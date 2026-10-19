@@ -1,0 +1,354 @@
+# frozen_string_literal: true
+
+RSpec.shared_context 'with claiming tools' do
+  let(:claim_service) { Gitlab::TopologyServiceClient::ClaimService.instance }
+  let(:deadline) { 10.seconds.from_now.to_i }
+  let(:lease_uuid) { SecureRandom.uuid }
+  let(:fake_error) { Class.new(RuntimeError) }
+  let(:create_records) { [] }
+  let(:destroy_records) { [] }
+
+  def claims_records(only: {})
+    claims_records_for(subject, only: only)
+  end
+
+  def destroy_claims_records(only: {})
+    destroy_claims_records_for(subject, only: only)
+  end
+
+  def claims_records_for(instance, only: {})
+    instance.class.cells_claims_attributes.filter_map do |attribute, config|
+      value = only[attribute]
+      next unless only.empty? || value
+      next unless instance.__send__(:cells_claims_attribute_claimable?, attribute, config)
+
+      claims_records_attribute_for(instance, attribute, config, value)
+    end
+  end
+
+  def destroy_claims_records_for(instance, only: {})
+    instance.class.cells_claims_attributes.filter_map do |attribute, config|
+      value = only[attribute]
+      next unless only.empty? || value
+      next unless instance.__send__(:cells_claims_attribute_claimable?, attribute, config)
+
+      claims_records_attribute_for(instance, attribute, config, value)
+    end
+  end
+
+  def claims_records_attribute_for(instance, attribute, config, value)
+    instance.__send__(
+      :cells_claims_metadata_for,
+      config[:type],
+      value || instance.public_send(attribute))
+  end
+
+  def sanitize_records_for_grpc(records)
+    records.map { |record| record.except(:record) }
+  end
+
+  before do
+    stub_config_cell(enabled: true)
+    # Current memoizes this, and let_it_be's before(:all) runs while the cell is
+    # still disabled, so the cached false has to be overridden explicitly.
+    allow(Current).to receive(:cells_claims_leases?).and_return(true)
+    allow(GRPC::Core::TimeConsts).to receive(:from_relative_time).and_return(deadline)
+  end
+
+  def expect_begin_update(type, success: true)
+    allow(Cells::OutstandingLease).to receive(:create_from_request!)
+      .and_wrap_original do |original, *args|
+        actual_create_records = args.dig(0, :create_records)
+        actual_destroy_records = args.dig(0, :destroy_records)
+        # This way we ignore the orders for the records
+        original.call(
+          create_records: sort_records(actual_create_records),
+          destroy_records: sort_records(actual_destroy_records),
+          deadline: args.dig(0, :deadline)
+        )
+      end
+
+    hook_method = :"cells_claims_#{type}_changes"
+    allow(subject).to receive(hook_method)
+      .and_wrap_original do |original, *args|
+        # We only want to do this ever once
+        allow(subject).to receive(hook_method).and_call_original
+
+        # We delay defining this mock because only after saving we have
+        # the id we can use for the metadata.
+        mock = expect(claim_service).to receive(:begin_update).with(
+          create_records: sort_records(create_records),
+          destroy_records: sort_records(destroy_records),
+          deadline: deadline
+        )
+
+        if success
+          mock.and_return(
+            Gitlab::Cells::TopologyService::Claims::V1::BeginUpdateResponse.new(
+              lease_uuid: Gitlab::Cells::TopologyService::Types::V1::UUID.new(
+                value: lease_uuid)))
+        else
+          mock.and_raise(fake_error.new)
+        end
+
+        original.call(*args)
+      end
+  end
+
+  def expect_commit_update(success: true)
+    if success
+      expect(claim_service).to receive(:commit_update).with(lease_uuid, deadline: deadline)
+    else
+      allow(claim_service).to receive(:commit_update).with(lease_uuid, deadline: deadline)
+        .and_raise(GRPC::Unavailable.new("service unavailable"))
+    end
+  end
+
+  def expect_rollback_update
+    expect(claim_service).to receive(:rollback_update).with(lease_uuid, deadline: deadline)
+  end
+
+  def expect_abort_commit
+    expect_next_instance_of(Cells::TransactionRecord) do |record|
+      expect(record).to receive(:before_committed!)
+        .and_wrap_original do |original_method, *args|
+          original_method.call(*args)
+          raise fake_error, 'Abort commit'
+        end
+    end
+  end
+
+  def expect_no_begin_update(action)
+    expect(claim_service).not_to receive(:begin_update).with(action)
+  end
+
+  def expect_no_commit_update
+    expect(claim_service).not_to receive(:commit_update)
+  end
+
+  def expect_no_rollback_update
+    expect(claim_service).not_to receive(:rollback_update)
+  end
+
+  def sort_records(records)
+    # Remove :record key before sorting
+    # We don't care about the actual order, but need a consistent order
+    # within this test run, so that when we compare two arrays we're only
+    # checking that they contain the same records regardless of order.
+    # This is reliable unless we hit hash collisions, which could cause
+    # test flakiness.
+    sanitize_records_for_grpc(records).sort_by(&:hash)
+  end
+end
+
+RSpec.shared_examples 'creating new claims' do
+  include_context 'with claiming tools'
+
+  context 'when creating the record' do
+    let(:create_records) { claims_records }
+
+    it 'claims attributes cleanly when created' do
+      expect_begin_update(:save)
+      expect_commit_update
+
+      expect(subject.save).to be(true)
+      expect(Cells::OutstandingLease.count).to eq(0)
+    end
+
+    context 'when begin_update fails' do
+      it 'does not save anything' do
+        expect_begin_update(:save, success: false)
+
+        expect { subject.save }.to raise_error(fake_error) # rubocop:disable Rails/SaveBang -- We're checking exceptions already
+          .and not_change { subject.class.count }
+        expect(Cells::OutstandingLease.count).to eq(0)
+      end
+    end
+
+    context 'when begin_update is successful but failing to commit' do
+      it 'rolls back the lease created from begin_update' do
+        expect_begin_update(:save)
+        expect_abort_commit
+        expect_rollback_update
+
+        expect { subject.save }.to raise_error(fake_error) # rubocop:disable Rails/SaveBang -- We're checking exceptions already
+          .and not_change { subject.class.count }
+        expect(Cells::OutstandingLease.count).to eq(0)
+      end
+    end
+
+    context 'when commit_update fails' do
+      it 'saves subject but leaves the outstanding lease for recovery' do
+        expect_begin_update(:save)
+        expect_commit_update(success: false)
+
+        expect { subject.save! }
+          .to change { subject.class.count }.by(1)
+          .and change { subject.persisted? }.from(false).to(true)
+        expect(Cells::OutstandingLease.count).to eq(1)
+      end
+    end
+  end
+end
+
+RSpec.shared_examples 'deleting existing claims' do
+  include_context 'with claiming tools'
+
+  context 'when deleting the record' do
+    subject! { super().tap(&:save!) }
+
+    let(:destroy_records) { destroy_claims_records }
+
+    it 'deletes the claimed attributes cleanly when created' do
+      expect_begin_update(:destroy)
+      expect_commit_update
+
+      subject.destroy!
+      expect(subject.destroyed?).to be(true)
+      expect(Cells::OutstandingLease.count).to eq(0)
+    end
+
+    context 'when begin_update fails' do
+      it 'does not delete anything' do
+        expect_begin_update(:destroy, success: false)
+
+        expect { subject.destroy }.to raise_error(fake_error) # rubocop:disable Rails/SaveBang -- We're checking exceptions already
+          .and not_change { subject.class.count }
+        expect(subject.destroyed?).to be(false)
+        expect(Cells::OutstandingLease.count).to eq(0)
+      end
+    end
+
+    context 'when begin_update is successful but failing to commit' do
+      it 'rolls back the lease created from begin_update' do
+        expect_begin_update(:destroy)
+        expect_abort_commit
+        expect_rollback_update
+
+        expect { subject.destroy }.to raise_error(fake_error) # rubocop:disable Rails/SaveBang -- We're checking exceptions already
+          .and not_change { subject.class.count }
+        expect(subject.destroyed?).to be(false)
+        expect(Cells::OutstandingLease.count).to eq(0)
+      end
+    end
+
+    context 'when commit_update fails' do
+      it 'deletes record but leaves the outstanding lease for recovery' do
+        expect_begin_update(:destroy)
+        expect_commit_update(success: false)
+
+        expect { subject.destroy! }.to change { subject.class.count }.by(-1)
+        expect(subject.destroyed?).to be(true)
+        expect(Cells::OutstandingLease.count).to eq(1)
+      end
+    end
+  end
+end
+
+RSpec.shared_examples 'updating existing claims' do
+  include_context 'with claiming tools'
+
+  context 'when updating the record' do
+    subject! { super().tap(&:save!) }
+
+    let!(:destroy_records) { destroy_claims_records(only: original_attributes) }
+    let!(:create_records) { claims_records(only: transform_attributes) }
+
+    let(:original_attributes) do
+      transform_attributes.each_key.index_with do |key|
+        subject.public_send(key)
+      end
+    end
+
+    it 'updates the claimed attributes cleanly when saved' do
+      expect_begin_update(:save)
+      expect_commit_update
+
+      expect(subject.update!(transform_attributes)).to be(true)
+      expect(Cells::OutstandingLease.count).to eq(0)
+    end
+
+    context 'when begin_update fails' do
+      it 'does not save anything' do
+        expect_begin_update(:save, success: false)
+
+        expect { subject.update(transform_attributes) }.to raise_error(fake_error) # rubocop:disable Rails/SaveBang -- We're checking exceptions already
+
+        subject.reload
+        original_attributes.each do |key, value|
+          expect(subject.public_send(key)).to eq(value)
+        end
+
+        expect(Cells::OutstandingLease.count).to eq(0)
+      end
+    end
+
+    context 'when begin_update is successful but failing to commit' do
+      it 'rolls back the lease created from begin_update' do
+        expect_begin_update(:save)
+        expect_abort_commit
+        expect_rollback_update
+
+        expect { subject.update(transform_attributes) }.to raise_error(fake_error) # rubocop:disable Rails/SaveBang -- We're checking exceptions already
+
+        subject.reload
+        original_attributes.each do |key, value|
+          expect(subject.public_send(key)).to eq(value)
+        end
+
+        expect(Cells::OutstandingLease.count).to eq(0)
+      end
+    end
+
+    context 'when commit_update fails' do
+      it 'updates attributes but leaves the outstanding lease for recovery' do
+        expect_begin_update(:save)
+        expect_commit_update(success: false)
+
+        expect(subject.update(transform_attributes)).to be(true)
+
+        subject.reload
+        transform_attributes.each do |key, value|
+          expect(subject.public_send(key)).to eq(value)
+        end
+
+        expect(Cells::OutstandingLease.count).to eq(1)
+      end
+    end
+  end
+end
+
+RSpec.shared_examples 'not creating claims' do
+  include_context 'with claiming tools'
+
+  context 'when creating the record' do
+    it 'saves the record without invoking claiming logic' do
+      expect_no_begin_update(:save)
+      expect_no_commit_update
+      expect_no_rollback_update
+
+      expect { subject.save! }
+        .to change { subject.class.count }.by(1)
+        .and change { subject.persisted? }.from(false).to(true)
+      expect(Cells::OutstandingLease.count).to eq(0)
+    end
+  end
+end
+
+RSpec.shared_examples 'not deleting claims' do
+  include_context 'with claiming tools'
+
+  context 'when deleting the record' do
+    subject! { super().tap(&:save!) }
+
+    it 'destroys the record without invoking claiming logic' do
+      expect_no_begin_update(:destroy)
+      expect_no_commit_update
+      expect_no_rollback_update
+
+      expect { subject.destroy! }.to change { subject.class.count }.by(-1)
+      expect(subject.destroyed?).to be(true)
+      expect(Cells::OutstandingLease.count).to eq(0)
+    end
+  end
+end

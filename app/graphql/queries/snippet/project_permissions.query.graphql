@@ -1,0 +1,10 @@
+query CanCreateProjectSnippet($fullPath: ID!) {
+  project(fullPath: $fullPath) {
+    __typename
+    id
+    userPermissions {
+      __typename
+      createSnippet
+    }
+  }
+}

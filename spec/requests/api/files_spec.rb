@@ -1,123 +1,2266 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe API::API, api: true  do
-  include ApiHelpers
-  let(:user) { create(:user) }
-  let!(:project) { create(:project, namespace: user.namespace ) }
-  let(:file_path) { 'files/ruby/popen.rb' }
+RSpec.describe API::Files, feature_category: :source_code_management do
+  include RepoHelpers
+  include ProjectForksHelper
 
-  before { project.team << [user, :developer] }
+  include_context 'for workhorse body uploads'
+  include_context 'workhorse headers'
 
-  describe "GET /projects/:id/repository/files" do
-    it "should return file info" do
-      params = {
-        file_path: file_path,
-        ref: 'master',
-      }
+  let_it_be(:group) { create(:group, :public) }
+  let(:helper) do
+    fake_class = Class.new do
+      include ::API::Helpers::HeadersHelpers
 
-      get api("/projects/#{project.id}/repository/files", user), params
-      expect(response.status).to eq(200)
-      expect(json_response['file_path']).to eq(file_path)
-      expect(json_response['file_name']).to eq('popen.rb')
-      expect(Base64.decode64(json_response['content']).lines.first).to eq("require 'fileutils'\n")
+      attr_reader :headers
+
+      def initialize
+        @headers = {}
+      end
+
+      def header(key, value)
+        @headers[key] = value
+      end
     end
 
-    it "should return a 400 bad request if no params given" do
-      get api("/projects/#{project.id}/repository/files", user)
-      expect(response.status).to eq(400)
+    fake_class.new
+  end
+
+  let_it_be_with_refind(:user) { create(:user) }
+  let_it_be(:inherited_guest) { create(:user, guest_of: group) }
+  let_it_be(:inherited_reporter) { create(:user, reporter_of: group) }
+  let_it_be(:inherited_developer) { create(:user, developer_of: group) }
+
+  let_it_be_with_reload(:project) { create(:project, :repository, namespace: user.namespace, developers: user) }
+  let_it_be_with_reload(:public_project) { create(:project, :public, :repository) }
+  let_it_be_with_reload(:private_project) { create(:project, :private, :repository, group: group) }
+  let_it_be_with_reload(:public_project_private_repo) { create(:project, :public, :repository, :repository_private, group: group) }
+
+  let_it_be(:guest) { create(:user) { |u| project.add_guest(u) } }
+  let(:file_path) { 'files%2Fruby%2Fpopen%2Erb' }
+  let(:file_name) { 'popen.rb' }
+  let(:last_commit_id) { '570e7b2abdd848b95f2f578043fc23bd6f6fd24d' }
+  let(:content_sha256) { 'c440cd09bae50c4632cc58638ad33c6aa375b6109d811e76a9cc3a613c1e8887' }
+  let(:executable_file_path) { 'files%2Fexecutables%2Fls' }
+  let(:invalid_file_path) { '%2e%2e%2f' }
+  let(:absolute_path) { '%2Fetc%2Fpasswd.rb' }
+  let(:invalid_file_message) { 'file_path should be a valid file path' }
+  let(:params) do
+    {
+      ref: 'master'
+    }
+  end
+
+  let(:executable_ref_params) do
+    {
+      ref: 'with-executables'
+    }
+  end
+
+  let(:last_commit_for_path) do
+    Gitlab::Git::Commit
+    .last_for_path(project.repository, 'master', Addressable::URI.unencode_component(file_path))
+  end
+
+  shared_context 'with author parameters' do
+    let(:author_email) { 'user@example.org' }
+    let(:author_name) { 'John Doe' }
+  end
+
+  def route(file_path = nil)
+    "/projects/#{project.id}/repository/files/#{file_path}"
+  end
+
+  def expect_to_send_git_blob(url, params)
+    expect(Gitlab::Workhorse).to receive(:send_git_blob)
+
+    get url, params: params, headers: workhorse_headers
+
+    expect(response).to have_gitlab_http_status(:ok)
+    expect(response.parsed_body).to be_empty
+  end
+
+  context 'http headers' do
+    it 'converts value into string' do
+      helper.set_http_headers(test: 1)
+
+      expect(helper.headers).to eq({ 'X-Gitlab-Test' => '1' })
     end
 
-    it "should return a 404 if such file does not exist" do
-      params = {
-        file_path: 'app/models/application.rb',
-        ref: 'master',
-      }
-
-      get api("/projects/#{project.id}/repository/files", user), params
-      expect(response.status).to eq(404)
+    context 'when value is an Enumerable' do
+      it 'raises an exception' do
+        expect { helper.set_http_headers(test: [1]) }.to raise_error(ArgumentError)
+      end
     end
   end
 
-  describe "POST /projects/:id/repository/files" do
-    let(:valid_params) {
+  shared_examples 'when path is absolute' do
+    it 'returns 400 when file path is absolute' do
+      subject
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+
+      if response.body.present?
+        expect(json_response['error']).to eq(invalid_file_message)
+      end
+    end
+  end
+
+  shared_examples 'ai_workflows scope' do
+    subject(:file_action) { nil }
+
+    let(:expected_status) { nil }
+    let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      before do
+        allow(Ability).to receive(:allowed?).and_call_original
+        allow(Ability).to receive(:allowed?).with(user, :duo_workflow, project)
+                                          .and_return(true)
+      end
+
+      it 'is successful' do
+        file_action
+
+        expect(response).to have_gitlab_http_status(expected_status)
+      end
+
+      context 'when the user has agentic chat permission for the project' do
+        before do
+          allow(Ability).to receive(:allowed?).and_call_original
+          allow(Ability).to receive(:allowed?).with(user, :access_duo_agentic_chat, project)
+                                              .and_return(true)
+        end
+
+        it 'is successful' do
+          file_action
+
+          expect(response).to have_gitlab_http_status(expected_status)
+        end
+      end
+
+      context 'when the user does not have duo_workflow permission for the project' do
+        before do
+          allow(Ability).to receive(:allowed?).and_call_original
+          allow(Ability).to receive(:allowed?).with(user, :duo_workflow, project)
+            .and_return(false)
+        end
+
+        it 'returns a forbidden error' do
+          file_action
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+  end
+
+  shared_examples 'ai_workflows file size limit' do
+    subject(:file_action) { nil }
+
+    let(:other_file_action) { nil }
+    let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+    before do
+      stub_const('API::Files::MAX_AI_WORKFLOW_BLOB_SIZE', 5)
+      allow(Ability).to receive(:allowed?).and_call_original
+      allow(Ability).to receive(:allowed?).with(user, :duo_workflow, project).and_return(true)
+    end
+
+    it 'rejects a file over the limit', :aggregate_failures do
+      file_action
+
+      expect(response).to have_gitlab_http_status(:payload_too_large)
+      expect(json_response['message']).to match(/File is too large to read: \d+ bytes exceeds the limit of 5 bytes/)
+    end
+
+    it 'does not limit tokens without the ai_workflows scope' do
+      other_file_action
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    context 'when limit_repository_file_size_for_ai_workflows is disabled' do
+      before do
+        stub_feature_flags(limit_repository_file_size_for_ai_workflows: false)
+      end
+
+      it 'returns the file' do
+        file_action
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  shared_examples 'validates file params' do
+    let(:current_user) { user }
+
+    shared_examples 'returns bad request - validation error' do |expected_message|
+      specify do
+        workhorse_body_upload(url, params)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq("400 Bad request - #{expected_message}")
+      end
+    end
+
+    context 'without workhorse headers', :verify_workhorse_jwt do
+      let(:workhorse_headers) { {} }
+
+      it 'returns forbidden' do
+        workhorse_body_upload(url, params)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'with an invalid execute_filemode' do
+      let(:params) { super().merge(execute_filemode: 0) }
+
+      it_behaves_like 'returns bad request - validation error', 'execute_filemode must be a boolean'
+    end
+
+    context 'with an invalid encoding' do
+      let(:params) { super().merge(encoding: 'bin') }
+
+      it_behaves_like 'returns bad request - validation error', 'encoding must be text or base64'
+    end
+
+    context 'without content' do
+      let(:params) { super().except(:content) }
+
+      it_behaves_like 'returns bad request - validation error', 'content is required'
+    end
+
+    context 'with non-string parameter types' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:param_name, :param_value) do
+        :branch         | { nested: 'object' }
+        :commit_message | { nested: 'object' }
+        :start_branch   | { nested: 'object' }
+        :author_email   | { nested: 'object' }
+        :author_name    | { nested: 'object' }
+        :last_commit_id | { nested: 'object' }
+        :branch         | ['array']
+        :commit_message | ['array']
+        :start_branch   | ['array']
+        :author_email   | ['array']
+        :author_name    | ['array']
+        :last_commit_id | ['array']
+      end
+
+      with_them do
+        let(:params) { super().merge(param_name => param_value) }
+
+        it 'returns bad request with type validation error' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq("400 Bad request - #{param_name} must be a string")
+        end
+      end
+    end
+  end
+
+  shared_examples 'rate limiting for large commit content' do
+    context 'when file size is above threshold' do
+      before do
+        stub_const('Repositories::CommitsUploader::MAX_RATE_LIMITED_REQUEST_SIZE', 1.byte)
+      end
+
+      it 'applies rate limiting' do
+        allow_next_instance_of(described_class) do |controller|
+          expect(controller).to receive(:check_rate_limit!).with(:user_large_commit_request, scope: { user: user })
+        end
+
+        workhorse_body_upload(url, params)
+      end
+    end
+  end
+
+  describe 'HEAD /projects/:id/repository/files/:file_path' do
+    shared_examples_for 'repository files' do
+      let(:options) { {} }
+
+      it 'returns 400 when file path is invalid' do
+        head api(route(invalid_file_path), current_user, **options), params: params
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it_behaves_like 'when path is absolute' do
+        subject { head api(route(absolute_path), current_user, **options), params: params }
+      end
+
+      it 'returns file attributes in headers' do
+        head api(route(file_path), current_user, **options), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['X-Gitlab-File-Path']).to eq(CGI.unescape(file_path))
+        expect(response.headers['X-Gitlab-File-Name']).to eq(file_name)
+        expect(response.headers['X-Gitlab-Last-Commit-Id']).to eq(last_commit_id)
+        expect(response.headers['X-Gitlab-Content-Sha256']).to eq(content_sha256)
+      end
+
+      it 'caches sha256 of the content', :use_clean_rails_redis_caching do
+        head api(route(file_path), current_user, **options), params: params
+
+        expect_next_instance_of(Gitlab::Cache::Client) do |instance|
+          expect(instance).to receive(:fetch).with(anything, nil, { cache_identifier: 'API::Files#content_sha', backing_resource: :gitaly }).and_call_original
+        end
+
+        expect(Rails.cache.fetch("blob_content_sha256:#{project.full_path}:#{response.headers['X-Gitlab-Blob-Id']}"))
+          .to eq(content_sha256)
+
+        expect_next_instance_of(Gitlab::Git::Blob) do |instance|
+          expect(instance).not_to receive(:load_all_data!)
+        end
+
+        head api(route(file_path), current_user, **options), params: params
+      end
+
+      it 'returns file by commit sha' do
+        # This file is deleted on HEAD
+        file_path = 'files%2Fjs%2Fcommit%2Ejs%2Ecoffee'
+        params[:ref] = '6f6d7e7ed97bb5f0054f2b1df789b39ca89b6ff9'
+
+        head api(route(file_path), current_user, **options), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['X-Gitlab-File-Name']).to eq('commit.js.coffee')
+        expect(response.headers['X-Gitlab-Content-Sha256']).to eq('08785f04375b47f81f46e68cc125d5ef368aa20576ddb53f91f4d83f1d04b929')
+      end
+
+      context 'when mandatory params are not given' do
+        it 'responds with a 400 status' do
+          head api(route('any%2Ffile'), current_user, **options)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when file_path does not exist' do
+        it 'responds with a 404 status' do
+          params[:ref] = 'master'
+
+          head api(route('app%2Fmodels%2Fapplication%2Erb'), current_user, **options), params: params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when file_path does not exist' do
+        include_context 'disabled repository'
+
+        it 'responds with a 403 status' do
+          head api(route(file_path), current_user, **options), params: params
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+
+    context 'when unauthenticated' do
+      context 'and project is public' do
+        let(:project) { public_project }
+
+        it_behaves_like 'repository files' do
+          let(:current_user) { nil }
+        end
+      end
+
+      context 'and project is private' do
+        it 'responds with a 404 status' do
+          current_user = nil
+
+          head api(route(file_path), current_user), params: params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'when PATs are used' do
+      it_behaves_like 'repository files' do
+        let(:token) { create(:personal_access_token, scopes: ['read_repository'], user: user) }
+        let(:current_user) { nil }
+        let(:options) { { personal_access_token: token } }
+      end
+    end
+
+    context 'when authenticated' do
+      context 'and user is a developer' do
+        it_behaves_like 'repository files' do
+          let(:current_user) { user }
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_repository_file do
+          let(:boundary_object) { project }
+          let(:request) do
+            head api(route(file_path), personal_access_token: pat), params: params
+          end
+        end
+      end
+
+      context 'and user is a guest' do
+        it_behaves_like '403 response' do
+          let(:request) { head api(route(file_path), guest), params: params }
+        end
+      end
+
+      it_behaves_like 'ai_workflows scope' do
+        subject(:file_action) { head api(route(file_path), oauth_access_token: oauth_token), params: params }
+
+        let(:expected_status) { :ok }
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/files/:file_path' do
+    let(:options) { {} }
+
+    shared_examples 'returns non-executable file attributes as json' do
+      specify do
+        get api(route(file_path), api_user, **options), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+        expect(json_response['file_name']).to eq(file_name)
+        expect(json_response['last_commit_id']).to eq(last_commit_id)
+        expect(json_response['content_sha256']).to eq(content_sha256)
+        expect(json_response['execute_filemode']).to be(false)
+        expect(Base64.decode64(json_response['content']).lines.first).to eq("require 'fileutils'\n")
+      end
+    end
+
+    shared_examples_for 'repository files' do
+      it_behaves_like 'when path is absolute' do
+        subject { get api(route(absolute_path), api_user, **options), params: params }
+      end
+
+      it_behaves_like 'returns non-executable file attributes as json'
+
+      context 'for executable file' do
+        it 'returns file attributes as json' do
+          get api(route(executable_file_path), api_user, **options), params: executable_ref_params
+
+          aggregate_failures 'testing response' do
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response['file_path']).to eq(CGI.unescape(executable_file_path))
+            expect(json_response['file_name']).to eq('ls')
+            expect(json_response['last_commit_id']).to eq('6b8dc4a827797aa025ff6b8f425e583858a10d4f')
+            expect(json_response['content_sha256']).to eq('2c74b1181ef780dfb692c030d3a0df6e0b624135c38a9344e56b9f80007b6191')
+            expect(json_response['execute_filemode']).to be(true)
+            expect(Base64.decode64(json_response['content']).lines.first).to eq("#!/bin/sh\n")
+          end
+        end
+      end
+
+      it 'returns json when file has txt extension' do
+        file_path = 'bar%2Fbranch-test.txt'
+
+        get api(route(file_path), api_user, **options), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.media_type).to eq('application/json')
+      end
+
+      context 'with filename with pathspec characters' do
+        let(:file_path) { ':wq' }
+        let(:newrev) { project.repository.commit('master').sha }
+
+        before do
+          create_file_in_repo(project, 'master', 'master', file_path, 'Test file')
+        end
+
+        it 'returns JSON wth commit SHA' do
+          params[:ref] = 'master'
+
+          get api(route(file_path), api_user, **options), params: params
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['file_path']).to eq(file_path)
+          expect(json_response['file_name']).to eq(file_path)
+          expect(json_response['last_commit_id']).to eq(newrev)
+        end
+      end
+
+      it 'returns file by commit sha' do
+        # This file is deleted on HEAD
+        file_path = 'files%2Fjs%2Fcommit%2Ejs%2Ecoffee'
+        params[:ref] = '6f6d7e7ed97bb5f0054f2b1df789b39ca89b6ff9'
+
+        get api(route(file_path), api_user, **options), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['file_name']).to eq('commit.js.coffee')
+        expect(json_response['content_sha256']).to eq('08785f04375b47f81f46e68cc125d5ef368aa20576ddb53f91f4d83f1d04b929')
+        expect(Base64.decode64(json_response['content']).lines.first).to eq("class Commit\n")
+      end
+
+      it 'returns raw file info' do
+        url = route(file_path) + '/raw'
+        expect_to_send_git_blob(api(url, api_user, **options), params)
+        expect(headers[Gitlab::Workhorse::DETECT_HEADER]).to eq 'true'
+      end
+
+      it 'returns blame file info' do
+        url = route(file_path) + '/blame'
+
+        get api(url, api_user, **options), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      context 'when a project is moved' do
+        let_it_be(:redirect_route) { 'new/project/location' }
+        let_it_be(:file_path) { 'files%2Fruby%2Fpopen.rb' }
+
+        it 'redirects to the new project location' do
+          project.route.create_redirect(redirect_route)
+
+          url = "/projects/#{CGI.escape(redirect_route)}/repository/files/#{file_path}"
+          get api(url, api_user, **options), params: params
+
+          expect(response).to have_gitlab_http_status(:moved_permanently)
+          expect(response.headers['Location']).to start_with(
+            "#{::Settings.gitlab.url}/api/v4/projects/#{project.id}/repository/files/#{file_path}"
+          )
+        end
+      end
+
+      it 'sets inline content disposition by default' do
+        url = route(file_path) + '/raw'
+
+        get api(url, api_user, **options), params: params
+
+        expect(headers['Content-Disposition']).to eq(%(inline; filename="#{file_name}"; filename*=UTF-8''#{file_name}))
+      end
+
+      context 'when mandatory params are not given' do
+        it_behaves_like '400 response' do
+          let(:request) { get api(route('any%2Ffile'), current_user, **options) }
+        end
+      end
+
+      context 'when file_path does not exist' do
+        let(:params) { { ref: 'master' } }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route('app%2Fmodels%2Fapplication%2Erb'), api_user, **options), params: params }
+          let(:message) { '404 File Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '403 response' do
+          let(:request) { get api(route(file_path), api_user, **options), params: params }
+        end
+      end
+    end
+
+    context 'when unauthenticated' do
+      context 'and project is public' do
+        it_behaves_like 'repository files' do
+          let(:project) { public_project }
+          let(:current_user) { nil }
+          let(:api_user) { nil }
+        end
+      end
+
+      context 'and project is private' do
+        it_behaves_like '404 response' do
+          let(:request) { get api(route(file_path)), params: params }
+          let(:message) { '404 Project Not Found' }
+        end
+      end
+    end
+
+    context 'when authenticated' do
+      context 'and user is a direct project member' do
+        context 'and project is private' do
+          context 'and user is a developer' do
+            it_behaves_like 'repository files' do
+              let(:current_user) { user }
+              let(:api_user) { user }
+            end
+
+            context 'and PATs are used' do
+              it_behaves_like 'repository files' do
+                let(:token) { create(:personal_access_token, scopes: ['read_repository'], user: user) }
+                let(:current_user) { user }
+                let(:api_user) { nil }
+                let(:options) { { personal_access_token: token } }
+              end
+            end
+          end
+
+          context 'and user is a guest' do
+            it_behaves_like '403 response' do
+              let(:request) { get api(route(file_path), guest), params: params }
+            end
+          end
+        end
+      end
+
+      context 'and user is an inherited member from the group' do
+        context 'when project is public with private repository' do
+          let(:project) { public_project_private_repo }
+
+          context 'and user is a guest' do
+            it_behaves_like 'returns non-executable file attributes as json' do
+              let(:api_user) { inherited_guest }
+            end
+          end
+
+          context 'and user is a reporter' do
+            it_behaves_like 'returns non-executable file attributes as json' do
+              let(:api_user) { inherited_reporter }
+            end
+          end
+
+          context 'and user is a developer' do
+            it_behaves_like 'returns non-executable file attributes as json' do
+              let(:api_user) { inherited_developer }
+            end
+          end
+        end
+
+        context 'when project is private' do
+          let(:project) { private_project }
+
+          context 'and user is a guest' do
+            it_behaves_like '403 response' do
+              let(:request) { get api(route(file_path), inherited_guest), params: params }
+            end
+          end
+
+          context 'and user is a reporter' do
+            it_behaves_like 'returns non-executable file attributes as json' do
+              let(:api_user) { inherited_reporter }
+            end
+          end
+
+          context 'and user is a developer' do
+            it_behaves_like 'returns non-executable file attributes as json' do
+              let(:api_user) { inherited_developer }
+            end
+
+            it_behaves_like 'authorizing granular token permissions', :read_repository_file do
+              let(:boundary_object) { project }
+              let(:user) { inherited_developer }
+              let(:request) do
+                get api(route(file_path), personal_access_token: pat), params: params
+              end
+            end
+          end
+        end
+      end
+
+      it_behaves_like 'ai_workflows scope' do
+        subject(:file_action) { get api(route(file_path), oauth_access_token: oauth_token), params: params }
+
+        let(:expected_status) { :ok }
+      end
+
+      it_behaves_like 'ai_workflows file size limit' do
+        subject(:file_action) { get api(route(file_path), oauth_access_token: oauth_token), params: params }
+
+        let(:other_file_action) { get api(route(file_path), user), params: params }
+      end
+    end
+
+    context 'when a large file/blob is requested' do
+      it 'rate limits user when thresholds hit' do
+        stub_const("API::Helpers::BlobHelpers::MAX_BLOB_SIZE", 5)
+        allow(::Gitlab::ApplicationRateLimiter).to receive(:throttled_request?).and_return(true)
+
+        get api(route(file_path), user), params: params
+
+        expect(response).to have_gitlab_http_status(:too_many_requests)
+        expect(response.headers).to include(
+          'Retry-After' => Gitlab::ApplicationRateLimiter.period_for(:large_blob_download)
+        )
+      end
+    end
+
+    context 'when Gitaly is unavailable' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:raised_error) do
+        [
+          [-> { GRPC::Unavailable.new('failed to connect to all addresses') }],
+          [-> { GRPC::DeadlineExceeded.new('deadline exceeded') }]
+        ]
+      end
+
+      with_them do
+        before do
+          allow_next_instance_of(Gitlab::GitalyClient::CommitService) do |svc|
+            allow(svc).to receive(:find_commit).and_raise(raised_error.call)
+          end
+
+          allow_next_instance_of(Gitlab::GitalyClient::HealthCheckService) do |svc|
+            allow(svc).to receive(:check).and_return(success: false, message: 'Gitaly is not available')
+          end
+        end
+
+        it 'returns 503 Service Unavailable instead of 404', :aggregate_failures do
+          get api(route(file_path), user), params: params
+
+          expect(response).to have_gitlab_http_status(:service_unavailable)
+          expect(json_response['message']).to eq('503 Service Unavailable')
+        end
+      end
+
+      it 'still returns 404 for a genuinely missing ref when Gitaly is healthy', :aggregate_failures do
+        get api(route(file_path), user), params: { ref: '1111111111111111111111111111111111111111' }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 Commit Not Found')
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/files/:file_path/blame' do
+    shared_examples_for 'repository blame files' do
+      let(:expected_blame_range_sizes) do
+        [3, 2, 1, 2, 1, 1, 1, 1, 8, 1, 3, 1, 2, 1, 4, 1, 2, 2]
+      end
+
+      let(:expected_blame_range_commit_ids) do
+        %w[
+          913c66a37b4a45b9769037c55c2d238bd0942d2e
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          913c66a37b4a45b9769037c55c2d238bd0942d2e
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          570e7b2abdd848b95f2f578043fc23bd6f6fd24d
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          913c66a37b4a45b9769037c55c2d238bd0942d2e
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          570e7b2abdd848b95f2f578043fc23bd6f6fd24d
+          913c66a37b4a45b9769037c55c2d238bd0942d2e
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          913c66a37b4a45b9769037c55c2d238bd0942d2e
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          570e7b2abdd848b95f2f578043fc23bd6f6fd24d
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          913c66a37b4a45b9769037c55c2d238bd0942d2e
+          874797c3a73b60d2187ed6e2fcabd289ff75171e
+          913c66a37b4a45b9769037c55c2d238bd0942d2e
+        ]
+      end
+
+      it 'returns file attributes in headers' do
+        head api(route(file_path) + '/blame', current_user), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['X-Gitlab-File-Path']).to eq(CGI.unescape(file_path))
+        expect(response.headers['X-Gitlab-File-Name']).to eq(file_name)
+        expect(response.headers['X-Gitlab-Last-Commit-Id']).to eq(last_commit_id)
+        expect(response.headers['X-Gitlab-Content-Sha256']).to eq(content_sha256)
+        expect(response.headers['X-Gitlab-Execute-Filemode']).to eq('false')
+      end
+
+      context 'for executable file' do
+        it 'returns file attributes in headers' do
+          head api(route(executable_file_path) + '/blame', current_user), params: executable_ref_params
+
+          aggregate_failures 'testing response' do
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response.headers['X-Gitlab-File-Path']).to eq(CGI.unescape(executable_file_path))
+            expect(response.headers['X-Gitlab-File-Name']).to eq('ls')
+            expect(response.headers['X-Gitlab-Last-Commit-Id']).to eq('6b8dc4a827797aa025ff6b8f425e583858a10d4f')
+            expect(response.headers['X-Gitlab-Content-Sha256'])
+              .to eq('2c74b1181ef780dfb692c030d3a0df6e0b624135c38a9344e56b9f80007b6191')
+            expect(response.headers['X-Gitlab-Execute-Filemode']).to eq('true')
+          end
+        end
+      end
+
+      it_behaves_like 'when path is absolute' do
+        subject { get api(route(absolute_path) + '/blame', current_user), params: params }
+      end
+
+      it 'returns blame file attributes as json' do
+        get api(route(file_path) + '/blame', current_user), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.map { |x| x['lines'].size }).to eq(expected_blame_range_sizes)
+        expect(json_response.map { |x| x['commit']['id'] }).to eq(expected_blame_range_commit_ids)
+        range = json_response[0]
+        expect(range['lines']).to eq(["require 'fileutils'", "require 'open3'", ''])
+        expect(range['commit']['id']).to eq('913c66a37b4a45b9769037c55c2d238bd0942d2e')
+        expect(range['commit']['parent_ids']).to eq(['cfe32cf61b73a0d5e9f13e774abde7ff789b1660'])
+        expect(range['commit']['message'])
+          .to eq("Files, encoding and much more\n\nSigned-off-by: Dmitriy Zaporozhets <dmitriy.zaporozhets@gmail.com>\n")
+
+        expect(range['commit']['authored_date']).to eq('2014-02-27T10:14:56.000+02:00')
+        expect(range['commit']['author_name']).to eq('Dmitriy Zaporozhets')
+        expect(range['commit']['author_email']).to eq('dmitriy.zaporozhets@gmail.com')
+
+        expect(range['commit']['committed_date']).to eq('2014-02-27T10:14:56.000+02:00')
+        expect(range['commit']['committer_name']).to eq('Dmitriy Zaporozhets')
+        expect(range['commit']['committer_email']).to eq('dmitriy.zaporozhets@gmail.com')
+      end
+
+      context 'with a range parameter' do
+        let(:params) { super().merge(range: { start: 2, end: 4 }) }
+
+        it 'returns file blame attributes as json for the range' do
+          get api(route(file_path) + '/blame', current_user), params: params
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.size).to eq(2)
+
+          lines = json_response.map { |x| x['lines'] }
+
+          expect(lines.map(&:size)).to eq(expected_blame_range_sizes[1..2])
+          expect(lines.flatten).to eq(["require 'open3'", '', 'module Popen'])
+        end
+
+        context 'when start > end' do
+          let(:params) { super().merge(range: { start: 4, end: 2 }) }
+
+          it 'returns 400 error' do
+            get api(route(file_path) + '/blame', current_user), params: params
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to eq('range[start] must be less than or equal to range[end]')
+          end
+        end
+
+        context 'when range is incomplete' do
+          let(:params) { super().merge(range: { start: 1 }) }
+
+          it 'returns 400 error' do
+            get api(route(file_path) + '/blame', current_user), params: params
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['error']).to eq('range[end] is missing, range[end] is empty')
+          end
+        end
+
+        context 'when range contains negative integers' do
+          let(:params) { super().merge(range: { start: -2, end: -5 }) }
+
+          it 'returns 400 error' do
+            get api(route(file_path) + '/blame', current_user), params: params
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['error']).to eq('range[start] does not have a valid value, range[end] does not have a valid value')
+          end
+        end
+
+        context 'when range is missing' do
+          let(:params) { super().merge(range: { start: '', end: '' }) }
+
+          it 'returns 400 error' do
+            get api(route(file_path) + '/blame', current_user), params: params
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['error']).to eq('range[start] is empty, range[end] is empty')
+          end
+        end
+      end
+
+      it 'returns blame file info for files with dots' do
+        url = route('.gitignore') + '/blame'
+
+        get api(url, current_user), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'returns file by commit sha' do
+        # This file is deleted on HEAD
+        file_path = 'files%2Fjs%2Fcommit%2Ejs%2Ecoffee'
+        params[:ref] = '6f6d7e7ed97bb5f0054f2b1df789b39ca89b6ff9'
+
+        get api(route(file_path) + '/blame', current_user), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      context 'when mandatory params are not given' do
+        it_behaves_like '400 response' do
+          let(:request) { get api(route('any%2Ffile/blame'), current_user) }
+        end
+      end
+
+      context 'when file_path does not exist' do
+        let(:params) { { ref: 'master' } }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route('app%2Fmodels%2Fapplication%2Erb/blame'), current_user), params: params }
+          let(:message) { '404 File Not Found' }
+        end
+      end
+
+      context 'when commit does not exist' do
+        let(:params) { { ref: '1111111111111111111111111111111111111111' } }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route(file_path + '/blame'), current_user), params: params }
+          let(:message) { '404 Commit Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '403 response' do
+          let(:request) { get api(route(file_path + '/blame'), current_user), params: params }
+        end
+      end
+    end
+
+    context 'when unauthenticated' do
+      context 'and project is public' do
+        it_behaves_like 'repository blame files' do
+          let(:project) { public_project }
+          let(:current_user) { nil }
+        end
+      end
+
+      context 'and project is private' do
+        it_behaves_like '404 response' do
+          let(:request) { get api(route(file_path)), params: params }
+          let(:message) { '404 Project Not Found' }
+        end
+      end
+    end
+
+    context 'when authenticated' do
+      context 'and user is a developer' do
+        it_behaves_like 'repository blame files' do
+          let(:current_user) { user }
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_repository_file_blame do
+          let(:boundary_object) { project }
+          let(:request) do
+            head api(route(file_path) + '/blame', personal_access_token: pat), params: params
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_repository_file_blame do
+          let(:boundary_object) { project }
+          let(:request) do
+            get api(route(file_path) + '/blame', personal_access_token: pat), params: params
+          end
+        end
+      end
+
+      context 'and user is a guest' do
+        it_behaves_like '403 response' do
+          let(:request) { get api(route(file_path) + '/blame', guest), params: params }
+        end
+      end
+
+      it_behaves_like 'ai_workflows scope' do
+        subject(:file_action) { get api(route(file_path) + '/blame', oauth_access_token: oauth_token), params: params }
+
+        let(:expected_status) { :ok }
+      end
+    end
+
+    context 'when PATs are used' do
+      it 'returns blame file by commit sha' do
+        token = create(:personal_access_token, scopes: ['read_repository'], user: user)
+
+        # This file is deleted on HEAD
+        file_path = 'files%2Fjs%2Fcommit%2Ejs%2Ecoffee'
+        params[:ref] = '6f6d7e7ed97bb5f0054f2b1df789b39ca89b6ff9'
+
+        get api(route(file_path) + '/blame', personal_access_token: token), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    context 'when rate limited' do
+      let(:public_blame_route) { "/projects/#{public_project.id}/repository/files/#{file_path}/blame" }
+
+      context 'when authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :project_repositories_blame do
+          let(:current_user) { user }
+
+          def request
+            get api(route(file_path) + '/blame', current_user), params: params
+          end
+
+          # The limit is per user and project, so a second project is a second scope.
+          def request_with_second_scope
+            get api(public_blame_route, current_user), params: params
+          end
+        end
+      end
+
+      context 'when unauthenticated' do
+        it_behaves_like 'rate limited endpoint',
+          rate_limit_key: :project_repositories_blame_unauthenticated, use_second_scope: false do
+          let(:current_user) { nil }
+
+          def request
+            get api(public_blame_route), params: params
+          end
+        end
+      end
+
+      # Only GET is limited. HEAD returns blob metadata without running Gitlab::Blame.
+      context 'when requesting blame metadata' do
+        it_behaves_like 'unthrottled endpoint', rate_limit_key: :project_repositories_blame do
+          def request
+            head api(route(file_path) + '/blame', user), params: params
+          end
+        end
+      end
+
+      context 'with the limits applied', :clean_gitlab_redis_rate_limiting do
+        before do
+          stub_application_setting(
+            project_repositories_blame_limit: 1,
+            project_repositories_blame_unauthenticated_limit: 1
+          )
+        end
+
+        it 'throttles a second anonymous request from the same IP', :aggregate_failures do
+          get api(public_blame_route), params: params
+          expect(response).to have_gitlab_http_status(:ok)
+
+          get api(public_blame_route), params: params
+          expect(response).to have_gitlab_http_status(:too_many_requests)
+        end
+
+        it 'does not charge an anonymous request to the authenticated limit', :aggregate_failures do
+          get api(public_blame_route), params: params
+          expect(response).to have_gitlab_http_status(:ok)
+
+          get api(public_blame_route, user), params: params
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        # The throttle must run before the blame computation, not merely short-circuit the response.
+        it 'does not run blame once throttled', :aggregate_failures do
+          get api(route(file_path) + '/blame', user), params: params
+          expect(response).to have_gitlab_http_status(:ok)
+
+          expect(Gitlab::Blame).not_to receive(:new)
+
+          get api(route(file_path) + '/blame', user), params: params
+          expect(response).to have_gitlab_http_status(:too_many_requests)
+        end
+      end
+    end
+  end
+
+  describe 'HEAD /projects/:id/repository/files/:file_path/raw' do
+    let(:request) { head api(route(file_path) + '/raw', current_user), params: params, headers: workhorse_headers }
+
+    describe 'response headers' do
+      subject { response.headers }
+
+      context 'and user is a developer' do
+        let(:current_user) { user }
+
+        it 'responds with blob data' do
+          request
+          headers = response.headers
+          expect(headers['X-Gitlab-File-Name']).to eq(file_name)
+          expect(headers['X-Gitlab-File-Path']).to eq('files/ruby/popen.rb')
+          expect(headers['X-Gitlab-Content-Sha256']).to eq('c440cd09bae50c4632cc58638ad33c6aa375b6109d811e76a9cc3a613c1e8887')
+          expect(headers['X-Gitlab-Ref']).to eq('master')
+          expect(headers['X-Gitlab-Blob-Id']).to eq('7e3e39ebb9b2bf433b4ad17313770fbe4051649c')
+          expect(headers['X-Gitlab-Commit-Id']).to eq(project.repository.commit.id)
+          expect(headers['X-Gitlab-Last-Commit-Id']).to eq('570e7b2abdd848b95f2f578043fc23bd6f6fd24d')
+        end
+
+        context 'when lfs parameter is true and the project has lfs enabled' do
+          before do
+            allow(Gitlab.config.lfs).to receive(:enabled).and_return(true)
+            project.update_attribute(:lfs_enabled, true)
+          end
+
+          let(:request) { head api(route('files%2Flfs%2Flfs_object.iso') + '/raw', current_user), params: params.merge(lfs: true), headers: workhorse_headers }
+
+          context 'and the file has an lfs object' do
+            let_it_be_with_reload(:lfs_object) { create(:lfs_object, :with_file, oid: '91eff75a492a3ed0dfcb544d7f31326bc4014c8551849c192fd1e48d4dd2c897') }
+
+            it 'responds with 404' do
+              request
+
+              expect(response).to have_gitlab_http_status(:not_found)
+            end
+
+            context 'and the project has access to the lfs object' do
+              before do
+                project.lfs_objects << lfs_object
+              end
+
+              context 'and lfs uses AWS' do
+                before do
+                  stub_lfs_object_storage(config: Gitlab.config.lfs.object_store.merge(connection: {
+                    provider: 'AWS',
+                    aws_access_key_id: '',
+                    aws_secret_access_key: ''
+                  }))
+                  lfs_object.file.migrate!(LfsObjectUploader::Store::REMOTE)
+                end
+
+                it 'redirects to the lfs object file with a signed url' do
+                  request
+
+                  expect(response).to have_gitlab_http_status(:found)
+                  expect(response.location).to include(lfs_object.reload.file.path)
+                  expect(response.location).to include('X-Amz-SignedHeaders')
+                end
+              end
+            end
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_repository_file do
+          let(:boundary_object) { project }
+          let(:request) do
+            head api(route(file_path) + '/raw', personal_access_token: pat), params: params, headers: workhorse_headers
+          end
+        end
+      end
+
+      context 'and user is a guest' do
+        it_behaves_like '403 response' do
+          let(:request) { head api(route(file_path), guest), params: params }
+        end
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/files/:file_path/raw' do
+    it_behaves_like 'enforcing job token policies', :read_repositories,
+      allow_public_access_for_enabled_project_features: :repository do
+      let(:request) do
+        get api(route(file_path) + '/raw'), params: { job_token: target_job.token }, headers: workhorse_headers
+      end
+    end
+
+    shared_examples_for 'repository raw files' do
+      it_behaves_like 'when path is absolute' do
+        subject { get api(route(absolute_path) + '/raw', current_user), params: params, headers: workhorse_headers }
+      end
+
+      it 'returns raw file info' do
+        url = route(file_path) + '/raw'
+
+        expect_to_send_git_blob(api(url, current_user), params)
+      end
+
+      context 'when ref is not provided' do
+        before do
+          stub_application_setting(default_branch_name: 'main')
+        end
+
+        it 'returns response :ok', :aggregate_failures do
+          url = route(file_path) + '/raw'
+
+          expect_to_send_git_blob(api(url, current_user), {})
+        end
+      end
+
+      it 'returns raw file info for files with dots' do
+        url = route('.gitignore') + '/raw'
+
+        expect_to_send_git_blob(api(url, current_user), params)
+      end
+
+      it 'returns file by commit sha' do
+        # This file is deleted on HEAD
+        file_path = 'files%2Fjs%2Fcommit%2Ejs%2Ecoffee'
+        params[:ref] = '6f6d7e7ed97bb5f0054f2b1df789b39ca89b6ff9'
+
+        expect_to_send_git_blob(api(route(file_path) + '/raw', current_user), params)
+      end
+
+      it 'sets no-cache headers' do
+        url = route('.gitignore') + '/raw'
+
+        expect_to_send_git_blob(api(url, current_user), params)
+
+        expect(response.headers['Cache-Control']).to eq('max-age=0, private, must-revalidate, no-store, no-cache')
+        expect(response.headers['Expires']).to eq('Fri, 01 Jan 1990 00:00:00 GMT')
+      end
+
+      context 'when mandatory params are not given' do
+        it_behaves_like '400 response' do
+          let(:request) { get api(route('any%2Ffile'), current_user) }
+        end
+      end
+
+      context 'when file_path does not exist' do
+        let(:params) { { ref: 'master' } }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route('app%2Fmodels%2Fapplication%2Erb'), current_user), params: params }
+          let(:message) { '404 File Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '403 response' do
+          let(:request) { get api(route(file_path), current_user), params: params }
+        end
+      end
+
+      context 'when lfs parameter is true and the project has lfs enabled' do
+        before do
+          allow(Gitlab.config.lfs).to receive(:enabled).and_return(true)
+          project.update_attribute(:lfs_enabled, true)
+        end
+
+        let(:request) { get api(route(file_path) + '/raw', current_user), params: params.merge(lfs: true), headers: workhorse_headers }
+        let(:file_path) { 'files%2Flfs%2Flfs_object.iso' }
+
+        it_behaves_like '404 response'
+
+        context 'and the file has an lfs object' do
+          let_it_be_with_reload(:lfs_object) { create(:lfs_object, :with_file, oid: '91eff75a492a3ed0dfcb544d7f31326bc4014c8551849c192fd1e48d4dd2c897') }
+
+          it_behaves_like '404 response'
+
+          context 'and the project has access to the lfs object' do
+            before do
+              project.lfs_objects << lfs_object
+            end
+
+            context 'and lfs uses local file storage' do
+              before do
+                Grape::Endpoint.before_each do |endpoint|
+                  allow(endpoint).to receive(:sendfile).with(lfs_object.file.path)
+                end
+              end
+
+              after do
+                Grape::Endpoint.before_each nil
+              end
+
+              it 'responds with the lfs object file' do
+                request
+                expect(response.headers["Content-Disposition"]).to eq(
+                  "attachment; filename=\"#{lfs_object.file.filename}\"; filename*=UTF-8''#{lfs_object.file.filename}"
+                )
+              end
+            end
+
+            context 'and lfs uses remote object storage' do
+              before do
+                stub_lfs_object_storage
+                lfs_object.file.migrate!(LfsObjectUploader::Store::REMOTE)
+              end
+
+              it 'redirects to the lfs object file' do
+                request
+
+                expect(response).to have_gitlab_http_status(:found)
+                expect(response.location).to include(lfs_object.reload.file.path)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    context 'when unauthenticated' do
+      context 'and project is public' do
+        it_behaves_like 'repository raw files' do
+          let(:project) { public_project }
+          let(:current_user) { nil }
+        end
+      end
+
+      context 'and project is private' do
+        it_behaves_like '404 response' do
+          let(:request) { get api(route(file_path)), params: params }
+          let(:message) { '404 Project Not Found' }
+        end
+      end
+    end
+
+    context 'when authenticated' do
+      context 'and user is a developer' do
+        it_behaves_like 'repository raw files' do
+          let(:current_user) { user }
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_repository_file do
+          let(:boundary_object) { project }
+          let(:request) do
+            get api(route(file_path) + '/raw', personal_access_token: pat), params: params, headers: workhorse_headers
+          end
+        end
+      end
+
+      context 'and user is a guest' do
+        it_behaves_like '403 response' do
+          let(:request) { get api(route(file_path), guest), params: params }
+        end
+      end
+
+      it_behaves_like 'ai_workflows scope' do
+        subject(:file_action) do
+          url = route(file_path) + '/raw'
+          get api(url, oauth_access_token: oauth_token), params: params, headers: workhorse_headers
+        end
+
+        let(:expected_status) { :ok }
+      end
+
+      it_behaves_like 'ai_workflows file size limit' do
+        subject(:file_action) do
+          get api(route(file_path) + '/raw', oauth_access_token: oauth_token), params: params, headers: workhorse_headers
+        end
+
+        let(:other_file_action) do
+          get api(route(file_path) + '/raw', user), params: params, headers: workhorse_headers
+        end
+      end
+    end
+
+    context 'when PATs are used' do
+      it 'returns file by commit sha' do
+        token = create(:personal_access_token, scopes: ['read_repository'], user: user)
+
+        # This file is deleted on HEAD
+        file_path = 'files%2Fjs%2Fcommit%2Ejs%2Ecoffee'
+        params[:ref] = '6f6d7e7ed97bb5f0054f2b1df789b39ca89b6ff9'
+        url = api(route(file_path) + '/raw', personal_access_token: token)
+
+        expect_to_send_git_blob(url, params)
+      end
+    end
+  end
+
+  describe 'GET repository_file_accessed_api audit event' do
+    let(:params) { { ref: 'master' } }
+
+    context 'when accessing GET /projects/:id/repository/files/:file_path' do
+      it 'emits a repository_file_accessed_api audit event for authenticated users' do
+        expect(::Gitlab::Audit::Auditor).to receive(:audit).with(
+          hash_including(
+            name: 'repository_file_accessed_api',
+            author: user,
+            scope: project,
+            target: project,
+            message: a_string_including('via API'),
+            additional_details: hash_including(
+              file_path: CGI.unescape(file_path),
+              ref: 'master',
+              project_path: project.full_path,
+              project_id: project.id
+            )
+          )
+        )
+
+        get api(route(file_path), user), params: params
+      end
+
+      it 'does not emit an audit event for unauthenticated requests' do
+        expect(::Gitlab::Audit::Auditor).not_to receive(:audit).with(
+          hash_including(name: 'repository_file_accessed_api')
+        )
+
+        get api(route(file_path)), params: params
+      end
+    end
+
+    context 'when accessing GET /projects/:id/repository/files/:file_path/raw' do
+      it 'emits a repository_file_accessed_api audit event for authenticated users' do
+        expect(::Gitlab::Audit::Auditor).to receive(:audit).with(
+          hash_including(
+            name: 'repository_file_accessed_api',
+            author: user,
+            scope: project,
+            target: project,
+            message: a_string_including('via API'),
+            additional_details: hash_including(
+              file_path: CGI.unescape(file_path),
+              ref: 'master',
+              project_path: project.full_path,
+              project_id: project.id
+            )
+          )
+        )
+
+        get api(route(file_path) + '/raw', user), params: params
+      end
+    end
+  end
+
+  shared_examples 'ai_workflows token cannot write without push access' do
+    let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+    let(:request) { workhorse_body_upload(api(route(file_path), oauth_access_token: oauth_token), params) }
+
+    # ProtectedBranches::CacheService memoizes protection in Redis, which outlives the DB rollback
+    context 'when the branch is protected', :clean_gitlab_redis_cache do
+      before do
+        create(:protected_branch, :no_one_can_push, project: project, name: 'master')
+      end
+
+      it 'returns 403 and does not commit' do
+        expect { request }.not_to change { project.repository.commit.id }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(json_response['message']).to eq('403 Forbidden - You are not allowed to push into this branch')
+      end
+    end
+
+    context 'when the user is not a member of a private project' do
+      let(:project) { private_project }
+
+      it 'returns 404 and does not commit' do
+        expect { request }.not_to change { project.repository.commit.id }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when the user is not a member of a public project' do
+      let(:project) { public_project }
+
+      it 'returns 403 and does not commit' do
+        expect { request }.not_to change { project.repository.commit.id }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(json_response['message']).to eq('403 Forbidden - You are not allowed to push into this branch')
+      end
+    end
+  end
+
+  # rubocop:disable RSpec/MultipleMemoizedHelpers -- sverrides make these blocks much more readable
+  describe 'POST /projects/:id/repository/files/:file_path' do
+    let(:file_path) { FFaker::UUID.uuidv4 }
+    let(:current_user) { user }
+    let(:url) { api(route(file_path), current_user) }
+
+    let(:params) do
       {
-        file_path: 'newfile.rb',
-        branch_name: 'master',
+        branch: 'master',
         content: 'puts 8',
         commit_message: 'Added newfile'
       }
-    }
-
-    it "should create a new file in project repo" do
-      post api("/projects/#{project.id}/repository/files", user), valid_params
-      expect(response.status).to eq(201)
-      expect(json_response['file_path']).to eq('newfile.rb')
     end
 
-    it "should return a 400 bad request if no params given" do
-      post api("/projects/#{project.id}/repository/files", user)
-      expect(response.status).to eq(400)
+    let(:executable_params) do
+      {
+        branch: 'master',
+        content: 'puts 8',
+        commit_message: 'Added newfile',
+        execute_filemode: true
+      }
     end
 
-    it "should return a 400 if editor fails to create file" do
-      Repository.any_instance.stub(
-        commit_file: false,
-      )
+    shared_examples 'creates a new file in the project repo' do
+      specify do
+        workhorse_body_upload(url, params)
 
-      post api("/projects/#{project.id}/repository/files", user), valid_params
-      expect(response.status).to eq(400)
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+        last_commit = project.repository.commit.raw
+        expect(last_commit.author_email).to eq(current_user.email)
+        expect(last_commit.author_name).to eq(current_user.name)
+        expect(project.repository.blob_at_branch(params[:branch], CGI.unescape(file_path)).executable?).to be(false)
+      end
+    end
+
+    shared_examples 'when authenticated', 'as a direct project member' do
+      context 'when project is private' do
+        context 'and user is a developer' do
+          it_behaves_like 'when path is absolute' do
+            subject { workhorse_body_upload(api(route(absolute_path), user), params) }
+          end
+
+          it_behaves_like 'creates a new file in the project repo'
+
+          it 'creates a new executable file in project repo' do
+            workhorse_body_upload(api(route(file_path), user), executable_params)
+
+            expect(response).to have_gitlab_http_status(:created)
+            expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+            last_commit = project.repository.commit.raw
+            expect(last_commit.author_email).to eq(user.email)
+            expect(last_commit.author_name).to eq(user.name)
+            expect(project.repository.blob_at_branch(params[:branch], CGI.unescape(file_path)).executable?).to be(true)
+          end
+
+          context 'when no mandatory params given' do
+            it 'returns a 400 bad request' do
+              workhorse_body_upload(api(route('any%2Etxt'), user), {})
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+            end
+          end
+
+          context 'when the commit message is empty' do
+            before do
+              params[:commit_message] = ''
+            end
+
+            it 'returns a 400 bad request' do
+              workhorse_body_upload(api(route(file_path), user), params)
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+            end
+          end
+
+          context 'when editor fails to create file' do
+            before do
+              allow_next_instance_of(Repository) do |instance|
+                allow(instance).to receive(:create_file).and_raise(Gitlab::Git::CommitError, 'Cannot create file')
+              end
+            end
+
+            it 'returns a 400 bad request' do
+              workhorse_body_upload(api(route('any%2Etxt'), user), params)
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+            end
+          end
+
+          context 'and PATs are used' do
+            it 'returns 403 with `read_repository` scope' do
+              token = create(:personal_access_token, scopes: ['read_repository'], user: user)
+
+              workhorse_body_upload(api(route(file_path), personal_access_token: token), params)
+
+              expect(response).to have_gitlab_http_status(:forbidden)
+              expect(json_response['error']).to eq('insufficient_scope')
+            end
+
+            it 'returns 201 with `api` scope' do
+              token = create(:personal_access_token, scopes: ['api'], user: user)
+
+              workhorse_body_upload(api(route(file_path), personal_access_token: token), params)
+
+              expect(response).to have_gitlab_http_status(:created)
+            end
+          end
+
+          context 'and OAuth tokens are used' do
+            let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+            it 'creates the file with the `ai_workflows` scope' do
+              workhorse_body_upload(api(route(file_path), oauth_access_token: oauth_token), params)
+
+              expect(response).to have_gitlab_http_status(:created)
+              expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+              expect(project.repository.commit.raw.author_email).to eq(user.email)
+            end
+          end
+
+          context 'and the repo is empty' do
+            let!(:project) { create(:project_empty_repo, namespace: user.namespace) }
+
+            it_behaves_like 'creates a new file in the project repo' do
+              let(:current_user) { user }
+              let(:file_path) { FFaker::UUID.uuidv4 }
+            end
+          end
+
+          context 'when specifying an author' do
+            include_context 'with author parameters'
+
+            it 'creates a new file with the specified author' do
+              params.merge!(author_email: author_email, author_name: author_name)
+              workhorse_body_upload(api(route('new_file_with_author%2Etxt'), user), params)
+
+              expect(response).to have_gitlab_http_status(:created)
+              expect(response.media_type).to eq('application/json')
+              last_commit = project.repository.commit.raw
+              expect(last_commit.author_email).to eq(author_email)
+              expect(last_commit.author_name).to eq(author_name)
+            end
+          end
+        end
+      end
+    end
+
+    shared_examples 'when authenticated' do
+      context 'and user is an inherited member from the group' do
+        let(:request) { workhorse_body_upload(url, params) }
+
+        context 'when project is public with private repository' do
+          let(:project) { public_project_private_repo }
+
+          context 'and user is a guest' do
+            let(:current_user) { inherited_guest }
+
+            it_behaves_like '403 response'
+          end
+
+          context 'and user is a reporter' do
+            let(:current_user) { inherited_reporter }
+
+            it_behaves_like '403 response'
+          end
+
+          context 'and user is a developer' do
+            it_behaves_like 'creates a new file in the project repo' do
+              let(:current_user) { inherited_developer }
+            end
+          end
+        end
+
+        context 'when project is private' do
+          let(:project) { private_project }
+
+          context 'and user is a guest' do
+            let(:current_user) { inherited_guest }
+
+            it_behaves_like '403 response'
+          end
+
+          context 'and user is a reporter' do
+            let(:current_user) { inherited_reporter }
+
+            it_behaves_like '403 response'
+          end
+
+          context 'and user is a developer' do
+            it_behaves_like 'creates a new file in the project repo' do
+              let(:current_user) { inherited_developer }
+            end
+
+            it_behaves_like 'authorizing granular token permissions', :create_repository_file do
+              let(:boundary_object) { project }
+              let(:user) { inherited_developer }
+              let(:request) do
+                workhorse_body_upload(api(route(file_path), personal_access_token: pat), params)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    context 'with json encoding' do
+      it_behaves_like 'validates file params'
+      it_behaves_like 'when authenticated'
+      it_behaves_like 'when authenticated', 'as a direct project member'
+      it_behaves_like 'rate limiting for large commit content'
+
+      it 'returns a 400 bad request with invalid json' do
+        perform_workhorse_json_body_upload(api(route(file_path), user), 'not valid json {')
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    context 'with multipart form encoding' do
+      let(:body_encoding) { :multipart_form }
+
+      it_behaves_like 'validates file params'
+      it_behaves_like 'when authenticated'
+      it_behaves_like 'when authenticated', 'as a direct project member'
+      it_behaves_like 'rate limiting for large commit content'
+    end
+
+    context 'with form encoding' do
+      let(:body_encoding) { :form }
+
+      it_behaves_like 'validates file params'
+      it_behaves_like 'when authenticated'
+      it_behaves_like 'when authenticated', 'as a direct project member'
+      it_behaves_like 'rate limiting for large commit content'
+    end
+
+    context 'when committing to a fork as a maintainer' do
+      include_context 'merge request allowing collaboration'
+
+      let(:file_path) { FFaker::UUID.uuidv4 }
+      let(:url) { api("/projects/#{forked_project.id}/repository/files/#{file_path}", user) }
+
+      let(:params) do
+        {
+          branch: 'feature',
+          content: 'puts 8',
+          commit_message: 'Added newfile'
+        }
+      end
+
+      it 'allows pushing to the source branch of the merge request' do
+        workhorse_body_upload(url, params)
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+
+      it 'denies pushing to another branch' do
+        workhorse_body_upload(url, params.merge(branch: 'master'))
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(json_response['message']).to eq('403 Forbidden - You are not allowed to push into this branch')
+      end
+    end
+
+    context 'when Workhorse did not rewrite the file param (route-matching bypass)' do
+      let(:leaked_file) { Tempfile.new('leaked-file-payload') }
+
+      subject(:request) do
+        post url, params: { file: '', 'file.path' => leaked_file.path }, headers: workhorse_headers
+      end
+
+      before do
+        leaked_file.write({ branch: 'master', commit_message: 'leaked', content: 'leaked' }.to_json)
+        leaked_file.close
+      end
+
+      after do
+        leaked_file.unlink
+      end
+
+      it 'does not read the attacker-supplied file.path param', :aggregate_failures do
+        expect { request }.not_to change { project.repository.commit_count }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    it_behaves_like 'ai_workflows token cannot write without push access'
+
+    context 'for arbitrary local file read (security issue #627748)' do
+      let(:unsigned_upload_url) do
+        api("/projects/#{public_project.id}/repository/files/new-file.rb", nil)
+      end
+
+      let(:non_existing_file_path) { '/tmp/this-file-does-not-exist-627748' }
+
+      it_behaves_like 'rejects unsigned Workhorse upload metadata', :post
     end
   end
 
-  describe "PUT /projects/:id/repository/files" do
-    let(:valid_params) {
+  describe 'PUT /projects/:id/repository/files/:file_path' do
+    let(:url) { api(route(file_path), user) }
+    let(:method) { :put }
+    let(:branch) { 'master' }
+
+    let(:params) do
       {
-        file_path: file_path,
-        branch_name: 'master',
+        branch: branch,
         content: 'puts 8',
         commit_message: 'Changed file'
       }
-    }
-
-    it "should update existing file in project repo" do
-      put api("/projects/#{project.id}/repository/files", user), valid_params
-      expect(response.status).to eq(200)
-      expect(json_response['file_path']).to eq(file_path)
     end
 
-    it "should return a 400 bad request if no params given" do
-      put api("/projects/#{project.id}/repository/files", user)
-      expect(response.status).to eq(400)
+    shared_examples 'updates to an existing file' do
+      it 'updates existing file in project repo' do
+        workhorse_body_upload(url, params)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+        last_commit = project.repository.commit.raw
+        expect(last_commit.author_email).to eq(user.email)
+        expect(last_commit.author_name).to eq(user.name)
+      end
+
+      context 'when the commit message is empty' do
+        before do
+          params[:commit_message] = ''
+        end
+
+        it 'returns a 400 bad request' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when base64 encoding with a nil content' do
+        let(:params) { super().merge(content: nil, encoding: 'base64') }
+
+        it 'updates a file with an empty content' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          updated_blob = project.repository.blob_at('master', CGI.unescape(file_path))
+          expect(updated_blob.data).to be_empty
+        end
+      end
+
+      context 'when updating an existing file with stale last commit id' do
+        let(:params_with_stale_id) { params.merge(last_commit_id: last_commit_for_path.parent_id) }
+
+        it 'returns a 400 bad request' do
+          workhorse_body_upload(url, params_with_stale_id)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq(_('You are attempting to update a file that has changed since you started editing it.'))
+        end
+      end
+
+      context 'with correct last commit id' do
+        let(:params_with_correct_id) { params.merge(last_commit_id: last_commit_for_path.id) }
+
+        it 'updates existing file in project repo' do
+          workhorse_body_upload(url, params_with_correct_id)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      it_behaves_like 'when path is absolute' do
+        let(:params_with_correct_id) { params.merge(last_commit_id: last_commit_for_path.id) }
+        let(:url) { api(route(absolute_path), user) }
+
+        subject { workhorse_body_upload(url, params_with_correct_id) }
+      end
+
+      context 'when no params given' do
+        it 'returns a 400 bad request' do
+          workhorse_body_upload(url, {})
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when specifying an author' do
+        include_context 'with author parameters'
+
+        let(:params) { super().merge(author_email: author_email, author_name: author_name, content: 'New content') }
+
+        it 'updates a file with the specified author' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          last_commit = project.repository.commit.raw
+          expect(last_commit.author_email).to eq(author_email)
+          expect(last_commit.author_name).to eq(author_name)
+        end
+      end
+
+      context 'when specifying the execute_filemode' do
+        context 'with executable params' do
+          let(:params) { super().merge(execute_filemode: true) }
+
+          it 'updates to executable file mode' do
+            workhorse_body_upload(url, params)
+
+            aggregate_failures 'testing response' do
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(project.repository.blob_at_branch(branch, CGI.unescape(file_path)).executable?).to be(true)
+            end
+          end
+        end
+
+        context 'with non-executable params' do
+          let(:branch) { 'with-executables' }
+          let(:params) { super().merge(execute_filemode: false) }
+
+          it 'updates to non-executable file mode' do
+            url = api(route(executable_file_path), user)
+            workhorse_body_upload(url, params)
+
+            aggregate_failures 'testing response' do
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(project.repository.blob_at_branch(branch, CGI.unescape(executable_file_path)).executable?).to be(false)
+            end
+          end
+        end
+      end
+    end
+
+    context 'with json encoding' do
+      it_behaves_like 'updates to an existing file'
+      it_behaves_like 'rate limiting for large commit content'
+    end
+
+    context 'with multipart form encoding' do
+      let(:body_encoding) { :multipart_form }
+
+      it_behaves_like 'updates to an existing file'
+      it_behaves_like 'rate limiting for large commit content'
+    end
+
+    context 'with form encoding' do
+      let(:body_encoding) { :form }
+
+      it_behaves_like 'updates to an existing file'
+      it_behaves_like 'rate limiting for large commit content'
+    end
+
+    context 'when authenticated' do
+      context 'and user is a direct project member' do
+        context 'and user is a developer' do
+          it 'updates existing file in project repo' do
+            workhorse_body_upload(url, params)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+          end
+        end
+
+        context 'and user is a guest' do
+          it_behaves_like '403 response' do
+            let(:request) { workhorse_body_upload(api(route(file_path), guest), params) }
+          end
+        end
+      end
+
+      context 'and an OAuth token with the `ai_workflows` scope is used' do
+        let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+        it 'updates existing file in project repo' do
+          workhorse_body_upload(api(route(file_path), oauth_access_token: oauth_token), params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+        end
+      end
+
+      context 'and user is an inherited member from the group' do
+        let(:project) { private_project }
+        let(:url) { api(route(file_path), current_user) }
+
+        context 'and user is a guest' do
+          let(:current_user) { inherited_guest }
+
+          it_behaves_like '403 response' do
+            let(:request) { workhorse_body_upload(url, params) }
+          end
+        end
+
+        context 'and user is a reporter' do
+          let(:current_user) { inherited_reporter }
+
+          it_behaves_like '403 response' do
+            let(:request) { workhorse_body_upload(url, params) }
+          end
+        end
+
+        context 'and user is a developer' do
+          let(:current_user) { inherited_developer }
+
+          it 'updates existing file in project repo' do
+            workhorse_body_upload(url, params)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+          end
+        end
+      end
+    end
+
+    context 'when file_path is a directory' do
+      # 'files%2Fruby' is a directory in the test repository
+      let(:url) { api(route('files%2Fruby'), user) }
+
+      it 'returns a 400 bad request' do
+        workhorse_body_upload(url, params)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to include(_('Path is a directory, not a file'))
+      end
+    end
+
+    context 'when committing to a fork as a maintainer' do
+      include_context 'merge request allowing collaboration'
+
+      let(:url) { api("/projects/#{forked_project.id}/repository/files/#{file_path}", user) }
+      let(:branch) { 'feature' }
+
+      it 'allows pushing to the source branch of the merge request' do
+        workhorse_body_upload(url, params)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      context 'when pushing to another branch' do
+        let(:branch) { 'master' }
+
+        it 'denies the push' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('403 Forbidden - You are not allowed to push into this branch')
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :update_repository_file do
+        let(:boundary_object) { project }
+        let(:request) do
+          workhorse_body_upload(api(route(file_path), personal_access_token: pat), params)
+        end
+      end
+    end
+
+    it_behaves_like 'ai_workflows token cannot write without push access'
+
+    context 'for arbitrary local file read (security issue #627748)' do
+      let(:unsigned_upload_url) do
+        api("/projects/#{public_project.id}/repository/files/#{file_path}", nil)
+      end
+
+      let(:non_existing_file_path) { '/tmp/this-file-does-not-exist-627748' }
+
+      it_behaves_like 'rejects unsigned Workhorse upload metadata', :put
+    end
+  end
+  # rubocop:enable RSpec/MultipleMemoizedHelpers
+
+  describe 'DELETE /projects/:id/repository/files' do
+    let(:params) do
+      {
+        branch: 'master',
+        commit_message: 'Changed file'
+      }
+    end
+
+    describe 'when files are deleted' do
+      let(:file_path) { FFaker::UUID.uuidv4 }
+
+      before do
+        create_file_in_repo(project, 'master', 'master', file_path, 'Test file')
+      end
+
+      it 'deletes existing file in project repo' do
+        delete api(route(file_path), user), params: params
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+
+      context 'when specifying an author' do
+        include_context 'with author parameters'
+
+        before do
+          params.merge!(author_email: author_email, author_name: author_name)
+        end
+
+        it 'removes a file with the specified author' do
+          delete api(route(file_path), user), params: params
+
+          expect(response).to have_gitlab_http_status(:no_content)
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :delete_repository_file do
+          let(:boundary_object) { project }
+          let(:request) do
+            delete api(route(file_path), personal_access_token: pat), params: params
+          end
+        end
+      end
+
+      context 'with a correct last_commit_id' do
+        let(:params) { super().merge(last_commit_id: last_commit_for_path.id) }
+
+        it 'deletes the file successfully' do
+          delete api(route(file_path), user), params: params
+
+          expect(response).to have_gitlab_http_status(:no_content)
+        end
+      end
+
+      context 'with an OAuth token that has the `ai_workflows` scope' do
+        let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+        it 'returns 403 insufficient_scope and keeps the file' do
+          delete api(route(file_path), oauth_access_token: oauth_token), params: params
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['error']).to eq('insufficient_scope')
+          expect(project.repository.blob_at('master', CGI.unescape(file_path))).to be_present
+        end
+      end
+    end
+
+    describe 'when files are not deleted' do
+      it_behaves_like 'when path is absolute' do
+        subject { delete api(route(absolute_path), user), params: params }
+      end
+
+      context 'when no params given' do
+        it 'returns a 400 bad request' do
+          delete api(route(file_path), user)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when the commit message is empty' do
+        before do
+          params[:commit_message] = ''
+        end
+
+        it 'returns a 400 bad request' do
+          delete api(route(file_path), user), params: params
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'with stale last_commit_id' do
+        let(:params) { super().merge(last_commit_id: last_commit_for_path.parent_id) }
+
+        it 'returns a 400 bad request' do
+          delete api(route(file_path), user), params: params
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq(
+            _('You are attempting to delete a file that has been previously updated.')
+          )
+        end
+      end
+
+      context 'when fails to delete file' do
+        before do
+          allow_next_instance_of(Repository) do |instance|
+            allow(instance).to receive(:delete_file).and_raise(Gitlab::Git::CommitError, 'Cannot delete file')
+          end
+        end
+
+        it 'returns a 400 bad request' do
+          delete api(route(file_path), user), params: params
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
     end
   end
 
-  describe "DELETE /projects/:id/repository/files" do
-    let(:valid_params) {
+  describe 'POST /projects/:id/repository/files with binary file' do
+    let(:file_path) { 'test%2Ebin' }
+    let(:put_params) do
       {
-        file_path: file_path,
-        branch_name: 'master',
-        commit_message: 'Changed file'
+        branch: 'master',
+        content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAA1BMVEUAAACnej3aAAAAAXRSTlMAQObYZgAAAApJREFUCNdjYAAAAAIAAeIhvDMAAAAASUVORK5CYII=',
+        commit_message: 'Binary file with a \n should not be touched',
+        encoding: 'base64'
       }
-    }
-
-    it "should delete existing file in project repo" do
-      delete api("/projects/#{project.id}/repository/files", user), valid_params
-      expect(response.status).to eq(200)
-      expect(json_response['file_path']).to eq(file_path)
     end
 
-    it "should return a 400 bad request if no params given" do
-      delete api("/projects/#{project.id}/repository/files", user)
-      expect(response.status).to eq(400)
+    let(:get_params) do
+      {
+        ref: 'master'
+      }
     end
 
-    it "should return a 400 if satellite fails to create file" do
-      Repository.any_instance.stub(
-        remove_file: false,
-      )
+    let(:url) { api(route(file_path), user) }
 
-      delete api("/projects/#{project.id}/repository/files", user), valid_params
-      expect(response.status).to eq(400)
+    before do
+      workhorse_body_upload(url, put_params)
+    end
+
+    it 'remains unchanged' do
+      get url, params: get_params
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+      expect(json_response['file_name']).to eq(CGI.unescape(file_path))
+      expect(json_response['content']).to eq(put_params[:content])
+    end
+  end
+
+  describe 'POST /projects/:id/repository/files with text encoding' do
+    let(:file_path) { 'test%2Etext' }
+    let(:put_params) do
+      {
+        branch: 'master',
+        content: 'test',
+        commit_message: 'Text file',
+        encoding: 'text'
+      }
+    end
+
+    let(:get_params) do
+      {
+        ref: 'master'
+      }
+    end
+
+    let(:url) { api(route(file_path), user) }
+
+    before do
+      workhorse_body_upload(url, put_params)
+    end
+
+    it 'returns base64-encoded text file' do
+      get url, params: get_params
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['file_path']).to eq(CGI.unescape(file_path))
+      expect(json_response['file_name']).to eq(CGI.unescape(file_path))
+      expect(Base64.decode64(json_response['content'])).to eq("test")
+    end
+  end
+
+  describe ':id/repository/files/:file_path/authorize' do
+    let(:project_id) { project.id }
+
+    shared_examples 'authorizes a body upload' do |verb|
+      include_context 'workhorse headers'
+
+      let(:url) { "/projects/#{project_id}/repository/files/#{file_path}/authorize" }
+
+      context 'with workhorse headers' do
+        it 'authorizes the upload' do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.media_type).to eq(Gitlab::Workhorse::INTERNAL_API_CONTENT_TYPE)
+          expect(json_response['TempPath']).to be_present
+          expect(json_response['MaximumSize']).to eq(300.megabytes)
+        end
+
+        it 'uses the correct upload path' do
+          request
+
+          expect(json_response['TempPath']).to eq(::Repositories::CommitsUploader.workhorse_local_upload_path)
+        end
+      end
+
+      context 'without workhorse headers' do
+        it 'returns forbidden' do
+          post api(url, user)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'with an OAuth token that has the `ai_workflows` scope' do
+        let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+        it 'authorizes the upload' do
+          public_send(verb, api(url, oauth_access_token: oauth_token), headers: workhorse_headers)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['TempPath']).to be_present
+        end
+      end
+
+      context 'without an authenticated user' do
+        it 'returns unauthorized' do
+          public_url = "/projects/#{public_project.id}/repository/files/#{file_path}/authorize"
+          public_send(verb, api(public_url, nil), headers: workhorse_headers)
+
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+    end
+
+    context 'POST' do
+      subject(:request) { post api(url, user), headers: workhorse_headers }
+
+      it_behaves_like 'authorizes a body upload', :post
+    end
+
+    context 'PUT' do
+      subject(:request) { put api(url, user), headers: workhorse_headers }
+
+      it_behaves_like 'authorizes a body upload', :put
     end
   end
 end

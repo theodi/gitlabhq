@@ -1,12 +1,4 @@
-- page_title "Projects"
-.clearfix
-  = render 'filter'
+- page_canonical_link explore_projects_url
 
-%hr
-.public-projects
-  %ul.bordered-list.top-list
-    = render @projects
-    - unless @projects.present?
-      .nothing-here-block No public projects
-
-  = paginate @projects, theme: "gitlab"
+= render 'explore/projects/head'
+#js-explore-projects{ data: explore_projects_app_data }

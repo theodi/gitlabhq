@@ -1,0 +1,150 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Search::GroupService, feature_category: :global_search do
+  shared_examples_for 'group search' do
+    context 'finding projects by name' do
+      let(:user) { create(:user) }
+      let(:term) { "Project Name" }
+      let(:nested_group) { create(:group, :nested) }
+
+      # These projects shouldn't be found
+      let!(:outside_project) { create(:project, :public, name: "Outside #{term}") }
+      let!(:private_project) { create(:project, :private, namespace: nested_group, name: "Private #{term}") }
+      let!(:other_project)   { create(:project, :public, namespace: nested_group, name: term.reverse) }
+
+      # These projects should be found
+      let!(:project1) { create(:project, :internal, namespace: nested_group, name: "Inner #{term} 1") }
+      let!(:project2) { create(:project, :internal, namespace: nested_group, name: "Inner #{term} 2") }
+      let!(:project3) { create(:project, :internal, namespace: nested_group.parent, name: "Outer #{term}") }
+
+      let(:results) { described_class.new(user, search_group, search: term).execute }
+
+      subject { results.objects('projects') }
+
+      context 'in parent group' do
+        let(:search_group) { nested_group.parent }
+
+        it { is_expected.to match_array([project1, project2, project3]) }
+      end
+
+      context 'in subgroup' do
+        let(:search_group) { nested_group }
+
+        it { is_expected.to match_array([project1, project2]) }
+      end
+    end
+  end
+
+  describe 'basic search' do
+    include_examples 'group search'
+  end
+
+  context 'issues' do
+    let(:scope) { 'issues' }
+
+    context 'sorting' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:project) { create(:project, :public, group: group) }
+
+      let_it_be(:old_result) { create(:issue, project: project, title: 'sorted old', created_at: 1.month.ago) }
+      let_it_be(:new_result) { create(:issue, project: project, title: 'sorted recent', created_at: 1.day.ago) }
+      let_it_be(:very_old_result) { create(:issue, project: project, title: 'sorted very old', created_at: 1.year.ago) }
+
+      let_it_be(:old_updated) { create(:issue, project: project, title: 'updated old', updated_at: 1.month.ago) }
+      let_it_be(:new_updated) { create(:issue, project: project, title: 'updated recent', updated_at: 1.day.ago) }
+      let_it_be(:very_old_updated) do
+        create(:issue, project: project, title: 'updated very old', updated_at: 1.year.ago)
+      end
+
+      include_examples 'search results sorted' do
+        let(:results_created) { described_class.new(nil, group, search: 'sorted', sort: sort).execute }
+        let(:results_updated) { described_class.new(nil, group, search: 'updated', sort: sort).execute }
+      end
+    end
+  end
+
+  context 'merge requests' do
+    let(:scope) { 'merge_requests' }
+
+    context 'sorting' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:project) { create(:project, :public, group: group) }
+
+      let_it_be(:old_result) do
+        create(:merge_request, :opened, source_project: project, source_branch: 'old-1', title: 'sorted old',
+          created_at: 1.month.ago)
+      end
+
+      let_it_be(:new_result) do
+        create(:merge_request, :opened, source_project: project, source_branch: 'new-1', title: 'sorted recent',
+          created_at: 1.day.ago)
+      end
+
+      let_it_be(:very_old_result) do
+        create(:merge_request, :opened, source_project: project, source_branch: 'very-old-1', title: 'sorted very old',
+          created_at: 1.year.ago)
+      end
+
+      let_it_be(:old_updated) do
+        create(:merge_request, :opened, source_project: project, source_branch: 'updated-old-1', title: 'updated old',
+          updated_at: 1.month.ago)
+      end
+
+      let_it_be(:new_updated) do
+        create(:merge_request, :opened, source_project: project, source_branch: 'updated-new-1', title: 'updated recent',
+          updated_at: 1.day.ago)
+      end
+
+      let_it_be(:very_old_updated) do
+        create(:merge_request, :opened, source_project: project, source_branch: 'updated-very-old-1',
+          title: 'updated very old', updated_at: 1.year.ago)
+      end
+
+      include_examples 'search results sorted' do
+        let(:results_created) { described_class.new(nil, group, search: 'sorted', sort: sort).execute }
+        let(:results_updated) { described_class.new(nil, group, search: 'updated', sort: sort).execute }
+      end
+    end
+
+    context 'when the project is private' do
+      let_it_be(:group) { create(:group, :private) }
+      let_it_be(:project) { create(:project, :private, group: group) }
+      let_it_be(:merge_request) { create(:merge_request, source_project: project, title: 'searchable') }
+      let_it_be(:user) { create(:user) }
+
+      subject(:results) { described_class.new(user, group, search: 'searchable').execute.objects(scope) }
+
+      context 'with a planner' do
+        before_all { project.add_planner(user) }
+
+        it { is_expected.to contain_exactly(merge_request) }
+      end
+
+      context 'with a guest' do
+        before_all { project.add_guest(user) }
+
+        it { is_expected.to be_empty }
+      end
+    end
+  end
+
+  describe '#projects' do
+    let_it_be(:parent_group) { create(:group, :public) }
+    let_it_be(:child_group) { create(:group, :public, parent: parent_group) }
+    let_it_be(:grandchild_group) { create(:group, :public, parent: child_group) }
+
+    let_it_be(:parent_project) { create(:project, :public, namespace: parent_group) }
+    let_it_be(:child_project) { create(:project, :public, namespace: child_group) }
+    let_it_be(:grandchild_project) { create(:project, :public, namespace: grandchild_group) }
+
+    let_it_be(:outside_project) { create(:project, :public) }
+
+    subject(:projects) { described_class.new(nil, child_group, search: 'foo').projects }
+
+    it 'returns projects within the group hierarchy' do
+      expect(projects).to contain_exactly(child_project, grandchild_project)
+    end
+  end
+end

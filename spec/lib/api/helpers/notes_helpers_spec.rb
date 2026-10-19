@@ -1,0 +1,178 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Helpers::NotesHelpers, feature_category: :api do
+  describe '.job_token_policy_for' do
+    let(:noteable_type_with_policy) do
+      instance_double(API::Helpers::NotesHelpers::NoteableType, policy_base: 'merge_requests')
+    end
+
+    context 'when noteable_type has a policy_base' do
+      context 'when http_method is GET' do
+        it 'returns read policy symbol' do
+          result = described_class.job_token_policy_for(noteable_type_with_policy, 'GET')
+
+          expect(result).to eq(:read_merge_requests)
+        end
+      end
+
+      context 'when http_method is HEAD' do
+        it 'returns read policy symbol' do
+          result = described_class.job_token_policy_for(noteable_type_with_policy, 'HEAD')
+
+          expect(result).to eq(:read_merge_requests)
+        end
+      end
+
+      context 'when http_method is POST' do
+        it 'raises ArgumentError for non-read operations' do
+          expect do
+            described_class.job_token_policy_for(noteable_type_with_policy, 'POST')
+          end.to raise_error(ArgumentError, 'Job tokens only support read operations')
+        end
+      end
+    end
+
+    context 'when noteable_type is nil' do
+      it 'returns nil' do
+        result = described_class.job_token_policy_for(nil, 'GET')
+
+        expect(result).to be_nil
+      end
+    end
+
+    context 'when noteable_type has nil policy_base' do
+      let(:noteable_type_with_nil_policy) do
+        instance_double(API::Helpers::NotesHelpers::NoteableType, policy_base: nil)
+      end
+
+      it 'returns nil' do
+        result = described_class.job_token_policy_for(noteable_type_with_nil_policy, 'GET')
+
+        expect(result).to be_nil
+      end
+    end
+
+    context 'when http_method is nil' do
+      it 'returns nil' do
+        result = described_class.job_token_policy_for(noteable_type_with_policy, nil)
+
+        expect(result).to be_nil
+      end
+    end
+  end
+
+  describe '#add_parent_to_finder_params' do
+    let(:helper_instance) do
+      Class.new do
+        include API::Helpers::NotesHelpers
+
+        attr_reader :user_project
+
+        def initialize(project)
+          @user_project = project
+        end
+      end.new(project)
+    end
+
+    let(:project) { instance_double(Project) }
+    let(:organization) { instance_double(Organizations::Organization, id: 42) }
+
+    before do
+      allow(Current).to receive(:organization).and_return(organization)
+    end
+
+    it 'includes organization_id from Current.organization' do
+      finder_params = {}
+      helper_instance.send(:add_parent_to_finder_params, finder_params, Issue, nil)
+
+      expect(finder_params[:organization_id]).to eq(42)
+    end
+
+    it 'includes project when parent_type is not group' do
+      finder_params = {}
+      helper_instance.send(:add_parent_to_finder_params, finder_params, Snippet, nil)
+
+      expect(finder_params[:project]).to eq(project)
+      expect(finder_params[:organization_id]).to eq(42)
+    end
+
+    it 'does not include project when parent_type is group' do
+      finder_params = {}
+      helper_instance.send(:add_parent_to_finder_params, finder_params, Issue, 'group')
+
+      expect(finder_params).not_to have_key(:project)
+      expect(finder_params[:organization_id]).to eq(42)
+    end
+  end
+
+  describe '.permission_name_for' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:create_noteable_type) do
+      ->(class_name) do
+        mock_class = instance_double(Class)
+        allow(mock_class).to receive(:to_s).and_return(class_name)
+
+        instance_double(
+          API::Helpers::NotesHelpers::NoteableType,
+          noteable_class: mock_class
+        )
+      end
+    end
+
+    where(:class_name, :http_method, :expected_permission) do
+      'Issue'          | 'GET'    | :read_issue_note
+      'Issue'          | 'POST'   | :create_issue_note
+      'Issue'          | 'PUT'    | :update_issue_note
+      'Issue'          | 'PATCH'  | :update_issue_note
+      'Issue'          | 'DELETE' | :delete_issue_note
+    end
+
+    with_them do
+      it 'generates correct permission name' do
+        noteable_type = create_noteable_type.call(class_name)
+
+        result = described_class.permission_name_for(noteable_type, http_method)
+
+        expect(result).to eq(expected_permission)
+      end
+    end
+
+    it 'raises ArgumentError for unsupported HTTP method' do
+      noteable_type = create_noteable_type.call('Issue')
+
+      expect do
+        described_class.permission_name_for(noteable_type, 'INVALID')
+      end.to raise_error(ArgumentError, /Unsupported HTTP method/)
+    end
+  end
+
+  describe API::Helpers::NotesHelpers::NoteableType do
+    describe '#human_name' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:class_name, :expected_human_name) do
+        'MergeRequest'       | 'merge request'
+        'Issue'              | 'issue'
+        'WikiPage::Meta'     | 'wiki page meta'
+        'APIResource'        | 'api resource'
+      end
+
+      with_them do
+        it 'converts class name to human readable format' do
+          mock_class = instance_double(Class, to_s: class_name)
+
+          noteable_type = described_class.new(
+            noteable_class: mock_class,
+            feature_category: :code_review_workflow,
+            parent_type: 'project'
+          )
+
+          expect(noteable_type.human_name).to eq(expected_human_name)
+        end
+      end
+    end
+  end
+end

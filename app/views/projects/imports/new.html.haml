@@ -1,22 +1,10 @@
-- page_title "Import repository"
-%h3.page-title
-  - if @project.import_failed?
-    Import failed. Retry?
-  - else
-    Import repository
+- page_title _('Import repository')
 
-%hr
+- ci_cd_only = params[:ci_cd_only].present?
+- git_timeout = time_interval_in_words(::Gitlab.config.gitlab_shell.git_timeout)
+- @repository_mirrors_available = 'false'
+- render_if_exists('import/url/repository_mirrors_data')
 
-= form_for @project, url: namespace_project_import_path(@project.namespace, @project), method: :post, html: { class: 'form-horizontal' } do |f|
-  .form-group.import-url-data
-    = f.label :import_url, class: 'control-label' do
-      %span Import existing git repo
-    .col-sm-10
-      = f.text_field :import_url, class: 'form-control', placeholder: 'https://github.com/randx/six.git'
-      .well.prepend-top-20
-        This URL must be publicly accessible or you can add a username and password like this: https://username:password@gitlab.com/company/project.git.
-        %br
-        The import will time out after 4 minutes. For big repositories, use a clone/push combination.
-        For SVN repositories, check #{link_to "this migrating from SVN doc.", "http://doc.gitlab.com/ce/workflow/migrating_from_svn.html"}
-  .form-actions
-    = f.submit 'Start import', class: "btn btn-create", tabindex: 4
+= render ::Layouts::PageHeadingComponent.new(_('Import repository'))
+
+.js-vue-import-by-url-to-project-root{ data: import_by_url_data_attributes(@project, ci_cd_only, git_timeout, @repository_mirrors_available) }

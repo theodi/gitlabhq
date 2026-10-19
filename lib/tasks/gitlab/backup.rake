@@ -1,106 +1,168 @@
-require 'active_record/fixtures'
+# frozen_string_literal: true
 
 namespace :gitlab do
   namespace :backup do
     # Create backup of GitLab system
-    desc "GITLAB | Create a backup of the GitLab system"
-    task create: :environment do
-      warn_user_is_not_gitlab
-      configure_cron_mode
-
-      Rake::Task["gitlab:backup:db:create"].invoke
-      Rake::Task["gitlab:backup:repo:create"].invoke
-      Rake::Task["gitlab:backup:uploads:create"].invoke
-
-      backup = Backup::Manager.new
-      backup.pack
-      backup.cleanup
-      backup.remove_old
+    desc 'GitLab | Backup | Create a backup of the GitLab system'
+    task create: :gitlab_environment do
+      Tasks::Gitlab::Backup.create_backup
     end
 
     # Restore backup of GitLab system
-    desc "GITLAB | Restore a previously created backup"
-    task restore: :environment do
-      warn_user_is_not_gitlab
-      configure_cron_mode
+    desc 'GitLab | Backup | Restore a previously created backup'
+    task restore: :gitlab_environment do
+      Tasks::Gitlab::Backup.restore_backup
+    end
 
-      backup = Backup::Manager.new
-      backup.unpack
-
-      Rake::Task["gitlab:backup:db:restore"].invoke unless backup.skipped?("db")
-      Rake::Task["gitlab:backup:repo:restore"].invoke unless backup.skipped?("repositories")
-      Rake::Task["gitlab:backup:uploads:restore"].invoke unless backup.skipped?("uploads")
-      Rake::Task["gitlab:shell:setup"].invoke
-
-      backup.cleanup
+    desc 'GitLab | Backup | Verify a previously created backup'
+    task verify: :gitlab_environment do
+      Tasks::Gitlab::Backup.verify_backup
     end
 
     namespace :repo do
-      task create: :environment do
-        $progress.puts "Dumping repositories ...".blue
-
-        if ENV["SKIP"] && ENV["SKIP"].include?("repositories")
-          $progress.puts "[SKIPPED]".cyan
-        else
-          Backup::Repository.new.dump
-          $progress.puts "done".green
-        end
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('repositories')
       end
 
-      task restore: :environment do
-        $progress.puts "Restoring repositories ...".blue
-        Backup::Repository.new.restore
-        $progress.puts "done".green
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('repositories')
+      end
+
+      task reset_pool_repositories: :gitlab_environment do
+        Tasks::Gitlab::Backup.reset_pool_repositories!
       end
     end
 
     namespace :db do
-      task create: :environment do
-        $progress.puts "Dumping database ... ".blue
-
-        if ENV["SKIP"] && ENV["SKIP"].include?("db")
-          $progress.puts "[SKIPPED]".cyan
-        else
-          Backup::Database.new.dump
-          $progress.puts "done".green
-        end
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('db')
       end
 
-      task restore: :environment do
-        $progress.puts "Restoring database ... ".blue
-        Backup::Database.new.restore
-        $progress.puts "done".green
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('db')
+      end
+    end
+
+    namespace :builds do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('builds')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('builds')
       end
     end
 
     namespace :uploads do
-      task create: :environment do
-        $progress.puts "Dumping uploads ... ".blue
-
-        if ENV["SKIP"] && ENV["SKIP"].include?("uploads")
-          $progress.puts "[SKIPPED]".cyan
-        else
-          Backup::Uploads.new.dump
-          $progress.puts "done".green
-        end
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('uploads')
       end
 
-      task restore: :environment do
-        $progress.puts "Restoring uploads ... ".blue
-        Backup::Uploads.new.restore
-        $progress.puts "done".green
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('uploads')
       end
     end
 
-    def configure_cron_mode
-      if ENV['CRON']
-        # We need an object we can say 'puts' and 'print' to; let's use a
-        # StringIO.
-        require 'stringio'
-        $progress = StringIO.new
-      else
-        $progress = $stdout
+    namespace :artifacts do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('artifacts')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('artifacts')
       end
     end
-  end # namespace end: backup
-end # namespace end: gitlab
+
+    namespace :pages do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('pages')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('pages')
+      end
+    end
+
+    namespace :lfs do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('lfs')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('lfs')
+      end
+    end
+
+    namespace :terraform_state do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('terraform_state')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('terraform_state')
+      end
+    end
+
+    namespace :registry do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('registry')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('registry')
+      end
+    end
+
+    namespace :packages do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('packages')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('packages')
+      end
+    end
+
+    namespace :ci_secure_files do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('ci_secure_files')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('ci_secure_files')
+      end
+    end
+
+    namespace :external_diffs do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('external_diffs')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('external_diffs')
+      end
+    end
+
+    namespace :agent_plan_content do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('agent_plan_content')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('agent_plan_content')
+      end
+    end
+
+    namespace :ci_catalog_bundles do
+      task create: :gitlab_environment do
+        Tasks::Gitlab::Backup.create_task('ci_catalog_bundles')
+      end
+
+      task restore: :gitlab_environment do
+        Tasks::Gitlab::Backup.restore_task('ci_catalog_bundles')
+      end
+    end
+  end
+  # namespace end: backup
+end
+# namespace end: gitlab

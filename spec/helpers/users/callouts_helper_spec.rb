@@ -1,0 +1,370 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe Users::CalloutsHelper, feature_category: :navigation do
+  include StubVersion
+  let_it_be_with_refind(:user) { create(:user) }
+
+  let(:admin) { build_stubbed(:user, :admin) }
+
+  before do
+    allow(helper).to receive(:current_user).and_return(user)
+  end
+
+  describe '.show_gke_cluster_integration_callout?' do
+    let(:project) { build_stubbed(:project) }
+
+    subject { helper.show_gke_cluster_integration_callout?(project) }
+
+    context 'when user can create a cluster' do
+      before do
+        allow(helper).to receive(:can?).with(anything, :create_cluster, anything)
+          .and_return(true)
+      end
+
+      context 'when user has not dismissed' do
+        before do
+          allow(helper).to receive(:user_dismissed?).and_return(false)
+        end
+
+        context 'when active_nav_link is in the operations section' do
+          before do
+            allow(helper).to receive(:active_nav_link?).and_return(true)
+          end
+
+          it { is_expected.to be true }
+        end
+
+        context 'when active_nav_link is not in the operations section' do
+          before do
+            allow(helper).to receive(:active_nav_link?).and_return(false)
+          end
+
+          it { is_expected.to be false }
+        end
+      end
+
+      context 'when user dismissed' do
+        before do
+          allow(helper).to receive(:user_dismissed?).and_return(true)
+        end
+
+        it { is_expected.to be false }
+      end
+    end
+
+    context 'when user can not create a cluster' do
+      before do
+        allow(helper).to receive(:can?).with(anything, :create_cluster, anything)
+          .and_return(false)
+      end
+
+      it { is_expected.to be false }
+    end
+  end
+
+  describe '.show_registration_enabled_user_callout?', :do_not_mock_admin_mode_setting do
+    subject { helper.show_registration_enabled_user_callout? }
+
+    using RSpec::Parameterized::TableSyntax
+
+    where(:gitlab_com, :current_user, :signup_enabled, :controller_path, :expected_result) do
+      false | ref(:admin) | true  | 'admin/users'     | true
+      true  | ref(:admin) | true  | 'admin/users'     | false
+      false | ref(:admin) | false | 'admin/users'     | false
+      false | ref(:admin) | true  | 'projects/issues' | false
+    end
+
+    with_them do
+      before do
+        allow(::Gitlab).to receive(:com?).and_return(gitlab_com)
+        allow(helper).to receive(:current_user).and_return(current_user)
+        stub_application_setting(signup_enabled: signup_enabled)
+        allow(helper.controller).to receive(:controller_path).and_return(controller_path)
+      end
+
+      it { is_expected.to be expected_result }
+    end
+  end
+
+  describe '.show_openssl_callout?', :do_not_mock_admin_mode_setting do
+    subject { helper.show_openssl_callout? }
+
+    using RSpec::Parameterized::TableSyntax
+
+    where(:version, :current_user, :user_dismissed, :controller_path, :expected_result) do
+      '17.1.0'  | ref(:admin) | false | 'admin'       | true
+      '17.1.0'  | ref(:admin) | false | 'admin/users' | true
+      '17.6.99' | ref(:admin) | false | 'admin'       | true
+      '17.0.0'  | ref(:admin) | false | 'admin'       | false
+      '17.7.0'  | ref(:admin) | false | 'admin'       | false
+      '17.1.0'  | ref(:user)  | false | 'admin'       | false
+      '17.1.0'  | ref(:admin) | true  | 'admin'       | false
+      '17.1.0'  | ref(:admin) | false | 'admin-'      | false
+    end
+
+    with_them do
+      before do
+        stub_version(version, 'abcdefg')
+        allow(helper).to receive(:current_user).and_return(current_user)
+        allow(helper).to receive(:user_dismissed?).with(described_class::OPENSSL_CALLOUT) { user_dismissed }
+        allow(helper.controller).to receive(:controller_path).and_return(controller_path)
+      end
+
+      it { is_expected.to be expected_result }
+    end
+  end
+
+  describe '.show_unfinished_tag_cleanup_callout?' do
+    subject { helper.show_unfinished_tag_cleanup_callout? }
+
+    before do
+      allow(helper).to receive(:user_dismissed?).with(described_class::UNFINISHED_TAG_CLEANUP_CALLOUT) { dismissed }
+    end
+
+    context 'when user has not dismissed' do
+      let(:dismissed) { false }
+
+      it { is_expected.to be true }
+    end
+
+    context 'when user dismissed' do
+      let(:dismissed) { true }
+
+      it { is_expected.to be false }
+    end
+  end
+
+  describe '.show_branch_rules_tip?' do
+    subject { helper.show_branch_rules_tip? }
+
+    before do
+      allow(helper).to receive(:user_dismissed?).with(described_class::BRANCH_RULES_TIP_CALLOUT) { dismissed }
+    end
+
+    context 'when user has dismissed callout' do
+      let(:dismissed) { true }
+
+      it { is_expected.to be false }
+    end
+
+    context 'when user has not dismissed callout' do
+      let(:dismissed) { false }
+
+      it { is_expected.to be true }
+    end
+  end
+
+  describe '#web_hook_disabled_dismissed?', feature_category: :webhooks do
+    context 'without a project' do
+      it 'is false' do
+        expect(helper).not_to be_web_hook_disabled_dismissed(nil)
+      end
+    end
+
+    context 'with a project' do
+      let_it_be(:project) { create(:project) }
+      let(:factory) { :project_callout }
+      let(:container_key) { :project }
+      let(:container) { project }
+      let(:key) { "web_hooks:last_failure:project-#{project.id}" }
+
+      include_examples 'CalloutsHelper#web_hook_disabled_dismissed shared examples'
+    end
+  end
+
+  describe '.show_transition_to_jihu_callout?', :do_not_mock_admin_mode_setting do
+    subject { helper.show_transition_to_jihu_callout? }
+
+    using RSpec::Parameterized::TableSyntax
+
+    where(:gitlab_jh, :current_user, :timezone, :user_dismissed, :expected_result) do
+      false | ref(:admin) | 'Asia/Hong_Kong'      | false | true
+      false | ref(:admin) | 'Asia/Shanghai'       | false | true
+      false | ref(:admin) | 'Asia/Macau'          | false | true
+      false | ref(:admin) | 'Asia/Chongqing'      | false | true
+
+      true  | ref(:admin) | 'Asia/Shanghai'       | false | false
+      false | ref(:user)  | 'Asia/Shanghai'       | false | false
+      false | ref(:admin) | 'America/Los_Angeles' | false | false
+      false | ref(:admin) | 'Asia/Shanghai'       | true  | false
+    end
+
+    with_them do
+      before do
+        allow(::Gitlab).to receive(:jh?).and_return(gitlab_jh)
+        allow(helper).to receive(:current_user).and_return(current_user)
+        allow(helper).to receive(:user_dismissed?).with(described_class::TRANSITION_TO_JIHU_CALLOUT) { user_dismissed }
+        allow(current_user).to receive(:timezone).and_return(timezone)
+      end
+
+      it { is_expected.to be expected_result }
+    end
+  end
+
+  describe '.show_period_in_terraform_state_name_alert_callout?' do
+    subject { helper.show_period_in_terraform_state_name_alert_callout? }
+
+    before do
+      allow(helper).to receive(:user_dismissed?).with(described_class::PERIOD_IN_TERRAFORM_STATE_NAME_ALERT) { dismissed }
+    end
+
+    context 'when user has not dismissed' do
+      let(:dismissed) { false }
+
+      it { is_expected.to be true }
+    end
+
+    context 'when user dismissed' do
+      let(:dismissed) { true }
+
+      it { is_expected.to be false }
+    end
+  end
+
+  describe '#show_email_otp_enrollment_callout?' do
+    subject { helper.show_email_otp_enrollment_callout? }
+
+    let(:now) { Time.zone.parse('2025-09-10 12:00') }
+    let(:email_otp_required_after) { now + 8.days }
+
+    before do
+      travel_to(now)
+      user.update!(email_otp_required_after: email_otp_required_after)
+    end
+
+    after do
+      travel_back
+    end
+
+    it { is_expected.to be false }
+
+    context 'when email_otp_enabled application setting is enabled' do
+      before do
+        stub_application_setting(email_otp_enabled: true)
+      end
+
+      it { is_expected.to be true }
+
+      context 'when user is not signed in' do
+        before do
+          allow(helper).to receive(:current_user).and_return(nil)
+        end
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user has dismissed the banner' do
+        before do
+          create(:callout, user: user, feature_name: :email_otp_enrollment_callout)
+        end
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user does not have email_otp_required_after set' do
+        let(:email_otp_required_after) { nil }
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user has two-factor authentication enabled' do
+        before do
+          user.update!(otp_required_for_login: true)
+        end
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user does not sign in with a password' do
+        before do
+          user.update!(password_automatically_set: true)
+        end
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user is not allowed to use password for authentication' do
+        before do
+          allow(user).to receive(:allow_password_authentication?).and_return(false)
+        end
+
+        it { is_expected.to be false }
+      end
+
+      context 'when at the start of the callout period' do
+        let(:email_otp_required_after) { now + 14.days }
+
+        it { is_expected.to be true }
+      end
+
+      context 'when almost at the end of the callout period' do
+        let(:email_otp_required_after) { now + 7.days + 1.minute }
+
+        it { is_expected.to be true }
+      end
+
+      context 'when before the callout period starts' do
+        let(:email_otp_required_after) { now + 14.days + 1.hour }
+
+        it { is_expected.to be false }
+      end
+
+      context 'when after the callout period ends' do
+        let(:email_otp_required_after) { now + 7.days }
+
+        it { is_expected.to be false }
+      end
+    end
+  end
+
+  describe 'show_single_origin_fallback_callout?', :do_not_mock_admin_mode_setting do
+    let(:user) { build_stubbed(:user) }
+
+    subject { helper.show_single_origin_fallback_callout? }
+
+    using RSpec::Parameterized::TableSyntax
+
+    where(:current_user, :single_origin_fallback_enabled, :dismissed, :controller_path, :expected_result) do
+      ref(:admin) | true  | false | 'admin/users'     | true
+      ref(:admin) | false | false | 'admin/users'     | false
+      ref(:admin) | true  | false | 'projects'        | false
+      ref(:user)  | true  | false | 'admin/users'     | false
+      ref(:admin) | true  | true  | 'admin/users'     | false
+    end
+
+    with_them do
+      before do
+        allow(helper).to receive_messages(
+          current_user: current_user,
+          user_dismissed?: dismissed
+        )
+        stub_application_setting(vscode_extension_marketplace_single_origin_fallback_enabled: single_origin_fallback_enabled)
+        allow(helper.controller).to receive(:controller_path).and_return(controller_path)
+      end
+
+      it { is_expected.to be expected_result }
+    end
+  end
+
+  describe '#show_feature_library_shimmer?' do
+    subject { helper.show_feature_library_shimmer? }
+
+    context 'when the user has not dismissed the callout' do
+      before do
+        allow(helper).to receive(:user_dismissed?).with(described_class::FEATURE_LIBRARY_SHIMMER).and_return(false)
+      end
+
+      it { is_expected.to be true }
+    end
+
+    context 'when the user has dismissed the callout' do
+      before do
+        allow(helper).to receive(:user_dismissed?).with(described_class::FEATURE_LIBRARY_SHIMMER).and_return(true)
+      end
+
+      it { is_expected.to be false }
+    end
+  end
+end

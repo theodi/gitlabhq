@@ -1,0 +1,10 @@
+%tr
+  %td
+    = link_to branch_name, project_ref_path(@project, branch_name, ref_type: 'heads'), class: 'ref-name'
+
+    - if @project.root_ref?(branch_name)
+      = gl_badge_tag s_('ProtectedBranch|default'), { variant: :info }, { class: 'gl-ml-2' }
+  %td
+    - commit = @project.commit(branch_name)
+    = link_to(commit.short_id, project_commit_path(@project, commit.id), class: 'commit-sha')
+    = time_ago_with_tooltip(commit.committed_date)

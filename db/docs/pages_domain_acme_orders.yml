@@ -1,0 +1,14 @@
+---
+table_name: pages_domain_acme_orders
+classes:
+- PagesDomainAcmeOrder
+feature_categories:
+- pages
+description: Stores ACME order information used in obtaining Let's Encrypt certificates
+  for GitLab Pages domains.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/14014
+milestone: '12.0'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

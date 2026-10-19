@@ -1,0 +1,24 @@
+query SnippetBlobContent(
+  $ids: [SnippetID!]
+  $rich: Boolean!
+  $paths: [String!]
+  $projectId: ProjectID
+) {
+  snippets(ids: $ids, projectId: $projectId) {
+    __typename
+    nodes {
+      __typename
+      id
+      blobs(paths: $paths) {
+        __typename
+        nodes {
+          __typename
+          path
+          richData @include(if: $rich)
+          plainData @skip(if: $rich)
+        }
+        hasUnretrievableBlobs
+      }
+    }
+  }
+}

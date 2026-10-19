@@ -1,0 +1,354 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Discussions, feature_category: :team_planning do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project, reload: true) do
+    create(:project, :public, :repository, namespace: user.namespace, developers: user)
+  end
+
+  let_it_be(:private_user) { create(:user) }
+
+  context 'when discussions have cross-reference system notes' do
+    let(:url) { "/projects/#{project.id}/merge_requests/#{merge_request.iid}/discussions" }
+    let(:notes_in_response) { json_response.first['notes'] }
+
+    it_behaves_like 'with cross-reference system notes'
+  end
+
+  context 'when noteable is an Issue' do
+    let_it_be(:issue) { create(:issue, project: project, author: user) }
+    let_it_be_with_reload(:issue_note) do
+      create(:discussion_note_on_issue, noteable: issue, project: project, author: user)
+    end
+
+    it_behaves_like 'discussions API', 'projects', 'issues', 'iid', can_reply_to_individual_notes: true do
+      let(:parent) { project }
+      let(:noteable) { issue }
+      let(:note) { issue_note }
+    end
+  end
+
+  context 'when noteable is a WorkItem' do
+    let_it_be(:work_item) { create(:work_item, project: project, author: user) }
+    let_it_be_with_reload(:work_item_note) do
+      create(:discussion_note_on_issue, noteable: work_item, project: project, author: user)
+    end
+
+    let(:parent) { project }
+    let(:noteable) { work_item }
+    let(:note) { work_item_note }
+    let(:url) { "/projects/#{parent.id}/issues/#{noteable[:iid]}/discussions" }
+
+    it_behaves_like 'discussions API', 'projects', 'issues', 'iid', can_reply_to_individual_notes: true
+
+    context 'with work item without notes widget' do
+      before do
+        stub_all_work_item_widgets(notes: false)
+      end
+
+      context 'when fetching discussions' do
+        it "returns 404" do
+          get api(url, user)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when single fetching discussion by discussion_id' do
+        it "returns 404" do
+          get api("#{url}/#{work_item_note.discussion_id}", user)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when trying to create a new discussion' do
+        it "returns 404" do
+          post api(url, user), params: { body: 'hi!' }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when trying to create a new comment on a discussion' do
+        it 'returns 404' do
+          post api("#{url}/#{note.discussion_id}/notes", user), params: { body: 'Hello!' }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when trying to update a new comment on a discussion' do
+        it 'returns 404' do
+          put api("#{url}/notes/#{note.id}", user), params: { body: 'Update Hello!' }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when deleting a note' do
+        it 'returns 404' do
+          delete api("#{url}/#{note.discussion_id}/notes/#{note.id}", user)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+  end
+
+  context 'when noteable is a Snippet' do
+    let_it_be_with_reload(:snippet) { create(:project_snippet, project: project, author: user) }
+    let_it_be_with_reload(:snippet_note) do
+      create(:discussion_note_on_project_snippet, noteable: snippet, project: project, author: user)
+    end
+
+    it_behaves_like 'discussions API', 'projects', 'snippets', 'id' do
+      let(:parent) { project }
+      let(:noteable) { snippet }
+      let(:note) { snippet_note }
+    end
+  end
+
+  context 'when noteable is a Merge Request' do
+    let_it_be(:noteable) do
+      create(:merge_request_with_diffs, source_project: project, target_project: project, author: user)
+    end
+
+    let_it_be_with_reload(:note) do
+      create(:discussion_note_on_merge_request, noteable: noteable, project: project, author: user)
+    end
+
+    let_it_be(:diff_note) { create(:diff_note_on_merge_request, noteable: noteable, project: project, author: user) }
+    let(:parent) { project }
+
+    it_behaves_like 'discussions API', 'projects', 'merge_requests', 'iid', can_reply_to_individual_notes: true
+    it_behaves_like 'diff discussions API', 'projects', 'merge_requests', 'iid'
+    it_behaves_like 'resolvable discussions API', 'projects', 'merge_requests', 'iid'
+
+    describe 'replying to a discussion with many notes' do
+      let(:url) do
+        "/projects/#{project.id}/merge_requests/#{noteable['iid']}/discussions/#{note.discussion_id}/notes"
+      end
+
+      before do
+        # Reload the noteable so creating notes does not touch the frozen let_it_be record.
+        create_list(:discussion_note_on_merge_request, 5, noteable: MergeRequest.find(noteable.id),
+          project: project, author: user, in_reply_to: note)
+      end
+
+      # Regression for a CPU hotspot: the endpoint used to Markdown-render every
+      # note in the discussion just to read the first one, so cost grew with the
+      # thread size. It must not render any note now.
+      it 'does not render the discussion notes' do
+        expect(::Notes::RenderService).not_to receive(:new)
+
+        post api(url, user), params: { body: 'Hello!' }
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+    end
+
+    context 'when the discussion is not readable by the replier' do
+      # A confidential discussion is hidden from a guest. Confidentiality is
+      # uniform across a discussion, so the root note's readability decides the
+      # thread's: an unreadable root means a 404.
+      let_it_be(:guest) { create(:user) }
+
+      let_it_be(:confidential_note) do
+        # Reload the noteable so creating the note does not touch the frozen let_it_be record.
+        create(:discussion_note_on_merge_request, :confidential, noteable: MergeRequest.find(noteable.id),
+          project: project, author: user)
+      end
+
+      let(:url) do
+        "/projects/#{project.id}/merge_requests/#{noteable['iid']}/discussions/#{confidential_note.discussion_id}/notes"
+      end
+
+      before_all do
+        project.add_guest(guest)
+      end
+
+      it 'returns 404' do
+        post api(url, guest), params: { body: 'Hello!' }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when the discussion does not exist' do
+      it 'returns 404' do
+        post api("/projects/#{project.id}/merge_requests/#{noteable['iid']}/discussions/#{'0' * 40}/notes", user),
+          params: { body: 'Hello!' }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context "when creating a note for multiple lines" do
+      it "creates a new diff multiline note" do
+        line_range = {
+          "start" => {
+            "line_code" => Gitlab::Git.diff_line_code(diff_note.position.file_path, 1, 1),
+            "type" => diff_note.position.type,
+            "new_line" => 1
+          },
+          "end" => {
+            "line_code" => Gitlab::Git.diff_line_code(diff_note.position.file_path, 3, 3),
+            "type" => diff_note.position.type,
+            "new_line" => 3
+          }
+        }
+
+        position = diff_note.position.to_h.merge({ line_range: line_range }).except(:ignore_whitespace_change)
+
+        post api("/projects/#{parent.id}/merge_requests/#{noteable['iid']}/discussions", user),
+          params: { body: 'hi!', position: position }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['notes'].first['body']).to eq('hi!')
+        expect(json_response['notes'].first['type']).to eq('DiffNote')
+        expect(json_response['notes'].first['position']).to eq(position.stringify_keys)
+      end
+    end
+
+    context "when commenting on a line in a file larger than 1 MB" do
+      # A file larger than 1 MB is `large?` in Gitlab::BlobHelper, so `blob.lines`
+      # is empty even though `blob.data` is present. Creating a diff note must
+      # still resolve the line code by counting from the fetched blob data.
+      let_it_be(:large_file_project) { create(:project, :repository, developers: user) }
+      let(:position) do
+        build(
+          :text_diff_position,
+          file: 'long-file',
+          old_line: 1,
+          new_line: 1,
+          diff_refs: large_file_mr.diff_refs
+        )
+      end
+
+      let_it_be(:large_file_mr) do
+        owner = large_file_project.first_owner
+        repo = large_file_project.repository
+        lines = Array.new(15_000) { |i| "line-#{i}-#{'x' * 70}" } # > 1 MB
+
+        repo.create_file(owner, 'long-file', "#{lines.join("\n")}\n",
+          message: 'Add long file', branch_name: large_file_project.default_branch)
+
+        changed = lines.dup
+        changed[15] = "line-15-CHANGED-#{'x' * 60}" # change near the top (line 16)
+        repo.update_file(owner, 'long-file', "#{changed.join("\n")}\n",
+          message: 'Change line 16', branch_name: 'branch-01',
+          start_branch_name: large_file_project.default_branch)
+
+        create(:merge_request, source_project: large_file_project, target_project: large_file_project,
+          source_branch: 'branch-01', target_branch: large_file_project.default_branch)
+      end
+
+      it "creates a diff note on line 1", :aggregate_failures do
+        post api("/projects/#{large_file_project.id}/merge_requests/#{large_file_mr.iid}/discussions", user),
+          params: { body: 'comment on line 1', position: position.to_h }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['notes'].first['type']).to eq('DiffNote')
+      end
+
+      context 'when the unfold_diff_note_large_blob feature flag is disabled' do
+        before do
+          stub_feature_flags(unfold_diff_note_large_blob: false)
+        end
+
+        it "returns 400 because the line code cannot be resolved" do
+          post api("/projects/#{large_file_project.id}/merge_requests/#{large_file_mr.iid}/discussions", user),
+            params: { body: 'comment on line 1', position: position.to_h }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    context "when position_type is file" do
+      it "creates a new diff note" do
+        position = diff_note.position.to_h.merge({ position_type: 'file' }).except(:ignore_whitespace_change)
+
+        post api("/projects/#{parent.id}/merge_requests/#{noteable['iid']}/discussions", user),
+          params: { body: 'hi!', position: position }
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+    end
+
+    context "when position is for a previous commit on the merge request" do
+      it "returns a 400 bad request error because the line_code is old" do
+        # SHA taken from an earlier commit listed in spec/factories/merge_requests.rb
+        position = diff_note.position.to_h.merge(new_line: 'c1acaa58bbcbc3eafe538cb8274ba387047b69f8')
+
+        post api("/projects/#{project.id}/merge_requests/#{noteable['iid']}/discussions", user),
+          params: { body: 'hi!', position: position }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    context "when a commit parameter is given" do
+      it "creates the discussion on that commit within the merge request" do
+        # SHAs of "feature" and its parent in spec/support/gitlab-git-test.git
+        mr_commit = '0b4bc9a49b562e85de7cc9e834518ea6828729b9'
+        parent_commit = 'ae73cb07c9eeaf35924a10f713b364d32b2dd34f'
+        file = "files/ruby/feature.rb"
+        position = build(
+          :text_diff_position,
+          :added,
+          file: file,
+          new_line: 1,
+          base_sha: parent_commit,
+          head_sha: mr_commit,
+          start_sha: parent_commit
+        )
+
+        post api("/projects/#{project.id}/merge_requests/#{noteable['iid']}/discussions", user),
+          params: { body: 'MR discussion on commit', position: position.to_h, commit_id: mr_commit }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['notes'].first['commit_id']).to eq(mr_commit)
+      end
+    end
+
+    context 'when note is a normal note' do
+      it 'does not include suggestions' do
+        create(:suggestion,
+          note: diff_note,
+          from_content: "      raise RuntimeError, \"System commands must be given as an array of strings\"\n",
+          to_content: "      raise RuntimeError, 'Explosion'\n      # explosion?")
+
+        get api("/projects/#{project.id}/merge_requests/#{noteable['iid']}/discussions", user)
+
+        expect(json_response.first['notes'].first['suggestions']).to be_nil
+      end
+    end
+
+    context 'when note is a diff note' do
+      it 'includes suggestions' do
+        create(:suggestion,
+          note: diff_note,
+          from_content: "      raise RuntimeError, \"System commands must be given as an array of strings\"\n",
+          to_content: "      raise RuntimeError, 'Explosion'\n      # explosion?")
+
+        get api("/projects/#{project.id}/merge_requests/#{noteable['iid']}/discussions", user)
+
+        expect(json_response.last['notes'].first['suggestions'].first).to include('id', 'from_line', 'to_line', 'appliable', 'applied', 'from_content', 'to_content')
+      end
+    end
+  end
+
+  context 'when noteable is a Commit' do
+    let!(:noteable) { create(:commit, project: project, author: user) }
+    let!(:note) { create(:discussion_note_on_commit, commit_id: noteable.id, project: project, author: user) }
+    let!(:diff_note) { create(:diff_note_on_commit, commit_id: noteable.id, project: project, author: user) }
+    let(:parent) { project }
+
+    it_behaves_like 'discussions API', 'projects', 'repository/commits', 'id'
+    it_behaves_like 'diff discussions API', 'projects', 'repository/commits', 'id'
+  end
+end

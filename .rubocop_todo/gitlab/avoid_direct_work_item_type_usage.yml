@@ -1,0 +1,9 @@
+---
+Gitlab/AvoidDirectWorkItemTypeUsage:
+  Exclude:
+    - 'app/models/work_item.rb'
+    - 'app/models/work_items/types_framework/system_defined/type.rb'
+    - 'ee/app/models/ee/work_items/types_framework/provider.rb'
+    - 'ee/app/models/work_items/types_framework/custom/type.rb'
+    - 'spec/factories/work_items/types_framework/system_defined/type.rb'
+    - 'spec/support/shared_examples/services/work_items/data_sync/cloneable_and_moveable_data_stared_examples.rb'

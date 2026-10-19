@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Application level VSCode extension marketplace settings for Web IDE and Workspaces",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Should the VSCode Extension Marketplace be enabled for Web IDE and Workspaces"
+    },
+    "extension_host_domain": {
+      "type": "string",
+      "pattern": "^(?=.{1,253}$)(?!-)(?:[a-zA-Z0-9-]{1,63}(?<!-)\\.)+[a-zA-Z]{2,63}(?::[1-9][0-9]{0,4})?$",
+      "examples": [
+        "example.com",
+        "cdn.example.com",
+        "cdn.example.com:3443"
+      ],
+      "default": "cdn.web-ide.gitlab-static.net",
+      "description": "Valid wildcard domain pointing to the HTTP server hosting the Web IDE VSCode workbench assets."
+    },
+    "preset": {
+      "enum": [
+        "custom",
+        "open_vsx"
+      ],
+      "default": "open_vsx",
+      "description": "The preset of URL's to use for the VSCode Extension Marketplace"
+    },
+    "custom_values": {
+      "type": "object",
+      "properties": {
+        "service_url": {
+          "type": "string",
+          "pattern": "^(https?://)"
+        },
+        "item_url": {
+          "type": "string",
+          "pattern": "^(https?://)"
+        },
+        "resource_url_template": {
+          "type": "string",
+          "pattern": "^(https?://)"
+        }
+      },
+      "required": [
+        "service_url",
+        "item_url",
+        "resource_url_template"
+      ]
+    },
+    "single_origin_fallback_enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable single origin fallback for when the VS Code extension host domain is unreachable."
+    }
+  },
+  "required": [],
+  "if": {
+    "properties": {
+      "preset": {
+        "const": "custom"
+      }
+    },
+    "required": [
+      "preset"
+    ]
+  },
+  "then": {
+    "required": [
+      "custom_values"
+    ]
+  }
+}

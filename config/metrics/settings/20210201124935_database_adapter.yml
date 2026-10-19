@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: database.adapter
+description: This metric only returns a value of PostgreSQL in supported versions
+  of GitLab. It could be removed from the usage ping. Historically MySQL was also
+  supported.
+product_group: database_architecture
+product_categories:
+- build
+value_type: string
+status: active
+time_frame: none
+data_source: system
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/51709

@@ -1,0 +1,22 @@
+---
+data_category: optional
+key_path: redis_hll_counters.source_code.merge_request_action_weekly
+description: Count of unique users who perform an action on a merge request
+product_group: code_review
+product_categories:
+- code_review_workflow
+value_type: number
+status: active
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - merge_request_action
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

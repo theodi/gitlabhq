@@ -1,0 +1,16 @@
+---
+table_name: web_hook_logs_daily
+classes:
+- WebHookLog
+- WebHookLog::Partitioned
+feature_categories:
+- webhooks
+description: Webhooks logs data partitioned by day.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/175379
+milestone: '17.8'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  organization_id: organizations
+  group_id: namespaces
+  project_id: projects
+table_size: small

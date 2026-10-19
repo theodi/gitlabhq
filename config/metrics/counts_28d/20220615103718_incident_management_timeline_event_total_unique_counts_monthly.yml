@@ -1,0 +1,28 @@
+---
+key_path: redis_hll_counters.incident_management.timeline_event_total_unique_counts_monthly
+description: Counts unique users for timeline events create, edit and delete events per month
+product_group: platform_insights
+product_categories:
+- incident_management
+value_type: number
+status: active
+milestone: "15.1"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/90205
+time_frame: 28d
+data_source: redis_hll
+data_category: optional
+instrumentation_class: RedisHLLMetric
+events:
+- name: incident_management_timeline_event_created
+  unique: user.id
+- name: incident_management_timeline_event_edited
+  unique: user.id
+- name: incident_management_timeline_event_deleted
+  unique: user.id
+performance_indicator_type:
+  - gmau
+  - paid_gmau
+tiers:
+- free
+- premium
+- ultimate

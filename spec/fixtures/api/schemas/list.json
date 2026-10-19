@@ -1,0 +1,44 @@
+{
+  "type": "object",
+  "required" : [
+    "id",
+    "list_type",
+    "title",
+    "position"
+  ],
+  "properties" : {
+    "id": { "type": "integer" },
+    "list_type": {
+      "type": "string",
+      "enum": ["backlog", "label", "iteration", "closed"]
+    },
+    "label": {
+      "type": ["object", "null"],
+      "required": [
+        "id",
+        "color",
+        "text_color",
+        "description",
+        "title",
+        "priority"
+      ],
+      "properties": {
+        "id": { "type": "integer" },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{3}{1,2}+$"
+        },
+        "description": { "type": ["string", "null"] },
+        "title": { "type": "string" },
+        "title": { "text_color": "string" },
+        "priority": { "type": ["integer", "null"] }
+      }
+    },
+    "title": { "type": ["string", "null"] },
+    "position": { "type": ["integer", "null"] },
+    "max_issue_count": { "type": "integer" },
+    "max_issue_weight": { "type": "integer" },
+    "limit_metric": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

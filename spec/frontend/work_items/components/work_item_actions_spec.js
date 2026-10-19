@@ -1,0 +1,1015 @@
+import { GlDisclosureDropdown, GlModal, GlDisclosureDropdownItem, GlLoadingIcon } from '@gitlab/ui';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { stubComponent } from 'helpers/stub_component';
+
+import waitForPromises from 'helpers/wait_for_promises';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { createMockDirective, getBinding } from 'helpers/vue_mock_directive';
+import { isLoggedIn } from '~/lib/utils/common_utils';
+import toast from '~/vue_shared/plugins/global_toast';
+import WorkItemActions from '~/work_items/components/work_item_actions.vue';
+import WorkItemAbuseModal from '~/work_items/components/work_item_abuse_modal.vue';
+import WorkItemStateToggle from '~/work_items/components/work_item_state_toggle.vue';
+import CreateWorkItemModal from '~/work_items/components/create_work_item_modal.vue';
+import WorkItemChangeTypeModal from 'ee_else_ce/work_items/components/work_item_change_type_modal.vue';
+import MoveWorkItemModal from '~/work_items/components/move_work_item_modal.vue';
+import {
+  CREATION_CONTEXT_RELATED_ITEM,
+  STATE_OPEN,
+  WORK_ITEM_TYPE_NAME_EPIC,
+  WORK_ITEM_TYPE_NAME_ISSUE,
+  WORK_ITEM_TYPE_NAME_KEY_RESULT,
+  WORK_ITEM_TYPE_NAME_OBJECTIVE,
+  WORK_ITEM_TYPE_NAME_TASK,
+} from '~/work_items/constants';
+import updateWorkItemMutation from '~/work_items/graphql/update_work_item.mutation.graphql';
+import updateWorkItemNotificationsMutation from '~/work_items/graphql/update_work_item_notifications.mutation.graphql';
+import namespaceWorkItemTypesQuery from '~/work_items/graphql/namespace_work_item_types.query.graphql';
+import getWorkItemNotificationsByIdQuery from '~/work_items/graphql/get_work_item_notifications_by_id.query.graphql';
+import convertWorkItemMutation from '~/work_items/graphql/work_item_convert.mutation.graphql';
+
+import {
+  convertWorkItemMutationErrorResponse,
+  convertWorkItemMutationResponse,
+  mockWorkItemFeaturesData,
+  namespaceWorkItemTypesQueryResponse,
+  updateWorkItemMutationResponse,
+  updateWorkItemNotificationsMutationResponse,
+  workItemNotificationsResponse,
+} from 'ee_else_ce_jest/work_items/mock_data';
+
+jest.mock('~/lib/utils/common_utils');
+jest.mock('~/vue_shared/plugins/global_toast');
+jest.mock('~/sentry/sentry_browser_wrapper');
+
+describe('WorkItemActions component', () => {
+  Vue.use(VueApollo);
+
+  let wrapper;
+
+  const mockWorkItemReference = 'gitlab-org/gitlab-test#1';
+  const mockWorkItemCreateNoteEmail =
+    'gitlab-incoming+gitlab-org-gitlab-test-2-ddpzuq0zd2wefzofcpcdr3dg7-issue-1@gmail.com';
+
+  const findModal = () => wrapper.findComponent(GlModal);
+  const findConfidentialityToggleButton = () =>
+    wrapper.findComponentByTestId('confidentiality-toggle-action');
+  const findLockDiscussionButton = () => wrapper.findComponentByTestId('lock-action');
+  const findDeleteButton = () => wrapper.findComponentByTestId('delete-action');
+  const findPromoteButton = () => wrapper.findComponentByTestId('promote-action');
+  const findCopyReferenceButton = () => wrapper.findComponentByTestId('copy-reference-action');
+  const findWorkItemToggleOption = () => wrapper.findComponent(WorkItemStateToggle);
+  const findCopyCreateNoteEmailButton = () =>
+    wrapper.findComponentByTestId('copy-create-note-email-action');
+  const findReportAbuseButton = () => wrapper.findComponentByTestId('report-abuse-action');
+  const findSubmitAsSpamItem = () => wrapper.findComponentByTestId('submit-as-spam-item');
+  const findNewRelatedItemButton = () => wrapper.findComponentByTestId('new-related-work-item');
+  const findChangeTypeButton = () => wrapper.findComponentByTestId('change-type-action');
+  const findTruncationToggle = () => wrapper.findComponentByTestId('truncation-toggle-action');
+  const findSidebarToggle = () => wrapper.findComponentByTestId('sidebar-toggle-action');
+  const findReportAbuseModal = () => wrapper.findComponent(WorkItemAbuseModal);
+  const findCreateWorkItemModal = () => wrapper.findComponent(CreateWorkItemModal);
+  const findWorkItemChangeTypeModal = () => wrapper.findComponent(WorkItemChangeTypeModal);
+  const findMoreDropdown = () => wrapper.findByTestId('work-item-actions-dropdown');
+  const findMoreDropdownTooltip = () => getBinding(findMoreDropdown().element, 'gl-tooltip');
+  const findDropdownItems = () =>
+    wrapper.findAll(
+      '[data-testid="work-item-actions-dropdown"] > *, [data-testid="work-item-actions-dropdown"] .gl-new-dropdown-item',
+    );
+
+  const findDropdownItemsActual = () =>
+    findDropdownItems().wrappers.map((x) => {
+      if (x.element.tagName === 'GL-DROPDOWN-DIVIDER-STUB') {
+        return { divider: true };
+      }
+
+      if (x.element.tagName === 'GL-DISCLOSURE-DROPDOWN-GROUP-STUB') {
+        return { group: true };
+      }
+      return {
+        testId: x.attributes('data-testid'),
+        text: x.text(),
+      };
+    });
+  const findNotificationsToggleForm = () =>
+    wrapper.findComponentByTestId('notifications-toggle-form');
+  const findNotificationsToggle = () => wrapper.findComponentByTestId('notifications-toggle');
+  const findMoveButton = () => wrapper.findComponentByTestId('move-action');
+  const findMoveModal = () => wrapper.findComponent(MoveWorkItemModal);
+  const findLoadingIcon = () => wrapper.findComponent(GlLoadingIcon);
+
+  const modalShowSpy = jest.fn();
+  const $toast = {
+    show: jest.fn(),
+    hide: jest.fn(),
+  };
+
+  const typesQuerySuccessHandler = jest.fn().mockResolvedValue(namespaceWorkItemTypesQueryResponse);
+  const notificationOffQueryHandler = jest
+    .fn()
+    .mockResolvedValue(workItemNotificationsResponse(false));
+  const notificationOnQueryHandler = jest
+    .fn()
+    .mockResolvedValue(workItemNotificationsResponse(true));
+  const convertWorkItemMutationSuccessHandler = jest
+    .fn()
+    .mockResolvedValue(convertWorkItemMutationResponse);
+  const convertWorkItemMutationErrorHandler = jest
+    .fn()
+    .mockResolvedValue(convertWorkItemMutationErrorResponse);
+  const toggleNotificationsOffHandler = jest
+    .fn()
+    .mockResolvedValue(updateWorkItemNotificationsMutationResponse(false));
+  const toggleNotificationsOnHandler = jest
+    .fn()
+    .mockResolvedValue(updateWorkItemNotificationsMutationResponse(true));
+  const toggleNotificationsFailureHandler = jest
+    .fn()
+    .mockRejectedValue(new Error('Failed to subscribe'));
+  const lockDiscussionMutationResolver = jest
+    .fn()
+    .mockResolvedValue(updateWorkItemMutationResponse);
+
+  const createComponent = ({
+    provide = {},
+    canUpdate = true,
+    canUpdateMetadata = true,
+    canDelete = true,
+    canReportSpam = true,
+    canMove = true,
+    isConfidential = false,
+    isDiscussionLocked = false,
+    isGroup = false,
+    isParentConfidential = false,
+    convertWorkItemMutationHandler = convertWorkItemMutationSuccessHandler,
+    notificationsMutationHandler,
+    lockDiscussionMutationHandler = lockDiscussionMutationResolver,
+    workItemType = WORK_ITEM_TYPE_NAME_TASK,
+    workItemReference = mockWorkItemReference,
+    workItemCreateNoteEmail = mockWorkItemCreateNoteEmail,
+    hideSubscribe = undefined,
+    hasChildren = false,
+    canCreateRelatedItem = true,
+    parentId = null,
+    projectId = 'gid://gitlab/Project/1',
+    namespaceFullName = 'GitLab.org / GitLab Test',
+    updateInProgress = false,
+    notificationsQueryHandler = notificationOnQueryHandler,
+    widgets = [],
+    features = null,
+  } = {}) => {
+    wrapper = shallowMountExtended(WorkItemActions, {
+      isLoggedIn: isLoggedIn(),
+      apolloProvider: createMockApollo([
+        [namespaceWorkItemTypesQuery, typesQuerySuccessHandler],
+        [getWorkItemNotificationsByIdQuery, notificationsQueryHandler],
+        [convertWorkItemMutation, convertWorkItemMutationHandler],
+        [updateWorkItemNotificationsMutation, notificationsMutationHandler],
+        [updateWorkItemMutation, lockDiscussionMutationHandler],
+      ]),
+      directives: {
+        GlTooltip: createMockDirective('gl-tooltip'),
+      },
+      propsData: {
+        workItemState: STATE_OPEN,
+        fullPath: 'gitlab-org/gitlab-test',
+        workItemId: 'gid://gitlab/WorkItem/1',
+        workItemIid: '1',
+        workItemWebUrl: 'gitlab-org/gitlab-test/-/work_items/1',
+        isGroup,
+        canUpdate,
+        canUpdateMetadata,
+        canDelete,
+        canReportSpam,
+        canMove,
+        isConfidential,
+        isDiscussionLocked,
+        isParentConfidential,
+        workItemType,
+        workItemReference,
+        workItemCreateNoteEmail,
+        hideSubscribe,
+        hasChildren,
+        canCreateRelatedItem,
+        parentId,
+        projectId,
+        namespaceFullName,
+        showSidebar: true,
+        truncationEnabled: true,
+        updateInProgress,
+        widgets,
+        features,
+      },
+      mocks: {
+        $toast,
+      },
+      provide: {
+        getWorkItemTypeConfiguration: jest.fn(),
+        ...provide,
+      },
+      stubs: {
+        GlModal: stubComponent(GlModal, {
+          methods: {
+            show: jest.fn(),
+          },
+        }),
+        GlDisclosureDropdownItem,
+        GlDisclosureDropdown: stubComponent(GlDisclosureDropdown, {
+          methods: {
+            close: modalShowSpy,
+          },
+        }),
+        WorkItemChangeTypeModal: stubComponent(WorkItemChangeTypeModal, {
+          methods: {
+            show: jest.fn(),
+          },
+        }),
+      },
+    });
+  };
+
+  beforeEach(() => {
+    isLoggedIn.mockReturnValue(true);
+  });
+
+  it('renders modal', () => {
+    createComponent();
+
+    expect(findModal().props('visible')).toBe(false);
+  });
+
+  it('renders dropdown actions', async () => {
+    createComponent({
+      workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+      provide: {
+        getWorkItemTypeConfiguration: jest.fn().mockReturnValue({ supportsMoveAction: true }),
+      },
+    });
+
+    await waitForPromises();
+
+    expect(findDropdownItemsActual()).toEqual([
+      {
+        testId: 'notifications-toggle-form',
+        text: 'Notifications',
+      },
+      {
+        divider: true,
+      },
+      {
+        testId: 'state-toggle-action',
+        text: '',
+      },
+      {
+        testId: 'new-related-work-item',
+        text: 'New related item',
+      },
+
+      {
+        testId: 'change-type-action',
+        text: 'Change type',
+      },
+      {
+        testId: 'move-action',
+        text: 'Move',
+      },
+      {
+        testId: 'lock-action',
+        text: 'Lock discussion',
+      },
+      {
+        testId: 'confidentiality-toggle-action',
+        text: 'Turn on confidentiality',
+      },
+      {
+        testId: 'copy-reference-action',
+        text: 'Copy reference',
+      },
+      {
+        testId: 'copy-create-note-email-action',
+        text: 'Copy issue email address',
+      },
+      {
+        group: true,
+      },
+      {
+        testId: 'report-abuse-action',
+        text: 'Report abuse',
+      },
+      {
+        testId: 'submit-as-spam-item',
+        text: 'Submit as spam',
+      },
+      {
+        testId: 'delete-action',
+        text: 'Delete issue',
+      },
+      {
+        group: true,
+      },
+      {
+        testId: 'truncation-toggle-action',
+        text: 'Truncate descriptions',
+      },
+      {
+        testId: 'sidebar-toggle-action',
+        text: 'Hide sidebar',
+      },
+    ]);
+  });
+
+  it('renders "New related item" as action item for all work items', () => {
+    createComponent({ workItemType: WORK_ITEM_TYPE_NAME_EPIC });
+
+    expect(findDropdownItemsActual()).toEqual(
+      expect.arrayContaining([
+        {
+          testId: 'new-related-work-item',
+          text: 'New related item',
+        },
+      ]),
+    );
+  });
+
+  describe('lock discussion action', () => {
+    it.each`
+      isDiscussionLocked | buttonText
+      ${false}           | ${'Lock discussion'}
+      ${true}            | ${'Unlock discussion'}
+    `('renders with text "$buttonText"', ({ isDiscussionLocked, buttonText }) => {
+      createComponent({ isDiscussionLocked });
+
+      expect(findLockDiscussionButton().text()).toBe(buttonText);
+    });
+
+    it.each`
+      isDiscussionLocked | toastMessage
+      ${false}           | ${'Discussion unlocked.'}
+      ${true}            | ${'Discussion locked.'}
+    `(
+      'shows toast when clicked, with message "$toastMessage"',
+      async ({ isDiscussionLocked, toastMessage }) => {
+        createComponent({ isDiscussionLocked });
+
+        findLockDiscussionButton().vm.$emit('action');
+        await waitForPromises();
+
+        expect(toast).toHaveBeenCalledWith(toastMessage);
+      },
+    );
+
+    it('calls update mutation when clicked', async () => {
+      createComponent();
+
+      findLockDiscussionButton().vm.$emit('action');
+      await waitForPromises();
+
+      expect(lockDiscussionMutationResolver).toHaveBeenCalledWith({
+        input: {
+          id: 'gid://gitlab/WorkItem/1',
+          notesWidget: {
+            discussionLocked: true,
+          },
+        },
+        useWorkItemFeatures: false,
+      });
+    });
+
+    it('passes useWorkItemFeatures as true to the mutation when workItemFeaturesField FF is enabled', async () => {
+      createComponent({ provide: { glFeatures: { workItemFeaturesField: true } } });
+
+      expect(lockDiscussionMutationResolver).not.toHaveBeenCalled();
+
+      findLockDiscussionButton().vm.$emit('action');
+      await waitForPromises();
+
+      expect(lockDiscussionMutationResolver).toHaveBeenCalledWith(
+        expect.objectContaining({ useWorkItemFeatures: true }),
+      );
+    });
+
+    it('emits error when update mutation fails', async () => {
+      createComponent({
+        lockDiscussionMutationHandler: jest.fn().mockRejectedValue(new Error('oh no!')),
+      });
+
+      findLockDiscussionButton().vm.$emit('action');
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toEqual([['oh no!']]);
+    });
+  });
+
+  describe('toggle confidentiality action', () => {
+    it.each`
+      isConfidential | buttonText
+      ${true}        | ${'Turn off confidentiality'}
+      ${false}       | ${'Turn on confidentiality'}
+    `(
+      'renders confidentiality toggle button with text "$buttonText"',
+      ({ isConfidential, buttonText }) => {
+        createComponent({ isConfidential });
+
+        expect(findConfidentialityToggleButton().text()).toBe(buttonText);
+      },
+    );
+
+    it('emits `toggle-work-item-confidentiality` event when clicked', () => {
+      createComponent();
+
+      findConfidentialityToggleButton().vm.$emit('action');
+
+      expect(wrapper.emitted('toggle-work-item-confidentiality')[0]).toEqual([true]);
+    });
+
+    it('does not render when canUpdateMetadata is false', () => {
+      createComponent({ canUpdateMetadata: false });
+      expect(findConfidentialityToggleButton().exists()).toBe(false);
+    });
+
+    it('is disabled when item has confidential parent', () => {
+      createComponent({ isParentConfidential: true });
+      expect(findConfidentialityToggleButton().props('item')).toMatchObject({
+        extraAttrs: { disabled: true },
+      });
+    });
+
+    it('shows loading icon badge when the work item is confidential', () => {
+      createComponent({ updateInProgress: true });
+
+      expect(findLoadingIcon().exists()).toBe(true);
+    });
+  });
+
+  describe('delete action', () => {
+    it('shows confirm modal with delete confirmation message when clicked', () => {
+      createComponent();
+
+      findDeleteButton().vm.$emit('action');
+
+      expect(modalShowSpy).toHaveBeenCalled();
+      expect(findModal().text()).toBe(
+        'Are you sure you want to delete the task? This action cannot be reversed.',
+      );
+    });
+
+    it('shows confirm modal with delete hierarchy confirmation message when clicked', () => {
+      createComponent({ hasChildren: true });
+
+      findDeleteButton().vm.$emit('action');
+
+      expect(findModal().text()).toBe(
+        'Delete this task and release all child items? This action cannot be reversed.',
+      );
+    });
+
+    it('emits event when clicking OK button', () => {
+      createComponent();
+
+      findModal().vm.$emit('ok');
+
+      expect(wrapper.emitted('delete-work-item')).toEqual([[]]);
+    });
+
+    it('does not render when canDelete is false', () => {
+      createComponent({ canDelete: false });
+
+      expect(findDeleteButton().exists()).toBe(false);
+    });
+  });
+
+  describe('notifications action', () => {
+    beforeEach(() => {
+      createComponent();
+      isLoggedIn.mockReturnValue(true);
+    });
+
+    it.each`
+      scenario                                     | hideSubscribe
+      ${'does not show notification subscription'} | ${true}
+      ${'shows notification subscription'}         | ${false}
+      ${'shows notification subscription'}         | ${undefined}
+    `('$scenario when hideSubscribe is set to $hideSubscribe', ({ hideSubscribe }) => {
+      createComponent({ hideSubscribe });
+      expect(findNotificationsToggleForm().exists()).toBe(!hideSubscribe);
+    });
+
+    it.each`
+      scenario        | subscribedToNotification | notificationsQueryHandler      | notificationsMutationHandler     | subscribed | toastMessage
+      ${'turned off'} | ${true}                  | ${notificationOnQueryHandler}  | ${toggleNotificationsOffHandler} | ${false}   | ${'Notifications turned off.'}
+      ${'turned on'}  | ${false}                 | ${notificationOffQueryHandler} | ${toggleNotificationsOnHandler}  | ${true}    | ${'Notifications turned on.'}
+    `(
+      'calls mutation and displays toast when notification toggle is $scenario',
+      async ({
+        subscribedToNotification,
+        notificationsMutationHandler,
+        subscribed,
+        toastMessage,
+        notificationsQueryHandler,
+      }) => {
+        createComponent({ notificationsMutationHandler, notificationsQueryHandler });
+        await waitForPromises();
+
+        expect(findNotificationsToggle().props().value).toBe(subscribedToNotification);
+
+        findNotificationsToggleForm().vm.$emit('action', subscribed);
+        await waitForPromises();
+
+        expect(notificationsMutationHandler).toHaveBeenCalledWith({
+          input: {
+            id: 'gid://gitlab/WorkItem/1',
+            subscribed,
+          },
+          useWorkItemFeatures: false,
+        });
+        expect(toast).toHaveBeenCalledWith(toastMessage);
+      },
+    );
+
+    it('emits error when the update notification mutation fails', async () => {
+      createComponent({ notificationsMutationHandler: toggleNotificationsFailureHandler });
+      await waitForPromises();
+
+      findNotificationsToggleForm().vm.$emit('action', false);
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toEqual([['Failed to subscribe']]);
+    });
+
+    describe('when workItemFeaturesField feature flag is enabled', () => {
+      it('passes useWorkItemFeatures as true to the notifications query', () => {
+        const handler = jest.fn().mockResolvedValue(workItemNotificationsResponse(true));
+        createComponent({
+          notificationsQueryHandler: handler,
+          provide: { glFeatures: { workItemFeaturesField: true } },
+        });
+
+        expect(handler).toHaveBeenCalledWith({
+          id: 'gid://gitlab/WorkItem/1',
+          useWorkItemFeatures: true,
+        });
+      });
+
+      it('passes useWorkItemFeatures as true to the mutation', async () => {
+        const mutationHandler = jest
+          .fn()
+          .mockResolvedValue(updateWorkItemNotificationsMutationResponse(true));
+        createComponent({
+          notificationsMutationHandler: mutationHandler,
+          notificationsQueryHandler: notificationOffQueryHandler,
+          provide: { glFeatures: { workItemFeaturesField: true } },
+        });
+        await waitForPromises();
+
+        findNotificationsToggleForm().vm.$emit('action');
+        await waitForPromises();
+
+        expect(mutationHandler).toHaveBeenCalledWith({
+          input: {
+            id: 'gid://gitlab/WorkItem/1',
+            subscribed: true,
+          },
+          useWorkItemFeatures: true,
+        });
+      });
+    });
+  });
+
+  describe('promote actions', () => {
+    describe('button visibility', () => {
+      it.each`
+        canUpdateMetadata | mockConfig                         | shouldExist | expectationText
+        ${true}           | ${{ canPromoteToObjective: true }} | ${true}     | ${'has permissions'}
+        ${false}          | ${{ canPromoteToObjective: true }} | ${false}    | ${'does not have permissions'}
+      `('when user $expectationText', async ({ canUpdateMetadata, mockConfig, shouldExist }) => {
+        createComponent({
+          canUpdateMetadata,
+          workItemType: WORK_ITEM_TYPE_NAME_KEY_RESULT,
+          provide: {
+            getWorkItemTypeConfiguration: jest.fn().mockReturnValue(mockConfig),
+          },
+        });
+
+        await waitForPromises();
+
+        expect(findChangeTypeButton().exists()).toBe(shouldExist);
+      });
+
+      describe.each`
+        description                                           | workItemType                      | mockConfig                          | shouldShowButton
+        ${'when config is undefined'}                         | ${WORK_ITEM_TYPE_NAME_KEY_RESULT} | ${undefined}                        | ${false}
+        ${'when config has canPromote false'}                 | ${WORK_ITEM_TYPE_NAME_KEY_RESULT} | ${{ canPromoteToObjective: false }} | ${false}
+        ${'when config has canPromote true'}                  | ${WORK_ITEM_TYPE_NAME_KEY_RESULT} | ${{ canPromoteToObjective: true }}  | ${true}
+        ${'when config has canPromote true for non-OKR type'} | ${WORK_ITEM_TYPE_NAME_TASK}       | ${{ canPromoteToObjective: true }}  | ${true}
+      `('$description', ({ workItemType, mockConfig, shouldShowButton }) => {
+        it('shows promote button correctly', async () => {
+          createComponent({
+            workItemType,
+            provide: {
+              getWorkItemTypeConfiguration: jest.fn().mockReturnValue(mockConfig),
+            },
+          });
+          await waitForPromises();
+
+          expect(findPromoteButton().exists()).toBe(shouldShowButton);
+        });
+      });
+    });
+
+    describe.each([false, true])(
+      'when button is clicked and workItemFeaturesField is %s',
+      (workItemFeaturesField) => {
+        const { workItemConvert } = convertWorkItemMutationResponse.data;
+        const convertHandler = jest.fn().mockResolvedValue({
+          data: {
+            workItemConvert: {
+              ...workItemConvert,
+              workItem: {
+                ...workItemConvert.workItem,
+                ...(workItemFeaturesField && { features: mockWorkItemFeaturesData() }),
+              },
+            },
+          },
+        });
+
+        beforeEach(async () => {
+          createComponent({
+            workItemType: WORK_ITEM_TYPE_NAME_KEY_RESULT,
+            convertWorkItemMutationHandler: convertHandler,
+            provide: {
+              getWorkItemTypeConfiguration: jest
+                .fn()
+                .mockReturnValue({ canPromoteToObjective: true }),
+              glFeatures: { workItemFeaturesField },
+            },
+          });
+          await waitForPromises();
+
+          findPromoteButton().vm.$emit('action');
+          await waitForPromises();
+        });
+
+        it('promotes key result to objective', () => {
+          expect(convertHandler).toHaveBeenCalledWith(
+            expect.objectContaining({ useWorkItemFeatures: workItemFeaturesField }),
+          );
+          expect($toast.show).toHaveBeenCalledWith('Promoted to objective.');
+        });
+      },
+    );
+
+    describe('when promote mutation fails', () => {
+      beforeEach(async () => {
+        createComponent({
+          workItemType: WORK_ITEM_TYPE_NAME_KEY_RESULT,
+          provide: {
+            getWorkItemTypeConfiguration: jest
+              .fn()
+              .mockReturnValue({ canPromoteToObjective: true }),
+          },
+          convertWorkItemMutationHandler: convertWorkItemMutationErrorHandler,
+        });
+
+        await waitForPromises();
+      });
+
+      it('emits error', async () => {
+        expect(findPromoteButton().exists()).toBe(true);
+
+        findPromoteButton().vm.$emit('action');
+        await waitForPromises();
+
+        expect(convertWorkItemMutationErrorHandler).toHaveBeenCalled();
+        expect(wrapper.emitted('error')).toEqual([
+          ['Something went wrong while promoting the key result. Please try again.'],
+        ]);
+      });
+    });
+  });
+
+  describe('copy reference action', () => {
+    it('shows toast when user clicks on the action', () => {
+      createComponent();
+
+      expect(findCopyReferenceButton().exists()).toBe(true);
+
+      findCopyReferenceButton().vm.$emit('action');
+
+      expect(toast).toHaveBeenCalledWith('Reference copied');
+    });
+  });
+
+  describe('copy email address action', () => {
+    it.each([
+      [WORK_ITEM_TYPE_NAME_KEY_RESULT, 'Copy key result email address'],
+      [WORK_ITEM_TYPE_NAME_OBJECTIVE, 'Copy objective email address'],
+    ])('renders correct button name when work item is %s', (workItemType, buttonText) => {
+      createComponent({ workItemType });
+
+      expect(findCopyCreateNoteEmailButton().text()).toEqual(buttonText);
+    });
+
+    it('shows toast when user clicks on the action', () => {
+      createComponent();
+
+      expect(findCopyCreateNoteEmailButton().exists()).toBe(true);
+
+      findCopyCreateNoteEmailButton().vm.$emit('action');
+
+      expect(toast).toHaveBeenCalledWith('Email address copied');
+    });
+  });
+
+  it('renders the toggle status button', () => {
+    createComponent();
+
+    expect(findWorkItemToggleOption().exists()).toBe(true);
+  });
+
+  describe('More actions menu', () => {
+    it('renders the dropdown button', () => {
+      createComponent();
+
+      expect(findMoreDropdown().exists()).toBe(true);
+    });
+
+    it('renders tooltip', () => {
+      createComponent();
+
+      expect(findMoreDropdownTooltip().value).toBe('More actions');
+    });
+  });
+
+  describe('report abuse action', () => {
+    it('renders the report abuse button', () => {
+      createComponent();
+
+      expect(findReportAbuseButton().exists()).toBe(true);
+      expect(findReportAbuseModal().exists()).toBe(false);
+    });
+
+    it('opens the report abuse modal', async () => {
+      createComponent();
+
+      findReportAbuseButton().vm.$emit('action');
+      await nextTick();
+
+      expect(wrapper.emitted('toggle-report-abuse-modal')).toEqual([[true]]);
+    });
+  });
+
+  describe('submit as spam item', () => {
+    it('renders the "Submit as spam" action', () => {
+      createComponent();
+
+      expect(findSubmitAsSpamItem().props('item')).toEqual({
+        href: '/gitlab-org/gitlab-test/-/issues/1/mark_as_spam',
+        text: 'Submit as spam',
+      });
+    });
+
+    it('does not render the "Submit as spam" action when not allowed', () => {
+      createComponent({ canReportSpam: false });
+
+      expect(findSubmitAsSpamItem().exists()).toBe(false);
+    });
+  });
+
+  describe('new related item', () => {
+    it('passes related item data to create work item modal', () => {
+      createComponent();
+
+      expect(findCreateWorkItemModal().props()).toMatchObject({
+        creationContext: CREATION_CONTEXT_RELATED_ITEM,
+        relatedItem: {
+          id: 'gid://gitlab/WorkItem/1',
+          reference: 'gitlab-org/gitlab-test#1',
+          type: WORK_ITEM_TYPE_NAME_TASK,
+          webUrl: 'gitlab-org/gitlab-test/-/work_items/1',
+        },
+      });
+    });
+
+    it('opens the create work item modal', async () => {
+      createComponent({ workItemType: WORK_ITEM_TYPE_NAME_TASK });
+
+      findNewRelatedItemButton().vm.$emit('action');
+      await nextTick();
+
+      expect(findCreateWorkItemModal().props('visible')).toBe(true);
+    });
+
+    it('emits `workItemCreated` when `CreateWorkItemModal` emits `workItemCreated`', () => {
+      createComponent();
+
+      findCreateWorkItemModal().vm.$emit('work-item-created');
+
+      expect(wrapper.emitted('work-item-created')).toHaveLength(1);
+    });
+  });
+
+  describe('change type action', () => {
+    it('opens the change type modal', async () => {
+      createComponent({ workItemType: WORK_ITEM_TYPE_NAME_TASK });
+
+      await waitForPromises();
+
+      findChangeTypeButton().vm.$emit('action');
+
+      expect(findWorkItemChangeTypeModal().exists()).toBe(true);
+    });
+
+    it('passes `widgets` and `features` to the change type modal', async () => {
+      const widgets = [{ type: 'MILESTONE' }];
+      const features = { milestone: { milestone: { id: 'gid://gitlab/Milestone/1' } } };
+
+      createComponent({ workItemType: WORK_ITEM_TYPE_NAME_TASK, widgets, features });
+
+      await waitForPromises();
+
+      findChangeTypeButton().vm.$emit('action');
+      await nextTick();
+
+      expect(findWorkItemChangeTypeModal().props()).toMatchObject({ widgets, features });
+    });
+
+    it('hides the action when work item type has no supported conversion types', async () => {
+      createComponent({ workItemType: WORK_ITEM_TYPE_NAME_EPIC });
+
+      await waitForPromises();
+
+      expect(findChangeTypeButton().exists()).toBe(false);
+    });
+
+    it('hides the action when there is no permission', () => {
+      createComponent({ canUpdateMetadata: false });
+
+      expect(findChangeTypeButton().exists()).toBe(false);
+    });
+
+    it('shows the action when work item type has supported conversion types', async () => {
+      createComponent({ workItemType: WORK_ITEM_TYPE_NAME_ISSUE });
+
+      await waitForPromises();
+
+      expect(findChangeTypeButton().exists()).toBe(true);
+    });
+  });
+
+  it('passes the `parentId` prop down to the `WorkItemStateToggle` component', () => {
+    createComponent({ parentId: 'example-id' });
+
+    expect(findWorkItemToggleOption().props('parentId')).toBe('example-id');
+  });
+
+  describe('move issue button', () => {
+    it('shows move button when supportsMoveAction config is true and `canMove` is true', async () => {
+      createComponent({
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue({ supportsMoveAction: true }),
+        },
+      });
+      await waitForPromises();
+
+      expect(findMoveButton().exists()).toBe(true);
+    });
+
+    it('renders with text "Move"', async () => {
+      createComponent({
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue({ supportsMoveAction: true }),
+        },
+      });
+
+      await waitForPromises();
+
+      expect(findMoveButton().text()).toBe('Move');
+    });
+
+    it('hides move button when `canMove` is false', async () => {
+      createComponent({
+        canMove: false,
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue({ supportsMoveAction: true }),
+        },
+      });
+      await waitForPromises();
+
+      expect(findMoveButton().exists()).toBe(false);
+    });
+
+    it('hides move button when supportsMoveAction config is false', async () => {
+      createComponent({
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue({ supportsMoveAction: false }),
+        },
+      });
+
+      await waitForPromises();
+
+      expect(findMoveButton().exists()).toBe(false);
+    });
+
+    it('hides move button when config is not available', async () => {
+      createComponent();
+
+      await waitForPromises();
+
+      expect(findMoveButton().exists()).toBe(false);
+    });
+  });
+
+  describe('move modal', () => {
+    const moveActionConfig = { supportsMoveAction: true };
+
+    it('does not render move modal when there is no projectId', async () => {
+      createComponent({
+        projectId: null,
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue(moveActionConfig),
+        },
+      });
+
+      await waitForPromises();
+
+      expect(findMoveModal().exists()).toBe(false);
+    });
+
+    it('renders move modal when move button is clicked', async () => {
+      createComponent({
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue(moveActionConfig),
+        },
+      });
+
+      await waitForPromises();
+
+      findMoveButton().vm.$emit('action');
+      await nextTick();
+
+      expect(findMoveModal().exists()).toBe(true);
+      expect(findMoveModal().props('visible')).toBe(true);
+    });
+
+    it('passes correct props to move modal', async () => {
+      createComponent({
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue(moveActionConfig),
+        },
+      });
+
+      await waitForPromises();
+
+      findMoveButton().vm.$emit('action');
+      await nextTick();
+
+      expect(findMoveModal().props()).toMatchObject({
+        visible: true,
+        workItemIid: '1',
+        fullPath: 'gitlab-org/gitlab-test',
+        projectId: 'gid://gitlab/Project/1',
+      });
+    });
+
+    it('closes modal when hide-modal event is emitted', async () => {
+      createComponent({
+        provide: {
+          getWorkItemTypeConfiguration: jest.fn().mockReturnValue(moveActionConfig),
+        },
+      });
+
+      await waitForPromises();
+
+      findMoveButton().vm.$emit('action');
+      await nextTick();
+
+      findMoveModal().vm.$emit('hide-modal');
+      await nextTick();
+
+      expect(findMoveModal().props('visible')).toBe(false);
+    });
+  });
+  describe('view options', () => {
+    it('toggles truncation enabled', () => {
+      createComponent({ workItemType: WORK_ITEM_TYPE_NAME_TASK });
+
+      expect(findTruncationToggle().exists()).toBe(true);
+
+      findTruncationToggle().vm.$emit('action');
+
+      expect(wrapper.emitted('toggle-truncation-enabled')).toEqual([[]]);
+    });
+
+    it('toggles sidebar visibility', () => {
+      createComponent({ workItemType: WORK_ITEM_TYPE_NAME_TASK });
+
+      expect(findSidebarToggle().exists()).toBe(true);
+
+      findSidebarToggle().vm.$emit('action');
+      expect(wrapper.emitted('toggle-sidebar')).toEqual([[]]);
+    });
+  });
+});

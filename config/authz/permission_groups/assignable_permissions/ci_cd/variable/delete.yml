@@ -1,0 +1,15 @@
+---
+name: delete_variable
+description: Grants the ability to delete variables
+boundaries:
+  - project
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - delete_variable
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

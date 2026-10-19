@@ -1,0 +1,69 @@
+import jsYaml from 'js-yaml';
+import { glql } from '@gitlab/query-language-rust';
+import { DEFAULT_DISPLAY_TYPE, MODE_ANALYTICS, MODE_STANDARD } from '../constants';
+import { extractGroupOrProject } from '../utils/common';
+import { glqlFeatureFlags } from '../utils/feature_flags';
+
+const isValidYAML = (text) => typeof jsYaml.safeLoad(text) === 'object';
+
+export const parseYAMLConfig = (frontmatter) => {
+  const config = jsYaml.safeLoad(frontmatter) || {};
+
+  config.display = config.display || DEFAULT_DISPLAY_TYPE;
+
+  return config;
+};
+
+export const parseQueryTextWithFrontmatter = (text) => {
+  const frontmatter = text.match(/---\n([\s\S]*?)\n---/);
+  const remaining = text.replace(frontmatter ? frontmatter[0] : '', '');
+  return {
+    frontmatter: frontmatter ? frontmatter[1].trim() : '',
+    query: remaining.trim(),
+  };
+};
+
+export const parseQuery = async (query, config, scope = null) => {
+  const { output, success, variables, fields, mode, source } = await glql.compile(query, {
+    ...config,
+    // An explicit scope replaces the URL-derived one rather than merging with it: the compiler
+    // prefers `project` over `group` unconditionally, so merging would let a stale URL-derived
+    // `project` win and compile successfully against the wrong namespace.
+    ...(scope ?? extractGroupOrProject()),
+    username: gon.current_username,
+    featureFlags: glqlFeatureFlags(),
+  });
+
+  if (!success) throw new Error(output);
+
+  return {
+    query: output,
+    variables,
+    config,
+    fields,
+    mode: mode || MODE_STANDARD,
+    source,
+  };
+};
+
+export const parseYAML = (yaml) => {
+  let { frontmatter: config, query } = parseQueryTextWithFrontmatter(yaml);
+  if (!config && isValidYAML(yaml)) {
+    // if frontmatter isn't present, query is a part of the config
+    ({ query, ...config } = parseYAMLConfig(yaml));
+  } else {
+    config = parseYAMLConfig(config);
+  }
+
+  return { query, config };
+};
+
+export const parse = (yaml, scope = null, { bindings = [] } = {}) => {
+  const { query, config } = parseYAML(yaml);
+
+  // Only analytics sources accept lists of groups and projects; the compiler rejects them
+  // elsewhere, so other queries keep the regular scope.
+  if (bindings.length && config.mode === MODE_ANALYTICS) config.bindings = bindings;
+
+  return parseQuery(query, config, scope);
+};

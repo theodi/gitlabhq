@@ -1,0 +1,377 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe SearchController, :with_current_organization, feature_category: :global_search do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:group) { create(:group) }
+  let_it_be(:project) { create(:project, :public, :repository, :wiki_repo, name: 'awesome project', group: group) }
+  let_it_be(:projects) { create_list(:project, 5, :public, :repository, :wiki_repo) }
+
+  def send_search_request(params)
+    get search_path, params: params
+  end
+
+  shared_examples 'an efficient database result' do
+    it 'avoids N+1 database queries', :request_store, :use_sql_query_cache do
+      create(object, *creation_traits, creation_args)
+
+      send_search_request(params) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) { send_search_request(params) }
+      expect(response.body).to include('search-results') # Confirm there are search results to prevent false positives
+
+      projects.each do |project|
+        creation_args[:source_project] = project if creation_args.key?(:source_project)
+        creation_args[:project] = project if creation_args.key?(:project)
+        create(object, *creation_traits, creation_args)
+      end
+
+      expect { send_search_request(params) }.not_to exceed_all_query_limit(control).with_threshold(threshold)
+      expect(response.body).to include('search-results') # Confirm there are search results to prevent false positives
+    end
+  end
+
+  describe 'GET /search' do
+    let(:creation_traits) { [] }
+
+    before do
+      login_as(user)
+    end
+
+    context 'for issues scope' do
+      let(:object) { :issue }
+      let(:labels) { create_list(:label, 3, project: project) }
+      let(:creation_args) { { project: project, title: 'foo', labels: labels } }
+      let(:params) { { search: 'foo', scope: 'issues' } }
+      # some N+1 queries still exist
+      # each issue runs an extra query for project routes
+      let(:threshold) { 25 }
+
+      it_behaves_like 'an efficient database result'
+    end
+
+    context 'for merge_requests scope' do
+      # Each project sits in its own nested group so that a regression in route
+      # or namespace preloading surfaces as an N+1 instead of being absorbed by
+      # a shared namespace.
+      let_it_be(:projects) do
+        Array.new(3) do
+          create(:project, :public, :repository, :wiki_repo, group: create(:group, parent: create(:group)))
+        end
+      end
+
+      let(:creation_traits) { [:unique_branches] }
+      let(:labels) { create_list(:label, 3, project: project) }
+      let(:object) { :merge_request }
+      let(:creation_args) { { source_project: project, title: 'bar', labels: labels } }
+      let(:params) { { search: 'bar', scope: 'merge_requests' } }
+      # 1 batched query preloading the parent namespaces of the result projects
+      let(:threshold) { 1 }
+
+      it_behaves_like 'an efficient database result'
+    end
+
+    context 'for projects scope' do
+      let(:creation_traits) { [:public] }
+      let(:object) { :project }
+      let(:creation_args) { { name: 'project' } }
+      let(:params) { { search: 'project', scope: 'projects' } }
+      # some N+1 queries still exist
+      # 1 for users
+      # 1 for root ancestor for each project
+      let(:threshold) { 7 }
+
+      it_behaves_like 'an efficient database result'
+    end
+
+    context 'for milestones scope' do
+      let(:object) { :milestone }
+      let(:creation_args) { { project: project } }
+      let(:params) { { search: 'title', scope: 'milestones' } }
+      let(:threshold) { 0 }
+
+      it_behaves_like 'an efficient database result'
+    end
+
+    context 'for users scope' do
+      let(:object) { :user }
+      let(:creation_args) { { name: 'georgia' } }
+      let(:params) { { search: 'georgia', scope: 'users' } }
+      let(:threshold) { 0 }
+
+      it_behaves_like 'an efficient database result'
+    end
+
+    context 'for notes scope' do
+      let(:creation_traits) { [:on_commit] }
+      let(:object) { :note }
+      let(:creation_args) { { project: project, note: 'hello world' } }
+      let(:params) { { search: 'hello world', scope: 'notes', project_id: project.id } }
+      let(:threshold) { 0 }
+
+      it_behaves_like 'an efficient database result'
+    end
+
+    context 'for blobs scope' do
+      # blobs are enabled for project search only in basic search
+      let(:params_for_one) { { search: 'test', project_id: project.id, scope: 'blobs', per_page: 1 } }
+      let(:params_for_many) { { search: 'test', project_id: project.id, scope: 'blobs', per_page: 5 } }
+
+      it 'avoids N+1 database queries', :request_store, :use_sql_query_cache do
+        send_search_request(params_for_one) # warm-up
+
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) { send_search_request(params_for_one) }
+        expect(response.body).to include('search-results') # Confirm search results to prevent false positives
+
+        expect do
+          send_search_request(params_for_many)
+        end.not_to exceed_query_limit(control).allow_skip_cache_inconsistency
+        expect(response.body).to include('search-results') # Confirm search results to prevent false positives
+      end
+    end
+
+    context 'for commits scope' do
+      let(:params_for_one) { { search: 'test', project_id: project.id, scope: 'commits', per_page: 1 } }
+      let(:params_for_many) { { search: 'test', project_id: project.id, scope: 'commits', per_page: 5 } }
+
+      it 'avoids N+1 database queries', :request_store, :use_sql_query_cache do
+        send_search_request(params_for_one) # warm-up
+
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) { send_search_request(params_for_one) }
+        expect(response.body).to include('search-results') # Confirm search results to prevent false positives
+
+        expect do
+          send_search_request(params_for_many)
+        end.not_to exceed_query_limit(control).allow_skip_cache_inconsistency
+        expect(response.body).to include('search-results') # Confirm search results to prevent false positives
+      end
+    end
+
+    context 'for code search' do
+      let(:params_for_code_search) { { search: 'blob: hello' } }
+
+      it 'does not auto-redirect to blobs scope for code search literals' do
+        send_search_request(params_for_code_search)
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).not_to redirect_to(anything)
+        # Should render search results in default scope (projects)
+        expect(response.body).to include('any projects matching')
+      end
+
+      it 'falls back to projects scope when blobs scope is selected without project context' do
+        send_search_request(params_for_code_search.merge({ scope: 'blobs' }))
+        expect(response).to have_gitlab_http_status(:ok)
+        # Blobs scope requires project context; without project_id it falls back to projects scope
+        expect(response.body).to include('any projects matching')
+      end
+
+      it 'respects explicit blobs scope selection with code search literals in project context' do
+        send_search_request(params_for_code_search.merge({ scope: 'blobs', project_id: project.id }))
+        expect(response).to have_gitlab_http_status(:ok)
+        # Should render blobs scope results when project_id is provided
+        expect(response.body).to include('any code results matching')
+      end
+    end
+
+    context 'when searching by SHA' do
+      let(:sha) { '6d394385cf567f80a8fd85055db1ab4c5295806f' }
+
+      it 'finds a commit and redirects to its page' do
+        send_search_request({ search: sha, scope: 'projects', project_id: project.id })
+
+        expect(response).to redirect_to(project_commit_path(project, sha))
+      end
+
+      it 'finds a commit in uppercase and redirects to its page' do
+        send_search_request({ search: sha.upcase, scope: 'projects', project_id: project.id })
+
+        expect(response).to redirect_to(project_commit_path(project, sha))
+      end
+
+      it 'finds a commit with a partial sha and redirects to its page' do
+        send_search_request({ search: sha[0..10], scope: 'projects', project_id: project.id })
+
+        expect(response).to redirect_to(project_commit_path(project, sha))
+      end
+
+      it 'redirects to the commit even if another scope result is returned' do
+        create(:note, project: project, note: "This is the #{sha}")
+        send_search_request({ search: sha, scope: 'projects', project_id: project.id })
+
+        expect(response).to redirect_to(project_commit_path(project, sha))
+      end
+
+      it 'goes to search results with the force_search_results param set' do
+        send_search_request({ search: sha, force_search_results: true, project_id: project.id })
+
+        expect(response).not_to redirect_to(project_commit_path(project, sha))
+      end
+
+      context 'when user cannot read_code' do
+        before do
+          allow(Ability).to receive(:allowed?).and_call_original
+          allow(Ability).to receive(:allowed?).with(user, :read_code, project).and_return(false)
+        end
+
+        it 'does not redirect' do
+          send_search_request({ search: sha, project_id: project.id })
+
+          expect(response).not_to redirect_to(project_commit_path(project, sha))
+        end
+      end
+
+      it 'does not redirect if commit sha not found in project' do
+        send_search_request({ search: '23594bc765e25c5b22c17a8cca25ebd50f792598', project_id: project.id })
+
+        expect(response).not_to redirect_to(project_commit_path(project, sha))
+      end
+
+      it 'does not redirect if not using project scope' do
+        send_search_request({ search: sha, group_id: project.root_namespace.id })
+
+        expect(response).not_to redirect_to(project_commit_path(project, sha))
+      end
+    end
+  end
+
+  describe 'GET /search/settings' do
+    subject(:request) { get search_settings_path, params: params }
+
+    let(:params) { nil }
+
+    before do
+      stub_application_setting(global_search_block_anonymous_searches_enabled: true)
+    end
+
+    context 'when user is not signed-in' do
+      it { is_expected.to redirect_to(new_user_session_path) }
+    end
+
+    context 'when user is signed-in' do
+      before do
+        login_as(user)
+      end
+
+      context 'when neither project_id nor group_id param is given' do
+        it 'responds with Bad Request' do
+          request
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when given project is not found' do
+        let(:params) { { project_id: non_existing_record_id } }
+
+        it 'returns an empty array' do
+          request
+          expect(response.body).to eq '[]'
+        end
+      end
+
+      context 'when user is not allowed to change settings in given project' do
+        let(:params) { { project_id: project.id } }
+
+        it 'returns an empty array' do
+          request
+          expect(response.body).to eq '[]'
+        end
+      end
+
+      context 'when user is allowed to change settings in given project' do
+        before_all do
+          project.add_maintainer(user)
+        end
+
+        let(:params) { { project_id: project.id } }
+
+        it 'returns all available settings results' do
+          expect_next_instance_of(Search::ProjectSettings) do |settings|
+            expect(settings).to receive(:all).and_return(%w[foo bar])
+          end
+
+          request
+          expect(response.body).to eq '["foo","bar"]'
+        end
+      end
+
+      context 'when given group is not found' do
+        let(:params) { { group_id: non_existing_record_id } }
+
+        it 'returns an empty array' do
+          request
+          expect(response.body).to eq '[]'
+        end
+      end
+
+      context 'when user is not allowed to change settings in given group' do
+        let(:params) { { group_id: group.id } }
+
+        it 'returns an empty array' do
+          request
+          expect(response.body).to eq '[]'
+        end
+      end
+
+      context 'when user is allowed to change settings in given group' do
+        before_all do
+          group.add_owner(user)
+        end
+
+        let(:params) { { group_id: group.id } }
+
+        it 'returns all available settings results' do
+          expect_next_instance_of(Search::GroupSettings) do |settings|
+            expect(settings).to receive(:all).and_return(%w[foo bar])
+          end
+
+          request
+          expect(response.body).to eq '["foo","bar"]'
+        end
+      end
+    end
+  end
+
+  describe 'GET /search/opensearch' do
+    # Asserted through the request options rather than through a Redis or Set-Cookie side effect:
+    # an unchanged session is also left alone by write throttling, so an observable effect would
+    # not tell the two apart.
+    it 'renders the document without committing the session', :aggregate_failures do
+      get search_opensearch_path(format: :xml)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(request.session_options[:skip]).to be(true)
+    end
+
+    # See https://gitlab.com/gitlab-org/gitlab/-/work_items/629538
+    context 'when organization is not resolved', :without_current_organization do
+      it 'renders the document without raising any error' do
+        get search_opensearch_path(format: :xml)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  describe 'GET /search/autocomplete' do
+    let_it_be(:work_item) { create(:work_item, project: project, title: 'autocomplete fix') }
+
+    subject(:request) { get search_autocomplete_path, params: { term: 'autocomplete fix' } }
+
+    before do
+      login_as(user)
+      allow_next_instance_of(Gitlab::Search::RecentWorkItems) do |instance|
+        allow(instance).to receive(:search).and_return([work_item])
+      end
+    end
+
+    it 'returns recent work items with a working URL' do
+      request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      entry = json_response.find { |r| r['category'] == 'Recent work items' }
+      expected_url = Gitlab::UrlBuilder.build(work_item, only_path: true)
+      expect(entry['url']).to eq(expected_url)
+    end
+  end
+end

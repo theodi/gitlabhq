@@ -1,0 +1,414 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::TagsController, feature_category: :source_code_management do
+  let(:project) { create(:project, :public, :repository) }
+  let!(:release) { create(:release, project: project, tag: "v1.1.0") }
+  let!(:invalid_release) { create(:release, project: project, tag: 'does-not-exist') }
+  let_it_be(:user) { create(:user) }
+
+  describe 'GET index' do
+    subject { get :index, params: { namespace_id: project.namespace.to_param, project_id: project } }
+
+    it 'returns the tags for the page' do
+      subject
+
+      expect(assigns(:tags).map(&:name)).to include('v1.1.0', 'v1.0.0')
+    end
+
+    context 'when requesting a later page' do
+      before do
+        allow(Kaminari.config).to receive(:default_per_page).and_return(2)
+      end
+
+      it 'returns the remaining tags and the full total', :aggregate_failures do
+        get :index, params: {
+          namespace_id: project.namespace.to_param, project_id: project,
+          sort: 'name_asc', page: 2, per_page: 2
+        }
+
+        expect(assigns(:tags).map(&:name)).to eq(['v1.1.1'])
+        expect(assigns(:tags).total_count).to eq(3)
+        expect(assigns(:tags).total_pages).to eq(2)
+      end
+
+      it 'paginates the complete search results', :aggregate_failures do
+        allow(Kaminari.config).to receive(:default_per_page).and_return(1)
+
+        get :index, params: {
+          namespace_id: project.namespace.to_param, project_id: project,
+          sort: 'name_asc', search: 'v1.1', page: 2, per_page: 1
+        }
+
+        expect(assigns(:tags).map(&:name)).to eq(['v1.1.1'])
+        expect(assigns(:tags).total_count).to eq(2)
+      end
+    end
+
+    context 'when batch loading signatures' do
+      let(:per_page_limit) { 2 }
+      let(:tags) do
+        Array.new(5) do |i|
+          instance_double(
+            Gitlab::Git::Tag,
+            name: "tag#{i}",
+            target: "sha#{i}",
+            dereferenced_target: nil
+          )
+        end
+      end
+
+      before do
+        allow(Kaminari.config).to receive(:default_per_page).and_return(per_page_limit)
+
+        allow_next_instance_of(TagsFinder) do |finder|
+          allow(finder).to receive(:execute).and_return(tags)
+        end
+
+        allow(TagsFinder).to receive(:batch_load_tag_signature_data)
+      end
+
+      it 'only batch loads signatures for tags on the current page' do
+        get :index, params: {
+          namespace_id: project.namespace.to_param,
+          project_id: project
+        }
+
+        expect(TagsFinder).to have_received(:batch_load_tag_signature_data) do |paginated_tags|
+          expect(paginated_tags.map(&:name)).to eq(tags.first(per_page_limit).map(&:name))
+        end
+      end
+    end
+
+    context 'default sort for tags' do
+      it 'sorts tags by recently updated' do
+        subject
+
+        expect(assigns(:sort)).to eq('updated_desc')
+      end
+    end
+
+    context 'when Gitaly is unavailable' do
+      before do
+        allow_next_instance_of(TagsFinder) do |finder|
+          allow(finder).to receive(:execute)
+            .and_raise(Gitlab::Git::CommandError, 'Gitaly unavailable')
+        end
+      end
+
+      where(:format) do
+        [:html, :atom]
+      end
+
+      with_them do
+        it 'returns 503 and sets gitaly_unavailable' do
+          get :index, params: { namespace_id: project.namespace.to_param, project_id: project }, format: format
+
+          expect(response).to have_gitlab_http_status(:service_unavailable)
+          expect(assigns(:gitaly_unavailable)).to be true
+        end
+      end
+
+      it 'tracks the exception' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception)
+          .with(instance_of(Gitlab::Git::CommandError))
+
+        get :index, params: { namespace_id: project.namespace.to_param, project_id: project }
+      end
+    end
+
+    it 'returns releases matching those tags' do
+      subject
+
+      expect(assigns(:releases)).to include(release)
+      expect(assigns(:releases)).not_to include(invalid_release)
+    end
+
+    context 'when releases are private' do
+      before do
+        project.project_feature.update!(releases_access_level: ProjectFeature::PRIVATE)
+      end
+
+      it 'does not contain release data' do
+        subject
+
+        expect(assigns(:releases)).to be_empty
+      end
+    end
+
+    context '@tag_pipeline_status' do
+      context 'when no pipelines exist' do
+        it 'is empty' do
+          subject
+
+          expect(assigns(:tag_pipeline_statuses)).to be_empty
+        end
+      end
+
+      context 'when multiple tags exist' do
+        before do
+          create(
+            :ci_pipeline, :running, :tag,
+            project: project, ref: 'v1.1.0', sha: project.commit('v1.1.0').sha
+          )
+          create(
+            :ci_pipeline, :success, :tag,
+            project: project, ref: 'v1.0.0', sha: project.commit('v1.0.0').sha
+          )
+        end
+
+        it 'all relevant commit statuses are received' do
+          subject
+
+          expect(assigns(:tag_pipeline_statuses)['v1.1.0'].group).to eq("running")
+          expect(assigns(:tag_pipeline_statuses)['v1.0.0'].group).to eq("success")
+        end
+      end
+
+      context 'when a tag has multiple pipelines' do
+        before do
+          create(
+            :ci_pipeline, :running, :tag,
+            project: project, ref: 'v1.0.0', sha: project.commit('v1.0.0').sha,
+            created_at: 6.months.ago
+          )
+          create(
+            :ci_pipeline, :success, :tag,
+            project: project, ref: 'v1.0.0', sha: project.commit('v1.0.0').sha,
+            created_at: 2.months.ago
+          )
+          create(
+            :ci_pipeline, :failed,
+            project: project, ref: 'v1.0.0', sha: project.commit('v1.0.0').sha,
+            created_at: 1.month.ago
+          )
+        end
+
+        it 'chooses the latest to determine status' do
+          subject
+
+          expect(assigns(:tag_pipeline_statuses)['v1.0.0'].group).to eq("success")
+        end
+      end
+    end
+  end
+
+  describe 'GET show' do
+    context "valid tag" do
+      let(:id) { 'v1.0.0' }
+
+      before do
+        get :show, params: { namespace_id: project.namespace.to_param, project_id: project, id: id }
+      end
+
+      it { is_expected.to respond_with(:success) }
+    end
+
+    context "invalid tag" do
+      let(:id) { 'latest' }
+
+      before do
+        get :show, params: { namespace_id: project.namespace.to_param, project_id: project, id: id }
+      end
+
+      it { is_expected.to respond_with(:not_found) }
+    end
+
+    context 'when Gitaly is unavailable' do
+      before do
+        allow_next_instance_of(Repository) do |repository|
+          allow(repository).to receive(:find_tag)
+            .and_raise(Gitlab::Git::CommandError, 'Gitaly unavailable')
+        end
+      end
+
+      it 'returns 503 and sets gitaly_unavailable' do
+        get :show, params: { namespace_id: project.namespace.to_param, project_id: project, id: 'v1.0.0' }
+
+        expect(response).to have_gitlab_http_status(:service_unavailable)
+        expect(assigns(:gitaly_unavailable)).to be true
+      end
+
+      it 'tracks the exception' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception)
+          .with(instance_of(Gitlab::Git::CommandError))
+
+        get :show, params: { namespace_id: project.namespace.to_param, project_id: project, id: 'v1.0.0' }
+      end
+    end
+  end
+
+  describe 'POST #create' do
+    before do
+      project.add_developer(user)
+      sign_in(user)
+    end
+
+    let(:release_description) { nil }
+
+    subject(:request) do
+      post(:create, params: {
+        namespace_id: project.namespace.to_param,
+        project_id: project,
+        tag_name: '1.0',
+        ref: 'master',
+        release_description: release_description
+      })
+    end
+
+    it 'creates tag' do
+      subject
+
+      expect(response).to have_gitlab_http_status(:found)
+      expect(project.repository.find_tag('1.0')).to be_present
+    end
+
+    context 'when a message is given' do
+      subject(:request) do
+        post(:create, params: {
+          namespace_id: project.namespace.to_param,
+          project_id: project,
+          tag_name: '1.0',
+          ref: 'master',
+          message: 'Release 1.0'
+        })
+      end
+
+      it 'creates an annotated tag with that message' do
+        request
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(project.repository.find_tag('1.0').message).to eq('Release 1.0')
+      end
+    end
+
+    # TODO: remove this with the release creation moved to it's own form https://gitlab.com/gitlab-org/gitlab/-/issues/214245
+    context 'when release description is set' do
+      let(:release_description) { 'some release description' }
+
+      it 'creates tag and release' do
+        subject
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(project.repository.find_tag('1.0')).to be_present
+
+        release = project.releases.find_by_tag!('1.0')
+
+        expect(release).to be_present
+        expect(release.description).to eq(release_description)
+      end
+
+      it 'passes the last pipeline for evidence creation', :sidekiq_inline do
+        sha = project.repository.commit('master').sha
+        create(:ci_pipeline, sha: sha, project: project) # old pipeline
+        pipeline = create(:ci_pipeline, sha: sha, project: project)
+
+        # simulating pipeline creation by new tag
+        expect_any_instance_of(Repository).to receive(:add_tag).and_wrap_original do |m, *args|
+          create(:ci_pipeline, sha: sha, project: project)
+          m.call(*args)
+        end
+
+        expect_next_instance_of(Releases::CreateEvidenceService, anything, pipeline: pipeline) do |service|
+          expect(service).to receive(:execute).and_call_original
+        end
+
+        subject
+
+        aggregate_failures do
+          expect(response).to have_gitlab_http_status(:found)
+
+          release = project.releases.find_by_tag('1.0')
+
+          expect(release).to be_present
+          expect(release&.description).to eq(release_description)
+        end
+      end
+    end
+
+    context 'when rate limited' do
+      it_behaves_like 'rate limited endpoint', rate_limit_key: :tags_create, with_redirect: true do
+        let(:current_user) { user }
+        let_it_be(:other_project) { create(:project, :public, :small_repo, developers: user) }
+
+        def request
+          post(:create, params: {
+            namespace_id: project.namespace.to_param,
+            project_id: project,
+            tag_name: 'rate-limited-tag',
+            ref: 'master'
+          })
+        end
+
+        def request_with_second_scope
+          post(:create, params: {
+            namespace_id: other_project.namespace.to_param,
+            project_id: other_project,
+            tag_name: 'rate-limited-tag-2',
+            ref: 'master'
+          })
+        end
+      end
+    end
+
+    context 'when the user is not allowed to create a tag' do
+      let(:other_project) { create(:project, :public, :small_repo) }
+
+      it 'does not consume the rate limit budget' do
+        expect(::Gitlab::ApplicationRateLimiter).not_to receive(:throttled_request?)
+
+        post(:create, params: {
+          namespace_id: other_project.namespace.to_param,
+          project_id: other_project,
+          tag_name: 'unauthorized-tag',
+          ref: 'master'
+        })
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  # rubocop:disable RSpec/InstanceVariable -- Needed to stub HTTP_REFERER.
+  describe 'DELETE #destroy' do
+    let(:tag) { project.repository.add_tag(user, 'fake-tag', 'master') }
+    let(:perform_request) do
+      delete :destroy, params: {
+        id: tag.name,
+        namespace_id: project.namespace.to_param,
+        project_id: project
+      }
+    end
+
+    before do
+      project.add_developer(user)
+      sign_in(user)
+    end
+
+    context 'with referrer' do
+      it 'deletes tag and redirects back to the referrer page with sort_params preserved' do
+        # Setting a referrer with sorting params
+        @request.env['HTTP_REFERER'] = project_tags_path(project, sort: 'updated_desc')
+        perform_request
+
+        expect(response).to redirect_to(project_tags_path(project, sort: 'updated_desc'))
+        expect(project.repository.find_tag(tag.name)).not_to be_present
+        expect(controller).to set_flash[:notice].to(/Tag was removed/)
+      end
+    end
+
+    context 'without referer' do
+      it 'deletes tag and redirects to tags path' do
+        # Ensure no referrer is set so we can test the fallback
+        @request.env['HTTP_REFERER'] = nil
+        perform_request
+
+        expect(project.repository.find_tag(tag.name)).not_to be_present
+        expect(controller).to set_flash[:notice].to(/Tag was removed/)
+        expect(response).to redirect_to(project_tags_path(project))
+      end
+    end
+  end
+  # rubocop:enable RSpec/InstanceVariable
+end

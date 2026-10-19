@@ -1,0 +1,4 @@
+---
+Database/AvoidInheritanceColumn:
+  Exclude:
+    - 'app/models/event.rb'

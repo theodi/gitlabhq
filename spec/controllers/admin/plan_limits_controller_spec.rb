@@ -1,0 +1,162 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Admin::PlanLimitsController do
+  let_it_be(:plan) { create(:default_plan) }
+  let_it_be(:plan_limits) { create(:plan_limits, plan: plan) }
+
+  describe 'POST create' do
+    let(:params) do
+      {
+        plan_limits: {
+          plan_name_uid: plan.plan_name_uid_before_type_cast,
+          conan_max_file_size: file_size
+        }
+      }
+    end
+
+    context 'with an authenticated admin user' do
+      let(:file_size) { 10.megabytes }
+
+      it 'updates the plan limits', :aggregate_failures do
+        sign_in(create(:admin))
+
+        post :create, params: params
+
+        expect(response).to redirect_to(general_admin_application_settings_path)
+        expect(plan_limits.reload.conan_max_file_size).to eq(file_size)
+        expect(plan_limits.plan_name_uid).to eq(Plan::PLAN_NAME_UID_LIST[:default])
+        expect(plan_limits.plan_id).to eq(plan.id)
+      end
+
+      it 'returns not_found when plan_name_uid is absent (no plan_id fallback)', :aggregate_failures do
+        other_plan = create(:plan, name: 'free')
+        other_plan_limits = create(:plan_limits, plan: other_plan)
+
+        sign_in(create(:admin))
+
+        post :create, params: { plan_limits: { plan_id: other_plan.id, conan_max_file_size: file_size } }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(other_plan_limits.reload.conan_max_file_size).not_to eq(file_size)
+        expect(plan_limits.reload.conan_max_file_size).not_to eq(file_size)
+      end
+
+      it 'returns not_found for a plan_name_uid with no matching plan', :aggregate_failures do
+        sign_in(create(:admin))
+
+        post :create, params: {
+          plan_limits: {
+            plan_name_uid: Plan::PLAN_NAME_UID_LIST[:gold],
+            conan_max_file_size: file_size
+          }
+        }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(plan_limits.reload.conan_max_file_size).not_to eq(file_size)
+      end
+
+      it 'returns not_found for a non-numeric plan_name_uid', :aggregate_failures do
+        sign_in(create(:admin))
+
+        post :create, params: { plan_limits: { plan_name_uid: 'not-a-uid', conan_max_file_size: file_size } }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(plan_limits.reload.conan_max_file_size).not_to eq(file_size)
+      end
+
+      it 'ignores plan_id and resolves via plan_name_uid when both are present' do
+        other_plan = create(:plan, name: 'free')
+        other_plan_limits = create(:plan_limits, plan: other_plan)
+
+        sign_in(create(:admin))
+
+        post :create, params: {
+          plan_limits: {
+            plan_id: other_plan.id,
+            plan_name_uid: plan.plan_name_uid_before_type_cast,
+            conan_max_file_size: file_size
+          }
+        }
+
+        expect(response).to redirect_to(general_admin_application_settings_path)
+        expect(plan_limits.reload.conan_max_file_size).to eq(file_size)
+        expect(other_plan_limits.reload.conan_max_file_size).not_to eq(file_size)
+      end
+    end
+
+    context "when pipeline_hierarchy_size is passed in params" do
+      let(:params) do
+        {
+          plan_limits: {
+            plan_name_uid: plan.plan_name_uid_before_type_cast,
+            pipeline_hierarchy_size: 200
+          }
+        }
+      end
+
+      it "updates the pipeline_hierarchy_size plan limit" do
+        sign_in(create(:admin))
+
+        post :create, params: params
+
+        expect(response).to redirect_to(general_admin_application_settings_path)
+        expect(plan_limits.reload.pipeline_hierarchy_size).to eq(params[:plan_limits][:pipeline_hierarchy_size])
+      end
+    end
+
+    context "when max_pipelines_per_merge_train is passed in params" do
+      let(:params) do
+        {
+          plan_limits: {
+            plan_name_uid: plan.plan_name_uid_before_type_cast,
+            max_pipelines_per_merge_train: 5
+          }
+        }
+      end
+
+      it "updates the max_pipelines_per_merge_train plan limit" do
+        sign_in(create(:admin))
+
+        post :create, params: params
+
+        expect(response).to redirect_to(general_admin_application_settings_path)
+        expect(plan_limits.reload.max_pipelines_per_merge_train).to eq(5)
+      end
+    end
+
+    context "when ci_max_artifact_size_cyclonedx is passed in params" do
+      let(:params) do
+        {
+          plan_limits: {
+            plan_name_uid: plan.plan_name_uid_before_type_cast,
+            ci_max_artifact_size_cyclonedx: 5
+          }
+        }
+      end
+
+      it "updates the ci_max_artifact_size_cyclonedx plan limit" do
+        sign_in(create(:admin))
+
+        post :create, params: params
+
+        expect(response).to redirect_to(general_admin_application_settings_path)
+        expect(plan_limits.reload.ci_max_artifact_size_cyclonedx).to eq(5)
+      end
+    end
+
+    context 'without admin access' do
+      let(:file_size) { 1.megabyte }
+
+      it 'returns `not_found`' do
+        sign_in(create(:user))
+
+        post :create, params: params
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(plan_limits.conan_max_file_size).not_to eq(file_size)
+      end
+    end
+  end
+end

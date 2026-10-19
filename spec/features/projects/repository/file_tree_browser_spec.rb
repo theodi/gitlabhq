@@ -1,0 +1,149 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Repository file tree browser', :js, feature_category: :source_code_management do
+  let_it_be(:project) { create(:project, :repository) }
+  let_it_be(:user) { create(:user, :with_namespace) }
+
+  before_all do
+    project.add_developer(user)
+  end
+
+  before do
+    sign_in(user)
+    visit project_tree_path(project, project.default_branch)
+    wait_for_requests
+  end
+
+  describe 'basic functionality' do
+    it 'shows and hides the file tree browser' do
+      expect(page).to have_css('.file-tree-browser')
+
+      click_button 'Hide file tree browser'
+      wait_for_requests
+
+      expect(page).not_to have_css('.file-tree-browser')
+    end
+
+    it 'displays files and directories' do
+      within('.file-tree-browser') do
+        expect(page).to have_file('CONTRIBUTING.md')
+        expect(page).to have_file('files')
+      end
+    end
+
+    it 'passes axe automated accessibility testing' do
+      expect(page).to be_axe_clean.within('.file-tree-browser')
+    end
+
+    it 'navigates to a file' do
+      within('.file-tree-browser') do
+        click_file('CONTRIBUTING.md')
+      end
+
+      expect(page).to have_current_path(
+        project_blob_path(project, "#{project.default_branch}/CONTRIBUTING.md", ref_type: :heads)
+      )
+    end
+
+    it 'searches for a file and navigates to it from the search panel' do
+      within('.file-tree-browser') do
+        input = find_by_testid('file-tree-search-input')
+        input.click
+        input.set('contributing')
+
+        wait_for_requests
+        expect(page).to have_css('.file-tree-search-result-item')
+        find('.file-tree-search-result-item', match: :first).click
+      end
+
+      expect(page).to have_current_path(
+        project_blob_path(project, "#{project.default_branch}/CONTRIBUTING.md", ref_type: :heads)
+      )
+    end
+
+    it 'expands and collapses directories' do
+      within('.file-tree-browser') do
+        click_button('Expand files directory')
+        expect(page).to have_file('ruby')
+
+        click_button('Collapse files directory')
+        expect(page).not_to have_file('ruby')
+      end
+    end
+
+    it 'expands parent directories when navigating directly to a nested file' do
+      visit project_blob_path(project, "#{project.default_branch}/files/ruby/popen.rb")
+      wait_for_requests
+
+      # File tree starts open
+      within('.file-tree-browser') do
+        # Should auto-expand parent directories
+        files_folder = find_link('files')
+        expect(files_folder[:class]).to include('is-open')
+
+        ruby_folder = find_link('ruby')
+        expect(ruby_folder[:class]).to include('is-open')
+
+        # Should highlight the current file
+        expect(find('[aria-selected="true"]')).to be_present
+      end
+    end
+  end
+
+  describe 'keyboard shortcuts' do
+    it 'focuses on file tree search input with f key' do
+      send_keys('f')
+
+      within('.file-tree-search-wrapper') do
+        expect(page).to have_css('[data-testid="file-tree-search-input"]:focus')
+      end
+    end
+
+    it 'toggles visibility with Shift+f' do
+      send_keys([:shift, 'f'])
+
+      expect(page).not_to have_css('.file-tree-browser-expanded')
+    end
+  end
+
+  describe 'pagination' do
+    before do
+      # Stub the field object the resolver reads (@field.max_page_size) so the test
+      # repo's root produces hasNextPage: true without needing scroll manipulation.
+      allow(Types::RepositoryType.fields['paginatedTree']).to receive(:max_page_size).and_return(5)
+
+      visit project_tree_path(project, project.default_branch)
+      wait_for_requests
+    end
+
+    it 'shows the "Show more" button when there are more files to load' do
+      within('.file-tree-browser') do
+        expect(page).to have_button('Show more')
+      end
+    end
+
+    it 'loads additional files when "Show more" is clicked' do
+      within('.file-tree-browser') do
+        initial_count = all('[data-item-id]').count
+
+        click_button 'Show more'
+        wait_for_requests
+
+        expect(all('[data-item-id]').count).to be > initial_count
+      end
+    end
+  end
+
+  private
+
+  def click_file(name)
+    find(".file-row[aria-label=\"#{name}\"]").click
+    wait_for_requests
+  end
+
+  def have_file(name)
+    have_css(".file-row[aria-label=\"#{name}\"]")
+  end
+end

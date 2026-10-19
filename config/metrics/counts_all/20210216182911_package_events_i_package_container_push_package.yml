@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: counts.package_events_i_package_container_push_package
+description: A count of container images that have been published
+product_group: container_registry
+product_categories:
+- container_registry
+value_type: number
+status: removed
+milestone_removed: "14.4"
+time_frame: all
+data_source: redis
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+removed_by_url:

@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Enterprise user settings for a namespace",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "allow_enterprise_user_account_deletion": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether enterprise users in this group are allowed to delete their own accounts."
+    },
+    "allow_non_enterprise_placeholder_reassignment": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether placeholder users can be reassigned to non-enterprise members of the group, its subgroups, or its projects."
+    }
+  }
+}

@@ -1,0 +1,143 @@
+---
+source_checksum: b9b632efe603c4a4
+distilled_at_sha: f821a52e7e6c48d5eb961fe53f9049f25bb4d274
+---
+<!-- Auto-generated from docs.gitlab.com by gitlab-ai-principles-distiller — do not edit manually -->
+
+# Frontend Principles
+
+## Checklist
+
+### General Architecture
+
+- Use GraphQL (Apollo) as the first choice for API calls; use REST only for simple Haml pages or legacy code
+- DO NOT use Vuex for new code; use Apollo or Pinia instead
+- DO NOT use Apollo and Vuex together
+- DO NOT create new Vuex stores; migrate existing ones to Pinia or Apollo
+- Follow the standard feature directory structure: `components/`, `graphql/`, `utils/`, `router/`, `constants.js`, `index.js`
+- Have as few Vue applications per page as possible; prefer Ruby ViewComponents for simple pages to avoid Vue overhead
+
+### Vue Component Basics
+
+- Use `.vue` files for Vue templates; DO NOT use `%template` in HAML
+- Explicitly define all data passed into the Vue app (DO NOT use spread operator on `provide`/`props` at instantiation)
+- Use kebab-case component names in templates (e.g., `<my-component />` not `<MyComponent />`)
+- DO NOT use `<style>` tags in Vue components; use Tailwind CSS utility classes or page-specific CSS instead
+- Parse non-scalar values (e.g., booleans) during Vue app instantiation using helpers like `parseBoolean`
+- Set a `name` property on every Vue component using PascalCase derived from the filename; for generic filenames (`app.vue`, `index.vue`) prefix with directory context to ensure uniqueness; add an `EE` suffix to EE components that share a name with a CE component
+- Prefer semantic props that describe intent over generic pass-through CSS class props (e.g., use `:truncate-username="true"` instead of `:username-css-classes="'gl-truncate'"`)
+
+### State Management
+
+- Use Apollo as the default state manager for GraphQL-based applications
+- Use Pinia for apps with significant client-side state or when migrating from Vuex
+- DO NOT combine Apollo and Pinia as co-equal state managers; pick one as primary
+- DO NOT use Apollo Client inside Pinia stores; use it only within Vue components or composables
+- DO NOT sync data between Apollo and Pinia stores
+
+### Pinia
+
+- Use the shared Pinia instance from `~/pinia/instance`
+- Prefer small, single-responsibility stores over large monolithic ones
+- Use Option Stores (not Setup Stores) for new Pinia stores
+- Place state, actions, and getters in a single file; DO NOT create barrel index files importing from `actions.js`, `state.js`, `getters.js`
+- Use global Pinia stores for global reactive state
+- DO NOT use HMR (Hot Module Replacement) with Pinia
+- DO NOT create circular dependencies between Pinia stores; use `tryStore` only during Vuex migration, then refactor
+- Use `createTestingPinia` with `stubActions: false` when unit testing Pinia stores
+- Always create a fresh Pinia instance per test case; DO NOT reuse Pinia instances across test cases
+- Register `PiniaVuePlugin` and provide the Pinia instance explicitly to `shallowMount`/`mount` in component tests
+- Create stores before rendering components in tests (to avoid Vue 3 compat issues)
+- In component tests using `createTestingPinia` with stubbed actions, set initial store state directly (e.g., `useMyStore().someState = { value: 1 }`); stubbed actions are no-ops and cannot mutate state (this is a testing-mechanics rule, not store-design advice — in app code, prefer actions to set state)
+- In component tests, stub async actions that return promises explicitly (e.g., `useMyStore().someAsyncAction.mockResolvedValue()`) since `createTestingPinia` stubs do not return promises by default
+
+### JavaScript Style
+
+- Use an accurately scoped `data-*` attribute set when the relevant initializer has completed as a readiness signal for feature-test synchronization; DO NOT use timer-based classes (e.g., `page-initialised`) as completion signals
+- DO NOT use `forEach` when mutating data; use `map`, `reduce`, or `filter` instead
+- Use an object parameter when a function has more than 3 parameters
+- DO NOT use classes solely to bind DOM events; use a function instead
+- Pass element containers as constructor parameters when manipulating the DOM
+- Always include the radix argument when using `parseInt`; prefer `Number` for simple conversions
+- Prefix CSS classes used only as JavaScript selectors with `js-`
+- Use named ES module exports; reserve default exports for Vue SFCs and Vuex mutation files
+- Use relative paths for imports less than two levels up; use `~/` absolute paths for two or more levels up
+- DO NOT add to the global namespace (e.g., `window.MyClass`)
+- DO NOT use `DOMContentLoaded` in non-page modules (only allowed in `/pages/*`)
+- DO NOT use `innerHTML`, `append()`, or `html()` to set content (XSS risk)
+- DO NOT use IIFEs
+- DO NOT place top-level side effects in modules that contain `export`
+- DO NOT make async calls, API requests, or DOM manipulations in constructors; move them to separate methods
+- Export constant primitives with a common namespace (e.g., `VARIANT_WARNING = 'warning'`) rather than exporting objects; only export as a collection when iteration is needed
+- Use `parseErrorMessage` from `~/lib/utils/error_message` to handle user-facing vs. generic server errors
+
+### TypeScript (satellite projects only)
+
+- Set `"strict": true` and `"skipLibCheck": true` in `tsconfig.json`; place TypeScript-specific ESLint rules in an `overrides` block for `**/*.ts` files
+- DO NOT use `any`; use `unknown` with type narrowing or well-defined types
+- DO NOT cast with `<>` or `as`; use type predicates instead
+- Prefer `interface` over `type` for new structures
+- Use `type` only for aliases of existing types/interfaces
+- Use union types to improve type inference and avoid casting
+
+### Design Patterns
+
+- DO NOT use Shared Global Objects (instances accessible from anywhere with no clear owner); export a factory function instead so the caller manages the lifecycle
+- DO NOT use the Singleton pattern; prefer utility functions or dependency injection
+- Use Vue `provide`/`inject` or constructor parameters for dependency injection instead of singletons
+
+### Axios
+
+- Import Axios from `axios_utils` (not directly from `axios`) to ensure CSRF token is set
+- DO NOT use Axios in new applications; use `apollo-client` for GraphQL API calls
+- Use `axios-mock-adapter` (not `spyOn`) to mock Axios responses in tests
+- Always include an empty headers object `{}` as the third argument when mocking poll requests
+
+### Internationalization (i18n)
+
+- Put translation calls directly in the `<template>`; move a string to `$options.i18n` only for a specific reason (e.g., the same string is reused in both the template and a method, needs processing like `sanitize()`, is a value in a runtime-keyed lookup map, or is shared across several components in the same module)
+
+### Vue Testing
+
+- Re-mount the component in every test block using a `createComponent` factory function
+- Use `mountExtended` / `shallowMountExtended` helpers to access `wrapper.findByTestId()`
+- Use a single object argument for `createComponent` parameters
+- DO NOT use `data`, `methods`, or other options that extend component internals in `createComponent`
+- Set component state via `propsData` at mount time; DO NOT use `setProps` except when testing reactivity
+- DO NOT use `setData`; trigger events or side-effects to force state changes
+- Prefer `wrapper.props('myProp')` over `wrapper.props().myProp` or `wrapper.vm.myProp`
+- Use `toEqual` when asserting multiple props; use `toMatchObject` over `expect.objectContaining` for partial prop checks
+- Use `assertProps` helper to test props validation failures
+- Use `stubs` option to properly stub async child components in `shallowMount`; ensure async child components have a `name` option
+
+### Pajamas Component Usage
+
+- Flag component usage that appears inconsistent with Pajamas "when to use" and "when not to use" guidelines
+- Flag usage of container components purely for simple visual separation without using the component's structural features (header, footer, etc.)
+- For simple visual separation without structured content, prefer utility classes (e.g., `gl-border gl-rounded-lg gl-p-5`) over container components
+- When both control and variants are toggled in Vue components layer, prefer the `<gitlab-experiment>` component
+
+### Experiments
+
+- Experiment uses an `experiment` type feature flag (not `development` or `ops`)
+- Context is appropriate and consistent (e.g., `actor:`, `project:`, `group:`)
+- Variants are clearly defined (control, candidate, or named variants)
+- Tracking calls use the same context as experiment runs
+- Frontend or feature tests exist to prevent premature code removal
+- Tests cover experiment variants and tracking behavior
+- Temporary assets (icons/illustrations) are in `/ee/app/assets/images` or `/app/assets/images`, not Pajamas library
+
+## Authoritative sources
+
+For the full picture, see:
+
+- doc/development/fe_guide/_index.md
+- doc/development/fe_guide/style/vue.md
+- doc/development/fe_guide/style/javascript.md
+- doc/development/fe_guide/style/typescript.md
+- doc/development/fe_guide/design_patterns.md
+- doc/development/fe_guide/state_management.md
+- doc/development/fe_guide/pinia.md
+- doc/development/fe_guide/axios.md
+- doc/development/code_comments.md
+

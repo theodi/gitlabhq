@@ -1,0 +1,68 @@
+# frozen_string_literal: true
+
+module Banzai
+  module Filter
+    # Find every image that isn't already wrapped in an `a` tag, and that has
+    # a `src` attribute ending with an audio or video extension, add a new audio or video node and
+    # a "Download" link in the case the media cannot be played.
+    class PlayableLinkFilter < HTML::Pipeline::Filter
+      prepend Concerns::PipelineTimingCheck
+
+      XPATH = 'descendant-or-self::img[not(ancestor::a)]'
+
+      def call
+        doc.xpath(XPATH).each do |el|
+          el.replace(media_node(doc, el)) if has_allowed_media?(el)
+        end
+
+        doc
+      end
+
+      private
+
+      def media_type
+        raise NotImplementedError
+      end
+
+      def safe_media_ext
+        raise NotImplementedError
+      end
+
+      def extra_element_attrs(element)
+        {}
+      end
+
+      def has_allowed_media?(element)
+        src = element.attr('data-canonical-src').presence || element.attr('src')
+
+        return unless src.present?
+
+        src_ext = File.extname(src).sub('.', '').downcase
+        safe_media_ext.include?(src_ext)
+      end
+
+      def media_element(doc, element)
+        media_element_attrs = {
+          src: element['src'],
+          controls: true,
+          'data-setup': '{}',
+          'data-title': element['title'] || element['alt']
+        }.merge!(extra_element_attrs(element))
+
+        if element['data-canonical-src']
+          media_element_attrs['data-canonical-src'] = element['data-canonical-src']
+        end
+
+        doc.document.create_element(media_type, media_element_attrs)
+      end
+
+      def media_node(doc, element)
+        container_element_attrs = { class: "media-container #{media_type}-container" }
+
+        doc.document.create_element('span', container_element_attrs).tap do |container|
+          container.add_child(media_element(doc, element))
+        end
+      end
+    end
+  end
+end

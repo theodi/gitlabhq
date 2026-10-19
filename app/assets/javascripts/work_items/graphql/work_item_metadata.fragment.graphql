@@ -1,0 +1,49 @@
+fragment WorkItemAvailableFeatures on NamespaceAvailableFeatures {
+  hasIssueWeightsFeature
+  hasIterationsFeature
+  hasSubepicsFeature
+  hasIssuableHealthStatusFeature
+  hasEpicsFeature
+  hasScopedLabelsFeature
+  hasLinkedItemsEpicsFeature
+  hasBlockedIssuesFeature
+  hasCustomFieldsFeature
+  hasDuoRemoteFlowsFeature
+}
+
+fragment WorkItemLinkPaths on NamespacesLinkPaths {
+  issuesList
+  contributionGuidePath
+  labelsManage
+  newProject
+  register
+  reportAbuse
+  signIn
+  userExportEmail
+  emailsHelpPagePath
+  markdownHelpPath
+  quickActionsHelpPath
+  calendarPath
+  rssPath
+  autocompleteAwardEmojisPath
+  newIssuePath
+  groupPath
+  namespaceFullPath
+  ... on ProjectNamespaceLinks {
+    newWorkItemEmailAddress
+    releasesPath
+    projectImportJiraPath
+    exportCsvPath
+  }
+}
+
+fragment WorkItemMetadata on NamespaceMetadata {
+  timeTrackingLimitToHours
+  isIssueRepositioningDisabled
+  showNewWorkItem
+  maxAttachmentSize
+  groupId
+  ... on GroupNamespaceMetadata {
+    hasProjects
+  }
+}

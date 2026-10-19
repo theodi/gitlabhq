@@ -1,0 +1,91 @@
+<script>
+import { GlTooltipDirective } from '@gitlab/ui';
+import { sprintf, n__ } from '~/locale';
+import DownstreamPipelineDropdown from './downstream_pipeline_dropdown.vue';
+
+/**
+ * Renders the downstream portion of the pipeline mini graph.
+ */
+export default {
+  name: 'DownstreamPipelines',
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  components: {
+    DownstreamPipelineDropdown,
+  },
+  props: {
+    pipelines: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    totalCount: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    pipelinePath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  emits: ['job-action-executed'],
+  data() {
+    return {
+      maxRenderedPipelines: 3,
+    };
+  },
+  computed: {
+    totalPipelineCount() {
+      return this.totalCount || this.pipelines.length;
+    },
+    pipelinesTrimmed() {
+      return this.pipelines.length > this.maxRenderedPipelines
+        ? this.pipelines.slice(0, this.maxRenderedPipelines)
+        : this.pipelines;
+    },
+    shouldRenderCounter() {
+      return this.totalPipelineCount > this.maxRenderedPipelines;
+    },
+    counterLabel() {
+      return `+${this.totalPipelineCount - this.maxRenderedPipelines}`;
+    },
+    counterTooltipText() {
+      return sprintf(
+        n__(
+          'Pipelines|%{counterLabel} more downstream pipeline',
+          'Pipelines|%{counterLabel} more downstream pipelines',
+          this.counterLabel,
+        ),
+        {
+          counterLabel: this.counterLabel,
+        },
+      );
+    },
+  },
+};
+</script>
+
+<template>
+  <span v-if="pipelines" class="gl-contents gl-align-middle">
+    <downstream-pipeline-dropdown
+      v-for="pipeline in pipelinesTrimmed"
+      :key="pipeline.id"
+      :pipeline="pipeline"
+      class="gl-mr-2 last-of-type:gl-mr-0"
+      @job-action-executed="$emit('job-action-executed')"
+    />
+    <a
+      v-if="shouldRenderCounter"
+      v-gl-tooltip="{ title: counterTooltipText }"
+      :title="counterTooltipText"
+      :href="pipelinePath"
+      class="gl-inline-flex gl-h-6 gl-w-7 gl-items-center gl-justify-center gl-rounded-pill gl-bg-strong gl-text-sm gl-text-subtle gl-no-underline"
+      data-testid="downstream-pipeline-counter"
+    >
+      {{ counterLabel }}
+    </a>
+  </span>
+</template>

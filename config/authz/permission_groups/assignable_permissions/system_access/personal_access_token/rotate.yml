@@ -1,0 +1,14 @@
+---
+name: rotate_personal_access_token
+description: Grants the ability to rotate personal access tokens
+boundaries:
+  - group
+  - user
+available_for:
+  - granular_access_token
+permissions:
+  - rotate_personal_access_token
+assignable_when:
+  - condition: saas
+    boundaries:
+      - group

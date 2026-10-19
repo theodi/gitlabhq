@@ -1,0 +1,37 @@
+# @feature_category: pipeline_composition
+
+query getCatalogResourcesCount(
+  $searchTerm: String
+  $verificationLevel: CiCatalogResourceVerificationLevel
+  $topics: [String!]
+  $groupIds: [GroupID!]
+) {
+  all: ciCatalogResources(
+    scope: ALL
+    search: $searchTerm
+    verificationLevel: $verificationLevel
+    topics: $topics
+    groupIds: $groupIds
+  ) {
+    count
+  }
+  namespaces: ciCatalogResources(
+    scope: NAMESPACES
+    search: $searchTerm
+    verificationLevel: $verificationLevel
+    topics: $topics
+    groupIds: $groupIds
+  ) {
+    count
+  }
+  analytics: ciCatalogResources(
+    scope: NAMESPACES
+    minAccessLevel: MAINTAINER
+    search: $searchTerm
+    verificationLevel: $verificationLevel
+    topics: $topics
+    groupIds: $groupIds
+  ) {
+    count
+  }
+}

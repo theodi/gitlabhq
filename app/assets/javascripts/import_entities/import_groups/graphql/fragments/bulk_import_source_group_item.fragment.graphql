@@ -1,0 +1,16 @@
+#import "./bulk_import_source_group_progress.fragment.graphql"
+
+fragment BulkImportSourceGroupItem on ClientBulkImportSourceGroup {
+  id
+  webUrl
+  fullPath
+  fullName
+  lastImportTarget {
+    id
+    targetNamespace
+    newName
+  }
+  progress {
+    ...BulkImportSourceGroupProgress
+  }
+}

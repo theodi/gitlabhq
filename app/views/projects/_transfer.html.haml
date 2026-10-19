@@ -1,0 +1,34 @@
+- return unless can?(current_user, :change_namespace, @project)
+- form_id = "transfer-project-form"
+- hidden_input_id = "new_namespace_id"
+- initial_data = { button_text: s_('ProjectSettings|Transfer project'), confirm_danger_message: transfer_project_message(@project), confirm_button_text: transfer_project_confirm_button, phrase: @project.full_path, target_form_id: form_id, target_hidden_input_id: hidden_input_id, project_id: @project.id, show_user_transfer_locations: current_user.can?(:transfer_projects, current_user.namespace).to_s }
+
+= render Pajamas::CardComponent.new(card_options: { data: { testid: 'transfer-project-content' } }) do |c|
+  - c.with_header do
+    .gl-flex.gl-grow
+      %h4.gl-text-base.gl-leading-24.gl-m-0= _('Transfer project')
+    %p.gl-text-subtle.gl-text-sm.gl-m-0
+      - link = link_to('', help_page_path('user/project/working_with_projects.md', anchor: 'transfer-a-project'), target: '_blank', rel: 'noopener noreferrer')
+      = safe_format(_("Transfer your project into another namespace. %{link_start}Learn more.%{link_end}"), tag_pair(link, :link_start, :link_end))
+
+  - c.with_body do
+    = form_for @project, url: transfer_project_path(@project), method: :put, html: { class: 'js-project-transfer-form', id: form_id } do |f|
+      .form-group.gl-mb-0
+        %p
+          - link = link_to('', help_page_path('user/project/working_with_projects.md', anchor: 'rename-a-repository'), target: '_blank', rel: 'noopener noreferrer')
+          = safe_format(_("A project’s repository name defines its URL (the one you use to access the project via a browser) and its place on the file disk where GitLab is installed. %{link_start}Learn more.%{link_end}"), tag_pair(link, :link_start, :link_end))
+        %p= _('When you transfer your project to a group, you can easily manage multiple projects, view usage quotas for storage, compute minutes, and users, and start a trial or upgrade to a paid tier.')
+        %p
+          = _("Don't have a group?")
+          = link_to _('Create one'), new_group_path, target: '_blank'
+        %p.gl-font-bold= _('Things to be aware of before transferring:')
+        %ul
+          %li= _("Be careful. Changing the project's namespace can have unintended side effects.")
+          %li= _('You can only transfer the project to namespaces you manage.')
+          %li= _('You will need to update your local repositories to point to the new location.')
+          %li= _('Project visibility level will be changed to match namespace rules when transferring to a group.')
+          %li
+            - secrets_manager_link = link_to('', help_page_path('ci/secrets/secrets_manager/_index.md', anchor: 'transfer-of-a-project-or-group'), target: '_blank', rel: 'noopener noreferrer')
+            = safe_format(_('All secrets stored in GitLab Secrets Manager are permanently deleted. %{link_start}Learn more.%{link_end}'), tag_pair(secrets_manager_link, :link_start, :link_end))
+        = hidden_field_tag(hidden_input_id)
+        .js-transfer-project-form{ data: initial_data }

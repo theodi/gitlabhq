@@ -1,0 +1,37 @@
+= gitlab_ui_form_for @application_setting, url: network_admin_application_settings_path(anchor: 'js-import-export-limits-settings'), html: { class: 'fieldset-form' } do |f|
+  = form_errors(@application_setting)
+
+  %fieldset
+    = html_escape(_("Set to 0 to disable the limits."))
+
+  %fieldset
+    .form-group
+      = f.label :project_import_limit, _('Maximum project import requests per minute'), class: 'label-bold'
+      = f.number_field :project_import_limit, class: 'form-control gl-form-input'
+
+  %fieldset
+    .form-group
+      = f.label :project_export_limit, _('Maximum project export requests per minute'), class: 'label-bold'
+      = f.number_field :project_export_limit, class: 'form-control gl-form-input'
+
+  %fieldset
+    .form-group
+      = f.label :project_download_export_limit, _('Maximum project export download requests per minute'), class: 'label-bold'
+      = f.number_field :project_download_export_limit, class: 'form-control gl-form-input'
+
+  %fieldset
+    .form-group
+      = f.label :group_import_limit, _('Maximum group import requests per minute'), class: 'label-bold'
+      = f.number_field :group_import_limit, class: 'form-control gl-form-input'
+
+  %fieldset
+    .form-group
+      = f.label :group_export_limit, _('Maximum group export requests per minute'), class: 'label-bold'
+      = f.number_field :group_export_limit, class: 'form-control gl-form-input'
+
+  %fieldset
+    .form-group
+      = f.label :group_download_export_limit, _('Maximum group export download requests per minute'), class: 'label-bold'
+      = f.number_field :group_download_export_limit, class: 'form-control gl-form-input'
+
+  = f.submit _('Save changes'), pajamas_button: true

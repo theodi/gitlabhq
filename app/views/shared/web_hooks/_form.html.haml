@@ -1,0 +1,27 @@
+-# Shared form used by ProjectHook, GroupHook (EE), and SystemHook.
+-# Hook-type-specific sections are guarded by hook.is_a? checks below.
+= form_errors(hook)
+- has_group = defined?(@group) && @group.present?
+- help_path = hook.is_a?(SystemHook) ? help_page_path('administration/system_hooks.md', anchor: 'custom-webhook-template') : help_page_path('user/project/integrations/webhooks.md', anchor: 'custom-webhook-template')
+
+.js-vue-webhook-form{ data: webhook_form_data(hook).merge('has_group': has_group.to_s) }
+
+- if hook.is_a?(ProjectHook) && Feature.enabled?(:project_deploy_token_expiring_notifications, @project)
+  .form-group
+    = form.label :resource_deploy_token_events, s_('Webhooks|Additional Triggers'), class: 'label-bold'
+    - deploy_token_help_link = link_to _('Which project deploy token events trigger webhooks'), help_page_path('user/project/integrations/webhook_events.md', anchor: 'project-and-group-deploy-token-events')
+    = form.gitlab_ui_checkbox_component :resource_deploy_token_events,
+        integration_webhook_event_human_name(:resource_deploy_token_events),
+        help_text: s_('Webhooks|A deploy token is expiring soon. %{help_link}?').html_safe % { help_link: deploy_token_help_link }
+
+.form-group
+  = form.label :custom_webhook_template, s_('Webhooks|Custom webhook template (optional)'), class: 'label-bold'
+  = form.text_area :custom_webhook_template, value: hook.custom_webhook_template, class: 'form-control gl-form-input gl-form-input-xl', rows: 8, maxlength: 4096
+  %p.form-text.gl-text-subtle
+    = link_to s_('Webhooks|How do I create a custom webhook template?'), help_path
+
+= render_if_exists 'shared/web_hooks/duo_agent_platform_section', form: form
+
+.form-group
+  = form.label :enable_ssl_verification, s_('Webhooks|SSL verification'), class: 'label-bold'
+  = form.gitlab_ui_checkbox_component :enable_ssl_verification, s_('Webhooks|Enable SSL verification')

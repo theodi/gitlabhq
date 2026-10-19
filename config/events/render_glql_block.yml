@@ -1,0 +1,20 @@
+---
+description: GLQL blocks rendered
+internal_events: true
+action: render_glql_block
+identifiers:
+- project
+- namespace
+- user
+additional_properties:
+  label:
+    description: SHA256 of the GLQL block content
+product_group: platform_insights
+product_categories:
+- custom_dashboards_foundation
+milestone: '17.5'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/167165
+tiers:
+- free
+- premium
+- ultimate

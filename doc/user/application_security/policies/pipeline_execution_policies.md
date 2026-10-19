@@ -1,0 +1,1660 @@
+---
+stage: Security Risk Management
+group: Security Policies
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Pipeline execution policies manage and enforce the execution of CI/CD pipelines, helping with security and compliance.
+title: Pipeline execution policies
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/13266) in GitLab 17.2 [with a feature flag](../../../administration/feature_flags/_index.md) named `pipeline_execution_policy_type`. Enabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/issues/454278) in GitLab 17.3. Feature flag `pipeline_execution_policy_type` removed.
+
+{{< /history >}}
+
+Use pipeline execution policies to manage and enforce CI/CD jobs for multiple projects with a single configuration.
+
+> [!warning]
+> Do not enable pipeline execution policies until you have migrated existing [compliance pipelines](../../compliance/compliance_pipelines.md) in the same project. When both are configured, compliance pipelines replace the standard project pipeline, but the pipeline execution policies apply based on the original project pipeline. This creates unpredictable behavior that varies depending on the pipeline execution policy strategy and CI/CD configurations, and can result in duplicated jobs, pipeline failures, or missing critical security and compliance checks. Compliance pipelines are [deprecated](../../../update/deprecations.md#compliance-pipelines). You should migrate existing compliance pipelines as soon as possible, and use pipeline execution policies for all new implementations.
+
+- <i class="fa-youtube-play" aria-hidden="true"></i> For a video walkthrough, see [Security Policies: Pipeline Execution Policy Type](https://www.youtube.com/watch?v=QQAOpkZ__pA).
+
+## Schema
+
+{{< history >}}
+
+- [Enabled](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/159858) the `suffix` field in GitLab 17.4.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/165096) pipeline execution so later stages wait for the `.pipeline-policy-pre` stage to complete in GitLab 17.7.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/issues/558233) pipeline execution so that when a `.pipeline-policy-pre` stage fails, all later jobs are skipped in GitLab 18.10. Enabled by default.
+- New pipeline execution [generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/233245) in GitLab 19.0. Feature flag `ensure_pipeline_policy_pre_succeeds` removed.
+
+{{< /history >}}
+
+The YAML file with pipeline execution policies consists of an array of objects matching pipeline execution
+policy schema nested under the `pipeline_execution_policy` key. You can configure a maximum of five
+policies under the `pipeline_execution_policy` key per security policy project. Any other policies configured after
+the first five are not applied.
+
+When you save a new policy, GitLab validates its contents against [this JSON schema](https://gitlab.com/gitlab-org/gitlab/-/blob/master/ee/app/validators/json_schemas/security_orchestration_policy.json).
+If you're not familiar with how to read [JSON schemas](https://json-schema.org/),
+the following sections and tables provide an alternative.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pipeline_execution_policy` | `array` of pipeline execution policy | true | List of pipeline execution policies (maximum five) |
+
+## `pipeline_execution_policy` schema
+
+| Field | Type | Required | Description                                                                                                                                                                                                                                                                                                                     |
+|-------|------|----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name` | `string` | true | Name of the policy. Maximum of 255 characters.                                                                                                                                                                                                                                                                                  |
+| `description` (optional) | `string` | true | Description of the policy.                                                                                                                                                                                                                                                                                                      |
+| `enabled` | `boolean` | true | Flag to enable (`true`) or disable (`false`) the policy.                                                                                                                                                                                                                                                                        |
+| `content` | `object` of [`content`](#content-type) | true | Reference to the CI/CD configuration to inject into project pipelines.                                                                                                                                                                                                                                                          |
+| `pipeline_config_strategy` | `string` | false | Can be `inject_policy`, `inject_ci` (deprecated), or `override_project_ci`. See [pipeline strategies](#pipeline-configuration-strategies) for more information.                                                                                                                                                                 |
+| `policy_scope` | `object` of [`policy_scope`](_index.md#configure-the-policy-scope) | false | Scopes the policy based on projects, groups, or compliance framework labels you specify.                                                                                                                                                                                                                                        |
+| `suffix` | `string` | false | Can either be `on_conflict` (default), or `never`. Defines the behavior for handling job naming conflicts. `on_conflict` applies a unique suffix to the job names for jobs that would break the uniqueness. `never` causes the pipeline to fail if the job names across the project and all applicable policies are not unique. |
+| `skip_ci` | `object` of [`skip_ci`](#skip_ci-type) | false | Defines whether users can apply the `skip-ci` directive. By default, the use of `skip-ci` is ignored and as a result, pipelines with pipeline execution policies cannot be skipped.                                                                                                                                             |
+| `no_pipeline` | `object` of [`no_pipeline`](#no_pipeline-type) | false | Defines whether users can apply the `no_pipeline` directive. By default, the use of `no_pipeline` is ignored and as a result, pipelines with pipeline execution policies cannot be prevented from being created.                                                                                                                                 |
+| `variables_override` | `object` of [`variables_override`](#variables_override-type) | false | Controls whether users can override the behavior of policy variables in the jobs created by the policy. By default, the policy variables are enforced with the highest precedence and users cannot override them.                                                                                                               |
+| `enforce_on_child_pipelines` | `boolean` | false | When `true`, the policy is also enforced in child pipelines. Default is `false`. See [enforce the policy in child pipelines](#enforce-the-policy-in-child-pipelines). |
+
+Note the following:
+
+- Users that trigger a pipeline must have at least read access to the pipeline execution file specified in the pipeline execution policy, otherwise the pipelines do not start.
+- If the pipeline execution file gets deleted or renamed, the pipelines in projects with the policy enforced might stop working.
+- Pipeline execution policy jobs can be assigned to one of the two reserved stages:
+  - `.pipeline-policy-pre` at the beginning of the pipeline, before the `.pre` stage.
+  - `.pipeline-policy-post` at the very end of the pipeline, after the `.post` stage.
+- Injecting jobs in any of the reserved stages is guaranteed to always work. Execution policy jobs can also be assigned to any standard (build, test, deploy) or user-declared stages. However, in this case, the jobs may be ignored depending on the project pipeline configuration.
+- It is not possible to assign jobs to reserved stages outside of a pipeline execution policy.
+- Choose unique job names for pipeline execution policies. Some CI/CD configurations are based on job names, which can lead to unwanted results if a job name exists multiple times in the same pipeline. For example, the `needs` keyword makes one job dependent on another. If there are multiple jobs with the name `example`, a job that `needs` the `example` job name depends on only one of the `example` job instances at random.
+- Pipeline execution policies remain in effect even if the project lacks a CI/CD configuration file.
+- The order of the policies matters for the applied suffix.
+- If any policy applied to a given project has `suffix: never`, the pipeline fails if another job with the same name is already present in the pipeline.
+- Pipeline execution policies are enforced on all branches and pipeline sources. However, for [merge request pipelines](../../../ci/pipelines/merge_request_pipelines.md#configure-merge-request-pipelines), some `rules:` or `workflow:rules` configurations can prevent jobs from running. Use [workflow rules](../../../ci/yaml/workflow.md) to control when pipeline execution policies are enforced.
+
+### Security policy pipeline check
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+- Status: Experiment
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/589650) in GitLab 18.11 [with a feature flag](../../../administration/feature_flags/_index.md) named `security_policy_pipeline_check`. Disabled by default.
+- [Enabled by default](https://gitlab.com/gitlab-org/gitlab/-/issues/592205) in GitLab 18.11.
+
+{{< /history >}}
+
+When pipeline execution policies or [scan execution policies](scan_execution_policies.md) are configured
+for a project, the security policy pipeline check requires all pipelines for the latest commit to
+succeed before the merge request can be merged. This check applies to all pipelines that run because of the
+commit, not just pipelines created by security policies.
+
+The security policy pipeline check prevents merging when the merge request pipeline passes but
+another pipeline (such as a branch pipeline created by a security policy) fails, which could otherwise
+allow unverified code to be merged.
+
+The security policy pipeline check behaves as follows:
+
+- If the project setting **Pipelines must succeed** is enabled, a failed pipeline results in a hard block
+  that prevents merging.
+- If **Pipelines must succeed** is not enabled, a failed pipeline results in a warning. The merge request
+  can still be set to [auto-merge](../../project/merge_requests/auto_merge.md).
+- If the project setting **Skipped pipelines are considered successful** is enabled, skipped pipelines
+  are treated as if they passed.
+
+> [!warning]
+> If you migrate a project, imported pipelines retain their source status and can satisfy the
+> security policy pipeline check on the destination instance without running again.
+> Run a new pipeline on any imported merge requests before you merge them.
+
+### `.pipeline-policy-pre` stage
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/issues/558233) pipeline execution so that when a `.pipeline-policy-pre` stage fails, all later jobs are skipped in GitLab 18.10. Enabled by default.
+- New pipeline execution [generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/233245) in GitLab 19.0. Feature flag `ensure_pipeline_policy_pre_succeeds` removed.
+
+{{< /history >}}
+
+Jobs in the `.pipeline-policy-pre` stage always execute.
+This stage is designed for security and compliance use cases.
+Jobs in the pipeline do not begin until the `.pipeline-policy-pre` stage completes.
+
+If the `.pipeline-policy-pre` stage fails or all jobs in the stage are skipped,
+all jobs in later stages are skipped, including:
+
+- Jobs with `needs: []`.
+- Jobs with `when: always`.
+
+If you do not require this behavior for your workflow,
+use the `.pre` stage or a custom stage instead.
+
+> [!note]
+> In GitLab 18.9 and earlier, jobs with `needs: []` or `when: always`
+> could bypass a failed `.pipeline-policy-pre` stage.
+> This behavior became the default in GitLab 18.10 and is permanent as of GitLab 19.0.
+
+### Job naming best practice
+
+{{< history >}}
+
+- Naming conflict handling [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/473189) in GitLab 17.4.
+
+{{< /history >}}
+
+There is no visible indicator that a job was generated by a security policy. To make it easier to identify jobs that were created by policies and avoid job name collisions, add a unique prefix or suffix to the job name.
+
+Examples:
+
+- Use: `policy1:deployments:sast`. This name is likely unique across all other policies and projects.
+- Don't use: `sast`. This name is likely to be duplicated in other policies and projects.
+
+Pipeline execution policies handle naming conflicts depending on the `suffix` attribute. If there are multiple jobs with the same name:
+
+- Using `on_conflict` (default), a suffix is added to a job if its name conflicts with another job in the pipeline.
+- Using `never`, no suffix is added in the event of a conflict and the pipeline fails.
+
+The suffix is added based on the order in which the jobs are merged onto the main pipeline.
+
+The order is as follows:
+
+1. Project pipeline jobs
+1. Project policy jobs (if applicable)
+1. Group policy jobs (if applicable, ordered by hierarchy, the most top-level group is applied as last)
+
+The applied suffix has the following format:
+
+`:policy-<security-policy-project-id>-<policy-index>`.
+
+Example of the resulting job: `sast:policy-123456-0`.
+
+If multiple policies in one security policy project define the same job name, the numerical suffix corresponds to the index of the conflicting policy.
+
+Example of the resulting jobs:
+
+- `sast:policy-123456-0`
+- `sast:policy-123456-1`
+
+### Job stage best practice
+
+Jobs defined in a pipeline execution policy can use any [stage](../../../ci/yaml/_index.md#stage)
+defined in the project's CI/CD configuration, also the reserved stages `.pipeline-policy-pre` and
+`.pipeline-policy-post`.
+
+> [!note]
+> If your policy contains jobs only in the `.pre` and `.post` stages, the policy's pipeline is
+> evaluated as `empty`. It is not merged with the project's pipeline.
+>
+> To use the `.pre` and `.post` stages in a pipeline execution policy, you must include at least one
+> other job that runs in a different stage. For example: `.pipeline-policy-pre`.
+
+When you use the `inject_policy` [pipeline strategy](#pipeline-configuration-strategies), if a target project does not
+contain its own `.gitlab-ci.yml` file, all policy stages are injected into the pipeline.
+
+When you use the (deprecated) `inject_ci` [pipeline strategy](#pipeline-configuration-strategies), if a target project does not
+contain its own `.gitlab-ci.yml` file, then the only stages available are the default pipeline
+stages and the reserved stages.
+
+When you enforce pipeline execution policies over projects with CI/CD configurations that you do not
+have permissions to modify, you should define jobs in the `.pipeline-policy-pre` and `.pipeline-policy-post` stages.
+These stages are always available, regardless of any project's CI/CD configuration.
+
+When you use the `override_project_ci` [pipeline strategy](#pipeline-configuration-strategies) with multiple
+pipeline execution policies and with custom stages, the stages must be defined in the same relative order
+to be compatible with each other:
+
+Valid configuration example:
+
+```yaml
+  - override-policy-1 stages: [build, test, policy-test, deploy]
+  - override-policy-2 stages: [test, deploy]
+```
+
+Invalid configuration example:
+
+```yaml
+  - override-policy-1 stages: [build, test, policy-test, deploy]
+  - override-policy-2 stages: [deploy, test]
+```
+
+The pipeline fails if one or more `override_project_ci` policies has an invalid `stages` configuration.
+
+### `content` type
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `project` | `string` | true | The full GitLab project path to a project on the same GitLab instance. |
+| `file` | `string` | true | A full file path relative to the root directory (/). The YAML files must have the `.yml` or `.yaml` extension. |
+| `ref` | `string` | false | The ref to retrieve the file from. Defaults to the HEAD of the project when not specified. |
+
+Use the `content` type in a policy to reference a CI/CD configuration stored in another repository.
+This allows you to reuse the same CI/CD configuration across multiple policies, reducing the
+overhead of maintaining these configurations. For example, if you have a custom secret detection
+CI/CD configuration you want to enforce in policy A and policy B, you can create a single YAML configuration file and reference the configuration in both policies.
+
+Prerequisites:
+
+- Users triggering pipelines run in those projects on which a policy containing the `content` type
+  is enforced must have at minimum read-only access to the project containing the CI/CD
+  configuration.
+- In projects that enforce pipeline execution policies, users must have at least read-only access to the project that contains the CI/CD configuration to trigger the pipeline.
+
+  In GitLab 17.4 and later, you can grant the required read-only access for the CI/CD configuration file
+  specified in a security policy project using the `content` type. To do so, enable the setting **Pipeline execution policies** in the general settings of the security policy project.
+  Enabling this setting grants the user who triggered the pipeline access to
+  read the CI/CD configuration file enforced by the pipeline execution policy. This setting does not grant the user access to any other parts of the project where the configuration file is stored.
+  For more details, see [Grant access automatically](#grant-access-automatically).
+
+### `skip_ci` type
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/173480) in GitLab 17.7.
+
+{{< /history >}}
+
+Pipeline execution policies offer control over who can use the `[skip ci]` directive. You can specify certain users or service accounts that are allowed to use `[skip ci]` while still ensuring critical security and compliance checks are performed.
+
+Use the `skip_ci` keyword to specify whether users are allowed to apply the `skip_ci` directive to skip the pipelines.
+When the keyword is not specified, the `skip_ci` directive is ignored, preventing all users
+from bypassing the pipeline execution policies.
+
+| Field                   | Type     | Possible values          | Description |
+|-------------------------|----------|--------------------------|-------------|
+| `allowed` | `boolean`   | `true`, `false` | Flag to allow (`true`) or prevent (`false`) the use of the `skip-ci` directive for pipelines with enforced pipeline execution policies. |
+| `allowlist`             | `object` | `users` | Specify users who are always allowed to use `skip-ci` directive, regardless of the `allowed` flag. Use `users:` followed by an array of objects with `id` keys representing user IDs. |
+
+### `no_pipeline` type
+
+Pipeline execution policies offer control over who can use the `[no_pipeline]` directive. You can specify certain users or service accounts that are allowed to use `[no_pipeline]` while still ensuring critical security and compliance checks are performed.
+
+Use the `no_pipeline` keyword to specify whether users are allowed to apply the `no_pipeline` directive to not create pipelines.
+When the keyword is not specified, the `no_pipeline` directive is ignored, preventing all users
+from bypassing the pipeline execution policies.
+
+| Field                   | Type     | Possible values          | Description |
+|-------------------------|----------|--------------------------|-------------|
+| `allowed` | `boolean`   | `true`, `false` | Flag to allow (`true`) or prevent (`false`) the use of the `no_pipeline` directive for pipelines with enforced pipeline execution policies. |
+| `allowlist`             | `object` | `users` | Specify users who are always allowed to use `no_pipeline` directive, regardless of the `allowed` flag. Use `users:` followed by an array of objects with `id` keys representing user IDs. |
+
+### `variables_override` type
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/16430) in GitLab 18.1.
+
+{{< /history >}}
+
+| Field                   | Type     | Possible values          | Description |
+|-------------------------|----------|--------------------------|-------------|
+| `allowed` | `boolean`   | `true`, `false` | When `true`, other configurations can override policy variables. When `false`, other configurations cannot override policy variables. |
+| `exceptions` | `array` | `array` of `string` | Variables that are exceptions to the global rule. When `allowed: false`, the `exceptions` are an allowlist. When `allowed: true`, the `exceptions` are a denylist. |
+| `dotenv` | `string` | `respect_policy`, `allow_override` | Controls whether [dotenv artifact](../../../ci/yaml/artifacts_reports.md#artifactsreportsdotenv) variables respect the `variables_override` policy rules. By default (when not specified or set to `respect_policy`), dotenv variables are subject to the same override rules as other variables. Set to `allow_override` to let dotenv variables bypass the policy rules. This option is provided for backward compatibility with workflows that rely on dotenv artifacts overriding policy variables. Using `allow_override` is not recommended because it weakens the security guarantees provided by `variables_override`. |
+
+This option controls how user-defined variables are handled in pipelines with policies enforced. This feature allows you to:
+
+- Deny user-defined variables by default (recommended), which provides stronger security, but requires that you add all of the variables that should be customizable to the `exceptions` allowlist.
+- Allow user-defined variables by default, which provides more flexibility but lower security, as you must add variables that can affect policy enforcement to the `exceptions` denylist.
+- Define exceptions to the `allowed` global rule.
+
+User-defined variables can affect the behavior of any policy jobs in the pipeline and can come from various sources:
+
+- [Pipeline variables](../../../ci/variables/_index.md#use-pipeline-variables).
+- [Project variables](../../../ci/variables/_index.md#for-a-project).
+- [Group variables](../../../ci/variables/_index.md#for-a-group).
+- [Instance variables](../../../ci/variables/_index.md#for-an-instance).
+
+When the `variables_override` option is not specified, the "highest precedence" behavior is maintained. For more information about this behavior, see [precedence of variables in pipeline execution policies](#precedence-of-variables-in-pipeline-execution-policies).
+
+When the pipeline execution policy controls variable precedence, the job logs include the configured `variables_override` options and the policy name.
+To view these logs, `gitlab-runner` must be updated to version 18.1 or later.
+
+#### Example `variables_override` configuration
+
+Add the `variables_override` option to your pipeline execution policy configuration:
+
+```yaml
+pipeline_execution_policy:
+  - name: Security Scans
+    description: 'Enforce security scanning'
+    enabled: true
+    pipeline_config_strategy: inject_policy
+    content:
+      include:
+        - project: gitlab-org/security-policies
+          file: security-scans.yml
+    variables_override:
+      allowed: false
+      exceptions:
+        - CS_IMAGE
+        - SAST_EXCLUDED_ANALYZERS
+```
+
+##### Enforcing security scans while allowing container customization (allowlist approach)
+
+To enforce security scans but allow project teams to specify their own container image:
+
+```yaml
+variables_override:
+  allowed: false
+  exceptions:
+    - CS_IMAGE
+```
+
+This configuration blocks all user-defined variables except `CS_IMAGE`, ensuring that security scans cannot be disabled, while allowing teams to customize the container image.
+
+##### Prevent specific security variable overrides (denylist approach)
+
+To allow most variables, but prevent disabling security scans:
+
+```yaml
+variables_override:
+  allowed: true
+  exceptions:
+    - SECRET_DETECTION_DISABLED
+    - SAST_DISABLED
+    - DEPENDENCY_SCANNING_DISABLED
+    - DAST_DISABLED
+    - CONTAINER_SCANNING_DISABLED
+```
+
+This configuration allows all user-defined variables except those that could disable security scans.
+
+> [!warning]
+> While this configuration can provide flexibility, it is discouraged due to the security implications.
+> Any variable that is not explicitly listed in the `exceptions` can be injected by the users. As a result,
+> the policy configuration is not as well protected as when using the `allowlist` approach.
+
+### Enforce the policy in child pipelines
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/632446) in GitLab 19.5.
+
+{{< /history >}}
+
+By default, pipeline execution policies are not enforced in child pipelines.
+Child pipelines are created with `trigger:include` and have `CI_PIPELINE_SOURCE` set to `parent_pipeline`.
+Multi-project downstream pipelines are not affected by this setting because
+they run the policies that apply to the downstream project.
+
+To enforce a policy in the child pipelines of the projects it applies to,
+set `enforce_on_child_pipelines: true` on the policy.
+The setting applies per policy, so other policies in the same file are unaffected.
+For example:
+
+```yaml
+pipeline_execution_policy:
+- name: Compliance jobs
+  description: Run compliance jobs in all pipelines, including child pipelines
+  enabled: true
+  pipeline_config_strategy: inject_policy
+  enforce_on_child_pipelines: true
+  content:
+    include:
+    - project: my-group/compliance-project
+      file: compliance-pipeline.yml
+```
+
+When you enable this setting:
+
+- Policy jobs run in every child pipeline, in addition to the parent pipeline.
+  To run a job in only one of them, use `rules` with `$CI_PIPELINE_SOURCE`.
+  For example, `if: $CI_PIPELINE_SOURCE == "parent_pipeline"` runs the job only in child pipelines,
+  and `if: $CI_PIPELINE_SOURCE != "parent_pipeline"` runs the job only in the parent pipeline.
+- With the [`override_project_ci`](#override_project_ci) strategy, the policy also replaces the child pipeline's
+  configuration, so jobs from the `trigger:include` file do not run.
+  To keep them, use `inject_policy`.
+- Policy jobs do not run in child pipelines that a policy's trigger job creates,
+  including a scheduled policy's trigger job. This prevents recursion.
+- A trigger job defined in a policy can create a child pipeline one level beyond the
+  [parent-child pipeline nesting limit](../../../ci/pipelines/downstream_pipelines.md#nested-child-pipelines),
+  so policy jobs can still run in the deepest pipeline of an existing hierarchy.
+
+> [!note]
+> The `enforce_on_child_pipelines` attribute replaces the `enforce_pipeline_policy_on_child_pipelines` experiment,
+> which you set in the `experiments` section of `.gitlab/security-policies/policy.yml`.
+> To migrate, set `enforce_on_child_pipelines: true` on each policy that should apply to child pipelines,
+> and remove the experiment.
+> Removal of the experiment is proposed in [issue 632456](https://gitlab.com/gitlab-org/gitlab/-/work_items/632456).
+
+### `policy scope` schema
+
+To customize policy enforcement, you can define a policy's scope to either include, or exclude,
+specified projects, groups, or compliance framework labels. For more details, see
+[Scope](_index.md#configure-the-policy-scope).
+
+> [!note]
+> Setting a `policy_scope` field to an empty collection (for example, `including: []`) is treated
+> the same as omitting the field, so the policy applies to all projects for that scope dimension.
+> To disable a policy entirely, use `enabled: false`. For more details, see
+> [Empty collections in `policy_scope`](_index.md#empty-collections-in-policy_scope).
+
+## Manage access to the CI/CD configuration
+
+When you enforce pipeline execution policies on a project, users that trigger pipelines must have at least read-only access to the project that contains the policy CI/CD configuration. You can grant access to the project manually or automatically.
+
+### Grant access manually
+
+To allow users or groups to run pipelines with enforced pipeline execution policies, you can invite them to the project that contains the policy CI/CD configuration.
+
+### Grant access automatically
+
+You can automatically grant access to the policy CI/CD configuration for all users who run pipelines in projects with enforced pipeline execution policies.
+
+Prerequisites:
+
+- Make sure the pipeline execution policy CI/CD configuration is stored in a security policy project.
+- In the general settings of the security policy project, enable the **Pipeline execution policies** setting.
+
+If you don't yet have a security policy project and you want to create the first pipeline execution policy, create an empty project and link it as a security policy project.
+To link the project:
+
+1. In the group or project where you want to enforce the policy, select **Secure** > **Policies** > **Edit policy project**.
+1. Select the security policy project.
+
+The project becomes a security policy project, and the setting becomes available.
+
+<!-- vale gitlab_base.OxfordComma = NO -->
+> [!note]
+> To create downstream pipelines using `$CI_JOB_TOKEN`, you need to make sure that projects and groups are authorized to request the security policy project.
+> In the security policy project, go to **Settings** > **CI/CD** > **Job token permissions** and add the authorized groups and projects to the allowlist.
+> If you don't see the **CI/CD** settings, go to **Settings** > **General** > **Visibility, project features, permissions** and enable **CI/CD**.
+<!-- vale gitlab_base.OxfordComma = YES -->
+
+#### Configuration
+
+1. In the policy project, select **Settings** > **General** > **Visibility, project features, permissions**.
+1. Enable the **Pipeline execution policies** setting.
+1. In the policy project, create a file for the policy CI/CD configuration.
+
+   ```yaml
+   # policy-ci.yml
+
+   policy-job:
+     script: ...
+   ```
+
+1. In the group or project where you want to enforce the policy, create a pipeline execution policy and specify the CI/CD configuration file for the security policy project.
+
+   ```yaml
+   pipeline_execution_policy:
+   - name: My pipeline execution policy
+     description: Enforces CI/CD jobs
+     enabled: true
+     pipeline_config_strategy: inject_policy
+     content:
+       include:
+        - project: my-group/my-security-policy-project
+          file: policy-ci.yml
+   ```
+
+### Allow access to private or internal projects
+
+Your policy `include:` value might reference a CI/CD configuration file stored
+in a private or internal project other than the security policy project.
+In this case, you can allow access for users who trigger pipelines in projects
+with enforced pipeline execution policies.
+
+For configuration steps, see [Allow access to private or internal projects](scheduled_pipeline_execution_policies.md#option-2-allow-access-to-private-or-internal-projects).
+
+## Pipeline configuration strategies
+
+Pipeline configuration strategy defines the method for merging the policy configuration with the project pipeline. Pipeline execution policies execute the jobs defined in the `.gitlab-ci.yml` file in isolated pipelines, which are merged into the pipelines of the target projects.
+
+### `inject_policy` type
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/475152) in GitLab 17.9.
+
+{{< /history >}}
+
+This strategy adds custom CI/CD configurations into the existing project pipeline without completely replacing the project's original CI/CD configuration. It is suitable when you want to enhance or extend the current pipeline with additional steps, such as adding new security scans, compliance checks, or custom scripts.
+
+Unlike the deprecated `inject_ci` strategy, `inject_policy` allows you to inject custom policy stages into your pipeline, giving you more granular control over where policy rules are applied in your CI/CD workflow.
+
+If you have multiple policies enabled, this strategy injects all of the jobs from each policy.
+
+When you use this strategy, a project CI/CD configuration cannot override any behavior defined in the policy pipelines because each pipeline has an isolated YAML configuration.
+
+For projects without a `.gitlab-ci.yml` file, this strategy creates `.gitlab-ci.yml` file
+implicitly. The executed pipeline contains only the jobs defined in the pipeline execution policy.
+
+> [!note]
+> When a pipeline execution policy uses workflow rules that prevent policy jobs from running, the only jobs that
+> run are the project's CI/CD jobs. If the project uses workflow rules that prevent project CI/CD jobs from running,
+> the only jobs that run are the pipeline execution policy jobs.
+
+This means that a project `workflow:rules` configuration that prevents the project pipeline from
+running does not prevent the policy pipeline from being created. If the policy includes
+`Dependency-Scanning.v2.gitlab-ci.yml`, the policy can still create the dependency scanning merge
+request pipeline according to the value available in the policy context.
+
+#### Stages injection
+
+The stages for the policy pipeline follow the usual CI/CD configuration.
+You define the order in which a custom policy stage is injected into the project pipeline by providing the stages before and after the custom stages.
+
+The project and policy pipeline stages are represented as a Directed Acyclic Graph (DAG), where nodes are stages and edges represent dependencies. When you combine pipelines, the individual DAGs are merged into a single, larger DAG. Afterward, a topological sorting is performed, which determines the order in which stages from all pipelines should execute. This sorting ensures that all dependencies are respected in the final order.
+If there are conflicting dependencies, the pipeline fails to run. To fix the dependencies, ensure that stages used across the project and policies are aligned.
+
+If a stage isn't explicitly defined in the policy pipeline configuration, the pipeline uses the default stages `stages: [build, test, deploy]`. If these stages are included, but listed in a different order, the pipeline fails with a `Cyclic dependencies detected when enforcing policies` error.
+
+The following examples demonstrate this behavior. All examples assume the following project CI/CD configuration:
+
+```yaml
+# .gitlab-ci.yml
+stages: [build, test, deploy]
+
+project-build-job:
+  stage: build
+  script: ...
+
+project-test-job:
+  stage: test
+  script: ...
+
+project-deploy-job:
+  stage: deploy
+  script: ...
+```
+
+##### Example 1
+
+```yaml
+# policy-ci.yml
+stages: [test, policy-stage, deploy]
+
+policy-job:
+  stage: policy-stage
+  script: ...
+```
+
+In this example, the `policy-stage` stage:
+
+- Must be injected after `test` stage, if present.
+- Must be injected before `deploy` stage, if present.
+
+Result: The pipeline contains the following stages: `[build, test, policy-stage, deploy]`.
+
+Special cases:
+
+- If the `.gitlab-ci.yml` specified the stages as `[build, deploy, test]`, the pipeline would fail with the error `Cyclic dependencies detected when enforcing policies` because the constraints cannot be satisfied. To fix the failure, adjust the project configuration to align the stages with the policies.
+- If the `.gitlab-ci.yml` specified stages as `[build]`, the resulting pipeline has the following stages: `[build, policy-stage]`.
+
+##### Example 2
+
+```yaml
+# policy-ci.yml
+stages: [policy-stage, deploy]
+
+policy-job:
+  stage: policy-stage
+  script: ...
+```
+
+In this example, the `policy-stage` stage:
+
+- Must be injected before `deploy` stage, if present.
+
+Result: The pipeline contains the following stages: `[build, test, policy-stage, deploy]`.
+
+Special cases:
+
+- If the `.gitlab-ci.yml` specified the stages as `[build, deploy, test]`, the resulting pipeline stages would be: `[build, policy-stage, deploy, test]`.
+- If there is no `deploy` stage in the project pipeline, the `policy-stage` stage is injected at the end of the pipeline, just before `.pipeline-policy-post`.
+
+##### Example 3
+
+```yaml
+# policy-ci.yml
+stages: [test, policy-stage]
+
+policy-job:
+  stage: policy-stage
+  script: ...
+```
+
+In this example, the `policy-stage` stage:
+
+- Must be injected after `test` stage, if present.
+
+Result: The pipeline contains the following stages: `[build, test, deploy, policy-stage]`.
+
+Special cases:
+
+- If there is no `test` stage in the project pipeline, the `policy-stage` stage is injected at the end of the pipeline, just before `.pipeline-policy-post`.
+
+##### Example 4
+
+```yaml
+# policy-ci.yml
+stages: [policy-stage]
+
+policy-job:
+  stage: policy-stage
+  script: ...
+```
+
+In this example, the `policy-stage` stage has no constraints.
+
+Result: The pipeline contains the following stages: `[build, test, deploy, policy-stage]`.
+
+##### Example 5
+
+```yaml
+# policy-ci.yml
+stages: [check, lint, test, policy-stage, deploy, verify, publish]
+
+policy-job:
+  stage: policy-stage
+  script: ...
+```
+
+In this example, the `policy-stage` stage:
+
+- Must be injected after the stages `check`, `lint`, `test`, if present.
+- Must be injected before the stages `deploy`, `verify`, `publish`, if present.
+
+Result: The pipeline contains the following stages: `[build, test, policy-stage, deploy]`.
+
+Special cases:
+
+- If the `.gitlab-ci.yml` specified stages as `[check, publish]`, the resulting pipeline has the following stages: `[check, policy-stage, publish]`
+
+#### Default stage order
+
+When stages are not defined in a policy, GitLab enforces the default stages order:
+
+1. `.pre`
+1. `build`
+1. `test`
+1. `deploy`
+1. `.post`.
+
+The default order may conflict with projects that use any of these default stages in a different order. For example, using `test` before `build` in `stages: [test, build, deploy]`.
+
+#### Avoiding cyclic dependencies
+
+Cyclic dependency errors occur when the stage order in a policy conflicts with the stage order in a project. To avoid these errors:
+
+- Always explicitly define the stages in your policy to ensure the stage order is clear and compatible with your projects. If your policy uses the default stages `build`, `test`, or `deploy`, be aware that the order will be enforced on all projects.
+- When you use only reserved stages (`.pipeline-policy-pre` and `.pipeline-policy-post`), you don't need to define the default stages in your policy as these reserved stages are always placed at the beginning and end of the pipeline.
+
+By following these guidelines, you can create policies that work reliably across projects with different stage configurations.
+
+### `inject_ci` (deprecated)
+
+> [!warning]
+> This feature was [deprecated](https://gitlab.com/gitlab-org/gitlab/-/issues/475152) in GitLab 17.9. Use [`inject_policy`](#inject_policy-type) instead as it supports the enforcement of custom policy stages.
+
+This strategy adds custom CI/CD configurations into the existing project pipeline without completely replacing the project's original CI/CD configuration. It is suitable when you want to enhance or extend the current pipeline with additional steps, such as adding new security scans, compliance checks, or custom scripts.
+
+Having multiple policies enabled injects all jobs additively.
+
+When you use this strategy, a project CI/CD configuration cannot override any behavior defined in the policy pipelines because each pipeline has an isolated YAML configuration.
+
+For projects without a `.gitlab-ci.yml` file, this strategy creates a `.gitlab-ci.yml` file
+implicitly. This allows a pipeline containing only the jobs defined in the pipeline execution policy to
+execute.
+
+> [!note]
+> When a pipeline execution policy uses workflow rules that prevent policy jobs from running, the only jobs that
+> run are the project's CI/CD jobs. If the project uses workflow rules that prevent project CI/CD jobs from running,
+> the only jobs that run are the pipeline execution policy jobs.
+
+### `override_project_ci`
+
+{{< history >}}
+
+- Updated handling of workflow rules:
+  - [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/175088) in GitLab 17.8 [with a feature flag](../../../administration/feature_flags/_index.md) named `policies_always_override_project_ci`. Enabled by default.
+  - [Generally available](https://gitlab.com/gitlab-org/gitlab/-/issues/512877) in GitLab 17.10. Feature flag `policies_always_override_project_ci` removed.
+- Handling of `override_project_ci` [changed](https://gitlab.com/gitlab-org/gitlab/-/issues/504434) to allow scan execution policies to run together with pipeline execution policies, in GitLab 17.9.
+
+{{< /history >}}
+
+This strategy replaces the project's existing CI/CD configuration with a new one defined by the pipeline execution policy. This strategy is ideal when the entire pipeline needs to be standardized or replaced, like when you want to enforce organization-wide CI/CD standards or compliance requirements in a highly regulated industry. To override the pipeline configuration, define the CI/CD jobs and do not use `include:project`.
+
+The strategy takes precedence over other policies that use the `inject_ci` or `inject_policy` strategy. If a policy with `override_project_ci` applies, the project CI/CD configuration is ignored. However, other security policy configurations are not overridden.
+
+When you use `override_project_ci` in a pipeline execution policy together with a scan execution policy,
+the CI/CD configurations are merged and both policies are applied to the resulting pipeline.
+
+Alternatively, you can merge the project's CI/CD configuration with the project's `.gitlab-ci.yml` instead of overriding it. To merge the configuration, use `include:project`. This strategy allows users to include the project CI/CD configuration in the pipeline execution policy configuration, enabling the users to customize the policy jobs. For example, they can combine the policy and project CI/CD configuration into one YAML file to override the `before_script` configuration or define required variables, such as `CS_IMAGE`, to define the required path to the container to scan. Here's a [short demo](https://youtu.be/W8tubneJ1X8) of this behavior.
+The following diagram illustrates how variables defined at the project and policy levels are selected in the resulting pipeline:
+
+```mermaid
+%%{init: { "fontFamily": "GitLab Sans" }}%%
+graph TB
+    accTitle: Variable precedence in pipeline execution policies
+    accDescr: Policy variables take precedence over project variables when jobs are combined into the resulting pipeline.
+
+classDef yaml text-align:left
+
+ActualPolicyYAML["<pre>
+variables:
+  MY_VAR: 'policy'
+policy-job:
+  stage: test
+</pre>"]
+
+class ActualPolicyYAML yaml
+
+ActualProjectYAML["<pre>
+variables:
+  MY_VAR: 'project'
+project-job:
+  stage: test
+</pre>"]
+
+class ActualProjectYAML yaml
+
+PolicyVariablesYAML["<pre>
+variables:
+  MY_VAR: 'policy'
+</pre>"]
+
+class PolicyVariablesYAML yaml
+
+ProjectVariablesYAML["<pre>
+variables:
+  MY_VAR: 'project'
+</pre>"]
+
+class ProjectVariablesYAML yaml
+
+ResultingPolicyVariablesYAML["<pre>
+variables:
+  MY_VAR: 'policy'
+</pre>"]
+
+class ResultingPolicyVariablesYAML yaml
+
+ResultingProjectVariablesYAML["<pre>
+variables:
+  MY_VAR: 'project'
+</pre>"]
+
+class ResultingProjectVariablesYAML yaml
+
+PolicyCiYAML(Policy CI YAML) --> ActualPolicyYAML
+ProjectCiYAML(<code>.gitlab-ci.yml</code>) --> ActualProjectYAML
+
+subgraph "Policy Pipeline"
+  subgraph "Test stage"
+    subgraph "<code>policy-job</code>"
+      PolicyVariablesYAML
+    end
+  end
+end
+
+subgraph "Project Pipeline"
+  subgraph "Test stage"
+    subgraph "<code>project-job</code>"
+      ProjectVariablesYAML
+    end
+  end
+end
+
+ActualPolicyYAML -- "Used as source" --> PolicyVariablesYAML
+ActualProjectYAML -- "Used as source" --> ProjectVariablesYAML
+
+subgraph "Resulting Pipeline"
+  subgraph "Test stage"
+    subgraph "<code>policy-job</code> "
+      ResultingPolicyVariablesYAML
+    end
+
+    subgraph "<code>project-job</code> "
+      ResultingProjectVariablesYAML
+    end
+  end
+end
+
+PolicyVariablesYAML -- "Inject <code>policy-job</code> if Test Stage exists" --> ResultingPolicyVariablesYAML
+ProjectVariablesYAML -- "Basis of the resulting pipeline" --> ResultingProjectVariablesYAML
+```
+
+> [!note]
+> The workflow rules in the pipeline execution policy override the project's original CI/CD configuration.
+> By defining workflow rules in the policy, you can set rules that are enforced across all linked projects,
+> like preventing the use of branch pipelines.
+
+#### Pipeline name
+
+Pipeline execution policies that use the `override_project_ci` strategy override the [pipeline name](../../../ci/yaml/_index.md#workflowname) that is defined in the project's original CI/CD configuration.
+
+You can define the pipeline name in the pipeline execution policy configuration.
+
+If there are multiple pipeline execution policies with the `override_project_ci` strategy, the lowest one in the group hierarchy is applied.
+For example, a policy for the project overrides a policy for the group the project belongs to. A policy for a subgroup takes precedence over a policy for the group the subgroup belongs to.
+
+### Include a project's CI/CD configuration in the pipeline execution policy configuration
+
+When you use the `override_project_ci` strategy, the project configuration can be included into the pipeline execution policy configuration:
+
+```yaml
+include:
+  - project: $CI_PROJECT_PATH
+    ref: $CI_COMMIT_SHA
+    file: $CI_CONFIG_PATH
+    rules:
+      - exists:
+          paths:
+            - '$CI_CONFIG_PATH'
+          project: '$CI_PROJECT_PATH'
+          ref: '$CI_COMMIT_SHA'
+
+compliance_job:
+ ...
+```
+
+> [!note]
+> When a project's `.gitlab-ci.yml` configuration is included in an `override_project_ci` policy
+> using `include:project`, the project configuration becomes part of the policy pipeline.
+> In this scenario, the included project configuration can assign jobs to the reserved stages
+> (`.pipeline-policy-pre` and `.pipeline-policy-post`), because the use of reserved stages is
+> permitted within a policy pipeline. Aside from this exception,
+> [you cannot assign jobs to reserved stages](#job-stage-best-practice).
+
+## CI/CD variables
+
+> [!warning]
+> Don't store sensitive information or credentials in variables because they are stored as part of the plaintext policy configuration
+> in a Git repository.
+
+By default, pipeline execution policies run in isolation, which means they do not apply any variables defined outside of the policy.
+This isolation also affects security scanning templates that use project or group CI/CD variables to
+choose a pipeline type. For example, when a pipeline execution policy injects
+`Dependency-Scanning.v2.gitlab-ci.yml`, the policy job does not automatically receive
+`AST_ENABLE_MR_PIPELINES` from the project or group. If the variable is unavailable, its value is
+`null`, and the dependency scanning v2 template treats `null` like `"true"`. As a result, the policy
+job can run in a merge request pipeline even when a project or group variable sets
+`AST_ENABLE_MR_PIPELINES: "false"`.
+
+To control this behavior, either define `AST_ENABLE_MR_PIPELINES` in the policy CI/CD configuration, or
+allow the variable through `variables_override`:
+
+```yaml
+variables_override:
+  allowed: false
+  exceptions:
+    - AST_ENABLE_MR_PIPELINES
+```
+
+Setting `allowed: false` blocks all project and group variables except those listed in
+`exceptions`. Setting `allowed: true` instead reverses this, which means listing a variable in
+`exceptions` blocks it rather than allowing it.
+
+When you enable the [`variables_override` setting](#variables_override-type) setting, pipeline execution policies can access the following user-defined variables:
+
+- Variables from group CI/CD settings.
+- Variables from project CI/CD settings.
+- Variables specified by users when running a new pipeline.
+
+However, even when the `variables_override` setting is enabled, pipeline execution policies cannot access the following types of variables:
+
+- Variables defined in other policies.
+- Variables defined in the project's `.gitlab-ci.yml` file.
+
+When enabled, the `variables_override` setting allows the policy to access and apply the variables according to standard [CI/CD variable precedence](../../../ci/variables/_index.md#cicd-variable-precedence) rules.
+
+This means a variable allowed by `variables_override` and set in the group or project settings
+takes precedence over the same variable defined in the policy.
+
+When `variables_override` is not set, the precedence depends on the pipeline execution policy strategy:
+
+- `inject_policy` strategy: If the variable is defined in the pipeline execution policy, the job always uses this value. If a variable is not defined in a pipeline execution policy, the job applies the value from the group or project settings.
+- `inject_ci` strategy: If the variable is defined in the pipeline execution policy, the job always uses this value. If a variable is not defined in a pipeline execution policy, the job applies the value from the group or project settings.
+- `override_project_ci` strategy: All jobs in the resulting pipeline are treated as policy jobs. Variables defined in the policy (including those in included files) take precedence over project and group variables. This means that variables from jobs in the CI/CD configuration of the included project take precedence over the variables defined in the project and group settings.
+
+For more details on variable in pipeline execution policies, see [precedence of variable in pipeline execution policies](#precedence-of-variables-in-pipeline-execution-policies).
+
+You can [define project or group variables in the UI](../../../ci/variables/_index.md#define-a-cicd-variable-in-the-ui).
+
+### Precedence of variables in pipeline execution policies
+
+When you use pipeline execution policies, especially with the `override_project_ci` strategy, the precedence of variable values defined in multiple places can differ from standard GitLab CI/CD pipelines. These are some important points to understand:
+
+- When using `override_project_ci`, all jobs in the resulting pipeline are considered policy jobs, including those from the CI/CD configurations of included projects.
+- Variables defined in a policy pipeline (for the entire instance or for a job) take precedence over variables defined in the project or group settings.
+- This behavior applies to all jobs, including those included from the project's CI/CD configuration file (`.gitlab-ci.yml`).
+
+#### Example
+
+If a variable in a project's CI/CD configuration and a job variable defined in an included `.gitlab-ci.yml` file have the same name, the job variable takes precedence when using `override_project_ci`.
+
+In the project's CI/CD settings, a `MY_VAR` variable is defined:
+
+- Key: `MY_VAR`
+- Value: `Project configuration variable value`
+
+In `.gitlab-ci.yml` of the included project, the same variable is defined:
+
+```yaml
+project-job:
+  variables:
+    MY_VAR: "Project job variable value"
+  script:
+    - echo $MY_VAR  # This will output "Project job variable value"
+```
+
+In this case, the job variable value `Project job variable value` takes precedence.
+
+### Prefill variables in manually-run pipelines
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/527021) in GitLab 18.5.
+
+{{< /history >}}
+
+> [!warning]
+> This feature does not work with pipeline execution policies created before GitLab 18.5.
+> To use this feature with older pipeline execution policies, you can either:
+>
+> - Make any change to the existing YAML configuration files for the pipeline execution policies.
+> - Copy, delete, and recreate the policies.
+>
+> For more information, see [recreate pipeline execution policies](#recreate-pipeline-execution-policies).
+
+You can use the `description`, `value`, and `options` keywords to define CI/CD variables
+that are [prefilled when a user runs a pipeline manually](../../../ci/pipelines/_index.md#prefill-variables-in-manual-pipelines).
+Use the description to provide relevant information, such as what the variable is used for and what the acceptable values are.
+
+You cannot prefill job-specific variables.
+
+In manually-triggered pipelines, the **New pipeline** page displays all pipeline variables that have a `description` defined in the CI/CD configuration, from all applicable policies.
+
+You must configure the prefilled variables as allowed using [`variables_override`](#variables_override-type),
+otherwise the values used when manually triggering the pipelines are ignored.
+
+#### Missing prefilled variables with `override_project_ci`
+
+When a project is assigned a pipeline execution policy that uses the
+[`override_project_ci`](#override_project_ci) strategy, the **New pipeline** page might not show
+the policy's prefilled variables. This issue occurs when the project's `.gitlab-ci.yml` file is not
+a valid CI/CD configuration on its own. For example, a file that contains only a `variables:` block
+and no jobs returns the error `jobs config should contain at least one visible job` when GitLab
+tries to list the prefilled variables.
+
+The pipeline itself still runs correctly, because the policy supplies the missing jobs when the
+pipeline is created. The issue affects only the **New pipeline** page's display of prefilled
+variables.
+
+As a workaround, add a visible job to the project's `.gitlab-ci.yml` file, so the file is valid on
+its own. Give the job a `rules:` clause with `when: never`, so it is never actually added to a
+pipeline:
+
+```yaml
+variables:
+  SOME_VAR: "value"
+
+placeholder-job:
+  script:
+    - echo "Placeholder job that keeps this configuration valid on its own."
+  rules:
+    - when: never
+```
+
+A hidden job (one whose name starts with a period) does not work as a substitute, because the
+configuration must contain at least one visible job.
+
+Use this workaround only if your project relies on the policy to provide its jobs. If the policy
+does not apply to a branch, a configuration whose only job never runs does not create a pipeline.
+
+For more information, see [issue 600124](https://gitlab.com/gitlab-org/gitlab/-/issues/600124).
+
+#### Recreate pipeline execution policies
+
+To recreate a pipeline execution policy:
+
+<!-- markdownlint-disable MD044 -->
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Policies**.
+1. Select the pipeline execution policy you want to recreate.
+1. In the right sidebar, select the **YAML** tab and copy the contents of the entire policy file.
+1. Next to the policies table, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}), and select **Delete**.
+1. Merge the generated merge request.
+1. Go back to **Secure** > **Policies** and select **New policy**.
+1. In the **Pipeline execution policy** section, select **Select policy**.
+1. In the **.yaml mode**, paste the contents of the old policy.
+1. Select **Update via merge request** and merge the generated merge request.
+
+<!-- markdownlint-enable MD044 -->
+
+## Ensuring that security-critical policies execute
+
+When you implement pipeline execution policies for security and compliance purposes, consider the following best practices to ensure your policies cannot be bypassed or compromised.
+
+### Avoid `changes:` rules for security-critical jobs
+
+In security-critical pipeline policies, avoid using the `changes:` rules as they can produce unexpected results on branch pipelines. The `changes:` keyword relies on SHA-based diffs and can be bypassed in certain scenarios, such as when using `git commit --amend` followed by force push.
+
+When using `git commit --amend` followed by a force push, GitLab calculates changed files differently:
+
+1. First push (standard commit):
+   1. GitLab compares the new commit against its parent.
+   1. GitLab detects that the target file was changed.
+   1. The `changes: [filename]` rule triggers correctly.
+
+1. Second push (amended commit with `--force`):
+   1. The amended commit replaces the previous one entirely with a new SHA.
+   1. GitLab calculates changes using `git diff HEAD~`, which compares against the previous commit on the branch.
+   1. Because the previous commit on that branch also had the same file changes, the diff shows **no new changes**.
+   1. The `changes:` rule does not trigger.
+
+Instead, use conditions that cannot be bypassed:
+
+```yaml
+check-critical-files:
+  stage: .pipeline-policy-pre
+  script:
+    - |
+      # Check if critical files differ from the target branch
+      if git diff origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME --name-only | grep -q "Makefile\|\.gitlab-ci\.yml"; then
+        echo "Critical files have been modified"
+        exit 1
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: always
+```
+
+Alternatively, run the policy check on every pipeline without the `changes:` condition:
+
+```yaml
+security-check:
+  stage: .pipeline-policy-pre
+  script:
+    - echo "Running security checks"
+    - ./run-security-checks.sh
+  rules:
+    - when: always
+```
+
+For more information about `changes:` behavior, see [jobs or pipelines run unexpectedly when using `changes`](../../../ci/jobs/job_troubleshooting.md#jobs-or-pipelines-run-unexpectedly-when-using-changes).
+
+### Use the `.pipeline-policy-pre` stage for critical security checks
+
+Jobs in the `.pipeline-policy-pre` stage are designed for security and compliance use cases.
+All other pipeline jobs wait until this stage completes before they start.
+If the `.pipeline-policy-pre` stage fails, all subsequent jobs are skipped.
+
+#### Detect duplicate security configurations
+
+You can use `.pipeline-policy-pre` to create custom validation jobs that check for existing
+security configurations and provide guidance. For example, when you enforce security scans across an organization with pipeline execution policies, but some projects already have their own security scanning implementations, you can use `.pipeline-policy-pre` to identify duplicated scans.
+
+Example policy CI/CD configuration:
+
+```yaml
+# policy-ci.yml
+check-duplicate-scans:
+  stage: .pipeline-policy-pre
+  script:
+    - |
+      echo "Checking for duplicate security scan configurations..."
+      if [ -f ".gitlab-ci.yml" ]; then
+        if grep -q "secret_detection:" .gitlab-ci.yml || \
+           grep -q "sast:" .gitlab-ci.yml || \
+           grep -q "dependency_scanning:" .gitlab-ci.yml || \
+           grep -q "container_scanning:" .gitlab-ci.yml; then
+          echo "WARNING: Duplicate security scans detected."
+          echo ""
+          echo "This project has security scans defined in .gitlab-ci.yml"
+          echo "that might duplicate the scans enforced by pipeline execution policies."
+          echo ""
+          echo "To avoid redundant scans and reduce pipeline time:"
+          echo "1. Review your .gitlab-ci.yml for security scanning jobs."
+          echo "2. Remove duplicate jobs (secret_detection, sast, dependency_scanning, and so on)."
+          echo "3. The pipeline execution policy ensures these scans still run."
+          echo ""
+          echo "For questions, contact your security team."
+        else
+          echo "No duplicate security scans detected."
+        fi
+      fi
+  allow_failure: true
+  rules:
+    - when: always
+```
+
+This configuration:
+
+- Detects potential duplicate configurations without blocking pipelines.
+- Provides actionable guidance to development teams.
+- Maintains visibility into which projects need cleanup.
+- Avoids the complexity of automatically removing jobs, which could have unintended consequences.
+
+You can extend this example to check for other configuration issues or to generate reports
+for security teams to track compliance across projects.
+
+### Control variable overrides
+
+Use the [`variables_override`](#variables_override-type) configuration to prevent users from overriding critical security variables by disabling security scans or modifying critical security configurations.
+
+```yaml
+variables_override:
+  allowed: false
+  exceptions:
+    - CS_IMAGE  # Allow customization of container image only
+```
+
+### Secure job naming
+
+Use unique, descriptive job names with prefixes to prevent conflicts and make it clear to users that jobs are security-enforced:
+
+```yaml
+# Good: Clear security policy job name
+security-policy:sast-scan:
+  stage: .pipeline-policy-pre
+  script: ...
+
+# Avoid: Generic name that could conflict
+sast:
+  stage: .pipeline-policy-pre
+  script: ...
+```
+
+## Behavior with `[no_pipeline]`
+
+By default, to prevent a regular pipeline from being created, users can push a commit to a protected branch with `[no_pipeline]` in push options. However, jobs defined with a pipeline execution policy are always triggered, as the policy ignores the `[no_pipeline]` directive. This prevents developers from skipping the execution of jobs defined in the policy, which ensures that critical security and compliance checks are always performed.
+
+For more flexible control over `[no_pipeline]` behavior, see the [`no_pipeline` type](#no_pipeline-type) section.
+
+## Behavior with `[skip ci]`
+
+By default, to prevent a regular pipeline from triggering, users can push a commit to a protected branch with `[skip ci]` in the commit message. However, jobs defined with a pipeline execution policy are always triggered, as the policy ignores the `[skip ci]` directive. This prevents developers from skipping the execution of jobs defined in the policy, which ensures that critical security and compliance checks are always performed.
+
+For more flexible control over `[skip ci]` behavior, see the [`skip_ci` type](#skip_ci-type) section.
+
+## Examples
+
+These examples demonstrate what you can achieve with pipeline execution policies.
+
+### Pipeline execution policy
+
+You can use the following example in a `.gitlab/security-policies/policy.yml` file stored in a
+[security policy project](enforcement/security_policy_projects.md):
+
+```yaml
+---
+pipeline_execution_policy:
+- name: My pipeline execution policy
+  description: Enforces CI/CD jobs
+  enabled: true
+  pipeline_config_strategy: override_project_ci
+  content:
+    include:
+    - project: my-group/pipeline-execution-ci-project
+      file: policy-ci.yml
+      ref: main # optional
+  policy_scope:
+    projects:
+      including:
+      - id: 361
+```
+
+### Customize enforced jobs based on project variables
+
+Pipeline execution policies adapt their behavior based on project-specific variables.
+You can create flexible policies that provide sensible defaults while allowing individual
+projects to customize certain aspects of the enforced jobs.
+
+#### Variable evaluation
+
+Rules in pipeline execution policies (such as `if: $PROJECT_CS_IMAGE`) are evaluated during policy execution, not based on the project's context. This means:
+
+- Project variables are available in the policy using their standard names (for example, `$PROJECT_CS_IMAGE`).
+- Project variables can take precedence over the policy-defined variables.
+- The evaluation on which variable to use happens when GitLab constructs the policy pipeline.
+
+#### Variable naming patterns
+
+When you create customizable policies, follow these naming conventions:
+
+- Policy variables: Use standard names (for example, `CS_IMAGE`) for default values.
+- Project override variables: Use descriptive prefixes (for example, `PROJECT_CS_IMAGE`) to clearly indicate their purpose.
+
+This pattern prevents naming conflicts and makes the intent clear.
+
+#### Example: Container scanning with customizable image
+
+This example shows how to create a policy that uses a default container image but allows projects to specify their own image:
+
+```yaml
+variables:
+  CS_ANALYZER_IMAGE: "$CI_TEMPLATE_REGISTRY_HOST/security-products/container-scanning:8"
+  CS_IMAGE: alpine:latest  # Default fallback value
+
+policy::container-security:
+  stage: .pipeline-policy-pre
+  rules:
+    - if: $PROJECT_CS_IMAGE  # Check if project defined a custom image
+      variables:
+        CS_IMAGE: $PROJECT_CS_IMAGE  # Use project's custom image
+    - when: always  # Always run the job (with default or custom image)
+  script:
+    - echo "CS_ANALYZER_IMAGE:$CS_ANALYZER_IMAGE"
+    - echo "CS_IMAGE:$CS_IMAGE"
+```
+
+How this works:
+
+1. Default behavior: If no `PROJECT_CS_IMAGE` is defined in the project, `CS_IMAGE` remains `alpine:latest`.
+1. Custom behavior: If a project defines `PROJECT_CS_IMAGE`, that value overrides `CS_IMAGE`.
+1. Rule evaluation: The `if: $PROJECT_CS_IMAGE` condition is evaluated in the policy context and can access project variables.
+1. Variable precedence: The policy's variable assignment takes precedence over the default value.
+
+To customize the container image, projects must define `PROJECT_CS_IMAGE` as a [project variable](../../../ci/variables/_index.md#for-a-project), not specify it in the `.gitlab-ci.yml` file.
+
+#### Summary of variable considerations
+
+Variable sources:
+
+- Project variables must be defined in the project's CI/CD settings, not in `.gitlab-ci.yml`.
+- Policies can also access group variables and instance variables using their standard names.
+- Policy variables take precedence over project variables when both are defined with the same name.
+
+Rule evaluation:
+
+- All `rules:` conditions in pipeline execution policies are evaluated when the policy executes. This means policies can access and react to project-specific variables.
+- The evaluation happens during pipeline construction, before any jobs execute.
+
+Best practices:
+
+- Use descriptive variable names with prefixes (for example, `PROJECT_*`) for project overrides.
+- Always provide sensible defaults in the policy.
+- Document the available customization variables for your users.
+
+### Customize enforced jobs using `.gitlab-ci.yml` and artifacts
+
+Because policy pipelines run in isolation, pipeline execution policies cannot read variables from `.gitlab-ci.yml` directly.
+If you want to use the variables in `.gitlab-ci.yml` instead of defining them in the project's CI/CD configuration,
+you can use artifacts to pass variables from the `.gitlab-ci.yml` configuration to the pipeline execution policy's pipeline.
+
+```yaml
+# .gitlab-ci.yml
+
+build-job:
+  stage: build
+  script:
+    - echo "BUILD_VARIABLE=value_from_build_job" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+```
+
+```yaml
+stages:
+- build
+- test
+
+test-job:
+  stage: test
+  script:
+    - echo "$BUILD_VARIABLE" # Prints "value_from_build_job"
+```
+
+### Customize security scanner's behavior with `before_script` in project configurations
+
+To customize the behavior of a security job enforced by a policy in the project's `.gitlab-ci.yml`, you can override `before_script`.
+To do so, use the `override_project_ci` strategy in the policy and include the project's CI/CD configuration. Example pipeline execution policy configuration:
+
+```yaml
+# policy.yml
+type: pipeline_execution_policy
+name: Secret detection
+description: >
+  This policy enforces secret detection and allows projects to override the
+  behavior of the scanner.
+enabled: true
+pipeline_config_strategy: override_project_ci
+content:
+  include:
+    - project: gitlab-org/pipeline-execution-policies/compliance-project
+      file: secret-detection.yml
+```
+
+```yaml
+# secret-detection.yml
+include:
+  - project: $CI_PROJECT_PATH
+    ref: $CI_COMMIT_SHA
+    file: $CI_CONFIG_PATH
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+```
+
+In the project's `.gitlab-ci.yml`, you can define `before_script` for the scanner:
+
+```yaml
+include:
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+secret_detection:
+  before_script:
+    - echo "Before secret detection"
+```
+
+By using `override_project_ci` and including the project's configuration, it allows for YAML configurations to be merged.
+
+### Configure resource-specific variable control
+
+You can allow teams to set global variables that can override pipeline execution policy variables, while still permitting job-specific overrides. This allows teams to set appropriate defaults for security scans, but use appropriate resources for other jobs.
+
+Include in your `resource-optimized-scans.yml`:
+
+```yaml
+variables:
+  # Default resource settings for all jobs
+  KUBERNETES_MEMORY_REQUEST: 4Gi
+  KUBERNETES_MEMORY_LIMIT: 4Gi
+  # Default values that teams can override via project variables
+  SAST_KUBERNETES_MEMORY_REQUEST: 4Gi
+
+sast:
+  variables:
+    SAST_EXCLUDED_ANALYZERS: 'spotbugs'
+    KUBERNETES_MEMORY_REQUEST: $SAST_KUBERNETES_MEMORY_REQUEST
+    KUBERNETES_MEMORY_LIMIT: $SAST_KUBERNETES_MEMORY_REQUEST
+```
+
+Include in your `policy.yml`:
+
+```yaml
+pipeline_execution_policy:
+- name: Resource-Optimized Security Policy
+  description: Enforces security scans with efficient resource management
+  enabled: true
+  pipeline_config_strategy: inject_ci
+  content:
+    include:
+    - project: security/policy-templates
+      file: resource-optimized-scans.yml
+      ref: main
+
+  variables_override:
+    allowed: false
+    exceptions:
+      # Allow scan-specific resource overrides
+      - SAST_KUBERNETES_MEMORY_REQUEST
+      - SECRET_DETECTION_KUBERNETES_MEMORY_REQUEST
+      - CS_KUBERNETES_MEMORY_REQUEST
+      # Allow necessary scan customization
+      - CS_IMAGE
+      - SAST_EXCLUDED_PATHS
+```
+
+This approach allows teams to set scan-specific resource variables (like `SAST_KUBERNETES_MEMORY_REQUEST`) using variable overrides without affecting all jobs in their pipeline, which provides better resource management for large projects. This example also shows the use of other common scan customization options that you can extend to developers. Make sure you document the available variables so your development teams can leverage them.
+
+### Use group or project variables in a pipeline execution policy
+
+You can use group or project variables in a pipeline execution policy.
+
+With a project variable of `PROJECT_VAR="I'm a project"` the following pipeline execution policy job results in: `I'm a project`.
+
+```yaml
+pipeline execution policy job:
+    stage: .pipeline-policy-pre
+    script:
+    - echo "$PROJECT_VAR"
+```
+
+### Include variables from the project configuration in a pipeline execution policy
+
+Pipeline execution policies run in their own isolated context, which means variables defined in a project's `.gitlab-ci.yml` file are not automatically available to the policy jobs. However, you can include project-defined variables by referencing a separate variables file from your project.
+
+Use this approach when:
+
+- You need to use custom naming conventions for Docker containers.
+- You want to maintain project-specific configurations that the policy should respect.
+- You have multiple containers with different names but built from the same project.
+
+#### Example: Include project variables file
+
+Create a variables file in your project repository (for example, `gitlab-variables.yml`):
+
+```yaml
+# gitlab-variables.yml
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+  CS_IMAGE: ${CI_REGISTRY_IMAGE}:build
+  CUSTOM_VARIABLE: "custom-value"
+```
+
+In your pipeline execution policy configuration, include this variables file:
+
+```yaml
+# Pipeline execution policy configuration
+include:
+  - project: $CI_PROJECT_PATH
+    ref: $CI_COMMIT_SHA
+    file: 'gitlab-variables.yml'
+  - template: Jobs/Container-Scanning.gitlab-ci.yml
+
+container_scanning:
+  stage: test
+  before_script:
+    - echo "CS_IMAGE = $CS_IMAGE"
+    - echo "CUSTOM_VARIABLE = $CUSTOM_VARIABLE"
+```
+
+This configuration:
+
+1. Includes the `gitlab-variables.yml` file from the project being scanned.
+1. Makes the variables defined in that file available to the policy jobs.
+1. Allows each project to define its own variable values while maintaining a consistent policy structure.
+
+#### Important considerations
+
+- Variable precedence: Variables included from the project file follow the standard [variable precedence rules](#precedence-of-variables-in-pipeline-execution-policies) for pipeline execution policies.
+- File location: The variables file can be located anywhere in your project repository. Use a descriptive name and location to make it easy to find and maintain.
+- Avoid including full CI/CD configuration: When you use this approach, include only the variables file, not the entire `.gitlab-ci.yml`. Including the full CI/CD configuration can cause job duplication.
+- Security: Don't store sensitive information in the variables file. Use [CI/CD variables](../../../ci/variables/_index.md#define-a-cicd-variable-in-the-ui) defined in the project or group settings for sensitive data.
+
+#### Alternative: Use project CI/CD settings
+
+If you don't require dynamically set variables, you can set a constant in the project's CI/CD settings (**Settings** > **CI/CD** > **Variables**) instead of using a separate file. These variables are automatically available to pipeline execution policy jobs without additional configuration.
+
+### Enforce a variable's value by using a pipeline execution policy
+
+The value of a variable defined in a pipeline execution policy overrides the value of a group or policy variable with the same name.
+In this example, the project value of variable `PROJECT_VAR` is overwritten and the job results in: `I'm a pipeline execution policy`.
+
+```yaml
+variables:
+  PROJECT_VAR: "I'm a pipeline execution policy"
+
+pipeline execution policy job:
+    stage: .pipeline-policy-pre
+    script:
+    - echo "$PROJECT_VAR"
+```
+
+### Example `policy.yml` with security policy scopes
+
+In this example, the security policy's `policy_scope`:
+
+- Includes any project with compliance frameworks with an ID of `9` applied to them.
+- Excludes projects with an ID of `456`.
+
+```yaml
+pipeline_execution_policy:
+- name: Pipeline execution policy
+  description: ''
+  enabled: true
+  pipeline_config_strategy: inject_policy
+  content:
+    include:
+    - project: my-group/pipeline-execution-ci-project
+      file: policy-ci.yml
+  policy_scope:
+    compliance_frameworks:
+    - id: 9
+    projects:
+      excluding:
+      - id: 456
+```
+
+### Configure `ci_skip` in a pipeline execution policy
+
+In the following example, the pipeline execution policy is enforced, and [skipping CI](#skip_ci-type) is disallowed except for the user with ID `75`.
+
+```yaml
+pipeline_execution_policy:
+  - name: My pipeline execution policy with ci.skip exceptions
+    description: 'Enforces CI/CD jobs'
+    enabled: true
+    pipeline_config_strategy: inject_policy
+    content:
+      include:
+        - project: group-a/project1
+          file: README.md
+    skip_ci:
+      allowed: false
+      allowlist:
+        users:
+          - id: 75
+```
+
+### Configure `ci_no_pipeline` in a pipeline execution policy
+
+In the following example, the pipeline execution policy is enforced, and [no create CI](#no_pipeline-type) is disallowed except for the user with ID `75`.
+
+```yaml
+pipeline_execution_policy:
+  - name: My pipeline execution policy with ci.no_pipeline exceptions
+    description: 'Enforces CI/CD jobs'
+    enabled: true
+    pipeline_config_strategy: inject_policy
+    content:
+      include:
+        - project: group-a/project1
+          file: README.md
+    no_pipeline:
+      allowed: false
+      allowlist:
+        users:
+          - id: 75
+```
+
+### Configure the `exists` condition
+
+Use the `exists` rule to configure the pipeline execution policy to include the CI/CD configuration file from the project when a certain file exists.
+
+In the following example, the pipeline execution policy includes the CI/CD configuration from the project if a `Dockerfile` exists. You must set the `exists` rule to use `'$CI_PROJECT_PATH'` as the `project`, otherwise GitLab evaluates where the files exists in the project that holds the security policy CI/CD configuration.
+
+```yaml
+include:
+  - project: $CI_PROJECT_PATH
+    ref: $CI_COMMIT_SHA
+    file: $CI_CONFIG_PATH
+    rules:
+      - exists:
+          paths:
+            - 'Dockerfile'
+          project: '$CI_PROJECT_PATH'
+```
+
+To use this approach, the group or project must use the `override_project_ci` strategy.
+
+### Validate pipeline stages and jobs with `CI_JOB_TOKEN`
+
+You can use `CI_JOB_TOKEN` in a `.pipeline-policy-pre` job to call the GitLab API and validate
+that the pipeline stages and jobs is in the list of approved stages or jobs. This pattern is useful when you want to
+prevent projects from using unapproved CI/CD stages and jobs.
+
+The following example script fetches the pipeline's jobs from the API, extracts the unique stages
+and job names, and checks each one against the `APPROVED_STAGES` and `APPROVED_JOBS` variables.
+If an unapproved stage or job is found, the pipeline fails before any other jobs run.
+
+Define `APPROVED_STAGES` and `APPROVED_JOBS` as
+[CI/CD variables](../../../ci/variables/_index.md) in the project, group, or policy configuration.
+
+```yaml
+validate-pipeline:
+  stage: .pipeline-policy-pre
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl jq bash
+  script:
+    - |
+      #!/bin/bash
+
+      echo "Checking pipeline stages and jobs..."
+
+      # Fetch pipeline jobs using CI_JOB_TOKEN
+      api_url="$CI_API_V4_URL/projects/$CI_PROJECT_ID/pipelines/$CI_PIPELINE_ID/jobs"
+      echo "API URL: $api_url"
+
+      jobs=$(curl --silent --header "JOB-TOKEN: $CI_JOB_TOKEN" "$api_url")
+      echo "Fetched Jobs: $jobs"
+
+      if [[ "$jobs" == *"404 Project Not Found"* ]]; then
+        echo "Failed to authenticate with GitLab API: Project not found"
+        exit 1
+      fi
+
+      # Extract stages and jobs
+      pipeline_stages=$(echo "$jobs" | jq -r '.[].stage' | sort | uniq | tr '\n' ',')
+      pipeline_jobs=$(echo "$jobs" | jq -r '.[].name' | sort | uniq | tr '\n' ',')
+
+      echo "Pipeline Stages: $pipeline_stages"
+      echo "Pipeline Jobs: $pipeline_jobs"
+
+      # Check if pipeline stages are approved
+      for stage in $(echo $pipeline_stages | tr ',' ' '); do
+        echo "Checking stage: $stage"
+        if ! [[ ",$APPROVED_STAGES," =~ ",$stage," ]]; then
+          echo "Stage $stage is not approved."
+          exit 1
+        fi
+      done
+
+      # Check if pipeline jobs are approved
+      for job in $(echo $pipeline_jobs | tr ',' ' '); do
+        echo "Checking job: $job"
+        if ! [[ ",$APPROVED_JOBS," =~ ",$job," ]]; then
+          echo "Job $job is not approved."
+          exit 1
+        fi
+      done
+```
+
+### Enforce a container scanning `component` using a pipeline execution policy
+
+You can use security scan components to improve the handling and enforcement of versioning.
+
+```yaml
+include:
+  - component: gitlab.com/components/container-scanning/container-scanning@main
+    inputs:
+      cs_image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+container_scanning: # override component with additional configuration
+  variables:
+    CS_REGISTRY_USER: $CI_REGISTRY_USER
+    CS_REGISTRY_PASSWORD: $CI_REGISTRY_PASSWORD
+    SECURE_LOG_LEVEL: debug # add for verbose debugging of the container scanner
+  before_script:
+  - echo $CS_IMAGE # optionally add a before_script for additional debugging
+```

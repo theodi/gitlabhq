@@ -1,0 +1,665 @@
+package duoworkflow
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	redsync "github.com/go-redsync/redsync/v4"
+	redis "github.com/redis/go-redis/v9"
+	pb "gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/clients/gopb/contract"
+	"google.golang.org/protobuf/proto"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/api"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/log"
+)
+
+var errFailedToAcquireLockError = errors.New("handleClientEvents: failed to acquire lock")
+
+// Stamped unconditionally: a client must not get to choose its own value here.
+func markClientInjected(tools []*pb.McpTool) {
+	for _, tool := range tools {
+		tool.ClientInjected = proto.Bool(true)
+	}
+}
+
+type workflowStream interface {
+	Send(*pb.ClientEvent) error
+	Recv() (*pb.Action, error)
+	CloseSend() error
+}
+
+type selfHostedWorkflowStream interface {
+	Send(*pb.TrackSelfHostedClientEvent) error
+	Recv() (*pb.TrackSelfHostedAction, error)
+	CloseSend() error
+}
+
+// teardownReason explains why an ExecuteWorkflow stream ended, so that
+// sessionErrorsTotal can show what sits behind each gRPC code. Workhorse
+// records it as soon as it learns the cause, which always happens before the
+// resulting teardown reaches Recv.
+type teardownReason int32
+
+const (
+	// teardownUnsolicited means nothing on the workhorse side asked for this
+	// teardown: the stream ended on its own, so DWS closed it or the transport
+	// between the two failed. This is the zero value, so a session where
+	// workhorse never noticed anything reports it.
+	teardownUnsolicited teardownReason = iota
+
+	// teardownClientNormalClose means the client closed the WebSocket with a
+	// normal code (1000 or 1001): the user closed the browser tab or the IDE
+	// panel, or stopped the flow.
+	teardownClientNormalClose
+
+	// teardownClientPongTimeout means the client stopped answering pings.
+	teardownClientPongTimeout
+
+	// teardownClientKeepaliveFailed means writing a keepalive to the client
+	// failed, so its connection was already gone.
+	teardownClientKeepaliveFailed
+
+	// teardownClientReadFailed means reading from the client failed in a way
+	// ReadError does not treat as an orderly disconnect: an abnormal WebSocket
+	// closure, a connection reset, or an unparsable message. No
+	// StopWorkflowRequest is sent on this path; the stream is torn down
+	// locally, which is why it must not be confused with teardownUnsolicited.
+	teardownClientReadFailed
+
+	// teardownWorkhorseShutdown means this workhorse instance is draining.
+	teardownWorkhorseShutdown
+)
+
+// String returns the value used for the teardown_reason metric label.
+func (t teardownReason) String() string {
+	switch t {
+	case teardownClientNormalClose:
+		return "client_normal_close"
+	case teardownClientPongTimeout:
+		return "client_pong_timeout"
+	case teardownClientKeepaliveFailed:
+		return "client_keepalive_failed"
+	case teardownClientReadFailed:
+		return "client_read_failed"
+	case teardownWorkhorseShutdown:
+		return "workhorse_shutdown"
+	default:
+		return "unsolicited"
+	}
+}
+
+// clientDisconnectReason maps a StopWorkflowRequest reason that ReadError
+// produced onto its teardown category. ReadError only reports a reason for
+// disconnects it considers orderly; anything else is teardownClientReadFailed.
+func clientDisconnectReason(reason string) teardownReason {
+	switch {
+	case reason == reasonPongTimeout:
+		return teardownClientPongTimeout
+	case strings.HasPrefix(reason, reasonClosePrefix):
+		return teardownClientNormalClose
+	default:
+		return teardownClientReadFailed
+	}
+}
+
+// stopCoordinator manages the graceful stop handshake between workhorse and DWS.
+// When workhorse needs to stop a workflow (client disconnect, keepalive failure,
+// server shutdown), it sends a StopWorkflowRequest and waits for DWS to
+// acknowledge by closing the gRPC stream with an Unavailable status code.
+type stopCoordinator struct {
+	// requested is set to true when stopWorkflow sends a StopWorkflowRequest
+	// to DWS. It gates whether an Unavailable gRPC error from DWS should be
+	// treated as a stop acknowledgment.
+	requested atomic.Bool
+
+	// acked is closed when DWS acknowledges a stop request by returning a
+	// gRPC Unavailable error on the Recv stream. stopWorkflow selects on this
+	// channel so it can return immediately instead of waiting for the full
+	// timeout.
+	acked chan struct{}
+
+	// agentDone tracks the lifetime of handleAgentMessages. Close waits on
+	// this before tearing down the gRPC stream so that a pending Recv can
+	// observe the DWS stop acknowledgment before the connection is destroyed.
+	agentDone sync.WaitGroup
+
+	// workflowEnded is set to true when handleAgentMessages receives io.EOF,
+	// meaning DWS finished the workflow naturally, or an unsolicited Unavailable,
+	// meaning DWS closed the stream while draining. When this is set,
+	// handleClientEvents should not attempt to send a StopWorkflowRequest
+	workflowEnded atomic.Bool
+
+	// shutdownStarted is set to true at the start of Shutdown. Close only
+	// waits on shutdownDone when this is set, since Shutdown is only invoked
+	// during server shutdown and never in the normal request path.
+	shutdownStarted atomic.Bool
+
+	// shutdownDone is closed by Shutdown when it finishes. Close waits on
+	// this before closing the client transport so that Shutdown always gets to
+	// send its going-away signal before Close terminates the connection.
+	shutdownDone chan struct{}
+}
+
+type runner struct {
+	originalReq         *http.Request
+	httpActionHandler   *runHTTPActionHandler
+	client              clientTransport
+	lockManager         *workflowLockManager
+	workflowID          string
+	mutex               *redsync.Mutex
+	lockFlow            bool
+	serverCapabilities  []string
+	streamManager       *streamManager
+	mcpManager          mcpManager
+	stop                stopCoordinator
+	stopWorkflowTimeout time.Duration
+
+	// teardown holds the teardownReason recorded for this session, read by
+	// Recv when it labels sessionErrorsTotal.
+	teardown atomic.Int32
+}
+
+// recordTeardown notes why the stream is about to end. The first cause recorded
+// wins: anything that fails afterwards is a consequence of it, not an
+// independent cause.
+func (r *runner) recordTeardown(reason teardownReason) {
+	r.teardown.CompareAndSwap(int32(teardownUnsolicited), int32(reason))
+}
+
+// teardownReason reports the cause recorded for the teardown Recv is observing.
+func (r *runner) teardownReason() teardownReason {
+	return teardownReason(r.teardown.Load())
+}
+
+func newRunner(client clientTransport, rails *api.API, backend http.Handler, relativeURLRoot string, r *http.Request, cfg *api.DuoWorkflow, rdb *redis.Client) (*runner, error) {
+	if cfg.Service == nil {
+		return nil, fmt.Errorf("failed to initialize client: Service configuration is nil")
+	}
+
+	lockFlow := cfg.LockConcurrentFlow
+	if lockFlow && rdb == nil {
+		log.WithRequest(r).Info("Workflow locking will be skipped as redis is not configured")
+		lockFlow = false
+	}
+
+	streamManager, err := newStreamManager(r, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize stream manager: %v", err)
+	}
+
+	mcpManager, err := newMcpManager(rails, r, cfg.McpServers)
+	if err != nil {
+		// Log the error while the feature is in development
+		log.WithRequest(r).WithError(err).Info("failed to initialize MCP server(s)")
+	}
+
+	httpActionHandler := &runHTTPActionHandler{
+		backend:                   backend,
+		relativeURLRoot:           relativeURLRoot,
+		token:                     cfg.Service.Headers["x-gitlab-oauth-token"],
+		shouldTimeoutHTTPRequests: cfg.TimeoutHTTPRequests,
+		originalReq:               r,
+		clientType:                cfg.Service.Headers["x-gitlab-client-type"],
+		clientName:                cfg.Service.Headers["x-gitlab-client-name"],
+	}
+
+	rnr := &runner{
+		originalReq:        r,
+		httpActionHandler:  httpActionHandler,
+		client:             client,
+		lockManager:        newWorkflowLockManager(rdb),
+		lockFlow:           lockFlow,
+		serverCapabilities: cfg.ServerCapabilities,
+		streamManager:      streamManager,
+		mcpManager:         mcpManager,
+		stop: stopCoordinator{
+			acked:        make(chan struct{}),
+			shutdownDone: make(chan struct{}),
+		},
+	}
+
+	// Let Recv read back the cause workhorse recorded, so every session error
+	// is labeled with what ended the stream.
+	streamManager.teardownReason = rnr.teardownReason
+
+	return rnr, nil
+}
+
+func (r *runner) Execute(ctx context.Context) error {
+	// Arm the transport before any goroutine reads from it, so liveness
+	// tracking is in place from the very first client event.
+	if err := r.client.Start(); err != nil {
+		return fmt.Errorf("Execute: failed to start client transport: %w", err)
+	}
+
+	errCh := make(chan error, 3) // one slot per goroutine: client reader, agent reader, keepalive
+
+	r.stop.agentDone.Add(1)
+
+	go r.handleClientEvents(errCh)
+	go func() {
+		defer r.stop.agentDone.Done()
+		r.handleAgentMessages(ctx, errCh)
+	}()
+	go r.keepaliveClient(ctx, errCh, r.client.KeepaliveInterval())
+
+	// Unfortunately the lock is acquired in handleClientEvent.  This is
+	// because the workflowID is not known until after we see the startReq. But
+	// we need to keep it as long as either of these connections is running. So
+	// we release it here instead.
+	defer func() {
+		if r.lockFlow {
+			log.WithRequest(r.originalReq).Info("Releasing lock for workflow")
+			r.lockManager.releaseLock(ctx, r.mutex, r.workflowID)
+		}
+	}()
+
+	return <-errCh
+}
+
+// keepaliveClient signals liveness to the client at a fixed interval. A dead
+// client eventually makes ReadClientEvent fail, which terminates
+// handleClientEvents.
+func (r *runner) keepaliveClient(ctx context.Context, errCh chan<- error, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := r.client.Keepalive(); err != nil {
+				r.recordTeardown(teardownClientKeepaliveFailed)
+				errCh <- r.stopAndWrapError("keepaliveClient", reasonKeepaliveFailed, err)
+				return
+			}
+		}
+	}
+}
+
+func (r *runner) handleClientEvents(errCh chan<- error) {
+	for {
+		event, err := r.client.ReadClientEvent()
+		if err != nil {
+			if reason, ok := r.client.ReadError(err); ok {
+				r.recordTeardown(clientDisconnectReason(reason))
+				errCh <- r.stopAndWrapError("handleClientEvents", reason, err)
+			} else {
+				// Not an orderly disconnect, so no stop request is sent and the
+				// stream is torn down locally instead.
+				r.recordTeardown(teardownClientReadFailed)
+				errCh <- fmt.Errorf("handleClientEvents: failed to read a client event: %w", err)
+			}
+			return
+		}
+
+		if err := r.handleClientEvent(event); err != nil {
+			errCh <- err
+			return
+		}
+	}
+}
+
+// stopAndWrapError sends a StopWorkflowRequest and returns the result. If the
+// stop succeeds (DWS acknowledged) it returns nil; otherwise it wraps the error
+// with the given caller label.
+func (r *runner) stopAndWrapError(caller string, reason string, closeErr error) error {
+	stopErr := r.stopWorkflow(reason, closeErr)
+	if stopErr != nil {
+		return fmt.Errorf("%s: %w", caller, stopErr)
+	}
+	return nil
+}
+
+func (r *runner) handleAgentMessages(ctx context.Context, errCh chan<- error) {
+	for {
+		action, err := r.streamManager.Recv()
+		if err != nil {
+			switch {
+			case err == io.EOF:
+				log.WithRequest(r.originalReq).Info("handleAgentMessages: EOF, expected when workflow ends")
+				r.stop.workflowEnded.Store(true)
+				errCh <- nil // Expected error when a workflow ends
+			case errors.Is(err, errStreamUnavailable) && r.stop.requested.Load():
+				log.WithRequest(r.originalReq).Info("handleAgentMessages: DWS acknowledged stop request")
+				close(r.stop.acked)
+				errCh <- nil
+			case errors.Is(err, errStreamUnavailable):
+				// DWS closed the stream on its own, e.g. its instance is draining on
+				// SIGTERM. The session is resumable from its last checkpoint, so tell
+				// the client to reconnect the same way Shutdown does for a workhorse
+				// drain. Nothing is left to stop on the DWS side.
+				log.WithRequest(r.originalReq).Info("handleAgentMessages: DWS closed the stream as unavailable, signaling client to reconnect")
+				r.stop.workflowEnded.Store(true)
+				if clientErr := r.client.SendGoingAway(closeReasonDWSUnavailable); clientErr != nil {
+					log.WithRequest(r.originalReq).WithError(clientErr).Error("handleAgentMessages: failed to signal going away to client")
+				}
+				errCh <- nil
+			case errors.Is(err, errInvalidRequest):
+				log.WithRequest(r.originalReq).WithError(err).Info("handleAgentMessages: DWS rejected reconnect with INVALID_ARGUMENT")
+				if clientErr := r.client.SendInvalidRequest(err.Error()); clientErr != nil {
+					log.WithRequest(r.originalReq).WithError(clientErr).Error("handleAgentMessages: failed to send invalid-request signal")
+				}
+				errCh <- nil
+			default:
+				errCh <- fmt.Errorf("handleAgentMessages: %w", err)
+			}
+			return
+		}
+
+		if err := r.handleAgentAction(ctx, action); err != nil {
+			errCh <- err
+			return
+		}
+	}
+}
+
+func (r *runner) logClose(name string, err error) error {
+	if err != nil {
+		log.WithRequest(r.originalReq).WithFields(log.Fields{
+			"connection_type": name,
+		}).WithError(err).Error("failed to close")
+	} else {
+		log.WithRequest(r.originalReq).WithFields(log.Fields{
+			"connection_type": name,
+		}).Info("closed")
+	}
+	return err
+}
+
+func (r *runner) Close() error {
+	// Wait for handleAgentMessages to finish before closing the gRPC stream, so
+	// that a pending Recv can observe the DWS stop acknowledgment (Unavailable)
+	// before the connection is torn down.
+	//
+	// Only when a stop was actually requested. Otherwise there is no
+	// acknowledgment coming and the wait would block until the stream fails on
+	// its own: a workflow that never started, because the lock was held
+	// elsewhere, leaves DWS waiting on its first Recv and workhorse waiting on
+	// ours.
+	if r.stop.requested.Load() {
+		r.stop.agentDone.Wait()
+	}
+
+	// When a server shutdown is in progress, wait for Shutdown to finish before
+	// closing the client transport. Shutdown signals the client to reconnect;
+	// if Close races ahead and terminates the connection normally first, the
+	// client never sees that signal and won't reconnect to the new instance. In
+	// the normal request path Shutdown is never called, so we must not block on
+	// shutdownDone there.
+	//
+	// Not when the workflow already ended: Shutdown sends nothing to the client
+	// then, and it only wakes on the drain deadline, so waiting would hold a
+	// finished session's connection open for the whole grace period.
+	if r.stop.shutdownStarted.Load() && !r.stop.workflowEnded.Load() {
+		<-r.stop.shutdownDone
+	}
+
+	streamManagerCloseErr := r.logClose("stream manager", r.streamManager.Close())
+	clientCloseErr := r.logClose("client transport", r.client.Close())
+	mcpManagerCloseErr := r.logClose("mcp manager", r.mcpManager.Close())
+
+	return errors.Join(streamManagerCloseErr, clientCloseErr, mcpManagerCloseErr)
+}
+
+func (r *runner) handleClientEvent(response *pb.ClientEvent) error {
+	if startReq := response.GetStartRequest(); startReq != nil {
+		// Acquire distributed lock when workflow starts
+		if r.lockFlow {
+			if err := r.acquireWorkflowLock(startReq); err != nil {
+				return err
+			}
+		}
+
+		// Make the workflow ID available to RunHTTPRequest actions so they can
+		// tag outbound GitLab API calls with X-Gitlab-Duo-Workflow-Id. Runs
+		// outside the lockFlow guard so the header is set even when Redis is
+		// unavailable or LockConcurrentFlow is disabled.
+		if r.httpActionHandler != nil {
+			r.httpActionHandler.workflowID = startReq.WorkflowID
+		}
+
+		r.mcpManager.SetWorkflowID(startReq.WorkflowID)
+
+		for _, tool := range startReq.McpTools {
+			tool.Trusted = nil
+		}
+		markClientInjected(startReq.McpTools)
+
+		startReq.McpTools = append(startReq.McpTools, r.mcpManager.Tools()...)
+		startReq.PreapprovedTools = append(startReq.PreapprovedTools, r.mcpManager.PreApprovedTools()...)
+		startReq.ClientCapabilities = append(
+			intersectClientCapabilities(startReq.ClientCapabilities),
+			intersectServerCapabilities(r.serverCapabilities)...,
+		)
+		log.WithRequest(r.originalReq).WithFields(log.Fields{
+			"client_capabilities": startReq.ClientCapabilities,
+		}).Info("Sending startRequest")
+	}
+
+	if err := r.streamManager.Send(response); err != nil {
+		if err == io.EOF {
+			// ignore EOF to let Recv() fail and return a meaningful message
+			return nil
+		}
+
+		return fmt.Errorf("handleClientEvent: failed to write a gRPC message: %v", err)
+	}
+
+	return nil
+}
+
+func (r *runner) acquireWorkflowLock(startReq *pb.StartWorkflowRequest) error {
+	r.workflowID = startReq.WorkflowID
+
+	if r.workflowID == "" {
+		log.WithRequest(r.originalReq).Error("No workflow ID provided in StartWorkflowRequest")
+		return fmt.Errorf("handleClientEvent: no workflow ID provided in StartWorkflowRequest")
+	}
+
+	// WorkflowDefinition is deprecated, but there is no strategy yet to stop using and eventually
+	// remove it. Legacy/chat flows have no concept of a flow definition until they are migrated to
+	// the flow registry, so this field is still the only value we get for them today.
+	//lint:ignore SA1019 see comment above
+	mutex, err := r.lockManager.acquireLock(r.originalReq.Context(), r.workflowID, startReq.WorkflowDefinition) //nolint:staticcheck // SA1019: see comment above
+	if err != nil && err != errLockIsUnavailable {
+		return errFailedToAcquireLockError
+	}
+
+	r.mutex = mutex
+	return nil
+}
+
+func (r *runner) handleAgentAction(ctx context.Context, action *pb.Action) error {
+	switch action.Action.(type) {
+	case *pb.Action_RunHTTPRequest:
+		event, err := r.httpActionHandler.Execute(ctx, action)
+		if err != nil {
+			return fmt.Errorf("handleAgentAction: failed to perform API call: %v", err)
+		}
+
+		if err := r.streamManager.Send(event); err != nil {
+			return fmt.Errorf("handleAgentAction: failed to send gRPC message: %v", err)
+		}
+
+		log.WithContextFields(r.originalReq.Context(), log.Fields{
+			"path": action.GetRunHTTPRequest().Path,
+		}).Info("Successfully sent HTTP response event")
+	case *pb.Action_RunMCPTool:
+		mcpTool := action.GetRunMCPTool()
+
+		// If a tool is not recongnized, propagate the message to the client
+		// It's possible when a user has local MCP servers configured in IDE
+		if !r.mcpManager.HasTool(mcpTool.Name) {
+			return r.writeActionToClient(ctx, action)
+		}
+
+		event, err := r.mcpManager.CallTool(ctx, action)
+		if err != nil {
+			log.WithContextFields(ctx, log.Fields{
+				"request_id": action.RequestID,
+				"name":       mcpTool.Name,
+			}).WithError(err).Error("handleAgentAction: reporting failed MCP tool call back to DWS")
+
+			return r.sendActionError(action, err)
+		}
+
+		if err := r.streamManager.Send(event); err != nil {
+			return fmt.Errorf("handleAgentAction: failed to send gRPC message: %v", err)
+		}
+	case *pb.Action_TrackLlmCallForSelfHosted:
+		return r.streamManager.HandleCloudServiceTracking(ctx, action)
+	default:
+		return r.writeActionToClient(ctx, action)
+	}
+
+	return nil
+}
+
+// writeActionToClient hands an action to the client for execution. Transports
+// whose client cannot execute actions reject them with errActionUnsupported;
+// those are reported back to Duo Workflow Service as a failed action.
+func (r *runner) writeActionToClient(ctx context.Context, action *pb.Action) error {
+	err := r.client.WriteAction(ctx, action)
+	if !errors.Is(err, errActionUnsupported) {
+		return err
+	}
+
+	log.WithContextFields(ctx, log.Fields{
+		"request_id": action.RequestID,
+	}).WithError(err).Info("writeActionToClient: reporting unsupported action back to DWS")
+
+	return r.sendActionError(action, err)
+}
+
+// sendActionError answers the action with an error so DWS does not wait forever.
+func (r *runner) sendActionError(action *pb.Action, actionErr error) error {
+	event := &pb.ClientEvent{
+		Response: &pb.ClientEvent_ActionResponse{
+			ActionResponse: &pb.ActionResponse{
+				RequestID: action.RequestID,
+				ResponseType: &pb.ActionResponse_PlainTextResponse{
+					PlainTextResponse: &pb.PlainTextResponse{Error: actionErr.Error()},
+				},
+			},
+		},
+	}
+
+	if err := r.streamManager.Send(event); err != nil {
+		return fmt.Errorf("sendActionError: failed to send gRPC message: %w", err)
+	}
+
+	return nil
+}
+
+func (r *runner) stopWorkflow(reason string, closeErr error) error {
+	log.WithRequest(r.originalReq).WithFields(log.Fields{
+		"close_error": closeErr.Error(),
+	}).Info("stopWorkflow: sending stop workflow request...")
+
+	r.stop.requested.Store(true)
+
+	stopRequest := &pb.ClientEvent{
+		Response: &pb.ClientEvent_StopWorkflow{
+			StopWorkflow: &pb.StopWorkflowRequest{
+				Reason: reason,
+			},
+		},
+	}
+
+	if err := r.streamManager.Send(stopRequest); err != nil {
+		return fmt.Errorf("failed to send stop request: %v", err)
+	}
+
+	timeout := r.stopWorkflowTimeout
+	if timeout == 0 {
+		timeout = wsStopWorkflowTimeout
+	}
+
+	select {
+	case <-r.stop.acked:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("workflow didn't stop on time")
+	}
+}
+
+// Shutdown gracefully stops the workflow runner during server shutdown.
+// It first waits for the workflow to finish naturally within the shutdown grace
+// period. If either the request context or the shutdown context expires before
+// the workflow completes, it sends a StopWorkflowRequest to DWS, releases the
+// distributed lock, and signals the client to go away so the executor can
+// reconnect to a new workhorse instance and resume from the last DWS
+// checkpoint.
+// Errors during shutdown are logged but not returned to allow other runners to proceed.
+func (r *runner) Shutdown(ctx context.Context) error {
+	// Signal Close that a shutdown is in progress so it waits for shutdownDone
+	// before closing the WebSocket connection.
+	r.stop.shutdownStarted.Store(true)
+
+	// requestContextDone is set to true when the original request context fires
+	// first. In that case the client is already gone, so we skip the going-away
+	// signal — there is no one to receive it.
+	var requestContextDone bool
+
+	select {
+	case <-r.originalReq.Context().Done():
+		requestContextDone = true
+		log.WithRequest(r.originalReq).Info("Shutdown: request context done, sending stop workflow")
+	case <-ctx.Done():
+		log.WithRequest(r.originalReq).Info("Shutdown: shutdown context done, sending stop workflow")
+	}
+
+	workflowEnded := r.stop.workflowEnded.Load()
+
+	// If the workflow already ended naturally (DWS sent EOF), there is nothing
+	// to stop and no reason to signal going away — the client does not need to
+	// reconnect to resume a workflow that has already finished.
+	if !workflowEnded {
+		r.recordTeardown(teardownWorkhorseShutdown)
+		err := r.stopWorkflow(
+			reasonServerShutdown,
+			fmt.Errorf("duoworkflow: stopping workflow due to server shutdown"),
+		)
+		if err != nil {
+			log.WithRequest(r.originalReq).WithError(err).Info("Shutdown: failed to stop workflow gracefully")
+		} else {
+			log.WithRequest(r.originalReq).Info("Shutdown: workflow stopped gracefully")
+		}
+	}
+
+	// Always release the lock so the executor can acquire it on the new
+	// workhorse instance. Even if the stop request failed or timed out, the
+	// instance is going away and holding the lock would block reconnection
+	// for up to 2 hours (the lock TTL).
+	if r.lockFlow {
+		// Use a detached context because the request context may already be
+		// canceled during shutdown, but we still need to reach Redis.
+		r.lockManager.releaseLock(context.Background(), r.mutex, r.workflowID) // lint:allow context.Background
+	}
+
+	// Signal the client to reconnect. Skip this when the request context fired
+	// first (client is already gone) or when the workflow ended naturally
+	// (nothing to reconnect to).
+	if !requestContextDone && !workflowEnded {
+		if clientErr := r.client.SendGoingAway(closeReasonWorkhorseShutdown); clientErr != nil {
+			log.WithRequest(r.originalReq).WithError(clientErr).Info("Shutdown: failed to signal going away to client")
+		} else {
+			log.WithRequest(r.originalReq).Info("Shutdown: successfully signaled going away to client")
+		}
+	}
+
+	if r.stop.shutdownDone != nil {
+		close(r.stop.shutdownDone)
+	}
+
+	return nil
+}

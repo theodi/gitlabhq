@@ -1,0 +1,13 @@
+#import "./board_list.fragment.graphql"
+
+# @feature_category: portfolio_management
+mutation createBoardList($boardId: BoardID!, $backlog: Boolean, $labelId: LabelID, $position: Int) {
+  boardListCreate(
+    input: { boardId: $boardId, backlog: $backlog, labelId: $labelId, position: $position }
+  ) {
+    list {
+      ...BoardListFragment
+    }
+    errors
+  }
+}

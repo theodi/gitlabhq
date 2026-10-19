@@ -1,0 +1,20 @@
+---
+name: organization_owner
+description: User who owns an organization and can administer its settings and members.
+inherits_from:
+- organization_user
+organization:
+  permissions: []
+  raw_permissions:
+  - access_organization_admin_area
+  - create_organization_user
+  - delete_organization
+  - delete_organization_user
+  - read_admin_users
+  - read_organization_user
+  - read_user_access_level
+  - read_user_groups
+  - transfer_group
+  - update_integration
+  - update_organization
+  - update_organization_user

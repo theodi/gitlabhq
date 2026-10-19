@@ -1,0 +1,106 @@
+<script>
+import { selectDiffLines } from '../lib/utils/diff_utils';
+import SuggestionDiffHeader from './suggestion_diff_header.vue';
+import SuggestionDiffRow from './suggestion_diff_row.vue';
+
+export default {
+  name: 'SuggestionDiff',
+  components: {
+    SuggestionDiffHeader,
+    SuggestionDiffRow,
+  },
+  props: {
+    suggestion: {
+      type: Object,
+      required: true,
+    },
+    batchSuggestionsInfo: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    disabled: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    helpPagePath: {
+      type: String,
+      required: true,
+    },
+    defaultCommitMessage: {
+      type: String,
+      required: true,
+    },
+    suggestionsCount: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    failedToLoadMetadata: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['add-to-batch', 'apply', 'apply-batch', 'remove-from-batch'],
+  computed: {
+    batchSuggestionsCount() {
+      return this.batchSuggestionsInfo.length;
+    },
+    isBatched() {
+      return Boolean(
+        this.batchSuggestionsInfo.find(({ suggestionId }) => suggestionId === this.suggestion.id),
+      );
+    },
+    lines() {
+      return selectDiffLines(this.suggestion.diff_lines);
+    },
+  },
+  methods: {
+    applySuggestion(callback, message) {
+      this.$emit('apply', { suggestionId: this.suggestion.id, callback, message });
+    },
+    applySuggestionBatch(message) {
+      this.$emit('apply-batch', message);
+    },
+    addSuggestionToBatch() {
+      this.$emit('add-to-batch', this.suggestion.id);
+    },
+    removeSuggestionFromBatch() {
+      this.$emit('remove-from-batch', this.suggestion.id);
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="md-suggestion">
+    <suggestion-diff-header
+      class="js-suggestion-diff-header"
+      :suggestions-count="suggestionsCount"
+      :can-apply="suggestion.appliable && suggestion.current_user.can_apply && !disabled"
+      :is-applied="suggestion.applied"
+      :is-batched="isBatched"
+      :is-applying-batch="suggestion.is_applying_batch"
+      :batch-suggestions-count="batchSuggestionsCount"
+      :help-page-path="helpPagePath"
+      :default-commit-message="defaultCommitMessage"
+      :inapplicable-reason="suggestion.inapplicable_reason"
+      :failed-to-load-metadata="failedToLoadMetadata"
+      @apply="applySuggestion"
+      @apply-batch="applySuggestionBatch"
+      @add-to-batch="addSuggestionToBatch"
+      @remove-from-batch="removeSuggestionFromBatch"
+    />
+    <table class="md-suggestion-diff code code-syntax-highlight-theme !gl-mb-5">
+      <tbody>
+        <suggestion-diff-row
+          v-for="(line, index) of lines"
+          :key="`${index}-${line.text}`"
+          :line="line"
+        />
+      </tbody>
+    </table>
+  </div>
+</template>

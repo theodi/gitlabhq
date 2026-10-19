@@ -1,0 +1,113 @@
+import { nextTick } from 'vue';
+import { GlDisclosureDropdown, GlDisclosureDropdownItem } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { createMockDirective, getBinding } from 'helpers/vue_mock_directive';
+import CommitListItemOverflowMenu from '~/projects/commits/components/commit_list_item_overflow_menu.vue';
+import { mockCommit } from './mock_data';
+
+describe('CommitListItemOverflowMenu', () => {
+  let wrapper;
+
+  const mockToastShow = jest.fn();
+
+  const mockProjectRootPath = '/gitlab-org/gitlab-shell';
+
+  const createComponent = (props = {}) => {
+    wrapper = shallowMountExtended(CommitListItemOverflowMenu, {
+      propsData: {
+        commit: mockCommit,
+        ...props,
+      },
+      provide: {
+        projectRootPath: mockProjectRootPath,
+      },
+      directives: {
+        GlTooltip: createMockDirective('gl-tooltip'),
+      },
+      mocks: {
+        $toast: {
+          show: mockToastShow,
+        },
+      },
+    });
+  };
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  const findDisclosureDropdown = () => wrapper.findComponent(GlDisclosureDropdown);
+  const findDropdownItems = () => wrapper.findAllComponents(GlDisclosureDropdownItem);
+
+  const findCopyShaItem = () => wrapper.findComponentByTestId('copy-commit-sha');
+  const findBrowseFilesItem = () => wrapper.findComponentByTestId('browse-files');
+
+  describe('dropdown button', () => {
+    it('renders with correct props', () => {
+      const dropdown = findDisclosureDropdown();
+
+      expect(dropdown.props()).toMatchObject({
+        icon: 'ellipsis_v',
+        toggleText: 'Commit actions',
+        textSrOnly: true,
+        noCaret: true,
+        category: 'tertiary',
+      });
+    });
+
+    it('has tooltip directive applied', () => {
+      const dropdown = findDisclosureDropdown();
+      const tooltipBinding = getBinding(dropdown.element, 'gl-tooltip');
+
+      expect(tooltipBinding.value).toBe('Actions');
+    });
+  });
+
+  describe('dropdown items', () => {
+    it('renders all dropdown items', () => {
+      expect(findDropdownItems()).toHaveLength(2);
+    });
+
+    describe('copy commit SHA item', () => {
+      it('has correct text, icon and clipboard data', () => {
+        const copyShaItem = findCopyShaItem();
+
+        expect(copyShaItem.props('item')).toMatchObject({
+          text: 'Copy commit SHA',
+          icon: 'copy-to-clipboard',
+          action: expect.any(Function),
+        });
+        expect(copyShaItem.attributes('data-clipboard-text')).toBe(mockCommit.sha);
+      });
+
+      it('shows successful toast on copy', async () => {
+        const copyShaItem = findCopyShaItem();
+
+        copyShaItem.props('item').action();
+        await nextTick();
+
+        expect(mockToastShow).toHaveBeenCalledWith('Commit SHA copied to clipboard.');
+      });
+    });
+  });
+
+  describe('browse files item', () => {
+    it('links to the repository tree at the commit SHA', () => {
+      const browseFilesItem = findBrowseFilesItem();
+
+      expect(browseFilesItem.props('item')).toMatchObject({
+        text: 'Browse files at this commit',
+        icon: 'folder-open',
+        href: `${mockProjectRootPath}/-/tree/${mockCommit.sha}`,
+      });
+    });
+
+    it('links to the blob at the commit SHA when a file path is set', () => {
+      createComponent({ currentPath: 'app/models/user.rb' });
+
+      expect(findBrowseFilesItem().props('item').href).toBe(
+        `${mockProjectRootPath}/-/blob/${mockCommit.sha}/app/models/user.rb`,
+      );
+    });
+  });
+});

@@ -1,0 +1,344 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Namespaces::Groups::TransferWorker, feature_category: :groups_and_projects do
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:group) { create(:group) }
+  let_it_be(:new_parent_group) { create(:group) }
+
+  let(:worker) { described_class.new }
+
+  it 'defers only on database-wide health signals, not per-table autovacuum' do
+    expect(described_class.database_health_check_attrs)
+      .to include(indicators: Gitlab::Database::HealthStatus::GLOBAL_INDICATORS)
+  end
+
+  describe '#perform', :clean_gitlab_redis_shared_state do
+    subject(:perform) { worker.perform(group.id, new_parent_group.id, user.id) }
+
+    context 'when all records exist' do
+      before_all do
+        group.add_owner(user)
+        new_parent_group.add_owner(user)
+      end
+
+      it 'transfers the group to the new parent and completes the transfer' do
+        perform
+
+        expect(group.reload).to have_attributes(parent: new_parent_group, state: 'ancestor_inherited')
+      end
+
+      it 'records a success transfer metric and duration' do
+        expect(::Gitlab::Metrics::Transfers).to receive(:count_transfer)
+          .with(namespace_type: 'group', result: 'success')
+        expect(::Gitlab::Metrics::Transfers).to receive(:observe_transfer_duration)
+          .with(duration_s: kind_of(Numeric), namespace_type: 'group')
+        expect(::Gitlab::Metrics::Transfers).to receive(:observe_end_to_end_transfer_duration)
+          .with(scheduled_at: kind_of(String), namespace_type: 'group')
+
+        perform
+      end
+
+      context 'when state_metadata is nil' do
+        it 'observes the end-to-end duration with a nil scheduled_at' do
+          allow(Group).to receive(:find_by_id).and_call_original
+          allow(Group).to receive(:find_by_id).with(group.id).and_return(group)
+          allow_next_instance_of(::Groups::TransferService) do |service|
+            allow(service).to receive(:execute) do
+              allow(group).to receive_messages(state_metadata: nil, complete_transfer!: true)
+              true
+            end
+          end
+
+          expect(::Gitlab::Metrics::Transfers).to receive(:observe_end_to_end_transfer_duration)
+            .with(scheduled_at: nil, namespace_type: 'group').and_call_original
+
+          perform
+        end
+      end
+
+      context 'when a pending transfer-failed todo exists for the user' do
+        it 'marks the transfer-failed todo as done on successful transfer' do
+          transfer_failed_todo = TodoService.new.transfer_failed(group, user).first
+
+          perform
+
+          expect(transfer_failed_todo.reload).to be_done
+        end
+      end
+
+      context 'when the group is stuck in transfer_in_progress state' do
+        before do
+          group.schedule_transfer!(transition_user: user)
+          group.start_transfer!(transition_user: user)
+        end
+
+        it 'cancels the stale state, logs a warning, and proceeds with the transfer' do
+          allow(Gitlab::AppLogger).to receive(:warn)
+
+          perform
+
+          expect(group.reload).to have_attributes(parent: new_parent_group, state: 'ancestor_inherited')
+          expect(Gitlab::AppLogger).to have_received(:warn).with(hash_including(
+            'message' => 'Cancelling stale transfer state',
+            'group_id' => group.id,
+            'gl_namespace_id' => group.id,
+            'namespace_type' => 'group',
+            'correlation_id' => kind_of(String)
+          ))
+        end
+      end
+
+      context 'when the group is already in transfer_scheduled state' do
+        it 'skips schedule_transfer! and proceeds with the transfer' do
+          group.schedule_transfer!(transition_user: user)
+
+          expect(group).not_to receive(:schedule_transfer!)
+
+          perform
+
+          expect(group.reload).to have_attributes(parent: new_parent_group, state: 'ancestor_inherited')
+        end
+      end
+
+      context 'when TransferService returns false' do
+        it 'cancels the transfer and creates a transfer failure todo' do
+          expect_next_instance_of(::Groups::TransferService, group, user) do |service|
+            expect(service).to receive(:execute).with(new_parent_group).and_return(false)
+          end
+
+          expect { perform }.to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: group
+            ).count
+          }.by(1)
+
+          expect(group.reload.state).to eq('ancestor_inherited')
+        end
+
+        it 'records the service error so the to-do item can show it' do
+          expect_next_instance_of(::Groups::TransferService, group, user) do |service|
+            expect(service).to receive(:execute).with(new_parent_group).and_return(false)
+            allow(service).to receive(:error).and_return('Namespace already taken')
+          end
+
+          perform
+
+          expect(group.reload.transfer_last_error).to eq('Namespace already taken')
+        end
+      end
+
+      context 'when TransferService raises an error' do
+        it 'cancels the transfer, logs the error, and re-raises' do
+          expect_next_instance_of(::Groups::TransferService, group, user) do |service|
+            expect(service).to receive(:execute).and_raise(StandardError, 'something went wrong')
+          end
+          expect(::Gitlab::Metrics::Transfers).to receive(:count_transfer)
+            .with(namespace_type: 'group', result: 'failure')
+
+          allow(Gitlab::AppLogger).to receive(:error)
+
+          expect do
+            expect { perform }.to raise_error(StandardError, 'something went wrong')
+          end.to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: group
+            ).count
+          }.by(1)
+
+          expect(group.reload.state).to eq('ancestor_inherited')
+          expect(group.transfer_last_error)
+            .to eq('The transfer failed unexpectedly. Contact your administrator if it continues to fail.')
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Namespaces::Groups::TransferWorker failed',
+            'group_id' => group.id,
+            'new_parent_group_id' => new_parent_group.id,
+            'error_type' => 'StandardError',
+            'error_message' => 'something went wrong',
+            'gl_namespace_id' => group.id,
+            'namespace_type' => 'group',
+            'correlation_id' => kind_of(String),
+            'duration_s' => kind_of(Numeric)
+          ))
+        end
+      end
+
+      context 'when TransferService succeeds but a subsequent step raises an error' do
+        it 'does not create a transfer failure todo and re-raises the error', :aggregate_failures do
+          expect_next_instance_of(::Groups::TransferService, group, user) do |service|
+            expect(service).to receive(:execute).with(new_parent_group).and_return(true)
+          end
+
+          allow_next_found_instance_of(Group) do |g|
+            allow(g).to receive(:complete_transfer!).and_raise(StandardError, 'post-success failure')
+          end
+
+          allow(Gitlab::AppLogger).to receive(:error)
+
+          expect do
+            expect { perform }.to raise_error(StandardError, 'post-success failure')
+          end.not_to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: group
+            ).count
+          }
+        end
+      end
+
+      context 'when TransferService raises and cancel_transfer! also raises' do
+        it 'logs the cancel error separately and re-raises the original error' do
+          expect_next_instance_of(::Groups::TransferService, group, user) do |service|
+            expect(service).to receive(:execute).and_raise(StandardError, 'transfer failed')
+          end
+
+          allow_next_found_instance_of(Group) do |g|
+            allow(g).to receive(:cancel_transfer!).and_raise(StandardError, 'cancel failed')
+          end
+
+          allow(Gitlab::AppLogger).to receive(:error)
+
+          expect { perform }.to raise_error(StandardError, 'transfer failed')
+
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Namespaces::Groups::TransferWorker failed to cancel transfer state',
+            'error_type' => 'StandardError',
+            'error_message' => 'cancel failed'
+          ))
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Namespaces::Groups::TransferWorker failed',
+            'error_type' => 'StandardError',
+            'error_message' => 'transfer failed'
+          ))
+        end
+      end
+
+      context 'when start_transfer! raises an error' do
+        it 'logs the error and re-raises without calling cancel_transfer!' do
+          group.update_column(:state, Group.states[:creation_in_progress])
+
+          allow(Gitlab::AppLogger).to receive(:error)
+          expect do
+            expect { perform }.to raise_error(StateMachines::InvalidTransition)
+          end.not_to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: group
+            ).count
+          }
+
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Namespaces::Groups::TransferWorker failed',
+            'group_id' => group.id,
+            'new_parent_group_id' => new_parent_group.id
+          ))
+
+          expect(group.reload.state).to eq('creation_in_progress')
+        end
+      end
+
+      context 'when exclusive lease is already set' do
+        let(:lease_key) { "namespaces_groups_transfer_worker:#{group.id}" }
+        let(:exclusive_lease) { Gitlab::ExclusiveLease.new(lease_key, uuid: uuid, timeout: 1.minute) }
+        let(:uuid) { 'other_worker_jid' }
+
+        it 'does not call the transfer service and leaves state unchanged when another worker holds the lease' do
+          group.schedule_transfer!(transition_user: user)
+          group.start_transfer!(transition_user: user)
+
+          expect(exclusive_lease.try_obtain).to eq(uuid)
+          expect(::Groups::TransferService).not_to receive(:new)
+
+          perform
+
+          expect(group.reload).to be_transfer_in_progress
+        end
+
+        it 'does nothing if transfer is not in progress' do
+          expect(exclusive_lease.try_obtain).to eq(uuid)
+          expect(::Groups::TransferService).not_to receive(:new)
+
+          expect { perform }.not_to raise_error
+        end
+
+        context 'when exclusive lease was taken by the current worker (Sidekiq interrupt)' do
+          let(:uuid) { 'existing_worker_jid' }
+
+          before do
+            allow(worker).to receive(:jid).and_return(uuid)
+          end
+
+          it 'cancels the stale lock so a subsequent retry can proceed' do
+            expect(exclusive_lease.try_obtain).to eq(worker.jid)
+            expect(::Groups::TransferService).not_to receive(:new)
+
+            perform
+
+            # verify the lease was released by checking it can be re-obtained
+            new_lease = Gitlab::ExclusiveLease.new(lease_key, uuid: 'new_uuid', timeout: 1.minute)
+            expect(new_lease.try_obtain).to eq('new_uuid')
+          end
+        end
+      end
+    end
+
+    context 'when transferring to root (no parent group)' do
+      subject(:perform) { worker.perform(group.id, nil, user.id) }
+
+      it 'transfers the group to root and completes the transfer' do
+        perform
+
+        expect(group.reload).to have_attributes(parent: nil, state: 'ancestor_inherited')
+      end
+
+      context 'when TransferService raises an error' do
+        it 'logs error with nil new_parent_group_id and re-raises' do
+          expect_next_instance_of(::Groups::TransferService, group, user) do |service|
+            expect(service).to receive(:execute).with(nil).and_raise(StandardError, 'transfer failed')
+          end
+
+          allow(Gitlab::AppLogger).to receive(:error)
+
+          expect { perform }.to raise_error(StandardError, 'transfer failed')
+
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Namespaces::Groups::TransferWorker failed',
+            'group_id' => group.id,
+            'new_parent_group_id' => nil,
+            'error_type' => 'StandardError',
+            'error_message' => 'transfer failed'
+          ))
+        end
+      end
+    end
+
+    context 'when group does not exist' do
+      subject(:perform) { worker.perform(non_existing_record_id, new_parent_group.id, user.id) }
+
+      it 'does not call the transfer service and does not raise' do
+        expect(::Groups::TransferService).not_to receive(:new)
+        expect { perform }.not_to raise_error
+      end
+    end
+
+    context 'when user does not exist' do
+      subject(:perform) { worker.perform(group.id, new_parent_group.id, non_existing_record_id) }
+
+      it 'does not call the transfer service and does not raise' do
+        expect(::Groups::TransferService).not_to receive(:new)
+        expect { perform }.not_to raise_error
+      end
+    end
+  end
+end

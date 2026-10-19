@@ -1,0 +1,12 @@
+mutation updateEpicDueDate($input: UpdateEpicInput!) {
+  issuableSetDate: updateEpic(input: $input) {
+    issuable: epic {
+      id
+      dueDateIsFixed
+      dueDateFixed
+      dueDate
+      dueDateFromMilestones
+    }
+    errors
+  }
+}

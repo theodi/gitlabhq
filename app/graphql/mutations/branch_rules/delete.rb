@@ -1,0 +1,34 @@
+# frozen_string_literal: true
+
+module Mutations
+  module BranchRules
+    class Delete < BaseMutation
+      graphql_name 'BranchRuleDelete'
+
+      authorize :delete_branch_rule
+      authorize_granular_token permissions: :delete_branch_rule,
+        boundary_argument: :id, boundary: :project, boundary_type: :project
+
+      argument :id, ::Types::GlobalIDType[::Projects::BranchRule],
+        required: true,
+        description: 'Global ID of the branch rule to destroy.'
+
+      field :branch_rule,
+        ::Types::Projects::BranchRuleType,
+        null: true,
+        description: 'Branch rule after mutation.'
+
+      def resolve(id:)
+        branch_rule = authorized_find!(id: id)
+
+        response = ::BranchRules::DestroyService.new(branch_rule, user: current_user).execute
+
+        if response.error? && (response.cause.access_denied? || response.cause.not_found?)
+          raise_resource_not_available_error!
+        end
+
+        { branch_rule: (branch_rule if response.error?), errors: response.errors }
+      end
+    end
+  end
+end

@@ -1,0 +1,236 @@
+import './helpers/patched_crypto.js';
+
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { RsdoctorRspackPlugin } from '@rsdoctor/rspack-plugin';
+import rspack from '@rspack/core';
+import gqlTag from 'graphql-tag';
+
+import { buildOutput } from './helpers/output.js';
+import { aliases } from './helpers/aliases.js';
+import { supportedBrowsersHash } from './helpers/supported_browsers.js';
+import vendorDllHash from './helpers/vendor_dll_hash.js';
+import { VUE_VERSION, VUE_COMPILER_VERSION, logVueVersion } from './vue3migration/version.js';
+import { cacheGroups } from './rspack/cache_groups.js';
+import { define } from './rspack/define.js';
+import { entries } from './rspack/entries.js';
+import GraphqlKnownOperationsPlugin from './plugins/graphql_known_operations_plugin.js';
+import GzipAssetsPlugin from './plugins/gzip_assets_plugin.js';
+import Vue3MigrationManifestPlugin from './vue3migration/plugins/manifest.js';
+import { buildLoaderRules } from './rspack/loader_rules.js';
+import { slimManifest } from './rspack/manifest_plugin.js';
+import {
+  DEVTOOL,
+  HASHED_CHUNKS,
+  COMPRESSION,
+  MINIFY,
+  RSDOCTOR,
+  RSDOCTOR_LEAN,
+} from './rspack/settings.js';
+import vue from './rspack/vue.js';
+import {
+  vue3InfectionResolveRegExp,
+  createVue3InfectionResolver,
+} from './vue3migration/plugins/rspack_resolve.js';
+import {
+  IS_EE,
+  IS_JH,
+  ROOT_PATH,
+  copyFilesPatterns,
+  IS_PRODUCTION,
+  IS_DEV_SERVER,
+  DEV_SERVER_HOST,
+  DEV_SERVER_PUBLIC_ADDR,
+  DEV_SERVER_PORT,
+  DEV_SERVER_ALLOWED_HOSTS,
+  DEV_SERVER_LIVERELOAD,
+} from './webpack.constants.js';
+
+const configPath = fileURLToPath(import.meta.url);
+const require = createRequire(import.meta.url);
+const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
+
+logVueVersion('[Rspack]');
+
+gqlTag.disableFragmentWarnings();
+
+const replaceWithEmptyComponent = (pattern) =>
+  new rspack.NormalModuleReplacementPlugin(pattern, (resource) => {
+    // eslint-disable-next-line no-param-reassign
+    resource.request = path.join(
+      ROOT_PATH,
+      'app/assets/javascripts/vue_shared/components/empty_component.js',
+    );
+  });
+
+const plugins = [
+  new vue.VueLoaderPlugin(),
+  new rspack.NormalModuleReplacementPlugin(
+    vue3InfectionResolveRegExp,
+    createVue3InfectionResolver(),
+  ),
+  slimManifest(),
+  new rspack.CopyRspackPlugin({ patterns: copyFilesPatterns }),
+  new GraphqlKnownOperationsPlugin({ filename: 'graphql_known_operations.yml' }),
+  new Vue3MigrationManifestPlugin({ filename: 'vue3_migration.json' }),
+  new rspack.ProvidePlugin({
+    $: 'jquery',
+    jQuery: 'jquery',
+    process: [require.resolve('process/browser')],
+  }),
+  !IS_EE && replaceWithEmptyComponent(/^ee_component\/(.*)\.vue/),
+  !IS_JH && replaceWithEmptyComponent(/^jh_component\/(.*)\.vue/),
+  !IS_EE && !IS_JH && replaceWithEmptyComponent(/^jh_else_ee\/(.*)\.vue/),
+  new rspack.ContextReplacementPlugin(/^\.$/, (context) => {
+    if (!/\/node_modules\/pdfjs-dist/.test(context.context)) return;
+    for (const d of context.dependencies || []) {
+      if (d.critical) d.critical = false;
+    }
+  }),
+  new rspack.DefinePlugin(define),
+  new MonacoWebpackPlugin({
+    filename: '[name].[contenthash:8].worker.js',
+    customLanguages: [
+      {
+        label: 'yaml',
+        entry: 'monaco-yaml',
+        worker: {
+          id: 'monaco-yaml/yamlWorker',
+          entry: 'monaco-yaml/yaml.worker',
+        },
+      },
+    ],
+  }),
+  new rspack.IgnorePlugin({ resourceRegExp: /moment/, contextRegExp: /pikaday/ }),
+  IS_PRODUCTION && COMPRESSION !== false && new GzipAssetsPlugin(),
+  RSDOCTOR &&
+    new RsdoctorRspackPlugin(
+      RSDOCTOR_LEAN
+        ? {
+            output: { mode: 'brief' },
+            features: ['bundle'],
+            supports: { generateTileGraph: false },
+          }
+        : {},
+    ),
+].filter(Boolean);
+
+// Static builds rename entry chunks to Webpack's `[name].chunk.js` (runtimeChunk:'single'
+// routes the runtime through output.filename, entry code through chunkFilename). The dev
+// server keeps the defaults — renaming entry chunks there breaks persistent-cache/HMR.
+const output = (() => {
+  const base = buildOutput({ hashChunks: HASHED_CHUNKS });
+  if (IS_DEV_SERVER) return base;
+  return {
+    ...base,
+    filename: (pathData) =>
+      pathData.chunk?.name === 'runtime' ? base.filename : base.chunkFilename,
+  };
+})();
+
+export default {
+  bail: !IS_DEV_SERVER,
+  mode: IS_PRODUCTION ? 'production' : 'development',
+  context: path.join(ROOT_PATH, 'app/assets/javascripts'),
+  target: 'web',
+  devtool: DEVTOOL,
+  entry: entries,
+  output,
+  resolve: {
+    extensions: ['.mjs', '.js'],
+    alias: {
+      ...aliases,
+      // Rspack honors Vue's package "exports" field, so a bare `vue` import can resolve
+      // to two different runtime builds (two Vue instances). Pin to one build.
+      ...(VUE_VERSION === '3' ? {} : { vue$: 'vue/dist/vue.runtime.esm.js' }),
+      // Same hazard for @vue/compat: pin every import to the single runtime build the
+      // infection alias targets, else getCurrentInstance() returns null in the stray copy.
+      '@vue/compat$': path.join(
+        ROOT_PATH,
+        'node_modules/@vue/compat/dist/vue.runtime.esm-bundler.js',
+      ),
+    },
+    fallback: { path: false, 'graphql-ws': false },
+  },
+  module: {
+    rules: [
+      ...vue.infectionRules,
+      ...buildLoaderRules({
+        vueLoaderOptions: { ...vue.vueRule.options, __loaderModule: vue.VUE_LOADER_MODULE },
+      }),
+    ].filter(Boolean),
+  },
+  optimization: {
+    runtimeChunk: 'single',
+    // Use the real NODE_ENV (not `mode`) so the app's env-gated behavior matches Webpack.
+    nodeEnv: process.env.NODE_ENV || 'development',
+    minimize: IS_PRODUCTION && MINIFY !== false,
+    splitChunks: {
+      maxInitialRequests: 20,
+      maxAsyncRequests: 20,
+      minSize: 150000,
+      automaticNameDelimiter: '-',
+      cacheGroups,
+    },
+  },
+  node: {
+    __dirname: 'mock',
+    __filename: 'mock',
+  },
+  // Must stay explicit: `rspack serve` turns lazy compilation on when this is undefined.
+  // Lazily compiled imports stall on a full rebuild the first time they are used.
+  lazyCompilation: false,
+  devServer: {
+    devMiddleware: {
+      stats: 'errors-only',
+    },
+    host: DEV_SERVER_HOST || 'localhost',
+    port: DEV_SERVER_PORT || 3808,
+    webSocketServer: DEV_SERVER_LIVERELOAD ? 'ws' : false,
+    hot: DEV_SERVER_LIVERELOAD,
+    liveReload: DEV_SERVER_LIVERELOAD,
+    allowedHosts: DEV_SERVER_ALLOWED_HOSTS || 'all',
+    // Rails serves public/. The default static dir would serve stale build output from it and
+    // watch it with an fd per file (chokidar 4 has no fsevents), crashing with EMFILE.
+    static: false,
+    client: {
+      ...(DEV_SERVER_PUBLIC_ADDR ? { webSocketURL: DEV_SERVER_PUBLIC_ADDR } : {}),
+      overlay: {
+        runtimeErrors: (error) => {
+          return !(
+            error instanceof DOMException && error.message === 'The user aborted a request.'
+          );
+        },
+      },
+    },
+  },
+  plugins,
+  cache: IS_PRODUCTION
+    ? false
+    : {
+        type: 'persistent',
+        version: [
+          supportedBrowsersHash,
+          `vue${VUE_VERSION}`,
+          `compiler${VUE_COMPILER_VERSION}`,
+          // package.json, yarn.lock and patch-package patches: a changed dependency
+          // must not be served from a persisted cache of the old one.
+          vendorDllHash(),
+        ].join('-'),
+        buildDependencies: [configPath],
+        storage: {
+          type: 'filesystem',
+          location: path.join(ROOT_PATH, 'tmp/cache/rspack'),
+        },
+      },
+  stats: {
+    children: false,
+    chunks: false,
+    modules: false,
+  },
+  infrastructureLogging: {
+    level: 'warn',
+  },
+};

@@ -1,0 +1,13 @@
+.form-group.row.js-template-warning.hidden.js-issuable-template-warning
+  .gl-col-sm-12
+    .warning_message{ class: '!gl-mb-0', role: 'alert' }
+      %btn.js-close-btn.js-dismiss-btn.close{ type: "button", "aria-hidden": "true", "aria-label": _("Close") }
+        = sprite_icon("close")
+
+      %p
+        = _("Applying a template will replace the existing description. Any changes you have made will be lost.")
+
+      = render Pajamas::ButtonComponent.new(variant: :confirm, button_options: { class: 'gl-mr-3 js-override-template' }) do
+        = _("Apply template")
+      = render Pajamas::ButtonComponent.new(button_options: { class: 'js-close-btn js-cancel-btn' }) do
+        = _("Cancel")

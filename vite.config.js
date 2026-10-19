@@ -1,0 +1,257 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+import { defineConfig } from 'vite';
+import vue2 from '@vitejs/plugin-vue2';
+import vue3 from '@vitejs/plugin-vue';
+import graphql from '@rollup/plugin-graphql';
+import webpackConfig from './config/webpack.config';
+import {
+  IS_EE,
+  IS_JH,
+  SOURCEGRAPH_PUBLIC_PATH,
+  GITLAB_WEB_IDE_PUBLIC_PATH,
+  copyFilesPatterns,
+} from './config/webpack.constants';
+import { PDF_JS_WORKER_PUBLIC_PATH, PDF_JS_CMAPS_PUBLIC_PATH } from './config/pdfjs.constants';
+
+import { viteTailwindCompilerPlugin } from './scripts/frontend/tailwindcss.cjs';
+import { CopyPlugin } from './config/helpers/vite_plugin_copy.mjs';
+import { AutoStopPlugin } from './config/helpers/vite_plugin_auto_stop.mjs';
+import { PageEntrypointsPlugin } from './config/helpers/vite_plugin_page_entrypoints.mjs';
+import { FixedRubyPlugin } from './config/helpers/vite_plugin_ruby_fixed.mjs';
+import { StylePlugin } from './config/helpers/vite_plugin_style.mjs';
+import { IconsPlugin } from './config/helpers/vite_plugin_icons.mjs';
+import { ImagesPlugin } from './config/helpers/vite_plugin_images.mjs';
+import { CrossOriginWorkerPlugin } from './config/helpers/vite_plugin_cross_origin_worker';
+import { Vue3InfectionPlugin } from './config/vue3migration/plugins/vite.mjs';
+import * as vue3SfcCompiler from './config/vue3migration/compilers/vue3_sfc.mjs';
+import vue2Compiler from './config/vue3migration/compilers/vue2_template';
+
+const { VUE_VERSION = '2', VUE_COMPILER_VERSION = '2' } = process.env;
+
+if (!['2', '3'].includes(VUE_VERSION)) {
+  throw new Error(`Invalid VUE_VERSION value: ${VUE_VERSION}. Only '2' or '3' are supported`);
+}
+if (!['2', '3'].includes(VUE_COMPILER_VERSION)) {
+  throw new Error(
+    `Invalid VUE_COMPILER_VERSION value: ${VUE_COMPILER_VERSION}. Only '2' or '3' are supported`,
+  );
+}
+
+const USE_VUE3 = VUE_VERSION === '3';
+const USE_VUE3_COMPILER = USE_VUE3 && VUE_COMPILER_VERSION === '3';
+
+console.log(`[V] Using Vue.js ${VUE_VERSION} (compiler ${VUE_COMPILER_VERSION})`);
+
+const vue = USE_VUE3_COMPILER ? vue3 : vue2;
+
+let viteGDKConfig;
+try {
+  viteGDKConfig = JSON.parse(
+    readFileSync(path.resolve(__dirname, 'config/vite.gdk.json'), 'utf-8'),
+  );
+} catch {
+  viteGDKConfig = {};
+}
+
+const aliasArr = Object.entries(webpackConfig.resolve.alias).map(([find, replacement]) => ({
+  find: find.includes('$') ? new RegExp(`^${find}`) : find,
+  replacement,
+}));
+
+const assetsPath = path.resolve(__dirname, 'app/assets');
+const javascriptsPath = path.resolve(assetsPath, 'javascripts');
+
+const emptyComponent = path.resolve(javascriptsPath, 'vue_shared/components/empty_component.js');
+
+const vueRule = webpackConfig.module.rules.find((rule) => rule.test?.toString() === '/\\.vue$/');
+if (!vueRule?.options?.compilerOptions) {
+  throw new Error(
+    'Could not find compilerOptions in webpack config for .vue rule. ' +
+      'Please ensure webpack.config.js has a .vue rule with options.compilerOptions defined.',
+  );
+}
+
+const EE_ALIAS_FALLBACK = [
+  {
+    find: /^ee_component\/(.*)\.vue/,
+    replacement: emptyComponent,
+  },
+];
+
+const JH_ALIAS_FALLBACK = [
+  {
+    find: /^jh_component\/(.*)\.vue/,
+    replacement: emptyComponent,
+  },
+];
+
+const JH_ELSE_EE_ALIAS_FALLBACK = [
+  {
+    find: /^jh_else_ee\/(.*)\.vue/,
+    replacement: emptyComponent,
+  },
+];
+
+export default defineConfig({
+  cacheDir: path.resolve(
+    __dirname,
+    `tmp/cache/vite/vue${VUE_VERSION}-compiler${VUE_COMPILER_VERSION}`,
+  ),
+  resolve: {
+    alias: [
+      ...aliasArr,
+      ...(IS_EE ? [] : EE_ALIAS_FALLBACK),
+      ...(IS_JH ? [] : JH_ALIAS_FALLBACK),
+      ...(!IS_EE && !IS_JH ? JH_ELSE_EE_ALIAS_FALLBACK : []),
+      {
+        find: '~katex',
+        replacement: 'katex',
+      },
+      {
+        // Mermaid v10's mindmap chunk imports cytoscape's UMD build directly, but
+        // that subpath only has a "require" export condition. Redirect to the ESM
+        // build so Vite's dep optimizer can pre-bundle it.
+        find: 'cytoscape/dist/cytoscape.umd.js',
+        replacement: 'cytoscape/dist/cytoscape.esm.mjs',
+      },
+      /*
+       Alias for GitLab Fonts
+       If we were to import directly from node_modules,
+       we would get the files under `public/assets/@gitlab`
+       with the assets pipeline. That seems less than ideal
+       */
+      {
+        find: /^gitlab-(sans|mono)\//,
+        replacement: '@gitlab/fonts/gitlab-$1/',
+      },
+    ],
+  },
+  plugins: [
+    ...(!USE_VUE3 ? [Vue3InfectionPlugin()] : []),
+    PageEntrypointsPlugin(),
+    IconsPlugin(),
+    ImagesPlugin(),
+    StylePlugin({ shouldWatch: viteGDKConfig.hmr !== null }),
+    viteTailwindCompilerPlugin({ shouldWatch: viteGDKConfig.hmr !== null }),
+    CopyPlugin({
+      patterns: copyFilesPatterns,
+    }),
+    viteGDKConfig.enabled ? AutoStopPlugin() : null,
+    FixedRubyPlugin(),
+    vue({
+      ...(USE_VUE3_COMPILER ? { compiler: vue3SfcCompiler } : {}),
+      template: {
+        ...(!USE_VUE3_COMPILER ? { compiler: vue2Compiler } : {}),
+        compilerOptions: vueRule.options.compilerOptions,
+      },
+    }),
+    graphql(),
+    CrossOriginWorkerPlugin(),
+  ],
+  define: {
+    // window can be undefined in a Web Worker
+    IS_EE: IS_EE
+      ? JSON.stringify('typeof window !== "undefined" && window.gon && window.gon.ee')
+      : JSON.stringify(false),
+    IS_JH: IS_JH
+      ? JSON.stringify('typeof window !== "undefined" && window.gon && window.gon.jh')
+      : JSON.stringify(false),
+    'process.platform': JSON.stringify(''),
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV),
+    'process.env.SOURCEGRAPH_PUBLIC_PATH': JSON.stringify(SOURCEGRAPH_PUBLIC_PATH),
+    'process.env.GITLAB_WEB_IDE_PUBLIC_PATH': JSON.stringify(GITLAB_WEB_IDE_PUBLIC_PATH),
+    'window.IS_VITE': JSON.stringify(true),
+    'window.VUE_DEVTOOLS_CONFIG.openInEditorHost': JSON.stringify(
+      `${viteGDKConfig.https?.enabled ? 'https' : 'http'}://${viteGDKConfig.public_host}:${viteGDKConfig.port}/assets/vite/`,
+    ),
+    'process.env.PDF_JS_WORKER_PUBLIC_PATH': JSON.stringify(PDF_JS_WORKER_PUBLIC_PATH),
+    'process.env.PDF_JS_CMAPS_UBLIC_PATH': JSON.stringify(PDF_JS_CMAPS_PUBLIC_PATH),
+  },
+  server: {
+    // this fixes Vite server being unreachable on some configurations
+    host: '0.0.0.0',
+    cors: true,
+    warmup: {
+      clientFiles: ['javascripts/entrypoints/main.js', 'javascripts/entrypoints/super_sidebar.js'],
+    },
+    https: viteGDKConfig.https?.enabled
+      ? {
+          key: viteGDKConfig.https?.key,
+          cert: viteGDKConfig.https?.certificate,
+        }
+      : false,
+    watch:
+      viteGDKConfig.hmr === null
+        ? null
+        : {
+            ignored: [
+              '**/*.stories.js',
+              '**/css_in_js.js',
+              function ignoreRootFolder(x) {
+                /*
+             `vite` watches the root folder of gitlab and all of its sub folders
+             This is not what we want, because we have temp files, and all kind
+             of other stuff. As vite starts its watchers recursively, we just
+             ignore if the path matches exactly the root folder
+
+             Additional folders like `ee/app/assets` are defined in
+             */
+                return x === __dirname;
+              },
+            ],
+          },
+  },
+  worker: {
+    format: 'es',
+  },
+  optimizeDeps: {
+    esbuildOptions: {
+      define: {
+        __VUE_OPTIONS_API__: 'true',
+        __VUE_PROD_DEVTOOLS__: 'false',
+        __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false',
+      },
+    },
+    exclude: [
+      '@gitlab/ui',
+      ...(!USE_VUE3
+        ? [
+            '@vue/compat',
+            '@gitlab/vuex-vue3',
+            '@gitlab/vue-router-vue3',
+            '@vue/apollo-option',
+            'pinia',
+            'vue-demi',
+            '@tiptap/vue-2',
+            '@gitlab/vuedraggable-vue3',
+          ]
+        : []),
+    ],
+    // CJS sub-dependency of the excluded @tiptap/vue-2: excluded deps are served as
+    // source, so their CJS imports must still be pre-bundled to get ESM interop.
+    include: !USE_VUE3 ? ['vue-ts-types'] : [],
+  },
+  css: {
+    lightningcss: {
+      errorRecovery: true,
+    },
+  },
+  build: {
+    sourcemap: true,
+    minify: true,
+    cssMinify: true,
+    reportCompressedSize: true,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: 'shared', test: /^((?!node_modules).)*$/, maxSize: 120000, minShareCount: 50 },
+          ],
+        },
+        strictExecutionOrder: true,
+      },
+    },
+  },
+});

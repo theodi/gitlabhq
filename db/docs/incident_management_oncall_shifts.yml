@@ -1,0 +1,14 @@
+---
+table_name: incident_management_oncall_shifts
+classes:
+- IncidentManagement::OncallShift
+feature_categories:
+- incident_management
+- on_call_schedule_management
+description: Tracks past and present on-call shifts
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/49423
+milestone: '13.8'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

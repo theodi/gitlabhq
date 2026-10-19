@@ -1,0 +1,35 @@
+- save_endpoint = local_assigns.fetch(:save_endpoint, nil)
+- is_group = !@group.nil?
+- is_project = !@project.nil?
+- is_root_group = @group && @group.root?
+
+- if is_root_group
+  #js-pipeline-variables-default-role{ data: { full_path: @group.full_path } }
+
+- if is_project
+  #js-ci-variables-minimum-override-role-app{ data: { full_path: @project.full_path } }
+
+  = render 'ci/variables/protect_merge_request_pipelines'
+  = render 'ci/variables/display_pipeline_variables'
+
+  %h5
+    = _('Project variables')
+
+= render 'ci/variables/attributes'
+
+= render_if_exists 'ci/variables/nudge_secrets_manager'
+
+#js-ci-variables{ data: { endpoint: save_endpoint,
+  is_project: is_project.to_s,
+  project_id: @project&.id || '',
+  project_full_path: @project&.full_path || '',
+  is_group: is_group.to_s,
+  group_id: @group&.id || '',
+  group_path: @group&.full_path,
+  maskable_raw_regex: ci_variable_maskable_raw_regex,
+  maskable_regex: ci_variable_maskable_regex,
+  protected_by_default: ci_variable_protected_by_default?.to_s } }
+
+- if !@group && @project.group
+  = render 'ci/group_variables/header'
+  = render 'ci/group_variables/index'

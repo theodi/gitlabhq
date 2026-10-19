@@ -1,0 +1,424 @@
+<script>
+import { GlButton } from '@gitlab/ui';
+import { unionBy } from 'lodash-es';
+import fuzzaldrinPlus from 'fuzzaldrin-plus';
+import { sortNameAlphabetically, newWorkItemId } from '~/work_items/utils';
+import { userIsDisabled } from '~/ai/agents_utils';
+import { FLOW_TRIGGER_EVENTS } from '~/vue_shared/constants';
+import currentUserQuery from '~/graphql_shared/queries/current_user.query.graphql';
+import usersSearchQuery from '~/graphql_shared/queries/workspace_autocomplete_users.query.graphql';
+import InviteMembersTrigger from '~/invite_members/components/invite_members_trigger.vue';
+import SidebarParticipant from '~/sidebar/components/assignees/sidebar_participant.vue';
+import UncollapsedAssigneeList from '~/sidebar/components/assignees/uncollapsed_assignee_list.vue';
+import WorkItemSidebarDropdownWidget from '~/work_items/components/shared/work_item_sidebar_dropdown_widget.vue';
+import { s__, sprintf, __ } from '~/locale';
+import Tracking from '~/tracking';
+import { ISSUE_MR_CHANGE_ASSIGNEE } from '~/behaviors/shortcuts/keybindings';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import updateWorkItemMutation from '../graphql/update_work_item.mutation.graphql';
+import { i18n, TRACKING_CATEGORY_SHOW, VIEW_CONTEXT } from '../constants';
+
+export default {
+  name: 'WorkItemAssignees',
+  components: {
+    WorkItemSidebarDropdownWidget,
+    InviteMembersTrigger,
+    SidebarParticipant,
+    GlButton,
+    UncollapsedAssigneeList,
+  },
+  mixins: [glFeatureFlagsMixin(), Tracking.mixin()],
+  inject: {
+    viewContext: { default: VIEW_CONTEXT.fullScreen },
+  },
+  props: {
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    isGroup: {
+      type: Boolean,
+      required: true,
+    },
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    assignees: {
+      type: Array,
+      required: true,
+    },
+    allowsMultipleAssignees: {
+      type: Boolean,
+      required: true,
+    },
+    workItemType: {
+      type: String,
+      required: true,
+    },
+    canUpdate: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canInviteMembers: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    participants: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+  },
+  emits: ['assignees-updated', 'error', 'update-widget-draft'],
+  data() {
+    return {
+      localAssigneeIds: [],
+      assigneeIdsToShowAtTopOfTheListbox: [],
+      searchStarted: false,
+      searchKey: '',
+      users: [],
+      currentUser: null,
+      updateInProgress: false,
+      localUsers: [],
+      shortcut: ISSUE_MR_CHANGE_ASSIGNEE,
+    };
+  },
+  apollo: {
+    users: {
+      query() {
+        return usersSearchQuery;
+      },
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          search: this.searchKey,
+          isProject: !this.isGroup,
+        };
+      },
+      skip() {
+        return !this.searchStarted;
+      },
+      update(data) {
+        return this.isGroup ? data.groupNamespace?.users : data.namespace?.users;
+      },
+      result({ data }) {
+        if (!data) {
+          // when data is not available, skip the update
+          return;
+        }
+        const users = this.isGroup ? data?.groupNamespace?.users : data?.namespace?.users;
+        this.localUsers = unionBy(this.localUsers, users, 'id');
+      },
+      error() {
+        this.$emit('error', i18n.fetchError);
+      },
+    },
+    currentUser: {
+      query: currentUserQuery,
+      result({ data }) {
+        if (!data) {
+          return;
+        }
+
+        const currentUsers = data.currentUser ? [data.currentUser] : [];
+        this.localUsers = unionBy(this.localUsers, currentUsers, 'id');
+      },
+    },
+  },
+  computed: {
+    allUsers() {
+      let usersToPin = [];
+
+      // Pin the current user to the top of the list. Prefer the richer autocomplete
+      // entry when present, otherwise fall back to the current user object from the currentUserQuery.
+      if (this.currentUser) {
+        const currentUserInList = this.alphabetizedUsers.find(
+          ({ id }) => id === this.currentUser.id,
+        );
+        usersToPin = [currentUserInList ?? this.currentUser];
+      }
+
+      return unionBy(usersToPin, this.alphabetizedUsers, 'id').map((user) => ({
+        ...user,
+        value: user.id,
+        text: user.name,
+      }));
+    },
+    alphabetizedUsers() {
+      return unionBy(this.users, this.participants, 'id').sort(sortNameAlphabetically);
+    },
+    disabledUsers() {
+      const selectedUsersId = this.selectedUsers.map((u) => u.id);
+      return (this.users || [])
+        .filter(
+          (u) => userIsDisabled(u, FLOW_TRIGGER_EVENTS.ASSIGN) && !selectedUsersId.includes(u.id),
+        )
+        .map((u) => u.id);
+    },
+    selectedUsers() {
+      return this.allUsers.filter(({ id }) => this.assigneeIdsToShowAtTopOfTheListbox.includes(id));
+    },
+    unselectedUsers() {
+      return this.allUsers.filter(
+        ({ id }) => !this.assigneeIdsToShowAtTopOfTheListbox.includes(id),
+      );
+    },
+    searchUsers() {
+      // when there is no search text, then we show selected users first
+      // followed by participants, then all other users
+      if (this.searchKey === '') {
+        if (this.alphabetizedUsers.length === 0) {
+          return [];
+        }
+
+        // don't show the selected section if it's empty
+        if (this.selectedUsers.length === 0) {
+          return this.allUsers.map((user) => ({
+            ...user,
+            value: user?.id,
+            text: user?.name,
+          }));
+        }
+
+        return [
+          { options: this.selectedUsers, text: __('Selected') },
+          { options: this.unselectedUsers, text: __('All users'), textSrOnly: true },
+        ];
+      }
+      const filteredParticipants = fuzzaldrinPlus.filter(
+        // We're storing `name` and `username` as a combined string in
+        // a new key `matcher` as fuzzaldrin-plus doesn't support searching
+        // using multiple keys.
+        this.participants.map((p) => ({ ...p, matcher: `${p.name} ${p.username}` })),
+        this.searchKey,
+        {
+          key: ['matcher'],
+        },
+      );
+
+      return unionBy([...filteredParticipants, ...this.users], 'id').map((user) => ({
+        ...user,
+        value: user?.id,
+        text: user?.name,
+      }));
+    },
+    // eslint-disable-next-line vue/no-unused-properties
+    tracking() {
+      return {
+        category: TRACKING_CATEGORY_SHOW,
+        label: 'item_assignees',
+        property: `type_${this.workItemType}`,
+        extra: { viewContext: this.viewContext },
+      };
+    },
+    isLoadingUsers() {
+      return this.$apollo.queries.users.loading;
+    },
+    selectedAssigneeIds() {
+      return this.allowsMultipleAssignees ? this.localAssigneeIds : this.localAssigneeIds[0];
+    },
+    dropdownText() {
+      if (this.localAssigneeIds.length === 0) {
+        return s__('WorkItem|No assignees');
+      }
+
+      return this.localAssigneeIds.length === 1
+        ? this.localAssignees.map(({ name }) => name).join(', ')
+        : sprintf(s__('WorkItem|%{usersLength} assignees'), {
+            usersLength: this.localAssigneeIds.length,
+          });
+    },
+    dropdownLabel() {
+      return this.allowsMultipleAssignees ? __('Assignees') : __('Assignee');
+    },
+    headerText() {
+      return this.allowsMultipleAssignees ? __('Select assignees') : __('Select assignee');
+    },
+    filteredAssignees() {
+      // assignees are the ones already assigned to the work item detail
+      // search users are the ones returned by the autocomplete query which can never be more than 20 , context
+      // https://gitlab.com/gitlab-org/gitlab/-/issues/417757#note_1480434390
+      // we need the previous results of users after resetting the search since we want to show the name of thes user out of the 20 results searched as well
+      // participants are the ones which have sometime commented on the work item, same logic as legacy issues
+      return unionBy(this.assignees, this.searchUsers, this.participants, this.localUsers, 'id');
+    },
+    localAssignees() {
+      const assignees =
+        this.filteredAssignees
+          .filter(({ id }) => this.localAssigneeIds.includes(id))
+          .sort(sortNameAlphabetically) || [];
+
+      const localAssigneeCurrentUser = assignees.find(
+        // uses gon to avoid race condition where filteredAssignees is computed before currentUser is fetched
+        ({ username }) => username === gon?.current_username,
+      );
+
+      if (localAssigneeCurrentUser) {
+        return [
+          localAssigneeCurrentUser,
+          ...assignees.filter(({ id }) => id !== localAssigneeCurrentUser?.id),
+        ];
+      }
+      return assignees;
+    },
+  },
+  watch: {
+    assignees: {
+      handler(newVal) {
+        this.localAssigneeIds = newVal.map(({ id }) => id);
+        this.assigneeIdsToShowAtTopOfTheListbox = this.localAssigneeIds;
+      },
+      deep: true,
+      immediate: true,
+    },
+    searchKey(newVal, oldVal) {
+      if (newVal === '' && oldVal !== '') {
+        this.assigneeIdsToShowAtTopOfTheListbox = this.localAssigneeIds;
+      }
+    },
+  },
+  methods: {
+    handleAssigneesInput(assignees) {
+      this.setLocalAssigneeIdsOnEvent(assignees);
+      this.setAssignees();
+    },
+    handleAssigneeClick(assignees) {
+      this.setLocalAssigneeIdsOnEvent(assignees);
+    },
+    async setAssignees() {
+      this.updateInProgress = true;
+      const { localAssigneeIds } = this;
+
+      if (this.workItemId === newWorkItemId(this.workItemType)) {
+        this.$emit('update-widget-draft', { assignees: this.localAssignees });
+        this.updateInProgress = false;
+        return;
+      }
+
+      try {
+        const {
+          data: {
+            workItemUpdate: { errors },
+          },
+        } = await this.$apollo.mutate({
+          mutation: updateWorkItemMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              assigneesWidget: {
+                assigneeIds: localAssigneeIds,
+              },
+            },
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          },
+        });
+        if (errors.length > 0) {
+          this.throwUpdateError(errors);
+          return;
+        }
+        this.track('updated_assignees');
+        this.$emit('assignees-updated', localAssigneeIds);
+      } catch {
+        this.throwUpdateError();
+      } finally {
+        this.updateInProgress = false;
+        this.searchKey = '';
+        this.searchStarted = false;
+      }
+    },
+    setLocalAssigneeIdsOnEvent(assignees) {
+      const singleSelectAssignee = assignees === null ? [] : [assignees];
+      this.localAssigneeIds = this.allowsMultipleAssignees ? assignees : singleSelectAssignee;
+    },
+    setSearchKey(value) {
+      this.searchKey = value;
+      this.searchStarted = true;
+    },
+    assignToCurrentUser() {
+      const assignees = this.allowsMultipleAssignees ? [this.currentUser.id] : this.currentUser.id;
+      this.setLocalAssigneeIdsOnEvent(assignees);
+      this.setAssignees();
+    },
+    throwUpdateError(messages = []) {
+      this.$emit('error', messages.length > 0 ? messages.join('. ') : i18n.updateError);
+      // If mutation is rejected, we're rolling back to initial state
+      this.localAssigneeIds = this.assignees.map(({ id }) => id);
+    },
+    onDropdownShown() {
+      this.searchStarted = true;
+    },
+    onDropdownHide() {
+      this.setSearchKey('');
+      this.assigneeIdsToShowAtTopOfTheListbox = this.localAssigneeIds;
+    },
+  },
+};
+</script>
+
+<template>
+  <work-item-sidebar-dropdown-widget
+    :multi-select="allowsMultipleAssignees"
+    class="issuable-assignees gl-mt-2"
+    :dropdown-label="dropdownLabel"
+    :can-update="canUpdate"
+    dropdown-name="assignees"
+    :show-footer="canInviteMembers"
+    :loading="isLoadingUsers"
+    :list-items="searchUsers"
+    :disabled-items="disabledUsers"
+    :item-value="selectedAssigneeIds"
+    :toggle-dropdown-text="dropdownText"
+    :header-text="headerText"
+    :update-in-progress="updateInProgress"
+    :reset-button-label="__('Clear')"
+    :shortcut="shortcut"
+    clear-search-on-item-select
+    data-testid="work-item-assignees"
+    @dropdown-shown="onDropdownShown"
+    @search-started="setSearchKey"
+    @update-value="handleAssigneesInput"
+    @update-selected="handleAssigneeClick"
+    @dropdown-hidden="onDropdownHide"
+  >
+    <template #list-item="{ item }">
+      <sidebar-participant v-if="item" :user="item" />
+    </template>
+    <template v-if="canInviteMembers" #footer>
+      <gl-button category="tertiary" block class="!gl-justify-start">
+        <invite-members-trigger
+          :display-text="__('Invite members')"
+          trigger-element="side-nav"
+          icon="plus"
+          trigger-source="work-item-assignees"
+          classes="hover:!gl-no-underline gl-pb-2"
+        />
+      </gl-button>
+    </template>
+    <template #none>
+      <div class="gl-flex gl-items-center gl-gap-2 gl-text-subtle">
+        <span>{{ __('None') }}</span>
+        <template v-if="currentUser && canUpdate">
+          <span>-</span>
+          <gl-button
+            class="!gl-text-inherit hover:!gl-text-link"
+            variant="link"
+            data-testid="assign-self"
+            @click.stop="assignToCurrentUser"
+          >
+            {{ __('assign yourself') }}
+          </gl-button>
+        </template>
+      </div>
+    </template>
+    <template #readonly>
+      <uncollapsed-assignee-list
+        :users="localAssignees"
+        show-less-assignees-class="hover:!gl-bg-transparent"
+        class="gl-mt-2"
+      />
+    </template>
+  </work-item-sidebar-dropdown-widget>
+</template>

@@ -1,0 +1,26 @@
+test-job:
+  inputs:
+    environment:
+      type: string
+      default: "staging"
+      description: "Deployment environment"
+      options: ["staging", "production"]
+      regex: "^(staging|production)$"
+    timeout:
+      type: number
+      default: 30
+      description: "Timeout in seconds"
+    debug:
+      type: boolean
+      default: false
+    tags:
+      type: array
+      default: ["linux", "docker"]
+    api_key:
+      default: "default-key"
+    test_framework:
+      default: "rspec"
+      description: "Testing framework to use"
+      options: ["rspec", "minitest", "cucumber"]
+  script:
+    - echo "Testing ${{ inputs.environment }}"

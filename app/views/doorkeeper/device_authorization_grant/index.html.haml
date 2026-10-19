@@ -1,0 +1,18 @@
+= render 'doorkeeper/pointer_events_guard'
+
+#container.gl-mx-auto.gl-pointer-events-none{ class: '@sm/panel:gl-w-1/2' }
+  .gl-text-size-h1
+    = s_('DeviceAuth|Authorize a device to access your GitLab account.')
+  .gl-text-subtle.gl-mt-3
+    = s_('DeviceAuth|Enter the code shown on your device to grant it access to your GitLab account.')
+  .gl-mt-3
+    = s_('DeviceAuth|Never enter a code someone else gave you.')
+  = form_with url: confirm_oauth_device_path, method: :post, class: 'gl-mt-5' do |f|
+    .gl-mb-3
+      = f.label :user_code, class: 'gl-block' do
+        %span.gl-mb-2.gl-block= s_('DeviceAuth|Device code')
+        = f.text_field :user_code, value: params[:user_code], name: :user_code, class: 'gl-form-input form-control', autofocus: true
+    = render Pajamas::ButtonComponent.new(type: :submit,
+      variant: :confirm,
+      button_options: { data: { testid: 'authorization-button' } }) do
+      = s_('DeviceAuth|Authorize')

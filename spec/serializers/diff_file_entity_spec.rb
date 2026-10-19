@@ -1,0 +1,113 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe DiffFileEntity, feature_category: :code_review_workflow do
+  include RepoHelpers
+
+  let_it_be(:project) { create(:project, :repository) }
+
+  let(:repository) { project.repository }
+  let(:commit) { project.commit(sample_commit.id) }
+  let(:diff_refs) { commit.diff_refs }
+  let(:diff) { commit.raw_diffs.first }
+  let(:diff_file) { Gitlab::Diff::File.new(diff, diff_refs: diff_refs, repository: repository) }
+  let(:options) { {} }
+  let(:entity) { described_class.new(diff_file, options.reverse_merge(request: {})) }
+
+  subject { entity.as_json }
+
+  context 'when there is no merge request' do
+    it_behaves_like 'diff file entity'
+  end
+
+  context 'when there is a merge request' do
+    let(:merge_request) { build_stubbed(:merge_request, source_project: project, target_project: project) }
+    let(:user) { build_stubbed(:user) }
+    let(:code_navigation_path) { Gitlab::CodeNavigationPath.new(project, project.commit.sha) }
+    let(:request) { EntityRequest.new(project: project, current_user: user) }
+    let(:entity) { described_class.new(diff_file, options.merge(request: request, merge_request: merge_request, code_navigation_path: code_navigation_path)) }
+    let(:exposed_urls) { %i[edit_path view_path context_lines_path] }
+
+    it_behaves_like 'diff file entity'
+
+    it 'exposes additional attributes' do
+      expect(subject).to include(*exposed_urls)
+      expect(subject).to include(:replaced_view_path)
+      expect(subject).to include(:code_navigation_path)
+    end
+
+    it 'points all urls to merge request target project' do
+      response = subject
+
+      exposed_urls.each do |attribute|
+        expect(response[attribute]).to include(merge_request.target_project.to_param)
+      end
+    end
+
+    it 'exposes load_collapsed_diff_url if the file viewer is collapsed' do
+      allow(diff_file.viewer).to receive(:collapsed?).and_return(true)
+
+      expect(subject).to include(:load_collapsed_diff_url)
+    end
+
+    context 'when the file path contains traversal segments' do
+      before do
+        allow(diff_file).to receive(:path_traversal?).and_return(true)
+      end
+
+      it 'drops every URL built from the file path' do
+        response = subject
+
+        # The browser normalizes the `..` away and lands on an unrelated route
+        # whose response is rendered into the diff page, so these must be blank.
+        %i[view_path replaced_view_path context_lines_path edit_path ide_edit_path].each do |attribute|
+          expect(response[attribute]).to be_nil
+        end
+      end
+    end
+
+    context 'when diff_view is unknown' do
+      let(:options) { { diff_view: :unknown } }
+
+      it 'hides highlighted_diff_lines and parallel_diff_lines' do
+        is_expected.not_to include(:highlighted_diff_lines, :parallel_diff_lines)
+      end
+    end
+  end
+
+  describe '#parallel_diff_lines' do
+    let(:options) { { diff_view: :parallel } }
+
+    it 'exposes parallel diff lines correctly' do
+      response = subject
+
+      lines = response[:parallel_diff_lines]
+
+      # make sure at least one line is present for each side
+      expect(lines.map { |line| line[:right] }.compact).to be_present
+      expect(lines.map { |line| line[:left] }.compact).to be_present
+      # make sure all lines are in correct format
+      lines.each do |parallel_line|
+        expect(parallel_line[:left].as_json).to match_schema('entities/diff_line') if parallel_line[:left]
+        expect(parallel_line[:right].as_json).to match_schema('entities/diff_line') if parallel_line[:right]
+      end
+    end
+  end
+
+  describe '#highlighted_diff_lines' do
+    let(:options) { { conflicts: {} } }
+
+    it 'calls diff_lines_for_serializer on diff_file' do
+      # #diff_lines_for_serializer gets called in #fully_expanded? and whitespace_only as well so we expect three calls
+      expect(diff_file).to receive(:diff_lines_for_serializer).exactly(3).times.and_return([])
+      expect(subject[:highlighted_diff_lines]).to eq([])
+    end
+  end
+
+  it 'exposes code_review_id' do
+    expect(subject[:code_review_id]).to match(/\A[0-9a-f]{40}\z/)
+  end
+
+  it_behaves_like 'diff file with conflict_type'
+end

@@ -1,0 +1,68 @@
+@use 'constants';
+
+$no-preview-padding: $gl-padding;
+$no-preview-paragraph-margin-bottom: $gl-spacing-scale-2;
+$no-preview-action-margin-top: $gl-spacing-scale-3;
+
+.rd-diff-file[data-virtual="no_preview"] {
+  $root-line-height: 0.875rem * 1.5;
+  --rd-body-intrinsic-height: calc(
+    (#{$no-preview-padding} * 2) +
+    (var(--virtual-paragraphs-count) * (#{$root-line-height} + #{$no-preview-paragraph-margin-bottom})) +
+    (#{$gl-button-medium-size} + #{$no-preview-action-margin-top})
+  );
+}
+
+.rd-no-preview {
+  padding: $no-preview-padding;
+  border-radius: var(--rd-content-border-radius);
+}
+
+.rd-no-preview-important {
+  // warning feedback background color looks over saturated in dark mode, we need to force a muted palette
+  background-color: light-dark(var(--gl-feedback-warning-background-color), #453522);
+  color: var(--gl-feedback-warning-text-color);
+}
+
+.rd-no-preview-body {
+  // stop margin collapsing against action button
+  display: flow-root;
+}
+
+.rd-no-preview-paragraph {
+  margin: 0 0 $no-preview-paragraph-margin-bottom;
+}
+
+.rd-no-preview-paragraph:only-child {
+  margin: 0;
+}
+
+.rd-no-preview-actions {
+  display: flex;
+
+  @include gl-container-width-down(md, panel) {
+    flex-direction: column;
+  }
+
+  @include gl-container-width-up(md, panel) {
+    margin-top: $no-preview-action-margin-top;
+  }
+}
+
+.rd-no-preview-action {
+  display: flex;
+  flex: 1;
+
+  > * {
+    flex: 1;
+  }
+
+  @include gl-container-width-up(md, panel) {
+    flex: 0;
+    margin-right: $gl-spacing-scale-4;
+  }
+
+  @include gl-container-width-down(md, panel) {
+    margin-top: $no-preview-action-margin-top;
+  }
+}

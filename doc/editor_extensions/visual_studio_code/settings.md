@@ -1,0 +1,116 @@
+---
+stage: AI Clients
+group: Developer Clients
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Settings and commands in the GitLab for VS Code extension.
+title: GitLab for VS Code extension settings and commands
+---
+
+The GitLab for VS Code extension integrates with the VS Code Command Palette, extends existing
+VS Code integrations with Git, and provides configuration options.
+
+## Command Palette commands
+
+This extension provides several sets of commands that you can trigger in the
+[Command Palette](https://code.visualstudio.com/docs/getstarted/userinterface#_command-palette):
+
+### Manage projects and code
+
+- `GitLab: Authenticate`
+- [`GitLab: Compare Current Branch with Default Branch`](projects.md#compare-with-default-branch):
+  Compare your branch with the repository's default branch and view changes on GitLab.
+- `GitLab: Open Current Project on GitLab`
+- [`GitLab: Open Remote Repository`](remote_urls.md): Browse a remote GitLab repository.
+- `GitLab: Pipeline Actions - View, Create, Retry, or Cancel`
+- `GitLab: Remove Account from VS Code`
+- `GitLab: Validate GitLab Accounts`
+
+### Manage issues and merge requests
+
+- [`GitLab: Advanced Search (Issues, Merge Requests, Commits, Comments...)`](projects.md#search-issues-and-merge-requests)
+- `GitLab: Copy Link to Active File on GitLab`
+- `GitLab: Create New Issue on Current Project`
+- `GitLab: Create New Merge Request on Current Project`: Open the merge request page to create a merge request.
+- [`GitLab: Open Active File on GitLab`](projects.md#open-current-file-in-gitlab-ui): View active file
+  on GitLab with highlighting active line number and selected text block.
+- `GitLab: Open Merge Request for Current Branch`
+- [`GitLab: Search Project Issues (Supports Filters)`](projects.md#search-issues-and-merge-requests).
+- [`GitLab: Search Project Merge Requests (Supports Filters)`](projects.md#search-issues-and-merge-requests).
+- `GitLab: Show Issues Assigned to Me`: Open issues assigned to you on GitLab.
+- `GitLab: Show Merge Requests Assigned to Me`: Open merge requests assigned to you on GitLab.
+
+### Manage CI/CD pipelines
+
+- [`GitLab: Show Merged GitLab CI/CD Configuration`](cicd.md#show-merged-configuration-file):
+  Show a preview of the GitLab CI/CD configuration file `.gitlab-ci.yml` with all includes resolved.
+- [`GitLab: Validate GitLab CI/CD Configuration`](cicd.md#test-gitlab-cicd-configuration):
+  Test the GitLab CI/CD configuration file `.gitlab-ci.yml`.
+
+### AI-assisted features
+
+- `GitLab: Restart GitLab Language Server`
+- `GitLab: Toggle Code Suggestions`
+- `GitLab: Toggle Code Suggestions for current language`
+
+### Other features
+
+- `GitLab: Apply Snippet Patch`
+- `GitLab: Clone Wiki`
+- [`GitLab: Create Snippet`](projects.md#create-a-snippet): Create a public, internal, or private snippet
+  from an entire file or selection.
+- [`GitLab: Create Snippet Patch`](projects.md#create-a-patch-file): Create a `.patch` file from the entire file, or a selection.
+- [`GitLab: Insert Snippet`](projects.md#insert-a-snippet): Insert a single-file or multi-file project snippet.
+- `GitLab: Publish Workspace to GitLab`
+- `GitLab: Refresh Sidebar`
+- `GitLab: Show Extension Logs`
+- `GitLab: Focus on For current branch View`
+- `GitLab: Focus on Issues and Merge Requests View`
+- `GitLab: Diagnostics`: Open a detailed settings page for the GitLab for VS Code extension.
+
+## Command integrations
+
+This extension also integrates with some commands provided by VS Code:
+
+- `Git: Clone`: Search for and clone projects for every GitLab instance you set up. For more information, see:
+  - [Clone GitLab projects](remote_urls.md#clone-a-git-project)
+    in the extension documentation.
+  - [Cloning a repository](https://code.visualstudio.com/docs/sourcecontrol/overview#_cloning-a-repository)
+    in the VS Code documentation.
+- `Git: Add Remote...`: Add existing projects as remotes from every GitLab instance you set up.
+
+## Extension settings
+
+{{< history >}}
+
+- Default namespace setting in editor extensions [removed](https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/work_items/2369) in GitLab 19.4.
+  - `gitlab.duoAgentPlatform.defaultNamespace` [removed](https://gitlab.com/gitlab-org/gitlab-vscode-extension/-/releases/v6.90.0) in GitLab for VS Code 6.90.0.
+- `gitlab.duoCodeSuggestions.additionalLanguages` and `gitlab.duoCodeSuggestions.enabledSupportedLanguages` removed, and `gitlab.duoCodeSuggestions.disabledLanguages` [added](https://gitlab.com/gitlab-org/gitlab-vscode-extension/-/releases/v6.92.0) in GitLab for VS Code 6.92.0 during the GitLab 19.5 release.
+
+{{< /history >}}
+
+To learn how to change settings in VS Code, see the VS Code documentation for
+[User and Workspace Settings](https://code.visualstudio.com/docs/configure/settings).
+
+If you use self-signed certificates to connect to your GitLab instance, see [configure the extension for Custom Certificate Authorities](https://gitlab.com/gitlab-org/gitlab-vscode-extension/-/blob/main/docs/user/custom-certificates.md).
+
+| Setting | Default | Information |
+| ------- | ------- | ----------- |
+| `gitlab.customQueries` | Not applicable | Defines the search queries that retrieve the items shown on the GitLab Panel. For more information, see [Custom Queries documentation](custom_queries.md). |
+| `gitlab.authentication.oauthClientIds` | Not applicable | The OAuth client ID to use (by GitLab instance URL) during [setup](setup.md#authenticate-with-gitlab). |
+| `gitlab.debug` | false | When `true`, enables debug mode. Debug mode improves error stack traces because the extension uses source maps to understand minified code. Debug mode also shows debug log messages in the [extension logs](troubleshooting.md#view-debug-logs). |
+| `gitlab.duo.enabledWithoutGitlabProject` | true | When `true`, keeps GitLab Duo features enabled if the extension can't retrieve the project's `duoFeaturesEnabledForProject` setting. When `false`, disables all GitLab Duo features if the extension can't retrieve the project's `duoFeaturesEnabledForProject` setting. See [`duoFeaturesEnabledForProject` setting](#duofeaturesenabledforproject). |
+| `gitlab.duo.proxy.directConnection` | false | When `true`, traffic for GitLab Duo and other GitLab features handled by the GitLab Language Server connects directly instead of using VS Code or system proxy settings. |
+| `gitlab.duoCodeSuggestions.disabledLanguages` | `[]` | The [language identifiers](https://code.visualstudio.com/docs/languages/identifiers#_known-language-identifiers) for which to turn off Code Suggestions, like `python` or `markdown`. Code Suggestions works with all other languages except plain text. |
+| `gitlab.duoCodeSuggestions.enabled` | true | When `true`, enables Code Suggestions for AI-assisted suggestions. |
+| `gitlab.duoCodeSuggestions.openTabsContext` | true | When `true`, enables sending of context across open tabs to improve Code Suggestions. |
+| `gitlab.keybindingHints.enabled` | true | Enables keybinding hints for GitLab Duo. |
+| `gitlab.pipelineGitRemoteName` | null | The name of the Git remote name corresponding to the GitLab repository with your pipelines. When `null` or empty, then the extension uses the same remote as for the non-pipeline features. |
+| `gitlab.showPipelineUpdateNotifications` | false | When `true`, shows an alert when a pipeline completes. |
+
+### `duoFeaturesEnabledForProject`
+
+The `duoFeaturesEnabledForProject` setting is unavailable if:
+
+- The project is not set up in the extension.
+- The project is on a different GitLab instance than your current account.
+- The file or folder you are working with isn't part of any GitLab project you have access to.

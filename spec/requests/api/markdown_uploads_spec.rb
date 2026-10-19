@@ -1,0 +1,675 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::MarkdownUploads, feature_category: :team_planning do
+  let_it_be(:group) { create(:group, :private) }
+  let_it_be(:group_maintainer) { create(:user, maintainer_of: group) }
+
+  let_it_be(:project) { create(:project, :private) }
+  let_it_be(:project_maintainer) { create(:user, maintainer_of: project) }
+
+  let_it_be(:public_project) { create(:project, :public) }
+
+  let_it_be(:user) { create(:user, guest_of: [project, group]) }
+  let_it_be(:non_member) { create(:user) }
+
+  describe "POST /projects/:id/uploads/authorize" do
+    include WorkhorseHelpers
+
+    let(:headers) { workhorse_internal_api_request_header.merge({ 'HTTP_GITLAB_WORKHORSE' => 1 }) }
+    let(:path) { "/projects/#{project.id}/uploads/authorize" }
+
+    context 'with authorized user' do
+      it "returns 200" do
+        post api(path, user), headers: headers
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['MaximumSize']).to eq(project.max_attachment_size)
+      end
+    end
+
+    context 'with unauthorized user' do
+      it "returns 404" do
+        post api(path, non_member), headers: headers
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'with anonymous user on public project' do
+      let(:project) { public_project }
+
+      it "returns 401" do
+        post api(path), headers: headers
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'with no Workhorse headers' do
+      it "returns 403" do
+        post api(path, user)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'allows the Workhorse pre-authorization' do
+        post api(path, oauth_access_token: oauth_token), headers: headers
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['MaximumSize']).to eq(project.max_attachment_size)
+      end
+    end
+  end
+
+  describe "POST /projects/:id/uploads" do
+    let(:file) { fixture_file_upload("spec/fixtures/dk.png", "image/png") }
+    let(:path) { "/projects/#{project.id}/uploads" }
+
+    it "uploads the file through the upload service and returns its info" do
+      expect(UploadService).to receive(:new).with(project, anything, uploaded_by_user_id: user.id).and_call_original
+
+      post api(path, user), params: { file: file }
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(json_response['id']).to eq(Upload.last.id)
+      expect(json_response['alt']).to eq("dk")
+      expect(json_response['url']).to start_with("/uploads/")
+      expect(json_response['url']).to end_with("/dk.png")
+      expect(json_response['full_path']).to start_with("/-/project/#{project.id}/uploads")
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'allows file upload' do
+        post api(path, oauth_access_token: oauth_token), params: { file: file }
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+    end
+
+    it "does not leave the temporary file in place after uploading, even when the tempfile reaper does not run" do
+      tempfile = Tempfile.new('foo')
+      path = tempfile.path
+
+      # rubocop: disable RSpec/AnyInstanceOf -- allow_next_instance_of does not work here because TempfileReaper is a middleware that is initialized early
+      allow_any_instance_of(Rack::TempfileReaper).to receive(:call) do |instance, env|
+        instance.instance_variable_get(:@app).call(env)
+      end
+      # rubocop: enable RSpec/AnyInstanceOf
+
+      expect(path).not_to be_nil
+      expect(Rack::Multipart::Parser::TEMPFILE_FACTORY).to receive(:call).and_return(tempfile)
+
+      post api(path, user), params: { file: fixture_file_upload("spec/fixtures/dk.png", "image/png") }
+
+      expect(tempfile.path).to be_nil
+      expect(File.exist?(path)).to be(false)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_markdown_upload do
+      let(:boundary_object) { project }
+      let(:request) do
+        post api(path, personal_access_token: pat), params: { file: file }
+      end
+    end
+
+    context 'with anonymous user on public project' do
+      let(:project) { public_project }
+
+      it "returns 401" do
+        post api(path), params: { file: file }
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+  end
+
+  shared_examples 'an unauthorized request' do
+    it 'returns 403' do
+      make_request
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+  end
+
+  describe "GET /projects/:id/uploads" do
+    let_it_be(:uploads) { create_list(:upload, 3, :issuable_upload, model: project) }
+    let_it_be(:other_upload) { create(:upload, :issuable_upload, model: public_project) }
+
+    let(:path) { "/projects/#{project.id}/uploads" }
+
+    it 'returns uploads ordered by created_at' do
+      get api(path, project_maintainer)
+
+      expect_paginated_array_response(uploads.reverse.map(&:id))
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: project_maintainer, scopes: [:ai_workflows]) }
+
+      it 'does not allow listing uploads' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { get api(path, user) }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_markdown_upload do
+      let(:boundary_object) { project }
+      let(:user) { project_maintainer }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "GET /projects/:id/uploads/:upload_id" do
+    let_it_be(:upload) { create(:upload, :issuable_upload, :with_file, model: project, filename: 'test.jpg') }
+
+    let(:path) { "/projects/#{project.id}/uploads/#{upload.id}" }
+
+    it 'returns the uploaded file' do
+      get api(path, project_maintainer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.headers['Content-Disposition'])
+        .to eq(%(attachment; filename="test.jpg"; filename*=UTF-8''test.jpg))
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_markdown_upload do
+      let!(:upload) { create(:upload, :issuable_upload, :with_file, model: project, filename: 'test.jpg') }
+      let(:boundary_object) { project }
+      let(:user) { project_maintainer }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: project_maintainer, scopes: [:ai_workflows]) }
+
+      it 'does not allow downloading by ID' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'when the upload does not exist' do
+      let(:path) { "/projects/#{project.id}/uploads/#{non_existing_record_id}" }
+
+      it 'returns a 404' do
+        get api(path, project_maintainer)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { get api(path, user) }
+    end
+  end
+
+  describe "GET /projects/:id/uploads/:secret/:filename" do
+    let_it_be(:upload) { create(:upload, :issuable_upload, :with_file, model: project, filename: 'test.jpg') }
+
+    let(:path) { "/projects/#{project.id}/uploads/#{upload.secret}/#{upload.filename}" }
+
+    it 'returns the uploaded file' do
+      get api(path, project_maintainer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.headers['Content-Disposition'])
+        .to eq(%(attachment; filename="test.jpg"; filename*=UTF-8''test.jpg))
+    end
+
+    context 'when the secret does not match' do
+      let(:path) { "/projects/#{project.id}/uploads/invalid_secret/#{upload.filename}" }
+
+      it 'returns a 404' do
+        get api(path, project_maintainer)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'with a user that does not have access to the project' do
+      it 'returns 404' do
+        get api(path, non_member)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+      let!(:upload) { create(:upload, :issuable_upload, :with_file, model: project, filename: 'test.jpg') }
+
+      it 'returns the uploaded file' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'allows HEAD requests' do
+        head api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      context 'when the user does not have access to the project' do
+        let_it_be(:oauth_token) { create(:oauth_access_token, user: non_member, scopes: [:ai_workflows]) }
+
+        it 'returns 404' do
+          get api(path, oauth_access_token: oauth_token)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_markdown_upload do
+      let!(:upload) { create(:upload, :issuable_upload, :with_file, model: project, filename: 'test.jpg') }
+      let(:boundary_object) { project }
+      let(:user) { project_maintainer }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "DELETE /projects/:id/uploads/:upload_id" do
+    let_it_be(:upload) { create(:upload, :issuable_upload, model: project) }
+
+    let(:path) { "/projects/#{project.id}/uploads/#{upload.id}" }
+
+    it 'deletes the given upload' do
+      expect do
+        delete api(path, project_maintainer)
+      end.to change { Upload.count }.by(-1)
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+
+    it 'returns an error when deletion fails' do
+      expect_next_instance_of(Banzai::UploadsFinder) do |finder|
+        expect(finder).to receive(:find).with(upload.id).and_return(upload)
+      end
+      expect(upload).to receive(:destroy).and_return(false)
+
+      delete api(path, project_maintainer)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']).to include(_('Upload could not be deleted.'))
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { delete api(path, user) }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_markdown_upload do
+      let(:boundary_object) { project }
+      let(:user) { project_maintainer }
+      let(:request) do
+        delete api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "DELETE /projects/:id/uploads/:secret/:filename" do
+    let_it_be(:upload) { create(:upload, :issuable_upload, model: project) }
+
+    let(:path) { "/projects/#{project.id}/uploads/#{upload.secret}/#{upload.filename}" }
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: project_maintainer, scopes: [:ai_workflows]) }
+
+      it 'does not allow deleting the upload' do
+        expect do
+          delete api(path, oauth_access_token: oauth_token)
+        end.not_to change { Upload.count }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it 'deletes the given upload' do
+      expect do
+        delete api(path, project_maintainer)
+      end.to change { Upload.count }.by(-1)
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { delete api(path, user) }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_markdown_upload do
+      let(:boundary_object) { project }
+      let(:user) { project_maintainer }
+      let(:request) do
+        delete api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "POST /groups/:id/uploads/authorize" do
+    include WorkhorseHelpers
+
+    let(:headers) { workhorse_internal_api_request_header.merge({ 'HTTP_GITLAB_WORKHORSE' => 1 }) }
+    let(:path) { "/groups/#{group.id}/uploads/authorize" }
+
+    context 'with authorized user' do
+      it "returns 200" do
+        post api(path, user), headers: headers
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['MaximumSize']).to eq(Gitlab::CurrentSettings.max_attachment_size.megabytes.to_i)
+      end
+    end
+
+    context 'with unauthorized user' do
+      it "returns 404" do
+        post api(path, non_member), headers: headers
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'with no Workhorse headers' do
+      it "returns 403" do
+        post api(path, user)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+  end
+
+  describe "POST /groups/:id/uploads" do
+    let(:file) { fixture_file_upload("spec/fixtures/dk.png", "image/png") }
+    let(:path) { "/groups/#{group.id}/uploads" }
+
+    it "uploads the file through the upload service and returns its info" do
+      expect(UploadService).to receive(:new)
+        .with(group, anything, NamespaceFileUploader, uploaded_by_user_id: user.id)
+        .and_call_original
+
+      post api(path, user), params: { file: file }
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(json_response['id']).to eq(Upload.last.id)
+      expect(json_response['alt']).to eq("dk")
+      expect(json_response['url']).to start_with("/uploads/")
+      expect(json_response['url']).to end_with("/dk.png")
+      expect(json_response['full_path']).to start_with("/-/group/#{group.id}/uploads")
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_markdown_upload do
+      let(:boundary_object) { group }
+      let(:request) do
+        post api(path, personal_access_token: pat), params: { file: file }
+      end
+    end
+
+    context 'with unauthorized user' do
+      it "returns 404" do
+        post api(path, non_member), params: { file: file }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when the upload service fails' do
+      before do
+        allow_next_instance_of(UploadService) do |service|
+          allow(service).to receive(:execute).and_return(nil)
+        end
+      end
+
+      it 'returns bad request error' do
+        post api(path, user), params: { file: file }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq('400 Bad request - Failed to upload file')
+      end
+    end
+  end
+
+  describe "GET /groups/:id/uploads" do
+    let_it_be(:uploads) { create_list(:upload, 3, :namespace_upload, model: group) }
+    let_it_be(:other_upload) { create(:upload, :namespace_upload, model: create(:group)) }
+
+    let(:path) { "/groups/#{group.id}/uploads" }
+
+    it 'returns uploads ordered by created_at' do
+      get api(path, group_maintainer)
+
+      expect_paginated_array_response(uploads.reverse.map(&:id))
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: group_maintainer, scopes: [:ai_workflows]) }
+
+      it 'does not allow listing uploads' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { get api(path, user) }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_markdown_upload do
+      let(:boundary_object) { group }
+      let(:user) { group_maintainer }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "GET /groups/:id/uploads/:upload_id" do
+    let_it_be(:upload) { create(:upload, :namespace_upload, :with_file, model: group, filename: 'test.jpg') }
+
+    let(:path) { "/groups/#{group.id}/uploads/#{upload.id}" }
+
+    it 'returns the uploaded file' do
+      get api(path, group_maintainer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.headers['Content-Disposition'])
+        .to eq(%(attachment; filename="test.jpg"; filename*=UTF-8''test.jpg))
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: group_maintainer, scopes: [:ai_workflows]) }
+
+      it 'does not allow downloading by ID' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'when the upload does not exist' do
+      let(:path) { "/groups/#{group.id}/uploads/#{non_existing_record_id}" }
+
+      it 'returns a 404' do
+        get api(path, group_maintainer)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { get api(path, user) }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_markdown_upload do
+      let!(:upload) { create(:upload, :namespace_upload, :with_file, model: group, filename: 'test.jpg') }
+      let(:boundary_object) { group }
+      let(:user) { group_maintainer }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "GET /groups/:id/uploads/:secret/:filename" do
+    let_it_be(:upload) { create(:upload, :namespace_upload, :with_file, model: group, filename: 'test.jpg') }
+
+    let(:path) { "/groups/#{group.id}/uploads/#{upload.secret}/#{upload.filename}" }
+
+    it 'returns the uploaded file' do
+      get api(path, group_maintainer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.headers['Content-Disposition'])
+        .to eq(%(attachment; filename="test.jpg"; filename*=UTF-8''test.jpg))
+    end
+
+    context 'when the secret does not match' do
+      let(:path) { "/groups/#{group.id}/uploads/invalid_secret/#{upload.filename}" }
+
+      it 'returns a 404' do
+        get api(path, group_maintainer)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'with a user that does not have access to the group' do
+      it 'returns 404' do
+        get api(path, non_member)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+      let!(:upload) { create(:upload, :namespace_upload, :with_file, model: group, filename: 'test.jpg') }
+
+      it 'returns the uploaded file' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'allows HEAD requests' do
+        head api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      context 'when the user does not have access to the group' do
+        let_it_be(:oauth_token) { create(:oauth_access_token, user: non_member, scopes: [:ai_workflows]) }
+
+        it 'returns 404' do
+          get api(path, oauth_access_token: oauth_token)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_markdown_upload do
+      let!(:upload) { create(:upload, :namespace_upload, :with_file, model: group, filename: 'test.jpg') }
+      let(:boundary_object) { group }
+      let(:user) { group_maintainer }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "DELETE /groups/:id/uploads/:upload_id" do
+    let_it_be(:upload) { create(:upload, :namespace_upload, model: group) }
+
+    let(:path) { "/groups/#{group.id}/uploads/#{upload.id}" }
+
+    it 'deletes the given upload' do
+      expect do
+        delete api(path, group_maintainer)
+      end.to change { Upload.count }.by(-1)
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+
+    it 'returns an error when deletion fails' do
+      expect_next_instance_of(Banzai::UploadsFinder) do |finder|
+        expect(finder).to receive(:find).with(upload.id).and_return(upload)
+      end
+      expect(upload).to receive(:destroy).and_return(false)
+
+      delete api(path, group_maintainer)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']).to include(_('Upload could not be deleted.'))
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { delete api(path, user) }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_markdown_upload do
+      let(:boundary_object) { group }
+      let(:user) { group_maintainer }
+      let(:request) do
+        delete api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe "DELETE /groups/:id/uploads/:secret/:filename" do
+    let_it_be(:upload) { create(:upload, :namespace_upload, model: group) }
+
+    let(:path) { "/groups/#{group.id}/uploads/#{upload.secret}/#{upload.filename}" }
+
+    it 'deletes the given upload' do
+      expect do
+        delete api(path, group_maintainer)
+      end.to change { Upload.count }.by(-1)
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let_it_be(:oauth_token) { create(:oauth_access_token, user: group_maintainer, scopes: [:ai_workflows]) }
+
+      it 'does not allow deleting the upload' do
+        expect do
+          delete api(path, oauth_access_token: oauth_token)
+        end.not_to change { Upload.count }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it_behaves_like 'an unauthorized request' do
+      subject(:make_request) { delete api(path, user) }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_markdown_upload do
+      let(:boundary_object) { group }
+      let(:user) { group_maintainer }
+      let(:request) do
+        delete api(path, personal_access_token: pat)
+      end
+    end
+  end
+end

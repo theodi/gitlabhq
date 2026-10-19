@@ -1,0 +1,255 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Query.accessTokenPermissions', feature_category: :permissions do
+  include GraphqlHelpers
+
+  let_it_be(:current_user) { create(:user) }
+
+  let(:target_permission) { ::Authz::PermissionGroups::Assignable.get(:update_wiki) }
+
+  let(:resource) do
+    resource_definition = {
+      name: 'Wiki Resource',
+      description: 'Pages that can be created, edited, and managed by team members'
+    }
+    ::Authz::PermissionGroups::Resource.new(resource_definition, 'source_file')
+  end
+
+  let(:category) do
+    category_definition = { name: 'Wiki Category' }
+    ::Authz::PermissionGroups::Category.new(category_definition, 'source_file')
+  end
+
+  let(:query) do
+    <<~GQL
+      query {
+        accessTokenPermissions {
+          name
+          description
+          action
+          resource
+          resourceName
+          resourceDescription
+          category
+          categoryName
+          boundaries
+        }
+      }
+    GQL
+  end
+
+  let(:permissions_data) { graphql_data['accessTokenPermissions'] }
+
+  before do
+    allow(::Authz::PermissionGroups::Assignable).to receive(:all).and_return(
+      target_permission.name => target_permission
+    )
+
+    allow(::Authz::PermissionGroups::Resource).to receive(:get)
+      .with("#{target_permission.category}/#{target_permission.resource}").and_return(resource)
+
+    allow(::Authz::PermissionGroups::Category).to receive(:get)
+      .with(target_permission.category).and_return(category)
+  end
+
+  context 'when user is authenticated' do
+    it 'returns expected fields' do
+      post_graphql(query, current_user: current_user)
+
+      expect(permissions_data).to eq([{
+        'name' => 'update_wiki',
+        'description' => 'Grants the ability to update wikis',
+        'action' => 'update',
+        'resource' => 'wiki',
+        'resourceName' => 'Wiki Resource',
+        'resourceDescription' => resource.definition[:description],
+        'category' => 'wiki',
+        'categoryName' => 'Wiki Category',
+        'boundaries' => %w[GROUP PROJECT]
+      }])
+    end
+  end
+
+  context 'when a permission has assignable_when conditions' do
+    let(:unconditional_permission) do
+      ::Authz::PermissionGroups::Assignable.new(
+        {
+          name: 'update_wiki',
+          description: 'Grants the ability to update wikis',
+          permissions: %w[update_wiki],
+          boundaries: %w[group project],
+          available_for: %w[granular_access_token]
+        },
+        Rails.root.join(::Authz::PermissionGroups::Assignable::BASE_PATH, 'category/wiki/update.yml').to_s
+      )
+    end
+
+    let(:conditional_permission) do
+      ::Authz::PermissionGroups::Assignable.new(
+        {
+          name: 'read_audit_event',
+          description: 'Grants the ability to read audit events',
+          permissions: %w[read_audit_event],
+          boundaries: %w[group project instance],
+          available_for: %w[granular_access_token],
+          assignable_when: [{ condition: 'admin', boundaries: %w[instance] }]
+        },
+        Rails.root.join(::Authz::PermissionGroups::Assignable::BASE_PATH, 'category/audit_event/read.yml').to_s
+      )
+    end
+
+    let(:fully_conditional_permission) do
+      ::Authz::PermissionGroups::Assignable.new(
+        {
+          name: 'create_experiment_assignment',
+          description: 'Grants the ability to create experiment assignments',
+          permissions: %w[create_experiment_assignment],
+          boundaries: %w[project],
+          available_for: %w[granular_access_token],
+          assignable_when: [{ condition: 'admin' }]
+        },
+        Rails.root.join(::Authz::PermissionGroups::Assignable::BASE_PATH, 'category/experiment/create.yml').to_s
+      )
+    end
+
+    before do
+      allow(::Authz::PermissionGroups::Assignable).to receive(:all).and_return(
+        unconditional_permission.name => unconditional_permission,
+        conditional_permission.name => conditional_permission,
+        fully_conditional_permission.name => fully_conditional_permission
+      )
+
+      stub_resource = ::Authz::PermissionGroups::Resource.new(
+        { name: 'Stub Resource', description: 'Stub description' }, 'source_file'
+      )
+      allow(::Authz::PermissionGroups::Resource).to receive(:get).and_return(stub_resource)
+      allow(::Authz::PermissionGroups::Category).to receive(:get).and_return(nil)
+    end
+
+    context 'when the user does not meet the conditions' do
+      it 'prunes boundaries with unmet conditions and hides fully conditional permissions' do
+        post_graphql(query, current_user: current_user)
+
+        permissions_by_name = permissions_data.index_by { |permission| permission['name'] }
+
+        expect(permissions_by_name.keys).to match_array(%w[update_wiki read_audit_event])
+        expect(permissions_by_name['read_audit_event']['boundaries']).to match_array(%w[GROUP PROJECT])
+      end
+    end
+
+    context 'when the user meets the conditions' do
+      let_it_be(:admin) { create(:admin) }
+
+      it 'returns all boundaries and all permissions' do
+        post_graphql(query, current_user: admin)
+
+        permissions_by_name = permissions_data.index_by { |permission| permission['name'] }
+
+        expect(permissions_by_name.keys)
+          .to match_array(%w[update_wiki read_audit_event create_experiment_assignment])
+        expect(permissions_by_name['read_audit_event']['boundaries']).to match_array(%w[GROUP PROJECT INSTANCE])
+      end
+    end
+  end
+
+  context 'when a permission is deprecated' do
+    let(:deprecated_permission) do
+      ::Authz::PermissionGroups::Assignable.new(
+        {
+          name: 'deprecated_permission',
+          description: 'A deprecated permission',
+          permissions: %w[deprecated_action],
+          boundaries: %w[project],
+          deprecated: true
+        },
+        "#{::Authz::PermissionGroups::Assignable::BASE_PATH}/category/resource/deprecated.yml"
+      )
+    end
+
+    before do
+      allow(::Authz::PermissionGroups::Assignable).to receive(:all).and_return(
+        target_permission.name => target_permission,
+        deprecated_permission.name => deprecated_permission
+      )
+    end
+
+    it 'excludes deprecated permissions from results' do
+      post_graphql(query, current_user: current_user)
+
+      permission_names = permissions_data.pluck('name')
+      expect(permission_names).to include('update_wiki')
+      expect(permission_names).not_to include('deprecated_permission')
+    end
+  end
+
+  context 'when resource names differ only in letter case' do
+    def build_assignable(category_dir, resource_dir, action)
+      ::Authz::PermissionGroups::Assignable.new(
+        {
+          name: "#{action}_#{resource_dir}",
+          description: "Grants the ability to #{action} #{resource_dir}",
+          permissions: ["#{action}_#{resource_dir}"],
+          boundaries: %w[project]
+        },
+        Rails.root.join(
+          ::Authz::PermissionGroups::Assignable::BASE_PATH, category_dir, resource_dir, "#{action}.yml"
+        ).to_s
+      )
+    end
+
+    def build_resource(name)
+      ::Authz::PermissionGroups::Resource.new({ name: name, description: '' }, 'source_file')
+    end
+
+    let(:cd_application) { build_assignable('ci_cd', 'cd_application', 'read') }
+    let(:catalog_resource) { build_assignable('ci_cd', 'catalog_resource', 'read') }
+    let(:ci_cd_category) { ::Authz::PermissionGroups::Category.new({ name: 'CI/CD' }, 'source_file') }
+
+    before do
+      allow(::Authz::PermissionGroups::Assignable).to receive(:all).and_return(
+        cd_application.name => cd_application,
+        catalog_resource.name => catalog_resource
+      )
+
+      allow(::Authz::PermissionGroups::Resource).to receive(:get)
+        .with('ci_cd/cd_application').and_return(build_resource('CD Application'))
+      allow(::Authz::PermissionGroups::Resource).to receive(:get)
+        .with('ci_cd/catalog_resource').and_return(build_resource('Catalog Resource'))
+      allow(::Authz::PermissionGroups::Category).to receive(:get)
+        .with('ci_cd').and_return(ci_cd_category)
+    end
+
+    it 'sorts resources case-insensitively by display name' do
+      post_graphql(query, current_user: current_user)
+
+      expect(permissions_data.pluck('resourceName')).to eq(['Catalog Resource', 'CD Application'])
+    end
+  end
+
+  context 'when feature-flag `granular_personal_access_tokens` is disabled' do
+    before do
+      stub_feature_flags(granular_personal_access_tokens: false)
+    end
+
+    it 'returns permissions' do
+      post_graphql(query, current_user: current_user)
+
+      expect_graphql_errors_to_be_empty
+      expect(permissions_data).to be_present
+    end
+
+    context 'when feature-flag `granular_oauth_tokens` is also disabled' do
+      before do
+        stub_feature_flags(granular_oauth_tokens: false)
+      end
+
+      it 'returns an error' do
+        post_graphql(query, current_user: current_user)
+
+        expect_graphql_errors_to_include("The resource that you are attempting to access does not exist")
+      end
+    end
+  end
+end

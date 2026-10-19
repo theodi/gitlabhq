@@ -1,0 +1,353 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Mcp::Tools::WorkItems::LinkWorkItemsTool, feature_category: :mcp_server do
+  let(:not_found_error) { ::Mcp::Tools::Concerns::ResourceFinder::ResourceNotFoundError }
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, :public) }
+  let_it_be(:source_work_item) { create(:work_item, :issue, project: project, iid: 1) }
+  let_it_be(:target_work_item) { create(:work_item, :issue, project: project, iid: 2) }
+
+  let(:target_gid) { target_work_item.to_global_id.to_s }
+  let(:params) do
+    {
+      project_id: project.id.to_s,
+      work_item_iid: source_work_item.iid,
+      work_items_ids: [target_gid]
+    }
+  end
+
+  let(:tool) { described_class.new(current_user: user, params: params) }
+
+  before_all do
+    project.add_developer(user)
+  end
+
+  describe 'versioning' do
+    it 'registers version using VERSIONS constant' do
+      expect(tool.version).to eq(Mcp::Tools::Concerns::Constants::VERSIONS[:v0_1_0])
+    end
+
+    it 'has correct operation name for version 0.1.0' do
+      expect(tool.operation_name).to eq('workItemAddLinkedItems')
+    end
+
+    it 'has correct GraphQL operation for version 0.1.0' do
+      operation = tool.graphql_operation
+
+      expect(operation).to include('mutation linkWorkItems')
+      expect(operation).to include('workItemAddLinkedItems(input: $input)')
+    end
+  end
+
+  describe '#build_variables' do
+    context 'with valid params' do
+      it 'builds variables with source work item ID and target IDs' do
+        variables = tool.build_variables
+
+        expect(variables[:input]).to include(
+          id: source_work_item.to_global_id.to_s,
+          workItemsIds: [target_gid]
+        )
+      end
+
+      it 'defaults link_type to RELATED when not provided' do
+        variables = tool.build_variables
+
+        expect(variables[:input][:linkType]).to eq('RELATED')
+      end
+
+      it 'maps link_type relates_to to RELATED' do
+        params[:link_type] = 'relates_to'
+        variables = tool.build_variables
+
+        expect(variables[:input][:linkType]).to eq('RELATED')
+      end
+
+      it 'accepts multiple target work item IDs' do
+        another_gid = "gid://gitlab/WorkItem/#{target_work_item.id + 1}"
+        params[:work_items_ids] = [target_gid, another_gid]
+        variables = tool.build_variables
+
+        expect(variables[:input][:workItemsIds]).to match_array([target_gid, another_gid])
+      end
+    end
+
+    context 'with URL-based identification' do
+      let(:params) do
+        {
+          url: "https://gitlab.com/#{project.full_path}/-/work_items/#{source_work_item.iid}",
+          work_items_ids: [target_gid]
+        }
+      end
+
+      it 'resolves source work item from URL' do
+        variables = tool.build_variables
+
+        expect(variables[:input][:id]).to eq(source_work_item.to_global_id.to_s)
+      end
+    end
+
+    context 'when link_type is blank' do
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: source_work_item.iid,
+          work_items_ids: [target_gid],
+          link_type: ''
+        }
+      end
+
+      it 'defaults to RELATED' do
+        variables = tool.build_variables
+
+        expect(variables[:input][:linkType]).to eq('RELATED')
+      end
+    end
+
+    context 'when link_type is relates_to' do
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: source_work_item.iid,
+          work_items_ids: [target_gid],
+          link_type: 'relates_to'
+        }
+      end
+
+      it 'maps to RELATED' do
+        variables = tool.build_variables
+
+        expect(variables[:input][:linkType]).to eq('RELATED')
+      end
+    end
+
+    context 'when work_items_ids contains an invalid ID format' do
+      where(:invalid_id) do
+        [
+          ['not-a-gid'],
+          ['gid://gitlab/Issue/123'],
+          ['']
+        ]
+      end
+
+      with_them do
+        let(:params) do
+          {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: [invalid_id]
+          }
+        end
+
+        it 'raises ArgumentError naming the id and both accepted formats' do
+          expect { tool.build_variables }
+            .to raise_error(ArgumentError, /Invalid target work item ID format: '#{Regexp.escape(invalid_id)}'/)
+        end
+      end
+    end
+
+    context 'when work_items_ids contains plain iids' do
+      where(:iid_form) { [[2], ['2']] }
+
+      with_them do
+        let(:params) do
+          {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: [iid_form]
+          }
+        end
+
+        it 'resolves the iid in the source parent to a global ID' do
+          expect(tool.build_variables[:input][:workItemsIds]).to eq([target_work_item.to_global_id.to_s])
+        end
+      end
+    end
+
+    context 'when work_items_ids mixes global IDs and iids' do
+      let_it_be(:second_target) { create(:work_item, :issue, project: project, iid: 3) }
+
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: source_work_item.iid,
+          work_items_ids: [target_gid, second_target.iid]
+        }
+      end
+
+      it 'resolves each element in its own format' do
+        expect(tool.build_variables[:input][:workItemsIds]).to eq(
+          [target_gid, second_target.to_global_id.to_s]
+        )
+      end
+    end
+
+    context 'when a target iid does not exist in the source parent' do
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: source_work_item.iid,
+          work_items_ids: [non_existing_record_iid]
+        }
+      end
+
+      it 'raises an error naming the iid, the parent, and the cross-parent escape hatch' do
+        expect { tool.build_variables }.to raise_error(
+          not_found_error,
+          /Target work item with iid '#{non_existing_record_iid}' not found in #{Regexp.escape(project.full_path)}/
+        )
+      end
+    end
+
+    context 'when a target iid names a confidential work item the caller cannot read' do
+      let_it_be(:confidential_target) { create(:work_item, :issue, :confidential, project: project, iid: 4) }
+      let_it_be(:guest) { create(:user, guest_of: project) }
+
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: source_work_item.iid,
+          work_items_ids: [confidential_target.iid]
+        }
+      end
+
+      let(:tool) { described_class.new(current_user: guest, params: params) }
+
+      it 'still points at the cross-parent escape hatch, and keeps the forbidden category' do
+        expect { tool.build_variables }.to raise_error(
+          Mcp::Tools::Concerns::ResourceFinder::ResourceForbiddenError,
+          /Target work item with iid '4' not found in #{Regexp.escape(project.full_path)}.+global ID/m
+        )
+      end
+    end
+
+    context 'when a target iid belongs to a different project' do
+      let_it_be(:other_project) { create(:project, :public) }
+      let_it_be(:foreign_item) { create(:work_item, :issue, project: other_project, iid: 77) }
+
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: source_work_item.iid,
+          work_items_ids: [foreign_item.iid]
+        }
+      end
+
+      it 'does not resolve it, keeping iids scoped to the source parent' do
+        expect { tool.build_variables }
+          .to raise_error(not_found_error, /Target work item with iid '77' not found in/)
+      end
+    end
+
+    context 'when link_type is invalid' do
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: source_work_item.iid,
+          work_items_ids: [target_gid],
+          link_type: 'invalid_type'
+        }
+      end
+
+      it 'raises ArgumentError' do
+        expect { tool.build_variables }
+          .to raise_error(ArgumentError, /Invalid link_type/)
+      end
+    end
+
+    context 'when source work item does not exist' do
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: non_existing_record_iid,
+          work_items_ids: [target_gid]
+        }
+      end
+
+      it 'raises ArgumentError' do
+        expect { tool.build_variables }
+          .to raise_error(not_found_error, "Work item ##{non_existing_record_iid} not found or inaccessible")
+      end
+    end
+
+    context 'when user lacks access to source work item' do
+      let_it_be(:private_project) { create(:project, :private) }
+      let(:params) do
+        {
+          project_id: private_project.id.to_s,
+          work_item_iid: 1,
+          work_items_ids: [target_gid]
+        }
+      end
+
+      it 'raises a uniform not-found error indistinguishable from a missing project' do
+        expect { tool.build_variables }
+          .to raise_error(StandardError, /not found or inaccessible/)
+      end
+    end
+  end
+
+  describe 'integration' do
+    it 'executes mutation with correct variables' do
+      allow(GitlabSchema).to receive(:execute).and_call_original
+
+      tool.execute
+
+      expect(GitlabSchema).to have_received(:execute).with(
+        anything,
+        variables: hash_including(
+          input: hash_including(
+            id: source_work_item.to_global_id.to_s,
+            workItemsIds: [target_gid],
+            linkType: 'RELATED'
+          )
+        ),
+        context: hash_including(current_user: user)
+      )
+    end
+
+    it 'returns linked work item data with the full payload shape the tool promises' do
+      result = tool.execute
+
+      expect(result[:isError]).to be(false)
+      expect(result[:structuredContent].keys).to match_array(%w[workItem message errors])
+
+      work_item = result[:structuredContent]['workItem']
+      expect(work_item.keys).to match_array(%w[id iid title])
+      expect(work_item['iid'].to_i).to eq(source_work_item.iid)
+    end
+
+    context 'when source work item does not exist' do
+      let(:params) do
+        {
+          project_id: project.id.to_s,
+          work_item_iid: non_existing_record_iid,
+          work_items_ids: [target_gid]
+        }
+      end
+
+      it 'raises error before executing GraphQL' do
+        expect { tool.execute }
+          .to raise_error(not_found_error, "Work item ##{non_existing_record_iid} not found or inaccessible")
+      end
+    end
+
+    context 'when user lacks permission' do
+      let_it_be(:private_project) { create(:project, :private) }
+      let(:params) do
+        {
+          project_id: private_project.id.to_s,
+          work_item_iid: 1,
+          work_items_ids: [target_gid]
+        }
+      end
+
+      it 'raises a uniform not-found error before executing GraphQL' do
+        expect { tool.execute }.to raise_error(StandardError, /not found or inaccessible/)
+      end
+    end
+  end
+end

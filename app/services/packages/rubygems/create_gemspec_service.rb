@@ -1,0 +1,46 @@
+# frozen_string_literal: true
+
+module Packages
+  module Rubygems
+    class CreateGemspecService
+      def initialize(package, gemspec)
+        @package = package
+        @gemspec = gemspec
+      end
+
+      def execute
+        write_gemspec_to_file
+      end
+
+      private
+
+      attr_reader :package, :gemspec
+
+      def write_gemspec_to_file
+        file = Tempfile.new(binmode: true)
+
+        begin
+          content = Gem.deflate(Marshal.dump(gemspec))
+          file.write(content)
+          file.flush
+          file.rewind
+
+          md5 = Gitlab::FIPS.enabled? ? nil : Digest::MD5.hexdigest(content) # rubocop:disable Fips/MD5 -- MD5 is not used when in FIPS-compliant mode
+
+          package.package_files.create!(
+            file: file,
+            size: file.size,
+            file_name: "#{gemspec.name}-#{gemspec.version}.gemspec.rz",
+            file_sha1: Digest::SHA1.hexdigest(content),
+            file_md5: md5,
+            file_sha256: Digest::SHA256.hexdigest(content),
+            project_id: package.project_id
+          )
+        ensure
+          file.close
+          file.unlink
+        end
+      end
+    end
+  end
+end

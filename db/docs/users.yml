@@ -1,0 +1,29 @@
+---
+table_name: users
+classes:
+- User
+feature_categories:
+- user_profile
+description: Stores user accounts and core authentication state (password digest,
+  OTP, sign-in tracking, admin/auditor flags). Profile, preferences, and other ancillary
+  user data live in related tables such as user_details, user_preferences, user_synced_attributes_metadata,
+  and identities.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/9ba1224867665844b117fa037e1465bb706b3685
+milestone: "<6.0"
+gitlab_schema: gitlab_main_user
+sharding_key:
+  organization_id: organizations
+schema_inconsistencies:
+- type: missing_indexes
+  object_name: index_users_on_id_and_last_activity_on_for_active_human_service
+  introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/139230
+- type: missing_indexes
+  object_name: index_users_on_public_email_trigram
+  introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/152249
+- type: missing_indexes
+  object_name: index_users_on_email_trigram
+  introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/152249
+- type: missing_indexes
+  object_name: tmp_index_users_on_external_where_external_is_null
+  introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/184848
+table_size: medium

@@ -1,0 +1,18 @@
+---
+description: Someone clicks the "Embedded view powered by GLQL" link below an embedded view
+internal_events: true
+status: active
+action: click_glql_info_link
+identifiers:
+- project
+- namespace
+- user
+product_group: platform_insights
+product_categories:
+- custom_dashboards_foundation
+milestone: '18.2'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/195595
+tiers:
+- free
+- premium
+- ultimate

@@ -1,0 +1,336 @@
+# frozen_string_literal: true
+
+module Ci
+  class JobArtifact < Ci::ApplicationRecord
+    include Ci::Partitionable
+    include AfterCommitQueue
+    include UpdateProjectStatistics
+    include UsageStatistics
+    include Sortable
+    include Artifactable
+    include Lockable
+    include FileStoreMounter
+    include ObjectStorable
+    include EachBatch
+    include Gitlab::Utils::StrongMemoize
+
+    STORE_COLUMN = :file_store
+    PLAN_LIMIT_PREFIX = 'ci_max_artifact_size_'
+    MAX_EXPOSED_AS_LENGTH = 100
+    EXPOSED_PATH_REGEX = /\A[^*]*\z/
+
+    InvalidArtifactError = Class.new(StandardError)
+
+    self.table_name = :p_ci_job_artifacts
+    self.primary_key = :id
+    self.sequence_name = :ci_job_artifacts_id_seq
+
+    partitionable scope: :job, partitioned: true
+    query_constraints :id, :partition_id
+
+    enum :accessibility, { public: 0, private: 1, none: 2, maintainer: 3 }, suffix: true
+
+    belongs_to :project
+    belongs_to :job,
+      ->(artifact) { in_partition(artifact) },
+      class_name: "Ci::Build",
+      foreign_key: :job_id,
+      partition_foreign_key: :partition_id,
+      inverse_of: :job_artifacts
+
+    has_one :artifact_report,
+      ->(artifact) { in_partition(artifact) },
+      class_name: 'Ci::JobArtifactReport',
+      partition_foreign_key: :partition_id,
+      inverse_of: :job_artifact
+
+    mount_file_store_uploader JobArtifactUploader, skip_store_file: true
+    update_project_statistics project_statistics_name: :build_artifacts_size
+
+    before_save :set_size, if: :file_changed?
+    after_save :store_file_in_transaction!, unless: :store_after_commit?
+
+    after_create_commit :log_create
+
+    after_commit :store_file_after_transaction!, on: [:create, :update], if: :store_after_commit?
+
+    after_destroy_commit :log_destroy
+
+    validates :job, presence: true
+    validates :file_format, presence: true, unless: :trace?, on: :create
+    validate :validate_file_format!, unless: :trace?, on: :create
+    validates :exposed_as, length: { maximum: MAX_EXPOSED_AS_LENGTH }
+    validate :validate_exposed_paths, if: -> { exposed_paths.present? }
+
+    scope :not_expired, -> { where('expire_at IS NULL OR expire_at > ?', Time.current) }
+    scope :for_sha, ->(sha, project_id) { joins(job: :pipeline).merge(Ci::Pipeline.for_sha(sha).for_project(project_id)) }
+    scope :for_job_ids, ->(job_ids) { where(job_id: job_ids) }
+    scope :created_at_before, ->(time) { where(arel_table[:created_at].lteq(time)) }
+    scope :id_before, ->(id) { where(arel_table[:id].lteq(id)) }
+    scope :id_after, ->(id) { where(arel_table[:id].gt(id)) }
+    scope :ordered_by_id, -> { order(:id) }
+    scope :scoped_build, -> {
+      where(arel_table[:job_id].eq(Ci::Build.arel_table[:id]))
+      .where(arel_table[:partition_id].eq(Ci::Build.arel_table[:partition_id]))
+    }
+
+    scope :with_job, -> { joins(:job).includes(:job) }
+
+    scope :with_file_types, ->(file_types) do
+      types = self.file_types.select { |file_type| file_types.include?(file_type) }.values
+
+      where(file_type: types)
+    end
+
+    scope :all_reports, -> do
+      with_file_types(Enums::Ci::JobArtifact.report_types.keys.map(&:to_s))
+    end
+
+    scope :erasable, -> do
+      where(file_type: erasable_file_types)
+    end
+
+    scope :non_trace, -> { where.not(file_type: [:trace]) }
+    scope :expired_and_deletable, -> { expired_before(Time.current).non_trace.artifact_unlocked }
+    scope :for_mod_bucket, ->(bucket, modulus) { where('MOD(project_id + job_id, ?) = ?', modulus, bucket) }
+
+    scope :downloadable, -> { where(file_type: Enums::Ci::JobArtifact.downloadable_types) }
+    scope :unlocked, -> { joins(job: :pipeline).merge(::Ci::Pipeline.unlocked) }
+    scope :order_expired_asc, -> { order(expire_at: :asc) }
+    scope :with_destroy_preloads, -> { includes(project: [:route, :statistics, :build_artifacts_size_refresh]) }
+
+    scope :for_project, ->(project) { where(project_id: project) }
+    scope :created_in_time_range, ->(from: nil, to: nil) { where(created_at: from..to) }
+
+    delegate :filename, :exists?, :open, to: :file
+    enum :file_type, Enums::Ci::JobArtifact.file_type
+
+    # `file_location` indicates where actual files are stored.
+    # Ideally, actual files should be stored in the same directory, and use the same
+    # convention to generate its path. However, sometimes we can't do so due to backward-compatibility.
+    #
+    # legacy_path ... The actual file is stored at a path consists of a timestamp
+    #                 and raw project/model IDs. Those rows were migrated from
+    #                 `ci_builds.artifacts_file` and `ci_builds.artifacts_metadata`
+    # hashed_path ... The actual file is stored at a path consists of a SHA2 based on the project ID.
+    #                 This is the default value.
+    enum :file_location, Enums::Ci::JobArtifact.file_location
+
+    def self.partition_groups
+      Gitlab::Database::SharedModel.using_connection(connection) do
+        Gitlab::Database::PostgresPartition
+          .for_parent_table(table_name)
+          .map(&:list_partition_ids)
+          .select(&:any?)
+          .sort_by(&:min)
+      end
+    end
+
+    def self.of_report_type(report_type)
+      file_types = file_types_for_report(report_type)
+
+      with_file_types(file_types)
+    end
+
+    def self.file_types_for_report(report_type)
+      Enums::Ci::JobArtifact.report_file_types.fetch(report_type) { raise ArgumentError, "Unrecognized report type: #{report_type}" }
+    end
+
+    def self.associated_file_types_for(file_type)
+      return unless file_types.include?(file_type)
+
+      [file_type]
+    end
+
+    def self.erasable_file_types
+      file_types.keys - Enums::Ci::JobArtifact.non_erasable_file_types
+    end
+
+    def self.total_size
+      sum(:size)
+    end
+
+    def self.pluck_job_id
+      pluck(:job_id)
+    end
+
+    ##
+    # FastDestroyAll concerns
+    # rubocop: disable CodeReuse/ServiceClass
+    def self.begin_fast_destroy
+      service = ::Ci::JobArtifacts::DestroyAssociationsService.new
+      service.destroy_records(self)
+      service
+    end
+    # rubocop: enable CodeReuse/ServiceClass
+
+    ##
+    # FastDestroyAll concerns
+    def self.finalize_fast_destroy(service)
+      service.update_statistics
+    end
+
+    def self.archived_trace_exists_for?(job_id)
+      where(job_id: job_id).trace.take&.stored?
+    end
+
+    def self.max_artifact_size(type:, project:)
+      limit_name = "#{PLAN_LIMIT_PREFIX}#{type}"
+
+      max_size = project.actual_limits.limit_for(
+        limit_name,
+        alternate_limit: -> { project.closest_setting(:max_artifacts_size) }
+      )
+
+      max_size&.megabytes.to_i
+    end
+
+    def validate_file_format!
+      unless Enums::Ci::JobArtifact.type_and_format_pairs[file_type&.to_sym] == file_format&.to_sym
+        errors.add(:base, _('Invalid file format with specified file type'))
+      end
+    end
+
+    def local_store?
+      [nil, ::JobArtifactUploader::Store::LOCAL].include?(file_store)
+    end
+
+    def hashed_path?
+      return true if trace? # ArchiveLegacyTraces background migration might not have `file_location` column
+
+      super || file_location.nil?
+    end
+
+    def expired?
+      expire_at.present? && expire_at.past?
+    end
+
+    def expire_in
+      expire_at - Time.current if expire_at
+    end
+
+    def expire_in=(value)
+      self.expire_at =
+        (::Gitlab::Ci::Build::DurationParser.new(value).seconds_from_now if value)
+    end
+
+    def stored?
+      file&.file&.exists?
+    end
+
+    def to_deleted_object_attrs(pick_up_at = nil)
+      store_dir_value, file_value = resolve_file_path_for_deletion
+
+      {
+        file_store: file_store,
+        store_dir: store_dir_value,
+        file: file_value,
+        pick_up_at: set_pick_up_at(pick_up_at),
+        project_id: project_id
+      }
+    end
+
+    def store_after_commit?
+      strong_memoize(:store_after_commit) do
+        trace? && JobArtifactUploader.direct_upload_enabled?
+      end
+    end
+
+    def public_access?
+      public_accessibility?
+    end
+
+    def none_access?
+      none_accessibility?
+    end
+
+    def maintainer_access?
+      maintainer_accessibility?
+    end
+
+    def each_blob(&blk)
+      if junit? && artifact_report.nil?
+        build_artifact_report(status: :validated, validation_error: nil, project_id: project_id)
+      end
+
+      super
+    rescue InvalidArtifactError => e
+      artifact_report&.assign_attributes(status: :faulty, validation_error: e.message)
+
+      raise e
+    ensure
+      artifact_report&.save! if persisted?
+    end
+
+    private
+
+    def resolve_file_path_for_deletion
+      return [File.dirname(file_final_path), File.basename(file_final_path)] if file_final_path.present?
+
+      return [nil, nil] if object_storage_inaccessible?
+
+      extract_path_from_uploader
+    end
+
+    def object_storage_inaccessible?
+      file_store == ObjectStorage::Store::REMOTE && !JobArtifactUploader.object_store_enabled?
+    end
+
+    def extract_path_from_uploader
+      [file.store_dir.to_s, file_identifier]
+    rescue RuntimeError => e
+      if e.message.match?(/Object Storage is not enabled|storage.*not.*configured/i)
+        [nil, nil]
+      else
+        raise e
+      end
+    end
+
+    def set_pick_up_at(pick_up_at)
+      (pick_up_at || expire_at || Time.current).clamp(1.day.ago, 1.hour.from_now)
+    end
+
+    def store_file_in_transaction!
+      store_file_now! if saved_change_to_file?
+
+      file_stored_in_transaction_hooks
+    end
+
+    def store_file_after_transaction!
+      store_file_now! if previous_changes.key?(:file)
+
+      file_stored_after_transaction_hooks
+    end
+
+    # method overridden in EE
+    def file_stored_after_transaction_hooks; end
+
+    # method overridden in EE
+    def file_stored_in_transaction_hooks; end
+
+    def set_size
+      self.size = file.size
+    end
+
+    def project_destroyed?
+      # Use job.project to avoid extra DB query for project
+      job.project.pending_delete?
+    end
+
+    def log_create
+      Gitlab::Ci::Artifacts::Logger.log_created(self)
+    end
+
+    def log_destroy
+      Gitlab::Ci::Artifacts::Logger.log_deleted(self, __method__)
+    end
+
+    def validate_exposed_paths
+      return if exposed_paths.is_a?(Array) && exposed_paths.all? { |path| path.match?(EXPOSED_PATH_REGEX) }
+
+      errors.add(:exposed_paths, 'must be an array of strings without `*`')
+    end
+  end
+end
+
+Ci::JobArtifact.prepend_mod_with('Ci::JobArtifact')

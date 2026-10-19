@@ -1,0 +1,16 @@
+name: gitlab_main_cell_local
+description: Schema for all Cell-local tables, ex. zoekt_nodes, geo_nodes.
+allow_cross_joins:
+  - gitlab_shared
+  - gitlab_shared_org
+  - gitlab_shared_cell_local
+  - gitlab_main
+  - gitlab_main_org
+allow_cross_transactions:
+  - gitlab_internal
+  - gitlab_shared
+  - gitlab_shared_org
+  - gitlab_shared_cell_local
+  - gitlab_main
+  - gitlab_main_org
+require_sharding_key: false

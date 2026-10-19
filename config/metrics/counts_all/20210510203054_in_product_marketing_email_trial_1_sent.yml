@@ -1,0 +1,23 @@
+---
+data_category: optional
+key_path: counts.in_product_marketing_email_trial_1_sent
+description: Total sent emails of the trial track's second email
+product_group: activation
+product_categories:
+- onboarding
+value_type: number
+status: removed
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/131860
+milestone_removed: '16.5'
+milestone: '13.12'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/56752
+time_frame: all
+data_source: database
+instrumentation_class: InProductMarketingEmailSentMetric
+options:
+  track: trial
+  series: 1
+tiers:
+  - free
+  - premium
+  - ultimate

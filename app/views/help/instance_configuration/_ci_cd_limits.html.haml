@@ -1,0 +1,48 @@
+- ci_cd_limits = @instance_configuration.settings[:ci_cd_limits]
+- return unless ci_cd_limits.present?
+
+- content_for :table_content do
+  %li= link_to _('CI/CD limits'), '#ci-cd-limits'
+
+- content_for :settings_content do
+  %h2#ci-cd-limits
+    = _('CI/CD limits')
+
+  %p
+    = s_('CICD|There are several CI/CD limits in place.')
+  .table-responsive
+    %table
+      %thead
+        %tr
+          %th= s_('CICD|Limit')
+          - ci_cd_limits.each_key do |title|
+            %th= title.to_s.humanize
+      %tbody
+        %tr
+          %td= plan_limit_setting_description(:ci_pipeline_size)
+          - ci_cd_limits.each_value do |limits|
+            %td= instance_configuration_disabled_cell_html(limits[:ci_pipeline_size])
+        %tr
+          %td= plan_limit_setting_description(:ci_active_jobs)
+          - ci_cd_limits.each_value do |limits|
+            %td= instance_configuration_disabled_cell_html(limits[:ci_active_jobs])
+        %tr
+          %td= plan_limit_setting_description(:ci_project_subscriptions)
+          - ci_cd_limits.each_value do |limits|
+            %td= instance_configuration_disabled_cell_html(limits[:ci_project_subscriptions])
+        %tr
+          %td= plan_limit_setting_description(:ci_pipeline_schedules)
+          - ci_cd_limits.each_value do |limits|
+            %td= instance_configuration_disabled_cell_html(limits[:ci_pipeline_schedules])
+        %tr
+          %td= plan_limit_setting_description(:ci_needs_size_limit)
+          - ci_cd_limits.each_value do |limits|
+            %td= instance_configuration_disabled_cell_html(limits[:ci_needs_size_limit])
+        %tr
+          %td= plan_limit_setting_description(:ci_registered_group_runners)
+          - ci_cd_limits.each_value do |limits|
+            %td= instance_configuration_disabled_cell_html(limits[:ci_registered_group_runners])
+        %tr
+          %td= plan_limit_setting_description(:ci_registered_project_runners)
+          - ci_cd_limits.each_value do |limits|
+            %td= instance_configuration_disabled_cell_html(limits[:ci_registered_project_runners])

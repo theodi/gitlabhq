@@ -1,0 +1,13 @@
+---
+table_name: catalog_resources
+classes:
+- Ci::Catalog::Resource
+feature_categories:
+- pipeline_composition
+description: Projects containing a catalog resource.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/112482
+milestone: '15.10'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

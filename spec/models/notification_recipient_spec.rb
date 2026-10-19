@@ -1,0 +1,612 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe NotificationRecipient, feature_category: :team_planning do
+  include ExternalAuthorizationServiceHelpers
+
+  let_it_be_with_reload(:user) { create(:user) }
+  let(:project) { create(:project, namespace: user.namespace) }
+  let(:target) { create(:issue, project: project) }
+
+  subject(:recipient) { described_class.new(user, :watch, target: target, project: project) }
+
+  describe '#notifiable?' do
+    let(:recipient) { described_class.new(user, :mention, target: target, project: project) }
+
+    context 'when user has a composite identity' do
+      before do
+        user.update!(composite_identity_enforced: true, user_type: :service_account)
+      end
+
+      it 'returns false' do
+        expect(recipient.notifiable?).to be false
+      end
+    end
+
+    context 'when emails are disabled' do
+      it 'returns false if group disabled' do
+        expect(project.namespace).to receive(:emails_enabled?).and_return(false)
+        expect(recipient).to receive(:emails_disabled?).and_call_original
+        expect(recipient.notifiable?).to be false
+      end
+
+      it 'returns false if project disabled' do
+        expect(project).to receive(:emails_disabled?).and_return(true)
+        expect(recipient).to receive(:emails_disabled?).and_call_original
+        expect(recipient.notifiable?).to be false
+      end
+    end
+
+    context 'when emails are enabled' do
+      it 'returns true if group enabled' do
+        expect(project.namespace).to receive(:emails_enabled?).and_return(true)
+        expect(recipient).to receive(:emails_disabled?).and_call_original
+        expect(recipient.notifiable?).to be true
+      end
+
+      it 'returns true if project enabled' do
+        expect(project).to receive(:emails_disabled?).and_return(false)
+        expect(recipient).to receive(:emails_disabled?).and_call_original
+        expect(recipient.notifiable?).to be true
+      end
+    end
+
+    context 'when recipient email is blocked', :freeze_time, :clean_gitlab_redis_rate_limiting do
+      before do
+        allow(Gitlab::ApplicationRateLimiter::LabkitAdapter).to receive(:run_peek!).and_return(true)
+      end
+
+      context 'with permanent failures' do
+        before do
+          allow(Gitlab::ApplicationRateLimiter::LabkitAdapter)
+            .to receive(:run!).with(:permanent_email_failure, any_args).and_return(false, true)
+
+          2.times { Gitlab::ApplicationRateLimiter.throttled?(:permanent_email_failure, scope: { email: user.email }) }
+        end
+
+        it 'returns false' do
+          expect(recipient.notifiable?).to be(false)
+        end
+      end
+
+      context 'with temporary failures' do
+        before do
+          allow(Gitlab::ApplicationRateLimiter::LabkitAdapter)
+            .to receive(:run!).with(:temporary_email_failure, any_args).and_return(false, true)
+        end
+
+        it 'returns false' do
+          2.times { Gitlab::ApplicationRateLimiter.throttled?(:temporary_email_failure, scope: { email: user.email }) }
+
+          expect(recipient.notifiable?).to be(false)
+        end
+      end
+    end
+  end
+
+  describe '#has_access?' do
+    before do
+      allow(user).to receive(:can?).and_call_original
+    end
+
+    context 'when external authorization service denies access' do
+      let(:target) { project }
+
+      before do
+        enable_external_authorization_service_check
+        external_service_deny_access(user, project)
+      end
+
+      it 'returns false' do
+        expect(recipient.has_access?).to be false
+      end
+    end
+
+    context 'user cannot read project' do
+      let(:target) { project }
+
+      it 'returns false' do
+        expect(user).to receive(:can?).with(:read_project, project).and_return(false)
+        expect(user).not_to receive(:can?).with(:read_cross_project)
+        expect(recipient.has_access?).to be false
+      end
+    end
+
+    context 'user cannot read build' do
+      let(:target) { build(:ci_pipeline) }
+
+      it 'returns false' do
+        expect(user).to receive(:can?).with(:read_build, target).and_return(false)
+        expect(recipient.has_access?).to be false
+      end
+    end
+
+    context 'user cannot read commit' do
+      let(:target) { build(:commit) }
+
+      it 'returns false' do
+        expect(user).to receive(:can?).with(:read_commit, target).and_return(false)
+        expect(recipient.has_access?).to be false
+      end
+    end
+
+    context 'target has no policy' do
+      let(:target) { double.as_null_object }
+
+      it 'returns true' do
+        expect(recipient.has_access?).to be true
+      end
+    end
+  end
+
+  describe '#notification_setting' do
+    context 'for child groups' do
+      let!(:moved_group) { create(:group) }
+      let(:group) { create(:group) }
+      let(:sub_group_1) { create(:group, parent: group) }
+      let(:sub_group_2) { create(:group, parent: sub_group_1) }
+      let(:project) { create(:project, namespace: moved_group) }
+
+      before do
+        sub_group_2.add_owner(user)
+        moved_group.add_owner(user)
+        Groups::TransferService.new(moved_group, user).execute(sub_group_2)
+
+        moved_group.reload
+      end
+
+      context 'when notification setting is global' do
+        before do
+          user.notification_settings_for(group).global!
+          user.notification_settings_for(sub_group_1).mention!
+          user.notification_settings_for(sub_group_2).global!
+          user.notification_settings_for(moved_group).global!
+        end
+
+        it 'considers notification setting from the first parent without global setting' do
+          expect(subject.notification_setting.source).to eq(sub_group_1)
+        end
+      end
+
+      context 'when notification setting is not global' do
+        before do
+          user.notification_settings_for(group).global!
+          user.notification_settings_for(sub_group_1).mention!
+          user.notification_settings_for(sub_group_2).watch!
+          user.notification_settings_for(moved_group).disabled!
+        end
+
+        it 'considers notification setting from lowest group member in hierarchy' do
+          expect(subject.notification_setting.source).to eq(moved_group)
+        end
+      end
+    end
+  end
+
+  describe '#custom_enabled?' do
+    let(:notification_setting) { user.notification_settings_for(project) }
+
+    where(:custom_action, :setting_updates, :expected_result, :description) do
+      [
+        [:new_issue, { new_issue: true }, true, 'issue event enabled'],
+        [:new_issue, { new_issue: false }, false, 'issue event disabled'],
+        [:new_work_item, { new_issue: true }, true, 'issue event enabled'],
+        [:new_work_item, { new_issue: false }, false, 'issue event disabled'],
+        [:close_issue, { close_issue: true }, true, 'close_issue enabled'],
+        [:close_work_item, { close_issue: true }, true, 'close_issue enabled'],
+        [:reassign_issue, { reassign_issue: true }, true, 'reassign_issue enabled'],
+        [:reassign_work_item, { reassign_issue: true }, true, 'reassign_issue enabled'],
+        [:reopen_issue, { reopen_issue: true }, true, 'reopen_issue enabled'],
+        [:reopen_work_item, { reopen_issue: true }, true, 'reopen_issue enabled'],
+        [:issue_due, { issue_due: true }, true, 'issue_due enabled'],
+        [:work_item_due, { issue_due: true }, true, 'issue_due enabled'],
+        [:new_epic, { new_epic: true }, true, 'epic event enabled'],
+        [:new_epic, { new_epic: false, new_issue: true }, true, 'epic event disabled but issue enabled'],
+        [:new_epic, { new_epic: false, new_issue: false }, false, 'both epic and issue events disabled'],
+        [:fixed_pipeline, { success_pipeline: true }, true, 'success_pipeline enabled']
+      ]
+    end
+
+    with_them do
+      let(:recipient) do
+        described_class.new(
+          user,
+          :custom,
+          custom_action: custom_action,
+          target: target,
+          project: project
+        )
+      end
+
+      before do
+        user.notification_settings_for(project).custom!
+        notification_setting.update!(setting_updates)
+      end
+
+      it "for action #{params[:custom_action]} returns #{params[:expected_result]} when #{params[:description]}" do
+        expect(recipient.custom_enabled?).to eq(expected_result)
+      end
+    end
+  end
+
+  describe '#suitable_notification_level?' do
+    context 'when notification level is mention' do
+      before do
+        user.notification_settings_for(project).mention!
+      end
+
+      context 'when type is mention' do
+        let(:recipient) { described_class.new(user, :mention, target: target, project: project) }
+
+        it 'returns true' do
+          expect(recipient.suitable_notification_level?).to be true
+        end
+      end
+
+      context 'when type is not mention' do
+        it 'returns false' do
+          expect(recipient.suitable_notification_level?).to be false
+        end
+      end
+    end
+
+    context 'when notification level is participating' do
+      let(:notification_setting) { user.notification_settings_for(project) }
+
+      context 'when type is participating' do
+        let(:recipient) { described_class.new(user, :participating, target: target, project: project) }
+
+        it 'returns true' do
+          expect(recipient.suitable_notification_level?).to be true
+        end
+      end
+
+      context 'when type is mention' do
+        let(:recipient) { described_class.new(user, :mention, target: target, project: project) }
+
+        it 'returns true' do
+          expect(recipient.suitable_notification_level?).to be true
+        end
+      end
+
+      context 'with custom action' do
+        context "when action is failed_pipeline" do
+          let(:recipient) do
+            described_class.new(
+              user,
+              :watch,
+              custom_action: :failed_pipeline,
+              target: target,
+              project: project
+            )
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context "when action is fixed_pipeline" do
+          let(:recipient) do
+            described_class.new(
+              user,
+              :watch,
+              custom_action: :fixed_pipeline,
+              target: target,
+              project: project
+            )
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context "when action is not fixed_pipeline or failed_pipeline" do
+          let(:recipient) do
+            described_class.new(
+              user,
+              :watch,
+              custom_action: :success_pipeline,
+              target: target,
+              project: project
+            )
+          end
+
+          it 'returns false' do
+            expect(recipient.suitable_notification_level?).to be false
+          end
+        end
+      end
+    end
+
+    context 'when notification level is custom' do
+      before do
+        user.notification_settings_for(project).custom!
+      end
+
+      context 'when type is participating' do
+        let(:notification_setting) { user.notification_settings_for(project) }
+        let(:recipient) do
+          described_class.new(
+            user,
+            :participating,
+            custom_action: :new_note,
+            target: target,
+            project: project
+          )
+        end
+
+        context 'with custom event enabled' do
+          before do
+            notification_setting.update!(new_note: true)
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'without custom event enabled' do
+          before do
+            notification_setting.update!(new_note: false)
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+      end
+
+      context 'when type is participating and custom_action is an opt-in-only event' do
+        let(:notification_setting) { user.notification_settings_for(project) }
+        let(:recipient) do
+          described_class.new(
+            user,
+            :participating,
+            custom_action: :push_to_merge_request,
+            target: target,
+            project: project
+          )
+        end
+
+        context 'with custom event enabled' do
+          before do
+            notification_setting.update!(push_to_merge_request: true)
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'without custom event enabled' do
+          before do
+            notification_setting.update!(push_to_merge_request: false)
+          end
+
+          it 'returns false' do
+            expect(recipient.suitable_notification_level?).to be false
+          end
+        end
+      end
+
+      context 'when type is mention and custom_action is an opt-in-only event' do
+        let(:notification_setting) { user.notification_settings_for(project) }
+        let(:recipient) do
+          described_class.new(
+            user,
+            :mention,
+            custom_action: :push_to_merge_request,
+            target: target,
+            project: project
+          )
+        end
+
+        before do
+          notification_setting.update!(push_to_merge_request: false)
+        end
+
+        it 'returns true because mentions always notify' do
+          expect(recipient.suitable_notification_level?).to be true
+        end
+      end
+
+      context 'when type is mention' do
+        let(:notification_setting) { user.notification_settings_for(project) }
+        let(:recipient) do
+          described_class.new(
+            user,
+            :mention,
+            custom_action: :new_issue,
+            target: target,
+            project: project
+          )
+        end
+
+        context 'with custom event enabled' do
+          before do
+            notification_setting.update!(new_issue: true)
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'without custom event enabled' do
+          before do
+            notification_setting.update!(new_issue: false)
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+      end
+
+      context 'when type is watch' do
+        let(:notification_setting) { user.notification_settings_for(project) }
+        let(:recipient) do
+          described_class.new(
+            user,
+            :watch,
+            custom_action: :failed_pipeline,
+            target: target,
+            project: project
+          )
+        end
+
+        context 'with custom event enabled' do
+          before do
+            notification_setting.update!(failed_pipeline: true)
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'without custom event enabled' do
+          before do
+            notification_setting.update!(failed_pipeline: false)
+          end
+
+          it 'returns false' do
+            expect(recipient.suitable_notification_level?).to be false
+          end
+        end
+
+        context 'when custom_action is fixed_pipeline and success_pipeline event is enabled' do
+          let(:recipient) do
+            described_class.new(
+              user,
+              :watch,
+              custom_action: :fixed_pipeline,
+              target: target,
+              project: project
+            )
+          end
+
+          before do
+            notification_setting.update!(success_pipeline: true)
+          end
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'with merge_when_pipeline_succeeds' do
+          let(:notification_setting) { user.notification_settings_for(project) }
+          let(:recipient) do
+            described_class.new(
+              user,
+              :watch,
+              custom_action: :merge_when_pipeline_succeeds,
+              target: target,
+              project: project
+            )
+          end
+
+          context 'custom event enabled' do
+            before do
+              notification_setting.update!(merge_when_pipeline_succeeds: true)
+            end
+
+            it 'returns true' do
+              expect(recipient.suitable_notification_level?).to be true
+            end
+          end
+
+          context 'custom event disabled' do
+            before do
+              notification_setting.update!(merge_when_pipeline_succeeds: false)
+            end
+
+            it 'returns false' do
+              expect(recipient.suitable_notification_level?).to be false
+            end
+          end
+        end
+      end
+    end
+
+    context 'when notification level is watch' do
+      before do
+        user.notification_settings_for(project).watch!
+      end
+
+      context 'when type is watch' do
+        context 'without excluded watcher events' do
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'with excluded watcher events' do
+          let(:recipient) do
+            described_class.new(user, :watch, custom_action: :issue_due, target: target, project: project)
+          end
+
+          it 'returns false' do
+            expect(recipient.suitable_notification_level?).to be false
+          end
+        end
+
+        context 'with push_to_merge_request' do
+          let(:recipient) do
+            described_class.new(user, :watch, custom_action: :push_to_merge_request, target: target, project: project)
+          end
+
+          it 'returns false since plain watchers remain excluded' do
+            expect(recipient.suitable_notification_level?).to be false
+          end
+        end
+
+        context 'with push_to_merge_request and mention type' do
+          let(:recipient) do
+            described_class.new(user, :mention, custom_action: :push_to_merge_request, target: target, project: project)
+          end
+
+          it 'returns true since mentions override the watcher exclusion' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+      end
+
+      context 'when type is not watch' do
+        context 'without excluded watcher events' do
+          let(:recipient) { described_class.new(user, :participating, target: target, project: project) }
+
+          it 'returns true' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'with excluded watcher events' do
+          let(:recipient) do
+            described_class.new(user, :participating, custom_action: :issue_due, target: target, project: project)
+          end
+
+          it 'returns true because participants trump the watcher exclusion' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+
+        context 'with push_to_merge_request' do
+          let(:recipient) do
+            described_class.new(
+              user, :participating, custom_action: :push_to_merge_request, target: target, project: project
+            )
+          end
+
+          it 'returns true so MR participants are notified of pushes' do
+            expect(recipient.suitable_notification_level?).to be true
+          end
+        end
+      end
+    end
+  end
+end

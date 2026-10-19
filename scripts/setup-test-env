@@ -1,0 +1,59 @@
+#!/usr/bin/env ruby
+
+# frozen_string_literal: true
+
+require_relative '../config/bundler_setup'
+
+require_relative '../spec/rails_autoload'
+
+require 'request_store'
+require 'rake'
+require 'active_support/all'
+
+ENV['SKIP_RAILS_ENV_IN_RAKE'] = 'true'
+
+load File.expand_path('../lib/tasks/gitlab/helpers.rake', __dir__)
+load File.expand_path('../lib/tasks/gitlab/gitaly.rake', __dir__)
+
+# Required for lib/system_check/helpers.rb
+require_relative '../lib/gitlab/task_helpers'
+
+# Required for lib/tasks/gitlab/helpers.rake
+require_relative '../lib/system_check/helpers'
+
+# Required for config/initializers/1_settings.rb
+require 'omniauth'
+require 'omniauth-github'
+require 'omniauth-saml'
+require 'etc'
+require 'gitlab/utils/all'
+require 'gitlab/safe_request_store'
+require_relative '../lib/gitlab/access'
+
+unless defined?(License)
+  # This is needed to allow use of `Gitlab::ImportSources.values` in `1_settings.rb`.
+  # See ee/lib/ee/gitlab/import_sources.rb
+  class License
+    def self.database
+      Struct.new(:cached_table_exists?).new(false)
+    end
+  end
+end
+
+require_relative '../config/initializers/1_settings'
+
+Gitlab.ee do
+  load File.expand_path('../ee/lib/tasks/gitlab/indexer.rake', __dir__)
+  load File.expand_path('../ee/lib/tasks/gitlab/zoekt.rake', __dir__)
+  load File.expand_path('../ee/lib/tasks/gitlab/secrets_management/openbao.rake', __dir__)
+  load File.expand_path('../ee/lib/tasks/gitlab/ai_gateway.rake', __dir__)
+
+  require_relative '../ee/lib/search/elastic/indexer'
+  require_relative '../ee/lib/tasks/gitlab/ai_gateway/utils'
+  require_relative '../ee/spec/support/helpers/secrets_management/openbao_test_setup'
+  require_relative '../ee/spec/support/search/zoekt_process_manager'
+end
+
+require_relative '../spec/support/helpers/test_env'
+
+TestEnv.init

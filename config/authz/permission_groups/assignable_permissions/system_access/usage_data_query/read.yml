@@ -1,0 +1,11 @@
+---
+name: read_usage_data_query
+description: Grants the ability to read usage data queries
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_usage_data_query
+assignable_when:
+  - condition: admin

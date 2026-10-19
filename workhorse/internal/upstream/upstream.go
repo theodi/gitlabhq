@@ -1,0 +1,356 @@
+/*
+Package upstream implements handlers for handling upstream requests.
+
+The upstream package provides functionality for routing requests and interacting with backend servers.
+*/
+package upstream
+
+import (
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	redis "github.com/redis/go-redis/v9"
+	"github.com/sebest/xff"
+	"github.com/sirupsen/logrus"
+	"gitlab.com/gitlab-org/labkit/correlation"
+
+	apipkg "gitlab.com/gitlab-org/gitlab/workhorse/internal/api"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/builds"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/config"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/healthcheck"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/helper"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/helper/nginx"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/loadshedding"
+	proxypkg "gitlab.com/gitlab-org/gitlab/workhorse/internal/proxy"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/rejectmethods"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/upload"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/upstream/roundtripper"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/urlprefix"
+)
+
+var (
+	// DefaultBackend is the default URL for the backend.
+	DefaultBackend = helper.URLMustParse("http://localhost:8080")
+
+	requestHeaderBlacklist = []string{
+		upload.RewrittenFieldsHeader,
+	}
+
+	geoProxyAPIPollingInterval = 10 * time.Second
+)
+
+type upstream struct {
+	config.Config
+	URLPrefix             urlprefix.Prefix
+	Routes                []routeEntry
+	RoundTripper          http.RoundTripper
+	CableRoundTripper     http.RoundTripper
+	APIClient             *apipkg.API
+	geoProxyBackend       *url.URL
+	geoProxyExtraData     string
+	geoLocalRoutes        []routeEntry
+	geoProxyCableRoute    routeEntry
+	geoProxyRoute         routeEntry
+	geoProxyPollSleep     func(time.Duration) <-chan time.Time
+	geoPollerDone         chan struct{}
+	accessLogger          *logrus.Logger
+	loadShedder           *loadshedding.LoadShedder
+	enableGeoProxyFeature bool
+	mu                    sync.RWMutex
+	watchKeyHandler       builds.WatchKeyHandler
+	rdb                   *redis.Client
+	healthCheckServer     *healthcheck.Server // Can be nil
+	shutdownChan          <-chan struct{}
+	upgradedConnsManager  *UpgradedConnsManager
+}
+
+// Dependencies holds the runtime-injected dependencies for an upstream
+// instance. Unlike config.Config (which holds static, file-based configuration),
+// these are live objects constructed at startup and cannot be expressed in a
+// config file.
+type Dependencies struct {
+	AccessLogger         *logrus.Logger
+	WatchKeyHandler      builds.WatchKeyHandler
+	Rdb                  *redis.Client
+	HealthCheckServer    *healthcheck.Server // optional, may be nil
+	ShutdownChan         <-chan struct{}
+	UpgradedConnsManager *UpgradedConnsManager
+	LoadShedder          *loadshedding.LoadShedder // optional, may be nil
+}
+
+// normalizeDependencies fills in safe defaults for any Dependencies fields
+// that were not explicitly set by the caller.
+func normalizeDependencies(deps Dependencies) Dependencies {
+	if deps.AccessLogger == nil {
+		deps.AccessLogger = logrus.StandardLogger()
+	}
+	return deps
+}
+
+// NewUpstream creates a new HTTP handler for handling upstream requests based on the provided configuration.
+func NewUpstream(cfg config.Config, deps Dependencies) http.Handler {
+	return newUpstream(cfg, deps, configureRoutes)
+}
+
+func newUpstream(cfg config.Config, deps Dependencies, routesCallback func(*upstream)) http.Handler {
+	deps = normalizeDependencies(deps)
+	up := upstream{
+		Config:       cfg,
+		accessLogger: deps.AccessLogger,
+		loadShedder:  deps.LoadShedder,
+		// Kind of a feature flag. See https://gitlab.com/groups/gitlab-org/-/epics/5914#note_564974130
+		enableGeoProxyFeature: os.Getenv("GEO_SECONDARY_PROXY") != "0",
+		geoProxyBackend:       &url.URL{},
+		watchKeyHandler:       deps.WatchKeyHandler,
+		rdb:                   deps.Rdb,
+		healthCheckServer:     deps.HealthCheckServer,
+		shutdownChan:          deps.ShutdownChan,
+		upgradedConnsManager:  deps.UpgradedConnsManager,
+	}
+
+	up.initializeDefaults()
+	routesCallback(&up)
+	go up.pollGeoProxyAPI()
+
+	return up.wrapWithMiddleware()
+}
+
+// initializeDefaults sets up default values and creates necessary components.
+// It uses u.Config which is embedded in the upstream struct.
+func (u *upstream) initializeDefaults() {
+	if u.geoProxyPollSleep == nil {
+		u.geoProxyPollSleep = time.After
+	}
+	if u.Backend == nil {
+		u.Backend = DefaultBackend
+	}
+	if u.CableBackend == nil {
+		u.CableBackend = u.Backend
+	}
+	if u.CableSocket == "" {
+		u.CableSocket = u.Socket
+	}
+	u.geoPollerDone = make(chan struct{})
+	u.RoundTripper = roundtripper.NewBackendRoundTripper(u.Backend, u.Socket, u.ProxyHeadersTimeout, u.DevelopmentMode)
+	u.CableRoundTripper = roundtripper.NewBackendRoundTripper(u.CableBackend, u.CableSocket, u.ProxyHeadersTimeout, u.DevelopmentMode)
+	u.configureURLPrefix()
+	u.APIClient = apipkg.NewAPI(u.Backend, u.Version, u.RoundTripper)
+}
+
+// wrapWithMiddleware applies correlation and other middleware to the upstream handler.
+// It uses u.Config which is embedded in the upstream struct.
+func (u *upstream) wrapWithMiddleware() http.Handler {
+	correlationOpts := buildCorrelationOptions(u.Config)
+	handler := correlation.InjectCorrelationID(u, correlationOpts...)
+	// TODO: move to LabKit https://gitlab.com/gitlab-org/gitlab/-/issues/324823
+	return rejectmethods.NewMiddleware(handler)
+}
+
+// buildCorrelationOptions creates correlation options based on config
+func buildCorrelationOptions(cfg config.Config) []correlation.InboundHandlerOption {
+	var opts []correlation.InboundHandlerOption
+	if cfg.PropagateCorrelationID {
+		opts = append(opts, correlation.WithPropagation())
+	}
+	if cfg.TrustedCIDRsForPropagation != nil {
+		opts = append(opts, correlation.WithCIDRsTrustedForPropagation(cfg.TrustedCIDRsForPropagation))
+	}
+	if cfg.TrustedCIDRsForXForwardedFor != nil {
+		opts = append(opts, correlation.WithCIDRsTrustedForXForwardedFor(cfg.TrustedCIDRsForXForwardedFor))
+	}
+	if cfg.AdoptCfRayHeader {
+		opts = append(opts, correlation.WithAdoptCfRayHeader())
+	}
+	return opts
+}
+
+func (u *upstream) configureURLPrefix() {
+	relativeURLRoot := u.Backend.Path
+	if !strings.HasSuffix(relativeURLRoot, "/") {
+		relativeURLRoot += "/"
+	}
+	u.URLPrefix = urlprefix.Prefix(relativeURLRoot)
+}
+
+func (u *upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	fixRemoteAddr(r)
+
+	nginx.DisableResponseBuffering(w)
+
+	// Drop RequestURI == "*" (FIXME: why?)
+	if r.RequestURI == "*" {
+		httpError(w, r, "Connection upgrade not allowed", http.StatusBadRequest)
+		return
+	}
+
+	// Disallow connect
+	if r.Method == "CONNECT" {
+		httpError(w, r, "CONNECT not allowed", http.StatusBadRequest)
+		return
+	}
+
+	// Check URL Root
+	URIPath := urlprefix.CleanURIPath(r.URL.EscapedPath())
+	prefix := u.URLPrefix
+	if !prefix.Match(URIPath) {
+		httpError(w, r, fmt.Sprintf("Not found %q", URIPath), http.StatusNotFound)
+		return
+	}
+
+	cleanedPath := prefix.Strip(URIPath)
+
+	route := u.findRoute(cleanedPath, r)
+
+	if route == nil {
+		// The protocol spec in git/Documentation/technical/http-protocol.txt
+		// says we must return 403 if no matching service is found.
+		httpError(w, r, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	for _, h := range requestHeaderBlacklist {
+		r.Header.Del(h)
+	}
+
+	route.handler.ServeHTTP(w, r)
+}
+
+func (u *upstream) findRoute(cleanedPath string, r *http.Request) *routeEntry {
+	if route := u.findGeoProxyRoute(cleanedPath, r); route != nil {
+		return route
+	}
+
+	for _, ro := range u.Routes {
+		if ro.isMatch(cleanedPath, r) {
+			return &ro
+		}
+	}
+
+	return nil
+}
+
+func (u *upstream) findGeoProxyRoute(cleanedPath string, r *http.Request) *routeEntry {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+
+	if u.geoProxyBackend.String() == "" {
+		return nil
+	}
+
+	// Some routes are safe to serve from this GitLab instance
+	for _, ro := range u.geoLocalRoutes {
+		if ro.isMatch(cleanedPath, r) {
+			return &ro
+		}
+	}
+
+	if cleanedPath == "/-/cable" {
+		return &u.geoProxyCableRoute
+	}
+
+	return &u.geoProxyRoute
+}
+
+// isShuttingDown returns true if the shutdown signal has been received.
+func (u *upstream) isShuttingDown() bool {
+	select {
+	case <-u.shutdownChan:
+		return true
+	default:
+		return false
+	}
+}
+
+func (u *upstream) pollGeoProxyAPI() {
+	defer close(u.geoPollerDone)
+
+	// Check enableGeoProxyFeature every time because `callGeoProxyApi()` can change its value.
+	// This is can also be disabled through the GEO_SECONDARY_PROXY env var.
+	for u.enableGeoProxyFeature {
+		if u.isShuttingDown() {
+			return
+		}
+		u.callGeoProxyAPI()
+
+		select {
+		case <-u.shutdownChan:
+			return
+		case <-u.geoProxyPollSleep(geoProxyAPIPollingInterval):
+		}
+	}
+}
+
+// Calls /api/v4/geo/proxy and sets up routes
+func (u *upstream) callGeoProxyAPI() {
+	geoProxyData, err := u.APIClient.GetGeoProxyData()
+	if err != nil {
+		// Unable to determine Geo Proxy URL. Fallback on cached value.
+		return
+	}
+
+	if !geoProxyData.GeoEnabled {
+		// When Geo is not enabled, we don't need to proxy, as it unnecessarily polls the
+		// API, whereas a restart is necessary to enable Geo in the first place; at which
+		// point we get fresh data from the API.
+		u.enableGeoProxyFeature = false
+		return
+	}
+
+	hasProxyDataChanged := u.geoProxyBackend.String() != geoProxyData.GeoProxyURL.String() || // URL changed
+		u.geoProxyExtraData != geoProxyData.GeoProxyExtraData // Signed data changed
+
+	if hasProxyDataChanged {
+		u.updateGeoProxyFieldsFromData(geoProxyData)
+	}
+}
+
+func (u *upstream) updateGeoProxyFieldsFromData(geoProxyData *apipkg.GeoProxyData) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	u.geoProxyBackend = geoProxyData.GeoProxyURL
+	u.geoProxyExtraData = geoProxyData.GeoProxyExtraData
+
+	if u.geoProxyBackend.String() == "" {
+		return
+	}
+
+	geoProxyWorkhorseHeaders := map[string]string{
+		"Gitlab-Workhorse-Geo-Proxy":            "1",
+		"Gitlab-Workhorse-Geo-Proxy-Extra-Data": u.geoProxyExtraData,
+	}
+	geoProxyRoundTripper := roundtripper.NewBackendRoundTripper(u.geoProxyBackend, "", u.ProxyHeadersTimeout, u.DevelopmentMode)
+	geoProxyUpstream := proxypkg.NewProxy(
+		u.geoProxyBackend,
+		u.Version,
+		geoProxyRoundTripper,
+		proxypkg.WithCustomHeaders(geoProxyWorkhorseHeaders),
+		proxypkg.WithForcedTargetHostHeader(),
+		proxypkg.WithCorrelationID(),
+	)
+	u.geoProxyCableRoute = u.wsRoute(newRoute(`^/-/cable\z`, "geo_action_cable", railsBackend), geoProxyUpstream)
+	u.geoProxyRoute = u.route("", newRoute("", "proxy", geoPrimaryBackend), geoProxyUpstream, withGeoProxy())
+}
+
+func httpError(w http.ResponseWriter, r *http.Request, err string, code int) {
+	if r.ProtoAtLeast(1, 1) {
+		// Force client to disconnect if we render request error
+		w.Header().Set("Connection", "close")
+	}
+
+	http.Error(w, err, code)
+}
+
+func fixRemoteAddr(r *http.Request) {
+	// Unix domain sockets have a remote addr of @. This will make the
+	// xff package lookup the X-Forwarded-For address if available.
+	if r.RemoteAddr == "@" {
+		r.RemoteAddr = "127.0.0.1:0"
+	}
+	r.RemoteAddr = xff.GetRemoteAddr(r)
+}

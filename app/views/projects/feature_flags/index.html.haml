@@ -1,0 +1,17 @@
+- page_title s_('FeatureFlags|Feature flags')
+
+#feature-flags-vue{ data: { endpoint: project_feature_flags_path(@project, format: :json),
+  "project-id" => @project.id,
+  "project-name" => @project.name,
+  "error-state-svg-path" => image_path('illustrations/empty-state/empty-feature-flag-md.svg'),
+  "feature-flags-help-page-path" => help_page_path("operations/feature_flags.md"),
+  "feature-flags-client-libraries-help-page-path" => help_page_path("operations/feature_flags.md", anchor: "choose-a-client-library"),
+  "feature-flags-client-example-help-page-path" => help_page_path("operations/feature_flags.md", anchor: "go-application-example"),
+  "feature-flags-limit-exceeded" => @project.actual_limits.exceeded?(:project_feature_flags, @project.operations_feature_flags.count),
+  "feature-flags-limit" => @project.actual_limits.project_feature_flags,
+  "unleash-api-url" => (unleash_api_url(@project) if can?(current_user, :admin_feature_flag, @project)),
+  "unleash-api-instance-id" => (unleash_api_instance_id(@project) if can?(current_user, :admin_feature_flag, @project)),
+  "can-user-admin-feature-flag" => can?(current_user, :admin_feature_flag, @project),
+  "new-feature-flag-path" => can?(current_user, :create_feature_flag, @project) ? new_project_feature_flag_path(@project): nil,
+  "rotate-instance-id-path" => can?(current_user, :admin_feature_flags_client, @project) ? reset_token_project_feature_flags_client_path(@project, format: :json) : nil,
+  "user-list-path" => can?(current_user, :admin_feature_flags_user_lists, @project) ? project_feature_flags_user_lists_path(@project) : nil } }

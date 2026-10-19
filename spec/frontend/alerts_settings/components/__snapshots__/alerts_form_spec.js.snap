@@ -1,0 +1,114 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Alert integration settings form default state should match the default snapshot 1`] = `
+<div>
+  <p>
+    <gl-sprintf-stub
+      message="Action to take when receiving an alert. %{docsLink}"
+    />
+  </p>
+  <form>
+    <gl-form-group-stub
+      class="gl-pl-0"
+      labeldescription=""
+      optionaltext="(optional)"
+    >
+      <gl-form-checkbox-stub
+        checked="true"
+        data-testid="create-incident-checkbox"
+        value="true"
+      >
+        <span>
+          Create an incident. Incidents are created for each alert triggered.
+        </span>
+      </gl-form-checkbox-stub>
+    </gl-form-group-stub>
+    <gl-form-group-stub
+      class="gl-col-8 gl-col-md-9 gl-px-6"
+      label-for="alert-integration-settings-issue-template"
+      label-size="sm"
+      labeldescription=""
+      optionaltext="(optional)"
+    >
+      <label
+        class="gl-inline-flex"
+        for="reference-0"
+      >
+        Incident template (optional).
+        <gl-link-stub
+          href="/help/user/project/description_templates#create-a-description-template"
+          target="_blank"
+        >
+          <span
+            class="gl-font-normal gl-pl-2"
+          >
+            Learn more.
+          </span>
+        </gl-link-stub>
+      </label>
+      <gl-collapsible-listbox-stub
+        block="true"
+        category="primary"
+        data-testid="incident-templates-dropdown"
+        headertext=""
+        icon=""
+        id="reference-0"
+        items="[object Object]"
+        noresultstext="No results found"
+        placement="bottom-start"
+        positioningstrategy="absolute"
+        resetbuttonlabel=""
+        searchplaceholder="Search"
+        selected="selecte_tmpl"
+        showselectallbuttonlabel=""
+        size="medium"
+        sronlyresultslabel="[Function]"
+        toggletext=""
+        variant="default"
+      />
+    </gl-form-group-stub>
+    <gl-form-group-stub
+      class="gl-mb-5 gl-pl-0"
+      labeldescription=""
+      optionaltext="(optional)"
+    >
+      <gl-form-checkbox-stub
+        data-testid="enable-email-notification-checkbox"
+        value="true"
+      >
+        <span>
+          Send a single email notification to Owners and Maintainers for new alerts.
+        </span>
+      </gl-form-checkbox-stub>
+    </gl-form-group-stub>
+    <gl-form-group-stub
+      class="gl-mb-5 gl-pl-0"
+      labeldescription=""
+      optionaltext="(optional)"
+    >
+      <gl-form-checkbox-stub
+        checked="true"
+        value="true"
+      >
+        <span>
+          Automatically close associated incident when a recovery alert notification resolves an alert
+        </span>
+      </gl-form-checkbox-stub>
+    </gl-form-group-stub>
+    <gl-button-stub
+      accessibledisabled="true"
+      buttontextclasses=""
+      category="primary"
+      class="js-no-auto-disable"
+      data-testid="save-changes-button"
+      icon=""
+      size="medium"
+      tag="button"
+      type="submit"
+      variant="confirm"
+    >
+      Save changes
+    </gl-button-stub>
+  </form>
+</div>
+`;

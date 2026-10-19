@@ -1,0 +1,29 @@
+mutation commitCIFile(
+  $action: CommitActionMode!
+  $projectPath: ID!
+  $branch: String!
+  $startBranch: String
+  $message: String!
+  $filePath: String!
+  $lastCommitId: String!
+  $content: String
+) {
+  commitCreate(
+    input: {
+      projectPath: $projectPath
+      branch: $branch
+      startBranch: $startBranch
+      message: $message
+      actions: [
+        { action: $action, filePath: $filePath, lastCommitId: $lastCommitId, content: $content }
+      ]
+    }
+  ) {
+    commit {
+      id
+      sha
+    }
+    commitPipelinePath
+    errors
+  }
+}

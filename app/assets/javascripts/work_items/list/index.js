@@ -1,0 +1,35 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import { apolloProvider } from '~/graphql_shared/issuable_client';
+import JiraIssuesImportStatusApp from './components/jira_issues_import_status_app.vue';
+
+export function initJiraIssuesImportStatusRoot() {
+  const el = document.querySelector('.js-jira-issues-import-status-root');
+
+  if (!el) {
+    return null;
+  }
+
+  const { issuesPath, projectPath } = el.dataset;
+  const canEdit = parseBoolean(el.dataset.canEdit);
+  const isJiraConfigured = parseBoolean(el.dataset.isJiraConfigured);
+
+  if (!isJiraConfigured || !canEdit) {
+    return null;
+  }
+
+  Vue.use(VueApollo);
+
+  return initVueApp({
+    el,
+    name: 'JiraIssuesImportStatusRoot',
+    apolloProvider,
+    component: JiraIssuesImportStatusApp,
+    props: {
+      issuesPath,
+      projectPath,
+    },
+  });
+}

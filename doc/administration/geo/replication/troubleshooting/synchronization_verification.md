@@ -1,0 +1,1939 @@
+---
+stage: GitLab Dedicated
+group: Geo
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Troubleshooting Geo synchronization and verification errors
+description: "Troubleshoot Geo synchronization and verification failures, covering error diagnosis and data consistency restoration."
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+If you notice replication or verification failures in `Admin > Geo > Sites` or the [Sync status Rake task](common.md#sync-status-rake-task), you can try to resolve the failures with the following general steps:
+
+1. Geo automatically retries failures. If the failures are new and few in number, or if you suspect the root cause is already resolved, then you can wait to see if the failures go away.
+1. If failures were present for a long time, then many retries have already occurred, and the interval between automatic retries has increased to up to 4 hours depending on the type of failure. If you suspect the root cause is already resolved, you can [manually retry replication or verification](../resync_reverify.md) to avoid the wait.
+1. If the failures persist, use the following sections to try to resolve them.
+
+## Diagnostic procedures
+
+Before attempting manual retries, you can use these enhanced diagnostic procedures to better understand the scope and nature of synchronization issues.
+
+### Model status check
+
+This procedure provides detailed status information for all [Geo data type Model classes](../resync_reverify.md#geo-data-type-model-classes) and helps identify checksumming failures. These failures happen when the checksum of a replicable object could not be computed. They are also sometimes called "primary verification failures".
+
+You can view the checksum failures either from the UI or the Rails console.
+
+{{< tabs >}}
+
+{{< tab title="UI" >}}
+
+On the primary site, use the [Data Management page](../../../admin_area.md#data-management).
+
+{{< /tab >}}
+
+{{< tab title="Rails console" >}}
+
+You can use the following script to output detailed information for each model type, including:
+
+- Total count of records
+- Number of failed, verified, and pending records
+- Sample failed records for investigation
+
+> [!note]
+> The `ModelMapper` class was added in [GitLab 18.3](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/196293).
+> For older versions, you need to manually specify the list of [Geo data type Model classes](../resync_reverify.md#geo-data-type-model-classes).
+
+1. On the primary site, [start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session).
+1. Run the following script to get a comprehensive overview:
+
+   ```ruby
+   def output_geo_verification_failures
+     model_classes = ::Gitlab::Geo::ModelMapper.available_models
+
+     model_classes.each do |klass|
+       total = klass.count
+       state_klass = klass.verification_state_table_class
+       failed_examples = []
+
+       puts "\n=== #{klass.name} ==="
+       puts "Total: #{total}"
+       ::Geo::VerificationState::VERIFICATION_STATE_VALUES.each do |key, value|
+         records = state_klass.where(verification_state: value)
+         failed_examples = records if key == 'verification_failed'
+
+         puts "#{key.gsub('verification_', '').camelize}: #{records.size}"
+       end
+
+       if failed_examples.any?
+         puts "\nSample failed records:"
+         failed_examples.limit(3).each { |record| puts "  ID: #{record.id}, Checksum: #{record.verification_checksum || 'nil'}, Error: #{record.verification_failure}" }
+       end
+     end
+
+     nil
+   end
+
+   output_geo_verification_failures
+   ```
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+### Registry status check
+
+This procedure provides detailed status information for all Geo registry types and helps identify patterns in failures.
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the secondary site.
+1. Run the following script to get a comprehensive overview:
+
+   ```ruby
+   def output_geo_failures()
+     registry_classes = [
+       Geo::UploadRegistry,
+       Geo::JobArtifactRegistry,
+       Geo::PackageFileRegistry,
+       Geo::PagesDeploymentRegistry,
+       Geo::ProjectRepositoryRegistry,
+       Geo::TerraformStateVersionRegistry,
+       Geo::MergeRequestDiffRegistry,
+       Geo::LfsObjectRegistry,
+       Geo::PipelineArtifactRegistry,
+       Geo::CiSecureFileRegistry,
+       Geo::ContainerRepositoryRegistry
+     ]
+
+     registry_classes.each do |klass|
+       puts "\n=== #{klass.name} ==="
+       puts "Total: #{klass.count}"
+       puts "Failed: #{klass.failed.count}"
+       puts "Synced: #{klass.synced.count}"
+       puts "Pending: #{klass.pending.count}"
+       puts "Started: #{klass.with_state(:started).count}"
+
+       if klass.failed.count > 0
+          puts "\nSample failed records:"
+          klass.failed.limit(3).each { |record| puts "  ID: #{record.id}, Error: #{record.last_sync_failure}" }
+       end
+     end
+
+     nil
+   end
+
+   output_geo_failures()
+   ```
+
+1. This script outputs detailed information for each registry type, including:
+   - Total count of records
+   - Number of failed, synced, and pending records
+   - Sample failed records for investigation
+
+## Manually retry replication or verification
+
+For more information on manually retrying replication or verification for individual components
+or in bulk, see [Resync and reverify Geo data](../resync_reverify.md).
+
+## Errors
+
+### Message: `The file is missing on the Geo primary site`
+
+The sync failure `The file is missing on the Geo primary site` is common when
+setting up a secondary Geo site for the first time, which is caused by data
+inconsistencies on the primary site.
+
+Data inconsistencies and missing files can occur due to system or human errors
+when operating GitLab. For example, an instance administrator manually deletes
+several artifacts on the local file system. Such changes are not properly
+propagated to the database and result in inconsistencies. These inconsistencies
+remain and can cause frictions. Geo secondaries might continue to try
+replicating those files as they are still referenced in the database but no
+longer exist.
+
+> [!note]
+> In case of a recent migration from local to object storage, see the dedicated
+> [object storage troubleshooting section](../../../object_storage.md#inconsistencies-after-migrating-to-object-storage).
+
+#### Identify inconsistencies
+
+When missing files or inconsistencies are present, you can encounter entries in `geo.log` such as the following. Take note of the field `"primary_missing_file" : true`:
+
+```json
+{
+   "bytes_downloaded" : 0,
+   "class" : "Geo::BlobDownloadService",
+   "correlation_id" : "01JT69C1ECRBEMZHA60E5SAX8E",
+   "download_success" : false,
+   "download_time_s" : 0.196,
+   "gitlab_host" : "gitlab.example.com",
+   "mark_as_synced" : false,
+   "message" : "Blob download",
+   "model_record_id" : 55,
+   "primary_missing_file" : true,
+   "reason" : "Not Found",
+   "replicable_name" : "upload",
+   "severity" : "WARN",
+   "status_code" : 404,
+   "time" : "2025-05-01T16:02:44.836Z",
+   "url" : "http://gitlab.example.com/api/v4/geo/retrieve/upload/55"
+}
+```
+
+The same errors are also reflected in the UI under **Admin** > **Geo** > **Sites** when reviewing the synchronization status of specific replicables. In this scenario, a specific upload is missing:
+
+![The Geo Uploads replicable dashboard displaying all failed errors.](img/geo_uploads_file_missing_v17_11.png)
+
+![The Geo Uploads replicable dashboard displaying missing file error.](img/geo_uploads_file_missing_details_v17_11.png)
+
+#### Clean up inconsistencies
+
+> [!warning]
+> Ensure you have a recent and working backup at hand before issuing any deletion commands.
+> Confirm the files are actually missing before you destroy any records.
+> Records that are [excluded from verification](#message-error-during-verificationerrorfile-is-not-checksummable)
+> fail with the same `File is not checksummable` error even though their files exist.
+> Spot-check a sample of the affected records, for example with `record.retrieve_uploader.exists?`
+> for uploads, or `record.file.exists?` for other blob types.
+
+To remove those errors, first identify which particular resources are affected. Then, run the appropriate `destroy` commands to ensure the deletion is propagated across all Geo sites and their databases. Based on the previous scenario, an upload is causing those errors which is used as an example below.
+
+1. Map the identified inconsistencies to their respective [Geo Model class](../resync_reverify.md#geo-data-type-model-classes) name. The class name is needed in the following steps. In this scenario, for uploads it corresponds to `Upload`.
+1. Start a [Rails console](../../../operations/rails_console.md#starting-a-rails-console-session) on the Geo primary site.
+1. Query all resources where verification failed due to missing files based on the *Geo Model class* of the previous step. Adjust or remove the `limit(20)` to display more results. Observe how the listed resources should match the failed ones shown in the UI:
+
+   ```ruby
+   Upload.verification_failed.where("verification_failure like '%File is not checksummable%'").limit(20)
+
+   => #<Upload:0x00007b362bb6c4e8
+    id: 55,
+    size: 13346,
+    path: "503d99159e2aa8a3ac23602058cfdf58/openbao.png",
+    checksum: "db29d233de49b25d2085dcd8610bac787070e721baa8dcedba528a292b6e816b",
+    model_id: 1,
+    model_type: "Project",
+    uploader: "FileUploader",
+    created_at: Thu, 01 May 2025 15:54:10.549178000 UTC +00:00,
+    store: 1,
+    mount_point: nil,
+    secret: "[FILTERED]",
+    version: 2,
+    uploaded_by_user_id: 1,
+    organization_id: nil,
+    namespace_id: nil,
+    project_id: 1,
+    verification_checksum: nil>
+   ```
+
+1. Optionally, use the `id` of the affected resources to determine if they are still needed:
+
+   ```ruby
+   Upload.find(55)
+
+   => #<Upload:0x00007b362bb6c4e8
+    id: 55,
+    size: 13346,
+    path: "503d99159e2aa8a3ac23602058cfdf58/openbao.png",
+    checksum: "db29d233de49b25d2085dcd8610bac787070e721baa8dcedba528a292b6e816b",
+    model_id: 1,
+    model_type: "Project",
+    uploader: "FileUploader",
+    created_at: Thu, 01 May 2025 15:54:10.549178000 UTC +00:00,
+    store: 1,
+    mount_point: nil,
+    secret: "[FILTERED]",
+    version: 2,
+    uploaded_by_user_id: 1,
+    organization_id: nil,
+    namespace_id: nil,
+    project_id: 1,
+    verification_checksum: nil>
+   ```
+
+   - If you determine that the affected resources need to be recovered, then you can explore the following options (non-exhaustive) to recover them:
+     - Check if the secondary site has the object and manually copy them to the primary.
+     - Look through old backups and manually copy the object back into the primary site.
+     - Spot check some to try to determine that it's probably fine to destroy the records, for example, if they are all very old artifacts, then maybe they are not critical data.
+
+1. Use the `id` of the identified resources to properly delete them individually or in bulk by using `destroy`. Ensure to use the appropriate *Geo Model class* name.
+   - Delete individual resources:
+
+     ```ruby
+     Upload.find(55).destroy
+     ```
+
+   - Delete all affected resources:
+
+     ```ruby
+     def destroy_uploads_not_checksummable
+       uploads = Upload.verification_failed.where("verification_failure like '%File is not checksummable%'");1
+       puts "Found #{uploads.count} resources that failed verification with 'File is not checksummable'."
+       puts "Enter 'y' to continue: "
+       prompt = STDIN.gets.chomp
+       if prompt != 'y'
+         puts "Exiting without action..."
+         return
+       end
+
+       puts "Destroying all..."
+       uploads.destroy_all
+     end
+
+     destroy_uploads_not_checksummable
+     ```
+
+Repeat the steps for all affected resources and Geo data types.
+
+### Message: `"Error during verification","error":"File is not checksummable"`
+
+The error `"Error during verification","error":"File is not checksummable"` is caused by inconsistencies on the primary site. Since GitLab 18.9, the error message includes additional details about the cause:
+
+- `File is not checksummable - file does not exist at: <path>`: The file is missing from storage.
+  The path shown helps identify the missing file.
+  To fix this error, follow the instructions in [The file is missing on the Geo primary site](#message-the-file-is-missing-on-the-geo-primary-site).
+- `File is not checksummable - <ModelClass> <ID> is excluded from verification`: The record no longer belongs to the replication scope, so Geo cannot verify it.
+  This behavior is expected when the primary site removes a record from the replication scope without deleting it.
+  For example, GitLab moves old `MergeRequestDiff` records to the `without_files` state during storage optimization.
+  The registry consistency worker removes these registry entries automatically over time.
+  Records stored in object storage are also excluded from verification when the
+  `geo_object_storage_verification` feature flag is disabled, even though their files exist.
+
+In GitLab 18.8 and earlier, the error message does not include the cause, so records that are
+excluded from verification are indistinguishable from records with missing files.
+Before you
+assume files are missing, [start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session)
+on the primary site and check whether object storage verification is enabled:
+
+```ruby
+Feature.enabled?(:geo_object_storage_verification)
+```
+
+If this command returns `false`, records in object storage are excluded from verification and
+their files are likely intact. Do not delete these records.
+
+To remove the affected `MergeRequestDiff` registry entries immediately, run the following command
+on the secondary site from the [Rails console](../../../operations/rails_console.md):
+
+```ruby
+Geo::MergeRequestDiffRegistry.where("verification_failure LIKE '%excluded from verification%'").find_each(&:destroy)
+```
+
+### Failed verification of Uploads on the primary Geo site
+
+If verification of some uploads is failing on the primary Geo site with `verification_checksum = nil` and with `verification_failure` containing ``Error during verification: undefined method `underscore' for NilClass:Class`` or ``The model which owns this upload is missing.``, this is due to orphaned Uploads. The parent record owning the Upload (the upload's "model") has somehow been deleted, but the Upload record still exists. This is usually due to a bug in the application, introduced by implementing bulk delete of the "model" while forgetting to bulk delete its associated Upload records. These verification failures are therefore not failures to verify, rather, the errors are a result of bad data in Postgres.
+
+You can find these errors in the `geo.log` file on the primary Geo site.
+
+To confirm that model records are missing, you can run a Rake task on the primary Geo site:
+
+```shell
+sudo gitlab-rake gitlab:uploads:check
+```
+
+You can delete these Upload records on the primary Geo site to get rid of these failures by running the following script from the [Rails console](../../../operations/rails_console.md):
+
+```ruby
+def delete_orphaned_uploads(dry_run: true)
+  if dry_run
+    p "This is a dry run. Upload rows will only be printed."
+  else
+    p "This is NOT A DRY RUN! Upload rows will be deleted from the DB!"
+  end
+
+  subquery = Geo::UploadState.where("(verification_failure LIKE 'Error during verification: The model which owns this upload is missing.%' OR verification_failure = 'Error during verification: undefined method `underscore'' for NilClass:Class') AND verification_checksum IS NULL")
+  uploads = Upload.where(upload_state: subquery)
+  p "Found #{uploads.count} uploads with a model that does not exist"
+
+  uploads_deleted = 0
+  begin
+    uploads.each do |upload|
+
+      if dry_run
+        p upload
+      else
+        uploads_deleted=uploads_deleted + 1
+        p upload.destroy!
+      end
+    rescue => e
+      puts "checking upload #{upload.id} failed with #{e.message}"
+    end
+  end
+
+  p "#{uploads_deleted} remote objects were destroyed." unless dry_run
+end
+```
+
+The previous script defines a method named `delete_orphaned_uploads` which you can call like this to do a dry run:
+
+```ruby
+delete_orphaned_uploads(dry_run: true)
+```
+
+And to actually delete the orphaned upload rows:
+
+```ruby
+delete_orphaned_uploads(dry_run: false)
+```
+
+### Orphaned exclusive lease keys blocking repository sync
+
+Repository synchronization may be blocked when an exclusive lease key is orphaned, preventing sync operations for up to 8 hours.
+
+**Symptoms:**
+
+- Repository sync blocked: the replication state of the affected repository alternates between `pending` and `failed` states.
+- Increased count of log lines with "Cannot obtain an exclusive lease" message in `geo.log`.
+- No active sync job running for the affected repository.
+- Affects a single repository for up to 8 hours until the lease expires.
+
+**Diagnosis:**
+
+1. Confirm the repository is not actively syncing by checking the Geo admin interface.
+1. Check `geo.log` for an increased amount of "Cannot obtain an exclusive lease" messages:
+
+   ```shell
+   grep "Cannot obtain an exclusive lease" /var/log/gitlab/geo/geo.log
+   ```
+
+1. Verify that all these log lines include a `lease_key` field with value
+   `geo_sync_ssf_service:project_repository:<repository id>`, where `<repository id>`
+   is the unique ID of the affected repository.
+1. Verify no active sync jobs are running in Sidekiq for the affected repository.
+
+**Workaround:**
+
+> [!warning]
+> The recommended approach is to wait for the 8-hour lease expiration. Manual lease release should only be used when
+> immediate sync is critical and you have confirmed no sync job is actively running.
+
+To manually release an orphaned lease key:
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the secondary site.
+1. Find the project ID of the affected repository (replace `<project-path>` with the actual project path):
+
+   ```ruby
+   project = Project.find_by_full_path('<project-path>')
+   project_id = project.id
+   ```
+
+1. In the same session, release the orphaned lease:
+
+   ```ruby
+   replicator = Geo::ProjectRepositoryRegistry.find_by(project_id: project_id).replicator
+   sync_service = Geo::FrameworkRepositorySyncService.new(replicator)
+   uuid = Gitlab::ExclusiveLease.get_uuid(sync_service.lease_key)
+
+   if uuid
+     Gitlab::ExclusiveLease.cancel(sync_service.lease_key, uuid)
+     puts "Lease released for project ID #{project_id}"
+   else
+     puts "No active lease found for project ID #{project_id}"
+   end
+   ```
+
+1. Verify the lease was released and trigger a new sync:
+
+   ```ruby
+   replicator.sync
+   ```
+
+> [!note]
+> After releasing the lease, the repository sync will be retried according to the normal Geo sync schedule, or you can manually trigger a sync as shown above.
+
+### Error: `Error syncing repository: 13:fatal: could not read Username`
+
+The `last_sync_failure` error
+`Error syncing repository: 13:fatal: could not read Username for 'https://gitlab.example.com': terminal prompts disabled`
+indicates that JWT authentication is failing during a Geo clone or fetch request.
+
+First, check that system clocks are synced. Run the [Health check Rake task](common.md#health-check-rake-task), or
+manually check that `date`, on all Sidekiq nodes on the secondary site and all Puma nodes on the primary site, are the
+same.
+
+If system clocks are synced, then the JWT token may be expiring while Git fetch is performing calculations between its
+two separate HTTP requests. See [issue 464101](https://gitlab.com/gitlab-org/gitlab/-/work_items/464101), which existed in
+all GitLab versions until it was fixed in GitLab 17.1.0, 17.0.5, and 16.11.7.
+
+To validate if you are experiencing this issue:
+
+1. Monkey patch the code in a [Rails console](../../../operations/rails_console.md#starting-a-rails-console-session) to increase the validity period of the token from 1 minute to 10 minutes. Run
+   this in Rails console on the secondary site:
+
+   ```ruby
+   module Gitlab; module Geo; class BaseRequest
+     private
+     def geo_auth_token(message)
+       signed_data = Gitlab::Geo::SignedData.new(geo_node: requesting_node, validity_period: 10.minutes).sign_and_encode_data(message)
+
+       "#{GITLAB_GEO_AUTH_TOKEN_TYPE} #{signed_data}"
+     end
+   end;end;end
+   ```
+
+1. In the same Rails console, resync an affected project:
+
+   ```ruby
+   Project.find_by_full_path('<mygroup/mysubgroup/myproject>').replicator.resync
+   ```
+
+1. Look at the sync state:
+
+   ```ruby
+   Project.find_by_full_path('<mygroup/mysubgroup/myproject>').replicator.registry
+   ```
+
+1. If `last_sync_failure` no longer includes the error `fatal: could not read Username`, then you are
+   affected by this issue. The state should now be `2`, which means that it's synced. If so, then you should upgrade to
+   a GitLab version with the fix. You may also wish to upvote or comment on
+   [issue 466681](https://gitlab.com/gitlab-org/gitlab/-/work_items/466681) which would have reduced the severity of this
+   issue.
+
+To workaround the issue, you must hot-patch all Sidekiq nodes in the secondary site to extend the JWT expiration time:
+
+1. Edit `/opt/gitlab/embedded/service/gitlab-rails/ee/lib/gitlab/geo/signed_data.rb`.
+1. Find `Gitlab::Geo::SignedData.new(geo_node: requesting_node)` and add `, validity_period: 10.minutes` to it:
+
+   ```diff
+   - Gitlab::Geo::SignedData.new(geo_node: requesting_node)
+   + Gitlab::Geo::SignedData.new(geo_node: requesting_node, validity_period: 10.minutes)
+   ```
+
+1. Restart Sidekiq:
+
+   ```shell
+   sudo gitlab-ctl restart sidekiq
+   ```
+
+1. Unless you upgrade to a version containing the fix, you would have to repeat this workaround after every GitLab upgrade.
+
+### Error: `Error syncing repository: 13:creating repository: cloning repository: exit status 128`
+
+You might see this error for projects that do not sync successfully.
+
+Exit code 128 during repository creation means Git encountered a fatal error while cloning. This could be due to repository corruption, network issues, authentication problems, resource limits or because the project does not have an associated Git repository. More details about the specific cause for such failures can be found in the Gitaly logs.
+
+When unsure where to start, run an integrity check on the source repository on the Primary site by [executing the `git fsck` command manually on the command line](../../../repository_checks.md#run-a-check-using-the-command-line).
+
+#### Exit status 128 caused by HTTP 504 from a load balancer
+
+For large repositories, the Gitaly logs on the secondary site might show:
+
+```plaintext
+error: RPC failed; HTTP 504 curl 22 The requested URL returned error: 504
+fatal: expected 'packfile'
+```
+
+This error occurs when a load balancer or proxy in front of the primary site terminates the
+connection during the Git clone packfile transfer. This commonly occurs with AWS Application Load
+Balancers (ALB), which have a default idle timeout of 60 seconds. For large repositories where
+Gitaly takes time to prepare the packfile before data transfer begins, the ALB might drop the
+connection before any data is sent and trigger the error.
+
+To resolve this issue:
+
+1. Increase the idle timeout on the load balancer in front of the primary site to accommodate
+   large repository clones. For AWS ALB, update the idle timeout setting in the load balancer
+   attributes in the AWS Management Console.
+1. Reset the failed registries:
+   1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session)
+      on the secondary site.
+   1. Identify and reset the affected repositories:
+
+      ```ruby
+      project_ids = Geo::ProjectRepositoryRegistry.failed
+                      .where("last_sync_failure LIKE '%exit status 128%'")
+                      .pluck(:project_id)
+
+      puts "Found #{project_ids.count} repositories failing with exit status 128"
+
+      # state: 0 sets the registry back to pending so Geo retries the sync
+      Geo::ProjectRepositoryRegistry.where(project_id: project_ids).update_all(
+        state: 0,
+        retry_count: 0,
+        retry_at: nil,
+        last_sync_failure: nil
+      )
+
+      puts "Reset #{project_ids.count} registries to pending"
+      ```
+
+1. Wait for Geo to retry the sync automatically, or
+   [manually retry replication](../resync_reverify.md).
+
+### Error: `gitmodulesUrl: disallowed submodule url`
+
+Some project repositories consistently fail to sync with the error
+`Error syncing repository: 13:creating repository: cloning repository: exit status 128`. However,
+for some repositories, the specific error message in the Gitaly logs is different: `gitmodulesUrl: disallowed submodule url`.
+This failure happens when repositories contain invalid submodule URLs in their `.gitmodules` files.
+
+**Root Cause:** This issue is caused by historical commits in the Git repository that contain `.gitmodules` files with malformed URLs. The problem occurs during Git's consistency checks (`git fsck`) that run when Geo attempts to clone the repository from primary to secondary.
+
+The problem is in the repository's commit history. Submodule URLs in `.gitmodules` files contain
+invalid formats, using `:` instead of `/` in the path:
+
+- Invalid: `https://example.gitlab.com:group/project.git`
+- Valid: `https://example.gitlab.com/group/project.git`
+
+**Why this breaks Geo synchronization:**
+
+1. **Git's strict validation**: Starting with GitLab 17.0 and newer Git versions, Git performs stricter `fsck` checks during clone operations
+1. **Historical data persistence**: Even if the current `.gitmodules` file is correct, Git stores all historical versions as "blobs" in the repository
+1. **Clone-time failure**: When Geo tries to clone the repository, Git's `fsck` examines all objects (including historical ones) and fails when it finds malformed URLs
+1. **Complete sync failure**: The entire clone operation fails, preventing the repository from reaching the secondary site
+
+**Important:** Editing the current `.gitmodules` file does not resolve this issue because the problematic data exists in the repository's Git history, not just in the current version of the file.
+
+This issue is known in GitLab 17.0 and later, and is a result of more strict repository consistency
+checks. This new behavior results from a change in Git itself, where this check was added. It is not
+specific to GitLab Geo or Gitaly. For more information, see
+[issue 468560](https://gitlab.com/gitlab-org/gitlab/-/work_items/468560).
+
+#### Workaround
+
+1. **Backup projects**
+
+   Before proceeding, ensure you back up the projects beforehand by using the [project export option](../../../../user/project/settings/import_export.md).
+
+1. **Identify problematic blob IDs**
+
+   For each affected project, identify the problematic blob IDs using one of these methods:
+
+   - Use `git fsck`: Clone the repository, then run `git fsck` to confirm the issue:
+
+     ```shell
+     git clone https://example.gitlab.com/group/project.git
+     cd project
+     git fsck
+     ```
+
+     The output shows the problematic blob:
+
+     ```plaintext
+     Checking object directories: 100% (256/256), done.
+     error in blob <SHA>: gitmodulesUrl: disallowed submodule url: https://example.gitlab.com:group/project.git
+     Checking objects: 100% (12/12), done.
+     ```
+
+   - Check the Gitaly logs. Look for error messages containing `gitmodulesUrl`
+     to find the specific blob SHA.
+
+1. **Remove blobs**
+
+   For each affected project, [remove the problematic blob IDs](../../../../user/project/repository/repository_size.md#remove-blobs) identified in the previous step.
+
+   **Important limitation:** If any of these repositories are part of a fork network, the blob removal method may not work (blobs contained in object pools cannot be removed this way).
+
+1. **Fix .gitmodules invalid URLs if required**
+
+   Check the state of `.gitmodules` files in each affected repository
+
+   If the `.gitmodules` still contains invalid URLs like `https://example.gitlab.com:foo/bar.git` instead of `https://example.gitlab.com/foo/bar.git`, the customer needs to:
+
+   - Fix the URLs in the `.gitmodules` file
+   - Push a commit with valid URLs
+
+> [!warning]
+> After the fix, all developers working on the affected projects must remove their current local copies
+> and clone fresh repositories. Otherwise, they might reintroduce the offending blobs when pushing changes.
+
+### Error: `fetch remote: signal: terminated: context deadline exceeded` at exactly 3 hours
+
+If Git fetch fails at exactly three hours while syncing a Git repository:
+
+1. Edit `/etc/gitlab/gitlab.rb` to increase the Git timeout from the default of 10800 seconds:
+
+   ```ruby
+   # Git timeout in seconds
+   gitlab_rails['gitlab_shell_git_timeout'] = 21600
+   ```
+
+1. Reconfigure GitLab:
+
+   ```shell
+   sudo gitlab-ctl reconfigure
+   ```
+
+### Error `Failed to open TCP connection to localhost:5000` on secondary when configuring registry replication
+
+You may face the following error when configuring container registry replication on the secondary site:
+
+```plaintext
+Failed to open TCP connection to localhost:5000 (Connection refused - connect(2) for \"localhost\" port 5000)"
+```
+
+It happens if the container registry is not enabled on the secondary site. To fix it, check that the container registry
+is [enabled on the secondary site](../../../packages/container_registry.md#enable-the-container-registry). If the [Let's Encrypt integration is disabled](https://docs.gitlab.com/omnibus/settings/ssl/#configure-https-manually), container registry is disabled as well, and you must [configure it manually](../../../packages/container_registry.md#configure-container-registry-under-its-own-domain).
+
+### Error: `Verification timed out after 28800`
+
+**Possible Root Cause:** Duplicate registry records causing verification conflicts across various registry types.
+
+**Diagnosis:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the secondary site.
+1. Check for duplicate registries across different types:
+
+   ```ruby
+   # Check for duplicate upload registries
+   upload_ids = Geo::UploadRegistry.group(:file_id).having('COUNT(*) > 1').pluck(:file_id)
+   puts "Duplicate upload IDs count: #{upload_ids.size}"
+   puts 'Duplicate Upload IDs:', upload_ids
+
+   # Check for duplicate job artifact registries
+   artifact_ids = Geo::JobArtifactRegistry.group(:artifact_id).having('COUNT(*) > 1').pluck(:artifact_id)
+   puts "Duplicate artifact IDs count: #{artifact_ids.size}"
+   puts 'Duplicate Artifact IDs:', artifact_ids
+
+   # Check for duplicate package file registries
+   package_file_ids = Geo::PackageFileRegistry.group(:package_file_id).having('COUNT(*) > 1').pluck(:package_file_id)
+   puts "Duplicate package file IDs count: #{package_file_ids.size}"
+   puts 'Duplicate Package File IDs:', package_file_ids
+
+   # Check for duplicate LFS object registries
+   lfs_object_ids = Geo::LfsObjectRegistry.group(:lfs_object_id).having('COUNT(*) > 1').pluck(:lfs_object_id)
+   puts "Duplicate LFS object IDs count: #{lfs_object_ids.size}"
+   puts 'Duplicate LFS Object IDs:', lfs_object_ids
+
+   # Check for duplicate pages deployment registries
+   pages_deployment_ids = Geo::PagesDeploymentRegistry.group(:pages_deployment_id).having('COUNT(*) > 1').pluck(:pages_deployment_id)
+   puts "Duplicate pages deployment IDs count: #{pages_deployment_ids.size}"
+   puts 'Duplicate Pages Deployment IDs:', pages_deployment_ids
+
+   # Check for duplicate terraform state version registries
+   terraform_state_ids = Geo::TerraformStateVersionRegistry.group(:terraform_state_version_id).having('COUNT(*) > 1').pluck(:terraform_state_version_id)
+   puts "Duplicate terraform state version IDs count: #{terraform_state_ids.size}"
+   puts 'Duplicate Terraform State Version IDs:', terraform_state_ids
+   ```
+
+**Resolution:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the secondary site.
+1. Remove duplicate registry entries for each affected type:
+
+   ```ruby
+   # Remove duplicate upload registries
+   upload_ids = Geo::UploadRegistry.group(:file_id).having('COUNT(*) > 1').pluck(:file_id)
+   if upload_ids.any?
+     Geo::UploadRegistry.where(file_id: upload_ids).delete_all
+     puts "Removed #{upload_ids.size} duplicate upload registry entries"
+   end
+
+   # Remove duplicate job artifact registries
+   artifact_ids = Geo::JobArtifactRegistry.group(:artifact_id).having('COUNT(*) > 1').pluck(:artifact_id)
+   if artifact_ids.any?
+     Geo::JobArtifactRegistry.where(artifact_id: artifact_ids).delete_all
+     puts "Removed #{artifact_ids.size} duplicate job artifact registry entries"
+   end
+
+   # Remove duplicate package file registries
+   package_file_ids = Geo::PackageFileRegistry.group(:package_file_id).having('COUNT(*) > 1').pluck(:package_file_id)
+   if package_file_ids.any?
+     Geo::PackageFileRegistry.where(package_file_id: package_file_ids).delete_all
+     puts "Removed #{package_file_ids.size} duplicate package file registry entries"
+   end
+
+   # Remove duplicate LFS object registries
+   lfs_object_ids = Geo::LfsObjectRegistry.group(:lfs_object_id).having('COUNT(*) > 1').pluck(:lfs_object_id)
+   if lfs_object_ids.any?
+     Geo::LfsObjectRegistry.where(lfs_object_id: lfs_object_ids).delete_all
+     puts "Removed #{lfs_object_ids.size} duplicate LFS object registry entries"
+   end
+
+   # Remove duplicate pages deployment registries
+   pages_deployment_ids = Geo::PagesDeploymentRegistry.group(:pages_deployment_id).having('COUNT(*) > 1').pluck(:pages_deployment_id)
+   if pages_deployment_ids.any?
+     Geo::PagesDeploymentRegistry.where(pages_deployment_id: pages_deployment_ids).delete_all
+     puts "Removed #{pages_deployment_ids.size} duplicate pages deployment registry entries"
+   end
+
+   # Remove duplicate terraform state version registries
+   terraform_state_ids = Geo::TerraformStateVersionRegistry.group(:terraform_state_version_id).having('COUNT(*) > 1').pluck(:terraform_state_version_id)
+   if terraform_state_ids.any?
+     Geo::TerraformStateVersionRegistry.where(terraform_state_version_id: terraform_state_ids).delete_all
+     puts "Removed #{terraform_state_ids.size} duplicate terraform state version registry entries"
+   end
+   ```
+
+1. Verify cleanup across all registry types:
+
+   ```ruby
+   # Verify no remaining duplicates
+   upload_duplicates = Geo::UploadRegistry.group(:file_id).having('COUNT(*) > 1').count
+   artifact_duplicates = Geo::JobArtifactRegistry.group(:artifact_id).having('COUNT(*) > 1').count
+   package_duplicates = Geo::PackageFileRegistry.group(:package_file_id).having('COUNT(*) > 1').count
+   lfs_duplicates = Geo::LfsObjectRegistry.group(:lfs_object_id).having('COUNT(*) > 1').count
+   pages_duplicates = Geo::PagesDeploymentRegistry.group(:pages_deployment_id).having('COUNT(*) > 1').count
+   terraform_duplicates = Geo::TerraformStateVersionRegistry.group(:terraform_state_version_id).having('COUNT(*) > 1').count
+
+   puts "Remaining duplicates:"
+   puts "  Uploads: #{upload_duplicates.size}"
+   puts "  Job Artifacts: #{artifact_duplicates.size}"
+   puts "  Package Files: #{package_duplicates.size}"
+   puts "  LFS Objects: #{lfs_duplicates.size}"
+   puts "  Pages Deployments: #{pages_duplicates.size}"
+   puts "  Terraform State Versions: #{terraform_duplicates.size}"
+   ```
+
+### Error: `Checksum does not match the primary checksum`
+
+**Possible Root Cause:** Repository or Container Registry verification interval changes causing checksum inconsistencies.
+
+**Diagnosis:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the secondary site.
+1. Check failed repositories or container registries:
+
+   ```ruby
+   failed_repos = Geo::ProjectRepositoryRegistry.failed.limit(100)
+   failed_repos.each do |repo|
+     puts "Project ID: #{repo.project_id}"
+     puts "Primary checksum: #{repo.verification_checksum_mismatched}"
+     puts "Secondary checksum: #{repo.verification_checksum}"
+     puts "Error: #{repo.last_sync_failure}"
+     puts "---"
+   end
+   ```
+
+   ```ruby
+   failed_container_repos = Geo::ContainerRepositoryRegistry.failed.limit(100)
+   failed_container_repos.each do |repo|
+     puts "Container Repo Id: #{repo.model_record_id}"
+     puts "Primary checksum: #{repo.verification_checksum_mismatched}"
+     puts "Secondary checksum: #{repo.verification_checksum}"
+     puts "Error: #{repo.last_sync_failure}"
+     puts "---"
+   end
+   ```
+
+**Resolution:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Force re-verification for specific projects or container registries:
+
+   ```ruby
+   project_ids = [1, 2, 3] # Replace with actual failing project IDs
+
+   project_ids.each do |project_id|
+     project = Project.find(project_id)
+     puts "Reverifying project: #{project.full_path}"
+
+     project_state = project.project_state
+     project_state.update!(verification_state: 0)
+
+     puts "Project #{project_id} marked for reverification"
+   end
+   ```
+
+   ```ruby
+   container_repo_ids = [1, 2, 3]
+
+   container_repo_ids.each do |repo_id|
+     container_repo = ContainerRepository.find(repo_id)
+     puts "Reverifying container repository: #{container_repo.path}"
+
+     state = container_repo.container_repository_state
+     state.update!(verification_state: 0)
+
+     puts "Container Repo #{repo_id} marked for reverification"
+   end
+   ```
+
+### Object type-specific troubleshooting for `Error during verification: File is not checksummable`
+
+Different Geo data types have unique characteristics and common failure patterns. This section provides targeted troubleshooting for specific object types.
+
+> [!warning]
+> Confirm the files are actually missing before you run any of the following `destroy` scripts.
+> Records that are [excluded from verification](#message-error-during-verificationerrorfile-is-not-checksummable)
+> fail with the same error even though their files exist, and the following scripts would destroy
+> those records too.
+> Spot-check a sample of the affected records, for example with `record.file.exists?` (or `record.retrieve_uploader.exists?` for uploads).
+
+#### Uploads
+
+**Diagnosis:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Identify uploads with missing files. Update `limit(5)` as needed to see more results:
+
+   ```ruby
+   checksummable_failures = Upload.verification_failed
+                                   .where("verification_failure LIKE '%File is not checksummable%'")
+
+   puts "Found #{checksummable_failures.count} uploads with missing files"
+
+   checksummable_failures.limit(5).each_with_index do |record, index|
+     puts "Record #{index + 1}:"
+     puts "  ID: #{record.id}"
+     puts "  Path: #{record.path}"
+     puts "  Model: #{record.model_type} (ID: #{record.model_id})"
+     puts "  Created: #{record.created_at}"
+     puts "---"
+   end
+   ```
+
+**Resolution:**
+
+To resolve these failures, follow the steps in [failed verification of uploads on the primary Geo site](#failed-verification-of-uploads-on-the-primary-geo-site).
+
+#### Pages deployments
+
+**Diagnosis:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Inspect problematic pages deployments:
+
+   ```ruby
+   checksummable_failures = PagesDeployment.verification_failed
+                                           .where("verification_failure LIKE '%File is not checksummable%'")
+
+   checksummable_failures.each_with_index do |record, index|
+     puts "Record #{index + 1}:"
+     puts "  ID: #{record.id}"
+     puts "  Project: #{record.project.full_path}"
+     puts "  Created: #{record.created_at}"
+     puts "  File exists: #{record.file.exists?}"
+     puts "---"
+   end
+   ```
+
+**Resolution:**
+
+> [!warning]
+> Ensure you have a recent and working backup before deleting any pages deployment records. Coordinate with your team to confirm these deployments are safe to remove.
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. After confirming with your team that the deployments are safe to remove:
+
+   ```ruby
+   def destroy_pages_deployments_not_checksummable(dry_run: true)
+     deployments = PagesDeployment.verification_failed.where("verification_failure LIKE '%File is not checksummable%'")
+     puts "Found #{deployments.count} pages deployments that failed verification with 'File is not checksummable'."
+
+     if dry_run
+       puts "DRY RUN - No changes made"
+       deployments.each { |d| puts "Would remove: ID #{d.id}, Project: #{d.project.full_path}" }
+       return
+     end
+
+     puts "Enter 'y' to continue: "
+     prompt = STDIN.gets.chomp
+     if prompt != 'y'
+       puts "Exiting without action..."
+       return
+     end
+
+     puts "Destroying all..."
+     deployments.destroy_all
+     puts "Done!"
+   end
+
+   # Run in dry run mode first
+   destroy_pages_deployments_not_checksummable(dry_run: true)
+   ```
+
+#### LFS objects
+
+**Diagnosis:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Inspect problematic LFS objects:
+
+   ```ruby
+   checksummable_failures = LfsObject.verification_failed
+                                     .where("verification_failure LIKE '%File is not checksummable%'")
+
+   checksummable_failures.each_with_index do |record, index|
+     puts "Record #{index + 1}:"
+     puts "  OID: #{record.oid}"
+     puts "  Size: #{record.size} bytes"
+     puts "  File Store: #{record.file_store}"
+     puts "  Created: #{record.created_at}"
+
+     # Show associated projects
+     associations = record.lfs_objects_projects.includes(:project)
+     puts "  Associated projects (#{associations.count}):"
+     associations.each do |assoc|
+       project = assoc.project
+       if project
+         puts "    - #{project.full_path}"
+       else
+         puts "    - Project ID: #{assoc.project_id} (not found)"
+       end
+     end
+     puts "---"
+   end
+   ```
+
+**Resolution:**
+
+> [!warning]
+> Removing LFS objects affects all projects that reference them. Ensure you have backups and coordinate with project maintainers before deletion.
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Remove LFS objects with missing files:
+
+   ```ruby
+   def destroy_lfs_not_checksummable(dry_run: true)
+     lfs_objects = LfsObject.verification_failed.where("verification_failure like '%File is not checksummable%'")
+     puts "Found #{lfs_objects.count} LFS objects that failed verification with 'File is not checksummable'."
+
+     if dry_run
+       puts "DRY RUN - No changes made"
+       lfs_objects.each { |obj| puts "Would remove: OID #{obj.oid}, Size: #{obj.size}" }
+       return
+     end
+
+     puts "Enter 'y' to continue with deletion: "
+     prompt = STDIN.gets.chomp
+     if prompt != 'y'
+       puts "Exiting without action..."
+       return
+     end
+
+     puts "Destroying all..."
+     lfs_objects.each do |lfs_object|
+       lfs_object.lfs_objects_projects.destroy_all
+       lfs_object.destroy!
+     end
+     puts "Done!"
+   end
+
+   # Run in dry run mode first
+   destroy_lfs_not_checksummable(dry_run: true)
+   ```
+
+#### Job artifacts
+
+**Diagnosis:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Check for artifacts with missing files:
+
+   ```ruby
+   failed_artifacts = Ci::JobArtifact.verification_failed.where("verification_failure LIKE '%File is not checksummable%'")
+
+   failed_artifacts.each do |registry|
+     artifact = Ci::JobArtifact.find_by(id: registry.id)
+     if artifact
+       puts "Artifact ID: #{artifact.id}"
+       puts "Job ID: #{artifact.job_id}"
+       puts "Project ID: #{artifact.project_id}"
+       puts "File exists: #{artifact.file.exists?}"
+       puts "File path: #{artifact.file.path}"
+     else
+       puts "Artifact ID #{artifact.id} not found in database"
+     end
+     puts "---"
+   end
+   ```
+
+**Resolution:**
+
+> [!warning]
+> Ensure you have a recent and working backup before deleting any job artifact records. Coordinate with your team to confirm these artifacts are safe to remove.
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Clean up artifacts with missing files:
+
+   ```ruby
+   def cleanup_missing_artifacts(dry_run: true)
+     missing_file_artifacts = []
+
+     Ci::JobArtifact.find_each do |artifact|
+       unless artifact.file.exists?
+         missing_file_artifacts << artifact.id
+         puts "Missing file for artifact #{artifact.id}" if dry_run
+       end
+     end
+
+     puts "Found #{missing_file_artifacts.size} artifacts with missing files"
+
+     unless dry_run
+       Ci::JobArtifact.where(id: missing_file_artifacts).destroy_all
+       puts "Removed #{missing_file_artifacts.size} artifacts with missing files"
+     end
+   end
+
+   # Run in dry run mode first
+   cleanup_missing_artifacts(dry_run: true)
+   ```
+
+#### Package files
+
+This error occurs when package files are missing from storage on the primary site.
+
+To identify the affected package files:
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session)
+   on the primary site.
+1. Query the affected records. Update `limit(5)` as needed to see more results:
+
+   ```ruby
+   checksummable_failures = Packages::PackageFile.verification_failed
+                                                  .where("verification_failure LIKE '%File is not checksummable%'")
+
+   puts "Found #{checksummable_failures.count} package files with missing files"
+
+   checksummable_failures.limit(5).each_with_index do |record, index|
+     puts "Record #{index + 1}:"
+     puts "  ID: #{record.id}"
+     puts "  File Name: #{record.file_name}"
+     puts "  Package ID: #{record.package_id}"
+     puts "  Created: #{record.created_at}"
+     puts "---"
+   end
+   ```
+
+> [!warning]
+> Ensure you have a recent and working backup before deleting any package file records.
+> Coordinate with your team to confirm these package files are safe to remove.
+
+To remove the affected package files:
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session)
+   on the primary site.
+1. Delete the affected records:
+
+   ```ruby
+   def destroy_packages_not_checksummable(dry_run: true)
+     packages = Packages::PackageFile.verification_failed
+                  .where("packages_package_file_states.verification_failure LIKE '%File is not checksummable%'")
+     puts "Found #{packages.count} packages that failed verification with 'File is not checksummable'."
+
+     if dry_run
+       puts "DRY RUN - No changes made"
+       packages.each { |p| puts "Would remove: ID #{p.id}, File: #{p.file_name}" }
+       return
+     end
+
+     puts "Enter 'y' to continue: "
+     prompt = STDIN.gets.chomp
+     if prompt != 'y'
+       puts "Exiting without action..."
+       return
+     end
+
+     puts "Destroying all..."
+     packages.destroy_all
+     puts "Done!"
+   end
+
+   # Run in dry run mode first
+   destroy_packages_not_checksummable(dry_run: true)
+   ```
+
+#### Pipeline artifacts
+
+**Diagnosis:**
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Check for artifacts with missing files:
+
+   ```ruby
+   failed_pipeline_artifacts = Ci::PipelineArtifact.verification_failed.where("verification_failure LIKE '%checksummable%'")
+
+   failed_pipeline_artifacts.each do |registry|
+     artifact = Ci::PipelineArtifact.find_by(id: registry.id)
+     if artifact
+       puts "Artifact ID: #{artifact.id}"
+       puts "Pipeline ID: #{artifact.pipeline_id}"
+       puts "Project ID: #{artifact.project_id}"
+       puts "File exists: #{artifact.file.exists?}"
+       puts "File path: #{artifact.file.path}"
+     else
+       puts "Artifact ID #{artifact.id} not found in database"
+     end
+     puts "---"
+   end
+   ```
+
+**Resolution:**
+
+> [!warning]
+> Ensure you have a recent and working backup before deleting any pipeline artifact records. Coordinate with your team to confirm these artifacts are safe to remove.
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session) on the primary site.
+1. Remove pipeline artifacts with missing files:
+
+   ```ruby
+   def destroy_pipeline_artifacts_not_checksummable
+     artifacts = Ci::PipelineArtifact.verification_failed.where("verification_failure like '%File is not checksummable%'")
+     puts "Found #{artifacts.count} pipeline artifacts that failed verification with 'File is not checksummable'."
+     puts "Enter 'y' to continue: "
+     prompt = STDIN.gets.chomp
+     if prompt != 'y'
+       puts "Exiting without action..."
+       return
+     end
+
+     puts "Destroying all..."
+     artifacts.destroy_all
+     puts "Done!"
+   end
+
+   destroy_pipeline_artifacts_not_checksummable
+   ```
+
+### Blobs out of sync due to timeout
+
+Blobs (such as LFS objects, job artifacts, and package files) might fail to sync with
+`Sync timed out after 28800` when large files exceed the default 8-hour blob download timeout.
+
+To resolve this issue, use the supported options first, in this order:
+
+1. [Increase the blob download timeout](#increase-the-blob-download-timeout) and let Geo
+   retry, so the framework handles the download, verification, and sync status.
+1. If the blob still fails to sync, [identify and validate the affected blobs](#identify-and-validate-timed-out-blobs)
+   and [copy the files from the primary site](#copy-files-from-primary-to-secondary).
+1. As a last resort, [resync the blob from the Rails console](#resync-timed-out-blobs-automatically-from-the-rails-console).
+
+#### Increase the blob download timeout
+
+In GitLab 18.10 and later, the blob download timeout is configurable per Geo site.
+
+To increase the blob download timeout, replace `<secondary_id>` with your secondary site ID
+and `<token>` with an admin API token:
+
+```shell
+curl --header "PRIVATE-TOKEN: <token>" \
+  --request PUT \
+  --data '{"blob_download_timeout": 43200}' \
+  "https://gitlab.example.com/api/v4/geo_nodes/<secondary_id>"
+```
+
+After you increase the timeout, wait for Geo to retry automatically, or
+[manually retry replication](../resync_reverify.md).
+
+#### Identify and validate timed-out blobs
+
+If blobs continue to fail after you increase the timeout, identify the affected objects
+and confirm the files exist on the primary site. The following examples use LFS objects;
+for other blob types, use the matching [Geo Registry class](../resync_reverify.md#geo-registry-classes) and model.
+
+1. Identify the affected objects on the secondary site:
+
+   ```ruby
+   registries = Geo::LfsObjectRegistry.failed.where("last_sync_failure LIKE '%timed out%'")
+
+   puts "Found #{registries.count} LFS objects that failed with a timeout"
+   registries.each do |registry|
+     lfs_object = LfsObject.find_by(id: registry.lfs_object_id)
+     size_gb = lfs_object ? (lfs_object.size / 1024.0 / 1024.0 / 1024.0).round(2) : 'unknown'
+     puts "  Registry ID: #{registry.id}, LFS Object ID: #{registry.lfs_object_id}, Size: #{size_gb} GB, Failure: #{registry.last_sync_failure}, Retries: #{registry.retry_count}"
+   end
+   ```
+
+1. Using the `lfs_object_id` values from the previous step, confirm the files exist on the
+   primary site:
+
+   ```ruby
+   [lfs_object_id1, lfs_object_id2, lfs_object_id3].each do |id|
+     lfs_object = LfsObject.find_by(id: id)
+
+     if lfs_object.nil?
+       puts "LFS Object ID: #{id} not found"
+       next
+     end
+
+     puts "LFS Object ID: #{id}, Size: #{(lfs_object.size / 1024.0 / 1024.0 / 1024.0).round(2)} GB, File exists?: #{lfs_object.file.exists?}, Path: #{lfs_object.file.path}"
+   end
+   ```
+
+#### Copy files from primary to secondary
+
+If the files exist on the primary but are missing on the secondary, use the path from the
+previous step to locate the file:
+
+- For object storage: the path is the object key within the configured LFS bucket. Locate and
+  download the file from the primary bucket, then upload it to the same key in the secondary bucket.
+- For local storage: the path is relative to `/var/opt/gitlab/gitlab-rails/shared/lfs-objects/`
+  on the primary site. Copy the file to the same relative path on the secondary site.
+
+#### Mark blobs as synced
+
+After the files are present on the secondary site, mark them as synced and trigger verification.
+The following example uses LFS objects; for other blob types, use the matching
+[Geo Registry class](../resync_reverify.md#geo-registry-classes):
+
+```ruby
+[lfs_object_id1, lfs_object_id2, lfs_object_id3].each do |lfs_object_id|
+  begin
+    registry = Geo::LfsObjectRegistry.find_by(lfs_object_id: lfs_object_id)
+
+    if registry.nil?
+      puts "Registry not found for LFS Object #{lfs_object_id}"
+      next
+    end
+
+    registry.update!(
+      state: 2,
+      success: true,
+      last_synced_at: Time.current,
+      last_sync_failure: nil,
+      retry_count: 0,
+      retry_at: nil
+    )
+    registry.replicator.verify
+
+    puts "LFS Object #{lfs_object_id}: marked as synced and verification triggered"
+  rescue => e
+    puts "Error processing LFS Object #{lfs_object_id}: #{e.message}"
+  end
+end
+```
+
+#### Resync timed-out blobs automatically from the Rails console
+
+Use this procedure only as a last resort, after the supported options
+([increase the blob download timeout](#increase-the-blob-download-timeout),
+the [API](../../../../api/geo_nodes.md), and the
+[Geo replication details in the Admin area](../resync_reverify.md#from-the-ui)) have not resolved
+the failure. It runs the sync outside the Geo framework, so prefer the
+supported options whenever possible.
+
+The following helper streams the blob directly from the primary site with a
+long read timeout (this avoids the sync job's fixed timeout), verifies its size
+and content checksum against the primary, stores it through the framework's
+uploader, marks the registry as synced, and re-triggers verification.
+
+This approach works for any blob-type replicable: `Ci::JobArtifact`,
+`Ci::PipelineArtifact`, `Ci::SecureFile`, `LfsObject`, `Packages::PackageFile`,
+`PagesDeployment`, `Terraform::StateVersion`, and `Upload`. Git repositories and
+container repositories use different sync paths and are not covered.
+
+> [!warning]
+> Commands that change data can cause damage if not run correctly or under the right conditions.
+> Always run commands in a test environment first and have a backup instance ready to restore.
+
+1. [Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session)
+   on the secondary site.
+
+1. Define the helper:
+
+   ```ruby
+   require 'net/http'
+   require 'digest'
+   require 'tempfile'
+
+   # Content-hash attribute for each blob model. Types that are not listed, or
+   # whose hash attribute is nil, fall back to size-only verification.
+   GEO_BLOB_VERIFICATION = {
+     'Ci::JobArtifact' => :file_sha256,
+     'Ci::PipelineArtifact' => :file_sha256,
+     'Packages::PackageFile' => :file_sha256,
+     'PagesDeployment' => :file_sha256,
+     'Upload' => :checksum,
+     'Ci::SecureFile' => :checksum,
+     'LfsObject' => :oid
+   }
+
+   # Streams an HTTP GET to the block, following redirects. The Geo
+   # authentication header is sent only on the first request. On a redirect to a
+   # pre-signed object storage URL (when proxy_download is disabled) it is
+   # dropped, because the pre-signed URL is already authenticated.
+   def geo_stream_get(uri, headers, limit = 5, &block)
+     raise 'too many redirects' if limit < 0
+
+     Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
+       open_timeout: 60, read_timeout: 86_400, write_timeout: 86_400) do |http|
+       request = Net::HTTP::Get.new(uri)
+       headers.each { |key, value| request[key] = value }
+
+       http.request(request) do |response|
+         case response.code.to_i
+         when 200
+           response.read_body { |chunk| yield chunk }
+         when 301, 302, 303, 307, 308
+           raise 'redirect with no Location' unless response['location']
+
+           return geo_stream_get(URI(response['location']), {}, limit - 1, &block)
+         else
+           raise "HTTP #{response.code}: #{response.message}"
+         end
+       end
+     end
+   end
+
+   def manual_geo_blob_sync(registry_class, registry_id)
+     registry = registry_class.find_by(id: registry_id)
+     return "no #{registry_class.name} ##{registry_id}" unless registry
+
+     replicator = registry.replicator
+     model = replicator.model_record
+     return 'missing model record (gone on primary?)' unless model
+
+     uploader = replicator.carrierwave_uploader
+     downloader = Gitlab::Geo::Replication::BlobDownloader.new(replicator: replicator)
+     uri = URI(downloader.resource_url)
+     # request_headers is a private BlobDownloader method, accessed here with
+     # send. It returns a short-lived Geo JWT. This relies on an internal API
+     # and might need updating after a GitLab upgrade.
+     auth = downloader.send(:request_headers)
+
+     sha_attr = GEO_BLOB_VERIFICATION[model.class.name]
+     want_size = model.respond_to?(:size) ? model.size : nil
+     want_sha = sha_attr && model.respond_to?(sha_attr) ? model.public_send(sha_attr) : nil
+
+     tmp = Tempfile.new(['geo-blob', '.bin'], '/tmp')
+     tmp.binmode
+
+     begin
+       geo_stream_get(uri, auth) { |chunk| tmp.write(chunk) }
+       tmp.flush
+
+       raise "size mismatch (#{tmp.size}/#{want_size})" if want_size && tmp.size != want_size
+
+       if want_sha && Digest::SHA256.file(tmp.path).hexdigest != want_sha
+         raise 'checksum mismatch - not marking as synced'
+       end
+
+       # Store the blob through the same uploader method the Geo framework
+       # uses (BlobDownloader#download_file), so local and object storage are
+       # both handled the same way.
+       uploader.replace_file_without_saving!(CarrierWave::SanitizedFile.new(tmp))
+
+       registry.update!(state: 2, last_synced_at: Time.current, retry_at: nil,
+         retry_count: 0, last_sync_failure: nil)
+       registry.update!(bytes: tmp.size) if registry.respond_to?(:bytes)
+
+       # The raw update! above bypasses the after_synced state-machine
+       # callback, so re-trigger verification explicitly to reconcile a
+       # previously verification_failed registry.
+       replicator.verify
+
+       "OK #{registry_class.name}##{registry_id} (#{tmp.size} bytes)"
+     ensure
+       tmp.close!
+     end
+   end
+   ```
+
+1. Run the helper for the affected registry record. Replace the registry class
+   with any of the [Geo Registry classes](../resync_reverify.md#geo-registry-classes) and `123` with
+   the actual registry ID:
+
+   ```ruby
+   manual_geo_blob_sync(Geo::LfsObjectRegistry, 123)
+   ```
+
+1. Optional. To re-sync all blobs of one type that failed with this error:
+
+   ```ruby
+   Geo::LfsObjectRegistry
+     .where("last_sync_failure LIKE '%Sync timed out after%'")
+     .pluck(:id)
+     .each { |id| puts manual_geo_blob_sync(Geo::LfsObjectRegistry, id) }; nil
+   ```
+
+If the helper still times out or fails, the object might be missing or
+unreadable on the primary site. For more information, see
+[The file is missing on the Geo primary site](#message-the-file-is-missing-on-the-geo-primary-site).
+
+### Error: `Projects - Error during verification: Repository does not exist`
+
+**Root Cause:** Projects without Git repositories causing verification failures.
+
+**Symptoms:**
+
+- Projects display "Repository does not exist" errors during verification
+- False error reporting in Geo UI for projects that legitimately have no repositories
+- Wasted sync attempts on non-existent repositories
+
+**Workaround:**
+
+Create project repositories on the primary when they don't exist:
+
+```ruby
+failed_projects = Project.verification_failed.where("verification_failure LIKE '%Repository does not exist%'")
+puts "Found #{failed_projects.count} project repos with 'Repository does not exist' verification failure"
+failed_projects.find_each do |p|
+  puts "#{p.full_path} #{p.ensure_repository.inspect}"
+end
+```
+
+### Error: `Expected(200) <=> Actual(403 Forbidden)`
+
+**Root Cause:** Missing `ListBucket` permission causing S3 API to return 403 instead of 404.
+
+**Symptoms:**
+
+- 403 errors in logs with S3 endpoints
+- HEAD requests failing to S3 buckets
+- Sync failures for object storage-backed data types
+
+**Resolution:**
+
+This requires infrastructure team intervention to add the `ListBucket` permission to the S3 IAM policy used by GitLab.
+
+### Message: `Synchronization failed - Error syncing repository`
+
+> [!warning]
+> If large repositories are affected by this problem,
+> their resync may take a long time and cause significant load on your Geo sites,
+> storage and network systems.
+
+The following error message indicates a consistency check error when syncing the repository:
+
+```plaintext
+Synchronization failed - Error syncing repository [..] fatal: fsck error in packed object
+```
+
+Several issues can trigger this error. For example, problems with email addresses:
+
+```plaintext
+Error syncing repository: 13:fetch remote: "error: object <SHA>: badEmail: invalid author/committer line - bad email
+   fatal: fsck error in packed object
+   fatal: fetch-pack: invalid index-pack output
+```
+
+Another issue that can trigger this error is `object <SHA>: hasDotgit: contains '.git'`. Check the specific errors because you might have more than one problem across all
+your repositories.
+
+A second synchronization error can also be caused by repository check issues:
+
+```plaintext
+Error syncing repository: 13:Received RST_STREAM with error code 2.
+```
+
+These errors can be observed by [immediately syncing all failed repositories](../resync_reverify.md#sync-all-resources-of-one-component-that-failed-to-sync).
+
+Removing the malformed objects causing consistency errors involves rewriting the repository history, which is usually not an option.
+
+To ignore these consistency checks, reconfigure Gitaly on the secondary Geo sites to ignore these `git fsck` issues.
+The following configuration example:
+
+- [Uses the updated configuration structure](../../../../update/versions/gitlab_16_changes.md#gitaly-configuration-structure-change).
+- Ignores five common check failures.
+
+[The Gitaly documentation has more details](../../../gitaly/consistency_checks.md)
+about other Git check failures and earlier versions of GitLab.
+
+```ruby
+gitaly['configuration'] = {
+  git: {
+    config: [
+      { key: "fsck.duplicateEntries", value: "ignore" },
+      { key: "fsck.badFilemode", value: "ignore" },
+      { key: "fsck.missingEmail", value: "ignore" },
+      { key: "fsck.badEmail", value: "ignore" },
+      { key: "fsck.hasDotgit", value: "ignore" },
+      { key: "fetch.fsck.duplicateEntries", value: "ignore" },
+      { key: "fetch.fsck.badFilemode", value: "ignore" },
+      { key: "fetch.fsck.missingEmail", value: "ignore" },
+      { key: "fetch.fsck.badEmail", value: "ignore" },
+      { key: "fetch.fsck.hasDotgit", value: "ignore" },
+      { key: "receive.fsck.duplicateEntries", value: "ignore" },
+      { key: "receive.fsck.badFilemode", value: "ignore" },
+      { key: "receive.fsck.missingEmail", value: "ignore" },
+      { key: "receive.fsck.badEmail", value: "ignore" },
+      { key: "receive.fsck.hasDotgit", value: "ignore" },
+    ],
+  },
+}
+```
+
+A comprehensive list of `fsck` errors can be found in the [Git documentation](https://git-scm.com/docs/git-fsck#_fsck_messages).
+
+GitLab [includes an enhancement](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/5879) that might resolve some of these issues.
+
+[Gitaly issue 5625](https://gitlab.com/gitlab-org/gitaly/-/work_items/5625) proposes to ensure that Geo replicates repositories even if the source repository contains
+problematic commits.
+
+### Related error `does not appear to be a git repository`
+
+You can also get the error message `Synchronization failed - Error syncing repository` along with the following log messages.
+This error indicates that the expected Geo remote is not present in the `.git/config` file
+of a repository on the secondary Geo site's file system:
+
+```json
+{
+  "created": "@1603481145.084348757",
+  "description": "Error received from peer unix:/var/opt/gitlab/gitaly/gitaly.socket",
+  …
+  "grpc_message": "exit status 128",
+  "grpc_status": 13
+}
+{  …
+  "grpc.request.fullMethod": "/gitaly.RemoteService/FindRemoteRootRef",
+  "grpc.request.glProjectPath": "<namespace>/<project>",
+  …
+  "level": "error",
+  "msg": "fatal: 'geo' does not appear to be a git repository
+          fatal: Could not read from remote repository. …",
+}
+```
+
+To solve this:
+
+1. Sign in on the web interface for the secondary Geo site.
+1. Back up [the `.git` folder](../../../repository_storage_paths.md#translate-hashed-storage-paths).
+1. Optional. [Spot-check](../../../logs/log_parsing.md#find-all-projects-affected-by-a-fatal-git-problem)
+   a few of those IDs whether they indeed correspond
+   to a project with known Geo replication failures.
+   Use `fatal: 'geo'` as the `grep` term and the following API call:
+
+   ```shell
+   curl --request GET --header "PRIVATE-TOKEN: <your_access_token>" "https://gitlab.example.com/api/v4/projects/<first_failed_geo_sync_ID>"
+   ```
+
+1. Enter the [Rails console](../../../operations/rails_console.md) and run:
+
+   ```ruby
+   failed_project_registries = Geo::ProjectRepositoryRegistry.failed
+
+   if failed_project_registries.any?
+     puts "Found #{failed_project_registries.count} failed project repository registry entries:"
+
+     failed_project_registries.each do |registry|
+       puts "ID: #{registry.id}, Project ID: #{registry.project_id}, Last Sync Failure: '#{registry.last_sync_failure}'"
+     end
+   else
+     puts "No failed project repository registry entries found."
+   end
+   ```
+
+1. Run the following commands to execute a new sync for each project:
+
+   ```ruby
+   failed_project_registries.each do |registry|
+     registry.replicator.sync
+     puts "Sync initiated for registry ID: #{registry.id}, Project ID: #{registry.project_id}"
+   end
+   ```
+
+## Failures during backfill
+
+During a [backfill](../../_index.md#backfill), failures are scheduled to be retried at the end
+of the backfill queue, therefore these failures only clear up after the backfill completes.
+
+## Message: `unexpected disconnect while reading sideband packet`
+
+Unstable networking conditions can cause Gitaly to fail when trying to fetch large repository
+data from the primary site. Those conditions can result in this error:
+
+```plaintext
+curl 18 transfer closed with outstanding read data remaining & fetch-pack:
+unexpected disconnect while reading sideband packet
+```
+
+This error is more likely to happen if a repository has to be
+replicated from scratch between sites.
+
+Geo retries several times, but if the transmission is consistently interrupted
+by network hiccups, an alternative method such as `rsync` can be used to circumvent `git` and
+create the initial copy of any repository that fails to be replicated by Geo.
+
+We recommend transferring each failing repository individually and checking for consistency
+after each transfer. Follow the [`rsync` to another server instructions](../../../operations/moving_repositories.md#use-rsync-to-another-server)
+to transfer each affected repository from the primary to the secondary site.
+
+## Find repository check failures in a Geo secondary site
+
+> [!note]
+> All repositories data types have been migrated to the Geo Self-Service Framework in GitLab 16.3. There is an [issue to implement this functionality back in the Geo Self-Service Framework](https://gitlab.com/gitlab-org/gitlab/-/work_items/426659).
+
+For GitLab 16.2 and earlier:
+
+When [enabled for all projects](../../../repository_checks.md#enable-repository-checks-for-all-projects), [Repository checks](../../../repository_checks.md) are also performed on Geo secondary sites. The metadata is stored in the Geo tracking database.
+
+Repository check failures on a Geo secondary site do not necessarily imply a replication problem. Here is a general approach to resolve these failures.
+
+1. Find affected repositories as mentioned below, as well as their [logged errors](../../../repository_checks.md#what-to-do-if-a-check-failed).
+1. Try to diagnose specific `git fsck` errors. The range of possible errors is wide, try putting them into search engines.
+1. Test typical functions of the affected repositories. Pull from the secondary, view the files.
+1. Check if the primary site's copy of the repository has an identical `git fsck` error. If you are planning a failover, then consider prioritizing that the secondary site has the same information that the primary site has. Ensure you have a backup of the primary, and follow [planned failover guidelines](../../disaster_recovery/planned_failover.md).
+1. Push to the primary and check if the change gets replicated to the secondary site.
+1. If replication is not automatically working, try to manually sync the repository.
+
+[Start a Rails console session](../../../operations/rails_console.md#starting-a-rails-console-session)
+to enact the following, basic troubleshooting steps.
+
+> [!warning]
+> Commands that change data can cause damage if not run correctly or under the right conditions. Always run commands in a test environment first and have a backup instance ready to restore.
+
+### Get the number of repositories that failed the repository check
+
+```ruby
+Geo::ProjectRegistry.where(last_repository_check_failed: true).count
+```
+
+### Find the repositories that failed the repository check
+
+```ruby
+Geo::ProjectRegistry.where(last_repository_check_failed: true)
+```
+
+## Hard delete a repository from Gitaly Cluster and resync
+
+> [!warning]
+> This procedure is risky, and heavy-handed. Use it as a last resort only when other
+> troubleshooting methods have failed. This procedure causes temporary data loss until the
+> repository is resynced.
+
+This procedure deletes the repository from the secondary site's Gitaly cluster, and re-syncs it.
+You should consider using it only if you understand the risks, and if these conditions are all true:
+
+- `git clone` is working for a repository on the primary site.
+- `p.replicator.sync_repository` (where `p` is a project model instance) logs a Gitaly error on a secondary site.
+- Standard troubleshooting has not resolved the issue.
+
+Prerequisites:
+
+- Ensure you have administrative access to both the secondary site's Rails console and Praefect nodes.
+- Verify that the repository is accessible and working correctly on the primary site.
+- Have a backup plan in case you must reverse this procedure.
+
+To do this:
+
+1. Sign in to the Rails console in the secondary site.
+1. Instantiate a project model, and save it to a variable `p`, using one of these options:
+
+   - If you know the affected project ID (for example, `60087`):
+
+     ```ruby
+     p = Project.find(60087)
+     ```
+
+   - If you know the affected project path in GitLab (for example, `my-group/my-project`):
+
+     ```ruby
+     p = Project.find_by_full_path('my-group/my-project')
+     ```
+
+1. Output the project Git repository's virtual storage, and note it for later:
+
+   ```ruby
+   p.repository.storage
+   ```
+
+   Example output:
+
+   ```ruby
+   irb(main):002:0> p.repository.storage
+   => "default"
+   ```
+
+1. Output the project Git repository's relative path, and note it for later:
+
+   ```ruby
+   p.repository.disk_path + '.git'
+   ```
+
+   Example output:
+
+   ```ruby
+   irb(main):003:0> p.repository.disk_path + '.git'
+   => "@hashed/66/b2/66b2fc8562b3432399acc2d0108fcd2782b32bd31d59226c7a03a20b32c76ee8.git"
+   ```
+
+1. SSH into a Praefect node in the secondary site.
+1. Follow the procedure to
+   [Manually remove repositories from Gitaly Cluster](../../../gitaly/praefect/recovery.md#manually-remove-repositories),
+   using the virtual storage and relative path you noted in the previous steps.
+
+   The Git repository on the secondary site is now deleted.
+
+1. In the Rails console, before you resync, set a correlation ID. This ID helps you search all logs
+   related to the commands you run in this session:
+
+   ```ruby
+   Gitlab::ApplicationContext.push({})
+   ```
+
+   Example output:
+
+   ```ruby
+   [2] pry(main)> Gitlab::ApplicationContext.push({})
+   => #<Labkit::Context:0x0000000122aa4060 @data={"correlation_id"=>"53da64ae800bd4794a2b61ab1c80b028"}>
+   ```
+
+1. Sync the project Git repository:
+
+   ```ruby
+   p.replicator.sync_repository
+   ```
+
+The Git repository should now be resynced from the primary site to the secondary site. Monitor the sync
+process through the Geo admin interface, or by checking the repository's sync status in the Rails console.
+
+## Infrastructure and performance considerations
+
+Some synchronization issues are caused by infrastructure-level problems or performance constraints.
+
+### High concurrency issues
+
+Excessive Geo verification concurrency can overwhelm the database and cause sync failures.
+
+**Symptoms:**
+
+- Database connection timeouts
+- High CPU usage on database servers
+- Slow sync progress despite healthy infrastructure
+
+**Diagnosis and Resolution:**
+
+Reduce concurrency settings on the primary site via [UI](../tuning.md#changing-the-syncverification-concurrency-values)
+
+## Manual sync status updates
+
+In some cases, you may need to manually mark an object type as synced after resolving underlying issues. This scenario occurs when the issue can only be fixed via a manual upload of the file to the object bucket in the secondary site. Normally that operation should not be needed, but can happen due to version bugs. The following shows a way to mark those manually uploaded object types (in this case uploads) as synced.
+
+> [!warning]
+> Only mark objects as synced if you have verified that the files are actually present and accessible on the secondary site.
+
+```ruby
+def mark_upload_synced(upload_id)
+  upload = Upload.find(upload_id)
+  registry = upload.replicator.registry
+  registry.start
+  registry.synced!
+  puts "Marked upload #{upload_id} as synced"
+end
+
+# Mark specific uploads as synced
+upload_ids = [107221, 107320] # Replace with actual IDs
+upload_ids.each { |id| mark_upload_synced(id) }
+```
+
+## Resetting Geo secondary site replication
+
+If you get a secondary site in a broken state and want to reset the replication state
+to start again from scratch, there are a few steps that can help you:
+
+1. Stop Sidekiq and the Geo Log Cursor.
+
+   It's possible to make Sidekiq stop gracefully, but making it stop getting new jobs and
+   wait until the current jobs to finish processing.
+
+   You need to send a **SIGTSTP** kill signal for the first phase and then a **SIGTERM**
+   when all jobs have finished. Otherwise just use the `gitlab-ctl stop` commands.
+
+   ```shell
+   gitlab-ctl status sidekiq
+   # run: sidekiq: (pid 10180) <- this is the PID you will use
+   kill -TSTP 10180 # change to the correct PID
+
+   gitlab-ctl stop sidekiq
+   gitlab-ctl stop geo-logcursor
+   ```
+
+   You can watch the [Sidekiq logs](../../../logs/_index.md#sidekiq-logs) to know when Sidekiq jobs processing has finished:
+
+   ```shell
+   gitlab-ctl tail sidekiq
+   ```
+
+1. Clear Gitaly and Gitaly Cluster (Praefect) data.
+
+   {{< tabs >}}
+
+   {{< tab title="Gitaly" >}}
+
+   ```shell
+   mv /var/opt/gitlab/git-data/repositories /var/opt/gitlab/git-data/repositories.old
+   sudo gitlab-ctl reconfigure
+   ```
+
+   {{< /tab >}}
+
+   {{< tab title="Gitaly Cluster (Praefect)" >}}
+
+   1. Optional. Disable the Praefect internal load balancer.
+   1. Stop Praefect on each Praefect server:
+
+      ```shell
+      sudo gitlab-ctl stop praefect
+      ```
+
+   1. Reset the Praefect database:
+
+      ```shell
+      sudo /opt/gitlab/embedded/bin/psql -U praefect -d template1 -h localhost -c "DROP DATABASE praefect_production WITH (FORCE);"
+      sudo /opt/gitlab/embedded/bin/psql -U praefect -d template1 -h localhost -c "CREATE DATABASE praefect_production WITH OWNER=praefect ENCODING=UTF8;"
+      ```
+
+   1. Rename/delete repository data from each Gitaly node:
+
+      ```shell
+      sudo mv /var/opt/gitlab/git-data/repositories /var/opt/gitlab/git-data/repositories.old
+      sudo gitlab-ctl reconfigure
+      ```
+
+   1. On your Praefect deploy node run reconfigure to set up the database:
+
+      ```shell
+      sudo gitlab-ctl reconfigure
+      ```
+
+   1. Start Praefect on each Praefect server:
+
+      ```shell
+      sudo gitlab-ctl start praefect
+      ```
+
+   1. Optional. If you disabled it, reactivate the Praefect internal load balancer.
+
+   {{< /tab >}}
+
+   {{< /tabs >}}
+
+   > [!note]
+   > You may want to remove the `/var/opt/gitlab/git-data/repositories.old` in the future
+   > as soon as you confirmed that you don't need it anymore, to save disk space.
+
+1. Optional. Rename other data folders and create new ones.
+
+   > [!warning]
+   > You may still have files on the secondary site that have been removed from the primary site, but this
+   > removal has not been reflected. If you skip this step, these files are not removed from the Geo secondary site.
+
+   Any uploaded content (like file attachments, avatars, or LFS objects) is stored in a
+   subfolder in one of these paths:
+
+   - `/var/opt/gitlab/gitlab-rails/shared`
+   - `/var/opt/gitlab/gitlab-rails/uploads`
+
+   To rename all of them:
+
+   ```shell
+   gitlab-ctl stop
+
+   mv /var/opt/gitlab/gitlab-rails/shared /var/opt/gitlab/gitlab-rails/shared.old
+   mkdir -p /var/opt/gitlab/gitlab-rails/shared
+
+   mv /var/opt/gitlab/gitlab-rails/uploads /var/opt/gitlab/gitlab-rails/uploads.old
+   mkdir -p /var/opt/gitlab/gitlab-rails/uploads
+
+   gitlab-ctl start postgresql
+   gitlab-ctl start geo-postgresql
+   ```
+
+   Reconfigure to recreate the folders and make sure permissions and ownership
+   are correct:
+
+   ```shell
+   gitlab-ctl reconfigure
+   ```
+
+1. Reset the Tracking Database.
+
+   > [!warning]
+   > If you skipped the optional step 3, be sure both `geo-postgresql` and `postgresql` services are running.
+
+   ```shell
+   gitlab-rake db:drop:geo DISABLE_DATABASE_ENVIRONMENT_CHECK=1   # on a secondary app node
+   gitlab-ctl reconfigure     # on the tracking database node
+   gitlab-rake db:migrate:geo # on a secondary app node
+   ```
+
+1. Restart previously stopped services.
+
+   ```shell
+   gitlab-ctl start
+   ```

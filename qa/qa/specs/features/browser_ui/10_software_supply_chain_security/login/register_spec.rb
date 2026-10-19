@@ -1,0 +1,198 @@
+# frozen_string_literal: true
+
+module QA
+  RSpec.describe 'Software Supply Chain Security', :skip_signup_disabled, :requires_admin,
+    feature_category: :system_access do
+    describe 'while LDAP is enabled', :orchestrated, :ldap_no_tls do
+      it 'allows the user to register and login' do
+        Runtime::Browser.visit(:gitlab, Page::Main::Login)
+
+        ldap_user = Runtime::User::Store.ldap_user
+        Resource::User.fabricate_via_browser_ui! do |user|
+          user.username = ldap_user.username
+          user.password = ldap_user.password
+          user.email_domain = 'gitlab.com'
+          user.ldap_user = true
+        end
+
+        Page::Main::Menu.perform do |menu|
+          expect(menu).to have_personal_area
+        end
+      end
+    end
+
+    # TODO: needs to be refactored to correctly support parallel testing
+    # If any other spec file depends on require_admin_approval setting, it could fail
+    describe 'standard', :smoke, :external_api_calls do
+      context 'when admin approval is not required' do
+        around do |example|
+          with_application_settings(require_admin_approval_after_user_signup: false) { example.run }
+        end
+
+        context "with basic registration" do
+          it 'allows the user to register and login' do
+            Runtime::Browser.visit(:gitlab, Page::Main::Login)
+
+            Resource::User.fabricate_via_browser_ui! do |user_resource|
+              user_resource.email_domain = 'gitlab.com'
+            end
+
+            Page::Main::Menu.perform do |menu|
+              expect(menu).to have_personal_area
+            end
+          end
+        end
+
+        context "with user deletion" do
+          # Hard delete so the record (and its username/email) is removed rather than ghosted,
+          # which lets the recreation test reliably reuse the same credentials. See gitlab-org/gitlab#594514.
+          let(:user) { create(:user, :hard_delete) }
+
+          it "allows to delete user account" do
+            Flow::Login.sign_in(as: user)
+            Page::Main::Menu.perform(&:click_edit_profile_link)
+            Page::Profile::Menu.perform(&:click_account)
+            Page::Profile::Accounts::Show.perform do |show|
+              show.delete_account(user.password)
+            end
+
+            # Confirming the deletion redirects, and an immediate text check can race the DOM swap
+            # and raise a transient Chrome inspector error ("Node with given id does not belong to
+            # the document") that Capybara does not retry. Retry the check until the confirmation is
+            # present, then assert. See gitlab-org/gitlab#594514.
+            account_scheduled_for_removal = Support::Retrier.retry_until(
+              max_attempts: 3, sleep_interval: 1, retry_on_exception: true, raise_on_failure: false
+            ) do
+              page.has_text?("Account scheduled for removal.")
+            end
+
+            expect(account_scheduled_for_removal).to be_truthy,
+              "Expected page to show 'Account scheduled for removal.' after deleting the account"
+          end
+
+          it "allows to recreate deleted user with same credentials" do
+            user.remove_via_api!
+            # make sure user is deleted - async deletion can exceed two minutes under CI load
+            Support::Waiter.wait_until(max_duration: 180, sleep_interval: 3) { !user.exists? }
+
+            # The user was just deleted, so this sign-in is expected to be rejected. Pass
+            # raise_on_invalid_login: false so the flow surfaces the rejection on the page for us to
+            # assert on, instead of raising InvalidCredentialsError. See gitlab-org/gitlab#594514.
+            Flow::Login.sign_in(as: user, skip_page_validation: true, raise_on_invalid_login: false)
+            expect(page).to have_text("Invalid login or password")
+
+            Resource::User.fabricate_via_browser_ui! do |resource|
+              resource.name = user.name
+              resource.username = user.username
+              resource.email = user.email
+            end
+            expect(Page::Main::Menu.perform(&:signed_in?)).to be_truthy, "Expected user to be recreated successfully"
+          end
+        end
+      end
+
+      context 'when admin approval is required', :external_api_calls do
+        let(:signed_up_waiting_approval_text) do
+          'You have signed up successfully. However, we could not sign you in because your account ' \
+            'is awaiting approval from your GitLab administrator.'
+        end
+
+        let(:pending_approval_blocked_text) do
+          'Your account is pending approval from your GitLab administrator and hence blocked. ' \
+            'Please contact your GitLab administrator if you think this is an error.'
+        end
+
+        let(:user) do
+          Resource::User.fabricate_via_browser_ui! do |user|
+            user.email_domain = 'gitlab.com'
+            user.expect_fabrication_success = false
+          end
+        end
+
+        around do |example|
+          with_application_settings(require_admin_approval_after_user_signup: true) do
+            # Wait for the setting to propagate.
+            # The user's blocked_pending_approval state is set at registration time based on
+            # this setting, so it must be active before the user registers.
+            # See https://gitlab.com/gitlab-org/gitlab/-/issues/603412
+            #
+            Support::Waiter.wait_until(
+              max_duration: 15,
+              sleep_interval: 1,
+              message: 'Waiting for require_admin_approval_after_user_signup setting to propagate'
+            ) do
+              Runtime::ApplicationSettings.get_application_setting(:require_admin_approval_after_user_signup) == true
+            end
+
+            example.run
+          end
+        end
+
+        it 'allows user login after approval' do
+          user # sign up user
+
+          expect(page).to have_text(signed_up_waiting_approval_text)
+
+          # The pending-approval alert is rendered after a blocked sign-in attempt, but it can be
+          # lost while the sign-in flow runs its post-login processing (onboarding checks, etc.),
+          # leaving a bare login page. Retry the blocked sign-in until the alert is reliably
+          # present before asserting on it. retry_on_exception also covers the transient Chrome
+          # inspector error ("Node with given id does not belong to the document") that can be
+          # raised when has_text? checks the DOM mid-navigation. See gitlab-org/gitlab#594514.
+          Support::Retrier.retry_until(
+            max_attempts: 3, sleep_interval: 2, retry_on_exception: true,
+            message: 'Expected pending-approval blocked message'
+          ) do
+            Flow::Login.sign_in(as: user, skip_page_validation: true)
+            page.has_text?(pending_approval_blocked_text)
+          end
+
+          approve_user(user)
+
+          Flow::Login.sign_in(as: user, skip_page_validation: true)
+
+          Flow::UserOnboarding.onboard_user
+          # In development env and .com the user is asked to create a group and a project.
+          # onboard_user clicks "Get started", which navigates; an immediate text check can race
+          # the DOM swap and raise a transient Chrome inspector error ("Node with given id does
+          # not belong to the document") that Capybara does not retry. Retry the check ourselves
+          # before deciding whether the project-creation step is shown. See gitlab-org/gitlab#594514.
+          first_project_prompt_shown = Support::Retrier.retry_on_exception(max_attempts: 3, sleep_interval: 2) do
+            page.has_text?("Create or import your first project")
+          end
+          Flow::UserOnboarding.create_initial_project if first_project_prompt_shown
+          Runtime::Browser.visit(:gitlab, Page::Dashboard::Welcome)
+
+          expect(Page::Main::Menu.perform(&:has_personal_area?)).to be_truthy
+        end
+      end
+    end
+
+    def approve_user(user)
+      Flow::Login.while_signed_in_as_admin do
+        Page::Main::Menu.perform(&:go_to_admin_area)
+        Page::Admin::Menu.perform(&:go_to_users_overview)
+        Page::Admin::Overview::Users::Index.perform do |index|
+          index.choose_pending_approval_filter
+          index.choose_search_user(user.username)
+          index.click_search
+          index.click_user(user.name)
+        end
+
+        Page::Admin::Overview::Users::Show.perform do |show|
+          user.id = show.user_id.to_i
+          show.approve_user(user)
+        end
+
+        expect(page).to have_text('Successfully approved')
+      end
+    end
+
+    def with_application_settings(**hargs)
+      Runtime::ApplicationSettings.set_application_settings(**hargs)
+      yield
+    ensure
+      Runtime::ApplicationSettings.restore_application_settings(*hargs.keys)
+    end
+  end
+end

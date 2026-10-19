@@ -1,0 +1,5 @@
+--force-color
+--order random
+--format documentation
+--default-path qa/specs
+--require spec_helper

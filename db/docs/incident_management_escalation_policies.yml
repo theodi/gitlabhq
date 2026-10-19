@@ -1,0 +1,13 @@
+---
+table_name: incident_management_escalation_policies
+classes:
+- IncidentManagement::EscalationPolicy
+feature_categories:
+- incident_management
+description: Persists information about escalation policies in a project
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/60685
+milestone: '13.12'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

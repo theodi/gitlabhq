@@ -1,0 +1,128 @@
+# frozen_string_literal: true
+
+module AuditEvents
+  class Processor
+    def self.fetch(audit_event_id: nil, audit_event_json: nil, model_class: nil)
+      return fetch_from_json(audit_event_json) if audit_event_json.present?
+      return fetch_from_id(audit_event_id, model_class) if audit_event_id.present?
+
+      nil
+    rescue StandardError => e
+      ::Gitlab::ErrorTracking.track_exception(
+        e,
+        audit_event_id: audit_event_id,
+        model_class: model_class,
+        audit_event_json: audit_event_json&.truncate(100)
+      )
+      nil
+    end
+
+    def self.fetch_from_id(audit_event_id, model_class)
+      return if model_class.blank?
+
+      model_class.constantize.find(audit_event_id)
+    rescue ActiveRecord::RecordNotFound => e
+      # The referenced entity was deleted between publish and consume; expected
+      # and non-actionable, so log rather than page Sentry (redelivery would
+      # otherwise re-report it for the same deleted entity on every attempt).
+      ::Gitlab::ErrorTracking.log_exception(
+        e,
+        audit_event_id: audit_event_id,
+        model_class: model_class
+      )
+      nil
+    end
+
+    def self.fetch_from_json(audit_event_json)
+      parsed_json = ::Gitlab::Json.parse(audit_event_json).with_indifferent_access
+      model_class, _entity = determine_audit_model_entity(parsed_json)
+
+      create_scoped_audit_event(model_class, parsed_json)
+    rescue ActiveRecord::RecordNotFound => e
+      # Deleted entity: log rather than page Sentry (see fetch_from_id).
+      ::Gitlab::ErrorTracking.log_exception(
+        e,
+        audit_event_json: audit_event_json&.truncate(100)
+      )
+      nil
+    rescue JSON::ParserError => e
+      ::Gitlab::ErrorTracking.track_exception(
+        e,
+        audit_event_json: audit_event_json&.truncate(100)
+      )
+      nil
+    end
+
+    def self.determine_audit_model_entity(audit_event_json)
+      entity_mapping = {
+        group_id: [::AuditEvents::GroupAuditEvent, ->(id) { ::Group.find(id) }],
+        project_id: [::AuditEvents::ProjectAuditEvent, ->(id) { ::Project.find(id) }],
+        user_id: [::AuditEvents::UserAuditEvent, ->(id) { ::User.find(id) }]
+      }
+
+      entity_key, (model_class, entity_finder) = entity_mapping.find do |key, _|
+        audit_event_json[key].present?
+      end
+
+      if entity_key && entity_finder
+        entity = entity_finder.call(audit_event_json[entity_key])
+        [model_class, entity]
+      else
+        determine_from_entity_type(audit_event_json)
+      end
+    end
+
+    # Fallback method for stream_only events that use entity_type/entity_id format
+    # instead of the scoped *_id fields (e.g., project_id, group_id, user_id).
+    # Note: ActiveRecord::RecordNotFound exceptions bubble up to fetch_from_json's rescue block.
+    def self.determine_from_entity_type(audit_event_json)
+      entity_type = audit_event_json[:entity_type]
+      entity_id = audit_event_json[:entity_id]
+
+      return [::AuditEvents::InstanceAuditEvent, :instance] if entity_id.blank?
+
+      case entity_type
+      when 'Project'
+        [::AuditEvents::ProjectAuditEvent, ::Project.find(entity_id)]
+      when 'Group'
+        [::AuditEvents::GroupAuditEvent, ::Group.find(entity_id)]
+      when 'User'
+        [::AuditEvents::UserAuditEvent, ::User.find(entity_id)]
+      else
+        [::AuditEvents::InstanceAuditEvent, :instance]
+      end
+    end
+
+    def self.create_scoped_audit_event(model_class, audit_event_json)
+      excluded_fields_mapping = {
+        ::AuditEvents::GroupAuditEvent => [:project_id, :user_id, :entity_type, :entity_id],
+        ::AuditEvents::ProjectAuditEvent => [:group_id, :user_id, :entity_type, :entity_id],
+        ::AuditEvents::UserAuditEvent => [:group_id, :project_id, :entity_type, :entity_id],
+        ::AuditEvents::InstanceAuditEvent => [:group_id, :project_id, :user_id, :entity_type, :entity_id]
+      }
+
+      excluded_fields = excluded_fields_mapping[model_class] || [:entity_type, :entity_id]
+      filtered_json = audit_event_json.except(*excluded_fields)
+
+      filtered_json = add_scoped_id_from_entity(model_class, filtered_json, audit_event_json)
+
+      model_class.new(filtered_json)
+    end
+
+    def self.add_scoped_id_from_entity(model_class, filtered_json, audit_event_json)
+      return filtered_json if audit_event_json[:entity_id].blank?
+
+      id_field_mapping = {
+        ::AuditEvents::GroupAuditEvent => :group_id,
+        ::AuditEvents::ProjectAuditEvent => :project_id,
+        ::AuditEvents::UserAuditEvent => :user_id
+      }
+
+      id_field = id_field_mapping[model_class]
+      return filtered_json unless id_field
+      return filtered_json if filtered_json[id_field].present?
+
+      filtered_json.merge(id_field => audit_event_json[:entity_id])
+    end
+  end
+end

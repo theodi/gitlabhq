@@ -1,0 +1,13 @@
+---
+table_name: p_ci_runner_machine_builds
+classes:
+- Ci::RunnerManagerBuild
+feature_categories:
+- fleet_visibility
+description: Relationships between builds and runner managers
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/111484
+milestone: '15.9'
+gitlab_schema: gitlab_ci
+sharding_key:
+  project_id: projects
+table_size: small

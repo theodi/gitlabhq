@@ -1,0 +1,391 @@
+<script>
+import {
+  GlModal,
+  GlSearchBoxByType,
+  GlButton,
+  GlIcon,
+  GlTooltipDirective,
+  GlLoadingIcon,
+  GlLink,
+  GlAlert,
+} from '@gitlab/ui';
+import { __, s__, sprintf } from '~/locale';
+import { ROUTES } from '~/work_items/constants';
+import { subscribeWithLimitEnforce } from 'ee_else_ce/work_items/list/utils';
+import { getIdFromGraphQLId } from '~/graphql_shared/utils';
+import { DEFAULT_DEBOUNCE_AND_THROTTLE_MS } from '~/lib/utils/constants';
+import {
+  SAVED_VIEW_SORT_NAME_ASC,
+  BROWSE_SAVED_VIEWS_PAGE_SIZE,
+} from '~/work_items/list/constants';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { helpPagePath } from '~/helpers/help_page_helper';
+import getNamespaceSavedViewsQuery from '../graphql/work_item_saved_views_namespace.query.graphql';
+
+export default {
+  name: 'WorkItemsExistingSavedViewsModal',
+  components: {
+    GlModal,
+    GlSearchBoxByType,
+    GlButton,
+    GlIcon,
+    GlLoadingIcon,
+    GlLink,
+    GlAlert,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  i18n: {
+    title: s__('WorkItem|Views'),
+    searchPlaceholder: s__('WorkItem|Search by view name or description'),
+    emptyViews: s__('WorkItem|No views yet'),
+    emptyViewsDescription: s__(
+      'WorkItem|Views created by you or shared by others will show up here.',
+    ),
+    noPermissionAlert: s__(
+      "WorkItem|You don't have permission to create views in this %{namespaceType}, but you can use views members of this %{namespaceType} have shared with you.",
+    ),
+    noPermissionEmptyDescription: s__(
+      "WorkItem|You don't have permission to create views in this %{namespaceType}. Views shared by members of this %{namespaceType} will appear here.",
+    ),
+    notFound: s__('WorkItem|No results found'),
+    notFoundDescription: s__('WorkItem|Edit your search and try again.'),
+    privateTooltip: s__('WorkItem|Private: only you can see and edit this view.'),
+    subscriptionLimitWarningMessage: s__(
+      'WorkItem|You have reached the maximum number of views in your list. If you add a view, the last view in your list will be removed.',
+    ),
+    learnMoreAboutViewLimits: s__('WorkItem|Learn more about view limits.'),
+  },
+  savedViewLimitsHelpPath: helpPagePath('user/work_items/saved_views.md', {
+    anchor: 'saved-view-limits',
+  }),
+  DEFAULT_DEBOUNCE_AND_THROTTLE_MS,
+  inject: ['canCreateSavedView', 'subscribedSavedViewLimit', 'isGroup'],
+  model: {
+    prop: 'show',
+    event: 'hide',
+  },
+  props: {
+    show: {
+      type: Boolean,
+      required: true,
+    },
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    showSubscriptionLimitWarning: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  // TODO: Add 'view-subscribed' emit once subscribe functionality is implemented
+  // See: https://gitlab.com/gitlab-org/gitlab/-/work_items/588295
+  emits: ['hide', 'show-new-view-modal', 'subscribe-from-modal'],
+  data() {
+    return {
+      searchInput: '',
+      savedViewsConnection: null,
+      isLoadingMore: false,
+      error: undefined,
+    };
+  },
+  apollo: {
+    savedViewsConnection: {
+      query: getNamespaceSavedViewsQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          subscribedOnly: false,
+          sort: SAVED_VIEW_SORT_NAME_ASC,
+          first: BROWSE_SAVED_VIEWS_PAGE_SIZE,
+          search: this.searchInput || undefined,
+        };
+      },
+      skip() {
+        return !this.show;
+      },
+      update(data) {
+        return data.namespace?.savedViews ?? null;
+      },
+      error(e) {
+        Sentry.captureException(e);
+      },
+    },
+  },
+  computed: {
+    isLoading() {
+      return this.$apollo.queries.savedViewsConnection.loading;
+    },
+    savedViews() {
+      return this.savedViewsConnection?.nodes ?? [];
+    },
+    namespaceType() {
+      return this.isGroup ? __('group') : __('project');
+    },
+    noPermissionAlertMessage() {
+      return sprintf(this.$options.i18n.noPermissionAlert, { namespaceType: this.namespaceType });
+    },
+    emptyStateDescription() {
+      if (!this.canCreateSavedView) {
+        return sprintf(this.$options.i18n.noPermissionEmptyDescription, {
+          namespaceType: this.namespaceType,
+        });
+      }
+      return this.$options.i18n.emptyViewsDescription;
+    },
+    hasSavedViews() {
+      return this.savedViews.length > 0;
+    },
+    hasSearchInput() {
+      return this.searchInput.trim().length > 0;
+    },
+    pageInfo() {
+      return this.savedViewsConnection?.pageInfo;
+    },
+    hasNextPage() {
+      return this.pageInfo?.hasNextPage ?? false;
+    },
+    endCursor() {
+      return this.pageInfo?.endCursor ?? null;
+    },
+    isInitialLoading() {
+      return this.isLoading && !this.isLoadingMore;
+    },
+    shouldShowEmptyState() {
+      return !this.isLoading && !this.hasSavedViews && !this.hasSearchInput;
+    },
+    shouldShowNoSearchResults() {
+      return this.hasSearchInput && !this.hasSavedViews;
+    },
+    shouldShowSearchBox() {
+      if (!this.canCreateSavedView) {
+        return this.hasSavedViews || this.hasSearchInput;
+      }
+      return this.hasSavedViews || this.hasSearchInput;
+    },
+    shouldShowNoPermissionAlert() {
+      if (this.hasSearchInput) {
+        return !this.canCreateSavedView;
+      }
+      return !this.canCreateSavedView && this.hasSavedViews;
+    },
+  },
+  methods: {
+    focusSearchInput() {
+      this.$refs.savedViewSearch?.$el.focus();
+    },
+    hideModal() {
+      this.$emit('hide', false);
+      this.searchInput = '';
+    },
+    redirectToNewViewModal() {
+      this.$emit('hide', false);
+      this.$emit('show-new-view-modal');
+    },
+    async fetchMoreViews() {
+      if (this.isLoadingMore || !this.hasNextPage) return;
+      this.isLoadingMore = true;
+
+      try {
+        await this.$apollo.queries.savedViewsConnection.fetchMore({
+          variables: { after: this.endCursor },
+        });
+      } catch (e) {
+        Sentry.captureException(e);
+      } finally {
+        this.isLoadingMore = false;
+      }
+    },
+    async redirectToView(view) {
+      const viewId = getIdFromGraphQLId(view.id).toString();
+
+      if (!view.subscribed) {
+        this.$emit('subscribe-from-modal');
+        const mutationKey = 'workItemSavedViewSubscribe';
+        try {
+          const { data } = await subscribeWithLimitEnforce({
+            view,
+            apolloClient: this.$apollo,
+            namespacePath: this.fullPath,
+            subscribedSavedViewLimit: this.subscribedSavedViewLimit,
+          });
+
+          if (data[mutationKey].errors?.length) {
+            this.error = s__(
+              'WorkItem|An error occurred while subscribing to the view. Please try again.',
+            );
+            return;
+          }
+
+          this.$router.push({
+            name: ROUTES.savedView,
+            params: { view_id: viewId },
+            query: undefined,
+          });
+        } catch (e) {
+          this.error = s__(
+            'WorkItem|An error occurred while subscribing to the view. Please try again.',
+          );
+          return;
+        }
+      } else {
+        this.$router.push({
+          name: ROUTES.savedView,
+          params: { view_id: viewId },
+          query: undefined,
+        });
+      }
+
+      this.hideModal();
+    },
+  },
+};
+</script>
+
+<template>
+  <gl-modal
+    modal-id="add-existing-view-modal"
+    modal-class="add-existing-view-modal"
+    :aria-label="$options.i18n.title"
+    :title="$options.i18n.title"
+    :visible="show"
+    body-class="!gl-pb-0"
+    size="sm"
+    hide-footer
+    @shown="focusSearchInput"
+    @hide="hideModal"
+  >
+    <div
+      v-if="showSubscriptionLimitWarning"
+      class="gl-mb-4 gl-flex gl-gap-3 gl-rounded-base gl-bg-orange-50 gl-p-3"
+    >
+      <gl-icon name="warning" :size="16" class="gl-mt-1 gl-shrink-0" variant="warning" />
+      <span class="gl-text-sm">
+        {{ $options.i18n.subscriptionLimitWarningMessage }}
+        <gl-link :href="$options.savedViewLimitsHelpPath" target="_blank">
+          {{ $options.i18n.learnMoreAboutViewLimits }}
+        </gl-link>
+      </span>
+    </div>
+    <div
+      v-if="shouldShowNoPermissionAlert"
+      class="gl-mb-4 gl-flex gl-gap-3 gl-rounded-base gl-bg-feedback-info gl-p-3"
+      data-testid="no-permission-alert"
+    >
+      <gl-icon name="information-o" :size="16" class="gl-mt-1 gl-shrink-0 gl-text-feedback-info" />
+      <span class="gl-text-sm">{{ noPermissionAlertMessage }}</span>
+    </div>
+    <gl-search-box-by-type
+      v-if="shouldShowSearchBox"
+      ref="savedViewSearch"
+      v-model="searchInput"
+      :debounce="$options.DEFAULT_DEBOUNCE_AND_THROTTLE_MS"
+      autofocus
+      :placeholder="$options.i18n.searchPlaceholder"
+    />
+    <gl-loading-icon v-if="isInitialLoading" class="gl-mt-5" size="lg" />
+    <template v-if="shouldShowEmptyState">
+      <div class="gl-mt-4 gl-pb-7 gl-text-center">
+        <h3 class="gl-mb-2 gl-text-lg gl-text-default">
+          {{ $options.i18n.emptyViews }}
+        </h3>
+        <span>{{ emptyStateDescription }}</span>
+        <gl-button
+          v-if="canCreateSavedView"
+          variant="confirm"
+          class="gl-mt-5"
+          data-testid="new-view-button"
+          @click="redirectToNewViewModal"
+        >
+          {{ s__('WorkItem|New View') }}
+        </gl-button>
+      </div>
+    </template>
+
+    <template v-else-if="shouldShowNoSearchResults">
+      <div class="gl-mt-6 gl-pb-7 gl-text-center">
+        <h3 class="gl-mb-2 gl-text-lg gl-text-default">
+          {{ $options.i18n.notFound }}
+        </h3>
+        <span>{{ $options.i18n.notFoundDescription }}</span>
+      </div>
+    </template>
+
+    <template v-else-if="hasSavedViews">
+      <div v-if="error" class="gl-mt-5">
+        <gl-alert variant="danger" @dismiss="error = undefined">
+          {{ error }}
+        </gl-alert>
+      </div>
+      <ul class="gl-mb-3 gl-mt-[6px] gl-max-h-[25rem] gl-overflow-auto gl-p-0 gl-px-1">
+        <li v-for="view in savedViews" :key="view.id" class="gl-my-1">
+          <button
+            class="saved-view-item gl-flex gl-min-h-[36px] gl-w-full gl-cursor-pointer gl-rounded-base gl-border-none gl-px-4 gl-py-3 hover:gl-bg-gray-50 focus-visible:gl-bg-gray-50"
+            data-testid="saved-view-item"
+            @click="redirectToView(view)"
+          >
+            <gl-icon name="list-bulleted" class="gl-mr-3 gl-shrink-0" variant="subtle" />
+            <span class="gl-text-start">
+              <h5 class="gl-m-0">
+                {{ view.name }}
+                <gl-icon
+                  v-if="view.isPrivate"
+                  v-gl-tooltip
+                  :title="$options.i18n.privateTooltip"
+                  name="lock"
+                  class="gl-mr-3 gl-shrink-0 gl-cursor-pointer"
+                  variant="subtle"
+                  data-testid="private-view-icon"
+                />
+              </h5>
+              <span class="gl-text-sm gl-text-subtle">
+                {{ view.description }}
+              </span>
+            </span>
+            <template v-if="view.subscribed">
+              <div
+                class="added-saved-view gl-ml-auto gl-flex gl-items-center gl-gap-1 gl-text-success"
+              >
+                <gl-icon
+                  name="check"
+                  class="gl-shrink-0 gl-text-success"
+                  data-testid="subscribed-view-icon"
+                />
+                <span class="gl-text-sm">
+                  {{ s__('WorkItem|Added') }}
+                </span>
+              </div>
+              <gl-icon
+                name="arrow-right"
+                class="added-saved-view-arrow gl-ml-auto gl-hidden gl-shrink-0"
+              />
+            </template>
+            <template v-else>
+              <gl-icon
+                name="plus"
+                class="add-saved-view gl-ml-auto gl-hidden gl-shrink-0 gl-items-center"
+              />
+            </template>
+          </button>
+        </li>
+        <li v-if="hasNextPage" class="gl-flex gl-justify-center gl-py-3">
+          <gl-button
+            v-if="!isLoadingMore"
+            variant="confirm"
+            category="tertiary"
+            size="small"
+            data-testid="load-more-button"
+            class="!gl-py-2"
+            @click="fetchMoreViews"
+          >
+            {{ __('Load more') }}
+          </gl-button>
+          <gl-loading-icon v-else size="md" />
+        </li>
+      </ul>
+    </template>
+  </gl-modal>
+</template>

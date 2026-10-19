@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: counts.web_ide_views
+description: Count of views of the Web IDE
+product_group: remote_development
+product_categories:
+- web_ide
+value_type: number
+status: active
+time_frame: all
+data_source: internal_events
+events:
+  - name: web_ide_viewed
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

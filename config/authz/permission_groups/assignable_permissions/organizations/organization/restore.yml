@@ -1,0 +1,11 @@
+---
+name: restore_organization
+description: Grants the ability to restore soft-deleted organizations
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - restore_organization
+assignable_when:
+  - condition: admin

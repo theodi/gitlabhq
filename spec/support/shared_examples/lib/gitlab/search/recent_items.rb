@@ -1,0 +1,147 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+RSpec.shared_examples 'search recent items' do
+  let_it_be(:user, freeze: false) { create(:user) }
+  let_it_be(:recent_items, freeze: false) { described_class.new(user: user) }
+  let(:item) { create_item(content: 'hello world 1', parent: parent) }
+  let(:parent) { create(parent_type, :public) }
+
+  describe '#log_view', :clean_gitlab_redis_shared_state do
+    it 'adds the item to the recent items' do
+      recent_items.log_view(item)
+
+      results = recent_items.search('hello')
+
+      expect(results).to eq([item])
+    end
+
+    it 'removes an item when it exceeds the size items_limit' do
+      recent_items = described_class.new(user: user, items_limit: 3)
+
+      4.times do |i|
+        recent_items.log_view(create_item(content: "item #{i}", parent: parent))
+      end
+
+      results = recent_items.search('item')
+
+      expect(results.map(&:title)).to contain_exactly('item 3', 'item 2', 'item 1')
+    end
+
+    it 'expires the items after expires_after' do
+      recent_items = described_class.new(user: user, expires_after: 0)
+
+      recent_items.log_view(item)
+
+      results = recent_items.search('hello')
+
+      expect(results).to be_empty
+    end
+
+    it 'does not include results logged for another user' do
+      another_user = create(:user)
+      another_item = create_item(content: 'hello world 2', parent: parent)
+      described_class.new(user: another_user).log_view(another_item)
+      recent_items.log_view(item)
+
+      results = recent_items.search('hello')
+
+      expect(results).to eq([item])
+    end
+  end
+
+  describe '#search', :clean_gitlab_redis_shared_state do
+    let(:item1) { create_item(content: "matching item 1", parent: parent) }
+    let(:item2) { create_item(content: "matching item 2", parent: parent) }
+    let(:item3) { create_item(content: "matching item 3", parent: parent) }
+    let(:non_matching_item) { create_item(content: "different item", parent: parent) }
+    let!(:non_viewed_item) { create_item(content: "matching but not viewed item", parent: parent) }
+
+    before do
+      recent_items.log_view(item1)
+      recent_items.log_view(item2)
+      recent_items.log_view(item3)
+      recent_items.log_view(non_matching_item)
+    end
+
+    it 'matches partial text in the item title' do
+      expect(recent_items.search('matching')).to contain_exactly(item1, item2, item3)
+    end
+
+    it 'returns results sorted by recently viewed' do
+      recent_items.log_view(item2)
+
+      expect(recent_items.search('matching')).to eq([item2, item3, item1])
+    end
+
+    it 'does not leak items you no longer have access to' do
+      private_parent = create(parent_type, :public)
+      private_item = create_item(content: 'matching item title', parent: private_parent)
+
+      recent_items.log_view(private_item)
+
+      private_parent.update!(visibility_level: ::Gitlab::VisibilityLevel::PRIVATE)
+
+      expect(recent_items.search('matching')).not_to include(private_item)
+    end
+
+    it "limits results to #{Gitlab::Search::RecentItems::SEARCH_LIMIT} items" do
+      (Gitlab::Search::RecentItems::SEARCH_LIMIT + 1).times do |i|
+        recent_items.log_view(create_item(content: "item #{i}", parent: parent))
+      end
+
+      results = recent_items.search('item')
+
+      expect(results.count).to eq(Gitlab::Search::RecentItems::SEARCH_LIMIT)
+    end
+
+    it 'returns all viewed items when search term is blank' do
+      expect(recent_items.search(nil)).to contain_exactly(item1, item2, item3, non_matching_item)
+      expect(recent_items.search('')).to contain_exactly(item1, item2, item3, non_matching_item)
+    end
+
+    it 'requires all whitespace-separated tokens to appear in the title' do
+      all_tokens = create_item(content: 'foo bar baz', parent: parent)
+      one_token  = create_item(content: 'foo only', parent: parent)
+      recent_items.log_view(all_tokens)
+      recent_items.log_view(one_token)
+
+      expect(recent_items.search('foo bar')).to contain_exactly(all_tokens)
+    end
+
+    it 'treats LIKE wildcards in the search term as literals' do
+      underscore_item = create_item(content: 'wildcard_test', parent: parent)
+      percent_item    = create_item(content: 'wildcard%test', parent: parent)
+      decoy_item      = create_item(content: 'wildcardXtest', parent: parent)
+      recent_items.log_view(underscore_item)
+      recent_items.log_view(percent_item)
+      recent_items.log_view(decoy_item)
+
+      expect(recent_items.search('wildcard_test')).to contain_exactly(underscore_item)
+      expect(recent_items.search('wildcard%test')).to contain_exactly(percent_item)
+    end
+  end
+
+  describe '#latest_with_timestamps', :clean_gitlab_redis_shared_state do
+    let(:item1) { create_item(content: "item 1", parent: parent) }
+    let(:item2) { create_item(content: "item 2", parent: parent) }
+    let(:item3) { create_item(content: "item 3", parent: parent) }
+
+    it 'returns items with their view timestamps in correct order' do
+      travel_to(3.hours.ago) { recent_items.log_view(item1) }
+      travel_to(2.hours.ago) { recent_items.log_view(item2) }
+      travel_to(1.hour.ago) { recent_items.log_view(item3) }
+
+      results = recent_items.latest_with_timestamps
+
+      expect(results.values).to all(be_a(Time))
+      expect(results.keys).to eq([item3, item2, item1])
+    end
+
+    it 'returns empty hash when no items are viewed' do
+      results = recent_items.latest_with_timestamps
+
+      expect(results).to eq({})
+    end
+  end
+end

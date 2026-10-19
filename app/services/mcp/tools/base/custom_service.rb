@@ -1,0 +1,110 @@
+# frozen_string_literal: true
+
+# rubocop:disable Mcp/UseApiService -- Tool does not depend on REST API
+module Mcp
+  module Tools
+    module Base
+      class CustomService < BaseService
+        include Mcp::Tools::Concerns::Versionable
+        include ::Mcp::Tools::Concerns::ResourceFinder
+        include ::Gitlab::Utils::StrongMemoize
+        extend ::Gitlab::Utils::Override
+
+        def initialize(name:, version: nil)
+          super(name: name)
+          initialize_version(version)
+        end
+
+        override :set_cred
+        def set_cred(current_user: nil, access_token: nil)
+          @current_user = current_user
+          @access_token = access_token
+        end
+
+        def execute(request: nil, params: nil)
+          unless current_user.present?
+            return Response.error("#{self.class.name}: current_user is not set", reason: Response::Reason::UNAUTHORIZED)
+          end
+
+          authorize!(params)
+          authorize_granular_token!(params) unless skip_granular_token_authorization?
+
+          super
+        rescue Mcp::Tools::Concerns::ResourceFinder::ResourceNotFoundError => e
+          Response.error("Tool execution failed: #{e.message}", reason: Response::Reason::NOT_FOUND)
+        rescue ArgumentError => e
+          Response.error("Tool execution failed: #{e.message}", reason: Response::Reason::BAD_REQUEST)
+        rescue Mcp::Tools::Concerns::ResourceFinder::ResourceForbiddenError, ::Gitlab::Access::AccessDeniedError => e
+          Response.error("Tool execution failed: #{e.message}", reason: Response::Reason::UNAUTHORIZED)
+        rescue StandardError => e
+          ::Gitlab::ErrorTracking.track_exception(e, mcp_tool: name)
+          Response.error("Tool execution failed: #{e.message}")
+        end
+
+        def authorize!(params)
+          target = authorized_target(params)
+          return if target && ::Ability.allowed?(current_user, auth_ability, target)
+
+          raise ::Mcp::Tools::Concerns::ResourceFinder::ResourceForbiddenError, authorization_error_message
+        end
+
+        def authorization_error_message
+          "#{name}: not found or access denied"
+        end
+
+        def auth_ability
+          raise NoMethodError, "#{self.class.name}#auth_ability should be implemented in a subclass"
+        end
+
+        def auth_target(_params)
+          raise NoMethodError, "#{self.class.name}#auth_target should be implemented in a subclass"
+        end
+
+        # Permissions a granular token needs on the target's boundary.
+        # Left empty, granular tokens are denied.
+        def granular_permissions
+          []
+        end
+
+        def granular_boundary(target)
+          return target if target.is_a?(::Project) || target.is_a?(::Group)
+          return target.project if target.respond_to?(:project)
+
+          raise NoMethodError, "#{self.class.name}#granular_boundary should be implemented for #{target.class.name}"
+        end
+
+        # Only for tools that return no user data.
+        def skip_granular_token_authorization?
+          false
+        end
+
+        private
+
+        def authorized_target(params)
+          strong_memoize_with(:authorized_target, params) { auth_target(params) }
+        end
+
+        def authorize_granular_token!(params)
+          if access_token.nil?
+            raise ::Mcp::Tools::Concerns::ResourceFinder::ResourceForbiddenError, authorization_error_message
+          end
+
+          response = ::Authz::Tokens::AuthorizeGranularScopesService.new(
+            boundaries: ::Authz::Boundary.for(granular_boundary(authorized_target(params))),
+            permissions: granular_permissions,
+            token: access_token
+          ).execute
+          return if response.success?
+
+          if response.reason == :resource_not_found
+            raise ::Mcp::Tools::Concerns::ResourceFinder::ResourceNotFoundError, authorization_error_message
+          end
+
+          ::Current.add_granular_denied_permissions(response.payload[:denied_permissions])
+          raise ::Mcp::Tools::Concerns::ResourceFinder::ResourceForbiddenError, response.message
+        end
+      end
+    end
+  end
+end
+# rubocop:enable Mcp/UseApiService

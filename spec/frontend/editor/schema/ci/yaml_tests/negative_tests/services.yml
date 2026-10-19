@@ -1,0 +1,81 @@
+empty_services:
+  services:
+
+without_name:
+  services:
+    - alias: db-postgres
+      entrypoint: ["/usr/local/bin/db-postgres"]
+      command: ["start"]
+
+invalid_entrypoint:
+  services:
+    - name: my-postgres:11.7
+      alias: db-postgres
+      entrypoint: "/usr/local/bin/db-postgres" # must be array
+
+empty_entrypoint:
+  services:
+    - name: my-postgres:11.7
+      alias: db-postgres
+      entrypoint: []
+
+empty_command:
+  services:
+    - name: my-postgres:11.7
+      alias: db-postgres
+      command: []
+
+empty_pull_policy:
+  script: echo "Multiple pull policies."
+  services:
+    - name: postgres:11.6
+      pull_policy: []
+
+invalid_service_executor_opts:
+  script: echo "Specifying platform."
+  services:
+    - name: mysql:5.7
+      docker:
+        unknown_key: test
+
+invalid_service_platform:
+  script: echo "Specifying platform."
+  services:
+    - name: mysql:5.7
+      docker:
+        platform: ["arm64"] # The expected value is a string, not an array
+
+invalid_service_user:
+  script: echo "Specifying user."
+  services:
+    - name: mysql:5.7
+      docker:
+        user: ["dave"] # The expected value is a string, not an array
+
+empty_service_user:
+  script: echo "Specifying user"
+  services:
+    - name: alpine:latest
+      docker:
+        user: ""
+
+invalid_service_executor_opts_kubernetes:
+  script: echo "Specifying user."
+  services:
+    - name: mysql:5.7
+      kubernetes:
+        unknown_key: test
+
+invalid_service_user_kubernetes:
+  script: echo "Specifying user."
+  services:
+    - name: mysql:5.7
+      kubernetes:
+        user: ["dave"] # The expected value is a string, not an array
+
+empty_service_user_kubernetes:
+  script: echo "Specifying user"
+  services:
+    - name: alpine:latest
+      kubernetes:
+        user: ""

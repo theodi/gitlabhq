@@ -1,0 +1,319 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "notes",
+    "individual_note"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "individual_note": {
+      "type": "boolean"
+    },
+    "resolvable": {
+      "type": "boolean"
+    },
+    "resolved": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": "string"
+          },
+          "award_emoji": {
+            "type": "array"
+          },
+          "author": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "username": {
+                "type": "string"
+              },
+              "id": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              },
+              "avatar_url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "web_url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "status_tooltip_html": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "state",
+              "avatar_url",
+              "path",
+              "name",
+              "username"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "system": {
+            "type": "boolean"
+          },
+          "noteable_id": {
+            "type": "integer"
+          },
+          "noteable_iid": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "noteable_type": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "integer"
+          },
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolvable": {
+            "type": "boolean"
+          },
+          "resolved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_by_push": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "note": {
+            "type": "string"
+          },
+          "note_html": {
+            "type": "string"
+          },
+          "body_first_line_html": {
+            "type": "string"
+          },
+          "current_user": {
+            "type": "object"
+          },
+          "suggestions": {
+            "type": "array"
+          },
+          "discussion_id": {
+            "type": "string"
+          },
+          "emoji_awardable": {
+            "type": "boolean"
+          },
+          "report_abuse_path": {
+            "type": "string"
+          },
+          "noteable_note_url": {
+            "type": "string"
+          },
+          "resolve_path": {
+            "type": "string"
+          },
+          "resolve_with_issue_path": {
+            "type": "string"
+          },
+          "cached_markdown_version": {
+            "type": "integer"
+          },
+          "human_access": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_noteable_author": {
+            "type": "boolean"
+          },
+          "is_contributor": {
+            "type": "boolean"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "toggle_award_path": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "commands_changes": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "confidential": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "internal": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "imported": {
+            "type": [
+              "boolean"
+            ]
+          },
+          "imported_from": {
+            "type": [
+              "string"
+            ]
+          },
+          "external_author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duo_session_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duo_session_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "duo_session_id_triggered": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duo_session_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duo_session_agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_presence": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "session_id": {
+                "type": "integer"
+              },
+              "agent_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "agent_catalog_web_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_link": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "trigger_source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "user_permissions": {
+                "type": "object",
+                "properties": {
+                  "read_duo_workflow": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "id",
+          "author",
+          "created_at",
+          "updated_at",
+          "system",
+          "noteable_id",
+          "noteable_type"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+#import "./crm_organization_fields.fragment.graphql"
+
+query organizations(
+  $groupFullPath: ID!
+  $state: CustomerRelationsOrganizationState
+  $searchTerm: String
+  $sort: OrganizationSort
+  $firstPageSize: Int
+  $lastPageSize: Int
+  $prevPageCursor: String = ""
+  $nextPageCursor: String = ""
+  $ids: [CustomerRelationsOrganizationID!]
+) {
+  group(fullPath: $groupFullPath) {
+    id
+    organizations(
+      state: $state
+      search: $searchTerm
+      sort: $sort
+      first: $firstPageSize
+      last: $lastPageSize
+      after: $nextPageCursor
+      before: $prevPageCursor
+      ids: $ids
+    ) {
+      nodes {
+        ...OrganizationFragment
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+        hasPreviousPage
+        startCursor
+      }
+    }
+  }
+}

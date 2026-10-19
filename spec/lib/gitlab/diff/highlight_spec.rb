@@ -1,0 +1,256 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Diff::Highlight, feature_category: :source_code_management do
+  include RepoHelpers
+
+  let_it_be(:project) { create(:project, :repository) }
+
+  let(:commit) { project.commit(sample_commit.id) }
+  let(:diff) { commit.raw_diffs.first }
+  let(:diff_file) { Gitlab::Diff::File.new(diff, diff_refs: commit.diff_refs, repository: project.repository) }
+
+  shared_examples 'without inline diffs' do
+    let(:code) { '<h2 onmouseover="alert(2)">Test</h2>' }
+
+    before do
+      allow_any_instance_of(Gitlab::Diff::Line).to receive(:text).and_return(code)
+    end
+
+    it 'returns html escaped diff text' do
+      expect(subject[1].rich_text).to eq html_escape(code)
+      expect(subject[1].rich_text).to be_html_safe
+    end
+  end
+
+  describe '#highlight' do
+    context 'when limiting inline diff highlighting' do
+      using RSpec::Parameterized::TableSyntax
+
+      let(:diff_lines) do
+        texts.each_with_index.map do |text, index|
+          type = text.start_with?('-') ? 'old' : 'new'
+          Gitlab::Diff::Line.new(text, type, index, index + 1, index + 1)
+        end
+      end
+
+      let(:marked) { highlighted_lines.map { |line| line.marker_ranges.any? } }
+
+      subject(:highlighted_lines) { described_class.new(diff_lines, repository: project.repository).highlight }
+
+      where(:old_length, :new_length, :highlighted) do
+        499 | 499 | true
+        500 | 500 | true
+        501 | 500 | false
+        500 | 501 | false
+      end
+
+      with_them do
+        let(:texts) { ["-#{'a' * old_length}", "+#{'b' * new_length}"] }
+
+        it 'only marks pairs within the line length limit', :aggregate_failures do
+          expect(marked[0]).to eq(highlighted)
+          expect(marked[1]).to eq(highlighted)
+        end
+      end
+
+      context 'with a per-file budget' do
+        let(:texts) { %w[-abc -def +xyz +uvw] }
+
+        context 'when the per-file budget is reached exactly' do
+          before do
+            stub_const('Gitlab::Diff::Highlight::MAX_INLINE_DIFF_COST_PER_FILE', 9)
+          end
+
+          it 'still marks the next pair' do
+            expect(marked).to eq([true, true, true, true])
+          end
+        end
+
+        context 'when the per-file budget is exceeded' do
+          before do
+            stub_const('Gitlab::Diff::Highlight::MAX_INLINE_DIFF_COST_PER_FILE', 8)
+          end
+
+          it 'marks the crossing pair but skips later pairs', :aggregate_failures do
+            expect(marked).to eq([true, false, true, false])
+            expect(highlighted_lines[1].rich_text).not_to include('idiff')
+            expect(highlighted_lines[3].rich_text).not_to include('idiff')
+          end
+
+          context 'when an earlier pair exceeds the length limit' do
+            let(:texts) { ["-#{'a' * 501}", '-abc', "+#{'b' * 501}", '+xyz'] }
+
+            it 'does not count that pair against the budget' do
+              expect(marked).to eq([false, true, false, true])
+            end
+          end
+        end
+      end
+
+      context 'when the flag is disabled' do
+        let(:texts) { ["-#{'a' * 501}", "+#{'b' * 501}"] }
+
+        before do
+          stub_feature_flags(limit_inline_diff_highlighting: false)
+        end
+
+        it 'still marks long lines' do
+          expect(marked).to eq([true, true])
+        end
+      end
+
+      context 'when skipped lines contain HTML' do
+        let(:texts) { ["-#{'a' * 501}<script>", "+#{'b' * 501}<script>"] }
+
+        it 'renders the escaped content without inline markers', :aggregate_failures do
+          expect(highlighted_lines.map(&:rich_text)).to all(include('&lt;script&gt;'))
+          expect(highlighted_lines.map(&:rich_text)).to all(exclude('<script>'))
+          expect(highlighted_lines.map(&:rich_text)).to all(exclude('idiff'))
+        end
+      end
+    end
+
+    shared_examples_for 'diff highlighter' do
+      context "with a diff file" do
+        let(:subject) { described_class.new(diff_file, repository: project.repository).highlight }
+
+        it 'returns Gitlab::Diff::Line elements' do
+          expect(subject.first).to be_an_instance_of(Gitlab::Diff::Line)
+        end
+
+        it 'does not modify "match" lines' do
+          expect(subject[0].text).to eq('@@ -6,12 +6,18 @@ module Popen')
+          expect(subject[22].text).to eq('@@ -19,6 +25,7 @@ module Popen')
+        end
+
+        it 'highlights and marks unchanged lines' do
+          code = %{ <span class="line" data-lang="ruby">  <span class="k">def</span> <span class="nf">popen</span><span class="p">(</span><span class="n">cmd</span><span class="p">,</span> <span class="n">path</span><span class="o">=</span><span class="kp">nil</span><span class="p">)</span></span>\n}
+
+          expect(subject[2].rich_text).to eq(code)
+        end
+
+        it 'highlights and marks removed lines' do
+          code = %(-<span class="line" data-lang="ruby">      <span class="k">raise</span> <span class="s2">"System commands must be given as an array of strings"</span></span>\n)
+
+          expect(subject[4].rich_text).to eq(code)
+        end
+
+        it 'highlights and marks added lines' do
+          code = %(+<span class="line" data-lang="ruby">      <span class="k">raise</span> <span class="no"><span class="idiff left addition">RuntimeError</span></span><span class="p"><span class="idiff addition">,</span></span><span class="idiff right addition"> </span><span class="s2">"System commands must be given as an array of strings"</span></span>\n)
+
+          expect(subject[5].rich_text).to eq(code)
+        end
+
+        context 'when no diff_refs' do
+          before do
+            allow(diff_file).to receive(:diff_refs).and_return(nil)
+          end
+
+          context 'when no inline diffs' do
+            it_behaves_like 'without inline diffs'
+          end
+        end
+      end
+
+      context "with diff lines" do
+        let(:subject) { described_class.new(diff_file.diff_lines, repository: project.repository).highlight }
+
+        it 'returns Gitlab::Diff::Line elements' do
+          expect(subject.first).to be_an_instance_of(Gitlab::Diff::Line)
+        end
+
+        it 'does not modify "match" lines' do
+          expect(subject[0].text).to eq('@@ -6,12 +6,18 @@ module Popen')
+          expect(subject[22].text).to eq('@@ -19,6 +25,7 @@ module Popen')
+        end
+
+        it 'marks unchanged lines' do
+          code = %q{   def popen(cmd, path=nil)}
+
+          expect(subject[2].text).to eq(code)
+          expect(subject[2].text).not_to be_html_safe
+        end
+
+        it 'marks removed lines' do
+          code = %q(-      raise "System commands must be given as an array of strings")
+
+          expect(subject[4].text).to eq(code)
+          expect(subject[4].text).not_to be_html_safe
+        end
+
+        it 'marks added lines' do
+          code = %q(+      raise <span class="idiff left right addition">RuntimeError, </span>&quot;System commands must be given as an array of strings&quot;)
+
+          expect(subject[5].rich_text).to eq(code)
+          expect(subject[5].rich_text).to be_html_safe
+        end
+
+        context 'when the inline diff marker has an invalid range' do
+          before do
+            allow_any_instance_of(Gitlab::Diff::InlineDiffMarker).to receive(:mark).and_raise(RangeError)
+          end
+
+          it 'keeps the original rich line' do
+            allow(Gitlab::ErrorTracking).to receive(:track_and_raise_for_dev_exception)
+
+            code = %q(+      raise RuntimeError, "System commands must be given as an array of strings")
+
+            expect(subject[5].text).to eq(code)
+            expect(subject[5].text).not_to be_html_safe
+          end
+
+          it 'reports to Sentry if configured' do
+            expect(Gitlab::ErrorTracking).to receive(:track_and_raise_for_dev_exception).and_call_original
+
+            expect { subject }.to raise_exception(RangeError)
+          end
+        end
+
+        context 'when no inline diffs' do
+          it_behaves_like 'without inline diffs'
+        end
+      end
+
+      context 'when blob is too large' do
+        let(:subject) { described_class.new(diff_file, repository: project.repository).highlight }
+
+        before do
+          allow(Gitlab::Highlight).to receive(:too_large?).and_return(true)
+        end
+
+        it 'blobs are highlighted as plain text without loading all data' do
+          expect(diff_file.blob).not_to receive(:load_all_data!)
+
+          expect(subject[2].rich_text).to eq(%{ <span class="line" data-lang="plaintext">  def popen(cmd, path=nil)</span>\n})
+          expect(subject[2].rich_text).to be_html_safe
+        end
+      end
+
+      context 'when blob highlight is plain' do
+        let(:subject) { described_class.new(diff_file, repository: project.repository, plain: true).highlight }
+
+        it 'blobs are highlighted as plain text without loading all data' do
+          expect(diff_file.blob).not_to receive(:load_all_data!)
+
+          expect(subject[2].rich_text).to eq(%{ <span class="line" data-lang="plaintext">  def popen(cmd, path=nil)</span>\n})
+          expect(subject[2].rich_text).to be_html_safe
+        end
+      end
+    end
+
+    it_behaves_like 'diff highlighter'
+
+    context 'with diff_file: keyword and explicit diff lines' do
+      let(:highlighted_lines) { described_class.new(diff_file.diff_lines, diff_file: diff_file).highlight }
+
+      it 'highlights lines using diff_line_highlighting instead of blob_highlighting', :aggregate_failures do
+        code = %(-<span class="line" data-lang="ruby">      <span class="k">raise</span> <span class="s2">"System commands must be given as an array of strings"</span></span>\n)
+
+        expect(highlighted_lines[4].rich_text).to eq(code)
+        expect(highlighted_lines.length).to eq(diff_file.diff_lines.length)
+      end
+    end
+  end
+end

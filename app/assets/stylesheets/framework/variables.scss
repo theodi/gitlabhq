@@ -1,0 +1,442 @@
+@import '@gitlab/ui/src/tokens/build/scss/tokens';
+@import '@gitlab/ui/src/scss/variables';
+
+/*
+ * Layout
+ */
+$grid-size: 8px;
+$right-sidebar-collapsed-width: 62px;
+$right-sidebar-width: 290px;
+$right-sidebar-inner-width: 250px;
+$wiki-sidebar-inner-width: 220px;
+$sidebar-breakpoint: 1024px;
+$default-transition-duration: 0.15s;
+$toggle-sidebar-height: 48px;
+$super-sidebar-width: 15rem;
+$super-sidebar-z-index: 600;
+$super-sidebar-skip-to-z-index: 601;
+$super-sidebar-overlay-z-index: 599;
+$super-sidebar-nav-flayout-menu-z-index: 800;
+$super-sidebar-nav-item-menu-z-index: $super-sidebar-nav-flayout-menu-z-index + 1;
+$super-sidebar-nav-item-z-index: $super-sidebar-nav-item-menu-z-index + 1;
+$flash-z-index: 251;
+$sidebar-z-index: $flash-z-index;
+// When rendered above the static panel
+// set the z-index to +1 of $flash-z-index to clear flash messages
+// that might be displayed in the page and that have a z-index of 251
+$dynamic-panel-z-index: $flash-z-index + 1;
+$panel-header-inner-z-index: 99;
+// The Duo chat surface sits at 999, so the AI panel header has to clear it
+// or chat content swallows clicks on the header's menus.
+$ai-panel-header-inner-z-index: 1000;
+$base-layout-sticky-header-z-index: $panel-header-inner-z-index - 1;
+$panel-header-inner-height: 2.25rem; //= 36px
+$top-bar-z-index: 210;
+$settings-sticky-header-height: 3rem;
+$settings-sticky-header-z-index: 98;
+$settings-sticky-footer-height: 2.5rem;
+$settings-sticky-footer-z-index: #{$settings-sticky-header-z-index + 1};
+$paneled-layout-ultra-wide-breakpoint: 2560px;
+
+/**
+  🚨 Do not use this spacing scale — it is deprecated and being removed. 🚨
+  See https://gitlab.com/gitlab-org/gitlab/issues/36857 for more details.
+
+  Instead, if you need a spacing class, add it to app/assets/stylesheets/framework/common.scss,
+  using the following values.
+
+    $gl-spacing-scale-0: 0;
+    $gl-spacing-scale-1: 2px;
+    $gl-spacing-scale-2: 4px;
+    $gl-spacing-scale-3: 8px;
+    $gl-spacing-scale-4: 12px;
+    $gl-spacing-scale-5: 16px;
+    $gl-spacing-scale-6: 24px;
+    $gl-spacing-scale-7: 32px;
+    $gl-spacing-scale-8: 40px;
+    $gl-spacing-scale-9: 48px;
+    $gl-spacing-scale-10: 56px;
+    $gl-spacing-scale-11: 64px;
+    $gl-spacing-scale-12: 80px;
+    $gl-spacing-scale-13: 96px;
+
+  E.g., a padding top of 96px can be added using:
+  .gl-shim-pt-13 {
+    padding-top: 96px;
+  }
+
+  Please use -shim- so it can be differentiated from the old scale classes.
+
+  These will be replaced when the Gitlab UI utilities are included.
+**/
+$spacing-scale: (
+  0: 0,
+  1: #{0.5 * $grid-size},
+  2: $grid-size,
+  3: #{2 * $grid-size},
+  4: #{3 * $grid-size},
+  5: #{4 * $grid-size}
+);
+
+/* Will be moved to @gitlab/ui by https://gitlab.com/gitlab-org/gitlab-services/design.gitlab.com/-/issues/2792 */
+$gl-spacing-scale-48: 48 * $grid-size;
+$gl-spacing-scale-75: 75 * $grid-size;
+/* End gitlab-ui#1709 */
+
+// Color schema
+$purple: #6d49cb !default;
+$purple-light: #ede8fb !default;
+
+/*
+ * Text
+ */
+$gl-font-size: 14px;
+$gl-font-size-small: 12px;
+$gl-font-size-large: 16px;
+$gl-font-weight-normal: 400;
+$gl-font-weight-bold: 600;
+$gl-text-color-tertiary: $gray-400;
+$link-color: var(--gl-text-color-link) !default;
+$link-hover-color: var(--gl-text-color-link) !default;
+$gl-font-size-12: 12px;
+$gl-font-size-14: 14px;
+$gl-font-size-16: 16px;
+
+/*
+ * Lists
+ */
+$list-text-height: 42px;
+
+/*
+ * Code
+ */
+$code-font-size: 90%;
+$code-line-height: 1.6;
+$code-font-size-fixed: 13px;
+
+/*
+ * Tooltips
+ */
+$tooltip-font-size: 12px;
+
+/*
+ * Padding
+ */
+$gl-padding-4: 4px;
+$gl-padding-6: 6px;
+$gl-padding-8: 8px;
+$gl-padding-12: 12px;
+$gl-padding: 16px;
+$gl-padding-24: 24px;
+$gl-padding-32: 32px;
+$gl-input-padding: 10px;
+$gl-vert-padding: 6px;
+$gl-padding-top: 10px;
+$gl-sidebar-padding: 22px;
+$input-horizontal-padding: 12px;
+$browser-scrollbar-size: 10px;
+
+/*
+ * Misc
+ */
+$header-height: calc(3rem + 1px); //= 48px + 1px border
+$content-wrapper-padding: 56px;
+$header-zindex: 1000;
+$zindex-dropdown-menu: 300;
+$ide-statusbar-height: 25px;
+$limited-layout-width: 1006px;
+$fixed-layout-width: 1296px;
+$wiki-content-default-width: 940px;
+$wiki-content-max-width: 1600px;
+$immersive-editor-text-width: 768px;
+$container-margin: $gl-padding;
+$container-margin-xl: $gl-padding-24;
+$gl-border-radius-base: 0.25rem;
+$gl-border-radius-base-inner: calc(#{$gl-border-radius-base} - 1px);
+$gl-border-radius-lg: 0.5rem;
+$gl-border-radius-lg-inner: calc(#{$gl-border-radius-lg} - 1px);
+$border-radius-small: 2px;
+$border-radius-large: 8px;
+$default-icon-size: 16px;
+$btn-side-margin: $grid-size;
+$general-hover-transition-duration: 100ms;
+$general-hover-transition-curve: linear;
+$performance-bar-height: 2.5rem;
+$system-header-height: 16px;
+$system-footer-height: $system-header-height;
+$top-bar-height: 3rem; //= 48px
+$home-panel-title-row-height: 48px;
+$home-panel-avatar-mobile-size: 24px;
+$issuable-title-max-width: 350px;
+$milestone-title-max-width: 75px;
+$gl-line-height: 16px;
+$gl-line-height-18: 18px;
+$gl-line-height-20: 20px;
+$gl-line-height-24: 24px;
+$file-header-height: 42px;
+
+/*
+ * Merge requests
+ */
+$mr-sticky-header-title-height: max($gl-button-small-size, $gl-font-size-base * 1.5);
+$mr-static-tabs-height: $gl-spacing-scale-9;
+$mr-sticky-tabs-height: $gl-spacing-scale-8;
+$mr-sticky-description-padding: $gl-spacing-scale-2;
+$mr-sticky-header-height: calc(#{$mr-sticky-tabs-height} + #{$mr-sticky-header-title-height} + #{$mr-sticky-description-padding} + #{$gl-border-size-1});
+$mr-review-bar-height: calc(2rem + 16px);
+
+/*
+ * Calculated heights
+ */
+$calc-system-headers-height: calc(var(--system-header-height) + var(--performance-bar-height));
+$calc-application-bars-height: calc(var(--header-height) + #{$calc-system-headers-height});
+$calc-application-header-height: calc(#{$calc-application-bars-height} + var(--top-bar-height));
+$calc-application-footer-height: var(--system-footer-height);
+$calc-application-viewport-height: calc(100vh - #{$calc-application-header-height} - #{$calc-application-footer-height});
+
+/* tanuki logo colors */
+$tanuki-red: #e24329;
+$tanuki-orange: #fc6d26;
+$tanuki-yellow: #fca326;
+
+/*
+ * State colors:
+ */
+$green-500-focus: rgba($green-500, 0.4);
+$gl-btn-active-background: rgba(0, 0, 0, 0.16);
+
+/*
+ * Commit Diff Colors
+ */
+$line-added: #ecfdf0;
+$line-added-dark: #c7f0d2 !default;
+$line-removed: #fbe9eb;
+$line-removed-dark: #fac5cd !default;
+
+/*
+ * The transparent colors are used in Monaco editor. Using full opacity colors
+ * would hide other layers (selected text, matching brackets).
+ *
+ * When the transparent colors get layered on white background, they create their
+ * full opacity counterparts:
+ *
+ *  - white + $line-added-transparent = $line-added
+ *  - white + $line-added-transparent + $line-added-dark-transparent = $line-added-dark
+ *
+ * More details: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/41553
+ */
+$line-added-transparent: rgba(160, 245, 180, 0.2);
+$line-added-dark-transparent: rgba(51, 188, 90, 0.2);
+$line-removed-transparent: rgba(235, 145, 155, 0.2);
+$line-removed-dark-transparent: rgba(246, 53, 85, 0.2);
+$line-number-old: #f9d7dc;
+$line-number-new: #ddfbe6;
+$dark-diff-match-bg: rgba($white, 0.3);
+$dark-diff-match-color: rgba($white, 0.1);
+$diff-jagged-border-gradient-color: $gray-200;
+$diff-jagged-bg-color: var(--gl-background-color-subtle);
+
+/*
+ * Fonts
+ * The --default-mono-font and --default-regular-font variables give users
+ * a way to override our font choices for them.
+ */
+$monospace-font: var(--default-mono-font, 'GitLab Mono'), 'JetBrains Mono', 'Menlo', 'DejaVu Sans Mono', 'Liberation Mono', 'Consolas',
+  'Ubuntu Mono', 'Courier New', 'andale mono', 'lucida console', monospace;
+$regular-font: var(--default-regular-font, 'GitLab Sans'), -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans',
+  Ubuntu, Cantarell, 'Helvetica Neue', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+  'Segoe UI Symbol', 'Noto Color Emoji';
+$gl-monospace-font: $monospace-font;
+$gl-regular-font: $regular-font;
+
+/*
+* Dropdowns
+*/
+$dropdown-width: 300px;
+$dropdown-min-height: 40px;
+$dropdown-max-height: 312px;
+$dropdown-max-height-lg: 445px;
+$dropdown-vertical-offset: 4px;
+$dropdown-title-btn-color: #bfbfbf;
+$dropdown-loading-bg: rgba($white, 0.6);
+$dropdown-fade-mask-height: 32px;
+$dropdown-member-form-control-width: 163px;
+
+/*
+* Sidebar
+*/
+$sidebar-toggle-height: 60px;
+$sidebar-toggle-width: 40px;
+$sidebar-milestone-toggle-bottom-margin: 10px;
+
+/*
+* Buttons
+*/
+$btn-active-gray: $gray-50;
+$btn-active-gray-light: $gray-50;
+$gl-btn-padding: 10px;
+$gl-btn-line-height: 16px;
+$gl-btn-vert-padding: 8px;
+$gl-btn-horz-padding: 12px;
+$gl-btn-small-font-size: 13px;
+$gl-btn-small-line-height: 18px;
+
+/*
+* Badges
+*/
+$badge-bg: rgba($black, 0.07);
+
+/*
+ *  Award emoji
+ */
+$award-emoji-menu-shadow: rgba(0, 0, 0, 0.175);
+$award-emoji-positive-add-lines: #bb9c13;
+$award-emoji-width: 376px;
+$award-emoji-width-xs: 90%;
+
+/*
+ * Search Box
+ */
+$search-input-width: 200px;
+$search-input-xl-width: 320px;
+
+/*
+ *  Notes
+ */
+$note-spacing-left: 2.5rem;
+$note-spacing-reply-left: 2rem;
+
+/*
+* Boards
+*/
+$issue-boards-card-shadow: rgba(0, 0, 0, 0.1);
+
+/*
+* Builds
+*/
+$builds-log-bg: #111;
+$job-line-number-width: 50px;
+
+/*
+* Commit Page
+*/
+$commit-max-width-marker-color: rgba(0, 0, 0, 0);
+$commit-message-text-area-bg: rgba(0, 0, 0, 0);
+
+/*
+* Files
+*/
+$logs-li-color: #888;
+$logs-p-color: #333;
+
+/*
+* Forms
+*/
+$input-height: 32px;
+$input-danger-bg: #f2dede;
+$gl-field-focus-shadow: rgba(0, 0, 0, 0.075);
+$gl-field-focus-shadow-error: rgba($red-500, 0.6);
+$input-short-width: 200px;
+$input-short-md-width: 280px;
+$input-md-width: 240px;
+$input-lg-width: 320px;
+
+/*
+* Label
+*/
+$label-font-size: 12px;
+$label-padding: 7px;
+$label-border-radius: 100px;
+
+/*
+* Animation
+*/
+$fade-in-duration: 200ms;
+$fade-mask-transition-duration: 0.1s;
+$fade-mask-transition-curve: ease-in-out;
+
+/*
+* Login
+*/
+$login-brand-holder-color: #888;
+
+/*
+* Typography
+*/
+$body-text-shadow: rgba(255, 255, 255, 0.01);
+
+/*
+Pipeline Graph
+*/
+$ci-action-dropdown-button-size: 24px;
+$ci-action-dropdown-svg-size: 16px;
+
+/*
+GitLab Plans
+*/
+$gl-ultimate-plan: #d4af37;
+$gl-premium-plan: #91a1ab;
+$gl-bronze-plan: #cd7f32;
+
+/*
+Performance Bar
+*/
+$perf-bar-bucket-bg: $black;
+$perf-bar-bucket-box-shadow-from: rgba($white, 0.2);
+$perf-bar-bucket-box-shadow-to: rgba($black, 0.25);
+$perf-bar-canary-text: $orange-400;
+
+/*
+Image Commenting cursor
+*/
+$image-comment-cursor-left-offset: 12;
+$image-comment-cursor-top-offset: 12;
+
+/*
+Popup
+*/
+$popup-triangle-size: 15px;
+$popup-triangle-border-size: 1px;
+$popup-box-shadow-color: rgba(90, 90, 90, 0.05);
+
+/*
+Drawers
+*/
+$wide-drawer: 500px;
+
+/*
+Modals
+*/
+$modal-body-height: 80px;
+
+$priority-label-empty-state-width: 114px;
+
+/*
+Popovers
+*/
+$popover-max-width: 384px;
+$popover-box-shadow: 0 2px 3px 1px $gray-100;
+
+/*
+Merge requests
+*/
+$mr-tabs-height: 48px;
+
+/*
+Board Swimlanes
+*/
+$board-swimlanes-headers-height: 48px;
+
+/*
+Source Editor theme overrides
+*/
+$source-editor-hover-light-text-color: $gl-color-neutral-50;
+$source-editor-hover-dark-text-color: $gl-color-neutral-900;
+
+/**
+ Bootstrap 4.2.0 introduced new icons for validating forms.
+ Our design system does not use those, so we are disabling them for now:
+ - Docs: https://getbootstrap.com/docs/4.3/components/forms/#server-side
+ - Issue: https://gitlab.com/gitlab-org/design.gitlab.com/issues/242
+ */
+$enable-validation-icons: false;

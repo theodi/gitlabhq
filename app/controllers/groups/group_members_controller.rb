@@ -1,86 +1,133 @@
+# frozen_string_literal: true
+
 class Groups::GroupMembersController < Groups::ApplicationController
-  skip_before_action :authenticate_user!, only: [:index]
-  before_action :group
+  include MembershipActions
+  include Members::InviteModalActions
+  include MembersPresentation
+  include SortingHelper
+  include Gitlab::Utils::StrongMemoize
+
+  MEMBER_PER_PAGE_LIMIT = 50
+
+  def self.admin_not_required_endpoints
+    %i[index leave request_access]
+  end
 
   # Authorize
-  before_action :authorize_read_group!
-  before_action :authorize_admin_group!, except: [:index, :leave]
+  before_action :authorize_admin_group_member!, except: admin_not_required_endpoints
+  before_action :authorize_read_group_member!, only: :index
+
+  skip_before_action :check_two_factor_requirement, only: :leave
+  skip_cross_project_access_check :index, :update, :destroy, :request_access,
+    :approve_access_request, :leave, :resend_invite, :override
+
+  feature_category :groups_and_projects
+  urgency :low
 
   def index
-    @project = @group.projects.find(params[:project_id]) if params[:project_id]
-    @members = @group.group_members
-    @members = @members.non_invite unless can?(current_user, :admin_group, @group)
+    @sort = index_params[:sort].presence || sort_value_name
+    @include_relations ||= requested_relations(:groups_with_inherited_permissions)
 
-    if params[:search].present?
-      users = @group.users.search(params[:search]).to_a
-      @members = @members.where(user_id: users)
+    if can?(current_user, :admin_group_member, @group)
+      @invited_members = invited_members
+
+      search_invited = index_params[:search_invited]
+      @invited_members = @invited_members.search_invite_email(search_invited) if search_invited.present?
+
+      @invited_members = present_invited_members(@invited_members)
     end
 
-    @members = @members.order('access_level DESC').page(params[:page]).per(50)
-    @group_member = GroupMember.new
+    @members = present_group_members(non_invited_members)
+    @placeholder_users_count = placeholder_users_count
+
+    @requesters = present_members(
+      AccessRequestsFinder.new(@group).execute(current_user)
+    )
   end
 
-  def create
-    @group.add_users(params[:user_ids].split(','), params[:access_level], current_user)
+  # MembershipActions concern
+  alias_method :membershipable, :group
 
-    redirect_to group_group_members_path(@group), notice: 'Users were successfully added.'
+  private
+
+  def members
+    @members ||= GroupMembersFinder
+      .new(@group, current_user, params: filter_params)
+      .execute(include_relations: requested_relations)
   end
 
-  def update
-    @member = @group.group_members.find(params[:id])
-    @member.update_attributes(member_params)
+  def invited_members
+    members.invite.with_invited_user_state
   end
 
-  def destroy
-    @group_member = @group.group_members.find(params[:id])
-
-    if can?(current_user, :destroy_group_member, @group_member)  # May fail if last owner.
-      @group_member.destroy
-      respond_to do |format|
-        format.html { redirect_to group_group_members_path(@group), notice: 'User was successfully removed from group.' }
-        format.js { render nothing: true }
-      end
-    else
-      return render_403
-    end
+  def non_invited_members
+    members.non_invite
   end
 
-  def resend_invite
-    redirect_path = group_group_members_path(@group)
-
-    @group_member = @group.group_members.find(params[:id])
-
-    if @group_member.invite?
-      @group_member.resend_invite
-
-      redirect_to redirect_path, notice: 'The invitation was successfully resent.'
-    else
-      redirect_to redirect_path, alert: 'The invitation has already been accepted.'
-    end
+  def present_invited_members(invited_members)
+    present_members(invited_members
+      .page(member_page_params[:invited_members_page])
+      .per(MEMBER_PER_PAGE_LIMIT))
   end
 
-  def leave
-    @group_member = @group.group_members.where(user_id: current_user.id).first
-
-    if can?(current_user, :destroy_group_member, @group_member)
-      @group_member.destroy
-      redirect_to(dashboard_groups_path, notice: "You left #{group.name} group.")
-    else
-      if @group.last_owner?(current_user)
-        redirect_to(dashboard_groups_path, alert: "You can not leave #{group.name} group because you're the last owner. Transfer or delete the group.")
-      else
-        return render_403
-      end
-    end
+  def present_group_members(members)
+    present_members(members
+      .page(member_page_params[:page])
+      .per(MEMBER_PER_PAGE_LIMIT))
   end
 
-  protected
+  def index_params
+    params.permit(:sort, :search_invited)
+  end
+  strong_memoize_attr :index_params
 
-  def group
-    @group ||= Group.find_by(path: params[:group_id])
+  def member_page_params
+    params.permit(:invited_members_page, :page)
+  end
+  strong_memoize_attr :member_page_params
+
+  def filter_params
+    params.permit(:two_factor, :search, :user_type, :max_role).merge(sort: @sort)
   end
 
-  def member_params
-    params.require(:group_member).permit(:access_level, :user_id)
+  def membershipable_members
+    group.members
   end
+
+  def plain_source_type
+    'group'
+  end
+
+  def source_type
+    _("group")
+  end
+
+  def source
+    group
+  end
+
+  def members_page_url
+    polymorphic_url([group, :members])
+  end
+
+  def root_params_key
+    :group_member
+  end
+
+  def placeholder_users_count
+    {
+      pagination: {
+        total_items: placeholder_users.count,
+        awaiting_reassignment_items: placeholder_users.awaiting_reassignment.count,
+        reassigned_items: placeholder_users.reassigned.count
+      }
+    }
+  end
+
+  def placeholder_users
+    Import::SourceUsersFinder.new(@group, current_user).execute
+  end
+  strong_memoize_attr :placeholder_users
 end
+
+Groups::GroupMembersController.prepend_mod_with('Groups::GroupMembersController')

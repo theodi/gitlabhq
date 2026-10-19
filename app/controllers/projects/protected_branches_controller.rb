@@ -1,51 +1,52 @@
-class Projects::ProtectedBranchesController < Projects::ApplicationController
-  # Authorize
-  before_action :require_non_empty_project
-  before_action :authorize_admin_project!
+# frozen_string_literal: true
 
-  layout "project_settings"
+class Projects::ProtectedBranchesController < Projects::ProtectedRefsController
+  def show
+    super
 
-  def index
-    @branches = @project.protected_branches.to_a
-    @protected_branch = @project.protected_branches.new
+    render 'protected_branches/show'
   end
 
-  def create
-    @project.protected_branches.create(protected_branch_params)
-    redirect_to namespace_project_protected_branches_path(@project.namespace,
-                                                          @project)
+  protected
+
+  def ref_type
+    :branches
   end
 
-  def update
-    protected_branch = @project.protected_branches.find(params[:id])
-
-    if protected_branch &&
-       protected_branch.update_attributes(
-        developers_can_push: params[:developers_can_push]
-       )
-
-      respond_to do |format|
-        format.json { render json: protected_branch, status: :ok }
-      end
-    else
-      respond_to do |format|
-        format.json { render json: protected_branch.errors, status: :unprocessable_entity }
-      end
-    end
+  def project_refs
+    @project.repository.branches
   end
 
-  def destroy
-    @project.protected_branches.find(params[:id]).destroy
+  def service_namespace
+    ::ProtectedBranches
+  end
 
-    respond_to do |format|
-      format.html { redirect_to namespace_project_protected_branches_path }
-      format.js { render nothing: true }
-    end
+  def load_protected_ref
+    @protected_ref = @project.protected_branches.find(params.permit(:id)[:id])
+  end
+
+  def access_levels
+    [:merge_access_levels, :push_access_levels]
+  end
+
+  def protected_ref_params(*attrs)
+    attrs = ([:name,
+      :allow_force_push,
+      { merge_access_levels_attributes: access_level_attributes,
+        push_access_levels_attributes: access_level_attributes }] + attrs).uniq
+
+    params.require(:protected_branch).permit(attrs)
   end
 
   private
 
-  def protected_branch_params
-    params.require(:protected_branch).permit(:name, :developers_can_push)
+  def handle_gitaly_error(exception)
+    Gitlab::ErrorTracking.track_exception(exception)
+
+    @gitaly_unavailable = true
+
+    render 'protected_branches/show', status: :service_unavailable
   end
 end
+
+Projects::ProtectedBranchesController.prepend_mod_with('Projects::ProtectedBranchesController')

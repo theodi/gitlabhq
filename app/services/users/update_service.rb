@@ -1,0 +1,264 @@
+# frozen_string_literal: true
+
+module Users
+  class UpdateService < BaseService
+    include NewUserNotifier
+    include Gitlab::Utils::StrongMemoize
+
+    attr_reader :user, :identity_params
+
+    ATTRS_REQUIRING_PASSWORD_CHECK = %w[email].freeze
+    BATCH_SIZE = 100
+    ORGANIZATION_USERS_LIMIT = 1 # users can only belong to a single organization for Cells 1.0
+
+    def initialize(current_user, params = {})
+      @current_user = current_user
+      @validation_password = params.delete(:validation_password)
+      @user = params.delete(:user)
+      @status_params = params.delete(:status)
+      @identity_params = params.slice(*identity_attributes)
+      @params = params.dup
+    end
+
+    def execute(validate: true, check_password: false, &block)
+      return organization_users_error if organization_users_error
+
+      yield(@user) if block
+
+      user_exists = @user.persisted?
+      @user.user_detail # prevent assignment
+
+      discard_read_only_attributes
+      append_extension_marketplace_attributes
+      assign_attributes
+
+      if check_password && require_password_check? && !@user.valid_password?(@validation_password)
+        return error(s_("Profiles|Invalid password"))
+      end
+
+      assign_identity
+      reset_unconfirmed_email
+      @user.set_email_otp_required_after_based_on_restrictions
+
+      if @user.save(validate: validate) && update_status
+        after_update(user_exists)
+      else
+        messages = @user.errors.full_messages + Array(@user.status&.errors&.full_messages)
+        error(messages.uniq.join('. '))
+      end
+    rescue ServiceDesk::RefreshProjectKeyAddressSlugsService::AddressSlugConflictError => e
+      error(service_desk_address_conflict_message(e.message))
+    rescue ActiveRecord::RecordInvalid => e
+      error(e.message)
+    end
+
+    def execute!(*args, **kargs, &block)
+      result = execute(*args, **kargs, &block)
+
+      raise ActiveRecord::RecordInvalid, @user unless result[:status] == :success
+
+      true
+    end
+
+    private
+
+    def service_desk_address_conflict_message(project_full_path)
+      format(
+        s_('Profiles|Service Desk address for project %{project_path} is already in use. ' \
+          'Change the Service Desk project key before changing the username.'),
+        project_path: project_full_path
+      )
+    end
+
+    def organization_users_attributes
+      params[:organization_users_attributes] || []
+    end
+
+    def error_message(content)
+      @user.errors.add(:base, content)
+      error(content)
+    end
+
+    def organization_ids_invalid_error
+      error_message(_('Organization ID cannot be nil'))
+    end
+
+    def organization_permission_error
+      error_message(_('Insufficient permission to modify user organizations'))
+    end
+
+    def organization_users_limit_exceeded_error
+      message = format(_('Cannot update more than %{limit} organization data at once'), limit: ORGANIZATION_USERS_LIMIT)
+      error_message(message)
+    end
+
+    def organization_ids_invalid?
+      organization_ids.include?(nil)
+    end
+
+    def organization_users_limit_exceeded?
+      organization_users_attributes.count > ORGANIZATION_USERS_LIMIT
+    end
+
+    def organization_users_error
+      return if organization_users_attributes.blank?
+      return organization_permission_error unless can_update_organization_users?
+      return organization_users_limit_exceeded_error if organization_users_limit_exceeded?
+      return organization_ids_invalid_error if organization_ids_invalid?
+
+      nil
+    end
+    strong_memoize_attr :organization_users_error
+
+    def can_update_organization_users?
+      return true if current_user.can_admin_all_resources?
+      return false if organization_ids_invalid?
+
+      # Non-admins can only change memberships that already exist. Fewer memberships
+      # than organizations means the user is not a member of at least one of them.
+      organization_users = user.organization_users.in_organization(organization_ids).to_a
+      return false unless organization_users.size == organization_ids.size
+
+      # The membership is the policy subject so it can refuse to demote the last owner.
+      organization_users.all? do |organization_user|
+        current_user.can?(:update_organization_user, organization_user)
+      end
+    end
+
+    def organization_ids
+      organization_users_attributes.pluck(:organization_id).uniq # rubocop:disable Database/AvoidUsingPluckWithoutLimit, CodeReuse/ActiveRecord -- Capped to ORGANIZATION_USERS_LIMIT and plucks on an array of plain hashes
+    end
+
+    def require_password_check?
+      return false unless @user.persisted?
+      return false if @user.password_automatically_set?
+      return false unless @user.allow_password_authentication_for_web?
+
+      changes = @user.changed
+      ATTRS_REQUIRING_PASSWORD_CHECK.any? { |param| changes.include?(param) }
+    end
+
+    def reset_unconfirmed_email
+      return unless @user.persisted?
+      return unless @user.email_changed?
+
+      @user.update_column(:unconfirmed_email, nil)
+    end
+
+    def update_status
+      return true unless @status_params
+
+      Users::SetStatusService.new(current_user, @status_params.merge(user: @user)).execute
+    end
+
+    def notify_success(user_exists)
+      notify_new_user(@user, nil) unless user_exists
+    end
+
+    def discard_read_only_attributes
+      discard_synced_attributes
+    end
+
+    def discard_synced_attributes
+      params.reject! { |key, _| synced_attributes.include?(key.to_sym) }
+    end
+
+    def synced_attributes
+      if (metadata = @user.user_synced_attributes_metadata)
+        metadata.read_only_attributes
+      else
+        []
+      end
+    end
+
+    def append_extension_marketplace_attributes
+      return unless params.has_key?(:extensions_marketplace_enabled)
+
+      value = params.delete(:extensions_marketplace_enabled)
+      marketplace_home_url = ::WebIde::ExtensionMarketplace.marketplace_home_url(user: @user)
+      update_params = ::WebIde::ExtensionMarketplaceOptIn.params(
+        enabled: value,
+        marketplace_home_url: marketplace_home_url
+      )
+
+      params.merge!(update_params)
+    end
+
+    def assign_attributes
+      @user.assign_attributes(params.except(*identity_attributes)) unless params.empty?
+    end
+
+    def assign_identity
+      return unless identity_params.present?
+
+      identity = user.identities.find_or_create_by(provider_params) # rubocop: disable CodeReuse/ActiveRecord
+      identity.update(identity_params)
+    end
+
+    def identity_attributes
+      [:provider, :extern_uid]
+    end
+
+    def provider_attributes
+      [:provider]
+    end
+
+    def provider_params
+      identity_params.slice(*provider_attributes)
+    end
+
+    def after_update(user_exists)
+      notify_success(user_exists)
+      remove_followers_and_followee!
+      sync_organization_admin_roles
+
+      success({ user: @user })
+    end
+
+    # Nested organization_users_attributes rewrite owner rows as a side effect of
+    # saving the user, so no organization-user service hook sees them.
+    def sync_organization_admin_roles
+      return unless ::Authz::Organizations::OwnerRoleSync.enabled?
+
+      organization_users_crossing_owner_boundary.each do |organization_user|
+        worker = if organization_user.owner?
+                   ::Authz::Organizations::GrantOwnerRoleWorker
+                 else
+                   ::Authz::Organizations::RevokeOwnerRoleWorker
+                 end
+
+        worker.perform_async(organization_user.organization_id, @user.id, current_user.id)
+      end
+    end
+
+    # A new membership moves from nil to default, which is not a demotion.
+    def organization_users_crossing_owner_boundary
+      return [] if organization_users_attributes.blank?
+
+      @user.organization_users.select do |organization_user|
+        next false unless organization_user.saved_change_to_access_level?
+
+        organization_user.owner? || organization_user.access_level_before_last_save == 'owner'
+      end
+    end
+
+    def remove_followers_and_followee!
+      return false unless user.user_preference.enabled_following_previously_changed?(from: true, to: false)
+
+      # rubocop: disable CodeReuse/ActiveRecord
+      loop do
+        inner_query = Users::UserFollowUser
+                        .where(follower_id: user.id).or(Users::UserFollowUser.where(followee_id: user.id))
+                        .select(:follower_id, :followee_id)
+                        .limit(BATCH_SIZE)
+
+        deleted_records = Users::UserFollowUser.where('(follower_id, followee_id) IN (?)', inner_query).delete_all
+
+        break if deleted_records == 0
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+    end
+  end
+end
+
+Users::UpdateService.prepend_mod_with('Users::UpdateService')

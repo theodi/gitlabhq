@@ -1,0 +1,283 @@
+# frozen_string_literal: true
+
+module API
+  class DeployTokens < ::API::Base
+    include PaginationParams
+
+    deploy_tokens_tags = %w[deploy_resources]
+    feature_category :continuous_delivery
+    urgency :low
+
+    helpers do
+      def scope_params
+        scopes = params.delete(:scopes)
+
+        result_hash = Hashie::Mash.new
+        result_hash[:read_registry] = scopes.include?('read_registry')
+        result_hash[:write_registry] = scopes.include?('write_registry')
+        result_hash[:read_package_registry] = scopes.include?('read_package_registry')
+        result_hash[:write_package_registry] = scopes.include?('write_package_registry')
+        result_hash[:read_repository] = scopes.include?('read_repository')
+        result_hash[:read_virtual_registry] = scopes.include?('read_virtual_registry')
+        result_hash[:write_virtual_registry] = scopes.include?('write_virtual_registry')
+        result_hash
+      end
+
+      params :filter_params do
+        optional :active, type: Boolean, desc: 'If `true`, returns only active deploy tokens.'
+      end
+    end
+
+    desc 'List all deploy tokens' do
+      detail 'Lists all deploy tokens for the instance.'
+      success Entities::DeployToken
+      failure [
+        { code: 401, message: 'Unauthorized' },
+        { code: 403, message: 'Forbidden' }
+      ]
+      is_array true
+      tags deploy_tokens_tags
+    end
+    params do
+      use :pagination
+      use :filter_params
+    end
+    route_setting :authorization, permissions: :read_deploy_token, boundary_type: :instance, assignable_when: [:admin]
+    get 'deploy_tokens' do
+      authenticated_as_admin!
+
+      deploy_tokens = ::DeployTokens::TokensFinder.new(
+        current_user,
+        :all,
+        declared_params
+      ).execute
+
+      present paginate(deploy_tokens), with: Entities::DeployToken
+    end
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      params do
+        use :pagination
+        use :filter_params
+      end
+      desc 'List all project deploy tokens' do
+        detail 'Lists all project deploy tokens.'
+        success Entities::DeployToken
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not found' }
+        ]
+        is_array true
+        tags deploy_tokens_tags
+      end
+      route_setting :authorization, permissions: :read_deploy_token, boundary_type: :project
+      get ':id/deploy_tokens' do
+        authorize!(:read_deploy_token, user_project)
+
+        deploy_tokens = ::DeployTokens::TokensFinder.new(
+          current_user,
+          user_project,
+          declared_params
+        ).execute
+
+        present paginate(deploy_tokens), with: Entities::DeployToken
+      end
+
+      params do
+        requires :name, type: String, desc: 'Name of the deploy token.'
+        requires :scopes,
+          type: Array[String],
+          coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce,
+          values: ::DeployToken::AVAILABLE_SCOPES.map(&:to_s),
+          desc: 'Scopes of the deploy token. Must include at least one scope.'
+        optional :expires_at, type: DateTime, desc: 'Date when the deploy token expires. If omitted, the deploy token does not expire.'
+        optional :username, type: String, desc: 'Username for the deploy token. Defaults to `gitlab+deploy-token-{n}`.'
+      end
+      desc 'Create a project deploy token' do
+        detail 'Creates a project deploy token.'
+        success Entities::DeployTokenWithToken
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deploy_tokens_tags
+      end
+      route_setting :authorization, permissions: :create_deploy_token, boundary_type: :project
+      post ':id/deploy_tokens' do
+        authorize!(:create_deploy_token, user_project)
+
+        result = ::Projects::DeployTokens::CreateService.new(
+          user_project, current_user, scope_params.merge(declared(params, include_missing: false, include_parent_namespaces: false))
+        ).execute
+
+        if result[:status] == :success
+          present result[:deploy_token], with: Entities::DeployTokenWithToken
+        else
+          render_api_error!(result[:message], result[:http_status])
+        end
+      end
+
+      desc 'Retrieve a project deploy token' do
+        detail 'Retrieves a project deploy token.'
+        success Entities::DeployToken
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deploy_tokens_tags
+      end
+      params do
+        requires :token_id, type: Integer, desc: 'ID of the deploy token.'
+      end
+      route_setting :authorization, permissions: :read_deploy_token, boundary_type: :project
+      get ':id/deploy_tokens/:token_id' do
+        authorize!(:read_deploy_token, user_project)
+
+        deploy_token = user_project.deploy_tokens.find(params[:token_id])
+
+        present deploy_token, with: Entities::DeployToken
+      end
+
+      desc 'Delete a project deploy token' do
+        detail 'Deletes a project deploy token.'
+        success code: 204, message: 'Resource deleted'
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deploy_tokens_tags
+      end
+      params do
+        requires :token_id, type: Integer, desc: 'ID of the deploy token.'
+      end
+      route_setting :authorization, permissions: :delete_deploy_token, boundary_type: :project
+      delete ':id/deploy_tokens/:token_id' do
+        authorize!(:destroy_deploy_token, user_project)
+
+        ::Projects::DeployTokens::DestroyService.new(
+          user_project, current_user, token_id: params[:token_id]
+        ).execute
+
+        no_content!
+      end
+    end
+
+    params do
+      requires :id, types: [Integer, String], desc: 'ID or URL-encoded path of the group.'
+    end
+    resource :groups, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      params do
+        use :pagination
+        use :filter_params
+      end
+      desc 'List all group deploy tokens' do
+        detail 'Lists all group deploy tokens.'
+        success Entities::DeployToken
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not found' }
+        ]
+        is_array true
+        tags deploy_tokens_tags
+      end
+      route_setting :authorization, permissions: :read_deploy_token, boundary_type: :group
+      get ':id/deploy_tokens' do
+        authorize!(:read_deploy_token, user_group)
+
+        deploy_tokens = ::DeployTokens::TokensFinder.new(
+          current_user,
+          user_group,
+          declared_params
+        ).execute
+
+        present paginate(deploy_tokens), with: Entities::DeployToken
+      end
+
+      params do
+        requires :name, type: String, desc: 'Name of the deploy token.'
+        requires :scopes,
+          type: Array[String],
+          coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce,
+          values: ::DeployToken::AVAILABLE_SCOPES.map(&:to_s),
+          desc: 'Scopes of the deploy token. Must include at least one scope.'
+        optional :expires_at, type: DateTime, desc: 'Date when the deploy token expires. If omitted, the deploy token does not expire.'
+        optional :username, type: String, desc: 'Username for the deploy token. Defaults to `gitlab+deploy-token-{n}`.'
+      end
+      desc 'Create a group deploy token' do
+        detail 'Creates a group deploy token.'
+        success Entities::DeployTokenWithToken
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deploy_tokens_tags
+      end
+      route_setting :authorization, permissions: :create_deploy_token, boundary_type: :group
+      post ':id/deploy_tokens' do
+        authorize!(:create_deploy_token, user_group)
+
+        result = ::Groups::DeployTokens::CreateService.new(
+          user_group, current_user, scope_params.merge(declared(params, include_missing: false, include_parent_namespaces: false))
+        ).execute
+
+        if result[:status] == :success
+          present result[:deploy_token], with: Entities::DeployTokenWithToken
+        else
+          render_api_error!(result[:message], result[:http_status])
+        end
+      end
+
+      desc 'Retrieve a group deploy token' do
+        detail 'Retrieves a group deploy token.'
+        detail "Get a single group's deploy token by ID. This feature was introduced in GitLab 14.9. "
+        success Entities::DeployToken
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deploy_tokens_tags
+      end
+      params do
+        requires :token_id, type: Integer, desc: 'ID of the deploy token.'
+      end
+      route_setting :authorization, permissions: :read_deploy_token, boundary_type: :group
+      get ':id/deploy_tokens/:token_id' do
+        authorize!(:read_deploy_token, user_group)
+
+        deploy_token = user_group.deploy_tokens.find(params[:token_id])
+
+        present deploy_token, with: Entities::DeployToken
+      end
+
+      desc 'Delete a group deploy token' do
+        detail 'Deletes a group deploy token.'
+        success code: 204, message: 'Resource deleted'
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deploy_tokens_tags
+      end
+      params do
+        requires :token_id, type: Integer, desc: 'ID of the deploy token.'
+      end
+      route_setting :authorization, permissions: :delete_deploy_token, boundary_type: :group
+      delete ':id/deploy_tokens/:token_id' do
+        authorize!(:destroy_deploy_token, user_group)
+
+        ::Groups::DeployTokens::DestroyService.new(
+          user_group, current_user, token_id: params[:token_id]
+        ).execute
+
+        no_content!
+      end
+    end
+  end
+end

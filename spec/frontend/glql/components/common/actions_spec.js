@@ -1,0 +1,95 @@
+import { nextTick } from 'vue';
+import { GlDisclosureDropdown } from '@gitlab/ui';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import GlqlActions from '~/glql/components/common/actions.vue';
+
+describe('GlqlActions', () => {
+  let wrapper;
+
+  const findDropdown = () => wrapper.findComponent(GlDisclosureDropdown);
+
+  const createComponent = (props = {}) => {
+    wrapper = mountExtended(GlqlActions, {
+      propsData: {
+        ...props,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  it('renders the dropdown component', () => {
+    expect(findDropdown().exists()).toBe(true);
+  });
+
+  it('sets correct text for dropdown', () => {
+    expect(findDropdown().props('toggleText')).toBe('Embedded view options');
+  });
+
+  it.each`
+    actionsCount | availableActions                                             | showCopyContents
+    ${'three'}   | ${['View source', 'Copy source', 'Reload']}                  | ${false}
+    ${'four'}    | ${['View source', 'Copy source', 'Copy contents', 'Reload']} | ${true}
+  `(
+    'passes $actionsCount items to dropdown when showCopyContents is $showCopyContents',
+    ({ availableActions, showCopyContents }) => {
+      createComponent({ showCopyContents });
+
+      const items = findDropdown().props('items');
+      expect(items).toHaveLength(availableActions.length);
+      items.forEach((item, index) => {
+        expect(item.text).toBe(availableActions[index]);
+      });
+    },
+  );
+
+  describe('dropdown actions', () => {
+    it('emits view-source event when clicked', async () => {
+      findDropdown().props('items')[0].action();
+      await nextTick();
+
+      expect(wrapper.emitted('view-source').at(0)).toEqual([]);
+    });
+
+    it('emits copy-source event when clicked', async () => {
+      findDropdown().props('items')[1].action();
+      await nextTick();
+
+      expect(wrapper.emitted('copy-source').at(0)).toEqual([]);
+    });
+
+    it('emits copy-as-gfm event when copy contents is clicked', async () => {
+      createComponent({ showCopyContents: true });
+
+      findDropdown().props('items')[2].action();
+      await nextTick();
+
+      expect(wrapper.emitted('copy-as-gfm').at(0)).toEqual([]);
+    });
+
+    it('emits reload event when clicked', async () => {
+      findDropdown().props('items')[2].action();
+      await nextTick();
+
+      expect(wrapper.emitted('reload').at(0)).toEqual([]);
+    });
+  });
+
+  describe('dropdown visibility handling', () => {
+    it('updates cachedShowCopy and sets isDropdownVisible when dropdown is shown', async () => {
+      createComponent({ showCopyContents: true });
+
+      findDropdown().vm.$emit('shown');
+      await nextTick();
+
+      expect(wrapper.vm.cachedShowCopy).toBe(true);
+      expect(wrapper.vm.isDropdownVisible).toBe(true);
+
+      await wrapper.setProps({ showCopyContents: false });
+
+      expect(wrapper.vm.cachedShowCopy).toBe(true);
+    });
+  });
+});

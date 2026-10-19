@@ -1,0 +1,916 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Organizations::Organization, feature_category: :organization do
+  let_it_be_with_refind(:organization) { create(:organization) }
+
+  it_behaves_like 'cells claimable model',
+    subject_type: Cells::Claimable::CLAIMS_SUBJECT_TYPE::ORGANIZATION,
+    subject_key: :id,
+    source_type: Cells::Claimable::CLAIMS_SOURCE_TYPE::RAILS_TABLE_ORGANIZATIONS,
+    claiming_attributes: [:path, :id]
+
+  describe 'associations' do
+    it { is_expected.to have_one(:organization_detail).inverse_of(:organization).autosave(true) }
+
+    it { is_expected.to have_many :namespaces }
+    it { is_expected.to have_many :groups }
+    it { is_expected.to have_many :integrations }
+
+    it { is_expected.to have_many(:users).through(:organization_users).inverse_of(:organizations) }
+    it { is_expected.to have_many(:organization_users).inverse_of(:organization) }
+    it { is_expected.to have_many :pool_repositories }
+    it { is_expected.to have_many :projects }
+    it { is_expected.to have_many :snippets }
+    it { is_expected.to have_many :snippet_repositories }
+    it { is_expected.to have_many :topics }
+  end
+
+  describe 'validations' do
+    subject { organization }
+
+    describe '#validate_single_organization_on_self_managed' do
+      subject(:new_organization) { build(:organization) }
+
+      context 'when Gitlab.com', :saas do
+        before do
+          allow(Gitlab).to receive(:com?).and_return(true)
+          allow(::Gitlab).to receive(:dev_or_test_env?).and_return(false)
+        end
+
+        it 'allows creating additional organizations' do
+          expect(new_organization).to be_valid
+        end
+      end
+
+      context 'when on self-managed' do
+        before do
+          allow(Gitlab).to receive(:com?).and_return(false)
+          allow(::Gitlab).to receive(:dev_or_test_env?).and_return(false)
+        end
+
+        context 'when creating the default organization' do
+          # rubocop:disable Gitlab/AvoidConstDefaultOrganizationId -- required for this test
+          subject(:new_default_organization) { build(:organization, id: described_class::DEFAULT_ORGANIZATION_ID) }
+          # rubocop:enable Gitlab/AvoidConstDefaultOrganizationId
+
+          context 'when an organization already exists' do
+            it 'is invalid and adds an error', :aggregate_failures do
+              expect(new_default_organization).not_to be_valid
+              expect(new_default_organization.errors[:base])
+                .to include(s_('Organization|Only one organization is allowed on this instance.'))
+            end
+          end
+
+          context 'when no organization exists' do
+            before do
+              described_class.delete_all
+            end
+
+            it 'allows creating the default organization' do
+              expect(new_default_organization).to be_valid
+            end
+          end
+        end
+
+        context 'when creating a non-default organization' do
+          context 'when an organization already exists' do
+            it 'is invalid and adds an error', :aggregate_failures do
+              expect(new_organization).not_to be_valid
+              expect(new_organization.errors[:base])
+                .to include(s_('Organization|Only one organization is allowed on this instance.'))
+            end
+          end
+
+          context 'when no organization exists' do
+            before do
+              described_class.delete_all
+            end
+
+            it 'is valid' do
+              expect(new_organization).to be_valid
+            end
+          end
+        end
+
+        context 'when updating an existing organization' do
+          it 'does not run the validation' do
+            expect(organization).to be_valid
+          end
+        end
+      end
+    end
+
+    it { is_expected.to validate_presence_of(:name) }
+    it { is_expected.to validate_length_of(:name).is_at_most(255) }
+    it { is_expected.to validate_presence_of(:path) }
+    it { is_expected.to validate_length_of(:path).is_at_least(2).is_at_most(255) }
+    it { is_expected.to validate_uniqueness_of(:path).case_insensitive }
+
+    context 'with visibility level' do
+      shared_examples 'visibility level validation' do
+        it 'performs visibility level validation' do
+          expect(organization).to receive(:check_visibility_level_broader_than_groups).and_call_original
+          expect(organization).to receive(:check_visibility_level_allowed).and_call_original
+
+          organization.valid?
+        end
+      end
+
+      context 'when new record' do
+        let(:organization) { build(:organization) }
+
+        it_behaves_like 'visibility level validation'
+      end
+
+      context 'when visibility level is changed' do
+        before do
+          organization.visibility_level = Gitlab::VisibilityLevel::PRIVATE
+        end
+
+        it_behaves_like 'visibility level validation'
+      end
+
+      context 'when visibility level is not changed' do
+        it 'skips visibility level validation' do
+          expect(organization).not_to receive(:check_visibility_level_broader_than_groups)
+          expect(organization).not_to receive(:check_visibility_level_allowed)
+
+          organization.valid?
+        end
+      end
+
+      context 'when checking visibility level is broader than group visibility levels' do
+        where(:visibility_level, :max_group_visibility, :valid) do
+          [
+            [Gitlab::VisibilityLevel::PRIVATE, Gitlab::VisibilityLevel::PRIVATE, true],
+            [Gitlab::VisibilityLevel::PRIVATE, Gitlab::VisibilityLevel::INTERNAL, false],
+            [Gitlab::VisibilityLevel::PRIVATE, Gitlab::VisibilityLevel::PUBLIC, false],
+            [Gitlab::VisibilityLevel::PUBLIC, Gitlab::VisibilityLevel::PRIVATE, true],
+            [Gitlab::VisibilityLevel::PUBLIC, Gitlab::VisibilityLevel::INTERNAL, true],
+            [Gitlab::VisibilityLevel::PUBLIC, Gitlab::VisibilityLevel::PUBLIC, true]
+          ]
+        end
+
+        with_them do
+          let(:organization) { build(:organization, visibility_level: visibility_level) }
+
+          it 'validates visibility level' do
+            allow(organization).to receive(:max_group_visibility_level)
+              .and_return(max_group_visibility)
+
+            expect(organization.valid?).to eq(valid)
+
+            error_message = "Visibility level can not be more restrictive than group visibility levels"
+            if valid
+              expect(organization.errors.full_messages).not_to include(error_message)
+            else
+              expect(organization.errors.full_messages).to include(error_message)
+            end
+          end
+        end
+      end
+
+      context 'when checking visibility level is not internal' do
+        where(:visibility_level, :valid) do
+          [
+            [Gitlab::VisibilityLevel::PRIVATE, true],
+            [Gitlab::VisibilityLevel::INTERNAL, false],
+            [Gitlab::VisibilityLevel::PUBLIC, true]
+          ]
+        end
+
+        with_them do
+          let(:organization) { build(:organization, visibility_level: visibility_level) }
+
+          it 'validates visibility level is not internal' do
+            expect(organization.valid?).to eq(valid)
+
+            error_message = "Visibility level must be private or public"
+            if valid
+              expect(organization.errors.full_messages).not_to include(error_message)
+            else
+              expect(organization.errors.full_messages).to include(error_message)
+            end
+          end
+        end
+      end
+    end
+
+    describe 'path validator' do
+      using RSpec::Parameterized::TableSyntax
+
+      let(:default_path_error) do
+        "can contain only letters, digits, '_' and '-'. Cannot start with '-'."
+      end
+
+      let(:reserved_path_error) do
+        "is a reserved name"
+      end
+
+      where(:path, :valid, :error_message) do
+        'org.path'        | false  | ref(:default_path_error)
+        'new'             | false  | ref(:reserved_path_error)
+        'org__path'       | true   | nil
+        'some-name'       | true   | nil
+        'simple'          | true   | nil
+      end
+
+      with_them do
+        it 'validates organization path' do
+          organization = build(:organization, name: 'Default', path: path)
+
+          expect(organization.valid?).to be(valid)
+          expect(organization.errors.full_messages.to_sentence).to include(error_message) if error_message.present?
+        end
+      end
+    end
+
+    describe 'check_organization_reserved_name validation', :aggregate_failures do
+      context 'for an existing record' do
+        let(:existing_namespace) { instance_double(Namespace, full_path: 'o') }
+
+        before do
+          allow(Namespace).to receive(:find_by_full_path).with('o').and_return(existing_namespace)
+        end
+
+        it 'skips reserved name validation' do
+          expect(organization).not_to receive(:check_organization_reserved_name)
+          expect(organization).to be_valid
+        end
+      end
+
+      context 'when creating a new organization' do
+        let(:organization) { build(:organization, name: 'Test Org', path: 'test-org') }
+
+        it 'is valid' do
+          expect(organization).to be_valid
+        end
+
+        context 'when reserved path "o" exists as a namespace' do
+          let(:existing_namespace) { instance_double(Namespace, full_path: 'o') }
+
+          before do
+            allow(Namespace).to receive_message_chain(:filter_by_path, :top_level, :exists?).and_return(true)
+          end
+
+          it 'is invalid and adds error' do
+            expect(organization).not_to be_valid
+            expect(organization.errors[:base])
+              .to include(
+                _('Cannot create organization. The `o` namespace is a reserved path. ' \
+                  'Please rename the group or user before creating an organization.')
+              )
+          end
+
+          context 'when organization is the default organization' do
+            let(:organization) { build(:organization, :default, name: 'Default', path: 'default') } # rubocop:disable Gitlab/RSpec/AvoidCreateDefaultOrganization -- required for testing default organization properties
+
+            it 'skips validation and is valid' do
+              expect(organization).to be_valid
+              expect(organization.errors[:base]).to be_empty
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe 'delegations' do
+    it { is_expected.to delegate_method(:description).to(:organization_detail) }
+    it { is_expected.to delegate_method(:description_html).to(:organization_detail) }
+    it { is_expected.to delegate_method(:avatar).to(:organization_detail) }
+    it { is_expected.to delegate_method(:avatar_url).to(:organization_detail) }
+    it { is_expected.to delegate_method(:remove_avatar!).to(:organization_detail) }
+  end
+
+  describe 'nested attributes' do
+    it { is_expected.to accept_nested_attributes_for(:organization_detail) }
+    it { is_expected.to accept_nested_attributes_for(:organization_users) }
+  end
+
+  context 'when using scopes' do
+    describe '.active' do
+      let_it_be(:active_org) { create(:organization) }
+
+      let_it_be(:soft_deleted_org) do
+        create(:organization).tap do |o|
+          o.update_column(:state, described_class.states['soft_deleted'])
+        end
+      end
+
+      let_it_be(:deletion_in_progress_org) do
+        create(:organization).tap do |o|
+          o.update_column(:state, described_class.states['deletion_in_progress'])
+        end
+      end
+
+      it 'returns only active organizations' do
+        expect(described_class.active).to include(active_org)
+        expect(described_class.active).not_to include(soft_deleted_org, deletion_in_progress_org)
+      end
+    end
+
+    describe '.with_states' do
+      let_it_be(:active_org) { create(:organization) }
+
+      let_it_be(:soft_deleted_org) do
+        create(:organization).tap do |o|
+          o.update_column(:state, described_class.states['soft_deleted'])
+        end
+      end
+
+      let_it_be(:deletion_in_progress_org) do
+        create(:organization).tap do |o|
+          o.update_column(:state, described_class.states['deletion_in_progress'])
+        end
+      end
+
+      it 'returns organizations matching a single state' do
+        expect(described_class.with_states('soft_deleted')).to include(soft_deleted_org)
+        expect(described_class.with_states('soft_deleted')).not_to include(active_org, deletion_in_progress_org)
+      end
+
+      it 'returns organizations matching multiple states' do
+        result = described_class.with_states(%w[soft_deleted deletion_in_progress])
+
+        expect(result).to include(soft_deleted_org, deletion_in_progress_org)
+        expect(result).not_to include(active_org)
+      end
+
+      it 'ignores invalid states' do
+        result = described_class.with_states(%w[active invalid_state])
+
+        expect(result).to include(active_org)
+        expect(result).not_to include(soft_deleted_org, deletion_in_progress_org)
+      end
+    end
+
+    describe '.by_path' do
+      let_it_be(:other_organization) { create(:organization, path: 'other-org') }
+
+      subject(:match) { described_class.by_path(path) }
+
+      context 'when path matches an organization' do
+        let(:path) { organization.path }
+
+        it 'returns the organization with matching path' do
+          expect(match).to contain_exactly(organization)
+        end
+      end
+
+      context 'when path does not match any organization' do
+        let(:path) { 'non-existent-path' }
+
+        it 'returns empty result' do
+          expect(match).to be_empty
+        end
+      end
+    end
+
+    describe '.find_by_namespace_path_with_isolation_record' do
+      let_it_be(:group) { create(:group, organization: organization) }
+
+      subject(:match) { described_class.find_by_namespace_path_with_isolation_record(path) }
+
+      context 'when namespace path belongs to an organization' do
+        let(:path) { group.path }
+
+        it 'returns the associated organization' do
+          expect(match).to eq(organization)
+        end
+      end
+
+      context 'when namespace path differs in case' do
+        let(:path) { group.path.upcase }
+
+        it 'returns the associated organization' do
+          expect(match).to eq(organization)
+        end
+      end
+
+      context 'when the path is a redirect route of a renamed namespace' do
+        let_it_be(:redirect_route) { create(:redirect_route, source: group, path: 'former-namespace-path') }
+
+        let(:path) { 'former-namespace-path' }
+
+        it 'returns the associated organization' do
+          expect(match).to eq(organization)
+        end
+      end
+
+      context 'when no namespace matches the path' do
+        let(:path) { 'not-a-namespace' }
+
+        it 'returns nil' do
+          expect(match).to be_nil
+        end
+      end
+    end
+
+    describe '.find_by_personal_snippet_id_with_isolation_record' do
+      let_it_be(:snippet) { create(:personal_snippet, organization: organization) }
+
+      subject(:match) { described_class.find_by_personal_snippet_id_with_isolation_record(snippet_id) }
+
+      context 'when the snippet exists' do
+        let(:snippet_id) { snippet.id }
+
+        it 'returns the organization owning the snippet' do
+          expect(match).to eq(organization)
+        end
+      end
+
+      context 'when the snippet does not exist' do
+        let(:snippet_id) { non_existing_record_id }
+
+        it 'returns nil' do
+          expect(match).to be_nil
+        end
+      end
+    end
+
+    describe '.with_user' do
+      let_it_be_with_reload(:user) { create(:user, organization: organization) }
+      let_it_be_with_reload(:second_organization) { create(:organization, users: [user]) }
+
+      subject(:organizations_for_user) { described_class.with_user(user) }
+
+      it { is_expected.to eq([organization, second_organization]) }
+    end
+  end
+
+  it_behaves_like 'an isolatable', :organization
+
+  describe '#destroy!' do
+    context 'when trying to delete the last organization' do
+      it 'raises an error' do
+        expect do
+          organization.destroy!
+        end.to raise_error(ActiveRecord::RecordNotDestroyed, s_('Organization|Cannot delete the last organization'))
+      end
+    end
+
+    context 'when trying to delete another organization' do
+      let(:to_be_removed) { create(:organization) }
+
+      it 'does not raise error' do
+        expect { to_be_removed.destroy! }.not_to raise_error
+      end
+    end
+  end
+
+  describe '#destroy' do
+    context 'when trying to delete the last organization' do
+      it 'returns false' do
+        expect(organization.destroy).to be(false)
+      end
+    end
+
+    context 'when trying to delete another organization' do
+      let(:to_be_removed) { create(:organization) }
+
+      it 'returns true' do
+        expect(to_be_removed.destroy).to eq(to_be_removed)
+      end
+    end
+  end
+
+  describe '#owner_user_ids' do
+    let_it_be(:organization_users) { create_list(:organization_user, 3, :owner, organization: organization) }
+
+    it 'returns the owner user ids' do
+      expect(organization.owner_user_ids).to match_array(organization_users.map(&:user_id))
+    end
+
+    it 'memoize results' do
+      ActiveRecord::QueryRecorder.new { organization.owner_user_ids }
+      second_query = ActiveRecord::QueryRecorder.new { organization.owner_user_ids }
+
+      expect(second_query.count).to eq(0)
+    end
+  end
+
+  describe '#visibility_level_field' do
+    it { expect(organization.visibility_level_field).to eq(:visibility_level) }
+  end
+
+  describe '#visibility_level' do
+    subject { organization.visibility_level }
+
+    context 'with default' do
+      specify do
+        organization = described_class.new
+        expect(organization.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+      end
+    end
+
+    context 'with visibility possibilities' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:attribute_name, :value, :result) do
+        :visibility        | 'public'                         | Gitlab::VisibilityLevel::PUBLIC
+        :visibility_level  | Gitlab::VisibilityLevel::PUBLIC  | Gitlab::VisibilityLevel::PUBLIC
+        'visibility'       | 'public'                         | Gitlab::VisibilityLevel::PUBLIC
+        'visibility_level' | Gitlab::VisibilityLevel::PUBLIC  | Gitlab::VisibilityLevel::PUBLIC
+        :visibility        | 'private'                        | Gitlab::VisibilityLevel::PRIVATE
+        :visibility_level  | Gitlab::VisibilityLevel::PRIVATE | Gitlab::VisibilityLevel::PRIVATE
+        'visibility'       | 'private'                        | Gitlab::VisibilityLevel::PRIVATE
+        'visibility_level' | Gitlab::VisibilityLevel::PRIVATE | Gitlab::VisibilityLevel::PRIVATE
+        :visibility_level  | 12345                            | Gitlab::VisibilityLevel::PRIVATE
+        :visibility_level  | 'bogus'                          | Gitlab::VisibilityLevel::PRIVATE
+      end
+
+      with_them do
+        it 'sets the visibility level' do
+          org = described_class.new(attribute_name => value)
+
+          expect(org.visibility_level).to eq(result)
+        end
+      end
+    end
+  end
+
+  describe '#organization_detail' do
+    it 'ensures organization has organization_detail upon initialization' do
+      expect(organization.organization_detail).to be_present
+      expect(organization.organization_detail).not_to be_persisted
+    end
+  end
+
+  describe '#empty?' do
+    context 'when the organization has no groups and no projects' do
+      it 'returns true' do
+        expect(organization.empty?).to be(true)
+      end
+    end
+
+    context 'when the organization has groups' do
+      before do
+        create(:group, organization: organization)
+      end
+
+      it 'returns false' do
+        expect(organization.empty?).to be(false)
+      end
+    end
+
+    context 'when the organization has projects' do
+      before do
+        create(:project, organization: organization)
+      end
+
+      it 'returns false' do
+        expect(organization.empty?).to be(false)
+      end
+    end
+  end
+
+  describe 'invalid state transitions' do
+    let_it_be_with_reload(:user) { create(:user) }
+
+    it 'cannot soft_delete! from soft_deleted state' do
+      organization.update_column(:state, described_class.states['soft_deleted'])
+
+      expect { organization.soft_delete!(transition_user: user) }
+        .to raise_error(StateMachines::InvalidTransition)
+    end
+  end
+
+  describe '#to_param' do
+    let_it_be(:organization) { build(:organization, path: 'org_path') }
+
+    it 'returns the path' do
+      expect(organization.to_param).to eq('org_path')
+    end
+  end
+
+  describe '#under_maintenance?' do
+    let_it_be_with_reload(:organization) { create(:organization) }
+
+    subject(:under_maintenance?) { organization.under_maintenance? }
+
+    context 'when the enforcement feature flag is enabled' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:state, :expected) do
+        :active                     | false
+        :maintenance_initialization | true
+        :maintenance                | true
+      end
+
+      with_them do
+        before do
+          organization.update_column(:state, Organizations::Organization.states[state])
+        end
+
+        it { is_expected.to eq(expected) }
+      end
+    end
+  end
+
+  describe '#user?' do
+    let_it_be(:user) { create :user }
+
+    subject { organization.user?(user) }
+
+    context 'when user is an organization user' do
+      before do
+        create :organization_user, organization: organization, user: user
+      end
+
+      it { is_expected.to be true }
+    end
+
+    context 'when user is not an organization user' do
+      it { is_expected.to be false }
+    end
+  end
+
+  describe '#owner?' do
+    let_it_be_with_reload(:user) { create(:user) }
+
+    subject { organization.owner?(user) }
+
+    context 'when user is an owner' do
+      before do
+        create(:organization_user, :owner, organization: organization, user: user)
+      end
+
+      it { is_expected.to be true }
+    end
+
+    context 'when user is not an owner' do
+      before do
+        create(:organization_user, organization: organization, user: user)
+      end
+
+      it { is_expected.to be false }
+    end
+
+    context 'when user is not an organization user' do
+      it { is_expected.to be false }
+    end
+  end
+
+  describe '#membership_for' do
+    let_it_be(:user) { create(:user) }
+
+    subject { organization.membership_for(user) }
+
+    context 'when the user is a member of the organization' do
+      let_it_be(:organization_user) do
+        create(:organization_user, organization: organization, user: user)
+      end
+
+      it { is_expected.to eq(organization_user) }
+    end
+
+    context 'when the user is not a member of the organization' do
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe '#add_owner' do
+    let_it_be_with_reload(:user) { create(:user) }
+
+    before_all do
+      organization.add_owner(user)
+    end
+
+    it 'adds user as an owner', quarantine: 'https://gitlab.com/gitlab-org/gitlab/-/issues/463107' do
+      expect(organization.owner?(user)).to be(true)
+    end
+  end
+
+  describe '#web_url' do
+    it 'returns web url from `Gitlab::UrlBuilder`' do
+      web_url = 'http://127.0.0.1:3000/o/default/-/overview'
+
+      expect(Gitlab::UrlBuilder).to receive(:build).with(organization, only_path: nil).and_return(web_url)
+      expect(organization.web_url).to eq(web_url)
+    end
+  end
+
+  describe '#scoped_paths?' do
+    it { expect(organization.scoped_paths?).to be(true) }
+  end
+
+  describe '#scoped_path' do
+    it { expect(organization.scoped_path).to eq(organization.path) }
+  end
+
+  describe '#root_path' do
+    it { expect(organization.root_path).to eq("/o/#{organization.path}") }
+  end
+
+  describe '#full_path' do
+    it { expect(organization.full_path).to eq("/o/#{organization.path}") }
+  end
+
+  describe '#max_group_visibility_level' do
+    context 'when the organization has root groups' do
+      let_it_be(:organization) { create(:organization, :public) }
+      let_it_be(:private_group) { create(:group, :private, organization: organization) }
+      let_it_be(:internal_group) { create(:group, :internal, organization: organization) }
+
+      it 'returns the highest visibility level among its root groups' do
+        expect(organization.max_group_visibility_level).to eq(Gitlab::VisibilityLevel::INTERNAL)
+      end
+    end
+
+    context 'when the organization has no root groups' do
+      it { expect(organization.max_group_visibility_level).to be_nil }
+    end
+  end
+
+  describe '.search' do
+    let_it_be(:other_organization) { create(:organization, name: 'Other') }
+
+    using RSpec::Parameterized::TableSyntax
+
+    subject { described_class.search(query) }
+
+    context 'when searching by name' do
+      where(:query, :expected_organizations) do
+        'Organization' | [ref(:organization)]
+        'Other'        | [ref(:other_organization)]
+      end
+
+      with_them do
+        it { is_expected.to match_array(expected_organizations) }
+      end
+    end
+
+    context 'when searching by path' do
+      where(:query, :expected_organizations) do
+        'organization' | [ref(:organization)]
+        'other'        | [ref(:other_organization)]
+      end
+
+      with_them do
+        it { is_expected.to match_array(expected_organizations) }
+      end
+    end
+  end
+
+  context 'when a default organization exists' do
+    let_it_be(:default_organization) { create(:organization, :default) } # rubocop:disable Gitlab/RSpec/AvoidCreateDefaultOrganization -- required for testing default organization properties
+
+    describe '.without_default' do
+      it 'excludes default organization' do
+        expect(described_class.without_default).not_to include(default_organization)
+      end
+
+      it 'includes other organizations organization' do
+        expect(described_class.without_default).to include(organization)
+      end
+    end
+
+    describe '.default_organization' do
+      it 'returns the default organization' do
+        expect(described_class.default_organization).to eq(default_organization)
+      end
+    end
+
+    describe '.default?' do
+      context 'when organization is default' do
+        it 'returns true' do
+          expect(described_class.default?(default_organization.id)).to be(true)
+        end
+      end
+
+      context 'when organization is not default' do
+        it 'returns false' do
+          expect(described_class.default?(organization.id)).to be(false)
+        end
+      end
+    end
+
+    describe '.find_by_path_with_isolation_record' do
+      let_it_be(:org) { create(:organization, path: 'My-Org') }
+
+      it 'finds organization case-insensitively' do
+        expect(described_class.find_by_path_with_isolation_record('my-org')).to eq(org)
+        expect(described_class.find_by_path_with_isolation_record('MY-ORG')).to eq(org)
+        expect(described_class.find_by_path_with_isolation_record('My-Org')).to eq(org)
+      end
+
+      it 'returns nil when path does not match' do
+        expect(described_class.find_by_path_with_isolation_record('nonexistent')).to be_nil
+      end
+
+      it 'uses LOWER in the query' do
+        query = described_class.with_isolation_record.where("LOWER(path) = ?", 'my-org').to_sql
+
+        expect(query).to include('LOWER(path)')
+      end
+
+      it 'returns nil when path is nil' do
+        expect(described_class.find_by_path_with_isolation_record(nil)).to be_nil
+      end
+    end
+
+    describe '#id' do
+      context 'when organization is default' do
+        it 'has id 1' do
+          expect(default_organization.id).to eq(1)
+        end
+      end
+
+      context 'when organization is not default' do
+        it 'does not have id 1' do
+          expect(organization.id).not_to eq(1)
+        end
+      end
+    end
+
+    describe '#destroy!' do
+      context 'when trying to delete the default organization' do
+        it 'raises an error' do
+          expect do
+            default_organization.destroy!
+          end.to raise_error(ActiveRecord::RecordNotDestroyed,
+            s_('Organization|Cannot delete the default organization'))
+        end
+      end
+
+      context 'when trying to delete a non-default organization' do
+        let(:to_be_removed) { create(:organization) }
+
+        it 'does not raise error' do
+          expect { to_be_removed.destroy! }.not_to raise_error
+        end
+      end
+    end
+
+    describe '#destroy' do
+      context 'when trying to delete the default organization' do
+        it 'returns false' do
+          expect(default_organization.destroy).to be(false)
+        end
+      end
+
+      context 'when trying to delete a non-default organization' do
+        let(:to_be_removed) { create(:organization) }
+
+        it 'returns true' do
+          expect(to_be_removed.destroy).to eq(to_be_removed)
+        end
+      end
+    end
+
+    context 'on deleting organizations via SQL' do
+      it 'does not allow to delete default organization' do
+        expect { default_organization.delete }.to raise_error(
+          ActiveRecord::StatementInvalid, /Deletion of the default Organization is not allowed/
+        )
+      end
+
+      it 'allows to delete any other organization' do
+        organization.delete
+
+        expect(described_class.where(id: organization)).not_to exist
+      end
+    end
+
+    describe '#default?' do
+      context 'when organization is default' do
+        it 'returns true' do
+          expect(default_organization.default?).to be(true)
+        end
+      end
+
+      context 'when organization is not default' do
+        it 'returns false' do
+          expect(organization.default?).to be(false)
+        end
+      end
+    end
+
+    describe '#name' do
+      context 'when organization is default' do
+        it 'returns Default' do
+          expect(default_organization.name).to eq('Default')
+        end
+      end
+    end
+
+    describe '#scoped_paths?' do
+      it { expect(default_organization.scoped_paths?).to be(false) }
+    end
+
+    describe '#scoped_path' do
+      it { expect(default_organization.scoped_path).to be_nil }
+    end
+
+    describe '#root_path' do
+      it { expect(default_organization.root_path).to eq('/') }
+    end
+
+    describe '#full_path' do
+      it { expect(default_organization.full_path).to eq('') }
+    end
+  end
+end

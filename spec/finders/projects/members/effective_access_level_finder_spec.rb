@@ -1,0 +1,183 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::Members::EffectiveAccessLevelFinder, '#execute' do
+  let_it_be(:group) { create(:group) }
+  let_it_be_with_reload(:project) { create(:project, group: group) }
+
+  subject(:effective_access_levels) { described_class.new(project).execute }
+
+  context 'for a personal project' do
+    let_it_be_with_reload(:project) { create(:project) }
+
+    shared_examples_for 'includes access level of the owner of the project' do
+      it 'includes access level of the owner of the project as Owner' do
+        expect(effective_access_levels).to contain_exactly([project.namespace.owner.id, Gitlab::Access::OWNER])
+      end
+    end
+
+    context 'when the project owner is a member of the project' do
+      it_behaves_like 'includes access level of the owner of the project'
+    end
+
+    context 'when the project owner is not explicitly a member of the project' do
+      before do
+        project.members.find_by(user_id: project.namespace.owner.id).destroy!
+      end
+
+      it_behaves_like 'includes access level of the owner of the project'
+    end
+  end
+
+  context 'direct members of the project' do
+    it 'includes access levels of the direct members of the project' do
+      developer = create(:project_member, :developer, source: project)
+      maintainer = create(:project_member, :maintainer, source: project)
+
+      expect(effective_access_levels).to include(
+        [developer.user.id, Gitlab::Access::DEVELOPER],
+        [maintainer.user.id, Gitlab::Access::MAINTAINER]
+      )
+    end
+
+    it 'does not include access levels of users who have requested access to the project' do
+      member_with_access_request = create(:project_member, :access_request, :developer, source: project)
+
+      expect(effective_access_levels).not_to include([member_with_access_request.user.id, anything])
+    end
+
+    it 'includes access levels of users who are in non-active state' do
+      blocked_member = create(:project_member, :blocked, :developer, source: project)
+
+      expect(effective_access_levels).to include([blocked_member.user.id, Gitlab::Access::DEVELOPER])
+    end
+  end
+
+  context 'for a project within a group' do
+    context 'project in a root group' do
+      context 'includes access levels of users who are direct members of the parent group' do
+        it 'when access level is developer' do
+          group_member = create(:group_member, :developer, source: group)
+
+          expect(effective_access_levels).to include([group_member.user.id, Gitlab::Access::DEVELOPER])
+        end
+
+        it 'when access level is owner' do
+          group_member = create(:group_member, :owner, source: group)
+
+          expect(effective_access_levels).to include([group_member.user.id, Gitlab::Access::OWNER])
+        end
+      end
+    end
+
+    context 'project in a subgroup' do
+      let_it_be_with_reload(:project) { create(:project, group: create(:group, :nested)) }
+
+      it 'includes access levels of users who are members of the ancestors of the parent group' do
+        group_member = create(:group_member, :maintainer, source: project.group.parent)
+
+        expect(effective_access_levels).to include([group_member.user.id, Gitlab::Access::MAINTAINER])
+      end
+    end
+
+    context 'user is both a member of the project and a member of the parent group' do
+      let_it_be(:user) { create(:user) }
+
+      before_all do
+        group.add_developer(user)
+        project.add_maintainer(user)
+      end
+
+      it 'includes the maximum access level among project and group membership' do
+        expect(effective_access_levels).to include([user.id, Gitlab::Access::MAINTAINER])
+      end
+    end
+
+    context 'members from group share' do
+      let_it_be(:shared_with_group) { create(:group) }
+      let_it_be(:user_from_shared_with_group) { create(:user) }
+
+      before_all do
+        shared_with_group.add_guest(user_from_shared_with_group)
+        create(:group_group_link, :developer, shared_group: project.group, shared_with_group: shared_with_group)
+      end
+
+      it 'includes the user from the group share with the right access level' do
+        expect(effective_access_levels).to include([user_from_shared_with_group.id, Gitlab::Access::GUEST])
+      end
+
+      context 'when the project also has the same user as a member, but with a different access level' do
+        before_all do
+          project.add_maintainer(user_from_shared_with_group)
+        end
+
+        it 'includes the maximum access level among project and group membership' do
+          expect(effective_access_levels).to include([user_from_shared_with_group.id, Gitlab::Access::MAINTAINER])
+        end
+      end
+
+      context "when the project's ancestor also has the same user as a member, but with a different access level" do
+        before_all do
+          project.group.add_maintainer(user_from_shared_with_group)
+        end
+
+        it 'includes the maximum access level among project and group membership' do
+          expect(effective_access_levels).to include([user_from_shared_with_group.id, Gitlab::Access::MAINTAINER])
+        end
+      end
+    end
+  end
+
+  context 'for a project that is shared with other group(s)' do
+    let_it_be(:shared_with_group) { create(:group) }
+    let_it_be(:user_from_shared_with_group) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project, group: create(:group)) }
+
+    before_all do
+      create(:project_group_link, :developer, project: project, group: shared_with_group)
+      shared_with_group.add_maintainer(user_from_shared_with_group)
+    end
+
+    it 'includes the least among the specified access levels' do
+      expect(effective_access_levels).to include([user_from_shared_with_group.id, Gitlab::Access::DEVELOPER])
+    end
+
+    context 'even when the `lock_memberships_to_ldap` setting has been turned ON' do
+      before do
+        stub_application_setting(lock_memberships_to_ldap: true)
+      end
+
+      it 'includes the least among the specified access levels' do
+        expect(effective_access_levels).to include([user_from_shared_with_group.id, Gitlab::Access::DEVELOPER])
+      end
+    end
+
+    context 'when the group containing the project has forbidden group shares for any of its projects' do
+      before do
+        project.namespace.update!(share_with_group_lock: true)
+      end
+
+      it 'does not include the users from any group shares' do
+        expect(effective_access_levels).not_to include([user_from_shared_with_group.id, anything])
+      end
+    end
+  end
+
+  context 'a combination of all possible avenues of membership' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:shared_with_group) { create(:group) }
+
+    before_all do
+      create(:project_group_link, :maintainer, project: project, group: shared_with_group)
+      create(:group_group_link, :reporter, shared_group: project.group, shared_with_group: shared_with_group)
+      shared_with_group.add_maintainer(user)
+      group.add_guest(user)
+      project.add_developer(user)
+    end
+
+    it 'includes the highest access level from all avenues of memberships' do
+      expect(effective_access_levels).to include([user.id, Gitlab::Access::MAINTAINER]) # From project_group_link
+    end
+  end
+end

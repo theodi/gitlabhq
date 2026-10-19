@@ -1,0 +1,32 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe "Populate new pipeline CI variables with url params", :js, feature_category: :pipeline_composition do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, :repository) }
+  let(:page_path) { new_project_pipeline_path(project) }
+
+  before_all do
+    project.add_maintainer(user)
+  end
+
+  before do
+    sign_in(user)
+    visit "#{page_path}?var[key1]=value1&file_var[key2]=value2"
+  end
+
+  it "var[key1]=value1 populates env_var variable correctly" do
+    page.within(all("[data-testid='ci-variable-row-container']")[0]) do
+      expect(find_by_testid('pipeline-form-ci-variable-key-field').value).to eq('key1')
+      expect(find_by_testid('pipeline-form-ci-variable-value-field').value).to eq('value1')
+    end
+  end
+
+  it "file_var[key2]=value2 populates file variable correctly" do
+    page.within(all("[data-testid='ci-variable-row-container']")[1]) do
+      expect(find_by_testid('pipeline-form-ci-variable-key-field').value).to eq('key2')
+      expect(find_by_testid('pipeline-form-ci-variable-value-field').value).to eq('value2')
+    end
+  end
+end

@@ -1,0 +1,17 @@
+---
+description: Click on the trigger Flux resource reconciliation button
+internal_events: true
+action: click_trigger_flux_reconciliation
+identifiers:
+- project
+- namespace
+- user
+product_group: environments
+product_categories:
+- environment_management
+milestone: '17.3'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/162017
+tiers:
+- free
+- premium
+- ultimate

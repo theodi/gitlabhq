@@ -1,0 +1,159 @@
+<script>
+import { GlTooltip, GlIcon, GlLink, GlTruncate } from '@gitlab/ui';
+
+export default {
+  name: 'WorkItemAttribute',
+  components: {
+    GlTooltip,
+    GlIcon,
+    GlLink,
+    GlTruncate,
+  },
+  props: {
+    anchorId: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    wrapperComponent: {
+      type: String,
+      required: false,
+      default: 'span',
+    },
+    wrapperComponentClass: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    title: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    titleComponentClass: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    iconName: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    iconClass: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    iconSize: {
+      type: Number,
+      required: false,
+      default: 16,
+    },
+    tooltipText: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    tooltipPlacement: {
+      type: String,
+      required: false,
+      default: 'bottom',
+    },
+    isLink: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    href: {
+      type: String,
+      required: false,
+      default: undefined,
+    },
+    ariaLabel: {
+      type: String,
+      required: false,
+      default: undefined,
+    },
+    popoverAttributes: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    srOnlyText: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  emits: ['click'],
+  computed: {
+    tooltipTarget() {
+      return () => {
+        const ref = this.$refs.wrapperRef;
+        return ref?.$el || ref;
+      };
+    },
+    hasPopover() {
+      return this.popoverAttributes !== null;
+    },
+  },
+  methods: {
+    handleClick(event) {
+      this.$emit('click', event);
+      if (this.isLink && this.href) {
+        event.stopPropagation();
+      }
+    },
+  },
+};
+</script>
+
+<template>
+  <!-- wrapper  -->
+  <component
+    :is="isLink && href ? 'gl-link' : wrapperComponent"
+    ref="wrapperRef"
+    class="gl-flex gl-items-center gl-gap-2"
+    :class="wrapperComponentClass"
+    :href="isLink ? href : null"
+    :data-testid="anchorId"
+    :aria-label="ariaLabel"
+    v-bind="hasPopover ? popoverAttributes : {}"
+    @click="handleClick"
+  >
+    <!-- aria-label isn't reliably announced on a non-interactive wrapper (e.g. span/div), so give those an sr-only text alternative -->
+    <span v-if="srOnlyText" class="gl-sr-only" :data-testid="`${anchorId}-sr-only`">{{
+      srOnlyText
+    }}</span>
+    <!-- icon  -->
+    <slot name="icon">
+      <gl-icon
+        v-if="iconName"
+        variant="subtle"
+        :class="['gl-shrink-0', iconClass]"
+        :name="iconName"
+        :size="iconSize"
+        :data-testid="`${anchorId}-icon`"
+      />
+    </slot>
+    <!-- title  -->
+    <slot name="title">
+      <gl-truncate
+        v-if="title"
+        :class="titleComponentClass"
+        class="gl-min-w-0"
+        :data-testid="`${anchorId}-title`"
+        :text="title"
+      />
+    </slot>
+    <!-- tooltip  -->
+    <gl-tooltip v-if="!hasPopover" :target="tooltipTarget" :placement="tooltipPlacement">
+      <slot name="tooltip-text">
+        <template v-if="tooltipText">
+          {{ tooltipText }}
+        </template>
+      </slot>
+    </gl-tooltip>
+  </component>
+</template>

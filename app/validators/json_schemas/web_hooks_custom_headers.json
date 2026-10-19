@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "WebHook#custom_headers",
+  "type": "object",
+  "additionalProperties": false,
+  "maxProperties": 20,
+  "propertyNames": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 255
+  },
+  "patternProperties": {
+    "\\A[A-Za-z]+[0-9]*(?:[._-][A-Za-z0-9]+)*\\z": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^(?!.*[\\r\\n])(?!.*(%0[aAd]|%0[dD]|%5[cC][nr]))(?!.*(\\\\n|\\\\r))[^\\s].*[^\\s]$|^[^\\s]$",
+      "description": "Single line, no encoded newlines, no leading/trailing whitespace"
+    }
+  }
+}

@@ -1,0 +1,53 @@
+---
+stage: Analytics
+group: Platform Insights
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Configure Grafana
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+[Grafana](https://grafana.com/) is a tool that enables you to visualize time
+series metrics through graphs and dashboards. GitLab writes performance data to Prometheus,
+and Grafana allows you to query the data to display graphs.
+
+## Integrate with GitLab UI
+
+Prerequisites:
+
+- Administrator access.
+
+After setting up Grafana, you can enable a link to access it from the
+GitLab sidebar:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Metrics and profiling**.
+1. Expand **Metrics - Grafana**.
+1. Select the **Add a link to Grafana** checkbox.
+1. Configure the **Grafana URL**. Enter the full URL of the Grafana instance.
+1. Select **Save changes**.
+
+GitLab displays your link in the **Admin** area under **Monitoring** > **Metrics Dashboard**.
+
+## Required Scopes
+
+When setting up Grafana through the previous process, no scope shows on the screen in
+the **Admin** area under **Applications** > **GitLab Grafana**. However, the `read_user` scope is
+required and is provided to the application automatically. Setting any scope other than
+`read_user` without also including `read_user` leads to this error when you try to sign in using
+GitLab as the OAuth provider:
+
+```plaintext
+The requested scope is invalid, unknown, or malformed.
+```
+
+If you see this error, make sure that one of the following is true in the GitLab Grafana
+configuration screen:
+
+- No scopes appear.
+- The `read_user` scope is included.

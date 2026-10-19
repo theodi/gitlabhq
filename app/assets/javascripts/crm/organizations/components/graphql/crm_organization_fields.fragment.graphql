@@ -1,0 +1,7 @@
+fragment OrganizationFragment on CustomerRelationsOrganization {
+  id
+  name
+  defaultRate
+  description
+  active
+}

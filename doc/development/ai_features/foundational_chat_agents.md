@@ -1,0 +1,945 @@
+---
+stage: Agent Foundations
+group: AI Catalog
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Managing foundational agents
+---
+
+> [!note]
+> This guide covers foundational **agents**. For foundational **flows**, see the [foundational flows guide](foundational_flows.md). To understand the difference between agents and flows, see the [glossary](glossary.md#gitlab-duo-agent-platform).
+
+[Foundational agents](../../user/duo_agent_platform/agents/foundational_agents/_index.md) are specialized agents
+that are created and maintained by GitLab, providing more accurate responses for specific use cases. These agents are
+available by default on any place chat and GitLab Duo chat are available, including groups, and are supported on GitLab Duo Self-Hosted.
+
+## Create a foundational agent
+
+There are two ways of creating a foundational agent, using the AI Catalog or GitLab Duo Workflow Service. AI Catalog provides
+a user-friendly interface, and it is the preferred approach, but writing a definition on GitLab Duo Workflow Service provides
+more flexibility for complex cases.
+
+### Using the AI catalog
+
+1. Create your agent on the [AI Catalog](https://gitlab.com/explore/ai-catalog/agents/), and note its ID. Make sure the agent is set to
+   public. Example: [Planner Agent](https://gitlab.com/explore/ai-catalog/agents/348/) has ID 348.
+1. Agents created on the AI Catalog need to be bundled into GitLab Duo Workflow Service, so they can be available to self-hosted
+   setups that do not have access to our SaaS. To achieve this, open an MR to GitLab Duo Workflow Service adding the ID of the
+   agent:
+
+   ```diff
+   # https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/blob/main/Dockerfile
+   - RUN poetry run fetch-foundational-agents "https://gitlab.com" "$GITLAB_TOKEN" "348" \
+   + RUN poetry run fetch-foundational-agents "https://gitlab.com" "$GITLAB_TOKEN" "duo_planner:348,<agent-reference>:<agent-catalog-id>" \
+   ```
+
+   The command above can also be executed locally for testing purposes. Agent reference must be lowercase without spaces (example: 'test_agent').
+1. To make the agent be selectable, add it to the [`FoundationalChatAgentsDefinitions.rb`](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/lib/ai/foundational_chat_agents_definitions.rb).
+   Use the reference used in the Dockerfile:
+
+   ```ruby
+   {
+     id: 3,
+     reference: '<agent-reference>',
+     version: 'v1',
+     name: 'Test Agent',
+     description: "An agent for testing"
+   }
+   ```
+
+1. Add suggested questions for the agent, as described in [Suggested questions](#suggested-questions).
+1. Update [user facing documentation](../../user/duo_agent_platform/agents/foundational_agents/_index.md).
+
+### Using GitLab Duo Workflow Service
+
+1. Create a flow configuration file in `/duo_workflow_service/agent_platform/v1/flows/configs/` (located either on your GDK under `PATH-TO-YOUR-GDK/gdk/gitlab-ai-gateway` or on the [ai-assist repository](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/tree/main/duo_workflow_service/agent_platform/v1/flows/configs/)):
+
+   File: `/duo_workflow_service/agent_platform/v1/flows/configs/foundational_pirate_agent/1.0.0.yml`
+
+   ```yaml
+   version: "v1"
+   environment: chat-partial
+   components:
+     - name: "foundational_pirate_agent"
+       type: AgentComponent
+       prompt_id: "foundational_pirate_agent_prompt"
+       inputs:
+         - from: "context:goal"
+           as: "goal"
+         - from: "context:project_id"
+           as: "project_id"
+       toolset: []
+       ui_log_events: []
+   prompts:
+     - name: Foundational Pirate Agent
+       prompt_id: "foundational_pirate_agent_prompt"
+       model:
+         params:
+           model_class_provider: anthropic
+           max_tokens: 2_000
+       prompt_template:
+         system: |
+           You are a seasoned pirate from the Golden Age of Piracy. You speak exclusively in pirate dialect, using nautical
+           terms, pirate slang, and colorful seafaring expressions. Transform any input into authentic pirate speak while
+           maintaining the original meaning. Use terms like 'ahoy', 'matey', 'ye', 'aye', 'landlubber', 'scallywag',
+           'doubloons', 'plunder', etc. Add pirate exclamations like 'Arrr!', 'Shiver me timbers!', and 'Yo ho ho!' where
+           appropriate. Refer to yourself in the first person as a pirate would.
+         user: |
+           {{goal}}
+         placeholder: history
+   routers: []
+   flow:
+     entry_point: "foundational_pirate_agent"
+   ```
+
+1. Add your agent definition to [FoundationalChatAgentsDefinitions.rb](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/lib/ai/foundational_chat_agents_definitions.rb):
+
+   ```ruby
+   # frozen_string_literal: true
+
+   module Ai
+     module FoundationalChatAgentsDefinitions
+       extend ActiveSupport::Concern
+
+       ITEMS = [
+         {
+           id: 1,
+           reference: 'chat',
+           version: '',
+           name: 'GitLab Duo Agent',
+           description: "GitLab Duo is your general development assistant"
+         },
+         {
+           id: 2,
+           reference: 'foundational_pirate_agent',
+           version: 'v1',
+           name: 'Foundational Pirate Agent',
+           description: "A most important agent that speaks like a pirate"
+         }
+       ].freeze
+     end
+   end
+   ```
+
+1. Add suggested questions for the agent, as described in [Suggested questions](#suggested-questions).
+1. Update [user facing documentation](../../user/duo_agent_platform/agents/foundational_agents/_index.md).
+
+Tips:
+
+1. You can use the AI Catalog to test foundational agents, even before you add them to the codebase.
+   Create a new private agent in the AI Catalog with the same prompt and same tools, and enable it on your test project.
+   Once results reach desired levels, add to GitLab Duo Workflow Service.
+1. Add prompts to the GitLab Duo Workflow Service to enable testing the agent in your local GDK.
+1. The version field of an agent in `FoundationalChatAgentsDefinitions.rb` should be `v1`, regardless of whether
+   the agent is defined in AI Catalog or GitLab Duo Workflow Service.
+
+## Update a foundational agent
+
+Use this process when you change an existing foundational agent's prompt, toolset, or flow
+configuration:
+
+1. Develop and test locally. Make the change in your GDK's `gitlab-ai-gateway` checkout,
+   restart the service with `gdk restart duo-workflow-service`, and iterate on the agent in
+   chat until it behaves as intended. This step is exploratory and shapes the change. See
+   [Developing foundational agents locally](#developing-foundational-agents-locally).
+1. Propose the change. Open a merge request to the
+   [ai-assist repository](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist)
+   that updates the flow configuration. Bump the flow version according to the
+   [versioning guidance](#versioning): patch for bug fixes, minor for backwards-compatible
+   additions, major for breaking changes.
+1. Evaluate the change. Unlike exploratory local testing, this step produces objective
+   evidence that the change does not regress the agent. Where the agent has a benchmark or
+   integration test suite, run it, compare the scores against the previous baseline, and
+   record the results in the merge request. See
+   [Integration testing foundational agents](#integration-testing-foundational-agents).
+   Validate the change in at least one full chat session before merging.
+1. Merge the change. The change follows the ai-assist
+   [code review process](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/blob/main/CONTRIBUTING.md#code-review-process).
+   If the change is a major version, or changes the agent's name or description, open a paired
+   merge request to the GitLab application (`gitlab-org/gitlab`) updating
+   [`FoundationalChatAgentsDefinitions.rb`](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/lib/ai/foundational_chat_agents_definitions.rb).
+   This is required because the GitLab application pins each agent to a flow version range
+   with the `flow_version` attribute: a major version is a breaking change, so GitLab Duo
+   Workflow Service does not serve it to instances whose pin excludes it. Updating the pin
+   deliberately releases the new major version while older GitLab Self-Managed and
+   GitLab Dedicated versions keep resolving a compatible flow config. See
+   [Versioning](#versioning).
+1. Update the documentation. If the agent's behavior or capabilities changed, update both the
+   [list of foundational agents](../../user/duo_agent_platform/agents/foundational_agents/_index.md)
+   and the agent's dedicated page in the same directory, which describes what the agent does
+   in depth. Add a history entry to the agent's page for the release where the change ships.
+1. Communicate the change. Announce the change and the affected capabilities in your group's Slack
+   channel, and add a release post item for user-facing changes.
+
+## Secret-safety requirements for agent prompts
+
+If your foundational agent's scope includes any of the following, you must include secret-safety
+guidance in its system prompt:
+
+- Generating or modifying files (for example, `.gitlab-ci.yml`, configuration files, scripts).
+- CI/CD pipeline configuration or conversion.
+- Handling credentials, API keys, tokens, or connection strings.
+
+### Required prompt guidance
+
+Add the following instructions verbatim to the agent's system prompt:
+
+```plaintext
+Never write literal secret values (API keys, tokens, passwords, connection strings, or any credentials)
+into files or repository content. Always substitute secrets with CI/CD variable references
+(for example, $API_KEY, $DB_PASSWORD, $DEPLOY_TOKEN). If a user provides a secret value directly,
+do not echo it into any file — instead, recommend storing it in Settings > CI/CD > Variables and
+reference it as a variable. When converting pipelines from other CI systems (for example, Jenkins,
+GitHub Actions, CircleCI) that contain hardcoded secrets, replace those values with variable
+references and flag to the user that the original pipeline contained hardcoded secrets.
+```
+
+### Checklist
+
+Before merging a new foundational agent, confirm:
+
+- [ ] Agent prompt reviewed for file-writing, CI/CD configuration, or credential-handling scope.
+- [ ] If in scope: secret-safety guidance added verbatim to the system prompt.
+- [ ] If not in scope: documented in the MR description with reasoning.
+
+## Use feature flags for releasing chat agents
+
+Control the release of new foundational agents with feature flags:
+
+```ruby
+# ee/app/graphql/resolvers/ai/foundational_chat_agents_resolver.rb
+
+  def resolve(*, project_id: nil, namespace_id: nil)
+    project = GitlabSchema.find_by_gid(project_id)
+
+    filtered_agents = []
+    filtered_agents << 'foundational_pirate_agent' if Feature.disabled?(:my_feature_flag, project)
+    # filtered_agents << 'foundational_pirate_agent' if Feature.disabled?(:my_feature_flag, current_user)
+
+    ::Ai::FoundationalChatAgent
+ .select {|agent| filtered_agents.exclude?(agent.reference) }
+      .sort_by(&:id)
+  end
+```
+
+This also allows making a foundational agent available to a specific tier.
+
+## Scoping
+
+Not every agent is useful in every area. For example, some agents operate in projects, while others are more useful or have more capabilities in groups. Scoping is not supported. See [issue 577395](https://gitlab.com/gitlab-org/gitlab/-/issues/577395).
+
+## Triggers
+
+Triggers are not supported for foundational chat agents. However, if they are defined on AI Catalog, users can
+still add them to their project at which point they can be used through triggers.
+
+## Versioning
+
+Pin a foundational agent to a specific flow version with the `flow_version` attribute in
+[`FoundationalChatAgentsDefinitions.rb`](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/lib/ai/foundational_chat_agents_definitions.rb).
+The value is a semantic version constraint that GitLab Duo Workflow Service uses to select a
+flow config from the bundled versions. Use version pinning to iterate on foundational agents
+without breaking existing GitLab Self-Managed and GitLab Dedicated customers.
+
+```ruby
+{
+  id: 2,
+  reference: 'foundational_pirate_agent',
+  version: 'v1',
+  flow_version: '^1.0.0',
+  name: 'Foundational Pirate Agent',
+  description: "A most important agent that speaks like a pirate"
+}
+```
+
+When `flow_version` is set, the monolith sends `flow_config_id`, `flow_config_schema_version`, and
+`flow_version` to GitLab Duo Workflow Service when starting a workflow. The service then resolves
+the matching flow config from its bundled versions.
+
+Use a constraint that matches the compatibility you need:
+
+- `^1.0.0` accepts any `1.x.y` release (recommended for most agents).
+- `~1.2.0` accepts any `1.2.x` release.
+- `1.2.3` pins to an exact version.
+
+Choose the version increment based on the change:
+
+- Increment the major version for breaking changes (for example, expecting a new required input).
+- Increment the minor version for backwards-compatible additions (for example, a new optional parameter).
+- Increment the patch version for bug fixes.
+
+> [!note]
+> Version pinning is only available for agents defined in GitLab Duo Workflow Service.
+> Agents backed by an AI Catalog item resolve their version from the catalog item and
+> ignore `flow_version`.
+
+Without `flow_version`, GitLab Duo Workflow Service falls back to its default resolution.
+Consider potential breaking changes to older GitLab versions before changing an agent.
+
+## Coding environment
+
+A foundational agent can run in a CI job, for example when the `start_duo_session` MCP tool
+starts it. By default, that job clones the project repository. Set `coding_environment: 'none'`
+when the agent does not need the clone:
+
+```ruby
+{
+  id: 5,
+  reference: 'analytics_agent',
+  version: 'v1',
+  flow_version: '^2.0.0',
+  coding_environment: 'none',
+  # ...
+}
+```
+
+Check the agent's flow configuration in GitLab Duo Workflow Service first. Set the value only when
+every tool there works without a repository checkout, like GitLab API, GraphQL, and MCP tools.
+File and command tools such as `read_file`, `grep`, `edit_file`, or `run_command` need the clone.
+The `tools` list in `FoundationalChatAgentsDefinitions` is only displayed in the AI Catalog, so
+it does not tell you which tools the agent runs with.
+
+Only an agent with a `flow_version` can set `coding_environment: 'none'`. An agent backed by an
+AI Catalog item gets its tools from the catalog item, which can change without a GitLab release.
+
+Adding a file or command tool to an agent that sets `coding_environment: 'none'` is a breaking
+change. GitLab instances on an older version still skip the clone, and a constraint like `^2.0.0`
+selects any new minor version. Add the tool in a new major flow configuration version, and in the
+same merge request, update `flow_version` to that major version and remove
+`coding_environment: 'none'`.
+
+The accepted values are the same as for [foundational flows](foundational_flows.md).
+
+## Suggested questions
+
+GitLab Duo chat shows suggested question chips on the empty chat screen. By default, these questions
+come from the current page URL (for example, a code page or a wiki page), or from the resource in
+context (an issue, merge request, epic, commit, or CI job). If neither applies, chat shows a generic
+list of questions.
+
+A foundational agent can override these questions. Add an optional `suggested_questions` array to the
+agent's entry in
+[`FoundationalChatAgentsDefinitions.rb`](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/lib/ai/foundational_chat_agents_definitions.rb):
+
+```ruby
+{
+  id: 2,
+  reference: 'foundational_pirate_agent',
+  version: 'v1',
+  flow_version: '^1.0.0',
+  name: 'Foundational Pirate Agent',
+  description: "A most important agent that speaks like a pirate",
+  suggested_questions: [
+    "How do I make my code more efficient, matey?",
+    "Which of my merge requests need review?",
+    "What treasure did my team ship last month?",
+    "Show me the bugs lurking in this project"
+  ]
+}
+```
+
+When a user selects the agent in chat, the frontend sends its `reference` value in the
+`foundationalAgentReference` argument of the `aiChatContextPresets` GraphQL query. The resolver
+resolves that reference through `Ai::FoundationalChatAgentsFinder`, so it only honours an agent the
+user could have selected, and returns that agent's `suggested_questions` instead of the URL-based or
+resource-based questions.
+
+If the agent's definition omits `suggested_questions`, or the array is empty, the usual URL and
+resource fallbacks apply unchanged. Each agent's owning team decides whether to add questions.
+
+Follow these guidelines when you write suggested questions:
+
+- The resolver samples `questionCount` questions at random from the array. Chat asks for 4. Define
+  more than 4, or the user sees the same questions every time, in a different order. Fewer than 4
+  means the empty state shows fewer chips.
+- Agent questions replace the URL-based and resource-based questions, so a question must make sense
+  with no page context. Avoid "this file", "this commit", and "this merge request".
+- Write questions as a real user would type them, in the first person. Keep each question under about
+  70 characters.
+- Only suggest a question the agent can act on with its tools.
+
+## Context variables
+
+Context variables let you inject runtime information into a Duo Workflow Service agent's system prompt.
+Use them to make prompt sections conditional or pass more information - for example, customizing the prompt based
+on the user location, or pass data from a form.
+
+> [!note]
+> Context variables are only supported for agents defined in GitLab Duo Workflow Service.
+> Agents created in the AI Catalog cannot use context variables except orbit_enabled
+
+The end-to-end flow is:
+
+1. The GitLab monolith builds an `additional_context` payload and includes it in the `startWorkflow` request.
+1. GitLab Duo Workflow Service reads the `additional_context`, resolves the values to Jinja2 variables
+   using the component `inputs` mapping, and pre-renders the system prompt.
+1. Jinja2 variables in the prompt (for example, `{% if my_variable %}...{% endif %}`) are evaluated
+   with the resolved values. Unknown variables like `{{ goal }}` are preserved and resolved in a later pass.
+
+### Define context variables in the flow config
+
+In your flow YAML
+(`/duo_workflow_service/agent_platform/v1/flows/configs/<agent_name>/<version>.yml`), declare:
+
+1. A `flow.inputs` entry that describes the variable's category and schema.
+1. A component `inputs` entry that maps the variable using the `context:inputs.<category>.<field>` path.
+
+```yaml
+components:
+  - name: "my_agent"
+    type: AgentComponent
+    prompt_id: "my_agent_prompt"
+    inputs:
+      - from: "context:goal"
+        as: "goal"
+      - from: "context:inputs.my_context.my_first_var"
+        as: "my_first_var"
+        optional: true   # optional: true prevents an error when the variable is absent
+      - from: "context:inputs.my_context.my_second_var"
+        as: "my_second_var"
+        optional: true
+    toolset: []
+    ui_log_events: []
+
+flow:
+  inputs:
+    - category: my_context
+      input_schema:
+        my_var:
+          type: boolean
+          description: Whether the feature is available for this user
+  entry_point: "my_agent"
+```
+
+### Use context variables in the prompt template
+
+Use Jinja2 `{% if %}` blocks in the `prompt_template.system` field to conditionally include prompt sections:
+
+```yaml
+prompts:
+  - name: My Agent
+    prompt_id: "my_agent_prompt"
+    prompt_template:
+      system: |
+        You are a helpful agent.
+
+        Additional information {{ my_first_var }}
+
+        {% if my_second_var %}
+        <my_feature_integration>
+          You also have access to the my feature API. Use it when the user asks about...
+        </my_feature_integration>
+        {% endif %}
+      user: |
+        {{goal}}
+```
+
+### Wire context variables from the GitLab monolith
+
+Context variables reach the Duo Workflow Service through the `additionalContext` field of the
+`startWorkflow` call. Each entry has a `category`, a `content` field (a JSON string), and `metadata`.
+
+In `duo_agentic_chat_state_manager.vue`, inject the context envelope only when a foundational agent
+is active:
+
+```javascript
+const mergedAdditionalContext =
+  this.selectedFoundationalAgent && goal
+    ? [
+        {
+          category: 'my_context',
+          content: JSON.stringify({ my_first_var: 1,  my_second_var: this.myFeatureEnabled }),
+          metadata: '{}',
+        },
+        ...(additionalContext || []).filter((c) => c.category !== 'my_context'),
+      ]
+    : additionalContext || [];
+```
+
+### Contribute context from outside the chat
+
+The wiring above builds the envelope inside `duo_agentic_chat_state_manager.vue`, which suits
+context the chat component already holds. For context owned by a feature *outside* the chat, such as
+a form elsewhere on the page whose state the user edits between messages, register a
+provider instead. Providers are read fresh on every send, so the agent always sees the current
+state rather than a value frozen when the chat opened.
+
+Register from the contributing component, using `external_context_store`:
+
+```javascript
+import { registerExternalContextProvider } from 'ee/ai/duo_agentic_chat/context/external_context_store';
+
+mounted() {
+  // getContent runs on every send; return a nullish value to contribute nothing this turn.
+  this.disposeContextProvider = registerExternalContextProvider(
+    'my_context',
+    () => ({ my_var: this.currentValue }),
+  );
+},
+beforeDestroy() {
+  this.disposeContextProvider?.();
+},
+```
+
+`registerExternalContextProvider` returns a disposer; call it on teardown so the provider does not
+leak. `duo_agentic_chat_state_manager.vue` calls `getExternalContextItems()` on every send and
+merges the results, taking precedence over per-message items of the same category.
+
+Categories registered this way must still be filtered from display and GraphQL.
+For more information, see [Filter internal categories](#filter-internal-categories-from-display-and-graphql).
+
+### Filter internal categories from display and GraphQL
+
+Internal context categories (for example, `my_context`) must not be shown in the UI or serialized
+through GraphQL. Custom category names are not registered in the `AiAdditionalContextCategory` enum,
+and serialization causes errors.
+
+Filter them in `ee/app/assets/javascripts/ai/duo_agentic_chat/utils/workflow_utils.js`:
+
+```javascript
+const INTERNAL_CATEGORIES = new Set(['my_context']);
+msg.extras = {
+  contextItems: msg.additional_context.filter((c) => !INTERNAL_CATEGORIES.has(c.category)),
+};
+```
+
+Strip them in `ee/app/presenters/ai/duo_workflows/workflow_checkpoint_event_presenter.rb` before
+building `DuoMessage` objects:
+
+```ruby
+INTERNAL_CONTEXT_CATEGORIES = %w[my_context].freeze
+
+if msg['additional_context'].is_a?(Array)
+  msg['additional_context'] = msg['additional_context'].reject do |ctx|
+    INTERNAL_CONTEXT_CATEGORIES.include?(ctx['category'])
+  end
+end
+```
+
+## Let an agent edit a UI form
+
+Foundational agents can read the state of a form on a page and write changes back to it.
+
+The pattern has two halves:
+
+- Read: pass the form state to the agent in a `form_context` context variable.
+- Write: the agent calls a form-editing tool, and the consumer applies the returned changes.
+
+The read half builds on [context variables](#context-variables). The sections below cover what the
+form-editing pattern adds for the consumer.
+
+### Pass the form state to the agent
+
+Send the current form state to the agent as a `form_context` [context variable](#context-variables).
+Use the `buildFormContext` helper from `ee/app/assets/javascripts/ai/shared/utils/form_context_utils.js`
+to wrap the form identity and contents in the envelope. The consumer passes only `formId` and
+`formContent`, so it does not carry the envelope shape (`category`, JSON-encoded content, and
+`metadata`):
+
+```javascript
+import { buildFormContext } from 'ee/ai/shared/utils/form_context_utils';
+
+// In the consumer component:
+computed: {
+  additionalContext() {
+    return buildFormContext({ formId: 'my-form', formContent: this.formContent });
+  },
+}
+```
+
+`formId` identifies the form so the agent only edits this form. `formContent` is the current form
+state, which the agent treats as ground truth. Pass the result through the `additional-context` prop
+of `open_agentic_chat_button.vue`. For the underlying envelope shape, see
+[Wire context variables from the GitLab monolith](#wire-context-variables-from-the-gitlab-monolith).
+
+### Apply the agent's changes
+
+The agent applies changes by calling a form-editing tool that returns the fields to change. The
+reference tool is
+[`update_form_fields`](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/blob/main/duo_workflow_service/tools/update_form_fields.py),
+with this contract:
+
+```plaintext
+form_id: str        # echoed from the system prompt; identifies the target form
+select: list[str]   # field or option names to select or enable
+clear:  list[str]   # field or option names to clear or disable
+```
+
+The system prompt pins `form_id` from the `form_context` envelope, so the agent echoes the correct
+value back instead of inventing one.
+
+In the consumer, handle the `tool-completed` event. Act only on tool calls whose `form_id` matches
+the form, so multiple form-editing buttons on the same page do not cross-fire:
+
+```javascript
+handleToolCompleted({ name, args } = {}) {
+  if (name !== 'update_form_fields' || args?.form_id !== 'my-form') return;
+
+  // Apply args.select and args.clear to the form.
+}
+```
+
+The `select` and `clear` contract covers any form control whose value is a set of named options:
+checkbox groups, multi-select dropdowns, token fields, and boolean toggles. Enable a toggle with
+`select` and disable it with `clear`. It does not yet support text fields.
+
+## Developing foundational agents locally
+
+  For AI catalog created agents, you need to sync the agents locally. To do so, either create the agent in the local AI Catalog or on GitLab.com AI Catalog.
+
+1. **Fetch agents from GitLab.com**
+
+   On `$GDK/gitlab-ai-gateway`, run the following command:
+
+   ```shell
+   poetry run fetch-foundational-agents "http://gdk.test:3000 or https://gitlab.com" "<token-to-your-local-gdk>" \
+    "<agent-reference>:<agent-id-in-local-catalog>" --flow-registry-version v1
+   ```
+
+   An example pulling `duo_planner` and `security_analyst_agent` from GitLab.com would look like this:
+
+   ```shell
+   poetry run fetch-foundational-agents "https://gitlab.com" "<token-to-your-local-gdk>" \
+    "duo_planner:348,security_analyst_agent:356" --flow-registry-version v1
+   ```
+
+   Where:
+
+   - `348` is the GitLab Duo Planner catalog ID on GitLab.com
+   - `356` is the Security Analyst Agent catalog ID on GitLab.com
+
+   After fetching the configurations, restart the service:
+
+   ```shell
+   gdk restart duo-workflow-service
+   ```
+
+1. **Verify the setup**
+
+   Foundational agents are saved in `$GDK/gitlab-ai-gateway/duo_workflow_service/agent_platform/v1/flows/configs/` as `.yml` files.
+
+   For example if you used the above `poetry` command to pull `duo_planner` and `security_analyst_agent`, you can run the following:
+
+   ```shell
+   ls duo_workflow_service/agent_platform/v1/flows/configs/ | grep -e "duo_planner" -e "security_analyst"
+   ```
+
+   You then should see the following output:
+
+   ```shell
+   duo_planner.yml
+   security_analyst_agent.yml
+   ```
+
+   Alternatively to check in the GDK UI:
+
+   1. With the changes to `FoundationalChatAgentsDefinitions.rb`, you can now select your foundational agent in the web chat locally.
+   1. Verify that you can see and interact with the foundational agents
+   1. Test sending a message to confirm the agents respond correctly
+
+### Troubleshooting
+
+- Agents don't appear in chat: Verify the configuration files were created in your GitLab-ai-gateway directory and the service restarted successfully
+- Permission errors: Ensure your GitLab.com API token has the API scope
+- Flow registry version errors: Confirm you're using `--flow-registry-version v1`
+
+## Testing foundational agent synchronization pipeline
+
+This section describes how to test the pipeline used to sync foundational agents in your local GDK. For developing the foundational flows or pulling the latest flows refer to the [Developing foundational agents locally](#developing-foundational-agents-locally) section above.
+
+### Prerequisites
+
+- A running GDK instance
+- A GitLab API token with `api` scope (`$GDK_PAT_WITH_API_SCOPE`)
+- Access to the `gitlab-ai-gateway` repository in your GDK
+
+### Step 1: Check existing foundational agents
+
+First, identify which foundational agents are defined in the monolith but missing from your local AI Catalog:
+
+1. Check the foundational agents definitions:
+
+   ```shell
+   # In your GDK's gitlab directory
+   cat ee/lib/ai/foundational_chat_agents_definitions.rb
+   ```
+
+1. List existing agents in your local AI Catalog:
+
+   ```shell
+   curl --header "Authorization: Bearer $GDK_PAT_WITH_API_SCOPE" \
+     --header "Content-Type: application/json" \
+     "http://gdk.test:3000/api/graphql" \
+     --data '{"query": "query { aiCatalogItems { nodes { id name description } } }"}'
+   ```
+
+1. Compare the results to identify missing foundational agents (typically `duo_planner` and `security_analyst_agent`).
+
+### Step 2: Create missing foundational agents
+
+If foundational agents are missing from your local AI Catalog, create them programmatically:
+
+1. Get a project ID for hosting the agents:
+
+   If you've run the duo setup script with `bundle exec rake gitlab:duo:setup`, you can use the project with ID `1000000` as the foundational agents owning project. If not, you can pick any Premium or Ultimate project in your GDK and use that project's ID.
+
+   ```shell
+   # If you haven't run the duo setup script, get any project ID
+   curl --header "Authorization: Bearer $GDK_PAT_WITH_API_SCOPE" \
+     "http://gdk.test:3000/api/v4/projects" | jq '.[0].id'
+   ```
+
+1. Create the Planner agent:
+
+   ```shell
+   curl --header "Authorization: Bearer $GDK_PAT_WITH_API_SCOPE" \
+     --header "Content-Type: application/json" \
+     "http://gdk.test:3000/api/graphql" \
+     --data '{
+       "query": "mutation { aiCatalogAgentCreate(input: { projectId: \"gid://gitlab/Project/YOUR_PROJECT_ID\", name: \"Planner\", description: \"Get help with planning and workflow management. Organize, edit, create, and track work more effectively in GitLab.\", public: true, systemPrompt: \"You are a helpful planning assistant that helps users organize, edit, create, and track work more effectively in GitLab.\" }) { item { id name } errors } }"
+     }'
+   ```
+
+1. Create the Security Analyst agent:
+
+   ```shell
+   curl --header "Authorization: Bearer $GDK_PAT_WITH_API_SCOPE" \
+     --header "Content-Type: application/json" \
+     "http://gdk.test:3000/api/graphql" \
+     --data '{
+       "query": "mutation { aiCatalogAgentCreate(input: { projectId: \"gid://gitlab/Project/YOUR_PROJECT_ID\", name: \"Security Analyst\", description: \"Automate vulnerability management and security workflows. The Security Analyst Agent acts as an AI team member that can autonomously analyze, triage, and remediate security vulnerabilities.\", public: true, systemPrompt: \"You are a security analyst AI that helps with vulnerability management and security workflows. You can analyze, triage, and help remediate security vulnerabilities.\" }) { item { id name } errors } }"
+     }'
+   ```
+
+   Replace `YOUR_PROJECT_ID` with the actual project ID from step 1.
+
+### Step 3: Get the local agent IDs
+
+After creating the agents, get their local catalog IDs:
+
+```shell
+# Get Planner agent ID
+curl --header "Authorization: Bearer $GDK_PAT_WITH_API_SCOPE" \
+  --header "Content-Type: application/json" \
+  "http://gdk.test:3000/api/graphql" \
+  --data '{"query": "query { aiCatalogItems(search: \"Planner\") { nodes { id name } } }"}'
+
+# Get Security Analyst agent ID
+curl --header "Authorization: Bearer $GDK_PAT_WITH_API_SCOPE" \
+  --header "Content-Type: application/json" \
+  "http://gdk.test:3000/api/graphql" \
+  --data '{"query": "query { aiCatalogItems(search: \"Security Analyst\") { nodes { id name } } }"}'
+```
+
+Note the numeric IDs from the responses (for example, `10` and `11`).
+
+### Step 4: Fetch foundational agent configurations
+
+In your `gitlab-ai-gateway` directory, fetch the agent configurations using the local IDs:
+
+```shell
+# For v1 flow registry (recommended)
+poetry run fetch-foundational-agents "http://gdk.test:3000" "$GDK_PAT_WITH_API_SCOPE" \
+  "duo_planner:10,security_analyst_agent:11" \
+  --flow-registry-version v1
+
+# For experimental flow registry (alternative)
+poetry run fetch-foundational-agents "http://gdk.test:3000" "$GDK_PAT_WITH_API_SCOPE" \
+  "duo_planner:10,security_analyst_agent:11" \
+  --flow-registry-version experimental \
+  --output-path duo_workflow_service/agent_platform/experimental/flows/configs
+```
+
+Replace `10` and `11` with the actual agent IDs from step 3.
+
+### Step 5: Restart GitLab Duo Workflow Service
+
+```shell
+gdk restart duo-workflow-service
+```
+
+### Step 6: Verify the setup
+
+With the changes to `FoundationalChatAgentsDefinitions.rb` and the fetched configurations, you can now select your foundational agents in the web chat locally.
+
+### Troubleshooting
+
+- **Missing agents**: If agents don't appear in chat after following these steps, verify:
+  - The agents exist in your local AI Catalog (check with the GraphQL query from Step 3)
+  - The flow configuration files were created in the correct directory after running `fetch-foundational-agents`
+  - The GitLab Duo Workflow Service was restarted successfully
+- **Flow registry version**: Use `v1` for production-like behavior, `experimental` for testing new features
+- **Permission errors**: Ensure your API token has the `api` scope and sufficient project permissions
+- **GraphQL errors**: Check the exact mutation parameters using GraphQL introspection:
+
+  ```shell
+  curl --header "Authorization: Bearer $GDK_PAT_WITH_API_SCOPE" \
+    --header "Content-Type: application/json" \
+    "http://gdk.test:3000/api/graphql" \
+    --data '{"query": "query { __type(name: \"AiCatalogAgentCreatePayload\") { fields { name type { name } } } }"}'
+  ```
+
+## Integration testing foundational agents
+
+Foundational agents have an integration test harness that runs the full agent loop end-to-end using real LLM calls.
+Use it to verify that an agent correctly selects tools, passes the right arguments,
+and produces valid responses - without needing a live GitLab instance or real tool backends.
+
+The tests live in the [ai-assist](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/tree/main/agent_tests)
+repository and run as CI jobs (for example, the Data Analyst agent tests run on changes to the agent prompt, otherwise manual).
+
+### Key concepts
+
+- **Real LLM calls**: Both the agent execution and response validation use actual model calls,
+  so tests catch regressions in prompt behavior, not just string matching.
+- **Mockable tools**: Tool responses can be stubbed so tests are deterministic and fast.
+- **Fluent assertion API**: Chain assertions like `assert_called_tool` and `assert_llm_validates`
+  to express expected behavior clearly.
+
+### Example test
+
+```python
+@pytest.mark.asyncio
+async def test_how_many_open_issues(
+    analytics_agent,
+    initial_state,
+    mock_gitlab_client,
+):
+    """Agent must call run_glql_query and report the count."""
+    mock_glql_response(mock_gitlab_client, glql_response(SAMPLE_ISSUES, count=42))
+
+    result = await ask_agent(
+        analytics_agent,
+        initial_state,
+        "How many open issues are there in the gitlab-org group?",
+    )
+
+    (result.assert_has_tool_calls().assert_called_tool("run_glql_query"))
+    await result.assert_llm_validates(
+        [
+            "Response says 42 open issues",
+        ]
+    )
+```
+
+`ask_agent` runs the agent loop with the given prompt and returns a result object.
+`assert_called_tool` verifies the agent invoked the expected tool.
+`assert_llm_validates` asks an LLM to check the response against plain-language criteria,
+so you don't need brittle substring matches.
+
+### CI configuration
+
+Integration test jobs are defined in [`.gitlab/ci/test.gitlab-ci.yml`](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/blob/main/.gitlab/ci/test.gitlab-ci.yml). Available configuration variables:
+
+- `EXECUTION_MODEL`: The model used to run the agent during the test.
+- `VALIDATION_MODEL`: The model used by `assert_llm_validates` to judge responses.
+
+### Getting started
+
+To reuse or extend this harness for your agent, see these merge requests for reference:
+
+- [Initial integration test harness (!4541)](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/merge_requests/4541)
+- [Additional test examples (!4543)](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/merge_requests/4543)
+
+## Architecture design
+
+[Foundational Chat Agents](glossary.md#agent-types) are developed by GitLab and must be available to all GitLab deployments (GitLab.com, GitLab Self-Managed, and Dedicated).
+
+The architecture of how Foundational Agents are made available avoids connecting to AI Catalog to fetch definitions at runtime and allows GitLab engineering teams full control over when they are released.
+
+This design could also be extended to support
+[Foundational flows](glossary.md#flow-types).
+
+### Foundational Agents in Monolith
+
+Defining foundational agents in the monolith serves two purposes: backwards compatibility support and release control.
+
+The [`FoundationalChatAgentsDefinitions`](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/lib/ai/foundational_chat_agents_definitions.rb)
+module manages agent versioning based on the GitLab instance version, affecting older GitLab versions, similar to [prompt versioning](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/prompts_migration/#versioning).
+
+Additionally, on [`FoundationalChatAgentsResolver`](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/app/graphql/resolvers/ai/foundational_chat_agents_resolver.rb),
+teams are able to select which conditions can make a foundational chat agent available, for situations like:
+
+- does the user have Ultimate,
+- is the feature flag enabled,
+- is the agent SaaS exclusive
+
+If we relied exclusively on AI Catalog or Duo Workflow Service, such flexibility wouldn't be possible
+
+#### Version resolution
+
+Agent versions are resolved based on the `version` field in `FoundationalChatAgentsDefinitions.rb`,
+which maps to a
+folder in GitLab Duo Workflow Service (for example, `v1`, `experimental`).
+
+In the future, [version resolution will be based on semantic versioning](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/issues/1577).
+This will allow:
+
+- **Patch and minor updates** (bug fixes, performance improvements, prompt refinements) to be shipped to existing
+  GitLab versions without requiring a GitLab instance update
+- **Major version releases** for breaking changes that require new GitLab features (such as new tools, API changes,
+  or schema modifications) to be shipped only to compatible GitLab versions
+
+This approach ensures backward compatibility while enabling continuous improvement of foundational agents.
+
+### Bundling into GitLab Duo Workflow Service
+
+Bundling agents into GitLab Duo Workflow Service makes agents defined in AI Catalog available on all deployments,
+including self-hosted setups.
+[With semantic versioning support](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/issues/1577),
+the latest version of each major release will be bundled,
+along with specific pinned versions of each foundational
+agent.
+
+The alternative to this would be to ship the YAML definitions themselves as part of GitLab monolith,
+but that comes with
+the downside of not being able to quickly ship fixes to cloud-connected GitLab Self-Managed instances.
+
+Eventually, if labels are implemented on AI Catalog,
+teams wouldn't need to add their entries to the Dockerfile. Versions
+could be fetched by the correct labels.
+
+### Creation flow
+
+```mermaid
+%%{init: {"sequence": {"actorMargin": 50}}}%%
+sequenceDiagram
+    accTitle: Foundational agent creation flow
+    accDescr: Sequence diagram showing the process of creating a foundational agent from AI Catalog through to GitLab monolith
+    participant Team
+    participant AI Catalog
+    participant DWS Repo as DWS Repository
+    participant CI
+    participant Monolith
+
+    Team->>AI Catalog: Create foundational agent
+    Team->>DWS Repo: Add agent ID to Dockerfile
+    DWS Repo->>CI: Trigger build
+    CI->>AI Catalog: Pull agent definitions
+    AI Catalog->>CI: Returns all required versions
+    CI->>CI: Store definitions in DWS image
+    CI->>CI: Ships images with definitions
+    Team->>Monolith: Add agent to FoundationalChatAgentsDefinitions.rb
+```
+
+### Usage flow
+
+```mermaid
+%%{init: {"sequence": {"actorMargin": 50}}}%%
+sequenceDiagram
+    accTitle: Foundational agent usage flow
+    accDescr: Sequence diagram showing how users interact with foundational agents through GitLab monolith and Duo Workflow Service
+    participant User
+    participant Monolith
+    participant DWS as GitLab Duo Workflow Service
+
+    User->>Monolith: Request to foundational agent
+    Monolith->>DWS: Request specific agent version
+    DWS->>DWS: Resolve agent version
+    DWS->>DWS: Process request
+    DWS->>Monolith: Return response
+    Monolith->>User: Return response
+```
+
+The execution flows are the same whether the user is using a local monolith, GitLab.com,
+the cloud-connected DWS or a
+local installation of DWS.

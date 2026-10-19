@@ -1,0 +1,50 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    class GetServerVersionService < Base::CustomService
+      extend ::Gitlab::Utils::Override
+
+      ungovernable!
+
+      # Register version 0.1.0
+      register_version '0.1.0', {
+        toolset: :meta,
+        description: 'Get the current version of MCP server.',
+        input_schema: {
+          type: 'object',
+          properties: {},
+          required: []
+        },
+        annotations: {
+          readOnlyHint: true
+        }
+      }
+
+      override :authorize!
+      def authorize!(_params)
+        true
+      end
+
+      override :skip_granular_token_authorization?
+      def skip_granular_token_authorization?
+        true
+      end
+
+      protected
+
+      # Version 0.1.0 implementation
+      def perform_v0_1_0(_arguments = {})
+        data = { version: Gitlab::VERSION, revision: Gitlab.revision }
+        formatted_content = [{ type: 'text', text: data[:version] }]
+        ::Mcp::Tools::Base::Response.success(formatted_content, data)
+      end
+
+      # Fallback to 0.1.0 behavior for any unimplemented versions
+      override :perform_default
+      def perform_default(arguments = {})
+        perform_v0_1_0(arguments)
+      end
+    end
+  end
+end

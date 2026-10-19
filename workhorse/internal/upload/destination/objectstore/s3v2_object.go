@@ -1,0 +1,160 @@
+package objectstore
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"path"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"gitlab.com/gitlab-org/labkit/v2/log"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/config"
+)
+
+const s3UploadFailTimeout = 60 * time.Second
+
+// S3v2Object represents an object stored in Amazon S3.
+type S3v2Object struct {
+	credentials config.S3Credentials
+	config      config.S3Config
+	objectName  string
+	uploaded    bool
+
+	*uploader
+}
+
+// In AWS SDK v1, all URLs are cleaned unless DisableRestProtocolURICleaning is set to true.
+// However, this no longer happens automatically in AWS SDK v2.
+// In practice, we generally don't create objects with extraneous
+// slashes present, but we saw test failures when we mixed AWS SDK v2
+// code with the tests that used SDK v1. For example:
+//
+// 1. Suppose the AWS SDK v2 sends a PUT /bucket//my-object.
+// 2. gofakes3 stores the object as /my-object.
+// 3. AWS SDK v1 sends GET /bucket/my-object.
+// 4. gofakes3 searches for the my-object (without the leading slash) and returns a 404.
+//
+// See https://docs.aws.amazon.com/sdk-for-go/api/aws/#Config
+// and https://github.com/aws/aws-sdk-go/blob/02c1f723b528251a45068001bee8b56d904d7484/private/protocol/rest/build.go#L137-L139
+// for more details.
+func normalizeKey(key string) string {
+	key = path.Clean(key)
+
+	// Strip leading slash
+	if len(key) > 0 && key[0] == '/' {
+		key = key[1:]
+	}
+
+	return key
+}
+
+// NewS3v2Object creates a new S3v2Object with the provided object name, S3 credentials, and S3 config.
+func NewS3v2Object(objectName string, s3Credentials config.S3Credentials, s3Config config.S3Config) (*S3v2Object, error) {
+	o := &S3v2Object{
+		credentials: s3Credentials,
+		config:      s3Config,
+		objectName:  objectName,
+	}
+
+	o.uploader = newUploader(o)
+	return o, nil
+}
+
+func setS3EncryptionOptions(input *transfermanager.UploadObjectInput, s3Config config.S3Config) {
+	if s3Config.ServerSideEncryption != "" {
+		input.ServerSideEncryption = types.ServerSideEncryption(s3Config.ServerSideEncryption)
+
+		if s3Config.ServerSideEncryption == string(types.ServerSideEncryptionAwsKms) && s3Config.SSEKMSKeyID != "" {
+			input.SSEKMSKeyID = aws.String(s3Config.SSEKMSKeyID)
+		}
+	}
+}
+
+// Upload uploads the S3 object with the provided context and reader.
+func (s *S3v2Object) Upload(ctx context.Context, r io.Reader) error {
+	client, err := setupS3Client(s.credentials, s.config)
+	if err != nil {
+		slog.Error("error setting up S3 client in upload", log.Error(err))
+		return err
+	}
+
+	uploader := transfermanager.New(client, func(o *transfermanager.Options) {
+		o.RequestChecksumCalculation = getRequestChecksumCalculation()
+		o.FailTimeout = s3UploadFailTimeout
+	})
+
+	input := &transfermanager.UploadObjectInput{
+		Bucket: aws.String(s.config.Bucket),
+		Key:    aws.String(s.Name()),
+		Body:   r,
+	}
+
+	setS3EncryptionOptions(input, s.config)
+
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+
+	_, err = uploader.UploadObject(ctx, input)
+	if err != nil {
+		slog.Error("error uploading S3 session", log.Error(err))
+		return err
+	}
+
+	s.uploaded = true
+
+	return nil
+}
+
+// ETag returns the ETag of the S3 object.
+func (s *S3v2Object) ETag() string {
+	return ""
+}
+
+// Strategy returns the name identifying the upload backend, used for logging.
+func (s *S3v2Object) Strategy() string {
+	return "s3v2"
+}
+
+// Abort aborts the multipart upload by deleting the object.
+func (s *S3v2Object) Abort() {
+	s.Delete()
+}
+
+// Delete deletes the S3 object if it has been uploaded.
+func (s *S3v2Object) Delete() {
+	if !s.uploaded {
+		return
+	}
+
+	client, err := setupS3Client(s.credentials, s.config)
+	if err != nil {
+		slog.Error("error setting up S3 client in delete", log.Error(err))
+		return
+	}
+
+	input := &s3.DeleteObjectInput{
+		Bucket: aws.String(s.config.Bucket),
+		Key:    aws.String(s.Name()),
+	}
+
+	// We can't use the request context because in a successful
+	// case, the original request has already completed.
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // lint:allow context.Background
+	defer cancel()
+
+	_, err = client.DeleteObject(deleteCtx, input)
+	if err != nil {
+		slog.Error("error deleting S3 object", log.Error(err))
+	}
+}
+
+// Name returns the object name without a leading slash.
+func (s *S3v2Object) Name() string {
+	return normalizeKey(s.objectName)
+}

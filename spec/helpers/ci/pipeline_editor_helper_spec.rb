@@ -1,0 +1,130 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::PipelineEditorHelper, feature_category: :pipeline_composition do
+  let(:project) { build_stubbed(:project) }
+  let(:user) { build_stubbed(:user) }
+
+  describe 'can_view_pipeline_editor?' do
+    subject { helper.can_view_pipeline_editor?(project) }
+
+    it 'user can view editor if they can collaborate' do
+      allow(helper).to receive(:can_collaborate_with_project?).and_return(true)
+
+      expect(subject).to be true
+    end
+
+    it 'user can not view editor if they cannot collaborate' do
+      allow(helper).to receive(:can_collaborate_with_project?).and_return(false)
+
+      expect(subject).to be false
+    end
+  end
+
+  describe '#js_pipeline_editor_data' do
+    let(:default_helper_data) do
+      {
+        "ci-config-path": project.ci_config_path_or_default,
+        "ci-examples-help-page-path" => help_page_path('ci/examples/_index.md'),
+        "ci-help-page-path" => help_page_path('ci/_index.md'),
+        "ci-lint-path" => project_ci_lint_path(project),
+        "ci-troubleshooting-path" => help_page_path('ci/debugging.md', anchor: 'job-configuration-issues'),
+        "default-branch" => project.default_branch_or_main,
+        "initial-branch-name" => nil,
+        "includes-help-page-path" => help_page_path('ci/yaml/includes.md'),
+        "needs-help-page-path" => help_page_path('ci/yaml/_index.md', anchor: 'needs'),
+        "new-merge-request-path" => '/mock/project/-/merge_requests/new',
+        "new-pipeline-path" => new_project_pipeline_path(project),
+        "project-full-path" => project.full_path,
+        "simulate-pipeline-help-page-path" => help_page_path('ci/pipeline_editor/_index.md', anchor: 'validate-cicd-configuration'),
+        "uses-external-config" => 'false',
+        "yml-help-page-path" => help_page_path('ci/yaml/_index.md')
+      }
+    end
+
+    before do
+      allow(helper)
+        .to receive(:can?)
+        .with(user, :create_pipeline, project)
+        .and_return(true)
+
+      allow(helper).to receive_messages(
+        namespace_project_new_merge_request_path: '/mock/project/-/merge_requests/new',
+        current_user: user
+      )
+    end
+
+    subject(:pipeline_editor_data) { helper.js_pipeline_editor_data(project) }
+
+    context 'with a project with commits' do
+      let(:project) { create(:project, :small_repo) }
+
+      it 'returns pipeline editor data' do
+        expect(pipeline_editor_data).to include(default_helper_data.merge({
+          "pipeline_etag" => graphql_etag_pipeline_sha_path(project.commit.sha),
+          "total-branches" => project.repository.branches.length
+        }))
+      end
+    end
+
+    context 'with an empty project' do
+      let(:project) { create(:project, :empty_repo) }
+
+      it 'returns pipeline editor data' do
+        expect(pipeline_editor_data).to include(default_helper_data.merge({
+          "pipeline_etag" => '',
+          "total-branches" => 0
+        }))
+      end
+    end
+
+    context 'with a project with no repository' do
+      it 'returns pipeline editor data' do
+        expect(pipeline_editor_data).to include({
+          "pipeline_etag" => '',
+          "total-branches" => 0
+        })
+      end
+    end
+
+    context 'with a remote CI config' do
+      before do
+        project.ci_config_path = 'http://example.com/path/to/ci/config.yml'
+      end
+
+      it 'returns true for uses-external-config in pipeline editor data' do
+        expect(pipeline_editor_data['uses-external-config']).to eq('true')
+      end
+    end
+
+    context 'with a CI config from an external project' do
+      before do
+        project.ci_config_path = '.gitlab-ci.yml@group/project'
+      end
+
+      it 'returns true for uses-external-config in pipeline editor data' do
+        expect(pipeline_editor_data['uses-external-config']).to eq('true')
+      end
+    end
+
+    context 'with a non-default branch name' do
+      let(:project) { create(:project, :small_repo) }
+      let(:user) { create(:user) }
+
+      before do
+        project.repository.commit_files(
+          user,
+          branch_name: 'feature',
+          message: 'Message',
+          actions: [{ action: :create, file_path: 'a/new.file', content: 'This is a new file' }]
+        )
+        controller.params[:branch_name] = 'feature'
+      end
+
+      it 'returns correct values' do
+        expect(pipeline_editor_data['initial-branch-name']).to eq('feature')
+      end
+    end
+  end
+end

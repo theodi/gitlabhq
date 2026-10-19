@@ -1,0 +1,1199 @@
+/**
+ * Apply Markup (Markdown/AsciiDoc) typography
+ *
+ */
+.md {
+  position: relative;
+  z-index: 1;
+  @apply gl-text-default;
+  word-wrap: break-word;
+
+  [dir='auto'] {
+    text-align: initial;
+  }
+
+  *:first-child {
+    @apply gl-mt-0;
+  }
+
+  > :last-child {
+    @apply gl-mb-0;
+  }
+
+  p {
+    @apply gl-text-default;
+    @apply gl-m-0;
+    @apply gl-mb-5;
+
+    > code {
+      font-weight: inherit;
+      @apply gl-break-words;
+      @apply gl-whitespace-break-spaces;
+    }
+  }
+
+  .media-container {
+    display: inline-flex;
+    flex-direction: column;
+    @apply gl-mb-2;
+
+    video {
+      max-width: 100%;
+      height: auto;
+    }
+
+    &.iframe-container {
+      display: flex;
+      align-items: flex-start;
+    }
+  }
+
+  img {
+    max-width: 100%;
+    vertical-align: baseline;
+  }
+
+  img[width][height] {
+    object-fit: contain;
+    object-position: top;
+    height: auto;
+  }
+
+  img.lazy {
+    min-width: 200px;
+    min-height: 100px;
+    @apply gl-bg-disabled;
+  }
+
+  /* stylelint-disable gitlab/no-js-class */
+  img.js-lazy-loaded,
+  img.emoji {
+  /* stylelint-enable gitlab/no-js-class */
+    min-width: inherit;
+    min-height: inherit;
+    background-color: inherit;
+  }
+
+  img.md-img-checkerboard {
+    @include checkerboard-bg;
+  }
+
+  details {
+    @apply gl-mb-5;
+
+    > *:not(summary) {
+      @apply gl-ml-5;
+    }
+
+    // stylelint-disable-next-line gitlab/no-has -- scoped to a specific details element
+    &:not(:has(summary)):not([open]) {
+      @apply gl-font-bold;
+    }
+  }
+
+  details[open] summary {
+    @apply gl-mb-5;
+  }
+
+  details summary {
+    @apply gl-font-bold;
+  }
+
+  summary > * {
+    @apply gl-inline-block;
+    @apply gl-mb-0;
+  }
+
+  // make default paragraph of summary text behave nicely with the summary marker
+  summary > p, summary > .markdown-code-block {
+    max-width: calc(100% - 1rem);
+  }
+
+  // Single code lines should wrap
+  code {
+    @apply gl-font-monospace;
+    white-space: pre-wrap;
+    // Safari
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: keep-all;
+  }
+
+  mark {
+    @include str-highlighted;
+  }
+
+  // the z-index of the mark is set to -1, so it's below the table cells
+  // unless they have their own stacking context
+  // stylelint-disable-next-line gitlab/no-has -- scoped to table cells with mark content
+  td:has(mark), th:has(mark) {
+    isolation: isolate;
+  }
+
+  // Fixed headings are default for markdown
+  h1 {
+    @apply gl-heading-1-fixed;
+    @apply gl-mt-7;
+  }
+
+  h2:not(:where(.crud-header) h2) {
+    @apply gl-heading-2-fixed;
+    @apply gl-mt-6;
+  }
+
+  h3 {
+    @apply gl-heading-3-fixed;
+    @apply gl-mt-6;
+  }
+
+  h4 {
+    @apply gl-heading-4-fixed;
+    @apply gl-mt-5;
+  }
+
+  h5 {
+    @apply gl-heading-5-fixed;
+    @apply gl-mt-5;
+  }
+
+  h6 {
+    @apply gl-heading-6-fixed;
+    @apply gl-mt-5;
+  }
+
+  blockquote,
+  .blockquote {
+    @apply gl-text-size-reset;
+    @apply gl-text-subtle;
+    @apply gl-py-3;
+    @apply gl-pl-5;
+    @apply gl-my-3;
+    @apply gl-mx-0;
+    @apply gl-border-l;
+    @apply gl-border-l-4;
+    @apply gl-border-strong;
+
+    &:dir(rtl) {
+      @apply gl-border-l-0;
+      @apply gl-border-r;
+      @apply gl-border-r-4;
+    }
+
+    p {
+      @apply gl-text-inherit;
+      @apply gl-leading-[1.5];
+
+      &:last-child {
+        margin: 0;
+      }
+    }
+
+    // ensure quoted lists are styled the same as normal lists
+    > ul {
+      list-style-type: disc;
+
+      ul {
+        list-style-type: circle;
+
+        ul {
+          list-style-type: square;
+        }
+      }
+    }
+
+    // Make sure a list that is the last child of a blockquote doesn't have an unnecessary bottom margin
+    > ul, > ol {
+      &:last-child {
+        @apply gl-mb-0;
+      }
+    }
+  }
+
+  hr {
+    @apply gl-border-default;
+    margin: 10px 0;
+  }
+
+  // A shadow is only shown on the right side while more content exists in
+  // that direction. No shadow on the left: once the user has scrolled, they
+  // already know content exists in the direction they came from. This
+  // matches the treatment of sticky header tables (.gl-table-shadow-overlay).
+  @keyframes gl-table-shadow {
+    0%,
+    95% {
+      box-shadow: inset -16px 0 14px -14px var(--gl-shadow-color-default);
+    }
+
+    100% {
+      box-shadow: inset 0 0 0 0 var(--gl-shadow-color-default);
+    }
+  }
+
+  @keyframes gl-table-shadow-overlay-x {
+    0%,
+    95% {
+      opacity: 1;
+    }
+
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes gl-table-shadow-overlay-y {
+    0%,
+    95% {
+      opacity: 1;
+    }
+
+    100% {
+      opacity: 0;
+    }
+  }
+
+  // Overlays scroll shadows on the right and bottom edges of scrollable
+  // tables while there is more content to scroll to in that direction.
+  // The shadows are pseudo-elements on this non-scrolling wrapper so they
+  // paint on top of the sticky table header. Their opacity is driven by
+  // named scroll timelines on the inner scroll container. Browsers without
+  // scroll timeline support (Firefox) never show the shadows.
+  .gl-table-shadow-overlay {
+    position: relative;
+    width: fit-content;
+    max-width: 100%;
+    // The container draws the table's outer frame; the outermost cell
+    // borders are removed below to avoid double borders.
+    border: 1px solid var(--gl-border-color-default);
+    border-radius: $gl-border-radius-base;
+    overflow: hidden;
+    timeline-scope: --gl-table-scroll-x, --gl-table-scroll-y;
+
+    table:not(.code) {
+      > thead > tr > th,
+      > tbody > tr > td,
+      > tbody > tr > th {
+        &:first-child {
+          border-inline-start: 0;
+        }
+
+        &:last-child {
+          border-inline-end: 0;
+        }
+      }
+
+      > thead > tr:first-child > th {
+        border-top: 0;
+      }
+
+      > tbody > tr:last-child > td {
+        border-bottom: 0;
+      }
+    }
+
+    &::before,
+    &::after {
+      content: '';
+      position: absolute;
+      pointer-events: none;
+      z-index: 2;
+      opacity: 0;
+    }
+
+    &::before {
+      // Scrollbar width can vary depending on the OS settings for visible scrollbar.
+      // This means that we cannot use --scrollbar-width to position the shadow, as it will be different for each user.
+      inset-block: 0 0;
+      inset-inline-end: 0;
+      width: 16px;
+      background: linear-gradient(to left, var(--gl-shadow-color-default), transparent);
+      animation: gl-table-shadow-overlay-x $gl-easing-out-cubic;
+      animation-timeline: --gl-table-scroll-x;
+    }
+
+    &:dir(rtl) {
+      margin-left: auto;
+
+      &::before {
+        background: linear-gradient(to right, var(--gl-shadow-color-default), transparent);
+      }
+    }
+
+    &::after {
+      // Scrollbar width can vary depending on the OS settings for visible scrollbar.
+      // This means that we cannot use --scrollbar-width to position the shadow, as it will be different for each user.
+      inset-inline: 0 0;
+      inset-block-end: 0;
+      height: 16px;
+      background: linear-gradient(to top, var(--gl-shadow-color-default), transparent);
+      animation: gl-table-shadow-overlay-y $gl-easing-out-cubic;
+      animation-timeline: --gl-table-scroll-y;
+    }
+
+    > [data-sticky-header] {
+      scroll-timeline: --gl-table-scroll-x inline, --gl-table-scroll-y block;
+    }
+  }
+
+  // Fix border bleed. The GLQL table can wrap `.gl-table-shadow` with its description, so
+  // "load more" may follow the wrapper instead.
+  // stylelint-disable-next-line gitlab/no-has -- scoped to gl-table-shadow element
+  .gl-table-shadow:not(:has(+ .glql-load-more), :has(+ .glql-load-more) > *) {
+    clip-path: inset(0 round 0 0 1px 1px);
+  }
+
+  .gl-table-shadow {
+    overflow-x: auto;
+    overflow-y: hidden;
+    animation: gl-table-shadow $gl-easing-out-cubic;
+    animation-timeline: scroll(self inline);
+    // Needs to stay white because we use mix-blend-mode
+    // to make it work in both light and darkmode.
+    background-color: var(--gl-color-neutral-0);
+
+    > table:not(.code) {
+      display: table;
+      overflow-x: initial;
+      mix-blend-mode: multiply;
+      min-width: stretch;
+      /* stylelint-disable-next-line value-no-vendor-prefix */
+      min-width: -webkit-fill-available;
+      /* stylelint-disable-next-line value-no-vendor-prefix */
+      min-width: -moz-available;
+    }
+  }
+
+  table:not(.code) {
+    @apply gl-text-default;
+    border: 0;
+    width: auto;
+
+    &:not(.gl-table-shadow > *, [data-sticky-header] > *) {
+      display: block;
+      margin: 16px 0;
+      overflow-x: auto;
+    }
+
+    td,
+    th {
+      @apply gl-border;
+    }
+
+    tr {
+      th {
+        @apply gl-border-b;
+      }
+
+      td[align="right"] {
+        font-variant-numeric: tabular-nums;
+      }
+    }
+
+    &.grid-none {
+      > thead > tr {
+        > th {
+          border-bottom-width: 0;
+          border-right-width: 0;
+          border-left-width: 0;
+
+          &:first-child {
+            border-left-width: 1px;
+          }
+
+          &:last-child {
+            border-right-width: 1px;
+          }
+        }
+      }
+
+      > tbody {
+        > tr > td {
+          border-width: 0;
+
+          &:first-child {
+            border-left-width: 1px;
+          }
+
+          &:last-child {
+            border-right-width: 1px;
+          }
+        }
+
+        > tr:last-child > td {
+          border-bottom-width: 1px;
+        }
+      }
+    }
+
+    &.grid-rows {
+      > thead > tr > th,
+      > tbody > tr > td {
+        border-right-width: 0;
+        border-left-width: 0;
+      }
+
+      > thead > tr {
+        > th:first-child {
+          border-left-width: 1px;
+        }
+
+        > th:last-child {
+          border-right-width: 1px;
+        }
+      }
+
+      > tbody > tr {
+        > td {
+          border-left-width: 0;
+          border-right-width: 0;
+        }
+
+        > td:first-child {
+          border-left-width: 1px;
+        }
+
+        > td:last-child {
+          border-right-width: 1px;
+        }
+      }
+    }
+
+    &.grid-cols {
+      > thead > tr > th {
+        border-bottom-width: 0;
+      }
+
+      > tbody > tr > td {
+        border-top-width: 0;
+        border-bottom-width: 0;
+      }
+
+      > tbody > tr:last-child > td {
+        border-bottom-width: 1px;
+      }
+    }
+
+    &.frame-sides {
+      > thead > tr > th {
+        border-top-width: 0;
+      }
+
+      > tbody > tr:last-child > td {
+        border-bottom-width: 0;
+      }
+    }
+
+    &.frame-topbot,
+    &.frame-ends {
+      > thead > tr > th:first-child,
+      > tbody > tr > td:first-child {
+        border-left-width: 0;
+      }
+
+      > thead > tr > th:last-child,
+      > tbody > tr > td:last-child {
+        border-right-width: 0;
+      }
+    }
+
+    &.frame-none {
+      > thead > tr > th {
+        border-top-width: 0;
+      }
+
+      > tbody > tr:last-child > td {
+        border-bottom-width: 0;
+      }
+
+      > thead > tr > th:first-child,
+      > tbody > tr > td:first-child {
+        border-left-width: 0;
+      }
+
+      > thead > tr > th:last-child,
+      > tbody > tr > td:last-child {
+        border-right-width: 0;
+      }
+    }
+
+    &.stripes-all tr,
+    &.stripes-odd tr:nth-of-type(odd),
+    &.stripes-even tr:nth-of-type(even),
+    &.stripes-hover tr:hover {
+      @apply gl-bg-subtle;
+    }
+  }
+
+  [data-sticky-header] > table:not(.code) > thead > tr:first-child > th,
+  [data-sticky-header] > table:not(.code) > tbody > tr:first-child > th {
+    @apply gl-sticky;
+    @apply gl-top-0;
+    @apply gl-bg-default;
+    @apply gl-z-1;
+    border-top: 0;
+    border-bottom: 0;
+    // Top edge is provided by the .gl-table-shadow-overlay container border.
+    box-shadow: inset 0 -1px 0 var(--gl-border-color-default);
+  }
+
+  table:dir(rtl) th {
+    text-align: right;
+  }
+
+  pre {
+    @apply gl-mb-5;
+    line-height: 1.6em;
+    overflow-x: auto;
+    @apply gl-rounded-base;
+
+    // Multi-line code blocks should scroll horizontally
+    code {
+      white-space: pre;
+      // Safari
+      word-wrap: normal;
+      overflow-wrap: normal;
+    }
+
+    &.plain-readme {
+      background: none;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      font-size: 14px;
+    }
+  }
+
+  dd {
+    margin-left: $gl-padding;
+  }
+
+  ul,
+  ol {
+    padding: 0;
+    @apply gl-m-0;
+    @apply gl-mb-5;
+
+    // Lists embedded in other lists can be "loose" or "tight"
+    // Remove bottom margin for all lists (default for tight lists)
+    ul,
+    ol {
+      @apply gl-mb-0;
+    }
+
+    // Loose lists need bottom margin added back
+    p ~ ol,
+    p ~ ul {
+      @apply gl-mb-5;
+    }
+  }
+
+  ul:dir(rtl),
+  ol:dir(rtl) {
+    margin: 3px 28px 3px 0 !important;
+  }
+
+  > ul {
+    list-style-type: disc;
+
+    ul {
+      list-style-type: circle;
+
+      ul {
+        list-style-type: square;
+      }
+    }
+  }
+
+  ul.checklist,
+  ul.none,
+  ol.none,
+  ul.no-bullet,
+  ol.no-bullet,
+  ol.unnumbered,
+  ul.unstyled,
+  ol.unstyled {
+    list-style-type: none;
+
+    li {
+      margin-left: 0;
+    }
+  }
+
+  li {
+    line-height: 1.6em;
+    margin-left: 25px;
+    padding-left: 3px;
+
+    /* Normalize the bullet position on webkit. */
+    /* stylelint-disable-next-line media-feature-name-no-vendor-prefix */
+    @media screen and (-webkit-min-device-pixel-ratio: 0) {
+      margin-left: 28px;
+      padding-left: 0;
+    }
+  }
+
+  ul.task-list,
+  ol.task-list {
+    > li.task-list-item {
+      position: relative;
+      min-height: 22px;
+      padding-inline-start: 32px;
+
+      > p > input.task-list-item-checkbox,
+      > input.task-list-item-checkbox {
+        position: absolute;
+        inset-inline-start: $gl-padding-8;
+        inset-block-start: 3px;
+      }
+    }
+  }
+
+  ul.task-list {
+    > li.task-list-item {
+      list-style-type: none;
+      margin-inline-start: 0 !important;
+    }
+  }
+
+  ul[data-type=taskList] input[type=checkbox],
+  ul.task-list .task-list-item-checkbox,
+  ol[data-type=taskList] input[type=checkbox],
+  ol.task-list .task-list-item-checkbox {
+    all: unset;
+    @apply gl-block;
+    @apply gl-w-5;
+    @apply gl-h-5;
+    @apply gl-cursor-pointer;
+    @apply gl-box-border;
+    @apply gl-rounded-base;
+    @apply focus-visible:gl-focus;
+    background-color: var(--gl-control-background-color-default);
+    border: 1px solid var(--gl-control-border-color-default);
+
+    // Ensure size of the target for pointer inputs is at least 24 pixels to satisfy WCAG 2.5.8.
+    &::before {
+      content: '';
+      margin-top: calc(-#{$gl-spacing-scale-2} - 1px);
+      margin-left: calc(-#{$gl-spacing-scale-2} - 1px);
+      @apply gl-absolute;
+      @apply gl-z-1;
+      @apply gl-w-6;
+      @apply gl-h-6;
+      @apply gl-bg-transparent;
+    }
+
+    &:not(:disabled):hover {
+      border-color: var(--gl-control-border-color-hover);
+    }
+
+    &:not(:disabled):focus-visible {
+      @apply gl-focus;
+      border-color: var(--gl-control-border-color-focus);
+    }
+
+    &:checked {
+      background-color: var(--gl-control-background-color-selected-default);
+      border-color: var(--gl-control-border-color-selected-default);
+
+      &::after {
+        content: '';
+        @apply gl-absolute;
+        @apply gl-z-2;
+        @apply gl-w-5;
+        @apply gl-h-5;
+        @apply gl-mt-[-1px];
+        @apply gl-ml-[-1px];
+        @apply gl-rounded-base;
+        mask: url("#{$gl-icon-check}") center center no-repeat;
+        background-color: var(--gl-control-indicator-color-selected);
+      }
+
+      @media (forced-colors: active) {
+        background-color: LinkText; // stylelint-disable-line scale-unlimited/declaration-strict-value
+        border-color: LinkText; // stylelint-disable-line scale-unlimited/declaration-strict-value
+      }
+    }
+
+    &:not(:disabled):checked:hover {
+      background-color: var(--gl-control-background-color-selected-hover);
+      border-color: var(--gl-control-border-color-selected-hover);
+    }
+
+    &:not(:disabled):checked:focus-visible {
+      background-color: var(--gl-control-background-color-selected-focus);
+      border-color: var(--gl-control-border-color-selected-focus);
+    }
+
+    &:disabled {
+      background-color: var(--gl-control-background-color-disabled);
+      border-color: var(--gl-control-border-color-disabled);
+      @apply gl-cursor-not-allowed;
+      @apply gl-text-disabled;
+    }
+
+    &:disabled:checked,
+    &[data-indeterminate]:disabled {
+      background-color: var(--gl-control-background-color-selected-disabled);
+      border-color: var(--gl-control-border-color-selected-disabled);
+
+      &::after {
+        background-color: var(--gl-control-indicator-color-disabled);
+      }
+    }
+
+    &[data-indeterminate]:disabled {
+      &::after {
+        content: '';
+        @apply gl-absolute;
+        @apply gl-z-2;
+        @apply gl-w-5;
+        @apply gl-h-5;
+        @apply gl-mt-[-1px];
+        @apply gl-ml-[-1px];
+        @apply gl-rounded-base;
+        mask: url("#{$gl-icon-indeterminate}") center center no-repeat;
+        background-color: var(--gl-control-indicator-color-disabled);
+      }
+    }
+  }
+
+  li.inapplicable {
+    // For a single line list item, there's no <p> (tight list); text nodes are wrapped in <s class="inapplicable">.
+    s.inapplicable {
+        @apply gl-text-disabled;
+    }
+
+    // Strikethrough block-level items in non-tight lists as a whole; we don't do sublists.
+    > p,
+    > div {
+      text-decoration: line-through;
+      @apply gl-text-disabled;
+    }
+
+    .drag-icon {
+      @apply gl-fill-icon-default;
+    }
+
+    // If an inapplicable task list item contains labels or <kbd>s, strike them
+    // out as well.
+    .gl-label, kbd {
+      text-decoration: line-through;
+      text-decoration-color: var(--gl-text-color-disabled);
+      vertical-align: text-bottom;
+    }
+  }
+
+  a.gfm-gollum-wiki-page {
+    &::before {
+      margin-right: 4px;
+      vertical-align: -2px;
+
+      @include gl-dark-invert-keep-hue;
+      content: url('sprite_icons/document.svg');
+    }
+  }
+
+  a.with-attachment-icon,
+  a[href*='/uploads/'],
+  a[href*='storage.googleapis.com/google-code-attachments/'] {
+    &::before {
+      margin-right: 4px;
+      vertical-align: -2px;
+
+      @include gl-dark-invert-keep-hue;
+      content: url('sprite_icons/paperclip.svg');
+    }
+  }
+
+  a[href*='/wikis/'],
+  a[href*='/uploads/'],
+  a[href*='storage.googleapis.com/google-code-attachments/'] {
+    &.no-attachment-icon {
+      &::before {
+        display: none;
+      }
+    }
+  }
+
+  /* Link to current header. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    a.anchor {
+      &:not([aria-hidden=true]) {
+        &::after {
+          @apply gl-inline-block;
+          @apply gl-bg-cover;
+          @include gl-dark-invert-keep-hue;
+          content: "";
+          background-image: url('icon_anchor.svg');
+          height: 0.9em;
+          width: 0.9em;
+          margin-inline-start: 0.2em;
+          @apply gl-invisible;
+        }
+      }
+
+      &:is([aria-hidden=true]) {
+        $anchor-offset: 20px;
+
+        margin-left: calc(-1 * $anchor-offset);
+        @apply gl-no-underline;
+        @apply gl-outline-none;
+        @apply gl-absolute;
+        width: $anchor-offset;
+
+        &::after {
+          @include gl-dark-invert-keep-hue;
+          content: url('icon_anchor.svg');
+          @apply gl-invisible;
+        }
+      }
+    }
+
+    &:hover > a.anchor::after {
+      visibility: visible;
+    }
+
+    > a.anchor:focus-visible::after {
+      visibility: visible;
+      outline: auto;
+    }
+  }
+
+  .big {
+    font-size: larger;
+  }
+
+  figcaption,
+  .small {
+    font-size: smaller;
+  }
+
+  .underline {
+    text-decoration: underline;
+  }
+
+  .overline {
+    text-decoration: overline;
+  }
+
+  .line-through {
+    text-decoration: line-through;
+  }
+
+  // Custom Font Awesome styles that render emojis in asciidoc
+  .fa {
+    display: inline-block;
+    font-style: normal;
+    font-size: 14px;
+    text-rendering: auto;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  .admonitionblock td.icon [class^='fa icon-'] {
+    font-size: 2em;
+  }
+
+  .admonitionblock td.icon .icon-warning::before {
+    content: '⚠';
+  }
+
+  .admonitionblock td.icon .icon-important::before {
+    content: '❗';
+  }
+
+  .admonitionblock td.icon .icon-tip::before {
+    content: '💡';
+  }
+
+  .admonitionblock td.icon .icon-note::before {
+    content: '📌';
+  }
+
+  .admonitionblock td.icon .icon-caution::before {
+    content: '🔥';
+  }
+
+  .admonitionblock, .sidebarblock, .openblock, .exampleblock {
+    margin: $gl-padding 0 $gl-padding;
+  }
+
+  .sidebarblock {
+    @apply gl-bg-strong;
+    padding: $gl-padding-12 $gl-padding-24;
+    border-radius: $gl-border-radius-large;
+
+    p {
+      margin: 0;
+    }
+  }
+
+  .exampleblock > div:nth-of-type(1) {
+    @apply gl-border;
+    border-width: $gl-border-size-3;
+    @apply gl-rounded-base;
+    padding: $gl-padding-12 $gl-padding-24;
+
+    p {
+      margin: 0;
+    }
+  }
+
+  .fa-square-o::before {
+    content: '\2610';
+  }
+
+  .fa-check-square-o::before {
+    content: '\2611';
+  }
+
+  .admonitionblock td.icon {
+    width: 1%;
+  }
+
+  .gl-dropdown-item {
+    margin: 0;
+    padding: 0;
+    line-height: 1rem;
+  }
+
+  /* AsciiDoc(tor) built-in alignment roles */
+
+  .text-left {
+    text-align: left !important;
+  }
+
+  .text-right {
+    text-align: right !important;
+  }
+
+  .text-center {
+    text-align: center !important;
+  }
+
+  .text-justify {
+    text-align: justify !important;
+  }
+
+  /* AsciiDoc(tor) table of contents */
+
+  .toc > div {
+    @apply gl-font-bold;
+  }
+
+  @include email-code-block;
+
+  &.md-child-content-text-subtle {
+    @apply gl-text-subtle;
+
+    p,
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    table:not(.code) {
+      @apply gl-text-subtle;
+    }
+  }
+
+  /* Vertically align badges with icons */
+  /* stylelint-disable-next-line gitlab/no-has -- scoped to gl-badge element */
+  .gl-badge:has(> svg) {
+    position: relative;
+    bottom: -3px;
+  }
+
+  /* Custom classes we explicitly support */
+  .glfm-float-left {
+    float: left;
+  }
+
+  .glfm-float-right {
+    float: right;
+  }
+
+  .glfm-float-none {
+    float: none;
+  }
+}
+
+/**
+ * Links
+ *
+ */
+a:focus-visible {
+  @include gl-focus($outline: true, $outline-offset: $outline-width);
+}
+
+/**
+ * Headers
+ *
+ */
+body {
+  -webkit-text-shadow: $body-text-shadow 0 0 1px;
+}
+
+.page-title {
+  margin: $gl-spacing-scale-4 0;
+  line-height: 1.3;
+
+  &.with-button {
+    line-height: 34px;
+  }
+
+}
+
+.page-title-empty {
+  margin: 12px 0;
+  line-height: 1.3;
+  font-size: 1.25em;
+  font-weight: $gl-font-weight-bold;
+}
+
+.light-header {
+  font-weight: $gl-font-weight-bold;
+}
+
+/** CODE **/
+pre {
+  position: relative;
+  @apply gl-font-monospace;
+
+  display: block;
+  padding: $gl-padding-8 $input-horizontal-padding;
+  margin: 0 0 $gl-padding-8;
+  font-size: $gl-font-size;
+  word-break: break-all;
+  word-wrap: break-word;
+  @apply gl-text-default;
+  @apply gl-bg-subtle;
+  @apply gl-border;
+  border-radius: $border-radius-small;
+
+  // Select only code elements that will have the copy code button
+  .markdown-code-block & {
+    padding: $input-horizontal-padding;
+  }
+}
+
+.monospace {
+  @apply gl-font-monospace;
+}
+
+.weight-normal {
+  font-weight: $gl-font-weight-normal;
+}
+
+.commit-sha,
+.ref-name {
+  @apply gl-font-monospace;
+  font-size: 95%;
+}
+
+.git-revision-dropdown .dropdown-content li:not(.dropdown-menu-empty-item) a {
+  @apply gl-font-monospace;
+  font-size: 95%;
+  word-break: break-all;
+}
+
+/**
+ * Textareas intended for GFM
+ *
+ */
+// stylelint-disable-next-line gitlab/no-js-class
+textarea.js-gfm-input {
+  @apply gl-font-monospace;
+  font-size: $gl-font-size;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  small {
+    @apply gl-text-heading;
+  }
+}
+
+.text-right-md {
+  @include gl-container-width-up(md, panel) {
+    text-align: right;
+  }
+}
+
+.text-right-lg {
+  @include gl-container-width-up(lg, panel) {
+    text-align: right;
+  }
+}
+
+.idiff.deletion {
+  background: var(--code-old-inline-diff-background-color, $line-removed-dark);
+}
+
+.idiff.addition {
+  background: var(--code-new-inline-diff-background-color, $line-added-dark);
+}
+
+/**
+ * form text input i.e. search bar, comments, forms, etc.
+ */
+input,
+textarea {
+  &::placeholder {
+    color: var(--gl-control-placeholder-color);
+  }
+}
+
+wbr {
+  display: inline-block;
+}
+
+// The font used in Monaco editor - Web IDE, Snippets, single file editor
+:root {
+  --code-editor-font: #{$monospace-font};
+}
+
+/**
+ * FOOTNOTES
+ */
+ section.footnotes {
+  position: relative;
+  padding-top: $gl-spacing-scale-5;
+  margin-top: $gl-spacing-scale-7;
+  font-size: $gl-font-size-12;
+
+  &::before {
+    content: '';
+    width: 16rem;
+    max-width: 100%;
+    @apply gl-border-t;
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  ol > li {
+    margin-inline-start: $gl-spacing-scale-6;
+
+     p {
+      margin-block-end: 0;
+     }
+  }
+
+  // prevent backref character from rendering as emoji
+  .footnote-backref gl-emoji {
+    font-family: inherit;
+    font-size: 0.875em;
+    pointer-events: none;
+  }
+}
+
+.math-content-inline {
+  @apply gl-max-w-full;
+}

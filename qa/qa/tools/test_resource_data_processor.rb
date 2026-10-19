@@ -1,0 +1,135 @@
+# frozen_string_literal: true
+
+# This script collects all resources created during each test execution
+# Save the data and write it to a JSON file at the end of suite
+
+module QA
+  module Tools
+    class TestResourceDataProcessor
+      include Singleton
+
+      def initialize
+        @resources = Hash.new { |hsh, key| hsh[key] = [] }
+      end
+
+      class << self
+        delegate :collect, :write_to_file, :resources, :load_prior_resources, to: :instance
+      end
+
+      # @return [Hash<String, Array>]
+      attr_reader :resources
+
+      # Collecting resources created in E2E tests
+      # Data is a Hash of resources with keys as resource type (group, project, issue, etc.)
+      # Each type contains an array of resource object (hash) of the same type
+      # E.g: { "QA::Resource::Project": [ { info: 'foo', api_path: '/foo'}, {...} ] }
+      #
+      # @param [QA::Resource::Base] resource fabricated resource
+      # @param [String] info resource info
+      # @param [Symbol] method fabrication method, api or browser_ui
+      # @param [Integer] time fabrication time
+      # @return [Hash]
+      def collect(resource:, info:, fabrication_method:, fabrication_time:)
+        # http_method is empty when we use the browser_ui to create a resource,
+        # so assign it a default :post value if it is empty otherwise it will be set to :get in resource_api_path
+        http_method = resource.api_fabrication_http_method || :post
+        api_path = resource_api_path(resource)
+        type = resource.class.name
+
+        resources[type] << {
+          info: info,
+          api_path: api_path,
+          fabrication_method: fabrication_method,
+          fabrication_time: fabrication_time,
+          http_method: http_method,
+          timestamp: Time.now.to_s
+        }
+      end
+
+      # Load resources from prior CI job attempts preserved via CI cache
+      #
+      # @return [void]
+      def load_prior_resources
+        return unless Runtime::Env.running_in_ci?
+
+        resource_dir = File.join(Runtime::Path.qa_root, 'tmp')
+        return unless Dir.exist?(resource_dir)
+
+        files = Dir.glob(File.join(resource_dir, '*test-resources-*.json'))
+        return if files.empty?
+
+        Runtime::Logger.info("CI job retry detected. " \
+          "Loading #{files.size} prior resource file(s) from cache.")
+
+        files.each do |file|
+          data = JSON.parse(File.read(file))
+          data.each do |type, resource_list|
+            resources[type].concat(Array(resource_list).map(&:deep_symbolize_keys))
+          end
+          Runtime::Logger.info("Loaded prior resources from #{File.basename(file)}")
+        rescue JSON::ParserError => e
+          Runtime::Logger.warn("Failed to parse prior resource file #{file}: #{e.message}")
+        end
+      end
+
+      # If JSON file exists and not empty, read and load file content
+      # Merge what is saved in @resources into the content from file
+      # Overwrite file content with the new data hash
+      # Otherwise create file and write data hash to file for the first time
+      #
+      # @return [void]
+      def write_to_file(suite_failed)
+        return if resources.empty?
+
+        start_str = mark_as_failed?(suite_failed) ? 'failed-test-resources' : 'test-resources'
+        file_name = Runtime::Env.running_in_ci? ? "#{start_str}-#{SecureRandom.hex(3)}.json" : "#{start_str}.json"
+        file = Pathname.new(File.join(Runtime::Path.qa_root, 'tmp', file_name))
+        FileUtils.mkdir_p(file.dirname)
+
+        data = resources.deep_dup
+        # merge existing json if present
+        if file.exist?
+          begin
+            JSON.parse(File.read(file)).deep_merge!(data) { |_, val, other_val| val + other_val }
+          rescue JSON::ParserError => e
+            raise JSON::ParserError, "Failed to parse JSON from #{file}: #{e.message}"
+          end
+        end
+
+        File.write(file, JSON.pretty_generate(data))
+      end
+
+      private
+
+      # Check if resource file should be marked as failed
+      #
+      # @param [Boolean] suite_failed
+      # @return [Boolean]
+      def mark_as_failed?(suite_failed)
+        return suite_failed unless ::Gitlab::QA::Runtime::Env.retry_failed_specs?
+
+        # if suite ran in the initial run, do not mark resource as failed even if suite failed
+        Runtime::Env.rspec_retried? ? suite_failed : false
+      end
+
+      # Determine resource api path or return default value
+      # Some resources fabricated via UI can raise no attribute error
+      #
+      # @param [QA::Resource::Base] resource
+      # @return [String]
+      def resource_api_path(resource)
+        default = 'Cannot find resource API path'
+
+        if resource.respond_to?(:api_delete_path)
+          resource.api_delete_path.gsub('%2F', '/')
+        elsif resource.respond_to?(:api_get_path)
+          resource.api_get_path.gsub('%2F', '/')
+        else
+          default
+        end
+      rescue QA::Resource::Base::NoValueError, QA::Resource::Errors::ResourceNotFoundError
+        default
+      end
+    end
+  end
+end

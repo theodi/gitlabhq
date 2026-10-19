@@ -1,0 +1,37 @@
+# @feature_category: source_code_management
+query getBranchMergeRequest($projectPath: ID!, $sourceBranch: String!, $targetBranch: String!) {
+  project(fullPath: $projectPath) {
+    id
+    userPermissions {
+      createMergeRequestFrom
+      createMergeRequestIn
+    }
+    defaultMergeRequestTarget @gl_introduced(version: "19.5.0") {
+      id
+      userPermissions {
+        createMergeRequestIn
+      }
+    }
+    mergeRequests(
+      state: opened
+      sourceBranches: [$sourceBranch]
+      targetBranches: [$targetBranch]
+      first: 1
+    ) {
+      nodes {
+        id
+        webPath
+      }
+    }
+    sourcedMergeRequests(state: opened, sourceBranches: [$sourceBranch], first: 1)
+      @gl_introduced(version: "19.5.0") {
+      nodes {
+        id
+        webPath
+      }
+    }
+    forkedFrom {
+      id
+    }
+  }
+}

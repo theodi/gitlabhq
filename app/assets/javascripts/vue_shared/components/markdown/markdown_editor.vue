@@ -1,0 +1,534 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlAlert } from '@gitlab/ui';
+import Autosize from 'autosize';
+import { __ } from '~/locale';
+import axios from '~/lib/utils/axios_utils';
+import { updateDraft, clearDraft, getDraft } from '~/lib/utils/autosave';
+import { setUrlParams, joinPaths } from '~/lib/utils/url_utility';
+import LocalStorageSync from '~/vue_shared/components/local_storage_sync.vue';
+import { glSlotsMixin } from '~/lib/utils/vue3compat/gl_slots_mixin';
+import {
+  EDITING_MODE_KEY,
+  EDITING_MODE_MARKDOWN_FIELD,
+  EDITING_MODE_CONTENT_EDITOR,
+  EDITING_MODE_EVENTS,
+  CLEAR_AUTOSAVE_ENTRY_EVENT,
+} from '../../constants';
+import { getInitialEditingMode } from './utils';
+import MarkdownField from './field.vue';
+import eventHub from './eventhub';
+
+async function sleep(t = 10) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, t);
+  });
+}
+
+async function waitFor(getEl, interval = 10, timeout = 2000) {
+  if (timeout <= 0) return null;
+
+  const el = getEl();
+  if (el) return el;
+
+  await sleep(interval);
+  return waitFor(getEl, timeout - interval);
+}
+
+export default {
+  name: 'MarkdownEditor',
+  components: {
+    GlAlert,
+    MarkdownField,
+    LocalStorageSync,
+    ContentEditor: defineAsyncComponent(
+      () =>
+        import(
+          /* webpackChunkName: 'content_editor' */ '~/content_editor/components/content_editor.vue'
+        ),
+    ),
+  },
+  mixins: [glSlotsMixin],
+  props: {
+    value: {
+      type: String,
+      required: true,
+    },
+    setFacade: {
+      type: Function,
+      required: false,
+      default: null,
+    },
+    renderMarkdownPath: {
+      type: String,
+      required: true,
+    },
+    uploadsPath: {
+      type: String,
+      required: false,
+      default: () => window.uploads_path || '',
+    },
+    enableContentEditor: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+    formFieldProps: {
+      type: Object,
+      required: true,
+    },
+    autofocus: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    enableAutocomplete: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+    autocompleteDataSources: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    supportsQuickActions: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    supportsTableOfContents: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    autosaveKey: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    markdownDocsPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    drawioEnabled: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    disabled: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    disableAttachments: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    codeSuggestionsConfig: {
+      type: Object,
+      required: false,
+      default: () => ({ lines: [], lineType: '', canSuggest: false, showPopover: false }),
+    },
+    noteableType: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    restrictedToolBarItems: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    restoreFromAutosave: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    newCommentTemplatePaths: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    editorAiActions: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    immersive: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    fillContainer: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hideModeSwitcher: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    collaborationProvider: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    beforeContentEditor: {
+      type: Function,
+      required: false,
+      default: null,
+    },
+  },
+  emits: [
+    'blur',
+    'content-editor',
+    'focus',
+    'handle-suggest-dismissed',
+    'input',
+    'keydown',
+    'markdown-field',
+  ],
+  data() {
+    const editingMode = getInitialEditingMode();
+
+    const autosaveValue = this.autosaveKey ? getDraft(this.autosaveKey) : '';
+    const initialValue = this.restoreFromAutosave ? autosaveValue : this.value;
+
+    return {
+      alert: null,
+      markdown: initialValue || autosaveValue || '',
+      editingMode,
+      autofocused: false,
+    };
+  },
+  computed: {
+    isContentEditorActive() {
+      return this.enableContentEditor && this.editingMode === EDITING_MODE_CONTENT_EDITOR;
+    },
+    contentEditorAutofocused() {
+      // Match textarea focus behavior
+      return this.autofocus && !this.autofocused ? 'end' : false;
+    },
+    markdownFieldRestrictedToolBarItems() {
+      const restrictAttachments = this.disableAttachments ? ['attach-file'] : [];
+
+      return [...this.restrictedToolBarItems, ...restrictAttachments];
+    },
+    isDefaultEditorEnabled() {
+      return ['plain_text_editor', 'rich_text_editor'].includes(window.gon?.text_editor);
+    },
+  },
+  watch: {
+    value: 'updateValue',
+    collaborationProvider(provider) {
+      if (provider) this.alert = null;
+    },
+  },
+  mounted() {
+    this.autofocusTextarea();
+
+    // Second argument (`true`) is passed to identify
+    // that the input event was emitted on component mount.
+    this.$emit('input', this.markdown, true);
+    this.$emit(EDITING_MODE_EVENTS[this.editingMode]);
+    this.saveDraft();
+
+    this.setFacade?.({
+      getValue: () => this.getValue(),
+      setValue: (val) => this.setValue(val),
+    });
+
+    eventHub.$on(CLEAR_AUTOSAVE_ENTRY_EVENT, this.clearDraft);
+  },
+  beforeDestroy() {
+    eventHub.$off(CLEAR_AUTOSAVE_ENTRY_EVENT, this.clearDraft);
+  },
+  methods: {
+    getValue() {
+      return this.markdown;
+    },
+    setValue(value) {
+      this.$emit('input', value);
+      this.updateValue(value);
+    },
+    updateValue(value) {
+      this.markdown = value;
+      this.saveDraft();
+      this.autosizeTextarea();
+    },
+    // eslint-disable-next-line vue/no-unused-properties -- append() is part of the component's public API.
+    append(value) {
+      if (!value) {
+        this.focus();
+        return;
+      }
+      const newValue = [this.markdown.trim(), value].filter(Boolean).join('\n\n');
+      this.updateValue(`${newValue}\n\n`);
+      this.$nextTick(() => {
+        this.focus();
+      });
+    },
+    // eslint-disable-next-line vue/no-unused-properties -- setTemplate() is part of the component's public API.
+    setTemplate(template, force = false) {
+      if (!this.markdown || force) {
+        this.setValue(template);
+      } else {
+        const dismiss = () => {
+          this.alert = null;
+        };
+        this.alert = {
+          message: this.$options.i18n.applyTemplateAlert.message,
+          variant: 'warning',
+          primaryButtonText: this.$options.i18n.applyTemplateAlert.primaryButtonText,
+          secondaryButtonText: this.$options.i18n.applyTemplateAlert.secondaryButtonText,
+          primaryAction: () => {
+            this.setValue(template, true);
+            dismiss();
+          },
+          secondaryAction: dismiss,
+          dismiss,
+        };
+      }
+    },
+    updateMarkdownFromContentEditor({ markdown }) {
+      this.markdown = markdown;
+      this.$emit('input', markdown);
+
+      this.saveDraft();
+    },
+    updateMarkdownFromMarkdownField({ target }) {
+      this.markdown = target.value;
+      this.$emit('input', target.value);
+
+      this.saveDraft();
+    },
+    renderMarkdown(markdown) {
+      const url = setUrlParams(
+        {
+          render_quick_actions: this.supportsQuickActions,
+          no_header_anchors: !this.supportsTableOfContents,
+        },
+        { url: joinPaths(window.location.origin, this.renderMarkdownPath) },
+      );
+      return axios
+        .post(url, { text: markdown })
+        .then(({ data: { html, body, ...otherData } = {} } = {}) => ({
+          body: body || html || '',
+          ...otherData,
+        }));
+    },
+    async onEditingModeChange(editingMode) {
+      if (
+        editingMode === EDITING_MODE_CONTENT_EDITOR &&
+        this.beforeContentEditor &&
+        !(await this.beforeContentEditor(this.markdown))
+      ) {
+        return;
+      }
+
+      this.editingMode = editingMode;
+      this.notifyEditingModeChange(editingMode);
+    },
+    onEditingModeRestored(editingMode) {
+      if (!this.isDefaultEditorEnabled) return;
+      if (editingMode === EDITING_MODE_CONTENT_EDITOR && !this.enableContentEditor) {
+        this.editingMode = EDITING_MODE_MARKDOWN_FIELD;
+        return;
+      }
+
+      this.editingMode = editingMode;
+      this.$emit(EDITING_MODE_EVENTS[editingMode]);
+      this.notifyEditingModeChange(editingMode);
+    },
+    async notifyEditingModeChange(editingMode) {
+      this.$emit(EDITING_MODE_EVENTS[editingMode]);
+
+      const componentToFocus =
+        editingMode === EDITING_MODE_CONTENT_EDITOR
+          ? () => this.$refs.contentEditor
+          : () => this.$refs.textarea;
+
+      (await waitFor(componentToFocus)).focus();
+    },
+    autofocusTextarea() {
+      if (this.autofocus && this.editingMode === EDITING_MODE_MARKDOWN_FIELD) {
+        this.$refs.textarea.focus();
+        this.setEditorAsAutofocused();
+      }
+    },
+    focus() {
+      if (this.editingMode === EDITING_MODE_MARKDOWN_FIELD) {
+        this.$refs.textarea.focus();
+      } else {
+        this.$refs.contentEditor.focus();
+      }
+    },
+    setEditorAsAutofocused() {
+      this.autofocused = true;
+    },
+    saveDraft() {
+      if (!this.autosaveKey) return;
+      if (this.markdown) updateDraft(this.autosaveKey, this.markdown);
+      else clearDraft(this.autosaveKey);
+    },
+    clearDraft(key) {
+      if (!this.autosaveKey || key !== this.autosaveKey) return;
+      clearDraft(this.autosaveKey);
+    },
+    // eslint-disable-next-line vue/no-unused-properties -- togglePreview() is part of the component's public API.
+    togglePreview(value) {
+      if (this.editingMode === EDITING_MODE_MARKDOWN_FIELD) {
+        this.$refs.markdownField.previewMarkdown = value;
+      }
+    },
+    autosizeTextarea() {
+      if (this.editingMode === EDITING_MODE_MARKDOWN_FIELD) {
+        this.$nextTick(() => {
+          Autosize.update(this.$refs.textarea);
+        });
+      }
+    },
+    onKeydown(event) {
+      const isModifierKey = event.ctrlKey || event.metaKey;
+      if (isModifierKey && event.key === 'k') {
+        event.preventDefault();
+      }
+      this.$emit('keydown', event);
+    },
+  },
+  EDITING_MODE_KEY,
+  i18n: {
+    applyTemplateAlert: {
+      message: __(
+        'Applying a template will replace the existing content. Any changes you have made will be lost.',
+      ),
+      primaryButtonText: __('Apply template'),
+      secondaryButtonText: __('Cancel'),
+    },
+  },
+};
+</script>
+<template>
+  <div
+    class="js-editor md-area-wrapper gl-rounded-lg !gl-px-0"
+    :class="{
+      'gl-relative': !immersive,
+      'md-area-wrapper-fill': fillContainer,
+    }"
+  >
+    <local-storage-sync
+      v-if="!isDefaultEditorEnabled"
+      :value="editingMode"
+      as-string
+      :storage-key="$options.EDITING_MODE_KEY"
+      @input="onEditingModeRestored"
+    />
+    <gl-alert
+      v-if="alert"
+      class="gl-mb-4"
+      :variant="alert.variant"
+      :primary-button-text="alert.primaryButtonText"
+      :secondary-button-text="alert.secondaryButtonText"
+      @primary-action="alert.primaryAction"
+      @secondary-action="alert.secondaryAction"
+      @dismiss="alert.dismiss"
+    >
+      {{ alert.message }}
+    </gl-alert>
+    <markdown-field
+      v-if="!isContentEditorActive"
+      ref="markdownField"
+      v-bind="$attrs"
+      data-testid="markdown-field"
+      :markdown-preview-path="renderMarkdownPath"
+      :new-comment-template-paths="newCommentTemplatePaths"
+      :can-attach-file="!disableAttachments"
+      :code-suggestions-config="codeSuggestionsConfig"
+      :editor-ai-actions="editorAiActions"
+      :textarea-value="markdown"
+      :uploads-path="uploadsPath"
+      :enable-autocomplete="enableAutocomplete"
+      :autocomplete-data-sources="autocompleteDataSources"
+      :markdown-docs-path="markdownDocsPath"
+      :supports-quick-actions="supportsQuickActions"
+      :supports-table-of-contents="supportsTableOfContents"
+      :show-content-editor-switcher="enableContentEditor && !hideModeSwitcher"
+      :drawio-enabled="drawioEnabled"
+      :immersive="immersive"
+      :restricted-tool-bar-items="markdownFieldRestrictedToolBarItems"
+      @enable-content-editor="onEditingModeChange('contentEditor')"
+      @handle-suggest-dismissed="() => $emit('handle-suggest-dismissed')"
+    >
+      <template v-if="glSlots().header" #header><slot name="header"></slot></template>
+      <template #header-buttons>
+        <div>
+          <slot name="header-buttons"></slot>
+        </div>
+      </template>
+      <template v-if="glSlots().toolbar" #toolbar><slot name="toolbar"></slot></template>
+      <template #textarea>
+        <textarea
+          v-bind="formFieldProps"
+          ref="textarea"
+          :value="markdown"
+          class="note-textarea js-gfm-input markdown-area"
+          :class="[{ 'focus-visible:gl-outline-none': immersive }, formFieldProps.class || '']"
+          dir="auto"
+          :data-can-suggest="codeSuggestionsConfig.canSuggest"
+          :data-noteable-type="noteableType"
+          :data-supports-quick-actions="supportsQuickActions"
+          :data-testid="formFieldProps['data-testid'] || 'markdown-editor-form-field'"
+          :disabled="disabled"
+          @input="updateMarkdownFromMarkdownField"
+          @keydown="$emit('keydown', $event)"
+          @focus="$emit('focus')"
+          @blur="$emit('blur')"
+        ></textarea>
+      </template>
+    </markdown-field>
+    <div v-else class="md-content-editor-wrapper">
+      <content-editor
+        ref="contentEditor"
+        :render-markdown="renderMarkdown"
+        :markdown-docs-path="markdownDocsPath"
+        :new-comment-template-paths="newCommentTemplatePaths"
+        :uploads-path="uploadsPath"
+        :markdown="markdown"
+        :supports-quick-actions="supportsQuickActions"
+        :supports-table-of-contents="supportsTableOfContents"
+        :autofocus="contentEditorAutofocused"
+        :placeholder="formFieldProps.placeholder"
+        :aria-label="formFieldProps['aria-label']"
+        :aria-labelled-by="formFieldProps['aria-labelledby']"
+        :aria-described-by="formFieldProps['aria-describedby']"
+        :drawio-enabled="drawioEnabled"
+        :enable-autocomplete="enableAutocomplete"
+        :autocomplete-data-sources="autocompleteDataSources"
+        :editable="!disabled"
+        :disable-attachments="disableAttachments"
+        :code-suggestions-config="codeSuggestionsConfig"
+        :immersive="immersive"
+        :hide-mode-switcher="hideModeSwitcher"
+        :collaboration-provider="collaborationProvider"
+        :data-testid="formFieldProps['data-testid'] || 'markdown-editor-form-field'"
+        @initialized="setEditorAsAutofocused"
+        @change="updateMarkdownFromContentEditor"
+        @keydown="onKeydown"
+        @enable-markdown-editor="onEditingModeChange('markdownField')"
+        @focus="$emit('focus')"
+        @blur="$emit('blur')"
+      >
+        <template v-if="glSlots().header" #header><slot name="header"></slot></template>
+        <template v-if="glSlots()['header-buttons']" #header-buttons
+          ><slot name="header-buttons"></slot
+        ></template>
+        <template v-if="glSlots().toolbar" #toolbar><slot name="toolbar"></slot></template>
+      </content-editor>
+      <input v-bind="formFieldProps" :value="markdown" type="hidden" />
+    </div>
+  </div>
+</template>

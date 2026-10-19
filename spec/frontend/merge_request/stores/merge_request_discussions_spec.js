@@ -1,0 +1,1291 @@
+import { createTestingPinia } from '@pinia/testing';
+import { useMergeRequestDiscussions } from '~/merge_request/stores/merge_request_discussions';
+import { useMergeRequestVersions } from '~/merge_request/stores/merge_request_versions';
+import { useDiffDiscussions } from '~/rapid_diffs/stores/diff_discussions';
+import { useDiffsView } from '~/rapid_diffs/stores/diffs_view';
+import { useDiscussions } from '~/notes/store/discussions';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { useMrNotes } from '~/mr_notes/store/legacy_mr_notes';
+import { useMergeRequestDraftNotes } from '~/merge_request/stores/merge_request_draft_notes';
+
+jest.mock('~/notes/store/legacy_notes');
+jest.mock('~/merge_request/stores/merge_request_draft_notes');
+
+describe('mergeRequestDiscussions store', () => {
+  let store;
+  let mockNotesStore;
+  let mockDraftNotes;
+
+  beforeEach(() => {
+    createTestingPinia({ stubActions: false });
+    mockDraftNotes = {
+      drafts: [],
+      isPublishing: false,
+      hasDrafts: false,
+      draftsCount: 0,
+      fetchDrafts: jest.fn().mockResolvedValue(),
+      createNewDraft: jest.fn().mockResolvedValue(),
+      addDraftToDiscussion: jest.fn().mockResolvedValue(),
+      updateDraft: jest.fn().mockResolvedValue(),
+      deleteDraft: jest.fn().mockResolvedValue(),
+      publishReview: jest.fn().mockResolvedValue(),
+      discardDrafts: jest.fn().mockResolvedValue(),
+      findDraftsForDiscussion: jest.fn().mockReturnValue([]),
+      findDraftsAsDiscussionsForFile: jest.fn().mockReturnValue([]),
+      findDraftsAsLineDiscussionsForFile: jest.fn().mockReturnValue([]),
+      findDraftsAsFileDiscussionsForFile: jest.fn().mockReturnValue([]),
+      findDraftsAsImageDiscussionsForFile: jest.fn().mockReturnValue([]),
+      findDraftsForPosition: jest.fn().mockReturnValue([]),
+    };
+    useMergeRequestDraftNotes.mockReturnValue(mockDraftNotes);
+    mockNotesStore = {
+      fetchNotes: jest.fn().mockResolvedValue(),
+      fetchNotesPromise: null,
+      // eslint-disable-next-line no-empty-function
+      fetchNotesBatches: jest.fn(async function* generator() {}),
+      addOrUpdateDiscussions: jest.fn(),
+      createNewNote: jest.fn().mockResolvedValue({ id: 'new-1' }),
+      saveNote: jest.fn().mockResolvedValue(),
+      replyToDiscussion: jest.fn().mockResolvedValue({ discussion: { id: 'disc-1' } }),
+      updateNote: jest.fn().mockResolvedValue({ id: 1, body: 'updated' }),
+      deleteNote: jest.fn().mockResolvedValue(),
+      toggleAwardRequest: jest.fn().mockResolvedValue(),
+      toggleResolveNote: jest.fn().mockResolvedValue(),
+      submitSuggestion: jest.fn().mockResolvedValue(),
+      submitSuggestionBatch: jest.fn().mockResolvedValue(),
+      toggleAllDiscussions: jest.fn(),
+      allDiscussionsExpanded: false,
+      getSuggestionsFilePaths: jest.fn().mockResolvedValue(),
+      addSuggestionInfoToBatch: jest.fn(),
+      removeSuggestionInfoFromBatch: jest.fn(),
+      batchSuggestionsInfo: [],
+      suggestionsCount: 0,
+      noteableData: {
+        create_note_path: '/api/notes',
+        noteableType: 'MergeRequest',
+        id: 42,
+        diff_head_sha: 'abc123',
+        targetType: 'merge_request',
+        can_receive_suggestion: true,
+      },
+      notesData: { draftsPath: '/drafts' },
+      getUserData: { id: 1 },
+    };
+    useNotes.mockReturnValue(mockNotesStore);
+    useMergeRequestVersions().setVersions({
+      sourceVersions: [{ selected: true, base_sha: 'base000', head_sha: 'head222' }],
+      targetVersions: [{ selected: true, version_index: 1, start_sha: 'start111' }],
+    });
+    store = useMergeRequestDiscussions();
+  });
+
+  it.each([
+    'setInitialDiscussions',
+    'replaceDiscussion',
+    'toggleDiscussionReplies',
+    'expandDiscussionReplies',
+    'startReplying',
+    'stopReplying',
+    'addNote',
+    'updateNote',
+    'updateNoteTextById',
+    'editNote',
+    'deleteNote',
+    'addDiscussion',
+    'deleteDiscussion',
+    'setEditingMode',
+    'requestLastNoteEditing',
+    'toggleAward',
+    'updateDiscussion',
+    'collapseDiscussion',
+    'expandDiscussion',
+    'addNewLineDiscussionForm',
+    'replaceDiscussionForm',
+    'removeNewLineDiscussionForm',
+    'setDiscussionFormText',
+    'setNewLineDiscussionFormAutofocus',
+    'setFileDiscussionsHidden',
+    'expandFileDiscussions',
+    'addNewFileDiscussionForm',
+    'removeNewFileDiscussionForm',
+    'createNewDiscussion',
+    'createLineDiscussion',
+    'createFileDiscussion',
+    'createImageDiscussion',
+    'replyToDiscussion',
+    'saveNote',
+    'destroyNote',
+    'toggleAwardOnNote',
+    'toggleResolveNote',
+    'expandLineDiscussions',
+    'createDraftLineDiscussion',
+    'createDraftFileDiscussion',
+    'createDraftImageDiscussion',
+    'addDraftToDiscussion',
+    'submitSuggestion',
+    'submitSuggestionBatch',
+    'addSuggestionInfoToBatch',
+    'removeSuggestionInfoFromBatch',
+  ])('exposes %s action', (action) => {
+    expect(store[action]).toEqual(expect.any(Function));
+  });
+
+  it.each([
+    'findDiscussionsForFile',
+    'findLinePositionsForFile',
+    'findLineDiscussionsForPosition',
+    'findAllFileDiscussionsForFile',
+    'findAllImageDiscussionsForFile',
+    'batchSuggestionsInfo',
+    'suggestionsCount',
+    'suggestionsFilePaths',
+  ])('exposes %s getter', (getter) => {
+    expect(store[getter]).toBeDefined();
+  });
+
+  describe('fetchNotes', () => {
+    describe('when fetchNotesPromise is not set (generator path)', () => {
+      const batch1 = [{ id: 'disc-1' }];
+      const batch2 = [{ id: 'disc-2' }];
+
+      beforeEach(() => {
+        mockNotesStore.fetchNotesPromise = null;
+        mockNotesStore.fetchNotesBatches = jest.fn(async function* generator() {
+          yield batch1;
+          yield batch2;
+        });
+        mockNotesStore.addOrUpdateDiscussions = jest.fn();
+      });
+
+      it('iterates batches and adds discussions to the store', async () => {
+        await store.fetchNotes();
+        expect(mockNotesStore.addOrUpdateDiscussions).toHaveBeenCalledWith(batch1);
+        expect(mockNotesStore.addOrUpdateDiscussions).toHaveBeenCalledWith(batch2);
+      });
+
+      it('collapses resolved discussions after each batch', async () => {
+        const resolvedDiscussion = { id: '1', resolvable: true, resolved: true };
+        const unresolvedDiscussion = { id: '2', resolvable: true, resolved: false };
+        useDiscussions().discussions = [resolvedDiscussion, unresolvedDiscussion];
+
+        await store.fetchNotes();
+
+        expect(resolvedDiscussion).toMatchObject({ hidden: true });
+        expect(unresolvedDiscussion).not.toHaveProperty('hidden');
+      });
+    });
+
+    describe('when fetchNotesPromise is already set (await path)', () => {
+      it('awaits existing promise and collapses resolved discussions', async () => {
+        mockNotesStore.fetchNotesPromise = Promise.resolve();
+
+        const resolvedDiscussion = { id: '1', resolvable: true, resolved: true };
+        const nonResolvableDiscussion = { id: '3', resolvable: false };
+        useDiscussions().discussions = [resolvedDiscussion, nonResolvableDiscussion];
+
+        await store.fetchNotes();
+
+        expect(resolvedDiscussion).toMatchObject({ hidden: true });
+        expect(nonResolvableDiscussion).not.toHaveProperty('hidden');
+      });
+
+      it('does not call fetchNotesBatches', async () => {
+        mockNotesStore.fetchNotesPromise = Promise.resolve();
+        mockNotesStore.fetchNotesBatches = jest.fn();
+
+        await store.fetchNotes();
+
+        expect(mockNotesStore.fetchNotesBatches).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('createNewDiscussion', () => {
+    it('delegates to notes store createNewNote', async () => {
+      await store.createNewDiscussion({ note: 'test' });
+      expect(mockNotesStore.createNewNote).toHaveBeenCalledWith({
+        endpoint: '/api/notes',
+        data: { note: { note: 'test' } },
+      });
+    });
+  });
+
+  describe('createLineDiscussion', () => {
+    it('delegates to notes store saveNote and removes the form', async () => {
+      const position = {
+        old_line: 1,
+        base_sha: 'start111',
+        start_sha: 'start111',
+        head_sha: 'head222',
+      };
+      const formDiscussion = {
+        id: 'form-1',
+        isForm: true,
+        position,
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'hash_0_1',
+      };
+      useDiffDiscussions().discussionForms.push(formDiscussion);
+
+      await store.createLineDiscussion({ discussion: formDiscussion, noteBody: 'test' });
+
+      expect(mockNotesStore.saveNote).toHaveBeenCalledWith({
+        endpoint: '/api/notes',
+        data: {
+          view: useDiffsView().viewType,
+          line_type: 'new',
+          merge_request_diff_head_sha: 'head222',
+          note_project_id: '',
+          target_type: 'merge_request',
+          target_id: 42,
+          return_discussion: true,
+          note: {
+            note: 'test',
+            position: JSON.stringify({
+              ...position,
+              position_type: 'text',
+              ignore_whitespace_change: !useDiffsView().showWhitespace,
+            }),
+            noteable_type: 'MergeRequest',
+            noteable_id: 42,
+            commit_id: null,
+            type: 'DiffNote',
+            line_code: 'hash_0_1',
+          },
+        },
+      });
+      expect(useDiffDiscussions().discussionForms).not.toContainEqual(formDiscussion);
+    });
+
+    it('forwards showWhitespace override to the position payload', async () => {
+      const formDiscussion = {
+        id: 'form-2',
+        isForm: true,
+        position: { old_line: 1, old_path: 'a.rb', new_path: 'a.rb' },
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'hash_0_1',
+      };
+      useDiffsView().showWhitespace = false;
+
+      await store.createLineDiscussion({
+        discussion: formDiscussion,
+        noteBody: 'test',
+        showWhitespace: true,
+      });
+
+      const sentPosition = JSON.parse(mockNotesStore.saveNote.mock.calls[0][0].data.note.position);
+      expect(sentPosition.ignore_whitespace_change).toBe(false);
+    });
+  });
+
+  describe('createImageDiscussion', () => {
+    it('delegates to notes store saveNote with the image position', async () => {
+      const position = {
+        base_sha: 'base000',
+        start_sha: 'start111',
+        head_sha: 'head222',
+        old_path: 'files/images/logo.png',
+        new_path: 'files/images/logo.png',
+        position_type: 'image',
+        width: 100,
+        height: 200,
+        x: 10,
+        y: 20,
+      };
+
+      await store.createImageDiscussion({ position, noteBody: 'image note' });
+
+      expect(mockNotesStore.saveNote).toHaveBeenCalledWith({
+        endpoint: '/api/notes',
+        data: {
+          view: useDiffsView().viewType,
+          line_type: undefined,
+          merge_request_diff_head_sha: 'head222',
+          note_project_id: '',
+          target_type: 'merge_request',
+          target_id: 42,
+          return_discussion: true,
+          note: {
+            note: 'image note',
+            position: JSON.stringify({
+              ...position,
+              position_type: 'image',
+              ignore_whitespace_change: !useDiffsView().showWhitespace,
+            }),
+            noteable_type: 'MergeRequest',
+            noteable_id: 42,
+            commit_id: null,
+            type: 'DiffNote',
+            line_code: null,
+          },
+        },
+      });
+    });
+  });
+
+  describe('canReceiveSuggestion', () => {
+    it('is true when the merge request accepts suggestions', () => {
+      expect(store.canReceiveSuggestion).toBe(true);
+    });
+
+    it.each`
+      scenario                                | noteableData
+      ${'does not accept suggestions'}        | ${{ can_receive_suggestion: false }}
+      ${'does not report suggestion support'} | ${{}}
+      ${'has no noteable data'}               | ${undefined}
+    `('is false when the merge request $scenario', ({ noteableData }) => {
+      mockNotesStore.noteableData = noteableData;
+      createTestingPinia({ stubActions: false });
+
+      expect(useMergeRequestDiscussions().canReceiveSuggestion).toBe(false);
+    });
+  });
+
+  describe('addNewLineDiscussionForm', () => {
+    const lineRange = {
+      start: { old_line: null, new_line: 5 },
+      end: { old_line: null, new_line: 5 },
+    };
+
+    it('uses per-file diffRefs over the global version refs when provided', () => {
+      const fileDiffRefs = {
+        base_sha: 'file_base',
+        start_sha: 'file_start',
+        head_sha: 'file_head',
+      };
+      store.addNewLineDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+        lineRange,
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_5',
+        diffRefs: fileDiffRefs,
+      });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.position).toMatchObject(fileDiffRefs);
+    });
+
+    it('falls back to the global version refs when no per-file refs are provided', () => {
+      store.addNewLineDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+        lineRange,
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_5',
+      });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.position).toMatchObject({
+        base_sha: 'start111',
+        start_sha: 'start111',
+        head_sha: 'head222',
+      });
+    });
+  });
+
+  describe('addNewFileDiscussionForm', () => {
+    it('uses the per-file diffRefs for the form position', () => {
+      const fileDiffRefs = {
+        base_sha: 'file_base',
+        start_sha: 'file_start',
+        head_sha: 'file_head',
+      };
+      store.addNewFileDiscussionForm({ oldPath: 'a.rb', newPath: 'a.rb', diffRefs: fileDiffRefs });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.position).toMatchObject(fileDiffRefs);
+    });
+
+    it('falls back to the global version refs when no per-file refs are provided', () => {
+      store.addNewFileDiscussionForm({ oldPath: 'a.rb', newPath: 'a.rb' });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.position).toMatchObject({
+        base_sha: 'start111',
+        start_sha: 'start111',
+        head_sha: 'head222',
+      });
+    });
+  });
+
+  describe('line range editing', () => {
+    const lineRange = {
+      start: { old_line: null, new_line: 5, type: 'new' },
+      end: { old_line: null, new_line: 8, type: 'new' },
+    };
+
+    const createForm = () => {
+      store.addNewLineDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+        lineRange,
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_8',
+        extraOptions: { lines: ['l5', 'l6', 'l7', 'l8'] },
+      });
+      const form = useDiffDiscussions().discussionForms[0];
+      form.noteBody = 'draft text';
+      return form;
+    };
+
+    it('keeps the form mounted, flags only that form, and stores the editing context', () => {
+      const form = createForm();
+      store.startLineRangeEditing(form);
+
+      expect(useDiffDiscussions().discussionForms).toHaveLength(1);
+      expect(form.editingLineRange).toBe(true);
+      expect(store.lineRangeEditing).toMatchObject({ discussion: form, lineRange });
+    });
+
+    it('resets the previously edited form when editing starts on another form', () => {
+      const formA = createForm();
+      store.addNewLineDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+        lineRange: {
+          start: { old_line: null, new_line: 10, type: 'new' },
+          end: { old_line: null, new_line: 12, type: 'new' },
+        },
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_12',
+      });
+      const formB = useDiffDiscussions().discussionForms[1];
+
+      store.startLineRangeEditing(formA);
+      store.startLineRangeEditing(formB);
+
+      expect(formA.editingLineRange).toBe(false);
+      expect(formB.editingLineRange).toBe(true);
+      expect(store.lineRangeEditing).toMatchObject({ discussion: formB });
+    });
+
+    it('commitLineRangeEditing re-creates the form at the new range end with the note body', () => {
+      const form = createForm();
+      store.startLineRangeEditing(form);
+
+      const newRange = {
+        start: { old_line: null, new_line: 3, type: 'new' },
+        end: { old_line: null, new_line: 6, type: 'new' },
+      };
+      store.lineRangeEditing.lineRange = newRange;
+      store.commitLineRangeEditing({
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_6',
+      });
+
+      const updated = useDiffDiscussions().discussionForms[0];
+      expect(store.lineRangeEditing).toBeNull();
+      expect(useDiffDiscussions().discussionForms).toHaveLength(1);
+      expect(updated.position.line_range).toStrictEqual(newRange);
+      expect(updated.position.new_line).toBe(6);
+      expect(updated.lineCode).toBe('abc_0_6');
+      expect(updated.noteBody).toBe('draft text');
+      expect(updated.editingLineRange).toBe(false);
+    });
+
+    it('cancelLineRangeEditing clears the flag and requests focus without changing the form', () => {
+      const form = createForm();
+      form.shouldFocus = false;
+      store.startLineRangeEditing(form);
+
+      store.cancelLineRangeEditing();
+
+      expect(store.lineRangeEditing).toBeNull();
+      expect(useDiffDiscussions().discussionForms).toHaveLength(1);
+      expect(form.editingLineRange).toBe(false);
+      expect(form.shouldFocus).toBe(true);
+      expect(form.position.line_range).toStrictEqual(lineRange);
+      expect(form.noteBody).toBe('draft text');
+    });
+
+    it('does nothing when committing without an active editing session', () => {
+      createForm();
+      store.commitLineRangeEditing({});
+      expect(store.lineRangeEditing).toBeNull();
+      expect(useDiffDiscussions().discussionForms).toHaveLength(1);
+    });
+
+    it("re-creates the form with the file's own diff refs so it is not filtered out", () => {
+      const fileDiffRefs = {
+        base_sha: 'file_base',
+        start_sha: 'file_start',
+        head_sha: 'file_head',
+      };
+      store.addNewLineDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+        lineRange,
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_8',
+        diffRefs: fileDiffRefs,
+      });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.position).toMatchObject(fileDiffRefs);
+
+      store.startLineRangeEditing(form);
+      store.commitLineRangeEditing({
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_8',
+        lines: [],
+      });
+
+      expect(useDiffDiscussions().discussionForms[0].position).toMatchObject(fileDiffRefs);
+    });
+  });
+
+  describe('commit view forms', () => {
+    const commitDiffRefs = { base_sha: 'parent', start_sha: 'parent', head_sha: 'commit_sha' };
+
+    beforeEach(() => {
+      useMergeRequestVersions().setCommit({
+        id: 'commit_sha',
+        diff_refs: commitDiffRefs,
+      });
+    });
+
+    it('passes commitId to line discussion form', () => {
+      store.addNewLineDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+        lineRange: { start: { old_line: null, new_line: 5 }, end: { old_line: null, new_line: 5 } },
+        lineChange: { change: 'added', position: 'new' },
+        lineCode: 'abc_0_5',
+      });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.commitId).toBe('commit_sha');
+    });
+
+    it('passes commitId to file discussion form', () => {
+      store.addNewFileDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+      });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.commitId).toBe('commit_sha');
+    });
+
+    it('merges caller extraOptions in file discussion form', () => {
+      store.addNewFileDiscussionForm({
+        oldPath: 'a.rb',
+        newPath: 'a.rb',
+        extraOptions: { custom: 'value' },
+      });
+      const form = useDiffDiscussions().discussionForms[0];
+      expect(form.custom).toBe('value');
+      expect(form.commitId).toBe('commit_sha');
+    });
+  });
+
+  describe('createFileDiscussion', () => {
+    it('delegates to notes store saveNote and removes the form', async () => {
+      const position = {
+        position_type: 'file',
+        old_path: 'file.js',
+        new_path: 'file.js',
+        old_line: null,
+        new_line: null,
+      };
+      const formDiscussion = { id: 'form-1', isForm: true, position };
+      useDiffDiscussions().discussionForms.push(formDiscussion);
+
+      await store.createFileDiscussion({ discussion: formDiscussion, noteBody: 'test' });
+
+      expect(mockNotesStore.saveNote).toHaveBeenCalledWith({
+        endpoint: '/api/notes',
+        data: expect.objectContaining({
+          note: expect.objectContaining({
+            note: 'test',
+            position: expect.stringContaining('"position_type":"file"'),
+          }),
+        }),
+      });
+      expect(useDiffDiscussions().discussionForms).not.toContainEqual(formDiscussion);
+    });
+  });
+
+  describe('replyToDiscussion', () => {
+    it('delegates to notes store saveNote with reply data', async () => {
+      const discussion = { id: 'disc-1', reply_id: 'reply-1' };
+
+      await store.replyToDiscussion(discussion, 'reply text');
+
+      expect(mockNotesStore.saveNote).toHaveBeenCalledWith({
+        endpoint: '/api/notes',
+        data: {
+          in_reply_to_discussion_id: 'reply-1',
+          target_type: 'merge_request',
+          note: { note: 'reply text' },
+          merge_request_diff_head_sha: 'head222',
+        },
+      });
+    });
+
+    it('sends the new resolved state when the reply toggles it', async () => {
+      const discussion = { id: 'disc-1', reply_id: 'reply-1', resolved: false };
+
+      await store.replyToDiscussion(discussion, 'reply text', true);
+
+      expect(mockNotesStore.saveNote).toHaveBeenCalledWith({
+        endpoint: '/api/notes',
+        data: expect.objectContaining({ resolve_discussion: true, return_discussion: true }),
+      });
+    });
+  });
+
+  describe('saveNote', () => {
+    it('delegates to notes store updateNote', async () => {
+      const note = { id: 1, path: '/note/1', noteable_id: 10 };
+
+      await store.saveNote(note, 'updated');
+
+      expect(mockNotesStore.updateNote).toHaveBeenCalledWith({
+        endpoint: '/note/1',
+        note: {
+          target_type: 'merge_request',
+          target_id: 10,
+          note: { note: 'updated' },
+        },
+      });
+    });
+  });
+
+  describe('destroyNote', () => {
+    it('delegates to notes store deleteNote', async () => {
+      const note = { id: 1, path: '/note/1' };
+
+      await store.destroyNote(note);
+
+      expect(mockNotesStore.deleteNote).toHaveBeenCalledWith(note);
+    });
+  });
+
+  describe('toggleAwardOnNote', () => {
+    it('delegates to notes store toggleAwardRequest', async () => {
+      const note = { id: 1, toggle_award_path: '/award/1' };
+
+      await store.toggleAwardOnNote(note, 'thumbsup');
+
+      expect(mockNotesStore.toggleAwardRequest).toHaveBeenCalledWith({
+        endpoint: '/award/1',
+        awardName: 'thumbsup',
+        noteId: 1,
+      });
+    });
+  });
+
+  describe('toggleResolveNote', () => {
+    it('delegates to the legacy notes store', async () => {
+      const discussion = {
+        id: 'discussion-1',
+        resolved: false,
+        resolve_path: '/resolve/path',
+      };
+
+      await store.toggleResolveNote(discussion);
+
+      expect(mockNotesStore.toggleResolveNote).toHaveBeenCalledWith({
+        endpoint: '/resolve/path',
+        isResolved: false,
+        discussion: true,
+        discussionId: 'discussion-1',
+      });
+    });
+  });
+
+  describe('toggleAllVisibleDiscussions', () => {
+    it('toggles diff discussions when on the diffs page', () => {
+      useMrNotes().setActiveTab('diffs');
+      useDiscussions().setInitialDiscussions([
+        { id: 'd1', diff_discussion: true, hidden: false, notes: [] },
+        { id: 'd2', diff_discussion: true, hidden: false, notes: [] },
+      ]);
+
+      store.toggleAllVisibleDiscussions();
+
+      expect(useDiscussions().discussions[0].hidden).toBe(true);
+      expect(useDiscussions().discussions[1].hidden).toBe(true);
+    });
+
+    it('delegates to legacy notes store toggleAllDiscussions when not on the diffs page', () => {
+      useMrNotes().setActiveTab('show');
+
+      store.toggleAllVisibleDiscussions();
+
+      expect(mockNotesStore.toggleAllDiscussions).toHaveBeenCalled();
+    });
+  });
+
+  describe('allVisibleDiscussionsExpanded', () => {
+    it('reflects diff discussions state on the diffs page', () => {
+      useMrNotes().setActiveTab('diffs');
+      useDiscussions().setInitialDiscussions([
+        { id: 'd1', diff_discussion: true, hidden: false, notes: [] },
+        { id: 'd2', diff_discussion: true, hidden: true, notes: [] },
+      ]);
+
+      expect(store.allVisibleDiscussionsExpanded).toBe(false);
+    });
+
+    it('reflects legacy notes allDiscussionsExpanded when not on the diffs page', () => {
+      useMrNotes().setActiveTab('show');
+      mockNotesStore.allDiscussionsExpanded = true;
+
+      expect(store.allVisibleDiscussionsExpanded).toBe(true);
+    });
+  });
+
+  describe('setFileDiscussionsHidden', () => {
+    it('hides discussions for the file', () => {
+      useDiscussions().setInitialDiscussions([
+        {
+          id: 'd1',
+          diff_discussion: true,
+          position: { old_path: 'a.js', new_path: 'a.js' },
+          notes: [],
+        },
+      ]);
+
+      store.setFileDiscussionsHidden('a.js', 'a.js', true);
+
+      expect(useDiscussions().discussions[0].hidden).toBe(true);
+    });
+  });
+
+  describe('expandLineDiscussions', () => {
+    it('expands discussions for the position', () => {
+      const pos = { oldPath: 'a.js', newPath: 'a.js', oldLine: 1, newLine: 1 };
+      useDiscussions().setInitialDiscussions([
+        {
+          id: 'd1',
+          diff_discussion: true,
+          position: {
+            old_path: 'a.js',
+            new_path: 'a.js',
+            old_line: 1,
+            new_line: 1,
+            position_type: 'text',
+          },
+          notes: [],
+        },
+      ]);
+      useDiscussions().discussions[0].hidden = true;
+
+      store.expandLineDiscussions(pos);
+
+      expect(useDiscussions().discussions[0].hidden).toBe(false);
+    });
+  });
+
+  describe('findDraftsForDiscussion', () => {
+    it('returns empty array when allCommentsReady is false', () => {
+      mockDraftNotes.findDraftsForDiscussion.mockReturnValue([{ id: 1 }]);
+
+      expect(store.findDraftsForDiscussion('disc-1')).toEqual([]);
+    });
+
+    it('delegates to draftNotes after fetchNotesAndDrafts', async () => {
+      mockDraftNotes.findDraftsForDiscussion.mockReturnValue([{ id: 1 }]);
+
+      await store.fetchNotesAndDrafts();
+
+      expect(store.findDraftsForDiscussion('disc-1')).toEqual([{ id: 1 }]);
+      expect(mockDraftNotes.findDraftsForDiscussion).toHaveBeenCalledWith('disc-1');
+    });
+  });
+
+  describe('createDraftLineDiscussion', () => {
+    const position = {
+      old_line: 1,
+      new_line: 1,
+      old_path: 'a.rb',
+      new_path: 'a.rb',
+      base_sha: 'start111',
+      start_sha: 'start111',
+      head_sha: 'head222',
+    };
+    const formDiscussion = {
+      id: 'form-1',
+      isForm: true,
+      position,
+      lineCode: 'hash_0_1',
+    };
+
+    it('calls createNewDraft with correct params and removes the form', async () => {
+      useDiffDiscussions().discussionForms.push(formDiscussion);
+
+      await store.createDraftLineDiscussion({
+        discussion: formDiscussion,
+        noteBody: 'draft comment',
+      });
+
+      expect(mockDraftNotes.createNewDraft).toHaveBeenCalledWith({
+        endpoint: '/drafts',
+        data: {
+          note: {
+            note: 'draft comment',
+            position: JSON.stringify({
+              ...position,
+              position_type: 'text',
+              ignore_whitespace_change: !useDiffsView().showWhitespace,
+            }),
+            type: 'DiffNote',
+            commit_id: null,
+            line_code: 'hash_0_1',
+          },
+        },
+      });
+      expect(useDiffDiscussions().discussionForms).not.toContainEqual(formDiscussion);
+    });
+  });
+
+  describe('createDraftImageDiscussion', () => {
+    const position = {
+      base_sha: 'base000',
+      start_sha: 'start111',
+      head_sha: 'head222',
+      old_path: 'files/images/logo.png',
+      new_path: 'files/images/logo.png',
+      position_type: 'image',
+      width: 100,
+      height: 200,
+      x: 10,
+      y: 20,
+    };
+
+    it('calls createNewDraft with the image position', async () => {
+      await store.createDraftImageDiscussion({ position, noteBody: 'draft image comment' });
+
+      expect(mockDraftNotes.createNewDraft).toHaveBeenCalledWith({
+        endpoint: '/drafts',
+        data: {
+          note: {
+            note: 'draft image comment',
+            position: JSON.stringify({
+              ...position,
+              ignore_whitespace_change: !useDiffsView().showWhitespace,
+            }),
+            type: 'DiffNote',
+            commit_id: null,
+            line_code: null,
+          },
+        },
+      });
+    });
+  });
+
+  describe('createDraftFileDiscussion', () => {
+    const formDiscussion = {
+      id: 'form-1',
+      isForm: true,
+      position: { position_type: 'file', old_path: 'file.js', new_path: 'file.js' },
+    };
+
+    it('calls createNewDraft and removes the file form', async () => {
+      useDiffDiscussions().discussionForms.push(formDiscussion);
+
+      await store.createDraftFileDiscussion({
+        discussion: formDiscussion,
+        noteBody: 'draft file comment',
+      });
+
+      expect(mockDraftNotes.createNewDraft).toHaveBeenCalledWith({
+        endpoint: '/drafts',
+        data: {
+          note: expect.objectContaining({
+            note: 'draft file comment',
+            position: expect.stringContaining('"position_type":"file"'),
+          }),
+        },
+      });
+      expect(useDiffDiscussions().discussionForms).not.toContainEqual(formDiscussion);
+    });
+  });
+
+  describe('addDraftToDiscussion', () => {
+    it('calls addDraftToDiscussion with correct params', async () => {
+      const discussion = { id: 'disc-1', reply_id: 'reply-1' };
+
+      await store.addDraftToDiscussion(discussion, 'draft reply');
+
+      expect(mockDraftNotes.addDraftToDiscussion).toHaveBeenCalledWith({
+        endpoint: '/drafts',
+        data: {
+          in_reply_to_discussion_id: 'reply-1',
+          draft_note: { note: 'draft reply', resolve_discussion: false },
+          merge_request_diff_head_sha: 'head222',
+        },
+      });
+    });
+  });
+
+  describe('version-aware discussion matching', () => {
+    const diffRefs = { base_sha: 'start111', head_sha: 'head222', start_sha: 'start111' };
+    const otherRefs = { base_sha: 'other', head_sha: 'other', start_sha: 'other' };
+    const filePaths = { oldPath: 'a.js', newPath: 'a.js', diffRefs };
+    const makePos = (refs, line = 5) => ({
+      old_path: 'a.js',
+      new_path: 'a.js',
+      old_line: line,
+      new_line: line,
+      position_type: 'text',
+      ...refs,
+    });
+
+    function makeDiscussion(id, overrides = {}) {
+      return {
+        id,
+        diff_discussion: true,
+        position: makePos(diffRefs),
+        original_position: makePos(diffRefs),
+        notes: [],
+        ...overrides,
+      };
+    }
+
+    describe('findDiscussionsForFile', () => {
+      it.each([
+        ['includes', diffRefs, 1],
+        ['excludes', otherRefs, 0],
+      ])('%s discussions based on SHA match', (_, refs, expected) => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('d', { position: makePos(refs), original_position: makePos(refs) }),
+        ]);
+
+        expect(store.findDiscussionsForFile(filePaths)).toHaveLength(expected);
+      });
+
+      it('excludes form discussions', () => {
+        store.addNewLineDiscussionForm({
+          ...filePaths,
+          lineRange: { start: { old_line: 1, new_line: 1 }, end: { old_line: 1, new_line: 1 } },
+        });
+
+        expect(store.findDiscussionsForFile(filePaths)).toHaveLength(0);
+      });
+
+      it('excludes drafts until comments are ready', () => {
+        mockDraftNotes.findDraftsAsDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true },
+        ]);
+
+        expect(store.findDiscussionsForFile(filePaths)).toHaveLength(0);
+      });
+
+      it('includes drafts after fetchNotesAndDrafts', async () => {
+        mockDraftNotes.findDraftsAsDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true },
+        ]);
+
+        await store.fetchNotesAndDrafts();
+
+        expect(store.findDiscussionsForFile(filePaths)).toHaveLength(1);
+      });
+
+      it('appends draft replies to discussion notes', async () => {
+        const draftReply = { id: 'draft-reply', isDraft: true };
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('d', { position: makePos(diffRefs), notes: [{ id: 'n1' }] }),
+        ]);
+        mockDraftNotes.findDraftsForDiscussion.mockReturnValue([draftReply]);
+
+        await store.fetchNotesAndDrafts();
+
+        const [discussion] = store.findDiscussionsForFile(filePaths);
+        expect(discussion.notes).toHaveLength(2);
+        expect(discussion.notes[1]).toBe(draftReply);
+      });
+    });
+
+    describe('findLinePositionsForFile', () => {
+      it('swaps position to applicable version', () => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('swap', {
+            position: makePos(otherRefs, 99),
+            original_position: makePos(diffRefs),
+          }),
+        ]);
+
+        const [result] = store.findLinePositionsForFile(filePaths);
+        expect(result.old_line).toBe(5);
+        expect(result).toMatchObject(diffRefs);
+      });
+
+      it('excludes non-line discussions', () => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('file-disc', {
+            position: { position_type: 'file', old_path: 'a.js', new_path: 'a.js', ...diffRefs },
+            original_position: {
+              position_type: 'file',
+              old_path: 'a.js',
+              new_path: 'a.js',
+              ...diffRefs,
+            },
+          }),
+        ]);
+
+        expect(store.findLinePositionsForFile(filePaths)).toHaveLength(0);
+      });
+
+      it('excludes line drafts until comments are ready', () => {
+        mockDraftNotes.findDraftsAsLineDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true, position: makePos(diffRefs) },
+        ]);
+
+        expect(store.findLinePositionsForFile(filePaths)).toHaveLength(0);
+      });
+
+      it('includes line drafts after fetchNotesAndDrafts', async () => {
+        mockDraftNotes.findDraftsAsLineDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true, position: makePos(diffRefs) },
+        ]);
+
+        await store.fetchNotesAndDrafts();
+
+        expect(store.findLinePositionsForFile(filePaths)).toHaveLength(1);
+      });
+    });
+
+    describe('findLineDiscussionsForPosition', () => {
+      it('returns discussions matching the given position', () => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('match', {
+            position: makePos(diffRefs, 5),
+            original_position: makePos(diffRefs, 5),
+          }),
+          makeDiscussion('no-match', {
+            position: makePos(diffRefs, 10),
+            original_position: makePos(diffRefs, 10),
+          }),
+        ]);
+
+        const result = store.findLineDiscussionsForPosition({
+          ...filePaths,
+          oldLine: 5,
+          newLine: 5,
+        });
+        expect(result).toHaveLength(1);
+        expect(result[0].id).toBe('match');
+      });
+
+      it('swaps position to applicable version for matching', () => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('swap', {
+            position: makePos(otherRefs, 99),
+            original_position: makePos(diffRefs, 5),
+          }),
+        ]);
+
+        const result = store.findLineDiscussionsForPosition({
+          ...filePaths,
+          oldLine: 5,
+          newLine: 5,
+        });
+        expect(result).toHaveLength(1);
+        expect(result[0].id).toBe('swap');
+      });
+
+      it('hides and shows a repositioned discussion found for the rendered line', () => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('swap', {
+            position: makePos(otherRefs, 99),
+            original_position: makePos(diffRefs, 5),
+          }),
+        ]);
+
+        const rendered = store.findLineDiscussionsForPosition({
+          ...filePaths,
+          oldLine: 5,
+          newLine: 5,
+        });
+        rendered.forEach((discussion) => store.collapseDiscussion(discussion));
+
+        expect(useDiscussions().discussions[0].hidden).toBe(true);
+
+        rendered.forEach((discussion) => store.expandDiscussion(discussion));
+
+        expect(useDiscussions().discussions[0].hidden).toBe(false);
+      });
+
+      it('excludes drafts until comments are ready', () => {
+        mockDraftNotes.findDraftsForPosition.mockReturnValue([{ id: 'draft_1', isDraft: true }]);
+
+        expect(
+          store.findLineDiscussionsForPosition({ ...filePaths, oldLine: 5, newLine: 5 }),
+        ).toHaveLength(0);
+      });
+
+      it('includes drafts after fetchNotesAndDrafts', async () => {
+        mockDraftNotes.findDraftsForPosition.mockReturnValue([{ id: 'draft_1', isDraft: true }]);
+
+        await store.fetchNotesAndDrafts();
+
+        const result = store.findLineDiscussionsForPosition({
+          ...filePaths,
+          oldLine: 5,
+          newLine: 5,
+        });
+        expect(result).toHaveLength(1);
+      });
+
+      it('appends draft replies to discussion notes', async () => {
+        const draftReply = { id: 'draft-reply', isDraft: true };
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('d', { position: makePos(diffRefs), notes: [{ id: 'n1' }] }),
+        ]);
+        mockDraftNotes.findDraftsForDiscussion.mockReturnValue([draftReply]);
+
+        await store.fetchNotesAndDrafts();
+
+        const [discussion] = store.findLineDiscussionsForPosition({
+          ...filePaths,
+          oldLine: 5,
+          newLine: 5,
+        });
+        expect(discussion.notes).toHaveLength(2);
+        expect(discussion.notes[1]).toBe(draftReply);
+      });
+    });
+
+    describe('findAllFileDiscussionsForFile', () => {
+      const filePos = {
+        position_type: 'file',
+        old_path: 'a.js',
+        new_path: 'a.js',
+        ...diffRefs,
+      };
+
+      it('returns file-level discussions', () => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('file-disc', {
+            position: filePos,
+            original_position: filePos,
+          }),
+        ]);
+
+        expect(store.findAllFileDiscussionsForFile(filePaths)).toHaveLength(1);
+      });
+
+      it('excludes line discussions', () => {
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('line-disc', {
+            position: makePos(diffRefs),
+            original_position: makePos(diffRefs),
+          }),
+        ]);
+
+        expect(store.findAllFileDiscussionsForFile(filePaths)).toHaveLength(0);
+      });
+
+      it('excludes file drafts until comments are ready', () => {
+        mockDraftNotes.findDraftsAsFileDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true },
+        ]);
+
+        expect(store.findAllFileDiscussionsForFile(filePaths)).toHaveLength(0);
+      });
+
+      it('includes file drafts after fetchNotesAndDrafts', async () => {
+        mockDraftNotes.findDraftsAsFileDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true },
+        ]);
+
+        await store.fetchNotesAndDrafts();
+
+        expect(store.findAllFileDiscussionsForFile(filePaths)).toHaveLength(1);
+      });
+
+      it('appends draft replies to discussion notes', async () => {
+        const draftReply = { id: 'draft-reply', isDraft: true };
+        useDiscussions().setInitialDiscussions([
+          makeDiscussion('d', {
+            position: filePos,
+            original_position: filePos,
+            notes: [{ id: 'n1' }],
+          }),
+        ]);
+        mockDraftNotes.findDraftsForDiscussion.mockReturnValue([draftReply]);
+
+        await store.fetchNotesAndDrafts();
+
+        const [discussion] = store.findAllFileDiscussionsForFile(filePaths);
+        expect(discussion.notes).toHaveLength(2);
+        expect(discussion.notes[1]).toBe(draftReply);
+      });
+    });
+
+    describe('findAllImageDiscussionsForFile', () => {
+      it.each([
+        ['returns', diffRefs, 1],
+        ['excludes', otherRefs, 0],
+      ])('%s image discussions with matching SHAs', (_, refs, expected) => {
+        useDiscussions().setInitialDiscussions([
+          {
+            id: 'img',
+            notes: [
+              { position: { position_type: 'image', old_path: 'a.js', new_path: 'a.js', ...refs } },
+            ],
+            position: { position_type: 'image', old_path: 'a.js', new_path: 'a.js', ...refs },
+            original_position: {
+              position_type: 'image',
+              old_path: 'a.js',
+              new_path: 'a.js',
+              ...refs,
+            },
+          },
+        ]);
+
+        expect(
+          store.findAllImageDiscussionsForFile({ oldPath: 'a.js', newPath: 'a.js', diffRefs }),
+        ).toHaveLength(expected);
+      });
+
+      it('excludes image drafts until comments are ready', () => {
+        mockDraftNotes.findDraftsAsImageDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true },
+        ]);
+
+        expect(
+          store.findAllImageDiscussionsForFile({ oldPath: 'a.js', newPath: 'a.js', diffRefs }),
+        ).toHaveLength(0);
+      });
+
+      it('includes image drafts after fetchNotesAndDrafts', async () => {
+        mockDraftNotes.findDraftsAsImageDiscussionsForFile.mockReturnValue([
+          { id: 'draft_1', isDraft: true },
+        ]);
+
+        await store.fetchNotesAndDrafts();
+
+        expect(
+          store.findAllImageDiscussionsForFile({ oldPath: 'a.js', newPath: 'a.js', diffRefs }),
+        ).toHaveLength(1);
+      });
+
+      it('appends draft replies to discussion notes', async () => {
+        const draftReply = { id: 'draft-reply', isDraft: true };
+        const imagePos = {
+          position_type: 'image',
+          old_path: 'a.js',
+          new_path: 'a.js',
+          ...diffRefs,
+        };
+        useDiscussions().setInitialDiscussions([
+          {
+            id: 'img',
+            notes: [{ id: 'n1', position: imagePos }],
+            position: imagePos,
+            original_position: imagePos,
+          },
+        ]);
+        mockDraftNotes.findDraftsForDiscussion.mockReturnValue([draftReply]);
+
+        await store.fetchNotesAndDrafts();
+
+        const [discussion] = store.findAllImageDiscussionsForFile({
+          oldPath: 'a.js',
+          newPath: 'a.js',
+          diffRefs,
+        });
+        expect(discussion.notes).toHaveLength(2);
+        expect(discussion.notes[1]).toBe(draftReply);
+      });
+    });
+  });
+});

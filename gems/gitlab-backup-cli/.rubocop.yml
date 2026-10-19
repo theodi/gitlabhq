@@ -1,0 +1,24 @@
+inherit_from:
+  - ../config/rubocop.yml
+
+Gemfile/MissingFeatureCategory:
+  Enabled: false
+
+Rails/Exit:
+  Enabled: false
+
+# Configuration parameters: AllowSubject.
+RSpec/MultipleMemoizedHelpers:
+  Max: 25
+  AllowSubject: true
+
+Rails/RakeEnvironment:
+  Enabled: false
+
+Gitlab/DirectStdio:
+  Exclude:
+    - lib/gitlab/backup/cli/**/*.rb
+
+Rails/Output:
+  Exclude:
+    - lib/gitlab/backup/cli/**/*.rb

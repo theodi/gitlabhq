@@ -1,36 +1,12 @@
-- page_title "Blame", @blob.path, @ref
-%h3.page-title Blame view
+- add_page_specific_style 'page_bundles/tree'
+- add_page_specific_style 'page_bundles/projects'
 
-#tree-holder.tree-holder
-  .file-holder
-    .file-title
-      %i.fa.fa-file
-      %strong
-        = @path
-      %small= number_to_human_size @blob.size
-      .file-actions
-        = render "projects/blob/actions"
-    .file-content.blame.highlight
-      %table
-        - @blame.each do |commit, lines, since|
-          - commit = Commit.new(commit, @project)
-          %tr
-            %td.blame-commit
-              %span.commit
-                = link_to commit.short_id, namespace_project_commit_path(@project.namespace, @project, commit), class: "commit_short_id"
-                &nbsp;
-                = commit_author_link(commit, avatar: true, size: 16)
-                &nbsp;
-                = link_to_gfm truncate(commit.title, length: 20), namespace_project_commit_path(@project.namespace, @project, commit.id), class: "row_title"
-            %td.lines.blame-numbers
-              %pre
-                - (since...(since + lines.count)).each do |i|
-                  = i
-                  \
-            %td.lines
-              %pre{class: 'code highlight white'}
-                %code
-                  :erb
-                    <% lines.each do |line| %>
-                      <%= highlight(@blob.name, line, nowrap: true, continue: true).html_safe %>
-                    <% end %>
+- if @gitaly_unavailable
+  - page_title _("Blame"), @path, @ref
+  = render 'shared/errors/gitaly_unavailable', reason: s_('Blame|Unable to load blame')
+- else
+  - blob_path = project_blob_path(@project, @id, ref_type: @ref_type.presence, blame: 1, ignore_revs: params[:ignore_revs].presence)
+  - content_for :startup_js do
+    = javascript_tag nonce: content_security_policy_nonce do
+      :plain
+        window.location.replace("#{j blob_path}" + window.location.hash);

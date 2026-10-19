@@ -1,0 +1,20 @@
+fragment FinishedPipelinesDapComparisonItem on Analytics {
+  pipelines(
+    # Mirrors Ci::HasStatus::COMPLETED_STATUSES
+    status: ["success", "failed", "canceled", "skipped"]
+    startedAtFrom: $startDate
+    startedAtTo: $endDate
+  ) {
+    aggregated(
+      orderBy: [{ identifier: "startedAt", direction: ASC, parameters: { granularity: "monthly" } }]
+    ) {
+      nodes {
+        allPipelinesCount: totalCount
+        duoPipelinesCount: totalCount(source: ["duo_workflow"])
+        dimensions {
+          startedAt(granularity: "monthly")
+        }
+      }
+    }
+  }
+}

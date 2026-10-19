@@ -1,0 +1,326 @@
+#!/usr/bin/env -S ENABLE_SPRING=0 bin/rails runner -e test
+
+# This is helper script to swap foreign key to loose foreign key
+# using DB schema
+
+require 'optparse'
+
+$options = {
+  cross_schema: false,
+  dry_run: false,
+  rspec: true
+}
+
+OptionParser.new do |opts|
+  opts.banner = "Usage: #{$0} [options] <regexp filters...>"
+
+  opts.on("-c", "--cross-schema", "Show only cross-schema foreign keys") do |v|
+    $options[:cross_schema] = v
+  end
+
+  opts.on("-n", "--dry-run", "Do not execute any commands (dry run)") do |v|
+    $options[:dry_run] = v
+  end
+
+  opts.on("-r", "--[no-]rspec", "Create or not a rspecs automatically") do |v|
+    $options[:rspec] = v
+  end
+
+  opts.on("-h", "--help", "Prints this help") do
+    puts opts
+    exit
+  end
+end.parse!
+
+unless system("git diff --quiet db/structure.sql")
+  raise "The db/structure.sql is changed. Reset branch or commit changes."
+end
+
+raise "There are uncommitted changes. Commit to continue." unless system("git diff --quiet")
+
+$files_affected = []
+
+puts "Re-creating current test database"
+ActiveRecord::Tasks::DatabaseTasks.drop_current
+ActiveRecord::Tasks::DatabaseTasks.create_current
+ActiveRecord::Tasks::DatabaseTasks.load_schema_current
+ActiveRecord::Tasks::DatabaseTasks.migrate
+ActiveRecord::Migration.check_all_pending!
+ActiveRecord::Base.connection_pool.disconnect!
+puts
+
+def exec_cmd(*args, fail: nil)
+  # output full command
+  if $options[:dry_run]
+    puts ">> #{args.shelljoin}"
+    return true
+  end
+
+  # truncate up-to 60 chars or first line
+  command = args.shelljoin
+  truncated_command = command.truncate([command.lines.first.length + 3, 120].min)
+
+  puts ">> #{truncated_command}"
+  return true if system(*args)
+
+  raise fail if fail
+
+  puts "--------------------------------------------------"
+  puts "This command failed:"
+  puts ">> #{command}"
+  puts "--------------------------------------------------"
+  false
+end
+
+def write_file(file_path, content)
+  $files_affected << file_path
+  File.write(file_path, content)
+end
+
+def print_files_affected
+  puts "The following files have been generated/modified:"
+  $files_affected.each do |filepath|
+    puts filepath
+  end
+end
+
+def has_lfk?(definition)
+  Gitlab::Database::LooseForeignKeys.definitions.any? do |lfk_definition|
+    lfk_definition.from_table == definition.from_table &&
+      lfk_definition.to_table == definition.to_table &&
+      lfk_definition.column == definition.column
+  end
+end
+
+def foreign_key_matching?(definition, filters)
+  filters.all? do |filter|
+    definition.from_table.match?(filter) ||
+      definition.to_table.match?(filter) ||
+      (if definition.column.is_a?(Array)
+         definition.column.any? do |col|
+           col.match?(filter)
+         end
+       else
+         definition.column.match?(filter)
+       end)
+  end
+end
+
+def columns(*args)
+  puts("%5s | %7s | %40s | %20s | %30s | %15s " % args)
+end
+
+def add_definition_to_yaml(definition)
+  content = YAML.load_file(Rails.root.join('config/gitlab_loose_foreign_keys.yml'))
+  table_definitions = content[definition.from_table]
+
+  # insert new entry in alphabetic order
+  unless table_definitions
+    table_definitions = []
+
+    content[definition.from_table] = table_definitions
+    content = content.sort.to_h
+  end
+
+  on_delete =
+    case definition.on_delete
+    when :cascade
+      'async_delete'
+    when :nullify
+      'async_nullify'
+    else
+      raise "Unsupported on_delete behavior: #{definition.on_delete}"
+    end
+
+  yaml_definition = {
+    "table" => definition.to_table,
+    "column" => definition.column,
+    "on_delete" => on_delete
+  }
+
+  # match and update by "table", "column"
+  if existing = table_definitions.pluck("table", "column").index([definition.to_table, definition.column])
+    puts "Updated existing definition from #{table_definitions[existing]} to #{yaml_definition}."
+    table_definitions[existing] = yaml_definition
+  else
+    puts "Add new definition for #{yaml_definition}."
+    table_definitions.append(yaml_definition)
+  end
+
+  # emulate existing formatting
+  write_file(
+    Rails.root.join('config/gitlab_loose_foreign_keys.yml'),
+    content.to_yaml.gsub(/^([- ] )/, '  \1')
+  )
+end
+
+def generate_migration(definition)
+  timestamp = Time.now.utc.strftime("%Y%m%d%H%M%S")
+
+  # db/post_migrate/20220111221516_remove_projects_ci_pending_builds_fk.rb
+  column_name = definition.column.is_a?(Array) ? definition.column.join('_') : definition.column
+  column_camelcase = definition.column.is_a?(Array) ? definition.column.map(&:camelcase).join('') : definition.column.camelcase
+
+  migration_name = "db/post_migrate/#{timestamp}_remove_#{definition.to_table}_#{definition.from_table}_#{column_name}_fk.rb"
+  puts "Writing #{migration_name}"
+
+  content = <<-EOF.strip_heredoc
+    # frozen_string_literal: true
+
+    class Remove#{definition.to_table.camelcase}#{definition.from_table.camelcase}#{column_camelcase}Fk < Gitlab::Database::Migration[#{Gitlab::Database::Migration.current_version}]
+      milestone '#{Gitlab.current_milestone}'
+      disable_ddl_transaction!
+
+      FOREIGN_KEY_NAME = "#{definition.name}"
+
+      def up
+        with_lock_retries do
+          remove_foreign_key_if_exists(:#{definition.from_table}, :#{definition.to_table},
+            name: FOREIGN_KEY_NAME, reverse_lock_order: true)
+        end
+      end
+
+      def down
+        add_concurrent_foreign_key(:#{definition.from_table}, :#{definition.to_table},
+          name: FOREIGN_KEY_NAME, column: :#{definition.column},
+          target_column: :#{definition.primary_key}, on_delete: :#{definition.on_delete})
+      end
+    end
+  EOF
+
+  write_file(migration_name, content)
+
+  exec_cmd("bin/rails", "db:migrate", fail: "Failed to run db:migrate.")
+end
+
+def class_by_table_name
+  @index_by_table_name ||= ActiveRecord::Base
+    .descendants
+    .reject(&:abstract_class)
+    .map(&:base_class)
+    .index_by(&:table_name)
+end
+
+def spec_from_clazz(clazz, definition)
+  %w[spec/models ee/spec/models].each do |specs_path|
+    path = File.join(specs_path, clazz.underscore + "_spec.rb")
+    return path if File.exist?(path)
+  end
+
+  raise "Cannot find specs for #{clazz} (#{definition.from_table})"
+end
+
+def add_test_to_specs(definition)
+  return unless $options[:rspec]
+
+  clazz = class_by_table_name[definition.from_table]
+  raise "Cannot map #{definition.from_table} to clazz" unless clazz
+
+  spec_path = spec_from_clazz(clazz, definition)
+  puts "Adding test to #{spec_path}..."
+
+  # handle both single and composite foreign key columns
+  column_display = definition.column.is_a?(Array) ? definition.column.join(', ') : definition.column
+
+  if definition.column.is_a?(Array)
+    spec_test = <<-EOF.strip_heredoc.indent(2)
+      context 'with loose foreign key on #{definition.from_table}.#{column_display}' do
+        it 'has loose foreign key configuration' do
+          expect(described_class).to have_loose_foreign_key(:#{definition.to_table.singularize})
+        end
+      end
+    EOF
+  else
+    spec_test = <<-EOF.strip_heredoc.indent(2)
+      context 'with loose foreign key on #{definition.from_table}.#{column_display}' do
+        it_behaves_like 'cleanup by a loose foreign key' do
+          let_it_be(:parent) { create(:#{definition.to_table.singularize}) }
+          let_it_be(:model) { create(:#{definition.from_table.singularize}, #{definition.column.delete_suffix('_id').singularize}: parent) }
+        end
+      end
+    EOF
+  end
+
+  # append to end of file with empty line before
+  lines = File.readlines(spec_path)
+  insert_line = lines.count - 1
+  lines.insert(insert_line, "\n", *spec_test.lines)
+  write_file(spec_path, lines.join(""))
+end
+
+def update_no_cross_db_foreign_keys_spec(definition)
+  from_column = "#{definition.from_table}.#{definition.column}"
+  spec_path = "spec/lib/gitlab/database/no_cross_db_foreign_keys_spec.rb"
+
+  puts "Updating #{spec_path}..."
+  lines = File.readlines(spec_path)
+  updated = lines.reject { |line| line.strip == from_column }
+
+  if lines.count == updated.count
+    puts "Nothing changed."
+    return
+  end
+
+  write_file(spec_path, updated.join(""))
+end
+
+all_foreign_keys = ActiveRecord::Base.connection.tables.flat_map do |table|
+  ActiveRecord::Base.connection.foreign_keys(table)
+end
+
+# Show only cross-schema foreign keys
+if $options[:cross_schema]
+  all_foreign_keys.select! do |definition|
+    Gitlab::Database::GitlabSchema.table_schema!(definition.from_table) != Gitlab::Database::GitlabSchema.table_schema!(definition.to_table)
+  end
+end
+
+if $options[:cross_schema]
+  puts "Showing cross-schema foreign keys (#{all_foreign_keys.count}):"
+else
+  puts "Showing all foreign keys (#{all_foreign_keys.count}):"
+  puts "Did you meant `#{$0} --cross-schema ...`?"
+end
+
+columns("ID", "HAS_LFK", "FROM", "TO", "COLUMN", "ON_DELETE")
+all_foreign_keys.each_with_index do |definition, idx|
+  columns(idx, has_lfk?(definition) ? 'Y' : 'N', definition.from_table, definition.to_table, definition.column,
+    definition.on_delete)
+end
+puts
+
+puts "To match FK write one or many filters to match against FROM/TO/COLUMN:"
+puts "- #{$0} <filter(s)...>"
+puts "- #{$0} ci_job_artifacts project_id"
+puts "- #{$0} dast_site_profiles_pipelines"
+puts
+
+return if ARGV.empty?
+
+puts "Loading all models..."
+# Fix bug with loading `app/models/identity/uniqueness_scopes.rb`
+require_relative Rails.root.join('app/models/identity.rb')
+
+%w[app/models/**/*.rb ee/app/models/**/*.rb].each do |filter|
+  Dir.glob(filter).each do |path|
+    require_relative Rails.root.join(path)
+  end
+end
+puts
+
+puts "Generating Loose Foreign Key for given filters: #{ARGV}"
+
+all_foreign_keys.each_with_index do |definition, idx|
+  next unless foreign_key_matching?(definition, ARGV.map { |arg| Regexp.new(arg) })
+
+  puts "Matched: #{idx} (#{definition.from_table}, #{definition.to_table}, #{definition.column})"
+
+  add_definition_to_yaml(definition)
+  generate_migration(definition)
+  add_test_to_specs(definition)
+  update_no_cross_db_foreign_keys_spec(definition)
+end
+
+print_files_affected
+
+puts

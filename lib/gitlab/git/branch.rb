@@ -1,0 +1,42 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Git
+    class Branch < Ref
+      STALE_BRANCH_THRESHOLD = 3.months
+
+      def self.find(repo, branch_name)
+        if branch_name.is_a?(Gitlab::Git::Branch)
+          branch_name
+        else
+          repo.find_branch(branch_name)
+        end
+      end
+
+      def self.from_ref(repository, ref, commit: nil)
+        new(repository, ref.name, ref.target, commit)
+      end
+
+      def active?
+        self.dereferenced_target.committed_date >= STALE_BRANCH_THRESHOLD.ago
+      end
+
+      def stale?
+        !active?
+      end
+
+      def state
+        active? ? :active : :stale
+      end
+
+      def cache_key
+        "branch:" + Digest::SHA1.hexdigest([name, target, dereferenced_target&.sha].join(':'))
+      end
+
+      def project
+        container = dereferenced_target&.repository&.container
+        container if container.is_a?(::Project)
+      end
+    end
+  end
+end

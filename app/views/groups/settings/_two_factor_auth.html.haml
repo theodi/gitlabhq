@@ -1,0 +1,25 @@
+- allow_mfa_for_subgroups_docs_url = link_to('', help_page_path('security/two_factor_authentication.md', anchor: '2fa-in-subgroups'), target: '_blank', rel: 'noopener noreferrer')
+- allow_mfa_for_subgroups_docs_note = safe_format(_("Turning this setting off disables all subgroup 2FA settings. This is a destructive change and cannot be reversed. Read %{link_start}more%{link_end}."), tag_pair(allow_mfa_for_subgroups_docs_url, :link_start, :link_end))
+
+- return unless group.parent_allows_two_factor_authentication?
+- docs_link_url = help_page_path('security/two_factor_authentication.md', anchor: 'enforce-2fa-for-all-users-in-a-group')
+- docs_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: docs_link_url }
+
+%h5= _('Two-factor authentication')
+
+%p= _('%{docs_link_start}What is two-factor authentication?%{docs_link_end}').html_safe % { docs_link_start: docs_link_start, docs_link_end: '</a>'.html_safe }
+
+.form-group
+  = f.gitlab_ui_checkbox_component :require_two_factor_authentication,
+      _('All users in this group must set up two-factor authentication'),
+      checkbox_options: { data: { testid: 'require-2fa-checkbox' } }
+.form-group
+  = f.label :two_factor_grace_period, _('Delay 2FA enforcement (hours)')
+  = f.text_field :two_factor_grace_period, class: 'form-control form-control-sm !gl-w-auto gl-form-input gl-mb-3'
+  .form-text.gl-text-subtle= _("The maximum amount of time users have to set up two-factor authentication before it's enforced.")
+- unless group.has_parent?
+  .form-group
+    = f.gitlab_ui_checkbox_component :allow_mfa_for_subgroups,
+        _('Allow more restrictive 2FA enforcement for subgroups'),
+        checkbox_options: { checked: group.namespace_settings&.allow_mfa_for_subgroups },
+        help_text: allow_mfa_for_subgroups_docs_note

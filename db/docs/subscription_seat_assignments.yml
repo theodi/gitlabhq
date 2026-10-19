@@ -1,0 +1,13 @@
+---
+table_name: subscription_seat_assignments
+description: Stores seat assignment information and activity within a namespace
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/164799
+milestone: '17.5'
+feature_categories:
+- seat_cost_management
+classes:
+- GitlabSubscriptions::SeatAssignment
+gitlab_schema: gitlab_main_org
+sharding_key:
+  organization_id: organizations
+table_size: small

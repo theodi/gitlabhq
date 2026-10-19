@@ -1,0 +1,106 @@
+// Import a subset of the GitLab UI framework:
+// keep parts that affect elements that can appear in emails;
+// omit Bootstrap Reboot since it adds unnecessary styles to every element.
+@import 'notify_base';
+
+// bootstrap variables, mixins, functions
+@import 'bootstrap/scss/functions';
+@import 'bootstrap/scss/variables';
+@import 'bootstrap/scss/mixins';
+
+// bootstrap styles
+@import 'bootstrap/scss/code';
+
+// @gitlab/ui variables, mixins, functions
+@import '@gitlab/ui/src/scss/variables';
+@import '@gitlab/ui/src/scss/mixins';
+
+// @gitlab/ui styles
+@import '@gitlab/ui/src/components/base/icon/icon';
+@import '@gitlab/ui/src/components/base/label/label';
+
+// gitlab styles
+@import 'bootstrap_migration_variables';
+@import 'bootstrap_migration_reset';
+@import '../framework/gfm';
+@import '../framework/kbd';
+@import '../framework/tables';
+@import '../framework/typography';
+
+body {
+  font-family: $regular-font;
+  font-size: inherit;
+}
+
+pre {
+  font-size: 14px;
+}
+
+gl-emoji img {
+  width: 1.2em;
+  height: 1.2em;
+  object-fit: scale-down;
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-mb-5 {
+  margin-bottom: $gl-spacing-scale-5;
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-mt-5 {
+  margin-top: $gl-spacing-scale-5;
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-label.gl-label-scoped {
+  border-width: $gl-spacing-scale-1;
+  border-style: solid;
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-label-text {
+    padding: 0 $label-padding-horizontal 0 ($label-padding-horizontal - $gl-spacing-scale-1);
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-label-text-scoped {
+    padding: 0 ($gl-spacing-scale-3 - $gl-spacing-scale-1) 0 $gl-spacing-scale-2;
+  }
+}
+
+.content {
+  hr {
+    border: 1px solid $gl-border-color-default;
+  }
+
+  blockquote {
+    border-top-width: 0;
+    border-bottom-width: 0;
+    border-right-width: 0;
+
+    &:dir(rtl) {
+      border-left-width: 0;
+      border-right-width: inherit;
+    }
+  }
+
+  table {
+    border-collapse: collapse;
+  }
+
+  .diff-table.code,
+  table.code:not(.blob-embed) {
+    width: auto;
+
+    td {
+      padding: inherit;
+
+      pre {
+        background-color: inherit;
+        margin: 0;
+        padding: 0;
+        border: inherit;
+      }
+    }
+  }
+}

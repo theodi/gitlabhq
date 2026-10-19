@@ -1,0 +1,213 @@
+---
+stage: Software Supply Chain Security
+group: Authentication
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Remove user accounts and manage associated records and contributions.
+title: Delete users
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Users can be deleted from a GitLab instance, either by:
+
+- The user themselves.
+- An administrator.
+
+> [!note]
+> Deleting a user deletes all projects in that user namespace.
+
+## Delete your own account
+
+{{< details >}}
+
+- Offering: GitLab.com, GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- Delay between a user deleting their own account and deletion of the user record introduced in GitLab 16.0 [with a feature flag](../../../administration/feature_flags/_index.md) named `delay_delete_own_user`. Enabled by default on GitLab.com.
+
+{{< /history >}}
+
+> [!note]
+> On GitLab Self-Managed, this feature is disabled by default. Use the
+> [application settings API](../../../api/settings.md) to enable the
+> `delay_user_account_self_deletion` setting for the instance.
+
+You can schedule your account for deletion. When you delete your account, it enters a pending
+deletion state. Generally, deletions complete in one or two hours but can take up to seven days for
+accounts that are associated with comments, issues, merge requests, notes, or snippets.
+
+While your account is pending deletion:
+
+- Your account is [blocked](../../../administration/moderate_users.md#block-a-user).
+- You cannot create a new account with the same username.
+- You cannot create a new account with the same primary email address unless you change the
+  email address first.
+
+> [!note]
+> After the account is deleted, any user can create a user account with the same username. If
+> another user takes the username, you cannot reclaim it.
+
+To delete your own account:
+
+1. In the upper-right corner, select your avatar.
+1. Select **Edit profile**.
+1. In the left sidebar, select **Account**.
+1. Select **Delete account**.
+
+If you cannot delete your account on GitLab.com, submit a [personal data request](https://support.gitlab.io/personal-data-request/)
+to remove your account and data from GitLab.
+
+## Delete users and user contributions
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Prerequisites:
+
+- You must be an administrator for the instance.
+
+To delete a user:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Overview** > **Users**.
+1. Select a user.
+1. Under the **Account** tab, select:
+   - **Delete user** to delete only the user but maintain their [associated records](#associated-records). You can't use this option if
+     the selected user is the sole owner of any groups.
+   - **Delete user and contributions** to delete the user and their associated records. This option also removes all groups (and
+     projects within these groups) where the user is the sole direct Owner of a group. Inherited ownership doesn't apply.
+
+> [!warning]
+> Using the **Delete user and contributions** option may result in removing more data than intended. See
+> [associated records](#associated-records) for additional details.
+
+### Associated records
+
+When deleting users, you can either:
+
+- Delete just the user, but move contributions to a ghost user:
+  - This internal user acts as a container for all deleted users' contributions.
+  - On GitLab.com, this user is called Ghost User (`@ghost1`).
+  - The user's profile and personal projects are deleted, instead of moved to Ghost User.
+- Delete the user and their contributions, including:
+  - Abuse reports.
+  - Emoji reactions.
+  - Groups of which the user is the only user with the Owner role.
+  - Personal access tokens.
+  - Epics.
+  - Issues.
+  - Merge requests.
+  - Snippets.
+  - [Notes and comments](../../../api/notes.md)
+    on other users' [commits](../../project/repository/_index.md#commit-changes-to-a-repository),
+    [epics](../../group/epics/_index.md),
+    [issues](../../project/issues/_index.md),
+    [merge requests](../../project/merge_requests/_index.md)
+    and [snippets](../../snippets.md).
+
+In both cases, commits retain [user information](https://git-scm.com/book/en/v2/Git-Internals-Git-Objects#_git_commit_objects)
+and therefore data integrity within a [Git repository](../../project/repository/_index.md).
+
+An alternative to deleting is [blocking a user](../../../administration/moderate_users.md#block-a-user).
+
+When a user is deleted from an [abuse report](../../../administration/review_abuse_reports.md) or spam log, these associated
+records are always removed.
+
+The deleting associated records option can be requested in the [API](../../../api/users.md#delete-a-user) as well as
+the **Admin** area.
+
+> [!warning]
+> User approvals are associated with a user ID. Other user contributions do not have an associated user ID. When you
+> delete a user and their contributions are moved to a ghost user, the approval contributions refer to a missing or
+> invalid user ID. Instead of deleting users, consider [blocking](../../../administration/moderate_users.md#block-a-user),
+> [banning](../../../administration/moderate_users.md#ban-a-user), or [deactivating](../../../administration/moderate_users.md#deactivate-a-user)
+> them.
+
+## Delete the root account on a GitLab Self-Managed instance
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+> [!warning]
+> The root account is the most privileged account on the system. Deleting the root account might result in losing access to the instance [**Admin** area](../../../administration/admin_area.md) if there is no other administrator available on the instance.
+
+You can delete the root account using either the UI or the [GitLab Rails console](../../../administration/operations/rails_console.md).
+
+Before you delete the root account:
+
+1. If you have created any [project](../../project/settings/project_access_tokens.md) or [personal access tokens](../personal_access_tokens.md) for the root account and use them in your workflow, transfer any necessary permissions or ownership from the root account to the new administrator.
+1. [Back up your GitLab Self-Managed instance](../../../administration/backup_restore/backup_gitlab.md).
+1. Consider [deactivating](../../../administration/moderate_users.md#deactivate-a-user) or [blocking](../../../administration/moderate_users.md#block-and-unblock-users) the root account instead.
+
+### Use the UI
+
+Prerequisites:
+
+- You must be an administrator for the GitLab Self-Managed instance.
+
+To delete the root account:
+
+1. In the **Admin** area, [create a new user with administrator access](create_accounts.md#create-a-user-in-the-admin-area). This ensures that you maintain administrator access to the instance whilst mitigating the risks associated with deleting the root account.
+1. [Delete the root account](#delete-users-and-user-contributions).
+
+### Use the GitLab Rails console
+
+> [!warning]
+> Commands that change data can cause damage if not run correctly or under the right conditions. Always run commands in a test environment first and have a backup instance ready to restore.
+
+Prerequisites:
+
+- You must have access to the GitLab Rails console.
+
+To delete the root account, in the Rails console:
+
+1. Give another existing user administrator access:
+
+   ```ruby
+   user = User.find(username: 'Username') # or use User.find_by(email: 'email@example.com') to find by email
+   user.admin = true
+   user.save!
+   ```
+
+   This ensures that you maintain administrator access to the instance whilst mitigating the risks associated with deleting the root account.
+
+1. To delete the root account, do either of the following:
+
+   - Block the root account:
+
+     ```ruby
+     # This needs to be a current admin user
+     current_user = User.find(username: 'Username')
+
+     # This is the root user to block
+     user = User.find(username: 'Username')
+
+     ::Users::BlockService.new(current_user).execute(user)
+     ```
+
+   - Deactivate the root user:
+
+     ```ruby
+     # This needs to be a current admin user
+     current_user = User.find(username: 'Username')
+
+     # This is the root user to deactivate
+     user = User.find(username: 'Username')
+
+     ::Users::DeactivateService.new(current_user, skip_authorization: true).execute(user)
+     ```

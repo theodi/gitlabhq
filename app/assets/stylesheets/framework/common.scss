@@ -1,0 +1,362 @@
+// stylelint-disable length-zero-no-unit
+:root {
+  @each $name, $size in $grid-breakpoints {
+    --breakpoint-#{$name}: #{$size};
+  }
+}
+
+.with-performance-bar {
+  --performance-bar-height: #{$performance-bar-height};
+}
+
+.with-system-header {
+  --system-header-height: #{$system-header-height};
+}
+
+.with-header {
+  --header-height: #{$header-height};
+}
+
+.with-top-bar {
+  --top-bar-height: #{$top-bar-height};
+}
+
+.with-system-footer {
+  --system-footer-height: #{$system-footer-height};
+}
+
+@include gl-container-width-up(sm, panel) {
+  .right-sidebar-collapsed {
+    --application-bar-right: #{$right-sidebar-collapsed-width};
+
+    &.is-merge-request {
+      --application-bar-right: 0px;
+    }
+  }
+
+  .right-sidebar-expanded {
+    --application-bar-right: #{$right-sidebar-width};
+  }
+}
+
+/** COLORS **/
+.text-underline,
+.text-underline:hover {
+  text-decoration: underline;
+}
+
+.hint {
+  font-style: italic;
+  @apply gl-text-disabled;
+}
+
+.light { @apply gl-text-default; }
+
+.tab-content {
+  overflow: visible;
+}
+
+pre {
+  &.clean {
+    background: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+  }
+
+  &.wrap {
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+}
+
+hr {
+  @apply gl-my-6;
+  @apply gl-mx-0;
+  @apply gl-border-t;
+  @apply gl-border-subtle;
+}
+
+.str-truncated {
+  @include str-truncated;
+}
+
+.str-truncated-100 {
+  @include str-truncated(100%);
+}
+
+.item-title { font-weight: $gl-font-weight-bold; }
+
+.loading {
+  margin: 20px auto;
+  height: 40px;
+  @apply gl-text-subtle;
+  font-size: 32px;
+  text-align: center;
+}
+
+p.time {
+  @apply gl-text-disabled;
+  font-size: 90%;
+  margin: 30px 3px 3px 2px;
+}
+
+.highlight {
+  text-shadow: none;
+}
+
+// Fix issue with notes & lists creating a bunch of bottom borders.
+li.note {
+  img { max-width: 100%; }
+}
+
+.markdown {
+  img {
+    max-width: 100%;
+  }
+}
+
+.wiki_content code,
+.readme code {
+  background-color: inherit;
+}
+
+.error-message {
+  padding: 10px;
+  background: $red-400;
+  margin: 0;
+  color: $white;
+
+  a {
+    color: $white;
+    text-decoration: underline;
+  }
+}
+
+@mixin message($background-color, $border-color, $text-color) {
+  border-left: 4px solid $border-color;
+  color: $text-color;
+  padding: $gl-padding $gl-padding-24;
+  margin-bottom: $gl-padding-12;
+  background-color: $background-color;
+
+  &.centered {
+    text-align: center;
+  }
+
+  .close {
+    svg {
+      width: $gl-font-size-large;
+      height: $gl-font-size-large;
+    }
+
+    color: inherit;
+  }
+}
+
+.warning_message {
+  @include message($orange-50, $orange-200, $gray-900);
+}
+
+.gitlab-promo {
+  a {
+    @apply gl-text-disabled;
+    margin-right: 30px;
+  }
+}
+
+.milestone {
+  .progress {
+    margin-top: 4px;
+    box-shadow: none;
+    background-color: $gray-100;
+  }
+}
+
+.chart {
+  overflow: hidden;
+  height: 220px;
+}
+
+.card.card-body {
+  margin-bottom: $gl-padding;
+
+  hr {
+    @apply gl-border-subtle;
+  }
+}
+
+// these classes override styles from the dropzone node package
+.dropzone .dz-preview .dz-progress {
+  @apply gl-border #{!important};
+
+  .dz-upload {
+    background: $green-500 !important;
+  }
+}
+
+.dz-message {
+  margin: 0;
+}
+
+.alert {
+  margin-bottom: $gl-padding;
+}
+
+.progress {
+  height: 4px;
+}
+
+.gl-accessibility {
+  &:focus-visible {
+    display: flex;
+    align-items: center;
+    top: 1px;
+    left: 1px;
+    width: auto;
+    height: 100%;
+    padding: 0 10px;
+    clip: auto;
+    text-decoration: none;
+    @apply gl-text-default;
+    @apply gl-bg-subtle;
+    z-index: 1;
+  }
+}
+
+.tooltip {
+  .tooltip-inner {
+    word-wrap: break-word;
+  }
+}
+
+.disabled-content {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/** COMMON CLASSES **/
+/**
+  🚨 Do not use these classes — they are deprecated and being removed. 🚨
+  See https://gitlab.com/gitlab-org/gitlab/-/issues/217418 for more details.
+**/
+.center { text-align: center; }
+.block { display: block; }
+.vertical-align-text-top { vertical-align: text-top; }
+.vertical-align-middle { vertical-align: middle; }
+
+/** COMMON SIZING CLASSES **/
+.w-0 { width: 0; }
+.w-8em { width: 8em; }
+.w-30p { width: 30%; }
+.w-60p { width: 60%; }
+
+.h-32-px { height: 32px;}
+
+.mw-6em { max-width: 6em; }
+
+.drag-handle {
+  width: 4px;
+
+  &:hover {
+    @apply gl-bg-strong;
+  }
+
+  &.is-dragging {
+    background-color: $gray-400;
+  }
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
+
+// this needs to use "!important" due to some very specific styles
+// around buttons
+.cursor-default {
+  cursor: default !important;
+}
+
+// Make buttons/dropdowns full-width on mobile
+.full-width-mobile {
+  @include gl-container-width-down(sm, panel) {
+    width: 100%;
+
+    > .dropdown-menu,
+    > .btn,
+    > .gl-new-dropdown-toggle > .gl-button-text {
+      width: 100%;
+    }
+  }
+}
+
+.gl-font-size-0 { font-size: 0; }
+
+.gl-pseudo-placeholder:empty::before {
+  content: attr(data-placeholder);
+  font-weight: $gl-font-weight-normal;
+  color: var(--gl-control-placeholder-color);
+  cursor: text;
+}
+
+// Temporarily restore the browser-default bottom margin that @gitlab/ui@135
+// removed from GlPagination, until all usages are audited individually.
+// See https://gitlab.com/gitlab-org/gitlab-services/design.gitlab.com/-/merge_requests/5437
+.gl-pagination ul {
+  margin-bottom: 1rem;
+}
+
+// --- moved from labels.scss when moving to page_bundles ---
+// Fix scoped label padding in cases where old markdown uses the old label structure */
+.gl-label-text + .gl-label-text {
+  padding-left: $gl-spacing-scale-2;
+  padding-right: $gl-spacing-scale-3;
+}
+
+.gl-label-scoped {
+  box-shadow: 0 0 0 2px currentColor inset;
+}
+
+.gl-label-tooltip-footer {
+  color: var(--gl-tooltip-text-color-subtle);
+}
+
+.ref-container,
+.commit-sha-container {
+  font-family: $gl-monospace-font;
+  font-variant-ligatures: none;
+  font-size: $gl-font-size-sm;
+  padding-left: $gl-spacing-scale-2;
+  padding-right: $gl-spacing-scale-2;
+  border-radius: $gl-border-radius-base;
+}
+
+.ref-container {
+  color: var(--gl-link-mention-text-color-default) !important;
+  background-color: var(--gl-link-mention-background-color-default);
+}
+
+.commit-sha-container {
+  @apply gl-bg-strong #{!important};
+  @apply gl-text-subtle #{!important};
+}
+
+[readonly] {
+  cursor: default;
+}
+
+copy-code {
+  position: absolute;
+  opacity: 0;
+  top: $gl-spacing-scale-3;
+  right: $gl-spacing-scale-3;
+
+  .markdown-code-block:hover &,
+  &:focus-within {
+    opacity: 1;
+  }
+}
+
+.markdown-code-block insert-code-snippet {
+  display: none;
+}

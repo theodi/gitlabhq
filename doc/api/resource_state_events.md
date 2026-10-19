@@ -1,0 +1,356 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: REST API to retrieve state change events for issues, merge requests, and epics.
+title: Resource state events API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to interact with state change events for issues, merge requests, and epics.
+
+This API does not track the initial state (`created` or `opened`) of resources.
+For a resource that was not closed or re-opened, an empty list is returned.
+
+## Issues
+
+### List project issue state events
+
+Lists all state events for a single issue.
+
+```plaintext
+GET /projects/:id/issues/:issue_iid/resource_state_events
+```
+
+| Attribute   | Type           | Required | Description                                                                     |
+| ----------- | -------------- | -------- | ------------------------------------------------------------------------------- |
+| `id`        | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths) |
+| `issue_iid` | integer        | yes      | The IID of an issue                                                             |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/issues/11/resource_state_events"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 142,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-20T13:38:20.077Z",
+    "resource_type": "Issue",
+    "resource_id": 11,
+    "source_commit": null,
+    "source_merge_request_id": null,
+    "state": "opened"
+  },
+  {
+    "id": 143,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-21T14:38:20.077Z",
+    "resource_type": "Issue",
+    "resource_id": 11,
+    "source_commit": null,
+    "source_merge_request_id": null,
+    "state": "closed"
+  }
+]
+```
+
+### Retrieve a single issue state event
+
+Retrieves a single state event for a specific project issue.
+
+```plaintext
+GET /projects/:id/issues/:issue_iid/resource_state_events/:resource_state_event_id
+```
+
+Parameters:
+
+| Attribute                     | Type           | Required | Description                                                                     |
+| ----------------------------- | -------------- | -------- | ------------------------------------------------------------------------------- |
+| `id`                          | integer or string | yes      | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the project |
+| `issue_iid`                   | integer        | yes      | The IID of an issue                                                             |
+| `resource_state_event_id`     | integer        | yes      | The ID of a state event                                                     |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/issues/11/resource_state_events/143"
+```
+
+Example response:
+
+```json
+{
+  "id": 143,
+  "user": {
+    "id": 1,
+    "name": "Administrator",
+    "username": "root",
+    "state": "active",
+    "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+    "web_url": "http://gitlab.example.com/root"
+  },
+  "created_at": "2018-08-21T14:38:20.077Z",
+  "resource_type": "Issue",
+  "resource_id": 11,
+  "source_commit": null,
+  "source_merge_request_id": null,
+  "state": "closed"
+}
+```
+
+## Merge requests
+
+### List project merge request state events
+
+Lists all state events for a single merge request.
+
+```plaintext
+GET /projects/:id/merge_requests/:merge_request_iid/resource_state_events
+```
+
+| Attribute           | Type           | Required | Description                                                                     |
+| ------------------- | -------------- | -------- | ------------------------------------------------------------------------------- |
+| `id`                | integer or string | yes      | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the project |
+| `merge_request_iid` | integer        | yes      | The IID of a merge request                                                      |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/merge_requests/11/resource_state_events"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 142,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-20T13:38:20.077Z",
+    "resource_type": "MergeRequest",
+    "resource_id": 11,
+    "source_commit": null,
+    "source_merge_request_id": null,
+    "state": "opened"
+  },
+  {
+    "id": 143,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-21T14:38:20.077Z",
+    "resource_type": "MergeRequest",
+    "resource_id": 11,
+    "source_commit": null,
+    "source_merge_request_id": null,
+    "state": "closed"
+  }
+]
+```
+
+### Retrieve a single merge request state event
+
+Retrieves a single state event for a specific project merge request.
+
+```plaintext
+GET /projects/:id/merge_requests/:merge_request_iid/resource_state_events/:resource_state_event_id
+```
+
+Parameters:
+
+| Attribute                     | Type           | Required | Description                                                                     |
+| ----------------------------- | -------------- | -------- | ------------------------------------------------------------------------------- |
+| `id`                          | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths) |
+| `merge_request_iid`           | integer        | yes      | The IID of a merge request                                                      |
+| `resource_state_event_id`     | integer        | yes      | The ID of a state event                                                     |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/merge_requests/11/resource_state_events/120"
+```
+
+Example response:
+
+```json
+{
+  "id": 120,
+  "user": {
+    "id": 1,
+    "name": "Administrator",
+    "username": "root",
+    "state": "active",
+    "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+    "web_url": "http://gitlab.example.com/root"
+  },
+  "created_at": "2018-08-21T14:38:20.077Z",
+  "resource_type": "MergeRequest",
+  "resource_id": 11,
+  "source_commit": null,
+  "source_merge_request_id": null,
+  "state": "closed"
+}
+```
+
+## Epics
+
+> [!warning]
+> The Epics REST API was [deprecated](https://gitlab.com/gitlab-org/gitlab/-/issues/460668) in GitLab 17.0
+> and is planned for removal in v5 of the API.
+> From GitLab 17.4 to 18.0, if [the new look for epics](../user/group/epics/_index.md#epics-as-work-items) is enabled, and in GitLab 18.1 and later, use the
+> Work Items API instead. For more information, see [migrate epic APIs to work items](graphql/epic_work_items_api_migration_guide.md).
+> This change is a breaking change.
+
+### List group epic state events
+
+Lists all state events for a single epic.
+
+```plaintext
+GET /groups/:id/epics/:epic_id/resource_state_events
+```
+
+| Attribute   | Type           | Required | Description                                                                    |
+|-------------| -------------- | -------- |--------------------------------------------------------------------------------|
+| `id`        | integer or string | yes      | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group.   |
+| `epic_id`   | integer        | yes      | The ID of an epic.                                                              |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/5/epics/11/resource_state_events"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 142,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-20T13:38:20.077Z",
+    "resource_type": "Epic",
+    "resource_id": 11,
+    "source_commit": null,
+    "source_merge_request_id": null,
+    "state": "opened"
+  },
+  {
+    "id": 143,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-21T14:38:20.077Z",
+    "resource_type": "Epic",
+    "resource_id": 11,
+    "source_commit": null,
+    "source_merge_request_id": null,
+    "state": "closed"
+  }
+]
+```
+
+### Retrieve a single epic state event
+
+Retrieves a single epic state event.
+
+```plaintext
+GET /groups/:id/epics/:epic_id/resource_state_events/:resource_state_event_id
+```
+
+Parameters:
+
+| Attribute                 | Type           | Required | Description                                                                   |
+|---------------------------| -------------- | -------- |-------------------------------------------------------------------------------|
+| `id`                      | integer or string | yes      | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group.  |
+| `epic_id`                 | integer        | yes      | The ID of an epic.                                                           |
+| `resource_state_event_id` | integer        | yes      | The ID of a state event.                                                       |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/5/epics/11/resource_state_events/143"
+```
+
+Example response:
+
+```json
+{
+  "id": 143,
+  "user": {
+    "id": 1,
+    "name": "Administrator",
+    "username": "root",
+    "state": "active",
+    "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+    "web_url": "http://gitlab.example.com/root"
+  },
+  "created_at": "2018-08-21T14:38:20.077Z",
+  "resource_type": "Epic",
+  "resource_id": 11,
+  "source_commit": null,
+  "source_merge_request_id": null,
+  "state": "closed"
+}
+```

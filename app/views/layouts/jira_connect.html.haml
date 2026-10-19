@@ -1,0 +1,12 @@
+%html{ lang: I18n.locale }
+  %head
+    %meta{ content: "text/html; charset=utf-8", "http-equiv" => "Content-Type" }
+    %title
+      GitLab
+    = yield :page_specific_styles
+
+    = javascript_include_tag atlassian_js_url
+    = Gon::Base.render_data(nonce: content_security_policy_nonce)
+    = yield :head
+  %body
+    = yield

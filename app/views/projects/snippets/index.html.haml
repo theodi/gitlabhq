@@ -1,16 +1,17 @@
-- page_title "Snippets"
-%h3.page-title
-  Snippets
-  - if can? current_user, :write_project_snippet, @project
-    = link_to new_namespace_project_snippet_path(@project.namespace, @project), class: "btn btn-new pull-right", title: "New Snippet" do
-      Add new snippet
+- page_title s_("Snippets|Snippets")
+- new_project_snippet_link = new_project_snippet_path(@project) if can?(current_user, :create_snippet, @project)
 
-%p.light
-  Share code pastes with others out of git repository
+%h1.gl-sr-only= page_title
 
-%hr
-%ul.bordered-list
-  = render partial: "projects/snippets/snippet", collection: @snippets
-  - if @snippets.empty?
-    %li
-      .nothing-here-block Nothing here.
+- if @snippets.exists?
+  - if current_user
+    .gl-flex-row.top-area.gl-justify-between.gl-items-center
+      - include_private = @project.member?(current_user) || current_user.admin?
+      = render partial: 'snippets/snippets_scope_menu', locals: { subject: @project, include_private: include_private, counts: @snippet_counts }
+      - if new_project_snippet_link.present?
+        .nav-controls.gl-my-4{ class: '!gl-basis-auto !gl-w-auto' }
+          = link_button_to s_("Snippets|New snippet"), new_project_snippet_link, title: s_("Snippets|New snippet"), variant: :confirm
+
+  = render 'shared/snippets/list'
+- else
+  = render 'shared/empty_states/snippets', button_path: new_project_snippet_link

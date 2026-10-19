@@ -1,0 +1,9 @@
+@import 'mixins_and_variables_and_functions';
+
+.edit-profile {
+  max-width: 460px;
+}
+
+.devise-errors {
+  @include devise-errors;
+}

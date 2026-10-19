@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique name for the permission"
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of the permission"
+    },
+    "conditionally_enables": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      ],
+      "description": "One broader permission (string) or several (array), or null when the permission has no broader counterpart. Roles holding ALL listed permissions implicitly hold this permission as well."
+    }
+  },
+  "required": [
+    "name",
+    "description"
+  ],
+  "if": {
+    "properties": {
+      "name": {
+        "pattern": "^_"
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "then": {
+    "required": [
+      "conditionally_enables"
+    ]
+  }
+}

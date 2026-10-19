@@ -1,0 +1,5 @@
+- add_to_breadcrumbs _("Topics"), admin_topics_path
+- page_title _("New topic")
+
+= render ::Layouts::PageHeadingComponent.new(_('New topic'))
+= render 'form', url: admin_topics_path(@topic)

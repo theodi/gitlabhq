@@ -1,0 +1,77 @@
+# frozen_string_literal: true
+
+module RapidDiffs
+  class CommitPresenter < BasePresenter
+    extend ::Gitlab::Utils::Override
+
+    presents ::Commit, as: :resource
+
+    def initialize(subject, diff_view:, diff_options:, request_params: nil, current_user: nil, environment: nil)
+      super(subject, diff_view:, diff_options:, current_user:, request_params:, environment:)
+    end
+
+    def diffs_stats_endpoint
+      diffs_stats_project_commit_path(resource.project, resource.id)
+    end
+
+    def diff_files_endpoint
+      diff_files_metadata_project_commit_path(resource.project, resource.id)
+    end
+
+    def diff_file_endpoint
+      diff_file_project_commit_path(resource.project, resource.id)
+    end
+
+    def discussions_endpoint
+      discussions_namespace_project_commit_path(project.namespace, resource.project, resource.id)
+    end
+
+    override(:reload_stream_url)
+    def reload_stream_url(offset: nil, diff_view: nil, skip_old_path: nil, skip_new_path: nil)
+      diffs_stream_project_commit_path(
+        resource.project,
+        resource.id,
+        offset: offset,
+        skip_old_path: skip_old_path,
+        skip_new_path: skip_new_path,
+        view: diff_view
+      )
+    end
+
+    def user_permissions
+      {
+        can_create_note: can?(@current_user, :create_note, resource.project)
+      }
+    end
+
+    def noteable_type
+      resource.base_class_name
+    end
+
+    def preview_markdown_endpoint
+      project_preview_markdown_path(resource.project)
+    end
+
+    def markdown_docs_path
+      help_page_path('user/markdown.md')
+    end
+
+    def register_path
+      new_user_registration_path(redirect_to_referer: 'yes')
+    end
+
+    def sign_in_path
+      new_user_session_path(redirect_to_referer: 'yes')
+    end
+
+    def report_abuse_path
+      add_category_abuse_reports_path
+    end
+
+    protected
+
+    def baseline_offset
+      5
+    end
+  end
+end

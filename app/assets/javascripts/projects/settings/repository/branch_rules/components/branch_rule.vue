@@ -1,0 +1,278 @@
+<script>
+import { GlBadge, GlButton } from '@gitlab/ui';
+import { createAlert } from '~/alert';
+import ProtectedBadge from '~/vue_shared/components/badges/protected_badge.vue';
+import { s__, sprintf, n__ } from '~/locale';
+import squashOptionQuery from '~/projects/settings/branch_rules/queries/squash_option.query.graphql';
+import GroupInheritancePopover from '~/vue_shared/components/settings/group_inheritance_popover.vue';
+import {
+  getAccessLevels,
+  getAccessLevelsRolesText,
+  getAccessLevelsDeployKeysText,
+} from '../../../utils';
+import GroupBadge from './group_badge.vue';
+
+export default {
+  name: 'BranchRule',
+  i18n: {
+    defaultLabel: s__('BranchRules|default'),
+    detailsButtonLabel: s__('BranchRules|View details'),
+    allowForcePush: s__('BranchRules|Allowed to force push'),
+    codeOwnerApprovalRequired: s__('BranchRules|Requires CODEOWNERS approval'),
+    statusChecks: s__('BranchRules|%{total} status %{subject}'),
+    approvalRules: s__('BranchRules|%{total} approval %{subject}'),
+    matchingBranches: s__('BranchRules|%{total} matching %{subject}'),
+    pushAccessLevels: s__('BranchRules|Allowed to push and merge'),
+    mergeAccessLevels: s__('BranchRules|Allowed to merge'),
+    squashSetting: s__('BranchRules|Squash commits: %{setting}'),
+  },
+  components: {
+    GlBadge,
+    GlButton,
+    ProtectedBadge,
+    GroupInheritancePopover,
+    GroupBadge,
+  },
+  apollo: {
+    squashOption: {
+      query: squashOptionQuery,
+      variables() {
+        return {
+          projectPath: this.projectPath,
+        };
+      },
+      update({ project }) {
+        const squashOptions = project?.branchRules?.nodes || [];
+        return squashOptions.find((option) => option.name === this.name)?.squashOption;
+      },
+      error(error) {
+        createAlert({ message: error });
+      },
+    },
+  },
+  inject: {
+    branchRulesPath: {
+      default: '',
+    },
+    showCodeOwners: { default: false },
+    showStatusChecks: { default: false },
+    showApprovers: { default: false },
+    canAdminGroupProtectedBranches: { default: false },
+    groupSettingsRepositoryPath: { default: '' },
+  },
+  props: {
+    name: {
+      type: String,
+      required: true,
+    },
+    projectPath: {
+      type: String,
+      required: true,
+    },
+    isDefault: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    branchProtection: {
+      type: Object,
+      required: false,
+      default: () => {},
+    },
+    statusChecksTotal: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    approvalRulesTotal: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    matchingBranchesCount: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+  },
+  data() {
+    return {
+      squashOption: null,
+    };
+  },
+  computed: {
+    // eslint-disable-next-line vue/no-unused-properties -- Used in EE override
+    protectedFromPushBySecurityPolicy() {
+      return false;
+    },
+    // Overridden in EE
+    isEnforcedByAnyPolicy() {
+      return false;
+    },
+    // Overridden in EE
+    showPolicyBadge() {
+      return false;
+    },
+    isWildcard() {
+      return this.name.includes('*');
+    },
+    isProtected() {
+      return Boolean(this.branchProtection);
+    },
+    isGroupLevel() {
+      return Boolean(this.branchProtection?.isGroupLevel);
+    },
+    hasApprovalDetails() {
+      return this.approvalDetails.length;
+    },
+    detailsPath() {
+      return `${this.branchRulesPath}?branch=${encodeURIComponent(this.name)}`;
+    },
+    statusChecksText() {
+      return sprintf(this.$options.i18n.statusChecks, {
+        total: this.statusChecksTotal,
+        subject: n__('check', 'checks', this.statusChecksTotal),
+      });
+    },
+    approvalRulesText() {
+      return sprintf(this.$options.i18n.approvalRules, {
+        total: this.approvalRulesTotal,
+        subject: n__('rule', 'rules', this.approvalRulesTotal),
+      });
+    },
+    matchingBranchesText() {
+      return sprintf(this.$options.i18n.matchingBranches, {
+        total: this.matchingBranchesCount,
+        subject: n__('branch', 'branches', this.matchingBranchesCount),
+      });
+    },
+    squashSettingText() {
+      return sprintf(this.$options.i18n.squashSetting, {
+        setting: this.squashOption?.option,
+      });
+    },
+    mergeAccessLevels() {
+      const { mergeAccessLevels } = this.branchProtection || {};
+      return this.getAccessLevels(mergeAccessLevels);
+    },
+    pushAccessLevels() {
+      const { pushAccessLevels } = this.branchProtection || {};
+      return this.getAccessLevels(pushAccessLevels);
+    },
+    pushAccessLevelsText() {
+      return this.getAccessLevelsText(this.$options.i18n.pushAccessLevels, this.pushAccessLevels);
+    },
+    mergeAccessLevelsText() {
+      return this.getAccessLevelsText(this.$options.i18n.mergeAccessLevels, this.mergeAccessLevels);
+    },
+    approvalDetails() {
+      const approvalDetails = [];
+      if (this.isWildcard || this.matchingBranchesCount > 1) {
+        approvalDetails.push(this.matchingBranchesText);
+      }
+      if (this.branchProtection?.allowForcePush) {
+        approvalDetails.push(this.$options.i18n.allowForcePush);
+      }
+      if (this.showCodeOwners && this.branchProtection?.codeOwnerApprovalRequired) {
+        approvalDetails.push(this.$options.i18n.codeOwnerApprovalRequired);
+      }
+      if (this.showStatusChecks && this.statusChecksTotal) {
+        approvalDetails.push(this.statusChecksText);
+      }
+      if (this.showApprovers && this.approvalRulesTotal) {
+        approvalDetails.push(this.approvalRulesText);
+      }
+      if (this.mergeAccessLevels.total > 0) {
+        approvalDetails.push(this.mergeAccessLevelsText);
+      }
+      if (this.pushAccessLevels.total > 0) {
+        approvalDetails.push(this.pushAccessLevelsText);
+      }
+      if (this.squashOption) {
+        approvalDetails.push(this.squashSettingText);
+      }
+      return approvalDetails;
+    },
+  },
+  methods: {
+    getAccessLevels,
+    // eslint-disable-next-line vue/no-unused-properties -- Used in EE override
+    hasPushAccessLevelsText() {
+      return false;
+    },
+    // Overridden in EE
+    isAffectedByPolicy() {
+      return false;
+    },
+    // Overridden in EE
+    isEnforcedForRow() {
+      return false;
+    },
+    // Overridden in EE
+    disabledText() {
+      return false;
+    },
+    getAccessLevelsText(beginString = '', accessLevels) {
+      const textParts = [
+        ...getAccessLevelsRolesText(accessLevels),
+        ...getAccessLevelsDeployKeysText(accessLevels),
+      ];
+
+      return textParts.length ? `${beginString}: ${textParts.join(', ')}` : '';
+    },
+  },
+};
+</script>
+
+<template>
+  <li>
+    <div
+      class="gl-flex gl-justify-between"
+      data-testid="branch-content"
+      :data-qa-branch-name="name"
+    >
+      <div class="gl-flex gl-flex-wrap gl-gap-2 @sm/panel:gl-flex-nowrap">
+        <strong class="gl-w-full gl-font-monospace">{{ name }}</strong>
+
+        <gl-badge v-if="isDefault" variant="info">{{ $options.i18n.defaultLabel }}</gl-badge>
+
+        <protected-badge v-if="isProtected" />
+
+        <group-badge v-if="isGroupLevel" />
+
+        <!-- eslint-disable-next-line vue/no-undef-components -- PolicyBadge is registered in EE via extends -->
+        <policy-badge v-if="showPolicyBadge" :is-protected-by-policy="isEnforcedByAnyPolicy" />
+      </div>
+
+      <div class="gl-flex gl-items-start gl-gap-2">
+        <group-inheritance-popover
+          v-if="isGroupLevel"
+          :has-group-permissions="canAdminGroupProtectedBranches"
+          :group-settings-repository-path="groupSettingsRepositoryPath"
+        />
+        <gl-button
+          class="gl-self-start"
+          category="tertiary"
+          size="small"
+          data-testid="details-button"
+          :href="detailsPath"
+          :disabled="isGroupLevel"
+        >
+          {{ $options.i18n.detailsButtonLabel }}</gl-button
+        >
+      </div>
+    </div>
+    <ul v-if="hasApprovalDetails" class="gl-mb-0 gl-mt-2 gl-pl-6 gl-text-subtle">
+      <li v-for="(detail, index) in approvalDetails" :key="index">
+        <div class="gl-flex gl-items-center">
+          <span :class="{ 'gl-text-disabled': disabledText(detail) }">{{ detail }}</span>
+          <!-- eslint-disable-next-line vue/no-undef-components -- DisabledByPolicyPopover is registered in EE via extends -->
+          <disabled-by-policy-popover
+            v-if="isAffectedByPolicy(detail)"
+            :is-protected-by-policy="isEnforcedForRow(detail)"
+          />
+        </div>
+      </li>
+    </ul>
+  </li>
+</template>

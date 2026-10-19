@@ -1,0 +1,27 @@
+# English documentation
+- source: /doc/(.+?/)_?index\.md/  # doc/administration/_index.md
+  public: '\1'                    # administration/
+
+# Release note feature files
+- source: /doc/(releases/\d+/gitlab-[\d-]+-released/)[^/]+\.md/  # doc/releases/19/gitlab-19-1-released/example-feature-name.md
+  public: '\1'                                                   # releases/19/gitlab-19-1-released/
+- source: /doc/(.+?)\.md/         # doc/administration/page.md
+  public: '\1/'                   # administration/page/
+
+# Japanese documentation
+- source: /doc-locale/ja-jp/(.+?/)_index\.md/  # doc-locale/ja-jp/administration/_index.md
+  public: 'ja-jp/\1'                           # ja-jp/administration/
+- source: /doc-locale/ja-jp/(.+?)\.md/         # doc-locale/ja-jp/administration/page.md
+  public: 'ja-jp/\1/'                          # ja-jp/administration/page/
+
+# Korean documentation
+- source: /doc-locale/ko-kr/(.+?/)_index\.md/  # doc-locale/ko-kr/administration/_index.md
+  public: 'ko-kr/\1'                           # ko-kr/administration/
+- source: /doc-locale/ko-kr/(.+?)\.md/         # doc-locale/ko-kr/administration/page.md
+  public: 'ko-kr/\1/'                          # ko-kr/administration/page/
+
+# French documentation
+- source: /doc-locale/fr-fr/(.+?/)_index\.md/  # doc-locale/fr-fr/administration/_index.md
+  public: 'fr-fr/\1'                           # fr-fr/administration/
+- source: /doc-locale/fr-fr/(.+?)\.md/         # doc-locale/fr-fr/administration/page.md
+  public: 'fr-fr/\1/'                          # fr-fr/administration/page/

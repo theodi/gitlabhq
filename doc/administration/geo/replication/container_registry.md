@@ -1,0 +1,456 @@
+---
+stage: GitLab Dedicated
+group: Geo
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Container registry for a secondary site
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+You can set up a container registry on your secondary Geo site that replicates container images from the one on the primary Geo site. This container image replication is used only for disaster recovery purposes.
+
+Do not push to the container registry on the secondary Geo site, because the data is not propagated to the primary site.
+
+We do not recommend pulling container registry data from the secondary site because it may be stale. The feature request [issue 365864](https://gitlab.com/gitlab-org/gitlab/-/work_items/365864) would solve this problem. You are encouraged to upvote the issue to register your interest.
+
+> [!warning]
+> **Important:** The container registry metadata database is separate from container image replication. While container images replicate from primary to secondary sites, the metadata database does not. When using GitLab Geo with the container registry metadata database enabled, you must configure separate, external PostgreSQL instances for the container registry at each Geo site (both primary and secondary). The container registry metadata database cannot use the default GitLab-managed PostgreSQL database. Each site's metadata database operates independently without replication between them. For setup instructions, see [Using an external database](../../packages/container_registry_metadata_database.md#using-an-external-database).
+
+## Supported container registries
+
+Geo supports the following types of container registries:
+
+- [Docker](https://distribution.github.io/distribution/)
+- [OCI](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)
+
+## Supported image formats
+
+The following container image formats are supported by Geo:
+
+- [Docker V2, schema 1](https://distribution.github.io/distribution/spec/deprecated-schema-v1/)
+- [Docker V2, schema 2](https://distribution.github.io/distribution/spec/manifest-v2-2/)
+- [OCI (Open Container Initiative)](https://github.com/opencontainers/image-spec)
+
+In addition, Geo also supports [BuildKit cache images](https://github.com/moby/buildkit).
+
+## Supported storage
+
+### Docker
+
+For more information on supported registry storage drivers see
+[Docker registry storage drivers](https://distribution.github.io/distribution/storage-drivers/)
+
+Read the [Load balancing considerations](https://distribution.github.io/distribution/about/deploying/#load-balancing-considerations)
+when deploying the Registry, and how to set up the storage driver for the GitLab integrated
+[container registry](../../packages/container_registry.md#use-object-storage).
+
+### Registries that support OCI artifacts
+
+The following registries support OCI artifacts:
+
+- CNCF Distribution - local/offline verification
+- Azure Container Registry (ACR)
+- Amazon Elastic Container Registry (ECR)
+- Google Artifact Registry (GAR)
+- GitHub Packages container registry (GHCR)
+- Bundle Bar
+
+For more information, see the [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec).
+
+## Configure container registry replication
+
+You can enable a storage-agnostic replication so it
+can be used for cloud or local storage. Whenever a new image is pushed to the
+primary site, each secondary site pulls it to its own container
+repository.
+
+To configure container registry replication:
+
+1. Configure the [primary site](#configure-primary-site).
+1. Configure the [secondary site](#configure-secondary-site).
+1. Verify container registry [replication](#verify-replication).
+
+### Configure primary site
+
+Make sure that you have container registry set up and working on
+the primary site before following the next steps.
+
+To be able to replicate new container images, the container registry must send notification events to the
+primary site for every push. The token shared between the container registry and the web nodes on the
+primary is used to make communication more secure.
+
+1. SSH into your GitLab primary server and sign in as root (for GitLab HA, you only need a Registry node):
+
+   ```shell
+   sudo -i
+   ```
+
+1. Edit `/etc/gitlab/gitlab.rb`:
+
+   ```ruby
+   # Configure the registry to listen on the public/internal interface
+   # Replace with the appropriate interface (for example, '0.0.0.0' for all interfaces)
+   registry['registry_http_addr'] = '0.0.0.0:5000'
+   registry['notifications'] = [
+     {
+       'name' => 'geo_event',
+       'url' => 'https://<example.com>/api/v4/container_registry_event/events',
+       'timeout' => '500ms',
+       'maxretries' => 5,
+       'backoff' => '1s',
+       'headers' => {
+         'Authorization' => ['<replace_with_a_secret_token>']
+       }
+     }
+   ]
+   ```
+
+   Replace `<example.com>` with the `external_url` defined in your primary site's `/etc/gitlab/gitlab.rb` file, and
+   replace `<replace_with_a_secret_token>` with a case-sensitive alphanumeric string
+   that starts with a letter. You can generate one with `/dev/urandom tr -dc _A-Z-a-z-0-9 | head -c 32 | sed "s/^[0-9]*//"; echo`
+
+   > [!note]
+   > Unless you set `gitlab_rails['registry_notification_secret']` explicitly, name this
+   > endpoint `geo_event`. On a node whose `/etc/gitlab/gitlab.rb` contains a
+   > `registry['notifications']` block, the Linux package derives that secret from this
+   > endpoint's `Authorization` header only when the endpoint name matches. With any
+   > other name, and no explicit setting, GitLab has no notification secret and the
+   > registry's notifications are rejected `401 Unauthorized`.
+   >
+   > If you use an external registry (not the one integrated with GitLab), there is no
+   > `registry['notifications']` block to derive the secret from, so you must set it
+   > yourself in `/etc/gitlab/gitlab.rb`:
+   >
+   > ```ruby
+   > gitlab_rails['registry_notification_secret'] = '<replace_with_a_secret_token>'
+   > ```
+
+1. For GitLab HA only. Edit `/etc/gitlab/gitlab.rb` on every web node:
+
+   ```ruby
+   gitlab_rails['registry_notification_secret'] = '<replace_with_a_secret_token_generated_above>'
+   ```
+
+   Web nodes have no `registry['notifications']` block, so there is nothing to derive
+   the secret from and it must be set explicitly. A web node that does carry the block,
+   because the same `/etc/gitlab/gitlab.rb` is copied to every node, derives the secret
+   the same way the registry node does.
+
+1. Reconfigure each node you just updated:
+
+   ```shell
+   gitlab-ctl reconfigure
+   ```
+
+### Configure secondary site
+
+Make sure you have container registry set up and working on
+the secondary site before following the next steps.
+
+The following steps should be done on each secondary site you're
+expecting to see the container images replicated.
+
+Because we need to allow the secondary site to communicate securely with
+the primary site container registry, we need to have a single key
+pair for all the sites. The secondary site uses this key to
+generate a short-lived JWT that is pull-only-capable to access the
+primary site container registry.
+
+For each application and Sidekiq node on the secondary site:
+
+1. SSH into the node and sign in as the `root` user:
+
+   ```shell
+   sudo -i
+   ```
+
+1. Copy `/var/opt/gitlab/gitlab-rails/etc/gitlab-registry.key` from the primary to the node.
+1. Edit `/etc/gitlab/gitlab.rb` and add:
+
+   ```ruby
+   gitlab_rails['geo_registry_replication_enabled'] = true
+
+   # Primary registry's hostname and port, it will be used by
+   # the secondary node to directly communicate to primary registry
+   gitlab_rails['geo_registry_replication_primary_api_url'] = 'https://primary.example.com:5050/'
+   ```
+
+1. Reconfigure the node for the change to take effect:
+
+   ```shell
+   gitlab-ctl reconfigure
+   ```
+
+### Disable container registry replication
+
+> [!note]
+> When the container registry service is disabled, Geo automatically skips
+> verification attempts for container repositories. Container registry metrics
+> are hidden from the Geo dashboard. Existing verification states remain in
+> the database but are not displayed.
+
+To stop replicating container images to a secondary site and disable the local container registry:
+
+1. SSH into the primary server node and sign in as the `root` user:
+
+   ```shell
+   sudo -i
+   ```
+
+1. Edit `/etc/gitlab/gitlab.rb` and add:
+
+   ```ruby
+   # Disable Geo replication for the container registry
+   gitlab_rails['geo_registry_replication_enabled'] = false
+   # Disable the container registry service itself
+   registry['enable'] = false
+   ```
+
+1. Reconfigure the node for the change to take effect:
+
+   ```shell
+   sudo gitlab-ctl reconfigure
+   ```
+
+### Verify replication
+
+To verify container registry replication is working, on the secondary site:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Geo** > **Nodes**.
+   The initial replication, or "backfill", is probably still in progress.
+
+You can monitor the synchronization process on each Geo site from the primary site's **Geo Nodes** dashboard in your browser.
+
+## Garbage collection on Geo sites
+
+Garbage collection on the primary site does not free storage on the secondary site.
+Each site must clean up its own container registry storage. When you delete a tag
+on the primary site, the deletion is replicated to the secondary site. However, the
+image layers remain in storage on both sites until garbage collection removes them.
+
+How you run garbage collection depends on your registry configuration.
+
+### Garbage collection with the container registry metadata database
+
+Each site has its own registry metadata database, and the registry runs
+[online garbage collection](../../packages/container_registry_metadata_database.md#online-garbage-collection-monitoring)
+on each site automatically. You do not need to run garbage collection manually.
+
+### Garbage collection without the metadata database, with separate storage for each site
+
+Run [garbage collection](../../packages/container_registry.md#container-registry-garbage-collection)
+on each site. The secondary site cannot replicate container images while garbage
+collection runs, and Geo retries the failed synchronizations after it completes.
+
+### Garbage collection without the metadata database, with shared storage
+
+> [!warning]
+> Using shared storage is not recommended. A wrong configuration may result in data loss.
+
+When you have shared storage, both sites read and write the same storage bucket, so the
+primary site owns all registry blobs. The secondary site must not touch them: do not run
+garbage collection on the secondary site, as it could delete images that were recently
+pushed to the primary site, and replication would copy blobs onto themselves.
+
+In short:
+
+1. On the secondary site, [disable the container registry replication](#disable-container-registry-replication).
+1. On the primary site, run [garbage collection](../../packages/container_registry.md#container-registry-garbage-collection).
+
+## Troubleshooting
+
+### Confirm that container registry replication is enabled
+
+This can be done with a check using the [Rails console](../../operations/rails_console.md#starting-a-rails-console-session):
+
+```ruby
+Geo::ContainerRepositoryRegistry.replication_enabled?
+```
+
+### Missing container registry notification event
+
+1. When an image is pushed to the primary site's container registry, it should trigger a [Container Registry notification](../../packages/container_registry.md#configure-container-registry-notifications)
+1. The primary site's container registry calls the primary site's API on `https://<example.com>/api/v4/container_registry_event/events`
+1. The primary site inserts a record to the `geo_events` table with `replicable_name: 'container_repository', model_record_id: <ID of the container repository>`.
+1. The record gets replicated by PostgreSQL to the secondary site's database.
+1. The Geo Log Cursor service processes the new event and enqueues a Sidekiq job `Geo::EventWorker`
+
+To verify this is working correctly, push an image to the registry on the primary site, and run the following command on the Rails console to verify that the notification was received, and processed into an event:
+
+```ruby
+Geo::Event.where(replicable_name: 'container_repository')
+```
+
+You can further verify this by checking `geo.log` for entries from `Geo::ContainerRepositorySyncService`.
+
+### Registry events logs response status 401 Unauthorized unaccepted
+
+`401 Unauthorized` errors indicate that the primary site's container registry notification is not accepted by the Rails application, preventing it from notifying GitLab that something was pushed.
+
+To fix this, make sure that the authorization headers being sent with the registry notification match what's configured on the primary site, as should be done during step [Configure primary site](#configure-primary-site).
+
+If they appear to match, check that GitLab holds a notification secret at all.
+On each node that runs Rails:
+
+```shell
+grep notification_secret /var/opt/gitlab/gitlab-rails/etc/gitlab.yml
+```
+
+An empty value means GitLab has nothing to compare the incoming header against,
+so every notification is rejected no matter what the registry sends.
+Two causes produce an empty value:
+
+- The node's `/etc/gitlab/gitlab.rb` has no `registry['notifications']` block,
+  so there is nothing to derive the secret from. This is the usual state of a web
+  node, and of every node when the registry is external.
+  Set `gitlab_rails['registry_notification_secret']` explicitly,
+  as described in [configure primary site](#configure-primary-site).
+- The block is present, but its endpoint is not named `geo_event`.
+  The derivation matches on the endpoint name, so any other name produces no secret.
+
+The Linux package does not write the derived secret to `/etc/gitlab/gitlab-secrets.json`,
+so it is derived again on every `gitlab-ctl reconfigure`.
+A misnamed endpoint is therefore not a one-time mistake that a later reconfigure repairs.
+
+Rejected notifications are retried according to the `maxretries` value in the endpoint
+configuration and then discarded, so the push itself succeeds and no Geo event is ever
+created for it.
+While the secret remains empty, no later push starts replication either.
+
+After you correct the secret, a later push to a repository resyncs the whole repository,
+including any pushes missed during the outage.
+A repository that receives no later push is not resynced right away.
+It resyncs after the primary site's periodic reverification recalculates its checksum
+and the secondary site detects the mismatch, which can take up to the
+[reverification interval](../disaster_recovery/background_verification.md#repository-re-verification).
+To resync sooner, either select **Resync all** as described in
+[Manually trigger a container registry sync event](#manually-trigger-a-container-registry-sync-event),
+or [reverify all container repositories on the primary site](resync_reverify.md#reverify-one-component-on-all-sites).
+The targeted `gitlab:geo:reverify_container_repositories_since` task described in
+[Repository not resynced after downtime](#repository-not-resynced-after-downtime)
+does not apply here.
+It selects repositories the primary site verified recently, and while the notifications
+were rejected the primary site did not reverify the repositories that were pushed to,
+so the task cannot tell them apart from any other repository.
+
+To confirm the rejections from the GitLab side,
+check `api_json.log` rather than `production_json.log`.
+The notification endpoint is part of the REST API,
+so its requests, including the rejections, are logged in `api_json.log`
+and not in `production_json.log`:
+
+```shell
+grep container_registry_event /var/log/gitlab/gitlab-rails/api_json.log
+```
+
+#### Registry error: `token from untrusted issuer: "<token>"`
+
+When replicating container images in Geo, you might see the error `token from untrusted issuer: "<token>"`.
+
+This issue occurs when the container registry configuration is incorrect, causing Sidekiq's JWT
+authentication to fail.
+
+To resolve this issue:
+
+1. Ensure both sites share a single signing key pair, as described in [configure secondary site](#configure-secondary-site).
+1. Verify that both container registries and both primary and secondary sites are configured
+   to use the same token issuer. For more information, see
+   [configure GitLab and registry on separate nodes](../../packages/container_registry.md#configure-gitlab-and-registry-on-separate-nodes-linux-package-installations).
+1. For multi-node deployments, confirm that the issuer configured on the Sidekiq node matches
+   the value configured on the registries.
+
+### Manually trigger a container registry sync event
+
+To help with troubleshooting, you can manually trigger the container registry replication process:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Geo** > **Sites**.
+1. In **Replication Details** for a **Secondary Site**, select **Container Repositories**.
+1. Select **Resync** for one row, or **Resync all**.
+
+You can also manually trigger a resync by running the following commands on the secondary's Rails console:
+
+```ruby
+registry = Geo::ContainerRepositoryRegistry.first # Choose a Geo registry entry
+registry.replicator.sync # Resync the container repository
+pp registry.reload # Look at replication state fields
+
+#<Geo::ContainerRepositoryRegistry:0x00007f54c2a36060
+ id: 1,
+ container_repository_id: 1,
+ state: "2",
+ retry_count: 0,
+ last_sync_failure: nil,
+ retry_at: nil,
+ last_synced_at: Thu, 28 Sep 2023 19:38:05.823680000 UTC +00:00,
+ created_at: Mon, 11 Sep 2023 15:38:06.262490000 UTC +00:00>
+```
+
+The `state` field represents sync state:
+
+- `"0"`: pending sync (usually means it was never synced)
+- `"1"`: started sync (a sync job is currently running)
+- `"2"`: successfully synced
+- `"3"`: failed to sync
+
+### Repository not resynced after downtime
+
+If container registry replication was disabled for a period of time,
+either through the `geo_container_repository_replication` feature flag
+or a misconfiguration, images pushed during that period might not
+automatically sync to the secondary site.
+
+New container repositories created during the downtime are
+automatically picked up by the backfill worker after replication is
+re-enabled. However, updates to existing container repositories
+(for example, new tags pushed to an existing repository) are not
+automatically resynced. The Geo admin UI might still report 100%
+replication because the sync status is based on the registry entry
+state, not on content verification.
+
+Updated container repositories eventually resync after the
+primary site reverification cycle detects a checksum mismatch.
+For more information about the reverification interval, see
+[repository re-verification](../disaster_recovery/background_verification.md#repository-re-verification).
+
+If replication was disabled with the `geo_container_repository_replication` feature flag,
+but registry notifications and force-primary-checksumming remained enabled, the primary site
+still recalculated the checksum of each container repository that was pushed to while
+replication was disabled, even though no replication events were sent to secondary sites.
+The verification timestamp (`verified_at`) of these repositories therefore identifies which
+repositories changed during the downtime, and reverifying only those repositories is enough
+to trigger resyncs for them. To mark for reverification the repositories that the primary
+site verified in the last N days, run the following command on the primary site:
+
+```shell
+sudo gitlab-rake "gitlab:geo:reverify_container_repositories_since[7]"
+```
+
+The argument is the number of days to look back and defaults to `7`. The task reports how many
+repositories were marked, and the periodic verification workers then recalculate their
+checksums. Secondary sites detect the resulting checksum mismatches and resync the affected
+repositories. If the task is interrupted, it is safe to run it again: repositories that were
+already marked are skipped.
+
+To preview how many container repositories would be marked without changing anything,
+set `DRY_RUN=true`:
+
+```shell
+sudo DRY_RUN=true gitlab-rake "gitlab:geo:reverify_container_repositories_since[7]"
+```
+
+This targeted recovery requires registry notifications to have reached the primary site during
+the outage and `geo_container_repository_force_primary_checksumming` to have remained enabled.
+
+If registry notifications were misconfigured for a period of time, for example due to user
+error, tag pushes during that period are not recorded, so Geo has no way to determine which
+container repositories changed. In this situation, the recommended action is to
+[reverify all container repositories on the primary site](resync_reverify.md#reverify-one-component-on-all-sites).
+The primary site recalculates all checksums, and secondary sites then resync only the
+repositories whose content changed.

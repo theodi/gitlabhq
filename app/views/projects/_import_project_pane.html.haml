@@ -1,0 +1,58 @@
+- namespace_id = local_assigns.fetch(:destination_namespace_id, nil)
+
+.project-import
+  .form-group.import-btn-container.gl-clearfix
+    %h5.gl-flex
+      = _("Import project from")
+      = link_to _('History'), import_history_index_path, class: 'gl-link gl-ml-auto gl-font-normal'
+    %div
+      = render Pajamas::AlertComponent.new(variant: :tip,
+        alert_options: { class: 'gl-my-3' },
+        dismissible: false) do |c|
+        - c.with_body do
+          - docs_link_url = help_page_path('user/group/import/_index.md')
+          - docs_link = '<a href="%{url}" target="_blank" rel="noopener noreferrer" aria-label="%{aria_label}">'.html_safe % { url: docs_link_url, aria_label: _('Learn more about importing GitLab projects by using direct transfer') }
+          = html_escape(_("Migrating GitLab projects? Migrating projects when you migrate groups by using direct transfer is recommended. %{link_start}What is direct transfer%{link_end}?")) % { link_start: docs_link, link_end: '</a>'.html_safe }
+    .import-buttons
+      - if gitlab_project_import_enabled?
+        .import_gitlab_project.has-tooltip{ data: { container: 'body', testid: 'gitlab-import-button' } }
+          = render Pajamas::ButtonComponent.new(href: '#', icon: 'tanuki', button_options: { class: 'js-import-gitlab-project-btn js-import-project-btn', data: { href: new_import_gitlab_project_path, platform: 'gitlab_export', **tracking_attrs_data('import_project', 'click_button', 'gitlab_export') } }) do
+            = _('GitLab export')
+
+      - if github_import_enabled?
+        %div
+          = render Pajamas::ButtonComponent.new(href: new_import_github_path(namespace_id: namespace_id), icon: 'github', button_options: { class: 'js-import-github js-import-project-btn', data: { platform: 'github', **tracking_attrs_data('import_project', 'click_button', 'github') } }) do
+            GitHub
+
+      - if bitbucket_import_enabled?
+        %div
+          = render Pajamas::ButtonComponent.new(href: status_import_bitbucket_path(namespace_id: namespace_id), icon: 'bitbucket', button_options: { class: "import_bitbucket js-import-project-btn #{'js-how-to-import-link' unless bitbucket_import_configured?}", data: { modal_title: _("Import projects from Bitbucket"), modal_message: import_from_bitbucket_message, platform: 'bitbucket_cloud', **tracking_attrs_data('import_project', 'click_button', 'bitbucket_cloud') } }) do
+            Bitbucket Cloud
+
+      - if bitbucket_server_import_enabled?
+        %div
+          = render Pajamas::ButtonComponent.new(href: status_import_bitbucket_server_path(namespace_id: namespace_id), icon: 'bitbucket', button_options: { class: 'import_bitbucket js-import-project-btn', data: { platform: 'bitbucket_server', **tracking_attrs_data('import_project', 'click_button', 'bitbucket_server') } }) do
+            Bitbucket Server
+
+      - if fogbugz_import_enabled?
+        %div
+          = render Pajamas::ButtonComponent.new(href: new_import_fogbugz_path(namespace_id: namespace_id), icon: 'bug', button_options: { class: 'import_fogbugz js-import-project-btn', data: { platform: 'fogbugz', **tracking_attrs_data('import_project', 'click_button', 'fogbugz') } }) do
+            FogBugz
+
+      - if gitea_import_enabled?
+        %div
+          = render Pajamas::ButtonComponent.new(href: new_import_gitea_path(namespace_id: namespace_id), icon: 'gitea', button_options: { class: 'import_gitea js-import-project-btn', data: { platform: 'gitea', **tracking_attrs_data('import_project', 'click_button', 'gitea') } }) do
+            Gitea
+
+      - if git_import_enabled?
+        %div
+          = render Pajamas::ButtonComponent.new(href: new_import_url_path(namespace_id: namespace_id), icon: 'link', button_options: { class: 'js-import-project-btn', data: { testid: 'new-project-import-url-button', platform: 'repo_url',
+            **tracking_attrs_data('import_project', 'click_button', 'repo_url') } }) do
+            = _('Repository by URL')
+
+      - if manifest_import_enabled?
+        %div
+          = render Pajamas::ButtonComponent.new(href: new_import_manifest_path(namespace_id: namespace_id), icon: 'doc-text', button_options: { class: 'import_manifest js-import-project-btn', data: { platform: 'manifest_file', **tracking_attrs_data('import_project', 'click_button', 'manifest_file') } }) do
+            = _('Manifest file')
+
+      = render_if_exists "projects/gitee_import_button", namespace_id: namespace_id, track_label: 'import_project'

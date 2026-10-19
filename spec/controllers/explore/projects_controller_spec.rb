@@ -1,0 +1,291 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Explore::ProjectsController, feature_category: :groups_and_projects do
+  shared_examples 'explore projects' do
+    describe 'GET #topic' do
+      context 'when topic does not exist' do
+        it 'renders a 404 error' do
+          get :topic, params: { topic_name: 'topic1' }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when topic exists' do
+        before do
+          create(:topic, name: 'topic1', organization: current_organization)
+        end
+
+        it 'renders the template' do
+          get :topic, params: { topic_name: 'topic1' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to render_template('topic')
+        end
+
+        it 'finds topic by case insensitive name' do
+          get :topic, params: { topic_name: 'TOPIC1' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to render_template('topic')
+        end
+
+        context 'with the "Filter by name" search box' do
+          let!(:matching_project) do
+            create(:project, :public, name: 'matching', namespace: namespace, topic_list: 'topic1')
+          end
+
+          let!(:other_project) do
+            create(:project, :public, name: 'unrelated', namespace: namespace, topic_list: 'topic1')
+          end
+
+          it 'filters the topic projects by the name param' do
+            get :topic, params: { topic_name: 'topic1', name: 'matching' }
+
+            expect(assigns(:projects)).to contain_exactly(matching_project)
+          end
+        end
+      end
+
+      context 'when current organization is not set' do
+        before do
+          create(:topic, name: 'topic1', organization: current_organization)
+          allow(::Current).to receive(:organization).and_return(nil)
+        end
+
+        it 'renders a 404 error' do
+          get :topic, params: { topic_name: 'topic1' }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when topic exists and projects belong to different organizations' do
+        let_it_be(:other_organization) { create(:organization) }
+        let_it_be(:topic) { create(:topic, name: 'topic1', organization: current_organization) }
+        let_it_be(:project_in_org) do
+          create(:project, :public, namespace: create(:namespace, organization: current_organization),
+            topic_list: 'topic1')
+        end
+
+        let_it_be(:project_outside_org) do
+          create(:project, :public, namespace: create(:namespace, organization: other_organization),
+            topic_list: 'topic1')
+        end
+
+        it 'only returns projects belonging to the current organization' do
+          get :topic, params: { topic_name: 'topic1' }
+
+          expect(assigns(:projects)).to include(project_in_org)
+          expect(assigns(:projects)).not_to include(project_outside_org)
+        end
+      end
+    end
+
+    describe 'GET #topic.atom' do
+      context 'when topic does not exist' do
+        it 'renders a 404 error' do
+          get :topic, format: :atom, params: { topic_name: 'topic1' }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when topic exists' do
+        let_it_be_with_reload(:topic) { create(:topic, name: 'topic1', organization: current_organization) }
+
+        let_it_be(:older_project) { create(:project, :public, updated_at: 1.day.ago, namespace: namespace, topic_list: 'topic1') }
+        let_it_be(:newer_project) { create(:project, :public, updated_at: 2.days.ago, namespace: namespace, topic_list: 'topic1') }
+
+        it 'renders the template' do
+          get :topic, format: :atom, params: { topic_name: 'topic1' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to render_template('topic', layout: :xml)
+        end
+
+        it 'sorts repos by descending creation date' do
+          get :topic, format: :atom, params: { topic_name: 'topic1' }
+
+          expect(assigns(:projects)).to match_array [newer_project, older_project]
+        end
+
+        it 'finds topic by case insensitive name' do
+          get :topic, format: :atom, params: { topic_name: 'TOPIC1' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to render_template('topic', layout: :xml)
+        end
+
+        describe 'when topic contains more than the RSS entries limit of projects' do
+          before do
+            stub_const('Explore::ProjectsController::RSS_ENTRIES_LIMIT', 3)
+
+            create_list(:project, 4, :public, topics: [topic])
+          end
+
+          it 'does not assigns more than the limit of projects' do
+            get :topic, format: :atom, params: { topic_name: 'topic1' }
+
+            expect(assigns(:projects).count).to be(3)
+          end
+        end
+      end
+    end
+  end
+
+  shared_examples 'avoids N+1 queries' do
+    describe 'GET #index' do
+      render_views
+
+      # some N+1 queries still exist
+      it 'avoids N+1 queries', :request_store do
+        # Because we enable the request store for this spec, Gitaly may report too many invocations.
+        # Allow N+1s here and when creating additional objects below because we're just creating test objects.
+        Gitlab::GitalyClient.allow_n_plus_1_calls do
+          projects = create_list(:project, 3, :small_repo, :public)
+
+          projects.each do |project|
+            pipeline = create(:ci_pipeline, :success, project: project, sha: project.commit.id)
+            create(:commit_status, :success, pipeline: pipeline, ref: pipeline.ref)
+          end
+        end
+
+        control = ActiveRecord::QueryRecorder.new { get :index }
+
+        Gitlab::GitalyClient.allow_n_plus_1_calls do
+          new_projects = create_list(:project, 2, :small_repo, :public)
+          new_projects.each do |project|
+            pipeline = create(:ci_pipeline, :success, project: project, sha: project.commit.id)
+            create(:commit_status, :success, pipeline: pipeline, ref: pipeline.ref)
+          end
+        end
+
+        expect { get :index }.not_to exceed_query_limit(control).with_threshold(8)
+      end
+    end
+  end
+
+  context 'when user is signed in' do
+    let_it_be_with_reload(:namespace) { create(:namespace, organization: current_organization) }
+    let_it_be_with_reload(:user) { create(:user, namespace: namespace) }
+    let_it_be(:project) { create(:project, name: 'Project 1', namespace: namespace) }
+    let_it_be(:project2) { create(:project, name: 'Project 2', namespace: namespace) }
+
+    before_all do
+      project.add_developer(user)
+      project2.add_developer(user)
+    end
+
+    before do
+      sign_in(user)
+      user.toggle_star(project2)
+    end
+
+    include_examples 'explore projects'
+    include_examples 'avoids N+1 queries'
+
+    context 'user preference sorting' do
+      let(:project) { create(:project) }
+
+      it_behaves_like 'set sort order from user preference' do
+        let(:sorting_param) { 'created_asc' }
+      end
+    end
+
+    describe 'GET #index' do
+      let(:controller_action) { :index }
+      let(:params_with_name) { { name: 'some project' } }
+
+      context 'when disable_anonymous_project_search is enabled' do
+        before do
+          stub_feature_flags(disable_anonymous_project_search: true)
+        end
+
+        it 'does not show a flash message' do
+          sign_in(create(:user))
+          get controller_action, params: params_with_name
+
+          expect(flash.now[:notice]).to be_nil
+        end
+      end
+    end
+  end
+
+  context 'when user is not signed in' do
+    let_it_be_with_reload(:namespace) { create(:namespace, organization: current_organization) }
+
+    include_examples 'explore projects'
+    include_examples 'avoids N+1 queries'
+
+    context 'user preference sorting' do
+      let(:project) { create(:project) }
+      let(:sorting_param) { 'created_asc' }
+
+      it 'does not set sort order from user preference' do
+        expect_any_instance_of(UserPreference).not_to receive(:update)
+
+        get :index, params: { sort: sorting_param }
+      end
+    end
+
+    context 'restricted visibility level is public' do
+      before do
+        stub_application_setting(restricted_visibility_levels: [Gitlab::VisibilityLevel::PUBLIC])
+      end
+
+      it 'redirects to login page' do
+        get :index
+
+        expect(response).to redirect_to new_user_session_path
+      end
+    end
+
+    describe 'GET #index' do
+      let(:controller_action) { :index }
+      let(:params_with_name) { { name: 'some project' } }
+
+      context 'when disable_anonymous_project_search is enabled' do
+        before do
+          stub_feature_flags(disable_anonymous_project_search: true)
+        end
+
+        it 'shows a flash message' do
+          get controller_action, params: params_with_name
+
+          expect(flash.now[:notice]).to eq('You must sign in to search for specific projects.')
+        end
+
+        context 'when search param is not given' do
+          it 'does not show a flash message' do
+            get controller_action
+
+            expect(flash.now[:notice]).to be_nil
+          end
+        end
+
+        context 'when format is not HTML' do
+          it 'does not show a flash message' do
+            get controller_action, params: params_with_name.merge(format: :atom)
+
+            expect(flash.now[:notice]).to be_nil
+          end
+        end
+      end
+
+      context 'when disable_anonymous_project_search is disabled' do
+        before do
+          stub_feature_flags(disable_anonymous_project_search: false)
+        end
+
+        it 'does not show a flash message' do
+          get controller_action, params: params_with_name
+
+          expect(flash.now[:notice]).to be_nil
+        end
+      end
+    end
+  end
+end

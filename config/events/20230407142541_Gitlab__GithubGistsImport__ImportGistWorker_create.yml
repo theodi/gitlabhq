@@ -1,0 +1,23 @@
+---
+description: State of imported gist from GitHub
+category: Gitlab::GithubGistsImport::ImportGistWorker
+action: create
+extra_properties:
+  status:
+    type: string
+    description: Import status
+identifiers:
+- user
+product_group: import
+product_categories:
+- importers
+milestone: "15.11"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/117057
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: github_gist_import
+

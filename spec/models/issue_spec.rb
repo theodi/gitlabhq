@@ -1,80 +1,2793 @@
-# == Schema Information
-#
-# Table name: issues
-#
-#  id           :integer          not null, primary key
-#  title        :string(255)
-#  assignee_id  :integer
-#  author_id    :integer
-#  project_id   :integer
-#  created_at   :datetime
-#  updated_at   :datetime
-#  position     :integer          default(0)
-#  branch_name  :string(255)
-#  description  :text
-#  milestone_id :integer
-#  state        :string(255)
-#  iid          :integer
-#
+# frozen_string_literal: true
 
 require 'spec_helper'
 
-describe Issue do
+RSpec.describe Issue, feature_category: :team_planning do
+  include ExternalAuthorizationServiceHelpers
+
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:reusable_project) { create(:project) }
+
+  let_it_be(:support_bot) { create(:support_bot) }
+
   describe "Associations" do
     it { is_expected.to belong_to(:milestone) }
+    it { is_expected.to belong_to(:project) }
+    it { is_expected.to belong_to(:moved_to).class_name('Issue') }
+    it { is_expected.to have_one(:moved_from).class_name('Issue') }
+    it { is_expected.to belong_to(:duplicated_to).class_name('Issue') }
+    it { is_expected.to belong_to(:closed_by).class_name('User') }
+    it { is_expected.to have_many(:assignees) }
+    it { is_expected.to have_many(:user_mentions).class_name("IssueUserMention") }
+    it { is_expected.to have_many(:designs) }
+    it { is_expected.to have_many(:design_versions) }
+    it { is_expected.to have_one(:sentry_issue) }
+    it { is_expected.to have_one(:alert_management_alert) }
+    it { is_expected.to have_one(:dates_source).class_name('WorkItems::DatesSource').inverse_of(:work_item) }
+    it { is_expected.to have_many(:alert_management_alerts).validate(false) }
+    it { is_expected.to have_many(:resource_milestone_events) }
+    it { is_expected.to have_many(:resource_state_events) }
+    it { is_expected.to have_many(:issue_email_participants) }
+    it { is_expected.to have_one(:email) }
+    it { is_expected.to have_many(:timelogs).autosave(true) }
+    it { is_expected.to have_one(:incident_management_issuable_escalation_status) }
+    it { is_expected.to have_many(:issue_customer_relations_contacts) }
+    it { is_expected.to have_many(:customer_relations_contacts) }
+    it { is_expected.to have_many(:incident_management_timeline_events) }
+    it { is_expected.to have_many(:assignment_events).class_name('ResourceEvents::IssueAssignmentEvent').inverse_of(:issue) }
+    it { is_expected.to have_one(:work_item_transition).class_name('::WorkItems::Transition') }
+    it { is_expected.to have_one(:work_item_position).class_name('::WorkItems::Position') }
+
+    describe '#assignees_by_name_and_id' do
+      it 'returns users ordered by name ASC, id DESC' do
+        user1 = create(:user, name: 'BBB')
+        user2 = create(:user, name: 'AAA')
+        user3 = create(:user, name: 'BBB')
+        users = [user1, user2, user3]
+        issue = create(:issue, project: reusable_project, assignees: users)
+
+        expect(issue.assignees_by_name_and_id).to match([user2, user3, user1])
+      end
+    end
+
+    describe 'versions.most_recent' do
+      it 'returns the most recent version' do
+        issue = create(:issue, project: reusable_project)
+        create_list(:design_version, 2, issue: issue)
+        last_version = create(:design_version, issue: issue)
+
+        expect(issue.design_versions.most_recent).to eq(last_version)
+      end
+    end
   end
 
   describe 'modules' do
     subject { described_class }
 
-    it { is_expected.to include_module(InternalId) }
     it { is_expected.to include_module(Issuable) }
     it { is_expected.to include_module(Referable) }
     it { is_expected.to include_module(Sortable) }
     it { is_expected.to include_module(Taskable) }
+    it { is_expected.to include_module(MilestoneEventable) }
+    it { is_expected.to include_module(StateEventable) }
+
+    it_behaves_like 'AtomicInternalId' do
+      let(:internal_id_attribute) { :iid }
+      let(:instance) { build(:issue) }
+      let(:scope) { :namespace }
+      let(:scope_attrs) { { namespace: instance.project.project_namespace } }
+      let(:usage) { :issues }
+    end
   end
 
-  subject { create(:issue) }
+  describe 'custom validations' do
+    subject(:valid?) { issue.valid? }
+
+    describe 'due_date_after_start_date' do
+      let(:today) { Date.today }
+
+      context 'when both values are not present' do
+        let(:issue) { build(:issue) }
+
+        it { is_expected.to be_truthy }
+      end
+
+      context 'when start date is present and due date is not' do
+        let(:issue) { build(:work_item, start_date: today) }
+
+        it { is_expected.to be_truthy }
+      end
+
+      context 'when due date is present and start date is not' do
+        let(:issue) { build(:work_item, due_date: today) }
+
+        it { is_expected.to be_truthy }
+      end
+
+      context 'when both date values are present' do
+        context 'when due date is greater than start date' do
+          let(:issue) { build(:work_item, start_date: today, due_date: 1.week.from_now) }
+
+          it { is_expected.to be_truthy }
+        end
+
+        context 'when due date is equal to start date' do
+          let(:issue) { build(:work_item, start_date: today, due_date: today) }
+
+          it { is_expected.to be_truthy }
+        end
+
+        context 'when due date is before start date' do
+          let(:issue) { build(:work_item, due_date: today, start_date: 1.week.from_now) }
+
+          it { is_expected.to be_falsey }
+
+          it 'adds an error message' do
+            valid?
+
+            expect(issue.errors.full_messages).to contain_exactly(
+              'Due date must be greater than or equal to start date'
+            )
+          end
+        end
+      end
+    end
+
+    describe '#allowed_work_item_type_change' do
+      where(:old_type, :new_type, :is_valid) do
+        :issue     | :incident  | true
+        :incident  | :issue     | true
+        :issue     | :task      | false
+        :incident  | :task      | false
+        :task      | :issue     | false
+        :task      | :incident  | false
+      end
+
+      with_them do
+        it 'is possible to change type only between selected types' do
+          traits = old_type == :issue ? [] : [old_type]
+          issue = create(:issue, *traits, project: reusable_project)
+
+          issue.assign_attributes(work_item_type_id: build(:work_item_system_defined_type, new_type).id)
+
+          expect(issue.valid?).to eq(is_valid)
+        end
+      end
+    end
+
+    describe 'confidentiality' do
+      let_it_be(:project) { create(:project) }
+
+      context 'when parent and child are confidential' do
+        let_it_be(:parent) { create(:work_item, confidential: true, project: project) }
+        let_it_be(:child) { create(:work_item, :task, confidential: true, project: project) }
+        let_it_be(:link) { create(:parent_link, work_item: child, work_item_parent: parent) }
+
+        it 'does not allow to make child not-confidential' do
+          issue = described_class.find(child.id)
+          issue.confidential = false
+
+          expect(issue).not_to be_valid
+          expect(issue.errors[:base])
+            .to include(_('A non-confidential issue cannot have a confidential parent.'))
+        end
+
+        it 'allows to make parent not-confidential' do
+          issue = described_class.find(parent.id)
+          issue.confidential = false
+
+          expect(issue).to be_valid
+        end
+      end
+
+      context 'when parent and child are not-confidential' do
+        let_it_be(:parent) { create(:work_item, project: project) }
+        let_it_be(:child) { create(:work_item, :task, project: project) }
+        let_it_be(:link) { create(:parent_link, work_item: child, work_item_parent: parent) }
+
+        it 'does not allow to make parent confidential' do
+          issue = described_class.find(parent.id)
+          issue.confidential = true
+
+          expect(issue).not_to be_valid
+          expect(issue.errors[:base])
+            .to include(_('A confidential issue must have only confidential children. Make any child items confidential and try again.'))
+        end
+
+        it 'allows to make child confidential' do
+          issue = described_class.find(child.id)
+          issue.confidential = true
+
+          expect(issue).to be_valid
+        end
+      end
+    end
+
+    describe '#validate_work_item_type_id' do
+      subject { build(:issue, project: reusable_project) }
+
+      it_behaves_like 'validates work item type ID'
+    end
+  end
+
+  subject { create(:issue, project: reusable_project) }
+
+  describe 'callbacks' do
+    describe '#ensure_metrics!' do
+      it 'creates metrics after saving' do
+        expect(subject.metrics).to be_persisted
+        expect(Issue::Metrics.count).to eq(1)
+      end
+
+      it 'does not create duplicate metrics for an issue' do
+        subject.close!
+
+        expect(subject.metrics).to be_persisted
+        expect(Issue::Metrics.count).to eq(1)
+      end
+
+      it 'records current metrics' do
+        expect(Issue::Metrics).to receive(:record!)
+
+        create(:issue, project: reusable_project)
+      end
+
+      context 'when metrics record is missing' do
+        before do
+          subject.metrics.delete
+          subject.reload
+        end
+
+        it 'creates the metrics record' do
+          subject.update!(title: 'title')
+
+          expect(subject.metrics).to be_present
+        end
+      end
+    end
+
+    describe '#ensure_work_item_type' do
+      let(:issue_type) { build(:work_item_system_defined_type, :issue) }
+      let(:incident_type) { build(:work_item_system_defined_type, :incident) }
+      let_it_be(:project) { create(:project) }
+      let(:provider) { ::WorkItems::TypesFramework::Provider.new(issue.namespace) }
+
+      before do
+        allow(::WorkItems::TypesFramework::Provider).to receive(:new).and_return(provider)
+      end
+
+      context 'when a type was already set' do
+        let_it_be_with_refind(:issue) { create(:issue, project: project) }
+
+        it 'does not fetch a work item type from the provider' do
+          expect(issue.work_item_type_id).to eq(issue_type.id)
+          expect(provider).not_to receive(:default_issue_type)
+
+          expect(issue).to be_valid
+        end
+
+        it 'does not fetch a work item type from the provider when updating the type' do
+          expect(issue.work_item_type_id).to eq(issue_type.id)
+          expect(provider).not_to receive(:default_issue_type)
+
+          issue.update!(work_item_type: incident_type)
+
+          expect(issue.work_item_type_id).to eq(incident_type.id)
+        end
+
+        it 'ensures a work item type if updated to nil' do
+          expect(issue.work_item_type_id).to eq(issue_type.id)
+
+          expect do
+            issue.update!(work_item_type_id: nil)
+          end.to not_change(issue, :work_item_type_id).from(issue_type.id)
+        end
+      end
+
+      context 'when no type was set' do
+        let(:issue) { build(:issue, project: project, work_item_type: nil) }
+
+        it 'sets a work item type before validation' do
+          expect(issue.work_item_type_id).to be_nil
+
+          issue.save!
+
+          expect(issue.work_item_type_id).to eq(issue_type.id)
+        end
+
+        it 'does not fetch type from the provider if provided during update' do
+          expect(issue.work_item_type_id).to be_nil
+          expect(provider).not_to receive(:default_issue_type)
+
+          issue.update!(work_item_type: incident_type)
+
+          expect(issue.work_item_type_id).to eq(incident_type.id)
+        end
+      end
+    end
+
+    describe '#ensure_namespace_traversal_ids' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:other_group) { create(:group) }
+      let_it_be(:project) { create(:project, group: group) }
+
+      let(:issue) { build(:issue, project: project) }
+
+      it 'sets the namespace_traversal_ids for a project issue' do
+        expect(issue.namespace_traversal_ids).to eq([])
+
+        issue.save!
+
+        expect(issue.namespace_traversal_ids).to eq([group.id, project.project_namespace.id])
+      end
+
+      context 'when the in-memory namespace cache is stale due to a concurrent namespace transfer' do
+        let(:new_traversal_ids) { [other_group.id, project.project_namespace.id] }
+
+        before do
+          # Update traversal_ids in the DB without touching the in-memory project.project_namespace object,
+          # simulating a concurrent namespace transfer that updated the DB after the object was loaded.
+          Namespace.where(id: project.project_namespace.id).update_all(traversal_ids: new_traversal_ids)
+        end
+
+        it 'reads fresh traversal_ids from the database when creating a new record' do
+          issue.save!
+
+          expect(issue.namespace_traversal_ids).to eq(new_traversal_ids)
+        end
+
+        it 'reads fresh traversal_ids from the database when importing' do
+          issue.importing = true
+          issue.save!
+
+          expect(issue.namespace_traversal_ids).to eq(new_traversal_ids)
+        end
+      end
+    end
+
+    describe '#record_create_action' do
+      it 'records the creation action after saving' do
+        expect(Gitlab::UsageDataCounters::IssueActivityUniqueCounter).to receive(:track_issue_created_action)
+
+        create(:issue, project: reusable_project)
+      end
+
+      it_behaves_like 'internal event tracking' do
+        let(:project) { reusable_project }
+        let(:event) { Gitlab::UsageDataCounters::IssueActivityUniqueCounter::ISSUE_CREATED }
+
+        subject { create(:issue, project: reusable_project, author: user) }
+      end
+    end
+
+    context 'issue namespace' do
+      let(:issue) { build(:issue, project: reusable_project) }
+
+      it 'sets the namespace_id' do
+        expect(issue).to be_valid
+        expect(issue.namespace).to eq(reusable_project.project_namespace)
+      end
+
+      context 'when issue is created' do
+        it 'sets the namespace_id' do
+          issue.save!
+
+          expect(issue.reload.namespace).to eq(reusable_project.project_namespace)
+        end
+      end
+
+      context 'when existing issue is saved' do
+        let(:issue) { create(:issue, project: reusable_project) }
+
+        before do
+          issue.update!(namespace_id: nil)
+        end
+
+        it 'sets the namespace id' do
+          issue.update!(title: "#{issue.title} and something extra")
+
+          expect(issue.namespace).to eq(issue.project.project_namespace)
+        end
+      end
+    end
+  end
+
+  describe 'scopes for preloading' do
+    before_all do
+      create(:issue, project: reusable_project)
+    end
+
+    describe '.preload_namespace' do
+      subject(:preload_namespace) { described_class.in_projects(reusable_project).preload_namespace }
+
+      it { expect(preload_namespace.first.association(:namespace)).to be_loaded }
+    end
+
+    describe '.preload_routables' do
+      subject(:preload_routables) { described_class.in_projects(reusable_project).preload_routables }
+
+      it { expect(preload_routables.first.association(:project)).to be_loaded }
+      it { expect(preload_routables.first.project.association(:route)).to be_loaded }
+      it { expect(preload_routables.first.project.association(:namespace)).to be_loaded }
+      it { expect(preload_routables.first.project.namespace.association(:route)).to be_loaded }
+    end
+  end
+
+  describe '.in_namespaces_with_cte' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+    let_it_be(:other_project) { create(:project) }
+    let_it_be(:other_issue) { create(:issue, project: other_project) }
+
+    subject(:in_namespaces_with_cte) { described_class.in_namespaces_with_cte(Namespace.where(id: issue.namespace_id)) }
+
+    it 'returns issues from a given namespace' do
+      expect(in_namespaces_with_cte).to match_array(issue)
+    end
+
+    it 'can be used with other scopes' do
+      expect(in_namespaces_with_cte.opened).to match_array(issue)
+    end
+  end
+
+  describe '.within_namespace_hierarchy' do
+    let_it_be(:root_group) { create(:group) }
+    let_it_be(:subgroup) { create(:group, parent: root_group) }
+    let_it_be(:other_group) { create(:group) }
+
+    let_it_be(:root_group_project) { create(:project, group: root_group) }
+    let_it_be(:subgroup_project) { create(:project, group: subgroup) }
+    let_it_be(:other_group_project) { create(:project, group: other_group) }
+
+    let_it_be(:root_group_issue) { create(:issue, project: root_group_project) }
+    let_it_be(:subgroup_issue) { create(:issue, project: subgroup_project) }
+    let_it_be(:other_group_issue) { create(:issue, project: other_group_project) }
+
+    context 'when filtering by root group' do
+      it 'returns issues within the hierarchy' do
+        result = described_class.within_namespace_hierarchy(root_group)
+
+        expect(result).to contain_exactly(root_group_issue, subgroup_issue)
+        expect(result).not_to include(other_group_issue)
+      end
+    end
+
+    context 'when filtering by subgroup' do
+      it 'returns issues within the subgroup hierarchy only' do
+        result = described_class.within_namespace_hierarchy(subgroup)
+
+        expect(result).to contain_exactly(subgroup_issue)
+        expect(result).not_to include(root_group_issue, other_group_issue)
+      end
+    end
+
+    context 'when namespace is nil' do
+      it 'returns no issues' do
+        result = described_class.within_namespace_hierarchy(nil)
+
+        expect(result).to be_empty
+      end
+    end
+  end
+
+  context 'order by upvotes' do
+    let!(:issue) { create(:issue, project: reusable_project) }
+    let!(:issue2) { create(:issue, project: reusable_project) }
+    let!(:award_emoji) { create(:award_emoji, :upvote, awardable: issue2) }
+
+    describe '.order_upvotes_desc' do
+      it 'orders on upvotes' do
+        expect(described_class.order_upvotes_desc.to_a).to eq [issue2, issue]
+      end
+    end
+
+    describe '.order_upvotes_asc' do
+      it 'orders on upvotes' do
+        expect(described_class.order_upvotes_asc.to_a).to eq [issue, issue2]
+      end
+    end
+  end
+
+  describe '.with_alert_management_alerts' do
+    subject { described_class.with_alert_management_alerts }
+
+    it 'gets only issues with alerts' do
+      alert = create(:alert_management_alert, project: reusable_project, issue: create(:issue, project: reusable_project))
+      issue = create(:issue, project: reusable_project)
+
+      expect(subject).to contain_exactly(alert.issue)
+      expect(subject).not_to include(issue)
+    end
+  end
+
+  describe '.due_before' do
+    subject { described_class.due_before(Date.current) }
+
+    let!(:issue) { create(:issue, project: reusable_project, due_date: 1.day.ago) }
+    let!(:issue2) { create(:issue, project: reusable_project, due_date: 1.day.from_now) }
+
+    it 'returns issues which are over due' do
+      expect(subject).to contain_exactly(issue)
+    end
+  end
+
+  describe '.due_after' do
+    subject { described_class.due_after(Date.current) }
+
+    let!(:issue) { create(:issue, project: reusable_project, due_date: 1.day.ago) }
+    let!(:issue2) { create(:issue, project: reusable_project, due_date: 1.day.from_now) }
+
+    it 'returns issues which are due in the future' do
+      expect(subject).to contain_exactly(issue2)
+    end
+  end
+
+  describe '.simple_sorts' do
+    it 'includes all keys' do
+      expect(described_class.simple_sorts.keys).to include(
+        *%w[created_asc created_at_asc created_date created_desc created_at_desc
+          closest_future_date closest_future_date_asc due_date due_date_asc due_date_desc
+          id_asc id_desc relative_position relative_position_asc updated_desc updated_asc
+          updated_at_asc updated_at_desc title_asc title_desc])
+    end
+  end
+
+  describe '.in_namespaces' do
+    let(:group) { create(:group) }
+    let!(:group_work_item) { create(:issue, :group_level, namespace: group) }
+    let!(:project_work_item) { create(:issue, project: reusable_project) }
+
+    subject { described_class.in_namespaces(group) }
+
+    it { is_expected.to contain_exactly(group_work_item) }
+  end
+
+  describe '.with_issue_type' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+    let_it_be(:incident) { create(:incident, project: reusable_project) }
+
+    it 'returns issues with the given issue type' do
+      expect(described_class.with_issue_type('issue'))
+        .to contain_exactly(issue)
+    end
+
+    context 'when multiple issue_types are provided' do
+      it 'returns issues with the given issue types' do
+        expect(described_class.with_issue_type(%w[issue incident]))
+          .to contain_exactly(issue, incident)
+      end
+    end
+
+    context 'when no types are provided' do
+      it 'activerecord handles the false condition' do
+        expect(described_class.with_issue_type([]).to_sql).to include('WHERE 1=0')
+      end
+    end
+  end
+
+  describe '.without_issue_type' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+    let_it_be(:incident) { create(:incident, project: reusable_project) }
+    let_it_be(:task) { create(:issue, :task, project: reusable_project) }
+
+    it 'returns issues without the given issue type' do
+      expect(described_class.without_issue_type('issue'))
+        .to contain_exactly(incident, task)
+    end
+
+    it 'returns issues without the given issue types' do
+      expect(described_class.without_issue_type(%w[issue incident]))
+        .to contain_exactly(task)
+    end
+  end
+
+  describe '.non_archived' do
+    let_it_be(:archived_project) { create(:project, :archived) }
+    let_it_be(:active_project) { create(:project) }
+    let_it_be(:group) { create(:group) }
+
+    let_it_be(:issue_in_archived_project) { create(:issue, project: archived_project) }
+    let_it_be(:issue_in_active_project) { create(:issue, project: active_project) }
+    let_it_be(:group_level_issue) { create(:issue, :group_level, namespace: group) }
+
+    context 'when use_existing_join is false' do
+      it 'returns issues from non-archived projects and group-level issues' do
+        expect(described_class.non_archived).to contain_exactly(
+          issue_in_active_project,
+          group_level_issue
+        )
+      end
+
+      it 'excludes issues from archived projects' do
+        expect(described_class.non_archived).not_to include(issue_in_archived_project)
+      end
+    end
+
+    context 'when use_existing_join is true' do
+      it 'returns issues from non-archived projects and group-level issues' do
+        result = described_class.left_joins(:project).non_archived(use_existing_join: true)
+
+        expect(result).to contain_exactly(
+          issue_in_active_project,
+          group_level_issue
+        )
+      end
+
+      it 'excludes issues from archived projects' do
+        result = described_class.left_joins(:project).non_archived(use_existing_join: true)
+
+        expect(result).not_to include(issue_in_archived_project)
+      end
+    end
+  end
+
+  describe '.order_severity' do
+    let_it_be(:issue_high_severity) { create(:issuable_severity, severity: :high).issue }
+    let_it_be(:issue_low_severity) { create(:issuable_severity, severity: :low).issue }
+    let_it_be(:issue_no_severity) { create(:incident) }
+
+    context 'sorting ascending' do
+      subject { described_class.order_severity_asc }
+
+      it { is_expected.to eq([issue_no_severity, issue_low_severity, issue_high_severity]) }
+    end
+
+    context 'sorting descending' do
+      subject { described_class.order_severity_desc }
+
+      it { is_expected.to eq([issue_high_severity, issue_low_severity, issue_no_severity]) }
+    end
+  end
+
+  describe '.order_title' do
+    let_it_be(:issue1) { create(:issue, title: 'foo', project: reusable_project) }
+    let_it_be(:issue2) { create(:issue, title: 'bar', project: reusable_project) }
+    let_it_be(:issue3) { create(:issue, title: 'baz', project: reusable_project) }
+    let_it_be(:issue4) { create(:issue, title: 'Baz 2', project: reusable_project) }
+
+    context 'sorting ascending' do
+      subject { described_class.order_title_asc }
+
+      it { is_expected.to eq([issue2, issue3, issue4, issue1]) }
+    end
+
+    context 'sorting descending' do
+      subject { described_class.order_title_desc }
+
+      it { is_expected.to eq([issue1, issue4, issue3, issue2]) }
+    end
+  end
+
+  describe '#order_by_relative_position' do
+    let(:project) { reusable_project }
+    let!(:issue1) { create(:issue, project: project) }
+    let!(:issue2) { create(:issue, project: project) }
+    let!(:issue3) { create(:issue, project: project, relative_position: -200) }
+    let!(:issue4) { create(:issue, project: project, relative_position: -100) }
+
+    it 'returns ordered list' do
+      expect(project.issues.order_by_relative_position)
+        .to match [issue3, issue4, issue1, issue2]
+    end
+
+    # Reads come from `work_item_positions.relative_position` (step 5 of the
+    # work_item_positions cutover, see
+    # https://gitlab.com/gitlab-org/gitlab/-/work_items/594236). The forward
+    # trigger populates `work_item_positions` when `issues.relative_position`
+    # is written, so ordering must reflect the value stored on the new table.
+    it 'left-joins work_item_positions and orders by its relative_position' do
+      sql = project.issues.order_by_relative_position.to_sql
+
+      expect(sql).to include('LEFT OUTER JOIN "work_item_positions"')
+      expect(sql).to include('ORDER BY "work_item_positions"."relative_position" ASC NULLS LAST')
+    end
+
+    it 'reflects updates that only landed in work_item_positions' do
+      # Simulate the future write path: bypass the issues column entirely and
+      # update only the new table. With reads on `work_item_positions`, the
+      # ordering must follow the new value.
+      issue4.work_item_position.update_column(:relative_position, -300)
+
+      expect(project.issues.order_by_relative_position)
+        .to match [issue4, issue3, issue1, issue2]
+    end
+
+    context 'with a positioning root' do
+      let(:root) { project.project_namespace.work_item_positioning_root }
+
+      before do
+        WorkItems::Position.where(work_item_id: issue1.id).delete_all
+      end
+
+      it 'filters by the root in WHERE, dropping issues without a positions row' do
+        expect(project.issues.order_by_relative_position(root))
+          .to match [issue3, issue4, issue2]
+      end
+
+      context 'when not walking the positions index' do
+        it 'filters by the root in the join, keeping issues without a positions row last' do
+          expect(project.issues.order_by_relative_position(root, walk_positions_index: false))
+            .to match [issue3, issue4, issue2, issue1]
+        end
+      end
+    end
+
+    context 'when read_relative_positions_from_work_item_positions is disabled' do
+      before do
+        stub_feature_flags(read_relative_positions_from_work_item_positions: false)
+      end
+
+      it 'orders by issues.relative_position without joining work_item_positions' do
+        sql = project.issues.order_by_relative_position.to_sql
+
+        expect(sql).not_to include('work_item_positions')
+        expect(sql).to include('ORDER BY "issues"."relative_position" ASC NULLS LAST')
+      end
+
+      it 'still returns the ordered list' do
+        expect(project.issues.order_by_relative_position)
+          .to match [issue3, issue4, issue1, issue2]
+      end
+    end
+  end
+
+  describe '.with_null_relative_position / .with_non_null_relative_position' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:positioned)   { create(:issue, project: project, relative_position: 10) }
+    let_it_be(:unpositioned) { create(:issue, project: project, relative_position: nil) }
+
+    it 'returns issues without a paired work_item_positions row as null', :aggregate_failures do
+      expect(described_class.with_null_relative_position).to include(unpositioned)
+      expect(described_class.with_null_relative_position).not_to include(positioned)
+    end
+
+    it 'returns issues with a populated work_item_positions row as non-null', :aggregate_failures do
+      expect(described_class.with_non_null_relative_position).to include(positioned)
+      expect(described_class.with_non_null_relative_position).not_to include(unpositioned)
+    end
+
+    context 'when read_relative_positions_from_work_item_positions is disabled' do
+      before do
+        stub_feature_flags(read_relative_positions_from_work_item_positions: false)
+      end
+
+      it 'filters on issues.relative_position instead of work_item_positions', :aggregate_failures do
+        expect(described_class.with_null_relative_position).to include(unpositioned)
+        expect(described_class.with_null_relative_position).not_to include(positioned)
+        expect(described_class.with_non_null_relative_position).to include(positioned)
+        expect(described_class.with_null_relative_position.to_sql).not_to include('work_item_positions')
+      end
+    end
+  end
+
+  context 'order by escalation status' do
+    let_it_be(:triggered_incident) { create(:incident_management_issuable_escalation_status, :triggered).issue }
+    let_it_be(:resolved_incident) { create(:incident_management_issuable_escalation_status, :resolved).issue }
+    let_it_be(:issue_no_status) { create(:issue, project: reusable_project) }
+
+    describe '.order_escalation_status_asc' do
+      subject { described_class.order_escalation_status_asc }
+
+      it { is_expected.to eq([triggered_incident, resolved_incident, issue_no_status]) }
+    end
+
+    describe '.order_escalation_status_desc' do
+      subject { described_class.order_escalation_status_desc }
+
+      it { is_expected.to eq([resolved_incident, triggered_incident, issue_no_status]) }
+    end
+  end
+
+  describe '#sort' do
+    let(:project) { reusable_project }
+
+    context "by relative_position" do
+      let!(:issue)  { create(:issue, project: project, relative_position: nil) }
+      let!(:issue2) { create(:issue, project: project, relative_position: 2) }
+      let!(:issue3) { create(:issue, project: project, relative_position: 1) }
+
+      it "sorts asc with nulls at the end" do
+        issues = project.issues.sort_by_attribute('relative_position')
+        expect(issues).to eq([issue3, issue2, issue])
+      end
+    end
+  end
+
+  describe '#card_attributes' do
+    it 'includes the author name' do
+      allow(subject).to receive_messages(author: double(name: 'Robert'), assignees: [])
+
+      expect(subject.card_attributes)
+        .to eq({ 'Author' => 'Robert', 'Assignee' => '' })
+    end
+
+    it 'includes the assignee name' do
+      allow(subject).to receive_messages(author: double(name: 'Robert'), assignees: [double(name: 'Douwe')])
+
+      expect(subject.card_attributes)
+        .to eq({ 'Author' => 'Robert', 'Assignee' => 'Douwe' })
+    end
+  end
+
+  describe '#close' do
+    subject(:issue) { create(:issue, project: reusable_project, state: 'opened') }
+
+    it 'sets closed_at to Time.current when an issue is closed' do
+      expect { issue.close }.to change { issue.closed_at }.from(nil)
+    end
+
+    it 'changes the state to closed' do
+      open_state = described_class.available_states[:opened]
+      closed_state = described_class.available_states[:closed]
+
+      expect { issue.close }.to change { issue.state_id }.from(open_state).to(closed_state)
+    end
+
+    context 'when an argument is provided' do
+      context 'and the argument is a User' do
+        it 'changes closed_by to the given user' do
+          expect { issue.close(user) }.to change { issue.closed_by }.from(nil).to(user)
+        end
+      end
+
+      context 'and the argument is a not a User' do
+        it 'does not change closed_by' do
+          expect { issue.close("test") }.not_to change { issue.closed_by }
+        end
+      end
+    end
+
+    context 'when an argument is not provided' do
+      it 'does not change closed_by' do
+        expect { issue.close }.not_to change { issue.closed_by }
+      end
+    end
+  end
+
+  describe '#reopen' do
+    let_it_be_with_reload(:issue) { create(:issue, project: reusable_project, state: 'closed', closed_at: Time.current, closed_by: user) }
+
+    it 'sets closed_at to nil when an issue is reopened' do
+      expect { issue.reopen }.to change { issue.closed_at }.to(nil)
+    end
+
+    it 'sets closed_by to nil when an issue is reopened' do
+      expect { issue.reopen }.to change { issue.closed_by }.from(user).to(nil)
+    end
+
+    it 'clears moved_to_id for moved issues' do
+      moved_issue = create(:issue, project: reusable_project)
+
+      issue.update!(moved_to_id: moved_issue.id)
+
+      expect { issue.reopen }.to change { issue.moved_to_id }.from(moved_issue.id).to(nil)
+    end
+
+    it 'clears duplicated_to_id for duplicated issues' do
+      duplicate_issue = create(:issue, project: reusable_project)
+
+      issue.update!(duplicated_to_id: duplicate_issue.id)
+
+      expect { issue.reopen }.to change { issue.duplicated_to_id }.from(duplicate_issue.id).to(nil)
+    end
+
+    it 'changes the state to opened' do
+      expect { issue.reopen }.to change { issue.state_id }.from(described_class.available_states[:closed]).to(described_class.available_states[:opened])
+    end
+  end
 
   describe '#to_reference' do
-    it 'returns a String reference to the object' do
-      expect(subject.to_reference).to eq "##{subject.iid}"
+    let_it_be(:namespace) { create(:namespace) }
+    let_it_be(:project)   { create(:project, namespace: namespace) }
+    let_it_be(:issue, freeze: false) { create(:issue, project: project) }
+
+    context 'when nil argument' do
+      it 'returns issue id' do
+        expect(issue.to_reference).to eq "##{issue.iid}"
+      end
+
+      it 'returns complete path to the issue with full: true' do
+        expect(issue.to_reference(full: true)).to eq "#{project.full_path}##{issue.iid}"
+      end
     end
 
-    it 'supports a cross-project reference' do
-      cross = double('project')
-      expect(subject.to_reference(cross)).
-        to eq "#{subject.project.to_reference}##{subject.iid}"
+    context 'when argument is a project' do
+      context 'when same project' do
+        it 'returns issue id' do
+          expect(issue.to_reference(project)).to eq("##{issue.iid}")
+        end
+
+        it 'returns full reference with full: true' do
+          expect(issue.to_reference(project, full: true)).to eq "#{project.full_path}##{issue.iid}"
+        end
+      end
+
+      context 'when cross-project in same namespace' do
+        let(:another_project) do
+          build(:project, namespace: project.namespace)
+        end
+
+        it 'returns a cross-project reference' do
+          expect(issue.to_reference(another_project)).to eq "#{project.path}##{issue.iid}"
+        end
+      end
+
+      context 'when cross-project in different namespace' do
+        let(:another_namespace) { build(:namespace, id: non_existing_record_id, path: 'another-namespace') }
+        let(:another_namespace_project) { build(:project, namespace: another_namespace) }
+
+        it 'returns complete path to the issue' do
+          expect(issue.to_reference(another_namespace_project)).to eq "#{project.full_path}##{issue.iid}"
+        end
+      end
+    end
+
+    context 'when argument is a namespace' do
+      context 'when same as issue' do
+        it 'returns path to the issue with the project name' do
+          expect(issue.to_reference(namespace)).to eq "#{project.path}##{issue.iid}"
+        end
+
+        it 'returns full reference with full: true' do
+          expect(issue.to_reference(namespace, full: true)).to eq "#{project.full_path}##{issue.iid}"
+        end
+      end
+
+      context 'when different to issue namespace' do
+        let(:group) { build(:group, name: 'Group', path: 'sample-group') }
+
+        it 'returns full path to the issue with full: true' do
+          expect(issue.to_reference(group)).to eq "#{project.full_path}##{issue.iid}"
+        end
+      end
     end
   end
 
-  describe '#is_being_reassigned?' do
-    it 'returns true if the issue assignee has changed' do
-      subject.assignee = create(:user)
-      expect(subject.is_being_reassigned?).to be_truthy
+  describe '#to_reference with table syntax' do
+    using RSpec::Parameterized::TableSyntax
+
+    let_it_be(:user) { create(:user) }
+    let_it_be(:user_namespace) { user.namespace }
+
+    let_it_be(:parent) { create(:group) }
+    let_it_be(:group) { create(:group, parent: parent) }
+    let_it_be(:another_group) { create(:group) }
+
+    let_it_be(:project) { create(:project, namespace: group) }
+    let_it_be(:project_namespace) { project.project_namespace }
+    let_it_be(:same_namespace_project) { create(:project, namespace: group) }
+    let_it_be(:same_namespace_project_namespace) { same_namespace_project.project_namespace }
+
+    let_it_be(:another_namespace_project) { create(:project) }
+    let_it_be(:another_namespace_project_namespace) { another_namespace_project.project_namespace }
+
+    let_it_be(:project_issue) { build(:issue, project: project, iid: 123) }
+    let_it_be(:project_issue_full_reference) { "#{project.full_path}##{project_issue.iid}" }
+
+    let_it_be(:group_issue) { build(:issue, namespace: group, iid: 123) }
+    let_it_be(:group_issue_full_reference) { "#{group.full_path}##{group_issue.iid}" }
+
+    # this one is just theoretically possible, not smth to be supported for real
+    let_it_be(:user_issue) { build(:issue, namespace: user_namespace, iid: 123) }
+    let_it_be(:user_issue_full_reference) { "#{user_namespace.full_path}##{user_issue.iid}" }
+
+    # namespace would be group, project namespace or user namespace
+    where(:issue, :full, :from, :result) do
+      ref(:project_issue) | false | nil                                       | lazy { "##{issue.iid}" }
+      ref(:project_issue) | true  | nil                                       | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:group)                               | lazy { "#{project.path}##{issue.iid}" }
+      ref(:project_issue) | true  | ref(:group)                               | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:parent)                              | ref(:project_issue_full_reference)
+      ref(:project_issue) | true  | ref(:parent)                              | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:project)                             | lazy { "##{issue.iid}" }
+      ref(:project_issue) | true  | ref(:project)                             | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:project_namespace)                   | lazy { "##{issue.iid}" }
+      ref(:project_issue) | true  | ref(:project_namespace)                   | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:same_namespace_project)              | lazy { "#{project.path}##{issue.iid}" }
+      ref(:project_issue) | true  | ref(:same_namespace_project)              | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:same_namespace_project_namespace)    | lazy { "#{project.path}##{issue.iid}" }
+      ref(:project_issue) | true  | ref(:same_namespace_project_namespace)    | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:another_group)                       | ref(:project_issue_full_reference)
+      ref(:project_issue) | true  | ref(:another_group)                       | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:another_namespace_project)           | ref(:project_issue_full_reference)
+      ref(:project_issue) | true  | ref(:another_namespace_project)           | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:another_namespace_project_namespace) | ref(:project_issue_full_reference)
+      ref(:project_issue) | true  | ref(:another_namespace_project_namespace) | ref(:project_issue_full_reference)
+      ref(:project_issue) | false | ref(:user_namespace)                      | ref(:project_issue_full_reference)
+      ref(:project_issue) | true  | ref(:user_namespace)                      | ref(:project_issue_full_reference)
+
+      ref(:group_issue) | false | nil                                         | lazy { "##{issue.iid}" }
+      ref(:group_issue) | true  | nil                                         | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:user_namespace)                        | ref(:group_issue_full_reference)
+      ref(:group_issue) | true  | ref(:user_namespace)                        | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:group)                                 | lazy { "##{issue.iid}" }
+      ref(:group_issue) | true  | ref(:group)                                 | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:parent)                                | ref(:group_issue_full_reference)
+      ref(:group_issue) | true  | ref(:parent)                                | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:project)                               | lazy { "#{group.path}##{issue.iid}" }
+      ref(:group_issue) | true  | ref(:project)                               | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:project_namespace)                     | lazy { "#{group.path}##{issue.iid}" }
+      ref(:group_issue) | true  | ref(:project_namespace)                     | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:another_group)                         | ref(:group_issue_full_reference)
+      ref(:group_issue) | true  | ref(:another_group)                         | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:another_namespace_project)             | ref(:group_issue_full_reference)
+      ref(:group_issue) | true  | ref(:another_namespace_project)             | ref(:group_issue_full_reference)
+      ref(:group_issue) | false | ref(:another_namespace_project_namespace)   | ref(:group_issue_full_reference)
+      ref(:group_issue) | true  | ref(:another_namespace_project_namespace)   | ref(:group_issue_full_reference)
+
+      ref(:user_issue) | false | nil                                          | lazy { "##{issue.iid}" }
+      ref(:user_issue) | true  | nil                                          | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:user_namespace)                         | lazy { "##{issue.iid}" }
+      ref(:user_issue) | true  | ref(:user_namespace)                         | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:group)                                  | ref(:user_issue_full_reference)
+      ref(:user_issue) | true  | ref(:group)                                  | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:parent)                                 | ref(:user_issue_full_reference)
+      ref(:user_issue) | true  | ref(:parent)                                 | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:project)                                | ref(:user_issue_full_reference)
+      ref(:user_issue) | true  | ref(:project)                                | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:project_namespace)                      | ref(:user_issue_full_reference)
+      ref(:user_issue) | true  | ref(:project_namespace)                      | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:another_group)                          | ref(:user_issue_full_reference)
+      ref(:user_issue) | true  | ref(:another_group)                          | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:another_namespace_project)              | ref(:user_issue_full_reference)
+      ref(:user_issue) | true  | ref(:another_namespace_project)              | ref(:user_issue_full_reference)
+      ref(:user_issue) | false | ref(:another_namespace_project_namespace)    | ref(:user_issue_full_reference)
+      ref(:user_issue) | true  | ref(:another_namespace_project_namespace)    | ref(:user_issue_full_reference)
     end
-    it 'returns false if the issue assignee has not changed' do
-      expect(subject.is_being_reassigned?).to be_falsey
+
+    with_them do
+      it 'returns correct reference' do
+        expect(issue.to_reference(from, full: full)).to eq(result)
+      end
     end
   end
 
-  describe '#is_being_reassigned?' do
-    it 'returns issues assigned to user' do
-      user = create(:user)
-      create_list(:issue, 2, assignee: user)
+  describe '#assignee_or_author?' do
+    let(:issue) { create(:issue, project: reusable_project) }
 
-      expect(Issue.open_for(user).count).to eq 2
+    it 'returns true for a user that is assigned to an issue' do
+      issue.assignees << user
+
+      expect(issue.assignee_or_author?(user)).to be_truthy
     end
+
+    it 'returns true for a user that is the author of an issue' do
+      issue.update!(author: user)
+
+      expect(issue.assignee_or_author?(user)).to be_truthy
+    end
+
+    it 'returns false for a user that is not the assignee or author' do
+      expect(issue.assignee_or_author?(user)).to be_falsey
+    end
+  end
+
+  describe '#related_issues to relate incidents and issues' do
+    let_it_be(:authorized_project) { create(:project) }
+    let_it_be(:authorized_project2) { create(:project) }
+    let_it_be(:unauthorized_project) { create(:project) }
+
+    let_it_be(:authorized_issue_a) { create(:issue, project: authorized_project) }
+    let_it_be(:authorized_issue_b) { create(:issue, project: authorized_project) }
+    let_it_be(:authorized_issue_c) { create(:issue, project: authorized_project2) }
+    let_it_be(:authorized_incident_a) { create(:incident, project: authorized_project) }
+
+    let_it_be(:unauthorized_issue) { create(:issue, project: unauthorized_project) }
+
+    let_it_be(:issue_link_a) { create(:issue_link, source: authorized_issue_a, target: authorized_issue_b) }
+    let_it_be(:issue_link_b) { create(:issue_link, source: authorized_issue_a, target: unauthorized_issue) }
+    let_it_be(:issue_link_c) { create(:issue_link, source: authorized_issue_a, target: authorized_issue_c) }
+    let_it_be(:issue_incident_link_a) { create(:issue_link, source: authorized_issue_a, target: authorized_incident_a) }
+
+    before_all do
+      authorized_project.add_developer(user)
+      authorized_project2.add_developer(user)
+    end
+
+    it 'returns only authorized related issues for given user' do
+      expect(authorized_issue_a.related_issues(user))
+        .to contain_exactly(authorized_issue_b, authorized_issue_c, authorized_incident_a)
+    end
+
+    it 'returns issues with valid issue_link_type' do
+      link_types = authorized_issue_a.related_issues(user).map(&:issue_link_type)
+
+      expect(link_types).not_to be_empty
+      expect(link_types).not_to include(nil)
+    end
+
+    it 'returns issues including the link creation time' do
+      dates = authorized_issue_a.related_issues(user).map(&:issue_link_created_at)
+
+      expect(dates).not_to be_empty
+      expect(dates).not_to include(nil)
+    end
+
+    it 'returns issues including the link update time' do
+      dates = authorized_issue_a.related_issues(user).map(&:issue_link_updated_at)
+
+      expect(dates).not_to be_empty
+      expect(dates).not_to include(nil)
+    end
+
+    describe 'when a user cannot read cross project' do
+      it 'only returns issues within the same project' do
+        allow(Gitlab::ExternalAuthorization).to receive_messages(perform_check?: true, access_allowed?: true)
+
+        expect(authorized_issue_a.related_issues(user))
+          .to contain_exactly(authorized_issue_b, authorized_incident_a)
+      end
+    end
+
+    context 'when authorize argument is false' do
+      it 'returns all related issues' do
+        expect(authorized_issue_a.related_issues(authorize: false))
+          .to contain_exactly(authorized_issue_b, authorized_issue_c, authorized_incident_a, unauthorized_issue)
+      end
+    end
+
+    context 'when current_user argument is nil' do
+      let_it_be(:public_issue) { create(:issue, project: create(:project, :public)) }
+
+      it 'returns public linked issues only' do
+        create(:issue_link, source: authorized_issue_a, target: public_issue)
+
+        expect(authorized_issue_a.related_issues).to contain_exactly(public_issue)
+      end
+    end
+
+    context 'when issue is a new record' do
+      let(:new_issue) { build(:issue, project: authorized_project) }
+
+      it { expect(new_issue.related_issues(user)).to be_empty }
+    end
+  end
+
+  describe '#can_move?' do
+    let(:issue) { create(:issue, project: reusable_project) }
+
+    subject { issue.can_move?(user) }
+
+    context 'user is not a member of project issue belongs to' do
+      it { is_expected.to be false }
+    end
+
+    context 'user is reporter in project issue belongs to' do
+      let(:issue) { create(:issue, project: reusable_project) }
+
+      before_all do
+        reusable_project.add_reporter(user)
+      end
+
+      it { is_expected.to be true }
+
+      context 'issue not persisted' do
+        let(:issue) { build(:issue, project: reusable_project) }
+
+        it { is_expected.to be false }
+      end
+
+      context 'checking destination project also' do
+        subject { issue.can_move?(user, to_project) }
+
+        let_it_be(:to_project) { create(:project) }
+
+        context 'destination project allowed' do
+          before do
+            to_project.add_reporter(user)
+          end
+
+          it { is_expected.to be true }
+        end
+
+        context 'destination project not allowed' do
+          before do
+            to_project.add_guest(user)
+          end
+
+          it { is_expected.to be false }
+        end
+      end
+    end
+  end
+
+  describe '#moved?' do
+    context 'when issue has not been moved' do
+      subject { build_stubbed(:issue) }
+
+      it { is_expected.not_to be_moved }
+    end
+
+    context 'when issue has already been moved' do
+      subject { build_stubbed(:issue, moved_to: build_stubbed(:issue)) }
+
+      it { is_expected.to be_moved }
+    end
+  end
+
+  describe '#duplicated?' do
+    let(:issue) { create(:issue, project: reusable_project) }
+
+    subject { issue.duplicated? }
+
+    context 'issue not duplicated' do
+      it { is_expected.to be false }
+    end
+
+    context 'issue already duplicated' do
+      let(:duplicated_to_issue) { create(:issue, project: reusable_project) }
+      let(:issue) { create(:issue, project: reusable_project, duplicated_to: duplicated_to_issue) }
+
+      it { is_expected.to be true }
+    end
+  end
+
+  describe '#autoclose_by_merged_closing_merge_request?' do
+    subject { issue.autoclose_by_merged_closing_merge_request? }
+
+    context 'when issue belongs to a group' do
+      let(:issue) { build_stubbed(:issue, :group_level, namespace: build_stubbed(:group)) }
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'when issue belongs to a project' do
+      let(:issue) { build_stubbed(:issue, project: reusable_project) }
+
+      context 'when autoclose_referenced_issues is enabled for the project' do
+        it { is_expected.to be(true) }
+      end
+
+      context 'when autoclose_referenced_issues is disabled for the project' do
+        before do
+          issue.project.update!(autoclose_referenced_issues: false)
+        end
+
+        it { is_expected.to be(false) }
+      end
+    end
+  end
+
+  describe '#suggested_branch_name' do
+    let(:repository) { double }
+
+    subject { build(:issue) }
+
+    before do
+      allow(subject.project).to receive(:repository).and_return(repository)
+    end
+
+    describe '#to_branch_name does not exists' do
+      before do
+        allow(repository).to receive(:branch_exists?).and_return(false)
+      end
+
+      it 'returns #to_branch_name' do
+        expect(subject.suggested_branch_name).to eq(subject.to_branch_name)
+      end
+    end
+
+    describe '#to_branch_name exists not ending with -index' do
+      before do
+        allow(repository).to receive(:branch_exists?).and_return(true)
+        allow(repository).to receive(:branch_exists?).with(/#{subject.to_branch_name}-\d/).and_return(false)
+      end
+
+      it 'returns #to_branch_name ending with -2' do
+        expect(subject.suggested_branch_name).to eq("#{subject.to_branch_name}-2")
+      end
+    end
+
+    describe '#to_branch_name exists ending with -index' do
+      it 'returns #to_branch_name ending with max index + 1' do
+        allow(repository).to receive(:branch_exists?).and_return(true)
+        allow(repository).to receive(:branch_exists?).with("#{subject.to_branch_name}-3").and_return(false)
+
+        expect(subject.suggested_branch_name).to eq("#{subject.to_branch_name}-3")
+      end
+
+      context 'when branch name still exists after 5 attempts' do
+        it 'returns #to_branch_name ending with random characters' do
+          allow(repository).to receive(:branch_exists?).with(subject.to_branch_name).and_return(true)
+          allow(repository).to receive(:branch_exists?).with(/#{subject.to_branch_name}-\d/).and_return(true)
+          allow(repository).to receive(:branch_exists?).with(/#{subject.to_branch_name}-\h{8}/).and_return(false)
+
+          expect(subject.suggested_branch_name).to match(/#{subject.to_branch_name}-\h{8}/)
+        end
+      end
+    end
+
+    context 'with current_user given' do
+      subject(:issue) { create(:issue) }
+
+      let(:user) { build_stubbed(:user, username: 'jane_doe') }
+
+      before do
+        subject.project.project_setting.update!(issue_branch_template: '%{branch_creator}-%{id}')
+      end
+
+      it 'threads current_user through to #to_branch_name' do
+        allow(repository).to receive(:branch_exists?).and_return(false)
+
+        expect(subject.suggested_branch_name(current_user: user)).to eq(subject.to_branch_name(current_user: user))
+      end
+
+      it 'threads current_user through when de-duplicating the suggested name' do
+        allow(repository).to receive(:branch_exists?).and_return(true)
+        allow(repository).to receive(:branch_exists?)
+          .with(/#{subject.to_branch_name(current_user: user)}-\d/).and_return(false)
+
+        expect(subject.suggested_branch_name(current_user: user))
+          .to eq("#{subject.to_branch_name(current_user: user)}-2")
+      end
+    end
+  end
+
+  it_behaves_like 'a time trackable' do
+    let(:trackable) { create(:issue, project: reusable_project) }
+    let(:timelog) { create(:issue_timelog, issue: trackable) }
   end
 
   it_behaves_like 'an editable mentionable' do
-    subject { create(:issue, project: project) }
+    subject { create(:issue, project: create(:project, :repository)) }
 
-    let(:backref_text) { "issue ##{subject.iid}" }
-    let(:set_mentionable_text) { ->(txt){ subject.description = txt } }
+    let(:backref_text) { "issue #{subject.to_reference}" }
+    let(:set_mentionable_text) { ->(txt) { subject.description = txt } }
   end
 
   it_behaves_like 'a Taskable' do
-    let(:subject) { create :issue }
+    let(:subject) { create(:issue, project: reusable_project) }
+  end
+
+  describe '.to_branch_name' do
+    it 'parameterizes arguments and joins with dashes' do
+      expect(described_class.to_branch_name(123, 'foo bar!@#$%f!o@o#b$a%r^')).to eq('123-foo-bar-f-o-o-b-a-r')
+    end
+
+    it 'preserves the case in the first argument' do
+      expect(described_class.to_branch_name('ACME-!@#$-123', 'FoO BaR')).to eq('ACME-123-foo-bar')
+    end
+
+    it 'truncates branch name to at most 100 characters' do
+      expect(described_class.to_branch_name('a' * 101, 'a')).to eq('a' * 100)
+    end
+
+    it 'truncates dangling parts of the branch name' do
+      branch_name = described_class.to_branch_name(
+        999,
+        'Lorem ipsum dolor sit amet consectetur adipiscing elit Mauris sit amet ipsum id lacus custom fringilla convallis'
+      )
+
+      # 100 characters would've got us "999-lorem...lacus-custom-fri".
+      expect(branch_name).to eq('999-lorem-ipsum-dolor-sit-amet-consectetur-adipiscing-elit-mauris-sit-amet-ipsum-id-lacus-custom')
+    end
+
+    it 'takes issue branch template into account' do
+      project = create(:project)
+      project.project_setting.update!(issue_branch_template: 'feature-%{id}-%{title}')
+
+      expect(described_class.to_branch_name(123, 'issue title', project: project)).to eq('feature-123-issue-title')
+    end
+
+    context 'with %{branch_creator} in the issue branch template' do
+      let_it_be(:project) { create(:project) }
+      let_it_be(:user) { create(:user, username: 'jane.doe_1') }
+
+      before do
+        project.project_setting.update!(issue_branch_template: 'feature-%{id}-%{branch_creator}-%{title}')
+      end
+
+      it 'substitutes it with the parameterized username of the given current_user' do
+        branch_name = described_class.to_branch_name(123, 'issue title', project: project, current_user: user)
+
+        expect(branch_name).to eq('feature-123-jane-doe_1-issue-title')
+      end
+
+      it 'substitutes it with an empty string when no current_user is given' do
+        branch_name = described_class.to_branch_name(123, 'issue title', project: project)
+
+        expect(branch_name).to eq('feature-123--issue-title')
+        expect(branch_name).not_to include('branch_creator')
+      end
+    end
+
+    it 'does not include the branch creator in the default branch name when no template is set' do
+      user = build_stubbed(:user, username: 'jane_doe')
+
+      branch_name = described_class.to_branch_name(123, 'issue title', current_user: user)
+
+      expect(branch_name).to eq('123-issue-title')
+    end
+  end
+
+  describe '#to_branch_name' do
+    let_it_be_with_reload(:issue) { create(:issue, project: reusable_project, iid: 123, title: 'Testing Issue') }
+
+    it 'returns a branch name with the issue title if not confidential' do
+      expect(issue.to_branch_name).to eq('123-testing-issue')
+    end
+
+    it 'returns a generic branch name if confidential' do
+      issue.confidential = true
+      expect(issue.to_branch_name).to eq('123-confidential-issue')
+    end
+
+    it 'ignores current_user when the issue is confidential' do
+      issue.confidential = true
+      user = build_stubbed(:user, username: 'jane_doe')
+
+      expect(issue.to_branch_name(current_user: user)).to eq('123-confidential-issue')
+    end
+
+    it 'substitutes %{branch_creator} when the project template references it' do
+      issue.project.project_setting.update!(issue_branch_template: '%{branch_creator}-%{id}')
+      user = build_stubbed(:user, username: 'jane_doe')
+
+      expect(issue.to_branch_name(current_user: user)).to eq('jane_doe-123')
+    end
+  end
+
+  describe '#can_be_worked_on?' do
+    let(:project) { build(:project) }
+
+    subject { build(:issue, :opened, project: project) }
+
+    context 'is closed' do
+      subject { build(:issue, :closed) }
+
+      it { is_expected.not_to be_can_be_worked_on }
+    end
+
+    context 'project is forked' do
+      before do
+        allow(project).to receive(:forked?).and_return(true)
+      end
+
+      it { is_expected.not_to be_can_be_worked_on }
+    end
+
+    it { is_expected.to be_can_be_worked_on }
+  end
+
+  describe '#participants' do
+    it_behaves_like 'issuable participants' do
+      let_it_be(:issuable_parent) { create(:project, :public) }
+      let_it_be_with_refind(:issuable) { create(:issue, project: issuable_parent) }
+
+      let(:params) { { noteable: issuable, project: issuable_parent } }
+    end
+
+    context 'using a private project' do
+      it 'does not include mentioned users that do not have access to the project' do
+        project = create(:project)
+        issue = create(:issue, project: project)
+        user = create(:user)
+
+        create(
+          :note_on_issue,
+          noteable: issue,
+          project: project,
+          note: user.to_reference
+        )
+
+        expect(issue.participants).not_to include(user)
+      end
+    end
+  end
+
+  describe 'cached counts' do
+    it 'updates when assignees change' do
+      user1 = create(:user)
+      user2 = create(:user)
+      issue = create(:issue, assignees: [user1], project: reusable_project)
+      reusable_project.add_developer(user1)
+      reusable_project.add_developer(user2)
+
+      expect(user1.assigned_open_issues_count).to eq(1)
+      expect(user2.assigned_open_issues_count).to eq(0)
+
+      issue.assignees = [user2]
+      issue.save!
+
+      expect(user1.assigned_open_issues_count).to eq(0)
+      expect(user2.assigned_open_issues_count).to eq(1)
+    end
+  end
+
+  describe '#publicly_visible?' do
+    let(:project) { build(:project, project_visibility) }
+    let(:issue) { build(:issue, confidential: confidential, project: project) }
+
+    subject { issue.send(:publicly_visible?) }
+
+    where(:project_visibility, :confidential, :expected_value) do
+      :public   | false | true
+      :public   | true  | false
+      :internal | false | false
+      :internal | true  | false
+      :private  | false | false
+      :private  | true  | false
+    end
+
+    with_them do
+      it { is_expected.to eq(expected_value) }
+    end
+
+    context 'with group level issues' do
+      let(:group) { build(:group, group_visibility) }
+      let(:issue) { build(:issue, :group_level, confidential: confidential, namespace: group) }
+
+      before do
+        stub_licensed_features(epics: false)
+      end
+
+      where(:group_visibility, :confidential, :expected_value) do
+        :public   | false | false
+        :public   | true  | false
+        :internal | false | false
+        :internal | true  | false
+        :private  | false | false
+        :private  | true  | false
+      end
+
+      with_them do
+        it { is_expected.to eq(expected_value) }
+      end
+    end
+  end
+
+  describe '#allow_possible_spam?' do
+    let_it_be(:issue) { build(:issue) }
+
+    subject { issue.allow_possible_spam?(issue.author) }
+
+    context 'when the `allow_possible_spam` application setting is turned off' do
+      context 'when the issue is private' do
+        it { is_expected.to be(true) }
+
+        context 'when the user is the support bot' do
+          before do
+            allow(issue.author).to receive(:support_bot?).and_return(true)
+          end
+
+          it { is_expected.to be(false) }
+        end
+      end
+
+      context 'when the issue is public' do
+        before do
+          allow(issue).to receive(:publicly_visible?).and_return(true)
+        end
+
+        it { is_expected.to be(false) }
+      end
+    end
+
+    context 'when the `allow_possible_spam` application setting is turned on' do
+      before do
+        stub_application_setting(allow_possible_spam: true)
+      end
+
+      it { is_expected.to be(true) }
+    end
+  end
+
+  describe '#check_for_spam?' do
+    where(:support_bot?, :visibility_level, :confidential, :new_attributes, :check_for_spam?) do
+      ### non-support-bot cases
+      # spammable attributes changing
+      false | Gitlab::VisibilityLevel::PUBLIC   | false | { description: 'new' } | true
+      false | Gitlab::VisibilityLevel::PUBLIC   | false | { title: 'new' } | true
+      # confidential to non-confidential
+      false | Gitlab::VisibilityLevel::PUBLIC   | true  | { confidential: false } | false
+      # non-confidential to confidential
+      false | Gitlab::VisibilityLevel::PUBLIC   | false | { confidential: true } | false
+      # spammable attributes changing on confidential
+      false | Gitlab::VisibilityLevel::PUBLIC   | true  | { description: 'new' } | true
+      # spammable attributes changing while changing to confidential
+      false | Gitlab::VisibilityLevel::PUBLIC   | false | { title: 'new', confidential: true } | true
+      # spammable attribute not changing
+      false | Gitlab::VisibilityLevel::PUBLIC   | false | { description: 'original description' } | false
+      # non-spammable attribute changing
+      false | Gitlab::VisibilityLevel::PUBLIC   | false | { weight: 3 } | false
+      # spammable attributes changing on non-public
+      false | Gitlab::VisibilityLevel::INTERNAL | false | { description: 'new' } | true
+      false | Gitlab::VisibilityLevel::PRIVATE  | false | { description: 'new' } | true
+
+      ### support-bot cases
+      # confidential to non-confidential
+      true | Gitlab::VisibilityLevel::PUBLIC    | true  | { confidential: false } | false
+      # non-confidential to confidential
+      true | Gitlab::VisibilityLevel::PUBLIC    | false | { confidential: true } | false
+      # spammable attributes changing on confidential
+      true  | Gitlab::VisibilityLevel::PUBLIC   | true  | { description: 'new' } | true
+      # spammable attributes changing while changing to confidential
+      true  | Gitlab::VisibilityLevel::PUBLIC   | false | { title: 'new', confidential: true } | true
+      # spammable attributes changing on non-public
+      true  | Gitlab::VisibilityLevel::INTERNAL | false | { description: 'new' } | true
+      true  | Gitlab::VisibilityLevel::PRIVATE  | false | { title: 'new' } | true
+      # spammable attribute not changing
+      true  | Gitlab::VisibilityLevel::PUBLIC   | false | { description: 'original description' } | false
+      # non-spammable attribute changing
+      true  | Gitlab::VisibilityLevel::PRIVATE  | true  | { weight: 3 } | false
+    end
+
+    with_them do
+      it 'checks for spam when necessary' do
+        active_user = support_bot? ? support_bot : user
+        project = reusable_project
+        project.update!(visibility_level: visibility_level)
+        issue = create(:issue, project: project, confidential: confidential, description: 'original description', author: support_bot)
+
+        issue.assign_attributes(new_attributes)
+
+        expect(issue.check_for_spam?(user: active_user)).to eq(check_for_spam?)
+      end
+    end
+  end
+
+  describe 'removing an issue' do
+    it 'refreshes the number of open issues of the project' do
+      project = subject.project
+
+      expect do
+        subject.destroy!
+
+        BatchLoader::Executor.clear_current
+      end.to change { project.open_issues_count }.from(1).to(0)
+    end
+  end
+
+  describe '.public_only' do
+    it 'only returns public issues' do
+      public_issue = create(:issue, project: reusable_project)
+      create(:issue, project: reusable_project, confidential: true)
+
+      expect(described_class.public_only).to eq([public_issue])
+    end
+  end
+
+  describe '.confidential_only' do
+    it 'only returns confidential_only issues' do
+      create(:issue, project: reusable_project)
+      confidential_issue = create(:issue, project: reusable_project, confidential: true)
+
+      expect(described_class.confidential_only).to eq([confidential_issue])
+    end
+  end
+
+  describe '.without_hidden' do
+    let_it_be(:banned_user) { create(:user, :banned) }
+    let_it_be(:public_issue) { create(:issue, project: reusable_project) }
+    let_it_be(:hidden_issue) { create(:issue, project: reusable_project, author: banned_user) }
+
+    it 'only returns without_hidden issues' do
+      expect(described_class.without_hidden).to eq([public_issue])
+    end
+  end
+
+  describe '.by_project_id_and_iid' do
+    let_it_be(:issue_a) { create(:issue, project: reusable_project) }
+    let_it_be(:issue_b) { create(:issue, iid: issue_a.iid) }
+    let_it_be(:issue_c) { create(:issue, project: issue_a.project) }
+    let_it_be(:issue_d) { create(:issue, project: issue_a.project) }
+
+    it_behaves_like 'a where_composite scope', :by_project_id_and_iid do
+      let(:all_results) { [issue_a, issue_b, issue_c, issue_d] }
+      let(:first_result) { issue_a }
+
+      let(:composite_ids) do
+        all_results.map { |issue| { project_id: issue.project_id, iid: issue.iid } }
+      end
+    end
+  end
+
+  describe '.service_desk' do
+    let_it_be(:service_desk_issue) { create(:issue, project: reusable_project, author: support_bot) }
+
+    let_it_be(:regular_issue) { create(:issue, project: reusable_project) }
+    let_it_be(:ticket) { create(:work_item, :ticket, project: reusable_project, author: user) }
+
+    it 'returns the service desk issue and ticket work item' do
+      expect(described_class.service_desk).to contain_exactly(service_desk_issue, described_class.find(ticket.id))
+      expect(described_class.service_desk).not_to include(regular_issue)
+    end
+  end
+
+  it_behaves_like 'throttled touch' do
+    subject { create(:issue, project: reusable_project, updated_at: 1.hour.ago) }
+  end
+
+  context "relative positioning" do
+    let_it_be(:group) { create(:group) }
+    let_it_be(:project) { create(:project, group: group) }
+    let_it_be(:issue1) { create(:issue, project: project, relative_position: nil) }
+    let_it_be(:issue2) { create(:issue, project: project, relative_position: nil) }
+
+    it_behaves_like "a class that supports relative positioning" do
+      let_it_be(:project) { reusable_project }
+      let(:factory) { :issue }
+      let(:default_params) { { project: project } }
+    end
+
+    describe 'sibling-shift query with the read flag on' do
+      before do
+        stub_feature_flags(write_relative_positions_to_work_item_positions: false)
+      end
+
+      it 'filters the range on work_item_positions.relative_position, not issues' do
+        left = create(:issue, project: project, relative_position: 99)
+        right = create(:issue, project: project, relative_position: 100)
+        create(:issue, project: project, relative_position: 100)
+        middle = create(:issue, project: project, relative_position: nil)
+
+        recorder = ActiveRecord::QueryRecorder.new do
+          middle.move_between(left, right)
+          middle.save!
+        end
+
+        shift = recorder.log.find { |q| q.match?(/UPDATE "issues".*IN \(SELECT.*work_item_positions/m) }
+
+        expect(shift).to be_present
+        expect(shift).to match(/"work_item_positions"\."relative_position" (=|BETWEEN)/)
+        expect(shift).not_to match(/AND "issues"\."relative_position" (=|BETWEEN)/)
+      end
+    end
+
+    describe 'sibling-shift write with the write flag on' do
+      it 'shifts the siblings on work_item_positions, not issues' do
+        left = create(:issue, project: project, relative_position: 99)
+        right = create(:issue, project: project, relative_position: 100)
+        create(:issue, project: project, relative_position: 100)
+        middle = create(:issue, project: project, relative_position: nil)
+
+        recorder = ActiveRecord::QueryRecorder.new do
+          middle.move_between(left, right)
+          middle.save!
+        end
+
+        shift = recorder.log.find { |q| q.start_with?('UPDATE "work_item_positions" SET "relative_position"') }
+
+        expect(shift).to be_present
+        expect(shift).to match(/"work_item_id" IN \(SELECT/)
+      end
+    end
+
+    describe 'single-item move write with the write flag on' do
+      it 'persists the moved position to work_item_positions and leaves issues untouched' do
+        left = create(:issue, project: project, relative_position: 100)
+        right = create(:issue, project: project, relative_position: 200)
+        moved = create(:issue, project: project, relative_position: nil)
+
+        recorder = ActiveRecord::QueryRecorder.new do
+          moved.move_between(left, right)
+          moved.save!
+        end
+
+        wip_write = recorder.log.find { |q| q.match?(/INSERT INTO "work_item_positions".*ON CONFLICT/m) }
+        expect(wip_write).to be_present
+        expect(recorder.log).not_to include(a_string_matching(/UPDATE "issues" SET.*"relative_position"/m))
+
+        expect(moved.work_item_position.reload.relative_position).to eq(moved.relative_position)
+        expect(described_class.where(id: moved.id).pick(Arel.sql('issues.relative_position'))).to be_nil
+      end
+    end
+
+    describe 'move_nulls write with the write flag on' do
+      it 'bulk-writes positions to work_item_positions and leaves issues untouched' do
+        a = create(:issue, project: project, relative_position: nil)
+        b = create(:issue, project: project, relative_position: nil)
+
+        recorder = ActiveRecord::QueryRecorder.new do
+          described_class.move_nulls_to_end([a, b])
+        end
+
+        wip_write = recorder.log.find { |q| q.match?(/INSERT INTO "work_item_positions".*ON CONFLICT/m) }
+        expect(wip_write).to be_present
+        expect(recorder.log).not_to include(a_string_matching(/UPDATE "issues" SET.*"relative_position"/m))
+
+        expect(WorkItems::Position.where(work_item_id: [a.id, b.id]).pluck(:relative_position)).to all(be_present)
+        expect(described_class.where(id: [a.id, b.id]).pluck(Arel.sql('issues.relative_position'))).to all(be_nil)
+      end
+    end
+
+    describe '.write_relative_positions_to_work_item_positions?' do
+      it 'is true when both the read and write flags are enabled' do
+        stub_feature_flags(
+          read_relative_positions_from_work_item_positions: true,
+          write_relative_positions_to_work_item_positions: true
+        )
+
+        expect(described_class.write_relative_positions_to_work_item_positions?(group)).to be(true)
+      end
+
+      it 'evaluates the flags with a nil namespace' do
+        stub_feature_flags(
+          read_relative_positions_from_work_item_positions: true,
+          write_relative_positions_to_work_item_positions: true
+        )
+
+        expect(described_class.write_relative_positions_to_work_item_positions?(nil)).to be(true)
+      end
+
+      it 'returns false when the read flag is disabled' do
+        stub_feature_flags(read_relative_positions_from_work_item_positions: false)
+
+        expect(described_class.write_relative_positions_to_work_item_positions?(group)).to be(false)
+      end
+    end
+
+    describe '.assign_relative_positions' do
+      before do
+        stub_feature_flags(
+          read_relative_positions_from_work_item_positions: true,
+          write_relative_positions_to_work_item_positions: true
+        )
+      end
+
+      it 'is a no-op for an empty mapping' do
+        expect(WorkItems::Position).not_to receive(:upsert_all)
+
+        expect { described_class.send(:assign_relative_positions, {}) }.not_to raise_error
+      end
+
+      it 'falls back to super when the write flag is off' do
+        stub_feature_flags(write_relative_positions_to_work_item_positions: false)
+        issue = create(:issue, project: project, relative_position: nil)
+
+        described_class.send(:assign_relative_positions, { issue => { relative_position: 120 } })
+
+        expect(described_class.where(id: issue.id).pick(Arel.sql('issues.relative_position'))).to eq(120)
+      end
+
+      it 'updates a loaded association in memory' do
+        issue = create(:issue, project: project, relative_position: nil)
+        issue.work_item_position
+
+        described_class.send(:assign_relative_positions, { issue => { relative_position: 130 } })
+
+        expect(issue.association(:work_item_position)).to be_loaded
+        expect(issue.work_item_position.relative_position).to eq(130)
+      end
+
+      it 'skips the in-memory update when the association is not loaded' do
+        issue = create(:issue, project: project, relative_position: nil)
+        issue.association(:work_item_position).reset
+
+        described_class.send(:assign_relative_positions, { issue => { relative_position: 140 } })
+
+        expect(issue.association(:work_item_position)).not_to be_loaded
+        expect(WorkItems::Position.where(work_item_id: issue.id).pick(:relative_position)).to eq(140)
+      end
+    end
+
+    describe '.preload_positioning_associations' do
+      it 'returns early when there are no objects' do
+        expect(ActiveRecord::Associations::Preloader).not_to receive(:new)
+
+        described_class.send(:preload_positioning_associations, [])
+      end
+
+      it 'does not preload when the read flag is disabled' do
+        stub_feature_flags(read_relative_positions_from_work_item_positions: false)
+        issue = create(:issue, project: project)
+
+        expect(ActiveRecord::Associations::Preloader).not_to receive(:new)
+
+        described_class.send(:preload_positioning_associations, [issue])
+      end
+
+      it 'preloads work_item_position when the write flag is enabled' do
+        stub_feature_flags(
+          read_relative_positions_from_work_item_positions: true,
+          write_relative_positions_to_work_item_positions: true
+        )
+        issue = create(:issue, project: project)
+
+        described_class.send(:preload_positioning_associations, [issue])
+
+        expect(issue.association(:work_item_position)).to be_loaded
+      end
+    end
+
+    describe 'persisting a position update to work_item_positions' do
+      it 'writes to work_item_positions on an update when the write flag is on' do
+        stub_feature_flags(
+          read_relative_positions_from_work_item_positions: true,
+          write_relative_positions_to_work_item_positions: true
+        )
+        issue = create(:issue, project: project, relative_position: 10)
+
+        issue.update!(relative_position: 20)
+
+        expect(WorkItems::Position.where(work_item_id: issue.id).pick(:relative_position)).to eq(20)
+      end
+    end
+
+    describe '#relative_position getter' do
+      it 'serves the stored position from work_item_positions when the write flag is on' do
+        stub_feature_flags(
+          read_relative_positions_from_work_item_positions: true,
+          write_relative_positions_to_work_item_positions: true
+        )
+        issue = create(:issue, project: project, relative_position: 500)
+        issue.work_item_position.update!(relative_position: 777)
+        issue.association(:work_item_position).reset
+
+        expect(issue.relative_position).to eq(777)
+      end
+
+      it 'returns the pending in-memory change before it is saved' do
+        stub_feature_flags(
+          read_relative_positions_from_work_item_positions: true,
+          write_relative_positions_to_work_item_positions: true
+        )
+        issue = create(:issue, project: project, relative_position: 500)
+        issue.relative_position = 999
+
+        expect(issue.relative_position).to eq(999)
+      end
+
+      it 'falls back to the issues column when the write flag is off' do
+        stub_feature_flags(write_relative_positions_to_work_item_positions: false)
+        issue = create(:issue, project: project, relative_position: 500)
+
+        expect(issue.relative_position).to eq(500)
+      end
+
+      it 'does not serve from work_item_positions when namespace_id is nil' do
+        issue = build(:issue, project: project, relative_position: 500)
+        issue.namespace_id = nil
+
+        expect(issue.send(:serve_relative_position_from_work_item_positions?)).to be(false)
+        expect(issue.relative_position).to eq(500)
+      end
+    end
+
+    it 'is not blocked for repositioning by default' do
+      expect(issue1.blocked_for_repositioning?).to be(false)
+    end
+
+    context 'when block_issue_repositioning flag is enabled for group' do
+      before do
+        stub_feature_flags(block_issue_repositioning: group)
+      end
+
+      it 'is blocked for repositioning' do
+        expect(issue1.blocked_for_repositioning?).to be(true)
+      end
+
+      it 'does not move issues with null position' do
+        payload = [issue1, issue2]
+
+        expect { described_class.move_nulls_to_end(payload) }.to raise_error(Gitlab::RelativePositioning::IssuePositioningDisabled)
+        expect { described_class.move_nulls_to_start(payload) }.to raise_error(Gitlab::RelativePositioning::IssuePositioningDisabled)
+      end
+    end
+
+    describe '.relative_positioning_query_base' do
+      let_it_be(:subgroup) { create(:group, parent: group) }
+      let_it_be(:subgroup_project) { create(:project, group: subgroup) }
+      let_it_be(:project_issue) { create(:issue, project: project, relative_position: 100) }
+      let_it_be(:subgroup_project_issue) { create(:issue, project: subgroup_project, relative_position: 200) }
+      let_it_be(:other_group_issue) { create(:issue, relative_position: 300) }
+
+      it 'includes issues from any project under the root namespace hierarchy' do
+        scope = described_class.relative_positioning_query_base(project_issue)
+
+        expect(scope).to include(project_issue, subgroup_project_issue)
+        expect(scope).not_to include(other_group_issue)
+      end
+
+      it 'returns the same scope when called with an issue from a nested project' do
+        scope = described_class.relative_positioning_query_base(subgroup_project_issue)
+
+        expect(scope).to include(project_issue, subgroup_project_issue)
+        expect(scope).not_to include(other_group_issue)
+      end
+
+      context 'when read_relative_positions_from_work_item_positions is enabled' do
+        it 'joins work_item_positions and scopes by the positioning root column' do
+          sql = described_class.relative_positioning_query_base(project_issue).to_sql
+
+          expect(sql).to include('INNER JOIN "work_item_positions"')
+          expect(sql).to include('"work_item_positions"."relative_positioning_namespace_id" =')
+          expect(sql).not_to include('"issues"."namespace_id" IN')
+        end
+      end
+
+      context 'when read_relative_positions_from_work_item_positions is disabled' do
+        before do
+          stub_feature_flags(read_relative_positions_from_work_item_positions: false)
+        end
+
+        it 'does not join work_item_positions' do
+          sql = described_class.relative_positioning_query_base(project_issue).to_sql
+
+          expect(sql).not_to include('work_item_positions')
+          expect(sql).to include('"issues"."namespace_id" IN')
+        end
+
+        it 'still scopes to the root namespace hierarchy' do
+          scope = described_class.relative_positioning_query_base(project_issue)
+
+          expect(scope).to include(project_issue, subgroup_project_issue)
+          expect(scope).not_to include(other_group_issue)
+        end
+      end
+    end
+
+    describe '.relative_positioning_column' do
+      let_it_be(:issue) { create(:issue, project: project, relative_position: 100) }
+
+      context 'when read_relative_positions_from_work_item_positions is enabled' do
+        it 'resolves to the joined work_item_positions.relative_position column' do
+          expect(described_class.relative_positioning_column(issue))
+            .to eq(WorkItems::Position.arel_table[:relative_position])
+        end
+      end
+
+      context 'when read_relative_positions_from_work_item_positions is disabled' do
+        before do
+          stub_feature_flags(read_relative_positions_from_work_item_positions: false)
+        end
+
+        it 'resolves to issues.relative_position' do
+          expect(described_class.relative_positioning_column(issue))
+            .to eq(described_class.arel_table[:relative_position])
+        end
+      end
+
+      it 'resolves to issues.relative_position when called without an object' do
+        stub_feature_flags(read_relative_positions_from_work_item_positions: false)
+
+        expect(described_class.relative_positioning_column)
+          .to eq(described_class.arel_table[:relative_position])
+      end
+    end
+  end
+
+  it_behaves_like 'versioned description'
+
+  describe '#design_collection' do
+    it 'returns a design collection' do
+      issue = build(:issue)
+      collection = issue.design_collection
+
+      expect(collection).to be_a(DesignManagement::DesignCollection)
+      expect(collection.issue).to eq(issue)
+    end
+  end
+
+  describe 'current designs' do
+    let(:issue) { create(:issue, project: reusable_project) }
+
+    subject { issue.designs.current }
+
+    context 'an issue has no designs' do
+      it { is_expected.to be_empty }
+    end
+
+    context 'an issue only has current designs' do
+      let!(:design_a) { create(:design, :with_file, issue: issue) }
+      let!(:design_b) { create(:design, :with_file, issue: issue) }
+      let!(:design_c) { create(:design, :with_file, issue: issue) }
+
+      it { is_expected.to include(design_a, design_b, design_c) }
+    end
+
+    context 'an issue only has deleted designs' do
+      let!(:design_a) { create(:design, :with_file, issue: issue, deleted: true) }
+      let!(:design_b) { create(:design, :with_file, issue: issue, deleted: true) }
+      let!(:design_c) { create(:design, :with_file, issue: issue, deleted: true) }
+
+      it { is_expected.to be_empty }
+    end
+
+    context 'an issue has a mixture of current and deleted designs' do
+      let!(:design_a) { create(:design, :with_file, issue: issue) }
+      let!(:design_b) { create(:design, :with_file, issue: issue, deleted: true) }
+      let!(:design_c) { create(:design, :with_file, issue: issue) }
+
+      it { is_expected.to contain_exactly(design_a, design_c) }
+    end
+  end
+
+  describe 'banzai_render_context' do
+    let(:project) { build(:project_empty_repo) }
+    let(:issue) { build :issue, project: project }
+
+    subject(:context) { issue.banzai_render_context(:title) }
+
+    it 'sets the label_url_method in the context' do
+      expect(context[:label_url_method]).to eq(:project_issues_url)
+    end
+  end
+
+  describe 'scheduling rebalancing' do
+    before do
+      allow_next_instance_of(RelativePositioning::Mover) do |mover|
+        allow(mover).to receive(:move) { raise RelativePositioning::NoSpaceLeft }
+      end
+    end
+
+    shared_examples 'schedules issues rebalancing' do
+      let(:issue) { build_stubbed(:issue, relative_position: 100, project: project) }
+
+      it 'schedules rebalancing if there is no space left' do
+        lhs = build_stubbed(:issue, relative_position: 99, project: project)
+        to_move = build(:issue, project: project)
+        expect(Issues::RebalancingWorker).to receive(:perform_async).with(nil, nil, expected_namespace_id)
+
+        expect { to_move.move_between(lhs, issue) }.to raise_error(RelativePositioning::NoSpaceLeft)
+      end
+    end
+
+    context 'when project in user namespace' do
+      let(:project_namespace) { build_stubbed(:project_namespace) }
+      let(:project) { build_stubbed(:project_empty_repo, project_namespace: project_namespace) }
+      let(:expected_namespace_id) { project_namespace.id }
+
+      it_behaves_like 'schedules issues rebalancing'
+    end
+
+    context 'when project in a group namespace' do
+      let(:group) { create(:group) }
+      let(:project_namespace) { build_stubbed(:project_namespace) }
+      let(:project) { build_stubbed(:project_empty_repo, group: group, project_namespace: project_namespace) }
+      let(:expected_namespace_id) { group.id }
+
+      it_behaves_like 'schedules issues rebalancing'
+    end
+  end
+
+  describe '#allows_reviewers?' do
+    it 'returns false as we do not support reviewers on issues yet' do
+      issue = build_stubbed(:issue)
+
+      expect(issue.allows_reviewers?).to be(false)
+    end
+  end
+
+  describe '#issue_type' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+
+    it 'gets the type field from the work_item_types table' do
+      expect(issue).to receive_message_chain(:work_item_type, :base_type)
+
+      issue.issue_type
+    end
+
+    context 'when the issue is not persisted' do
+      it 'uses the default work item type' do
+        non_persisted_issue = build(:issue, work_item_type: nil)
+
+        expect(non_persisted_issue.issue_type).to eq(WorkItems::TypesFramework::Provider.new.default_issue_type.name.downcase)
+      end
+    end
+  end
+
+  describe '#issue_type_supports?' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+
+    it 'raises error when feature is invalid' do
+      expect { issue.issue_type_supports?(:unkown_feature) }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe '#labels_limit_exceeded?' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:labels) { create_list(:label, 3, project: project) }
+
+    let(:issue) { build(:issue, project: project, labels: labels.first(2)) }
+
+    before do
+      stub_const('Issue::MAX_NUMBER_OF_LABELS', 2)
+    end
+
+    it 'is true only when the set grows past the limit' do
+      expect(issue.labels_limit_exceeded?(labels.map(&:id))).to be(true)
+      expect(issue.labels_limit_exceeded?(labels.first(2).map(&:id))).to be(false)
+      expect(issue.labels_limit_exceeded?([])).to be(false)
+    end
+
+    it 'allows an over-limit issue to shrink without dropping below the limit' do
+      issue.labels << labels.last
+
+      expect(issue.labels_limit_exceeded?(labels.first(3).map(&:id))).to be(false)
+    end
+
+    context 'when the limit_labels_per_work_item feature flag is disabled' do
+      before do
+        stub_feature_flags(limit_labels_per_work_item: false)
+      end
+
+      it 'is false' do
+        expect(issue.labels_limit_exceeded?(labels.map(&:id))).to be(false)
+      end
+    end
+  end
+
+  describe '#supports_assignee?' do
+    WorkItems::TypesFramework::SystemDefined::Type::BASE_TYPES.pluck(:base_type).each do |base_type|
+      specify do
+        traits = base_type == 'issue' ? [] : [base_type.to_sym]
+        issue = build(:issue, *traits)
+        widgets = WorkItems::TypesFramework::SystemDefined::Definitions
+          .const_get(base_type.camelize, false).widgets
+        supports_assignee = widgets.include?('assignees')
+
+        expect(issue.supports_assignee?).to eq(supports_assignee)
+      end
+    end
+  end
+
+  describe '#supports_time_tracking?' do
+    let_it_be(:project) { create(:project) }
+    let_it_be_with_refind(:issue) { create(:incident, project: project) }
+
+    where(:issue_type, :supports_time_tracking) do
+      :issue | true
+      :incident | true
+    end
+
+    with_them do
+      before do
+        issue.update!(work_item_type_id: build(:work_item_system_defined_type, issue_type).id)
+      end
+
+      specify do
+        expect(issue.supports_time_tracking?).to eq(supports_time_tracking)
+      end
+    end
+  end
+
+  describe '#time_estimate' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:issue, freeze: false) { create(:issue, project: project) }
+
+    context 'when time estimate on the issue record is NULL' do
+      before do
+        issue.update_column(:time_estimate, nil)
+      end
+
+      it 'sets time estimate to zeor on save' do
+        expect(issue.read_attribute(:time_estimate)).to be_nil
+
+        issue.save!
+
+        expect(issue.reload.read_attribute(:time_estimate)).to eq(0)
+      end
+    end
+  end
+
+  describe '#supports_move_and_clone?' do
+    let_it_be(:project) { create(:project) }
+    let_it_be_with_refind(:issue) { create(:incident, project: project) }
+
+    where(:issue_type, :supports_move_and_clone) do
+      :issue | true
+      :incident | true
+    end
+
+    with_them do
+      before do
+        issue.update!(work_item_type_id: build(:work_item_system_defined_type, issue_type).id)
+      end
+
+      specify do
+        expect(issue.supports_move_and_clone?).to eq(supports_move_and_clone)
+      end
+    end
+  end
+
+  describe '#email_participants_downcase' do
+    it 'returns a list of emails with all uppercase letters replaced with their lowercase counterparts' do
+      participant = create(:issue_email_participant, email: 'SomEoNe@ExamPLe.com')
+
+      expect(participant.issue.email_participants_emails_downcase).to match([participant.email.downcase])
+    end
+  end
+
+  describe '#escalation_status' do
+    it 'returns the incident_management_issuable_escalation_status association' do
+      escalation_status = create(:incident_management_issuable_escalation_status)
+      issue = escalation_status.issue
+
+      expect(issue.escalation_status).to eq(escalation_status)
+    end
+  end
+
+  describe '#expire_etag_cache' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+
+    subject(:expire_cache) { issue.expire_etag_cache }
+
+    it 'touches the etag cache store' do
+      key = Gitlab::Routing.url_helpers.realtime_changes_project_issue_path(issue.project, issue)
+
+      expect_next_instance_of(Gitlab::EtagCaching::Store) do |cache_store|
+        expect(cache_store).to receive(:touch).with(key)
+      end
+
+      expire_cache
+    end
+  end
+
+  describe '#link_reference_pattern' do
+    let(:match_data) { described_class.link_reference_pattern.match(link_reference_url) }
+
+    context 'with issue url' do
+      let(:link_reference_url) { "#{Gitlab.config.gitlab.url}/namespace/project/-/issues/1" }
+
+      it 'matches with expected attributes' do
+        expect(match_data['namespace']).to eq('namespace')
+        expect(match_data['project']).to eq('project')
+        expect(match_data['issue']).to eq('1')
+      end
+    end
+
+    context 'with incident url' do
+      let(:link_reference_url) { "#{Gitlab.config.gitlab.url}/namespace1/project1/-/issues/incident/2" }
+
+      it 'matches with expected attributes' do
+        expect(match_data['namespace']).to eq('namespace1')
+        expect(match_data['project']).to eq('project1')
+        expect(match_data['issue']).to eq('2')
+      end
+    end
+  end
+
+  context 'order by closed_at' do
+    let!(:issue_a) { create(:issue, project: reusable_project, closed_at: 1.day.ago) }
+    let!(:issue_b) { create(:issue, project: reusable_project, closed_at: 5.days.ago) }
+    let!(:issue_c_nil) { create(:issue, project: reusable_project, closed_at: nil) }
+    let!(:issue_d) { create(:issue, project: reusable_project, closed_at: 3.days.ago) }
+
+    describe '.order_closed_at_asc' do
+      it 'orders on closed at' do
+        expect(described_class.order_closed_at_asc.to_a).to eq([issue_b, issue_d, issue_a, issue_c_nil])
+      end
+    end
+
+    describe '.order_closed_at_desc' do
+      it 'orders on closed at' do
+        expect(described_class.order_closed_at_desc.to_a).to eq([issue_a, issue_d, issue_b, issue_c_nil])
+      end
+    end
+  end
+
+  describe '#full_search' do
+    context 'when searching non-english terms' do
+      [
+        'abc 中文語',
+        '中文語cn',
+        '中文語',
+        'Привет'
+      ].each do |term|
+        it 'adds extra where clause to match partial index' do
+          expect(described_class.full_search(term).to_sql).to include(
+            "AND (issues.title NOT SIMILAR TO '[\\u0000-\\u02FF\\u1E00-\\u1EFF\\u2070-\\u218F]*' " \
+            "OR issues.description NOT SIMILAR TO '[\\u0000-\\u02FF\\u1E00-\\u1EFF\\u2070-\\u218F]*')"
+          )
+        end
+      end
+    end
+  end
+
+  describe '#work_item_type_with_default' do
+    subject { described_class.new.work_item_type_with_default }
+
+    it { is_expected.to eq(WorkItems::TypesFramework::Provider.new.default_issue_type) }
+  end
+
+  describe '#update_search_data!' do
+    it 'copies namespace_id to search data' do
+      issue = create(:issue, project: reusable_project)
+
+      expect(issue.search_data.namespace_id).to eq(issue.namespace_id)
+    end
+  end
+
+  describe '#linked_items_count' do
+    let_it_be(:issue1) { create(:issue, project: reusable_project) }
+    let_it_be(:issue2) { create(:issue, project: reusable_project) }
+    let_it_be(:issue3) { create(:issue, project: reusable_project) }
+    let_it_be(:issue4) { build(:issue, project: reusable_project) }
+
+    it 'returns number of issues linked to the issue' do
+      create(:issue_link, source: issue1, target: issue2)
+      create(:issue_link, source: issue1, target: issue3)
+
+      expect(issue1.linked_items_count).to eq(2)
+      expect(issue2.linked_items_count).to eq(1)
+      expect(issue3.linked_items_count).to eq(1)
+      expect(issue4.linked_items_count).to eq(0)
+    end
+  end
+
+  describe '#gfm_reference' do
+    where(:issue_type, :expected_name) do
+      :issue     | 'issue'
+      :incident  | 'incident'
+      :test_case | 'test case'
+      :task      | 'task'
+    end
+
+    with_them do
+      it 'uses the issue type as the reference name' do
+        skip if !Gitlab.ee? && issue_type == :test_case
+
+        traits = issue_type == :issue ? [] : [issue_type]
+        issue = create(:issue, *traits, project: reusable_project)
+
+        expect(issue.gfm_reference).to eq("#{expected_name} #{issue.to_reference}")
+      end
+    end
+
+    context 'when referencing a group level issue' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:sub_group) { create(:group, parent: group) }
+      let_it_be(:sub_group_project) { create(:project, namespace: sub_group) }
+      let_it_be(:sub_group_issue) { create(:issue, :group_level, namespace: sub_group) }
+      let_it_be(:sub_project_issue) { create(:issue, project: sub_group_project) }
+
+      let_it_be(:group_issue) { create(:issue, :group_level, namespace: group) }
+      let_it_be(:group_issue2) { create(:issue, :group_level, namespace: group) }
+      let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+
+      it 'uses uses an absolute and full path when referencing a root group' do
+        expect(group_issue.gfm_reference(issue.project)).to eq("issue /#{group.full_path}##{group_issue.iid}")
+        expect(group_issue.gfm_reference(issue.namespace)).to eq("issue /#{group.full_path}##{group_issue.iid}")
+      end
+
+      it 'does not use an absolute namespace when referencing a sub-group' do
+        expect(sub_group_issue.gfm_reference(sub_project_issue.project)).to eq("issue #{sub_group.full_path}##{sub_project_issue.iid}")
+      end
+    end
+  end
+
+  describe '#has_widget?' do
+    let(:work_item_type) { create(:work_item_system_defined_type, :task) }
+    let(:issue) { create(:issue, project: reusable_project, work_item_type: work_item_type) }
+
+    # Setting a fixed widget here so we don't get a licensed widget from the list as that could break the specs.
+    # Using const_get in the implementation will make sure the widget exists in CE (no licenses)
+    let(:widget_type) { :designs }
+
+    subject { issue.has_widget?(widget_type) }
+
+    context 'when the work item does not have the widget' do
+      it { is_expected.to be_falsey }
+    end
+
+    context 'when the work item has the widget' do
+      let(:work_item_type) { build(:work_item_system_defined_type, :issue) }
+
+      it { is_expected.to be_truthy }
+    end
+  end
+
+  shared_examples 'a markdown field that parses work item references' do
+    shared_examples 'a html field with work item information' do
+      it 'parses the work item reference' do
+        html_link = Nokogiri::HTML.fragment(issue[:"#{field}_html"]).css('a').first
+
+        expect(html_link.text).to eq(expected_link_text)
+        expect(html_link[:href]).to eq(work_item_path)
+      end
+    end
+
+    let_it_be(:group) { create(:group) }
+
+    context 'when it is a group level issue', :aggregate_failures do
+      let(:issue) { create(:issue, :group_level, namespace: group, field => work_item_reference) }
+      let(:work_item_path) { Gitlab::UrlBuilder.build(group_work_item, only_path: true) }
+      let(:expected_link_text) { group_work_item.to_reference }
+
+      context 'when field contains a work item reference (URL)' do
+        let(:work_item_path) { Gitlab::UrlBuilder.build(group_work_item) }
+        let(:work_item_reference) { work_item_path }
+
+        it_behaves_like 'a html field with work item information'
+      end
+
+      context 'when field contains a work item reference (short)' do
+        let(:work_item_reference) { group_work_item.to_reference }
+
+        it_behaves_like 'a html field with work item information'
+      end
+
+      context 'when field contains a work item reference (full)' do
+        let(:work_item_reference) { group_work_item.to_reference(full: true) }
+
+        it_behaves_like 'a html field with work item information'
+      end
+
+      context 'when field contains a project level work item reference (URL)' do
+        let(:work_item_path) { Gitlab::UrlBuilder.build(project_work_item) }
+        let(:work_item_reference) { work_item_path }
+        let(:expected_link_text) { "#{reusable_project.full_path}##{project_work_item.iid}" }
+
+        it_behaves_like 'a html field with work item information'
+      end
+    end
+
+    context 'when it is a project level issue', :aggregate_failures do
+      let(:issue) { create(:issue, :task, project: reusable_project, field => work_item_reference) }
+      let(:work_item_path) { Gitlab::UrlBuilder.build(project_work_item, only_path: true) }
+      let(:expected_link_text) { group_work_item.to_reference }
+
+      context 'when field contains a work item reference (URL)' do
+        let(:work_item_path) { Gitlab::UrlBuilder.build(project_work_item) }
+        let(:work_item_reference) { work_item_path }
+        let(:expected_link_text) { project_work_item.to_reference }
+
+        it_behaves_like 'a html field with work item information'
+      end
+
+      context 'when field contains a work item reference (short)' do
+        let(:work_item_reference) { project_work_item.to_reference }
+
+        it_behaves_like 'a html field with work item information'
+      end
+
+      context 'when field contains a work item reference (full)' do
+        let(:work_item_reference) { project_work_item.to_reference(full: true) }
+
+        it_behaves_like 'a html field with work item information'
+      end
+
+      context 'when field contains a group level work item reference (URL)' do
+        let(:work_item_path) { Gitlab::UrlBuilder.build(group_work_item) }
+        let(:work_item_reference) { work_item_path }
+        let(:expected_link_text) { "#{group.full_path}##{group_work_item.iid}" }
+
+        it_behaves_like 'a html field with work item information'
+      end
+    end
+  end
+
+  describe '#title_html' do
+    it_behaves_like 'a markdown field that parses work item references' do
+      let_it_be(:group_work_item) { create(:work_item, :group_level, namespace: group) }
+      let_it_be(:project_work_item) { create(:work_item, :task, project: reusable_project) }
+      let(:field) { :title }
+    end
+  end
+
+  describe '#description_html' do
+    it_behaves_like 'a markdown field that parses work item references' do
+      let_it_be(:group_work_item) { create(:work_item, :group_level, namespace: group) }
+      let_it_be(:project_work_item) { create(:work_item, :task, project: reusable_project) }
+      let(:field) { :description }
+    end
+  end
+
+  describe ".invalidate_project_counter_caches" do
+    let(:issues_count_service) { instance_double(Projects::OpenIssuesCountService) }
+    let(:work_items_count_service) { instance_double(Projects::OpenWorkItemsCountService) }
+
+    context "when the project exists" do
+      it "deletes the cached counts for open issues and open work items", :aggregate_failures do
+        allow(Projects::OpenIssuesCountService).to receive(:new).with(reusable_project).and_return(issues_count_service)
+        allow(Projects::OpenWorkItemsCountService).to receive(:new).with(reusable_project).and_return(work_items_count_service)
+
+        expect(issues_count_service).to receive(:delete_cache)
+        expect(work_items_count_service).to receive(:delete_cache)
+
+        subject.invalidate_project_counter_caches
+      end
+    end
+
+    context "when the project does not exist" do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:group_work_item) { create(:work_item, :group_level, namespace: group) }
+
+      it "does not instantiate the project count services", :aggregate_failures do
+        expect(Projects::OpenIssuesCountService).not_to receive(:new).with(reusable_project)
+        expect(Projects::OpenWorkItemsCountService).not_to receive(:new).with(reusable_project)
+
+        group_work_item.invalidate_project_counter_caches
+      end
+    end
+  end
+
+  describe '#show_as_work_item?' do
+    subject(:issue_as_work_item) { issue.show_as_work_item? }
+
+    where(:factory, :result) do
+      :issue                  | true
+      [:issue, :task]         | true
+      [:issue, :group_level]  | true
+      [:issue, :incident]     | false
+      [:issue, :ticket]       | true
+    end
+
+    with_them do
+      let(:issue) { build_stubbed(*Array(factory)) }
+
+      it { is_expected.to be result }
+    end
+
+    context 'when work_item_ticket_migration feature flag is disabled' do
+      let(:issue) { build_stubbed(:issue, :ticket) }
+
+      before do
+        stub_feature_flags(work_item_ticket_migration: false)
+      end
+
+      it { is_expected.to be false }
+    end
+
+    context 'when work_item_type is nil' do
+      let(:issue) { build_stubbed(:issue, work_item_type: nil, project: reusable_project) }
+
+      it 'returns true' do
+        expect(issue_as_work_item).to be true
+      end
+    end
+  end
+
+  describe '#use_work_item_url?' do
+    subject(:use_work_item_url) { issue.use_work_item_url? }
+
+    where(:factory, :result) do
+      :issue                  | true
+      [:issue, :task]         | true
+      [:issue, :incident]     | false
+      [:issue, :ticket]       | true
+    end
+
+    with_them do
+      let(:issue) { build_stubbed(*Array(factory)) }
+
+      it { is_expected.to be result }
+    end
+
+    context 'when work_item_ticket_migration feature flag is disabled' do
+      let(:issue) { build_stubbed(:issue, :ticket) }
+
+      before do
+        stub_feature_flags(work_item_ticket_migration: false)
+      end
+
+      it { is_expected.to be false }
+    end
+
+    context 'when work_item_type is nil' do
+      let(:issue) { build_stubbed(:issue, work_item_type: nil, project: reusable_project) }
+
+      it 'returns true' do
+        expect(use_work_item_url).to be true
+      end
+    end
+  end
+
+  describe '#require_legacy_views?' do
+    subject(:require_legacy_views) { issue.require_legacy_views? }
+
+    where(:factory, :result) do
+      :issue                  | false
+      [:issue, :task]         | false
+      [:issue, :group_level]  | false
+      [:issue, :incident]     | true
+      [:issue, :ticket]       | false
+    end
+
+    with_them do
+      let(:issue) { build_stubbed(*Array(factory)) }
+
+      it { is_expected.to be result }
+    end
+
+    context 'when work_item_ticket_migration feature flag is disabled' do
+      let(:issue) { build_stubbed(:issue, :ticket) }
+
+      before do
+        stub_feature_flags(work_item_ticket_migration: false)
+      end
+
+      it { is_expected.to be true }
+    end
+
+    context 'when work_item_type is nil' do
+      let(:issue) { build_stubbed(:issue, work_item_type: nil) }
+
+      it { is_expected.to be false }
+    end
+  end
+
+  describe '#==' do
+    let(:issue) { build_stubbed(:issue, project: reusable_project) }
+
+    it 'returns false when comparing with a non-ActiveRecord object' do
+      expect(issue == :some_symbol).to be(false)
+    end
+
+    it 'returns false when comparing with an unrelated ActiveRecord object' do
+      user = build_stubbed(:user, id: issue.id)
+
+      expect(issue == user).to be(false)
+    end
+
+    it 'returns false when issues have different ids' do
+      other_issue = build_stubbed(:issue, project: reusable_project)
+
+      expect(issue == other_issue).to be(false)
+    end
+
+    it 'returns false when comparing different unpersisted issues' do
+      expect(build(:issue) == build(:issue)).to be(false)
+    end
+
+    it 'returns true when comparing the same unpersisted issue' do
+      new_issue = build(:issue)
+
+      expect(new_issue == new_issue).to be(true)
+    end
+
+    it 'returns true when ids are the same' do
+      other_issue_instance = build_stubbed(:issue, project: reusable_project, id: issue.id)
+
+      expect(issue == other_issue_instance).to be(true)
+    end
+
+    it 'returns true when compared with subclass having the same id' do
+      work_item = build_stubbed(:work_item, project: reusable_project, id: issue.id)
+
+      expect(issue == work_item).to be(true)
+    end
+  end
+
+  describe '#referenced_mentionables' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+
+    context 'when mentioning an issue from the work item version of itself' do
+      it 'does not include the self-reference' do
+        issue_as_work_item = WorkItem.find(issue.id)
+        issue_as_work_item.description = issue.to_reference
+
+        expect(issue_as_work_item.referenced_mentionables).to be_empty
+      end
+    end
+
+    context 'when mentioning a work item from the issue version of itself' do
+      it 'does not include the self-reference' do
+        issue.description = Gitlab::Routing.url_helpers.project_work_item_url(issue.project, issue)
+
+        expect(issue.referenced_mentionables).to be_empty
+      end
+    end
+  end
+
+  describe '#as_json' do
+    let_it_be(:issue, freeze: false) { create(:issue, project: reusable_project) }
+
+    it 'renames exported_work_item_type to work_item_type' do
+      json = issue.as_json(methods: [:exported_work_item_type])
+
+      expect(json).to have_key('work_item_type')
+      expect(json).not_to have_key('exported_work_item_type')
+      expect(json['work_item_type']).to eq({ 'name' => issue.work_item_type.name })
+    end
+
+    it 'does not add work_item_type when exported_work_item_type is not in methods' do
+      json = issue.as_json(only: [:id])
+
+      expect(json).not_to have_key('work_item_type')
+      expect(json).not_to have_key('exported_work_item_type')
+    end
+
+    it 'includes labels when labels option is present' do
+      label = create(:label, project: issue.project)
+      issue.labels << label
+
+      json = issue.as_json(labels: true)
+
+      expect(json[:labels]).to be_present
+      expect(json[:labels].first).to include('title' => label.title)
+    end
   end
 end

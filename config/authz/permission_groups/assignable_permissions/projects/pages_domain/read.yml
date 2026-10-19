@@ -1,0 +1,10 @@
+---
+name: read_pages_domain
+description: Grants the ability to read pages domains
+boundaries:
+  - project
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_pages_domain

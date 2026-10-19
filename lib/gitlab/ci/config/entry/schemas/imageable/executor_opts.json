@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Describe `image:` and `service:` options like `docker:`",
+  "type": "object",
+  "properties": {
+    "docker": {
+      "type": "object",
+      "properties": {
+        "platform": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "additionalProperties": false
+    },
+    "kubernetes": {
+      "type": "object",
+      "properties": {
+        "user": {
+          "type": ["string", "integer"],
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Username or UID to use for the container. It also supports the UID:GID format"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "type": [
+        "string"
+      ]
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error_message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "collapsed": {
+      "type": [
+        "boolean"
+      ]
+    },
+    "generated": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "expandable": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "whitespace_only": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

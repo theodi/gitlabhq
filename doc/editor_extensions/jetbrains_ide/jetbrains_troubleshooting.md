@@ -1,0 +1,245 @@
+---
+stage: AI Clients
+group: Developer Clients
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Connect and use GitLab Duo in JetBrains IDEs.
+title: Troubleshooting JetBrains
+---
+
+If the steps on this page don't solve your problem, check the
+[list of open issues](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin/-/issues/?sort=created_date&state=opened&first_page_size=100)
+in the JetBrains plugin's project. If an issue matches your problem, update the issue.
+If no issues match your problem, [create a new issue](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin/-/issues/new)
+and provide the [required information for Support](#required-information-for-support).
+
+## GitLab Duo features are unavailable
+
+To troubleshoot GitLab Duo errors in your IDE:
+
+1. Ensure you meet the [prerequisites](setup.md#configure-gitlab-duo) and the necessary settings
+   are on.
+1. Ensure that [Admin mode is disabled](../../administration/settings/sign_in_restrictions.md#turn-off-admin-mode-for-your-session).
+1. Review diagnostics output:
+   - In your JetBrains IDE, go to **Tools** > **GitLab** > **Diagnostics** and review the output for
+     any failed checks.
+1. If the diagnostics indicate that the feature is not enabled:
+   1. In your JetBrains IDE, go to **Settings** > **Tools** > **GitLab Duo**.
+   1. Find and select the checkbox to enable the missing feature.
+   1. Select **OK** or **Save**.
+   1. Restart your IDE, if prompted.
+1. If the diagnostics indicate that Agentic Chat is not supported for the current project,
+   [set a default GitLab Duo namespace](../../user/profile/preferences.md#namespace-resolution-in-your-local-environment).
+1. If you use JetBrains Remote Development and diagnostics indicate that a missing feature is enabled, check whether the GitLab Duo plugin is installed on both
+   the host and client machines. If it is, uninstall the plugin from the client machine and keep it
+   on the host machine only. For more information, see
+   [use with remote development](_index.md#use-with-remote-development).
+
+For support with Code Suggestions, see [troubleshooting Code Suggestions](../../user/project/repository/code_suggestions/troubleshooting.md#jetbrains-ides-troubleshooting).
+
+## Network issues
+
+If you are seeing `HTTP/1.1` responses from GitLab Duo rather than `/-/cable`
+WebSocket endpoints in your logs, your WebSocket connections may be blocked.
+
+Your GitLab instance must allow inbound WebSocket connections from IDE clients.
+Ask your network administrator to
+[allow WebSocket traffic to your GitLab instance](../../administration/gitlab_duo/configure/_index.md#allow-inbound-connections-from-clients-to-the-gitlab-instance)
+if you suspect this is the issue.
+
+If the connection to the GitLab Duo Agent Platform fails with a WebSocket error `1006` or `404`, see
+[connection fails with WebSocket error `1006` or `404`](../../user/duo_agent_platform/troubleshooting.md#connection-fails-with-websocket-error-1006-or-404).
+
+## IDE commands fail or run indefinitely
+
+When using GitLab Duo Agentic Chat or the Software Development Flow in your IDE,
+GitLab Duo can get stuck in a loop or have difficulty running commands.
+
+This issue can occur when you are using shell themes or integrations, like `Oh My ZSH!` or `powerlevel10k`.
+When a GitLab Duo agent spawns a terminal, a theme or integration can prevent commands from running properly.
+
+As a workaround, use a simpler theme for commands sent by agents.
+[Issue 2070](https://gitlab.com/gitlab-org/gitlab-vscode-extension/-/issues/2070) in the VS Code extension project tracks improvements to this behavior so this workaround is no longer needed.
+
+### Edit your `.zshrc` file
+
+In VS Code and JetBrains IDEs, configure `Oh My ZSH!` or `powerlevel10k` to use a simpler
+theme when it runs commands sent by an agent. You can use the environment variables exposed
+by the IDEs to set these values.
+
+Edit your `~/.zshrc` file to include this code:
+
+```shell
+# ~/.zshrc
+
+# Path to your oh-my-zsh installation
+export ZSH="$HOME/.oh-my-zsh"
+
+# ...
+
+# Decide whether to load a full terminal environment,
+# or keep it minimal for agentic AI in IDEs
+if [[ "$TERM_PROGRAM" == "vscode" || "$TERMINAL_EMULATOR" == "JetBrains-JediTerm" ]]; then
+  echo "IDE agentic environment detected, not loading full shell integrations"
+else
+  # Oh My ZSH
+  source $ZSH/oh-my-zsh.sh
+  # Theme: Powerlevel10k
+  [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+  # Other integrations like syntax highlighting
+fi
+
+# Other setup, like PATH variables
+```
+
+## Enable debug mode
+
+To enable debug logs in JetBrains:
+
+1. In the top bar, go to **Help** > **Diagnostic Tools** > **Debug Log Settings**, or
+   search for the action by going to **Help** > **Find Action** > **Debug log settings**.
+1. Add this line: `com.gitlab.plugin`
+1. Select **OK** or **Save**.
+
+After you reproduce the problem, [collect the logs](#get-debug-logs).
+
+If you experience [certificate errors](#certificate-errors) or other connection errors, and
+use an HTTP proxy to connect to your GitLab instance, you must
+[configure the Language Server to use a proxy](../language_server/_index.md#configure-the-language-server-to-use-a-proxy)
+for the GitLab Language Server.
+
+You can also [enable proxy authentication](../language_server/_index.md#enable-proxy-authentication).
+
+## Enable GitLab Language Server debug logs
+
+To enable GitLab Language Server debug logs:
+
+1. In your IDE, in the top bar, select your IDE name, then select **Settings**.
+1. In the left sidebar, select **Tools** > **GitLab Duo**.
+1. Select **GitLab Language Server** to expand the section.
+1. In **Logging** > **Log Level**, enter `debug`.
+1. Select **Apply**.
+1. Below **Enable GitLab Language Server**, select **Restart Language Server**.
+
+## Get debug logs
+
+Prerequisite:
+
+- GitLab Duo plugin 3.27.0 or later.
+
+To collect debug logs and diagnostics together:
+
+1. Go to **Tools** > **GitLab** > **Export Diagnostics Bundle**.
+1. Run the `GitLab: Export Diagnostics Bundle` quick action.
+
+This saves a single zip file containing GitLab plugin diagnostics, extension logs, and GitLab Language Server logs to
+a location you choose.
+
+To instead access the raw `idea.log` log file, either:
+
+<!-- vale gitlab_base.SubstitutionWarning = NO -->
+
+- In your IDE, go to **Help** > **Show Log in Finder**.
+- Go to the directory `/Users/<user>/Library/Logs/JetBrains/IntelliJIdea<build_version>`, replacing
+  `<user>` and `<build_version>` with the appropriate values.
+
+<!-- vale gitlab_base.SubstitutionWarning = YES -->
+
+## Certificate errors
+
+If your machine connects to your GitLab instance through a proxy, you might encounter
+SSL certificate errors in JetBrains. GitLab Duo attempts to detect certificates in your system store;
+however, Language Server cannot do this. If you see errors from the Language Server
+about certificates, try enabling the option to pass a Certificate Authority (CA) certificate:
+
+To do this:
+
+1. On the bottom right corner of your IDE, select the GitLab icon.
+1. On the dialog, select **Show Settings**. This opens the **Settings** dialog to **Tools** > **GitLab Duo**.
+1. Select **GitLab Language Server** to expand the section.
+1. Select **HTTP Agent Options** to expand it.
+1. Either:
+   - Select an option **Pass CA certificate from Duo to the Language Server**.
+   - In **Certificate authority (CA)**, specify the path to your `.pem` file with CA certificates.
+1. Restart your IDE.
+
+### Ignore certificate errors
+
+If GitLab Duo still fails to connect, you might need to
+ignore certificate errors. You might see errors in the GitLab Language Server logs after enabling
+[debug mode](#enable-debug-mode):
+
+```plaintext
+2024-10-31T10:32:54:165 [error]: fetch: request to https://gitlab.com/api/v4/personal_access_tokens/self failed with:
+request to https://gitlab.com/api/v4/personal_access_tokens/self failed, reason: unable to get local issuer certificate
+FetchError: request to https://gitlab.com/api/v4/personal_access_tokens/self failed, reason: unable to get local issuer certificate
+```
+
+By design, this setting represents a security risk:
+these errors alert you to potential security breaches. You should enable this
+setting only if you are absolutely certain the proxy causes the problem.
+
+Prerequisites:
+
+- You verified the certificate chain in your system browser or your machine's administrator
+  confirmed that this error is safe to ignore.
+
+To do this:
+
+1. Refer to JetBrains documentation on [SSL certificates](https://www.jetbrains.com/help/idea/ssl-certificates.html).
+1. Go to your IDE's top menu bar and select **Settings**.
+1. In the left sidebar, select **Tools** > **GitLab Duo**.
+1. Confirm your default browser trusts the **URL to GitLab instance** you're using.
+1. Enable the **Ignore certificate errors** option.
+1. Select **Verify setup**.
+1. Select **OK** or **Save**.
+
+### Authentication fails in PyCharm
+
+If you encounter problems during the **Verify setup** phase of GitLab authentication, confirm you
+are running a supported version of PyCharm:
+
+1. Go to the [plugin compatibility](https://plugins.jetbrains.com/plugin/22325-gitlab-duo/versions) page.
+1. For **Compatibility**, select `PyCharm Community` or `PyCharm Professional`.
+1. For **Channels**, select your desired stability level for the GitLab plugin.
+1. For your version of PyCharm, select **Download** to download the correct GitLab plugin version, and install it.
+
+## JCEF Errors
+
+If you experience issues with GitLab Duo Chat related to JCEF (Java Chromium Embedded Framework), you can try these steps:
+
+1. In the top bar, go to **Help** > **Find Action** and search for `Registry`.
+1. Find or search for `ide.browser.jcef.sandbox.enable`.
+1. Clear the checkbox to disable this setting.
+1. Close the Registry dialog.
+1. Restart your IDE.
+1. In the top bar, go to **Help** > **Find Action** and search for `Choose Boot Java Runtime for the IDE`.
+1. Select the boot java runtime version that's the same as your current IDE version, but with JCEF bundled:
+   ![JCEF supporting runtime example](img/jcef_supporting_runtime_example_v17_3.png)
+1. Restart your IDE.
+
+## Required information for support
+
+Before contacting Support, make sure the latest GitLab Duo plugin is installed. All releases
+are available in the [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/22325-gitlab-duo/versions),
+on the **Versions** tab.
+
+Gather this information from affected users, and provide it in your bug report:
+
+1. The error message shown to the user.
+1. Diagnostics and logs. Choose one of the following methods:
+   - Automatic (recommended): Export a [diagnostics bundle](#get-debug-logs), which packages the
+     logs and diagnostics into a single zip file.
+   - Manual:
+     - Enable and collect [debug logs](#enable-debug-mode)
+     - Enable and collect [Language Server debug logs](#enable-gitlab-language-server-debug-logs)
+     - Capture [logs output](#get-debug-logs)
+     - Run `GitLab: Diagnostics` from the quick actions menu and copy the Markdown output
+1. Describe the scope of impact. How many users are affected?
+1. Describe how to reproduce the error. Include a screen recording, if possible.
+1. Describe how other GitLab Duo features are affected:
+   - Is GitLab Quick Chat functional?
+   - Is Code Suggestions working?
+   - Does GitLab Duo Chat in the Web IDE return responses?
+1. Perform extension isolation testing. Try disabling (or uninstalling) all other extensions to determine
+   if another extension is causing the issue. This helps determine if the problem is with our extension,
+   or from an external source.

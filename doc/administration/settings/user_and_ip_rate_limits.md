@@ -1,0 +1,371 @@
+---
+stage: Production Engineering
+group: Networking and Incident Management
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: User and IP rate limits
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+Rate limiting is a common technique used to improve the security and durability
+of a web application. For more details, see
+[Rate limits](../../rate_limits/_index.md).
+
+The following limits are disabled by default:
+
+- [Unauthenticated API requests (per IP)](#enable-unauthenticated-api-request-rate-limit).
+- [Unauthenticated web requests (per IP)](#enable-unauthenticated-web-request-rate-limit).
+- [Authenticated API requests (per user)](#enable-authenticated-api-request-rate-limit).
+- [Authenticated web requests (per user)](#enable-authenticated-web-request-rate-limit).
+- [Authenticated dependency proxy requests (per user or deploy token)](#enable-authenticated-dependency-proxy-request-rate-limit).
+
+> [!note]
+> By default, all Git operations are first tried unauthenticated. Because of this, HTTP Git operations
+> may trigger the rate limits configured for unauthenticated requests.
+
+The rate limits for API requests don't affect requests made by the frontend, as these are always
+counted as web traffic.
+
+## Prerequisites
+
+You must have administrator access.
+
+## Enable unauthenticated API request rate limit
+
+To enable the unauthenticated API request rate limit:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **User and IP rate limits**.
+1. Select **Enable unauthenticated API request rate limit**.
+
+   - Optional. Update the **Maximum unauthenticated API requests per rate limit period per IP** value.
+     Defaults to `3600`.
+   - Optional. Update the **Unauthenticated rate limit period in seconds** value.
+     Defaults to `3600`.
+
+## Enable unauthenticated web request rate limit
+
+To enable the unauthenticated request rate limit:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **User and IP rate limits**.
+1. Select **Enable unauthenticated web request rate limit**.
+
+   - Optional. Update the **Maximum unauthenticated web requests per rate limit period per IP** value.
+     Defaults to `3600`.
+   - Optional. Update the **Unauthenticated rate limit period in seconds** value.
+     Defaults to `3600`.
+
+## Enable authenticated API request rate limit
+
+To enable the authenticated API request rate limit:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **User and IP rate limits**.
+1. Select **Enable authenticated API request rate limit**.
+
+   - Optional. Update the **Maximum authenticated API requests per rate limit period per user** value.
+     Defaults to `7200`.
+   - Optional. Update the **Authenticated API rate limit period in seconds** value.
+     Defaults to `3600`.
+
+## Enable authenticated web request rate limit
+
+To enable the authenticated request rate limit:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **User and IP rate limits**.
+1. Select **Enable authenticated web request rate limit**.
+
+   - Optional. Update the **Maximum authenticated web requests per rate limit period per user** value.
+     Defaults to `7200`.
+   - Optional. Update the **Authenticated web rate limit period in seconds** value.
+     Defaults to `3600`.
+
+## Enable authenticated dependency proxy request rate limit
+
+Authenticated requests to the
+[dependency proxy for container images](../../user/packages/dependency_proxy/_index.md) count
+against the [authenticated web request rate limit](#enable-authenticated-web-request-rate-limit)
+by default. Container image pulls then share a budget with a user's other web traffic. Parallel
+CI/CD pulls can exhaust that budget and fail with a `429` error.
+
+To give dependency proxy traffic its own budget, enable a rate limit dedicated to the container
+image manifest and blob endpoints under `/v2/<group>/dependency_proxy/containers/`. This limit
+applies only to authenticated requests. GitLab does not provide a rate limit for unauthenticated
+dependency proxy requests.
+
+Requests that authenticate with a deploy token count against that deploy token, and each deploy
+token has its own budget. They don't count against the IP address of the client.
+
+The following requests count against the authenticated web request rate limit, per user or per
+deploy token, and not against this limit:
+
+- The Docker authentication request, `GET /v2`.
+- Requests that GitLab makes to store images in the dependency proxy cache.
+
+To enable the authenticated dependency proxy rate limit:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **Dependency proxy rate limits**.
+1. Select **Enable authenticated dependency proxy request rate limit**.
+
+   - Optional. Update the **Max authenticated dependency proxy requests per period per user** value.
+     Defaults to `1000`.
+   - Optional. Update the **Authenticated dependency proxy rate limit period in seconds** value.
+     Defaults to `15`.
+
+While this limit is disabled, dependency proxy requests continue to count against the
+authenticated web request rate limit.
+
+> [!note]
+> When you upgrade to GitLab 19.4 or later, GitLab automatically enables this limit if the
+> authenticated web request rate limit is already enabled on your instance, and copies its
+> requests-per-period and period-in-seconds values. This can only loosen limits: dependency proxy
+> traffic that previously shared a budget with web traffic gets its own budget of the same size.
+> If the authenticated web request rate limit is disabled, this limit remains disabled.
+
+## Enable authenticated MCP server request rate limit
+
+Authenticated requests to the
+[GitLab MCP server](../../user/model_context_protocol/mcp_server.md) count against the
+[authenticated API request rate limit](#enable-authenticated-api-request-rate-limit).
+
+To add restrictions to MCP server traffic, enable a rate limit for the `POST /api/v4/mcp` endpoint.
+This limit applies in addition to the authenticated API rate limit. Requests are refused if either limits are
+exceeded. It counts every request to the endpoint,
+not only tool calls. This limit applies only to authenticated requests and is disabled by default.
+
+To enable the authenticated MCP server rate limit:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **GitLab MCP server rate limits**.
+1. Select **Enable authenticated MCP server request rate limit**.
+
+   - Optional. Update the **Max authenticated MCP server requests per period per user** value.
+     Defaults to `600`.
+   - Optional. Update the **Authenticated MCP server rate limit period in seconds** value.
+     Defaults to `60`.
+
+## Use a custom rate limit response
+
+A request that exceeds a rate limit returns a `429` response code and a
+plain-text body, which by default is `Retry later`.
+
+To use a custom response:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **User and IP rate limits**.
+1. In the **Plain-text response to send to clients that hit a rate limit** text box,
+   add the plain-text response message.
+
+## Maximum authenticated requests to `project/:id/jobs` per minute
+
+To reduce timeouts, the `project/:id/jobs` endpoint has a default [rate limit](../../rate_limits/_index.md) of 600 calls per authenticated user.
+
+To modify the maximum number of requests:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Network**.
+1. Expand **User and IP rate limits**.
+1. Update the **Maximum authenticated requests to `project/:id/jobs` per minute** value.
+
+## Response headers
+
+Response headers include rate limit information for all requests.
+Use these headers to proactively monitor usage and adjust request patterns to avoid throttling.
+
+### Multiple rate limiting systems
+
+Rate limits are enforced through two independent systems:
+
+- `Rack::Attack` middleware rate limits: Applied at the HTTP layer. Examples include authenticated API requests per user, or unauthenticated web requests per IP. These limits are reflected in response headers.
+- Application rate limits: Applied at the application level. Examples include issue creation per user, or project export per user. These limits are not included in response headers.
+
+A single request can count toward both types of rate limits simultaneously.
+Response headers only show the most restrictive `Rack::Attack` rate limit status.
+
+> [!note]
+> Application rate limits are not included in response headers.
+
+#### Example
+
+A request to create an issue through the API counts toward:
+
+- The authenticated API request rate limit (`Rack::Attack`). Included in response headers.
+- The issue creation rate limit (application-level). Not included in response headers.
+
+Exceeding the issue creation limit results in a `429` response, even when previous response headers indicated enough remaining authenticated API requests.
+
+### Headers returned for all requests
+
+The following headers are included in all responses to help clients track their rate limit status:
+
+| Header                | Example                      | Description                                                                                                                                                                                                      |
+|:----------------------|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `RateLimit-Limit`     | `60`                         | The request quota for the client each minute. If the rate limit period set in the **Admin** area is different from 1 minute, the value of this header is adjusted to approximately the nearest 60-minute period. |
+| `RateLimit-Name`      | `throttle_authenticated_api` | Name of the throttle applied to the request.                                                                                                                                                                     |
+| `RateLimit-Observed`  | `67`                         | Number of requests associated with the client in the time window.                                                                                                                                                  |
+| `RateLimit-Remaining` | `33`                         | Remaining quota in the time window. The result of `RateLimit-Limit` - `RateLimit-Observed`.                                                                                                                     |
+| `RateLimit-Reset`     | `1609844400`                 | [Unix time](https://en.wikipedia.org/wiki/Unix_time)-formatted time when the request quota is reset.                                                                                                             |
+
+### Additional headers for throttled requests
+
+When a client exceeds the rate limit (HTTP status `429`), the following additional headers are included:
+
+| Header                | Example                         | Description                                                                                                                                                   |
+|:----------------------|:--------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `RateLimit-ResetTime` | `Tue, 05 Jan 2021 11:00:00 GMT` | [RFC2616](https://www.rfc-editor.org/rfc/rfc2616#section-3.3.1)-formatted date and time when the request quota is reset.                                     |
+| `Retry-After`         | `30`                            | Remaining duration in seconds until the quota is reset. This is a [standard HTTP header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Retry-After). |
+
+## Use an HTTP header to bypass rate limiting
+
+Depending on the needs of your organization, you may want to enable rate limiting
+but have some requests bypass the rate limiter.
+
+You can do this by marking requests that should bypass the rate limiter with a custom
+header. You must do this somewhere in a load balancer or reverse proxy in front of
+GitLab. For example:
+
+1. Pick a name for your bypass header. For example, `Gitlab-Bypass-Rate-Limiting`.
+1. Configure your load balancer to set `Gitlab-Bypass-Rate-Limiting: 1` on requests
+   that should bypass GitLab rate limiting.
+1. Configure your load balancer to either:
+   - Erase `Gitlab-Bypass-Rate-Limiting`.
+   - Set `Gitlab-Bypass-Rate-Limiting` to a value other than `1` on all requests that
+     should be affected by rate limiting.
+1. Set the environment variable `GITLAB_THROTTLE_BYPASS_HEADER`.
+   - For [Linux package installations](https://docs.gitlab.com/omnibus/settings/environment-variables/),
+     set `'GITLAB_THROTTLE_BYPASS_HEADER' => 'Gitlab-Bypass-Rate-Limiting'` in `gitlab_rails['env']`.
+   - For self-compiled installations, set `export GITLAB_THROTTLE_BYPASS_HEADER=Gitlab-Bypass-Rate-Limiting`
+     in `/etc/default/gitlab`.
+
+It is important that your load balancer erases or overwrites the bypass
+header on all incoming traffic. Otherwise, you must trust your
+users to not set that header and bypass the GitLab rate limiter.
+
+The bypass works only if the header is set to `1`.
+
+Requests that bypassed the rate limiter because of the bypass header
+are marked with `"throttle_safelist":"throttle_bypass_header"` in
+[`production_json.log`](../logs/_index.md#production_jsonlog).
+
+To disable the bypass mechanism, make sure the environment variable
+`GITLAB_THROTTLE_BYPASS_HEADER` is unset or empty.
+
+## Allow specific users to bypass authenticated request rate limiting
+
+Similarly to the bypass header described previously, it is possible to allow
+a certain set of users to bypass the rate limiter. This only applies
+to authenticated requests: with unauthenticated requests, by definition
+GitLab does not know who the user is.
+
+The allowlist is configured as a comma-separated list of user IDs in
+the `GITLAB_THROTTLE_USER_ALLOWLIST` environment variable. If you want
+users 1, 53, and 217 to bypass the authenticated request rate limiter,
+the allowlist configuration would be `1,53,217`.
+
+- For [Linux package installations](https://docs.gitlab.com/omnibus/settings/environment-variables/),
+  set `'GITLAB_THROTTLE_USER_ALLOWLIST' => '1,53,217'` in `gitlab_rails['env']`.
+- For self-compiled installations, set `export GITLAB_THROTTLE_USER_ALLOWLIST=1,53,217`
+  in `/etc/default/gitlab`.
+
+Requests that bypassed the rate limiter because of the user allowlist
+are marked with `"throttle_safelist":"throttle_user_allowlist"` in
+[`production_json.log`](../logs/_index.md#production_jsonlog).
+
+At application startup, the allowlist is logged in [`auth.log`](../logs/_index.md#authlog).
+
+## Try out throttling settings before enforcing them
+
+{{< history >}}
+
+- Logging the rate limit state of the LabKit rate limiter to per-request structured logs [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/256645) in GitLab 19.5.
+
+{{< /history >}}
+
+You can try out throttling settings by setting the `GITLAB_THROTTLE_DRY_RUN` environment variable to
+a comma-separated list of throttle names.
+
+The possible names are:
+
+- `throttle_unauthenticated`
+  - [Deprecated](https://gitlab.com/gitlab-org/gitlab/-/issues/335300) in GitLab 14.3. Use `throttle_unauthenticated_api` or `throttle_unauthenticated_web` instead.
+    `throttle_unauthenticated` is still supported and selects both of them.
+- `throttle_unauthenticated_api`
+- `throttle_unauthenticated_web`
+- `throttle_authenticated_api`
+- `throttle_authenticated_web`
+- `throttle_unauthenticated_protected_paths`
+- `throttle_authenticated_protected_paths_api`
+- `throttle_authenticated_protected_paths_web`
+- `throttle_unauthenticated_packages_api`
+- `throttle_authenticated_packages_api`
+- `throttle_authenticated_git_lfs`
+- `throttle_unauthenticated_files_api`
+- `throttle_authenticated_files_api`
+- `throttle_unauthenticated_deprecated_api`
+- `throttle_authenticated_deprecated_api`
+- `throttle_unauthenticated_git_http`
+- `throttle_authenticated_git_http`
+- `throttle_authenticated_mcp`
+
+For example, you can try out throttles for all authenticated requests to
+non-protected paths by setting
+`GITLAB_THROTTLE_DRY_RUN='throttle_authenticated_web,throttle_authenticated_api'`.
+
+To enable dry run mode for all throttles, the variable can be set to `*`.
+
+In dry run mode, GitLab does not block requests that would hit the limit of a throttle.
+These requests continue to be processed as usual.
+Where GitLab logs these requests depends on the rate limiter that evaluates them:
+
+- Legacy `Rack::Attack` rate limiter: GitLab logs a message to [`auth.log`](../logs/_index.md#authlog)
+  and [`auth_json.log`](../logs/_index.md#auth_jsonlog) when a request would hit the limit.
+  The log message contains an `env` field set to `track`.
+  The `matched` field contains the name of the throttle that was hit.
+- LabKit rate limiter: GitLab does not emit a separate `auth.log` or `auth_json.log` message
+  for this event. Instead, GitLab adds the rate limit state to the `rate_limit_state` field of the
+  [per-request structured logs](../logs/_index.md#production_jsonlog), including `production_json.log` and `api_json.log`.
+  Each entry has the format `<limiter>:<rule>:<result>`.
+  When a request would hit the limit of a throttle in dry run mode, the result is `log`
+  (for example, `["rack_request:unauthenticated_api:log"]` for a request that returns a `200` status code).
+  To confirm that dry run mode works with this rate limiter, check the `rate_limit_state` field,
+  not the `env` field in `auth.log`.
+
+It is important to set the environment variable before enabling
+the rate limiting in the settings. The settings in the **Admin** area
+take effect immediately, while setting the environment variable
+requires a restart of all the Puma processes.
+
+## Troubleshooting
+
+### Disable throttling after accidentally locking administrators out
+
+If many users connect to GitLab through the same proxy or network gateway,
+it is possible that, if a rate limit is too low, that limit will also lock administrators out,
+because GitLab sees them using the same IP as the requests that triggered the throttling.
+
+Administrators can use [the Rails console](../operations/rails_console.md) to disable the same limits as listed for
+[the `GITLAB_THROTTLE_DRY_RUN` variable](#try-out-throttling-settings-before-enforcing-them).
+For example:
+
+```ruby
+Gitlab::CurrentSettings.update!(throttle_authenticated_web_enabled: false)
+```
+
+In this example, the `throttle_authenticated_web` parameter has the `_enabled` name suffix.
+
+To set numeric values for the limits, replace the `_enabled` name suffix with the `_period_in_seconds` and `_requests_per_period` suffixes.

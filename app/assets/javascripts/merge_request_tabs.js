@@ -1,0 +1,851 @@
+/* eslint-disable class-methods-use-this */
+import $ from 'jquery';
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import createDefaultClient from '~/lib/graphql';
+import { createAlert } from '~/alert';
+import { getCookie, isMetaClick } from '~/lib/utils/common_utils';
+import { scrollTo, scrollToElement } from '~/lib/utils/scroll_utils';
+import { NO_SCROLL_TO_HASH_CLASS } from '~/lib/utils/constants';
+import { getScrollingElement } from '~/lib/utils/panels';
+import { parseUrlPathname, setUrlParams, visitUrl } from '~/lib/utils/url_utility';
+import { pinia } from '~/pinia/instance';
+import { useMergeRequestVersions } from '~/merge_request/stores/merge_request_versions';
+import { useDiffsList } from '~/rapid_diffs/stores/diffs_list';
+import { findApplicablePosition } from '~/rapid_diffs/utils/discussion_position';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { useBatchComments } from '~/batch_comments/store';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { getAiOverviewEl } from '~/merge_requests/utils/ai_overview';
+import {
+  removeLinkedFileUrlParams,
+  withLinkedFileUrlParams,
+} from '~/rapid_diffs/utils/linked_file';
+import createEventHub from '~/helpers/event_hub_factory';
+import { renderGFM } from '~/behaviors/markdown/render_gfm';
+import InternalEvents from '~/tracking/internal_events';
+import BlobForkSuggestion from './blob/blob_fork_suggestion';
+import Diff from './diff';
+import { initDiffStatsDropdown } from './init_diff_stats_dropdown';
+import axios from './lib/utils/axios_utils';
+
+import { localTimeAgo } from './lib/utils/datetime_utility';
+import { isInVueNoteablePage } from './lib/utils/dom_utils';
+import { __, s__ } from './locale';
+import syntaxHighlight from './syntax_highlight';
+
+Vue.use(VueApollo);
+
+const apolloProvider = new VueApollo({
+  defaultClient: createDefaultClient(),
+});
+
+// MergeRequestTabs
+//
+// Handles persisting and restoring the current tab selection and lazily-loading
+// content on the MergeRequests#show page.
+//
+// ### Example Markup
+//
+//   <ul class="nav-links merge-request-tabs">
+//     <li class="notes-tab active">
+//       <a data-action="notes" data-target="#notes" data-toggle="tab" href="/foo/bar/-/merge_requests/1">
+//         Discussion
+//       </a>
+//     </li>
+//     <li class="commits-tab">
+//       <a data-action="commits" data-target="#commits" data-toggle="tab" href="/foo/bar/-/merge_requests/1/commits">
+//         Commits
+//       </a>
+//     </li>
+//     <li class="diffs-tab">
+//       <a data-action="diffs" data-target="#diffs" data-toggle="tab" href="/foo/bar/-/merge_requests/1/diffs">
+//         Diffs
+//       </a>
+//     </li>
+//   </ul>
+//
+//   <div class="tab-content">
+//     <div class="notes tab-pane active" id="notes">
+//       Notes Content
+//     </div>
+//     <div class="commits tab-pane" id="commits">
+//       Commits Content
+//     </div>
+//     <div class="diffs tab-pane" id="diffs">
+//       Diffs Content
+//     </div>
+//   </div>
+//
+//   <div class="mr-loading-status">
+//     <div class="loading">
+//       Loading Animation
+//     </div>
+//   </div>
+//
+
+// <100ms is typically indistinguishable from "instant" for users, but allows for re-rendering
+const FAST_DELAY_FOR_RERENDER = 75;
+// Store the `location` object, allowing for easier stubbing in tests
+let { location } = window;
+
+function scrollToContainer(container) {
+  if (location.hash) {
+    const el = document.querySelector(`${container} ${location.hash}:not(.match)`);
+
+    if (el) {
+      scrollToElement(el);
+    }
+  }
+}
+
+function mountPipelines() {
+  const pipelineTableViewEl = document.querySelector('#commit-pipeline-table-view');
+  const { mrWidgetData } = gl;
+  const table = new Vue({
+    name: 'MergeRequestPipelinesTableRoot',
+    components: {
+      MergeRequestPipelinesTable: () => {
+        return gon.features.mrPipelinesGraphql
+          ? import('~/ci/merge_requests/components/pipelines_table_wrapper.vue')
+          : import('~/commit/pipelines/legacy_pipelines_table_wrapper.vue');
+      },
+    },
+    apolloProvider,
+    provide: {
+      newPipelinePath: pipelineTableViewEl.dataset.newPipelinePath,
+      graphqlPath: pipelineTableViewEl.dataset.graphqlPath,
+      useFailedJobsWidget: true,
+      mergeRequestPath: mrWidgetData?.merge_request_path
+        ? `${gon.gitlab_url}${mrWidgetData.merge_request_path}`
+        : null,
+    },
+    render(createElement) {
+      return createElement('merge-request-pipelines-table', {
+        props: {
+          canCreatePipelineInTargetProject: Boolean(
+            mrWidgetData?.can_create_pipeline_in_target_project,
+          ),
+          sourceProjectFullPath: mrWidgetData?.source_project_full_path || '',
+          targetProjectFullPath: mrWidgetData?.target_project_full_path || '',
+          projectId: pipelineTableViewEl.dataset.projectId,
+          mergeRequestId: mrWidgetData ? mrWidgetData.iid : null,
+
+          // Only used by legacy_pipelines_table_wrapper.vue:
+          endpoint: pipelineTableViewEl.dataset.endpoint,
+          isMergeRequestTable: true,
+        },
+      });
+    },
+  }).$mount();
+
+  // $mount(el) replaces the el with the new rendered component. We need it in order to mount
+  // it every time this tab is clicked - https://vuejs.org/v2/api/#vm-mount
+  pipelineTableViewEl.appendChild(table.$el);
+
+  return table;
+}
+
+export function destroyPipelines(app) {
+  if (app && app.$destroy) {
+    app.$destroy();
+
+    document.querySelector('#commit-pipeline-table-view').innerHTML = '';
+  }
+
+  return null;
+}
+
+function loadDiffs({ url, tabs }) {
+  return axios.get(url).then(({ data }) => {
+    const $container = $('#diffs');
+    $container.html(data.html);
+    initDiffStatsDropdown();
+
+    localTimeAgo(document.querySelectorAll('#diffs .js-timeago'));
+    syntaxHighlight($('#diffs .js-syntax-highlight'));
+
+    tabs.createDiff();
+    tabs.setHubToDiff();
+
+    scrollToContainer('#diffs');
+
+    $('.diff-file').each((i, el) => {
+      new BlobForkSuggestion({
+        openButtons: $(el).find('.js-edit-blob-link-fork-toggler'),
+        forkButtons: $(el).find('.js-fork-suggestion-button'),
+        cancelButtons: $(el).find('.js-cancel-fork-suggestion-button'),
+        suggestionSections: $(el).find('.js-file-fork-suggestion-section'),
+        actionTextPieces: $(el).find('.js-file-fork-suggestion-section-action'),
+      }).init();
+    });
+  });
+}
+
+export function toggleLoader(state) {
+  $('.mr-loading-status .loading').toggleClass('hide', !state);
+}
+
+export function getActionFromHref(pathName) {
+  let action = pathName.match(/\/(\d+|new)\/(commits|diffs|pipelines|reports).*$/);
+
+  if (action) {
+    action = action.at(-1).replace(/(^\/|\.html)/g, '');
+  } else {
+    action = 'show';
+  }
+
+  return action;
+}
+
+export const pageBundles = {
+  // The AI overview replaces the whole Overview tab, so the notes app is not mounted alongside it.
+  show: () => {
+    const aiOverviewEl = getAiOverviewEl();
+
+    if (!aiOverviewEl) {
+      return import(/* webpackPrefetch: true */ '~/mr_notes/mount_app');
+    }
+
+    return import('ee_else_ce/merge_requests/ai_overview').then(({ default: init }) => ({
+      default: () => init(aiOverviewEl),
+    }));
+  },
+  diffs: () => import(/* webpackPrefetch: true */ '~/diffs'),
+  reports: () => import('~/merge_requests/reports'),
+};
+
+export default class MergeRequestTabs {
+  constructor({ action, setUrl, stubLocation, createRapidDiffsApp } = {}) {
+    const containers = document.querySelectorAll('.content-wrapper .container-fluid');
+    this.contentWrapper = containers[containers.length - 1];
+    this.mergeRequestTabs = document.querySelector('.merge-request-tabs-container');
+    this.mergeRequestTabsAll =
+      this.mergeRequestTabs && this.mergeRequestTabs.querySelectorAll
+        ? this.mergeRequestTabs.querySelectorAll('.merge-request-tabs li')
+        : null;
+    this.mergeRequestTabPanes = document.querySelector('#diff-notes-app');
+    this.mergeRequestTabPanesAll =
+      this.mergeRequestTabPanes && this.mergeRequestTabPanes.querySelectorAll
+        ? this.mergeRequestTabPanes.querySelectorAll('.tab-pane')
+        : null;
+    this.peek = document.getElementById('js-peek');
+    this.sidebar = document.querySelector('.js-right-sidebar');
+    this.pageLayout = document.querySelector('.layout-page');
+    this.expandSidebar = document.querySelectorAll('.js-expand-sidebar, .js-sidebar-toggle');
+    this.rapidDiffsToggle = document.getElementById('js-rapid-diffs-toggle');
+    this.paddingTop = 16;
+    this.actionRegex = /\/(commits|diffs|pipelines|reports(?:\/[^/]+)?)(\.html)?\/?$/;
+
+    this.scrollPositions = {};
+
+    this.commitsTab = document.querySelector('.tab-content .commits.tab-pane');
+
+    this.currentTab = null;
+    this.diffsLoaded = false;
+    this.diffsClass = null;
+    this.commitsLoaded = false;
+    this.isFixedLayoutPreferred = this.contentWrapper.classList.contains('container-limited');
+    this.isNewMergeRequest = Boolean(document.querySelector('.js-merge-request-new-submit'));
+    this.createRapidDiffsApp = createRapidDiffsApp;
+    this.rapidDiffsApp = null;
+    this.eventHub = createEventHub();
+    this.loadedPages = { [action]: true };
+
+    this.setUrl = setUrl !== undefined ? setUrl : true;
+    this.setCurrentAction = this.setCurrentAction.bind(this);
+    this.switchViewType = this.switchViewType.bind(this);
+    this.tabShown = this.tabShown.bind(this);
+    this.clickTab = this.clickTab.bind(this);
+    this.navigateToNote = this.navigateToNote.bind(this);
+
+    if (stubLocation) {
+      location = stubLocation;
+    }
+
+    this.bindEvents();
+    this.mergeRequestTabs?.querySelector(`a[data-action='${action}']`)?.click?.();
+  }
+
+  bindEvents() {
+    $('.merge-request-tabs a[data-toggle="tabvue"]').on('click', this.clickTab);
+    let prevHref = window.location.href;
+    window.addEventListener('popstate', (event) => {
+      const [prevPath] = prevHref.split('#');
+      const [newPath, newHash] = window.location.href.split('#');
+
+      prevHref = window.location.href;
+
+      if (prevPath === newPath && newHash) {
+        const target = document.getElementById(newHash);
+        if (target && target.classList.contains(NO_SCROLL_TO_HASH_CLASS)) return;
+      }
+      if (event?.state?.skipScrolling) return;
+
+      const action = getActionFromHref(window.location.pathname);
+
+      this.tabShown(action, location.href);
+      this.eventHub.$emit('MergeRequestTabChange', action);
+    });
+    this.eventHub.$on('diff:switch-view-type', this.switchViewType);
+  }
+
+  // Used in tests
+  unbindEvents() {
+    $('.merge-request-tabs a[data-toggle="tabvue"]').off('click', this.clickTab);
+    this.eventHub.$off('diff:switch-view-type', this.switchViewType);
+  }
+
+  storeScroll() {
+    if (this.currentTab) {
+      this.scrollPositions[this.currentTab] = getScrollingElement().scrollTop;
+    }
+  }
+  recallScroll(action) {
+    const storedPosition = this.scrollPositions[action];
+    if (storedPosition == null) return;
+
+    setTimeout(() => {
+      scrollTo({
+        top: storedPosition > 0 ? storedPosition : 0,
+        left: 0,
+        behavior: 'auto',
+      });
+    }, FAST_DELAY_FOR_RERENDER);
+  }
+
+  clickTab(e) {
+    if (e.currentTarget) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+
+      this.storeScroll();
+
+      const { action } = e.currentTarget.dataset || {};
+
+      const href = e.currentTarget.getAttribute('href');
+
+      if (isMetaClick(e)) {
+        visitUrl(href, true);
+      } else if (
+        this.createRapidDiffsApp &&
+        this.isDiffAction(action) &&
+        !this.loadedPages[action] &&
+        !this.isNewMergeRequest &&
+        !this.#hasDiffRefs()
+      ) {
+        visitUrl(href);
+      } else if (action) {
+        this.tabShown(action, href);
+      }
+    }
+  }
+
+  async tabShown(action, href, shouldScroll = true) {
+    toggleLoader(false);
+
+    if (action !== this.currentTab && this.mergeRequestTabs) {
+      this.currentTab = action;
+      if (this.setUrl) {
+        this.setCurrentAction(action);
+      }
+
+      if (this.mergeRequestTabPanesAll) {
+        this.mergeRequestTabPanesAll.forEach((el) => {
+          const tabPane = el;
+          tabPane.style.display = 'none';
+        });
+      }
+
+      if (this.mergeRequestTabsAll) {
+        this.mergeRequestTabsAll.forEach((el) => {
+          el.classList.remove('active');
+          el.querySelector('a')?.removeAttribute('aria-current');
+        });
+      }
+
+      const tabPane = this.mergeRequestTabPanes.querySelector(`#${action}`);
+      if (tabPane) tabPane.style.display = 'block';
+      const tab = this.mergeRequestTabs.querySelector(`.${action}-tab`);
+      if (tab) {
+        this.#setActiveTab(tab);
+      }
+
+      const skipPageBundle = this.isDiffAction(action) && this.createRapidDiffsApp;
+      if (
+        isInVueNoteablePage() &&
+        !this.loadedPages[action] &&
+        action in pageBundles &&
+        !skipPageBundle
+      ) {
+        if (this.isDiffAction(action)) {
+          this.trackSpaVisit('legacy_diffs');
+        }
+        toggleLoader(true);
+        pageBundles[action]()
+          .then(({ default: init }) => {
+            toggleLoader(false);
+            init();
+            this.loadedPages[action] = true;
+          })
+          .catch(() => {
+            toggleLoader(false);
+            createAlert({ message: s__('MergeRequest|Failed to load the page') });
+          });
+      }
+
+      this.expandSidebar?.forEach((el) => el.classList.toggle('!gl-hidden', action !== 'show'));
+      this.rapidDiffsToggle?.classList.toggle('!gl-hidden', action !== 'diffs');
+      this.rapidDiffsApp?.hide?.();
+
+      if (action === 'commits') {
+        if (!this.commitsLoaded) {
+          this.loadCommits(href);
+        }
+        // this.hideSidebar();
+        this.resetViewContainer();
+        this.mergeRequestPipelinesTable = destroyPipelines(this.mergeRequestPipelinesTable);
+      } else if (action === 'new') {
+        this.expandView();
+        this.resetViewContainer();
+        this.mergeRequestPipelinesTable = destroyPipelines(this.mergeRequestPipelinesTable);
+      } else if (this.isDiffAction(action)) {
+        if (this.createRapidDiffsApp) {
+          if (!this.rapidDiffsApp) {
+            if (!this.loadedPages[action]) {
+              this.trackSpaVisit('rapid_diffs');
+            }
+            this.rapidDiffsApp = await this.createRapidDiffsApp();
+            this.rapidDiffsApp.init();
+          } else {
+            this.rapidDiffsApp.show();
+          }
+        } else if (!isInVueNoteablePage()) {
+          /*
+            for pages where we have not yet converted to the new vue
+            implementation we load the diff tab content the old way,
+            inserting html rendered by the backend.
+
+            in practice, this only occurs when comparing commits in
+            the new merge request form page.
+          */
+          this.startDiffs({ endpoint: href, strip: true });
+        }
+        // this.hideSidebar();
+        this.expandViewContainer();
+        this.mergeRequestPipelinesTable = destroyPipelines(this.mergeRequestPipelinesTable);
+        this.commitsTab.classList.remove('active');
+      } else if (action === 'pipelines') {
+        // this.hideSidebar();
+        this.resetViewContainer();
+        this.mountPipelinesView();
+      } else if (action === 'reports') {
+        this.resetViewContainer();
+        this.mergeRequestPipelinesTable = destroyPipelines(this.mergeRequestPipelinesTable);
+      } else {
+        const notesTab = this.mergeRequestTabs.querySelector('.notes-tab');
+        const notesPane = this.mergeRequestTabPanes.querySelector('#notes');
+        if (notesPane) {
+          notesPane.style.display = 'block';
+        }
+        if (notesTab) {
+          this.#setActiveTab(notesTab);
+        }
+
+        // this.showSidebar();
+        this.resetViewContainer();
+        this.mergeRequestPipelinesTable = destroyPipelines(this.mergeRequestPipelinesTable);
+      }
+
+      renderGFM(document.querySelector('.detail-page-description'));
+
+      if (shouldScroll) this.recallScroll(action);
+    } else if (action === this.currentAction) {
+      // ContentTop is used to handle anything at the top of the page before the main content
+      const mainContentContainer = document.querySelector('.content-wrapper');
+      const tabContentContainer = document.querySelector('.tab-content');
+
+      if (mainContentContainer && tabContentContainer) {
+        const mainContentTop = mainContentContainer.getBoundingClientRect().top;
+        const tabContentTop = tabContentContainer.getBoundingClientRect().top;
+
+        // 51px is the height of the navbar buttons, e.g. `Discussion | Commits | Changes`
+        const scrollDestination = tabContentTop - mainContentTop - 51;
+
+        if (shouldScroll) {
+          scrollTo({
+            top: scrollDestination,
+            behavior: 'smooth',
+          });
+        } else {
+          scrollTo({
+            top: scrollDestination,
+          });
+        }
+      }
+    }
+
+    this.eventHub.$emit('MergeRequestTabChange', action);
+  }
+
+  // Replaces the current merge request-specific action in the URL with a new one
+  //
+  // If the action is "notes", the URL is reset to the standard
+  // `MergeRequests#show` route.
+  //
+  // Examples:
+  //
+  //   location.pathname # => "/namespace/project/-/merge_requests/1"
+  //   setCurrentAction('diffs')
+  //   location.pathname # => "/namespace/project/-/merge_requests/1/diffs"
+  //
+  //   location.pathname # => "/namespace/project/-/merge_requests/1/diffs"
+  //   setCurrentAction('show')
+  //   location.pathname # => "/namespace/project/-/merge_requests/1"
+  //
+  //   location.pathname # => "/namespace/project/-/merge_requests/1/diffs"
+  //   setCurrentAction('commits')
+  //   location.pathname # => "/namespace/project/-/merge_requests/1/commits"
+  //
+  // Returns the new URL String
+  setCurrentAction(action) {
+    this.currentAction = action;
+
+    const pathname = location.pathname.replace(/\/*$/, '');
+
+    // For reports tab, preserve Vue Router sub-paths (e.g., /reports/security-scan)
+    const HAS_REPORTS_SUB_PATH = /merge_requests\/\d+\/reports\/.+/;
+    if (action === 'reports' && HAS_REPORTS_SUB_PATH.test(pathname)) {
+      window.history.replaceState(
+        {
+          url: window.location.href,
+          action,
+        },
+        document.title,
+        window.location.href,
+      );
+      return pathname + location.search;
+    }
+
+    // Remove a trailing '/commits' '/diffs' '/pipelines'
+    let newStatePathname = pathname.replace(this.actionRegex, '');
+
+    // Append the new action if we're on a tab other than 'notes'
+    if (
+      this.currentAction !== 'show' &&
+      this.currentAction !== 'new' &&
+      !newStatePathname.endsWith(`/${this.currentAction}`)
+    ) {
+      newStatePathname += `/${this.currentAction}`;
+    }
+
+    // Strip linked file params and note hash when switching tabs
+    const cleanUrl = removeLinkedFileUrlParams(newStatePathname + location.search + location.hash);
+    const newState = cleanUrl.pathname + cleanUrl.search + cleanUrl.hash;
+
+    if (pathname !== newStatePathname) {
+      window.history.pushState(
+        {
+          url: newState,
+          action: this.currentAction,
+        },
+        document.title,
+        newState,
+      );
+    } else {
+      window.history.replaceState(
+        {
+          url: window.location.href,
+          action,
+        },
+        document.title,
+        window.location.href,
+      );
+    }
+
+    return newState;
+  }
+
+  getCurrentAction() {
+    return this.currentAction;
+  }
+
+  loadCommits(source, page = 1) {
+    toggleLoader(true);
+
+    axios
+      .get(`${source}.json`, { params: { page, per_page: 100 } })
+      .then(({ data: { html, count, next_page: nextPage } }) => {
+        toggleLoader(false);
+
+        document.querySelector('.js-commits-count').textContent = count;
+
+        const commitsDiv = document.querySelector('div#commits');
+        // eslint-disable-next-line no-unsanitized/property
+        commitsDiv.innerHTML += html;
+        localTimeAgo(commitsDiv.querySelectorAll('.js-timeago'));
+        this.commitsLoaded = true;
+        scrollToElement('#commits');
+
+        const loadMoreButton = document.querySelector('.js-load-more-commits');
+
+        if (loadMoreButton) {
+          loadMoreButton.addEventListener('click', (e) => {
+            e.preventDefault();
+
+            loadMoreButton.remove();
+            this.loadCommits(source, loadMoreButton.dataset.nextPage);
+          });
+        }
+
+        if (!nextPage) {
+          return import('./add_context_commits_modal');
+        }
+
+        return null;
+      })
+      .then((m) => m?.default())
+      .catch(() => {
+        toggleLoader(false);
+        createAlert({
+          message: __('An error occurred while fetching this tab.'),
+        });
+      });
+  }
+
+  mountPipelinesView() {
+    this.mergeRequestPipelinesTable = mountPipelines();
+  }
+
+  // Initialize the Changes tab
+  async startDiffs(options = {}) {
+    this.loadDiff(options);
+  }
+  // load the legacy diff tab content from the backend
+  loadDiff({ endpoint, strip = true }) {
+    if (this.diffsLoaded) {
+      getScrollingElement().dispatchEvent(new CustomEvent('scroll'));
+      return;
+    }
+
+    // We extract pathname for the current Changes tab anchor href
+    // some pages like MergeRequestsController#new has query parameters on that anchor
+    const diffUrl = strip ? `${parseUrlPathname(endpoint)}.json${location.search}` : endpoint;
+
+    loadDiffs({
+      url: diffUrl,
+      tabs: this,
+    })
+      .then(() => {
+        if (this.isDiffAction(this.currentAction)) {
+          this.expandViewContainer();
+        }
+
+        this.diffsLoaded = true;
+      })
+      .catch(() => {
+        createAlert({
+          message: __('An error occurred while fetching this tab.'),
+        });
+      });
+  }
+  switchViewType({ source }) {
+    this.diffsLoaded = false;
+
+    this.loadDiff({ endpoint: source, strip: false });
+  }
+  createDiff() {
+    if (!this.diffsClass) {
+      this.diffsClass = new Diff({ mergeRequestEventHub: this.eventHub });
+    }
+  }
+  setHubToDiff() {
+    if (this.diffsClass) {
+      this.diffsClass.mrHub = this.eventHub;
+    }
+  }
+
+  diffViewType() {
+    return $('.js-diff-view-buttons button.active').data('viewType');
+  }
+
+  isDiffAction(action) {
+    return action === 'diffs' || action === 'new/diffs';
+  }
+
+  trackSpaVisit(label) {
+    InternalEvents.trackEvent('view_merge_request_diffs', {
+      label,
+      property: 'spa_navigation',
+    });
+  }
+
+  expandViewContainer() {
+    if (this.contentWrapper.classList.contains('container-limited')) {
+      this.contentWrapper.classList.remove('container-limited');
+      this.contentWrapper.classList.remove('rd-page-container');
+      this.contentWrapper.classList.add('diffs-container-limited');
+    }
+  }
+
+  resetViewContainer() {
+    this.contentWrapper.classList.toggle('container-limited', this.isFixedLayoutPreferred);
+    this.contentWrapper.classList.remove('diffs-container-limited');
+  }
+
+  // Expand the issuable sidebar unless the user explicitly collapsed it
+  expandView() {
+    if (parseBoolean(getCookie('collapsed_gutter'))) {
+      return;
+    }
+    const $gutterBtn = $('.js-sidebar-toggle');
+    const $collapseSvg = $gutterBtn.find('.js-sidebar-collapse');
+
+    // Wait until listeners are set
+    setTimeout(() => {
+      // Only when sidebar is collapsed
+      if ($collapseSvg.length && !$collapseSvg.hasClass('hidden')) {
+        $gutterBtn.trigger('click', [true]);
+      }
+    }, 0);
+  }
+
+  hideSidebar() {
+    if (!isInVueNoteablePage() || this.cachedPageLayoutClasses) return;
+
+    this.cachedPageLayoutClasses = this.pageLayout.className;
+    this.pageLayout.classList.remove('right-sidebar-collapsed', 'right-sidebar-expanded');
+    this.sidebar.style.width = '0px';
+  }
+
+  showSidebar() {
+    if (!isInVueNoteablePage() || !this.cachedPageLayoutClasses) return;
+
+    this.pageLayout.className = this.cachedPageLayoutClasses;
+    this.sidebar.style.width = '';
+    delete this.cachedPageLayoutClasses;
+  }
+
+  async navigateToDiffNote(discussion) {
+    if (!this.createRapidDiffsApp) {
+      visitUrl(discussion.discussion_path);
+      return;
+    }
+
+    const position = discussion.position || discussion.original_position;
+    if (!position || discussion.for_commit || discussion.commit_id) {
+      this.#visitLegacyDiffNote(discussion);
+      return;
+    }
+
+    const { diffRefs } = useMergeRequestVersions(pinia);
+    const canSpaNavigate =
+      discussion.isDraft ||
+      (this.rapidDiffsApp
+        ? diffRefs && findApplicablePosition(discussion, diffRefs)
+        : discussion.active);
+
+    if (!canSpaNavigate) {
+      this.#visitDiffNote(discussion);
+      return;
+    }
+
+    await this.#spaNavigateToDiffNote(discussion, position);
+  }
+
+  async navigateToNote(note) {
+    const discussion = note.discussion_id && useNotes(pinia).getDiscussion(note.discussion_id);
+    const isDiffNote = Boolean(note.position || discussion?.diff_discussion);
+
+    if (!isDiffNote) {
+      useBatchComments(pinia).scrollToDraft(note);
+      return;
+    }
+
+    if (note.position && !this.#isOnLatestDiff(note)) {
+      this.#visitVersionedDiffNote(note);
+      return;
+    }
+
+    if (!this.createRapidDiffsApp) {
+      const legacyDiffs = useLegacyDiffs(pinia);
+      if (legacyDiffs.viewDiffsFileByFile) await legacyDiffs.goToFile({ path: note.file_path });
+      useBatchComments(pinia).scrollToDraft(note);
+      return;
+    }
+
+    await this.navigateToDiffNote(
+      discussion?.diff_discussion ? discussion : { isDraft: true, position: note.position },
+    );
+  }
+
+  #isOnLatestDiff(note) {
+    return note.position?.head_sha === useNotes(pinia).getNoteableData.diff_head_sha;
+  }
+
+  #visitVersionedDiffNote(note) {
+    const diffsPath = this.mergeRequestTabs
+      ?.querySelector("a[data-action='diffs']")
+      ?.getAttribute('href');
+    if (!diffsPath) return;
+
+    const url = new URL(setUrlParams({ commit_id: note.position.head_sha }, { url: diffsPath }));
+    url.hash = `draft_${note.id}`;
+    visitUrl(url.toString());
+  }
+
+  async #spaNavigateToDiffNote(discussion, position) {
+    this.storeScroll();
+    if (!this.rapidDiffsApp) {
+      useDiffsList(pinia).setLinkedFileData({
+        old_path: position.old_path,
+        new_path: position.new_path,
+      });
+    }
+
+    const noteId = discussion.notes?.[0]?.id;
+    if (noteId) {
+      const url = new URL(window.location.href);
+      url.hash = `note_${noteId}`;
+      window.history.replaceState(null, '', url);
+    }
+    await this.tabShown('diffs', null, false);
+    this.rapidDiffsApp.scrollToDiffNote(discussion);
+  }
+
+  #setActiveTab(tabEl) {
+    tabEl.classList.add('active');
+    tabEl.querySelector('a')?.setAttribute('aria-current', 'page');
+  }
+
+  #visitDiffNote(discussion) {
+    const position = discussion.position || discussion.original_position;
+    const noteId = discussion.notes?.[0]?.id;
+    const url = withLinkedFileUrlParams(discussion.discussion_path, {
+      oldPath: position?.old_path,
+      newPath: position?.new_path,
+      hash: noteId ? `note_${noteId}` : undefined,
+    });
+    visitUrl(url.toString());
+  }
+
+  #hasDiffRefs() {
+    const appDataEl = document.querySelector('[data-rapid-diffs]');
+    if (!appDataEl) return false;
+
+    try {
+      const appData = JSON.parse(appDataEl.dataset.appData);
+      return Boolean(appData?.versions);
+    } catch {
+      return false;
+    }
+  }
+
+  #visitLegacyDiffNote(discussion) {
+    const url = new URL(discussion.discussion_path, window.location.origin);
+    url.searchParams.set('rapid_diffs_disabled', 'true');
+    url.searchParams.set('reason', 'unsupported');
+    visitUrl(url.toString());
+  }
+}

@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative '../sidekiq_cluster/cli'
+
+Thread.abort_on_exception = true
+
+cli = Gitlab::SidekiqCluster::CLI.new
+
+begin
+  cli.run
+rescue Gitlab::SidekiqCluster::CLI::CommandError => error
+  abort error.message
+end

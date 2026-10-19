@@ -1,0 +1,46 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`NpmInstallation renders all the messages 1`] = `
+<div>
+  <installation-method-stub
+    options="[object Object],[object Object]"
+    packagetype="npm"
+  />
+  <code-instruction-stub
+    copytext="Copy npm command"
+    instruction="npm i @gitlab-org/package-15"
+    label="npm install command"
+    trackingaction="copy_npm_install_command"
+    trackinglabel="code_instruction"
+  />
+  <h3
+    class="gl-heading-3 gl-mt-5"
+  >
+    Registry setup
+  </h3>
+  <gl-form-radio-group-stub
+    checked="instance"
+    class="gl-my-5"
+    options="[object Object],[object Object],[object Object]"
+  />
+  <code-instruction-stub
+    copytext="Copy npm setup command"
+    instruction="echo @gitlab-org:registry=npmInstanceUrl/ >> .npmrc"
+    label="Registry setup command"
+    trackingaction="copy_npm_setup_command"
+    trackinglabel="code_instruction"
+  />
+  <span
+    class="gl-text-subtle"
+  >
+    You may also need to setup authentication using an auth token.
+    <gl-link-stub
+      href="/help/user/packages/npm_registry/_index"
+      target="_blank"
+    >
+      See the documentation
+    </gl-link-stub>
+    to find out more.
+  </span>
+</div>
+`;

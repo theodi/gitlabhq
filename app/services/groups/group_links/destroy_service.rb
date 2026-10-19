@@ -1,0 +1,33 @@
+# frozen_string_literal: true
+
+module Groups
+  module GroupLinks
+    class DestroyService < ::Groups::GroupLinks::BaseService
+      def execute(one_or_more_links, skip_authorization: false)
+        unless skip_authorization || (group && can?(current_user, :delete_group_link, group))
+          return error('Not Found', 404)
+        end
+
+        links = Array(one_or_more_links)
+
+        if GroupGroupLink.delete(links)
+          Gitlab::AppLogger.info(
+            "GroupGroupLinks with ids: #{links.map(&:id)} have been deleted.")
+
+          groups_to_refresh = links.map(&:shared_with_group)
+          groups_to_refresh.uniq.each do |group|
+            AuthorizedProjectUpdate::EnqueueGroupMembersRefreshAuthorizedProjectsWorker.perform_async(group.id,
+              { 'priority' => priority_for_refresh.to_s, 'direct_members_only' => true })
+          end
+        else
+          Gitlab::AppLogger.info(
+            "Failed to delete GroupGroupLinks with ids: #{links.map(&:id)}.")
+        end
+
+        links
+      end
+    end
+  end
+end
+
+Groups::GroupLinks::DestroyService.prepend_mod

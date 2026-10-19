@@ -1,0 +1,305 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::AuthJobFinder, feature_category: :continuous_integration do
+  let_it_be_with_reload(:user) { create(:user) }
+  let_it_be_with_refind(:job) { create(:ci_build, status: :running, user: user) }
+  let_it_be_with_refind(:canceling_job) { create(:ci_build, :canceling, user: user) }
+
+  let(:token) { job.token }
+
+  subject(:finder) do
+    described_class.new(token: token)
+  end
+
+  describe '#execute!', :request_store do
+    subject(:execute) { finder.execute! }
+
+    it { is_expected.to eq(job) }
+
+    context 'with a database token' do
+      before do
+        stub_feature_flags(ci_job_token_jwt: false)
+        token # preloads the job
+      end
+
+      it { is_expected.to eq(job) }
+
+      it 'uses partition_id as a filter' do
+        recorder = ActiveRecord::QueryRecorder.new { execute }
+
+        expect(recorder).not_to exceed_query_limit(1).for_query(/FROM "p_ci_builds"/)
+        expect(recorder).not_to exceed_query_limit(1).for_query(/"p_ci_builds"."partition_id" = #{job.partition_id}/)
+        expect(recorder).not_to exceed_query_limit(1).for_query(/"p_ci_builds"."token_encrypted" IN/)
+      end
+
+      context 'when the partition_id is incorrect' do
+        before do
+          allow(::Ci::Builds::TokenPrefix).to receive(:decode_partition).with(job.token).and_return(123)
+        end
+
+        it 'falls back to all partitions and finds the job' do
+          recorder = ActiveRecord::QueryRecorder.new { execute }
+
+          expect(recorder).not_to exceed_query_limit(2).for_query(/FROM "p_ci_builds"/)
+          expect(recorder).not_to exceed_query_limit(2).for_query(/"p_ci_builds"."token_encrypted" IN/)
+          expect(recorder).not_to exceed_query_limit(1)
+            .for_query(/"p_ci_builds"."partition_id" = 123/)
+        end
+
+        it { is_expected.to eq(job) }
+      end
+
+      context 'when the partition_id can not be decoded' do
+        before do
+          allow(::Ci::Builds::TokenPrefix).to receive(:decode_partition).with(job.token).and_return(nil)
+        end
+
+        it 'returns nil without querying the database' do
+          recorder = ActiveRecord::QueryRecorder.new { execute }
+
+          expect(recorder).not_to exceed_query_limit(0).for_query(/FROM "p_ci_builds"/)
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    context 'when job has a `scoped_user_id` tracked' do
+      let(:scoped_user) { create(:user) }
+
+      before do
+        job.update!(scoped_user_id: scoped_user.id)
+      end
+
+      context 'when job user does not support composite identity' do
+        it 'does not link the scoped user as composite identity' do
+          execute
+
+          expect(::Gitlab::Auth::Identity.new(job.user)).not_to be_linked
+        end
+      end
+    end
+
+    it 'raises error if the job is succeeded' do
+      job.success!
+
+      expect { execute }.to raise_error(described_class::NotRunningJobError) do |error|
+        expect(error.message).to eq('Job is not running')
+        expect(error.job).to eq(job)
+      end
+    end
+
+    context 'when the job is canceling' do
+      let(:token) { canceling_job.token }
+
+      it 'returns the job' do
+        expect(finder.execute!).to eq(canceling_job)
+      end
+    end
+
+    context 'when the job is read in a pre-execution status', :request_store do
+      let(:session) do
+        ::Gitlab::Database::LoadBalancing::SessionMap.current(::Ci::Build.load_balancer)
+      end
+
+      before do
+        allow(finder).to receive(:find_job_by_token).and_return(job)
+        job.update_column(:status, :pending)
+
+        # The setup write above already pinned the session to the primary;
+        # start the example from a clean session.
+        ::Gitlab::Database::LoadBalancing::SessionMap.clear_session
+      end
+
+      context 'when the primary shows the job as executing' do
+        before do
+          # Simulate a stale replica read: primary has `running`, while the
+          # in-memory instance still has stale `pending`. `update_all` bypasses
+          # the instance; clear the session again because the write pinned it.
+          Ci::Build.where(id: job.id).update_all(status: 'running')
+          ::Gitlab::Database::LoadBalancing::SessionMap.clear_session
+        end
+
+        it 'retries on the primary and returns the job with fresh attributes', :aggregate_failures do
+          expect(execute).to eq(job)
+          expect(job.status).to eq('running')
+        end
+
+        it 'pins the CI database session to the primary' do
+          expect { execute }.to change { session.use_primary? }.from(false).to(true)
+        end
+
+        it 'logs the recovered retry' do
+          allow(::Gitlab::AppLogger).to receive(:info)
+
+          execute
+
+          expect(::Gitlab::AppLogger).to have_received(:info).with(
+            a_hash_including(
+              message: 'job token auth retried on primary after stale status read',
+              job_id: job.id,
+              job_status: 'running',
+              job_recovered: true
+            )
+          )
+        end
+      end
+
+      context 'when the job is still in a pre-execution status on the primary' do
+        it 'raises NotRunningJobError' do
+          expect { execute }.to raise_error(described_class::NotRunningJobError)
+        end
+
+        it 'logs the unrecovered retry' do
+          allow(::Gitlab::AppLogger).to receive(:info)
+
+          expect { execute }.to raise_error(described_class::NotRunningJobError)
+
+          expect(::Gitlab::AppLogger).to have_received(:info).with(
+            a_hash_including(
+              message: 'job token auth retried on primary after stale status read',
+              job_id: job.id,
+              job_status: 'pending',
+              job_recovered: false
+            )
+          )
+        end
+      end
+
+      context 'when the job is deleted between the replica read and the retry' do
+        before do
+          job.delete
+        end
+
+        it 'raises NotRunningJobError' do
+          expect { execute }.to raise_error(described_class::NotRunningJobError)
+        end
+      end
+    end
+
+    it 'raises error if the job is erased' do
+      expect(finder).to receive(:find_job_by_token).and_return(job)
+      expect(job).to receive(:erased?).and_return(true)
+
+      expect { execute }.to raise_error(described_class::ErasedJobError) do |error|
+        expect(error.message).to eq('Job has been erased!')
+        expect(error.job).to eq(job)
+      end
+    end
+
+    it 'raises error if the the project is missing' do
+      expect(finder).to receive(:find_job_by_token).and_return(job)
+      expect(job).to receive(:project).and_return(nil)
+
+      expect { execute }.to raise_error(described_class::DeletedProjectError) do |error|
+        expect(error.message).to eq('Project has been deleted!')
+        expect(error.job).to eq(job)
+      end
+    end
+
+    it 'raises error if the the project is being removed' do
+      project = instance_double(Project)
+
+      expect(finder).to receive(:find_job_by_token).and_return(job)
+      expect(job).to receive(:project).twice.and_return(project)
+      expect(project).to receive(:pending_delete?).and_return(true)
+
+      expect { execute }.to raise_error(described_class::DeletedProjectError) do |error|
+        expect(error.message).to eq('Project has been deleted!')
+        expect(error.job).to eq(job)
+      end
+    end
+
+    context 'when the job token is a valid JWT' do
+      let!(:token) { ::Ci::JobToken::Jwt.encode(job) }
+
+      it 'returns the job' do
+        expect(execute).to eq(job)
+      end
+
+      context 'when the JWT has expired' do
+        it 'raises ExpiredJobTokenError with the job' do
+          travel_to(3.hours.from_now) do
+            expect { execute }.to raise_error(described_class::ExpiredJobTokenError) do |error|
+              expect(error.message).to eq('Job token has expired')
+              expect(error.job).to eq(job)
+            end
+          end
+        end
+      end
+    end
+
+    context 'when JWT decoding returns nil' do
+      before do
+        allow(::Ci::JobToken::Jwt).to receive(:decode).with(token, verify_expiration: false).and_return(nil)
+      end
+
+      it 'falls back to database token lookup' do
+        expect(execute).to eq(job)
+      end
+    end
+
+    context 'when JWT job is nil' do
+      let(:jwt_double) { instance_double(Ci::JobToken::Jwt, job: nil) }
+
+      before do
+        allow(::Ci::JobToken::Jwt).to receive(:decode).with(token, verify_expiration: false).and_return(jwt_double)
+      end
+
+      it 'falls back to database token lookup' do
+        expect(execute).to eq(job)
+      end
+    end
+
+    context 'when token exceeds maximum bytesize' do
+      let(:token) { 'a' * (described_class::MAX_TOKEN_BYTESIZE + 1) }
+
+      it { is_expected.to be_nil }
+
+      it 'does not attempt JWT decoding or database lookup' do
+        expect(::Ci::JobToken::Jwt).not_to receive(:decode)
+        expect(::Ci::Build).not_to receive(:find_by_token)
+
+        execute
+      end
+    end
+
+    context 'with wrong job token' do
+      let(:token) { 'missing' }
+
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe '#execute' do
+    subject(:execute) { finder.execute }
+
+    context 'when job is not running' do
+      before do
+        job.success!
+      end
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when job is running', :request_store do
+      it 'sets ci_job_token_scope on the job user', :aggregate_failures do
+        expect(execute).to eq(job)
+        expect(execute.user).to be_from_ci_job_token
+        expect(execute.user.ci_job_token_scope.current_project).to eq(job.project)
+      end
+
+      it 'logs context data about the job' do
+        expect(::Gitlab::AppLogger).to receive(:info).with a_hash_including({
+          job_id: job.id,
+          job_user_id: job.user_id,
+          job_project_id: job.project_id
+        })
+
+        execute
+      end
+    end
+  end
+end

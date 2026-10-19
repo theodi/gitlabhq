@@ -1,0 +1,481 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import setWindowLocation from 'helpers/set_window_location_helper';
+import { createAlert } from '~/alert';
+
+import CatalogHeader from '~/ci/catalog/components/list/catalog_header.vue';
+import CiResourcesList from '~/ci/catalog/components/list/ci_resources_list.vue';
+import CiResourcesPage from '~/ci/catalog/components/pages/ci_resources_page.vue';
+import CatalogSearch from '~/ci/catalog/components/list/catalog_search.vue';
+import CatalogTabs from '~/ci/catalog/components/list/catalog_tabs.vue';
+import CatalogListSkeletonLoader from '~/ci/catalog/components/list/catalog_list_skeleton_loader.vue';
+import EmptyState from '~/ci/catalog/components/list/empty_state.vue';
+
+import { cacheConfig, resolvers } from '~/ci/catalog/graphql/settings';
+import { DEFAULT_SORT_VALUE, SCOPE } from '~/ci/catalog/constants';
+import typeDefs from '~/ci/catalog/graphql/typedefs.graphql';
+
+import getCatalogResources from '~/ci/catalog/graphql/queries/get_ci_catalog_resources.query.graphql';
+import getCatalogResourcesCount from '~/ci/catalog/graphql/queries/get_ci_catalog_resources_count.query.graphql';
+
+import {
+  emptyCatalogResponseBody,
+  catalogResponseBody,
+  catalogResourcesCountResponseBody,
+} from '../../mock';
+
+Vue.use(VueApollo);
+jest.mock('~/alert');
+
+describe('CiResourcesPage', () => {
+  let wrapper;
+  let catalogResourcesResponse;
+  let catalogResourcesCountResponse;
+
+  const defaultQueryVariables = {
+    first: 20,
+    scope: SCOPE.all,
+    searchTerm: null,
+    sortValue: DEFAULT_SORT_VALUE,
+    minAccessLevel: null,
+    verificationLevel: null,
+    topics: [],
+    groupIds: [],
+  };
+
+  const createComponent = () => {
+    const handlers = [
+      [getCatalogResources, catalogResourcesResponse],
+      [getCatalogResourcesCount, catalogResourcesCountResponse],
+    ];
+    const mockApollo = createMockApollo(handlers, resolvers, { cacheConfig, typeDefs });
+
+    wrapper = shallowMountExtended(CiResourcesPage, {
+      apolloProvider: mockApollo,
+    });
+
+    return waitForPromises();
+  };
+
+  const findCatalogHeader = () => wrapper.findComponent(CatalogHeader);
+  const findCatalogSearch = () => wrapper.findComponent(CatalogSearch);
+  const findCatalogTabs = () => wrapper.findComponent(CatalogTabs);
+  const findCiResourcesList = () => wrapper.findComponent(CiResourcesList);
+  const findLoadingState = () => wrapper.findComponent(CatalogListSkeletonLoader);
+  const findEmptyState = () => wrapper.findComponent(EmptyState);
+
+  beforeEach(() => {
+    catalogResourcesResponse = jest.fn();
+    catalogResourcesCountResponse = jest.fn();
+    catalogResourcesCountResponse.mockResolvedValue(catalogResourcesCountResponseBody);
+  });
+
+  describe('when initial queries are loading', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('shows a loading icon and no list', () => {
+      expect(findLoadingState().exists()).toBe(true);
+      expect(findEmptyState().exists()).toBe(false);
+      expect(findCiResourcesList().exists()).toBe(false);
+    });
+  });
+
+  describe('when queries have loaded', () => {
+    it('renders the Catalog Header', async () => {
+      await createComponent();
+
+      expect(findCatalogHeader().exists()).toBe(true);
+    });
+
+    describe('and there are no resources', () => {
+      beforeEach(async () => {
+        catalogResourcesResponse.mockResolvedValue(emptyCatalogResponseBody);
+
+        await createComponent();
+      });
+
+      it('renders the empty state', () => {
+        expect(findEmptyState().exists()).toBe(true);
+        expect(findEmptyState().props('currentTab')).toBe('all');
+      });
+
+      it('renders the search', () => {
+        expect(findCatalogSearch().exists()).toBe(true);
+      });
+
+      it('renders the tabs', () => {
+        expect(findCatalogTabs().exists()).toBe(true);
+      });
+
+      it('does not render the list', () => {
+        expect(findCiResourcesList().exists()).toBe(false);
+      });
+    });
+
+    describe('and there are resources', () => {
+      const { nodes, pageInfo } = catalogResponseBody.data.ciCatalogResources;
+
+      beforeEach(async () => {
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+
+        await createComponent();
+      });
+
+      it('renders the resources list', () => {
+        expect(findLoadingState().exists()).toBe(false);
+        expect(findEmptyState().exists()).toBe(false);
+        expect(findCiResourcesList().exists()).toBe(true);
+      });
+
+      it('renders the catalog tabs', () => {
+        expect(findCatalogTabs().exists()).toBe(true);
+      });
+
+      it('updates the scope after switching tabs', async () => {
+        await findCatalogTabs().vm.$emit('tab-change', {
+          scope: SCOPE.namespaces,
+          name: 'namespaces',
+        });
+
+        expect(catalogResourcesResponse).toHaveBeenCalledWith({
+          ...defaultQueryVariables,
+          scope: SCOPE.namespaces,
+        });
+
+        await findCatalogTabs().vm.$emit('tab-change', { scope: SCOPE.all, name: 'all' });
+
+        expect(catalogResourcesResponse).toHaveBeenCalledWith({
+          ...defaultQueryVariables,
+          scope: SCOPE.all,
+        });
+
+        await findCatalogTabs().vm.$emit('tab-change', {
+          scope: SCOPE.namespaces,
+          name: 'analytics',
+          minAccessLevel: 'MAINTAINER',
+        });
+
+        expect(catalogResourcesResponse).toHaveBeenCalledWith({
+          ...defaultQueryVariables,
+          scope: SCOPE.namespaces,
+          minAccessLevel: 'MAINTAINER',
+        });
+      });
+
+      it('passes down props to the resources list', () => {
+        expect(findCiResourcesList().props()).toMatchObject({
+          resources: nodes,
+          currentTab: 'all',
+          pageInfo,
+        });
+      });
+
+      it('renders the search and sort', () => {
+        expect(findCatalogSearch().exists()).toBe(true);
+      });
+    });
+  });
+
+  describe('pagination', () => {
+    it.each`
+      eventName
+      ${'on-prev-page'}
+      ${'on-next-page'}
+    `('refetch query with new params when receiving $eventName', async ({ eventName }) => {
+      const { pageInfo } = catalogResponseBody.data.ciCatalogResources;
+
+      catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+      await createComponent();
+
+      expect(catalogResourcesResponse).toHaveBeenCalledTimes(1);
+
+      await findCiResourcesList().vm.$emit(eventName);
+
+      expect(catalogResourcesResponse).toHaveBeenCalledTimes(2);
+
+      if (eventName === 'on-next-page') {
+        expect(catalogResourcesResponse.mock.calls[1][0]).toEqual({
+          ...defaultQueryVariables,
+          after: pageInfo.endCursor,
+        });
+      } else {
+        expect(catalogResourcesResponse.mock.calls[1][0]).toEqual({
+          ...defaultQueryVariables,
+          before: pageInfo.startCursor,
+          last: 20,
+          first: null,
+          scope: SCOPE.all,
+        });
+      }
+    });
+  });
+
+  describe('search and sort', () => {
+    describe('on initial load', () => {
+      beforeEach(() => {
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+      });
+
+      it('calls the query without search or sort', async () => {
+        await createComponent();
+
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(1);
+        expect(catalogResourcesResponse.mock.calls[0][0]).toEqual({
+          ...defaultQueryVariables,
+        });
+      });
+
+      it('calls the query with search when present in URL', async () => {
+        setWindowLocation('?search=Hello');
+        await createComponent();
+
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(1);
+        expect(catalogResourcesResponse.mock.calls[0][0]).toEqual({
+          ...defaultQueryVariables,
+          searchTerm: 'Hello',
+        });
+      });
+    });
+
+    describe('when sorting changes', () => {
+      const newSort = 'MOST_AWESOME_ASC';
+
+      beforeEach(async () => {
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+        await createComponent();
+        await findCatalogSearch().vm.$emit('update-sorting', newSort);
+      });
+
+      it('passes it to the graphql query', () => {
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(2);
+        expect(catalogResourcesResponse.mock.calls[1][0]).toEqual({
+          ...defaultQueryVariables,
+          sortValue: newSort,
+        });
+      });
+    });
+
+    describe('when search component emits a new search term', () => {
+      const newSearch = 'sloths';
+
+      describe('and there are no results', () => {
+        beforeEach(async () => {
+          catalogResourcesResponse.mockResolvedValue(emptyCatalogResponseBody);
+          await createComponent();
+        });
+
+        it('renders the empty state and passes down the search query', async () => {
+          await findCatalogSearch().vm.$emit('update-filters', {
+            searchTerm: newSearch,
+            verificationLevel: null,
+            topics: [],
+          });
+          await waitForPromises();
+
+          expect(findEmptyState().exists()).toBe(true);
+          expect(findEmptyState().props().searchTerm).toBe(newSearch);
+        });
+      });
+
+      describe('and there are results', () => {
+        beforeEach(async () => {
+          catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+          await createComponent();
+          await findCatalogSearch().vm.$emit('update-filters', {
+            searchTerm: newSearch,
+            verificationLevel: null,
+            topics: [],
+          });
+        });
+
+        it('passes it to the graphql query', () => {
+          expect(catalogResourcesResponse).toHaveBeenCalledTimes(2);
+          expect(catalogResourcesResponse.mock.calls[1][0]).toEqual({
+            ...defaultQueryVariables,
+            searchTerm: newSearch,
+          });
+        });
+      });
+    });
+
+    describe('when search component emits a verification level filter', () => {
+      const verificationLevel = 'VERIFIED_CREATOR_SELF_MANAGED';
+
+      beforeEach(async () => {
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+        await createComponent();
+        await findCatalogSearch().vm.$emit('update-filters', {
+          searchTerm: null,
+          verificationLevel: 'Verified creator',
+          topics: [],
+        });
+      });
+
+      it('passes it to the graphql query', () => {
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(2);
+        expect(catalogResourcesResponse.mock.calls[1][0]).toEqual({
+          ...defaultQueryVariables,
+          verificationLevel,
+        });
+      });
+    });
+
+    describe('when verification level is present in URL', () => {
+      beforeEach(async () => {
+        setWindowLocation('?verification_level=Verified creator');
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+        await createComponent();
+      });
+
+      it('calls the query with verification level', () => {
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(1);
+        expect(catalogResourcesResponse.mock.calls[0][0]).toEqual({
+          ...defaultQueryVariables,
+          verificationLevel: 'VERIFIED_CREATOR_SELF_MANAGED',
+        });
+      });
+
+      it('passes the verification level to the search component', () => {
+        expect(findCatalogSearch().props('initialVerificationLevel')).toBe('Verified creator');
+      });
+    });
+
+    describe('when search component emits topics filter', () => {
+      const topics = ['ruby', 'ci-cd'];
+
+      beforeEach(async () => {
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+        await createComponent();
+        await findCatalogSearch().vm.$emit('update-filters', {
+          searchTerm: null,
+          verificationLevel: null,
+          topics,
+        });
+      });
+
+      it('passes topics to the graphql query', () => {
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(2);
+        expect(catalogResourcesResponse.mock.calls[1][0]).toEqual({
+          ...defaultQueryVariables,
+          topics,
+        });
+      });
+    });
+
+    describe('when topics are present in URL', () => {
+      beforeEach(async () => {
+        setWindowLocation('?topics=ruby,ci-cd');
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+        await createComponent();
+      });
+
+      it('calls the query with topics', () => {
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(1);
+        expect(catalogResourcesResponse.mock.calls[0][0]).toEqual({
+          ...defaultQueryVariables,
+          topics: ['ruby', 'ci-cd'],
+        });
+      });
+
+      it('passes the topics to the search component', () => {
+        expect(findCatalogSearch().props('initialTopics')).toEqual(['ruby', 'ci-cd']);
+      });
+    });
+
+    describe('when groups are present in URL', () => {
+      beforeEach(async () => {
+        setWindowLocation('?groups=1,2');
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+        await createComponent();
+      });
+
+      it('converts numeric IDs to GIDs and passes them to the graphql query', () => {
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(1);
+        expect(catalogResourcesResponse.mock.calls[0][0]).toEqual({
+          ...defaultQueryVariables,
+          groupIds: ['gid://gitlab/Group/1', 'gid://gitlab/Group/2'],
+        });
+      });
+
+      it('passes the groups to the search component', () => {
+        expect(findCatalogSearch().props('initialGroups')).toEqual(['1', '2']);
+      });
+    });
+
+    describe('when search component emits a group filter', () => {
+      beforeEach(async () => {
+        catalogResourcesResponse.mockResolvedValue(catalogResponseBody);
+        await createComponent();
+        await findCatalogSearch().vm.$emit('update-filters', {
+          searchTerm: null,
+          verificationLevel: null,
+          topics: [],
+          groups: ['1', '2'],
+        });
+      });
+
+      it('passes converted group GIDs to the graphql query', () => {
+        expect(catalogResourcesResponse).toHaveBeenCalledTimes(2);
+        expect(catalogResourcesResponse.mock.calls[1][0]).toEqual({
+          ...defaultQueryVariables,
+          groupIds: ['gid://gitlab/Group/1', 'gid://gitlab/Group/2'],
+        });
+      });
+
+      it('updates the URL with the numeric group IDs', () => {
+        expect(window.location.search).toContain('groups=1%2C2');
+      });
+    });
+  });
+
+  describe('pages count', () => {
+    describe('when the fetchMore call fails', () => {
+      const errorMessage = 'there was an error';
+
+      describe('for next page', () => {
+        beforeEach(async () => {
+          catalogResourcesResponse.mockResolvedValueOnce(catalogResponseBody);
+          catalogResourcesResponse.mockRejectedValue({ message: errorMessage });
+
+          await createComponent();
+        });
+
+        it('does not increment the page and calls createAlert', async () => {
+          findCiResourcesList().vm.$emit('on-next-page');
+          await waitForPromises();
+
+          expect(createAlert).toHaveBeenCalledWith({ message: errorMessage, variant: 'danger' });
+        });
+      });
+
+      describe('for previous page', () => {
+        beforeEach(async () => {
+          // Initial query
+          catalogResourcesResponse.mockResolvedValueOnce(catalogResponseBody);
+          // When clicking on next
+          catalogResourcesResponse.mockResolvedValueOnce(catalogResponseBody);
+          // when clicking on previous
+          catalogResourcesResponse.mockRejectedValue({ message: errorMessage });
+
+          await createComponent();
+        });
+
+        it('does not decrement the page and calls createAlert', async () => {
+          findCiResourcesList().vm.$emit('on-next-page');
+          await waitForPromises();
+
+          findCiResourcesList().vm.$emit('on-prev-page');
+          await waitForPromises();
+
+          expect(createAlert).toHaveBeenCalledWith({ message: errorMessage, variant: 'danger' });
+        });
+      });
+    });
+  });
+});

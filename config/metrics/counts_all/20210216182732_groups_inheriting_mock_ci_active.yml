@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: counts.groups_inheriting_mock_ci_active
+description: Count of active groups inheriting integrations for Mock CI
+product_group: import
+product_categories:
+- integrations
+value_type: number
+status: removed
+milestone_removed: '13.12'
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+removed_by_url:

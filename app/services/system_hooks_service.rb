@@ -1,98 +1,58 @@
+# frozen_string_literal: true
+
 class SystemHooksService
   def execute_hooks_for(model, event)
-    execute_hooks(build_event_data(model, event))
+    data = build_event_data(model, event)
+    organization = organization_for(model)
+
+    model.run_after_commit_or_now do
+      SystemHooksService.new.execute_hooks(data, organization: organization)
+    end
+  end
+
+  def execute_hooks(data, hooks_scope = :all, organization:)
+    if organization
+      SystemHook.for_organization(organization).executable.hooks_for(hooks_scope).find_each do |hook|
+        hook.async_execute(data, 'system_hooks')
+      end
+    else
+      Gitlab::AppLogger.warn(
+        message: 'System hooks not executed: organization could not be resolved',
+        hooks_scope: hooks_scope
+      )
+    end
+
+    Gitlab::FileHook.execute_all_async(data)
   end
 
   private
 
-  def execute_hooks(data)
-    SystemHook.all.each do |sh|
-      async_execute_hook(sh, data, 'system_hooks')
-    end
-  end
-
-  def async_execute_hook(hook, data, hook_name)
-    Sidekiq::Client.enqueue(SystemHookWorker, hook.id, data, hook_name)
+  def organization_for(model)
+    model.is_a?(Member) ? model.source.organization : model.organization
   end
 
   def build_event_data(model, event)
-    data = {
-      event_name: build_event_name(model, event),
-      created_at: model.created_at.xmlschema
-    }
+    builder_class = case model
+                    when GroupMember
+                      Gitlab::HookData::GroupMemberBuilder
+                    when Group
+                      Gitlab::HookData::GroupBuilder
+                    when ProjectMember
+                      Gitlab::HookData::ProjectMemberBuilder
+                    when User
+                      Gitlab::HookData::UserBuilder
+                    when Project
+                      Gitlab::HookData::ProjectBuilder
+                    when Key
+                      Gitlab::HookData::KeyBuilder
+                    end
 
-    case model
-    when Key
-      data.merge!(
-        key: model.key,
-        id: model.id
-      )
-      if model.user
-        data.merge!(
-          username: model.user.username
-        )
-      end
-    when Project
-      owner = model.owner
+    builder = builder_class.new(model)
 
-      data.merge!({
-        name: model.name,
-        path: model.path,
-        path_with_namespace: model.path_with_namespace,
-        project_id: model.id,
-        owner_name: owner.name,
-        owner_email: owner.respond_to?(:email) ?  owner.email : "",
-        project_visibility: Project.visibility_levels.key(model.visibility_level_field).downcase
-      })
-    when User
-      data.merge!({
-        name: model.name,
-        email: model.email,
-        user_id: model.id
-      })
-    when ProjectMember
-      data.merge!({
-        project_name: model.project.name,
-        project_path: model.project.path,
-        project_id: model.project.id,
-        user_name: model.user.name,
-        user_email: model.user.email,
-        access_level: model.human_access,
-        project_visibility: Project.visibility_levels.key(model.project.visibility_level_field).downcase
-      })
-    when Group
-      owner = model.owner
-
-      data.merge!(
-        name: model.name,
-        path: model.path,
-        group_id: model.id,
-        owner_name: owner.respond_to?(:name) ? owner.name : nil,
-        owner_email: owner.respond_to?(:email) ? owner.email : nil,
-      )
-    when GroupMember
-      data.merge!(
-        group_name: model.group.name,
-        group_path: model.group.path,
-        group_id: model.group.id,
-        user_name: model.user.name,
-        user_email: model.user.email,
-        user_id: model.user.id,
-        group_access: model.human_access,
-      )
-    end
-  end
-
-  def build_event_name(model, event)
-    case model
-    when ProjectMember
-      return "user_add_to_team"      if event == :create
-      return "user_remove_from_team" if event == :destroy
-    when GroupMember
-      return 'user_add_to_group'      if event == :create
-      return 'user_remove_from_group' if event == :destroy
+    if builder_class == Gitlab::HookData::ProjectBuilder
+      builder.build(event, include_deprecated_owner: true)
     else
-      "#{model.class.name.downcase}_#{event.to_s}"
+      builder.build(event)
     end
   end
 end

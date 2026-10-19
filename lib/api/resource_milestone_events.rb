@@ -1,0 +1,72 @@
+# frozen_string_literal: true
+
+module API
+  class ResourceMilestoneEvents < ::API::Base
+    include PaginationParams
+
+    helpers ::API::Helpers::NotesHelpers
+
+    resource_milestone_events_tags = %w[resource_events]
+    before do
+      authenticate!
+    end
+
+    {
+      Issue => :team_planning,
+      MergeRequest => :code_review_workflow
+    }.each do |eventable_type, feature_category|
+      parent_type = eventable_type.parent_class.to_s.underscore
+      eventable_str = eventable_type.to_s.underscore
+      eventables_str = eventable_str.pluralize
+      eventable_name = eventable_str.humanize(capitalize: false)
+      eventable_article = eventable_name.match?(/\A[aeiou]/i) ? 'an' : 'a'
+
+      params do
+        requires :id, types: [String, Integer], desc: "ID or URL-encoded path of the #{parent_type}."
+      end
+      resource parent_type.pluralize.to_sym, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc "List all project #{eventable_name} milestone events" do
+          detail "Lists all milestone events for a specified #{eventable_name}."
+          success Entities::ResourceMilestoneEvent
+          is_array true
+          tags resource_milestone_events_tags
+        end
+        params do
+          requires :eventable_id, types: [Integer, String], desc: 'Internal ID of the issue or merge request.'
+          use :pagination
+        end
+        route_setting :authorization, permissions: "read_#{eventable_str}_milestone_event", boundary_type: :project
+        get ":id/#{eventables_str}/:eventable_id/resource_milestone_events", feature_category: feature_category, urgency: :low do
+          eventable = find_noteable(eventable_type, params[:eventable_id])
+
+          events = ResourceMilestoneEventFinder.new(current_user, eventable).execute
+
+          present paginate(events), with: Entities::ResourceMilestoneEvent
+        end
+
+        desc "Retrieve #{eventable_article} #{eventable_name} milestone event" do
+          detail "Retrieves a specified milestone event for a project #{eventable_name}."
+          success Entities::ResourceMilestoneEvent
+          failure [
+            { code: 404, message: 'Not found' }
+          ]
+          tags resource_milestone_events_tags
+        end
+        params do
+          requires :event_id, type: String, desc: 'ID of the resource milestone event.'
+          requires :eventable_id, types: [Integer, String], desc: 'Internal ID of the issue or merge request.'
+        end
+        route_setting :authorization, permissions: "read_#{eventable_str}_milestone_event", boundary_type: :project
+        get ":id/#{eventables_str}/:eventable_id/resource_milestone_events/:event_id", feature_category: feature_category do
+          eventable = find_noteable(eventable_type, params[:eventable_id])
+
+          event = eventable.resource_milestone_events.find(params[:event_id])
+
+          not_found!('ResourceMilestoneEvent') unless can?(current_user, :read_milestone, event.milestone_parent)
+
+          present event, with: Entities::ResourceMilestoneEvent
+        end
+      end
+    end
+  end
+end

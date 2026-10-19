@@ -1,0 +1,9 @@
+# @feature_category: team_planning
+query getProjectRootRef($projectFullPath: ID!) {
+  project(fullPath: $projectFullPath) {
+    id
+    repository {
+      rootRef
+    }
+  }
+}

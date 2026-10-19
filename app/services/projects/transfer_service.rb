@@ -1,74 +1,510 @@
+# frozen_string_literal: true
+
 # Projects::TransferService class
 #
-# Used for transfer project to another namespace
+# Used to transfer a project to another namespace
 #
 # Ex.
-#   # Move projects to namespace with ID 17 by user
-#   Projects::TransferService.new(project, user, namespace_id: 17).execute
+#   # Move project to namespace by user
+#   Projects::TransferService.new(project, user).execute(namespace)
 #
 module Projects
   class TransferService < BaseService
     include Gitlab::ShellAdapter
-    class TransferError < StandardError; end
+    include Namespaces::TransferLogging
 
-    def execute
-      namespace_id = params[:new_namespace_id]
-      namespace = Namespace.find_by(id: namespace_id)
+    TransferError = Class.new(StandardError)
 
-      if allowed_transfer?(current_user, project, namespace)
-        transfer(project, namespace)
-      else
-        project.errors.add(:namespace, 'is invalid')
-        false
+    # Shorter lock retry timing for Sidekiq context (~2 minutes worst case).
+    # Default WithLockRetries config retries for ~40 minutes which is too long.
+    LOCK_RETRY_TIMING = [
+      [0.5.seconds, 2.seconds],
+      [0.5.seconds, 2.seconds],
+      [1.second, 5.seconds],
+      [1.second, 5.seconds],
+      [2.seconds, 10.seconds],
+      [2.seconds, 15.seconds],
+      [5.seconds, 30.seconds]
+    ].freeze
+
+    attr_reader :error
+
+    def log_project_transfer_success(project, new_namespace)
+      log_transfer(project, new_namespace, nil)
+    end
+
+    def log_project_transfer_error(project, new_namespace, error)
+      log_transfer(project, new_namespace, error)
+    end
+
+    def schedule_async_transfer(new_namespace)
+      ensure_allowed_transfer(new_namespace)
+
+      project_namespace = project.project_namespace
+      cancel_stale_transfer_state(project_namespace)
+
+      project_namespace.state_metadata[:transfer_target_parent_id] = new_namespace.id
+
+      unless project_namespace.schedule_transfer(transition_user: current_user)
+        raise TransferError, s_('TransferProject|Unable to initiate transfer. ' \
+          'The project may already have a transfer in progress.')
       end
+
+      Projects::TransferWorker.perform_async(
+        project.id,
+        new_namespace.id,
+        current_user.id
+      )
+
+      ServiceResponse.success(
+        message: s_("TransferProject|Project transfer is scheduled. If it fails, you get a to-do item with the reason.")
+      )
     rescue Projects::TransferService::TransferError => ex
-      project.reload
-      project.errors.add(:namespace_id, ex.message)
+      project.reset
+      project.errors.add(:new_namespace, ex.message)
+      @error = ex.message
+
+      log_project_transfer_error(project, @new_namespace, ex)
+
+      ServiceResponse.error(message: ex.message)
+    end
+
+    def execute(new_namespace)
+      ensure_allowed_transfer(new_namespace)
+
+      @new_namespace = new_namespace
+      @owner_of_personal_project_before_transfer = project.namespace.owner if project.personal?
+      start_time = Gitlab::Metrics::System.monotonic_time
+
+      transfer(project)
+
+      duration_s = elapsed_seconds(start_time)
+      log_project_transfer_success(project, @new_namespace)
+      ::Gitlab::Metrics::Transfers.count_transfer(namespace_type: 'project', result: 'success')
+      ::Gitlab::Metrics::Transfers.observe_transfer_duration(duration_s: duration_s, namespace_type: 'project')
+
+      true
+    rescue Projects::TransferService::TransferError => ex
+      project.reset
+      project.errors.add(:new_namespace, ex.message)
+      @error = ex.message
+
+      log_project_transfer_error(project, @new_namespace, ex)
+      ::Gitlab::Metrics::Transfers.count_transfer(namespace_type: 'project', result: 'failure')
+
       false
     end
 
-    def transfer(project, new_namespace)
-      Project.transaction do
-        old_path = project.path_with_namespace
-        new_path = File.join(new_namespace.try(:path) || '', project.path)
+    private
 
-        if Project.where(path: project.path, namespace_id: new_namespace.try(:id)).present?
-          raise TransferError.new("Project with same path in target namespace already exists")
-        end
+    attr_reader :old_path, :new_path, :new_namespace, :old_namespace
 
-        # Remove old satellite
-        project.satellite.destroy
+    def log_transfer(project, new_namespace, error = nil)
+      action = error.nil? ? "was" : "was not"
+      # `old_namespace` is captured up front in `transfer` (before the namespace change is
+      # persisted), so it reflects the pre-transfer namespace consistently on both the success
+      # and failure paths. Falling back to `project.namespace` covers failures raised before
+      # `transfer` runs (e.g. from `ensure_allowed_transfer`), where nothing has changed yet.
+      pre_transfer_namespace = old_namespace || project.namespace
 
-        # Apply new namespace id
-        project.namespace = new_namespace
-        project.save!
+      log_payload = build_transfer_log_payload(
+        message: "Project #{action} transferred to a new namespace",
+        namespace: project.project_namespace,
+        error: error,
+        gl_project_id: project.id,
+        gl_project_path: project.full_path,
+        old_project_namespace: pre_transfer_namespace&.full_path,
+        old_namespace_id: pre_transfer_namespace&.id,
+        new_namespace_id: new_namespace&.id,
+        new_project_namespace: new_namespace&.full_path
+      )
 
-        # Notifications
-        project.send_move_instructions
-
-        # Move main repository
-        unless gitlab_shell.mv_repository(old_path, new_path)
-          raise TransferError.new('Cannot move project')
-        end
-
-        # Move wiki repo also if present
-        gitlab_shell.mv_repository("#{old_path}.wiki", "#{new_path}.wiki")
-
-        # Create a new satellite (reload project from DB)
-        Project.find(project.id).ensure_satellite_exists
-
-        # clear project cached events
-        project.reset_events_cache
-
-        true
+      if error.nil?
+        ::Gitlab::AppLogger.info(log_payload)
+      else
+        ::Gitlab::AppLogger.error(log_payload)
       end
     end
 
-    def allowed_transfer?(current_user, project, namespace)
-      namespace &&
-        can?(current_user, :change_namespace, project) &&
-        namespace.id != project.namespace_id &&
-        current_user.can?(:create_projects, namespace)
+    # Note: There is a small window where a worker could acquire the lease between
+    # the lease check and cancel_transfer!. This is acceptable because the worker's own
+    # cancel_stale_transfer_state handles this as a safety net.
+    def cancel_stale_transfer_state(project_namespace)
+      return unless project_namespace.transfer_in_progress? || project_namespace.transfer_scheduled?
+
+      lease_key = Projects::TransferWorker.lease_key(project.id)
+      return if Gitlab::ExclusiveLease.get_uuid(lease_key)
+
+      Gitlab::AppLogger.warn(
+        build_transfer_log_payload(
+          message: 'Cancelling stale transfer state - no active worker lease found',
+          namespace: project_namespace,
+          gl_project_id: project.id
+        )
+      )
+      project_namespace.cancel_transfer!
+    end
+
+    def ensure_allowed_transfer(namespace)
+      raise TransferError, s_('TransferProject|Please select a new namespace for your project.') if namespace.blank?
+
+      if namespace.id == project.namespace_id
+        raise TransferError, s_('TransferProject|Project is already in this namespace.')
+      end
+
+      unless allowed_transfer_project?(current_user, project)
+        raise TransferError, s_("TransferProject|You don't have permission to transfer this project.")
+      end
+
+      unless allowed_to_transfer_to_namespace?(current_user, namespace)
+        raise TransferError, s_("TransferProject|You don't have permission to transfer projects into that namespace.")
+      end
+
+      if project_with_same_name_or_path_exists?(namespace)
+        raise TransferError, s_("TransferProject|Project with same name or path in target namespace already exists")
+      end
+
+      nil
+    end
+
+    # rubocop: disable CodeReuse/ActiveRecord -- scoped conflict lookup, no model method exists
+    def project_with_same_name_or_path_exists?(namespace)
+      Project.in_namespace(namespace.id)
+             .where('path = ? or name = ?', project.path, project.name)
+             .exists?
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def transfer(project)
+      @visibility_before_transfer = project.visibility_level
+      @old_path = project.full_path
+      @old_group = project.group
+      @new_path = File.join(@new_namespace.try(:full_path) || '', project.path)
+      @old_namespace = project.namespace
+
+      if conflicting_project_namespace_from_pending_deletion?
+        raise TransferError,
+          s_("TransferProject|A project with the same name or path was recently deleted in the target namespace. " \
+            "Please wait for the deletion to complete or permanently delete it first.")
+      end
+
+      verify_if_container_registry_tags_can_be_handled(project)
+
+      if !new_namespace_has_same_root?(project) && project_has_namespaced_npm_packages?
+        raise TransferError, s_("TransferProject|Root namespace can't be updated if the project has NPM packages " \
+          "scoped to the current root level namespace.")
+      end
+
+      proceed_to_transfer
+    end
+
+    def verify_if_container_registry_tags_can_be_handled(project)
+      return unless project.has_container_registry_tags?
+
+      raise_error_due_to_tags_if_transfer_is_not_allowed
+      raise_error_due_to_tags_if_not_in_same_root(project)
+      raise_error_due_to_tags_if_transfer_dry_run_fails(project)
+    rescue Faraday::Error => error
+      Gitlab::ErrorTracking.track_exception(error, project_id: project.id)
+      raise TransferError, s_('TransferProject|Cannot transfer project: failed to connect to the container registry. ' \
+        'Please try again later.')
+    end
+
+    def raise_error_due_to_tags_if_transfer_is_not_allowed
+      return if ContainerRegistry::GitlabApiClient.supports_gitlab_api?
+
+      raise TransferError, s_('TransferProject|Project cannot be transferred, ' \
+        'because image tags are present in its container registry')
+    end
+
+    def raise_error_due_to_tags_if_not_in_same_root(project)
+      return if new_namespace_has_same_root?(project)
+
+      raise TransferError, s_('TransferProject|Project cannot be transferred to a different top-level namespace, ' \
+        'because image tags are present in its container registry')
+    end
+
+    def raise_error_due_to_tags_if_transfer_dry_run_fails(project)
+      dry_run = transfer_project_path_in_registry(
+        project.full_path, new_namespace.full_path, project: project, dry_run: true
+      )
+      return if dry_run == :accepted
+
+      raise TransferError, format(
+        s_('TransferProject|Project cannot be transferred because of a container registry error: %{error}'),
+        error: dry_run.to_s.titleize
+      )
+    end
+
+    def new_namespace_has_same_root?(project)
+      new_namespace.root_ancestor == project.namespace.root_ancestor
+    end
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def conflicting_project_namespace_from_pending_deletion?
+      Namespaces::ProjectNamespace
+        .where(parent_id: @new_namespace.id)
+        .where('name = ? OR path = ?', project.name, project.path)
+        .where.not(id: project.project_namespace_id)
+        .exists?
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def proceed_to_transfer
+      Gitlab::Database::WithLockRetries.new(
+        connection: ApplicationRecord.connection,
+        logger: Gitlab::AppLogger,
+        timing_configuration: LOCK_RETRY_TIMING,
+        klass: self.class
+      ).run(raise_on_exhaustion: true) do
+        Gitlab::Database::QueryAnalyzers::PreventCrossDatabaseModification.temporary_ignore_tables_in_transaction(
+          %w[routes redirect_routes], url: 'https://gitlab.com/gitlab-org/gitlab/-/issues/424282'
+        ) do
+          Project.transaction do
+            project.expire_caches_before_rename(@old_path)
+
+            # Apply changes to the project
+            update_namespace_and_visibility(@new_namespace)
+            project.reconcile_shared_runners_setting!
+            save_project!
+
+            # Notifications
+            project.send_move_instructions(@old_path)
+
+            transfer_missing_group_resources(@old_group)
+
+            # Move uploads
+            move_project_uploads(project)
+
+            # Update Container Registry
+            update_container_registry_path(project)
+
+            update_integrations
+
+            project.old_path_with_namespace = @old_path
+
+            update_repository_configuration
+
+            remove_issue_contacts
+
+            execute_system_hooks
+          end
+        end
+      end
+
+      remove_paid_features
+      update_pending_builds
+
+      post_update_hooks(project, @old_group)
+    rescue Exception # rubocop:disable Lint/RescueException
+      rollback_side_effects
+      raise
+    ensure
+      refresh_permissions
+    end
+
+    # Translate the persistence error into the service's own TransferError so it
+    # is surfaced to the user via execute's rescue, consistent with the other
+    # transfer preconditions.
+    def save_project!
+      project.save!
+    rescue ActiveRecord::RecordInvalid => e
+      raise TransferError, e.record.errors.full_messages.to_sentence
+    end
+
+    def update_container_registry_path(project)
+      return unless project.has_container_registry_tags?
+
+      transfer_project_path_in_registry(@old_path, @new_namespace.full_path, project: project, dry_run: false)
+    rescue Faraday::ConnectionFailed, Faraday::TimeoutError => error
+      Gitlab::ErrorTracking.track_exception(error, project_id: project.id)
+      raise TransferError, registry_unreachable_message(error)
+    end
+
+    def registry_unreachable_message(error)
+      format(
+        s_('TransferProject|Failed to transfer project. ' \
+          'The container registry at %{registry_url} could not be reached (%{error}). ' \
+          'If the container registry is not in use, disable the integration to allow the project to be transferred.'),
+        registry_url: Gitlab.config.registry.api_url,
+        error: error.message
+      )
+    end
+
+    def transfer_project_path_in_registry(old_project_path, new_namespace_path, project:, dry_run:)
+      ContainerRegistry::GitlabApiClient.move_repository_to_namespace(
+        old_project_path,
+        namespace: new_namespace_path,
+        project: project,
+        dry_run: dry_run
+      )
+    end
+
+    # Overridden in EE
+    def post_update_hooks(project, _old_group)
+      ensure_personal_project_owner_membership(project)
+      invalidate_personal_projects_counts
+      EventCreateService.new.transfer_project(project, current_user)
+
+      disable_unauthorized_merge_request_collaboration
+
+      publish_event
+    end
+
+    # When a project's visibility is reduced to private as a result of the transfer,
+    # members of the project could otherwise still push to the source branch of open
+    # fork merge requests through collaboration. Disable collaboration asynchronously
+    # so the stale `allow_maintainer_to_push` flag cannot silently re-grant access if
+    # the project's visibility is later raised again.
+    def disable_unauthorized_merge_request_collaboration
+      return unless @visibility_before_transfer > Gitlab::VisibilityLevel::PRIVATE
+      return unless project.visibility_level <= Gitlab::VisibilityLevel::PRIVATE
+
+      ::MergeRequests::DisableCollaborationOnUnauthorizedWorker.perform_async(project.id)
+    end
+
+    # Overridden in EE
+    def remove_paid_features; end
+
+    def invalidate_personal_projects_counts
+      # If the project was moved out of a personal namespace,
+      # the cache of the namespace owner, before the transfer, should be cleared.
+      if @owner_of_personal_project_before_transfer.present?
+        @owner_of_personal_project_before_transfer.invalidate_personal_projects_count
+      end
+
+      # If the project has now moved into a personal namespace,
+      # the cache of the target namespace owner should be cleared.
+      project.invalidate_personal_projects_count_of_owner
+    end
+
+    def transfer_missing_group_resources(group)
+      Labels::TransferService.new(current_user, group, project).execute
+
+      Milestones::TransferService.new(current_user, group, project).execute
+    end
+
+    def allowed_transfer_project?(current_user, project)
+      current_user.can?(:change_namespace, project)
+    end
+
+    def allowed_to_transfer_to_namespace?(current_user, namespace)
+      current_user.can?(:transfer_projects, namespace)
+    end
+
+    def update_namespace_and_visibility(to_namespace)
+      # Apply new namespace id and visibility level
+      project.namespace = to_namespace
+      project.visibility_level = to_namespace.visibility_level unless project.visibility_level_allowed_by_namespace?
+    end
+
+    def update_repository_configuration
+      project.track_project_repository
+    end
+
+    def ensure_personal_project_owner_membership(project)
+      # In case of personal projects, we want to make sure that
+      # a membership record with `OWNER` access level exists for the owner of the namespace.
+      return unless project.personal?
+
+      namespace_owner = project.namespace.owner
+      existing_membership_record = project.member(namespace_owner)
+
+      return if existing_membership_record.present? && existing_membership_record.access_level == Gitlab::Access::OWNER
+
+      project.add_owner(namespace_owner)
+    end
+
+    def refresh_permissions
+      # This ensures we only schedule 1 job for every user that has access to
+      # the namespaces.
+      user_ids = @old_namespace.user_ids_for_project_authorizations |
+        @new_namespace.user_ids_for_project_authorizations
+
+      AuthorizedProjectUpdate::ProjectRecalculateWorker.perform_async(project.id)
+
+      # Until we compare the inconsistency rates of the new specialized worker and
+      # the old approach, we still run AuthorizedProjectsWorker
+      # but with some delay and lower urgency as a safety net.
+      UserProjectAccessChangedService.new(user_ids).execute(
+        priority: UserProjectAccessChangedService::LOW_PRIORITY
+      )
+    end
+
+    def rollback_side_effects
+      project.reset
+      update_namespace_and_visibility(@old_namespace)
+      update_repository_configuration
+    end
+
+    def execute_system_hooks
+      system_hook_service.execute_hooks_for(project, :transfer)
+    end
+
+    def move_project_uploads(project)
+      return if project.hashed_storage?(:attachments)
+
+      Gitlab::UploadsTransfer.new.move_project(
+        project.path,
+        @old_namespace.full_path,
+        @new_namespace.full_path
+      )
+    end
+
+    def old_wiki_repo_path
+      "#{old_path}#{::Gitlab::GlRepository::WIKI.path_suffix}"
+    end
+
+    def new_wiki_repo_path
+      "#{new_path}#{::Gitlab::GlRepository::WIKI.path_suffix}"
+    end
+
+    def old_design_repo_path
+      "#{old_path}#{::Gitlab::GlRepository::DESIGN.path_suffix}"
+    end
+
+    def new_design_repo_path
+      "#{new_path}#{::Gitlab::GlRepository::DESIGN.path_suffix}"
+    end
+
+    def update_integrations
+      project.integrations.with_default_settings.delete_all
+      Integration.create_from_default_integrations(project, :project_id)
+    end
+
+    def update_pending_builds
+      ::Ci::PendingBuilds::UpdateProjectWorker.perform_async(project.id, pending_builds_params.stringify_keys)
+    end
+
+    def pending_builds_params
+      ::Ci::PendingBuild.namespace_transfer_params(new_namespace)
+    end
+
+    def remove_issue_contacts
+      return unless @old_group&.crm_group != @new_namespace&.crm_group
+
+      CustomerRelations::IssueContact.delete_for_project(project.id)
+    end
+
+    def publish_event
+      event = ::Projects::ProjectTransferedEvent.new(data: {
+        project_id: project.id,
+        old_namespace_id: old_namespace.id,
+        old_root_namespace_id: old_namespace.root_ancestor.id,
+        new_namespace_id: new_namespace.id,
+        new_root_namespace_id: new_namespace.root_ancestor.id
+      })
+
+      Gitlab::EventStore.publish(event)
+    end
+
+    def project_has_namespaced_npm_packages?
+      ::Packages::Npm::Package.for_projects(project)
+                              .with_npm_scope(project.root_namespace.path)
+                              .not_pending_destruction
+                              .exists?
     end
   end
 end
+
+Projects::TransferService.prepend_mod_with('Projects::TransferService')

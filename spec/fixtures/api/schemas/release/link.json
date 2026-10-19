@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "required": ["name", "url"],
+  "properties": {
+    "id": { "type": "integer" },
+    "name": { "type": "string" },
+    "url": { "type": "string" },
+    "direct_asset_url": { "type": "string" },
+    "external": { "type": "boolean" },
+    "link_type": { "type": "string" }
+  },
+  "additionalProperties": false
+}

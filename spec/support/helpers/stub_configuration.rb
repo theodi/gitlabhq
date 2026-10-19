@@ -1,0 +1,228 @@
+# frozen_string_literal: true
+
+require 'gitlab_edition'
+require 'active_support/hash_with_indifferent_access'
+require 'active_support/dependencies'
+
+# check gets rid of already initialized constant warnings when using spring
+require_dependency 'gitlab' unless defined?(Gitlab)
+
+module StubConfiguration
+  def stub_application_setting(messages)
+    add_predicates(messages)
+
+    # Stubbing both of these because we're not yet consistent with how we access
+    # current application settings
+    allow_any_instance_of(ApplicationSetting).to receive_messages(to_settings(messages))
+    allow(Gitlab::CurrentSettings.current_application_settings)
+      .to receive_messages(to_settings(messages))
+
+    # Ensure that we don't use the Markdown cache when stubbing these values
+    allow_any_instance_of(ApplicationSetting).to receive(:cached_html_up_to_date?).and_return(false)
+  end
+
+  # For enums with `_prefix: true`, this allows us to stub the application setting properly
+  def stub_application_setting_enum(setting, value)
+    stub_application_setting(setting.to_sym => value)
+
+    ApplicationSetting.send(setting.pluralize.to_sym).each_key do |key|
+      stub_application_setting("#{setting}_#{key}": key == value)
+    end
+
+    Gitlab::CurrentSettings.send(setting)
+  end
+
+  def stub_not_protect_default_branch
+    stub_application_setting(
+      default_branch_protection: Gitlab::Access::PROTECTION_NONE)
+    stub_application_setting(default_branch_protection_defaults: Gitlab::Access::BranchProtection.protection_none)
+  end
+
+  def stub_default_url_options(host: "localhost", protocol: "http", script_name: nil)
+    url_options = { host: host, protocol: protocol, script_name: script_name }
+    allow(Rails.application.routes).to receive(:default_url_options).and_return(url_options)
+  end
+
+  def stub_config(messages, config = Gitlab.config)
+    allow(config).to receive_messages(to_settings(messages))
+  end
+
+  def stub_config_setting(messages)
+    stub_config(messages, Gitlab.config.gitlab)
+  end
+
+  def stub_config_cell(messages)
+    stub_config(messages, Gitlab.config.cell)
+  end
+
+  def stub_dependency_proxy_setting(messages)
+    stub_config(messages, Gitlab.config.dependency_proxy)
+  end
+
+  def stub_gravatar_setting(messages)
+    stub_config(messages, Gitlab.config.gravatar)
+  end
+
+  def stub_incoming_email_setting(messages)
+    stub_config(messages, Gitlab.config.incoming_email)
+  end
+
+  def stub_mattermost_setting(messages)
+    stub_config(messages, Gitlab.config.mattermost)
+  end
+
+  def stub_omniauth_setting(messages)
+    stub_config(messages, Gitlab.config.omniauth)
+  end
+
+  def stub_backup_setting(messages)
+    stub_config(messages, Gitlab.config.backup)
+  end
+
+  def stub_lfs_setting(messages)
+    stub_config(messages, Gitlab.config.lfs)
+  end
+
+  def stub_external_diffs_setting(messages)
+    stub_config(messages, Gitlab.config.external_diffs)
+  end
+
+  def stub_artifacts_setting(messages)
+    stub_config(messages, Gitlab.config.artifacts)
+  end
+
+  def stub_pages_setting(messages)
+    stub_config(messages, Gitlab.config.pages)
+  end
+
+  def stub_microsoft_graph_mailer_setting(messages)
+    stub_config(messages, Gitlab.config.microsoft_graph_mailer)
+  end
+
+  def stub_amazon_ses_mailer_setting(messages)
+    stub_config(messages, Gitlab.config.amazon_ses_mailer)
+  end
+
+  def stub_kerberos_setting(messages)
+    stub_config(messages, Gitlab.config.kerberos)
+  end
+
+  def stub_gitlab_shell_setting(messages)
+    stub_config(messages, Gitlab.config.gitlab_shell)
+  end
+
+  def stub_asset_proxy_setting(messages)
+    stub_config(messages, Gitlab.config.asset_proxy)
+  end
+
+  def stub_asset_proxy_enabled(url:, secret_key:, allowlist:)
+    domain_regexp = Banzai::Filter::AssetProxyFilter.host_regexp_for_allowlist(allowlist)
+    csp_directives = Banzai::Filter::AssetProxyFilter.csp_for_allowlist(allowlist, asset_proxy_url: url)
+
+    stub_asset_proxy_setting(
+      enabled: true,
+      url: url,
+      secret_key: secret_key,
+      allowlist: allowlist,
+      domain_regexp: domain_regexp,
+      csp_directives: csp_directives
+    )
+  end
+
+  def stub_rack_attack_setting(messages)
+    stub_config({ git_basic_auth: messages }, Gitlab.config.rack_attack)
+  end
+
+  def stub_service_desk_email_setting(messages)
+    stub_config(messages, Gitlab.config.service_desk_email)
+  end
+
+  def stub_packages_setting(messages)
+    stub_config(messages, Gitlab.config.packages)
+  end
+
+  def stub_storage_settings(messages)
+    messages.deep_stringify_keys!
+
+    # Default storage is always required
+    messages['default'] ||= Gitlab.config.repositories.storages[GitalySetup::REPOS_STORAGE]
+    messages.each do |storage_name, storage_hash|
+      # Default additional storages to connect to the default storage, including its gitway_address when it has one.
+      # A storage inherits both addresses or neither, so one given its own gitaly_address is never routed through the
+      # default storage's gitway.
+      unless storage_hash.key?('gitaly_address')
+        default_storage = Gitlab.config.repositories.storages[GitalySetup::REPOS_STORAGE]
+        storage_hash['gitaly_address'] = default_storage.gitaly_address
+
+        if !storage_hash.key?('gitway_address') && default_storage['gitway_address']
+          storage_hash['gitway_address'] = default_storage['gitway_address']
+        end
+      end
+
+      messages[storage_name] = Gitlab::GitalyClient::StorageSettings.new(storage_hash.to_h)
+    end
+
+    allow(Gitlab.config.repositories).to receive(:storages).and_return(::Gitlab::Configs.build_options(messages))
+  end
+
+  def stub_sentry_settings(enabled: true)
+    allow(Gitlab::CurrentSettings).to receive(:sentry_enabled?) { enabled }
+
+    dsn = 'dummy://b44a0828b72421a6d8e99efd68d44fa8@example.com/42'
+    allow(Gitlab::CurrentSettings).to receive(:sentry_dsn) { dsn }
+
+    clientside_dsn = 'dummy://b44a0828b72421a6d8e99efd68d44fa8@example.com/43'
+    allow(Gitlab::CurrentSettings)
+      .to receive(:sentry_clientside_dsn) { clientside_dsn }
+  end
+
+  def clear_sentry_settings
+    Sentry.get_current_scope.clear
+  end
+
+  def stub_maintenance_mode_setting(value)
+    allow(Gitlab::CurrentSettings).to receive(:current_application_settings?).and_return(true)
+
+    stub_application_setting(maintenance_mode: value)
+  end
+
+  def stub_usage_ping_features(value)
+    stub_application_setting(usage_ping_enabled: value)
+    stub_application_setting(usage_ping_features_enabled: value)
+  end
+
+  # Modifies stubbed messages to also stub possible predicate versions
+  #
+  # Examples:
+  #
+  #   add_predicates(foo: true)
+  #   # => {foo: true, foo?: true}
+  #
+  #   add_predicates(signup_enabled?: false)
+  #   # => {signup_enabled? false}
+  def add_predicates(messages)
+    # Only modify keys that aren't already predicates
+    keys = messages.keys.map(&:to_s).reject { |k| k.end_with?('?') }
+
+    keys.each do |key|
+      predicate = key + '?'
+      messages[predicate.to_sym] = messages[key.to_sym]
+    end
+  end
+
+  # Support nested hashes by converting all values into Gitlab::Configs::Options objects
+  def to_settings(hash)
+    hash.transform_values do |value|
+      if value.is_a? Hash
+        ::Gitlab::Configs.build_options(value)
+      else
+        value
+      end
+    end
+  end
+end
+
+require_relative '../../../ee/spec/support/helpers/ee/stub_configuration' if
+  GitlabEdition.ee?
+
+StubConfiguration.prepend_mod_with('StubConfiguration')

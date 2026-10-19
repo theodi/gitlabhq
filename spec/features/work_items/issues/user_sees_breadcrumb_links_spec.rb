@@ -1,0 +1,42 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'New issue breadcrumb', :js, feature_category: :team_planning do
+  let_it_be_with_reload(:project) { create(:project) }
+
+  let(:user) { project.creator }
+
+  before do
+    sign_in(user)
+  end
+
+  it 'displays link to project issues and new issue' do
+    visit(new_project_work_item_path(project))
+
+    within_testid 'breadcrumb-links' do
+      expect(page).to have_link('Work items', href: project_work_items_path(project))
+      expect(page).to have_link('New', href: new_project_work_item_path(project))
+    end
+  end
+
+  it 'links to current issue in breadcrumbs' do
+    issue = create(:issue, project: project)
+
+    visit project_issue_path(project, issue)
+
+    within_testid 'breadcrumb-links' do
+      expect(find('.gl-breadcrumb-item:last-of-type a')[:href]).to end_with(issue_path(issue))
+    end
+  end
+
+  it 'excludes award_emoji from comment count' do
+    issue = create(:issue, author: user, assignees: [user], project: project, title: 'foobar')
+    create(:award_emoji, awardable: issue)
+
+    visit project_work_items_path(project, assignee_id: user.id)
+
+    expect(page).to have_content 'foobar'
+    expect(page).not_to have_selector("[data-testid='issuable-comments']")
+  end
+end

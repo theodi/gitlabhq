@@ -1,0 +1,18 @@
+---
+description: User clicks regular expression button in search bar
+internal_events: true
+action: click_regex_button_in_search_page_input
+identifiers:
+- project
+- namespace
+- user
+product_group: global_search
+product_categories:
+- global_search
+- code_search
+milestone: '17.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/147919
+tiers:
+- free
+- premium
+- ultimate

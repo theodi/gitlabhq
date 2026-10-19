@@ -1,0 +1,95 @@
+# @feature_category: portfolio_management
+query getDashboardIssuesCount(
+  $search: String
+  $assigneeId: String
+  $assigneeUsernames: [String!]
+  $assigneeWildcardId: AssigneeWildcardId
+  $authorUsername: String
+  $closedAfter: Time
+  $closedBefore: Time
+  $confidential: Boolean
+  $createdAfter: Time
+  $createdBefore: Time
+  $labelName: [String]
+  $milestoneTitle: [String]
+  $milestoneWildcardId: MilestoneWildcardId
+  $myReactionEmoji: String
+  $subscribed: SubscriptionStatus
+  $workItemTypeIds: [WorkItemsTypeID!]
+  $in: [IssuableSearchableField!]
+  $not: NegatedIssueFilterInput
+  $or: UnionedIssueFilterInput
+) {
+  openedIssues: issues(
+    state: opened
+    search: $search
+    assigneeId: $assigneeId
+    assigneeUsernames: $assigneeUsernames
+    assigneeWildcardId: $assigneeWildcardId
+    authorUsername: $authorUsername
+    closedAfter: $closedAfter
+    closedBefore: $closedBefore
+    confidential: $confidential
+    createdAfter: $createdAfter
+    createdBefore: $createdBefore
+    labelName: $labelName
+    milestoneTitle: $milestoneTitle
+    milestoneWildcardId: $milestoneWildcardId
+    myReactionEmoji: $myReactionEmoji
+    subscribed: $subscribed
+    workItemTypeIds: $workItemTypeIds
+    in: $in
+    not: $not
+    or: $or
+  ) {
+    count
+  }
+  closedIssues: issues(
+    state: closed
+    search: $search
+    assigneeId: $assigneeId
+    assigneeUsernames: $assigneeUsernames
+    assigneeWildcardId: $assigneeWildcardId
+    authorUsername: $authorUsername
+    closedAfter: $closedAfter
+    closedBefore: $closedBefore
+    confidential: $confidential
+    createdAfter: $createdAfter
+    createdBefore: $createdBefore
+    labelName: $labelName
+    milestoneTitle: $milestoneTitle
+    milestoneWildcardId: $milestoneWildcardId
+    myReactionEmoji: $myReactionEmoji
+    subscribed: $subscribed
+    workItemTypeIds: $workItemTypeIds
+    in: $in
+    not: $not
+    or: $or
+  ) {
+    count
+  }
+  allIssues: issues(
+    state: all
+    search: $search
+    assigneeId: $assigneeId
+    assigneeUsernames: $assigneeUsernames
+    assigneeWildcardId: $assigneeWildcardId
+    authorUsername: $authorUsername
+    closedAfter: $closedAfter
+    closedBefore: $closedBefore
+    confidential: $confidential
+    createdAfter: $createdAfter
+    createdBefore: $createdBefore
+    labelName: $labelName
+    milestoneTitle: $milestoneTitle
+    milestoneWildcardId: $milestoneWildcardId
+    myReactionEmoji: $myReactionEmoji
+    subscribed: $subscribed
+    workItemTypeIds: $workItemTypeIds
+    in: $in
+    not: $not
+    or: $or
+  ) {
+    count
+  }
+}

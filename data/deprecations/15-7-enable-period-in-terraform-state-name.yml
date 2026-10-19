@@ -1,0 +1,22 @@
+- title: "Support for periods (`.`) in Terraform state names might break existing states"
+  announcement_milestone: "15.7"
+  removal_milestone: "16.0"
+  breaking_change: true
+  reporter: nagyv-gitlab
+  stage: configure
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/385564
+  body: |
+    Previously, Terraform state names containing periods were not supported. However, you could still use state names with periods via a workaround.
+
+    GitLab 15.7 [adds full support](https://docs.gitlab.com/user/infrastructure/iac/troubleshooting/#state-not-found-if-the-state-name-contains-a-period) for state names that contain periods. If you used a workaround to handle these state names, your jobs might fail, or it might look like you've run Terraform for the first time.
+
+    To resolve the issue:
+
+    1. Change any references to the state file by excluding the period and any characters that follow.
+       - For example, if your state name is `state.name`, change all references to `state`.
+    1. Run your Terraform commands.
+
+    To use the full state name, including the period, [migrate to the full state file](https://docs.gitlab.com/user/infrastructure/iac/terraform_state/#migrate-to-a-gitlab-managed-terraform-state).
+  end_of_support_milestone:
+  tiers: [Free, Silver, Gold, Core, Premium, Ultimate]
+  documentation_url: 'https://docs.gitlab.com/user/infrastructure/iac/troubleshooting/#troubleshooting-terraform-state'

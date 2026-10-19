@@ -1,0 +1,49 @@
+# @feature_category: team_planning
+query workItemErrorTracking($fullPath: ID!, $iid: String!, $useWorkItemFeatures: Boolean = false) {
+  namespace(fullPath: $fullPath) {
+    id
+    workItem(iid: $iid) {
+      id
+      widgets @skip(if: $useWorkItemFeatures) {
+        ... on WorkItemWidgetErrorTracking {
+          type
+          identifier
+          stackTrace {
+            nodes {
+              absolutePath
+              columnNumber
+              context {
+                line
+                lineNumber
+              }
+              filename
+              function
+              lineNumber
+            }
+          }
+          status
+        }
+      }
+      features @include(if: $useWorkItemFeatures) {
+        errorTracking {
+          type
+          identifier
+          stackTrace {
+            nodes {
+              absolutePath
+              columnNumber
+              context {
+                line
+                lineNumber
+              }
+              filename
+              function
+              lineNumber
+            }
+          }
+          status
+        }
+      }
+    }
+  }
+}

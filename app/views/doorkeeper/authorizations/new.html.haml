@@ -1,28 +1,74 @@
-%h3.page-title Authorize required
-%main{:role => "main"}
-  %p.h4
-    Authorize
-    %strong.text-info= @pre_auth.client.name
-    to use your account?
+= render 'doorkeeper/pointer_events_guard'
+
+- gitlab_provided = Gitlab.com? && !@pre_auth.client.application.owner && !@pre_auth.client.application.dynamic?
+#container.gl-mx-auto.gl-pointer-events-none{ class: '@sm/panel:gl-w-1/2' }
+  .gl-text-size-h1
+    = safe_format(_('%{strong_start}%{client_name}%{strong_end} is requesting access to your account on %{title}.'),
+      { client_name: @pre_auth.client.name, title: brand_title },
+      tag_pair(tag.strong, :strong_start, :strong_end))
+  .gl-flex.gl-items-center.gl-gap-2.gl-py-5
+    = render Pajamas::AvatarComponent.new(current_user, size: 24, avatar_options: { data: { testid: 'user_avatar_content' }, title: current_user.username })
+    .gl-pl-1
+      %strong= current_user.name
+    &middot;
+    .gl-text-subtle
+      %span= current_user.to_reference
+  - if current_user.admin?
+    = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false, alert_options: { class: 'gl-mb-5' }) do |c|
+      - c.with_body do
+        = safe_format(_('You are an administrator. Authorizing %{strong_start}%{client_name}%{strong_end} will let it act as an administrator. Only continue if you trust this application.'),
+          { client_name: @pre_auth.client.name },
+          tag_pair(tag.strong, :strong_start, :strong_end))
+  - elsif !gitlab_provided
+    = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false, alert_options: { class: 'gl-mb-5' }) do |c|
+      - c.with_body do
+        = safe_format(_('Make sure you trust %{strong_start}%{client_name}%{strong_end} before authorizing.'),
+          { client_name: @pre_auth.client.name },
+          tag_pair(tag.strong, :strong_start, :strong_end))
   - if @pre_auth.scopes
-    #oauth-permissions
-      %p This application will be able to:
-      %ul.text-info
-        - @pre_auth.scopes.each do |scope|
-          %li= t scope, scope: [:doorkeeper, :scopes]
-  %hr/
-  .actions
-    = form_tag oauth_authorization_path, method: :post do
-      = hidden_field_tag :client_id, @pre_auth.client.uid
-      = hidden_field_tag :redirect_uri, @pre_auth.redirect_uri
-      = hidden_field_tag :state, @pre_auth.state
-      = hidden_field_tag :response_type, @pre_auth.response_type
-      = hidden_field_tag :scope, @pre_auth.scope
-      = submit_tag "Authorize", class: "btn btn-success wide pull-left"
-    = form_tag oauth_authorization_path, method: :delete do
-      = hidden_field_tag :client_id, @pre_auth.client.uid
-      = hidden_field_tag :redirect_uri, @pre_auth.redirect_uri
-      = hidden_field_tag :state, @pre_auth.state
-      = hidden_field_tag :response_type, @pre_auth.response_type
-      = hidden_field_tag :scope, @pre_auth.scope
-      = submit_tag "Deny", class: "btn btn-danger prepend-left-10"
+    - @pre_auth.scopes.each do |scope|
+      .js-experimental-setting-accordion.gl-mb-5
+        - title = t(scope, scope: [:doorkeeper, :scopes])
+        - description = t(scope, scope: [:doorkeeper, :scope_desc])
+        = render Pajamas::AccordionItemComponent.new(title: title, state: :closed, button_options: { class: '!gl-text-default gl-font-bold' }) do
+          .gl-text-subtle.gl-text-sm
+            = description
+  .info-well
+    .well-segment
+      - if gitlab_provided
+        %p.gl-text-success
+          = sprite_icon('tanuki-verified', css_class: 'gl-fill-icon-success')
+          = _('This application is provided by GitLab.')
+      %p
+        = safe_format(_('%{owner} %{created_date} ago.'),
+          { owner: auth_app_owner_text(@pre_auth.client.application),
+            created_date: time_ago_in_words(@pre_auth.client.application.created_at) })
+        - domain = URI.parse(@pre_auth.redirect_uri).host.gsub(/^www\./, '')
+        - if @pre_auth.redirect_uri.start_with?('http://', 'https://') && domain != 'localhost'
+          = safe_format(_('You will be redirected to %{strong_start}%{domain}%{strong_end} after authorizing.'),
+            { domain: domain }, tag_pair(tag.strong, :strong_start, :strong_end))
+  %div
+    = form_with url: oauth_authorization_path, method: :post, class: 'gl-inline-block gl-pr-3' do |f|
+      = f.hidden_field :client_id, value: @pre_auth.client.uid
+      = f.hidden_field :redirect_uri, value: @pre_auth.redirect_uri
+      = f.hidden_field :state, value: @pre_auth.state
+      = f.hidden_field :response_type, value: @pre_auth.response_type
+      = f.hidden_field :scope, value: @pre_auth.scope
+      = f.hidden_field :nonce, value: @pre_auth.nonce
+      = f.hidden_field :code_challenge, value: @pre_auth.code_challenge
+      = f.hidden_field :code_challenge_method, value: @pre_auth.code_challenge_method
+      = render Pajamas::ButtonComponent.new(type: :submit,
+        variant: :confirm,
+        button_options: { data: { testid: 'authorization-button' } }) do
+        = safe_format(_('Authorize %{client_name}'), { client_name: @pre_auth.client.name })
+    = form_with url: oauth_authorization_path, method: :delete, class: 'gl-inline-block' do |f|
+      = f.hidden_field :client_id, value: @pre_auth.client.uid
+      = f.hidden_field :redirect_uri, value: @pre_auth.redirect_uri
+      = f.hidden_field :state, value: @pre_auth.state
+      = f.hidden_field :response_type, value: @pre_auth.response_type
+      = f.hidden_field :scope, value: @pre_auth.scope
+      = f.hidden_field :nonce, value: @pre_auth.nonce
+      = f.hidden_field :code_challenge, value: @pre_auth.code_challenge
+      = f.hidden_field :code_challenge_method, value: @pre_auth.code_challenge_method
+      = render Pajamas::ButtonComponent.new(type: :submit) do
+        = _('Cancel')

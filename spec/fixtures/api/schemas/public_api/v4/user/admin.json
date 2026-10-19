@@ -1,0 +1,175 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "username",
+    "email",
+    "commit_email",
+    "name",
+    "state",
+    "avatar_url",
+    "web_url",
+    "created_at",
+    "is_admin",
+    "bio",
+    "location",
+    "pronouns",
+    "linkedin",
+    "twitter",
+    "website_url",
+    "organization",
+    "last_sign_in_at",
+    "confirmed_at",
+    "color_scheme_id",
+    "projects_limit",
+    "current_sign_in_at",
+    "identities",
+    "can_create_group",
+    "can_create_project",
+    "two_factor_enabled",
+    "external",
+    "namespace_id"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "username": {
+      "type": "string"
+    },
+    "email": {
+      "type": "string",
+      "pattern": "^[^@]+@[^@]+$"
+    },
+    "commit_email": {
+      "type": "string",
+      "pattern": "^[^@]+@[^@]+$"
+    },
+    "name": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "active",
+        "blocked"
+      ]
+    },
+    "avatar_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri"
+    },
+    "web_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "is_admin": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "bio": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "location": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pronouns": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "linkedin": {
+      "type": "string"
+    },
+    "twitter": {
+      "type": "string"
+    },
+    "website_url": {
+      "type": "string"
+    },
+    "organization": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_sign_in_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "confirmed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "color_scheme_id": {
+      "type": "integer"
+    },
+    "projects_limit": {
+      "type": "integer"
+    },
+    "current_sign_in_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "identities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "github",
+              "bitbucket",
+              "google_oauth2",
+              "twitter"
+            ]
+          },
+          "extern_uid": {
+            "type": [
+              "number",
+              "string"
+            ]
+          }
+        }
+      }
+    },
+    "can_create_group": {
+      "type": "boolean"
+    },
+    "can_create_project": {
+      "type": "boolean"
+    },
+    "two_factor_enabled": {
+      "type": "boolean"
+    },
+    "external": {
+      "type": "boolean"
+    },
+    "namespace_id": {
+      "type": "integer"
+    }
+  }
+}

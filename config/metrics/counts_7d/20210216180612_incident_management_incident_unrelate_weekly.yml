@@ -1,0 +1,23 @@
+---
+data_category: optional
+key_path: redis_hll_counters.incident_management.incident_management_incident_unrelate_weekly
+description: Count of unique users removing issue that are related to an incident
+  per week
+product_group: platform_insights
+product_categories:
+- incident_management
+value_type: number
+status: active
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - incident_management_incident_unrelate
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

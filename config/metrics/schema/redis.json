@@ -1,0 +1,54 @@
+{
+  "if": {
+    "properties": {
+      "data_source": {
+        "const": "redis"
+      }
+    }
+  },
+  "then": {
+    "anyOf": [
+      {
+        "properties": {
+          "instrumentation_class": {
+            "const": "RedisMetric"
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "event": {
+                "type": "string"
+              },
+              "prefix": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "include_usage_prefix": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "event",
+              "prefix"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "instrumentation_class",
+          "options"
+        ]
+      },
+      {
+        "properties": {
+          "status": {
+            "description": "Legacy metrics that do not match with the schema",
+            "const": "removed"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,173 @@
+- breadcrumb_title _("Network")
+- page_title _("Network")
+- add_page_specific_style 'page_bundles/settings'
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_application_settings_network_pageload' } }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Performance optimization'),
+  id: 'js-performance-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Various settings that affect GitLab performance.')
+  - c.with_body do
+    = render 'performance'
+
+= render ::Layouts::SettingsBlockComponent.new(_('User and IP rate limits'),
+  id: 'js-ip-limits-settings',
+  testid: 'ip-limits-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set limits for web and API requests.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/user_and_ip_rate_limits.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'ip_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Package registry rate limits'),
+  id: 'js-packages-limits-settings',
+  testid: 'packages-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set rate limits for package registry API requests that supersede the general user and IP rate limits.')
+    = link_to _('Learn more.'), help_page_path('rate_limits/api/package-registry.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render partial: 'network_rate_limits', locals: { anchor: 'js-packages-limits-settings', setting_fragment: 'packages_api' }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Dependency proxy rate limits'),
+  id: 'js-dependency-proxy-limits-settings',
+  testid: 'dependency-proxy-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure specific limits for authenticated dependency proxy requests.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/user_and_ip_rate_limits.md', anchor: 'enable-authenticated-dependency-proxy-request-rate-limit'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'dependency_proxy_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Files API rate limits'),
+  id: 'js-files-limits-settings',
+  testid: 'files-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure specific limits for Files API requests that supersede the general user and IP rate limits.')
+  - c.with_body do
+    = render partial: 'network_rate_limits', locals: { anchor: 'js-files-limits-settings', setting_fragment: 'files_api' }
+
+= render ::Layouts::SettingsBlockComponent.new(s_('AdminSettings|GitLab MCP server rate limits'),
+  id: 'js-mcp-limits-settings',
+  testid: 'mcp-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('AdminSettings|Set an additional per-user limit for MCP server requests. These requests also count against the general user and IP rate limits.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/user_and_ip_rate_limits.md', anchor: 'enable-authenticated-mcp-server-request-rate-limit'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'mcp_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Search rate limits'),
+  id: 'js-search-limits-settings',
+  testid: 'search-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set rate limits for searches performed by web or API requests.')
+  - c.with_body do
+    = render 'search_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Deprecated API rate limits'),
+  id: 'js-deprecated-limits-settings',
+  testid: 'deprecated-api-rate-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure specific limits for deprecated API requests that supersede the general user and IP rate limits.')
+    = link_to _('Which API requests are affected?'), help_page_path('rate_limits/api/deprecated.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render partial: 'network_rate_limits', locals: { anchor: 'js-deprecated-limits-settings', setting_fragment: 'deprecated_api' }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Git HTTP rate limits'),
+  id: 'js-git-http-limits-settings',
+  testid: 'git-http-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure specific limits for Git HTTP requests.')
+    = link_to _('Learn more.'), help_page_path('rate_limits/git.md', anchor: 'git-http'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'git_http_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Git LFS rate limits'),
+  id: 'js-git-lfs-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure specific limits for Git LFS requests that supersede the general user and IP rate limits.')
+    = link_to _('Learn more.'), help_page_path('rate_limits/git.md', anchor: 'git-lfs'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'git_lfs_limits'
+
+= render 'gitlab_shell_operation_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(s_('OutboundRequests|Outbound requests'),
+  id: 'js-outbound-settings',
+  testid: 'outbound-requests-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('OutboundRequests|Allow requests to the local network from hooks and integrations.')
+    = link_to _('Learn more.'), help_page_path('security/webhooks.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'outbound'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Protected paths'),
+  id: 'js-protected-paths-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Rate limit access to specified paths.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/protected_paths.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'protected_paths'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Issues rate limits'),
+  id: 'js-issue-limits-settings',
+  testid: 'issue-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Limit the number of issues and epics per minute a user can create through web and API requests.')
+    = link_to _('Learn more.'), help_page_path('rate_limits/content_creation.md', anchor: 'issue-and-epic-creation'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'issue_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Notes rate limits'),
+  id: 'js-note-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set the per-user rate limit for notes created by web or API requests.')
+    = link_to _('Learn more.'), help_page_path('rate_limits/content_creation.md', anchor: 'note-creation'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'note_limits'
+
+= render 'users_api_limits'
+
+= render 'groups_api_limits'
+
+= render 'projects_api_limits'
+
+= render 'organizations_api_limits'
+
+= render 'members_api_limits'
+
+= render 'web_hook_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Import and export rate limits'),
+  id: 'js-import-export-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set per-user rate limits for imports and exports of projects and groups.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/import_export_rate_limits.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'import_export_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Pipeline creation rate limits'),
+  id: 'js-pipeline-limits-settings',
+  testid: 'pipeline-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Limit the number of pipeline creation requests per minute. This limit includes pipelines created through the UI, the API, and by background processing.')
+    = link_to _('Learn more.'), help_page_path('administration/cicd/limits.md', anchor: 'pipeline-creation-rate-limits'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'pipeline_limits'
+
+= render_if_exists 'admin/application_settings/ee_network_settings'

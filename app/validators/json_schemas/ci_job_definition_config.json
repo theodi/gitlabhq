@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "CI job configuration options",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id_tokens": {
+      "$ref": "./ci_job_definition_id_tokens.json"
+    },
+    "interruptible": {
+      "type": "boolean"
+    },
+    "options": {
+      "$ref": "./ci_job_definition_options.json"
+    },
+    "run_steps": {
+      "$ref": "./ci_job_definition_run_steps.json"
+    },
+    "secrets": {
+      "$ref": "./ci_job_definition_secrets.json"
+    },
+    "tag_list": {
+      "$ref": "#/definitions/tagsDefinition"
+    },
+    "yaml_variables": {
+      "$ref": "#/definitions/variablesDefinition"
+    }
+  },
+  "definitions": {
+    "tagsDefinition": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string"
+      }
+    },
+    "variablesDefinition": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "public": {
+            "type": "boolean"
+          },
+          "raw": {
+            "type": "boolean"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

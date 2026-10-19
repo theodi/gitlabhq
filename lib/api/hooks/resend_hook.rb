@@ -1,0 +1,46 @@
+# frozen_string_literal: true
+
+module API
+  module Hooks
+    # rubocop: disable API/Base -- re-usable module
+    class ResendHook < ::Grape::API
+      desc 'Resend a webhook event' do
+        detail 'Resends a webhook event. This endpoint has a rate limit of five requests per minute for each ' \
+          'authenticated user for a given project or group. On GitLab Self-Managed and GitLab Dedicated, an ' \
+          'administrator can change this limit in the application settings.'
+        success code: 201
+        failure [
+          { code: 422, message: 'Unprocessable entity' },
+          { code: 404, message: 'Not found' },
+          { code: 429, message: 'Too many requests' }
+        ]
+        tags ['hooks']
+      end
+      params do
+        requires :hook_id, type: Integer, desc: 'ID of the hook.'
+        requires :hook_log_id, type: Integer, desc: 'ID of the hook log entry.'
+      end
+      given configuration[:tier] do
+        route_setting :tier, configuration[:tier]
+      end
+      route_setting :authorization, permissions: :resend_webhook_event, boundary_type: configuration[:boundary_type]
+      post ":hook_id/events/:hook_log_id/resend" do
+        hook = find_hook
+        check_rate_limit!(
+          :web_hook_event_resend,
+          scope: ::Gitlab::ApplicationRateLimiter.parent_scope(hook.parent).merge(user: current_user)
+        )
+
+        web_hook_log = hook.web_hook_logs.find(params[:hook_log_id])
+        result = WebHooks::Events::ResendService.new(web_hook_log, current_user: current_user).execute
+
+        if result.success?
+          present result, with: Entities::RetryWebhookEvent
+        else
+          render_api_error!(result.message, 422)
+        end
+      end
+    end
+    # rubocop: enable API/Base
+  end
+end

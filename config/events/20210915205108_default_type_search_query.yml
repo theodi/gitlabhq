@@ -1,0 +1,17 @@
+description: "Type search query"
+category: default
+action: type_search_query
+extra_properties:
+identifiers:
+product_group: engagement
+product_categories:
+- navigation
+milestone: "13.7"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/47589
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`[dropdown_type]_dropdown_frequent_items_search_input`"

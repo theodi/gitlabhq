@@ -1,138 +1,495 @@
+# frozen_string_literal: true
+
 class GroupsController < Groups::ApplicationController
-  skip_before_action :authenticate_user!, only: [:show, :issues, :merge_requests]
+  include API::Helpers::RelatedResourcesHelpers
+  include Groups::Params
+  include IssuableCollectionsAction
+  include ParamsBackwardCompatibility
+  include PreviewMarkdown
+  include RecordUserLastActivity
+  include SendFileUpload
+  include FiltersEvents
+  extend ::Gitlab::Utils::Override
+
   respond_to :html
-  before_action :group, except: [:new, :create]
+
+  prepend_before_action(only: [:show]) { authenticate_sessionless_user!(:rss, permission: :read_event) }
+  prepend_before_action(only: [:issues]) { authenticate_sessionless_user!(:rss) }
+  prepend_before_action(only: [:merge_requests], if: -> {
+    request.format.atom?
+  }) { authenticate_sessionless_user!(:rss, permission: :read_merge_request) }
+  prepend_before_action(only: [:issues_calendar]) { authenticate_sessionless_user!(:ics) }
+
+  before_action :authenticate_user!, only: [:new, :create]
+  before_action :group, except: [:index, :new, :create]
 
   # Authorize
-  before_action :authorize_read_group!, except: [:new, :create]
-  before_action :authorize_admin_group!, only: [:edit, :update, :destroy, :projects]
-  before_action :authorize_create_group!, only: [:new, :create]
+  before_action :authorize_admin_group!, only: [:update, :export, :download_export, :create_organization_from_group]
+  before_action :authorize_change_group!, only: [:transfer]
+  before_action :authorize_view_edit_page!, only: :edit
+  before_action :authorize_remove_group!, only: [:destroy, :restore]
+  before_action :authorize_create_group!, only: [:new]
 
-  # Load group projects
-  before_action :load_projects, except: [:new, :create, :projects, :edit, :update]
-  before_action :event_filter, only: :show
+  # Skip :index, :new, :create because the before_action :group has not been executed for these
+  # actions, so @group is not available. Enforcement requires a loaded group instance.
+  # TODO: For :new and :create actions, enforce step-up auth by checking the parent group
+  # (via params[:parent_id]) to check if parent group has step-up auth required.
+  # See: https://gitlab.com/gitlab-org/gitlab/-/issues/579212
+  before_action :enforce_step_up_auth_for_namespace, except: [:index, :new, :create]
+
+  # Skip for :edit and :update when user is a group admin/owner to enable self-service recovery
+  # from misconfiguration. Without this, owners could lock themselves out, requiring instance
+  # admin intervention for every affected group. Non-admin users still require step-up auth.
+  skip_before_action :enforce_step_up_auth_for_namespace, if: :skip_step_up_auth_for_owner_on_edit_and_update?
+
+  before_action :set_group_markdown_flags
+
+  before_action :group_projects, only: [:activity, :merge_requests] # rubocop:disable Rails/LexicallyScopedActionFilter -- merge_requests defined in IssuableCollectionsAction concern
+  before_action :event_filter, only: [:activity]
+
+  before_action :user_actions, only: [:show]
+
+  before_action :check_export_rate_limit!, only: [:export, :download_export]
+  before_action :check_create_rate_limit!, only: [:create]
+
+  skip_cross_project_access_check :index, :new, :create, :edit, :update, :destroy
+  # When loading show as an atom feed, we render events that could leak cross
+  # project information
+  skip_cross_project_access_check :show, if: -> { request.format.html? }
 
   layout :determine_layout
 
+  feature_category :groups_and_projects, [
+    :index, :new, :create, :show, :edit, :update,
+    :destroy, :details, :transfer, :activity, :restore
+  ]
+  feature_category :planning_views, [:issues, :issues_calendar]
+  feature_category :team_planning, [:preview_markdown]
+  feature_category :code_review_workflow, [:merge_requests]
+  feature_category :importers, [:export, :download_export]
+  feature_category :continuous_delivery, [:unfoldered_environment_names]
+  feature_category :organization, [:create_organization_from_group]
+  urgency :low, [:export, :download_export, :create_organization_from_group]
+
+  urgency :high, [:unfoldered_environment_names]
+
+  urgency :low, [:issues, :issues_calendar, :preview_markdown]
+  # TODO: Set #show to higher urgency after resolving https://gitlab.com/gitlab-org/gitlab/-/issues/334795
+  urgency :low, [:merge_requests, :show, :create, :new, :update, :destroy, :edit, :activity]
+
+  def index
+    redirect_to(current_user ? dashboard_groups_path : explore_groups_path)
+  end
+
   def new
-    @group = Group.new
+    @parent_group = Group.find_by_id(parent_id_params[:parent_id])
+    @group = Group.new(parent_id_params)
+    @group.build_namespace_settings
   end
 
   def create
-    @group = Group.new(group_params)
-    @group.name = @group.path.dup unless @group.name
+    response = Groups::CreateService.new(
+      current_user,
+      group_params.merge(organization_id: Current.organization.id)
+    ).execute
+    @group = response[:group]
 
-    if @group.save
-      @group.add_owner(current_user)
-      redirect_to @group, notice: 'Group was successfully created.'
+    if response.success?
+      successful_creation_hooks
+
+      notice = if @group.chat_team.present?
+                 format(
+                   _("Group %{group_name} and its Mattermost team were successfully created."),
+                   group_name: @group.name
+                 )
+               else
+                 format(
+                   _("Group %{group_name} was successfully created."),
+                   group_name: @group.name
+                 )
+               end
+
+      redirect_to group_path(@group, organization_path: nil), notice: notice
     else
       render action: "new"
     end
   end
 
   def show
-    @last_push = current_user.recent_push if current_user
-    @projects = @projects.includes(:namespace)
+    respond_to do |format|
+      format.html do
+        if @group.import_state&.in_progress?
+          redirect_to group_import_path(@group)
+        else
+          render_show_html
+        end
+      end
 
+      format.atom do
+        render_details_view_atom
+      end
+    end
+  end
+
+  def details
+    render_details_view_atom
+  end
+
+  def activity
     respond_to do |format|
       format.html
 
       format.json do
         load_events
-        pager_json("events/_events", @events.count)
+        pager_json("events/_events", @events.count { |event| event.visible_to_user?(current_user) })
       end
-
-      format.atom do
-        load_events
-        render layout: false
-      end
-    end
-  end
-
-  def merge_requests
-    @merge_requests = get_merge_requests_collection
-    @merge_requests = @merge_requests.page(params[:page]).per(PER_PAGE)
-    @merge_requests = @merge_requests.preload(:author, :target_project)
-  end
-
-  def issues
-    @issues = get_issues_collection
-    @issues = @issues.page(params[:page]).per(PER_PAGE)
-    @issues = @issues.preload(:author, :project)
-
-    respond_to do |format|
-      format.html
-      format.atom { render layout: false }
     end
   end
 
   def edit
+    @badge_api_endpoint = expose_path(api_v4_groups_badges_path(id: @group.id))
   end
 
-  def projects
-    @projects = @group.projects.page(params[:page])
+  def create_organization_from_group
+    return render_404 unless Organizations::Release.enabled?(:create_org_from_group_settings, @group)
+
+    result = Organizations::CreateFromGroupService.new(
+      group: @group,
+      current_user: current_user,
+      params: params.permit(:name)
+    ).execute
+
+    if result.success?
+      organization = result.payload[:organization]
+
+      render json: Organizations::OrganizationSerializer.new.represent(organization), status: :created
+    else
+      render json: { message: Array(result.message) }, status: :unprocessable_entity
+    end
   end
 
   def update
-    if @group.update_attributes(group_params)
-      redirect_to edit_group_path(@group), notice: 'Group was successfully updated.'
+    if Groups::UpdateService.new(@group, current_user, group_params).execute
+
+      if @group.namespace_settings.errors.present?
+        flash[:alert] = group.namespace_settings.errors.full_messages.to_sentence
+      else
+        flash[:notice] = "Group '#{@group.name}' was successfully updated."
+      end
+
+      redirect_to edit_group_origin_location
     else
+      @group.reset
       render action: "edit"
     end
   end
 
+  def edit_group_origin_location
+    if permitted_params.dig(:group, :redirect_target) == 'repository_settings'
+      group_settings_repository_path(@group, anchor: 'js-default-branch-name')
+    else
+      edit_group_path(@group, anchor: permitted_params[:update_section])
+    end
+  end
+
   def destroy
-    @group.destroy
+    if group.self_deletion_scheduled? &&
+        ::Gitlab::Utils.to_boolean(permitted_params[:permanently_remove])
 
-    redirect_to root_path, notice: 'Group was removed.'
-  end
+      return destroy_immediately
+    end
 
-  protected
+    result = ::Groups::MarkForDeletionService.new(group, current_user).execute
 
-  def group
-    @group ||= Group.find_by(path: params[:id])
-  end
+    if result.success?
+      respond_to do |format|
+        format.html do
+          redirect_to dashboard_groups_path, status: :found
+        end
 
-  def load_projects
-    @projects ||= ProjectsFinder.new.execute(current_user, group: group).sorted_by_activity.non_archived
-  end
+        format.json do
+          render json: {
+            message: format(
+              _("'%{group_name}' has been scheduled for deletion and will be deleted on %{date}."),
+              group_name: group.name,
+              date: helpers.permanent_deletion_date_formatted(group)
+            )
+          }
+        end
+      end
+    else
+      respond_to do |format|
+        format.html do
+          redirect_to edit_group_path(group), status: :found, alert: result.message
+        end
 
-  def project_ids
-    @projects.pluck(:id)
-  end
-
-  # Dont allow unauthorized access to group
-  def authorize_read_group!
-    unless @group and (@projects.present? or can?(current_user, :read_group, @group))
-      if current_user.nil?
-        return authenticate_user!
-      else
-        return render_404
+        format.json do
+          render json: { message: result.message }, status: :unprocessable_entity
+        end
       end
     end
   end
 
-  def authorize_create_group!
-    unless can?(current_user, :create_group, nil)
-      return render_404
+  def restore
+    return render_404 unless group.self_deletion_scheduled?
+
+    result = ::Groups::RestoreService.new(group, current_user).execute
+
+    if result.success?
+      redirect_to edit_group_path(group),
+        notice: format(_("Group '%{group_name}' has been successfully restored."), group_name: group.full_name)
+    else
+      redirect_to(edit_group_path(group), alert: result.message)
     end
   end
 
+  # rubocop: disable CodeReuse/ActiveRecord
+  def transfer
+    parent_group = Group.find_by(id: permitted_params[:new_parent_group_id])
+
+    enqueue_async_transfer(parent_group)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def export
+    export_service = Groups::ImportExport::ExportService.new(
+      group: @group,
+      user: current_user,
+      exported_by_admin: current_user.can_admin_all_resources?
+    )
+
+    if export_service.async_execute
+      redirect_to edit_group_path(@group),
+        notice: _('Group export started. A download link will be sent by email and made available on this page.')
+    else
+      redirect_to edit_group_path(@group), alert: _('Group export could not be started.')
+    end
+  end
+
+  def download_export
+    if @group.export_file_exists?(current_user)
+      if @group.export_archive_exists?(current_user)
+        export_file = @group.export_file(current_user)
+        send_upload(
+          export_file,
+          attachment: export_file.filename,
+          send_params: { content_type: Gitlab::ImportExport.export_download_content_type }
+        )
+      else
+        redirect_to edit_group_path(@group),
+          alert: _(
+            'The file containing the export is not available yet; it may still be transferring. Please try again later.'
+          )
+      end
+    else
+      redirect_to edit_group_path(@group),
+        alert: _('Group export link has expired. Please generate a new export from your group settings.')
+    end
+  end
+
+  def unfoldered_environment_names
+    respond_to do |format|
+      format.json do
+        render json: Environments::EnvironmentNamesFinder.new(@group, current_user).execute
+      end
+    end
+  end
+
+  def issues
+    return super unless html_request?
+
+    set_sort_order
+
+    redirect_issues_to_work_items
+  end
+
+  protected
+
+  def render_show_html
+    Gitlab::Tracking.event('group_overview', 'render', user: current_user, namespace: @group)
+
+    render 'groups/show', locals: { trial: permitted_params[:trial] }
+  end
+
+  def render_details_view_atom
+    load_events
+    render layout: 'xml', template: 'groups/show'
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def authorize_create_group!
+    parent_id = parent_id_params[:parent_id]
+    allowed = if parent_id.present?
+                parent = Group.find_by(id: parent_id)
+                can?(current_user, :create_subgroup, parent)
+              else
+                can?(current_user, :create_group)
+              end
+
+    render_404 unless allowed
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
   def determine_layout
     if [:new, :create].include?(action_name.to_sym)
-      'application'
+      'dashboard'
+    elsif [:edit, :update].include?(action_name.to_sym)
+      'group_settings'
     else
       'group'
     end
   end
 
-  def group_params
-    params.require(:group).permit(:name, :description, :path, :avatar)
+  # rubocop: disable CodeReuse/ActiveRecord
+  def load_events
+    options = { include_subgroups: true }
+    projects = GroupProjectsFinder.new(
+      params: event_projects_finder_params, group: group, options: options, current_user: current_user
+    ).execute
+      .includes(:namespace)
+
+    @events = EventCollection.new(
+      projects,
+      offset: permitted_params[:offset].to_i,
+      filter: event_filter,
+      groups: groups,
+      transfer_options: { current_group_id: @group.id }
+    ).to_a.map(&:present)
+
+    Events::RenderService
+      .new(current_user)
+      .execute(@events, atom_request: request.format.atom?)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  # Permits the filter keys read by GroupProjectsFinder/ProjectsFinder for the group activity feed,
+  # including the EE-only filters those finders gain via prepend_mod.
+  def event_projects_finder_params
+    finder_params = params.permit(
+      :sort, :visibility_level, :topic, :topic_id, :tag, :personal, :search, :non_archived, :archived,
+      :owned, :non_public, :min_access_level, :starred, :with_issues_enabled, :with_merge_requests_enabled,
+      :namespace_path, :include_pending_delete, :id_after, :id_before, :marked_for_deletion_on,
+      :aimed_for_deletion, :not_aimed_for_deletion, :last_activity_after, :last_activity_before,
+      :repository_storage, :language_name, :active, :last_repository_check_failed,
+      :with_security_reports, :include_hidden, :duo_licensed_feature,
+      :filter_expired_saml_session_projects,
+      :name, :minimum_search_length, :search_namespaces, :updated_before, :updated_after,
+      full_paths: [], plans: [], custom_attributes: {}
+    )
+    finder_params[:sort] ||= 'latest_activity_desc'
+    finder_params
   end
 
-  def load_events
-    @events = Event.in_projects(project_ids)
-    @events = event_filter.apply_filter(@events).with_associations
-    @events = @events.limit(20).offset(params[:offset] || 0)
+  def user_actions
+    @notification_setting = current_user.notification_settings_for(group) if current_user
+  end
+
+  def build_canonical_path(group)
+    return group_path(group) if action_name == 'show' # root group path
+
+    url_for(safe_params.merge(id: group.to_param))
+  end
+
+  def check_export_rate_limit!
+    prefixed_action = :"group_#{action_name}"
+
+    scope = action_name == 'download_export' ? @group : nil
+
+    check_rate_limit!(prefixed_action, scope: { user: current_user, group: scope }.compact)
+  end
+
+  def check_create_rate_limit!
+    return unless Feature.enabled?(:namespace_create_rate_limit, current_user)
+
+    check_rate_limit!(:groups_create, scope: { user: current_user })
+  end
+
+  private
+
+  # Kept separate from permitted_params because it is passed whole to Group.new,
+  # where the exact key set is the behaviour.
+  def parent_id_params
+    params.permit(:parent_id)
+  end
+  strong_memoize_attr :parent_id_params
+
+  def permitted_params
+    params.permit(
+      :update_section, :permanently_remove, :new_parent_group_id, :trial, :offset,
+      group: :redirect_target
+    )
+  end
+  strong_memoize_attr :permitted_params
+
+  def successful_creation_hooks
+    # overwritten in EE
+  end
+
+  def groups
+    return unless @group.supports_events?
+
+    @group.self_and_descendants.public_or_visible_to_user(current_user)
+  end
+
+  override :resource_parent
+  def resource_parent
+    group
+  end
+
+  override :has_project_list?
+  def has_project_list?
+    %w[details show index].include?(action_name)
+  end
+
+  def enqueue_async_transfer(parent_group)
+    service = ::Groups::TransferService.new(@group, current_user)
+    result = service.schedule_async_transfer(parent_group)
+
+    if result.success?
+      redirect_to group_path(@group)
+    else
+      flash[:alert] = result.message
+      redirect_to edit_group_path(@group)
+    end
+  end
+
+  def destroy_immediately
+    Groups::DestroyService.new(@group, current_user).async_execute
+    message = format(_("%{group_name} is being deleted."), group_name: @group.name)
+
+    respond_to do |format|
+      format.html do
+        flash[:toast] = message
+        redirect_to dashboard_groups_path, status: :found
+      end
+
+      format.json do
+        render json: { message: message }
+      end
+    end
+  end
+
+  # Overridden in EE
+  def redirect_if_epic_params; end
+
+  def redirect_issues_to_work_items
+    params = work_items_redirect_params.except("type", "type[]").merge(additional_work_items_params)
+
+    redirect_to group_work_items_path(group, params: params)
+  end
+
+  def work_items_redirect_params
+    request.query_parameters
+  end
+
+  # Overridden in EE
+  def additional_work_items_params
+    {}
+  end
+
+  def skip_step_up_auth_for_owner_on_edit_and_update?
+    [:edit, :update].include?(action_name.to_sym) && can?(current_user, :admin_group, group)
   end
 end
+
+GroupsController.prepend_mod

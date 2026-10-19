@@ -1,2 +1,7 @@
-- page_title "Edit", @milestone.title, "Milestones"
-= render "form"
+- breadcrumb_title _('Edit')
+- add_to_breadcrumbs _('Milestones'), project_milestones_path(@project)
+- add_to_breadcrumbs @milestone.title, milestone_path(@milestone)
+- page_title _('Edit'), @milestone.title, _('Milestones')
+
+= render ::Layouts::PageHeadingComponent.new(_('Edit milestone'))
+= render 'form'

@@ -1,0 +1,161 @@
+# frozen_string_literal: true
+
+module API
+  class Invitations < ::API::Base
+    include PaginationParams
+
+    # Inviting members to a source organization that has data isolation
+    # enabled relies on resolving the invitee across organizations to
+    # detect cross-organization invitations. The global Current.organization
+    # hook would scope those lookups and hide cross-organization users from
+    # the resolver, bypassing the explicit isolation check. Opt out so the
+    # invitations endpoints can keep doing cross-organization lookups.
+    skip_global_organization_setup!
+
+    feature_category :user_profile
+
+    before { authenticate! }
+
+    helpers ::API::Helpers::MembersHelpers
+
+    helpers do
+      params :invitation_params_ee do
+        # Overridden in EE
+      end
+    end
+
+    # rubocop: disable Cop/InjectEnterpriseEditionModule -- params helper needs to be included before the endpoints
+    prepend_mod_with('API::Invitations')
+    # rubocop: enable Cop/InjectEnterpriseEditionModule
+
+    %w[group project].each do |source_type|
+      params do
+        requires :id, type: String, desc: "ID or URL-encoded path of the #{source_type}."
+      end
+      resource source_type.pluralize, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc "Add a member to a #{source_type}" do
+          detail "Adds a member to a #{source_type}. You can specify a user ID or invite a user by email."
+          success Entities::Invitation
+          tags %w[invitations]
+        end
+        params do
+          requires :access_level, type: Integer, values: ::API::Helpers::MembersHelpers.member_access_levels, desc: 'Access level to grant to the invited user. For a list of values, see [roles](https://docs.gitlab.com/user/permissions/#default-roles).' # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+          optional :email, type: Array[String], email_or_email_list: true, coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce, desc: 'Email address of the member to invite, or multiple email addresses separated by commas. Required if `user_id` is not provided.'
+          optional :user_id, type: Array[String], coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce, desc: 'ID of the user to invite, or multiple IDs separated by commas. Required if `email` is not provided.'
+          optional :expires_at, type: DateTime, desc: 'Date when the invitation expires.'
+          optional :invite_source, type: String, desc: 'Source of the invitation that starts the member creation process.', default: 'invitations-api'
+
+          use :invitation_params_ee
+        end
+        route_setting :authorization, permissions: :create_invitation, boundary_type: source_type.to_sym
+        post ":id/invitations", urgency: :low do
+          ::Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/354016')
+
+          bad_request!('Must provide either email or user_id as a parameter') if params[:email].blank? && params[:user_id].blank?
+
+          source = find_source(source_type, params[:id])
+
+          authorize_invite_source_member!(source_type, source)
+
+          create_service_params = declared_params.merge(source: source)
+
+          ::Members::InviteService.new(current_user, create_service_params).execute
+        end
+
+        desc "List all pending invitations for a #{source_type}" do
+          detail "Lists all pending invitations for a specified #{source_type} viewable by the authenticated " \
+            "user. Returns invitations to direct members only, and not through inherited ancestor groups. This " \
+            "function takes pagination parameters `page` and `per_page` to restrict the list of members."
+          success Entities::Invitation
+          is_array true
+          tags %w[invitations]
+        end
+        params do
+          optional :page, type: Integer, desc: 'Page to retrieve'
+          optional :per_page, type: Integer, desc: 'Number of member invitations to return per page'
+          optional :query, type: String, desc: 'Return only invitations sent to this email address. Must match exactly. If omitted, returns all invitations.'
+          use :pagination
+        end
+        route_setting :authorization, permissions: :read_invitation, boundary_type: source_type.to_sym
+        get ":id/invitations" do
+          source = find_source(source_type, params[:id])
+          query = params[:query]
+
+          authorize_admin_source_member!(source_type, source)
+
+          invitations = paginate(retrieve_member_invitations(source, query))
+
+          present_member_invitations invitations
+        end
+
+        desc "Update an invitation to a #{source_type}" do
+          detail "Updates a pending invitation to a #{source_type}."
+          success Entities::Invitation
+          tags %w[invitations]
+        end
+        params do
+          requires :email, type: String, desc: 'Email address the invitation was previously sent to.'
+          optional :access_level, type: Integer, values: Gitlab::Access.all_values, desc: 'Access level to grant to the invited user. For a list of values, see [roles](https://docs.gitlab.com/user/permissions/#default-roles).' # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+          optional :expires_at, type: DateTime, desc: 'Date when the invitation expires.'
+
+          use :invitation_params_ee
+        end
+        route_setting :authorization, permissions: :update_invitation, boundary_type: source_type.to_sym
+        put ":id/invitations/:email", requirements: { email: %r{[^/]+} } do
+          source = find_source(source_type, params.delete(:id))
+          invite_email = params[:email]
+
+          authorize_admin_source_member!(source_type, source)
+
+          invite = retrieve_member_invitations(source, invite_email).first
+          not_found! unless invite
+
+          update_params = declared_params(include_missing: false)
+          update_params.delete(:email)
+          bad_request! unless update_params.any?
+
+          result = ::Members::UpdateService
+            .new(current_user, update_params.merge({ source: source }))
+            .execute(invite)
+
+          updated_member = result[:members].first
+
+          if result[:status] == :success
+            present_member_invitations updated_member
+          else
+            render_validation_error!(updated_member)
+          end
+        end
+
+        desc "Delete an invitation to a #{source_type}" do
+          detail "Deletes a pending invitation to a specified email address for a #{source_type}."
+          success code: 204
+          failure [
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' },
+            { code: 409, message: 'Could not delete invitation' }
+          ]
+          tags %w[invitations]
+        end
+        params do
+          requires :email, type: String, desc: 'Email address the invitation was previously sent to.'
+        end
+        route_setting :authorization, permissions: :delete_invitation, boundary_type: source_type.to_sym
+        delete ":id/invitations/:email", requirements: { email: %r{[^/]+} } do
+          source = find_source(source_type, params[:id])
+          invite_email = params[:email]
+
+          authorize_admin_source_member!(source_type, source)
+
+          invite = retrieve_member_invitations(source, invite_email).first
+          not_found! unless invite
+
+          destroy_conditionally!(invite) do
+            ::Members::DestroyService.new(invite, current_user: current_user).execute
+            unprocessable_entity! unless invite.destroyed?
+          end
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,495 @@
+@use "sass:color";
+@use 'constants';
+
+diff-file[data-with-discussion-toggle] {
+  --rd-line-area-extend-left: 16px;
+}
+
+diff-file[data-line-range-dragging] {
+  --rd-line-area-extend-left: 100vw;
+  --rd-paint-extend-left: 100vw;
+}
+
+.rd-diff-file {
+  --rd-body-font-size: #{constants.$code-font-size};
+  --rd-body-font-line-height: #{constants.$code-line-height};
+}
+
+.rd-diff-file[data-virtual="text_parallel"],
+.rd-diff-file[data-virtual="text_inline"] {
+  --rd-row-intrinsic-height: calc(var(--rd-body-font-line-height) * var(--rd-body-font-size));
+  --rd-body-intrinsic-height: calc(var(--rd-row-intrinsic-height) * var(--virtual-total-rows));
+}
+
+.rd-text-view-root,
+.rd-text-view-content {
+  display: block;
+}
+
+.rd-text-view-root.rd-text-view-root {
+  // override .code-syntax-highlight-theme
+  background: transparent;
+}
+
+.rd-text-view-content {
+  --rd-code-border-adjust: var(--code-border-lightness-adjust, -0.075);
+  --rd-line-added-background-color: var(--custom-diff-addition-color, var(--code-new-diff-background-color, $line-number-new));
+  --rd-line-removed-background-color: var(--custom-diff-deletion-color, var(--code-old-diff-background-color, $line-number-old));
+  --rd-line-link-color: var(--code-line-number-color, #{$gl-color-neutral-400});
+  --rd-line-theme-border-color: oklch(from var(--code-background) calc(l + var(--rd-code-border-adjust)) c h);
+  margin: 0 -1px;
+  background-color: var(--code-background, $gl-color-neutral-0);
+}
+
+// Each hunk's tbody is virtualized so off-screen hunks within an on-screen file
+// are skipped during rendering. Mirrors the file-level content-visibility setup.
+.rd-diff-file[data-virtual] .rd-text-view-content {
+  content-visibility: var(--rd-content-visibility-auto, auto);
+  contain-intrinsic-size:
+    auto 0
+    auto calc(var(--rd-row-intrinsic-height) * var(--virtual-total-rows));
+}
+
+// Disable per-tbody content-visibility when it hosts a discussion row or a
+// new-discussion toggle, since those extend beyond the tbody's paint container.
+// stylelint-disable-next-line gitlab/no-has -- scoped to text view content within virtual diff files
+.rd-diff-file[data-virtual] .rd-text-view-content:has([data-discussion-row]),
+.rd-diff-file[data-virtual] .rd-text-view-content:has([data-has-new-discussion-toggle]) {
+  --rd-content-visibility-auto: visible;
+}
+
+.rd-text-view-content:last-child {
+  border-radius: 0 0 var(--rd-diff-file-border-radius) var(--rd-diff-file-border-radius);
+}
+
+.rd-text-view-content td:first-child {
+  border-left: 1px solid var(--rd-diff-file-outer-border-color, var(--rd-line-border-color, var(--rd-line-theme-border-color)));
+}
+
+.rd-text-view-content td:last-child {
+  border-right: 1px solid var(--rd-diff-file-outer-border-color, var(--rd-line-border-color, var(--rd-line-theme-border-color)));
+}
+
+.rd-hunk-header,
+.rd-hunk-lines {
+  display: grid;
+  font-family: $monospace-font;
+  line-height: var(--rd-body-font-line-height);
+  font-size: var(--rd-body-font-size);
+}
+
+.rd-text-view-content:last-child > tr:last-child {
+  --rd-row-bottom-left-radius: var(--rd-diff-file-border-radius);
+  --rd-row-bottom-right-radius: var(--rd-diff-file-border-radius);
+}
+
+.rd-text-view-content:last-child > tr:last-child > td:not(:last-child) {
+  --rd-row-bottom-right-radius: 0;
+}
+
+.rd-text-view-content:last-child > tr:last-child > td:not(:first-child) {
+  --rd-row-bottom-left-radius: 0;
+}
+
+.rd-hunk-header {
+  position: relative;
+  z-index: constants.$diff-file-hunk-header-z-index;
+  // this is used when a hunk header doesn't have any text, only expand buttons
+  min-height: calc(1em * $code-line-height);
+  background-color: var(--code-diff-hunk-header-background-color, $gray-50);
+  color: var(--code-diff-hunk-header-color, $gray-400);
+  border-radius: 0 0 var(--rd-row-bottom-right-radius) var(--rd-row-bottom-left-radius);
+
+  &:first-child {
+    border-top: 0;
+  }
+
+  &:last-child {
+    border-bottom: 0;
+  }
+}
+
+.rd-hunk-header[data-loading=both] [data-visible-when=loading],
+.rd-hunk-header[data-loading=up] [data-expand-direction=up] [data-visible-when=loading],
+.rd-hunk-header[data-loading=down] [data-expand-direction=down] [data-visible-when=loading] {
+  display: block;
+}
+
+.rd-hunk-header[data-loading=both] [data-visible-when=idle],
+.rd-hunk-header[data-loading=up] [data-expand-direction=up] [data-visible-when=idle],
+.rd-hunk-header[data-loading=down] [data-expand-direction=down] [data-visible-when=idle] {
+  display: none;
+}
+
+.rd-hunk-lines-parallel {
+  grid-template-columns: 50px 1fr 50px 1fr;
+}
+
+.rd-hunk-lines-inline td:nth-child(2),
+.rd-hunk-lines-parallel td:first-child {
+  border-right: 1px solid var(--rd-line-border-color, var(--rd-line-theme-border-color));
+}
+
+.rd-hunk-lines-parallel .rd-line-number {
+  border-left: 1px solid var(--rd-line-border-color, var(--rd-line-theme-border-color));
+  border-right: 1px solid var(--rd-line-border-color, var(--rd-line-theme-border-color));
+}
+
+.rd-hunk-header-parallel {
+  grid-template-columns: 50px 1fr;
+}
+
+.rd-hunk-header-inline {
+  grid-template-columns: 100px 1fr;
+}
+
+.rd-hunk-lines-inline {
+  grid-template-columns: 50px 50px 1fr;
+}
+
+.rd-hunk-header-buttons {
+  display: grid;
+  grid-auto-flow: column;
+  padding: 0;
+  border-bottom-left-radius: var(--rd-row-bottom-left-radius);
+}
+
+.rd-expand-lines-button {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  // whitespace inside button increases the minimum size of the row
+  // this causes jumps when the icons change from idle to loading
+  font-size: 0;
+  border: 0;
+  padding: 0;
+
+  background-color: var(--code-diff-expand-button-background-color, $gray-100);
+  color: var(--code-diff-expand-button-color, var(--gl-text-color-subtle));
+  border-radius: 0 0 var(--rd-row-bottom-right-radius) var(--rd-row-bottom-left-radius);
+
+  &:hover {
+    background-color: var(--code-diff-expand-button-hover-background-color, $gray-200);
+    color: var(--code-diff-expand-button-hover-color, $gray-800);
+  }
+
+  &:focus-visible {
+    outline: 1px solid var(--gl-focus-ring-outer-color);
+    position: relative;
+    margin: 0 1px;
+  }
+}
+
+.rd-expand-lines-button [data-visible-when=loading] {
+  display: none;
+}
+
+.rd-line-number {
+  position: relative;
+  padding: 0 10px 0 5px;
+  text-align: right;
+  background-color: var(--code-line-number-background-color, $white);
+  scroll-margin-top: var(--rd-diff-file-header-height);
+}
+
+diff-file:where([data-with-discussion-toggle], [data-line-range-dragging]) .rd-line-number:not(:nth-child(2))::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--rd-line-area-extend-left);
+  left: calc(1px + var(--rd-line-area-extend-left) * -1);
+}
+
+.rd-hunk-lines:target,
+.rd-hunk-lines[data-highlight] {
+  --rd-highlight-color: var(--code-highlighted-line-background-color);
+  --rd-highlight-border-color: var(--code-highlighted-line-border-color);
+  --rd-line-background-color-override: var(--rd-highlight-color);
+  --code-line-number-background-color: var(--rd-highlight-color);
+  --rd-shadow-top: 0 -1px var(--rd-highlight-border-color);
+  --rd-shadow-bottom: 0 1px var(--rd-highlight-border-color);
+  position: relative;
+  background-color: var(--rd-highlight-color);
+  border-radius: 0 0 var(--rd-row-bottom-right-radius) var(--rd-row-bottom-left-radius);
+  box-shadow: var(--rd-shadow-top), var(--rd-shadow-bottom);
+  z-index: constants.$diff-file-highlighted-line-number-z-index;
+}
+
+.rd-hunk-lines[data-highlight] {
+  --rd-shadow-top: 0 0 transparent;
+  --rd-shadow-bottom: 0 0 transparent;
+}
+
+.rd-hunk-lines:target > td:first-child,
+.rd-hunk-lines[data-highlight] > td:first-child {
+  border-left-color: var(--rd-highlight-border-color);
+}
+
+.rd-hunk-lines:target > td:last-child,
+.rd-hunk-lines[data-highlight] > td:last-child {
+  border-right-color: var(--rd-highlight-border-color);
+}
+
+.rd-hunk-lines:target .rd-line-number {
+  --rd-line-link-color: var(--code-line-number-hover-color);
+  --rd-adjacent-line-border-color: var(--rd-line-border-color);
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+  .rd-hunk-lines:target > [data-change=added],
+  .rd-hunk-lines[data-highlight] > [data-change=added] {
+    --rd-line-background-color-override:
+      color-mix(in oklab, var(--rd-highlight-color) 60%, var(--rd-line-added-background-color));
+  }
+
+  .rd-hunk-lines:target > [data-change=removed],
+  .rd-hunk-lines[data-highlight] > [data-change=removed] {
+    --rd-line-background-color-override:
+      color-mix(in oklab, var(--rd-highlight-color) 60%, var(--rd-line-removed-background-color));
+  }
+}
+
+.rd-hunk-lines[data-highlight~=start] {
+  --rd-shadow-top: 0 -1px var(--rd-highlight-border-color);
+}
+
+.rd-hunk-lines[data-highlight~=end] {
+  --rd-shadow-bottom: 0 1px var(--rd-highlight-border-color);
+}
+
+// child combinator improves performance of the selector
+// duplicate .rd-hunk-lines-inline selector to override highlighted color
+.rd-hunk-lines-parallel:hover > .rd-line-number:not(:empty),
+.rd-hunk-lines-inline.rd-hunk-lines-inline:hover > .rd-line-number {
+  --rd-line-border-color: var(--code-line-number-hover-border-color, #{$gl-color-purple-200});
+  --rd-adjacent-line-border-color: var(--rd-line-border-color);
+  --rd-line-background-color: var(--code-line-number-hover-background-color, #{$gl-color-purple-100});
+  background-color: var(--rd-line-background-color);
+}
+
+.rd-line-number:hover > .rd-line-link {
+  color: var(--code-line-number-hover-color, $gl-color-neutral-600);
+}
+
+.rd-line-number[data-change=removed] {
+  --rd-line-link-color: var(--code-old-diff-line-number-color, #{color.scale($gl-color-neutral-300, $red: -30%, $green: -30%, $blue: -30%)});
+  --rd-line-background-color: var(--custom-diff-deletion-color, var(--code-old-diff-line-number-background-color));
+}
+
+.rd-line-number[data-change=added] {
+  --rd-line-link-color: var(--code-new-diff-line-number-color, #{color.scale($gl-color-neutral-200, $red: -30%, $green: -30%, $blue: -30%)});
+  --rd-line-background-color: var(--custom-diff-addition-color, var(--code-new-diff-line-number-background-color));
+}
+
+.rd-line-number[data-change=meta] {
+  --rd-line-background-color: var(--code-meta-diff-background-color);
+}
+
+// consistent border colors for changed lines
+.rd-line-number,
+.rd-line-content,
+.rd-hunk-header-buttons,
+.rd-hunk-header-content {
+  --background-color: var(--rd-line-background-color-override, var(--rd-line-background-color));
+  --rd-line-border-color: var(--code-border-color, var(--rd-content-border-color));
+  background-color: var(--background-color);
+}
+
+.rd-line-number[data-change="added"],
+.rd-line-number[data-change="removed"],
+.rd-line-content[data-change="added"],
+.rd-line-content[data-change="removed"] {
+  --rd-line-border-color: var(--code-changed-border-color, rgba(0,0,0,0.1));
+}
+
+.rd-line-number-empty {
+  --rd-line-background-color: var(--code-empty-background);
+}
+
+.rd-line-content[data-change=removed] + .rd-line-number[data-change=added] {
+  border-left-color: var(--rd-adjacent-line-border-color,
+    oklch(
+      from color-mix(in lch, var(--rd-line-removed-background-color), var(--rd-line-added-background-color))
+      calc(l + var(--rd-code-border-adjust)) c h
+    )
+  );
+}
+
+.rd-hunk-lines-parallel > .rd-line-number[data-position=new]:not([data-change=meta]):empty {
+  border-left-color: var(--rd-adjacent-line-border-color,
+    oklch(
+      from var(--rd-line-removed-background-color)
+      calc(l + var(--rd-code-border-adjust)) c h
+    )
+  );
+}
+
+.rd-line-number:first-child {
+  border-bottom-left-radius: var(--rd-row-bottom-left-radius);
+}
+
+.rd-line-content:last-child {
+  border-bottom-right-radius: var(--rd-row-bottom-right-radius);
+}
+
+.rd-line-link {
+  display: block;
+
+  &, &:hover {
+    color: var(--rd-line-link-color);
+  }
+
+  &:focus-visible {
+    outline: none;
+  }
+
+  &::before {
+    content: attr(data-line-number);
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0 -1px;
+  }
+}
+
+.rd-line-link:focus-visible::after {
+  outline: 1px solid var(--gl-focus-ring-outer-color);
+  inset: 1px 0;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to diff line number cells
+.rd-line-number:has(> .rd-line-link:focus-visible) {
+  z-index: constants.$diff-file-cell-focused-z-index;
+}
+
+.rd-line-content,
+.rd-hunk-header-content {
+  --rd-row-inline-padding: 1.5em;
+  padding: 0 var(--rd-row-inline-padding);
+  word-break: break-word;
+}
+
+.rd-hunk-header-content {
+  align-self: stretch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom-right-radius: var(--rd-row-bottom-right-radius);
+}
+
+.rd-line-content {
+  display: flex;
+  padding-left: calc(var(--rd-row-inline-padding) + var(--rd-line-gutter-width, 0px));
+  white-space: break-spaces;
+
+  &::before {
+    position: absolute;
+    margin-left: var(--rd-line-sign-offset, -13px);
+    pointer-events: none;
+  }
+}
+
+.rd-line-content[data-change=removed] {
+  --rd-line-background-color: var(--rd-line-removed-background-color);
+
+  &::before {
+    content: "−";
+    color: var(--code-old-diff-sign-color, color.scale($line-number-old, $red: -30%, $green: -30%, $blue: -30%));
+  }
+}
+
+.rd-line-content[data-change=added] {
+  --rd-line-background-color: var(--rd-line-added-background-color);
+
+  &::before {
+    content: "+";
+    color: var(--code-new-diff-sign-color, color.scale($line-number-new, $red: -30%, $green: -30%, $blue: -30%));
+  }
+}
+
+.rd-line-content[data-change=meta] {
+  --rd-line-background-color: var(--code-meta-diff-background-color);
+  color: var(--code-meta-diff-color);
+  user-select: none;
+
+  &::before {
+    content: "\\" / "";
+  }
+}
+
+.rd-line-text {
+  all: unset;
+}
+
+// Jupyter images
+.rd-line-text img {
+  max-width: 100%;
+}
+
+[data-line-coverage] {
+  --rd-line-coverage-size: 2px;
+  --rd-line-coverage-inline-padding: 7px;
+  position: relative;
+  flex: none;
+  display: none;
+  padding: 0 var(--rd-line-coverage-inline-padding);
+  width: var(--rd-line-coverage-size);
+  margin-right: calc((var(--rd-line-coverage-size) + var(--rd-line-coverage-inline-padding) * 2) * -1);
+  vertical-align: top;
+  transform: translateX(calc((var(--rd-row-inline-padding) + var(--rd-line-gutter-width, 0px) + var(--rd-line-coverage-inline-padding)) * -1 - 1px));
+  background-clip: content-box;
+  box-sizing: content-box;
+}
+
+[data-line-coverage][data-coverage] {
+  display: inline-block;
+}
+
+[data-coverage=hit] {
+  background-color: var(--gl-color-green-400);
+}
+
+[data-coverage=miss] {
+  --rd-line-coverage-size: 4px;
+  --rd-line-coverage-inline-padding: 6px;
+  background-color: var(--gl-color-red-400);
+}
+
+[data-line-inline-findings] {
+  display: none;
+}
+
+[data-inline-findings-loaded] {
+  --rd-inline-findings-slot-width: 20px;
+  --rd-inline-findings-slot-gap: calc(var(--rd-inline-findings-slot-width) / 1.5);
+  --rd-line-gutter-width: calc(var(--rd-inline-findings-slot-gap) + 4px);
+}
+
+[data-inline-findings-loaded] [data-line-inline-findings] {
+  display: flex;
+  position: absolute;
+  align-items: flex-start;
+  justify-content: center;
+  width: var(--rd-inline-findings-slot-width);
+  margin-left: calc((var(--rd-inline-findings-slot-width) + var(--rd-inline-findings-slot-gap)) * -1);
+}
+
+.rd-inline-findings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--rd-inline-findings-slot-width);
+  height: var(--rd-inline-findings-slot-width);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-disable-diff-side=old] [data-position=old],
+[data-disable-diff-side=new] [data-position=new] {
+  user-select: none;
+}

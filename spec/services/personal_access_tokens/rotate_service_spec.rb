@@ -1,0 +1,356 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe PersonalAccessTokens::RotateService, feature_category: :system_access do
+  describe '#execute' do
+    let_it_be(:current_user) { create(:user, :with_namespace) }
+    let_it_be_with_reload(:token) do
+      create(:personal_access_token, user: current_user, expires_at: Time.zone.today + 30.days)
+    end
+
+    let(:params) { {} }
+
+    subject(:response) { described_class.new(token.user, token, nil, params).execute }
+
+    shared_examples_for 'rotates token successfully' do
+      it "rotates user's own token", :freeze_time do
+        expect(response).to be_success
+
+        new_token = response.payload[:personal_access_token]
+
+        expect(new_token.token).not_to eq(token.token)
+        expect(new_token.expires_at).to eq(Time.zone.today + 1.week)
+        expect(new_token.user).to eq(token.user)
+        expect(new_token.user_type).to eq(token.user_type)
+        expect(new_token.group_id).to eq(token.group_id)
+        expect(new_token.user.namespace).to eq(token.user.namespace)
+        expect(new_token.organization).to eq(token.organization)
+        expect(new_token.description).to eq(token.description)
+        expect(new_token.scopes).to eq(token.scopes)
+      end
+
+      it 'notifies the user' do
+        expect_next_instance_of(NotificationService) do |notification_service|
+          expect(notification_service).to receive(:access_token_rotated).with(token.user, token.name)
+        end
+
+        response
+      end
+    end
+
+    it_behaves_like "rotates token successfully"
+
+    it_behaves_like 'internal event tracking' do
+      let(:event) { 'rotate_pat' }
+      let(:category) { described_class.name }
+      let(:user) { token.user }
+      let(:namespace) { token.user.namespace }
+      let(:project) { nil }
+      let(:additional_properties) { { type: 'legacy', creation_source: PersonalAccessToken::CREATION_SOURCE_UNKNOWN } }
+      subject(:track_event) { response }
+    end
+
+    it 'tracks type and creation_source' do
+      expect { response }.to trigger_internal_events('rotate_pat')
+        .with(user: token.user, namespace: token.user.namespace,
+          additional_properties: { type: 'legacy', creation_source: PersonalAccessToken::CREATION_SOURCE_UNKNOWN })
+    end
+
+    context 'when creation_source is specified' do
+      subject(:response) do
+        described_class.new(token.user, token, nil, creation_source: PersonalAccessToken::CREATION_SOURCE_API).execute
+      end
+
+      it 'tracks the specified creation_source' do
+        expect { response }.to trigger_internal_events('rotate_pat')
+          .with(user: token.user, namespace: token.user.namespace,
+            additional_properties: { type: 'legacy', creation_source: PersonalAccessToken::CREATION_SOURCE_API })
+      end
+    end
+
+    context 'when rotating a granular token' do
+      let_it_be_with_reload(:token) do
+        create(:granular_pat, user: current_user, expires_at: Time.zone.today + 30.days)
+      end
+
+      it 'tracks type as granular' do
+        expect { response }.to trigger_internal_events('rotate_pat')
+          .with(user: token.user, namespace: token.user.namespace,
+            additional_properties: { type: 'granular', creation_source: PersonalAccessToken::CREATION_SOURCE_UNKNOWN })
+      end
+    end
+
+    it 'revokes the previous token' do
+      expect { response }.to change { token.reload.revoked? }.from(false).to(true)
+
+      new_token = response.payload[:personal_access_token]
+      expect(new_token).not_to be_revoked
+    end
+
+    it 'saves the previous token as previous PAT attribute' do
+      response
+
+      new_token = response.payload[:personal_access_token]
+      expect(new_token.previous_personal_access_token).to eql(token)
+    end
+
+    context 'when expires_at param is set' do
+      let(:params) { { expires_at: Time.zone.today + 60.days } }
+
+      it 'sets the custom expiration time', :freeze_time do
+        response
+
+        new_token = response.payload[:personal_access_token]
+        expect(new_token.expires_at).to eql(Time.zone.today + 60.days)
+      end
+    end
+
+    context 'when keep_token_lifetime param is set' do
+      let(:params) { { keep_token_lifetime: true } }
+
+      it 'keeps the lifetime of the new token the same with the old token', :freeze_time do
+        travel 1.day
+
+        response
+
+        new_token = response.payload[:personal_access_token]
+        expect(new_token.expires_at).to eql(Time.zone.today + 30.days)
+      end
+
+      context 'when token never expires' do
+        before do
+          allow_next_instance_of(PersonalAccessToken) do |token|
+            allow(token).to receive(:allow_expires_at_to_be_empty?).and_return(true)
+          end
+          token.update!(expires_at: nil)
+        end
+
+        it 'sets the new token to never expire' do
+          response
+
+          new_token = response.payload[:personal_access_token]
+          expect(new_token.expires_at).to be_nil
+        end
+      end
+    end
+
+    context 'when user tries to rotate already revoked token' do
+      let_it_be_with_reload(:token) { create(:personal_access_token, :revoked) }
+
+      it 'returns an error' do
+        expect { response }.not_to change { token.reload.revoked? }.from(true)
+        expect(response).to be_error
+        expect(response.message).to eq(s_('AccessTokens|Token already revoked'))
+      end
+    end
+
+    context 'when revoking previous token fails' do
+      it 'returns an error' do
+        expect(token).to receive(:revoke!).and_return(false)
+
+        expect(response).to be_error
+      end
+    end
+
+    context 'when creating the new token fails' do
+      before do
+        # change the default expiration for rotation to create an invalid token
+        stub_const('::PersonalAccessTokens::RotateService::EXPIRATION_PERIOD', 10.years)
+      end
+
+      it 'returns an error' do
+        expect(response).to be_error
+        expect(response.message).to include('Expiration date must be before')
+      end
+
+      it 'reverts the changes' do
+        expect { response }.not_to change { token.reload.revoked? }.from(false)
+      end
+    end
+
+    context 'with bot users', :freeze_time do
+      context "with a project_bot user" do
+        let_it_be(:current_user) { create(:user, :project_bot) }
+        let_it_be_with_reload(:token) do
+          create(:personal_access_token, user: current_user, expires_at: Time.zone.today + 30.days)
+        end
+
+        it_behaves_like "rotates token successfully"
+
+        context 'with membership expiration' do
+          it 'updates membership expiration date to nil' do
+            membership_with_expiration_date = create(:project_member, user: current_user, expires_at: 30.days.since)
+            # Prevents automatic bot membership deletion by RemoveExpiredMembersWorker to
+            # preserve the association between the token and its bot user
+            expect { response }.to change { membership_with_expiration_date.reload.expires_at }.to(nil)
+          end
+        end
+      end
+
+      # See https://gitlab.com/gitlab-org/gitlab/-/issues/526327 (has many duplicates)
+      context 'with a service_account user' do
+        let_it_be(:current_user) { create(:user, :service_account) }
+        let_it_be_with_reload(:token) do
+          create(:personal_access_token, user: current_user, expires_at: Time.zone.today + 30.days)
+        end
+
+        it_behaves_like "rotates token successfully"
+
+        context 'with membership expiration' do
+          it 'does not update membership expiration date' do
+            membership_with_expiration_date = create(:project_member, user: current_user, expires_at: 30.days.since)
+
+            expect { response }.not_to change { membership_with_expiration_date.reload.expires_at }
+          end
+        end
+      end
+    end
+
+    context 'when the token has the sudo capability', :enable_admin_mode do
+      let_it_be(:admin) { create(:admin, :with_namespace) }
+      let(:token) { create(:granular_pat, :sudo, user: admin) }
+
+      it 'preserves the sudo capability on the rotated token' do
+        new_token = response.payload[:personal_access_token]
+
+        expect(new_token.sudo).to be(true)
+      end
+    end
+
+    context 'when granular' do
+      let_it_be(:project) { create(:project, developers: current_user) }
+      let_it_be(:boundary) { Authz::Boundary.for(project) }
+      let_it_be_with_reload(:token) do
+        create(:granular_pat, user: current_user, boundary: boundary, permissions: :create_work_item)
+      end
+
+      it_behaves_like "rotates token successfully"
+
+      it "creates granular scopes based on the previous token's granular scopes" do
+        new_token = response.payload[:personal_access_token]
+
+        granular_scopes = new_token.granular_scopes
+        expect(granular_scopes.size).to eq(token.granular_scopes.size)
+
+        new_granular_scope = granular_scopes.first
+        prev_granular_scope = token.granular_scopes.first
+
+        expect(new_granular_scope.namespace_id).to eq(prev_granular_scope.namespace_id)
+        expect(new_granular_scope.organization_id).to eq(prev_granular_scope.organization_id)
+        expect(new_granular_scope.access).to eq(prev_granular_scope.access)
+        expect(new_granular_scope.permissions).to match_array(prev_granular_scope.permissions)
+      end
+
+      context 'when the token holds duplicate scopes' do
+        let_it_be(:other_project) { create(:project, developers: current_user) }
+        let_it_be(:instance_boundary) { Authz::Boundary.for(:instance) }
+        let_it_be_with_reload(:token) do
+          create(:granular_pat, user: current_user, boundary: boundary, permissions: :create_work_item,
+            additional_scopes: [
+              { boundary: boundary, permissions: :read_work_item },
+              { boundary: Authz::Boundary.for(other_project), permissions: :read_work_item },
+              { boundary: instance_boundary, permissions: :read_runner },
+              { boundary: instance_boundary, permissions: :create_member_role },
+              { boundary: Authz::Boundary.for(:user), permissions: :read_member_role }
+            ])
+        end
+
+        it 'copies each access level and namespace once with the combined permissions', :aggregate_failures do
+          expect(token.granular_scopes.size).to eq(6)
+          expect(response).to be_success
+
+          new_scopes = response.payload[:personal_access_token].granular_scopes
+          expect(new_scopes.map { |scope| [scope.access, scope.namespace_id, scope.permissions.sort] })
+            .to contain_exactly(
+              ['selected_memberships', project.project_namespace_id, %w[create_work_item read_work_item]],
+              ['selected_memberships', other_project.project_namespace_id, %w[read_work_item]],
+              ['instance', nil, %w[create_member_role read_runner]],
+              ['user', nil, %w[read_member_role]]
+            )
+        end
+      end
+
+      context 'when granular scopes addition fails' do
+        before do
+          allow_next_instance_of(Authz::GranularScopeService) do |instance|
+            allow(instance).to receive(:add_granular_scopes).and_return(
+              ServiceResponse.error(message: 'Granular scope addition failed')
+            )
+          end
+        end
+
+        it 'returns an error' do
+          expect(response).to be_error
+          expect(response.message).to include('Granular scope addition failed')
+        end
+
+        it 'does not revoke the token' do
+          expect { response }.not_to change { token.reload.revoked? }.from(false)
+        end
+
+        it 'does not create PersonalAccessToken and Authz::GranularScope records' do
+          expect { response }.not_to change { [PersonalAccessToken.count, Authz::GranularScope.count] }
+        end
+      end
+    end
+
+    describe 'granular_tokens_enforced?' do
+      context 'when `granular_personal_access_tokens` feature flag is disabled' do
+        before do
+          stub_feature_flags(granular_personal_access_tokens: false)
+        end
+
+        it_behaves_like 'rotates token successfully'
+      end
+
+      context 'when `granular_personal_access_tokens` feature flag is enabled' do
+        before do
+          stub_feature_flags(granular_personal_access_tokens: token.user)
+        end
+
+        context 'when granular tokens are not enforced' do
+          before do
+            allow(Gitlab::CurrentSettings).to receive(:granular_tokens_enforced?).and_return(false)
+          end
+
+          it_behaves_like 'rotates token successfully'
+        end
+
+        context 'when granular tokens are enforced' do
+          before do
+            allow(Gitlab::CurrentSettings).to receive(:granular_tokens_enforced?).and_return(true)
+          end
+
+          context 'when token is a legacy token' do
+            it 'returns an error' do
+              expect(response).to be_error
+              expect(response.message).to eq(
+                s_('AccessTokens|Rotation of legacy personal access tokens is disabled. ' \
+                  'Use a fine-grained token instead.')
+              )
+            end
+
+            it 'does not create PersonalAccessToken records' do
+              expect { response }.not_to change { PersonalAccessToken.count }
+            end
+
+            context 'when the token belongs to a bot' do
+              let_it_be_with_reload(:token) do
+                create(:personal_access_token, user: create(:user, :project_bot), expires_at: Time.zone.today + 30.days)
+              end
+
+              it_behaves_like 'rotates token successfully'
+            end
+          end
+
+          context 'when token is a granular token' do
+            let_it_be_with_reload(:token) { create(:granular_pat, user: current_user) }
+
+            it_behaves_like 'rotates token successfully'
+          end
+        end
+      end
+    end
+  end
+end

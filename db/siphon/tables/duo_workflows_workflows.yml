@@ -1,0 +1,16 @@
+---
+table: duo_workflows_workflows
+database: main
+ignored_columns:
+  - model_metadata_json
+  - flow_metadata_json
+replication_targets:
+  - name: clickhouse_main
+    target: siphon_duo_workflows_workflows
+    dedup_by:
+      - id
+    reconcile:
+      column: traversal_path
+      expression_key_columns:
+        - namespace_id
+        - project_id

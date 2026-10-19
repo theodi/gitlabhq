@@ -1,0 +1,7 @@
+inherit_from:
+  - ../config/rubocop.yml
+
+# Configuration parameters: AllowSubject.
+RSpec/MultipleMemoizedHelpers:
+  Max: 25
+  AllowSubject: true

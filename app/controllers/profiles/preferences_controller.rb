@@ -1,0 +1,76 @@
+# frozen_string_literal: true
+
+class Profiles::PreferencesController < Profiles::ApplicationController
+  include SafeFormatHelper
+
+  before_action :user
+
+  feature_category :user_profile
+
+  urgency :low, [:show]
+  urgency :medium, [:update]
+
+  def show; end
+
+  def update
+    result = Users::UpdateService.new(current_user, preferences_params.merge(user: user)).execute
+    if result[:status] == :success
+      message = _('Preferences saved.')
+
+      render json: { type: :notice, message: message }
+    else
+      render status: :bad_request, json: { type: :alert, message: _('Failed to save preferences.') }
+    end
+  rescue ArgumentError => e
+    # Raised when `dashboard` is given an invalid value.
+    message = safe_format(_("Failed to save preferences (%{error_message})."), error_message: e.message)
+    render status: :bad_request, json: { type: :alert, message: message }
+  end
+
+  private
+
+  def user
+    @user = current_user
+  end
+
+  def preferences_params
+    params.require(:user).permit(preferences_param_names)
+  end
+
+  def preferences_param_names
+    [
+      :color_scheme_id,
+      :color_mode_id,
+      :dark_color_scheme_id,
+      :diffs_deletion_color,
+      :diffs_addition_color,
+      :layout,
+      :dashboard,
+      :project_view,
+      :theme_id,
+      :first_day_of_week,
+      :preferred_language,
+      :time_display_relative,
+      :time_display_format,
+      :show_whitespace_in_diffs,
+      :view_diffs_file_by_file,
+      :tab_width,
+      :sourcegraph_enabled,
+      :gitpod_enabled,
+      :extensions_marketplace_enabled,
+      :render_whitespace_in_code,
+      :project_shortcut_buttons,
+      :keyboard_shortcuts_enabled,
+      :emoji_autocomplete_enabled,
+      :emoji_skin_tone,
+      :markdown_surround_selection,
+      :markdown_automatic_lists,
+      :markdown_maintain_indentation,
+      :use_new_navigation,
+      :enabled_following,
+      :text_editor
+    ]
+  end
+end
+
+Profiles::PreferencesController.prepend_mod_with('Profiles::PreferencesController')

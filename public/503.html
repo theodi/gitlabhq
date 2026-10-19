@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta content="width=device-width, initial-scale=1" name="viewport">
+  <title>GitLab is not responding (503)</title>
+  <style>
+    body {
+      color: #333238;
+      text-align: center;
+      font-family: "Nunito Sans", -apple-system, ".SFNSText-Regular", "San Francisco", BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+
+    h1 {
+      font-size: 1.75rem;
+      line-height: 2.25rem;
+      margin: 1rem 0;
+    }
+
+    p {
+      margin-bottom: .5rem;
+    }
+
+    img {
+      display: block;
+      margin: 0 auto;
+    }
+
+    a {
+      text-decoration: none;
+      color: #1068bf;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .error-container {
+      max-width: 65ch;
+      margin: auto;
+      padding: 1rem 0;
+    }
+
+    .action-container {
+      margin-top: 1.5rem;
+    }
+
+    .go-back {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="error-container">
+    <img src='/-/error-illustrations/error-503-lg.svg' alt="503 error"/>
+    <h1>503: We're sorry, GitLab is currently unavailable</h1>
+    <p>Try refreshing the page, or going back and attempting the action again.</p>
+    <p>Please contact your GitLab administrator if this problem persists.</p>
+    <div class="action-container">
+      <a href="javascript:history.back()" class="js-go-back go-back">Go back</a>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var goBack = document.querySelector('.js-go-back');
+
+      if (history.length > 1) {
+        goBack.style.display = 'inline';
+      }
+    })();
+  </script>
+</body>
+</html>

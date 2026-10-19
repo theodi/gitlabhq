@@ -1,0 +1,115 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Resolvers::Analytics::Aggregation::AggregationFieldResolver::BaseAggregationFieldResolver,
+  feature_category: :database do
+  describe '#build_metric_parts' do
+    let(:engine_class) do
+      Gitlab::Database::Aggregation::Engine.build do
+        def self.metrics_mapping
+          { metric: Gitlab::Database::Aggregation::ClickHouse::MetricDefinition }
+        end
+
+        def self.dimensions_mapping
+          {}
+        end
+
+        def self.filters_mapping
+          {}
+        end
+
+        metrics do
+          metric :total, :integer
+          metric :"duration.max", :integer, ->(_params) { Arel.sql('max(duration)') }
+          metric :"duration.quantile", :float, ->(_params) { Arel.sql('duration') },
+            parameters: { quantile: { type: :float } }
+        end
+      end
+    end
+
+    let(:engine) { engine_class.new(context: {}) }
+    let(:resolver) { described_class.new(object: nil, context: double.as_null_object, field: nil) }
+
+    def selection(name, arguments: {}, selections: [])
+      instance_double(GraphQL::Execution::Lookahead, name: name, arguments: arguments, selections: selections)
+    end
+
+    it 'builds flat metric parts from top-level selections' do
+      parts = resolver.send(:build_metric_parts, [selection(:total)], engine)
+
+      expect(parts).to eq([{ identifier: :total, parameters: {} }])
+    end
+
+    it 'expands metric group selections into dotted identifiers' do
+      group = selection(:duration, selections: [
+        selection(:max),
+        selection(:quantile, arguments: { quantile: 0.9 })
+      ])
+
+      parts = resolver.send(:build_metric_parts, [selection(:total), group], engine)
+
+      expect(parts).to eq([
+        { identifier: :total, parameters: {} },
+        { identifier: :"duration.max", parameters: {} },
+        { identifier: :"duration.quantile", parameters: { quantile: 0.9 } }
+      ])
+    end
+
+    it 'ignores introspection selections inside groups' do
+      group = selection(:duration, selections: [selection(:__typename), selection(:max)])
+
+      parts = resolver.send(:build_metric_parts, [group], engine)
+
+      expect(parts).to eq([{ identifier: :"duration.max", parameters: {} }])
+    end
+  end
+
+  describe '#build_order' do
+    let(:resolver) { described_class.new(object: nil, context: double.as_null_object, field: nil) }
+
+    it 'underscores the identifier and parameter keys' do
+      order_input = instance_double(Types::Analytics::Aggregation::OrderType, to_hash: {
+        identifier: 'createdAt',
+        direction: :desc,
+        parameters: { 'customOrigin' => '2026-06-07T00:00:00Z' }
+      })
+
+      expect(resolver.send(:build_order, [order_input])).to eq([{
+        identifier: :created_at,
+        direction: :desc,
+        parameters: { custom_origin: '2026-06-07T00:00:00Z' }
+      }])
+    end
+
+    it 'defaults parameters to an empty hash' do
+      order_input = instance_double(Types::Analytics::Aggregation::OrderType,
+        to_hash: { identifier: 'total', direction: :asc, parameters: nil })
+
+      expect(resolver.send(:build_order, [order_input]))
+        .to eq([{ identifier: :total, direction: :asc, parameters: {} }])
+    end
+  end
+
+  describe '#raise_execution_error!' do
+    let(:resolver) { described_class.new(object: nil, context: double.as_null_object, field: nil) }
+
+    it 'adds the not authorized code for an unauthorized response' do
+      response = ServiceResponse.error(message: "access to metric 'total' is not authorized", reason: :unauthorized)
+
+      expect { resolver.send(:raise_execution_error!, response) }.to raise_error(GraphQL::ExecutionError) { |error|
+        expect(error.message).to eq("access to metric 'total' is not authorized")
+        expect(error.extensions).to eq(code: described_class::NOT_AUTHORIZED_CODE)
+      }
+    end
+
+    it 'raises without extensions for other errors' do
+      response = ServiceResponse.error(message: 'at least one metric is required')
+
+      expect { resolver.send(:raise_execution_error!, response) }.to raise_error(GraphQL::ExecutionError) { |error|
+        expect(error.message).to eq('at least one metric is required')
+        expect(error.extensions).to be_nil
+      }
+    end
+  end
+end

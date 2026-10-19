@@ -1,0 +1,132 @@
+# frozen_string_literal: true
+
+module API
+  class ServiceAccounts < ::API::Base
+    include PaginationParams
+
+    before do
+      authenticated_as_admin!
+    end
+
+    resource :service_accounts do
+      desc 'Create an instance service account' do
+        detail 'Creates an instance service account.'
+        tags ['service_accounts']
+        success Entities::ServiceAccount
+        failure [
+          { code: 400, message: '400 Bad request' },
+          { code: 401, message: '401 Unauthorized' },
+          { code: 403, message: '403 Forbidden' }
+        ]
+      end
+
+      params do
+        optional :name, type: String, desc: 'Name of the user. If omitted, uses `Service account user`.'
+        optional :username, type: String, desc: 'Username of the user account. If omitted, generates a name prefixed ' \
+                                            'with `service_account_`.'
+        optional :email, type: String,
+          desc: 'Email address of the user account. If omitted, generates a no-reply email address. ' \
+            'Custom email addresses require confirmation, unless the email confirmation settings are ' \
+            '[turned off](https://docs.gitlab.com/administration/settings/sign_up_restrictions/#confirm-user-email).'
+        optional :external, type: Boolean, desc: 'Flag indicating the user is an external user'
+      end
+
+      route_setting :authorization, permissions: :create_service_account, boundary_type: :instance,
+        assignable_when: [:admin]
+      post feature_category: :user_management do
+        check_rate_limit!(:service_account_creation, scope: { user: current_user })
+
+        response = ::Users::ServiceAccounts::CreateService.new(
+          current_user, declared_params.merge(organization_id: Current.organization.id)
+        ).execute
+
+        if response.status == :success
+          present response.payload[:user], with: Entities::ServiceAccount, current_user: current_user
+        elsif response.reason == :forbidden
+          forbidden!(response.message)
+        else
+          bad_request!(response.message)
+        end
+      end
+
+      desc 'List all instance service accounts' do
+        tags ['service_accounts']
+        detail 'Lists all instance service accounts. Use the `page` and `per_page` pagination parameters to filter ' \
+          'the results.'
+        success Entities::ServiceAccount
+        failure [
+          { code: 400, message: '400 Bad request' },
+          { code: 401, message: '401 Unauthorized' },
+          { code: 403, message: '403 Forbidden' }
+        ]
+      end
+
+      params do
+        use :pagination
+        optional :order_by, type: String, values: %w[id username], default: 'id',
+          desc: 'Sort results by the specified field.'
+        optional :sort, type: String, values: %w[asc desc], default: 'desc', desc: 'Sort results in ascending or ' \
+                                                                               'descending order.'
+      end
+
+      # rubocop: disable CodeReuse/ActiveRecord -- for the user or reorder
+      route_setting :authorization, permissions: :read_service_account, boundary_type: :instance,
+        assignable_when: [:admin]
+      get do
+        authorize! :admin_service_accounts
+
+        users = User.service_account
+
+        users = users.reorder(params[:order_by] => params[:sort])
+
+        present paginate_with_strategies(users), with: Entities::ServiceAccount
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Update an instance service account' do
+        tags ['service_accounts']
+        detail 'Updates a specified instance service account.'
+        success Entities::ServiceAccount
+        failure [
+          { code: 400, message: '400 Bad request' },
+          { code: 401, message: '401 Unauthorized' },
+          { code: 403, message: '403 Forbidden' },
+          { code: 404, message: '404 Not found' }
+        ]
+      end
+
+      params do
+        requires :user_id, type: Integer, desc: 'ID of the service account.'
+        optional :name, type: String, desc: 'Name of the user. If omitted when creating a new service account, ' \
+                                        'uses `Service account user`.'
+        optional :username, type: String, desc: 'Username of the user account. If omitted when creating a new ' \
+                                            'service account, generates a name prefixed with `service_account_`.'
+        optional :email, type: String,
+          desc: 'Email address of the user account. If omitted when creating a new service account, generates a ' \
+            'no-reply email address. Custom email addresses require confirmation, unless the email confirmation ' \
+            'settings are ' \
+            '[turned off](https://docs.gitlab.com/administration/settings/sign_up_restrictions/#confirm-user-email).'
+        optional :external, type: Boolean, desc: 'Flag indicating the user is an external user'
+      end
+
+      route_setting :authorization, permissions: :update_service_account, boundary_type: :instance,
+        assignable_when: [:admin]
+      patch ":user_id", feature_category: :user_management do
+        authorize! :admin_service_accounts
+
+        user = User.find(params[:user_id])
+        update_params = declared_params(include_missing: false)
+
+        response = ::Users::ServiceAccounts::UpdateService
+                     .new(current_user, user, update_params)
+                     .execute
+
+        if response.status == :success
+          present response.payload[:user], with: Entities::ServiceAccount, current_user: current_user
+        else
+          render_api_error!(response.message, response.reason)
+        end
+      end
+    end
+  end
+end

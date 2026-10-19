@@ -1,0 +1,76 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    module Build
+      module Context
+        class Build < Base
+          include Gitlab::Utils::StrongMemoize
+
+          attr_reader :attributes
+
+          def initialize(pipeline, attributes = {}, logger:)
+            super(pipeline, logger: logger)
+
+            @attributes = attributes
+          end
+
+          def variables
+            logger.instrument(:pipeline_seed_context_build_variables) do
+              build_variables
+            end
+          end
+          strong_memoize_attr :variables
+
+          def build_variables
+            pipeline
+              .variables_builder
+              .scoped_variables_for_pipeline_seed(
+                attributes,
+                user: pipeline.user,
+                environment: seed_environment,
+                kubernetes_namespace: seed_kubernetes_namespace,
+                trigger: pipeline.trigger
+              )
+          end
+
+          private
+
+          # Copied from `app/models/concerns/ci/deployable.rb#expanded_environment_name`
+          # See: https://gitlab.com/gitlab-org/gitlab/-/issues/479126
+          def seed_environment
+            return unless attributes[:environment].present?
+
+            # The initial `environment` parameter is `expanded_environment_name` for a build.
+            # The persisted job environment is created after pipeline creation, so seed-time
+            # variables expand the environment from the provided attributes.
+            ExpandVariables.expand(attributes[:environment], -> { simple_variables.sort_and_expand_all })
+          end
+
+          # Copied from `app/models/concerns/ci/deployable.rb#expanded_kubernetes_namespace`
+          # See: https://gitlab.com/gitlab-org/gitlab/-/issues/479126
+          def seed_kubernetes_namespace
+            return unless attributes[:environment].present?
+
+            namespace = attributes[:options]&.dig(:environment, :kubernetes, :namespace)
+
+            return unless namespace.present?
+
+            ExpandVariables.expand(namespace, -> { simple_variables })
+          end
+
+          def simple_variables
+            pipeline.variables_builder.scoped_variables_for_pipeline_seed(
+              attributes,
+              user: pipeline.user,
+              environment: nil,
+              kubernetes_namespace: nil,
+              trigger: pipeline.trigger
+            )
+          end
+          strong_memoize_attr :simple_variables
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,122 @@
+# frozen_string_literal: true
+
+module Ci
+  class Partition < Ci::ApplicationRecord
+    INITIAL_PARTITION_VALUE = 100
+    LAST_STATIC_PARTITION_VALUE = 102
+    DEFAULT_PARTITION_VALUES = (INITIAL_PARTITION_VALUE..LAST_STATIC_PARTITION_VALUE).to_a.freeze
+
+    RECENT_PARTITIONS_COUNT = 3
+
+    validates :id, :status, presence: true
+    validates :status, uniqueness: { if: ->(partition) { partition.status_changed? && partition.current? } }
+
+    state_machine :status, initial: :preparing do
+      state :preparing, value: 0
+      state :ready, value: 1
+      state :current, value: 2
+      state :active, value: 3
+      state :archived, value: 4
+
+      event :ready do
+        transition preparing: :ready
+      end
+
+      event :switch_writes do
+        transition [:ready, :active] => :current
+      end
+
+      event :archive do
+        transition active: :archived
+      end
+
+      before_transition any => :current do |partition|
+        next false unless partition.all_partitions_exist?
+
+        partition.current_from ||= Time.current
+
+        Ci::Partition.with_status(:current).update_all(
+          current_until: partition.current_from,
+          status: Ci::Partition.statuses[:active]
+        )
+      end
+    end
+
+    scope :id_before, ->(partition_id) { where(arel_table[:id].lt(partition_id)) }
+    scope :id_after, ->(partition_id) { where(arel_table[:id].gt(partition_id)) }
+
+    class << self
+      def statuses
+        @statuses ||= state_machines[:status].states.to_h { |state| [state.name, state.value] }.freeze
+      end
+
+      def current
+        with_status(:current).first
+      end
+
+      def recent_ids
+        ids = with_status(:current, :active).order(id: :desc).limit(RECENT_PARTITIONS_COUNT).pluck(:id)
+        ids.presence || [INITIAL_PARTITION_VALUE]
+      end
+
+      def create_next!
+        create!(id: last.id.next, status: statuses[:preparing])
+      end
+
+      def next_available(partition_id)
+        Ci::Partition
+          .with_status(:ready)
+          .id_after(partition_id)
+          .order(id: :asc)
+          .first
+      end
+
+      def provisioning(partition_id)
+        Ci::Partition
+          .id_after(partition_id)
+          .order(id: :asc)
+          .first
+      end
+
+      def all_archived?(ids)
+        return false if ids.blank?
+
+        id_in(ids).with_status(:archived).count == ids.uniq.size
+      end
+
+      # `archived` is terminal and only the archive event reaches it, so a row's `updated_at` is
+      # when that partition was archived. The last of them is when the set became archived.
+      def archived_since(ids)
+        return unless all_archived?(ids)
+
+        id_in(ids).with_status(:archived).maximum(:updated_at)
+      end
+    end
+
+    def all_partitions_exist?
+      with_ci_connection do
+        Gitlab::Database::PostgresPartition
+          .with_parent_tables(parent_table_names)
+          .with_list_constraint(id)
+          .count == parent_table_names.size
+      end
+    end
+
+    def exceed_time_window?(time_window = ::Gitlab::CurrentSettings.ci_partitions_in_seconds_limit)
+      return false if current_from.blank?
+      return false if time_window.blank?
+
+      Time.current.after?(current_from + time_window)
+    end
+
+    private
+
+    def with_ci_connection(&block)
+      Gitlab::Database::SharedModel.using_connection(connection, &block)
+    end
+
+    def parent_table_names
+      Ci::Partitionable.registered_models.map(&:table_name)
+    end
+  end
+end

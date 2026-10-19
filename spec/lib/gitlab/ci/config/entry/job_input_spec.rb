@@ -1,0 +1,69 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Ci::Config::Entry::JobInput, feature_category: :pipeline_composition do
+  let(:factory) do
+    Gitlab::Config::Entry::Factory
+      .new(described_class)
+      .value(config)
+      .with(key: input_name)
+  end
+
+  let(:input_name) { 'website' }
+  let(:entry) { factory.create!.tap(&:compose!) }
+
+  describe 'validations' do
+    let(:required_config) { { default: 'default_value' } }
+
+    it_behaves_like 'BaseInput'
+
+    context 'when default is missing' do
+      let(:config) { { type: 'string' } }
+
+      it 'reports an error about the missing default' do
+        expect(entry).not_to be_valid
+        expect(entry.errors).to contain_exactly('website must have a default value')
+      end
+    end
+
+    context 'when config is not a hash' do
+      let(:config) { true }
+
+      it 'reports an error about invalid type' do
+        expect(entry).not_to be_valid
+        expect(entry.errors).to include('website config should be a hash')
+      end
+    end
+  end
+
+  describe '#value' do
+    context 'when type is specified' do
+      let(:config) do
+        {
+          default: 'staging',
+          description: 'Environment name',
+          options: %w[staging production],
+          type: 'string'
+        }
+      end
+
+      it 'returns the config hash with the specified type' do
+        expect(entry.value).to eq(config)
+      end
+    end
+
+    context 'when type is not specified' do
+      let(:config) do
+        {
+          default: 'staging',
+          description: 'Environment name'
+        }
+      end
+
+      it 'returns the config hash with type defaulting to string' do
+        expect(entry.value).to eq(config.merge(type: 'string'))
+      end
+    end
+  end
+end

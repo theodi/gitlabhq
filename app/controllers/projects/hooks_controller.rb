@@ -1,58 +1,58 @@
+# frozen_string_literal: true
+
 class Projects::HooksController < Projects::ApplicationController
+  include ::WebHooks::HookActions
+
   # Authorize
-  before_action :authorize_admin_project!
+  before_action :authorize_read_hook!, only: [:index, :show]
+  before_action :authorize_admin_hook!, except: [:index, :show]
+  before_action -> { check_rate_limit!(:web_hook_test, scope: { project: @project, user: current_user }) }, only: :test
 
   respond_to :html
 
   layout "project_settings"
 
-  def index
-    @hooks = @project.hooks
-    @hook = ProjectHook.new
-  end
-
-  def create
-    @hook = @project.hooks.new(hook_params)
-    @hook.save
-
-    if @hook.valid?
-      redirect_to namespace_project_hooks_path(@project.namespace, @project)
-    else
-      @hooks = @project.hooks.select(&:persisted?)
-      render :index
-    end
-  end
+  urgency :low, [:test]
 
   def test
-    if !@project.empty_repo?
-      status = TestHookService.new.execute(hook, current_user)
+    result = TestHooks::ProjectService.new(hook, current_user, trigger_param).execute
 
-      if status
-        flash[:notice] = 'Hook successfully executed.'
-      else
-        flash[:alert] = 'Hook execution failed. '\
-                        'Ensure hook URL is correct and service is up.'
-      end
-    else
-      flash[:alert] = 'Hook execution failed. Ensure the project has commits.'
-    end
+    set_hook_execution_notice(result)
 
-    redirect_to :back
-  end
-
-  def destroy
-    hook.destroy
-
-    redirect_to namespace_project_hooks_path(@project.namespace, @project)
+    redirect_back_or_default(default: { action: :index })
   end
 
   private
 
-  def hook
-    @hook ||= @project.hooks.find(params[:id])
+  def relation
+    @project.hooks
   end
 
-  def hook_params
-    params.require(:hook).permit(:url, :push_events, :issues_events, :merge_requests_events, :tag_push_events, :note_events)
+  def hook_container
+    @project
+  end
+
+  def hook
+    @hook ||= @project.hooks.find(id_param)
+  end
+
+  def id_param
+    params.permit(:id)[:id]
+  end
+
+  def trigger_param
+    params.permit(:trigger).fetch(:trigger, 'push_events')
+  end
+
+  def trigger_values
+    ProjectHook.triggers.values
+  end
+
+  def authorize_admin_hook!
+    render_404 unless can?(current_user, :admin_web_hook, project)
+  end
+
+  def authorize_read_hook!
+    render_404 unless can?(current_user, :read_web_hook, project)
   end
 end

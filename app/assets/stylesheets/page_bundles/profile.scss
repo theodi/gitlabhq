@@ -1,0 +1,194 @@
+@import 'mixins_and_variables_and_functions';
+@import 'framework/mixins';
+
+$profile-grid-gap: 2rem;
+$profile-grid-flex: 1fr;
+
+.edit-user {
+  .emoji-menu-toggle-button {
+    @include emoji-menu-toggle-button;
+  }
+
+  @include gl-container-width-down(md, panel) {
+    .input-lg {
+      max-width: 100%;
+    }
+  }
+}
+
+.modal-profile-crop {
+  .modal-dialog {
+    width: 380px;
+
+    @include gl-container-width-down(sm, panel) {
+      width: auto;
+    }
+  }
+
+  .profile-crop-image-container {
+    height: 300px;
+    margin: 0 auto;
+  }
+}
+
+.calendar-help {
+  // Match width of calendar
+  max-width: 864px;
+}
+
+.user-profile-activity {
+  &:not(:last-child)::before {
+    @include vertical-line(16px, 10px);
+    height: 100%;
+    @apply gl-bg-strong;
+  }
+}
+
+.user-calendar-activities {
+  direction: ltr;
+
+  .str-truncated {
+    max-width: 70%;
+  }
+}
+
+.user-contrib-text {
+  font-size: 11px;
+  fill: var(--gl-text-color-subtle);
+}
+
+.user-profile {
+  position: relative;
+
+  // Home panel show profile sidebar
+  // information on top
+  @include gl-container-width-down(lg, panel) {
+    display: flex;
+    flex-direction: column;
+
+    .user-profile-sidebar {
+      order: -1;
+      flex-basis: 100%;
+    }
+  }
+
+  @include gl-container-width-up(lg, panel) {
+    display: grid;
+    grid-template-columns: $profile-grid-flex;
+    gap: $profile-grid-gap;
+
+    .profile-header {
+      position: sticky;
+      top: 0;
+      height: $calc-application-viewport-height;
+      padding-left: $gl-spacing-scale-2;
+    }
+  }
+
+  .activities-block {
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-label-scoped {
+      --label-inset-border: inset 0 0 0 1px currentColor;
+    }
+  }
+}
+
+.key-created-at {
+  line-height: 42px;
+}
+
+.key-list-item {
+  .key-list-item-info {
+    @include gl-container-width-up(sm, panel) {
+      float: left;
+    }
+  }
+}
+
+.ssh-keys-list {
+  .expires,
+  .key-created-at {
+    line-height: 32px;
+  }
+}
+
+.subkeys-list {
+  @include basic-list;
+
+  li {
+    padding: 3px 0;
+    border: 0;
+  }
+}
+
+.user-profile-with-sidebar {
+  z-index: 2;
+
+  @include gl-container-width-up(lg, panel) {
+    display: grid;
+    grid-template-columns: $profile-grid-flex $right-sidebar-width;
+    gap: $profile-grid-gap;
+  }
+}
+
+
+.user-profile-sidebar,
+.user-profile-content {
+  min-width: 1px; // grid overflow fix
+}
+
+.provider-btn-group {
+  display: inline-block;
+  margin-right: 10px;
+  margin-bottom: 10px;
+  border-radius: 3px;
+  @apply gl-border;
+
+  &:last-child {
+    margin-right: 0;
+    margin-bottom: 0;
+  }
+}
+
+.social-provider-btn-image {
+  > img {
+    width: 16px;
+    vertical-align: inherit;
+  }
+}
+
+.provider-btn-image {
+  display: inline-block;
+  padding: 5px 10px;
+  @apply gl-border-r;
+  @apply gl-border-r-default;
+
+  > img {
+    width: 20px;
+  }
+}
+
+.provider-btn {
+  display: inline-block;
+  padding: 5px 10px;
+  margin-left: -3px;
+  line-height: 22px;
+  @apply gl-bg-subtle;
+}
+
+.user-activity-content, .user-calendar-activities {
+  position: relative;
+
+  .system-note-image {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    top: 14px;
+    width: 22px;
+    height: 22px;
+
+    svg {
+      fill: var(--gl-status-neutral-icon-color) !important;
+    }
+  }
+}

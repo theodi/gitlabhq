@@ -1,0 +1,10 @@
+- title: 'GraphQL field `confidential` changed to `internal` on notes'
+  announcement_milestone: '15.5'
+  removal_milestone: '17.0'
+  breaking_change: true
+  reporter: nicolasdular
+  stage: plan
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/371485
+  body: |
+    The `confidential` field for a `Note` will be deprecated and renamed to `internal`.
+  documentation_url: https://docs.gitlab.com/api/graphql/reference/#note

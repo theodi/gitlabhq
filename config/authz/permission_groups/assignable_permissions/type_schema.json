@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique name for the permission"
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of the permission"
+    },
+    "action": {
+      "type": "string",
+      "description": "Override for the generated action name"
+    },
+    "resource": {
+      "type": "string",
+      "description": "Override for the generated resource name"
+    },
+    "deprecated": {
+      "type": "boolean",
+      "description": "When true, the permission is hidden from view but continues to function for existing tokens"
+    },
+    "boundaries": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "instance",
+          "group",
+          "project",
+          "user"
+        ]
+      },
+      "minItems": 1,
+      "description": "List of resource types that the permission can be applied to"
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "known_permissions"
+      },
+      "minItems": 1,
+      "description": "List of raw permissions the assignable permission expands to"
+    },
+    "available_for": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "granular_access_token",
+          "role"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "Consumers that may use this permission: granular access tokens, standard roles, and/or custom roles"
+    },
+    "assignable_when": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Conditions the user must meet for the permission to be offered in the token creation UI. Not a security control: endpoints must still enforce these conditions at request time",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "condition"
+        ],
+        "properties": {
+          "condition": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "gitlab_team_member",
+              "saas",
+              "self_managed"
+            ]
+          },
+          "boundaries": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "instance",
+                "group",
+                "project",
+                "user"
+              ]
+            },
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "Boundaries the condition applies to. When omitted, the condition applies to all boundaries"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "name",
+    "description",
+    "permissions",
+    "boundaries",
+    "available_for"
+  ]
+}

@@ -1,0 +1,94 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Types::PermissionTypes::Project do
+  include GraphqlHelpers
+
+  it do
+    expected_permissions = [
+      :change_namespace, :change_visibility_level, :rename_project,
+      :remove_project, :archive_project, :remove_fork_project,
+      :remove_pages, :read_project, :create_merge_request_in,
+      :read_wiki, :read_project_member, :create_issue, :upload_file,
+      :read_cycle_analytics, :download_code, :download_wiki_code,
+      :fork_project, :read_commit_status, :create_snippet,
+      :request_access, :create_pipeline, :create_pipeline_schedule,
+      :create_merge_request_from, :create_wiki, :push_code,
+      :create_deployment, :push_to_delete_protected_branch,
+      :admin_wiki, :admin_project, :update_pages,
+      :admin_remote_mirror, :create_label, :update_wiki, :destroy_wiki,
+      :create_pages, :destroy_pages, :read_pages_content, :admin_operations,
+      :read_merge_request, :read_design, :create_design, :update_design, :destroy_design,
+      :move_design, :read_environment, :view_edit_page, :admin_issue, :create_work_item,
+      :import_issues, :read_crm_contact, :read_crm_organization
+    ]
+
+    expected_permissions.each do |permission|
+      expect(described_class).to have_graphql_field(permission)
+    end
+  end
+
+  describe '#admin_all_resources' do
+    let_it_be(:project) { create(:project) }
+
+    subject { resolve_field(:admin_all_resources, project, current_user: user) }
+
+    context 'when authenticated', :enable_admin_mode do
+      context 'when user is an admin' do
+        let_it_be(:user) { create(:admin) }
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'when user is not an admin' do
+        let_it_be(:user) { create(:user) }
+
+        it { is_expected.to be(false) }
+      end
+    end
+
+    context 'when unauthenticated' do
+      let_it_be(:user) { nil }
+
+      it { is_expected.to be(false) }
+    end
+  end
+
+  describe '#can_leave' do
+    let(:project) { nil }
+    let(:current_user) { nil }
+
+    subject { resolve_field(:can_leave, project, current_user: current_user) }
+
+    context 'when authenticated' do
+      let_it_be(:user) { create(:user, :with_namespace) }
+
+      let(:current_user) { user }
+
+      context 'when user is a member' do
+        let(:project) { create(:project, owners: user) }
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'when user is not a member' do
+        let(:project) { create(:project) }
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when project is a personal project' do
+        let(:project) { create(:project, namespace: user.namespace) }
+
+        it { is_expected.to be(false) }
+      end
+    end
+
+    context 'when unauthenticated' do
+      let(:project) { create(:project) }
+
+      it { is_expected.to be(false) }
+    end
+  end
+end

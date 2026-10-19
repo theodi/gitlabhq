@@ -1,0 +1,1537 @@
+import produce from 'immer';
+import { camelCase, capitalize } from 'lodash-es';
+import { createAlert, VARIANT_INFO } from '~/alert';
+import {
+  TYPENAME_ITERATIONS_CADENCE,
+  TYPENAME_WORK_ITEM,
+  TYPENAME_WORK_ITEMS_TYPE,
+} from '~/graphql_shared/constants';
+import { getIdFromGraphQLId, convertToGraphQLId } from '~/graphql_shared/utils';
+import { isPositiveInteger } from '~/lib/utils/number_utils';
+import { capitalizeFirstCharacter, convertEachWordToTitleCase } from '~/lib/utils/text_utility';
+import { getParameterByName } from '~/lib/utils/url_utility';
+import { __, s__ } from '~/locale';
+import {
+  FILTER_ANY,
+  FILTER_ME,
+  FILTERED_SEARCH_TERM,
+  OPERATOR_NOT,
+  OPERATOR_IS,
+  OPERATOR_OR,
+  OPERATOR_AFTER,
+  OPERATORS_TO_GROUP,
+  TOKEN_TYPE_ASSIGNEE,
+  TOKEN_TYPE_REVIEWER,
+  TOKEN_TYPE_AUTHOR,
+  TOKEN_TYPE_CLOSED,
+  TOKEN_TYPE_CREATED,
+  TOKEN_TYPE_DRAFT,
+  TOKEN_TYPE_DUE_DATE,
+  TOKEN_TYPE_CONFIDENTIAL,
+  TOKEN_TYPE_SUBSCRIBED,
+  TOKEN_TYPE_ITERATION,
+  TOKEN_TYPE_MILESTONE,
+  TOKEN_TYPE_RELEASE,
+  TOKEN_TYPE_TYPE,
+  TOKEN_TYPE_HEALTH,
+  TOKEN_TYPE_LABEL,
+  TOKEN_TYPE_EPIC,
+  TOKEN_TYPE_WEIGHT,
+  TOKEN_TYPE_STATE,
+  TOKEN_TYPE_PARENT,
+  TOKEN_TYPE_STATUS,
+  TOKEN_TYPE_UPDATED,
+} from '~/vue_shared/components/filtered_search_bar/constants';
+import { DEFAULT_PAGE_SIZE } from '~/vue_shared/issuable/list/constants';
+import {
+  WORK_ITEM_TO_ISSUABLE_MAP,
+  WIDGET_TYPE_MILESTONE,
+  WIDGET_TYPE_ASSIGNEES,
+  WIDGET_TYPE_LABELS,
+  WIDGET_TYPE_TIME_TRACKING,
+} from '~/work_items/constants';
+import { BoardType } from '~/boards/constants';
+import { STATUS_CLOSED, STATUS_OPEN, TYPE_EPIC } from '~/issues/constants';
+import {
+  ALTERNATIVE_FILTER,
+  API_PARAM,
+  BLOCKING_ISSUES_ASC,
+  BLOCKING_ISSUES_DESC,
+  CLOSED_AT_ASC,
+  CLOSED_AT_DESC,
+  CREATED_ASC,
+  CREATED_DESC,
+  DUE_DATE_ASC,
+  DUE_DATE_DESC,
+  filtersMap,
+  HEALTH_STATUS_ASC,
+  HEALTH_STATUS_DESC,
+  HIERARCHY_FILTERS,
+  STATUS_ASC,
+  STATUS_DESC,
+  LABEL_PRIORITY_ASC,
+  LABEL_PRIORITY_DESC,
+  MILESTONE_DUE_ASC,
+  MILESTONE_DUE_DESC,
+  NORMAL_FILTER,
+  PARAM_ASSIGNEE_ID,
+  POPULARITY_ASC,
+  POPULARITY_DESC,
+  PRIORITY_ASC,
+  PRIORITY_DESC,
+  RELATIVE_POSITION_ASC,
+  WILDCARD_FILTER,
+  wildcardFilterValues,
+  TITLE_ASC,
+  TITLE_DESC,
+  UPDATED_ASC,
+  UPDATED_DESC,
+  URL_PARAM,
+  urlSortParams,
+  WEIGHT_ASC,
+  WEIGHT_DESC,
+  MERGED_AT_ASC,
+  MERGED_AT_DESC,
+  START_DATE_ASC,
+  START_DATE_DESC,
+  savedViewFilters,
+  NEW_SAVED_VIEWS_GID,
+  SAVED_VIEW_SEARCH_DELIMITER,
+  SAVED_VIEW_SORT_RELATIVE_POSITION,
+  SAVED_VIEW_SORT_NAME_ASC,
+} from '~/work_items/list/constants';
+import createSavedViewMutation from '~/work_items/list/graphql/create_saved_view.mutation.graphql';
+import updateSavedViewMutation from '~/work_items/list/graphql/update_saved_view.mutation.graphql';
+import subscribeToSavedViewMutation from '~/work_items/graphql/subscribe_to_saved_view.mutation.graphql';
+import getSubscribedSavedViewsQuery from '~/work_items/list/graphql/work_item_saved_views_namespace.query.graphql';
+import namespaceSavedViewQuery from '~/work_items/list/graphql/namespace_saved_view.query.graphql';
+import workItemSavedViewUnsubscribe from '~/work_items/list/graphql/unsubscribe_from_saved_view.mutation.graphql';
+import workItemSavedViewReorder from '~/work_items/graphql/reorder_saved_view.mutation.graphql';
+import getUserWorkItemsPreferences from '~/work_items/graphql/get_user_preferences.query.graphql';
+import updateWorkItemListUserPreference from '~/work_items/graphql/update_work_item_list_user_preferences.mutation.graphql';
+
+export const getInitialPageParams = (
+  pageSize,
+  firstPageSize = pageSize ?? DEFAULT_PAGE_SIZE,
+  lastPageSize,
+  afterCursor,
+  beforeCursor,
+  // eslint-disable-next-line max-params
+) => ({
+  firstPageSize: lastPageSize ? undefined : firstPageSize,
+  lastPageSize,
+  afterCursor,
+  beforeCursor,
+});
+
+// REST keyset cursors include the `_kd` direction marker; GraphQL cursors do not.
+// A cursor is considered compatible when its presence (or absence) of `_kd` matches
+// the API mode being used. Empty/invalid cursors are treated as compatible so they
+// pass through unchanged and can be handled by downstream logic.
+export const isCursorCompatibleWithApi = (cursor, useRestApi) => {
+  if (!cursor) return true;
+
+  let decoded;
+  try {
+    decoded = JSON.parse(atob(cursor));
+  } catch (e) {
+    return true;
+  }
+
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) return true;
+
+  const hasDirectionMarker = Object.hasOwn(decoded, '_kd');
+
+  return useRestApi ? hasDirectionMarker : !hasDirectionMarker;
+};
+
+export const getSortKey = (sort, sortMap = urlSortParams) =>
+  Object.keys(sortMap).find((key) => sortMap[key] === sort);
+
+export const isSortKey = (sort, sortMap = urlSortParams) => Object.keys(sortMap).includes(sort);
+
+export const deriveSortKey = ({ sort, sortMap, state = STATUS_OPEN }) => {
+  const defaultSortKey = state === STATUS_CLOSED ? UPDATED_DESC : CREATED_DESC;
+  const legacySortKey = getSortKey(sort, sortMap);
+  const graphQLSortKey = isSortKey(sort?.toUpperCase(), sortMap) && sort.toUpperCase();
+
+  return legacySortKey || graphQLSortKey || defaultSortKey;
+};
+
+export const getSortOptions = ({
+  hasBlockedIssuesFeature,
+  hasIssuableHealthStatusFeature,
+  hasIssueWeightsFeature,
+  hasStatusFeature,
+  hasDueDate = true,
+  hasManualSort = true,
+  hasStartDate = false,
+  hasMergedDate = false,
+} = {}) => {
+  const sortOptions = [
+    {
+      id: 1,
+      title: __('Priority'),
+      sortDirection: {
+        ascending: PRIORITY_ASC,
+        descending: PRIORITY_DESC,
+      },
+    },
+    {
+      id: 2,
+      title: __('Created date'),
+      sortDirection: {
+        ascending: CREATED_ASC,
+        descending: CREATED_DESC,
+      },
+    },
+    {
+      id: 3,
+      title: __('Updated date'),
+      sortDirection: {
+        ascending: UPDATED_ASC,
+        descending: UPDATED_DESC,
+      },
+    },
+    {
+      id: 4,
+      title: __('Closed date'),
+      sortDirection: {
+        ascending: CLOSED_AT_ASC,
+        descending: CLOSED_AT_DESC,
+      },
+    },
+    {
+      id: 5,
+      title: __('Milestone due date'),
+      sortDirection: {
+        ascending: MILESTONE_DUE_ASC,
+        descending: MILESTONE_DUE_DESC,
+      },
+    },
+    hasDueDate && {
+      id: 6,
+      title: __('Due date'),
+      sortDirection: {
+        ascending: DUE_DATE_ASC,
+        descending: DUE_DATE_DESC,
+      },
+    },
+    {
+      id: 7,
+      title: __('Popularity'),
+      sortDirection: {
+        ascending: POPULARITY_ASC,
+        descending: POPULARITY_DESC,
+      },
+    },
+    {
+      id: 8,
+      title: __('Label priority'),
+      sortDirection: {
+        ascending: LABEL_PRIORITY_ASC,
+        descending: LABEL_PRIORITY_DESC,
+      },
+    },
+    hasManualSort && {
+      id: 9,
+      title: __('Manual'),
+      sortDirection: {
+        ascending: RELATIVE_POSITION_ASC,
+        descending: RELATIVE_POSITION_ASC,
+      },
+    },
+    {
+      id: 10,
+      title: __('Title'),
+      sortDirection: {
+        ascending: TITLE_ASC,
+        descending: TITLE_DESC,
+      },
+    },
+    hasStartDate && {
+      id: 11,
+      title: __('Start date'),
+      sortDirection: {
+        ascending: START_DATE_ASC,
+        descending: START_DATE_DESC,
+      },
+    },
+  ];
+
+  if (hasMergedDate) {
+    sortOptions.push({
+      id: sortOptions.length + 1,
+      title: s__('SortOptions|Merged date'),
+      sortDirection: {
+        ascending: MERGED_AT_ASC,
+        descending: MERGED_AT_DESC,
+      },
+    });
+  }
+
+  if (hasIssuableHealthStatusFeature) {
+    sortOptions.push({
+      id: sortOptions.length + 1,
+      title: __('Health'),
+      sortDirection: {
+        ascending: HEALTH_STATUS_ASC,
+        descending: HEALTH_STATUS_DESC,
+      },
+    });
+  }
+
+  if (hasStatusFeature) {
+    sortOptions.push({
+      id: sortOptions.length + 1,
+      title: __('Status'),
+      sortDirection: {
+        ascending: STATUS_ASC,
+        descending: STATUS_DESC,
+      },
+    });
+  }
+
+  if (hasIssueWeightsFeature) {
+    sortOptions.push({
+      id: sortOptions.length + 1,
+      title: __('Weight'),
+      sortDirection: {
+        ascending: WEIGHT_ASC,
+        descending: WEIGHT_DESC,
+      },
+    });
+  }
+
+  if (hasBlockedIssuesFeature) {
+    sortOptions.push({
+      id: sortOptions.length + 1,
+      title: __('Blocking'),
+      sortDirection: {
+        ascending: BLOCKING_ISSUES_ASC,
+        descending: BLOCKING_ISSUES_DESC,
+      },
+    });
+  }
+
+  return sortOptions.filter((x) => x);
+};
+
+const tokenTypes = Object.keys(filtersMap);
+
+const getUrlParams = (tokenType) =>
+  Object.values(filtersMap[tokenType][URL_PARAM]).flatMap((filterObj) => Object.values(filterObj));
+
+const getApiParams = (tokenType) =>
+  Object.values(filtersMap[tokenType][API_PARAM]).flatMap((filterObj) => filterObj);
+
+const urlParamKeys = tokenTypes.flatMap(getUrlParams);
+const apiParamKeys = tokenTypes.flatMap(getApiParams);
+
+const getTokenTypeFromUrlParamKey = (urlParamKey) =>
+  tokenTypes.find((tokenType) => getUrlParams(tokenType).includes(urlParamKey));
+
+const getTokenTypeFromApiParamKey = (apiParamKey) => {
+  // Delete `isLegacyTypesKey` once https://gitlab.com/gitlab-org/gitlab/-/work_items/596878 is complete
+  const isLegacyTypesKey = apiParamKey === 'types';
+  if (isLegacyTypesKey) {
+    return TOKEN_TYPE_TYPE;
+  }
+
+  return tokenTypes.find((tokenType) => {
+    return getApiParams(tokenType).includes(apiParamKey);
+  });
+};
+
+const getOperatorFromUrlParamKey = (tokenType, urlParamKey) =>
+  Object.entries(filtersMap[tokenType][URL_PARAM]).find(([, filterObj]) =>
+    Object.values(filterObj).includes(urlParamKey),
+  )[0];
+
+export const convertMultipleIsTypeTokensToOr = (tokens) => {
+  const typeIsTokenIndices = [];
+  tokens.forEach((token, index) => {
+    if (token.type === TOKEN_TYPE_TYPE && token.value.operator === OPERATOR_IS) {
+      typeIsTokenIndices.push(index);
+    }
+  });
+
+  if (typeIsTokenIndices.length <= 1) {
+    return tokens;
+  }
+
+  return tokens.map((token, index) => {
+    if (typeIsTokenIndices.includes(index)) {
+      return {
+        ...token,
+        value: {
+          ...token.value,
+          operator: OPERATOR_OR,
+        },
+      };
+    }
+    return token;
+  });
+};
+
+export const getFilterTokens = (locationSearch, options = {}) => {
+  const tokens = Array.from(new URLSearchParams(locationSearch).entries())
+    .filter(
+      ([key]) =>
+        urlParamKeys.includes(key) && (options.includeStateToken || key !== TOKEN_TYPE_STATE),
+    )
+    .map(([key, data]) => {
+      const type = getTokenTypeFromUrlParamKey(key);
+      const operator = getOperatorFromUrlParamKey(type, key);
+      return {
+        type,
+        value: { data, operator },
+      };
+    });
+  if (options.convertTypeTokens) {
+    const hasTypeToken = tokens.some((token) => token.type === TOKEN_TYPE_TYPE);
+    if (hasTypeToken) return convertMultipleIsTypeTokensToOr(tokens);
+  }
+
+  return tokens;
+};
+
+/**
+ * Converts `type` URL param old enum value to new gid value
+ * i.e. `type[]=KEY_RESULT`/`type[]=epic` to `type[]=1`
+ *
+ * @param {Object[]} tokens - Array of filter tokens
+ * @param {Object} workItemTypesConfiguration - Work item types configuration
+ * @returns {Object[]} Array of filter tokens, with the type token value converted
+ */
+export const convertOldTypeTokenEnumToGid = (tokens, workItemTypesConfiguration) => {
+  const isTypeEnum = /^[a-zA-Z_]+$/;
+
+  const getGidFromTypeTokenEnum = (typeEnum) => {
+    // typeEnum can either be lowercase (epic) or screaming snake case (KEY_RESULT).
+    // The system type name is in title case (Key Result)
+    const typeName = typeEnum.toLowerCase().split('_').map(capitalizeFirstCharacter).join(' ');
+    const typeConfig = workItemTypesConfiguration.find((type) => type.name === typeName);
+    if (typeConfig) {
+      createAlert({
+        message: s__(
+          'WorkItems|The Type filter URL has been changed. Please update any bookmarks or links that reference the old URL.',
+        ),
+        variant: VARIANT_INFO,
+      });
+      return String(getIdFromGraphQLId(typeConfig.id));
+    }
+    return undefined;
+  };
+
+  return tokens
+    .map((token) => {
+      // Only process TYPE tokens and return early
+      if (token.type !== TOKEN_TYPE_TYPE) {
+        return token;
+      }
+
+      const { data } = token.value;
+
+      // Handle array of type values
+      if (Array.isArray(data)) {
+        const convertedData = data
+          .map((item) => (isTypeEnum.test(item) ? getGidFromTypeTokenEnum(item) : item))
+          .filter((item) => item !== undefined);
+
+        return {
+          ...token,
+          value: {
+            ...token.value,
+            data: convertedData.length > 0 ? convertedData : undefined,
+          },
+        };
+      }
+
+      if (isTypeEnum.test(data)) {
+        return {
+          ...token,
+          value: {
+            ...token.value,
+            data: getGidFromTypeTokenEnum(data),
+          },
+        };
+      }
+
+      // Return unchanged if already in correct format (numeric ID)
+      return token;
+    })
+    .filter((token) => {
+      // Only filter out TYPE tokens with undefined data
+      // Preserve all other token types
+      return token.type !== TOKEN_TYPE_TYPE || token.value.data !== undefined;
+    });
+};
+
+const trueYesFalseNo = (value) => {
+  if (value) {
+    return 'yes';
+  }
+  return 'no';
+};
+
+const wildcardTokens = [
+  TOKEN_TYPE_ASSIGNEE,
+  TOKEN_TYPE_EPIC,
+  TOKEN_TYPE_HEALTH,
+  TOKEN_TYPE_ITERATION,
+  TOKEN_TYPE_MILESTONE,
+  TOKEN_TYPE_RELEASE,
+  TOKEN_TYPE_REVIEWER,
+  TOKEN_TYPE_WEIGHT,
+  TOKEN_TYPE_PARENT,
+];
+
+// Tokens whose backend supports a "Me" (current user) wildcard. Not applicable to
+// all token types, so tested separately from other wildcard tokens.
+const meSupportingTokens = [TOKEN_TYPE_ASSIGNEE];
+
+const isMeWildcardValue = (tokenType, value) =>
+  meSupportingTokens.includes(tokenType) && value === FILTER_ME;
+
+const isWildcardValue = (tokenType, value) =>
+  (wildcardTokens.includes(tokenType) && wildcardFilterValues.includes(value)) ||
+  isMeWildcardValue(tokenType, value);
+
+const convertToTokenValue = (token, baseValue) => {
+  switch (token) {
+    case TOKEN_TYPE_CONFIDENTIAL:
+      return trueYesFalseNo(baseValue);
+    case TOKEN_TYPE_SUBSCRIBED:
+      return baseValue.toUpperCase();
+    case TOKEN_TYPE_HEALTH:
+      if (isWildcardValue(token, capitalize(baseValue))) {
+        return capitalize(baseValue);
+      }
+      return camelCase(baseValue);
+    case TOKEN_TYPE_STATUS:
+      return baseValue.name;
+    case TOKEN_TYPE_CLOSED:
+    case TOKEN_TYPE_CREATED:
+    case TOKEN_TYPE_DUE_DATE:
+    case TOKEN_TYPE_UPDATED:
+      // Saved views round-trip dates through a GraphQL Time arg, so they come back as
+      // full ISO strings. Slice rather than parse: parsing would shift the calendar day.
+      return baseValue.slice(0, 10);
+    default:
+      if (isWildcardValue(token, capitalize(baseValue))) {
+        return capitalize(baseValue);
+      }
+      return baseValue;
+  }
+};
+
+/**
+ * Takes a saved view filters field and converts it
+ * into a list of 'token' objects.
+ */
+export const getSavedViewFilterTokens = (filterObject, options = {}) => {
+  const iterationCadenceKey = filtersMap[TOKEN_TYPE_ITERATION][API_PARAM][ALTERNATIVE_FILTER];
+  const iterationWildcardKey = filtersMap[TOKEN_TYPE_ITERATION][API_PARAM][WILDCARD_FILTER];
+  // The iteration token holds a cadence selection as one `<wildcard>&<cadenceId>`
+  // value, but it is saved as two separate filters.
+  const iterationCadenceIds = [filterObject[iterationCadenceKey] ?? []].flat().filter(Boolean);
+
+  const tokens = Object.entries(filterObject)
+    .filter(([key]) => {
+      // Delete `isLegacyTypesKey` once https://gitlab.com/gitlab-org/gitlab/-/work_items/596878 is complete
+      const isLegacyTypesKey = key === 'types';
+      return (
+        (isLegacyTypesKey ||
+          apiParamKeys.includes(key) ||
+          ['not', 'or', 'in', HIERARCHY_FILTERS].includes(key)) &&
+        (options.includeStateToken || key !== TOKEN_TYPE_STATE)
+      );
+    })
+    .reduce((acc, [key, value]) => {
+      // Here the delimited search values are again formatted into array for filter tokens
+      if (key === 'search' && value?.includes(SAVED_VIEW_SEARCH_DELIMITER)) {
+        const { operator, type } = savedViewFilters[key];
+        const searchTokens = value.split(SAVED_VIEW_SEARCH_DELIMITER);
+        searchTokens.forEach((data) => {
+          acc.push({ type, data, operator });
+        });
+
+        return acc;
+      }
+      if (key === 'in') {
+        const { operator, type } = savedViewFilters[key];
+        // TITLE or DESCRIPTION
+        const data = Array.isArray(value) ? value[0] : value;
+
+        acc.push({ type, data: data?.toUpperCase(), operator });
+
+        return acc;
+      }
+
+      if (key === 'not') {
+        /**
+         * 'not' filters are a sub-object of the main filters
+         * object, so they need to be mapped separately.
+         */
+
+        Object.entries(value).forEach(([apiParamKey, data]) => {
+          const type = getTokenTypeFromApiParamKey(apiParamKey);
+          if (!type) return;
+          const notData =
+            type === TOKEN_TYPE_PARENT ? getIdFromGraphQLId(data?.[0])?.toString() : data;
+          acc.push({ type, data: notData, operator: OPERATOR_NOT });
+        });
+        return acc;
+      }
+      if (key === 'or') {
+        /**
+         * 'or' filters are a sub-object of the main filters
+         * object, so they need to be mapped separately.
+         */
+        Object.entries(value).forEach(([apiParamKey, data]) => {
+          const type = getTokenTypeFromApiParamKey(apiParamKey);
+          if (type) {
+            acc.push({ type, data, operator: OPERATOR_OR });
+          }
+        });
+        return acc;
+      }
+
+      if (key === HIERARCHY_FILTERS) {
+        const normalFilter = filtersMap[TOKEN_TYPE_PARENT][API_PARAM][NORMAL_FILTER];
+        const wildcardFilter = filtersMap[TOKEN_TYPE_PARENT][API_PARAM][WILDCARD_FILTER];
+        const parentValue = value[normalFilter] || value[wildcardFilter];
+        if (isWildcardValue(TOKEN_TYPE_PARENT, capitalize(parentValue))) {
+          acc.push({
+            type: TOKEN_TYPE_PARENT,
+            data: parentValue,
+            operator: OPERATOR_IS,
+          });
+        } else if (parentValue?.length) {
+          acc.push({
+            type: TOKEN_TYPE_PARENT,
+            data: getIdFromGraphQLId(parentValue[0])?.toString(),
+            operator: OPERATOR_IS,
+          });
+        }
+        return acc;
+      }
+
+      if (key === iterationCadenceKey && iterationCadenceIds.length) {
+        const { operator, type } = savedViewFilters[key];
+        const wildcard = capitalize(filterObject[iterationWildcardKey]) || FILTER_ANY;
+
+        acc.push(
+          ...iterationCadenceIds.map((cadenceId) => ({
+            type,
+            data: `${wildcard}&${getIdFromGraphQLId(cadenceId)}`,
+            operator,
+          })),
+        );
+        return acc;
+      }
+
+      if (key === iterationWildcardKey && iterationCadenceIds.length) {
+        // Already part of the cadence token above.
+        return acc;
+      }
+
+      const { operator, type } = savedViewFilters[key];
+      if (operator === OPERATOR_IS && Array.isArray(value)) {
+        acc.push(...value.map((v) => ({ type, data: v, operator })));
+      } else {
+        acc.push({ type, data: value, operator });
+      }
+      return acc;
+    }, [])
+    .map(({ type, data, operator }) => {
+      if (Array.isArray(data)) {
+        /**
+         * heath status returns an array for a single value with
+         * the 'not' operator.
+         */
+        if (operator === OPERATOR_NOT && type === TOKEN_TYPE_HEALTH) {
+          return {
+            type,
+            value: { data: convertToTokenValue(type, data[0]), operator },
+          };
+        }
+        return {
+          type,
+          value: { data: data.map((datum) => convertToTokenValue(type, datum)), operator },
+        };
+      }
+      return {
+        type,
+        value: { data: convertToTokenValue(type, data), operator },
+      };
+    });
+  if (options.convertTypeTokens) {
+    const hasTypeToken = tokens.some((token) => token.type === TOKEN_TYPE_TYPE);
+    if (hasTypeToken) return convertMultipleIsTypeTokensToOr(tokens);
+  }
+  return tokens;
+};
+
+const getIdFromEnum = (value, getWorkItemTypeConfiguration) => {
+  const typeName = convertEachWordToTitleCase(value.split('_').join(' '));
+  return String(getIdFromGraphQLId(getWorkItemTypeConfiguration(typeName)?.id));
+};
+
+const convertEnumToId = (value, getWorkItemTypeConfiguration) => {
+  return Array.isArray(value)
+    ? value.map((val) => getIdFromEnum(val, getWorkItemTypeConfiguration))
+    : getIdFromEnum(value, getWorkItemTypeConfiguration);
+};
+
+const convertGidToId = (value) => {
+  return Array.isArray(value)
+    ? value.map((val) => String(getIdFromGraphQLId(val.toLowerCase())))
+    : String(getIdFromGraphQLId(value.toLowerCase()));
+};
+
+export const convertNumberToGid = (value) => {
+  return Array.isArray(value)
+    ? value.map((val) => convertToGraphQLId(TYPENAME_WORK_ITEMS_TYPE, val))
+    : convertToGraphQLId(TYPENAME_WORK_ITEMS_TYPE, value);
+};
+
+/**
+ * For an array of tokens with a Type token, we convert the data from:
+ *
+ * - An enum (e.g. `ISSUE`)
+ * - A gid (e.g. `gid://gitlab/WorkItems::Type/1`)
+ *
+ * To a number:
+ *
+ * - `1`
+ *
+ * @param {Object[]} tokens
+ * @param {Function} getWorkItemTypeConfiguration
+ * @returns {Object[]} tokens
+ */
+export const convertLegacyTypeFormat = (tokens, getWorkItemTypeConfiguration) => {
+  const enumRegex = /^[a-z_]+$/i;
+
+  tokens.forEach((token) => {
+    if (token.type !== TOKEN_TYPE_TYPE) {
+      return;
+    }
+    if (!token?.value?.data) {
+      return;
+    }
+
+    const testValue = Array.isArray(token.value.data) ? token.value.data.at(0) : token.value.data;
+
+    if (token && enumRegex.test(testValue)) {
+      // eslint-disable-next-line no-param-reassign
+      token.value.data = convertEnumToId(token.value.data, getWorkItemTypeConfiguration);
+    }
+
+    if (token && testValue.toLowerCase().startsWith('gid')) {
+      // eslint-disable-next-line no-param-reassign
+      token.value.data = convertGidToId(token.value.data);
+    }
+  });
+
+  return tokens;
+};
+
+export function groupMultiSelectFilterTokens(filterTokensToGroup, tokenDefs) {
+  const groupedTokens = [];
+
+  const multiSelectTokenTypes = tokenDefs.filter((t) => t.multiSelect).map((t) => t.type);
+
+  filterTokensToGroup.forEach((token) => {
+    const shouldGroup =
+      OPERATORS_TO_GROUP.includes(token.value.operator) &&
+      multiSelectTokenTypes.includes(token.type);
+
+    if (!shouldGroup) {
+      groupedTokens.push(token);
+      return;
+    }
+
+    const sameTypeAndOperator = (t) =>
+      t.type === token.type && t.value.operator === token.value.operator;
+    const existingToken = groupedTokens.find(sameTypeAndOperator);
+
+    if (!existingToken) {
+      groupedTokens.push({
+        ...token,
+        value: {
+          ...token.value,
+          data: [token.value.data],
+        },
+      });
+    } else if (!existingToken.value.data.includes(token.value.data)) {
+      existingToken.value.data.push(token.value.data);
+    }
+  });
+
+  return groupedTokens;
+}
+
+export const isNotEmptySearchToken = (token) =>
+  !(token.type === FILTERED_SEARCH_TERM && !token.value.data);
+
+export const isAssigneeIdParam = (type, data) => {
+  return (
+    type === TOKEN_TYPE_ASSIGNEE &&
+    isPositiveInteger(data) &&
+    getParameterByName(PARAM_ASSIGNEE_ID) === data
+  );
+};
+
+export const isIterationCadenceIdParam = (type, data) => {
+  return type === TOKEN_TYPE_ITERATION && data?.includes('&');
+};
+
+export const isParentIdParam = (type) => {
+  return type === TOKEN_TYPE_PARENT;
+};
+
+const getFilterType = ({ type, value: { data, operator } }) => {
+  const isUnionedAuthor = type === TOKEN_TYPE_AUTHOR && operator === OPERATOR_OR;
+  const isUnionedLabel = type === TOKEN_TYPE_LABEL && operator === OPERATOR_OR;
+  const isAfter = operator === OPERATOR_AFTER;
+
+  if (
+    isUnionedAuthor ||
+    isUnionedLabel ||
+    isAssigneeIdParam(type, data) ||
+    isIterationCadenceIdParam(type, data) ||
+    isAfter
+  ) {
+    return ALTERNATIVE_FILTER;
+  }
+  if (wildcardFilterValues.includes(data) || isMeWildcardValue(type, data)) {
+    return WILDCARD_FILTER;
+  }
+
+  return NORMAL_FILTER;
+};
+
+const formatData = (token) => {
+  const { data } = token.value;
+
+  if (Array.isArray(data)) {
+    return data.map((item) => formatData({ ...token, value: { ...token.value, data: item } }));
+  }
+
+  if (isWildcardValue(token.type, data)) {
+    return data.toUpperCase();
+  }
+  if ([TOKEN_TYPE_CONFIDENTIAL, TOKEN_TYPE_DRAFT].includes(token.type)) {
+    return data === 'yes';
+  }
+  if (token.type === TOKEN_TYPE_TYPE) {
+    return convertToGraphQLId(TYPENAME_WORK_ITEMS_TYPE, data);
+  }
+  if (token.type === TOKEN_TYPE_HEALTH) {
+    return camelCase(data);
+  }
+
+  return data;
+};
+
+function fullIterationCadenceId(id) {
+  if (!id) {
+    return null;
+  }
+
+  return convertToGraphQLId(TYPENAME_ITERATIONS_CADENCE, getIdFromGraphQLId(id));
+}
+
+export const convertToApiParams = (filterTokens) => {
+  const params = new Map();
+  const not = new Map();
+  const or = new Map();
+
+  // Normalize type tokens: convert OPERATOR_OR to OPERATOR_IS
+  // because backend doesn't support or[type][] yet
+  const normalizedTokens = filterTokens.map((token) => {
+    if (token.type === TOKEN_TYPE_TYPE && token.value.operator === OPERATOR_OR) {
+      return {
+        ...token,
+        value: {
+          ...token.value,
+          operator: OPERATOR_IS,
+        },
+      };
+    }
+    return token;
+  });
+
+  normalizedTokens.filter(isNotEmptySearchToken).forEach((token) => {
+    const filterType = getFilterType(token);
+    const apiField = filtersMap[token.type][API_PARAM][filterType];
+    let obj;
+    if (token.value.operator === OPERATOR_NOT) {
+      obj = not;
+    } else if (token.value.operator === OPERATOR_OR) {
+      obj = or;
+    } else {
+      obj = params;
+    }
+    const data = formatData(token);
+    if (isIterationCadenceIdParam(token.type, token.value.data)) {
+      const [iteration, cadence] = data.split('&');
+      const cadenceId = fullIterationCadenceId(cadence);
+      const iterationWildCardId = iteration.toUpperCase();
+      obj.set(apiField, obj.has(apiField) ? [obj.get(apiField), cadenceId].flat() : cadenceId);
+      const secondApiField = filtersMap[token.type][API_PARAM][WILDCARD_FILTER];
+      obj.set(
+        secondApiField,
+        obj.has(secondApiField)
+          ? [obj.get(secondApiField), iterationWildCardId].flat()
+          : iterationWildCardId,
+      );
+    } else if (isParentIdParam(token.type)) {
+      // Due to complex nature of the hierarchy filters we had to add this block
+      // https://gitlab.com/gitlab-org/gitlab/-/issues/565597
+      if (token.value.operator === OPERATOR_NOT) {
+        obj.set(apiField, [convertToGraphQLId(TYPENAME_WORK_ITEM, data)]);
+      } else {
+        obj.set(HIERARCHY_FILTERS, {
+          [apiField]: wildcardFilterValues.includes(capitalize(data))
+            ? data.toUpperCase()
+            : [convertToGraphQLId(TYPENAME_WORK_ITEM, data)],
+          includeDescendantWorkItems: true,
+        });
+      }
+    } else {
+      obj.set(apiField, obj.has(apiField) ? [obj.get(apiField), data].flat() : data);
+    }
+  });
+
+  if (not.size) {
+    params.set('not', Object.fromEntries(not));
+  }
+
+  if (or.size) {
+    params.set('or', Object.fromEntries(or));
+  }
+
+  return Object.fromEntries(params);
+};
+
+export const convertToUrlParams = (filterTokens) => {
+  const urlParamsMap = filterTokens.filter(isNotEmptySearchToken).reduce((acc, token) => {
+    const filterType = getFilterType(token);
+    const urlParam = filtersMap[token.type][URL_PARAM][token.value.operator]?.[filterType];
+    return acc.set(
+      urlParam,
+      acc.has(urlParam) ? [acc.get(urlParam), token.value.data].flat() : token.value.data,
+    );
+  }, new Map());
+
+  return Object.fromEntries(urlParamsMap);
+};
+
+export const convertToSearchQuery = (filterTokens) =>
+  filterTokens
+    .filter((token) => token.type === FILTERED_SEARCH_TERM && token.value.data)
+    .map((token) => token.value.data)
+    .join(' ') || undefined;
+
+export function findWidget(type, workItem) {
+  return workItem?.widgets?.find((widget) => widget.type === type);
+}
+
+export function mapWorkItemWidgetsToIssuableFields({
+  list,
+  workItem,
+  isBoard = false,
+  namespace = BoardType.project,
+  type,
+}) {
+  const listType = `${type}s`;
+
+  return produce(list, (draftData) => {
+    const activeList = isBoard
+      ? draftData[namespace].board.lists.nodes[0][listType].nodes
+      : draftData[namespace][listType].nodes;
+
+    const activeItem = activeList.find((item) =>
+      type === TYPE_EPIC
+        ? item.iid === workItem.iid
+        : getIdFromGraphQLId(item.id) === getIdFromGraphQLId(workItem.id),
+    );
+
+    Object.keys(WORK_ITEM_TO_ISSUABLE_MAP).forEach((widgetType) => {
+      const currentWidget =
+        workItem.features?.[camelCase(widgetType)] || findWidget(widgetType, workItem);
+      if (!currentWidget) {
+        return;
+      }
+      const property = WORK_ITEM_TO_ISSUABLE_MAP[widgetType];
+
+      // The detail query may select a widget's type without its fields.
+      // Writing `undefined` would clear the cached value instead of keeping it.
+      const value =
+        property === WORK_ITEM_TO_ISSUABLE_MAP[WIDGET_TYPE_TIME_TRACKING]
+          ? currentWidget.humanReadableAttributes?.timeEstimate
+          : currentWidget[property];
+      if (value === undefined) {
+        return;
+      }
+
+      // handling the case for assignees and labels
+      if (
+        property === WORK_ITEM_TO_ISSUABLE_MAP[WIDGET_TYPE_ASSIGNEES] ||
+        property === WORK_ITEM_TO_ISSUABLE_MAP[WIDGET_TYPE_LABELS]
+      ) {
+        activeItem[property] = {
+          ...currentWidget[property],
+          nodes: currentWidget[property].nodes.map((node) => ({
+            __persist: true,
+            ...node,
+          })),
+        };
+        return;
+      }
+
+      // handling the case for milestone
+      if (
+        property === WORK_ITEM_TO_ISSUABLE_MAP[WIDGET_TYPE_MILESTONE] &&
+        currentWidget[property]
+      ) {
+        activeItem[property] = { __persist: true, ...currentWidget[property] };
+        return;
+      }
+
+      activeItem[property] = value;
+    });
+
+    activeItem.title = workItem.title;
+    activeItem.titleHtml = workItem.titleHtml;
+    activeItem.confidential = workItem.confidential;
+    activeItem.type = workItem?.workItemType?.name?.toUpperCase();
+  });
+}
+
+const removeSavedViewFromCache = (savedViews, savedView) => {
+  const index = savedViews.findIndex(({ id }) => id === savedView.id);
+  if (index !== -1) savedViews.splice(index, 1);
+};
+
+const updateSavedViewInCache = (savedViews, savedView) => {
+  const index = savedViews.findIndex(({ id }) => id === savedView.id);
+  // eslint-disable-next-line no-param-reassign
+  if (index !== -1) savedViews[index] = savedView;
+};
+
+// Manually update the saved views Apollo cache since its
+// fields differ from the mutation, causing automatic cache updates to fail.
+const updateSavedViewsQueryCache = ({
+  cache,
+  responseData,
+  mutationKey,
+  namespacePath,
+  action = 'create', // 'create', 'update', or 'remove'
+  subscribedOnly,
+}) => {
+  const sort = subscribedOnly ? SAVED_VIEW_SORT_RELATIVE_POSITION : SAVED_VIEW_SORT_NAME_ASC;
+
+  const query = {
+    query: getSubscribedSavedViewsQuery,
+    variables: { fullPath: namespacePath, subscribedOnly, sort },
+  };
+
+  const sourceData = cache.readQuery(query);
+  if (!sourceData) return;
+
+  const newData = produce(sourceData, (draftState) => {
+    const { savedView } = responseData[mutationKey];
+    const savedViews = draftState.namespace.savedViews.nodes;
+
+    if (action === 'remove') {
+      removeSavedViewFromCache(savedViews, savedView);
+    } else if (action === 'update') {
+      updateSavedViewInCache(savedViews, savedView);
+    } else if (action === 'create') {
+      savedViews.push(savedView);
+    }
+
+    if (sort === SAVED_VIEW_SORT_NAME_ASC) {
+      savedViews.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    }
+  });
+
+  cache.writeQuery({ ...query, data: newData });
+};
+
+const updateNamespaceSavedViewQueryCache = ({ cache, savedView, fullPath, id = '' }) => {
+  const query = {
+    query: namespaceSavedViewQuery,
+    variables: {
+      fullPath,
+      id,
+    },
+  };
+
+  const sourceData = cache.readQuery(query);
+
+  if (!sourceData) {
+    return;
+  }
+
+  const newData = produce(sourceData, (draftState) => {
+    const existingSavedView = draftState.namespace?.savedViews?.nodes;
+
+    existingSavedView[0] = savedView;
+  });
+
+  cache.writeQuery({ ...query, data: newData });
+};
+
+const updateSavedViewsCache = ({ cache, responseData, mutationKey, namespacePath, isEdit }) => {
+  const action = isEdit ? 'update' : 'create';
+
+  updateSavedViewsQueryCache({
+    cache,
+    responseData,
+    mutationKey,
+    namespacePath,
+    action,
+    subscribedOnly: true,
+  });
+  updateSavedViewsQueryCache({
+    cache,
+    responseData,
+    mutationKey,
+    namespacePath,
+    action,
+    subscribedOnly: false,
+  });
+};
+
+export const updateCacheAfterViewRemoval = ({ cache, view, action, fullPath }) => {
+  const variants = [true, false];
+
+  variants.forEach((subscribedOnly) => {
+    const query = {
+      query: getSubscribedSavedViewsQuery,
+      variables: {
+        fullPath,
+        subscribedOnly,
+        sort: subscribedOnly ? SAVED_VIEW_SORT_RELATIVE_POSITION : SAVED_VIEW_SORT_NAME_ASC,
+      },
+    };
+
+    const sourceData = cache.readQuery(query);
+    if (!sourceData) return;
+
+    const newData = produce(sourceData, (draftState) => {
+      const savedViews = draftState.namespace.savedViews.nodes;
+
+      if (subscribedOnly || (!subscribedOnly && action === 'delete')) {
+        const index = savedViews.findIndex((v) => v.id === view.id);
+        if (index !== -1) {
+          savedViews.splice(index, 1);
+        }
+      } else if (!subscribedOnly && action === 'unsubscribe') {
+        const unsubscribedView = savedViews.find((v) => v.id === view.id);
+        if (unsubscribedView) unsubscribedView.subscribed = false;
+      }
+    });
+
+    cache.writeQuery({ ...query, data: newData });
+  });
+};
+
+export const handleEnforceSubscriptionLimit = async ({
+  subscribedSavedViewLimit,
+  apolloClient,
+  namespacePath,
+  creating,
+}) => {
+  const { data } = await apolloClient.query({
+    query: getSubscribedSavedViewsQuery,
+    variables: {
+      fullPath: namespacePath,
+      subscribedOnly: true,
+      sort: SAVED_VIEW_SORT_RELATIVE_POSITION,
+    },
+    fetchPolicy: 'cache-only',
+  });
+
+  if (!data) return;
+
+  const subscribedViews = data.namespace.savedViews.nodes;
+
+  const needToUnsub = creating
+    ? subscribedViews.length > subscribedSavedViewLimit
+    : subscribedViews.length >= subscribedSavedViewLimit;
+  // Check if we're over the limit
+  if (needToUnsub) {
+    const viewToUnsubscribe =
+      subscribedViews[creating ? subscribedViews.length - 2 : subscribedViews.length - 1];
+
+    await apolloClient.mutate({
+      mutation: workItemSavedViewUnsubscribe,
+      variables: {
+        input: {
+          id: viewToUnsubscribe.id,
+        },
+      },
+      optimisticResponse: {
+        workItemSavedViewUnsubscribe: {
+          __typename: 'WorkItemSavedViewUnsubscribePayload',
+          savedView: {
+            __typename: 'WorkItemSavedViewType',
+            id: viewToUnsubscribe.id,
+          },
+        },
+      },
+      update: (cache) => {
+        updateCacheAfterViewRemoval({
+          cache,
+          view: viewToUnsubscribe,
+          action: 'unsubscribe',
+          fullPath: namespacePath,
+        });
+      },
+    });
+  }
+};
+
+// Centralized logic for creating and updating saved views
+// Reused across All items > Save view, Save changes, and Create/Edit saved view
+// TODO: Break this into smaller functions (create, updateMeta, updateConfig) with clearer responsibilities
+export const saveSavedView = async ({
+  isEdit = false,
+  isForm = false,
+  id = '',
+  namespacePath = '',
+  name = '',
+  description = '',
+  isPrivate = true,
+  filters = {},
+  sort = null,
+  displaySettings = {},
+  userPermissions,
+  subscribed,
+  mutationKey,
+  apolloClient,
+  enforceSubscriptionLimit = true,
+  subscribedSavedViewLimit,
+}) => {
+  const mutation = isEdit ? updateSavedViewMutation : createSavedViewMutation;
+
+  // Filter tokens are kept as an array when multiple values are present for search field.
+  // However, saved view filters do not support persisting arrays.
+  // Therefore, we serialize the array into a single string using a delimiter.
+  // A space cannot be used as the delimiter since search terms may contain spaces.
+  const updatedSavedViewFilters = {
+    ...filters,
+  };
+  if (filters.search) {
+    updatedSavedViewFilters.search = Array.isArray(filters.search)
+      ? filters.search.join(SAVED_VIEW_SEARCH_DELIMITER)
+      : filters.search;
+  }
+
+  const commonInput =
+    isEdit && isForm
+      ? {
+          name,
+          description,
+          isPrivate,
+        }
+      : {
+          name,
+          description,
+          isPrivate,
+          filters: updatedSavedViewFilters,
+          displaySettings,
+          sort,
+        };
+
+  const inputVariables = isEdit
+    ? { id, ...commonInput }
+    : {
+        namespacePath,
+        ...commonInput,
+      };
+
+  const commonSavedViewResponse = {
+    name,
+    description,
+    isPrivate,
+    filters: updatedSavedViewFilters,
+    displaySettings,
+    sort,
+    updatedAt: '',
+    author: {},
+    lastUpdatedBy: {},
+    __typename: 'WorkItemSavedViewType',
+  };
+
+  const optimisticResponse = {
+    [mutationKey]: {
+      __typename: isEdit ? 'WorkItemSavedViewUpdatePayload' : 'WorkItemSavedViewCreatePayload',
+      errors: [],
+      savedView: isEdit
+        ? {
+            id,
+            ...commonSavedViewResponse,
+            userPermissions,
+            subscribed,
+          }
+        : {
+            id: NEW_SAVED_VIEWS_GID,
+            ...commonSavedViewResponse,
+            subscribed: true,
+            userPermissions: {
+              updateSavedView: true,
+              deleteSavedView: true,
+              updateSavedViewVisibility: true,
+              __typename: 'SavedViewPermissions',
+            },
+          },
+    },
+  };
+
+  const result = await apolloClient.mutate({
+    mutation,
+    variables: { input: inputVariables },
+    optimisticResponse,
+    update: (cache, { data: responseData }) => {
+      if (!responseData || responseData[mutationKey].errors?.length) return;
+
+      updateSavedViewsCache({
+        cache,
+        responseData,
+        mutationKey,
+        namespacePath,
+        isEdit,
+      });
+
+      if (isEdit) {
+        updateNamespaceSavedViewQueryCache({
+          cache,
+          savedView: responseData[mutationKey].savedView,
+          fullPath: namespacePath,
+          id,
+        });
+      }
+    },
+  });
+
+  if (!isEdit && enforceSubscriptionLimit && result.data?.[mutationKey]?.savedView) {
+    await handleEnforceSubscriptionLimit({
+      subscribedSavedViewLimit,
+      apolloClient,
+      namespacePath,
+      creating: true,
+    });
+  }
+
+  return result;
+};
+
+// Centralized logic for subscribing to a saved view
+export const updateCacheAfterSubscribe = (cache, view, fullPath) => {
+  const variants = [true, false];
+
+  variants.forEach((subscribedOnly) => {
+    const query = {
+      query: getSubscribedSavedViewsQuery,
+      variables: {
+        fullPath,
+        subscribedOnly,
+        sort: subscribedOnly ? SAVED_VIEW_SORT_RELATIVE_POSITION : SAVED_VIEW_SORT_NAME_ASC,
+      },
+    };
+
+    const sourceData = cache.readQuery(query);
+    if (!sourceData) return;
+
+    const newData = produce(sourceData, (draftState) => {
+      const savedViews = draftState.namespace.savedViews.nodes;
+
+      if (!subscribedOnly) {
+        const subscribedView = savedViews.find((v) => v.id === view.id);
+        if (subscribedView) subscribedView.subscribed = true;
+      } else {
+        savedViews.push(view);
+      }
+    });
+
+    cache.writeQuery({ ...query, data: newData });
+  });
+};
+
+export const subscribeToSavedView = async ({ view, cache, fullPath }) => {
+  const result = await cache.mutate({
+    mutation: subscribeToSavedViewMutation,
+    variables: {
+      input: { id: view.id },
+    },
+
+    optimisticResponse: {
+      workItemSavedViewSubscribe: {
+        __typename: 'WorkItemSavedViewSubscribePayload',
+        errors: [],
+        savedView: {
+          __typename: 'WorkItemSavedViewType',
+          id: view.id,
+        },
+      },
+    },
+    update: (localCache) => updateCacheAfterSubscribe(localCache, view, fullPath),
+  });
+
+  return result;
+};
+
+export const subscribeWithLimitEnforce = async ({
+  view,
+  apolloClient,
+  namespacePath,
+  subscribedSavedViewLimit,
+}) => {
+  await handleEnforceSubscriptionLimit({ apolloClient, namespacePath, subscribedSavedViewLimit });
+  return subscribeToSavedView({
+    view,
+    cache: apolloClient,
+    fullPath: namespacePath,
+  });
+};
+
+export const updateCacheAfterViewReorder = ({
+  cache,
+  movedView,
+  referenceView,
+  position,
+  fullPath,
+}) => {
+  const variants = [true, false];
+
+  variants.forEach((subscribedOnly) => {
+    const query = {
+      query: getSubscribedSavedViewsQuery,
+      variables: {
+        fullPath,
+        subscribedOnly,
+        sort: subscribedOnly ? SAVED_VIEW_SORT_RELATIVE_POSITION : SAVED_VIEW_SORT_NAME_ASC,
+      },
+    };
+
+    const sourceData = cache.readQuery(query);
+    if (!sourceData) return;
+
+    const newData = produce(sourceData, (draftState) => {
+      const savedViews = draftState.namespace.savedViews.nodes;
+
+      // Remove the moved view from its current position
+      const movedIndex = savedViews.findIndex((v) => v.id === movedView.id);
+      if (movedIndex === -1) return;
+
+      const [removed] = savedViews.splice(movedIndex, 1);
+
+      // Find the reference view and insert relative to it
+      const referenceIndex = savedViews.findIndex((v) => v.id === referenceView.id);
+      if (referenceIndex === -1) {
+        // If reference not found, append at end
+        savedViews.push(removed);
+        return;
+      }
+
+      const insertIndex = position === 'before' ? referenceIndex : referenceIndex + 1;
+      savedViews.splice(insertIndex, 0, removed);
+    });
+
+    cache.writeQuery({ ...query, data: newData });
+  });
+};
+
+export const reorderSavedView = async ({
+  apolloClient,
+  movedView,
+  referenceView,
+  position,
+  fullPath,
+}) => {
+  const input = { id: movedView.id };
+
+  if (position === 'before') {
+    input.moveBeforeId = referenceView.id;
+  } else {
+    input.moveAfterId = referenceView.id;
+  }
+
+  await apolloClient.mutate({
+    mutation: workItemSavedViewReorder,
+    variables: { input },
+    update: (cache) =>
+      updateCacheAfterViewReorder({
+        cache,
+        movedView,
+        referenceView,
+        position,
+        fullPath,
+      }),
+  });
+};
+
+// Persists namespace-level work item display settings (for example collapsed
+// groups or hidden metadata fields) and patches the cached preferences so the
+// change is reflected without a refetch. Errors propagate to the caller.
+export const updateNamespaceDisplaySettings = ({
+  apolloClient,
+  namespacePath,
+  workItemTypeId,
+  isSavedView = false,
+  sort,
+  displaySettings,
+}) =>
+  apolloClient.mutate({
+    mutation: updateWorkItemListUserPreference,
+    variables: {
+      namespace: namespacePath,
+      displaySettings,
+    },
+    optimisticResponse: {
+      workItemUserPreferenceUpdate: {
+        errors: [],
+        userPreferences: {
+          displaySettings,
+          sort,
+          __typename: 'WorkItemTypesUserPreference',
+        },
+        __typename: 'WorkItemUserPreferenceUpdatePayload',
+      },
+    },
+    update(
+      cache,
+      {
+        data: {
+          workItemUserPreferenceUpdate: { userPreferences },
+        },
+      },
+    ) {
+      cache.updateQuery(
+        {
+          query: getUserWorkItemsPreferences,
+          variables: {
+            namespace: namespacePath,
+            workItemTypeId,
+            userPreferencesOnly: isSavedView,
+          },
+        },
+        (existingData) =>
+          produce(existingData, (draftData) => {
+            if (draftData?.currentUser) {
+              draftData.currentUser.workItemPreferences = {
+                ...(draftData?.currentUser?.workItemPreferences ?? {}),
+                displaySettings: userPreferences.displaySettings,
+              };
+            }
+          }),
+      );
+    },
+  });

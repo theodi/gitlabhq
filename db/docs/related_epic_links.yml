@@ -1,0 +1,13 @@
+---
+table_name: related_epic_links
+classes:
+- Epic::RelatedEpicLink
+feature_categories:
+- portfolio_management
+description: Information on the relationship between two epics
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/80499
+milestone: '14.9'
+gitlab_schema: gitlab_main_org
+table_size: small
+sharding_key:
+  group_id: namespaces

@@ -1,0 +1,174 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe MergeRequestWidgetEntity, feature_category: :code_review_workflow do
+  include ProjectForksHelper
+  include Gitlab::Routing.url_helpers
+
+  let_it_be(:project) { create :project, :repository }
+  let_it_be_with_refind(:resource) { create(:merge_request, source_project: project, target_project: project) }
+  let_it_be(:user) { create(:user) }
+
+  let(:request) { double('request', current_user: user, project: project) }
+
+  subject do
+    described_class.new(resource, request: request).as_json
+  end
+
+  describe 'source_project_full_path' do
+    it 'includes the full path of the source project' do
+      expect(subject[:source_project_full_path]).to be_present
+    end
+
+    context 'when the source project is missing' do
+      it 'returns `nil` for the source project' do
+        resource.allow_broken = true
+        resource.update!(source_project: nil)
+
+        expect(subject[:source_project_full_path]).to be_nil
+      end
+    end
+  end
+
+  describe 'can_create_pipeline_in_target_project' do
+    context 'when user has permission' do
+      before_all do
+        project.add_developer(user)
+      end
+
+      it 'includes the correct permission info' do
+        expect(subject[:can_create_pipeline_in_target_project]).to be(true)
+      end
+    end
+
+    context 'when user does not have permission' do
+      before_all do
+        project.add_guest(user)
+      end
+
+      it 'includes the correct permission info' do
+        expect(subject[:can_create_pipeline_in_target_project]).to be(false)
+      end
+    end
+  end
+
+  describe 'issues links' do
+    it 'includes issues links when requested' do
+      data = described_class.new(resource, request: request, issues_links: true).as_json
+
+      expect(data).to include(:issues_links)
+      expect(data[:issues_links]).to include(:assign_to_closing, :assign_to_closing_count, :closing, :mentioned_but_not_closing, :closing_count, :mentioned_count)
+    end
+
+    it 'omits issue links by default' do
+      expect(subject).not_to include(:issues_links)
+    end
+  end
+
+  it 'has email_patches_path' do
+    expect(subject[:email_patches_path])
+      .to eq("/#{resource.project.full_path}/-/merge_requests/#{resource.iid}.patch")
+  end
+
+  it 'has plain_diff_path' do
+    expect(subject[:plain_diff_path])
+      .to eq("/#{resource.project.full_path}/-/merge_requests/#{resource.iid}.diff")
+  end
+
+  describe 'user callouts' do
+    subject { described_class.new(resource, request: request).as_json }
+
+    it 'provides a valid path value for user callout path' do
+      expect(subject[:user_callouts_path]).to eq '/-/users/callouts'
+    end
+  end
+
+  it 'has new pipeline path for project' do
+    project.add_maintainer(user)
+
+    expect(subject[:new_project_pipeline_path])
+      .to eq("/#{resource.project.full_path}/-/pipelines/new")
+  end
+
+  describe 'when source project is deleted' do
+    let(:project) { create(:project, :repository) }
+    let(:forked_project) { fork_project(project) }
+    let(:merge_request) { create(:merge_request, source_project: forked_project, target_project: project) }
+
+    it 'returns a blank rebase_path' do
+      allow(merge_request).to receive(:should_be_rebased?).and_return(true)
+      forked_project.destroy!
+      merge_request.reload
+
+      entity = described_class.new(merge_request, request: request).as_json
+
+      expect(entity[:rebase_path]).to be_nil
+    end
+  end
+
+  it 'has security_reports_docs_path' do
+    expect(subject[:security_reports_docs_path]).not_to be_nil
+  end
+
+  describe 'has source_project_default_url' do
+    it 'returns the default url to the source project' do
+      expect(subject[:source_project_default_url]).to eq project.http_url_to_repo
+    end
+
+    context 'when source project is nil' do
+      it 'returns nil' do
+        allow(resource).to receive(:source_project).and_return(nil)
+
+        expect(subject[:source_project_default_url]).to be_nil
+      end
+    end
+  end
+
+  describe 'when ona is disabled' do
+    before do
+      allow(Gitlab::CurrentSettings).to receive(:gitpod_enabled).and_return(false)
+    end
+
+    it 'exposes ona attributes' do
+      expect(subject).to include(
+        show_gitpod_button: false,
+        gitpod_url: nil,
+        gitpod_enabled: false
+      )
+    end
+  end
+
+  describe 'when ona is enabled' do
+    before do
+      allow(Gitlab::CurrentSettings).to receive_messages(gitpod_enabled: true, gitpod_url: "https://gitpod.example.com")
+    end
+
+    it 'exposes ona attributes' do
+      mr_url = Gitlab::Routing.url_helpers.project_merge_request_url(resource.project, resource)
+
+      expect(subject).to include(
+        show_gitpod_button: true,
+        gitpod_url: "https://gitpod.example.com##{mr_url}",
+        gitpod_enabled: false
+      )
+    end
+
+    describe 'when ona is enabled for user' do
+      before do
+        allow(user).to receive(:gitpod_enabled).and_return(true)
+      end
+
+      it 'exposes ona_enabled as true' do
+        expect(subject[:gitpod_enabled]).to be(true)
+      end
+    end
+  end
+
+  describe 'merge_request_path' do
+    it 'exposes the merge request URL' do
+      expected_path = "/#{resource.project.full_path}/-/merge_requests/#{resource.iid}"
+      expect(subject[:merge_request_path]).to eq(expected_path)
+    end
+  end
+end

@@ -1,0 +1,19 @@
+description: "Copy file path on diffs"
+category: default
+action: click_copy_file_button
+extra_properties:
+identifiers:
+product_group: code_review
+product_categories:
+- code_review_workflow
+milestone:
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/73809
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`diff_copy_file_path_button`"
+  property:
+    description: "`diff_copy_file`"

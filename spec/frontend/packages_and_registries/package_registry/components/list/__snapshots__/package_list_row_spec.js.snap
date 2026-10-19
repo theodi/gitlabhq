@@ -1,0 +1,115 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`packages_list_row renders 1`] = `
+<div
+  class="gl-border-b-1 gl-border-b-default gl-border-b-solid gl-border-t-1 gl-border-t-solid gl-border-t-transparent gl-flex gl-flex-col"
+  data-testid="package-row"
+>
+  <div
+    class="gl-flex gl-py-3"
+  >
+    <div
+      class="gl-flex gl-justify-start gl-pt-2 gl-w-7"
+      data-testid="left-action-container"
+    >
+      <gl-form-checkbox-stub
+        class="gl-m-0"
+        value="true"
+      />
+    </div>
+    <div
+      class="@sm/panel:gl-flex-row gl-flex gl-flex-col gl-grow gl-items-stretch gl-justify-between"
+    >
+      <div
+        class="@sm/panel:gl-mb-0 gl-flex gl-flex-col gl-grow gl-mb-3 gl-min-w-0"
+      >
+        <div
+          class="@sm/panel:gl-flex gl-font-semibold gl-items-center gl-min-h-6 gl-min-w-0 gl-text-default"
+        >
+          <div
+            class="gl-flex gl-gap-3 gl-items-center gl-min-w-0 gl-mr-5"
+            data-testid="package-name"
+          >
+            <div
+              class="@sm/panel:gl-flex gl-gap-2"
+            >
+              <a
+                class="gl-break-all gl-min-w-0 gl-text-default"
+                data-testid="details-link"
+              >
+                @gitlab-org/package-15
+              </a>
+            </div>
+          </div>
+        </div>
+        <div
+          class="gl-flex gl-gap-3 gl-grow gl-items-center gl-min-h-6 gl-min-w-0 gl-text-sm gl-text-subtle"
+        >
+          <div
+            class="gl-flex gl-items-center"
+            data-testid="left-secondary-infos"
+          >
+            <gl-truncate-stub
+              class="@md/panel:gl-max-w-26 gl-max-w-15"
+              position="end"
+              text="1.0.0"
+              withtooltip="true"
+            />
+            <span
+              class="gl-ml-2"
+              data-testid="package-type"
+            >
+              · npm
+            </span>
+          </div>
+        </div>
+      </div>
+      <div
+        class="@sm/panel:gl-items-end gl-flex gl-flex-col gl-justify-center gl-shrink-0 gl-text-subtle"
+      >
+        <div
+          class="@sm/panel:gl-text-default gl-flex gl-items-center gl-min-h-6"
+        >
+          <publish-method-stub />
+        </div>
+        <div
+          class="gl-flex gl-items-center gl-min-h-6 gl-text-sm"
+        >
+          <publish-message-stub
+            author=""
+            projectname=""
+            projecturl=""
+            publishdate="2020-05-17T14:23:32Z"
+          />
+        </div>
+      </div>
+    </div>
+    <div
+      class="@sm/panel:gl-flex gl-items-center gl-pl-3"
+    >
+      <gl-disclosure-dropdown-stub
+        autoclose="true"
+        category="tertiary"
+        data-testid="delete-dropdown"
+        icon="ellipsis_v"
+        items=""
+        nocaret="true"
+        placement="bottom-start"
+        positioningstrategy="absolute"
+        size="medium"
+        textsronly="true"
+        toggleid="dropdown-toggle-btn-1"
+        toggletext="More actions"
+        variant="default"
+      >
+        <gl-disclosure-dropdown-item-stub
+          data-testid="action-delete"
+          variant="danger"
+        >
+          Delete package
+        </gl-disclosure-dropdown-item-stub>
+      </gl-disclosure-dropdown-stub>
+    </div>
+  </div>
+</div>
+`;

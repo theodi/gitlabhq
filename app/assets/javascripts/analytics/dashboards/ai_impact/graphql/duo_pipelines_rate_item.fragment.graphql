@@ -1,0 +1,15 @@
+fragment DuoPipelinesRateItem on Analytics {
+  pipelines(
+    # Mirrors Ci::HasStatus::COMPLETED_STATUSES
+    status: ["success", "failed", "canceled", "skipped"]
+    startedAtFrom: $startDate
+    startedAtTo: $endDate
+  ) {
+    aggregated {
+      nodes {
+        allPipelinesCount: totalCount
+        duoPipelinesCount: totalCount(source: ["duo_workflow"])
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+.welcome-grid
+  = render_if_exists "dashboard/projects/blank_state_extra_info"
+
+  - if current_user.can_create_project?
+    = render Onboarding::ActionCardComponent.new(title: _('Create a project'),
+      description: _('Projects are where you store your code, access issues, wiki, and other features of GitLab.'),
+      icon: 'project',
+      href: new_project_path,
+      link_options: { data: { testid: 'new-project-button' }})
+
+  = render Onboarding::ActionCardComponent.new(title: _('Explore public projects'),
+    description: _('Public projects are an easy way to allow everyone to have read-only access.'),
+    icon: 'earth',
+    href: explore_projects_path)
+
+  - if current_user.can_create_group?
+    = render Onboarding::ActionCardComponent.new(title: _('Create a group'),
+      description: _('Groups are the best way to manage projects and members.'),
+      icon: 'group',
+      href: new_group_path)
+
+  = render Onboarding::ActionCardComponent.new(title: _('Learn more about GitLab'),
+    description: _('Take a look at the documentation to discover all of GitLab’s capabilities.'),
+    icon: 'bulb',
+    href: Gitlab.doc_url)

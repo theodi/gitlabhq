@@ -1,0 +1,24 @@
+.row
+  .form-group.project-name.gl-col-sm-12
+    = label_tag :name, _('Project name'), class: 'label-bold'
+    = text_field_tag :name, @name, placeholder: s_('ProjectsNew|My project'), class: "js-project-name form-control gl-form-input input-lg", autofocus: true, required: true, aria: { required: true }, data: { testid: 'project-name-field' }
+  .form-group.gl-col-12.gl-col-sm-6.gl-pr-0
+    = label_tag :namespace_id, _('Project URL'), class: 'label-bold'
+    .input-group.gl-flex-nowrap
+      - if current_user.can_select_namespace?
+        - namespace_id = namespace_id_from(params)
+        .js-vue-new-project-url-select{ data: { namespace_full_path: GroupFinder.new(current_user).execute(id: namespace_id)&.full_path,
+          namespace_id: namespace_id,
+          input_id: 'namespace_id',
+          input_name: 'namespace_id',
+          root_url: root_url,
+          user_namespace_id: current_user.namespace_id } }
+      - else
+        .input-group-prepend.static-namespace.has-tooltip{ class: '!gl-shrink-0', title: user_url(current_user.username) + '/' }
+          %div{ class: "input-group-text !gl-border-0" }
+            #{user_url(current_user.username)}/
+        = hidden_field_tag :namespace_id, current_user.namespace_id
+      .gl-self-center.gl-pl-5 /
+  .form-group.gl-col-12.gl-col-sm-6.project-path
+    = label_tag :path, _('Project slug'), class: 'label-bold'
+    = text_field_tag :path, @path, placeholder: "my-awesome-project", class: "js-path-name form-control gl-form-input", required: true, aria: { required: true }

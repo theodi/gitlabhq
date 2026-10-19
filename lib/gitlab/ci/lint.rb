@@ -1,0 +1,268 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    class Lint
+      # Raised when a linting request is throttled and enforcement is enabled.
+      # Entry points rescue this to respond with a 429 instead of a lint result.
+      RateLimitError = Class.new(StandardError)
+
+      class Result
+        attr_reader :jobs, :merged_yaml, :errors, :warnings, :includes
+
+        def initialize(jobs:, merged_yaml:, errors:, warnings:, includes:, timed_out: false)
+          @jobs = jobs
+          @merged_yaml = merged_yaml
+          @errors = errors
+          @warnings = warnings
+          @includes = includes
+          @timed_out = timed_out
+        end
+
+        def valid?
+          @errors.empty?
+        end
+
+        def timed_out?
+          @timed_out
+        end
+
+        def status
+          valid? ? :valid : :invalid
+        end
+      end
+
+      LOG_MAX_DURATION_THRESHOLD = 2.seconds
+      USER_EXPERIENCE_ID = :lint_ci_config
+      SURFACES = %i[graphql_ci_lint graphql_ci_config rest_get rest_post web_lint_page rails_console].freeze
+
+      def initialize(project:, current_user:, surface:, sha: nil, verify_project_sha: true)
+        raise ArgumentError, "unknown lint surface: #{surface}" unless SURFACES.include?(surface)
+
+        @project = project
+        @current_user = current_user
+        @surface = surface
+
+        #
+        # We are deprecating these parameters because we'll replace the `legacy_validate` with the `validate` method.
+        #
+        # If the `sha` is not provided, the default is the project's head commit (or nil). In such case, we
+        # don't need to call `YamlProcessor.verify_project_sha!`, which prevents redundant calls to Gitaly.
+        @legacy_verify_project_sha = verify_project_sha && sha.present?
+        @legacy_sha = sha || project&.repository&.commit&.sha
+      end
+
+      # Our goal is to remove the `sha` dependency and the custom `YamlProcessor` usage from the CI linting logic.
+      # This legacy method is aimed to be removed with https://gitlab.com/gitlab-org/gitlab/-/issues/543727.
+      def legacy_validate(content, dry_run: false, ref: project&.default_branch)
+        raise RateLimitError if ci_lint_rate_limited?
+        return simulate_pipeline_creation(content, ref) if dry_run
+
+        measure_lint_experience { legacy_static_validation(content) }
+      end
+
+      def validate(content, dry_run:, ref:)
+        raise RateLimitError if ci_lint_rate_limited?
+        return simulate_pipeline_creation(content, ref) if dry_run
+
+        measure_lint_experience { lint_pipeline_creation(content, ref) }
+      end
+
+      private
+
+      attr_accessor :project, :current_user, :legacy_sha, :legacy_verify_project_sha, :surface
+
+      def measure_lint_experience
+        return yield if surface == :rails_console
+
+        started_at = Time.current
+        begin
+          result = yield
+        rescue StandardError
+          raised = true
+          raise
+        ensure
+          report_lint_experience(started_at, result, raised: raised)
+        end
+      end
+
+      # Invalid YAML is the right answer for a bad config, so it isn't an SLI error.
+      # A timed-out `include:` fetch also returns an invalid result, but the config was
+      # never fully checked, so that one is an SLI error.
+      def report_lint_experience(started_at, result, raised:)
+        Labkit::UserExperienceSli.observed(
+          USER_EXPERIENCE_ID,
+          start_time: started_at,
+          error: raised || result.timed_out?,
+          lint_result: lint_result_for(result, raised),
+          **experience_extra
+        )
+      rescue StandardError => e
+        Gitlab::ErrorTracking.track_exception(e, **experience_extra)
+      end
+
+      def lint_result_for(result, raised)
+        return :error if raised
+        return :timeout if result.timed_out?
+
+        result.status
+      end
+
+      # `lint_surface` names the entry point because GraphQL requests all share the
+      # `GraphqlController#execute` caller_id, so the request context cannot tell them apart.
+      def experience_extra
+        { lint_surface: surface, Labkit::Fields::GL_PROJECT_ID.to_sym => project&.id }
+      end
+
+      # Increments the :ci_lint counter and logs when over the limit, but only reports the request
+      # as rate limited (so callers can reject it) when the ci_enforce_ci_lint_rate_limit flag
+      # is enabled. This keeps lint rate limiting in log-only mode until the flag is turned on.
+      def ci_lint_rate_limited?
+        return false unless ::Gitlab::ApplicationRateLimiter.throttled?(:ci_lint, scope: { user: current_user })
+
+        enforce = ::Feature.enabled?(:ci_enforce_ci_lint_rate_limit, project, type: :gitlab_com_derisk)
+
+        ::Gitlab::AppJsonLogger.info(
+          Labkit::Fields::CLASS_NAME => self.class.name,
+          Labkit::Fields::GL_PROJECT_ID => project&.id,
+          Labkit::Fields::GL_USER_ID => current_user&.id,
+          message: 'CI Lint rate limit exceeded',
+          throttled: enforce
+        )
+
+        enforce
+      end
+
+      def simulate_pipeline_creation(content, ref)
+        pipeline = ::Ci::CreatePipelineService
+          .new(@project, @current_user, ref: ref)
+          .execute(:push, ignore_skip_ci: true, dry_run: true, content: content)
+          .payload
+
+        Result.new(
+          jobs: dry_run_convert_to_jobs(pipeline.stages),
+          merged_yaml: pipeline.config_metadata.try(:[], :merged_yaml)&.call,
+          errors: pipeline.error_messages.map(&:content),
+          warnings: pipeline.warning_messages(limit: ::Gitlab::Ci::Warnings::MAX_LIMIT).map(&:content),
+          includes: pipeline.config_metadata.try(:[], :includes)
+        )
+      end
+
+      def lint_pipeline_creation(content, ref)
+        service = ::Ci::CreatePipelineService.new(@project, @current_user, ref: ref)
+        pipeline = service.execute(:push, ignore_skip_ci: true, linting: true, content: content).payload
+
+        Result.new(
+          jobs: yaml_processor_result_to_jobs(service.yaml_processor_result),
+          merged_yaml: pipeline.config_metadata.try(:[], :merged_yaml)&.call,
+          errors: pipeline.error_messages.map(&:content),
+          warnings: pipeline.warning_messages(limit: ::Gitlab::Ci::Warnings::MAX_LIMIT).map(&:content),
+          includes: pipeline.config_metadata.try(:[], :includes),
+          timed_out: !!service.yaml_processor_result&.timed_out?
+        )
+      end
+
+      def legacy_static_validation(content)
+        logger = build_logger
+
+        result = yaml_processor_result(content, logger)
+
+        Result.new(
+          jobs: yaml_processor_result_to_jobs(result),
+          merged_yaml: result.config_metadata[:merged_yaml]&.call,
+          errors: result.errors,
+          warnings: result.warnings.take(::Gitlab::Ci::Warnings::MAX_LIMIT), # rubocop: disable CodeReuse/ActiveRecord
+          includes: result.config_metadata[:includes],
+          timed_out: result.timed_out?
+        )
+      ensure
+        logger.commit(pipeline: ::Ci::Pipeline.new, caller: self.class.name)
+      end
+
+      def yaml_processor_result(content, logger)
+        logger.instrument(:yaml_process, once: true) do
+          Gitlab::Ci::YamlProcessor.new(content, project: project,
+            user: current_user,
+            ref: find_ref,
+            sha: legacy_sha,
+            verify_project_sha: legacy_verify_project_sha,
+            logger: logger).execute
+        end
+      end
+
+      def dry_run_convert_to_jobs(stages)
+        stages.reduce([]) do |jobs, stage|
+          jobs + stage.statuses.map do |job|
+            {
+              name: job.name,
+              stage: stage.name,
+              before_script: job.options[:before_script].to_a,
+              script: job.options[:script].to_a,
+              after_script: job.options[:after_script].to_a,
+              tag_list: (job.tag_list if job.is_a?(::Ci::Build)).to_a,
+              environment: job.options.dig(:environment, :name),
+              when: job.when,
+              allow_failure: job.allow_failure
+            }
+          end
+        end
+      end
+
+      def yaml_processor_result_to_jobs(result)
+        jobs = []
+        return jobs unless result&.valid?
+
+        builds_by_stage = result.builds.group_by { |job| job[:stage] }
+
+        result.stages.each do |stage_name|
+          builds_by_stage.fetch(stage_name, []).each do |job|
+            jobs << {
+              name: job[:name],
+              stage: stage_name,
+              before_script: job.dig(:options, :before_script).to_a,
+              script: job.dig(:options, :script).to_a,
+              after_script: job.dig(:options, :after_script).to_a,
+              tag_list: job[:tag_list].to_a,
+              only: job[:only],
+              except: job[:except],
+              environment: job[:environment],
+              when: job[:when],
+              allow_failure: job[:allow_failure],
+              needs: job[:needs_attributes]
+            }
+          end
+        end
+
+        jobs
+      end
+
+      def build_logger
+        Gitlab::Ci::Pipeline::Logger.new(project: project) do |l|
+          l.log_when do |observations|
+            duration = observations['yaml_process_duration_s']
+            next false unless duration
+
+            duration >= LOG_MAX_DURATION_THRESHOLD
+          end
+        end
+      end
+
+      def find_ref
+        ref = RefFinder.new(project).find_by_sha(legacy_sha)
+
+        return unless ref
+
+        allowed_to_write_ref?(ref) ? ref : nil
+      end
+
+      def allowed_to_write_ref?(ref)
+        access = Gitlab::UserAccess.new(current_user, container: project)
+
+        # We only check access for protected branches and not for protected tags
+        # because it's not possible to perform static validation on a protected tag
+        # as we initialize a new `Ci::Pipeline` in `Ci::Config` and do not pass `tag: true`.
+        access.can_update_branch?(ref)
+      end
+    end
+  end
+end

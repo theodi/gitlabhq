@@ -1,0 +1,15 @@
+---
+# Cop supports --autocorrect.
+API/DescriptionTags:
+  Exclude:
+    - 'ee/lib/ee/api/internal/kubernetes.rb'
+    - 'ee/lib/gitlab_subscriptions/api/internal/add_on_purchases.rb'
+    - 'ee/lib/gitlab_subscriptions/api/internal/members.rb'
+    - 'ee/lib/gitlab_subscriptions/api/internal/namespaces.rb'
+    - 'ee/lib/gitlab_subscriptions/api/internal/namespaces/provision.rb'
+    - 'ee/lib/gitlab_subscriptions/api/internal/subscriptions.rb'
+    - 'ee/lib/gitlab_subscriptions/api/internal/users.rb'
+    - 'lib/api/internal/coverage.rb'
+    - 'lib/api/internal/kubernetes.rb'
+    - 'lib/api/internal/lfs.rb'
+    - 'lib/api/internal/pages.rb'

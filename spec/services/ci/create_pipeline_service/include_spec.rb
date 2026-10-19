@@ -1,0 +1,421 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::CreatePipelineService, feature_category: :pipeline_composition do
+  include RepoHelpers
+
+  context 'include:' do
+    let_it_be_with_reload(:project) { create(:project, :repository) }
+    let_it_be(:user) { project.first_owner }
+
+    let(:ref)                  { 'refs/heads/master' }
+    let(:variables_attributes) { [{ key: 'MYVAR', value: 'hello' }] }
+    let(:source)               { :push }
+
+    let(:service)  { described_class.new(project, user, { ref: ref, variables_attributes: variables_attributes }) }
+    let(:pipeline) { service.execute(source).payload }
+
+    let_it_be(:file_location) { 'spec/fixtures/gitlab/ci/external_files/.gitlab-ci-template-1.yml' }
+
+    let(:project_files) do
+      {
+        '.gitlab-ci.yml' => config,
+        file_location => File.read(Rails.root.join(file_location))
+      }
+    end
+
+    around do |example|
+      create_and_delete_files(project, project_files) do
+        example.run
+      end
+    end
+
+    before do
+      project.update!(ci_pipeline_variables_minimum_override_role: :maintainer)
+    end
+
+    shared_examples 'not including the file' do
+      it 'does not include the job in the file' do
+        expect(pipeline).to be_created_successfully
+        expect(pipeline.processables.pluck(:name)).to contain_exactly('job')
+      end
+    end
+
+    shared_examples 'including the file' do
+      it 'includes the job in the file' do
+        expect(pipeline).to be_created_successfully
+        expect(pipeline.processables.pluck(:name)).to contain_exactly('job', 'rspec')
+      end
+    end
+
+    context 'with a local file' do
+      let(:config) do
+        <<~YAML
+        include: #{file_location}
+        job:
+          script: exit 0
+        YAML
+      end
+
+      it_behaves_like 'including the file'
+    end
+
+    context 'with a local file with rules with a project variable' do
+      let(:config) do
+        <<~YAML
+        include:
+          - local: #{file_location}
+            rules:
+              - if: $CI_PROJECT_ID == "#{project_id}"
+        job:
+          script: exit 0
+        YAML
+      end
+
+      context 'when the rules matches' do
+        let(:project_id) { project.id }
+
+        it_behaves_like 'including the file'
+      end
+
+      context 'when the rules does not match' do
+        let(:project_id) { non_existing_record_id }
+
+        it_behaves_like 'not including the file'
+      end
+    end
+
+    context 'with a local file with rules with a predefined pipeline variable' do
+      let(:config) do
+        <<~YAML
+        include:
+          - local: #{file_location}
+            rules:
+              - if: $CI_PIPELINE_SOURCE == "#{pipeline_source}"
+        job:
+          script: exit 0
+        YAML
+      end
+
+      context 'when the rules matches' do
+        let(:pipeline_source) { 'push' }
+
+        it_behaves_like 'including the file'
+      end
+
+      context 'when the rules does not match' do
+        let(:pipeline_source) { 'web' }
+
+        it_behaves_like 'not including the file'
+      end
+    end
+
+    context 'with a local file with rules with a run pipeline variable' do
+      let(:config) do
+        <<~YAML
+        include:
+          - local: #{file_location}
+            rules:
+              - if: $MYVAR == "#{my_var}"
+        job:
+          script: exit 0
+        YAML
+      end
+
+      context 'when the rules matches' do
+        let(:my_var) { 'hello' }
+
+        it_behaves_like 'including the file'
+      end
+
+      context 'when the rules does not match' do
+        let(:my_var) { 'mello' }
+
+        it_behaves_like 'not including the file'
+      end
+    end
+
+    context 'with a local file with rules:exists' do
+      let(:config) do
+        <<~YAML
+        include:
+          - local: file1.yml
+            rules:
+              - exists:
+                - 'docs/*.md' # does not match
+                - 'config/*.rb' # does not match
+          - local: file2.yml
+            rules:
+              - exists:
+                - 'docs/*.md' # does not match
+                - '**/app.rb' # does not match
+          - local: #{file_location}
+            rules:
+              - exists:
+                - '**/app.rb' # does not match
+                - spec/fixtures/gitlab/ci/*/.gitlab-ci-template-1.yml # matches
+
+        job:
+          script: exit 0
+        YAML
+      end
+
+      let(:number_of_files) { project.repository.ls_files(ref).size }
+
+      it_behaves_like 'including the file'
+
+      context 'on checking cache', :request_store do
+        it 'does not evaluate the same glob more than once' do
+          expect(File).to receive(:fnmatch?)
+            .with('docs/*.md', anything, anything)
+            .exactly(number_of_files).times # it iterates all files
+            .and_call_original
+          expect(File).to receive(:fnmatch?)
+            .with('config/*.rb', anything, anything)
+            .exactly(number_of_files).times # it iterates all files
+            .and_call_original
+          expect(File).to receive(:fnmatch?)
+            .with('**/app.rb', anything, anything)
+            .exactly(number_of_files).times # it iterates all files
+            .and_call_original
+          expect(File).to receive(:fnmatch?)
+            .with('spec/fixtures/gitlab/ci/*/.gitlab-ci-template-1.yml', anything, anything)
+            .exactly(39).times # it iterates files until it finds a match
+            .and_call_original
+
+          expect(pipeline).to be_created_successfully
+          expect(pipeline.processables.pluck(:name)).to contain_exactly('job', 'rspec')
+        end
+      end
+    end
+
+    context 'with Gitaly timeout handling', :clean_gitlab_redis_repository_cache do
+      before do
+        stub_const('Gitlab::Ci::Config::GITALY_TIMEOUT_SECONDS', 0.0001)
+      end
+
+      context 'when local include times out' do
+        let(:config) do
+          <<~YAML
+          include:
+            - local: #{file_location}
+          job:
+            script: exit 0
+          YAML
+        end
+
+        it 'fails with timeout error' do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).and_call_original
+
+          expect(pipeline).to be_persisted
+          expect(pipeline.error_messages.map(&:content)).to include(
+            'CI configuration fetch from Gitaly timed out. This may indicate Gitaly service slowness or an outage.'
+          )
+        end
+      end
+
+      context 'when project include times out' do
+        let_it_be(:another_project) { create(:project, :small_repo, :public) }
+
+        let(:included_file_content) { File.read(Rails.root.join(file_location)) }
+
+        let(:config) do
+          <<~YAML
+          include:
+            - project: #{another_project.full_path}
+              file: /#{file_location}
+          job:
+            script: exit 0
+          YAML
+        end
+
+        before_all do
+          another_project.repository.create_file(
+            another_project.creator,
+            file_location,
+            File.read(Rails.root.join(file_location)),
+            message: 'Add CI template',
+            branch_name: 'master'
+          )
+        end
+
+        it 'fails with timeout error' do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).and_call_original
+
+          expect(pipeline).to be_persisted
+          expect(pipeline.error_messages.map(&:content)).to include(
+            'CI configuration fetch from Gitaly timed out. This may indicate Gitaly service slowness or an outage.'
+          )
+        end
+      end
+
+      context 'when multiple includes exceed the cumulative fetch timeout' do
+        let_it_be(:other_project1) { create(:project, :small_repo, :public) }
+        let_it_be(:other_project2) { create(:project, :small_repo, :public) }
+
+        let(:config) do
+          <<~YAML
+          include:
+            - local: templates/ci-1.yml
+            - project: #{other_project1.full_path}
+              file: /templates/ci-2.yml
+            - project: #{other_project2.full_path}
+              file: /templates/ci-3.yml
+          job:
+            script: exit 0
+          YAML
+        end
+
+        let(:project_files) do
+          {
+            '.gitlab-ci.yml' => config,
+            'templates/ci-1.yml' => "local_job_templates_ci-1.yml:\n  script: echo templates/ci-1.yml"
+          }
+        end
+
+        before_all do
+          other_project1.repository.create_file(
+            other_project1.creator,
+            'templates/ci-2.yml',
+            "remote_job_templates_ci-2.yml:\n  script: echo templates/ci-2.yml",
+            message: "Add templates/ci-2.yml",
+            branch_name: 'master'
+          )
+          other_project2.repository.create_file(
+            other_project2.creator,
+            'templates/ci-3.yml',
+            "remote_job_templates_ci-3.yml:\n  script: echo templates/ci-3.yml",
+            message: "Add templates/ci-3.yml",
+            branch_name: 'master'
+          )
+        end
+
+        before do
+          stub_feature_flags(ci_config_fetch_timeout_override: false)
+          stub_const('Gitlab::Ci::Config::TIMEOUT_SECONDS', 0.3.seconds) # it should take at least 0.3 seconds (0.1 x 3)
+          stub_const('Gitlab::Ci::Config::GITALY_TIMEOUT_SECONDS', 60) # allowing it run as long as it takes
+
+          allow_any_instance_of(Repository).to receive(:blobs_at).and_wrap_original do |method, *args| # rubocop:disable RSpec/AnyInstanceOf -- needed to intercept calls across multiple repositories
+            sleep 0.1
+            method.call(*args)
+          end
+        end
+
+        it 'fails with the cumulative fetch timeout error' do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).and_call_original
+
+          expect(pipeline).to be_persisted
+          expect(pipeline.error_messages.map(&:content)).to include(
+            'Request timed out when fetching configuration files.'
+          )
+        end
+      end
+    end
+
+    context 'with HTTP timeout handling' do
+      include StubRequests
+
+      let(:remote_url) { 'https://example.com/ci-template.yml' }
+
+      let(:config) do
+        <<~YAML
+        include:
+          - remote: #{remote_url}
+        job:
+          script: exit 0
+        YAML
+      end
+
+      before do
+        stub_full_request(remote_url).to_timeout
+      end
+
+      it 'fails with timeout error' do
+        expect(pipeline).to be_persisted
+        expect(pipeline.error_messages.map(&:content)).to include(
+          "Remote file `#{remote_url}` could not be fetched after 3 attempts because of a timeout error!"
+        )
+      end
+    end
+
+    context 'when a nested include filters out all of its includes leaving no visible jobs' do
+      let(:config) do
+        <<~YAML
+        include:
+          - local: nested.yml
+        YAML
+      end
+
+      let(:project_files) do
+        {
+          '.gitlab-ci.yml' => config,
+          'nested.yml' => <<~YAML
+            include:
+              - local: .child.yml
+                rules:
+                  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+            .hidden_job:
+              script: echo
+          YAML
+        }
+      end
+
+      it 'does not persist the pipeline', :aggregate_failures do
+        expect(pipeline).not_to be_persisted
+        expect(pipeline.failure_reason).to eq('filtered_by_rules')
+      end
+    end
+
+    context 'when multiple includes are all filtered out leaving no visible jobs' do
+      let(:config) do
+        <<~YAML
+        include:
+          - local: a.yml
+            rules:
+              - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+          - local: b.yml
+            rules:
+              - if: $CI_PIPELINE_SOURCE == "schedule"
+        YAML
+      end
+
+      # The included files are never fetched: include:rules: filtering runs before
+      # resolution. This asserts that even with several filtered includes only a
+      # single "no visible jobs" error is produced, so the pipeline is reclassified.
+      it 'does not persist the pipeline', :aggregate_failures do
+        expect(pipeline).not_to be_persisted
+        expect(pipeline.failure_reason).to eq('filtered_by_rules')
+      end
+    end
+
+    context 'when an include survives filtering but contributes no visible jobs' do
+      let(:config) do
+        <<~YAML
+        include:
+          - local: defaults.yml
+          - local: .child.yml
+            rules:
+              - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+        YAML
+      end
+
+      let(:project_files) do
+        {
+          '.gitlab-ci.yml' => config,
+          'defaults.yml' => <<~YAML
+            .hidden_job:
+              script: echo
+          YAML
+        }
+      end
+
+      it 'persists a failed pipeline with the original config_error', :aggregate_failures do
+        expect(pipeline).to be_persisted
+        expect(pipeline.failure_reason).to eq('config_error')
+        expect(pipeline.errors.full_messages).to include(a_string_including('at least one visible job'))
+      end
+    end
+  end
+end

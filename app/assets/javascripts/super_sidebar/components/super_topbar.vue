@@ -1,0 +1,265 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlBreadcrumb, GlButton, GlIcon, GlModalDirective, GlTooltipDirective } from '@gitlab/ui';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { __, s__ } from '~/locale';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import BrandLogo from 'jh_else_ce/super_sidebar/components/brand_logo.vue';
+import { EVENT_OPEN_GLOBAL_SEARCH } from '~/vue_shared/global_search/constants';
+import { staticBreadcrumbs } from '~/lib/utils/breadcrumbs_state';
+import { RedirectScrollKeysToPanelDirective } from '~/vue_shared/directives/redirect_scroll_keys_to_panel';
+import { adminRootPath } from '~/lib/utils/path_helpers/instance_admin';
+import { newUserRegistrationPath, newUserSessionPath } from '~/lib/utils/path_helpers/routes';
+import SuperSidebarToggle from './super_sidebar_toggle.vue';
+import CreateMenu from './create_menu.vue';
+import UserMenu from './user_menu.vue';
+import UserCounts from './user_counts.vue';
+import PromoMenu from './promo_menu.vue';
+import { SEARCH_MODAL_ID } from './global_search/constants';
+
+export default {
+  name: 'SuperTopbar',
+  SEARCH_MODAL_ID,
+  staticBreadcrumbs,
+  components: {
+    GlButton,
+    GlBreadcrumb,
+    GlIcon,
+    BrandLogo,
+    SuperSidebarToggle,
+    CreateMenu,
+    UserCounts,
+    UserMenu,
+    PromoMenu,
+    OrganizationSwitcher: defineAsyncComponent(
+      () => import(/* webpackChunkName: 'organization_switcher' */ './organization_switcher.vue'),
+    ),
+    SearchModal: defineAsyncComponent(
+      () =>
+        import(
+          /* webpackChunkName: 'global_search_modal' */ './global_search/components/global_search.vue'
+        ),
+    ),
+  },
+  directives: {
+    GlModal: GlModalDirective,
+    GlTooltip: GlTooltipDirective,
+    RedirectScrollKeysToPanel: RedirectScrollKeysToPanelDirective,
+  },
+  mixins: [glFeatureFlagsMixin()],
+  i18n: {
+    skipToMainContent: __('Skip to main content'),
+    adminArea: s__('Navigation|Admin'),
+    searchBtnText: __('Search or go to…'),
+    analyticsDashboardsBtnText: s__('Analytics|View GitLab Intelligence'),
+  },
+  inject: ['isSaas'],
+  provide() {
+    return {
+      showAdminAreaLink: this.showAdminButton,
+    };
+  },
+  props: {
+    sidebarData: {
+      type: Object,
+      required: true,
+    },
+  },
+  computed: {
+    isAdmin() {
+      return parseBoolean(this.sidebarData?.admin_mode?.user_is_admin);
+    },
+    isLoggedIn() {
+      return parseBoolean(this.sidebarData.is_logged_in);
+    },
+    allowSignUp() {
+      return parseBoolean(this.sidebarData?.allow_signup);
+    },
+    shouldShowOrganizationSwitcher() {
+      return (
+        this.glFeatures.orgSwitcher &&
+        this.isLoggedIn &&
+        window.gon.current_organization &&
+        this.sidebarData.has_multiple_organizations
+      );
+    },
+    showAdminButton() {
+      return (
+        this.isAdmin &&
+        (!this.sidebarData.admin_mode.admin_mode_feature_enabled ||
+          this.sidebarData.admin_mode.admin_mode_active)
+      );
+    },
+    // Supplied by EE only, and only when the feature flag is on. The route
+    // itself is EE-only, so FOSS has no path helper to build it from.
+    analyticsDashboardsPath() {
+      return this.sidebarData.analytics_dashboards_path;
+    },
+  },
+  methods: {
+    adminRootPath() {
+      return adminRootPath({ organizationPath: null });
+    },
+    newUserRegistrationPath() {
+      return newUserRegistrationPath({ organizationPath: null });
+    },
+    signInPath() {
+      return newUserSessionPath({ redirect_to_referer: 'yes', organizationPath: null });
+    },
+    onSearchButtonDrop(event) {
+      const text = event.dataTransfer.getData('text/plain');
+      if (text) {
+        document.dispatchEvent(
+          new CustomEvent(EVENT_OPEN_GLOBAL_SEARCH, { detail: { searchText: text } }),
+        );
+      }
+    },
+  },
+};
+</script>
+
+<template>
+  <header
+    v-redirect-scroll-keys-to-panel
+    class="super-topbar js-super-topbar gl-grid gl-grid-cols-[1fr_1fr] gl-items-center gl-gap-x-5 gl-outline-none sm:gl-grid-cols-[1fr_auto_1fr] forced-colors:gl-outline-0"
+    tabindex="0"
+    autofocus
+  >
+    <gl-button
+      class="gl-t-0 gl-sr-only !gl-fixed gl-left-0 gl-z-9999 !gl-m-3 !gl-px-4 focus:gl-not-sr-only focus-visible:gl-not-sr-only"
+      data-testid="super-topbar-skip-to"
+      href="#content-body"
+      variant="confirm"
+    >
+      {{ $options.i18n.skipToMainContent }}
+    </gl-button>
+    <div class="gl-flex gl-items-center gl-gap-3">
+      <brand-logo :logo-url="sidebarData.logo_url" class="!gl-p-0" />
+
+      <super-sidebar-toggle v-if="sidebarData.current_menu_items.length" class="xl:gl-hidden" />
+
+      <promo-menu
+        v-if="!isLoggedIn"
+        :pricing-url="sidebarData.compare_plans_url"
+        :allow-sign-up="allowSignUp"
+        class="gl-hidden lg:gl-flex"
+      />
+
+      <organization-switcher v-if="shouldShowOrganizationSwitcher" class="gl-hidden md:gl-block" />
+
+      <div
+        v-if="glFeatures.pageBreadcrumbsInTopBar"
+        id="js-vue-page-breadcrumbs-wrapper"
+        class="gl-ml-3 gl-grow"
+        data-testid="breadcrumb-links"
+      >
+        <gl-breadcrumb
+          v-if="!$options.staticBreadcrumbs.hasInjectedBreadcrumbs"
+          class="gl-grow"
+          :items="$options.staticBreadcrumbs.items"
+        />
+
+        <div
+          id="js-super-topbar-breadcrumbs-slot"
+          :class="{ 'gl-grow': $options.staticBreadcrumbs.hasInjectedBreadcrumbs }"
+        ></div>
+      </div>
+    </div>
+
+    <gl-button
+      id="super-sidebar-search"
+      v-gl-modal="$options.SEARCH_MODAL_ID"
+      button-text-classes="gl-flex gl-items-center"
+      category="tertiary"
+      class="topbar-search-button !gl-hidden !gl-rounded-[.75rem] !gl-bg-default !gl-pl-3 hover:!gl-border-alpha-dark-40 sm:!gl-flex md:!gl-pr-2 dark:!gl-bg-alpha-light-8 dark:hover:!gl-border-alpha-light-36"
+      data-testid="super-topbar-search-button"
+      @drop.prevent="onSearchButtonDrop"
+      @dragover.prevent
+    >
+      <gl-icon name="search" class="gl-shrink-0" />
+      <span class="topbar-search-button-placeholder !gl-min-w-[20vw] gl-truncate gl-text-left">{{
+        $options.i18n.searchBtnText
+      }}</span>
+      <kbd class="gl-mr-1 gl-hidden gl-shrink-0 gl-rounded-base gl-shadow-none md:gl-block">/</kbd>
+    </gl-button>
+
+    <div class="gl-flex gl-justify-end gl-gap-3">
+      <gl-button
+        v-gl-modal="$options.SEARCH_MODAL_ID"
+        v-gl-tooltip.bottom="$options.i18n.searchBtnText"
+        icon="search"
+        size="small"
+        class="gl-self-center sm:!gl-hidden"
+        :aria-label="$options.i18n.searchBtnText"
+        data-testid="super-topbar-search-button-xs"
+        @drop.prevent="onSearchButtonDrop"
+        @dragover.prevent
+      />
+      <template v-if="isLoggedIn">
+        <gl-button
+          v-if="analyticsDashboardsPath"
+          v-gl-tooltip.bottom="$options.i18n.analyticsDashboardsBtnText"
+          :href="analyticsDashboardsPath"
+          :aria-label="$options.i18n.analyticsDashboardsBtnText"
+          category="tertiary"
+          icon="chart"
+          size="small"
+          class="gl-self-center"
+          data-testid="topbar-analytics-dashboards-button"
+        />
+        <create-menu
+          v-if="isLoggedIn && sidebarData.create_new_menu_groups.length > 0"
+          :groups="sidebarData.create_new_menu_groups"
+        />
+        <div
+          class="gl-border-r gl-mx-2 gl-my-3 gl-block gl-h-5 gl-w-1 gl-border-r-strong md:gl-ml-3 md:gl-mr-0"
+        ></div>
+
+        <user-counts v-if="isLoggedIn" :sidebar-data="sidebarData" class="gl-hidden md:gl-flex" />
+
+        <gl-button
+          v-if="showAdminButton"
+          :href="adminRootPath()"
+          icon="admin"
+          class="topbar-admin-link gl-hidden !gl-rounded-lg sm:gl-mr-1 xl:gl-flex"
+          data-testid="topbar-admin-link"
+        >
+          {{ $options.i18n.adminArea }}
+        </gl-button>
+
+        <user-menu :data="sidebarData" />
+      </template>
+      <template v-else>
+        <gl-button
+          v-if="allowSignUp"
+          :href="
+            isSaas && sidebarData.trial_registration_path
+              ? sidebarData.trial_registration_path
+              : newUserRegistrationPath()
+          "
+          variant="confirm"
+          class="topbar-signup-button gl-hidden lg:gl-flex"
+          data-testid="topbar-signup-button"
+        >
+          {{ isSaas ? __('Get free trial') : __('Register') }}
+        </gl-button>
+        <gl-button
+          :href="signInPath()"
+          class="gl-hidden lg:gl-flex"
+          data-testid="topbar-signin-button"
+        >
+          {{ __('Sign in') }}
+        </gl-button>
+        <promo-menu
+          v-if="!isLoggedIn"
+          :sidebar-data="sidebarData"
+          :pricing-url="sidebarData.compare_plans_url"
+          :allow-sign-up="allowSignUp"
+          class="gl-flex lg:gl-hidden"
+        />
+      </template>
+    </div>
+
+    <search-modal />
+  </header>
+</template>

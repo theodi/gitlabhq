@@ -1,0 +1,268 @@
+<script>
+import {
+  GlLink,
+  GlSprintf,
+  GlIcon,
+  GlTooltipDirective,
+  GlLabel,
+  GlSkeletonLoader,
+} from '@gitlab/ui';
+import ApprovalCount from 'ee_else_ce/merge_requests/components/approval_count.vue';
+import { __, n__, sprintf } from '~/locale';
+import isShowingLabelsQuery from '~/graphql_shared/client/is_showing_labels.query.graphql';
+import { getIdFromGraphQLId, convertToGraphQLId } from '~/graphql_shared/utils';
+import { TYPENAME_USER } from '~/graphql_shared/constants';
+import TimeAgoTooltip from '~/vue_shared/components/time_ago_tooltip.vue';
+import CiIcon from '~/vue_shared/components/ci_icon/ci_icon.vue';
+import UserAvatarImage from '~/vue_shared/components/user_avatar/user_avatar_image.vue';
+import DiscussionsBadge from '~/merge_requests/list/components/discussions_badge.vue';
+import { isScopedLabel } from '~/lib/utils/common_utils';
+import diffStatsQuery from '../queries/diff_stats.query.graphql';
+import AssignedUsers from './assigned_users.vue';
+import StatusBadge from './status_badge.vue';
+
+export default {
+  name: 'MergeRequest',
+  apollo: {
+    isShowingLabels: {
+      query: isShowingLabelsQuery,
+      update: (data) => data.isShowingLabels,
+    },
+    diffStats: {
+      query: diffStatsQuery,
+      variables() {
+        return {
+          id: this.mergeRequest.id,
+        };
+      },
+      update: (d) => d.mergeRequest?.diffStatsSummary,
+      context() {
+        return { batchKey: `MergeRequestDiffStats_${this.listId}` };
+      },
+    },
+  },
+  components: {
+    GlLink,
+    GlSprintf,
+    GlIcon,
+    GlLabel,
+    GlSkeletonLoader,
+    UserAvatarImage,
+    CiIcon,
+    TimeAgoTooltip,
+    ApprovalCount,
+    DiscussionsBadge,
+    AssignedUsers,
+    StatusBadge,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  props: {
+    mergeRequest: {
+      type: Object,
+      required: true,
+    },
+    listId: {
+      type: String,
+      required: true,
+    },
+    newMergeRequestIds: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+  },
+  data() {
+    return {
+      isShowingLabels: null,
+      diffStats: null,
+    };
+  },
+  computed: {
+    currentUserId() {
+      return gon.current_user_id && convertToGraphQLId(TYPENAME_USER, gon.current_user_id);
+    },
+    statsAriaLabel() {
+      if (!this.diffStats) return null;
+
+      const lineAdditions = n__('%d line added', '%d lines added', this.diffStats.additions);
+      const lineDeletions = n__('%d line removed', '%d lines removed', this.diffStats.deletions);
+
+      return sprintf(__('%{filesChanged}, %{lineAdditions}, %{lineDeletions}'), {
+        filesChanged: n__('%d file', '%d files', this.diffStats.fileCount),
+        lineAdditions,
+        lineDeletions,
+      });
+    },
+    isMergeRequestBroken() {
+      return (
+        this.mergeRequest.state === 'opened' &&
+        (this.mergeRequest.commitCount === 0 ||
+          !this.mergeRequest.sourceBranchExists ||
+          !this.mergeRequest.targetBranchExists ||
+          this.mergeRequest.conflicts)
+      );
+    },
+    isNewlyAdded() {
+      return this.newMergeRequestIds.includes(this.mergeRequest.id);
+    },
+    authorId() {
+      return getIdFromGraphQLId(this.mergeRequest.author.id);
+    },
+    milestoneNumericId() {
+      return getIdFromGraphQLId(this.mergeRequest.milestone?.id);
+    },
+    reviewerUpdatedAt() {
+      return this.mergeRequest.reviewers.nodes.find(({ id }) => id === this.currentUserId)
+        ?.mergeRequestInteraction?.updatedAt;
+    },
+  },
+  methods: {
+    isScopedLabel,
+  },
+};
+</script>
+
+<template>
+  <div :class="{ 'gl-bg-feedback-success': isNewlyAdded }" role="row">
+    <div role="cell" class="gl-flex gl-flex-col gl-items-start gl-gap-2">
+      <status-badge :merge-request="mergeRequest" :list-id="listId" />
+      <span v-if="reviewerUpdatedAt" class="gl-text-sm gl-text-subtle">
+        <span class="gl-sr-only">{{ __('Review requested') }}</span>
+        <time-ago-tooltip :time="reviewerUpdatedAt" data-testid="reviewer-updated-at" />
+      </span>
+    </div>
+    <div role="cell" class="gl-flex gl-flex-col gl-items-start gl-gap-2">
+      <gl-link
+        :href="mergeRequest.webUrl"
+        class="gl-font-bold gl-text-default hover:gl-text-default"
+      >
+        {{ mergeRequest.title }}
+      </gl-link>
+      <div class="gl-text-sm gl-text-subtle">
+        <gl-sprintf :message="__('%{reference} %{author} %{stats} %{milestone}')">
+          <template #reference>{{ mergeRequest.reference }}</template>
+          <template #author>
+            <gl-link
+              :href="mergeRequest.author.webUrl"
+              :data-name="mergeRequest.author.name"
+              :data-user-id="authorId"
+              :data-username="mergeRequest.author.username"
+              class="js-user-link gl-mx-2 gl-inline-flex gl-align-bottom gl-text-subtle"
+            >
+              <user-avatar-image
+                :img-src="mergeRequest.author.avatarUrl"
+                img-alt=""
+                :size="16"
+                lazy
+              />
+              <span class="gl-sr-only">{{ mergeRequest.author.name }}</span>
+            </gl-link>
+          </template>
+          <template #milestone>
+            <template v-if="mergeRequest.milestone">
+              <gl-link
+                class="has-popover gl-text-subtle hover:gl-text-subtle hover:gl-no-underline"
+                data-reference-type="milestone"
+                data-placement="top"
+                :data-milestone="milestoneNumericId"
+                :href="mergeRequest.milestone.webPath"
+              >
+                <gl-icon :size="16" name="milestone" />
+                {{ mergeRequest.milestone.title }}
+              </gl-link>
+            </template>
+          </template>
+          <template #stats>
+            <div class="gl-mr-2 gl-inline-flex">
+              <gl-skeleton-loader
+                v-if="$apollo.queries.diffStats.loading"
+                :lines="1"
+                :width="100"
+                equal-width-lines
+              />
+              <div
+                v-else-if="diffStats"
+                class="gl-inline-flex gl-gap-2"
+                :aria-label="statsAriaLabel"
+                :title="statsAriaLabel"
+              >
+                <div class="gl-whitespace-nowrap">
+                  <gl-icon name="doc-new" />
+                  <span>{{ diffStats.fileCount }}</span>
+                </div>
+                <div class="gl-flex gl-items-center gl-text-success">
+                  <span>+</span>
+                  <span>{{ diffStats.additions }}</span>
+                </div>
+                <div class="gl-flex gl-items-center gl-text-danger">
+                  <span>−</span>
+                  <span>{{ diffStats.deletions }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
+        </gl-sprintf>
+      </div>
+      <div
+        v-if="isShowingLabels && mergeRequest.labels.nodes.length"
+        class="gl-mt-3 gl-flex gl-flex-wrap gl-gap-2"
+        data-testid="labels-container"
+      >
+        <gl-label
+          v-for="label in mergeRequest.labels.nodes"
+          :key="label.id"
+          :background-color="label.color"
+          :title="label.title"
+          :description="label.description"
+          size="sm"
+          :scoped="isScopedLabel(label)"
+        />
+      </div>
+    </div>
+    <div role="cell">
+      <assigned-users :users="mergeRequest.assignees.nodes" type="ASSIGNEES" />
+    </div>
+    <div role="cell">
+      <assigned-users :users="mergeRequest.reviewers.nodes" type="REVIEWERS" />
+    </div>
+    <div class="gl-flex gl-flex-col gl-items-end gl-gap-2" role="cell">
+      <div class="gl-flex gl-gap-3">
+        <gl-icon
+          v-if="isMergeRequestBroken"
+          v-gl-tooltip
+          :title="__('Cannot be merged automatically')"
+          name="warning-solid"
+          variant="subtle"
+          class="gl-mt-1"
+          data-testid="mr-broken-badge"
+        />
+        <discussions-badge
+          v-if="mergeRequest.resolvableDiscussionsCount"
+          :merge-request="mergeRequest"
+        />
+        <approval-count :merge-request="mergeRequest" />
+        <ci-icon
+          v-if="mergeRequest.headPipeline && mergeRequest.headPipeline.detailedStatus"
+          :status="mergeRequest.headPipeline.detailedStatus"
+          use-link
+          show-tooltip
+        />
+      </div>
+      <div class="gl-text-sm gl-text-subtle">
+        <gl-sprintf :message="__('Updated %{updatedAt}')">
+          <template #updatedAt>
+            <time-ago-tooltip :time="mergeRequest.updatedAt" />
+          </template>
+        </gl-sprintf>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.gl-skeleton-loader-default-container svg {
+  display: block;
+}
+</style>

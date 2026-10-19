@@ -1,0 +1,25 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+#import "~/graphql_shared/fragments/user_availability.fragment.graphql"
+#import "ee_else_ce/sidebar/queries/reviewer_applicable_approval_rules.fragment.graphql"
+
+subscription mergeRequestReviewersUpdated($issuableId: IssuableID!) {
+  mergeRequestReviewersUpdated(issuableId: $issuableId) {
+    ... on MergeRequest {
+      id
+      reviewers {
+        nodes {
+          ...User
+          ...UserAvailability
+          mergeRequestInteraction {
+            canMerge
+            canUpdate
+            approved
+            reviewState
+
+            ...ReviewersApplicableApprovalRules
+          }
+        }
+      }
+    }
+  }
+}

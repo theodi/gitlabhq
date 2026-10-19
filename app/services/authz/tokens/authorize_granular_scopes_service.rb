@@ -1,0 +1,170 @@
+# frozen_string_literal: true
+
+module Authz
+  module Tokens
+    class AuthorizeGranularScopesService
+      include Gitlab::Utils::StrongMemoize
+
+      InvalidInputError = Class.new(StandardError)
+
+      BOUNDARY_TYPE_ORDER = { project: 0, group: 1, user: 2, instance: 3 }.freeze
+      NOT_FOUND_MESSAGE = '404 Not Found'
+
+      def initialize(boundaries:, permissions:, token:)
+        @boundaries = Array(boundaries).compact_blank
+        @permissions = Array(permissions).map(&:to_sym)
+        @token = token
+
+        validate_inputs!
+      end
+
+      def execute
+        return success unless should_check_authorization?
+        return disabled_error if token.granular? && !feature_enabled?
+        return resource_not_found_error if resource_unresolved?
+        return missing_inputs_error unless missing_inputs.empty?
+        return success if authorized?
+        return resource_not_found_error if hidden_boundary
+
+        access_denied_error
+      end
+
+      private
+
+      attr_reader :boundaries, :permissions, :token
+
+      def validate_inputs!
+        validate_boundaries!
+        validate_permissions!
+      end
+
+      def validate_boundaries!
+        return if boundaries.empty?
+        return if boundaries.all?(::Authz::Boundary::Base)
+
+        raise InvalidInputError,
+          "Boundaries must be instances of Authz::Boundary::Base, got #{boundaries.map(&:class).join(', ')}"
+      end
+
+      def validate_permissions!
+        return if permissions.empty?
+
+        invalid_permissions = permissions - Authz::PermissionGroups::Assignable.all_permissions
+        return if invalid_permissions.empty?
+
+        raise InvalidInputError, "Invalid permissions: #{invalid_permissions.join(', ')}"
+      end
+
+      def should_check_authorization?
+        token_supports_granular_permissions? &&
+          (token.granular? || granular_token_required?)
+      end
+
+      def feature_enabled?
+        return Feature.enabled?(:granular_oauth_tokens, token.user) if token.is_a?(::OauthAccessToken)
+
+        Feature.enabled?(:granular_personal_access_tokens, token.user)
+      end
+
+      def granular_token_required?
+        return false unless token.subject_to_granular_enforcement?
+        return false unless feature_enabled?
+        return false unless token.user.human?
+
+        root_namespaces_enforce_granular_tokens?
+      end
+
+      def root_namespaces_enforce_granular_tokens?
+        root_namespace_ids = boundaries.filter_map(&:root_namespace_id).uniq
+
+        EnforcementCache.new.any_enforced?(root_namespace_ids)
+      end
+
+      def boundaries_by_priority
+        boundaries.sort_by { |b| BOUNDARY_TYPE_ORDER.fetch(b.type_label.to_sym, BOUNDARY_TYPE_ORDER.size) }
+      end
+      strong_memoize_attr :boundaries_by_priority
+
+      def authorized?
+        boundary_evaluations.values.any? { |eval| eval[:missing].empty? }
+      end
+
+      # The boundary access_denied_error would name. Only meaningful once
+      # authorization has failed, when every boundary has missing permissions.
+      def denied_boundary
+        boundary, = boundary_evaluations.find { |_, eval| eval[:missing].any? }
+        boundary
+      end
+      strong_memoize_attr :denied_boundary
+
+      # Asked of the user, not the token: may the caller be told this boundary
+      # exists? Checked only for the boundary we are about to describe, so the
+      # cost does not grow with the number of boundaries an endpoint declares.
+      def hidden_boundary
+        resource = denied_boundary.boundary
+        return false unless resource.is_a?(::Project) || resource.is_a?(::Group)
+
+        !Ability.allowed?(token.user, :read_boundary, resource)
+      end
+
+      def resource_unresolved?
+        boundaries.empty? && permissions.present?
+      end
+
+      def token_supports_granular_permissions?
+        token.class.include?(::Authz::GranularTokenInterface)
+      end
+
+      def missing_inputs
+        { token:, boundaries:, permissions: }.select { |_, value| value.blank? }.keys
+      end
+      strong_memoize_attr :missing_inputs
+
+      def boundary_evaluations
+        boundaries_by_priority.each_with_object({}) do |boundary, memo|
+          missing = permissions.reject { |permission| token.can?(permission, boundary) }
+          memo[boundary] = { missing: missing }
+          break memo if missing.empty?
+        end
+      end
+      strong_memoize_attr :boundary_evaluations
+
+      def disabled_error
+        error "Access denied: Fine-grained #{token_type.pluralize} are not yet supported."
+      end
+
+      def missing_inputs_error
+        error "Access denied: This operation doesn't support fine-grained #{token_type.pluralize}."
+      end
+
+      def success
+        ::ServiceResponse.success
+      end
+
+      def access_denied_error
+        boundary = denied_boundary
+        perms = boundary_evaluations[boundary][:missing].map do |permission|
+          assignable = Authz::PermissionGroups::Assignable.preferred_for_permission(permission)
+          "#{assignable.resource_name}: #{assignable.action.titleize}"
+        end.uniq.sort.join(', ')
+        ::ServiceResponse.error(
+          message: "Access denied: This operation requires a fine-grained #{token_type} " \
+            "with the following #{boundary.type_label} permissions: [#{perms}].",
+          payload: { denied_permissions: boundary_evaluations[boundary][:missing] }
+        )
+      end
+
+      def resource_not_found_error
+        ::ServiceResponse.error(message: NOT_FOUND_MESSAGE, reason: :resource_not_found)
+      end
+
+      def token_type
+        token.class.model_name.human.downcase
+      end
+
+      def error(message)
+        ::ServiceResponse.error(message:)
+      end
+    end
+  end
+end

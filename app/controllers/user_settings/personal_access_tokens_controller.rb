@@ -1,0 +1,184 @@
+# frozen_string_literal: true
+
+module UserSettings
+  class PersonalAccessTokensController < ApplicationController
+    include FeedTokenHelper
+
+    feature_category :system_access
+
+    before_action :check_personal_access_tokens_enabled
+    before_action :ensure_granular_tokens_feature_flag, only: [:legacy_new, :granular_new]
+    before_action :check_granular_token_enforced, only: [:legacy_new]
+    before_action :set_access_token_params, only: [:index, :legacy_new]
+    before_action :set_hide_search_settings, only: [:index, :legacy_new, :granular_new]
+    before_action only: [:index] do
+      push_frontend_feature_flag(:granular_personal_access_tokens, current_user)
+    end
+
+    prepend_before_action(only: [:index]) do
+      authenticate_sessionless_user!(:ics, permission: :read_personal_access_token)
+    end
+
+    def index
+      if redirect_for_legacy_new?
+        redirect_to action: :legacy_new, **legacy_new_params
+
+        return
+      end
+
+      respond_to do |format|
+        format.html
+        format.ics do
+          if permitted_params[:feed_token]
+            response.headers['Content-Type'] = 'text/plain'
+            render plain: expiry_ics
+          else
+            redirect_to "#{request.path}?feed_token=#{generate_feed_token_with_path(:ics, request.path)}"
+          end
+        end
+      end
+    end
+
+    def legacy_new
+      # Renders the legacy create form on a dedicated page
+    end
+
+    def granular_new
+      # Renders the granular create form on a dedicated page
+    end
+
+    def create
+      result = ::PersonalAccessTokens::CreateService.new(
+        current_user: current_user,
+        target_user: current_user,
+        organization_id: Current.organization.id,
+        params: personal_access_token_params.merge(creation_source: PersonalAccessToken::CREATION_SOURCE_UI),
+        concatenate_errors: false
+      ).execute
+
+      if result.success?
+        render json: { token: result.payload[:personal_access_token].token }, status: :ok
+      else
+        render json: { errors: result.errors }, status: :unprocessable_entity
+      end
+    end
+
+    def toggle_dpop
+      unless Feature.enabled?(:dpop_authentication, current_user)
+        redirect_to user_settings_personal_access_tokens_path
+        return
+      end
+
+      result = UserPreferences::UpdateService.new(current_user, dpop_params).execute
+
+      if result.success?
+        flash[:notice] = _('DPoP preference updated.')
+      else
+        flash[:warning] = _('Unable to update DPoP preference.')
+      end
+
+      redirect_to user_settings_personal_access_tokens_path
+    end
+
+    private
+
+    def permitted_params
+      params.permit(:description, :feed_token, :name, :scopes)
+    end
+
+    def set_hide_search_settings
+      @hide_search_settings = true
+    end
+
+    def set_access_token_params
+      @access_token_params = {
+        name: permitted_params[:name],
+        description: permitted_params[:description],
+        scopes: parse_scopes_from_params
+      }
+    end
+
+    def expiry_ics
+      tokens = PersonalAccessTokensFinder.new({
+        user: current_user,
+        impersonation: false,
+        state: 'active',
+        sort: 'expires_asc'
+      }).execute.preload_users
+
+      cal = Icalendar::Calendar.new
+      tokens.each do |token|
+        next unless token.expires_at
+
+        cal.event do |event|
+          event.dtstart = Icalendar::Values::Date.new(token.expires_at)
+          event.dtend = Icalendar::Values::Date.new(token.expires_at)
+          event.summary = format(_("Token '%{name}' expires today"), name: token.name)
+        end
+      end
+
+      cal.to_ical
+    end
+
+    def personal_access_token_params
+      params.permit(:name, :expires_at, :description, scopes: [])
+    end
+
+    def legacy_new_params
+      params.permit(:name, :description, :scopes)
+    end
+
+    def dpop_params
+      params.require(:user).permit(:dpop_enabled)
+    end
+
+    def parse_scopes_from_params
+      raw_scopes = permitted_params[:scopes]
+      return [] if raw_scopes.nil?
+
+      scopes = []
+
+      raw_scopes.split(",", Gitlab::Auth.all_available_scopes.count + 1) do |scope|
+        scope = scope.squish
+        next if scope.empty?
+
+        scope = scope.to_sym
+        next if Gitlab::Auth.all_available_scopes.exclude?(scope)
+
+        scopes << scope
+      end
+
+      scopes
+    end
+
+    def check_personal_access_tokens_enabled
+      render_404 if Gitlab::CurrentSettings.personal_access_tokens_disabled?
+    end
+
+    def ensure_granular_tokens_feature_flag
+      render_404 unless granular_tokens_feature_enabled?
+    end
+
+    def check_granular_token_enforced
+      render_404 if granular_tokens_enforced?
+    end
+
+    def granular_tokens_enforced?
+      return false unless granular_tokens_feature_enabled?
+
+      Gitlab::CurrentSettings.granular_tokens_enforced?
+    end
+
+    def redirect_for_legacy_new?
+      granular_tokens_feature_enabled? &&
+        !granular_tokens_enforced? &&
+        parse_scopes_from_params.any?
+    end
+
+    def granular_tokens_feature_enabled?
+      Feature.enabled?(:granular_personal_access_tokens, current_user)
+    end
+  end
+end
+
+UserSettings::PersonalAccessTokensController.prepend_mod

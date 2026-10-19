@@ -1,0 +1,367 @@
+@import 'mixins_and_variables_and_functions';
+@import 'page_bundles/commits';
+@import 'page_bundles/commit_description';
+
+$tabs-holder-z-index: 250;
+$comparison-empty-state-height: 62px;
+$merge-request-sticky-header-height: rem-to-px($mr-sticky-tabs-height) + 1px;
+$merge-request-sticky-description-height: 28px;
+
+.apply-suggestions-input-min-width {
+  @include gl-container-width-up(lg, panel) {
+    width: $gl-dropdown-width-wide;
+  }
+}
+
+.media-section {
+  @include gl-container-width-down(lg, panel) {
+    align-items: flex-start;
+
+    .media-body {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+
+  .code-text {
+    @include gl-container-width-up(lg, panel) {
+      align-self: center;
+      flex: 1;
+    }
+  }
+}
+
+.mr-source-commit {
+  margin-bottom: 0;
+
+  .commit {
+    margin: 0;
+    padding: 10px;
+    list-style: none;
+
+    &:hover {
+      background: none;
+    }
+  }
+}
+
+.compare-commit-empty {
+  min-height: $comparison-empty-state-height;
+}
+
+.nothing-here-block {
+  img {
+    width: 230px;
+  }
+}
+
+.mr-list,
+.issuable-list {
+  .merge-request {
+    padding: 10px $gl-padding;
+    display: flex;
+
+    .issuable-info-container {
+      flex: 1;
+    }
+
+    .merge-request-title {
+      margin-bottom: 2px;
+    }
+  }
+}
+
+.merge-request-select {
+  padding-left: 5px;
+  padding-right: 5px;
+  margin-bottom: 10px;
+
+  @include gl-container-width-up(sm, panel) {
+    float: left;
+    width: 50%;
+    margin-bottom: 0;
+  }
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.issuable-form-select-holder {
+  display: inline-block;
+  width: 100%;
+
+  @include gl-container-width-up(md, panel) {
+    width: 250px;
+  }
+
+  .dropdown-menu-toggle {
+    width: 100%;
+  }
+}
+
+.table-holder {
+  .ci-table {
+    th {
+      background-color: var(--white, $white);
+      @apply gl-text-strong;
+    }
+  }
+}
+
+@supports (container-type: scroll-state) {
+  .merge-request-sticky-header-wrapper {
+    pointer-events: none;
+
+    > * {
+      pointer-events: auto;
+    }
+
+    @include gl-container-width-up(md, panel) {
+      top: $calc-application-header-height;
+      // Must equal the unstuck header height: any difference flips the scroll-state
+      // query on every frame and the header flickers.
+      height: 89px;
+      container-type: scroll-state;
+      container-name: sticky-header;
+      z-index: $top-bar-z-index - 1;
+      @apply gl-sticky;
+    }
+  }
+
+  .merge-request-sticky-header {
+    @include gl-container-width-up(md, panel) {
+      // stylelint-disable-next-line gitlab/no-has -- scoped to a specific sticky-header element
+      &:has(.detail-page-description)::after {
+        height: calc(#{$merge-request-sticky-header-height} + #{$merge-request-sticky-description-height}); // Height of the 2 sticky bars combined
+      }
+
+      &::after {
+        content: '';
+        top: $calc-application-header-height;
+        height: $merge-request-sticky-header-height;
+        right: var(--scrollbar-width, 0);
+        @apply gl-bg-default;
+        @apply gl-border-b;
+        @apply gl-fixed;
+        @apply gl-left-0;
+        @apply gl-z-0;
+        @apply gl-hidden;
+      }
+
+      @container sticky-header scroll-state(stuck: top) {
+        &::after, .merge-request-sticky-title {
+          @apply gl-block;
+        }
+
+        .merge-request-tabs-container {
+          @apply gl-flex-row;
+        }
+
+        .merge-request-tabs {
+          height: $mr-sticky-tabs-height;
+        }
+
+        .nav-links li a {
+          @apply gl-py-4;
+        }
+
+        .detail-page-description {
+          padding-top: $mr-sticky-description-padding;
+          @apply gl-pb-0;
+          @apply gl-flex-nowrap;
+        }
+
+        time,
+        .merge-request-author-container {
+          @apply gl-hidden;
+        }
+
+        .detail-page-description {
+          @apply gl-z-2;
+        }
+
+        .merge-request-tabs-container {
+          @apply gl-z-1;
+        }
+      }
+    }
+  }
+
+  // Flash alerts scroll with the page until the merge request header sticks, then stick below it
+  // (both bars, as _mr_box always renders the description bar). Classes set by sticky_header_stuck_state.js.
+  .flash-container.sticky.is-sticky-header-observed {
+    @include gl-container-width-up(md, panel) {
+      position: relative;
+      // Scroll under the panel's top border (.panel-content-inner::before, z-index 2) like other content
+      z-index: 1;
+    }
+  }
+
+  .flash-container.sticky.is-sticky-header-stuck {
+    @include gl-container-width-up(md, panel) {
+      position: sticky;
+      z-index: $flash-z-index;
+      top: calc(#{$calc-application-header-height} + #{$merge-request-sticky-header-height} + #{$merge-request-sticky-description-height} + #{$gl-spacing-scale-3});
+    }
+  }
+
+  // Match the Overview discussion column (.merge-request-overview grid) so the alert doesn't cover the sidebar
+  // stylelint-disable-next-line gitlab/no-has -- scoped to the flash container preceding the merge request page
+  .flash-container.sticky.is-sticky-header-stuck:has(~ .merge-request .notes-tab.active) {
+    @include gl-container-width-up(lg, panel) {
+      max-width: calc(100% - #{$right-sidebar-width} - #{$gl-spacing-scale-7});
+    }
+  }
+
+  // Span the fluid Changes tab like the stuck header does, overriding the .diffs-container-limited cap
+  // stylelint-disable-next-line gitlab/no-has -- scoped to the flash container preceding the merge request page
+  .flash-container.sticky.is-sticky-header-stuck:has(~ .merge-request .diffs-tab.active) {
+    @include gl-container-width-up(md, panel) {
+      max-width: none;
+      @apply gl-mx-0;
+    }
+  }
+}
+
+@supports not (container-type: scroll-state) {
+  .merge-request-sticky-header {
+    z-index: calc($top-bar-z-index - 1);
+    min-height: $mr-sticky-header-height; // Allow container to grow with content or browser zoom
+    @apply gl-bg-default;
+  }
+}
+
+.merge-request-tabs-container {
+  align-items: center;
+
+  .discussion-filter-container {
+    &:not(:only-child) {
+      margin: $gl-padding-4;
+    }
+  }
+}
+
+.merge-request-tabs {
+  --mr-tab-border-width: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  height: $mr-static-tabs-height;
+}
+
+.merge-request-tabs.merge-request-tabs li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-top: var(--mr-tab-border-width) solid transparent;
+  border-bottom: var(--mr-tab-border-width) solid transparent;
+  @apply gl-px-4;
+}
+
+.merge-request-tabs.merge-request-tabs li a {
+  padding: 0;
+}
+
+.merge-request-tabs.merge-request-tabs li a,
+.merge-request-tabs.merge-request-tabs li a:focus-visible {
+  outline: none;
+}
+
+.merge-request-tabs.merge-request-tabs li a::before {
+  content: '';
+  position: absolute;
+  inset: calc(-1 * var(--mr-tab-border-width)) 0;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to merge-request-tabs li
+.merge-request-tabs.merge-request-tabs li a:hover,
+.merge-request-tabs.merge-request-tabs li a:active,
+.merge-request-tabs.merge-request-tabs li a.active,
+.merge-request-tabs.merge-request-tabs li.active a,
+.merge-request-tabs.merge-request-tabs li:has(a.active) a {
+  box-shadow: none;
+}
+
+.merge-request-tabs.merge-request-tabs li a:focus-visible::before,
+.merge-request-tabs.merge-request-tabs li.active a:focus-visible::before {
+  border: var(--mr-tab-border-width) solid var(--gl-focus-ring-color, var(--gl-tab-selected-indicator-color-default));
+}
+
+.merge-request-tabs.merge-request-tabs li:hover,
+.merge-request-tabs.merge-request-tabs li.active {
+  border-bottom-color: var(--gl-tab-selected-indicator-color-default);
+}
+
+// Use text-stroke instead of font-weight to visually emphasize active tabs
+// without changing the element's layout width, preventing tab bar shifts.
+@supports (-webkit-text-stroke: 0.025em) {
+  // stylelint-disable-next-line gitlab/no-has -- scoped to merge-request-tabs li
+  .merge-request-tabs.merge-request-tabs li.active a,
+  .merge-request-tabs.merge-request-tabs li:has(a.active) a,
+  .merge-request-tabs.merge-request-tabs li a.active,
+  .merge-request-tabs.merge-request-tabs li.active a .badge.badge-pill,
+  .merge-request-tabs.merge-request-tabs li a.active .badge.badge-pill {
+    -webkit-text-stroke: 0.025em currentColor;
+    font-weight: normal;
+  }
+}
+
+.merge-request-tabs-actions {
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.container-fluid {
+  // Negative margins for mobile/tablet screen
+  .diffs.tab-pane {
+    margin: 0 (-$gl-padding);
+  }
+}
+
+@include gl-container-width-down(md, panel) {
+  .merge-request-tabs-container {
+    flex-direction: column-reverse;
+    align-items: flex-start;
+  }
+}
+
+// Hide actions on sticky header when right sidebar is expanded
+// and viewport is medium.
+.right-sidebar-expanded {
+  .merge-request-sticky-header {
+    @include gl-container-width-up(md, panel) {
+      @container sticky-header scroll-state(stuck: top) {
+        .merge-request-tabs-container .merge-request-tabs-actions {
+          @apply gl-hidden;
+        }
+      }
+    }
+  }
+}
+
+.fork-sprite {
+  margin-right: -5px;
+}
+
+.merge-request-details .file-finder-overlay.diff-file-finder {
+  position: fixed;
+  z-index: 99999;
+  @apply gl-bg-overlay;
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class --- We need a slightly smaller spinner to fit the design
+.mr-widget-check-checking .gl-spinner {
+  width: 12px;
+  height: 12px;
+}
+
+// Firefox rendering bug fix - force new stacking context.
+// Not a transform: that also makes this a containing block for fixed
+// descendants, which misplaces the file browser while it's resized.
+.diffs.tab-pane,
+.notes.tab-pane {
+  @supports (-moz-appearance: none) {
+    isolation: isolate;
+  }
+}

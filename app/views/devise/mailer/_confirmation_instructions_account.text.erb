@@ -1,0 +1,15 @@
+<% if @resource.unconfirmed_email.present? || !@resource.created_recently? %>
+<%= @email %>,
+<%= _('Use the link below to confirm your email address.') %>
+<% else %>
+  <% if Gitlab.com? %>
+<%= _('Thanks for signing up to GitLab!') %>
+  <% else %>
+<%= _("Welcome, %{name}!") % { name: @resource.name } %>
+  <% end %>
+<%= _('To get started, use the link below to confirm your account.') %>
+<% end %>
+
+<%= render_if_exists 'devise/shared/delete_unconfirmed_users_text' %>
+
+<%= confirmation_url(@resource, confirmation_token: @token) %>

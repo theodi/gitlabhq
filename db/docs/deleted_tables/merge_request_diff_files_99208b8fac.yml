@@ -1,0 +1,14 @@
+---
+table_name: merge_request_diff_files_99208b8fac
+classes:
+- MergeRequestDiffFile
+feature_categories:
+- code_review_workflow
+description: Temporary partitioned table for merge_request_diff_files during partitioning
+  migration. Renamed to merge_request_diff_files in 19.3 swap migration.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/199297
+milestone: '18.3'
+gitlab_schema: gitlab_main_org
+table_size: over_limit
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/241924
+removed_in_milestone: '19.3'

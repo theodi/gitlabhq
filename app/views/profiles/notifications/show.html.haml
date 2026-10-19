@@ -1,79 +1,60 @@
-- page_title "Notifications"
-%h3.page-title
-  = page_title
-%p.light
-  These are your global notification settings.
-%hr
+- page_title _('Notifications')
 
-= form_for @user, url: profile_notifications_path, method: :put, html: { class: 'update-notifications form-horizontal global-notifications-form' } do |f|
-  -if @user.errors.any?
-    %div.alert.alert-danger
+- if @user.errors.any?
+  = render Pajamas::AlertComponent.new(variant: :danger) do |c|
+    - c.with_body do
       %ul
         - @user.errors.full_messages.each do |msg|
           %li= msg
 
-  = hidden_field_tag :notification_type, 'global'
+= hidden_field_tag :notification_type, 'global'
 
-  .form-group
-    = f.label :notification_email, class: "control-label"
-    .col-sm-10
-      = f.select :notification_email, @user.all_emails, { include_blank: false }, class: "form-control"
+= render ::Layouts::SettingsSectionComponent.new(page_title) do |c|
+  - c.with_description do
+    = _('You can specify notification level per group or per project.')
 
-  .form-group
-    = f.label :notification_level, class: 'control-label'
-    .col-sm-10
-      .radio
-        = f.label :notification_level, value: Notification::N_DISABLED do
-          = f.radio_button :notification_level, Notification::N_DISABLED
-          .level-title
-            Disabled
-          %p You will not get any notifications via email
+  - c.with_body do
+    .gl-mt-0
+      = gitlab_ui_form_for @user, url: profile_notifications_path, method: :put, html: { class: 'update-notifications gl-mt-3 gl-mb-6' } do |f|
+        = render_if_exists 'profiles/notifications/email_settings'
 
-      .radio
-        = f.label :notification_level, value: Notification::N_MENTION do
-          = f.radio_button :notification_level, Notification::N_MENTION
-          .level-title
-            Mention
-          %p You will receive notifications only for comments in which you were @mentioned
+      = label_tag :global_notification_level, _('Global notification level'), class: "label-bold gl-mb-0"
+      .gl-text-subtle.gl-mb-3
+        = _('By default, all projects and groups use the global notifications setting.')
 
-      .radio
-        = f.label :notification_level, value: Notification::N_PARTICIPATING do
-          = f.radio_button :notification_level, Notification::N_PARTICIPATING
-          .level-title
-            Participating
-          %p You will only receive notifications from related resources (e.g. from your commits or assigned issues)
+      .form-group.global-notification-setting.gl-mb-3
+        - if @global_notification_setting
+          .js-vue-notification-dropdown{ data: { dropdown_items: notification_dropdown_items(@global_notification_setting).to_json, notification_level: @global_notification_setting.level, help_page_path: help_page_path('user/profile/notifications.md'), show_label: 'true' } }
 
-      .radio
-        = f.label :notification_level, value: Notification::N_WATCH do
-          = f.radio_button :notification_level, Notification::N_WATCH
-          .level-title
-            Watch
-          %p You will receive all notifications from projects in which you participate
+      = gitlab_ui_form_for @user, url: profile_notifications_path, method: :put do |f|
+        .form-group
+          = f.gitlab_ui_checkbox_component :notified_of_own_activity, _('Receive notifications about your own activity')
 
-  .form-actions
-    = f.submit 'Save changes', class: "btn btn-create"
+      = render ::Layouts::CrudComponent.new(_('Groups'),
+        icon: 'group',
+        count: @user_groups.total_count) do |c|
+        - c.with_body do
+          - if @user_groups.total_count > 0
+            %ul.content-list
+              - @group_notifications.each do |setting|
+                = render 'group_settings', setting: setting, group: setting.source
+          - else
+            .gl-text-subtle= _('You do not belong to any groups yet.')
 
-.clearfix
-  %hr
-.row.all-notifications
-  .col-md-6
-    %p
-      You can also specify notification level per group or per project.
-      %br
-      By default, all projects and groups will use the notification level set above.
-    %h4 Groups:
-    %ul.bordered-list
-      - @group_members.each do |group_member|
-        - notification = Notification.new(group_member)
-        = render 'settings', type: 'group', membership: group_member, notification: notification
+        - if @user_groups.total_count > 0
+          - c.with_pagination do
+            = paginate @user_groups, theme: 'gitlab'
 
-  .col-md-6
-    %p
-      To specify the notification level per project of a group you belong to,
-      %br
-      you need to be a member of the project itself, not only its group.
-    %h4 Projects:
-    %ul.bordered-list
-      - @project_members.each do |project_member|
-        - notification = Notification.new(project_member)
-        = render 'settings', type: 'project', membership: project_member, notification: notification
+      = render ::Layouts::CrudComponent.new(_('Projects'),
+        icon: 'project',
+        count: @project_notifications.size,
+        options: { class: 'gl-mt-5' }) do |c|
+        - c.with_description do
+          = _('To specify the notification level per project of a group you belong to, visit the project page and change the notification level there.')
+        - c.with_body do
+          - if @project_notifications.size > 0
+            %ul.content-list
+              - @project_notifications.each do |setting|
+                = render 'project_settings', setting: setting, project: setting.source
+          - else
+            .gl-text-subtle= _("You do not belong to any projects yet.")

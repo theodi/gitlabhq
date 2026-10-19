@@ -1,0 +1,70 @@
+import { nextTick } from 'vue';
+import GroupSettingsCreateOrganization from '~/groups/settings/create_organization/components/app.vue';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { TYPENAME_GROUP } from '~/graphql_shared/constants';
+import ReconciliationModal from '~/groups/settings/create_organization/components/modal.vue';
+import { mockDefaultGroupOrganization } from './mock_data';
+
+const { bindInternalEventDocument } = useMockInternalEventsTracking();
+
+describe('GroupSettingsCreateOrganization', () => {
+  let wrapper;
+
+  const defaultPropsData = {
+    groupFullPath: 'mock-group',
+    groupGid: convertToGraphQLId(TYPENAME_GROUP, 1),
+    groupOrganization: mockDefaultGroupOrganization,
+  };
+
+  const createComponent = () => {
+    wrapper = shallowMountExtended(GroupSettingsCreateOrganization, {
+      propsData: defaultPropsData,
+    });
+  };
+
+  const findReconciliationModal = () => wrapper.findComponent(ReconciliationModal);
+  const findStartCreatingOrganizationButton = () =>
+    wrapper.findComponentByTestId('start-creating-organization-button');
+
+  beforeEach(createComponent);
+
+  it('passes group props to reconciliation modal', () => {
+    expect(findReconciliationModal().props()).toMatchObject(defaultPropsData);
+  });
+
+  it('opens reconciliation modal when clicked', async () => {
+    expect(findReconciliationModal().props('visible')).toBe(false);
+    findStartCreatingOrganizationButton().vm.$emit('click');
+    await nextTick();
+
+    expect(findReconciliationModal().props('visible')).toBe(true);
+  });
+
+  describe('when create organization button is clicked', () => {
+    it('tracks the click', () => {
+      const { trackEventSpy } = bindInternalEventDocument(wrapper.element);
+
+      findStartCreatingOrganizationButton().vm.$emit('click');
+
+      expect(trackEventSpy).toHaveBeenCalledWith(
+        'click_create_organization_from_group_settings',
+        {},
+        undefined,
+      );
+    });
+  });
+
+  it('closes modal when change event is emitted with false', async () => {
+    findStartCreatingOrganizationButton().vm.$emit('click');
+
+    await nextTick();
+    expect(findReconciliationModal().props('visible')).toBe(true);
+
+    findReconciliationModal().vm.$emit('change', false);
+    await nextTick();
+
+    expect(findReconciliationModal().props('visible')).toBe(false);
+  });
+});

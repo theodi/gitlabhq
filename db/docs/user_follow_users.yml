@@ -1,0 +1,13 @@
+---
+table_name: user_follow_users
+classes:
+- Users::UserFollowUser
+feature_categories:
+- user_profile
+description: Stores which users follow each other
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/45451
+milestone: '13.9'
+gitlab_schema: gitlab_main_user
+sharding_key:
+  follower_id: users
+table_size: small

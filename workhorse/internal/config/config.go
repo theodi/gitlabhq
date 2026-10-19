@@ -1,0 +1,559 @@
+// Package config provides configuration management for object storage,
+// including support for S3, Azure Blob Storage, and Google Cloud Storage.
+package config
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
+	"github.com/BurntSushi/toml"
+	"gocloud.dev/blob"
+	"gocloud.dev/blob/azureblob"
+	"gocloud.dev/blob/gcsblob"
+	"gocloud.dev/gcp"
+	"golang.org/x/oauth2/google"
+)
+
+// Megabyte constant for size calculations
+const Megabyte = 1 << 20
+
+// TLSVersions contains a mapping of textual TLS versions to tls.Version* constants
+var TLSVersions = map[string]uint16{
+	"":       0, // Default value in tls.Config
+	"tls1.0": tls.VersionTLS10,
+	"tls1.1": tls.VersionTLS11,
+	"tls1.2": tls.VersionTLS12,
+	"tls1.3": tls.VersionTLS13,
+}
+
+// TomlURL wraps url.URL for TOML unmarshalling
+type TomlURL struct {
+	url.URL
+}
+
+// UnmarshalText parses a TOML text representation into a TomlURL
+func (u *TomlURL) UnmarshalText(text []byte) error {
+	temp, err := url.Parse(string(text))
+	u.URL = *temp
+	return err
+}
+
+// MarshalText converts a TomlURL back to TOML text representation
+func (u *TomlURL) MarshalText() ([]byte, error) {
+	return []byte(u.String()), nil
+}
+
+// TomlDuration wraps time.Duration for TOML unmarshalling
+type TomlDuration struct {
+	time.Duration
+}
+
+// UnmarshalText parses a TOML text representation into a TomlDuration
+func (d *TomlDuration) UnmarshalText(text []byte) error {
+	temp, err := time.ParseDuration(string(text))
+	d.Duration = temp
+	return err
+}
+
+// MarshalText converts a TomlDuration back to TOML text representation
+func (d TomlDuration) MarshalText() ([]byte, error) {
+	return []byte(d.String()), nil
+}
+
+// ObjectStorageCredentials holds credentials for various object storage providers
+type ObjectStorageCredentials struct {
+	Provider string
+
+	S3Credentials     S3Credentials     `toml:"s3" json:"s3"`
+	AzureCredentials  AzureCredentials  `toml:"azurerm" json:"azurerm"`
+	GoogleCredentials GoogleCredentials `toml:"google" json:"google"`
+}
+
+// ObjectStorageConfig contains the URLMux for object storage configuration
+type ObjectStorageConfig struct {
+	URLMux *blob.URLMux `toml:"-"`
+}
+
+// S3Credentials holds AWS S3 credentials
+type S3Credentials struct {
+	AwsAccessKeyID     string `toml:"aws_access_key_id" json:"aws_access_key_id"`
+	AwsSecretAccessKey string `toml:"aws_secret_access_key" json:"aws_secret_access_key"`
+	AwsSessionToken    string `toml:"aws_session_token" json:"aws_session_token"`
+}
+
+// S3Config holds S3-specific configuration options
+type S3Config struct {
+	Region               string `toml:"-"`
+	Bucket               string `toml:"-"`
+	PathStyle            bool   `toml:"-"`
+	Endpoint             string `toml:"-"`
+	UseIamProfile        bool   `toml:"-"`
+	ServerSideEncryption string `toml:"-"` // Server-side encryption mode (e.g. AES256, aws:kms)
+	SSEKMSKeyID          string `toml:"-"` // Server-side encryption key-management service key ID (e.g. arn:aws:xxx)
+	AwsSDK               string `toml:"-"` // DEPRECATED. AWS SDK v2 is always used now.
+}
+
+// GoCloudConfig holds GoCloud-specific configuration
+type GoCloudConfig struct {
+	URL string `toml:"-"`
+}
+
+// AzureCredentials holds Azure Blob Storage credentials
+type AzureCredentials struct {
+	AccountName string `toml:"azure_storage_account_name" json:"azure_storage_account_name"`
+	AccountKey  string `toml:"azure_storage_access_key" json:"azure_storage_access_key"`
+}
+
+// GoogleCredentials holds Google Cloud Storage credentials
+type GoogleCredentials struct {
+	ApplicationDefault bool   `toml:"google_application_default" json:"google_application_default"`
+	JSONKeyString      string `toml:"google_json_key_string" json:"google_json_key_string"`
+	JSONKeyLocation    string `toml:"google_json_key_location" json:"google_json_key_location"`
+}
+
+// RedisConfig holds configuration for Redis
+type RedisConfig struct {
+	URL                 TomlURL
+	Sentinel            []TomlURL
+	SentinelMaster      string
+	SentinelUsername    string
+	SentinelPassword    string
+	Username            string
+	Password            string
+	DB                  *int
+	MaxIdle             *int
+	MaxActive           *int
+	TLS                 *TLSConfig                `toml:"tls" json:"tls"`
+	CredentialsProvider *RedisCredentialsProvider `toml:"credentials_provider" json:"credentials_provider"`
+}
+
+// RedisCredentialsProvider enables passwordless authentication to a managed
+// Redis service using a rotating token that is refreshed automatically. When
+// set, it takes precedence over the static Username/Password and requires TLS.
+// It follows the same shape as ObjectStorageCredentials: Provider selects the
+// cloud, and only that provider's nested block is used.
+type RedisCredentialsProvider struct {
+	// Provider selects the cloud credential provider. Currently only "azure"
+	// is implemented; "aws" and "google" can be added later.
+	Provider string            `toml:"provider" json:"provider"`
+	Azure    *RedisAzureConfig `toml:"azure" json:"azure"`
+}
+
+// RedisAzureConfig holds Microsoft Entra options for the "azure" credentials
+// provider.
+type RedisAzureConfig struct {
+	// AuthType selects how the Entra token is acquired. "" or "default" (the
+	// default) uses the Azure default credential chain, which covers workload
+	// identity, managed identity, and environment credentials. "managed_identity"
+	// pins to the instance's managed identity (optionally a user-assigned one
+	// via ObjectID).
+	AuthType string `toml:"auth_type" json:"auth_type"`
+	// ObjectID is the object (principal) ID of a user-assigned managed identity.
+	// Leave empty to use a system-assigned managed identity.
+	ObjectID string `toml:"object_id" json:"object_id"`
+	// Scope is the OAuth scope, defaulting to https://redis.azure.com/.default.
+	Scope string `toml:"scope" json:"scope"`
+}
+
+// SentinelConfig contains configuration options specifically for Sentinel
+type SentinelConfig struct {
+	TLS *TLSConfig `toml:"tls" json:"tls"`
+}
+
+// ImageResizerConfig holds configuration for the image resizer
+type ImageResizerConfig struct {
+	MaxScalerProcs uint32 `toml:"max_scaler_procs" json:"max_scaler_procs"`
+	MaxScalerMem   uint64 `toml:"max_scaler_mem" json:"max_scaler_mem"`
+	MaxFilesize    uint64 `toml:"max_filesize" json:"max_filesize"`
+}
+
+// MetadataConfig holds configuration for metadata processing
+type MetadataConfig struct {
+	ZipReaderLimitBytes int64 `toml:"zip_reader_limit_bytes"`
+}
+
+// TLSConfig holds TLS configuration settings
+type TLSConfig struct {
+	Certificate   string `toml:"certificate" json:"certificate"`
+	Key           string `toml:"key" json:"key"`
+	CACertificate string `toml:"ca_certificate" json:"ca_certificate"`
+	MinVersion    string `toml:"min_version" json:"min_version"`
+	MaxVersion    string `toml:"max_version" json:"max_version"`
+}
+
+// ListenerConfig holds configuration for network listeners
+type ListenerConfig struct {
+	Network string     `toml:"network" json:"network"`
+	Addr    string     `toml:"addr" json:"addr"`
+	TLS     *TLSConfig `toml:"tls" json:"tls"`
+}
+
+// CircuitBreakerConfig holds circuit breaker settings
+type CircuitBreakerConfig struct {
+	Enabled             bool   `toml:"enabled" json:"enabled"`
+	Timeout             uint32 `toml:"timeout" json:"timeout"`
+	Interval            uint32 `toml:"interval" json:"interval"`
+	MaxRequests         uint32 `toml:"max_requests" json:"max_requests"`
+	ConsecutiveFailures uint32 `toml:"consecutive_failures" json:"consecutive_failures"`
+}
+
+// HealthCheckConfig holds configuration for health check endpoints
+type HealthCheckConfig struct {
+	// Network is the network type (tcp, tcp4, tcp6, unix)
+	Network string `toml:"network" json:"network"`
+	// Addr is the address to listen on (e.g., "localhost:8082")
+	Addr string `toml:"addr" json:"addr"`
+	// ReadinessProbeURL is the URL to check the readiness endpoint
+	ReadinessProbeURL string `toml:"readiness_probe_url" json:"readiness_probe_url"`
+	// PumaControlURL is the URL to check Puma's control server (for readiness checks)
+	PumaControlURL string `toml:"puma_control_url" json:"puma_control_url"`
+	// CheckInterval is how often to perform health checks
+	CheckInterval TomlDuration `toml:"check_interval" json:"check_interval"`
+	// Timeout for health check requests
+	Timeout TomlDuration `toml:"timeout" json:"timeout"`
+	// GracefulShutdownDelay is how long to remain not ready after shutdown signal
+	GracefulShutdownDelay TomlDuration `toml:"graceful_shutdown_delay" json:"graceful_shutdown_delay"`
+	// MaxConsecutiveFailures is the number of consecutive failures allowed before marking as not ready (readiness only)
+	MaxConsecutiveFailures int `toml:"max_consecutive_failures" json:"max_consecutive_failures"`
+	// MinSuccessfulProbes is the number of successful probes in a row required to be deemed ready (readiness only)
+	MinSuccessfulProbes int `toml:"min_successful_probes" json:"min_successful_probes"`
+	// RailsSkipInterval is the duration to skip Rails readiness checks after a successful request
+	RailsSkipInterval TomlDuration `toml:"rails_skip_interval" json:"rails_skip_interval"`
+}
+
+// LoadSheddingConfig holds configuration for load shedding
+type LoadSheddingConfig struct {
+	// Enabled indicates whether load shedding is active
+	Enabled bool `toml:"enabled" json:"enabled"`
+	// BacklogThreshold is the backlog threshold at which to start shedding load
+	BacklogThreshold int `toml:"backlog_threshold" json:"backlog_threshold"`
+	// BacklogHysteresis is the factor for deactivation (e.g., 0.8 means deactivate at 80% of threshold)
+	BacklogHysteresis float64 `toml:"backlog_hysteresis" json:"backlog_hysteresis"`
+	// RetryAfterSeconds is the Retry-After header value in seconds when shedding load
+	RetryAfterSeconds int `toml:"retry_after_seconds" json:"retry_after_seconds"`
+	// StatusCode is the HTTP status code to return when shedding load (default: 503)
+	StatusCode int `toml:"status_code" json:"status_code"`
+	// Strategy is the strategy to use for calculating effective backlog (max, sum; default: max)
+	Strategy string `toml:"strategy" json:"strategy"`
+	// CheckInterval is how often to sample the Puma backlog (independent of readiness checks)
+	CheckInterval TomlDuration `toml:"check_interval" json:"check_interval"`
+	// PumaControlURL is the URL to check Puma's control server for backlog metrics
+	PumaControlURL string `toml:"puma_control_url" json:"puma_control_url"`
+	// Timeout for control server requests
+	Timeout TomlDuration `toml:"timeout" json:"timeout"`
+}
+
+// Config holds the overall application configuration
+type Config struct {
+	ConfigCommand                string                   `toml:"config_command,omitempty" json:"config_command"`
+	Redis                        *RedisConfig             `toml:"redis" json:"redis"`
+	Backend                      *url.URL                 `toml:"-"`
+	CableBackend                 *url.URL                 `toml:"-"`
+	IAMServiceURL                *url.URL                 `toml:"-"` // AUTH-011: optional; nil disables OAuth IAM proxy routing
+	Version                      string                   `toml:"-"`
+	DocumentRoot                 string                   `toml:"-"`
+	DevelopmentMode              bool                     `toml:"-"`
+	Socket                       string                   `toml:"-"`
+	CableSocket                  string                   `toml:"-"`
+	ProxyHeadersTimeout          time.Duration            `toml:"-"`
+	APILimit                     uint                     `toml:"-"`
+	APIQueueLimit                uint                     `toml:"-"`
+	APIQueueTimeout              time.Duration            `toml:"-"`
+	APICILongPollingDuration     time.Duration            `toml:"-"`
+	ObjectStorageConfig          ObjectStorageConfig      `toml:"-"`
+	ObjectStorageCredentials     ObjectStorageCredentials `toml:"object_storage" json:"object_storage"`
+	PropagateCorrelationID       bool                     `toml:"-"`
+	AdoptCfRayHeader             bool                     `toml:"adopt_cf_ray_header" json:"adopt_cf_ray_header"`
+	ImageResizerConfig           ImageResizerConfig       `toml:"image_resizer" json:"image_resizer"`
+	MetadataConfig               MetadataConfig           `toml:"metadata" json:"metadata"`
+	AltDocumentRoot              string                   `toml:"alt_document_root" json:"alt_document_root"`
+	ShutdownTimeout              TomlDuration             `toml:"shutdown_timeout" json:"shutdown_timeout"`
+	TrustedCIDRsForXForwardedFor []string                 `toml:"trusted_cidrs_for_x_forwarded_for" json:"trusted_cidrs_for_x_forwarded_for"`
+	TrustedCIDRsForPropagation   []string                 `toml:"trusted_cidrs_for_propagation" json:"trusted_cidrs_for_propagation"`
+	TrustedForwardedHosts        []string                 `toml:"trusted_forwarded_hosts" json:"trusted_forwarded_hosts"`
+	Listeners                    []ListenerConfig         `toml:"listeners" json:"listeners"`
+	MetricsListener              *ListenerConfig          `toml:"metrics_listener" json:"metrics_listener"`
+	HealthCheckListener          *HealthCheckConfig       `toml:"health_check_listener" json:"health_check_listener"`
+	LoadSheddingConfig           *LoadSheddingConfig      `toml:"load_shedding" json:"load_shedding"`
+	Sentinel                     *SentinelConfig          `toml:"Sentinel" json:"Sentinel"`
+	CircuitBreakerConfig         CircuitBreakerConfig     `toml:"circuit_breaker" json:"circuit_breaker"`
+}
+
+// DefaultImageResizerConfig contains default settings for the image resizer
+var DefaultImageResizerConfig = ImageResizerConfig{
+	MaxScalerProcs: uint32(math.Max(2, float64(runtime.NumCPU())/2)),
+	MaxFilesize:    250 * 1000, // 250kB,
+}
+
+// DefaultMetadataConfig contains default settings for metadata processing
+var DefaultMetadataConfig = MetadataConfig{
+	ZipReaderLimitBytes: 100 * Megabyte,
+}
+
+// DefaultCircuitBreakerConfig contains default settings for the circuit breaker
+var DefaultCircuitBreakerConfig = CircuitBreakerConfig{
+	Enabled:             false,
+	Timeout:             60,
+	Interval:            180,
+	MaxRequests:         1,
+	ConsecutiveFailures: 5,
+}
+
+// NewDefaultConfig creates a new configuration with default values
+func NewDefaultConfig() *Config {
+	return &Config{
+		ImageResizerConfig:   DefaultImageResizerConfig,
+		MetadataConfig:       DefaultMetadataConfig,
+		CircuitBreakerConfig: DefaultCircuitBreakerConfig,
+	}
+}
+
+// LoadConfigFromFile reads configuration from a specified file
+func LoadConfigFromFile(file *string) (*Config, error) {
+	tomlData := ""
+
+	if *file != "" {
+		buf, err := os.ReadFile(*file)
+		if err != nil {
+			return nil, fmt.Errorf("file: %v", err)
+		}
+		tomlData = string(buf)
+	}
+
+	return LoadConfig(tomlData)
+}
+
+// LoadConfig loads configuration from a TOML string
+func LoadConfig(data string) (*Config, error) {
+	cfg := NewDefaultConfig()
+
+	if _, err := toml.Decode(data, cfg); err != nil {
+		return nil, err
+	}
+
+	if cfg.ConfigCommand != "" {
+		cmd, args := splitCommand(cfg.ConfigCommand)
+		// #nosec G204 -- cmd and args come from the operator-controlled
+		// config_command setting, not from request or user input.
+		output, err := exec.Command(cmd, args...).Output()
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				return cfg, fmt.Errorf("running config command: %w, stderr: %q", err, string(exitErr.Stderr))
+			}
+
+			return cfg, fmt.Errorf("running config command: %w", err)
+		}
+
+		if err := json.Unmarshal(output, &cfg); err != nil {
+			return cfg, fmt.Errorf("unmarshalling generated config: %w", err)
+		}
+	}
+
+	return cfg, nil
+}
+
+// RegisterGoCloudURLOpeners registers URL openers for GoCloud storage providers
+func (c *Config) RegisterGoCloudURLOpeners() error {
+	c.ObjectStorageConfig.URLMux = new(blob.URLMux)
+
+	creds := c.ObjectStorageCredentials
+	if strings.EqualFold(creds.Provider, "AzureRM") && creds.AzureCredentials.AccountName != "" {
+		urlOpener := creds.AzureCredentials.getURLOpener()
+		c.ObjectStorageConfig.URLMux.RegisterBucket(azureblob.Scheme, urlOpener)
+	}
+
+	if strings.EqualFold(creds.Provider, "Google") && (creds.GoogleCredentials.JSONKeyLocation != "" || creds.GoogleCredentials.JSONKeyString != "" || creds.GoogleCredentials.ApplicationDefault) {
+		urlOpener, err := creds.GoogleCredentials.getURLOpener()
+		if err != nil {
+			return err
+		}
+		c.ObjectStorageConfig.URLMux.RegisterBucket(gcsblob.Scheme, urlOpener)
+	}
+
+	return nil
+}
+
+// MergeFromFile merges file-based configuration into the current config,
+// applying defaults for health check and load shedding.
+func (c *Config) MergeFromFile(file *Config, prometheusListenAddr string) error {
+	c.MetricsListener = file.MetricsListener
+	if prometheusListenAddr != "" {
+		if c.MetricsListener != nil {
+			return fmt.Errorf("configFile: both prometheusListenAddr and metrics_listener can't be specified")
+		}
+		c.MetricsListener = &ListenerConfig{Network: "tcp", Addr: prometheusListenAddr}
+	}
+
+	c.Redis = file.Redis
+	c.Sentinel = file.Sentinel
+	c.ObjectStorageCredentials = file.ObjectStorageCredentials
+	c.ImageResizerConfig = file.ImageResizerConfig
+	c.AltDocumentRoot = file.AltDocumentRoot
+	c.ShutdownTimeout = file.ShutdownTimeout
+	c.TrustedCIDRsForXForwardedFor = file.TrustedCIDRsForXForwardedFor
+	c.TrustedCIDRsForPropagation = file.TrustedCIDRsForPropagation
+	c.TrustedForwardedHosts = file.TrustedForwardedHosts
+	c.Listeners = file.Listeners
+	c.HealthCheckListener = file.HealthCheckListener
+	c.LoadSheddingConfig = file.LoadSheddingConfig
+
+	c.ApplyHealthCheckDefaults()
+	c.ApplyLoadSheddingDefaults()
+
+	c.CircuitBreakerConfig = file.CircuitBreakerConfig
+	c.AdoptCfRayHeader = file.AdoptCfRayHeader
+
+	return nil
+}
+
+// ApplyHealthCheckDefaults applies default values to health check configuration
+func (c *Config) ApplyHealthCheckDefaults() {
+	if c.HealthCheckListener == nil {
+		return
+	}
+
+	if c.HealthCheckListener.CheckInterval.Duration == 0 {
+		c.HealthCheckListener.CheckInterval = TomlDuration{Duration: 10 * time.Second}
+	}
+	if c.HealthCheckListener.Timeout.Duration == 0 {
+		c.HealthCheckListener.Timeout = TomlDuration{Duration: 5 * time.Second}
+	}
+	if c.HealthCheckListener.GracefulShutdownDelay.Duration == 0 {
+		c.HealthCheckListener.GracefulShutdownDelay = TomlDuration{Duration: 10 * time.Second}
+	}
+	if c.HealthCheckListener.MaxConsecutiveFailures <= 0 {
+		c.HealthCheckListener.MaxConsecutiveFailures = 1
+	}
+	if c.HealthCheckListener.MinSuccessfulProbes <= 0 {
+		c.HealthCheckListener.MinSuccessfulProbes = 1
+	}
+	if c.HealthCheckListener.ReadinessProbeURL == "" {
+		readinessProbeURL := "http://localhost:8080/-/readiness"
+		if c.Backend != nil {
+			readinessProbeURL = c.Backend.String() + "/-/readiness"
+		}
+		c.HealthCheckListener.ReadinessProbeURL = readinessProbeURL
+	}
+}
+
+// ApplyLoadSheddingDefaults applies default values to load shedding configuration
+func (c *Config) ApplyLoadSheddingDefaults() {
+	if c.LoadSheddingConfig == nil || !c.LoadSheddingConfig.Enabled {
+		return
+	}
+
+	if c.LoadSheddingConfig.CheckInterval.Duration == 0 {
+		c.LoadSheddingConfig.CheckInterval = TomlDuration{Duration: 1 * time.Second}
+	}
+	if c.LoadSheddingConfig.Timeout.Duration == 0 {
+		c.LoadSheddingConfig.Timeout = TomlDuration{Duration: 5 * time.Second}
+	}
+	// Validate hysteresis (must be between 0 and 1, where 1.0 means no hysteresis effect)
+	if c.LoadSheddingConfig.BacklogHysteresis <= 0 || c.LoadSheddingConfig.BacklogHysteresis > 1 {
+		c.LoadSheddingConfig.BacklogHysteresis = 0.8
+	}
+	if c.LoadSheddingConfig.StatusCode == 0 {
+		c.LoadSheddingConfig.StatusCode = http.StatusServiceUnavailable
+	}
+	if c.LoadSheddingConfig.Strategy == "" {
+		c.LoadSheddingConfig.Strategy = "max"
+	}
+	if c.LoadSheddingConfig.PumaControlURL == "" {
+		c.LoadSheddingConfig.PumaControlURL = "http://localhost:9293"
+	}
+}
+
+func (creds *AzureCredentials) getURLOpener() *azureblob.URLOpener {
+	serviceURLOptions := azureblob.ServiceURLOptions{
+		AccountName: creds.AccountName,
+	}
+
+	clientFunc := func(svcURL azureblob.ServiceURL, containerName azureblob.ContainerName) (*container.Client, error) {
+		containerURL := fmt.Sprintf("%s/%s", svcURL, containerName)
+
+		if creds.AccountKey != "" {
+			sharedKeyCred, err := azblob.NewSharedKeyCredential(creds.AccountName, creds.AccountKey)
+			if err != nil {
+				return nil, fmt.Errorf("error creating Azure credentials: %w", err)
+			}
+			return container.NewClientWithSharedKeyCredential(containerURL, sharedKeyCred, &container.ClientOptions{})
+		}
+
+		creds, err := azidentity.NewDefaultAzureCredential(nil)
+		if err != nil {
+			return nil, fmt.Errorf("error creating default Azure credentials: %w", err)
+		}
+
+		return container.NewClient(containerURL, creds, nil)
+	}
+
+	return &azureblob.URLOpener{
+		MakeClient:        clientFunc,
+		ServiceURLOptions: serviceURLOptions,
+	}
+}
+
+func (creds *GoogleCredentials) getURLOpener() (*gcsblob.URLOpener, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // lint:allow context.Background
+	defer cancel()
+
+	gcpCredentials, err := creds.getGCPCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := gcp.NewHTTPClient(
+		gcp.DefaultTransport(),
+		gcp.CredentialsTokenSource(gcpCredentials),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error creating Google HTTP client: %w", err)
+	}
+
+	return &gcsblob.URLOpener{
+		Client: client,
+	}, nil
+}
+
+func (creds *GoogleCredentials) getGCPCredentials(ctx context.Context) (*google.Credentials, error) {
+	// #nosec G101 -- this is a public Google OAuth scope URL, not a credential.
+	const gcpCredentialsScope = "https://www.googleapis.com/auth/devstorage.read_write"
+	if creds.ApplicationDefault {
+		return gcp.DefaultCredentials(ctx)
+	}
+
+	if creds.JSONKeyLocation != "" {
+		b, err := os.ReadFile(creds.JSONKeyLocation)
+		if err != nil {
+			return nil, fmt.Errorf("error reading Google json key location: %w", err)
+		}
+
+		//lint:ignore SA1019 migration tracked in https://gitlab.com/gitlab-org/gitlab/-/work_items/598339
+		return google.CredentialsFromJSON(ctx, b, gcpCredentialsScope) //nolint:staticcheck
+	}
+
+	b := []byte(creds.JSONKeyString)
+	//lint:ignore SA1019 migration tracked in https://gitlab.com/gitlab-org/gitlab/-/work_items/598339
+	return google.CredentialsFromJSON(ctx, b, gcpCredentialsScope) //nolint:staticcheck
+}
+
+func splitCommand(cmd string) (string, []string) {
+	cmdAndArgs := strings.Split(cmd, " ")
+
+	return cmdAndArgs[0], cmdAndArgs[1:]
+}

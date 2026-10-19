@@ -1,0 +1,364 @@
+:root {
+  --layout-sticky-header-height: 0px; // stylelint-disable-line length-zero-no-unit
+  --container-padding-x: #{$gl-spacing-scale-4};
+  --ai-panel-width: 0px; // stylelint-disable-line length-zero-no-unit
+  --ai-navigation-rail-size: 0px; // stylelint-disable-line length-zero-no-unit
+}
+
+:root.page-with-ai-panel {
+  --ai-panel-width: clamp(25rem, 20vw, 35rem);
+  --ai-navigation-rail-size: 2.5rem;
+}
+
+html {
+  // Scroll bars styles
+  scrollbar-color: var(--gl-color-neutral-400) transparent;
+
+  @media (forced-colors: active) {
+    scrollbar-color: var(--gl-color-neutral-950) transparent;
+  }
+
+  &.touch .tooltip {
+    display: none !important;
+  }
+}
+
+.page-with-panels {
+  // Fix page height
+  &, body {
+    @apply gl-h-full;
+  }
+
+  body {
+    @apply gl-flex;
+    @apply gl-flex-col;
+    @apply gl-bg-application-chrome;
+  }
+}
+
+.container-fluid {
+  &.limit-container-width {
+    .flash-container.sticky {
+      max-width: $limited-layout-width;
+      margin-right: auto;
+      margin-left: auto;
+    }
+  }
+}
+
+// this negates the effect of the wrapping element padding and scrollbar width on the 'main' element
+// it allows us to achieve width parity with the viewport inner width and reduce regressions when moving from media queries to container queries
+// scrollbar padding is added on the left side to avoid introducing page overflow
+.container-queries-enabled {
+  width: calc(100% + var(--container-padding-x) * 2 + var(--scrollbar-width, 0px));
+  padding-right: var(--container-padding-x);
+  padding-left: calc(var(--container-padding-x) + var(--scrollbar-width, 0px));
+  margin-right: calc(var(--container-padding-x) * -1);
+  margin-left: calc((var(--container-padding-x) + var(--scrollbar-width, 0px)) * -1);
+}
+
+.layout-page {
+  @apply gl-py-0;
+}
+
+.page-with-panels {
+  .layout-page:where(.page-with-super-sidebar) {
+    @apply gl-grid;
+    @apply gl-grid-cols-1;
+    @apply gl-grid-rows-[auto,1fr,auto,var(--ai-navigation-rail-size)];
+    @apply gl-gap-0;
+    @apply sm:gl-pb-3;
+    @apply gl-min-h-0;
+    @apply gl-flex-1;
+
+    @apply sm:gl-px-3;
+
+    grid-template-areas:
+      "broadcast-message"
+      "panels"
+      "ai-panel"
+      "ai-navigation-rail";
+
+    @include media-breakpoint-up(lg) {
+      @apply gl-grid-cols-[auto,1fr,auto,var(--ai-navigation-rail-size)];
+      @apply gl-grid-rows-[auto,1fr];
+      grid-template-areas:
+        "super-sidebar-nav broadcast-message broadcast-message ."
+        "super-sidebar-nav panels ai-panel ai-navigation-rail";
+    }
+  }
+
+  .broadcast-wrapper {
+    grid-area: broadcast-message;
+
+    // stylelint-disable-next-line gitlab/no-has -- scoped to child element
+    &:has(> .gl-broadcast-message) {
+      @apply gl-mb-3;
+    }
+  }
+
+  .super-sidebar-wrapper {
+    @include media-breakpoint-up(lg) {
+      grid-area: super-sidebar-nav;
+    }
+  }
+
+  .panels-container {
+    grid-area: panels;
+  }
+}
+
+.page-with-panels.page-with-ai-panel .layout-page {
+  @apply sm:gl-pb-0;
+  @apply lg:gl-pb-3;
+  @apply lg:gl-pr-0;
+}
+
+.panels-container {
+  @apply gl-relative;
+  @apply gl-grow;
+  @apply gl-flex;
+  @apply gl-pr-0;
+  @apply gl-pb-0;
+  @apply gl-min-h-0;
+
+  // Inside the panels container, everything that calculates an offset from
+  // the top needs to ignore application header height, system header height,
+  // performance bar height, header height and top bar height, since these
+  // all lie outside of the panels. Note that the `px` IS REQUIRED here for
+  // these variables to function properly.
+  --application-header-height: 0px; // stylelint-disable-line length-zero-no-unit
+  --system-header-height: 0px; // stylelint-disable-line length-zero-no-unit
+  --performance-bar-height: 0px; // stylelint-disable-line length-zero-no-unit
+  --header-height: 0px; // stylelint-disable-line length-zero-no-unit
+  --top-bar-height: 0px; // stylelint-disable-line length-zero-no-unit
+
+  .panel-content-inner,
+  .vue-portal-target .work-item-detail-panel-content {
+    // Hide alert wrapper if it's empty
+    // stylelint-disable-next-line gitlab/no-has -- scoped to direct alert-wrapper child
+    > .alert-wrapper:not(:has(*)) {
+      @apply gl-hidden;
+    }
+  }
+}
+
+// Smoothly animate the panels container and super sidebar when they expand
+// or collapse. `width: auto` can't normally be transitioned, so we use
+// `calc-size()` together with `interpolate-size: allow-keywords` to make the
+// intrinsic width animatable.
+@supports (width: calc-size(auto, size)) {
+  .panels-container,
+  .super-sidebar.super-sidebar-toggled-manually {
+    width: calc-size(auto, size);
+    /* stylelint-disable-next-line property-no-unknown */
+    interpolate-size: allow-keywords;
+    transition: width .25s $gl-easing-out-cubic,
+                transform .25s $gl-easing-out-cubic;
+  }
+}
+
+.ai-panel-wrapper {
+  grid-area: ai-panel;
+  overflow: inherit;
+  @apply gl-relative;
+}
+
+.ai-navigation-rail {
+  grid-area: ai-navigation-rail;
+
+  @apply gl-flex;
+  @apply gl-flex-1;
+  @apply gl-items-center;
+  @apply gl-gap-5;
+  @apply gl-p-3;
+  @apply gl-h-[var(--ai-navigation-rail-size)];
+
+  @apply lg:gl-flex-col;
+  @apply lg:gl-gap-3;
+  @apply lg:gl-w-[var(--ai-navigation-rail-size)];
+  @apply lg:gl-h-full;
+
+  .gl-nav-item.selected::before {
+    @apply -gl-bottom-[6px];
+    @apply lg:gl-bottom-2;
+    @apply lg:-gl-right-[6px];
+  }
+}
+
+// When the AI panel is maximized
+.layout-page.ai-panel-maximized {
+  @include media-breakpoint-up(lg) {
+    @apply gl-grid-cols-[auto,2fr,3fr];
+  }
+
+  .ai-panel-wrapper {
+    grid-column-start: panels;
+    grid-column-end: ai-panel;
+  }
+
+  .ai-panel {
+    @apply gl-w-full;
+    @apply gl-border-l-transparent;
+    @apply dark:gl-border-l-subtle;
+    @apply gl-rounded-xl;
+    @apply gl-shadow-sm;
+    clip-path: none;
+  }
+
+  // Hiding all other panels when DAP is maximized
+  .panels-container {
+    display: none;
+  }
+
+  // Preserving other panels when DAP is maximized on bigger screens
+  @media(min-width: #{$paneled-layout-ultra-wide-breakpoint}) {
+    .ai-panel-wrapper {
+      grid-column-start: ai-panel;
+    }
+
+    .ai-panel {
+      @apply gl-border-l;
+      @apply gl-rounded-l-none;
+    }
+
+    .panels-container {
+      display: flex;
+    }
+  }
+}
+
+.content-wrapper {
+  padding-top: var(--top-bar-height);
+  padding-bottom: $content-wrapper-padding;
+}
+
+.container {
+  padding-top: 0;
+  z-index: 5;
+
+  .content {
+    margin: 0;
+
+    @include gl-container-width-down(sm, panel) { margin-top: 20px; }
+  }
+
+  @include gl-container-width-down(sm, panel) {
+    .container .title {
+      padding-left: 15px !important;
+    }
+  }
+}
+
+.container-limited {
+  max-width: $fixed-layout-width;
+
+  &.limit-container-width {
+    max-width: $limited-layout-width;
+  }
+}
+
+.alert-wrapper-top-space {
+  .gl-alert:first-child {
+    @apply gl-mt-3;
+  }
+}
+
+.alert-wrapper {
+  .alert-link-group {
+    float: right;
+  }
+
+  .flex-alert {
+    @include gl-container-width-up(lg, panel) {
+      display: flex;
+
+      .alert-message {
+        flex: 1;
+        padding-right: 40px;
+      }
+    }
+
+    .alert-link-group {
+      float: none;
+    }
+  }
+
+  @include gl-container-width-down(md, panel) {
+    .alert-link-group {
+      float: none;
+      margin-top: $gl-padding-8;
+    }
+  }
+}
+
+.fullscreen-layout {
+  padding-top: 0;
+  height: 100vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  overflow: hidden;
+
+  // stylelint-disable-next-line gitlab/no-js-class
+  > #js-peek {
+    position: static;
+    top: auto;
+  }
+
+  .flash-container {
+    margin-top: 0;
+    margin-bottom: 0;
+  }
+}
+
+.gl-drawer-responsive {
+  // Both width & min-width
+  // are defined as per Pajamas
+  // See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/44902#note_429056182
+  width: 28%;
+  min-width: 400px;
+  padding-left: $gl-padding;
+  padding-right: $gl-padding;
+  box-shadow: none;
+  @apply gl-bg-subtle;
+  @apply gl-border-l;
+
+  @include gl-container-width-down(md, panel) {
+    min-width: unset;
+    width: 100%;
+  }
+
+  // These overrides should not happen here,
+  // we should ideally have support for custom
+  // header and body classes in `GlDrawer`.
+  .gl-drawer-header,
+  .gl-drawer-body > * {
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+// Hides Chrome's iOS translation tooltip
+//
+// Chrome on iOS injects `#goog-gt-tt` into the `<body>` when translation is enabled.
+// The accompanying Google CSS, which would normally hide this element, is blocked
+// by GitLab's CSP. Without that stylesheet, the element becomes visibly rendered.
+#goog-gt-tt {
+  display: none;
+}
+
+/*
+ * These are used by the `Tab width` user preference in
+ * `https://gitlab.com/-/profile/preferences`. The `css_class_for_user` method in
+ * `lib/gitlab/tab_width.rb` is used to add one of these classes to the `body` element.
+*/
+
+@for $i from 1 through 12 {
+  #{'.tab-width-#{$i}'} {
+    /* stylelint-disable-next-line property-no-vendor-prefix */
+    -moz-tab-size: $i;
+    tab-size: $i;
+  }
+}

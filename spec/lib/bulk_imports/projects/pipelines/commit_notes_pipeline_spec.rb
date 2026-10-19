@@ -1,0 +1,104 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::Projects::Pipelines::CommitNotesPipeline, feature_category: :importers do
+  let_it_be(:user, freeze: false) { create(:user) }
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be(:project, freeze: false) { create(:project, group: group) }
+  let_it_be(:bulk_import, freeze: false) { create(:bulk_import, :with_configuration, user: user) }
+  let_it_be(:entity, freeze: false) do
+    create(
+      :bulk_import_entity,
+      :project_entity,
+      project: project,
+      bulk_import: bulk_import,
+      source_full_path: 'source/full/path',
+      destination_slug: 'destination-project',
+      destination_namespace: group.full_path
+    )
+  end
+
+  let(:ci_pipeline_note) do
+    {
+      "note" => "Commit note 1",
+      "noteable_type" => "Commit",
+      "author_id" => 101,
+      "created_at" => "2023-01-30T19:27:36.585Z",
+      "updated_at" => "2023-02-10T14:43:01.308Z",
+      "project_id" => 1,
+      "commit_id" => "sha-notes",
+      "system" => false,
+      "updated_by_id" => 101,
+      "discussion_id" => "e3fde7d585c6467a7a5147e83617eb6daa61aaf4",
+      "last_edited_at" => "2023-02-10T14:43:01.306Z",
+      "author" => {
+        "name" => "Administrator"
+      },
+      "events" => [
+        {
+          "project_id" => 1,
+          "author_id" => 101,
+          "action" => "commented",
+          "target_type" => "Note"
+        }
+      ]
+    }
+  end
+
+  let_it_be(:tracker, freeze: false) { create(:bulk_import_tracker, entity: entity) }
+  let_it_be(:context, freeze: false) { BulkImports::Pipeline::Context.new(tracker) }
+
+  subject(:pipeline) { described_class.new(context) }
+
+  describe '#run', :clean_gitlab_redis_shared_state do
+    let_it_be(:source_user, freeze: false) do
+      create(:import_source_user,
+        import_type: ::Import::SOURCE_DIRECT_TRANSFER,
+        namespace: group,
+        source_user_identifier: 101,
+        source_hostname: bulk_import.configuration.url,
+        placeholder_user: create(:user, :import_user)
+      )
+    end
+
+    before do
+      allow_next_instance_of(BulkImports::Common::Extractors::NdjsonExtractor) do |extractor|
+        allow(extractor).to receive(:extract).and_return(
+          BulkImports::Pipeline::ExtractedData.new(data: [ci_pipeline_note])
+        )
+      end
+
+      allow(pipeline).to receive(:set_source_objects_counter)
+
+      allow(Import::PlaceholderReferences::PushService).to receive(:from_record).and_call_original
+    end
+
+    it 'imports merge_requests and maps user references to placeholder users', :aggregate_failures do
+      pipeline.run
+
+      note = project.notes.for_commit_id("sha-notes").first
+      event = note.events.first
+
+      expect(note.author).to be_import_user
+      expect(note.updated_by).to be_import_user
+      expect(event.author).to be_import_user
+
+      source_user = Import::SourceUser.find_by(source_user_identifier: 101)
+      expect(source_user.placeholder_user).to be_import_user
+      expect(Import::PlaceholderReferences::PushService).to have_received(:from_record).exactly(3).times
+    end
+
+    context 'when direct reassignment is supported' do
+      before do
+        allow(Import::DirectReassignService).to receive(:supported?).and_return(true)
+      end
+
+      it 'does not push any placeholder references' do
+        pipeline.run
+
+        expect(Import::PlaceholderReferences::PushService).not_to have_received(:from_record)
+      end
+    end
+  end
+end

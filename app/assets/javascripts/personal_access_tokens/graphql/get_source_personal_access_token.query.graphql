@@ -1,0 +1,40 @@
+# @feature_category: permissions
+query getSourcePersonalAccessToken($userId: UserID, $id: PersonalAccessTokenID!) {
+  user(id: $userId) {
+    id
+    personalAccessTokens(id: $id) {
+      nodes {
+        id
+        name
+        description
+        granular
+        sudo
+        scopes {
+          ... on AccessTokenGranularScope {
+            access
+            namespace {
+              id
+              name
+              fullPath
+            }
+            group @gl_introduced(version: "19.2.0") {
+              id
+              name
+              fullPath
+              projectsCount
+              descendantGroupsCount
+            }
+            project {
+              id
+              name
+              fullPath
+            }
+            permissions {
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}

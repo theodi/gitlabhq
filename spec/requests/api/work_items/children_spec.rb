@@ -1,0 +1,364 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::WorkItems::Children, feature_category: :portfolio_management do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, :private, reporters: user) }
+  let_it_be_with_reload(:parent_work_item) { create(:work_item, :issue, project: project) }
+
+  let_it_be(:first_child) { create(:work_item, :task, project: project, title: 'First child') }
+  let_it_be(:second_child) { create(:work_item, :task, project: project, title: 'Second child') }
+  let_it_be(:closed_child) do
+    create(:work_item, :task, project: project, title: 'Closed child', state: :closed)
+  end
+
+  before_all do
+    create(:parent_link, work_item: first_child, work_item_parent: parent_work_item, relative_position: 100)
+    create(:parent_link, work_item: second_child, work_item_parent: parent_work_item, relative_position: 200)
+    create(:parent_link, work_item: closed_child, work_item_parent: parent_work_item, relative_position: 300)
+  end
+
+  before do
+    stub_feature_flags(work_item_rest_api: true)
+  end
+
+  it_behaves_like 'work item list routes declaring cursor pagination', 'children'
+
+  shared_examples 'children GET endpoint' do
+    it 'returns children of the parent work item in relative-position order' do
+      get api(api_request_path, user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.pluck('id')).to eq([first_child.id, second_child.id, closed_child.id])
+      expect(json_response).to all(include('id', 'iid', 'global_id', 'title'))
+    end
+
+    it 'returns 404 when the parent work item does not exist' do
+      get api(api_request_path.sub("/#{parent_work_item.iid}/", "/#{non_existing_record_iid}/"), user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'returns not_found when the feature flag is disabled' do
+      stub_feature_flags(work_item_rest_api: false)
+
+      get api(api_request_path, user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context 'with state filter' do
+      it 'returns only opened children when state=opened' do
+        get api(api_request_path, user), params: { state: 'opened' }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.pluck('id')).to contain_exactly(first_child.id, second_child.id)
+      end
+
+      it 'returns only closed children when state=closed' do
+        get api(api_request_path, user), params: { state: 'closed' }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.pluck('id')).to contain_exactly(closed_child.id)
+      end
+
+      it 'rejects invalid state values' do
+        get api(api_request_path, user), params: { state: 'invalid' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    it_behaves_like 'a work item endpoint paginated by cursor'
+
+    context 'with field and feature selection' do
+      it 'returns 400 for unknown fields or features values', :aggregate_failures do
+        get api(api_request_path, user), params: { fields: 'bogus', features: 'description,bogus' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error'])
+          .to eq('fields does not have a valid value: bogus, features does not have a valid value: bogus')
+      end
+
+      it 'returns the requested base fields and feature payloads' do
+        get api(api_request_path, user), params: { fields: 'reference', features: 'description' }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.first).to include(
+          'id' => first_child.id,
+          'reference' => first_child.to_reference(full: true),
+          'features' => a_hash_including('description')
+        )
+      end
+    end
+
+    context 'when a child is not readable by the current user' do
+      let_it_be(:other_project) { create(:project, :private) }
+      let_it_be(:hidden_child) { create(:work_item, :task, project: other_project, title: 'Hidden') }
+
+      before_all do
+        create(:parent_link, work_item: hidden_child, work_item_parent: parent_work_item, relative_position: 50)
+      end
+
+      it 'omits the unreadable child from the response' do
+        get api(api_request_path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        ids = json_response.pluck('id')
+        expect(ids).not_to include(hidden_child.id)
+        expect(ids).to include(first_child.id, second_child.id, closed_child.id)
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/-/work_items/:work_item_iid/children' do
+    let(:api_request_path) { "/projects/#{project.id}/-/work_items/#{parent_work_item.iid}/children" }
+
+    it_behaves_like 'children GET endpoint'
+
+    it_behaves_like 'authorizing granular token permissions', :read_work_item do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(api_request_path, personal_access_token: pat)
+      end
+    end
+
+    it 'returns forbidden when the user cannot read the parent' do
+      other_user = create(:user)
+
+      get api(api_request_path, other_user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'does not issue N+1 queries when more children are added' do
+      # Have the baseline already include a child in a sibling project. Adding the next child
+      # in that same sibling project then doesn't trigger any new project policy loads
+      sibling_project = create(:project, :private, reporters: user)
+      baseline_sibling_child = create(:work_item, :task, project: sibling_project)
+      create(:parent_link, work_item: baseline_sibling_child, work_item_parent: parent_work_item,
+        relative_position: 350)
+
+      # First-time lazy writes settle on the warmup so the baseline isn't skewed.
+      get api(api_request_path, user)
+
+      baseline = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+        get api(api_request_path, user)
+      end
+
+      extra_child = create(:work_item, :task, project: sibling_project)
+      create(:parent_link, work_item: extra_child, work_item_parent: parent_work_item, relative_position: 400)
+
+      # Settle any first-touch costs for users / preferences materialized above.
+      get api(api_request_path, user)
+
+      expect { get api(api_request_path, user) }.to issue_same_number_of_queries_as(baseline)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.pluck('id')).to include(extra_child.id)
+    end
+  end
+
+  describe 'GET /namespaces/:id/-/work_items/:work_item_iid/children' do
+    let(:api_request_path) do
+      "/namespaces/#{CGI.escape(project.project_namespace.full_path)}/-/work_items/#{parent_work_item.iid}/children"
+    end
+
+    it_behaves_like 'children GET endpoint'
+
+    it_behaves_like 'authorizing granular token permissions', :read_work_item do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(api_request_path, personal_access_token: pat)
+      end
+    end
+  end
+
+  shared_context 'for attach child work item' do
+    let_it_be(:unauthorized_user) { create(:user, guest_of: project) }
+    let(:child) { create(:work_item, :task, project: project) }
+    let(:already_attached_child) { first_child }
+    let(:other_parent_work_item) { create(:work_item, :issue, project: project) }
+    let(:invalid_hierarchy_child_work_item) { create(:work_item, :issue, project: project) }
+    let(:confidential_parent_work_item) { create(:work_item, :issue, :confidential, project: project) }
+
+    let(:cross_boundary_child_work_item) do
+      other_project = create(:project, :private, reporters: user)
+      create(:work_item, :task, project: other_project)
+    end
+
+    let(:unreadable_child_work_item) do
+      other_project = create(:project, :private)
+      create(:work_item, :task, project: other_project)
+    end
+  end
+
+  describe 'POST /projects/:id/-/work_items/:work_item_iid/children/:child_id' do
+    include_context 'for attach child work item'
+
+    let(:path_for) do
+      ->(work_item_iid:, child_id:) { "/projects/#{project.id}/-/work_items/#{work_item_iid}/children/#{child_id}" }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :update_work_item, expected_success_status: :created do
+      let(:boundary_object) { project }
+      let(:api_request_path) { path_for.call(work_item_iid: parent_work_item.iid, child_id: child.id) }
+      let(:request) do
+        post api(api_request_path, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'attach child work item endpoint'
+  end
+
+  describe 'POST /namespaces/:id/-/work_items/:work_item_iid/children/:child_id' do
+    include_context 'for attach child work item'
+
+    let(:project_namespace) { CGI.escape(project.project_namespace.full_path) }
+
+    let(:path_for) do
+      ->(work_item_iid:, child_id:) {
+        "/namespaces/#{project_namespace}/-/work_items/#{work_item_iid}/children/#{child_id}"
+      }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :update_work_item, expected_success_status: :created do
+      let(:boundary_object) { project }
+      let(:api_request_path) { path_for.call(work_item_iid: parent_work_item.iid, child_id: child.id) }
+      let(:request) do
+        post api(api_request_path, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'attach child work item endpoint'
+  end
+
+  shared_context 'for detach child work item' do
+    let_it_be(:unauthorized_user) { create(:user, guest_of: project) }
+    let_it_be_with_reload(:attached_child) { create(:work_item, :task, project: project) }
+    let(:other_parent_work_item) { create(:work_item, :issue, project: project) }
+
+    let(:unreadable_child_work_item) do
+      other_project = create(:project, :private)
+      child = create(:work_item, :task, project: other_project)
+      create(:parent_link, work_item: child, work_item_parent: parent_work_item)
+      child
+    end
+
+    let(:unlinked_unreadable_child_work_item) do
+      other_project = create(:project, :private)
+      create(:work_item, :task, project: other_project)
+    end
+
+    let(:cross_boundary_attached_child) do
+      other_project = create(:project, :private, reporters: user)
+      child = create(:work_item, :task, project: other_project)
+      create(:parent_link, work_item: child, work_item_parent: parent_work_item)
+      child
+    end
+
+    before_all do
+      create(:parent_link, work_item: attached_child, work_item_parent: parent_work_item)
+    end
+  end
+
+  describe 'DELETE /projects/:id/-/work_items/:work_item_iid/children/:child_id' do
+    include_context 'for detach child work item'
+
+    let(:path_for) do
+      ->(work_item_iid:, child_id:) { "/projects/#{project.id}/-/work_items/#{work_item_iid}/children/#{child_id}" }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :update_work_item, expected_success_status: :no_content do
+      let(:boundary_object) { project }
+      let(:api_request_path) { path_for.call(work_item_iid: parent_work_item.iid, child_id: attached_child.id) }
+      let(:request) do
+        delete api(api_request_path, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'detach child work item endpoint'
+  end
+
+  describe 'DELETE /namespaces/:id/-/work_items/:work_item_iid/children/:child_id' do
+    include_context 'for detach child work item'
+
+    let(:project_namespace) { CGI.escape(project.project_namespace.full_path) }
+
+    let(:path_for) do
+      ->(work_item_iid:, child_id:) {
+        "/namespaces/#{project_namespace}/-/work_items/#{work_item_iid}/children/#{child_id}"
+      }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :update_work_item, expected_success_status: :no_content do
+      let(:boundary_object) { project }
+      let(:api_request_path) { path_for.call(work_item_iid: parent_work_item.iid, child_id: attached_child.id) }
+      let(:request) do
+        delete api(api_request_path, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'detach child work item endpoint'
+  end
+
+  shared_context 'for reorder child work item' do
+    let_it_be(:unauthorized_user) { create(:user, guest_of: project) }
+    let_it_be(:non_sibling_work_item) { create(:work_item, :task, project: project) }
+
+    let_it_be(:unreadable_sibling_work_item) do
+      other_project = create(:project, :private)
+      work_item = create(:work_item, :task, project: other_project)
+      create(:parent_link, work_item: work_item, work_item_parent: parent_work_item, relative_position: 400)
+      work_item
+    end
+
+    let_it_be(:cross_boundary_sibling_work_item) do
+      other_project = create(:project, :private, reporters: user)
+      work_item = create(:work_item, :task, project: other_project, title: 'Cross-boundary child')
+      create(:parent_link, work_item: work_item, work_item_parent: parent_work_item, relative_position: 500)
+      work_item
+    end
+  end
+
+  describe 'PUT /projects/:id/-/work_items/:work_item_iid/children/:child_id' do
+    include_context 'for reorder child work item'
+
+    let(:path_for) do
+      ->(work_item_iid:, child_id:) { "/projects/#{project.id}/-/work_items/#{work_item_iid}/children/#{child_id}" }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :update_work_item, expected_success_status: :ok do
+      let(:boundary_object) { project }
+      let(:api_request_path) { path_for.call(work_item_iid: parent_work_item.iid, child_id: second_child.id) }
+      let(:request) do
+        put api(api_request_path, personal_access_token: pat), params: { move_before_id: first_child.id }
+      end
+    end
+
+    it_behaves_like 'reorder child work item endpoint'
+  end
+
+  describe 'PUT /namespaces/:id/-/work_items/:work_item_iid/children/:child_id' do
+    include_context 'for reorder child work item'
+
+    let(:project_namespace) { CGI.escape(project.project_namespace.full_path) }
+
+    let(:path_for) do
+      ->(work_item_iid:, child_id:) {
+        "/namespaces/#{project_namespace}/-/work_items/#{work_item_iid}/children/#{child_id}"
+      }
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :update_work_item, expected_success_status: :ok do
+      let(:boundary_object) { project }
+      let(:api_request_path) { path_for.call(work_item_iid: parent_work_item.iid, child_id: second_child.id) }
+      let(:request) do
+        put api(api_request_path, personal_access_token: pat), params: { move_before_id: first_child.id }
+      end
+    end
+
+    it_behaves_like 'reorder child work item endpoint'
+  end
+end

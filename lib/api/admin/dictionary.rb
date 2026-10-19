@@ -1,0 +1,51 @@
+# frozen_string_literal: true
+
+module API
+  module Admin
+    class Dictionary < ::API::Base
+      feature_category :database
+      urgency :low
+
+      before do
+        authenticated_as_admin!
+      end
+
+      namespace 'admin' do
+        params do
+          requires :database_name, type: String, desc: 'Name of the database.'
+          requires :table_name, type: String, desc: 'Name of the table.'
+        end
+        resources 'databases/:database_name/dictionary/tables/:table_name' do
+          desc 'Retrieve dictionary details' do
+            detail 'Provides table schema and column information from the GitLab database dictionary.'
+            success ::API::Entities::Dictionary::Table
+            failure [
+              { code: 401, message: '401 Unauthorized' },
+              { code: 403, message: '403 Forbidden' },
+              { code: 404, message: '404 Not found' }
+            ]
+            tags %w[database_dictionary]
+          end
+          params do
+            requires :database_name,
+              type: String,
+              values: %w[main ci],
+              desc: 'Name of the database.'
+
+            requires :table_name,
+              type: String,
+              desc: 'Name of the table.'
+          end
+          route_setting :authorization, permissions: :read_database_dictionary, boundary_type: :instance,
+            assignable_when: [:admin]
+          get do
+            table_dictionary = ::Gitlab::Database::Dictionary.entry(params[:table_name])
+            not_found!('Table not found') unless table_dictionary
+
+            present table_dictionary, with: Entities::Dictionary::Table
+          end
+        end
+      end
+    end
+  end
+end

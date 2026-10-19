@@ -1,0 +1,23 @@
+- if local_assigns.has_key?(:contributed_projects) && contributed_projects.present?
+  = render Pajamas::CardComponent.new(card_options: { class: 'gl-mb-5' }, body_options: { class: 'gl-py-0' }) do |c|
+    - c.with_header do
+      = _('Projects contributed to')
+    - c.with_body do
+      = render 'shared/projects/list',
+        projects: contributed_projects.sort_by(&:star_count).reverse,
+        projects_limit: 5, stars: true, avatar: false, compact_mode: true
+
+- if local_assigns.has_key?(:projects) && projects.present?
+  = render ::Layouts::CrudComponent.new(_('Personal projects'),
+    icon: 'project',
+    count: projects.total_count,
+    is_collapsible: true,
+    body_options: { class: '!gl-my-0'},
+    options: { style: 'max-height: fit-content' }) do |c|
+    - c.with_body do
+      = render 'shared/projects/list',
+        projects: projects.sort_by(&:star_count).reverse,
+        projects_limit: projects.total_count, stars: true, avatar: false, compact_mode: true
+    - unless projects.total_count <= 10
+      - c.with_footer do
+        = paginate projects, param_name: 'personal_projects_page', theme: 'gitlab'

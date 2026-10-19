@@ -1,4 +1,19 @@
-= form_tag(user_omniauth_callback_path(server['provider_name']), id: 'new_ldap_user' ) do
-  = text_field_tag :username, nil, {class: "form-control top", placeholder: "#{server['label']} Login", autofocus: "autofocus"}
-  = password_field_tag :password, nil, {class: "form-control bottom", placeholder: "Password"}
-  = button_tag "#{server['label']} Sign in", class: "btn-save btn"
+- server = local_assigns.fetch(:server)
+- provider = server['provider_name']
+- render_remember_me = local_assigns[:admin_mode] ? false : remember_me_enabled?
+- submit_message = local_assigns[:admin_mode] ? _('Enter admin mode') : _('Sign in')
+
+= gitlab_ui_form_for(provider, url: omniauth_callback_path(:user, provider), html: { class: 'gl-show-field-errors', aria: { live: 'assertive' }, data: { testid: 'new_ldap_user' }}) do |f|
+  .form-group
+    = f.label :username, _('Username')
+    = f.text_field :username, name: :username, autocomplete: :username, class: 'form-control gl-form-input', title: _('This field is required.'), autofocus: 'autofocus', data: { testid: 'username-field' }, required: true
+  .form-group
+    = f.label :password, _('Password')
+    %input.form-control.gl-form-input.js-password{ data: { id: "#{provider}_password", name: 'password', testid: 'password-field' } }
+
+  - if render_remember_me
+    .gl-mb-3
+      = f.gitlab_ui_checkbox_component :remember_me, _('Remember me'), checkbox_options: { name: :remember_me, autocomplete: 'off' }
+
+  = render Pajamas::ButtonComponent.new(type: :submit, variant: :confirm, block: true, button_options: { data: { testid: 'sign-in-button' } }) do
+    = submit_message

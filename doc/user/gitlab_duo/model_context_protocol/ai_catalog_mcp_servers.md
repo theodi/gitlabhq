@@ -1,0 +1,304 @@
+---
+stage: Agent Foundations
+group: AI Catalog
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Connect custom agents in the AI Catalog to external data sources and third-party services using MCP servers.
+title: MCP servers in the AI Catalog
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed
+- Status: Experiment
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/590708) in GitLab 18.10 [with a feature flag](../../../administration/feature_flags/_index.md) named `ai_catalog_mcp_servers`. Disabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+> This feature is available for testing, but not ready for production use.
+
+Custom agents in the AI Catalog can connect to external data sources and
+third-party services (such as Jira or Linear) through the
+[Model Context Protocol](https://modelcontextprotocol.io/) (MCP).
+
+This feature is an [experiment](../../../policy/development_stages_support.md#experiment).
+Share your feedback in [issue 593219](https://gitlab.com/gitlab-org/gitlab/-/work_items/593219).
+
+With MCP servers in the AI Catalog, you can:
+
+- Add MCP servers to your organization's catalog (name, URL, and transport type).
+- Associate MCP servers with custom agents.
+- View which MCP servers are connected to each agent.
+- Authenticate with OAuth-enabled MCP servers.
+
+A dedicated **MCP** tab appears in the AI Catalog navigation alongside **Agents** and **Flows**.
+MCP servers associated with agents enabled in your namespace are also available under **AI** > **MCP servers**
+at both the group and project level.
+
+## Prerequisites
+
+- Meet the [prerequisites for the GitLab Duo Agent Platform](../../duo_agent_platform/_index.md#prerequisites).
+- On GitLab.com, be a member of a top-level group that has
+  [turned on GitLab Duo experiment and beta features](../turn_on_off.md#on-gitlabcom-2).
+- On GitLab Self-Managed, your instance has
+  [GitLab Duo experiment and beta features turned on](../turn_on_off.md#on-gitlab-self-managed-2).
+- On GitLab Self-Managed, an administrator has enabled the `mcp_client`
+  [feature flag](../../../administration/feature_flags/_index.md).
+- The MCP server must be a:
+  - Vetted or partner MCP server. Arbitrary URLs are not allowed.
+  - Remote MCP server.
+
+## Add an MCP server to the AI Catalog
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Prerequisites:
+
+- Administrator access for the instance.
+
+On GitLab Self-Managed and GitLab Dedicated, instance administrators can add an MCP server to the AI Catalog for their instance from the list of [available MCP Servers](#available-mcp-servers).
+
+> [!note]
+> On GitLab.com, top-level group members cannot add an MCP server to the AI Catalog because this is centrally managed by GitLab.com administrators.
+
+To add an MCP server to the AI Catalog:
+
+1. In the top bar, select **Search or go to** > **Explore**.
+1. In the left sidebar, select **AI Catalog**, then select the **MCP** tab.
+1. Select **New MCP server**.
+1. Complete the fields:
+   - **Name**: A descriptive name for the MCP server (for example, `Jira`).
+   - **Description** (optional): A brief description of what the server provides.
+   - **URL**: The HTTP endpoint of the MCP server.
+   - **Homepage URL** (optional): The homepage or documentation URL for the MCP server.
+   - **Transport**: Select **HTTP**. Only HTTP transport is supported.
+     SSE and stdio transports are not available.
+   - **Authentication type**: Select one of the following:
+     - **None**: No authentication required.
+     - **OAuth**: Authenticate with OAuth 2.0. If the server supports
+       [OAuth 2.0 Dynamic Client Registration](https://tools.ietf.org/html/rfc7591),
+       GitLab automatically registers itself as an OAuth client on first connection.
+1. Select **Create MCP server**.
+
+The MCP server is now available in your organization's catalog and can be associated with agents.
+
+## Edit an MCP server
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Prerequisites:
+
+- Administrator access for the instance.
+
+On GitLab Self-Managed and GitLab Dedicated, instance administrators can edit an MCP server in the AI Catalog for their instance.
+
+> [!note]
+> On GitLab.com, top-level group members cannot edit an MCP server in the AI Catalog because this is centrally managed by GitLab.com administrators.
+
+To edit an MCP server:
+
+1. In the top bar, select **Search or go to** > **Explore**.
+1. In the left sidebar, select **AI Catalog**, then select the **MCP** tab.
+1. Select the MCP server you want to edit.
+1. Select **Edit**.
+1. Update the fields as needed.
+1. Select **Save changes**.
+
+## Connect an MCP server to a custom agent
+
+To connect an MCP server to a custom agent:
+
+1. In the top bar, select **Search or go to** and find your group or project.
+1. Select **AI** > **Agents**.
+1. Select the agent you want to configure.
+1. In the upper-right corner, select **Edit**.
+1. In the **MCP servers** section, select the MCP servers to associate with this agent.
+1. Select **Save changes**.
+
+The agent can now use all tools provided by the associated MCP server during execution.
+For an OAuth-enabled MCP server, the agent can use the server only after you
+[authenticate with it](#authenticate-with-an-mcp-server).
+
+You cannot restrict an agent from using specific MCP server tools.
+
+## View MCP servers connected to a custom agent
+
+To view which MCP servers are connected to a custom agent:
+
+1. In the top bar, select **Search or go to** and find your group or project.
+1. Select **AI** > **Agents**.
+1. Select the agent.
+
+The agent detail page lists all connected MCP servers.
+
+## Disconnect from an MCP server
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/227157) in GitLab 18.11.
+
+{{< /history >}}
+
+You can disconnect from an OAuth-enabled MCP server that you
+[authenticated with](#authenticate-with-an-mcp-server). When you disconnect,
+your access token for the server is revoked. It does not remove the MCP server from any
+custom agents. To stop an agent from using an MCP server, [edit the agent](#connect-an-mcp-server-to-a-custom-agent)
+and remove the server from the **MCP servers** section.
+
+After disconnecting, existing custom agent chats can still reference content
+already retrieved from the MCP server. However, agents are no longer able to
+fetch new content or perform any actions with the server until you connect again.
+
+To disconnect from an MCP server:
+
+1. In the top bar, select **Search or go to** and find your group or project.
+1. Select **AI** > **MCP servers**.
+1. For the MCP server you want to disconnect from, select **Disconnect**.
+1. In the confirmation dialog, select **Disconnect**.
+
+## View MCP servers for a namespace
+
+The **AI** > **MCP servers** page shows all MCP servers associated with agents enabled in your namespace.
+Each server displays the number of agents that use it, with agent names shown in a tooltip on hover.
+
+This page is available at both the group and project level:
+
+- **Group level** shows MCP servers associated with agents across the group.
+- **Project level** shows MCP servers associated with agents configured in the project.
+
+To view MCP servers at the group or project level:
+
+1. In the top bar, select **Search or go to** and find your group or project.
+1. Select **AI** > **MCP servers**.
+
+For OAuth-enabled servers that you have not yet authenticated with, an option to **Connect** is displayed.
+
+## Authenticate with an MCP server
+
+To authenticate with an OAuth-enabled MCP server:
+
+1. In the top bar, select **Search or go to** and find your group or project.
+1. Select **AI** > **MCP servers**.
+1. Find the MCP server and select **Connect**.
+1. Review and approve the authorization request on the MCP server's authorization page.
+1. GitLab stores the access token securely for future requests.
+
+If the server supports [OAuth 2.0 Dynamic Client Registration](https://tools.ietf.org/html/rfc7591),
+GitLab automatically registers itself as an OAuth client on first connection.
+You do not need to provide OAuth credentials manually.
+
+## Available MCP servers
+
+{{< details >}}
+
+- Offering: GitLab.com
+
+{{< /details >}}
+
+You can add the following MCP servers from the AI Catalog to your custom agents.
+For more servers proposed for the catalog, see [issue 591969](https://gitlab.com/gitlab-org/gitlab/-/work_items/591969).
+
+### Linear
+
+The Linear MCP server allows AI agents and workflows to interact with Linear data in real-time,
+including finding, creating, and updating issues, projects, and comments.
+
+| Property | Value |
+|---|---|
+| URL | `https://mcp.linear.app/mcp` |
+| Transport | HTTP |
+| Authentication | OAuth |
+
+### Atlassian
+
+The Atlassian MCP server allows AI agents and workflows to interact with Jira and Confluence data
+in real-time, including searching, creating, and updating issues, pages, and project content.
+
+| Property | Value |
+|---|---|
+| URL | `https://mcp.atlassian.com/v1/mcp` |
+| Transport | HTTP |
+| Authentication | OAuth |
+
+Before connecting, configure your Atlassian instance to trust GitLab as an authorized domain:
+
+1. In Atlassian, go to the admin page.
+1. Select **Apps** > **AI Settings** > **Rovo MCP Server**.
+1. Add `https://gitlab.com/**` to the list of trusted domains.
+
+### Context7
+
+Context7 MCP pulls up-to-date, version-specific documentation and code examples from the
+source and adds them to your prompt.
+
+| Property | Value |
+|---|---|
+| URL | `https://mcp.context7.com/mcp` |
+| Transport | HTTP |
+| Authentication | None |
+
+## Related topics
+
+- [GitLab MCP server](../../model_context_protocol/mcp_server.md)
+
+## Troubleshooting
+
+When working with MCP servers in the AI Catalog, you might encounter the following issues.
+
+### MCP server issues due to outbound request restrictions
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+GitLab validates an MCP server's URL the same way it validates other outbound requests, such
+as webhooks and integrations. If your GitLab Self-Managed instance restricts [outbound requests](../../../security/webhooks.md),
+attempts to add, edit, or connect to an MCP server might fail, even when the URL itself is valid.
+
+How you resolve this issue depends on where the MCP service is hosted.
+
+For more troubleshooting information, see
+[filtering outbound requests](../../../security/webhooks.md#troubleshooting).
+
+#### Public MCP server
+
+A public MCP server can be a vetted or partner server, or your own server reachable
+over the internet.
+
+If your instance [blocks all outbound requests except those in an allowlist](../../../security/webhooks.md#filter-requests),
+ask your instance administrator to add the MCP server's domain or IP address to the
+[outbound request allowlist](../../../security/webhooks.md#allow-outbound-requests-to-certain-ip-addresses-and-domains).
+
+If your instance does not do this, no further action is required.
+
+#### Internal or local MCP server
+
+An internal or local MCP server can be a server running on `localhost`, or on a private or internal network.
+
+By default, GitLab blocks requests to local and private network addresses to protect against server-side request forgery.
+
+To allow the request, ask your instance administrator to do either of the following:
+
+- [Allow requests to the local network from webhooks and integrations](../../../security/webhooks.md#allow-requests-to-the-local-network-from-webhooks-and-integrations).
+  This allows requests to all local and private network addresses, not just your MCP server.
+- Add only the MCP server's domain or IP address (and port, if needed) to the outbound request
+  allowlist. This option is more restrictive, because it does not open access to the entire
+  local network.

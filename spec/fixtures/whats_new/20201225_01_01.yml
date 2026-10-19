@@ -1,0 +1,7 @@
+---
+- name: It's gonna be a bright
+  description: |
+    ## It's gonna be a bright
+  self-managed: true
+  gitlab-com: false
+  available_in: ["Premium", "Ultimate"]

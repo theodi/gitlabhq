@@ -1,0 +1,94 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::GithubImport::Importer::PullRequests::MergedByImporter, :clean_gitlab_redis_shared_state, feature_category: :importers do
+  include Import::UserMappingHelper
+
+  let_it_be_with_reload(:project) do
+    create(
+      :project, :in_group, :github_import,
+      :import_user_mapping_enabled
+    )
+  end
+
+  let_it_be(:ghost_user) { Users::Internal.in_organization(project.organization).ghost }
+  let_it_be(:merge_request) { create(:merged_merge_request, project: project) }
+  let_it_be(:merger_source_user) { generate_source_user(project, 999) }
+
+  let(:merged_at) { Time.utc(2017, 1, 1, 12) }
+  let(:merger_user) { { id: 999, login: 'merger' } }
+  let(:cached_references) { placeholder_user_references(Import::SOURCE_GITHUB, project.import_state.id) }
+  let(:client_double) do
+    instance_double(Gitlab::GithubImport::Client, user: { id: 999, login: 'merger', email: 'merger@email.com' })
+  end
+
+  let(:pull_request) do
+    Gitlab::GithubImport::Representation::PullRequest.from_api_response(
+      {
+        number: merge_request.iid,
+        merged_at: merged_at,
+        merged_by: merger_user
+      }
+    )
+  end
+
+  subject { described_class.new(pull_request, project, client_double) }
+
+  before do
+    allow(client_double).to receive_message_chain(:octokit, :last_response, :headers).and_return({ etag: nil })
+  end
+
+  describe '#execute', :aggregate_failures do
+    it 'upserts merge request metrics with merged_by details' do
+      expect { subject.execute }
+        .to not_change { Note.count }
+        .and not_change(merge_request, :updated_at)
+
+      metrics = merge_request.metrics.reload
+      expect(metrics.merged_by_id).to eq(merger_source_user.mapped_user_id)
+      expect(metrics.merged_at).to eq(merged_at)
+    end
+
+    it 'pushes placeholder references to the store' do
+      subject.execute
+
+      metrics = merge_request.metrics.reload
+
+      expect(cached_references).to match_array([
+        ['MergeRequest::Metrics', metrics.id, 'merged_by_id', merger_source_user.id]
+      ])
+    end
+
+    context 'when merged_by is nil' do
+      let(:merger_user) { nil }
+
+      it 'maps merged_by to the ghost user and pushes no references' do
+        subject.execute
+
+        expect(merge_request.metrics.reload.merged_by_id).to eq(ghost_user.id)
+        expect(cached_references).to be_empty
+      end
+    end
+
+    context 'when importing into a personal namespace' do
+      let_it_be(:user_namespace) { create(:namespace) }
+
+      before_all do
+        project.update!(namespace: user_namespace)
+      end
+
+      it 'does not push any references' do
+        subject.execute
+
+        expect(cached_references).to be_empty
+      end
+
+      it 'imports the merged_by mapped to the personal namespace owner' do
+        subject.execute
+
+        expect(merge_request.metrics.reload.merged_by_id).to eq(user_namespace.owner_id)
+      end
+    end
+  end
+end

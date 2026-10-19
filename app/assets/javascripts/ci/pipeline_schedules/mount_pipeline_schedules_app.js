@@ -1,0 +1,34 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+import PipelineSchedules from './components/pipeline_schedules.vue';
+
+Vue.use(VueApollo);
+
+const apolloProvider = new VueApollo({
+  defaultClient: createDefaultClient(),
+});
+
+export default () => {
+  const containerEl = document.querySelector('#pipeline-schedules-app');
+
+  if (!containerEl) {
+    return false;
+  }
+
+  const { projectPath, pipelinesPath, newSchedulePath, projectId } = containerEl.dataset;
+
+  return initVueApp({
+    el: containerEl,
+    name: 'PipelineSchedulesRoot',
+    apolloProvider,
+    provide: {
+      projectPath,
+      pipelinesPath,
+      newSchedulePath,
+      projectId,
+    },
+    component: PipelineSchedules,
+  });
+};

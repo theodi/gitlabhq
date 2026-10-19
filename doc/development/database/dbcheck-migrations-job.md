@@ -1,0 +1,83 @@
+---
+stage: Data Access
+group: Database Frameworks
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: db:check-migrations job
+---
+
+This job runs on the test stage of a merge request pipeline. It checks:
+
+1. A timestamp check on the migration files.
+   This check validates that no migration has a future timestamp.
+   It also validates that each migration the merge request adds is no more than three weeks (21 days) old.
+   The job measures the age when it runs, so a migration that passes in one pipeline can fail in a later one.
+   To update a migration timestamp, see [Migration timestamp age](../migration_style_guide.md#migration-timestamp-age).
+1. An ignored-columns check on the migration files.
+   This check validates that the model ignores each column that a new migration drops or renames.
+   It also scans `cleanup_conversion_of_integer_to_bigint` calls, which drop the old `integer` columns of a `bigint` conversion.
+   For more information, see [Dropping columns](avoiding_downtime_in_migrations.md#dropping-columns), [Renaming columns](avoiding_downtime_in_migrations.md#renaming-columns), and [Migrating `integer` primary keys to `bigint`](avoiding_downtime_in_migrations.md#migrating-integer-primary-keys-to-bigint).
+1. A schema dump comparison between the author's working branch and the target branch,
+   after executing a rollback of your new migrations. This check validates that the
+   schema properly resets to what it was before executing new migrations.
+1. A schema dump comparison between the author's working branch and the `db/structure.sql`
+   file that the author committed. This check validates that it contains all the expected changes
+   in the migration.
+1. A Git diff between the `db/schema_migrations` that the author committed and the
+   one that the script generated after running migrations. This check validates that everything
+   was properly committed.
+
+## Troubleshooting
+
+### False positives
+
+This job is not allowed to fail, but it can throw some false positives.
+
+**Examples:**
+
+1. When we drop a column and then roll back, the column is always
+   re-added at the end of the list of columns. If the column was previously not the last column,
+   the rollback can't return the schema exactly to its previous state. Reference: [job failure](https://gitlab.com/gitlab-org/gitlab/-/jobs/2006544972#L138).
+1. Sometimes pg_dump can change how it orders the constraints and other database objects in minor PostgreSQL version upgrades.
+   This causes the job to fail by complaining about the ordering of statements in the schema that are not related
+   to the MR. Reference: [job failure](https://gitlab.com/gitlab-org/gitlab/-/jobs/12192481127).
+   - Do report this in the `#database` Slack channel or create an issue, if not already done by someone else, since this will
+     affect all the feature MRs.
+
+In such cases, it's safer to add the `pipeline:skip-check-migrations` label to the merge request.
+The label skips both schema dump comparisons and the `db/schema_migrations` diff.
+It does not skip the timestamp check or the ignored-columns check, so the job can still fail on either.
+The validator also accepts `pipeline::skip-check-migrations`, but avoid it.
+That scoped label shares the `pipeline::` scope with the [pipeline tier labels](../pipelines/_index.md#pipeline-tiers), so adding either one removes the other.
+
+### Schema dump comparison fails after rollback
+
+This failure often happens if your working branch is behind the target branch.
+A real scenario:
+
+```mermaid
+%%{init: { "fontFamily": "GitLab Sans" }}%%
+graph LR
+    accTitle: Schema dump comparison fails after rollback
+    accDescr: Diagram showing how schema dump comparison failures occur if a working branch is behind the target branch
+
+    Main((main<br>commit A)) ===> |remove constraint<br>fk_rails_dbebdaa8fe| MainB((main<br>commit B))
+    Main((main<br>commit A)) --> |checkout<br>dev| DevA((dev<br>commit A)):::dev
+    DevA((dev<br>commit A)) --> |add column<br>dependency_proxy_size| DevC((dev<br>commit C)):::dev
+    DevC -.-> |CI pipeline<br>executes| JOB-FAILED((JOB FAILED!)):::error
+```
+
+1. You check out the `dev` working branch from the `main` target branch. At this point,
+   each branch has its `HEAD` at commit A.
+1. Someone works on the `main` branch and drops the `fk_rails_dbebdaa8fe` constraint,
+   thus creating commit B on `main`.
+1. You add a column `dependency_proxy_size` to your `dev` branch.
+1. The `db:check-migrations` job fails for your `dev` branch's CI/CD pipeline, because
+   the `structure.sql` file did not roll back to its expected state.
+
+This happened because branch `dev` contained commits A and C, not B. Its database schema
+did not know about the removal of the `fk_rails_dbebdaa8fe` constraint. When comparing the two
+schemas, the `dev` branch contained this constraint while the `main` branch didn't.
+
+This example really happened. Read the [job failure logs](https://gitlab.com/gitlab-org/gitlab/-/jobs/1992050890).
+
+To fix these kinds of issues, rebase the working branch onto the target branch to get the latest changes.

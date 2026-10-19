@@ -1,0 +1,79 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module ImportExport
+    class AttributesFinder
+      attr_reader :tree, :included_attributes, :excluded_attributes, :methods, :preloads, :export_reorders,
+        :import_only_tree
+
+      def initialize(config:)
+        @tree = config[:tree] || {}
+        @included_attributes = config[:included_attributes] || {}
+        @excluded_attributes = config[:excluded_attributes] || {}
+        @methods = config[:methods] || {}
+        @preloads = config[:preloads] || {}
+        @export_reorders = config[:export_reorders] || {}
+        @include_if_exportable = config[:include_if_exportable] || {}
+        @import_only_tree = config[:import_only_tree] || {}
+      end
+
+      def find_root(model_key)
+        find(model_key, @tree[model_key])
+      end
+
+      def find_relations_tree(model_key, include_import_only_tree: false)
+        return @tree[model_key].deep_merge(@import_only_tree[model_key] || {}) if include_import_only_tree
+
+        @tree[model_key]
+      end
+
+      def find_excluded_keys(klass_name)
+        @excluded_attributes[klass_name.to_sym]&.map(&:to_s) || []
+      end
+
+      def find_included_keys(klass_name)
+        @included_attributes[klass_name.to_sym]&.map(&:to_s) || []
+      end
+
+      private
+
+      def find(model_key, model_tree)
+        {
+          only: @included_attributes[model_key],
+          except: @excluded_attributes[model_key],
+          methods: @methods[model_key],
+          include: resolve_model_tree(model_tree),
+          preload: resolve_preloads(model_key, model_tree),
+          export_reorder: @export_reorders[model_key],
+          include_if_exportable: @include_if_exportable[model_key]
+        }.compact
+      end
+
+      def resolve_preloads(model_key, model_tree)
+        model_tree
+          .map { |submodel_key, submodel_tree| resolve_preload(model_key, submodel_key, submodel_tree) }
+          .tap(&:compact!)
+          .to_h
+          .deep_merge(@preloads[model_key].to_h)
+          .presence
+      end
+
+      def resolve_preload(parent_model_key, model_key, model_tree)
+        return if @methods[parent_model_key]&.include?(model_key)
+
+        [model_key, resolve_preloads(model_key, model_tree)]
+      end
+
+      def resolve_model_tree(model_tree)
+        return unless model_tree
+
+        model_tree
+          .map { |key, tree| resolve_model(key, tree) }
+      end
+
+      def resolve_model(model_key, model_tree)
+        { model_key => find(model_key, model_tree) }
+      end
+    end
+  end
+end

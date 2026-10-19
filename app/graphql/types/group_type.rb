@@ -1,0 +1,575 @@
+# frozen_string_literal: true
+
+module Types
+  class GroupType < NamespaceType
+    graphql_name 'Group'
+
+    include ::Namespaces::DeletableHelper
+
+    implements ::Types::Namespaces::GroupInterface
+
+    authorize :read_group
+
+    authorize_granular_token permissions: :read_group,
+      boundary: :itself,
+      boundary_type: :group
+
+    expose_permissions Types::PermissionTypes::Group
+
+    field :web_url,
+      type: GraphQL::Types::String,
+      null: false,
+      scopes: [:api, :read_api, :ai_workflows],
+      description: 'Web URL of the group.'
+
+    field :web_path,
+      GraphQL::Types::String,
+      null: false,
+      description: 'Web path of the group.'
+
+    field :organization_edit_path, GraphQL::Types::String,
+      null: true,
+      description: 'Path for editing group at the organization level.',
+      experiment: { milestone: '17.1' }
+
+    field :edit_path, GraphQL::Types::String,
+      null: false,
+      description: 'Path for editing group.'
+
+    field :admin_edit_path, GraphQL::Types::String,
+      null: true,
+      description: 'Admin path for editing group. Only available to admins.',
+      authorize: :admin_all_resources
+
+    field :admin_show_path, GraphQL::Types::String,
+      null: true,
+      description: 'Admin path of the group. Only available to admins.',
+      authorize: :admin_all_resources
+
+    field :custom_attributes, [Types::CustomAttributeType],
+      null: true,
+      description: 'Custom attributes of the group. Only available to admins.',
+      authorize: :read_custom_attribute
+
+    field :avatar_url,
+      type: GraphQL::Types::String,
+      null: true,
+      description: 'Avatar URL of the group.'
+
+    field :created_at, Types::TimeType,
+      null: true,
+      description: 'Timestamp of the group creation.'
+
+    field :updated_at, Types::TimeType,
+      null: true,
+      description: 'Timestamp of when the group was last updated.'
+
+    field :custom_emoji,
+      type: Types::CustomEmojiType.connection_type,
+      null: true,
+      resolver: Resolvers::CustomEmojiResolver,
+      description: 'Custom emoji in this namespace.'
+
+    field :share_with_group_lock,
+      type: GraphQL::Types::Boolean,
+      null: true,
+      description: 'Indicates if sharing a project with another group within the group is prevented.'
+
+    field :project_creation_level,
+      type: GraphQL::Types::String,
+      null: true,
+      method: :project_creation_level_str,
+      description: 'Permission level required to create projects in the group.'
+
+    field :subgroup_creation_level,
+      type: GraphQL::Types::String,
+      null: true,
+      method: :subgroup_creation_level_str,
+      description: 'Permission level required to create subgroups within the group.'
+
+    field :require_two_factor_authentication,
+      type: GraphQL::Types::Boolean,
+      null: true,
+      description: 'Indicates if all users in the group are required to set up two-factor authentication.'
+
+    field :two_factor_grace_period,
+      type: GraphQL::Types::Int,
+      null: true,
+      description: 'Time before two-factor authentication is enforced.'
+
+    field :auto_devops_enabled,
+      type: GraphQL::Types::Boolean,
+      null: true,
+      description: 'Indicates whether Auto DevOps is enabled for all projects within the group.'
+
+    field :emails_disabled,
+      type: GraphQL::Types::Boolean,
+      null: true,
+      description: 'Indicates if a group has email notifications disabled.'
+
+    field :emails_enabled,
+      type: GraphQL::Types::Boolean,
+      null: true,
+      description: 'Indicates if a group has email notifications enabled.'
+
+    field :max_access_level, Types::AccessLevelType,
+      null: false,
+      description: 'Maximum access level of the current user in the group.'
+
+    field :mentions_disabled,
+      type: GraphQL::Types::Boolean,
+      null: true,
+      description: 'Indicates if a group is disabled from getting mentioned.'
+
+    field :parent,
+      type: GroupType,
+      null: true,
+      description: 'Parent group.'
+
+    field :issues,
+      Types::IssueType.connection_type,
+      null: true,
+      description: 'Issues for projects in this group.',
+      resolver: Resolvers::GroupIssuesResolver
+
+    field :merge_requests,
+      Types::MergeRequestType.connection_type,
+      null: true,
+      description: 'Merge requests for projects in this group.',
+      resolver: Resolvers::GroupMergeRequestsResolver
+
+    field :environment_scopes,
+      Types::Ci::GroupEnvironmentScopeType.connection_type,
+      description: 'Environment scopes of the group.',
+      null: true,
+      authorize: :admin_cicd_variables,
+      resolver: Resolvers::GroupEnvironmentScopesResolver
+
+    field :milestones,
+      description: 'Milestones of the group.',
+      extras: [:lookahead],
+      resolver: Resolvers::GroupMilestonesResolver
+
+    field :boards,
+      Types::BoardType.connection_type,
+      null: true,
+      description: 'Boards of the group.',
+      max_page_size: 2000,
+      resolver: Resolvers::BoardsResolver
+
+    field :recent_issue_boards,
+      Types::BoardType.connection_type,
+      null: true,
+      description: 'List of recently visited boards of the group. Maximum size is 4.',
+      resolver: Resolvers::RecentBoardsResolver
+
+    field :board,
+      Types::BoardType,
+      null: true,
+      description: 'A single board of the group.',
+      resolver: Resolvers::BoardResolver
+
+    field :label,
+      Types::LabelType,
+      null: true,
+      description: 'Label available on the group.' do
+      argument :title,
+        type: GraphQL::Types::String,
+        required: true,
+        description: 'Title of the label.'
+    end
+
+    field :group_members,
+      description: 'A membership of a user within this group.',
+      resolver: Resolvers::GroupMembersResolver
+
+    field :container_repositories,
+      Types::ContainerRegistry::ContainerRepositoryType.connection_type,
+      null: true,
+      description: 'Container repositories of the group.',
+      resolver: Resolvers::ContainerRepositoriesResolver,
+      authorize: :read_container_image
+
+    field :container_repositories_count,
+      type: GraphQL::Types::Int,
+      null: false,
+      description: 'Number of container repositories in the group.'
+
+    field :packages,
+      description: 'Packages of the group. This field can only be resolved for one group in any single request.',
+      resolver: Resolvers::GroupPackagesResolver
+
+    field :dependency_proxy_setting,
+      Types::DependencyProxy::GroupSettingType,
+      null: true,
+      description: 'Dependency Proxy settings for the group.'
+
+    field :dependency_proxy_manifests,
+      Types::DependencyProxy::ManifestType.connection_type,
+      null: true,
+      description: 'Dependency Proxy manifests.'
+
+    field :dependency_proxy_blobs,
+      Types::DependencyProxy::BlobType.connection_type,
+      null: true,
+      description: 'Dependency Proxy blobs.'
+
+    field :dependency_proxy_image_count,
+      GraphQL::Types::Int,
+      null: false,
+      description: 'Number of dependency proxy images cached in the group.'
+
+    field :dependency_proxy_blob_count,
+      GraphQL::Types::Int,
+      null: false,
+      description: 'Number of dependency proxy blobs cached in the group.'
+
+    field :dependency_proxy_total_size,
+      GraphQL::Types::String,
+      null: false,
+      description: 'Total size of the dependency proxy cached images.'
+
+    field :dependency_proxy_total_size_in_bytes,
+      GraphQL::Types::Int,
+      null: false,
+      deprecated: { reason: 'Use `dependencyProxyTotalSizeBytes`', milestone: '16.1' },
+      description: 'Total size of the dependency proxy cached images in bytes.'
+
+    field :dependency_proxy_total_size_bytes,
+      GraphQL::Types::BigInt,
+      null: false,
+      description: 'Total size of the dependency proxy cached images in bytes, encoded as a string.'
+
+    field :dependency_proxy_image_prefix,
+      GraphQL::Types::String,
+      null: false,
+      description: 'Prefix for pulling images when using the dependency proxy.'
+
+    field :dependency_proxy_image_ttl_policy,
+      Types::DependencyProxy::ImageTtlGroupPolicyType,
+      null: true,
+      description: 'Dependency proxy TTL policy for the group.'
+
+    field :labels,
+      Types::LabelType.connection_type,
+      null: true,
+      description: 'Labels available on this group.',
+      scopes: [:api, :read_api, :ai_workflows],
+      resolver: Resolvers::GroupLabelsResolver
+
+    field :timelogs, ::Types::TimelogType.connection_type, null: false,
+      description: 'Time logged on issues and merge requests in the group and its subgroups.',
+      extras: [:lookahead],
+      complexity: 5,
+      resolver: ::Resolvers::TimelogResolver
+
+    field :descendant_groups, Types::GroupType.connection_type,
+      null: true,
+      description: 'List of descendant groups of this group.',
+      complexity: 5,
+      resolver: Resolvers::NestedGroupsResolver
+
+    field :shared_groups, Types::GroupType.connection_type,
+      null: true,
+      description: 'List of shared groups this group was invited to.',
+      resolver: Resolvers::Namespaces::SharedGroupsResolver
+
+    field :descendant_groups_count,
+      GraphQL::Types::Int,
+      null: false,
+      description: 'Count of direct descendant groups of the group.'
+
+    field :shared_projects, Types::ProjectType.connection_type,
+      null: true,
+      description: 'List of shared projects this group was invited to.',
+      resolver: Resolvers::Projects::SharedProjectsResolver
+
+    field :group_members_count,
+      GraphQL::Types::Int,
+      null: false,
+      description: 'Count of direct members of the group.'
+
+    field :projects_count,
+      GraphQL::Types::Int,
+      null: false,
+      description: 'Count of direct projects in the group.'
+
+    field :pipeline_analytics, Types::Ci::AnalyticsType,
+      null: true,
+      description: 'Pipeline analytics.',
+      resolver: Resolvers::Ci::PipelineAnalyticsResolver
+
+    field :ci_variables,
+      Types::Ci::GroupVariableType.connection_type,
+      null: true,
+      description: "List of the group's CI/CD variables.",
+      authorize: :admin_cicd_variables,
+      resolver: Resolvers::Ci::VariablesResolver
+
+    field :runners, Types::Ci::RunnerType.connection_type,
+      null: true,
+      resolver: Resolvers::Ci::GroupRunnersResolver,
+      description: "Find runners visible to the current user."
+
+    field :organizations, Types::CustomerRelations::OrganizationType.connection_type,
+      null: true,
+      description: "Find organizations of this group.",
+      resolver: Resolvers::Crm::OrganizationsResolver
+
+    field :organization_state_counts,
+      Types::CustomerRelations::OrganizationStateCountsType,
+      null: true,
+      description: 'Counts of organizations by status for the group.',
+      resolver: Resolvers::Crm::OrganizationStateCountsResolver
+
+    field :contacts, Types::CustomerRelations::ContactType.connection_type,
+      null: true,
+      description: "Find contacts of this group.",
+      resolver: Resolvers::Crm::ContactsResolver
+
+    field :contact_state_counts,
+      Types::CustomerRelations::ContactStateCountsType,
+      null: true,
+      description: 'Counts of contacts by state for the group.',
+      resolver: Resolvers::Crm::ContactStateCountsResolver
+
+    field :work_item_types, Types::WorkItems::TypeType.connection_type,
+      resolver: Resolvers::WorkItems::TypesResolver,
+      description: 'Work item types available to the group.'
+
+    field :releases,
+      Types::ReleaseType.connection_type,
+      null: true,
+      description: 'Releases belonging to projects in the group.',
+      resolver: Resolvers::GroupReleasesResolver
+
+    field :data_transfer, Types::DataTransfer::GroupDataTransferType,
+      null: true,
+      resolver: Resolvers::DataTransfer::GroupDataTransferResolver,
+      description: 'Data transfer data point for a specific period. This is mocked data under a development feature flag.'
+
+    field :work_items,
+      null: true,
+      description: 'Work items that belong to the namespace.',
+      resolver: ::Resolvers::Namespaces::WorkItemsResolver
+
+    field :work_item, Types::WorkItemType,
+      resolver: Resolvers::Namespaces::WorkItemResolver,
+      description: 'Find a work item by IID directly associated with the group.'
+
+    field :work_item_state_counts,
+      Types::WorkItemStateCountsType,
+      null: true,
+      description: 'Counts of work items by state for the namespace.',
+      resolver: Resolvers::Namespaces::WorkItemStateCountsResolver
+
+    field :autocomplete_users,
+      null: true,
+      resolver: Resolvers::AutocompleteUsersResolver,
+      description: 'Search users for autocompletion',
+      extras: [:lookahead]
+
+    field :lock_math_rendering_limits_enabled,
+      GraphQL::Types::Boolean,
+      null: true,
+      method: :lock_math_rendering_limits_enabled?,
+      description: 'Indicates if math rendering limits are locked for all descendant groups.'
+
+    field :math_rendering_limits_enabled,
+      GraphQL::Types::Boolean,
+      null: true,
+      method: :math_rendering_limits_enabled?,
+      description: 'Indicates if math rendering limits are used for the group.'
+
+    field :is_linked_to_subscription,
+      GraphQL::Types::Boolean,
+      null: true,
+      method: :linked_to_subscription?,
+      description: 'Indicates if group is linked to a subscription.'
+
+    field :cluster_agents,
+      ::Types::Clusters::AgentType.connection_type,
+      extras: [:lookahead],
+      null: true,
+      description: 'Cluster agents associated with projects in the group and its subgroups.',
+      resolver: ::Resolvers::Clusters::AgentsResolver
+
+    field :archived, GraphQL::Types::Boolean,
+      description: 'Indicates if the group or any ancestor is archived.',
+      method: :self_or_ancestors_archived?
+
+    field :is_self_archived, GraphQL::Types::Boolean,
+      description: 'Indicates if the group is archived.',
+      method: :self_archived?
+
+    field :marked_for_deletion, GraphQL::Types::Boolean,
+      null: false,
+      description: 'Indicates if group or any ancestor is scheduled to be deleted.',
+      method: :scheduled_for_deletion_in_hierarchy_chain?,
+      experiment: { milestone: '18.2' }
+
+    field :marked_for_deletion_on, ::Types::TimeType,
+      null: true,
+      description: 'Date when group was scheduled to be deleted.',
+      experiment: { milestone: '16.11' }
+
+    field :permanent_deletion_date, GraphQL::Types::String,
+      null: true,
+      description: "For groups pending deletion, returns the group's scheduled deletion date. " \
+        'For groups not pending deletion, returns a theoretical date based on current settings ' \
+        'if marked for deletion today.',
+      experiment: { milestone: '16.11' }
+
+    field :is_self_deletion_in_progress, GraphQL::Types::Boolean,
+      null: false,
+      description: 'Indicates if group deletion is in progress.',
+      method: :self_deletion_in_progress?,
+      experiment: { milestone: '18.2' }
+
+    field :is_self_deletion_scheduled, GraphQL::Types::Boolean,
+      null: false,
+      description: 'Indicates if group deletion is scheduled.',
+      method: :self_deletion_scheduled?,
+      experiment: { milestone: '18.2' }
+
+    field :transfer_in_progress,
+      GraphQL::Types::Boolean,
+      null: false,
+      description: 'Indicates if the group is currently being transferred.',
+      method: :transfer_in_progress?,
+      experiment: { milestone: '19.3' }
+
+    field :project_statistics, Types::Namespaces::ProjectStatisticsType,
+      method: :itself,
+      null: true,
+      description: 'Statistics of the projects in the group. Only available from `Query.groups`.',
+      experiment: { milestone: '18.2' }
+
+    def label(title:)
+      BatchLoader::GraphQL.for(title).batch(key: group) do |titles, loader, args|
+        LabelsFinder
+          .new(current_user, group: args[:key], title: titles)
+          .execute
+          .each { |label| loader.call(label.title, label) }
+      end
+    end
+
+    def avatar_url
+      object.avatar_url(only_path: false)
+    end
+
+    def parent
+      Gitlab::Graphql::Loaders::BatchModelLoader.new(Group, object.parent_id).find
+    end
+
+    def container_repositories_count
+      group.container_repositories.size
+    end
+
+    def dependency_proxy_manifests
+      group.dependency_proxy_manifests.order_id_desc
+    end
+
+    def dependency_proxy_image_count
+      group.dependency_proxy_manifests.size
+    end
+
+    def dependency_proxy_blob_count
+      group.dependency_proxy_blobs.size
+    end
+
+    def dependency_proxy_total_size
+      ActiveSupport::NumberHelper.number_to_human_size(
+        dependency_proxy_total_size_in_bytes
+      )
+    end
+
+    def dependency_proxy_total_size_in_bytes
+      dependency_proxy_total_size_bytes
+    end
+
+    def dependency_proxy_total_size_bytes
+      group.dependency_proxy_manifests.sum(:size) + group.dependency_proxy_blobs.sum(:size)
+    end
+
+    def dependency_proxy_setting
+      group.dependency_proxy_setting || group.create_dependency_proxy_setting
+    end
+
+    def descendant_groups_count
+      BatchLoader::GraphQL.for(object.id).batch do |group_ids, loader|
+        descendants_counts = Group.id_in(group_ids).descendant_groups_counts
+        descendants_counts.each { |group_id, count| loader.call(group_id, count) }
+      end
+    end
+
+    def emails_disabled
+      !group.emails_enabled?
+    end
+
+    def projects_count
+      BatchLoader::GraphQL.for(object.id).batch do |group_ids, loader|
+        projects_counts = Group.id_in(group_ids).projects_counts
+        projects_counts.each { |group_id, count| loader.call(group_id, count) }
+      end
+    end
+
+    def group_members_count
+      BatchLoader::GraphQL.for(object.id).batch do |group_ids, loader|
+        members_counts = Group.id_in(group_ids).group_members_counts
+        members_counts.each { |group_id, count| loader.call(group_id, count) }
+      end
+    end
+
+    def max_access_level
+      return Gitlab::Access::NO_ACCESS if current_user.nil?
+
+      BatchLoader::GraphQL.for(object.id).batch do |group_ids, loader|
+        current_user.max_member_access_for_group_ids(group_ids).each do |group_id, max_access_level|
+          loader.call(group_id, max_access_level)
+        end
+      end
+    end
+
+    def organization_edit_path
+      return if group.organization.nil?
+
+      ::Gitlab::Routing.url_helpers.edit_groups_organization_path(
+        group.organization,
+        id: group.to_param
+      )
+    end
+
+    def marked_for_deletion_on
+      group.self_deletion_scheduled_deletion_created_on
+    end
+
+    def permanent_deletion_date
+      permanent_deletion_date_formatted(group) || permanent_deletion_date_formatted
+    end
+
+    def web_path
+      group.web_url(only_path: true)
+    end
+
+    def edit_path
+      ::Gitlab::Routing.url_helpers.edit_group_path(group)
+    end
+
+    def admin_show_path
+      ::Gitlab::Routing.url_helpers.admin_group_path(group)
+    end
+
+    def admin_edit_path
+      ::Gitlab::Routing.url_helpers.admin_group_edit_path(group)
+    end
+
+    private
+
+    def group
+      object.respond_to?(:sync) ? object.sync : object
+    end
+  end
+end
+
+Types::GroupType.prepend_mod_with('Types::GroupType')

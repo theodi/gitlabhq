@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Work item user preference display settings",
+  "type": "object",
+  "properties": {
+    "hiddenMetadataKeys": {
+      "description": "Array of metadata keys that should be hidden in the work item display",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "assignee",
+          "blocked",
+          "blocking",
+          "dates",
+          "health",
+          "labels",
+          "milestone",
+          "parent",
+          "popularity",
+          "weight",
+          "comments",
+          "iteration",
+          "status"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "collapsedGroups": {
+      "description": "Array of group identifiers (for example status IDs) that should be rendered collapsed",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "visibleGroups": {
+      "description": "Array of group identifiers (for example status IDs) that should be visible on the board. null or absent means all groups are visible",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "groupOrder": {
+      "description": "Ordered array of group identifiers (for example status IDs) defining the board column order. Groups not listed are rendered after these in their default order; unknown identifiers are ignored",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "uniqueItems": true,
+      "maxItems": 100
+    },
+    "showEmptyGroups": {
+      "description": "Whether groups with no work items are shown. Defaults to true when absent",
+      "type": "boolean"
+    },
+    "groupSort": {
+      "description": "How groups (for example board columns) are ordered: ascending or descending by their natural order, or manually via groupOrder",
+      "type": "string",
+      "enum": [
+        "asc",
+        "desc",
+        "manual"
+      ]
+    },
+    "viewMode": {
+      "description": "Which view mode (list, board or table) the saved view should open in",
+      "type": "string",
+      "enum": [
+        "list",
+        "board",
+        "table"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

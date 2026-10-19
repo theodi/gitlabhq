@@ -1,0 +1,91 @@
+# frozen_string_literal: true
+
+RSpec.shared_context 'MergeRequestsFinder multiple projects with merge requests context' do
+  include ProjectForksHelper
+
+  # We need to explicitly permit Gitaly N+1s because of the specs that use
+  # :request_store. Gitaly N+1 detection is only enabled when :request_store is,
+  # but we don't care about potential N+1s when we're just creating several
+  # projects in the setup phase.
+  def allow_gitaly_n_plus_1
+    Gitlab::GitalyClient.allow_n_plus_1_calls do
+      yield
+    end
+  end
+
+  # fork_project stubs RepositoryForkWorker, and stubs are only allowed outside
+  # an example inside a temporary mock scope.
+  def shared_fork_project(source_project, user)
+    RSpec::Mocks.with_temporary_scope do
+      allow_gitaly_n_plus_1 { fork_project(source_project, user) }
+    end
+  end
+
+  let_it_be(:user, freeze: false)  { create(:user) }
+  let_it_be(:user2, freeze: false) { create(:user) }
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be(:subgroup, freeze: false) { create(:group, parent: group) }
+  let_it_be_with_reload(:project1) do
+    allow_gitaly_n_plus_1 { create(:project, :public, group: group, maintainers: user) }
+  end
+
+  let_it_be_with_refind(:project2) { shared_fork_project(project1, user) }
+
+  let_it_be_with_refind(:project3) do
+    shared_fork_project(project1, user).tap do |project|
+      project.update!(archived: true)
+    end
+  end
+
+  let_it_be_with_reload(:project4) do
+    allow_gitaly_n_plus_1 { create(:project, :repository, group: subgroup, developers: user) }
+  end
+
+  let_it_be_with_refind(:merge_request1) do
+    create(
+      :merge_request, assignees: [user], author: user, reviewers: [user2],
+      source_project: project2, target_project: project1,
+      target_branch: 'merged-target'
+    )
+  end
+
+  let_it_be_with_refind(:merge_request2) do
+    create(
+      :merge_request, :conflict, assignees: [user], author: user, reviewers: [user2],
+      source_project: project2, target_project: project1,
+      state: 'closed'
+    )
+  end
+
+  let_it_be_with_refind(:merge_request3) do
+    create(
+      :merge_request, :simple, author: user, assignees: [user2], reviewers: [user],
+      source_project: project2, target_project: project2,
+      state: 'locked',
+      title: 'thing Draft thing'
+    )
+  end
+
+  let_it_be_with_refind(:merge_request4) do
+    create(
+      :merge_request, :simple, author: user,
+      source_project: project3, target_project: project3,
+      title: 'Draft - thing'
+    )
+  end
+
+  let_it_be(:merge_request5, freeze: false) do
+    create(
+      :merge_request, :simple, author: user,
+      source_project: project4, target_project: project4,
+      title: '[Draft]'
+    )
+  end
+
+  before_all do
+    project2.add_developer(user)
+    project3.add_developer(user)
+
+    project2.add_developer(user2)
+  end
+end

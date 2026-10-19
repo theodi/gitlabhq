@@ -1,0 +1,11 @@
+---
+name: create_topic
+description: Grants the ability to create topics
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - create_topic
+assignable_when:
+  - condition: admin

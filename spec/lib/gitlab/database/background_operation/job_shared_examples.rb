@@ -1,0 +1,334 @@
+# frozen_string_literal: true
+
+RSpec.shared_examples 'background operation job functionality' do |job_factory, worker_factory|
+  using RSpec::Parameterized::TableSyntax
+
+  it { is_expected.to be_a Gitlab::Database::SharedModel }
+
+  specify do
+    expect(described_class::TIMEOUT_EXCEPTIONS).to contain_exactly(
+      ActiveRecord::StatementTimeout,
+      ActiveRecord::ConnectionTimeoutError,
+      ActiveRecord::AdapterTimeout,
+      ActiveRecord::LockWaitTimeout,
+      ActiveRecord::QueryCanceled
+    )
+  end
+
+  describe 'associations' do
+    let_it_be(:worker, freeze: false) { create(worker_factory) } # rubocop:disable Rails/SaveBang -- factory, not an AR object
+    let_it_be(:job, freeze: false) { create(job_factory, worker: worker, worker_partition: worker.partition) }
+
+    it { is_expected.to belong_to(:worker).inverse_of(:jobs) }
+
+    it 'maintains inverse relationship with the worker' do
+      expect(worker.jobs).to match_array([job])
+      expect(job.worker).to eq(worker)
+    end
+
+    context 'with partition pruning' do
+      let(:worker_class) { FactoryBot.factories.find(worker_factory).build_class }
+      let(:worker_table) { worker_class.table_name }
+      let(:job_table) { described_class.table_name }
+
+      it 'constrains Job.joins(:worker) by worker_partition = partition' do
+        expect { described_class.joins(:worker).to_a }.to prune_partition_by(
+          job_table, 'worker_partition', worker_table, 'partition'
+        )
+      end
+    end
+  end
+
+  describe 'validations' do
+    subject { build(job_factory) }
+
+    described_class::REQUIRED_COLUMNS.each do |column|
+      it { is_expected.to validate_presence_of(column) }
+    end
+
+    it { is_expected.to validate_numericality_of(:pause_ms).is_greater_than_or_equal_to(100) }
+  end
+
+  describe 'scopes' do
+    let_it_be(:job_1, freeze: false) { create(job_factory, :pending) }
+    let_it_be(:job_2, freeze: false) { create(job_factory, :running) }
+    let_it_be(:job_3, freeze: false) { create(job_factory, :failed, attempts: 3) }
+    let_it_be(:job_4, freeze: false) { create(job_factory, :succeeded) }
+
+    describe '.executable' do
+      it 'returns jobs with only with pending or running status' do
+        expect(described_class.executable).to contain_exactly(job_1, job_2)
+      end
+    end
+
+    describe '.running' do
+      it 'returns jobs only with running status' do
+        expect(described_class.running).to contain_exactly(job_2)
+      end
+    end
+
+    describe '.failed' do
+      it 'returns jobs only with failed status' do
+        expect(described_class.failed).to contain_exactly(job_3)
+      end
+    end
+
+    describe '.created_since', :freeze_time do
+      let(:cutoff_time) { 1.minute.from_now }
+      let!(:job_5) { create(job_factory, created_at: 2.minutes.from_now) }
+
+      it 'returns jobs created since the cutoff time' do
+        expect(described_class.created_since(cutoff_time)).to contain_exactly(job_5)
+      end
+    end
+
+    describe '.below_max_attempts' do
+      before do
+        job_4.update!(attempts: 2)
+      end
+
+      it 'returns jobs below max attempts' do
+        expect(described_class.below_max_attempts).to contain_exactly(job_1, job_2, job_4)
+      end
+    end
+
+    describe '.stale', :freeze_time do
+      it 'returns running jobs older than STUCK_JOBS_TIMEOUT' do
+        job_2.update!(started_at: (described_class::STUCK_JOBS_TIMEOUT + 1.minute).ago)
+
+        expect(described_class.stale).to contain_exactly(job_2)
+      end
+
+      it 'excludes running jobs within STUCK_JOBS_TIMEOUT' do
+        job_2.update!(started_at: (described_class::STUCK_JOBS_TIMEOUT - 1.minute).ago)
+
+        expect(described_class.stale).to be_empty
+      end
+    end
+
+    describe '.retriable', :freeze_time do
+      let!(:retriable_job) { create(job_factory, :failed, attempts: 2) }
+
+      it 'returns failed jobs below max attempts' do
+        expect(described_class.retriable).to include(retriable_job)
+      end
+
+      it 'includes stale running jobs' do
+        job_2.update!(started_at: (described_class::STUCK_JOBS_TIMEOUT + 1.minute).ago)
+
+        expect(described_class.retriable).to include(retriable_job, job_2)
+      end
+    end
+
+    describe '.succeeded' do
+      it 'returns jobs only with succeeded status' do
+        expect(described_class.succeeded).to contain_exactly(job_4)
+      end
+    end
+
+    describe '.finished' do
+      let_it_be(:job_6, freeze: false) { create(job_factory, :failed, finished_at: 2.hours.ago) }
+
+      it 'returns jobs with non-nil finished_at' do
+        expect(described_class.finished).to contain_exactly(job_4, job_6)
+      end
+    end
+
+    describe '.successful_in_execution_order' do
+      let_it_be(:job_7, freeze: false) { create(job_factory, :succeeded, finished_at: 1.hour.ago) }
+      let_it_be(:job_8, freeze: false) { create(job_factory, :succeeded, finished_at: 3.hours.ago) }
+
+      it 'returns finished succeeded jobs ordered by finished_at' do
+        expect(described_class.successful_in_execution_order).to match_array([job_8, job_4, job_7])
+      end
+    end
+  end
+
+  describe 'sliding_list partitioning' do
+    let(:connection) { described_class.connection }
+    let(:partition_manager) { Gitlab::Database::Partitioning::PartitionManager.new(described_class) }
+
+    describe 'next_partition_if callback' do
+      let(:active_partition) do
+        Gitlab::Database::SharedModel.using_connection(ApplicationRecord.connection) do
+          described_class.partitioning_strategy.active_partition
+        end
+      end
+
+      subject(:value) { described_class.partitioning_strategy.next_partition_if.call(active_partition) }
+
+      context 'when the partition is empty' do
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the partition has recent records' do
+        before do
+          create(job_factory, created_at: 1.day.ago)
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the first record of the partition is older than PARTITION_DURATION' do
+        before do
+          create(job_factory, created_at: (described_class::PARTITION_DURATION + 1.day).ago)
+          create(job_factory, created_at: 1.day.ago)
+        end
+
+        it { is_expected.to be(true) }
+      end
+    end
+
+    describe 'detach_partition_if callback' do
+      let(:active_partition) do
+        Gitlab::Database::SharedModel.using_connection(ApplicationRecord.connection) do
+          described_class.partitioning_strategy.active_partition
+        end
+      end
+
+      subject(:value) { described_class.partitioning_strategy.detach_partition_if.call(active_partition) }
+
+      context 'when the partition contains executable jobs' do
+        before do
+          create(job_factory, :pending)
+          create(job_factory, :running)
+          create(job_factory, :succeeded)
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the partition contains only non-executable jobs' do
+        before do
+          create(job_factory, :succeeded)
+          create(job_factory, :failed)
+        end
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'when the partition is empty' do
+        it { is_expected.to be(true) }
+      end
+    end
+
+    describe 'the behavior of the strategy' do
+      it 'moves records to new partitions as time passes', :freeze_time do
+        Gitlab::Database::SharedModel.using_connection(ApplicationRecord.connection) do
+          # We start with partition 1
+          expect(described_class.partitioning_strategy.current_partitions.map(&:value)).to match_array([1])
+
+          # it's not a day old yet so no new partitions are created
+          partition_manager.sync_partitions
+
+          expect(described_class.partitioning_strategy.current_partitions.map(&:value)).to match_array([1])
+
+          # add one record so the next partition will be created
+          create(job_factory) # rubocop:disable Rails/SaveBang -- factory
+
+          # after traveling forward past PARTITION_DURATION
+          travel(Gitlab::Database::BackgroundOperation::Worker::PARTITION_DURATION + 1.second)
+
+          # a new partition is created
+          partition_manager.sync_partitions
+
+          expect(described_class.partitioning_strategy.current_partitions.map(&:value)).to match_array([1, 2])
+
+          # and we can insert to the new partition
+          expect { create(job_factory) }.not_to raise_error # rubocop:disable Rails/SaveBang -- factory
+
+          # after marking old records as non-executable
+          described_class.for_partition(1).update_all(status: 3)
+
+          partition_manager.sync_partitions
+
+          # the old one is removed
+          expect(described_class.partitioning_strategy.current_partitions.map(&:value)).to match_array([2])
+
+          # and we only have the newly created partition left.
+          expect(described_class.count).to eq(1)
+        end
+      end
+    end
+  end
+
+  describe 'state machine transitions' do
+    context 'with logging' do
+      let(:error_event) { StandardError.new('timeout') }
+      let_it_be(:pending_job, freeze: false) { create(job_factory, :pending) }
+
+      it 'logs state transitions' do
+        expect(::Gitlab::Database::BackgroundOperation::Observability::EventLogger).to receive(:log).with(
+          event: :job_transition,
+          record: pending_job,
+          previous_state: :pending,
+          new_state: :succeeded,
+          error: nil
+        )
+
+        pending_job.succeed!
+      end
+
+      it 'logs state transitions with errors' do
+        expect(::Gitlab::Database::BackgroundOperation::Observability::EventLogger).to receive(:log).with(
+          event: :job_transition,
+          record: pending_job,
+          previous_state: :succeeded,
+          new_state: :failed,
+          error: error_event
+        )
+
+        pending_job.failure!(error: error_event)
+      end
+    end
+  end
+
+  describe '#time_efficiency' do
+    subject { job.time_efficiency }
+
+    let_it_be(:worker, freeze: false) { create(worker_factory, interval: 120.seconds) }
+    let(:job) { create(job_factory, :succeeded, worker: worker, worker_partition: worker.partition) }
+
+    context 'when job has not yet succeeded' do
+      let(:job) { create(job_factory, :running, worker: worker, worker_partition: worker.partition) }
+
+      it 'returns nil' do
+        expect(subject).to be_nil
+      end
+    end
+
+    context 'when finished_at is not set' do
+      before do
+        job.update_column(:finished_at, nil)
+      end
+
+      it 'returns nil' do
+        expect(subject).to be_nil
+      end
+    end
+
+    context 'when started_at is not set' do
+      before do
+        job.update_column(:started_at, nil)
+      end
+
+      it 'returns nil' do
+        expect(subject).to be_nil
+      end
+    end
+
+    context 'when job has finished', :freeze_time do
+      it 'returns ratio of duration to interval, here: 0.5' do
+        job.update_columns(started_at: Time.current - (worker.interval / 2), finished_at: Time.current)
+
+        expect(subject).to eq(0.5)
+      end
+
+      it 'returns ratio of duration to interval, here: 1' do
+        job.update_columns(started_at: Time.current - worker.interval, finished_at: Time.current)
+
+        expect(subject).to eq(1)
+      end
+    end
+  end
+end

@@ -1,0 +1,17 @@
+# @feature_category: pipeline_composition
+
+fragment CatalogResourceFields on CiCatalogResource {
+  id
+  description
+  fullPath
+  icon
+  last30DayUsageCount
+  name
+  starCount
+  starrersPath
+  topics
+  verificationLevel
+  archived
+  visibilityLevel
+  webPath
+}

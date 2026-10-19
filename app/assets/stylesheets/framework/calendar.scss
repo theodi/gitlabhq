@@ -1,0 +1,202 @@
+.new-activities-block {
+  // Set min-height to avoid big layout shift
+  min-height: 240px;
+}
+
+.contrib-calendar-wrapper,
+.contrib-legend-wrapper {
+  max-width: $fixed-layout-width;
+  @apply gl-mx-auto;
+}
+
+.contrib-calendar {
+  // First row holds the month labels; the remaining 7 rows are the day cells.
+  // The first column holds the day labels and hugs their width; the week
+  // columns are created implicitly, one per week, sized evenly so wide month
+  // labels overflow instead of widening their week column.
+  grid-template-rows: auto repeat(7, minmax(0, 1fr));
+  grid-template-columns: auto;
+  grid-auto-columns: minmax(15px, 1fr);
+}
+
+.user-contribution-graph-cell {
+  min-width: 15px;
+  min-height: 15px;
+}
+
+.contrib-calendar .user-contribution-graph-cell {
+  // Fade contribution colors in once the data has been fetched. The delay is
+  // staggered per column (via --contrib-fade-delay) for a more natural reveal.
+  transition:
+    background-color 0.5s ease var(--contrib-fade-delay, 0ms),
+    border-color 0.1s ease;
+}
+
+// Only real days render as buttons; empty padding cells are plain divs
+// that are hidden and must not look interactive.
+.contrib-calendar button.user-contribution-graph-cell {
+  cursor: pointer;
+
+  &:hover,
+  &:focus,
+  &.is-active:hover,
+  &.is-active:focus {
+    z-index: 1;
+    border: 2px solid var(--gl-focus-ring-inner-color);
+    outline: 2px solid var(--gl-focus-ring-outer-color) !important;
+    outline-offset: 0;
+  }
+
+  // is-active keeps the selected day highlighted after focus moves to the feed.
+  &.is-active {
+    z-index: 1;
+    border: 2px solid var(--gl-background-color-default);
+    outline: 2px solid var(--gl-action-selected-border-color-default) !important;
+    outline-offset: 0;
+  }
+}
+
+.contrib-calendar div.user-contribution-graph-cell {
+  opacity: 0;
+}
+
+.contrib-legend-cell {
+  cursor: help;
+}
+
+.user-contribution-graph-cell {
+  @apply gl-rounded-sm;
+}
+
+.user-contribution-graph-cell-0 {
+  background-color: var(--user-contribution-graph-cell-level-0);
+}
+
+.user-contribution-graph-cell-1 {
+  background-color: var(--user-contribution-graph-cell-level-1);
+}
+
+.user-contribution-graph-cell-2 {
+  background-color: var(--user-contribution-graph-cell-level-2);
+}
+
+.user-contribution-graph-cell-3 {
+  background-color: var(--user-contribution-graph-cell-level-3);
+}
+
+.user-contribution-graph-cell-4 {
+  background-color: var(--user-contribution-graph-cell-level-4);
+}
+
+.user-contrib-cell {
+  &:hover,
+  &:focus-visible,
+  &.is-active {
+    cursor: pointer;
+    outline: none;
+    stroke: var(--gl-text-color-default);
+  }
+
+  &:active,
+  &.is-active {
+    stroke-width: 2px;
+  }
+
+  &[data-level="0"] {
+    fill: var(--user-contribution-graph-cell-level-0);
+  }
+
+  &[data-level="1"] {
+    fill: var(--user-contribution-graph-cell-level-1);
+  }
+
+  &[data-level="2"] {
+    fill: var(--user-contribution-graph-cell-level-2);
+  }
+
+  &[data-level="3"] {
+    fill: var(--user-contribution-graph-cell-level-3);
+  }
+
+  &[data-level="4"] {
+    fill: var(--user-contribution-graph-cell-level-4);
+  }
+}
+
+.contribution-event {
+  @apply gl-gap-x-3;
+  @apply gl-gap-y-2;
+  display: grid;
+  align-items: center;
+
+  &::before {
+    @apply gl-w-1;
+    @apply gl-left-4;
+    @apply gl-top-6;
+    @apply gl-bottom-0;
+    @apply gl-bg-strong;
+    content: "";
+    transform: translateX(-50%);
+    position: absolute;
+  }
+}
+
+.contribution-event-avatar {
+  grid-template-columns: var(--gl-spacing-scale-6) auto 1fr;
+  grid-template-areas:
+      "author author author"
+      ". icon title"
+      ". description description"
+      ". timestamp timestamp";
+
+  @include gl-container-width-up(sm, panel) {
+    grid-template-columns: var(--gl-spacing-scale-6) min-content 1fr auto;
+    grid-template-areas:
+        "author author author timestamp"
+        ". icon title ."
+        ". description description .";
+  }
+
+  .contribution-event-icon {
+    @apply -gl-mr-1; // Visual alignment fix
+  }
+}
+
+.contribution-event-default {
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+      "icon title"
+      ". description"
+      ". timestamp";
+
+  @include gl-container-width-up(sm, panel) {
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+        "icon title timestamp"
+        ". description .";
+  }
+}
+
+.contribution-event-author {
+  grid-area: author;
+}
+
+.contribution-event-icon {
+  grid-area: icon;
+}
+
+.contribution-event-timestamp {
+  grid-area: timestamp;
+}
+
+.contribution-event-title {
+  grid-area: title;
+}
+
+.contribution-event-description {
+  grid-area: description;
+}
+
+.contribution-event:last-of-type::before {
+  display: none;
+}

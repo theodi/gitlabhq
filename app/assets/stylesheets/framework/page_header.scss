@@ -1,0 +1,50 @@
+.page-content-header {
+  line-height: 34px;
+  padding: 10px 0;
+  margin-bottom: 0;
+
+  @include gl-container-width-up(sm, panel) {
+    display: flex;
+    align-items: center;
+
+    .header-main-content {
+      flex: 1;
+    }
+  }
+
+  .avatar {
+    float: none;
+    display: inline-block;
+    margin-left: 2px;
+    flex-shrink: 0;
+
+    @include gl-container-width-up(sm, panel) {
+      margin-left: 4px;
+    }
+
+    &.s24 {
+      margin-top: -2px;
+      margin-right: 4px;
+    }
+  }
+
+  .commit-committer-link,
+  .commit-author-link {
+    @apply gl-text-default;
+    font-weight: $gl-font-weight-bold;
+  }
+
+  .commit-info {
+    &.branches {
+      margin-left: 8px;
+    }
+  }
+}
+
+.page-heading-actions {
+  > .gl-button,
+  > .gl-disclosure-dropdown {
+    @apply gl-w-full;
+    @apply sm:gl-w-auto;
+  }
+}

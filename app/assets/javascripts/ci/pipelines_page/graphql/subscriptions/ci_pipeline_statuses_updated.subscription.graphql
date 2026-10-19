@@ -1,0 +1,5 @@
+subscription pipelineStatusesUpdated($projectId: ProjectID!) {
+  ciPipelineStatusesUpdated(projectId: $projectId) {
+    id
+  }
+}

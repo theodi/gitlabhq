@@ -1,0 +1,324 @@
+# frozen_string_literal: true
+
+module WorkItems
+  module TypesFramework
+    module SystemDefined
+      class Type
+        include ActiveRecord::FixedItemsModel::Model
+        include GlobalID::Identification
+        include Gitlab::Utils::StrongMemoize
+
+        BASE_TYPES = [
+          WorkItems::TypesFramework::SystemDefined::Definitions::Issue.configuration,
+          WorkItems::TypesFramework::SystemDefined::Definitions::Incident.configuration,
+          WorkItems::TypesFramework::SystemDefined::Definitions::Task.configuration,
+          WorkItems::TypesFramework::SystemDefined::Definitions::Ticket.configuration
+        ].freeze
+
+        attribute :name, :string
+        attribute :base_type, :string
+        attribute :icon_name, :string
+
+        class << self
+          def fixed_items
+            BASE_TYPES
+          end
+
+          # Helper method for the transition from the old `WorkItems::Type`
+          # to the new `WorkItems::TypesFramework::SystemDefined::Type`
+          #
+          # TODO: Remove this once the transition is complete.
+          # See https://gitlab.com/gitlab-org/gitlab/-/work_items/581926
+          def base_types
+            all.index_by(&:base_type)
+          end
+
+          def by_type(type)
+            types = Array(type).map(&:to_s)
+            where(base_type: types)
+          end
+
+          def find_by_type(type)
+            find_by(base_type: type&.to_s)
+          end
+
+          def find_by_id(id)
+            find_by(id: id&.to_i)
+          end
+
+          alias_method :default_by_type, :find_by_type
+
+          def find_by_name(name)
+            find_by(name: name.to_s)
+          end
+
+          def default_issue_type
+            find_by_type(:issue)
+          end
+
+          def order_by_name_asc
+            name_sorting_asc(all)
+          end
+
+          def by_ids_ordered_by_name(ids)
+            name_sorting_asc(where(id: ids))
+          end
+
+          def with_widget_definition(widget_type)
+            all.select do |type|
+              ::WorkItems::TypesFramework::SystemDefined::WidgetDefinition
+                .where(work_item_type_id: type.id, widget_type: widget_type.to_s)
+                .present?
+            end
+          end
+
+          private
+
+          def name_sorting_asc(items)
+            items.sort_by { |type| type.name.downcase }
+          end
+        end
+
+        # Long-term these per-type predicates should be replaced with a single is_base_type?(name)
+        # method to avoid meta-programming and method_missing issues between CE/EE type classes.
+        # See https://gitlab.com/gitlab-org/gitlab/-/work_items/592881
+        BASE_TYPES.each do |type|
+          define_method :"#{type[:base_type]}?" do
+            base_type == type[:base_type]
+          end
+        end
+
+        # Use legacy format
+        def to_global_id(_options = {})
+          ::Gitlab::GlobalId.build(self, model_name: 'WorkItems::Type', id: id)
+        end
+        alias_method :to_gid, :to_global_id
+
+        # The id used to persist a reference to this type (e.g. in join tables
+        # like work_item_type_custom_fields). For system-defined types this is
+        # simply the type id. Custom types override this to return the
+        # converted_from_system_defined_type_identifier when applicable, which
+        # keeps persisted references consistent with how work items store
+        # work_item_type_id.
+        def persistable_id
+          id
+        end
+
+        # The system-defined type id to use for cross-cutting lookups that
+        # only know about system-defined ids (e.g. HierarchyRestriction).
+        # Custom types override this to return their delegation_source id.
+        def system_defined_type_id
+          id
+        end
+
+        def widget_definitions
+          WorkItems::TypesFramework::SystemDefined::WidgetDefinition.where(work_item_type_id: id)
+        end
+        strong_memoize_attr :widget_definitions
+
+        def widgets(_resource_parent)
+          widget_definitions.filter(&:widget_class)
+        end
+
+        def widget_classes(resource_parent)
+          widgets(resource_parent).map(&:widget_class)
+        end
+
+        def unavailable_widgets_on_conversion(target_type, resource_parent)
+          source_widgets = widgets(resource_parent)
+          target_widgets = target_type.widgets(resource_parent)
+          target_widget_types = target_widgets.map(&:widget_type).to_set
+          source_widgets.reject { |widget| target_widget_types.include?(widget.widget_type) }
+        end
+
+        # TODO: remove the supports_assignee? and supports_time_tracking? and replace it with this method
+        def supports_widget?(resource_parent, widget_class)
+          widget_classes(resource_parent).include?(widget_class)
+        end
+
+        # TODO: Move to something generic like .supports_widget?(widget_type)
+        def supports_assignee?(resource_parent)
+          widget_classes(resource_parent).include?(::WorkItems::Widgets::Assignees)
+        end
+
+        def supports_time_tracking?(resource_parent)
+          widget_classes(resource_parent).include?(::WorkItems::Widgets::TimeTracking)
+        end
+
+        def allowed_child_types_by_name(resource_parent: nil)
+          child_type_ids = WorkItems::TypesFramework::SystemDefined::HierarchyRestriction
+            .where(parent_type_id: id)
+            .map(&:child_type_id)
+
+          types_provider(resource_parent).by_ids_ordered_by_name(child_type_ids)
+        end
+
+        def allowed_parent_types_by_name(resource_parent: nil)
+          parent_type_ids = WorkItems::TypesFramework::SystemDefined::HierarchyRestriction
+            .where(child_type_id: id)
+            .map(&:parent_type_id)
+
+          types_provider(resource_parent).by_ids_ordered_by_name(parent_type_ids)
+        end
+
+        def supported_conversion_types(resource_parent, user)
+          type_names = supported_conversion_base_types(resource_parent, user) - [base_type]
+
+          types_provider(resource_parent).by_base_types_ordered_by_name(type_names)
+            .select { |type| type.enabled && !type.archived? }
+        end
+
+        def allowed_child_types(authorize: false, resource_parent: nil)
+          types = allowed_child_types_by_name(resource_parent: resource_parent)
+
+          return types unless authorize
+
+          authorized_types(types, resource_parent, licenses_for_child)
+        end
+
+        def allowed_parent_types(authorize: false, resource_parent: nil)
+          types = allowed_parent_types_by_name(resource_parent: resource_parent)
+
+          return types unless authorize
+
+          authorized_types(types, resource_parent, licenses_for_parent)
+        end
+
+        def descendant_types(resource_parent: nil)
+          descendant_types = []
+          next_level_child_types = allowed_child_types(resource_parent: resource_parent).to_a
+
+          loop do
+            descendant_types += next_level_child_types
+
+            # We remove types that we've already seen to avoid circular dependencies
+            next_level_child_types = next_level_child_types.flat_map do |type|
+              type.allowed_child_types(resource_parent: resource_parent).to_a
+            end - descendant_types
+
+            break if next_level_child_types.empty?
+          end
+
+          descendant_types.uniq
+        end
+
+        def configuration_class
+          WorkItems::TypesFramework::SystemDefined::Definitions.const_get(base_type.camelize, false)
+        end
+
+        def license_name
+          configuration_class.try(:license_name)
+        end
+
+        def licensed?
+          license_name.present?
+        end
+
+        def supports_roadmap_view?
+          configuration_class.try(:supports_roadmap_view?) || false
+        end
+
+        def use_legacy_view?(resource_parent)
+          return false if ticket? && Feature.enabled?(:work_item_ticket_migration, resource_parent&.root_ancestor)
+
+          configuration_class.try(:use_legacy_view?) || false
+        end
+
+        def can_promote_to_objective?
+          configuration_class.try(:can_promote_to_objective?) || false
+        end
+
+        def supports_move_action?
+          configuration_class.try(:supports_move_action?) || false
+        end
+
+        def service_desk?
+          configuration_class.try(:service_desk?) || false
+        end
+
+        def incident_management?
+          configuration_class.try(:incident_management?) || false
+        end
+
+        def configurable?
+          value = configuration_class.try(:configurable?)
+          value.nil? || value
+        end
+
+        def creatable?
+          value = configuration_class.try(:creatable?)
+          value.nil? || value
+        end
+
+        def visible_in_settings?
+          value = configuration_class.try(:visible_in_settings?)
+          value.nil? || value
+        end
+
+        def archived?
+          configuration_class.try(:archived?) || false
+        end
+
+        def only_for_group?
+          configuration_class.try(:only_for_group?) || false
+        end
+
+        def enabled?
+          true
+        end
+
+        def can_be_conversion_target?
+          value = configuration_class.try(:can_be_conversion_target?)
+          value.nil? || value
+        end
+
+        def allowed_child_types_config
+          configuration_class.try(:allowed_child_types) || []
+        end
+
+        def filterable_list_view?
+          value = configuration_class.try(:filterable_list_view?)
+          value.nil? || value
+        end
+
+        def filterable_board_view?
+          configuration_class.try(:filterable_board_view?) || false
+        end
+
+        def disabled_workflow_type?
+          configuration_class.try(:disabled_workflow_type?) || false
+        end
+
+        def okr?
+          configuration_class.try(:okr?) || false
+        end
+
+        private
+
+        def licenses_for_parent
+          configuration_class.try(:licenses_for_parent)
+        end
+
+        def licenses_for_child
+          configuration_class.try(:licenses_for_child)
+        end
+
+        # resource_parent is used in EE
+        def supported_conversion_base_types(_resource_parent, _user)
+          self.class.all.select(&:can_be_conversion_target?).map(&:base_type)
+        end
+
+        # overridden in EE to check for EE-specific restrictions
+        def authorized_types(types, _resource_parent, _relation)
+          types
+        end
+
+        def types_provider(resource_parent)
+          ::WorkItems::TypesFramework::Provider.new(resource_parent)
+        end
+      end
+    end
+  end
+end
+
+WorkItems::TypesFramework::SystemDefined::Type.prepend_mod

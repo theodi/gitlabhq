@@ -1,0 +1,62 @@
+- page_title s_('UserMapping|Review reassignment details')
+
+- source_name = @source_user.source_name
+- source_username = "@#{@source_user.source_username}"
+- source_hostname = @source_user.source_hostname
+- destination_group = "#{@source_user.namespace.name} (/#{@source_user.namespace.full_path})"
+- reassign_to = @source_user.reassign_to_user
+- reassign_to_name = reassign_to.name
+- reassign_to_username = link_to reassign_to.to_reference, user_path(reassign_to)
+- reassigned_by = @source_user.reassigned_by_user
+- reassigned_by_name = reassigned_by.name
+- reassigned_by_username = link_to reassigned_by.to_reference, user_path(reassigned_by)
+
+.gl-flex.gl-justify-center.gl-mt-8
+  = render Pajamas::CardComponent.new(card_options: { class: 'gl-max-w-80' }) do |c|
+    - c.with_header do
+      %h1.gl-text-size-h1.gl-my-0
+        = s_('UserMapping|Review reassignment details')
+
+    - c.with_body do
+      %p.gl-mb-5
+        = safe_format(s_('UserMapping|%{reassigned_by_name} (%{reassigned_by_username}) wants to reassign contributions from %{source_name} (%{source_username}) on %{source_hostname} to you in %{destination_group}.'),
+          reassigned_by_name: reassigned_by_name,
+          reassigned_by_username: reassigned_by_username,
+          source_name: source_name,
+          source_username: source_username,
+          source_hostname: source_hostname,
+          destination_group: destination_group)
+        = succeed '.' do
+          = link_to s_('UserMapping|How do I accept reassignments?'), help_page_path('user/import/mapping/reassignment.md', anchor: 'accept-contribution-reassignment')
+      %h5
+        = s_('UserMapping|Import details:')
+      %p.gl-mb-5
+        = safe_format(s_('UserMapping|Imported from: %{source_hostname}'), source_hostname: source_hostname)
+        %br
+        = safe_format(s_('UserMapping|Original user: %{source_name} (%{source_username})'), source_name: source_name, source_username: source_username)
+      - if @source_user.offline_transfer?
+        %p.gl-mb-5
+          = s_('UserMapping|This import was created from a file. The source hostname was supplied by the importing user and GitLab cannot verify it.')
+      %h5
+        = s_('UserMapping|Reassignment details:')
+      %p
+        = safe_format(s_('UserMapping|Imported to: %{destination_group}'), destination_group: destination_group)
+        %br
+        = safe_format(s_('UserMapping|Reassigned to: %{reassign_to_name} (%{reassign_to_username})'), reassign_to_name: reassign_to_name, reassign_to_username: reassign_to_username)
+        %br
+        = safe_format(s_('UserMapping|Reassigned by: %{reassigned_by_name} (%{reassigned_by_username})'), reassigned_by_name: reassigned_by_name, reassigned_by_username: reassigned_by_username)
+      %p.gl-mb-0
+        %strong
+          - if Feature.enabled?(:revoke_import_source_user_reassignment, current_user)
+            = s_('UserMapping|Approve reassignments only from users you trust. After you approve, contributions are assigned to you. You can revoke the reassignment later in your account settings, but contributions that were already reassigned to you are not removed.')
+          - else
+            = s_('UserMapping|Approve reassignments only from users you trust. After you approve, contributions are assigned to you permanently.')
+
+    - c.with_footer do
+      .gl-flex.gl-gap-3
+        = render Pajamas::ButtonComponent.new(variant: :danger, method: :post,
+          href: namespaced_accept_import_source_users_path(@source_user.namespace_id, @source_user.reassignment_token),
+          button_options: { data: { testid: 'approve-reassignment-button' } }) do
+          = s_('UserMapping|Approve reassignment')
+        = render Pajamas::ButtonComponent.new(method: :post, href: namespaced_decline_import_source_users_path(@source_user.namespace_id, @source_user.reassignment_token)) do
+          = s_('UserMapping|Reject')

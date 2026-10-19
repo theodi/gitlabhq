@@ -1,0 +1,11 @@
+---
+Gitlab/AvoidDefaultOrganization:
+  Exclude:
+    - 'ee/app/finders/ai/foundational_chat_agents_finder.rb'
+    - 'ee/app/helpers/ee/application_settings_helper.rb'
+    - 'ee/app/presenters/admin/ai_configuration_presenter.rb'
+    - 'ee/app/services/ee/application_settings/update_service.rb'
+    - 'ee/lib/api/admin/security/compliance_policy_settings.rb'
+    - 'lib/gitlab/current/organization.rb'
+    - 'lib/gitlab/database_importers/default_organization_importer.rb'
+    - 'spec/models/personal_access_token_spec.rb'

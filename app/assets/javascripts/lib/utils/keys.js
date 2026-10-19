@@ -1,0 +1,13 @@
+export const ESC_KEY = 'Escape';
+export const ENTER_KEY = 'Enter';
+export const NUMPAD_ENTER_KEY = 'NumpadEnter';
+export const BACKSPACE_KEY = 'Backspace';
+export const ARROW_DOWN_KEY = 'ArrowDown';
+export const ARROW_UP_KEY = 'ArrowUp';
+export const ARROW_LEFT_KEY = 'ArrowLeft';
+export const ARROW_RIGHT_KEY = 'ArrowRight';
+export const END_KEY = 'End';
+export const HOME_KEY = 'Home';
+export const TAB_KEY = 'Tab';
+export const PAGE_DOWN_KEY = 'PageDown';
+export const PAGE_UP_KEY = 'PageUp';

@@ -1,0 +1,15 @@
+---
+name: reset_runner_registration_token
+description: Grants the ability to reset runner registration tokens
+boundaries:
+  - group
+  - project
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - reset_runner_registration_token
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

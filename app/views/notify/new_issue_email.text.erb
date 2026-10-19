@@ -1,5 +1,7 @@
-New Issue was created.
+<%= _('%{type} created by %{user}: %{issue_link}') % { user: sanitize_name(@issue.author_name),
+                                                       issue_link: @target_url,
+                                                       type: work_item_type_for(@issue) } %>
 
-Issue <%= @issue.iid %>: <%= url_for(namespace_project_issue_url(@issue.project.namespace, @issue.project, @issue)) %>
-Author:    <%= @issue.author_name %>
-Assignee:  <%= @issue.assignee_name %>
+<%= assignees_label(@issue) if @issue.assignees.any? %>
+
+<%= @issue.description %>

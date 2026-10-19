@@ -1,0 +1,232 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe IssueEntity, feature_category: :team_planning do
+  include Gitlab::Routing.url_helpers
+
+  let_it_be_with_reload(:group) { create(:group) }
+  let_it_be_with_reload(:project) { create(:project, namespace: group) }
+  let_it_be_with_reload(:user) { create(:user) }
+  let_it_be(:member) { create(:user) }
+  let(:resource) { build_stubbed(:issue, project: project) }
+  let(:non_member) { build_stubbed(:user) }
+
+  let(:request) { double('request', current_user: user) }
+
+  subject { described_class.new(resource, request: request).as_json }
+
+  describe 'web_url' do
+    context 'when issue is of type task' do
+      let(:resource) { build_stubbed(:issue, :task, project: project) }
+
+      # This was already a path and not a url when the work items change was introduced
+      it 'has a work item path with iid' do
+        expect(subject[:web_url]).to eq(project_work_item_path(project, resource.iid))
+      end
+    end
+  end
+
+  describe 'type' do
+    it 'has an issue type' do
+      expect(subject[:type]).to eq('ISSUE')
+    end
+  end
+
+  it 'has Issuable attributes' do
+    expect(subject).to include(
+      :id, :iid, :author_id, :description, :lock_version, :milestone_id,
+      :title, :updated_by_id, :created_at, :updated_at, :milestone, :labels
+    )
+  end
+
+  it 'has time estimation attributes' do
+    expect(subject).to include(:time_estimate, :total_time_spent, :human_time_estimate, :human_total_time_spent)
+  end
+
+  describe 'current_user' do
+    it 'has the expected permissions' do
+      expect(subject[:current_user]).to include(
+        :can_create_note, :can_update, :can_set_issue_metadata, :can_award_emoji
+      )
+    end
+  end
+
+  context 'when issue got moved' do
+    let_it_be(:public_project) { create(:project, :public, developers: member) }
+    let_it_be(:issue) { create(:issue, project: public_project) }
+
+    before_all do
+      project.add_developer(member)
+      ::WorkItems::DataSync::MoveService.new(
+        work_item: issue, current_user: member, target_namespace: project.project_namespace
+      ).execute
+    end
+
+    context 'when user cannot read target project' do
+      it 'does not return moved_to_id' do
+        request = double('request', current_user: non_member)
+
+        response = described_class.new(issue, request: request).as_json
+
+        expect(response[:moved_to_id]).to be_nil
+      end
+    end
+
+    context 'when user can read target project' do
+      it 'returns moved moved_to_id' do
+        request = double('request', current_user: member)
+
+        response = described_class.new(issue, request: request).as_json
+
+        expect(response[:moved_to_id]).to eq(issue.moved_to_id)
+      end
+    end
+  end
+
+  context 'when issue got duplicated' do
+    let_it_be(:private_project) { create(:project, :private) }
+    let_it_be(:issue) { create(:issue, project: project) }
+    let_it_be(:new_issue) { create(:issue, project: private_project) }
+
+    before_all do
+      Issues::DuplicateService
+        .new(container: project, current_user: member)
+        .execute(issue, new_issue)
+    end
+
+    context 'when user cannot read new issue' do
+      it 'does not return duplicated_to_id' do
+        request = double('request', current_user: non_member)
+
+        response = described_class.new(issue, request: request).as_json
+
+        expect(response[:duplicated_to_id]).to be_nil
+      end
+    end
+
+    context 'when user can read target project' do
+      before_all do
+        project.add_developer(member)
+        private_project.add_developer(member)
+      end
+
+      it 'returns duplicated duplicated_to_id' do
+        request = double('request', current_user: member)
+
+        response = described_class.new(issue, request: request).as_json
+
+        expect(response[:duplicated_to_id]).to eq(issue.duplicated_to_id)
+      end
+    end
+  end
+
+  context 'when issuable in active or archived project' do
+    before_all do
+      project.add_developer(user)
+    end
+
+    context 'when project is active' do
+      it 'returns archived false' do
+        expect(subject[:is_project_archived]).to be(false)
+      end
+
+      it 'returns nil for archived project doc' do
+        response = described_class.new(resource, request: request).as_json
+
+        expect(response[:archived_project_docs_path]).to be_nil
+      end
+    end
+
+    context 'when project is archived' do
+      before_all do
+        project.update!(archived: true)
+      end
+
+      it 'returns archived true' do
+        expect(subject[:is_project_archived]).to be(true)
+      end
+
+      it 'returns archived project doc' do
+        expect(subject[:archived_project_docs_path]).to eq(
+          '/help/user/project/working_with_projects.md#delete-a-project'
+        )
+      end
+    end
+
+    context 'when project group is archived' do
+      before_all do
+        group.update!(archived: true)
+      end
+
+      it 'returns archived true' do
+        expect(subject[:is_project_archived]).to be(true)
+      end
+
+      it 'returns archived project doc' do
+        expect(subject[:archived_project_docs_path]).to eq(
+          '/help/user/project/working_with_projects.md#delete-a-project'
+        )
+      end
+    end
+  end
+
+  context 'with a persisted issue' do
+    let_it_be_with_reload(:resource) { create(:issue, project: project) }
+
+    it_behaves_like 'issuable entity current_user properties'
+  end
+
+  context 'when issue has email participants' do
+    let_it_be_with_reload(:resource) { create(:issue, project: project) }
+    let_it_be(:obfuscated_email) { 'an*****@e*****.c**' }
+    let_it_be(:email) { 'any@email.com' }
+
+    before_all do
+      resource.issue_email_participants.create!(email: email)
+    end
+
+    context 'with anonymous user' do
+      it 'returns obfuscated email participants email' do
+        request = double('request', current_user: nil)
+
+        response = described_class.new(resource, request: request).as_json
+        expect(response[:issue_email_participants]).to eq([{ email: obfuscated_email }])
+      end
+    end
+
+    context 'with signed in user' do
+      context 'when user has no role in project' do
+        it 'returns obfuscated email participants email' do
+          expect(subject[:issue_email_participants]).to eq([{ email: obfuscated_email }])
+        end
+      end
+
+      context 'when user has guest role in project' do
+        before_all do
+          project.add_guest(member)
+        end
+
+        it 'returns obfuscated email participants email' do
+          request = double('request', current_user: member)
+
+          response = described_class.new(resource, request: request).as_json
+          expect(response[:issue_email_participants]).to eq([{ email: obfuscated_email }])
+        end
+      end
+
+      context 'when user has (at least) reporter role in project' do
+        before_all do
+          project.add_reporter(member)
+        end
+
+        it 'returns full email participants email' do
+          request = double('request', current_user: member)
+
+          response = described_class.new(resource, request: request).as_json
+          expect(response[:issue_email_participants]).to eq([{ email: email }])
+        end
+      end
+    end
+  end
+end

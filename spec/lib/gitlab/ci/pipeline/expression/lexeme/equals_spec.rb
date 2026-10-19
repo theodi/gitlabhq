@@ -1,0 +1,117 @@
+# frozen_string_literal: true
+
+require 'fast_spec_helper'
+
+RSpec.describe Gitlab::Ci::Pipeline::Expression::Lexeme::Equals, feature_category: :pipeline_composition do
+  let(:left) { double('left') }
+  let(:right) { double('right') }
+
+  describe '.build' do
+    context 'with non-evaluable operands' do
+      it 'creates a new instance of the token' do
+        expect { described_class.build('==', left, right) }
+          .to raise_error Gitlab::Ci::Pipeline::Expression::Lexeme::Operator::OperatorError
+      end
+    end
+
+    context 'with evaluable operands' do
+      it 'creates a new instance of the token' do
+        allow(left).to receive(:evaluate).and_return('my-string')
+        allow(right).to receive(:evaluate).and_return('my-string')
+
+        expect(described_class.build('==', left, right))
+          .to be_a(described_class)
+      end
+    end
+  end
+
+  describe '.type' do
+    it 'is an operator' do
+      expect(described_class.type).to eq :logical_operator
+    end
+  end
+
+  describe '.precedence' do
+    it 'has a precedence' do
+      expect(described_class.precedence).to be_an Integer
+    end
+  end
+
+  describe '#evaluate' do
+    let(:operator) { described_class.new(left, right) }
+
+    subject { operator.evaluate }
+
+    before do
+      allow(left).to receive(:evaluate).and_return(left_value)
+      allow(right).to receive(:evaluate).and_return(right_value)
+    end
+
+    context 'when left and right are equal' do
+      where(:left_value, :right_value) do
+        [%w[string string]]
+      end
+
+      with_them do
+        it { is_expected.to be(true) }
+      end
+    end
+
+    context 'when left and right are not equal' do
+      where(:left_value, :right_value) do
+        ['one string', 'two string'].permutation(2).to_a
+      end
+
+      with_them do
+        it { is_expected.to be(false) }
+      end
+    end
+
+    context 'with boolean and string comparison' do
+      context 'when boolean matches string representation' do
+        where(:left_value, :right_value) do
+          [
+            [true, 'true'],
+            ['true', true],
+            [false, 'false'],
+            ['false', false]
+          ]
+        end
+
+        with_them do
+          it { is_expected.to be(true) }
+        end
+      end
+
+      context 'when boolean does not match string representation' do
+        where(:left_value, :right_value) do
+          [
+            [true, 'false'],
+            ['false', true],
+            [false, 'true'],
+            ['true', false]
+          ]
+        end
+
+        with_them do
+          it { is_expected.to be(false) }
+        end
+      end
+    end
+
+    context 'with both values as booleans' do
+      where(:left_value, :right_value, :expected) do
+        [
+          [true, true, true],
+          [false, false, true],
+          [true, false, false],
+          [false, true, false]
+        ]
+      end
+
+      with_them do
+        it { is_expected.to eq(expected) }
+      end
+    end
+  end
+end

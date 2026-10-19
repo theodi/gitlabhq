@@ -1,0 +1,19 @@
+---
+key_path: installation_creation_date
+description: "The date and time the instance was installed"
+product_group: analytics_instrumentation
+value_type: string
+status: removed
+milestone: "15.10"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/113090
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/123348
+time_frame: none
+data_source: database
+data_category: operational
+instrumentation_class: InstallationCreationDateMetric
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate
+milestone_removed: "<16.4"

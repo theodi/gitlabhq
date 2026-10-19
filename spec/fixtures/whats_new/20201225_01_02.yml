@@ -1,0 +1,7 @@
+---
+- name: bright
+  description: |
+    ## bright
+  self-managed: true
+  gitlab-com: false
+  available_in: ["Premium", "Ultimate"]

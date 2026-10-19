@@ -1,0 +1,33 @@
+# frozen_string_literal: true
+
+module Ci
+  class PlayManualStageService < BaseService
+    def initialize(project, current_user, params)
+      super
+
+      @pipeline = params[:pipeline]
+    end
+
+    def execute(stage)
+      stage.processables.manual.each do |processable|
+        next unless processable.playable?
+
+        result = processable.play(current_user)
+
+        if result.error?
+          logger.error(message: 'Unable to play manual action', processable_id: processable.id, error: result.message)
+        end
+      rescue Gitlab::Access::AccessDeniedError => e
+        logger.error(message: 'Unable to play manual action', processable_id: processable.id, error: e.message)
+      end
+    end
+
+    private
+
+    attr_reader :pipeline, :current_user
+
+    def logger
+      Gitlab::AppLogger
+    end
+  end
+end

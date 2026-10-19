@@ -1,0 +1,238 @@
+import { GlButtonGroup, GlButton } from '@gitlab/ui';
+import { nextTick } from 'vue';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import { mockTracking } from 'helpers/tracking_helper';
+import { createMockDirective, getBinding } from 'helpers/vue_mock_directive';
+import BlobHeaderViewerSwitcher from '~/blob/components/blob_header_viewer_switcher.vue';
+import InlineBlamePopover from '~/blob/components/inline_blame_popover.vue';
+import UserCalloutDismisser from '~/vue_shared/components/user_callout_dismisser.vue';
+import {
+  RICH_BLOB_VIEWER,
+  RICH_BLOB_VIEWER_TITLE,
+  SIMPLE_BLOB_VIEWER,
+  SIMPLE_BLOB_VIEWER_TITLE,
+} from '~/blob/components/constants';
+
+const mockDismiss = jest.fn();
+let mockShouldShowCallout = true;
+
+// Replaces the Apollo-backed UserCalloutDismisser with a simple slot renderer
+// so tests can control `shouldShowCallout` and assert `dismiss` calls.
+jest.mock('~/vue_shared/components/user_callout_dismisser.vue', () => {
+  const { getSlotFunction } = jest.requireActual('~/lib/utils/vue3compat/normalize_render');
+
+  return {
+    __esModule: true,
+    default: {
+      name: 'UserCalloutDismisser',
+      props: ['featureName'],
+      // Vue 3-style zero-arg render; opt out of @vue/compat's legacy
+      // render-function emulation, which misclassifies it.
+      compatConfig: { RENDER_FUNCTION: false },
+      render() {
+        const slot = getSlotFunction(this);
+        return slot?.({ dismiss: mockDismiss, shouldShowCallout: mockShouldShowCallout }) ?? null;
+      },
+    },
+  };
+});
+
+describe('Blob Header Viewer Switcher', () => {
+  let wrapper;
+  let trackingSpy;
+
+  function createComponent(propsData = { showViewerToggles: true }) {
+    wrapper = mountExtended(BlobHeaderViewerSwitcher, {
+      propsData,
+      directives: {
+        GlHoverLoad: createMockDirective('gl-hover-load'),
+      },
+    });
+  }
+
+  const findSimpleViewerButton = () => wrapper.findComponent('[data-viewer="simple"]');
+  const findRichViewerButton = () => wrapper.findComponent('[data-viewer="rich"]');
+  const findBlameButton = () => wrapper.findComponentByTestId('blame-button');
+  const findInlineBlamePopover = () => wrapper.findComponent(InlineBlamePopover);
+  const findUserCalloutDismisser = () => wrapper.findComponent(UserCalloutDismisser);
+
+  beforeEach(() => {
+    mockDismiss.mockClear();
+    mockShouldShowCallout = true;
+  });
+
+  describe('initialization', () => {
+    it('is initialized with simple viewer as active', () => {
+      createComponent();
+      expect(findSimpleViewerButton().props('selected')).toBe(true);
+      expect(findRichViewerButton().props('selected')).toBe(false);
+    });
+
+    it('sets aria-pressed on the active viewer button', () => {
+      createComponent();
+      expect(findSimpleViewerButton().attributes('aria-pressed')).toBe('true');
+      expect(findRichViewerButton().attributes('aria-pressed')).toBe('false');
+    });
+  });
+
+  describe('rendering', () => {
+    let btnGroup;
+    let buttons;
+
+    beforeEach(() => {
+      createComponent();
+      btnGroup = wrapper.findComponent(GlButtonGroup);
+      buttons = wrapper.findAllComponents(GlButton);
+    });
+
+    it('renders gl-button-group component', () => {
+      expect(btnGroup.exists()).toBe(true);
+    });
+
+    it('renders exactly 2 buttons with predefined actions', () => {
+      expect(buttons).toHaveLength(2);
+      [SIMPLE_BLOB_VIEWER_TITLE, RICH_BLOB_VIEWER_TITLE].forEach((title, i) => {
+        expect(buttons.at(i).attributes('title')).toBe(title);
+      });
+    });
+  });
+
+  describe('viewer changes', () => {
+    it('does not switch the viewer if the selected one is already active', async () => {
+      createComponent();
+      expect(findSimpleViewerButton().props('selected')).toBe(true);
+
+      findSimpleViewerButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findSimpleViewerButton().props('selected')).toBe(true);
+      expect(wrapper.emitted('input')).toBe(undefined);
+    });
+
+    it('emits an event when a Rich Viewer button is clicked', async () => {
+      createComponent();
+      expect(findSimpleViewerButton().props('selected')).toBe(true);
+
+      findRichViewerButton().vm.$emit('click');
+      await nextTick();
+
+      expect(wrapper.emitted('input')).toEqual([[RICH_BLOB_VIEWER]]);
+    });
+
+    it('emits an event when a Simple Viewer button is clicked', async () => {
+      createComponent({ value: RICH_BLOB_VIEWER, showViewerToggles: true });
+
+      findSimpleViewerButton().vm.$emit('click');
+      await nextTick();
+
+      expect(wrapper.emitted('input')).toEqual([[SIMPLE_BLOB_VIEWER]]);
+    });
+  });
+
+  it('does not render simple and rich viewer buttons if `showViewerToggles` is `false`', () => {
+    createComponent({ showViewerToggles: false });
+
+    expect(findSimpleViewerButton().exists()).toBe(false);
+    expect(findRichViewerButton().exists()).toBe(false);
+  });
+
+  it('does not render a Blame button if `showBlameToggle` is `false`', async () => {
+    createComponent({ showBlameToggle: false });
+    await nextTick();
+
+    expect(findBlameButton().exists()).toBe(false);
+  });
+
+  it('adds a hover directive to the Blame button', () => {
+    createComponent({ showBlameToggle: true });
+
+    const hoverLoadDirective = getBinding(findBlameButton().element, 'gl-hover-load');
+
+    expect(hoverLoadDirective).toBeDefined();
+    expect(hoverLoadDirective.value).toBeInstanceOf(Function);
+  });
+
+  it('emits preload-blame event on focus', () => {
+    createComponent({ showBlameToggle: true });
+
+    findBlameButton().vm.$emit('focus');
+
+    expect(wrapper.emitted('preload-blame')).toHaveLength(1);
+  });
+
+  it('emits an event when the Blame button is clicked', async () => {
+    createComponent({ showBlameToggle: true });
+
+    findBlameButton().trigger('click');
+    await nextTick();
+
+    expect(wrapper.emitted('blame')).toHaveLength(1);
+  });
+
+  it('sets aria-pressed on the Blame button based on viewer state', () => {
+    createComponent({ showBlameToggle: true });
+    expect(findBlameButton().attributes('aria-pressed')).toBe('false');
+  });
+
+  it('sets aria-pressed to true on the Blame button when blame is active', () => {
+    createComponent({ showBlameToggle: true, value: 'blame' });
+    expect(findBlameButton().attributes('aria-pressed')).toBe('true');
+  });
+
+  it('emits a tracking event when the Blame button is clicked', async () => {
+    trackingSpy = mockTracking(undefined, wrapper.element, jest.spyOn);
+    createComponent({ showBlameToggle: true });
+
+    findBlameButton().trigger('click');
+    await nextTick();
+
+    expect(trackingSpy).toHaveBeenCalledWith(
+      undefined,
+      'open_blame_viewer_on_blob_page',
+      expect.any(Object),
+    );
+  });
+
+  describe('viewer toggles', () => {
+    it('renders text toggles', () => {
+      createComponent({ showViewerToggles: true });
+      expect(findSimpleViewerButton().text()).toBe('Code');
+      expect(findRichViewerButton().text()).toBe('Preview');
+    });
+  });
+
+  describe('inline blame popover', () => {
+    it('does not render the popover when the Blame toggle is hidden', () => {
+      createComponent({ showBlameToggle: false });
+      expect(findUserCalloutDismisser().exists()).toBe(false);
+    });
+
+    it('renders UserCalloutDismisser with the correct feature name', async () => {
+      createComponent({ showBlameToggle: true });
+      await nextTick();
+      expect(findUserCalloutDismisser().props('featureName')).toBe('inline_blame_popover');
+    });
+
+    it('passes a function that returns the Blame button element as targetElement', async () => {
+      createComponent({ showBlameToggle: true });
+      await nextTick();
+      const { targetElement } = findInlineBlamePopover().props();
+      expect(typeof targetElement).toBe('function');
+      expect(targetElement()).toBe(findBlameButton().element);
+    });
+
+    it('calls dismiss when the popover emits dismiss', async () => {
+      createComponent({ showBlameToggle: true });
+      await nextTick();
+      findInlineBlamePopover().vm.$emit('dismiss');
+      expect(mockDismiss).toHaveBeenCalled();
+    });
+
+    it('does not render the popover when the callout has been dismissed', async () => {
+      mockShouldShowCallout = false;
+      createComponent({ showBlameToggle: true });
+      await nextTick();
+      expect(findInlineBlamePopover().exists()).toBe(false);
+    });
+  });
+});

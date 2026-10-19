@@ -1,0 +1,355 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::PipelinesForMergeRequestFinder, feature_category: :continuous_integration do
+  describe '#execute' do
+    include ProjectForksHelper
+
+    subject { finder.execute }
+
+    let_it_be(:developer_in_parent) { create(:user) }
+    let_it_be(:developer_in_fork) { create(:user) }
+    let_it_be(:developer_in_both) { create(:user) }
+    let_it_be(:reporter_in_parent_and_developer_in_fork) { create(:user) }
+    let_it_be(:external_user) { create(:user) }
+    let_it_be(:parent_project) { create(:project, :repository, :private) }
+    let_it_be(:forked_project) { fork_project(parent_project, nil, repository: true, target_project: create(:project, :private, :repository)) }
+
+    let_it_be(:merge_request) do
+      create(
+        :merge_request, source_project: forked_project, source_branch: 'feature',
+        target_project: parent_project, target_branch: 'master'
+      )
+    end
+
+    let_it_be(:pipeline_in_parent) do
+      create(:ci_pipeline, :merged_result_pipeline, merge_request: merge_request, project: parent_project)
+    end
+
+    let_it_be(:pipeline_in_fork) do
+      create(:ci_pipeline, :merged_result_pipeline, merge_request: merge_request, project: forked_project)
+    end
+
+    let(:finder) { described_class.new(merge_request, actor) }
+
+    before_all do
+      parent_project.add_developer(developer_in_parent)
+      parent_project.add_developer(developer_in_both)
+      parent_project.add_reporter(reporter_in_parent_and_developer_in_fork)
+      forked_project.add_developer(developer_in_fork)
+      forked_project.add_developer(developer_in_both)
+      forked_project.add_developer(reporter_in_parent_and_developer_in_fork)
+    end
+
+    context 'when actor has permission to read pipelines in both parent and forked projects' do
+      let(:actor) { developer_in_both }
+
+      it 'returns all pipelines' do
+        is_expected.to match_array([pipeline_in_fork, pipeline_in_parent])
+      end
+    end
+
+    context 'when actor has permission to read pipelines in both parent and forked projects' do
+      let(:actor) { reporter_in_parent_and_developer_in_fork }
+
+      it 'returns all pipelines' do
+        is_expected.to match_array([pipeline_in_fork, pipeline_in_parent])
+      end
+    end
+
+    context 'when actor has permission to read pipelines in the parent project only' do
+      let(:actor) { developer_in_parent }
+
+      it 'returns pipelines in parent' do
+        is_expected.to match_array([pipeline_in_parent])
+      end
+
+      it 'scopes to the target project by equality, with no fork id, IN list, or union' do
+        sql = subject.to_sql
+
+        expect(sql).to include(%("project_id" = #{parent_project.id}))
+        expect(sql).not_to include(%("project_id" = #{forked_project.id}))
+        expect(sql).not_to match(/"project_id" IN/)
+        expect(sql).not_to include('UNION')
+      end
+    end
+
+    context 'when actor has permission to read pipelines in the forked project only' do
+      let(:actor) { developer_in_fork }
+
+      it 'returns pipelines in fork' do
+        is_expected.to match_array([pipeline_in_fork])
+      end
+
+      it 'keeps the union and scopes each arm to the source project by equality' do
+        sql = subject.to_sql
+
+        expect(sql).to include('UNION')
+        expect(sql).not_to match(/"project_id" IN/)
+        # The merge-request-event arm itself is equality-scoped to the fork, not just the branch arm.
+        expect(sql).to match(/"merge_request_id" = \d+ AND [^()]*"project_id" = #{forked_project.id}/)
+      end
+    end
+
+    context 'when actor does not have permission to read pipelines' do
+      let(:actor) { external_user }
+
+      it 'returns nothing' do
+        is_expected.to be_empty
+      end
+    end
+
+    context 'when actor is nil' do
+      let(:actor) { nil }
+
+      it 'returns nothing' do
+        is_expected.to be_empty
+      end
+    end
+
+    context 'when the ci_pipelines_for_mr_single_project_scope flag is disabled' do
+      before do
+        stub_feature_flags(ci_pipelines_for_mr_single_project_scope: false)
+      end
+
+      context 'with a parent-only viewer' do
+        let(:actor) { developer_in_parent }
+
+        it 'returns the same pipelines' do
+          is_expected.to match_array([pipeline_in_parent])
+        end
+      end
+
+      context 'with a fork-only viewer' do
+        let(:actor) { developer_in_fork }
+
+        it 'returns the same pipelines' do
+          is_expected.to match_array([pipeline_in_fork])
+        end
+      end
+    end
+
+    context 'with an unsaved fork merge request' do
+      let_it_be(:unsaved_target_project) { create(:project, :repository, :private) }
+      let_it_be(:unsaved_source_project) { fork_project(unsaved_target_project, nil, repository: true) }
+
+      let(:merge_request) do
+        build(
+          :merge_request, source_project: unsaved_source_project, source_branch: 'feature',
+          target_project: unsaved_target_project, target_branch: 'master'
+        )
+      end
+
+      let!(:branch_pipeline) do
+        create(
+          :ci_pipeline, source: :push, project: unsaved_source_project,
+          ref: 'feature', sha: merge_request.diff_head_sha
+        )
+      end
+
+      context 'when actor can read pipelines in the forked project only' do
+        let(:actor) { create(:user, developer_of: unsaved_source_project) }
+
+        it 'returns the source branch pipeline' do
+          is_expected.to contain_exactly(branch_pipeline)
+        end
+      end
+
+      context 'when actor can read pipelines in the parent project only' do
+        let(:actor) { create(:user, developer_of: unsaved_target_project) }
+
+        it 'returns nothing, since branch pipelines are source-only' do
+          is_expected.to be_empty
+        end
+      end
+    end
+  end
+
+  describe '#all' do
+    let_it_be_with_reload(:merge_request) { create(:merge_request) }
+    let(:project) { merge_request.source_project }
+
+    subject { described_class.new(merge_request, nil) }
+
+    shared_examples 'returning pipelines with proper ordering' do
+      let!(:all_pipelines) do
+        merge_request.recent_diff_head_shas.map do |sha|
+          create(:ci_pipeline,
+            project: project, sha: sha, ref: merge_request.source_branch)
+        end
+      end
+
+      it 'returns all pipelines' do
+        expect(subject.all).not_to be_empty
+        expect(subject.all).to eq(all_pipelines.reverse)
+      end
+    end
+
+    context 'with single merge_request_diffs' do
+      it_behaves_like 'returning pipelines with proper ordering'
+    end
+
+    context 'with multiple irrelevant merge_request_diffs' do
+      before do
+        merge_request.update!(target_branch: 'v1.0.0')
+      end
+
+      it_behaves_like 'returning pipelines with proper ordering'
+    end
+
+    context 'with unsaved merge request' do
+      let(:merge_request) { build(:merge_request, source_project: create(:project, :small_repo)) }
+
+      let!(:pipeline) do
+        create(
+          :ci_pipeline, project: project,
+          sha: merge_request.diff_head_sha, ref: merge_request.source_branch
+        )
+      end
+
+      it 'returns pipelines from diff_head_sha' do
+        expect(subject.all).to contain_exactly(pipeline)
+      end
+    end
+
+    context 'when pipelines exist for the branch and merge request' do
+      let_it_be(:project) { create(:project, :repository) }
+      let_it_be(:source_ref) { 'feature' }
+      let_it_be(:target_ref) { 'master' }
+      let_it_be(:shas) { project.repository.commits(source_ref, limit: 2).map(&:id) }
+
+      let_it_be_with_reload(:merge_request) do
+        create(
+          :merge_request, source_project: project, source_branch: source_ref,
+          target_project: project, target_branch: target_ref
+        )
+      end
+
+      let_it_be(:branch_pipeline) do
+        create(
+          :ci_pipeline, source: :push, project: project,
+          ref: source_ref, sha: merge_request.merge_request_diff.head_commit_sha
+        )
+      end
+
+      let_it_be(:tag_pipeline) do
+        create(:ci_pipeline, project: project, ref: source_ref, tag: true)
+      end
+
+      let_it_be(:detached_merge_request_pipeline) do
+        create(
+          :ci_pipeline, source: :merge_request_event, project: project,
+          ref: source_ref, sha: shas.second, merge_request: merge_request
+        )
+      end
+
+      it 'returns merge request pipeline first' do
+        expect(subject.all).to match_array([detached_merge_request_pipeline, branch_pipeline])
+      end
+
+      context 'when there are a branch pipeline and a merge request pipeline' do
+        let_it_be(:branch_pipeline_2) do
+          create(:ci_pipeline, source: :push, project: project, ref: source_ref, sha: shas.first)
+        end
+
+        let_it_be(:detached_merge_request_pipeline_2) do
+          create(
+            :ci_pipeline, source: :merge_request_event, project: project,
+            ref: source_ref, sha: shas.first, merge_request: merge_request
+          )
+        end
+
+        it 'returns merge request pipelines first' do
+          expect(subject.all)
+            .to match_array([detached_merge_request_pipeline_2, detached_merge_request_pipeline, branch_pipeline_2, branch_pipeline])
+        end
+      end
+
+      context 'when there are multiple merge request pipelines from the same branch' do
+        let_it_be_with_reload(:merge_request_2) do
+          create(
+            :merge_request, source_project: project, source_branch: source_ref,
+            target_project: project, target_branch: 'stable'
+          )
+        end
+
+        let_it_be(:branch_pipeline_2) do
+          create(:ci_pipeline, source: :push, project: project, ref: source_ref, sha: shas.first)
+        end
+
+        let_it_be(:branch_pipeline_with_sha_not_belonging_to_merge_request) do
+          create(:ci_pipeline, source: :push, project: project, ref: source_ref)
+        end
+
+        let_it_be(:detached_merge_request_pipeline_2) do
+          create(
+            :ci_pipeline, source: :merge_request_event, project: project,
+            ref: source_ref, sha: shas.first, merge_request: merge_request_2
+          )
+        end
+
+        before do
+          shas.each.with_index do |sha, index|
+            create(
+              :merge_request_diff_commit,
+              merge_request_diff: merge_request_2.merge_request_diff,
+              sha: sha, relative_order: index
+            )
+          end
+        end
+
+        it 'returns only related merge request pipelines' do
+          expect(subject.all).to match_array([detached_merge_request_pipeline, branch_pipeline_2, branch_pipeline])
+
+          expect(described_class.new(merge_request_2, nil).all)
+            .to match_array([detached_merge_request_pipeline_2, branch_pipeline_2, branch_pipeline])
+        end
+      end
+
+      context 'when detached merge request pipeline is run on head ref of the merge request' do
+        let_it_be(:detached_merge_request_pipeline) do
+          create(
+            :ci_pipeline, source: :merge_request_event, project: project,
+            ref: merge_request.ref_path, sha: shas.second, merge_request: merge_request
+          )
+        end
+
+        it 'sets the head ref of the merge request to the pipeline ref' do
+          expect(detached_merge_request_pipeline.ref).to match(%r{refs/merge-requests/\d+/head})
+        end
+
+        it 'includes the detached merge request pipeline even though the ref is custom path' do
+          expect(merge_request.all_pipelines).to include(detached_merge_request_pipeline)
+        end
+      end
+    end
+  end
+
+  describe '#authorizing_project' do
+    include ProjectForksHelper
+
+    let_it_be(:parent_project) { create(:project, :repository, :private) }
+    let_it_be(:forked_project) { fork_project(parent_project, nil, repository: true, target_project: create(:project, :private, :repository)) }
+
+    let_it_be(:merge_request) do
+      create(
+        :merge_request, source_project: forked_project, source_branch: 'feature',
+        target_project: parent_project, target_branch: 'master')
+    end
+
+    subject(:authorizing_project) { described_class.new(merge_request, user).authorizing_project }
+
+    context 'when the user can read pipelines in the source project' do
+      let_it_be(:user) { create(:user, developer_of: forked_project) }
+
+      it { is_expected.to eq(forked_project) }
+    end
+
+    context 'when the user cannot read pipelines in the source project' do
+      let_it_be(:user) { create(:user, developer_of: parent_project) }
+
+      it { is_expected.to eq(parent_project) }
+    end
+  end
+end

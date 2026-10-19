@@ -1,114 +1,554 @@
-module API
-  module APIHelpers
-    PRIVATE_TOKEN_HEADER = "HTTP_PRIVATE_TOKEN"
-    PRIVATE_TOKEN_PARAM = :private_token
-    SUDO_HEADER ="HTTP_SUDO"
-    SUDO_PARAM = :sudo
+# frozen_string_literal: true
 
-    def parse_boolean(value)
-      [ true, 1, '1', 't', 'T', 'true', 'TRUE', 'on', 'ON' ].include?(value)
+module API
+  module Helpers
+    include Gitlab::Allowable
+    include Gitlab::Utils
+    include Helpers::Caching
+    include Helpers::Pagination
+    include Helpers::PaginationStrategies
+    include Gitlab::Ci::Artifacts::Logger
+    include Gitlab::Utils::StrongMemoize
+    include Gitlab::RackLoadBalancingHelpers
+    include Gitlab::ResourceLookup
+
+    SUDO_HEADER = "HTTP_SUDO"
+    GITLAB_SHARED_SECRET_HEADER = "Gitlab-Shared-Secret"
+    SUDO_PARAM = :sudo
+    API_USER_ENV = 'gitlab.api.user'
+    API_EXCEPTION_ENV = 'gitlab.api.exception'
+    API_RESPONSE_STATUS_CODE = 'gitlab.api.response_status_code'
+    INTEGER_ID_REGEX = Gitlab::ResourceLookup::INTEGER_ID_REGEX
+    GLOBAL_ID_LOG_REGEXES = [
+      %r{^/ai/.*$},
+      %r{^/code_suggestions/.*$}
+    ].freeze
+
+    # ai_workflows scope is used by Duo Workflow which is an AI automation tool, requests authenticated by token with
+    # this scope are audited to keep track of all actions done by Duo Workflow.
+    TOKEN_SCOPES_TO_AUDIT = [:ai_workflows].freeze
+
+    def logger
+      API.logger
     end
 
-    def current_user
-      private_token = (params[PRIVATE_TOKEN_PARAM] || env[PRIVATE_TOKEN_HEADER]).to_s
-      @current_user ||= (User.find_by(authentication_token: private_token) || doorkeeper_guard)
+    def declared_params(options = {})
+      options = { include_parent_namespaces: false }.merge(options)
+      # Splatted: Grape 3.x takes these as keywords, Grape 2.4 as a positional hash. `**` satisfies both.
+      declared(params, **options).to_h.symbolize_keys
+    end
 
-      unless @current_user && Gitlab::UserAccess.allowed?(@current_user)
-        return nil
+    def check_unmodified_since!(last_modified)
+      if_unmodified_since = begin
+        Time.parse(headers['If-Unmodified-Since'])
+      rescue StandardError
+        nil
       end
 
-      identifier = sudo_identifier()
+      if if_unmodified_since && last_modified && last_modified > if_unmodified_since
+        render_api_error!('412 Precondition Failed', 412)
+      end
+    end
 
-      # If the sudo is the current user do nothing
-      if identifier && !(@current_user.id == identifier || @current_user.username == identifier)
-        render_api_error!('403 Forbidden: Must be admin to use sudo', 403) unless @current_user.is_admin?
-        @current_user = User.by_username_or_id(identifier)
-        not_found!("No user id or username for: #{identifier}") if @current_user.nil?
+    def destroy_conditionally!(resource, last_updated: nil)
+      last_updated ||= resource.updated_at
+
+      check_unmodified_since!(last_updated)
+
+      status 204
+      body false
+
+      if block_given?
+        yield resource
+      else
+        resource.destroy
+      end
+    end
+
+    def job_token_authentication?
+      initial_current_user && @current_authenticated_job.present? # rubocop:disable Gitlab/ModuleWithInstanceVariables
+    end
+
+    # Returns the job associated with the token provided for
+    # authentication, if any
+    def current_authenticated_job
+      if try(:inheritable_setting)&.namespace_inheritable&.[](:authentication)
+        ci_build_from_namespace_inheritable
+      else
+        @current_authenticated_job # rubocop:disable Gitlab/ModuleWithInstanceVariables
+      end
+    end
+
+    # rubocop:disable Gitlab/ModuleWithInstanceVariables
+    # We can't rewrite this with StrongMemoize because `sudo!` would
+    # actually write to `@current_user`, and `sudo?` would immediately
+    # call `current_user` again which reads from `@current_user`.
+    # We should rewrite this in a way that using StrongMemoize is possible
+    def current_user
+      return @current_user if defined?(@current_user)
+
+      @current_user = initial_current_user
+
+      Gitlab::I18n.locale = @current_user&.preferred_language
+
+      sudo!
+
+      token = sudo? ? access_token : validate_and_save_access_token!(scopes: scopes_registered_for_endpoint)
+      authorize_granular_token_scopes!(token)
+
+      save_current_user_in_env(@current_user) if @current_user
+
+      if @current_user
+        load_balancer_stick_request(::ApplicationRecord, :user, @current_user.id)
+        audit_request_with_token_scope(@current_user)
       end
 
       @current_user
     end
+    # rubocop:enable Gitlab/ModuleWithInstanceVariables
 
-    def sudo_identifier()
-      identifier ||= params[SUDO_PARAM] ||= env[SUDO_HEADER]
+    def set_current_organization(user: current_user)
+      # Resolved even when #organization is already assigned, so URL helpers
+      # can consult the resolver (e.g. the Organization header) for scoping.
+      ::Current.organization_resolver ||= Gitlab::Current::Organization.new(
+        params: {},
+        user: user,
+        rack_env: request.env
+      )
 
-      # Regex for integers
-      if !!(identifier =~ /^[0-9]+$/)
-        identifier.to_i
-      else
-        identifier
+      return if ::Current.organization_assigned
+
+      ::Current.organization = ::Current.organization_resolver.organization
+
+      check_organization_maintenance_mode!
+    end
+
+    def save_current_user_in_env(user)
+      env[API_USER_ENV] = { user_id: user.id, username: user.username, user_is_bot: user.respond_to?(:bot?) && user.bot? }
+
+      if GLOBAL_ID_LOG_REGEXES.any? { |re| re.match?(env["api.endpoint"]&.namespace) }
+        env[API_USER_ENV][:global_user_id] = Gitlab::GlobalAnonymousId.user_id(user)
       end
+    end
+
+    def sudo?
+      initial_current_user != current_user
+    end
+
+    def user_group
+      @group ||= find_group!(params[:id])
     end
 
     def user_project
-      @project ||= find_project(params[:id])
-      @project || not_found!("Project")
+      @project ||= find_project!(params[:id])
+    end
+
+    def available_labels_for(label_parent, params = { include_ancestor_groups: true, only_group_labels: true })
+      if label_parent.is_a?(Project)
+        params.delete(:only_group_labels)
+        params[:project_id] = label_parent.id
+      else
+        params[:group_id] = label_parent.id
+      end
+
+      LabelsFinder.new(current_user, params).execute
+    end
+
+    def find_user(id)
+      UserFinder.new(id).find_by_id_or_username
     end
 
     def find_project(id)
-      project = Project.find_with_namespace(id) || Project.find_by(id: id)
+      lookup_project(id, scope: find_project_scopes)
+    end
 
-      if project && can?(current_user, :read_project, project)
-        project
+    # Can be overridden by API endpoints
+    def find_project_scopes
+      Project.without_deleted.not_hidden
+    end
+
+    def find_project!(id)
+      project = find_project(id)
+
+      return forbidden!("This project's CI/CD job token cannot be used to authenticate with the container registry of a different project.") unless authorized_project_scope?(project)
+      return not_found!('Project') if project.nil?
+
+      unless can?(current_user, read_project_ability, project)
+        return unauthorized! if authenticate_non_public?
+
+        return handle_job_token_failure!(project)
+      end
+
+      authorize_job_token_policies!(project) && return
+
+      if project_moved?(id, project)
+        return not_allowed!('Non GET methods are not allowed for moved projects') unless request.get?
+
+        return redirect!(url_with_project_id(project))
+      end
+
+      check_organization_maintenance_mode_for!(project)
+
+      project
+    end
+
+    def authorize_job_token_policies!(project)
+      forbidden!(job_token_policies_unauthorized_message(project)) unless job_token_policies_authorized?(project)
+    end
+
+    def read_project_ability
+      :read_project
+    end
+
+    def authorized_project_scope?(project)
+      return true unless job_token_authentication?
+      return true unless route_authentication_setting[:job_token_scope] == :project
+
+      current_authenticated_job.project == project
+    end
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def find_pipeline(id)
+      return unless id
+
+      if INTEGER_ID_REGEX.match?(id.to_s)
+        ::Ci::Pipeline.find_by(id: id)
+      end
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def find_pipeline!(id)
+      pipeline = find_pipeline(id)
+      check_pipeline_access(pipeline)
+    end
+
+    def check_pipeline_access(pipeline)
+      return forbidden! unless authorized_project_scope?(pipeline&.project)
+
+      return pipeline if can?(current_user, :read_pipeline, pipeline)
+      return unauthorized! if authenticate_non_public?
+
+      not_found!('Pipeline')
+    end
+
+    def find_organization!(id)
+      organization = ::Organizations::Organization.find_by_id(id)
+      check_organization_access(organization)
+    end
+
+    def find_group(id, organization: nil)
+      collection = organization.present? ? Group.in_organization(organization) : Group.all
+
+      lookup_group(id, scope: collection)
+    end
+
+    def find_group!(id, organization: nil)
+      group = find_group(id, organization: organization)
+      # We need to ensure the namespace is in the context since
+      # it's possible a method such as bypass_session! might log
+      # a message before @group is set.
+      ::Gitlab::ApplicationContext.push(namespace: group) if group
+      result = check_group_access(group)
+
+      check_organization_maintenance_mode_for!(result)
+
+      result
+    end
+
+    def find_group_by_full_path!(full_path)
+      group = Group.find_by_full_path(full_path)
+      result = check_group_access(group)
+
+      check_organization_maintenance_mode_for!(result)
+
+      result
+    end
+
+    def check_group_access(group)
+      return group if can?(current_user, :read_group, group)
+      return unauthorized! if authenticate_non_public?
+
+      not_found!('Group')
+    end
+
+    def check_namespace_access(namespace)
+      return namespace if can?(current_user, :read_namespace_via_membership, namespace)
+
+      not_found!('Namespace')
+    end
+
+    # find_namespace returns the namespace regardless of user access level on the namespace
+    # rubocop: disable CodeReuse/ActiveRecord
+    def find_namespace(id, allow_project_namespaces: false)
+      if INTEGER_ID_REGEX.match?(id.to_s)
+        # We need to stick to an up-to-date replica or primary db here in order to properly observe the namespace
+        # recently created by GitlabSubscriptions::Trials::UltimateCreateService.
+        # See https://gitlab.com/gitlab-org/customers-gitlab-com/-/issues/9808
+        ::Namespace.sticking.find_caught_up_replica(:namespace, id)
+
+        scope = allow_project_namespaces ? Namespace : Namespace.without_project_namespaces
+        scope.find_by(id: id)
       else
-        nil
+        find_namespace_by_path(id, allow_project_namespaces: allow_project_namespaces)
       end
     end
 
-    def find_group(id)
-      begin
-        group = Group.find(id)
-      rescue ActiveRecord::RecordNotFound
-        group = Group.find_by!(path: id)
-      end
+    # Boundary for `namespaces/:id` routes, resolved by path exactly like the handlers so a numeric path
+    # can't be read as a project or group ID. Anything but a project or group has no boundary.
+    def namespace_path_boundary
+      namespace = find_namespace_by_path(params[:id].to_s, allow_project_namespaces: true)
 
-      if can?(current_user, :read_group, group)
-        group
-      else
-        forbidden!("#{current_user.username} lacks sufficient "\
-        "access to #{group.name}")
+      case namespace
+      when ::Namespaces::ProjectNamespace then namespace.project
+      when ::Group then namespace
       end
     end
 
-    def paginate(relation)
-      per_page  = params[:per_page].to_i
-      paginated = relation.page(params[:page]).per(per_page)
-      add_pagination_headers(paginated, per_page)
+    def find_namespace_by_path(path, allow_project_namespaces: false)
+      scope = allow_project_namespaces ? Namespace : Namespace.without_project_namespaces
+      namespace = scope.find_by_full_path(path)
 
-      paginated
+      return namespace if namespace
+      return unless allow_project_namespaces
+
+      Project.find_by_full_path(path)&.project_namespace
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    # Import destinations are a group or a personal namespace. Anything else, including a
+    # path that resolves to nothing, has no boundary so a granular token gets a 404.
+    def import_target_boundary(namespace)
+      case namespace
+      when ::Group then namespace
+      when ::Namespaces::UserNamespace then :user
+      end
+    end
+
+    # find_namespace! returns the namespace if the current user can read the given namespace
+    # Otherwise, returns a not_found! error
+    def find_namespace!(id, allow_project_namespaces: false)
+      namespace = find_namespace(id, allow_project_namespaces: allow_project_namespaces)
+
+      resolve_namespace_access!(namespace)
+    end
+
+    def find_namespace_by_path!(path, allow_project_namespaces: false)
+      namespace = find_namespace_by_path(path, allow_project_namespaces: allow_project_namespaces)
+
+      resolve_namespace_access!(namespace)
+    end
+
+    def resolve_namespace_access!(namespace)
+      if namespace.is_a?(::Namespaces::ProjectNamespace)
+        if can?(current_user, read_project_ability, namespace)
+          check_organization_maintenance_mode_for!(namespace)
+          return namespace
+        end
+
+        return unauthorized! if authenticate_non_public?
+
+        return not_found!('Project')
+      end
+
+      accessible_namespace = check_namespace_access(namespace)
+      check_organization_maintenance_mode_for!(accessible_namespace)
+
+      accessible_namespace
+    end
+
+    def find_branch!(branch_name)
+      if Gitlab::GitRefValidator.validate(branch_name)
+        user_project.repository.find_branch(branch_name) || not_found!('Branch')
+      else
+        render_api_error!('The branch refname is invalid', 400)
+      end
+    end
+
+    def find_tag!(tag_name)
+      if Gitlab::GitRefValidator.validate(tag_name)
+        user_project.repository.find_tag(tag_name) || not_found!('Tag')
+      else
+        render_api_error!('The tag refname is invalid', 400)
+      end
+    end
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def find_project_issue(iid, project_id = nil)
+      project = project_id ? find_project!(project_id) : user_project
+
+      ::IssuesFinder.new(
+        current_user,
+        project_id: project.id,
+        issue_types: ::WorkItems::TypesFramework::Provider.unfiltered_base_types_for_issues
+      ).find_by!(iid: iid)
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def find_project_merge_request(iid, project: user_project)
+      MergeRequestsFinder.new(current_user, project_id: project.id).find_by!(iid: iid)
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def find_project_commit(id)
+      user_project.commit_by(oid: id)
+    end
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def find_merge_request_with_access(iid, access_level = :read_merge_request)
+      merge_request = user_project.merge_requests.find_by!(iid: iid)
+      authorize! access_level, merge_request
+      merge_request
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def find_build!(id)
+      user_project.builds.find(id.to_i)
+    end
+
+    def find_job!(id)
+      user_project.processables.find(id.to_i)
     end
 
     def authenticate!
       unauthorized! unless current_user
     end
 
+    def authenticate_non_get!
+      authenticate! unless %w[GET HEAD].include?(route.request_method)
+    end
+
     def authenticate_by_gitlab_shell_token!
-      input = params['secret_token'].try(:chomp)
-      unless Devise.secure_compare(secret_token, input)
-        unauthorized!
-      end
+      unauthorized! unless Gitlab::Shell.verify_api_request(headers)
+    end
+
+    def authenticate_by_gitlab_shell_or_workhorse_token!
+      return require_gitlab_workhorse! unless Gitlab::Shell.header_set?(headers)
+
+      authenticate_by_gitlab_shell_token!
+    end
+
+    def authenticated_with_can_read_all_resources!
+      authenticate!
+      forbidden! unless current_user.can_read_all_resources?
     end
 
     def authenticated_as_admin!
-      forbidden! unless current_user.is_admin?
+      authenticate!
+      forbidden! unless current_user.can_admin_all_resources?
     end
 
-    def authorize!(action, subject)
-      unless abilities.allowed?(current_user, action, subject)
-        forbidden!
-      end
+    def authorize_read_application_statistics!
+      authenticate!
+      forbidden! unless current_user.can?(:read_application_statistics)
+    end
+
+    def authorize!(action, subject = :global, reason = nil)
+      forbidden!(reason) unless can?(current_user, action, subject)
+    end
+
+    def authorize_any!(abilities, subject = :global, reason = nil)
+      forbidden!(reason) unless can_any?(current_user, abilities, subject)
     end
 
     def authorize_push_project
       authorize! :push_code, user_project
     end
 
+    def authorize_admin_tag
+      authorize! :admin_tag, user_project
+    end
+
     def authorize_admin_project
       authorize! :admin_project, user_project
     end
 
-    def can?(object, action, subject)
-      abilities.allowed?(object, action, subject)
+    def authorize_admin_project_integrations
+      authorize! :admin_integrations, user_project
+    end
+
+    def authorize_admin_group_integrations
+      authorize! :admin_integrations, user_group
+    end
+
+    def authorize_admin_group
+      authorize! :admin_group, user_group
+    end
+
+    def authorize_admin_member_role_on_group!
+      authorize! :admin_member_role, user_group
+    end
+
+    def authorize_admin_member_role_on_instance!
+      authorize! :admin_member_role
+    end
+
+    def authorize_read_attestations!
+      authorize! :read_attestation, user_project
+    end
+
+    def authorize_read_builds!
+      authorize! :read_build, user_project
+    end
+
+    def authorize_read_code!
+      authorize! :read_code, user_project
+    end
+
+    def authorize_read_build_trace!(build)
+      authorize! :read_build_trace, build
+    end
+
+    def authorize_read_job_artifacts!(build)
+      authorize! :read_job_artifacts, build
+    end
+
+    def authorize_delete_job_artifact!
+      authorize! :delete_job_artifact, user_project
+    end
+
+    def authorize_cancel_builds!
+      authorize! :cancel_build, user_project
+    end
+
+    def require_repository_enabled!(subject = :global)
+      not_found!("Repository") unless user_project.feature_available?(:repository, current_user)
+    end
+
+    def require_gitlab_workhorse!
+      verify_workhorse_api!
+
+      unless env['HTTP_GITLAB_WORKHORSE'].present?
+        forbidden!('Request should be executed via GitLab Workhorse')
+      end
+    end
+
+    def verify_workhorse_api!
+      Gitlab::Workhorse.verify_api_request!(request.headers)
+    rescue StandardError => e
+      Gitlab::ErrorTracking.track_exception(e)
+
+      forbidden!
+    end
+
+    # Chokepoint for emitting Gitlab-Workhorse-Send-Data response headers from
+    # Grape route bodies. Verifies the Workhorse JWT first so the senddata
+    # payload (which may carry Gitaly credentials or pre-signed object storage
+    # URLs) cannot escape Rails unless the request came through Workhorse.
+    # The senddata helpers in this file (send_git_blob, send_git_archive, etc.)
+    # call verify_workhorse_api! directly; this wrapper exists for routes that
+    # emit the header inline rather than through a typed helper.
+    def send_workhorse_headers!(*pair)
+      verify_workhorse_api!
+      header(*pair)
+    end
+
+    def require_pages_enabled!
+      not_found! unless ::Gitlab::Pages.enabled?
+    end
+
+    def require_pages_config_enabled!
+      not_found! unless Gitlab.config.pages.enabled
     end
 
     # Checks the occurrences of required attributes, each attribute must be present in the params hash
@@ -118,77 +558,67 @@ module API
     #   keys (required) - A hash consisting of keys that must be present
     def required_attributes!(keys)
       keys.each do |key|
-        bad_request!(key) unless params[key].present?
+        bad_request_missing_attribute!(key) unless params[key].present?
       end
     end
 
-    def attributes_for_keys(keys)
+    def attributes_for_keys(keys, custom_params = nil)
+      params_hash = custom_params || params
       attrs = {}
-
       keys.each do |key|
-        if params[key].present? or (params.has_key?(key) and params[key] == false)
-          attrs[key] = params[key]
+        if params_hash[key].present? || (params_hash.key?(key) && params_hash[key] == false)
+          attrs[key] = params_hash[key]
         end
       end
-
-      ActionController::Parameters.new(attrs).permit!
-    end
-
-    # Helper method for validating all labels against its names
-    def validate_label_params(params)
-      errors = {}
-
-      if params[:labels].present?
-        params[:labels].split(',').each do |label_name|
-          label = user_project.labels.create_with(
-            color: Label::DEFAULT_COLOR).find_or_initialize_by(
-              title: label_name.strip)
-
-          if label.invalid?
-            errors[label.title] = label.errors
-          end
-        end
-      end
-
-      errors
-    end
-
-    def validate_access_level?(level)
-      Gitlab::Access.options_with_owner.values.include? level.to_i
-    end
-
-    def issuable_order_by
-      if params["order_by"] == 'updated_at'
-        'updated_at'
-      else
-        'created_at'
-      end
-    end
-
-    def issuable_sort
-      if params["sort"] == 'asc'
-        :asc
-      else
-        :desc
-      end
+      permitted_attrs = ActionController::Parameters.new(attrs).permit!
+      permitted_attrs.to_h
     end
 
     def filter_by_iid(items, iid)
-      items.where(iid: iid)
+      items.iid_in(iid)
+    end
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def filter_by_title(items, title)
+      items.where(title: title)
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def filter_by_search(items, text)
+      items.search(text)
+    end
+
+    def order_options_with_tie_breaker(override_created_at: true)
+      order_by = if params[:order_by] == 'created_at' && override_created_at
+                   'id'
+                 else
+                   params[:order_by]
+                 end
+
+      order_options = { order_by => params[:sort] }
+      order_options['id'] ||= params[:sort] || 'asc'
+      order_options
+    end
+
+    # An error is raised to interrupt user's request and redirect them to the right route.
+    # The error! helper behaves similarly, but it cannot be used because it formats the
+    # response message.
+    def redirect!(location_url)
+      raise ::API::API::MovedPermanentlyError, location_url
     end
 
     # error helpers
 
     def forbidden!(reason = nil)
-      message = ['403 Forbidden']
-      message << " - #{reason}" if reason
-      render_api_error!(message.join(' '), 403)
+      render_api_error_with_reason!(403, '403 Forbidden', reason)
     end
 
-    def bad_request!(attribute)
-      message = ["400 (Bad request)"]
-      message << "\"" + attribute.to_s + "\" not given"
-      render_api_error!(message.join(' '), 400)
+    def bad_request!(reason = nil)
+      render_api_error_with_reason!(400, '400 Bad request', reason)
+    end
+
+    def bad_request_missing_attribute!(attribute)
+      bad_request!("\"#{attribute}\" not given")
     end
 
     def not_found!(resource = nil)
@@ -198,57 +628,785 @@ module API
       render_api_error!(message.join(' '), 404)
     end
 
-    def unauthorized!
-      render_api_error!('401 Unauthorized', 401)
+    def check_sha_param!(params, merge_request)
+      if params[:sha] && merge_request.diff_head_sha != params[:sha]
+        render_api_error!("SHA does not match HEAD of source branch: #{merge_request.diff_head_sha}", 409)
+      end
     end
 
-    def not_allowed!
-      render_api_error!('405 Method Not Allowed', 405)
+    def unauthorized!(reason = nil)
+      render_api_error_with_reason!(401, '401 Unauthorized', reason)
+    end
+
+    def not_allowed!(message = nil)
+      render_api_error!(message || '405 Method Not Allowed', :method_not_allowed)
+    end
+
+    def not_acceptable!(message = nil)
+      render_api_error!(message || '406 Not Acceptable', 406)
+    end
+
+    def service_unavailable!(message = nil)
+      render_api_error!(message || '503 Service Unavailable', 503)
+    end
+
+    def check_organization_maintenance_mode!
+      organization = ::Current.organization
+      return unless organization_maintenance_mode_enforced?(organization)
+
+      render_organization_maintenance_mode_error!(organization)
+    end
+
+    # Guards the resource's own organization, which can differ from
+    # Current.organization (already checked in set_current_organization) when a
+    # request targets a project or group outside the caller's current
+    # organization. The extra organization load is intentional defense-in-depth.
+    def check_organization_maintenance_mode_for!(resource)
+      return unless resource.respond_to?(:organization)
+
+      organization = resource.organization
+      return unless organization_maintenance_mode_enforced?(organization)
+
+      render_organization_maintenance_mode_error!(organization)
+    end
+
+    def organization_maintenance_mode_enforced?(organization)
+      return false unless organization
+
+      organization.under_maintenance?
+    end
+
+    # Time-bounded reasons are retryable (503 + Retry-After); indefinite reasons
+    # are not (403).
+    def render_organization_maintenance_mode_error!(organization)
+      if organization.maintenance_time_bounded?
+        header 'Retry-After', ::Organizations::Organization::MAINTENANCE_MODE_RETRY_AFTER_SECONDS.to_s
+        service_unavailable!(organization.maintenance_message)
+      else
+        forbidden!(organization.maintenance_message)
+      end
     end
 
     def conflict!(message = nil)
       render_api_error!(message || '409 Conflict', 409)
     end
 
-    def render_validation_error!(model)
-      if model.errors.any?
-        render_api_error!(model.errors.messages || '400 Bad Request', 400)
-      end
+    def unprocessable_entity!(message = nil)
+      render_api_error!(message || '422 Unprocessable Entity', :unprocessable_entity)
+    end
+
+    def file_too_large!(message = nil)
+      render_api_error!(message || '413 Request Entity Too Large', 413)
+    end
+
+    def too_many_requests!(message = nil, retry_after: 1.minute)
+      header['Retry-After'] = retry_after.to_i if retry_after
+
+      render_api_error!(message || '429 Too Many Requests', 429)
+    end
+
+    def not_modified!(message = nil)
+      render_api_error!(message || '304 Not Modified', 304)
+    end
+
+    def no_content!(message = nil)
+      render_api_error!(message || '204 No Content', 204)
+    end
+
+    def created!(message = nil)
+      render_api_error!(message || '201 Created', 201)
+    end
+
+    def accepted!(message = nil)
+      render_api_error!(message || '202 Accepted', 202)
+    end
+
+    def render_validation_error!(models, status = 400)
+      models = Array(models)
+
+      errors = models.map { |m| model_errors(m) }.filter(&:present?)
+      messages = errors.map(&:messages)
+      messages = messages.count == 1 ? messages.first : messages.join(" ")
+
+      render_api_error!(messages || '400 Bad Request', status) if errors.any?
+    end
+
+    def model_errors(model)
+      model.errors
+    end
+
+    def render_api_error_with_reason!(status, message, reason)
+      message = [message]
+      message << "- #{reason}" if reason
+      render_api_error!(message.join(' '), status)
     end
 
     def render_api_error!(message, status)
-      error!({ 'message' => message }, status)
+      # Coerce non-primitive messages (e.g. ActiveModel::Errors) into a Hash so they
+      # serialize to a structured body. Grape 2.4 binds Grape::Json to ::JSON, which
+      # serializes such objects via #to_s instead of #as_json (see issue 603720).
+      message = message.to_hash if message.respond_to?(:to_hash)
+
+      render_structured_api_error!({ 'message' => message }, status)
+    end
+
+    def render_structured_api_error!(hash, status)
+      # Use this method instead of `render_api_error!` when you have additional top-level
+      # hash entries in addition to 'message' which need to be passed to `#error!`
+      set_status_code_in_env(status)
+      error!(hash, status, header)
+    end
+
+    def set_status_code_in_env(status)
+      # grape-logging doesn't pass the status code, so this is a
+      # workaround for getting that information in the loggers:
+      # https://github.com/aserafin/grape_logging/issues/71
+      env[API_RESPONSE_STATUS_CODE] = Rack::Utils.status_code(status)
+    end
+
+    def handle_api_exception(exception)
+      if report_exception?(exception)
+        context_user = begin
+          current_user
+        rescue StandardError
+          nil
+        end
+        define_params_for_grape_middleware
+        Gitlab::ApplicationContext.push(user: context_user, remote_ip: request.ip)
+        Gitlab::ErrorTracking.track_exception(exception)
+      end
+
+      # This is used with GrapeLogging::Loggers::ExceptionLogger
+      env[API_EXCEPTION_ENV] = exception
+
+      # lifted from https://github.com/rails/rails/blob/master/actionpack/lib/action_dispatch/middleware/debug_exceptions.rb#L60
+      trace = exception.backtrace
+
+      message = ["\n#{exception.class} (#{exception.message}):\n"]
+      message << exception.annoted_source_code.to_s if exception.respond_to?(:annoted_source_code)
+      message << "  " << trace.join("\n  ")
+      message = message.join
+
+      API.logger.add Logger::FATAL, message
+
+      response_message =
+        if Rails.env.test?
+          message
+        else
+          '500 Internal Server Error'
+        end
+
+      error!({ 'message' => response_message }, 500)
+    end
+
+    # project helpers
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def reorder_projects(projects)
+      projects.reorder(order_options_with_tie_breaker)
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def project_finder_params
+      project_finder_params_ce.merge(project_finder_params_ee)
+    end
+
+    # file helpers
+
+    def present_disk_file!(path, filename, content_type: nil, extra_response_headers: {})
+      filename ||= File.basename(path)
+      extra_response_headers.compact_blank.each { |k, v| header[k] = v }
+      header['Content-Disposition'] = ActionDispatch::Http::ContentDisposition.format(disposition: 'attachment', filename: filename)
+      header['Content-Transfer-Encoding'] = 'binary'
+      content_type(content_type || 'application/octet-stream')
+
+      # Support download acceleration
+      case headers['X-Sendfile-Type']
+      when 'X-Sendfile'
+        header['X-Sendfile'] = path
+        body '' # to avoid an error from API::APIGuard::ResponseCoercerMiddleware
+      else
+        sendfile path
+      end
+    end
+
+    def present_artifacts_file!(file, **args)
+      log_artifacts_filesize(file&.model)
+
+      present_carrierwave_file!(file, **args)
+    end
+
+    # When a response body is delegated to Workhorse the Rails body is `''`.
+    # Rack::ETag then digests that empty body and emits the same weak ETag
+    # for every response, which combined with Rack::ConditionalGet causes
+    # spurious 304s (gitlab-org/gitlab#371991). Callers that can derive a
+    # content-based ETag should pass one via the `etag:` kwarg; otherwise we
+    # suppress Rack::ETag's default by setting Last-Modified, matching the
+    # approach used for streaming responses in ApplicationController.
+    def apply_etag_or_suppress_rack_etag!(etag)
+      if etag
+        header 'ETag', etag
+      elsif !headers['Last-Modified']
+        header 'Last-Modified', '0'
+      end
+    end
+
+    # Return back the given file depending on the object storage configuration.
+    # For disabled mode, the disk file is returned.
+    # For enabled mode, the response depends on the direct download support:
+    #   * direct download supported by the uploader class: a redirect to the file signed url is returned.
+    #   * direct download not supported: a workhorse send_url response is returned.
+    #
+    # Params:
+    # @file the carrierwave file.
+    # @supports_direct_download set to false to force a workhorse send_url response. true by default.
+    # @content_disposition controls the Content-Disposition response header. nil by default. Forced to attachment for object storage disabled mode.
+    # @content_type controls the Content-Type response header. By default, it will rely on the 'application/octet-stream' value or the content type detected by carrierwave.
+    # @extra_response_headers. Set additional response headers. Not used in the direct download supported case.
+    # @extra_send_url_params. Additional parameters to send to workhorse send_url call. See Gitlab::Workhorse.send_url for more information
+    # @etag. Optional content-derived ETag string (e.g. %("<sha256>")). When nil, Rack::ETag's default empty-body ETag is suppressed instead.
+    def present_carrierwave_file!(file, supports_direct_download: true, content_disposition: nil, content_type: nil, extra_response_headers: {}, extra_send_url_params: {}, etag: nil)
+      return not_found! unless file&.exists?
+
+      apply_etag_or_suppress_rack_etag!(etag)
+
+      if content_disposition
+        response_disposition = ActionDispatch::Http::ContentDisposition.format(disposition: content_disposition, filename: file.filename)
+      end
+
+      if file.file_storage?
+        present_disk_file!(file.path, file.filename, content_type: content_type, extra_response_headers: extra_response_headers)
+      elsif resolved_download_mode(file, supports_direct_download: supports_direct_download) == :direct
+        return redirect(ObjectStorage::S3.signed_head_url(file)) if request.head? && file.fog_credentials[:provider] == 'AWS'
+
+        redirect_params = {}
+        if content_disposition
+          redirect_params[:query] = { 'response-content-disposition' => response_disposition, 'response-content-type' => content_type || file.content_type }
+        end
+
+        file_url = ObjectStorage::CDN::FileUrl.new(file: file, ip_address: ip_address, redirect_params: redirect_params)
+        redirect(file_url.url)
+      else
+        verify_workhorse_api!
+        response_headers = extra_response_headers.merge('Content-Type' => content_type, 'Content-Disposition' => response_disposition).compact_blank
+
+        header(*Gitlab::Workhorse.send_url(file.url, response_headers: response_headers, **extra_send_url_params))
+        status :ok
+        body '' # to avoid an error from API::APIGuard::ResponseCoercerMiddleware
+      end
+    end
+
+    def increment_counter(event_name)
+      Gitlab::UsageDataCounters.count(event_name)
+    rescue StandardError => error
+      Gitlab::AppLogger.warn("Redis tracking event failed for event: #{event_name}, message: #{error.message}")
+    end
+
+    # @param event_name [String] the event name
+    # @param values [Array|String] the values counted
+    def increment_unique_values(event_name, values)
+      return unless values.present?
+
+      Gitlab::UsageDataCounters::HLLRedisCounter.track_event(event_name, values: values)
+    rescue StandardError => error
+      Gitlab::AppLogger.warn("Redis tracking event failed for event: #{event_name}, message: #{error.message}")
+    end
+
+    def track_event(event_name, user:, send_snowplow_event: true, namespace_id: nil, project_id: nil, additional_properties: {})
+      return unless user.present?
+
+      namespace = Namespace.find(namespace_id) if namespace_id
+      project = Project.find(project_id) if project_id
+
+      Gitlab::InternalEvents.track_event(
+        event_name,
+        send_snowplow_event: send_snowplow_event,
+        additional_properties: additional_properties,
+        user: user,
+        namespace: namespace,
+        project: project
+      )
+    rescue Gitlab::Tracking::EventValidator::UnknownEventError => e
+      Gitlab::ErrorTracking.track_exception(e, event_name: event_name)
+
+      # We want to keep the error silent on production to keep the behavior
+      # consistent with StandardError rescue
+      unprocessable_entity!(e.message) if Gitlab.dev_or_test_env?
+    rescue StandardError => e
+      Gitlab::ErrorTracking.track_and_raise_for_dev_exception(e, event_name: event_name)
+    end
+
+    def order_by_similarity?(allow_unauthorized: true)
+      params[:order_by] == 'similarity' && params[:search].present? && (allow_unauthorized || current_user.present?)
+    end
+
+    protected
+
+    def project_finder_params_visibility_ce
+      finder_params = {}
+      finder_params[:min_access_level] = params[:min_access_level] if params[:min_access_level]
+      finder_params[:visibility_level] = Gitlab::VisibilityLevel.level_value(params[:visibility]) if params[:visibility]
+      finder_params[:owned] = true if params[:owned].present?
+      finder_params[:non_public] = true if params[:membership].present?
+      finder_params[:starred] = true if params[:starred].present?
+      finder_params[:archived] = archived_param unless params[:archived].nil?
+      finder_params[:active] = params[:active] unless params[:active].nil?
+      finder_params
+    end
+
+    def project_finder_params_ce
+      finder_params = project_finder_params_visibility_ce
+
+      finder_params.merge!(
+        params
+          .slice(:search,
+            :custom_attributes,
+            :last_activity_after,
+            :last_activity_before,
+            :topic,
+            :topic_id,
+            :repository_storage)
+          .symbolize_keys
+          .compact
+      )
+
+      finder_params[:with_issues_enabled] = true if params[:with_issues_enabled].present?
+      finder_params[:with_merge_requests_enabled] = true if params[:with_merge_requests_enabled].present?
+      finder_params[:search_namespaces] = true if params[:search_namespaces].present?
+      finder_params[:user] = params.delete(:user) if params[:user]
+      finder_params[:id_after] = sanitize_id_param(params[:id_after]) if params[:id_after]
+      finder_params[:id_before] = sanitize_id_param(params[:id_before]) if params[:id_before]
+
+      %i[updated_after updated_before include_pending_delete marked_for_deletion_on].each do |param|
+        finder_params[param] = declared_params[param] if declared_params[param]
+      end
+
+      finder_params
+    end
+
+    # Overridden in EE
+    def project_finder_params_ee
+      {}
+    end
+
+    def validate_search_rate_limit!
+      if current_user
+        check_rate_limit!(:search_rate_limit, scope: { user: current_user },
+          users_allowlist: Gitlab::CurrentSettings.current_application_settings.search_rate_limit_allowlist)
+      else
+        check_rate_limit!(:search_rate_limit_unauthenticated, scope: { ip: ip_address })
+      end
+    end
+
+    def audit_request_with_token_scope(user)
+      token_info = ::Current.token_info
+      return unless token_info
+      return unless TOKEN_SCOPES_TO_AUDIT.intersect?(Array.wrap(token_info[:token_scopes]))
+
+      request_author = Gitlab::Auth::Identity.resolve_composite_identity_actor(user)
+      context = {
+        name: 'api_request_access_with_scope',
+        author: request_author,
+        scope: request_author,
+        target: ::Gitlab::Audit::NullTarget.new,
+        message: "API request with token scopes #{token_info[:token_scopes]} - #{request.request_method} #{request.path}",
+        additional_details: {
+          request: request.path,
+          method: request.request_method,
+          token_scopes: token_info[:token_scopes],
+          scoped_user_id: user.id
+        }
+      }
+
+      ::Gitlab::Audit::Auditor.audit(context)
     end
 
     private
 
-    def add_pagination_headers(paginated, per_page)
-      request_url = request.url.split('?').first
+    # Decides which transfer mode (:proxy or :direct) to use for a given file, honoring:
+    # * the object storage type's allowed modes (admin policy)
+    # * the endpoint's capability (supports_direct_download)
+    # * the client's requested mode (download_mode param), when allowed
+    def resolved_download_mode(file, supports_direct_download:)
+      allowed = file.allowed_download_modes.dup
+      allowed -= [:direct] unless supports_direct_download
 
-      links = []
-      links << %(<#{request_url}?page=#{paginated.current_page - 1}&per_page=#{per_page}>; rel="prev") unless paginated.first_page?
-      links << %(<#{request_url}?page=#{paginated.current_page + 1}&per_page=#{per_page}>; rel="next") unless paginated.last_page?
-      links << %(<#{request_url}?page=1&per_page=#{per_page}>; rel="first")
-      links << %(<#{request_url}?page=#{paginated.total_pages}&per_page=#{per_page}>; rel="last")
+      requested = client_requested_download_mode
+      mode = requested if allowed.include?(requested)
+      mode ||= file.default_download_mode
 
-      header 'Link', links.join(', ')
+      allowed.include?(mode) ? mode : :proxy
     end
 
-    def abilities
-      @abilities ||= begin
-                       abilities = Six.new
-                       abilities << Ability
-                       abilities
-                     end
+    def client_requested_download_mode
+      return unless respond_to?(:params)
+      # Only honor the override on endpoints that explicitly declare this parameter.
+      return unless respond_to?(:declared) &&
+        declared(params, include_parent_namespaces: false).key?(:download_mode)
+
+      mode = params[:download_mode]
+      return unless mode.in?(%w[proxy direct])
+
+      mode.to_sym
+    end
+
+    # rubocop:disable Gitlab/ModuleWithInstanceVariables
+    def initial_current_user
+      return @initial_current_user if defined?(@initial_current_user)
+
+      begin
+        @initial_current_user = Gitlab::Auth::UniqueIpsLimiter.limit_user! { find_current_user! }
+      rescue Gitlab::Auth::UnauthorizedError
+        unauthorized!
+
+        # Explicitly return `nil`, otherwise an instance of `Rack::Response` is returned when reporting an error
+        nil
+      end
+    end
+    # rubocop:enable Gitlab/ModuleWithInstanceVariables
+
+    def sudo!
+      return unless sudo_identifier
+
+      unauthorized! unless initial_current_user
+
+      unless initial_current_user.can_admin_all_resources?
+        forbidden!('Must be admin to use sudo')
+      end
+
+      unless access_token
+        forbidden!('Must be authenticated using an OAuth or personal access token to use sudo')
+      end
+
+      # Granular tokens bypass the :sudo scope check in AccessTokenValidationService
+      # (scopes are only validated for non-granular tokens), so the `sudo` capability
+      # is the sole gate for them. Do not remove this in favour of the scope check below.
+      if access_token.try(:granular?)
+        forbidden!('Fine-grained OAuth tokens cannot be used with sudo') if access_token.is_a?(OauthAccessToken)
+        forbidden!('Fine-grained token must have sudo enabled to use sudo') unless access_token.sudo?
+      end
+
+      validate_and_save_access_token!(scopes: [:sudo])
+
+      sudoed_user = find_user(sudo_identifier)
+      not_found!("User with ID or username '#{sudo_identifier}'") unless sudoed_user
+
+      @current_user = sudoed_user # rubocop:disable Gitlab/ModuleWithInstanceVariables
+    end
+
+    def sudo_identifier
+      @sudo_identifier ||= params[SUDO_PARAM] || env[SUDO_HEADER]
+    end
+
+    def check_organization_access(organization)
+      return organization if can?(current_user, :read_organization, organization)
+
+      not_found!('Organization')
     end
 
     def secret_token
-      File.read(Gitlab.config.gitlab_shell.secret_file).chomp
+      Gitlab::Shell.secret_token
     end
 
-    def handle_member_errors(errors)
-      error!(errors[:access_level], 422) if errors[:access_level].any?
-      not_found!(errors)
+    def authenticate_non_public?
+      route_authentication_setting[:authenticate_non_public] && !current_user
+    end
+
+    def send_git_blob(repository, blob)
+      verify_workhorse_api!
+
+      env['api.format'] = :txt
+      content_type 'text/plain'
+
+      # Some browsers ignore content type when filename has an xhtml extension
+      # We remove the extensions to prevent the contents from being displayed inline
+      # See https://gitlab.com/gitlab-org/gitlab/-/issues/458236
+      filename = blob.name&.ends_with?('.xhtml') ? blob.name.split('.')[0] : blob.name
+      header['Content-Disposition'] = ActionDispatch::Http::ContentDisposition.format(disposition: 'inline', filename: filename)
+
+      # Let Workhorse examine the content and determine the better content disposition
+      header[Gitlab::Workhorse::DETECT_HEADER] = "true"
+
+      header(*Gitlab::Workhorse.send_git_blob(repository, blob))
+
+      body ''
+    end
+
+    def send_git_diff(repository, diff_refs, client_name: nil)
+      verify_workhorse_api!
+      header(*Gitlab::Workhorse.send_git_diff(repository, diff_refs, client_name: client_name))
+
+      headers['Content-Disposition'] = 'inline'
+
+      body ''
+    end
+
+    def send_git_archive(repository, **kwargs)
+      verify_workhorse_api!
+      header(*Gitlab::Workhorse.send_git_archive(repository, **kwargs))
+
+      body ''
+    end
+
+    # Enforces the project download ban (and, for real downloads, emits an audit
+    # event) before an archive is served. Overridden in EE; a no-op in CE. Runs
+    # before the caching/conditional-request logic so a banned user cannot get a
+    # `304`, and an error response never inherits the archive's cache headers.
+    # Enforces the project download ban before an archive is served. Overridden
+    # in EE; a no-op in CE (download bans are an EE feature). Runs before the
+    # caching/conditional-request logic so a banned user never receives a 304 and
+    # an error response never inherits the archive's cache headers.
+    def check_repository_archive_download!(repository); end
+
+    # Emits an audit event for a served archive download. Overridden in EE; a
+    # no-op in CE. Called only after the request is known to transfer the archive
+    # (past the 304 short-circuit) and only for a real GET download.
+    def audit_repository_archive_download(repository, client_name: nil); end
+
+    # Emits the same Cache-Control and strong ETag headers as the web archive
+    # controller so API archives are cacheable under the same rules, and returns
+    # `304 Not Modified` for matching conditional requests. The caller passes the
+    # `ArchiveHeaderBuilder`; its metadata (a single Gitaly RPC) is reused for the
+    # content headers and the archive body so the ETag and the served archive
+    # always describe the same commit.
+    def set_repository_archive_cache_headers!(project, builder, ref:, include_lfs_blobs: true, exclude_paths: [])
+      metadata = builder.metadata
+
+      raise Gitlab::Workhorse::ArchiveNotFoundError, 'Repository or ref not found' if metadata.empty?
+
+      cache = Gitlab::Repositories::ArchiveCacheControl.new(
+        project, ref: ref, metadata: metadata, include_lfs_blobs: include_lfs_blobs, exclude_paths: exclude_paths
+      )
+
+      header 'Cache-Control', cache.cache_control
+      header 'ETag', cache.etag
+
+      not_modified! if archive_etag_matches?(cache.etag)
+    end
+
+    def archive_etag_matches?(etag)
+      if_none_match = headers['If-None-Match']
+      return false if if_none_match.blank?
+
+      validators = if_none_match.split(',').map(&:strip)
+      return true if validators.include?('*')
+
+      # `If-None-Match` uses weak comparison (RFC 9110): a validator weakened in
+      # transit (a `W/` prefix) must still match our strong ETag. Rails' own
+      # `etag_matches?` compares exactly, so normalize the `W/` prefix ourselves.
+      weak_etag = etag.delete_prefix('W/')
+      validators.any? { |candidate| candidate.delete_prefix('W/') == weak_etag }
+    end
+
+    # Prevents a shared cache from storing an error response with the archive's
+    # Cache-Control/ETag when a failure happens after the headers were set.
+    def reset_archive_cache_headers!
+      header 'Cache-Control', 'no-store'
+      header.delete('ETag')
+    end
+
+    # Respond to HEAD requests for archive endpoints without generating the archive.
+    # Sets appropriate Content-Type and Content-Disposition headers.
+    # Raises an exception if the ref is not found, matching send_git_archive behavior.
+    # An existing `builder` can be passed in to reuse already-fetched metadata.
+    def send_git_archive_head(repository, ref:, format:, append_sha:, path: nil, ref_type: nil, builder: nil)
+      builder ||= Gitlab::Repositories::ArchiveHeaderBuilder.new(
+        repository,
+        ref: ref,
+        format: format,
+        append_sha: append_sha,
+        path: path,
+        ref_type: ref_type
+      )
+
+      content_type builder.content_type
+      header 'Content-Disposition', builder.content_disposition
+
+      body ''
+    end
+
+    # Deprecated. Use `send_artifacts_entry` instead.
+    def legacy_send_artifacts_entry(file, entry, etag: nil)
+      verify_workhorse_api!
+      apply_etag_or_suppress_rack_etag!(etag)
+      header(*Gitlab::Workhorse.send_artifacts_entry(file, entry))
+
+      body ''
+    end
+
+    def send_artifacts_entry(file, entry, etag: nil)
+      verify_workhorse_api!
+      apply_etag_or_suppress_rack_etag!(etag)
+      header(*Gitlab::Workhorse.send_artifacts_entry(file, entry))
+      header(*Gitlab::Workhorse.detect_content_type)
+
+      body ''
+    end
+
+    # The Grape Error Middleware only has access to `env` but not `params` nor
+    # `request`. We workaround this by defining methods that returns the right
+    # values.
+    def define_params_for_grape_middleware
+      self.define_singleton_method(:request) { ActionDispatch::Request.new(env) }
+      self.define_singleton_method(:params) { request.params.symbolize_keys }
+    end
+
+    # We could get a Grape or a standard Ruby exception. We should only report anything that
+    # is clearly an error.
+    def report_exception?(exception)
+      return true unless exception.respond_to?(:status)
+
+      exception.status == 500
+    end
+
+    def archived_param
+      return 'only' if params[:archived]
+
+      params[:archived]
+    end
+
+    def ip_address
+      env["action_dispatch.remote_ip"].to_s || request.ip
+    end
+
+    def sanitize_id_param(id)
+      id.present? ? id.to_i : nil
+    end
+
+    def project_moved?(id, project)
+      return false unless id.is_a?(String) && id.include?('/')
+      return false if project.blank? || project.full_path.casecmp?(id)
+      return false unless params[:id] == id
+
+      true
+    end
+
+    def url_with_project_id(project)
+      path_values = params.merge(id: project.id).transform_values { |v| v.is_a?(String) ? CGI.escape(v) : v }
+      path = GrapePathHelpers::DecoratedRoute.new(route).path_segments_with_values(path_values).join('/')
+      extension = File.extname(request.path_info)
+      query_string = "?#{request.query_string}" if request.query_string.present?
+
+      Gitlab::Utils.append_path(Gitlab.config.gitlab.url, "#{path}#{extension}#{query_string}")
+    end
+
+    def handle_job_token_failure!(project)
+      if current_user&.from_ci_job_token? && current_user.ci_job_token_scope
+        source_project = current_user.ci_job_token_scope.current_project
+
+        error_message = format("Authentication by CI/CD job token not allowed from %{source_project_path} to project #%{target_project_id}.",
+          source_project_path: source_project.path,
+          target_project_id: project.id)
+
+        forbidden!(error_message)
+      else
+        not_found!('Project')
+      end
+    end
+
+    def job_token_policies_authorized?(project)
+      return true unless current_user&.from_ci_job_token?
+      return true if skip_job_token_policies?
+      return true if publicly_accessible_feature?(project)
+
+      current_user.ci_job_token_scope.policies_allowed?(project, job_token_policies)
+    end
+
+    def job_token_policies_unauthorized_message(project)
+      policies = job_token_policies
+      case policies.size
+      when 0
+        'This action is unauthorized for CI/CD job tokens.'
+      when 1
+        format("Insufficient permissions to access this resource in project #%{project_id}. " \
+          "The following token permission is required: %{policy}.",
+          project_id: project.id, policy: policies[0])
+      else
+        format("Insufficient permissions to access this resource in project #%{project_id}. " \
+          "The following token permissions are required: %{policies}.",
+          project_id: project.id, policies: policies.to_sentence)
+      end
+    end
+
+    def job_token_policies
+      return [] unless respond_to?(:route_setting)
+
+      Array(route_setting(:authorization).try(:fetch, :job_token_policies, nil))
+    end
+
+    def skip_job_token_policies?
+      return false unless respond_to?(:route_setting)
+
+      route_setting(:authorization).try(:fetch, :skip_job_token_policies, false)
+    end
+
+    def publicly_accessible_feature?(project)
+      return false unless respond_to?(:route_setting)
+      return false unless project.public? || project.internal?
+      return false unless project&.project_feature
+
+      project_features = Array(route_setting(:authorization).try(:fetch, :allow_public_access_for_enabled_project_features, nil))
+      return false if project_features.empty?
+
+      project_features.all? do |project_feature|
+        project.project_feature.access_level(project_feature) >= ProjectFeature::ENABLED
+      end
+    end
+
+    def authorization_settings
+      (respond_to?(:route_setting) && route_setting(:authorization)) || {}
+    end
+
+    def authorize_granular_token?(token)
+      token.respond_to?(:granular?) &&
+        (token.granular? || token.subject_to_granular_enforcement?) &&
+        !authorization_settings[:skip_granular_token_authorization]
+    end
+
+    def authorize_granular_token_scopes!(token)
+      return unless authorize_granular_token?(token)
+
+      result = ::Authz::Tokens::AuthorizeGranularScopesService.new(
+        boundaries: boundaries_for_endpoint, permissions: permissions_for_endpoint, token: token
+      ).execute
+      return unless result.error?
+
+      not_found! if result.reason == :resource_not_found
+
+      Current.add_granular_denied_permissions(result.payload[:denied_permissions])
+
+      raise Gitlab::Auth::GranularPermissionsError, result.message
+    end
+
+    def permissions_for_endpoint
+      Array(authorization_settings[:permissions])
+    end
+
+    def boundaries_for_endpoint
+      if authorization_settings[:boundary] && authorization_settings[:boundary].respond_to?(:call)
+        boundary_object = instance_exec(&authorization_settings[:boundary])
+        ::Authz::Boundary.for(boundary_object) if boundary_object
+      elsif authorization_settings[:boundaries]
+        authorization_settings[:boundaries]
+          .filter_map { |b| build_boundary(b[:boundary_type], b[:boundary_param]) }
+      else
+        build_boundary(authorization_settings[:boundary_type], authorization_settings[:boundary_param])
+      end
+    end
+
+    def build_boundary(boundary_type, boundary_param = nil)
+      case boundary_type
+      when :user, :instance
+        ::Authz::Boundary.for(boundary_type)
+      when :group
+        group = find_group(boundary_param ? params[boundary_param] : (params[:group_id] || params[:id]))
+        ::Authz::Boundary.for(group) if group
+      when :project
+        project = find_project(boundary_param ? params[boundary_param] : (params[:project_id] || params[:id]))
+        ::Authz::Boundary.for(project) if project
+      end
     end
   end
 end
+
+API::Helpers.prepend_mod_with('API::Helpers')

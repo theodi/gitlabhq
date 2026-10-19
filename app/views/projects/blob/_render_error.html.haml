@@ -1,0 +1,7 @@
+.file-content.code
+  .nothing-here-block
+    The #{viewer.switcher_title} could not be displayed because #{blob_render_error_reason(viewer)}.
+
+    You can
+    = Gitlab::Sentence.to_exclusive_sentence(blob_render_error_options(viewer)).html_safe
+    instead.

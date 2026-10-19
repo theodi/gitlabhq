@@ -1,0 +1,217 @@
+---
+stage: GitLab Dedicated
+group: Geo
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Reintroduce demoted site back into Geo
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+After a failover, it is possible to bring back the demoted primary site as a new secondary site or
+restore your original primary site. This process consists of two steps:
+
+1. Making the old primary site a secondary site.
+1. Promoting a secondary site to a primary site.
+
+> [!warning]
+>
+> - If you have any doubts about the consistency of the data on this site, you should set it up from scratch.
+> - The demoted primary is considered a standalone GitLab server that is not in sync with Geo anymore.
+>
+>   Make sure that any remnant configuration of it as a former primary is removed prior to adding it back as a new secondary site.
+
+## Configure the former primary site to be a secondary site
+
+Because the former primary site is out of sync with the current primary site, the first step is to bring the former primary site up to date. Note, deletion of data stored on disk like
+repositories and uploads is not replayed when bringing the former primary site back
+into sync, which may result in increased disk usage.
+Alternatively, you can [set up a new secondary GitLab instance](../setup/_index.md) to avoid this.
+
+To bring the former primary site up to date:
+
+1. SSH into the former primary site that has fallen behind.
+1. Remove `/etc/gitlab/gitlab-cluster.json` if it exists. ([What is the `gitlab-cluster.json` file?](https://docs.gitlab.com/omnibus/development/reconfigure_in_detail/#gitlab-clusterjson-file))
+
+   If the site to be re-added as a secondary site was promoted with the `gitlab-ctl geo promote` command, then it may contain `/etc/gitlab/gitlab-cluster.json`. For example during `gitlab-ctl reconfigure`, you may notice output like:
+
+   ```plaintext
+   The 'geo_primary_role' is defined in /etc/gitlab/gitlab-cluster.json as 'true' and overrides the setting in the /etc/gitlab/gitlab.rb
+   ```
+
+   If so, then `/etc/gitlab/gitlab-cluster.json` must be deleted from every Sidekiq, PostgreSQL, Gitaly, and Rails node in the site (if using multi-node setup), to make `/etc/gitlab/gitlab.rb` the single source of truth again.
+
+1. Make sure all the services are up:
+
+   ```shell
+   sudo gitlab-ctl start
+   ```
+
+   > [!note]
+   > - If you [disabled the primary site permanently](_index.md#step-1-permanently-disable-the-primary-site),
+   >   you need to undo those steps now. For distributions with systemd, such as Debian/Ubuntu/CentOS7+, you must run
+   >   `sudo systemctl enable gitlab-runsvdir`. For distributions without systemd, such as CentOS 6, you need to install
+   >   the GitLab instance from scratch and set it up as a secondary site by
+   >   following [Setup instructions](../setup/_index.md). In this case, you don't need to follow the next step.
+   > - If you [changed the DNS records](_index.md#optional-updating-the-primary-domain-dns-record)
+   >   for this site during disaster recovery procedure you may need to
+   >   [block all the writes to this site](planned_failover.md#prevent-updates-to-the-primary-site)
+   >   during this procedure.
+
+1. [Set up Geo](../setup/_index.md). In this case, the secondary site
+   refers to the former primary site.
+   1. If [PgBouncer](../../postgresql/pgbouncer.md) was enabled on the current secondary site
+      (when it was a primary site) disable it by editing `/etc/gitlab/gitlab.rb`
+      and running `sudo gitlab-ctl reconfigure`.
+   1. You can then set up database replication on the secondary site.
+   1. Initialize the Geo tracking database schema on the reintroduced secondary site.
+
+      `gitlab-ctl replicate-geo-database` only replicates the main `gitlabhq_production`
+      database. The Geo tracking database (`gitlabhq_geo_production`) is local to the
+      secondary site and is normally migrated by `sudo gitlab-ctl reconfigure` through
+      `geo_secondary['auto_migrate']`. If `auto_migrate` is disabled, the tracking
+      database is external, or it was empty when reconfigure last ran, the Geo Log
+      Cursor stalls and all sync types remain at 0%.
+
+      In those cases, on a Rails or Sidekiq node of the secondary site:
+
+      1. [Run the tracking database migrations manually](../setup/external_database.md#set-up-the-database-schema).
+      1. Restart the Geo Log Cursor so it picks up the new schema:
+
+         ```shell
+         sudo gitlab-ctl restart geo-logcursor
+         ```
+
+      1. Verify the tracking database is correctly set up before continuing:
+
+         ```shell
+         # Confirm the tracking database has tables
+         sudo gitlab-geo-psql -d gitlabhq_geo_production -c "\dt"
+
+         # Confirm all tracking database migrations are applied
+         sudo gitlab-rake db:migrate:status:geo | grep -w down
+
+         # Run the full Geo check
+         sudo gitlab-rake gitlab:geo:check
+         ```
+
+      The `db:migrate:status:geo` command should return no `down` migrations, and
+      `gitlab:geo:check` should report `GitLab Geo tracking database is correctly configured ... yes` in its output.
+
+   1. Configure JWT audience for OpenBao. If you have enabled GitLab Secrets Manager
+      and the primary and secondary sites don't share the same JWT audience,
+      set `jwt_audience` to the new primary's OpenBao URL in the re-added secondary's Helm values:
+
+      ```yaml
+      global:
+        openbao:
+          enabled: true
+          url: https://openbao.old-primary.example.com:8200
+          jwt_audience: https://openbao.promoted.example.com:8200
+      ```
+
+If you have lost your original primary site, follow the
+[setup instructions](../setup/_index.md) to set up a new secondary site.
+
+## Promote the secondary site to primary site
+
+When the initial replication is complete and the primary site and secondary site are
+closely in sync, you can do a [planned failover](planned_failover.md).
+
+## Restore the secondary site
+
+If your objective is to have two sites again, you need to bring your secondary
+site back online as well by repeating the first step
+([configure the former primary site to be a secondary site](#configure-the-former-primary-site-to-be-a-secondary-site))
+for the secondary site.
+
+### Restoring additional secondary sites
+
+If there is more than one secondary site, the remaining sites can be brought online now. For each of the remaining sites, [initiate the replication process](../setup/database.md#step-3-initiate-the-replication-process) with the primary site.
+
+## Skipping re-transfer of data on a secondary site
+
+When a secondary site is added, if it contains data that would otherwise be synced from the primary, then Geo avoids re-transferring the data.
+
+- Git repositories are transferred by `git fetch`, which only transfers missing refs.
+- Geo's container registry sync code compares tuples of tags and digests, and only pulls missing ones.
+- [Blobs](#skipping-re-transfer-of-blobs) are skipped if they exist on the first sync.
+
+Use-cases:
+
+- You do a planned failover and demote the old primary site by attaching it as a secondary site without rebuilding it.
+- You have multiple secondary Geo sites. You do a planned failover and reattach the other secondary Geo sites without rebuilding them.
+- You do a failover test by promoting and demoting a secondary site and reattach it without rebuilding it.
+- You restore a backup and attach the site as a secondary site.
+- You manually copy data to a secondary site to workaround a sync problem.
+- You delete or truncate registry table rows in the Geo tracking database to workaround a problem.
+- You reset the Geo tracking database to workaround a problem.
+
+### Skipping re-transfer of blobs
+
+When you add a secondary site which has preexisting blobs data, then the secondary Geo site will avoid re-transferring that data. This applies to:
+
+- CI job artifacts
+- CI pipeline artifacts
+- CI secure files
+- LFS objects
+- Merge request diffs
+- Package files
+- Pages deployments
+- Terraform state versions
+- Uploads
+- Dependency proxy manifests
+- Dependency proxy blobs
+
+If the secondary site's copy is actually corrupted, then background verification will eventually fail, and the blob will be resynced.
+
+Blobs will only be skipped in this manner if they do not have a corresponding registry record in the Geo tracking database. The conditions are strict because resyncing is almost always intentional, and we cannot risk mistakenly skipping a transfer.
+
+## Troubleshooting
+
+### Error: `too many replication slots active before shutdown`
+
+When you configure the former primary site as a secondary site, `sudo gitlab-ctl reconfigure`
+might fail because PostgreSQL does not start. The PostgreSQL logs show an error like:
+
+```plaintext
+FATAL:  too many replication slots active before shutdown
+HINT:  Increase max_replication_slots and try again.
+```
+
+This issue occurs when the former primary site still has replication slots from its previous
+role, and the secondary site configuration sets `max_replication_slots` to `0`, which is common for
+single-node secondary sites. PostgreSQL refuses to start while the leftover slots exist.
+
+To prevent this issue, before you reconfigure the former primary site as a secondary site,
+remove its leftover replication slots. For more information, see
+[removing an inactive replication slot](../replication/troubleshooting/postgresql_replication.md#removing-an-inactive-replication-slot).
+
+If PostgreSQL has already failed to start:
+
+1. In `/etc/gitlab/gitlab.rb`, temporarily set `postgresql['max_replication_slots']` to a value
+   that is at least the number of leftover replication slots.
+1. Reconfigure GitLab:
+
+   ```shell
+   sudo gitlab-ctl reconfigure
+   ```
+
+1. Start a PostgreSQL console session:
+
+   ```shell
+   sudo gitlab-psql -d gitlabhq_production
+   ```
+
+1. Remove all replication slots:
+
+   ```sql
+   SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots;
+   ```
+
+1. In `/etc/gitlab/gitlab.rb`, remove the temporary `postgresql['max_replication_slots']` setting
+   and reconfigure GitLab again.

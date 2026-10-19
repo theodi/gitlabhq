@@ -1,0 +1,108 @@
+.visibility-level-setting {
+  .option-disabled-reason {
+    display: none;
+  }
+
+  .disabled {
+    svg {
+      opacity: 0.5;
+    }
+
+    .option-description {
+      display: none;
+    }
+
+    .option-disabled-reason {
+      display: block;
+    }
+  }
+}
+
+.saml-settings.info-well {
+  .form-control[readonly] {
+    background: var(--white, $white);
+  }
+}
+
+// doorkeeper-authorize refers to an element rendered by 'doorkeeper' gem, do not remove unless removing doorkeeper gem
+.doorkeeper-authorize {
+  max-width: px-to-rem(500px);
+}
+
+.settings-section::after {
+  content: '';
+  display: block;
+  padding-bottom: $gl-spacing-scale-7;
+}
+
+.settings-section,
+.settings-section-no-bottom ~ .settings-section {
+  padding-top: 0;
+}
+
+// Fix for sticky header when there is no search bar.
+.flash-container + .settings-section {
+  @apply gl-pt-1;
+}
+
+.settings-section:not(.settings-section-no-bottom) ~ .settings-section {
+  @apply gl-border-t;
+  @apply gl-pt-6;
+}
+
+.settings-section-no-bottom::after {
+  padding-bottom: 0 !important;
+
+  @include gl-container-width-up(sm, panel) {
+    @apply gl-pb-5;
+  }
+}
+
+.settings-sticky-header {
+  z-index: $settings-sticky-header-z-index;
+  position: sticky;
+  top: $calc-application-header-height;
+  min-height: $settings-sticky-header-height;
+  @apply gl-bg-default;
+  @apply gl-py-3;
+
+  &::before {
+    content: '';
+    z-index: -1;
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: calc(100% - 1px);
+    @apply gl-bg-default;
+  }
+
+  &::after {
+    content: '';
+    z-index: -2;
+    display: block;
+    position: sticky;
+    top: calc(#{$calc-application-header-height} + #{$settings-sticky-header-height - $gl-spacing-scale-3});
+    left: 0;
+    margin-top: -2px; // Fix retina issue with half pixel rendering
+    width: 100%;
+    height: 1px;
+    box-shadow: 0 #{$gl-spacing-scale-3} 0 var(--gl-border-color-default);
+  }
+}
+
+.settings-sticky-footer {
+  z-index: $settings-sticky-footer-z-index;
+  position: sticky;
+  bottom: 0;
+  min-height: $settings-sticky-footer-height;
+  @apply gl-bg-default;
+  @apply gl-pt-3;
+  @apply gl-border-t;
+}
+
+// Header shouldn't be sticky if only one section on page
+.settings-sticky-header:first-of-type:last-of-type {
+  position: static;
+}

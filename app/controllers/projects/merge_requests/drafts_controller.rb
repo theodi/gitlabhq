@@ -1,0 +1,281 @@
+# frozen_string_literal: true
+
+class Projects::MergeRequests::DraftsController < Projects::MergeRequests::ApplicationController
+  include Gitlab::Utils::StrongMemoize
+
+  respond_to :json
+
+  before_action :authorize_create_note!, only: [:create, :publish]
+  before_action :authorize_admin_draft!, only: [:update, :destroy]
+  before_action :authorize_admin_draft!, if: -> { action_name == 'publish' && permitted_params[:id].present? }
+
+  urgency :low, [
+    :create,
+    :update,
+    :destroy,
+    :publish
+  ]
+
+  def index
+    drafts = prepare_notes_for_rendering(draft_notes)
+    render json: serialize_drafts(drafts)
+  end
+
+  def create
+    create_params = draft_note_params.merge(
+      in_reply_to_discussion_id: permitted_params[:in_reply_to_discussion_id],
+      note_type: draft_note_type_param
+    )
+
+    create_service = DraftNotes::CreateService.new(merge_request, current_user, create_params)
+
+    draft_note = create_service.execute
+
+    if draft_note.errors.present?
+      render json: { errors: draft_note.errors.full_messages.to_sentence }, status: :unprocessable_entity
+      return
+    end
+
+    prepare_notes_for_rendering(draft_note)
+
+    render json: serialize_drafts(draft_note)
+  end
+
+  def update
+    if draft_note.update(draft_note_params)
+      prepare_notes_for_rendering(draft_note)
+      render json: serialize_drafts(draft_note)
+    else
+      render json: { errors: draft_note.errors.full_messages.to_sentence }, status: :unprocessable_entity
+    end
+  end
+
+  def destroy
+    DraftNotes::DestroyService.new(merge_request, current_user).execute(draft_note)
+
+    head :ok
+  end
+
+  def publish
+    # Two experiences cover this action: submit_mr_review_ui stops once the review
+    # is visible in the app, submit_and_notify_mr_review_ui keeps running until the
+    # todos and notifications have been delivered in ProcessDraftNotePublishedWorker.
+    submit_experience = Labkit::UserExperienceSli.start(:submit_mr_review_ui)
+    submit_and_notify_experience = start_submit_and_notify_experience
+
+    result = publish_service.execute(draft: draft_note(allow_nil: true))
+
+    if create_note_params[:note]
+      ::Notes::CreateService.new(@project, current_user, create_note_params).execute unless summary_note_in_review?
+
+      merge_request_activity_counter.track_submit_review_comment(user: current_user)
+    end
+
+    reviewer_state_error = update_reviewer_state if reviewer_state_params[:reviewer_state]
+
+    if result[:status] == :success
+      submit_experience.complete
+
+      payload = { review_id: result[:review_id], summary_note_id: result[:summary_note_id] }
+      payload[:reviewer_state_error] = reviewer_state_error if reviewer_state_error
+
+      render json: payload
+    else
+      submit_experience.error!(result[:message]).complete
+      submit_and_notify_experience.error!(result[:message]).complete if submit_and_notify_experience
+
+      render json: { message: result[:message] }, status: :internal_server_error
+    end
+  end
+
+  def discard
+    DraftNotes::DestroyService.new(merge_request, current_user).execute
+
+    head :ok
+  end
+
+  private
+
+  def permitted_params
+    params.permit(:id, :merge_request_id, :in_reply_to_discussion_id)
+  end
+
+  def draft_note_type_param
+    params.permit(draft_note: [:type]).dig(:draft_note, :type)
+  end
+
+  def draft_note(allow_nil: false)
+    strong_memoize(:draft_note) do
+      draft_notes.find(permitted_params[:id])
+    end
+  rescue ActiveRecord::RecordNotFound => e
+    # draft_note is allowed to be nil in #publish
+    raise e unless allow_nil
+  end
+
+  def draft_notes
+    return unless current_user
+
+    strong_memoize(:draft_notes) do
+      merge_request.draft_notes.authored_by(current_user)
+    end
+  end
+
+  def publish_service
+    strong_memoize(:publish_service) do
+      DraftNotes::PublishService.new(merge_request, current_user, publish_params)
+    end
+  end
+
+  # Completed by ProcessDraftNotePublishedWorker, which only runs when draft notes are published.
+  def start_submit_and_notify_experience
+    return if publish_params[:defer_notifications]
+    return unless publish_service.publishes_draft_notes?(draft: draft_note(allow_nil: true))
+
+    Labkit::UserExperienceSli.start(:submit_and_notify_mr_review_ui)
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def merge_request
+    @merge_request ||= MergeRequestsFinder
+      .new(current_user, project_id: @project.id)
+      .find_by!(iid: permitted_params[:merge_request_id])
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def draft_note_params
+    params.require(:draft_note).permit(
+      :commit_id,
+      :note,
+      :position,
+      :resolve_discussion,
+      :line_code,
+      :internal
+    ).tap do |h|
+      # Old FE version will still be sending `draft_note[commit_id]` as 'undefined'.
+      # That can result to having a note linked to a commit with 'undefined' ID
+      # which is non-existent.
+      h[:commit_id] = nil if h[:commit_id] == 'undefined'
+    end
+  end
+
+  def create_note_params
+    params.permit(
+      :note,
+      :merge_request_diff_head_sha
+    ).tap do |create_params|
+      create_params[:noteable_type] = merge_request.class.name
+      create_params[:noteable_id] = merge_request.id
+    end
+  end
+
+  def publish_params
+    params.permit(:review_id, :defer_notifications, ids: []).tap do |permitted|
+      permitted[:ids] = permitted[:ids]&.map(&:to_i) if permitted[:ids].present?
+      permitted[:defer_notifications] = Gitlab::Utils.to_boolean(permitted[:defer_notifications])
+      permitted[:summary_note] = create_note_params if summary_note_in_review?
+    end
+  end
+
+  def summary_note_in_review?
+    create_note_params[:note].present? && Feature.enabled?(:improved_review_email, @project)
+  end
+
+  def approve_params
+    params.permit(:approve)
+  end
+
+  def reviewer_state_params
+    params.permit(:reviewer_state)
+  end
+
+  def serialize_drafts(drafts)
+    trace_merge_head_positions(drafts)
+
+    DraftNoteSerializer
+      .new(current_user: current_user)
+      .represent(drafts)
+  end
+
+  def trace_merge_head_positions(drafts)
+    return unless Feature.enabled?(:draft_note_merge_head_line_code, project)
+
+    DraftNotes::TraceMergeHeadPositionService.new(merge_request, drafts).execute
+  end
+
+  def prepare_notes_for_rendering(notes)
+    return [] unless notes
+
+    notes = Array.wrap(notes)
+
+    # Preload author and access-level information
+    DraftNote.preload_author(notes)
+    user_ids = notes.map(&:author_id)
+    project.team.max_member_access_for_user_ids(user_ids)
+
+    notes.map { |note| render_draft_note(note) }
+  end
+
+  def render_draft_note(note)
+    markdown_params = { issuable_reference_expansion_enabled: true, no_header_anchors: true }
+    params = { target_id: merge_request.iid, target_type: 'MergeRequest', text: note.note }
+
+    if note.position.complete? && note.position.on_text?
+      markdown_params[:suggestions_filter_enabled] = true
+
+      params.merge!({
+        preview_suggestions: true,
+        file_path: note.position.new_path,
+        line: note.position.new_line,
+        base_sha: note.position.base_sha,
+        head_sha: note.position.head_sha,
+        start_sha: note.position.start_sha
+      })
+    end
+
+    result = PreviewMarkdownService.new(container: @project, current_user: current_user, params: params)
+      .execute do |text|
+      view_context.markdown(text, markdown_params)
+    end
+
+    note.rendered_note = result[:rendered_html]
+    note.users_referenced = result[:users]
+    note.suggestions = SuggestionSerializer.new.represent_diff(result[:suggestions])
+    note.commands_changes = view_context.markdown(result[:commands])
+
+    note
+  end
+
+  def authorize_admin_draft!
+    access_denied! unless can?(current_user, :admin_note, draft_note)
+  end
+
+  def authorize_create_note!
+    access_denied! unless can?(current_user, :create_note, merge_request)
+  end
+
+  def merge_request_activity_counter
+    Gitlab::UsageDataCounters::MergeRequestActivityUniqueCounter
+  end
+
+  # @return [String, nil] why the approval was refused, so the review can still be published
+  def update_reviewer_state
+    if reviewer_state_params[:reviewer_state] === 'approved'
+      approval = ::MergeRequests::ApprovalService
+        .new(project: @project, current_user: current_user, params: approve_params)
+        .execute(merge_request)
+
+      return approval.message if approval.error? && approval.reason != :already_approved
+
+      merge_request_activity_counter.track_submit_review_approve(user: current_user)
+    else
+      ::MergeRequests::UpdateReviewerStateService
+        .new(project: @project, current_user: current_user)
+        .execute(merge_request, reviewer_state_params[:reviewer_state])
+    end
+
+    nil
+  end
+end
+
+Projects::MergeRequests::DraftsController.prepend_mod

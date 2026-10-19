@@ -1,0 +1,31 @@
+query getPipelineNeeds($projectPath: ID!, $iid: ID!) {
+  project(fullPath: $projectPath) {
+    id
+    pipeline(iid: $iid) {
+      id
+      stages {
+        nodes {
+          id
+          groups {
+            nodes {
+              id
+              jobs {
+                nodes {
+                  id
+                  name
+                  schedulingType
+                  needs {
+                    nodes {
+                      id
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

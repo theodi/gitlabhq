@@ -1,0 +1,15 @@
+---
+table_name: project_import_export_relation_export_upload_uploads
+classes:
+- Geo::ProjectImportExportRelationExportUploadUpload
+- Projects::ImportExport::RelationExportUpload
+- Upload
+feature_categories:
+- importers
+description: Stores uploads for Projects::ImportExport::RelationExportUpload model
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/175203
+milestone: '17.11'
+table_size: medium
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects

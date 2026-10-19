@@ -1,0 +1,242 @@
+@import 'mixins_and_variables_and_functions';
+
+.build-page {
+  .build-log {
+    @include build-log();
+  }
+
+  .job-log-top-bar-sentinel {
+    position: absolute;
+    top: 0;
+    height: 1px;
+    width: 100%;
+    pointer-events: none;
+  }
+
+  .top-bar {
+    @include job-log-top-bar;
+
+    &.affix {
+      top: $calc-application-header-height;
+
+      // with sidebar
+      &.sidebar-expanded {
+        right: 306px;
+        left: 16px;
+      }
+
+      // without sidebar
+      &.sidebar-collapsed {
+        right: 16px;
+        left: 16px;
+      }
+    }
+
+    .controllers {
+      @include build-controllers(15px, center, false, 0, inline, 0);
+    }
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-detail-layout-container-has-sidebar {
+  // stylelint-disable-next-line gitlab/no-gl-class
+ .gl-detail-layout-content {
+  @include gl-container-width-down(lg, panel) {
+    grid-column: 1 / -1;
+  }
+ }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-detail-layout-sidebar {
+    @include gl-container-width-down(lg, panel) {
+      @apply gl-z-9999;
+      @apply gl-fixed;
+      @apply gl-top-1;
+      @apply gl-right-0;
+      @apply gl-px-5;
+      @apply gl-py-3;
+      @apply gl-bg-default;
+      @apply gl-rounded-l-lg;
+      @apply gl-shadow-md;
+      @apply gl-overflow-y-auto;
+      width: $right-sidebar-width;
+      // stylelint-disable-next-line value-no-vendor-prefix
+      height: -webkit-fill-available;
+      height: stretch;
+    }
+  }
+}
+
+.build-sidebar {
+  .container-fluid.container-limited {
+    max-width: 100%;
+  }
+
+  .icon-arrow-right {
+    @apply gl-top-3;
+    @apply gl-left-3;
+  }
+
+  .build-job {
+    &.retried {
+      @apply gl-bg-subtle;
+    }
+
+    &:hover {
+      @apply gl-bg-strong;
+    }
+
+    a:focus-visible {
+      @apply gl-relative;
+      @apply gl-z-2;
+    }
+  }
+}
+
+.build-sidebar-item {
+  @apply gl-mb-4;
+
+  &:not(:first-child) {
+    @apply gl-pt-4;
+    @apply gl-border-t;
+    @apply gl-border-subtle;
+  }
+}
+
+.job-log {
+  font-family: $monospace-font;
+  padding: $gl-padding-8 $input-horizontal-padding;
+  margin: 0;
+  font-size: $code-font-size-fixed;
+  word-break: break-all;
+  word-wrap: break-word;
+  color: color-yiq($builds-log-bg);
+  @apply gl-min-h-8;
+  @apply gl-rounded-t-none;
+  @apply gl-rounded-b-lg;
+  @apply gl-border-l;
+  @apply gl-border-r;
+  @apply gl-border-section;
+  background-color: $builds-log-bg;
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-dark & {
+    @apply gl-bg-subtle;
+    @apply gl-shadow-lg;
+  }
+}
+
+.build-log-container:fullscreen {
+  overflow-y: scroll;
+
+  .top-bar {
+    top: 0 !important;
+  }
+}
+
+.job-log-line {
+  display: flex;
+  // 1px vertical spacing so
+  // job log items don't stack
+  padding: 1px $gl-padding-8;
+}
+
+.job-log-line-number {
+  @apply gl-text-neutral-400;
+  @apply dark:gl-text-neutral-300;
+  @apply gl-relative;
+  padding-right: $gl-padding-8;
+  margin-right: $gl-padding-8;
+  min-width: $job-line-number-width;
+  user-select: none;
+  text-align: right;
+
+  &:hover,
+  &:active,
+  &:visited {
+    text-decoration: underline;
+    @apply gl-text-neutral-400;
+    @apply dark:gl-text-neutral-300;
+  }
+
+  &::before {
+    content: ' ';
+    display: block;
+    // min accessibility height for the touch target
+    height: 24px;
+    position: absolute;
+    left: 0;
+    right: 0;
+    // this transform is used to center the line number in the line
+    transform: translateY(-2.25px);
+  }
+
+}
+
+.job-log-time {
+  padding-right: $gl-padding-8;
+  margin-right: $gl-padding-8;
+  @apply gl-text-neutral-400;
+  @apply dark:gl-text-neutral-300;
+  user-select: none;
+  flex-shrink: 0;
+
+  display: none;
+  @include gl-container-width-up(sm, panel){
+    display: block;
+  }
+}
+
+.job-log-line-content {
+  flex-grow: 1;
+  white-space: pre-wrap;
+
+  span {
+    // Our default 1.5 line-height leave gaps between lines with `xterm-bg` backgrounds classes.
+    // Add extra padding to fill the line. Helps with ANSI art.
+    padding: 1.25px 0;
+  }
+}
+
+.job-log-line-header {
+  display: flex;
+  position: relative;
+  align-items: flex-start;
+
+  &:hover {
+    background-color: var(--gl-color-alpha-light-8);
+  }
+
+  .arrow {
+    left: 0;
+  }
+}
+
+.job-log-line-highlight {
+  $highlight-border-size: 2px;
+  $highlight-extra-x-padding: 2px;
+  $highlight-x-padding: $gl-padding-8 + $highlight-extra-x-padding;
+  $highlight-border: $highlight-border-size solid currentColor;
+  $highlight-x-margin: -#{$highlight-border-size + $highlight-extra-x-padding};
+
+  border-left: $highlight-border;
+  border-right: $highlight-border;
+
+  padding-left: $highlight-x-padding;
+  padding-right: $highlight-x-padding;
+
+  margin-left: $highlight-x-margin;
+  margin-right: $highlight-x-margin;
+
+  @apply gl-bg-alpha-light-8;
+  @apply dark:gl-bg-alpha-light-4;
+
+  .arrow {
+    left: $highlight-extra-x-padding;
+  }
+}
+
+.loader-animation {
+  @include build-loader-animation;
+}

@@ -1,0 +1,151 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::BridgePolicy, feature_category: :continuous_integration do
+  let_it_be_with_reload(:user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project) }
+  let_it_be_with_reload(:downstream_project) { create(:project, :small_repo) }
+  let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+  let_it_be_with_refind(:bridge) { create(:ci_bridge, pipeline: pipeline, downstream: downstream_project) }
+
+  let(:policy) do
+    described_class.new(user, bridge)
+  end
+
+  it_behaves_like 'a deployable job policy', :ci_bridge do
+    before_all do
+      downstream_project.add_maintainer(user)
+    end
+
+    before do
+      allow(job).to receive(:downstream_project).at_least(:once).and_return(downstream_project)
+    end
+  end
+
+  describe '#play_job' do
+    shared_examples 'a bridge play missing a required permission' do
+      context 'when user can update the downstream branch but not the job' do
+        let(:can_update_branch) { true }
+        let(:can_update_job) { false }
+
+        it 'does not allow' do
+          expect(policy).not_to be_allowed :play_job
+        end
+      end
+
+      context 'when user can update the job but not the downstream branch' do
+        let(:can_update_branch) { false }
+        let(:can_update_job) { true }
+
+        it 'does not allow' do
+          expect(policy).not_to be_allowed :play_job
+        end
+      end
+
+      context 'when user can update neither the job nor the downstream branch' do
+        let(:can_update_branch) { false }
+        let(:can_update_job) { false }
+
+        it 'does not allow' do
+          expect(policy).not_to be_allowed :play_job
+        end
+      end
+    end
+
+    context 'when downstream project exists' do
+      before do
+        project.add_developer(user) if can_update_job
+        fake_access = double('Gitlab::UserAccess')
+        allow(fake_access).to receive(:can_update_branch?).with('master').and_return(can_update_branch)
+        allow(Gitlab::UserAccess).to receive(:new).with(user, container: downstream_project).and_return(fake_access)
+      end
+
+      context 'when user can update the job and the downstream branch' do
+        let(:can_update_branch) { true }
+        let(:can_update_job) { true }
+
+        it 'allows' do
+          expect(policy).to be_allowed :play_job
+        end
+
+        describe 'rules for archived jobs' do
+          # :erase_build is not applicable to Ci::Bridge and :update_build is not used in Ci::Bridge
+          let(:cleanup_abilities) { described_class.all_job_cleanup_abilities - [:erase_build] }
+          let(:update_abilities) { described_class.job_user_facing_update_abilities }
+
+          context 'when job is not archived' do
+            it 'allows update and cleanup job abilities' do
+              update_abilities.each do |perm|
+                expect(policy).to be_allowed(perm)
+              end
+
+              cleanup_abilities.each do |perm|
+                expect(policy).to be_allowed(perm)
+              end
+            end
+          end
+
+          context 'when job is archived' do
+            before do
+              allow(bridge).to receive(:archived?).and_return(true)
+            end
+
+            it 'prevents update job abilities while allowing cleanup job abilities' do
+              update_abilities.each do |perm|
+                expect(policy).to be_disallowed(perm)
+              end
+
+              cleanup_abilities.each do |perm|
+                expect(policy).to be_allowed(perm)
+              end
+            end
+          end
+        end
+      end
+
+      it_behaves_like 'a bridge play missing a required permission'
+
+      context 'when the pipeline variables file is missing from storage' do
+        before do
+          create(:ci_pipeline_artifact, :with_pipeline_variables, pipeline: pipeline).file.remove!
+        end
+
+        context 'when user can update the job and the downstream branch' do
+          let(:can_update_branch) { true }
+          let(:can_update_job) { true }
+
+          it 'does not allow' do
+            # The user can update both, so only the missing variables deny the play
+            expect(policy).not_to be_allowed :play_job
+          end
+        end
+
+        it_behaves_like 'a bridge play missing a required permission'
+      end
+    end
+
+    context 'when a child pipeline bridge has its pipeline variables file missing from storage' do
+      before do
+        project.add_developer(user)
+        stub_ci_job_definition(bridge, options: { trigger: { include: 'child.yml' } })
+        create(:ci_pipeline_artifact, :with_pipeline_variables, pipeline: pipeline).file.remove!
+      end
+
+      it 'does not allow' do
+        expect(policy).not_to be_allowed :play_job
+      end
+    end
+
+    context 'when downstream project does not exist' do
+      before do
+        project.add_developer(user)
+        stub_ci_job_definition(bridge, options: { trigger: { project: 'deleted-project' } })
+      end
+
+      it 'does not allow' do
+        expect(policy).not_to be_allowed :play_job
+      end
+    end
+  end
+end

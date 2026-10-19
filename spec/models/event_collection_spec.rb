@@ -1,0 +1,314 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe EventCollection do
+  include DesignManagementTestHelpers
+
+  describe '#to_a' do
+    let_it_be(:group, freeze: false) { create(:group) }
+    let_it_be(:project, freeze: false) { create(:project_empty_repo, group: group) }
+    let_it_be(:projects, freeze: false) { Project.where(id: project.id) }
+    let_it_be(:user, freeze: false) { create(:user) }
+    let_it_be(:merge_request, freeze: false) { create(:merge_request) }
+
+    before do
+      enable_design_management
+    end
+
+    context 'with project events' do
+      let_it_be(:push_event_payloads, freeze: false) do
+        Array.new(9) do
+          create(:push_event_payload, event: create(:push_event, project: project, author: user))
+        end
+      end
+
+      let_it_be(:merge_request_events, freeze: false) do
+        create_list(:event, 10, :merged, project: project, target: merge_request)
+      end
+
+      let_it_be(:closed_issue_event, freeze: false) { create(:closed_issue_event, project: project, author: user) }
+      let_it_be(:wiki_page_event, freeze: false) { create(:wiki_page_event, project: project) }
+      let_it_be(:design_event, freeze: false) { create(:design_event, project: project) }
+
+      let(:push_events) { push_event_payloads.map(&:event) }
+
+      it 'returns an Array of all event types when no filter is passed', :aggregate_failures do
+        most_recent_20_events = [
+          wiki_page_event,
+          design_event,
+          closed_issue_event,
+          *push_events,
+          *merge_request_events
+        ].sort_by(&:id).reverse.take(20)
+        events = described_class.new(projects).to_a
+
+        expect(events).to be_an_instance_of(Array)
+        expect(events).to match_array(most_recent_20_events)
+      end
+
+      it 'includes the wiki page events when using to_a' do
+        events = described_class.new(projects).to_a
+
+        expect(events).to include(wiki_page_event)
+      end
+
+      it 'includes the design events' do
+        collection = described_class.new(projects)
+
+        expect(collection.to_a).to include(design_event)
+        expect(collection.all_project_events).to include(design_event)
+      end
+
+      it 'includes the wiki page events when using all_project_events' do
+        events = described_class.new(projects).all_project_events
+
+        expect(events).to include(wiki_page_event)
+      end
+
+      it 'applies a limit to the number of events' do
+        events = described_class.new(projects).to_a
+
+        expect(events.length).to eq(20)
+      end
+
+      it 'can paginate through events' do
+        events = described_class.new(projects, limit: 5, offset: 15).to_a
+
+        expect(events.length).to eq(5)
+      end
+
+      it 'returns an empty Array when crossing the maximum page number' do
+        events = described_class.new(projects, limit: 1, offset: 15).to_a
+
+        expect(events).to be_empty
+      end
+
+      it 'allows filtering of events using an EventFilter, returning single item' do
+        filter = EventFilter.new(EventFilter::ISSUE)
+        events = described_class.new(projects, filter: filter).to_a
+
+        expect(events).to contain_exactly(closed_issue_event)
+      end
+
+      context 'when there are multiple issue events' do
+        let!(:work_item_event) do
+          create(
+            :event,
+            :created,
+            project: project,
+            target: create(:work_item, :task, project: project),
+            target_type: 'WorkItem'
+          )
+        end
+
+        it 'includes work item events too' do
+          filter = EventFilter.new(EventFilter::ISSUE)
+          events = described_class.new(projects, filter: filter).to_a
+
+          expect(events).to contain_exactly(closed_issue_event, work_item_event)
+        end
+      end
+
+      it 'allows filtering of events using an EventFilter, returning several items' do
+        filter = EventFilter.new(EventFilter::MERGED)
+        events = described_class.new(projects, filter: filter).to_a
+
+        expect(events).to match_array(merge_request_events)
+      end
+
+      it 'allows filtering of events using an EventFilter, returning pushes' do
+        filter = EventFilter.new(EventFilter::PUSH)
+        events = described_class.new(projects, filter: filter).to_a
+
+        expect(events).to match_array(push_events)
+      end
+
+      context 'when transferred events exist' do
+        it 'excludes transferred events when exclude_transferred_events is enabled', :aggregate_failures do
+          transferred_event = create(
+            :event,
+            :transferred,
+            project: project,
+            target: project,
+            target_type: 'Project',
+            author: user
+          )
+          non_transferred_event = create(:event, :joined, project: project, author: user)
+
+          events = described_class.new(projects, transfer_options: { exclude_transferred_events: true }).to_a
+
+          expect(events.map(&:id)).to include(non_transferred_event.id)
+          expect(events.map(&:id)).not_to include(transferred_event.id)
+        end
+      end
+
+      context 'when ancestor group transfer events exist' do
+        let_it_be(:source_group, freeze: false) { create(:group) }
+        let_it_be(:target_group) { create(:group) }
+        let_it_be(:source_project) { create(:project_empty_repo, group: source_group) }
+        let(:source_projects) { Project.where(id: source_project.id) }
+
+        it 'includes ancestor group transfer events for project activity' do
+          source_group.update!(parent: target_group)
+          group_transfer_event = create(
+            :event,
+            :transferred,
+            project: nil,
+            group: source_group,
+            target: source_group,
+            target_type: 'Group',
+            author: user
+          )
+          events = described_class.new(
+            source_projects,
+            transfer_options: { ancestor_group_ids: source_group.self_and_ancestors.select(:id) }
+          ).to_a
+
+          expect(events.map(&:id)).to include(group_transfer_event.id)
+        end
+      end
+    end
+
+    context 'with multiple projects' do
+      let_it_be(:project_1, freeze: false) { create(:project_empty_repo, name: 'Project Z') }
+      let_it_be(:project_1_event, freeze: false) { create(:wiki_page_event, project: project_1) }
+
+      let_it_be(:project_2, freeze: false) { create(:project_empty_repo, name: 'Project A') }
+      let_it_be(:project_2_event, freeze: false) { create(:wiki_page_event, project: project_2) }
+
+      context 'when projects param has an order by clause' do
+        let_it_be(:projects_sorted_by_name, freeze: false) do
+          Project.where(id: [project_1.id, project_2.id]).limit(1).order(:name)
+        end
+
+        context 'when preserve_projects_order is true' do
+          subject(:events) do
+            described_class.new(
+              projects_sorted_by_name,
+              preserve_projects_order: true
+            ).to_a
+          end
+
+          it 'returns events from the first project with respect to the order by column' do
+            expect(events).to contain_exactly(project_2_event)
+          end
+        end
+      end
+    end
+
+    context 'with group events' do
+      let(:groups) { group.self_and_descendants.public_or_visible_to_user(user) }
+      let(:subject) { described_class.new(projects, groups: groups).to_a }
+
+      it 'includes also group events' do
+        subgroup = create(:group, parent: group)
+        event1 = create(:event, project: project, author: user)
+        event2 = create(:event, project: nil, group: group, author: user)
+        event3 = create(:event, project: nil, group: subgroup, author: user)
+
+        expect(subject).to eq([event3, event2, event1])
+      end
+
+      it 'does not include events from inaccessible groups' do
+        subgroup = create(:group, :private, parent: group)
+        event1 = create(:event, project: nil, group: group, author: user)
+        create(:event, project: nil, group: subgroup, author: user)
+
+        expect(subject).to match_array([event1])
+      end
+
+      context 'when transferred project and group events exist' do
+        let_it_be(:subgroup) { create(:group, parent: group) }
+
+        it 'includes transferred project and subgroup events for parent group activity', :aggregate_failures do
+          project_transfer_event = create(
+            :event,
+            :transferred,
+            project: project,
+            target: project,
+            target_type: 'Project',
+            author: user
+          )
+
+          subgroup_group_transfer_event = create(
+            :event,
+            :transferred,
+            project: nil,
+            group: subgroup,
+            target_type: nil,
+            target_id: nil,
+            author: user
+          )
+
+          group_transfer_event = create(
+            :event,
+            :transferred,
+            project: nil,
+            group: group,
+            target_type: nil,
+            target_id: nil,
+            author: user
+          )
+
+          events = described_class.new(
+            projects,
+            groups: groups,
+            transfer_options: { current_group_id: group.id }
+          ).to_a
+
+          expect(events.map(&:id)).to include(
+            project_transfer_event.id,
+            subgroup_group_transfer_event.id,
+            group_transfer_event.id
+          )
+        end
+      end
+
+      context 'with pagination through events' do
+        let_it_be(:project_events, freeze: false) { create_list(:event, 4, project: project) }
+        let_it_be(:group_events, freeze: false) { create_list(:event, 4, group: group, project: nil, author: user) }
+
+        subject(:events) { described_class.new(projects, limit: 4, offset: 2, groups: groups).to_a }
+
+        it 'returns recent groups and projects events' do
+          recent_events_with_offset = (project_events[2..] + group_events[..1]).reverse
+
+          expect(events).to eq(recent_events_with_offset)
+        end
+      end
+
+      context 'with project exclusive event types' do
+        using RSpec::Parameterized::TableSyntax
+
+        where(:filter, :event) do
+          EventFilter::PUSH | lazy { create(:push_event, project: project) }
+          EventFilter::MERGED | lazy { create(:event, :merged, project: project, target: merge_request) }
+          EventFilter::TEAM | lazy { create(:event, :joined, project: project) }
+          EventFilter::ISSUE | lazy { create(:closed_issue_event, project: project) }
+          EventFilter::DESIGNS | lazy { create(:design_event, project: project) }
+        end
+
+        with_them do
+          let(:subject) do
+            described_class.new(projects, groups: Group.where(id: group.id), filter: EventFilter.new(filter))
+          end
+
+          it "queries only project events" do
+            expected_event = event # Forcing lazy evaluation
+            expect(subject).to receive(:project_events).with(no_args).and_call_original
+            expect(subject).not_to receive(:group_events)
+
+            expect(subject.to_a).to match_array(expected_event)
+          end
+        end
+      end
+    end
+
+    it 'returns no events if no projects are passed' do
+      events = described_class.new(Project.none).to_a
+
+      expect(events).to be_empty
+    end
+  end
+end

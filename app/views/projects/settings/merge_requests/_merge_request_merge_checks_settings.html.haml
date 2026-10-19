@@ -1,0 +1,12 @@
+- form = local_assigns.fetch(:form)
+
+%fieldset.form-group{ aria: { describedby: :merge_request_merge_checks_settings_description } }
+  %legend{ class: 'gl-m-0 gl-heading-5 gl-border-0' }
+    = s_('ProjectSettings|Merge checks')
+  %p.gl-text-subtle{ id: :merge_request_merge_checks_settings_description }
+    = s_('ProjectSettings|These checks must pass before merge requests can be merged.')
+  = render 'projects/settings/merge_requests/merge_request_pipelines_and_threads_options', form: form, project: @project
+  = render_if_exists 'projects/settings/merge_requests/merge_request_merge_checks_status_checks', form: form, project: @project
+  = render_if_exists 'projects/settings/merge_requests/merge_request_merge_checks_security_policy_pipelines', form: form, project: @project
+  = render_if_exists 'projects/settings/merge_requests/merge_request_merge_checks_jira_enforcement', form: form, project: @project
+  = render_if_exists 'projects/settings/merge_requests/merge_request_merge_checks_title_regex', form: form, project: @project

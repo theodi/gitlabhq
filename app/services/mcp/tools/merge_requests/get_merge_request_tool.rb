@@ -1,0 +1,122 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    module MergeRequests
+      class GetMergeRequestTool < Mcp::Tools::Base::GraphqlTool
+        include Mcp::Tools::Concerns::ResourceFinder
+
+        def self.build_query
+          load_graphql('merge_requests/get_merge_request.query.graphql')
+        end
+
+        register_version VERSIONS[:v0_1_0], {
+          operation_name: 'project',
+          graphql_operation: build_query
+        }
+
+        def build_variables
+          full_path, iid = resolve_target
+          facets = Array(params[:include]).map(&:to_s)
+          detail = params[:detail].to_s
+          diffs_requested = facets.include?('diffs')
+
+          {
+            fullPath: full_path,
+            iid: iid.to_s,
+            includeDiffs: diffs_requested,
+            includeDiffFiles: diffs_requested && detail != 'none',
+            includeDiffPatches: diffs_requested && detail == 'full_patch',
+            includeCommits: facets.include?('commits'),
+            includeNotes: facets.include?('notes'),
+            includePipelines: facets.include?('pipelines'),
+            includeDiscussions: facets.include?('discussions'),
+            includeApprovals: facets.include?('approvals'),
+            includeConflicts: facets.include?('conflicts'),
+            **notes_pagination_variables(facets),
+            diffsAfter: params[:diffs_after],
+            diffsFirst: params[:diffs_first],
+            commitsAfter: params[:commits_after],
+            commitsFirst: params[:commits_first],
+            pipelinesAfter: params[:pipelines_after],
+            pipelinesFirst: params[:pipelines_first]
+          }.compact
+        end
+
+        protected
+
+        def build_variables_v0_1_0
+          build_variables
+        end
+
+        private
+
+        def notes_pagination_variables(facets)
+          return {} unless facets.include?('notes')
+
+          backward = params[:notes_last].present? || params[:notes_before].present?
+          forward = params[:notes_first].present? || params[:notes_after].present?
+
+          if backward && forward
+            raise ArgumentError, 'Provide notes_first/notes_after or notes_last/notes_before, not both directions'
+          end
+
+          if backward
+            {
+              notesLast: params[:notes_last] || Mcp::Tools::Concerns::CursorPagination::MAX_PAGE_SIZE,
+              notesBefore: params[:notes_before]
+            }
+          else
+            { notesFirst: params[:notes_first], notesAfter: params[:notes_after] }
+          end
+        end
+
+        def resolve_target
+          @resolve_target ||=
+            if params[:url].present?
+              match = ::MergeRequest.link_reference_pattern.match(params[:url])
+              raise ArgumentError, "Invalid merge request URL: #{params[:url]}" unless match
+
+              [find_project!("#{match[:namespace]}/#{match[:project]}").full_path, match[:merge_request]]
+            else
+              iid = params[:merge_request_iid]
+              project_id = params[:project_id]
+
+              raise ArgumentError, 'Provide either url, or project_id and merge_request_iid' unless iid && project_id
+
+              [find_project!(project_id).full_path, iid]
+            end
+        end
+
+        def process_result(result)
+          missing = missing_resource(result)
+          return missing_resource_error(missing) if missing
+
+          processed_result = super
+          return processed_result if processed_result[:isError]
+
+          merge_request = processed_result[:structuredContent]['mergeRequest']
+          formatted_content = [{ type: 'text', text: Gitlab::Json.dump(merge_request) }]
+          ::Mcp::Tools::Base::Response.success(formatted_content, merge_request)
+        end
+
+        def missing_resource(result)
+          return if result['errors'].present?
+
+          project = result.dig('data', 'project')
+          return 'Project' if project.nil?
+
+          'Merge request' if project['mergeRequest'].nil?
+        end
+
+        def missing_resource_error(resource)
+          ::Mcp::Tools::Base::Response.error(
+            "#{resource} not found or inaccessible", reason: ::Mcp::Tools::Base::Response::Reason::NOT_FOUND
+          )
+        end
+      end
+    end
+  end
+end
+
+Mcp::Tools::MergeRequests::GetMergeRequestTool.prepend_mod

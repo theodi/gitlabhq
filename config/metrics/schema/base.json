@@ -1,0 +1,201 @@
+{
+  "type": "object",
+  "required": [
+    "key_path",
+    "description",
+    "value_type",
+    "status",
+    "product_group",
+    "time_frame",
+    "data_source",
+    "data_category",
+    "milestone",
+    "introduced_by_url",
+    "tiers"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "key_path": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "product_group": {
+      "$ref": "product_groups.json"
+    },
+    "product_categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "known_product_category"
+      }
+    },
+    "value_type": {
+      "type": "string",
+      "enum": [
+        "string",
+        "number",
+        "boolean",
+        "object"
+      ]
+    },
+    "status": {
+      "type": [
+        "string"
+      ],
+      "enum": [
+        "active",
+        "removed",
+        "broken"
+      ]
+    },
+    "milestone": {
+      "type": [
+        "string"
+      ],
+      "pattern": "^<?[0-9]+\\.[0-9]+$"
+    },
+    "milestone_removed": {
+      "type": [
+        "string"
+      ],
+      "pattern": "^<?[0-9]+\\.[0-9]+$"
+    },
+    "introduced_by_url": {
+      "type": [
+        "string"
+      ],
+      "format": "uri"
+    },
+    "removed_by_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri"
+    },
+    "repair_issue_url": {
+      "type": [
+        "string"
+      ],
+      "format": "uri"
+    },
+    "options": {
+      "type": "object"
+    },
+    "data_source": {
+      "type": "string",
+      "enum": [
+        "database",
+        "clickhouse",
+        "redis",
+        "redis_hll",
+        "prometheus",
+        "system",
+        "license",
+        "internal_events"
+      ]
+    },
+    "data_category": {
+      "type": "string",
+      "enum": [
+        "operational",
+        "optional",
+        "subscription",
+        "standard"
+      ]
+    },
+    "instrumentation_class": {
+      "type": "string",
+      "pattern": "^(([A-Z][a-z]+)+::)*(([A-Z]+[a-z]+)+)$"
+    },
+    "performance_indicator_type": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "gmau",
+          "smau",
+          "paid_gmau",
+          "umau",
+          "customer_health_score",
+          "devops_report",
+          "lighthouse",
+          "leading_indicator"
+        ]
+      }
+    },
+    "tiers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "free",
+          "premium",
+          "ultimate"
+        ]
+      }
+    },
+    "value_json_schema": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "events": {},
+    "time_frame": {}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "time_frame": {
+          "type": "string",
+          "enum": [
+            "7d",
+            "28d",
+            "all",
+            "none"
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "time_frame": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "7d",
+              "28d",
+              "all"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "$ref": "internal_events.json"
+    },
+    {
+      "$ref": "redis_hll.json"
+    },
+    {
+      "$ref": "redis.json"
+    },
+    {
+      "$ref": "status.json"
+    },
+    {
+      "$ref": "product_categories.json"
+    },
+    {
+      "$ref": "internal_events/valid_timeframe_for_unique_property.json"
+    }
+  ]
+}

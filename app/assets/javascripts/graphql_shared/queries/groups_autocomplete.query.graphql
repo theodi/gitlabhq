@@ -1,0 +1,11 @@
+query groupsAutocomplete($search: String) {
+  groups(search: $search) {
+    nodes {
+      id
+      name
+      fullPath
+      fullName
+      avatarUrl
+    }
+  }
+}

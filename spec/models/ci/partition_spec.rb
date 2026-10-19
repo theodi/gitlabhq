@@ -1,0 +1,402 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::Partition, feature_category: :ci_scaling do
+  let_it_be_with_reload(:ci_partition) { create(:ci_partition) }
+
+  describe 'validations' do
+    it { is_expected.to validate_presence_of(:id) }
+    it { is_expected.to validate_presence_of(:status) }
+
+    it 'is valid' do
+      expect(ci_partition).to be_valid
+    end
+
+    context 'when status is current' do
+      before do
+        ci_partition.update!(status: described_class.statuses[:current])
+      end
+
+      it { is_expected.to validate_uniqueness_of(:status) }
+    end
+  end
+
+  describe '.create_next!' do
+    subject(:next_ci_partition) { described_class.create_next! }
+
+    let(:ci_last_partition) { described_class.last }
+
+    it 'creates a new record', :aggregate_failures do
+      expect { next_ci_partition }.to change { Ci::Partition.count }.by(1)
+      expect(ci_last_partition.id).to eq(ci_partition.id + 1)
+      expect(ci_last_partition.status).to eq(described_class.statuses[:preparing])
+    end
+  end
+
+  describe '.statuses' do
+    subject(:statuses) { described_class.statuses }
+
+    it 'returns the statuses' do
+      expect(statuses).to eq({
+        preparing: 0,
+        ready: 1,
+        current: 2,
+        active: 3,
+        archived: 4
+      })
+    end
+  end
+
+  describe 'scopes' do
+    describe '.current' do
+      subject(:current) { described_class.current }
+
+      context 'when no ci_partition is marked as current' do
+        it { is_expected.to be_nil }
+      end
+
+      context 'when a given ci_partition is marked as current' do
+        before do
+          ci_partition.update!(status: described_class.statuses[:current])
+        end
+
+        it 'returns the current record' do
+          is_expected.to eq(ci_partition)
+        end
+      end
+    end
+
+    describe '.recent_ids' do
+      subject(:recent_ids) { described_class.recent_ids }
+
+      it 'scopes the query to the current and active statuses (status IN (2, 3))' do
+        expect(described_class.with_status(:current, :active).to_sql)
+          .to include('"status" IN (2, 3)')
+      end
+
+      context 'when no current or active partitions exist' do
+        it 'falls back to the initial partition value' do
+          expect(recent_ids).to eq([described_class::INITIAL_PARTITION_VALUE])
+        end
+      end
+
+      context 'when current and active partitions exist' do
+        let_it_be(:active_one) { create(:ci_partition, :active) }
+        let_it_be(:active_two) { create(:ci_partition, :active) }
+        let_it_be(:active_three) { create(:ci_partition, :active) }
+        let_it_be(:current_partition) { create(:ci_partition, :current) }
+        let_it_be(:archived_partition) { create(:ci_partition, :archived) }
+
+        it 'returns the most recent current and active partition ids, newest first' do
+          expect(recent_ids).to match_array([current_partition, active_three, active_two].map(&:id))
+        end
+
+        it 'returns at most RECENT_PARTITIONS_COUNT ids' do
+          expect(recent_ids.size).to eq(described_class::RECENT_PARTITIONS_COUNT)
+        end
+
+        it 'excludes archived partitions' do
+          expect(recent_ids).not_to include(archived_partition.id)
+        end
+      end
+    end
+
+    describe '.id_before' do
+      let_it_be(:ci_next_partition) { create(:ci_partition) }
+
+      subject(:id_before) { described_class.id_before(ci_next_partition.id) }
+
+      it 'returns ci_partitions before given id' do
+        expect(id_before).to match_array(ci_partition)
+      end
+    end
+
+    describe '.id_after' do
+      subject(:id_after) { described_class.id_after(ci_partition.id) }
+
+      let(:ci_next_partition) { create(:ci_partition) }
+
+      it 'returns ci_partitions above given id' do
+        expect(id_after).to match_array(ci_next_partition)
+      end
+    end
+
+    describe '.next_available' do
+      subject(:next_available) { described_class.next_available(ci_partition.id) }
+
+      let_it_be(:next_ci_partition) { create(:ci_partition, :ready) }
+
+      context 'when one partition is ready' do
+        it { is_expected.to eq(next_ci_partition) }
+      end
+
+      context 'when multiple partitions are ready' do
+        before do
+          create_list(:ci_partition, 2, :ready)
+        end
+
+        it 'returns the first next partition available' do
+          expect(next_available).to eq(next_ci_partition)
+        end
+      end
+    end
+
+    describe '.provisioning' do
+      subject(:provisioning) { described_class.provisioning(ci_partition.id) }
+
+      let_it_be_with_reload(:next_ci_partition) { create(:ci_partition) }
+
+      context 'when one partition is preparing' do
+        it { is_expected.to eq(next_ci_partition) }
+      end
+
+      context 'when multiple partitions are preparing' do
+        before do
+          create_list(:ci_partition, 2)
+        end
+
+        it 'returns the first ci_partition' do
+          expect(provisioning).to eq(next_ci_partition)
+        end
+      end
+
+      context 'when the next partition has a different status' do
+        before do
+          next_ci_partition.ready!
+        end
+
+        it 'allows the next partition to be considered' do
+          expect(provisioning).to eq(next_ci_partition)
+        end
+      end
+    end
+
+    describe '.all_archived?' do
+      subject(:all_archived) { described_class.all_archived?(ids) }
+
+      let_it_be(:archived) { create(:ci_partition, :archived) }
+      let_it_be(:also_archived) { create(:ci_partition, :archived) }
+      let_it_be(:active) { create(:ci_partition, :active) }
+
+      context 'when every id is archived' do
+        let(:ids) { [archived.id, also_archived.id] }
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'when one id is not archived' do
+        let(:ids) { [archived.id, active.id] }
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when an id has no ci_partitions row' do
+        let(:ids) { [archived.id, non_existing_record_id] }
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when an id is repeated' do
+        let(:ids) { [archived.id, archived.id] }
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'when no ids are given' do
+        let(:ids) { [] }
+
+        it { is_expected.to be(false) }
+      end
+    end
+
+    describe '.archived_since' do
+      subject(:archived_since) { described_class.archived_since(ids) }
+
+      let_it_be(:archived) { create(:ci_partition, :archived, updated_at: 3.weeks.ago) }
+      let_it_be(:archived_later) { create(:ci_partition, :archived, updated_at: 1.week.ago) }
+      let_it_be(:active) { create(:ci_partition, :active) }
+
+      context 'when every id is archived' do
+        let(:ids) { [archived.id, archived_later.id] }
+
+        it 'returns when the last of them was archived' do
+          expect(archived_since).to be_within(1.second).of(archived_later.updated_at)
+        end
+      end
+
+      context 'when one id is not archived' do
+        let(:ids) { [archived.id, active.id] }
+
+        it { is_expected.to be_nil }
+      end
+
+      context 'when no ids are given' do
+        let(:ids) { [] }
+
+        it { is_expected.to be_nil }
+      end
+    end
+  end
+
+  describe 'state machine' do
+    context 'when transitioning from prepare to ready' do
+      before do
+        ci_partition.ready!
+      end
+
+      it 'status is ready' do
+        expect(ci_partition).to be_ready
+      end
+    end
+
+    context 'when transitioning from current to active' do
+      let(:current_from) { nil }
+      let!(:next_ci_partition) { create(:ci_partition, :ready, current_from: current_from) }
+
+      before do
+        ci_partition.update!(status: described_class.statuses[:current])
+        allow(next_ci_partition).to receive(:all_partitions_exist?).and_return(true)
+      end
+
+      it 'updates statuses for current and next partition' do
+        expect do
+          next_ci_partition.switch_writes!
+        end
+        .to change { ci_partition.reload.status_name }.from(:current).to(:active)
+        .and change { next_ci_partition.reload.status_name }.from(:ready).to(:current)
+      end
+
+      it 'sets current_from on the new current partition' do
+        expect do
+          next_ci_partition.switch_writes!
+        end
+        .to change { next_ci_partition.reload.current_from }.from(nil).to(be_present)
+      end
+
+      it 'sets current_until on the previous current partition' do
+        expect do
+          next_ci_partition.switch_writes!
+        end
+        .to change { ci_partition.reload.current_until }.from(nil).to(be_present)
+      end
+
+      context 'when current_from exists' do
+        let(:current_from) { Time.current - 8.days }
+
+        it 'does not change current_from' do
+          expect do
+            next_ci_partition.switch_writes!
+          end
+          .not_to change { ci_partition.reload.current_from }
+        end
+      end
+    end
+
+    context 'when transitioning from active to archived' do
+      let_it_be_with_reload(:active_partition) { create(:ci_partition, :active) }
+
+      it 'transitions to archived' do
+        expect { active_partition.archive! }
+          .to change { active_partition.reload.status_name }.from(:active).to(:archived)
+      end
+    end
+  end
+
+  describe '#switch_writes!' do
+    let_it_be_with_reload(:ready_partition) { create(:ci_partition, :ready) }
+    let_it_be_with_reload(:active_partition) { create(:ci_partition, :active) }
+    let_it_be_with_reload(:current_partition) { create(:ci_partition, :current) }
+
+    it 'switches from ready to current' do
+      expect(ready_partition)
+        .to receive(:all_partitions_exist?)
+        .and_return(true)
+
+      expect { ready_partition.switch_writes! }
+        .to change { described_class.current }
+        .from(current_partition).to(ready_partition)
+
+      expect(current_partition.reload).to be_active
+      expect(ready_partition.reload).to be_current
+    end
+
+    it 'switches from active to current' do
+      expect(active_partition)
+        .to receive(:all_partitions_exist?)
+        .and_return(true)
+
+      expect { active_partition.switch_writes! }
+        .to change { described_class.current }
+        .from(current_partition).to(active_partition)
+
+      expect(current_partition.reload).to be_active
+      expect(active_partition.reload).to be_current
+    end
+
+    context 'when the candidate partition status is incorrect' do
+      it 'prevents the switch' do
+        expect(ready_partition)
+          .to receive(:all_partitions_exist?)
+          .and_return(false)
+
+        expect { ready_partition.switch_writes! }
+          .to raise_error(StateMachines::InvalidTransition)
+
+        expect(described_class.current).to eq(current_partition)
+      end
+    end
+  end
+
+  describe '#all_partitions_exist?' do
+    subject(:all_partitions_exist) { ci_partition.all_partitions_exist? }
+
+    context 'when all partitions exist' do
+      it { is_expected.to be(true) }
+    end
+
+    context 'when database partitions does not exist for ci_partition record' do
+      let(:ci_partition) { create(:ci_partition, id: non_existing_record_id) }
+
+      it { is_expected.to be(false) }
+    end
+  end
+
+  describe '#exceed_time_window?', time_travel_to: '2026-01-31' do
+    subject(:exceeded) { ci_partition.exceed_time_window? }
+
+    before do
+      stub_application_setting(ci_partitions_in_seconds_limit: ChronicDuration.parse('30 days'))
+      ci_partition.assign_attributes(current_from: Time.current)
+    end
+
+    context 'when current_from is nil' do
+      it 'returns false' do
+        ci_partition.assign_attributes(current_from: nil)
+        expect(exceeded).to be(false)
+      end
+    end
+
+    context 'when time_window is nil' do
+      before do
+        stub_application_setting(ci_partitions_in_seconds_limit: nil)
+      end
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'when elapsed' do
+      it 'returns true for "31 days"' do
+        ci_partition.assign_attributes(current_from: 31.days.ago)
+        expect(exceeded).to be(true)
+      end
+    end
+
+    context 'when not elapsed' do
+      it 'returns false for "29 days"' do
+        ci_partition.assign_attributes(current_from: 29.days.ago)
+        expect(exceeded).to be(false)
+      end
+    end
+  end
+end

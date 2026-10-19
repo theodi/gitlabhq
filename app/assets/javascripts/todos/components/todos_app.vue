@@ -1,0 +1,554 @@
+<script>
+import { computed } from 'vue';
+import {
+  GlButton,
+  GlLoadingIcon,
+  GlLink,
+  GlBadge,
+  GlTab,
+  GlTabs,
+  GlTooltipDirective,
+  GlFormCheckbox,
+  GlIcon,
+  GlSegmentedControl,
+} from '@gitlab/ui';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { createAlert } from '~/alert';
+import { BV_HIDE_TOOLTIP } from '~/lib/utils/constants';
+import { getStorageValue, saveStorageValue } from '~/lib/utils/local_storage';
+import { s__ } from '~/locale';
+import Tracking from '~/tracking';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import {
+  DEFAULT_PAGE_SIZE,
+  TODOS_VIEW_GROUPED,
+  TODOS_VIEW_LIST,
+  TODOS_VIEW_STORAGE_KEY,
+  INSTRUMENT_TAB_LABELS,
+  INSTRUMENT_TODO_FILTER_CHANGE,
+  STATUS_BY_TAB,
+  TODO_WAIT_BEFORE_RELOAD,
+  TABS_INDICES,
+} from '~/todos/constants';
+import IndexLayout from '~/vue_shared/components/index_layout.vue';
+import { groupTodosByTarget } from '../utils/group_todos';
+import getTodosQuery from './queries/get_todos.query.graphql';
+import getPendingTodosCount from './queries/get_pending_todos_count.query.graphql';
+import TodoItem from './todo_item.vue';
+import TodosEmptyState from './todos_empty_state.vue';
+import TodosFilterBar, { SORT_OPTIONS } from './todos_filter_bar.vue';
+import TodosBulkBar from './todos_bulk_bar.vue';
+import TodosPagination from './todos_pagination.vue';
+import TodosGroup from './todos_group.vue';
+
+const getStoredView = () => {
+  const { exists, value } = getStorageValue(TODOS_VIEW_STORAGE_KEY);
+  return exists && value === TODOS_VIEW_GROUPED ? TODOS_VIEW_GROUPED : TODOS_VIEW_LIST;
+};
+
+export default {
+  name: 'TodosApp',
+  components: {
+    GlLink,
+    GlButton,
+    GlLoadingIcon,
+    GlBadge,
+    GlTabs,
+    GlTab,
+    GlFormCheckbox,
+    GlIcon,
+    GlSegmentedControl,
+    IndexLayout,
+    TodosEmptyState,
+    TodosFilterBar,
+    TodoItem,
+    TodosBulkBar,
+    TodosPagination,
+    TodosGroup,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [Tracking.mixin(), glFeatureFlagsMixin()],
+  provide() {
+    return {
+      currentTab: computed(() => this.currentTab),
+      currentTime: computed(() => this.currentTime),
+      currentUserId: computed(() => this.currentUserId),
+    };
+  },
+  data() {
+    return {
+      updateTimeoutId: null,
+      needsRefresh: false,
+      view: this.glFeatures?.todosGroupedView ? getStoredView() : TODOS_VIEW_LIST,
+      cursor: {
+        first: DEFAULT_PAGE_SIZE,
+        after: null,
+        last: null,
+        before: null,
+      },
+      currentUserId: null,
+      pageInfo: {},
+      todos: [],
+      currentTab: TABS_INDICES.pending,
+      pendingTodosCount: '-',
+      queryFilterValues: {
+        groupId: [],
+        projectId: [],
+        authorId: [],
+        type: [],
+        action: [],
+        sort: `${SORT_OPTIONS[0].value}_DESC`,
+      },
+      alert: null,
+      showSpinnerWhileLoading: true,
+      currentTime: new Date(),
+      currentTimeInterval: null,
+      multiselectState: {},
+      selectAllChecked: false,
+    };
+  },
+  apollo: {
+    todos: {
+      query: getTodosQuery,
+      fetchPolicy: 'cache-and-network',
+      variables() {
+        const state = this.isOnSnoozedTab ? ['pending'] : this.statusByTab;
+        return {
+          state,
+          ...(this.isOnSnoozedTab ? { isSnoozed: true } : {}),
+          ...this.queryFilterValues,
+          ...this.cursor,
+        };
+      },
+      update({ currentUser: { id, todos: { nodes = [], pageInfo = {} } } = {} }) {
+        this.pageInfo = pageInfo;
+        this.currentUserId = id;
+        return nodes;
+      },
+      error(error) {
+        this.alert = createAlert({ message: s__('Todos|Something went wrong. Please try again.') });
+        Sentry.captureException(error);
+      },
+      watchLoading() {
+        // We reset the `needsRefresh` when paginating or changing tabs
+        this.needsRefresh = false;
+      },
+    },
+    pendingTodosCount: {
+      query: getPendingTodosCount,
+      variables() {
+        return this.queryFilterValues;
+      },
+      update({ currentUser: { todos: { count } } = {} }) {
+        return count;
+      },
+    },
+  },
+  computed: {
+    statusByTab() {
+      return STATUS_BY_TAB[this.currentTab];
+    },
+    isLoading() {
+      return this.$apollo.queries.todos.loading;
+    },
+    isLoadingWithSpinner() {
+      return this.isLoading && this.showSpinnerWhileLoading;
+    },
+    isFiltered() {
+      // Ignore sort value. It is always present and not really a filter.
+      const { sort: _, ...filters } = this.queryFilterValues;
+      return Object.values(filters).some((value) => value.length > 0);
+    },
+    isOnSnoozedTab() {
+      return this.currentTab === TABS_INDICES.snoozed;
+    },
+    isOnAllTab() {
+      return this.currentTab === TABS_INDICES.all;
+    },
+    canUseGroupedView() {
+      return Boolean(this.glFeatures.todosGroupedView) && this.currentTab === TABS_INDICES.pending;
+    },
+    isGroupedView() {
+      return this.canUseGroupedView && this.view === TODOS_VIEW_GROUPED;
+    },
+    viewOptions() {
+      return [
+        { value: TODOS_VIEW_LIST, text: s__('Todos|List') },
+        { value: TODOS_VIEW_GROUPED, text: s__('Todos|Grouped') },
+      ].map((option) => ({
+        ...option,
+        // GlSegmentedControl only shows the selected state visually
+        props: { 'aria-pressed': String(this.view === option.value) },
+      }));
+    },
+    todoGroups() {
+      return this.isGroupedView ? groupTodosByTarget(this.todos) : [];
+    },
+    isPaginated() {
+      return Boolean(this.pageInfo.hasNextPage || this.pageInfo.hasPreviousPage);
+    },
+    isOnFirstPage() {
+      return !this.pageInfo.hasPreviousPage;
+    },
+    showEmptyState() {
+      return this.isOnFirstPage && !this.isLoading && this.todos.length === 0;
+    },
+    showSelectAll() {
+      if (this.isOnAllTab) return false;
+
+      return !(this.showEmptyState || this.isLoadingWithSpinner);
+    },
+    selectedIds() {
+      return this.todos.filter((todo) => this.multiselectState[todo.id]).map((todo) => todo.id);
+    },
+    hasIndeterminateSelectAll() {
+      return this.selectedIds.length > 0 && this.selectedIds.length < this.todos.length;
+    },
+  },
+  watch: {
+    selectedIds(ids) {
+      if (!ids.length) this.selectAllChecked = false;
+      else if (ids.length === this.todos.length) this.selectAllChecked = true;
+    },
+    todos(todos) {
+      const pageSize = this.cursor.first || this.cursor.last;
+      // If we are on the last page, and have 0 todos, we want to load the previous page
+      if (!this.isOnFirstPage && todos.length === 0) {
+        this.updateCursor({
+          last: pageSize,
+          after: null,
+          first: null,
+          before: null,
+        });
+      }
+      // If we are on the first page, have less than a page full of todos, but more todos available,
+      // we load the full first page
+      else if (this.isOnFirstPage && todos.length < pageSize && this.pageInfo.hasNextPage) {
+        this.updateCursor({
+          last: null,
+          after: null,
+          first: pageSize,
+          before: null,
+        });
+      }
+    },
+  },
+  created() {
+    const searchParams = new URLSearchParams(window.location.search);
+    const stateFromUrl = searchParams.get('state');
+    switch (stateFromUrl) {
+      case 'snoozed':
+        this.currentTab = TABS_INDICES.snoozed;
+        break;
+      case 'done':
+        this.currentTab = TABS_INDICES.done;
+        break;
+      case 'all':
+        this.currentTab = TABS_INDICES.all;
+        break;
+      default:
+        break;
+    }
+  },
+  mounted() {
+    document.addEventListener('visibilitychange', this.handleVisibilityChanged);
+    this.currentTimeInterval = setInterval(() => {
+      this.currentTime = new Date();
+    }, 60 * 1000);
+  },
+  beforeDestroy() {
+    document.removeEventListener('visibilitychange', this.handleVisibilityChanged);
+    clearInterval(this.currentTimeInterval);
+  },
+  methods: {
+    changeView(view) {
+      this.view = view;
+      saveStorageValue(TODOS_VIEW_STORAGE_KEY, view);
+    },
+    updateCursor(cursor) {
+      this.cursor = cursor;
+    },
+    resetPagination() {
+      this.cursor = {
+        first: this.cursor.first || this.cursor.last,
+        after: null,
+        last: null,
+        before: null,
+      };
+    },
+    tabChanged(tabIndex) {
+      if (tabIndex === this.currentTab) {
+        return;
+      }
+
+      this.unselectAll();
+
+      this.track(INSTRUMENT_TODO_FILTER_CHANGE, {
+        label: INSTRUMENT_TAB_LABELS[tabIndex],
+      });
+      this.currentTab = tabIndex;
+
+      this.resetPagination();
+
+      this.syncActiveTabToUrl();
+    },
+    syncActiveTabToUrl() {
+      const tabIndexToUrlStateParam = {
+        [TABS_INDICES.snoozed]: 'snoozed',
+        [TABS_INDICES.done]: 'done',
+        [TABS_INDICES.all]: 'all',
+      };
+      const searchParams = new URLSearchParams(window.location.search);
+      if (this.currentTab === TABS_INDICES.pending) {
+        searchParams.delete('state');
+      } else {
+        searchParams.set('state', tabIndexToUrlStateParam[this.currentTab]);
+      }
+
+      window.history.replaceState(null, '', `?${searchParams.toString()}`);
+    },
+    handleFiltersChanged(data) {
+      this.alert?.dismiss();
+      this.resetPagination();
+      this.queryFilterValues = { ...data };
+    },
+    handleVisibilityChanged() {
+      if (!document.hidden) {
+        this.updateAllQueries(false);
+      }
+    },
+    async handleItemChanged() {
+      this.needsRefresh = true;
+
+      await this.updateCounts();
+    },
+    handleSelectionChanged(id, isSelected) {
+      this.multiselectState = {
+        ...this.multiselectState,
+        [id]: isSelected,
+      };
+    },
+    handleBulkAction() {
+      this.unselectAll();
+      this.updateAllQueries(false);
+    },
+    updateCounts() {
+      return this.$apollo.queries.pendingTodosCount.refetch();
+    },
+    async updateAllQueries(showLoading = true) {
+      this.$root.$emit(BV_HIDE_TOOLTIP, 'todo-refresh-btn');
+      this.showSpinnerWhileLoading = showLoading;
+
+      await Promise.all([this.updateCounts(), this.$apollo.queries.todos.refetch()]);
+
+      this.showSpinnerWhileLoading = true;
+    },
+    startedInteracting() {
+      clearTimeout(this.updateTimeoutId);
+    },
+    stoppedInteracting() {
+      if (!this.needsRefresh) {
+        return;
+      }
+
+      if (this.updateTimeoutId) {
+        clearTimeout(this.updateTimeoutId);
+      }
+
+      this.updateTimeoutId = setTimeout(() => {
+        /*
+         We double-check needsRefresh or
+         whether a query is already running
+         */
+        if (this.needsRefresh && !this.$apollo.queries.todos.loading) {
+          this.updateAllQueries(false);
+        }
+        this.updateTimeoutId = null;
+      }, TODO_WAIT_BEFORE_RELOAD);
+    },
+    selectAll() {
+      this.multiselectState = Object.fromEntries(this.todos.map((todo) => [todo.id, true]));
+    },
+    unselectAll() {
+      this.multiselectState = {};
+      this.selectAllChecked = false;
+    },
+    handleSelectAllChange(checked) {
+      if (checked) this.selectAll();
+      else this.unselectAll();
+    },
+  },
+  tabLinkAttributes: {
+    default: { href: window.location.pathname },
+    snoozed: { href: '?state=snoozed' },
+    done: { href: '?state=done' },
+  },
+};
+</script>
+
+<template>
+  <index-layout :heading="__('To-Do List')" data-testid="todos-list-container">
+    <div
+      class="gl-flex gl-flex-wrap-reverse gl-justify-between gl-border-b-1 gl-border-default gl-border-b-solid"
+    >
+      <gl-tabs
+        :value="currentTab"
+        content-class="gl-p-0"
+        nav-class="gl-border-0"
+        @input="tabChanged"
+      >
+        <gl-tab :title-link-attributes="$options.tabLinkAttributes.default">
+          <template #title>
+            <span>{{ s__('Todos|To Do') }}</span>
+            <gl-badge pill size="sm" class="gl-tab-counter-badge" data-testid="pending-todos-count">
+              {{ pendingTodosCount }}
+            </gl-badge>
+          </template>
+        </gl-tab>
+        <gl-tab :title-link-attributes="$options.tabLinkAttributes.snoozed">
+          <template #title>
+            <span>{{ s__('Todos|Snoozed') }}</span>
+          </template>
+        </gl-tab>
+        <gl-tab :title-link-attributes="$options.tabLinkAttributes.done">
+          <template #title>
+            <span>{{ s__('Todos|Done') }}</span>
+          </template>
+        </gl-tab>
+      </gl-tabs>
+
+      <div class="gl-my-3 gl-flex gl-flex-grow gl-items-center gl-justify-end gl-gap-3">
+        <gl-button
+          id="todo-refresh-btn"
+          v-gl-tooltip.hover
+          data-testid="refresh-todos"
+          icon="retry"
+          :aria-label="__('Refresh')"
+          :title="__('Refresh')"
+          :loading="isLoading && !showSpinnerWhileLoading"
+          @click.prevent="updateAllQueries(false)"
+        />
+      </div>
+    </div>
+
+    <todos-filter-bar :todos-status="statusByTab" @filters-changed="handleFiltersChanged">
+      <template v-if="canUseGroupedView" #view-toggle>
+        <gl-segmented-control
+          :value="view"
+          :options="viewOptions"
+          :aria-label="s__('Todos|View')"
+          class="gl-shrink-0"
+          data-testid="todos-view-toggle"
+          @input="changeView"
+        />
+      </template>
+    </todos-filter-bar>
+
+    <div>
+      <div class="gl-flex gl-flex-col">
+        <div
+          v-show="showSelectAll"
+          data-testid="todos-bulk-bar-container"
+          class="todos-bulk-bar gl-border-b gl-z-2 gl-flex gl-items-baseline gl-gap-2 gl-bg-default gl-px-5 gl-py-3"
+          :class="{ 'is-sticky': selectedIds.length }"
+        >
+          <gl-form-checkbox
+            v-model="selectAllChecked"
+            data-testid="todos-select-all"
+            class="gl-mb-2 gl-mt-3"
+            :indeterminate="hasIndeterminateSelectAll"
+            @change="handleSelectAllChange"
+            >{{
+              selectAllChecked ? s__('Todos|Clear all') : s__('Todos|Select all')
+            }}</gl-form-checkbox
+          >
+          <span v-show="selectedIds.length">|</span>
+          <todos-bulk-bar
+            v-show="selectedIds.length"
+            :ids="selectedIds"
+            :tab="currentTab"
+            @change="handleBulkAction"
+          />
+        </div>
+
+        <gl-loading-icon v-if="isLoading && showSpinnerWhileLoading" size="lg" class="gl-mt-5" />
+        <div
+          v-else
+          data-testid="todo-item-list-container"
+          @mouseenter="startedInteracting"
+          @mouseleave="stoppedInteracting"
+        >
+          <p
+            v-if="isGroupedView && isPaginated"
+            class="gl-mb-0 gl-mt-4 gl-flex gl-items-center gl-gap-2 gl-text-sm gl-text-subtle"
+            data-testid="todos-grouped-view-pagination-notice"
+          >
+            <gl-icon name="information-o" variant="subtle" :size="12" class="gl-shrink-0" />
+            {{
+              s__(
+                'Todos|Only to-dos on this page are grouped. Other pages might have more to-dos for the same item.',
+              )
+            }}
+          </p>
+          <ol
+            v-if="isGroupedView"
+            data-testid="todos-group-list"
+            class="gl-m-0 gl-flex gl-list-none gl-flex-col gl-gap-4 gl-p-0 gl-pt-4"
+          >
+            <todos-group
+              v-for="group in todoGroups"
+              :key="group.key"
+              :todos="group.todos"
+              :selected-ids="selectedIds"
+              @change="handleItemChanged"
+              @select-change="handleSelectionChanged"
+            />
+          </ol>
+          <transition-group
+            v-else
+            name="todos"
+            tag="ol"
+            data-testid="todo-item-list"
+            class="gl-m-0 gl-list-none gl-p-0"
+          >
+            <todo-item
+              v-for="todo in todos"
+              :key="todo.id"
+              :todo="todo"
+              selectable
+              :selected="selectedIds.includes(todo.id)"
+              @change="handleItemChanged"
+              @select-change="handleSelectionChanged"
+            />
+          </transition-group>
+        </div>
+
+        <todos-empty-state v-if="showEmptyState" :is-filtered="isFiltered" />
+
+        <todos-pagination v-if="!showEmptyState" v-bind="pageInfo" @cursor-changed="updateCursor" />
+
+        <div class="gl-mt-5 gl-text-center">
+          <gl-link href="https://gitlab.com/gitlab-org/gitlab/-/issues/506387" target="_blank">{{
+            s__('Todos|Leave feedback')
+          }}</gl-link>
+        </div>
+      </div>
+    </div>
+  </index-layout>
+</template>
+
+<style>
+.todos-leave-active {
+  transition: transform 0.15s ease-out;
+  position: absolute;
+}
+.todos-leave-to {
+  opacity: 0;
+  transform: translateY(-100px);
+}
+.todos-move {
+  transition: transform 0.15s ease-out;
+}
+</style>

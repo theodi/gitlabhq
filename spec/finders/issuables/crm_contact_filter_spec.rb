@@ -1,0 +1,50 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Issuables::CrmContactFilter do
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be(:project, freeze: false) { create(:project, group: group) }
+  let_it_be(:developer, freeze: false) { create(:user, developer_of: group) }
+
+  let_it_be(:contact1, freeze: false) { create(:contact, group: group) }
+  let_it_be(:contact2, freeze: false) { create(:contact, group: group) }
+
+  let_it_be(:contact1_issue1, freeze: false) { create(:issue, project: project) }
+  let_it_be(:contact1_issue2, freeze: false) { create(:issue, project: project) }
+  let_it_be(:contact2_issue1, freeze: false) { create(:issue, project: project) }
+  let_it_be(:issues, freeze: false) { Issue.where(id: [contact1_issue1.id, contact1_issue2.id, contact2_issue1.id]) }
+
+  let(:params) { {} }
+
+  before_all do
+    create(:issue_customer_relations_contact, issue: contact1_issue1, contact: contact1)
+    create(:issue_customer_relations_contact, issue: contact1_issue2, contact: contact1)
+    create(:issue_customer_relations_contact, issue: contact2_issue1, contact: contact2)
+  end
+
+  subject(:crm_contact_filter) { described_class.new(params: params, parent: group, current_user: developer) }
+
+  describe 'when a contact has issues' do
+    it 'returns all contact1 issues' do
+      params[:crm_contact_id] = contact1.id
+
+      expect(crm_contact_filter.filter(issues)).to contain_exactly(contact1_issue1, contact1_issue2)
+    end
+
+    it 'returns all contact2 issues' do
+      params[:crm_contact_id] = contact2.id
+
+      expect(crm_contact_filter.filter(issues)).to contain_exactly(contact2_issue1)
+    end
+  end
+
+  describe 'when a contact has no issues' do
+    it 'returns no issues' do
+      contact3 = create(:contact, group: group)
+      params[:crm_contact_id] = contact3.id
+
+      expect(crm_contact_filter.filter(issues)).to be_empty
+    end
+  end
+end

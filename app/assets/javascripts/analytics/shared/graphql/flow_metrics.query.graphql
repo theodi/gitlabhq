@@ -1,0 +1,140 @@
+#import "./flow_metric_item.fragment.graphql"
+
+query flowMetricsQuery(
+  $fullPath: ID!
+  $startDate: Time!
+  $endDate: Time!
+  $labelNames: [String!]
+  $projectIds: [ID!]
+  $authorUsername: String
+  $assigneeUsernames: [String!]
+  $milestoneTitle: String
+  $skipIssueCount: Boolean = false
+  $skipIssuesCompletedCount: Boolean = false
+  $skipCycleTime: Boolean = false
+  $skipLeadTime: Boolean = false
+  $skipDeploymentCount: Boolean = false
+  $skipTimeToMerge: Boolean = false
+) {
+  project(fullPath: $fullPath) {
+    id
+    flowMetrics {
+      issues: issueCount(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipIssueCount) {
+        ...FlowMetricItem
+      }
+      issues_completed: issuesCompletedCount(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipIssuesCompletedCount) {
+        ...FlowMetricItem
+      }
+      cycle_time: cycleTime(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipCycleTime) {
+        ...FlowMetricItem
+      }
+      lead_time: leadTime(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipLeadTime) {
+        ...FlowMetricItem
+      }
+      deploys: deploymentCount(from: $startDate, to: $endDate) @skip(if: $skipDeploymentCount) {
+        ...FlowMetricItem
+      }
+      median_time_to_merge: timeToMerge(
+        from: $startDate
+        to: $endDate
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipTimeToMerge) {
+        ...FlowMetricItem
+      }
+    }
+  }
+  group(fullPath: $fullPath) {
+    id
+    flowMetrics {
+      issues: issueCount(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        projectIds: $projectIds
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipIssueCount) {
+        ...FlowMetricItem
+      }
+      issues_completed: issuesCompletedCount(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        projectIds: $projectIds
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipIssuesCompletedCount) {
+        ...FlowMetricItem
+      }
+      cycle_time: cycleTime(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        projectIds: $projectIds
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipCycleTime) {
+        ...FlowMetricItem
+      }
+      lead_time: leadTime(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        projectIds: $projectIds
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipLeadTime) {
+        ...FlowMetricItem
+      }
+      deploys: deploymentCount(from: $startDate, to: $endDate, projectIds: $projectIds)
+        @skip(if: $skipDeploymentCount) {
+        ...FlowMetricItem
+      }
+      median_time_to_merge: timeToMerge(
+        from: $startDate
+        to: $endDate
+        labelNames: $labelNames
+        projectIds: $projectIds
+        authorUsername: $authorUsername
+        assigneeUsernames: $assigneeUsernames
+        milestoneTitle: $milestoneTitle
+      ) @skip(if: $skipTimeToMerge) {
+        ...FlowMetricItem
+      }
+    }
+  }
+}

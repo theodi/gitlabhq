@@ -1,0 +1,112 @@
+- page_title _("CI/CD Settings")
+- page_title _("CI/CD")
+
+- expanded = expanded_by_default?
+- general_expanded = @project.errors.empty? ? expanded : true
+
+%h1.gl-sr-only= @breadcrumb_title
+
+- if can?(current_user, :admin_pipeline, @project)
+  = render ::Layouts::SettingsBlockComponent.new(_("General pipelines"),
+    id: 'js-general-pipeline-settings',
+    expanded: general_expanded) do |c|
+    - c.with_description do
+      = _("Customize your pipeline configuration.")
+    - c.with_body do
+      = render 'form'
+
+  = render ::Layouts::SettingsBlockComponent.new(s_('CICD|Auto DevOps'),
+    id: 'autodevops-settings',
+    testid: 'autodevops-settings-content',
+    expanded: expanded) do |c|
+    - c.with_description do
+      - auto_devops_url = help_page_path('topics/autodevops/_index.md')
+      - quickstart_url = help_page_path('topics/autodevops/cloud_deployments/auto_devops_with_gke.md')
+      - auto_devops_link = link_to('', auto_devops_url, target: '_blank', rel: 'noopener noreferrer')
+      - quickstart_link = link_to('', quickstart_url, target: '_blank', rel: 'noopener noreferrer')
+      = safe_format(s_('AutoDevOps|%{auto_devops_start}Automate building, testing, and deploying%{auto_devops_end} your applications based on your continuous integration and delivery configuration. %{quickstart_start}How do I get started?%{quickstart_end}'), tag_pair(auto_devops_link, :auto_devops_start, :auto_devops_end), tag_pair(quickstart_link, :quickstart_start, :quickstart_end))
+    - c.with_body do
+      = render 'autodevops_form', auto_devops_enabled: @project.auto_devops_enabled?
+
+- if can?(current_user, :admin_protected_environments, @project)
+  = render_if_exists 'projects/settings/ci_cd/protected_environments', expanded: expanded
+
+- if can?(current_user, :read_runners, @project)
+  = render ::Layouts::SettingsBlockComponent.new(_('Runners'),
+    id: 'js-runners-settings',
+    testid: 'runners-settings-content') do |c|
+    - c.with_description do
+      = _("Runners are processes that pick up and execute CI/CD jobs for GitLab.")
+      = link_to _('What is GitLab Runner?'), 'https://docs.gitlab.com/runner/', target: '_blank', rel: 'noopener noreferrer'
+    - c.with_body do
+      #js-project-runners-settings{ data: project_runners_settings_data(@project) }
+
+- if can?(current_user, :admin_pipeline, @project)
+  - if Gitlab::CurrentSettings.current_application_settings.keep_latest_artifact?
+    = render ::Layouts::SettingsBlockComponent.new(_("Artifacts"),
+      id: 'js-artifacts-settings',
+      expanded: expanded) do |c|
+      - c.with_description do
+        = _("A job artifact is an archive of files and directories saved by a job when it finishes.")
+      - c.with_body do
+        #js-artifacts-settings-app{ data: { full_path: @project.full_path, help_page_path: help_page_path('ci/jobs/job_artifacts.md', anchor: 'keep-artifacts-from-most-recent-successful-jobs') } }
+
+- if can?(current_user, :admin_cicd_variables, @project)
+  = render ::Layouts::SettingsBlockComponent.new(_('Variables'),
+    id: 'js-cicd-variables-settings',
+    testid: 'variables-settings-content',
+    expanded: expanded) do |c|
+    - c.with_description do
+      = render "ci/variables/content", entity: @entity, variable_limit: @variable_limit
+    - c.with_body do
+      = render 'ci/variables/index', save_endpoint: project_variables_path(@project)
+
+= render 'projects/settings/ci_cd/feature_flags', expanded: expanded
+
+- if can?(current_user, :admin_pipeline, @project)
+  = render ::Layouts::SettingsBlockComponent.new(_('Pipeline trigger tokens'),
+    id: 'js-pipeline-triggers',
+    expanded: expanded) do |c|
+    - c.with_description do
+      = _("Trigger a pipeline for a branch or tag by generating a trigger token and using it with an API call. The token impersonates a user's project access and permissions.")
+      = link_to _('Learn more.'), help_page_path('ci/triggers/_index.md'), target: '_blank', rel: 'noopener noreferrer'
+    - c.with_body do
+      = render 'projects/triggers/index'
+
+  = render_if_exists 'projects/settings/ci_cd/auto_rollback', expanded: expanded
+
+  - if can?(current_user, :create_freeze_period, @project)
+    = render ::Layouts::SettingsBlockComponent.new(_('Deploy freezes'),
+      id: 'js-deploy-freeze-settings',
+      expanded: expanded) do |c|
+      - c.with_description do
+        - freeze_period_docs = help_page_path('user/project/releases/_index.md', anchor: 'prevent-unintentional-releases-by-setting-a-deploy-freeze')
+        - freeze_period_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: freeze_period_docs }
+        = html_escape(s_('DeployFreeze|Add a freeze period to prevent unintended releases during a period of time for a given environment. You must update the deployment jobs in %{filename} according to the deploy freezes added here. %{freeze_period_link_start}Learn more.%{freeze_period_link_end}')) % { freeze_period_link_start: freeze_period_link_start, freeze_period_link_end: '</a>'.html_safe, filename: tag.code('.gitlab-ci.yml') }
+
+        - cron_syntax_url = 'https://crontab.guru/'
+        - cron_syntax_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: cron_syntax_url }
+        = s_('DeployFreeze|Specify deploy freezes using %{cron_syntax_link_start}cron syntax%{cron_syntax_link_end}.').html_safe % { cron_syntax_link_start: cron_syntax_link_start, cron_syntax_link_end: "</a>".html_safe }
+      - c.with_body do
+        = render 'ci/deploy_freeze/index'
+
+  = render ::Layouts::SettingsBlockComponent.new(_('Job token permissions'),
+    id: 'js-token-access',
+    testid: 'job-token-permissions-content',
+    expanded: expanded) do |c|
+    - zones_link_url = help_page_path('ci/jobs/ci_job_token.md', anchor: 'gitlab-cicd-job-token-security')
+    - zones_link = link_to('', zones_link_url, target: '_blank', rel: 'noopener noreferrer')
+    - c.with_description do
+      = safe_format(_("Control which groups and projects can use CI/CD job tokens to authenticate with this project. Learn more about %{link_start}job token security%{link_end}."), tag_pair(zones_link, :link_start, :link_end))
+    - c.with_body do
+      = render 'ci/job_token_access/index'
+
+  - if show_secure_files_setting(@project, current_user)
+    = render ::Layouts::SettingsBlockComponent.new(_('Secure files'),
+      id: 'js-secure-files',
+      expanded: expanded) do |c|
+      - c.with_description do
+        = _("Use secure files to store files used by your pipelines such as Android keystores, or Apple provisioning profiles and signing certificates.")
+        = link_to _('Learn more'), help_page_path('ci/secure_files/_index.md'), target: '_blank', rel: 'noopener noreferrer'
+      - c.with_body do
+        #js-ci-secure-files{ data: { project_id: @project.id, admin: can?(current_user, :admin_secure_files, @project).to_s, file_size_limit: Ci::SecureFile::FILE_SIZE_LIMIT.to_mb } }

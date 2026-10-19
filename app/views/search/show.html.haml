@@ -1,7 +1,37 @@
+- @hide_top_links = true
+- breadcrumb_title _('Search')
 - page_title @search_term
-= render 'search/form'
-%hr
-- if @search_term
-  = render 'search/category'
-  %hr
+- nav 'search'
+- if params[:group_id].present?
+  = hidden_field_tag :group_id, params[:group_id]
+- if params[:project_id].present?
+  = hidden_field_tag :project_id, params[:project_id]
+- group_attributes = @group&.attributes&.slice('id', 'name', 'full_path')&.merge(full_name: @group&.full_name)&.merge(full_path: @group&.full_path)
+- project_attributes = @project&.attributes&.slice('id', 'namespace_id', 'name')&.merge(name_with_namespace: @project&.name_with_namespace)&.merge(full_path: @project&.full_path)
+
+- if @search_results && !(@search_results.respond_to?(:failed?) && @search_results.failed?(@scope))
+  - if search_service.level == 'global' && current_user
+    = render_if_exists 'shared/dashboard/saml_reauth_notice', groups_requiring_saml_reauth: user_groups_requiring_reauth
+
+  - if @search_service_presenter.without_count?
+    - page_description(_("%{scope} results for term '%{term}'") % { scope: @scope, term: @search_term })
+  - else
+    - page_description(_("%{count} %{scope} for term '%{term}'") % { count: @search_results.formatted_count(@scope), scope: @scope, term: @search_term })
+  - page_card_attributes("Namespace" => @group&.full_path, "Project" => @project&.full_path)
+
+#js-search-topbar{ data: { "default-branch-name": @project&.default_branch } }
+.results{ class: "@md/panel:gl-flex" }
+  #js-search-sidebar{
+    data: {
+      navigation_json: search_navigation_json,
+      search_type: search_service.search_type,
+      advanced_search_available: @search_service_presenter.advanced_search_enabled?.to_s,
+      zoekt_available: @search_service_presenter.zoekt_enabled?.to_s,
+      search_level: search_service.level,
+      group_initial_json: group_attributes.to_json,
+      project_initial_json: project_attributes.to_json,
+      work_item_types_json: work_item_types_for_filter.to_json,
+      ref: @project.present? ? repository_ref(@project) : nil
+    } }
+
   = render 'search/results'

@@ -1,0 +1,12 @@
+- breadcrumb_title s_('AccessTokens|Personal access tokens')
+- page_title s_('AccessTokens|Personal access tokens')
+
+
+- if Feature.enabled?(:granular_personal_access_tokens, current_user)
+  #js-personal-access-token-app{ data: personal_access_token_data(@access_token_params) }
+- else
+  #js-shared-access-token-app{ data: personal_access_token_data(@access_token_params) }
+
+= render 'user_settings/personal_access_tokens/dpop' if Feature.enabled?(:dpop_authentication, current_user)
+
+#js-tokens-app{ data: { tokens_data: tokens_app_data } }

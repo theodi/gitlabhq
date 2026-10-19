@@ -1,0 +1,658 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe DraftNotes::PublishService, feature_category: :code_review_workflow do
+  include RepoHelpers
+
+  let_it_be(:merge_request, freeze: false) { create(:merge_request, reviewers: create_list(:user, 1), assignees: create_list(:user, 1)) }
+  let(:project) { merge_request.target_project }
+  let(:user) { merge_request.author }
+  let(:commit) { project.commit(sample_commit.id) }
+  let(:internal) { false }
+  let(:executing_user) { nil }
+  let(:params) { {} }
+  let(:service) { described_class.new(merge_request, user, params) }
+  let(:todo_service) { instance_double(TodoService) }
+  let(:notification_service) { instance_double(NotificationService) }
+
+  let(:position) do
+    Gitlab::Diff::Position.new(
+      old_path: "files/ruby/popen.rb",
+      new_path: "files/ruby/popen.rb",
+      old_line: nil,
+      new_line: 14,
+      diff_refs: commit.diff_refs
+    )
+  end
+
+  before do
+    allow(service).to receive_messages(todo_service: todo_service, notification_service: notification_service)
+    allow(todo_service).to receive(:new_review)
+    allow(notification_service).to receive_message_chain(:async, :new_review)
+    allow(::Gitlab::EventStore).to receive(:publish)
+  end
+
+  def publish(draft: nil)
+    service.execute(draft: draft, executing_user: executing_user)
+  end
+
+  context 'single draft note' do
+    let(:commit_id) { nil }
+    let!(:drafts) { create_list(:draft_note, 2, merge_request: merge_request, author: user, commit_id: commit_id, position: position, internal: internal) }
+
+    it 'publishes' do
+      expect { publish(draft: drafts.first) }.to change { DraftNote.count }.by(-1).and change { Note.count }.by(1)
+      expect(DraftNote.count).to eq(1)
+    end
+
+    it 'propagates the draft line_code to the published note' do
+      draft = drafts.first
+
+      publish(draft: draft)
+
+      expect(merge_request.notes.order(id: :asc).first.line_code).to eq(draft.line_code)
+    end
+
+    it 'does not skip notification', :sidekiq_might_not_need_inline do
+      note_params = drafts.first.publish_params.merge(skip_keep_around_commits: false)
+      expect(Notes::CreateService).to receive(:new).with(project, user, note_params).and_call_original
+      expect_next_instance_of(NotificationService) do |notification_service|
+        expect(notification_service).to receive(:new_note)
+      end
+
+      result = publish(draft: drafts.first)
+
+      expect(result[:status]).to eq(:success)
+    end
+
+    it 'does not track the publish event' do
+      expect(Gitlab::UsageDataCounters::MergeRequestActivityUniqueCounter)
+        .not_to receive(:track_publish_review_action)
+
+      publish(draft: drafts.first)
+    end
+
+    it 'reports that there are draft notes to publish' do
+      expect(service.publishes_draft_notes?(draft: drafts.first)).to be(true)
+    end
+
+    context 'commit_id is set' do
+      let(:commit_id) { commit.id }
+
+      it 'creates note from draft with commit_id' do
+        result = publish(draft: drafts.first)
+
+        expect(result[:status]).to eq(:success)
+        expect(merge_request.notes.first.commit_id).to eq(commit_id)
+      end
+    end
+
+    context 'internal is set' do
+      let(:position) { nil }
+      let(:internal) { true }
+
+      it 'creates internal note from draft' do
+        result = publish(draft: drafts.first)
+
+        expect(result[:status]).to eq(:success)
+        expect(merge_request.notes.first.internal).to eq(internal)
+      end
+    end
+  end
+
+  context 'multiple draft notes' do
+    let(:commit_id) { nil }
+
+    before do
+      create(:draft_note_on_text_diff, merge_request: merge_request, author: user, note: 'first note', commit_id: commit_id, position: position)
+      create(:draft_note_on_text_diff, merge_request: merge_request, author: user, note: 'second note', commit_id: commit_id, position: position)
+    end
+
+    context 'when review fails to create' do
+      before do
+        expect_next_instance_of(Review) do |review|
+          allow(review).to receive(:save!).and_raise(ActiveRecord::RecordInvalid.new(review))
+        end
+      end
+
+      it_behaves_like 'does not trigger GraphQL subscription mergeRequestMergeStatusUpdated' do
+        let(:action) { publish }
+      end
+
+      it 'does not publish any draft note' do
+        expect { publish }.not_to change { DraftNote.count }
+      end
+
+      it 'does not track the publish event' do
+        expect(Gitlab::UsageDataCounters::MergeRequestActivityUniqueCounter)
+          .not_to receive(:track_publish_review_action)
+
+        publish
+      end
+
+      it 'returns an error' do
+        result = publish
+
+        expect(result[:status]).to eq(:error)
+        expect(result[:message]).to match(/Unable to save Review/)
+      end
+    end
+
+    it_behaves_like 'triggers GraphQL subscription mergeRequestMergeStatusUpdated' do
+      let(:action) { publish }
+    end
+
+    it 'returns success' do
+      result = publish
+
+      expect(result[:status]).to eq(:success)
+    end
+
+    it 'reports that there are draft notes to publish' do
+      expect(service.publishes_draft_notes?).to be(true)
+    end
+
+    it 'publishes all draft notes for a user in a merge request' do
+      expect { publish }.to change { DraftNote.count }.by(-2).and change { Note.count }.by(2).and change { Review.count }.by(1)
+      expect(DraftNote.count).to eq(0)
+
+      notes = merge_request.notes.order(id: :asc)
+      expect(notes.first.note).to eq('first note')
+      expect(notes.last.note).to eq('second note')
+    end
+
+    it 'creates the correct pub-sub event' do
+      expect(::Gitlab::EventStore).to receive(:publish).with(
+        an_instance_of(MergeRequests::DraftNotePublishedEvent)
+      ).and_call_original
+
+      publish
+    end
+
+    it 'tracks the publish event' do
+      expect(Gitlab::UsageDataCounters::MergeRequestActivityUniqueCounter)
+        .to receive(:track_publish_review_action)
+        .with(user: user)
+
+      publish
+    end
+
+    it 'invalidates cache counts' do
+      expect(merge_request.assignees).to all(receive(:invalidate_merge_request_cache_counts))
+
+      publish
+    end
+
+    context 'when passing draft note ids' do
+      let(:draft) { create(:draft_note_on_text_diff, merge_request: merge_request, author: user, note: 'first note', commit_id: commit_id, position: position) }
+      let(:params) { { ids: [draft.id] } }
+
+      it 'publishes draft notes by ID' do
+        expect { publish }.to change { DraftNote.count }.by(-1).and change { Note.count }.by(1)
+      end
+
+      context 'when none of the ids match a draft note of the user' do
+        let(:params) { { ids: [non_existing_record_id] } }
+
+        it 'reports that there are no draft notes to publish' do
+          expect(service.publishes_draft_notes?).to be(false)
+        end
+      end
+    end
+
+    context 'with a summary note' do
+      let(:summary) { 'Review summary' }
+      let(:params) { { summary_note: { note: summary, noteable_type: 'MergeRequest', noteable_id: merge_request.id } } }
+
+      it 'adds the summary note to the review, the event and the response' do
+        allow(::Gitlab::EventStore).to receive(:publish).and_call_original
+
+        result = publish
+
+        summary_note = merge_request.notes.find_by(note: summary)
+        expect(summary_note.review).to eq(Review.last)
+        expect(result[:summary_note_id]).to eq(summary_note.id)
+        expect(::Gitlab::EventStore).to have_received(:publish)
+          .with(an_instance_of(MergeRequests::DraftNotePublishedEvent)
+            .and(having_attributes(data: hash_including(summary_note_id: summary_note.id))))
+      end
+
+      it 'sorts the summary note before the review notes' do
+        publish
+
+        expect(merge_request.notes.order_created_at_id_asc.map(&:note)).to eq([summary, 'first note', 'second note'])
+      end
+
+      context 'when the summary note only contains quick actions' do
+        let(:summary) { '/title New title' }
+
+        it 'does not add a summary note id to the event' do
+          allow(::Gitlab::EventStore).to receive(:publish).and_call_original
+
+          publish
+
+          expect(::Gitlab::EventStore).to have_received(:publish)
+            .with(an_instance_of(MergeRequests::DraftNotePublishedEvent)
+              .and(having_attributes(data: hash_excluding(:summary_note_id))))
+        end
+      end
+    end
+
+    context 'when deferring notifications' do
+      let(:params) { { defer_notifications: true } }
+
+      it 'does not publish a DraftNotePublishedEvent' do
+        allow(::Gitlab::EventStore).to receive(:publish).and_call_original
+        expect(::Gitlab::EventStore).not_to receive(:publish).with(an_instance_of(MergeRequests::DraftNotePublishedEvent))
+
+        publish
+      end
+    end
+
+    context 'when passing a review id' do
+      let(:review) { create(:review, merge_request: merge_request, project: project, author: user) }
+      let(:params) { { review_id: review.id } }
+
+      it 'publishes the draft notes into the existing review' do
+        expect { publish }.not_to change { Review.count }
+        expect(review.notes.count).to eq(2)
+      end
+
+      context 'when the review belongs to another user' do
+        let(:review) { create(:review, merge_request: merge_request, project: project) }
+
+        it 'returns an error without publishing' do
+          result = nil
+
+          expect { result = publish }.not_to change { Note.count }
+          expect(result[:message]).to eq('Review not found')
+        end
+      end
+
+      context 'when the review belongs to another merge request' do
+        let(:review) { create(:review, author: user) }
+
+        it 'returns an error' do
+          expect(publish[:message]).to eq('Review not found')
+        end
+      end
+
+      context 'when no draft notes are left to publish' do
+        let(:params) { { review_id: review.id, ids: [non_existing_record_id] } }
+
+        it 'returns the review and publishes the event for it' do
+          result = nil
+
+          expect { result = publish }.to publish_event(MergeRequests::DraftNotePublishedEvent)
+            .with(current_user_id: user.id, merge_request_id: merge_request.id, review_id: review.id)
+          expect(result[:review_id]).to eq(review.id)
+        end
+      end
+    end
+
+    context 'capturing diff notes positions and keeping around commits' do
+      before do
+        # Need to execute this to ensure that we'll be able to test creation of
+        # DiffNotePosition records as that only happens when the `MergeRequest#merge_ref_head`
+        # is present. This service creates that for the specified merge request.
+        MergeRequests::MergeToRefService.new(project: project, current_user: user).execute(merge_request)
+
+        # Need to re-stub this and call original as we are stubbing
+        # `Gitlab::Git::KeepAround#execute` in spec_helper for performance reason.
+        # Enabling it here so we can test the Gitaly calls it makes.
+        allow(Gitlab::Git::KeepAround).to receive(:execute).and_call_original
+      end
+
+      it 'creates diff_note_positions for diff notes' do
+        publish
+
+        notes = merge_request.notes.order(id: :asc)
+        expect(notes.first.diff_note_positions).to be_any
+        expect(notes.last.diff_note_positions).to be_any
+        expect(notes.flat_map(&:diff_note_positions).pluck(:namespace_id).uniq)
+          .to contain_exactly(project.project_namespace_id)
+      end
+
+      it 'keeps around the commits of each published note' do
+        publish
+
+        repository = project.repository
+        notes = merge_request.notes.order(id: :asc)
+
+        notes.first.shas.each do |sha|
+          expect(repository.ref_exists?("refs/keep-around/#{sha}")).to be_truthy
+        end
+
+        notes.last.shas.each do |sha|
+          expect(repository.ref_exists?("refs/keep-around/#{sha}")).to be_truthy
+        end
+      end
+
+      context 'checking gitaly calls' do
+        # NOTE: This was added to avoid test flakiness.
+        let(:merge_request) { create(:merge_request) }
+
+        it 'does not request a lot from Gitaly', :request_store, :clean_gitlab_redis_cache do
+          merge_request
+          position
+
+          Gitlab::GitalyClient.reset_counts
+
+          # NOTE: This should be reduced as we work on reducing Gitaly calls.
+          # Gitaly requests shouldn't go above this threshold as much as possible
+          # as it may add more to the Gitaly N+1 issue we are experiencing.
+          expect { publish }.to change { Gitlab::GitalyClient.get_request_count }.by_at_most(18)
+        end
+      end
+    end
+
+    context 'commit_id is set' do
+      let(:commit_id) { commit.id }
+
+      it 'creates note from draft with commit_id' do
+        result = publish
+
+        expect(result[:status]).to eq(:success)
+
+        merge_request.notes.each do |note|
+          expect(note.commit_id).to eq(commit_id)
+        end
+      end
+    end
+
+    it 'does not call UpdateReviewerStateService' do
+      publish
+
+      expect(MergeRequests::UpdateReviewerStateService).not_to receive(:new)
+    end
+  end
+
+  context 'with many draft notes', :use_sql_query_cache, :request_store do
+    let(:merge_request) { create(:merge_request) }
+
+    it 'reduce N+1 queries' do
+      5.times do
+        create(:draft_note_on_discussion, merge_request: merge_request, author: user, note: 'some note')
+      end
+
+      recorder = ActiveRecord::QueryRecorder.new(skip_cached: false) { publish }
+
+      expect(recorder.count).not_to be > 116
+    end
+  end
+
+  context 'with a scope validator' do
+    let(:scope_validator) { instance_double(Gitlab::Auth::ScopeValidator) }
+    let(:params) { { scope_validator: scope_validator } }
+
+    it 'passes it to the notes created from drafts' do
+      create(:draft_note, merge_request: merge_request, author: user)
+
+      expect(Notes::CreateService).to receive(:new)
+        .with(project, user, hash_including(scope_validator: scope_validator))
+        .and_call_original
+
+      publish
+    end
+  end
+
+  context 'with no draft notes' do
+    let_it_be_with_reload(:merge_request) { create(:merge_request) }
+
+    it 'does not publish a DraftNotePublishedEvent' do
+      expect(::Gitlab::EventStore).not_to receive(:publish)
+
+      publish
+    end
+
+    it 'reports that there are no draft notes to publish' do
+      expect(service.publishes_draft_notes?).to be(false)
+    end
+
+    it 'does not track the publish event' do
+      expect(Gitlab::UsageDataCounters::MergeRequestActivityUniqueCounter)
+        .not_to receive(:track_publish_review_action)
+
+      publish
+    end
+
+    it 'does not send resolved discussion notifications' do
+      expect(MergeRequests::ResolvedDiscussionNotificationService).not_to receive(:new)
+
+      publish
+    end
+
+    context 'when all discussions are already resolved' do
+      before do
+        allow(merge_request).to receive(:discussions_resolved?).and_return(true)
+      end
+
+      it 'does not send a duplicate resolved discussion notification' do
+        expect(::Gitlab::EventStore).not_to receive(:publish)
+        expect(MergeRequests::ResolvedDiscussionNotificationService).not_to receive(:new)
+
+        publish
+      end
+    end
+  end
+
+  context 'draft notes with suggestions' do
+    let(:project) { create(:project, :repository) }
+    let(:merge_request) { create(:merge_request, source_project: project, target_project: project) }
+
+    let(:suggestion_note) do
+      <<-MARKDOWN.strip_heredoc
+        ```suggestion
+          foo
+        ```
+      MARKDOWN
+    end
+
+    let!(:draft) { create(:draft_note_on_text_diff, note: suggestion_note, merge_request: merge_request, author: user) }
+
+    it 'creates a suggestion with correct content' do
+      expect { publish(draft: draft) }.to change { Suggestion.count }.by(1)
+        .and change { DiffNote.count }.from(0).to(1)
+
+      suggestion = Suggestion.last
+
+      expect(suggestion.from_line).to eq(14)
+      expect(suggestion.to_line).to eq(14)
+      expect(suggestion.from_content).to eq("    vars = {\n")
+      expect(suggestion.to_content).to eq("  foo\n")
+    end
+
+    context 'when the diff is changed' do
+      let(:file_path) { 'files/ruby/popen.rb' }
+      let(:branch_name) { project.default_branch }
+      let(:commit) { project.repository.commit }
+
+      def update_file(file_path, new_content)
+        params = {
+          file_path: file_path,
+          commit_message: "Update File",
+          file_content: new_content,
+          start_project: project,
+          start_branch: project.default_branch,
+          branch_name: branch_name
+        }
+
+        Files::UpdateService.new(project, user, params).execute
+      end
+
+      before do
+        project.add_developer(user)
+      end
+
+      it 'creates a suggestion based on the latest diff content and positions' do
+        diff_file = merge_request.diffs(paths: [file_path]).diff_files.first
+        raw_data = diff_file.new_blob.data
+
+        # Add a line break to the beginning of the file
+        result = update_file(file_path, raw_data.prepend("\n"))
+        oldrev = merge_request.diff_head_sha
+        newrev = result[:result]
+
+        expect(newrev).to be_present
+
+        # Generates new MR revision at DB level
+        refresh = MergeRequests::RefreshService.new(project: project, current_user: user)
+        refresh.execute(oldrev, newrev, merge_request.source_branch_ref)
+
+        merge_request.reload
+        expect { publish(draft: draft) }.to change { Suggestion.count }.by(1)
+          .and change { DiffNote.count }.from(0).to(1)
+
+        suggestion = Suggestion.last
+
+        expect(suggestion.from_line).to eq(15)
+        expect(suggestion.to_line).to eq(15)
+        expect(suggestion.from_content).to eq("    vars = {\n")
+        expect(suggestion.to_content).to eq("  foo\n")
+      end
+    end
+  end
+
+  it 'only publishes the draft notes belonging to the current user' do
+    other_user = create(:user)
+    project.add_maintainer(other_user)
+
+    create_list(:draft_note, 2, merge_request: merge_request, author: user)
+    create_list(:draft_note, 2, merge_request: merge_request, author: other_user)
+
+    expect { publish }.to change { DraftNote.count }.by(-2).and change { Note.count }.by(2)
+    expect(DraftNote.count).to eq(2)
+  end
+
+  context 'with quick actions', :sidekiq_inline do
+    it 'performs quick actions' do
+      other_user = create(:user)
+      project.add_developer(other_user)
+
+      create(
+        :draft_note,
+        merge_request: merge_request,
+        author: user,
+        note: "thanks\n/assign #{other_user.to_reference}"
+      )
+
+      expect { publish }.to change { DraftNote.count }.by(-1).and change { Note.count }.by(2)
+      expect(merge_request.reload.assignees).to match_array([other_user])
+      expect(merge_request.notes.last).to be_system
+    end
+
+    it 'does not create a note if it only contains quick actions' do
+      create(:draft_note, merge_request: merge_request, author: user, note: "/assign #{user.to_reference}")
+
+      expect { publish }.to change { DraftNote.count }.by(-1).and change { Note.count }.by(1)
+      expect(merge_request.reload.assignees).to include(user)
+      expect(merge_request.notes.last).to be_system
+    end
+  end
+
+  context 'with drafts that resolve threads' do
+    let!(:note) { create(:discussion_note_on_merge_request, noteable: merge_request, project: project) }
+    let!(:draft_note) { create(:draft_note, merge_request: merge_request, author: user, resolve_discussion: true, discussion_id: note.discussion.reply_id) }
+
+    it 'resolves the thread' do
+      publish(draft: draft_note)
+
+      # discussion is memoized and reload doesn't clear the memoization
+      expect(Note.find(note.id).discussion.resolved?).to be true
+    end
+
+    it 'handles resolved discussions without sending notifications' do
+      expect_next_instance_of(MergeRequests::ResolvedDiscussionNotificationService) do |instance|
+        expect(instance).to receive(:execute).with(merge_request, send_notifications: false)
+      end
+
+      publish
+    end
+  end
+
+  context 'when a draft note fails to persist' do
+    let(:unpersisted_note) { DiffNote.new.tap { |n| n.errors.add(:position, 'is incomplete') } }
+
+    before do
+      allow_next_instance_of(Notes::CreateService) do |service|
+        allow(service).to receive(:execute).and_return(unpersisted_note)
+      end
+    end
+
+    context 'when publishing a single draft' do
+      let!(:draft) { create(:draft_note_on_text_diff, merge_request: merge_request, author: user, position: position) }
+
+      it 'logs a warning with details' do
+        expect(Gitlab::AppLogger).to receive(:warn).with(
+          hash_including(
+            message: 'Draft note publish: note not persisted',
+            draft_note_id: draft.id,
+            merge_request_id: merge_request.id,
+            project_id: project.id,
+            errors: ['Position is incomplete']
+          )
+        )
+
+        publish(draft: draft)
+      end
+    end
+
+    context 'when publishing a summary note' do
+      let(:params) { { summary_note: { note: 'Summary', noteable_type: 'MergeRequest', noteable_id: merge_request.id } } }
+
+      it 'logs a warning with details' do
+        expect(Gitlab::AppLogger).to receive(:warn).with(
+          hash_including(
+            message: 'Draft note publish: summary note not persisted',
+            merge_request_id: merge_request.id,
+            project_id: project.id,
+            errors: ['Position is incomplete']
+          )
+        )
+
+        publish
+      end
+    end
+  end
+
+  context 'user cannot create notes' do
+    before do
+      allow(Ability).to receive(:allowed?).with(user, :create_note, merge_request).and_return(false)
+    end
+
+    it 'returns an error' do
+      expect(publish[:status]).to eq(:error)
+    end
+
+    context 'when executing_user is specified' do
+      let(:executing_user) { create(:user) }
+
+      context 'and executing_user can create notes' do
+        before do
+          allow(Ability)
+            .to receive(:allowed?)
+            .with(executing_user, :create_note, merge_request)
+            .and_return(true)
+        end
+
+        it 'returns success' do
+          expect(publish[:status]).to eq(:success)
+        end
+      end
+
+      context 'and executing_user cannot create notes' do
+        before do
+          allow(Ability)
+            .to receive(:allowed?)
+            .with(executing_user, :create_note, merge_request)
+            .and_return(false)
+        end
+
+        it 'returns an error' do
+          expect(publish[:status]).to eq(:error)
+        end
+      end
+    end
+  end
+end

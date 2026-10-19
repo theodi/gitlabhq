@@ -1,0 +1,331 @@
+---
+stage: AI Platform
+group: AI Core Infra
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: AI features based on 3rd-party integrations
+---
+
+GitLab Duo features are powered by AI models and integrations. This document provides an overview of developing with AI features in GitLab.
+
+For detailed instructions on setting up GitLab Duo licensing in your development environment, see [GitLab Duo licensing for local development](ai_development_license.md).
+
+## Set up your local development environment
+
+Here is a list of all of the main steps to go through from a fresh, GDK-less computer to fully working ai-development ready.
+
+### Prepare your GDK
+
+Follow the instructions in the [GitLab Development Kit](https://gitlab-org.gitlab.io/gitlab-development-kit/howto/ai/) to set up
+GitLab Duo for local development purposes. These instructions describe how to fulfill prerequisites in your local environment and set up core backend components.
+
+### Update an existing GDK
+
+If you already have a GDK installed, you still must refer to the [GitLab Development Kit instructions](https://gitlab-org.gitlab.io/gitlab-development-kit/howto/ai/) to set up DAP with the right environment variables, NGINX, your Anthropic key and more.
+
+### Run `gitlab:duo:setup` task
+
+Run the `gitlab:duo:setup` Rake task to seed a test group and a project with GitLab Duo features enabled.
+
+> [!note]
+> This task is idempotent and skips reseeding if the `gitlab-duo` group
+> already exists. To force reseeding from this task, set `GITLAB_DUO_RESEED=1`.
+> For details on the seeds used, see [Development seed files](../development_seed_files.md#seed-project-and-group-resources-for-gitlab-duo).
+
+This ensures that your instance or group has the correct licenses, settings, and feature flags to test GitLab Duo features locally. Below are several options. If you are unsure, use option 1.
+
+> [!note]
+> Duo Core add-on is always created when running this script.
+
+Be sure to run the Rake task from the GitLab Rails root directory (typically `/path/to/gdk/gitlab`), not from the GDK root directory.
+
+1. GitLab.com mode
+
+   ```shell
+   GITLAB_SIMULATE_SAAS=1 bundle exec 'rake gitlab:duo:setup'
+   ```
+
+   This:
+
+   - Creates a test group called `gitlab-duo`, which contains a project called `test`
+   - Applies an Ultimate license to the group
+   - Sets up GitLab Duo Enterprise seats for the group
+   - Enables all feature flags for the group
+   - Updates group settings to enable all available GitLab Duo features
+
+   Alternatively, if you want to add GitLab Duo Pro licenses for the group instead (which only enables a subset of features), you can run:
+
+   ```shell
+   GITLAB_SIMULATE_SAAS=1 bundle exec 'rake gitlab:duo:setup[duo_pro]'
+   ```
+
+   To test only Duo Core features, you can run:
+
+   ```shell
+   GITLAB_SIMULATE_SAAS=1 bundle exec 'rake gitlab:duo:setup[duo_core]'
+   ```
+
+1. GitLab Self-Managed / Dedicated mode
+
+   ```shell
+   GITLAB_SIMULATE_SAAS=0 bundle exec 'rake gitlab:duo:setup'
+   ```
+
+   This:
+
+   - Creates a test group called `gitlab-duo`, which contains a project called `test`
+   - Applies an Ultimate license to the instance
+   - Sets up GitLab Duo Enterprise seats for the instance
+   - Enables all feature flags for the instance
+   - Updates instance settings to enable all available GitLab Duo features
+
+   Alternatively, if you want to add GitLab Duo Pro add-on for the instance instead (which only enables a subset of features), you can run:
+
+   ```shell
+   GITLAB_SIMULATE_SAAS=0 bundle exec 'rake gitlab:duo:setup[duo_pro]'
+   ```
+
+   To test only Duo Core features, you can run:
+
+   ```shell
+   GITLAB_SIMULATE_SAAS=0 bundle exec 'rake gitlab:duo:setup[duo_core]'
+   ```
+
+After the script finishes without error, now go to `gitlab-duo/test` and validate that you can see GitLab Duo Chat. Send a question to Chat and make sure there are no errors.
+
+### Troubleshooting
+
+In most cases, you can simply run the [ai-services script](https://gitlab-org.gitlab.io/gitlab-development-kit/howto/ai/#step-1-run-the-automated-setup-script) to reset your GDK environment variables and it may be enough to fix any errors that occurred.
+
+If you get error [A9999](../../user/gitlab_duo_chat/troubleshooting.md#error-a9999), it is a catchall error. The biggest offender is not setting up the AI Gateway URL correctly as described in the
+[AI Gateway installation instructions](https://gitlab-org.gitlab.io/gitlab-development-kit/howto/gitlab_ai_gateway/#set-up-the-ai-gateway).
+If not, make sure to check the tests are passing in the `gitlab-ai-gateway` repository with `make test` and that `gdk tail gitlab-ai-gateway` returns no error.
+
+[A1003](../../user/gitlab_duo_chat/troubleshooting.md#error-a1003) is more around permissions, either an invalid/missing Anthropic token or a misconfiguration of `gcloud`.
+
+In Agentic Chat, authentication errors may happen and not result in an A1003 error. Use `gdk tail duo-workflow-service` to make sure the workflow service runs without issues. If you see an authentication error, you need to [get a new Anthropic key](https://gitlab-org.gitlab.io/gitlab-development-kit/howto/ai/#set-up-anthropic-api-key) and [re-run the ai-setup script](https://gitlab-org.gitlab.io/gitlab-development-kit/howto/gitlab_ai_gateway/#set-up-the-ai-gateway)
+
+### Tips for local development
+
+1. When responses are taking too long to appear in the user interface, consider
+   restarting Sidekiq by running `gdk restart rails-background-jobs`. If that
+   doesn't work, try `gdk kill` and then `gdk start`.
+1. Alternatively, bypass Sidekiq entirely and run the service synchronously.
+   This can help with debugging errors as GraphQL errors are now available in
+   the network inspector instead of the Sidekiq logs. To do that, temporarily alter
+   the `perform_for` method in `Llm::CompletionWorker` class by changing
+   `perform_async` to `perform_inline`.
+1. When testing model selection, add `export FETCH_MODEL_SELECTION_DATA_FROM_LOCAL=1` to your `env.runit` file, so that
+   your GDK fetches model information from your local AI Gateway rather than cloud-connected AIGW.
+
+## Feature development (Abstraction Layer)
+
+### Feature flags
+
+Apply the following feature flags to any AI feature work:
+
+- A general flag (`ai_global_switch`) that applies to all other AI features. It's enabled by default.
+- A flag specific to that feature. The feature flag name [must be different](../feature_flags/_index.md#feature-flags-for-licensed-features) than the licensed feature name.
+
+See the [feature flag tracker epic](https://gitlab.com/groups/gitlab-org/-/work_items/10524) for the list of all feature flags and how to use them.
+
+### Push feature flags to AI Gateway
+
+You can push [feature flags](../feature_flags/_index.md) to AI Gateway. This is helpful to gradually rollout user-facing changes even if the feature resides in AI Gateway.
+See the following example:
+
+```ruby
+# Push a feature flag state to AI Gateway.
+Gitlab::AiGateway.push_feature_flag(:new_prompt_template, user)
+```
+
+Later, you can use the feature flag state in AI Gateway in the following way:
+
+```python
+from ai_gateway.feature_flags import is_feature_enabled
+
+# Check if the feature flag "new_prompt_template" is enabled.
+if is_feature_enabled('new_prompt_template'):
+  # Build a prompt from the new prompt template
+else:
+  # Build a prompt from the old prompt template
+```
+
+**IMPORTANT**: At the [cleaning up](../feature_flags/controls.md#cleaning-up) step, remove the feature flag in AI Gateway repository before removing the flag in GitLab-Rails repository.
+If you clean up the flag in GitLab-Rails repository at first, the feature flag in AI Gateway will be disabled immediately as it's the default state, hence you might encounter a surprising behavior.
+
+**IMPORTANT**: Cleaning up the feature flag in AI Gateway will immediately distribute the change to all GitLab instances, including GitLab.com, GitLab Self-Managed, and GitLab Dedicated.
+
+**Technical details**:
+
+- When `push_feature_flag` runs on an enabled feature flag, the name of the flag is cached in the current context,
+  which is later attached to the `x-gitlab-enabled-feature-flags` HTTP header when `GitLab-Sidekiq/Rails` sends requests to AI Gateway.
+- When frontend clients (for example, VS Code Extension or LSP) request a [User JWT](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/cloud_connector/authentication/architecture/#terms) (UJWT)
+  for direct AI Gateway communication, GitLab returns:
+
+  - Public headers (including `x-gitlab-enabled-feature-flags`).
+  - The generated UJWT (1-hour expiration).
+
+Frontend clients must regenerate UJWT upon expiration. Backend changes such as feature flag updates through [ChatOps](../feature_flags/controls.md) render the header values to become stale. These header values are refreshed at the next UJWT generation.
+
+Similarly, we also have [`push_frontend_feature_flag`](../feature_flags/_index.md) to push feature flags to frontend.
+
+### GraphQL API
+
+To connect to the AI provider API using the Abstraction Layer, use an extendable
+GraphQL API called [`aiAction`](https://gitlab.com/gitlab-org/gitlab/blob/master/ee/app/graphql/mutations/ai/action.rb).
+The `input` accepts key/value pairs, where the `key` is the action that needs to
+be performed. We only allow one AI action per mutation request.
+
+Example of a mutation:
+
+```graphql
+mutation {
+  aiAction(input: {summarizeComments: {resourceId: "gid://gitlab/Issue/52"}}) {
+    clientMutationId
+  }
+}
+```
+
+As an example, assume we want to build an "explain code" action. To do this, we extend the `input` with a new key,
+`explainCode`. The mutation would look like this:
+
+```graphql
+mutation {
+  aiAction(
+    input: {
+      explainCode: { resourceId: "gid://gitlab/MergeRequest/52", code: "foo() { console.log() }" }
+    }
+  ) {
+    clientMutationId
+  }
+}
+```
+
+The GraphQL API then uses the [Anthropic Client](https://gitlab.com/gitlab-org/gitlab/-/blob/master/ee/lib/gitlab/llm/anthropic/client.rb)
+to send the response.
+
+#### How to receive a response
+
+The API requests to AI providers are handled in a background job. We therefore do not keep the request alive and the Frontend needs to match the request to the response from the subscription.
+
+> [!warning]
+> Determining the right response to a request can cause problems when only `userId` and `resourceId` are used. For example, when two AI features use the same `userId` and `resourceId` both subscriptions will receive the response from each other. To prevent this interference, we introduced the `clientSubscriptionId`.
+
+To match a response on the `aiCompletionResponse` subscription, you can provide a `clientSubscriptionId` to the `aiAction` mutation.
+
+- The `clientSubscriptionId` should be unique per feature and within a page to not interfere with other AI features. We recommend to use a `UUID`.
+- Only when the `clientSubscriptionId` is provided as part of the `aiAction` mutation, it will be used for broadcasting the `aiCompletionResponse`.
+- If the `clientSubscriptionId` is not provided, only `userId` and `resourceId` are used for the `aiCompletionResponse`.
+
+As an example mutation for summarizing comments, we provide a `randomId` as part of the mutation:
+
+```graphql
+mutation {
+  aiAction(
+    input: {
+      summarizeComments: { resourceId: "gid://gitlab/Issue/52" }
+      clientSubscriptionId: "randomId"
+    }
+  ) {
+    clientMutationId
+  }
+}
+```
+
+In our component, we then listen on the `aiCompletionResponse` using the `userId`, `resourceId`, and `clientSubscriptionId` (`"randomId"`):
+
+```graphql
+subscription aiCompletionResponse(
+  $userId: UserID
+  $resourceId: AiModelID
+  $clientSubscriptionId: String
+) {
+  aiCompletionResponse(
+    userId: $userId
+    resourceId: $resourceId
+    clientSubscriptionId: $clientSubscriptionId
+  ) {
+    content
+    errors
+  }
+}
+```
+
+The [subscription for Chat](duo_chat.md#graphql-subscription) behaves differently.
+
+To not have many concurrent subscriptions, you should also only subscribe to the subscription once the mutation is sent by using [`skip()`](https://apollo.vuejs.org/guide-option/subscriptions.html#skipping-the-subscription).
+
+##### Clarifying different ID parameters
+
+When working with the `aiAction` mutation, several ID parameters are used for routing requests and responses correctly. Here's what each parameter does:
+
+- `user_id` (required)
+  - Purpose: Identifies and authenticates the requesting user
+  - Used for: Permission checks, request attribution, and response routing
+  - Example: `gid://gitlab/User/123`
+  - Note: This ID is automatically included by the GraphQL API framework
+- `client_subscription_id` (recommended for streaming or multiple features)
+  - Client-generated UUID for tracking specific request/response pairs
+  - Required when using streaming responses or when multiple AI features share the same page
+  - Example: `"9f5dedb3-c58d-46e3-8197-73d653c71e69"`
+  - Can be omitted for simple, isolated requests with no streaming
+- `resource_id` (contextual - required for some features)
+  - Purpose: References a specific GitLab entity (project, issue, MR) that provides context for the AI operation
+  - Used for: Permission verification and contextual information gathering
+  - Real example: `"gid://gitlab/Issue/164723626"`
+  - Note: Some features may not require a specific resource
+- `project_id` (contextual - required for some features)
+  - Purpose: Identifies the project context for the AI operation
+  - Used for: Project-specific permission checks and context
+  - Real example: `"gid://gitlab/Project/278964"`
+  - Note: Some features may not require a specific project
+
+#### Current abstraction layer flow
+
+The following graph uses VertexAI as an example. You can use different providers.
+
+```mermaid
+flowchart TD
+A[GitLab frontend] -->B[AiAction GraphQL mutation]
+B --> C[Llm::ExecuteMethodService]
+C --> D[One of services, for example: Llm::GenerateSummaryService]
+D -->|scheduled| E[AI worker:Llm::CompletionWorker]
+E -->F[::Gitlab::Llm::Completions::Factory]
+F -->G[#96;::Gitlab::Llm::VertexAi::Completions::...#96; class using #96;::Gitlab::Llm::Templates::...#96; class]
+G -->|calling| H[Gitlab::Llm::VertexAi::Client]
+H --> |response| I[::Gitlab::Llm::GraphqlSubscriptionResponseService]
+I --> J[GraphqlTriggers.ai_completion_response]
+J --> K[::GitlabSchema.subscriptions.trigger]
+```
+
+## Reuse the existing AI components for multiple models
+
+We thrive optimizing AI components, such as prompt, input/output parser, tools/function-calling, for each LLM,
+however, diverging the components for each model could increase the maintenance overhead.
+Hence, it's generally advised to reuse the existing components for multiple models as long as it doesn't degrade a feature quality.
+Here are the rules of thumbs:
+
+1. Iterate on the existing prompt template for multiple models. Do _NOT_ introduce a new one unless it causes a quality degradation for a particular model.
+1. Iterate on the existing input/output parsers and tools/functions-calling for multiple models. Do _NOT_ introduce a new one unless it causes a quality degradation for a particular model.
+1. If a quality degradation is detected for a particular model, the shared component should be diverged for the particular model.
+
+An [example](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/issues/713) of this case is that we can apply Claude specific CoT optimization to the other models such as Mixtral as long as it doesn't cause a quality degradation.
+
+## Monitoring
+
+- Error ratio and response latency apdex for each Ai action can be found on [Sidekiq Service dashboard](https://dashboards.gitlab.net/d/sidekiq-main/sidekiq-overview?orgId=1) under **SLI Detail: `llm_completion`**.
+- Spent tokens, usage of each Ai feature and other statistics can be found on [periscope dashboard](https://app.periscopedata.com/app/gitlab/1137231/Ai-Features).
+- [AI Gateway logs](https://log.gprd.gitlab.net/app/r/s/zKEel).
+- [AI Gateway metrics](https://dashboards.gitlab.net/d/ai-gateway-main/ai-gateway3a-overview?orgId=1).
+- [Feature usage dashboard via proxy](https://log.gprd.gitlab.net/app/r/s/egybF).
+
+## Security
+
+Refer to the [secure coding guidelines for Artificial Intelligence (AI) features](../secure_coding_guidelines/_index.md#artificial-intelligence-ai-features).
+
+## Help
+
+- [Here's how to reach us!](https://handbook.gitlab.com/handbook/engineering/development/data-science/ai-powered/ai-framework/#-how-to-reach-us)
+- View [guidelines](duo_chat.md) for working with GitLab Duo Chat.
+- Learn how to [add foundational chat agents](foundational_chat_agents.md) to GitLab Duo.
+- Learn how to [add foundational flows](foundational_flows.md) to GitLab Duo Agent Platform.

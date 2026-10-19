@@ -1,0 +1,28 @@
+- disable_collapse_class = local_assigns.fetch(:disable_collapse_class, false)
+- collapsed_class = 'collapsed' if discussion.resolved? && !disable_collapse_class
+- badge_counter = discussion_counter + 1 if local_assigns[:discussion_counter]
+- show_toggle = local_assigns.fetch(:show_toggle, true)
+- show_image_comment_badge = local_assigns.fetch(:show_image_comment_badge, false)
+
+.discussion-notes{ class: collapsed_class }
+  -# Save the first note position data so that we have a reference and can go
+  -# to the first note position when we click on a badge diff discussion
+  %ul.notes{ id: "discussion_#{discussion.id}", data: { discussion_id: discussion.id, position: discussion.notes[0].position.to_json } }
+    - if discussion.try(:on_image?) && show_toggle
+      %button.comment-indicator.gl-flex.gl-items-center.gl-justify-center.gl-text-sm.diff-notes-collapse.js-diff-notes-toggle{ type: 'button' }
+        = sprite_icon('collapse', css_class: 'collapse-icon')
+      %button.gl-items-center.gl-justify-center.gl-text-sm.small.design-note-pin.js-diff-notes-toggle.diff-notes-expand{ type: 'button', class: '-gl-translate-x-1/2' }
+        = badge_counter
+    = render partial: "shared/notes/note", collection: discussion.notes, as: :note, locals: { badge_counter: badge_counter, show_image_comment_badge: show_image_comment_badge }
+
+    %li.discussion-reply-holder.gl-clearfix{ class: '!gl-border-t-0 !gl-pb-5' }
+      - if can_create_note?
+        .discussion-with-resolve-btn
+          = link_to_reply_discussion(discussion)
+      - elsif !current_user
+        .disabled-comment.gl-text-center.gl-text-subtle
+          Please
+          = link_to _("register"), new_session_path(:user, redirect_to_referer: 'yes')
+          or
+          = link_to _("sign in"), new_session_path(:user, redirect_to_referer: 'yes')
+          to reply

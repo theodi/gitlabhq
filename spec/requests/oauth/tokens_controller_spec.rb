@@ -1,0 +1,693 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Oauth::TokensController, feature_category: :system_access do
+  let_it_be(:organization) { create(:organization) }
+
+  # Requires the caller to define:
+  # - `maintenance_organization`: the org the credential resolves to
+  # - `request`: performs the token request
+  shared_examples 'an OAuth token request blocked by organization maintenance mode' do
+    context 'for a time-bounded maintenance reason' do
+      before do
+        maintenance_organization.start_maintenance(maintenance_reason: 'migration')
+        maintenance_organization.confirm_maintenance
+      end
+
+      it 'does not issue a token and responds with service unavailable', :aggregate_failures do
+        expect { request }.not_to change { Doorkeeper::AccessToken.count }
+
+        expect(response).to have_gitlab_http_status(:service_unavailable)
+        expect(response.headers['Retry-After']).to eq('60')
+        expect(response.parsed_body['error']).to eq('temporarily_unavailable')
+        expect(response.parsed_body['error_description'])
+          .to eq(_('This organization is temporarily unavailable due to maintenance.'))
+      end
+    end
+
+    context 'for an indefinite maintenance reason' do
+      before do
+        maintenance_organization.start_maintenance(maintenance_reason: 'legal')
+        maintenance_organization.confirm_maintenance
+      end
+
+      it 'does not issue a token and responds with forbidden', :aggregate_failures do
+        expect { request }.not_to change { Doorkeeper::AccessToken.count }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(response.headers['Retry-After']).to be_nil
+        expect(response.parsed_body['error']).to eq('access_denied')
+        expect(response.parsed_body['error_description'])
+          .to eq(_('This organization is unavailable.'))
+      end
+    end
+  end
+
+  describe 'POST /oauth/token' do
+    context 'with dynamic user scope', :aggregate_failures do
+      def expect_token_info_appended_to_logs
+        expect_next_instance_of(described_class) do |instance|
+          expect(instance).to receive(:append_info_to_payload).and_wrap_original do |method, payload|
+            method.call(payload)
+
+            expect(payload[:metadata]).to have_key(:oauth_access_token_id)
+            expect(payload[:metadata][:oauth_access_token_application_id]).to eq(oauth_application.id)
+            expect(payload[:metadata][:oauth_access_token_scopes]).to eq(scopes)
+          end
+        end
+      end
+
+      let_it_be(:user) { create(:user) }
+      let_it_be(:scopes) { "api user:#{user.id}" }
+      let_it_be(:oauth_application) { create(:oauth_application, owner: nil, scopes: "api user:*") }
+      let_it_be(:oauth_access_grant) { create(:oauth_access_grant, scopes: scopes, application: oauth_application, redirect_uri: oauth_application.redirect_uri) }
+
+      context 'when authorization code flow' do
+        let_it_be(:grant_type) { 'authorization_code' }
+
+        it 'returns an access token with the dynamic scopes' do
+          expect_token_info_appended_to_logs
+
+          post(
+            '/oauth/token',
+            params: {
+              grant_type: grant_type,
+              client_secret: oauth_application.secret,
+              client_id: oauth_application.uid,
+              redirect_uri: oauth_application.redirect_uri,
+              code: oauth_access_grant.plaintext_token
+            }
+          )
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.parsed_body['scope']).to eq scopes
+        end
+      end
+
+      context 'when refresh token flow' do
+        let_it_be(:grant_type) { 'refresh_token' }
+        let_it_be(:oauth_token) { create(:oauth_access_token, application: oauth_application, scopes: scopes, use_refresh_token: true) }
+
+        it 'returns an access token with the dynamic scopes' do
+          expect_token_info_appended_to_logs
+
+          post(
+            '/oauth/token',
+            params: {
+              grant_type: grant_type,
+              refresh_token: oauth_token.plaintext_refresh_token,
+              client_secret: oauth_application.secret,
+              client_id: oauth_application.uid,
+              redirect_uri: oauth_application.redirect_uri,
+              scopes: scopes # must be passed for refresh token to have correct scopes until https://github.com/doorkeeper-gem/doorkeeper/pull/1754 is merged
+            }
+          )
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.parsed_body['scope']).to eq scopes
+        end
+      end
+    end
+
+    describe 'sticking the issued token to the primary database' do
+      let_it_be(:oauth_application) { create(:oauth_application, :with_device_code_enabled, owner: nil, scopes: 'api') }
+
+      def token_request(params)
+        post(
+          '/oauth/token',
+          params: {
+            client_secret: oauth_application.secret,
+            client_id: oauth_application.uid,
+            redirect_uri: oauth_application.redirect_uri
+          }.merge(params)
+        )
+      end
+
+      shared_examples 'sticks the issued token' do
+        it 'records the primary write location for the new token so replicas do not miss it' do
+          allow(::OauthAccessToken.sticking).to receive(:bulk_stick)
+
+          token_request(params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(::OauthAccessToken.sticking)
+            .to have_received(:bulk_stick).with(:oauth_token, include(response.parsed_body['access_token']), hash_id: true)
+        end
+
+        it 'still returns the token when sticking fails' do
+          allow(::OauthAccessToken.sticking).to receive(:bulk_stick).and_raise(Redis::CannotConnectError)
+          allow(Gitlab::ErrorTracking).to receive(:track_and_raise_for_dev_exception)
+
+          token_request(params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.parsed_body['access_token']).to be_present
+          expect(Gitlab::ErrorTracking).to have_received(:track_and_raise_for_dev_exception)
+            .with(an_instance_of(Redis::CannotConnectError), model: 'OauthAccessToken', record_id: an_instance_of(Integer))
+        end
+      end
+
+      context 'with a refresh_token grant' do
+        let_it_be(:oauth_token) { create(:oauth_access_token, application: oauth_application, scopes: 'api', use_refresh_token: true) }
+        let(:params) { { grant_type: 'refresh_token', refresh_token: oauth_token.plaintext_refresh_token } }
+
+        it_behaves_like 'sticks the issued token'
+
+        it 'records the write location for the new access and refresh tokens in one call' do
+          allow(::OauthAccessToken.sticking).to receive(:bulk_stick)
+
+          token_request(params)
+
+          expect(::OauthAccessToken.sticking).to have_received(:bulk_stick).with(
+            :oauth_token,
+            contain_exactly(response.parsed_body['access_token'], response.parsed_body['refresh_token']),
+            hash_id: true
+          ).once
+        end
+
+        it 'looks the presented refresh token up through a caught-up replica' do
+          expect(::OauthAccessToken.sticking).to receive(:find_caught_up_replica)
+            .with(:oauth_token, oauth_token.plaintext_refresh_token, hash_id: true).at_least(:once).and_call_original
+
+          token_request(params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'with an authorization_code grant' do
+        let_it_be(:oauth_access_grant) { create(:oauth_access_grant, scopes: 'api', application: oauth_application, redirect_uri: oauth_application.redirect_uri) }
+        let(:params) { { grant_type: 'authorization_code', code: oauth_access_grant.plaintext_token } }
+
+        it_behaves_like 'sticks the issued token'
+
+        it 'looks the code up through a caught-up replica' do
+          expect(::OauthAccessGrant.sticking).to receive(:find_caught_up_replica)
+            .with(:oauth_grant, oauth_access_grant.plaintext_token, hash_id: true).at_least(:once).and_call_original
+
+          token_request(params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'with a client_credentials grant' do
+        let(:params) { { grant_type: 'client_credentials', scope: 'api' } }
+
+        before do
+          # The flow takes the token's organization from the request context, which a
+          # request spec does not carry (see spec/requests/oauth/flows/client_credentials_spec.rb).
+          allow_next_instance_of(Gitlab::Current::Organization) do |instance|
+            allow(instance).to receive(:organization).and_return(organization)
+          end
+        end
+
+        it_behaves_like 'sticks the issued token'
+      end
+
+      context 'with a device_code grant' do
+        let_it_be(:user) { create(:user) }
+
+        # A grant that has a resource owner and no user code was already approved on
+        # the verification page, which is the state the token request expects.
+        let_it_be(:device_grant) do
+          Doorkeeper::DeviceAuthorizationGrant::DeviceGrant.create!(
+            application: oauth_application,
+            resource_owner_id: user.id,
+            expires_in: 300,
+            scopes: 'api',
+            organization: organization
+          )
+        end
+
+        let(:params) do
+          { grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: device_grant.plaintext_device_code }
+        end
+
+        it_behaves_like 'sticks the issued token'
+      end
+
+      context 'when the grant is refused' do
+        it 'does not stick' do
+          expect(::OauthAccessToken.sticking).not_to receive(:bulk_stick)
+
+          token_request(grant_type: 'refresh_token', refresh_token: 'not-a-refresh-token')
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when the stick_new_oauth_tokens_to_primary feature flag is disabled' do
+        let_it_be(:oauth_token) { create(:oauth_access_token, application: oauth_application, scopes: 'api', use_refresh_token: true) }
+
+        before do
+          stub_feature_flags(stick_new_oauth_tokens_to_primary: false)
+        end
+
+        it 'issues the token without sticking it' do
+          expect(::OauthAccessToken.sticking).not_to receive(:bulk_stick)
+
+          token_request(grant_type: 'refresh_token', refresh_token: oauth_token.plaintext_refresh_token)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.parsed_body['access_token']).to be_present
+        end
+      end
+    end
+
+    describe 'refresh token hash logging' do
+      let_it_be(:user) { create(:user) }
+      let_it_be(:oauth_application) { create(:oauth_application, owner: nil) }
+      let_it_be(:oauth_token) { create(:oauth_access_token, application: oauth_application, use_refresh_token: true) }
+      let(:refresh_token) { oauth_token.plaintext_refresh_token }
+
+      def expect_refresh_token_hash_logged(expected_hash:)
+        expect_next_instance_of(described_class) do |instance|
+          expect(instance).to receive(:append_info_to_payload).and_wrap_original do |method, payload|
+            method.call(payload)
+
+            if expected_hash
+              expect(payload[:metadata]).to have_key(:refresh_token_hash)
+              expect(payload[:metadata][:refresh_token_hash]).to eq(expected_hash)
+            end
+          end
+        end
+      end
+
+      def expect_no_refresh_token_hash_logged
+        expect_next_instance_of(described_class) do |instance|
+          expect(instance).to receive(:append_info_to_payload).and_wrap_original do |method, payload|
+            method.call(payload)
+
+            expect(payload[:metadata]).not_to have_key(:refresh_token_hash)
+          end
+        end
+      end
+
+      context 'when grant_type is refresh_token and refresh_token param is present' do
+        it 'logs the first 10 characters of SHA256 hash of the refresh token' do
+          expected_hash = Digest::SHA256.hexdigest(refresh_token)[0..9]
+          expect_refresh_token_hash_logged(expected_hash: expected_hash)
+
+          post(
+            '/oauth/token',
+            params: {
+              grant_type: 'refresh_token',
+              refresh_token: refresh_token,
+              client_secret: oauth_application.secret,
+              client_id: oauth_application.uid
+            }
+          )
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'when grant_type is refresh_token but refresh_token param is missing' do
+        it 'does not log refresh_token_hash' do
+          expect_no_refresh_token_hash_logged
+
+          post(
+            '/oauth/token',
+            params: {
+              grant_type: 'refresh_token',
+              client_secret: oauth_application.secret,
+              client_id: oauth_application.uid
+            }
+          )
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when grant_type is refresh_token but refresh_token param is blank' do
+        it 'does not log refresh_token_hash' do
+          expect_no_refresh_token_hash_logged
+
+          post(
+            '/oauth/token',
+            params: {
+              grant_type: 'refresh_token',
+              refresh_token: '',
+              client_secret: oauth_application.secret,
+              client_id: oauth_application.uid
+            }
+          )
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when grant_type is not refresh_token' do
+        let_it_be(:oauth_access_grant) { create(:oauth_access_grant, application: oauth_application, redirect_uri: oauth_application.redirect_uri) }
+
+        it 'does not log refresh_token_hash even if refresh_token param is present' do
+          expect_no_refresh_token_hash_logged
+
+          post(
+            '/oauth/token',
+            params: {
+              grant_type: 'authorization_code',
+              refresh_token: refresh_token, # This shouldn't be used for authorization_code flow
+              client_secret: oauth_application.secret,
+              client_id: oauth_application.uid,
+              redirect_uri: oauth_application.redirect_uri,
+              code: oauth_access_grant.plaintext_token
+            }
+          )
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+    end
+
+    describe 'PKCE validation for dynamic applications' do
+      let_it_be(:user) { create(:user) }
+
+      context 'with dynamic OAuth application' do
+        let_it_be(:oauth_application) { create(:oauth_application, :dynamic) }
+        let_it_be(:oauth_access_grant) do
+          create(:oauth_access_grant,
+            application: oauth_application,
+            redirect_uri: oauth_application.redirect_uri,
+            resource_owner_id: user.id)
+        end
+
+        let(:base_params) do
+          {
+            grant_type: 'authorization_code',
+            client_id: oauth_application.uid,
+            client_secret: oauth_application.secret,
+            redirect_uri: oauth_application.redirect_uri,
+            code: oauth_access_grant.plaintext_token
+          }
+        end
+
+        context 'when code_verifier is missing' do
+          it 'returns bad request with PKCE error' do
+            post('/oauth/token', params: base_params)
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(response.parsed_body).to eq({
+              'error' => 'invalid_request',
+              'error_description' => 'PKCE code_verifier is required for dynamic OAuth applications'
+            })
+          end
+        end
+
+        context 'when code_verifier is blank' do
+          it 'returns bad request with PKCE error' do
+            post('/oauth/token', params: base_params.merge(code_verifier: ''))
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(response.parsed_body).to eq({
+              'error' => 'invalid_request',
+              'error_description' => 'PKCE code_verifier is required for dynamic OAuth applications'
+            })
+          end
+        end
+
+        context 'when code_verifier is present' do
+          it 'allows the request to proceed past PKCE validation' do
+            post('/oauth/token', params: base_params.merge(code_verifier: 'valid_code_verifier'))
+
+            expect(response.parsed_body['error']).not_to eq('invalid_request')
+            expect(response.parsed_body['error_description']).not_to include('PKCE code_verifier is required')
+          end
+        end
+
+        context 'when refreshing access tokens with refresh_token' do
+          let_it_be(:dynamic_oauth_application) do
+            create(:oauth_application, :dynamic, confidential: false, scopes: 'mcp')
+          end
+
+          let_it_be(:oauth_token) do
+            create(
+              :oauth_access_token,
+              application: dynamic_oauth_application,
+              resource_owner_id: user.id,
+              use_refresh_token: true,
+              scopes: 'mcp'
+            )
+          end
+
+          it 'does not require PKCE code_verifier for refresh token flow' do
+            post('/oauth/token', params: {
+              grant_type: 'refresh_token',
+              refresh_token: oauth_token.plaintext_refresh_token,
+              client_id: dynamic_oauth_application.uid,
+              scopes: 'mcp'
+            })
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response.parsed_body).to have_key('access_token')
+            expect(response.parsed_body['error']).to be_nil
+          end
+        end
+      end
+
+      context 'with non-dynamic OAuth application' do
+        let_it_be(:oauth_application) { create(:oauth_application) }
+        let_it_be(:oauth_access_grant) do
+          create(:oauth_access_grant,
+            application: oauth_application,
+            redirect_uri: oauth_application.redirect_uri,
+            resource_owner_id: user.id)
+        end
+
+        let(:base_params) do
+          {
+            grant_type: 'authorization_code',
+            client_id: oauth_application.uid,
+            client_secret: oauth_application.secret,
+            redirect_uri: oauth_application.redirect_uri,
+            code: oauth_access_grant.plaintext_token
+          }
+        end
+
+        context 'when code_verifier is missing' do
+          it 'does not enforce PKCE validation' do
+            post('/oauth/token', params: base_params)
+
+            # Should not be rejected due to missing code_verifier
+            expect(response.parsed_body['error']).not_to eq('invalid_request')
+
+            if response.parsed_body['error_description']
+              expect(
+                response.parsed_body['error_description']
+              ).not_to include('PKCE')
+            end
+          end
+        end
+      end
+
+      context 'with application that is explicitly not dynamic' do
+        let_it_be(:oauth_application) { create(:oauth_application, :without_owner) }
+        let_it_be(:oauth_access_grant) do
+          create(:oauth_access_grant,
+            application: oauth_application,
+            redirect_uri: oauth_application.redirect_uri,
+            resource_owner_id: user.id)
+        end
+
+        let(:base_params) do
+          {
+            grant_type: 'authorization_code',
+            client_id: oauth_application.uid,
+            client_secret: oauth_application.secret,
+            redirect_uri: oauth_application.redirect_uri,
+            code: oauth_access_grant.token
+          }
+        end
+
+        context 'when code_verifier is missing' do
+          it 'does not enforce PKCE validation' do
+            post('/oauth/token', params: base_params)
+
+            expect(response.parsed_body['error']).not_to eq('invalid_request')
+
+            if response.parsed_body['error_description']
+              expect(response.parsed_body['error_description'])
+                .not_to include('PKCE')
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe 'POST /oauth/token when the client_id is missing', feature_category: :system_access do
+    let(:docs_anchor) { 'reuse-a-single-oauth-application' }
+
+    subject(:request_token) do
+      post '/oauth/token', params: { grant_type: 'authorization_code', client_id: client_id, code: 'irrelevant' }
+    end
+
+    context 'when dynamic client registration is disabled' do
+      before do
+        stub_application_setting(dynamic_client_registration_enabled: false)
+      end
+
+      context 'and the client_id does not reference any application' do
+        let(:client_id) { 'this-client-id-does-not-exist' }
+
+        it 'returns an actionable invalid_client error linking to the docs', :aggregate_failures do
+          request_token
+
+          expect(response).to have_gitlab_http_status(:unauthorized)
+          expect(response.parsed_body['error']).to eq('invalid_client')
+          expect(response.parsed_body['error_description']).to include('dynamic client registration is disabled')
+          expect(response.parsed_body['error_description']).to include(docs_anchor)
+        end
+      end
+
+      context 'and the client_id references an existing application' do
+        let_it_be(:existing_application) { create(:oauth_application, owner: nil) }
+        let(:client_id) { existing_application.uid }
+
+        it 'does not return the custom error and falls through to Doorkeeper' do
+          request_token
+
+          expect(response.parsed_body['error_description']).not_to include(docs_anchor)
+        end
+      end
+    end
+
+    context 'when dynamic client registration is enabled' do
+      let(:client_id) { 'this-client-id-does-not-exist' }
+
+      before do
+        stub_application_setting(dynamic_client_registration_enabled: true)
+      end
+
+      it 'does not return the custom error' do
+        request_token
+
+        expect(response.parsed_body['error_description']).not_to include(docs_anchor)
+      end
+    end
+  end
+
+  context 'for CORS requests' do
+    let(:cors_request_headers) { { 'Origin' => 'http://notgitlab.com' } }
+    let(:other_headers) { {} }
+    let(:headers) { cors_request_headers.merge(other_headers) }
+    let(:allowed_methods) { 'POST, OPTIONS' }
+    let(:authorization_methods) { %w[Authorization X-CSRF-Token X-Requested-With] }
+
+    shared_examples 'cross-origin POST request' do
+      it 'allows cross-origin requests' do
+        expect(response.headers['Access-Control-Allow-Origin']).to eq '*'
+        expect(response.headers['Access-Control-Allow-Methods']).to eq allowed_methods
+        expect(response.headers['Access-Control-Allow-Headers']).to be_nil
+        expect(response.headers['Access-Control-Allow-Credentials']).to be_nil
+      end
+    end
+
+    shared_examples 'CORS preflight OPTIONS request' do
+      it 'returns 200' do
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'allows cross-origin requests' do
+        expect(response.headers['Access-Control-Allow-Origin']).to eq '*'
+        expect(response.headers['Access-Control-Allow-Methods']).to eq allowed_methods
+        expect(response.headers['Access-Control-Allow-Credentials']).to be_nil
+
+        expect(
+          Array.wrap(response.headers['Access-Control-Allow-Headers']).join("\n")
+        ).to eq authorization_methods.join("\n")
+      end
+    end
+
+    describe 'POST /oauth/token' do
+      before do
+        post '/oauth/token', headers: headers
+      end
+
+      it_behaves_like 'cross-origin POST request'
+    end
+
+    describe 'OPTIONS /oauth/token' do
+      let(:other_headers) { { 'Access-Control-Request-Headers' => authorization_methods, 'Access-Control-Request-Method' => 'POST' } }
+
+      before do
+        options '/oauth/token', headers: headers
+      end
+
+      it_behaves_like 'CORS preflight OPTIONS request'
+    end
+
+    describe 'POST /oauth/revoke' do
+      let(:other_headers) { { 'Content-Type' => 'application/x-www-form-urlencoded' } }
+      let_it_be(:oauth_application) { create(:oauth_application) }
+
+      before do
+        post '/oauth/revoke', headers: headers, params: { token: '12345', client_id: oauth_application.uid, client_secret: oauth_application.secret }
+      end
+
+      it 'returns 200' do
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it_behaves_like 'cross-origin POST request'
+    end
+
+    describe 'OPTIONS /oauth/revoke' do
+      let(:other_headers) { { 'Access-Control-Request-Headers' => authorization_methods, 'Access-Control-Request-Method' => 'POST' } }
+
+      before do
+        options '/oauth/revoke', headers: headers
+      end
+
+      it_behaves_like 'CORS preflight OPTIONS request'
+    end
+  end
+
+  describe 'organization maintenance mode enforcement on POST /oauth/token' do
+    let_it_be_with_reload(:maintenance_organization) { create(:organization) }
+    let_it_be(:user) { create(:user, organization: maintenance_organization) }
+    let_it_be(:oauth_application) do
+      create(:oauth_application, owner: user, scopes: 'api', redirect_uri: 'http://example.com')
+    end
+
+    context 'with the authorization_code grant' do
+      let_it_be(:oauth_access_grant) do
+        create(:oauth_access_grant, resource_owner_id: user.id, application: oauth_application,
+          scopes: 'api', redirect_uri: oauth_application.redirect_uri,
+          organization_id: maintenance_organization.id)
+      end
+
+      subject(:request) do
+        post('/oauth/token', params: {
+          grant_type: 'authorization_code',
+          client_id: oauth_application.uid,
+          client_secret: oauth_application.secret,
+          redirect_uri: oauth_application.redirect_uri,
+          code: oauth_access_grant.plaintext_token
+        })
+      end
+
+      it_behaves_like 'an OAuth token request blocked by organization maintenance mode'
+    end
+
+    context 'with the refresh_token grant' do
+      let_it_be(:oauth_token) do
+        create(:oauth_access_token, resource_owner_id: user.id, application: oauth_application,
+          scopes: 'api', use_refresh_token: true, organization_id: maintenance_organization.id)
+      end
+
+      subject(:request) do
+        post('/oauth/token', params: {
+          grant_type: 'refresh_token',
+          client_id: oauth_application.uid,
+          client_secret: oauth_application.secret,
+          refresh_token: oauth_token.plaintext_refresh_token
+        })
+      end
+
+      it_behaves_like 'an OAuth token request blocked by organization maintenance mode'
+    end
+  end
+end

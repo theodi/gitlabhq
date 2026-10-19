@@ -1,0 +1,84 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::Offline::Imports::Groups::Stage, feature_category: :importers do
+  let(:ancestor) { create(:group) }
+  let(:group) { build(:group, parent: ancestor) }
+  let(:bulk_import) { build(:bulk_import) }
+  let(:entity) do
+    build(:bulk_import_entity, bulk_import: bulk_import, group: group, destination_namespace: ancestor.full_path)
+  end
+
+  subject(:stage) { described_class.new(entity) }
+
+  it 'raises error when initialized without a BulkImport' do
+    expect { described_class.new({}) }.to raise_error(
+      ArgumentError, 'Expected an argument of type ::BulkImports::Entity'
+    )
+  end
+
+  describe '#pipelines' do
+    it 'lists all the pipelines' do
+      pipelines = stage.pipelines
+
+      expect(pipelines).to include(
+        hash_including({
+          pipeline: Import::Offline::Groups::Pipelines::GroupPipeline,
+          stage: 0
+        }),
+        hash_including({
+          pipeline: BulkImports::Common::Pipelines::MaxIidsPipeline,
+          stage: 1
+        }),
+        hash_including({
+          pipeline: Import::Offline::Common::Pipelines::MembersPipeline,
+          stage: 1
+        }),
+        hash_including({
+          pipeline: BulkImports::Groups::Pipelines::NamespaceSettingsPipeline,
+          stage: 1
+        }),
+        hash_including({
+          pipeline: BulkImports::Common::Pipelines::LabelsPipeline,
+          stage: 1
+        }),
+        hash_including({
+          pipeline: BulkImports::Common::Pipelines::MilestonesPipeline,
+          stage: 1
+        }),
+        hash_including({
+          pipeline: Import::Offline::Common::Pipelines::BadgesPipeline,
+          minimum_source_version: '19.5.0',
+          stage: 1
+        }),
+        hash_including({
+          pipeline: BulkImports::Common::Pipelines::BoardsPipeline,
+          stage: 2
+        }),
+        hash_including({
+          pipeline: BulkImports::Common::Pipelines::UploadsPipeline,
+          stage: 2
+        }),
+        hash_including({
+          pipeline: Import::Offline::Common::Pipelines::UserContributionsPipeline,
+          stage: 3
+        }),
+        hash_including({
+          pipeline: Import::Offline::Groups::Pipelines::ProjectEntitiesPipeline,
+          stage: 3
+        }),
+        hash_including({
+          pipeline: Import::Offline::Groups::Pipelines::SubgroupEntitiesPipeline,
+          stage: 4
+        }),
+        hash_including({
+          pipeline: BulkImports::Common::Pipelines::EntityFinisher,
+          stage: 5
+        })
+      )
+    end
+
+    it_behaves_like 'a BulkImports::Stage'
+  end
+end

@@ -1,0 +1,90 @@
+# @feature_category: team_planning
+query groupWorkItems(
+  $searchTerm: String
+  $fullPath: ID!
+  $in: [IssuableSearchableField!]
+  $includeAncestors: Boolean = false
+  $includeDescendants: Boolean = false
+  $iid: String = null
+  $searchByIid: Boolean = false
+  $searchByText: Boolean = true
+  $useWorkItemFeatures: Boolean = false
+  $workItemTypeIds: [WorkItemsTypeID!]
+) {
+  namespace: group(fullPath: $fullPath) {
+    id
+    workItems(
+      search: $searchTerm
+      state: opened
+      in: $in
+      includeAncestors: $includeAncestors
+      includeDescendants: $includeDescendants
+      workItemTypeIds: $workItemTypeIds
+    ) @include(if: $searchByText) {
+      nodes {
+        id
+        iid
+        title
+        titleHtml
+        confidential
+        webUrl
+        namespace {
+          id
+          fullPath
+        }
+        workItemType {
+          id
+          name
+          iconName
+        }
+        widgets {
+          type
+          ... on WorkItemWidgetMilestone {
+            milestone {
+              id
+              dueDate
+              startDate
+              title
+              webPath
+            }
+          }
+        }
+        features @include(if: $useWorkItemFeatures) {
+          milestone {
+            milestone {
+              id
+              dueDate
+              startDate
+              title
+              webPath
+            }
+          }
+        }
+      }
+    }
+    workItemsByIid: workItems(
+      iid: $iid
+      includeAncestors: $includeAncestors
+      includeDescendants: $includeDescendants
+      workItemTypeIds: $workItemTypeIds
+    ) @include(if: $searchByIid) {
+      nodes {
+        id
+        iid
+        title
+        titleHtml
+        confidential
+        webUrl
+        namespace {
+          id
+          fullPath
+        }
+        workItemType {
+          id
+          name
+          iconName
+        }
+      }
+    }
+  }
+}

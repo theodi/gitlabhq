@@ -1,0 +1,206 @@
+# frozen_string_literal: true
+
+module API
+  class ResourceAccessTokens < ::API::Base
+    include PaginationParams
+
+    ALLOWED_RESOURCE_ACCESS_LEVELS = Gitlab::Access.options_with_owner.freeze
+
+    before { authenticate! }
+
+    feature_category :system_access
+
+    helpers ::API::Helpers::PersonalAccessTokensHelpers
+    helpers ::API::Helpers::ResourceAccessTokensHelpers
+
+    %w[project group].each do |source_type|
+      resource source_type.pluralize, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc "List all #{source_type} access tokens" do
+          detail "Lists all #{source_type} access tokens for a specified #{source_type}."
+          is_array true
+          tags ['access_tokens']
+          success code: 200, model: Entities::ResourceAccessToken
+        end
+        params do
+          requires :id, types: [String, Integer], desc: "ID or URL-encoded path of the #{source_type}."
+          use :access_token_params
+        end
+        route_setting :authorization, permissions: :read_resource_access_token, boundary_type: source_type.to_sym
+        get ":id/access_tokens" do
+          resource = find_source(source_type, params[:id])
+
+          next unauthorized! unless current_user.can?(:read_resource_access_tokens, resource)
+
+          tokens = PersonalAccessTokensFinder
+            .new(declared(params, include_missing: false).merge({ user: resource.bots, impersonation: false }))
+            .execute
+            .preload_users
+            .preload_last_used_ips
+
+          tokens = if source_type == 'project'
+                     tokens.preload_bot_user_associations_for_project
+                   else
+                     tokens.preload_bot_user_associations_for_group
+                   end
+
+          resource.members.load
+          present paginate(tokens), with: Entities::ResourceAccessToken, resource: resource
+        end
+
+        desc "Retrieve details on a #{source_type} access token" do
+          detail "Retrieves details on a specified #{source_type} access token."
+          tags ['access_tokens']
+          success code: 200, model: Entities::ResourceAccessToken
+        end
+        params do
+          requires :id, types: [String, Integer], desc: "ID or URL-encoded path of the #{source_type}."
+          requires :token_id, type: String, desc: 'ID of the token.'
+        end
+        route_setting :authorization, permissions: :read_resource_access_token, boundary_type: source_type.to_sym
+        get ":id/access_tokens/:token_id" do
+          resource = find_source(source_type, params[:id])
+
+          next unauthorized! unless current_user.can?(:read_resource_access_tokens, resource)
+
+          token = find_token(resource, params[:token_id])
+
+          next not_found!("#{source_type} Access Token") if token.nil?
+
+          resource.members.load
+          present token, with: Entities::ResourceAccessToken, resource: resource
+        end
+
+        desc "Revoke a #{source_type} access token" do
+          detail "Revokes a specified #{source_type} access token."
+          tags ['access_tokens']
+          success code: 204
+          failure [
+            { code: 400, message: 'Bad Request' },
+            { code: 404, message: 'Not found' }
+          ]
+        end
+        params do
+          requires :id, type: String, desc: "ID or URL-encoded path of the #{source_type}."
+          requires :token_id, type: String, desc: 'ID of the token.'
+        end
+        route_setting :authorization, permissions: :delete_resource_access_token, boundary_type: source_type.to_sym
+        delete ':id/access_tokens/:token_id' do
+          resource = find_source(source_type, params[:id])
+          token = find_token(resource, params[:token_id])
+
+          next not_found!("#{source_type} Access Token") if token.nil?
+
+          service = ::ResourceAccessTokens::RevokeService.new(
+            current_user,
+            resource,
+            token
+          ).execute
+
+          service.success? ? no_content! : bad_request!(service.message)
+        end
+
+        desc "Create a #{source_type} access token" do
+          detail "Creates a #{source_type} access token for a specified #{source_type}. You cannot create a token " \
+            "with an access level greater than your account. For example, a user with the Maintainer role cannot " \
+            "create a #{source_type} access token with the Owner role. You must use a personal access token with " \
+            "this endpoint. You cannot authenticate with a #{source_type} access token."
+          tags ['access_tokens']
+          success code: 201, model: Entities::ResourceAccessTokenWithToken
+        end
+        params do
+          use :create_personal_access_token_params
+          requires :id,
+            type: String,
+            desc: "ID or URL-encoded path of the #{source_type}.",
+            documentation: { example: '2' }
+          requires :scopes,
+            type: Array[String],
+            values: ::Gitlab::Auth.resource_bot_scopes.map(&:to_s),
+            desc: 'List of [scopes](https://docs.gitlab.com/security/tokens/access_token_scopes/) available to the token.',
+            documentation: { example: %w[api read_repository] }
+          optional :expires_at,
+            type: Date,
+            desc: 'Date when the access token expires. If omitted, the token does not expire, which is accepted only when [token expiry is not enforced](https://docs.gitlab.com/user/profile/personal_access_tokens/#access-token-expiration).',
+            documentation: {
+              example: '2026-02-14'
+            }
+          # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+          optional :access_level,
+            type: Integer,
+            values: ALLOWED_RESOURCE_ACCESS_LEVELS.values,
+            default: Gitlab::Access::MAINTAINER,
+            desc: "The access level of the token in the #{source_type}",
+            documentation: { example: 40 }
+          # rubocop:enable API/AccessLevelStringType
+        end
+        route_setting :authorization, permissions: :create_resource_access_token, boundary_type: source_type.to_sym
+        post ':id/access_tokens' do
+          resource = find_source(source_type, params[:id])
+
+          token_response = ::ResourceAccessTokens::CreateService.new(
+            current_user,
+            resource,
+            declared(params, include_missing: false)
+            .merge(creation_source: PersonalAccessToken::CREATION_SOURCE_API)
+          ).execute
+
+          if token_response.success?
+            present token_response.payload[:access_token], with: Entities::ResourceAccessTokenWithToken, resource: resource
+          else
+            bad_request!(token_response.message)
+          end
+        end
+
+        desc "Rotate a #{source_type} access token" do
+          detail "Rotates a #{source_type} access token. This immediately revokes the previous token and creates a " \
+            "token. Generally, this endpoint rotates a specific #{source_type} access token by authenticating with " \
+            "a personal access token. You can also use a #{source_type} access token to rotate itself. If you " \
+            "attempt to use this endpoint to rotate a token that was previously revoked, any active tokens from " \
+            "the same token family are revoked. This feature was introduced in GitLab 16.0."
+          tags ['access_tokens']
+          success code: 200, model: Entities::ResourceAccessTokenWithToken
+        end
+        params do
+          requires :id, type: String, desc: "ID or URL-encoded path of the #{source_type}."
+          requires :token_id, type: String, desc: 'ID of the token.'
+          optional :expires_at,
+            type: Date,
+            desc: 'Date when the access token expires. If omitted, the new token expires one week after rotation when [token expiry is enforced](https://docs.gitlab.com/user/profile/personal_access_tokens/#access-token-expiration), and does not expire otherwise.',
+            documentation: { example: '2021-01-31' }
+        end
+        route_setting :authorization, permissions: :rotate_resource_access_token, boundary_type: source_type.to_sym
+        post ':id/access_tokens/:token_id/rotate' do
+          resource = find_source(source_type, params[:id])
+
+          resource_accessible = Ability.allowed?(current_user, :manage_resource_access_tokens, resource)
+          token = find_token(resource, params[:token_id]) if resource_accessible
+
+          if token
+            response = if source_type == "project"
+                         ::ProjectAccessTokens::RotateService.new(
+                           current_user, token, resource, declared_params).execute
+                       elsif source_type == "group"
+                         ::GroupAccessTokens::RotateService.new(
+                           current_user, token, resource, declared_params).execute
+                       else
+                         ::PersonalAccessTokens::RotateService.new(
+                           current_user, token, nil, declared_params).execute
+                       end
+
+            if response.success?
+              status :ok
+
+              new_token = response.payload[:personal_access_token]
+              present new_token, with: Entities::ResourceAccessTokenWithToken, resource: resource
+            else
+              bad_request!(response.message)
+            end
+          else
+            # Only admins should be informed if the token doesn't exist
+            current_user.can_admin_all_resources? ? not_found! : unauthorized!
+          end
+        end
+      end
+    end
+  end
+end

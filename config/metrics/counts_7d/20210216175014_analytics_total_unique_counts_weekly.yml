@@ -1,0 +1,60 @@
+---
+data_category: optional
+key_path: redis_hll_counters.analytics.analytics_total_unique_counts_weekly
+description: The number of unique users who visited any analytics feature by week
+product_group: optimize
+product_categories:
+- product_analytics
+value_type: number
+status: active
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+events:
+- name: users_viewing_analytics_group_devops_adoption
+  unique: user.id
+- name: i_analytics_dev_ops_adoption
+  unique: user.id
+- name: i_analytics_dev_ops_score
+  unique: user.id
+- name: p_analytics_merge_request
+  unique: user.id
+- name: i_analytics_instance_statistics
+  unique: user.id
+- name: g_analytics_contribution
+  unique: user.id
+- name: g_analytics_insights
+  unique: user.id
+- name: g_analytics_issues
+  unique: user.id
+- name: g_analytics_productivity
+  unique: user.id
+- name: g_analytics_valuestream
+  unique: user.id
+- name: p_analytics_pipelines
+  unique: user.id
+- name: p_analytics_ci_cd_pipelines
+  unique: user.id
+- name: p_analytics_ci_cd_deployment_frequency
+  unique: user.id
+- name: p_analytics_ci_cd_lead_time
+  unique: user.id
+- name: p_analytics_code_reviews
+  unique: user.id
+- name: p_analytics_valuestream
+  unique: user.id
+- name: p_analytics_insights
+  unique: user.id
+- name: p_analytics_issues
+  unique: user.id
+- name: p_analytics_repo
+  unique: user.id
+- name: i_analytics_cohorts
+  unique: user.id
+tiers:
+  - free
+  - premium
+  - ultimate
+performance_indicator_type: []
+milestone: '<13.9'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

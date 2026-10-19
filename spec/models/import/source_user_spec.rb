@@ -1,0 +1,869 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::SourceUser, feature_category: :importers do
+  describe 'associations' do
+    it { is_expected.to belong_to(:placeholder_user).class_name('User') }
+    it { is_expected.to belong_to(:reassign_to_user).class_name('User') }
+    it { is_expected.to belong_to(:namespace) }
+  end
+
+  describe 'validations' do
+    it { is_expected.to validate_presence_of(:namespace_id) }
+    it { is_expected.to validate_presence_of(:import_type) }
+    it { is_expected.to validate_presence_of(:placeholder_user_id) }
+    it { is_expected.to validate_presence_of(:source_hostname) }
+    it { is_expected.to validate_presence_of(:source_user_identifier) }
+    it { is_expected.to validate_presence_of(:status) }
+    it { is_expected.to validate_absence_of(:reassignment_token) }
+    it { is_expected.not_to validate_presence_of(:reassign_to_user_id) }
+
+    it 'validates source_hostname has port and scheme' do
+      create(:import_source_user)
+
+      is_expected.to allow_value("http://example.com:8080", "http://example.com").for(:source_hostname)
+      is_expected.not_to allow_values("http://", "example.com", "http://example.com/dir").for(:source_hostname)
+    end
+
+    it 'validates uniqueness of reassign_to_user_id' do
+      create(:import_source_user, :reassignment_in_progress)
+
+      is_expected.to validate_uniqueness_of(:reassign_to_user_id)
+        .scoped_to(:namespace_id, :source_hostname, :import_type)
+        .with_message('already assigned to another placeholder')
+    end
+
+    it 'validates uniqueness of source_user_identifier' do
+      create(:import_source_user)
+
+      is_expected.to validate_uniqueness_of(:source_user_identifier)
+        .scoped_to(:namespace_id, :source_hostname, :import_type)
+    end
+
+    context 'when completed' do
+      subject { build(:import_source_user, :completed) }
+
+      it { is_expected.not_to validate_presence_of(:placeholder_user_id) }
+      it { is_expected.to validate_presence_of(:reassign_to_user_id) }
+    end
+
+    context 'when awaiting_approval' do
+      subject { build(:import_source_user, :awaiting_approval) }
+
+      it { is_expected.to validate_presence_of(:reassign_to_user_id) }
+      it { is_expected.to validate_length_of(:reassignment_token).is_equal_to(32) }
+      it { is_expected.to validate_presence_of(:reassignment_token).with_message(/is the wrong length/) }
+    end
+
+    context 'when reassignment_in_progress' do
+      subject { build(:import_source_user, :reassignment_in_progress) }
+
+      it { is_expected.to validate_presence_of(:reassign_to_user_id) }
+    end
+
+    context 'when rejected' do
+      subject { build(:import_source_user, :rejected) }
+
+      it { is_expected.not_to validate_absence_of(:reassign_to_user_id) }
+    end
+
+    context 'when pending_reassignment' do
+      subject { build(:import_source_user, :pending_reassignment) }
+
+      it { is_expected.to validate_absence_of(:reassign_to_user_id) }
+    end
+
+    context 'when keep_as_placeholder' do
+      subject { build(:import_source_user, :keep_as_placeholder) }
+
+      it { is_expected.to validate_absence_of(:reassign_to_user_id) }
+    end
+
+    context 'when revoked' do
+      subject { build(:import_source_user, :revoked) }
+
+      it { is_expected.not_to validate_presence_of(:placeholder_user_id) }
+      it { is_expected.not_to validate_absence_of(:reassign_to_user_id) }
+    end
+
+    context 'for validate_source_hostname' do
+      let(:namespace) { create(:namespace) }
+      let(:placeholder_user) { create(:import_source_user, namespace: namespace).placeholder_user }
+      let(:import_source_user) do
+        build(:import_source_user, placeholder_user: placeholder_user, namespace: namespace,
+          source_hostname: 'example.com')
+      end
+
+      context 'when source_hostname is changed' do
+        it 'validates the format of source_hostname' do
+          expect(import_source_user).not_to be_valid
+          expect(import_source_user.errors[:source_hostname]).to include(
+            "must contain scheme and host, and not path"
+          )
+        end
+
+        it 'passes validation for correct hostname' do
+          import_source_user.source_hostname = 'http://example.com:8080'
+          expect(import_source_user).to be_valid
+        end
+      end
+
+      context 'when source_hostname is not changed' do
+        it 'skips validation' do
+          # First save with invalid hostname but skip validation
+          import_source_user.save!(validate: false)
+
+          # Now update a different attribute
+          import_source_user.source_name = 'New Name'
+
+          # Validation should be skipped since source_hostname didn't change
+          expect(import_source_user).to be_valid
+        end
+      end
+
+      context 'when updating an existing record with the same source_hostname' do
+        it 'skips validation' do
+          # First save with invalid hostname but skip validation
+          import_source_user.save!(validate: false)
+
+          # Reload and try to save again without changing source_hostname
+          reloaded_user = described_class.find(import_source_user.id)
+
+          # Should be valid because source_hostname_changed? is false
+          expect(reloaded_user).to be_valid
+        end
+      end
+
+      context 'when updating an existing record with a new invalid source_hostname' do
+        it 'fails validation' do
+          # First save with valid hostname
+          import_source_user.source_hostname = 'http://example.com'
+          import_source_user.save!
+
+          # Now update to an invalid hostname
+          import_source_user.source_hostname = 'example.com'
+
+          # Should fail validation because source_hostname_changed? is true
+          expect(import_source_user).not_to be_valid
+          expect(import_source_user.errors[:source_hostname]).to include(
+            "must contain scheme and host, and not path"
+          )
+        end
+      end
+    end
+  end
+
+  describe '#reassignment_expires_at' do
+    it 'defaults to one year from now for a new record' do
+      freeze_time do
+        source_user = build(:import_source_user, reassignment_expires_at: nil)
+        source_user.valid?
+
+        expect(source_user.reassignment_expires_at).to be_within(1.second).of(1.year.from_now)
+      end
+    end
+
+    it 'defaults to one year from now, not one year from created_at, for a pre-existing record with no value set' do
+      created_at = 3.years.ago
+      source_user = travel_to(created_at) { create(:import_source_user) }
+      source_user.update_column(:reassignment_expires_at, nil)
+
+      freeze_time do
+        source_user.valid?
+
+        expect(source_user.reassignment_expires_at).to be_within(1.second).of(1.year.from_now)
+      end
+    end
+
+    it 'does not override an explicitly set value' do
+      reassignment_expires_at = 5.days.from_now
+      source_user = build(:import_source_user, reassignment_expires_at: reassignment_expires_at)
+
+      source_user.valid?
+
+      expect(source_user.reassignment_expires_at).to be_within(1.second).of(reassignment_expires_at)
+    end
+  end
+
+  describe 'scopes' do
+    let_it_be(:namespace) { create(:namespace) }
+    let_it_be(:source_user_1) { create(:import_source_user, namespace: namespace) }
+    let_it_be(:source_user_2) { create(:import_source_user, namespace: namespace) }
+    let_it_be(:source_user_3) { create(:import_source_user) }
+
+    describe '.for_namespace' do
+      it 'only returns source users for the given namespace_id' do
+        expect(described_class.for_namespace(namespace.id).to_a).to match_array(
+          [source_user_1, source_user_2]
+        )
+      end
+    end
+
+    describe '.for_placeholder_user' do
+      let(:placeholder_user) { source_user_2.placeholder_user }
+
+      it 'only returns source users for the given placeholder user' do
+        expect(described_class.for_placeholder_user(placeholder_user).to_a).to match_array(
+          [source_user_2]
+        )
+      end
+    end
+
+    describe '.for_reassign_to_user' do
+      it 'only returns source users for the given reassign to user' do
+        reassign_to_user = create(:user)
+        source_user = create(:import_source_user, :completed, reassign_to_user: reassign_to_user)
+        create(:import_source_user, :completed)
+
+        expect(described_class.for_reassign_to_user(reassign_to_user)).to match_array([source_user])
+      end
+    end
+
+    describe '.awaiting_reassignment' do
+      it 'only returns source users that await reassignment' do
+        namespace = create(:namespace)
+        pending_reassignment_user = create(:import_source_user, :pending_reassignment, namespace: namespace)
+        awaiting_approval_user = create(:import_source_user, :awaiting_approval, namespace: namespace)
+
+        expect(namespace.import_source_users.awaiting_reassignment)
+          .to match_array([pending_reassignment_user, awaiting_approval_user])
+      end
+    end
+
+    describe '.reassigned' do
+      it 'returns source users with a reassigned status' do
+        namespace = create(:namespace)
+        completed_assignment_user = create(:import_source_user, :completed, namespace: namespace)
+        placeholder_user = create(:import_source_user, :keep_as_placeholder, namespace: namespace)
+        revoked_user = create(:import_source_user, :revoked, namespace: namespace)
+        create(:import_source_user, :pending_reassignment, namespace: namespace)
+
+        expect(described_class.for_namespace(namespace.id).reassigned)
+          .to match_array([completed_assignment_user, placeholder_user, revoked_user])
+      end
+    end
+  end
+
+  describe 'state machine' do
+    it 'begins in pending state' do
+      expect(described_class.new.pending_reassignment?).to be(true)
+    end
+
+    context 'when switching to pending_reassignment' do
+      subject(:source_user) { create(:import_source_user, :keep_as_placeholder) }
+
+      it 'removes the reassign_to_user and reassigned_by_user' do
+        source_user.reassign_to_user = build(:user)
+        source_user.reassigned_by_user = build(:user)
+
+        source_user.undo_keep_as_placeholder
+
+        expect(source_user.pending_reassignment?).to be(true)
+        expect(source_user.reassign_to_user).to be_nil
+        expect(source_user.reassigned_by_user).to be_nil
+      end
+    end
+
+    context 'when switching to awaiting_approval' do
+      subject(:source_user) { create(:import_source_user, :pending_reassignment) }
+
+      it 'assigns a reassignment_token' do
+        expect { source_user.reassign }.to change { source_user.reassignment_token }.from(nil)
+      end
+    end
+
+    context 'when switching from awaiting_approval' do
+      subject(:source_user) { create(:import_source_user, :awaiting_approval) }
+
+      it 'removes the reassignment_token' do
+        expect { source_user.cancel_reassignment }.to change { source_user.reassignment_token }.to(nil)
+      end
+    end
+
+    context 'when switching to failed' do
+      subject(:source_user) { create(:import_source_user, :reassignment_in_progress) }
+
+      it 'sets the reassignment_error from the transition argument' do
+        source_user.fail_reassignment!('Something went wrong')
+
+        expect(source_user.reassignment_error).to eq('Something went wrong')
+      end
+    end
+
+    context 'when retrying a failed reassignment' do
+      subject(:source_user) { create(:import_source_user, :failed) }
+
+      it 'transitions from failed to reassignment_in_progress' do
+        expect { source_user.retry_reassignment }.to change {
+          source_user.reassignment_in_progress?
+        }.from(false).to(true)
+      end
+
+      it 'clears the reassignment_error' do
+        source_user.update_column(:reassignment_error, 'Previous error')
+
+        expect { source_user.retry_reassignment }.to change {
+          source_user.reassignment_error
+        }.from('Previous error').to(nil)
+      end
+    end
+
+    context 'when revoking a reassignment' do
+      subject(:source_user) { create(:import_source_user, :completed) }
+
+      it 'transitions from completed to revoked' do
+        expect { source_user.revoke }.to change {
+          source_user.revoked?
+        }.from(false).to(true)
+      end
+
+      it 'does not transition from other statuses' do
+        source_user = build_stubbed(:import_source_user, :reassignment_in_progress)
+
+        expect(source_user.revoke).to be(false)
+      end
+    end
+
+    context 'when switching to reassignment_in_progress without reassigned to user approval' do
+      let_it_be(:reassign_to_user) { create(:user) }
+      let_it_be(:reassigned_by_user) { create(:user, :admin) }
+      let_it_be(:namespace) { create(:namespace) }
+
+      subject(:source_user) { create(:import_source_user, :pending_reassignment, namespace: namespace) }
+
+      before do
+        source_user.reassign_to_user = reassign_to_user
+        source_user.reassigned_by_user = reassigned_by_user
+      end
+
+      context 'and admin bypass placeholder user confirmation is allowed' do
+        before do
+          expect_next_instance_of(Import::UserMapping::AdminBypassAuthorizer, reassigned_by_user) do |authorizer|
+            allow(authorizer).to receive(:allowed?).and_return(true)
+          end
+        end
+
+        it 'allows the transition' do
+          expect(source_user.reassign_without_confirmation).to be(true)
+        end
+
+        it 'changes to reassignment_in_progress' do
+          expect { source_user.reassign_without_confirmation }.to change { source_user.status }.from(0).to(2)
+        end
+      end
+
+      context 'and admins bypass placeholder user confirmation is not allowed' do
+        subject(:source_user) { build_stubbed(:import_source_user, :pending_reassignment, namespace: namespace) }
+
+        before do
+          expect_next_instance_of(Import::UserMapping::AdminBypassAuthorizer, reassigned_by_user) do |authorizer|
+            allow(authorizer).to receive(:allowed?).and_return(false)
+          end
+        end
+
+        it 'does not allow the transition' do
+          expect(source_user.reassign_without_confirmation).to be(false)
+        end
+
+        it 'does not change to reassignment_in_progress' do
+          expect { source_user.reassign_without_confirmation }.not_to change { source_user.status }.from(0)
+        end
+      end
+
+      context 'when project bot bypass is allowed' do
+        before do
+          expect_next_instance_of(Import::UserMapping::ProjectBotBypassAuthorizer, namespace,
+            reassign_to_user, reassigned_by_user) do |authorizer|
+            allow(authorizer).to receive(:allowed?).and_return(true)
+          end
+        end
+
+        it 'allows the transition' do
+          expect(source_user.reassign_without_confirmation).to be(true)
+        end
+
+        it 'changes to reassignment_in_progress' do
+          expect { source_user.reassign_without_confirmation }.to change { source_user.status }.from(0).to(2)
+        end
+      end
+
+      context 'when project bot bypass is not allowed' do
+        subject(:source_user) { build_stubbed(:import_source_user, :pending_reassignment, namespace: namespace) }
+
+        before do
+          expect_next_instance_of(Import::UserMapping::ProjectBotBypassAuthorizer, namespace,
+            reassign_to_user, reassigned_by_user) do |authorizer|
+            allow(authorizer).to receive(:allowed?).and_return(false)
+          end
+        end
+
+        it 'does not allow the transition' do
+          expect(source_user.reassign_without_confirmation).to be(false)
+        end
+      end
+    end
+  end
+
+  describe '.find_source_user' do
+    let_it_be(:namespace_1) { create(:namespace) }
+    let_it_be(:namespace_2) { create(:namespace) }
+    let_it_be(:source_user_1) { create(:import_source_user, source_user_identifier: '1', namespace: namespace_1) }
+    let_it_be(:source_user_2) { create(:import_source_user, source_user_identifier: '2', namespace: namespace_1) }
+    let_it_be(:source_user_3) { create(:import_source_user, source_user_identifier: '1', namespace: namespace_2) }
+    let_it_be(:source_user_4) do
+      create(:import_source_user,
+        source_user_identifier: '1',
+        namespace: namespace_1,
+        import_type: 'bitbucket',
+        source_hostname: 'https://bitbucket.org'
+      )
+    end
+
+    let_it_be(:source_user_5) do
+      create(:import_source_user,
+        source_user_identifier: '1',
+        namespace: namespace_1,
+        source_hostname: 'https://bitbucket-server-domain.com',
+        import_type: 'bitbucket_server'
+      )
+    end
+
+    it 'returns the first source_user that matches the source_user_identifier for the import source attributes' do
+      expect(described_class.find_source_user(
+        source_user_identifier: '1',
+        namespace: namespace_1,
+        source_hostname: 'https://github.com',
+        import_type: 'github'
+      )).to eq(source_user_1)
+    end
+
+    it 'does not throw an error when any attributes are nil' do
+      expect do
+        described_class.find_source_user(
+          source_user_identifier: nil,
+          namespace: nil,
+          source_hostname: nil,
+          import_type: nil
+        )
+      end.not_to raise_error
+    end
+
+    it 'returns nil if no namespace is provided' do
+      expect(described_class.find_source_user(
+        source_user_identifier: '1',
+        namespace: nil,
+        source_hostname: 'https://github.com',
+        import_type: 'github'
+      )).to be_nil
+    end
+  end
+
+  describe '.find_by_namespace_and_token' do
+    let_it_be(:namespace_1) { create(:namespace) }
+    let_it_be(:namespace_2) { create(:namespace) }
+    let_it_be(:source_user_1) { create(:import_source_user, :awaiting_approval, namespace: namespace_1) }
+    let_it_be(:source_user_2) { create(:import_source_user, :awaiting_approval, namespace: namespace_2) }
+
+    it 'returns the source_user that matches the namespace_id and reassignment_token' do
+      result = described_class.find_by_namespace_and_token(
+        namespace_id: namespace_1.id,
+        reassignment_token: source_user_1.reassignment_token
+      )
+
+      expect(result).to eq(source_user_1)
+    end
+
+    it 'returns nil when namespace_id does not match' do
+      result = described_class.find_by_namespace_and_token(
+        namespace_id: namespace_2.id,
+        reassignment_token: source_user_1.reassignment_token
+      )
+
+      expect(result).to be_nil
+    end
+
+    it 'returns nil when reassignment_token does not match' do
+      result = described_class.find_by_namespace_and_token(
+        namespace_id: namespace_1.id,
+        reassignment_token: 'invalid_token'
+      )
+
+      expect(result).to be_nil
+    end
+
+    it 'returns nil when both parameters are nil' do
+      result = described_class.find_by_namespace_and_token(
+        namespace_id: nil,
+        reassignment_token: nil
+      )
+
+      expect(result).to be_nil
+    end
+  end
+
+  describe '.search' do
+    let!(:source_user) do
+      create(:import_source_user, source_name: 'Source Name', source_username: 'Username')
+    end
+
+    it 'searches by source_name or source_username' do
+      expect(described_class.search('name')).to eq([source_user])
+      expect(described_class.search('username')).to eq([source_user])
+      expect(described_class.search('source')).to eq([source_user])
+      expect(described_class.search('inexistent')).to eq([])
+    end
+  end
+
+  describe '.sort_by_attribute' do
+    let_it_be(:namespace) { create(:namespace) }
+
+    let_it_be(:source_user_1) do
+      create(:import_source_user, namespace: namespace, status: 4, source_name: 'd')
+    end
+
+    let_it_be(:source_user_2) do
+      create(:import_source_user, namespace: namespace, status: 3, source_name: 'c')
+    end
+
+    let_it_be(:source_user_3) do
+      create(
+        :import_source_user,
+        :with_reassign_to_user,
+        namespace: namespace,
+        status: 1,
+        source_name: 'a',
+        reassignment_token: SecureRandom.hex
+      )
+    end
+
+    let_it_be(:source_user_4) do
+      create(:import_source_user, :with_reassign_to_user, namespace: namespace, status: 2, source_name: 'b')
+    end
+
+    let(:sort_by_attribute) { described_class.sort_by_attribute(method).pluck(attribute) }
+
+    context 'with method status_asc' do
+      let(:method) { 'status_asc' }
+      let(:attribute) { :status }
+
+      it 'order by status_desc ascending' do
+        expect(sort_by_attribute).to eq([1, 2, 3, 4])
+      end
+    end
+
+    context 'with method status_desc' do
+      let(:method) { 'status_desc' }
+      let(:attribute) { :status }
+
+      it 'order by status_desc descending' do
+        expect(sort_by_attribute).to eq([4, 3, 2, 1])
+      end
+    end
+
+    context 'with method source_name_asc' do
+      let(:method) { 'source_name_asc' }
+      let(:attribute) { :source_name }
+
+      it 'order by source_name_asc ascending' do
+        expect(sort_by_attribute).to eq(%w[a b c d])
+      end
+    end
+
+    context 'with method source_name_desc' do
+      let(:method) { 'source_name_desc' }
+      let(:attribute) { :source_name }
+
+      it 'order by source_name_desc descending' do
+        expect(sort_by_attribute).to eq(%w[d c b a])
+      end
+    end
+
+    context 'with method id_asc' do
+      let(:method) { 'id_asc' }
+      let(:attribute) { :id }
+
+      it 'order by id_asc ascending' do
+        expect(sort_by_attribute).to eq([
+          source_user_1.id,
+          source_user_2.id,
+          source_user_3.id,
+          source_user_4.id
+        ])
+      end
+    end
+
+    context 'with method id_desc' do
+      let(:method) { 'id_desc' }
+      let(:attribute) { :id }
+
+      it 'order by id_desc descending' do
+        expect(sort_by_attribute).to eq([
+          source_user_4.id,
+          source_user_3.id,
+          source_user_2.id,
+          source_user_1.id
+        ])
+      end
+    end
+
+    context 'with an unexpected method' do
+      let(:method) { 'unknown_sort' }
+      let(:attribute) { :source_name }
+
+      it 'order by source_name_asc ascending' do
+        expect(sort_by_attribute).to eq(%w[a b c d])
+      end
+    end
+  end
+
+  describe '.namespace_placeholder_user_count' do
+    let_it_be_with_refind(:namespace) { create(:namespace) }
+
+    subject(:namespace_placeholder_user_count) do
+      described_class.namespace_placeholder_user_count(namespace, limit: 100)
+    end
+
+    before_all do
+      placeholder_user = create(:import_source_user, namespace: namespace).placeholder_user
+      create_list(:import_source_user, 2, placeholder_user: placeholder_user, namespace: namespace)
+      create(:import_source_user, :completed, placeholder_user: nil, namespace: namespace)
+      create(:import_source_user)
+    end
+
+    it 'returns the count of records with unique placeholder users for the namespace' do
+      expect(namespace_placeholder_user_count).to eq(1)
+    end
+
+    it 'does not count the import user type' do
+      import_user = create(:namespace_import_user, namespace: namespace).import_user
+      create(:import_source_user, placeholder_user: import_user, namespace: namespace)
+
+      expect(namespace_placeholder_user_count).to eq(1)
+    end
+
+    it 'can limit the count to optimize the query' do
+      create(:import_source_user, namespace: namespace)
+
+      expect(described_class.namespace_placeholder_user_count(namespace, limit: 1)).to eq(1)
+      expect(described_class.namespace_placeholder_user_count(namespace, limit: 2)).to eq(2)
+      expect(described_class.namespace_placeholder_user_count(namespace, limit: 3)).to eq(2)
+    end
+  end
+
+  describe '.source_users_with_missing_information' do
+    let_it_be(:namespace) { create(:namespace) }
+    let_it_be(:import_type) { 'github' }
+    let_it_be(:source_hostname) { 'https://github.com' }
+
+    let_it_be(:source_user_1) do
+      create(:import_source_user, namespace: namespace, source_username: nil, source_name: nil,
+        import_type: import_type, source_hostname: source_hostname)
+    end
+
+    let_it_be(:source_user_2) do
+      create(:import_source_user, namespace: namespace, source_username: 'a', source_name: nil,
+        import_type: import_type, source_hostname: source_hostname)
+    end
+
+    let_it_be(:source_user_3) do
+      create(:import_source_user, namespace: namespace, source_username: nil, source_name: 'b',
+        import_type: import_type, source_hostname: source_hostname)
+    end
+
+    before_all do
+      create(:import_source_user, namespace: namespace, source_username: 'a', source_name: 'b',
+        import_type: import_type, source_hostname: source_hostname)
+      create(:import_source_user, source_username: nil, source_name: nil, import_type: import_type,
+        source_hostname: source_hostname)
+      create(:import_source_user, namespace: namespace, source_username: nil, source_name: nil,
+        import_type: 'gitlab_importer', source_hostname: source_hostname)
+      create(:import_source_user, namespace: namespace, source_username: nil, source_name: nil,
+        import_type: import_type, source_hostname: 'http://source_hostname')
+    end
+
+    it 'returns the count of records with unique placeholder users for the namespace' do
+      results = described_class.source_users_with_missing_information(namespace: namespace, import_type: import_type,
+        source_hostname: source_hostname)
+
+      expect(results).to match_array([source_user_1, source_user_2, source_user_3])
+    end
+  end
+
+  describe '#mapped_user' do
+    let_it_be(:source_user) { build(:import_source_user, :with_reassign_to_user) }
+
+    subject(:mapped_user) { source_user.mapped_user }
+
+    before do
+      allow(source_user).to receive(:accepted_status?).and_return(accepted)
+    end
+
+    context 'when accepted' do
+      let(:accepted) { true }
+
+      it { is_expected.to eq(source_user.reassign_to_user) }
+    end
+
+    context 'when not accepted' do
+      let(:accepted) { false }
+
+      it { is_expected.to eq(source_user.placeholder_user) }
+    end
+  end
+
+  describe '#mapped_user_id' do
+    let_it_be(:source_user) { build(:import_source_user, :with_reassign_to_user) }
+
+    subject(:mapped_user_id) { source_user.mapped_user_id }
+
+    before do
+      allow(source_user).to receive(:accepted_status?).and_return(accepted)
+    end
+
+    context 'when accepted' do
+      let(:accepted) { true }
+
+      it { is_expected.to eq(source_user.reassign_to_user_id) }
+    end
+
+    context 'when not accepted' do
+      let(:accepted) { false }
+
+      it { is_expected.to eq(source_user.placeholder_user_id) }
+    end
+  end
+
+  describe '#offline_transfer?' do
+    it 'returns true for offline transfers' do
+      expect(described_class.new(import_type: Import::SOURCE_OFFLINE_TRANSFER.to_s)).to be_offline_transfer
+    end
+
+    it 'returns false for other imports' do
+      expect(described_class.new(import_type: 'github')).not_to be_offline_transfer
+    end
+  end
+
+  describe '#reassignment_error=' do
+    let(:source_user) { build(:import_source_user, :reassignment_in_progress) }
+
+    it 'sanitizes URLs with credentials' do
+      source_user.reassignment_error = 'Error including source hostname user:password@example.com'
+
+      expect(source_user.reassignment_error).not_to include('password')
+      expect(source_user.reassignment_error).to include('*****:*****@example.com')
+    end
+
+    it 'filters file paths from the message' do
+      source_user.reassignment_error = "Error including file path /home/user/project/file.json"
+
+      expect(source_user.reassignment_error).to include('[FILTERED]')
+      expect(source_user.reassignment_error).not_to include('/home/user/project/file.json')
+    end
+
+    it 'truncates to 255 characters' do
+      source_user.reassignment_error = 'x' * 300
+
+      expect(source_user.reassignment_error.length).to eq(255)
+    end
+
+    it 'converts non-string values to string' do
+      source_user.reassignment_error = StandardError.new('error')
+
+      expect(source_user.reassignment_error).to eq('error')
+    end
+
+    it 'allows nil reassignment_error' do
+      source_user.reassignment_error = nil
+
+      expect(source_user.reassignment_error).to be_nil
+    end
+
+    it 'saves blank reassignment_error as nil' do
+      source_user.reassignment_error = ''
+
+      expect(source_user.reassignment_error).to be_nil
+    end
+
+    it 'applies all filters together' do
+      message = 'Error including file path /home/user/project/file.json and hostname user:password@example.com'
+      source_user.reassignment_error = message
+
+      expect(source_user.reassignment_error).not_to include('password')
+      expect(source_user.reassignment_error).not_to include('/home/user/file.json')
+      expect(source_user.reassignment_error).to include('*****:*****@example.com')
+      expect(source_user.reassignment_error).to include('[FILTERED]')
+    end
+
+    it 'sanitizes partially truncated URLs' do
+      long_message_start = 'x' * 245
+      message = "#{long_message_start} user:password@example.com"
+      source_user.reassignment_error = message
+
+      expect(source_user.reassignment_error).to eq(
+        "#{long_message_start} *****:*****@example.com".truncate(255)
+      )
+    end
+
+    it 'filters partially truncated filepaths' do
+      long_message_start = 'x' * 245
+      message = "#{long_message_start} /home/user/file.json"
+      source_user.reassignment_error = message
+
+      expect(source_user.reassignment_error).to eq(
+        "#{long_message_start} [FILTERED]".truncate(255)
+      )
+    end
+  end
+
+  describe '#reassignable_status?' do
+    reassignable_statuses = [:pending_reassignment, :rejected]
+    all_states = described_class.state_machines[:status].states
+
+    all_states.reject { |state| reassignable_statuses.include?(state.name) }.each do |state|
+      it "returns false for #{state.name}" do
+        expect(described_class.new(status: state.value)).not_to be_reassignable_status
+      end
+    end
+
+    all_states.select { |state| reassignable_statuses.include?(state.name) }.each do |state|
+      it "returns true for #{state.name}" do
+        expect(described_class.new(status: state.value)).to be_reassignable_status
+      end
+    end
+  end
+
+  describe '#cancelable_status?' do
+    cancelable_statuses = [:awaiting_approval, :rejected]
+    all_states = described_class.state_machines[:status].states
+
+    all_states.reject { |state| cancelable_statuses.include?(state.name) }.each do |state|
+      it "returns false for #{state.name}" do
+        expect(described_class.new(status: state.value)).not_to be_cancelable_status
+      end
+    end
+
+    all_states.select { |state| cancelable_statuses.include?(state.name) }.each do |state|
+      it "returns true for #{state.name}" do
+        expect(described_class.new(status: state.value)).to be_cancelable_status
+      end
+    end
+  end
+
+  describe '#accepted_status?' do
+    accepted_statuses = [:reassignment_in_progress, :completed, :failed]
+    all_states = described_class.state_machines[:status].states
+
+    all_states.reject { |state| accepted_statuses.include?(state.name) }.each do |state|
+      it "returns false for #{state.name}" do
+        expect(described_class.new(status: state.value)).not_to be_accepted_status
+      end
+    end
+
+    all_states.select { |state| accepted_statuses.include?(state.name) }.each do |state|
+      it "returns true for #{state.name}" do
+        expect(described_class.new(status: state.value)).to be_accepted_status
+      end
+    end
+  end
+end

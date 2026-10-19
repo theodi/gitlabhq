@@ -1,0 +1,11 @@
+---
+name: read_badge
+description: Grants the ability to read badges
+boundaries:
+  - project
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_badge

@@ -1,0 +1,144 @@
+# frozen_string_literal: true
+
+module Resolvers
+  module Namespaces
+    class BaseGroupsResolver < BaseResolver # rubocop:disable Graphql/ResolverType -- Child class defines the type
+      include ResolvesGroups
+      include Gitlab::Graphql::Authorize::AuthorizeResource
+      extend ::Gitlab::Graphql::NegatableArguments
+
+      # Sorting by storage size needs to be optimized. Restricted to admin-only to prevent abuse.
+      # https://gitlab.com/gitlab-org/gitlab/-/issues/556662
+      ADMIN_RESTRICTED_SORTS = %w[storage_size_keyset_asc storage_size_keyset_desc].freeze
+
+      argument :ids, [GraphQL::Types::ID],
+        required: false,
+        description: 'Filter groups by IDs.',
+        prepare: ->(global_ids, _ctx) { GitlabSchema.parse_gids(global_ids, expected_type: ::Group).map(&:model_id) }
+
+      # rubocop:disable GraphQL/ArgumentUniqueness -- `ids` is defined on the negated input type, not on the resolver
+      negated do
+        argument :ids, [::Types::GlobalIDType[::Group]],
+          as: :exclude_group_ids,
+          required: false,
+          validates: { length: { maximum: 10 } },
+          description: 'Filters groups to exclude the group IDs provided in the given array. ' \
+            "Up to 10 values.",
+          prepare: ->(global_ids, _ctx) { GitlabSchema.parse_gids(global_ids, expected_type: ::Group).map(&:model_id) }
+      end
+      # rubocop:enable GraphQL/ArgumentUniqueness
+
+      argument :top_level_only, GraphQL::Types::Boolean,
+        required: false,
+        default_value: false,
+        description: 'Only include top-level groups.'
+
+      argument :owned_only, GraphQL::Types::Boolean,
+        as: :owned,
+        required: false,
+        default_value: false,
+        description: 'Only include groups where the current user has an owner role.'
+
+      argument :search, GraphQL::Types::String,
+        required: false,
+        description: 'Search query for group name or group full path.'
+
+      argument :sort, GraphQL::Types::String,
+        required: false,
+        description: "Sort order of results. Format: `<field_name>_<sort_direction>`, " \
+          "for example: `id_desc` or `name_asc`. Use `similarity` to rank results by closeness " \
+          "to `search`. `similarity` applies only when `search` is given and results are already " \
+          "scoped to the current user's memberships, such as with `ownedOnly: true` or " \
+          "`allAvailable: false`. Filtering by `visibilityLevel` to public or internal groups " \
+          "only disables `similarity`, because the results are then no longer scoped by " \
+          "membership. Results fall back to `id_desc` when `similarity` does not apply.",
+        default_value: 'name_asc'
+
+      argument :parent_path, GraphQL::Types::ID,
+        required: false,
+        description: 'Full path of the parent group.'
+
+      argument :include_subgroups, GraphQL::Types::Boolean,
+        as: :include_parent_descendants,
+        required: false,
+        default_value: false,
+        description: 'Include descendant groups of the group given in `parentPath`. ' \
+          'Ignored unless `parentPath` is also provided.'
+
+      argument :visibility_level, ::Types::VisibilityLevelsEnum,
+        as: :visibility,
+        required: false,
+        description: 'Filter groups by visibility level.'
+
+      argument :all_available, GraphQL::Types::Boolean,
+        required: false,
+        default_value: true,
+        replace_null_with_default: true,
+        description: <<~DESC
+          When `true`, returns all accessible groups. When `false`, returns only groups where the user is a member.
+          Unauthenticated requests always return all public groups. The `owned_only` argument takes precedence.
+        DESC
+
+      argument :marked_for_deletion_on, ::Types::DateType,
+        required: false,
+        description: 'Date when the group was marked for deletion.'
+
+      argument :active, GraphQL::Types::Boolean,
+        required: false,
+        default_value: nil,
+        description: 'When `nil` (default value), returns all groups. ' \
+          'When `true`, returns only groups that are not pending deletion. ' \
+          'When `false`, only returns groups that are pending deletion.'
+
+      argument :aimed_for_deletion, GraphQL::Types::Boolean,
+        required: false,
+        description: 'Filter groups that are marked for deletion.'
+
+      private
+
+      def resolve_groups(parent_path: nil, **args)
+        sanitized_args = sanitize_sort_args(unpack_negated_args(args))
+        sanitized_args[:parent] = find_authorized_parent!(parent_path) if parent_path
+        sanitized_args = sanitized_args.merge(allow_similarity_sort: true)
+
+        return GroupsFinder.new(current_user, sanitized_args).execute unless advanced_finder_enabled?
+
+        # Argument names and defaults are unchanged, so results match whichever backend
+        # Namespaces::GroupsFinder picks.
+        ::Namespaces::GroupsFinder.new(current_user, sanitized_args).execute
+      end
+
+      def advanced_finder_enabled?
+        Feature.enabled?(:namespaces_advanced_groups_finder, current_user)
+      end
+
+      # GroupsFinder takes flat params, so negated arguments are merged into the top level.
+      def unpack_negated_args(args)
+        negated_args = args[:not]
+        return args unless negated_args
+
+        args.except(:not).merge(negated_args.to_h)
+      end
+
+      def find_authorized_parent!(path)
+        group = Group.find_by_full_path(path)
+
+        unless Ability.allowed?(current_user, :read_group, group)
+          raise_resource_not_available_error! format(_('Could not find parent group with path %{path}'), path: path)
+        end
+
+        group
+      end
+
+      def sanitize_sort_args(args)
+        return args unless ADMIN_RESTRICTED_SORTS.include?(args[:sort]) && !user_is_admin?
+
+        args.except(:sort)
+      end
+
+      def user_is_admin?
+        context[:current_user].present? && context[:current_user].can_admin_all_resources?
+      end
+    end
+  end
+end

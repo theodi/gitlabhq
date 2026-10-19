@@ -1,0 +1,45 @@
+# frozen_string_literal: true
+
+module QA
+  module Page
+    module File
+      class Show < Page::Base
+        include Shared::CommitMessage
+        include Layout::Flash
+        include Page::Component::BlobContent
+        include Shared::Editor
+
+        view 'app/assets/javascripts/vue_shared/components/web_ide_link.vue' do
+          element 'action-dropdown'
+          element 'edit-menu-item', ':data-testid="`${action.key}-menu-item`"' # rubocop:disable QA/ElementWithPattern
+          element 'webide-menu-item', ':data-testid="`${action.key}-menu-item`"' # rubocop:disable QA/ElementWithPattern
+        end
+
+        view 'app/assets/javascripts/repository/components/code_dropdown/compact_code_dropdown.vue' do
+          element 'code-dropdown'
+        end
+
+        def click_edit
+          click_element('action-dropdown')
+          click_element('edit-menu-item')
+        end
+
+        def click_delete
+          click_on 'Delete'
+        end
+
+        def double_click_code_token(text)
+          within_element('blob-viewer-file-content') do
+            find('span', text: text, match: :first).double_click
+          end
+        end
+
+        def explain_code
+          click_element('question-icon')
+        end
+      end
+    end
+  end
+end
+
+QA::Page::File::Show.prepend_mod_with('Page::File::Show', namespace: QA)

@@ -1,0 +1,695 @@
+/* stylelint-disable scss/at-rule-no-unknown */
+/**
+ * SCSS variables
+ */
+$super-sidebar-transition-delay: 0.4s;
+$super-sidebar-transition-duration: 0.2s;
+$command-palette-spacing: px-to-rem(14px);
+
+/**
+ * CSS Custom properties
+ */
+:root {
+  --super-sidebar-hr-border-color: var(--gl-color-neutral-100);
+}
+
+:root.gl-dark {
+  --super-sidebar-hr-border-color: var(--gl-color-neutral-900);
+}
+
+/**
+ * Skip to
+ */
+.super-sidebar-skip-to {
+  top: $calc-application-bars-height;
+  z-index: $super-sidebar-skip-to-z-index;
+}
+
+/**
+ * Super sidebar wrapper
+ */
+.super-sidebar-wrapper {
+  @apply gl-absolute;
+  @apply xl:gl-static;
+  @apply gl-w-0;
+  @apply gl-h-0;
+  @apply xl:gl-h-auto;
+  @apply xl:gl-w-auto;
+  @apply xl:gl-ml-0;
+  @apply gl-min-h-0;
+
+  // Prevent the active nav item's background from breaking out past the rail
+  // while the sidebar collapses. Applied as a one-shot animation rather than a
+  // plain `clip-path`, because the clip also applies to the fixed-position
+  // flyout menus, and `.super-sidebar-toggled-manually` sticks around whenever
+  // `transitionend` doesn't fire (for example when transitions are disabled).
+  // Tying it to the animation means the clip can never outlive the collapse.
+  // stylelint-disable-next-line gitlab/no-has -- scoped to the animating sidebar
+  &:has(.super-sidebar-toggled-manually) {
+    // Duration matches the sidebar width transition in layout.scss.
+    animation: super-sidebar-collapse-clip 0.25s;
+  }
+}
+
+@keyframes super-sidebar-collapse-clip {
+  // The left stays open because the sidebar's negative margin puts the active
+  // item's left edge outside the wrapper, and clipping it there makes the accent
+  // flicker mid-collapse.
+  from,
+  to {
+    clip-path: inset(0 0 0 -#{$gl-spacing-scale-3});
+  }
+}
+
+/**
+ * Super sidebar
+ */
+.super-sidebar {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  top: 0;
+  bottom: $calc-application-footer-height;
+  left: 0;
+  @apply gl-h-full;
+  @apply xl:-gl-ml-3;
+  @apply gl-bg-application-chrome;
+  @apply xl:gl-bg-transparent;
+  transform: translate3d(0, 0, 0);
+  z-index: $super-sidebar-z-index;
+  @apply max-xl:forced-colors:gl-border-r;
+
+  &:not(.super-sidebar-is-icon-only) {
+    width: min(80%, 320px);
+
+    @include media-breakpoint-up(xl) {
+      width: $super-sidebar-width;
+    }
+  }
+
+  &:is(.super-sidebar-is-icon-only) {
+    // Stack section buttons above SVG polygon for clickable space
+    // Only target top-level nav items, not those inside flyout menus
+    > * .super-sidebar-nav-item:not(.nav-flyout-menu .super-sidebar-nav-item) {
+      z-index: $super-sidebar-nav-item-z-index;
+    }
+  }
+
+  // Ensure selected styles on parent GlNavItem when flyout menu is open
+  .gl-nav-item {
+    &.with-mouse-over-flyout {
+      color: var(--gl-nav-item-foreground-color-hover);
+      background-color: var(--gl-nav-item-background-color-hover);
+    }
+
+    &.selected {
+      &.with-mouse-over-flyout {
+        color: var(--gl-nav-item-selected-foreground-color-hover);
+        background-color: var(--gl-nav-item-selected-background-color-hover);
+      }
+    }
+  }
+
+  .nav-flyout-menu {
+    z-index: $super-sidebar-nav-flayout-menu-z-index;
+    @include gl-prefers-reduced-motion-transition;
+    transition: opacity .2s $gl-easing-out-cubic;
+
+    .gl-nav-item-label {
+      width: max-content;
+      overflow-wrap: anywhere;
+    }
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
+
+  &.super-sidebar-loading {
+    position: static;
+    width: 0;
+    transform: translate3d(-100%, 0, 0);
+    transition: none;
+
+    @include media-breakpoint-up(xl) {
+      position: relative;
+      left: 0;
+      top: 0;
+      transform: translate3d(0, 0, 0);
+    }
+
+    &:not(.super-sidebar-is-icon-only) {
+      @include media-breakpoint-up(xl) {
+        width: $super-sidebar-width;
+      }
+    }
+
+    &.super-sidebar-is-icon-only {
+      width: $gl-button-medium-size;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    @apply gl-transition-transform;
+  }
+
+  hr {
+    border-color: var(--super-sidebar-hr-border-color);
+  }
+
+  #trial-status-sidebar-widget:hover {
+    text-decoration: none;
+    color: var(--gl-color-neutral-0);
+  }
+}
+
+@include media-breakpoint-down(lg) {
+  .page-with-super-sidebar:not(.super-sidebar-has-css-transitions-blocked) .super-sidebar {
+    position: fixed;
+    @apply gl-rounded-r-[1rem];
+  }
+}
+
+/**
+ * Overlay
+ */
+.super-sidebar-overlay {
+  display: none;
+}
+
+/**
+ * Page with super sidebar
+ */
+.page-with-super-sidebar {
+  @media (prefers-reduced-motion: no-preference) {
+    @apply gl-transition-padding;
+  }
+
+  &:not(.page-with-super-sidebar-collapsed,.super-sidebar-has-css-transitions-blocked) {
+    .super-sidebar-overlay {
+      display: block;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      @apply gl-bg-overlay;
+      z-index: $super-sidebar-z-index - 1;
+
+      @include media-breakpoint-up(xl) {
+        display: none;
+      }
+    }
+  }
+
+  @include media-breakpoint-up(xl) {
+    .super-sidebar-toggle {
+      display: none;
+    }
+  }
+}
+
+.page-with-super-sidebar-collapsed {
+  .super-sidebar {
+    @apply gl-m-0;
+    transform: translate3d(-100%, 0, 0);
+  }
+
+  @include media-breakpoint-up(xl) {
+    padding-left: 0;
+
+    .super-sidebar-toggle {
+      display: block;
+    }
+  }
+}
+
+/**
+ * Feature Library modal
+ */
+.feature-library-modal {
+  &.gl-modal .modal-dialog {
+    align-items: flex-start;
+    margin-top: 5vh;
+    min-height: 0;
+
+    .modal-content {
+      min-height: auto;
+      max-height: 90vh;
+    }
+
+    @include gl-media-breakpoint-up(sm) {
+      margin-top: 10vh;
+
+      .modal-content {
+        max-height: 80vh;
+      }
+    }
+  }
+
+  .feature-library-scroll-area {
+    // Keeps the modal from collapsing on empty results, while staying small
+    // enough not to overflow short viewports.
+    min-height: min(20rem, 40vh);
+  }
+
+  // Let the scroll area (and its top/bottom scrim gradients) bleed to the
+  // modal body edges by cancelling the body's horizontal padding, then
+  // re-inset the actual content so it stays aligned with the search box.
+  .feature-library-scroll-bleed {
+    margin-left: -$gl-padding;
+    margin-right: -$gl-padding;
+  }
+
+  .feature-library-scroll-inset {
+    padding-left: $gl-padding;
+    padding-right: $gl-padding;
+  }
+
+  &.gl-modal .modal-footer {
+    padding-top: 0;
+    padding-bottom: $gl-spacing-scale-3;
+  }
+
+  .feature-library-gemini-button {
+    &.gl-button.gl-button {
+      background-color: var(--gl-background-color-default);
+      background-image: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--gl-color-purple-500) 12%, transparent),
+        color-mix(in srgb, var(--gl-color-blue-500) 12%, transparent)
+      );
+      border-color: color-mix(in srgb, var(--gl-color-purple-500) 60%, transparent);
+    }
+
+    &.gl-button.gl-button:hover,
+    &.gl-button.gl-button:focus,
+    &.gl-button.gl-button:active {
+      background-image: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--gl-color-purple-500) 24%, transparent),
+        color-mix(in srgb, var(--gl-color-blue-500) 24%, transparent)
+      );
+    }
+  }
+}
+
+/**
+ * Global search modal
+ */
+.global-search-modal {
+  padding: var(--performance-bar-height) 0.5rem 0;
+
+  .modal-content {
+    @apply gl-rounded-[1rem] #{!important};
+  }
+
+  &.gl-modal .modal-dialog {
+    align-items: flex-start;
+  }
+
+  @include gl-media-breakpoint-up(sm) {
+    padding: var(--performance-bar-height) 1rem 0;
+  }
+
+  .vertical-align-normalization {
+    margin-top: -$gl-spacing-scale-3;
+    margin-bottom: -$gl-spacing-scale-3;
+  }
+
+
+  .show-focus-layover {
+    &:focus-visible,
+    &:focus-within {
+      .show-focus-layover-hint {
+        @apply gl-opacity-10;
+      }
+    }
+  }
+
+  .command-palette-px {
+    padding-left: $command-palette-spacing;
+    padding-right: $command-palette-spacing;
+  }
+
+  // This is a temporary workaround!
+  // the button in GitLab UI Search components need to be updated to not be the small size
+  // see in Figma: https://www.figma.com/file/qEddyqCrI7kPSBjGmwkZzQ/Component-library?node-id=43905%3A45540
+  .gl-search-box-by-type-clear.btn-sm {
+    padding: 0.5rem !important;
+  }
+
+  .gl-search-box-by-type-input-borderless {
+    @apply gl-rounded-[0.75rem];
+  }
+
+  .global-search-results {
+    max-height: 30rem;
+
+    .gl-new-dropdown-item {
+      @apply gl-px-3;
+    }
+
+    // Target groups
+    [id*='gl-disclosure-dropdown-group'] {
+      padding-left: $command-palette-spacing;
+      padding-right: $command-palette-spacing;
+    }
+
+    .gl-scroll-scrim {
+      border-width: 0 !important;
+    }
+  }
+
+  &.gl-modal .modal-footer {
+    @apply gl-bg-strong;
+    @apply gl-border-t;
+    padding: $command-palette-spacing;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    transition-property: opacity;
+    transition-timing-function: $gl-easing-out-cubic;
+
+    &.show {
+      opacity: 1;
+      transition-duration: 0.2s;
+
+      .modal-dialog {
+        scale: 1;
+        transition-duration: 0.2s;
+      }
+    }
+
+    &:not(.show) {
+      opacity: 0;
+      transition-duration: 0.1s;
+
+      .modal-dialog {
+        scale: 0.8;
+        transition-duration: 0.1s;
+      }
+    }
+
+    @starting-style {
+      opacity: 0;
+    }
+
+    .modal-dialog {
+      transform-origin: top center;
+      transform: none !important;
+      transition-property: scale;
+      transition-timing-function: $gl-easing-out-cubic;
+
+      @starting-style {
+        scale: 0.8;
+      }
+    }
+  }
+}
+
+/**
+ * Utilities
+ */
+.transition-opacity-on-hover--context {
+  .transition-opacity-on-hover--target {
+    @apply gl-transition-opacity;
+    @apply gl-duration-fast;
+    @apply gl-ease-linear;
+
+    &:hover {
+      transition-delay: $super-sidebar-transition-delay;
+    }
+  }
+
+  &:hover {
+    .transition-opacity-on-hover--target {
+      transition-delay: $super-sidebar-transition-delay;
+    }
+  }
+}
+
+.show-on-focus-or-hover--context {
+  .show-on-focus-or-hover--target {
+    opacity: 0;
+
+    &:hover,
+    &:focus-visible {
+      opacity: 1;
+    }
+  }
+
+  &:hover,
+  &:focus-within {
+    .show-on-focus-or-hover--target {
+      opacity: 1;
+    }
+  }
+
+  .show-on-focus-or-hover--control {
+    &:hover,
+    &:focus-visible {
+      + .show-on-focus-or-hover--target {
+        opacity: 1;
+      }
+    }
+  }
+}
+
+.hide-on-focus-or-hover--context {
+  .hide-on-focus-or-hover--target {
+    opacity: 1;
+  }
+
+  &:hover,
+  &:focus-within {
+    .hide-on-focus-or-hover--target {
+      opacity: 0;
+    }
+  }
+
+  .hide-on-focus-or-hover--control {
+    &:hover,
+    &:focus-visible {
+      .hide-on-focus-or-hover--target {
+        opacity: 0;
+      }
+    }
+  }
+}
+
+.super-sidebar-mix-blend-mode {
+  mix-blend-mode: multiply;
+
+  .gl-dark & {
+    mix-blend-mode: screen;
+  }
+}
+
+// Styles for the ScrollScrim component.
+// Should eventually be moved to gitlab-ui.
+// See https://gitlab.com/gitlab-org/gitlab-services/design.gitlab.com/-/issues/2688
+
+$scroll-scrim-height: 2.25rem;
+
+.gl-scroll-scrim {
+  .top-scrim-wrapper,
+  .bottom-scrim-wrapper {
+    height: $scroll-scrim-height;
+    opacity: 0;
+    position: sticky;
+    z-index: 1;
+    display: block;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+    transition: opacity 0.1s;
+  }
+
+  .top-scrim-wrapper {
+    top: 0;
+    margin-bottom: -$scroll-scrim-height;
+
+    .top-scrim {
+      background: linear-gradient(180deg, var(--gl-color-alpha-dark-8) 0%, $transparent-rgba 100%);
+
+      .gl-dark & {
+        background: linear-gradient(180deg, var(--gl-color-alpha-dark-24) 0%, $transparent-rgba 100%);
+      }
+    }
+  }
+
+  .bottom-scrim-wrapper {
+    bottom: 0;
+    margin-top: -$scroll-scrim-height;
+
+    .bottom-scrim {
+      background: linear-gradient(180deg, $transparent-rgba 0%, var(--gl-color-alpha-dark-8));
+
+      .gl-dark & {
+        background: linear-gradient(180deg, $transparent-rgba 0%, var(--gl-color-alpha-dark-24));
+      }
+    }
+  }
+
+  .top-scrim,
+  .bottom-scrim {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+  }
+
+  &.top-scrim-visible .top-scrim-wrapper,
+  &.bottom-scrim-visible .bottom-scrim-wrapper {
+    opacity: 1;
+  }
+}
+
+// Tweaks to the dropdown styles width to match the
+// dropdown width
+.super-sidebar-org-switcher-dropdown .gl-new-dropdown-panel,
+.super-sidebar-mr-menu-dropdown .gl-new-dropdown-panel,
+.super-sidebar-new-menu-dropdown .gl-new-dropdown-panel,
+.super-sidebar-user-dropdown .gl-new-dropdown-panel,
+.super-sidebar-help-center-dropdown .gl-new-dropdown-panel,
+.super-sidebar-settings-dropdown .gl-new-dropdown-panel {
+  @apply gl-min-w-28 #{!important};
+  @apply gl-w-28 #{!important};
+}
+
+// Keep the selected background on the settings toggle but drop the edge
+// indicator bar, which reads as clutter on this always-present control.
+// Applies to both the header and footer placements of the disclosure.
+.super-sidebar-settings-dropdown .gl-nav-item.selected::before {
+  @apply gl-hidden;
+}
+
+// Tweaks to the styles for the ScrollScrim component above (line 418)
+// are leaking into the collapsible list box dropdowns
+// https://gitlab.com/gitlab-org/gitlab/-/issues/435538
+
+.gl-new-dropdown {
+  .top-scrim-wrapper {
+    margin-bottom: 0;
+  }
+
+  .bottom-scrim-wrapper {
+    margin-top: 0;
+  }
+}
+
+.custom-gradient-progress .gl-progress {
+  background: linear-gradient(90deg, #ffb177 0%, #936fff 100%);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .super-sidebar-animatable {
+    .nav-item-link-label,
+    .menu-section-button-label {
+      transition-duration: .15s;
+      transition-timing-function: $gl-easing-out-cubic;
+      transition-property: opacity, translate;
+
+      @starting-style {
+        opacity: 0;
+        translate: -30% 0;
+      }
+    }
+
+    .super-sidebar-context-header {
+      transition-duration: .15s;
+      transition-timing-function: $gl-easing-out-cubic;
+      transition-property: opacity, translate;
+
+      @starting-style {
+        opacity: 0;
+        translate: 0 -30%;
+      }
+    }
+
+    .nav-item-link-badge {
+      transition-duration: .15s;
+      transition-timing-function: $gl-easing-out-cubic;
+      transition-property: opacity;
+
+      @starting-style {
+        opacity: 0;
+      }
+    }
+  }
+}
+
+.feature-library-shimmer {
+  --super-sidebar-shimmer-base-color: hsla(from var(--gl-color-blue-500) h s l / 32%);
+  --super-sidebar-shimmer-peak-color: hsla(from var(--gl-color-blue-500) h s l / 8%);
+  --super-sidebar-shimmer-border-color: hsla(from var(--gl-color-blue-500) h s l / 24%);
+
+  position: relative;
+
+  // Raise the nav item's icon and label above the overlay so the content stays
+  // visible while the pseudo-element is drawn on top of the nav item's own
+  // background.
+  .gl-nav-item-slot,
+  .gl-nav-item-label {
+    position: relative;
+    z-index: 1;
+  }
+
+  // Static outline, drawn regardless of motion preference so users who prefer
+  // reduced motion still get a motion-free highlight on the nav item. Inset
+  // box-shadow renders the outline inside the element's edge so it does not add
+  // to the box and shift the nav item's layout.
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: var(--gl-border-radius-lg);
+    pointer-events: none;
+    box-shadow: inset 0 0 0 2px var(--super-sidebar-shimmer-border-color);
+  }
+
+  // Only the animated gradient sweep depends on motion preference. It lives on
+  // the same pseudo-element so the whole treatment can be faded out by
+  // animating `opacity`; fading the gradient directly is not possible because
+  // `background-image` is a discrete property and cannot be interpolated.
+  @media (prefers-reduced-motion: no-preference) {
+    &::before {
+      background-image: linear-gradient(
+        90deg,
+        var(--super-sidebar-shimmer-base-color),
+        var(--super-sidebar-shimmer-peak-color),
+        var(--super-sidebar-shimmer-base-color)
+      );
+      background-size: 200% 100%;
+      background-position: 50% 0;
+      // Sweep the gradient for several iterations, then fade the whole
+      // treatment out. `forwards` holds the final (transparent) frame so the
+      // nav item reverts to its default tertiary styling once complete.
+      animation:
+        super-sidebar-shimmer 2s linear 4,
+        super-sidebar-shimmer-fade-out 1s ease-out 8s forwards;
+    }
+  }
+}
+
+@keyframes super-sidebar-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes super-sidebar-shimmer-fade-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}

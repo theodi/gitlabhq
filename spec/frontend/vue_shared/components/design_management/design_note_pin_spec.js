@@ -1,0 +1,103 @@
+import { shallowMount } from '@vue/test-utils';
+import { assertProps } from 'helpers/assert_props';
+import DesignNotePin from '~/vue_shared/components/design_management/design_note_pin.vue';
+
+describe('Design note pin component', () => {
+  let wrapper;
+
+  function createComponent(propsData = {}) {
+    wrapper = shallowMount(DesignNotePin, {
+      propsData: {
+        position: {
+          left: '10px',
+          top: '10px',
+        },
+        ...propsData,
+      },
+    });
+  }
+
+  it('applies `on-image` class when isOnImage is true', () => {
+    createComponent({ isOnImage: true });
+
+    expect(wrapper.find('.on-image').exists()).toBe(true);
+  });
+
+  it('applies `draft` class when isDraft is true', () => {
+    createComponent({ isDraft: true });
+
+    expect(wrapper.find('.draft').exists()).toBe(true);
+  });
+
+  it('becomes non clickable', () => {
+    createComponent({ clickable: false });
+    expect(wrapper.find('button').exists()).toBe(false);
+  });
+
+  // Triggers real DOM events on the root element: the overlay binds `@mousedown`/`@mouseup` on
+  // this component, and `@vue/compat` MODE 2 with INSTANCE_LISTENERS strips every `on*` prop from
+  // `$attrs`, so the pin must re-emit them itself for the drag to work.
+  describe.each(['click', 'mousedown', 'mouseup'])('%s event', (event) => {
+    it('re-emits the native event', async () => {
+      createComponent();
+
+      await wrapper.find('button').trigger(event);
+
+      expect(wrapper.emitted(event)).toHaveLength(1);
+      expect(wrapper.emitted(event)[0][0]).toBeInstanceOf(MouseEvent);
+    });
+  });
+
+  describe('size', () => {
+    it('is `sm` it applies `small` class', () => {
+      createComponent({ size: 'sm' });
+      expect(wrapper.find('.small').exists()).toBe(true);
+    });
+
+    it('is `md` it applies no size class', () => {
+      createComponent({ size: 'md' });
+      expect(wrapper.find('.small').exists()).toBe(false);
+      expect(wrapper.find('.medium').exists()).toBe(false);
+    });
+
+    it('throws when passed any other value except `sm` or `md`', () => {
+      expect(() => {
+        assertProps(DesignNotePin, { size: 'lg' });
+      }).toThrow('Invalid prop: custom validator check failed');
+    });
+  });
+
+  describe('ariaLabel', () => {
+    describe('when value is passed', () => {
+      it('overrides default aria-label', () => {
+        const ariaLabel = 'Aria Label';
+
+        createComponent({ ariaLabel });
+
+        const button = wrapper.find('button');
+
+        expect(button.attributes('aria-label')).toBe(ariaLabel);
+      });
+    });
+
+    describe('when no value is passed', () => {
+      it('shows new note label as aria-label when label is absent', () => {
+        createComponent({ label: null });
+
+        const button = wrapper.find('button');
+
+        expect(button.attributes('aria-label')).toBe('Comment form position');
+      });
+
+      it('shows label position as aria-label when label is present', () => {
+        const label = 1;
+
+        createComponent({ label, isNewNote: false });
+
+        const button = wrapper.find('button');
+
+        expect(button.attributes('aria-label')).toBe(`Comment '${label}' position`);
+      });
+    });
+  });
+});

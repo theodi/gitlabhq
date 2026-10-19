@@ -1,0 +1,448 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Projects blob controller', feature_category: :code_review_workflow do
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:project) { create(:project, :repository) }
+  let_it_be(:user) { create(:user, :with_namespace, maintainer_of: project) }
+
+  before do
+    sign_in(user)
+  end
+
+  describe 'GET show' do
+    let(:blob_path) { project_blob_path(project, 'master/README.md') }
+
+    where(:path_suffix) do
+      [
+        [''],
+        ['/']
+      ]
+    end
+
+    with_them do
+      it 'renders the blob' do
+        get "#{blob_path}#{path_suffix}"
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    it 'redirects an encoded extra trailing slash through the missing path flow', :aggregate_failures do
+      get "#{blob_path}/%2F"
+
+      expect(response).to redirect_to(project_tree_path(project, 'master'))
+      expect(flash[:notice]).to eq('"README.md/" did not exist on "master"')
+    end
+  end
+
+  describe 'GET diff_lines' do
+    def do_get(**extra_params)
+      params = {
+        namespace_id: project.namespace.to_param,
+        project_id: project,
+        id: 'master/CHANGELOG'
+      }
+
+      get namespace_project_blob_diff_lines_path(params.merge(extra_params))
+    end
+
+    it 'renders the diff content' do
+      do_get(since: 2, to: 3, offset: 10, closest_line_number: 1)
+
+      expect(response.body).to be_present
+    end
+
+    it 'renders the specified number of lines including match line.' do
+      do_get(since: 2, to: 4, offset: 0, closest_line_number: 1)
+
+      expect(response.body).to include('@@').exactly(2).times
+      expect(response.body).to include('<tr').exactly(4).times
+      expect(response.body).to include('</tr>').exactly(4).times
+    end
+
+    it 'renders the specified number of lines without a match line.' do
+      do_get(since: 1, to: 3, offset: 0, closest_line_number: 1)
+
+      expect(response.body).to not_include('@@')
+      expect(response.body).to include('<tr').exactly(3).times
+      expect(response.body).to include('</tr>').exactly(3).times
+    end
+
+    context 'when view param is parallel' do
+      it 'renders diff lines in parallel' do
+        do_get(view: 'parallel', since: 2, to: 4, offset: 0, closest_line_number: 1)
+
+        expect(response.body).to be_present
+        expect(response.body).to include('data-testid="hunk-lines-parallel"')
+      end
+    end
+
+    context 'when view param is inline' do
+      it 'renders diff lines in inline' do
+        do_get(view: 'inline', since: 2, to: 4, offset: 0, closest_line_number: 1)
+
+        expect(response.body).to be_present
+        expect(response.body).to include('data-testid="hunk-lines-inline"')
+      end
+    end
+
+    context 'with missing required parameters' do
+      it 'requires the since parameter' do
+        expect do
+          do_get(to: 4, offset: 0, closest_line_number: 1)
+        end.to raise_error(ActionController::ParameterMissing)
+      end
+
+      it 'requires the to parameter' do
+        expect do
+          do_get(since: 2, offset: 0, closest_line_number: 1)
+        end.to raise_error(ActionController::ParameterMissing)
+      end
+
+      it 'requires the offset parameter' do
+        expect do
+          do_get(since: 2, to: 4, closest_line_number: 1)
+        end.to raise_error(ActionController::ParameterMissing)
+      end
+    end
+
+    context 'when no hunk is found' do
+      before do
+        allow(Gitlab::Diff::ViewerHunk)
+          .to receive(:init_from_expanded_lines).and_return([])
+      end
+
+      it 'returns 404' do
+        do_get(since: 2, to: 6, offset: 10, closest_line_number: 1)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'GET show with an ambiguous branch and tag ref' do
+    # When a branch and a tag share a name, the displayed ref and the download links
+    # must stay anchored to the same ref so they cannot resolve to different content
+    # (https://gitlab.com/gitlab-org/gitlab/-/issues/578988). The blob page threads
+    # ref_type through its download links to keep them consistent.
+    #
+    # 'v1.1.0' exists as both a branch and a tag in the test repository, and
+    # 'bar/branch-test.txt' only exists on the branch (it is absent from the tag).
+    let_it_be(:public_project) { create(:project, :public, :repository) }
+
+    let(:file_path) { 'v1.1.0/bar/branch-test.txt' }
+
+    before do
+      # 'v1.1.0' is expected to exist as both a branch and a tag in the test repository.
+      raise 'fixture changed: v1.1.0 must be both a branch and a tag' unless
+        public_project.repository.branch_exists?('v1.1.0') &&
+          public_project.repository.tag_exists?('v1.1.0')
+
+      # Render the page anonymously so the authenticated fork-button path, which is
+      # unrelated to this regression, is not exercised.
+      sign_out(user)
+    end
+
+    def get_show(ref_type:)
+      get project_blob_path(public_project, file_path, ref_type: ref_type)
+    end
+
+    context 'when ref_type is heads' do
+      it 'renders the branch blob with the ref type marker' do
+        get_show(ref_type: 'heads')
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.body).to include('data-ref-type="heads"')
+      end
+
+      it_behaves_like 'archive download links anchored to the ref_type', ref_type: 'heads'
+    end
+
+    context 'when ref_type is tags' do
+      it 'does not show the branch blob, redirecting to the tag tree instead' do
+        get_show(ref_type: 'tags')
+
+        # The file is absent from the tag, so the blob view cannot render the
+        # branch content under the tag ref - it redirects to the tag tree.
+        expect(response).to redirect_to(project_tree_path(public_project, 'v1.1.0'))
+      end
+    end
+
+    context 'when ref_type is omitted' do
+      it 'resolves the unqualified ref to the tag and redirects to the tag tree' do
+        get_show(ref_type: nil)
+
+        expect(response).to redirect_to(project_tree_path(public_project, 'v1.1.0'))
+      end
+    end
+  end
+
+  describe 'GET show for an ambiguous branch and tag whose names embed a ref prefix' do
+    before do
+      # Render anonymously so the authenticated fork-button path, which is unrelated
+      # to this regression, is not exercised.
+      sign_out(user)
+    end
+
+    def get_show(ref_type:)
+      get project_blob_path(ambiguous_project, "#{ambiguous_ref}/#{file_path}", ref_type: ref_type)
+    end
+
+    context 'with a branch named "refs/tags/release" alongside a tag "release"' do
+      include_context 'with an ambiguous branch and tag fixture',
+        branch_name: 'refs/tags/release', tag_name: 'release'
+
+      let(:ambiguous_ref) { 'refs/tags/release' }
+
+      it_behaves_like 'an ambiguous ref with divergent branch and tag content'
+      it_behaves_like 'archive download links anchored to the ref_type', ref_type: 'heads'
+      it_behaves_like 'archive download links not anchored to a ref_type'
+    end
+
+    context 'with a tag named "refs/heads/release" alongside a branch "release"' do
+      include_context 'with an ambiguous branch and tag fixture',
+        branch_name: 'release', tag_name: 'refs/heads/release'
+
+      let(:ambiguous_ref) { 'refs/heads/release' }
+
+      it_behaves_like 'an ambiguous ref with divergent branch and tag content'
+      it_behaves_like 'archive download links anchored to the ref_type', ref_type: 'tags'
+      it_behaves_like 'archive download links not anchored to a ref_type'
+    end
+  end
+
+  describe 'POST preview', :aggregate_failures do
+    let(:content) { 'Some content' }
+
+    def do_post(content, id: 'master/CHANGELOG', target_project: project, **extra_params)
+      post namespace_project_preview_blob_path(
+        namespace_id: target_project.namespace,
+        project_id: target_project,
+        id: id
+      ), params: { content: content }.merge(extra_params)
+    end
+
+    def expect_markup_preview
+      expect(response).to have_gitlab_http_status(:ok)
+
+      doc = Nokogiri::HTML(response.body)
+      expect(doc.css('.file-content.md')).to be_present
+      expect(doc.css('.diff-file')).to be_empty
+      expect(doc.css('.file-content.md h1').map { |heading| heading.text.strip }).to include('Title')
+    end
+
+    def expect_diff_preview(all_lines_added: false)
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.headers['Content-Type']).to include('text/html')
+
+      doc = Nokogiri::HTML(response.body)
+      expect(doc.css('.diff-file')).to be_present
+      expect(doc.css('.line_holder.new')).to be_present
+      expect(doc.css('.line_holder.old')).to be_empty if all_lines_added
+      expect(doc.css('.file-content.md')).to be_empty
+    end
+
+    context 'when content is missing' do
+      it 'returns bad request' do
+        post namespace_project_preview_blob_path(
+          namespace_id: project.namespace,
+          project_id: project,
+          id: 'master/CHANGELOG'
+        )
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    context 'when content is not a string' do
+      it 'returns bad request' do
+        post namespace_project_preview_blob_path(
+          namespace_id: project.namespace,
+          project_id: project,
+          id: 'master/CHANGELOG'
+        ), params: Gitlab::Json.generate({ content: 123 }), headers: { 'Content-Type' => 'application/json' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    context 'when content is empty' do
+      it 'renders a diff with removed lines' do
+        do_post('')
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(Nokogiri::HTML(response.body).css('.line_holder.old')).to be_present
+      end
+    end
+
+    context 'when content exceeds size limit' do
+      before do
+        stub_const('Projects::BlobController::MAX_PREVIEW_CONTENT', 1.byte)
+      end
+
+      it 'returns payload too large error' do
+        do_post(content)
+
+        expect(response).to have_gitlab_http_status(:payload_too_large)
+        expect(json_response['errors']).to include('Preview content too large')
+      end
+    end
+
+    context 'when the user cannot download code from a private project' do
+      let_it_be(:private_project) { create(:project, :private, :repository) }
+
+      it 'redirects an anonymous user to sign in' do
+        sign_out(user)
+
+        do_post(content, target_project: private_project)
+
+        expect(response).to redirect_to(new_user_session_path)
+      end
+
+      it 'does not disclose the project to a non-member' do
+        do_post(content, target_project: private_project)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+
+      it 'denies a guest member' do
+        private_project.add_guest(user)
+
+        do_post(content, target_project: private_project)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'without a file_path param' do
+      context 'when the blob is a markup file' do
+        it 'renders the content with the markup renderer' do
+          do_post('# Title', id: 'master/README.md')
+
+          expect_markup_preview
+        end
+      end
+
+      context 'when the blob is not a markup file' do
+        it 'renders a diff' do
+          do_post(content)
+
+          expect_diff_preview
+        end
+      end
+    end
+
+    context 'with a file_path param' do
+      context 'when file_path is a markup file' do
+        where(:file_path, :body) do
+          'docs/doc.org'         | "* Title\n"
+          'docs/doc.md'          | '# Title'
+          '../../../etc/doc.org' | "* Title\n"
+        end
+
+        with_them do
+          it 'renders the content with the markup renderer' do
+            do_post(body, file_path: file_path)
+
+            expect_markup_preview
+          end
+        end
+      end
+
+      context 'when file_path is not a markup file' do
+        where(:case_name, :file_path) do
+          'a non-markup file path' | 'scripts/script.py'
+          'a blank file_path'      | ''
+          'a non-string file_path' | ['docs/doc.rst']
+        end
+
+        with_them do
+          it 'renders a diff' do
+            do_post(content, file_path: file_path)
+
+            expect_diff_preview
+          end
+        end
+      end
+    end
+
+    context 'when the file is new' do
+      def do_post_new_file(content, **extra_params)
+        do_post(content, id: 'master', **extra_params)
+      end
+
+      context 'when file_path is a markup file' do
+        it 'renders the content with the markup renderer' do
+          do_post_new_file("* Title\n", file_path: 'docs/doc.org')
+
+          expect_markup_preview
+        end
+      end
+
+      context 'when file_path is not a markup file' do
+        it 'renders a diff with all lines added' do
+          do_post_new_file(content, file_path: 'scripts/script.py')
+
+          expect_diff_preview(all_lines_added: true)
+        end
+      end
+
+      context 'without a file_path param' do
+        it 'renders a diff with all lines added' do
+          do_post_new_file(content)
+
+          expect_diff_preview(all_lines_added: true)
+        end
+      end
+    end
+
+    context 'when the repository is empty' do
+      let_it_be(:empty_project) { create(:project, :empty_repo, maintainers: user) }
+
+      def do_post_empty_repo(content, **extra_params)
+        do_post(content, id: 'master', target_project: empty_project, **extra_params)
+      end
+
+      it 'renders a markup file_path with the markup renderer' do
+        do_post_empty_repo("* Title\n", file_path: 'docs/doc.org')
+
+        expect_markup_preview
+      end
+
+      it 'renders a diff with all lines added' do
+        do_post_empty_repo(content, file_path: 'scripts/script.py')
+
+        expect_diff_preview(all_lines_added: true)
+      end
+    end
+
+    context 'when the ref does not exist' do
+      it 'returns not found' do
+        do_post(content, id: 'nonexistent-branch', file_path: 'docs/doc.org')
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when the id contains a path that does not exist' do
+      it 'renders a diff with all lines added' do
+        do_post(content, id: 'master/does/not/exist.py')
+
+        expect_diff_preview(all_lines_added: true)
+      end
+    end
+
+    context 'when creating a new file inside a directory' do
+      # The New file button carries the current directory into the URL,
+      # so the preview id can point at a tree, not a blob.
+      it 'renders a diff with all lines added' do
+        do_post(content, id: 'master/files')
+
+        expect_diff_preview(all_lines_added: true)
+      end
+    end
+  end
+end

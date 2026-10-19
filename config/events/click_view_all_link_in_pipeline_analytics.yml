@@ -1,0 +1,17 @@
+---
+description: View all link on Pipeline Analytics failure rate stat
+internal_events: true
+action: click_view_all_link_in_pipeline_analytics
+identifiers:
+- project
+- namespace
+- user
+product_group: runner_core
+product_categories:
+- fleet_visibility
+milestone: '17.2'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/158957
+tiers:
+- free
+- premium
+- ultimate

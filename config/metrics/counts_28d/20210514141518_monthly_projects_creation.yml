@@ -1,0 +1,18 @@
+---
+data_category: optional
+key_path: counts_monthly.projects
+description: 'Count number of projects created monthly'
+product_group: organizations
+product_categories:
+- groups_and_projects
+value_type: number
+status: active
+milestone: "14.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/61775
+time_frame: 28d
+data_source: database
+instrumentation_class: CountProjectsMetric
+tiers:
+  - free
+  - premium
+  - ultimate

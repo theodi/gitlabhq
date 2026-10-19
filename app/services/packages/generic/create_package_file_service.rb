@@ -1,0 +1,94 @@
+# frozen_string_literal: true
+
+module Packages
+  module Generic
+    class CreatePackageFileService < BaseService
+      MAX_RETRIES = 1
+
+      def execute
+        retries = 0
+        begin
+          ::Packages::Package.transaction do
+            package_file = create_package_file(find_or_create_package)
+            ServiceResponse.success(payload: { package_file: package_file })
+          end
+        rescue ::Packages::DuplicatePackageError => e
+          ServiceResponse.error(message: e.message, reason: :package_file_already_exists)
+        rescue ::Packages::PackageProtectedError
+          ::Packages::CreatePackageService::ERROR_RESPONSE_PACKAGE_PROTECTED
+        rescue ::Packages::PackageStatusChangeNotAllowedError
+          ServiceResponse.error(
+            message: 'Insufficient permissions to change the package status',
+            reason: :package_status_change_not_allowed
+          )
+        rescue ::ActiveRecord::RecordNotUnique => e
+          retry if (retries += 1) == MAX_RETRIES
+
+          ServiceResponse.error(message: e.message, reason: :package_already_exists)
+        rescue ::ActiveRecord::RecordInvalid => invalid
+          retry if invalid.record&.errors&.of_kind?(:name, :taken) && (retries += 1) == MAX_RETRIES
+
+          ServiceResponse.error(message: invalid.message, reason: :invalid_parameter)
+        end
+      end
+
+      private
+
+      def find_or_create_package
+        package_params = {
+          name: params[:package_name],
+          version: params[:package_version],
+          build: params[:build],
+          status: params[:status]
+        }
+
+        response = ::Packages::Generic::FindOrCreatePackageService
+          .new(project, current_user, package_params)
+          .execute
+
+        raise ::Packages::PackageProtectedError, response.message if response.cause.package_protected?
+
+        package = response[:package]
+
+        unless Namespace::PackageSetting.duplicates_allowed?(package)
+          raise ::Packages::DuplicatePackageError if target_file_is_duplicate?(package)
+        end
+
+        update_status!(package)
+
+        package.create_build_infos!(params[:build])
+
+        package
+      end
+
+      # Changing the status of an already existing package can hide it from the
+      # package registry, so it requires more than the ability to publish.
+      def update_status!(package)
+        return if params[:status].blank? || params[:status] == package.status
+        raise ::Packages::PackageStatusChangeNotAllowedError unless can?(current_user, :update_package, project)
+
+        package.update!(status: params[:status])
+      end
+
+      def create_package_file(package)
+        file_params = {
+          file: params[:file],
+          size: params[:file].size,
+          file_sha256: params[:file].sha256,
+          file_name: params[:file_name],
+          build: params[:build]
+        }
+
+        ::Packages::CreatePackageFileService.new(package, file_params).execute
+      end
+
+      def target_file_is_duplicate?(package)
+        package
+          .package_files
+          .with_file_name(params[:file_name])
+          .not_pending_destruction
+          .exists?
+      end
+    end
+  end
+end

@@ -1,0 +1,14 @@
+---
+table_name: user_permission_export_uploads
+classes:
+- UserPermissionExportUpload
+feature_categories:
+- permissions
+description: Stores exported user permission data files for auditing and compliance
+  reporting.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/47846
+milestone: '13.7'
+gitlab_schema: gitlab_main_user
+table_size: small
+sharding_key:
+  user_id: users

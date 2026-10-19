@@ -1,0 +1,32 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "../fragments/mr_pipeline_list_item.fragment.graphql"
+
+query getMergeRequestPipelines(
+  $mergeRequestIid: String!
+  $fullPath: ID!
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+) {
+  project(fullPath: $fullPath) {
+    id
+    fullPath
+    mergeRequest(iid: $mergeRequestIid) {
+      id
+      iid
+      title
+      webPath
+      sourceBranch
+      pipelines(first: $first, last: $last, after: $after, before: $before) {
+        count
+        nodes {
+          ...MergeRequestPipelineListItem
+        }
+        pageInfo {
+          ...PageInfo
+        }
+      }
+    }
+  }
+}

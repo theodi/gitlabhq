@@ -1,0 +1,88 @@
+# frozen_string_literal: true
+
+# This class is being used to persist additional artifacts after a pipeline completes, which is a great place to cache a computed result in object storage
+
+module Ci
+  class PipelineArtifact < Ci::ApplicationRecord
+    include Ci::Partitionable
+    include UpdateProjectStatistics
+    include Artifactable
+    include FileStoreMounter
+    include Lockable
+    include Presentable
+
+    FILE_SIZE_LIMIT = 10.megabytes.freeze
+    EXPIRATION_DATE = 1.week.freeze
+
+    DEFAULT_FILE_NAMES = {
+      code_coverage: 'code_coverage.json',
+      code_quality_mr_diff: 'code_quality_mr_diff.json',
+      pipeline_variables: 'pipeline_variables.json'
+    }.freeze
+
+    REPORT_TYPES = {
+      code_coverage: :raw,
+      code_quality_mr_diff: :raw
+    }.freeze
+
+    belongs_to :project, class_name: "Project", inverse_of: :pipeline_artifacts
+    belongs_to :pipeline, class_name: "Ci::Pipeline", inverse_of: :pipeline_artifacts
+
+    validates :pipeline, :project, :file_format, :file, presence: true
+    validates :file_store, presence: true, inclusion: { in: ObjectStorage::SUPPORTED_STORES }
+    validates :size, presence: true, numericality: { less_than_or_equal_to: -> { FILE_SIZE_LIMIT } }
+    validates :file_type, presence: true
+
+    partitionable scope: :pipeline
+
+    mount_file_store_uploader Ci::PipelineArtifactUploader
+
+    update_project_statistics project_statistics_name: :pipeline_artifacts_size
+
+    enum :file_type, {
+      code_coverage: 1,
+      code_quality_mr_diff: 2,
+      pipeline_variables: 3
+    }
+
+    scope :with_file_types, ->(file_types) { where(file_type: file_types) }
+
+    scope :unlocked, -> { joins(:pipeline).merge(::Ci::Pipeline.unlocked) }
+
+    class << self
+      def report_exists?(file_type)
+        return false unless REPORT_TYPES.key?(file_type)
+
+        where(file_type: file_type).exists?
+      end
+
+      def find_by_file_type(file_type)
+        find_by(file_type: file_type)
+      end
+
+      def create_or_replace_for_pipeline!(pipeline:, file_type:, file:, size:, locked: :unknown)
+        transaction do
+          pipeline.pipeline_artifacts.find_by_file_type(file_type)&.destroy!
+
+          pipeline.pipeline_artifacts.create!(
+            file_type: file_type,
+            project_id: pipeline.project_id,
+            size: size,
+            file: file,
+            file_format: REPORT_TYPES[file_type],
+            expire_at: EXPIRATION_DATE.from_now,
+            locked: locked
+          )
+        end
+      rescue ActiveRecord::ActiveRecordError => err
+        Gitlab::ErrorTracking.track_and_raise_exception(err, { pipeline_id: pipeline.id, file_type: file_type })
+      end
+    end
+
+    def present
+      super(presenter_class: "Ci::PipelineArtifacts::#{file_type.camelize}Presenter".constantize)
+    end
+  end
+end
+
+Ci::PipelineArtifact.prepend_mod

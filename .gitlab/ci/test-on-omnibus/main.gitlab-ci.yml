@@ -1,0 +1,501 @@
+spec:
+  inputs:
+    pipeline-type:
+      type: string
+      default: external
+      options: ['internal', 'external']
+      description: Pipeline type, where 'external' represents pipeline directly included in other project pipelines without access to repo code
+---
+
+include:
+  - local: .gitlab/ci/qa-common/rules.gitlab-ci.yml
+  - local: .gitlab/ci/qa-common/variables.gitlab-ci.yml
+  - local: .gitlab/ci/qa-common/omnibus.gitlab-ci.yml
+  - local: .gitlab/ci/test-on-omnibus/rules.gitlab-ci.yml
+  - local: .gitlab/ci/test-on-omnibus/$[[ inputs.pipeline-type ]].gitlab-ci.yml
+
+variables:
+  QA_PARALLEL_PROCESSES: 6
+
+# ==========================================
+# Prepare stage
+# ==========================================
+check-release-set:
+  extends:
+    - .rules:prepare
+    - .check-release-set
+
+# ==========================================
+# Test stage
+# ==========================================
+
+# ------------------------------------------
+# Manual jobs
+# ------------------------------------------
+
+# Run manual quarantine job
+#   this job requires passing QA_SCENARIO variable
+#   and optionally QA_TESTS to run specific quarantined tests
+_quarantine:
+  extends:
+    - .omnibus-e2e
+  stage: test
+  variables:
+    QA_RSPEC_TAGS: --tag quarantine
+  after_script:
+    - echo "After script overridden in _quarantine job"
+  artifacts:
+    when: always
+    expire_in: 1 day
+    paths:
+      - gitlab-qa-run-*/**/test-metrics-*.json
+  rules:
+    - !reference [.rules:test:external-trigger-never, rules]
+    - when: manual
+
+# ------------------------------------------
+# Test jobs
+# ------------------------------------------
+
+# ========== Network limiting setup ===========
+# Only run a subset of smoke suite
+airgapped:
+  extends:
+    - .parallel
+    - .omnibus-e2e
+    - .with-ignored-runtime-data
+  variables:
+    QA_SCENARIO: Test::Instance::Airgapped
+    QA_RSPEC_TAGS: --tag smoke --tag ~github --tag ~external_api_calls --tag ~skip_live_env
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Instance::Airgapped/
+
+# Execute smallest test suite to validate omnibus package in dependency update merge request pipelines
+health-check:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Instance::Image
+    QA_RUN_IN_PARALLEL: true
+    QA_RSPEC_TAGS: --tag health_check
+  rules:
+    - if: $RUN_ALL_TESTS == "true"
+    - if: $QA_SUITES =~ /Test::Instance::HealthCheck/
+
+# ========== praefect ===========
+praefect:
+  extends:
+    - .parallel
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::Praefect
+    QA_SUITE_CLASS_NAME: Test::Instance::Create  # overrides default 'All' suite to only run 'Create' group specs
+    QA_CAN_TEST_PRAEFECT: "true"
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:smoke-for-omnibus-mr, rules]
+    - if: $QA_SUITES =~ /Test::Instance::Create/
+
+# ========== gitaly reftables backend ===========
+# Verifies that E2E tests that interact with the gitaly backend work when the reftables backend is in use
+# https://about.gitlab.com/blog/2024/05/30/a-beginners-guide-to-the-git-reftable-format/
+# https://gitlab.com/groups/gitlab-org/-/epics/14946
+gitaly-reftables-backend:
+  when: manual
+  extends:
+    - .parallel
+    - .omnibus-e2e
+    - .with-ignored-runtime-data
+  variables:
+    QA_SCENARIO: Test::Integration::Praefect
+    QA_SUITE_CLASS_NAME: Test::Instance::Create  # overrides default 'All' suite to only run 'Create' group specs
+    QA_CAN_TEST_PRAEFECT: "true"
+    QA_FEATURE_FLAGS: "gitaly_new_repo_reftable_backend=enabled"
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Instance::Create/
+
+# ========== git sha256 enabled ===========
+git-sha256-repositories:
+  when: manual
+  extends:
+    - .parallel
+    - .omnibus-e2e
+    - .with-ignored-runtime-data
+  variables:
+    QA_SCENARIO: Test::Instance::Image
+    QA_USE_SHA256_REPOSITORY_OBJECT_STORAGE: true
+    GITLAB_QA_OPTS: "--enable-feature support_sha256_repositories"
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Instance::All/
+
+gitaly-cluster:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::GitalyCluster
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::GitalyCluster/
+
+group-saml:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::GroupSAML
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::GroupSAML/
+
+instance-saml:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::InstanceSAML
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::InstanceSAML/
+
+jira:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::Jira
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::Jira/
+
+integrations:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::Integrations
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::Integrations/
+
+ldap-no-server:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::LDAPNoServer
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::LDAPNoServer/
+
+ldap-tls:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::LDAPTLS
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::LDAPTLS/
+
+ldap-no-tls:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::LDAPNoTLS
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::LDAPNoTLS/
+
+mtls:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::MTLS
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::Mtls/
+
+repository-storage:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Instance::RepositoryStorage
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Instance::RepositoryStorage/
+
+# ========== Object Storage with MiniO ===========
+object-storage:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Instance::Image
+    QA_RSPEC_TAGS: --tag object_storage
+    GITLAB_QA_OPTS: --omnibus-config object_storage
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Instance::ObjectStorage/
+
+# ========== Object Storage with AWS ===========
+object-storage-aws:
+  extends:
+    - object-storage
+  variables:
+    AWS_S3_ACCESS_KEY: $QA_AWS_S3_ACCESS_KEY
+    AWS_S3_BUCKET_NAME: $QA_AWS_S3_BUCKET_NAME
+    AWS_S3_KEY_ID: $QA_AWS_S3_KEY_ID
+    AWS_S3_REGION: $QA_AWS_S3_REGION
+    GITLAB_QA_OPTS: --omnibus-config object_storage_aws
+
+# ========== Object Storage with GCS ===========
+object-storage-gcs:
+  extends:
+    - object-storage
+  variables:
+    GCS_BUCKET_NAME: $QA_GCS_BUCKET_NAME
+    GOOGLE_PROJECT: $QA_GOOGLE_PROJECT
+    GOOGLE_JSON_KEY: $QA_GOOGLE_JSON_KEY
+    GOOGLE_CLIENT_EMAIL: $QA_GOOGLE_CLIENT_EMAIL
+    GITLAB_QA_OPTS: --omnibus-config object_storage_gcs
+
+service-ping-disabled:
+  extends:
+    - .omnibus-e2e
+    - .failure-videos
+  variables:
+    QA_SCENARIO: Test::Integration::ServicePingDisabled
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::ServicePingDisabled/
+
+smtp:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::SMTP
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::SMTP/
+
+cloud-activation:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Instance::Image
+    QA_RSPEC_TAGS: --tag cloud_activation
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Instance::CloudActivation/
+
+metrics:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::Metrics
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::Metrics/
+
+elasticsearch:
+  extends: .omnibus-e2e
+  variables:
+    QA_SCENARIO: "Test::Integration::Elasticsearch"
+    ELASTIC_URL: "http://elastic68:9200"
+  before_script:
+    - !reference [.omnibus-e2e, before_script]
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:ee-only, rules]
+    - if: $QA_SUITES =~ /Test::Integration::Elasticsearch/
+
+importers:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::Import
+    QA_MOCK_GITHUB: "true"
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::Import/
+
+import-with-smtp:
+  extends:
+    - .omnibus-e2e
+    - .failure-videos
+  variables:
+    QA_SCENARIO: Test::Integration::ImportWithSMTP
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::ImportWithSMTP/
+
+# ========== ai-gateway ===========
+ai-gateway:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::AiGateway
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::AiGateway/
+
+# ========== duo-agent-platform ===========
+duo-agent-platform:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::DuoAgentPlatform
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::DuoAgentPlatform/
+
+ai-gateway-no-seat-assigned:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::AiGatewayNoSeatAssigned
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::AiGatewayNoSeatAssigned/
+
+ai-gateway-no-add-on:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::AiGatewayNoAddOn
+  before_script:
+    - export QA_EE_ACTIVATION_CODE=$QA_EE_ACTIVATION_CODE_NO_ADD_ON
+    - !reference [.omnibus-e2e, before_script]
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::AiGatewayNoAddOn/
+
+ai-gateway-no-license:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::AiGatewayNoLicense
+  before_script:
+    - unset QA_EE_LICENSE
+    - !reference [.omnibus-e2e, before_script]
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Integration::AiGatewayNoLicense/
+
+# ========== continuous-vulnerability-scanning ===========
+
+continuous-vulnerabiity-scanning:
+  extends:
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Integration::ContinuousVulnerabilityScanning
+    QA_MOCK_GITHUB: "true"
+  rules:
+    - when: never
+
+# ========== vue3-rollout ===========
+
+# Canary verifying that the Vue 3 rollout mechanism survives Omnibus
+# packaging: the compiled `vue3_migration.json` manifest and the `.vue3`
+# chunks must both ship, or pages silently fall back to Vue 2.
+vue3-rollout:
+  extends:
+    - .omnibus-e2e
+  variables:
+    # `gitlab-qa` resolves QA_SCENARIO against its own scenario namespace, which
+    # has no Vue3Rollout, so use its generic image scenario and select the spec
+    # by tag instead. Same shape as the `health-check` job above.
+    QA_SCENARIO: Test::Instance::Image
+    QA_RSPEC_TAGS: --tag vue3_rollout
+    QA_FEATURE_FLAGS: "vue3_migrate_jobs=enabled"
+  rules:
+    - !reference [.rules:test:omnibus-base, rules]
+    - if: $QA_SUITES =~ /Test::Instance::Vue3Rollout/
+
+# ------------------------------------------
+# Update jobs
+# ------------------------------------------
+update-minor:
+  extends:
+    - .omnibus-e2e
+    - .update-script
+  variables:
+    UPDATE_TYPE: minor
+    QA_RSPEC_TAGS: --tag health_check
+  rules:
+    - !reference [.rules:test:update-jobs-never, rules]
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:update, rules]
+
+update-major:
+  extends:
+    - .omnibus-e2e
+    - .update-script
+  variables:
+    UPDATE_TYPE: major
+    QA_RSPEC_TAGS: --tag health_check
+  rules:
+    - !reference [.rules:test:update-jobs-never, rules]
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:update, rules]
+
+update-patch:
+  extends:
+    - .omnibus-e2e
+    - .update-script
+  variables:
+    UPDATE_TYPE: patch
+    QA_RSPEC_TAGS: --tag health_check
+  rules:
+    - !reference [.rules:test:update-jobs-never, rules]
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:update-patch, rules]
+
+# Job tests upgrade from previous internal release to latest if available
+# Requires GITLAB_QA_DEV_ACCESS_TOKEN to pull internal release
+update-patch-from-internal-to-internal:
+  extends:
+    - .omnibus-e2e
+    - .update-script
+  variables:
+    UPDATE_TYPE: internal_patch
+    QA_RSPEC_TAGS: --tag health_check
+  rules:
+    - !reference [.rules:test:update-jobs-never, rules]
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:update-patch, rules]
+
+update-from-patch-to-stable:
+  extends:
+    - .omnibus-e2e
+    - .update-script
+  variables:
+    QA_RSPEC_TAGS: --tag health_check
+    QA_SCENARIO: Test::Omnibus::UpdateToNext
+  rules:
+    - !reference [.rules:test:update-jobs-never, rules]
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:update-patch, rules]
+
+update-ee-to-ce:
+  extends:
+    - .omnibus-e2e
+    - .update-script
+  variables:
+    UPDATE_TYPE: minor
+    UPDATE_FROM_EDITION: ee
+    QA_RSPEC_TAGS: --tag health_check
+  rules:
+    - !reference [.rules:test:update-jobs-never, rules]
+    - !reference [.rules:test:omnibus-base, rules]
+    - !reference [.rules:test:ce-only, rules]
+    - !reference [.rules:test:update, rules]
+
+# ==========================================
+# Post test stage
+# ==========================================
+e2e-test-report:
+  extends: .rules:report:allure-report
+  variables:
+    ALLURE_RESULTS_GLOB: "gitlab-qa-run-*/**/allure-results"
+
+upload-test-runtime-data:
+  extends:
+    - .upload-test-runtime-data
+    - .rules:report:upload-test-runtime-data
+  variables:
+    QA_JSON_REPORT_FILE_PATTERN: $CI_PROJECT_DIR/gitlab-qa-run-*/gitlab-*-qa-*/rspec-*.json
+
+notify-slack:
+  extends:
+    - .notify-slack
+    - .rules:report:process-results
+  variables:
+    QA_RSPEC_XML_FILE_PATTERN: "${CI_PROJECT_DIR}/gitlab-qa-run-*/**/rspec-*.xml"

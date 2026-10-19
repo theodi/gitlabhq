@@ -1,0 +1,129 @@
+# frozen_string_literal: true
+
+module Terraform
+  class State < ApplicationRecord
+    include UsageStatistics
+    include AfterCommitQueue
+    include Gitlab::InternalEventsTracking
+
+    HEX_REGEXP = %r{\A\h+\z}
+    UUID_LENGTH = 32
+    GRACE_PERIOD = 7.days
+
+    self.locking_column = :activerecord_lock_version
+
+    belongs_to :project
+    belongs_to :locked_by_user, class_name: 'User', optional: true
+
+    has_many :versions,
+      class_name: 'Terraform::StateVersion',
+      foreign_key: :terraform_state_id,
+      inverse_of: :terraform_state
+
+    has_one :latest_version, -> { ordered_by_version_desc },
+      class_name: 'Terraform::StateVersion',
+      foreign_key: :terraform_state_id,
+      inverse_of: :terraform_state
+
+    scope :ordered_by_name, -> { order(:name) }
+    scope :with_name, ->(name) { where(name: name) }
+    scope :ready_for_destruction, -> {
+      where(deleted_at: ..GRACE_PERIOD.ago)
+    }
+    scope :with_project_and_route, -> { preload(project: [:route, :namespace]) }
+
+    validates :project_id, :name, presence: true
+    validates :uuid, presence: true, uniqueness: true, length: { is: UUID_LENGTH },
+      format: { with: HEX_REGEXP, message: 'only allows hex characters' }
+    validates :name, length: { maximum: 255 }
+
+    attribute :uuid, default: -> { SecureRandom.hex(UUID_LENGTH / 2) }
+
+    def latest_file
+      latest_version&.file
+    end
+
+    def locked?
+      self.lock_xid.present?
+    end
+
+    def permanent_deletion_at
+      deleted_at + GRACE_PERIOD if deleted_at
+    end
+
+    def within_grace_period?
+      deleted_at.present? && deleted_at > GRACE_PERIOD.ago
+    end
+
+    def update_file!(data, version:, build:)
+      # This check is required to maintain backwards compatibility with
+      # states that were created prior to versioning being supported.
+      # This can be removed in 14.0 when support for these states is dropped.
+      # See https://gitlab.com/gitlab-org/gitlab/-/issues/258960
+      if versioning_enabled?
+        create_new_version!(data: data, version: version, build: build)
+      else
+        migrate_legacy_version!(data: data, version: version, build: build)
+      end
+
+      if reload_latest_version.encryption_enabled?
+        track_internal_event(
+          'terraform_state_stored_with_encryption',
+          project: project,
+          user: locked_by_user
+        )
+      else
+        track_internal_event(
+          'terraform_state_stored_without_encryption',
+          project: project,
+          user: locked_by_user
+        )
+      end
+    end
+
+    private
+
+    ##
+    # If a Terraform state was created before versioning support was
+    # introduced, it will have a single version record whose file
+    # uses a legacy naming scheme in object storage. To update
+    # these states and versions to use the new behaviour, we must do
+    # the following when creating the next version:
+    #
+    #  * Read the current, non-versioned file from the old location.
+    #  * Update the :versioning_enabled flag, which determines the
+    #    naming scheme
+    #  * Resave the existing file with the updated name and location,
+    #    using a version number one prior to the new version
+    #  * Create the new version as normal
+    #
+    # This migration only needs to happen once for each state, from
+    # then on the state will behave as if it was always versioned.
+    #
+    # The code can be removed in the next major version (14.0), after
+    # which any states that haven't been migrated will need to be
+    # recreated: https://gitlab.com/gitlab-org/gitlab/-/issues/258960
+    def migrate_legacy_version!(data:, version:, build:)
+      current_file = latest_version.file.read
+      current_version = parse_serial(current_file) || (version - 1)
+
+      update!(versioning_enabled: true)
+
+      reload_latest_version.update!(version: current_version, file: CarrierWaveStringFile.new(current_file))
+      create_new_version!(data: data, version: version, build: build)
+    end
+
+    def create_new_version!(data:, version:, build:)
+      new_version = versions.build(version: version, created_by_user: locked_by_user, build: build)
+      new_version.assign_attributes(file: data)
+      new_version.save!
+    end
+
+    def parse_serial(data)
+      ::Gitlab::Terraform::StateParser.extract_serial(data)
+    rescue JSON::ParserError
+    end
+  end
+end
+
+Terraform::State.prepend_mod

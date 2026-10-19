@@ -1,0 +1,33 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "../fragments/import_source_user.fragment.graphql"
+
+query importSourceUsers(
+  $fullPath: ID!
+  $before: String
+  $after: String
+  $first: Int
+  $last: Int
+  $statuses: [ImportSourceUserStatus!]
+  $search: String
+  $sort: SourceUserSort
+) {
+  namespace(fullPath: $fullPath) {
+    id
+    importSourceUsers(
+      before: $before
+      after: $after
+      first: $first
+      last: $last
+      statuses: $statuses
+      search: $search
+      sort: $sort
+    ) {
+      nodes {
+        ...ImportSourceUser
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

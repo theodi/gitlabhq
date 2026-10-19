@@ -1,0 +1,415 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe JiraConnectInstallation, feature_category: :integrations do
+  it_behaves_like 'cells claimable model',
+    subject_type: Cells::Claimable::CLAIMS_SUBJECT_TYPE::ORGANIZATION,
+    subject_key: :organization_id,
+    source_type: Cells::Claimable::CLAIMS_SOURCE_TYPE::RAILS_TABLE_JIRA_CONNECT_INSTALLATIONS,
+    claiming_attributes: [:forge_installation_xid, :client_key]
+
+  describe 'associations' do
+    it { is_expected.to have_many(:subscriptions).class_name('JiraConnectSubscription') }
+  end
+
+  describe 'validations' do
+    subject(:installation) { build(:jira_connect_installation) }
+
+    it { is_expected.to validate_presence_of(:client_key) }
+    it { is_expected.to validate_uniqueness_of(:client_key).scoped_to(:organization_id) }
+    it { is_expected.to validate_presence_of(:shared_secret) }
+    it { is_expected.to validate_presence_of(:base_url) }
+
+    it { is_expected.to allow_value('https://test.atlassian.net').for(:base_url) }
+    it { is_expected.not_to allow_value('not/a/url').for(:base_url) }
+
+    it { is_expected.to allow_value('https://test.atlassian.net').for(:display_url) }
+    it { is_expected.to allow_value(nil).for(:display_url) }
+    it { is_expected.not_to allow_value('not/a/url').for(:display_url) }
+
+    it { is_expected.to allow_value('https://test.atlassian.net').for(:instance_url) }
+    it { is_expected.not_to allow_value('not/a/url').for(:instance_url) }
+    it { is_expected.not_to allow_value("https://example.coצ").for(:instance_url) }
+    it { is_expected.not_to allow_value('https://user:p@ss@example.com').for(:instance_url) }
+
+    it { is_expected.to validate_length_of(:cloud_id).is_at_most(255) }
+  end
+
+  describe '#normalize_instance_url' do
+    using RSpec::Parameterized::TableSyntax
+
+    subject(:installation) { build(:jira_connect_installation, instance_url: raw_url) }
+
+    where(:case_name, :raw_url, :expected_url) do
+      'no scheme'                       | 'gitlab.example.com'           | 'https://gitlab.example.com'
+      'no scheme with subpath'          | 'gitlab.example.com/gitlab'    | 'https://gitlab.example.com/gitlab'
+      'leading and trailing whitespace' | '  gitlab.example.com  '       | 'https://gitlab.example.com'
+      'https:// scheme already'         | 'https://gitlab.example.com'   | 'https://gitlab.example.com'
+      'http:// scheme already'          | 'http://gitlab.example.com'    | 'http://gitlab.example.com'
+      'non-http scheme'                 | 'ftp://gitlab.example.com'     | 'ftp://gitlab.example.com'
+      'no dot (not host-like)'          | 'not-a-url'                    | 'not-a-url'
+      'path-only value'                 | '/gitlab'                      | '/gitlab'
+      'blank string'                    | ''                             | ''
+      'nil'                             | nil                            | nil
+    end
+
+    with_them do
+      it 'normalizes the value as expected' do
+        installation.valid?
+
+        expect(installation.instance_url).to eq(expected_url)
+      end
+    end
+  end
+
+  describe 'scopes' do
+    let_it_be(:jira_connect_subscription) { create(:jira_connect_subscription) }
+
+    describe '.for_project' do
+      let_it_be(:other_group) { create(:group) }
+      let_it_be(:parent_group) { create(:group) }
+      let_it_be(:group) { create(:group, parent: parent_group) }
+      let_it_be(:project) { create(:project, group: group) }
+
+      subject { described_class.for_project(project) }
+
+      it 'returns installations with subscriptions for project' do
+        sub_on_project_namespace = create(:jira_connect_subscription, namespace: group)
+        sub_on_ancestor_namespace = create(:jira_connect_subscription, namespace: parent_group)
+
+        # Subscription on other group that shouldn't be returned
+        create(:jira_connect_subscription, namespace: other_group)
+
+        expect(subject).to contain_exactly(
+          sub_on_project_namespace.installation, sub_on_ancestor_namespace.installation
+        )
+      end
+
+      it 'returns distinct installations' do
+        subscription = create(:jira_connect_subscription, namespace: group)
+        create(:jira_connect_subscription, namespace: parent_group, installation: subscription.installation)
+
+        expect(subject).to contain_exactly(subscription.installation)
+      end
+    end
+
+    describe '.direct_installations' do
+      subject { described_class.direct_installations }
+
+      it { is_expected.to contain_exactly(jira_connect_subscription.installation) }
+    end
+
+    describe '.proxy_installations' do
+      subject { described_class.proxy_installations }
+
+      it { is_expected.to be_empty }
+
+      context 'with an installation on a self-managed instance' do
+        let_it_be(:installation) { create(:jira_connect_installation, instance_url: 'http://self-managed-gitlab.com') }
+
+        it { is_expected.to contain_exactly(installation) }
+      end
+    end
+  end
+
+  describe '#oauth_authorization_url' do
+    let(:installation) { build(:jira_connect_installation) }
+
+    subject { installation.oauth_authorization_url }
+
+    before do
+      allow(Gitlab.config.gitlab).to receive(:url).and_return('http://test.host')
+    end
+
+    it { is_expected.to eq('http://test.host') }
+
+    context 'with instance_url' do
+      let(:installation) { build(:jira_connect_installation, instance_url: 'https://gitlab.example.com') }
+
+      it { is_expected.to eq('https://gitlab.example.com') }
+    end
+  end
+
+  describe 'audience_url' do
+    let(:installation) { build(:jira_connect_installation) }
+
+    subject(:audience) { installation.audience_url }
+
+    it { is_expected.to be_nil }
+
+    context 'when proxy installation' do
+      let(:installation) { build(:jira_connect_installation, instance_url: 'https://example.com') }
+
+      it { is_expected.to eq('https://example.com/-/jira_connect') }
+    end
+  end
+
+  describe 'audience_installed_event_url' do
+    let(:installation) { build(:jira_connect_installation) }
+
+    subject(:audience) { installation.audience_installed_event_url }
+
+    it { is_expected.to be_nil }
+
+    context 'when proxy installation' do
+      let(:installation) { build(:jira_connect_installation, instance_url: 'https://example.com') }
+
+      it { is_expected.to eq('https://example.com/-/jira_connect/events/installed') }
+    end
+  end
+
+  describe 'audience_uninstalled_event_url' do
+    let(:installation) { build(:jira_connect_installation) }
+
+    subject(:audience) { installation.audience_uninstalled_event_url }
+
+    it { is_expected.to be_nil }
+
+    context 'when proxy installation' do
+      let(:installation) { build(:jira_connect_installation, instance_url: 'https://example.com') }
+
+      it { is_expected.to eq('https://example.com/-/jira_connect/events/uninstalled') }
+    end
+  end
+
+  describe 'create_branch_url' do
+    context 'when the jira installation is not for a self-managed instance' do
+      let(:installation) { build(:jira_connect_installation) }
+
+      subject(:create_branch) { installation.create_branch_url }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when the jira installation is for a self-managed instance' do
+      let(:installation) { build(:jira_connect_installation, instance_url: 'https://example.com') }
+
+      subject(:create_branch) { installation.create_branch_url }
+
+      it { is_expected.to eq('https://example.com/-/jira_connect/branches/new') }
+    end
+  end
+
+  describe 'proxy?' do
+    let(:installation) { build(:jira_connect_installation) }
+
+    subject { installation.proxy? }
+
+    it { is_expected.to be(false) }
+
+    context 'when instance_url is present' do
+      let(:installation) { build(:jira_connect_installation, instance_url: 'https://example.com') }
+
+      it { is_expected.to be(true) }
+    end
+  end
+
+  describe '#forge_direct?' do
+    let(:installation) { build(:jira_connect_installation) }
+
+    subject(:result) { installation.forge_direct? }
+
+    it { expect(result).to be(false) }
+
+    context 'when both the apiBaseUrl and system token are present' do
+      let(:installation) do
+        build(:jira_connect_installation,
+          jira_api_base_url: 'https://api.atlassian.com/ex/jira/cloud-xyz',
+          forge_system_token: 'sys-token')
+      end
+
+      it { expect(result).to be(true) }
+    end
+
+    context 'when only the apiBaseUrl is present' do
+      let(:installation) do
+        build(:jira_connect_installation, jira_api_base_url: 'https://api.atlassian.com/ex/jira/cloud-xyz')
+      end
+
+      it { expect(result).to be(false) }
+    end
+
+    context 'when only the system token is present' do
+      let(:installation) { build(:jira_connect_installation, forge_system_token: 'sys-token') }
+
+      it { expect(result).to be(false) }
+    end
+  end
+
+  describe 'jira_api_base_url validation' do
+    subject(:installation) { build(:jira_connect_installation) }
+
+    it { is_expected.to allow_value(nil).for(:jira_api_base_url) }
+    it { is_expected.to allow_value('https://api.atlassian.com/ex/jira/cloud-xyz').for(:jira_api_base_url) }
+    it { is_expected.not_to allow_value('not/a/url').for(:jira_api_base_url) }
+  end
+
+  describe '#forge?' do
+    it 'is false for a Connect installation' do
+      expect(build(:jira_connect_installation).forge?).to be(false)
+    end
+
+    it 'is true for a native Forge installation (installation id, no client_key)' do
+      expect(build(:jira_connect_installation, :forge).forge?).to be(true)
+    end
+
+    it 'is false for a Connect-on-Forge installation (client_key present)' do
+      installation = build(:jira_connect_installation,
+        forge_installation_xid: 'ari:cloud:ecosystem::installation/0a3a7799-53ae-4a5b-9e7e-03338980abb5',
+        cloud_id: 'cloud-1',
+        jira_api_base_url: 'https://api.atlassian.com/ex/jira/c', forge_system_token: 'tok')
+
+      expect(installation.forge?).to be(false)
+    end
+  end
+
+  describe 'native Forge installation validations' do
+    subject(:installation) { build(:jira_connect_installation, :forge) }
+
+    it { is_expected.to be_valid }
+    it { is_expected.to validate_presence_of(:cloud_id) }
+    it { is_expected.to validate_uniqueness_of(:forge_installation_xid) }
+
+    it 'accepts the Forge installation ARI and rejects anything else' do
+      expect(installation).to allow_value('ari:cloud:ecosystem::installation/0a3a7799-53ae-4a5b-9e7e-03338980abb5')
+        .for(:forge_installation_xid)
+
+      expect(installation).not_to allow_value('0a3a7799-53ae-4a5b-9e7e-03338980abb5').for(:forge_installation_xid)
+      expect(installation).not_to allow_value('ari:cloud:ecosystem::installation/not-a-uuid')
+        .for(:forge_installation_xid)
+      expect(installation).not_to allow_value('ari:cloud:ecosystem::installation/0A3A7799-53AE-4A5B-9E7E-03338980ABB5')
+        .for(:forge_installation_xid)
+      expect(installation).not_to allow_value('ari:cloud:ecosystem::app/0a3a7799-53ae-4a5b-9e7e-03338980abb5')
+        .for(:forge_installation_xid)
+    end
+
+    it 'stays valid when the app clears the apiBaseUrl and system token' do
+      installation.assign_attributes(jira_api_base_url: nil, forge_system_token: nil)
+
+      expect(installation).to be_valid
+      expect(installation.forge_direct?).to be(false)
+    end
+
+    it 'allows two installations for the same Jira site' do
+      existing = create(:jira_connect_installation, :forge)
+      installation.assign_attributes(cloud_id: existing.cloud_id, organization: existing.organization)
+
+      expect(installation).to be_valid
+    end
+
+    it 'does not require Connect credentials' do
+      installation.assign_attributes(client_key: nil, shared_secret: nil, base_url: nil)
+
+      expect(installation).to be_valid
+    end
+
+    it 'is valid without an apiBaseUrl or system token (set later via forge_token)' do
+      installation.assign_attributes(jira_api_base_url: nil, forge_system_token: nil)
+
+      expect(installation).to be_valid
+    end
+  end
+
+  describe '#client' do
+    it 'returns the Connect client for a Connect installation' do
+      expect(build(:jira_connect_installation).client).to be_an_instance_of(Atlassian::JiraConnect::Client)
+    end
+
+    it 'returns the Forge system-token client once forge_direct?' do
+      expect(build(:jira_connect_installation, :forge).client).to be_an_instance_of(Atlassian::Forge::SystemTokenClient)
+    end
+  end
+
+  describe '#client_configured?' do
+    it { expect(build(:jira_connect_installation)).to be_client_configured }
+    it { expect(build(:jira_connect_installation, :forge)).to be_client_configured }
+
+    it 'is false for a native Forge install without an apiBaseUrl or system token' do
+      installation = build(:jira_connect_installation, :forge, jira_api_base_url: nil, forge_system_token: nil)
+
+      expect(installation).not_to be_client_configured
+    end
+  end
+
+  describe '.find_or_backfill_by_forge_token' do
+    let_it_be(:organization) { create(:organization) }
+
+    let(:installation_id) { 'ari:cloud:ecosystem::installation/0a3a7799-53ae-4a5b-9e7e-03338980abb5' }
+
+    let(:cloud_id) { 'cloud-1' }
+
+    subject(:resolved) do
+      described_class.find_or_backfill_by_forge_token(
+        installation_id: installation_id, cloud_id: cloud_id, organization_id: organization.id
+      )
+    end
+
+    it 'finds by installation id' do
+      installation = create(:jira_connect_installation, :forge,
+        organization: organization, forge_installation_xid: installation_id)
+
+      expect(resolved).to eq(installation)
+    end
+
+    it 'falls back to the site row without an installation id and backfills it' do
+      installation = create(:jira_connect_installation, organization: organization, cloud_id: 'cloud-1')
+
+      expect(resolved).to eq(installation)
+      expect(installation.reload.forge_installation_xid).to eq(installation_id)
+    end
+
+    it 'does not fall back to a row that carries another installation id' do
+      create(:jira_connect_installation, :forge,
+        organization: organization, cloud_id: 'cloud-1',
+        forge_installation_xid: 'ari:cloud:ecosystem::installation/8db33809-1f32-48bb-8c52-5877dab48107')
+
+      expect(resolved).to be_nil
+    end
+
+    it 'does not resolve rows in another organization' do
+      create(:jira_connect_installation, :forge, forge_installation_xid: installation_id)
+
+      expect(resolved).to be_nil
+    end
+
+    it 'prefers the newest site row when several lack an installation id' do
+      create(:jira_connect_installation, organization: organization, cloud_id: 'cloud-1')
+      newest = create(:jira_connect_installation, organization: organization, cloud_id: 'cloud-1')
+
+      expect(resolved).to eq(newest)
+    end
+
+    context 'when the site row cannot adopt the installation id' do
+      let(:installation_id) { 'not-an-installation-ari' }
+
+      it 'returns nil and logs the validation errors' do
+        installation = create(:jira_connect_installation, organization: organization, cloud_id: 'cloud-1')
+
+        expect(Gitlab::AppLogger).to receive(:warn).with(hash_including(
+          message: 'Failed to adopt the Forge installation id on a Connect installation',
+          jira_connect_installation_id: installation.id
+        ))
+
+        expect(resolved).to be_nil
+        expect(installation.reload.forge_installation_xid).to be_nil
+      end
+    end
+
+    context 'when cloud_id is blank' do
+      let(:cloud_id) { nil }
+
+      it 'does not fall back to a legacy row without a cloud id' do
+        create(:jira_connect_installation, organization: organization, cloud_id: nil)
+
+        expect(resolved).to be_nil
+      end
+    end
+
+    context 'when installation_id is blank' do
+      let(:installation_id) { nil }
+
+      it { is_expected.to be_nil }
+    end
+  end
+end

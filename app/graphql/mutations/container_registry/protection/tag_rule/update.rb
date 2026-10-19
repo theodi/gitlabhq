@@ -1,0 +1,64 @@
+# frozen_string_literal: true
+
+module Mutations
+  module ContainerRegistry
+    module Protection
+      module TagRule
+        class Update < ::Mutations::BaseMutation
+          graphql_name 'UpdateContainerProtectionTagRule'
+          description 'Updates a protection rule that controls which user roles ' \
+            'can modify container image tags matching a specified pattern.'
+
+          authorize :admin_container_image
+          authorize_granular_token permissions: :update_container_registry_protection_tag_rule,
+            boundary_argument: :id, boundary: :project, boundary_type: :project
+
+          argument :id,
+            ::Types::GlobalIDType[::ContainerRegistry::Protection::TagRule],
+            required: true,
+            description: 'Global ID of the tag protection rule to update.'
+
+          argument :tag_name_pattern,
+            GraphQL::Types::String,
+            required: false,
+            validates: { allow_blank: false },
+            description: copy_field_description(
+              Types::ContainerRegistry::Protection::TagRuleType,
+              :tag_name_pattern
+            )
+
+          argument :minimum_access_level_for_delete,
+            Types::ContainerRegistry::Protection::TagRuleAccessLevelEnum,
+            required: false,
+            description: copy_field_description(
+              Types::ContainerRegistry::Protection::TagRuleType,
+              :minimum_access_level_for_delete
+            )
+
+          argument :minimum_access_level_for_push,
+            Types::ContainerRegistry::Protection::TagRuleAccessLevelEnum,
+            required: false,
+            description: copy_field_description(
+              Types::ContainerRegistry::Protection::TagRuleType,
+              :minimum_access_level_for_push
+            )
+
+          field :container_protection_tag_rule,
+            Types::ContainerRegistry::Protection::TagRuleType,
+            null: true,
+            description: 'Protection rule for container image tags after creation.'
+
+          def resolve(id:, **kwargs)
+            container_protection_tag_rule = authorized_find!(id:)
+
+            response = ::ContainerRegistry::Protection::UpdateTagRuleService.new(container_protection_tag_rule,
+              current_user: current_user, params: kwargs).execute
+
+            { container_protection_tag_rule: response[:container_protection_tag_rule],
+              errors: response.errors }
+          end
+        end
+      end
+    end
+  end
+end

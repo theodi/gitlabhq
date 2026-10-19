@@ -1,0 +1,174 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::NamespaceMirror, feature_category: :continuous_integration do
+  let_it_be_with_reload(:group1) { create(:group) }
+  let_it_be_with_reload(:group2) { create(:group, parent: group1) }
+  let_it_be_with_reload(:group3) { create(:group, parent: group2) }
+  let_it_be_with_reload(:group4) { create(:group, parent: group3) }
+
+  before do
+    # refreshing ci mirrors according to the parent tree above
+    Namespaces::SyncEvent.find_each { |event| Ci::NamespaceMirror.sync!(event) }
+
+    # checking initial situation. we need to reload to reflect the changes of event sync
+    expect(group1.reload.ci_namespace_mirror).to have_attributes(traversal_ids: [group1.id])
+    expect(group2.reload.ci_namespace_mirror).to have_attributes(traversal_ids: [group1.id, group2.id])
+    expect(group3.reload.ci_namespace_mirror).to have_attributes(traversal_ids: [group1.id, group2.id, group3.id])
+    expect(group4.reload.ci_namespace_mirror).to have_attributes(
+      traversal_ids: [group1.id, group2.id, group3.id, group4.id]
+    )
+  end
+
+  describe 'associations' do
+    it { is_expected.to belong_to(:namespace) }
+    it { is_expected.to have_many(:project_mirrors) }
+
+    it 'has a bidirectional relationship with project mirrors' do
+      expect(described_class.reflect_on_association(:project_mirrors).has_inverse?).to eq(:namespace_mirror)
+      expect(Ci::ProjectMirror.reflect_on_association(:namespace_mirror).has_inverse?).to eq(:project_mirrors)
+    end
+  end
+
+  context 'scopes' do
+    describe '.by_group_and_descendants' do
+      subject(:result) { described_class.by_group_and_descendants(id) }
+
+      context 'when a group id is passed' do
+        let(:id) { group2.id }
+
+        it 'returns groups having group2.id in traversal_ids' do
+          expect(result.pluck(:namespace_id)).to contain_exactly(group2.id, group3.id, group4.id)
+        end
+
+        it 'matches descendants using the traversal_ids prefix instead of the GIN operator' do
+          # The unnest covering index is reached via the prefix form rather than the GIN
+          # `traversal_ids @>` operator; asserting its absence is the meaningful behavioral
+          # difference regardless of the test hierarchy depth.
+          expect(result.to_sql).not_to include('traversal_ids @>')
+        end
+      end
+
+      context 'when the namespace mirror does not exist' do
+        let(:id) { non_existing_record_id }
+
+        it { is_expected.to be_empty }
+      end
+
+      context 'when an array of ids is passed' do
+        let(:id) { [group2.id, group3.id] }
+
+        it 'raises ArgumentError' do
+          expect { result }
+            .to raise_error(ArgumentError, 'only a single id is supported')
+        end
+      end
+    end
+
+    describe '.contains_traversal_ids' do
+      let_it_be_with_reload(:other_group1) { create(:group) }
+      let_it_be_with_reload(:other_group2) { create(:group, parent: other_group1) }
+      let_it_be_with_reload(:other_group3) { create(:group, parent: other_group2) }
+      let_it_be_with_reload(:other_group4) { create(:group) }
+
+      subject(:result) { described_class.contains_traversal_ids(all_traversal_ids) }
+
+      context 'when passing a top-level group' do
+        let(:all_traversal_ids) do
+          [
+            [other_group1.id]
+          ]
+        end
+
+        it 'returns only itself and children of that group' do
+          expect(result.map(&:namespace)).to contain_exactly(other_group1, other_group2, other_group3)
+        end
+      end
+
+      context 'when passing many levels of groups' do
+        let(:all_traversal_ids) do
+          [
+            [other_group2.parent_id, other_group2.id],
+            [other_group3.parent_id, other_group3.id],
+            [other_group4.id]
+          ]
+        end
+
+        it 'returns only the asked group' do
+          expect(result.map(&:namespace)).to contain_exactly(other_group2, other_group3, other_group4)
+        end
+      end
+
+      context 'when passing invalid data' do
+        let(:all_traversal_ids) do
+          [
+            ["; UPDATE"]
+          ]
+        end
+
+        it 'data is properly sanitised' do
+          expect(result.to_sql).to include "((traversal_ids[1])) IN (('; UPDATE'))"
+        end
+      end
+    end
+
+    describe '.by_namespace_id' do
+      subject(:result) { described_class.by_namespace_id(group2.id) }
+
+      it 'returns namespace mirrors of namespace id' do
+        expect(result).to contain_exactly(group2.ci_namespace_mirror)
+      end
+    end
+  end
+
+  describe '.sync!' do
+    subject(:sync) { described_class.sync!(Namespaces::SyncEvent.last) }
+
+    let(:expected_traversal_ids) { [group1.id, group2.id, group3.id] }
+
+    context 'when namespace mirror does not exist in the first place' do
+      let(:namespace) { group3 }
+
+      before do
+        namespace.ci_namespace_mirror.destroy!
+        namespace.sync_events.create!
+      end
+
+      it 'creates the mirror' do
+        expect { sync }.to change { described_class.count }.from(3).to(4)
+
+        expect(namespace.reload.ci_namespace_mirror)
+          .to have_attributes(traversal_ids: expected_traversal_ids, organization_id: namespace.organization_id)
+      end
+    end
+
+    context 'when namespace mirror does already exist' do
+      let(:namespace) { group3 }
+
+      before do
+        namespace.sync_events.create!
+      end
+
+      it 'updates the mirror' do
+        expect { sync }.not_to change { described_class.count }
+
+        expect(namespace.reload.ci_namespace_mirror)
+          .to have_attributes(traversal_ids: expected_traversal_ids, organization_id: namespace.organization_id)
+      end
+
+      context 'when the namespace organization has changed' do
+        let_it_be(:other_organization) { create(:organization) }
+
+        before do
+          namespace.ci_namespace_mirror.update!(organization_id: other_organization.id)
+        end
+
+        it 'updates the organization_id of the mirror' do
+          expect { sync }.to change { namespace.ci_namespace_mirror.reload.organization_id }
+            .from(other_organization.id).to(namespace.organization_id)
+        end
+      end
+    end
+  end
+end

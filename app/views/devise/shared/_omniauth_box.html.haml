@@ -1,10 +1,24 @@
-%p
-  %span.light
-    Sign in with &nbsp;
-  - providers = additional_providers
-  - providers.each do |provider|
-    %span.light
-      - if default_providers.include?(provider)
-        = link_to oauth_image_tag(provider), omniauth_authorize_path(resource_name, provider), method: :post, class: 'oauth-image-link'
-      - else
-        = link_to provider.to_s.titleize, omniauth_authorize_path(resource_name, provider), method: :post, class: "btn", "data-no-turbolink" => "true"
+- render_remember_me = remember_me_enabled? && local_assigns.fetch(:render_remember_me, true)
+- step_up_auth_scope = local_assigns[:step_up_auth_scope]
+
+- if any_form_based_providers_enabled? || password_authentication_enabled_for_web?
+  - if step_up_auth_scope.blank? || step_up_auth_scope == 'admin_mode'
+    = render 'shared/divider', text: _("or sign in with")
+
+.gl-mt-5.gl-text-center.gl-flex.gl-flex-col.gl-gap-3.js-oauth-login
+  - enabled_button_based_providers.each do |provider|
+    - if step_up_auth_scope.present?
+      = render 'devise/shared/omniauth_provider_button',
+        href: omniauth_authorize_path(:user, provider, **step_up_auth_params(provider, step_up_auth_scope)),
+        provider: provider,
+        data: { testid: test_id_for_provider(provider) }
+    - else
+      = render 'devise/shared/omniauth_provider_button',
+        href: omniauth_authorize_path(:user, provider),
+        provider: provider,
+        data: { testid: test_id_for_provider(provider) }
+
+  - if render_remember_me
+    = render Pajamas::CheckboxTagComponent.new(name: 'js-remember-me-omniauth', value: nil) do |c|
+      - c.with_label do
+        = _('Remember me')

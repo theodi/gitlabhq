@@ -1,0 +1,5 @@
+reports/
+.ruby-version
+.tool-versions
+.ruby-gemset
+urls.yml

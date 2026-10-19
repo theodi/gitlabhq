@@ -1,0 +1,18 @@
+---
+key_path: counts_monthly.promoted_issues
+description: Count of issues promoted to epics
+product_group: analytics_instrumentation
+value_type: number
+status: removed
+milestone: "14.3"
+milestone_removed: "15.1"
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/88113
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/70485
+time_frame: 28d
+data_source: database
+data_category: optional
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

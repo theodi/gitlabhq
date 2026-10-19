@@ -1,0 +1,182 @@
+<script>
+import { getStartLineNumber, getEndLineNumber } from '~/notes/components/multiline_comment_utils';
+import ToggleRepliesWidget from '~/notes/components/toggle_replies_widget.vue';
+import { SYSTEM_NOTE } from '~/notes/constants';
+import { glSlotsMixin } from '~/lib/utils/vue3compat/gl_slots_mixin';
+import PlaceholderNote from './placeholder_note.vue';
+import PlaceholderSystemNote from './placeholder_system_note.vue';
+import DraftNote from './draft_note.vue';
+import SystemNote from './system_note.vue';
+import NoteableNote from './noteable_note.vue';
+import LineRangeHeadline from './line_range_headline.vue';
+
+export default {
+  name: 'DiscussionNotes',
+  SYSTEM_NOTE,
+  components: {
+    DraftNote,
+    SystemNote,
+    NoteableNote,
+    PlaceholderNote,
+    PlaceholderSystemNote,
+    ToggleRepliesWidget,
+    LineRangeHeadline,
+  },
+  mixins: [glSlotsMixin],
+  inject: {
+    userPermissions: {
+      type: Object,
+    },
+  },
+  props: {
+    notes: {
+      type: Array,
+      required: true,
+    },
+    expanded: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+    individual: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    timelineLayout: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isLastDiscussion: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canResolve: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isResolved: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isResolving: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: [
+    'cancel-editing',
+    'note-edited',
+    'resolve',
+    'start-editing',
+    'start-replying',
+    'toggle-discussion-replies',
+  ],
+  computed: {
+    hasReplies() {
+      return Boolean(this.replies.length);
+    },
+    replies() {
+      return this.notes.slice(1).filter((note) => !note.isDraft);
+    },
+    draftReplies() {
+      return this.notes.slice(1).filter((note) => note.isDraft);
+    },
+    firstNote() {
+      return this.notes[0];
+    },
+    lineRange() {
+      return this.firstNote.position?.line_range;
+    },
+    showMultiLineComment() {
+      const startLine = getStartLineNumber(this.lineRange);
+      const endLine = getEndLineNumber(this.lineRange);
+
+      return Boolean(startLine && endLine && startLine !== endLine);
+    },
+  },
+};
+</script>
+
+<template>
+  <ul class="gl-list-none gl-p-0">
+    <system-note v-if="firstNote.system" :note="firstNote" :is-last-discussion="isLastDiscussion" />
+    <noteable-note
+      v-else
+      :note="firstNote"
+      :timeline-layout="timelineLayout"
+      :show-reply-button="userPermissions.can_create_note && !individual"
+      :is-last-discussion="isLastDiscussion"
+      is-first-note
+      :can-resolve="canResolve"
+      :is-resolved="isResolved"
+      :is-resolving="isResolving"
+      @resolve="$emit('resolve')"
+      @note-edited="$emit('note-edited', { note: firstNote, value: $event })"
+      @start-replying="$emit('start-replying')"
+      @start-editing="$emit('start-editing', firstNote)"
+      @cancel-editing="$emit('cancel-editing', firstNote)"
+    >
+      <template v-if="showMultiLineComment" #headline>
+        <line-range-headline :line-range="lineRange" />
+      </template>
+      <template v-if="glSlots()['avatar-badge']" #avatar-badge>
+        <slot name="avatar-badge"></slot>
+      </template>
+      <template #footer>
+        <div
+          v-if="hasReplies || draftReplies.length || userPermissions.can_create_note"
+          class="gl-m-0 gl-rounded-[var(--content-border-radius)] gl-bg-subtle"
+        >
+          <ul class="gl-list-none gl-p-0">
+            <li v-if="hasReplies" class="gl-border-t gl-px-5" :aria-expanded="expanded">
+              <toggle-replies-widget
+                tag="div"
+                :collapsed="!expanded"
+                :replies="replies"
+                class="gl-mx-2 !gl-border-0 gl-border-t-subtle !gl-px-0"
+                @toggle="$emit('toggle-discussion-replies')"
+              />
+            </li>
+            <template v-if="expanded">
+              <template v-for="note in replies">
+                <placeholder-system-note
+                  v-if="note.isPlaceholderNote && note.placeholderType === $options.SYSTEM_NOTE"
+                  :key="note.id"
+                  :note="note.notes[0]"
+                />
+                <placeholder-note
+                  v-else-if="note.isPlaceholderNote"
+                  :key="note.id"
+                  :note="note.notes[0]"
+                />
+                <system-note
+                  v-else-if="note.system"
+                  :key="`system-${note.id}`"
+                  :note="note"
+                  :is-last-discussion="isLastDiscussion"
+                />
+                <noteable-note
+                  v-else
+                  :key="note.id"
+                  :note="note"
+                  :is-last-discussion="isLastDiscussion"
+                  @note-edited="$emit('note-edited', { note, value: $event })"
+                  @start-editing="$emit('start-editing', note)"
+                  @cancel-editing="$emit('cancel-editing', note)"
+                />
+              </template>
+              <slot name="footer" :has-replies="hasReplies"></slot>
+            </template>
+          </ul>
+          <draft-note v-for="draft in draftReplies" :key="`draft-${draft.id}`" :draft="draft" />
+        </div>
+      </template>
+    </noteable-note>
+  </ul>
+</template>

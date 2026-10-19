@@ -1,0 +1,12 @@
+---
+name: gitlab_docs.RelativeLinks
+description: |
+  Checks for the presence of absolute hyperlinks that should be relative.
+extends: existence
+message: "Use a relative link instead of a URL, and ensure the file name ends in .md and not .html."
+link: https://docs.gitlab.com/development/documentation/styleguide/#links
+vocab: false
+level: error
+scope: raw
+raw:
+  - '\[[^\]]+\]\(https?:\/\/docs\.gitlab\.com\/(?!runner|archives|omnibus|charts|operator|cli|orbit|artifact_registry|releases\/patches\/|releases\/\)|\))[^\)]*\)'

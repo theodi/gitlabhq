@@ -1,0 +1,143 @@
+import { nextTick } from 'vue';
+import { GlDisclosureDropdown, GlTooltip } from '@gitlab/ui';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import ToolbarMoreDropdown from '~/content_editor/components/toolbar_more_dropdown.vue';
+import Diagram from '~/content_editor/extensions/diagram';
+import HorizontalRule from '~/content_editor/extensions/horizontal_rule';
+import eventHubFactory from '~/helpers/event_hub_factory';
+import { useLocalStorageSpy } from 'helpers/local_storage_helper';
+import { createTestEditor, mockChainedCommands, emitEditorEvent } from '../test_utils';
+
+describe('content_editor/components/toolbar_more_dropdown', () => {
+  useLocalStorageSpy();
+
+  let wrapper;
+  let tiptapEditor;
+  let contentEditor;
+  let eventHub;
+
+  const buildEditor = () => {
+    tiptapEditor = createTestEditor({
+      extensions: [Diagram, HorizontalRule],
+    });
+    contentEditor = { drawioEnabled: true, supportsTableOfContents: true };
+    eventHub = eventHubFactory();
+  };
+
+  const buildWrapper = (propsData = {}) => {
+    wrapper = mountExtended(ToolbarMoreDropdown, {
+      provide: {
+        tiptapEditor,
+        contentEditor,
+        eventHub,
+      },
+      propsData,
+    });
+  };
+
+  const findDropdown = () => wrapper.findComponent(GlDisclosureDropdown);
+  const findGlTooltip = () => wrapper.findComponent(GlTooltip);
+  beforeEach(() => {
+    buildEditor();
+  });
+
+  describe.each`
+    name                        | contentType          | command                    | params
+    ${'Alert'}                  | ${'alert'}           | ${'insertAlert'}           | ${[]}
+    ${'Code block'}             | ${'codeBlock'}       | ${'setNode'}               | ${['codeBlock']}
+    ${'Collapsible section'}    | ${'details'}         | ${'toggleList'}            | ${['details', 'detailsContent']}
+    ${'Bullet list'}            | ${'bulletList'}      | ${'toggleList'}            | ${['bulletList', 'listItem']}
+    ${'Ordered list'}           | ${'orderedList'}     | ${'toggleList'}            | ${['orderedList', 'listItem']}
+    ${'Task list'}              | ${'taskList'}        | ${'toggleList'}            | ${['taskList', 'taskItem']}
+    ${'Mermaid diagram'}        | ${'diagram'}         | ${'insertMermaid'}         | ${[]}
+    ${'PlantUML diagram'}       | ${'diagram'}         | ${'insertPlantUML'}        | ${[]}
+    ${'Table of contents'}      | ${'tableOfContents'} | ${'insertTableOfContents'} | ${[]}
+    ${'Horizontal rule'}        | ${'horizontalRule'}  | ${'setHorizontalRule'}     | ${[]}
+    ${'Create or edit diagram'} | ${'drawioDiagram'}   | ${'createOrEditDiagram'}   | ${[]}
+    ${'Embedded view'}          | ${'glqlView'}        | ${'insertGLQLView'}        | ${[]}
+  `('when option $name is clicked', ({ name, command, contentType, params }) => {
+    let commands;
+    let btn;
+
+    beforeEach(() => {
+      buildWrapper();
+
+      commands = mockChainedCommands(tiptapEditor, [command, 'focus', 'run']);
+      btn = wrapper.findByRole('button', { name });
+    });
+
+    it(`inserts a ${contentType}`, async () => {
+      await btn.trigger('click');
+      await emitEditorEvent({ event: 'transaction', tiptapEditor });
+
+      expect(commands.focus).toHaveBeenCalled();
+      expect(commands[command]).toHaveBeenCalledWith(...params);
+      expect(commands.run).toHaveBeenCalled();
+
+      expect(wrapper.emitted('execute')).toEqual([[{ contentType }]]);
+    });
+  });
+
+  it('does not show drawio option when drawio is disabled', () => {
+    contentEditor.drawioEnabled = false;
+    buildWrapper();
+
+    expect(wrapper.findByRole('button', { name: 'Create or edit diagram' }).exists()).toBe(false);
+  });
+
+  it('does not show TOC option when supportsTableOfContents is false', () => {
+    contentEditor.supportsTableOfContents = false;
+    buildWrapper();
+
+    expect(wrapper.findByRole('button', { name: 'Table of contents' }).exists()).toBe(false);
+  });
+
+  describe.each`
+    name                        | icon
+    ${'Alert'}                  | ${'warning'}
+    ${'Code block'}             | ${'code'}
+    ${'Collapsible section'}    | ${'details-block'}
+    ${'Bullet list'}            | ${'list-bulleted'}
+    ${'Ordered list'}           | ${'list-numbered'}
+    ${'Task list'}              | ${'list-task'}
+    ${'Horizontal rule'}        | ${'dash'}
+    ${'Embedded view'}          | ${'kind'}
+    ${'Mermaid diagram'}        | ${'diagram'}
+    ${'PlantUML diagram'}       | ${'diagram'}
+    ${'Create or edit diagram'} | ${'pencil-square'}
+    ${'Table of contents'}      | ${'title'}
+  `('option $name', ({ name, icon }) => {
+    it(`sets the icon to ${icon}`, () => {
+      buildWrapper();
+
+      const item = findDropdown()
+        .props('items')
+        .find((i) => i.text === name);
+
+      expect(item.icon).toBe(icon);
+    });
+  });
+
+  describe('a11y tests', () => {
+    it('sets toggleText and text-sr-only properties to the table button dropdown', () => {
+      buildWrapper();
+
+      expect(findDropdown().props()).toMatchObject({
+        textSrOnly: true,
+        toggleText: 'More options',
+      });
+    });
+
+    it('hides tooltip when dropdown is open', async () => {
+      buildWrapper();
+
+      expect(findGlTooltip().text()).toBe('More options');
+
+      findDropdown().vm.$emit('shown');
+
+      await nextTick();
+
+      expect(findGlTooltip().exists()).toBe(false);
+    });
+  });
+});

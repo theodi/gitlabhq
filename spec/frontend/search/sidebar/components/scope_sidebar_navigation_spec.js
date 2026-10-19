@@ -1,0 +1,326 @@
+import { mount } from '@vue/test-utils';
+import Vue, { nextTick } from 'vue';
+// eslint-disable-next-line no-restricted-imports
+import Vuex from 'vuex';
+import VueApollo from 'vue-apollo';
+import waitForPromises from 'helpers/wait_for_promises';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import ScopeSidebarNavigation from '~/search/sidebar/components/scope_sidebar_navigation.vue';
+import NavItem from '~/super_sidebar/components/nav_item.vue';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { RECEIVE_NAVIGATION_COUNT } from '~/search/store/mutation_types';
+import getBlobSearchCountQuery from '~/search/graphql/blob_search_zoekt_count_only.query.graphql';
+import {
+  MOCK_QUERY,
+  MOCK_NAVIGATION,
+  MOCK_NAVIGATION_ITEMS,
+  mockgetBlobSearchCountQuery,
+} from '../../mock_data';
+
+Vue.use(Vuex);
+Vue.use(VueApollo);
+
+describe('ScopeSidebarNavigation', () => {
+  let wrapper;
+  const mockError = new Error('Network error');
+
+  const actionSpies = {
+    fetchSidebarCount: jest.fn(),
+  };
+
+  const getterSpies = {
+    navigationItems: jest.fn(() => MOCK_NAVIGATION_ITEMS),
+    currentScope: jest.fn(),
+  };
+
+  const mutationSpies = {
+    [RECEIVE_NAVIGATION_COUNT]: jest.fn(),
+  };
+
+  const blobCountHandler = jest.fn().mockResolvedValue(mockgetBlobSearchCountQuery);
+  const mockQueryError = jest.fn().mockRejectedValue(mockError);
+
+  const createComponent = (initialState, gqlHandler = blobCountHandler) => {
+    const requestHandlers = [[getBlobSearchCountQuery, gqlHandler]];
+    const apolloProvider = createMockApollo(requestHandlers);
+    const state = {
+      urlQuery: MOCK_QUERY,
+      navigation: MOCK_NAVIGATION,
+      ...initialState,
+    };
+
+    const store = new Vuex.Store({
+      state,
+      actions: actionSpies,
+      getters: getterSpies,
+      mutations: mutationSpies,
+    });
+
+    wrapper = mount(ScopeSidebarNavigation, {
+      apolloProvider,
+      store,
+      stubs: {
+        NavItem,
+      },
+    });
+  };
+
+  const findNavElement = () => wrapper.findComponent('nav');
+  const findNavItems = () => wrapper.findAllComponents(NavItem);
+  const findNavItemActive = () => wrapper.find('[aria-current=page]');
+  const findNavItemActiveLabel = () => findNavItemActive().find('[data-testid="nav-item-label"]');
+
+  describe('when navigation render', () => {
+    beforeEach(() => {
+      createComponent({ urlQuery: { ...MOCK_QUERY, search: 'test' } });
+    });
+
+    it('renders section', () => {
+      expect(findNavElement().exists()).toBe(true);
+    });
+
+    it('calls proper action when rendered', async () => {
+      await nextTick();
+      expect(actionSpies.fetchSidebarCount).toHaveBeenCalled();
+    });
+
+    it('renders all nav item components', () => {
+      expect(findNavItems()).toHaveLength(11);
+    });
+
+    it('has all proper links', () => {
+      const linkAtPosition = 3;
+      const { link } = MOCK_NAVIGATION[Object.keys(MOCK_NAVIGATION)[linkAtPosition]];
+
+      expect(findNavItems().at(linkAtPosition).findComponent('a').attributes('href')).toBe(link);
+    });
+  });
+
+  describe('when scope navigation', () => {
+    describe('when sets proper state with url scope set', () => {
+      beforeEach(() => {
+        const navigationItemsClone = [...MOCK_NAVIGATION_ITEMS];
+        navigationItemsClone[3].is_active = true;
+        getterSpies.navigationItems = jest.fn(() => navigationItemsClone);
+
+        createComponent();
+      });
+
+      it('has correct active item', () => {
+        expect(findNavItemActive().exists()).toBe(true);
+        expect(findNavItemActiveLabel().text()).toBe('Issues');
+      });
+    });
+
+    describe('when sets proper state', () => {
+      beforeEach(() => {
+        const navigationItemsClone = [...MOCK_NAVIGATION_ITEMS];
+        navigationItemsClone[3].is_active = true;
+
+        getterSpies.navigationItems = jest.fn(() => navigationItemsClone);
+        createComponent({});
+      });
+
+      it('renders all navigation items', () => {
+        expect(findNavItemActive().exists()).toBe(true);
+        expect(findNavItemActiveLabel().text()).toBe('Issues');
+        expect(findNavItems()).toHaveLength(11);
+      });
+    });
+  });
+
+  describe('Zoekt graphql count', () => {
+    beforeEach(() => {
+      createComponent({
+        zoektAvailable: true,
+        query: {
+          search: 'test search',
+          group_id: '123',
+          regex: 'false',
+        },
+      });
+    });
+
+    describe('when conditions are met', () => {
+      it('makes graphql query with correct variables for group search', () => {
+        expect(blobCountHandler).toHaveBeenCalledWith({
+          search: 'test search',
+          chunkCount: 5,
+          groupId: 'gid://gitlab/Group/123',
+          projectId: undefined,
+          includeArchived: false,
+          excludeForks: false,
+          regex: false,
+        });
+      });
+
+      describe('when group_id and project_id is missing', () => {
+        beforeEach(() => {
+          blobCountHandler.mockClear();
+          createComponent({
+            zoektAvailable: true,
+            query: {
+              search: 'test',
+              regex: 'false',
+            },
+          });
+        });
+
+        it('makes query even without group_id or project_id', () => {
+          expect(blobCountHandler).toHaveBeenCalledWith({
+            search: 'test',
+            chunkCount: 5,
+            groupId: undefined,
+            projectId: undefined,
+            includeArchived: false,
+            excludeForks: false,
+            regex: false,
+          });
+        });
+      });
+
+      it('commits the count to store on successful response', async () => {
+        await blobCountHandler();
+        jest.runOnlyPendingTimers();
+        await waitForPromises();
+
+        expect(mutationSpies[RECEIVE_NAVIGATION_COUNT]).toHaveBeenCalledWith(expect.anything(), {
+          key: 'blobs',
+          count: '123',
+        });
+      });
+    });
+
+    describe('when zoektAvailable is false', () => {
+      beforeEach(() => {
+        blobCountHandler.mockClear();
+        createComponent({
+          zoektAvailable: false,
+          query: {
+            search: 'test',
+            regex: 'false',
+          },
+        });
+      });
+
+      it('does not make query', () => {
+        expect(blobCountHandler).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('error handling', () => {
+      beforeEach(async () => {
+        jest.spyOn(Sentry, 'captureException').mockImplementation();
+        createComponent(
+          {
+            zoektAvailable: true,
+            query: {
+              search: 'test search',
+              group_id: '123',
+              regex: 'false',
+            },
+          },
+          mockQueryError,
+        );
+        jest.runOnlyPendingTimers();
+        await waitForPromises();
+      });
+
+      it('captures exception in Sentry when query fails', () => {
+        expect(Sentry.captureException).toHaveBeenCalledWith(mockError);
+      });
+    });
+
+    describe('when error is expected global search disabled message', () => {
+      const expectedError = new Error('Global search is not enabled for this scope');
+      const mockExpectedQueryError = jest.fn().mockRejectedValue(expectedError);
+
+      beforeEach(async () => {
+        jest.spyOn(Sentry, 'captureException').mockImplementation();
+        createComponent(
+          {
+            zoektAvailable: true,
+            query: {
+              search: 'test search',
+              group_id: '123',
+              regex: 'false',
+            },
+          },
+          mockExpectedQueryError,
+        );
+        jest.runOnlyPendingTimers();
+        await waitForPromises();
+      });
+
+      it('does not report to Sentry', () => {
+        expect(Sentry.captureException).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('when current scope is blobs', () => {
+      beforeEach(() => {
+        blobCountHandler.mockClear();
+        getterSpies.currentScope.mockReturnValue('blobs');
+        createComponent({
+          zoektAvailable: true,
+          query: {
+            search: 'test search',
+            group_id: '123',
+            regex: 'false',
+          },
+        });
+      });
+
+      it('does not make query regardless of other conditions', () => {
+        expect(blobCountHandler).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('legacyBlobsCount computed property', () => {
+      const legacyBlobsCountCases = [
+        {
+          name: 'returns true when currentScope is "blobs"',
+          initialState: {
+            zoektAvailable: true,
+            query: {
+              search: 'test',
+              group_id: '123',
+            },
+          },
+          currentScope: 'blobs',
+          expected: true,
+        },
+        {
+          name: 'returns true when zoektAvailable is false',
+          initialState: {
+            zoektAvailable: false,
+            query: {
+              search: 'test',
+              group_id: '123',
+            },
+          },
+          currentScope: 'notes',
+          expected: true,
+        },
+        {
+          name: 'returns false when scope is not blobs and zoekt is available',
+          initialState: {
+            zoektAvailable: true,
+            query: { search: 'test' },
+          },
+          currentScope: 'notes',
+          expected: false,
+        },
+      ];
+
+      legacyBlobsCountCases.forEach(({ name, initialState, currentScope, expected }) => {
+        it(`test ${name}`, () => {
+          getterSpies.currentScope.mockReturnValue(currentScope);
+          createComponent(initialState);
+
+          expect(wrapper.vm.legacyBlobsCount).toBe(expected);
+        });
+      });
+    });
+  });
+});

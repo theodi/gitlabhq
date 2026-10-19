@@ -1,0 +1,390 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ResourceLabelEvent, feature_category: :team_planning do
+  let_it_be(:group) { create(:group) }
+  let_it_be(:project) { create(:project, :repository, group: group) }
+  let_it_be(:issue) { create(:issue, project: project) }
+  let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+  let_it_be(:label) { create(:label, project: project) }
+
+  subject(:resource_label_event) { build(:resource_label_event, issue: issue, label: label) }
+
+  it_behaves_like 'having unique enum values'
+
+  it_behaves_like 'a resource event'
+  it_behaves_like 'a resource event that responds to imported'
+  it_behaves_like 'a resource event for issues'
+  it_behaves_like 'a resource event for merge requests'
+  it_behaves_like 'a note for work item resource event'
+
+  describe 'associations' do
+    it { is_expected.to belong_to(:label) }
+
+    it { is_expected.to belong_to(:namespace) }
+  end
+
+  describe '.with_label_id' do
+    let_it_be(:other_label) { create(:label, project: project) }
+    let_it_be(:event1) { create(:resource_label_event, merge_request: merge_request, label: label) }
+    let_it_be(:event2) { create(:resource_label_event, merge_request: merge_request, label: other_label) }
+
+    it 'returns the expected records for a label with events' do
+      events = described_class.with_label_id(label.id)
+
+      expect(events).to contain_exactly(event1)
+    end
+
+    it 'returns the expected records for a label with no events' do
+      events = described_class.with_label_id(non_existing_record_id)
+
+      expect(events).to be_empty
+    end
+  end
+
+  describe 'validations' do
+    it { is_expected.to be_valid }
+
+    describe 'Issuable validation' do
+      it 'is invalid if issue_id and merge_request_id are missing' do
+        subject.attributes = { issue: nil, merge_request: nil }
+
+        expect(subject).to be_invalid
+      end
+
+      it 'is invalid if issue_id and merge_request_id are set' do
+        subject.attributes = { issue: issue, merge_request: merge_request }
+
+        expect(subject).to be_invalid
+      end
+
+      it 'is valid if only issue_id is set' do
+        subject.attributes = { issue: issue, merge_request: nil }
+
+        expect(subject).to be_valid
+      end
+
+      it 'is valid if only merge_request_id is set' do
+        subject.attributes = { merge_request: merge_request, issue: nil }
+
+        expect(subject).to be_valid
+      end
+    end
+  end
+
+  context 'callbacks' do
+    describe '#broadcast_notes_changed' do
+      it 'broadcasts note change on event save' do
+        expect(subject.issuable).to receive(:broadcast_notes_changed)
+
+        subject.save!
+      end
+
+      it 'broadcasts note change on event destroy' do
+        subject.save!
+
+        expect(subject.issuable).to receive(:broadcast_notes_changed)
+
+        subject.destroy!
+      end
+    end
+
+    describe '#ensure_namespace_id' do
+      context 'when label_event belongs to a project issue' do
+        let(:label_event) { described_class.new(issue: issue) }
+
+        it 'sets the namespace id from the issue namespace id' do
+          expect(label_event.namespace_id).to be_nil
+
+          label_event.valid?
+
+          expect(label_event.namespace_id).to eq(issue.namespace.id)
+        end
+      end
+
+      context 'when label_event belongs to a group issue' do
+        let(:issue) { create(:issue, :group_level, namespace: group) }
+        let(:label_event) { described_class.new(issue: issue) }
+
+        it 'sets the namespace id from the issue namespace id' do
+          expect(label_event.namespace_id).to be_nil
+
+          label_event.valid?
+
+          expect(label_event.namespace_id).to eq(issue.namespace.id)
+        end
+      end
+
+      context 'when label_event belongs to a merge request' do
+        let(:label_event) { described_class.new(merge_request: merge_request) }
+
+        it 'sets the namespace id from the merge request project namespace id' do
+          expect(label_event.namespace_id).to be_nil
+
+          label_event.valid?
+
+          expect(label_event.namespace_id).to eq(merge_request.project.project_namespace_id)
+        end
+      end
+
+      context 'when label_event has no issuable' do
+        let(:label_event) { described_class.new }
+
+        it 'returns nil and does not fail' do
+          expect(label_event.namespace_id).to be_nil
+
+          label_event.valid?
+
+          expect(label_event.namespace_id).to be_nil
+        end
+      end
+    end
+  end
+
+  describe '#outdated_reference?' do
+    it 'returns true if label is missing and reference is not empty' do
+      subject.attributes = { reference: 'ref', label_id: nil }
+
+      expect(subject.outdated_reference?).to be true
+    end
+
+    it 'returns true if reference is not set yet' do
+      subject.attributes = { reference: nil }
+
+      expect(subject.outdated_reference?).to be true
+    end
+  end
+
+  describe '.visible_to_user?' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:issue_project) { create(:project) }
+    let_it_be(:issue) { create(:issue, project: issue_project) }
+
+    subject { described_class.visible_to_user?(user, issue.resource_label_events.inc_relations) }
+
+    it 'returns events with labels accessible by user' do
+      label = create(:label, project: issue_project)
+      event = create_event(label)
+      issue_project.add_guest(user)
+
+      expect(subject).to eq [event]
+    end
+
+    it 'filters events with public project labels if issues and MRs are private' do
+      project = create(:project, :public, :issues_private, :merge_requests_private)
+      label = create(:label, project: project)
+      create_event(label)
+
+      expect(subject).to be_empty
+    end
+
+    it 'filters events with project labels not accessible by user' do
+      project = create(:project, :private)
+      label = create(:label, project: project)
+      create_event(label)
+
+      expect(subject).to be_empty
+    end
+
+    it 'filters events with group labels not accessible by user' do
+      group = create(:group, :private)
+      label = create(:group_label, group: group)
+      create_event(label)
+
+      expect(subject).to be_empty
+    end
+
+    def create_event(label)
+      create(:resource_label_event, issue: issue, label: label)
+    end
+  end
+
+  describe '#discussion_id' do
+    it 'generates different discussion ID for events created milliseconds apart' do
+      now = Time.current
+      event_1 = create(:resource_label_event, issue: issue, label: label, user: issue.author, created_at: now)
+      event_2 = create(:resource_label_event, issue: issue, label: label, user: issue.author, created_at: now.advance(seconds: 0.001))
+
+      expect(event_1.discussion_id).not_to eq(event_2.discussion_id)
+    end
+  end
+
+  context 'with multiple label events' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:project) { create(:project) }
+    let_it_be(:work_item) { create(:work_item, :task, project: project, author: user) }
+    # `freeze: false` is required in this spec: one or more `let_it_be` subjects
+    # cannot be frozen by default (deep_freeze traversal failure, a non-AR
+    # subject, or an in-memory mutation that survives reload/refind). Do not
+    # drop these opt-outs or convert them to `let_it_be_with_reload`/`refind`
+    # (see gitlab-org/gitlab#602925).
+    let_it_be(:events, freeze: false) { create_pair(:resource_label_event, issue: work_item) }
+
+    it 'builds synthetic note' do
+      first_event = events.first
+      synthetic_note = first_event.work_item_synthetic_system_note(events: events)
+
+      expect(synthetic_note.class.name).to eq(first_event.synthetic_note_class.name)
+      expect(synthetic_note.events).to match_array(events)
+    end
+  end
+
+  describe 'storing the reference on create' do
+    let_it_be(:local_label) { create(:label, project: project) }
+
+    it 'stores the reference when the caller does not set one' do
+      event = create(:resource_label_event, issue: issue, label: local_label)
+
+      expect(event.reference).to eq(local_label.to_reference(format: :id))
+    end
+
+    it 'does not overwrite a reference the caller already set' do
+      event = create(:resource_label_event, issue: issue, label: local_label, reference: 'preset')
+
+      expect(event.reference).to eq('preset')
+    end
+
+    it 'does not derive a reference while importing' do
+      event = create(:resource_label_event, issue: issue, label: local_label, importing: true)
+
+      expect(event.reference).to be_nil
+    end
+
+    it 'does not recompute the reference on update' do
+      event = create(:resource_label_event, issue: issue, label: local_label)
+      event.update!(reference: nil)
+
+      expect(event.reload.reference).to be_nil
+    end
+
+    it 'leaves an event with no issuable to the validators rather than raising' do
+      event = described_class.new(action: :add, label: local_label)
+
+      expect(event).to be_invalid
+      expect(event.reference).to be_nil
+    end
+  end
+
+  describe '.reference_for' do
+    it 'returns an empty reference when the label is gone' do
+      expect(described_class.reference_for(nil, project, [])).to eq('')
+    end
+  end
+
+  describe '.local_labels_finder_params' do
+    let_it_be(:subgroup) { create(:group, parent: group) }
+    let_it_be(:subgroup_project) { create(:project, group: subgroup) }
+    let_it_be(:labels) do
+      [
+        create(:group_label, group: group),
+        create(:group_label, group: subgroup),
+        create(:group_label, group: create(:group, parent: subgroup)),
+        create(:label, project: subgroup_project),
+        create(:label, project: create(:project, group: subgroup))
+      ]
+    end
+
+    it 'finds the same labels as the label reference filter' do
+      filter = Banzai::Filter::References::LabelReferenceFilter.new('', project: nil)
+
+      [subgroup, subgroup_project].each do |parent|
+        local = LabelsFinder.new(nil, described_class.local_labels_finder_params(parent))
+        rendered = LabelsFinder.new(nil, filter.send(:label_finder_params, parent, false))
+
+        expect(local.execute(skip_authorization: true).id_in(labels).ids)
+          .to match_array(rendered.execute(skip_authorization: true).id_in(labels).ids)
+      end
+    end
+  end
+
+  describe '#label_reference' do
+    let_it_be(:group_label) { create(:group_label, group: group) }
+    let_it_be(:foreign_label) { create(:label) }
+
+    def event_for(label)
+      build(:resource_label_event, issue: issue, label: label)
+    end
+
+    it 'returns a bare id reference for a label local to the parent' do
+      expect(event_for(label).send(:label_reference)).to eq(label.to_reference(format: :id))
+    end
+
+    it 'returns a bare id reference for an ancestor group label' do
+      expect(event_for(group_label).send(:label_reference)).to eq(group_label.to_reference(format: :id))
+    end
+
+    it 'qualifies a label that is not reachable from the parent' do
+      expect(event_for(foreign_label).send(:label_reference))
+        .to eq("#{foreign_label.project.full_path}~#{foreign_label.id}")
+    end
+
+    it 'qualifies a group label that is not reachable from the parent' do
+      other_group_label = create(:group_label)
+
+      expect(event_for(other_group_label).send(:label_reference))
+        .to eq("#{other_group_label.group.full_path}~#{other_group_label.id}")
+    end
+
+    it 'returns an empty string when the label was deleted' do
+      expect(event_for(nil).send(:label_reference)).to eq('')
+    end
+
+    context 'when the parent is a group' do
+      let_it_be(:group_work_item) { create(:work_item, :group_level, namespace: group) }
+
+      def event_for(label)
+        build(:resource_label_event, issue: group_work_item, label: label)
+      end
+
+      it 'returns a bare id reference for a label on the group itself' do
+        expect(event_for(group_label).send(:label_reference)).to eq(group_label.to_reference(format: :id))
+      end
+
+      it 'qualifies a label owned by a child project' do
+        expect(event_for(label).send(:label_reference)).to eq("#{project.path}~#{label.id}")
+      end
+    end
+  end
+
+  describe '#work_item_synthetic_system_note' do
+    context 'with a group level work item' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:work_item) { create(:work_item, :group_level, namespace: group) }
+      let_it_be(:label) { create(:group_label, group: group) }
+      let_it_be(:event, freeze: false) do
+        create(:resource_label_event, issue: work_item, label: label, namespace: group)
+      end
+
+      it 'renders the label reference against the group' do
+        note = event.work_item_synthetic_system_note
+
+        expect(note.resource_parent).to eq(group)
+        expect(note.note_html).to include(label.title)
+      end
+
+      it 'renders the label reference against the group when events are batched' do
+        note = event.work_item_synthetic_system_note(events: [event])
+
+        expect(note.resource_parent).to eq(group)
+        expect(note.note_html).to include(label.title)
+      end
+    end
+
+    context 'with a project level work item' do
+      let_it_be(:project) { create(:project) }
+      let_it_be(:work_item) { create(:work_item, project: project) }
+      let_it_be(:label) { create(:label, project: project) }
+      let_it_be(:event, freeze: false) do
+        create(:resource_label_event, issue: work_item, label: label)
+      end
+
+      it 'renders the label reference against the project' do
+        note = event.work_item_synthetic_system_note
+
+        expect(note.resource_parent).to eq(project)
+        expect(note.note_html).to include(label.title)
+      end
+    end
+  end
+end

@@ -1,0 +1,624 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { mockTracking } from 'helpers/tracking_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { typePolicies } from '~/lib/graphql';
+import { config as issuableClientConfig } from '~/graphql_shared/issuable_client';
+import { visitUrl } from '~/lib/utils/url_utility';
+import { clearDraft } from '~/lib/utils/autosave';
+import WorkItemAddNote from '~/work_items/components/notes/work_item_add_note.vue';
+import WorkItemCommentLocked from '~/work_items/components/notes/work_item_comment_locked.vue';
+import WorkItemCommentForm from '~/work_items/components/notes/work_item_comment_form.vue';
+import createNoteMutation from '~/work_items/graphql/notes/create_work_item_note.mutation.graphql';
+import { TRACKING_CATEGORY_SHOW } from '~/work_items/constants';
+import { findNotesWidget } from '~/work_items/utils';
+import workItemByIidQuery from '~/work_items/graphql/work_item_by_iid.query.graphql';
+import workItemNotesByIidQuery from '~/work_items/graphql/notes/work_item_notes_by_iid.query.graphql';
+import DiscussionReplyPlaceholder from '~/notes/components/discussion_reply_placeholder.vue';
+import ResolveDiscussionButton from '~/notes/components/resolve_discussion_button.vue';
+import {
+  createWorkItemNoteResponse,
+  mockWorkItemNotesByIidResponse,
+  workItemByIidResponseFactory,
+  workItemQueryResponse,
+} from 'ee_else_ce_jest/work_items/mock_data';
+
+jest.mock('~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal');
+jest.mock('~/lib/utils/autosave');
+
+jest.mock('~/lib/utils/url_utility', () => {
+  const actual = jest.requireActual('~/lib/utils/url_utility');
+  return {
+    ...actual,
+    visitUrl: jest.fn(),
+  };
+});
+
+const workItemId = workItemQueryResponse.data.workItem.id;
+
+describe('Work item add note', () => {
+  /** @type {import('helpers/vue_test_utils_helper').ExtendedWrapper} */
+  let wrapper;
+
+  Vue.use(VueApollo);
+
+  const mutationSuccessHandler = jest.fn().mockResolvedValue(createWorkItemNoteResponse());
+  let workItemResponseHandler;
+  let apolloProvider;
+
+  const findCommentForm = () => wrapper.findComponent(WorkItemCommentForm);
+  const findErrorAlert = () => wrapper.findComponentByTestId('error-alert');
+  const findReplyPlaceholder = () => wrapper.findComponent(DiscussionReplyPlaceholder);
+  const findSuccessAlert = () => wrapper.findComponentByTestId('success-alert');
+  const findWorkItemLockedComponent = () => wrapper.findComponent(WorkItemCommentLocked);
+  const findResolveDiscussionButton = () => wrapper.findComponent(ResolveDiscussionButton);
+
+  const createComponent = async ({
+    mutationHandler = mutationSuccessHandler,
+    canCreateNote = true,
+    emailParticipantsWidgetPresent = true,
+    workItemIid = '1',
+    signedIn = true,
+    isEditing = true,
+    isInternalThread = false,
+    isNewDiscussion = false,
+    isDiscussionResolved = false,
+    isDiscussionResolvable = false,
+    isResolving = false,
+    isWorkItemConfidential = false,
+    parentId = null,
+    hideFullscreenMarkdownButton = false,
+    archived = false,
+    workItemFeaturesField = false,
+  } = {}) => {
+    const workItemResponse = workItemByIidResponseFactory({
+      canCreateNote,
+      emailParticipantsWidgetPresent,
+      archived,
+      ...(workItemFeaturesField && { features: {} }),
+    });
+    workItemResponseHandler = jest.fn().mockResolvedValue(workItemResponse);
+
+    if (signedIn) {
+      window.gon.current_user_id = '1';
+      window.gon.current_user_avatar_url = 'avatar.png';
+    }
+
+    apolloProvider = createMockApollo(
+      [
+        [workItemByIidQuery, workItemResponseHandler],
+        [createNoteMutation, mutationHandler],
+      ],
+      {},
+      {
+        // The work items app runs on the `issuable_client` cache config. Its
+        // `WorkItem.features` merge is what keeps `notes.discussions` alive across
+        // writes from different queries, so the cache must be configured the same
+        // way here for cache-update assertions to be meaningful.
+        typePolicies: { ...typePolicies, ...issuableClientConfig.cacheConfig.typePolicies },
+      },
+    );
+
+    wrapper = shallowMountExtended(WorkItemAddNote, {
+      apolloProvider,
+      provide: {
+        glFeatures: { workItemFeaturesField },
+      },
+      propsData: {
+        fullPath: 'test-project-path',
+        workItemId: workItemResponse.data.namespace.workItem.id,
+        workItemIid,
+        workItemType: 'Task',
+        markdownPreviewPath: '/group/project/preview_markdown?target_type=WorkItem',
+        uploadsPath: 'http://127.0.0.1:3000/test-project-path/uploads',
+        autocompleteDataSources: {},
+        isInternalThread,
+        isNewDiscussion,
+        isDiscussionResolved,
+        isDiscussionResolvable,
+        isResolving,
+        isWorkItemConfidential,
+        parentId,
+        hideFullscreenMarkdownButton,
+      },
+    });
+
+    await waitForPromises();
+
+    if (isEditing) {
+      findReplyPlaceholder().vm.$emit('focus');
+    }
+  };
+
+  describe('adding a comment', () => {
+    describe.each`
+      isInternalComment
+      ${false}
+      ${true}
+    `('when internal comment is $isInternalComment', ({ isInternalComment }) => {
+      it('calls update widgets mutation', async () => {
+        const noteText = 'updated desc';
+        await createComponent({ isEditing: true, signedIn: true });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: noteText,
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(mutationSuccessHandler).toHaveBeenCalledWith({
+          input: {
+            noteableId: workItemId,
+            body: noteText,
+            discussionId: null,
+            internal: isInternalComment,
+          },
+        });
+      });
+
+      it('tracks adding comment', async () => {
+        await createComponent();
+        const trackingSpy = mockTracking(undefined, wrapper.element, jest.spyOn);
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: 'test',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(trackingSpy).toHaveBeenCalledWith(TRACKING_CATEGORY_SHOW, 'add_work_item_comment', {
+          category: TRACKING_CATEGORY_SHOW,
+          label: 'item_comment',
+          property: 'type_Task',
+          extra: { viewContext: 'full_screen' },
+        });
+      });
+
+      it('emits `replied` event and hides form after successful mutation', async () => {
+        await createComponent({ isEditing: true, signedIn: true });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: 'some text',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(wrapper.emitted('replied')).toEqual([
+          [expect.objectContaining({ id: createWorkItemNoteResponse().data.createNote.note.id })],
+        ]);
+      });
+
+      it('clears a draft after successful mutation', async () => {
+        await createComponent({
+          isEditing: true,
+          signedIn: true,
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: 'some text',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(clearDraft).toHaveBeenCalledWith('gid://gitlab/WorkItem/1-comment');
+      });
+
+      it('shows the error inline when mutation returns error', async () => {
+        const error = 'eror';
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest
+            .fn()
+            .mockResolvedValue(createWorkItemNoteResponse({ errors: [error] })),
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: 'updated desc',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(findErrorAlert().text()).toBe(error);
+      });
+
+      it('shows the error inline when mutation fails', async () => {
+        const error = 'eror';
+
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest.fn().mockRejectedValue(new Error(error)),
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: 'updated desc',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(findErrorAlert().text()).toBe(error);
+      });
+
+      it('emits `replied` to clear the reply placeholder when mutation returns error', async () => {
+        const error = 'eror';
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest
+            .fn()
+            .mockResolvedValue(createWorkItemNoteResponse({ errors: [error] })),
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: 'updated desc',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(wrapper.emitted('replied')).toEqual([[]]);
+      });
+
+      it('ignores errors when mutation returns additional information as errors for quick actions', async () => {
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest.fn().mockResolvedValue(
+            createWorkItemNoteResponse({
+              errors: ['Commands only Removed assignee @foobar.', 'Command names ["unassign"]'],
+            }),
+          ),
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: 'updated desc',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(clearDraft).toHaveBeenCalledWith('gid://gitlab/WorkItem/1-comment');
+      });
+
+      it('renders success alert on successful quick action', async () => {
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest
+            .fn()
+            .mockResolvedValue(createWorkItemNoteResponse({ messages: ['Added ~"Label" label.'] })),
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: '/label ~Label',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(findSuccessAlert().text()).toBe('Added ~"Label" label.');
+        expect(findSuccessAlert().props('variant')).toBe('info');
+      });
+
+      it('renders error alert on unsuccessful quick action', async () => {
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest
+            .fn()
+            .mockResolvedValue(
+              createWorkItemNoteResponse({ errorMessages: ['Failed to apply commands.'] }),
+            ),
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: '/label doesnotexist',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(findErrorAlert().text()).toBe('Failed to apply commands.');
+        expect(findErrorAlert().props('variant')).toBe('danger');
+      });
+
+      it('renders the quick action error inline instead of a page-level error when the response carries both', async () => {
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest.fn().mockResolvedValue(
+            createWorkItemNoteResponse({
+              errorMessages: [
+                'Work item type cannot be changed to incident when linked to a parent epic.',
+              ],
+              messages: ['Type changed successfully.'],
+              errors: [
+                'Validation Work item type cannot be changed to incident when linked to a parent epic.',
+              ],
+            }),
+          ),
+        });
+
+        findCommentForm().vm.$emit('submit-form', {
+          commentText: '/type Incident',
+          isNoteInternal: isInternalComment,
+        });
+        await waitForPromises();
+
+        expect(findErrorAlert().text()).toBe(
+          'Work item type cannot be changed to incident when linked to a parent epic.',
+        );
+        expect(findSuccessAlert().exists()).toBe(false);
+        expect(wrapper.emitted('error')).toBeUndefined();
+        expect(visitUrl).not.toHaveBeenCalled();
+      });
+
+      it('refetches widgets when work item type is updated', async () => {
+        await createComponent({
+          isEditing: true,
+          mutationHandler: jest.fn().mockResolvedValue(
+            createWorkItemNoteResponse({
+              errors: ['Commands only Type changed successfully.', 'Command names ["type"]'],
+            }),
+          ),
+        });
+
+        expect(workItemResponseHandler).toHaveBeenCalled();
+      });
+
+      it('emits error to parent when the comment form emits error', async () => {
+        await createComponent({ isEditing: true, signedIn: true });
+        const error = 'error';
+
+        findCommentForm().vm.$emit('error', error);
+
+        expect(wrapper.emitted('error')).toEqual([[error]]);
+      });
+
+      it('sends confidential prop to work item comment form', async () => {
+        await createComponent({ isWorkItemConfidential: true });
+
+        expect(findCommentForm().props('isWorkItemConfidential')).toBe(true);
+      });
+
+      it('emits focus event on comment form focus event', async () => {
+        await createComponent({ isEditing: true });
+
+        findCommentForm().vm.$emit('focus');
+
+        expect(wrapper.emitted('focus')).toHaveLength(1);
+      });
+
+      it('emits blur event on comment form blur event', async () => {
+        await createComponent({ isEditing: true });
+
+        findCommentForm().vm.$emit('blur');
+
+        expect(wrapper.emitted('blur')).toHaveLength(1);
+      });
+    });
+
+    describe('when the work item type is changed to incident', () => {
+      it.each`
+        command                                  | shouldPerformReload
+        ${'/promote_to_incident'}                | ${true}
+        ${'/type Incident'}                      | ${true}
+        ${'/type incident'}                      | ${true}
+        ${'/promote_to Incident'}                | ${true}
+        ${'/promote_to incident'}                | ${true}
+        ${'/convert_to_ticket user@example.com'} | ${true}
+        ${'/promote_to Epic'}                    | ${false}
+        ${'/type Issue'}                         | ${false}
+        ${'/type Task'}                          | ${false}
+        ${'No quick action'}                     | ${false}
+      `(
+        'calls visitUrl $shouldPerformReload when note was added with command: $command',
+        async ({ command, shouldPerformReload }) => {
+          await createComponent({
+            isEditing: true,
+            mutationHandler: jest.fn().mockResolvedValue(
+              createWorkItemNoteResponse({
+                messages: ['Message does not matter because its localized'],
+              }),
+            ),
+          });
+
+          findCommentForm().vm.$emit('submit-form', {
+            commentText: command,
+          });
+
+          await waitForPromises();
+
+          if (shouldPerformReload) {
+            expect(visitUrl).toHaveBeenCalled();
+          } else {
+            expect(visitUrl).not.toHaveBeenCalled();
+          }
+        },
+      );
+    });
+  });
+
+  it('calls the work item query', async () => {
+    await createComponent();
+
+    expect(workItemResponseHandler).toHaveBeenCalled();
+  });
+
+  it('skips calling the work item query when missing workItemIid', async () => {
+    await createComponent({ workItemIid: '', isEditing: false });
+
+    expect(workItemResponseHandler).not.toHaveBeenCalled();
+  });
+
+  it('wrapper adds `internal-note` class when internal thread', async () => {
+    await createComponent({ isInternalThread: true });
+
+    expect(wrapper.attributes('class')).toContain('internal-note');
+  });
+
+  describe.each`
+    description                    | workItemFeaturesField
+    ${'when using `widgets` key'}  | ${false}
+    ${'when using `features` key'} | ${true}
+  `('when the notes query is cached in the $description', ({ workItemFeaturesField }) => {
+    // The cache read in `addDiscussionToCache` must resolve the same branch of
+    // `workItemNotesByIidQuery` that `work_item_notes.vue` wrote, otherwise the
+    // read misses, the update is silently skipped, and the new note only ever
+    // reaches the list via the (racy) `workItemNoteCreated` subscription.
+    // See https://gitlab.com/gitlab-org/quality/test-failure-issues/-/work_items/43757
+    const notesQueryVariables = {
+      fullPath: 'test-project-path',
+      iid: '1',
+      useWorkItemFeatures: workItemFeaturesField,
+    };
+
+    const readCachedDiscussionIds = () => {
+      const cached = apolloProvider.clients.defaultClient.cache.readQuery({
+        query: workItemNotesByIidQuery,
+        variables: notesQueryVariables,
+      });
+      const notesWidget = findNotesWidget(cached.namespace.workItem);
+
+      return notesWidget.discussions.nodes.map(({ id }) => id);
+    };
+
+    const seedNotesCache = (id) => {
+      const mockWorkItem = mockWorkItemNotesByIidResponse.data.namespace.workItem;
+      const notesWidget = findNotesWidget(mockWorkItem);
+      const { widgets, ...workItem } = mockWorkItem;
+
+      apolloProvider.clients.defaultClient.cache.writeQuery({
+        query: workItemNotesByIidQuery,
+        variables: notesQueryVariables,
+        data: {
+          namespace: {
+            __typename: 'Project',
+            id: 'gid://gitlab/Project/1',
+            workItem: {
+              ...workItem,
+              id,
+              iid: '1',
+              ...(workItemFeaturesField
+                ? { features: { __typename: 'WorkItemFeatures', notes: notesWidget } }
+                : { widgets: [notesWidget] }),
+            },
+          },
+        },
+      });
+    };
+
+    it('adds the newly created note to the cached discussions', async () => {
+      await createComponent({ workItemFeaturesField });
+      seedNotesCache(wrapper.props('workItemId'));
+
+      const discussionIdsBefore = readCachedDiscussionIds();
+
+      findCommentForm().vm.$emit('submit-form', { commentText: 'Main comment' });
+      await waitForPromises();
+
+      expect(readCachedDiscussionIds()).toEqual([
+        ...discussionIdsBefore,
+        'gid://gitlab/Discussion/c872ba2d7d3eb780d2255138d67ca8b04f65b122',
+      ]);
+    });
+  });
+
+  describe('when work item `createNote` permission is false', () => {
+    it('cannot add comment', async () => {
+      await createComponent({ isEditing: false, canCreateNote: false });
+
+      expect(findCommentForm().exists()).toBe(false);
+    });
+
+    describe('when project is not archived', () => {
+      it('shows locked component', async () => {
+        await createComponent({ isEditing: false, canCreateNote: false, archived: false });
+
+        expect(findWorkItemLockedComponent().exists()).toBe(true);
+      });
+    });
+
+    describe('when project is archived', () => {
+      it('does not show locked component', async () => {
+        await createComponent({ isEditing: false, canCreateNote: false, archived: true });
+
+        expect(findWorkItemLockedComponent().exists()).toBe(false);
+      });
+    });
+  });
+
+  describe('email participants', () => {
+    it('sets `hasEmailParticipantsWidget` prop to `true` for comment form by default', async () => {
+      await createComponent();
+
+      expect(findCommentForm().props('hasEmailParticipantsWidget')).toBe(true);
+    });
+
+    describe('when email participants widget is not available', () => {
+      it('sets `hasEmailParticipantsWidget` prop to `false` for comment form', async () => {
+        await createComponent({ emailParticipantsWidgetPresent: false });
+
+        expect(findCommentForm().props('hasEmailParticipantsWidget')).toBe(false);
+      });
+    });
+  });
+
+  describe('Resolve Discussion button', () => {
+    it('renders resolve discussion button when discussion is resolvable', async () => {
+      await createComponent({ isDiscussionResolvable: true, isEditing: false });
+
+      expect(findResolveDiscussionButton().exists()).toBe(true);
+    });
+
+    it('does not render resolve discussion button when discussion is not resolvable', async () => {
+      await createComponent({ isDiscussionResolvable: false, isEditing: false });
+
+      expect(findResolveDiscussionButton().exists()).toBe(false);
+    });
+
+    it('does not render resolve discussion button when it is a new discussion', async () => {
+      await createComponent({
+        isDiscussionResolvable: false,
+        isEditing: false,
+        isNewDiscussion: true,
+      });
+
+      expect(findResolveDiscussionButton().exists()).toBe(false);
+    });
+
+    it('emits `resolve` event when resolve discussion button is clicked', async () => {
+      await createComponent({ isDiscussionResolvable: true, isEditing: false });
+
+      findResolveDiscussionButton().vm.$emit('on-click');
+
+      expect(wrapper.emitted('resolve')).toHaveLength(1);
+    });
+
+    it('emits `resolve` with the reply when the comment form resolves on submit', async () => {
+      await createComponent({ isDiscussionResolvable: true });
+
+      findCommentForm().vm.$emit('toggle-resolve-discussion');
+
+      expect(wrapper.emitted('resolve')).toEqual([[{ withReply: true }]]);
+    });
+
+    it('passes correct props to resolve discussion button', async () => {
+      await createComponent({
+        isDiscussionResolvable: true,
+        isDiscussionResolved: false,
+        isResolving: true,
+        isEditing: false,
+      });
+
+      expect(findResolveDiscussionButton().props()).toMatchObject({
+        isResolving: true,
+        buttonTitle: 'Resolve thread',
+      });
+    });
+  });
+
+  it('passes the `parentId` prop down to the `WorkItemCommentForm` component', async () => {
+    await createComponent({ parentId: 'example-id' });
+
+    expect(findCommentForm().props('parentId')).toBe('example-id');
+  });
+
+  it('passes hideFullscreenMarkdownButton to comment form', async () => {
+    await createComponent({ hideFullscreenMarkdownButton: true });
+
+    expect(findCommentForm().props('hideFullscreenMarkdownButton')).toBe(true);
+  });
+});

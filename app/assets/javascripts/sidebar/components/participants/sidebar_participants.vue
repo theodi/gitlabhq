@@ -1,0 +1,88 @@
+<script>
+import { GlIcon, GlLoadingIcon, GlTooltipDirective } from '@gitlab/ui';
+import { n__, sprintf } from '~/locale';
+import Participants from './participants.vue';
+
+export default {
+  name: 'SidebarParticipants',
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  components: {
+    GlIcon,
+    GlLoadingIcon,
+    Participants,
+  },
+  props: {
+    loading: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    participants: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    participantCount: {
+      type: Number,
+      required: false,
+      default: undefined,
+    },
+    numberOfLessParticipants: {
+      type: Number,
+      required: false,
+      default: 8,
+    },
+    showParticipantLabel: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+    lazy: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+  },
+  emits: ['toggle-sidebar'],
+  computed: {
+    participantLabel() {
+      return sprintf(
+        n__('%{count} Participant', '%{count} Participants', this.participantCountCalculated),
+        { count: this.loading ? '' : this.participantCountCalculated },
+      );
+    },
+    participantCountCalculated() {
+      return Math.max(this.participants.length, this.participantCount || 0);
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <div
+      v-if="showParticipantLabel"
+      v-gl-tooltip.left.viewport
+      :title="participantLabel"
+      class="sidebar-collapsed-icon"
+      @click="$emit('toggle-sidebar')"
+    >
+      <gl-icon name="users" />
+      <gl-loading-icon v-if="loading" size="sm" />
+      <span v-else class="gl-px-3 gl-pt-2 gl-text-sm">
+        {{ participantCountCalculated }}
+      </span>
+    </div>
+    <participants
+      class="hide-collapsed"
+      :lazy="lazy"
+      :loading="loading"
+      :number-of-less-participants="numberOfLessParticipants"
+      :participants="participants"
+      :participant-count="participantCount"
+      :show-participant-label="showParticipantLabel"
+    />
+  </div>
+</template>

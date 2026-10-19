@@ -1,0 +1,142 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Project Badges', feature_category: :groups_and_projects do
+  include WaitForRequests
+
+  let(:user) { create(:user) }
+  let(:group) { create(:group) }
+  let(:project) { create(:project, namespace: group) }
+  let(:badge_link_url) { "http://#{page.server.host}:#{page.server.port}/#{project.full_path}/commits/master" }
+  let(:badge_image_url) { "http://#{page.server.host}:#{page.server.port}/#{project.full_path}/badges/master/pipeline.svg" }
+  let!(:project_badge) { create(:project_badge, project: project) }
+  let!(:group_badge) { create(:group_badge, group: group) }
+
+  before do
+    group.add_maintainer(user)
+    sign_in(user)
+
+    visit(edit_project_path(project))
+  end
+
+  it 'shows a list of badges', :js do
+    within_testid('badge-settings') do
+      wait_for_requests
+
+      rows = all('tbody tr')
+      expect(rows.length).to eq 2
+      expect(rows[0]).to have_content group_badge.link_url
+      expect(rows[1]).to have_content project_badge.link_url
+    end
+  end
+
+  context 'adding a badge', :js do
+    it 'user can preview a badge' do
+      click_button 'Add new badge'
+      within_testid('crud-form') do
+        fill_in 'Name', with: 'test badge'
+        fill_in 'Link', with: badge_link_url
+        fill_in 'Badge image URL', with: badge_image_url
+
+        badge_link = find_by_testid('badge-image-link')
+        expect(badge_link[:href]).to eq badge_link_url
+        expect(badge_link.find('img')[:src]).to eq badge_image_url
+      end
+    end
+
+    it do
+      click_button 'Add new badge'
+      within_testid('crud-form') do
+        fill_in 'Name', with: 'test badge'
+        fill_in 'Link', with: badge_link_url
+        fill_in 'Badge image URL', with: badge_image_url
+
+        click_button 'Add badge'
+        wait_for_requests
+      end
+
+      within_testid('badge-settings') do
+        rows = all('tbody tr')
+        expect(rows.length).to eq 3
+
+        within rows.last do
+          badge_link = find_by_testid('badge-image-link')
+          expect(badge_link[:href]).to eq badge_link_url
+          expect(badge_link.find('img')[:src]).to eq badge_image_url
+        end
+      end
+    end
+  end
+
+  context 'editing a badge', :js do
+    it 'form is shown when clicking edit button in list' do
+      within_testid('badge-settings') do
+        wait_for_requests
+        rows = all('tbody tr')
+        expect(rows.length).to eq 2
+        rows[1].find('[aria-label="Edit"]').click
+      end
+
+      page.within '.gl-modal' do
+        expect(find_field('Link').value).to eq project_badge.link_url
+        expect(find_field('Badge image URL').value).to eq project_badge.image_url
+      end
+    end
+
+    it 'updates a badge when submitting the edit form' do
+      within_testid('badge-settings') do
+        wait_for_requests
+        rows = all('tbody tr')
+        expect(rows.length).to eq 2
+        rows[1].find('[aria-label="Edit"]').click
+      end
+
+      page.within '.gl-modal' do
+        fill_in 'Name', with: 'test badge'
+        fill_in 'Link', with: badge_link_url
+        fill_in 'Badge image URL', with: badge_image_url
+
+        click_button 'Save changes'
+        wait_for_requests
+      end
+
+      within_testid('badge-settings') do
+        rows = all('tbody tr')
+        expect(rows.length).to eq 2
+        expect(rows[1]).to have_content badge_link_url
+      end
+    end
+  end
+
+  context 'deleting a badge', :js do
+    def click_delete_button(badge_row)
+      badge_row.find('[aria-label="Delete"]').click
+    end
+
+    it 'shows a modal when deleting a badge' do
+      within_testid('badge-settings') do
+        expect(page).to have_css('tbody tr', count: 2)
+
+        click_delete_button(all('tbody tr')[1])
+      end
+
+      expect(find('.modal .modal-title')).to have_content 'Delete badge?'
+    end
+
+    it 'deletes a badge when confirming the modal' do
+      within_testid('badge-settings') do
+        expect(page).to have_css('tbody tr', count: 2)
+
+        click_delete_button(all('tbody tr')[1])
+      end
+
+      find('.modal .btn-danger').click
+
+      within_testid('badge-settings') do
+        expect(page).to have_css('tbody tr', count: 1)
+        expect(all('tbody tr').first).to have_content group_badge.link_url
+      end
+    end
+  end
+end

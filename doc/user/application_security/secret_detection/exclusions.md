@@ -1,0 +1,72 @@
+---
+stage: Application Security Testing
+group: Secret Detection
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Secret detection exclusions
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+- Status: Experiment
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/14878) as an [experiment](../../../policy/development_stages_support.md) in GitLab 17.5 [with a feature flag](../../../administration/feature_flags/list.md) named `secret_detection_project_level_exclusions`. Enabled by default.
+- Feature flag `secret_detection_project_level_exclusions` [removed](https://gitlab.com/gitlab-org/gitlab/-/issues/499059) in GitLab 17.7.
+
+{{< /history >}}
+
+Secret detection may detect something that's not actually a secret. For example, if you use
+a fake value as a placeholder in your code, it might be detected and possibly blocked.
+
+To avoid false positives and [optimize performance](secret_push_protection/_index.md#optimize-performance),
+you can exclude from secret detection:
+
+- A path.
+- A raw value.
+- A rule from the default ruleset.
+
+You can define multiple exclusions for a project.
+
+## Restrictions
+
+The following restrictions apply:
+
+- Exclusions can only be defined for each project.
+- Exclusions apply only to [secret push protection](secret_push_protection/_index.md).
+- The maximum number of path-based exclusions per project is 10.
+- The maximum depth for path-based exclusions is 20.
+
+<i class="fa-youtube-play" aria-hidden="true"></i>
+For an overview, see [secret detection exclusions - demo](https://www.youtube.com/watch?v=vh_Uh4_4aoc).
+<!-- Video published on 2024-10-12 -->
+
+## Add an exclusion
+
+Define an exclusion to avoid false positives from secret detection.
+
+Prerequisites:
+
+- You must have the Security Manager, Maintainer, or Owner role for the project.
+
+To define an exclusion:
+
+1. In the top bar, select **Search or go to** and find your project or group.
+1. In the left sidebar, select **Secure** > **Security configuration**.
+1. Scroll down to **Secret push protection**.
+1. Turn on the **Secret push protection** toggle.
+1. Select **Configure Secret Detection** ({{< icon name="settings" >}}).
+1. Select **Add exclusion** to open the exclusion form.
+1. Enter the details of the exclusion, then select **Add exclusion**.
+
+Path exclusions support glob patterns which are supported and interpreted with the Ruby method
+[`File.fnmatch`](https://docs.ruby-lang.org/en/master/File.html#method-c-fnmatch)
+with the [flags](https://docs.ruby-lang.org/en/master/File/Constants.html#module-File::Constants-label-Filename+Globbing+Constants+-28File-3A-3AFNM_-2A-29)
+`File::FNM_PATHNAME | File::FNM_DOTMATCH | File::FNM_EXTGLOB`.
+
+Rule exclusions support any of the IDs listed in the [default ruleset](https://gitlab.com/gitlab-org/security-products/secret-detection/secret-detection-rules). For example,
+`gitlab_personal_access_token` is the rule ID for GitLab personal access tokens.

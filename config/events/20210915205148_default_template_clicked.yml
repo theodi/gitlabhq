@@ -1,0 +1,15 @@
+description: "Click pipeline empty state template"
+category: default
+action: template_clicked
+extra_properties:
+identifiers:
+product_group: activation
+milestone: "13.11"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/58808
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "Template name or \"Getting-Started\""

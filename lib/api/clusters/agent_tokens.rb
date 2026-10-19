@@ -1,0 +1,110 @@
+# frozen_string_literal: true
+
+module API
+  module Clusters
+    class AgentTokens < ::API::Base
+      include PaginationParams
+
+      before { authenticate! }
+
+      feature_category :deployment_management
+
+      params do
+        requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+      end
+      resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        params do
+          requires :agent_id, type: Integer, desc: 'ID of the agent.'
+        end
+        resource ':id/cluster_agents/:agent_id' do
+          resource :tokens do
+            desc 'List all agent tokens' do
+              detail 'Lists all active tokens for an agent. You must have the Developer, Maintainer, or Owner role ' \
+                'to use this endpoint.'
+              success Entities::Clusters::AgentTokenBasic
+              tags %w[cluster_agents]
+            end
+            params do
+              use :pagination
+            end
+            route_setting :authorization, permissions: :read_cluster_agent_token, boundary_type: :project
+            get do
+              agent = ::Clusters::AgentsFinder.new(user_project, current_user).find(params[:agent_id])
+              agent_tokens = ::Clusters::AgentTokensFinder.new(agent, current_user, status: :active).execute
+
+              present paginate(agent_tokens), with: Entities::Clusters::AgentTokenBasic
+            end
+
+            desc 'Retrieve an agent token' do
+              detail 'Retrieves a specified agent token. You must have the Developer, Maintainer, or Owner role to ' \
+                'use this endpoint. Returns a `404` if the agent token has been revoked.'
+              success Entities::Clusters::AgentToken
+              tags %w[cluster_agents]
+            end
+            params do
+              requires :token_id, type: Integer, desc: 'ID of the agent token.'
+            end
+            route_setting :authorization, permissions: :read_cluster_agent_token, boundary_type: :project
+            get ':token_id' do
+              agent = ::Clusters::AgentsFinder.new(user_project, current_user).find(params[:agent_id])
+              token = ::Clusters::AgentTokensFinder.new(agent, current_user, status: :active).find(params[:token_id])
+
+              present token, with: Entities::Clusters::AgentToken
+            end
+
+            desc 'Create an agent token' do
+              detail 'Creates a token for an agent. You must have the Maintainer or Owner role to use this endpoint. ' \
+                'An agent can have only two active tokens at one time.'
+              success Entities::Clusters::AgentTokenWithToken
+              tags %w[cluster_agents]
+            end
+            params do
+              requires :name, type: String, desc: 'Name of the token.'
+              optional :description, type: String, desc: 'Description of the token.'
+            end
+            route_setting :authorization, permissions: :create_cluster_agent_token, boundary_type: :project
+            post do
+              authorize! :create_cluster, user_project
+
+              token_params = declared_params(include_missing: false)
+
+              agent = ::Clusters::AgentsFinder.new(user_project, current_user).find(params[:agent_id])
+
+              result = ::Clusters::AgentTokens::CreateService.new(
+                agent: agent,
+                current_user: current_user,
+                params: token_params
+              ).execute
+
+              bad_request!(result[:message]) if result[:status] == :error
+
+              present result[:token], with: Entities::Clusters::AgentTokenWithToken
+            end
+
+            desc 'Revoke an agent token' do
+              detail 'Revokes an agent token. You must have the Maintainer or Owner role to use this endpoint.'
+              success code: 204, message: 'Resource deleted'
+              tags %w[cluster_agents]
+            end
+            params do
+              requires :token_id, type: Integer, desc: 'ID of the agent token.'
+            end
+            route_setting :authorization, permissions: :revoke_cluster_agent_token, boundary_type: :project
+            delete ':token_id' do
+              authorize! :admin_cluster, user_project
+
+              agent = ::Clusters::AgentsFinder.new(user_project, current_user).find(params[:agent_id])
+              token = ::Clusters::AgentTokensFinder.new(agent, current_user).find(params[:token_id])
+
+              result = ::Clusters::AgentTokens::RevokeService.new(token: token, current_user: current_user).execute
+
+              bad_request!(result[:message]) if result[:status] == :error
+
+              status :no_content
+            end
+          end
+        end
+      end
+    end
+  end
+end

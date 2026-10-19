@@ -1,0 +1,119 @@
+# frozen_string_literal: true
+
+module JiraConnectSubscriptions
+  class CreateService < ::JiraConnectSubscriptions::BaseService
+    include Gitlab::Utils::StrongMemoize
+
+    MERGE_REQUEST_SYNC_BATCH_SIZE = 20
+    MERGE_REQUEST_SYNC_BATCH_DELAY = 1.minute.freeze
+    BATCH_SIZE = 1_000
+
+    def execute
+      if !params[:jira_user]
+        return error(s_('JiraConnect|Could not fetch user information from Jira. ' \
+                        'Check the permissions in Jira and try again.'), 403)
+      elsif !can_administer_jira?
+        return error(jira_not_an_admin_error_message, 403)
+      end
+
+      # Return 404 when the user cannot read the namespace (including when it does not exist) so that
+      # we do not reveal the existence of private namespaces the user is not a member of.
+      unless namespace && can?(current_user, :read_namespace, namespace)
+        return error(s_('JiraConnect|Namespace not found. Check the group path and try again.'), 404)
+      end
+
+      unless can?(current_user, :create_jira_connect_subscription, namespace)
+        return error(
+          s_('JiraConnect|You do not have permission to link this namespace. ' \
+             'You must be a Maintainer or Owner of the group.'),
+          403
+        )
+      end
+
+      create_subscription
+    end
+
+    private
+
+    def can_administer_jira?
+      params[:jira_user]&.jira_admin?
+    end
+
+    def jira_not_an_admin_error_message
+      detailed_message = params[:jira_user].not_an_admin_error_message
+
+      if detailed_message
+        format(
+          s_('JiraConnect|%{detailed_message}. ' \
+             'Check the permissions in Jira and try again.'),
+          detailed_message: detailed_message
+        )
+      else
+        s_('JiraConnect|The Jira user is not a site or organization ' \
+           'administrator. Check the permissions in Jira and try again.')
+      end
+    end
+
+    def create_subscription
+      subscription = JiraConnectSubscription.new(installation: jira_connect_installation, namespace: namespace)
+
+      if subscription.save
+        create_jira_cloud_integration!
+        schedule_sync_project_jobs
+
+        success
+      else
+        error(subscription.errors.full_messages.join(', '), 422)
+      end
+    end
+
+    # We must make all GitLab for Jira app integrations active (or inactive in the DestroyService)
+    # regardless of whether those integration inherit, or have defined their own custom settings.
+    # Unless the group namespace is linked in Jira,
+    # the project integrations do not work, even if they are non-inheriting.
+    #
+    # Using Integration.descendants_from_self_or_ancestors_from we update
+    # all integrations of all subgroups and sub projects to be active.
+    #
+    # We keep their inherit_from_id intact, as they might have custom service_ids fields.
+    # We also still queue a PropagateIntegrationWorker in order to create integrations
+    # (the Integration.descendants_from_self_or_ancestors_from only updates existing ones).
+    def create_jira_cloud_integration!
+      integration = Integration.find_or_initialize_non_project_specific_integration(
+        'jira_cloud_app',
+        group_id: namespace.id
+      )
+
+      return unless integration
+
+      Integrations::JiraCloudApp.transaction do
+        integration.inherit_from_id = nil
+        integration.activate!
+
+        Integration.descendants_from_self_or_ancestors_from(integration).each_batch(of: BATCH_SIZE) do |records|
+          records.update!(active: true)
+        end
+      end
+
+      # This worker must be queued outside of the PostgreSQL transaction.
+      PropagateIntegrationWorker.perform_async(integration.id) if integration.persisted?
+    end
+
+    def namespace
+      strong_memoize(:namespace) do
+        Namespace.find_by_full_path(params[:namespace_path])
+      end
+    end
+
+    def schedule_sync_project_jobs
+      namespace.all_projects.each_batch(of: MERGE_REQUEST_SYNC_BATCH_SIZE) do |projects, index|
+        JiraConnect::SyncProjectWorker.bulk_perform_in_with_contexts(
+          index * MERGE_REQUEST_SYNC_BATCH_DELAY,
+          projects,
+          arguments_proc: ->(project) { [project.id, Atlassian::JiraConnect::Client.generate_update_sequence_id] },
+          context_proc: ->(project) { { project: project } }
+        )
+      end
+    end
+  end
+end

@@ -1,0 +1,406 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Organizations::ActivateService, :freeze_time, feature_category: :organization do
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:organization) { create(:organization, :confirmed, owners: user) }
+  let_it_be(:top_level_group) { create(:group, organization: organization, owners: user) }
+  let_it_be(:other_top_level_group) { create(:group, organization: organization, owners: user) }
+
+  let(:current_user) { user }
+  let(:organization_id) { organization.id }
+  let(:params) { { organization_id: organization_id } }
+  let(:seconds_since_confirmation) { 90 }
+
+  subject(:response) { described_class.new(current_user, params).execute }
+
+  before do
+    organization.state_metadata['confirmed_at'] = seconds_since_confirmation.seconds.ago.as_json
+    organization.organization_detail.save!
+  end
+
+  describe '#execute' do
+    context 'when all validations pass' do
+      before do
+        allow_next_instance_of(Organizations::Transfer::GroupsService) do |service|
+          allow(service).to receive(:execute).and_return(ServiceResponse.success)
+        end
+      end
+
+      it 'transitions the organization state to active' do
+        expect { response }.to change { organization.reload.state }.from('confirmed').to('active')
+      end
+
+      it 'returns a successful response', :aggregate_failures do
+        expect(response).to be_success
+        expect(response.payload[:organization]).to eq(organization)
+      end
+
+      it 'publishes an Organizations::ActivatedEvent' do
+        expect { response }
+          .to publish_event(Organizations::ActivatedEvent)
+          .with(organization_id: organization.id)
+      end
+
+      it 'calls Organizations::Transfer::GroupsService for each top-level group', :aggregate_failures do
+        expect(Organizations::Transfer::GroupsService).to receive(:new).with(
+          group: top_level_group,
+          new_organization: organization,
+          current_user: current_user
+        ).and_call_original
+
+        expect(Organizations::Transfer::GroupsService).to receive(:new).with(
+          group: other_top_level_group,
+          new_organization: organization,
+          current_user: current_user
+        ).and_call_original
+
+        response
+      end
+
+      it 'triggers the transfer started event', :clean_gitlab_redis_shared_state do
+        expect { response }.to trigger_internal_events(
+          'transfer_tlg_resources_into_an_organization_started'
+        ).with(
+          user: current_user,
+          additional_properties: { target_organization_id: organization.id }
+        ).and increment_usage_metrics(
+          usage_metrics_for('transfer_tlg_resources_into_an_organization_started')
+        )
+      end
+
+      it 'triggers the transfer succeeded event', :clean_gitlab_redis_shared_state do
+        expect { response }.to trigger_internal_events(
+          'transfer_tlg_resources_into_an_organization_succeeded'
+        ).with(
+          user: current_user,
+          additional_properties: {
+            target_organization_id: organization.id,
+            value: seconds_since_confirmation,
+            groups_count: 2,
+            projects_count: 0,
+            users_count: 1
+          }
+        ).and increment_usage_metrics(
+          usage_metrics_for('transfer_tlg_resources_into_an_organization_succeeded')
+        )
+      end
+
+      it 'does not trigger the transfer failed event' do
+        expect { response }.to not_trigger_internal_events(
+          'transfer_tlg_resources_into_an_organization_failed'
+        )
+      end
+
+      context 'when the organization has no confirmation timestamp' do
+        before do
+          organization.state_metadata.delete('confirmed_at')
+          organization.organization_detail.save!
+        end
+
+        it 'omits the duration from the succeeded event' do
+          expect { response }.to trigger_internal_events(
+            'transfer_tlg_resources_into_an_organization_succeeded'
+          ).with(
+            user: current_user,
+            additional_properties: {
+              target_organization_id: organization.id,
+              groups_count: 2,
+              projects_count: 0,
+              users_count: 1
+            }
+          )
+        end
+      end
+
+      context 'when the organization has projects and a subgroup' do
+        let_it_be(:subgroup) { create(:group, parent: top_level_group, organization: organization) }
+        let_it_be(:project) { create(:project, group: subgroup, organization: organization) }
+
+        it 'reports the group, project, and user counts on the succeeded event' do
+          expect { response }.to trigger_internal_events(
+            'transfer_tlg_resources_into_an_organization_succeeded'
+          ).with(
+            user: current_user,
+            additional_properties: {
+              target_organization_id: organization.id,
+              value: seconds_since_confirmation,
+              groups_count: 3,
+              projects_count: 1,
+              users_count: 1
+            }
+          )
+        end
+      end
+
+      it 'copies users to the organization via Organizations::Transfer::OrganizationUsersService' do
+        expect_next_instance_of(
+          Organizations::Transfer::OrganizationUsersService, organization: organization
+        ) do |instance|
+          expect(instance).to receive(:execute).and_return(ServiceResponse.success)
+        end
+
+        response
+      end
+
+      context 'when the organization has no top-level groups' do
+        let_it_be_with_reload(:organization) { create(:organization, :confirmed, owners: user) }
+
+        it 'still activates the organization' do
+          expect(Organizations::Transfer::GroupsService).not_to receive(:new)
+
+          expect { response }.to change { organization.reload.state }.from('confirmed').to('active')
+        end
+      end
+    end
+
+    it 'transfers groups and copies users before activating the organization' do
+      allow(Organizations::Organization).to receive(:find_by_id).and_call_original
+      allow(Organizations::Organization).to receive(:find_by_id).with(organization.id).and_return(organization)
+
+      transfer_service = instance_double(Organizations::Transfer::GroupsService)
+      allow(Organizations::Transfer::GroupsService).to receive(:new).and_return(transfer_service)
+      expect(transfer_service).to receive(:execute).and_return(ServiceResponse.success).twice.ordered
+
+      users_service = instance_double(Organizations::Transfer::OrganizationUsersService)
+      allow(Organizations::Transfer::OrganizationUsersService).to receive(:new).and_return(users_service)
+      expect(users_service).to receive(:execute).and_return(ServiceResponse.success).ordered
+
+      expect(organization).to receive(:activate).ordered.and_call_original
+
+      response
+    end
+
+    context 'when descendants have not yet been transferred' do
+      # Reproduces the activation flow that follows Organizations::ConfirmService:
+      # the top-level group has been moved to the target organization but its
+      # descendants and projects still belong to the previous organization.
+      let_it_be(:old_organization) { create(:organization, owners: user) }
+      let_it_be_with_refind(:subgroup) { create(:group, parent: top_level_group) }
+      let_it_be_with_refind(:nested_project) { create(:project, namespace: subgroup) }
+
+      before do
+        # ConfirmService records the source on the top-level group; the descendants still point at it here.
+        details = Namespace::Detail.find_by!(namespace_id: top_level_group.id)
+        details.state_metadata['organization_transfer_source_id'] = old_organization.id
+        details.save!
+        subgroup.update_column(:organization_id, old_organization.id)
+        nested_project.update_column(:organization_id, old_organization.id)
+        nested_project.project_namespace.update_column(:organization_id, old_organization.id)
+      end
+
+      it 'moves the descendants to the target organization and activates', :aggregate_failures do
+        expect(response).to be_success
+        expect(organization.reload.state).to eq('active')
+
+        expect(subgroup.reload.organization_id).to eq(organization.id)
+        expect(nested_project.reload.organization_id).to eq(organization.id)
+        expect(nested_project.project_namespace.reload.organization_id).to eq(organization.id)
+      end
+
+      # GroupsService must still publish here even though the top-level group already sits in the
+      # target org, so subscribers (e.g. the vulnerability re-index worker) are not silently skipped.
+      it 'publishes GroupTransferredEvent for the transferred group' do
+        expect { response }.to publish_event(Organizations::GroupTransferredEvent).with(
+          group_id: top_level_group.id,
+          old_organization_id: old_organization.id,
+          new_organization_id: organization.id
+        )
+      end
+    end
+
+    context 'when Organizations::Transfer::GroupsService returns a non-recoverable error' do
+      let(:transfer_error_response) do
+        ServiceResponse.error(message: 'Transfer failed')
+      end
+
+      before do
+        allow_next_instance_of(Organizations::Transfer::GroupsService) do |service|
+          allow(service).to receive(:execute).and_return(transfer_error_response)
+        end
+      end
+
+      it 'returns an error response containing the transfer error message' do
+        expect(response).to be_error
+        expect(response.message).to include('Transfer failed')
+      end
+
+      it 'does not change organization state' do
+        expect { response }.not_to change { organization.reload.state }.from('confirmed')
+      end
+
+      it 'does not publish an Organizations::ActivatedEvent' do
+        expect { response }.to not_publish_event(Organizations::ActivatedEvent)
+      end
+
+      it 'triggers the transfer failed event with the group_transfer reason', :clean_gitlab_redis_shared_state do
+        expect { response }.to trigger_internal_events(
+          'transfer_tlg_resources_into_an_organization_failed'
+        ).with(
+          user: current_user,
+          additional_properties: {
+            target_organization_id: organization.id,
+            label: 'group_transfer',
+            value: seconds_since_confirmation
+          }
+        ).and increment_usage_metrics(
+          usage_metrics_for('transfer_tlg_resources_into_an_organization_failed')
+        )
+      end
+
+      it 'does not trigger the transfer succeeded event' do
+        expect { response }.to not_trigger_internal_events(
+          'transfer_tlg_resources_into_an_organization_succeeded'
+        )
+      end
+    end
+
+    context 'when the state transition to active fails' do
+      before do
+        allow_next_instance_of(Organizations::Transfer::GroupsService) do |service|
+          allow(service).to receive(:execute).and_return(ServiceResponse.success)
+        end
+        allow(Organizations::Organization).to receive(:find_by_id).and_call_original
+        allow(Organizations::Organization).to receive(:find_by_id).with(organization.id).and_return(organization)
+        allow(organization).to receive(:activate).and_return(false)
+        organization.errors.add(:base, 'Cannot activate')
+      end
+
+      it 'returns an error response with the model error message' do
+        expect(response).to be_error
+        expect(response.message).to include('Cannot activate')
+      end
+
+      it 'does not change organization state' do
+        expect { response }.not_to change { organization.reload.state }.from('confirmed')
+      end
+
+      it 'does not publish an Organizations::ActivatedEvent' do
+        expect { response }.to not_publish_event(Organizations::ActivatedEvent)
+      end
+
+      it 'triggers the transfer failed event with the activation reason', :clean_gitlab_redis_shared_state do
+        expect { response }.to trigger_internal_events(
+          'transfer_tlg_resources_into_an_organization_failed'
+        ).with(
+          user: current_user,
+          additional_properties: {
+            target_organization_id: organization.id,
+            label: 'activation',
+            value: seconds_since_confirmation
+          }
+        ).and increment_usage_metrics(
+          usage_metrics_for('transfer_tlg_resources_into_an_organization_failed')
+        )
+      end
+    end
+
+    context 'when the organization cannot be activated' do
+      using RSpec::Parameterized::TableSyntax
+
+      let_it_be(:unauthorized_user) { create(:user) }
+      let_it_be(:valid_organization_id) { organization.id }
+
+      # rubocop:disable Layout/LineLength -- For readability
+      where(:case_name, :request_user, :request_organization_id, :organization_state, :error_message) do
+        'organization cannot be found' | ref(:user)              | non_existing_record_id      | :confirmed   | 'Organization not found'
+        'user lacks permissions'       | ref(:unauthorized_user) | ref(:valid_organization_id) | :confirmed   | 'Insufficient permissions'
+        'organization is unconfirmed'  | ref(:user)              | ref(:valid_organization_id) | :unconfirmed | 'Organization must be confirmed'
+        'organization is active'       | ref(:user)              | ref(:valid_organization_id) | :active      | 'Organization must be confirmed'
+      end
+      # rubocop:enable Layout/LineLength
+
+      with_them do
+        let(:current_user) { request_user }
+        let(:organization_id) { request_organization_id }
+
+        before do
+          next if organization_state == :confirmed
+
+          organization.update_column(:state, Organizations::Organization.states[organization_state])
+        end
+
+        it 'returns an error response', :aggregate_failures do
+          expect(response).to be_error
+          expect(response.message).to eq(_(error_message))
+        end
+
+        it 'does not publish an Organizations::ActivatedEvent' do
+          expect { response }.to not_publish_event(Organizations::ActivatedEvent)
+        end
+
+        it 'does not trigger any transfer events', :clean_gitlab_redis_shared_state do
+          expect { response }.to not_trigger_internal_events(
+            'transfer_tlg_resources_into_an_organization_started',
+            'transfer_tlg_resources_into_an_organization_succeeded',
+            'transfer_tlg_resources_into_an_organization_failed'
+          ).and not_increment_usage_metrics(
+            usage_metrics_for('transfer_tlg_resources_into_an_organization_started'),
+            usage_metrics_for('transfer_tlg_resources_into_an_organization_succeeded'),
+            usage_metrics_for('transfer_tlg_resources_into_an_organization_failed')
+          )
+        end
+      end
+    end
+  end
+
+  def usage_metrics_for(event)
+    [
+      "counts.count_total_#{event}",
+      "counts.count_total_#{event}_monthly",
+      "counts.count_total_#{event}_weekly",
+      "redis_hll_counters.count_distinct_target_organization_id_from_#{event}_monthly",
+      "redis_hll_counters.count_distinct_target_organization_id_from_#{event}_weekly"
+    ]
+  end
+
+  describe 'Organization Administrator role sync' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:other_owner) { create(:user) }
+    let_it_be_with_reload(:organization) { create(:organization, :confirmed, owners: user) }
+    let_it_be(:top_level_group) { create(:group, organization: organization, owners: [user, other_owner]) }
+
+    let(:organization_id) { organization.id }
+
+    subject(:response) { described_class.new(user, { organization_id: organization_id }).execute }
+
+    before do
+      allow(Authz::Organizations::OwnerRoleSync).to receive(:enabled?).and_return(true)
+      allow_next_instance_of(Organizations::Transfer::GroupsService) do |service|
+        allow(service).to receive(:execute).and_return(ServiceResponse.success)
+      end
+    end
+
+    describe '#execute' do
+      it 'enqueues one owner sync job after the transfer, acting as the activating user', :aggregate_failures do
+        expect(Authz::Organizations::GrantOwnerRoleWorker).to receive(:perform_async)
+          .with(organization.id, nil, user.id)
+
+        expect(response).to be_success
+      end
+
+      context 'when the owner role sync is unavailable' do
+        before do
+          allow(Authz::Organizations::OwnerRoleSync).to receive(:enabled?).and_return(false)
+        end
+
+        it 'does not enqueue GrantOwnerRoleWorker', :aggregate_failures do
+          expect(Authz::Organizations::GrantOwnerRoleWorker).not_to receive(:perform_async)
+
+          expect(response).to be_success
+        end
+      end
+
+      context 'when the organization cannot be activated' do
+        let(:organization_id) { non_existing_record_id }
+
+        it 'does not enqueue GrantOwnerRoleWorker', :aggregate_failures do
+          expect(Authz::Organizations::GrantOwnerRoleWorker).not_to receive(:perform_async)
+
+          expect(response).to be_error
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,128 @@
+@import 'mixins_and_variables_and_functions';
+
+.issuable-details {
+  section {
+    .issuable-discussion {
+      margin-right: 1px;
+    }
+  }
+
+  .title-container {
+    display: flex;
+    align-items: flex-start;
+  }
+
+  .title {
+    padding: 0;
+    margin-bottom: $gl-spacing-scale-4;
+    border-bottom: 0;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    min-width: 0;
+    width: 100%;
+    text-align: initial;
+  }
+
+  .btn-edit {
+    margin-left: auto;
+  }
+}
+
+.detail-page-description {
+  small {
+    @apply gl-text-subtle;
+  }
+}
+
+.edited-text {
+  @apply gl-text-subtle;
+  @apply gl-text-sm;
+  display: block;
+  margin: 16px 0 0;
+
+  .author-link {
+    @apply gl-text-default;
+    @apply gl-text-sm;
+  }
+}
+
+.issuable-gutter-toggle {
+  @include gl-container-width-down(md, panel) {
+    margin-left: $btn-side-margin;
+  }
+}
+
+.issuable-meta {
+  flex: 1;
+  display: inline-block;
+  font-size: 14px;
+  align-self: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  .user-status-emoji {
+    margin-left: $gl-padding-4;
+    margin-right: 0;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-js-class
+.js-issuable-selector-wrap {
+  // stylelint-disable-next-line gitlab/no-js-class
+  .js-issuable-selector {
+    width: 100%;
+  }
+
+  @include gl-container-width-down(md, panel) {
+    margin-bottom: $gl-padding;
+  }
+}
+
+.suggestion-footer {
+  font-size: 12px;
+  line-height: 15px;
+
+  .avatar {
+    margin-top: -3px;
+    border: 0;
+  }
+}
+
+.merge-request-notification-toggle {
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-toggle {
+    margin-left: auto;
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-toggle-label {
+    font-weight: $gl-font-weight-normal;
+  }
+}
+
+.comment-templates-modal {
+  padding: 3rem 0.5rem 0;
+
+  .modal-content {
+    @apply gl-max-h-[80vh];
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  &.gl-modal .modal-dialog {
+    align-items: flex-start;
+  }
+
+  @include gl-container-width-up(sm, panel) {
+    padding: 5rem 1rem 0;
+  }
+
+  [id*='gl-disclosure-dropdown-group'] {
+    padding-left: 0;
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .comment-templates-options .gl-new-dropdown-item {
+    padding-left: 0;
+    padding-right: 0;
+  }
+}

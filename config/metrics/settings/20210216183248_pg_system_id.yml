@@ -1,0 +1,18 @@
+---
+data_category: optional
+key_path: database.pg_system_id
+description: TBD
+product_group: database_architecture
+product_categories:
+- database
+value_type: number
+status: active
+time_frame: all
+data_source: system
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

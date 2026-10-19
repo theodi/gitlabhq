@@ -1,0 +1,563 @@
+@use 'sass:list';
+@use 'sass:map';
+@import '@gitlab/ui/src/scss/variables';
+
+/**
+ * Prefilled mixins
+ * Mixins with fixed values
+ */
+
+@mixin str-truncated($max-width: 82%) {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
+  max-width: $max-width;
+}
+
+/*
+ * Base mixin for lists in GitLab
+ */
+@mixin basic-list {
+  margin: 5px 0;
+  padding: 0;
+  list-style: none;
+
+  > li {
+    @include clearfix;
+
+    padding: 10px 0;
+    @apply gl-border-b;
+    @apply gl-border-b-subtle;
+    display: block;
+    margin: 0;
+
+    &:last-child {
+      border-bottom: 0;
+    }
+
+    &.active {
+      @apply gl-bg-subtle;
+
+      a {
+        @apply gl-font-bold;
+      }
+    }
+
+    &.hide {
+      display: none;
+    }
+
+    &.light {
+      a {
+        @apply gl-text-default;
+      }
+    }
+  }
+}
+
+@mixin webkit-prefix($property, $value) {
+  #{'-webkit-' + $property}: $value;
+  #{$property}: $value;
+}
+
+@mixin keyframes($animation-name) {
+  @keyframes #{$animation-name} {
+    @content;
+  }
+}
+
+@mixin include-keyframes($animation-name) {
+  @include webkit-prefix(animation-name, $animation-name);
+  @include keyframes($animation-name) {
+    @content;
+  }
+}
+
+/*
+ * Mixin for status badges, as used for pipelines and commit signatures
+ */
+@mixin status-color($color-light, $color-main, $color-dark) {
+  color: $color-main;
+  border-color: $color-main;
+
+  &:not(span):hover {
+    background-color: $color-light;
+    color: $color-dark;
+    border-color: $color-dark;
+  }
+}
+
+@mixin fade($gradient-direction, $gradient-color) {
+  visibility: hidden;
+  opacity: 0;
+  z-index: 2;
+  position: absolute;
+  bottom: 12px;
+  width: 43px;
+  height: 30px;
+  transition-duration: 0.3s;
+  transform: translateZ(0);
+  background: linear-gradient(to $gradient-direction,
+  $gradient-color 45%,
+  rgba($gradient-color, 0.4));
+  border: 0;
+  padding: 0;
+
+  &:hover {
+    @apply gl-focus;
+  }
+
+  &.scrolling {
+    visibility: visible;
+    opacity: 1;
+    transition-duration: 0.3s;
+  }
+
+  svg {
+    position: absolute;
+    top: 12px;
+    font-size: 18px;
+  }
+}
+
+@mixin scrolling-links() {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-wrap: nowrap;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@mixin triangle($color, $border-color, $size, $border-size) {
+  &::before,
+  &::after {
+    bottom: 100%;
+    left: 50%;
+    border: solid transparent;
+    content: '';
+    height: 0;
+    width: 0;
+    position: absolute;
+    pointer-events: none;
+  }
+
+  &::before {
+    border-color: transparent;
+    border-bottom-color: $border-color;
+    border-width: ($size + $border-size);
+    margin-left: -($size + $border-size);
+  }
+
+  &::after {
+    border-color: transparent;
+    border-bottom-color: $color;
+    border-width: $size;
+    margin-left: -$size;
+  }
+}
+
+/*
+ * Mixin that fixes wrapping issues with long strings (e.g. URLs)
+ *
+ * Note: the width needs to be set for it to work in Firefox
+ */
+@mixin overflow-break-word {
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  word-break: break-word;
+  max-width: 100%;
+}
+
+/*
+* Mixin that handles the container for the job logs (CI/CD and kubernetes pod logs)
+*/
+@mixin build-log($background: $black) {
+  background: $background;
+  @apply gl-text-disabled;
+  white-space: pre;
+  overflow-x: auto;
+  font-size: 12px;
+  border-radius: 0;
+  border: 0;
+  padding: $grid-size;
+
+  .bash {
+    display: block;
+  }
+}
+
+@mixin job-log-top-bar {
+  height: auto;
+  min-height: 50px;
+  padding: $grid-size;
+  @apply gl-bg-section;
+  @apply gl-border;
+  @apply gl-border-section;
+  @apply gl-text-default;
+  z-index: 2;
+  position: sticky;
+  top: 32px;
+  @apply gl-rounded-t-lg;
+
+  &.is-stuck {
+    @apply gl-border-t-default;
+    @apply gl-rounded-t-none;
+  }
+}
+
+/*
+* Mixin that handles the position of the controls placed on the top bar
+*/
+@mixin build-controllers($control-font-size, $flex-direction, $with-grow, $flex-grow-size, $svg-display: block, $svg-top: 2px) {
+  display: flex;
+  font-size: $control-font-size;
+  justify-content: $flex-direction;
+  align-items: center;
+  align-self: baseline;
+  @if $with-grow {
+    flex-grow: $flex-grow-size;
+  }
+
+  svg {
+    width: 15px;
+    height: 15px;
+    display: $svg-display;
+    top: $svg-top;
+  }
+
+  .controllers-buttons {
+    @apply gl-text-default;
+    margin: 0 $grid-size;
+
+    &:last-child {
+      margin-right: 0;
+    }
+  }
+}
+
+@mixin build-loader-animation {
+  @keyframes blinking-dot {
+    0% {
+      opacity: 1;
+    }
+
+    25% {
+      opacity: 0.4;
+    }
+
+    75% {
+      opacity: 0.4;
+    }
+
+    100% {
+      opacity: 1;
+    }
+  }
+
+  position: relative;
+  white-space: initial;
+
+  .dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin: auto auto 12px;
+    border-radius: 50%;
+    animation: blinking-dot 1s linear infinite;
+    background: $white;
+
+    &:nth-child(2) {
+      animation-delay: 0.33s;
+    }
+
+    &:nth-child(3) {
+      animation-delay: 0.66s;
+    }
+  }
+}
+
+@mixin emoji-menu-toggle-button {
+  line-height: 1;
+  padding: 0;
+  min-width: 16px;
+
+  .award-control-icon-positive,
+  .award-control-icon-super-positive {
+    position: absolute;
+    top: 0;
+    left: 0;
+    opacity: 0;
+  }
+
+  &:hover,
+  &.is-active {
+    .award-control-icon-neutral {
+      opacity: 0;
+    }
+
+    .award-control-icon-positive {
+      opacity: 1;
+    }
+  }
+
+  &.is-active {
+    .award-control-icon-positive {
+      opacity: 0;
+    }
+
+    .award-control-icon-super-positive {
+      opacity: 1;
+    }
+  }
+}
+
+/*
+* Mixin that handles the size and right margin of avatars.
+*/
+@mixin avatar-size($size, $margin-right) {
+  width: $size;
+  height: $size;
+  margin-right: $margin-right;
+}
+
+@mixin code-icon-size() {
+  width: $gl-font-size * $code-line-height * 0.9;
+  height: $gl-font-size * $code-line-height * 0.9;
+}
+
+@mixin email-code-block {
+  .code.language-email {
+    font-family: inherit;
+    font-size: inherit;
+
+    code {
+      white-space: pre-wrap;
+      font-family: inherit;
+
+      // Rouge `Name.Tag` and `Operator` token (email header key + ':')
+      .nt,
+      .o {
+        color: inherit;
+        font-weight: bold;
+      }
+
+      // Rouge `Name.Attribute` token (email header value)
+      .na {
+        color: inherit;
+      }
+
+      // Rouge `Comment` token (quoted text in email body)
+      .c {
+        color: $gl-text-color-subtle;
+        font-style: italic;
+      }
+    }
+  }
+}
+
+@mixin avatar-counter($border-radius: 1em) {
+  background-color: $gray-400;
+  color: $white;
+  border: 1px solid $gray-50;
+  border-radius: $border-radius;
+  font-family: $regular-font;
+  font-size: 9px;
+  line-height: 16px;
+  text-align: center;
+}
+
+@mixin devise-errors {
+  h2 {
+    margin-top: 0;
+    font-size: $gl-font-size;
+    color: var(--red-700, $red-700);
+  }
+}
+
+@mixin notes-media($breakpoint-name) {
+  @include gl-container-width-down($breakpoint-name) { @content; }
+
+  // Diff is side by side
+  .notes-content.parallel & {
+    $breakpoint-keys: map.keys($grid-breakpoints);
+    $current-index: list.index($breakpoint-keys, $breakpoint-name);
+
+    @if $current-index < list.length($breakpoint-keys) {
+      $parallel-breakpoint: list.nth($breakpoint-keys, $current-index + 1);
+
+      @include gl-container-width-down($parallel-breakpoint) { @content; }
+    }
+  }
+}
+
+/**
+* Style to apply to, for example, search results matches or text wrapped
+* around <mark> (allowed in Markdown).
+*/
+@mixin str-highlighted {
+  background-color: var(--orange-100);
+  box-shadow: 0 0 0 $gl-spacing-scale-1 var(--orange-100);
+  color: var(--gl-text-color-default);
+  padding: 0;
+  position: relative;
+  z-index: -1;
+}
+
+/**
+* Line connecting activity entries, used in issuables, work items etc
+*/
+@mixin vertical-line($top, $left, $offset: $top) {
+  content: '';
+  position: absolute;
+  width: 2px;
+  left: $left;
+  top: $top;
+  height: calc(100% - #{$offset});
+}
+
+/**
+ * Deprecated mixin for dark mode
+ */
+@mixin gl-dark-invert-keep-hue {
+  .gl-dark & {
+    filter: invert(0.8) hue-rotate(180deg);
+  }
+}
+
+/**
+* CI/CD Job item failed status background
+*
+* Sets background color of items to visually
+* highlight failed jobs in the UI.
+*/
+@mixin ci-job-item-failed-status-bg {
+  --ci-job-item-failed: var(--gl-color-red-50);
+
+  .gl-dark & {
+    --ci-job-item-failed: var(--gl-action-danger-background-color-active);
+  }
+
+  background: var(--ci-job-item-failed);
+}
+
+@mixin make-container-grid-columns($columns: $grid-columns, $gutter: $grid-gutter-width, $breakpoints: $grid-breakpoints) {
+  // Common properties for all breakpoints
+  %grid-column {
+    position: relative;
+    width: 100%;
+    padding-right: $gutter * .5;
+    padding-left: $gutter * .5;
+  }
+
+  .gl-row {
+    @include make-row();
+  }
+
+  // Remove the negative margin from default .row, then the horizontal padding
+  // from all immediate children columns (to prevent runaway style inheritance).
+  .gl-no-gutters {
+    margin-right: 0;
+    margin-left: 0;
+
+    > .gl-col,
+    > [class*="gl-col-"] {
+      padding-right: 0;
+      padding-left: 0;
+    }
+  }
+
+  @each $breakpoint in map.keys($breakpoints) {
+    $breakpoint-value: breakpoint-min($breakpoint, $breakpoints);
+    $infix: breakpoint-infix($breakpoint, $breakpoints);
+
+    @if $columns > 0 {
+      // Allow columns to stretch full width below their breakpoints
+      @for $i from 1 through $columns {
+        .gl-col#{$infix}-#{$i} {
+          @extend %grid-column; // stylelint-disable-line at-rule-disallowed-list
+        }
+      }
+    }
+
+    .gl-col#{$infix},
+    .gl-col#{$infix}-auto {
+      @extend %grid-column; // stylelint-disable-line at-rule-disallowed-list
+    }
+
+    @include gl-container-width-up($breakpoint) {
+      // Provide basic `.gl-col-{bp}` classes for equal-width flexbox columns
+      .gl-col#{$infix} {
+        flex-basis: 0;
+        flex-grow: 1;
+        max-width: 100%;
+      }
+
+      @if $grid-row-columns > 0 {
+        @for $i from 1 through $grid-row-columns {
+          .gl-row-cols#{$infix}-#{$i} {
+            @include row-cols($i);
+          }
+        }
+      }
+
+      .gl-col#{$infix}-auto {
+        @include make-col-auto();
+      }
+
+      @if $columns > 0 {
+        @for $i from 1 through $columns {
+          .gl-col#{$infix}-#{$i} {
+            @include make-col($i, $columns);
+          }
+        }
+      }
+
+     .gl-order#{$infix}-first { order: -1; }
+
+     .gl-order#{$infix}-last { order: $columns + 1; }
+
+      @for $i from 0 through $columns {
+       .gl-order#{$infix}-#{$i} { order: $i; }
+      }
+
+      @if $columns > 0 {
+        // `$columns - 1` because offsetting by the width of an entire row isn't possible
+        @for $i from 0 through ($columns - 1) {
+          @if not ($infix == "" and $i == 0) { // Avoid emitting useless.gl-offset-0
+           .gl-offset#{$infix}-#{$i} {
+              @include make-col-offset($i, $columns);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@mixin checkerboard-bg {
+  background-color: var(--gl-background-color-default);
+  background-image: linear-gradient(
+      45deg,
+      var(--gl-background-color-strong) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--gl-background-color-strong) 75%,
+      var(--gl-background-color-strong) 100%
+    ),
+    linear-gradient(
+      45deg,
+      var(--gl-background-color-strong) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--gl-background-color-strong) 75%,
+      var(--gl-background-color-strong) 100%
+    );
+  background-size: 10px 10px;
+  background-position: 0 0, 5px 5px;
+}

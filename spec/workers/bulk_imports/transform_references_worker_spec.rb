@@ -1,0 +1,218 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::TransformReferencesWorker, feature_category: :importers do
+  let_it_be_with_reload(:project) do
+    project = create(:project)
+    project.add_owner(user)
+    project
+  end
+
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:bulk_import) { create(:bulk_import) }
+
+  let_it_be_with_reload(:entity) do
+    create(:bulk_import_entity, :project_entity, project: project, bulk_import: bulk_import,
+      source_full_path: 'source/full/path')
+  end
+
+  let_it_be(:tracker) { create(:bulk_import_tracker, entity: entity) }
+  let_it_be(:config) { create(:bulk_import_configuration, bulk_import: bulk_import, url: 'https://my.gitlab.com') }
+
+  let_it_be_with_refind(:issue) do
+    create(:issue,
+      project: project,
+      description: 'https://my.gitlab.com/source/full/path/-/issues/1')
+  end
+
+  let_it_be(:merge_request) do
+    create(:merge_request,
+      source_project: project,
+      description: 'https://my.gitlab.com/source/full/path/-/merge_requests/1 @source_username? @bob, @alice!')
+  end
+
+  let_it_be(:issue_note) do
+    create(:note,
+      noteable: issue,
+      project: project,
+      note: 'https://my.gitlab.com/source/full/path/-/issues/1')
+  end
+
+  let_it_be(:merge_request_note) do
+    create(:note,
+      noteable: merge_request,
+      project: project,
+      note: 'https://my.gitlab.com/source/full/path/-/merge_requests/1')
+  end
+
+  let(:expected_url) do
+    expected_url = URI('')
+    expected_url.scheme = ::Gitlab.config.gitlab.https ? 'https' : 'http'
+    expected_url.host = ::Gitlab.config.gitlab.host
+    expected_url.port = ::Gitlab.config.gitlab.port
+    expected_url.path = "/#{project.full_path}"
+    expected_url
+  end
+
+  subject(:perform) { described_class.new.perform([object.id], object.class.to_s, tracker.id) }
+
+  it_behaves_like 'an idempotent worker' do
+    let(:job_args) { [[issue.id], 'Issue', tracker.id] }
+  end
+
+  shared_examples 'transforms and saves references' do
+    it 'transforms references and saves the object' do
+      expect { perform }.not_to change { object.reload.updated_at }
+
+      expect(body).to eq(expected_body)
+    end
+
+    context 'when an error is raised' do
+      before do
+        allow_next_found_instance_of(object.class) do |instance|
+          allow(instance).to receive(:refresh_markdown_cache!).and_raise(StandardError)
+        end
+      end
+
+      it 'tracks the error and creates an import failure' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception)
+          .with(anything, hash_including(bulk_import_id: bulk_import.id))
+
+        expect(BulkImports::Failure).to receive(:create)
+          .with(hash_including(bulk_import_entity_id: entity.id, pipeline_class: 'ReferencesPipeline'))
+
+        perform
+      end
+    end
+  end
+
+  it 'transforms and saves multiple objects' do
+    old_note = merge_request_note.note
+    merge_request_note_2 = create(:note, noteable: merge_request, project: project, note: old_note)
+
+    described_class.new.perform([merge_request_note.id, merge_request_note_2.id], 'Note', tracker.id)
+
+    expect(merge_request_note.reload.note).not_to eq(old_note)
+    expect(merge_request_note_2.reload.note).not_to eq(old_note)
+  end
+
+  it "sets the object's `importing` attribute to `true`" do
+    expect_next_found_instance_of(Note) do |object|
+      expect(object).to receive(:importing=).with(true)
+    end
+
+    described_class.new.perform([issue_note.id], 'Note', tracker.id)
+  end
+
+  context 'for issue description' do
+    let(:object) { issue }
+    let(:body) { object.reload.description }
+    let(:expected_body) { "http://localhost:80/#{object.namespace.full_path}/-/issues/1" }
+
+    include_examples 'transforms and saves references'
+
+    shared_examples 'returns object unchanged' do
+      before do
+        issue.update!(description: description)
+      end
+
+      it 'returns object unchanged' do
+        perform
+
+        expect(issue.reload.description).to eq(description)
+      end
+
+      it 'does not save the object' do
+        expect_next_found_instance_of(Issue) do |instance|
+          expect(instance).not_to receive(:save!)
+        end
+
+        perform
+      end
+    end
+
+    context 'when object does not have a reference' do
+      let(:description) { 'foo' }
+
+      include_examples 'returns object unchanged'
+    end
+
+    context 'when there are no matched urls' do
+      let(:description) { 'https://my.gitlab.com/another/project/path/-/issues/1' }
+
+      include_examples 'returns object unchanged'
+    end
+
+    context 'when url path does not start with source full path' do
+      let(:description) { 'https://my.gitlab.com/another/source/full/path/-/issues/1' }
+
+      include_examples 'returns object unchanged'
+    end
+
+    context 'when host does not match and url path starts with source full path' do
+      let(:description) { 'https://another.gitlab.com/source/full/path/-/issues/1' }
+
+      include_examples 'returns object unchanged'
+    end
+
+    context 'when url does not match at all' do
+      let(:description) { 'https://website.example/foo/bar' }
+
+      include_examples 'returns object unchanged'
+    end
+  end
+
+  context 'for merge request description' do
+    let(:object) { merge_request }
+    let(:body) { object.reload.description }
+    # Mentions are left as-is; users are resolved through placeholder references.
+    let(:expected_body) do
+      "#{expected_url}/-/merge_requests/#{merge_request.iid} @source_username? @bob, @alice!"
+    end
+
+    include_examples 'transforms and saves references'
+  end
+
+  context 'for issue notes' do
+    let(:object) { issue_note }
+    let(:body) { object.reload.note }
+    let(:expected_body) { "#{expected_url}/-/issues/#{issue.iid}" }
+
+    include_examples 'transforms and saves references'
+  end
+
+  context 'for merge request notes' do
+    let(:object) { merge_request_note }
+    let(:body) { object.reload.note }
+    let(:expected_body) { "#{expected_url}/-/merge_requests/#{merge_request.iid}" }
+
+    include_examples 'transforms and saves references'
+  end
+
+  context 'when a non-URI string that URI.extract considers a URI is returned' do
+    let_it_be(:note_with_bad_uri) do
+      create(
+        :note,
+        noteable: issue,
+        project: project,
+        note: 'Invalid: http://[127.0.0.1] Valid: https://my.gitlab.com/source/full/path/-/issues/1'
+      )
+    end
+
+    let(:expected_body) { "Invalid: http://[127.0.0.1] Valid: http://localhost:80/#{project.full_path}/-/issues/1" }
+
+    let(:object) { note_with_bad_uri }
+    let(:body) { object.reload.note }
+
+    it 'does not log an error and updates the other URI correctly' do
+      # On URI 1.0.3 'http://[127.0.0.1]' will match for URI.extract, but is invalid for URI.parse.
+      # We are stubbing the result so the spec remains valid if this example case is fixed
+      allow(URI).to receive(:extract).and_return(['http://[127.0.0.1]', 'https://my.gitlab.com/source/full/path/-/issues/1'])
+
+      expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+      perform
+      expect(body).to eq(expected_body)
+    end
+  end
+end

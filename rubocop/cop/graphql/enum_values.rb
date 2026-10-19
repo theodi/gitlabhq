@@ -1,0 +1,82 @@
+# frozen_string_literal: true
+
+module RuboCop
+  module Cop
+    module Graphql
+      # This cop enforces the enum value conventions from the enum style guide:
+      # https://docs.gitlab.com/development/api_graphql_styleguide/#enums
+      #
+      # @example
+      #
+      #   # bad
+      #   class BadEnum < BaseEnum
+      #     graphql_name 'Bad'
+      #
+      #     value 'foo'
+      #   end
+      #
+      #   class UngoodEnum < BaseEnum
+      #     graphql_name 'Ungood'
+      #
+      #     ['bar'].each do |val|
+      #       value val
+      #      end
+      #   end
+      #
+      #   # good
+      #   class GoodEnum < BaseEnum
+      #     graphql_name 'Good'
+      #
+      #     value 'FOO'
+      #   end
+      #
+      #   class GreatEnum < BaseEnum
+      #     graphql_name 'Great'
+      #
+      #     ['bar'].each do |val|
+      #       value val.upcase
+      #      end
+      #   end
+      class EnumValues < RuboCop::Cop::Base
+        MSG = "Enum values must either be an uppercase string literal or uppercased with the `upcase` method. " \
+              "See https://docs.gitlab.com/development/api_graphql_styleguide/#enums"
+
+        # @!method enum_value(node)
+        def_node_matcher :enum_value, <<~PATTERN
+          (send nil? :value $_ $...)
+        PATTERN
+
+        # @!method deprecated?(node)
+        def_node_search :deprecated?, <<~PATTERN
+          (hash <(pair (sym :deprecated) _) ...>)
+        PATTERN
+
+        # @!method upcase_literal?(node)
+        def_node_matcher :upcase_literal?, <<~PATTERN
+          (str #upcase?)
+        PATTERN
+
+        # @!method upcase_method?(node)
+        def_node_matcher :upcase_method?, <<~PATTERN
+          `(send _ :upcase)
+        PATTERN
+
+        def on_send(node)
+          value_node, params = enum_value(node)
+
+          return unless value_node
+          return if params.any? { deprecated?(_1) }
+          return if upcase_literal?(value_node) || upcase_method?(value_node)
+
+          add_offense(value_node)
+        end
+
+        private
+
+        def upcase?(str)
+          str == str.upcase
+        end
+      end
+    end
+  end
+end

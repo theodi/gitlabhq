@@ -1,0 +1,42 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "ee_else_ce/todos/components/queries/todo.fragment.graphql"
+
+query todos(
+  $first: Int
+  $last: Int
+  $before: String
+  $after: String
+  $state: [TodoStateEnum!]
+  $isSnoozed: Boolean
+  $projectId: [ID!]
+  $groupId: [ID!]
+  $authorId: [ID!]
+  $action: [TodoActionEnum!]
+  $type: [TodoTargetEnum!]
+  $sort: TodoSort
+) {
+  currentUser {
+    id
+    todos(
+      first: $first
+      last: $last
+      after: $after
+      before: $before
+      state: $state
+      isSnoozed: $isSnoozed
+      projectId: $projectId
+      groupId: $groupId
+      authorId: $authorId
+      action: $action
+      type: $type
+      sort: $sort
+    ) {
+      nodes {
+        ...Todo
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

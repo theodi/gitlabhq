@@ -1,0 +1,89 @@
+- pretty_name = @project&.full_name ? html_escape(@project&.full_name) : '<' + _('project name') + '>'
+- run_actions_text = html_escape(s_("ProjectService|Perform common operations on GitLab project: %{project_name}")) % { project_name: pretty_name }
+- external_link_icon = sprite_icon('external-link')
+
+%p= s_("ProjectService|To configure this integration, you should:")
+%ol.indent-list
+  %li
+    - enable_slash_commands_link_url = help_page_url('user/project/integrations/mattermost_slash_commands.md', anchor: 'enable-custom-slash-commands-in-mattermost')
+    - enable_slash_commands_link = link_to '', enable_slash_commands_link_url, target: '_blank', rel: 'noopener noreferrer'
+    = safe_format(s_('MattermostService|%{link_start}Enable custom slash commands %{icon}%{link_end} on your Mattermost installation.'), tag_pair(enable_slash_commands_link, :link_start, :link_end), icon: external_link_icon)
+  %li
+    - create_slash_commands_link_url = help_page_url('user/project/integrations/mattermost_slash_commands.md', anchor: 'create-a-slash-command-in-mattermost')
+    - create_slash_commands_link = link_to '', create_slash_commands_link_url, target: '_blank', rel: 'noopener noreferrer'
+    = safe_format(s_('MattermostService|%{link_start}Add a slash command %{icon}%{link_end} in your Mattermost team with the options listed below.'), tag_pair(create_slash_commands_link, :link_start, :link_end), icon: external_link_icon)
+  %li
+    = safe_format(s_('MattermostService|Paste the token into the %{strong_start}Token%{strong_end} field.'), tag_pair(tag.strong, :strong_start, :strong_end))
+  %li
+    = safe_format(s_('MattermostService|Select the %{strong_start}Active%{strong_end} check box, then select %{strong_start}Save changes%{strong_end} to start using GitLab inside Mattermost!'), tag_pair(tag.strong, :strong_start, :strong_end))
+
+%hr
+
+.help-form
+  .form-group
+    = label_tag :display_name, _('Display name'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12.input-group
+      = text_field_tag :display_name, "GitLab / #{pretty_name}".html_safe, class: 'form-control form-control-sm', readonly: 'readonly'
+      .input-group-append
+        = clipboard_button(target: '#display_name', category: :primary, size: :medium)
+
+  .form-group
+    = label_tag :description, _('Description'), class: 'gl-col-12 col-form-label  label-bold'
+    .gl-col-12.input-group
+      = text_field_tag :description, run_actions_text, class: 'form-control form-control-sm', readonly: 'readonly'
+      .input-group-append
+        = clipboard_button(target: '#description', category: :primary, size: :medium)
+
+  .form-group
+    = label_tag nil, s_('MattermostService|Command trigger word'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12
+      %p= s_('MattermostService|Fill in the word that works best for your team.')
+      %p
+        = s_('MattermostService|Suggestions:')
+        %code= 'gitlab'
+        - if @project
+          %code= @project.path # Path contains no spaces, but dashes
+          %code= @project.full_path
+
+  .form-group
+    = label_tag :request_url, s_('MattermostService|Request URL'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12.input-group
+      = text_field_tag :request_url, integration_trigger_url(integration), class: 'form-control form-control-sm', readonly: 'readonly'
+      .input-group-append
+        = clipboard_button(target: '#request_url', category: :primary, size: :medium)
+
+  .form-group
+    = label_tag nil, s_('MattermostService|Request method'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12 POST
+
+  .form-group
+    = label_tag :response_username, s_('MattermostService|Response username'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12.input-group
+      = text_field_tag :response_username, 'GitLab', class: 'form-control form-control-sm', readonly: 'readonly'
+      .input-group-append
+        = clipboard_button(target: '#response_username', category: :primary, size: :medium)
+
+  .form-group
+    = label_tag :response_icon, s_('MattermostService|Response icon'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12.input-group
+      = text_field_tag :response_icon, asset_url('gitlab_logo.png'), class: 'form-control form-control-sm', readonly: 'readonly'
+      .input-group-append
+        = clipboard_button(target: '#response_icon', category: :primary, size: :medium)
+
+  .form-group
+    = label_tag nil, _('Autocomplete'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12 Yes
+
+  .form-group
+    = label_tag :autocomplete_hint, _('Autocomplete hint'), class: 'gl-col-12 gl-col-12 col-form-label label-bold'
+    .gl-col-12.input-group
+      = text_field_tag :autocomplete_hint, '[help]', class: 'form-control form-control-sm', readonly: 'readonly'
+      .input-group-append
+        = clipboard_button(target: '#autocomplete_hint', category: :primary, size: :medium)
+
+  .form-group
+    = label_tag :autocomplete_description, _('Autocomplete description'), class: 'gl-col-12 col-form-label label-bold'
+    .gl-col-12.input-group
+      = text_field_tag :autocomplete_description, run_actions_text, class: 'form-control form-control-sm', readonly: 'readonly'
+      .input-group-append
+        = clipboard_button(target: '#autocomplete_description', category: :primary, size: :medium)

@@ -1,0 +1,34 @@
+- expanded = integration_expanded?('jira_connect')
+
+= render ::Layouts::SettingsBlockComponent.new(s_('JiraConnect|GitLab for Jira App'),
+  id: 'js-jira_connect-settings',
+  expanded: expanded) do |c|
+  - c.with_description do
+    = s_('JiraConnect|Configure your Jira Connect Application ID.')
+    = link_to sprite_icon('question-o'),
+        help_page_path('administration/settings/jira_cloud_app.md',
+        aria: { label: _('GitLab for Jira Cloud') },
+        class: 'has-tooltip',
+        anchor: 'install-the-gitlab-for-jira-cloud-app-manually'),
+        title: _('More information')
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-jira_connect-settings'), html: { class: 'fieldset-form', id: 'jira-connect-application-id-settings' } do |f|
+      = form_errors(@application_setting)
+      .gl-form-group
+        = f.label :jira_connect_application_key, s_('JiraConnect|Jira Connect Application ID'), class: 'label-bold'
+        = f.text_field :jira_connect_application_key, class: 'form-control gl-form-input'
+      .gl-form-group
+        = f.label :jira_connect_proxy_url, s_('JiraConnect|Jira Connect Proxy URL'), class: 'label-bold'
+        = f.text_field :jira_connect_proxy_url, class: 'form-control gl-form-input'
+      .gl-form-group
+        = f.label :jira_connect_additional_audience_url, s_('JiraConnect|Jira Connect Additional Audience URL'), class: 'label-bold'
+        = f.text_field :jira_connect_additional_audience_url, class: 'form-control gl-form-input'
+      .gl-form-group
+        = f.label :jira_forge_app_id, s_('JiraConnect|Forge app ID'), class: 'label-bold'
+        = f.text_field :jira_forge_app_id, class: 'form-control gl-form-input', placeholder: 'ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000'
+        %span.form-text.gl-text-subtle
+          = s_('JiraConnect|Atlassian Forge app ID (ARI) used to verify inbound Forge tokens. Required only for a manual (self-managed) Forge install.')
+      .gl-form-group
+        = f.gitlab_ui_checkbox_component :jira_connect_public_key_storage_enabled, s_('JiraConnect|Enable public key storage')
+
+      = f.submit _('Save changes'), pajamas_button: true

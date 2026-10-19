@@ -1,0 +1,13 @@
+mutation updateContainerProtectionRepositoryRule(
+  $input: UpdateContainerProtectionRepositoryRuleInput!
+) {
+  updateContainerProtectionRepositoryRule(input: $input) {
+    containerProtectionRepositoryRule {
+      id
+      repositoryPathPattern
+      minimumAccessLevelForPush
+      minimumAccessLevelForDelete
+    }
+    errors
+  }
+}

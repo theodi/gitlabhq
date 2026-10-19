@@ -1,0 +1,428 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Cells::TransactionRecord, feature_category: :cell do
+  let(:connection) { ApplicationRecord.connection }
+  let(:transaction) do
+    instance_double(ActiveRecord::ConnectionAdapters::NullTransaction, add_record: nil)
+  end
+
+  let(:current_transaction) { transaction }
+
+  before do
+    allow(connection).to receive(:current_transaction).and_return(current_transaction)
+    allow(GRPC::Core::TimeConsts).to receive(:from_relative_time).and_return("fake-deadline")
+  end
+
+  describe ".current_transaction" do
+    subject(:transaction_record) { described_class.current_transaction(connection) }
+
+    before do
+      transaction.extend(Cells::TransactionRecord::TransactionExtension)
+
+      allow(Current).to receive(:cells_claims_leases?).and_return(true)
+      allow(transaction).to receive(:closed?).and_return(false)
+    end
+
+    context "when Current.cells_claims_leases? is false" do
+      before do
+        allow(Current).to receive(:cells_claims_leases?).and_return(false)
+      end
+
+      it { is_expected.to be_nil }
+    end
+
+    context "when transaction is closed" do
+      before do
+        allow(transaction).to receive(:closed?).and_return(true)
+      end
+
+      it "raises an error" do
+        expect { transaction_record }.to raise_error(described_class::Error, /requires transaction to be open/)
+      end
+    end
+
+    context "when transaction already has a TransactionRecord" do
+      let(:existing_record) { instance_double(described_class) }
+
+      before do
+        transaction.cells_current_transaction_record = existing_record
+      end
+
+      it { is_expected.to eq(existing_record) }
+    end
+
+    context "when transaction does not have a TransactionRecord" do
+      it "creates and attaches a new TransactionRecord" do
+        new_record = transaction_record
+        expect(new_record).to be_a(described_class)
+        expect(transaction.cells_current_transaction_record).to eq(new_record)
+      end
+    end
+  end
+
+  describe ".sanitize_records_for_grpc" do
+    it "removes the :record key from each metadata hash" do
+      records = [
+        { bucket: { value: 'foo' }, subject: { id: 1 }, record: build(:organization) },
+        { bucket: { value: 'bar' }, subject: { id: 2 }, record: build(:organization) }
+      ]
+
+      result = described_class.sanitize_records_for_grpc(records)
+
+      expect(result).to all(not_include(:record))
+      expect(result).to match([
+        { bucket: { value: 'foo' }, subject: { id: 1 } },
+        { bucket: { value: 'bar' }, subject: { id: 2 } }
+      ])
+    end
+
+    it "returns an empty array when given an empty array" do
+      expect(described_class.sanitize_records_for_grpc([])).to eq([])
+    end
+  end
+
+  describe "#create_record and #destroy_record" do
+    let(:record) { described_class.new(connection, transaction) }
+
+    it "stores create metadata" do
+      expect { record.create_record("meta1") }.to change { record.send(:create_records) }.to include("meta1")
+    end
+
+    it "stores destroy metadata" do
+      expect { record.destroy_record("meta2") }.to change { record.send(:destroy_records) }.to include("meta2")
+    end
+
+    context "when after lease is created" do
+      let(:lease) { instance_double(Cells::OutstandingLease) }
+      let(:metadata) { { bucket: { value: 'meta' }, record: lease } }
+
+      before do
+        record.create_record(metadata)
+        allow(Cells::OutstandingLease).to receive_messages(create_from_request!: lease, connection: connection)
+        record.before_committed!
+      end
+
+      it "raises if create_record is called" do
+        expect { record.create_record(metadata) }.to raise_error(described_class::Error, "Lease already created")
+      end
+
+      it "raises if destroy_record is called" do
+        expect { record.destroy_record(metadata) }.to raise_error(described_class::Error, "Lease already created")
+      end
+    end
+  end
+
+  describe "transaction lifecycle callbacks" do
+    let(:record) { described_class.new(connection, transaction) }
+    let(:metadata) { { bucket: { value: 'meta' }, record: record } }
+
+    let(:lease) do
+      instance_double(Cells::OutstandingLease, send_commit_update!: nil, send_rollback_update!: nil, destroy!: nil)
+    end
+
+    before do
+      allow(Cells::OutstandingLease).to receive(:connection).and_return(connection)
+    end
+
+    describe "#before_committed!" do
+      it "creates a lease" do
+        record.create_record(metadata)
+
+        expect(Cells::OutstandingLease).to receive(:create_from_request!).with(
+          create_records: [{ bucket: { value: 'meta' } }],
+          destroy_records: [],
+          deadline: "fake-deadline"
+        ).and_return(lease)
+
+        record.before_committed!
+        expect(record.send(:outstanding_lease)).to eq(lease)
+      end
+
+      it "raises if already done" do
+        allow(Cells::OutstandingLease).to receive(:create_from_request!).and_return(lease)
+        record.create_record(metadata)
+        record.before_committed!
+        record.committed!
+        expect { record.before_committed! }.to raise_error(described_class::Error, "Already done")
+      end
+
+      it "raises if lease already created" do
+        allow(Cells::OutstandingLease).to receive(:create_from_request!).and_return(lease)
+        record.create_record(metadata)
+        record.before_committed!
+        expect { record.before_committed! }.to raise_error(described_class::Error, "Already created lease")
+      end
+
+      it "raises if connection mismatch" do
+        record.create_record(metadata)
+        allow(Cells::OutstandingLease)
+          .to receive(:connection)
+          .and_return(instance_double(Gitlab::Database::LoadBalancing::ConnectionProxy))
+
+        expect do
+          record.before_committed!
+        end.to raise_error(described_class::Error, "Attributes can now only be claimed on main DB")
+      end
+
+      context "when a transient GRPC error occurs on BeginUpdate" do
+        using RSpec::Parameterized::TableSyntax
+
+        let(:model) { build(:organization) }
+        let(:metadata) do
+          {
+            bucket: {
+              value: model.path
+            },
+            record: model
+          }
+        end
+
+        before do
+          record.create_record(metadata)
+        end
+
+        where(:error_class) do
+          [[GRPC::Unavailable], [GRPC::DeadlineExceeded]]
+        end
+
+        with_them do
+          it "does not retry and raises a generic Error" do
+            allow(Cells::OutstandingLease).to receive(:create_from_request!)
+              .and_raise(error_class.new("transient"))
+
+            expect { record.before_committed! }
+              .to raise_error(described_class::Error, /Failed to create lease/) do |error|
+                expect(error).not_to be_a(described_class::AlreadyClaimedError)
+              end
+            expect(Cells::OutstandingLease).to have_received(:create_from_request!).once
+          end
+        end
+
+        it "raises AlreadyClaimedError without retrying on ALREADY_EXISTS" do
+          allow(Cells::OutstandingLease).to receive(:create_from_request!)
+            .and_raise(GRPC::AlreadyExists.new("claim conflict"))
+
+          expect { record.before_committed! }
+            .to raise_error(described_class::AlreadyClaimedError, /Failed to create lease/)
+          expect(Cells::OutstandingLease).to have_received(:create_from_request!).once
+        end
+      end
+
+      context "when a non-transient GRPC error occurs" do
+        let(:grpc_error) { GRPC::AlreadyExists.new("claim conflict") }
+        let(:model) { build(:organization) }
+        let(:metadata) do
+          {
+            bucket: {
+              value: model.path
+            },
+            record: model
+          }
+        end
+
+        before do
+          record.create_record(metadata)
+          allow(Cells::OutstandingLease).to receive(:create_from_request!).and_raise(grpc_error)
+        end
+
+        it "adds error to created records and raises AlreadyClaimedError" do
+          expect { record.before_committed! }
+            .to raise_error(described_class::AlreadyClaimedError, /Failed to create lease/)
+          expect(model.errors[:base]).to include("path has already been taken")
+        end
+      end
+    end
+
+    describe "deadline" do
+      before do
+        record.create_record(metadata)
+        allow(Cells::OutstandingLease).to receive(:create_from_request!).and_return(lease)
+        allow(Gitlab::Runtime).to receive_messages(rake?: false, rails_runner?: false, console?: false)
+      end
+
+      it "uses the serving timeout in application processes" do
+        record.before_committed!
+
+        expect(GRPC::Core::TimeConsts).to have_received(:from_relative_time).with(described_class::TIMEOUT_IN_SECONDS)
+      end
+
+      where(:runtime) { %i[rake? rails_runner? console?] }
+
+      with_them do
+        it "uses the non-serving timeout" do
+          allow(Gitlab::Runtime).to receive(runtime).and_return(true)
+
+          record.before_committed!
+
+          expect(GRPC::Core::TimeConsts)
+            .to have_received(:from_relative_time).with(described_class::NON_SERVING_TIMEOUT_IN_SECONDS)
+        end
+      end
+    end
+
+    describe "#committed!" do
+      before do
+        record.create_record(metadata)
+        allow(Cells::OutstandingLease).to receive(:create_from_request!).and_return(lease)
+        record.before_committed!
+      end
+
+      it "sends commit update and destroys lease" do
+        expect(lease).to receive(:send_commit_update!).with(deadline: "fake-deadline")
+        expect(lease).to receive(:destroy!)
+        record.committed!
+        expect(record.send(:done)).to be true
+      end
+
+      it "raises if already done" do
+        record.committed!
+        expect { record.committed! }.to raise_error(described_class::Error, "Already done")
+      end
+
+      it "raises if no lease created" do
+        new_record = described_class.new(connection, transaction)
+        new_record.create_record(metadata)
+        expect { new_record.committed! }.to raise_error(described_class::Error, "No lease created")
+      end
+
+      it "does nothing if no records were added" do
+        new_record = described_class.new(connection, transaction)
+        expect { new_record.committed! }.not_to raise_error
+      end
+
+      context "when a transient GRPC error occurs" do
+        using RSpec::Parameterized::TableSyntax
+
+        where(:error_class) do
+          [[GRPC::Unavailable], [GRPC::DeadlineExceeded]]
+        end
+
+        with_them do
+          it "retries and succeeds" do
+            call_count = 0
+            allow(lease).to receive(:send_commit_update!) do
+              call_count += 1
+              raise error_class, "transient" if call_count == 1
+            end
+
+            record.committed!
+            expect(record.send(:done)).to be true
+            expect(call_count).to eq(2)
+          end
+        end
+
+        it "swallows error after exhausting retries and tracks exception" do
+          allow(lease).to receive(:send_commit_update!)
+            .and_raise(GRPC::Unavailable.new("unavailable"))
+          allow(Gitlab::ErrorTracking).to receive(:track_exception)
+
+          expect { record.committed! }.not_to raise_error
+          expect(record.send(:done)).to be true
+          expect(Gitlab::ErrorTracking).to have_received(:track_exception)
+            .with(an_instance_of(GRPC::Unavailable), feature_category: :cell)
+        end
+      end
+
+      context "when a non-transient GRPC error occurs" do
+        it "swallows the error and tracks exception" do
+          allow(lease).to receive(:send_commit_update!)
+            .and_raise(GRPC::AlreadyExists.new("conflict"))
+          allow(Gitlab::ErrorTracking).to receive(:track_exception)
+
+          expect { record.committed! }.not_to raise_error
+          expect(record.send(:done)).to be true
+          expect(Gitlab::ErrorTracking).to have_received(:track_exception)
+            .with(an_instance_of(GRPC::AlreadyExists), feature_category: :cell)
+        end
+      end
+    end
+
+    describe "#rolledback!" do
+      before do
+        allow(Cells::OutstandingLease).to receive(:create_from_request!).and_return(lease)
+      end
+
+      it "sends rollback update and destroys lease" do
+        record.create_record(metadata)
+        record.before_committed!
+
+        expect(lease).to receive(:send_rollback_update!).with(deadline: "fake-deadline")
+        expect(lease).to receive(:destroy!)
+
+        record.rolledback!
+        expect(record.send(:done)).to be true
+      end
+
+      it "does not raise if lease was never created" do
+        new_record = described_class.new(connection, transaction)
+        expect { new_record.rolledback! }.not_to raise_error
+      end
+
+      it "raises if already done" do
+        record.create_record(metadata)
+        record.before_committed!
+        record.rolledback!
+
+        expect { record.rolledback! }.to raise_error(described_class::Error, "Already done")
+      end
+
+      context "when a transient GRPC error occurs" do
+        using RSpec::Parameterized::TableSyntax
+
+        before do
+          record.create_record(metadata)
+          record.before_committed!
+        end
+
+        where(:error_class) do
+          [[GRPC::Unavailable], [GRPC::DeadlineExceeded]]
+        end
+
+        with_them do
+          it "retries and succeeds" do
+            call_count = 0
+            allow(lease).to receive(:send_rollback_update!) do
+              call_count += 1
+              raise error_class, "transient" if call_count == 1
+            end
+
+            record.rolledback!
+            expect(record.send(:done)).to be true
+            expect(call_count).to eq(2)
+          end
+        end
+
+        it "swallows error after exhausting retries and tracks exception" do
+          allow(lease).to receive(:send_rollback_update!)
+            .and_raise(GRPC::Unavailable.new("unavailable"))
+          allow(Gitlab::ErrorTracking).to receive(:track_exception)
+
+          expect { record.rolledback! }.not_to raise_error
+          expect(record.send(:done)).to be true
+          expect(Gitlab::ErrorTracking).to have_received(:track_exception)
+            .with(an_instance_of(GRPC::Unavailable), feature_category: :cell)
+        end
+      end
+
+      context "when a non-transient GRPC error occurs" do
+        before do
+          record.create_record(metadata)
+          record.before_committed!
+        end
+
+        it "swallows the error and tracks exception" do
+          allow(lease).to receive(:send_rollback_update!)
+            .and_raise(GRPC::AlreadyExists.new("conflict"))
+          allow(Gitlab::ErrorTracking).to receive(:track_exception)
+
+          expect { record.rolledback! }.not_to raise_error
+          expect(record.send(:done)).to be true
+          expect(Gitlab::ErrorTracking).to have_received(:track_exception)
+            .with(an_instance_of(GRPC::AlreadyExists), feature_category: :cell)
+        end
+      end
+    end
+  end
+end

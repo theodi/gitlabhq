@@ -1,0 +1,193 @@
+import { GlBreadcrumb, GlAlert, GlSprintf } from '@gitlab/ui';
+import { nextTick } from 'vue';
+import { MountingPortal } from 'portal-vue';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import LegacyContainer from '~/vue_shared/new_namespace/components/legacy_container.vue';
+import WelcomePage from '~/vue_shared/new_namespace/components/welcome.vue';
+import NewNamespacePage from '~/vue_shared/new_namespace/new_namespace_page.vue';
+
+describe('Experimental new namespace creation app', () => {
+  let wrapper;
+
+  const findWelcomePage = () => wrapper.findComponent(WelcomePage);
+  const findLegacyContainer = () => wrapper.findComponent(LegacyContainer);
+  const findBreadcrumb = () => wrapper.findComponent(GlBreadcrumb);
+  const findAccountVerificationAlert = () => wrapper.findComponent(GlAlert);
+  const findMountingPortal = () => wrapper.findComponent(MountingPortal);
+  const findContributeMessage = () => wrapper.findComponent(GlSprintf);
+
+  const DEFAULT_PROPS = {
+    title: 'Create something',
+    initialBreadcrumbs: [{ text: 'Something', href: '#' }],
+    panels: [
+      { name: 'panel1', selector: '#some-selector1' },
+      { name: 'panel2', selector: '#some-selector2' },
+    ],
+    persistenceKey: 'DEMO-PERSISTENCE-KEY',
+  };
+
+  const createComponent = ({ slots, propsData, identityVerificationRequired = false } = {}) => {
+    wrapper = shallowMountExtended(NewNamespacePage, {
+      slots,
+      propsData: {
+        ...DEFAULT_PROPS,
+        ...propsData,
+      },
+      provide: {
+        identityVerificationRequired,
+        identityVerificationPath: '#',
+      },
+      stubs: {
+        MountingPortal: {
+          name: 'MountingPortal',
+          template: '<div data-testid="mounting-portal-stub"><slot /></div>',
+        },
+      },
+    });
+  };
+
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  describe('with empty hash', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('renders welcome page', () => {
+      expect(findWelcomePage().exists()).toBe(true);
+    });
+
+    it('renders breadcrumbs', () => {
+      expect(findBreadcrumb().exists()).toBe(true);
+    });
+  });
+
+  it('renders first container if jumpToLastPersistedPanel passed', () => {
+    createComponent({ propsData: { jumpToLastPersistedPanel: true } });
+    expect(findWelcomePage().exists()).toBe(false);
+    expect(findLegacyContainer().exists()).toBe(true);
+  });
+
+  describe('when hash is not empty on load', () => {
+    beforeEach(() => {
+      window.location.hash = `#${DEFAULT_PROPS.panels[1].name}`;
+      createComponent();
+    });
+
+    it('renders relevant container', () => {
+      expect(findWelcomePage().exists()).toBe(false);
+
+      const container = findLegacyContainer();
+
+      expect(container.exists()).toBe(true);
+      expect(container.props().selector).toBe(DEFAULT_PROPS.panels[1].selector);
+    });
+
+    it('renders breadcrumbs', () => {
+      const breadcrumb = findBreadcrumb();
+      expect(breadcrumb.exists()).toBe(true);
+      expect(breadcrumb.props().items[0].text).toBe(DEFAULT_PROPS.initialBreadcrumbs[0].text);
+    });
+  });
+
+  describe('contribute to built-in templates message', () => {
+    const TEMPLATE_PANELS = [{ name: 'template_panel', key: 'template', selector: '#template' }];
+
+    it.each`
+      showBuiltInProjectTemplates | rendered | outcome
+      ${true}                     | ${true}  | ${'renders the message'}
+      ${false}                    | ${false} | ${'does not render the message'}
+    `(
+      '$outcome when showBuiltInProjectTemplates is $showBuiltInProjectTemplates',
+      ({ showBuiltInProjectTemplates, rendered }) => {
+        window.location.hash = `#${TEMPLATE_PANELS[0].name}`;
+        createComponent({
+          propsData: { panels: TEMPLATE_PANELS, showBuiltInProjectTemplates },
+        });
+
+        expect(findContributeMessage().exists()).toBe(rendered);
+      },
+    );
+
+    it('does not render the message on non-template panels', () => {
+      window.location.hash = `#${DEFAULT_PROPS.panels[0].name}`;
+      createComponent({ propsData: { showBuiltInProjectTemplates: true } });
+
+      expect(findContributeMessage().exists()).toBe(false);
+    });
+  });
+
+  it('renders extra description if provided', () => {
+    window.location.hash = `#${DEFAULT_PROPS.panels[1].name}`;
+    const EXTRA_DESCRIPTION = 'Some extra description';
+    createComponent({
+      slots: {
+        'extra-description': EXTRA_DESCRIPTION,
+      },
+    });
+
+    expect(wrapper.text()).toContain(EXTRA_DESCRIPTION);
+  });
+
+  it('renders relevant container when hash changes', async () => {
+    createComponent();
+    expect(findWelcomePage().exists()).toBe(true);
+
+    window.location.hash = `#${DEFAULT_PROPS.panels[0].name}`;
+    window.dispatchEvent(new Event('hashchange'));
+
+    await nextTick();
+    expect(findWelcomePage().exists()).toBe(false);
+    expect(findLegacyContainer().exists()).toBe(true);
+  });
+
+  describe('account verification alert', () => {
+    describe('when identity verification is not required', () => {
+      beforeEach(() => {
+        window.location.hash = 'panel1';
+        createComponent({ identityVerificationRequired: false });
+      });
+
+      it('does not show account verification alert', () => {
+        expect(findAccountVerificationAlert().exists()).toBe(false);
+      });
+
+      it('shows the group create form', () => {
+        expect(findLegacyContainer().exists()).toBe(true);
+      });
+    });
+
+    describe('when identity verification is required', () => {
+      beforeEach(() => {
+        window.location.hash = 'panel1';
+        createComponent({ identityVerificationRequired: true });
+      });
+
+      it('shows the account verification alert', () => {
+        expect(findAccountVerificationAlert().props()).toMatchObject({
+          title: 'Before you can create additional groups, we need to verify your account.',
+          dismissible: false,
+          variant: 'danger',
+          primaryButtonText: 'Verify my account',
+          primaryButtonLink: '#',
+        });
+
+        expect(findAccountVerificationAlert().text()).toBe(
+          `We won't ask you for this information again. It will never be used for marketing purposes.`,
+        );
+      });
+
+      it('does not show the group create form', () => {
+        expect(findLegacyContainer().exists()).toBe(false);
+      });
+    });
+  });
+
+  it('always renders MountingPortal', () => {
+    createComponent();
+
+    expect(findMountingPortal().exists()).toBe(true);
+  });
+});

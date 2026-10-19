@@ -1,0 +1,313 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Packages::Generic::CreatePackageFileService, feature_category: :package_registry do
+  let_it_be(:namespace) { create(:group) }
+  let_it_be(:project) { create(:project, group: namespace) }
+  let_it_be_with_reload(:package_settings) { create(:namespace_package_setting, namespace: namespace) }
+  let_it_be(:user) { create(:user) }
+  let_it_be(:pipeline) { create(:ci_pipeline, user: user) }
+  let_it_be(:file_name) { 'myfile.tar.gz.1' }
+
+  let(:build) { double('build', pipeline: pipeline) }
+
+  let(:service) { described_class.new(project, user, params) }
+
+  describe '#execute' do
+    let_it_be(:package) { create(:generic_package, project: project) }
+
+    let(:sha256) { '440e5e148a25331bbd7991575f7d54933c0ebf6cc735a18ee5066ac1381bb590' }
+    let(:temp_file) { Tempfile.new("test") }
+    let(:file) { UploadedFile.new(temp_file.path, sha256: sha256) }
+    let(:package_service) { double }
+
+    let(:params) do
+      {
+        package_name: 'mypackage',
+        package_version: '0.0.1',
+        file: file,
+        file_name: file_name,
+        build: build
+      }
+    end
+
+    let(:package_params) do
+      {
+        name: params[:package_name],
+        version: params[:package_version],
+        build: params[:build],
+        status: nil
+      }
+    end
+
+    subject(:response) { service.execute }
+
+    before do
+      FileUtils.touch(temp_file)
+      allow(::Packages::Generic::FindOrCreatePackageService).to receive(:new).with(project, user, package_params).and_return(package_service)
+      allow(package_service).to receive(:execute).and_return(ServiceResponse.success(payload: { package: package }))
+    end
+
+    after do
+      FileUtils.rm_f(temp_file)
+    end
+
+    shared_examples 'allows creating the file' do
+      it_behaves_like 'returning a success service response'
+
+      it { expect { response }.to change { ::Packages::PackageFile.for_projects(project).count }.by(1) }
+    end
+
+    shared_examples 'does not allow duplicates' do
+      it_behaves_like 'returning an error service response', message: 'Packages::DuplicatePackageError'
+
+      it { is_expected.to have_attributes reason: :package_file_already_exists }
+
+      it 'does not add new package file' do
+        expect { response }.to not_change { ::Packages::PackageFile.for_projects(project).count }
+                           .and not_change { ::Packages::Generic::Package.for_projects(project).count }
+      end
+    end
+
+    it_behaves_like 'returning a success service response'
+
+    it 'creates package file', :aggregate_failures do
+      expect { response }.to change { package.package_files.count }.by(1)
+        .and change { Packages::PackageFileBuildInfo.count }.by(1)
+
+      package_file = package.package_files.last
+      aggregate_failures do
+        expect(package_file.package.status).to eq('default')
+        expect(package_file.package).to eq(package)
+        expect(package_file.file_name).to eq(file_name)
+        expect(package_file.size).to eq(file.size)
+        expect(package_file.file_sha256).to eq(sha256)
+      end
+    end
+
+    context 'with a status' do
+      let(:package) { create(:generic_package, project: project) }
+      let(:params) { super().merge(status: 'hidden') }
+      let(:package_params) { super().merge(status: 'hidden') }
+
+      context 'when the user can update packages' do
+        before_all do
+          project.add_maintainer(user)
+        end
+
+        it 'updates an existing packages status' do
+          expect { response }.to change { package.package_files.count }.by(1)
+            .and change { Packages::PackageFileBuildInfo.count }.by(1)
+
+          package_file = package.package_files.last
+          aggregate_failures do
+            expect(package_file.package.status).to eq('hidden')
+          end
+        end
+      end
+
+      context 'when the user cannot update packages' do
+        before_all do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'returning an error service response',
+          message: 'Insufficient permissions to change the package status'
+
+        it { is_expected.to have_attributes reason: :package_status_change_not_allowed }
+
+        it 'does not change the status and does not create the package file' do
+          expect { response }.to not_change { package.reload.status }
+            .and not_change { ::Packages::PackageFile.for_projects(project).count }
+        end
+      end
+
+      context 'when the requested status matches the existing status' do
+        let(:package) { create(:generic_package, :hidden, project: project) }
+
+        before_all do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'allows creating the file'
+      end
+    end
+
+    it_behaves_like 'assigns build to package file' do
+      subject { super().payload.fetch(:package_file) }
+    end
+
+    context 'with existing package' do
+      let_it_be_with_reload(:duplicate_file) { create(:package_file, package: package, file_name: file_name) }
+
+      it { expect { response }.to change { ::Packages::PackageFile.for_projects(project).count }.by(1) }
+
+      context 'when duplicates are not allowed' do
+        before do
+          package_settings.update!(generic_duplicates_allowed: false, generic_duplicate_exception_regex: '')
+        end
+
+        it_behaves_like 'does not allow duplicates'
+
+        context 'when the file is pending destruction' do
+          before do
+            duplicate_file.update_column(:status, :pending_destruction)
+          end
+
+          it_behaves_like 'allows creating the file'
+        end
+
+        context 'when the package name matches the exception regex' do
+          before do
+            package_settings.update!(generic_duplicate_exception_regex: package.name)
+          end
+
+          it_behaves_like 'allows creating the file'
+        end
+      end
+
+      context 'when duplicates are allowed' do
+        before do
+          package_settings.update!(generic_duplicates_allowed: true, generic_duplicate_exception_regex: '')
+        end
+
+        it_behaves_like 'allows creating the file'
+
+        context 'when the package name matches the exception regex' do
+          before do
+            package_settings.update!(generic_duplicate_exception_regex: package.name)
+          end
+
+          it_behaves_like 'does not allow duplicates'
+        end
+
+        context 'with multiple files for the same package and the same pipeline' do
+          let(:file_2_params) { params.merge(file_name:  'myfile.tar.gz.2', file: file2) }
+          let(:file_3_params) { params.merge(file_name:  'myfile.tar.gz.3', file: file3) }
+
+          let(:temp_file2) { Tempfile.new("test2") }
+          let(:temp_file3) { Tempfile.new("test3") }
+
+          let(:file2) { UploadedFile.new(temp_file2.path, sha256: sha256) }
+          let(:file3) { UploadedFile.new(temp_file3.path, sha256: sha256) }
+
+          before do
+            FileUtils.touch(temp_file2)
+            FileUtils.touch(temp_file3)
+            expect(::Packages::Generic::FindOrCreatePackageService).to receive(:new).with(project, user, package_params).and_return(package_service).exactly(3).times
+            expect(package_service).to receive(:execute).and_return(ServiceResponse.success(payload: { package: package })).exactly(3).times
+          end
+
+          after do
+            FileUtils.rm_f(temp_file2)
+            FileUtils.rm_f(temp_file3)
+          end
+
+          it 'creates the build info only once' do
+            expect do
+              described_class.new(project, user, params).execute
+              described_class.new(project, user, file_2_params).execute
+              described_class.new(project, user, file_3_params).execute
+            end.to change { package.build_infos.count }.by(1)
+          end
+        end
+      end
+    end
+
+    context 'when the package is protected' do
+      before do
+        allow(service).to receive(:find_or_create_package).and_raise(::Packages::PackageProtectedError)
+      end
+
+      it { is_expected.to eq(::Packages::CreatePackageService::ERROR_RESPONSE_PACKAGE_PROTECTED) }
+    end
+
+    context 'when unexpected error is raised' do
+      before do
+        allow(service).to receive(:create_package_file).and_raise(StandardError, 'Custom error')
+      end
+
+      it 'returns error instead of service response' do
+        expect { response }.to raise_error(StandardError, 'Custom error')
+      end
+    end
+
+    context 'when a race condition causes ActiveRecord::RecordNotUnique on the first attempt' do
+      let(:always_raise_unique_violation) { false }
+      let(:call_counter) { { count: 0 } }
+
+      before do
+        allow(service).to receive(:find_or_create_package).and_wrap_original do |original, *args|
+          call_counter[:count] += 1
+          raise ::ActiveRecord::RecordNotUnique if always_raise_unique_violation || call_counter[:count] == 1
+
+          original.call(*args)
+        end
+      end
+
+      it_behaves_like 'allows creating the file'
+
+      context 'when ActiveRecord::RecordNotUnique persists on retry' do
+        let(:always_raise_unique_violation) { true }
+
+        it_behaves_like 'returning an error service response',
+          message: 'ActiveRecord::RecordNotUnique',
+          reason: :package_already_exists
+      end
+    end
+
+    context 'when a race condition causes ActiveRecord::RecordInvalid with name taken on the first attempt' do
+      let(:always_raise_record_invalid) { false }
+      let(:call_counter) { { count: 0 } }
+
+      before do
+        allow(service).to receive(:find_or_create_package).and_wrap_original do |original, *args|
+          call_counter[:count] += 1
+
+          if always_raise_record_invalid || call_counter[:count] == 1
+            record = ::Packages::Generic::Package.new
+            record.errors.add(:name, :taken)
+            raise ::ActiveRecord::RecordInvalid, record
+          end
+
+          original.call(*args)
+        end
+      end
+
+      it_behaves_like 'allows creating the file'
+
+      context 'when ActiveRecord::RecordInvalid with name taken persists on retry' do
+        let(:always_raise_record_invalid) { true }
+
+        it_behaves_like 'returning an error service response',
+          message: 'Validation failed: Name has already been taken',
+          reason: :invalid_parameter
+      end
+    end
+
+    context 'when ActiveRecord::RecordInvalid is raised for a non-uniqueness reason' do
+      before do
+        allow(service).to receive(:find_or_create_package).and_wrap_original do |_original, *_args|
+          record = ::Packages::Generic::Package.new
+          record.errors.add(:name, :blank)
+          raise ::ActiveRecord::RecordInvalid, record
+        end
+      end
+
+      it_behaves_like 'returning an error service response',
+        message: 'Validation failed: Name can\'t be blank',
+        reason: :invalid_parameter
+    end
+
+    context 'when ActiveRecord::RecordInvalid is raised without a record' do
+      before do
+        allow(service).to receive(:find_or_create_package).and_raise(ActiveRecord::RecordInvalid)
+      end
+
+      it_behaves_like 'returning an error service response',
+        message: 'Record invalid',
+        reason: :invalid_parameter
+    end
+  end
+end

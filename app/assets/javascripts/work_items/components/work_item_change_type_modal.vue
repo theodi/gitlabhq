@@ -1,0 +1,550 @@
+<script>
+import { GlModal, GlFormGroup, GlFormSelect, GlAlert, GlToastMixin } from '@gitlab/ui';
+import { differenceBy } from 'lodash-es';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { visitUrl } from '~/lib/utils/url_utility';
+import { __, n__, s__, sprintf } from '~/locale';
+import {
+  findDesignsWidget,
+  findHierarchyWidget,
+  findMilestoneWidget,
+  findWidgetByType,
+  getParentGroupName,
+  lowercaseWorkItemType,
+} from '~/work_items/utils';
+import glFeatureFlagMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import {
+  WIDGET_TYPE_DESIGNS,
+  WIDGET_TYPE_HIERARCHY,
+  WIDGET_TYPE_MILESTONE,
+  WORK_ITEM_TYPE_NAME_EPIC,
+  WORK_ITEM_TYPE_NAME_KEY_RESULT,
+  WORK_ITEM_TYPE_NAME_TASK,
+  WORK_ITEM_WIDGETS_NAME_MAP,
+} from '../constants';
+
+import namespaceWorkItemTypesQuery from '../graphql/namespace_work_item_types.query.graphql';
+import convertWorkItemMutation from '../graphql/work_item_convert.mutation.graphql';
+import getWorkItemDesignListQuery from './design_management/graphql/design_collection.query.graphql';
+
+export default {
+  name: 'WorkItemChangeTypeModal',
+  components: {
+    GlModal,
+    GlFormGroup,
+    GlFormSelect,
+    GlAlert,
+  },
+  mixins: [glFeatureFlagMixin(), GlToastMixin],
+  inject: ['hasSubepicsFeature', 'getWorkItemTypeConfiguration'],
+  actionCancel: {
+    text: __('Cancel'),
+  },
+  props: {
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    // Used in EE component
+    // eslint-disable-next-line vue/no-unused-properties
+    workItemIid: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    workItemType: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    hasChildren: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasParent: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    widgets: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    features: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    allowedChildTypes: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    namespaceFullName: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    epicFieldNote: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    getEpicWidgetDefinitions: {
+      type: Function,
+      required: false,
+      default: () => {},
+    },
+  },
+  emits: ['error', 'promote-to-epic', 'work-item-type-changed'],
+  data() {
+    return {
+      selectedWorkItemType: null,
+      workItemTypes: [],
+      warningMessage: '',
+      valueNotPresentWarning: '',
+      changeTypeDisabled: true,
+      hasDesigns: false,
+      typeFieldNote: '',
+    };
+  },
+  apollo: {
+    workItemTypes: {
+      query: namespaceWorkItemTypesQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+        };
+      },
+      update(data) {
+        return data.namespace?.workItemTypes?.nodes || [];
+      },
+      error(e) {
+        this.throwError(e);
+      },
+    },
+    hasDesigns: {
+      query: getWorkItemDesignListQuery,
+      variables() {
+        return {
+          id: this.workItemId,
+          atVersion: null,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      update(data) {
+        return findDesignsWidget(data.workItem)?.designCollection?.designs.nodes?.length > 0;
+      },
+      error(e) {
+        this.throwError(e);
+      },
+    },
+  },
+  computed: {
+    supportedConversionTypes() {
+      return (
+        this.workItemTypes.find((type) => type.name === this.workItemType)
+          ?.supportedConversionTypes ?? []
+      );
+    },
+    selectOptions() {
+      const selectOptions = this.supportedConversionTypes.map((item) => {
+        const isGroupWorkItemType = this.getWorkItemTypeConfiguration(
+          item.name,
+        )?.isGroupWorkItemType;
+
+        return {
+          text: isGroupWorkItemType
+            ? `${item.name} ${s__('WorkItem|(Promote to group)')}`
+            : item.name,
+          value: item.id,
+        };
+      });
+      selectOptions.unshift({
+        text: __('Select type'),
+        value: null,
+      });
+      return selectOptions;
+    },
+    isSelectedWorkItemTypeEpic() {
+      return this.selectedWorkItemType?.name === WORK_ITEM_TYPE_NAME_EPIC;
+    },
+    workItemWidgetData() {
+      return { features: this.features, widgets: this.widgets };
+    },
+    milestoneWidget() {
+      return findMilestoneWidget(this.workItemWidgetData)?.milestone;
+    },
+    selectedWorkItemTypeWidgetDefinitions() {
+      return this.isSelectedWorkItemTypeEpic
+        ? this.getEpicWidgetDefinitions({ workItemTypes: this.workItemTypes })
+        : this.getWidgetDefinitions(this.selectedWorkItemType?.name);
+    },
+    currentWorkItemTypeWidgetDefinitions() {
+      return this.getWidgetDefinitions(this.workItemType);
+    },
+    widgetDifference() {
+      return differenceBy(
+        this.currentWorkItemTypeWidgetDefinitions,
+        this.selectedWorkItemTypeWidgetDefinitions,
+        'type',
+      );
+    },
+    widgetsWithExistingDataList() {
+      // Filter the widgets based on the presence or absence of data
+      const widgetsWithExistingDataList = this.widgetDifference.filter((item) => {
+        const widgetObject = findWidgetByType(this.workItemWidgetData, item.type);
+
+        // return false if the widget data is not found
+        if (!widgetObject) {
+          return false;
+        }
+
+        // Skip the type and __typename fields
+        // It will either have the actual widget object or none
+        const fieldName = Object.keys(widgetObject).find(
+          (key) => key !== 'type' && key !== '__typename',
+        );
+
+        // return false if the field name is undefined
+        if (!fieldName) {
+          return false;
+        }
+
+        // Check if the object has non-empty nodes array or
+        // non-empty object
+        return widgetObject[fieldName]?.nodes !== undefined
+          ? widgetObject[fieldName]?.nodes?.length > 0
+          : Boolean(widgetObject[fieldName]);
+      });
+
+      if (this.hasDesigns) {
+        widgetsWithExistingDataList.push({
+          name: WORK_ITEM_WIDGETS_NAME_MAP[WIDGET_TYPE_DESIGNS],
+          type: WIDGET_TYPE_DESIGNS,
+        });
+      }
+
+      return widgetsWithExistingDataList;
+    },
+    widgetsWithExistingData() {
+      return this.widgetsWithExistingDataList.reduce((widgets, item) => {
+        // Skip adding milestone to widget difference if upgrading to epic
+        if (this.isSelectedWorkItemTypeEpic && item.type === WIDGET_TYPE_MILESTONE) {
+          return widgets;
+        }
+        widgets.push({
+          ...item,
+          name: WORK_ITEM_WIDGETS_NAME_MAP[item.type],
+        });
+        return widgets;
+      }, []);
+    },
+    noValuePresentWidgets() {
+      return this.widgetsWithExistingDataList.reduce((acc, item) => {
+        if (
+          this.isSelectedWorkItemTypeEpic &&
+          this.milestoneWidget?.projectMilestone &&
+          item.type === WIDGET_TYPE_MILESTONE
+        ) {
+          const itemType = WORK_ITEM_WIDGETS_NAME_MAP[item.type];
+          const itemText = `${itemType}: ${this.milestoneWidget.title}`;
+          acc.push({
+            ...item,
+            name: itemType,
+            title: this.milestoneWidget.title,
+            text: itemText,
+          });
+        }
+        return acc;
+      }, []);
+    },
+    hasWidgetDifference() {
+      if (this.hasParent || this.childrenBlockConversion) {
+        return false;
+      }
+      return this.widgetsWithExistingData.length > 0;
+    },
+    hierarchyWidget() {
+      return findHierarchyWidget(this.workItemWidgetData);
+    },
+    parentWorkItem() {
+      return this.hierarchyWidget?.parent;
+    },
+    parentWorkItemType() {
+      return this.parentWorkItem?.workItemType?.name;
+    },
+    // Direct/descendant child types actually attached to this work item,
+    // derived from the hierarchy widget's rolledUpCountsByType. We only
+    // count types with at least one item to avoid false positives from
+    // empty buckets.
+    childTypesInUse() {
+      const counts = this.hierarchyWidget?.rolledUpCountsByType ?? [];
+      return counts
+        .filter((entry) => entry?.countsByState?.all > 0 && entry.workItemType)
+        .map((entry) => entry.workItemType);
+    },
+    selectedWorkItemTypeAllowedChildTypes() {
+      const hierarchyDefinition = this.selectedWorkItemTypeWidgetDefinitions?.find(
+        (definition) => definition.type === WIDGET_TYPE_HIERARCHY,
+      );
+      return hierarchyDefinition?.allowedChildTypes?.nodes ?? [];
+    },
+    unsupportedChildTypeNames() {
+      if (this.childTypesInUse.length === 0) {
+        return [];
+      }
+      const allowedIds = new Set(this.selectedWorkItemTypeAllowedChildTypes.map((type) => type.id));
+      return this.childTypesInUse
+        .filter((type) => !allowedIds.has(type.id))
+        .map((type) => type.name);
+    },
+    // Block conversion when there are children that the target type does
+    // not support. If we cannot determine the actual child types (e.g.
+    // rolledUpCountsByType missing from the supplied widgets), fall back
+    // to the conservative "block on any children" behaviour.
+    childrenBlockConversion() {
+      if (!this.hasChildren) return false;
+      if (this.childTypesInUse.length === 0) return true;
+      return this.unsupportedChildTypeNames.length > 0;
+    },
+    // Names of the child item types that prevent conversion to the
+    // currently selected target type. Falls back to the target type's
+    // allowed child type names when the offending types cannot be
+    // determined (e.g. rolledUpCountsByType is missing).
+    offendingChildTypeNames() {
+      if (this.unsupportedChildTypeNames.length > 0) {
+        return this.unsupportedChildTypeNames;
+      }
+      return this.allowedChildTypes?.map((type) => type.name).filter(Boolean) ?? [];
+    },
+    workItemTypeId() {
+      return this.workItemTypes.find((type) => type.name === this.selectedWorkItemType?.name).id;
+    },
+    selectedWorkItemTypeId() {
+      return this.selectedWorkItemType?.id || null;
+    },
+    actionPrimary() {
+      return {
+        text: s__('WorkItem|Change type'),
+        attributes: {
+          variant: 'confirm',
+          disabled: this.changeTypeDisabled,
+        },
+      };
+    },
+    isWorkItemTypesQueryLoading() {
+      return this.$apollo.queries.workItemTypes.loading;
+    },
+  },
+  methods: {
+    changeType() {
+      if (this.isSelectedWorkItemTypeEpic) {
+        this.$emit('promote-to-epic');
+      } else {
+        this.convertType();
+      }
+    },
+    async convertType() {
+      try {
+        const {
+          data: {
+            workItemConvert: { workItem, errors },
+          },
+        } = await this.$apollo.mutate({
+          mutation: convertWorkItemMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              workItemTypeId: this.workItemTypeId,
+            },
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          },
+        });
+        if (errors?.length > 0) {
+          this.throwError(errors[0]);
+          return;
+        }
+        this.$toast.show(s__('WorkItem|Type changed.'));
+
+        // Incidents need to be shown in the legacy view, until they're migrated to work items
+        if (this.getWorkItemTypeConfiguration(workItem.workItemType.name)?.isIncidentManagement) {
+          visitUrl(workItem.webUrl);
+          return;
+        }
+
+        this.$emit('work-item-type-changed');
+        this.hide();
+      } catch (error) {
+        this.throwError(error.message);
+        Sentry.captureException(error);
+      }
+    },
+    getWidgetDefinitions(type) {
+      if (!type) {
+        return [];
+      }
+      return this.workItemTypes.find((widget) => widget.name === type)?.widgetDefinitions;
+    },
+    updateWorkItemType(id) {
+      this.typeFieldNote = '';
+
+      if (!id) {
+        this.resetModal();
+        return;
+      }
+
+      this.selectedWorkItemType = this.supportedConversionTypes.find((item) => item.id === id);
+
+      if (this.selectedWorkItemType.name === WORK_ITEM_TYPE_NAME_EPIC) {
+        this.typeFieldNote = this.epicFieldNote;
+      }
+      this.validateWorkItemType();
+    },
+    validateWorkItemType() {
+      this.changeTypeDisabled = false;
+      this.warningMessage = '';
+      this.valueNotPresentWarning = '';
+
+      const isPromotingToEpicWithoutSubepicsFeature =
+        this.selectedWorkItemType.name === WORK_ITEM_TYPE_NAME_EPIC && !this.hasSubepicsFeature;
+      const isTask = this.workItemType === WORK_ITEM_TYPE_NAME_TASK;
+      const isKeyResult = this.workItemType === WORK_ITEM_TYPE_NAME_KEY_RESULT;
+
+      if (this.hasParent && (isPromotingToEpicWithoutSubepicsFeature || isTask || isKeyResult)) {
+        this.warningMessage = sprintf(
+          s__(
+            'WorkItem|Parent item type %{parentWorkItemType} is not supported on %{workItemType}. Remove the parent item to change type.',
+          ),
+          {
+            workItemType: lowercaseWorkItemType(this.selectedWorkItemType.name),
+            parentWorkItemType: lowercaseWorkItemType(this.parentWorkItemType),
+          },
+        );
+
+        this.changeTypeDisabled = true;
+        return;
+      }
+
+      if (this.childrenBlockConversion) {
+        const { offendingChildTypeNames } = this;
+        const template = n__(
+          'WorkItem|%{workItemType} does not support the %{childItemType} child item type. Remove child items to change type.',
+          'WorkItem|%{workItemType} does not support the %{childItemType} child item types. Remove child items to change type.',
+          offendingChildTypeNames.length,
+        );
+
+        this.warningMessage = sprintf(template, {
+          workItemType: this.selectedWorkItemType.name,
+          childItemType: offendingChildTypeNames.join(', '),
+        });
+
+        this.changeTypeDisabled = true;
+        return;
+      }
+
+      if (this.noValuePresentWidgets.length) {
+        this.valueNotPresentWarning = sprintf(
+          s__('WorkItem|Some values are not present in %{groupName} and will be removed.'),
+          {
+            groupName: getParentGroupName(this.namespaceFullName),
+          },
+        );
+      }
+
+      // Compare the widget definitions of both types
+      if (this.hasWidgetDifference) {
+        this.warningMessage = sprintf(
+          s__(
+            'WorkItem|Some fields are not present in %{workItemType}. If you change type now, this information will be lost.',
+          ),
+          { workItemType: lowercaseWorkItemType(this.selectedWorkItemType.name) },
+        );
+      }
+    },
+    throwError(message) {
+      this.$emit('error', message);
+    },
+    // show() is invoked by parent component to show the modal
+    // eslint-disable-next-line vue/no-unused-properties
+    show() {
+      this.resetModal();
+      this.$refs.modal.show();
+    },
+    hide() {
+      this.resetModal();
+      this.$refs.modal.hide();
+    },
+    resetModal() {
+      this.warningMessage = '';
+      this.valueNotPresentWarning = '';
+      this.selectedWorkItemType = null;
+      this.changeTypeDisabled = true;
+      this.typeFieldNote = '';
+    },
+  },
+};
+</script>
+
+<template>
+  <gl-modal
+    v-if="workItemId"
+    ref="modal"
+    modal-id="work-item-change-type"
+    :title="s__('WorkItem|Change type')"
+    size="sm"
+    :action-primary="actionPrimary"
+    :action-cancel="$options.actionCancel"
+    @primary="changeType"
+    @canceled="hide"
+  >
+    <div class="gl-mb-4">
+      {{ s__('WorkItem|Select which type you would like to change this item to.') }}
+    </div>
+    <gl-form-group :label="__('Type')" label-for="work-item-type-select">
+      <gl-form-select
+        id="work-item-type-select"
+        class="gl-mb-2"
+        data-testid="work-item-change-type-select"
+        :value="selectedWorkItemTypeId"
+        width="md"
+        :options="selectOptions"
+        @change="updateWorkItemType"
+      />
+      <p v-if="typeFieldNote" class="gl-text-subtle">{{ typeFieldNote }}</p>
+    </gl-form-group>
+    <gl-alert
+      v-if="warningMessage && !isWorkItemTypesQueryLoading"
+      data-testid="change-type-warning-message"
+      variant="warning"
+      :dismissible="false"
+    >
+      {{ warningMessage }}
+      <ul v-if="hasWidgetDifference" class="gl-mb-0">
+        <li v-for="widget in widgetsWithExistingData" :key="widget.type">
+          {{ widget.name }}
+        </li>
+      </ul>
+    </gl-alert>
+    <gl-alert
+      v-if="valueNotPresentWarning && !isWorkItemTypesQueryLoading"
+      data-testid="change-type-no-value-present-message"
+      class="gl-mt-3"
+      variant="warning"
+      :dismissible="false"
+    >
+      {{ valueNotPresentWarning }}
+      <ul v-if="noValuePresentWidgets.length" class="gl-mb-0">
+        <li v-for="widget in noValuePresentWidgets" :key="widget.type">
+          {{ widget.text }}
+        </li>
+      </ul>
+    </gl-alert>
+  </gl-modal>
+</template>

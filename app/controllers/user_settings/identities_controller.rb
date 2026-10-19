@@ -1,0 +1,74 @@
+# frozen_string_literal: true
+
+module UserSettings
+  class IdentitiesController < ApplicationController
+    feature_category :system_access
+
+    before_action :verify_state, only: [:new]
+    before_action :assign_variables_from_session
+    before_action :verify_session_variables
+    before_action :verify_intended_user
+
+    def new
+      # rubocop:disable CodeReuse/ActiveRecord -- Specific use-case
+      @identity = current_user.identities
+                              .with_extern_uid(@provider, @extern_uid)
+                              .first_or_initialize(extern_uid: @extern_uid)
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      if @identity.persisted?
+        delete_session_variables
+        return redirect_to profile_two_factor_auth_path, notice: _('Identity already exists')
+      end
+
+      render layout: 'devise'
+    end
+
+    def create
+      identity = current_user.identities.new(provider: @provider, extern_uid: @extern_uid)
+      notice = if identity.save
+                 _('Authentication method updated')
+               else
+                 format(_('Error linking identity: %{errors}'), errors: identity.errors.full_messages.to_sentence)
+               end
+
+      delete_session_variables
+      redirect_to profile_two_factor_auth_path, notice: notice
+    end
+
+    private
+
+    def verify_state
+      render_403 unless session[:identity_link_state] == params.permit(:state)[:state]
+    end
+
+    def assign_variables_from_session
+      @provider = session[:identity_link_provider]
+      @extern_uid = session[:identity_link_extern_uid]
+    end
+
+    def verify_session_variables
+      return if @provider && @extern_uid
+
+      delete_session_variables
+      redirect_to profile_two_factor_auth_path,
+        notice: _('Error linking identity: Provider and Extern UID must be in the session.')
+    end
+
+    def verify_intended_user
+      intended_user_id = session[:identity_link_user_id]
+      return if intended_user_id.blank?
+      return if current_user.id == intended_user_id
+
+      delete_session_variables
+      render_403
+    end
+
+    def delete_session_variables
+      session.delete(:identity_link_state)
+      session.delete(:identity_link_provider)
+      session.delete(:identity_link_extern_uid)
+      session.delete(:identity_link_user_id)
+    end
+  end
+end

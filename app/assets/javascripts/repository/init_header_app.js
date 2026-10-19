@@ -1,0 +1,168 @@
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import { convertObjectPropsToCamelCase } from '~/lib/utils/common_utils';
+import { pinia } from '~/pinia/instance';
+import apolloProvider from './graphql';
+import projectShortPathQuery from './queries/project_short_path.query.graphql';
+import projectPathQuery from './queries/project_path.query.graphql';
+import HeaderArea from './components/header_area.vue';
+import createRouter from './router';
+import refsQuery from './queries/ref.query.graphql';
+
+const initClientQueries = ({ projectPath, projectShortPath, ref, escapedRef }) => {
+  // These queries are used in the breadcrumbs component as GraphQL client queries.
+
+  if (projectPath)
+    apolloProvider.clients.defaultClient.cache.writeQuery({
+      query: projectPathQuery,
+      data: { projectPath },
+    });
+
+  if (projectShortPath)
+    apolloProvider.clients.defaultClient.cache.writeQuery({
+      query: projectShortPathQuery,
+      data: { projectShortPath },
+    });
+
+  if (ref || escapedRef)
+    apolloProvider.clients.defaultClient.cache.writeQuery({
+      query: refsQuery,
+      data: { ref, escapedRef },
+    });
+};
+
+export default function initHeaderApp({ router, isReadmeView = false }) {
+  const headerEl = document.getElementById('js-repository-blob-header-app');
+  if (headerEl) {
+    const {
+      ref,
+      escapedRef,
+      refType,
+      rootRef,
+      projectId,
+      breadcrumbsCanCollaborate,
+      breadcrumbsCanEditTree,
+      breadcrumbsCanPushCode,
+      breadcrumbsCanPushToBranch,
+      breadcrumbsSelectedBranch,
+      breadcrumbsNewBranchPath,
+      breadcrumbsNewTagPath,
+      breadcrumbsNewBlobPath,
+      breadcrumbsForkNewBlobPath,
+      breadcrumbsForkNewDirectoryPath,
+      breadcrumbsForkUploadBlobPath,
+      breadcrumbsUploadPath,
+      breadcrumbsNewDirPath,
+      projectRootPath,
+      comparePath,
+      projectPath,
+      webIdeButtonOptions,
+      sshUrl,
+      httpUrl,
+      xcodeUrl,
+      kerberosUrl,
+      downloadLinks,
+      showNoSshKeyMessage,
+      userSettingsSshKeysPath,
+      projectShortPath,
+      isBinary,
+      newWorkspacePath,
+      organizationId,
+      fullName,
+      customCodeDropdownClients,
+    } = headerEl.dataset;
+
+    let parsedCustomCodeDropdownClients = [];
+    try {
+      const parsed = JSON.parse(customCodeDropdownClients || '[]');
+      if (Array.isArray(parsed)) {
+        parsedCustomCodeDropdownClients = parsed.map((client) =>
+          convertObjectPropsToCamelCase(client),
+        );
+      }
+    } catch (_e) {
+      parsedCustomCodeDropdownClients = [];
+    }
+
+    const {
+      isFork,
+      needsToFork,
+      gitpodEnabled,
+      isBlob,
+      showEditButton,
+      showWebIdeButton,
+      showGitpodButton,
+      showPipelineEditorButton,
+      webIdeUrl,
+      editUrl,
+      pipelineEditorUrl,
+      gitpodUrl,
+      userPreferencesGitpodPath,
+      userProfileEnableGitpodPath,
+    } = convertObjectPropsToCamelCase(webIdeButtonOptions ? JSON.parse(webIdeButtonOptions) : {});
+
+    // Repository pages seed these once through initRepositoryPage(); a
+    // standalone header mount (readme view) owns its own seeding.
+    if (!router) initClientQueries({ projectPath, projectShortPath, ref, escapedRef });
+
+    initVueApp({
+      el: headerEl,
+      name: 'RepositoryHeaderAreaRoot',
+      pinia,
+      provide: {
+        canCollaborate: parseBoolean(breadcrumbsCanCollaborate),
+        canEditTree: parseBoolean(breadcrumbsCanEditTree),
+        canPushCode: parseBoolean(breadcrumbsCanPushCode),
+        canPushToBranch: parseBoolean(breadcrumbsCanPushToBranch),
+        originalBranch: ref,
+        selectedBranch: breadcrumbsSelectedBranch,
+        newBranchPath: breadcrumbsNewBranchPath,
+        newTagPath: breadcrumbsNewTagPath,
+        newBlobPath: breadcrumbsNewBlobPath,
+        forkNewBlobPath: breadcrumbsForkNewBlobPath,
+        forkNewDirectoryPath: breadcrumbsForkNewDirectoryPath,
+        forkUploadBlobPath: breadcrumbsForkUploadBlobPath,
+        uploadPath: breadcrumbsUploadPath,
+        newDirPath: breadcrumbsNewDirPath,
+        projectRootPath,
+        comparePath,
+        isReadmeView,
+        isFork: parseBoolean(isFork),
+        needsToFork: parseBoolean(needsToFork),
+        isGitpodEnabledForUser: parseBoolean(gitpodEnabled),
+        isBlob: parseBoolean(isBlob),
+        showEditButton: parseBoolean(showEditButton),
+        showWebIdeButton: parseBoolean(showWebIdeButton),
+        isGitpodEnabledForInstance: parseBoolean(showGitpodButton),
+        showPipelineEditorButton: parseBoolean(showPipelineEditorButton),
+        webIdeUrl,
+        editUrl,
+        pipelineEditorUrl,
+        gitpodUrl,
+        userPreferencesGitpodPath,
+        userProfileEnableGitpodPath,
+        httpUrl,
+        xcodeUrl,
+        sshUrl,
+        kerberosUrl,
+        newWorkspacePath,
+        downloadLinks: downloadLinks ? JSON.parse(downloadLinks) : null,
+        showNoSshKeyMessage: parseBoolean(showNoSshKeyMessage),
+        userSettingsSshKeysPath,
+        isBinary: parseBoolean(isBinary),
+        rootRef,
+        organizationId,
+        customCodeDropdownClients: parsedCustomCodeDropdownClients,
+      },
+      apolloProvider,
+      router: router || createRouter(projectPath, escapedRef, fullName),
+      component: HeaderArea,
+      props: {
+        refType,
+        currentRef: ref,
+        projectPath,
+        projectId,
+      },
+    });
+  }
+}

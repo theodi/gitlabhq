@@ -1,19 +1,39 @@
-- page_title "Sign in"
-%div
-  - if signin_enabled? || ldap_enabled?
-    = render 'devise/shared/signin_box'
+- page_title _("Sign in")
 
-  -# Omniauth fits between signin/ldap signin and signup and does not have a surrounding box
-  - if Gitlab.config.omniauth.enabled && devise_mapping.omniauthable?
-    .clearfix.prepend-top-20
-      = render 'devise/shared/omniauth_box'
+- content_for :page_specific_javascripts do
+  = render_if_exists "layouts/google_tag_manager_head"
+  = render "layouts/one_trust"
 
-  -# Signup only makes sense if you can also sign-in
-  - if signin_enabled? && signup_enabled?
-    .prepend-top-20
-      = render 'devise/shared/signup_box'
+- content_for :sessions_broadcast do
+  = render "devise/sessions/broadcast"
 
-  -# Show a message if none of the mechanisms above are enabled
-  - if !signin_enabled? && !ldap_enabled? && !(Gitlab.config.omniauth.enabled && devise_mapping.omniauthable?)
-    %div
-      No authentication methods configured.
+= render_if_exists "layouts/google_tag_manager_body"
+- content_for :overridden_brand_title, custom_sign_in_brand_title
+
+.js-non-oauth-login
+  - if any_form_based_providers_enabled?
+    = render 'devise/shared/tabs_ldap', admin_mode: false
+  - elsif password_authentication_enabled_for_web?
+    = render 'devise/sessions/new_base', admin_mode: false
+
+-# Show a message if none of the mechanisms above are enabled
+- if !password_authentication_enabled_for_web? && !ldap_sign_in_enabled? && !(omniauth_enabled? && devise_mapping.omniauthable?)
+  %div
+    = _('No authentication methods configured.')
+
+- if Gitlab::CurrentSettings.current_application_settings.terms
+  .gl-mt-3
+    = html_escape(s_("SignUp|By signing in you accept the %{link_start}Terms of Use and acknowledge the Privacy Statement and Cookie Policy%{link_end}.")) % { link_start: "<a href='#{terms_path}' target='_blank' rel='noreferrer noopener'>".html_safe,
+    link_end: '</a>'.html_safe }
+
+- if allow_signup?
+  .gl-mt-3.gl-text-center
+    = _("Don't have an account yet?")
+    = link_to _("Register now"),
+      new_registration_path(:user, invite_email: @invite_email),
+      data: { testid: 'register-link',
+        track_action: 'click_register_from_sign_in_page',
+        track_label: onboarding_status_tracking_label }
+
+- if omniauth_enabled? && devise_mapping.omniauthable? && button_based_providers_enabled?
+  = render 'devise/shared/omniauth_box'

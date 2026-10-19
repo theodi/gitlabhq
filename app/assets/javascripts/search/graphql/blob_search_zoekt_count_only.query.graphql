@@ -1,0 +1,21 @@
+query getBlobSearchCountQuery(
+  $search: String!
+  $groupId: GroupID
+  $projectId: ProjectID
+  $chunkCount: Int
+  $regex: Boolean
+  $includeArchived: Boolean
+  $excludeForks: Boolean
+) {
+  blobSearch(
+    search: $search
+    groupId: $groupId
+    projectId: $projectId
+    chunkCount: $chunkCount
+    regex: $regex
+    includeArchived: $includeArchived
+    excludeForks: $excludeForks
+  ) {
+    matchCount
+  }
+}

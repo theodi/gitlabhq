@@ -1,0 +1,15 @@
+dast-variables-check-docs:
+  variables:
+    SETUP_DB: "false"
+    GIT_DEPTH: "1"
+  extends:
+    - .default-retry
+    - .ruby-cache
+    - .default-before_script
+    - .dast_variables:rules:dast-variables-check-docs
+  stage: test
+  needs:
+    - job: cache:ruby-gems
+      optional: true
+  script:
+    - bundle exec rake gitlab:dast_variables:check_docs

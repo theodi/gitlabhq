@@ -1,0 +1,41 @@
+# frozen_string_literal: true
+
+module Types
+  module WorkItems
+    module Widgets
+      # Disabling widget level authorization as it might be too granular
+      # and we already authorize the parent work item
+      # rubocop:disable Graphql/AuthorizeTypes
+      class LabelsType < BaseObject
+        graphql_name 'WorkItemWidgetLabels'
+        description 'Represents the labels widget'
+
+        authorize_granular_token skip_reason: :parent_authorizes
+
+        implements ::Types::WorkItems::WidgetInterface
+
+        def self.authorization_scopes
+          super + [:ai_workflows]
+        end
+
+        field :labels, ::Types::LabelType.connection_type,
+          null: true,
+          description: 'Labels assigned to the work item.',
+          scopes: [:api, :read_api, :ai_workflows],
+          skip_type_authorization: [:read_label],
+          resolver: Resolvers::BulkLabelsResolver
+
+        field :allows_scoped_labels, GraphQL::Types::Boolean,
+          null: true,
+          method: :allows_scoped_labels?,
+          description: 'Indicates whether a scoped label is allowed.',
+          deprecated: {
+            milestone: '16.7',
+            replacement: 'WorkItemWidgetDefinitionLabels.allowsScopedLabels',
+            reason: 'Field moved to workItemType widget definition interface'
+          }
+      end
+      # rubocop:enable Graphql/AuthorizeTypes
+    end
+  end
+end

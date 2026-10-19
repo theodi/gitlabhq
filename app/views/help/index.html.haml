@@ -1,52 +1,41 @@
 %div
-  %h1
-    GitLab
-    %span= Gitlab::VERSION
-    %small= Gitlab::REVISION
-    - if current_application_settings.version_check_enabled
-      = version_status_badge
-  %p.slead
-    GitLab is open source software to collaborate on code.
-    %br
-    Manage git repositories with fine grained access controls that keep your code secure.
-    %br
-    Perform code reviews and enhance collaboration with merge requests.
-    %br
-    Each project can also have an issue tracker and a wiki.
-    %br
-    Used by more than 100,000 organizations, GitLab is the most popular solution to manage git repositories on-premises.
-    %br
-    Read more about GitLab at #{link_to promo_host, promo_url, target: '_blank'}.
+- if Gitlab::CurrentSettings.help_page_text.present?
+  .gl-mt-3.md
+    = markdown_field(Gitlab::CurrentSettings.current_application_settings, :help_page_text)
+  %hr
 
+%h1{ class: 'gl-heading-1 !gl-mt-5 !gl-mb-3' }
+  = default_brand_title
+  - if user_signed_in?
+    = link_to_version
+  - if show_version_check?
+    .js-gitlab-version-check-badge{ data: { "size": "md", "actionable": "true", "version": gitlab_version_check.to_json } }
+
+- unless Gitlab::CurrentSettings.help_page_hide_commercial_content?
+  %p.gl-mb-4.gl-leading-24
+    = _('GitLab is the most comprehensive DevSecOps platform, built for intelligent orchestration.')
+    - link_to_promo = link_to(::Gitlab.promo_host, promo_url, target: '_blank', rel: 'noopener noreferrer')
+    = _("Read more at %{link_to_promo}.").html_safe % { link_to_promo: link_to_promo }
+
+%p= link_to _('Check the current instance configuration.'), help_instance_configuration_url
 %hr
 
-.row
-  .col-md-8
-    .documentation-index
-      = preserve do
-        - readme_text = File.read(Rails.root.join("doc", "README.md"))
-        - text = readme_text.dup
-        - readme_text.scan(/\]\(([^(]+)\)/) { |match| text.gsub!(match.first, "help/#{match.first}") }
-        = markdown text
-
-  .col-md-4
-    .panel.panel-default
-      .panel-heading
-        Quick help
-      %ul.well-list
+.row.gl-mt-3
+  .gl-col-md-8
+    .md
+      = markdown(@help_index)
+  .gl-col-md-4
+    .card.links-card
+      .card-header
+        = _('Quick help')
+      %ul.content-list
+        %li= link_to _('See our website for help'), support_url, { class: '!gl-text-link' }
         %li
-          See our website for
-          = link_to 'getting help', promo_url + '/getting-help/'
+          %button.gl-border-none.gl-rounded-none.gl-p-0.btn-link.gl-button.js-trigger-search-bar{ type: 'button', class: "!gl-bg-transparent !gl-outline-none !gl-shadow-none" }
+            = _('Use the search bar on the top of this page')
         %li
-          Use the
-          = link_to 'search bar', '#', onclick: 'Shortcuts.focusSearch(event)'
-          on the top of this page
-        %li
-          Use
-          = link_to 'shortcuts', '#', onclick: 'Shortcuts.showHelp(event)'
-        %li
-          Get a support
-          = link_to 'subscription', 'https://about.gitlab.com/pricing/'
-        %li
-          = link_to 'Compare', 'https://about.gitlab.com/features/#compare'
-          GitLab editions
+          %button.gl-border-none.gl-rounded-none.gl-p-0.btn-link.gl-button.js-trigger-shortcut{ type: 'button', class: "!gl-bg-transparent !gl-outline-none !gl-shadow-none" }
+            = _('Use shortcuts')
+        - unless Gitlab::CurrentSettings.help_page_hide_commercial_content?
+          %li= link_to _('Get a support subscription'), promo_pricing_url, { class: '!gl-text-link' }
+          %li= link_to _('Compare GitLab editions'), promo_url(path: '/features/', anchor: 'compare'), { class: '!gl-text-link' }

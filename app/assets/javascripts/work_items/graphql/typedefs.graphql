@@ -1,0 +1,143 @@
+enum LocalWidgetType {
+  ASSIGNEES
+}
+
+interface LocalWorkItemWidget {
+  type: LocalWidgetType!
+}
+
+type LocalWorkItemAssignees implements LocalWorkItemWidget {
+  type: LocalWidgetType!
+  nodes: [UserCore]
+}
+
+extend type WorkItem {
+  mockWidgets: [LocalWorkItemWidget]
+}
+
+input LocalUserInput {
+  id: ID!
+  name: String
+  username: String
+  webUrl: String
+  avatarUrl: String
+}
+
+input LocalLabelInput {
+  color: String
+  description: String
+  id: ID!
+  textColor: String
+  title: String
+}
+
+input LocalIterationCadence {
+  id: ID!
+  title: String
+}
+
+input LocalIterationInput {
+  description: String
+  id: ID!
+  iid: String
+  title: String
+  startDate: String
+  dueDate: String
+  webUrl: String
+  updatedAt: String
+  iterationCadence: [LocalIterationCadence]
+}
+
+input LocalMilestoneInput {
+  expired: Boolean
+  id: ID!
+  title: String
+  state: String
+  dueDate: String
+  webUrl: String
+  webPath: String
+}
+
+input LocalCrmContactsInput {
+  firstName: String
+  lastName: String
+  organizationName: String
+  id: ID!
+}
+
+input LocalUpdateWorkItemInput {
+  id: WorkItemID!
+  assignees: [LocalUserInput!]
+}
+
+input LocalRolledUpDatesInput {
+  isFixed: Boolean!
+  rollUp: Boolean!
+  dueDate: String
+  startDate: String
+}
+
+type LocalWorkItemPayload {
+  workItem: WorkItem!
+  errors: [String!]
+}
+
+input LocalCustomFieldSelectOptionInput {
+  id: ID!
+  value: String
+}
+
+input LocalCustomFieldInput {
+  id: ID!
+  type: String!
+  numberValue: Float
+  textValue: String
+  selectedOptions: [LocalCustomFieldSelectOptionInput]
+}
+
+input LocalStatusInput {
+  id: ID!
+  name: String!
+  iconName: String
+  color: String
+  position: Int
+}
+
+input LocalUpdateNewWorkItemInput {
+  fullPath: String!
+  workItemType: String!
+  healthStatus: String
+  assignees: [LocalUserInput]
+  color: String
+  title: String
+  description: String
+  confidential: Boolean
+  labels: [LocalLabelInput]
+  iteration: [LocalIterationInput]
+  milestone: [LocalMilestoneInput]
+  rolledUpDates: [LocalRolledUpDatesInput]
+  crmContacts: [LocalCrmContactsInput]
+  weight: Int
+  customField: LocalCustomFieldInput
+  status: LocalStatusInput
+}
+
+extend type Mutation {
+  updateNewWorkItem(input: LocalUpdateNewWorkItemInput!): LocalWorkItemPayload
+  localUpdateWorkItem(input: LocalUpdateWorkItemInput!): LocalWorkItemPayload
+  updateActiveDesignDiscussion(id: ID!, source: String!): Boolean
+}
+
+type ActiveDesignDiscussion {
+  id: ID
+  source: String
+}
+
+extend type Query {
+  activeDesignDiscussion: ActiveDesignDiscussion
+}
+
+type LocalWorkItemChildIsExpanded {
+  id: WorkItemID!
+  isExpanded: Boolean!
+}

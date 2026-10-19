@@ -1,0 +1,56 @@
+# @feature_category: security_testing_configuration
+query getProjectSecurityConfiguration($projectId: ProjectID!) {
+  securityConfiguration(projectId: $projectId) {
+    autoDevopsEnabled
+    autoDevopsHelpPagePath
+    autoDevopsPath
+    canEnableAutoDevops
+    licenseScanningForCyclonedxEnabled
+    features {
+      type
+      configured
+      configurationPath
+      available
+      canEnableByMergeRequest
+      canUserConfigure
+      metaInfoPath
+      onDemandAvailable
+      securityFeatures {
+        anchor
+        configurationHelpPath
+        description
+        helpPath
+        name
+        shortName
+        type
+        secondary {
+          configurationText
+          description
+          name
+          type
+        }
+      }
+    }
+    gitlabCiHistoryPath
+    gitlabCiPresent
+    helpPagePath
+    latestPipelinePath
+    licenseConfigurationSource
+    secretDetectionConfigurationPath
+    secretPushProtectionAvailable
+    secretPushProtectionEnforced
+    secretPushProtectionEnabled
+    securityTrainingEnabled
+    userIsProjectAdmin
+    validityChecksAvailable
+    validityChecksEnabled
+    vulnerabilityArchiveExportPath
+    vulnerabilityTrainingDocsPath
+    groupFullPath
+    canApplyProfiles
+    canReadAttributes
+    canManageAttributes
+    securityScanProfilesLicensed
+    groupManageAttributesPath
+  }
+}

@@ -1,12 +1,16 @@
-- page_title "Merge Requests"
-.append-bottom-10
-  .pull-right
-    = render 'shared/issuable_search_form', path: namespace_project_merge_requests_path(@project.namespace, @project)
+- @can_bulk_update = can?(current_user, :admin_merge_request, @project)
 
-    - if can? current_user, :write_merge_request, @project
-      = link_to new_namespace_project_merge_request_path(@project.namespace, @project), class: "btn btn-new pull-left", title: "New Merge Request" do
-        %i.fa.fa-plus
-        New Merge Request
-  = render 'shared/issuable_filter', type: :merge_requests
-.merge-requests-holder
-  = render 'merge_requests'
+- page_title _("Merge requests")
+- add_page_specific_style 'page_bundles/issuable_list'
+- add_page_specific_style 'page_bundles/merge_request'
+
+= content_for :meta_tags do
+  = auto_discovery_link_tag(:atom, safe_params.merge(rss_url_options).to_h, title: "#{@project.name} merge requests")
+
+%h1.gl-sr-only= page_title
+
+= render 'projects/last_push'
+
+.js-merge-request-list-root{ data: project_merge_requests_list_data(@project, current_user) }
+- if @can_bulk_update
+  = render 'bulk_update_sidebar', type: :merge_requests

@@ -1,0 +1,104 @@
+{
+  "type": "object",
+  "required" : [
+    "project",
+    "user",
+    "credit_card",
+    "pipeline",
+    "builds",
+    "total_builds_count"
+  ],
+  "properties" : {
+    "project": {
+      "type": "object",
+      "required": [
+        "id",
+        "path",
+        "created_at",
+        "shared_runners_enabled",
+        "group_runners_enabled"
+      ],
+      "properties": {
+        "id": { "type": "integer" },
+        "path": { "type": "string" },
+        "created_at": { "type": ["string", "null"], "format": "date-time" },
+        "shared_runners_enabled": { "type": "boolean" },
+        "group_runners_enabled": { "type": "boolean" }
+      }
+    },
+    "user": {
+      "type": "object",
+      "required": [
+        "id",
+        "username",
+        "email",
+        "created_at"
+      ],
+      "properties": {
+        "id": { "type": "integer" },
+        "username": { "type": "string" },
+        "email": { "type": "string" },
+        "created_at": { "type": ["string", "null"], "format": "date-time" },
+        "current_sign_in_ip": { "type": ["string", "null"] },
+        "last_sign_in_ip": { "type": ["string", "null"] },
+        "sign_in_count": { "type": "integer" }
+      }
+    },
+    "credit_card": {
+      "type": "object",
+      "required": [
+        "similar_cards_count",
+        "similar_holder_names_count"
+      ],
+      "properties": {
+        "similar_cards_count": { "type": "integer" },
+        "similar_holder_names_count": { "type": "integer" }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "required": [
+        "sha",
+        "ref",
+        "type"
+      ],
+      "properties": {
+        "sha": { "type": "string" },
+        "ref": { "type": "string" },
+        "type": { "type": "string" }
+      }
+    },
+    "builds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "stage",
+          "image",
+          "tag_list",
+          "services",
+          "script"
+        ],
+        "properties": {
+          "name": { "type": "string" },
+          "stage": { "type": "string" },
+          "image": { "type": ["string", "null"] },
+          "tag_list": {
+            "type": ["array", "null"] },
+            "items": { "type": "string" }
+          },
+          "services": {
+            "type": ["array", "null"],
+            "items": { "type": "string" }
+          },
+          "script": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "total_builds_count": { "type": "integer" }
+  }
+}

@@ -1,0 +1,20 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+fragment RunnerFieldsShared on CiRunner {
+  id
+  shortSha
+  runnerType
+  paused
+  accessLevel
+  runUntagged
+  locked
+  description
+  maximumTimeout
+  tagList
+  createdAt
+  createdBy {
+    ...User
+  }
+  status
+  contactedAt
+}

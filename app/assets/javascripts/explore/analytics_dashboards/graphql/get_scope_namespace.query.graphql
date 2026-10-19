@@ -1,0 +1,23 @@
+# @feature_category: custom_dashboards_foundation
+
+#import "ee_else_ce/explore/analytics_dashboards/graphql/fragments/scope_group_permissions.fragment.graphql"
+#import "ee_else_ce/explore/analytics_dashboards/graphql/fragments/scope_project_permissions.fragment.graphql"
+
+query getAnalyticsDashboardScopeNamespace($fullPath: ID!, $fullPaths: [String!]) {
+  group(fullPath: $fullPath) {
+    id
+    name
+    fullName
+    fullPath
+    ...AnalyticsDashboardScopeGroupPermissions
+  }
+  projects(fullPaths: $fullPaths) {
+    nodes {
+      id
+      name
+      fullName: nameWithNamespace
+      fullPath
+      ...AnalyticsDashboardScopeProjectPermissions
+    }
+  }
+}

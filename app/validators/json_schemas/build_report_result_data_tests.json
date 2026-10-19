@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Build report result data tests",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "duration": {
+      "type": "number"
+    },
+    "failed": {
+      "type": "integer"
+    },
+    "errored": {
+      "type": "integer"
+    },
+    "skipped": {
+      "type": "integer"
+    },
+    "success": {
+      "type": "integer"
+    },
+    "suite_error": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

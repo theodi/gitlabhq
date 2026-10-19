@@ -1,0 +1,2328 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Query.work_item(id)', :with_current_organization, feature_category: :team_planning do
+  include_context 'with work item request context'
+
+  let_it_be(:user) { create(:user) }
+  let(:current_user) { developer }
+
+  let_it_be(:child_item1) { create(:work_item, :task, project: project, id: 1200) }
+  let_it_be(:child_item2) { create(:work_item, :task, confidential: true, project: project, id: 1400) }
+  let_it_be(:child_link1) { create(:parent_link, work_item_parent: work_item, work_item: child_item1) }
+  let_it_be(:child_link2) { create(:parent_link, work_item_parent: work_item, work_item: child_item2) }
+
+  context 'when project is archived' do
+    before do
+      project.update!(archived: true)
+      post_graphql(query, current_user: current_user)
+    end
+
+    it 'returns the correct value in the archived field' do
+      expect(work_item_data).to include(
+        'id' => work_item.to_gid.to_s,
+        'iid' => work_item.iid.to_s,
+        'archived' => true
+      )
+    end
+  end
+
+  context 'when project group is archived' do
+    before do
+      group.update!(archived: true)
+      post_graphql(query, current_user: current_user)
+    end
+
+    it 'returns the correct value in the archived field' do
+      expect(work_item_data).to include(
+        'id' => work_item.to_gid.to_s,
+        'iid' => work_item.iid.to_s,
+        'archived' => true
+      )
+    end
+  end
+
+  context "for showPlanUpgradePromotion field" do
+    context "when the namespace is in a free plan" do
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      it "returns true" do
+        # For FOSS/ce version the api will always return true
+        expect(work_item_data).to include('showPlanUpgradePromotion' => true)
+      end
+    end
+  end
+
+  context 'when the user can read the work item' do
+    let(:incoming_email_token) { current_user.incoming_email_token }
+    let(:work_item_email) do
+      "p+#{project.full_path_slug}-#{project.project_id}-#{incoming_email_token}-issue-#{work_item.iid}@gl.ab"
+    end
+
+    before do
+      stub_incoming_email_setting(enabled: true, address: "p+%{key}@gl.ab")
+      post_graphql(query, current_user: current_user)
+    end
+
+    it_behaves_like 'a working graphql query'
+
+    it_behaves_like 'authorizing granular token permissions for GraphQL', :read_work_item do
+      let(:user) { developer }
+      let(:boundary_object) { project }
+      # createNoteEmail requires write permissions since it can be used to create issues and notes.
+      let(:work_item_fields) { all_graphql_fields_for('WorkItem', max_depth: 1, excluded: ["createNoteEmail"]) }
+      let(:request) { post_graphql(query, token: { personal_access_token: pat }) }
+    end
+
+    # Exercises the granular scope directive on the WorkItem.createNoteEmail field.
+    # The token also needs read_work_item to authorize the enclosing WorkItem type.
+    it_behaves_like 'authorizing granular token permissions for GraphQL', [:read_work_item, :create_issue_note] do
+      let(:user) { developer }
+      let(:boundary_object) { project }
+      let(:work_item_fields) { 'id createNoteEmail' }
+      let(:request) { post_graphql(query, token: { personal_access_token: pat }) }
+    end
+
+    it 'returns all fields' do
+      expect(work_item_data).to include(
+        'description' => work_item.description,
+        'id' => work_item.to_gid.to_s,
+        'iid' => work_item.iid.to_s,
+        'webPath' => Gitlab::Routing.url_helpers.project_work_item_path(work_item.project, work_item.iid).to_s,
+        'lockVersion' => work_item.lock_version,
+        'state' => "OPEN",
+        'title' => work_item.title,
+        'confidential' => work_item.confidential,
+        'userDiscussionsCount' => 3,
+        'workItemType' => hash_including('id' => work_item.work_item_type.to_gid.to_s),
+        'reference' => work_item.to_reference,
+        'createNoteEmail' => work_item_email,
+        'archived' => false,
+        'hidden' => false,
+        'userPermissions' => hash_including(
+          'readWorkItem' => true,
+          'updateWorkItem' => true,
+          'deleteWorkItem' => false,
+          'adminWorkItem' => true,
+          'adminParentLink' => true,
+          'setWorkItemMetadata' => true,
+          'createNote' => true,
+          'adminWorkItemLink' => true,
+          'markNoteAsInternal' => true,
+          'moveWorkItem' => true,
+          'cloneWorkItem' => true,
+          'reportSpam' => false,
+          'summarizeComments' => false
+        ),
+        'project' => hash_including('id' => project.to_gid.to_s, 'fullPath' => project.full_path)
+      )
+    end
+
+    context 'when using a read_api scoped token' do
+      let(:read_api_token) { create(:personal_access_token, user: current_user, scopes: [:read_api]) }
+
+      before do
+        post_graphql(
+          graphql_query_for('workItem', { 'id' => global_id }, 'createNoteEmail'),
+          current_user: current_user,
+          token: { personal_access_token: read_api_token }
+        )
+      end
+
+      it 'does not return createNoteEmail' do
+        expect(work_item_data).to include('createNoteEmail' => nil)
+      end
+    end
+
+    context 'when using a granular personal access token' do
+      let(:work_item_fields) { 'id createNoteEmail' }
+
+      before do
+        post_graphql(query, token: { personal_access_token: pat })
+      end
+
+      context 'with only read_work_item permission' do
+        let(:pat) do
+          create(:granular_pat, user: current_user, boundary: ::Authz::Boundary.for(project),
+            permissions: [:read_work_item])
+        end
+
+        it 'returns the work item but redacts `createNoteEmail`' do
+          expect(graphql_errors).to be_nil
+          expect(work_item_data).to include('id' => work_item.to_gid.to_s, 'createNoteEmail' => nil)
+        end
+      end
+
+      context 'with create_work_item permission' do
+        let(:pat) do
+          create(:granular_pat, user: current_user, boundary: ::Authz::Boundary.for(project),
+            permissions: [:read_work_item, :create_work_item])
+        end
+
+        it 'returns `createNoteEmail`' do
+          expect(graphql_errors).to be_nil
+          expect(work_item_data).to include('id' => work_item.to_gid.to_s, 'createNoteEmail' => work_item_email)
+        end
+      end
+    end
+
+    it 'uses the work items path for webPath and webUrl' do
+      expect(work_item_data).to include(
+        'webPath' => Gitlab::Routing.url_helpers.project_work_item_path(work_item.project, work_item.iid).to_s,
+        'webUrl' => Gitlab::Routing.url_helpers.project_work_item_url(work_item.project, work_item.iid).to_s
+      )
+    end
+
+    context 'when querying work item type information' do
+      include_context 'with work item types request context'
+
+      let(:work_item_fields) { "workItemType { #{work_item_type_fields} }" }
+
+      it 'returns work item type information' do
+        expect(work_item_data['workItemType']).to match(
+          expected_work_item_type_response(work_item.resource_parent, current_user, work_item.work_item_type).first
+        )
+      end
+    end
+
+    context 'when querying features' do
+      describe 'description widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              description {
+                description
+                descriptionHtml
+                edited
+                lastEditedBy {
+                  webPath
+                  username
+                }
+                lastEditedAt
+                taskCompletionStatus {
+                  completedCount
+                  count
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'description' => {
+                'description' => work_item.description,
+                'descriptionHtml' => ::MarkupHelper.markdown_field(work_item, :description, {}),
+                'edited' => true,
+                'lastEditedAt' => work_item.last_edited_at.iso8601,
+                'lastEditedBy' => {
+                  'webPath' => "/#{guest.full_path}",
+                  'username' => guest.username
+                },
+                'taskCompletionStatus' => {
+                  'completedCount' => 1,
+                  'count' => 1
+                }
+              }
+            }
+          )
+        end
+      end
+
+      describe 'hierarchy widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              hierarchy {
+                parent {
+                  id
+                }
+                children {
+                  nodes {
+                    id
+                  }
+                }
+                hasChildren
+                hasParent
+                rolledUpCountsByType {
+                  workItemType {
+                    name
+                  }
+                  countsByState {
+                    all
+                    opened
+                    closed
+                  }
+                }
+                depthLimitReachedByType {
+                  workItemType {
+                    name
+                  }
+                  depthLimitReached
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'hierarchy' => {
+                'parent' => nil,
+                'children' => { 'nodes' => match_array(
+                  [
+                    hash_including('id' => child_link1.work_item.to_gid.to_s),
+                    hash_including('id' => child_link2.work_item.to_gid.to_s)
+                  ]) },
+                'hasChildren' => true,
+                'hasParent' => false,
+                'rolledUpCountsByType' => match_array([
+                  hash_including(
+                    'workItemType' => hash_including('name' => 'Task'),
+                    'countsByState' => {
+                      'all' => 2,
+                      'opened' => 2,
+                      'closed' => 0
+                    }
+                  )
+                ]),
+                'depthLimitReachedByType' => match_array([
+                  hash_including(
+                    'workItemType' => hash_including('name' => 'Task'),
+                    'depthLimitReached' => false
+                  )
+                ])
+              }
+            }
+          )
+        end
+
+        context 'for N+1 queries checks' do
+          let_it_be(:work_item, freeze: false) { create(:work_item, project: project) }
+          let_it_be(:another_project) { create(:project, :repository) }
+          let_it_be(:another_label) { create(:label, project: another_project) }
+          let_it_be(:another_milestone) do
+            create(:milestone, project: another_project, start_date: start_date, due_date: due_date)
+          end
+
+          let(:work_item_fields) do
+            <<~GRAPHQL
+              id
+              features {
+                hierarchy {
+                  parent {
+                    id
+                  }
+                  children {
+                    nodes { #{widget_fields} }
+                  }
+                }
+              }
+            GRAPHQL
+          end
+
+          before do
+            add_child_task(work_item, project, { milestone: milestone, labels: labels })
+            add_child_task(work_item, another_project, { milestone: another_milestone, labels: [another_label] })
+          end
+
+          it 'avoids N+1 queries' do
+            another_project.add_guest(current_user)
+            post_graphql(query, current_user: current_user) # warm up
+
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+              post_graphql(query, current_user: current_user)
+            end
+            expect_graphql_errors_to_be_empty
+
+            add_child_task(work_item, project, { milestone: milestone, labels: labels })
+            add_child_task(work_item, another_project, { milestone: another_milestone, labels: [another_label] })
+
+            expect do
+              post_graphql(query, current_user: current_user)
+            end.not_to exceed_all_query_limit(control)
+            expect_graphql_errors_to_be_empty
+          end
+        end
+
+        context 'when user is guest' do
+          let(:current_user) { guest }
+
+          it 'filters out not accessible children or parent' do
+            expect(work_item_data).to include(
+              'id' => work_item.to_gid.to_s,
+              'features' => {
+                'hierarchy' => hash_including({
+                  'parent' => nil,
+                  'children' => { 'nodes' => match_array(
+                    [
+                      hash_including('id' => child_link1.work_item.to_gid.to_s)
+                    ]) },
+                  'hasChildren' => true,
+                  'hasParent' => false
+                })
+              }
+            )
+          end
+        end
+
+        context 'when requesting child item' do
+          let_it_be(:work_item, freeze: false) do
+            create(:work_item, :task, project: project, description: '- List item')
+          end
+
+          let_it_be(:parent_link) { create(:parent_link, work_item: work_item) }
+
+          it 'returns parent information' do
+            expect(work_item_data).to include(
+              'id' => work_item.to_gid.to_s,
+              'features' => {
+                'hierarchy' => hash_including({
+                  'parent' => hash_including('id' => parent_link.work_item_parent.to_gid.to_s),
+                  'children' => { 'nodes' => match_array([]) },
+                  'hasChildren' => false,
+                  'hasParent' => true
+                })
+              }
+            )
+          end
+        end
+
+        context 'when ordered by default by work_item_id' do
+          let_it_be(:newest_child) { create(:work_item, :task, project: project, id: 2000) }
+          let_it_be(:oldest_child) { create(:work_item, :task, project: project, id: 1000) }
+          let_it_be(:newest_link) { create(:parent_link, work_item_parent: work_item, work_item: newest_child) }
+          let_it_be(:oldest_link) { create(:parent_link, work_item_parent: work_item, work_item: oldest_child) }
+
+          let(:hierarchy_children) { work_item_data.dig('features', 'hierarchy', 'children', 'nodes') }
+
+          it 'places the oldest child item to the beginning of the children list' do
+            expect(hierarchy_children.first['id']).to eq(oldest_child.to_gid.to_s)
+          end
+
+          it 'places the newest child item to the end of the children list' do
+            expect(hierarchy_children.last['id']).to eq(newest_child.to_gid.to_s)
+          end
+
+          context 'when relative position is set' do
+            let_it_be(:first_child) { create(:work_item, :task, project: project, id: 3000) }
+
+            let_it_be(:first_link) do
+              create(:parent_link, work_item_parent: work_item, work_item: first_child, relative_position: 1)
+            end
+
+            it 'places children according to relative_position at the beginning of the children list' do
+              ordered_list = [first_child, oldest_child, child_item1, child_item2, newest_child]
+
+              expect(hierarchy_children.pluck('id')).to eq(ordered_list.map(&:to_gid).map(&:to_s))
+            end
+          end
+        end
+      end
+
+      describe 'assignees widget' do
+        let(:work_item) { create(:work_item, project: project, assignees: assignees) }
+        let(:assignees) do
+          [
+            create(:user, name: 'BBB'),
+            create(:user, name: 'AAA'),
+            create(:user, name: 'BBB')
+          ]
+        end
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              assignees {
+                allowsMultipleAssignees
+                canInviteMembers
+                assignees {
+                  nodes {
+                    id
+                    username
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information, assignees are ordered by name ASC id DESC' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'assignees' => {
+                'allowsMultipleAssignees' => boolean,
+                'canInviteMembers' => boolean,
+                'assignees' => {
+                  'nodes' => [
+                    { 'id' => assignees[1].to_gid.to_s, 'username' => assignees[1].username },
+                    { 'id' => assignees[2].to_gid.to_s, 'username' => assignees[2].username },
+                    { 'id' => assignees[0].to_gid.to_s, 'username' => assignees[0].username }
+                  ]
+                }
+              }
+            }
+          )
+        end
+      end
+
+      describe 'labels widget' do
+        let(:labels) { create_list(:label, 2, project: project) }
+        let(:work_item) { create(:work_item, project: project, labels: labels) }
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              labels {
+                labels {
+                  nodes {
+                    id
+                    title
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'labels' => {
+                'labels' => {
+                  'nodes' => match_array(
+                    labels.map { |a| { 'id' => a.to_gid.to_s, 'title' => a.title } }
+                  )
+                }
+              }
+            }
+          )
+        end
+      end
+
+      describe 'start and due date widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              startAndDueDate {
+                startDate
+                dueDate
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'startAndDueDate' => {
+                'startDate' => work_item.start_date.to_s,
+                'dueDate' => work_item.due_date.to_s
+              }
+            }
+          )
+        end
+      end
+
+      describe 'milestone widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              milestone {
+                milestone {
+                  id
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'milestone' => {
+                'milestone' => {
+                  'id' => work_item.milestone.to_gid.to_s
+                }
+              }
+            }
+          )
+        end
+      end
+
+      describe 'notifications widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              notifications {
+                subscribed
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'notifications' => {
+                'subscribed' => work_item.subscribed?(current_user, project)
+              }
+            }
+          )
+        end
+      end
+
+      describe 'currentUserTodos widget' do
+        let_it_be(:current_user) { developer }
+        let_it_be(:other_todo) { create(:todo, state: :pending, user: current_user) }
+
+        let_it_be(:done_todo) do
+          create(:todo, state: :done, target: work_item, target_type: work_item.class.name, user: current_user)
+        end
+
+        let_it_be(:pending_todo) do
+          create(:todo, state: :pending, target: work_item, target_type: work_item.class.name, user: current_user)
+        end
+
+        let_it_be(:other_user_todo) do
+          create(:todo, state: :pending, target: work_item, target_type: work_item.class.name, user: user)
+        end
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              currentUserTodos {
+                currentUserTodos {
+                  nodes {
+                    id
+                    state
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        context 'with access' do
+          it 'returns widget information' do
+            expect(work_item_data).to include(
+              'id' => work_item.to_gid.to_s,
+              'features' => {
+                'currentUserTodos' => {
+                  'currentUserTodos' => {
+                    'nodes' => match_array(
+                      [done_todo, pending_todo].map { |t| { 'id' => t.to_gid.to_s, 'state' => t.state } }
+                    )
+                  }
+                }
+              }
+            )
+          end
+        end
+
+        context 'with filter' do
+          let(:work_item_fields) do
+            <<~GRAPHQL
+              id
+              features {
+                currentUserTodos {
+                  currentUserTodos(state: done) {
+                    nodes {
+                      id
+                      state
+                    }
+                  }
+                }
+              }
+            GRAPHQL
+          end
+
+          it 'returns widget information' do
+            expect(work_item_data).to include(
+              'id' => work_item.to_gid.to_s,
+              'features' => {
+                'currentUserTodos' => {
+                  'currentUserTodos' => {
+                    'nodes' => match_array(
+                      [done_todo].map { |t| { 'id' => t.to_gid.to_s, 'state' => t.state } }
+                    )
+                  }
+                }
+              }
+            )
+          end
+        end
+      end
+
+      describe 'award emoji widget' do
+        let_it_be(:emoji) { create(:award_emoji, name: 'star', awardable: work_item) }
+        let_it_be(:upvote) { create(:award_emoji, :upvote, awardable: work_item) }
+        let_it_be(:downvote) { create(:award_emoji, :downvote, awardable: work_item) }
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              awardEmoji {
+                upvotes
+                downvotes
+                newCustomEmojiPath
+                awardEmoji {
+                  nodes {
+                    name
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'awardEmoji' => {
+                'upvotes' => work_item.upvotes,
+                'downvotes' => work_item.downvotes,
+                'newCustomEmojiPath' => Gitlab::Routing.url_helpers.new_group_custom_emoji_path(group),
+                'awardEmoji' => {
+                  'nodes' => match_array(
+                    [emoji, upvote, downvote].map { |e| { 'name' => e.name } }
+                  )
+                }
+              }
+            }
+          )
+        end
+
+        it 'does not perform read_emoji authorization checks' do
+          expect(Ability).not_to receive(:allowed?).with(
+            current_user, :read_emoji, anything
+          )
+
+          post_graphql(query, current_user: current_user)
+        end
+
+        context 'when user does not have access' do
+          let(:current_user) { user }
+
+          it 'does not return widget information' do
+            expect(work_item_data).to be_nil
+          end
+        end
+      end
+
+      describe 'linked items widget' do
+        let_it_be(:related_item) { create(:work_item, project: project) }
+        let_it_be(:blocked_item) { create(:work_item, project: project) }
+        let_it_be(:link1) do
+          create(:work_item_link, source: work_item, target: related_item, link_type: 'relates_to',
+            created_at: Time.current + 1.day)
+        end
+
+        let_it_be(:link2, freeze: false) do
+          create(:work_item_link, source: work_item, target: blocked_item, link_type: 'blocks',
+            created_at: Time.current + 2.days)
+        end
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              linkedItems {
+                linkedItems {
+                  nodes {
+                    linkId
+                    linkType
+                    linkCreatedAt
+                    linkUpdatedAt
+                    workItem {
+                      id
+                    }
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'features' => {
+              'linkedItems' => {
+                'linkedItems' => { 'nodes' => match_array(
+                  [
+                    hash_including(
+                      'linkId' => link1.to_gid.to_s, 'linkType' => 'relates_to',
+                      'linkCreatedAt' => link1.created_at.iso8601, 'linkUpdatedAt' => link1.updated_at.iso8601,
+                      'workItem' => { 'id' => related_item.to_gid.to_s }
+                    ),
+                    hash_including(
+                      'linkId' => link2.to_gid.to_s, 'linkType' => 'blocks',
+                      'linkCreatedAt' => link2.created_at.iso8601, 'linkUpdatedAt' => link2.updated_at.iso8601,
+                      'workItem' => { 'id' => blocked_item.to_gid.to_s }
+                    )
+                  ]
+                ) }
+              }
+            }
+          )
+        end
+
+        context 'when inaccessible links are present' do
+          let_it_be(:no_access_item) { create(:work_item, title: "PRIVATE", project: create(:project, :private)) }
+
+          before do
+            create(:work_item_link, source: work_item, target: no_access_item, link_type: 'relates_to')
+          end
+
+          it 'returns only items that the user has access to' do
+            expect(graphql_dig_at(work_item_data, :features, "linkedItems", "linkedItems", "nodes", "linkId"))
+              .to match_array([link1.to_gid.to_s, link2.to_gid.to_s])
+          end
+
+          context 'with anonymous user on public project' do
+            let(:current_user) { nil }
+
+            before do
+              project.update!(visibility: ::Gitlab::VisibilityLevel::PUBLIC)
+            end
+
+            it 'returns only items that the user has access to' do
+              post_graphql(query, current_user: current_user)
+
+              expect(graphql_dig_at(work_item_data, :features, "linkedItems", "linkedItems", "nodes", "linkId"))
+                .to match_array([link1.to_gid.to_s, link2.to_gid.to_s])
+            end
+          end
+        end
+
+        context 'when limiting the number of results' do
+          it_behaves_like 'sorted paginated query' do
+            include_context 'no sort argument'
+
+            let(:first_param) { 1 }
+            let(:all_records) { [link2, link1] }
+            let(:data_path) { %w[workItem features linkedItems linkedItems] }
+
+            def widget_fields(args)
+              query_graphql_field(
+                :features, {}, query_graphql_field(
+                  'linkedItems', {}, query_graphql_field(
+                    'linkedItems', args, "#{page_info} nodes { linkId }"
+                  )
+                )
+              )
+            end
+
+            def pagination_query(params)
+              graphql_query_for('workItem', { 'id' => global_id }, widget_fields(params))
+            end
+
+            def pagination_results_data(nodes)
+              nodes.map { |item| GlobalID::Locator.locate(item['linkId']) }
+            end
+          end
+        end
+
+        context 'when filtering by link type' do
+          let(:work_item_fields) do
+            <<~GRAPHQL
+              features {
+                linkedItems {
+                  linkedItems(filter: RELATED) {
+                    nodes {
+                      linkType
+                    }
+                  }
+                }
+              }
+            GRAPHQL
+          end
+
+          it 'returns items with specified type' do
+            widget_data = work_item_data.dig('features', 'linkedItems', 'linkedItems')
+
+            expect(widget_data["nodes"].size).to eq(1)
+            expect(widget_data.dig("nodes", 0, "linkType")).to eq('relates_to')
+          end
+        end
+      end
+
+      describe 'linked resources widget' do
+        # already have linked resources
+        let_it_be(:linked_resources_type) { build(:work_item_system_defined_type, :task) }
+        let_it_be(:work_item, freeze: false) do
+          create(:work_item, project: project, work_item_type: linked_resources_type)
+        end
+
+        let_it_be(:resource1) do
+          create(:zoom_meeting, issue_id: work_item.id, project: project, url: 'https://zoom.us/j/123456789')
+        end
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              linkedResources {
+                linkedResources {
+                  nodes {
+                    url
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns widget information' do
+          expect(work_item_data).to include(
+            'id' => work_item.to_gid.to_s,
+            'features' => {
+              'linkedResources' => {
+                'linkedResources' => {
+                  'nodes' => containing_exactly(
+                    hash_including(
+                      'url' => resource1.url
+                    )
+                  )
+                }
+              }
+            }
+          )
+        end
+      end
+
+      describe 'requester widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            widgets {
+              type
+              ... on WorkItemWidgetRequester {
+                email
+              }
+            }
+            features {
+              requester {
+                email
+              }
+            }
+          GRAPHQL
+        end
+
+        context 'when work item is a ticket created through Service Desk' do
+          let_it_be(:ticket_type) { build(:work_item_system_defined_type, :ticket) }
+          let_it_be(:support_bot) { create(:support_bot) }
+          let_it_be(:work_item, freeze: false) do
+            create(:work_item, project: project, work_item_type: ticket_type,
+              author: support_bot, service_desk_reply_to: 'requester@example.com')
+          end
+
+          it 'returns the requester email' do
+            expected = { 'email' => 'requester@example.com' }
+
+            expect(work_item_data['widgets']).to include(hash_including(expected.merge('type' => 'REQUESTER')))
+            expect(work_item_data['features']).to include('requester' => expected)
+          end
+
+          context 'when the user cannot read external emails' do
+            let(:current_user) { guest }
+
+            it 'returns an obfuscated email' do
+              expect(work_item_data['features']['requester']['email']).to eq(
+                Gitlab::Utils::Email.obfuscated_email('requester@example.com', deform: true)
+              )
+            end
+          end
+
+          context 'when the requester email is blank' do
+            let_it_be(:work_item, freeze: false) do
+              create(:work_item, project: project, work_item_type: ticket_type,
+                author: support_bot, service_desk_reply_to: nil)
+            end
+
+            it 'returns no email' do
+              expect(work_item_data['features']).to include('requester' => { 'email' => nil })
+            end
+          end
+        end
+
+        context 'when work item is not a ticket' do
+          it 'does not return the widget' do
+            expect(work_item_data['widgets']).not_to include(hash_including('type' => 'REQUESTER'))
+            expect(work_item_data['features']).to include('requester' => nil)
+          end
+        end
+      end
+
+      describe 'escalation status widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            widgets {
+              type
+              ... on WorkItemWidgetEscalationStatus {
+                escalationStatus
+              }
+            }
+            features {
+              escalationStatus {
+                escalationStatus
+              }
+            }
+          GRAPHQL
+        end
+
+        context 'when work item is an incident' do
+          let_it_be(:incident_type) { build(:work_item_system_defined_type, :incident) }
+          let_it_be(:work_item, freeze: false) do
+            create(:work_item, project: project, work_item_type: incident_type)
+          end
+
+          let_it_be(:escalation_status) do
+            create(:incident_management_issuable_escalation_status, :acknowledged, issue: work_item)
+          end
+
+          it 'returns widget information' do
+            expect(work_item_data['widgets']).to include(
+              hash_including('type' => 'ESCALATION_STATUS', 'escalationStatus' => 'ACKNOWLEDGED')
+            )
+            expect(work_item_data['features']).to include(
+              'escalationStatus' => { 'escalationStatus' => 'ACKNOWLEDGED' }
+            )
+          end
+        end
+
+        context 'when work item is not an incident' do
+          it 'does not return the widget' do
+            expect(work_item_data['widgets']).not_to include(hash_including('type' => 'ESCALATION_STATUS'))
+            expect(work_item_data['features']).to include('escalationStatus' => nil)
+          end
+        end
+      end
+
+      describe 'severity widget' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            widgets {
+              type
+              ... on WorkItemWidgetSeverity {
+                severity
+              }
+            }
+            features {
+              severity {
+                severity
+              }
+            }
+          GRAPHQL
+        end
+
+        context 'when work item is an incident' do
+          let_it_be(:incident_type) { build(:work_item_system_defined_type, :incident) }
+          let_it_be(:work_item, freeze: false) do
+            create(:work_item, project: project, work_item_type: incident_type)
+          end
+
+          let_it_be(:issuable_severity) { create(:issuable_severity, issue: work_item, severity: :high) }
+
+          it 'returns widget information' do
+            expect(work_item_data['widgets']).to include(
+              hash_including('type' => 'SEVERITY', 'severity' => 'HIGH')
+            )
+            expect(work_item_data['features']).to include('severity' => { 'severity' => 'HIGH' })
+          end
+        end
+
+        context 'when work item is not an incident' do
+          it 'does not return the widget' do
+            expect(work_item_data['widgets']).not_to include(hash_including('type' => 'SEVERITY'))
+            expect(work_item_data['features']).to include('severity' => nil)
+          end
+        end
+      end
+
+      context 'when filtering' do
+        context 'when selecting widgets' do
+          let(:work_item_fields) do
+            <<~GRAPHQL
+              id
+              widgets(onlyTypes: [DESCRIPTION]) {
+                type
+              }
+            GRAPHQL
+          end
+
+          it 'only returns selected widgets' do
+            expect(work_item_data).to include(
+              'id' => work_item.to_gid.to_s,
+              'widgets' => [{
+                'type' => 'DESCRIPTION'
+              }]
+            )
+          end
+        end
+
+        context 'when excluding widgets' do
+          let(:work_item_fields) do
+            <<~GRAPHQL
+              id
+              widgets(exceptTypes: [DESCRIPTION]) {
+                type
+              }
+            GRAPHQL
+          end
+
+          it 'does not return excluded widgets' do
+            expect(work_item_data).to include(
+              'id' => work_item.to_gid.to_s,
+              'widgets' => [
+                { "type" => "ASSIGNEES" },
+                { "type" => "AWARD_EMOJI" },
+                { "type" => "CRM_CONTACTS" },
+                { "type" => "CURRENT_USER_TODOS" },
+                { "type" => "DESIGNS" },
+                { "type" => "DEVELOPMENT" },
+                { "type" => "EMAIL_PARTICIPANTS" },
+                { "type" => "ERROR_TRACKING" },
+                { "type" => "HIERARCHY" },
+                { "type" => "LABELS" },
+                { "type" => "LINKED_ITEMS" },
+                { "type" => "MILESTONE" },
+                { "type" => "NOTES" },
+                { "type" => "NOTIFICATIONS" },
+                { "type" => "PARTICIPANTS" },
+                { "type" => "START_AND_DUE_DATE" },
+                { "type" => "TIME_TRACKING" },
+                { "type" => "LINKED_RESOURCES" }
+              ]
+            )
+          end
+        end
+      end
+    end
+
+    describe 'notes widget' do
+      let(:notes_widget) { graphql_dig_at(work_item_data, :features, :notes) }
+
+      context 'when fetching award emoji from notes' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              notes {
+                discussions(filter: ALL_NOTES, first: 10) {
+                  nodes {
+                    id
+                    resolvable
+                    resolvedBy {
+                      username
+                    }
+                    userPermissions {
+                      resolveNote
+                    }
+                    notes {
+                      nodes {
+                        id
+                        system
+                        body
+                        maxAccessLevelOfAuthor
+                        authorIsContributor
+                        awardEmoji {
+                          nodes {
+                            name
+                            user {
+                              name
+                            }
+                          }
+                        }
+                        discussion {
+                          id
+                        }
+                      }
+                    }
+                  }
+                }
+                notes(last: 1) {
+                  nodes {
+                    id
+                    body
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        let_it_be(:note, freeze: false) do
+          create(:note, project: work_item.project, noteable: work_item, author: developer)
+        end
+
+        before_all do
+          create(:award_emoji, awardable: note, name: 'rocket', user: developer)
+        end
+
+        context 'when fetching resolvable notes data' do
+          context 'with system notes' do
+            let_it_be(:comment1) { create(:discussion_note_on_issue, project: work_item.project, noteable: work_item) }
+            let_it_be(:comment2) { create(:note, discussion_id: comment1.discussion_id) }
+            let_it_be(:sys_note1) { create(:system_note, project: work_item.project, noteable: work_item) }
+            let_it_be(:sys_note2) { create(:resource_state_event, user: developer, issue: work_item, state: :closed) }
+
+            it 'returns resolve note permission' do
+              discussions = graphql_dig_at(notes_widget['discussions'], :nodes)
+
+              expect(discussions).to include(
+                hash_including(
+                  'id' => note.discussion.to_global_id.to_s,
+                  'resolvable' => false,
+                  'userPermissions' => {
+                    'resolveNote' => false
+                  }
+                ),
+                hash_including(
+                  'id' => comment1.discussion.to_global_id.to_s,
+                  'resolvable' => true,
+                  'userPermissions' => {
+                    'resolveNote' => true
+                  }
+                ),
+                hash_including(
+                  'id' => sys_note1.discussion.to_global_id.to_s,
+                  'resolvable' => false,
+                  'userPermissions' => {
+                    'resolveNote' => false
+                  }
+                ),
+                hash_including(
+                  'id' => sys_note2.work_item_synthetic_system_note.discussion.to_global_id.to_s,
+                  'resolvable' => false,
+                  'userPermissions' => {
+                    'resolveNote' => false
+                  }
+                )
+              )
+            end
+          end
+        end
+
+        it 'returns award emoji data' do
+          notes = graphql_dig_at(notes_widget['discussions'], :nodes).flat_map { |d| d['notes']['nodes'] }
+
+          note_with_emoji = notes.find { |n| n['id'] == note.to_gid.to_s }
+
+          expect(note_with_emoji).to include(
+            'awardEmoji' => {
+              'nodes' => include(
+                hash_including(
+                  'name' => 'rocket',
+                  'user' => {
+                    'name' => developer.name
+                  }
+                )
+              )
+            }
+          )
+        end
+
+        it 'returns author contributor status and max access level' do
+          notes = graphql_dig_at(notes_widget['discussions'], :nodes).flat_map { |d| d['notes']['nodes'] }
+
+          expect(notes).to include(
+            hash_including('maxAccessLevelOfAuthor' => 'Developer', 'authorIsContributor' => false)
+          )
+        end
+
+        it 'can return the latest note' do
+          latest_note = create(:note, project: work_item.project, noteable: work_item, note: 'Last note')
+
+          post_graphql(query, current_user: developer)
+
+          note = graphql_dig_at(notes_widget['notes'], :nodes).last
+
+          expect(note).to include(
+            'id' => latest_note.to_gid.to_s,
+            'body' => latest_note.note
+          )
+        end
+
+        it 'avoids N+1 queries' do
+          another_user = create(:user, developer_of: note.resource_parent)
+          create(:note, project: note.project, noteable: work_item, author: another_user)
+
+          post_graphql(query, current_user: developer)
+
+          control = ActiveRecord::QueryRecorder.new { post_graphql(query, current_user: developer) }
+
+          expect_graphql_errors_to_be_empty
+
+          another_note = create(:discussion_note, project: work_item.project, noteable: work_item)
+          create(:note, project: work_item.project, noteable: work_item, in_reply_to: another_note)
+
+          create(:award_emoji, awardable: another_note, name: 'star', user: guest)
+          another_user = create(:user, developer_of: note.resource_parent)
+          note_with_different_user = create(:note, project: note.project, noteable: work_item, author: another_user)
+          create(:award_emoji, awardable: note_with_different_user, name: 'star', user: developer)
+
+          expect { post_graphql(query, current_user: developer) }.not_to exceed_query_limit(control)
+          expect_graphql_errors_to_be_empty
+        end
+      end
+
+      context 'when fetching latest discussions first' do
+        let_it_be(:notes) do
+          create_list(:note, 3, project: work_item.project, noteable: work_item)
+        end
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              notes {
+                discussions(filter: ALL_NOTES, first: 3, sort: CREATED_DESC) {
+                  nodes {
+                    id
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        it 'returns latest discussions' do
+          discussions = graphql_dig_at(notes_widget['discussions'], :nodes)
+
+          expect(discussions).to include(
+            hash_including(
+              'id' => notes[2].discussion.to_global_id.to_s
+            ),
+            hash_including(
+              'id' => notes[1].discussion.to_global_id.to_s
+            ),
+            hash_including(
+              'id' => notes[0].discussion.to_global_id.to_s
+            )
+          )
+        end
+      end
+    end
+
+    describe 'designs widget' do
+      include DesignManagementTestHelpers
+
+      let(:work_item_fields) do
+        query_graphql_field(
+          :features, {}, query_graphql_field(
+            :designs, {}, query_graphql_field(
+              :design_collection, nil, design_collection_fields
+            )
+          )
+        )
+      end
+
+      let(:design_collection_fields) { nil }
+
+      let(:post_query) { post_graphql(query, current_user: current_user) }
+
+      let(:design_collection_data) { work_item_data.dig('features', 'designs', 'designCollection') }
+
+      before do
+        project.add_developer(developer)
+        enable_design_management
+      end
+
+      def id_hash(object)
+        a_graphql_entity_for(object)
+      end
+
+      shared_examples 'fetch a design-like object by ID' do
+        let(:design) { design_a }
+
+        let(:design_fields) do
+          [
+            :filename,
+            query_graphql_field(:project, :id)
+          ]
+        end
+
+        let(:design_collection_fields) do
+          query_graphql_field(object_field_name, object_params, object_fields)
+        end
+
+        let(:object_fields) { design_fields }
+
+        context 'when the ID is passed' do
+          let(:object_params) { { id: global_id_of(object) } }
+          let(:result_fields) { {} }
+
+          it 'retrieves the object' do
+            post_query
+            data = design_collection_data[GraphqlHelpers.fieldnamerize(object_field_name)]
+
+            expect(data).to match(
+              a_hash_including(
+                result_fields.merge({ 'filename' => design.filename, 'project' => id_hash(project) })
+              )
+            )
+          end
+
+          context 'when the user is unauthorized' do
+            let(:current_user) { user }
+
+            it_behaves_like 'a failure to find anything'
+          end
+
+          context 'without parameters' do
+            let(:object_params) { nil }
+
+            it 'raises an error' do
+              post_query
+
+              expect(graphql_errors).to include(no_argument_error)
+            end
+          end
+        end
+
+        context 'when attempting to retrieve an object from a different issue' do
+          let(:object_params) { { id: global_id_of(object_on_other_issue) } }
+
+          it_behaves_like 'a failure to find anything'
+        end
+      end
+
+      context 'when work item is an issue' do
+        let_it_be(:issue_work_item) { create(:work_item, :issue, project: project) }
+        let_it_be(:issue_work_item1) { create(:work_item, :issue, project: project) }
+        let_it_be(:design_a) { create(:design, issue: issue_work_item) }
+        let_it_be(:version_a) { create(:design_version, issue: issue_work_item, created_designs: [design_a]) }
+        let_it_be(:global_id) { issue_work_item.to_gid.to_s }
+
+        describe '.designs' do
+          let(:design_collection_fields) do
+            query_graphql_field('designs', {}, "nodes { id event filename }")
+          end
+
+          it 'returns design data' do
+            post_query
+
+            expect(design_collection_data).to include(
+              'designs' => include(
+                'nodes' => include(
+                  hash_including(
+                    'id' => design_a.to_gid.to_s,
+                    'event' => 'CREATION',
+                    'filename' => design_a.filename
+                  )
+                )
+              )
+            )
+          end
+        end
+
+        describe 'copy_state' do
+          let(:design_collection_fields) do
+            'copyState'
+          end
+
+          it 'returns copyState of designCollection' do
+            post_query
+
+            expect(design_collection_data).to include(
+              'copyState' => 'READY'
+            )
+          end
+        end
+
+        describe '.versions' do
+          let(:design_collection_fields) do
+            query_graphql_field('versions', {}, "nodes { id sha createdAt }")
+          end
+
+          it 'returns versions data' do
+            post_query
+
+            expect(design_collection_data).to include(
+              'versions' => include(
+                'nodes' => include(
+                  hash_including(
+                    'id' => version_a.to_gid.to_s,
+                    'sha' => version_a.sha,
+                    'createdAt' => version_a.created_at.iso8601
+                  )
+                )
+              )
+            )
+          end
+        end
+
+        describe '.version' do
+          let(:version) { version_a }
+
+          let(:design_collection_fields) do
+            query_graphql_field(:version, version_params, 'id sha')
+          end
+
+          context 'with no parameters' do
+            let(:version_params) { nil }
+
+            it 'raises an error' do
+              post_query
+
+              expect(graphql_errors).to include(a_hash_including("message" => "one of id or sha is required"))
+            end
+          end
+
+          shared_examples 'a successful query for a version' do
+            it 'finds the version' do
+              post_query
+
+              data = design_collection_data['version']
+
+              expect(data).to match a_graphql_entity_for(version, :sha)
+            end
+          end
+
+          context 'with (sha: STRING_TYPE)' do
+            let(:version_params) { { sha: version.sha } }
+
+            it_behaves_like 'a successful query for a version'
+          end
+
+          context 'with (id: ID_TYPE)' do
+            let(:version_params) { { id: global_id_of(version) } }
+
+            it_behaves_like 'a successful query for a version'
+          end
+        end
+
+        describe '.design' do
+          it_behaves_like 'fetch a design-like object by ID' do
+            let(:object) { design }
+            let(:object_field_name) { :design }
+
+            let(:no_argument_error) do
+              a_hash_including("message" => "one of id or filename must be passed")
+            end
+
+            let_it_be(:object_on_other_issue) { create(:design, issue: issue_work_item1) }
+          end
+        end
+
+        describe '.designAtVersion' do
+          it_behaves_like 'fetch a design-like object by ID' do
+            let(:object) { build(:design_at_version, design: design, version: version) }
+            let(:object_field_name) { :design_at_version }
+
+            let(:version) { version_a }
+
+            let(:result_fields) { { 'version' => id_hash(version) } }
+            let(:object_fields) do
+              design_fields + [query_graphql_field(:version, :id)]
+            end
+
+            let(:no_argument_error) do
+              a_hash_including("message" => "Field 'designAtVersion' is missing required arguments: id")
+            end
+
+            let(:object_on_other_issue) { build(:design_at_version, issue: issue_work_item1) }
+          end
+        end
+
+        describe 'N+1 query check' do
+          let(:design_collection_fields) do
+            query_graphql_field('designs', {}, "nodes { id event filename}")
+          end
+
+          it 'avoids N+1 queries', :use_sql_query_cache do
+            post_query # warmup
+            control_count = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+              post_query
+            end
+
+            create_list(:work_item, 3, namespace: group) do |item|
+              create(:design, :with_file, issue: item)
+            end
+
+            expect do
+              post_query
+            end.to issue_same_number_of_queries_as(control_count)
+            expect_graphql_errors_to_be_empty
+          end
+        end
+      end
+
+      context 'when work item base type is non issue' do
+        let_it_be(:epic) { create(:work_item, :task, project: project) }
+        let_it_be(:global_id) { epic.to_gid.to_s }
+
+        it 'returns without design' do
+          post_query
+
+          expect(epic&.work_item_type&.base_type).not_to match('issue')
+          expect(work_item_data['features']['designs']).to be_nil
+        end
+      end
+    end
+
+    describe 'development widget' do
+      let_it_be_with_reload(:merge_request1) { create(:merge_request, source_project: project) }
+      let_it_be_with_reload(:merge_request2) { create(:merge_request, source_project: project, target_branch: 'feat2') }
+
+      context 'when fetching related merge requests' do
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              development {
+                relatedMergeRequests {
+                  nodes {
+                    id
+                    iid
+                    author { id username }
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        before_all do
+          update_params = { description: "References #{work_item.to_reference}" }
+
+          [merge_request1, merge_request2].each do |merge_request|
+            ::MergeRequests::UpdateService
+              .new(project: merge_request.project, current_user: developer, params: update_params)
+              .execute(merge_request)
+          end
+        end
+
+        context 'when user is developer' do
+          let(:current_user) { developer }
+
+          it 'returns related merge requests in the response' do
+            post_graphql(query, current_user: current_user)
+
+            expect(work_item_data).to include(
+              'id' => work_item.to_global_id.to_s,
+              'features' => {
+                'development' => {
+                  'relatedMergeRequests' => {
+                    'nodes' => [
+                      hash_including('id' => merge_request2.to_gid.to_s, 'iid' => merge_request2.iid.to_s),
+                      hash_including('id' => merge_request1.to_gid.to_s, 'iid' => merge_request1.iid.to_s)
+                    ]
+                  }
+                }
+              }
+            )
+          end
+
+          it 'prevents N+1 queries', quarantine: 'https://gitlab.com/gitlab-org/gitlab/-/issues/565915' do
+            post_graphql(query, current_user: current_user) # warm up
+
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+              post_graphql(query, current_user: current_user)
+            end
+
+            merge_request3 = create(:merge_request, source_project: project, target_branch: 'feat3')
+            ::MergeRequests::UpdateService.new(
+              project: merge_request3.project,
+              current_user: developer,
+              params: { description: "References #{work_item.to_reference}" }
+            ).execute(merge_request3)
+
+            expect do
+              post_graphql(query, current_user: current_user)
+            end.not_to exceed_all_query_limit(control)
+          end
+        end
+      end
+
+      context 'when fetching persisted related merge request links' do
+        let_it_be(:related_mr) { create(:merge_request, source_project: project, target_branch: 'related-link') }
+        let_it_be(:related_link) do
+          create(:merge_request_issue,
+            issue: work_item, merge_request: related_mr, link_type: :related, from_mr_description: false)
+        end
+
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              development {
+                relatedMergeRequests { nodes { id } }
+              }
+            }
+          GRAPHQL
+        end
+
+        let(:related_mr_ids) do
+          work_item_data.dig('features', 'development', 'relatedMergeRequests', 'nodes').pluck('id')
+        end
+
+        it 'includes the explicitly related merge request' do
+          post_graphql(query, current_user: developer)
+
+          expect(related_mr_ids).to include(related_mr.to_gid.to_s)
+        end
+
+        context 'when the feature flag is disabled' do
+          before do
+            stub_feature_flags(explicit_mr_work_item_relations: false)
+            post_graphql(query, current_user: developer)
+          end
+
+          it 'excludes the explicitly related merge request' do
+            expect(related_mr_ids).not_to include(related_mr.to_gid.to_s)
+          end
+        end
+      end
+
+      context 'when fetching closing merge requests' do
+        let_it_be(:private_project) { create(:project, :repository, :private) }
+        let_it_be(:private_merge_request) { create(:merge_request, source_project: private_project) }
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              development {
+                willAutoCloseByMergeRequest
+                closingMergeRequests {
+                  count
+                  nodes {
+                    id
+                    fromMrDescription
+                    mergeRequest { id }
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        let_it_be(:mr_closing_issue1) do
+          create(
+            :merge_request_issue,
+            merge_request: merge_request1,
+            issue: work_item,
+            from_mr_description: false
+          )
+        end
+
+        let_it_be(:mr_closing_issue2) do
+          create(
+            :merge_request_issue,
+            merge_request: merge_request2,
+            issue: work_item,
+            from_mr_description: true
+          )
+        end
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        context 'when user is developer' do
+          let(:current_user) { developer }
+
+          it 'returns related merge requests in the response' do
+            expect(work_item_data).to include(
+              'id' => work_item.to_global_id.to_s,
+              'features' => {
+                'development' => {
+                  'willAutoCloseByMergeRequest' => true,
+                  'closingMergeRequests' => {
+                    'count' => 2,
+                    'nodes' => containing_exactly(
+                      hash_including(
+                        'id' => mr_closing_issue1.to_gid.to_s,
+                        'mergeRequest' => { 'id' => merge_request1.to_global_id.to_s },
+                        'fromMrDescription' => false
+                      ),
+                      hash_including(
+                        'id' => mr_closing_issue2.to_gid.to_s,
+                        'mergeRequest' => { 'id' => merge_request2.to_global_id.to_s },
+                        'fromMrDescription' => true
+                      )
+                    )
+                  }
+                }
+              }
+            )
+          end
+
+          it 'avoids N + 1 queries', :use_sql_query_cache,
+            quarantine: 'https://gitlab.com/gitlab-org/gitlab/-/issues/463450' do
+            # warm-up already done in the before block
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+              post_graphql(query, current_user: current_user)
+            end
+            expect(graphql_errors).to be_blank
+
+            create(
+              :merge_request_issue,
+              merge_request: create(:merge_request, source_project: project, target_branch: 'feature3'),
+              issue: work_item
+            )
+
+            expect do
+              post_graphql(query, current_user: current_user)
+            end.to issue_same_number_of_queries_as(control)
+            expect(graphql_errors).to be_blank
+          end
+        end
+      end
+
+      context 'when fetching related branches' do
+        let_it_be(:branch_name) { "#{work_item.iid}-another-branch-with-功能分支-UTF-8-chars" }
+        let_it_be(:pipeline1) { create(:ci_pipeline, :success, project: project, ref: work_item.to_branch_name) }
+        let_it_be(:pipeline2) { create(:ci_pipeline, :success, project: project, ref: branch_name) }
+        let(:work_item_fields) do
+          <<~GRAPHQL
+            id
+            features {
+              development {
+                relatedBranches  {
+                  nodes {
+                    name
+                    comparePath
+                    pipelineStatus { name label favicon }
+                  }
+                }
+              }
+            }
+          GRAPHQL
+        end
+
+        before_all do
+          project.repository.create_branch(work_item.to_branch_name, pipeline1.sha)
+          project.repository.create_branch(branch_name, pipeline2.sha)
+          project.repository.create_branch("#{work_item.iid}doesnt-match", project.repository.root_ref)
+          project.repository.create_branch("#{work_item.iid}-0-stable", project.repository.root_ref)
+
+          project.repository.add_tag(developer, work_item.to_branch_name, pipeline1.sha)
+          create(
+            :merge_request,
+            source_project: work_item.project,
+            source_branch: work_item.to_branch_name,
+            description: "Related to #{work_item.to_reference}"
+          ).tap { |merge_request| merge_request.create_cross_references!(developer) }
+        end
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        context 'when user is developer' do
+          let(:current_user) { developer }
+
+          it 'returns related branches not referenced in merge requests' do
+            brach_compare_path = Gitlab::Routing.url_helpers.project_compare_path(
+              project,
+              from: project.default_branch,
+              to: branch_name
+            )
+
+            expect(work_item_data).to include(
+              'id' => work_item.to_global_id.to_s,
+              'features' => {
+                'development' => {
+                  'relatedBranches' => {
+                    'nodes' => containing_exactly(
+                      hash_including(
+                        'name' => branch_name,
+                        'comparePath' => brach_compare_path,
+                        'pipelineStatus' => {
+                          'name' => 'SUCCESS',
+                          'label' => 'passed',
+                          'favicon' => match_asset_path("/assets/ci_favicons/favicon_status_success.png")
+                        }
+                      )
+                    )
+                  }
+                }
+              }
+            )
+          end
+        end
+      end
+    end
+
+    describe 'email participants widget' do
+      let_it_be(:email) { 'user@example.com' }
+      let_it_be(:obfuscated_email) { 'us*****@e*****.c**' }
+      let_it_be(:issue_email_participant) { create(:issue_email_participant, issue_id: work_item.id, email: email) }
+
+      let(:work_item_fields) do
+        <<~GRAPHQL
+          id
+          features {
+            emailParticipants {
+              emailParticipants {
+                nodes {
+                  email
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      it 'contains the email' do
+        expect(work_item_data).to include(
+          'features' => {
+            'emailParticipants' => {
+              'emailParticipants' => {
+                'nodes' => containing_exactly(
+                  hash_including(
+                    'email' => email
+                  )
+                )
+              }
+            }
+          }
+        )
+      end
+
+      context 'when user has the guest role' do
+        let(:current_user) { guest }
+
+        it 'contains the obfuscated email' do
+          expect(work_item_data).to include(
+            'features' => {
+              'emailParticipants' => {
+                'emailParticipants' => {
+                  'nodes' => containing_exactly(
+                    hash_including(
+                      'email' => obfuscated_email
+                    )
+                  )
+                }
+              }
+            }
+          )
+        end
+      end
+    end
+
+    describe 'external author' do
+      let_it_be(:email) { 'user@example.com' }
+      let_it_be(:work_item, freeze: false) do
+        create(:work_item, :ticket, project: project, service_desk_reply_to: email)
+      end
+
+      let(:work_item_fields) do
+        <<~GRAPHQL
+          id
+          externalAuthor
+        GRAPHQL
+      end
+
+      it 'contains the email' do
+        expect(work_item_data).to include('externalAuthor' => email)
+      end
+
+      context 'when user has the guest role' do
+        let(:current_user) { guest }
+
+        it 'contains the obfuscated email' do
+          expect(work_item_data).to include('externalAuthor' => 'us*****@e*****.c**')
+        end
+      end
+    end
+
+    describe 'contacts widget' do
+      let(:work_item_fields) do
+        <<~GRAPHQL
+          id
+          features {
+            crmContacts {
+              contactsAvailable
+              contacts {
+                nodes {
+                  firstName
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      context 'when no contacts are available' do
+        it 'returns expected data' do
+          expect(work_item_data).to include(
+            'features' => {
+              'crmContacts' => {
+                'contactsAvailable' => false,
+                'contacts' => {
+                  'nodes' => be_empty
+                }
+              }
+            }
+          )
+        end
+      end
+
+      context 'when contacts are available' do
+        let_it_be(:contact) { create(:contact, group: work_item.project.group) }
+        let_it_be(:issue_contact) { create(:issue_customer_relations_contact, issue: work_item, contact: contact) }
+
+        it 'returns expected data' do
+          expect(work_item_data).to include(
+            'features' => {
+              'crmContacts' => {
+                'contactsAvailable' => true,
+                'contacts' => {
+                  'nodes' => containing_exactly(
+                    hash_including(
+                      'firstName' => contact.first_name
+                    )
+                  )
+                }
+              }
+            }
+          )
+        end
+      end
+    end
+
+    context 'when an Issue Global ID is provided' do
+      let(:global_id) { Issue.find(work_item.id).to_gid.to_s }
+
+      it 'allows an Issue GID as input' do
+        expect(work_item_data).to include('id' => work_item.to_gid.to_s)
+      end
+    end
+  end
+
+  context 'when the user can not read the work item' do
+    let(:current_user) { user }
+
+    before do
+      post_graphql(query)
+    end
+
+    it 'returns an access error' do
+      expect(work_item_data).to be_nil
+      expect(graphql_errors).to contain_exactly(
+        hash_including('message' => ::Gitlab::Graphql::Authorize::AuthorizeResource::RESOURCE_ACCESS_ERROR)
+      )
+    end
+  end
+
+  context 'when the user cannot set work item metadata' do
+    let(:current_user) { guest }
+
+    before do
+      post_graphql(query, current_user: current_user)
+    end
+
+    it 'returns correct user permission' do
+      expect(work_item_data).to include(
+        'id' => work_item.to_gid.to_s,
+        'userPermissions' =>
+          hash_including(
+            'setWorkItemMetadata' => false
+          )
+      )
+    end
+  end
+
+  context 'when the user can submit a work item as spam' do
+    let(:current_user) { create(:user, :admin) }
+
+    before do
+      stub_application_setting(akismet_enabled: true)
+      post_graphql(query, current_user: current_user)
+    end
+
+    it 'returns correct user permission' do
+      expect(work_item_data).to include(
+        'id' => work_item.to_gid.to_s,
+        'userPermissions' =>
+          hash_including(
+            'reportSpam' => true
+          )
+      )
+    end
+  end
+
+  describe 'authorization for nested project traversal' do
+    let_it_be(:public_group) { create(:group, :public) }
+    let_it_be(:public_project) { create(:project, :public, group: public_group) }
+    let_it_be(:private_project) do
+      create(:project, :private, group: public_group, description: 'private project description')
+    end
+
+    let_it_be(:public_work_item) { create(:work_item, project: public_project) }
+    let_it_be(:group_developer) { create(:user, developer_of: public_group) }
+
+    let(:global_id) { public_work_item.to_gid.to_s }
+
+    context 'when traversing workItem -> project -> group -> projects' do
+      let(:work_item_fields) do
+        <<~GRAPHQL
+          id
+          project {
+            group {
+              projects {
+                nodes {
+                  name
+                  visibility
+                  description
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      context 'when queried by an unauthenticated user' do
+        before do
+          post_graphql(query)
+        end
+
+        it 'returns only public projects' do
+          projects_data = graphql_dig_at(graphql_data, :work_item, :project, :group, :projects, :nodes)
+          project_names = projects_data&.pluck('name') || []
+
+          expect(project_names).to include(public_project.name)
+          expect(project_names).not_to include(private_project.name)
+        end
+      end
+
+      context 'when queried by an unauthorized user' do
+        let(:current_user) { user }
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        it 'does not return private projects' do
+          projects_data = graphql_dig_at(graphql_data, :work_item, :project, :group, :projects, :nodes)
+          project_names = projects_data&.pluck('name') || []
+
+          expect(project_names).not_to include(private_project.name)
+          expect(project_names).to include(public_project.name)
+        end
+      end
+
+      context 'when queried by an authorized user' do
+        let(:current_user) { group_developer }
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        it 'returns private projects for authorized users' do
+          projects_data = graphql_dig_at(graphql_data, :work_item, :project, :group, :projects, :nodes)
+          project_names = projects_data&.pluck('name') || []
+
+          expect(project_names).to include(private_project.name, public_project.name)
+        end
+      end
+    end
+
+    context 'when traversing workItem -> namespace -> rootNamespace' do
+      let(:work_item_fields) do
+        <<~GRAPHQL
+          id
+          namespace {
+            rootNamespace {
+              name
+              fullPath
+              description
+              projects {
+                nodes {
+                  name
+                  description
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      def root_namespace_data
+        graphql_dig_at(graphql_data, :work_item, :namespace, :root_namespace)
+      end
+
+      def root_namespace_project_names
+        root_namespace_data.dig('projects', 'nodes')&.pluck('name') || []
+      end
+
+      shared_examples 'returns root namespace metadata' do
+        it 'returns the root namespace name and path' do
+          expect(root_namespace_data['name']).to eq(public_group.name)
+          expect(root_namespace_data['fullPath']).to eq(public_group.full_path)
+        end
+      end
+
+      context 'when queried by an unauthenticated user' do
+        before do
+          post_graphql(query)
+        end
+
+        it_behaves_like 'returns root namespace metadata'
+
+        it 'returns only public projects' do
+          expect(root_namespace_project_names).to include(public_project.name)
+          expect(root_namespace_project_names).not_to include(private_project.name)
+        end
+      end
+
+      context 'when queried by an unauthorized user' do
+        let(:current_user) { user }
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        it_behaves_like 'returns root namespace metadata'
+
+        it 'does not return private projects' do
+          expect(root_namespace_project_names).to include(public_project.name)
+          expect(root_namespace_project_names).not_to include(private_project.name)
+        end
+      end
+
+      context 'when queried by an authorized user' do
+        let(:current_user) { group_developer }
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        it_behaves_like 'returns root namespace metadata'
+
+        it 'returns all accessible projects with their metadata' do
+          expect(root_namespace_project_names).to include(public_project.name, private_project.name)
+
+          private_project_data = root_namespace_data.dig('projects', 'nodes')
+            .find { |p| p['name'] == private_project.name }
+          expect(private_project_data['description']).to eq(private_project.description)
+        end
+      end
+
+      context 'when the root namespace is a private group' do
+        let_it_be(:private_root_group) { create(:group, :private, description: 'secret root description') }
+        let_it_be(:private_child_group) { create(:group, :private, parent: private_root_group) }
+        let_it_be(:private_child_project) { create(:project, :private, group: private_child_group) }
+        let_it_be(:private_work_item) { create(:work_item, project: private_child_project) }
+        let_it_be(:child_project_developer) { create(:user, developer_of: private_child_project) }
+
+        let(:global_id) { private_work_item.to_gid.to_s }
+
+        context 'when queried by a user with access to the child project' do
+          let(:current_user) { child_project_developer }
+
+          before do
+            post_graphql(query, current_user: current_user)
+          end
+
+          it 'returns private root namespace metadata' do
+            expect(root_namespace_data['name']).to eq(private_root_group.name)
+            expect(root_namespace_data['description']).to eq(private_root_group.description)
+          end
+        end
+
+        context 'when queried by a user without access' do
+          let(:current_user) { user }
+
+          before do
+            post_graphql(query, current_user: current_user)
+          end
+
+          it 'does not expose the private root namespace metadata' do
+            expect(graphql_dig_at(graphql_data, :work_item)).to be_nil
+            expect(root_namespace_data).to be_nil
+          end
+        end
+      end
+    end
+
+    context 'when traversing workItem -> namespace -> projects (with includeSiblingProjects)' do
+      let(:work_item_fields) do
+        <<~GRAPHQL
+          id
+          namespace {
+            projects(includeSiblingProjects: true) {
+              nodes {
+                name
+                visibility
+                description
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      context 'when queried by an unauthenticated user' do
+        before do
+          post_graphql(query)
+        end
+
+        it 'returns only public projects' do
+          projects_data = graphql_dig_at(graphql_data, :work_item, :namespace, :projects, :nodes)
+          project_names = projects_data&.pluck('name') || []
+
+          expect(project_names).to include(public_project.name)
+          expect(project_names).not_to include(private_project.name)
+        end
+      end
+
+      context 'when queried by an unauthorized user' do
+        let(:current_user) { user }
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        it 'does not return private projects' do
+          projects_data = graphql_dig_at(graphql_data, :work_item, :namespace, :projects, :nodes)
+          project_names = projects_data&.pluck('name') || []
+
+          expect(project_names).not_to include(private_project.name)
+          expect(project_names).to include(public_project.name)
+        end
+      end
+
+      context 'when queried by an authorized user' do
+        let(:current_user) { group_developer }
+
+        before do
+          post_graphql(query, current_user: current_user)
+        end
+
+        it 'returns private projects for authorized users' do
+          projects_data = graphql_dig_at(graphql_data, :work_item, :namespace, :projects, :nodes)
+          project_names = projects_data&.pluck('name') || []
+
+          expect(project_names).to include(private_project.name, public_project.name)
+        end
+      end
+    end
+  end
+end

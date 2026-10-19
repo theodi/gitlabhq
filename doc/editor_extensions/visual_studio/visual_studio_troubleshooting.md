@@ -1,0 +1,99 @@
+---
+stage: AI Clients
+group: Developer Clients
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Learn how to address common issues for the GitLab for Visual Studio extension.
+title: Troubleshooting the GitLab for Visual Studio extension
+---
+
+If the steps on this page don't solve your problem, check the
+[list of open issues](https://gitlab.com/gitlab-org/editor-extensions/gitlab-visual-studio-extension/-/issues/?sort=created_date&state=opened&first_page_size=100)
+in the extension's project. If an issue matches your problem, update the issue.
+If no issues match your problem, [create a new issue](https://gitlab.com/gitlab-org/editor-extensions/gitlab-visual-studio-extension/-/issues/new).
+
+## GitLab Duo features do not appear
+
+If GitLab Duo Chat or GitLab Duo Code Suggestions are not available in Visual Studio:
+
+- Ensure you meet the [prerequisites](setup.md#configure-gitlab-duo) and the necessary settings
+  are on.
+- Ensure that [Admin mode is disabled](../../administration/settings/sign_in_restrictions.md#turn-off-admin-mode-for-your-session).
+- Check that GitLab Duo Agentic Chat is enabled:
+  1. In Visual Studio, go to **Tools** > **Options** > **GitLab**.
+  1. Under **GitLab**, select **General**.
+  1. Check that **Enable Agentic Duo Chat** is set to **True**.
+- Check that Code Suggestions is enabled:
+  1. In Visual Studio, on the bottom status bar, check the GitLab icon's tooltip for the current
+     status of the feature.
+  1. If Code Suggestions is not enabled, in the top bar, select **Extensions** > **GitLab** >
+     **Toggle Code Suggestions**.
+
+For support with Code Suggestions, see [troubleshooting Code Suggestions](../../user/project/repository/code_suggestions/troubleshooting.md#microsoft-visual-studio-troubleshooting).
+
+## Network issues
+
+If you are seeing `HTTP/1.1` responses from GitLab Duo rather than `/-/cable`
+WebSocket endpoints in your logs, your WebSocket connections may be blocked.
+
+Your GitLab instance must allow inbound WebSocket connections from IDE clients.
+Ask your network administrator to
+[allow WebSocket traffic to your GitLab instance](../../administration/gitlab_duo/configure/_index.md#allow-inbound-connections-from-clients-to-the-gitlab-instance)
+if you suspect this is the issue.
+
+If the connection to the GitLab Duo Agent Platform fails with a WebSocket error `1006` or `404`, see
+[connection fails with WebSocket error `1006` or `404`](../../user/duo_agent_platform/troubleshooting.md#connection-fails-with-websocket-error-1006-or-404).
+
+## View more logs
+
+More logs are available in the **GitLab Extension Output** window:
+
+1. In Visual Studio, in the top bar, go to the **Tools** > **Options** menu.
+1. Find the **GitLab** option, and set **Log Level** to **Debug**.
+1. Go to **View** > **Output** to open the extension log. In the dropdown list, select **GitLab Extension** as the log filter.
+1. Verify that the debug log contains similar output:
+
+   ```shell
+   GetProposalManagerAsync: Code suggestions enabled. ContentType (csharp) or file extension (cs) is supported.
+   GitlabProposalSourceProvider.GetProposalSourceAsync
+   ```
+
+### View activity log
+
+If your extension does not load or crashes, check the activity log for errors.
+Your activity log is available in this location:
+
+```plaintext
+C:\Users\WINDOWS_USERNAME\AppData\Roaming\Microsoft\VisualStudio\VS_VERSION\ActivityLog.xml
+```
+
+Replace these values in the directory path:
+
+- `WINDOWS_USERNAME`: Your Windows username.
+- `VS_VERSION`: The version of your Visual Studio installation.
+
+## Required information for support
+
+Before contacting Support, make sure the latest GitLab extension is installed. Visual Studio should automatically update to the latest version of the extension.
+
+Gather this information from affected users, and provide it in your bug report:
+
+1. The error message shown to the user.
+1. Workflow and Language Server logs:
+   1. [Enable debug logs](#view-more-logs).
+   1. [Retrieve log files](#view-activity-log).
+1. Diagnostics output:
+   1. With Visual Studio open, on the top banner, select **Help** > **About Microsoft Visual Studio**.
+   1. On the dialog, select **Copy Info** to copy all the required information for this section to your clipboard.
+1. System details:
+   1. With Visual Studio open, on the top banner, select **Help** > **About Microsoft Visual Studio**.
+   1. On the dialog, select **System Info** to see more detailed information.
+   1. For **OS type and version**: Copy the `OS Name` and `Version`.
+   1. For **Machine specifications (CPU, RAM)**: copy the `Processor` and `Installed Physical Memory (RAM)` sections.
+1. Describe the scope of impact. How many users are affected?
+1. Describe how to reproduce the error. Include a screen recording, if possible.
+1. Describe how other GitLab Duo features are affected:
+   - Is Code Suggestions working?
+   - Does GitLab Duo Chat in the Web IDE return responses?
+1. Perform extension isolation testing. Try disabling (or uninstalling) all other extensions to determine
+   if another extension is causing the issue. This helps determine if the problem is with our extension,
+   or from an external source.

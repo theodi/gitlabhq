@@ -1,0 +1,71 @@
+stages:
+  - prepare
+
+# valid include:rules
+include:
+  - local: builds.yml
+    rules:
+      - if: $DONT_INCLUDE_BUILDS == "true"
+        when: never
+  - local: builds.yml
+    rules:
+      - if: $INCLUDE_BUILDS == "true"
+        when: always
+  - local: deploys.yml
+    rules:
+      - if: $CI_COMMIT_BRANCH == "main"
+  - local: builds.yml
+    rules:
+      - exists:
+          - exception-file.md
+        when: never
+  - local: builds.yml
+    rules:
+      - exists:
+          - file.md
+        when: always
+  - local: builds.yml
+    rules:
+      - exists:
+          - file.md
+        when: null
+  - local: deploys.yml
+    rules:
+      - exists:
+          - file.md
+  - local: builds.yml
+    rules:
+      - if: $INCLUDE_BUILDS == "true"
+        changes:
+          - 'test.yml'
+  - local: builds.yml
+    rules:
+      - changes:
+          paths:
+            - 'test.yml'
+          compare_to: 'master'
+  # valid include:cache
+  - remote: 'https://gitlab.com/example-project/-/raw/main/sample1.gitlab-ci.yml'
+    cache: true
+  - remote: 'https://gitlab.com/example-project/-/raw/main/sample2.gitlab-ci.yml'
+    cache: '1 day'
+
+# valid trigger:include
+trigger:include accepts project and file properties:
+  stage: prepare
+  script:
+    - echo 'creating pipeline...'
+  trigger:
+    include:
+      - project: 'my-group/my-pipeline-library'
+        file: '.gitlab-ci.yml'
+
+trigger:include accepts optional ref property:
+  stage: prepare
+  script:
+    - echo 'creating pipeline...'
+  trigger:
+    include:
+      - project: 'my-group/my-pipeline-library'
+        file: '.gitlab-ci.yml'
+        ref: 'main'

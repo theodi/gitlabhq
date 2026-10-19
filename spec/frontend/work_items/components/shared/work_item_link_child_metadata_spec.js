@@ -1,0 +1,117 @@
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+
+import ItemMilestone from '~/issuable/components/issue_milestone.vue';
+import WorkItemLinkChildMetadata from '~/work_items/components/shared/work_item_link_child_metadata.vue';
+import WorkItemRolledUpCount from '~/work_items/components/work_item_links/work_item_rolled_up_count.vue';
+import WorkItemParentMetadata from '~/work_items/components/shared/work_item_parent_metadata.vue';
+
+import {
+  workItemObjectiveMetadataWidgets,
+  mockParentWorkItem,
+} from 'ee_else_ce_jest/work_items/mock_data';
+
+describe('WorkItemLinkChildMetadata', () => {
+  const { MILESTONE } = workItemObjectiveMetadataWidgets;
+  const mockMilestone = MILESTONE.milestone;
+
+  let wrapper;
+
+  const findRolledUpCount = () => wrapper.findComponent(WorkItemRolledUpCount);
+  const findParentMetadata = () => wrapper.findComponent(WorkItemParentMetadata);
+
+  const createComponent = ({
+    metadataWidgets = workItemObjectiveMetadataWidgets,
+    namespacePath = 'test-project-path',
+  } = {}) => {
+    wrapper = shallowMountExtended(WorkItemLinkChildMetadata, {
+      propsData: {
+        iid: '1',
+        reference: 'test-project-path#1',
+        metadataWidgets,
+        namespacePath,
+      },
+      scopedSlots: {
+        'weight-metadata': `<div data-testid="weight-metadata-slot">Weight</div>`,
+        'left-metadata': `<div data-testid="left-metadata-slot">Foo</div>`,
+        'right-metadata': `<div data-testid="right-metadata-slot">Bar</div>`,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  it('renders scoped slot contents', () => {
+    expect(wrapper.findByTestId('weight-metadata-slot').text()).toBe('Weight');
+    expect(wrapper.findByTestId('left-metadata-slot').text()).toBe('Foo');
+    expect(wrapper.findByTestId('right-metadata-slot').text()).toBe('Bar');
+  });
+
+  it('renders item milestone', () => {
+    const milestoneLink = wrapper.findComponent(ItemMilestone);
+
+    expect(milestoneLink.exists()).toBe(true);
+    expect(milestoneLink.props('milestone')).toEqual(mockMilestone);
+  });
+
+  it('does not render rolled up count if there are no rolled up items', () => {
+    expect(findRolledUpCount().exists()).toBe(false);
+  });
+
+  it('renders rolled up count if there are rolled up items', () => {
+    createComponent({
+      metadataWidgets: {
+        ...workItemObjectiveMetadataWidgets,
+        HIERARCHY: {
+          type: 'HIERARCHY',
+          hasChildren: false,
+          rolledUpCountsByType: [
+            {
+              countsByState: {
+                all: 4,
+                closed: 0,
+                __typename: 'WorkItemStateCountsType',
+              },
+              workItemType: {
+                id: 'gid://gitlab/WorkItems::Type/8',
+                name: 'Epic',
+                iconName: 'work-item-epic',
+                __typename: 'WorkItemType',
+              },
+              __typename: 'WorkItemTypeCountsByState',
+            },
+          ],
+          __typename: 'WorkItemWidgetHierarchy',
+        },
+      },
+    });
+
+    expect(findRolledUpCount().exists()).toBe(true);
+    expect(findRolledUpCount().props('hideCountWhenZero')).toBe(true);
+  });
+
+  describe('parent metadata', () => {
+    it('does not render parent metadata when parent is not present', () => {
+      expect(findParentMetadata().exists()).toBe(false);
+    });
+
+    it('renders parent metadata when parent is present', () => {
+      createComponent({
+        metadataWidgets: {
+          ...workItemObjectiveMetadataWidgets,
+          HIERARCHY: {
+            type: 'HIERARCHY',
+            hasChildren: false,
+            rolledUpCountsByType: [],
+            parent: mockParentWorkItem,
+            __typename: 'WorkItemWidgetHierarchy',
+          },
+        },
+      });
+
+      expect(findParentMetadata().exists()).toBe(true);
+      expect(findParentMetadata().props('parent')).toEqual(mockParentWorkItem);
+    });
+  });
+});

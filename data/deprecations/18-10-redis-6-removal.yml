@@ -1,0 +1,38 @@
+- title: "Support for Redis 6"
+  removal_milestone: "19.0"
+  announcement_milestone: "18.10"
+  breaking_change: true
+  reporter: grantyoung
+  stage: gitlab-delivery
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/work_items/585839
+  impact: low
+  impact_offering: self-managed
+  scope: instance
+  resolution_role: Admin
+  manual_task: true
+  body: |
+    In GitLab 19.0, we plan to remove support for Redis 6 as part of our commitment to maintaining a secure and
+    supportable infrastructure stack.
+
+    Before upgrading to GitLab 19.0, migrate to Redis 7.0 or higher, or Valkey 7.2. Redis 7.2 or
+    Valkey 7.2 is recommended. Redis 7.0 has reached end-of-life (EOL) upstream, but in some cases
+    is actively maintained by vendors, such as Amazon ElastiCache for Redis 7.1, which is built on
+    Redis 7.0.
+
+    The bundled Redis included with the Linux package has used Redis 7 since GitLab 16.2 and is not affected.
+    Only GitLab Self-Managed instances using an external Redis 6 deployment must migrate.
+
+    See the following resources for migrating an external Redis 6 deployment:
+
+    - **AWS ElastiCache**: ElastiCache for Redis 7.2 is not available on AWS. Migrate to
+      [Amazon ElastiCache for Valkey 7.2](https://aws.amazon.com/elasticache/what-is-valkey/), which is recommended.
+      ElastiCache for Redis 7.1 is built on Redis 7.0 and is known to work.
+      For available upgrade paths, see [AWS ElastiCache documentation](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/engine-versions.html).
+    - **GCP Memorystore**: Upgrade your Redis 6 instance to Redis 7.2 or Valkey 7.2. For available upgrade paths, see
+      [GCP Memorystore documentation](https://docs.cloud.google.com/memorystore/docs/redis/supported-versions).
+    - **Azure Cache for Redis**: A managed Redis 7.2 or Valkey 7.2 option is not currently available on Azure. You can
+      self-host Redis 7.2 or Valkey 7.2 on Azure VMs or AKS. You can also use the GitLab Linux package installation method,
+      which supports Valkey 7.2.
+    - **Self-hosted**: Upgrade your Redis 6 instance to Redis 7.2 or Valkey 7.2.
+
+    For more information, see the [requirements documentation](https://docs.gitlab.com/install/requirements/).

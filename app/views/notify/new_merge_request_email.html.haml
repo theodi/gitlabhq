@@ -1,9 +1,11 @@
 %p.details
-  != merge_path_description(@merge_request, '&rarr;')
+  = html_escape(_('%{user} created a merge request: %{mr_link}')) % { user: link_to(@merge_request.author_name, user_url(@merge_request.author)),
+                                                                      mr_link: merge_request_reference_link(@merge_request) }
 
-- if @merge_request.assignee_id.present?
-  %p
-    Assignee: #{@merge_request.author_name} &rarr; #{@merge_request.assignee_name}
+.branch
+  = merge_path_description(@merge_request)
+= render 'merge_request_participants', merge_request: @merge_request
 
--if @merge_request.description
-  = markdown(@merge_request.description, reference_only_path: false)
+- if @merge_request.description
+  .md.gl-mt-5
+    = markdown(@merge_request.description, pipeline: :email, author: @merge_request.author, current_user: @recipient, issuable_reference_expansion_enabled: true)

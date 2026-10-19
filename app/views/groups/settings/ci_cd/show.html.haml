@@ -1,0 +1,53 @@
+- breadcrumb_title _("CI/CD Settings")
+- page_title _("CI/CD")
+
+- expanded = expanded_by_default?
+- general_expanded = @group.errors.empty? ? expanded : true
+
+%h1.gl-sr-only= @breadcrumb_title
+
+-# Given we only have one field in this form which is also admin-only,
+-# we don't want to show an empty section to non-admin users,
+- if can?(current_user, :update_max_artifacts_size, @group) || @group.root?
+  = render ::Layouts::SettingsBlockComponent.new(_("General pipelines"),
+    id: 'js-general-pipeline-settings',
+    expanded: general_expanded) do |c|
+    - c.with_description do
+      = _("Customize your pipeline configuration.")
+    - c.with_body do
+      = render 'groups/settings/ci_cd/form', group: @group
+
+- if can?(current_user, :admin_cicd_variables, @group)
+  = render ::Layouts::SettingsBlockComponent.new(_('Variables'),
+    id: 'ci-variables',
+    expanded: expanded) do |c|
+    - c.with_description do
+      = render "ci/variables/content", entity: @entity, variable_limit: @variable_limit
+    - c.with_body do
+      = render 'ci/variables/index', save_endpoint: group_variables_path
+
+- if can?(current_user, :admin_runners, @group)
+  = render ::Layouts::SettingsBlockComponent.new(_('Runners'),
+    id: 'runners-settings',
+    expanded: expanded) do |c|
+    - c.with_description do
+      = _("Runners are processes that pick up and execute CI/CD jobs for GitLab.")
+      = link_to _('What is GitLab Runner?'), 'https://docs.gitlab.com/runner/', target: '_blank', rel: 'noopener noreferrer'
+    - c.with_body do
+      = render 'groups/runners/settings'
+
+- if can?(current_user, :admin_group, @group)
+  = render ::Layouts::SettingsBlockComponent.new(_('Auto DevOps'),
+    id: 'auto-devops-settings',
+    expanded: expanded) do |c|
+    - c.with_description do
+      - auto_devops_url = help_page_path('topics/autodevops/_index.md')
+      - quickstart_url = help_page_path('topics/autodevops/cloud_deployments/auto_devops_with_gke.md')
+      - auto_devops_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: auto_devops_url }
+      - quickstart_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: quickstart_url }
+      = html_escape(s_('AutoDevOps|%{auto_devops_start}Automate building, testing, and deploying%{auto_devops_end} your applications based on your continuous integration and delivery configuration. %{quickstart_start}How do I get started?%{quickstart_end}')) % { auto_devops_start: auto_devops_start, auto_devops_end: '</a>'.html_safe, quickstart_start: quickstart_start, quickstart_end: '</a>'.html_safe }
+    - c.with_body do
+      = render 'groups/settings/ci_cd/auto_devops_form', group: @group
+
+- if can?(current_user, :admin_protected_environments, @group)
+  = render_if_exists 'groups/settings/ci_cd/protected_environments', expanded: expanded

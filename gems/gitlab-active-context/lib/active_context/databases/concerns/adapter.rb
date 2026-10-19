@@ -1,0 +1,68 @@
+# frozen_string_literal: true
+
+require 'addressable/uri'
+
+module ActiveContext
+  module Databases
+    module Concerns
+      module Adapter
+        attr_reader :connection, :options, :prefix, :client, :indexer, :executor
+
+        DEFAULT_PREFIX = 'gitlab_active_context'
+        DEFAULT_SEPARATOR = '_'
+
+        delegate :search, to: :client
+        delegate :all_refs, :add_ref, :empty?, :bulk, :process_bulk_errors, :reset, to: :indexer
+
+        def initialize(connection, options:)
+          @connection = connection
+          @options = options.symbolize_keys
+          @prefix = @options[:prefix] || DEFAULT_PREFIX
+          @client = client_klass.new(@options)
+          @indexer = indexer_klass.new(@options, client)
+          @executor = executor_klass.new(self)
+        end
+
+        def name
+          raise NotImplementedError
+        end
+
+        def client_klass
+          raise NotImplementedError
+        end
+
+        def indexer_klass
+          raise NotImplementedError
+        end
+
+        def executor_klass
+          raise NotImplementedError
+        end
+
+        def full_collection_name(name)
+          [prefix, name].compact.join(separator)
+        end
+
+        def collection_name_without_prefix(collection_name)
+          collection_name.delete_prefix("#{prefix}#{separator}")
+        end
+
+        def separator
+          DEFAULT_SEPARATOR
+        end
+
+        def indexer_connection_options
+          raise NotImplementedError
+        end
+
+        private
+
+        def normalize_urls(urls)
+          Array(urls).map do |url|
+            url.is_a?(Hash) ? Addressable::URI.new(url.symbolize_keys).normalize.to_s : url
+          end
+        end
+      end
+    end
+  end
+end

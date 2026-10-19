@@ -1,0 +1,97 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Projects > Files > User previews file while editing in single file editor', :js, feature_category: :source_code_management do
+  include Features::SourceEditorSpecHelpers
+
+  let_it_be_with_reload(:project) { create(:project, :repository) }
+  let_it_be_with_reload(:user) { create(:user) }
+  let(:content_mermaid_graph) do
+    <<~MERMAID
+    ```mermaid
+    graph TD;
+      A-->B;
+      A-->C;
+      B-->D;
+      C-->D;
+    ```
+    MERMAID
+  end
+
+  let(:use_mermaid_v12) { true }
+  let(:sandbox_path) { sandbox_mermaid_v12_path }
+
+  let(:mermaid_frame_selector) do
+    src_prefix = "http://#{Capybara.current_session.server.host}:#{Capybara.current_session.server.port}#{sandbox_path}"
+    "iframe[src^='#{src_prefix}'][sandbox='allow-scripts']"
+  end
+
+  before_all do
+    project.add_maintainer(user)
+  end
+
+  before do
+    stub_feature_flags(use_mermaid_v12: use_mermaid_v12)
+    sign_in user
+    visit project_edit_blob_path(project, File.join(project.default_branch, 'README.md'))
+  end
+
+  context 'when user toggles preview' do
+    it 'renders math equations correctly',
+      quarantine: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/issues/6039' do
+      content = <<~MATH
+      This math is inline $`a^2+b^2=c^2`$.
+
+      This is on a separate line
+      ```math
+      a^2+b^2=c^2
+      ```
+
+      This math is aligned
+
+      ```math
+      \\begin{align*}
+        a&=b+c \\\\
+        d+e&=f
+      \\end{align*}
+      ```
+      MATH
+
+      fill_editor(content)
+      click_link 'Preview'
+      wait_for_requests
+      expect(page).to have_selector('.katex .mord.mathnormal', text: 'b')
+      expect(page).to have_selector('.katex-display .mord.mathnormal', text: 'b')
+      expect(page).to have_selector('.katex-display .mtable .col-align-l .mord.mathnormal', text: 'f')
+    end
+
+    it 'renders mermaid graphs correctly' do
+      fill_editor(content_mermaid_graph)
+      click_link 'Preview'
+
+      page.within('.js-markdown-code') do
+        expect(page).to have_css(mermaid_frame_selector)
+      end
+    end
+
+    context 'when use_mermaid_v12 is disabled' do
+      let(:use_mermaid_v12) { false }
+      let(:sandbox_path) { sandbox_mermaid_v11_path }
+
+      it 'renders mermaid graphs with the Mermaid 11 sandbox' do
+        fill_editor(content_mermaid_graph)
+        click_link 'Preview'
+
+        page.within('.js-markdown-code') do
+          expect(page).to have_css(mermaid_frame_selector)
+        end
+      end
+    end
+  end
+
+  def fill_editor(content)
+    wait_for_requests
+    editor_set_value(content)
+  end
+end

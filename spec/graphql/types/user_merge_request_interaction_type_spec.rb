@@ -1,0 +1,173 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe GitlabSchema.types['UserMergeRequestInteraction'], feature_category: :code_review_workflow do
+  include GraphqlHelpers
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:current_user) { create(:user) }
+  let_it_be(:project) { create(:project, :public, :repository) }
+  let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+
+  let(:interaction) { ::Users::MergeRequestInteraction.new(user: user, merge_request: merge_request.reset) }
+
+  specify { expect(described_class).to require_graphql_authorizations(:read_merge_request) }
+
+  it 'has the expected fields' do
+    expected_fields = %w[
+      can_merge
+      can_update
+      review_state
+      reviewed
+      approved
+      approved_at
+      updated_at
+    ]
+
+    expect(described_class).to have_graphql_fields(*expected_fields).at_least
+  end
+
+  def resolve(field_name)
+    resolve_field(field_name, interaction, current_user: current_user)
+  end
+
+  describe '#can_merge' do
+    subject { resolve(:can_merge) }
+
+    context 'when the user cannot merge' do
+      it { is_expected.to be false }
+    end
+
+    context 'when the user can merge' do
+      before do
+        project.add_maintainer(user)
+      end
+
+      it { is_expected.to be true }
+    end
+  end
+
+  describe '#can_update' do
+    subject { resolve(:can_update) }
+
+    context 'when the user cannot update the MR' do
+      it { is_expected.to be false }
+    end
+
+    context 'when the user can update the MR' do
+      before do
+        project.add_developer(user)
+      end
+
+      it { is_expected.to be true }
+    end
+  end
+
+  describe '#review_state' do
+    subject { resolve(:review_state) }
+
+    context 'when the user has not been asked to review the MR' do
+      it { is_expected.to be_nil }
+
+      it 'implies not reviewed' do
+        expect(resolve(:reviewed)).to be false
+      end
+    end
+
+    context 'when the user has been asked to review the MR' do
+      before do
+        merge_request.reviewers << user
+      end
+
+      it 'implies not reviewed' do
+        expect(resolve(:reviewed)).to be false
+      end
+    end
+
+    context 'when the user has provided a review' do
+      before do
+        reviewer = merge_request.merge_request_reviewers.create!(reviewer: user)
+        reviewer.update!(state: MergeRequestReviewer.states['reviewed'])
+      end
+
+      it { is_expected.to eq(Types::MergeRequestReviewStateEnum.values['REVIEWED'].value) }
+
+      it 'implies reviewed' do
+        expect(resolve(:reviewed)).to be true
+      end
+    end
+  end
+
+  describe '#approved' do
+    subject { resolve(:approved) }
+
+    context 'when the user has not approved the MR' do
+      it { is_expected.to be false }
+    end
+
+    context 'when the user has approved the MR' do
+      before do
+        merge_request.approved_by_users << user
+      end
+
+      it { is_expected.to be true }
+    end
+  end
+
+  describe '#approved_at' do
+    subject(:approved_at) { resolve(:approved_at) }
+
+    context 'when the user has not approved the MR' do
+      it { is_expected.to be_nil }
+    end
+
+    context 'when the user has approved the MR' do
+      before do
+        merge_request.approved_by_users << user
+      end
+
+      it 'returns the approval record timestamp', :aggregate_failures do
+        approval = merge_request.approvals.find_by(user_id: user.id)
+
+        expect(approval.created_at).not_to be_nil
+        expect(approved_at).to be_like_time(approval.created_at)
+      end
+    end
+  end
+
+  describe '#updated_at' do
+    subject(:updated_at) { resolve(:updated_at) }
+
+    context 'when the user is not a reviewer' do
+      it { is_expected.to be_nil }
+    end
+
+    context 'when the user has been asked to review the MR' do
+      before do
+        merge_request.reviewers << user
+      end
+
+      it 'returns the reviewer record timestamp', :aggregate_failures do
+        reviewer = merge_request.merge_request_reviewers.find_by(user_id: user.id)
+
+        expect(reviewer.updated_at).not_to be_nil
+        expect(updated_at).to be_like_time(reviewer.updated_at)
+      end
+
+      context 'when reviewer state changes' do
+        let(:reviewed_at) { 1.hour.from_now }
+
+        before do
+          travel_to(reviewed_at) do
+            merge_request.batch_update_reviewer_state([user.id], :reviewed)
+          end
+        end
+
+        it 'updates the timestamp' do
+          expect(interaction.updated_at).to be_like_time(reviewed_at)
+        end
+      end
+    end
+  end
+end

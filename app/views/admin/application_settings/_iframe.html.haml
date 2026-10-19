@@ -1,0 +1,25 @@
+- expanded = integration_expanded?('iframe_')
+
+= render ::Layouts::SettingsBlockComponent.new(_('Embedded content'),
+  id: 'js-iframe-settings',
+  testid: 'admin-iframe-settings',
+  expanded: expanded) do |c|
+  - c.with_description do
+    = _('Allow embedding of external videos and designs in Markdown.')
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-iframe-settings'), html: { class: 'fieldset-form', id: 'iframe-settings' } do |f|
+      = form_errors(@application_setting) if expanded
+
+      %fieldset
+        .form-group
+          = f.gitlab_ui_checkbox_component :iframe_rendering_enabled, _('Enable embedded content'), help_text: _('When enabled, users can embed content from the selected providers in Markdown.')
+
+        %fieldset.form-group
+          %legend.gl-text-base.gl-mb-3.gl-border-none.gl-font-bold= _('Embed providers')
+          .form-text.gl-text-subtle.gl-mb-3
+            = _('Content from enabled providers loads inside GitLab pages and can run scripts in the browsers of users who view it. Enable only providers you trust. GitLab defines the list of available providers. You cannot add providers here.')
+          = hidden_field_tag 'application_setting[iframe_rendering_allowlist][]'
+          - iframe_providers_checkboxes(f).each do |checkbox|
+            = checkbox
+
+      = f.submit _('Save changes'), pajamas_button: true

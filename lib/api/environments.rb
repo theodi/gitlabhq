@@ -1,0 +1,315 @@
+# frozen_string_literal: true
+
+module API
+  # Environments RESTfull API endpoints
+  class Environments < ::API::Base
+    include PaginationParams
+
+    environments_tags = %w[environments]
+    before { authenticate! }
+
+    feature_category :continuous_delivery
+    urgency :low
+
+    MIN_SEARCH_LENGTH = 3
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'List all environments' do
+        detail 'Lists all environments for a specified project.'
+        success Entities::Environment
+        is_array true
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags environments_tags
+      end
+      params do
+        use :pagination
+        optional :name, type: String, desc: 'Return the environment with this name.'
+        optional :search, type: String, desc: "Return list of environments matching the search criteria. Must be at least #{MIN_SEARCH_LENGTH} characters."
+        optional :states,
+          type: String,
+          values: Environment.valid_states.map(&:to_s),
+          desc: 'Filter environments by state. If omitted, returns all environments.'
+        mutually_exclusive :name, :search, message: 'cannot be used together'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :read_environment, boundary_type: :project,
+        job_token_policies: :read_environments,
+        allow_public_access_for_enabled_project_features: [:repository, :builds, :environments]
+      get ':id/environments' do
+        authorize! :read_environment, user_project
+
+        if params[:search].present? && params[:search].length < MIN_SEARCH_LENGTH
+          bad_request!("Search query is less than #{MIN_SEARCH_LENGTH} characters")
+        end
+
+        environments = ::Environments::EnvironmentsFinder.new(user_project, current_user, declared_params(include_missing: false)).execute
+
+        present paginate(environments), with: Entities::Environment, current_user: current_user
+      end
+
+      desc 'Create an environment' do
+        detail 'Creates an environment for a specified project.'
+        success Entities::Environment
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags environments_tags
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the environment.'
+        optional :external_url, type: String, desc: 'URL to link to for the environment.'
+        optional :slug, absence: { message: "is automatically generated and cannot be changed" }, documentation: { hidden: true }
+        optional :tier, type: String, values: Environment.tiers.keys, desc: 'Tier of the environment.'
+        optional :cluster_agent_id, type: Integer, desc: 'ID of the cluster agent to associate with the environment. When updating an environment, set to `null` to remove it.'
+        optional :kubernetes_namespace, type: String, desc: 'Kubernetes namespace to associate with the environment. When updating an environment, set to `null` to remove it.'
+        optional :flux_resource_path, type: String, desc: 'Flux resource path to associate with the environment, for example `helm.toolkit.fluxcd.io/v2/namespaces/gitlab-agent/helmreleases/gitlab-agent`. When updating an environment, set to `null` to remove it.'
+        optional :description, type: String, desc: 'Description of the environment.'
+        optional :auto_stop_setting, type: String, values: Environment.auto_stop_settings.keys, desc: 'Auto stop setting for the environment.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :create_environment, boundary_type: :project,
+        job_token_policies: :admin_environments
+      post ':id/environments' do
+        authorize! :create_environment, user_project
+
+        params = declared_params
+
+        if params[:cluster_agent_id]
+          agent = ::Clusters::AgentsFinder.new(user_project, current_user).execute.find_by_id(params[:cluster_agent_id])
+
+          bad_request!("cluster agent doesn't exist or cannot be associated with this environment") unless agent
+          params[:cluster_agent] = agent
+        end
+
+        params[:skip_agent_auth] = true
+        response = ::Environments::CreateService.new(user_project, current_user, params).execute
+
+        if response.success?
+          present response.payload[:environment], with: Entities::Environment, current_user: current_user
+        else
+          render_api_error!(response.message, 400)
+        end
+      end
+
+      desc 'Update an existing environment' do
+        detail 'Updates an existing environment for a project.'
+        success Entities::Environment
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags environments_tags
+      end
+      params do
+        requires :environment_id, type: Integer,  desc: 'ID of the environment.'
+        optional :external_url,   type: String,   desc: 'New URL to link to for the environment.'
+        optional :slug, absence: { message: "is automatically generated and cannot be changed" }, documentation: { hidden: true }
+        optional :tier, type: String, values: Environment.tiers.keys, desc: 'Tier of the environment.'
+        optional :cluster_agent_id, type: Integer, desc: 'ID of the cluster agent to associate with the environment. When updating an environment, set to `null` to remove it.'
+        optional :kubernetes_namespace, type: String, desc: 'Kubernetes namespace to associate with the environment. When updating an environment, set to `null` to remove it.'
+        optional :flux_resource_path, type: String, desc: 'Flux resource path to associate with the environment, for example `helm.toolkit.fluxcd.io/v2/namespaces/gitlab-agent/helmreleases/gitlab-agent`. When updating an environment, set to `null` to remove it.'
+        optional :description, type: String, desc: 'Description of the environment.'
+        optional :auto_stop_setting, type: String, values: Environment.auto_stop_settings.keys, desc: 'Auto stop setting for the environment.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :update_environment, boundary_type: :project,
+        job_token_policies: :admin_environments
+      put ':id/environments/:environment_id' do
+        authorize! :read_environment, user_project
+
+        environment = user_project.environments.find(params[:environment_id])
+
+        docs_url = ::Gitlab::Routing.url_helpers
+                     .help_page_url('ci/environments/protected_environments.md')
+        reason = "You do not have permission to modify the protected environment " \
+          "'#{environment.name}'. This endpoint enforces Protected Environment access policies.\n" \
+          "To resolve this, ask a project Maintainer or Owner to grant you access under " \
+          "Settings > CI/CD > Protected environments, or use an account with the required permissions.\n" \
+          "Learn more: #{docs_url}"
+
+        authorize! :update_environment, environment, reason
+
+        update_params = declared_params(include_missing: false).extract!(:external_url, :tier, :cluster_agent_id, :kubernetes_namespace, :flux_resource_path, :description, :auto_stop_setting)
+
+        if update_params[:cluster_agent_id]
+          agent = ::Clusters::AgentsFinder.new(user_project, current_user).execute.find_by_id(params[:cluster_agent_id])
+
+          bad_request!("cluster agent doesn't exist or cannot be associated with this environment") unless agent
+        end
+
+        environment.assign_attributes(update_params)
+
+        if environment.save
+          present environment, with: Entities::Environment, current_user: current_user
+        else
+          render_validation_error!(environment)
+        end
+      end
+
+      desc 'Schedule multiple stopped review apps for deletion' do
+        detail 'Schedules multiple stopped review apps for deletion. The deletion is performed after 1 week. By ' \
+          'default, only environments 30 days or older are deleted.'
+        success Entities::EnvironmentBasic
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' },
+          { code: 409, message: 'Conflict' }
+        ]
+        tags environments_tags
+      end
+      params do
+        optional :before, type: Time, desc: 'Date before which environments can be deleted. Defaults to 30 days ago.', default: -> { 30.days.ago }
+        optional :limit, type: Integer, desc: 'Maximum number of environments to delete.', default: 100, values: 1..1000
+        optional :dry_run, type: Boolean, desc: 'If `true`, performs a dry run where no deletion is actually performed. If `false`, deletes the environment.', default: true
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :delete_environment_review_app, boundary_type: :project,
+        job_token_policies: :admin_environments
+      delete ":id/environments/review_apps" do
+        authorize! :read_environment, user_project
+
+        result = ::Environments::ScheduleToDeleteReviewAppsService.new(user_project, current_user, params).execute
+
+        response = {
+          scheduled_entries: Entities::EnvironmentBasic.represent(result.scheduled_entries),
+          unprocessable_entries: Entities::EnvironmentBasic.represent(result.unprocessable_entries)
+        }
+
+        if result.success?
+          status result.status
+          present response, current_user: current_user
+        else
+          render_api_error!(response.merge!(message: result.error_message), result.status)
+        end
+      end
+
+      desc 'Delete an environment' do
+        detail 'Deletes an environment from a project. The environment must be stopped first.'
+        success Entities::Environment
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags %w[environments]
+      end
+      params do
+        requires :environment_id, type: Integer, desc: 'ID of the environment.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :delete_environment, boundary_type: :project,
+        job_token_policies: :admin_environments
+      delete ':id/environments/:environment_id' do
+        authorize! :read_environment, user_project
+        environment = user_project.environments.find(params[:environment_id])
+
+        authorize! :destroy_environment, environment
+
+        destroy_conditionally!(environment)
+      end
+
+      desc 'Stop an environment' do
+        detail 'Stops a specified running environment.'
+        success Entities::Environment
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags %w[environments]
+      end
+      params do
+        requires :environment_id, type: Integer, desc: 'ID of the environment.'
+        optional :force, type: Boolean, default: false, desc: 'If `true`, stops the environment without executing `on_stop` actions.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :stop_environment, boundary_type: :project,
+        job_token_policies: :admin_environments
+      post ':id/environments/:environment_id/stop' do
+        authorize! :read_environment, user_project
+
+        environment = user_project.environments.find(params[:environment_id])
+
+        authorize! :stop_environment, environment
+
+        service_response = ::Environments::StopService.new(
+          user_project,
+          current_user,
+          declared_params(include_missing: false)
+        ).execute(environment)
+
+        bad_request!(service_response.message) if service_response.error?
+
+        status 200
+        present environment, with: Entities::Environment, current_user: current_user
+      end
+
+      desc 'Stop stale environments' do
+        detail 'Stops all environments that were last modified or deployed to before a specified date. Excludes ' \
+          'protected environments.'
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' }
+        ]
+        tags %w[environments]
+      end
+      params do
+        requires :before,
+          type: DateTime,
+          desc: 'Stop environments that were modified or deployed to before the specified date. Valid inputs are between 10 years ago and 1 week ago.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :stop_stale_environment, boundary_type: :project,
+        job_token_policies: :admin_environments
+      post ':id/environments/stop_stale' do
+        authorize! :stop_environment, user_project
+
+        bad_request!('Invalid Date') if params[:before] < 10.years.ago || params[:before] > 1.week.ago
+
+        service_response = ::Environments::StopStaleService.new(user_project, current_user, params.slice(:before)).execute
+
+        if service_response.error?
+          status 400
+        else
+          status 200
+        end
+
+        present({ message: service_response.message })
+      end
+
+      desc 'Retrieve an environment' do
+        detail 'Retrieves a specified environment for a project.'
+        success Entities::Environment
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags %w[environments]
+      end
+      params do
+        requires :environment_id, type: Integer, desc: 'ID of the environment.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :read_environment, boundary_type: :project,
+        job_token_policies: :read_environments,
+        allow_public_access_for_enabled_project_features: [:repository, :builds, :environments]
+      get ':id/environments/:environment_id' do
+        authorize! :read_environment, user_project
+
+        environment = user_project.environments.find(params[:environment_id])
+        present environment, with: Entities::Environment, current_user: current_user,
+          except: [:project, { last_deployment: [:environment] }],
+          last_deployment: true
+      end
+    end
+  end
+end

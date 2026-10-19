@@ -1,22 +1,111 @@
+# frozen_string_literal: true
+
 module API
-  # namespaces API
-  class Namespaces < Grape::API
-    before do
-      authenticate!
-      authenticated_as_admin!
+  class Namespaces < ::API::Base
+    include PaginationParams
+
+    before { authenticate! }
+
+    NAMESPACES_TAGS = %w[namespaces].freeze
+    helpers do
+      params :optional_list_params_ee do
+        # EE::API::Namespaces would override this helper
+      end
+
+      # EE::API::Namespaces would override this method
+      def custom_namespace_present_options(_namespaces = nil)
+        {}
+      end
     end
 
-    resource :namespaces do
-      # Get a namespaces list
-      #
-      # Example Request:
-      #  GET /namespaces
-      get do
-        @namespaces = Namespace.all
-        @namespaces = @namespaces.search(params[:search]) if params[:search].present?
-        @namespaces = paginate @namespaces
+    prepend_mod_with('API::Namespaces') # rubocop: disable Cop/InjectEnterpriseEditionModule
 
-        present @namespaces, with: Entities::Namespace
+    resource :namespaces do
+      desc 'List all namespaces' do
+        detail 'Lists all namespaces available to the current user. If the user is an administrator, this endpoint ' \
+          'returns all namespaces in the instance.'
+        success Entities::Namespace
+        failure [
+          { code: 401, message: 'Unauthorized' }
+        ]
+        is_array true
+        tags NAMESPACES_TAGS
+      end
+      params do
+        optional :search, type: String, desc: 'Return only namespaces that contain the specified value in their name or path.'
+        optional :owned_only, type: Boolean, desc: 'If `true`, returns only namespaces owned by the current user.'
+        optional :top_level_only, type: Boolean, default: false, desc: 'If `true`, returns only top-level namespaces.'
+        optional :full_path_search, type: Boolean, default: false, desc: 'If `true`, the `search` parameter is matched against the full path of the namespaces.'
+
+        use :pagination
+        use :optional_list_params_ee
+      end
+      route_setting :authorization, permissions: :read_namespace, boundary_type: :user
+      get feature_category: :groups_and_projects, urgency: :low do
+        owned_only = params[:owned_only] == true
+
+        namespaces = current_user.admin ? Namespace.all : current_user.namespaces(owned_only: owned_only)
+
+        namespaces = namespaces.top_level if params[:top_level_only]
+
+        namespaces = namespaces.without_project_namespaces.include_route
+
+        namespaces = namespaces.include_gitlab_subscription_with_hosted_plan if Gitlab.ee?
+
+        if params[:search].present?
+          namespaces = namespaces.search(params[:search], include_parents: params[:full_path_search])
+        end
+
+        namespaces = paginate(namespaces)
+
+        options = { with: Entities::Namespace, current_user: current_user }
+
+        present namespaces, **options.reverse_merge(custom_namespace_present_options(namespaces))
+      end
+
+      desc 'Retrieve namespace details' do
+        detail 'Retrieves a specified namespace.'
+        success Entities::Namespace
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags NAMESPACES_TAGS
+      end
+      params do
+        requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the namespace.'
+      end
+      route_setting :authorization, permissions: :read_namespace, boundary_type: :user
+      get ':id', requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS, feature_category: :groups_and_projects, urgency: :low do
+        user_namespace = find_namespace!(params[:id])
+
+        present user_namespace, with: Entities::Namespace, current_user: current_user
+      end
+
+      desc 'Verify namespace availability' do
+        detail 'Verifies that a namespace is available for use.'
+        success Entities::NamespaceExistence
+        failure [
+          { code: 401, message: 'Unauthorized' }
+        ]
+        tags NAMESPACES_TAGS
+      end
+      params do
+        requires :id, type: String, desc: 'Path of the namespace.'
+        optional :parent_id, type: Integer, desc: 'ID of the parent namespace. If omitted, only top-level namespaces are considered.'
+      end
+      route_setting :authorization, permissions: :read_namespace, boundary_type: :user
+      get ':id/exists', requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS, feature_category: :groups_and_projects, urgency: :low do
+        check_rate_limit!(:namespace_exists, scope: { user: current_user })
+
+        namespace_path = params[:id]
+        existing_namespaces_within_the_parent = Namespace.without_project_namespaces.by_parent(params[:parent_id])
+
+        exists = existing_namespaces_within_the_parent.filter_by_path(namespace_path).exists? || ProjectSetting.unique_domain_exists?(namespace_path)
+        suggestions = exists ? [Namespace.clean_path(namespace_path, limited_to: existing_namespaces_within_the_parent)] : []
+
+        present :exists, exists
+        present :suggests, suggestions
       end
     end
   end

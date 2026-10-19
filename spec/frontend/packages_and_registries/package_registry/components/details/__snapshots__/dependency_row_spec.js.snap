@@ -1,0 +1,32 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`DependencyRow renders full dependency 1`] = `
+<div
+  class="gl-responsive-table-row"
+>
+  <div
+    class="section-50 table-section"
+  >
+    <strong
+      class="gl-text-default"
+    >
+      Ninject.Extensions.Factory
+    </strong>
+    <span
+      data-testid="target-framework"
+    >
+      (.NETCoreApp3.1)
+    </span>
+  </div>
+  <div
+    class="@md/panel:gl-justify-end gl-flex section-50 table-section"
+    data-testid="version-pattern"
+  >
+    <span
+      class="gl-text-default"
+    >
+      3.3.2
+    </span>
+  </div>
+</div>
+`;

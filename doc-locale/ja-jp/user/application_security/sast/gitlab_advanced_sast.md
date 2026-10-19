@@ -1,0 +1,702 @@
+---
+stage: Application Security Testing
+group: Static Analysis
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: GitLab高度なSASTは、クロスファイル、クロスファンクションのテイント解析を使用して、複雑な脆弱性を高い精度で検出します。
+title: GitLab高度なSAST
+---
+
+{{< details >}}
+
+- プラン: Ultimate
+- 提供形態: GitLab.com、GitLab Self-Managed、GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- GitLab 17.1でPythonの[実験的機能](../../../policy/development_stages_support.md)として導入されました。
+- 17.2でGoとJavaのサポートが追加されました。
+- GitLab 17.2で実験的機能からベータ版に[変更](https://gitlab.com/gitlab-org/gitlab/-/issues/461859)されました。
+- 17.3でJavaScript、TypeScript、C#のサポートが追加されました。
+- GitLab 17.3で[一般提供](https://gitlab.com/gitlab-org/gitlab/-/issues/474094)になりました。
+- GitLab 17.4でJava Server Pages（JSP）のサポートが追加されました。
+- GitLab 18.1でPHPのサポートが[追加](https://gitlab.com/groups/gitlab-org/-/epics/14273)されました。
+- GitLab 18.6でC/C++のサポートが[追加](https://gitlab.com/groups/gitlab-org/-/work_items/14271)されました。
+- GitLab 19.3でSwiftとObjective-Cのサポートが[ベータ版](../../../policy/development_stages_support.md#beta)として[追加](https://gitlab.com/groups/gitlab-org/-/work_items/16318)されました。
+
+{{< /history >}}
+
+GitLab高度なSASTは、従来のSASTよりも誤検出が少なく、クロスファンクションおよびクロスファイルのテイント解析を使用して複雑な脆弱性を検出する、静的アプリケーションセキュリティテスト（SAST）アナライザーです。
+
+GitLab高度なSASTは、オプトイン機能です。有効にすると、GitLab高度なSASTは、定義済みのルールセットを使用してサポートされているすべての言語ファイルをスキャンします。SASTアナライザーは引き続き他のファイルをスキャンします。両方のアナライザーは並行して実行できます。SASTとGitLab高度なSASTは完全な同等性を持っていません。それぞれのアナライザーは、もう一方が検出しない脆弱性を検出します。両方のアナライザーが同じ脆弱性を検出した場合、自動化された[移行プロセス](#transitioning-from-semgrep-to-gitlab-advanced-sast)によって検出結果の重複が排除されます。
+
+GitLab高度なSASTは、標準のSemgrepベースのSASTアナライザーよりも詳細な分析を実行します。この包括的なアプローチにより、精度が向上し、誤検出が減少しますが、より多くのコンピューティングリソースとより長いスキャン時間が必要です。
+
+<i class="fa-youtube-play" aria-hidden="true"></i>概要については、[GitLab高度なSAST: を参照してください: Accelerating Vulnerability Resolution](https://youtu.be/xDa1MHOcyn8)を参照してください。
+<!-- Video published on 2025-09-19 -->
+
+製品ツアーについては、[GitLab高度なSAST製品ツアー](https://gitlab.navattic.com/advanced-sast)をご覧ください。
+
+## 機能 {#features}
+
+| 機能                                                                      | SAST                                                                                                                                      | 高度なSAST                                                                                                                               |
+|------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| 分析の深さ                                                            | 複雑な脆弱性を検出する機能が制限されています。分析は単一のファイル、および単一の関数（限定的な例外はあります）に限定されます。 | クロスファイル、クロスファンクションのテイント解析を使用して、複雑な脆弱性を検出します。                                                            |
+| 精度                                                                     | コンテキストが限られているため、誤検出の結果が生じる可能性が高くなります。                                                                      | クロスファイル、クロスファンクションのテイント解析を使用して、真に悪用可能な脆弱性に焦点を当てることで、誤検出の結果を減らします。      |
+| 修正ガイダンス                                                         | 脆弱性の検出結果は行番号で識別されます。                                                                                     | 詳細な[コードフロービュー](#code-flow)は、脆弱性がプログラム全体にどのように流れるかを示し、迅速な修正を可能にします。 |
+| GitLab Duo脆弱性の説明と脆弱性の修正に対応 | はい。                                                                                                                                      | はい。                                                                                                                                        |
+| 言語カバレッジ                                                            | [より広範にカバーします](_index.md#supported-languages-and-frameworks)。                                                                           | [より限定的です](#supported-languages)。                                                                                                       |
+
+## GitLab高度なSASTを有効にする {#turn-on-gitlab-advanced-sast}
+
+プロジェクトでGitLab高度なSASTを有効にするには、以下の手順に従ってください。
+
+前提条件: 
+
+- プロジェクトのメンテナーまたはオーナーのロール。
+- 標準のSASTアナライザーを有効にします。詳細については、[SASTの前提条件](_index.md#getting-started)を参照してください。
+- GitLab Self-Managedの場合は、サポートされているGitLabバージョンを使用してください: 
+  - 最小バージョン: GitLab 17.1以降
+  - 推奨バージョン: GitLab 17.4以降（コードフロービュー、脆弱性の重複排除、更新されたテンプレートが含まれます）
+  - テンプレートの互換性: 
+    - 安定版テンプレート: GitLab 17.3以降
+    - 最新テンプレート: GitLab 17.2以降
+    - 同じプロジェクトで[安定版テンプレートと最新テンプレート](../detect/security_configuration.md#template-editions)を混在させないでください
+
+GitLab高度なSASTを有効にする:
+
+1. 上部のバーで、**検索または移動先**を選択して、プロジェクトを見つけます。
+1. **ビルド** > **パイプライン**エディタに移動します。
+1. `.gitlab-ci.yml`ファイルを作成または編集します。
+1. 適切な変数を追加して、高度なSASTを有効にします:
+
+   - C/C++以外のサポートされているすべての言語の場合: `GITLAB_ADVANCED_SAST_ENABLED: 'true'`
+
+   - C/C++の場合: `GITLAB_ADVANCED_SAST_CPP_ENABLED: 'true'`
+
+1. **検証**タブを選択し、**パイプラインの検証**を選択します。
+
+   **シミュレーションが正常に完了しました**というメッセージは、ファイルが有効であることを裏付けています。
+1. **編集**タブを選択します。
+1. フィールドに入力します。
+1. **これらの変更で新しいマージリクエストを開始**チェックボックスをオンにし、**変更をコミットする**を選択します。
+1. 標準のワークフローに従ってフィールドに入力し、**マージリクエストの作成**を選択します。
+1. 標準のワークフローに従ってマージリクエストをレビューおよび編集し、**マージ**を選択します。
+
+この時点で、GitLab高度なSASTがパイプラインで有効になっています。サポートされているソースコードは、パイプラインの実行時に脆弱性がスキャンされます。対応するジョブがパイプラインの`test`ステージに表示されます。
+
+これらのステップを完了すると、次のことができるようになります。
+
+- [脆弱性の結果](#vulnerability-results)を評価する方法の詳細について学ぶ。
+- [スキャンパフォーマンスのヒント](#improve-scanning-performance)を確認してください。
+- [幅広いプロジェクトへのロールアウト](#roll-out)を計画する。
+
+## 脆弱性の結果 {#vulnerability-results}
+
+GitLab高度なSASTの脆弱性には、セキュリティの問題を評価および修正するのに役立つ詳細情報が含まれています。各脆弱性には、以下が表示されます:
+
+- 説明: 脆弱性の原因、潜在的な影響、推奨される修正手順について説明しています。
+- ステータス: 脆弱性がトリアージされたか、解決されたかを示します。
+- 重大度: 影響に基づいて6つのレベルに分類されます。[重大度レベルの詳細はこちらをご覧ください](../vulnerabilities/severities.md)。
+- 場所: 問題が検出されたファイル名と行番号を示します。ファイルパスを選択すると、対応する行がコードビューで開きます。
+- コードフロー: ユーザー入力（ソース）から脆弱性のあるコード行までのデータのパス。
+- スキャナー: 脆弱性を検出したアナライザーを示します。
+- 識別子: CWEの識別子やそれを検出したルールのIDなど、脆弱性の分類に使用される参照の一覧です。
+
+SASTの脆弱性には、検出された脆弱性の主要なCWE識別子に従って名前が付けられています。SASTカバレッジの詳細については、[SASTルール](rules.md)を参照してください。
+
+### 結果の表示 {#view-results}
+
+前提条件: 
+
+- プロジェクトのメンテナーまたはオーナーのロール。
+
+パイプラインで脆弱性を表示するには:
+
+1. 上部のバーで、**検索または移動先**を選択して、プロジェクトを見つけます。
+1. 左側のサイドバーで、**ビルド** > **パイプライン**を選択します。
+1. パイプラインを選択します。
+1. **セキュリティ**タブを選択します。
+1. 結果をダウンロードするか、詳細を表示する脆弱性を選択します（Ultimateのみ）。
+
+#### コードフロー {#code-flow}
+
+{{< history >}}
+
+- GitLab 17.3で、[いくつかの機能フラグ](../../../administration/feature_flags/_index.md)とともに導入されました。デフォルトでは有効になっています。
+- GitLab 17.7のGitLab Self-ManagedおよびGitLab Dedicatedで有効になりました。
+- GitLab 17.7で一般提供になりました。すべての機能フラグが削除されました。
+
+{{< /history >}}
+
+特定の種類の脆弱性について、GitLab高度なSASTはコードフロー情報を提供します。脆弱性のコードフローとは、データが、すべての割り当て、操作、サニタイズを通じて、ユーザー入力（ソース）から脆弱なコード行（シンク）に至るまでの間でたどるパスです。この情報は、脆弱性のコンテキスト、影響、およびリスクを理解して評価するのに役立ちます。入力をソースからシンクまでトレースすることで検出された脆弱性のコードフロー情報を利用できます。この脆弱性には、以下が含まれます。
+
+- SQLインジェクション
+- コマンドインジェクション
+- クロスサイトスクリプティング（XSS）
+- パストラバーサル
+
+このコードフロー情報は、**データフロー**タブに表示され、次の情報が含まれています:
+
+- ソースからシンクまでのステップ。
+- コードスニペットを含む、関連ファイル。
+
+![検索語を提供するリクエストパラメータから、それを実行するデータベースクエリへのSQLインジェクションのデータフロー](img/code_flow_view_v19_3.png)
+
+## サポートされている言語 {#supported-languages}
+
+{{< history >}}
+
+- GitLab 18.6でC#バージョンのサポートが[10.0から13.0に増加](https://gitlab.com/gitlab-org/gitlab/-/issues/570499)しました。
+- DartのサポートはGitLab 19.4で[追加](https://gitlab.com/gitlab-org/gitlab/-/issues/630101)され、[ベータ](../../../policy/development_stages_support.md#beta)版として提供されています。
+- ScalaのサポートはGitLab 19.4で[追加](https://gitlab.com/gitlab-org/gitlab/-/issues/630101)され、[ベータ](../../../policy/development_stages_support.md#beta)版として提供されています。
+- KotlinのサポートはGitLab 19.4で[追加](https://gitlab.com/gitlab-org/gitlab/-/issues/630101)され、[ベータ](../../../policy/development_stages_support.md#beta)版として提供されています。
+- RustのサポートはGitLab 19.5で[追加](https://gitlab.com/gitlab-org/gitlab/-/issues/630101)され、[ベータ](../../../policy/development_stages_support.md#beta)版として提供されています。
+
+{{< /history >}}
+
+GitLab高度なSASTは、以下の言語をサポートしています:
+
+- C#（13.0まで）
+- C/C++
+- Dart（ベータ）
+- Go
+- Java（Java Server Pages（JSP）を含む）
+- JavaScript、TypeScript
+- Kotlin（ベータ）
+- Objective-C（ベータ）
+- PHP
+- Python
+- Ruby
+- Rust（ベータ）
+- Scala（ベータ）
+- Swift（ベータ）
+
+GitLab高度なSAST C++には、コンパイルデータベースを含む追加の設定が必要です。詳細については、[C/C++設定](advanced_sast_cpp.md)を参照してください。GitLab高度なSAST C++とSemgrepは両方ともC/C++プロジェクトで実行され、それぞれ異なるルールセットを使用します。
+
+Dart、Kotlin、Objective-C、Rust、Scala、Swiftのサポートは[ベータ](../../../policy/development_stages_support.md#beta)版です。GitLab Advanced SASTが有効で、リポジトリにこれらの言語のファイルが含まれている場合、分析は別のCI/CDジョブである`gitlab-advanced-sast-ext`として実行されます。追加の変数は必要ありません。SwiftおよびObjective-Cについては、[SwiftおよびObjective-Cの設定](advanced_sast_swift_objc.md)を参照してください。
+
+Kotlin、Objective-C、Scala、Swiftの場合、`semgrep-sast`も実行され、Semgrepが既に報告している脆弱性については`gitlab-advanced-sast-ext`がそれに委ねるため、同じ脆弱性クラスが2回報告されることはありません。Kotlinの場合、これらはCWE-89、CWE-78、CWE-22、CWE-79、CWE-327、およびCWE-295です。Swiftの場合、Keychainのアクセシビリティチェック（CWE-922）です。この動作を変更またはオフにするには、`GITLAB_ADVANCED_SAST_EXT_DEDUP_LANGUAGES`を使用します。DartとRustの場合、SASTテンプレートが`.dart`または`.rs`ファイルをそこにルーティングしないため、`semgrep-sast`は実行されません。
+
+### PHPの既知の問題 {#php-known-issues}
+
+PHPコードを分析する際、GitLab高度なSASTには以下の既知のイシューがあります:
+
+- 動的ファイルインクルージョン: ファイルパスに変数を使用する動的なファイルインクルードステートメント（`include`、`include_once`、`require`、`require_once`）は、このリリースではサポートされていません。クロスファイル分析では、静的なファイルインクルードパスのみがサポートされます。[イシュー527341](https://gitlab.com/gitlab-org/gitlab/-/issues/527341)を参照してください。
+- 大文字小文字の区別: 関数名、クラス名、およびメソッド名について大文字と小文字を区別しないPHPの特性は、クロスファイル分析では完全にはサポートされていません。[イシュー526528](https://gitlab.com/gitlab-org/gitlab/-/issues/526528)を参照してください。
+
+## スキャンパフォーマンスの改善 {#improve-scanning-performance}
+
+GitLab高度なSASTのスキャンパフォーマンスは、主にコードカバレッジとRunnerリソースによって決定されます。GitLab高度なSASTのスキャンパフォーマンスを向上させるには、コードカバレッジとRunnerリソースを調整できます。
+
+### スキャンパフォーマンスの診断 {#diagnose-scan-performance}
+
+設定を変更する前に、何が遅いかを見つけます。GitLab高度なSASTは、各スキャンに対して2つのタイミングアーティファクトを生成でき、スキャンにかかる時間を示します。これらのアーティファクトはデフォルトではアップロードされません。
+
+これらを収集するには、`.gitlab-ci.yml`ファイル内のジョブの既存の`artifacts`設定にパスを追加します:
+
+```yaml
+gitlab-advanced-sast:
+  artifacts:
+    paths:
+      - '**/scan_metrics.csv'
+      - '**/lightz_times.json'
+    when: always
+```
+
+このジョブに対してすでに`artifacts`をオーバーライドしている場合（例えば、インクリメンタルスキャンのため）、これらのパスを既存の`artifacts.paths`リストに追加してください。2番目の`gitlab-advanced-sast`ブロックを追加すると、SASTレポートなどの他のアーティファクトがドロップされる可能性があります。
+
+`scan_metrics.csv`と`lightz_times.json`には、各ルールとファイルに関するタイミング情報が含まれています。この情報を使用して、どのルールとファイルのスキャンに最も時間がかかっているかを見つけることができます。`scan_metrics.csv`は、タイミング列でスプレッドシート内でソート可能です。`lightz_times.json`には、GitLabサポートが解釈を支援できる各ファイルのより詳細なタイミングが含まれています。アナライザーは、ジョブが正常に完了した場合にのみこれらのアーティファクトを生成します。タイムアウトするジョブはそれらを生成しません。ジョブがタイムアウトする場合は、まず[`timeout`](../../../ci/yaml/_index.md#timeout)を上げてスキャンが完了できるようにし、その後アーティファクトを収集してください。
+
+最も遅いルールとファイルを特定したら、[パスを除外する](#exclude-paths)か[特定のルールを無効にする](customize_rulesets.md#disable-specific-default-gitlab-advanced-sast-rules)ことができます。
+
+### コードカバレッジを調整する {#tune-code-coverage}
+
+コードカバレッジとは、コードベースのどの程度が分析されるかを指します。GitLab高度なSASTは、定義済みのルールセットを使用して、サポートされているすべての言語ファイルをスキャンします。SemgrepベースのSASTアナライザーは、これらのファイルをスキャンしません。自動化された[移行プロセス](#transitioning-from-semgrep-to-gitlab-advanced-sast)により、両方のアナライザーが同じ脆弱性を検出した場合に、重複する検出結果が削除されます。
+
+ソースからシンクまでの完全なパスが特定されていない場合でも、オプションで[未検証の脆弱性を報告](#report-unverified-vulnerabilities)できます。
+
+デフォルトでは、GitLab高度なSASTはリポジトリ全体をスキャンします。以下の方法でコードカバレッジを調整できます:
+
+- リポジトリのパスを除外することで、分析されるコードの量を減らします。
+- 特定の検出結果を抑制するために、インラインコメントを使用して個々の行を除外します。
+- 差分ベースのスキャンを有効にして、マージリクエストで変更されたファイル（およびその依存ファイル）のみを分析します。
+- インクリメンタルスキャンを有効にすると、以前のスキャンの結果をキャッシュすることで、計算負荷を軽減します。
+
+差分ベースのスキャンとインクリメンタルスキャンは、個別にまたは組み合わせて使用して、スキャンパフォーマンスを向上させることができます。
+
+差分ベースのスキャン: マージリクエスト関連パイプライン（マージリクエストパイプラインまたはマージリクエストに関連付けられたブランチパイプライン）内の変更されたファイルとその依存関係のみをスキャンし、完全なカバレッジと引き換えに速度を優先します。
+
+インクリメンタルスキャン: 以前のスキャン結果をキャッシュし、後続のパイプラインで再利用することで、フルファイルのカバレッジを維持しながらスキャン時間を短縮します。すべてのパイプラインで利用可能です。
+
+| 構成                     | マージリクエスト関連パイプライン              | その他すべてのパイプライン                  |
+|-----------------------------------|-------------------------------------------------|--------------------------------------|
+| 最適化なし                   | 標準。すべてのファイルをスキャン、キャッシュなし。            | 標準。すべてのファイルをスキャン、キャッシュなし。 |
+| インクリメンタルスキャンのみ         | 高速。キャッシュを使用してすべてのファイルをスキャン。               | 高速。キャッシュを使用してすべてのファイルをスキャン。    |
+| 差分ベースのスキャンのみ          | より高速。変更されたファイルのみをスキャン、キャッシュなし。     | 標準。すべてのファイルをスキャン、キャッシュなし。 |
+| 差分ベース + インクリメンタルスキャン | 最速。キャッシュを使用して変更されたファイルのみをスキャン。   | 高速。キャッシュを使用してすべてのファイルをスキャン。    |
+
+#### パスを除外する {#exclude-paths}
+
+スキャン時間を短縮するために、脆弱性が含まれる可能性の低いパスをGitLab高度なSASTのスキャンから除外することができます。
+
+パスを除外する場合は、脆弱性を隠さないように選択的に行ってください。変更をインクリメンタルに行い、それぞれの除外後のスキャン時間への影響をテストします。
+
+GitLab高度なSASTは、テスト、`node_modules`、`vendor`、ビルド出力など、多くの一般的なパスをデフォルトで除外します。デフォルトでカバーされていないプロジェクト固有の追加のパスには、`SAST_EXCLUDED_PATHS`を使用します。
+
+以下のものを含むパスを除外することを検討してください:
+
+- データベースマイグレーション
+- 単体テスト
+- 依存関係（`node_modules/`など）
+- ビルドファイル
+- 設定情報
+- 静的アセット
+- テストデータ
+- Infrastructure as Code
+
+除外候補を特定するには、リポジトリのファイルタイプの分布をリストします:
+
+```shell
+git ls-files | grep -o '\.[^.]*$' | sort | uniq -c | sort -nr
+```
+
+バンドルされたUI依存関係は一般的な候補です。例えば、`swagger-ui`または`swagger-ui-dist/`ディレクトリを除外すると、バンドルされたファイルがスキャン時間を増大させるため、スキャン時間を短縮できます。ワイルドカードパターン`**/*.min.js`は、縮小されたコンテンツも除外します。
+
+前提条件: 
+
+- プロジェクトのメンテナーまたはオーナーのロール。
+
+パスを除外するには:
+
+- [`SAST_EXCLUDED_PATHS`](_index.md#vulnerability-filters) CI/CD変数に除外するパスをリストします。
+
+除外を追加した後、以前のフルスキャンとの検出数を比較してください。減少は、実際のコードを含むパスを除外したことを示している可能性があります。各パターンが何を削除したかを確認し、必要に応じて除外を絞り込みます。
+
+検出数は、除外されたファイルの数に直接対応するわけではありません。合計ではなく、変更が影響を与えたパスに基づいて判断してください。負荷がかかっている場合、各ファイルのタイムアウト（`GITLAB_ADVANCED_SAST_RULE_TIMEOUT`）に達したルールはスキップされる可能性があるため、実行ごとに多少の変動が予想されます。特定の除外パスに関連する永続的な減少は、カバレッジの損失を示す可能性が高いです。
+
+#### 行を除外する {#exclude-lines}
+
+特定の行での検出結果を抑制するには、ソースコードに`gitlab-advanced-sast-exclude`をコメントとして追加します。このタグは大文字と小文字を区別せず、任意のコメント構文で機能します（例: `#`、`//`、`--`）。
+
+コメントを検出結果と同じ行、またはその直前の行に配置します:
+
+```python
+# Suppress all findings on the next line (previous-line comment):
+# gitlab-advanced-sast-exclude
+result = db.execute(query)
+
+# Suppress all findings inline:
+result = db.execute(query)  # gitlab-advanced-sast-exclude
+```
+
+特定のルールからの検出結果のみを抑制するには、`:`または`=`に続けて1つ以上のルールIDをカンマで区切って追加します:
+
+```python
+# gitlab-advanced-sast-exclude: rule-id-1, rule-id-2
+result = db.execute(query)
+```
+
+ルールIDが指定されていない場合、その行のすべての検出結果が抑制されます。
+
+#### 差分ベーススキャン {#diff-based-scanning}
+
+{{< history >}}
+
+- GitLab 18.5で`vulnerability_partial_scans`[機能フラグ](../../../administration/feature_flags/_index.md)とともに[導入](https://gitlab.com/groups/gitlab-org/-/epics/16790)されました。デフォルトでは無効になっています。
+- GitLab 18.5の[GitLab.com、GitLab Self-Managed、GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/issues/552051)で有効になりました。
+- GitLab 18.6で[一般提供](https://gitlab.com/gitlab-org/gitlab/-/issues/552051)になりました。機能フラグ`vulnerability_partial_scans`は削除されました。
+
+{{< /history >}}
+
+差分ベーススキャンは、マージリクエストで変更されたファイルとその依存ファイルのみを分析します。このターゲットを絞ったアプローチにより、スキャン時間が短縮され、開発中のより迅速なフィードバックが得られます。
+
+完全なカバレッジを確保するために、マージリクエストがマージされた後、デフォルトブランチでフルスキャンが実行されます。
+
+差分ベースのスキャンは、以下の条件でマージリクエストパイプラインとブランチパイプラインの両方でサポートされています:
+
+- マージリクエストパイプライン: 差分ベーススキャンは、[マージリクエストパイプライン](../detect/security_configuration.md#use-security-scanning-tools-with-merge-request-pipelines)で実行するようにGitLab高度なSASTが設定されている場合に発生します。
+- ブランチパイプライン: 差分ベーススキャンは、ブランチに関連付けられているオープンマージリクエストが1つだけ存在する場合に発生します。存在しない場合、または複数存在する場合、ブランチをどのコミットと比較すればよいかを判断できないため、スキャンはフルスキャンにフォールバックします。
+
+差分ベースのスキャンが有効な場合:
+
+- マージリクエストで変更または追加されたファイルと、その依存ファイルのみがスキャンされます。
+- ジョブログには出力: `Running differential scan`が含まれます。（非アクティブの場合、出力は`Running
+  full scan`。）
+- マージリクエストセキュリティスキャンレポートでは、専用の**差分ベース**タブに関連するスキャン検出結果が表示されます。
+- パイプラインセキュリティタブでは、**Partial SAST report**とラベル付けされたアラートは、部分的な結果のみが含まれていることを示します。
+
+差分ベースのスキャンには、以下の既知のイシューがあります:
+
+- 偽陰性と陽性: 差分ベーススキャンでは、スキャンされたファイル内の完全な呼び出しグラフがキャプチャされず、脆弱性を見逃したり（偽陰性）、解決済みの脆弱性が再浮上したり（偽陽性）する可能性があります。このトレードオフにより、スキャン時間が短縮され、開発中に迅速なフィードバックが得られます。包括的なカバレッジのために、デフォルトブランチでは常にフルスキャンが実行されます。
+- C/C++ ヘッダーファイルカバレッジ: 差分ベーススキャンは、C/C++ヘッダーファイルを完全にサポートしていません。ヘッダーファイルとソースファイルの両方にまたがる脆弱性は検出できますが、ヘッダーファイルにのみ存在する脆弱性は検出されない場合があります。
+- 修正された脆弱性は報告されません: 誤った結果を避けるため、差分ベーススキャンでは修正された脆弱性が除外されます。ファイルのサブセットのみが分析されるため、完全な呼び出しグラフは利用できず、脆弱性が修正されたかどうかを確認することはできません。フルスキャンは、マージ後にデフォルトブランチで常に実行され、修正された脆弱性が報告されます。結果として、差分ベースのスキャンから生じる可能性のあるギャップは、デフォルトブランチへのマージ時に自動的に実行されるフルスキャンによって軽減され、包括的なカバレッジが確保されます。この多層的なアプローチにより、開発中の迅速なフィードバックループと、コードが本番環境に到達する前の徹底的なセキュリティ分析のバランスが取れます。
+
+##### 差分ベースのスキャンを有効にする {#turn-on-diff-based-scanning}
+
+前提条件: 
+
+- プロジェクトのメンテナーまたはオーナーのロール。
+
+マージリクエストパイプラインで差分ベースのスキャンを有効にするには:
+
+- プロジェクトの`.gitlab-ci.yml`ファイルで`ADVANCED_SAST_PARTIAL_SCAN` CI/CD変数を`differential`に設定します。
+
+##### 依存ファイル {#dependent-files}
+
+変更ファイルでは検出できないクロスファイルの脆弱性を見逃さないようにするため、差分ベーススキャンには、変更ファイルに直接依存するファイルも含まれます。これにより、迅速なスキャンを維持しながら偽陰性を減らしますが、より深い依存チェーンでは不正確な結果を生じる可能性があります。
+
+次のファイルがスキャンに含まれています:
+
+- 変更ファイル（マージリクエストで変更または追加されたファイル）
+- 依存ファイル（変更ファイルをインポートするファイル）
+
+この設計は、変更された関数からそれをインポートする呼び出し元に汚染データが移動するなど、クロスファイルデータフローの検出に役立ちます。
+
+変更ファイルによってインポートされたファイルは、通常、変更されたコード行の動作やデータフローに影響を与えないため、スキャンされません。
+
+たとえば、ファイルBを変更するマージリクエストについて考えてみましょう:
+
+- ファイルAがファイルBをインポートする場合、ファイルAとファイルBがスキャンされます。
+- ファイルBがファイルCをインポートする場合、ファイルBのみがスキャンされます。
+
+#### インクリメンタルスキャン {#incremental-scanning}
+
+{{< history >}}
+
+- GitLab 18.11で[導入](https://gitlab.com/groups/gitlab-org/-/work_items/15545)されました。
+
+{{< /history >}}
+
+インクリメンタルスキャンは、パイプラインの実行間でテイント署名分析の結果をキャッシュします。その後のスキャンでは、変更されていないコードはキャッシュされた署名を再利用し、再分析されることはありませんが、変更または新規のコードは完全に分析されます。これにより、コミット間でほとんどのファイルが変更されない大規模なコードベースでのスキャン時間が短縮されます。
+
+インクリメンタルスキャンは次のように機能します:
+
+1. 最初のスキャン（コールドラン）: アナライザーは完全な分析を実行し、テイント署名のキャッシュを作成します。キャッシュはCIアーティファクト（`ts-cache.sqlite.gz`）として保存されます。
+1. その後のスキャン（ウォームラン）: アナライザーは、キャッシュアーティファクトを含む成功したパイプラインを以前のコミットから検索します。見つかった場合、キャッシュがフェッチされ、変更されていない結果が再利用されます。スキャンが完了すると、更新されたキャッシュは新しいアーティファクトとして保存されます。
+
+アナライザーがキャッシュを取得できない場合、フルスキャンが実行され、スキャン速度の改善は見られません。これは、次の場合に発生することがあります。
+
+- 以前のパイプラインにキャッシュアーティファクトがまだありません（例えば、初回実行時）。
+- キャッシュアーティファクトの有効期限が切れたか、`GITLAB_ADV_SAST_INCR_SCAN_SEARCH_PERIOD`の範囲外にあります。
+- `GITLAB_ADV_SAST_INCR_SCAN_CUSTOM_JOB_NAME`を設定せずにジョブの名前が変更されました。
+- キャッシュがアーティファクトのサイズ制限を超えています。
+
+インクリメンタルスキャンでスキャン速度が改善しない場合は、ジョブログで次の行から始まるものを確認してください。コロンの後の理由を読みます:
+
+```plaintext
+Failed to retrieve cache, continuing without cache:
+```
+
+##### キャッシュの無効化 {#cache-invalidation}
+
+キャッシュは、精度を確保しつつ再利用を最大化するために無効化されます:
+
+部分的な無効化: 影響を受けるエントリのみが再計算され、残りのキャッシュは再利用されます:
+
+- 新規または変更されたファイル: ファイルが追加、変更、削除、または名前変更された場合、キャッシュされた署名は無効化され、次回のスキャンで再計算されます。
+- 新規または変更されたルール: 検出ルールが追加または変更された場合、その特定のルールのみがコードベースに対して再計算されます。
+
+完全な無効化: キャッシュ全体が再構築されます:
+
+- エンジン変更: エンジンレベルの変更により既存のキャッシュに互換性がなくなった場合、フルスキャンから新しいキャッシュが自動的に生成されます。
+
+##### インクリメンタルスキャンを有効にする {#turn-on-incremental-scanning}
+
+インクリメンタルスキャンを有効にするには:
+
+- プロジェクトの`.gitlab-ci.yml`ファイルで、`GITLAB_ADV_SAST_INCR_SCAN` CI/CD変数を`true`に設定します:
+
+  ```yaml
+  gitlab-advanced-sast:
+    variables:
+      GITLAB_ADV_SAST_INCR_SCAN: "true"
+  ```
+
+##### キャッシュの保持期間を設定する {#configure-cache-retention}
+
+SAST CI/CDテンプレートは、デフォルトで3日間の有効期限を持つキャッシュアーティファクトを保存します。`GITLAB_ADV_SAST_INCR_SCAN_SEARCH_PERIOD`変数は、アナライザーがキャッシュアーティファクトをどれだけ遡って検索するかを制御します（デフォルト: `3 days`）。
+
+これら2つの値は同期させる必要があります。検索期間はアーティファクトの有効期限を超えてはなりません。超えた場合、アナライザーは既に期限切れのアーティファクトを検索してしまう可能性があります。
+
+両方の値をカスタマイズするには、`artifacts:expire_in`をオーバーライドし、検索期間変数を設定します:
+
+```yaml
+gitlab-advanced-sast:
+  variables:
+    GITLAB_ADV_SAST_INCR_SCAN: "true"
+    GITLAB_ADV_SAST_INCR_SCAN_SEARCH_PERIOD: "7 days"
+  artifacts:
+    paths:
+      - gl-sast-report.json
+      - ts-cache.sqlite.gz
+    expire_in: 7 days
+```
+
+検索期間は、`d`、`day`、または`days`のいずれかが続く数値をサポートしています（例: `7 days`、`14d`）。
+
+##### カスタムジョブ名を設定する {#configure-custom-job-name}
+
+アナライザーは、キャッシュを含むジョブのアーティファクトを特定するためにCI/CDジョブ名を使用します。`gitlab-advanced-sast`ジョブの名前を変更した場合、`GITLAB_ADV_SAST_INCR_SCAN_CUSTOM_JOB_NAME`をカスタム名に設定して、キャッシュルックアップが正しいジョブを見つけられるようにします:
+
+```yaml
+my-custom-sast-job:
+  variables:
+    GITLAB_ADV_SAST_INCR_SCAN: "true"
+    GITLAB_ADV_SAST_INCR_SCAN_CUSTOM_JOB_NAME: "my-custom-sast-job"
+```
+
+##### キャッシュサイズ制限 {#cache-size-limits}
+
+キャッシュは圧縮されたCI/CDアーティファクトとして保存されます。アーティファクトのサイズ制限が適用されます:
+
+- GitLab.com: 最大アーティファクトサイズは1 GB。
+- GitLab Self-Managed: デフォルトの最大アーティファクトサイズは100 MB。管理者は、[CI/CD設定](../../../administration/cicd/limits.md#maximum-artifacts-size)でこの制限を調整できます。
+
+##### 外部オブジェクトストレージにキャッシュを保存する {#store-cache-in-external-object-storage}
+
+CI/CDアーティファクトストレージの代替として、インクリメンタルスキャンキャッシュを外部オブジェクトストレージに保存できます。アーティファクトストレージの制限が制約となる場合、またはキャッシュのライフサイクルを個別に管理したい場合に、このストレージ方法を使用します。AWS S3がサポートされています。
+
+認証では、[OpenID Connect（OIDC）](../../../ci/cloud_services/_index.md)を使用して、クラウドプロバイダーと短命のトークンを交換します。長期間有効な認証情報をCI/CD変数として保存する必要はありません。
+
+前提条件: 
+
+- S3バケット。
+- GitLab用に設定された[IAM OIDC Identity Provider](../../../ci/cloud_services/aws/_index.md)。
+- 以下の権限を持つIAMロールをバケットに付与します:
+  - `s3:GetObject`
+  - `s3:PutObject`
+  - `s3:HeadObject`
+- IAMロールの信頼ポリシーは、アクセスを必要とするプロジェクトまたはグループにスコープする必要があります（例: グループ内のすべてのプロジェクトに対して`project_path:myorg/*`）。
+
+キャッシュをS3に保存するには:
+
+1. この設定を`.gitlab-ci.yml`に追加します:
+
+   ```yaml
+   gitlab-advanced-sast:
+     id_tokens:
+       GITLAB_ADV_SAST_INCR_SCAN_OIDC_TOKEN:
+         aud: https://gitlab.com
+     variables:
+       GITLAB_ADV_SAST_INCR_SCAN: "true"
+       GITLAB_ADV_SAST_INCR_SCAN_STORAGE: "s3"
+       GITLAB_ADV_SAST_INCR_SCAN_S3_BUCKET: "advanced-sast-cache"
+       GITLAB_ADV_SAST_INCR_SCAN_S3_REGION: "us-east-1"
+       GITLAB_ADV_SAST_INCR_SCAN_S3_ROLE_ARN: "arn:aws:iam::<account-id>:role/<role-name>"
+   ```
+
+1. GitLab Self-ManagedまたはGitLab Dedicatedの場合、`aud: https://gitlab.com`をGitLabインスタンスURLに置き換えます。
+1. キャッシュオブジェクトを自動的に期限切れにするように[S3ライフサイクルポリシー](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html)を設定します。
+
+   有効期限は`GITLAB_ADV_SAST_INCR_SCAN_SEARCH_PERIOD`の値（デフォルト: 3日間）と一致させて、古いキャッシュファイルが保持されないようにしてください。
+
+キャッシュはS3の`<project-path>/<commit-sha>/ts-cache.sqlite.gz`に保存されます。アナライザーは親コミットで最新のキャッシュを検索し、アーティファクトベースのキャッシュ動作と一致させます。
+
+### 未検証の脆弱性を報告する {#report-unverified-vulnerabilities}
+
+{{< details >}}
+
+- ステータス: ベータ版
+
+{{< /details >}}
+
+{{< history >}}
+
+- GitLab 18.11で[導入](https://gitlab.com/groups/gitlab-org/-/epics/15649)された[ベータ](../../../policy/development_stages_support.md#beta)として。
+
+{{< /history >}}
+
+GitLab高度なSASTは、テイント解析を使用して、信頼できないソースから脆弱性のあるシンクへのデータフローをトレースします。デフォルトでは、アナライザーは完全なパスをトレースできる場合にのみ脆弱性を報告し、カバレッジよりも精度を優先します。より多くの潜在的なデータフローを検出するために、未検証の脆弱性を有効にできます。この機能は、完全なデータフローパスが確立できない場合でも結果を報告します。これによりカバレッジは向上しますが、誤検出の数も増加する可能性があります。
+
+未検証の脆弱性報告を有効にすると、アナライザーは、部分的なテイントフローが検出されたものの、ソースからシンクまで完全に検証できなかった結果も報告します。これらのニアミス結果は、コードが悪用される前にリスクのあるコードを特定し、プロアクティブに修正するのに役立ちます。未検証の結果は、セキュリティ重大度が中以上のルールに対してのみ報告されます。
+
+未検証の結果は、完全に検証された脆弱性とは以下の点で明確に区別されます:
+
+- パイプライン**セキュリティ**タブでは、脆弱性の説明は**（未検証）**　プレフィックスで始まります。
+- **脆弱性レポート**では、未検証の結果も同様にプレフィックスが付加されます。
+- **データフロー**タブでは、未検証の脆弱性にはソースノードがありません。フロー内の最初のノードは**トレースエントリーポイント**であり、部分的なトレースの開始点を示します。
+
+#### 未検証の脆弱性報告を有効にする {#turn-on-unverified-vulnerability-reporting}
+
+スキャン結果に未検証の結果を含めるには、`REPORT_UNVERIFIED_VULNS` CI/CD変数を`.gitlab-ci.yml`ファイルで真値に設定します:
+
+```yaml
+gitlab-advanced-sast:
+  variables:
+    REPORT_UNVERIFIED_VULNS: "true"
+```
+
+> [!warning]
+> 未検証の脆弱性レポートを有効にすると、アナライザーによって生成される検出結果の数が大幅に増加する可能性があります。これらの結果は脆弱性データベースに保存され、トリアージの労力やレポート作成を含む脆弱性管理ワークフローに影響を与える可能性があります。
+
+### Runnerリソースを調整する {#tune-runner-resources}
+
+Runnerリソースはスキャン時間に直接影響します。GitLab高度なSASTはデフォルトでチェックを並行して実行するため、複数のCPUコアとコアあたり最低4 GBのメモリが必要です。Runnerリソースは自動的に検出されますが、必要に応じて一部の設定を調整できます。
+
+アナライザーは、以下の優先順位に従って利用可能なCPUとメモリを決定します:
+
+1. GitLab SaaS Runnerタグ（`CI_RUNNER_TAGS`）:
+   - GitLabがホストするRunnerでは、アナライザーはRunnerタグ（例: `saas-linux-large-amd64`）を読み取り、そのRunnerタイプに既知のCPUおよびメモリ値を検索します。
+1. コンテナリソース制限（`/sys/fs/cgroup/cpu.max`、`/sys/fs/cgroup/memory.max`）:
+   - セルフマネージドRunnerでは、アナライザーはLinux cgroupからコンテナのリソース制限を読み取ります。cgroupにはリソース制限のみが反映されます。リクエストはコンテナレベルでは強制されず、効果がありません。
+1. CI/CD変数のオーバーライド（`ADVANCED_SAST_AVAILABLE_CPUS`、`ADVANCED_SAST_AVAILABLE_MEMORY`）:
+   - 設定されている場合、これらの値はステップ1または2で検出されたものをオーバーライドします。
+
+ステップ1と2で検出に失敗した場合、アナライザーはデフォルトで1コアと4 GBのメモリを使用します。
+
+CPUとメモリの割り当てを確認するには、`gitlab-advanced-sast`ジョブログを表示し、GitLab高度なSASTのエントリを探してください。例: 
+
+```plaintext
+[INFO] [GitLab Advanced SAST] [2026-03-30T02:38:09Z] ▶ Detected 2 CPU Cores
+[INFO] [GitLab Advanced SAST] [2026-03-30T02:38:09Z] ▶ No Memory limit is detected
+```
+
+#### 推奨される開始点 {#recommended-starting-point}
+
+スキャンが遅い大規模なリポジトリの場合、複数のCPUコアと1コアあたり4 GBの十分なメモリから開始します。その後、観測されたスキャン時間に基づいて調整します。設定例については、[Runnerリソース設定の構成](#configure-runner-resource-settings)を参照してください。最初のフルスキャンが完了するのに十分な高さにジョブの[`timeout`](../../../ci/yaml/_index.md#timeout)を設定してください。
+
+#### Runnerリソース設定を構成する {#configure-runner-resource-settings}
+
+以下の状況で、CI/CD変数を使用してアナライザーのCPUおよびメモリ設定を手動で調整できます:
+
+- Runnerにcgroup制限が設定されていない場合（例えば、ベアメタルや制約のないVM）。
+- 検出された値がRunnerの実際のリソースと一致しない場合。
+- アナライザーが利用可能なリソース以下で使用するよう制限したい場合。
+
+GitLab高度なSAST Runnerのリソースを調整するには、以下のCI/CD設定を使用します:
+
+- `ADVANCED_SAST_AVAILABLE_CPUS` - アナライザーが利用できるCPUコアを指定します。
+- `ADVANCED_SAST_AVAILABLE_MEMORY` - アナライザーが利用できる合計メモリを指定します。
+- `MAX_UNVERIFIED_CORES` - 自動コア検出の上限を設定します。
+- `DISABLE_MULTI_CORE` - マルチコアスキャンを完全に無効にします。
+
+セルフマネージドRunnerの場合、[セキュリティスキャナー設定](_index.md#security-scanner-configuration)で`--multi-core`フラグを使用して、`requested`コアの数を指定できます。
+
+詳細については、[設定](#configuration)を参照してください。
+
+プロジェクトに最適な設定を見つけるには、一度に1つの設定のみを変更し、スキャン時間を監視してください。
+
+以下の例では、GitLab高度なSASTアナライザーに4つのCPUコアと16 GBのメモリが利用可能です。4つのワーカーそれぞれに4 GBのメモリが利用可能です。
+
+```yaml
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+
+variables:
+  GITLAB_ADVANCED_SAST_ENABLED: 'true'
+  ADVANCED_SAST_AVAILABLE_CPUS: '4'
+  ADVANCED_SAST_AVAILABLE_MEMORY: '16384'  # 16 GB for 4 cores
+```
+
+#### Runnerリソース調整が有効になったことを確認 {#verify-runner-resource-tuning-took-effect}
+
+`ADVANCED_SAST_AVAILABLE_CPUS`または`ADVANCED_SAST_AVAILABLE_MEMORY`を設定した後、`gitlab-advanced-sast`ジョブログで有効な値を確認します。ログには検出されたCPUと、メモリが設定されている場合は検出されたメモリが報告されます。例: 
+
+```plaintext
+Detected 2 CPU Cores
+Detected 8192 MB of Memory
+```
+
+有効な値が要求したものよりも低い場合:
+
+1. Runnerの実際のCPUとメモリを確認します。アナライザーは指定されたオーバーライド値をそのまま適用し、Runnerの処理能力に合わせて上限を設けることはありません。実際の容量を超える値は、より高速なスキャンではなくリソースの競合を引き起こします。GitLabホスト型Runnerについては、[ホスト型Runnerの仕様](../../../ci/runners/hosted_runners/linux.md)を参照してください。セルフマネージドRunnerでは、`nproc`とRunnerホスト上のcgroup制限を確認してください。
+1. 変数が[正しいスコープ](../../../ci/variables/_index.md#cicd-variable-precedence)に設定されており、他の何者もそれを上書きしていないことを確認します。
+
+デフォルトでは、アナライザーは`MAX_UNVERIFIED_CORES`（デフォルト`4`）よりも最大1コア少ないコアを使用するため、3コアを使用します。この動作により、何も設定を変更していない場合でも、ジョブログに次のような行が表示されることがあります:
+
+```plaintext
+Detected 8 cores but using 3; set --multi-core or MAX_UNVERIFIED_CORES for more
+```
+
+より多くのコアを使用するには、`MAX_UNVERIFIED_CORES`を上げるか、`SAST_SCANNER_ALLOWED_CLI_OPTS`を介して`--multi-core`で特定の数をリクエストします:
+
+```yaml
+variables:
+  SAST_SCANNER_ALLOWED_CLI_OPTS: "--multi-core 6"
+```
+
+## 設定 {#configuration}
+
+次の変数を使用して、GitLab高度なSASTの動作を調整できます:
+
+| CI/CD変数                              | デフォルト                | 説明                                                                                                                                                                                     |
+|---------------------------------------------|------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GITLAB_ADVANCED_SAST_ENABLED`              | `false`                | CおよびC++を除く、サポートされているすべての言語でGitLab高度なSASTスキャンを有効にします。Dart、Kotlin、Objective-C、Rust、Scala、Swiftの分析は、別の`gitlab-advanced-sast-ext`ジョブとして実行されます。 |
+| `GITLAB_ADVANCED_SAST_CPP_ENABLED`          | `false`                | CおよびC++プロジェクト専用にGitLab高度なSASTスキャンを有効にします。                                                                                                                       |
+| `GITLAB_ADV_SAST_INCR_SCAN`                 | `false`                | パイプライン実行間でテイント署名をキャッシュする[インクリメンタルスキャン](#incremental-scanning)を有効にします。 |
+| `GITLAB_ADVANCED_SAST_EXT_INCREMENTAL_ENABLED` | `true` | これは、[インクリメンタルスキャン](advanced_sast_swift_objc.md#incremental-scanning)がデフォルトで有効になっている`gitlab-advanced-sast-ext`アナライザー（Dart、Kotlin、Objective-C、Rust、Scala、およびSwift）にのみ適用されます。オフにするには`false`に設定します。これらの言語のファイルがないリポジトリには影響しません。他の言語の場合は、代わりに`GITLAB_ADV_SAST_INCR_SCAN`を使用してください。 |
+| `GITLAB_ADVANCED_SAST_EXT_DEDUP_LANGUAGES` | `kotlin,swift` | これは`gitlab-advanced-sast-ext`アナライザーにのみ適用されます。アナライザーがSemgrepが既に報告している脆弱性について`semgrep-sast`に委ねるベータ言語のカンマ区切りリスト。これにより、同じ脆弱性が2回報告されることはありません。Kotlinの場合: CWE-89、CWE-78、CWE-22、CWE-79、CWE-327、およびCWE-295。Swiftの場合: Keychainアクセシビリティチェック（CWE-922）。ベンチマーク時など、重複排除をオフにするには空の値を設定します。 |
+| `ADVANCED_SAST_PARTIAL_SCAN`                | `false`                | GitLab高度なSAST差分-スキャンモードを`differential`に設定して有効にします。                                                                                                                    |
+| `GITLAB_ADVANCED_SAST_RULE_TIMEOUT`         | `30`                   | ファイルおよびルールごとのタイムアウト（秒単位）。超過すると、その分析はスキップされます。                                                                                                                  |
+| `REPORT_UNVERIFIED_VULNS`                   | `false`                | スキャン結果に未検証の結果を含めます。有効にするには、`true`、`1`、または`True`に設定します。                                                                                                           |
+| `GITLAB_ADV_SAST_INCR_SCAN_SEARCH_PERIOD`   | `3 days`               | キャッシュされたテイント署名アーティファクトを検索する期間。サポートされているフォーマット: 数値の後に`d`、`day`、または`days`（例: `7 days`）が続きます。アーティファクトの有効期限を超えてはなりません。 |
+| `GITLAB_ADV_SAST_INCR_SCAN_CUSTOM_JOB_NAME` | `gitlab-advanced-sast` | キャッシュアーティファクトルックアップ用のカスタムジョブ名。`gitlab-advanced-sast`ジョブの名前を変更した場合にこれを設定します。                                                                                              |
+| `GITLAB_ADV_SAST_INCR_SCAN_STORAGE`         | 設定なし                | キャッシュストレージバックエンド。`s3`に設定すると、キャッシュをCI/CDアーティファクトではなくAWS S3に保存できます。詳細については、[外部オブジェクトストレージにキャッシュを保存する](#store-cache-in-external-object-storage)を参照してください。           |
+| `GITLAB_ADV_SAST_INCR_SCAN_S3_BUCKET`       | 設定なし                | キャッシュストレージ用のS3バケット名。`GITLAB_ADV_SAST_INCR_SCAN_STORAGE`が`s3`の場合に必須です。                                                                                                   |
+| `GITLAB_ADV_SAST_INCR_SCAN_S3_REGION`       | 設定なし                | S3バケットのAWSリージョン。`GITLAB_ADV_SAST_INCR_SCAN_STORAGE`が`s3`の場合に必須です。                                                                                                        |
+| `GITLAB_ADV_SAST_INCR_SCAN_S3_ROLE_ARN`     | 設定なし                | OIDCを介して引き受けるIAMロールのARN。`GITLAB_ADV_SAST_INCR_SCAN_STORAGE`が`s3`の場合に必須です。                                                                                              |
+
+GitLab高度なSASTスキャンはデフォルトで無効になっています。上位レベル（例えばグループ）で有効になっている場合に明示的に無効にするには、`GITLAB_ADVANCED_SAST_ENABLED`（C/C++プロジェクトの場合は`GITLAB_ADVANCED_SAST_CPP_ENABLED`）を`false`に設定します。
+
+## ロールアウトする {#roll-out}
+
+1つのプロジェクトでGitLab高度なSASTの結果に満足したら、追加のプロジェクトとグループに拡張します。GitLab高度なSASTを含む共有CI/CD設定を作成し、必要に応じてグループとプロジェクト全体に適用します。
+
+詳細については、[セキュリティ設定](../detect/security_configuration.md)を参照してください。
+
+## 脆弱性検出基準 {#vulnerability-detection-criteria}
+
+GitLab高度なSASTは、テイント解析によるクロスファイル、クロスファンクションスキャンを使用して、ユーザー入力のプログラムへのフローを追跡します。これにより、SQLインジェクションやクロスサイトスクリプティング（XSS）などのインジェクション脆弱性が、複数の関数やファイルにまたがる場合でも検出されるようになります。
+
+アナライザーは、信頼できないユーザー入力をソースから、信頼できないデータがセキュリティ脆弱性を引き起こす可能性のあるポイントに導く、検証可能なフローがある場合にのみ、テイント解析ベースの脆弱性を報告します。このアプローチは、検証が不十分な脆弱性を報告する可能性のある他の製品と比較して、ノイズを最小限に抑えます。
+
+検出では、HTTPリクエストからソースされる値など、信頼境界を越える入力が重視されますが、コマンドラインの引数、環境変数、またはプログラムを操作するユーザーが通常提供するその他の入力は除外されます。
+
+GitLabの高度な静的アプリケーションセキュリティテストが検出する脆弱性の種類の詳細については、[GitLab高度なSASTのCWEカバレッジ](advanced_sast_coverage.md)を参照してください。
+
+## SemgrepからGitLab高度なSASTへの移行 {#transitioning-from-semgrep-to-gitlab-advanced-sast}
+
+SemgrepからGitLab高度なSASTに移行すると、自動移行プロセスにより、脆弱性が重複排除されます。このプロセスでは、以前に検出されたSemgrepの脆弱性を対応するGitLab高度なSASTの発見にリンクし、一致するものが見つかった場合に置き換えます。
+
+デフォルトブランチで高度なSASTスキャンを有効にした後、スキャンが実行されて脆弱性が検出されると、次の条件に基づいて、既存のSemgrepの脆弱性を置き換える必要があるかどうかがチェックされます。
+
+### 重複排除の条件 {#conditions-for-deduplication}
+
+1. **識別子の照合**:
+   - GitLab高度なSASTの少なくとも1つの脆弱性識別子（CWEとOWASPを除く）が、既存のSemgrep脆弱性の**プライマリ識別子**と一致する必要があります。
+   - プライマリ識別子は、[SASTレポート](_index.md#download-a-sast-report)内にある脆弱性の識別子配列の最初の識別子です。
+   - たとえば、GitLab高度なSASTの脆弱性に`bandit.B506`などの識別子があり、Semgrepの脆弱性のプライマリ識別子も`bandit.B506`である場合、この条件は満たされます。
+
+1. **場所の照合**:
+   - 脆弱性は、コード内の**同じ場所**に関連付けられている必要があります。これは、[SASTレポート](_index.md#download-a-sast-report)内にある脆弱性の次のいずれかのフィールドを使用して判別されます。
+     - 追跡フィールド（存在する場合）
+     - 場所フィールド（追跡フィールドが存在しない場合）
+
+### 脆弱性の変更 {#vulnerability-changes}
+
+条件が満たされると、Semgrepの既存の脆弱性はGitLab高度なSASTの脆弱性に変換されます。この更新された脆弱性は、次の変更を加えて[脆弱性レポート](../vulnerability_report/_index.md)に表示されます。
+
+- スキャナーの種類がSemgrepからGitLab高度なSASTに更新されます。
+- GitLab高度なSASTの脆弱性に存在する追加の識別子が、既存の脆弱性に追加されます。
+- 脆弱性のそれ以外の詳細は変更されません。
+
+条件が満たされない場合、基になるコードの問題が修正されていても、既存のSemgrep脆弱性は脆弱性ダッシュボードに残ります。これらの修正された脆弱性をGitLabで解決済みとしてマークするには、脆弱性ダッシュボードで手動で解決するか、Semgrepアナライザーを再度実行する必要があります。
+
+### 重複する脆弱性を修正する {#resolve-duplicate-vulnerabilities}
+
+[重複排除の条件](#conditions-for-deduplication)が満たされない場合、Semgrepの脆弱性が重複としてそのまま表示されることがあります。[脆弱性レポート](../vulnerability_report/_index.md)でこれを解決するには、次の手順に従います。
+
+1. 高度なSASTスキャナーで[脆弱性をフィルタリング](../vulnerability_report/_index.md#filtering-vulnerabilities)し、[結果をCSV形式でエクスポート](../vulnerability_report/_index.md#export-details)します。
+1. Semgrepスキャナーで[脆弱性をフィルタリング](../vulnerability_report/_index.md#filtering-vulnerabilities)します。これらは、重複排除されなかった脆弱性である可能性があります。
+1. Semgrepの脆弱性ごとに、エクスポートされた高度なSASTの結果に対応する一致があるかどうかを確認します。
+1. 重複が存在する場合は、Semgrepの脆弱性を適切に解決します。
+
+## GitLab高度なSASTで、LGPLライセンスコンポーネントのソースコードをリクエストする {#request-source-code-of-lgpl-licensed-components-in-gitlab-advanced-sast}
+
+GitLab高度なSASTで、LGPLライセンスコンポーネントのソースコードに関する情報をリクエストするには、[GitLabサポート](https://support.gitlab.com/)にお問い合わせください。
+
+迅速な対応を確保するために、リクエストにGitLab高度なSASTアナライザーのバージョンを含めてください。
+
+この機能はUltimateプランでのみ利用できるため、そのレベルのサポート資格を持つ組織と関連している必要があります。

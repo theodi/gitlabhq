@@ -1,0 +1,24 @@
+# @feature_category: custom_dashboards_foundation
+
+query analyticsGetGroups(
+  $search: String!
+  $first: Int!
+  $topLevelOnly: Boolean = false
+  $sort: String = "name_asc"
+) {
+  groups(
+    search: $search
+    first: $first
+    topLevelOnly: $topLevelOnly
+    sort: $sort
+    # Only return groups the user is a member of, not every group available
+    allAvailable: false
+  ) {
+    nodes {
+      id
+      name
+      avatarUrl
+      fullPath
+    }
+  }
+}

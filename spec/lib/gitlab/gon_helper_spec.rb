@@ -1,0 +1,577 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::GonHelper, feature_category: :navigation do
+  let_it_be(:organization) { create(:organization) }
+  let(:helper) do
+    Class.new do
+      include Gitlab::GonHelper
+    end.new
+  end
+
+  describe '#add_gon_variables' do
+    let(:gon) { double('gon').as_null_object }
+    let(:https) { true }
+
+    before do
+      allow(helper).to receive_messages(current_user: nil, gon: gon)
+      stub_config_setting(https: https)
+    end
+
+    context 'when HTTPS is enabled' do
+      it 'sets the secure flag to true' do
+        expect(gon).to receive(:secure=).with(true)
+
+        helper.add_gon_variables
+      end
+    end
+
+    context 'when HTTP is disabled' do
+      let(:https) { false }
+
+      it 'sets the secure flag to false' do
+        expect(gon).to receive(:secure=).with(false)
+
+        helper.add_gon_variables
+      end
+    end
+
+    it 'sets no GitLab version' do
+      expect(gon).not_to receive(:version=)
+
+      helper.add_gon_variables
+    end
+
+    context 'when user is logged in' do
+      before do
+        allow(helper).to receive(:current_user).and_return(build_stubbed(:user))
+      end
+
+      it 'sets GitLab version' do
+        expect(gon).to receive(:version=).with(Gitlab::VERSION)
+
+        helper.add_gon_variables
+      end
+    end
+
+    context 'when sentry is configured' do
+      let(:clientside_dsn) { 'https://xxx@sentry.example.com/1' }
+      let(:environment) { 'staging' }
+      let(:sentry_clientside_traces_sample_rate) { 0.5 }
+
+      context 'with sentry settings' do
+        before do
+          stub_application_setting(sentry_enabled: true)
+          stub_application_setting(sentry_clientside_dsn: clientside_dsn)
+          stub_application_setting(sentry_environment: environment)
+          stub_application_setting(sentry_clientside_traces_sample_rate: sentry_clientside_traces_sample_rate)
+        end
+
+        it 'sets sentry dsn and environment from config' do
+          expect(gon).to receive(:sentry_dsn=).with(clientside_dsn)
+          expect(gon).to receive(:sentry_environment=).with(environment)
+          expect(gon).to receive(:sentry_clientside_traces_sample_rate=).with(sentry_clientside_traces_sample_rate)
+
+          helper.add_gon_variables
+        end
+      end
+    end
+
+    context 'when iframe rendering is enabled' do
+      before do
+        stub_iframe_providers(
+          'example' => {
+            'name' => 'Example',
+            'matches' => [{ 'host' => 'example.com', 'path' => '/{id}' }],
+            'src' => 'https://embed.example.com/{id}',
+            'sandbox' => %w[allow-scripts allow-popups]
+          },
+          'other' => {
+            'name' => 'Other',
+            'matches' => [{ 'host' => 'other.example.com', 'path' => '/{id}' }],
+            'src' => 'https://other.example.com/embed/{id}',
+            'sandbox' => []
+          })
+        stub_application_setting(iframe_rendering_enabled: true, iframe_rendering_allowlist: %w[example])
+      end
+
+      it 'exposes the enabled providers' do
+        expect(gon).to receive(:iframe_rendering_providers=).with({
+          'example' => {
+            name: 'Example',
+            src_origin: 'https://embed.example.com',
+            sandbox: 'allow-scripts allow-popups',
+            require_activation: true
+          }
+        })
+
+        helper.add_gon_variables
+      end
+    end
+
+    context 'when iframe rendering is disabled' do
+      before do
+        stub_application_setting(iframe_rendering_enabled: false, iframe_rendering_allowlist: %w[youtube])
+      end
+
+      it 'does not expose any providers' do
+        expect(gon).not_to receive(:iframe_rendering_providers=)
+
+        helper.add_gon_variables
+      end
+    end
+
+    context 'when current_organization is set', :with_current_organization do
+      subject(:add_gon_variables) { helper.add_gon_variables }
+
+      before do
+        Current.organization = current_organization
+      end
+
+      it 'exposes current_organization' do
+        expect(gon).to receive(:current_organization=).with(
+          current_organization.slice(:id, :name, :path, :full_path, :web_url, :avatar_url)
+        )
+
+        add_gon_variables
+      end
+
+      it_behaves_like 'internal event not tracked'
+    end
+
+    context 'when current_organization is not set' do
+      it 'does not expose current_organization' do
+        expect(gon).not_to receive(:current_organization=)
+
+        helper.add_gon_variables
+      end
+    end
+
+    context 'when ui_for_organizations_enabled? is true' do
+      it 'does expose current_organization' do
+        expect(gon).not_to receive(:current_organization=)
+
+        helper.add_gon_variables
+      end
+    end
+
+    context 'when ui_for_organizations_enabled? is false', :ui_for_organizations_disabled do
+      it 'does not expose current_organization' do
+        expect(gon).not_to receive(:current_organization=)
+
+        helper.add_gon_variables
+      end
+    end
+
+    describe 'organization scoped path helpers' do
+      context 'when the request has an organization_path param' do
+        before do
+          organization = build_stubbed(:organization, path: 'acme')
+          allow(Current).to receive(:organization_resolver)
+            .and_return(instance_double(Gitlab::Current::Organization, from_organization_params: organization))
+        end
+
+        it 'exposes organization_path' do
+          expect(gon).to receive(:organization_path=).with('acme')
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when the request has no organization_path param' do
+        before do
+          allow(Current).to receive(:organization_resolver)
+            .and_return(instance_double(Gitlab::Current::Organization, from_organization_params: nil))
+        end
+
+        it 'exposes a nil organization_path' do
+          expect(gon).to receive(:organization_path=).with(nil)
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when the data context is an organization' do
+        before do
+          allow(Current).to receive(:data_context).and_return(
+            Gitlab::Current::DataContext.new(organization: build_stubbed(:organization, :isolated, path: 'acme'))
+          )
+        end
+
+        it 'exposes data_context_organization_path' do
+          expect(gon).to receive(:data_context_organization_path=).with('acme')
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when the data context is not an organization' do
+        before do
+          allow(Current).to receive(:data_context).and_return(Gitlab::Current::DataContext.new)
+        end
+
+        it 'exposes a nil data_context_organization_path' do
+          expect(gon).to receive(:data_context_organization_path=).with(nil)
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when there is no data context' do
+        it 'exposes a nil data_context_organization_path' do
+          expect(gon).to receive(:data_context_organization_path=).with(nil)
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when ui_for_organizations_enabled? is false', :ui_for_organizations_disabled do
+        before do
+          organization = build_stubbed(:organization, path: 'acme')
+
+          allow(Current).to receive_messages(
+            organization_resolver: instance_double(
+              Gitlab::Current::Organization,
+              from_organization_params: organization
+            ),
+            data_context: Gitlab::Current::DataContext.new(
+              organization: build_stubbed(:organization, :isolated, path: 'acme')
+            )
+          )
+        end
+
+        it 'does not expose organization_path or data_context_organization_path' do
+          expect(gon).not_to receive(:organization_path=)
+          expect(gon).not_to receive(:data_context_organization_path=)
+
+          helper.add_gon_variables
+        end
+      end
+    end
+
+    describe 'fluid_layout' do
+      context 'when there is no current_user' do
+        it 'sets gon.fluid_layout to false' do
+          expect(gon).to receive(:fluid_layout=).with(false)
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when current_user prefers a fluid layout' do
+        before do
+          allow(helper).to receive(:current_user).and_return(build_stubbed(:user, layout: :fluid))
+        end
+
+        it 'sets gon.fluid_layout to true' do
+          expect(gon).to receive(:fluid_layout=).with(true).ordered
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when current_user prefers a fixed layout' do
+        before do
+          allow(helper).to receive(:current_user).and_return(build_stubbed(:user, layout: :fixed))
+        end
+
+        it 'sets gon.fluid_layout to false' do
+          expect(gon).to receive(:fluid_layout=).with(false).twice
+
+          helper.add_gon_variables
+        end
+      end
+    end
+
+    describe 'emoji_autocomplete_enabled' do
+      context 'when there is no current_user' do
+        it 'defaults gon.emoji_autocomplete_enabled to true' do
+          expect(gon).to receive(:emoji_autocomplete_enabled=).with(true)
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when the current_user has the preference enabled' do
+        before do
+          allow(helper).to receive(:current_user).and_return(build_stubbed(:user, emoji_autocomplete_enabled: true))
+        end
+
+        it 'sets gon.emoji_autocomplete_enabled to true' do
+          expect(gon).to receive(:emoji_autocomplete_enabled=).with(true)
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when the current_user has the preference disabled' do
+        before do
+          allow(helper).to receive(:current_user).and_return(build_stubbed(:user, emoji_autocomplete_enabled: false))
+        end
+
+        it 'sets gon.emoji_autocomplete_enabled to false' do
+          expect(gon).to receive(:emoji_autocomplete_enabled=).with(false)
+
+          helper.add_gon_variables
+        end
+      end
+    end
+
+    describe 'emoji_skin_tone' do
+      context 'when there is no current_user' do
+        it 'does not expose gon.emoji_skin_tone' do
+          expect(gon).not_to receive(:emoji_skin_tone=)
+
+          helper.add_gon_variables
+        end
+      end
+
+      context 'when there is a current_user' do
+        before do
+          allow(helper).to receive(:current_user).and_return(build_stubbed(:user, emoji_skin_tone: 'medium'))
+        end
+
+        it 'exposes the preferred tone' do
+          expect(gon).to receive(:emoji_skin_tone=).with('medium')
+
+          helper.add_gon_variables
+        end
+
+        context 'when the emoji_skin_tone_preference feature flag is disabled' do
+          before do
+            stub_feature_flags(emoji_skin_tone_preference: false)
+          end
+
+          it 'does not expose gon.emoji_skin_tone' do
+            expect(gon).not_to receive(:emoji_skin_tone=)
+
+            helper.add_gon_variables
+          end
+        end
+      end
+    end
+
+    describe 'instance_token_prefix' do
+      it 'exposes instance_token_prefix' do
+        stub_application_setting(instance_token_prefix: 'instanceprefix')
+
+        expect(gon).to receive(:instance_token_prefix=).with('instanceprefix')
+
+        helper.add_gon_variables
+      end
+
+      it 'exposes empty instance_token_prefix when not set' do
+        stub_application_setting(instance_token_prefix: '')
+
+        expect(gon).to receive(:instance_token_prefix=).with('')
+
+        helper.add_gon_variables
+      end
+
+      context 'with feature flag custom_prefix_for_all_token_types disabled' do
+        before do
+          stub_feature_flags(custom_prefix_for_all_token_types: false)
+        end
+
+        it 'does not expose instance_token_prefix' do
+          stub_application_setting(instance_token_prefix: 'instanceprefix')
+
+          expect(gon).not_to receive(:instance_token_prefix=).with('instanceprefix')
+
+          helper.add_gon_variables
+        end
+      end
+    end
+
+    describe 'aggregation_max_page_size' do
+      it 'exposes the ClickHouse aggregation page size cap' do
+        expect(gon).to receive(:aggregation_max_page_size=)
+          .with(Gitlab::Database::Aggregation::ClickHouse::Engine.max_page_size)
+
+        helper.add_gon_variables
+      end
+    end
+  end
+
+  describe '#push_frontend_ability' do
+    it 'pushes an ability to the frontend' do
+      user = create(:user)
+      gon = class_double('Gon')
+      allow(helper)
+        .to receive(:gon)
+        .and_return(gon)
+
+      expect(gon)
+        .to receive(:push)
+        .with({ abilities: { 'logIn' => true } }, true)
+
+      helper.push_frontend_ability(ability: :log_in, user: user)
+    end
+  end
+
+  describe '#push_frontend_feature_flag' do
+    before do
+      skip_default_enabled_yaml_check
+    end
+
+    it 'pushes a feature flag to the frontend' do
+      gon = class_double('Gon')
+      thing = stub_feature_flag_gate('thing')
+
+      stub_feature_flags(my_feature_flag: thing)
+      stub_feature_flag_definition(:my_feature_flag)
+
+      allow(helper)
+        .to receive(:gon)
+        .and_return(gon)
+
+      expect(gon)
+        .to receive(:push)
+        .with({ features: { 'myFeatureFlag' => true } }, true)
+
+      helper.push_frontend_feature_flag(:my_feature_flag, thing)
+    end
+  end
+
+  describe '#push_force_frontend_feature_flag' do
+    let(:gon) { class_double('Gon') }
+
+    before do
+      allow(helper)
+        .to receive(:gon)
+        .and_return(gon)
+    end
+
+    it 'pushes a feature flag to the frontend with a true value' do
+      expect(gon)
+        .to receive(:push)
+        .with({ features: { 'myFeatureFlag' => true } }, true)
+
+      helper.push_force_frontend_feature_flag(:my_feature_flag, true)
+    end
+
+    it 'pushes a feature flag to the frontend with a false value' do
+      expect(gon)
+        .to receive(:push)
+        .with({ features: { 'myFeatureFlag' => false } }, true)
+
+      helper.push_force_frontend_feature_flag(:my_feature_flag, false)
+    end
+
+    it 'raises an ArgumentError if argument is not a boolean' do
+      expect { helper.push_force_frontend_feature_flag(:my_feature_flag, Object.new) }.to raise_error ArgumentError
+    end
+  end
+
+  describe '#push_frontend_organization_release' do
+    let(:gon) { class_double('Gon') }
+    let(:actor) { stub_feature_flag_gate('actor') }
+
+    before do
+      allow(helper).to receive(:gon).and_return(gon)
+    end
+
+    it 'pushes the resolved organization flag under its own name when enabled' do
+      allow(::Organizations::Release).to receive(:enabled?).with(:my_org_flag, actor).and_return(true)
+
+      expect(gon)
+        .to receive(:push)
+        .with({ features: { 'myOrgFlag' => true } }, true)
+
+      helper.push_frontend_organization_release(:my_org_flag, actor)
+    end
+
+    it 'pushes false when the organization flag is disabled' do
+      allow(::Organizations::Release).to receive(:enabled?).with(:my_org_flag, actor).and_return(false)
+
+      expect(gon)
+        .to receive(:push)
+        .with({ features: { 'myOrgFlag' => false } }, true)
+
+      helper.push_frontend_organization_release(:my_org_flag, actor)
+    end
+
+    it 'passes a nil actor through to the release layer' do
+      allow(::Organizations::Release).to receive(:enabled?).with(:my_org_flag, nil).and_return(true)
+
+      expect(gon)
+        .to receive(:push)
+        .with({ features: { 'myOrgFlag' => true } }, true)
+
+      helper.push_frontend_organization_release(:my_org_flag, nil)
+    end
+  end
+
+  describe '#push_namespace_setting' do
+    it 'pushes a namespace setting to the frontend' do
+      namespace_settings = create(:namespace_settings, math_rendering_limits_enabled: false)
+      group = create(:group, namespace_settings: namespace_settings)
+
+      gon = class_double('Gon')
+      allow(helper)
+        .to receive(:gon)
+        .and_return(gon)
+
+      expect(gon)
+        .to receive(:push)
+        .with({ math_rendering_limits_enabled: false })
+
+      helper.push_namespace_setting(:math_rendering_limits_enabled, group)
+    end
+
+    it 'does not push if missing namespace setting entry' do
+      group = create(:group)
+
+      gon = class_double('Gon')
+      allow(helper)
+        .to receive(:gon)
+        .and_return(gon)
+
+      expect(gon)
+        .not_to receive(:push)
+        .with({ math_rendering_limits_enabled: false })
+
+      helper.push_namespace_setting(:math_rendering_limits_enabled, group)
+    end
+  end
+
+  describe '#push_application_setting' do
+    it 'pushes an application setting to the frontend' do
+      stub_application_setting(signup_enabled: true)
+
+      gon = class_double('Gon')
+      allow(helper)
+        .to receive(:gon)
+        .and_return(gon)
+
+      expect(gon)
+        .to receive(:push)
+        .with({ signup_enabled: true })
+
+      helper.push_application_setting(:signup_enabled)
+    end
+
+    it 'does not push if missing application setting entry' do
+      gon = class_double('Gon')
+      allow(helper)
+        .to receive(:gon)
+        .and_return(gon)
+
+      expect(gon)
+        .not_to receive(:push)
+        .with({ non_existent_application_setting: true })
+
+      helper.push_application_setting(:non_existent_application_setting)
+    end
+  end
+
+  describe '#default_avatar_url' do
+    it 'returns an absolute URL' do
+      url = helper.default_avatar_url
+
+      expect(url).to match(/^http/)
+      expect(url).to match(/no_avatar.*png$/)
+    end
+  end
+end

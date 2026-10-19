@@ -1,0 +1,32 @@
+.gitlab-tabs {
+  @apply gl-bg-subtle;
+  @apply gl-border;
+  flex-wrap: nowrap;
+
+  li {
+    width: 50%;
+
+    &:not(:last-child) {
+      @apply gl-border-r;
+    }
+
+    &.active {
+      background: $white;
+    }
+
+    a {
+      width: 100%;
+      text-align: center;
+    }
+  }
+}
+
+.gitlab-tab-content {
+  @apply gl-border;
+  border-top: 0;
+  margin-bottom: $gl-padding;
+
+  .tab-pane {
+    padding: $gl-padding;
+  }
+}

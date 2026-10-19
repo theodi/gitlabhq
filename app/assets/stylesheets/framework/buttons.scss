@@ -1,0 +1,145 @@
+@mixin btn-default {
+  border-radius: var(--gl-button-border-radius);
+  font-size: $gl-font-size;
+  font-weight: $gl-font-weight-normal;
+  padding: $gl-vert-padding $gl-btn-padding;
+
+  &:focus-visible,
+  &:active {
+    background-color: $btn-active-gray;
+  }
+}
+
+@mixin btn-with-margin {
+  margin-left: $gl-spacing-scale-3;
+  float: left;
+
+  &.inline {
+    float: none;
+  }
+}
+
+.btn {
+  white-space: nowrap;
+  @include btn-default;
+
+  &:focus-visible:active {
+    outline: 0;
+  }
+
+  &.btn-grouped {
+    @include btn-with-margin;
+  }
+
+  svg {
+    height: 15px;
+    width: 15px;
+  }
+
+  svg:not(:last-child) {
+    margin-right: 5px;
+  }
+}
+
+.btn-group {
+  &.btn-grouped {
+    @include btn-with-margin;
+  }
+}
+
+// Reset button styles when wrapping a tooltip element in a button for accessibility
+.button-reset {
+  @apply gl-border-none;
+  @apply gl-bg-transparent;
+  @apply gl-p-0;
+  @apply focus-visible:gl-focus-inset;
+  cursor: default !important;
+}
+
+/**
+ * Use `gl-button-theme` mixin from GitLab UI to apply same styles to
+ * <button class="btn"> and <button class="btn btn-danger"> as GlButton.
+ * Use `:not(.gl-button)` selector to avoid overriding GlButton usage.
+ * Use `.btn-danger.btn-danger` double selector to increase specificity
+ * against Bootstrap default .btn-danger styles for hover/focus states.
+ */
+.btn:not(.gl-button) {
+  @include gl-button-theme(
+    $color: var(--gl-button-default-primary-foreground-color-default),
+    $background-color: var(--gl-button-default-primary-background-color-default),
+    $border-color: var(--gl-button-default-primary-border-color-default),
+    $hover-color: var(--gl-button-default-primary-foreground-color-hover),
+    $hover-background-color: var(--gl-button-default-primary-background-color-hover),
+    $hover-border-color: var(--gl-button-default-primary-border-color-hover),
+    $focus-color: var(--gl-button-default-primary-foreground-color-focus),
+    $focus-background-color: var(--gl-button-default-primary-background-color-focus),
+    $focus-border-color: var(--gl-button-default-primary-border-color-focus),
+    $active-color: var(--gl-button-default-primary-foreground-color-active),
+    $active-background-color: var(--gl-button-default-primary-background-color-active),
+    $active-border-color: var(--gl-button-default-primary-border-color-active),
+  );
+
+  &.btn-danger.btn-danger {
+    @include gl-button-theme(
+      $color: var(--gl-button-danger-primary-foreground-color-default),
+      $background-color: var(--gl-button-danger-primary-background-color-default),
+      $border-color: var(--gl-button-danger-primary-border-color-default),
+      $hover-color: var(--gl-button-danger-primary-foreground-color-hover),
+      $hover-background-color: var(--gl-button-danger-primary-background-color-hover),
+      $hover-border-color: var(--gl-button-danger-primary-border-color-hover),
+      $focus-color: var(--gl-button-danger-primary-foreground-color-focus),
+      $focus-background-color: var(--gl-button-danger-primary-background-color-focus),
+      $focus-border-color: var(--gl-button-danger-primary-border-color-focus),
+      $active-color: var(--gl-button-danger-primary-foreground-color-active),
+      $active-background-color: var(--gl-button-danger-primary-background-color-active),
+      $active-border-color: var(--gl-button-danger-primary-border-color-active),
+    );
+  }
+}
+
+.input-group-prepend,
+.input-group-append {
+  .btn {
+    @include btn-default;
+
+    &:hover {
+      outline: none;
+    }
+
+    &:active {
+      outline: none;
+    }
+  }
+
+  .active {
+    box-shadow: $gl-btn-active-background;
+
+    border: 1px solid $gray-100 !important;
+    background-color: $btn-active-gray-light !important;
+  }
+}
+
+// All disabled buttons, regardless of color, type, etc
+.btn.disabled,
+.btn[disabled],
+fieldset[disabled] .btn,
+.dropdown-toggle[disabled],
+[disabled].dropdown-menu-toggle {
+  &,
+  &:hover {
+    @apply gl-bg-disabled;
+    border-color: $gray-100;
+    @apply gl-text-disabled;
+    opacity: 1;
+    text-decoration: none;
+    cursor: default;
+
+    &.cursor-not-allowed {
+      cursor: not-allowed;
+    }
+
+    i {
+      @apply gl-text-disabled;
+    }
+  }
+}

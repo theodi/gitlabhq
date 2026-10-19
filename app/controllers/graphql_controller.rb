@@ -1,0 +1,541 @@
+# frozen_string_literal: true
+
+class GraphqlController < ApplicationController
+  include Gitlab::Auth::AuthFinders
+  extend ::Gitlab::Utils::Override
+
+  ERROR_STATUS_MAP = {
+    StandardError => { status: :internal },
+
+    # ApplicationController has similar rescues but we declare these again here because the
+    # `rescue_from StandardError` above would prevent these from bubbling up to ApplicationController.
+    # These also return errors in a JSON format similar to GraphQL errors.
+    ActionController::InvalidAuthenticityToken => { status: :unprocessable_entity, track: false },
+
+    # Domain errors -> 422
+    Gitlab::Graphql::Variables::Invalid => { status: :unprocessable_entity, track: false },
+    Gitlab::Graphql::Errors::ArgumentError => { status: :unprocessable_entity, track: false },
+    Issuables::GroupMembersFilterable::TooManyGroupMembersError => { status: :unprocessable_entity },
+    Issuables::GroupMembersFilterable::TooManyAssignedIssuesError => { status: :unprocessable_entity },
+
+    # Auth errors
+    Gitlab::Auth::RestrictedLanguageServerClientError => { status: :unauthorized },
+    Gitlab::Auth::DpopValidationError => { status: :unauthorized },
+
+    # # Other errors
+    Gitlab::Auth::TooManyIps => { status: :forbidden },
+    RateLimitedService::RateLimitedError => { status: :too_many_requests, track: false },
+    Gitlab::Git::ResourceExhaustedError => { status: :service_unavailable },
+    # Time-bounded blocks are retryable (503 + Retry-After); indefinite blocks are not (403).
+    Gitlab::Graphql::Errors::TimeBoundedOrganizationMaintenanceModeError => { status: :service_unavailable },
+    Gitlab::Graphql::Errors::IndefiniteOrganizationMaintenanceModeError => { status: :forbidden },
+    ActiveRecord::QueryAborted => { status: :service_unavailable },
+    ActiveRecord::QueryCanceled => {
+      status: :service_unavailable,
+      custom_message: 'Request timed out. Please try a less complex query or a smaller set of records.'
+    }
+  }.freeze
+
+  # Unauthenticated users have access to the API for public data
+  skip_before_action :authenticate_user!
+  # This is already handled by authorize_access_api!
+  skip_before_action :active_user_check
+  # CSRF protection is only necessary when the request is authenticated via a session cookie.
+  # Also, we allow anonymous users to access the API without a CSRF token so that it is easier for users
+  # to get started with our GraphQL API.
+  skip_before_action :verify_authenticity_token, if: -> {
+    current_user.nil? || sessionless_user? || !any_mutating_query?
+  }
+  skip_before_action :check_two_factor_requirement, if: -> { sessionless_user? }
+  # GraphQL handles maintenance-mode enforcement in
+  # #disallow_requests_for_organization_maintenance_mode so the error is returned
+  # as a GraphQL-shaped response instead of the generic HTML/JSON error from
+  # EnforcesOrganizationMaintenanceMode.
+  skip_before_action :enforce_organization_maintenance_mode
+
+  # Header can be passed by tests to disable SQL query limits.
+  DISABLE_SQL_QUERY_LIMIT_HEADER = 'HTTP_X_GITLAB_DISABLE_SQL_QUERY_LIMIT'
+
+  # Max size of the query text in characters
+  MAX_QUERY_SIZE = 10_000
+
+  # Cap the operation-name label so a multiplex batch with many named operations
+  # can't produce an unbounded string for the use_pat event's `label` field.
+  GRAPHQL_OPERATION_NAME_LABEL_LIMIT = 255
+
+  # Operations temporarily allowed to exceed MAX_QUERY_SIZE during the
+  # work-item widgets => features migration. Remove entries as the migration
+  # completes. Tracked in https://gitlab.com/gitlab-org/gitlab/-/issues/587970
+  EXTENDED_QUERY_SIZE_ALLOWLIST = %w[
+    workItemById
+    namespaceWorkItem
+    workItemUpdate
+    createWorkItem
+    workItemConvert
+    addLinkedItems
+    workItemUpdated
+    getWorkItemsFull
+    getWorkItemsFullEE
+    getWorkItemsSlim
+    getWorkItemsSlimEE
+  ].to_set.freeze
+
+  EXTENDED_MAX_QUERY_SIZE = 12_000
+
+  # The query string of a standard IntrospectionQuery, used to compare incoming requests for caching
+  CACHED_INTROSPECTION_QUERY_STRING = CachedIntrospectionQuery.query_string
+  INTROSPECTION_QUERY_OPERATION_NAME = 'IntrospectionQuery'
+
+  # must come first: current_user is set up here
+  prepend_before_action { authenticate_sessionless_user!(:graphql_api) }
+
+  before_action :authorize_access_api!
+  before_action :disallow_requests_for_organization_maintenance_mode
+  before_action(only: [:execute]) { check_dpop! }
+  before_action :set_graphql_caller_id, only: [:execute]
+  before_action :set_user_last_activity
+  before_action :track_vs_code_usage
+  before_action :track_jetbrains_usage
+  before_action :track_jetbrains_bundled_usage
+  before_action :track_gitlab_cli_usage
+  before_action :track_visual_studio_usage
+  before_action :track_neovim_plugin_usage
+  before_action :disable_query_limiting
+  before_action :limit_query_size
+  before_action :enforce_language_server_restrictions
+
+  before_action :disallow_mutations_for_get
+
+  # Since we deactivate authentication from the main ApplicationController and
+  # defer it to :authorize_access_api!, we need to override the bypass session
+  # callback execution order here
+  around_action :sessionless_bypass_admin_mode!, if: :sessionless_user?
+  around_action :track_user_experience_sli_by_operation_name
+  around_action :track_pat_usage, only: [:execute]
+
+  # The default feature category is overridden to read from request
+  feature_category :not_owned # rubocop:todo Gitlab/AvoidFeatureCategoryNotOwned
+
+  # We don't know what the query is going to be, so we can't set a high urgency
+  # See https://gitlab.com/groups/gitlab-org/-/epics/5841 for the work that will
+  # allow us to specify an urgency per query.
+  # Currently, all queries have a default urgency. And this is measured in the `graphql_queries`
+  # SLI. But queries could be multiplexed, so the total duration could be longer.
+  urgency :low, [:execute]
+
+  rescue_from(*ERROR_STATUS_MAP.keys, with: :handle_exception)
+
+  def execute
+    result = if multiplex?
+               execute_multiplex
+             else
+               introspection_query? ? execute_introspection_query : execute_single_query(query)
+             end
+
+    render json: result unless performed?
+  end
+
+  def handle_internal_error(exception)
+    if Rails.env.test? || Rails.env.development?
+      render_error("Internal server error: #{exception.message}", raised_at: exception.backtrace[0..10].join(' <-- '))
+    else
+      render_error("Internal server error")
+    end
+  end
+
+  override :feature_category
+  def feature_category
+    ::Gitlab::FeatureCategories.default.from_request(request) || super
+  end
+
+  private
+
+  def handle_exception(exception)
+    @exception_object = exception
+    http_status = ERROR_STATUS_MAP.dig(exception.class, :status)
+    custom_message = ERROR_STATUS_MAP.dig(exception.class, :custom_message)
+
+    response.headers.merge!(exception.headers) if exception.respond_to?(:headers)
+
+    # For exceptions that support logging of the request
+    exception.try(:log_request, request, current_user)
+
+    # Client errors (`track: false`) are rendered without reporting them to error tracking.
+    log_exception(exception) unless ERROR_STATUS_MAP.dig(exception.class, :track) == false
+
+    return handle_internal_error(exception) if http_status.nil? || http_status == :internal
+
+    render_error(custom_message || exception.message, status: http_status)
+  end
+
+  def check_dpop!
+    return unless !!sessionless_user? # DPoP is only enforced on token-based authentication
+    return unless current_user && Feature.enabled?(:dpop_authentication, current_user)
+
+    token = extract_personal_access_token
+    return unless PersonalAccessToken.find_by_token(token.to_s) # The token is not PAT, exit early
+
+    # For authenticated requests we check if the user has DPoP enabled
+    ::Auth::DpopAuthenticationService.new(current_user: current_user,
+      personal_access_token_plaintext: token,
+      request: current_request).execute
+  end
+
+  def enforce_language_server_restrictions
+    response = Gitlab::Auth::EditorExtensions::LanguageServerClientVerifier.new(
+      current_user: current_user,
+      request: current_request
+    ).execute
+
+    raise Gitlab::Auth::RestrictedLanguageServerClientError, response.message if response.error?
+  end
+
+  def permitted_params
+    @permitted_params ||= begin
+      p = multiplex? ? permitted_multiplex_params : permitted_standalone_query_params
+
+      # SECURITY: Normalize query strings at the params layer so that every consumer
+      # of permitted_params[:query], including subclass overrides, always sees the
+      # post-escape_single_quoted_newlines string.
+      if multiplex?
+        p[:_json].each { |q| q[:query] = GraphQL::Language.escape_single_quoted_newlines(q[:query].to_s) }
+      else
+        p[:query] = GraphQL::Language.escape_single_quoted_newlines(p.fetch(:query, '').to_s)
+      end
+
+      p
+    end
+  end
+
+  def permitted_standalone_query_params
+    params.permit(:query, :operationName, :remove_deprecated, variables: {}).tap do |permitted_params|
+      # GraphQL variables may be a JSON-encoded String, which `permit(variables: {})` would drop.
+      # Read the raw value to preserve both Hash and String forms.
+      permitted_params[:variables] = params[:variables] # rubocop:disable Rails/StrongParams -- see comment above
+    end
+  end
+
+  def permitted_multiplex_params
+    params.permit(:remove_deprecated, _json: [:query, :operationName, { variables: {} }])
+  end
+
+  def disallow_mutations_for_get
+    return unless request.get? || request.head?
+    return unless any_mutating_query?
+
+    raise ::Gitlab::Graphql::Errors::ArgumentError, "Mutations are forbidden in #{request.request_method} requests"
+  end
+
+  # Blocks all operations, including read queries: HTTP verb and operation type
+  # are unreliable proxies for "no write"
+  # (https://gitlab.com/gitlab-org/gitlab/-/issues/607966).
+  def disallow_requests_for_organization_maintenance_mode
+    organization = ::Current.organization
+    return unless organization&.under_maintenance?
+
+    if organization.maintenance_time_bounded?
+      raise ::Gitlab::Graphql::Errors::TimeBoundedOrganizationMaintenanceModeError.new(
+        organization.maintenance_message,
+        headers: { 'Retry-After' => ::Organizations::Organization::MAINTENANCE_MODE_RETRY_AFTER_SECONDS.to_s })
+    else
+      raise ::Gitlab::Graphql::Errors::IndefiniteOrganizationMaintenanceModeError,
+        organization.maintenance_message
+    end
+  end
+
+  def limit_query_size
+    if multiplex?
+      total_size = multiplex_param.sum { |query_info| query_info[:query].size }
+      raise ::Gitlab::Graphql::Errors::ArgumentError, "Query too large" if total_size > MAX_QUERY_SIZE
+    else
+      max = if permitted_params[:operationName].to_s.in?(EXTENDED_QUERY_SIZE_ALLOWLIST)
+              EXTENDED_MAX_QUERY_SIZE
+            else
+              MAX_QUERY_SIZE
+            end
+
+      raise ::Gitlab::Graphql::Errors::ArgumentError, "Query too large" if query.size > max
+    end
+  end
+
+  def any_mutating_query?
+    if multiplex?
+      multiplex_param.any? { |q| mutation?(q[:query], q[:operationName]) }
+    else
+      mutation?(query)
+    end
+  end
+
+  def mutation?(query_string, operation_name = permitted_params[:operationName])
+    parsed = GraphQL.parse(query_string)
+    operations = parsed.definitions.select { |d| d.is_a?(GraphQL::Language::Nodes::OperationDefinition) }
+
+    if operation_name.present?
+      target = operations.find { |op| op.name == operation_name }
+      return target.operation_type == "mutation" if target
+    end
+
+    operations.any? { |op| op.operation_type == "mutation" }
+  rescue GraphQL::ParseError
+    true
+  end
+
+  # Append the operation name to caller_id, e.g. "GraphqlController#execute:getProjects"
+  # instead of "GraphqlController#execute". This runs before execution so the operation
+  # is the active caller_id for anything that reads ApplicationContext during the query,
+  # including Gitaly calls.
+  #
+  # We only trust operation names in the KnownOperations allowlist. The client supplies
+  # operationName, so using it verbatim would let arbitrary values into caller_id, which
+  # is a Prometheus label (endpoint_id) and is forwarded to Gitaly. Multiplex requests
+  # have no single operation, so they keep the base caller_id.
+  def set_graphql_caller_id
+    return unless Feature.enabled?(:graphql_caller_id_with_operation_name, Feature.current_request)
+    return if multiplex?
+
+    operation = ::Gitlab::Graphql::KnownOperations.default.from_operation_name(permitted_params[:operationName])
+    return if operation == ::Gitlab::Graphql::KnownOperations::UNKNOWN
+
+    caller_id = "#{self.class.endpoint_id_for_action(:execute)}:#{operation.name}"
+    Gitlab::ApplicationContext.push(caller_id: caller_id)
+  end
+
+  # Tests may mark some GraphQL queries as exempt from SQL query limits
+  def disable_query_limiting
+    return unless Gitlab::QueryLimiting.enabled_for_env?
+
+    disable_reference = request.headers[DISABLE_SQL_QUERY_LIMIT_HEADER]
+    return unless disable_reference
+
+    first, second = disable_reference.split(',')
+
+    if first.match?(/^\d+$/)
+      Gitlab::QueryLimiting.disable!(second, new_threshold: first&.to_i)
+    else
+      Gitlab::QueryLimiting.disable!(first)
+    end
+  end
+
+  def set_user_last_activity
+    return unless current_user
+
+    # TODO: add namespace & project - https://gitlab.com/gitlab-org/gitlab/-/issues/387951
+    Users::ActivityService.new(author: current_user).execute
+  end
+
+  def track_vs_code_usage
+    Gitlab::UsageDataCounters::VSCodeExtensionActivityUniqueCounter
+      .track_api_request_when_trackable(user_agent: request.user_agent, user: current_user)
+  end
+
+  def track_jetbrains_usage
+    Gitlab::UsageDataCounters::JetBrainsPluginActivityUniqueCounter
+      .track_api_request_when_trackable(user_agent: request.user_agent, user: current_user)
+  end
+
+  def track_jetbrains_bundled_usage
+    Gitlab::UsageDataCounters::JetBrainsBundledPluginActivityUniqueCounter
+      .track_api_request_when_trackable(user_agent: request.user_agent, user: current_user)
+  end
+
+  def track_visual_studio_usage
+    Gitlab::UsageDataCounters::VisualStudioExtensionActivityUniqueCounter
+      .track_api_request_when_trackable(user_agent: request.user_agent, user: current_user)
+  end
+
+  def track_neovim_plugin_usage
+    Gitlab::UsageDataCounters::NeovimPluginActivityUniqueCounter
+      .track_api_request_when_trackable(user_agent: request.user_agent, user: current_user)
+  end
+
+  def track_gitlab_cli_usage
+    Gitlab::UsageDataCounters::GitLabCliActivityUniqueCounter
+      .track_api_request_when_trackable(user_agent: request.user_agent, user: current_user)
+  end
+
+  def track_user_experience_sli_by_operation_name
+    ::Gitlab::Graphql::UxSliByOperationName
+      .new(permitted_params[:operationName]).track { yield }
+  end
+
+  def track_pat_usage
+    yield
+  ensure
+    emit_pat_usage_event
+  end
+
+  def emit_pat_usage_event
+    token_info = ::Current.token_info
+    return unless token_info.is_a?(Hash) && token_info[:token_type] == 'PersonalAccessToken'
+    return unless current_user
+    return unless Feature.enabled?(:track_api_request_from_personal_access_token, current_user)
+
+    additional_properties = {
+      label: graphql_operation_name,
+      pat_type: token_info[:token_granularity],
+      response_code: response.status
+    }
+
+    denied_permissions = ::Current.formatted_granular_denied_permissions
+    additional_properties[:denied_permissions] = denied_permissions if denied_permissions
+
+    ::Gitlab::InternalEvents.track_event(
+      'use_pat',
+      user: current_user,
+      additional_properties: additional_properties
+    )
+  end
+
+  def graphql_operation_name
+    name = if multiplex?
+             multiplex_param.filter_map { |q| q[:operationName] }.join(',')
+           else
+             permitted_params[:operationName].to_s
+           end
+
+    name.presence&.truncate(GRAPHQL_OPERATION_NAME_LABEL_LIMIT) || 'unknown'
+  end
+
+  def execute_multiplex
+    GitlabSchema.multiplex(multiplex_queries, context: context)
+  end
+
+  # SECURITY: This is the single execution hook for non-multiplex queries.
+  # The normalized_query argument is the same string validated by #disallow_mutations_for_get
+  # (via #query which applies #escape_single_quoted_newlines). Subclasses that
+  # override this method MUST use this argument for execution.
+  def execute_single_query(normalized_query)
+    variables = build_variables(permitted_params[:variables])
+    operation_name = permitted_params[:operationName]
+    GitlabSchema.execute(normalized_query, variables: variables, context: context, operation_name: operation_name)
+  end
+
+  def query
+    @query ||= permitted_params.fetch(:query, '').to_s
+  end
+
+  def multiplex_param
+    @multiplex_param ||= permitted_params[:_json] || []
+  end
+
+  def multiplex_queries
+    multiplex_param.map do |single_query_info|
+      {
+        query: single_query_info[:query],
+        variables: build_variables(single_query_info[:variables]),
+        operation_name: single_query_info[:operationName],
+        context: context
+      }
+    end
+  end
+
+  # When modifying the context, also update GraphqlChannel#context if needed
+  # so that we have similar context when executing queries, mutations, and subscriptions
+  def context
+    api_user = !!sessionless_user?
+    @context ||= {
+      current_user: current_user,
+      is_sessionless_user: api_user,
+      current_organization: Current.organization,
+      request: request,
+      scope_validator: ::Gitlab::Auth::ScopeValidator.new(api_user, request_authenticator),
+      remove_deprecated: Gitlab::Utils.to_boolean(permitted_params[:remove_deprecated], default: false),
+      access_token: access_token
+    }
+  end
+
+  def build_variables(variable_info)
+    Gitlab::Graphql::Variables.new(variable_info).to_h
+  end
+
+  # We support Apollo-style query batching where an array of queries will be in the `_json:` key.
+  # https://graphql-ruby.org/queries/multiplex.html#apollo-query-batching
+  #
+  # Uses raw #params intentionally: this is a routing check, not a data access.
+  # #permitted_params itself calls #multiplex? to decide which permit set to use,
+  # so reading #permitted_params here would create infinite recursion.
+  def multiplex?
+    params[:_json].is_a?(Array) # rubocop:disable Rails/StrongParams -- routing check, see comment above
+  end
+
+  def authorize_access_api!
+    if current_user.nil? &&
+        request_authenticator.authentication_token_present?
+      return render_error('Invalid token', status: :unauthorized)
+    end
+
+    return if can?(current_user, :access_api)
+
+    render_error('API not accessible for user', status: :forbidden)
+  end
+
+  # Overridden from the ApplicationController to make the response look like
+  # a GraphQL response. That is nicely picked up in Graphiql.
+  def render_404
+    render_error("Not found!", status: :not_found)
+  end
+
+  def render_error(message, status: 500, raised_at: nil)
+    error = { errors: [message: message] }
+    error[:errors].first['raisedAt'] = raised_at if raised_at
+
+    render json: error, status: status
+  end
+
+  def append_info_to_payload(payload)
+    super
+
+    # Merging to :metadata will ensure these are logged as top level keys
+    payload[:metadata] ||= {}
+    payload[:metadata][:graphql] = logs
+
+    payload[:exception_object] = @exception_object if @exception_object
+  end
+
+  def logs
+    RequestStore.store[:graphql_logs].to_a
+  end
+
+  def execute_introspection_query
+    context[:introspection] = true
+
+    return execute_single_query(query) if Gitlab.dev_or_test_env?
+
+    load_static_schema
+  end
+
+  def load_static_schema
+    @static_schema ||= begin
+      schema_path = if Gitlab::Utils.to_boolean(permitted_params[:remove_deprecated]) === true
+                      Rails.root.join("public/-/graphql/introspection_result_no_deprecated.json")
+                    else
+                      Rails.root.join("public/-/graphql/introspection_result.json")
+                    end
+
+      if File.exist?(schema_path)
+        # rubocop:disable Gitlab/JsonSafeParse -- safe_parse has to restrictive limits for the introspection query result
+        Gitlab::Json.parse(File.read(schema_path))
+        # rubocop:enable Gitlab/JsonSafeParse
+      else
+        execute_single_query(query)
+      end
+    end
+  end
+
+  def introspection_query?
+    if permitted_params.key?(:operationName)
+      permitted_params[:operationName] == INTROSPECTION_QUERY_OPERATION_NAME
+    else
+      query.include?('__schema') ||
+        (query.include?('__type') && query.exclude?('__typename')) ||
+        graphql_query_object.selected_operation_name == INTROSPECTION_QUERY_OPERATION_NAME
+    end
+  end
+
+  def graphql_query_object
+    @graphql_query_object ||= GraphQL::Query.new(GitlabSchema, query: query,
+      variables: build_variables(permitted_params[:variables]))
+  end
+end
+
+GraphqlController.prepend_mod_with('GraphqlController')

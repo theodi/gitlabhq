@@ -1,0 +1,17 @@
+- branches = local_assigns.fetch(:branches)
+- state = local_assigns.fetch(:state)
+- panel_title = local_assigns.fetch(:panel_title)
+- show_more_text = local_assigns.fetch(:show_more_text)
+- project = local_assigns.fetch(:project)
+- overview_max_branches = local_assigns.fetch(:overview_max_branches)
+
+- return unless branches.any?
+
+= render ::Layouts::CrudComponent.new(panel_title, options: { class: 'gl-mt-5' }) do |c|
+  - c.with_body do
+    %ul.content-list.branches-list.all-branches{ data: { testid: 'all-branches-container' } }
+      - branches.first(overview_max_branches).each do |branch|
+        = render "projects/branches/branch", branch: branch, merged: project.repository.merged_to_root_ref?(branch), commit_status: @branch_pipeline_statuses[branch.name], show_commit_status: @branch_pipeline_statuses.any?
+  - if branches.size > overview_max_branches
+    - c.with_footer do
+      = link_to show_more_text, project_branches_filtered_path(project, state: state), id: "state-#{state}", data: { state: state }

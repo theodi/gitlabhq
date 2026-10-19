@@ -1,0 +1,21 @@
+---
+data_category: optional
+key_path: redis_hll_counters.quickactions.i_quickactions_copy_metadata_merge_request_monthly
+description: Count of MAU using the `/copy_metadata` quick action on a Merge Request
+product_group: source_code
+product_categories:
+- source_code_management
+value_type: number
+status: active
+time_frame: 28d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - i_quickactions_copy_metadata_merge_request
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

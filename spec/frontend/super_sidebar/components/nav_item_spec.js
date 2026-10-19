@@ -1,0 +1,481 @@
+import { h, nextTick } from 'vue';
+import { GlButton, GlAvatar, GlNavItem } from '@gitlab/ui';
+import { RouterLinkStub } from '@vue/test-utils';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import { createMockDirective, getBinding } from 'helpers/vue_mock_directive';
+import { getSlotFunction } from '~/lib/utils/vue3compat/normalize_render';
+import NavItem from '~/super_sidebar/components/nav_item.vue';
+import {
+  CLICK_MENU_ITEM_ACTION,
+  TRACKING_UNKNOWN_ID,
+  TRACKING_UNKNOWN_PANEL,
+} from '~/super_sidebar/constants';
+
+describe('NavItem component', () => {
+  let wrapper;
+
+  const findAvatar = () => wrapper.findComponent(GlAvatar);
+  const findLink = () => wrapper.findByTestId('nav-item-link');
+  const findPill = () => wrapper.findByTestId('pill-badge');
+  const findBadge = () => wrapper.findByTestId('nav-item-feature-announcement-badge');
+  const findPinButton = () => wrapper.findComponent(GlButton);
+  const findNavItem = () => wrapper.findComponent(GlNavItem);
+
+  const createWrapper = ({
+    item,
+    props = {},
+    provide = {},
+    routerLinkSlotProps = {},
+    directives = {},
+  }) => {
+    wrapper = mountExtended(NavItem, {
+      propsData: {
+        item,
+        ...props,
+      },
+      provide,
+      directives,
+      stubs: {
+        RouterLink: {
+          ...RouterLinkStub,
+          // Vue 3-style zero-arg render (h comes from the vue import); opt
+          // out of @vue/compat's legacy render-function emulation, which
+          // misclassifies it.
+          compatConfig: { RENDER_FUNCTION: false },
+          render() {
+            const children = getSlotFunction(this)({
+              href: '/foo',
+              isActive: false,
+              navigate: jest.fn(),
+              ...routerLinkSlotProps,
+            });
+            return h('a', children);
+          },
+        },
+      },
+    });
+  };
+
+  describe('pills', () => {
+    it.each([0, 5, 3.4, 'foo', '10%'])('item with pill_count `%p` renders a pill', (pillCount) => {
+      createWrapper({ item: { title: 'Foo', pill_count: pillCount } });
+
+      expect(findPill().text()).toBe(pillCount.toString());
+    });
+
+    it.each([null, undefined, false, true, '', NaN, Number.POSITIVE_INFINITY])(
+      'item with pill_data `%p` renders no pill',
+      (pillCount) => {
+        createWrapper({ item: { title: 'Foo', pill_count: pillCount } });
+
+        expect(findPill().exists()).toBe(false);
+      },
+    );
+
+    it('does not render a pill when in icon-only mode', () => {
+      createWrapper({ item: { title: 'Foo', pill_count: 123 }, provide: { isIconOnly: true } });
+      expect(findPill().exists()).toBe(false);
+    });
+
+    describe('async updating pill prop', () => {
+      it('re-renders item with when prop pill_count changes', async () => {
+        createWrapper({ item: { title: 'Foo', pill_count: 0 } });
+
+        expect(findPill().text()).toBe('0');
+
+        // https://gitlab.com/gitlab-org/gitlab/-/issues/428246
+        // This is testing specific async behaviour that was before missed
+        await wrapper.setProps({ item: { title: 'Foo', pill_count: 10 } });
+        expect(findPill().text()).toBe('10');
+      });
+    });
+
+    it.each([null, undefined, false, true, '', NaN, Number.POSITIVE_INFINITY])(
+      'if `pill_count_field` field is `%s`, does not render pill',
+      (value) => {
+        createWrapper({
+          item: {
+            pill_count: 100,
+            pill_count_field: 'test',
+          },
+          props: {
+            asyncCount: {
+              test: value,
+            },
+          },
+        });
+        expect(findPill().exists()).toBe(false);
+      },
+    );
+
+    describe('if asyncCount `pill_count_field` exists, use it to get count', () => {
+      it.each`
+        pillCountField                       | result
+        ${'openIssuesCount'}                 | ${0}
+        ${'openIssuesCount'}                 | ${10}
+        ${'openIssuesCount'}                 | ${'100.2k'}
+        ${'todos'}                           | ${1}
+        ${'assigned_issues'}                 | ${2}
+        ${'assigned_merge_requests'}         | ${3}
+        ${'review_requested_merge_requests'} | ${4}
+        ${'total_merge_requests'}            | ${7}
+      `(
+        'returns `$result` when nav item `pill_count_field` is `$pillCountField` and count is `$result`',
+        ({ pillCountField, result }) => {
+          createWrapper({
+            item: {
+              pill_count: 100,
+              pill_count_field: pillCountField,
+            },
+            props: {
+              asyncCount: {
+                [pillCountField]: result,
+              },
+            },
+          });
+          expect(findPill().text()).toBe(`${result}`);
+        },
+      );
+    });
+
+    describe('async count pill', () => {
+      beforeEach(() => {
+        createWrapper({
+          item: {
+            title: 'Foo',
+            pill_count_field: 'openIssuesCount',
+          },
+          props: {
+            asyncCount: {},
+          },
+        });
+      });
+
+      it('renders `-` while async count field is not available yet', () => {
+        expect(findPill().text()).toBe('-');
+      });
+
+      it('updates from loading placeholder to async count value', async () => {
+        await wrapper.setProps({
+          asyncCount: {
+            openIssuesCount: 12,
+          },
+        });
+
+        expect(findPill().text()).toBe('12');
+      });
+    });
+
+    describe('if `pill_count_field` does not exist, use `pill_count` value`', () => {
+      it('renders `pill_count_field` value based on item type', () => {
+        createWrapper({ item: { title: 'Foo', pill_count: 10, pill_count_field: null } });
+
+        expect(findPill().text()).toBe('10');
+      });
+    });
+  });
+
+  describe('feature announcement badge', () => {
+    it('renders the badge with its label when `item.badge` is present', () => {
+      createWrapper({ item: { title: 'Foo', badge: { label: 'New' } } });
+
+      expect(findBadge().exists()).toBe(true);
+      expect(findBadge().text()).toBe('New');
+    });
+
+    it('does not render the badge when `item.badge` is absent', () => {
+      createWrapper({ item: { title: 'Foo' } });
+
+      expect(findBadge().exists()).toBe(false);
+    });
+  });
+
+  describe('pins', () => {
+    describe('when pins are not supported', () => {
+      it('does not render pin button', () => {
+        createWrapper({
+          item: { title: 'Foo' },
+          provide: {
+            panelSupportsPins: false,
+          },
+        });
+
+        expect(findPinButton().exists()).toBe(false);
+      });
+    });
+
+    describe('when pins are supported', () => {
+      beforeEach(() => {
+        createWrapper({
+          item: { title: 'Foo' },
+          provide: {
+            panelSupportsPins: true,
+          },
+        });
+      });
+
+      it('renders pin button', () => {
+        expect(findPinButton().exists()).toBe(true);
+      });
+
+      it('contains an aria-label', () => {
+        expect(findPinButton().attributes('aria-label')).toBe('Pin Foo');
+      });
+
+      it('toggles pointer events on after CSS fade-in', async () => {
+        const pinButton = findPinButton();
+
+        expect(pinButton.classes()).toContain('gl-pointer-events-none');
+
+        wrapper.trigger('mouseenter');
+        pinButton.vm.$emit('transitionend');
+        await nextTick();
+
+        expect(pinButton.classes()).not.toContain('gl-pointer-events-none');
+      });
+
+      it('does not toggle pointer events if mouse leaves before CSS fade-in ends', async () => {
+        const pinButton = findPinButton();
+
+        expect(pinButton.classes()).toContain('gl-pointer-events-none');
+
+        wrapper.trigger('mouseenter');
+        wrapper.trigger('mousemove');
+        wrapper.trigger('mouseleave');
+        pinButton.vm.$emit('transitionend');
+        await nextTick();
+
+        expect(pinButton.classes()).toContain('gl-pointer-events-none');
+      });
+    });
+
+    describe('when sidebar is in icon-only mode', () => {
+      it('does not render pin button', () => {
+        createWrapper({
+          item: { title: 'Foo' },
+          provide: {
+            panelSupportsPins: true,
+            isIconOnly: true,
+          },
+        });
+
+        expect(findPinButton().exists()).toBe(false);
+      });
+
+      it('renders pin button in a flyout menu', () => {
+        createWrapper({
+          item: { title: 'Foo' },
+          props: { isFlyout: true },
+          provide: {
+            panelSupportsPins: true,
+            isIconOnly: true,
+          },
+        });
+
+        expect(findPinButton().exists()).toBe(true);
+      });
+    });
+  });
+
+  it('applies correct aria-label', () => {
+    const titleString = 'Hello, world!';
+    createWrapper({
+      item: { title: titleString },
+    });
+
+    expect(findLink().attributes('aria-label')).toEqual(titleString);
+  });
+
+  it('applies custom link classes', () => {
+    const customClass = 'customClass';
+    createWrapper({
+      item: { title: 'Foo' },
+      props: {
+        linkClasses: {
+          [customClass]: true,
+        },
+      },
+    });
+
+    expect(findLink().attributes('class')).toContain(customClass);
+  });
+
+  it('applies custom classes set in the backend', () => {
+    const customClass = 'customBackendClass';
+    createWrapper({ item: { title: 'Foo', link_classes: customClass } });
+
+    expect(findLink().attributes('class')).toContain(customClass);
+  });
+
+  it('applies data-method specified in the backend', () => {
+    const method = 'post';
+    createWrapper({ item: { title: 'Foo', data_method: method } });
+
+    expect(findLink().attributes('data-method')).toContain(method);
+  });
+
+  describe('Data Tracking Attributes', () => {
+    it.each`
+      id           | panelType    | eventLabel             | eventProperty             | eventExtra
+      ${'abc'}     | ${'xyz'}     | ${'abc'}               | ${'nav_panel_xyz'}        | ${undefined}
+      ${undefined} | ${'xyz'}     | ${TRACKING_UNKNOWN_ID} | ${'nav_panel_xyz'}        | ${'{"title":"Foo"}'}
+      ${'abc'}     | ${undefined} | ${'abc'}               | ${TRACKING_UNKNOWN_PANEL} | ${'{"title":"Foo"}'}
+      ${undefined} | ${undefined} | ${TRACKING_UNKNOWN_ID} | ${TRACKING_UNKNOWN_PANEL} | ${'{"title":"Foo"}'}
+    `(
+      'adds appropriate data tracking labels for id=$id and panelType=$panelType',
+      ({ id, eventLabel, panelType, eventProperty, eventExtra }) => {
+        createWrapper({ item: { title: 'Foo', id }, props: {}, provide: { panelType } });
+
+        expect(findLink().attributes('data-track-action')).toBe(CLICK_MENU_ITEM_ACTION);
+        expect(findLink().attributes('data-track-label')).toBe(eventLabel);
+        expect(findLink().attributes('data-track-property')).toBe(eventProperty);
+        expect(findLink().attributes('data-track-extra')).toBe(eventExtra);
+      },
+    );
+  });
+
+  describe('when `item` prop has `link` attribute', () => {
+    describe('when `item` has `is_active` set to `false`', () => {
+      it('renders `GlNavItem` with no selected prop', () => {
+        createWrapper({ item: { title: 'Foo', link: '/foo', is_active: false } });
+
+        expect(findNavItem().props('selected')).toBe(false);
+      });
+    });
+
+    describe('when `item` has `is_active` set to `true`', () => {
+      it('renders `GlNavItem` with selected prop', () => {
+        createWrapper({ item: { title: 'Foo', link: '/foo', is_active: true } });
+
+        expect(findNavItem().props('selected')).toBe(true);
+      });
+    });
+  });
+
+  describe('when `item` prop has `entity_id` attribute', () => {
+    it('renders an avatar', () => {
+      createWrapper({
+        item: { title: 'Foo', entity_id: 123, avatar: '/avatar.png', avatar_shape: 'circle' },
+      });
+
+      expect(findAvatar().props()).toMatchObject({
+        entityId: 123,
+        shape: 'circle',
+        src: '/avatar.png',
+      });
+    });
+  });
+
+  describe('when `item.is_active` is true', () => {
+    it('scrolls into view', () => {
+      createWrapper({
+        item: { is_active: true },
+      });
+      expect(wrapper.element.scrollIntoView).toHaveBeenNthCalledWith(1, {
+        behavior: 'instant',
+        block: 'center',
+        inline: 'nearest',
+      });
+    });
+  });
+
+  describe('when `item.is_active` is true but item is inside a flyout menu', () => {
+    it('scrolls not into view', () => {
+      createWrapper({
+        item: { is_active: true },
+        props: { isFlyout: true },
+      });
+      expect(wrapper.element.scrollIntoView).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when `item.is_active` is false', () => {
+    it('scrolls not into view', () => {
+      createWrapper({
+        item: { is_active: false },
+      });
+      expect(wrapper.element.scrollIntoView).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('drag icon behavior in pinned section', () => {
+    const pinnedItem = { title: 'Issues', icon: 'issues', library_icon: 'issues' };
+
+    describe('when hideUnpinnedSidebarItems is enabled', () => {
+      beforeEach(() => {
+        createWrapper({
+          item: pinnedItem,
+          props: { isInPinnedSection: true },
+          provide: { glFeatures: { hideUnpinnedSidebarItems: true } },
+        });
+      });
+
+      it('renders both item icon and grip icon', () => {
+        expect(wrapper.findByTestId('issues-icon').exists()).toBe(true);
+        expect(wrapper.findByTestId('grip-icon').exists()).toBe(true);
+      });
+
+      it('swaps item icon for grip icon on hover', () => {
+        expect(wrapper.findByTestId('issues-icon').classes()).toContain(
+          'hide-on-focus-or-hover--target',
+        );
+        expect(wrapper.findByTestId('grip-icon').classes()).toContain(
+          'show-on-focus-or-hover--target',
+        );
+        expect(wrapper.findByTestId('grip-icon').classes()).toContain('js-draggable-icon');
+      });
+
+      describe('when in icon-only mode', () => {
+        beforeEach(() => {
+          createWrapper({
+            item: pinnedItem,
+            props: { isInPinnedSection: true },
+            provide: { glFeatures: { hideUnpinnedSidebarItems: true }, isIconOnly: true },
+          });
+        });
+
+        it('renders only the item icon without drag swap', () => {
+          expect(wrapper.findByTestId('issues-icon').exists()).toBe(true);
+          expect(wrapper.findByTestId('grip-icon').exists()).toBe(false);
+          expect(wrapper.findByTestId('issues-icon').classes()).not.toContain(
+            'hide-on-focus-or-hover--target',
+          );
+        });
+      });
+    });
+
+    describe('when hideUnpinnedSidebarItems is disabled', () => {
+      it('renders only the item icon without hover swap', () => {
+        createWrapper({
+          item: { title: 'Issues', icon: 'issues' },
+          props: { isInPinnedSection: true },
+        });
+
+        expect(wrapper.findByTestId('issues-icon').exists()).toBe(true);
+        expect(wrapper.findByTestId('issues-icon').classes()).not.toContain(
+          'hide-on-focus-or-hover--target',
+        );
+      });
+    });
+  });
+
+  describe('title tooltip', () => {
+    const directives = {
+      GlTooltip: createMockDirective('gl-tooltip'),
+    };
+
+    it('does not show when sidebar is fully visible', () => {
+      createWrapper({ item: { title: 'Foo' }, directives });
+      const tooltip = getBinding(wrapper.element, 'gl-tooltip');
+
+      expect(tooltip.value).toBe('');
+    });
+
+    it('shows when sidebar is in icon-only mode', () => {
+      createWrapper({ item: { title: 'Foo' }, provide: { isIconOnly: true }, directives });
+      const tooltip = getBinding(wrapper.element, 'gl-tooltip');
+
+      expect(tooltip.value).toBe('Foo');
+    });
+  });
+});

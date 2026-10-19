@@ -1,0 +1,69 @@
+@import 'mixins_and_variables_and_functions';
+@import './pipeline_mixins';
+
+/**
+ * Pipelines Bundle: Pipeline lists and Mini Pipelines
+ */
+
+.pipelines-container .top-area .nav-controls > .btn:last-child {
+  float: none;
+}
+
+// Pipeline mini graph
+.pipeline-mini-graph-stage-container {
+  position: relative;
+  // Temporarily sets a max height for the dropdown
+  // until GlDisclosureDropdown supports adding
+  // a max-height value
+  // see https://gitlab.com/gitlab-org/gitlab-services/design.gitlab.com/-/issues/2207
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-new-dropdown-inner {
+    max-height: $dropdown-max-height-lg !important;
+  }
+
+  &:last-child {
+    margin-right: 0;
+  }
+
+  &:not(:last-child) {
+    &::after {
+      content: '';
+      border-bottom: 2px solid $gray-200;
+      position: absolute;
+      right: -4px;
+      top: 12px;
+      width: 4px;
+    }
+  }
+}
+
+.pipeline-mini-graph-search {
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-form-input {
+    @apply gl-w-full;
+    @apply gl-h-auto;
+    @apply gl-py-4;
+    @apply gl-border-none;
+    @apply gl-rounded-none;
+    @apply gl-text-base;
+    @apply gl-leading-normal;
+    padding-left: calc(#{$gl-spacing-scale-7} + #{$gl-spacing-scale-2});
+    padding-right: calc(#{$gl-spacing-scale-6} + #{$gl-spacing-scale-2});
+    background-color: var(--gl-dropdown-search-background-color);
+    @apply gl-border-b;
+
+    &:hover {
+      @apply gl-shadow-none;
+    }
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-search-box-by-type-search-icon {
+    @apply gl-inset-4;
+  }
+}
+
+// Pipeline failed status
+.ci-job-component.ci-job-item-failed:not(:hover):not(:focus-visible) > a {
+  @include ci-job-item-failed-status-bg;
+}

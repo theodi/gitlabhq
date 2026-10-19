@@ -1,0 +1,340 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::GithubImport::Importer::NoteImporter, feature_category: :importers do
+  include Import::UserMappingHelper
+
+  let_it_be_with_reload(:project) do
+    create(
+      :project, :in_group, :github_import,
+      :import_user_mapping_enabled
+    )
+  end
+
+  let_it_be(:imported_from) { ::Import::HasImportSource::IMPORT_SOURCES[:github] }
+  let_it_be(:user) { create(:user) }
+  let_it_be(:source_user) { generate_source_user(project, '4') }
+
+  let(:client) { double(:client, web_endpoint: 'https://github.com') }
+  let(:created_at) { Time.new(2017, 1, 1, 12, 00) }
+  let(:updated_at) { Time.new(2017, 1, 1, 12, 15) }
+  let(:note_body) { 'This is my note' }
+  let(:import_state) { create(:import_state, :started, project: project) }
+  let(:author) { Gitlab::GithubImport::Representation::User.new(id: 4, login: 'alice', email: 'alice@alice.com') }
+
+  let(:github_note) do
+    Gitlab::GithubImport::Representation::Note.new(
+      note_id: 100,
+      noteable_id: 1,
+      noteable_type: 'Issue',
+      author: author,
+      note: note_body,
+      created_at: created_at,
+      updated_at: updated_at
+    )
+  end
+
+  let(:importer) { described_class.new(github_note, project, client) }
+
+  describe '#execute', :clean_gitlab_redis_shared_state do
+    context 'when the noteable exists' do
+      let!(:issue_row) { create(:issue, project: project, iid: 1) }
+
+      before do
+        allow(importer)
+          .to receive(:find_noteable_id)
+          .and_return(issue_row.id)
+      end
+
+      context 'when user contribution mapping is enabled' do
+        it 'maps the correct user and pushes a reference' do
+          expect(importer.user_finder).to receive(:author_id_for).with(github_note).and_call_original
+
+          expect(ApplicationRecord)
+            .to receive(:legacy_bulk_insert)
+            .with(
+              Note.table_name,
+              [
+                {
+                  noteable_type: 'Issue',
+                  noteable_id: issue_row.id,
+                  project_id: project.id,
+                  author_id: source_user.mapped_user_id,
+                  note: 'This is my note',
+                  discussion_id: match(/\A[0-9a-f]{40}\z/),
+                  system: false,
+                  created_at: created_at,
+                  updated_at: updated_at,
+                  imported_from: imported_from
+                }
+              ],
+              { return_ids: true }
+            )
+            .and_call_original
+
+          expect_next_instance_of(::Import::PlaceholderReferences::PushService,
+            import_source: ::Import::SOURCE_GITHUB,
+            import_uid: project.import_state.id,
+            source_user_id: source_user.id,
+            source_user_namespace_id: project.root_ancestor.id,
+            model: Note,
+            user_reference_column: :author_id,
+            numeric_key: an_instance_of(Integer)) do |push_service|
+              expect(push_service).to receive(:execute).and_call_original
+            end
+
+          importer.execute
+        end
+
+        context 'when direct reassignment is supported' do
+          let(:cached_references) { placeholder_user_references(::Import::SOURCE_GITHUB, project.import_state.id) }
+
+          before do
+            allow(Import::DirectReassignService).to receive(:supported?).and_return(true)
+          end
+
+          it 'does not push any placeholder references' do
+            importer.execute
+
+            expect(cached_references).to be_empty
+          end
+        end
+
+        context 'when importing into a personal namespace' do
+          let_it_be(:user_namespace) { create(:namespace) }
+          let(:cached_references) { placeholder_user_references(::Import::SOURCE_GITHUB, project.import_state.id) }
+
+          before_all do
+            project.update!(namespace: user_namespace)
+          end
+
+          it 'does not push any references' do
+            importer.execute
+
+            expect(cached_references).to be_empty
+          end
+
+          it 'imports the note mapped to the personal namespace owner' do
+            expect(ApplicationRecord)
+              .to receive(:legacy_bulk_insert)
+              .with(
+                Note.table_name,
+                [
+                  {
+                    noteable_type: 'Issue',
+                    noteable_id: issue_row.id,
+                    project_id: project.id,
+                    author_id: user_namespace.owner_id,
+                    note: 'This is my note',
+                    discussion_id: match(/\A[0-9a-f]{40}\z/),
+                    system: false,
+                    created_at: created_at,
+                    updated_at: updated_at,
+                    imported_from: imported_from
+                  }
+                ],
+                { return_ids: true }
+              )
+              .and_call_original
+
+            importer.execute
+          end
+        end
+      end
+
+      context 'when the note has no author' do
+        let(:author) { nil }
+        let(:cached_references) { placeholder_user_references(::Import::SOURCE_GITHUB, project.import_state.id) }
+
+        it 'imports the note as the ghost user and does not push a reference' do
+          expect { importer.execute }.to change { project.notes.count }.by(1)
+
+          expect(project.notes.last.author_id).to eq(Users::Internal.in_organization(project.organization).ghost.id)
+          expect(cached_references).to be_empty
+        end
+      end
+
+      context 'when the note have invalid chars' do
+        let(:note_body) { %(There were an invalid char "\u0000" <= right here) }
+
+        it 'removes invalid chars' do
+          expect(importer.user_finder)
+            .to receive(:author_id_for)
+            .with(github_note)
+            .and_return([user.id, true])
+
+          expect { importer.execute }
+            .to change { project.notes.count }
+            .by(1)
+
+          expect(project.notes.last.note)
+            .to eq('There were an invalid char "" <= right here')
+        end
+      end
+
+      context 'when note is invalid' do
+        it 'fails validation' do
+          expect(importer.user_finder)
+            .to receive(:author_id_for)
+            .with(github_note)
+            .and_return([user.id, true])
+
+          expect(github_note).to receive(:discussion_id).and_return('invalid')
+
+          expect { importer.execute }.to raise_error(ActiveRecord::RecordInvalid)
+        end
+      end
+
+      context 'when noteble_id can not be found' do
+        before do
+          allow(importer)
+            .to receive(:find_noteable_id)
+            .and_return(nil)
+        end
+
+        it 'raises NoteableNotFound' do
+          expect { importer.execute }.to raise_error(
+            ::Gitlab::GithubImport::Exceptions::NoteableNotFound,
+            'Error to find noteable_id for note'
+          )
+        end
+      end
+    end
+
+    it 'produces a valid Note' do
+      issue_row = create(:issue, project: project, iid: 1)
+
+      allow(importer)
+        .to receive(:find_noteable_id)
+        .and_return(issue_row.id)
+
+      allow(importer.user_finder)
+        .to receive(:author_id_for)
+        .with(github_note)
+        .and_return([user.id, true])
+
+      importer.execute
+
+      expect(project.notes.take).to be_valid
+    end
+
+    context 'when the description is processed for formatting' do
+      let(:issue_row) { create(:issue, project: project, iid: 1) }
+      let(:note_body) { "I said to @sam_allen\0 the code should follow @bob's\0 advice. @.ali-ce/group#9?\0" }
+      let(:expected_note_body) { "I said to `@sam_allen` the code should follow `@bob`'s advice. `@.ali-ce/group#9`?" }
+
+      before do
+        allow(importer).to receive(:find_noteable_id).and_return(issue_row.id)
+        allow(importer.user_finder).to receive(:author_id_for).with(github_note).and_return([user.id, true])
+        allow(Gitlab::GithubImport::MarkdownText).to receive(:format).and_call_original
+
+        importer.execute
+      end
+
+      it 'verify that the formatted description using MarkdownText equals the expected description' do
+        expect(Gitlab::GithubImport::MarkdownText).to have_received(:format)
+        expect(project.notes.last.note).to eq(expected_note_body)
+      end
+    end
+  end
+
+  describe '#find_noteable_id' do
+    it 'returns the ID of the noteable' do
+      expect_next_instance_of(Gitlab::GithubImport::IssuableFinder) do |instance|
+        expect(instance).to receive(:database_id).and_return(10)
+      end
+
+      expect(importer.find_noteable_id).to eq(10)
+    end
+  end
+
+  describe '#imported_note_id' do
+    let!(:issue_row) { create(:issue, project: project, iid: 1) }
+
+    before do
+      allow(importer).to receive(:find_noteable_id).and_return(issue_row.id)
+    end
+
+    it 'is nil before the note is imported' do
+      expect(importer.imported_note_id).to be_nil
+    end
+
+    it 'is the id of the inserted note without changing the return value' do
+      result = importer.execute
+
+      expect(importer.imported_note_id).to eq(project.notes.take.id)
+      expect(result).not_to be_a(Note)
+    end
+
+    it 'does not query the notes table by id for a normal import' do
+      queries = ActiveRecord::QueryRecorder.new { importer.execute }.log
+
+      expect(queries.grep(/SELECT.*FROM "notes".*"notes"\."id"\s*(=|IN|ANY)/i)).to be_empty
+    end
+
+    it 'stays nil when nothing was inserted' do
+      allow(ApplicationRecord).to receive(:legacy_bulk_insert).and_return([])
+
+      importer.execute
+
+      expect(importer.imported_note_id).to be_nil
+    end
+  end
+
+  describe '#import_attributes' do
+    let!(:issue_row) { create(:issue, project: project, iid: 1) }
+
+    before do
+      allow(importer).to receive(:find_noteable_id).and_return(issue_row.id)
+    end
+
+    it 'looks up the noteable and the author only once when called repeatedly' do
+      expect(importer.user_finder).to receive(:author_id_for).once.and_call_original
+
+      2.times { importer.import_attributes }
+
+      expect(importer).to have_received(:find_noteable_id).once
+    end
+
+    it 'returns the attributes used to insert the note' do
+      expect(importer.import_attributes).to include(
+        noteable_type: 'Issue',
+        noteable_id: issue_row.id,
+        project_id: project.id,
+        author_id: source_user.mapped_user_id,
+        note: note_body,
+        system: false,
+        imported_from: imported_from
+      )
+    end
+
+    it 'raises when the noteable cannot be found' do
+      allow(importer).to receive(:find_noteable_id).and_return(nil)
+
+      expect { importer.import_attributes }.to raise_error(Gitlab::GithubImport::Exceptions::NoteableNotFound)
+    end
+  end
+
+  describe '#push_placeholder_references', :clean_gitlab_redis_shared_state do
+    let!(:issue_row) { create(:issue, project: project, iid: 1) }
+    let(:note) { create(:note, noteable: issue_row, project: project, author: source_user.placeholder_user) }
+
+    it 'pushes the author reference for an existing note' do
+      importer.push_placeholder_references(note)
+
+      expect(placeholder_user_references(::Import::SOURCE_GITHUB, project.import_state.id))
+        .to contain_exactly(['Note', note.id, 'author_id', source_user.id])
+    end
+
+    context 'when the note has no author' do
+      let(:author) { nil }
+
+      it 'does not push a reference' do
+        importer.push_placeholder_references(note)
+
+        expect(placeholder_user_references(::Import::SOURCE_GITHUB, project.import_state.id)).to be_empty
+      end
+    end
+  end
+end

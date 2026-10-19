@@ -1,0 +1,94 @@
+# frozen_string_literal: true
+
+module WorkItems
+  module SavedViews
+    class UpdateService < BaseService
+      # Attributes that change what other viewers of a shared view see: the name shows in the view title and
+      # tabs, the rest change which work items are listed and how.
+      BROADCAST_ATTRIBUTES = %w[name display_settings filter_data sort].freeze
+
+      attr_reader :current_user, :saved_view, :params, :container
+
+      def initialize(current_user:, saved_view:, params:)
+        @current_user = current_user
+        @saved_view = saved_view
+        @params = params
+        @container = saved_view.namespace.owner_entity
+      end
+
+      def execute
+        unless Ability.allowed?(current_user, :update_saved_view, saved_view)
+          return ServiceResponse.error(
+            message: _('You do not have permission to update this saved view.')
+          )
+        end
+
+        if updating_visibility? && !can_update_visibility?
+          return ServiceResponse.error(message: _('Only the author can change visibility settings'))
+        end
+
+        if params[:filters]
+          filter_response = normalize_filters!
+          return filter_response unless filter_response.success?
+
+          params[:filter_data] = filter_response.payload
+        end
+
+        params.delete(:filters)
+
+        # Check before the update, since updating could change the view to private before we check this
+        changing_to_private = changing_to_private?
+
+        params[:updated_by] = current_user if params.present?
+
+        response = SavedView.transaction do
+          if saved_view.update(params)
+            saved_view.unsubscribe_other_users!(user: current_user) if changing_to_private
+            ::Gitlab::WorkItems::Instrumentation::TrackingService.track_saved_view(
+              event: ::Gitlab::WorkItems::Instrumentation::EventActions::SAVED_VIEW_UPDATE,
+              saved_view: saved_view,
+              user: current_user
+            )
+            ServiceResponse.success(payload: { saved_view: saved_view })
+          else
+            ServiceResponse.error(message: saved_view.errors.full_messages)
+          end
+        end
+
+        broadcast_update if response.success?
+
+        response
+      end
+
+      private
+
+      def broadcast_update
+        return if (saved_view.previous_changes.keys & BROADCAST_ATTRIBUTES).empty?
+
+        GraphqlTriggers.work_item_saved_view_updated(saved_view)
+      end
+
+      def updating_visibility?
+        params.key?(:private) && params[:private] != saved_view.private?
+      end
+
+      def can_update_visibility?
+        Ability.allowed?(current_user, :update_saved_view_visibility, saved_view)
+      end
+
+      def normalize_filters!
+        filter_response = FilterNormalizerService.new(
+          filter_data: params[:filters], container: container, current_user: current_user
+        ).execute
+
+        return filter_response unless filter_response.success?
+
+        ServiceResponse.success(payload: filter_response.payload)
+      end
+
+      def changing_to_private?
+        params[:private] == true && !saved_view.private?
+      end
+    end
+  end
+end

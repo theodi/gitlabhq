@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: counts.pod_logs_usages_total
+description: Count the total number of log views
+product_group: platform_insights
+product_categories:
+- observability
+value_type: number
+status: removed
+milestone_removed: '14.0'
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+removed_by_url:

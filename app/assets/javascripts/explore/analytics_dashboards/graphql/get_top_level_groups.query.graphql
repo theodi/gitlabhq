@@ -1,0 +1,24 @@
+# @feature_category: custom_dashboards_foundation
+
+#import "ee_else_ce/explore/analytics_dashboards/graphql/fragments/scope_group_permissions.fragment.graphql"
+
+# The scope picker's starting point. `allAvailable: false` still includes the ancestors of any
+# project the user belongs to, so the picker disables groups missing a permission the dashboard
+# requires.
+query getAnalyticsDashboardTopLevelGroups($after: String) {
+  groups(topLevelOnly: true, allAvailable: false, sort: "name_asc", first: 20, after: $after) {
+    nodes {
+      id
+      name
+      fullName
+      fullPath
+      projectsCount
+      descendantGroupsCount
+      ...AnalyticsDashboardScopeGroupPermissions
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}

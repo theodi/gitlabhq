@@ -1,0 +1,12 @@
+<%= _('Hello %{name},') % { name: @name } %>
+
+<%= _('Your account has been deactivated for %{host}. You will not be able to: ') % { host: @host } %>
+
+  - <%= _('Access Git repositories or the API.') %>
+  - <%= _('Receive any notifications from GitLab.') %>
+  - <%= _('Use slash commands.') %>
+
+<%= _('To reactivate your account, sign in to GitLab at %{gitlab_url}.') % { gitlab_url: root_url } %>
+
+<%= _('Please contact your GitLab administrator if you think this is an error.') %>
+<%= render 'layouts/mailer/user_deactivated_additional_text' %>

@@ -1,0 +1,49 @@
+= gitlab_ui_form_for @topic, url: url, html: { multipart: true, class: 'js-project-topic-form gl-show-field-errors common-note-form js-quick-submit' }, authenticity_token: true do |f|
+  = form_errors(@topic)
+
+  .form-group
+    = f.label :name do
+      = _("Topic slug (name)")
+    = f.text_field :name, placeholder: _('my-topic'), class: 'form-control input-lg',
+      required: true,
+      title: _('Please fill in a name for your topic.'),
+      autofocus: true
+
+  .form-group
+    = f.label :title do
+      = _("Topic title")
+    = f.text_field :title, placeholder: _('My topic'), class: 'form-control input-lg',
+      required: true,
+      title: _('Please fill in a title for your topic.')
+
+  .form-group
+    = f.label :description, _("Description")
+    .js-markdown-editor{ data: { render_markdown_path: preview_markdown_admin_topics_path,
+                                 markdown_docs_path: help_page_path('user/markdown.md'),
+                                 testid: 'topic-form-description',
+                                 form_field_placeholder: _('Write a description…'),
+                                 supports_quick_actions: 'false',
+                                 supports_table_of_contents: 'true',
+                                 enable_autocomplete: 'false',
+                                 disable_attachments: 'true',
+                                 autofocus: 'false',
+                                 form_field_classes: 'note-textarea js-gfm-input markdown-area' } }
+      = f.hidden_field :description
+
+  .form-group.gl-mt-3.gl-mb-3
+    = f.label :avatar, _('Topic avatar'), class: 'gl-block'
+    - if @topic.avatar?
+      = render Pajamas::AvatarComponent.new(@topic, alt: _('Topic avatar'), class: 'gl-float-left gl-mr-5', size: 96)
+    = render 'shared/choose_avatar_button', f: f
+    - if @topic.avatar?
+      .js-remove-topic-avatar{ data: { path: admin_topic_avatar_path(@topic), name: @topic.name } }
+
+  .gl-mt-5.gl-flex.gl-flex-wrap.gl-gap-3
+    - if @topic.new_record?
+      = f.submit _('Create topic'), pajamas_button: true
+      = render Pajamas::ButtonComponent.new(href: admin_topics_path) do
+        = _('Cancel')
+    - else
+      = f.submit _('Save changes'), pajamas_button: true
+      = render Pajamas::ButtonComponent.new(href: admin_topics_path) do
+        = _('Cancel')

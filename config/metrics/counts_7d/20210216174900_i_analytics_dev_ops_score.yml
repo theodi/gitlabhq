@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: analytics_unique_visits.i_analytics_dev_ops_score
+description: Unique visitors to /-/instance_statistics/dev_ops_score
+product_group: optimize
+product_categories:
+- devops_reports
+value_type: number
+status: active
+time_frame: 7d
+data_source: internal_events
+events:
+- name: i_analytics_dev_ops_score
+  unique: user.id
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

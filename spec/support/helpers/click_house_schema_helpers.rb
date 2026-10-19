@@ -1,0 +1,112 @@
+# frozen_string_literal: true
+
+module ClickHouseSchemaHelpers
+  # Points at the same physical database as `main` but with elevated credentials. Only CI
+  # configures it, for the few specs needing a privilege the production `gitlab` user is not
+  # granted. It must never be migrated, dropped or truncated separately.
+  ADMIN_DATABASE = :main_admin
+
+  def admin_database?(identifier)
+    identifier.to_sym == ADMIN_DATABASE
+  end
+
+  def migrate(migration_context, target_version, step = nil)
+    quietly { migration_context.up(target_version, step) }
+  end
+
+  def rollback(migration_context, target_version, step = 1)
+    quietly { migration_context.down(target_version, step) }
+  end
+
+  def table_names(database = :main, configuration = ClickHouse::Client.configuration)
+    ClickHouse::Client.select('SHOW TABLES', database, configuration).pluck('name')
+  end
+
+  def active_schema_migrations_count(database = :main, configuration = ClickHouse::Client.configuration)
+    query = <<~SQL
+      SELECT COUNT(*) AS count FROM schema_migrations FINAL WHERE active = 1
+    SQL
+
+    ClickHouse::Client.select(query, database, configuration).first['count']
+  end
+
+  def main_database_exists?(database = :main, configuration = ClickHouse::Client.configuration)
+    db = ClickHouse::Client.configuration.databases[database]
+    ClickHouse::Client.configuration.databases[:default] = db.with_default_database
+
+    query = <<~SQL
+      SELECT COUNT() as count FROM system.databases WHERE name = '#{db.database}';
+    SQL
+
+    result = ClickHouse::Client.select(query, :default, configuration).dig(0, "count")
+
+    !result.zero?
+  end
+
+  def describe_table(table_name, database = :main, configuration = ClickHouse::Client.configuration)
+    ClickHouse::Client
+      .select("DESCRIBE TABLE #{table_name} FORMAT JSON", database, configuration)
+      .map(&:symbolize_keys)
+      .index_by { |h| h[:name].to_sym }
+  end
+
+  def schema_migrations(database = :main, configuration = ClickHouse::Client.configuration)
+    ClickHouse::Client
+      .select('SELECT * FROM schema_migrations FINAL ORDER BY version ASC', database, configuration)
+      .map(&:symbolize_keys)
+  end
+
+  def clear_db(configuration = ClickHouse::Client.configuration)
+    identifiers = configuration.databases.each_key.reject { |id| admin_database?(id) }
+    identifiers.each do |identifier|
+      db_config = ClickHouse::Client.configuration.databases[identifier]
+      connection = ::ClickHouse::Connection.new(identifier, configuration)
+
+      # It's faster to re-create the database than dropping tables one by one
+      ClickHouse::Client.configuration.databases[:default] = db_config.with_default_database
+      ClickHouse::Client.execute("DROP DATABASE IF EXISTS #{db_config.database}", :default)
+      ClickHouse::Client.execute("CREATE DATABASE #{db_config.database}", :default)
+      ClickHouse::Client.configuration.databases.delete(:default)
+
+      ClickHouse::MigrationSupport::SchemaMigration.new(connection).ensure_table
+    end
+  end
+
+  def register_database(config, database_identifier, db_config)
+    config.register_database(
+      database_identifier,
+      database: db_config[:database],
+      url: db_config[:url],
+      username: db_config[:username],
+      password: db_config[:password],
+      variables: db_config[:variables] || {}
+    )
+  end
+
+  private
+
+  def lookup_tables(db, configuration = ClickHouse::Client.configuration)
+    ClickHouse::Client.select('SHOW TABLES', db, configuration).pluck('name')
+  end
+
+  def quietly(&_block)
+    was_verbose = ClickHouse::Migration.verbose
+    ClickHouse::Migration.verbose = false
+
+    yield
+  ensure
+    ClickHouse::Migration.verbose = was_verbose
+  end
+
+  def unload_click_house_migration_classes(fixtures_path)
+    $LOADED_FEATURES.select { |file| file.include? fixtures_path }.each do |file|
+      const = File.basename(file)
+                  .scan(ClickHouse::Migration::MIGRATION_FILENAME_REGEXP)[0][1]
+                  .camelcase
+                  .safe_constantize
+
+      Object.send(:remove_const, const.to_s) if const # rubocop:disable RSpec/RemoveConst -- constant should be unloaded
+      $LOADED_FEATURES.delete(file)
+    end
+  end
+end

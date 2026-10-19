@@ -1,0 +1,270 @@
+# frozen_string_literal: true
+
+class ProjectImportState < ApplicationRecord
+  include AfterCommitQueue
+  include Gitlab::InternalEventsTracking
+  include ImportState::SidekiqJobTracker
+
+  self.table_name = "project_mirror_data"
+
+  attr_accessor :user_mapping_enabled, :safe_import_url, :timed_out
+  alias_method :timed_out?, :timed_out
+
+  # Written by Import::BaseService#request_channel= at the request boundary,
+  # before Projects::CreateService creates the project (and thus this record).
+  # after_create fires while the caller still holds control, so Redis has the
+  # value before ProjectImportState#schedule enqueues the import job.
+  after_create :capture_request_channel_from_request_store
+  after_commit :expire_etag_cache
+
+  belongs_to :project, inverse_of: :import_state
+
+  validates :project, presence: true
+  validates :checksums, json_schema: { filename: "project_import_stats" }
+
+  alias_attribute :correlation_id, :correlation_id_value
+
+  state_machine :status, initial: :none do
+    event :schedule do
+      transition [:none, :finished, :failed] => :scheduled
+    end
+
+    event :force_start do
+      transition [:none, :finished, :failed] => :started
+    end
+
+    event :start do
+      transition scheduled: :started
+    end
+
+    event :finish do
+      transition started: :finished
+    end
+
+    event :cancel do
+      transition [:none, :scheduled, :started] => :canceled
+    end
+
+    event :fail_op do
+      transition [:scheduled, :started] => :failed
+    end
+
+    state :scheduled
+    state :started
+    state :finished
+    state :failed
+    state :canceled
+
+    after_transition [:none, :finished, :failed] => :scheduled do |state, _|
+      state.run_after_commit do
+        job_id = project.add_import_job
+
+        if job_id
+          correlation_id = Labkit::Correlation::CorrelationId.current_or_new_id
+          update(jid: job_id, correlation_id_value: correlation_id)
+        end
+      end
+    end
+
+    after_transition any => [:canceled, :finished] do |state, _|
+      if state.jid.present?
+        Gitlab::SidekiqStatus.unset(state.jid)
+
+        state.update_column(:jid, nil)
+      end
+    end
+
+    after_transition any => [:canceled, :failed] do |state, _|
+      state.set_notification_data
+      state.project.remove_import_data
+    end
+
+    before_transition started: [:finished, :canceled, :failed] do |state, _|
+      project = state.project
+
+      if project.github_import?
+        import_stats = ::Gitlab::GithubImport::ObjectCounter.summary(state.project)
+
+        state.update_column(:checksums, import_stats)
+      end
+    end
+
+    after_transition any => :started do |state, _|
+      state.track_project_import_event('start_project_import')
+    end
+
+    after_transition any => :failed do |state, _|
+      state.track_project_import_event(state.timed_out? ? 'timeout_project_import' : 'fail_project_import')
+    end
+
+    after_transition any => :canceled do |state, _|
+      state.track_project_import_event('cancel_project_import')
+    end
+
+    after_transition started: :finished do |state, _|
+      project = state.project
+
+      state.set_notification_data
+      project.reset_cache_and_import_attrs
+
+      if Gitlab::ImportSources.values.include?(project.import_type) && project.repo_exists? # rubocop: disable Performance/InefficientHashSearch -- not a Hash
+        state.run_after_commit do
+          Projects::AfterImportWorker.perform_async(project.id)
+        end
+      end
+
+      state.track_project_import_event('finish_project_import')
+
+      state.send_completion_notification
+    end
+
+    after_transition any => [:failed] do |state, _|
+      state.set_notification_data
+      state.send_completion_notification(notify_group_owners: false)
+    end
+  end
+
+  def expire_etag_cache
+    if realtime_changes_path
+      Gitlab::EtagCaching::Store.new.tap do |store|
+        store.touch(realtime_changes_path)
+      rescue Gitlab::EtagCaching::Store::InvalidKeyError
+        # no-op: not every realtime changes endpoint is using etag caching
+      end
+    end
+  end
+
+  def realtime_changes_path
+    Gitlab::Routing.url_helpers.polymorphic_path([:realtime_changes_import, project.import_type.to_sym], format: :json)
+  rescue NoMethodError
+    # polymorphic_path throws NoMethodError when no such path exists
+    nil
+  end
+
+  def relation_hard_failures(limit:)
+    project.import_failures.hard_failures_by_correlation_id(correlation_id).limit(limit)
+  end
+
+  # `timed_out` is set by the caller (see StuckProjectImportJobsWorker) before this
+  # runs, so the after_transition :failed handler can tell a timeout from a plain
+  # failure. Pull mirrors reuse this same class and state machine, and their recovery
+  # logic (CE's `schedule` event, EE's retry/capacity bookkeeping) only knows about
+  # the `failed` state, so a timed-out import still transitions to `failed` like any
+  # other failure.
+  def mark_as_failed(error_message)
+    original_errors = errors.dup
+    sanitized_message = sanitized_failure_message(error_message)
+
+    fail_op
+
+    update_column(:last_error, sanitized_message)
+  rescue ActiveRecord::ActiveRecordError => e
+    ::Import::Framework::Logger.error(
+      message: 'Error setting import status to failed',
+      error: e.message,
+      original_error: sanitized_message
+    )
+  ensure
+    @errors = original_errors
+  end
+
+  alias_method :no_import?, :none?
+
+  # This method is coupled to the repository mirror domain.
+  # Use with caution in the importers domain. As an alternative, use the `#completed?` method.
+  # See EE-override and https://gitlab.com/gitlab-org/gitlab/-/merge_requests/4697
+  def in_progress?
+    scheduled? || started?
+  end
+
+  def completed?
+    finished? || failed? || canceled?
+  end
+
+  def started?
+    # import? does SQL work so only run it if it looks like there's an import running
+    status == 'started' && project.import?
+  end
+
+  def send_completion_notification(notify_group_owners: true)
+    return unless project.notify_project_import_complete?
+
+    run_after_commit do
+      Projects::ImportExport::ImportCompletionNotificationWorker.perform_async(
+        project.id,
+        'user_mapping_enabled' => user_mapping_enabled?,
+        'notify_group_owners' => notify_group_owners,
+        'safe_import_url' => safe_import_url
+      )
+    end
+  end
+
+  def set_notification_data
+    self.user_mapping_enabled ||= project.import_data&.user_mapping_enabled?
+    self.safe_import_url ||= project.safe_import_url(masked: false)
+  end
+
+  # request_channel (api/ui/congregate) is captured in Redis at request time
+  # by the importer's controller/API/service, and read here when start_project_import
+  # fires from the state machine transition in Sidekiq. Stored in
+  # Redis rather than a column to match the pattern used by
+  # Import::BulkImports::EphemeralData for Direct Transfer.
+  def request_channel=(value)
+    Gitlab::Cache::Import::Caching.write(request_channel_cache_key, value.to_s) if value.present?
+  end
+
+  def request_channel
+    Gitlab::Cache::Import::Caching.read(request_channel_cache_key)
+  end
+
+  def track_project_import_event(action)
+    return if project.mirror?
+    return unless Gitlab::ImportSources.importable_project_types.include?(project.import_type)
+
+    run_after_commit do
+      track_internal_event(
+        action,
+        project: project,
+        user: project.creator,
+        namespace: project.namespace,
+        additional_properties: {
+          label: project.import_type,
+          property: hashed_import_source,
+          source_hosting: project.source_hosting,
+          # Start-only: the channel can't change mid-import, and the 24h cache TTL
+          # can expire before a long import reaches its terminal event.
+          request_channel: (request_channel if action == 'start_project_import')
+        }.compact
+      )
+    end
+  end
+
+  private
+
+  def request_channel_cache_key
+    "project_import_request_channel_#{project_id}"
+  end
+
+  def capture_request_channel_from_request_store
+    self.request_channel = ::Gitlab::Import::RequestChannel.stashed
+  end
+
+  def hashed_import_source
+    # masked: false strips credentials rather than replacing them with a placeholder,
+    # so imports of the same source hash the same whether credentials were saved or not.
+    Gitlab::Import::SourceIdentifier.hash(project.safe_import_url(masked: false))
+  end
+
+  # Return whether or not user mapping was enabled during the project's import to determine who to
+  # send completion emails to. user_mapping_enabled should be set if import_data is removed.
+  # This can be removed when all 3rd party project importer user mapping feature flags are removed.
+  def user_mapping_enabled?
+    user_mapping_enabled || project.import_data&.user_mapping_enabled?
+  end
+
+  def sanitized_failure_message(error_message)
+    Gitlab::UrlSanitizer.sanitize(error_message)
+  end
+end
+
+ProjectImportState.prepend_mod_with('ProjectImportState')

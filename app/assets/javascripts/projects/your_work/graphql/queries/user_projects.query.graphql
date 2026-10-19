@@ -1,0 +1,58 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "~/graphql_shared/fragments/project.fragment.graphql"
+
+query getYourWorkUserProjects(
+  $contributed: Boolean = false
+  $starred: Boolean = false
+  $first: Int
+  $last: Int
+  $before: String
+  $after: String
+  $sort: ProjectSort
+  $search: String
+  $minAccessLevel: AccessLevelEnum
+  $programmingLanguageName: String
+) {
+  currentUser {
+    id
+    contributedProjects(
+      active: true
+      first: $first
+      last: $last
+      before: $before
+      after: $after
+      sort: $sort
+      search: $search
+      minAccessLevel: $minAccessLevel
+      programmingLanguageName: $programmingLanguageName
+      includePersonal: true
+    ) @include(if: $contributed) {
+      nodes {
+        ...Project
+      }
+      pageInfo {
+        ...PageInfo
+      }
+      count
+    }
+    starredProjects(
+      active: true
+      first: $first
+      last: $last
+      before: $before
+      after: $after
+      sort: $sort
+      search: $search
+      minAccessLevel: $minAccessLevel
+      programmingLanguageName: $programmingLanguageName
+    ) @include(if: $starred) {
+      nodes {
+        ...Project
+      }
+      pageInfo {
+        ...PageInfo
+      }
+      count
+    }
+  }
+}

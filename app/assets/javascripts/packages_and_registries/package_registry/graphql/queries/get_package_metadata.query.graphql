@@ -1,0 +1,44 @@
+# @feature_category: package_registry
+
+query getPackageMetadata($id: PackagesPackageID!) {
+  package(id: $id) {
+    id
+    packageType
+    metadata {
+      ... on ComposerMetadata {
+        targetSha
+        composerJson {
+          license
+          version
+        }
+      }
+      ... on PypiMetadata {
+        id
+        authorEmail
+        keywords
+        requiredPython
+        summary
+      }
+      ... on ConanMetadata {
+        id
+        packageChannel
+        packageUsername
+        recipe
+        recipePath
+      }
+      ... on MavenMetadata {
+        id
+        appName
+        appGroup
+        appVersion
+        path
+      }
+      ... on NugetMetadata {
+        id
+        iconUrl
+        licenseUrl
+        projectUrl
+      }
+    }
+  }
+}

@@ -1,0 +1,94 @@
+<script>
+import { markRaw } from 'vue';
+import { joinPaths } from '~/lib/utils/url_utility';
+import Page from './page/index.vue';
+
+let pdfjs;
+let getDocument;
+let GlobalWorkerOptions;
+
+export default {
+  name: 'PdfIndex',
+  components: { Page },
+  props: {
+    pdf: {
+      type: [String, Uint8Array],
+      required: true,
+    },
+  },
+  emits: ['pdflaberror', 'pdflabload'],
+  data() {
+    return {
+      pages: [],
+    };
+  },
+  computed: {
+    document() {
+      return typeof this.pdf === 'string' ? this.pdf : { data: this.pdf };
+    },
+    hasPDF() {
+      return this.pdf && this.pdf.length > 0;
+    },
+    availablePages() {
+      return this.pages.filter(Boolean);
+    },
+  },
+  watch: { pdf: 'load' },
+  mounted() {
+    if (this.hasPDF) this.load();
+  },
+  methods: {
+    async loadPDFJS() {
+      // eslint-disable-next-line import-x/extensions
+      pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      ({ getDocument, GlobalWorkerOptions } = pdfjs);
+      /* eslint-disable @gitlab/no-hardcoded-urls -- webpack public asset path configuration, not a navigable URL */
+      GlobalWorkerOptions.workerSrc = joinPaths(
+        gon.relative_url_root,
+        process.env.PDF_JS_WORKER_PUBLIC_PATH,
+      );
+      /* eslint-enable @gitlab/no-hardcoded-urls */
+    },
+    async load() {
+      await this.loadPDFJS();
+      this.pages = [];
+      return getDocument({
+        url: this.document,
+        // eslint-disable-next-line @gitlab/no-hardcoded-urls -- webpack public asset path configuration, not a navigable URL (cMapUrl)
+        cMapUrl: joinPaths(gon.relative_url_root, process.env.PDF_JS_CMAPS_PUBLIC_PATH),
+        cMapPacked: true,
+        isEvalSupported: true,
+      })
+        .promise.then(this.renderPages)
+        .then((pages) => {
+          this.pages = pages;
+          this.$emit('pdflabload', pages.length);
+        })
+        .catch((error) => {
+          this.$emit('pdflaberror', error);
+        });
+    },
+    renderPages(pdf) {
+      const pagePromises = [];
+      for (let num = 1; num <= pdf.numPages; num += 1) {
+        pagePromises.push(pdf.getPage(num).then((page) => markRaw(page)));
+      }
+      return Promise.all(pagePromises);
+    },
+  },
+};
+</script>
+
+<template>
+  <div v-if="hasPDF" class="pdf-viewer">
+    <page v-for="(page, index) in availablePages" :key="index" :page="page" :number="index + 1" />
+  </div>
+</template>
+
+<style>
+.pdf-viewer {
+  background: url('./assets/img/bg.gif');
+  display: flex;
+  flex-flow: column nowrap;
+}
+</style>

@@ -1,0 +1,386 @@
+import { ApolloClient, InMemoryCache, ApolloLink, HttpLink } from '@apollo/client/core';
+import { BatchHttpLink } from '@apollo/client/link/batch-http';
+import { createUploadLink } from 'apollo-upload-client';
+import { persistCache } from 'apollo3-cache-persist';
+import ActionCableLink from '~/actioncable_link';
+import { apolloCaptchaLink } from '~/captcha/apollo_captcha_link';
+import possibleTypes from '~/graphql_shared/possible_types.json';
+import { GRAPHQL_GET_QUERY_PARAM_KEYS } from '~/graphql_shared/constants';
+import { StartupJSLink } from '~/lib/utils/apollo_startup_js_link';
+import csrf from '~/lib/utils/csrf';
+import { objectToQuery, queryToObject } from '~/lib/utils/url_utility';
+import PerformanceBarService from '~/performance_bar/services/performance_bar_service';
+import {
+  registerApolloClient,
+  startNonDedupedOperation,
+  finishNonDedupedOperation,
+} from './graphql_pending_requests';
+import { getInstrumentationLink } from './apollo/instrumentation_link';
+import { getSuppressNetworkErrorsDuringNavigationLink } from './apollo/suppress_network_errors_during_navigation_link';
+import { getPersistLink } from './apollo/persist_link';
+import { getOperationFinishedLink } from './apollo/operation_finished_link';
+import { persistenceMapper } from './apollo/persistence_mapper';
+import { sentryBreadcrumbLink } from './apollo/sentry_breadcrumb_link';
+import { correlationIdLink } from './apollo/correlation_id_link';
+import { backgroundRequestLink } from './apollo/background_request_link';
+import { createEtagFetch } from './apollo/etag_fetch';
+
+export const ERROR_POLICY_ALL = 'all';
+export const ERROR_POLICY_NONE = 'none';
+
+export const fetchPolicies = {
+  CACHE_FIRST: 'cache-first',
+  CACHE_AND_NETWORK: 'cache-and-network',
+  NETWORK_ONLY: 'network-only',
+  NO_CACHE: 'no-cache',
+  CACHE_ONLY: 'cache-only',
+};
+
+export const typePolicies = {
+  Repository: {
+    merge: true,
+  },
+  UserPermissions: {
+    merge: true,
+  },
+  MergeRequestPermissions: {
+    merge: true,
+  },
+  ContainerRepositoryConnection: {
+    merge: true,
+  },
+  TimelogConnection: {
+    merge: true,
+  },
+  BranchList: {
+    merge: true,
+  },
+  InstanceSecurityDashboard: {
+    merge: true,
+  },
+  PipelinePermissions: {
+    merge: true,
+  },
+  DesignCollection: {
+    merge: true,
+  },
+  TreeEntry: {
+    keyFields: ['webPath'],
+  },
+  Blob: {
+    keyFields: ['webPath'],
+  },
+  Subscription: {
+    fields: {
+      aiCompletionResponse: {
+        read(value) {
+          return value ?? null;
+        },
+      },
+    },
+  },
+  GroupDora: {
+    merge: true,
+  },
+  Dora: {
+    merge: true,
+  },
+  GroupValueStreamAnalyticsFlowMetrics: {
+    merge: true,
+  },
+  ProjectValueStreamAnalyticsFlowMetrics: {
+    merge: true,
+  },
+  ValueStreamStageMetrics: {
+    merge: true,
+  },
+  ScanExecutionPolicy: {
+    keyFields: ['name'],
+  },
+  ApprovalPolicy: {
+    keyFields: ['name'],
+  },
+  SecurityPolicyType: {
+    keyFields: ({ type, policyConfigurationId, name }) => {
+      if (!policyConfigurationId || !type || !name) {
+        return false;
+      }
+
+      return `SecurityPolicyType:${policyConfigurationId}:${type}:${name}`;
+    },
+  },
+  ComplianceFrameworkConnection: {
+    merge: true,
+  },
+  OrganizationUserConnection: {
+    merge: true,
+  },
+  RepositoryBlob: {
+    keyFields: ({ id, path }) => {
+      if (path) {
+        return `${id}${encodeURIComponent(path)}`;
+      }
+
+      return id;
+    },
+  },
+  AiMetrics: {
+    merge: true,
+  },
+  Analytics: {
+    merge: true,
+  },
+};
+
+/**
+ * Builds an InMemoryCache from a per-client `cacheConfig`, merging it over the global
+ * type policies and possibleTypes. Callers get the globals plus their own, and win on a
+ * key collision.
+ */
+export const createCache = (cacheConfig = { typePolicies: {}, possibleTypes: {} }) =>
+  new InMemoryCache({
+    ...cacheConfig,
+    typePolicies: { ...typePolicies, ...cacheConfig.typePolicies },
+    possibleTypes: { ...possibleTypes, ...cacheConfig.possibleTypes },
+  });
+
+export const stripWhitespaceFromQuery = (url, path) => {
+  const [, params] = url.split(path);
+
+  if (!params) {
+    return url;
+  }
+
+  const decoded = decodeURIComponent(params);
+  const paramsObj = queryToObject(decoded, {
+    preservePlusForKeys: GRAPHQL_GET_QUERY_PARAM_KEYS,
+  });
+
+  if (!paramsObj.query) {
+    return url;
+  }
+
+  const stripped = paramsObj.query
+    .split(/\s+|\n/)
+    .join(' ')
+    .trim();
+  paramsObj.query = stripped;
+
+  const reassembled = objectToQuery(paramsObj);
+  return `${path}?${reassembled}`;
+};
+
+function createApolloClient(resolvers = {}, config = {}) {
+  const {
+    baseUrl,
+    cacheConfig = { typePolicies: {}, possibleTypes: {} },
+    fetchPolicy = fetchPolicies.CACHE_FIRST,
+    typeDefs,
+    httpHeaders = {},
+    fetchCredentials = 'same-origin',
+    // eslint-disable-next-line @gitlab/no-hardcoded-urls -- default GraphQL API path template, not a navigational URL
+    path = '/api/graphql',
+    // Extra ApolloLinks prepended to the link chain (outermost position).
+    // Errors propagate outward from the terminating link, so the built-in
+    // suppress-during-navigation link swallows navigation-abort errors before
+    // these links (e.g. error reporting) can observe them.
+    links = [],
+  } = config;
+
+  let ac = null;
+  // eslint-disable-next-line @gitlab/no-hardcoded-urls -- URL construction for GraphQL client endpoint
+  let uri = `${gon.relative_url_root || ''}${path}`;
+
+  if (baseUrl) {
+    // Prepend baseUrl and ensure that `///` are replaced with `/`
+    uri = `${baseUrl}${uri}`.replace(/\/{3,}/g, '/');
+  }
+
+  if (gon.version) {
+    httpHeaders['x-gitlab-version'] = gon.version;
+  }
+
+  httpHeaders['X-GitLab-Client-Type'] = 'browser';
+
+  if (gon.current_organization?.id) {
+    httpHeaders['X-GitLab-Organization-ID'] = gon.current_organization.id;
+  }
+
+  const httpOptions = {
+    uri,
+    headers: {
+      [csrf.headerKey]: csrf.token,
+      ...httpHeaders,
+    },
+    // fetch won’t send cookies in older browsers, unless you set the credentials init option.
+    // We set to `same-origin` which is default value in modern browsers.
+    // See https://github.com/whatwg/fetch/pull/585 for more information.
+    credentials: fetchCredentials,
+  };
+
+  /*
+    This custom fetcher intervention is to deal with an issue where we are using GET to access
+    eTag polling, but Apollo Client adds excessive whitespace, which causes the
+    request to fail on certain self-hosted stacks. When we can move
+    to subscriptions entirely or can land an upstream PR, this can be removed.
+
+    Related links
+    Bug report: https://gitlab.com/gitlab-org/gitlab/-/issues/329895
+    Moving to subscriptions: https://gitlab.com/gitlab-org/gitlab/-/issues/332485
+    Apollo Client issue: https://github.com/apollographql/apollo-feature-requests/issues/182
+  */
+
+  const fetchIntervention = createEtagFetch((url, options) => {
+    return fetch(stripWhitespaceFromQuery(url, uri), options);
+  });
+
+  // Lets a link tag its own request for the logs by appending `context.requestTag` to the query
+  // string — `json.path` has its query string stripped by Lograge, but `json.params` keeps it.
+  const requestUri = (operation) => {
+    const tag = operation.getContext().requestTag;
+    return tag ? `${uri}?${objectToQuery(tag)}` : uri;
+  };
+
+  const requestLink = ApolloLink.split(
+    (operation) => operation.getContext().batchKey,
+    new BatchHttpLink({
+      ...httpOptions,
+      uri: requestUri,
+      batchKey: (operation) => operation.getContext().batchKey,
+      fetch: fetchIntervention,
+    }),
+    new HttpLink({ ...httpOptions, uri: requestUri, fetch: fetchIntervention }),
+  );
+
+  const uploadsLink = ApolloLink.split(
+    (operation) => operation.getContext().hasUpload,
+    createUploadLink(httpOptions),
+  );
+
+  const performanceBarLink = new ApolloLink((operation, forward) => {
+    return forward(operation).map((response) => {
+      const httpResponse = operation.getContext().response;
+
+      if (PerformanceBarService.interceptor) {
+        PerformanceBarService.interceptor({
+          config: {
+            url: httpResponse.url,
+            operationName: operation.operationName,
+            method: operation.getContext()?.fetchOptions?.method || 'POST', // If method is not explicitly set, we default to POST request
+          },
+          headers: {
+            'x-request-id': httpResponse.headers.get('x-request-id'),
+            'x-gitlab-from-cache': httpResponse.headers.get('x-gitlab-from-cache'),
+          },
+        });
+      }
+
+      return response;
+    });
+  });
+
+  const hasSubscriptionOperation = ({ query: { definitions } }) => {
+    return definitions.some(
+      ({ kind, operation }) => kind === 'OperationDefinition' && operation === 'subscription',
+    );
+  };
+
+  const hasMutation = (operation) =>
+    (operation?.query?.definitions || []).some((x) => x.operation === 'mutation');
+
+  const isNonDedupedOperation = (operation) =>
+    hasMutation(operation) || Boolean(operation.getContext().forceFetch);
+
+  const operationCounterLink = getOperationFinishedLink({
+    started: (operation) => {
+      if (isNonDedupedOperation(operation)) {
+        startNonDedupedOperation();
+      }
+    },
+    finished: (operation) => {
+      if (isNonDedupedOperation(operation)) {
+        finishNonDedupedOperation();
+      }
+    },
+  });
+
+  const persistLink = getPersistLink();
+
+  const appLink = ApolloLink.split(
+    hasSubscriptionOperation,
+    new ActionCableLink(),
+    ApolloLink.from(
+      [
+        ...links,
+        getSuppressNetworkErrorsDuringNavigationLink(),
+        getInstrumentationLink(),
+        backgroundRequestLink,
+        sentryBreadcrumbLink,
+        correlationIdLink,
+        operationCounterLink,
+        performanceBarLink,
+        new StartupJSLink(),
+        apolloCaptchaLink,
+        persistLink,
+        uploadsLink,
+        requestLink,
+      ].filter(Boolean),
+    ),
+  );
+
+  const newCache = createCache(cacheConfig);
+
+  ac = new ApolloClient({
+    typeDefs,
+    link: appLink,
+    connectToDevTools: process.env.NODE_ENV !== 'production',
+    cache: newCache,
+    resolvers,
+    defaultOptions: {
+      query: {
+        fetchPolicy,
+      },
+    },
+  });
+
+  registerApolloClient(ac);
+
+  return { client: ac, cache: newCache };
+}
+
+export async function createApolloClientWithCaching(resolvers = {}, config = {}) {
+  const { localCacheKey = null } = config;
+  const { client, cache } = createApolloClient(resolvers, config);
+
+  if (localCacheKey) {
+    let storage;
+
+    // Test that we can use IndexedDB. If not, no persisting for you!
+    try {
+      const { IndexedDBPersistentStorage } = await import(
+        /* webpackChunkName: 'indexed_db_persistent_storage' */ './apollo/indexed_db_persistent_storage'
+      );
+
+      storage = await IndexedDBPersistentStorage.create();
+    } catch (error) {
+      return client;
+    }
+
+    await persistCache({
+      cache,
+      // we leave NODE_ENV here temporarily for visibility so developers can easily see caching happening in dev mode
+      debug: process.env.NODE_ENV === 'development',
+      storage,
+      key: localCacheKey,
+      persistenceMapper,
+    });
+  }
+
+  return client;
+}
+
+export default (resolvers = {}, config = {}) => {
+  const { client } = createApolloClient(resolvers, config);
+
+  return client;
+};

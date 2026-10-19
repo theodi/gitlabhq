@@ -1,0 +1,80 @@
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import MessageComponent from '~/vue_merge_request_widget/components/checks/message.vue';
+import StatusIcon from '~/vue_merge_request_widget/components/widget/status_icon.vue';
+import {
+  CHECKING_REASONS,
+  FAILURE_REASONS,
+} from '~/vue_merge_request_widget/components/checks/constants';
+
+let wrapper;
+
+function factory(propsData = {}) {
+  wrapper = mountExtended(MessageComponent, {
+    propsData,
+  });
+}
+
+describe('Merge request merge checks message component', () => {
+  it.each`
+    identifier                      | expectedText
+    ${'commits_status'}             | ${'Source branch exists and contains commits.'}
+    ${'ci_must_pass'}               | ${'Pipeline must succeed.'}
+    ${'conflict'}                   | ${'Merge conflicts must be resolved.'}
+    ${'discussions_not_resolved'}   | ${'Open threads must be resolved.'}
+    ${'draft_status'}               | ${'Merge request must not be draft.'}
+    ${'not_open'}                   | ${'Merge request must be open.'}
+    ${'need_rebase'}                | ${'Fast forward merge is not possible. Please rebase.'}
+    ${'not_approved'}               | ${'All required approvals must be given.'}
+    ${'merge_request_blocked'}      | ${'Merge request dependencies must be merged.'}
+    ${'status_checks_must_pass'}    | ${'Status checks must pass.'}
+    ${'jira_association_missing'}   | ${'Either the title or description must reference a Jira issue.'}
+    ${'requested_changes'}          | ${'Change requests must be approved by the requesting user.'}
+    ${'approvals_syncing'}          | ${'The merge request approvals are currently syncing.'}
+    ${'locked_paths'}               | ${'All paths must be unlocked'}
+    ${'locked_lfs_files'}           | ${'All LFS files must be unlocked.'}
+    ${'security_policy_violations'} | ${'All policy rules must be satisfied.'}
+    ${'title_regex'}                | ${'Title must match required pattern'}
+  `('renders failure reason text', ({ identifier, expectedText }) => {
+    factory({ check: { status: 'success', identifier } });
+
+    expect(wrapper.text()).toBe(expectedText);
+  });
+
+  it.each`
+    status        | icon
+    ${'success'}  | ${'success'}
+    ${'failed'}   | ${'failed'}
+    ${'inactive'} | ${'neutral'}
+  `('renders $icon icon for $status result', ({ status, icon }) => {
+    factory({ check: { status, identifier: 'discussions_not_resolved' } });
+
+    expect(wrapper.findComponent(StatusIcon).props('iconName')).toBe(icon);
+  });
+
+  it('renders loading icon when status is CHECKING', () => {
+    factory({ check: { status: 'CHECKING', identifier: 'discussions_not_resolved' } });
+
+    expect(wrapper.findByTestId('checking-icon').exists()).toBe(true);
+  });
+
+  it.each`
+    identifier
+    ${'conflict'}
+    ${'need_rebase'}
+    ${'need_rebase_merge_train'}
+  `(
+    'renders the checking message instead of the failure reason for an identifier with a checking reason',
+    ({ identifier }) => {
+      factory({ check: { status: 'CHECKING', identifier } });
+
+      expect(wrapper.text()).toBe(CHECKING_REASONS[identifier]);
+      expect(wrapper.text()).not.toBe(FAILURE_REASONS[identifier]);
+    },
+  );
+
+  it('falls back to the failure reason while CHECKING for an identifier without a checking reason', () => {
+    factory({ check: { status: 'CHECKING', identifier: 'discussions_not_resolved' } });
+
+    expect(wrapper.text()).toBe(FAILURE_REASONS.discussions_not_resolved);
+  });
+});

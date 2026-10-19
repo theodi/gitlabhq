@@ -1,0 +1,14 @@
+description: Delete project repository
+category: Projects::Registry::RepositoriesController
+action: delete_repository
+extra_properties:
+identifiers:
+product_group: container_registry
+product_categories:
+- container_registry
+milestone: "13.5"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/41846
+tiers:
+- free
+- premium
+- ultimate

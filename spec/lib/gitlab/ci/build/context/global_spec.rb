@@ -1,0 +1,66 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Ci::Build::Context::Global, feature_category: :pipeline_composition do
+  let(:pipeline)       { build_stubbed(:ci_pipeline) }
+  let(:yaml_variables) { {} }
+  let(:logger) { instance_double(Gitlab::Ci::Pipeline::Logger) }
+
+  let(:context) do
+    allow(logger).to receive(:instrument).and_yield
+    described_class.new(pipeline, yaml_variables: yaml_variables, logger: logger)
+  end
+
+  shared_examples 'variables collection' do
+    it { expect(subject.fetch('CI_COMMIT_REF_NAME')).to eq('main') }
+    it { expect(subject.fetch('CI_PIPELINE_IID')).to eq(pipeline.iid.to_s) }
+    it { expect(subject.fetch('CI_PROJECT_PATH')).to eq(pipeline.project.full_path) }
+
+    it { expect(subject.fetch('CI_JOB_NAME', nil)).to be_nil }
+
+    shared_examples 'with passed yaml variables' do
+      let(:yaml_variables) { [{ key: 'SUPPORTED', value: 'parsed', public: true }] }
+
+      it { expect(subject.fetch('SUPPORTED')).to eq('parsed') }
+    end
+
+    it_behaves_like 'with passed yaml variables'
+  end
+
+  describe '#variables' do
+    subject { context.variables.to_hash }
+
+    it { expect(context.variables).to be_instance_of(Gitlab::Ci::Variables::Collection) }
+
+    it_behaves_like 'variables collection'
+  end
+
+  describe '#variables_hash' do
+    subject { context.variables_hash }
+
+    it { expect(context.variables_hash).to be_instance_of(Gitlab::Ci::Variables::Collection::LazyHash) }
+
+    it_behaves_like 'variables collection'
+  end
+
+  describe '#top_level_worktree_paths' do
+    subject(:top_level_worktree_paths) { context.top_level_worktree_paths }
+
+    it 'delegates to pipeline' do
+      expect(pipeline).to receive(:top_level_worktree_paths)
+
+      top_level_worktree_paths
+    end
+  end
+
+  describe '#all_worktree_paths' do
+    subject(:all_worktree_paths) { context.all_worktree_paths }
+
+    it 'delegates to pipeline' do
+      expect(pipeline).to receive(:all_worktree_paths)
+
+      all_worktree_paths
+    end
+  end
+end

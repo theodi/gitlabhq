@@ -1,0 +1,1075 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::CargoProjectPackages, feature_category: :package_registry do
+  include HttpBasicAuthHelpers
+  include WorkhorseHelpers
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:group) { create(:group) }
+  let_it_be_with_reload(:project) { create(:project, :public, group: group) }
+  let_it_be(:personal_access_token) { create(:personal_access_token, user: user) }
+  let_it_be(:deploy_token) do
+    create(:deploy_token, read_package_registry: true, write_package_registry: true, projects: [project])
+  end
+
+  let_it_be(:deploy_token_without_permission) do
+    create(:deploy_token, read_package_registry: false, write_package_registry: false)
+  end
+
+  let_it_be(:job) { create(:ci_build, :running, user: user, project: project) }
+  let(:headers) { {} }
+
+  describe 'GET /api/v4/projects/:id/packages/cargo/config.json' do
+    let(:url) { "/projects/#{project.id}/packages/cargo/config.json" }
+
+    subject(:request) do
+      get api(url), headers: headers
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_cargo_package do
+      let(:boundary_object) { project }
+      let(:headers) { { 'Authorization' => "Bearer #{pat.token}" } }
+      let(:request) { get(api(url), headers: headers) }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+
+    shared_examples 'successful config response' do
+      it 'returns the config' do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        # Spelled out rather than rebuilt from the route helper: the helper
+        # already ends in `/packages`, and deriving it here hid a doubled
+        # segment that Cargo followed to a 404.
+        expected_url =
+          "#{Gitlab.config.gitlab.url}/api/v4/projects/#{project.id}/packages/cargo"
+        expect(json_response).to match(
+          "dl" => expected_url,
+          "api" => expected_url,
+          "auth-required" => !project.public?
+        )
+      end
+    end
+
+    context 'with public project' do
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it_behaves_like 'successful config response'
+    end
+
+    context 'with private project' do
+      let(:headers) { { 'Authorization' => "Bearer #{personal_access_token.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      context 'with authenticated user' do
+        before_all do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'successful config response'
+        it_behaves_like 'updating personal access token last used'
+      end
+
+      context 'with unauthenticated user' do
+        it 'returns not found' do
+          request
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'with anonymous user' do
+        let(:headers) { {} }
+
+        it 'returns unauthorized' do
+          request
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+    end
+
+    context 'with deploy token' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it_behaves_like 'successful config response'
+    end
+
+    context 'with job token' do
+      let(:headers) { { 'Authorization' => "Bearer #{job.token}" } }
+
+      before_all do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'successful config response'
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_packages,
+      allow_public_access_for_enabled_project_features: :package_registry do
+      let(:headers) { { 'Authorization' => "Bearer #{target_job.token}" } }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+
+    context 'without read permissions deploy token' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token_without_permission.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when package feature is disabled' do
+      before do
+        stub_config(packages: { enabled: false })
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+
+    context 'when feature flag is disabled' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+      before do
+        stub_feature_flags(package_registry_cargo_support: false)
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+  end
+
+  describe 'GET /api/v4/projects/:id/packages/cargo/:name/:version/download' do
+    let_it_be(:package) { create(:cargo_package, name: 'my-crate', version: '1.0.0', project: project) }
+    let_it_be(:metadatum) { create(:cargo_metadatum, package: package) }
+
+    let(:package_name) { package.name }
+    let(:package_version) { package.version }
+    let(:url) { "/projects/#{project.id}/packages/cargo/#{package_name}/#{package_version}/download" }
+
+    subject(:request) do
+      get api(url), headers: headers
+    end
+
+    shared_examples 'successful crate download' do
+      it 'returns the crate file', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.media_type).to eq('application/octet-stream')
+      end
+
+      it 'bumps last_downloaded_at on the package' do
+        expect { request }
+          .to change { package.reload.last_downloaded_at }
+          .from(nil).to(instance_of(ActiveSupport::TimeWithZone))
+      end
+    end
+
+    context 'with public project' do
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it_behaves_like 'successful crate download'
+    end
+
+    context 'with private project' do
+      let(:headers) { { 'Authorization' => "Bearer #{personal_access_token.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      context 'with authenticated user' do
+        before_all do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'successful crate download'
+      end
+
+      context 'with unauthenticated user' do
+        it 'returns not found' do
+          request
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'with anonymous user' do
+        let(:headers) { {} }
+
+        it 'returns unauthorized' do
+          request
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+    end
+
+    context 'with deploy token' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it_behaves_like 'successful crate download'
+    end
+
+    context 'with job token' do
+      let(:headers) { { 'Authorization' => "Bearer #{job.token}" } }
+
+      before_all do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'successful crate download'
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_packages,
+      allow_public_access_for_enabled_project_features: :package_registry do
+      let(:headers) { { 'Authorization' => "Bearer #{target_job.token}" } }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+
+    context 'without read permissions deploy token' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token_without_permission.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when package does not exist' do
+      let(:package_name) { 'does-not-exist' }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when version does not exist' do
+      let(:package_version) { '9.9.9' }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when package files are pending destruction' do
+      let_it_be(:pending_destruction_package) do
+        create(:cargo_package, name: 'pending-crate', version: '1.0.0', project: project)
+      end
+
+      let_it_be(:pending_destruction_metadatum) { create(:cargo_metadatum, package: pending_destruction_package) }
+
+      let(:package_name) { pending_destruction_package.name }
+      let(:package_version) { pending_destruction_package.version }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+        pending_destruction_package.package_files.update_all(status: :pending_destruction)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when package feature is disabled' do
+      before do
+        stub_config(packages: { enabled: false })
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+
+    context 'when feature flag is disabled' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+      before do
+        stub_feature_flags(package_registry_cargo_support: false)
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+
+    describe 'package event tracking' do
+      let(:headers) { { 'Authorization' => "Bearer #{personal_access_token.token}" } }
+      let(:snowplow_gitlab_standard_context) do
+        { project: project, namespace: project.namespace, user: user, property: 'i_package_cargo_user' }
+      end
+
+      before_all do
+        project.add_developer(user)
+      end
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it_behaves_like 'a package tracking event', described_class.name, 'pull_package'
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :download_cargo_package do
+      let(:boundary_object) { project }
+      let(:headers) { { 'Authorization' => "Bearer #{pat.token}" } }
+      let(:request) { get(api(url), headers: headers) }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+  end
+
+  describe 'GET /api/v4/projects/:id/packages/cargo/{prefix}/{name} (sparse index)' do
+    let_it_be(:package_v1) { create(:cargo_package, name: 'my-crate', version: '1.0.0', project: project) }
+    let_it_be(:package_v2) { create(:cargo_package, name: 'my-crate', version: '2.0.0', project: project) }
+    let_it_be(:metadatum_v1) { create(:cargo_metadatum, package: package_v1) }
+    let_it_be(:metadatum_v2) { create(:cargo_metadatum, package: package_v2) }
+
+    let(:prefix) { 'my/-c' }
+    let(:package_name) { 'my-crate' }
+    let(:url) { "/projects/#{project.id}/packages/cargo/#{prefix}/#{package_name}" }
+
+    subject(:request) do
+      get api(url), headers: headers
+    end
+
+    shared_examples 'successful sparse index response' do
+      it 'returns newline-delimited JSON, one line per version, most recently published first', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.media_type).to eq('text/plain')
+
+        lines = response.body.split("\n")
+        expect(lines.size).to eq(2)
+
+        parsed = lines.map { |line| Gitlab::Json.safe_parse(line) }
+        expect(parsed).to eq([metadatum_v2.index_content, metadatum_v1.index_content])
+      end
+    end
+
+    context 'with public project' do
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it_behaves_like 'successful sparse index response'
+    end
+
+    context 'with private project' do
+      let(:headers) { { 'Authorization' => "Bearer #{personal_access_token.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      context 'with authenticated user' do
+        before_all do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'successful sparse index response'
+      end
+
+      context 'with unauthenticated user' do
+        it 'returns not found' do
+          request
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'with anonymous user' do
+        let(:headers) { {} }
+
+        it 'returns unauthorized' do
+          request
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+    end
+
+    context 'with deploy token' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it_behaves_like 'successful sparse index response'
+    end
+
+    context 'with job token' do
+      let(:headers) { { 'Authorization' => "Bearer #{job.token}" } }
+
+      before_all do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'successful sparse index response'
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_packages,
+      allow_public_access_for_enabled_project_features: :package_registry do
+      let(:headers) { { 'Authorization' => "Bearer #{target_job.token}" } }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+
+    context 'without read permissions deploy token' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token_without_permission.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when the package name uses uppercase letters' do
+      let(:package_name) { 'My-Crate' }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it_behaves_like 'successful sparse index response'
+    end
+
+    context 'when no package matches the name' do
+      let(:package_name) { 'does-not-exist' }
+      let(:prefix) { 'do/es' }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when the path prefix is not coherent with the package name' do
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      context 'with the 4+ character prefix shape' do
+        let(:prefix) { 'zz/zz' }
+
+        it 'returns bad request' do
+          request
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'with the 3-character prefix shape' do
+        let(:url) { "/projects/#{project.id}/packages/cargo/3/z/abc" }
+
+        it 'returns bad request' do
+          request
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    context 'when every version is pending destruction' do
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+        ::Packages::Cargo::Package.where(id: [package_v1.id, package_v2.id]).update_all(status: :pending_destruction)
+      end
+
+      it 'returns not found' do
+        request
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'with the 1-character prefix shape' do
+      let_it_be(:short_package) { create(:cargo_package, name: 'a', version: '0.1.0', project: project) }
+      let_it_be(:short_metadatum) { create(:cargo_metadatum, package: short_package) }
+
+      let(:url) { "/projects/#{project.id}/packages/cargo/1/a" }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns the index for the named crate', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.body.split("\n").size).to eq(1)
+      end
+    end
+
+    context 'with the 2-character prefix shape' do
+      let_it_be(:two_package) { create(:cargo_package, name: 'ab', version: '0.1.0', project: project) }
+      let_it_be(:two_metadatum) { create(:cargo_metadatum, package: two_package) }
+
+      let(:url) { "/projects/#{project.id}/packages/cargo/2/ab" }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns the index for the named crate', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.body.split("\n").size).to eq(1)
+      end
+    end
+
+    context 'with the 3-character prefix shape' do
+      let_it_be(:three_package) { create(:cargo_package, name: 'abc', version: '0.1.0', project: project) }
+      let_it_be(:three_metadatum) { create(:cargo_metadatum, package: three_package) }
+
+      let(:url) { "/projects/#{project.id}/packages/cargo/3/a/abc" }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns the index for the named crate', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.body.split("\n").size).to eq(1)
+      end
+    end
+
+    context 'when the package name contains an underscore' do
+      let_it_be(:underscore_package) { create(:cargo_package, name: 'os_info', version: '0.1.0', project: project) }
+      let_it_be(:underscore_metadatum) { create(:cargo_metadatum, package: underscore_package) }
+
+      let(:url) { "/projects/#{project.id}/packages/cargo/os/_i/os_info" }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns the index for the named crate', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.body.split("\n").size).to eq(1)
+      end
+    end
+
+    context 'when package feature is disabled' do
+      before do
+        stub_config(packages: { enabled: false })
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+
+    context 'when feature flag is disabled' do
+      let(:headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+      before do
+        stub_feature_flags(package_registry_cargo_support: false)
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+
+    context 'with granular token authorization' do
+      let(:boundary_object) { project }
+      let(:headers) { { 'Authorization' => "Bearer #{pat.token}" } }
+      let(:request) { get(api(url), headers: headers) }
+
+      before_all do
+        project.add_developer(user)
+      end
+
+      context 'for the 4+ character prefix shape' do
+        it_behaves_like 'authorizing granular token permissions', :read_cargo_package
+      end
+
+      context 'for the 1 character prefix shape' do
+        let_it_be(:short_package_for_auth) do
+          create(:cargo_package, name: 'a', version: '0.1.0', project: project)
+        end
+
+        let_it_be(:short_metadatum_for_auth) { create(:cargo_metadatum, package: short_package_for_auth) }
+
+        let(:url) { "/projects/#{project.id}/packages/cargo/1/a" }
+
+        it_behaves_like 'authorizing granular token permissions', :read_cargo_package
+      end
+
+      context 'for the 2 character prefix shape' do
+        let_it_be(:two_package_for_auth) do
+          create(:cargo_package, name: 'ab', version: '0.1.0', project: project)
+        end
+
+        let_it_be(:two_metadatum_for_auth) { create(:cargo_metadatum, package: two_package_for_auth) }
+
+        let(:url) { "/projects/#{project.id}/packages/cargo/2/ab" }
+
+        it_behaves_like 'authorizing granular token permissions', :read_cargo_package
+      end
+
+      context 'for the 3 character prefix shape' do
+        let_it_be(:three_package_for_auth) do
+          create(:cargo_package, name: 'abc', version: '0.1.0', project: project)
+        end
+
+        let_it_be(:three_metadatum_for_auth) { create(:cargo_metadatum, package: three_package_for_auth) }
+
+        let(:url) { "/projects/#{project.id}/packages/cargo/3/a/abc" }
+
+        it_behaves_like 'authorizing granular token permissions', :read_cargo_package
+      end
+    end
+  end
+
+  describe 'PUT /api/v4/projects/:id/packages/cargo/api/v1/crates/new/authorize' do
+    include_context 'workhorse headers'
+
+    let(:url) { "/projects/#{project.id}/packages/cargo/api/v1/crates/new/authorize" }
+    let(:base_headers) { { 'Authorization' => "Bearer #{personal_access_token.token}" } }
+    let(:headers) { base_headers }
+
+    subject(:request) do
+      put api(url), headers: headers
+    end
+
+    it_behaves_like 'enforcing job token policies', :admin_packages do
+      before_all do
+        project.add_developer(user)
+      end
+
+      let(:headers) { build_token_auth_header(target_job.token).merge(workhorse_headers) }
+    end
+
+    context 'with workhorse headers' do
+      let(:headers) { base_headers.merge(workhorse_headers) }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+        project.actual_limits.update!(cargo_max_file_size: 1.megabyte)
+      end
+
+      context 'with a developer' do
+        before_all do
+          project.add_developer(user)
+        end
+
+        it 'authorizes the upload', :aggregate_failures do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.media_type).to eq(Gitlab::Workhorse::INTERNAL_API_CONTENT_TYPE)
+          expect(json_response).to include(
+            'TempPath' => ::Packages::PackageFileUploader.workhorse_local_upload_path,
+            'MaximumSize' => 1.megabyte
+          )
+        end
+      end
+
+      context 'with a reporter' do
+        before_all do
+          project.add_reporter(user)
+        end
+
+        it_behaves_like 'returning response status', :forbidden
+      end
+
+      context 'with a deploy token' do
+        let(:base_headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+        it_behaves_like 'returning response status', :ok
+      end
+
+      context 'with a job token' do
+        let(:base_headers) { { 'Authorization' => "Bearer #{job.token}" } }
+
+        before_all do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'returning response status', :ok
+      end
+
+      context 'without write permissions deploy token' do
+        let(:base_headers) { { 'Authorization' => "Bearer #{deploy_token_without_permission.token}" } }
+
+        it_behaves_like 'returning response status', :not_found
+      end
+
+      context 'with unauthenticated user' do
+        let(:headers) { workhorse_headers }
+
+        it_behaves_like 'returning response status', :unauthorized
+      end
+
+      context 'with public project' do
+        before do
+          project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+        end
+
+        context 'with anonymous user' do
+          let(:headers) { workhorse_headers }
+
+          it_behaves_like 'returning response status', :unauthorized
+        end
+
+        context 'with a guest' do
+          before_all do
+            project.add_guest(user)
+          end
+
+          it_behaves_like 'returning response status', :forbidden
+        end
+      end
+
+      context 'when feature flag is disabled' do
+        let(:base_headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+        before do
+          stub_feature_flags(package_registry_cargo_support: false)
+        end
+
+        it_behaves_like 'returning response status', :not_found
+      end
+
+      context 'when package feature is disabled' do
+        before do
+          stub_config(packages: { enabled: false })
+        end
+
+        it_behaves_like 'returning response status', :not_found
+      end
+    end
+
+    context 'without workhorse headers' do
+      before_all do
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'returning response status', :forbidden
+    end
+  end
+
+  describe 'PUT /api/v4/projects/:id/packages/cargo/api/v1/crates/new' do
+    include_context 'workhorse headers'
+
+    # Cargo publish format: [4-byte LE JSON length][JSON][4-byte LE crate length][crate]
+    def build_cargo_publish_body(index_content:, crate_data:)
+      json_bytes = Gitlab::Json.dump(index_content).b
+
+      [json_bytes.bytesize].pack('L<') + json_bytes + [crate_data.bytesize].pack('L<') + crate_data
+    end
+
+    # PackagesManagerApiSpecHelpers#temp_file writes in text mode, which cannot
+    # represent the binary publish body.
+    def upload_body(content)
+      upload_path = ::Packages::PackageFileUploader.workhorse_local_upload_path
+      file_path = File.join(upload_path, 'cargo-publish-body')
+
+      FileUtils.mkdir_p(upload_path)
+      File.binwrite(file_path, content)
+
+      UploadedFile.new(file_path, filename: File.basename(file_path))
+    end
+
+    let_it_be(:crate_data) do
+      File.binread(Rails.root.join('spec/fixtures/packages/cargo/test-crate-1.0.0.crate'))
+    end
+
+    # Mirrors what `cargo publish` uploads: manifest keys, no `cksum`, and
+    # `rust_version` present but null when the manifest omits it.
+    let(:index_content) do
+      {
+        name: 'test-crate',
+        vers: '1.0.0',
+        deps: [],
+        features: {},
+        authors: [],
+        description: 'a test crate',
+        documentation: nil,
+        homepage: nil,
+        readme: nil,
+        readme_file: nil,
+        keywords: [],
+        categories: [],
+        license: 'MIT',
+        license_file: nil,
+        repository: nil,
+        badges: {},
+        links: nil,
+        rust_version: nil
+      }
+    end
+
+    let(:url) { "/projects/#{project.id}/packages/cargo/api/v1/crates/new" }
+    let(:base_headers) { { 'Authorization' => "Bearer #{personal_access_token.token}" } }
+    let(:headers) { base_headers.merge(workhorse_headers) }
+    let(:file) do
+      upload_body(build_cargo_publish_body(index_content: index_content, crate_data: crate_data))
+    end
+
+    subject(:request) do
+      workhorse_finalize(
+        api(url),
+        method: :put,
+        file_key: :file,
+        params: { file: file },
+        headers: headers,
+        send_rewritten_field: true
+      )
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :upload_cargo_package do
+      let(:boundary_object) { project }
+      let(:base_headers) { { 'Authorization' => "Bearer #{pat.token}" } }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+
+    it_behaves_like 'enforcing job token policies', :admin_packages do
+      before_all do
+        project.add_developer(user)
+      end
+
+      let(:headers) { build_token_auth_header(target_job.token).merge(workhorse_headers) }
+    end
+
+    # The cargo client prints each `detail` from this shape.
+    shared_examples 'refusing the publish' do |status:, detail:|
+      it 'refuses in the cargo error format and creates nothing', :aggregate_failures do
+        expect { request }
+          .to not_change { ::Packages::Cargo::Package.for_projects(project).count }
+          .and not_change { ::Packages::PackageFile.count }
+          .and not_change { ::Packages::Cargo::ExtractionWorker.jobs.size }
+
+        expect(response).to have_gitlab_http_status(status)
+        expect(json_response).to eq('errors' => [{ 'detail' => detail }])
+      end
+    end
+
+    context 'with a developer' do
+      before_all do
+        project.add_developer(user)
+      end
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it 'creates a processing package and enqueues extraction', :aggregate_failures do
+        expect { request }
+          .to change { ::Packages::Cargo::Package.for_projects(project).count }.by(1)
+          .and change { ::Packages::PackageFile.count }.by(1)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to eq(
+          'warnings' => { 'invalid_categories' => [], 'invalid_badges' => [], 'other' => [] }
+        )
+
+        package = ::Packages::Cargo::Package.for_projects(project).last
+
+        expect(package.name).to eq(::Packages::Cargo::TEMPORARY_PACKAGE_NAME)
+        expect(package.status).to eq('processing')
+        expect(package.package_files.last).to have_attributes(file_name: 'package.crate', status: 'default')
+        expect(::Packages::Cargo::ExtractionWorker.jobs.last['args'])
+          .to eq([package.package_files.last.id, { 'user_id' => user.id }])
+      end
+
+      it 'promotes the package once the worker runs', :aggregate_failures, :sidekiq_inline do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+
+        package = ::Packages::Cargo::Package.for_projects(project).last
+
+        expect(package).to have_attributes(name: 'test-crate', version: '1.0.0', status: 'default')
+        expect(package.cargo_metadatum.index_content).to eq(
+          'name' => 'test-crate',
+          'vers' => '1.0.0',
+          'deps' => [],
+          'cksum' => Digest::SHA256.hexdigest(crate_data),
+          'features' => {},
+          'yanked' => false,
+          'links' => nil,
+          'v' => 2
+        )
+        expect(package.package_files.last.file_name).to eq('test-crate-1.0.0.crate')
+      end
+
+      context 'when the file is larger than the plan limit' do
+        before do
+          project.actual_limits.update!(cargo_max_file_size: 1)
+        end
+
+        it_behaves_like 'returning response status with message', status: :bad_request,
+          message: '400 Bad request - File is too large'
+      end
+
+      context 'when the crate name is protected' do
+        let_it_be(:protection_rule) do
+          create(:package_protection_rule, project: project, package_type: :cargo,
+            package_name_pattern: 'test-crate', minimum_access_level_for_push: :owner)
+        end
+
+        it_behaves_like 'refusing the publish', status: :forbidden, detail: 'Package protected.'
+      end
+
+      context 'when the crate version already exists' do
+        let_it_be(:existing_package) do
+          create(:cargo_package, project: project, name: 'test-crate', version: '1.0.0')
+        end
+
+        let_it_be(:existing_metadatum) { create(:cargo_metadatum, package: existing_package) }
+
+        it_behaves_like 'refusing the publish', status: :bad_request, detail: 'Package already exists'
+      end
+
+      context 'when ObjectStorage::RemoteStoreError is raised' do
+        before do
+          allow_next_instance_of(::Packages::Cargo::CreateTemporaryPackageService) do |service|
+            allow(service).to receive(:execute).and_raise(ObjectStorage::RemoteStoreError)
+          end
+        end
+
+        it 'tracks the exception and returns forbidden' do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+            an_instance_of(ObjectStorage::RemoteStoreError),
+            extra: { project_id: project.id }
+          )
+
+          request
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      describe 'package event tracking' do
+        let(:snowplow_gitlab_standard_context) do
+          { project: project, namespace: group, property: 'i_package_cargo_user', user: user }
+        end
+
+        it_behaves_like 'a package tracking event', described_class.name, 'push_package'
+      end
+    end
+
+    context 'with a reporter' do
+      before_all do
+        project.add_reporter(user)
+      end
+
+      it_behaves_like 'returning response status', :forbidden
+    end
+
+    context 'with a deploy token' do
+      let(:base_headers) { { 'Authorization' => "Bearer #{deploy_token.token}" } }
+
+      it 'enqueues extraction with the deploy token as the actor', :aggregate_failures do
+        expect { request }.to change { ::Packages::Cargo::Package.for_projects(project).count }.by(1)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(::Packages::Cargo::ExtractionWorker.jobs.last['args'].last)
+          .to eq({ 'deploy_token_id' => deploy_token.id })
+      end
+    end
+
+    context 'without write permissions deploy token' do
+      let(:base_headers) { { 'Authorization' => "Bearer #{deploy_token_without_permission.token}" } }
+
+      before do
+        project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+
+    context 'with unauthenticated user' do
+      let(:headers) { workhorse_headers }
+
+      it_behaves_like 'returning response status', :unauthorized
+    end
+
+    context 'with a guest' do
+      before_all do
+        project.add_guest(user)
+      end
+
+      it_behaves_like 'returning response status', :forbidden
+    end
+
+    context 'without workhorse headers' do
+      let(:headers) { base_headers }
+
+      before_all do
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'returning response status', :forbidden
+    end
+
+    # No 'when package feature is disabled' example here: with packages off the
+    # multipart middleware rejects the upload path with a 400 before the
+    # endpoint runs. The other cargo routes cover that gate.
+    context 'when feature flag is disabled' do
+      before do
+        stub_feature_flags(package_registry_cargo_support: false)
+      end
+
+      it_behaves_like 'returning response status', :not_found
+    end
+  end
+end

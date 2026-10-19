@@ -1,0 +1,45 @@
+= gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-merge-request-settings'), html: { class: 'fieldset-form', id: 'merge-request-settings' } do |f|
+  = form_errors(@application_setting)
+
+  %fieldset
+    .form-group
+      = f.label :diff_max_patch_bytes, _('Maximum diff patch size (bytes)'), class: 'label-light'
+      = f.number_field :diff_max_patch_bytes, class: 'form-control gl-form-input'
+      %span.form-text.gl-text-subtle
+        = _("Files larger than this limit are shown as 'too large' and cannot be expanded.")
+
+        = link_to sprite_icon('question-o'),
+          help_page_path('administration/diff_limits.md')
+
+      = f.label :diff_max_files, _('Maximum files in a diff'), class: 'label-light'
+      = f.number_field :diff_max_files, class: 'form-control gl-form-input'
+      %span.form-text.gl-text-subtle
+        = _("Diffs with more files than this limit are shown as 'too large' and cannot be expanded.")
+
+        = link_to sprite_icon('question-o'),
+          help_page_path('administration/diff_limits.md')
+
+      = f.label :diff_max_lines, _('Maximum lines in a diff'), class: 'label-light'
+      = f.number_field :diff_max_lines, class: 'form-control gl-form-input'
+      %span.form-text.gl-text-subtle
+        = _("Diffs with more lines than this limit are shown as 'too large' and cannot be expanded.")
+
+        = link_to sprite_icon('question-o'),
+          help_page_path('administration/diff_limits.md')
+
+      = f.label :diff_max_versions, _('Maximum diff versions per merge request'), class: 'label-light'
+      = f.number_field :diff_max_versions, class: 'form-control gl-form-input'
+      %span.form-text.gl-text-subtle
+        = _("Merge requests that reach this diff version limit cannot be updated.")
+
+        = link_to sprite_icon('question-o'),
+          help_page_path('administration/diff_limits.md')
+
+      = f.label :diff_max_commits, _('Maximum diff commits per merge request'), class: 'label-light'
+      = f.number_field :diff_max_commits, class: 'form-control gl-form-input'
+      %span.form-text.gl-text-subtle
+        = _("Merge requests that reach this diff commits limit cannot be updated.")
+
+        = link_to sprite_icon('question-o'),
+          help_page_path('administration/diff_limits.md')
+  = f.submit _('Save changes'), pajamas_button: true

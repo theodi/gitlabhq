@@ -1,0 +1,72 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`~/releases/components/issuable_stats.vue matches snapshot 1`] = `
+<div
+  class="gl-flex gl-flex-col gl-mb-5 gl-mr-6 gl-shrink-0"
+>
+  <span
+    class="gl-mb-2"
+  >
+    Items
+    <span
+      class="badge badge-neutral badge-pill gl-badge"
+    >
+      <span
+        class="gl-badge-content"
+      >
+        10
+      </span>
+    </span>
+  </span>
+  <div
+    class="gl-flex"
+  >
+    <span
+      class="gl-whitespace-pre-wrap"
+      data-testid="open-stat"
+    >
+      Open:
+      <a
+        class="gl-link"
+        href="path/to/opened/items"
+      >
+        1
+      </a>
+    </span>
+    <span
+      class="gl-mx-2"
+    >
+      •
+    </span>
+    <span
+      class="gl-whitespace-pre-wrap"
+      data-testid="merged-stat"
+    >
+      Merged:
+      <a
+        class="gl-link"
+        href="path/to/merged/items"
+      >
+        7
+      </a>
+    </span>
+    <span
+      class="gl-mx-2"
+    >
+      •
+    </span>
+    <span
+      class="gl-whitespace-pre-wrap"
+      data-testid="closed-stat"
+    >
+      Closed:
+      <a
+        class="gl-link"
+        href="path/to/closed/items"
+      >
+        2
+      </a>
+    </span>
+  </div>
+</div>
+`;

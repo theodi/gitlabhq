@@ -1,0 +1,90 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Updating a Note', feature_category: :team_planning do
+  include GraphqlHelpers
+
+  let!(:note) { create(:note, note: original_body) }
+  let(:original_body) { 'Initial body text' }
+  let(:updated_body) { 'Updated body text' }
+  let(:params) { { body: updated_body } }
+  let(:mutation) do
+    variables = params.merge(id: GitlabSchema.id_from_object(note).to_s)
+
+    graphql_mutation(:update_note, variables)
+  end
+
+  def mutation_response
+    graphql_mutation_response(:update_note)
+  end
+
+  it_behaves_like 'authorizing granular token permissions for GraphQL', :update_note do
+    let(:user) { note.author }
+    let(:boundary_object) { note.project }
+    let(:request) do
+      post_graphql_mutation(
+        graphql_mutation(:update_note, { id: global_id_of(note).to_s, body: 'updated' }, 'errors'),
+        token: { personal_access_token: pat })
+    end
+  end
+
+  context 'when the user does not have permission' do
+    let_it_be(:current_user) { create(:user) }
+
+    it_behaves_like 'a mutation that returns a top-level access error'
+
+    it 'does not update the Note' do
+      post_graphql_mutation(mutation, current_user: current_user)
+
+      expect(note.reload.note).to eq(original_body)
+    end
+  end
+
+  context 'when the user has permission' do
+    let(:current_user) { note.author }
+
+    it_behaves_like 'a Note mutation when the given resource id is not for a Note'
+
+    it_behaves_like 'a Note mutation updates a note successfully'
+    it_behaves_like 'a Note mutation update with errors'
+    it_behaves_like 'a Note mutation update only with quick actions'
+
+    context 'for work item' do
+      let(:noteable) { create(:work_item) }
+      let(:note) { create(:note, noteable: noteable, project: noteable.project, note: original_body) }
+
+      it_behaves_like 'a Note mutation updates a note successfully'
+      it_behaves_like 'a Note mutation update with errors'
+      it_behaves_like 'a Note mutation update only with quick actions'
+
+      context 'without notes widget' do
+        before do
+          stub_all_work_item_widgets(notes: false)
+        end
+
+        it 'does not update the Note' do
+          post_graphql_mutation(mutation, current_user: current_user)
+
+          expect(note.reload.note).to eq(original_body)
+        end
+
+        it_behaves_like 'a mutation that returns top-level errors',
+          errors: [Gitlab::Graphql::Authorize::AuthorizeResource::RESOURCE_ACCESS_ERROR]
+      end
+    end
+  end
+
+  describe '.authorization' do
+    it 'allows ai_workflows scope token' do
+      expect(Mutations::Notes::Update::Note.authorization.permitted_scopes).to include(:ai_workflows)
+    end
+  end
+
+  describe 'note field with :ai_workflows scope' do
+    it "includes :ai_workflows scope for the note field" do
+      field = Mutations::Notes::Update::Note.fields['note']
+      expect(field.instance_variable_get(:@scopes)).to include(:ai_workflows)
+    end
+  end
+end

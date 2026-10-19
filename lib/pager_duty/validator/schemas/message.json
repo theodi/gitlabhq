@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "required": [
+    "event"
+  ],
+  "properties": {
+    "event": {
+      "type": "object",
+      "required": [
+        "data"
+      ]
+    },
+    "properties": {
+      "data": {
+        "type": "object",
+        "required": [
+          "html_url",
+          "number",
+          "title",
+          "status",
+          "created_at",
+          "urgency",
+          "incident_key"
+        ],
+        "properties": {
+          "html_url": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string",
+            "enum": [
+              "high",
+              "low"
+            ]
+          },
+          "incident_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "assignee": {
+            "type": "array",
+            "items": {
+              "summary": {
+                "type": "string"
+              },
+              "html_url": {
+                "type": "string"
+              }
+            }
+          },
+          "service": {
+            "type": "object",
+            "items": {
+              "summary": {
+                "type": "string"
+              },
+              "html_url": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

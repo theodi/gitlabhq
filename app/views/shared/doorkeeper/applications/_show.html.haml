@@ -1,0 +1,57 @@
+- show_trusted_row = local_assigns.fetch(:show_trusted_row, false)
+
+.table-holder
+  %table.table
+    %tr
+      %td
+        = _('Application ID')
+      %td
+        .btn-group
+          = render Pajamas::ButtonComponent.new(label: true, button_text_classes: 'gl-font-monospace', button_options: { data: { testid: 'application-id-field' } }) do
+            = @application.uid
+          = clipboard_button(text: @application.uid, title: _("Copy ID"), category: :primary, size: :medium)
+    %tr
+      %td
+        = _('Secret')
+      %td
+        #js-oauth-application-secret{ data: { initial_secret: @application.plaintext_secret, renew_path: renew_path } }
+
+    %tr
+      %td
+        = _('Callback URL')
+      %td
+        - @application.redirect_uri.split.each do |uri|
+          %div
+            %span.monospace= uri
+
+    - if show_trusted_row
+      %tr
+        %td
+          = _('Trusted')
+        %td
+          = @application.trusted? ? _('Yes') : _('No')
+
+    %tr
+      %td
+        = _('Confidential')
+      %td
+        = @application.confidential? ? _('Yes') : _('No')
+
+    %tr
+      %td
+        = _('Device authorization grant')
+      %td
+        %span{ data: { testid: 'device-code-enabled-value' } }
+          = @application.device_code_enabled? ? _('Yes') : _('No')
+
+    = render "shared/tokens/scopes_list", token: @application
+
+.gl-flex.gl-gap-3
+  = render 'shared/doorkeeper/applications/delete_form', path: delete_path
+  %div
+    - if @created
+      = link_button_to _('Continue'), index_path, class: 'gl-mr-3', variant: :confirm
+    = link_button_to _('Edit'), edit_path
+
+-# Create a hidden field to save the ID of application created
+= hidden_field_tag(:id_of_application, @application.id, data: { testid: 'id-of-application-field' })

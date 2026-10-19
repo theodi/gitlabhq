@@ -1,0 +1,441 @@
+<script>
+import { GlForm, GlFormInputGroup, GlFormGroup, GlModal, GlToastMixin } from '@gitlab/ui';
+import { debounce } from 'lodash-es';
+import { findTargetBranch } from 'ee_else_ce/merge_requests/utils/branch_finder';
+import axios from '~/lib/utils/axios_utils';
+import { createAlert } from '~/alert';
+import { REF_TYPE_BRANCHES, REF_TYPE_TAGS } from '~/vue_shared/components/ref/constants';
+
+import { visitUrl } from '~/lib/utils/url_utility';
+import { newProjectForkPath } from '~/lib/utils/path_helpers/project';
+import { createBranchMRApiPathHelper, lowercaseWorkItemType } from '~/work_items/utils';
+import { helpPagePath } from '~/helpers/help_page_helper';
+import {
+  findInvalidBranchNameCharacters,
+  humanizeBranchValidationErrors,
+} from '~/lib/utils/text_utility';
+import SimpleCopyButton from '~/vue_shared/components/simple_copy_button.vue';
+import RefSelector from '~/vue_shared/components/ref/components/ref_selector.vue';
+import getProjectRootRef from '~/work_items/graphql/get_project_root_ref.query.graphql';
+import { s__, __, sprintf } from '~/locale';
+import confidentialMergeRequestState from '~/confidential_merge_request/state';
+import ProjectFormGroup from '~/confidential_merge_request/components/project_form_group.vue';
+
+export default {
+  name: 'WorkItemCreateBranchMergeRequestModal',
+  components: {
+    GlForm,
+    GlFormInputGroup,
+    GlFormGroup,
+    GlModal,
+    ProjectFormGroup,
+    SimpleCopyButton,
+    RefSelector,
+  },
+  mixins: [GlToastMixin],
+  i18n: {
+    sourceBranchOrTagLabel: __('Source (branch or tag)'),
+    targetBranchLabel: __('Target branch'),
+    newBranchLabel: __('Branch name'),
+    sourceBranchLabel: __('Source branch name'),
+    createBranch: __('Create branch'),
+    cancelLabel: __('Cancel'),
+    createMergeRequest: __('Create merge request'),
+    branchNameExists: __('Branch is already taken'),
+    branchNameAvailable: __('Branch name is available'),
+    branchNameIsRequired: __('Branch name is required'),
+    checkingBranchValidity: __('Checking branch validity'),
+  },
+  createMRModalId: 'create-merge-request-modal',
+  mergeRequestHelpPagePath: helpPagePath('user/project/merge_requests/_index.md'),
+  inject: ['groupPath'],
+  props: {
+    showModal: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    showBranchFlow: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+    workItemIid: {
+      type: String,
+      required: true,
+    },
+    workItemType: {
+      type: String,
+      required: true,
+    },
+    workItemFullPath: {
+      type: String,
+      required: true,
+    },
+    projectId: {
+      type: String,
+      required: true,
+    },
+    isConfidentialWorkItem: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['error', 'fetched-permissions', 'hide-modal'],
+  data() {
+    return {
+      isLoading: false,
+      canCreateBranch: false,
+      branchName: '',
+      refName: '',
+      invalidBranch: false,
+      branchDescription: '',
+      checkingBranchValidity: false,
+      creatingBranch: false,
+      defaultBranch: '',
+    };
+  },
+  apollo: {
+    defaultBranch: {
+      query: getProjectRootRef,
+      variables() {
+        return {
+          projectFullPath: this.workItemFullPath,
+        };
+      },
+      update(data) {
+        return data?.project?.repository?.rootRef || '';
+      },
+      skip() {
+        return !this.workItemFullPath;
+      },
+      error(e) {
+        this.$emit('error', this.$options.i18n.fetchError);
+        this.error = e.message || this.$options.i18n.fetchError;
+      },
+    },
+  },
+  computed: {
+    enabledRefTypes() {
+      return this.showBranchFlow ? [REF_TYPE_BRANCHES, REF_TYPE_TAGS] : [REF_TYPE_BRANCHES];
+    },
+    numericProjectId() {
+      return this.projectId.split('/').at(-1);
+    },
+    refSelectorFieldLabel() {
+      return this.showBranchFlow
+        ? this.$options.i18n.sourceBranchOrTagLabel
+        : this.$options.i18n.targetBranchLabel;
+    },
+    branchNameFieldLabel() {
+      return this.showBranchFlow
+        ? this.$options.i18n.newBranchLabel
+        : this.$options.i18n.sourceBranchLabel;
+    },
+    createButtonText() {
+      return this.showBranchFlow
+        ? this.$options.i18n.createBranch
+        : this.$options.i18n.createMergeRequest;
+    },
+    branchFeedback() {
+      const branchErrors = findInvalidBranchNameCharacters(this.branchName);
+      if (!this.branchName.length) {
+        return this.$options.i18n.branchNameIsRequired;
+      }
+      if (branchErrors.length) {
+        return humanizeBranchValidationErrors(branchErrors);
+      }
+      return this.$options.i18n.branchNameExists;
+    },
+    modalTitle() {
+      return this.createButtonText;
+    },
+    isSaveButtonDisabled() {
+      return (
+        this.invalidBranch ||
+        (this.isConfidentialWorkItem && !this.canCreateConfidentialMergeRequest)
+      );
+    },
+    saveButtonAction() {
+      return {
+        text: this.createButtonText,
+        attributes: {
+          variant: 'confirm',
+          disabled: this.isSaveButtonDisabled,
+          loading: this.checkingBranchValidity || this.creatingBranch,
+        },
+      };
+    },
+    canCreateConfidentialMergeRequest() {
+      return (
+        this.isConfidentialWorkItem &&
+        Object.keys(confidentialMergeRequestState?.selectedProject).length > 0
+      );
+    },
+    cancelButtonAction() {
+      return {
+        text: this.$options.i18n.cancelLabel,
+      };
+    },
+    newForkPath() {
+      return newProjectForkPath(this.workItemFullPath);
+    },
+    projectFullPath() {
+      return this.isConfidentialWorkItem
+        ? confidentialMergeRequestState.selectedProject.pathWithNamespace
+        : this.workItemFullPath;
+    },
+  },
+  watch: {
+    showModal(newVal, oldVal) {
+      if (newVal && newVal !== oldVal) {
+        this.init();
+      }
+    },
+  },
+  mounted() {
+    this.init();
+  },
+  methods: {
+    async init() {
+      const createPath = createBranchMRApiPathHelper.canCreateBranch({
+        fullPath: this.workItemFullPath,
+        workItemIid: this.workItemIid,
+      });
+      this.isLoading = true;
+      const {
+        data: { can_create_branch, suggested_branch_name },
+      } = await axios.get(createPath);
+
+      this.isLoading = false;
+      /** The legacy API is returning values in camelcase format has have to use it here */
+      /** Can be changed when we migrate the response to graphql */
+      /* eslint-disable camelcase */
+      this.canCreateBranch = can_create_branch;
+      this.$emit('fetched-permissions', can_create_branch);
+
+      if (this.canCreateBranch) {
+        this.branchName = suggested_branch_name;
+        /* eslint-enable camelcase */
+        this.refName = this.defaultBranch;
+
+        this.fetchTargetBranch(this.branchName);
+      }
+    },
+    async createBranch() {
+      try {
+        const endpoint = createBranchMRApiPathHelper.createBranch(this.projectFullPath);
+
+        this.creatingBranch = true;
+
+        const { data } = await axios.post(endpoint, {
+          branch_name: this.branchName,
+          confidential_issue_project_id: this.canCreateConfidentialMergeRequest
+            ? this.projectId
+            : null,
+          format: 'json',
+          issue_iid: this.workItemIid,
+          ref: this.refName,
+        });
+
+        this.$toast.show(__('Branch created.'), {
+          autoHideDelay: 10000,
+          action: {
+            text: __('View branch'),
+            onClick: () => visitUrl(data.url),
+          },
+        });
+
+        this.$emit('hide-modal');
+
+        return data.name;
+      } catch {
+        createAlert({
+          message: sprintf(
+            s__('WorkItem|Failed to create a branch for this %{workItemType}. Please try again.'),
+            { workItemType: lowercaseWorkItemType(this.workItemType) },
+          ),
+        });
+
+        return null;
+      } finally {
+        this.creatingBranch = false;
+      }
+    },
+    async createMergeRequest() {
+      // Prefer the branch name returned by the server (the branch actually created); fall
+      // back to the requested name so a later init() cannot repoint the MR at a stale name.
+      const createdBranch = await this.createBranch();
+      const sourceBranch = createdBranch || this.branchName;
+      const path = createBranchMRApiPathHelper.createMR({
+        fullPath: this.projectFullPath,
+        workItemIid: this.workItemIid,
+        sourceBranch,
+        targetBranch: this.refName,
+      });
+
+      /** open the merge request once we have it created */
+      visitUrl(path);
+    },
+    createEntity() {
+      if (this.showBranchFlow) {
+        this.createBranch();
+      } else {
+        this.createMergeRequest();
+      }
+    },
+    markBranchValidityCheckPending() {
+      this.checkingBranchValidity = true;
+      this.branchDescription = __('Checking branch validity…');
+    },
+    fetchRefs(refValue) {
+      // A check that is still in flight is stale as soon as a newer one starts: its response
+      // would release the submit button while the newer name is unvalidated, and overwrite
+      // invalidBranch with the verdict for the older name.
+      this.refCancelToken?.cancel();
+      this.refCancelToken = null;
+
+      if (!refValue || !refValue.trim().length) {
+        this.invalidBranch = true;
+        this.checkingBranchValidity = false;
+        return;
+      }
+
+      this.markBranchValidityCheckPending();
+
+      const cancelToken = axios.CancelToken.source();
+      this.refCancelToken = cancelToken;
+
+      const refsPath = createBranchMRApiPathHelper.getRefs({
+        fullPath: this.projectFullPath,
+      });
+
+      axios
+        .get(`${refsPath}${encodeURIComponent(refValue)}`, {
+          cancelToken: cancelToken.token,
+        })
+        .then(({ data }) => {
+          const branches = data?.Branches || [];
+
+          this.invalidBranch =
+            branches.includes(refValue) || findInvalidBranchNameCharacters(refValue).length > 0;
+        })
+        .catch((thrown) => {
+          if (axios.isCancel(thrown)) {
+            return false;
+          }
+          createAlert({
+            message: __('Failed to get ref.'),
+          });
+          return false;
+        })
+        .finally(() => {
+          if (this.refCancelToken === cancelToken) {
+            this.checkingBranchValidity = false;
+          }
+        });
+    },
+    async fetchTargetBranch(branchName) {
+      if (this.showBranchFlow) return;
+
+      this.targetBranchCancelToken?.cancel();
+      this.targetBranchCancelToken = axios.CancelToken.source();
+
+      const targetBranchName = await findTargetBranch(
+        this.workItemFullPath,
+        branchName,
+        this.targetBranchCancelToken.token,
+      );
+
+      if (targetBranchName && branchName === this.branchName) {
+        this.refName = targetBranchName;
+      }
+    },
+    checkBranchValidity: debounce(function debouncedCheckBranchValidity(refValue) {
+      this.fetchTargetBranch(refValue);
+
+      return this.fetchRefs(refValue);
+    }, 250),
+    // Mark the check as pending and cancel the one in flight synchronously, so the button
+    // stays disabled from the first keystroke until the latest name has been validated.
+    onBranchNameInput(refValue) {
+      this.refCancelToken?.cancel();
+      this.refCancelToken = null;
+
+      if (refValue && refValue.trim().length) {
+        this.markBranchValidityCheckPending();
+      }
+
+      this.checkBranchValidity(refValue);
+    },
+    hideModal() {
+      this.$emit('hide-modal');
+      this.$nextTick(() => {
+        this.invalidBranch = false;
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <gl-modal
+      ref="create-modal"
+      :visible="showModal || creatingBranch"
+      :title="modalTitle"
+      :modal-id="$options.createMRModalId"
+      :action-primary="saveButtonAction"
+      :action-cancel="cancelButtonAction"
+      size="sm"
+      @primary.prevent="createEntity"
+      @hide="hideModal"
+    >
+      <gl-form class="gl-text-left">
+        <project-form-group
+          v-if="isConfidentialWorkItem"
+          :namespace-path="groupPath"
+          :project-path="workItemFullPath"
+          :help-page-path="$options.mergeRequestHelpPagePath"
+          :new-fork-path="newForkPath"
+        />
+        <gl-form-group label-for="ref-name-id" :label="refSelectorFieldLabel">
+          <ref-selector
+            id="ref-name-id"
+            v-model="refName"
+            :project-id="numericProjectId"
+            :enabled-ref-types="enabledRefTypes"
+          />
+        </gl-form-group>
+        <gl-form-group
+          required
+          label-for="branch-name-id"
+          :label="branchNameFieldLabel"
+          :description="checkingBranchValidity ? branchDescription : ''"
+          :invalid-feedback="checkingBranchValidity || isLoading ? '' : branchFeedback"
+          :valid-feedback="
+            checkingBranchValidity || isLoading ? '' : $options.i18n.branchNameAvailable
+          "
+          :state="branchName ? !invalidBranch : false"
+        >
+          <gl-form-input-group
+            id="branch-name-id"
+            v-model.trim="branchName"
+            data-testid="target-name"
+            :state="!invalidBranch"
+            :disabled="isLoading || creatingBranch"
+            required
+            name="branch-name"
+            type="text"
+            @input="onBranchNameInput($event)"
+          >
+            <template #append>
+              <simple-copy-button :text="branchName" :title="__('Copy to clipboard')" />
+            </template>
+          </gl-form-input-group>
+        </gl-form-group>
+      </gl-form>
+    </gl-modal>
+  </div>
+</template>

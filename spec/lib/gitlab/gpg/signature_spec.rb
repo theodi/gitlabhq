@@ -1,0 +1,409 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Gpg::Signature, feature_category: :source_code_management do
+  let_it_be(:project) { create(:project, :small_repo, path: 'sample-project') }
+
+  let(:commit_sha) { '0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33' }
+  let(:committer_email) { GpgHelpers::User1.emails.first }
+  let(:user_email) { committer_email }
+  let(:signature) { GpgHelpers::User1.signed_commit_signature }
+  let(:signed_text) { GpgHelpers::User1.signed_commit_base_data }
+  let(:signer) { :SIGNER_USER }
+  let(:crypto) { instance_double(GPGME::Crypto) }
+  let(:user) { create(:user, email: user_email) }
+  let!(:gpg_key) { create(:gpg_key, key: public_key, user: user) }
+  let(:public_key) { GpgHelpers::User1.public_key }
+  let(:commit) { create(:commit, project: project, sha: commit_sha, committer_email: committer_email) }
+  let(:gpg_signature) { described_class.new(signature, signed_text, signer, committer_email) }
+
+  it_behaves_like 'signature with type checking', :gpg do
+    subject { gpg_signature }
+  end
+
+  shared_examples_for 'called with temporary keychain' do
+    it 'calls within using_tmp_keychain' do
+      expect(Gitlab::Gpg).to receive(:using_tmp_keychain).at_least(:once).and_call_original
+
+      subject
+    end
+  end
+
+  describe '#verification_status' do
+    subject { gpg_signature.verification_status }
+
+    context 'when the fingerprint in the signature matches a key belonging to a matching user' do
+      it { is_expected.to eq(:verified) }
+    end
+
+    context 'when the signature is invalid' do
+      let(:signature) { GpgHelpers::User1.signed_commit_signature.tr('=', 'a') }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when commit has multiple signatures' do
+      before do
+        verified_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint, valid?: true)
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify).and_yield(verified_signature).and_yield(instance_double(GPGME::Signature))
+      end
+
+      it { is_expected.to eq(:multiple_signatures) }
+    end
+
+    context 'when commit signed with a subkey' do
+      let(:committer_email) { GpgHelpers::User3.emails.first }
+      let(:public_key) { GpgHelpers::User3.public_key }
+      let(:signature) { GpgHelpers::User3.signed_commit_signature }
+      let(:signed_text) { GpgHelpers::User3.signed_commit_base_data }
+
+      it { is_expected.to eq(:verified) }
+    end
+
+    context 'when the committer_email belongs to a uid of the key that has been revoked' do
+      let(:public_key) { GpgHelpers::UserWithRevokedUid.public_key }
+      let(:signature) { GpgHelpers::UserWithRevokedUid.signed_commit_signature }
+      let(:signed_text) { GpgHelpers::UserWithRevokedUid.signed_commit_base_data }
+      let(:committer_email) { GpgHelpers::UserWithRevokedUid.revoked_emails.first }
+
+      context 'and the user has confirmed that email' do
+        let(:user) do
+          create(:user, email: GpgHelpers::UserWithRevokedUid.emails.first).tap do |user|
+            create :email, :confirmed, user: user, email: committer_email
+          end
+        end
+
+        it { is_expected.to eq(:same_user_different_email) }
+      end
+
+      context 'and the email belongs to another user' do
+        let(:user) { create(:user, email: GpgHelpers::UserWithRevokedUid.emails.first) }
+
+        before do
+          create(:user, email: committer_email)
+        end
+
+        it { is_expected.to eq(:other_user) }
+      end
+
+      context 'and the commit was signed with a subkey' do
+        let(:signature) { GpgHelpers::UserWithRevokedUid.subkey_signed_commit_signature }
+        let(:signed_text) { GpgHelpers::UserWithRevokedUid.subkey_signed_commit_base_data }
+
+        let(:user) do
+          create(:user, email: GpgHelpers::UserWithRevokedUid.emails.first).tap do |user|
+            create :email, :confirmed, user: user, email: committer_email
+          end
+        end
+
+        it { is_expected.to eq(:same_user_different_email) }
+      end
+    end
+
+    context 'when the committer_email belongs to the live uid of a key that also has a revoked uid' do
+      let(:public_key) { GpgHelpers::UserWithRevokedUid.public_key }
+      let(:signature) { GpgHelpers::UserWithRevokedUid.signed_commit_signature }
+      let(:signed_text) { GpgHelpers::UserWithRevokedUid.signed_commit_base_data }
+      let(:committer_email) { GpgHelpers::UserWithRevokedUid.emails.first }
+
+      it { is_expected.to eq(:verified) }
+    end
+
+    context 'when every uid of the key has been revoked' do
+      let(:public_key) { GpgHelpers::UserWithOnlyRevokedUid.public_key }
+      let(:signature) { GpgHelpers::UserWithOnlyRevokedUid.signed_commit_signature }
+      let(:signed_text) { GpgHelpers::UserWithOnlyRevokedUid.signed_commit_base_data }
+      let(:committer_email) { GpgHelpers::UserWithOnlyRevokedUid.revoked_emails.first }
+
+      it { is_expected.to eq(:unverified_key) }
+    end
+
+    context 'when gpg key email does not match the committer_email but is the same user when the committer_email \
+      belongs to the user as a confirmed secondary email' do
+      let(:committer_email) { GpgHelpers::User2.emails.first }
+
+      let(:user) do
+        create(:user, email: GpgHelpers::User1.emails.first).tap do |user|
+          create :email, :confirmed, user: user, email: committer_email
+        end
+      end
+
+      it { is_expected.to eq(:same_user_different_email) }
+    end
+
+    context 'when gpg key email does not match the committer_email when the committer_email belongs to the user \
+      as a unconfirmed secondary email' do
+      let(:committer_email) { GpgHelpers::User2.emails.first }
+
+      let(:user) do
+        create(:user, email: GpgHelpers::User1.emails.first).tap do |user|
+          create :email, user: user, email: committer_email
+        end
+      end
+
+      it { is_expected.to eq(:other_user) }
+    end
+
+    context 'when user email does not match the committer email' do
+      let(:committer_email) { GpgHelpers::User2.emails.first }
+      let(:user_email) { GpgHelpers::User1.emails.first }
+
+      it { is_expected.to eq(:other_user) }
+    end
+
+    context 'when user does not match the key uid' do
+      let(:user_email) { GpgHelpers::User2.emails.first }
+      let(:public_key) { GpgHelpers::User1.public_key }
+
+      it { is_expected.to eq(:unverified_key) }
+    end
+
+    context 'when the signature is not cryptographically valid' do
+      before do
+        invalid_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint, valid?: false,
+          revoked_key?: false, expired_key?: false)
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify).and_yield(invalid_signature)
+      end
+
+      it { is_expected.to eq(:unverified) }
+    end
+
+    context 'when the signing key has been revoked' do
+      before do
+        revoked_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint, valid?: false,
+          revoked_key?: true)
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify).and_yield(revoked_signature)
+      end
+
+      it { is_expected.to eq(:revoked_key) }
+    end
+
+    context 'when the signing key has expired' do
+      before do
+        expired_key_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint,
+          valid?: false, revoked_key?: false, expired_key?: true)
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify).and_yield(expired_key_signature)
+      end
+
+      it { is_expected.to eq(:expired_key) }
+    end
+
+    context 'when there is no matching gpg key' do
+      let(:gpg_key) { nil }
+
+      it { is_expected.to eq(:unknown_key) }
+    end
+
+    context 'when signature created by GitLab' do
+      let(:signer) { :SIGNER_SYSTEM }
+      let(:gpg_key) { nil }
+
+      it { is_expected.to eq(:verified_system) }
+    end
+
+    context 'when gpg_signatures returns signatures initially but empty array on re-verification' do
+      before do
+        verified_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint, valid?: true)
+        call_count = 0
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify) do |*_args, &block|
+          call_count += 1
+          block.call(verified_signature) if call_count == 1
+        end
+      end
+
+      it { is_expected.to eq(:unverified) }
+    end
+
+    it_behaves_like 'called with temporary keychain'
+  end
+
+  describe '#gpg_key' do
+    subject(:get_gpg_key) { gpg_signature.gpg_key }
+
+    context 'when initialized with a preloaded key' do
+      let(:gpg_signature) do
+        described_class.new(signature, signed_text, signer, committer_email, preloaded_gpg_key: gpg_key)
+      end
+
+      it { is_expected.to eq(gpg_key) }
+
+      it 'does not query for a gpg key' do
+        expect(GpgKey).not_to receive(:find_by_fingerprint)
+        expect(GpgKey).not_to receive(:find_by_primary_keyid)
+        expect(GpgKeySubkey).not_to receive(:find_by_fingerprint)
+        expect(GpgKeySubkey).not_to receive(:find_by_keyid)
+
+        get_gpg_key
+      end
+    end
+
+    context 'when a valid key signed using recent version of Gnupg' do
+      before do
+        verified_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint, valid?: true)
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify).and_yield(verified_signature)
+      end
+
+      it { is_expected.to eq(gpg_key) }
+    end
+
+    context 'when a valid key signed using older version of Gnupg' do
+      before do
+        keyid = GpgHelpers::User1.fingerprint.last(16)
+        verified_signature = instance_double(GPGME::Signature, fingerprint: keyid, valid?: true)
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify).and_yield(verified_signature)
+      end
+
+      it { is_expected.to eq(gpg_key) }
+    end
+
+    context 'when commit has multiple signatures' do
+      before do
+        verified_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint, valid?: true)
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify).and_yield(verified_signature).and_yield(instance_double(GPGME::Signature))
+      end
+
+      it 'returns the key matching the first signature' do
+        is_expected.to eq(gpg_key)
+      end
+    end
+
+    context 'when commit signed with a subkey' do
+      let(:committer_email) { GpgHelpers::User3.emails.first }
+      let(:public_key) { GpgHelpers::User3.public_key }
+      let(:signature) { GpgHelpers::User3.signed_commit_signature }
+      let(:signed_text) { GpgHelpers::User3.signed_commit_base_data }
+
+      let(:gpg_key_subkey) do
+        gpg_key.subkeys.find_by(fingerprint: GpgHelpers::User3.subkey_fingerprints.last)
+      end
+
+      it { is_expected.to eq(gpg_key_subkey) }
+    end
+
+    context 'when commit signed with a subkey of a key that has a revoked uid' do
+      let(:committer_email) { GpgHelpers::UserWithRevokedUid.revoked_emails.first }
+      let(:public_key) { GpgHelpers::UserWithRevokedUid.public_key }
+      let(:signature) { GpgHelpers::UserWithRevokedUid.subkey_signed_commit_signature }
+      let(:signed_text) { GpgHelpers::UserWithRevokedUid.subkey_signed_commit_base_data }
+
+      let(:gpg_key_subkey) do
+        gpg_key.subkeys.find_by(fingerprint: GpgHelpers::UserWithRevokedUid.subkey_fingerprints.first)
+      end
+
+      it { is_expected.to eq(gpg_key_subkey) }
+    end
+
+    context 'when there is no matching gpg key' do
+      let(:gpg_key) { nil }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when signature created by GitLab' do
+      let(:signer) { :SIGNER_SYSTEM }
+      let(:gpg_key) { nil }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when the signature is invalid' do
+      let(:signature) { GpgHelpers::User1.signed_commit_signature.tr('=', 'a') }
+
+      it { is_expected.to be_nil }
+    end
+
+    it_behaves_like 'called with temporary keychain'
+  end
+
+  describe '#user_infos' do
+    subject(:user_infos) { gpg_signature.user_infos }
+
+    context 'when the key has a revoked uid beside a live one' do
+      let(:public_key) { GpgHelpers::UserWithRevokedUid.public_key }
+      let(:signature) { GpgHelpers::UserWithRevokedUid.signed_commit_signature }
+      let(:signed_text) { GpgHelpers::UserWithRevokedUid.signed_commit_base_data }
+      let(:committer_email) { GpgHelpers::UserWithRevokedUid.revoked_emails.first }
+
+      it 'returns the live uid' do
+        is_expected.to eq(
+          name: GpgHelpers::UserWithRevokedUid.names.first,
+          email: GpgHelpers::UserWithRevokedUid.emails.first
+        )
+      end
+    end
+
+    context 'when every uid of the key has been revoked' do
+      let(:public_key) { GpgHelpers::UserWithOnlyRevokedUid.public_key }
+      let(:signature) { GpgHelpers::UserWithOnlyRevokedUid.signed_commit_signature }
+      let(:signed_text) { GpgHelpers::UserWithOnlyRevokedUid.signed_commit_base_data }
+      let(:committer_email) { GpgHelpers::UserWithOnlyRevokedUid.revoked_emails.first }
+
+      it { is_expected.to eq({}) }
+    end
+  end
+
+  describe '#gpg_key_primary_keyid' do
+    subject(:gpg_key_primary_keyid) { gpg_signature.gpg_key_primary_keyid }
+
+    context 'when a gpg key exists' do
+      it { is_expected.to eq(gpg_key.keyid) }
+    end
+
+    context 'when a no gpg key does not exist' do
+      let(:gpg_key) { nil }
+
+      it 'returns fingerprint' do
+        allow(gpg_signature).to receive(:fingerprint).and_return('stubbed_fingerprint')
+
+        expect(gpg_key_primary_keyid).to eq('stubbed_fingerprint')
+      end
+    end
+  end
+
+  describe '#fingerprint' do
+    subject(:fingerprint)  { gpg_signature.fingerprint }
+
+    let(:signature_double) { instance_double(GPGME::Signature, fingerprint: 'stubbed_fingerprint') }
+
+    it 'delegates to signature' do
+      expect_next_instance_of(GPGME::Crypto) do |instance|
+        expect(instance).to receive(:verify)
+          .with(signature, signed_text: signed_text)
+          .and_yield(signature_double)
+      end
+
+      expect(fingerprint).to eq('stubbed_fingerprint')
+    end
+
+    context 'when the signature is invalid' do
+      let(:signature) { GpgHelpers::User1.signed_commit_signature.tr('=', 'a') }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when gpg_signatures returns signatures initially but empty array on re-verification' do
+      before do
+        verified_signature = instance_double(GPGME::Signature, fingerprint: GpgHelpers::User1.fingerprint, valid?: true)
+        call_count = 0
+        allow(GPGME::Crypto).to receive(:new).and_return(crypto)
+        allow(crypto).to receive(:verify) do |*_args, &block|
+          call_count += 1
+          block.call(verified_signature) if call_count == 1
+        end
+      end
+
+      it { is_expected.to be_nil }
+    end
+
+    it_behaves_like 'called with temporary keychain'
+  end
+end

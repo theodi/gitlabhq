@@ -1,0 +1,129 @@
+# frozen_string_literal: true
+
+# require 'fast_spec_helper' -- this no longer runs under fast_spec_helper
+require 'spec_helper'
+require 'rspec-parameterized'
+
+RSpec.describe Gitlab::Graphql::KnownOperations, feature_category: :api do
+  using RSpec::Parameterized::TableSyntax
+
+  # Include duplicated operation names to test that we are unique-ifying them
+  let(:fake_operations) do
+    { "foo" => { "feature_category" => "source_code_management", "urgency" => "low" },
+      "bar" => { "feature_category" => nil, "urgency" => "default" },
+      "baz" => { "feature_category" => nil, "urgency" => "default" },
+      "high_urgency_op" => { "feature_category" => nil, "urgency" => "high" } }
+  end
+
+  let(:fake_schema) do
+    Class.new(GraphQL::Schema) do
+      query Graphql::FakeQueryType
+    end
+  end
+
+  subject { described_class.new(fake_operations) }
+
+  describe "#from_query" do
+    where(:query_string, :expected) do
+      "query { helloWorld }"         | described_class::UNKNOWN
+      "query fuzzyyy { helloWorld }" | described_class::UNKNOWN
+      "query foo { helloWorld }"     | described_class::Operation.new("foo",
+        { "feature_category" => "source_code_management", "urgency" => "low" }
+      )
+    end
+
+    with_them do
+      it "returns known operation name from GraphQL Query" do
+        query = ::GraphQL::Query.new(fake_schema, query_string)
+
+        expect(subject.from_query(query)).to eq(expected)
+      end
+    end
+  end
+
+  describe "#from_operation_name" do
+    where(:operation_name, :expected) do
+      nil     | described_class::UNKNOWN
+      ""      | described_class::UNKNOWN
+      "fuzzy" | described_class::UNKNOWN
+      "foo"   | described_class::Operation.new("foo",
+        { "feature_category" => "source_code_management", "urgency" => "low" }
+      )
+    end
+
+    with_them do
+      it "returns the known operation matching the name" do
+        expect(subject.from_operation_name(operation_name)).to eq(expected)
+      end
+    end
+  end
+
+  describe "#operations" do
+    it "returns array of known operations" do
+      expect(subject.operations.map(&:name)).to match_array(%w[unknown foo bar baz high_urgency_op])
+    end
+  end
+
+  describe "Operation#to_caller_id" do
+    where(:query_string, :expected) do
+      "query { helloWorld }"         | "graphql:#{described_class::UNKNOWN.name}"
+      "query foo { helloWorld }"     | "graphql:foo"
+    end
+
+    with_them do
+      it "formats operation name for caller_id metric property" do
+        query = ::GraphQL::Query.new(fake_schema, query_string)
+
+        expect(subject.from_query(query).to_caller_id).to eq(expected)
+      end
+    end
+  end
+
+  describe "Operation#query_urgency" do
+    where(:query_string, :expected_urgency) do
+      "query bar { helloWorld }"           | ::Gitlab::EndpointAttributes::Config::REQUEST_URGENCIES[:default]
+      "query foo { helloWorld }"           | ::Gitlab::EndpointAttributes::Config::REQUEST_URGENCIES[:low]
+      "query high_urgency_op { helloWorld }" | ::Gitlab::EndpointAttributes::Config::REQUEST_URGENCIES[:high]
+    end
+
+    with_them do
+      it "returns the associated query urgency" do
+        query = ::GraphQL::Query.new(fake_schema, query_string)
+
+        expect(subject.from_query(query).query_urgency).to equal(expected_urgency)
+      end
+    end
+  end
+
+  describe "Operation#feature_category" do
+    where(:query_string, :expected_category) do
+      "query foo { helloWorld }"           | "source_code_management"
+      "query bar { helloWorld }"           | nil
+      "query high_urgency_op { helloWorld }" | nil
+    end
+
+    with_them do
+      it "returns the associated feature category" do
+        query = ::GraphQL::Query.new(fake_schema, query_string)
+
+        expect(subject.from_query(query).feature_category).to eq(expected_category)
+      end
+    end
+  end
+
+  describe ".default" do
+    it "returns a memoization of values from webpack", :aggregate_failures do
+      # .default could have been referenced in another spec, so we need to clean it up here
+      described_class.instance_variable_set(:@default, nil)
+
+      expect(Gitlab::Webpack::GraphqlKnownOperations).to receive(:load).once.and_return(fake_operations)
+
+      2.times { described_class.default }
+
+      # Uses reference equality to verify memoization
+      expect(described_class.default).to equal(described_class.default)
+      expect(described_class.default).to be_a(described_class)
+      expect(described_class.default.operations.map(&:name)).to include(*fake_operations.keys)
+    end
+  end
+end

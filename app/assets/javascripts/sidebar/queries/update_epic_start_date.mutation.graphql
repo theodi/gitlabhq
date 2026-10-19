@@ -1,0 +1,12 @@
+mutation updateEpicStartDate($input: UpdateEpicInput!) {
+  issuableSetDate: updateEpic(input: $input) {
+    issuable: epic {
+      id
+      startDateIsFixed
+      startDateFixed
+      startDate
+      startDateFromMilestones
+    }
+    errors
+  }
+}

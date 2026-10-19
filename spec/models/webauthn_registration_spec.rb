@@ -1,0 +1,105 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe WebauthnRegistration, feature_category: :system_access do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:webauthn_device) { create(:webauthn_registration, user: user) } # default second_factor
+  let_it_be(:passkey) { create(:webauthn_registration, :passkey, user: user) }
+  let_it_be(:second_factor_authenticator) { create(:webauthn_registration, :second_factor, user: user) }
+  let_it_be(:passkey_eligible_second_factor_authenticator) do
+    create(:webauthn_registration, :passkey_eligible, user: user)
+  end
+
+  describe 'relations' do
+    it { is_expected.to belong_to(:user) }
+  end
+
+  describe 'validations', :aggregate_failures do
+    it { is_expected.to validate_presence_of(:credential_xid) }
+    it { is_expected.to validate_presence_of(:public_key) }
+    it { is_expected.to validate_presence_of(:counter) }
+    it { is_expected.to validate_presence_of(:authentication_mode) }
+    it { is_expected.to validate_inclusion_of(:passkey_eligible).in_array([true, false]) }
+    it { is_expected.to validate_length_of(:name).is_at_least(0) }
+    it { is_expected.not_to allow_value(nil).for(:name) }
+
+    it do
+      is_expected.to validate_numericality_of(:counter)
+          .only_integer
+          .is_greater_than_or_equal_to(0)
+          .is_less_than_or_equal_to(4294967295)
+    end
+
+    context 'for passwordless authentication mode' do
+      let(:credential) { build(:webauthn_registration, authentication_mode: :passwordless) }
+
+      it 'ensures that the credential is passkey eligible' do
+        credential.passkey_eligible = true
+        expect(credential).to be_valid
+
+        credential.passkey_eligible = false
+        expect(credential).to be_invalid
+        expect(credential.errors[:base]).to include('This credential is not passkey eligible')
+
+        credential.authentication_mode = :second_factor
+        expect(credential).to be_valid
+      end
+    end
+  end
+
+  describe 'enums' do
+    let(:modes) do
+      {
+        passwordless: 1,
+        second_factor: 2
+      }
+    end
+
+    it { is_expected.to define_enum_for(:authentication_mode).with_values(modes) }
+  end
+
+  describe 'scopes' do
+    describe '.passkey' do
+      it 'returns all passkeys' do
+        expect(described_class.passkey).to eq([passkey])
+      end
+    end
+
+    describe '.second_factor_authenticator' do
+      it 'returns all second_factor_authenticators' do
+        expect(described_class.second_factor_authenticator).to match_array(
+          [webauthn_device, second_factor_authenticator, passkey_eligible_second_factor_authenticator]
+        )
+      end
+    end
+  end
+
+  describe '#passkey?' do
+    subject(:passkey?) { webauthn_registration.passkey? }
+
+    context 'when webauthn_registration is registered as passkey' do
+      let(:webauthn_registration) { passkey }
+
+      it 'returns true' do
+        expect(passkey?).to be(true)
+      end
+    end
+
+    context 'when webauthn_registration is registered as second factor authenticator' do
+      let(:webauthn_registration) { second_factor_authenticator }
+
+      it 'returns false' do
+        expect(passkey?).to be(false)
+      end
+    end
+
+    context 'when webauthn_registration is registered as passkey eligible second factor authenticator' do
+      let(:webauthn_registration) { passkey_eligible_second_factor_authenticator }
+
+      it 'returns false' do
+        expect(passkey?).to be(false)
+      end
+    end
+  end
+end

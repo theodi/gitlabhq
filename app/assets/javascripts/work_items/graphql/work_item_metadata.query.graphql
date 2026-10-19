@@ -1,0 +1,30 @@
+#import "./work_item_metadata.fragment.graphql"
+
+# @feature_category: team_planning
+query workItemMetadata($fullPath: ID!) {
+  namespace(fullPath: $fullPath) {
+    id
+    name
+    availableFeatures {
+      ...WorkItemAvailableFeatures
+    }
+    linkPaths {
+      ...WorkItemLinkPaths
+    }
+    userPermissions {
+      createWorkItem
+      createLabel @gl_introduced(version: "19.5.0")
+      createProjects
+      adminIssue
+      adminProject
+      importWorkItems
+      readCrmContact
+      readCrmOrganization
+      createSavedView
+    }
+    metadata {
+      ...WorkItemMetadata
+    }
+    subscribedSavedViewLimit
+  }
+}

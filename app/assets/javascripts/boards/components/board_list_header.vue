@@ -1,0 +1,595 @@
+<script>
+import {
+  GlAvatar,
+  GlButton,
+  GlButtonGroup,
+  GlLabel,
+  GlTooltip,
+  GlIcon,
+  GlSprintf,
+  GlTooltipDirective,
+  GlAnimatedChevronLgRightDownIcon,
+} from '@gitlab/ui';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { getBoardListTitleId, isListDraggable } from '~/boards/boards_util';
+import { isScopedLabel } from '~/lib/utils/common_utils';
+import { fetchPolicies } from '~/lib/graphql';
+import { BV_HIDE_TOOLTIP } from '~/lib/utils/constants';
+import { n__, s__ } from '~/locale';
+import Tracking from '~/tracking';
+import { TYPE_ISSUE } from '~/issues/constants';
+import setActiveBoardItemMutation from 'ee_else_ce/boards/graphql/client/set_active_board_item.mutation.graphql';
+import MilestonePopover from '~/issuable/popover/components/milestone_popover.vue';
+import AccessorUtilities from '~/lib/utils/accessor';
+import {
+  ListType,
+  updateListQueries,
+  toggleCollapsedMutations,
+  listsDeferredQuery,
+} from 'ee_else_ce/boards/constants';
+import { setError } from '../graphql/cache_updates';
+import ItemCount from './item_count.vue';
+
+export default {
+  name: 'BoardListHeader',
+  i18n: {
+    newIssue: s__('Boards|Create new issue'),
+    newEpic: s__('Boards|Create new epic'),
+    listSettings: s__('Boards|Edit list settings'),
+    expand: s__('Boards|Expand'),
+    collapse: s__('Boards|Collapse'),
+    fetchError: s__(
+      "Boards|An error occurred while fetching list's information. Please try again.",
+    ),
+  },
+  components: {
+    GlAvatar,
+    GlButton,
+    GlButtonGroup,
+    GlLabel,
+    GlTooltip,
+    MilestonePopover,
+    GlIcon,
+    GlSprintf,
+    GlAnimatedChevronLgRightDownIcon,
+    ItemCount,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [Tracking.mixin()],
+  inject: {
+    weightFeatureAvailable: {
+      default: false,
+    },
+    scopedLabelsAvailable: {
+      default: false,
+    },
+    currentUserId: {
+      default: null,
+    },
+    canCreateEpic: {
+      default: false,
+    },
+    isEpicBoard: {
+      default: false,
+    },
+    disabled: {
+      default: true,
+    },
+    issuableType: {
+      default: TYPE_ISSUE,
+    },
+  },
+  props: {
+    list: {
+      type: Object,
+      default: () => ({}),
+      required: false,
+    },
+    isSwimlanesHeader: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    filterParams: {
+      type: Object,
+      required: true,
+    },
+    boardId: {
+      type: String,
+      required: true,
+    },
+  },
+  emits: ['open-unassigned-lane', 'set-active-list', 'toggle-new-form'],
+  data() {
+    return {
+      showMilestonePopover: false,
+    };
+  },
+  computed: {
+    isLoggedIn() {
+      return Boolean(this.currentUserId);
+    },
+    listType() {
+      return this.list.listType;
+    },
+    isLabelList() {
+      return this.listType === ListType.label;
+    },
+    itemsCount() {
+      return this.isEpicBoard ? this.list.metadata.epicsCount : this.boardList?.issuesCount;
+    },
+    hasItemsCount() {
+      return typeof this.itemsCount === 'number';
+    },
+    boardItemsSizeExceedsMax() {
+      return this.list.maxIssueCount > 0 && this.itemsCount > this.list.maxIssueCount;
+    },
+    listAssignee() {
+      return this.list?.assignee?.username || '';
+    },
+    listTitle() {
+      return this.list?.label?.description || this.list?.assignee?.name || this.list.title || '';
+    },
+    listTitleId() {
+      return getBoardListTitleId(this.list.id);
+    },
+    listStatus() {
+      return this.list?.status || {};
+    },
+    listStatusColor() {
+      return this.listStatus?.color;
+    },
+    listStatusIconName() {
+      return this.listStatus?.iconName;
+    },
+    showListHeaderButton() {
+      return !this.disabled && this.listType !== ListType.closed;
+    },
+    showAssigneeListDetails() {
+      return this.listType === ListType.assignee && this.showListDetails;
+    },
+    showListDetails() {
+      return !this.list.collapsed || !this.isSwimlanesHeader;
+    },
+    showListHeaderActions() {
+      if (this.isLoggedIn) {
+        return (
+          (this.isNewIssueShown || this.isNewEpicShown || this.isSettingsShown) &&
+          !this.list.collapsed
+        );
+      }
+      return false;
+    },
+    countIcon() {
+      return 'issues';
+    },
+    itemsTooltipLabel() {
+      return n__(`%d issue`, `%d issues`, this.itemsCount);
+    },
+    chevronTooltip() {
+      return this.list.collapsed ? this.$options.i18n.expand : this.$options.i18n.collapse;
+    },
+    isNewIssueShown() {
+      return (this.listType === ListType.backlog || this.showListHeaderButton) && !this.isEpicBoard;
+    },
+    isNewEpicShown() {
+      return this.isEpicBoard && this.canCreateEpic && this.listType !== ListType.closed;
+    },
+    isSettingsShown() {
+      return (
+        this.listType !== ListType.backlog &&
+        this.listType !== ListType.closed &&
+        !this.list.collapsed
+      );
+    },
+    uniqueKey() {
+      // eslint-disable-next-line @gitlab/require-i18n-strings
+      return `boards.${this.boardId}.${this.listType}.${this.list.id}`;
+    },
+    collapsedTooltipTitle() {
+      return this.listTitle || this.listAssignee;
+    },
+    headerStyle() {
+      return { borderTopColor: this.list?.label?.color };
+    },
+    userCanDrag() {
+      return !this.disabled && isListDraggable(this.list);
+    },
+    // due to the issues with cache-and-network, we need this hack to check if there is any data for the query in the cache.
+    // if we have cached data, we disregard the loading state
+    isLoading() {
+      return (
+        this.$apollo.queries.boardList.loading &&
+        !this.$apollo.provider.clients.defaultClient.readQuery({
+          query: listsDeferredQuery[this.issuableType].query,
+          variables: this.countQueryVariables,
+        })
+      );
+    },
+    totalIssueWeight() {
+      return parseInt(this.boardList?.totalIssueWeight, 10);
+    },
+    canShowTotalWeight() {
+      return this.weightFeatureAvailable && !this.isLoading;
+    },
+    countQueryVariables() {
+      return {
+        id: this.list.id,
+        filters: this.filterParams,
+      };
+    },
+    showStatusIcon() {
+      return this.listType === 'status' && (!this.isSwimlanesHeader || !this.list.collapsed);
+    },
+  },
+  apollo: {
+    // eslint-disable-next-line @gitlab/vue-no-undef-apollo-properties
+    boardList: {
+      fetchPolicy: fetchPolicies.CACHE_AND_NETWORK,
+      query() {
+        return listsDeferredQuery[this.issuableType].query;
+      },
+      variables() {
+        return this.countQueryVariables;
+      },
+      error(error) {
+        setError({
+          error,
+          message: this.$options.i18n.fetchError,
+        });
+      },
+    },
+  },
+  created() {
+    const localCollapsed = parseBoolean(localStorage.getItem(`${this.uniqueKey}.collapsed`));
+    if ((!this.isLoggedIn || this.isEpicBoard) && localCollapsed) {
+      this.updateLocalCollapsedStatus(true);
+    }
+  },
+  methods: {
+    openSidebarSettings() {
+      this.$apollo.mutate({
+        mutation: setActiveBoardItemMutation,
+        variables: { boardItem: null, listId: null },
+      });
+      this.$emit('set-active-list', this.list.id);
+
+      this.track('click_button', { label: 'list_settings' });
+    },
+    showScopedLabels(label) {
+      return this.scopedLabelsAvailable && isScopedLabel(label);
+    },
+    showNewForm() {
+      if (this.isSwimlanesHeader) {
+        this.$emit('open-unassigned-lane');
+        this.$nextTick(() => {
+          this.$emit('toggle-new-form');
+        });
+      } else {
+        this.$emit('toggle-new-form');
+      }
+    },
+    toggleExpanded() {
+      const collapsed = !this.list.collapsed;
+      this.updateLocalCollapsedStatus(collapsed);
+
+      if (!this.isLoggedIn) {
+        this.addToLocalStorage(collapsed);
+      } else {
+        this.updateListFunction(collapsed);
+      }
+
+      // When expanding/collapsing, the tooltip on the caret button sometimes stays open.
+      // Close all tooltips manually to prevent dangling tooltips.
+      this.$root.$emit(BV_HIDE_TOOLTIP);
+
+      this.track('click_toggle_button', {
+        label: 'toggle_list',
+        property: collapsed ? 'closed' : 'open',
+      });
+    },
+    addToLocalStorage(collapsed) {
+      if (AccessorUtilities.canUseLocalStorage()) {
+        localStorage.setItem(`${this.uniqueKey}.collapsed`, collapsed);
+      }
+    },
+    async updateListFunction(collapsed) {
+      try {
+        await this.$apollo.mutate({
+          mutation: updateListQueries[this.issuableType].mutation,
+          variables: {
+            listId: this.list.id,
+            collapsed,
+          },
+          optimisticResponse: {
+            updateBoardList: {
+              __typename: 'UpdateBoardListPayload',
+              errors: [],
+              list: {
+                ...this.list,
+                collapsed,
+              },
+            },
+          },
+        });
+      } catch (error) {
+        setError({
+          error,
+          message: s__('Boards|An error occurred while updating the list. Please try again.'),
+        });
+      }
+    },
+    updateLocalCollapsedStatus(collapsed) {
+      this.$apollo.mutate({
+        mutation: toggleCollapsedMutations[this.issuableType].mutation,
+        variables: {
+          list: this.list,
+          collapsed,
+        },
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <header
+    :class="{
+      'gl-h-full': list.collapsed,
+      'gl-bg-strong': isSwimlanesHeader,
+      'gl-rounded-tl-base gl-rounded-tr-base gl-border-4 gl-border-t-solid': isLabelList,
+      'gl-rounded-tl-base gl-rounded-tr-base gl-bg-red-50': boardItemsSizeExceedsMax,
+    }"
+    :style="headerStyle"
+    class="board-header gl-relative"
+    data-testid="board-list-header"
+  >
+    <div
+      :class="{
+        'gl-cursor-grab': userCanDrag,
+        'gl-h-full gl-py-3': list.collapsed && !isSwimlanesHeader,
+        'gl-border-b-0': list.collapsed || isSwimlanesHeader,
+        'gl-pb-0 gl-pt-2': list.collapsed && isSwimlanesHeader,
+        'gl-flex-col': list.collapsed,
+        '-gl-mt-2': isLabelList && (!list.collapsed || (list.collapsed && isSwimlanesHeader)),
+        'gl-pt-3': isLabelList && list.collapsed && isSwimlanesHeader,
+      }"
+      class="board-title gl-m-0 gl-flex gl-h-9 gl-items-center gl-px-3 gl-text-base gl-will-change-transform"
+    >
+      <gl-button
+        v-gl-tooltip
+        :aria-label="chevronTooltip"
+        :title="chevronTooltip"
+        class="board-title-caret no-drag btn-icon gl-cursor-pointer hover:gl-bg-strong"
+        :class="{
+          '-gl-mt-1': list.collapsed && isLabelList,
+          'gl-mb-2': list.collapsed && isLabelList && !isSwimlanesHeader,
+          'gl-mt-1': list.collapsed && !isLabelList,
+          'gl-mr-2': !list.collapsed,
+        }"
+        category="tertiary"
+        size="small"
+        data-testid="board-title-caret"
+        @click="toggleExpanded"
+      >
+        <gl-animated-chevron-lg-right-down-icon :is-on="!list.collapsed" />
+      </gl-button>
+      <milestone-popover
+        v-if="showMilestonePopover"
+        :target="$refs.milestoneTrigger"
+        :milestone-id="list.milestone && list.milestone.id"
+        :cached-title="listTitle"
+        :placement="list.collapsed ? 'right' : 'bottom'"
+      />
+      <!-- EE start -->
+
+      <a
+        v-if="showAssigneeListDetails"
+        :href="list.assignee.webUrl"
+        class="user-avatar-link js-no-trigger"
+        :class="{
+          'gl-mt-5 gl-rotate-90': list.collapsed,
+        }"
+      >
+        <gl-avatar
+          v-gl-tooltip.bottom
+          :title="listAssignee"
+          :alt="list.assignee.name"
+          :src="list.assignee.avatarUrl"
+          :entity-name="list.assignee.name"
+          :size="24"
+          class="gl-mr-3"
+        />
+      </a>
+      <gl-icon
+        v-if="showStatusIcon"
+        data-testid="status-icon"
+        :name="listStatusIconName"
+        :size="12"
+        :class="{
+          'gl-mt-2': list.collapsed,
+          'gl-mx-2': !list.collapsed,
+          'gl-shrink-0': true,
+        }"
+        :style="{ color: listStatusColor }"
+      />
+      <!-- EE end -->
+      <h2
+        :id="listTitleId"
+        class="gl-text-bold board-title-text gl-text-base"
+        :class="{
+          'gl-hidden': list.collapsed && isSwimlanesHeader,
+          'gl-mx-0 gl-my-3 gl-flex-grow-0 gl-rotate-90 gl-py-0': list.collapsed,
+          'gl-grow': !list.collapsed,
+          'gl-max-w-20': list.collapsed && listType === 'milestone',
+        }"
+      >
+        <!-- EE start -->
+
+        <span
+          v-if="listType === 'milestone'"
+          ref="milestoneTrigger"
+          data-testid="milestone-trigger"
+          class="board-title-main-text gl-block gl-truncate"
+          :class="{
+            'gl-max-w-20 gl-text-subtle': list.collapsed,
+          }"
+          @mouseenter="showMilestonePopover = true"
+          @mouseleave="showMilestonePopover = false"
+        >
+          {{ listTitle }}
+        </span>
+
+        <span
+          v-else-if="listType !== 'label'"
+          v-gl-tooltip
+          :class="{
+            '!gl-ml-2': list.collapsed && !showAssigneeListDetails,
+            'gl-text-subtle': list.collapsed,
+            'gl-block': list.collapsed || listType === 'milestone',
+          }"
+          :title="listTitle"
+          class="board-title-main-text gl-truncate"
+        >
+          {{ listTitle }}
+        </span>
+
+        <span
+          v-if="listType === 'assignee'"
+          v-show="!list.collapsed"
+          class="gl-ml-2 gl-font-normal gl-text-subtle"
+        >
+          @{{ listAssignee }}
+        </span>
+
+        <!-- EE end -->
+
+        <gl-label
+          v-if="listType === 'label' && list.label"
+          v-gl-tooltip.bottom
+          :background-color="list.label.color"
+          :description="list.label.description"
+          :scoped="showScopedLabels(list.label)"
+          :title="list.label.title"
+        />
+      </h2>
+
+      <!-- EE start -->
+      <span
+        v-if="isSwimlanesHeader && list.collapsed"
+        ref="collapsedInfo"
+        aria-hidden="true"
+        class="board-header-collapsed-info-icon gl-cursor-pointer"
+      >
+        <gl-icon name="information" variant="subtle" />
+      </span>
+      <gl-tooltip v-if="isSwimlanesHeader && list.collapsed" :target="() => $refs.collapsedInfo">
+        <div class="gl-pb-2 gl-font-bold">{{ collapsedTooltipTitle }}</div>
+        <div v-if="hasItemsCount && list.maxIssueCount !== 0">
+          •
+          <gl-sprintf :message="__('%{issuesSize} with a limit of %{maxIssueCount}')">
+            <template #issuesSize>{{ itemsCount }}</template>
+            <template #maxIssueCount>{{ list.maxIssueCount }}</template>
+          </gl-sprintf>
+        </div>
+        <div v-else-if="hasItemsCount">• {{ itemsTooltipLabel }}</div>
+        <div v-if="weightFeatureAvailable && !isLoading">
+          •
+          <gl-sprintf :message="__('%{totalIssueWeight} total weight')">
+            <template #totalIssueWeight>{{ totalIssueWeight }}</template>
+          </gl-sprintf>
+        </div>
+      </gl-tooltip>
+      <!-- EE end -->
+
+      <div
+        class="issue-count-badge no-drag gl-inline-flex gl-pr-2"
+        data-testid="issue-count-badge"
+        :class="{
+          '!gl-hidden': list.collapsed && isSwimlanesHeader,
+          'gl-p-0': list.collapsed,
+        }"
+      >
+        <span class="gl-inline-flex gl-items-center" :class="{ 'gl-rotate-90': list.collapsed }">
+          <gl-button
+            v-if="isLoading || hasItemsCount"
+            ref="itemCount"
+            v-gl-tooltip
+            :title="itemsTooltipLabel"
+            class="!gl-bg-transparent !gl-p-0"
+            data-testid="item-count"
+            category="tertiary"
+            size="small"
+            button-text-classes="gl-flex gl-text-subtle gl-text-sm gl-font-bold"
+          >
+            <gl-icon class="gl-mr-2" :name="countIcon" :size="14" />
+            <item-count
+              v-if="!isLoading"
+              :current-count="itemsCount"
+              :max-count="list.maxIssueCount"
+            />
+          </gl-button>
+          <!-- EE start -->
+          <template v-if="canShowTotalWeight">
+            <gl-button
+              ref="weightTooltip"
+              v-gl-tooltip
+              :title="weightCountToolTip"
+              class="gl-ml-3 !gl-bg-transparent !gl-p-0"
+              data-testid="weight"
+              category="tertiary"
+              size="small"
+              button-text-classes="gl-flex gl-text-subtle gl-text-sm gl-font-bold"
+            >
+              <gl-icon class="gl-mr-2" name="weight" :size="14" />
+              <item-count
+                v-if="!isLoading"
+                :current-count="totalIssueWeight"
+                :max-count="list.maxIssueWeight"
+              />
+            </gl-button>
+          </template>
+          <!-- EE end -->
+        </span>
+      </div>
+      <gl-button-group v-if="showListHeaderActions" class="board-list-button-group gl-pl-2">
+        <gl-button
+          v-if="isNewIssueShown"
+          ref="newIssueBtn"
+          v-gl-tooltip
+          :aria-label="$options.i18n.newIssue"
+          :title="$options.i18n.newIssue"
+          size="small"
+          icon="plus"
+          data-testid="new-issue-btn"
+          @click="showNewForm"
+        />
+
+        <gl-button
+          v-if="isNewEpicShown"
+          v-gl-tooltip
+          :aria-label="$options.i18n.newEpic"
+          :title="$options.i18n.newEpic"
+          size="small"
+          icon="plus"
+          data-testid="new-epic-btn"
+          @click="showNewForm"
+        />
+
+        <gl-button
+          v-if="isSettingsShown"
+          ref="settingsBtn"
+          v-gl-tooltip
+          :aria-label="$options.i18n.listSettings"
+          size="small"
+          :title="$options.i18n.listSettings"
+          icon="settings"
+          data-testid="settings-btn"
+          @click="openSidebarSettings"
+        />
+      </gl-button-group>
+    </div>
+  </header>
+</template>

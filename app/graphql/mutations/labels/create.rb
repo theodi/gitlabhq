@@ -1,0 +1,55 @@
+# frozen_string_literal: true
+
+module Mutations
+  module Labels
+    class Create < BaseMutation
+      graphql_name 'LabelCreate'
+
+      include Mutations::ResolvesResourceParent
+
+      field :label,
+        Types::LabelType,
+        null: true,
+        description: 'Label after mutation.'
+
+      argument :title, GraphQL::Types::String,
+        required: true,
+        description: 'Title of the label.'
+
+      argument :description, GraphQL::Types::String,
+        required: false,
+        description: 'Description of the label.'
+
+      argument :color, GraphQL::Types::String,
+        required: false,
+        default_value: Label::DEFAULT_COLOR,
+        see: {
+          'List of color keywords at mozilla.org' =>
+            'https://developer.mozilla.org/en-US/docs/Web/CSS/color_value#Color_keywords'
+        },
+        description: <<~DESC
+                 The color of the label given in 6-digit hex notation with leading '#' sign
+                 (for example, `#FFAABB`) or one of the CSS color names.
+        DESC
+
+      authorize :create_label
+      authorize_granular_token permissions: :create_label,
+        boundaries: [
+          { boundary_argument: :project_path, boundary_type: :project },
+          { boundary_argument: :group_path, boundary_type: :group }
+        ]
+
+      def resolve(args)
+        parent = authorized_resource_parent_find!(args)
+        parent_key = parent.is_a?(Project) ? :project : :group
+
+        label = ::Labels::CreateService.new(current_user, args).execute(parent_key => parent)
+
+        {
+          label: label.persisted? ? label : nil,
+          errors: errors_on_object(label)
+        }
+      end
+    end
+  end
+end

@@ -1,0 +1,33 @@
+# frozen_string_literal: true
+
+return unless helper.ci?
+
+SPECIALIZATIONS = {
+  database: 'database',
+  backend: 'backend',
+  frontend: 'frontend',
+  ux: 'UX',
+  docs: 'documentation',
+  qa: 'QA',
+  ci_template: 'ci::templates',
+  feature_flag: 'feature flag'
+}.freeze
+
+labels_to_add = helper.changes_by_category.each_with_object([]) do |(category, _changes), memo|
+  label = SPECIALIZATIONS[category]
+  next unless label
+  next if helper.mr_labels.include?(label)
+
+  # Don't override already-set scoped labels.
+  label_scope = label.split('::')[0...-1].join('::')
+  next if !label_scope.empty? && helper.has_scoped_label_with_scope?(label_scope)
+
+  memo << label
+end
+
+# qa/ is categorized as :backend for reviewer roulette, but still warrants the ~QA label.
+qa_label = SPECIALIZATIONS[:qa]
+has_qa_changes = helper.changed_files(%r{\A((ee|jh)/)?qa/}).any?
+labels_to_add << qa_label if has_qa_changes && !helper.mr_labels.include?(qa_label)
+
+helper.labels_to_add.concat(labels_to_add) if labels_to_add.any?

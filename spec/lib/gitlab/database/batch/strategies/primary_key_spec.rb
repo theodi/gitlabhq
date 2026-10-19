@@ -1,0 +1,145 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Database::Batch::Strategies::PrimaryKey, '#next_batch', feature_category: :database do
+  include MigrationsHelpers
+
+  let(:batching_strategy) { described_class.new(connection: ActiveRecord::Base.connection) }
+  let(:job_class) do
+    Class.new(Gitlab::BackgroundOperation::BaseOperationWorker) do
+      cursor :id
+    end
+  end
+
+  let_it_be(:namespaces) { table(:namespaces) }
+
+  let_it_be(:organization) { table(:organizations).create!(name: 'organization', path: 'organization') }
+  let_it_be(:namespace1) do
+    namespaces.create!(name: 'batchtest999', path: 'batch-test1', organization_id: organization.id)
+  end
+
+  let_it_be(:namespace2) do
+    namespaces.create!(name: 'batchtest2', path: 'batch-test2', organization_id: organization.id)
+  end
+
+  let_it_be(:namespace3) do
+    namespaces.create!(name: 'batchtest3', path: 'batch-test3', organization_id: organization.id)
+  end
+
+  let_it_be(:namespace4) do
+    namespaces.create!(name: 'batchtest4', path: 'batch-test4', organization_id: organization.id)
+  end
+
+  it { expect(described_class).to be < Gitlab::Database::Batch::Strategies::BaseStrategy }
+
+  context 'when starting on the first batch' do
+    it 'returns the bounds of the next batch' do
+      batch_bounds = batching_strategy.next_batch(:namespaces, batch_min_value: [namespace1.id], batch_size: 3,
+        job_class: job_class)
+
+      expect(batch_bounds).to match_array([[namespace1.id], [namespace3.id]])
+    end
+  end
+
+  context 'when additional batches batch' do
+    it 'returns the bounds of the next batch' do
+      batch_bounds = batching_strategy.next_batch(:namespaces, batch_min_value: [namespace2.id], batch_size: 3,
+        job_class: job_class)
+
+      expect(batch_bounds).to match_array([[namespace2.id], [namespace4.id]])
+    end
+  end
+
+  context 'when on the final batch' do
+    it 'returns the bounds of the next batch' do
+      batch_bounds = batching_strategy.next_batch(:namespaces, batch_min_value: [namespace4.id], batch_size: 3,
+        job_class: job_class)
+
+      expect(batch_bounds).to eq([[namespace4.id], [namespace4.id]])
+    end
+  end
+
+  context 'when no additional batches remain' do
+    it 'returns nil' do
+      batch_bounds = batching_strategy.next_batch(:namespaces, batch_min_value: [namespace4.id + 1], batch_size: 1,
+        job_class: job_class)
+
+      expect(batch_bounds).to be_nil
+    end
+  end
+
+  context 'when cursor column is a non-integer type' do
+    let(:job_class) do
+      Class.new(Gitlab::BackgroundOperation::BaseOperationWorker) do
+        cursor :id, :name
+      end
+    end
+
+    it 'correctly casts values in the tuple comparison' do
+      batch_bounds = batching_strategy.next_batch(:namespaces,
+        batch_min_value: [namespace1.id, namespace1.name], batch_size: 3, job_class: job_class)
+
+      expect(batch_bounds).to match_array([[namespace1.id, namespace1.name], [namespace3.id, namespace3.name]])
+    end
+  end
+
+  it 'selects only the cursor columns so the batching query can be an index only scan' do
+    queries = []
+    subscriber = ActiveSupport::Notifications.subscribe('sql.active_record') do |*args|
+      event = ActiveSupport::Notifications::Event.new(*args)
+      queries << event.payload[:sql]
+    end
+
+    begin
+      batching_strategy.next_batch(:namespaces, batch_min_value: [namespace1.id], batch_size: 3,
+        job_class: job_class)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+
+    expect(queries).to include(
+      a_string_matching(/SELECT "namespaces"\."id" FROM/i)
+    )
+  end
+
+  context 'with scope_to' do
+    let(:scoped_job_class) do
+      Class.new(Gitlab::BackgroundOperation::BaseOperationWorker) do
+        cursor :id
+        scope_to ->(relation) { relation.where(name: 'batchtest999') }
+      end
+    end
+
+    it 'calculates batch boundaries based on matching rows only' do
+      batch_bounds = batching_strategy.next_batch(:namespaces, batch_min_value: [namespace1.id], batch_size: 10,
+        job_class: scoped_job_class)
+
+      expect(batch_bounds).to eq([[namespace1.id], [namespace1.id]])
+    end
+
+    it 'returns nil when no matching rows exist after min_value' do
+      batch_bounds = batching_strategy.next_batch(:namespaces, batch_min_value: [namespace1.id + 1], batch_size: 10,
+        job_class: scoped_job_class)
+
+      expect(batch_bounds).to be_nil
+    end
+
+    context 'with job_arguments' do
+      let(:scoped_job_class) do
+        Class.new(Gitlab::BackgroundOperation::BaseOperationWorker) do
+          cursor :id
+          job_arguments :target_name
+          scope_to ->(relation) { relation.where(name: target_name) }
+        end
+      end
+
+      it 'passes arguments to the scope' do
+        batch_bounds = batching_strategy.next_batch(:namespaces, batch_min_value: [namespace1.id], batch_size: 10,
+          job_class: scoped_job_class, job_arguments: ['batchtest999'])
+
+        expect(batch_bounds).to eq([[namespace1.id], [namespace1.id]])
+      end
+    end
+  end
+end

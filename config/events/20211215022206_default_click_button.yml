@@ -1,0 +1,14 @@
+description: "Reply comment on design annotations"
+category: default
+action: click_button
+extra_properties:
+identifiers:
+product_group: analytics_instrumentation
+product_categories:
+- application_instrumentation
+milestone:
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/73809
+tiers:
+- free
+- premium
+- ultimate

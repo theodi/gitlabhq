@@ -1,0 +1,18 @@
+---
+description: User expands a panel on a settings page
+internal_events: true
+action: click_expand_panel_on_settings
+identifiers:
+- project
+- namespace
+- user
+product_group: engagement
+product_categories:
+- navigation
+- settings
+milestone: '16.11'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/issues/451458
+tiers:
+- free
+- premium
+- ultimate

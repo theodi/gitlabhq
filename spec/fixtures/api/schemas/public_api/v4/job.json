@@ -1,0 +1,84 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "status",
+    "stage",
+    "name",
+    "ref",
+    "tag",
+    "coverage",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "erased_at",
+    "duration",
+    "queued_duration",
+    "user",
+    "commit",
+    "pipeline",
+    "web_url",
+    "artifacts",
+    "artifacts_expire_at",
+    "tag_list",
+    "runner",
+    "project",
+    "archived"
+  ],
+  "properties": {
+    "id": { "type": "integer" },
+    "status": { "type": "string" },
+    "stage": { "type": "string" },
+    "name": { "type": "string" },
+    "ref": { "type": "string" },
+    "tag": { "type": "boolean" },
+    "coverage": { "type": ["number", "null"] },
+    "allow_failure": { "type": "boolean" },
+    "created_at": { "type": "string" },
+    "started_at": { "type": ["null", "string"] },
+    "finished_at": { "type": ["null", "string"] },
+    "erased_at": { "type": ["null", "string"] },
+    "duration": { "type": ["null", "number"] },
+    "queued_duration": { "type": ["null", "number"] },
+    "user": { "$ref": "user/basic.json" },
+    "commit": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "commit/basic.json" }
+      ]
+    },
+    "pipeline": { "$ref": "pipeline/basic.json" },
+    "web_url": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "artifact.json" }
+    },
+    "artifacts_file": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "artifact_file.json" }
+      ]
+    },
+    "artifacts_expire_at": { "type": ["null", "string"] },
+    "tag_list": {
+      "type": "array"
+    },
+    "runner_manager": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "runner_manager.json" }
+      ]
+    },
+    "runner": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "runner.json" }
+      ]
+    },
+    "project": {
+      "ci_job_token_scope_enabled": { "type": "boolean" }
+    },
+    "archived": { "type": "boolean" }
+  },
+  "additionalProperties":false
+}

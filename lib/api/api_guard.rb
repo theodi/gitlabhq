@@ -1,172 +1,342 @@
+# frozen_string_literal: true
+
 # Guard API with OAuth 2.0 Access Token
 
 require 'rack/oauth2'
 
-module APIGuard
-  extend ActiveSupport::Concern
+module API
+  module APIGuard
+    extend ActiveSupport::Concern
+    include Gitlab::Utils::StrongMemoize
 
-  included do |base|
-    # OAuth2 Resource Server Authentication
-    use Rack::OAuth2::Server::Resource::Bearer, 'The API' do |request|
-      # The authenticator only fetches the raw token string
+    included do |base|
+      # OAuth2 Resource Server Authentication
+      # The authenticator only fetches the raw token string and must yield it
+      # so that it is stored in the env.
+      use Rack::OAuth2::Server::Resource::Bearer, 'The API', &:access_token
 
-      # Must yield access token to store it in the env
-      request.access_token
+      use AdminModeMiddleware
+      use ResponseCoercerMiddleware
+
+      helpers HelperMethods
+
+      install_error_responders(base)
     end
 
-    helpers HelperMethods
+    class_methods do
+      # Set the authorization scope(s) allowed for an API endpoint.
+      #
+      # A call to this method maps the given scope(s) to the current API
+      # endpoint class. If this method is called multiple times on the same class,
+      # the scopes are all aggregated.
+      def allow_access_with_scope(scopes, options = {})
+        Array(scopes).each do |scope|
+          allowed_scopes << Scope.new(scope, options)
+        end
+      end
 
-    install_error_responders(base)
-  end
+      def allowed_scopes
+        @scopes ||= []
+      end
+    end
 
-  # Helper Methods for Grape Endpoint
-  module HelperMethods
-    # Invokes the doorkeeper guard.
-    #
-    # If token is presented and valid, then it sets @current_user.
-    #
-    # If the token does not have sufficient scopes to cover the requred scopes,
-    # then it raises InsufficientScopeError.
-    #
-    # If the token is expired, then it raises ExpiredError.
-    #
-    # If the token is revoked, then it raises RevokedError.
-    #
-    # If the token is not found (nil), then it raises TokenNotFoundError.
-    #
-    # Arguments:
-    #
-    #   scopes: (optional) scopes required for this guard.
-    #           Defaults to empty array.
-    #
-    def doorkeeper_guard!(scopes: [])
-      if (access_token = find_access_token).nil?
-        raise TokenNotFoundError
+    # Helper Methods for Grape Endpoint
+    module HelperMethods
+      include Gitlab::Auth::AuthFinders
 
-      else
-        case validate_access_token(access_token, scopes)
-        when Oauth2::AccessTokenValidationService::INSUFFICIENT_SCOPE
-          raise InsufficientScopeError.new(scopes)
-        when Oauth2::AccessTokenValidationService::EXPIRED
-          raise ExpiredError
-        when Oauth2::AccessTokenValidationService::REVOKED
-          raise RevokedError
-        when Oauth2::AccessTokenValidationService::VALID
-          @current_user = User.find(access_token.resource_owner_id)
+      def access_token
+        strong_memoize(:api_guard_access_token) do
+          super || find_personal_access_token_from_http_basic_auth
+        end
+      end
+
+      def find_current_user!
+        user = find_user_from_sources
+        return unless user
+
+        Gitlab::Auth::CurrentUserMode.bypass_session!(user.id) if bypass_session_for_admin_mode?(user)
+
+        unless api_access_allowed?(user)
+          forbidden!(api_access_denied_message(user))
+        end
+
+        check_language_server_client!(user)
+        check_dpop!(user)
+
+        user
+      end
+
+      def find_user_from_sources
+        strong_memoize(:find_user_from_sources) do
+          if try(:inheritable_setting)&.namespace_inheritable&.[](:authentication)
+            user_from_namespace_inheritable ||
+              user_from_warden
+          else
+            deploy_token_from_request ||
+              find_user_from_bearer_token ||
+              find_user_from_job_token ||
+              user_from_warden
+          end
+        end
+      end
+
+      private
+
+      def group_manage_endpoint?
+        request.path.match?(%r{/groups/(\d+)/manage/})
+      end
+
+      def bypass_session_for_admin_mode?(user)
+        return false unless user.is_a?(User) && Gitlab::CurrentSettings.admin_mode
+
+        Gitlab::Session.with_session(current_request.session) { Gitlab::Auth::CurrentUserMode.new(user).admin_mode? } ||
+          Gitlab::Auth::RequestAuthenticator.new(current_request).valid_access_token?(scopes: [:admin_mode])
+      end
+
+      # An array of scopes that were registered (using `allow_access_with_scope`)
+      # for the current endpoint class. It also returns scopes registered on
+      # `API::API`, since these are meant to apply to all API routes.
+      def scopes_registered_for_endpoint
+        @scopes_registered_for_endpoint ||=
+          begin
+            endpoint_classes = [options[:for].presence, ::API::API].compact
+            endpoint_classes.reduce([]) do |memo, endpoint|
+              if endpoint.respond_to?(:allowed_scopes)
+                memo.concat(endpoint.allowed_scopes)
+              else
+                memo
+              end
+            end
+          end
+      end
+
+      # Scopes the insufficient_scope 403 names in its body and its challenge.
+      #
+      # @param scopes [Array<Symbol>] the scopes that can authorize the request
+      # @return [Array<Symbol>]
+      def bearer_challenge_scopes(scopes)
+        scopes
+      end
+
+      # WWW-Authenticate challenge for an RFC 6750 error, on an endpoint that has one of its own.
+      #
+      # @param error [Symbol] the RFC 6750 error code
+      # @param error_description [String]
+      # @param scope [String, nil] the scopes the 403's body names, nil on a 401
+      # @return [String, nil] the challenge, or nil to keep the guard's
+      # @see API::Helpers::Mcp::AuthChallenge
+      def bearer_challenge(error:, error_description:, scope: nil); end
+
+      def api_access_allowed?(user)
+        user_allowed_or_deploy_token?(user) && user.can?(:access_api)
+      end
+
+      def api_access_denied_message(user)
+        Gitlab::Auth::UserAccessDeniedReason.new(user).rejection_message
+      end
+
+      def check_dpop!(user)
+        return unless api_request? && user.is_a?(User)
+        return unless Feature.enabled?(:dpop_authentication, user)
+
+        token = extract_personal_access_token
+        return unless PersonalAccessToken.find_by_token(token.to_s) # The token is not PAT, exit early
+
+        ::Auth::DpopAuthenticationService.new(current_user: user,
+          personal_access_token_plaintext: token,
+          request: current_request).execute(
+            enforce_dpop_authentication: group_manage_endpoint?,
+            group_id: params[:id])
+      end
+
+      def check_language_server_client!(user)
+        return unless api_request? && user.is_a?(User)
+
+        response = Gitlab::Auth::EditorExtensions::LanguageServerClientVerifier.new(
+          current_user: user,
+          request: current_request
+        ).execute
+
+        raise Gitlab::Auth::RestrictedLanguageServerClientError, response.message if response.error?
+      end
+
+      def user_allowed_or_deploy_token?(user)
+        Gitlab::UserAccess.new(user).allowed? || user.is_a?(DeployToken)
+      end
+
+      def user_from_warden
+        user = find_user_from_warden
+
+        return unless user
+        return if two_factor_required_but_not_setup?(user)
+
+        user
+      end
+
+      def two_factor_required_but_not_setup?(user)
+        verifier = Gitlab::Auth::TwoFactorAuthVerifier.new(user, request)
+
+        if verifier.two_factor_authentication_required? && verifier.current_user_needs_to_setup_two_factor?
+          verifier.two_factor_grace_period_expired?
+        else
+          false
         end
       end
     end
 
-    def doorkeeper_guard(scopes: [])
-      if access_token = find_access_token
-        case validate_access_token(access_token, scopes)
-        when Oauth2::AccessTokenValidationService::INSUFFICIENT_SCOPE
-          raise InsufficientScopeError.new(scopes)
-
-        when Oauth2::AccessTokenValidationService::EXPIRED
-          raise ExpiredError
-
-        when Oauth2::AccessTokenValidationService::REVOKED
-          raise RevokedError
-
-        when Oauth2::AccessTokenValidationService::VALID
-          @current_user = User.find(access_token.resource_owner_id)
+    # Rack::OAuth2 writes the WWW-Authenticate challenge for its Unauthorized error only.
+    # RFC 6750 (section 3) asks for it with the insufficient_scope 403 too, so this error
+    # writes it from the parameters its body carries, and the two cannot disagree.
+    class InsufficientScopeForbidden < Rack::OAuth2::Server::Resource::Bearer::Forbidden
+      def finish
+        super do |response|
+          self.realm ||= Rack::OAuth2::Server::Resource::DEFAULT_REALM
+          params = protocol_params
+          challenge = [
+            %(Bearer realm="#{realm}"),
+            %(error="#{params[:error]}"),
+            %(error_description="#{params[:error_description]}")
+          ]
+          # The body leaves out an empty scope list, so the challenge does too.
+          challenge << %(scope="#{params[:scope]}") if params[:scope].present?
+          response.headers['WWW-Authenticate'] = challenge.join(', ')
         end
       end
     end
 
-    def current_user
-      @current_user
-    end
+    class_methods do
+      private
 
-    private
-    def find_access_token
-      @access_token ||= Doorkeeper.authenticate(doorkeeper_request, Doorkeeper.configuration.access_token_methods)
-    end
+      def install_error_responders(base)
+        error_classes = [Gitlab::Auth::MissingTokenError,
+          Gitlab::Auth::TokenNotFoundError,
+          Gitlab::Auth::ExpiredError,
+          Gitlab::Auth::RevokedError,
+          Gitlab::Auth::ImpersonationDisabled,
+          Gitlab::Auth::InsufficientScopeError,
+          Gitlab::Auth::RestrictedLanguageServerClientError,
+          Gitlab::Auth::DpopValidationError,
+          Gitlab::Auth::GranularPermissionsError]
 
-    def doorkeeper_request
-      @doorkeeper_request ||= ActionDispatch::Request.new(env)
-    end
-
-    def validate_access_token(access_token, scopes)
-      Oauth2::AccessTokenValidationService.validate(access_token, scopes: scopes)
-    end
-  end
-
-  module ClassMethods
-    # Installs the doorkeeper guard on the whole Grape API endpoint.
-    #
-    # Arguments:
-    #
-    #   scopes: (optional) scopes required for this guard.
-    #           Defaults to empty array.
-    #
-    def guard_all!(scopes: [])
-      before do
-        guard! scopes: scopes
+        base.__send__(:rescue_from, *error_classes, oauth2_bearer_token_error_handler) # rubocop:disable GitlabSecurity/PublicSend
       end
-    end
 
-    private
-    def install_error_responders(base)
-      error_classes = [ MissingTokenError, TokenNotFoundError,
-                        ExpiredError, RevokedError, InsufficientScopeError]
+      def oauth2_bearer_token_error_handler
+        proc do |e|
+          response =
+            case e
+            when Gitlab::Auth::MissingTokenError
+              Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new
 
-      base.send :rescue_from, *error_classes, oauth2_bearer_token_error_handler
-    end
+            when Gitlab::Auth::TokenNotFoundError
+              Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
+                :invalid_token,
+                "Bad Access Token.")
 
-    def oauth2_bearer_token_error_handler
-      Proc.new do |e|
-        response =
-          case e
-          when MissingTokenError
-            Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new
+            when Gitlab::Auth::ExpiredError
+              Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
+                :invalid_token,
+                "Token is expired. You can either do re-authorization or token refresh.")
 
-          when TokenNotFoundError
-            Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
-              :invalid_token,
-              "Bad Access Token.")
+            when Gitlab::Auth::RevokedError
+              Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
+                :invalid_token,
+                "Token was revoked. You have to re-authorize from the user.")
 
-          when ExpiredError
-            Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
-              :invalid_token,
-              "Token is expired. You can either do re-authorization or token refresh.")
+            when Gitlab::Auth::ImpersonationDisabled
+              Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
+                :invalid_token,
+                "Token is an impersonation token but impersonation was disabled.")
 
-          when RevokedError
-            Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
-              :invalid_token,
-              "Token was revoked. You have to re-authorize from the user.")
+            when Gitlab::Auth::InsufficientScopeError
+              InsufficientScopeForbidden.new(
+                :insufficient_scope,
+                Rack::OAuth2::Server::Resource::ErrorMethods::DEFAULT_DESCRIPTION[:insufficient_scope],
+                { scope: bearer_challenge_scopes(e.scopes) })
 
-          when InsufficientScopeError
-            # FIXME: ForbiddenError (inherited from Bearer::Forbidden of Rack::Oauth2)
-            # does not include WWW-Authenticate header, which breaks the standard.
-            Rack::OAuth2::Server::Resource::Bearer::Forbidden.new(
-              :insufficient_scope,
-              Rack::OAuth2::Server::Resource::ErrorMethods::DEFAULT_DESCRIPTION[:insufficient_scope],
-              { scope: e.scopes })
+            when Gitlab::Auth::DpopValidationError
+              Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
+                :dpop_error,
+                e)
+
+            when Gitlab::Auth::RestrictedLanguageServerClientError
+              Rack::OAuth2::Server::Resource::Bearer::Unauthorized.new(
+                :restricted_language_server_client_error,
+                e)
+
+            when Gitlab::Auth::GranularPermissionsError
+              Rack::OAuth2::Server::Resource::Bearer::Forbidden.new(
+                :insufficient_granular_scope,
+                e)
+            end
+
+          status, headers, body = response.finish
+
+          # GitLab's own errors, such as DPoP's, keep the guard's challenge.
+          if Rack::OAuth2::Server::Resource::ErrorMethods::DEFAULT_DESCRIPTION.key?(response.error)
+            challenge = bearer_challenge(**response.protocol_params.slice(:error, :error_description, :scope))
+            headers['WWW-Authenticate'] = challenge if challenge
           end
 
-        response.finish
+          # Grape expects a Rack::Response
+          # (https://github.com/ruby-grape/grape/commit/c117bff7d22971675f4b34367d3a98bc31c8fc02),
+          # so we need to recreate the response again even though
+          # response.finish already does this.
+          # (https://github.com/nov/rack-oauth2/blob/40c9a99fd80486ccb8de0e4869ae384547c0d703/lib/rack/oauth2/server/abstract/error.rb#L26).
+          Rack::Response.new(body, status, headers)
+        end
       end
     end
-  end
 
-  #
-  # Exceptions
-  #
+    # Prior to Rack v2.1.x, returning a body of [nil] or [201] worked
+    # because the body was coerced to a string. However, this no longer
+    # works in Rack v2.1.0+. The Rack spec
+    # (https://github.com/rack/rack/blob/master/SPEC.rdoc#the-body-)
+    # says:
+    #
+    # The Body must respond to `each` and must only yield String values
+    #
+    # Because it's easy to return the wrong body type, this middleware
+    # will:
+    #
+    # 1. Inspect each element of the body if it is an Array.
+    # 2. Coerce each value to a string if necessary.
+    # 3. Flag a test and development error.
+    class ResponseCoercerMiddleware < ::Grape::Middleware::Base
+      def call(env)
+        response = super(env)
 
-  class MissingTokenError < StandardError; end
+        status = response[0]
+        body = response[2]
 
-  class TokenNotFoundError < StandardError; end
+        return response if Rack::Utils::STATUS_WITH_NO_ENTITY_BODY[status]
+        return response unless body.is_a?(Array)
 
-  class ExpiredError < StandardError; end
+        body.map! do |part|
+          if part.is_a?(String)
+            part
+          else
+            err = ArgumentError.new("The response body should be a String, but it is of type #{part.class}")
+            Gitlab::ErrorTracking.track_and_raise_for_dev_exception(err)
+            part.to_s
+          end
+        end
 
-  class RevokedError < StandardError; end
+        response
+      end
+    end
 
-  class InsufficientScopeError < StandardError
-    attr_reader :scopes
-    def initialize(scopes)
-      @scopes = scopes
+    class AdminModeMiddleware < ::Grape::Middleware::Base
+      def after
+        # Use a Grape middleware since the Grape `after` blocks might run
+        # before we are finished rendering the `Grape::Entity` classes
+        Gitlab::Auth::CurrentUserMode.reset_bypass_session! if Gitlab::CurrentSettings.admin_mode
+
+        # Explicit nil is needed or the api call return value will be overwritten
+        nil
+      end
     end
   end
 end
+
+API::APIGuard::HelperMethods.prepend_mod

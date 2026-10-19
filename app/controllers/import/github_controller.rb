@@ -1,68 +1,363 @@
-class Import::GithubController < Import::BaseController
-  before_action :verify_github_import_enabled
-  before_action :github_auth, except: :callback
+# frozen_string_literal: true
 
-  rescue_from Octokit::Unauthorized, with: :github_unauthorized
+class Import::GithubController < Import::BaseController
+  extend ::Gitlab::Utils::Override
+
+  include ImportHelper
+  include SafeFormatHelper
+  include ActionView::Helpers::SanitizeHelper
+  include Import::GithubOauth
+
+  before_action :verify_import_enabled
+  before_action :provider_auth, only: [:status, :realtime_changes, :create]
+  before_action :expire_etag_cache, only: [:status, :create]
+
+  rescue_from Octokit::Unauthorized, with: :provider_unauthorized
+  rescue_from Octokit::TooManyRequests, with: :provider_rate_limit
+  rescue_from Octokit::Forbidden, with: :provider_forbidden
+  rescue_from Gitlab::GithubImport::RateLimitError, with: :rate_limit_threshold_exceeded
+
+  delegate :client, to: :client_proxy, private: true
+
+  PAGE_LENGTH = 25
+
+  def new
+    if !ci_cd_only? && github_import_configured? && logged_in_with_provider?
+      go_to_provider_for_permissions
+    elsif session[access_token_key]
+      redirect_to status_import_url
+    end
+  end
 
   def callback
-    token = client.get_token(params[:code])
-    current_user.github_access_token = token
-    current_user.save
-    redirect_to status_import_github_url
+    auth_state = session.delete(auth_state_key)
+
+    if auth_state.blank? || !ActiveSupport::SecurityUtils.secure_compare(auth_state, callback_params[:state])
+      provider_unauthorized
+    else
+      token = get_token(callback_params[:code])
+      session[access_token_key] = token.token
+      session[refresh_credentials_key] = Gitlab::GithubImport::OauthClient.refresh_credentials(token).stringify_keys
+      session[oauth_token_key] = true
+      redirect_to status_import_url
+    end
+  end
+
+  def personal_access_token
+    session[access_token_key] = personal_access_token_param&.strip
+    session.delete(oauth_token_key)
+    session.delete(refresh_credentials_key)
+    redirect_to status_import_url
   end
 
   def status
-    @repos = client.repos
-    client.orgs.each do |org|
-      @repos += client.org_repos(org.login)
+    respond_to do |format|
+      format.json do
+        render json: { imported_projects: serialized_imported_projects,
+                       provider_repos: serialized_provider_repos,
+                       incompatible_repos: serialized_incompatible_repos,
+                       page_info: client_repos_response[:page_info],
+                       provider_repo_count: client_repos_response[:count] }
+      end
+
+      format.html do
+        namespace_id = namespace_id_param
+        if namespace_id.present?
+          @namespace = Namespace.find_by_id(namespace_id)
+
+          render_404 unless current_user.can?(:import_projects, @namespace)
+        end
+      end
     end
-
-    @already_added_projects = current_user.created_projects.where(import_type: "github")
-    already_added_projects_names = @already_added_projects.pluck(:import_source)
-
-    @repos.reject!{ |repo| already_added_projects_names.include? repo.full_name }
   end
 
-  def jobs
-    jobs = current_user.created_projects.where(import_type: "github").to_json(only: [:id, :import_status])
-    render json: jobs
-  end
+  def details; end
 
   def create
-    @repo_id = params[:repo_id].to_i
-    repo = client.repo(@repo_id)
-    @project_name = repo.name
+    import_service = Import::GithubService.new(client, current_user,
+      import_params.merge(organization_id: Current.organization.id))
+    import_service.request_channel = ::Gitlab::Import::RequestChannel::UI
+    result = import_service.execute(access_params, provider_name)
 
-    repo_owner = repo.owner.login
-    repo_owner = current_user.username if repo_owner == client.user.login
-    @target_namespace = params[:new_namespace].presence || repo_owner
-
-    namespace = get_or_create_namespace || (render and return)
-
-    @project = Gitlab::GithubImport::ProjectCreator.new(repo, namespace, current_user).execute
+    if result[:status] == :success
+      render json: serialized_imported_projects(result[:project])
+    else
+      render json: { errors: result[:message] }, status: result[:http_status]
+    end
   end
+
+  def realtime_changes
+    Gitlab::PollingInterval.set_header(response, interval: 3_000)
+
+    render json: Import::GithubRealtimeRepoSerializer.new.represent(already_added_projects)
+  end
+
+  def failures
+    return render_404 unless Ability.allowed?(current_user, :read_project_import, project)
+
+    unless project.import_finished?
+      return render status: :bad_request, json: {
+        message: _('The import is not complete.')
+      }
+    end
+
+    failures = project.import_failures.with_external_identifiers
+    serializer = Import::GithubFailureSerializer.new.with_pagination(request, response)
+
+    render json: serializer.represent(failures)
+  end
+
+  def cancel
+    return render_404 unless Ability.allowed?(current_user, :cancel_project_import, project)
+
+    result = Import::Github::CancelProjectImportService.new(project, current_user).execute
+
+    if result[:status] == :success
+      render json: serialized_imported_projects(result[:project])
+    else
+      render json: { errors: result[:message] }, status: result[:http_status]
+    end
+  end
+
+  def cancel_all
+    projects_to_cancel = Project.imported_from(provider_name).created_by(current_user).is_importing
+
+    canceled = projects_to_cancel.map do |project|
+      # #reset is called to make sure project was not finished/canceled before calling service
+      result = Import::Github::CancelProjectImportService.new(project.reset, current_user).execute
+
+      {
+        id: project.id,
+        status: result[:status],
+        error: result[:message]
+      }.compact
+    end
+
+    render json: canceled
+  end
+
+  def counts
+    render json: {
+      owned: client_proxy.count_repos_by('owned', current_user.id),
+      collaborated: client_proxy.count_repos_by('collaborated', current_user.id),
+      organization: client_proxy.count_repos_by('organization', current_user.id)
+    }
+  end
+
+  protected
+
+  override :importable_repos
+  def importable_repos
+    client_repos.to_a
+  end
+
+  override :incompatible_repos
+  def incompatible_repos
+    []
+  end
+
+  override :provider_name
+  def provider_name
+    :github
+  end
+
+  override :provider_url
+  def provider_url
+    oauth_config&.dig('url').presence || 'https://github.com'
+  end
+  strong_memoize_attr :provider_url
 
   private
 
-  def client
-    @client ||= Gitlab::GithubImport::Client.new(current_user.github_access_token)
+  def project
+    @project ||= Project.imported_from(provider_name).find(project_id_param)
   end
 
-  def verify_github_import_enabled
-    not_found! unless github_import_enabled?
+  def callback_params
+    params.permit(:state, :code)
   end
 
-  def github_auth
-    if current_user.github_access_token.blank?
-      go_to_github_for_permissions
+  def personal_access_token_param
+    params.permit(:personal_access_token)[:personal_access_token]
+  end
+
+  def project_id_param
+    params.permit(:project_id)[:project_id]
+  end
+
+  def import_params
+    permitted_params = params.permit(permitted_import_params)
+
+    unless oauth_token? && ::Feature.enabled?(:github_continuous_import, current_user)
+      permitted_params[:optional_stages]&.delete(:continuous_sync)
+    end
+
+    permitted_params
+  end
+
+  def permitted_import_params
+    [:repo_id, :new_name, :target_namespace, { optional_stages: {} }]
+  end
+
+  def serialized_imported_projects(projects = already_added_projects)
+    ProjectSerializer.new.represent(
+      projects,
+      serializer: :import, provider_url: provider_url, client: client_proxy
+    )
+  end
+
+  def expire_etag_cache
+    Gitlab::EtagCaching::Store.new.tap do |store|
+      store.touch(realtime_changes_path)
     end
   end
 
-  def go_to_github_for_permissions
-    redirect_to client.authorize_url(callback_import_github_url)
+  def client_proxy
+    @client_proxy ||= Gitlab::GithubImport::Clients::Proxy.new(
+      session[access_token_key]
+    )
   end
 
-  def github_unauthorized
-    go_to_github_for_permissions
+  def client_repos_response
+    @client_repos_response ||= client_proxy.repos(sanitized_filter_param, fetch_repos_options)
+  end
+
+  def client_repos
+    # Request repos to display error page if provider token is invalid
+    # Improving in https://gitlab.com/gitlab-org/gitlab-foss/issues/55585
+    client_repos_response[:repos]
+  end
+
+  def sanitized_filter_param
+    super
+
+    @filter = sanitize_query_param(@filter)
+  end
+
+  def sanitize_query_param(value)
+    value.to_s.first(255).gsub(/[ :]/, '')
+  end
+
+  def verify_import_enabled
+    render_404 unless import_enabled?
+  end
+
+  def import_enabled?
+    __send__("#{provider_name}_import_enabled?") # rubocop:disable GitlabSecurity/PublicSend
+  end
+
+  def realtime_changes_path
+    public_send("realtime_changes_import_#{provider_name}_path", format: :json) # rubocop:disable GitlabSecurity/PublicSend
+  end
+
+  def new_import_url
+    public_send("new_import_#{provider_name}_url", extra_import_params.merge({ namespace_id: namespace_id_param })) # rubocop:disable GitlabSecurity/PublicSend -- provider_name comes from the subclass definition, not user input
+  end
+
+  def status_import_url
+    public_send("status_import_#{provider_name}_url", extra_import_params.merge({ namespace_id: namespace_id_param.presence })) # rubocop:disable GitlabSecurity/PublicSend -- provider_name comes from the subclass definition, not user input
+  end
+
+  def provider_unauthorized
+    session[access_token_key] = nil
+    flash[:alert] = s_('Import|Invalid credentials')
+    respond_to do |format|
+      format.json { render json: { error: { redirect: new_import_url } }, status: :not_found }
+      format.html { redirect_to new_import_url }
+    end
+  end
+
+  def provider_rate_limit(exception)
+    reset_time = Time.zone.at(exception.response_headers['x-ratelimit-reset'].to_i)
+    session[access_token_key] = nil
+    redirect_to new_import_url,
+      alert: safe_format(_("GitHub API rate limit exceeded. Try again after %{reset_time}"), reset_time: reset_time)
+  end
+
+  def provider_forbidden
+    session[access_token_key] = nil
+    docs_link = helpers.link_to(
+      '',
+      help_page_url('user/project/import/github.md', anchor: 'use-a-github-personal-access-token'),
+      target: '_blank',
+      rel: 'noopener noreferrer'
+    )
+    tag_pair_docs_link = tag_pair(docs_link, :link_start, :link_end)
+    alert_message = safe_format(
+      s_(
+        "GithubImport|Your GitHub personal access token does not have the required scope to import. " \
+          "%{link_start}Learn More%{link_end}."
+      ),
+      tag_pair_docs_link
+    )
+
+    redirect_to new_import_url, alert: alert_message
+  end
+
+  def auth_state_key
+    :"#{provider_name}_auth_state_key"
+  end
+
+  def access_token_key
+    :"#{provider_name}_access_token"
+  end
+
+  def oauth_token_key
+    :"#{provider_name}_oauth_token"
+  end
+
+  def refresh_credentials_key
+    :"#{provider_name}_refresh_credentials"
+  end
+
+  def oauth_token?
+    session[oauth_token_key].present?
+  end
+  helper_method :oauth_token?
+
+  def access_params
+    token_params = { github_access_token: session[access_token_key] }
+    return token_params unless oauth_token?
+
+    token_params.merge(session[refresh_credentials_key].to_h.symbolize_keys)
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def logged_in_with_provider?
+    current_user.identities.exists?(provider: provider_name)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def rate_limit_threshold_exceeded
+    head :too_many_requests
+  end
+
+  def fetch_repos_options
+    pagination_options.merge(relation_options)
+  end
+
+  def pagination_params
+    params.permit(:before, :after)
+  end
+
+  def pagination_options
+    {
+      before: pagination_params[:before].presence,
+      after: pagination_params[:after].presence,
+      first: PAGE_LENGTH
+    }
+  end
+
+  def relation_params
+    params.permit(:relation_type, :organization_login)
+  end
+
+  def relation_options
+    {
+      relation_type: relation_params[:relation_type],
+      organization_login: sanitize_query_param(relation_params[:organization_login])
+    }
   end
 end
+
+Import::GithubController.prepend_mod_with('Import::GithubController')

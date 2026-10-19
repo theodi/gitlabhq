@@ -1,0 +1,17 @@
+query agentConfigurations($projectPath: ID!) {
+  project(fullPath: $projectPath) {
+    id
+    agentConfigurations {
+      nodes {
+        agentName
+      }
+    }
+
+    clusterAgents {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}

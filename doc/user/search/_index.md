@@ -1,0 +1,301 @@
+---
+stage: Analytics
+group: Global Search
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Searching in GitLab
+description: Basic, advanced, exact, search scope, and commit SHA search.
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Find what you need in a growing codebase or expanding organization.
+Save time by looking up specific code, work items, merge requests, and other content across your projects.
+Choose from three types of search to match your needs: **basic search**,
+[**advanced search**](advanced_search.md), and [**exact code search**](exact_code_search.md).
+
+For code search, GitLab uses these types in this order:
+
+- **Exact code search**: where you can use exact match and regular expression modes.
+- **Advanced search**: when exact code search is not available.
+- **Basic search**: when exact code search and advanced search are not available
+  or when you search against a non-default branch.
+  This type does not support group or global search.
+
+## Available scopes
+
+{{< history >}}
+
+- Groups scope [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/249760) in GitLab 19.4 [with a feature flag](../../administration/feature_flags/_index.md) named `elasticsearch_group_search`. Disabled by default.
+- Groups scope [generally available](https://gitlab.com/gitlab-org/gitlab/-/issues/607018) in GitLab 19.5. Feature flag `elasticsearch_group_search` removed.
+
+{{< /history >}}
+
+Scopes describe the type of data you're searching.
+The following scopes are available for basic search:
+
+| Scope          | Global[^disable-global-search-scopes] |    Group    | Project |
+|----------------|:-------------------:|:-----------:|:-------:|
+| Code           |     {{< no >}}      | {{< no >}}  | {{< yes >}} |
+| Comments       |     {{< no >}}      | {{< no >}}  | {{< yes >}} |
+| Commits        |     {{< no >}}      | {{< no >}}  | {{< yes >}} |
+| Groups         |     {{< yes >}}     | {{< yes >}} | {{< no >}} |
+| Work items     |     {{< yes >}}     | {{< yes >}} | {{< yes >}} |
+| Merge requests |     {{< yes >}}     | {{< yes >}} | {{< yes >}} |
+| Milestones[^global-basic-search] |     {{< yes >}}     | {{< yes >}} | {{< yes >}} |
+| Projects       |     {{< yes >}}     | {{< yes >}} | {{< no >}} |
+| Users          |     {{< yes >}}     | {{< yes >}} | {{< yes >}} |
+| Wikis          |     {{< no >}}      | {{< no >}}  | {{< yes >}} |
+
+[^disable-global-search-scopes]: An administrator can [disable global search scopes](#disable-global-search-scopes).
+[^global-basic-search]: Global basic search returns only project milestones, not group milestones.
+
+## Specify a search type
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/161999) in GitLab 17.4.
+
+{{< /history >}}
+
+To specify a search type, set the `search_type` URL parameter as follows:
+
+- `search_type=zoekt` for [exact code search](exact_code_search.md)
+- `search_type=advanced` for [advanced search](advanced_search.md)
+- `search_type=basic` for basic search
+
+`search_type` replaces the deprecated `basic_search` parameter.
+For more information, see [issue 477333](https://gitlab.com/gitlab-org/gitlab/-/issues/477333).
+
+## Restrict search access
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- Restricting global search to authenticated users [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/41041) in GitLab 13.4 [with a feature flag](../../administration/feature_flags/_index.md) named `block_anonymous_global_searches`. Disabled by default.
+- Allowing search for unauthenticated users [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/138975) in GitLab 16.7 [with a feature flag](../../administration/feature_flags/_index.md) named `allow_anonymous_searches`. Enabled by default.
+- Restricting global search to authenticated users [generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/186727) in GitLab 17.11. Feature flag `block_anonymous_global_searches` removed.
+- Allowing search for unauthenticated users [generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/190090) in GitLab 18.0. Feature flag `allow_anonymous_searches` removed.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have administrator access to the instance.
+
+By default, requests to `/search` and global search are available for unauthenticated users.
+
+To restrict `/search` to authenticated users only, do one of the following:
+
+- [Restrict visibility levels](../../administration/settings/visibility_and_access_controls.md#restrict-visibility-levels)
+  for the project or group.
+  If public projects are restricted, anonymous global search
+  is redirected to the GitLab sign-in page.
+- Restrict access in the **Admin** area:
+
+  1. In the upper-right corner, select **Admin**.
+  1. Select **Settings** > **Search**.
+  1. Expand **Advanced search**.
+  1. Clear the **Allow unauthenticated users to use search** checkbox.
+  1. Select **Save changes**.
+
+To restrict global search to authenticated users only:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Search**.
+1. Expand **Visibility and access controls**
+1. Select the **Restrict global search to authenticated users only** checkbox.
+1. Select **Save changes**.
+
+## Disable global search scopes
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/179688) in GitLab 17.9.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have administrator access to the instance.
+
+To improve the performance of your instance's global search,
+you can disable one or more search scopes.
+All global search scopes are enabled by default on GitLab Self-Managed instances.
+
+To disable one or more global search scopes:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Search**.
+1. Expand **Visibility and access controls**.
+1. Clear the checkboxes for the scopes you want to disable.
+1. Select **Save changes**.
+
+## Configure a default search scope
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+Prerequisites:
+
+- You must have administrator access to the instance.
+
+By default, when users do not select a search scope,
+a scope is selected automatically based on context and availability.
+To configure a default search scope instead:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Search**.
+1. Expand **Visibility and access controls**.
+1. From the **Default search scope** dropdown list, select a scope.
+   For automatic selection, select **System default (automatic)**.
+1. Select **Save changes**.
+
+Users can override the default scope by selecting another scope.
+If the default scope is not available (for example, code in global search),
+a scope is selected automatically.
+
+## Global search validation
+
+Global search ignores and logs as abusive any search that includes:
+
+- Fewer than two characters
+- A term longer than 100 characters (URL search terms must not exceed 200 characters)
+- A stop word only (for example, `the`, `and`, or `if`)
+- An unknown `scope`
+- `group_id` or `project_id` that is not completely numeric
+- `repository_ref` or `project_ref` with special characters not allowed by [Git refname](https://git-scm.com/docs/git-check-ref-format)
+
+Global search only flags with an error any search that includes more than:
+
+- 4096 characters
+- 64 terms
+
+Partial matches are not supported in issue search.
+For example, when you search issues for `play`, the query does not return issues that contain `display`.
+However, the query matches all possible variations of the string (for example, `plays`).
+
+## Autocomplete suggestions
+
+{{< history >}}
+
+- Showing only users from authorized projects and groups [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/442091) in GitLab 17.10 [with feature flags](../../administration/feature_flags/_index.md) named `users_search_scoped_to_authorized_namespaces_advanced_search`, `users_search_scoped_to_authorized_namespaces_basic_search`, and `users_search_scoped_to_authorized_namespaces_basic_search_by_ids`. Disabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/185577) in GitLab 17.11. Feature flags `users_search_scoped_to_authorized_namespaces_advanced_search`, `users_search_scoped_to_authorized_namespaces_basic_search`, and `users_search_scoped_to_authorized_namespaces_basic_search_by_ids` removed.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by feature flags.
+> For more information, see the history.
+
+As you type in the search box, autocomplete suggestions are displayed for:
+
+- Projects and groups
+- Users from authorized projects and groups
+- Help pages
+- Project features (for example, milestones)
+- Settings (for example, user settings)
+- Recently viewed merge requests
+- Recently viewed work items
+- [GitLab Flavored Markdown references](../markdown.md#gitlab-specific-references) for work items in a project
+
+## Search in all GitLab
+
+To search in all GitLab:
+
+1. In the top bar, select **Search or go to**.
+1. Type your search query. You must type at least two characters.
+1. Press <kbd>Enter</kbd> to search, or select from the list.
+
+The results are displayed. To filter the results, in the left sidebar, select a filter.
+
+## Search in a project
+
+To search in a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. Select **Search or go to** again and type the string you want to search for.
+1. Press <kbd>Enter</kbd> to search, or select from the list.
+
+The results are displayed. To filter the results, in the left sidebar, select a filter.
+
+## Include archived projects in search results
+
+By default, archived projects are excluded from search results.
+To include archived projects in search results:
+
+1. On the search page, in the left sidebar, select the **Include archived** checkbox.
+1. In the left sidebar, select **Apply**.
+
+## Search for code
+
+To search for code in a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. Select **Search or go to** again and type the code you want to search for.
+1. Press <kbd>Enter</kbd> to search, or select from the list.
+
+Code search shows only the first result in the file.
+To search for code in all GitLab, ask your administrator to enable [advanced search](advanced_search.md).
+
+### View Git blame from code search
+
+After you find search results, you can view who made the last change to the line
+where the results were found.
+
+1. From the code search result, hover over the line number.
+1. On the left, select **View blame**.
+
+### Filter code search results by language
+
+To filter code search results by one or more languages:
+
+1. On the code search page, in the left sidebar, select one or more languages.
+1. In the left sidebar, select **Apply**.
+
+## Search for a commit SHA
+
+To search for a commit SHA:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. Select **Search or go to** again and type the commit SHA you want to search for.
+1. Press <kbd>Enter</kbd> to search, or select from the list.
+
+If a single result is returned, GitLab redirects to the commit result
+and gives you the option to return to the search results page.
+
+## Syntax
+
+Basic search uses exact substring matching with the following options:
+
+| Syntax       | Description                                     | Example |
+|--------------|-------------------------------------------------|---------|
+| `filename:`  | Filename                                        | `filename:*spec.rb` |
+| `path:`      | Repository location (full or partial matches)   | `path:spec/workers/` |
+| `extension:` | File extension without `.` (exact matches only) | `extension:js` |
+
+### Examples
+
+| Query                                 | Description |
+|---------------------------------------|-------------|
+| `rails -filename:gemfile.lock`        | Returns `rails` in all files except the `gemfile.lock` file. |
+| `helper -extension:yml -extension:js` | Returns `helper` in all files except files with a `.yml` or `.js` extension. |
+| `helper path:lib/git`                 | Returns `helper` in all files with a `lib/git*` path (for example, `spec/lib/gitlab`). |

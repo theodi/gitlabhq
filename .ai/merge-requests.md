@@ -1,0 +1,73 @@
+# Merge Request Guidelines
+
+## Merge Request Description
+
+Base the description on a template from `.gitlab/merge_request_templates/`. List that directory and choose the most specific template that matches the change; the template names indicate their purpose. When no specific template fits, or when unsure, use `Default.md`. Read the chosen template file and keep all of its sections: fill in each section, or state briefly why it does not apply, rather than deleting it. Treat HTML comments in the template as instructions to follow, then remove them from the final description.
+
+In the "How to set up and validate locally" section, do not include steps to run specs or linters; CI runs them. List only manual steps a reviewer can follow to see the change working, such as enabling a feature flag, running commands in the Rails console, or visiting a page.
+
+If there are related issues, add their URLs to the description of the merge request under the heading `References`.
+
+Add quick commands at the bottom of the description:
+
+- Add a line with `/assign me` so the MR is assigned to the author.
+- Add a line with `/milestone <milestone>` where the `<milestone>` corresponds to the milestone in the file `./VERSION`
+  - For example, if `./VERSION` contains 18.11.0-pre, use the milestone `%18.11`.
+
+## Pre-submission readiness checklist
+
+Before opening a merge request, verify each predicate that applies to your change. Each item states the action; follow the linked detail for the how.
+
+### Review
+
+- Before opening the merge request, review local changes using the reviewer sub-agent and fix findings that matter.
+
+### Changelog
+
+- Add a changelog trailer for any user-facing change, or explicitly decide it is unnecessary. Use the `--changelog` flag on `git commit` or add a `Changelog:` trailer.
+- Detail: `.ai/principles/distilled/code-review.md` and `doc/development/changelog.md`.
+
+### Tests
+
+- Add or update tests for code changes. Recommended for documentation changes that ship code examples.
+- Detail: `.ai/principles/distilled/testing-rspec.md` (backend, RSpec) and `.ai/principles/distilled/testing-jest.md` (frontend, Jest).
+
+### Documentation
+
+- Update documentation when behavior, API surface, configuration, or UI changes.
+- Detail: `.ai/principles/distilled/documentation.md`.
+
+### Screenshot
+
+- Attach before/after screenshots for visible-UI changes.
+- Detail: the "Images and Screenshots" and "Screenshot Guidelines" sections of `.ai/principles/distilled/documentation.md`.
+
+### Application Security review
+
+- Request Application Security review for changes touching authentication, session handling, dependency lockfiles, or other security-sensitive paths.
+- Detail: `.ai/principles/distilled/security.md` and `.ai/principles/distilled/code-review.md`.
+
+### Database review
+
+- Request database review for migrations, schema changes, or query changes against large tables.
+- Detail: `.ai/principles/distilled/database-fundamentals.md`, `.ai/principles/distilled/database-migrations.md`, and `.ai/principles/distilled/database-schema.md`.
+
+### Translation
+
+- Do not add hard-coded user-facing strings. Wrap them with the `_()`, `s_()`, or `n_()` externalization helpers (in JavaScript, `__()`, `s__()`, `n__()`) so they can be translated.
+- Detail: `doc/development/i18n/externalization.md`.
+
+### Feature flag
+
+- Put non-trivial behavior changes behind a feature flag and define a rollout plan.
+- Detail: `.ai/principles/distilled/feature-flags.md`.
+
+### Milestone
+
+- Set the milestone before merging, when the MR is likely to land in the current milestone.
+- Detail: `.ai/principles/distilled/code-review.md` (Approval Requirements).
+
+### MR type label
+
+- Apply the correct MR type label (for example, `type::feature`, `type::bug`, `type::maintenance`).
+- Detail: `.ai/principles/distilled/code-review.md` (Approval Requirements).

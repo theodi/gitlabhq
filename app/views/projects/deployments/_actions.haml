@@ -1,0 +1,14 @@
+- if can?(current_user, :read_deployment, deployment)
+  - actions = deployment.manual_actions
+  - if actions.present?
+    .btn-group
+      .dropdown
+        %button.dropdown.dropdown-new.btn.gl-button.btn-default.has-tooltip{ type: 'button', 'data-toggle' => 'dropdown', title: s_('Environments|Deploy to…') }
+          = sprite_icon('play')
+          = sprite_icon('chevron-down')
+        %ul.dropdown-menu.dropdown-menu-right
+          - actions.each do |action|
+            - next unless can?(current_user, :play_job, action)
+            %li
+              = link_to [:play, @project, action], method: :post, rel: 'nofollow' do
+                %span= action.name

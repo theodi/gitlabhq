@@ -1,0 +1,13 @@
+---
+table_name: upcoming_reconciliations
+classes:
+- GitlabSubscriptions::UpcomingReconciliation
+feature_categories:
+- subscription_management
+description: Stores the data needed to notify a user of an upcoming reconciliation
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/63054
+milestone: '14.0'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  organization_id: organizations
+table_size: small

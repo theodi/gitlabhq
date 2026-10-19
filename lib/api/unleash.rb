@@ -1,0 +1,104 @@
+# frozen_string_literal: true
+
+module API
+  class Unleash < ::API::Base
+    include PaginationParams
+
+    unleash_tags = %w[unleash]
+    feature_category :feature_flags
+
+    namespace :feature_flags do
+      resource :unleash, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        params do
+          requires :project_id, type: String, desc: 'ID of the project.'
+          optional :instance_id, type: String, desc: 'Instance ID of Unleash Client.'
+          optional :app_name, type: String, desc: 'Application name of Unleash Client.'
+        end
+        route_param :project_id do
+          before do
+            authorize_by_unleash_instance_id!
+          end
+
+          route_setting :authorization, skip_granular_token_authorization: :unleash_token_auth
+          desc 'Get Unleash features' do
+            detail 'This endpoint is a no-op and always returns a 200 OK response.'
+            tags unleash_tags
+          end
+          get do
+            # not supported yet
+            status :ok
+          end
+
+          desc 'Get a list of features (v2 client support)' do
+            detail 'Deprecated in GitLab 15.6'
+            is_array true
+            tags unleash_tags
+            deprecated true
+          end
+          route_setting :authorization, skip_granular_token_authorization: :unleash_token_auth
+          get 'features', urgency: :low do
+            present_feature_flags
+          end
+
+          desc 'Get a list of features' do
+            detail 'Returns feature flags in the Unleash client features format used by GitLab feature flag clients.'
+            is_array true
+            tags unleash_tags
+          end
+          route_setting :authorization, skip_granular_token_authorization: :unleash_token_auth
+          get 'client/features', urgency: :medium do
+            present_feature_flags
+          end
+
+          desc 'Register Unleash client' do
+            detail 'This endpoint is a no-op and always returns a 200 OK response.'
+            tags unleash_tags
+          end
+          route_setting :authorization, skip_granular_token_authorization: :unleash_token_auth
+          post 'client/register' do
+            # not supported yet
+            status :ok
+          end
+
+          desc 'Report Unleash client metrics' do
+            detail 'This endpoint is a no-op and always returns a 200 OK response.'
+            tags unleash_tags
+          end
+          route_setting :authorization, skip_granular_token_authorization: :unleash_token_auth
+          post 'client/metrics', urgency: :low do
+            # not supported yet
+            status :ok
+          end
+        end
+      end
+    end
+
+    helpers do
+      def present_feature_flags
+        present_cached feature_flags_client,
+          with: ::API::Entities::Unleash::ClientFeatureFlags,
+          cache_context: ->(client) { client.unleash_api_cache_key }
+      end
+
+      def feature_flags_client
+        strong_memoize(:feature_flags_client) do
+          client = Operations::FeatureFlagsClient.find_for_project_and_token(params[:project_id], unleash_instance_id)
+          client.unleash_app_name = unleash_app_name if client
+          client
+        end
+      end
+
+      def unleash_instance_id
+        env['HTTP_UNLEASH_INSTANCEID'] || params[:instance_id]
+      end
+
+      def unleash_app_name
+        env['HTTP_UNLEASH_APPNAME'] || params[:app_name]
+      end
+
+      def authorize_by_unleash_instance_id!
+        unauthorized! unless feature_flags_client
+      end
+    end
+  end
+end

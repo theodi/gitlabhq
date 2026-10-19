@@ -1,0 +1,606 @@
+<script>
+import { GlSprintf, GlAvatarLink, GlAvatar } from '@gitlab/ui';
+import { defineAsyncComponent } from 'vue';
+import { escape } from 'lodash-es';
+import { mapState, mapActions } from 'pinia';
+import { getIdFromGraphQLId } from '~/graphql_shared/utils';
+import SafeHtml from '~/vue_shared/directives/safe_html';
+import { confirmAction } from '~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal';
+import { createAlert } from '~/alert';
+import { HTTP_STATUS_GONE } from '~/lib/utils/http_status';
+import { ignoreWhilePending } from '~/lib/utils/ignore_while_pending';
+import { truncateSha } from '~/lib/utils/text_utility';
+import TimelineEntryItem from '~/vue_shared/components/notes/timeline_entry_item.vue';
+import { __, s__, sprintf } from '~/locale';
+import { renderGFM } from '~/behaviors/markdown/render_gfm';
+import { detectAndConfirmSensitiveTokens } from '~/lib/utils/secret_detection';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import { glSlotsMixin } from '~/lib/utils/vue3compat/gl_slots_mixin';
+import { parseAgentPresence } from '~/ai/agents_utils';
+import eventHub from '../event_hub';
+import noteable from '../mixins/noteable';
+import resolvable from '../mixins/resolvable';
+import { renderMarkdown, updateNoteErrorMessage } from '../utils';
+import { getStartLineNumber, getEndLineNumber, getLineClasses } from './multiline_comment_utils';
+import NoteActions from './note_actions.vue';
+import NoteBody from './note_body.vue';
+import NoteHeader from './note_header.vue';
+
+export default {
+  name: 'NoteableNote',
+  components: {
+    GlSprintf,
+    NoteHeader,
+    NoteActions,
+    NoteBody,
+    NoteSessionBar: defineAsyncComponent(
+      () => import('ee_component/ai/shared/widgets/note_session_bar.vue'),
+    ),
+    NoteAgentActorLine: defineAsyncComponent(
+      () => import('ee_component/ai/shared/widgets/note_agent_actor_line.vue'),
+    ),
+    TimelineEntryItem,
+    GlAvatarLink,
+    GlAvatar,
+  },
+  directives: {
+    SafeHtml,
+  },
+  mixins: [noteable, resolvable, glSlotsMixin, glFeatureFlagsMixin()],
+  inject: {
+    reportAbusePath: {
+      default: '',
+    },
+  },
+  props: {
+    note: {
+      type: Object,
+      required: true,
+    },
+    line: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    discussionFile: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    helpPagePath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    commit: {
+      type: Object,
+      required: false,
+      default: () => null,
+    },
+    showReplyButton: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    discussionRoot: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    // eslint-disable-next-line vue/no-unused-properties -- discussionResolvePath used by the `Resolvable` mixin
+    discussionResolvePath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    isOverviewTab: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    discussion: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    autosaveKey: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    restoreFromAutosave: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    anchorPrefix: {
+      type: String,
+      required: false,
+      default: 'note',
+    },
+  },
+  emits: [
+    'cancel-form',
+    'handle-delete-note',
+    'handle-edit',
+    'handle-update-note',
+    'start-replying',
+    'update-success',
+  ],
+  data() {
+    return {
+      actorLineOverflows: false,
+      isEditingLocal: false,
+      isDeleting: false,
+      isRequesting: false,
+      isResolving: false,
+      commentLineStart: {},
+      // eslint-disable-next-line vue/no-unused-properties -- `resolveAsThread` is used by the `resolvable` mixin
+      resolveAsThread: true,
+    };
+  },
+  computed: {
+    ...mapState(useLegacyDiffs, ['getDiffFileByHash']),
+    ...mapState(useNotes, ['targetNoteHash', 'getNoteableData', 'getUserData']),
+    isEditing: {
+      get() {
+        return this.note.isEditing ?? this.isEditingLocal;
+      },
+      set(value) {
+        this.isEditingLocal = value;
+        if (value) {
+          this.$emit('handle-edit');
+        } else {
+          this.$emit('cancel-form');
+        }
+      },
+    },
+    author() {
+      return this.note.author;
+    },
+    authorId() {
+      return getIdFromGraphQLId(this.author.id);
+    },
+    commentType() {
+      return this.note.internal ? __('internal note') : __('comment');
+    },
+    classNameBindings() {
+      return {
+        [`note-row-${this.note.id}`]: true,
+        'is-editing': this.isEditing && !this.isRequesting,
+        'is-requesting being-posted': this.isRequesting,
+        'disabled-content': this.isDeleting,
+        target: this.isTarget,
+        'is-editable': this.canEdit,
+      };
+    },
+    canAwardEmoji() {
+      return this.note.current_user?.can_award_emoji ?? false;
+    },
+    canEdit() {
+      return this.note.current_user?.can_edit ?? false;
+    },
+    canReportAsAbuse() {
+      return Boolean(this.reportAbusePath) && this.authorId !== this.getUserData.id;
+    },
+    noteAnchorId() {
+      return `${this.anchorPrefix}_${this.note.id}`;
+    },
+    isTarget() {
+      return this.targetNoteHash === this.noteAnchorId;
+    },
+    discussionId() {
+      if (this.discussion) {
+        return this.discussion.id;
+      }
+      return '';
+    },
+    commentLines() {
+      return this.getLinesForDiscussion({ discussion: this.discussion });
+    },
+    actionText() {
+      if (!this.commit) {
+        return '';
+      }
+
+      // We need to do this to ensure we have the correct sentence order
+      // when translating this as the sentence order may change from one
+      // language to the next. See:
+      // https://gitlab.com/gitlab-org/gitlab-foss/merge_requests/24427#note_133713771
+      const { id, url } = this.commit;
+      const commitLink = `<a class="commit-sha monospace" href="${escape(url)}">${truncateSha(
+        id,
+      )}</a>`;
+      return sprintf(s__('MergeRequests|commented on commit %{commitLink}'), { commitLink }, false);
+    },
+    isDraft() {
+      return this.note.isDraft;
+    },
+    canResolve() {
+      if (!this.discussionRoot) return false;
+      if (!this.note.resolvable) return false;
+
+      return this.note.current_user?.can_resolve_discussion;
+    },
+    lineRange() {
+      return this.note.position?.line_range;
+    },
+    startLineNumber() {
+      return getStartLineNumber(this.lineRange);
+    },
+    endLineNumber() {
+      return getEndLineNumber(this.lineRange);
+    },
+    showMultiLineComment() {
+      if (
+        !this.discussionRoot ||
+        this.startLineNumber.length === 0 ||
+        this.endLineNumber.length === 0
+      )
+        return false;
+
+      return this.line && this.startLineNumber !== this.endLineNumber;
+    },
+    diffFile() {
+      let fileResolvedFromAvailableSource;
+
+      if (this.commentLineStart.line_code) {
+        const lineCode = this.commentLineStart.line_code.split('_')[0];
+        fileResolvedFromAvailableSource = this.getDiffFileByHash(lineCode);
+      }
+
+      if (!fileResolvedFromAvailableSource && this.discussionFile) {
+        fileResolvedFromAvailableSource = this.discussionFile;
+      }
+
+      return fileResolvedFromAvailableSource || null;
+    },
+    isMRDiffView() {
+      const isFileComment = this.note.position?.position_type === 'file';
+      return !this.isOverviewTab && (this.line || isFileComment);
+    },
+    isAmazonQCodeReview() {
+      return this.author.username === 'amazon-q';
+    },
+    hasSession() {
+      return (
+        this.glFeatures.noteAgentSessionBar &&
+        Boolean(this.note.duo_session_id_triggered && this.note.duo_session_agent_name)
+      );
+    },
+    agentPresence() {
+      if (!this.glFeatures.agentPresenceConsolidation) return null;
+
+      return parseAgentPresence(this.note.agent_presence);
+    },
+    duoSessionId() {
+      if (this.agentPresence) return null;
+
+      return this.note.duo_session_id;
+    },
+  },
+  created() {
+    const line = this.note.position?.line_range?.start || this.line;
+
+    this.commentLineStart = line
+      ? {
+          line_code: line.line_code,
+          type: line.type,
+          old_line: line.old_line,
+          new_line: line.new_line,
+        }
+      : {};
+
+    eventHub.$on('enter-edit-mode', ({ noteId }) => {
+      if (noteId === this.note.id) {
+        this.isEditing = true;
+        this.setSelectedCommentPositionHover();
+        this.$el.scrollIntoView();
+      }
+    });
+  },
+
+  methods: {
+    ...mapActions(useNotes, [
+      'deleteNote',
+      'removeNote',
+      'updateNote',
+      // eslint-disable-next-line vue/no-unused-properties -- toggleResolveNote() used by the `Resolvable` mixin
+      'toggleResolveNote',
+      'updateAssignees',
+      'setSelectedCommentPositionHover',
+    ]),
+    ...mapActions(useLegacyDiffs, ['getLinesForDiscussion']),
+    editHandler() {
+      this.isEditing = true;
+      this.setSelectedCommentPositionHover();
+    },
+    async deleteHandler() {
+      let { commentType } = this;
+
+      if (this.note.isDraft) {
+        // Draft internal notes (i.e. MR review comments) are not supported.
+        commentType = __('pending comment');
+      }
+
+      const msg = sprintf(__('Are you sure you want to delete this %{commentType}?'), {
+        commentType,
+      });
+      const confirmed = await confirmAction(msg, {
+        primaryBtnVariant: 'danger',
+        primaryBtnText: this.note.internal ? __('Delete internal note') : __('Delete comment'),
+      });
+
+      if (confirmed) {
+        this.isDeleting = true;
+        this.$emit('handle-delete-note', this.note);
+
+        if (this.note.isDraft) return;
+
+        this.deleteNote(this.note)
+          .then(() => {
+            this.isDeleting = false;
+          })
+          .catch(() => {
+            createAlert({
+              message: __('Something went wrong while deleting your note. Please try again.'),
+            });
+            this.isDeleting = false;
+          });
+      }
+    },
+    updateSuccess() {
+      this.isEditingLocal = false;
+      this.isRequesting = false;
+      this.oldContent = null;
+      renderGFM(this.$refs.noteBody.$el);
+      this.$emit('update-success');
+    },
+    async formUpdateHandler({ noteText, callback, resolveDiscussion }) {
+      this.$emit('handle-update-note', {
+        note: this.note,
+        noteText,
+        resolveDiscussion,
+        flashContainer: this.$el,
+        callback: () => this.updateSuccess(),
+        errorCallback: () => callback(),
+      });
+
+      if (this.isDraft) return;
+
+      const confirmSubmit = await detectAndConfirmSensitiveTokens({ content: noteText });
+
+      if (!confirmSubmit) {
+        callback();
+        return;
+      }
+
+      const data = {
+        endpoint: this.note.path,
+        note: {
+          target_type: this.getNoteableData.targetType,
+          target_id: this.note.noteable_id,
+          note: { note: noteText },
+        },
+      };
+
+      this.isRequesting = true;
+      this.oldContent = this.note.note_html;
+      // eslint-disable-next-line vue/no-mutating-props
+      this.note.note_html = renderMarkdown(noteText);
+
+      this.updateNote(data)
+        .then(() => {
+          this.updateSuccess();
+          callback();
+        })
+        .catch((e) => {
+          if (e.status === HTTP_STATUS_GONE) {
+            this.removeNote(this.note);
+            this.updateSuccess();
+            callback();
+          } else {
+            this.isRequesting = false;
+            this.isEditing = true;
+            this.setSelectedCommentPositionHover();
+            this.$nextTick(() => {
+              this.handleUpdateError(e); // The 'e' parameter is being used in JH, don't remove it
+              this.recoverNoteContent();
+              callback();
+            });
+          }
+        });
+    },
+    handleUpdateError(e) {
+      createAlert({
+        message: updateNoteErrorMessage(e),
+        parent: this.$el,
+      });
+    },
+    formCancelHandler: ignoreWhilePending(async function formCancelHandler({
+      shouldConfirm,
+      isDirty,
+    }) {
+      if (shouldConfirm && isDirty) {
+        const msg = sprintf(__('Are you sure you want to cancel editing this %{commentType}?'), {
+          commentType: this.commentType,
+        });
+        const confirmed = await confirmAction(msg, {
+          primaryBtnText: __('Cancel editing'),
+          primaryBtnVariant: 'danger',
+          secondaryBtnVariant: 'default',
+          secondaryBtnText: __('Continue editing'),
+          hideCancel: true,
+        });
+        if (!confirmed) return;
+      }
+      this.recoverNoteContent();
+      this.isEditing = false;
+    }),
+    recoverNoteContent() {
+      if (this.oldContent) {
+        // eslint-disable-next-line vue/no-mutating-props
+        this.note.note_html = this.oldContent;
+      }
+    },
+    getLineClasses(lineNumber) {
+      return getLineClasses(lineNumber);
+    },
+    assigneesUpdate(assignees) {
+      this.updateAssignees(assignees);
+    },
+  },
+};
+</script>
+
+<template>
+  <timeline-entry-item
+    :id="noteAnchorId"
+    :class="{ ...classNameBindings, 'internal-note': note.internal }"
+    :data-award-url="note.toggle_award_path"
+    :data-note-id="note.id"
+    class="note note-wrapper note-comment"
+    data-testid="noteable-note-container"
+  >
+    <div
+      v-if="showMultiLineComment"
+      data-testid="multiline-comment"
+      class="gl-border-b gl-border-section gl-px-5 gl-py-3 gl-text-subtle"
+    >
+      <gl-sprintf :message="__('Comment on lines %{startLine} to %{endLine}')">
+        <template #startLine>
+          <span :class="getLineClasses(startLineNumber)">{{ startLineNumber }}</span>
+        </template>
+        <template #endLine>
+          <span :class="getLineClasses(endLineNumber)">{{ endLineNumber }}</span>
+        </template>
+      </gl-sprintf>
+    </div>
+
+    <div v-if="isMRDiffView" class="timeline-avatar gl-float-left gl-pt-2">
+      <gl-avatar-link
+        :href="author.path"
+        :data-user-id="authorId"
+        :data-username="author.username"
+        class="js-user-link"
+      >
+        <gl-avatar
+          :src="author.avatar_url"
+          :entity-name="author.username"
+          :alt="author.name"
+          :size="24"
+        />
+
+        <slot name="avatar-badge"></slot>
+      </gl-avatar-link>
+    </div>
+
+    <div v-else class="timeline-avatar gl-float-left">
+      <gl-avatar-link
+        :href="author.path"
+        :data-user-id="authorId"
+        :data-username="author.username"
+        class="js-user-link gl-relative"
+      >
+        <gl-avatar
+          :src="author.avatar_url"
+          :entity-name="author.username"
+          :alt="author.name"
+          :size="32"
+        />
+
+        <slot name="avatar-badge"></slot>
+      </gl-avatar-link>
+    </div>
+
+    <div class="timeline-content">
+      <div class="note-header">
+        <note-header
+          :author="author"
+          :created-at="note.created_at"
+          :note-id="note.id"
+          :is-internal-note="note.internal"
+          :is-imported="note.imported"
+          :email-participant="note.external_author"
+          :hide-username="Boolean(agentPresence)"
+          :single-line="Boolean(agentPresence) && !actorLineOverflows"
+        >
+          <template v-if="glSlots()['note-header-info']" #note-header-info>
+            <slot name="note-header-info"></slot>
+          </template>
+          <span v-if="commit" v-safe-html="actionText"></span>
+          <template v-if="agentPresence">
+            <note-agent-actor-line
+              :presence="agentPresence"
+              @overflow="actorLineOverflows = $event"
+            />
+          </template>
+        </note-header>
+        <note-actions
+          :author="author"
+          :author-id="authorId"
+          :note-id="note.id"
+          :note-url="note.noteable_note_url"
+          :note-preview="note.body_first_line_html"
+          :access-level="note.human_access"
+          :is-contributor="note.is_contributor"
+          :is-author="note.is_noteable_author"
+          :project-name="note.project_name"
+          :noteable-type="note.noteable_type"
+          :show-reply="showReplyButton"
+          :can-edit="canEdit"
+          :can-award-emoji="canAwardEmoji"
+          :can-delete="canEdit"
+          :can-report-as-abuse="canReportAsAbuse"
+          :can-resolve="canResolve"
+          :resolvable="note.resolvable"
+          :is-resolved="note.resolved || note.resolve_discussion"
+          :is-resolving="isResolving"
+          :resolved-by="note.resolved_by"
+          :is-amazon-q-code-review="isAmazonQCodeReview"
+          :is-draft="note.isDraft"
+          :resolve-discussion="note.isDraft && note.resolve_discussion"
+          :discussion-id="discussionId"
+          :award-path="note.toggle_award_path"
+          :duo-session-id="duoSessionId"
+          @handle-edit="editHandler"
+          @handle-delete="deleteHandler"
+          @handle-resolve="resolveHandler"
+          @start-replying="$emit('start-replying')"
+          @update-assignees="assigneesUpdate"
+        />
+      </div>
+      <div class="timeline-discussion-body">
+        <slot name="discussion-resolved-text"></slot>
+        <slot name="note-body">
+          <note-body
+            ref="noteBody"
+            :note="note"
+            :can-edit="canEdit"
+            :line="line"
+            :lines="commentLines"
+            :file="diffFile"
+            :is-editing="isEditing"
+            :autosave-key="autosaveKey"
+            :restore-from-autosave="restoreFromAutosave"
+            :help-page-path="helpPagePath"
+            @handle-form-update="formUpdateHandler"
+            @cancel-form="formCancelHandler"
+          />
+        </slot>
+        <div class="timeline-discussion-body-footer">
+          <slot name="after-note-body"></slot>
+        </div>
+      </div>
+      <note-session-bar
+        v-if="hasSession"
+        :agent-name="note.duo_session_agent_name"
+        :session-id="note.duo_session_id_triggered"
+        :status="note.duo_session_status"
+        :is-reply="!discussionRoot"
+      />
+    </div>
+  </timeline-entry-item>
+</template>

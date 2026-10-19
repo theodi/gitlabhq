@@ -1,0 +1,129 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Achievements::AwardService, feature_category: :user_profile do
+  describe '#execute' do
+    let_it_be(:developer) { create(:user) }
+    let_it_be(:maintainer) { create(:user) }
+    let_it_be(:group) { create(:group) }
+    let_it_be(:achievement) { create(:achievement, namespace: group) }
+    let_it_be(:recipient) { create(:user) }
+
+    let(:achievement_id) { achievement.id }
+    let(:recipient_id) { recipient.id }
+    let(:award_message) { nil }
+
+    subject(:response) do
+      described_class.new(current_user, achievement_id, recipient_id, award_message: award_message).execute
+    end
+
+    before_all do
+      group.add_developer(developer)
+      group.add_maintainer(maintainer)
+    end
+
+    context 'when user does not have permission' do
+      let(:current_user) { developer }
+
+      it 'returns an error' do
+        expect(response).to be_error
+        expect(response.message).to match_array(
+          ['You have insufficient permissions to award this achievement'])
+      end
+    end
+
+    context 'when the recipient has disabled achievement notifications' do
+      let(:current_user) { maintainer }
+      let(:recipient) { create(:user, achievements_enabled: false) }
+
+      it 'returns success' do
+        expect(response).to be_success
+      end
+
+      it 'still creates a UserAchievement record' do
+        expect { response }.to change { Achievements::UserAchievement.count }.by(1)
+      end
+
+      it 'does not send a notification email' do
+        expect(NotificationService).not_to receive(:new)
+
+        response
+      end
+    end
+
+    context 'when user has permission' do
+      let(:current_user) { maintainer }
+      let(:notification_service) { instance_double(NotificationService) }
+      let(:mail_message) { instance_double(ActionMailer::MessageDelivery) }
+
+      it 'creates an achievement and sends an e-mail' do
+        allow(NotificationService).to receive(:new).and_return(notification_service)
+        expect(notification_service).to receive(:new_achievement_email)
+          .with(recipient, achievement, an_instance_of(Achievements::UserAchievement))
+          .and_return(mail_message)
+        expect(mail_message).to receive(:deliver_later)
+
+        expect(response).to be_success
+      end
+
+      it 'awards the achievement with show_on_profile set to false' do
+        expect(response.payload.show_on_profile).to be(false)
+      end
+
+      context 'when achievements are automatically accepted for the instance' do
+        before do
+          stub_application_setting(auto_accept_awarded_achievements: true)
+        end
+
+        it 'awards the achievement with show_on_profile set to true' do
+          expect(response.payload.show_on_profile).to be(true)
+        end
+      end
+
+      context 'with an award_message' do
+        let(:award_message) { 'Awarded for outstanding contribution' }
+
+        it 'persists the award_message' do
+          allow(NotificationService).to receive(:new).and_return(notification_service)
+          allow(notification_service).to receive(:new_achievement_email).and_return(mail_message)
+          allow(mail_message).to receive(:deliver_later)
+
+          expect(response).to be_success
+          expect(response.payload.award_message).to eq(award_message)
+        end
+      end
+
+      context 'when the achievement is not persisted' do
+        let(:user_achievement) { instance_double('Achievements::UserAchievement') }
+
+        it 'returns the correct error' do
+          allow(user_achievement).to receive_messages(persisted?: false, errors: nil)
+          allow(Achievements::UserAchievement).to receive(:create).and_return(user_achievement)
+
+          expect(response).to be_error
+          expect(response.message).to match_array(["Failed to award achievement"])
+        end
+      end
+
+      context 'when the achievement does not exist' do
+        let(:achievement_id) { non_existing_record_id }
+
+        it 'returns the correct error' do
+          expect(response).to be_error
+          expect(response.message)
+            .to contain_exactly("Couldn't find Achievements::Achievement with 'id'=#{non_existing_record_id}")
+        end
+      end
+
+      context 'when the recipient does not exist' do
+        let(:recipient_id) { non_existing_record_id }
+
+        it 'returns the correct error' do
+          expect(response).to be_error
+          expect(response.message).to contain_exactly("Couldn't find User with 'id'=#{non_existing_record_id}")
+        end
+      end
+    end
+  end
+end

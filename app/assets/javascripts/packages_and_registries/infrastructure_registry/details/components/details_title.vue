@@ -1,0 +1,92 @@
+<script>
+import { GlIcon, GlSprintf, GlTooltipDirective } from '@gitlab/ui';
+import { numberToHumanSize } from '~/lib/utils/number_utils';
+import { __ } from '~/locale';
+import MetadataItem from '~/vue_shared/components/registry/metadata_item.vue';
+import TitleArea from '~/vue_shared/components/registry/title_area.vue';
+import timeagoMixin from '~/vue_shared/mixins/timeago';
+import { glSlotsMixin } from '~/lib/utils/vue3compat/gl_slots_mixin';
+
+export default {
+  name: 'DetailsTitle',
+  components: {
+    TitleArea,
+    GlIcon,
+    GlSprintf,
+    MetadataItem,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [timeagoMixin, glSlotsMixin],
+  i18n: {
+    packageInfo: __('v%{version} published %{timeAgo}'),
+  },
+  props: {
+    packageEntity: {
+      type: Object,
+      required: true,
+    },
+    packageFiles: {
+      type: Array,
+      required: true,
+    },
+    packagePipeline: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+  },
+  computed: {
+    totalSize() {
+      return numberToHumanSize(this.packageFiles.reduce((acc, p) => acc + p.size, 0));
+    },
+  },
+};
+</script>
+
+<template>
+  <title-area :title="packageEntity.name">
+    <template #sub-header>
+      <gl-icon name="eye" class="gl-mr-3" />
+      <gl-sprintf :message="$options.i18n.packageInfo">
+        <template #version>
+          {{ packageEntity.version }}
+        </template>
+
+        <template #timeAgo>
+          <span v-gl-tooltip :title="tooltipTitle(packageEntity.created_at)">
+            <time :datetime="packageEntity.created_at">{{
+              timeFormatted(packageEntity.created_at)
+            }}</time>
+          </span>
+        </template>
+      </gl-sprintf>
+    </template>
+
+    <template #metadata-type>
+      <metadata-item data-testid="package-type" icon="infrastructure-registry" text="Terraform" />
+    </template>
+
+    <template #metadata-size>
+      <metadata-item data-testid="package-size" icon="disk" :text="totalSize" />
+    </template>
+
+    <template v-if="packagePipeline" #metadata-pipeline>
+      <metadata-item
+        data-testid="pipeline-project"
+        icon="review-list"
+        :text="packagePipeline.project.name"
+        :link="packagePipeline.project.web_url"
+      />
+    </template>
+
+    <template v-if="packagePipeline" #metadata-ref>
+      <metadata-item data-testid="package-ref" icon="branch" :text="packagePipeline.ref" />
+    </template>
+
+    <template v-if="glSlots()['delete-button']" #right-actions>
+      <slot name="delete-button"></slot>
+    </template>
+  </title-area>
+</template>

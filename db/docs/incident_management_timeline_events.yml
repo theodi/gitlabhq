@@ -1,0 +1,13 @@
+---
+table_name: incident_management_timeline_events
+classes:
+- IncidentManagement::TimelineEvent
+feature_categories:
+- incident_management
+description: Persists timeline events for an incident
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/74530
+milestone: '14.6'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

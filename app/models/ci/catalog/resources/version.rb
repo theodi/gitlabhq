@@ -1,0 +1,137 @@
+# frozen_string_literal: true
+
+module Ci
+  module Catalog
+    module Resources
+      # This class represents a CI/CD Catalog resource version.
+      # Only versions which contain valid CI components are included in this table.
+      class Version < ::ApplicationRecord
+        include BulkInsertableAssociations
+        include CacheMarkdownField
+        include SemanticVersionable
+
+        self.table_name = 'catalog_resource_versions'
+
+        belongs_to :release, inverse_of: :catalog_resource_version
+        belongs_to :catalog_resource, class_name: 'Ci::Catalog::Resource', inverse_of: :versions
+        belongs_to :project, inverse_of: :catalog_resource_versions
+        belongs_to :published_by, class_name: 'User'
+        has_many :components, class_name: 'Ci::Catalog::Resources::Component', inverse_of: :version
+
+        validates :release, presence: true, uniqueness: { message: N_('has already been published') }
+        validates :catalog_resource, :project, presence: true
+        validates :published_by, presence: true, on: :create
+        validate :validate_published_by_is_release_author, on: :create
+
+        scope :for_catalog_resources, ->(catalog_resources) { where(catalog_resource_id: catalog_resources) }
+        scope :preloaded, -> { includes(:catalog_resource, project: [:route, { namespace: :route }], release: :author) }
+        scope :by_name, ->(name) { joins(:release).merge(Release.where(tag: name)) }
+        scope :by_sha, ->(sha) { joins(:release).merge(Release.where(sha: sha)) }
+        scope :with_semver, -> { where.not(semver_major: nil) }
+        scope :without_prerelease, -> { where(semver_prerelease: nil) }
+        scope :search_by_version, ->(term) {
+          sanitized_term = sanitize_sql_like(term)
+          where(
+            "concat_ws('.', semver_major, semver_minor, semver_patch) " \
+              "|| COALESCE('-' || semver_prerelease, '') ILIKE :term",
+            term: "%#{sanitized_term}%"
+          )
+        }
+
+        delegate :sha, :author_id, to: :release
+
+        cache_markdown_field :readme
+
+        before_create :sync_with_release
+        after_destroy :update_catalog_resource
+        after_save :update_catalog_resource
+
+        class << self
+          def latest(major = nil, minor = nil)
+            raise ArgumentError, 'semver minor version used without major version' if minor.present? &&
+              major.blank?
+
+            relation = with_semver
+            relation = relation.without_prerelease
+            relation = relation.where(semver_major: major) if major
+            relation = relation.where(semver_minor: minor) if minor
+
+            relation.order_by_semantic_version_desc.first
+          end
+
+          def versions_for_catalog_resources(catalog_resources, limit: nil)
+            return none if catalog_resources.empty?
+
+            relation = if limit
+                         top_versions_per_catalog_resource(catalog_resources, limit)
+                       else
+                         for_catalog_resources(catalog_resources).with_semver
+                       end
+
+            relation
+              .includes(:components, :release, project: { namespace: :route })
+              .order_by_semantic_version_desc
+          end
+
+          private
+
+          def top_versions_per_catalog_resource(catalog_resources, limit)
+            resources = Ci::Catalog::Resource.arel_table
+            ids = Arel::Nodes::ValuesList.new(catalog_resources.map { |resource| [resource.id] })
+
+            top_versions = with_semver
+              .where(arel_table[:catalog_resource_id].eq(resources[:id]))
+              .order_by_semantic_version_desc
+              .limit(limit)
+
+            from(Arel::Nodes::Grouping.new(ids).as("#{resources.name}(id)"))
+              .joins("INNER JOIN LATERAL (#{top_versions.to_sql}) #{table_name} ON TRUE")
+          end
+        end
+
+        def name
+          semver.to_s
+        end
+
+        def commit
+          project.commit_by(oid: sha)
+        end
+
+        def path
+          Gitlab::Routing.url_helpers.project_tag_path(project, name)
+        end
+
+        def readme
+          return unless project.repo_exists?
+
+          project.repository.tree(sha).readme&.data
+        end
+
+        def sync_with_release!
+          sync_with_release
+          save!
+        end
+
+        private
+
+        def sync_with_release
+          self.released_at = release.released_at
+        end
+
+        def update_catalog_resource
+          catalog_resource.update_latest_released_at!
+        end
+
+        # We require the published_by to be the same as the release author because
+        # creating a release and publishing a version must be done in a single session via CLI tools.
+        def validate_published_by_is_release_author
+          return if published_by == release.author
+
+          errors.add(:published_by, 'must be the same as the release author')
+        end
+      end
+    end
+  end
+end
+
+Ci::Catalog::Resources::Version.prepend_mod_with('Ci::Catalog::Resources::Version')

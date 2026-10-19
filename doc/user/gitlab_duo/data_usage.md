@@ -1,0 +1,239 @@
+---
+stage: AI Platform
+group: AI Core Infra
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: AI-native features and functionality.
+title: GitLab Duo data usage
+---
+
+GitLab Duo uses generative AI to help increase your velocity and make you more productive. Each AI-native feature operates independently and is not required for other features to function.
+
+GitLab uses the right large language models (LLMs) for specific tasks.
+These LLMs are [Anthropic Claude](https://claude.com/product/overview),
+[Fireworks AI-hosted Codestral](https://mistral.ai/news/codestral/),
+[Gemini Enterprise Agent Platform models](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/beginners-guide),
+and [OpenAI models](https://platform.openai.com/docs/models).
+
+## Progressive enhancement
+
+GitLab Duo AI-native features are designed as a progressive enhancement to existing GitLab features across the DevSecOps platform. These features are designed to fail gracefully and should not prevent the core functionality of the underlying feature. You should note each feature is subject to its expected functionality as defined by the relevant [feature support policy](../../policy/development_stages_support.md).
+
+## Stability and performance
+
+GitLab Duo AI-native features are in a variety of [feature support levels](../../policy/development_stages_support.md#beta). Due to the nature of these features, there may be high demand for usage which may cause degraded performance or unexpected downtime of the feature. We have built these features to gracefully degrade and have controls in place to allow us to mitigate abuse or misuse. GitLab may disable beta and experimental features for any or all customers at any time at our discretion.
+
+## Data privacy
+
+GitLab Duo AI-native features are powered by generative AI models.
+GitLab processes any personal data in accordance with the [GitLab Privacy Statement](https://about.gitlab.com/privacy/).
+
+For a list of AI model sub-processors GitLab uses to provide these features,
+see [third-party sub-processors](https://about.gitlab.com/privacy/subprocessors/#third-party-sub-processors).
+
+## Data retention
+
+### Model sub-processors
+
+For GitLab Duo requests, GitLab has a zero data retention policy with Fireworks AI.
+Fireworks AI discards model input and output data immediately after the output is
+provided and does not store input and output data for abuse monitoring.
+The exception to this policy is when prompt caching is turned on for
+GitLab Duo Code Suggestions and GitLab Duo Agentic Chat.
+For OpenAI models, you cannot turn off prompt caching.
+
+Certain Anthropic and OpenAI models, including when hosted on Amazon Bedrock and
+Gemini Enterprise Agent Platform, are subject to limited vendor-side data retention.
+For more information about these models, see
+[supported AI models for GitLab Duo Agent Platform](../duo_agent_platform/model_selection.md#supported-models).
+
+### GitLab
+
+GitLab Duo Chat and GitLab Duo Agent Platform retain chat and workflow history
+to help you return quickly to previously discussed topics.
+You can delete chats in the GitLab Duo Chat interface.
+On GitLab.com, GitLab retains chat and workflow history for anti-abuse purposes.
+GitLab does not otherwise retain input and output data unless customers provide consent
+through a [GitLab Support ticket](https://about.gitlab.com/support/portal/).
+
+When you enable expanded logging for GitLab Duo Agent Platform, GitLab retains trace data.
+Logging information related to AI features is separate from any
+zero data retention policy with GitLab AI model sub-processors.
+For more information, see [GitLab log system](../../administration/logs/_index.md).
+
+## Model training
+
+GitLab does not train generative AI models.
+
+All GitLab AI model sub-processors are restricted from using model input and output to train models.
+These sub-processors are under data protection agreements with GitLab that prohibit the use of
+customer content for their own purposes, except to perform their independent legal obligations.
+
+## Telemetry
+
+GitLab Duo collects aggregated or de-identified first-party usage data through a Snowplow collector. This usage data includes the following metrics:
+
+- Number of unique users
+- Number of unique instances
+- Prompt and suffix lengths
+- Model used
+- Status code responses
+- API response times
+- Code Suggestions also collects:
+  - Language the suggestion was in (for example, Python)
+  - Editor being used (for example, VS Code)
+  - Number of suggestions shown, accepted, rejected, or that had errors
+  - Duration of time that a suggestion was shown
+
+## GitLab Model Context Protocol server
+
+The following information applies to [GitLab Model Context Protocol (MCP) server](../model_context_protocol/mcp_server.md) usage in
+GitLab Self-Managed instances.
+
+GitLab does not transmit, store, retain, or process any data when the GitLab MCP server is used. All
+communication occurs directly between the MCP client and the GitLab MCP server in your environment.
+
+Repository data and metadata are not sent to GitLab.
+
+You control which MCP clients connect to your instance. Each client's own privacy and data retention policies apply.
+
+## Model accuracy and quality
+
+Generative AI may produce unexpected results that may be:
+
+- Low-quality
+- Incoherent
+- Incomplete
+- Failed pipelines
+- Insecure code
+- Offensive or insensitive
+- Out of date information
+
+GitLab is actively iterating on all our AI-assisted capabilities to improve the quality of the generated content. We improve the quality through prompt engineering, evaluating new AI/ML models to power these features, and through novel heuristics built into these features directly.
+
+## Secret detection and redaction
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/issues/632) in GitLab 17.9.
+
+{{< /history >}}
+
+GitLab Duo includes [secret detection and redaction](https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/blob/main/docs/developer/secret-redaction.md) during flow execution. Depending on the scenario, GitLab Duo automatically
+detects and removes sensitive information like API keys, credentials, and tokens from your
+code before processing it with large language models.
+
+Your code goes through a pre-scan security workflow when using GitLab Duo:
+
+1. Your code is scanned for sensitive information using Gitleaks.
+1. Any detected secrets are automatically removed from the request.
+
+Secret scanning runs in the following scenarios:
+
+- Code completion context transformation (before the context is sent to AI)
+- AI context transformation
+- Workflow tool results
+- Agentic Chat user input
+- Git command logging
+- CLI config logging
+
+> [!note]
+> Secret scanning does not occur when you interact with GitLab Duo Chat through the web interface.
+
+### Exception: Secret false positive detection
+
+[Secret false positive detection](../application_security/vulnerabilities/secret_false_positive_detection.md) is an opt-in feature that sends information about the vulnerability, including code context surrounding detected secrets, to LLMs for analysis. This is a deliberate exception to the [secret detection and redaction](#secret-detection-and-redaction) behavior.
+
+Because this feature is opt-in, you must explicitly enable it at both the group and project level before any vulnerability data is sent to LLMs. Review your organization's data policies before enabling this feature.
+
+## Share group usage data with GitLab
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/587976) in GitLab 18.9.1.
+
+{{< /history >}}
+
+To help improve service quality, you can share usage data about GitLab Duo Agent Platform features with GitLab.
+
+After you turn on data collection, AI interactions from all projects and subgroups in your namespace are logged with GitLab.
+This data is used exclusively for service improvement and debugging, and not for training AI models.
+
+You can also turn on usage data collection [for an instance](../../administration/gitlab_duo/configure/_index.md#share-usage-data-with-gitlab)
+
+Prerequisites:
+
+- Have GitLab 18.9.1 or later.
+- Have the Owner role for a top-level group.
+- On GitLab.com, your group must [have GitLab Duo enabled](turn_on_off.md#turn-gitlab-duo-on-or-off).
+
+To turn on data collection for your group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **GitLab Duo**.
+1. Select **Change configuration**.
+1. Under **Data collection**, select the **Collect usage data** checkbox.
+1. Select **Save changes**.
+
+### Agent Platform usage data
+
+When you turn on data collection, the following data is logged:
+
+- Full prompt and response text from interactions with GitLab Duo.
+- Session context, including sessions that were ongoing at the time the setting is enabled.
+- Model metadata (model version, token counts, latency).
+- Tool calls and their results.
+- Session IDs to correlate with user feedback.
+
+The following information is not included in logs, unless users include it in their own prompts:
+
+- User IDs or usernames.
+- Email addresses or personal identifiers.
+- Project or namespace identifiers.
+
+GitLab does not remove identifiers that users have included in their prompt.
+
+## Prompt caching
+
+Prompt caching improves latency by avoiding the reprocessing of cached prompt and input data.
+When you turn on prompt caching, the model vendor temporarily stores prompt data in memory.
+The cached data is never logged to any persistent storage.
+
+For both Agent Platform features that use the prompt registry and Code Suggestions,
+token caching is automatically turned on for supported models.
+
+### Turn off prompt caching
+
+By default, prompt caching is turned on.
+You can turn prompt caching off for a top-level group or an instance.
+
+{{< tabs >}}
+
+{{< tab title="For a top-level group" >}}
+
+Prerequisites:
+
+- The Owner role for the top-level group.
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **GitLab Duo**.
+1. Select **Change configuration**.
+1. In the **Data and privacy** section, under **Prompt cache**, clear the **Turn on prompt caching** checkbox.
+1. Select **Save changes**.
+
+{{< /tab >}}
+
+{{< tab title="For an instance" >}}
+
+Prerequisites:
+
+- Administrator access.
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **GitLab Duo**.
+1. Select **Change configuration**.
+1. In the **Data and privacy** section, under **Prompt cache**, clear the **Turn on prompt caching** checkbox.
+1. Select **Save changes**.
+
+{{< /tab >}}
+
+{{< /tabs >}}

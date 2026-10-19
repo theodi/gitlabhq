@@ -1,21 +1,13 @@
-- page_title "Issues"
+- page_title _("Work items")
+- @breadcrumb_link = issues_dashboard_path(assignee_username: current_user.username)
+- add_page_specific_style 'page_bundles/issuable_list'
+- add_page_specific_style 'page_bundles/dashboard'
 = content_for :meta_tags do
-  - if current_user
-    = auto_discovery_link_tag(:atom, issues_dashboard_url(format: :atom, private_token: current_user.private_token), title: "#{current_user.name} issues")
+  = auto_discovery_link_tag(:atom, safe_params.merge(rss_url_options).to_h, title: "#{current_user.name} issues")
 
-%h3.page-title
-  Issues
+= render_dashboard_ultimate_trial(current_user)
 
-%p.light
-  List all issues from all projects you have access to.
-%hr
+= render_if_exists 'shared/dashboard/saml_reauth_notice',
+  groups_requiring_saml_reauth: user_groups_requiring_reauth
 
-.append-bottom-20
-  .pull-right
-    - if current_user
-      .hidden-xs.pull-left
-        = link_to issues_dashboard_url(format: :atom, private_token: current_user.private_token), class: 'btn' do
-          %i.fa.fa-rss
-
-  = render 'shared/issuable_filter', type: :issues
-= render 'shared/issues'
+.js-issues-dashboard{ data: dashboard_issues_list_data(current_user) }

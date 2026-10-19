@@ -1,0 +1,117 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Current
+    class Organization
+      include Gitlab::Utils::StrongMemoize
+
+      HTTP_HEADER = "X-GitLab-Organization-ID"
+
+      attr_reader :params
+
+      def initialize(params: {}, user: nil, rack_env: nil)
+        @params = params
+        @user_or_proc = user
+        @headers = rack_env ? Rack::Proxy.extract_http_request_headers(rack_env) : nil
+      end
+
+      def organization
+        from_request || from_user || fallback_organization
+      end
+
+      # The Organization named by the request's path, namespace, or header, if any.
+      def from_request
+        from_params || from_headers
+      end
+      strong_memoize_attr :from_request
+
+      def from_params
+        from_group_params || from_organization_params || from_repository_params
+      end
+
+      # True when the URL names an Organization (/o/:organization_path) other than
+      # the one the group/namespace params resolve to, so the request can be
+      # rejected. See https://gitlab.com/gitlab-org/gitlab/-/issues/595615.
+      # A string comparison is enough: Organization paths are case-insensitively
+      # unique (unique_organizations_on_path_case_insensitive), and it avoids a
+      # second Organization lookup on every organization-scoped request.
+      def organization_path_mismatch?
+        return false if params[:organization_path].blank?
+        return false unless from_group_params
+
+        !from_group_params.path.casecmp?(params[:organization_path].to_s)
+      end
+
+      def from_headers
+        return if headers.nil?
+
+        header_organization_id = headers[HTTP_HEADER]
+
+        return unless header_organization_id.to_i > 0
+
+        ::Organizations::Organization.find_by_id_with_isolation_record(header_organization_id)
+      end
+      strong_memoize_attr :from_headers
+
+      # The Organization owning the repository named by the URL on git-over-HTTP
+      # routes (/group/sub/project.git/...): resolved via the top-level namespace
+      # in the path, or via the snippet record for personal snippet repositories,
+      # whose paths carry no namespace.
+      def from_repository_params
+        path = params[:repository_path]
+        return if path.blank?
+
+        snippet_id = Gitlab::RepoPath.personal_snippet_id(path)
+
+        return ::Organizations::Organization.find_by_personal_snippet_id_with_isolation_record(snippet_id) if snippet_id
+
+        namespace_path = Gitlab::RepoPath.top_level_namespace_path(path)
+        return unless namespace_path
+
+        ::Organizations::Organization.find_by_namespace_path_with_isolation_record(namespace_path)
+      end
+      strong_memoize_attr :from_repository_params
+
+      # The Organization named by the URL's /o/:organization_path segment, if any.
+      def from_organization_params
+        path = params[:organization_path]
+        return if path.blank?
+
+        ::Organizations::Organization.find_by_path_with_isolation_record(path)
+      end
+      strong_memoize_attr :from_organization_params
+
+      def from_user
+        return unless user
+
+        ::Organizations::Organization.find_by_id_with_isolation_record(user.organization_id)
+      end
+
+      def user
+        return @user if defined?(@user)
+
+        @user = @user_or_proc.respond_to?(:call) ? @user_or_proc.call : @user_or_proc
+      end
+
+      private
+
+      attr_reader :headers
+
+      def from_group_params
+        path = params[:namespace_id] || params[:group_id]
+        path ||= params[:id] if params[:controller] == 'groups'
+
+        return if path.blank?
+
+        ::Organizations::Organization.find_by_namespace_path_with_isolation_record(path)
+      end
+      strong_memoize_attr :from_group_params
+
+      def fallback_organization
+        Gitlab::Organizations::FallbackOrganizationTracker.enable
+
+        ::Organizations::Organization.default_organization
+      end
+    end
+  end
+end

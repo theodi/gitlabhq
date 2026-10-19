@@ -1,0 +1,13 @@
+---
+table_name: analytics_devops_adoption_snapshots
+classes:
+- Analytics::DevopsAdoption::Snapshot
+feature_categories:
+- devops_reports
+description: Contains periodical DevOps Adoption data points.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/47388
+milestone: '13.7'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces
+table_size: small

@@ -1,0 +1,125 @@
+# frozen_string_literal: true
+
+require 'gitlab-glfm-markdown'
+require 'gitlab/heading_slug'
+
+# Use the gitlab-glfm-markdown gem (https://gitlab.com/gitlab-org/ruby/gems/gitlab-glfm-markdown)
+# to interface with the Rust-based Comrak parser (https://github.com/kivikakk/comrak).
+module Banzai
+  module Filter
+    module MarkdownEngines
+      class GlfmMarkdown < Base
+        # Table of characters that need this special handling. It consists of
+        # the GitLab special reference characters.
+        REFERENCE_CHARS = %w[$ % # & @ ! ~ ^ :].freeze
+
+        OPTIONS = {
+          alerts: true,
+          autolink: true,
+          cjk_friendly_emphasis: true,
+          description_lists: true,
+          escaped_char_spans: true,
+          footnotes: true,
+          full_info_string: true,
+          hardbreaks: false,
+          header_accessibility: true,
+          header_id_prefix: Banzai::Renderer::USER_CONTENT_ID_PREFIX,
+          inapplicable_tasks: true,
+          math_code: true,
+          math_dollars: true,
+          multiline_block_quotes: true,
+          only_escape_chars: REFERENCE_CHARS,
+          placeholder_detection: true,
+          relaxed_autolinks: true,
+          relaxed_tasklist_character: true,
+          smart: false,
+          sourcepos: true,
+          strikethrough: true,
+          table: true,
+          tasklist: true,
+          tasklist_classes: true,
+          tasklist_in_table: true,
+          wikilinks_title_before_pipe: true,
+          unsafe: true
+        }.freeze
+
+        def render(text)
+          # GLFMMarkdown requires UTF-8 input and raises on anything else.
+          #
+          # Fast path for empty input, and re-encode any non-UTF-8 as UTF-8; raises if the encoding
+          # is invalid.
+          #
+          # Practically, all web input is gathered as UTF-8, but internally we may sometimes call
+          # render with US-ASCII, as it's the encoding given to e.g.: `[].join`, `1.to_s`,
+          # `true.to_s`, etc., even if the source file that contained these calls was in UTF-8 and
+          # `""` is UTF-8!
+          #
+          # See related discussion with further links:
+          # https://github.com/gjtorikian/commonmarker/issues/277.
+          return "" if text.empty?
+
+          text = text.encode(Encoding::UTF_8) unless text.encoding == Encoding::UTF_8
+
+          ::GLFMMarkdown.to_html(text, options: render_options)
+        end
+
+        private
+
+        def render_options
+          customized_options.merge(
+            github_pre_lang: Feature.disabled?(:use_css_language_classes, resolve_project),
+            header_slug_prefix: filename_prefix
+          )
+        end
+
+        def filename_prefix
+          return unless context[:use_filename_in_anchor]
+
+          Gitlab::HeadingSlug.prefix_from_file_path(context[:requested_path])
+        end
+
+        def customized_options
+          return OPTIONS unless any_options_customized?
+
+          OPTIONS.merge(
+            sourcepos: !sourcepos_disabled?,
+            header_id_prefix: headers_disabled? ? nil : OPTIONS[:header_id_prefix],
+            autolink: !autolink_disabled?,
+            relaxed_autolinks: !autolink_disabled?,
+            placeholder_detection: !placeholders_disabled?,
+            unsafe: !raw_html_disabled?
+          )
+        end
+
+        def any_options_customized?
+          sourcepos_disabled? || headers_disabled? || autolink_disabled? || raw_html_disabled? || placeholders_disabled?
+        end
+
+        def headers_disabled?
+          context[:no_header_anchors]
+        end
+
+        def autolink_disabled?
+          context[:autolink] == false
+        end
+
+        def raw_html_disabled?
+          context[:disable_raw_html]
+        end
+
+        def placeholders_disabled?
+          return true unless resolve_project&.markdown_placeholders_feature_flag_enabled? ||
+            group&.markdown_placeholders_feature_flag_enabled?
+
+          context[:disable_placeholders] || context[:broadcast_message_placeholders]
+        end
+
+        def resolve_project
+          context[:project].respond_to?(:project) ? context[:project].project : context[:project]
+        end
+      end
+    end
+  end
+end
+
+Banzai::Filter::MarkdownEngines::GlfmMarkdown.prepend_mod

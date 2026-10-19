@@ -1,0 +1,171 @@
+# frozen_string_literal: true
+
+# rubocop:disable Gitlab/BoundedContexts -- this is an existing class
+module Auth
+  class ContainerProxyAuthenticationService < BaseService
+    include ::Gitlab::Utils::StrongMemoize
+
+    AUDIENCE = 'dependency_proxy'
+    HMAC_KEY = 'gitlab-dependency-proxy'
+    DEFAULT_EXPIRE_TIME = 1.minute
+    REQUIRED_CI_ABILITIES = %i[build_read_container_image build_create_container_image].freeze
+    REQUIRED_USER_ABILITIES = %i[read_container_image create_container_image].freeze
+    REQUIRED_USER_VR_ABILITIES = %i[read_dependency_proxy write_dependency_proxy].freeze
+
+    SERVICE_TYPE_VIRTUAL_REGISTRY = 'virtual_registry'
+    SERVICE_TYPE_DEPENDENCY_PROXY = 'dependency_proxy'
+    VIRTUAL_REGISTRY_SCOPE_PATTERN = %r{virtual_registries/container/}
+    # A dependency proxy pull scope looks like:
+    #   repository:<group_full_path>/dependency_proxy/containers/<image>:<actions>
+    DEPENDENCY_PROXY_SCOPE_PATTERN = %r{\Arepository:(?<group_path>.+?)/dependency_proxy/containers/}
+
+    def execute(authentication_abilities:, personal_access_token: nil)
+      @authentication_abilities = authentication_abilities
+      @personal_access_token = personal_access_token
+
+      unless ::Gitlab.config.dependency_proxy.enabled
+        return error('UNAVAILABLE', status: 404, message: 'dependency proxy not enabled')
+      end
+
+      return error('DENIED', status: 403, message: 'access forbidden') unless valid_user_actor?
+
+      { token: authorized_token.encoded }
+    end
+
+    class << self
+      include ::Gitlab::Utils::StrongMemoize
+
+      def secret
+        derive_secret(::Gitlab::Encryption::KeyProvider[:db_key_base].encryption_key.secret)
+      end
+      strong_memoize_attr :secret
+
+      # Current key first, so tokens signed before a db_key_base rotation still verify
+      def secrets
+        ::Gitlab::Encryption::KeyProvider[:db_key_base].decryption_keys_current_first
+          .map { |key| derive_secret(key.secret) }
+      end
+
+      def token_expire_at
+        Time.current + Gitlab::CurrentSettings.container_registry_token_expire_delay.minutes
+      end
+
+      private
+
+      def derive_secret(db_key_base)
+        OpenSSL::HMAC.hexdigest('sha256', db_key_base, HMAC_KEY)
+      end
+    end
+
+    private
+
+    attr_reader :authentication_abilities
+
+    def error(code, status:, message:)
+      { errors: [{ code: code, message: message }], http_status: status }
+    end
+
+    def valid_user_actor?
+      has_required_abilities? &&
+        pat_authorized? &&
+        (!deploy_token || deploy_token.valid_for_dependency_proxy?)
+    end
+
+    def has_required_abilities?
+      return true if granular_dependency_proxy_pull?
+
+      [REQUIRED_CI_ABILITIES, REQUIRED_USER_ABILITIES, REQUIRED_USER_VR_ABILITIES].any? do |required_abilities|
+        (required_abilities & authentication_abilities).size == required_abilities.size
+      end
+    end
+
+    def granular_dependency_proxy_pull?
+      granular_personal_access_token.present? && detect_service_type == SERVICE_TYPE_DEPENDENCY_PROXY
+    end
+
+    def granular_personal_access_token
+      return unless @personal_access_token&.granular?
+
+      @personal_access_token
+    end
+    strong_memoize_attr :granular_personal_access_token
+
+    def pat_authorized?
+      return true unless @personal_access_token
+      # A scopeless request (for example `docker login`) has no group to
+      # authorize; enforcement for these tokens happens at consumption.
+      return true unless dependency_proxy_scope
+      return false unless requested_group
+
+      strong_memoize_with(:pat_authorized, requested_group.id) do
+        ::DependencyProxy::GranularAuthorization.pull_authorized?(@personal_access_token, requested_group)
+      end
+    end
+
+    def dependency_proxy_scope
+      scopes.find { |scope| scope.match?(DEPENDENCY_PROXY_SCOPE_PATTERN) }
+    end
+    strong_memoize_attr :dependency_proxy_scope
+
+    def requested_group
+      return unless dependency_proxy_scope
+
+      group_path = dependency_proxy_scope.match(DEPENDENCY_PROXY_SCOPE_PATTERN)[:group_path]
+      # follow_redirects matches the consuming controller so both stages resolve a renamed group the same way.
+      Group.find_by_full_path(group_path, follow_redirects: true)
+    end
+    strong_memoize_attr :requested_group
+
+    def group_access_token
+      PersonalAccessTokensFinder.new(state: 'active').find_by_token(raw_token.to_s)
+    end
+
+    def authorized_token
+      JSONWebToken::HMACToken.new(self.class.secret).tap do |token|
+        token['user_id'] = current_user.id if current_user
+        token['deploy_token'] = deploy_token.token if deploy_token
+        token['personal_access_token'] = raw_token if personal_access_token_user?
+        token['group_access_token'] = raw_token if group_access_token_user?
+        token['service_type'] = detect_service_type if scopes.present?
+        token['scoped_user_id'] = composite_scoped_user_id if composite_scoped_user_id
+        token.expire_time = self.class.token_expire_at
+      end
+    end
+
+    def detect_service_type
+      return SERVICE_TYPE_VIRTUAL_REGISTRY if scopes.any? { |scope| scope.match?(VIRTUAL_REGISTRY_SCOPE_PATTERN) }
+
+      SERVICE_TYPE_DEPENDENCY_PROXY
+    end
+
+    def scopes
+      params[:scopes] || []
+    end
+
+    def deploy_token
+      return unless Gitlab::ExternalAuthorization.allow_deploy_tokens_and_deploy_keys?
+
+      params[:deploy_token]
+    end
+
+    def raw_token
+      params[:raw_token]
+    end
+
+    def group_access_token_user?
+      raw_token && current_user&.project_bot? && current_user.resource_bot_resource.is_a?(Group)
+    end
+
+    def personal_access_token_user?
+      raw_token && current_user && (current_user.human? || current_user.service_account?)
+    end
+
+    def composite_scoped_user_id
+      return unless current_user&.composite_identity_enforced?
+
+      identity = ::Gitlab::Auth::Identity.fabricate(current_user)
+      identity&.linked? ? identity.scoped_user&.id : nil
+    end
+  end
+end
+# rubocop:enable Gitlab/BoundedContexts

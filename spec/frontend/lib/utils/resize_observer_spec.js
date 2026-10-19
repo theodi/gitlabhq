@@ -1,0 +1,469 @@
+import { setHTMLFixture, resetHTMLFixture } from 'helpers/fixtures';
+import { contentTop } from '~/lib/utils/common_utils';
+import { scrollToTargetOnResize } from '~/lib/utils/resize_observer';
+
+jest.mock('~/lib/utils/common_utils', () => ({
+  ...jest.requireActual('~/lib/utils/common_utils'),
+  contentTop: jest.fn(),
+}));
+
+function mockStickyHeaderSize(val) {
+  contentTop.mockReturnValue(val);
+}
+
+describe('scrollToTargetOnResize', () => {
+  let cleanup;
+  const mockHeaderSize = 50;
+  let resizeObserverCallback;
+  let mockObserve;
+  let mockUnobserve;
+
+  beforeEach(() => {
+    mockObserve = jest.fn();
+    mockUnobserve = jest.fn();
+
+    global.ResizeObserver = jest.fn((callback) => {
+      resizeObserverCallback = callback;
+      return {
+        observe: mockObserve,
+        unobserve: mockUnobserve,
+      };
+    });
+
+    mockStickyHeaderSize(mockHeaderSize);
+
+    jest.spyOn(document.documentElement, 'scrollTop', 'get').mockReturnValue(0);
+    jest.spyOn(document.documentElement, 'scrollHeight', 'get').mockReturnValue(1000);
+
+    setHTMLFixture(
+      `<div>
+        <header class="js-super-topbar"></header>
+        <div id="content-body">
+          <div id="target-element">Target content</div>
+          <div id="other-content">Other content</div>
+        </div>
+      </div>
+      `,
+    );
+  });
+
+  afterEach(() => {
+    if (cleanup) {
+      cleanup();
+    }
+    contentTop.mockReset();
+    resetHTMLFixture();
+    jest.restoreAllMocks();
+  });
+
+  describe('initialization and basic functionality', () => {
+    it('returns null if no targetId is provided and no hash exists', () => {
+      Object.defineProperty(window, 'location', {
+        value: { hash: '' },
+        writable: true,
+      });
+
+      const result = scrollToTargetOnResize();
+
+      expect(result).toBeNull();
+      expect(mockObserve).not.toHaveBeenCalled();
+    });
+
+    it('observes the container element on initialization', () => {
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      expect(mockObserve).toHaveBeenCalledWith(document.querySelector('#content-body'));
+    });
+
+    it('uses window.location.hash if no targetId is provided', () => {
+      Object.defineProperty(window, 'location', {
+        value: { hash: '#target-element' },
+        writable: true,
+      });
+
+      const getBoundingClientRectSpy = jest
+        .spyOn(document.getElementById('target-element'), 'getBoundingClientRect')
+        .mockReturnValue({ top: 200 });
+
+      cleanup = scrollToTargetOnResize({ container: '#content-body' });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(getBoundingClientRectSpy).toHaveBeenCalled();
+      expect(document.scrollingElement.scrollTo).toHaveBeenCalled();
+    });
+
+    it('returns a cleanup function that stops observing', () => {
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      expect(typeof cleanup).toBe('function');
+
+      cleanup();
+
+      jest.runAllTimers();
+
+      expect(mockUnobserve).toHaveBeenCalledWith(document.querySelector('#content-body'));
+    });
+  });
+
+  describe('scrolling behavior', () => {
+    beforeEach(() => {
+      jest
+        .spyOn(document.getElementById('target-element'), 'getBoundingClientRect')
+        .mockReturnValue({ top: 200 });
+    });
+
+    it('scrolls to keep target at top minus header size on resize', () => {
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(document.scrollingElement.scrollTo).toHaveBeenCalledWith({
+        top: 200 - 0 - mockHeaderSize,
+        behavior: 'instant',
+      });
+    });
+
+    it('does not scroll when an element other than body is focused', () => {
+      const otherElement = document.getElementById('other-content');
+      jest.spyOn(document, 'activeElement', 'get').mockReturnValue(otherElement);
+
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(document.scrollingElement.scrollTo).not.toHaveBeenCalled();
+    });
+
+    it('does scroll when the super topbar is focused', () => {
+      const otherElement = document.querySelector('.js-super-topbar');
+      jest.spyOn(document, 'activeElement', 'get').mockReturnValue(otherElement);
+
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(document.scrollingElement.scrollTo).toHaveBeenCalledWith({
+        top: 200 - 0 - mockHeaderSize,
+        behavior: 'instant',
+      });
+    });
+
+    it('does nothing if target element does not exist', () => {
+      cleanup = scrollToTargetOnResize({
+        targetId: 'non-existent-id',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(document.scrollingElement.scrollTo).not.toHaveBeenCalled();
+    });
+
+    it('maintains scroll position relative to target after user scroll', () => {
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(document.scrollingElement.scrollTo).toHaveBeenCalledWith({
+        top: 150,
+        behavior: 'instant',
+      });
+
+      jest.spyOn(document.documentElement, 'scrollTop', 'get').mockReturnValue(100);
+
+      jest
+        .spyOn(document.getElementById('target-element'), 'getBoundingClientRect')
+        .mockReturnValue({ top: 100 });
+
+      document.scrollingElement.dispatchEvent(new Event('scroll'));
+
+      jest
+        .spyOn(document.getElementById('target-element'), 'getBoundingClientRect')
+        .mockReturnValue({ top: 200 });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(document.scrollingElement.scrollTo).toHaveBeenLastCalledWith({
+        top: 200,
+        behavior: 'instant',
+      });
+    });
+
+    it('scrolls the static panel', () => {
+      setHTMLFixture(
+        `<div class="js-static-panel">
+            <div class="js-static-panel-inner">
+              <div id="target-element">Target content</div>
+              <div id="other-content">Other content</div>
+            </div>
+          </div>`,
+      );
+
+      const panelScroller = document.querySelector('.js-static-panel-inner');
+
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: panelScroller }]);
+
+      expect(panelScroller.scrollTo).toHaveBeenCalled();
+    });
+
+    it('scrolls the dynamic panel', () => {
+      setHTMLFixture(
+        `<div class="js-dynamic-panel">
+            <div class="js-dynamic-panel-inner">
+              <div id="content-other-body">
+                <div id="target-element">Target content</div>
+              </div>
+              <div id="other-content">Other content</div>
+            </div>
+          </div>`,
+      );
+
+      const panelScroller = document.querySelector('.js-dynamic-panel-inner');
+
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-other-body',
+      });
+
+      resizeObserverCallback([{ target: panelScroller }]);
+
+      expect(panelScroller.scrollTo).toHaveBeenCalled();
+    });
+  });
+
+  describe('intersection observer', () => {
+    let intersectionCallback;
+    let observeSpy;
+    let unobserveSpy;
+    let disconnectSpy;
+
+    beforeEach(() => {
+      observeSpy = jest.fn();
+      unobserveSpy = jest.fn();
+      disconnectSpy = jest.fn();
+
+      global.IntersectionObserver = jest.fn((callback) => {
+        intersectionCallback = callback;
+        return {
+          observe: observeSpy,
+          unobserve: unobserveSpy,
+          disconnect: disconnectSpy,
+        };
+      });
+
+      jest
+        .spyOn(document.getElementById('target-element'), 'getBoundingClientRect')
+        .mockReturnValue({ top: 200 });
+    });
+
+    it('creates intersection observer after first resize', () => {
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      expect(global.IntersectionObserver).toHaveBeenCalled();
+      expect(observeSpy).toHaveBeenCalledWith(document.getElementById('target-element'));
+    });
+
+    it('cleans up when target is scrolled out of view', () => {
+      jest.useFakeTimers();
+
+      cleanup = scrollToTargetOnResize({
+        targetId: 'target-element',
+        container: '#content-body',
+      });
+
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+      intersectionCallback([
+        { target: document.getElementById('target-element'), isIntersecting: false },
+      ]);
+
+      jest.runAllTimers();
+
+      expect(unobserveSpy).toHaveBeenCalledWith(document.getElementById('target-element'));
+      expect(disconnectSpy).toHaveBeenCalled();
+      expect(mockUnobserve).toHaveBeenCalledWith(document.querySelector('#content-body'));
+
+      document.getElementById('target-element').remove();
+
+      document.scrollingElement.scrollTo.mockClear();
+      resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+      expect(document.scrollingElement.scrollTo).not.toHaveBeenCalled();
+    });
+
+    describe('when the target node is replaced', () => {
+      let oldTarget;
+      let newTarget;
+
+      beforeEach(() => {
+        cleanup = scrollToTargetOnResize({
+          targetId: 'target-element',
+          container: '#content-body',
+        });
+
+        resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+        oldTarget = document.getElementById('target-element');
+        newTarget = oldTarget.cloneNode();
+        newTarget.textContent = 'Replaced content';
+        jest.spyOn(newTarget, 'getBoundingClientRect').mockReturnValue({ top: 200 });
+        oldTarget.replaceWith(newTarget);
+
+        intersectionCallback([{ target: oldTarget, isIntersecting: false }]);
+        jest.runAllTimers();
+      });
+
+      it('does not clean up', () => {
+        expect(disconnectSpy).not.toHaveBeenCalled();
+        expect(mockUnobserve).not.toHaveBeenCalled();
+      });
+
+      it('ignores scroll events until the next resize finds the new node', () => {
+        jest.spyOn(oldTarget, 'getBoundingClientRect').mockReturnValue({ top: 0 });
+        jest.spyOn(document.documentElement, 'scrollTop', 'get').mockReturnValue(10);
+
+        document.scrollingElement.dispatchEvent(new Event('scroll'));
+        resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+        expect(document.scrollingElement.scrollTo).toHaveBeenLastCalledWith({
+          top: 160,
+          behavior: 'instant',
+        });
+      });
+
+      it('unobserves the observed node on cleanup when the target is missing', () => {
+        newTarget.remove();
+        resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+        cleanup();
+        jest.runAllTimers();
+
+        expect(unobserveSpy).toHaveBeenCalledWith(oldTarget);
+        expect(unobserveSpy).not.toHaveBeenCalledWith(null);
+        expect(disconnectSpy).toHaveBeenCalled();
+      });
+
+      it('cleans up when the new node is scrolled out of view', () => {
+        resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+        intersectionCallback([{ target: newTarget, isIntersecting: false }]);
+        jest.runAllTimers();
+
+        expect(unobserveSpy).toHaveBeenLastCalledWith(newTarget);
+        expect(disconnectSpy).toHaveBeenCalled();
+      });
+
+      it('observes the new node on the next resize', () => {
+        resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+        expect(unobserveSpy).toHaveBeenCalledWith(oldTarget);
+        expect(observeSpy).toHaveBeenLastCalledWith(newTarget);
+      });
+    });
+  });
+
+  it('ignores scroll events caused by its own scrollTo', () => {
+    jest
+      .spyOn(document.getElementById('target-element'), 'getBoundingClientRect')
+      .mockReturnValue({ top: 1200 });
+
+    cleanup = scrollToTargetOnResize({
+      targetId: 'target-element',
+      container: '#content-body',
+    });
+
+    resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+    // scrollTop stays at 0, as if the browser clamped the requested 1150px
+    document.scrollingElement.dispatchEvent(new Event('scroll'));
+
+    resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+    expect(document.scrollingElement.scrollTo).toHaveBeenLastCalledWith({
+      top: 1150,
+      behavior: 'instant',
+    });
+  });
+
+  it('counts a user scroll back to the position of its own scrollTo', () => {
+    const target = document.getElementById('target-element');
+    const rect = jest.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 200 });
+    const scrollTop = jest.spyOn(document.documentElement, 'scrollTop', 'get');
+
+    cleanup = scrollToTargetOnResize({
+      targetId: 'target-element',
+      container: '#content-body',
+    });
+
+    resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+    scrollTop.mockReturnValue(100);
+    rect.mockReturnValue({ top: 100 });
+    document.scrollingElement.dispatchEvent(new Event('scroll'));
+
+    scrollTop.mockReturnValue(0);
+    rect.mockReturnValue({ top: 180 });
+    document.scrollingElement.dispatchEvent(new Event('scroll'));
+
+    resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+    expect(document.scrollingElement.scrollTo).toHaveBeenLastCalledWith({
+      top: 0,
+      behavior: 'instant',
+    });
+  });
+
+  it('ignores large scrollHeight changes', () => {
+    jest
+      .spyOn(document.getElementById('target-element'), 'getBoundingClientRect')
+      .mockReturnValue({ top: 200 });
+
+    cleanup = scrollToTargetOnResize({
+      targetId: 'target-element',
+      container: '#content-body',
+    });
+
+    resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+    expect(document.scrollingElement.scrollTo).toHaveBeenCalled();
+
+    document.scrollingElement.scrollTo.mockClear();
+
+    jest.spyOn(document.documentElement, 'scrollHeight', 'get').mockReturnValue(1200);
+
+    window.dispatchEvent(new Event('scroll'));
+
+    resizeObserverCallback([{ target: document.querySelector('#content-body') }]);
+
+    expect(document.scrollingElement.scrollTo).toHaveBeenCalledWith({
+      top: 150,
+      behavior: 'instant',
+    });
+  });
+});

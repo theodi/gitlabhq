@@ -1,0 +1,700 @@
+<script>
+import { mapState, mapActions } from 'pinia';
+import { GlLoadingIcon, GlHoverLoadDirective } from '@gitlab/ui';
+import { createAlert } from '~/alert';
+import FileRow from '~/vue_shared/components/file_row.vue';
+import FileTreeBrowserToggle from '~/repository/file_tree_browser/components/file_tree_browser_toggle.vue';
+import { __ } from '~/locale';
+import { InternalEvents } from '~/tracking';
+import { joinPaths, buildURLwithRefType, visitUrl } from '~/lib/utils/url_utility';
+import { projectPath as projectBasePath } from '~/lib/utils/path_helpers/project';
+import paginatedTreeQuery from 'shared_queries/repository/paginated_tree.query.graphql';
+import { TREE_PAGE_SIZE } from '~/repository/constants';
+import { getRefType } from '~/repository/utils/ref_type';
+import { useFileTreeBrowserVisibility } from '~/repository/stores/file_tree_browser_visibility';
+import getRefMixin from '~/repository/mixins/get_ref';
+import FileTreeBrowserPopover from '~/repository/file_tree_browser/components/file_tree_browser_popover.vue';
+import UserCalloutDismisser from '~/vue_shared/components/user_callout_dismisser.vue';
+import FileTreeSearch from '~/repository/file_tree_browser/components/file_tree_search.vue';
+import blobInfoQuery from 'shared_queries/repository/blob_info.query.graphql';
+import { createItemVisibilityObserver, observeElements } from '~/lib/utils/lazy_render_utils';
+import { scrollUp } from '~/lib/utils/scroll_utils';
+import {
+  normalizePath,
+  dedupeByFlatPathAndId,
+  generateShowMoreItem,
+  directoryContainsChild,
+  shouldStopPagination,
+  hasMorePages,
+  isExpandable,
+  generateSkeletonItem,
+} from '../utils';
+
+export default {
+  name: 'FileTreeBrowser',
+  directives: {
+    GlHoverLoad: GlHoverLoadDirective,
+  },
+  components: {
+    UserCalloutDismisser,
+    FileTreeBrowserPopover,
+    FileRow,
+    GlLoadingIcon,
+    FileTreeBrowserToggle,
+    FileTreeSearch,
+  },
+  mixins: [InternalEvents.mixin(), getRefMixin],
+  props: {
+    currentRef: {
+      type: String,
+      required: true,
+    },
+    projectPath: {
+      type: String,
+      required: true,
+    },
+    refType: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    isAnimating: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  data() {
+    return {
+      directoriesCache: {},
+      expandedPathsMap: {},
+      loadingPathsMap: {},
+      appearedItems: {},
+      itemObserver: null,
+      activeItemId: null,
+      focusRAFId: null,
+    };
+  },
+  computed: {
+    flatFilesList() {
+      if (this.isRootLoading) return [];
+      return this.buildList('/', 0);
+    },
+    isRootLoading() {
+      return this.isDirectoryLoading('/') && this.isDirectoryEmpty('/');
+    },
+    currentRouterPath() {
+      return this.$route.params?.path && normalizePath(this.$route.params.path);
+    },
+    siblingMap() {
+      const map = new Map();
+      this.flatFilesList.forEach((item) => {
+        const key = `${item.parentPath || ''}-${item.level}`;
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(item.id);
+      });
+      return map;
+    },
+    activeStyles() {
+      return {
+        backgroundColor: 'var(--gl-highlight-target-background-color)',
+      };
+    },
+    targetElement() {
+      return this.$refs.toggle?.$el;
+    },
+    ...mapState(useFileTreeBrowserVisibility, ['fileTreeBrowserIsPeekOn']),
+  },
+  watch: {
+    flatFilesList(newList) {
+      this.$nextTick(() => this.observeListItems());
+      if (newList.length && !newList.find((item) => item.id === this.activeItemId)) {
+        this.activeItemId = newList[0].id; // Reset active item to first in list if current active item was filtered out
+      }
+    },
+    fileTreeBrowserIsPeekOn() {
+      this.$nextTick(() => this.observeItemVisibility());
+    },
+    async currentRouterPath(newPath, oldPath) {
+      if (newPath && newPath !== oldPath) this.expandPathAncestors(newPath);
+      await this.$nextTick();
+      this.scrollFileRowIntoView(this.currentRouterPath);
+    },
+  },
+  mounted() {
+    this.observeItemVisibility();
+    this.loadInitialPath();
+  },
+  beforeDestroy() {
+    this.itemObserver?.disconnect();
+    if (this.focusRAFId) {
+      cancelAnimationFrame(this.focusRAFId);
+    }
+  },
+  methods: {
+    ...mapActions(useFileTreeBrowserVisibility, ['resetFileTreeBrowserAllStates']),
+    isTreeRow(item) {
+      return item?.type === 'tree';
+    },
+    async loadInitialPath() {
+      await this.expandPathAncestors(this.currentRouterPath || '/');
+      await this.$nextTick();
+      this.scrollFileRowIntoView(this.currentRouterPath, 'center');
+    },
+    observeItemVisibility() {
+      this.itemObserver?.disconnect();
+      const rootElement = this.fileTreeBrowserIsPeekOn
+        ? document.querySelector('.file-tree-browser-peek')
+        : document.querySelector('.js-static-panel-inner');
+      this.itemObserver = createItemVisibilityObserver(
+        (itemId, isVisible) => {
+          this.appearedItems = { ...this.appearedItems, [itemId]: isVisible };
+        },
+        { rootElement },
+      );
+
+      this.observeListItems();
+    },
+    isCurrentPath(path) {
+      if (!this.$route.params.path) return path === '/';
+      return path === this.currentRouterPath;
+    },
+    buildList(path, level) {
+      const contents = this.getDirectoryContents(path);
+      return this.processDirectories({ trees: contents.trees, path, level })
+        .concat(this.processSubmodules({ submodules: contents.submodules, path, level }))
+        .concat(this.processFiles({ blobs: contents.blobs, path, level }));
+    },
+    buildFileHref(routerPath) {
+      return new URL(joinPaths(projectBasePath(this.projectPath), routerPath), gon.gitlab_url).href;
+    },
+    processDirectories({ trees = [], path, level }) {
+      const directoryList = [];
+
+      trees.forEach((tree, index) => {
+        const treePath = normalizePath(tree.path || tree.name);
+        const routerPath = buildURLwithRefType({
+          path: joinPaths(
+            // eslint-disable-next-line @gitlab/no-hardcoded-urls -- This is a Vue router route defined in app/assets/javascripts/repository/router.js, acceptable in this case
+            '/-/tree',
+            this.escapedRef,
+            treePath.split('/').map(encodeURIComponent).join('/'),
+          ),
+          refType: this.refType,
+        });
+        directoryList.push({
+          id: `${treePath}-${tree.id}-${index}`,
+          path: treePath,
+          parentPath: path,
+          routerPath,
+          href: this.buildFileHref(routerPath),
+          type: 'tree',
+          name: tree.name,
+          level,
+          opened: Boolean(this.expandedPathsMap[treePath]),
+          loading: this.isDirectoryLoading(treePath),
+        });
+
+        if (this.shouldRenderShowMore(treePath, path)) {
+          if (this.loadingPathsMap[path]) directoryList.push(generateSkeletonItem(path, level));
+          else directoryList.push(generateShowMoreItem(tree.id, path, level));
+        }
+
+        // Recursively add children for expanded directories
+        if (this.expandedPathsMap[treePath]) {
+          if (this.isDirectoryLoading(treePath) && this.isDirectoryEmpty(treePath))
+            directoryList.push(generateSkeletonItem(treePath, level + 1));
+          else directoryList.push(...this.buildList(treePath, level + 1));
+        }
+      });
+
+      return directoryList;
+    },
+    processFiles({ blobs = [], path, level }) {
+      const filesList = [];
+
+      blobs.forEach((blob, index) => {
+        const blobPath = normalizePath(blob.path);
+        const routerPath = buildURLwithRefType({
+          path: joinPaths(
+            // eslint-disable-next-line @gitlab/no-hardcoded-urls -- This is a Vue router route defined in app/assets/javascripts/repository/router.js, acceptable in this case
+            '/-/blob',
+            this.escapedRef,
+            blobPath.split('/').map(encodeURIComponent).join('/'),
+          ),
+          refType: this.refType,
+        });
+
+        filesList.push({
+          id: `${blobPath}-${blob.id}-${index}`,
+          type: 'blob',
+          fileHash: blob.sha,
+          path: blobPath,
+          parentPath: path,
+          routerPath,
+          href: this.buildFileHref(routerPath),
+          name: blob.name,
+          mode: blob.mode,
+          level,
+        });
+
+        if (this.shouldRenderShowMore(blobPath, path)) {
+          if (this.loadingPathsMap[path]) filesList.push(generateSkeletonItem(path, level));
+          else filesList.push(generateShowMoreItem(blob.id, path, level));
+        }
+      });
+
+      return filesList;
+    },
+    processSubmodules({ submodules = [], path, level }) {
+      const submodulesList = [];
+
+      submodules.forEach((submodule, index) => {
+        const submodulePath = normalizePath(submodule.path || submodule.name);
+        submodulesList.push({
+          id: `${submodulePath}-${submodule.id}-${index}`,
+          fileHash: submodule.sha,
+          path: submodulePath,
+          parentPath: path,
+          webUrl: submodule.webUrl,
+          href: submodule.webUrl,
+          name: submodule.name,
+          submodule: true,
+          level,
+        });
+
+        if (this.shouldRenderShowMore(submodulePath, path)) {
+          if (this.loadingPathsMap[path]) submodulesList.push(generateSkeletonItem(path, level));
+          else submodulesList.push(generateShowMoreItem(submodule.id, path, level));
+        }
+      });
+
+      return submodulesList;
+    },
+    async fetchDirectory(dirPath) {
+      const path = normalizePath(dirPath);
+      const apiPath = path === '/' ? path : path.substring(1);
+      const nextPageCursor = this.directoriesCache[path]?.pageInfo?.endCursor || '';
+
+      if ((this.directoriesCache[path] && !nextPageCursor) || this.loadingPathsMap[path]) return;
+
+      this.loadingPathsMap = { ...this.loadingPathsMap, [path]: true };
+
+      try {
+        const { projectPath, currentRef, refType } = this;
+        const { data } = await this.$apollo.query({
+          query: paginatedTreeQuery,
+          variables: {
+            projectPath,
+            ref: currentRef,
+            refType: getRefType(refType),
+            path: apiPath,
+            nextPageCursor,
+            pageSize: TREE_PAGE_SIZE,
+          },
+        });
+
+        const { project } = data;
+        const treeData = project?.repository?.paginatedTree?.nodes[0];
+        if (!treeData) return;
+        const directoryContents = {
+          trees: dedupeByFlatPathAndId(treeData.trees.nodes),
+          blobs: dedupeByFlatPathAndId(treeData.blobs.nodes),
+          submodules: dedupeByFlatPathAndId(treeData.submodules.nodes),
+        };
+        const cached = this.directoriesCache[path] || { trees: [], blobs: [], submodules: [] };
+
+        this.directoriesCache = {
+          ...this.directoriesCache,
+          [path]: {
+            trees: [...cached.trees, ...directoryContents.trees],
+            blobs: [...cached.blobs, ...directoryContents.blobs],
+            submodules: [...cached.submodules, ...directoryContents.submodules],
+            pageInfo: project?.repository?.paginatedTree?.pageInfo,
+          },
+        };
+      } catch (error) {
+        createAlert({
+          message: __('Error fetching data. Please try again.'),
+          captureError: true,
+          error,
+        });
+      } finally {
+        const newMap = { ...this.loadingPathsMap };
+        delete newMap[path];
+        this.loadingPathsMap = newMap;
+      }
+    },
+
+    // Expand all parent directories leading to a path
+    async expandPathAncestors(path) {
+      await this.fetchDirectory('/');
+      const segments = (path || '').split('/').filter(Boolean);
+      if (!isExpandable(segments)) return;
+
+      const expand = async (index = 0, currentPath = '', page = 0) => {
+        if (index >= segments.length) return;
+
+        const parent = currentPath || '/';
+        const segment = segments[index];
+        const parentContents = this.getDirectoryContents(parent);
+
+        // Check if segment exists in parent directory
+        if (!directoryContainsChild(parentContents, segment)) {
+          if (shouldStopPagination(page, this.loadingPathsMap[parent])) return;
+
+          await this.fetchDirectory(parent);
+
+          // Check if found after fetch
+          const updatedContents = this.getDirectoryContents(parent);
+          if (!directoryContainsChild(updatedContents, segment)) {
+            // If more pages exist, try next page
+            if (hasMorePages(updatedContents)) {
+              await expand(index, currentPath, page + 1);
+              return;
+            }
+            return; // Not found
+          }
+        }
+
+        // Expand and move to next segment
+        const next = `${currentPath}/${segment}`;
+        this.expandedPathsMap = { ...this.expandedPathsMap, [next]: true };
+        if (!this.directoriesCache[next]) await this.fetchDirectory(next);
+        await expand(index + 1, next);
+      };
+
+      await expand();
+    },
+
+    toggleDirectory(normalizedPath, { toggleClose = true } = {}) {
+      if (!this.expandedPathsMap[normalizedPath]) {
+        // If directory is collapsed, expand it
+        this.expandedPathsMap = {
+          ...this.expandedPathsMap,
+          [normalizedPath]: true,
+        };
+        this.fetchDirectory(normalizedPath);
+      } else if (toggleClose) {
+        // If directory is already expanded and toggleClose=true, collapse it
+        const newExpandedPaths = { ...this.expandedPathsMap };
+        delete newExpandedPaths[normalizedPath];
+        this.expandedPathsMap = newExpandedPaths;
+      }
+    },
+
+    isDirectoryLoading(path) {
+      return Boolean(this.loadingPathsMap[normalizePath(path)]);
+    },
+
+    isDirectoryEmpty(path) {
+      const contents = this.getDirectoryContents(path);
+      return !contents.trees.length && !contents.blobs.length && !contents.submodules.length;
+    },
+
+    getDirectoryContents(path) {
+      return this.directoriesCache[path] || { trees: [], blobs: [], submodules: [] };
+    },
+    shouldRenderShowMore(itemPath, parentPath) {
+      const cached = this.directoriesCache[parentPath];
+      if (!cached) return false;
+
+      const { trees, blobs, submodules, pageInfo } = cached;
+      const lastItemPath = normalizePath([...trees, ...blobs, ...submodules].at(-1)?.path);
+      return itemPath === lastItemPath && pageInfo?.hasNextPage;
+    },
+    onTreeKeydown(event) {
+      const items = this.flatFilesList;
+      const current = items.findIndex((i) => i.id === this.activeItemId);
+      const item = items[current];
+
+      // Allow all browser/OS shortcuts to pass through
+      if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+        // Enter/Space
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          if (item?.isShowMore) this.handleShowMore(item.parentPath, event);
+          if (this.isTreeRow(item)) this.toggleDirectory(item.path, { toggleClose: false });
+          if (item?.submodule && item?.webUrl) visitUrl(item.webUrl);
+          if (item?.routerPath && !this.isCurrentPath(item?.path)) {
+            this.$router.push(item.routerPath);
+
+            if (this.fileTreeBrowserIsPeekOn && !this.isTreeRow(item)) {
+              this.resetFileTreeBrowserAllStates();
+            }
+          }
+          return;
+        }
+
+        // Home/End
+        if (event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          const index = event.key === 'Home' ? 0 : items.length - 1;
+          if (items.length) {
+            this.activeItemId = items[index].id;
+            this.$nextTick(() => this.focusActiveItemThrottled());
+          }
+          return;
+        }
+
+        // Asterisk (*)
+        if (event.key === '*' && item) {
+          event.preventDefault();
+          items
+            .filter((i) => this.isTreeRow(i) && !i.opened && i.parentPath === item.parentPath)
+            .forEach((i) => this.toggleDirectory(i.path, { toggleClose: false }));
+        }
+
+        // a-z
+        if (/^[a-zA-Z]$/.test(event.key)) {
+          event.preventDefault();
+          const key = event.key.toLowerCase();
+          const idx = items.findIndex((i) => i.id === this.activeItemId);
+
+          // Search after current, then wrap to beginning
+          const match =
+            items.slice(idx + 1).find((i) => i.name?.[0]?.toLowerCase() === key) ||
+            items.slice(0, idx + 1).find((i) => i.name?.[0]?.toLowerCase() === key);
+
+          if (match) {
+            this.activeItemId = match.id;
+            this.$nextTick(() => this.focusActiveItemThrottled());
+          }
+          return;
+        }
+
+        // Right Arrow
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          if (this.isTreeRow(item) && !item.opened) {
+            this.toggleDirectory(item.path, { toggleClose: false });
+            return;
+          }
+          const child = items[current + 1];
+          if (this.isTreeRow(item) && child?.level > item.level) {
+            this.activeItemId = child.id;
+            this.$nextTick(() => this.focusActiveItemThrottled());
+          }
+          return;
+        }
+
+        // Left Arrow
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          if (this.isTreeRow(item) && item.opened) {
+            this.toggleDirectory(item.path);
+            return;
+          }
+          const parent = items
+            .slice(0, current)
+            .reverse()
+            .find((i) => i.level === item.level - 1);
+          if (parent) {
+            this.activeItemId = parent.id;
+            this.$nextTick(() => this.focusActiveItemThrottled());
+          }
+          return;
+        }
+
+        // Arrow keys (Up/Down)
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+
+        event.preventDefault();
+        const move = event.key === 'ArrowDown' ? 1 : -1;
+        const next = current + move;
+
+        if (next < 0 || next >= items.length) return;
+
+        this.activeItemId = items[next].id;
+        this.$nextTick(() => this.focusActiveItemThrottled());
+      }
+    },
+    observeListItems() {
+      this.$nextTick(() => observeElements(this.$refs.fileTreeList, this.itemObserver));
+    },
+    focusActiveItem() {
+      this.$refs.activeItem?.[0]?.focus();
+    },
+    focusActiveItemThrottled() {
+      if (this.focusRAFId) return;
+
+      this.focusRAFId = requestAnimationFrame(() => {
+        this.focusActiveItem();
+        this.focusRAFId = null;
+      });
+    },
+    handleClickSubmodule(webUrl) {
+      visitUrl(webUrl);
+    },
+    async handleShowMore(parentPath, event) {
+      const prevItem = event.target.closest('li')?.previousElementSibling;
+      await this.fetchDirectory(parentPath);
+      await this.$nextTick();
+      const nextItem = prevItem?.nextElementSibling;
+      if (!nextItem) return;
+      this.activeItemId = nextItem.dataset?.itemId;
+      nextItem.focus(); // Ensures the next available item is focussed after loading more items
+    },
+    handleNavigate(item) {
+      if (!item.routerPath || this.isCurrentPath(item.path)) return;
+      this.$router.push(item.routerPath);
+
+      if (this.fileTreeBrowserIsPeekOn && !this.isTreeRow(item)) {
+        this.resetFileTreeBrowserAllStates();
+      }
+    },
+    scrollFileRowIntoView(path, block = 'nearest') {
+      const item = this.flatFilesList.find((i) => i.path === path);
+      if (!item) return;
+      const element = this.$el.querySelector(`[data-item-id="${item.id}"]`);
+      if (!element) return;
+      element.scrollIntoView({
+        behavior: 'instant',
+        block,
+      });
+    },
+    onFileClick() {
+      scrollUp();
+      this.trackEvent('click_file_tree_browser_on_repository_page');
+    },
+    onTreeClick(item) {
+      this.toggleDirectory(item.path, { toggleClose: false });
+      this.handleNavigate(item);
+    },
+    siblingInfo(item) {
+      const siblings = this.siblingMap.get(`${item.parentPath || ''}-${item.level}`);
+      return [siblings.length, siblings.indexOf(item.id) + 1];
+    },
+    handlePreload(item) {
+      if (item.submodule || item.isSkeleton || item.isShowMore) return;
+      if (this.isTreeRow(item)) {
+        this.preloadFolder(item.path);
+      } else {
+        this.preloadBlob(item.path);
+      }
+    },
+    preloadFolder(path) {
+      const apiPath = normalizePath(path);
+      if (this.directoriesCache[apiPath] || this.loadingPathsMap[apiPath]) return;
+      this.$apollo.query({
+        query: paginatedTreeQuery,
+        fetchPolicy: 'cache-first',
+        variables: {
+          projectPath: this.projectPath,
+          ref: this.currentRef,
+          refType: getRefType(this.refType),
+          path: apiPath === '/' ? apiPath : apiPath.substring(1),
+          nextPageCursor: '',
+          pageSize: TREE_PAGE_SIZE,
+        },
+      });
+    },
+    preloadBlob(path) {
+      const apiPath = normalizePath(path).substring(1);
+      this.$apollo.query({
+        query: blobInfoQuery,
+        fetchPolicy: 'cache-first',
+        variables: {
+          projectPath: this.projectPath,
+          filePath: [apiPath],
+          ref: this.currentRef,
+          refType: getRefType(this.refType),
+          shouldFetchRawText: true,
+        },
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <section aria-labelledby="tree-list-heading" class="gl-flex gl-h-full gl-flex-col">
+    <div class="gl-mb-3 gl-flex gl-items-center gl-gap-3">
+      <file-tree-browser-toggle
+        id="file-tree-browser-toggle"
+        ref="toggle"
+        :is-animating="isAnimating"
+      />
+      <user-callout-dismisser feature-name="file_tree_browser_popover">
+        <template #default="{ dismiss, shouldShowCallout }">
+          <file-tree-browser-popover
+            v-if="shouldShowCallout"
+            :target-element="targetElement"
+            @dismiss="dismiss"
+          />
+        </template>
+      </user-callout-dismisser>
+      <h3 id="tree-list-heading" class="gl-heading-3 gl-mb-0">
+        {{ __('Files') }}
+      </h3>
+    </div>
+
+    <div class="gl-relative gl-flex gl-pr-3">
+      <file-tree-search :project-path="projectPath" :ref-type="refType" :escaped-ref="escapedRef" />
+    </div>
+    <gl-loading-icon v-if="isRootLoading" class="gl-mt-5" />
+    <nav
+      v-else
+      class="repository-tree-list gl-mt-2 gl-flex gl-min-h-0 gl-flex-col"
+      :aria-label="__('File tree')"
+    >
+      <ul
+        v-if="flatFilesList.length"
+        ref="fileTreeList"
+        class="gl-h-full gl-min-h-0 gl-flex-grow gl-list-none gl-overflow-y-auto !gl-pl-2 gl-pr-3"
+        role="tree"
+        @keydown="onTreeKeydown"
+      >
+        <li
+          v-for="item in flatFilesList"
+          :key="item.isSkeleton || item.isShowMore ? item.id : `${item.path}-${item.type}`"
+          :ref="item.id === activeItemId ? 'activeItem' : undefined"
+          :data-item-id="item.id"
+          role="treeitem"
+          :aria-expanded="item.opened"
+          :aria-selected="isCurrentPath(item.path)"
+          :aria-level="item.level + 1"
+          :aria-setsize="siblingInfo(item)[0]"
+          :aria-posinset="siblingInfo(item)[1]"
+          :aria-label="item.name"
+          :tabindex="item.id === activeItemId ? 0 : -1"
+          class="gl-action-neutral-colors gl-w-fit gl-min-w-full gl-rounded-lg focus-visible:gl-focus-inset"
+          :style="isCurrentPath(item.path) ? activeStyles : {}"
+          @click="activeItemId = item.id"
+        >
+          <file-row
+            v-if="item.isSkeleton || appearedItems[item.id]"
+            v-gl-hover-load="() => handlePreload(item)"
+            :file="item"
+            :level="item.level"
+            :opened="item.opened"
+            :loading="item.loading"
+            show-tree-toggle
+            roving-tabindex
+            :class="{
+              'tree-list-parent': item.level > 0,
+            }"
+            :bold-text="isCurrentPath(item.path)"
+            class="gl-relative !gl-mx-0"
+            @click-tree="onTreeClick(item)"
+            @toggle-tree.stop="toggleDirectory(item.path)"
+            @click-submodule="handleClickSubmodule(item.webUrl)"
+            @click-file="handleNavigate(item)"
+            @click-row="onFileClick"
+            @show-more="handleShowMore(item.parentPath, $event)"
+          />
+          <div v-else data-placeholder-item class="gl-h-7" tabindex="-1"></div>
+        </li>
+      </ul>
+      <p v-else class="gl-my-6 gl-text-center">
+        {{ __('No files found') }}
+      </p>
+    </nav>
+  </section>
+</template>
+
+<style>
+.file-browser-filter-tooltip .tooltip-inner {
+  max-width: 210px;
+}
+</style>

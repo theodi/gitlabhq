@@ -1,0 +1,624 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Merge request > User sees pipelines', :js, feature_category: :code_review_workflow do
+  include Spec::Support::Helpers::GraphqlSubscriptionHelpers
+  using RSpec::Parameterized::TableSyntax
+
+  let(:merge_request) { create(:merge_request) }
+  let(:project) { merge_request.target_project }
+  let(:user) { project.creator }
+
+  where(:mr_pipelines_graphql) do
+    [true, false]
+  end
+
+  with_them do
+    before do
+      stub_feature_flags(mr_pipelines_graphql: mr_pipelines_graphql)
+      project.add_maintainer(user)
+      sign_in(user)
+    end
+
+    describe 'pipeline tab', :clean_gitlab_redis_cache do
+      let_it_be(:user) { create(:user) }
+      let_it_be_with_reload(:project) { create(:project, :repository, maintainers: user) }
+
+      let(:merge_request) { create(:merge_request, source_project: project, target_project: project) }
+
+      context 'with pipelines' do
+        let!(:pipeline) do
+          create(
+            :ci_pipeline,
+            :success,
+            project: merge_request.source_project,
+            ref: merge_request.source_branch,
+            sha: merge_request.diff_head_sha
+          )
+        end
+
+        let!(:manual_job) { create(:ci_build, :manual, name: 'job1', stage: 'deploy', pipeline: pipeline) }
+
+        let!(:job) { create(:ci_build, :success, name: 'job2', stage: 'test', pipeline: pipeline) }
+
+        before do
+          merge_request.update_attribute(:head_pipeline_id, pipeline.id)
+        end
+
+        it 'pipelines table displays correctly' do
+          visit project_merge_request_path(project, merge_request)
+
+          expect(page.find('.ci-widget')).to have_content('passed')
+
+          page.within('.merge-request-tabs') do
+            click_link('Pipelines')
+          end
+
+          within_testid('pipeline-table-row', match: :first) do
+            expect(page).to have_selector('[data-testid="ci-icon"]', text: 'Passed')
+            expect(page).to have_content(pipeline.id)
+            expect(page).to have_css('[data-testid="pipeline-mini-graph"]')
+            expect(page).to have_css('[data-testid="pipelines-manual-actions-dropdown"]')
+            expect(page).to have_css('[data-testid="pipeline-multi-actions-dropdown"]')
+          end
+
+          expect(page).to have_no_testid('failed-jobs-card')
+
+          within('.merge-request-tabs') do
+            expect(page).to have_link('Pipelines 1')
+          end
+        end
+
+        context 'with a detached merge request pipeline' do
+          let(:merge_request) do
+            create(:merge_request, :with_detached_merge_request_pipeline,
+              source_project: project, target_project: project)
+          end
+
+          it 'displays the "Run pipeline" button and increments the pipelines tab badge count without a page reload',
+            :sidekiq_inline, :aggregate_failures do
+            stub_ci_pipeline_yaml_file(
+              YAML.dump({ test: { script: 'test', rules: [{ if: '$CI_MERGE_REQUEST_ID' }] } })
+            )
+
+            # Whichever table wrapper the flag mounts registers this operation when
+            # the tab loads; clicking "Run pipeline" before then would drop the
+            # creation event in GraphQL mode. The MR widget subscribes to the same
+            # field under a different operation name, so it can't satisfy this wait.
+            wait_for_new_graphql_subscription('ciPipelineCreationRequestsUpdated') do
+              visit project_merge_request_path(project, merge_request)
+              page.within('.merge-request-tabs') { click_link('Pipelines') }
+              page.within('.ci-table') { expect(page).to have_testid('pipeline-url-link', count: 2) }
+            end
+
+            within('.merge-request-tabs') { expect(page).to have_link('Pipelines 2') }
+            expect(page).to have_testid('run-mr-pipeline-button', text: 'Run pipeline')
+
+            click_button 'Run pipeline'
+
+            # The new row appears first (subscription in GraphQL mode, creation-requests
+            # refetch in legacy); the legacy badge updates on the next REST poll.
+            page.within('.ci-table') { expect(page).to have_testid('pipeline-url-link', count: 3) }
+            within('.merge-request-tabs') { expect(page).to have_link('Pipelines 3') }
+          end
+        end
+
+        context 'with a merged results pipeline' do
+          let(:merge_request) do
+            create(:merge_request, :with_merge_request_pipeline,
+              source_project: project, target_project: project, merge_sha: project.commit.sha)
+          end
+
+          it 'displays the "Run pipeline" button' do
+            visit project_merge_request_path(project, merge_request)
+
+            page.within('.merge-request-tabs') do
+              click_link('Pipelines')
+            end
+
+            expect(page).to have_testid('run-mr-pipeline-button', text: 'Run pipeline')
+          end
+        end
+
+        context 'with 4 downstream pipelines' do
+          before do
+            # the first 3 are shown explicitly and the last one is added as a counter
+            create_list(:ci_pipeline, 4, :success, child_of: pipeline)
+
+            visit project_merge_request_path(project, merge_request)
+          end
+
+          it 'renders downstream pipelines and the counter in the mini graph', :aggregate_failures do
+            page.within('.merge-request-tabs') do
+              click_link('Pipelines')
+            end
+
+            within_testid('pipeline-table-row', match: :first) do
+              within_testid('pipeline-mini-graph') do
+                # arrow in between pipeline stages and downstream icons
+                expect(page).to have_testid('downstream-arrow-icon')
+
+                within_testid('pipeline-mini-graph-downstream') do
+                  expect(page).to have_testid('pipeline-mini-graph-dropdown', count: 3)
+                  expect(page).to have_testid('downstream-pipeline-counter', text: '+1')
+                end
+              end
+            end
+          end
+        end
+      end
+
+      context 'with failed jobs', feature_category: :continuous_integration do
+        let!(:pipeline) do
+          create(
+            :ci_pipeline,
+            :failed,
+            project: project,
+            ref: merge_request.source_branch,
+            sha: merge_request.diff_head_sha
+          )
+        end
+
+        let!(:failed_job) { create(:ci_build, :failed, name: 'failed-job-1', stage: 'test', pipeline: pipeline) }
+
+        before do
+          merge_request.update_attribute(:head_pipeline_id, pipeline.id)
+        end
+
+        context 'with a second failed job and a retried failed job' do
+          let!(:second_failed_job) do
+            create(:ci_build, :failed, name: 'failed-job-2', stage: 'test', pipeline: pipeline)
+          end
+
+          let!(:retried_job) do
+            create(:ci_build, :failed, :retried, name: 'old-failed-job', stage: 'test', pipeline: pipeline)
+          end
+
+          it 'shows the failed jobs, excluding retried jobs, and refreshes the count and pipeline row on retry',
+            :aggregate_failures do
+            visit_pipelines_tab
+
+            within_testid('pipeline-table-row', match: :first) do
+              expect(page).to have_testid('ci-icon', text: 'Failed')
+            end
+
+            within_testid('failed-jobs-card') do
+              expect(page).to have_testid('crud-count', text: '2', exact_text: true)
+              expect(page).to have_css('[data-testid="toggle-button"][aria-expanded="false"]')
+            end
+
+            expand_failed_jobs_widget
+
+            within_testid('failed-jobs-card') do
+              expect(page).to have_link('failed-job-1', href: project_job_path(project, failed_job))
+              expect(page).to have_testid('job-stage-name', text: 'test')
+              expect(page).to have_testid('job-id-link', text: "##{failed_job.id}")
+              expect(page).to have_no_content('old-failed-job')
+            end
+
+            retry_job('failed-job-1')
+
+            expect(page).to have_content('failed-job-1 job is being retried')
+
+            within_testid('pipeline-table-row', match: :first) do
+              expect(page).to have_testid('ci-icon', text: 'Running')
+            end
+
+            within_testid('failed-jobs-card') do
+              expect(page).to have_testid('crud-count', text: '1', exact_text: true)
+              expect(page).to have_testid('widget-row', count: 1)
+              expect(page).to have_no_content('failed-job-1')
+            end
+          end
+        end
+
+        context 'when the only failed job is retried' do
+          let!(:passed_job) { create(:ci_build, :success, name: 'passed-job', stage: 'test', pipeline: pipeline) }
+
+          it 'removes the failed jobs widget after the last failed job is retried', :aggregate_failures do
+            visit_pipelines_tab
+
+            expand_failed_jobs_widget
+            retry_job('failed-job-1')
+
+            expect(page).to have_content('failed-job-1 job is being retried')
+            expect(page).to have_no_testid('failed-jobs-card')
+
+            within_testid('pipeline-table-row', match: :first) do
+              expect(page).to have_testid('ci-icon', text: 'Running')
+            end
+          end
+        end
+
+        def visit_pipelines_tab
+          visit project_merge_request_path(project, merge_request)
+          within('.merge-request-tabs') { click_link('Pipelines') }
+
+          expect(page).to have_testid('pipeline-table-row')
+        end
+
+        def expand_failed_jobs_widget
+          within_testid('failed-jobs-card') do
+            find_by_testid('toggle-button').click
+            expect(page).to have_link(failed_job.name)
+          end
+        end
+
+        def retry_job(job_name)
+          within_testid('widget-row', text: job_name) do
+            find_by_testid('retry-button').click
+          end
+        end
+      end
+
+      context 'without pipelines' do
+        before do
+          visit project_merge_request_path(project, merge_request)
+        end
+
+        it 'shows the Pipelines tab and its empty state with run pipeline button' do
+          page.within('.merge-request-tabs') do
+            expect(page).to have_link('Pipelines')
+            click_link('Pipelines')
+          end
+
+          expect(page).to have_content('There are currently no pipelines.')
+          expect(page).to have_testid('run-mr-pipeline-button', text: 'Run pipeline')
+        end
+      end
+    end
+
+    describe 'fork MRs in parent project', :sidekiq_inline do
+      include ProjectForksHelper
+
+      let_it_be(:parent_project) { create(:project, :public, :repository) }
+      let_it_be(:forked_project) { fork_project(parent_project, developer_in_fork, repository: true, target_project: create(:project, :public, :repository)) }
+      let_it_be(:developer_in_parent) { create(:user) }
+      let_it_be(:developer_in_fork) { create(:user) }
+      let_it_be(:reporter_in_parent_and_developer_in_fork) { create(:user) }
+
+      let(:merge_request) do
+        create(
+          :merge_request,
+          :with_detached_merge_request_pipeline,
+          source_project: forked_project,
+          source_branch: 'feature',
+          target_project: parent_project,
+          target_branch: 'master'
+        )
+      end
+
+      let(:config) do
+        { test: { script: 'test', rules: [{ if: '$CI_MERGE_REQUEST_ID' }] } }
+      end
+
+      before_all do
+        parent_project.add_developer(developer_in_parent)
+        parent_project.add_reporter(reporter_in_parent_and_developer_in_fork)
+        forked_project.add_developer(developer_in_fork)
+        forked_project.add_developer(reporter_in_parent_and_developer_in_fork)
+      end
+
+      before do
+        stub_ci_pipeline_yaml_file(YAML.dump(config))
+        sign_in(actor)
+      end
+
+      # rubocop:disable Cop/DestroyAll -- cannot delete due to not-null constraint
+      after do
+        parent_project.all_pipelines.destroy_all
+        forked_project.all_pipelines.destroy_all
+      end
+      # rubocop:enable Cop/DestroyAll
+
+      context 'when actor is a developer in parent project' do
+        let(:actor) { developer_in_parent }
+
+        it 'creates a pipeline in the parent project when user proceeds with the warning' do
+          visit project_merge_request_path(parent_project, merge_request)
+
+          create_merge_request_pipeline
+          act_on_security_warning(action: 'Run pipeline')
+
+          check_pipeline(expected_project: parent_project)
+          check_head_pipeline(expected_project: parent_project)
+        end
+
+        it 'does not create a pipeline in the parent project when user cancels the action', :clean_gitlab_redis_cache, :clean_gitlab_redis_shared_state do
+          visit project_merge_request_path(parent_project, merge_request)
+
+          create_merge_request_pipeline
+          act_on_security_warning(action: 'Cancel')
+
+          check_no_new_pipeline_created
+        end
+      end
+
+      context 'when actor is a developer in fork project' do
+        let(:actor) { developer_in_fork }
+
+        it 'creates a pipeline in the fork project' do
+          visit project_merge_request_path(parent_project, merge_request)
+
+          create_merge_request_pipeline
+
+          check_pipeline(expected_project: forked_project)
+          check_head_pipeline(expected_project: forked_project)
+        end
+      end
+
+      context 'when actor is a reporter in parent project and a developer in fork project' do
+        let(:actor) { reporter_in_parent_and_developer_in_fork }
+
+        it 'creates a pipeline in the fork project' do
+          visit project_merge_request_path(parent_project, merge_request)
+
+          create_merge_request_pipeline
+
+          check_pipeline(expected_project: forked_project)
+          check_head_pipeline(expected_project: forked_project)
+        end
+      end
+
+      def create_merge_request_pipeline
+        page.within('.merge-request-tabs') { click_link('Pipelines') }
+        click_on('Run pipeline')
+      end
+
+      def check_pipeline(expected_project:)
+        page.within('.ci-table') do
+          expect(page).to have_selector('[data-testid="pipeline-table-row"]', count: 2)
+
+          page.within(first('[data-testid="pipeline-table-row"]')) do
+            within_testid('pipeline-url-table-cell') do
+              expect(find_by_testid('pipeline-url-link')[:href]).to include(expected_project.full_path)
+              expect(page).to have_content('merge request')
+            end
+            page.within('.pipeline-triggerer') do
+              expect(page).to have_link(href: user_path(actor))
+            end
+          end
+        end
+      end
+
+      def check_head_pipeline(expected_project:)
+        # The widget mounted before the pipeline existed and only refreshes its
+        # pipeline data on a poll, so reload rather than switching tabs.
+        visit project_merge_request_path(parent_project, merge_request)
+
+        within_testid('pipeline-info-container') do
+          expect(page).to have_link(href: %r{/#{Regexp.escape(expected_project.full_path)}/-/pipelines/})
+        end
+      end
+
+      def act_on_security_warning(action:)
+        page.within('#create-pipeline-for-fork-merge-request-modal') do
+          expect(page).to have_content('Are you sure you want to run this pipeline?')
+          click_button(action)
+        end
+      end
+
+      def check_no_new_pipeline_created
+        page.within('.ci-table') do
+          expect(page).to have_selector('[data-testid="pipeline-table-row"]', count: 1)
+        end
+      end
+    end
+  end
+
+  describe 'race condition' do
+    let(:project) { create(:project, :repository) }
+    let(:user) { create(:user) }
+    let(:build_push_data) { { ref: 'feature', checkout_sha: TestEnv::BRANCH_SHA['feature'] } }
+
+    let(:merge_request_params) do
+      { "source_branch" => "feature", "source_project_id" => project.id,
+        "target_branch" => "master", "target_project_id" => project.id, "title" => "A" }
+    end
+
+    before do
+      project.add_maintainer(user)
+      sign_in(user)
+    end
+
+    context 'when pipeline and merge request were created simultaneously', :delete do
+      before do
+        stub_ci_pipeline_to_return_yaml_file
+
+        threads = []
+
+        threads << Thread.new do
+          Sidekiq::Worker.skipping_transaction_check do
+            @merge_request = MergeRequests::CreateService.new(project: project, current_user: user, params: merge_request_params).execute
+          end
+        end
+
+        threads << Thread.new do
+          Sidekiq::Worker.skipping_transaction_check do
+            @pipeline = Ci::CreatePipelineService.new(project, user, build_push_data).execute(:push).payload
+          end
+        end
+
+        threads.each { |thr| thr.join }
+      end
+
+      it 'user sees pipeline in merge request widget', :sidekiq_might_not_need_inline do
+        visit project_merge_request_path(project, @merge_request)
+
+        expect(page.find(".ci-widget")).to have_content(TestEnv::BRANCH_SHA['feature'])
+        expect(page.find(".ci-widget")).to have_content("##{@pipeline.id}")
+      end
+    end
+  end
+
+  describe 'real-time updates', feature_category: :continuous_integration do
+    let_it_be_with_reload(:project) { create(:project, :repository) }
+    let_it_be(:user) { create(:user) }
+
+    let(:merge_request) { create(:merge_request, source_project: project, target_project: project) }
+
+    # :detached_merge_request_pipeline (merge_request_event source) so the "Run pipeline" button renders.
+    let!(:pipeline) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, :running, merge_request: merge_request)
+    end
+
+    before_all do
+      project.add_maintainer(user)
+    end
+
+    before do
+      sign_in(user)
+      merge_request.update_attribute(:head_pipeline_id, pipeline.id)
+    end
+
+    def visit_pipelines_tab(subscription_name)
+      wait_for_new_graphql_subscription(subscription_name) do
+        visit project_merge_request_path(project, merge_request)
+        within('.merge-request-tabs') { click_link('Pipelines') }
+        # May time out with the local 10s default wait. If so, run with CI_SERVER=1 to get the 30s CI timeout.
+        expect(page).to have_testid('pipeline-table-row')
+      end
+    end
+
+    context 'when the pipeline completes' do
+      before do
+        visit_pipelines_tab('mrPipelineStatusUpdated')
+      end
+
+      it 'updates the pipeline status in place' do
+        within_testid('pipeline-table-row', match: :first) do
+          expect(page).to have_testid('ci-icon', text: 'Running')
+        end
+
+        pipeline.succeed!
+
+        within_testid('pipeline-table-row', match: :first) do
+          expect(page).to have_testid('ci-icon', text: 'Passed')
+        end
+      end
+    end
+
+    context 'when a downstream pipeline completes' do
+      let!(:downstream) { create(:ci_pipeline, :running, child_of: pipeline) }
+
+      before do
+        visit_pipelines_tab('downstreamPipelineStatusUpdated')
+      end
+
+      it 'updates the downstream pipeline status in place' do
+        within_testid('pipeline-mini-graph-downstream') do
+          expect(page).to have_testid('status_running_borderless-icon')
+        end
+
+        downstream.succeed!
+
+        within_testid('pipeline-mini-graph-downstream') do
+          expect(page).to have_testid('status_success_borderless-icon')
+        end
+      end
+    end
+
+    context 'when a pipeline creation request succeeds', :sidekiq_inline do
+      before do
+        stub_ci_pipeline_yaml_file(YAML.dump({ test: { script: 'test', rules: [{ if: '$CI_MERGE_REQUEST_ID' }] } }))
+        visit_pipelines_tab('ciPipelineCreationRequestsUpdated')
+      end
+
+      it 'appends the newly created pipeline row in place', :aggregate_failures do
+        expect(page).to have_testid('pipeline-url-link', count: 1)
+
+        click_button 'Run pipeline'
+
+        expect(page).to have_testid('pipeline-url-link', count: 2)
+      end
+    end
+
+    context 'when pipeline creation requests fail', :sidekiq_inline do
+      let(:failed_alert_message) { 'Pipeline creation failed. Please try again.' }
+
+      before do
+        # A tag-only rule produces no jobs for merge request pipelines, so creation fails.
+        stub_ci_pipeline_yaml_file(YAML.dump({ test: { script: 'test', rules: [{ if: '$CI_COMMIT_TAG' }] } }))
+      end
+
+      context 'when the request was automatic' do
+        before do
+          MergeRequests::CreatePipelineService
+            .new(project: project, current_user: user, params: { allow_duplicate: true })
+            .execute_async(merge_request)
+        end
+
+        it 'does not show the failure alert' do
+          # visit_pipelines_tab waits for the subscription, which only registers
+          # once the creation requests query has resolved.
+          visit_pipelines_tab('ciPipelineCreationRequestsUpdated')
+
+          expect(page).not_to have_content(failed_alert_message)
+        end
+      end
+
+      context 'when the request was user-initiated' do
+        it 'shows the failure alert and keeps its dismissal across reloads', :aggregate_failures do
+          visit_pipelines_tab('ciPipelineCreationRequestsUpdated')
+
+          click_button 'Run pipeline'
+
+          expect(page).to have_content(failed_alert_message)
+
+          click_button 'Dismiss'
+
+          expect(page).not_to have_content(failed_alert_message)
+
+          visit_pipelines_tab('ciPipelineCreationRequestsUpdated')
+
+          expect(page).not_to have_content(failed_alert_message)
+        end
+      end
+    end
+
+    context 'when jobs progress through multiple stages', :sidekiq_inline do
+      let!(:build_stage) { create(:ci_stage, pipeline: pipeline, name: 'build', position: 1, status: 'running') }
+      let!(:test_stage) { create(:ci_stage, pipeline: pipeline, name: 'test', position: 2, status: 'created') }
+
+      let!(:build_job) { create(:ci_build, :running, name: 'compile', pipeline: pipeline, ci_stage: build_stage) }
+      let!(:test_job) { create(:ci_build, :created, name: 'rspec', pipeline: pipeline, ci_stage: test_stage) }
+
+      before do
+        visit_pipelines_tab('mrPipelineStatusUpdated')
+      end
+
+      it 'advances the stage icons in place as jobs move through the pipeline', :aggregate_failures do
+        expect_stage_icon('build', 'running')
+        expect_stage_icon('test', 'created')
+
+        # Finishing the build job re-processes the pipeline inline: the build
+        # stage succeeds and the test job is enqueued.
+        build_job.reset.success!
+
+        expect_stage_icon('build', 'success')
+        expect_stage_icon('test', 'pending')
+
+        test_job.reset.run!
+
+        expect_stage_icon('test', 'running')
+
+        test_job.reset.success!
+
+        expect_stage_icon('test', 'success')
+
+        within_testid('pipeline-table-row', match: :first) do
+          expect(page).to have_testid('ci-icon', text: 'Passed')
+        end
+      end
+
+      def expect_stage_icon(stage_name, status)
+        within_testid('pipeline-mini-graph') do
+          within("[aria-label='View Stage: #{stage_name}']") do
+            expect(page).to have_testid("status_#{status}_borderless-icon")
+          end
+        end
+      end
+    end
+  end
+end

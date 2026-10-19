@@ -1,0 +1,737 @@
+import { GlLink } from '@gitlab/ui';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import waitForPromises from 'helpers/wait_for_promises';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import WorkItemPopover from '~/issuable/popover/components/work_item_popover.vue';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import WorkItemParent from '~/work_items/components/work_item_parent.vue';
+import WorkItemSidebarDropdownWidget from '~/work_items/components/shared/work_item_sidebar_dropdown_widget.vue';
+import { updateParent } from '~/work_items/graphql/cache_utils';
+import updateWorkItemMutation from '~/work_items/graphql/update_parent.mutation.graphql';
+import groupWorkItemsQuery from '~/work_items/graphql/group_work_items.query.graphql';
+import projectWorkItemsQuery from '~/work_items/graphql/project_work_items.query.graphql';
+import workItemsByReferencesQuery from '~/work_items/graphql/work_items_by_references.query.graphql';
+import workItemAllowedParentTypesQuery from '~/work_items/graphql/work_item_allowed_parent_types.query.graphql';
+import {
+  availableObjectivesResponse,
+  mockParentWidgetResponse,
+  mockAncestorWidgetResponse,
+  mockEmptyAncestorWidgetResponse,
+  searchedObjectiveResponse,
+  updateWorkItemMutationErrorResponse,
+  mockWorkItemReferenceQueryResponse,
+  allowedParentTypesResponse,
+  groupEpicsWithMilestonesQueryResponse,
+  groupEpicsWithMilestonesQueryResponseWithFeatures,
+  mockMilestone,
+  mockFeaturesMilestone,
+  availableObjectivesResponseWithoutParent,
+} from '../mock_data';
+
+jest.mock('~/sentry/sentry_browser_wrapper');
+jest.mock('~/work_items/graphql/cache_utils', () => ({
+  updateParent: jest.fn(),
+}));
+
+describe('WorkItemParent component', () => {
+  Vue.use(VueApollo);
+
+  let wrapper;
+
+  const workItemId = 'gid://gitlab/WorkItem/1';
+  const mockFullPath = 'full-path';
+
+  const firstParentOption = groupEpicsWithMilestonesQueryResponse.data.namespace.workItems.nodes[0];
+
+  const groupWorkItemsSuccessHandler = jest
+    .fn()
+    .mockResolvedValue(groupEpicsWithMilestonesQueryResponse);
+  const availableWorkItemsSuccessHandler = jest.fn().mockResolvedValue(availableObjectivesResponse);
+  const failedQueryHandler = jest.fn().mockRejectedValue(new Error());
+  const allowedParentTypesHandler = jest.fn().mockResolvedValue({
+    data: {
+      workItem: {
+        id: 'gid://gitlab/WorkItem/634',
+        workItemType: {
+          id: 'gid://gitlab/WorkItems::Type/6',
+          name: 'Objective',
+          widgetDefinitions: [],
+        },
+      },
+    },
+  });
+  const workItemReferencesSuccessHandler = jest
+    .fn()
+    .mockResolvedValue(mockWorkItemReferenceQueryResponse);
+
+  const findSidebarDropdownWidget = () => wrapper.findComponent(WorkItemSidebarDropdownWidget);
+  const findAncestorUnavailable = () => wrapper.findByTestId('ancestor-not-available');
+  const findLink = () => wrapper.findComponent(GlLink);
+  const findInaccessibleParentPopover = () =>
+    wrapper.findComponentByTestId('inaccessible-parent-popover');
+  const findWorkItemPopover = () => wrapper.findComponent(WorkItemPopover);
+
+  const successUpdateWorkItemMutationHandler = jest
+    .fn()
+    .mockResolvedValue(mockAncestorWidgetResponse);
+
+  const showDropdown = () => {
+    findSidebarDropdownWidget().vm.$emit('dropdown-shown');
+  };
+
+  const mockWorkItemConfigGetter = jest.fn().mockImplementation((workItemType) => {
+    // Default mock implementation that returns a valid config structure
+
+    return {
+      workItemType,
+      isGroupWorkItemType: null,
+      widgetDefinitions: [
+        {
+          autoExpandTreeOnMove: null,
+          propagatesMilestone: null,
+          type: 'HIERARCHY',
+          __typename: 'WorkItemWidgetDefinitionHierarchy',
+        },
+      ],
+    };
+  });
+
+  const createComponent = ({
+    workItemType = 'Objective',
+    canUpdate = true,
+    parent = null,
+    allowedParentTypesForNewWorkItem = [],
+    searchQueryHandler = availableWorkItemsSuccessHandler,
+    groupSearchQueryHandler = groupWorkItemsSuccessHandler,
+    mutationHandler = successUpdateWorkItemMutationHandler,
+    allowedParentTypesQueryHandler = allowedParentTypesHandler,
+    hasParent = true,
+    provide = {},
+  } = {}) => {
+    wrapper = shallowMountExtended(WorkItemParent, {
+      apolloProvider: createMockApollo([
+        [projectWorkItemsQuery, searchQueryHandler],
+        [groupWorkItemsQuery, groupSearchQueryHandler],
+        [updateWorkItemMutation, mutationHandler],
+        [workItemsByReferencesQuery, workItemReferencesSuccessHandler],
+        [workItemAllowedParentTypesQuery, allowedParentTypesQueryHandler],
+      ]),
+      propsData: {
+        canUpdate,
+        fullPath: mockFullPath,
+        parent,
+        workItemId,
+        workItemType,
+        hasParent,
+        allowedParentTypesForNewWorkItem,
+      },
+      provide: {
+        getWorkItemTypeConfiguration: mockWorkItemConfigGetter,
+        workItemTypesConfiguration: [
+          { id: 'gid://gitlab/WorkItems::Type/1', name: 'Issue', isGroupWorkItemType: false },
+          { id: 'gid://gitlab/WorkItems::Type/2', name: 'Incident', isGroupWorkItemType: false },
+          { id: 'gid://gitlab/WorkItems::Type/3', name: 'Test Case', isGroupWorkItemType: false },
+          { id: 'gid://gitlab/WorkItems::Type/4', name: 'Requirement', isGroupWorkItemType: false },
+          { id: 'gid://gitlab/WorkItems::Type/5', name: 'Task', isGroupWorkItemType: false },
+          { id: 'gid://gitlab/WorkItems::Type/6', name: 'Objective', isGroupWorkItemType: false },
+          { id: 'gid://gitlab/WorkItems::Type/7', name: 'Key Result', isGroupWorkItemType: false },
+          { id: 'gid://gitlab/WorkItems::Type/8', name: 'Epic', isGroupWorkItemType: true },
+          { id: 'gid://gitlab/WorkItems::Type/9', name: 'Ticket', isGroupWorkItemType: false },
+        ],
+        ...provide,
+      },
+      stubs: {
+        WorkItemPopover,
+      },
+    });
+  };
+
+  const selectWorkItem = (workItem) => {
+    findSidebarDropdownWidget().vm.$emit('update-value', workItem);
+  };
+
+  describe('when loaded', () => {
+    it('fetches allowed parent types for the current work item', () => {
+      createComponent();
+
+      expect(allowedParentTypesHandler).toHaveBeenCalled();
+    });
+  });
+
+  describe('label', () => {
+    it('shows widget label', () => {
+      createComponent();
+
+      expect(findSidebarDropdownWidget().props('dropdownLabel')).toBe('Parent');
+    });
+  });
+
+  describe('edit button', () => {
+    it('is not shown if user cannot edit', () => {
+      createComponent({ canUpdate: false });
+
+      expect(findSidebarDropdownWidget().props('canUpdate')).toBe(false);
+    });
+
+    it('is shown if user can edit', () => {
+      createComponent({ canUpdate: true });
+
+      expect(findSidebarDropdownWidget().props('canUpdate')).toBe(true);
+    });
+
+    it('fetches the  work items on edit click', async () => {
+      createComponent({
+        allowedParentTypesForNewWorkItem: [
+          { __typename: 'WorkItemType', id: 'gid://gitlab/WorkItems::Type/1', name: 'Issue' },
+          { __typename: 'WorkItemType', id: 'gid://gitlab/WorkItems::Type/2', name: 'Incident' },
+          { __typename: 'WorkItemType', id: 'gid://gitlab/WorkItems::Type/9', name: 'Ticket' },
+        ],
+      });
+
+      showDropdown();
+      await nextTick();
+
+      expect(availableWorkItemsSuccessHandler).toHaveBeenCalledWith({
+        fullPath: 'full-path',
+        iid: null,
+        in: undefined,
+        includeAncestors: true,
+        isNumber: false,
+        searchByIid: false,
+        searchByText: true,
+        searchTerm: '',
+        workItemTypeIds: [
+          'gid://gitlab/WorkItems::Type/1',
+          'gid://gitlab/WorkItems::Type/2',
+          'gid://gitlab/WorkItems::Type/9',
+        ],
+      });
+    });
+  });
+
+  describe('loading icon', () => {
+    it('shows loading icon while update is in progress', async () => {
+      createComponent();
+
+      showDropdown();
+      selectWorkItem('gid://gitlab/WorkItem/716');
+      await nextTick();
+
+      expect(findSidebarDropdownWidget().props('updateInProgress')).toBe(true);
+
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('updateInProgress')).toBe(false);
+    });
+
+    it('shows loading icon when unassign is clicked', async () => {
+      createComponent({ parent: mockEmptyAncestorWidgetResponse });
+
+      showDropdown();
+      findSidebarDropdownWidget().vm.$emit('update-value', null);
+      await nextTick();
+
+      expect(findSidebarDropdownWidget().props('updateInProgress')).toBe(true);
+
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('updateInProgress')).toBe(false);
+    });
+  });
+
+  describe('value', () => {
+    it('shows None when no parent is set', () => {
+      createComponent({ hasParent: false });
+
+      expect(findSidebarDropdownWidget().props('toggleDropdownText')).toBe('None');
+    });
+
+    it('shows parent when parent is set', () => {
+      createComponent({ parent: mockParentWidgetResponse });
+
+      expect(findSidebarDropdownWidget().props('toggleDropdownText')).toBe(
+        mockParentWidgetResponse.title,
+      );
+      expect(findLink().attributes('href')).toBe(mockParentWidgetResponse.webUrl);
+    });
+
+    it('renders IssuePopover for parent link', () => {
+      createComponent({ parent: mockParentWidgetResponse });
+
+      expect(findWorkItemPopover().exists()).toBe(true);
+      expect(findWorkItemPopover().props('target')).toBe(findLink().attributes('id'));
+    });
+
+    it('does not show ancestor not available message', () => {
+      createComponent({ parent: mockParentWidgetResponse });
+
+      expect(findAncestorUnavailable().exists()).toBe(false);
+    });
+
+    it('does not render inaccessible parent popover', () => {
+      createComponent({ parent: mockParentWidgetResponse });
+
+      expect(findInaccessibleParentPopover().exists()).toBe(false);
+    });
+  });
+
+  describe('Parent dropdown', () => {
+    it('renders the sidebar dropdown widget with required props by default', () => {
+      createComponent();
+
+      expect(findSidebarDropdownWidget().props()).toMatchObject({
+        listItems: [],
+        headerText: 'Select parent',
+        loading: false,
+        searchable: true,
+        resetButtonLabel: 'Clear',
+      });
+    });
+
+    it('shows loading while searching', async () => {
+      createComponent();
+
+      showDropdown();
+      await nextTick();
+
+      expect(findSidebarDropdownWidget().props('loading')).toBe(true);
+    });
+  });
+
+  describe('work items query', () => {
+    const mockText = 'Objective 101';
+    const mockURL = 'http://localhost/gitlab-org/test-project-path/-/work_items/111';
+    const mockReference = 'gitlab-org/test-project-path#111';
+
+    it('loads work items in the listbox', async () => {
+      createComponent();
+
+      showDropdown();
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('loading')).toBe(false);
+      expect(findSidebarDropdownWidget().props('listItems')).toStrictEqual([
+        { text: 'Objective 101', textHtml: 'Objective 101', value: 'gid://gitlab/WorkItem/716' },
+        { text: 'Objective 103', textHtml: 'Objective 103', value: 'gid://gitlab/WorkItem/712' },
+        { text: 'Objective 102', textHtml: 'Objective 102', value: 'gid://gitlab/WorkItem/711' },
+      ]);
+      expect(availableWorkItemsSuccessHandler).toHaveBeenCalled();
+    });
+
+    it('emits error when the query fails', async () => {
+      createComponent({ searchQueryHandler: failedQueryHandler });
+
+      showDropdown();
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toEqual([
+        ['Something went wrong while fetching items. Please try again.'],
+      ]);
+    });
+
+    it('skips the work item query when the workItemAllowedParentTypesQuery query fails', () => {
+      createComponent({ allowedParentTypesHandler: failedQueryHandler });
+
+      expect(availableWorkItemsSuccessHandler).not.toHaveBeenCalled();
+    });
+
+    it('searches item when input data is entered', async () => {
+      const searchedItemQueryHandler = jest.fn().mockResolvedValue(searchedObjectiveResponse);
+      createComponent({ searchQueryHandler: searchedItemQueryHandler });
+
+      showDropdown();
+      await waitForPromises();
+
+      expect(searchedItemQueryHandler).toHaveBeenCalledWith({
+        fullPath: 'full-path',
+        searchTerm: '',
+        in: undefined,
+        iid: null,
+        isNumber: false,
+        searchByIid: false,
+        searchByText: true,
+        includeAncestors: true,
+        workItemTypeIds: [],
+      });
+
+      findSidebarDropdownWidget().vm.$emit('search-started', mockText);
+      await waitForPromises();
+
+      expect(searchedItemQueryHandler).toHaveBeenLastCalledWith({
+        fullPath: 'full-path',
+        searchTerm: mockText,
+        in: 'TITLE',
+        iid: null,
+        isNumber: false,
+        searchByIid: false,
+        searchByText: true,
+        includeAncestors: true,
+        workItemTypeIds: [],
+      });
+      expect(workItemReferencesSuccessHandler).not.toHaveBeenCalled();
+      expect(findSidebarDropdownWidget().props('listItems')).toStrictEqual([
+        { text: mockText, textHtml: 'Objective 101', value: 'gid://gitlab/WorkItem/716' },
+      ]);
+    });
+
+    it.each`
+      inputType      | input            | refs
+      ${'url'}       | ${mockURL}       | ${[mockURL]}
+      ${'reference'} | ${mockReference} | ${[mockReference]}
+    `('lists work item when valid $inputType is pasted', async ({ input, refs }) => {
+      createComponent();
+
+      showDropdown();
+      await waitForPromises();
+
+      expect(availableWorkItemsSuccessHandler).toHaveBeenCalledWith({
+        fullPath: mockFullPath,
+        searchTerm: '',
+        in: undefined,
+        iid: null,
+        isNumber: false,
+        searchByIid: false,
+        searchByText: true,
+        includeAncestors: true,
+        workItemTypeIds: [],
+      });
+
+      findSidebarDropdownWidget().vm.$emit('search-started', input);
+      await waitForPromises();
+
+      expect(workItemReferencesSuccessHandler).toHaveBeenCalledWith({
+        contextNamespacePath: mockFullPath,
+        refs,
+      });
+      expect(findSidebarDropdownWidget().props('listItems')).toStrictEqual([
+        {
+          text: 'Objective _linked_ items 104',
+          textHtml: 'Objective <em>linked</em> items 104',
+          value: 'gid://gitlab/WorkItem/705',
+        },
+      ]);
+    });
+
+    it('includes parent in dropdown list when not in search results', async () => {
+      const customSearchHandler = jest
+        .fn()
+        .mockResolvedValue(availableObjectivesResponseWithoutParent);
+
+      createComponent({
+        parent: mockParentWidgetResponse,
+        searchQueryHandler: customSearchHandler,
+      });
+
+      showDropdown();
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('listItems')).toEqual([
+        { text: 'Objective 101', textHtml: 'Objective 101', value: 'gid://gitlab/WorkItem/716' },
+        { text: 'Objective 103', textHtml: 'Objective 103', value: 'gid://gitlab/WorkItem/712' },
+        { text: 'Objective 102', textHtml: 'Objective 102', value: 'gid://gitlab/WorkItem/711' },
+      ]);
+    });
+
+    it('does not duplicate parent when already in search results', async () => {
+      const customSearchHandler = jest.fn().mockResolvedValue(availableObjectivesResponse);
+
+      createComponent({
+        parent: mockParentWidgetResponse,
+        searchQueryHandler: customSearchHandler,
+      });
+
+      showDropdown();
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('listItems')).toEqual([
+        { text: 'Objective 101', textHtml: 'Objective 101', value: 'gid://gitlab/WorkItem/716' },
+        { text: 'Objective 103', textHtml: 'Objective 103', value: 'gid://gitlab/WorkItem/712' },
+        { text: 'Objective 102', textHtml: 'Objective 102', value: 'gid://gitlab/WorkItem/711' },
+      ]);
+    });
+
+    it('does not include parent when it does not match search term', async () => {
+      const customSearchHandler = jest
+        .fn()
+        .mockResolvedValue(availableObjectivesResponseWithoutParent);
+
+      createComponent({
+        parent: mockParentWidgetResponse,
+        searchQueryHandler: customSearchHandler,
+      });
+
+      showDropdown();
+      await waitForPromises();
+
+      findSidebarDropdownWidget().vm.$emit('search-started', 'Objective 102');
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('listItems')).not.toContainEqual({
+        text: 'Objective 101',
+        textHtml: 'Objective 101',
+        value: 'gid://gitlab/WorkItem/716',
+      });
+    });
+  });
+
+  describe('listbox', () => {
+    it('calls mutation when item is selected', async () => {
+      createComponent();
+
+      showDropdown();
+      selectWorkItem('gid://gitlab/WorkItem/716');
+      await waitForPromises();
+
+      expect(successUpdateWorkItemMutationHandler).toHaveBeenCalledWith({
+        input: {
+          id: 'gid://gitlab/WorkItem/1',
+          hierarchyWidget: {
+            parentId: 'gid://gitlab/WorkItem/716',
+          },
+        },
+        useWorkItemFeatures: false,
+      });
+      expect(updateParent).toHaveBeenCalledWith({
+        cache: expect.anything(Object),
+        fullPath: mockFullPath,
+        iid: undefined,
+        workItem: { id: 'gid://gitlab/WorkItem/1' },
+      });
+    });
+
+    it('calls mutation when item is unassigned', async () => {
+      const unAssignParentWorkItemMutationHandler = jest
+        .fn()
+        .mockResolvedValue(mockEmptyAncestorWidgetResponse);
+      createComponent({
+        parent: {
+          iid: '1',
+        },
+        mutationHandler: unAssignParentWorkItemMutationHandler,
+      });
+
+      showDropdown();
+      findSidebarDropdownWidget().vm.$emit('update-value', null);
+      await waitForPromises();
+
+      expect(unAssignParentWorkItemMutationHandler).toHaveBeenCalledWith({
+        input: {
+          id: 'gid://gitlab/WorkItem/1',
+          hierarchyWidget: {
+            parentId: null,
+          },
+        },
+        useWorkItemFeatures: false,
+      });
+      expect(updateParent).toHaveBeenCalledWith({
+        cache: expect.anything(Object),
+        fullPath: mockFullPath,
+        iid: '1',
+        workItem: { id: 'gid://gitlab/WorkItem/1' },
+      });
+    });
+
+    it('emits error when mutation fails', async () => {
+      createComponent({
+        mutationHandler: jest.fn().mockResolvedValue(updateWorkItemMutationErrorResponse),
+      });
+
+      showDropdown();
+      selectWorkItem('gid://gitlab/WorkItem/716');
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toEqual([['Error!']]);
+      expect(findSidebarDropdownWidget().props('itemValue')).toBeNull();
+    });
+
+    it('emits error and captures exception in sentry when network request fails', async () => {
+      const error = new Error('error');
+      createComponent({ mutationHandler: jest.fn().mockRejectedValue(error) });
+
+      showDropdown();
+      selectWorkItem('gid://gitlab/WorkItem/716');
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toEqual([
+        ['Something went wrong while updating the Objective. Please try again.'],
+      ]);
+      expect(Sentry.captureException).toHaveBeenCalledWith(error);
+    });
+  });
+
+  describe('with inaccessible parent', () => {
+    beforeEach(() => {
+      createComponent({ hasParent: true });
+    });
+
+    it('shows ancestor not available message', () => {
+      expect(findAncestorUnavailable().text()).toBe('Ancestor not available');
+    });
+
+    it('displays appropriate message in popover on hover and focus', () => {
+      expect(findInaccessibleParentPopover().props('triggers')).toBe('hover focus');
+      expect(findInaccessibleParentPopover().text()).toEqual(
+        `You don't have the necessary permission to view the ancestor.`,
+      );
+    });
+  });
+
+  describe('on group level', () => {
+    beforeEach(() => {
+      mockWorkItemConfigGetter.mockImplementation(() => ({
+        widgetDefinitions: [{ type: 'HIERARCHY', propagatesMilestone: true }],
+      }));
+      createComponent({
+        hasParent: false,
+        workItemType: 'Epic',
+        allowedParentTypesQueryHandler: jest.fn().mockResolvedValue(allowedParentTypesResponse),
+      });
+    });
+
+    it('calls group mutation when selecting a parent', async () => {
+      showDropdown();
+      await waitForPromises();
+
+      expect(groupWorkItemsSuccessHandler).toHaveBeenCalled();
+    });
+
+    it('emits `parent-milestone` if a selected parent has an assigned milestone', async () => {
+      showDropdown();
+      await waitForPromises();
+
+      selectWorkItem(firstParentOption.id);
+      await nextTick();
+
+      expect(wrapper.emitted('parent-milestone')).toBeDefined();
+    });
+
+    describe('when workItemFeaturesField feature flag is enabled', () => {
+      it('emits `parent-milestone` with data from features.milestone', async () => {
+        const featuresHandler = jest
+          .fn()
+          .mockResolvedValue(groupEpicsWithMilestonesQueryResponseWithFeatures);
+
+        createComponent({
+          hasParent: false,
+          workItemType: 'Epic',
+          groupSearchQueryHandler: featuresHandler,
+          allowedParentTypesQueryHandler: jest.fn().mockResolvedValue(allowedParentTypesResponse),
+          provide: {
+            glFeatures: { workItemFeaturesField: true },
+          },
+        });
+
+        showDropdown();
+        await waitForPromises();
+
+        expect(featuresHandler).toHaveBeenCalledWith(
+          expect.objectContaining({ useWorkItemFeatures: true }),
+        );
+
+        selectWorkItem(
+          groupEpicsWithMilestonesQueryResponseWithFeatures.data.namespace.workItems.nodes[0].id,
+        );
+        await waitForPromises();
+        await nextTick();
+
+        expect(wrapper.emitted('parent-milestone')).toBeDefined();
+        expect(wrapper.emitted('parent-milestone')[0]).toEqual([
+          expect.objectContaining({
+            id: mockFeaturesMilestone.id,
+            title: mockFeaturesMilestone.title,
+          }),
+        ]);
+      });
+    });
+  });
+
+  describe('work item type configuration', () => {
+    describe('query selection based on configuration', () => {
+      it.each`
+        workItemType               | isGroupWorkItemType | expectedQuery
+        ${'Epic'}                  | ${true}             | ${'group'}
+        ${'Epic'}                  | ${null}             | ${'project'}
+        ${'Objective'}             | ${false}            | ${'project'}
+        ${'Objective'}             | ${null}             | ${'project'}
+        ${'Issue'}                 | ${true}             | ${'group'}
+        ${'Issue'}                 | ${null}             | ${'project'}
+        ${'Custom work item type'} | ${false}            | ${'group'}
+      `(
+        'selects correct query when workItemType=$workItemType, isGroupWorkItemType=$isGroupWorkItemType',
+        async ({ workItemType, isGroupWorkItemType, expectedQuery }) => {
+          mockWorkItemConfigGetter.mockImplementation(() => {
+            return { isGroupWorkItemType };
+          });
+
+          createComponent({
+            workItemType,
+            allowedParentTypesQueryHandler: jest.fn().mockResolvedValue(allowedParentTypesResponse),
+          });
+
+          showDropdown();
+          await waitForPromises();
+
+          const expectedHandler =
+            expectedQuery === 'group'
+              ? groupWorkItemsSuccessHandler
+              : availableWorkItemsSuccessHandler;
+          expect(expectedHandler).toHaveBeenCalled();
+        },
+      );
+    });
+
+    describe('propagatesMilestone', () => {
+      it.each`
+        workItemType | propagatesMilestone | isGroupWorkItemType | shouldEmitMilestone
+        ${'Epic'}    | ${true}             | ${true}             | ${true}
+        ${'Epic'}    | ${false}            | ${true}             | ${false}
+        ${'Epic'}    | ${null}             | ${true}             | ${false}
+        ${'Issue'}   | ${true}             | ${true}             | ${true}
+        ${'Issue'}   | ${false}            | ${true}             | ${false}
+        ${'Issue'}   | ${null}             | ${true}             | ${false}
+      `(
+        'emits `parent-milestone` correctly when workItemType=$workItemType and propagatesMilestone=$propagatesMilestone',
+        async ({ workItemType, propagatesMilestone, isGroupWorkItemType, shouldEmitMilestone }) => {
+          mockWorkItemConfigGetter.mockImplementation(() => {
+            return {
+              isGroupWorkItemType,
+              widgetDefinitions: [
+                {
+                  type: 'HIERARCHY',
+                  propagatesMilestone,
+                  __typename: 'WorkItemWidgetDefinitionHierarchy',
+                },
+              ],
+            };
+          });
+
+          createComponent({
+            workItemType,
+            allowedParentTypesQueryHandler: jest.fn().mockResolvedValue(allowedParentTypesResponse),
+          });
+          showDropdown();
+          await waitForPromises();
+
+          selectWorkItem(firstParentOption.id);
+          await waitForPromises();
+          await nextTick();
+
+          if (shouldEmitMilestone) {
+            expect(wrapper.emitted('parent-milestone')).toEqual([
+              [
+                expect.objectContaining({
+                  id: mockMilestone.id,
+                  title: mockMilestone.title,
+                }),
+              ],
+            ]);
+          } else {
+            expect(wrapper.emitted('parent-milestone')).toBeUndefined();
+          }
+        },
+      );
+    });
+  });
+});

@@ -1,0 +1,6 @@
+---
+RSpec/SpecFilePathSuffix:
+  Exclude:
+    - 'spec/benchmarks/banzai_benchmark.rb'
+    - 'spec/docs_screenshots/container_registry_docs.rb'
+    - 'spec/docs_screenshots/wiki_docs.rb'

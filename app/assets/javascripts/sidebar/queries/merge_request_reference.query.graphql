@@ -1,0 +1,9 @@
+query mergeRequestReference($fullPath: ID!, $iid: String!) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: mergeRequest(iid: $iid) {
+      id
+      reference(full: true)
+    }
+  }
+}

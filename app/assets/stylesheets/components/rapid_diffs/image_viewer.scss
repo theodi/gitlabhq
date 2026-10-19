@@ -1,0 +1,10 @@
+.rd-image-diff {
+  --diff-file-image-viewer-border-radius: 0 0 var(--rd-diff-file-border-radius) var(--rd-diff-file-border-radius);
+  margin: 0;
+  overflow: hidden;
+}
+
+.rd-image-diff-fallback {
+  @apply gl-p-5;
+  text-align: center;
+}

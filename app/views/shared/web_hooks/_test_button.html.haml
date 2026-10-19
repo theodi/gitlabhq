@@ -1,0 +1,5 @@
+- hook = local_assigns.fetch(:hook)
+- size = local_assigns.fetch(:size, 'medium')
+- triggers = hook.class.triggers.each_value
+
+.js-webhook-test-dropdown{ data: { items: webhook_test_items(hook, triggers).to_json, size: size } }

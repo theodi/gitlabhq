@@ -1,81 +1,199 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe API::API, api: true  do
-  include ApiHelpers
+RSpec.describe API::SystemHooks, :with_current_organization, feature_category: :webhooks do
+  let_it_be(:non_admin) { create(:user) }
+  let_it_be(:admin) { create(:admin) }
+  let_it_be_with_refind(:hook) do
+    create(:system_hook, url: "http://example.com", organization: current_organization)
+  end
 
-  let(:user) { create(:user) }
-  let(:admin) { create(:admin) }
-  let!(:hook) { create(:system_hook, url: "http://example.com") }
+  describe 'POST /hooks/:hook_id' do
+    it_behaves_like 'authorizing granular token permissions', :test_webhook do
+      include StubRequests
 
-  before { stub_request(:post, hook.url) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
 
-  describe "GET /hooks" do
-    context "when no user" do
-      it "should return authentication error" do
-        get api("/hooks")
-        expect(response.status).to eq(401)
+      before do
+        stub_full_request(hook.url, method: :post).to_return(status: 200)
+      end
+
+      let(:request) { post api("/hooks/#{hook.id}", personal_access_token: pat) }
+    end
+  end
+
+  it_behaves_like 'web-hook API endpoints', '' do
+    let(:resource) { :instance }
+    let(:user) { admin }
+    let(:unauthorized_user) { non_admin }
+
+    def scope
+      SystemHook
+    end
+
+    def collection_uri
+      "/hooks"
+    end
+
+    def match_collection_schema
+      match_response_schema('public_api/v4/system_hooks')
+    end
+
+    def hook_uri(hook_id = hook.id)
+      "/hooks/#{hook_id}"
+    end
+
+    def match_hook_schema
+      match_response_schema('public_api/v4/system_hook')
+    end
+
+    def event_names
+      %i[
+        push_events
+        tag_push_events
+        merge_requests_events
+        repository_update_events
+      ]
+    end
+
+    def hook_param_overrides
+      {}
+    end
+
+    let(:update_params) do
+      {
+        push_events: false,
+        tag_push_events: true
+      }
+    end
+
+    let(:default_values) do
+      { repository_update_events: true }
+    end
+
+    it_behaves_like 'POST webhook API endpoints with a branch filter', ''
+    it_behaves_like 'PUT webhook API endpoints with a branch filter', ''
+  end
+
+  describe 'organization scoping' do
+    let(:organization) { current_organization }
+
+    def admin_api(path)
+      api(path, admin, admin_mode: true)
+    end
+
+    describe 'GET /hooks' do
+      it_behaves_like 'system hook listing scoped to the organization' do
+        def listed_system_hook_ids
+          get admin_api('/hooks')
+
+          json_response.pluck('id')
+        end
       end
     end
 
-    context "when not an admin" do
-      it "should return forbidden error" do
-        get api("/hooks", user)
-        expect(response.status).to eq(403)
+    describe 'GET /hooks/:hook_id' do
+      it_behaves_like 'system hook lookup scoped to the organization' do
+        def request_system_hook(hook)
+          get admin_api("/hooks/#{hook.id}")
+        end
       end
     end
 
-    context "when authenticated as admin" do
-      it "should return an array of hooks" do
-        get api("/hooks", admin)
-        expect(response.status).to eq(200)
-        expect(json_response).to be_an Array
-        expect(json_response.first['url']).to eq(hook.url)
+    describe 'POST /hooks' do
+      it 'creates the hook in the current organization', :aggregate_failures do
+        post admin_api('/hooks'), params: { url: 'http://example.com/new' }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(SystemHook.find(json_response['id']).organization).to eq(current_organization)
+      end
+    end
+
+    describe 'PUT /hooks/:hook_id' do
+      it_behaves_like 'system hook lookup scoped to the organization' do
+        def request_system_hook(hook)
+          put admin_api("/hooks/#{hook.id}"), params: { url: 'http://changed.example.com' }
+        end
+      end
+    end
+
+    describe 'DELETE /hooks/:hook_id' do
+      it_behaves_like 'system hook lookup scoped to the organization' do
+        def request_system_hook(hook)
+          delete admin_api("/hooks/#{hook.id}")
+        end
+      end
+    end
+
+    describe 'POST /hooks/:hook_id' do
+      it_behaves_like 'system hook lookup scoped to the organization' do
+        def request_system_hook(hook)
+          post admin_api("/hooks/#{hook.id}")
+        end
+      end
+    end
+
+    describe 'PUT /hooks/:hook_id/url_variables/:key' do
+      it_behaves_like 'system hook lookup scoped to the organization',
+        hook_attributes: { url_variables: { 'abc' => 'secret' } } do
+        def request_system_hook(hook)
+          put admin_api("/hooks/#{hook.id}/url_variables/abc"), params: { value: 'changed' }
+        end
+      end
+    end
+
+    describe 'DELETE /hooks/:hook_id/url_variables/:key' do
+      it_behaves_like 'system hook lookup scoped to the organization',
+        hook_attributes: { url_variables: { 'abc' => 'secret' } } do
+        def request_system_hook(hook)
+          delete admin_api("/hooks/#{hook.id}/url_variables/abc")
+        end
+      end
+    end
+
+    describe 'PUT /hooks/:hook_id/custom_headers/:key' do
+      it_behaves_like 'system hook lookup scoped to the organization',
+        hook_attributes: { custom_headers: { 'X-Custom' => 'value' } } do
+        def request_system_hook(hook)
+          put admin_api("/hooks/#{hook.id}/custom_headers/X-Custom"), params: { value: 'changed' }
+        end
+      end
+    end
+
+    describe 'DELETE /hooks/:hook_id/custom_headers/:key' do
+      it_behaves_like 'system hook lookup scoped to the organization',
+        hook_attributes: { custom_headers: { 'X-Custom' => 'value' } } do
+        def request_system_hook(hook)
+          delete admin_api("/hooks/#{hook.id}/custom_headers/X-Custom")
+        end
       end
     end
   end
 
-  describe "POST /hooks" do
-    it "should create new hook" do
-      expect {
-        post api("/hooks", admin), url: 'http://example.com'
-      }.to change { SystemHook.count }.by(1)
+  # System hooks share the web_hooks table, so the column exists on them, but this
+  # endpoint does not declare the attribute and has no container to gate it on. Sending
+  # it must stay a no-op rather than start failing the request.
+  describe 'duo_flow_callback_enabled' do
+    it 'ignores the attribute on create' do
+      post api('/hooks', admin, admin_mode: true), params: {
+        url: 'http://example.com/system-hook',
+        duo_flow_callback_enabled: true
+      }
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(SystemHook.last.duo_flow_callback_enabled).to be(false)
     end
 
-    it "should respond with 400 if url not given" do
-      post api("/hooks", admin)
-      expect(response.status).to eq(400)
-    end
+    it 'ignores the attribute on update' do
+      put api("/hooks/#{hook.id}", admin, admin_mode: true), params: {
+        duo_flow_callback_enabled: true,
+        push_events: false
+      }
 
-    it "should not create new hook without url" do
-      expect {
-        post api("/hooks", admin)
-      }.to_not change { SystemHook.count }
-    end
-  end
-
-  describe "GET /hooks/:id" do
-    it "should return hook by id" do
-      get api("/hooks/#{hook.id}", admin)
-      expect(response.status).to eq(200)
-      expect(json_response['event_name']).to eq('project_create')
-    end
-
-    it "should return 404 on failure" do
-      get api("/hooks/404", admin)
-      expect(response.status).to eq(404)
-    end
-  end
-
-  describe "DELETE /hooks/:id" do
-    it "should delete a hook" do
-      expect {
-        delete api("/hooks/#{hook.id}", admin)
-      }.to change { SystemHook.count }.by(-1)
-    end
-
-    it "should return success if hook id not found" do
-      delete api("/hooks/12345", admin)
-      expect(response.status).to eq(200)
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(hook.reload.duo_flow_callback_enabled).to be(false)
     end
   end
 end

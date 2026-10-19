@@ -1,0 +1,80 @@
+# @feature_category: source_code_management
+query getCommitList(
+  $projectPath: ID!
+  $ref: String!
+  $pipelineRef: String
+  $first: Int
+  $after: String
+  $author: String
+  $query: UntrustedRegexp
+  $committedAfter: Time
+  $committedBefore: Time
+  $path: String
+) {
+  project(fullPath: $projectPath) {
+    id
+    repository {
+      commits(
+        ref: $ref
+        first: $first
+        after: $after
+        author: $author
+        query: $query
+        committedAfter: $committedAfter
+        committedBefore: $committedBefore
+        path: $path
+      ) {
+        pageInfo {
+          hasNextPage
+          hasPreviousPage
+          startCursor
+          endCursor
+        }
+        nodes {
+          id
+          sha
+          shortId
+          title
+          titleHtml
+          description
+          hasAgentSession @gl_introduced(version: "19.1.0")
+          webPath
+          webUrl
+          tags
+          authoredDate
+          authorName
+          authorGravatar
+          author {
+            id
+            name
+            username
+            avatarUrl
+            webPath
+          }
+          committedDate
+          signature {
+            ... on GpgSignature {
+              gpgKeyPrimaryKeyid
+              verificationStatus
+            }
+            ... on X509Signature {
+              verificationStatus
+            }
+            ... on SshSignature {
+              verificationStatus
+            }
+          }
+          latestPipeline(ref: $pipelineRef) {
+            id
+            detailedStatus {
+              id
+              detailsPath
+              icon
+              text
+            }
+          }
+        }
+      }
+    }
+  }
+}

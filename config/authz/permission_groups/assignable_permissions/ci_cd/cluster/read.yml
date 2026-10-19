@@ -1,0 +1,15 @@
+---
+name: read_cluster
+description: Grants the ability to read clusters
+boundaries:
+  - group
+  - project
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_cluster
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

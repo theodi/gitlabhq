@@ -1,0 +1,681 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ProjectImportState, feature_category: :importers do
+  let_it_be(:correlation_id) { 'cid' }
+  let_it_be_with_refind(:import_state) { create(:import_state, correlation_id_value: correlation_id) }
+
+  subject { import_state }
+
+  describe 'associations' do
+    it { is_expected.to belong_to(:project) }
+  end
+
+  describe '#request_channel', :clean_gitlab_redis_shared_state, :request_store do
+    it 'is populated from the request store when the record is created' do
+      Gitlab::Import::RequestChannel.stash(:ui)
+
+      project = create(:project, import_type: 'github', import_url: 'https://github.com/foo/bar.git')
+
+      expect(project.import_state.request_channel).to eq('ui')
+    end
+
+    it 'returns nil when nothing was stored' do
+      expect(import_state.request_channel).to be_nil
+    end
+
+    it 'round-trips a symbol as a string' do
+      import_state.request_channel = :ui
+
+      expect(import_state.request_channel).to eq('ui')
+    end
+
+    it 'is scoped per project' do
+      import_state.request_channel = :congregate
+
+      other_state = create(:import_state)
+
+      expect(other_state.request_channel).to be_nil
+    end
+  end
+
+  describe 'validations' do
+    it { is_expected.to validate_presence_of(:project) }
+
+    describe 'checksums attribute' do
+      let(:import_state) { build(:import_state, checksums: checksums) }
+
+      before do
+        import_state.validate
+      end
+
+      context 'when the checksums attribute has invalid fields' do
+        let(:checksums) { { fetched: { issue: :foo, note: 20 } } }
+
+        it 'adds errors' do
+          expect(import_state.errors.details.keys).to include(:checksums)
+        end
+      end
+
+      context 'when the checksums attribute has valid fields' do
+        let(:checksums) { { fetched: { issue: 8, note: 2 }, imported: { issue: 3, note: 2 } } }
+
+        it 'does not add errors' do
+          expect(import_state.errors.details.keys).not_to include(:checksums)
+        end
+      end
+    end
+  end
+
+  describe 'Project import job' do
+    let_it_be_with_reload(:project) { create(:project) }
+
+    let(:import_state) { create(:import_state, import_url: generate(:url), project: project) }
+    let(:jid) { '551d3ceac5f67a116719ce41' }
+
+    before do
+      # Works around https://github.com/rspec/rspec-mocks/issues/910
+      allow(Project).to receive(:find).with(project.id).and_return(project)
+      allow(project).to receive(:add_import_job).and_return(jid)
+    end
+
+    it 'imports a project', :sidekiq_might_not_need_inline do
+      expect { import_state.schedule }.to change { import_state.status }.from('none').to('scheduled')
+    end
+
+    it 'records job and correlation IDs', :sidekiq_might_not_need_inline do
+      allow(Labkit::Correlation::CorrelationId).to receive(:current_or_new_id).and_return(correlation_id)
+
+      import_state.schedule
+
+      expect(project).to have_received(:add_import_job)
+      expect(import_state.jid).to eq(jid)
+      expect(import_state.correlation_id).to eq(correlation_id)
+    end
+  end
+
+  describe '#relation_hard_failures' do
+    let_it_be(:failures) { create_list(:import_failure, 2, :hard_failure, project: import_state.project, correlation_id_value: correlation_id) }
+
+    it 'returns hard relation failures related to this import' do
+      expect(subject.relation_hard_failures(limit: 100)).to match_array(failures)
+    end
+
+    it 'limits returned collection to given maximum' do
+      expect(subject.relation_hard_failures(limit: 1).size).to eq(1)
+    end
+  end
+
+  describe '#mark_as_failed' do
+    let(:error_message) { 'http://user:password@gitlab.com/group/project.git failed to download' }
+    let(:sanitized_error_message) { 'http://*****:*****@gitlab.com/group/project.git failed to download' }
+
+    it 'logs error when update column fails' do
+      allow(import_state).to receive(:update_column).and_raise(ActiveRecord::ActiveRecordError)
+
+      expect_next_instance_of(::Import::Framework::Logger) do |logger|
+        expect(logger).to receive(:error).with(
+          {
+            error: 'ActiveRecord::ActiveRecordError',
+            message: 'Error setting import status to failed',
+            original_error: sanitized_error_message
+          }
+        )
+      end
+
+      import_state.mark_as_failed(error_message)
+    end
+
+    it 'updates last_error with error message' do
+      import_state.mark_as_failed(error_message)
+
+      expect(import_state.last_error).to eq(sanitized_error_message)
+    end
+
+    it 'removes project import data' do
+      import_data = ProjectImportData.new(data: { 'test' => 'some data' })
+      project = create(:project, import_data: import_data)
+      import_state = create(:import_state, :started, project: project)
+
+      expect do
+        import_state.mark_as_failed(error_message)
+      end.to change { project.reload.import_data }.from(import_data).to(nil)
+    end
+  end
+
+  describe 'the timed_out flag' do
+    it 'is picked up by mark_as_failed, but does not change its behavior' do
+      import_state = create(:import_state, :started)
+      import_state.timed_out = true
+
+      import_state.mark_as_failed('boom')
+
+      expect(import_state).to be_failed
+      expect(import_state).to be_timed_out
+    end
+  end
+
+  describe '#human_status_name' do
+    context 'when import_state exists' do
+      it 'returns the humanized status name' do
+        import_state = build(:import_state, :started)
+
+        expect(import_state.human_status_name).to eq("started")
+      end
+    end
+  end
+
+  describe '#completed?' do
+    it { expect(described_class.new(status: :failed)).to be_completed }
+    it { expect(described_class.new(status: :finished)).to be_completed }
+    it { expect(described_class.new(status: :canceled)).to be_completed }
+    it { expect(described_class.new(status: :scheduled)).not_to be_completed }
+    it { expect(described_class.new(status: :started)).not_to be_completed }
+  end
+
+  describe '#expire_etag_cache' do
+    context 'when project import type has realtime changes endpoint' do
+      before do
+        import_state.project.import_type = 'github'
+      end
+
+      it 'expires revelant etag cache' do
+        expect_next_instance_of(Gitlab::EtagCaching::Store) do |instance|
+          expect(instance).to receive(:touch).with(Gitlab::Routing.url_helpers.realtime_changes_import_github_path(format: :json))
+        end
+
+        subject.expire_etag_cache
+      end
+    end
+
+    context 'when project import type does not have realtime changes endpoint' do
+      before do
+        import_state.project.import_type = 'jira'
+      end
+
+      it 'does not touch etag caches' do
+        expect(Gitlab::EtagCaching::Store).not_to receive(:new)
+
+        subject.expire_etag_cache
+      end
+    end
+  end
+
+  describe 'import state transitions', :clean_gitlab_redis_shared_state do
+    context 'state transition: [:started] => [:finished]' do
+      it 'resets last_error' do
+        error_message = 'Some error'
+        import_state = create(:import_state, :started, last_error: error_message)
+
+        expect { import_state.finish }.to change { import_state.last_error }.from(error_message).to(nil)
+      end
+
+      it 'sets the user mapping feature flag state from import data for other transitions' do
+        import_state = create(:import_state, :started)
+        import_state.project.build_or_assign_import_data(data: { user_contribution_mapping_enabled: true }).save!
+
+        import_state.finish
+
+        expect(import_state.user_mapping_enabled).to be(true)
+      end
+
+      it 'enqueues housekeeping when an import of a fresh project is completed' do
+        project = create(:project_empty_repo, :import_started, import_type: :github)
+
+        expect(Projects::AfterImportWorker).to receive(:perform_async).with(project.id)
+
+        project.import_state.finish
+      end
+
+      it 'does not perform housekeeping when project repository does not exist' do
+        project = create(:project, :import_started, import_type: :github)
+
+        expect(Projects::AfterImportWorker).not_to receive(:perform_async)
+
+        project.import_state.finish
+      end
+
+      it 'does not enqueue housekeeping when project does not have a valid import type' do
+        project = create(:project, :import_started, import_type: nil)
+
+        expect(Projects::AfterImportWorker).not_to receive(:perform_async)
+
+        project.import_state.finish
+      end
+
+      it 'tracks the finish_project_import internal event' do
+        project = create(:project, :import_started, import_type: 'github')
+
+        expect { project.import_state.finish }
+          .to trigger_internal_events('finish_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github' }
+          )
+      end
+
+      it 'does not track the finish_project_import event for built-in template imports' do
+        project = create(:project, :import_started, import_type: 'gitlab_built_in_project_template')
+
+        expect { project.import_state.finish }
+          .not_to trigger_internal_events('finish_project_import')
+      end
+
+      it 'does not track the finish_project_import event for unknown import types' do
+        project = create(:project, :import_started, import_type: 'not_a_real_importer')
+
+        expect { project.import_state.finish }
+          .not_to trigger_internal_events('finish_project_import')
+      end
+
+      it 'includes the hashed import_source when the project has an import URL' do
+        project = create(:project, :import_started, import_type: 'github', import_url: 'https://github.com/foo/bar.git')
+        expected_source = Gitlab::Import::SourceIdentifier.hash(project.safe_import_url(masked: false))
+
+        expect { project.import_state.finish }
+          .to trigger_internal_events('finish_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github', property: expected_source, source_hosting: 'cloud' }
+          )
+      end
+
+      it 'hashes the same import_source regardless of saved credentials' do
+        with_credentials = create(
+          :project, :import_started, import_type: 'github', import_url: 'https://user:pass@github.com/foo/bar.git'
+        )
+        without_credentials = create(
+          :project, :import_started, import_type: 'github', import_url: 'https://github.com/foo/bar.git'
+        )
+
+        expect(with_credentials.import_state.send(:hashed_import_source))
+          .to eq(without_credentials.import_state.send(:hashed_import_source))
+      end
+
+      it 'does not track the finish_project_import event for mirrors' do
+        project = create(:project, :import_started, import_type: 'github')
+        allow(project).to receive(:mirror?).and_return(true)
+        allow(project.import_state).to receive(:project).and_return(project)
+
+        expect { project.import_state.finish }
+          .not_to trigger_internal_events('finish_project_import')
+      end
+    end
+
+    context 'state transition: [:scheduled] => [:started]' do
+      it 'tracks the start_project_import internal event' do
+        project = create(:project, :import_scheduled, import_type: 'github')
+
+        expect { project.import_state.start }
+          .to trigger_internal_events('start_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github' }
+          )
+      end
+
+      it 'forwards request_channel when the importer captured one' do
+        project = create(:project, :import_scheduled, import_type: 'github')
+        project.import_state.request_channel = :ui
+
+        expect { project.import_state.start }
+          .to trigger_internal_events('start_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github', request_channel: 'ui' }
+          )
+      end
+
+      it 'includes source_hosting when the project has a resolvable github source' do
+        project = create(
+          :project, :import_scheduled, import_type: 'github', import_url: 'https://api.github.com/foo/bar.git'
+        )
+        expected_source = Gitlab::Import::SourceIdentifier.hash(project.safe_import_url(masked: false))
+
+        expect { project.import_state.start }
+          .to trigger_internal_events('start_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github', property: expected_source, source_hosting: 'cloud' }
+          )
+      end
+
+      it 'labels enterprise github as self_hosted' do
+        project = create(
+          :project, :import_scheduled, import_type: 'github', import_url: 'https://ghe.example.com/foo/bar.git'
+        )
+        expected_source = Gitlab::Import::SourceIdentifier.hash(project.safe_import_url(masked: false))
+
+        expect { project.import_state.start }
+          .to trigger_internal_events('start_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github', property: expected_source, source_hosting: 'self_hosted' }
+          )
+      end
+
+      it 'labels gitea.com as cloud' do
+        project = create(
+          :project, :import_scheduled, import_type: 'gitea', import_url: 'https://gitea.com/foo/bar.git'
+        )
+        expected_source = Gitlab::Import::SourceIdentifier.hash(project.safe_import_url(masked: false))
+
+        expect { project.import_state.start }
+          .to trigger_internal_events('start_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'gitea', property: expected_source, source_hosting: 'cloud' }
+          )
+      end
+
+      it 'labels self-hosted gitea as self_hosted' do
+        project = create(
+          :project, :import_scheduled, import_type: 'gitea', import_url: 'https://gitea.example.com/foo/bar.git'
+        )
+        expected_source = Gitlab::Import::SourceIdentifier.hash(project.safe_import_url(masked: false))
+
+        expect { project.import_state.start }
+          .to trigger_internal_events('start_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'gitea', property: expected_source, source_hosting: 'self_hosted' }
+          )
+      end
+
+      it 'omits source_hosting for non-github/gitea importers' do
+        project = create(
+          :project, :import_scheduled, import_type: 'bitbucket', import_url: 'https://bitbucket.org/foo/bar.git'
+        )
+        expected_source = Gitlab::Import::SourceIdentifier.hash(project.safe_import_url(masked: false))
+
+        expect { project.import_state.start }
+          .to trigger_internal_events('start_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'bitbucket', property: expected_source }
+          )
+      end
+
+      it 'does not track the start_project_import event for built-in template imports' do
+        project = create(:project, :import_scheduled, import_type: 'gitlab_built_in_project_template')
+
+        expect { project.import_state.start }
+          .not_to trigger_internal_events('start_project_import')
+      end
+
+      it 'does not track the start_project_import event for unknown import types' do
+        project = create(:project, :import_scheduled, import_type: 'not_a_real_importer')
+
+        expect { project.import_state.start }
+          .not_to trigger_internal_events('start_project_import')
+      end
+    end
+
+    context 'state transition: [:scheduled, :started] => [:failed]' do
+      it 'tracks the fail_project_import internal event' do
+        project = create(:project, :import_started, import_type: 'github')
+
+        expect { project.import_state.fail_op }
+          .to trigger_internal_events('fail_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github' }
+          )
+      end
+
+      it 'does not track the fail_project_import event for unknown import types' do
+        project = create(:project, :import_started, import_type: 'not_a_real_importer')
+
+        expect { project.import_state.fail_op }
+          .not_to trigger_internal_events('fail_project_import')
+      end
+    end
+
+    context 'when marked as timed out' do
+      it 'tracks the timeout_project_import internal event, not fail_project_import' do
+        project = create(:project, :import_started, import_type: 'github')
+        project.import_state.timed_out = true
+
+        expect { project.import_state.mark_as_failed('boom') }
+          .to trigger_internal_events('timeout_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github' }
+          )
+          .and not_trigger_internal_events('fail_project_import')
+      end
+
+      it 'marks the import as completed, in the failed state' do
+        project = create(:project, :import_started, import_type: 'github')
+        project.import_state.timed_out = true
+
+        project.import_state.mark_as_failed('boom')
+
+        expect(project.import_state).to be_completed
+        expect(project.import_state).to be_failed
+      end
+    end
+
+    context 'state transition: [:none, :scheduled, :started] => [:canceled]' do
+      it 'tracks the cancel_project_import internal event' do
+        project = create(:project, :import_started, import_type: 'github')
+
+        expect { project.import_state.cancel }
+          .to trigger_internal_events('cancel_project_import')
+          .with(
+            project: project,
+            user: project.creator,
+            namespace: project.namespace,
+            additional_properties: { label: 'github' }
+          )
+      end
+
+      it 'does not track the cancel_project_import event for unknown import types' do
+        project = create(:project, :import_started, import_type: 'not_a_real_importer')
+
+        expect { project.import_state.cancel }
+          .not_to trigger_internal_events('cancel_project_import')
+      end
+
+      it 'updates the import status' do
+        import_state = create(:import_state, :none)
+        expect { import_state.cancel }
+          .to change { import_state.status }
+          .from('none').to('canceled')
+      end
+
+      it 'unsets the JID' do
+        import_state = create(:import_state, :started, jid: '123')
+
+        expect(Gitlab::SidekiqStatus)
+          .to receive(:unset)
+          .with('123')
+          .and_call_original
+
+        import_state.cancel!
+
+        expect(import_state.jid).to be_nil
+      end
+
+      it 'removes import data' do
+        import_data = ProjectImportData.new(data: { 'test' => 'some data' })
+        project = create(:project, :import_scheduled, import_data: import_data)
+
+        expect(project)
+          .to receive(:remove_import_data)
+          .and_call_original
+
+        expect do
+          project.import_state.cancel
+          project.reload
+        end.to change { project.import_data }
+          .from(import_data).to(nil)
+      end
+
+      it 'sets the user mapping feature flag state from import data for other transitions' do
+        import_state = create(:import_state, :scheduled)
+        import_state.project.build_or_assign_import_data(data: { user_contribution_mapping_enabled: true }).save!
+
+        import_state.cancel
+
+        expect(import_state.user_mapping_enabled).to be(true)
+      end
+    end
+
+    context 'when the importer captured a request_channel' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:transition, :event) do
+        :finish  | 'finish_project_import'
+        :fail_op | 'fail_project_import'
+        :cancel  | 'cancel_project_import'
+      end
+
+      with_them do
+        it 'does not forward request_channel on terminal events' do
+          project = create(:project, :import_started, import_type: 'github')
+          project.import_state.request_channel = :ui
+
+          expect { project.import_state.public_send(transition) }
+            .to trigger_internal_events(event)
+            .with(
+              project: project,
+              user: project.creator,
+              namespace: project.namespace,
+              additional_properties: { label: 'github' }
+            )
+        end
+      end
+    end
+
+    context 'state transition: started: [:finished, :canceled, :failed]' do
+      using RSpec::Parameterized::TableSyntax
+
+      let_it_be_with_reload(:project) { create(:project) }
+
+      where(
+        :import_type,
+        :import_status,
+        :transition,
+        :expected_checksums
+      ) do
+        'github'         | :started   | :finish     | { 'fetched' => {}, 'imported' => {} }
+        'github'         | :started   | :cancel     | { 'fetched' => {}, 'imported' => {} }
+        'github'         | :started   | :fail_op    | { 'fetched' => {}, 'imported' => {} }
+        'github'         | :scheduled | :cancel     | {}
+        'gitlab_project' | :started   | :cancel     | {}
+      end
+
+      with_them do
+        before do
+          create(:import_state, status: import_status, import_type: import_type, project: project)
+        end
+
+        it 'updates (or does not update) checksums' do
+          project.import_state.send(transition)
+
+          expect(project.import_state.checksums).to eq(expected_checksums)
+        end
+      end
+    end
+  end
+
+  describe 'completion notification trigger', :aggregate_failures do
+    context 'when transitioning from started to finished' do
+      it 'enqueues ImportCompletionNotificationWorker' do
+        state = create(:import_state, status: :started, import_type: 'github')
+
+        expect(Projects::ImportExport::ImportCompletionNotificationWorker).to receive(:perform_async)
+
+        state.finish!
+      end
+    end
+
+    context 'when transitioning to failed' do
+      it 'enqueues ImportCompletionNotificationWorker' do
+        state = create(:import_state, status: :started, import_type: 'github')
+
+        expect(Projects::ImportExport::ImportCompletionNotificationWorker).to receive(:perform_async)
+
+        state.fail_op!
+      end
+    end
+
+    context 'when transitioning to scheduled' do
+      it 'does not enqueue ImportCompletionNotificationWorker' do
+        state = create(:import_state, status: :none, import_type: 'github')
+
+        expect(Projects::ImportExport::ImportCompletionNotificationWorker).not_to receive(:perform_async)
+
+        state.schedule!
+      end
+    end
+  end
+
+  describe 'clearing `jid` after finish', :clean_gitlab_redis_cache do
+    context 'without an JID' do
+      it 'does nothing' do
+        import_state = create(:import_state, :started)
+
+        expect(Gitlab::SidekiqStatus)
+          .not_to receive(:unset)
+
+        import_state.finish!
+      end
+    end
+
+    context 'with a JID' do
+      it 'unsets the JID' do
+        import_state = create(:import_state, :started, jid: '123')
+
+        expect(Gitlab::SidekiqStatus)
+          .to receive(:unset)
+          .with('123')
+          .and_call_original
+
+        import_state.finish!
+
+        expect(import_state.jid).to be_nil
+      end
+    end
+  end
+
+  describe 'callbacks' do
+    context 'after_commit :expire_etag_cache' do
+      before do
+        import_state.project.import_type = 'github'
+      end
+
+      it 'expires etag cache' do
+        expect_next_instance_of(Gitlab::EtagCaching::Store) do |instance|
+          expect(instance).to receive(:touch).with(Gitlab::Routing.url_helpers.realtime_changes_import_github_path(format: :json))
+        end
+
+        subject.save!
+      end
+    end
+  end
+end

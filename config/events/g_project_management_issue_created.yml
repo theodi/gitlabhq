@@ -1,0 +1,18 @@
+---
+description: An issue has been created
+internal_events: true
+action: g_project_management_issue_created
+extra_properties:
+identifiers:
+  - namespace
+  - project
+  - user
+product_group: work_items
+product_categories:
+- team_planning
+milestone: "16.1"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/123184
+tiers:
+  - free
+  - premium
+  - ultimate

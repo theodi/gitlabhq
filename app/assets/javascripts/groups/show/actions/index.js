@@ -1,0 +1,41 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+import GroupActionsApp from '~/groups/show/actions/components/app.vue';
+import { convertObjectPropsToCamelCase } from '~/lib/utils/common_utils';
+import { formatGroup } from '~/groups/show/actions/formatter';
+
+Vue.use(VueApollo);
+
+const apolloProvider = new VueApollo({
+  defaultClient: createDefaultClient(),
+});
+
+export const initGroupActions = () => {
+  const el = document.querySelector('#js-group-more-actions-dropdown');
+
+  if (!el) return null;
+
+  const { dashboardPath, canWithdrawAccessRequest, canRequestAccess } =
+    convertObjectPropsToCamelCase(el.dataset);
+
+  const baseGroup = JSON.parse(el.dataset.group);
+  const group = formatGroup(baseGroup, {
+    canWithdrawAccessRequest: parseBoolean(canWithdrawAccessRequest),
+    canRequestAccess: parseBoolean(canRequestAccess),
+  });
+
+  return initVueApp({
+    el,
+    name: 'GroupActionsApp',
+    apolloProvider,
+    provide: {
+      triggerDeleteLocation: 'header',
+      triggerRestoreLocation: 'header',
+    },
+    component: GroupActionsApp,
+    props: { group, dashboardPath },
+  });
+};

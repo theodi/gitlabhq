@@ -1,0 +1,24 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# This script is used both in CI and in local development 'rspec' runs.
+
+require_relative '../config/bundler_setup'
+require_relative '../spec/support/helpers/gitaly_setup'
+
+class GitalyTestSpawn
+  include GitalySetup
+
+  def run
+    ensure_gitlab_shell_secret!
+
+    # Run Praefect migrations
+    setup_praefect
+
+    # Optionally specify the path to the gitaly config toml as first argument.
+    # Used by workhorse in test.
+    spawn_gitaly(ARGV[0])
+  end
+end
+
+GitalyTestSpawn.new.run

@@ -1,0 +1,47 @@
+# frozen_string_literal: true
+
+module Members
+  class ApproveAccessRequestService < Members::BaseService
+    include Members::MembershipLockValidation
+
+    def execute(access_requester, skip_authorization: false, skip_log_audit_event: false)
+      validate_access!(access_requester) unless skip_authorization
+
+      access_requester.access_level = params[:access_level] if params[:access_level]
+
+      handle_request_acceptance(access_requester)
+
+      after_execute(member: access_requester, skip_log_audit_event: skip_log_audit_event)
+
+      success({ member: access_requester })
+    end
+
+    private
+
+    def handle_request_acceptance(access_requester)
+      limit_to_guest_if_billable_promotion_restricted(access_requester)
+      access_requester.accept_request(current_user)
+    end
+
+    def after_execute(member:, skip_log_audit_event:)
+      super
+
+      resolve_access_request_todos(member)
+    end
+
+    def validate_access!(access_requester)
+      raise Gitlab::Access::AccessDeniedError unless can_approve_access_requester?(access_requester)
+    end
+
+    def limit_to_guest_if_billable_promotion_restricted(access_requester)
+      # override in EE
+    end
+
+    def can_approve_access_requester?(access_requester)
+      can?(current_user, :admin_member_access_request, access_requester.source) &&
+        !access_requester.prevent_role_assignement?(current_user, params)
+    end
+  end
+end
+
+Members::ApproveAccessRequestService.prepend_mod_with('Members::ApproveAccessRequestService')

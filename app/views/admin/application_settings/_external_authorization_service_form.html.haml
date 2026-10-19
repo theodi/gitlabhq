@@ -1,0 +1,50 @@
+= render ::Layouts::SettingsBlockComponent.new(s_('ExternalAuthorization|External authorization'),
+  id: 'js-external-auth-settings',
+  testid: 'external-auth-settings',
+  expanded: expanded) do |c|
+  - c.with_description do
+    = s_('ExternalAuthorization|External classification policy authorization.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/external_authorization.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-external-auth-settings'), html: { class: 'fieldset-form', id: 'external-auth-settings' } do |f|
+      = form_errors(@application_setting)
+
+      %fieldset
+        .form-group
+          = f.gitlab_ui_checkbox_component :external_authorization_service_enabled,
+            s_('ExternalAuthorization|Enable classification control using an external service'),
+            help_text: external_authorization_description
+        = f.gitlab_ui_checkbox_component :allow_deploy_tokens_and_keys_with_external_authn,
+            s_('ExternalAuthorization|Allow deploy tokens and deploy keys to be used with external authorization'),
+            help_text: external_authorization_allow_token_help_text
+        .form-group
+          = f.label :external_authorization_service_url, s_('ExternalAuthorization|Service URL'), class: 'label-bold'
+          = f.text_field :external_authorization_service_url, class: 'form-control gl-form-input'
+          %span.form-text.gl-text-subtle
+            = external_authorization_url_help_text
+        .form-group
+          = f.label :external_authorization_service_timeout, s_('ExternalAuthorization|External authorization request timeout (seconds)'), class: 'label-bold'
+          = f.number_field :external_authorization_service_timeout, class: 'form-control gl-form-input', min: 0.001, max: 10, step: 0.001
+          %span.form-text.gl-text-subtle
+            = external_authorization_timeout_help_text
+        .form-group
+          = f.label :external_auth_client_cert, s_('ExternalAuthorization|Client authorization certificate'), class: 'label-bold'
+          = f.text_area :external_auth_client_cert, class: 'form-control gl-form-input'
+          %span.form-text.gl-text-subtle
+            = external_authorization_client_certificate_help_text
+        .form-group
+          = f.label :external_auth_client_key, s_('ExternalAuthorization|Client authorization key'), class: 'label-bold'
+          = f.text_area :external_auth_client_key, class: 'form-control gl-form-input'
+          %span.form-text.gl-text-subtle
+            = external_authorization_client_key_help_text
+        .form-group
+          = f.label :external_auth_client_key_pass, s_('ExternalAuthorization|Client authorization key password (optional)'), class: 'label-bold'
+          = f.password_field :external_auth_client_key_pass, class: 'form-control gl-form-input'
+          %span.form-text.gl-text-subtle
+            = external_authorization_client_pass_help_text
+        .form-group
+          = f.label :external_authorization_service_default_label, s_('ExternalAuthorization|Default classification label'), class: 'label-bold'
+          = f.text_field :external_authorization_service_default_label, class: 'form-control gl-form-input'
+          %span.form-text.gl-text-subtle
+            = external_authorization_client_url_help_text
+      = f.submit _('Save changes'), pajamas_button: true

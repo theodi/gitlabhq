@@ -1,0 +1,49 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Noteable Warning Component when item is locked but not confidential renders information about locked item 1`] = `
+<span>
+  Discussion is
+  <gl-link-stub
+    href="/help/user/discussions/_index#prevent-comments-by-locking-the-discussion"
+    target="_blank"
+  >
+    locked
+  </gl-link-stub>
+  . Only members can comment.
+</span>
+`;
+
+exports[`Noteable Warning Component when noteable is confidential but not locked renders information about confidential item 1`] = `
+<span>
+  Marked as
+  <gl-link-stub
+    href="/help/user/discussions/_index#comments-on-confidential-items"
+    target="_blank"
+  >
+    confidential
+  </gl-link-stub>
+  . People without permission will never get a notification.
+</span>
+`;
+
+exports[`Noteable Warning Component when noteable is locked and confidential renders information about locked and confidential noteable 1`] = `
+<span>
+  <span>
+    Marked as
+    <gl-link-stub
+      href="/help/user/discussions/_index#comments-on-confidential-items"
+      target="_blank"
+    >
+      confidential
+    </gl-link-stub>
+    and discussion is
+    <gl-link-stub
+      href="/help/user/discussions/_index#prevent-comments-by-locking-the-discussion"
+      target="_blank"
+    >
+      locked
+    </gl-link-stub>
+    . People without permission will never get a notification and won't be able to comment.
+  </span>
+</span>
+`;

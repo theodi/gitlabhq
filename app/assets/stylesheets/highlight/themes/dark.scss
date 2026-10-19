@@ -1,0 +1,431 @@
+/* https://github.com/MozMorris/tomorrow-pygments */
+
+@import '../common';
+@import '../hljs';
+
+/*
+* Dark syntax colors
+*/
+$dark-new-bg: #233726;
+$dark-new-idiff: rgba(51, 255, 51, 0.2);
+$dark-old-bg: #4b2526;
+$dark-old-idiff: rgba(255, 51, 51, 0.25);
+$dark-border: #808080;
+$dark-code-border: #666;
+$dark-code-mark: #1d3043;
+$dark-main-bg: #1d1f21;
+$dark-main-color: #1d1f21;
+$dark-line-color: #c5c8c6;
+$dark-line-num-color: rgba(255, 255, 255, 0.3);
+$dark-line-num-color-new: #627165;
+$dark-line-num-color-old: #806565;
+$dark-diff-not-empty-bg: #557;
+$dark-highlight-bg: #ffe792;
+$dark-highlight-color: $gl-color-neutral-1000;
+$dark-pre-hll-bg: #373b41;
+$dark-hll-bg: #373b41;
+$dark-expanded-bg: #3e3e3e;
+$dark-coverage: #b3e841;
+$dark-no-coverage: #ff4f33;
+$dark-c: #969896;
+$dark-err: #c66;
+$dark-k: #b294bb;
+$dark-l: #de935f;
+$dark-n: #c5c8c6;
+$dark-o: #8abeb7;
+$dark-p: #c5c8c6;
+$dark-cm: #969896;
+$dark-cp: #969896;
+$dark-c1: #969896;
+$dark-cs: #969896;
+$dark-cd: #969896;
+$dark-gd: #c66;
+$dark-gh: #8abeb7;
+$dark-gi: #b5bd68;
+$dark-gp: #969896;
+$dark-gu: #8abeb7;
+$dark-kc: #b294bb;
+$dark-kd: #b294bb;
+$dark-kn: #8abeb7;
+$dark-kp: #b294bb;
+$dark-kr: #b294bb;
+$dark-kt: #f0c674;
+$dark-ld: #b5bd68;
+$dark-m: #de935f;
+$dark-s: #b5bd68;
+$dark-na: #81a2be;
+$dark-nb: #c5c8c6;
+$dark-nc: #f0c674;
+$dark-no: #c66;
+$dark-nd: #8abeb7;
+$dark-ni: #c5c8c6;
+$dark-ne: #c66;
+$dark-nf: #81a2be;
+$dark-nl: #c5c8c6;
+$dark-nn: #f0c674;
+$dark-nx: #81a2be;
+$dark-py: #c5c8c6;
+$dark-nt: #8abeb7;
+$dark-nv: #c66;
+$dark-ow: #8abeb7;
+$dark-w: #c5c8c6;
+$dark-mf: #de935f;
+$dark-mh: #de935f;
+$dark-mi: #de935f;
+$dark-mo: #de935f;
+$dark-sb: #b5bd68;
+$dark-sc: #c5c8c6;
+$dark-sd: #969896;
+$dark-s2: #b5bd68;
+$dark-se: #de935f;
+$dark-sh: #b5bd68;
+$dark-si: #de935f;
+$dark-sx: #b5bd68;
+$dark-sr: #b5bd68;
+$dark-s1: #b5bd68;
+$dark-ss: #b5bd68;
+$dark-bp: #c5c8c6;
+$dark-vc: #c66;
+$dark-vg: #c66;
+$dark-vi: #c66;
+$dark-il: #de935f;
+
+:root {
+  --color-hljs-comment: #{$dark-c};
+  --color-hljs-variable: #{$dark-k};
+  --color-hljs-link: #{$dark-l};
+  --color-hljs-meta: #{$dark-cp};
+  --color-hljs-keyword: #{$dark-kd};
+  --color-hljs-type: #{$dark-kt};
+  --color-hljs-attr: #{$dark-na};
+  --color-hljs-builtin: #{$dark-nb};
+  --color-hljs-title: #{$dark-n};
+  --color-hljs-class: #{$dark-nc};
+  --color-hljs-function: #{$dark-nf};
+  --color-hljs-tag: #{$dark-nt};
+  --color-hljs-number: #{$dark-mi};
+  --color-hljs-subst: #{$dark-sc};
+  --color-hljs-string: #{$dark-s1};
+  --color-hljs-symbol: #{$dark-ss};
+  --color-hljs-variable: #{$dark-vi};
+  --color-hljs-operator: #{$dark-o};
+  --color-hljs-punctuation: #{$dark-p};
+  --color-hljs-regexp: #{$dark-sr};
+  --color-hljs-constant: #{$dark-nx};
+  --color-hljs-literal: #{$dark-kc};
+  --color-hljs-language: #{$dark-nx};
+  --color-hljs-params: #{$dark-nx};
+  --color-hljs-selector-doctag: #{$dark-cm};
+  --color-hljs-selector-tag: #{$dark-nt};
+  --color-hljs-selector-class: #{$dark-nc};
+  --color-hljs-selector-id: #{$dark-nn};
+  --color-hljs-selector-attr: #{$dark-nt};
+  --color-hljs-selector-pseudo: #{$dark-nd};
+  --default-diff-color-deletion: #ff3333;
+  --default-diff-color-addition: #288f2a;
+  --diff-addition-color: #{$dark-new-bg};
+  --diff-deletion-color: #{$dark-old-bg};
+}
+
+.code.dark,
+.code-syntax-highlight-theme {
+  --code-dark-theme: 1;
+  --code-border-lightness-adjust: 0.1;
+  --diff-expansion-background-color: #{$gl-color-neutral-600};
+
+  --code-text-color: #{$dark-line-color};
+  --code-empty-background: #{$gl-color-neutral-900};
+  --code-border-color: #{$gl-color-neutral-700};
+  --code-changed-border-color: #{rgba(255,255,255,0.15)};
+  --code-line-number-background-color: #{$dark-main-bg};
+  --code-line-number-color: #{$dark-line-num-color};
+  --code-line-number-hover-background-color: #{$gl-color-purple-800};
+  --code-line-number-hover-border-color: #{$gl-color-purple-700};
+  --code-line-number-hover-color: #{$gl-color-purple-50};
+
+  --code-old-diff-line-number-background-color: #{$dark-old-bg};
+  --code-old-diff-line-number-color: #{$dark-line-num-color-old};
+  --code-old-diff-sign-color: #{$dark-line-num-color-old};
+  --code-old-diff-background-color: #{$dark-old-bg};
+  --code-old-diff-border-color: #{$dark-border};
+  --code-old-diff-color: #{$dark-line-num-color-old};
+  --code-old-inline-diff-background-color: #{$dark-old-idiff};
+
+  --code-new-diff-line-number-background-color: #{$dark-new-bg};
+  --code-new-diff-line-number-color: #{$dark-line-num-color-new};
+  --code-new-diff-sign-color: #{$dark-line-num-color-new};
+  --code-new-diff-background-color: #{$dark-new-bg};
+  --code-new-diff-border-color: #{$dark-border};
+  --code-new-diff-color: #{$dark-line-num-color-new};
+  --code-new-inline-diff-background-color: #{$dark-new-idiff};
+
+  --code-meta-diff-background-color: #{$dark-diff-match-color};
+  --code-meta-diff-color: #{$gl-color-neutral-200};
+
+  --code-diff-hunk-header-background-color: #{$dark-diff-match-color};
+  --code-diff-hunk-header-color: #{$gl-color-neutral-200};
+
+  --code-diff-expand-button-background-color: #{$gl-color-neutral-600};
+  --code-diff-expand-button-color: #{$gl-color-neutral-200};
+  --code-diff-expand-button-hover-background-color: #{$gl-color-neutral-300};
+  --code-diff-expand-button-hover-color: #{$gl-color-neutral-0};
+
+  --code-highlighted-line-background-color: #{$gl-color-orange-800};
+  --code-highlighted-line-border-color: #{$gl-color-orange-500};
+
+  // Highlight.js theme overrides (https://gitlab.com/gitlab-org/gitlab/-/issues/365167)
+  // We should be able to remove the overrides once the upstream issue is fixed (https://github.com/sourcegraph/sourcegraph/issues/23251)
+  @include hljs-override('title\\.class', $dark-nc);
+  @include hljs-override('title\\.class\\.inherited', $dark-no);
+  @include hljs-override('variable\\.constant', $dark-no);
+  @include hljs-override('title\\.function', $dark-nf);
+
+
+  // Line numbers
+  .file-line-blame {
+    @include line-link($gl-color-neutral-0, 'git');
+  }
+
+  .line-links {
+    @include line-hover-bg($dark-main-bg);
+  }
+
+  .line-numbers,
+  .diff-line-num,
+  .code-search-line {
+    background-color: $dark-main-bg;
+  }
+
+  .diff-line-num,
+  .diff-line-num a {
+    color: $dark-line-num-color;
+  }
+
+  // Code itself
+  pre.code,
+  .diff-line-num {
+    border-color: $dark-code-border;
+  }
+
+  &,
+  pre.code,
+  .line_holder .line_content {
+    --code-background: #{$dark-main-bg};
+    background-color: $dark-main-bg;
+    color: $dark-line-color;
+  }
+
+  .diff-line-expand-button {
+    @include diff-expansion($gl-color-neutral-600, $gl-color-neutral-200, $gl-color-neutral-300, $gl-color-neutral-0);
+  }
+
+  .diff-grid-row.line_holder.diff-tr .diff-td.commented:not(.hll) {
+    --highlight-border-color: #{$gl-color-blue-600};
+    background-color: $gl-color-blue-900;
+  }
+
+  // Diff line
+  .line_holder {
+    &.match .line_content,
+    &.old-nonewline .line_content,
+    &.new-nonewline .line_content {
+      @include dark-diff-match-line;
+    }
+
+    .diff-td.diff-line-num.hll,
+    .diff-td.line-coverage.hll,
+    .diff-td.line-inline-findings.hll,
+    .diff-td.line_content.hll,
+    td.diff-line-num.hll,
+    td.line-coverage.hll,
+    td.line_content.hll {
+      --highlight-border-color: #{$gl-color-orange-500};
+      background-color: $gl-color-orange-800;
+    }
+
+    .line-coverage {
+      @include line-coverage-border-color($dark-coverage, $dark-no-coverage);
+    }
+
+    .diff-line-num.new,
+    .line-coverage.new,
+    .line-inline-findings.new,
+    .line_content.new,
+    .diff-line-num.new-nomappinginraw,
+    .line-coverage.new-nomappinginraw,
+    .line-inline-findings.new-nomappinginraw,
+    .line_content.new-nomappinginraw {
+      @include diff-background($dark-new-bg, $dark-new-idiff, $dark-border);
+
+      &::before,
+      a {
+        color: $dark-line-num-color-new;
+      }
+    }
+
+    .diff-line-num.old,
+    .line-coverage.old,
+    .line-inline-findings.old,
+    .line_content.old,
+    .diff-line-num.old-nomappinginraw,
+    .line-coverage.old-nomappinginraw,
+    .line-inline-findings.old-nomappinginraw,
+    .line_content.old-nomappinginraw {
+      @include diff-background($dark-old-bg, $dark-old-idiff, $dark-border);
+
+      &::before,
+      a {
+        color: $dark-line-num-color-old;
+      }
+    }
+
+    &:not(.match) .diff-grid-left:hover,
+    &:not(.match) .diff-grid-right:hover,
+    &.code-search-line:hover {
+      .diff-line-num:not(.empty-cell) {
+        @include line-number-hover-dark;
+      }
+    }
+
+    .diff-line-num {
+      &.is-over,
+      &.hll:not(.empty-cell).is-over {
+        @include line-number-hover-dark;
+      }
+    }
+
+    .line_content.match {
+      @include dark-diff-match-line;
+    }
+
+    &:not(.diff-expanded) + .diff-expanded,
+    &.diff-expanded + .line_holder:not(.diff-expanded) {
+      > .diff-line-num,
+      > .line-coverage,
+      > .line_content {
+        border-top: 1px solid $gl-color-neutral-1000;
+      }
+    }
+
+    &.diff-expanded {
+      > .diff-line-num,
+      > .line-coverage,
+      > .line_content {
+        background: $dark-expanded-bg;
+        border-color: $dark-expanded-bg;
+      }
+    }
+  }
+
+  @include conflict-colors('dark');
+
+  // mark lines via mark_multiple_lines
+  pre.dark code {
+    .selected-inline-section-marker {
+      background: $dark-code-mark !important;
+    }
+
+    .inline-section-marker {
+      background: $dark-pre-hll-bg;
+    }
+  }
+
+  .file-holder div.code.dark {
+    .selected-inline-number-mark {
+      color: $gl-color-neutral-200;
+    }
+
+    .unselected-inline-number-mark {
+      color: $gl-color-neutral-600;
+    }
+  }
+
+
+  // Search result highlight
+  span.highlight_word {
+    background-color: $dark-highlight-bg !important;
+    color: $dark-highlight-color !important;
+  }
+
+  // Links to URLs, emails, or dependencies
+  .line a {
+    color: $dark-na;
+  }
+
+  .hll { background-color: $dark-hll-bg; }
+  .c { color: $dark-c; } // Comment
+  .err { color: $dark-err; } // Error
+  .k { color: $dark-k; } // Keyword
+  .l { color: $dark-l; } // Literal
+  .n { color: $dark-n; } // Name
+  .o { color: $dark-o; } // Operator
+  .p { color: $dark-p; } // Punctuation
+  .cm { color: $dark-cm; } // Comment.Multiline
+  .cp { color: $dark-cp; } // Comment.Preproc
+  .c1 { color: $dark-c1; } // Comment.Single
+  .cs { color: $dark-cs; } // Comment.Special
+  .cd { color: $dark-cd; } // Comment.Doc
+  .gd { color: $dark-gd; } // Generic.Deleted
+  .ge { font-style: italic; } // Generic.Emph
+  .gh { /* Generic.Heading */
+    color: $dark-gh;
+    font-weight: $gl-font-weight-bold;
+  }
+  .gi { color: $dark-gi; } // Generic.Inserted
+  .gp { /* Generic.Prompt */
+    color: $dark-gp;
+    font-weight: $gl-font-weight-bold;
+  }
+  .gs { font-weight: $gl-font-weight-bold; } // Generic.Strong
+  .gu { /* Generic.Subheading */
+    color: $dark-gu;
+    font-weight: $gl-font-weight-bold;
+  }
+  .kc { color: $dark-kc; } // Keyword.Constant
+  .kd { color: $dark-kd; } // Keyword.Declaration
+  .kn { color: $dark-kn; } // Keyword.Namespace
+  .kp { color: $dark-kp; } // Keyword.Pseudo
+  .kr { color: $dark-kr; } // Keyword.Reserved
+  .kt { color: $dark-kt; } // Keyword.Type
+  .ld { color: $dark-ld; } // Literal.Date
+  .m { color: $dark-m; } // Literal.Number
+  .s { color: $dark-s; } // Literal.String
+  .na { color: $dark-na; } // Name.Attribute
+  .nb { color: $dark-nb; } // Name.Builtin
+  .nc { color: $dark-nc; } // Name.Class
+  .no { color: $dark-no; } // Name.Constant
+  .nd { color: $dark-nd; } // Name.Decorator
+  .ni { color: $dark-ni; } // Name.Entity
+  .ne { color: $dark-ne; } // Name.Exception
+  .nf { color: $dark-nf; } // Name.Function
+  .nl { color: $dark-nl; } // Name.Label
+  .nn { color: $dark-nn; } // Name.Namespace
+  .nx { color: $dark-nx; } // Name.Other
+  .py { color: $dark-py; } // Name.Property
+  .nt { color: $dark-nt; } // Name.Tag
+  .nv { color: $dark-nv; } // Name.Variable
+  .ow { color: $dark-ow; } // Operator.Word
+  .w { color: $dark-w; } // Text.Whitespace
+  .mf { color: $dark-mf; } // Literal.Number.Float
+  .mh { color: $dark-mh; } // Literal.Number.Hex
+  .mi { color: $dark-mi; } // Literal.Number.Integer
+  .mo { color: $dark-mo; } // Literal.Number.Oct
+  .sb { color: $dark-sb; } // Literal.String.Backtick
+  .sc { color: $dark-sc; } // Literal.String.Char
+  .sd { color: $dark-sd; } // Literal.String.Doc
+  .s2 { color: $dark-s2; } // Literal.String.Double
+  .se { color: $dark-se; } // Literal.String.Escape
+  .sh { color: $dark-sh; } // Literal.String.Heredoc
+  .si { color: $dark-si; } // Literal.String.Interpol
+  .sx { color: $dark-sx; } // Literal.String.Other
+  .sr { color: $dark-sr; } // Literal.String.Regex
+  .s1 { color: $dark-s1; } // Literal.String.Single
+  .ss { color: $dark-ss; } // Literal.String.Symbol
+  .bp { color: $dark-bp; } // Name.Builtin.Pseudo
+  .vc { color: $dark-vc; } // Name.Variable.Class
+  .vg { color: $dark-vg; } // Name.Variable.Global
+  .vi { color: $dark-vi; } // Name.Variable.Instance
+  .il { color: $dark-il; } // Literal.Number.Integer.Long
+}
+
+@include merge-conflicts-syntax-highlight-theme('dark');

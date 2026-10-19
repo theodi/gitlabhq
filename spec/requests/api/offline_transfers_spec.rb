@@ -1,0 +1,800 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::OfflineTransfers, feature_category: :importers do
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:export_1) { create(:offline_export, :with_configuration, user: user) }
+  let_it_be(:export_2) { create(:offline_export, :with_configuration, user: user) }
+  let_it_be(:other_user_export) { create(:offline_export, :with_configuration) }
+
+  before do
+    stub_application_setting(offline_transfer_exports_enabled: true, offline_transfer_imports_enabled: true)
+  end
+
+  shared_examples 'not found when offline_transfer_exports is disabled' do
+    before do
+      stub_feature_flags(offline_transfer_exports: false)
+    end
+
+    it_behaves_like '404 response'
+  end
+
+  shared_examples 'not found when offline_transfer_exports_enabled setting is disabled' do
+    before do
+      stub_application_setting(offline_transfer_exports_enabled: false)
+    end
+
+    it_behaves_like '404 response'
+  end
+
+  describe 'POST /offline_exports', :with_current_organization do
+    let(:bucket) { 'exports' }
+    let(:entity_params) { [{ 'full_path' => 'group/subgroup' }, { 'full_path' => 'group/project' }] }
+    let(:aws_s3_credentials) do
+      {
+        'aws_access_key_id' => 'AwsUserAccessKey',
+        'aws_secret_access_key' => 'aws/secret+access/key',
+        'region' => 'us-east-1'
+      }
+    end
+
+    let(:s3_compatible_credentials) do
+      {
+        'aws_access_key_id' => 'minio-user-access-key',
+        'aws_secret_access_key' => 'minio-secret-access-key',
+        'region' => 'gdk',
+        'endpoint' => 'https://minio.example.com'
+      }
+    end
+
+    let(:params) do
+      {
+        bucket: bucket,
+        aws_s3_configuration: aws_s3_credentials,
+        entities: entity_params
+      }
+    end
+
+    subject(:request) { post api('/offline_exports', user), params: params }
+
+    before do
+      # Prevents unintentional rate limit errors because the limit for this endpoint is low
+      allow(::Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_return(false)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_offline_export do
+      let(:boundary_object) { :user }
+
+      before do
+        service_response = instance_double(ServiceResponse, success?: true, payload: export_1)
+        allow(Import::Offline::Exports::CreateService).to receive(:new)
+          .and_return(instance_double(Import::Offline::Exports::CreateService, execute: service_response))
+      end
+
+      let(:request) do
+        post api('/offline_exports', personal_access_token: pat),
+          params: { bucket: bucket, aws_s3_configuration: aws_s3_credentials, entities: entity_params }
+      end
+    end
+
+    shared_examples 'starting a new export' do |provider|
+      let(:path_style_default) { nil }
+      let(:service_response) { instance_double(ServiceResponse, success?: true, payload: export_1) }
+      let(:service_double) { instance_double(Import::Offline::Exports::CreateService, execute: service_response) }
+      let(:params) do
+        {
+          bucket: bucket,
+          entities: entity_params
+        }.merge(configuration_key => credentials)
+      end
+
+      before do
+        allow(Import::Offline::Exports::CreateService).to receive(:new).and_return(service_double)
+      end
+
+      it "starts a new offline export using #{provider} object storage default params" do
+        expected_credentials = if path_style_default.nil?
+                                 credentials
+                               else
+                                 credentials.merge('path_style' => path_style_default)
+                               end
+
+        expect(Import::Offline::Exports::CreateService).to receive(:new).with(
+          user,
+          entity_params,
+          {
+            bucket: bucket,
+            provider: provider,
+            credentials: expected_credentials
+          },
+          current_organization.id
+        )
+
+        request
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['id']).to eq(export_1.id)
+      end
+    end
+
+    shared_examples 'configuring path_style' do |provider|
+      let(:service_response) { instance_double(ServiceResponse, success?: true, payload: export_1) }
+      let(:service_double) { instance_double(Import::Offline::Exports::CreateService, execute: service_response) }
+      let(:params) do
+        {
+          bucket: bucket,
+          entities: entity_params
+        }.merge(configuration_key => credentials)
+      end
+
+      before do
+        allow(Import::Offline::Exports::CreateService).to receive(:new).and_return(service_double)
+      end
+
+      context 'when path_style is true' do
+        it 'sets true' do
+          credentials['path_style'] = true
+
+          expect(Import::Offline::Exports::CreateService).to receive(:new).with(
+            user,
+            entity_params,
+            {
+              bucket: bucket,
+              provider: provider,
+              credentials: credentials
+            },
+            current_organization.id
+          )
+
+          request
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['id']).to eq(export_1.id)
+        end
+      end
+
+      context 'when path_style is false' do
+        it 'sets_false' do
+          credentials['path_style'] = false
+
+          expect(Import::Offline::Exports::CreateService).to receive(:new).with(
+            user,
+            entity_params,
+            {
+              bucket: bucket,
+              provider: provider,
+              credentials: credentials
+            },
+            current_organization.id
+          )
+
+          request
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['id']).to eq(export_1.id)
+        end
+      end
+    end
+
+    context 'when using AWS S3 object storage' do
+      let(:configuration_key) { :aws_s3_configuration }
+      let(:credentials) { aws_s3_credentials }
+
+      it_behaves_like 'starting a new export', :aws do
+        let(:path_style_default) { false }
+      end
+
+      it_behaves_like 'configuring path_style', :aws
+    end
+
+    context 'when using S3-compatible object storage' do
+      let(:configuration_key) { :s3_compatible_configuration }
+      let(:credentials) { s3_compatible_credentials }
+
+      it_behaves_like 'starting a new export', :s3_compatible do
+        let(:path_style_default) { true }
+      end
+
+      it_behaves_like 'configuring path_style', :s3_compatible
+    end
+
+    context 'when using GCS object storage' do
+      it_behaves_like 'starting a new export', :gcs do
+        let(:configuration_key) { :gcs_configuration }
+        let(:credentials) do
+          {
+            'google_project' => 'gitlab-project',
+            'google_json_key_string' => '{"type":"service_account"}'
+          }
+        end
+      end
+    end
+
+    context 'when using GCS object storage with HMAC keys' do
+      let(:configuration_key) { :gcs_hmac_configuration }
+      let(:credentials) do
+        {
+          'google_storage_access_key_id' => 'GOOG1EXAMPLEACCESSKEY123',
+          'google_storage_secret_access_key' => 'AbCd+EfGh/IjKlMnOpQrStUvWxYz0123456789K=', # gitleaks:allow
+          'region' => 'us-east1'
+        }
+      end
+
+      it_behaves_like 'starting a new export', :gcs_hmac do
+        let(:path_style_default) { true }
+      end
+
+      it_behaves_like 'configuring path_style', :gcs_hmac
+    end
+
+    context 'when using GCS object storage with Application Default Credentials' do
+      it_behaves_like 'starting a new export', :gcs_application_default do
+        let(:configuration_key) { :gcs_adc_configuration }
+        let(:credentials) { { 'google_project' => 'gitlab-project' } }
+      end
+    end
+
+    context 'when no configuration params are provided' do
+      let(:params) do
+        {
+          bucket: bucket,
+          entities: entity_params
+        }
+      end
+
+      it_behaves_like '400 response'
+    end
+
+    context 'when more than one provider configuration params are provided' do
+      let(:params) do
+        {
+          bucket: bucket,
+          aws_s3_configuration: aws_s3_credentials,
+          s3_compatible_configuration: s3_compatible_credentials,
+          entities: entity_params
+        }
+      end
+
+      it_behaves_like '400 response'
+    end
+
+    context 'when request exceeds rate limits' do
+      it 'prevents user from starting a new migration' do
+        allow(::Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_return(true)
+
+        request
+
+        expect(response).to have_gitlab_http_status(:too_many_requests)
+        expect(response.headers).to include(
+          'Retry-After' => Gitlab::ApplicationRateLimiter.period_for(:offline_export)
+        )
+        expect(json_response['message']['error']).to eq(
+          'This endpoint has been requested too many times. Try again later.'
+        )
+      end
+    end
+
+    context 'when service returns an error' do
+      before do
+        allow_next_instance_of(Import::Offline::Exports::CreateService) do |service|
+          allow(service).to receive(:execute).and_return(
+            ServiceResponse.error(message: 'Export failed', reason: :unprocessable_entity)
+          )
+        end
+      end
+
+      it 'renders the error' do
+        request
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response['message']).to eq('Export failed')
+      end
+    end
+
+    context 'when user is unauthenticated' do
+      let(:request) { post api('/offline_exports', nil), params: params }
+
+      it_behaves_like '401 response'
+    end
+
+    it_behaves_like 'not found when offline_transfer_exports is disabled'
+    it_behaves_like 'not found when offline_transfer_exports_enabled setting is disabled'
+  end
+
+  describe 'GET /offline_exports' do
+    let(:request) { get api('/offline_exports', user), params: params }
+    let(:params) { {} }
+
+    it_behaves_like 'authorizing granular token permissions', :read_offline_export do
+      let(:boundary_object) { :user }
+      let(:request) { get api('/offline_exports', personal_access_token: pat) }
+    end
+
+    it 'returns offline exports authored by the user ordered by created_at descending' do
+      request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.pluck('id')).to eq([export_2.id, export_1.id])
+    end
+
+    it 'does not return exports from other users' do
+      request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.pluck('id')).not_to include(other_user_export.id)
+    end
+
+    context 'with sort parameter' do
+      context 'when descending' do
+        let(:params) { { sort: 'desc' } }
+
+        it 'sorts by created_at descending' do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('id')).to match_array([export_2.id, export_1.id])
+        end
+      end
+
+      context 'when ascending' do
+        let(:params) { { sort: 'asc' } }
+
+        it 'sorts by created_at ascending when explicitly specified' do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('id')).to match_array([export_1.id, export_2.id])
+        end
+      end
+
+      context 'when sort is invalid' do
+        let(:params) { { sort: 'invalid' } }
+
+        it_behaves_like '400 response'
+      end
+    end
+
+    context 'with status parameter' do
+      let_it_be(:started_export) { create(:offline_export, :started, user: user) }
+      let_it_be(:finished_export) { create(:offline_export, :finished, user: user) }
+      let_it_be(:failed_export) { create(:offline_export, :failed, user: user) }
+
+      context 'when status is valid' do
+        where(:status, :expected_exports) do
+          'created'  | [ref(:export_1), ref(:export_2)]
+          'started'  | [ref(:started_export)]
+          'finished' | [ref(:finished_export)]
+          'failed'   | [ref(:failed_export)]
+        end
+
+        with_them do
+          let(:params) { { status: status } }
+
+          it 'returns only exports with the specified status' do
+            request
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.pluck('id')).to match_array(expected_exports.map(&:id))
+          end
+        end
+      end
+
+      context 'when status is invalid' do
+        let(:params) { { status: 'invalid' } }
+
+        it_behaves_like '400 response'
+      end
+    end
+
+    context 'when user is unauthenticated' do
+      let(:request) { get api('/offline_exports', nil) }
+
+      it_behaves_like '401 response'
+    end
+
+    it_behaves_like 'not found when offline_transfer_exports is disabled'
+    it_behaves_like 'not found when offline_transfer_exports_enabled setting is disabled'
+  end
+
+  describe 'GET /offline_exports/:id' do
+    let(:request) { get api("/offline_exports/#{export_1.id}", user) }
+
+    it_behaves_like 'authorizing granular token permissions', :read_offline_export do
+      let(:boundary_object) { :user }
+      let(:request) { get api("/offline_exports/#{export_1.id}", personal_access_token: pat) }
+    end
+
+    it 'returns specified offline export' do
+      request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['id']).to eq(export_1.id)
+    end
+
+    it 'includes export attributes' do
+      request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response).to include(
+        'id' => export_1.id,
+        'status' => export_1.status_name.to_s,
+        'source_hostname' => export_1.source_hostname,
+        'bucket' => export_1.configuration.bucket,
+        'export_prefix' => export_1.configuration.export_prefix
+      )
+    end
+
+    context 'when the export has no configuration' do
+      let_it_be(:export_without_configuration) { create(:offline_export, user: user) }
+      let(:request) { get api("/offline_exports/#{export_without_configuration.id}", user) }
+
+      it 'returns bucket and export_prefix as null' do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to include('bucket' => nil, 'export_prefix' => nil)
+      end
+    end
+
+    context 'when export does not belong to user' do
+      let(:request) { get api("/offline_exports/#{other_user_export.id}", user) }
+
+      it_behaves_like '404 response'
+    end
+
+    context 'when export does not exist' do
+      let(:request) { get api("/offline_exports/#{non_existing_record_id}", user) }
+
+      it_behaves_like '404 response'
+    end
+
+    context 'when user is unauthenticated' do
+      let(:request) { get api("/offline_exports/#{export_1.id}", nil) }
+
+      it_behaves_like '401 response'
+    end
+
+    it_behaves_like 'not found when offline_transfer_exports is disabled'
+    it_behaves_like 'not found when offline_transfer_exports_enabled setting is disabled'
+  end
+
+  describe 'POST /offline_imports', :with_current_organization do
+    let_it_be(:bulk_import) { create(:bulk_import, user: user) }
+
+    let(:bucket) { 'imports' }
+    let(:export_prefix) { 'export_2025-09-18_1hrwkrv' }
+    let(:entity_params) do
+      [
+        {
+          'source_type' => 'group_entity',
+          'source_full_path' => 'top_level_group',
+          'destination_namespace' => 'dest-group',
+          'destination_slug' => 'dest-grp'
+        }
+      ]
+    end
+
+    let(:aws_s3_credentials) do
+      {
+        'aws_access_key_id' => 'AwsUserAccessKey',
+        'aws_secret_access_key' => 'aws/secret+access/key',
+        'region' => 'us-east-1'
+      }
+    end
+
+    let(:s3_compatible_credentials) do
+      {
+        'aws_access_key_id' => 'minio-user-access-key',
+        'aws_secret_access_key' => 'minio-secret-access-key',
+        'region' => 'gdk',
+        'endpoint' => 'https://minio.example.com'
+      }
+    end
+
+    let(:params) do
+      {
+        bucket: bucket,
+        export_prefix: export_prefix,
+        aws_s3_configuration: aws_s3_credentials,
+        entities: entity_params
+      }
+    end
+
+    subject(:request) { post api('/offline_imports', user), params: params }
+
+    before do
+      allow(::Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_return(false)
+    end
+
+    shared_examples 'starting a new import' do |provider|
+      let(:path_style_default) { nil }
+      let(:service_response) { instance_double(ServiceResponse, success?: true, payload: bulk_import) }
+      let(:service_double) { instance_double(Import::Offline::Imports::CreateService, execute: service_response) }
+      let(:params) do
+        {
+          bucket: bucket,
+          export_prefix: export_prefix,
+          entities: entity_params
+        }.merge(configuration_key => credentials)
+      end
+
+      before do
+        allow(Import::Offline::Imports::CreateService).to receive(:new).and_return(service_double)
+      end
+
+      it "starts a new offline import using #{provider} object storage with default params" do
+        expected_credentials = if path_style_default.nil?
+                                 credentials
+                               else
+                                 credentials.merge('path_style' => path_style_default)
+                               end
+
+        expect(Import::Offline::Imports::CreateService).to receive(:new).with(
+          {
+            bucket: bucket,
+            export_prefix: export_prefix,
+            object_storage_credentials: expected_credentials,
+            provider: provider
+          },
+          { entities: entity_params },
+          current_user: user,
+          fallback_organization: current_organization,
+          request_channel: :api
+        )
+
+        request
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response).to include(
+          'id' => bulk_import.id,
+          'status' => bulk_import.status_name.to_s,
+          'created_at' => bulk_import.created_at.iso8601(3),
+          'updated_at' => bulk_import.updated_at.iso8601(3),
+          'has_failures' => bulk_import.has_failures
+        )
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_offline_import do
+      before do
+        allow_next_instance_of(Import::Offline::Imports::CreateService) do |service|
+          allow(service).to receive(:execute).and_return(ServiceResponse.success)
+        end
+      end
+
+      let(:boundary_object) { :instance }
+      let(:request) { post api('/offline_imports', personal_access_token: pat), params: params }
+    end
+
+    it_behaves_like 'starting a new import', :aws do
+      let(:configuration_key) { :aws_s3_configuration }
+      let(:credentials) { aws_s3_credentials }
+      let(:path_style_default) { false }
+    end
+
+    it_behaves_like 'starting a new import', :s3_compatible do
+      let(:configuration_key) { :s3_compatible_configuration }
+      let(:credentials) { s3_compatible_credentials }
+      let(:path_style_default) { true }
+    end
+
+    context 'when using GCS object storage' do
+      it_behaves_like 'starting a new import', :gcs do
+        let(:configuration_key) { :gcs_configuration }
+        let(:credentials) do
+          {
+            'google_project' => 'gitlab-project',
+            'google_json_key_string' => '{"type":"service_account"}'
+          }
+        end
+      end
+    end
+
+    context 'when using GCS object storage with HMAC keys' do
+      it_behaves_like 'starting a new import', :gcs_hmac do
+        let(:configuration_key) { :gcs_hmac_configuration }
+        let(:credentials) do
+          {
+            'google_storage_access_key_id' => 'GOOG1EXAMPLEACCESSKEY123',
+            'google_storage_secret_access_key' => 'AbCd+EfGh/IjKlMnOpQrStUvWxYz0123456789K=', # gitleaks:allow
+            'region' => 'us-east1'
+          }
+        end
+
+        let(:path_style_default) { true }
+      end
+    end
+
+    context 'when using GCS object storage with Application Default Credentials' do
+      it_behaves_like 'starting a new import', :gcs_application_default do
+        let(:configuration_key) { :gcs_adc_configuration }
+        let(:credentials) { { 'google_project' => 'gitlab-project' } }
+      end
+    end
+
+    context 'when import_all is provided instead of entities' do
+      let(:service_response) { instance_double(ServiceResponse, success?: true, payload: bulk_import) }
+      let(:service_double) { instance_double(Import::Offline::Imports::CreateService, execute: service_response) }
+      let(:destination_namespace) { 'dest-group' }
+      let(:params) do
+        {
+          bucket: bucket,
+          export_prefix: export_prefix,
+          aws_s3_configuration: aws_s3_credentials,
+          import_all: { destination_namespace: destination_namespace }
+        }
+      end
+
+      before do
+        allow(Import::Offline::Imports::CreateService).to receive(:new).and_return(service_double)
+      end
+
+      it 'passes import_all to the service instead of entities' do
+        expect(Import::Offline::Imports::CreateService).to receive(:new).with(
+          anything,
+          { import_all: { destination_namespace: destination_namespace } },
+          current_user: user,
+          fallback_organization: current_organization,
+          request_channel: :api
+        )
+
+        request
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+
+      it 'passes request_channel: :congregate when the caller identifies as Congregate' do
+        expect(Import::Offline::Imports::CreateService).to receive(:new).with(
+          anything,
+          anything,
+          hash_including(request_channel: :congregate)
+        )
+
+        post api('/offline_imports', user), params: params, headers: { 'User-Agent' => 'GitLabApiClient' }
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+
+      context 'when destination_namespace is empty' do
+        let(:destination_namespace) { '' }
+
+        it 'is accepted so the source structure is recreated at the instance root' do
+          expect(Import::Offline::Imports::CreateService).to receive(:new).with(
+            anything,
+            { import_all: { destination_namespace: '' } },
+            current_user: user,
+            fallback_organization: current_organization,
+            request_channel: :api
+          )
+
+          request
+
+          expect(response).to have_gitlab_http_status(:created)
+        end
+      end
+    end
+
+    context 'when neither entities nor import_all are provided' do
+      let(:params) do
+        {
+          bucket: bucket,
+          export_prefix: export_prefix,
+          aws_s3_configuration: aws_s3_credentials
+        }
+      end
+
+      it_behaves_like '400 response'
+    end
+
+    context 'when both entities and import_all are provided' do
+      let(:params) do
+        {
+          bucket: bucket,
+          export_prefix: export_prefix,
+          aws_s3_configuration: aws_s3_credentials,
+          entities: entity_params,
+          import_all: { destination_namespace: 'dest-group' }
+        }
+      end
+
+      it_behaves_like '400 response'
+    end
+
+    context 'when entities is empty' do
+      let(:params) do
+        {
+          bucket: bucket,
+          export_prefix: export_prefix,
+          aws_s3_configuration: aws_s3_credentials,
+          entities: []
+        }
+      end
+
+      it_behaves_like '400 response'
+    end
+
+    context 'when no configuration params are provided' do
+      let(:params) do
+        {
+          bucket: bucket,
+          export_prefix: export_prefix,
+          entities: entity_params
+        }
+      end
+
+      it_behaves_like '400 response'
+    end
+
+    context 'when more than one provider configuration params are provided' do
+      let(:params) do
+        {
+          bucket: bucket,
+          export_prefix: export_prefix,
+          aws_s3_configuration: aws_s3_credentials,
+          s3_compatible_configuration: s3_compatible_credentials,
+          entities: entity_params
+        }
+      end
+
+      it_behaves_like '400 response'
+    end
+
+    context 'when request exceeds rate limits' do
+      it 'prevents user from starting a new import' do
+        allow(::Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_return(true)
+
+        request
+
+        expect(response).to have_gitlab_http_status(:too_many_requests)
+        expect(response.headers).to include(
+          'Retry-After' => Gitlab::ApplicationRateLimiter.period_for(:offline_import)
+        )
+        expect(json_response['message']['error']).to eq(
+          'This endpoint has been requested too many times. Try again later.'
+        )
+      end
+    end
+
+    context 'when service returns an error' do
+      before do
+        allow_next_instance_of(Import::Offline::Imports::CreateService) do |service|
+          allow(service).to receive(:execute).and_return(
+            ServiceResponse.error(message: 'Import failed', reason: :unprocessable_entity)
+          )
+        end
+      end
+
+      it 'renders the error' do
+        request
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response['message']).to eq('Import failed')
+      end
+    end
+
+    context 'when offline_transfer_imports is disabled' do
+      before do
+        stub_feature_flags(offline_transfer_imports: false)
+      end
+
+      it_behaves_like '404 response'
+    end
+
+    context 'when offline_transfer_imports_enabled setting is disabled' do
+      before do
+        stub_application_setting(offline_transfer_imports_enabled: false)
+      end
+
+      it_behaves_like '404 response'
+    end
+
+    context 'when user is unauthenticated' do
+      let(:request) { post api('/offline_imports', nil), params: params }
+
+      it_behaves_like '401 response'
+    end
+  end
+end

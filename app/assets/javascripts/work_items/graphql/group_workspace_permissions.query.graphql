@@ -1,0 +1,9 @@
+# @feature_category: team_planning
+query groupWorkspacePermissions($fullPath: ID!) {
+  namespace: group(fullPath: $fullPath) {
+    id
+    userPermissions {
+      adminWorkItemLifecycle
+    }
+  }
+}

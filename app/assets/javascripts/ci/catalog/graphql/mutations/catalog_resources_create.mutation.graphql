@@ -1,0 +1,7 @@
+# @feature_category: pipeline_composition
+
+mutation catalogResourcesCreate($input: CatalogResourcesCreateInput!) {
+  catalogResourcesCreate(input: $input) {
+    errors
+  }
+}

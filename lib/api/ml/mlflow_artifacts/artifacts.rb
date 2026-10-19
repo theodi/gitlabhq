@@ -1,0 +1,68 @@
+# frozen_string_literal: true
+
+require 'mime/types'
+
+module API
+  # MLFlow integration API, replicating the Rest API https://www.mlflow.org/docs/latest/rest-api.html#rest-api
+  module Ml
+    module MlflowArtifacts
+      CANDIDATE_PREFIX = 'candidate:'
+
+      class Artifacts < ::API::Base
+        feature_category :mlops
+        helpers ::API::Helpers::PackagesHelpers
+
+        before do
+          check_api_read!
+          check_api_model_registry_read!
+        end
+
+        desc 'MLflow artifact API' do
+          detail 'MLflow artifacts mapping to GitLab artifacts'
+          tags ['mlops']
+        end
+
+        route_setting :api, write: true
+        route_setting :model_registry, write: true
+        params do
+          optional :path, type: String,
+            desc: 'Model version ID, optionally followed by `/` and the path to the artifact, for example `15/MLmodel`.'
+        end
+        route_setting :authorization, permissions: :read_ml_flow_artifact, boundary_type: :project
+        get 'artifacts', urgency: :low do
+          model_version, path = params[:path].split('/', 2)
+
+          # MLflow handles directories differently than GitLab does so when MLflow checks if a path is a directory
+          # we return an empty array as 404s would cause issues for MLflow
+          files = if candidate_version?(model_version)
+                    run_version = model_version.delete_prefix(CANDIDATE_PREFIX)
+                    path.present? ? [] : list_run_artifacts(user_project, run_version).all
+                  else
+                    path.present? ? [] : list_model_artifacts(user_project, model_version).all
+                  end
+
+          package_files = { files: files }
+          present package_files, with: Entities::Ml::MlflowArtifacts::ArtifactsList
+        end
+
+        desc 'Get MLflow artifact file' do
+          detail 'Retrieves an MLflow artifact file'
+          tags ['mlops']
+        end
+        params do
+          requires :model_version, type: String, desc: 'The model version'
+        end
+        route_setting :authorization, permissions: :read_ml_flow_artifact, boundary_type: :project
+        get 'artifacts/:model_version/*file_path', urgency: :low, requirements: ::API::NO_FORMAT_SUFFIX_REQUIREMENT do
+          if candidate_version?(params[:model_version])
+            version = params[:model_version].delete_prefix(CANDIDATE_PREFIX)
+            present_package_file!(find_run_artifact(user_project, version, CGI.escape(params[:file_path])))
+          else
+            present_package_file!(find_model_artifact(user_project, params[:model_version],
+              CGI.escape(params[:file_path])))
+          end
+        end
+      end
+    end
+  end
+end

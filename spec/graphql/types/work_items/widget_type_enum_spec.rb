@@ -1,0 +1,13 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe GitlabSchema.types['WorkItemWidgetType'], feature_category: :team_planning do
+  specify { expect(described_class.graphql_name).to eq('WorkItemWidgetType') }
+
+  it 'exposes all the existing widget type values' do
+    expect(described_class.values.transform_values(&:value)).to include(
+      'DESCRIPTION' => :description
+    )
+  end
+end

@@ -1,0 +1,14 @@
+---
+table_name: cluster_agent_url_configurations
+classes:
+- Clusters::Agents::UrlConfiguration
+feature_categories:
+- deployment_management
+description: Stores user-configured gRPC URL endpoints for cluster agents, including
+  TLS certificate or public key authentication settings.
+introduced_by_url:
+milestone: '17.4'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

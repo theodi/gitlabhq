@@ -1,0 +1,419 @@
+@use "sass:color";
+
+/* https://github.com/richleland/pygments-css/blob/master/monokai.css */
+
+@import '../common';
+@import 'highlight.js/styles/base16/monokai';
+
+/*
+* Monokai Colors
+*/
+$monokai-bg: #272822;
+$monokai-border: #555;
+$monokai-code-mark: #113953;
+$monokai-text-color: #f8f8f2;
+$monokai-line-num-color: rgba(255, 255, 255, 0.3);
+$monokai-line-num-color-new: #707565;
+$monokai-line-num-color-old: #7e736f;
+$monokai-line-empty-bg: #49483e;
+$monokai-line-empty-border: color.adjust($monokai-line-empty-bg, $lightness: -15%);
+$monokai-diff-border: #808080;
+$monokai-highlight-bg: #ffe792;
+$monokai-expanded-bg: #3e3e3e;
+$monokai-coverage: #a6e22e;
+$monokai-no-coverage: #fd971f;
+
+$monokai-new-bg: #343b25;
+$monokai-new-idiff: rgba(166, 226, 46, 0.15);
+
+$monokai-old-bg: #473832;
+$monokai-old-idiff: rgba(254, 147, 140, 0.2);
+
+$monokai-hll: #49483e;
+$monokai-c: #75715e;
+$monokai-err-color: #960050;
+$monokai-err-bg: #1e0010;
+$monokai-k: #66d9ef;
+$monokai-l: #ae81ff;
+$monokai-n: #f8f8f2;
+$monokai-o: #f92672;
+$monokai-p: #f8f8f2;
+$monokai-cm: #75715e;
+$monokai-cp: #75715e;
+$monokai-c1: #75715e;
+$monokai-cs: #75715e;
+$monokai-cd: #75715e;
+$monokai-kc: #66d9ef;
+$monokai-kd: #66d9ef;
+$monokai-kn: #f92672;
+$monokai-kp: #66d9ef;
+$monokai-kr: #66d9ef;
+$monokai-kt: #66d9ef;
+$monokai-ld: #e6db74;
+$monokai-m: #ae81ff;
+$monokai-s: #e6db74;
+$monokai-na: #a6e22e;
+$monokai-nb: #f8f8f2;
+$monokai-nc: #a6e22e;
+$monokai-no: #66d9ef;
+$monokai-nd: #a6e22e;
+$monokai-ni: #f8f8f2;
+$monokai-ne: #a6e22e;
+$monokai-nf: #a6e22e;
+$monokai-nl: #f8f8f2;
+$monokai-nn: #f8f8f2;
+$monokai-nx: #a6e22e;
+$monokai-py: #f8f8f2;
+$monokai-nt: #f92672;
+$monokai-nv: #f8f8f2;
+$monokai-ow: #f92672;
+$monokai-w: #f8f8f2;
+$monokai-mf: #ae81ff;
+$monokai-mh: #ae81ff;
+$monokai-mi: #ae81ff;
+$monokai-mo: #ae81ff;
+$monokai-sb: #e6db74;
+$monokai-sc: #e6db74;
+$monokai-sd: #e6db74;
+$monokai-s2: #e6db74;
+$monokai-se: #ae81ff;
+$monokai-sh: #e6db74;
+$monokai-si: #e6db74;
+$monokai-sx: #e6db74;
+$monokai-sr: #e6db74;
+$monokai-s1: #e6db74;
+$monokai-ss: #e6db74;
+$monokai-bp: #f8f8f2;
+$monokai-vc: #f8f8f2;
+$monokai-vg: #f8f8f2;
+$monokai-vi: #f8f8f2;
+$monokai-il: #ae81ff;
+$monokai-gu: #75715e;
+$monokai-gd: #f92672;
+$monokai-gi: #a6e22e;
+$monokai-gh: #75715e;
+
+:root {
+  --default-diff-color-deletion: #c87872;
+  --default-diff-color-addition: #678528;
+  --diff-addition-color: #{$monokai-new-bg};
+  --diff-deletion-color: #{$monokai-old-bg};
+}
+
+.code.monokai,
+.code-syntax-highlight-theme {
+  --code-dark-theme: 1;
+  --code-border-lightness-adjust: 0.1;
+  --diff-expansion-background-color: #{$gl-color-neutral-600};
+
+  --code-background: #{$monokai-bg};
+  --code-text-color: #{$monokai-text-color};
+  --code-empty-background: #{color.adjust($monokai-bg, $lightness: -1.5%)};
+  --code-border-color: #{$gl-color-neutral-700};
+  --code-changed-border-color: #{rgba(255,255,255,0.1)};
+
+  --code-line-number-background-color: #{$monokai-bg};
+  --code-line-number-color: #{$monokai-line-num-color};
+  --code-line-number-hover-background-color: #{$gl-color-purple-800};
+  --code-line-number-hover-border-color: #{$gl-color-purple-700};
+  --code-line-number-hover-color: #{$gl-color-purple-50};
+
+  --code-old-diff-line-number-background-color: #{$monokai-old-bg};
+  --code-old-diff-line-number-color: #{$monokai-line-num-color-old};
+  --code-old-diff-sign-color: #{$monokai-line-num-color-old};
+  --code-old-diff-background-color: #{$monokai-old-bg};
+  --code-old-diff-border-color: #{$monokai-diff-border};
+  --code-old-diff-color: #{$monokai-line-num-color-old};
+  --code-old-inline-diff-background-color: #{$monokai-old-idiff};
+
+  --code-new-diff-line-number-background-color: #{$monokai-new-bg};
+  --code-new-diff-line-number-color: #{$monokai-line-num-color-new};
+  --code-new-diff-sign-color: #{$monokai-line-num-color-new};
+  --code-new-diff-background-color: #{$monokai-new-bg};
+  --code-new-diff-border-color: #{$monokai-diff-border};
+  --code-new-diff-color: #{$monokai-line-num-color-new};
+  --code-new-inline-diff-background-color: #{$monokai-new-idiff};
+
+  --code-meta-diff-background-color: #{$dark-diff-match-color};
+  --code-meta-diff-color: #{$gl-color-neutral-200};
+
+  --code-diff-hunk-header-background-color: #{$dark-diff-match-color};
+  --code-diff-hunk-header-color: #{$gl-color-neutral-200};
+
+  --code-diff-expand-button-background-color: #{$gl-color-neutral-600};
+  --code-diff-expand-button-color: #{$gl-color-neutral-200};
+  --code-diff-expand-button-hover-background-color: #{$gl-color-neutral-300};
+  --code-diff-expand-button-hover-color: #{$gl-color-neutral-0};
+
+  --code-highlighted-line-background-color: #{$gl-color-orange-800};
+  --code-highlighted-line-border-color: #{$gl-color-orange-500};
+
+  // Highlight.js theme overrides (https://gitlab.com/gitlab-org/gitlab/-/issues/365167)
+  // We should be able to remove the overrides once the upstream issue is fixed (https://github.com/sourcegraph/sourcegraph/issues/23251)
+  @include hljs-override('string', $monokai-s);
+  @include hljs-override('attr', $monokai-na);
+  @include hljs-override('attribute', $monokai-n);
+  @include hljs-override('selector-tag', $monokai-nt);
+  @include hljs-override('keyword', $monokai-k);
+  @include hljs-override('variable', $monokai-nv);
+  @include hljs-override('variable\\.language_', $monokai-k);
+  @include hljs-override('title', $monokai-nf);
+  @include hljs-override('name', $monokai-k);
+  @include hljs-override('tag', $monokai-nt);
+  @include hljs-override('type', $monokai-nc);
+  @include hljs-override('number', $monokai-mf);
+  @include hljs-override('literal', $monokai-kc);
+  @include hljs-override('built_in', $monokai-n);
+  @include hljs-override('section', $monokai-gh);
+  @include hljs-override('bullet', $monokai-n);
+  @include hljs-override('subst', $monokai-p);
+  @include hljs-override('symbol', $monokai-ss);
+  @include hljs-override('title\\.class_\\.inherited__', $monokai-no);
+  @include hljs-override('title\\.class\\.inherited', $monokai-no);
+  @include hljs-override('title\\.class', $monokai-nc);
+  @include hljs-override('title\\.function', $monokai-nf);
+  @include hljs-override('variable\\.constant', $monokai-no);
+  @include hljs-override('variable\\.language', $monokai-nb);
+  @include hljs-override('params', $monokai-nb);
+
+  // Line numbers
+  .file-line-blame {
+    @include line-link($gl-color-neutral-0, 'git');
+  }
+
+  .line-links {
+    @include line-hover-bg($monokai-bg);
+  }
+
+  .line-numbers,
+  .diff-line-num,
+  .code-search-line {
+    background-color: $monokai-bg;
+  }
+
+  .diff-line-num,
+  .diff-line-num a {
+    color: $monokai-line-num-color;
+  }
+
+  .diff-grid-row.line_holder.diff-tr .diff-td.commented:not(.hll) {
+    --highlight-border-color: #{$gl-color-blue-600};
+    background-color: $gl-color-blue-900;
+  }
+
+  // Code itself
+  pre.code,
+  .diff-line-num {
+    border-color: $monokai-border;
+  }
+
+  &,
+  pre.code,
+  .line_holder .line_content {
+    background-color: $monokai-bg;
+    color: $monokai-text-color;
+  }
+
+  .diff-line-expand-button {
+    @include diff-expansion($gl-color-neutral-600, $gl-color-neutral-200, $gl-color-neutral-300, $gl-color-neutral-0);
+  }
+
+  // Diff line
+  .line_holder {
+    &.match .line_content,
+    &.old-nonewline .line_content,
+    &.new-nonewline .line_content {
+      @include dark-diff-match-line;
+    }
+
+    .diff-td.diff-line-num.hll,
+    .diff-td.line-coverage.hll,
+    .diff-td.line-inline-findings.hll,
+    .diff-td.line_content.hll,
+    td.diff-line-num.hll,
+    td.line-coverage.hll,
+    td.line_content.hll {
+      --highlight-border-color: #{$gl-color-orange-500};
+      background-color: $gl-color-orange-800;
+    }
+
+    .line-coverage {
+      @include line-coverage-border-color($monokai-coverage, $monokai-no-coverage);
+    }
+
+    .diff-line-num.new,
+    .line-coverage.new,
+    .line-inline-findings.new,
+    .line_content.new,
+    .diff-line-num.new-nomappinginraw,
+    .line-coverage.new-nomappinginraw,
+    .line-inline-findings.new-nomappinginraw,
+    .line_content.new-nomappinginraw {
+      @include diff-background($monokai-new-bg, $monokai-new-idiff, $monokai-diff-border);
+
+      &::before,
+      a {
+        color: $monokai-line-num-color-new;
+      }
+    }
+
+    .diff-line-num.old,
+    .line-coverage.old,
+    .line-inline-findings.old,
+    .line_content.old,
+    .diff-line-num.old-nomappinginraw,
+    .line-coverage.old-nomappinginraw,
+    .line-inline-findings.old-nomappinginraw,
+    .line_content.old-nomappinginraw {
+      @include diff-background($monokai-old-bg, $monokai-old-idiff, $monokai-diff-border);
+
+      &::before,
+      a {
+        color: $monokai-line-num-color-old;
+      }
+    }
+
+    &:not(.match) .diff-grid-left:hover,
+    &:not(.match) .diff-grid-right:hover,
+    &.code-search-line:hover {
+      .diff-line-num:not(.empty-cell) {
+        @include line-number-hover-dark;
+      }
+    }
+
+    .diff-line-num {
+      &.is-over,
+      &.hll:not(.empty-cell).is-over {
+        @include line-number-hover-dark;
+      }
+    }
+
+    .line_content.match {
+      @include dark-diff-match-line;
+    }
+
+    &:not(.diff-expanded) + .diff-expanded,
+    &.diff-expanded + .line_holder:not(.diff-expanded) {
+      > .diff-line-num,
+      > .line-coverage,
+      > .line_content {
+        border-top: 1px solid $gl-color-neutral-1000;
+      }
+    }
+
+    &.diff-expanded {
+      > .diff-line-num,
+      > .line-coverage,
+      > .line_content {
+        background: $monokai-expanded-bg;
+        border-color: $monokai-expanded-bg;
+      }
+    }
+  }
+
+  @include conflict-colors('monokai');
+
+  // mark lines via mark_multiple_lines
+  pre.monokai code {
+    .selected-inline-section-marker {
+      background: $monokai-code-mark !important;
+    }
+
+    .inline-section-marker {
+      background: $monokai-hll;
+    }
+  }
+
+  .file-holder div.code.monokai {
+    .selected-inline-number-mark {
+      color: $gl-color-neutral-200;
+    }
+
+    .unselected-inline-number-mark {
+      color: $gl-color-neutral-600;
+    }
+  }
+
+
+
+  // Search result highlight
+  span.highlight_word {
+    background-color: $monokai-highlight-bg !important;
+    color: $gl-color-neutral-1000 !important;
+  }
+
+  // Links to URLs, emails, or dependencies
+  .line a {
+    color: $monokai-k;
+  }
+
+  .hll { background-color: $monokai-hll; }
+  .c { color: $monokai-c; } // Comment
+  .err { /* Error */
+    color: $monokai-err-color;
+    background-color: $monokai-err-bg;
+  }
+  .k { color: $monokai-k; } // Keyword
+  .l { color: $monokai-l; } // Literal
+  .n { color: $monokai-n; } // Name
+  .o { color: $monokai-o; } // Operator
+  .p { color: $monokai-p; } // Punctuation
+  .cm { color: $monokai-cm; } // Comment.Multiline
+  .cp { color: $monokai-cp; } // Comment.Preproc
+  .c1 { color: $monokai-c1; } // Comment.Single
+  .cs { color: $monokai-cs; } // Comment.Special
+  .cd { color: $monokai-cd; } // Comment.Doc
+  .ge { font-style: italic; } // Generic.Emph
+  .gs { font-weight: $gl-font-weight-bold; } // Generic.Strong
+  .kc { color: $monokai-kc; } // Keyword.Constant
+  .kd { color: $monokai-kd; } // Keyword.Declaration
+  .kn { color: $monokai-kn; } // Keyword.Namespace
+  .kp { color: $monokai-kp; } // Keyword.Pseudo
+  .kr { color: $monokai-kr; } // Keyword.Reserved
+  .kt { color: $monokai-kt; } // Keyword.Type
+  .ld { color: $monokai-ld; } // Literal.Date
+  .m { color: $monokai-m; } // Literal.Number
+  .s { color: $monokai-s; } // Literal.String
+  .na { color: $monokai-na; } // Name.Attribute
+  .nb { color: $monokai-nb; } // Name.Builtin
+  .nc { color: $monokai-nc; } // Name.Class
+  .no { color: $monokai-no; } // Name.Constant
+  .nd { color: $monokai-nd; } // Name.Decorator
+  .ni { color: $monokai-ni; } // Name.Entity
+  .ne { color: $monokai-ne; } // Name.Exception
+  .nf { color: $monokai-nf; } // Name.Function
+  .nl { color: $monokai-nl; } // Name.Label
+  .nn { color: $monokai-nn; } // Name.Namespace
+  .nx { color: $monokai-nx; } // Name.Other
+  .py { color: $monokai-py; } // Name.Property
+  .nt { color: $monokai-nt; } // Name.Tag
+  .nv { color: $monokai-nv; } // Name.Variable
+  .ow { color: $monokai-ow; } // Operator.Word
+  .w { color: $monokai-w; } // Text.Whitespace
+  .mf { color: $monokai-mf; } // Literal.Number.Float
+  .mh { color: $monokai-mh; } // Literal.Number.Hex
+  .mi { color: $monokai-mi; } // Literal.Number.Integer
+  .mo { color: $monokai-mo; } // Literal.Number.Oct
+  .sb { color: $monokai-sb; } // Literal.String.Backtick
+  .sc { color: $monokai-sc; } // Literal.String.Char
+  .sd { color: $monokai-sd; } // Literal.String.Doc
+  .s2 { color: $monokai-s2; } // Literal.String.Double
+  .se { color: $monokai-se; } // Literal.String.Escape
+  .sh { color: $monokai-sh; } // Literal.String.Heredoc
+  .si { color: $monokai-si; } // Literal.String.Interpol
+  .sx { color: $monokai-sx; } // Literal.String.Other
+  .sr { color: $monokai-sr; } // Literal.String.Regex
+  .s1 { color: $monokai-s1; } // Literal.String.Single
+  .ss { color: $monokai-ss; } // Literal.String.Symbol
+  .bp { color: $monokai-bp; } // Name.Builtin.Pseudo
+  .vc { color: $monokai-vc; } // Name.Variable.Class
+  .vg { color: $monokai-vg; } // Name.Variable.Global
+  .vi { color: $monokai-vi; } // Name.Variable.Instance
+  .il { color: $monokai-il; } // Literal.Number.Integer.Long
+  .gu { color: $monokai-gu; } // Generic.Subheading & Diff Unified/Comment?
+  .gd { color: $monokai-gd; } // Generic.Deleted & Diff Deleted
+  .gi { color: $monokai-gi; } // Generic.Inserted & Diff Inserted
+  .gh { color: $monokai-gh; } // Generic.Heading
+}
+
+@include merge-conflicts-syntax-highlight-theme('monokai');

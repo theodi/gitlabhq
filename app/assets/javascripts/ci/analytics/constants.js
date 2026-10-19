@@ -1,0 +1,55 @@
+export const CHART_CONTAINER_HEIGHT = 300;
+
+export const INNER_CHART_HEIGHT = 200;
+
+export const X_AXIS_LABEL_ROTATION = 45;
+
+export const X_AXIS_TITLE_OFFSET = 60;
+
+export const ONE_WEEK_AGO_DAYS = 7;
+export const ONE_MONTH_AGO_DAYS = 31;
+export const ONE_YEAR_AGO_DAYS = 365;
+
+export const BRANCH_ANY = '~any'; // ~ is not allowed as part of a branch name so it can be used as a special identifier, see https://git-scm.com/docs/git-check-ref-format#_description
+
+export const DATE_RANGE_7_DAYS = '7d';
+export const DATE_RANGE_30_DAYS = '30d';
+export const DATE_RANGE_90_DAYS = '90d';
+export const DATE_RANGE_180_DAYS = '180d';
+
+export const DATE_RANGES_AS_DAYS = {
+  [DATE_RANGE_7_DAYS]: 7,
+  [DATE_RANGE_30_DAYS]: 30,
+  [DATE_RANGE_90_DAYS]: 90,
+  [DATE_RANGE_180_DAYS]: 180,
+};
+export const DATE_RANGE_DEFAULT = DATE_RANGE_7_DAYS;
+
+export const DEFAULT = 'default';
+export const PARSE_FAILURE = 'parse_failure';
+export const LOAD_ANALYTICS_FAILURE = 'load_analytics_failure';
+export const LOAD_PIPELINES_FAILURE = 'load_analytics_failure';
+export const UNSUPPORTED_DATA = 'unsupported_data';
+
+// CiPipelineSources values from GraphQL schema.
+export const SOURCE_PUSH = 'PUSH';
+export const SOURCE_SCHEDULE = 'SCHEDULE';
+export const SOURCE_MERGE_REQUEST_EVENT = 'MERGE_REQUEST_EVENT';
+export const SOURCE_WEB = 'WEB';
+export const SOURCE_TRIGGER = 'TRIGGER';
+export const SOURCE_API = 'API';
+export const SOURCE_EXTERNAL = 'EXTERNAL';
+export const SOURCE_PIPELINE = 'PIPELINE';
+export const SOURCE_CHAT = 'CHAT';
+export const SOURCE_WEBIDE = 'WEBIDE';
+export const SOURCE_EXTERNAL_PULL_REQUEST_EVENT = 'EXTERNAL_PULL_REQUEST_EVENT';
+
+export const SOURCE_PARENT_PIPELINE = 'PARENT_PIPELINE';
+export const SOURCE_ONDEMAND_DAST_SCAN = 'ONDEMAND_DAST_SCAN';
+export const SOURCE_ONDEMAND_DAST_VALIDATION = 'ONDEMAND_DAST_VALIDATION';
+export const SOURCE_SECURITY_ORCHESTRATION_POLICY = 'SECURITY_ORCHESTRATION_POLICY';
+export const SOURCE_CONTAINER_REGISTRY_PUSH = 'CONTAINER_REGISTRY_PUSH';
+export const SOURCE_DUO_WORKFLOW = 'DUO_WORKFLOW';
+export const SOURCE_PIPELINE_EXECUTION_POLICY_SCHEDULE = 'PIPELINE_EXECUTION_POLICY_SCHEDULE';
+
+export const SOURCE_UNKNOWN = 'UNKNOWN';

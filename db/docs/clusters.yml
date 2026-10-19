@@ -1,0 +1,15 @@
+---
+table_name: clusters
+classes:
+- Clusters::Cluster
+feature_categories:
+- deployment_management
+description: Persists information about GitLab managed clusters
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab-foss/-/merge_requests/14879
+milestone: '10.1'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+  group_id: namespaces
+  organization_id: organizations
+table_size: small

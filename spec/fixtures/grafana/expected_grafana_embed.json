@@ -1,0 +1,25 @@
+{
+  "panel_groups": [
+    {
+      "panels": [
+        {
+          "title": "Network I/O",
+          "type": "area-chart",
+          "y_label": "",
+          "metrics": [
+            {
+              "id": "In_0",
+              "query_range": "sum(  rate(redis_net_input_bytes_total{instance=~\"localhost:9121\"}[1m]))",
+              "label": "In"
+            },
+            {
+              "id": "Out_1",
+              "query_range": "sum(  rate(redis_net_output_bytes_total{instance=~\"localhost:9121\"}[1m]))",
+              "label": "Out"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

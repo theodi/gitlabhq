@@ -1,0 +1,18 @@
+---
+data_category: standard
+key_path: recording_ce_finished_at
+description: When the core features were computed
+product_group: analytics_instrumentation
+product_categories:
+- service_ping
+value_type: string
+status: active
+milestone: "13.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/31222
+time_frame: none
+data_source: system
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []

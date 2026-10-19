@@ -1,0 +1,165 @@
+import { GlAvatar, GlDisclosureDropdown, GlLoadingIcon } from '@gitlab/ui';
+import VueApollo from 'vue-apollo';
+import Vue from 'vue';
+
+import currentUserOrganizationsGraphQlResponse from 'test_fixtures/graphql/organizations/current_user_organizations.query.graphql.json';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import OrganizationSwitcher from '~/super_sidebar/components/organization_switcher.vue';
+import {
+  pageInfoEmpty,
+  defaultOrganization as currentOrganization,
+} from 'jest/organizations/mock_data';
+import organizationsQuery from '~/organizations/shared/graphql/queries/current_user_organizations.query.graphql';
+import { getIdFromGraphQLId } from '~/graphql_shared/utils';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+
+Vue.use(VueApollo);
+
+describe('OrganizationSwitcher', () => {
+  let wrapper;
+  let mockApollo;
+
+  const {
+    data: {
+      currentUser: {
+        organizations: { nodes, pageInfo },
+      },
+    },
+  } = currentUserOrganizationsGraphQlResponse;
+
+  const [firstOrganization, secondOrganization] = nodes;
+
+  const organizations = {
+    nodes,
+    pageInfo,
+  };
+
+  const successHandler = jest.fn().mockResolvedValue({
+    data: {
+      currentUser: {
+        id: 'gid://gitlab/User/1',
+        organizations,
+      },
+    },
+  });
+
+  const createComponent = (handler = successHandler) => {
+    mockApollo = createMockApollo([[organizationsQuery, handler]]);
+
+    wrapper = mountExtended(OrganizationSwitcher, {
+      apolloProvider: mockApollo,
+    });
+  };
+
+  const findDropdownItemByIndex = (index) =>
+    wrapper.findAllByTestId('disclosure-dropdown-item').at(index);
+  const showDropdown = () => wrapper.findComponent(GlDisclosureDropdown).vm.$emit('shown');
+
+  beforeEach(() => {
+    window.gon.current_organization = currentOrganization;
+  });
+
+  afterEach(() => {
+    mockApollo = null;
+    window.gon = {};
+  });
+
+  it('renders disclosure dropdown with current organization selected', () => {
+    createComponent();
+
+    const toggleButton = wrapper.findByTestId('toggle-button');
+    const dropdownItem = findDropdownItemByIndex(0);
+
+    expect(toggleButton.text()).toContain(currentOrganization.name);
+    expect(toggleButton.findComponent(GlAvatar).props()).toMatchObject({
+      src: currentOrganization.avatar_url,
+      entityId: currentOrganization.id,
+      entityName: currentOrganization.name,
+    });
+    expect(dropdownItem.text()).toContain(currentOrganization.name);
+    expect(dropdownItem.findComponent(GlAvatar).props()).toMatchObject({
+      src: currentOrganization.avatar_url,
+      entityId: currentOrganization.id,
+      entityName: currentOrganization.name,
+    });
+  });
+
+  it('does not call GraphQL query', () => {
+    createComponent();
+
+    expect(successHandler).not.toHaveBeenCalled();
+  });
+
+  describe('when dropdown is shown', () => {
+    it('calls GraphQL query and renders organizations that are available to switch to', async () => {
+      createComponent();
+      showDropdown();
+
+      expect(wrapper.findComponent(GlLoadingIcon).exists()).toBe(true);
+
+      await waitForPromises();
+
+      expect(findDropdownItemByIndex(1).text()).toContain(firstOrganization.name);
+      expect(findDropdownItemByIndex(1).find('a').attributes('href')).toBe(
+        firstOrganization.webPath,
+      );
+      expect(findDropdownItemByIndex(1).findComponent(GlAvatar).props()).toMatchObject({
+        src: firstOrganization.avatarUrl,
+        entityId: getIdFromGraphQLId(firstOrganization.id),
+        entityName: firstOrganization.name,
+      });
+
+      expect(findDropdownItemByIndex(2).text()).toContain(secondOrganization.name);
+      expect(findDropdownItemByIndex(2).find('a').attributes('href')).toBe(
+        secondOrganization.webPath,
+      );
+      expect(findDropdownItemByIndex(2).findComponent(GlAvatar).props()).toMatchObject({
+        src: secondOrganization.avatarUrl,
+        entityId: getIdFromGraphQLId(secondOrganization.id),
+        entityName: secondOrganization.name,
+      });
+
+      expect(wrapper.text()).toContain('Organizations is a new feature. Help us make it better by');
+      expect(wrapper.findByTestId('feedback-url').attributes('href')).toBe(
+        'https://gitlab.com/gitlab-com/gl-infra/tenant-scale/organizations/organizations-internal-feedback/-/issues/1',
+      );
+    });
+
+    describe('when there are no organizations to switch to', () => {
+      beforeEach(async () => {
+        createComponent(
+          jest.fn().mockResolvedValue({
+            data: {
+              currentUser: {
+                id: 'gid://gitlab/User/1',
+                organizations: {
+                  nodes: [],
+                  pageInfo: pageInfoEmpty,
+                },
+              },
+            },
+          }),
+        );
+        showDropdown();
+        await waitForPromises();
+      });
+
+      it('renders empty message', () => {
+        expect(findDropdownItemByIndex(1).text()).toBe('No organizations available to switch to.');
+      });
+    });
+
+    describe('when there is an error fetching organizations', () => {
+      beforeEach(async () => {
+        createComponent(jest.fn().mockRejectedValue());
+        showDropdown();
+        await waitForPromises();
+      });
+
+      it('renders empty message', () => {
+        expect(findDropdownItemByIndex(1).text()).toBe('No organizations available to switch to.');
+      });
+    });
+  });
+});

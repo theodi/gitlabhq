@@ -1,0 +1,1142 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Atlassian::JiraConnect::Client, feature_category: :integrations do
+  include StubRequests
+
+  subject(:client) { described_class.new('https://gitlab-test.atlassian.net', 'sample_secret') }
+
+  let_it_be(:project, freeze: false) { create_default(:project, :small_repo) }
+  let_it_be(:mrs_by_title) { create_list(:merge_request, 4, :unique_branches, :jira_title) }
+  let_it_be(:mrs_by_branch) { create_list(:merge_request, 2, :jira_branch) }
+  let_it_be(:red_herrings) { create_list(:merge_request, 1, :unique_branches) }
+  let_it_be(:mrs_by_description) { create_list(:merge_request, 2, :unique_branches, :jira_description) }
+
+  let_it_be(:pipelines, freeze: false) do
+    (red_herrings + mrs_by_branch + mrs_by_title + mrs_by_description).map do |mr|
+      create(:ci_pipeline, merge_request: mr)
+    end
+  end
+
+  around do |example|
+    if example.metadata[:skip_freeze_time]
+      example.run
+    else
+      freeze_time { example.run }
+    end
+  end
+
+  it_behaves_like 'a Jira dev-info client', auth_error_message: 'Invalid JWT'
+
+  describe '.generate_update_sequence_id', :skip_freeze_time do
+    it 'returns unix time in microseconds as integer', :aggregate_failures do
+      travel_to(Time.utc(1970, 1, 1, 0, 0, 1)) do
+        expect(described_class.generate_update_sequence_id).to eq(1000)
+      end
+
+      travel_to(Time.utc(1970, 1, 1, 0, 0, 5)) do
+        expect(described_class.generate_update_sequence_id).to eq(5000)
+      end
+    end
+  end
+
+  def expected_headers(path, method)
+    expected_jwt = Atlassian::Jwt.encode(
+      Atlassian::Jwt.build_claims(Atlassian::JiraConnect.app_key, path, method),
+      'sample_secret'
+    )
+
+    {
+      'Authorization' => "JWT #{expected_jwt}",
+      'Content-Type' => 'application/json'
+    }
+  end
+
+  # The status matrix lives in the shared 'a Jira dev-info client' contract.
+  # Only the request-body log limit stays here, with the payload that trips it.
+  describe '#handle_response' do
+    let(:errors) { [{ 'message' => 'X' }, { 'message' => 'Y' }] }
+    let(:request) { double(raw_body: { repositories: ['a' * 20_000] }.to_json) }
+    let(:response) { double(code: 400, parsed_response: errors, request: request) }
+    let(:processed) { subject.send(:handle_response, response, 'foo') { |x| [:data, x] } }
+
+    it 'truncates a request body that exceeds the log limit', :aggregate_failures do
+      expect(processed['requestBody']).to be_a(String)
+      expect(processed['requestBody']).to start_with('Request body truncated')
+      expect(processed['requestBody'].length).to be < 15_000
+    end
+  end
+
+  describe '#request_body_schema' do
+    let(:response) { instance_double(HTTParty::Response, success?: true, code: 200, request: request) }
+
+    context 'with valid JSON request body' do
+      let(:request) { instance_double(HTTParty::Request, raw_body: '{ "foo": 1, "bar": 2 }') }
+
+      it 'returns the request body' do
+        expect(subject.send(:request_body_schema, response)).to eq({ "foo" => 1, "bar" => 2 })
+      end
+    end
+
+    context 'with invalid JSON request body' do
+      let(:request) { instance_double(HTTParty::Request, raw_body: 'invalid json') }
+
+      it 'reports the invalid json' do
+        expect(subject.send(:request_body_schema, response)).to eq('Request body includes invalid JSON')
+      end
+    end
+  end
+
+  describe '#store_deploy_info' do
+    let_it_be(:deployments) { create_list(:deployment, 1) }
+
+    let(:schema) do
+      Atlassian::Schemata.deploy_info_payload
+    end
+
+    let(:body) do
+      matcher = be_valid_json.and match_schema(schema)
+
+      ->(text) { matcher.matches?(text) }
+    end
+
+    let(:rejections) { [] }
+    let(:response_body) do
+      {
+        acceptedDeployments: [],
+        rejectedDeployments: rejections,
+        unknownIssueKeys: []
+      }.to_json
+    end
+
+    before do
+      path = '/rest/deployments/0.1/bulk'
+      stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+        .with(body: body, headers: expected_headers(path, 'POST'))
+        .to_return(body: response_body, headers: { 'Content-Type': 'application/json' })
+    end
+
+    it "calls the API with auth headers" do
+      subject.send(:store_deploy_info, project: project, deployments: deployments)
+    end
+
+    it 'calls the API if issue keys are found' do
+      expect(subject).to receive(:post).with(
+        '/rest/deployments/0.1/bulk', { deployments: have_attributes(size: 1) }
+      ).and_call_original
+
+      subject.send(:store_deploy_info, project: project, deployments: deployments)
+    end
+
+    it 'calls the API if no issue keys are found, but there are service IDs' do
+      allow_next_instances_of(Atlassian::JiraConnect::Serializers::DeploymentEntity, nil) do |entity|
+        allow(entity).to receive_messages(
+          issue_keys: [],
+          service_ids_from_integration_configuration: [{ associationType: 'serviceIdOrKeys', values: ['foo'] }]
+        )
+      end
+
+      expect(subject).to receive(:post).with(
+        '/rest/deployments/0.1/bulk', { deployments: have_attributes(size: 1) }
+      ).and_call_original
+
+      subject.send(:store_deploy_info, project: project, deployments: deployments)
+    end
+
+    it 'does not call the API if no issue keys or service IDs are found' do
+      allow_next_instances_of(Atlassian::JiraConnect::Serializers::DeploymentEntity, nil) do |entity|
+        allow(entity).to receive_messages(issue_keys: [], service_ids_from_integration_configuration: [])
+      end
+
+      expect(subject).not_to receive(:post)
+    end
+
+    context 'when there are errors' do
+      let(:rejections) do
+        [{ errors: [{ message: 'X' }, { message: 'Y' }] }, { errors: [{ message: 'Z' }] }]
+      end
+
+      it 'reports the errors' do
+        response = subject.send(:store_deploy_info, project: project, deployments: deployments)
+
+        expect(response['errorMessages']).to eq(%w[X Y Z])
+        expect(response['responseCode']).to eq(200)
+        expect(response['requestBody']).to be_a(Hash)
+      end
+    end
+
+    context 'when deployment has more than 500 total association values' do
+      let(:issue_keys) { (1..600).map { |i| "JIRA-#{i}" } }
+      let(:success_response) do
+        double(code: 202,
+          parsed_response: { 'acceptedDeployments' => [], 'rejectedDeployments' => [], 'unknownIssueKeys' => [] },
+          request: double(raw_body: '{}'))
+      end
+
+      before do
+        allow_next_instances_of(Atlassian::JiraConnect::Serializers::DeploymentEntity, nil) do |entity|
+          allow(entity).to receive_messages(issue_keys: issue_keys, service_ids_from_integration_configuration: [])
+        end
+
+        allow(subject).to receive(:post).and_return(success_response)
+      end
+
+      it 'makes a single API request with at most the limit of association values' do
+        subject.send(:store_deploy_info, project: project, deployments: deployments)
+
+        expect(subject).to have_received(:post).once do |_path, payload|
+          deployment = payload[:deployments].first
+          total = (deployment[:associations] || []).sum { |a| a[:values]&.size || 0 }
+          expect(total).to eq(Atlassian::JiraConnect::Client::ASSOCIATION_VALUES_LIMIT)
+        end
+      end
+    end
+
+    context 'when deployment has 500 or fewer total association values' do
+      let(:issue_keys) { (1..100).map { |i| "JIRA-#{i}" } }
+
+      before do
+        allow_next_instances_of(Atlassian::JiraConnect::Serializers::DeploymentEntity, nil) do |entity|
+          allow(entity).to receive_messages(issue_keys: issue_keys, service_ids_from_integration_configuration: [])
+        end
+      end
+
+      it 'makes a single API request' do
+        allow(subject).to receive(:post).and_return(
+          double(code: 202,
+            parsed_response: { 'acceptedDeployments' => [], 'rejectedDeployments' => [], 'unknownIssueKeys' => [] },
+            request: double(raw_body: '{}'))
+        )
+
+        subject.send(:store_deploy_info, project: project, deployments: deployments)
+
+        expect(subject).to have_received(:post).once
+      end
+
+      it 'does not track a truncation exception' do
+        allow(subject).to receive(:post).and_return(
+          double(code: 202,
+            parsed_response: { 'acceptedDeployments' => [], 'rejectedDeployments' => [], 'unknownIssueKeys' => [] },
+            request: double(raw_body: '{}'))
+        )
+
+        expect(Gitlab::ErrorTracking).not_to receive(:track_exception).with(
+          instance_of(Atlassian::JiraConnect::Client::AssociationsTruncatedError),
+          anything
+        )
+
+        subject.send(:store_deploy_info, project: project, deployments: deployments)
+      end
+    end
+  end
+
+  describe '#truncate_associations_if_needed' do
+    subject(:client) { described_class.new('https://gitlab-test.atlassian.net', 'sample_secret') }
+
+    context 'when total values are within the limit' do
+      let(:deployment_hash) do
+        {
+          associations: [
+            { associationType: :issueKeys, values: %w[JIRA-1 JIRA-2] },
+            { associationType: :commit, values: [{ commitHash: 'abc', repositoryId: '1' }] }
+          ],
+          deploymentSequenceNumber: 1
+        }
+      end
+
+      it 'returns the deployment unchanged' do
+        expect(client.send(:truncate_associations_if_needed, deployment_hash)).to eq(deployment_hash)
+      end
+
+      it 'does not track an exception' do
+        expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+
+        client.send(:truncate_associations_if_needed, deployment_hash)
+      end
+    end
+
+    context 'when associations are absent' do
+      let(:deployment_hash) { { deploymentSequenceNumber: 1 } }
+
+      it 'returns the deployment unchanged' do
+        expect(client.send(:truncate_associations_if_needed, deployment_hash)).to eq(deployment_hash)
+      end
+    end
+
+    context 'when an association has nil values' do
+      let(:deployment_hash) do
+        {
+          associations: [
+            { associationType: :issueKeys, values: %w[JIRA-1 JIRA-2] },
+            { associationType: :commit, values: nil }
+          ],
+          deploymentSequenceNumber: 1
+        }
+      end
+
+      it 'treats nil values as zero and returns the deployment unchanged' do
+        expect(client.send(:truncate_associations_if_needed, deployment_hash)).to eq(deployment_hash)
+      end
+    end
+
+    context 'when total values are exactly at the limit' do
+      let(:deployment_hash) do
+        {
+          associations: [
+            { associationType: :issueKeys, values: (1..500).map { |i| "JIRA-#{i}" } }
+          ],
+          deploymentSequenceNumber: 1
+        }
+      end
+
+      it 'returns the deployment unchanged' do
+        expect(client.send(:truncate_associations_if_needed, deployment_hash)).to eq(deployment_hash)
+      end
+    end
+
+    context 'when total values exceed the limit' do
+      let(:issue_keys) { (1..700).map { |i| "JIRA-#{i}" } }
+      let(:deployment_hash) do
+        {
+          associations: [
+            { associationType: :issueKeys, values: issue_keys }
+          ],
+          deploymentSequenceNumber: 1,
+          pipeline: { id: 'pipeline-9' }
+        }
+      end
+
+      it 'truncates to the limit preserving the first values' do
+        result = client.send(:truncate_associations_if_needed, deployment_hash)
+
+        expect(result[:associations].sum { |a| a[:values].size }).to eq(500)
+        expect(result[:associations].first[:values]).to eq(issue_keys.first(500))
+      end
+
+      it 'preserves the deployment metadata' do
+        result = client.send(:truncate_associations_if_needed, deployment_hash)
+
+        expect(result[:deploymentSequenceNumber]).to eq(1)
+        expect(result[:pipeline]).to eq({ id: 'pipeline-9' })
+      end
+
+      it 'tracks an exception with the dropped count and Sentry tags' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+          instance_of(Atlassian::JiraConnect::Client::AssociationsTruncatedError),
+          extra: {
+            deployment_sequence_number: 1,
+            pipeline_id: 'pipeline-9',
+            total_values: 700,
+            dropped_values: 200
+          },
+          tags: { dropped_bucket: '100-499', truncation_severity: 'normal', jira_endpoint: 'deployments' }
+        )
+
+        client.send(:truncate_associations_if_needed, deployment_hash)
+      end
+    end
+
+    context 'when bucketing dropped values into Sentry tags' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:dropped, :expected_bucket, :expected_severity) do
+        1    | '<100'    | 'normal'
+        99   | '<100'    | 'normal'
+        100  | '100-499' | 'normal'
+        499  | '100-499' | 'normal'
+        500  | '500-999' | 'normal'
+        799  | '500-999' | 'normal'
+        800  | '500-999' | 'high'
+        999  | '500-999' | 'high'
+        1000 | '>=1000'  | 'high'
+        1500 | '>=1000'  | 'high'
+      end
+
+      with_them do
+        let(:deployment_hash) do
+          {
+            associations: [
+              { associationType: :issueKeys, values: (1..(500 + dropped)).map { |i| "JIRA-#{i}" } }
+            ],
+            deploymentSequenceNumber: 1
+          }
+        end
+
+        it 'maps dropped count to the expected tags' do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+            instance_of(Atlassian::JiraConnect::Client::AssociationsTruncatedError),
+            hash_including(tags: { dropped_bucket: expected_bucket, truncation_severity: expected_severity, jira_endpoint: 'deployments' })
+          )
+
+          client.send(:truncate_associations_if_needed, deployment_hash)
+        end
+      end
+    end
+
+    context 'with mixed association types' do
+      let(:issue_keys) { (1..400).map { |i| "JIRA-#{i}" } }
+      let(:commits) { (1..200).map { |i| { commitHash: "sha#{i}", repositoryId: '1' } } }
+      let(:deployment_hash) do
+        {
+          associations: [
+            { associationType: 'issueKeys', values: issue_keys },
+            { associationType: 'commit', values: commits }
+          ],
+          deploymentSequenceNumber: 1
+        }
+      end
+
+      before do
+        allow(Gitlab::ErrorTracking).to receive(:track_exception)
+      end
+
+      it 'fills the budget from issueKeys first, then from remaining types' do
+        result = client.send(:truncate_associations_if_needed, deployment_hash)
+
+        expect(result[:associations].sum { |a| a[:values].size }).to eq(500)
+        expect(result[:associations][0]).to eq({ associationType: 'issueKeys', values: issue_keys })
+        expect(result[:associations][1][:associationType]).to eq('commit')
+        expect(result[:associations][1][:values].size).to eq(100)
+      end
+
+      it 'drops association entries that end up empty after truncation' do
+        deployment = deployment_hash.deep_dup
+        deployment[:associations].first[:values] = (1..500).map { |i| "JIRA-#{i}" }
+
+        result = client.send(:truncate_associations_if_needed, deployment)
+
+        expect(result[:associations].size).to eq(1)
+        expect(result[:associations].first[:associationType]).to eq('issueKeys')
+      end
+
+      it 'prioritises issueKeys even when they are emitted last' do
+        deployment = {
+          associations: [
+            { associationType: 'commit', values: (1..400).map { |i| "sha#{i}" } },
+            { associationType: 'issueKeys', values: (1..400).map { |i| "JIRA-#{i}" } }
+          ],
+          deploymentSequenceNumber: 1
+        }
+
+        result = client.send(:truncate_associations_if_needed, deployment)
+
+        expect(result[:associations][0][:associationType]).to eq('issueKeys')
+        expect(result[:associations][0][:values].size).to eq(400)
+        expect(result[:associations][1][:associationType]).to eq('commit')
+        expect(result[:associations][1][:values].size).to eq(100)
+      end
+
+      it 'skips empty-value associations without consuming budget' do
+        deployment = {
+          associations: [
+            { associationType: 'commit', values: [] },
+            { associationType: 'issueKeys', values: (1..600).map { |i| "JIRA-#{i}" } }
+          ],
+          deploymentSequenceNumber: 1
+        }
+
+        result = client.send(:truncate_associations_if_needed, deployment)
+
+        expect(result[:associations].size).to eq(1)
+        expect(result[:associations].first[:associationType]).to eq('issueKeys')
+        expect(result[:associations].first[:values].size).to eq(500)
+      end
+    end
+  end
+
+  describe '#truncate_issue_keys' do
+    it 'returns the keys unchanged when at or below the limit' do
+      keys = (1..500).map { |i| "JIRA-#{i}" }
+
+      expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+      expect(client.send(:truncate_issue_keys, keys, endpoint: 'builds')).to eq(keys)
+    end
+
+    it 'returns non-array input unchanged' do
+      expect(client.send(:truncate_issue_keys, nil, endpoint: 'builds')).to be_nil
+    end
+
+    context 'when the keys exceed the limit' do
+      let(:keys) { (1..700).map { |i| "JIRA-#{i}" } }
+
+      it 'caps to the limit preserving the first keys' do
+        allow(Gitlab::ErrorTracking).to receive(:track_exception)
+
+        expect(client.send(:truncate_issue_keys, keys, endpoint: 'builds')).to eq(keys.first(500))
+      end
+
+      it 'tracks the excess with the endpoint tag and passed context' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+          instance_of(described_class::IssueKeysTruncatedError),
+          extra: { pipeline_id: '9', total_values: 700, dropped_values: 200 },
+          tags: { dropped_bucket: '100-499', truncation_severity: 'normal', jira_endpoint: 'builds' }
+        )
+
+        client.send(:truncate_issue_keys, keys, endpoint: 'builds', pipeline_id: '9')
+      end
+    end
+  end
+
+  describe '#truncate_dev_info_issue_keys' do
+    let(:over_limit) { (1..600).map { |i| "JIRA-#{i}" } }
+
+    it 'caps issueKeys on commits, branches, pull requests, and a branch lastCommit' do
+      allow(Gitlab::ErrorTracking).to receive(:track_exception)
+
+      repo_hash = {
+        commits: [{ id: 'c1', issueKeys: over_limit }],
+        branches: [{ id: 'b1', issueKeys: over_limit, lastCommit: { id: 'c2', issueKeys: over_limit } }],
+        pullRequests: [{ id: 'p1', issueKeys: over_limit }]
+      }
+
+      client.send(:truncate_dev_info_issue_keys, repo_hash, project_id: 1)
+
+      expect(repo_hash[:commits].first[:issueKeys].size).to eq(500)
+      expect(repo_hash[:branches].first[:issueKeys].size).to eq(500)
+      expect(repo_hash[:branches].first[:lastCommit][:issueKeys].size).to eq(500)
+      expect(repo_hash[:pullRequests].first[:issueKeys].size).to eq(500)
+    end
+
+    it 'leaves entities at or below the limit untouched and tracks nothing' do
+      under_limit = (1..10).map { |i| "JIRA-#{i}" }
+      repo_hash = { commits: [{ id: 'c1', issueKeys: under_limit }], branches: [], pullRequests: [] }
+
+      expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+
+      client.send(:truncate_dev_info_issue_keys, repo_hash, project_id: 1)
+
+      expect(repo_hash[:commits].first[:issueKeys]).to eq(under_limit)
+    end
+
+    it 'skips nil entries without raising' do
+      repo_hash = { commits: [nil], branches: nil, pullRequests: [{ id: 'p1', issueKeys: %w[JIRA-1] }] }
+
+      expect { client.send(:truncate_dev_info_issue_keys, repo_hash, project_id: 1) }.not_to raise_error
+    end
+  end
+
+  describe '#store_ff_info' do
+    let_it_be(:feature_flags, freeze: false) { create_list(:operations_feature_flag, 3, project: project) }
+
+    let(:schema) do
+      Atlassian::Schemata.ff_info_payload
+    end
+
+    let(:body) do
+      matcher = be_valid_json.and match_schema(schema)
+
+      ->(text) { matcher.matches?(text) }
+    end
+
+    let(:failures) { {} }
+    let(:response_body) do
+      {
+        acceptedFeatureFlags: [],
+        failedFeatureFlags: failures,
+        unknownIssueKeys: []
+      }.to_json
+    end
+
+    before do
+      feature_flags.first.update!(description: 'RELEVANT-123')
+      feature_flags.second.update!(description: 'RELEVANT-123')
+      path = '/rest/featureflags/0.1/bulk'
+      stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+        .with(body: body, headers: expected_headers(path, 'POST'))
+        .to_return(body: response_body, headers: { 'Content-Type': 'application/json' })
+    end
+
+    it "calls the API with auth headers" do
+      subject.send(:store_ff_info, project: project, feature_flags: feature_flags)
+    end
+
+    it 'only sends information about relevant MRs' do
+      expect(subject).to receive(:post).with(
+        '/rest/featureflags/0.1/bulk', { flags: have_attributes(size: 2), properties: Hash }
+      ).and_call_original
+
+      subject.send(:store_ff_info, project: project, feature_flags: feature_flags)
+    end
+
+    it 'does not call the API if there is nothing to report' do
+      expect(subject).not_to receive(:post)
+
+      subject.send(:store_ff_info, project: project, feature_flags: [feature_flags.last])
+    end
+
+    context 'when there are errors' do
+      let(:failures) do
+        {
+          a: [{ message: 'X' }, { message: 'Y' }],
+          b: [{ message: 'Z' }]
+        }
+      end
+
+      it 'reports the errors' do
+        response = subject.send(:store_ff_info, project: project, feature_flags: feature_flags)
+
+        expect(response['errorMessages']).to eq(['a: X', 'a: Y', 'b: Z'])
+      end
+    end
+
+    context 'when a feature flag has more than 500 issue keys' do
+      let(:issue_keys) { (1..600).map { |i| "JIRA-#{i}" } }
+
+      before do
+        # `issue_keys` is a Grape-exposed attribute (stubbing it breaks Grape
+        # introspection) and a flag description is capped at 255 characters, so
+        # feed the keys through the extractor the real method delegates to.
+        allow(Atlassian::JiraIssueKeyExtractor).to receive(:new).and_return(
+          instance_double(Atlassian::JiraIssueKeyExtractor, issue_keys: issue_keys)
+        )
+        allow(subject).to receive(:post).and_return(
+          double(code: 202, parsed_response: {}, request: double(raw_body: '{}'))
+        )
+      end
+
+      it 'caps the posted issueKeys at the limit and tracks the excess' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+          instance_of(described_class::IssueKeysTruncatedError),
+          extra: hash_including(total_values: 600, dropped_values: 100),
+          tags: hash_including(jira_endpoint: 'feature_flags')
+        )
+
+        subject.send(:store_ff_info, project: project, feature_flags: [feature_flags.first])
+
+        expect(subject).to have_received(:post).once do |_path, payload|
+          expect(payload[:flags].first[:issueKeys].size).to eq(described_class::ISSUE_KEYS_LIMIT)
+        end
+      end
+    end
+  end
+
+  describe '#store_build_info' do
+    let(:build_info_payload_schema) do
+      Atlassian::Schemata.build_info_payload
+    end
+
+    let(:body) do
+      matcher = be_valid_json.and match_schema(build_info_payload_schema)
+
+      ->(text) { matcher.matches?(text) }
+    end
+
+    let(:failures) { [] }
+    let(:response_body) do
+      {
+        acceptedBuilds: [],
+        rejectedBuilds: failures,
+        unknownIssueKeys: []
+      }.to_json
+    end
+
+    before do
+      path = '/rest/builds/0.1/bulk'
+      stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+        .with(body: body, headers: expected_headers(path, 'POST'))
+        .to_return(body: response_body, headers: { 'Content-Type': 'application/json' })
+    end
+
+    it "calls the API with auth headers" do
+      subject.send(:store_build_info, project: project, pipelines: pipelines)
+    end
+
+    it 'only sends information about relevant MRs' do
+      expect(subject).to receive(:post)
+        .with('/rest/builds/0.1/bulk', { builds: have_attributes(size: 8) })
+        .and_call_original
+
+      subject.send(:store_build_info, project: project, pipelines: pipelines)
+    end
+
+    it 'does not call the API if there is nothing to report' do
+      expect(subject).not_to receive(:post)
+
+      subject.send(:store_build_info, project: project, pipelines: pipelines.take(1))
+    end
+
+    context 'when there are errors' do
+      let(:failures) do
+        [{ errors: [{ message: 'X' }, { message: 'Y' }] }, { errors: [{ message: 'Z' }] }]
+      end
+
+      it 'reports the errors' do
+        response = subject.send(:store_build_info, project: project, pipelines: pipelines)
+
+        expect(response['errorMessages']).to eq(%w[X Y Z])
+        expect(response['responseCode']).to eq(200)
+        expect(response['requestBody']).to be_a(Hash)
+      end
+    end
+
+    context 'when a build has more than 500 issue keys' do
+      let(:issue_keys) { (1..600).map { |i| "JIRA-#{i}" } }
+      let(:success_response) do
+        double(code: 202,
+          parsed_response: { 'acceptedBuilds' => [], 'rejectedBuilds' => [], 'unknownIssueKeys' => [] },
+          request: double(raw_body: '{}'))
+      end
+
+      before do
+        # `issue_keys` is a Grape-exposed attribute, so stubbing it directly
+        # breaks Grape's serialization introspection. Stub the private source
+        # instead so the real `issue_keys` method still runs.
+        allow_next_instances_of(Atlassian::JiraConnect::Serializers::BuildEntity, nil) do |entity|
+          allow(entity).to receive(:pipeline_commit_issue_keys).and_return(issue_keys)
+        end
+        allow(subject).to receive(:post).and_return(success_response)
+      end
+
+      it 'caps the posted issueKeys at the limit' do
+        subject.send(:store_build_info, project: project, pipelines: pipelines.take(1))
+
+        expect(subject).to have_received(:post).once do |_path, payload|
+          expect(payload[:builds].first[:issueKeys].size).to eq(described_class::ISSUE_KEYS_LIMIT)
+        end
+      end
+
+      it 'tracks the dropped count with the builds endpoint tag' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+          instance_of(described_class::IssueKeysTruncatedError),
+          extra: hash_including(total_values: 600, dropped_values: 100),
+          tags: hash_including(jira_endpoint: 'builds', dropped_bucket: '100-499')
+        )
+
+        subject.send(:store_build_info, project: project, pipelines: pipelines.take(1))
+      end
+    end
+
+    it 'avoids N+1 database queries' do
+      pending 'https://gitlab.com/gitlab-org/gitlab/-/issues/292818'
+
+      baseline = ActiveRecord::QueryRecorder.new do
+        subject.send(:store_build_info, project: project, pipelines: pipelines)
+      end
+
+      pipelines << create(:ci_pipeline, project: project, head_pipeline_of: create(:merge_request, :jira_branch, source_project: project))
+
+      expect do
+        subject.send(:store_build_info, project: project, pipelines: pipelines)
+      end.not_to exceed_query_limit(baseline)
+    end
+  end
+
+  describe '#store_dev_info' do
+    let_it_be(:merge_requests, freeze: false) { create_list(:merge_request, 2, :unique_branches, source_project: project) }
+
+    let(:path) { '/rest/devinfo/0.10/bulk' }
+
+    before do
+      stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+        .with(headers: expected_headers(path, 'POST'))
+        .to_return(status: 202, body: {}.to_json, headers: { 'Content-Type' => 'application/json' })
+    end
+
+    it "calls the API with auth headers" do
+      subject.send(:store_dev_info, project: project)
+    end
+
+    context 'when a commit has more than 500 issue keys' do
+      let(:issue_keys) { (1..600).map { |i| "JIRA-#{i}" } }
+
+      before do
+        allow_next_instance_of(Atlassian::JiraConnect::Serializers::RepositoryEntity) do |entity|
+          allow(entity).to receive(:as_json).and_return(
+            'id' => project.id.to_s,
+            'commits' => [{ 'id' => 'sha1', 'issueKeys' => issue_keys }],
+            'branches' => [],
+            'pullRequests' => []
+          )
+        end
+        allow(subject).to receive(:post).and_return(
+          double(code: 202, parsed_response: {}, request: double(raw_body: '{}'))
+        )
+      end
+
+      it 'caps the commit issueKeys at the limit and tracks the excess per entity' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+          instance_of(described_class::IssueKeysTruncatedError),
+          extra: hash_including(total_values: 600, dropped_values: 100, entity_type: :commits),
+          tags: hash_including(jira_endpoint: 'devinfo')
+        )
+
+        subject.send(:store_dev_info, project: project)
+
+        expect(subject).to have_received(:post).once do |_path, payload|
+          expect(payload[:repositories].first[:commits].first[:issueKeys].size)
+            .to eq(described_class::ISSUE_KEYS_LIMIT)
+        end
+      end
+    end
+
+    context 'when Jira accepts the dev info' do
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+          .with(headers: expected_headers(path, 'POST'))
+          .to_return(status: 202, body: {}.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns a successful response with no error messages' do
+        response = subject.send(:store_dev_info, project: project)
+
+        expect(response['errorMessages']).to eq([])
+        expect(response['responseCode']).to eq(202)
+      end
+
+      it 'does not log the request body on success' do
+        response = subject.send(:store_dev_info, project: project)
+
+        expect(response).not_to have_key('requestBody')
+      end
+    end
+
+    context 'when Jira rejects some dev info entities' do
+      let(:response_body) do
+        {
+          failedDevinfoEntities: {
+            "#{project.id}": {
+              errorMessages: [{ message: 'Repository rejected', errorTraceId: 'trace-1' }],
+              commits: [{ id: 'abc123', errorMessages: [{ message: 'Invalid commit payload' }] }],
+              branches: [{ id: 'feature', errorMessages: [{ message: 'Invalid branch payload' }] }],
+              pullRequests: [{ id: '42', errorMessages: [{ message: 'Invalid PR payload' }] }]
+            }
+          }
+        }
+      end
+
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+          .with(headers: expected_headers(path, 'POST'))
+          .to_return(status: 202, body: response_body.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'surfaces the rejection details in the response' do
+        response = subject.send(:store_dev_info, project: project)
+
+        expect(response['errorMessages']).to include('Repository rejected')
+        expect(response['errorMessages']).to include('commits abc123: Invalid commit payload')
+        expect(response['errorMessages']).to include('branches feature: Invalid branch payload')
+        expect(response['errorMessages']).to include('pullRequests 42: Invalid PR payload')
+        expect(response['responseCode']).to eq(202)
+        expect(response['requestBody']).to be_present
+      end
+    end
+
+    context 'when Jira reports only unknown issue keys' do
+      let(:response_body) do
+        { unknownIssueKeys: %w[ABC-123], acceptedDevinfoEntities: {} }
+      end
+
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+          .with(headers: expected_headers(path, 'POST'))
+          .to_return(status: 202, body: response_body.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'does not treat unknown issue keys as an error and does not log the request body' do
+        response = subject.send(:store_dev_info, project: project)
+
+        expect(response['errorMessages']).to eq([])
+        expect(response).not_to have_key('requestBody')
+      end
+    end
+
+    context 'when Jira returns an error status' do
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+          .with(headers: expected_headers(path, 'POST'))
+          .to_return(status: 401, body: {}.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns the mapped error message' do
+        response = subject.send(:store_dev_info, project: project)
+
+        expect(response['errorMessages']).to eq(['Invalid JWT'])
+        expect(response['responseCode']).to eq(401)
+      end
+    end
+
+    context 'when Jira returns a 400 with an errorMessages array body' do
+      let(:error_body) { { errorMessages: ['Request payload is not valid JSON'] } }
+
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+          .with(headers: expected_headers(path, 'POST'))
+          .to_return(status: 400, body: error_body.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'surfaces the error messages, raw response, and request body', :aggregate_failures do
+        response = subject.send(:store_dev_info, project: project)
+
+        expect(response['errorMessages']).to eq(['Request payload is not valid JSON'])
+        expect(response['responseCode']).to eq(400)
+        expect(response['response']).to eq('errorMessages' => ['Request payload is not valid JSON'])
+        expect(response['requestBody']).to be_present
+      end
+    end
+
+    context 'when Jira returns a 400 with an unrecognized body' do
+      let(:error_body) { { detail: 'something opaque' } }
+
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net#{path}", method: :post)
+          .with(headers: expected_headers(path, 'POST'))
+          .to_return(status: 400, body: error_body.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'falls back to including the raw body in the error message' do
+        response = subject.send(:store_dev_info, project: project)
+
+        expect(response['errorMessages'].first).to include('something opaque')
+        expect(response['responseCode']).to eq(400)
+      end
+    end
+
+    it 'avoids N+1 database queries' do
+      control = ActiveRecord::QueryRecorder.new do
+        subject.send(:store_dev_info, project: project, merge_requests: merge_requests)
+      end
+
+      merge_requests << create(:merge_request, :unique_branches, source_project: project)
+
+      expect do
+        subject.send(:store_dev_info, project: project,
+          merge_requests: merge_requests)
+      end.not_to exceed_query_limit(control)
+    end
+  end
+
+  describe '#remove_branch_info' do
+    let_it_be(:merge_requests, freeze: false) { create_list(:merge_request, 2, :unique_branches, source_project: project) }
+    let(:branch_name) { merge_requests.first.source_branch }
+    let(:jira_branch_id) { Digest::SHA256.hexdigest(branch_name) }
+    let(:additional_headers) do
+      { 'Accept' => 'application/json',
+        'Accept-Encoding' => 'gzip;q=1.0,deflate;q=0.6,identity;q=0.3',
+        'User-Agent' => 'Ruby' }
+    end
+
+    context 'when the branch exists' do
+      before do
+        delete_path = "/rest/devinfo/0.10/repository/#{project.id}/branch/#{jira_branch_id}"
+        stub_full_request("https://gitlab-test.atlassian.net#{delete_path}", method: :delete)
+          .with(headers: expected_headers(delete_path, 'DELETE').merge(additional_headers))
+          .to_return(status: 200, body: "", headers: {})
+      end
+
+      it 'sends delete branch info' do
+        expect(subject).to receive(:delete)
+          .with("/rest/devinfo/0.10/repository/#{project.id}/branch/#{jira_branch_id}")
+          .and_call_original
+        expect(Gitlab::IntegrationsLogger).to receive(:info)
+          .with({ message: "deleting jira branch id: #{jira_branch_id}, gitlab branch name: #{branch_name}" })
+          .and_call_original
+
+        subject.send(:remove_branch_info, project: project, remove_branch_info: branch_name)
+      end
+    end
+  end
+
+  describe '#user_info' do
+    context 'when user is a site administrator' do
+      let(:account_id) { '12345' }
+      let(:response_body) do
+        {
+          groups: {
+            items: [
+              { name: 'site-admins' }
+            ]
+          }
+        }.to_json
+      end
+
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net/rest/api/3/user?accountId=#{account_id}&expand=groups")
+          .to_return(status: response_status, body: response_body, headers: { 'Content-Type': 'application/json' })
+      end
+
+      context 'with a successful response' do
+        let(:response_status) { 200 }
+
+        it 'returns a JiraUser instance' do
+          jira_user = client.user_info(account_id)
+
+          expect(jira_user).to be_a(Atlassian::JiraConnect::JiraUser)
+          expect(jira_user).to be_jira_admin
+        end
+      end
+
+      context 'with a failed response' do
+        let(:response_status) { 401 }
+
+        it 'returns nil' do
+          expect(client.user_info(account_id)).to be_nil
+        end
+      end
+    end
+
+    context 'when user is an organization administrator' do
+      let(:account_id) { '12345' }
+      let(:response_body) do
+        {
+          groups: {
+            items: [
+              { name: 'org-admins' }
+            ]
+          }
+        }.to_json
+      end
+
+      before do
+        stub_full_request("https://gitlab-test.atlassian.net/rest/api/3/user?accountId=#{account_id}&expand=groups")
+          .to_return(status: response_status, body: response_body, headers: { 'Content-Type': 'application/json' })
+      end
+
+      context 'with a successful response' do
+        let(:response_status) { 200 }
+
+        it 'returns a JiraUser instance' do
+          jira_user = client.user_info(account_id)
+
+          expect(jira_user).to be_a(Atlassian::JiraConnect::JiraUser)
+          expect(jira_user).to be_jira_admin
+        end
+      end
+
+      context 'with a failed response' do
+        let(:response_status) { 401 }
+
+        it 'returns nil' do
+          expect(client.user_info(account_id)).to be_nil
+        end
+      end
+    end
+  end
+
+  describe '#parse_jira_error_messages' do
+    subject { client.send(:parse_jira_error_messages, data) }
+
+    context 'with array data' do
+      let(:data) { [{ 'message' => 'Error 1' }, { 'message' => 'Error 2' }] }
+
+      it 'extracts messages from array' do
+        expect(subject).to match_array(['Error 1', 'Error 2'])
+      end
+    end
+
+    context 'with hash data containing message' do
+      let(:data) { { 'message' => 'Single error' } }
+
+      it 'returns message in array' do
+        expect(subject).to match_array(['Single error'])
+      end
+    end
+
+    context 'with hash data containing error' do
+      let(:data) { { 'error' => 'Error message' } }
+
+      it 'returns error in array' do
+        expect(subject).to match_array(['Error message'])
+      end
+    end
+
+    context 'with hash data without message or error' do
+      let(:data) { { 'foo' => 'bar' } }
+
+      it 'falls back to including the raw body' do
+        expect(subject.first).to include('foo')
+        expect(subject.first).to include('bar')
+      end
+    end
+
+    context 'with array data containing hashes without a message key' do
+      let(:data) { [{ 'message' => 'Error 1' }, { 'code' => 42 }] }
+
+      it 'keeps entries without a message key' do
+        expect(subject).to match_array(['Error 1', { 'code' => 42 }.to_s])
+      end
+    end
+
+    context 'with hash data containing an errorMessages array' do
+      let(:data) { { 'errorMessages' => ['Error A', { 'message' => 'Error B' }] } }
+
+      it 'extracts all entries' do
+        expect(subject).to match_array(['Error A', 'Error B'])
+      end
+    end
+
+    context 'with hash data containing errorMessages entries without a message key' do
+      let(:data) { { 'errorMessages' => ['Error A', { 'code' => 42 }] } }
+
+      it 'keeps entries without a message key' do
+        expect(subject).to match_array(['Error A', { 'code' => 42 }.to_s])
+      end
+    end
+
+    context 'with hash data containing only blank errorMessages entries' do
+      let(:data) { { 'errorMessages' => [''] } }
+
+      it 'falls back to including the raw body' do
+        expect(subject.first).to include('Unrecognized error body')
+      end
+    end
+
+    context 'with unexpected data type' do
+      let(:data) { 'string' }
+
+      it 'returns invalid error format' do
+        expect(subject).to match_array(['Unknown error'])
+      end
+    end
+  end
+
+  # Regression test for https://gitlab.com/gitlab-org/gitlab/-/work_items/565633
+  # Jira rejected the whole sync with "Invalid binary character '#xD83D'" (the
+  # UTF-16 high surrogate of an emoji) when free-text fields contained emoji.
+  describe '#post' do
+    let(:path) { '/rest/devinfo/0.10/bulk' }
+    let(:url) { "https://gitlab-test.atlassian.net#{path}" }
+
+    def stub_post(&body_matcher)
+      stub_full_request(url, method: :post)
+        .with(&body_matcher)
+        .to_return(status: 202, body: {}.to_json, headers: { 'Content-Type' => 'application/json' })
+    end
+
+    it 'strips characters Atlassian rejects from the request body' do
+      stub = stub_post do |req|
+        req.body.include?('"name":"ship  it"') &&
+          req.body.match(::Atlassian::Jira::PayloadSanitizer::INVALID_CHARS).nil?
+      end
+
+      subject.send(:post, path, { repositories: [{ name: 'ship 🚝 it' }] })
+
+      expect(stub).to have_been_requested
+    end
+
+    it 'preserves valid multi-byte characters' do
+      stub = stub_post { |req| req.body.include?('"name":"café-ñ"') }
+
+      subject.send(:post, path, { repositories: [{ name: 'café-ñ' }] })
+
+      expect(stub).to have_been_requested
+    end
+
+    it 'strips rejected characters from payloads serialized by Grape entities' do
+      # Grape entities serialize to a SimpleDelegator (NestingExposure::OutputBuilder),
+      # which must not escape sanitization: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/245813#note_3625655389
+      emoji_project = create(:project, :public, name: 'ship 🚝 it', namespace: project.namespace)
+      repo = ::Atlassian::JiraConnect::Serializers::RepositoryEntity.represent(emoji_project)
+
+      stub = stub_post do |req|
+        req.body.include?('"name":"ship  it"') &&
+          req.body.match(::Atlassian::Jira::PayloadSanitizer::INVALID_CHARS).nil?
+      end
+
+      subject.send(:post, path, { repositories: [repo] })
+
+      expect(stub).to have_been_requested
+    end
+  end
+end

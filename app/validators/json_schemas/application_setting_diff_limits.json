@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Application diff limits",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "diff_max_patch_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum diff patch size in bytes."
+    },
+    "diff_max_files": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum number of files in a diff."
+    },
+    "diff_max_lines": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum number of lines in a diff."
+    },
+    "diff_max_versions": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum number of diff versions per merge request."
+    },
+    "diff_max_commits": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Maximum number of diff commits per merge request."
+    }
+  }
+}

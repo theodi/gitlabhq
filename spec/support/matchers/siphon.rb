@@ -1,0 +1,260 @@
+# frozen_string_literal: true
+
+module SiphonTableDefinitions
+  def self.table_names_by_reference
+    @table_names_by_reference ||= Dir[Rails.root.join('db/siphon/tables/*.yml')]
+      .each_with_object({}) do |file, references|
+        content = YAML.safe_load_file(file)
+        names = [content['table'], content['renamed_table_name']].compact
+
+        names.each { |name| references[name] = names }
+      end
+  end
+
+  def self.pg_table_for(reference)
+    Array(table_names_by_reference[reference]).find do |name|
+      ApplicationRecord.connection.table_exists?(name)
+    end
+  end
+end
+
+RSpec::Matchers.define :be_a_siphon_of do |pg_table|
+  match do |ch_table|
+    matching_field_names_and_type?(pg_table, ch_table)
+  end
+end
+
+RSpec::Matchers.define :match_database_schema do |table_config|
+  match do |content|
+    @database = content['database']
+    @gitlab_schema = table_config['gitlab_schema']
+    @db_config = Gitlab::Database.all_database_connections[@database]
+
+    @db_config.present? && @db_config.gitlab_schemas.include?(@gitlab_schema.to_sym)
+  end
+
+  failure_message do
+    if @db_config.nil?
+      "expected database '#{@database}' to be 'main', 'sec', or 'ci'"
+    else
+      "expected database '#{@database}' to have gitlab_schema '#{@gitlab_schema}', it was #{@db_config.gitlab_schemas}"
+    end
+  end
+end
+
+RSpec::Matchers.define :ignore_sensitive_and_encrypted_columns do |table_config, skipped_columns|
+  match do |content|
+    @ignored_columns = Array(content['ignored_columns']).to_set
+    @skipped_columns = Array(skipped_columns).to_set
+    @errors = []
+
+    table_config['classes'].each do |class_name|
+      # Some models are only defined in EE
+      model = class_name.safe_constantize
+      next unless model
+
+      # Use connection.columns instead of model.column_names because the latter
+      # respects ignored_columns, which would exclude the very columns we need
+      # to validate in the ignored_columns check below.
+      postgresql_columns = model.connection.columns(model.table_name).map(&:name)
+
+      # Check if all ignored columns actually exist in PG
+      missing_in_pg = @ignored_columns - postgresql_columns.to_set
+      unless missing_in_pg.empty?
+        @errors << "ignored_columns contains fields not present in PG: #{missing_in_pg.to_a.join(', ')}"
+      end
+
+      # Check token_authenticatable_fields
+      if model.respond_to?(:token_authenticatable_fields)
+        token_fields = Array(model.token_authenticatable_fields).map(&:to_s).to_set
+        # token columns might have _encrypted suffix in the DB
+        without_encrypted_suffix = @ignored_columns.map { |c| c.gsub('_encrypted', '') }
+        missing = token_fields - @ignored_columns - without_encrypted_suffix
+        unless missing.empty?
+          @errors << "missing token_authenticatable_fields in ignored_columns: #{missing.to_a.join(', ')}"
+        end
+      end
+
+      # Check encrypted_attributes
+      if model.respond_to?(:encrypted_attributes)
+        encrypted_attributes = Array(model.encrypted_attributes).map(&:to_s).to_set
+        missing = encrypted_attributes - @ignored_columns
+        @errors << "missing encrypted_attributes in ignored_columns: #{missing.to_a.join(', ')}" unless missing.empty?
+      end
+
+      # Check _token and _html columns
+      postgresql_columns.each do |column|
+        next unless column.include?('_token') || column.include?('_html') || column.include?('secret')
+        next if @skipped_columns.include?(column)
+        next if @ignored_columns.include?(column)
+
+        @errors << "column '#{column}' looks sensitive or large but is not in ignored_columns"
+      end
+    end
+
+    @errors.empty?
+  end
+
+  failure_message do |content|
+    "expected #{content['table']} to ignore sensitive and encrypted columns, but:\n  " + @errors.join("\n  ")
+  end
+end
+
+RSpec::Matchers.define :have_correct_reconcile_config do |table_config|
+  match do |content|
+    @errors = []
+
+    target = Array(content['replication_targets']).first
+    next true unless target&.key?('reconcile')
+
+    reconcile = target['reconcile']
+
+    sharding_keys = table_config['sharding_key'] || table_config['desired_sharding_key']
+    expected_columns = sharding_keys&.keys&.sort || []
+
+    if expected_columns.empty?
+      @errors << "no sharding_key found in db/docs/#{table_config['table_name']}.yml"
+    else
+      actual_columns = Array(reconcile['expression_key_columns'])
+      if actual_columns != expected_columns
+        @errors << "expression_key_columns [#{actual_columns.join(', ')}] does not match " \
+          "sharding_key columns [#{expected_columns.join(', ')}] from db/docs/#{table_config['table_name']}.yml"
+      end
+    end
+
+    @errors.empty?
+  end
+
+  failure_message do |content|
+    "expected #{content['table']} to have correct reconcile config, but:\n  " + @errors.join("\n  ")
+  end
+end
+
+RSpec::Matchers.define :have_correct_replication_target do |clickhouse_table_names, pg_table, allow_pk_prefix = false|
+  # `ch_primary_keys` and `ch_column_names` are provided by the including example group
+  # (delegated via the matcher's method_missing), backed by the ClickHouse schema cache.
+  def unique_index_prefix?(table, target_keys)
+    ApplicationRecord.connection.indexes(table).any? do |index|
+      next false unless index.unique
+
+      Array(index.columns).take(target_keys.size) == target_keys
+    end
+  end
+
+  match do |content|
+    next true unless content.has_key?('replication_targets')
+
+    @errors = []
+    replication_targets = Array(content['replication_targets'])
+
+    target = replication_targets.find { |t| t['name'] == 'clickhouse_main' }
+    next true unless target
+
+    unless clickhouse_table_names.include?(target['target'])
+      @errors << "target ClickHouse table '#{target['target']}' does not exist"
+    end
+
+    if target['dedup_by_table'] && clickhouse_table_names.exclude?(target['dedup_by_table'])
+      @errors << "dedup_by_table '#{target['dedup_by_table']}' does not exist"
+    end
+
+    Array(target['downstream_materialized_views']).each do |view|
+      @errors << "downstream_materialized_views '#{view}' does not exist" if clickhouse_table_names.exclude?(view)
+    end
+
+    # If dedup_by_table config is present, we must inspect that table for matching primary keys
+    clickhouse_table = target['dedup_by_table'] || target['target']
+
+    postgresql_primary_keys = ApplicationRecord.connection.primary_keys(pg_table)
+    clickhouse_primary_keys = ch_primary_keys(clickhouse_table)
+    if target['dedup_by']
+      dedup_cols = target['dedup_by'].join(', ')
+      pkeys = postgresql_primary_keys.join(', ')
+      expected_cols = allow_pk_prefix ? postgresql_primary_keys.first(target['dedup_by'].length).join(', ') : pkeys
+
+      @errors << "dedup_by [#{dedup_cols}] does not match PG primary keys [#{pkeys}]" if dedup_cols != expected_cols
+
+      if clickhouse_primary_keys.last(postgresql_primary_keys.length) != postgresql_primary_keys
+        @errors << "the ClickHouse primary keys (#{clickhouse_primary_keys.join(', ')}) don't match or end with " \
+          "the PostgreSQL table's primary keys (#{postgresql_primary_keys.join(', ')})"
+      end
+    elsif clickhouse_primary_keys != postgresql_primary_keys
+      @errors << "the ClickHouse primary keys (#{clickhouse_primary_keys.join(', ')}) don't match with " \
+        "the PostgreSQL table's primary keys (#{postgresql_primary_keys.join(', ')})"
+    end
+
+    lookup_table = target['dedup_by_columns_lookup_table']
+    if lookup_table
+      if clickhouse_table_names.exclude?(lookup_table)
+        @errors << "dedup_by_columns_lookup_table '#{lookup_table}' does not exist"
+      else
+        lookup_primary_keys = ch_primary_keys(lookup_table)
+        if lookup_primary_keys.first(postgresql_primary_keys.length) != postgresql_primary_keys
+          @errors << "the ClickHouse lookup table '#{lookup_table}' primary keys " \
+            "(#{lookup_primary_keys.join(', ')}) don't start with the PostgreSQL table's primary keys " \
+            "(#{postgresql_primary_keys.join(', ')})"
+        end
+
+        if lookup_primary_keys.sort != clickhouse_primary_keys.sort
+          @errors << "the ClickHouse lookup table '#{lookup_table}' primary keys " \
+            "(#{lookup_primary_keys.join(', ')}) don't cover the same columns as the main ClickHouse table " \
+            "'#{clickhouse_table}' primary keys (#{clickhouse_primary_keys.join(', ')})"
+        end
+      end
+    end
+
+    Array(target['refresh_on_change']).each do |roc|
+      target_identifier = roc['target_stream_identifier']
+      target_pg_table = SiphonTableDefinitions.pg_table_for(target_identifier)
+      unless target_pg_table
+        @errors << "target table/stream (#{target_identifier}) is not configured in db/siphon/tables, " \
+          "or none of its names exist in PostgreSQL"
+        next
+      end
+
+      target_keys = Array(roc['target_keys'])
+
+      target_postgresql_pks = ApplicationRecord.connection.primary_keys(target_pg_table)
+      unless target_postgresql_pks == target_keys || unique_index_prefix?(target_pg_table, target_keys)
+        @errors << "refresh_on_change.target_keys must match with the PostgreSQL primary keys of " \
+          "#{target_identifier}, or be a prefix of a unique index on #{target_identifier}"
+      end
+
+      source_keys = Array(roc['source_keys'])
+      if source_keys.size != target_keys.size
+        @errors << "refresh_on_change.source_keys (#{source_keys.join(', ')}) should have the same " \
+          "size as refresh_on_change.target_keys (#{target_keys.join(', ')})"
+      end
+
+      column_names = ch_column_names(target['target'])
+      source_keys.each do |key|
+        unless column_names.include?(key)
+          @errors << "ClickHouse table '#{target['target']}' doesn't contain '#{key}' column"
+        end
+      end
+
+      pg_column_names = ApplicationRecord.connection.columns(pg_table).map(&:name)
+      Array(roc['filters']).each do |filter|
+        column = filter['column']
+        unless pg_column_names.include?(column)
+          @errors << "refresh_on_change.filters column '#{column}' does not exist in the " \
+            "PostgreSQL table '#{pg_table}'"
+        end
+
+        model = filter['value'].to_s.safe_constantize
+        unless model.is_a?(Class) && model < ApplicationRecord
+          @errors << "refresh_on_change.filters value '#{filter['value']}' does not constantize " \
+            "to an ApplicationRecord"
+        end
+      end
+    end
+
+    @errors << "priority must be a number, got: '#{target['priority']}'" unless (target['priority'] || 1).is_a?(Numeric)
+
+    @errors.empty?
+  end
+
+  failure_message do |content|
+    "expected #{content['table']} to have correct replication target, but:\n  " + @errors.join("\n  ")
+  end
+end

@@ -1,0 +1,10 @@
+query epicSubscribed($fullPath: ID!, $iid: ID) {
+  namespace: group(fullPath: $fullPath) {
+    id
+    emailsDisabled
+    issuable: epic(iid: $iid) {
+      id
+      subscribed
+    }
+  }
+}

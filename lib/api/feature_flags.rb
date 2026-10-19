@@ -1,0 +1,307 @@
+# frozen_string_literal: true
+
+module API
+  class FeatureFlags < ::API::Base
+    include PaginationParams
+
+    feature_flags_tags = %w[feature_flags]
+    FEATURE_FLAG_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS
+        .merge(name: ::API::NO_SLASH_URL_PART_REGEX)
+
+    feature_category :feature_flags
+    urgency :low
+
+    before do
+      authorize_read_feature_flags!
+    end
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource 'projects/:id', requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      resource :feature_flags do
+        desc 'List all feature flags for a project' do
+          detail 'Lists all feature flags of the requested project. Use the `page` and `per_page` pagination ' \
+            'parameters to control the pagination of results.'
+          success ::API::Entities::FeatureFlag
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 404, message: 'Not found' }
+          ]
+          is_array true
+          tags feature_flags_tags
+        end
+        params do
+          optional :scope,
+            type: String,
+            desc: 'Filter feature flags by condition.',
+            values: %w[enabled disabled]
+          use :pagination
+        end
+        route_setting :authorization, permissions: :read_feature_flag, boundary_type: :project
+        get do
+          feature_flags = ::FeatureFlagsFinder
+            .new(user_project, current_user, declared_params(include_missing: false))
+            .execute
+
+          present_entity(paginate(feature_flags))
+        end
+
+        desc 'Create a feature flag' do
+          detail 'Creates a feature flag for a specified project.'
+          success ::API::Entities::FeatureFlag
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' }
+          ]
+          tags feature_flags_tags
+        end
+        params do
+          requires :name, type: String, desc: 'Name of the feature flag.'
+          optional :description, type: String, desc: 'Description of the feature flag.'
+          optional :active, type: Boolean, default: true, desc: 'If `true`, the feature flag is active.'
+          optional :version, type: String, desc: 'The version of the feature flag. Must be `new_version_flag`. Omit to create a Legacy feature flag.'
+          optional :strategies, type: Array, desc: 'Array of feature flag [strategies](https://docs.gitlab.com/operations/feature_flags/#feature-flag-strategies).' do
+            requires :name, type: String, desc: 'Name of the strategy. Can be `default`, `gradualRolloutUserId`, `userWithId`, `gitlabUserList`, or `flexibleRollout`.'
+            optional :parameters, type: JSON, desc: 'Strategy parameters as a JSON-formatted string, for example `{"userIds":"user1"}`.', documentation: { type: 'String' }
+            optional :user_list_id, type: Integer, desc: 'ID of the feature flag user list. Applies only if the strategy is `gitlabUserList`.'
+            optional :scopes, type: Array, desc: 'Array of scopes for the strategy.' do
+              requires :environment_scope, type: String, desc: 'Environment scope of the scope.'
+            end
+          end
+        end
+        route_setting :authorization, permissions: :create_feature_flag, boundary_type: :project
+        post do
+          authorize_create_feature_flag!
+
+          attrs = declared_params(include_missing: false)
+
+          rename_key(attrs, :scopes, :scopes_attributes)
+          rename_key(attrs, :strategies, :strategies_attributes)
+          update_value(attrs, :strategies_attributes) do |strategies|
+            strategies.map { |s| rename_key(s, :scopes, :scopes_attributes) }
+          end
+
+          result = ::FeatureFlags::CreateService
+            .new(user_project, current_user, attrs)
+            .execute
+
+          if result[:status] == :success
+            present_entity(result[:feature_flag])
+          else
+            render_api_error!(result[:message], result[:http_status])
+          end
+        end
+      end
+
+      resource :feature_flags_settings do
+        desc 'Retrieve feature flag settings' do
+          detail 'Retrieves the feature flag settings of a specified project.'
+          success ::API::Entities::FeatureFlag::Settings
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags feature_flags_tags
+        end
+        route_setting :authorization, permissions: :read_feature_flag, boundary_type: :project
+        get do
+          present_settings_entity(user_project)
+        end
+
+        desc 'Update feature flag settings' do
+          detail 'Updates the feature flag settings of a specified project.'
+          success ::API::Entities::FeatureFlag::Settings
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags feature_flags_tags
+        end
+        params do
+          requires :minimum_role,
+            type: String,
+            values: ::ProjectSetting::FEATURE_FLAGS_MANAGEMENT_ROLES.keys.map(&:to_s),
+            desc: 'Minimum role required to create, update, toggle, and delete feature flags'
+        end
+        route_setting :authorization,
+          permissions: :update_feature_flags_minimum_role_setting, boundary_type: :project
+        put do
+          authorize! :update_feature_flags_minimum_role_setting, user_project
+
+          result = ::Projects::UpdateService
+            .new(user_project, current_user, feature_flags_minimum_role: params[:minimum_role])
+            .execute
+
+          if result[:status] == :success
+            present_settings_entity(user_project)
+          else
+            render_api_error!(result[:message], 400)
+          end
+        end
+      end
+
+      params do
+        requires :feature_flag_name, type: String, desc: 'Name of the feature flag.'
+      end
+      resource 'feature_flags/:feature_flag_name', requirements: FEATURE_FLAG_ENDPOINT_REQUIREMENTS do
+        desc 'Retrieve a feature flag' do
+          detail 'Retrieves a specified feature flag.'
+          success ::API::Entities::FeatureFlag
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags feature_flags_tags
+        end
+        route_setting :authorization, permissions: :read_feature_flag, boundary_type: :project
+        get do
+          authorize_read_feature_flag!
+          exclude_legacy_flags_check!
+
+          present_entity(feature_flag)
+        end
+
+        desc 'Update a feature flag' do
+          detail 'Updates a specified feature flag.'
+          success ::API::Entities::FeatureFlag
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' },
+            { code: 422, message: 'Unprocessable entity' }
+          ]
+          tags feature_flags_tags
+        end
+        params do
+          optional :name, type: String, desc: 'New name of the feature flag.'
+          optional :description, type: String, desc: 'Description of the feature flag.'
+          optional :active, type: Boolean, desc: 'If `true`, the feature flag is active.'
+          optional :strategies, type: Array, desc: 'Array of feature flag [strategies](https://docs.gitlab.com/operations/feature_flags/#feature-flag-strategies).' do
+            optional :id, type: Integer, desc: 'ID of the feature flag strategy.'
+            optional :name, type: String, desc: 'Name of the strategy.'
+            optional :parameters, type: JSON, desc: 'Strategy parameters as a JSON-formatted string, for example `{"userIds":"user1"}`.', documentation: { type: 'String' }
+            optional :user_list_id, type: Integer, desc: 'ID of the feature flag user list. Applies only if the strategy is `gitlabUserList`.'
+            optional :_destroy, type: Boolean, desc: 'If `true`, deletes the strategy.'
+            optional :scopes, type: Array, desc: 'Array of scopes for the strategy.' do
+              optional :id, type: Integer, desc: 'ID of the scope.'
+              optional :environment_scope, type: String, desc: 'Environment scope of the scope.'
+              optional :_destroy, type: Boolean, desc: 'If `true`, deletes the scope.'
+            end
+          end
+        end
+        route_setting :authorization, permissions: :update_feature_flag, boundary_type: :project
+        put do
+          authorize_update_feature_flag!
+          exclude_legacy_flags_check!
+          render_api_error!('PUT operations are not supported for legacy feature flags', :unprocessable_entity) unless feature_flag.new_version_flag?
+
+          attrs = declared_params(include_missing: false)
+
+          rename_key(attrs, :strategies, :strategies_attributes)
+          update_value(attrs, :strategies_attributes) do |strategies|
+            strategies.map { |s| rename_key(s, :scopes, :scopes_attributes) }
+          end
+
+          result = ::FeatureFlags::UpdateService
+            .new(user_project, current_user, attrs)
+            .execute(feature_flag)
+
+          if result[:status] == :success
+            present_entity(result[:feature_flag])
+          else
+            render_api_error!(result[:message], result[:http_status])
+          end
+        end
+
+        desc 'Delete a feature flag' do
+          detail 'Deletes a specified feature flag.'
+          success ::API::Entities::FeatureFlag
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags feature_flags_tags
+        end
+        route_setting :authorization, permissions: :delete_feature_flag, boundary_type: :project
+        delete do
+          authorize_destroy_feature_flag!
+
+          result = ::FeatureFlags::DestroyService
+            .new(user_project, current_user, declared_params(include_missing: false))
+            .execute(feature_flag)
+
+          if result[:status] == :success
+            present_entity(result[:feature_flag])
+          else
+            render_api_error!(result[:message], result[:http_status])
+          end
+        end
+      end
+    end
+
+    helpers do
+      def authorize_read_feature_flags!
+        authorize! :read_feature_flag, user_project
+      end
+
+      def authorize_read_feature_flag!
+        authorize! :read_feature_flag, feature_flag
+      end
+
+      def authorize_create_feature_flag!
+        authorize! :create_feature_flag, user_project
+      end
+
+      def authorize_update_feature_flag!
+        authorize! :update_feature_flag, feature_flag
+      end
+
+      def authorize_destroy_feature_flag!
+        authorize! :destroy_feature_flag, feature_flag
+      end
+
+      def present_entity(result)
+        present result,
+          with: ::API::Entities::FeatureFlag
+      end
+
+      def present_settings_entity(project)
+        present project.project_setting,
+          with: ::API::Entities::FeatureFlag::Settings
+      end
+
+      def feature_flag
+        @feature_flag ||= user_project.operations_feature_flags.find_by_name!(params[:feature_flag_name])
+      end
+
+      def project
+        @project ||= feature_flag.project
+      end
+
+      def new_version_flag_present?
+        user_project.operations_feature_flags.new_version_flag.find_by_name(params[:name]).present?
+      end
+
+      def rename_key(hash, old_key, new_key)
+        hash[new_key] = hash.delete(old_key) if hash.key?(old_key)
+        hash
+      end
+
+      def update_value(hash, key)
+        hash[key] = yield(hash[key]) if hash.key?(key)
+        hash
+      end
+
+      def exclude_legacy_flags_check!
+        unless feature_flag.new_version_flag?
+          not_found!
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,200 @@
+---
+stage: none
+group: unassigned
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Accessibility feature tests
+---
+
+## When to add accessibility tests
+
+Feature tests with axe-core-gem provide the most comprehensive accessibility testing approach, covering complete user journeys across all UI technologies (HAML, Vue, and JavaScript).
+
+Prioritize accessibility tests for:
+
+- **Mission-critical user journeys:** core workflows that users depend on.
+- **High-traffic pages:** areas with significant user interaction.
+- **New features:** Ensure accessibility from the start.
+- **Complex UI interactions:** Multi-step processes, modals, dynamic content.
+
+### Strategic approach
+
+Rather than testing every possible page combination, focus on deep coverage of key user scenarios. This approach provides better value than broad but shallow coverage across all views.
+
+One of the advantages of testing in feature tests is that we can check different states and complete user flows, not only single components in isolation.
+
+You can find some examples on how to approach accessibility checks below.
+
+### Empty state
+
+Some views have an empty state that result in a page structure that's different from the default view.
+They might also offer some actions, for example to create a first issue or to enable a feature.
+In this case, add assertions for both an empty state and a default view.
+
+### Ensure compliance before user interactions
+
+Often we test against a number of steps we expect our users to perform.
+In this case, make sure to include the check early on, before any of them has been simulated.
+This way we ensure there are no barriers to what we expect of users.
+
+### Ensure compliance after changed page structure
+
+User interactions might result in significant changes in page structure. For example,
+a dialog is shown, or a new section is rendered.
+In that case, add an assertion after any such change.
+We want to make sure that users are able to interact with all available components.
+
+## How to add accessibility tests
+
+### Create new spec file
+
+For automated accessibility tests, we want to follow already defined steps for various user journeys.
+To achieve this we are reusing test cases defined for E2E tests.
+
+#### Golden user journeys
+
+We want to make sure that already defined [golden user journeys](https://handbook.gitlab.com/handbook/product/ux/user-journeys/) have accessibility test coverage. To do this, we translated Figma files to YAML format that can be used to generate accessibility specs.
+
+Follow [Accessibility journeys README](https://gitlab.com/gitlab-org/gitlab/-/blob/master/config/accessibility_journeys/README.md) to learn how to implement these specs.
+
+#### Specific user flows
+
+To add a new accessibility spec for your feature, browse the list of test cases for your group by either:
+
+- [Looking through Test Cases page](https://gitlab.com/gitlab-org/gitlab/-/quality/test_cases),
+  which you can filter by your group's label.
+- Navigating to the E2E [`browser_ui` directory](https://gitlab.com/gitlab-org/gitlab/-/tree/master/qa/qa/specs/features/browser_ui) and
+  [`ee/browser_ui` directory](https://gitlab.com/gitlab-org/gitlab/-/tree/master/qa/qa/specs/features/ee/browser_ui),
+  then selecting the director for your stage and a feature you want to cover.
+
+Once you know the user journey you want to cover:
+
+- Navigate to `spec/features/accessibility`.
+- Create a new Ruby spec under the folder for your stage and the feature you are covering, for example `create/repository/`.
+- Name your file after the E2E test case you are following, for example: `add_new_branch_rule_spec.rb`.
+
+In this example, the result will be a dedicated feature spec under `spec/features/accessibility/create/repository/add_new_branch_rule_spec.rb`.
+
+The next step is recreating the test cases with the Capybara feature tests syntax and setup.
+
+### Using axe methods
+
+Axe provides the custom matcher `be_axe_clean`, which can be used like the following:
+
+```ruby
+# spec/features/accessibility/create/repository/add_new_branch_rule_spec.rb
+it 'passes axe automated accessibility testing', :js do
+  visit_settings_page
+
+  # Wait for an element that appears only when this page is ready to scan.
+  expect(page).to have_selector('#content-body')
+
+  expect(page).to be_axe_clean
+end
+```
+
+Do not use `wait_for_requests` to prepare a page for an accessibility scan. It
+can return before asynchronous rendering completes, and the scan is incomplete.
+Instead, wait for a page-specific element that represents the rendered
+state. See [Never use `wait_for_requests` or `wait_for_all_requests`](../../testing_guide/best_practices.md#never-use-wait_for_requests-or-wait_for_all_requests).
+
+If needed, you can scope testing to a specific area of the page by using `within`.
+
+Axe also provides specific [clauses](https://github.com/dequelabs/axe-core-gems/blob/develop/packages/axe-core-rspec/README.md#clauses),
+for example:
+
+```ruby
+expect(page).to be_axe_clean.within '[data-testid="element"]'
+
+# run only WCAG 2.1 Level AA rules
+expect(page).to be_axe_clean.according_to :wcag21aa
+
+# specifies which rule to skip
+expect(page).to be_axe_clean.skipping :'link-in-text-block'
+
+# clauses can be chained
+expect(page).to be_axe_clean.within('[data-testid="element"]')
+                            .according_to(:wcag21aa)
+```
+
+Axe does not test hidden regions, such as inactive menus or dialogs. To test
+hidden regions for accessibility, write tests that activate or render the regions visible
+and run the matcher again.
+
+You can run accessibility tests locally in the same way as you [run any feature tests](../../testing_guide/frontend_testing.md#how-to-run-a-feature-test).
+
+After adding accessibility tests, make sure to fix all possible errors.
+For help on how to do it, refer to [this guide](best_practices.md#quick-checklist).
+You can also check accessibility sections in [Pajamas components' documentation](https://design.gitlab.com/components/overview).
+If any of the errors require global changes, create a follow-up issue and assign these labels: `accessibility`, `accessibility::intake`.
+
+### Add your first test for critical issues only
+
+By default, `be_axe_clean` fails on every violation, regardless of severity.
+When you add accessibility coverage to an existing area for the first time, this can surface many
+lower-severity violations at once.
+
+To adopt coverage gradually, chain `with_minimum_impact` to fail only on violations at or above a
+severity level.
+Axe reports four severity levels, from lowest to highest: `minor`, `moderate`, `serious`, and
+`critical`.
+
+```ruby
+# Fail only on critical violations. Ignore serious, moderate, and minor violations.
+expect(page).to be_axe_clean.within('#content-body').with_minimum_impact(
+  :critical, because: 'https://gitlab.com/gitlab-org/gitlab/-/issues/12345 - bootstrapping coverage'
+)
+```
+
+The `because:` argument is required and must be non-blank. Because a threshold hides real
+violations, every use must state why the threshold is relaxed, ideally with a tracking issue link.
+The reason stays visible in the diff, in `git blame`, and during code review.
+
+Use `with_minimum_impact` only while you bootstrap coverage.
+After you resolve the critical violations, remove the clause to enforce all severities again, or
+tighten the threshold to `:serious` to also catch serious violations.
+
+### Good practices
+
+Adding accessibility checks in feature tests is easier if you have domain knowledge from the product area in question.
+However, there are a few things that can help you contribute to accessibility tests.
+
+#### What parts of a page to add accessibility tests for
+
+In most cases you do not want to test accessibility of a whole page:
+
+1. We have elements that appear on every application view, such as breadcrumbs or main navigation. Including them in every feature spec takes up quite a lot of resources and multiplies something that can be done just once. These elements have their own feature specs and that's where we want to test them.
+1. If a feature spec covers a whole view, the best practice would be to scope it to `<main id="content-body">` element. Here's an example of such test case:
+
+   ```ruby
+    it "passes axe automated accessibility testing" do
+      expect(page).to be_axe_clean.within('#content-body')
+    end
+   ```
+
+1. If a specific test case covers only a part of a page, like a section that includes some components, keep the test scoped to that section. Here's an example of such test case:
+
+   ```ruby
+    it 'passes axe automated accessibility testing for todo' do
+      expect(page).to be_axe_clean.within(todo_selector)
+    end
+   ```
+
+#### Test output not specific enough
+
+When axe test case fails, it outputs the violation found and an element that it concerns. Because we often use Pajamas Components,
+the element is often a `<div>` without any annotation that could help you identify the element. However, we can take
+advantage of a fact that axe_core rules is used both for Ruby tests and Deque browser extension - axe DevTools. They both
+provide the same output.
+
+1. Make sure you have axe DevTools extension installed in a browser of your choice. See [axe DevTools official website for more information](https://www.deque.com/axe/browser-extensions/).
+1. Go to the view you're testing with a feature test.
+1. Open axe DevTools extension and run a scan of the page.
+1. Expand found issues and use Highlight option to see the elements on the page for each violation.
+
+### Known accessibility violations
+
+This section documents violations where a recommendation differs with the [design system](https://design.gitlab.com/):
+
+- `link-in-text-block`: For now, use the `skipping` clause to skip `:'link-in-text-block'`
+  rule to fix the violation. After this is fixed as part of [issue 1444](https://gitlab.com/gitlab-org/gitlab-services/design.gitlab.com/-/issues/1444)
+  and underline is added to the `GlLink` component, this clause can be removed.

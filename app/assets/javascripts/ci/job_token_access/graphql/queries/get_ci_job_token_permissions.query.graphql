@@ -1,0 +1,10 @@
+query getCiJobTokenPermissions($fullPath: ID!) {
+  project(fullPath: $fullPath) {
+    id
+    name
+    ciCdSettings {
+      pushRepositoryForJobTokenAllowed
+      crossProjectPushForJobTokenAllowed @gl_introduced(version: "19.0.0")
+    }
+  }
+}

@@ -1,0 +1,16 @@
+#import "../fragments/mr_pipeline_list_item.fragment.graphql"
+
+subscription ciPipelineCreationRequestsUpdated($mergeRequestId: MergeRequestID!) {
+  ciPipelineCreationRequestsUpdated(mergeRequestId: $mergeRequestId) {
+    id
+    pipelineCreationRequests {
+      id
+      status
+      error
+      userInitiated
+      pipeline {
+        ...MergeRequestPipelineListItem
+      }
+    }
+  }
+}

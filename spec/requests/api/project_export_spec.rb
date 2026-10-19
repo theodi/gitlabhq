@@ -1,0 +1,1063 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::ProjectExport, :aggregate_failures, :clean_gitlab_redis_cache, feature_category: :importers do
+  let_it_be_with_reload(:project) { create(:project) }
+  let_it_be(:project_none) { create(:project) }
+  let_it_be(:project_started) { create(:project) }
+  let(:project_finished) { create(:project, :with_export, export_user: user) }
+  let(:project_after_export) { create(:project, :with_export, export_user: user) }
+  let_it_be(:user) { create(:user) }
+  let_it_be(:admin) { create(:admin) }
+
+  let(:path) { "/projects/#{project.id}/export" }
+  let(:path_none) { "/projects/#{project_none.id}/export" }
+  let(:path_started) { "/projects/#{project_started.id}/export" }
+  let(:path_finished) { "/projects/#{project_finished.id}/export" }
+  let(:path_after_export) { "/projects/#{project_after_export.id}/export" }
+
+  let(:download_path) { "/projects/#{project.id}/export/download" }
+  let(:download_path_none) { "/projects/#{project_none.id}/export/download" }
+  let(:download_path_started) { "/projects/#{project_started.id}/export/download" }
+  let(:download_path_finished) { "/projects/#{project_finished.id}/export/download" }
+  let(:download_path_export_action) { "/projects/#{project_after_export.id}/export/download" }
+
+  let(:export_path) { "#{Dir.tmpdir}/project_export_spec" }
+
+  before do
+    allow(Gitlab::ImportExport).to receive(:storage_path).and_return(export_path)
+    allow_next_instance_of(ProjectExportWorker) do |job|
+      allow(job).to receive(:jid).and_return(SecureRandom.hex(8))
+    end
+  end
+
+  after do
+    FileUtils.rm_rf(export_path, secure: true)
+  end
+
+  shared_examples_for 'when project export is disabled' do
+    before do
+      stub_application_setting(project_export_enabled?: false)
+    end
+
+    it_behaves_like '404 response'
+  end
+
+  describe 'GET /projects/:project_id/export' do
+    it_behaves_like 'GET request permissions for admin mode' do
+      let(:failed_status_code) { :not_found }
+    end
+
+    shared_examples_for 'get project export status not found' do
+      it_behaves_like '404 response' do
+        subject(:request) { get api(path, user) }
+      end
+    end
+
+    shared_examples_for 'get project export status denied' do
+      it_behaves_like '403 response' do
+        subject(:request) { get api(path, user) }
+      end
+    end
+
+    shared_examples_for 'get project export status ok' do
+      let_it_be(:admin_mode) { false }
+
+      it 'is none' do
+        get api(path_none, user, admin_mode: admin_mode)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/project/export_status')
+        expect(json_response['export_status']).to eq('none')
+      end
+
+      context 'when project export has started' do
+        before do
+          create(:project_export_job, project: project_started, status: 1, user: user)
+        end
+
+        it 'returns status started' do
+          get api(path_started, user, admin_mode: admin_mode)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/project/export_status')
+          expect(json_response['export_status']).to eq('started')
+        end
+      end
+
+      context 'when project export has finished' do
+        it 'returns status finished' do
+          get api(path_finished, user, admin_mode: admin_mode)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/project/export_status')
+          expect(json_response['export_status']).to eq('finished')
+        end
+      end
+
+      context 'when project export is being regenerated' do
+        before do
+          create(:project_export_job, project: project_finished, status: 1, user: user)
+        end
+
+        it 'returns status regeneration_in_progress' do
+          get api(path_finished, user, admin_mode: admin_mode)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/project/export_status')
+          expect(json_response['export_status']).to eq('regeneration_in_progress')
+        end
+      end
+    end
+
+    it_behaves_like 'when project export is disabled' do
+      subject(:request) { get api(path, admin, admin_mode: true) }
+    end
+
+    context 'when project export is enabled' do
+      context 'when user is an admin' do
+        let(:user) { admin }
+
+        it_behaves_like 'get project export status ok' do
+          let(:admin_mode) { true }
+        end
+      end
+
+      context 'when user is a maintainer' do
+        before do
+          project.add_maintainer(user)
+          project_none.add_maintainer(user)
+          project_started.add_maintainer(user)
+          project_finished.add_maintainer(user)
+          project_after_export.add_maintainer(user)
+        end
+
+        it_behaves_like 'get project export status ok'
+
+        it_behaves_like 'authorizing granular token permissions', :read_project_export do
+          let(:boundary_object) { project }
+          let(:request) { get api(path, personal_access_token: pat) }
+        end
+      end
+
+      context 'when user is a developer' do
+        before do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'get project export status denied'
+      end
+
+      context 'when user is a reporter' do
+        before do
+          project.add_reporter(user)
+        end
+
+        it_behaves_like 'get project export status denied'
+      end
+
+      context 'when user is a guest' do
+        before do
+          project.add_guest(user)
+        end
+
+        it_behaves_like 'get project export status denied'
+      end
+
+      context 'when user is not a member' do
+        it_behaves_like 'get project export status not found'
+      end
+    end
+  end
+
+  describe 'GET /projects/:project_id/export/download' do
+    shared_examples_for 'get project export download not found' do
+      it_behaves_like '404 response' do
+        subject(:request) { get api(download_path, user) }
+      end
+    end
+
+    shared_examples_for 'get project export download denied' do
+      it_behaves_like '403 response' do
+        subject(:request) { get api(download_path, user) }
+      end
+    end
+
+    shared_examples_for 'get project export download' do
+      it_behaves_like '404 response' do
+        subject(:request) { get api(download_path_none, user, admin_mode: admin_mode) }
+      end
+
+      it_behaves_like '404 response' do
+        subject(:request) { get api(download_path_started, user, admin_mode: admin_mode) }
+      end
+
+      it 'downloads' do
+        get api(download_path_finished, user, admin_mode: admin_mode)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    shared_examples_for 'get project export upload after action' do
+      context 'and is uploading' do
+        it 'downloads' do
+          get api(download_path_export_action, user, admin_mode: admin_mode)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'when export object is not present' do
+        before do
+          project_after_export.export_file(user).file.delete
+        end
+
+        it 'returns 404' do
+          get api(download_path_export_action, user, admin_mode: admin_mode)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('The project export file is not available yet')
+        end
+      end
+
+      context 'when upload complete' do
+        before do
+          project_after_export.remove_export_for_user(user)
+        end
+
+        it 'has removed the export' do
+          expect(project_after_export.export_file_exists?(user)).to be_falsey
+        end
+
+        it_behaves_like '404 response' do
+          subject(:request) { get api(download_path_export_action, user, admin_mode: admin_mode) }
+        end
+      end
+    end
+
+    shared_examples_for 'get project download by strategy' do
+      let_it_be(:admin_mode) { false }
+
+      context 'when upload strategy set' do
+        it_behaves_like 'get project export upload after action'
+      end
+
+      context 'when download strategy set' do
+        it_behaves_like 'get project export download'
+      end
+    end
+
+    it_behaves_like 'when project export is disabled' do
+      subject(:request) { get api(download_path, admin, admin_mode: true) }
+    end
+
+    context 'when project export is enabled' do
+      context 'when user is an admin' do
+        let(:user) { admin }
+
+        it_behaves_like 'get project download by strategy' do
+          let(:admin_mode) { true }
+        end
+
+        context 'when rate limit is exceeded' do
+          subject(:request) { get api(download_path, admin, admin_mode: true) }
+
+          it 'prevents requesting project export' do
+            expect(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+              .with(:project_download_export, scope: { user: user, project: project }).and_return(true)
+
+            request
+
+            expect(response).to have_gitlab_http_status(:too_many_requests)
+            expect(json_response['message']['error']).to eq('This endpoint has been requested too many times. Try again later.')
+          end
+        end
+      end
+
+      context 'when user is a maintainer' do
+        before do
+          project.add_maintainer(user)
+          project_none.add_maintainer(user)
+          project_started.add_maintainer(user)
+          project_finished.add_maintainer(user)
+          project_after_export.add_maintainer(user)
+        end
+
+        it_behaves_like 'get project download by strategy'
+
+        it_behaves_like 'authorizing granular token permissions', :download_project_export do
+          let(:boundary_object) { project_finished }
+          let(:request) { get api(download_path_finished, personal_access_token: pat) }
+        end
+      end
+
+      context 'when user is a developer' do
+        before do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'get project export download denied'
+      end
+
+      context 'when user is a reporter' do
+        before do
+          project.add_reporter(user)
+        end
+
+        it_behaves_like 'get project export download denied'
+      end
+
+      context 'when user is a guest' do
+        before do
+          project.add_guest(user)
+        end
+
+        it_behaves_like 'get project export download denied'
+      end
+
+      context 'when user is not a member' do
+        it_behaves_like 'get project export download not found'
+      end
+    end
+
+    context 'when an uploader is used' do
+      before do
+        stub_uploads_object_storage(ImportExportUploader)
+
+        project.add_maintainer(user)
+        project_finished.add_maintainer(user)
+        project_after_export.add_maintainer(user)
+
+        upload = ImportExportUpload.new(project: project)
+        upload.export_file = fixture_file_upload('spec/fixtures/project_export.tar.gz', "`/tar.gz")
+        upload.save!
+      end
+
+      it 'returns download headers for import compatibility' do
+        upload = ImportExportUpload.new(project: project_finished, user: user)
+        upload.export_file = fixture_file_upload('spec/fixtures/project_export.tar.gz', "`/tar.gz")
+        upload.save!
+        project_finished.add_maintainer(user)
+
+        get api("/projects/#{project_finished.id}/export/download", user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.header['Content-Disposition']).to include('_export.tar.gz')
+        expect(response.header['Content-Type']).to eq('application/octet-stream')
+      end
+
+      it_behaves_like 'get project download by strategy'
+    end
+  end
+
+  describe 'POST /projects/:project_id/export' do
+    let(:admin_mode) { false }
+    let(:params) { {} }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { { 'upload[url]' => 'http://gitlab.com' } }
+      let(:failed_status_code) { :not_found }
+      let(:success_status_code) { :accepted }
+    end
+
+    subject(:request) { post api(path, user, admin_mode: admin_mode), params: params }
+
+    shared_examples_for 'post project export start not found' do
+      it_behaves_like '404 response'
+    end
+
+    shared_examples_for 'post project export start denied' do
+      it_behaves_like '403 response'
+    end
+
+    shared_examples_for 'post project export start' do
+      let_it_be(:admin_mode) { false }
+
+      context 'with upload strategy' do
+        context 'when params invalid' do
+          it_behaves_like '400 response' do
+            let(:params) { { 'upload[url]' => 'whatever' } }
+          end
+        end
+
+        it 'starts' do
+          allow_any_instance_of(Import::AfterExportStrategies::WebUploadStrategy).to receive(:send_file)
+
+          request do
+            let(:params) { { 'upload[url]' => 'http://gitlab.com' } }
+          end
+
+          expect(response).to have_gitlab_http_status(:accepted)
+        end
+      end
+
+      context 'with download strategy' do
+        before do
+          Grape::Endpoint.before_each do |endpoint|
+            allow(endpoint).to receive(:user_project).and_return(project)
+          end
+        end
+
+        after do
+          Grape::Endpoint.before_each nil
+        end
+
+        it 'starts' do
+          expect_any_instance_of(Import::AfterExportStrategies::WebUploadStrategy).not_to receive(:send_file)
+
+          request
+
+          expect(response).to have_gitlab_http_status(:accepted)
+        end
+
+        it 'removes previously exported archive file' do
+          expect(project).to receive(:remove_export_for_user).with(user).once
+
+          request
+        end
+      end
+    end
+
+    it_behaves_like 'when project export is disabled'
+
+    context 'when project export is enabled' do
+      context 'when user is an admin' do
+        let(:user) { admin }
+        let(:admin_mode) { true }
+
+        it_behaves_like 'post project export start' do
+          let(:admin_mode) { true }
+        end
+
+        context 'with project export size limit' do
+          before do
+            stub_application_setting(max_export_size: 1)
+          end
+
+          it 'starts if limit not exceeded' do
+            request
+
+            expect(response).to have_gitlab_http_status(:accepted)
+          end
+
+          it '400 response if limit exceeded' do
+            project.statistics.update!(lfs_objects_size: 2.megabytes, repository_size: 2.megabytes)
+
+            request
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response["message"]).to include('The project size exceeds the export limit.')
+          end
+        end
+
+        context 'when export is already in progress' do
+          before do
+            allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+              .with(:project_export, scope: { user: user }).and_return(false)
+          end
+
+          it '400 response if export already queued' do
+            create(:project_export_job, :queued, project: project, user: user)
+
+            request
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response["message"]).to include('An export is already running or queued for this project.')
+          end
+
+          it '400 response if export already started' do
+            create(:project_export_job, :started, project: project, user: user)
+
+            request
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response["message"]).to include('An export is already running or queued for this project.')
+          end
+        end
+
+        context 'when rate limit is exceeded across projects' do
+          before do
+            allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+              .with(:project_export, scope: anything).and_return(true)
+          end
+
+          it 'prevents requesting project export' do
+            request
+
+            expect(response).to have_gitlab_http_status(:too_many_requests)
+            expect(json_response['message']['error']).to eq('This endpoint has been requested too many times. Try again later.')
+          end
+        end
+      end
+
+      context 'when user is a maintainer' do
+        before do
+          project.add_maintainer(user)
+          project_none.add_maintainer(user)
+          project_started.add_maintainer(user)
+          project_finished.add_maintainer(user)
+          project_after_export.add_maintainer(user)
+        end
+
+        it_behaves_like 'post project export start'
+
+        context 'with excluded_relations param' do
+          using RSpec::Parameterized::TableSyntax
+
+          around do |example|
+            Grape::Endpoint.before_each do |endpoint|
+              allow(endpoint).to receive(:user_project).and_return(project)
+            end
+
+            example.run
+          ensure
+            Grape::Endpoint.before_each nil
+          end
+
+          before do
+            allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+              .with(:project_export, scope: { user: user }).and_return(false)
+          end
+
+          it 'passes excluded_relations to add_export_job' do
+            expect(project).to receive(:add_export_job).with(
+              current_user: user,
+              after_export_strategy: nil,
+              params: hash_including(excluded_relations: %w[merge_requests issues])
+            )
+
+            post api(path, user), params: { excluded_relations: %w[merge_requests issues] }
+
+            expect(response).to have_gitlab_http_status(:accepted)
+          end
+
+          it 'returns 400 for unknown relation names' do
+            post api(path, user), params: { excluded_relations: %w[merge_requests totally_invalid_relation] }
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to include('totally_invalid_relation')
+          end
+
+          it 'works without excluded_relations param' do
+            post api(path, user), params: {}
+
+            expect(response).to have_gitlab_http_status(:accepted)
+          end
+
+          it 'accepts uploads and lfs_objects and passes them to add_export_job' do
+            expect(project).to receive(:add_export_job).with(
+              current_user: user,
+              after_export_strategy: nil,
+              params: hash_including(excluded_relations: %w[uploads lfs_objects])
+            )
+
+            post api(path, user), params: { excluded_relations: %w[uploads lfs_objects] }
+
+            expect(response).to have_gitlab_http_status(:accepted)
+          end
+
+          it 'enqueues the relation exports with the excluded relations' do
+            expect(Projects::ImportExport::CreateRelationExportsWorker).to receive(:perform_async).with(
+              user.id,
+              project.id,
+              nil,
+              hash_including('excluded_relations' => %w[uploads lfs_objects])
+            )
+
+            post api(path, user), params: { excluded_relations: %w[uploads lfs_objects] }
+
+            expect(response).to have_gitlab_http_status(:accepted)
+          end
+
+          context 'with a relation that can be excluded' do
+            where(:relation) do
+              [['uploads'], ['lfs_objects'], ['avatar'], ['wiki_repository'], ['merge_requests'], ['commit_notes']]
+            end
+
+            with_them do
+              it 'returns the same status as an export without excluded relations' do
+                expect(project).to receive(:add_export_job)
+
+                post api(path, user), params: { excluded_relations: [relation] }
+
+                expect(response).to have_gitlab_http_status(:accepted)
+              end
+            end
+          end
+
+          context 'with a relation that must not be excluded' do
+            where(:relation) do
+              [['project'], ['repository'], ['snippets_repository'], ['design_repository']]
+            end
+
+            with_them do
+              it 'returns 400 and does not start an export' do
+                expect(project).not_to receive(:add_export_job)
+
+                post api(path, user), params: { excluded_relations: [relation] }
+
+                expect(response).to have_gitlab_http_status(:bad_request)
+                expect(json_response['message']).to eq("Invalid excluded_relations: #{relation}")
+              end
+            end
+          end
+
+          it 'returns 400 with the unknown relation name' do
+            expect(project).not_to receive(:add_export_job)
+
+            post api(path, user), params: { excluded_relations: %w[totally_invalid_relation] }
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to eq('Invalid excluded_relations: totally_invalid_relation')
+          end
+
+          it 'returns 400 listing only the invalid names when valid extra relations are sent along' do
+            expect(project).not_to receive(:add_export_job)
+
+            post api(path, user), params: { excluded_relations: %w[uploads totally_invalid_relation lfs_objects project] }
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to eq('Invalid excluded_relations: totally_invalid_relation, project')
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :create_project_export do
+          let(:boundary_object) { project }
+          let(:request) { post api(path, personal_access_token: pat) }
+        end
+      end
+
+      context 'when user is a developer' do
+        before do
+          project.add_developer(user)
+        end
+
+        it_behaves_like 'post project export start denied'
+      end
+
+      context 'when user is a reporter' do
+        before do
+          project.add_reporter(user)
+        end
+
+        it_behaves_like 'post project export start denied'
+      end
+
+      context 'when user is a guest' do
+        before do
+          project.add_guest(user)
+        end
+
+        it_behaves_like 'post project export start denied'
+      end
+
+      context 'when user is not a member' do
+        it_behaves_like 'post project export start not found'
+      end
+
+      context 'when overriding description' do
+        let(:params) { { description: "Foo" } }
+
+        it 'enqueues CreateRelationExportsWorker' do
+          expect(Projects::ImportExport::CreateRelationExportsWorker).to receive(:perform_async).with(
+            project.first_owner.id,
+            project.id,
+            nil,
+            { 'description' => 'Foo', 'exported_by_admin' => false }
+          )
+
+          post api(path, project.first_owner), params: params
+          expect(response).to have_gitlab_http_status(:accepted)
+        end
+      end
+    end
+  end
+
+  describe 'export relations' do
+    let(:relation) { 'labels' }
+    let(:download_path) { "/projects/#{project.id}/export_relations/download?relation=#{relation}" }
+    let(:path) { "/projects/#{project.id}/export_relations" }
+
+    let_it_be(:status_path) { "/projects/#{project.id}/export_relations/status" }
+
+    before do
+      stub_application_setting(bulk_import_enabled: true)
+    end
+
+    context 'when user is a maintainer' do
+      before do
+        project.add_maintainer(user)
+      end
+
+      describe 'POST /projects/:id/export_relations' do
+        it 'accepts the request' do
+          post api(path, user)
+
+          expect(response).to have_gitlab_http_status(:accepted)
+        end
+
+        it 'creates new audit event' do
+          expect(::Import::BulkImports::Audit::Auditor)
+            .to receive(:new)
+            .with(
+              event_name: ::Import::BulkImports::Audit::Events::EXPORT_INITIATED,
+              event_message: 'Direct Transfer relations export initiated',
+              current_user: user,
+              scope: project
+            )
+
+          post api(path, user)
+        end
+
+        context 'when response is not success' do
+          before do
+            allow_next_instance_of(BulkImports::ExportService) do |service|
+              allow(service).to receive(:execute).and_return(ServiceResponse.error(message: 'error', http_status: :error))
+            end
+          end
+
+          it 'returns api error' do
+            post api(path, user)
+
+            expect(response).to have_gitlab_http_status(:error)
+          end
+
+          it 'does not create audit event' do
+            expect(::Import::BulkImports::Audit::Auditor).not_to receive(:new)
+
+            post api(path, user)
+          end
+        end
+
+        context 'when request is to export in batches' do
+          it 'accepts the request' do
+            expect(BulkImports::ExportService)
+              .to receive(:new)
+              .with(portable: project, user: user, batched: true)
+              .and_call_original
+
+            post api(path, user), params: { batched: true }
+
+            expect(response).to have_gitlab_http_status(:accepted)
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :create_project_relation_export do
+          let(:boundary_object) { project }
+          let(:request) { post api(path, personal_access_token: pat) }
+        end
+      end
+
+      describe 'GET /projects/:id/export_relations/download' do
+        context 'when export request is not batched' do
+          let_it_be_with_reload(:export) { create(:bulk_import_export, project: project, relation: 'labels', user: user) }
+          let_it_be_with_reload(:upload) { create(:bulk_import_export_upload, export: export) }
+
+          it_behaves_like 'authorizing granular token permissions', :download_project_relation_export do
+            before do
+              upload.update!(export_file: fixture_file_upload('spec/fixtures/bulk_imports/gz/labels.ndjson.gz'))
+            end
+
+            let(:boundary_object) { project }
+            let(:request) { get api(download_path, personal_access_token: pat) }
+          end
+
+          context 'when export file exists' do
+            it 'downloads exported project relation archive' do
+              upload.update!(export_file: fixture_file_upload('spec/fixtures/bulk_imports/gz/labels.ndjson.gz'))
+
+              get api(download_path, user)
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(response.header['Content-Disposition']).to eq("attachment; filename=\"labels.ndjson.gz\"; filename*=UTF-8''labels.ndjson.gz")
+            end
+
+            it 'creates new audit event' do
+              upload.update!(export_file: fixture_file_upload('spec/fixtures/bulk_imports/gz/labels.ndjson.gz'))
+
+              expect(::Import::BulkImports::Audit::Auditor)
+                .to receive(:new)
+                .with(
+                  event_name: ::Import::BulkImports::Audit::Events::EXPORT_DOWNLOADED,
+                  event_message: 'Direct Transfer relation export downloaded',
+                  current_user: user,
+                  scope: project
+                )
+
+              get api(download_path, user)
+            end
+          end
+
+          context 'when relation is not portable' do
+            let(:relation) { ::BulkImports::FileTransfer::ProjectConfig.new(project).skipped_relations.first }
+
+            it_behaves_like '400 response' do
+              subject(:request) { get api(download_path, user) }
+            end
+          end
+
+          context 'when export file does not exist' do
+            it 'returns 404' do
+              allow(upload).to receive(:export_file).and_return(nil)
+
+              get api(download_path, user)
+
+              expect(response).to have_gitlab_http_status(:not_found)
+            end
+          end
+
+          context 'when export is batched' do
+            let(:relation) { 'issues' }
+
+            let_it_be_with_reload(:export) { create(:bulk_import_export, :batched, project: project, relation: 'issues', user: user) }
+
+            it 'returns 400' do
+              export.update!(batched: true)
+
+              get api(download_path, user)
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+              expect(json_response['message']).to eq('Export is batched')
+            end
+          end
+        end
+
+        context 'when export request is batched' do
+          let(:export) { create(:bulk_import_export, :batched, project: project, relation: 'labels', user: user) }
+          let(:upload) { create(:bulk_import_export_upload) }
+          let!(:batch) { create(:bulk_import_export_batch, export: export, upload: upload) }
+
+          it 'downloads exported batch' do
+            upload.update!(export_file: fixture_file_upload('spec/fixtures/bulk_imports/gz/labels.ndjson.gz'))
+
+            get api(download_path, user), params: { batched: true, batch_number: batch.batch_number }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response.header['Content-Disposition']).to eq("attachment; filename=\"labels.ndjson.gz\"; filename*=UTF-8''labels.ndjson.gz")
+          end
+
+          it 'creates new audit event' do
+            upload.update!(export_file: fixture_file_upload('spec/fixtures/bulk_imports/gz/labels.ndjson.gz'))
+
+            expect(::Import::BulkImports::Audit::Auditor)
+              .to receive(:new)
+              .with(
+                event_name: ::Import::BulkImports::Audit::Events::EXPORT_BATCH_DOWNLOADED,
+                event_message: 'Direct Transfer relation export batch downloaded',
+                current_user: user,
+                scope: project
+              )
+
+            get api(download_path, user), params: { batched: true, batch_number: batch.batch_number }
+          end
+
+          context 'when request is to download not batched export' do
+            it 'returns 400' do
+              get api(download_path, user)
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+              expect(json_response['message']).to eq('Export is batched')
+            end
+          end
+
+          context 'when batch cannot be found' do
+            it 'returns 404' do
+              get api(download_path, user), params: { batched: true, batch_number: 0 }
+
+              expect(response).to have_gitlab_http_status(:not_found)
+              expect(json_response['message']).to eq('Batch not found')
+            end
+          end
+
+          context 'when batch file cannot be found' do
+            it 'returns 404' do
+              batch.upload.destroy!
+
+              get api(download_path, user), params: { batched: true, batch_number: batch.batch_number }
+
+              expect(response).to have_gitlab_http_status(:not_found)
+              expect(json_response['message']).to eq('Batch file not found')
+            end
+          end
+        end
+
+        context 'when export is from an offline transfer export' do
+          let_it_be_with_reload(:export) { create(:bulk_import_export, :offline, project: project, relation: 'labels', user: user) }
+
+          it 'returns 404' do
+            get api(download_path, user)
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+
+      describe 'GET /projects/:id/export_relations/status' do
+        let_it_be(:started_export) { create(:bulk_import_export, :started, project: project, relation: 'labels', user: user) }
+        let_it_be(:finished_export) { create(:bulk_import_export, :finished, project: project, relation: 'milestones', user: user) }
+        let_it_be(:failed_export) { create(:bulk_import_export, :failed, project: project, relation: 'project_badges', user: user) }
+
+        it 'returns a list of relation export statuses' do
+          get api(status_path, user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('relation')).to contain_exactly('labels', 'milestones', 'project_badges')
+          expect(json_response.pluck('status')).to contain_exactly(-1, 0, 1)
+          expect(json_response.pluck('batched')).to all(be(false))
+          expect(json_response.pluck('batches_count')).to all(eq(0))
+        end
+
+        context 'when relation is specified' do
+          it 'return a single relation export status' do
+            get api(status_path, user), params: { relation: 'labels' }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response['relation']).to eq('labels')
+            expect(json_response['status']).to eq(0)
+          end
+        end
+
+        context 'when there is a batched export' do
+          let_it_be(:batched_export) do
+            create(:bulk_import_export, :started, :batched, project: project, relation: 'issues', batches_count: 1, user: user)
+          end
+
+          let_it_be(:batch) { create(:bulk_import_export_batch, objects_count: 5, export: batched_export) }
+
+          it 'returns a list of batched relation export statuses' do
+            get api(status_path, user)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response).to include(
+              hash_including(
+                'relation' => batched_export.relation,
+                'batched' => true,
+                'batches_count' => 1,
+                'batches' => contain_exactly(
+                  {
+                    'batch_number' => 1,
+                    'error' => nil,
+                    'objects_count' => batch.objects_count,
+                    'status' => batch.status,
+                    'updated_at' => batch.updated_at.as_json
+                  }
+                )
+              )
+            )
+          end
+        end
+
+        context 'when the export was started by another user' do
+          let_it_be(:other_user) { create(:user) }
+
+          before_all do
+            project.add_maintainer(other_user)
+          end
+
+          it 'returns not_found when a relation was specified' do
+            get api(status_path, other_user), params: { relation: 'labels' }
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+
+          it 'does not appear in the list of all statuses' do
+            get api(status_path, other_user)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response).to be_empty
+          end
+        end
+
+        context 'when exports exist from offline transfer exports' do
+          let_it_be(:offline_self_export) do
+            create(:bulk_import_export, :pending, :offline, project: project, relation: 'self', user: user)
+          end
+
+          it 'returns not_found when a relation not yet exported by direct transfer was specified' do
+            get api(status_path, user), params: { relation: 'self' }
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+
+          it 'does not return offline transfer relation ExportService in the list of all statuses' do
+            get api(status_path, user)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.pluck('relation')).not_to include('self')
+            expect(json_response.pluck('status')).not_to include(-2)
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_project_relation_export do
+          let(:boundary_object) { project }
+          let(:request) { get api(status_path, personal_access_token: pat) }
+        end
+      end
+
+      context 'with bulk_import is disabled' do
+        before do
+          stub_application_setting(bulk_import_enabled: false)
+        end
+
+        describe 'POST /projects/:id/export_relations' do
+          subject(:request) { post api(path, user) }
+
+          it_behaves_like '404 response' do
+            let(:message) { '404 Not Found' }
+          end
+        end
+
+        describe 'GET /projects/:id/export_relations/download' do
+          let_it_be_with_reload(:export) { create(:bulk_import_export, project: project, relation: 'labels', user: user) }
+          let_it_be_with_reload(:upload) { create(:bulk_import_export_upload, export: export) }
+
+          subject(:request) { get api(download_path, user) }
+
+          before do
+            upload.update!(export_file: fixture_file_upload('spec/fixtures/bulk_imports/gz/labels.ndjson.gz'))
+          end
+
+          it_behaves_like '404 response' do
+            let(:message) { '404 Not Found' }
+          end
+        end
+
+        describe 'GET /projects/:id/export_relations/status' do
+          subject(:request) { get api(status_path, user) }
+
+          it_behaves_like '404 response' do
+            let(:message) { '404 Not Found' }
+          end
+        end
+      end
+    end
+
+    context 'when user is a developer' do
+      let_it_be(:developer) { create(:user) }
+
+      before do
+        project.add_developer(developer)
+      end
+
+      describe 'POST /projects/:id/export_relations' do
+        it_behaves_like '403 response' do
+          subject(:request) { post api(path, developer) }
+        end
+      end
+
+      describe 'GET /projects/:id/export_relations/download' do
+        it_behaves_like '403 response' do
+          subject(:request) { get api(download_path, developer) }
+        end
+      end
+
+      describe 'GET /projects/:id/export_relations/status' do
+        it_behaves_like '403 response' do
+          subject(:request) { get api(status_path, developer) }
+        end
+      end
+    end
+  end
+end

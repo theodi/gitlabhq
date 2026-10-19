@@ -1,0 +1,27 @@
+---
+# Cop supports --autocorrect.
+Layout/LineBreakAfterFinalMixin:
+  Exclude:
+    - 'app/workers/concurrency_limit/resume_worker.rb'
+    - 'app/workers/members/expiring_worker.rb'
+    - 'app/workers/metrics/global_metrics_update_worker.rb'
+    - 'app/workers/namespaces/process_outdated_namespace_descendants_cron_worker.rb'
+    - 'app/workers/object_storage/delete_stale_direct_uploads_worker.rb'
+    - 'app/workers/prune_old_events_worker.rb'
+    - 'app/workers/purge_dependency_proxy_cache_worker.rb'
+    - 'app/workers/remove_unreferenced_lfs_objects_worker.rb'
+    - 'app/workers/repository_archive_cache_worker.rb'
+    - 'app/workers/stuck_export_jobs_worker.rb'
+    - 'app/workers/user_status_cleanup/batch_worker.rb'
+    - 'app/workers/users/create_statistics_worker.rb'
+    - 'ee/app/workers/active_user_count_threshold_worker.rb'
+    - 'ee/app/workers/analytics/value_stream_dashboard/count_worker.rb'
+    - 'ee/app/workers/arkose/blocked_users_report_worker.rb'
+    - 'ee/app/workers/gitlab_subscriptions/notify_seats_exceeded_batch_worker.rb'
+    - 'ee/app/workers/historical_data_worker.rb'
+    - 'ee/app/workers/ldap_all_groups_sync_worker.rb'
+    - 'ee/app/workers/okrs/checkin_reminder_emails_cron_worker.rb'
+    - 'ee/app/workers/security/create_orchestration_policy_worker.rb'
+    - 'ee/app/workers/sync_seat_link_worker.rb'
+    - 'ee/app/workers/vulnerabilities/historical_statistics/deletion_worker.rb'
+    - 'ee/app/workers/vulnerabilities/statistics/schedule_worker.rb'

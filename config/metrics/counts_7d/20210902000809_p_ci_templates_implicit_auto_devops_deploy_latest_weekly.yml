@@ -1,0 +1,23 @@
+---
+key_path: redis_hll_counters.ci_templates.p_ci_templates_implicit_auto_devops_deploy_latest_weekly
+description: Count of pipelines using the latest Auto Deploy template
+product_group: environments
+product_categories:
+- auto_devops
+value_type: number
+status: removed
+milestone: '14.3'
+milestone_removed: '14.6'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/69204
+time_frame: 7d
+data_source: redis_hll
+data_category: optional
+instrumentation_class: RedisHLLMetric
+tiers:
+- free
+- premium
+- ultimate
+options:
+  events:
+  - p_ci_templates_implicit_auto_devops_deploy_latest
+removed_by_url:

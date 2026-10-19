@@ -1,0 +1,115 @@
+<script>
+import { GlTooltipDirective } from '@gitlab/ui';
+import { __ } from '~/locale';
+import {
+  destroyUserCountsManager,
+  createUserCountsManager,
+  userCounts,
+  useCachedUserCounts,
+} from '~/super_sidebar/user_counts_manager';
+import { fetchUserCounts } from '~/super_sidebar/user_counts_fetch';
+import {
+  issuesDashboardPath,
+  dashboardTodosPath,
+  mergeRequestsDashboardPath,
+} from '~/lib/utils/path_helpers/dashboard';
+import Counter from './counter.vue';
+
+export default {
+  name: 'UserCounts',
+  components: {
+    Counter,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  props: {
+    sidebarData: {
+      type: Object,
+      required: true,
+    },
+  },
+  i18n: {
+    mergeRequests: __('Merge requests'),
+    todoList: __('To-do items'),
+    workItems: __('Assigned work items'),
+  },
+  computed: {
+    userCounts() {
+      return userCounts;
+    },
+    mergeRequestsDashboardPath() {
+      return mergeRequestsDashboardPath({ organizationPath: null });
+    },
+    dashboardTodosPath() {
+      return dashboardTodosPath({ organizationPath: null });
+    },
+  },
+  created() {
+    Object.assign(userCounts, this.sidebarData.user_counts);
+    createUserCountsManager();
+
+    if (
+      userCounts.assigned_merge_requests === null ||
+      userCounts.review_requested_merge_requests === null
+    ) {
+      useCachedUserCounts();
+      fetchUserCounts();
+    }
+  },
+  beforeDestroy() {
+    destroyUserCountsManager();
+  },
+  methods: {
+    issuesPathWithUser() {
+      return issuesDashboardPath({
+        assignee_username: this.sidebarData.username,
+        organizationPath: null,
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="gl-flex gl-items-center gl-justify-between">
+    <counter
+      v-gl-tooltip.bottom="$options.i18n.workItems"
+      class="dashboard-shortcuts-issues gl-basis-1/3"
+      icon="work-items"
+      :count="userCounts.assigned_issues"
+      :href="issuesPathWithUser()"
+      :label="$options.i18n.workItems"
+      data-testid="issues-shortcut-button"
+      data-track-action="click_link"
+      data-track-label="issues_link"
+      data-track-property="nav_core_menu"
+    />
+    <div class="!gl-block gl-basis-1/3">
+      <counter
+        v-gl-tooltip.bottom="$options.i18n.mergeRequests"
+        class="js-merge-request-dashboard-shortcut gl-w-full"
+        icon="merge-request"
+        :href="mergeRequestsDashboardPath"
+        :count="userCounts.total_merge_requests"
+        :label="$options.i18n.mergeRequests"
+        data-testid="merge-requests-shortcut-button"
+        data-track-action="click_dropdown"
+        data-track-label="merge_requests_menu"
+        data-track-property="nav_core_menu"
+      />
+    </div>
+    <counter
+      v-gl-tooltip.bottom="$options.i18n.todoList"
+      class="shortcuts-todos js-todos-count gl-basis-1/3"
+      icon="todo-done"
+      :count="userCounts.todos"
+      :href="dashboardTodosPath"
+      :label="$options.i18n.todoList"
+      data-testid="todos-shortcut-button"
+      data-track-action="click_link"
+      data-track-label="todos_link"
+      data-track-property="nav_core_menu"
+    />
+  </div>
+</template>

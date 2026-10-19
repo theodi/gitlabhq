@@ -1,0 +1,16 @@
+- only_key_value = local_assigns.fetch(:only_key_value, false)
+
+%li{ class: "@sm/panel:gl-block ci-variable-row !gl-m-0 gl-hidden" }
+  %div{ class: "gl-flex gl-w-full gl-items-center !gl-pb-3" }
+    .gl-font-bold.table-section.section-15.gl-mr-3
+      = s_('CiVariables|Type')
+    .gl-font-bold.table-section.section-15.gl-mr-3
+      = s_('CiVariables|Key')
+    .gl-font-bold.table-section.section-15.gl-mr-3
+      = s_('CiVariables|Value')
+    - unless only_key_value
+      .gl-font-bold.table-section.section-20
+        = s_('CiVariables|State')
+    .gl-font-bold.table-section.section-20
+      = s_('CiVariables|Masked')
+    = render_if_exists 'ci/variables/environment_scope_header'

@@ -1,0 +1,15 @@
+---
+table_name: duo_workflows_workflows
+classes:
+- Ai::DuoWorkflows::Workflow
+feature_categories:
+- duo_agent_platform
+description: Stores individual Duo Workflow runs initiated by users, tracking goal,
+  status, environment, agent privileges, and links to issues, merge requests, or projects.
+introduced_by_url:
+milestone: '17.2'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+  namespace_id: namespaces
+table_size: medium

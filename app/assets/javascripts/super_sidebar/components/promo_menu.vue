@@ -1,0 +1,135 @@
+<script>
+import {
+  GlButton,
+  GlDisclosureDropdown,
+  GlDisclosureDropdownGroup,
+  GlDisclosureDropdownItem,
+} from '@gitlab/ui';
+import { __, s__ } from '~/locale';
+import { PROMO_URL } from '~/constants';
+import { exploreRootPath } from '~/lib/utils/path_helpers/explore';
+import { newUserRegistrationPath, newUserSessionPath } from '~/lib/utils/path_helpers/routes';
+
+export default {
+  name: 'PromoMenu',
+  components: {
+    GlButton,
+    GlDisclosureDropdown,
+    GlDisclosureDropdownGroup,
+    GlDisclosureDropdownItem,
+  },
+  inject: ['isSaas'],
+  props: {
+    sidebarData: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    pricingUrl: {
+      type: String,
+      required: true,
+    },
+    allowSignUp: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  computed: {
+    exploreItem() {
+      return {
+        text: __('Explore'),
+        href: exploreRootPath({ organizationPath: null }),
+      };
+    },
+    items() {
+      if (!this.isSaas) {
+        return [{ ...this.exploreItem }];
+      }
+      return [
+        {
+          text: s__('LoggedOutMarketingHeader|Why GitLab'),
+          // eslint-disable-next-line @gitlab/no-hardcoded-urls -- promo/marketing site path used with PROMO_URL (about.gitlab.com)
+          href: this.promoUrl('/why-gitlab'),
+        },
+        {
+          text: s__('LoggedOutMarketingHeader|Pricing'),
+          href: this.pricingUrl,
+        },
+        {
+          text: s__('LoggedOutMarketingHeader|Contact Sales'),
+          // eslint-disable-next-line @gitlab/no-hardcoded-urls -- promo/marketing site path used with PROMO_URL (about.gitlab.com)
+          href: this.promoUrl('/sales'),
+          extraAttrs: {
+            dataMenuOnly: true,
+          },
+        },
+        { ...this.exploreItem },
+      ];
+    },
+    visibleItems() {
+      return this.items.filter((item) => !item.extraAttrs?.dataMenuOnly);
+    },
+  },
+  methods: {
+    newUserRegistrationPath() {
+      return newUserRegistrationPath({ organizationPath: null });
+    },
+    signInPath() {
+      return newUserSessionPath({ redirect_to_referer: 'yes', organizationPath: null });
+    },
+    promoUrl(url) {
+      return `${PROMO_URL}${url}`;
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="gl-flex gl-gap-3">
+    <div
+      class="gl-border-r gl-mx-2 gl-my-3 gl-block gl-h-5 gl-w-1 gl-border-r-strong sm:gl-hidden"
+    ></div>
+    <gl-disclosure-dropdown
+      icon="user"
+      category="tertiary"
+      :toggle-text="__('Menu')"
+      text-sr-only
+      no-caret
+      :items="items"
+      class="gl-block lg:gl-hidden"
+      toggle-class="!gl-rounded-full !gl-border !gl-border-strong"
+    >
+      <gl-disclosure-dropdown-group>
+        <div class="gl-flex gl-flex-col gl-gap-3 gl-px-4 gl-py-3">
+          <gl-button
+            v-if="allowSignUp"
+            :href="
+              isSaas && sidebarData.trial_registration_path
+                ? sidebarData.trial_registration_path
+                : newUserRegistrationPath()
+            "
+            variant="confirm"
+            class="topbar-signup-button gl-basis-1/2"
+            data-testid="topbar-signup-button"
+          >
+            {{ isSaas ? __('Get free trial') : __('Register') }}
+          </gl-button>
+          <gl-button :href="signInPath()" class="gl-basis-1/2" data-testid="topbar-signin-button">
+            {{ __('Sign in') }}
+          </gl-button>
+        </div>
+      </gl-disclosure-dropdown-group>
+      <gl-disclosure-dropdown-group bordered>
+        <gl-disclosure-dropdown-item v-for="item in items" :key="item.href" :item="item" />
+      </gl-disclosure-dropdown-group>
+    </gl-disclosure-dropdown>
+    <ul class="gl-m-0 gl-hidden gl-list-none gl-gap-2 gl-p-0 lg:gl-flex" data-testid="menu">
+      <li v-for="(item, index) in visibleItems" :key="index">
+        <gl-button :href="item.href" category="tertiary">
+          {{ item.text }}
+        </gl-button>
+      </li>
+    </ul>
+  </div>
+</template>

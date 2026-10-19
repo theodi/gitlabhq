@@ -1,0 +1,515 @@
+{
+  "vulnerabilities": [
+    {
+      "id": "vulnerability-1",
+      "category": "dependency_scanning",
+      "name": "Vulnerability for remediation testing 1",
+      "message": "This vulnerability should have ONE remediation",
+      "description": "",
+      "severity": "High",
+      "solution": "Upgrade to latest version.",
+      "scanner": {
+        "id": "gemnasium",
+        "name": "Gemnasium"
+      },
+      "cvss_vectors": [
+        {
+          "vendor": "GitLab",
+          "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"
+        }
+      ],
+      "location": {
+        "file": "some/kind/of/file.c",
+        "dependency": {
+          "package": {
+            "name": "io.netty/netty"
+          },
+          "version": "3.9.1.Final"
+        }
+      },
+      "identifiers": [
+        {
+          "type": "GitLab",
+          "name": "Foo vulnerability",
+          "value": "foo"
+        }
+      ],
+      "links": [
+        {
+          "url": "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-2137"
+        }
+      ],
+      "details": {
+        "commit": {
+          "name": "the commit",
+          "description": "description",
+          "type": "commit",
+          "value": "41df7b7eb3be2b5be2c406c2f6d28cd6631eeb19"
+        }
+      }
+    },
+    {
+      "id": "vulnerability-2",
+      "category": "dependency_scanning",
+      "name": "Vulnerability for remediation testing 2",
+      "message": "This vulnerability should have ONE remediation",
+      "description": "",
+      "severity": "High",
+      "solution": "Upgrade to latest version.",
+      "scanner": {
+        "id": "gemnasium",
+        "name": "Gemnasium"
+      },
+      "location": {
+        "file": "some/kind/of/file.c",
+        "dependency": {
+          "package": {
+            "name": "io.netty/netty"
+          },
+          "version": "3.9.1.Final"
+        }
+      },
+      "identifiers": [
+        {
+          "type": "GitLab",
+          "name": "Foo vulnerability",
+          "value": "foo"
+        }
+      ],
+      "links": [
+        {
+          "url": "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-2138"
+        }
+      ],
+      "details": {
+        "commit": {
+          "name": "the commit",
+          "description": "description",
+          "type": "commit",
+          "value": "41df7b7eb3be2b5be2c406c2f6d28cd6631eeb19"
+        }
+      }
+    },
+    {
+      "id": "vulnerability-3",
+      "category": "dependency_scanning",
+      "name": "Vulnerability for remediation testing 3",
+      "message": "Remediation for this vulnerability should remediate CVE-2140 as well",
+      "description": "",
+      "severity": "High",
+      "solution": "Upgrade to latest version.",
+      "scanner": {
+        "id": "gemnasium",
+        "name": "Gemnasium"
+      },
+      "location": {
+        "file": "some/kind/of/file.c",
+        "dependency": {
+          "package": {
+            "name": "io.netty/netty"
+          },
+          "version": "3.9.1.Final"
+        }
+      },
+      "identifiers": [
+        {
+          "type": "GitLab",
+          "name": "Foo vulnerability",
+          "value": "foo"
+        }
+      ],
+      "links": [
+        {
+          "url": "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-2139"
+        }
+      ],
+      "details": {
+        "commit": {
+          "name": "the commit",
+          "description": "description",
+          "type": "commit",
+          "value": "41df7b7eb3be2b5be2c406c2f6d28cd6631eeb19"
+        }
+      }
+    },
+    {
+      "id": "vulnerability-4",
+      "category": "dependency_scanning",
+      "name": "Vulnerability for remediation testing 4",
+      "message": "Remediation for this vulnerability should remediate CVE-2139 as well",
+      "description": "",
+      "severity": "High",
+      "solution": "Upgrade to latest version.",
+      "scanner": {
+        "id": "gemnasium",
+        "name": "Gemnasium"
+      },
+      "location": {
+        "file": "some/kind/of/file.c",
+        "dependency": {
+          "package": {
+            "name": "io.netty/netty"
+          },
+          "version": "3.9.1.Final"
+        }
+      },
+      "identifiers": [
+        {
+          "type": "GitLab",
+          "name": "Foo vulnerability",
+          "value": "foo"
+        }
+      ],
+      "links": [
+        {
+          "url": "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-2140"
+        }
+      ],
+      "details": {
+        "commit": {
+          "name": "the commit",
+          "description": "description",
+          "type": "commit",
+          "value": "41df7b7eb3be2b5be2c406c2f6d28cd6631eeb19"
+        }
+      }
+    },
+    {
+      "id": "vulnerability-5",
+      "category": "dependency_scanning",
+      "name": "Vulnerabilities in libxml2",
+      "message": "Vulnerabilities in libxml2 in nokogiri",
+      "description": "",
+      "severity": "High",
+      "solution": "Upgrade to latest version.",
+      "scanner": {
+        "id": "gemnasium",
+        "name": "Gemnasium"
+      },
+      "evidence": {
+        "source": {
+          "id": "assert:CORS - Bad 'Origin' value",
+          "name": "CORS - Bad 'Origin' value"
+        },
+        "summary": "The Origin header was changed to an invalid value of http://peachapisecurity.com and the response contained an Access-Control-Allow-Origin header which included this invalid Origin, indicating that the CORS configuration on the server is overly permissive.\n\n\n",
+        "request": {
+          "headers": [
+            {
+              "name": "Host",
+              "value": "127.0.0.1:7777"
+            }
+          ],
+          "method": "GET",
+          "url": "http://127.0.0.1:7777/api/users",
+          "body": ""
+        },
+        "response": {
+          "headers": [
+            {
+              "name": "Server",
+              "value": "TwistedWeb/20.3.0"
+            }
+          ],
+          "reason_phrase": "OK",
+          "status_code": 200,
+          "body": "[{\"user_id\":1,\"user\":\"admin\",\"first\":\"Joe\",\"last\":\"Smith\",\"password\":\"Password!\"}]"
+        },
+        "supporting_messages": [
+          {
+            "name": "Origional",
+            "request": {
+              "headers": [
+                {
+                  "name": "Host",
+                  "value": "127.0.0.1:7777"
+                }
+              ],
+              "method": "GET",
+              "url": "http://127.0.0.1:7777/api/users",
+              "body": ""
+            }
+          },
+          {
+            "name": "Recorded",
+            "request": {
+              "headers": [
+                {
+                  "name": "Host",
+                  "value": "127.0.0.1:7777"
+                }
+              ],
+              "method": "GET",
+              "url": "http://127.0.0.1:7777/api/users",
+              "body": ""
+            },
+            "response": {
+              "headers": [
+                {
+                  "name": "Server",
+                  "value": "TwistedWeb/20.3.0"
+                }
+              ],
+              "reason_phrase": "OK",
+              "status_code": 200,
+              "body": "[{\"user_id\":1,\"user\":\"admin\",\"first\":\"Joe\",\"last\":\"Smith\",\"password\":\"Password!\"}]"
+            }
+          }
+        ]
+      },
+      "location": {
+        "file": "some/kind/of/file.c",
+        "dependency": {
+          "package": {
+            "name": "io.netty/netty"
+          },
+          "version": "3.9.1.Final"
+        }
+      },
+      "identifiers": [
+        {
+          "type": "GitLab",
+          "name": "Foo vulnerability",
+          "value": "foo"
+        }
+      ],
+      "links": [
+        {
+          "url": "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-1020"
+        }
+      ],
+      "details": {
+        "commit": {
+          "name": "the commit",
+          "description": "description",
+          "type": "commit",
+          "value": "41df7b7eb3be2b5be2c406c2f6d28cd6631eeb19"
+        }
+      }
+    },
+    {
+      "id": "vulnerability-6",
+      "category": "dependency_scanning",
+      "name": "Regular Expression Denial of Service",
+      "message": "Regular Expression Denial of Service in debug",
+      "description": "",
+      "severity": "Unknown",
+      "solution": "Upgrade to latest versions.",
+      "scanner": {
+        "id": "gemnasium",
+        "name": "Gemnasium"
+      },
+      "evidence": {
+        "source": {
+          "id": "assert:CORS - Bad 'Origin' value",
+          "name": "CORS - Bad 'Origin' value"
+        },
+        "summary": "The Origin header was changed to an invalid value of http://peachapisecurity.com and the response contained an Access-Control-Allow-Origin header which included this invalid Origin, indicating that the CORS configuration on the server is overly permissive.\n\n\n",
+        "request": {
+          "headers": [
+            {
+              "name": "Host",
+              "value": "127.0.0.1:7777"
+            }
+          ],
+          "method": "GET",
+          "url": "http://127.0.0.1:7777/api/users",
+          "body": ""
+        },
+        "response": {
+          "headers": [
+            {
+              "name": "Server",
+              "value": "TwistedWeb/20.3.0"
+            }
+          ],
+          "reason_phrase": "OK",
+          "status_code": 200,
+          "body": "[{\"user_id\":1,\"user\":\"admin\",\"first\":\"Joe\",\"last\":\"Smith\",\"password\":\"Password!\"}]"
+        },
+        "supporting_messages": [
+          {
+            "name": "Origional",
+            "request": {
+              "headers": [
+                {
+                  "name": "Host",
+                  "value": "127.0.0.1:7777"
+                }
+              ],
+              "method": "GET",
+              "url": "http://127.0.0.1:7777/api/users",
+              "body": ""
+            }
+          },
+          {
+            "name": "Recorded",
+            "request": {
+              "headers": [
+                {
+                  "name": "Host",
+                  "value": "127.0.0.1:7777"
+                }
+              ],
+              "method": "GET",
+              "url": "http://127.0.0.1:7777/api/users",
+              "body": ""
+            },
+            "response": {
+              "headers": [
+                {
+                  "name": "Server",
+                  "value": "TwistedWeb/20.3.0"
+                }
+              ],
+              "reason_phrase": "OK",
+              "status_code": 200,
+              "body": "[{\"user_id\":1,\"user\":\"admin\",\"first\":\"Joe\",\"last\":\"Smith\",\"password\":\"Password!\"}]"
+            }
+          }
+        ]
+      },
+      "location": {
+        "file": "some/kind/of/file.c",
+        "dependency": {
+          "package": {
+            "name": "io.netty/netty"
+          },
+          "version": "3.9.1.Final"
+        }
+      },
+      "identifiers": [
+        {
+          "type": "GitLab",
+          "name": "Bar vulnerability",
+          "value": "bar"
+        }
+      ],
+      "links": [
+        {
+          "name": "CVE-1030",
+          "url": "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-1030"
+        }
+      ]
+    },
+    {
+      "id": "vulnerability-7",
+      "category": "dependency_scanning",
+      "name": "Authentication bypass via incorrect DOM traversal and canonicalization",
+      "message": "Authentication bypass via incorrect DOM traversal and canonicalization in saml2-js",
+      "description": "",
+      "cve": "yarn/yarn.lock:saml2-js:gemnasium:9952e574-7b5b-46fa-a270-aeb694198a98",
+      "severity": "Unknown",
+      "solution": "Upgrade to fixed version.\r\n",
+      "scanner": {
+        "id": "gemnasium",
+        "name": "Gemnasium"
+      },
+      "location": {
+        "file": "some/kind/of/file.c",
+        "dependency": {
+          "package": {
+            "name": "io.netty/netty"
+          },
+          "version": "3.9.1.Final"
+        }
+      },
+      "identifiers": [
+        {
+          "type": "GitLab",
+          "name": "Foo vulnerability",
+          "value": "foo"
+        }
+      ],
+      "links": [
+
+      ]
+    }
+  ],
+  "remediations": [
+    {
+      "fixes": [
+        {
+          "id": "vulnerability-1"
+        }
+      ],
+      "summary": "this remediates the first vulnerability",
+      "diff": "dG90YWxseSBsZWdpdCBkaWZm"
+    },
+    {
+      "fixes": [
+        {
+          "id": "vulnerability-2"
+        }
+      ],
+      "summary": "this remediates the second vulnerability",
+      "diff": "dG90YWxseSBsZWdpdCBkaWZm"
+    },
+    {
+      "fixes": [
+        {
+          "id": "vulnerability-3"
+        },
+        {
+          "id": "vulnerability-4"
+        }
+      ],
+      "summary": "this remediates the third and fourth vulnerability",
+      "diff": "dG90YWxseSBsZWdpdGltYXRlIGRpZmYsIDEwLzEwIHdvdWxkIGFwcGx5"
+    },
+    {
+      "fixes": [
+        {
+          "id": "vulnerability-5"
+        }
+      ],
+      "summary": "this fixes the fifth vulnerability",
+      "diff": "dG90YWxseSBsZWdpdGltYXRlIGRpZmYsIDEwLzEwIHdvdWxkIGFwcGx5"
+    },
+    {
+      "fixes": [
+        {
+          "id": "vulnerability-6"
+        }
+      ],
+      "summary": "this fixes CVE",
+      "diff": "dG90YWxseSBsZWdpdGltYXRlIGRpZmYsIDEwLzEwIHdvdWxkIGFwcGx5"
+    },
+    {
+      "fixes": [
+        {
+          "id": "vulnerability-6"
+        }
+      ],
+      "summary": "this fixed CVE",
+      "diff": "dG90YWxseSBsZWdpdGltYXRlIGRpZmYsIDEwLzEwIHdvdWxkIGFwcGx5"
+    }
+  ],
+  "dependency_files": [
+
+  ],
+  "scan": {
+    "analyzer": {
+      "id": "common-analyzer",
+      "name": "Common Analyzer",
+      "url": "https://site.com/analyzer/common",
+      "version": "2.0.1",
+      "vendor": {
+        "name": "Common"
+      }
+    },
+    "scanner": {
+      "id": "gemnasium",
+      "name": "Gemnasium top-level",
+      "url": "https://gitlab.com/gitlab-org/security-products/analyzers/gemnasium-maven",
+      "vendor": {
+        "name": "GitLab"
+      },
+      "version": "2.18.0"
+    },
+    "type": "dependency_scanning",
+    "start_time": "2022-08-10T21:37:00",
+    "end_time": "2022-08-10T21:38:00",
+    "status": "success"
+  },
+  "version": "14.0.2"
+}

@@ -1,0 +1,15 @@
+---
+name: create_service_account
+description: Grants the ability to create service accounts
+boundaries:
+  - project
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - create_service_account
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

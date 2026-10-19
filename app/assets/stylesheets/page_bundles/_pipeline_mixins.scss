@@ -1,0 +1,38 @@
+/**
+ Action icons inside dropdowns:
+ - dropdown in big graph
+*/
+@mixin pipeline-graph-dropdown-menu() {
+  max-height: $gl-max-dropdown-max-height;
+
+  .ci-action-icon-container {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+
+    &.ci-action-icon-wrapper {
+      height: $ci-action-dropdown-button-size;
+      width: $ci-action-dropdown-button-size;
+      border-radius: 50%;
+      display: block;
+
+      &:hover {
+        @apply gl-bg-strong;
+      }
+
+      // stylelint-disable-next-line gitlab/no-gl-class
+      .gl-spinner,
+      svg {
+        width: $ci-action-dropdown-svg-size;
+        height: $ci-action-dropdown-svg-size;
+        position: relative;
+        vertical-align: initial;
+      }
+    }
+  }
+
+  // SVGs in the pipeline graph
+  a.ci-action-icon-container.ci-action-icon-wrapper svg {
+    top: 5px;
+  }
+}

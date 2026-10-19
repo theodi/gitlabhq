@@ -1,0 +1,506 @@
+mapping:
+  # EE/FOSS app should map to respective spec
+  - source: '(?<prefix>ee/)?app/(?<rest>.+)\.rb'
+    test: '%{prefix}spec/%{rest}_spec.rb'
+
+  # EE extension should also map to its FOSS class spec
+  - source: 'ee/app/(?<directory>.*/)ee/(?<rest>.+)\.rb'
+    test:
+      - 'spec/%{directory}%{rest}_spec.rb'
+      # Some EE extensions also map to its EE class spec, but this is not recommended:
+      # https://docs.gitlab.com/ee/development/ee_features.html#testing-ee-features-based-on-ce-features
+      - 'ee/spec/%{directory}%{rest}_spec.rb'
+
+  # EE/FOSS lib should map to respective spec
+  - source: '(?<prefix>ee/)?lib/(?<rest>.+)\.rb'
+    test: '%{prefix}spec/lib/%{rest}_spec.rb'
+
+  # Map rake tasks to its respective specs
+  - source: '(?<prefix>ee/)?lib/tasks/(?<rest>.+)\.rake'
+    test: '%{prefix}spec/tasks/%{rest}_rake_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/368628
+  - source: '(?<prefix>ee/)?lib/gitlab/usage_data_counters/(?<rest>.+)\.rb'
+    test: 'spec/lib/gitlab/usage_data_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/54#note_1160811638
+  - source: '(?<prefix>ee/)?lib/gitlab/ci/config/(?<rest>.+)\.rb'
+    test: 'spec/lib/gitlab/ci/yaml_processor_spec.rb'
+  - source: 'ee/lib/gitlab/ci/config/(?<rest>.+)\.rb'
+    test: 'ee/spec/lib/gitlab/ci/yaml_processor_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_1987902951
+  - source: 'ee/lib/audit_events/strategies/(?<rest>.+)\.rb'
+    test: 'ee/spec/lib/audit_events/external_destination_streamer_spec.rb'
+
+  # FOSS tooling should map to respective spec
+  - source: 'tooling/(?<rest>.+)\.rb'
+    test: 'spec/tooling/%{rest}_spec.rb'
+
+  # Trigger tooling related specs when this file changes
+  - source: 'tests\.yml'
+    test:
+      - 'spec/tooling/lib/tooling/find_tests_spec.rb'
+      - 'spec/tooling/lib/tooling/predictive_tests_spec.rb'
+
+  # CI command span helper and exporter
+  - source:
+      - 'scripts/utils\.sh'
+      - 'scripts/ci/otel_span_exporter\.rb'
+    test:
+      - 'spec/scripts/ci/otel_span_shell_function_spec.rb'
+      - 'spec/scripts/ci/otel_span_exporter_spec.rb'
+
+  # RuboCop related specs
+  - source: 'rubocop/(?<rest>.+)\.rb'
+    test: 'spec/rubocop/%{rest}_spec.rb'
+
+  # .gitlab/ci related specs
+  - source: '.gitlab/ci/(?<rest>.+)\.gitlab-ci\.yml'
+    test: 'spec/dot_gitlab_ci/rules_spec.rb'
+
+  # The jest per-test-coverage generator mirrors the shard count of
+  # rspec-all frontend_fixture; run its spec when either side changes
+  - source:
+      - '.gitlab/ci/frontend\.gitlab-ci\.yml'
+      - '.gitlab/ci/per_test_coverage/jest_child_pipeline_template\.erb'
+      - 'scripts/generate_jest_pipeline\.rb'
+    test: 'spec/scripts/generate_jest_pipeline_spec.rb'
+
+  # The gems pipeline generator selects gems from the dependency graph
+  - source:
+      - 'tooling/bin/generate_gems_pipeline'
+      - 'tooling/lib/tooling/dependency_graph/generate_gems_pipeline\.rb'
+      - 'tooling/lib/tooling/dependency_graph/graph\.rb'
+    test: 'spec/tooling/lib/tooling/dependency_graph/generate_gems_pipeline_spec.rb'
+
+  # Map config to respective specs
+  - source: 'config/(?<rest>.+)\..*'
+    test: 'spec/config/%{rest}_spec.rb'
+
+  # The loose foreign keys config is validated by a spec that lives outside of
+  # spec/config/, so it needs an explicit mapping.
+  - source: 'config/gitlab_loose_foreign_keys\.yml'
+    test: 'spec/lib/gitlab/database/loose_foreign_keys_spec.rb'
+
+  # Initializers should map to respective spec
+  - source: 'config/initializers/(?<rest>.+)\.rb'
+    test: 'spec/initializers/%{rest}_spec.rb'
+
+  # DB structure should map to schema spec
+  - source: 'db/structure\.sql'
+    test: 'spec/db/schema_spec.rb'
+
+  # Migration should map to either timestamped or non-timestamped spec
+  - source: 'db/(?:post_)?migrate/(?:[0-9]+)_(?<name>.+)\.rb'
+    test: 'spec/migrations/%{name}_spec.rb'
+  - source: 'db/(?:post_)?migrate/(?<rest>[0-9]+_.+)\.rb'
+    test: 'spec/migrations/%{rest}_spec.rb'
+
+  # EE/FOSS views should map to respective spec
+  - source: '(?<prefix>ee/)?app/views/(?<rest>.+)\.haml'
+    test: '%{prefix}spec/views/%{rest}.haml_spec.rb'
+
+  # EE/FOSS controllers should map to request specs
+  - source: '(?<prefix>ee/)?app/controllers/(?<rest>.+)\.rb'
+    test: '%{prefix}spec/requests/%{rest}_spec.rb'
+
+  # EE/FOSS GraphQL resolvers map to request specs
+  - source: '(?<prefix>ee/)?app/graphql/resolvers/(?<rest>.+)_resolver\.rb'
+    test:
+      - '%{prefix}spec/requests/api/graphql/%{rest}_spec.rb'
+      - '%{prefix}spec/requests/api/graphql/%{rest}_query_spec.rb'
+
+  # EE/FOSS GraphQL mutations map to request specs
+  - source: '(?<prefix>ee/)?app/graphql/mutations/(?<rest>.+)\.rb'
+    test: '%{prefix}spec/requests/api/graphql/mutations/%{rest}_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/22561
+  - source:
+      - '(ee/)?app/assets/javascripts/.+\.graphql'
+      - '(ee/)?app/graphql/queries/.+\.graphql'
+    test:
+      - 'spec/graphql/all_queries_spec.rb'
+      - 'ee/spec/graphql/all_queries_spec.rb'
+
+  # vue3_migration.yml files and their sibling page index.js entrypoints are
+  # validated together (orphan and schema checks). A vue3_migration.yml is only
+  # valid next to an index.js, so a change to either can break the spec.
+  # See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/253552
+  - source:
+      - '(ee/|jh/)?app/assets/javascripts/pages/.+/vue3_migration\.yml'
+      - '(ee/|jh/)?app/assets/javascripts/pages/.+/index\.js'
+    test: 'spec/lib/gitlab/vue3_migration_files_spec.rb'
+
+  # EE/FOSS spec code should map to itself
+  - source: '(?<rest>.+_spec\.rb)'
+    test: '%{rest}'
+
+  # EE extension spec should map to its FOSS class spec
+  - source: 'ee/spec/(?<directory>.*/)ee/(?<rest>.+\.rb)'
+    test: 'spec/%{directory}%{rest}'
+
+  # Map spec support to corresponding support specs
+  - source: '(?<prefix>ee/)?spec/support/(?<rest>.+)\.rb'
+    test: '%{prefix}spec/support_specs/%{rest}_spec.rb'
+
+  # FOSS+EE factories map to FOSS/EE model specs
+  - source:
+      - '(?<prefix>ee/)?spec/factories/(?<model>.+)\.rb'
+      - '(?<prefix>ee/)?spec/factories/(?<model>.+)s\.rb'
+    test:
+      - 'spec/factories_specs/%{model}_spec.rb'
+      - '%{prefix}spec/factories_specs/%{model}_spec.rb'
+      - 'spec/models/%{model}_spec.rb'
+      - 'ee/spec/models/ee/%{model}_spec.rb'
+      - '%{prefix}spec/models/%{model}_spec.rb'
+      - '%{prefix}spec/models/%{prefix}%{model}_spec.rb'
+
+  # Whats New should map to its respective spec
+  - source: 'data/whats_new/\w*\.yml'
+    test: 'spec/lib/release_highlights/validator_spec.rb'
+
+  - source: '(?<prefix>ee/)?app/models/.+\.rb'
+    test: 'spec/models/every_model_spec.rb'
+
+  - source: '(?<prefix>ee/)?app/workers/.+\.rb'
+    test: 'spec/workers/every_sidekiq_worker_spec.rb'
+
+  # Mailer previews
+  - source: '(?<prefix>ee/)?app/mailers/(?<inner_prefix>ee/)?previews/.+\.rb'
+    test: 'spec/mailers/previews_spec.rb'
+
+  ## BEGIN Remote development GraphQL resolvers (in alphabetical order by resolver source file path)
+  - source: 'ee/app/graphql/resolvers/remote_development/workspaces_admin_resolver\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/workspace/*_spec.rb'
+      - 'ee/spec/requests/api/graphql/remote_development/workspaces/*_spec.rb'
+      - 'ee/spec/requests/api/graphql/remote_development/workspace_variables/*_spec.rb'
+
+  - source: 'ee/app/graphql/resolvers/remote_development/cluster_agent/workspaces_agent_config_resolver\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/cluster_agent/workspaces_agent_config/*_spec.rb'
+
+  - source: 'ee/app/graphql/resolvers/remote_development/cluster_agent/workspaces_resolver\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/cluster_agent/workspaces/*_spec.rb'
+      - 'ee/spec/requests/api/graphql/remote_development/workspace_variables/*_spec.rb'
+
+  - source: 'ee/app/graphql/resolvers/remote_development/workspaces_resolver\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/current_user/workspaces/*_spec.rb'
+      - 'ee/spec/requests/api/graphql/remote_development/workspace_variables/*_spec.rb'
+
+  - source: 'ee/app/graphql/resolvers/remote_development/namespace/cluster_agents_resolver\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/namespace/remote_development_cluster_agents/*_spec.rb'
+      - 'ee/spec/requests/api/graphql/remote_development/namespace/workspaces_cluster_agents/*_spec.rb'
+
+  - source: 'ee/app/graphql/resolvers/remote_development/organization/cluster_agents_resolver\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/organization/workspaces_cluster_agents/*_spec.rb'
+
+  - source: 'ee/app/graphql/resolvers/remote_development/workspaces_resolver\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/current_user/workspaces/*_spec.rb'
+      - 'ee/spec/requests/api/graphql/remote_development/workspace/*_spec.rb'
+      - 'ee/spec/requests/api/graphql/remote_development/workspace_variables/*_spec.rb'
+
+  ## END Remote development GraphQL resolvers
+
+  ## BEGIN Remote development GraphQL types
+
+  - source: 'ee/app/graphql/types/remote_development/workspace_type\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/workspace/with_id_arg_spec.rb'
+
+  - source: 'ee/app/graphql/types/remote_development/workspace_variable_input\.rb'
+    test:
+      - 'ee/spec/graphql/types/remote_development/workspace_variable_input_spec.rb'
+      - 'ee/spec/requests/api/graphql/mutations/remote_development/workspace_operations/create_spec.rb'
+
+  - source: 'ee/app/graphql/types/remote_development/workspace_variable_type\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/workspace_variables/with_no_args_spec.rb'
+
+  - source: 'ee/app/graphql/types/remote_development/workspace_variable_type_enum\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/remote_development/workspace_variables/with_no_args_spec.rb'
+
+  - source: 'ee/app/graphql/types/remote_development/workspace_variable_input_type_enum\.rb'
+    test:
+      - 'ee/spec/requests/api/graphql/mutations/remote_development/workspace_operations/create_spec.rb'
+
+  - source: 'ee/app/graphql/types/remote_development/namespace_cluster_agent_mapping_type\.rb'
+    test:
+      - 'ee/spec/graphql/types/remote_development/namespace_cluster_agent_mapping_type_spec.rb'
+      - 'ee/spec/requests/api/graphql/mutations/remote_development/namespace_cluster_agent_mapping_operations/create_spec.rb'
+      - 'ee/spec/requests/api/graphql/mutations/remote_development/namespace_cluster_agent_mapping_operations/delete_spec.rb'
+
+  ## END Remote development GraphQL types
+
+  # Usage metric schema changes should trigger validations for all metrics and tooling
+  - source: 'config/metrics/schema/.*\.json'
+    test:
+      - 'spec/config/metrics/every_metric_definition_spec.rb'
+      - 'ee/spec/config/metrics/every_metric_definition_spec.rb'
+      - 'spec/lib/gitlab/usage/metric_definition_validate_all_spec.rb'
+      - 'spec/support_specs/matchers/internal_events_matchers_spec.rb'
+
+  # Internal events schema changes should trigger validations for all events and tooling
+  - source: 'config/events/schema\.json'
+    test:
+      - 'spec/lib/gitlab/tracking/event_definition_validator_validate_all_spec.rb'
+      - 'spec/support_specs/matchers/internal_events_matchers_spec.rb'
+
+  # Any change to metric/event definitions should trigger the specs in the ee/spec/config/metrics/ folder.
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/287#note_1192008962
+  - source:
+      - '(ee/)?config/metrics/.*\.yml'
+    test:
+      - 'spec/config/metrics/every_metric_definition_spec.rb'
+      - 'ee/spec/config/metrics/every_metric_definition_spec.rb'
+      - 'spec/lib/gitlab/usage/metric_definition_validate_all_spec.rb'
+
+  # Internal event/Snowplow event definitions map to schema validation spec
+  - source:
+      - '(ee/)?config/events/.+\.yml'
+    test: 'spec/lib/gitlab/tracking/event_definition_validator_validate_all_spec.rb'
+
+  # Changes to Internal Events behavior should trigger tests for the shared matchers
+  - source:
+      - 'lib/gitlab/internal_events\.rb'
+      - 'spec/support/shared_examples/controllers/internal_event_tracking_examples\.rb'
+      - 'spec/support/matchers/internal_events_matchers\.rb'
+    test:
+      - 'spec/support_specs/matchers/internal_events_matchers_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/team/-/issues/146
+  - source: 'config/feature_categories\.yml'
+    test:
+      - 'spec/db/docs_spec.rb'
+      - 'ee/spec/lib/ee/gitlab/database/docs/docs_spec.rb'
+
+  # Run database dictionary related specs on db/docs changes.
+  # https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/6276
+  - source: 'db/docs/.+\.yml'
+    test:
+      # Found via `git grep Database::Dictionary -l spec ee/spec`
+      - 'ee/spec/lib/gitlab/database/desired_sharding_key_spec.rb'
+      - 'spec/db/docs_spec.rb'
+      - 'spec/lib/gitlab/database/dictionary_spec.rb'
+      - 'ee/spec/lib/gitlab/database/inclusion_of_tables_with_gitlab_sec_schema_spec.rb'
+      - 'spec/lib/gitlab/database/no_new_tables_with_gitlab_main_schema_spec.rb'
+      - 'spec/lib/gitlab/organizations/sharding_key_spec.rb'
+      # Dropping a table adds/moves a db/docs/deleted_tables/*.yml entry; run the
+      # loose foreign keys spec so stale source/target tables in the LFK config
+      # are caught on the same MR.
+      - 'spec/lib/gitlab/database/loose_foreign_keys_spec.rb'
+
+  # Always run the ClickHouse siphon tables spec when anything under db/ changes,
+  # so PG schema / migration / siphon-definition drift vs ClickHouse is caught.
+  - source: 'db/.+'
+    test: 'spec/db/clickhouse_siphon_tables_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/1360
+  - source: 'vendor/project_templates/.*'
+    test: 'spec/lib/gitlab/project_template_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/1683#note_1385966977
+  - source: 'app/finders/members_finder\.rb'
+    test: 'spec/graphql/types/project_member_relation_enum_spec.rb'
+  - source: 'app/finders/group_members_finder\.rb'
+    test: 'spec/graphql/types/group_member_relation_enum_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/4440#note_1675547256
+  - source: 'lib/gitlab/ci/templates/.*\.gitlab-ci\.yml'
+    test:
+      - 'spec/lib/gitlab/ci/templates/templates_spec.rb'
+      - 'ee/spec/lib/ee/gitlab/ci/templates/templates_spec.rb'
+
+  - source: 'lib/gitlab/ci/templates/Jobs/SAST\..*gitlab-ci\.yml'
+    test:
+      - 'ee/spec/lib/gitlab/ci/templates/sast_gitlab_ci_yaml_spec.rb'
+      - 'ee/spec/lib/gitlab/ci/templates/sast_latest_gitlab_ci_yaml_spec.rb'
+      - 'ee/spec/lib/gitlab/ci/templates/sast_iac_gitlab_ci_yaml_spec.rb'
+      - 'ee/spec/lib/gitlab/ci/templates/sast_iac_latest_gitlab_ci_yaml_spec.rb'
+
+  - source: 'lib/gitlab/ci/templates/Jobs/Dependency-Scanning\..*gitlab-ci\.yml'
+    test:
+      - 'ee/spec/lib/gitlab/ci/templates/dependency_scanning_gitlab_ci_yaml_spec.rb'
+      - 'ee/spec/lib/gitlab/ci/templates/dependency_scanning_latest_gitlab_ci_yaml_spec.rb'
+      - 'ee/spec/lib/gitlab/ci/templates/dependency_scanning_v2_gitlab_ci_yaml_spec.rb'
+
+  - source: 'lib/gitlab/ci/templates/Jobs/Container-Scanning\..*gitlab-ci\.yml'
+    test:
+      - 'ee/spec/lib/gitlab/ci/templates/container_scanning_gitlab_ci_yaml_spec.rb'
+      - 'ee/spec/lib/gitlab/ci/templates/container_scanning_latest_gitlab_ci_yaml_spec.rb'
+
+  - source: 'lib/gitlab/ci/templates/Jobs/Secret-Detection\..*gitlab-ci\.yml'
+    test:
+      - 'ee/spec/lib/gitlab/ci/templates/secret_detection_gitlab_ci_yaml_spec.rb'
+      - 'ee/spec/lib/gitlab/ci/templates/secret_detection_latest_gitlab_ci_yaml_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/8021
+  - source: 'public/robots\.txt'
+    test:
+      - 'spec/requests/robots_txt_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_1987834618
+  - source: 'ee/app/replicators/geo/(?<rest>.+)\.rb'
+    test: 'ee/spec/models/geo_node_status_spec.rb'
+
+  # Any change to lib/sidebars/**/*.rb should map to specs that contain the words `sidebar` or `navbar`
+  #
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_1988359861
+  - source: '(?<prefix>ee/)?lib/sidebars/(?<rest>.+)\.rb'
+    test: '%{prefix}spec/features/**/{navbar,sidebar}_spec.rb'
+
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_2131393513
+  - source: 'ee/app/policies/ee/group_policy\.rb'
+    test: 'ee/spec/features/groups/groups_security_credentials_spec.rb'
+
+  # Any change to lib/gitlab/ci/mask_secret.rb should trigger any spec relying on masking CI secrets
+  # The list below was computed by searching for the following terms:
+  #
+  #   - `[MASKED]` in any `spec` folder
+  #   - `masked: true` in any `spec` folder
+  #
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_2132805842
+  - source: 'lib/gitlab/ci/mask_secret\.rb'
+    test:
+      - ee/spec/lib/gitlab/ci/google_cloud/generate_build_environment_variables_service_spec.rb
+      - ee/spec/models/dast_site_profile_spec.rb
+      - ee/spec/models/ee/project_spec.rb
+      - spec/features/admin_variables_spec.rb
+      - spec/features/group_variables_spec.rb
+      - spec/features/project_group_variables_spec.rb
+      - spec/features/project_variables_spec.rb
+      - spec/lib/expand_variables_spec.rb
+      - spec/lib/gitlab/ci/build/rules/rule/clause/exists_spec.rb
+      - spec/lib/gitlab/ci/config/external/file/artifact_spec.rb
+      - spec/lib/gitlab/ci/config/external/file/base_spec.rb
+      - spec/lib/gitlab/ci/config/external/file/local_spec.rb
+      - spec/lib/gitlab/ci/config/external/file/project_spec.rb
+      - spec/lib/gitlab/ci/config/external/file/remote_spec.rb
+      - spec/lib/gitlab/ci/config/external/file/template_spec.rb
+      - spec/lib/gitlab/ci/config/external/mapper/matcher_spec.rb
+      - spec/lib/gitlab/ci/config/interpolation/functions/expand_vars_spec.rb
+      - spec/lib/gitlab/ci/mask_secret_spec.rb
+      - spec/lib/gitlab/ci/variables/collection/item_spec.rb
+      - spec/models/ci/build_spec.rb
+      - spec/models/clusters/kubernetes_namespace_spec.rb
+      - spec/models/clusters/platforms/kubernetes_spec.rb
+      - spec/models/integrations/apple_app_store_spec.rb
+      - spec/models/integrations/diffblue_cover_spec.rb
+      - spec/models/integrations/google_play_spec.rb
+      - spec/models/integrations/harbor_spec.rb
+      - spec/models/project_spec.rb
+      - spec/requests/api/admin/ci/variables_spec.rb
+      - spec/requests/api/ci/variables_spec.rb
+      - spec/requests/api/graphql/ci/group_variables_spec.rb
+      - spec/requests/api/graphql/ci/inherited_ci_variables_spec.rb
+      - spec/requests/api/graphql/ci/instance_variables_spec.rb
+      - spec/requests/api/graphql/ci/project_variables_spec.rb
+      - spec/requests/api/group_variables_spec.rb
+      - spec/services/ci/change_variable_service_spec.rb
+      - spec/services/ci/create_pipeline_service/creation_errors_and_warnings_spec.rb
+
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_2132808426
+  - source: 'lib/gitlab/ci/build/rules/(?<rest>.+)\.rb'
+    test:
+      - spec/lib/gitlab/ci/build/rules/rule_spec.rb
+      - spec/lib/gitlab/ci/config/external/rules_spec.rb
+
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_2138440847
+  - source: 'app/services/merge_requests/mergeability/(?<rest>.+)\.rb'
+    test: ee/spec/graphql/ee/types/merge_request_type_spec.rb
+
+  # Any change to the (ee/)lib/api/hooks folder, or any files in (ee/)lib/api/ with the `hook` substring in them
+  # should map to specs that contain the words `hook` in both {ee/,}spec/requests/api
+  #
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/466068#note_1939569462
+  - source:
+      - '(?<prefix>ee/)?lib/api/hooks/(?<rest>.+)\.rb'
+      - '(?<prefix>ee/)?lib/api/(?<rest>.+hook.+)\.rb'
+    test:
+      - '{ee/,}spec/requests/api/**/*hook*_spec.rb'
+
+  # Registration/Onboarding
+  - source:
+      - 'ee/app/(controllers|services)/registrations/.*'
+      - 'ee/app/presenters/ee/onboarding/status_presenter\.rb'
+      - 'app/presenters/onboarding/status_presenter\.rb'
+      - 'ee/app/models/onboarding/.*_registration\.rb'
+      - 'ee/app/models/onboarding/user_status\.rb'
+    test:
+      - 'ee/spec/features/registrations/saas/*_spec.rb'
+      - 'ee/spec/requests/ee/registrations_controller_spec.rb'
+      - 'ee/spec/requests/trial_registrations_controller_spec.rb'
+      - ee/spec/features/registrations/email_opt_in_registration_spec.rb
+      - ee/spec/features/registrations/one_trust_spec.rb
+
+  # ultimate trials
+  - source: 'ee/app/controllers/gitlab_subscriptions/trials_controller\.rb'
+    test:
+      - 'ee/spec/features/gitlab_subscriptions/trials/creation_*_spec.rb'
+      - ee/spec/features/gitlab_subscriptions/trials/access_denied_spec.rb
+      - ee/spec/features/trials/lead_creation_form_validation_spec.rb
+
+  # duo pro trials
+  - source: 'ee/app/controllers/gitlab_subscriptions/trials/duo_pro_controller\.rb'
+    test: 'ee/spec/features/gitlab_subscriptions/trials/duo_pro/*_spec.rb'
+
+  # duo enterprise trials
+  - source: 'ee/app/controllers/gitlab_subscriptions/trials/duo_enterprise_controller\.rb'
+    test: 'ee/spec/features/gitlab_subscriptions/trials/duo_enterprise/*_spec.rb'
+
+  # trial status widget
+  - source:
+      - 'ee/app/presenters/gitlab_subscriptions/trials/status_widget_presenter\.rb'
+    test:
+      - ee/spec/helpers/sidebars_helper_spec.rb
+      - ee/app/presenters/gitlab_subscriptions/trials/status_widget_presenter.rb
+
+  # Import/Export checks
+  - source:
+      - 'spec/lib/gitlab/import_export/all_models\.yml'
+      - '(?<prefix>ee/)?app/models/.+\.rb'
+    test: 'spec/lib/gitlab/import_export/model_configuration_spec.rb'
+
+  # Docs related checks
+  - source: 'doc/api/settings\.md'
+    test: 'spec/scripts/cells/application_settings_analysis_spec.rb'
+
+  - source: 'doc/api/glql\.md'
+    test: 'spec/lib/analytics/glql/documentation_spec.rb'
+
+  # System analytics dashboards: the definition drives its content spec and the loader spec
+  - source: 'ee/lib/gitlab/analytics/dashboards/system/(?<name>.+)\.yaml'
+    test:
+      - 'ee/spec/lib/gitlab/analytics/dashboards/system/%{name}_spec.rb'
+      - 'ee/spec/services/analytics/custom_dashboards/system_dashboards_loader_spec.rb'
+
+  # Devfile and root yaml related checks
+  - source:
+      - '.*\.yaml'
+      - '\.devfile/.*\.yaml'
+    test: 'spec/dot_gitlab_ci/rules_spec.rb'
+
+  # Cells claims related specs
+  - source:
+      - 'app/models/cells/transaction_record\.rb'
+      - 'app/models/cells/outstanding_lease\.rb'
+      - 'app/models/concerns/cells/claimable\.rb'
+      - 'config/initializers/active_record_connection_adapters_transaction\.rb'
+      - 'spec/support/shared_examples/cells/claims_shared_examples\.rb'
+    test: 'spec/cells/claims/**/*_spec.rb'
+
+  # For individual models
+  - source:
+      - 'app/models/(?<model>.+)\.rb'
+    test: 'spec/cells/claims/**/%{model}_spec.rb'
+
+  # GLQL shared examples should trigger the feature spec that includes them
+  - source: 'spec/support/shared_examples/features/glql/glql_shared_examples\.rb'
+    test: 'spec/features/work_items/issues/new/user_creates_issue_spec.rb'

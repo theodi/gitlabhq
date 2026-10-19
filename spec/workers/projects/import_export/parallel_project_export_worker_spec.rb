@@ -1,0 +1,108 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::ImportExport::ParallelProjectExportWorker, feature_category: :importers do
+  let_it_be(:user) { create(:user) }
+
+  let(:export_job) { create(:project_export_job, :started) }
+  let(:after_export_strategy) { {} }
+  let(:job_args) { [export_job.id, user.id, after_export_strategy] }
+
+  before do
+    allow_next_instance_of(described_class) do |job|
+      allow(job).to receive(:jid) { SecureRandom.hex(8) }
+    end
+  end
+
+  describe '#perform' do
+    it_behaves_like 'an idempotent worker' do
+      it 'sets the export job status to finished' do
+        subject
+
+        expect(export_job.reload.finished?).to be true
+      end
+    end
+
+    context 'when after export strategy does not exist' do
+      let(:after_export_strategy) { { 'klass' => 'InvalidStrategy' } }
+
+      it 'sets the export job status to failed' do
+        described_class.new.perform(*job_args)
+
+        expect(export_job.reload.failed?).to be true
+      end
+    end
+
+    context 'when the export file is not ready' do
+      let(:error) { ::Import::AfterExportStrategies::BaseAfterExportStrategy::ExportNotReadyError }
+
+      before do
+        allow_next_instance_of(::Projects::ImportExport::ParallelExportService) do |service|
+          allow(service).to receive(:execute).and_raise(error)
+        end
+      end
+
+      it 'propagates the error so Sidekiq can retry and leaves the job unfinished', :aggregate_failures do
+        expect { described_class.new.perform(*job_args) }.to raise_error(error)
+
+        expect(export_job.reload.finished?).to be false
+      end
+    end
+  end
+
+  describe '.sidekiq_retries_exhausted' do
+    let(:job) { { 'args' => job_args, 'error_message' => 'Error message' } }
+
+    it 'sets export_job status to failed' do
+      described_class.sidekiq_retries_exhausted_block.call(job)
+
+      expect(export_job.reload.failed?).to be true
+    end
+
+    it 'logs an error message' do
+      expect_next_instance_of(Gitlab::Export::Logger) do |logger|
+        expect(logger).to receive(:error).with(
+          hash_including(
+            message: 'Parallel project export error',
+            export_error: 'Error message'
+          )
+        )
+      end
+
+      described_class.sidekiq_retries_exhausted_block.call(job)
+    end
+
+    it 'notifies the user that the project was not exported' do
+      expect_next_instance_of(NotificationService) do |notification|
+        expect(notification).to receive(:project_not_exported)
+          .with(export_job.project, user, ['Error message'])
+      end
+
+      described_class.sidekiq_retries_exhausted_block.call(job)
+    end
+  end
+
+  describe '.sidekiq_interruptions_exhausted' do
+    let(:job) { { 'args' => job_args, 'error_message' => 'Error message' } }
+
+    it 'sets export_job status to failed' do
+      described_class.interruptions_exhausted_block.call(job)
+
+      expect(export_job.reload.failed?).to be true
+    end
+
+    it 'logs an error message' do
+      expect_next_instance_of(Gitlab::Export::Logger) do |logger|
+        expect(logger).to receive(:error).with(
+          hash_including(
+            message: 'Parallel project export error',
+            export_error: 'Export process reached the maximum number of interruptions'
+          )
+        )
+      end
+
+      described_class.interruptions_exhausted_block.call(job)
+    end
+  end
+end

@@ -1,0 +1,407 @@
+# frozen_string_literal: true
+
+module Types
+  module Ci
+    class PipelineType < BaseObject
+      graphql_name 'Pipeline'
+
+      include Gitlab::Graphql::Authorize::AuthorizeResource
+
+      implements PipelineInterface
+
+      connection_type_class Types::CountableConnectionType
+
+      authorize :read_pipeline
+      authorize_granular_token permissions: :read_pipeline, boundary: :project, boundary_type: :project
+      present_using ::Ci::PipelinePresenter
+
+      def self.authorization_scopes
+        super + [:ai_workflows]
+      end
+
+      expose_permissions Types::PermissionTypes::Ci::Pipeline
+
+      field :id, GraphQL::Types::ID, null: false,
+        description: 'ID of the pipeline.',
+        scopes: [:api, :read_api, :ai_workflows]
+
+      field :iid, GraphQL::Types::String, null: false,
+        description: 'Internal ID of the pipeline.',
+        scopes: [:api, :read_api, :ai_workflows]
+
+      field :name, GraphQL::Types::String, null: true,
+        description: 'Name of the pipeline.',
+        scopes: [:api, :read_api, :ai_workflows]
+
+      field :sha, GraphQL::Types::String, null: true,
+        description: "SHA of the pipeline's commit.",
+        scopes: [:api, :read_api, :ai_workflows] do
+        argument :format,
+          type: Types::ShaFormatEnum,
+          required: false,
+          description: 'Format of the SHA.'
+      end
+
+      field :before_sha, GraphQL::Types::String, null: true,
+        description: 'Base SHA of the source branch.',
+        calls_gitaly: true
+
+      field :complete, GraphQL::Types::Boolean, null: false, method: :complete?,
+        description: 'Indicates if a pipeline is complete.'
+
+      field :status, PipelineStatusEnum, null: false,
+        description: "Status of the pipeline (#{::Ci::Pipeline.all_state_names.compact.join(', ').upcase})",
+        scopes: [:api, :read_api, :ai_workflows]
+
+      field :warnings, GraphQL::Types::Boolean, null: false, method: :has_warnings?,
+        description: "Indicates if a pipeline has warnings."
+
+      field :detailed_status, Types::Ci::DetailedStatusType, null: false,
+        description: 'Detailed status of the pipeline.'
+
+      field :config_source, PipelineConfigSourceEnum, null: true,
+        description: "Configuration source of the pipeline (#{::Enums::Ci::Pipeline.config_sources.keys.join(', ').upcase})"
+
+      field :duration, GraphQL::Types::Int, null: true,
+        description: 'Duration of the pipeline in seconds.'
+
+      field :queued_duration, Types::DurationType, null: true,
+        description: 'How long the pipeline was queued before starting.'
+
+      field :coverage, GraphQL::Types::Float, null: true,
+        description: 'Coverage percentage.'
+
+      field :created_at, Types::TimeType, null: false,
+        description: "Timestamp of the pipeline's creation.",
+        scopes: [:api, :read_api, :ai_workflows]
+
+      field :updated_at, Types::TimeType, null: false,
+        description: "Timestamp of the pipeline's last activity."
+
+      field :started_at, Types::TimeType, null: true,
+        description: 'Timestamp when the pipeline was started.'
+
+      field :finished_at, Types::TimeType, null: true,
+        description: "Timestamp of the pipeline's completion."
+
+      field :committed_at, Types::TimeType, null: true,
+        description: "Timestamp of the pipeline's commit."
+
+      field :stages,
+        type: Types::Ci::StageType.connection_type,
+        null: true,
+        authorize: :read_build,
+        description: 'Stages of the pipeline.',
+        extras: [:lookahead],
+        resolver: Resolvers::Ci::PipelineStagesResolver
+
+      field :user,
+        type: 'Types::UserType',
+        null: true,
+        description: 'Pipeline user.'
+
+      field :retryable, GraphQL::Types::Boolean,
+        description: 'Specifies if a pipeline\'s jobs can be retried.',
+        null: false
+
+      field :cancelable, GraphQL::Types::Boolean,
+        description: 'Specifies if a pipeline can be canceled.',
+        method: :cancelable?,
+        null: false
+
+      field :jobs,
+        ::Types::Ci::JobType.connection_type,
+        null: true,
+        authorize: :read_build,
+        description: 'Jobs belonging to the pipeline.',
+        resolver: ::Resolvers::Ci::JobsResolver
+
+      field :job,
+        type: ::Types::Ci::JobType,
+        null: true,
+        authorize: :read_build,
+        description: 'Specific job in the pipeline, either by name or ID.' do
+        argument :id,
+          type: ::Types::GlobalIDType[::CommitStatus],
+          required: false,
+          description: 'ID of the job.'
+        argument :name,
+          type: ::GraphQL::Types::String,
+          required: false,
+          description: 'Name of the job.'
+      end
+
+      field :job_artifacts,
+        null: true,
+        description: 'Job artifacts of the pipeline.',
+        resolver: ::Resolvers::Ci::PipelineJobArtifactsResolver
+
+      field :source_job,
+        type: Types::Ci::JobType,
+        null: true,
+        authorize: :read_build,
+        description: 'Job where pipeline was triggered from.'
+
+      field :downstream, Types::Ci::PipelineType.connection_type, null: true,
+        description: 'Latest pipelines triggered by the pipeline. ' \
+          'Pipelines from trigger jobs that have since been retried are excluded.',
+        method: :triggered_pipelines_with_preloads
+
+      field :upstream, Types::Ci::PipelineType, null: true,
+        description: 'Pipeline that triggered the pipeline.',
+        method: :triggered_by_pipeline
+
+      field :path, GraphQL::Types::String, null: true,
+        description: "Relative path to the pipeline's page."
+
+      field :commit, Types::Repositories::CommitType, null: true,
+        description: "Git commit of the pipeline.",
+        calls_gitaly: true
+
+      field :commit_path, GraphQL::Types::String, null: true,
+        description: 'Path to the commit that triggered the pipeline.'
+
+      field :commit_title, GraphQL::Types::String, null: true, calls_gitaly: true,
+        description: "Title of the pipeline's commit."
+
+      field :commit_author_name, GraphQL::Types::String, null: true, calls_gitaly: true,
+        description: "Name of the author of the pipeline's commit."
+
+      field :commit_author_gravatar, GraphQL::Types::String, null: true, calls_gitaly: true,
+        description: "Gravatar URL of the author of the pipeline's commit."
+
+      field :project, Types::ProjectType, null: true,
+        description: 'Project the pipeline belongs to.'
+
+      field :active, GraphQL::Types::Boolean, null: false, method: :active?,
+        description: 'Indicates if the pipeline is active.'
+
+      field :uses_needs, GraphQL::Types::Boolean, null: true,
+        method: :uses_needs?,
+        description: 'Indicates if the pipeline has jobs with `needs` dependencies.'
+
+      field :test_report_summary,
+        Types::Ci::TestReportSummaryType,
+        null: false,
+        description: 'Summary of the test report generated by the pipeline.',
+        resolver: Resolvers::Ci::TestReportSummaryResolver
+
+      field :test_suite,
+        Types::Ci::TestSuiteType,
+        null: true,
+        description: 'A specific test suite in a pipeline test report.',
+        resolver: Resolvers::Ci::TestSuiteResolver
+
+      field :ref, GraphQL::Types::String, null: true,
+        description: 'Reference to the branch from which the pipeline was triggered.',
+        scopes: [:api, :read_api, :ai_workflows]
+
+      field :ref_path, GraphQL::Types::String, null: true,
+        description: 'Reference path to the branch from which the pipeline was triggered.',
+        method: :source_ref_path
+
+      field :warning_messages, Types::Ci::PipelineMessageType.connection_type, null: true,
+        description: 'Pipeline warning messages. Always empty for pipelines created in 19.5 and later ' \
+          'due to database concerns.'
+
+      field :error_messages, Types::Ci::PipelineMessageType.connection_type, null: true,
+        description: 'Pipeline error messages.'
+
+      field :merge_request_event_type, Types::Ci::PipelineMergeRequestEventTypeEnum, null: true,
+        description: "Event type of the pipeline associated with a merge request."
+
+      field :total_jobs, GraphQL::Types::Int, null: false, method: :total_size, description: "Total number of jobs in the pipeline."
+
+      field :failed_jobs_count, GraphQL::Types::Int, null: false, description: "Number of failed jobs in the pipeline, including trigger jobs and external jobs."
+
+      field :failure_reason, GraphQL::Types::String, null: true, description: "Reason why the pipeline failed."
+
+      field :triggered_by_path, GraphQL::Types::String, null: true, description: "Path that triggered the pipeline."
+
+      field :source, GraphQL::Types::String, null: true, description: "Source of the pipeline."
+
+      field :type, GraphQL::Types::String, null: false, description: "Type of the pipeline."
+
+      field :child, GraphQL::Types::Boolean, null: false, method: :child?, description: "If the pipeline is a child or not."
+
+      field :latest, GraphQL::Types::Boolean, null: false, method: :latest?, calls_gitaly: true, description: "If the pipeline is the latest one or not."
+
+      field :ref_text, GraphQL::Types::String, null: false, description: "Reference text from the presenter.", calls_gitaly: true
+
+      field :merge_request, Types::MergeRequestType, null: true, description: "MR which the Pipeline is attached to."
+
+      field :stuck, GraphQL::Types::Boolean, null: false, description: "If the pipeline is stuck."
+
+      field :yaml_errors, GraphQL::Types::Boolean, method: :yaml_errors?, null: false, description: "If the pipeline has YAML errors."
+
+      field :yaml_error_messages, GraphQL::Types::String, method: :yaml_errors, null: true, description: "Pipeline YAML errors."
+
+      field :trigger, GraphQL::Types::Boolean, method: :trigger?, null: false, description: "If the pipeline was created by a Trigger request."
+
+      field :manual_variables, PipelineManualVariableType.connection_type, null: true, description: 'CI/CD variables added to a manual pipeline.'
+
+      field :has_manual_actions, GraphQL::Types::Boolean,
+        null: false,
+        resolver_method: :has_manual_actions?,
+        description: 'Indicates if the pipeline has manual actions.'
+
+      field :has_scheduled_actions, GraphQL::Types::Boolean,
+        null: false,
+        resolver_method: :has_scheduled_actions?,
+        description: 'Indicates if the pipeline has scheduled actions.'
+
+      field :pipeline_schedule, Types::Ci::PipelineScheduleType,
+        null: true,
+        authorize: :read_pipeline_schedule,
+        description: 'Pipeline schedule that triggered the pipeline.'
+
+      def commit
+        BatchLoader::GraphQL.wrap(object.commit)
+      end
+
+      def error_messages
+        BatchLoader::GraphQL.for(object).batch do |pipelines, loader|
+          # rubocop: disable CodeReuse/ActiveRecord -- no need to bloat the Pipeline model, we only need this functionality for GraphQL
+          messages = ::Ci::PipelineMessage.where(pipeline: pipelines, severity: :error)
+          # rubocop: enable CodeReuse/ActiveRecord
+          pipelines.each do |pipeline|
+            loader.call(pipeline, messages.select { |m| m.pipeline_id == pipeline.id })
+          end
+        end
+      end
+
+      def detailed_status
+        return object.detailed_status(current_user) unless object.success?
+
+        Gitlab::Graphql::Lazy.with_value(BatchLoader::GraphQL.wrap(object.number_of_warnings)) do
+          object.detailed_status(current_user)
+        end
+      end
+
+      def user
+        Gitlab::Graphql::Loaders::BatchModelLoader.new(User, object.user_id).find
+      end
+
+      def commit_path
+        ::Gitlab::Routing.url_helpers.project_commit_path(object.project, object.sha)
+      end
+
+      def commit_title
+        with_commit(&:title)
+      end
+
+      def commit_author_name
+        with_commit(&:author_name)
+      end
+
+      def commit_author_gravatar
+        with_commit { |commit| GravatarService.new.execute(commit.author_email, 40) }
+      end
+
+      def warning_messages
+        BatchLoader::GraphQL.for(object).batch do |pipelines, loader|
+          # rubocop: disable CodeReuse/ActiveRecord -- context specific
+          messages = ::Ci::PipelineMessage.where(pipeline: pipelines, severity: :warning)
+          # rubocop: enable CodeReuse/ActiveRecord
+
+          pipelines.each do |pipeline|
+            loader.call(pipeline, messages.select { |m| m.pipeline_id == pipeline.id })
+          end
+        end
+      end
+
+      def job(id: nil, name: nil)
+        raise ::Gitlab::Graphql::Errors::ArgumentError, 'One of id or name is required' unless id || name
+
+        if id
+          pipeline.statuses.id_in(id.model_id)
+        else
+          pipeline.latest_statuses.by_name(name)
+        end.take # rubocop: disable CodeReuse/ActiveRecord
+      end
+
+      def sha(format: Types::ShaFormatEnum.enum[:long])
+        return pipeline.short_sha if format == Types::ShaFormatEnum.enum[:short]
+
+        pipeline.sha
+      end
+
+      def manual_variables
+        object.variables
+      rescue ::Ci::Pipeline::VariablesFileMissingError
+        raise_resource_not_available_error! 'Pipeline variables file is missing.'
+      end
+
+      def has_manual_actions?
+        object.association(:manual_actions).loaded? ? object.manual_actions.any? : object.manual_actions.exists?
+      end
+
+      def has_scheduled_actions?
+        object.association(:scheduled_actions).loaded? ? object.scheduled_actions.any? : object.scheduled_actions.exists?
+      end
+
+      def failed_jobs_count
+        BatchLoader::GraphQL.for(object).batch do |pipelines, loader|
+          pipelines.each do |pipeline|
+            loader.call(pipeline, pipeline.limited_failed_jobs.size)
+          end
+        end
+      end
+
+      def retryable
+        return false if object.archived?
+
+        BatchLoader::GraphQL.for([object.id, object.partition_id]).batch(default_value: false, key: :pipeline_retryable_builds) do |items, loader|
+          keys = ::Ci::Build.retryable_pipeline_keys(items)
+          items.each { |key| loader.call(key, keys.include?(key)) }
+        end
+      end
+
+      def stuck
+        BatchLoader::GraphQL.for([object.id, object.partition_id]).batch(default_value: false, key: :pipeline_stuck_builds) do |items, loader|
+          pending_builds_by_pipeline = pending_builds_grouped_by_pipeline(items)
+
+          items.each do |key|
+            loader.call(key, ::Ci::Build.any_stuck?(pending_builds_by_pipeline[key] || []))
+          end
+        end
+      end
+
+      # This duplicates the logic in Ci::Pipeline#type (app/models/ci/pipeline.rb) for
+      # performance reasons, avoiding N+1 queries by using pre-loaded GraphQL data.
+      def type
+        return 'merge_train' if object.merge_train_pipeline?
+        return 'merged_result' if object.merge_request_id? && object.target_sha.present?
+        return 'merge_request' if object.merge_request_id?
+        return 'tag' if object.tag?
+
+        'branch'
+      end
+
+      alias_method :pipeline, :object
+
+      private
+
+      # Rides the batched Commit.lazy lookup shared with `commit`; calling object.git_commit_title
+      # directly would force the batch on the first row and degrade to one Gitaly call per pipeline.
+      def with_commit
+        Gitlab::Graphql::Lazy.with_value(BatchLoader::GraphQL.wrap(object.commit)) do |commit|
+          yield commit if commit
+        end
+      end
+
+      # rubocop: disable CodeReuse/ActiveRecord -- batch loading across multiple pipelines for performance
+      def pending_builds_grouped_by_pipeline(items)
+        ::Ci::Build
+          .where([:commit_id, :partition_id] => items)
+          .pending
+          .eager_load_tags
+          .select(:id, :commit_id, :partition_id, :project_id, :status, :protected)
+          .group_by { |b| [b.commit_id, b.partition_id] }
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+    end
+  end
+end
+
+Types::Ci::PipelineType.prepend_mod_with('Types::Ci::PipelineType')

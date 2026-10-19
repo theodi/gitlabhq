@@ -1,0 +1,70 @@
+$notification-box-shadow-color: rgba(0, 0, 0, 0.25);
+
+.flash-container {
+  margin: 0;
+  font-size: 14px;
+  position: relative;
+  z-index: 1;
+  @apply gl-flex;
+  @apply gl-flex-col;
+  @apply gl-gap-3;
+
+  &.sticky {
+    position: sticky;
+    top: 0;
+    z-index: $flash-z-index;
+  }
+
+  &.flash-container-page {
+    margin-bottom: 0;
+  }
+
+  &:empty {
+    margin: 0;
+  }
+
+  // stylelint-disable-next-line gitlab/no-has -- scoped to flash container
+  &:has(.gl-alert) {
+    @apply gl-mt-3;
+  }
+
+  .flash-alert,
+  .flash-notice,
+  .flash-success,
+  .flash-warning {
+    &:not(.gl-alert) {
+      padding: $gl-padding $gl-padding-32 $gl-padding ($gl-padding + $gl-padding-4);
+      margin-top: 10px;
+
+      .container-fluid,
+      .container-fluid.container-limited {
+        background: transparent;
+      }
+    }
+  }
+
+  &.flash-container-no-margin {
+    .gl-alert {
+      margin-top:0;
+      margin-bottom: 0;
+    }
+
+    .flash-alert,
+    .flash-notice,
+    .flash-success,
+    .flash-warning {
+      margin-top: 0;
+    }
+  }
+}
+
+.gl-browser-ie .flash-container {
+  position: fixed;
+  max-width: $limited-layout-width;
+  left: 50%;
+
+  .flash-alert {
+    position: relative;
+    left: -50%;
+  }
+}

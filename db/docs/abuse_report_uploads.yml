@@ -1,0 +1,16 @@
+---
+table_name: abuse_report_uploads
+classes:
+- AbuseReport
+- AntiAbuse::AbuseReportUpload
+- Geo::AbuseReportUpload
+- Upload
+feature_categories:
+- instance_resiliency
+description: Stores uploads for AbuseReport model
+introduced_by_url:
+milestone: '17.11'
+gitlab_schema: gitlab_main_org
+table_size: small
+sharding_key:
+  organization_id: organizations

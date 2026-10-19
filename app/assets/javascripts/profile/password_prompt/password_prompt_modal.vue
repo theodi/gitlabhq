@@ -1,0 +1,90 @@
+<script>
+import { GlModal, GlForm, GlFormGroup, GlFormInput } from '@gitlab/ui';
+import {
+  I18N_PASSWORD_PROMPT_TITLE,
+  I18N_PASSWORD_PROMPT_FORM_LABEL,
+  I18N_PASSWORD_PROMPT_ERROR_MESSAGE,
+  I18N_PASSWORD_PROMPT_CANCEL_BUTTON,
+  I18N_PASSWORD_PROMPT_CONFIRM_BUTTON,
+} from './constants';
+
+export default {
+  name: 'PasswordPromptModal',
+  components: {
+    GlModal,
+    GlForm,
+    GlFormGroup,
+    GlFormInput,
+  },
+  emits: ['hide', 'submit'],
+  data() {
+    return {
+      passwordCheck: '',
+    };
+  },
+  computed: {
+    isValid() {
+      return Boolean(this.passwordCheck.length);
+    },
+    primaryProps() {
+      return {
+        text: I18N_PASSWORD_PROMPT_CONFIRM_BUTTON,
+        attributes: { variant: 'danger', category: 'primary', disabled: !this.isValid },
+      };
+    },
+  },
+  methods: {
+    onConfirmPassword() {
+      this.$emit('submit', this.passwordCheck);
+    },
+    onHide() {
+      this.$emit('hide');
+      this.passwordCheck = '';
+    },
+    // show() can be invoked by parent components to show the modal
+    // eslint-disable-next-line vue/no-unused-properties
+    show() {
+      this.$refs.modal.show();
+    },
+  },
+  cancelProps: {
+    text: I18N_PASSWORD_PROMPT_CANCEL_BUTTON,
+  },
+  i18n: {
+    title: I18N_PASSWORD_PROMPT_TITLE,
+    formLabel: I18N_PASSWORD_PROMPT_FORM_LABEL,
+    errorMessage: I18N_PASSWORD_PROMPT_ERROR_MESSAGE,
+  },
+};
+</script>
+
+<template>
+  <gl-modal
+    ref="modal"
+    data-testid="password-prompt-modal"
+    modal-id="password-prompt-modal"
+    :title="$options.i18n.title"
+    :action-primary="primaryProps"
+    :action-cancel="$options.cancelProps"
+    @primary="onConfirmPassword"
+    @hide="onHide"
+  >
+    <gl-form @submit.prevent="onConfirmPassword">
+      <gl-form-group
+        :label="$options.i18n.formLabel"
+        label-for="password-prompt-confirmation"
+        :invalid-feedback="$options.i18n.errorMessage"
+        :state="isValid"
+      >
+        <gl-form-input
+          id="password-prompt-confirmation"
+          v-model="passwordCheck"
+          name="password-confirmation"
+          type="password"
+          autocomplete="current-password"
+          data-testid="password-prompt-field"
+        />
+      </gl-form-group>
+    </gl-form>
+  </gl-modal>
+</template>

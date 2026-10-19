@@ -1,142 +1,160 @@
+# frozen_string_literal: true
+
 module Emails
   module Projects
-    def project_access_granted_email(project_member_id)
-      @project_member = ProjectMember.find project_member_id
-      @project = @project_member.project
+    include Namespaces::DeletableHelper
 
-      @target_url = namespace_project_url(@project.namespace, @project)
-      @current_user = @project_member.user
-
-      mail(to: @project_member.user.notification_email,
-           subject: subject("Access to project was granted"))
-    end
-
-    def project_member_invited_email(project_member_id, token)
-      @project_member = ProjectMember.find project_member_id
-      @project = @project_member.project
-      @token = token
-
-      @target_url = namespace_project_url(@project.namespace, @project)
-      @current_user = @project_member.user
-
-      mail(to: @project_member.invite_email,
-           subject: "Invitation to join project #{@project.name_with_namespace}")
-    end
-
-    def project_invite_accepted_email(project_member_id)
-      @project_member = ProjectMember.find project_member_id
-      return if @project_member.created_by.nil?
-
-      @project = @project_member.project
-
-      @target_url = namespace_project_url(@project.namespace, @project)
-      @current_user = @project_member.created_by
-
-      mail(to: @project_member.created_by.notification_email,
-           subject: subject("Invitation accepted"))
-    end
-
-    def project_invite_declined_email(project_id, invite_email, access_level, created_by_id)
-      return if created_by_id.nil?
-
-      @project = Project.find(project_id)
-      @current_user = @created_by = User.find(created_by_id)
-      @access_level = access_level
-      @invite_email = invite_email
-      
-      @target_url = namespace_project_url(@project.namespace, @project)
-
-      mail(to: @created_by.notification_email,
-           subject: subject("Invitation declined"))
-    end
-
-    def project_was_moved_email(project_id, user_id)
+    def project_was_moved_email(project_id, user_id, old_path_with_namespace)
       @current_user = @user = User.find user_id
       @project = Project.find project_id
-      @target_url = namespace_project_url(@project.namespace, @project)
-      mail(to: @user.notification_email,
-           subject: subject("Project was moved"))
+      @target_url = project_url(@project)
+      @old_path_with_namespace = old_path_with_namespace
+      email_with_layout(
+        to: @user.notification_email_for(@project.group),
+        subject: subject("Project was moved")
+      )
     end
 
-    def repository_push_email(project_id, recipient,  author_id: nil, 
-                                                      ref: nil, 
-                                                      action: nil, 
-                                                      compare: nil, 
-                                                      reverse_compare: false, 
-                                                      send_from_committer_email: false, 
-                                                      disable_diffs: false)
-      unless author_id && ref && action
-        raise ArgumentError, "missing keywords: author_id, ref, action"
-      end
+    def project_was_exported_email(current_user, project)
+      @project = project
+      email_with_layout(
+        to: current_user.notification_email_for(project.group),
+        subject: subject("Project was exported")
+      )
+    end
 
+    def project_was_not_exported_email(current_user, project, errors)
+      @project = project
+      @errors = errors
+      email_with_layout(
+        to: current_user.notification_email_for(@project.group),
+        subject: subject("Project export error")
+      )
+    end
+
+    def project_scheduled_for_deletion(recipient_id, project_id)
+      @project = ::Project.find(project_id)
+      @user = ::User.find(recipient_id)
+      @deletion_due_in_days = ::Gitlab::CurrentSettings.deletion_adjourned_period.days
+      @deletion_date = permanent_deletion_date_formatted(@project, format: '%B %-d, %Y')
+
+      email_with_layout(
+        to: @user.email,
+        subject: subject('Project scheduled for deletion')
+      )
+    end
+
+    def repository_cleanup_success_email(project, user)
+      @project = project
+      @user = user
+
+      mail_with_locale(
+        to: user.notification_email_for(project.group),
+        subject: subject("Project cleanup has completed")
+      )
+    end
+
+    def repository_cleanup_failure_email(project, user, error)
+      @project = project
+      @user = user
+      @error = error
+
+      mail_with_locale(to: user.notification_email_for(project.group), subject: subject("Project cleanup failure"))
+    end
+
+    def repository_rewrite_history_success_email(project, user)
+      @project = project
+
+      email_with_layout(
+        to: user.notification_email_for(project.group),
+        subject: subject("Project history rewrite has completed")
+      )
+    end
+
+    def repository_rewrite_history_failure_email(project, user, error)
+      @project = project
+      @error = error
+
+      email_with_layout(
+        to: user.notification_email_for(project.group),
+        subject: subject("Project history rewrite failure")
+      )
+    end
+
+    def pipeline_variables_migration_complete_email(user, group, counts)
+      @user = user
+      @group = group
+      @updated_count = counts[:updated_count]
+      @skipped_count = counts[:skipped_count]
+
+      email_with_layout(
+        to: @user.notification_email_for(@group),
+        subject: subject("Pipeline variables settings migration complete")
+      )
+    end
+
+    def repository_push_email(project_id, opts = {})
+      @message =
+        Gitlab::Email::Message::RepositoryPush.new(self, project_id, opts)
+
+      # used in notify layout
+      @target_url = @message.target_url
       @project = Project.find(project_id)
-      @current_user = @author  = User.find(author_id)
-      @reverse_compare = reverse_compare
-      @compare = compare
-      @ref_name  = Gitlab::Git.ref_name(ref)
-      @ref_type  = Gitlab::Git.tag_ref?(ref) ? "tag" : "branch"
-      @action  = action
-      @disable_diffs = disable_diffs
+      @diff_notes_disabled = true
 
-      if @compare
-        @commits = Commit.decorate(compare.commits, @project)
-        @diffs   = compare.diffs
-      end
+      add_project_headers
+      headers['X-GitLab-Author'] = @message.author_username
 
-      @action_name = 
-        case action
-        when :create
-          "pushed new"
-        when :delete
-          "deleted"
-        else
-          "pushed to"
-        end
+      mail_with_locale(
+        from: sender(@message.author_id, send_from_user_email: @message.send_from_committer_email?),
+        reply_to: @message.reply_to,
+        subject: subject_with_prefix_and_suffix([@message.subject])
+      )
+    end
 
-      @subject = "[Git]"
-      @subject << "[#{@project.path_with_namespace}]"
-      @subject << "[#{@ref_name}]" if action == :push
-      @subject << " "
+    def prometheus_alert_fired_email(project, user, alert)
+      @project = project
+      @alert = alert.present
+      @incident = alert.issue
 
-      if action == :push
-        if @commits.length > 1
-          @target_url = namespace_project_compare_url(@project.namespace,
-                                                      @project,
-                                                      from: Commit.new(@compare.base, @project),
-                                                      to:   Commit.new(@compare.head, @project))
-          @subject << "Deleted " if @reverse_compare
-          @subject << "#{@commits.length} commits: #{@commits.first.title}"
-        else
-          @target_url = namespace_project_commit_url(@project.namespace,
-                                                     @project, @commits.first)
+      add_project_headers
+      add_alert_headers
 
-          @subject << "Deleted 1 commit: " if @reverse_compare
-          @subject << @commits.first.title
-        end
-      else
-        unless action == :delete
-          @target_url = namespace_project_tree_url(@project.namespace,
-                                                   @project, @ref_name)
-        end
+      subject_text = "Alert: #{@alert.email_title}"
+      mail_with_locale(to: user.notification_email_for(@project.group), subject: subject(subject_text))
+    end
 
-        subject_action = @action_name.dup
-        subject_action[0] = subject_action[0].capitalize
-        @subject << "#{subject_action} #{@ref_type} #{@ref_name}"
-      end
+    def inactive_project_deletion_warning_email(project, user, deletion_date)
+      @project = project
+      @user = user
+      @deletion_date = deletion_date
+      subject_text = "Action required: Project #{project.name} is scheduled to be deleted on " \
+        "#{deletion_date} due to inactivity"
 
-      @disable_footer = true
+      email_with_layout(
+        to: user.notification_email_for(project.group),
+        subject: subject(subject_text))
+    end
 
-      reply_to = 
-        if send_from_committer_email && can_send_from_user_email?(@author)
-          @author.email
-        else
-          Gitlab.config.gitlab.email_reply_to
-        end
+    private
 
-      mail(from:      sender(author_id, send_from_committer_email),
-           reply_to:  reply_to,
-           to:        recipient,
-           subject:   @subject)
+    def add_alert_headers
+      return unless @alert
+
+      headers['X-GitLab-Alert-ID'] = @alert.id
+      headers['X-GitLab-Alert-IID'] = @alert.iid
+      headers['X-GitLab-NotificationReason'] = "alert_#{@alert.state}"
+
+      add_incident_headers
+    end
+
+    def add_incident_headers
+      return unless @incident
+
+      headers['X-GitLab-Incident-ID'] = @incident.id
+      headers['X-GitLab-Incident-IID'] = @incident.iid
     end
   end
 end
+
+Emails::Projects.prepend_mod_with('Emails::Projects')

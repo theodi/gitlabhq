@@ -1,0 +1,121 @@
+# frozen_string_literal: true
+
+module API
+  class AccessRequests < ::API::Base
+    include PaginationParams
+
+    before { authenticate! }
+
+    helpers ::API::Helpers::MembersHelpers
+
+    feature_category :system_access
+
+    %w[group project].each do |source_type|
+      params do
+        requires :id, type: String,
+          desc: "ID or URL-encoded path of the #{source_type}."
+      end
+      resource source_type.pluralize, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc "List all access requests for a #{source_type}" do
+          detail "Lists all access requests for a specified #{source_type} that are viewable by the authenticated user."
+          success Entities::AccessRequester
+          tags %w[access_requests]
+        end
+        params do
+          use :pagination
+        end
+        # rubocop: disable CodeReuse/ActiveRecord
+        route_setting :authorization, permissions: :read_access_request, boundary_type: source_type.to_sym
+        get ":id/access_requests" do
+          source = find_source(source_type, params[:id])
+
+          access_requesters = AccessRequestsFinder.new(source).execute!(current_user)
+          access_requesters = paginate(access_requesters.includes(:user))
+
+          present access_requesters, with: Entities::AccessRequester
+        end
+        # rubocop: enable CodeReuse/ActiveRecord
+
+        desc "Request access to a #{source_type}" do
+          detail "Requests access to a specified #{source_type} for the authenticated user."
+          success code: 200, model: Entities::AccessRequester, example: {
+            "id" => 1,
+            "username" => "raymond_smith",
+            "name" => "Raymond Smith",
+            "state" => "active",
+            "requested_at" => "2012-10-22T14:13:35Z"
+          }
+          tags %w[access_requests]
+        end
+        route_setting :authorization, permissions: :create_access_request, boundary_type: :user
+        post ":id/access_requests" do
+          source = find_source(source_type, params[:id])
+          access_requester = source.request_access(current_user)
+
+          if access_requester.persisted?
+            present access_requester, with: Entities::AccessRequester
+          else
+            render_validation_error!(access_requester)
+          end
+        end
+
+        desc 'Approve an access request' do
+          detail "Approves an access request for a specified user in a #{source_type}."
+          success code: 201, model: Entities::Member, example: {
+            "id" => 1,
+            "username" => "raymond_smith",
+            "name" => "Raymond Smith",
+            "state" => "active",
+            "created_at" => "2012-10-22T14:13:35Z",
+            "access_level" => "20"
+          }
+          tags %w[access_requests]
+        end
+        params do
+          requires :user_id, type: Integer, desc: 'ID of the user requesting access.'
+          # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+          optional :access_level, type: Integer,
+            desc: 'Access level to grant to the approved user. For a list of values, see ' \
+              '[roles](https://docs.gitlab.com/user/permissions/#default-roles).',
+            default: 30
+          # rubocop:enable API/AccessLevelStringType
+        end
+        # rubocop: disable CodeReuse/ActiveRecord
+        route_setting :authorization, permissions: :approve_access_request, boundary_type: source_type.to_sym
+        put ':id/access_requests/:user_id/approve' do
+          source = find_source(source_type, params[:id])
+
+          access_requester = source.requesters.find_by!(user_id: params[:user_id])
+          result = ::Members::ApproveAccessRequestService
+            .new(current_user, declared_params)
+            .execute(access_requester)
+
+          status :created
+          present result[:member], with: Entities::Member
+        end
+        # rubocop: enable CodeReuse/ActiveRecord
+
+        desc 'Deny an access request' do
+          detail "Denies an access request for a specified user in a #{source_type}."
+          success code: 204, message: 'Resource deleted'
+          tags %w[access_requests]
+        end
+        params do
+          requires :user_id, type: Integer, desc: 'ID of the user requesting access.'
+        end
+        # rubocop: disable CodeReuse/ActiveRecord
+        route_setting :authorization, permissions: :delete_access_request,
+          boundaries: [{ boundary_type: source_type.to_sym }, { boundary_type: :user }]
+        delete ":id/access_requests/:user_id" do
+          source = find_source(source_type, params[:id])
+          member = source.requesters.find_by!(user_id: params[:user_id])
+
+          destroy_conditionally!(member) do
+            ::Members::DestroyService.new(member, current_user: current_user, skip_subresources: true).execute
+          end
+        end
+        # rubocop: enable CodeReuse/ActiveRecord
+      end
+    end
+  end
+end

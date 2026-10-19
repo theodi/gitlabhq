@@ -1,0 +1,284 @@
+import { GlAvatar, GlCollapsibleListbox } from '@gitlab/ui';
+import { cloneDeep } from 'lodash-es';
+import { shallowMount } from '@vue/test-utils';
+import Vue from 'vue';
+// eslint-disable-next-line no-restricted-imports
+import Vuex from 'vuex';
+import waitForPromises from 'helpers/wait_for_promises';
+import { simulateRapidTyping } from 'helpers/simulate_typing';
+import { MOCK_GROUPS, MOCK_QUERY } from 'jest/search/mock_data';
+import SearchableDropdown from '~/search/sidebar/components/shared/searchable_dropdown.vue';
+import { DEFAULT_DEBOUNCE_AND_THROTTLE_MS } from '~/lib/utils/constants';
+
+Vue.use(Vuex);
+
+describe('Global Search Searchable Dropdown', () => {
+  let wrapper;
+
+  const defaultProps = {
+    headerText: 'Filter results by group',
+    name: 'name',
+    fullName: 'full_name',
+    loading: false,
+    selectedItem: {
+      id: null,
+      name: 'Any',
+      name_with_namespace: 'Any',
+    },
+    items: [],
+    frequentItems: [{ ...MOCK_GROUPS[0] }],
+    searchHandler: jest.fn(),
+  };
+
+  const createComponent = (initialState, props) => {
+    const store = new Vuex.Store({
+      state: {
+        query: MOCK_QUERY,
+        ...initialState,
+      },
+    });
+
+    wrapper = shallowMount(SearchableDropdown, {
+      store,
+      propsData: {
+        ...defaultProps,
+        ...props,
+      },
+    });
+  };
+
+  const findGlDropdown = () => wrapper.findComponent(GlCollapsibleListbox);
+
+  describe('template', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('renders GlDropdown', () => {
+      expect(findGlDropdown().exists()).toBe(true);
+    });
+
+    const propItems = [
+      {
+        value: 'Any',
+        text: 'Any',
+        id: null,
+        name: 'Any',
+        name_with_namespace: 'Any',
+      },
+      {
+        text: 'Frequently searched',
+        options: [{ value: MOCK_GROUPS[0].id, text: MOCK_GROUPS[0].full_name, ...MOCK_GROUPS[0] }],
+      },
+      {
+        text: 'All available groups',
+        options: [{ value: MOCK_GROUPS[1].id, text: MOCK_GROUPS[1].full_name, ...MOCK_GROUPS[1] }],
+      },
+    ];
+
+    beforeEach(() => {
+      createComponent({}, { items: MOCK_GROUPS });
+    });
+
+    it('contains correct set of items', () => {
+      expect(findGlDropdown().props('items')).toStrictEqual(propItems);
+    });
+
+    it('renders searchable prop', () => {
+      expect(findGlDropdown().props('searchable')).toBe(true);
+    });
+
+    it('renders item name as plain text in the list item slot', () => {
+      const store = new Vuex.Store({ state: { query: MOCK_QUERY } });
+
+      const localWrapper = shallowMount(SearchableDropdown, {
+        store,
+        propsData: { ...defaultProps, frequentItems: [MOCK_GROUPS[0]] },
+        stubs: {
+          GlCollapsibleListbox: {
+            props: ['items'],
+            template: '<div><slot name="list-item" :item="items[1].options[0]" /></div>',
+          },
+        },
+      });
+
+      const itemTitle = localWrapper.find('[data-testid="item-title"]');
+      expect(itemTitle.exists()).toBe(true);
+      expect(itemTitle.text()).toBe(MOCK_GROUPS[0].name);
+    });
+
+    it('renders an avatar for a real item in the list item slot', () => {
+      const store = new Vuex.Store({ state: { query: MOCK_QUERY } });
+
+      const localWrapper = shallowMount(SearchableDropdown, {
+        store,
+        propsData: { ...defaultProps, frequentItems: [MOCK_GROUPS[0]] },
+        stubs: {
+          GlCollapsibleListbox: {
+            props: ['items'],
+            template: '<div><slot name="list-item" :item="items[1].options[0]" /></div>',
+          },
+        },
+      });
+
+      expect(localWrapper.findComponent(GlAvatar).exists()).toBe(true);
+    });
+
+    it('does not render an avatar for the "Any" option', () => {
+      const store = new Vuex.Store({ state: { query: MOCK_QUERY } });
+
+      const localWrapper = shallowMount(SearchableDropdown, {
+        store,
+        propsData: { ...defaultProps, frequentItems: [MOCK_GROUPS[0]] },
+        stubs: {
+          GlCollapsibleListbox: {
+            props: ['items'],
+            template: '<div><slot name="list-item" :item="items[0]" /></div>',
+          },
+        },
+      });
+
+      expect(localWrapper.findComponent(GlAvatar).exists()).toBe(false);
+    });
+
+    it('renders the namespace for a real item in the list item slot', () => {
+      const store = new Vuex.Store({ state: { query: MOCK_QUERY } });
+
+      const localWrapper = shallowMount(SearchableDropdown, {
+        store,
+        propsData: { ...defaultProps, frequentItems: [MOCK_GROUPS[0]] },
+        stubs: {
+          GlCollapsibleListbox: {
+            props: ['items'],
+            template: '<div><slot name="list-item" :item="items[1].options[0]" /></div>',
+          },
+        },
+      });
+
+      expect(localWrapper.find('[data-testid="item-namespace"]').exists()).toBe(true);
+    });
+
+    it('does not render the namespace for the "Any" option', () => {
+      const store = new Vuex.Store({ state: { query: MOCK_QUERY } });
+
+      const localWrapper = shallowMount(SearchableDropdown, {
+        store,
+        propsData: { ...defaultProps, frequentItems: [MOCK_GROUPS[0]] },
+        stubs: {
+          GlCollapsibleListbox: {
+            props: ['items'],
+            template: '<div><slot name="list-item" :item="items[0]" /></div>',
+          },
+        },
+      });
+
+      expect(localWrapper.find('[data-testid="item-namespace"]').exists()).toBe(false);
+    });
+
+    describe('events', () => {
+      it('emits select', () => {
+        findGlDropdown().vm.$emit('select', 1);
+        expect(cloneDeep(wrapper.emitted('change')[0][0])).toStrictEqual(MOCK_GROUPS[0]);
+      });
+
+      it('emits reset', () => {
+        findGlDropdown().vm.$emit('reset');
+        expect(cloneDeep(wrapper.emitted('change')[0][0])).toStrictEqual({
+          id: null,
+          name: 'Any',
+          name_with_namespace: 'Any',
+        });
+      });
+
+      it('emits first-open', () => {
+        findGlDropdown().vm.$emit('shown');
+        expect(wrapper.emitted('first-open')).toHaveLength(1);
+        findGlDropdown().vm.$emit('shown');
+        expect(wrapper.emitted('first-open')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('when @search is emitted', () => {
+    const search = 'test';
+
+    beforeEach(async () => {
+      createComponent();
+      findGlDropdown().vm.$emit('search', search);
+
+      jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+      await waitForPromises();
+    });
+
+    it('calls fetchGroups with the search paramter', () => {
+      expect(defaultProps.searchHandler).toHaveBeenCalledTimes(1);
+      expect(defaultProps.searchHandler).toHaveBeenCalledWith(search);
+    });
+  });
+
+  describe('debounce behavior', () => {
+    beforeAll(() => {
+      global.JEST_DEBOUNCE_THROTTLE_TIMEOUT = DEFAULT_DEBOUNCE_AND_THROTTLE_MS;
+    });
+
+    afterAll(() => {
+      global.JEST_DEBOUNCE_THROTTLE_TIMEOUT = undefined;
+    });
+
+    beforeEach(() => {
+      defaultProps.searchHandler.mockClear();
+    });
+
+    it('debounces rapid searches - only calls searchHandler once for rapid typing', async () => {
+      createComponent();
+
+      simulateRapidTyping(findGlDropdown().vm, 'test');
+
+      jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+      await waitForPromises();
+
+      expect(defaultProps.searchHandler).toHaveBeenCalledTimes(1);
+      expect(defaultProps.searchHandler).toHaveBeenCalledWith('test');
+    });
+  });
+
+  describe('beforeDestroy', () => {
+    beforeAll(() => {
+      global.JEST_DEBOUNCE_THROTTLE_TIMEOUT = DEFAULT_DEBOUNCE_AND_THROTTLE_MS;
+    });
+
+    afterAll(() => {
+      global.JEST_DEBOUNCE_THROTTLE_TIMEOUT = undefined;
+    });
+
+    beforeEach(() => {
+      defaultProps.searchHandler.mockClear();
+    });
+
+    it('cancels pending debounced search when component is destroyed', async () => {
+      createComponent();
+
+      findGlDropdown().vm.$emit('search', 'test');
+
+      wrapper.destroy();
+
+      jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+      await waitForPromises();
+
+      expect(defaultProps.searchHandler).not.toHaveBeenCalled();
+    });
+
+    it('cancels rapid typing search when component is destroyed mid-typing', async () => {
+      createComponent();
+
+      simulateRapidTyping(findGlDropdown().vm, 'test');
+
+      wrapper.destroy();
+
+      jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+      await waitForPromises();
+
+      expect(defaultProps.searchHandler).not.toHaveBeenCalled();
+    });
+  });
+});

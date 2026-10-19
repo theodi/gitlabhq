@@ -1,0 +1,29 @@
+<script>
+export default {
+  name: 'TableHeader',
+  data() {
+    return {
+      showCommitColumns: window.gon?.show_commit_columns !== false,
+    };
+  },
+};
+</script>
+
+<template>
+  <thead>
+    <tr>
+      <th id="name" scope="col">{{ s__('ProjectFileTree|Name') }}</th>
+      <th
+        v-if="showCommitColumns"
+        id="last-commit"
+        scope="col"
+        class="gl-hidden @sm/panel:gl-table-cell"
+      >
+        {{ __('Last commit') }}
+      </th>
+      <th v-if="showCommitColumns" id="last-update" scope="col" class="!gl-text-right">
+        {{ __('Last update') }}
+      </th>
+    </tr>
+  </thead>
+</template>

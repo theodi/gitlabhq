@@ -1,26 +1,35 @@
+# frozen_string_literal: true
+
 class Admin::ApplicationsController < Admin::ApplicationController
-  before_action :set_application, only: [:show, :edit, :update, :destroy]
+  include OauthApplications
+
+  before_action :set_application, only: [:show, :edit, :update, :renew, :destroy]
+  before_action :load_scopes, only: [:new, :create, :edit, :update]
+
+  feature_category :system_access
 
   def index
-    @applications = Doorkeeper::Application.where("owner_id IS NULL")
+    applications = ApplicationsFinder.new.execute
+    @applications = applications.keyset_paginate(cursor: pagination_params[:cursor])
+    @applications_total_count = applications.count
   end
 
-  def show
-  end
+  def show; end
 
   def new
-    @application = Doorkeeper::Application.new
+    @application = Authn::OauthApplication.new
   end
 
-  def edit
-  end
+  def edit; end
 
   def create
-    @application = Doorkeeper::Application.new(application_params)
+    @application = Applications::CreateService.new(current_user, request, application_params).execute
 
-    if @application.save
+    if @application.persisted?
       flash[:notice] = I18n.t(:notice, scope: [:doorkeeper, :flash, :applications, :create])
-      redirect_to admin_application_url(@application)
+
+      @created = true
+      render :show
     else
       render :new
     end
@@ -28,25 +37,57 @@ class Admin::ApplicationsController < Admin::ApplicationController
 
   def update
     if @application.update(application_params)
-      redirect_to admin_application_path(@application), notice: 'Application was successfully updated.'
+      redirect_to admin_application_path(@application), notice: _('Application was successfully updated.')
     else
       render :edit
     end
   end
 
+  def renew
+    @application.renew_secret
+
+    if @application.save
+      render json: { secret: @application.plaintext_secret }
+    else
+      render json: { errors: @application.errors }, status: :unprocessable_entity
+    end
+  end
+
   def destroy
     @application.destroy
-    redirect_to admin_applications_url, notice: 'Application was successfully destroyed.'
+    redirect_to admin_applications_url, status: :found, notice: _('Application was successfully destroyed.')
+  end
+
+  def reset_web_ide_oauth_application_settings
+    success = ::WebIde::DefaultOauthApplication.reset_oauth_application_settings
+
+    return render json: {}, status: :internal_server_error unless success
+
+    render json: {}
   end
 
   private
 
   def set_application
-    @application = Doorkeeper::Application.where("owner_id IS NULL").find(params[:id])
+    @application = ApplicationsFinder.new(id: applications_finder_params[:id]).execute
   end
 
-  # Only allow a trusted parameter "white list" through.
+  def permitted_params
+    super << :trusted
+  end
+
   def application_params
-    params[:doorkeeper_application].permit(:name, :redirect_uri)
+    super.tap do |params|
+      params[:owner] = nil
+      params[:organization] = admin_current_organization
+    end
+  end
+
+  def pagination_params
+    params.permit(:cursor)
+  end
+
+  def applications_finder_params
+    params.permit(:id)
   end
 end

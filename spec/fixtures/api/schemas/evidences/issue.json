@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "description",
+    "state",
+    "iid",
+    "confidential",
+    "created_at",
+    "due_date"
+  ],
+  "properties": {
+    "id": { "type": "integer" },
+    "title": { "type": "string" },
+    "description": { "type": ["string", "null"] },
+    "state": { "type": "string" },
+    "iid": { "type": "integer" },
+    "confidential": { "type": "boolean" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "due_date": { "type": ["string", "null"], "format": "date-time" }
+  },
+  "additionalProperties": false
+}

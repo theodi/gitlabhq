@@ -1,0 +1,148 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    module Pipeline
+      module Chain
+        class Build
+          class Associations < Chain::Base
+            include Gitlab::Allowable
+            include Chain::Helpers
+            include ::Gitlab::Utils::StrongMemoize
+
+            def perform!
+              observe_pipeline_variables
+              assign_pipeline_variables
+              assign_source_pipeline
+            end
+
+            def break?
+              @pipeline.errors.any?
+            end
+
+            private
+
+            def assign_pipeline_variables
+              Gitlab::Ci::Pipeline::Build::PipelineVariablesArtifactBuilder.new(@pipeline, variables_attributes).run
+            rescue ActiveModel::ValidationError,
+              Gitlab::Ci::Pipeline::Build::PipelineVariablesArtifactBuilder::SizeLimitExceededError => e
+              error("Failed to build pipeline variables: #{e}", failure_reason: :config_error)
+            end
+
+            # Measures the raw input, before permission filtering and deduplication, because
+            # that is the layer a limit would apply to.
+            def observe_pipeline_variables
+              variables = Array(@command.variables_attributes)
+
+              logger.observe(:pipeline_variables_count, variables.size, once: true)
+
+              logger.observe(:pipeline_variables_max_value_bytesize, max_value_bytesize(variables), once: true)
+
+              file_variables, env_variables = variables.partition { |var| file_variable?(var) }
+              if env_variables.any?
+                logger.observe(:pipeline_variables_max_env_var_value_bytesize, max_value_bytesize(env_variables),
+                  once: true)
+              end
+
+              if file_variables.any?
+                logger.observe(:pipeline_variables_max_file_value_bytesize, max_value_bytesize(file_variables),
+                  once: true)
+              end
+
+              total_bytesize = variables.sum { |var| var[:key].to_s.bytesize + var[:value].to_s.bytesize }
+              logger.observe(:pipeline_variables_total_bytesize, total_bytesize, once: true)
+            end
+
+            def max_value_bytesize(variables)
+              variables.map { |var| var[:value].to_s.bytesize }.max.to_i
+            end
+
+            # Only file type values are written to a file, so anything else counts as env_var.
+            def file_variable?(var)
+              type = var[:variable_type]
+              type.to_s == 'file' || type == ::Enums::Ci::Variable::TYPES[:file]
+            end
+
+            def assign_source_pipeline
+              return unless @command.bridge
+
+              @pipeline.build_source_pipeline(
+                source_pipeline: @command.bridge.pipeline,
+                source_project: @command.bridge.project,
+                source_bridge: @command.bridge,
+                project: @command.project,
+                source_partition_id: @command.bridge.partition_id
+              )
+            end
+
+            def variables_attributes
+              variables = Array(@command.variables_attributes)
+              variables = apply_permissions(variables)
+              validate_uniqueness(variables)
+            end
+            strong_memoize_attr :variables_attributes
+
+            def apply_permissions(variables)
+              # On demand DAST validation pipelines are created by the GitLab backend.
+              # Their pipeline variables are also controlled by GitLab.
+              # See https://gitlab.com/gitlab-org/gitlab/-/issues/513148
+              return variables if @command.source.to_sym == :ondemand_dast_validation
+
+              # We allow parent pipelines to pass variables to child pipelines since
+              # these variables are coming from internal configurations. We will check
+              # permissions to :set_pipeline_variables when those are injected upstream,
+              # to the parent pipeline.
+              # In other scenarios (e.g. multi-project pipelines or run pipeline via UI)
+              # the variables are provided from the outside and those should be guarded.
+              return variables if @command.creates_child_pipeline?
+
+              # If the trigger token belongs to a user that has permissions to set pipeline variables,
+              # we allow all other variables in the variables[]= REST API param, including TRIGGER_PAYLOAD if exists.
+              # If the trigger token belongs to a user that does NOT have permissions to set pipeline variables:
+              #   - if variables other than TRIGGER_PAYLOAD are specified, we return an error.
+              #   - if only TRIGGER_PAYLOAD is specified, we allow it.
+              # See https://gitlab.com/gitlab-org/gitlab/-/issues/557381
+              # The trigger_api_request flag is explicitly set by PipelineTriggerService to identify
+              # requests from the trigger API where CI_JOB_TOKEN is used (to support source: :pipeline).
+              source = @command.source.to_sym
+              trigger_api_source = source == :trigger || (source == :pipeline && @command.trigger_api_request)
+              user_defined_variables = if trigger_api_source
+                                         # This variable is defined by GitLab when triggering via the API,
+                                         # so it should be allowlisted.
+                                         variables.reject { |v| v[:key] == 'TRIGGER_PAYLOAD' }
+                                       else
+                                         variables
+                                       end
+
+              if user_defined_variables.present? && !can?(@command.current_user, :set_pipeline_variables,
+                @command.project)
+                error("Insufficient permissions to set pipeline variables")
+                variables = []
+              end
+
+              variables
+            end
+
+            def validate_uniqueness(variables)
+              duplicated_keys = variables
+                .map { |var| var[:key] }
+                .tally
+                .filter_map { |key, count| key if count > 1 }
+
+              if duplicated_keys.empty?
+                variables
+              else
+                error(duplicate_variables_message(duplicated_keys), failure_reason: :config_error)
+                []
+              end
+            end
+
+            def duplicate_variables_message(keys)
+              "Duplicate variable #{'name'.pluralize(keys.size)}: #{keys.join(', ')}"
+            end
+          end
+        end
+      end
+    end
+  end
+end

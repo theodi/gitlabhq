@@ -1,0 +1,86 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'bundler/inline'
+require 'optparse'
+
+gemfile do
+  source 'https://rubygems.org'
+
+  gem 'gitlab', '~> 5.1'
+  gem 'test_file_finder', '~> 0.3'
+  # loaded from standard library by gitlab and will stop working on ruby 3.4
+  gem 'base64'
+  gem 'csv'
+end
+
+require_relative '../lib/tooling/predictive_tests/executor'
+
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: #{$PROGRAM_NAME} [options]"
+
+  opts.on('--ci', 'Enable more verbose logging instead of returning list of tests to stdout') do
+    options[:ci] = true
+  end
+
+  opts.on('--debug', 'Enable debug log level') do
+    options[:debug] = true
+  end
+
+  opts.on('--changed-files [string]', String, 'Manual space separated list of changed files.') do |value|
+    options[:changed_files] = value
+  end
+
+  opts.on('--changed-files-path [string]', String, 'Path to save list of calculated changed files') do |value|
+    options[:changed_files_path] = value
+  end
+
+  opts.on('--with-crystalball-mappings', 'Download crystalball mappings for rspec tests') do
+    options[:with_crystalball_mappings] = true
+  end
+
+  opts.on('--mapping-type [string]', String, 'Crystalball mapping type, coverage or described_class') do |value|
+    options[:mapping_type] = value
+  end
+
+  opts.on('--with-frontend-fixture-mappings', 'Download frontend fixture mappings') do
+    options[:with_frontend_fixture_mappings] = true
+  end
+
+  opts.on('--frontend-fixtures-mapping-path [string]', String, 'Path to save frontend fixtures mappings') do |value|
+    options[:frontend_fixtures_mapping_path] = value
+  end
+
+  opts.on('--matching-foss-rspec-test-files-path [string]', String, 'Path for list of foss rspec tests') do |value|
+    options[:matching_foss_rspec_test_files_path] = value
+  end
+
+  opts.on('--matching-ee-rspec-test-files-path [string]', String, 'Path for list of ee rspec tests') do |value|
+    options[:matching_ee_rspec_test_files_path] = value
+  end
+
+  opts.on('--matching-js-files-path [string]', String, 'File to save list of view related js files') do |value|
+    options[:matching_js_files_path] = value
+  end
+
+  opts.on('--use-duo', 'Enable Duo AI-powered system spec prediction') do
+    options[:use_duo] = true
+  end
+
+  opts.on('--duo-system-test-files-path PATH', 'Path to save Duo system test predictions') do |value|
+    options[:duo_system_test_files_path] = value
+  end
+
+  opts.on('-h', '--help', 'Show this help message') do
+    puts opts
+    exit
+  end
+end.parse!
+
+begin
+  Tooling::PredictiveTests::Executor.new(options).execute
+rescue StandardError => e
+  puts "[predictive tests] ERROR: #{e.message}"
+  exit 1
+end

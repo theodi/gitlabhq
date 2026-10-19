@@ -1,0 +1,202 @@
+import { GlAvatarLabeled, GlButton } from '@gitlab/ui';
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import CandidateDetail from '~/ml/experiment_tracking/routes/candidates/show/candidate_detail.vue';
+import { newCandidate } from 'jest/ml/model_registry/mock_data';
+import PackageFiles from '~/packages_and_registries/package_registry/components/details/package_files.vue';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { copyToClipboard } from '~/lib/utils/copy_to_clipboard';
+
+jest.mock('~/lib/utils/copy_to_clipboard');
+
+Vue.use(VueApollo);
+
+describe('ml/experiment_tracking/routes/candidates/show/candidate_detail.vue', () => {
+  let wrapper;
+
+  const defaultProps = {
+    candidate: newCandidate(),
+  };
+
+  const createWrapper = (props = {}, mountFn = mountExtended) => {
+    const apolloProvider = createMockApollo();
+    return mountFn(CandidateDetail, {
+      apolloProvider,
+      propsData: {
+        ...defaultProps,
+        ...props,
+      },
+    });
+  };
+
+  const findArtifactsTab = () => wrapper.findByTestId('artifacts');
+  const findAllTabs = () => wrapper.findAll('.gl-tab-nav-item');
+  const findMetricsTab = () => wrapper.findByTestId('metrics');
+  const findMlflowIdButton = () => wrapper.findComponent(GlButton);
+  const findMetricsTable = () => wrapper.findComponentByTestId('metrics-table');
+  const findMetadata = () => wrapper.findByTestId('metadata');
+  const findMlflowRunId = () => wrapper.findByTestId('mlflow-run-id');
+  const findCiJobPathLink = () => wrapper.findByTestId('ci-job-path');
+  const findPackageFiles = () => wrapper.findComponent(PackageFiles);
+  const findAvatarLabeled = () => wrapper.findComponent(GlAvatarLabeled);
+  const findParametersSection = () => wrapper.findByTestId('parameters');
+  const findParametersTable = () => wrapper.findComponentByTestId('parameters-table');
+  const findCiSection = () => wrapper.findByTestId('ci');
+
+  describe('Basic rendering', () => {
+    beforeEach(() => {
+      wrapper = createWrapper();
+    });
+
+    it('renders all three tabs', () => {
+      const tabs = findAllTabs();
+      expect(tabs.at(0).text()).toBe('Details & Metadata');
+      expect(tabs.at(1).text()).toBe('Artifacts');
+      expect(tabs.at(2).text()).toBe('Performance');
+    });
+
+    it('displays MLflow run ID', () => {
+      expect(findMlflowRunId().text()).toBe('abcdefg');
+    });
+
+    it('renders metadata section', () => {
+      expect(findMetadata().text()).toContain('FileName');
+      expect(findMetadata().text()).toContain('test.py');
+    });
+  });
+
+  describe('Parameters section', () => {
+    beforeEach(() => {
+      wrapper = createWrapper();
+    });
+
+    it('renders parameters table when parameters exist', () => {
+      expect(findParametersSection().text()).toContain('Parameters');
+    });
+
+    it('renders metrics table with correct columns', () => {
+      const fields = findParametersTable().props('fields');
+      expect(fields.map((e) => e.label)).toEqual(['Name', 'Value']);
+    });
+
+    it('formats metrics data correctly', () => {
+      expect(findParametersTable().props('items')).toEqual([
+        { name: 'Algorithm', value: 'Decision Tree' },
+        { name: 'MaxDepth', value: '3' },
+      ]);
+    });
+
+    it('shows no parameters message when parameters are empty', () => {
+      wrapper = createWrapper({
+        candidate: {
+          ...defaultProps.candidate,
+          params: [],
+        },
+      });
+      expect(findParametersSection().text()).toContain('No logged parameters');
+    });
+  });
+
+  describe('CI information section', () => {
+    it('renders CI job information when available', () => {
+      wrapper = createWrapper();
+      expect(findCiJobPathLink().text()).toContain('test');
+    });
+
+    it('renders user information when available', () => {
+      wrapper = createWrapper();
+      expect(findAvatarLabeled().text()).toContain('CI User');
+    });
+
+    it('shows no CI message when CI information is missing', () => {
+      wrapper = createWrapper({
+        candidate: {
+          ...defaultProps.candidate,
+          info: { ...defaultProps.candidate.info, ciJob: null },
+        },
+      });
+      expect(findCiSection().text()).toContain('Run not linked to a CI build');
+    });
+  });
+
+  describe('Metrics table', () => {
+    beforeEach(() => {
+      wrapper = createWrapper();
+    });
+
+    it('renders metrics table with correct columns', () => {
+      const fields = findMetricsTable().props('fields');
+      expect(fields.map((e) => e.label)).toEqual([
+        'Metric',
+        'Step 0',
+        'Step 1',
+        'Step 2',
+        'Step 3',
+      ]);
+    });
+
+    it('formats metrics data correctly', () => {
+      expect(findMetricsTable().props('items')).toContainEqual({
+        name: 'Accuracy',
+        1: '.99',
+        2: '.98',
+        3: '.97',
+      });
+    });
+
+    it('shows no metrics message when metrics are empty', () => {
+      wrapper = createWrapper({
+        candidate: {
+          ...defaultProps.candidate,
+          metrics: [],
+        },
+      });
+      expect(findMetricsTab().text()).toContain('No logged metrics');
+    });
+
+    it('handles null steps', () => {
+      wrapper = createWrapper({
+        candidate: {
+          ...defaultProps.candidate,
+          metrics: [{ name: 'AUC', value: '.55', step: undefined }],
+        },
+      });
+      expect(findMetricsTab().text()).toContain('Step 0AUC');
+    });
+  });
+
+  describe('MLflow ID copy button', () => {
+    beforeEach(() => {
+      wrapper = createWrapper();
+    });
+
+    it('copies MLflow ID to clipboard when clicked', async () => {
+      await findMlflowIdButton().vm.$emit('click');
+      expect(copyToClipboard).toHaveBeenCalledWith('abcdefg');
+    });
+  });
+
+  describe('Artifacts tab', () => {
+    it('renders files', () => {
+      wrapper = createWrapper({});
+      expect(findPackageFiles().props()).toEqual({
+        packageId: 'gid://gitlab/Packages::Package/12',
+        projectPath: 'some/project',
+        packageType: 'ml_model',
+        canDelete: false,
+        deleteAllFiles: false,
+      });
+    });
+
+    it('shows no artifacts message when artifact path is missing', () => {
+      wrapper = createWrapper({
+        candidate: {
+          ...defaultProps.candidate,
+          info: { ...defaultProps.candidate.info, pathToArtifact: null },
+        },
+      });
+      expect(findArtifactsTab().text()).toContain('No logged artifacts');
+    });
+  });
+});

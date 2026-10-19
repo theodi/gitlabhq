@@ -1,0 +1,207 @@
+// stylelint-disable-next-line gitlab/no-js-class
+.js-highlight {
+  color: var(--find-and-replace-match-text-color);
+  background-color: var(--find-and-replace-match-background-color);
+}
+
+// stylelint-disable-next-line gitlab/no-js-class
+.js-highlight-active {
+  color: var(--find-and-replace-match-active-text-color);
+  background-color: var(--find-and-replace-match-active-background-color);
+}
+
+.div-dropzone-wrapper {
+  .div-dropzone {
+    position: relative;
+
+    .div-dropzone-hover {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      margin-top: -11.5px;
+      margin-left: -15px;
+      opacity: 0;
+      font-size: 30px;
+      transition: opacity 200ms ease-in-out;
+      pointer-events: none;
+    }
+
+    .div-dropzone-icon {
+      display: block;
+      text-align: center;
+      font-size: inherit;
+    }
+
+    .dz-preview {
+      display: none;
+    }
+  }
+}
+
+.nav-links {
+  li.md-header-toolbar {
+    margin-left: auto;
+    visibility: hidden;
+
+    &.active {
+      visibility: visible;
+
+      @include gl-container-width-down(sm, panel) {
+        flex: none;
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        flex-wrap: wrap;
+        margin-top: $gl-padding-8;
+      }
+    }
+  }
+}
+
+.referenced-users {
+  @apply gl-text-default;
+  padding: 0 $gl-padding $gl-padding-8;
+}
+
+.referenced-commands {
+  background: $blue-50;
+  padding: $gl-padding-8 $gl-padding;
+  border-radius: 0 0 $gl-border-radius-base-inner $gl-border-radius-base-inner;
+
+  p {
+    margin: 0;
+  }
+}
+
+.md-preview-holder {
+  min-height: 177px;
+  padding: 10px 0;
+  overflow-x: auto;
+}
+
+.markdown-area {
+  border-radius: 0;
+  min-height: 140px;
+  max-height: 500px;
+  padding: 5px;
+  box-shadow: none;
+  width: 100%;
+  resize: none !important;
+  @apply gl-bg-transparent;
+  @apply gl-border;
+  @apply gl-border-subtle;
+  @apply gl-transition-box-shadow;
+}
+
+.md-suggestion-diff {
+  display: table !important;
+  @apply gl-border #{!important};
+  @apply gl-border-section #{!important};
+
+  td {
+    border: 0 !important;
+  }
+
+  tr.old {
+    td {
+      border-radius: 0 !important;
+    }
+  }
+}
+
+.suggestions.md > .markdown-code-block {
+  position: relative;
+}
+
+.md-suggestion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  @apply gl-bg-section;
+  @apply gl-border;
+  @apply gl-border-section;
+  border-radius: $gl-border-radius-base $gl-border-radius-base 0 0;
+}
+
+/* these two styles are important to prevent certain LaTeX from
+   hijacking a page: https://gitlab.com/gitlab-org/gitlab/-/issues/394770
+*/
+.math-content-inline {
+  overflow: hidden;
+  display: inline-flex;
+}
+
+.math-content-display {
+  overflow: auto;
+  display: block;
+}
+
+@include gl-container-width-down(sm, panel) {
+  .referenced-users {
+    margin-right: 0;
+  }
+}
+
+// Opt-in layout for MarkdownEditor consumers that render the editor inside
+// a fixed-height container (side panels, modals, etc). Enabled by the
+// `:fill-container` prop on MarkdownEditor, which puts this class on the
+// editor's root `.md-area-wrapper`.
+.md-area-wrapper-fill {
+  &,
+  .md-content-editor-wrapper,
+  .md-content-editor-wrapper .content-editor-body,
+  .md-content-editor-wrapper .md,
+  .md-area,
+  .md-write-holder,
+  .md-preview-holder,
+  .zen-backdrop,
+  .div-dropzone-wrapper,
+  .div-dropzone {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 0;
+  }
+
+  .md-content-editor-wrapper > .md-area {
+    overflow-y: auto;
+  }
+
+  .md .ProseMirror {
+    flex: 1 1 0;
+    overflow-y: visible !important;
+    resize: none !important;
+    max-height: none !important;
+  }
+
+  .markdown-area.note-textarea {
+    flex: 1 1 0;
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto !important;
+    resize: none !important;
+    max-height: none !important;
+  }
+
+  .md-preview-holder {
+    overflow-y: auto;
+  }
+
+  .md-area,
+  .md-area:focus-within,
+  .md-area:hover,
+  .md-area-wrapper,
+  .zen-backdrop,
+  .div-dropzone-wrapper,
+  .div-dropzone {
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .md-write-holder textarea:focus-visible,
+  .zen-backdrop:not(.fullscreen) textarea:focus-visible,
+  .md .ProseMirror:focus-visible {
+    outline: none !important;
+    box-shadow: none !important;
+  }
+}

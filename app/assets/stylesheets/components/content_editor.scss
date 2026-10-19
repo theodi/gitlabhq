@@ -1,0 +1,546 @@
+.ProseMirror {
+  width: calc(100% - 4px);
+  padding-top: $gl-spacing-scale-4;
+  padding-left: calc(#{$gl-spacing-scale-5} - 2px);
+  padding-right: $gl-spacing-scale-5;
+  margin: 2px;
+  min-height: 140px;
+  max-height: 55vh;
+  position: static;
+  overflow-y: auto;
+  transition: box-shadow ease-in-out 0.15s;
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-dark & {
+    width: calc(100% - 6px);
+    padding-left: calc(#{$gl-spacing-scale-5} - 3px);
+  }
+
+  ::selection {
+    @apply gl-bg-blue-100;
+  }
+
+  gl-emoji {
+    user-select: text;
+  }
+
+  &:focus-visible {
+    @apply gl-focus;
+  }
+
+  .content-editor-selection,
+  .ProseMirror-selectednode {
+    @apply gl-bg-blue-100;
+
+    &.gfm-project_member, .gfm-project_member {
+      &:not(.current-user) {
+        @apply gl-bg-blue-200;
+      }
+    }
+
+    &.gfm-project_member {
+      box-shadow: 0 0 0 2px var(--blue-100, $blue-100);
+    }
+  }
+
+  hr.ProseMirror-selectednode {
+    box-shadow: 0 0 0 2px var(--blue-100, $blue-100);
+  }
+
+  .selectedCell {
+    .content-editor-selection,
+    .ProseMirror-selectednode {
+      @apply gl-bg-transparent;
+    }
+  }
+
+  pre > code {
+    background-color: transparent;
+  }
+
+  th[align] *, td[align] * {
+    text-align: inherit;
+  }
+
+  td,
+  th {
+    > [data-node-view-content] > [data-node-view-wrapper]:only-child {
+      :first-child {
+        margin-bottom: 0 !important;
+      }
+    }
+  }
+
+  li,
+  dd,
+  dt,
+  summary {
+    :first-child {
+      margin-bottom: 0 !important;
+    }
+  }
+
+  img.ProseMirror-selectednode,
+  audio.ProseMirror-selectednode,
+  .ProseMirror-selectednode audio,
+  video.ProseMirror-selectednode,
+  .ProseMirror-selectednode video {
+    outline: 3px solid $blue-200;
+    outline-offset: -3px;
+  }
+
+  .ProseMirror-selectednode .iframe-embed,
+  .content-editor-selection .iframe-embed {
+    outline: 3px solid $blue-200;
+  }
+
+  .selectedCell::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba($blue-200, 0.25);
+    pointer-events: none;
+  }
+
+  .image-resize-container {
+    position: relative;
+  }
+
+  .image-resize {
+    display: inline-block;
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    background: $blue-200;
+    outline: 1px solid $white;
+
+    &::before {
+      content: '';
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      top: -8px;
+      left: -8px;
+    }
+  }
+
+  .image-resize-nw {
+    top: -4px;
+    left: -4px;
+    cursor: nw-resize;
+  }
+
+  .image-resize-ne {
+    top: -4px;
+    right: -4px;
+    cursor: ne-resize;
+  }
+
+  .image-resize-sw {
+    bottom: -4px;
+    left: -4px;
+    cursor: sw-resize;
+  }
+
+  .image-resize-se {
+    bottom: -4px;
+    right: -4px;
+    cursor: se-resize;
+  }
+
+  img.ProseMirror-selectednode {
+    outline: 2px solid $blue-200;
+    outline-offset: -2px;
+  }
+
+  img,
+  iframe {
+    max-width: 100%;
+    vertical-align: bottom;
+  }
+
+  > ul {
+    list-style-type: disc;
+
+    ul {
+      list-style-type: circle;
+
+      ul {
+        list-style-type: square;
+      }
+    }
+  }
+
+  ul[data-type='taskList'] {
+    list-style: none;
+    padding: 0;
+
+    ul,
+    ol,
+    p {
+      margin-bottom: 0;
+    }
+
+    > li {
+      display: flex;
+      margin: 0;
+
+      > label,
+      > div {
+        display: inline-block;
+        vertical-align: top;
+      }
+
+      > label {
+        padding: $gl-spacing-scale-1 $gl-spacing-scale-3 0 0;
+        margin: 0;
+      }
+
+      &[data-inapplicable] * {
+        text-decoration: line-through;
+        @apply gl-text-disabled;
+      }
+    }
+  }
+
+  ol[data-type='taskList'] {
+    ul,
+    ol,
+    p {
+      margin-bottom: 0;
+    }
+
+    > li {
+      position: relative;
+      padding-inline-start: 32px;
+
+      > label,
+      > div {
+        display: inline-block;
+        vertical-align: top;
+      }
+
+      > label {
+        position: absolute;
+        inset-inline-start: $gl-padding-8;
+        inset-block-start: 3px;
+      }
+
+      &[data-inapplicable] * {
+        text-decoration: line-through;
+        @apply gl-text-disabled;
+      }
+    }
+  }
+
+  .suggestion-added,
+  .suggestion-deleted,
+  .suggestion-added-input {
+    white-space: pre-wrap;
+
+    > code {
+      font-size: $code-font-size-fixed;
+      white-space: pre-wrap;
+      padding: 0;
+      display: flex;
+    }
+  }
+
+  .suggestion-added-input {
+    @apply gl-border-1;
+    @apply gl-border-section;
+
+    > code {
+      display: block;
+      margin-left: 120px;
+      background-color: transparent !important;
+    }
+  }
+
+  .suggestion-added,
+  .suggestion-deleted {
+    width: 100%;
+
+    > code {
+      border-left: 100px solid transparent;
+      padding-left: 20px;
+      border-radius: 0;
+      background-color: var(--diff-addition-color) !important;
+    }
+
+    > code::before {
+      content: attr(data-line-number);
+      position: absolute;
+      width: 100px;
+      margin-left: -120px;
+      text-align: right;
+      padding-right: 10px;
+      padding-left: 10px;
+    }
+
+    > code::after {
+      content: '+';
+      position: absolute;
+      margin-left: -20px;
+      width: 20px;
+      text-align: center;
+    }
+  }
+
+  .suggestion-added > code {
+    color: rgba($white, 0);
+  }
+
+  .suggestion-deleted {
+    cursor: not-allowed;
+    @apply gl-rounded-none;
+
+    > code {
+      background-color: var(--diff-deletion-color) !important;
+    }
+
+    > code::before {
+      padding-right: 60px;
+    }
+
+    > code::after {
+      content: '-';
+    }
+  }
+
+  .content-editor-code-block {
+    .hljs-addition {
+      background-color: var(--diff-addition-color);
+    }
+
+    .hljs-deletion {
+      background-color: var(--diff-deletion-color);
+    }
+  }
+
+  .dl-content {
+    width: 100%;
+
+    > li {
+      list-style-type: none;
+      margin-left: $gl-spacing-scale-5;
+
+      &.dl-term {
+        margin: 0;
+        font-weight: 600;
+      }
+    }
+  }
+
+  .details-toggle-icon {
+    cursor: pointer;
+    z-index: 1;
+
+    &::before {
+      content: '▶';
+      display: inline-block;
+      width: $gl-spacing-scale-4;
+    }
+
+    &.is-open::before {
+      content: '▼';
+    }
+  }
+
+  .details-content {
+    width: calc(100% - #{$gl-spacing-scale-4});
+
+    > li {
+      list-style-type: none;
+      margin-left: $gl-spacing-scale-2;
+    }
+
+    > :not(:first-child) {
+      display: none;
+    }
+
+    &.is-open > :not(:first-child) {
+      display: inherit;
+    }
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-new-dropdown-inner li {
+    margin-left: 0 !important;
+
+    // stylelint-disable-next-line gitlab/no-gl-class
+    &.gl-new-dropdown-item {
+      padding-left: $gl-spacing-scale-2;
+      padding-right: $gl-spacing-scale-2;
+    }
+  }
+
+  .markdown-alert {
+    > *:last-child *:only-child {
+      @apply gl-mb-0;
+    }
+  }
+}
+
+// Fixes a problem with the layout shifting
+// when switching between Markdown and the
+// Richtext editor due to a loosly defined
+// style in typography.scss
+.md > .ProseMirror {
+  margin: 2px;
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-dark & {
+    margin: 2px 3px;
+  }
+}
+
+.table-creator-grid-item {
+  min-height: 1rem !important;
+  min-width: 1rem !important;
+
+  &.active {
+    border-color: var(--gl-feedback-info-text-color) !important;
+    background-color: var(--gl-feedback-info-background-color) !important;
+    border-width: 2px;
+  }
+
+  &:focus-visible {
+    box-shadow: none !important;
+  }
+}
+
+.content-editor-switcher {
+  min-height: 32px;
+}
+
+
+.content-editor-color-chip::after {
+  content: ' ';
+  display: inline-block;
+  align-items: center;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  margin-left: 4px;
+  margin-top: -2px;
+  @apply gl-border-1;
+  @apply gl-border-solid;
+  @apply gl-border-alpha-dark-24;
+  background-color: var(--gl-color-chip-color);
+}
+
+.content-editor-placeholder {
+  @apply gl-rounded-base;
+  @apply gl-border-1;
+  @apply gl-border-dashed;
+  @apply gl-border-default;
+  @apply gl-px-2;
+
+  &.content-editor-placeholder-selected {
+    @apply gl-border-solid;
+    border-color: var(--gl-focus-ring-outer-color);
+  }
+}
+
+.content-editor-comment {
+  &::before {
+    content: '<!--';
+  }
+
+  &::after {
+    content: '-->';
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.content-editor-table-dropdown .gl-new-dropdown-panel {
+  min-width: auto;
+}
+
+.content-editor-suggestions-dropdown {
+  .content-editor-suggestions-panel {
+    width: max-content;
+    max-width: min(#{$gl-new-dropdown-max-width}, calc(100vw - 2rem));
+  }
+
+  .focused .content-editor-suggestions-item-content {
+    @include gl-focus($inset: true);
+    background-color: var(--gl-dropdown-option-background-color-unselected-hover);
+  }
+}
+
+.bubble-menu-form {
+  min-width: 320px;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to ProseMirror paragraphs with marks
+.ProseMirror p:has(mark) {
+  position: relative;
+  z-index: 0;
+}
+
+.immersive {
+  .rte-text-box>*, .placeholder {
+    margin-left: auto !important;
+    margin-right: auto !important;
+    max-width: var(--immersive-editor-text-width, $immersive-editor-text-width);
+  }
+
+  .rte-text-box:focus-visible {
+    background: inherit;
+    box-shadow: none;
+  }
+
+  .md-area, .md-area:hover {
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .rte-text-box {
+    position: relative;
+    max-height: none !important;
+    resize: none !important;
+  }
+}
+
+.iframe-drag-placeholder {
+  border: 2px solid $blue-200;
+  border-radius: $gl-border-radius-base;
+  background: $gray-400;
+
+  @apply gl-absolute;
+  top: -9999px;
+}
+
+.collaboration-cursor-caret {
+  @apply gl-pointer-events-none;
+  @apply gl-relative;
+  @apply gl-break-normal;
+  // The caret sits between two characters, so it is pulled back over its own
+  // border width to avoid nudging the surrounding text.
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 1px solid;
+  border-right: 1px solid;
+}
+
+.collaboration-cursor-label {
+  @apply gl-absolute;
+  @apply gl-select-none;
+  @apply gl-whitespace-nowrap;
+  @apply gl-px-1;
+  @apply gl-text-sm;
+  @apply gl-font-bold;
+  @apply gl-not-italic;
+  @apply gl-text-white;
+  // Sits above the caret, with the bottom-left corner squared off so the label
+  // reads as a flag attached to it.
+  top: -1.4em;
+  left: -1px;
+  border-radius: $gl-border-radius-base $gl-border-radius-base $gl-border-radius-base 0;
+  line-height: 1.4;
+}

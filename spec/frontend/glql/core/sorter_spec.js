@@ -1,0 +1,374 @@
+import { sorterFor, sortBy } from '~/glql/core/sorter';
+
+describe('sorterFor', () => {
+  it('sorts by string property', () => {
+    const items = [{ name: 'Charlie' }, { name: 'Alice' }, { name: 'Bob' }];
+
+    expect(items.sort(sorterFor('name'))).toEqual([
+      { name: 'Alice' },
+      { name: 'Bob' },
+      { name: 'Charlie' },
+    ]);
+
+    expect(items.sort(sorterFor('name', false))).toEqual([
+      { name: 'Charlie' },
+      { name: 'Bob' },
+      { name: 'Alice' },
+    ]);
+  });
+
+  it('sorts by number property', () => {
+    const items = [{ age: 30 }, { age: 25 }, { age: 35 }];
+
+    expect(items.sort(sorterFor('age'))).toEqual([{ age: 25 }, { age: 30 }, { age: 35 }]);
+    expect(items.sort(sorterFor('age', false))).toEqual([{ age: 35 }, { age: 30 }, { age: 25 }]);
+  });
+
+  it('sorts by date string', () => {
+    const items = [{ date: '2023-06-01' }, { date: '2023-05-15' }, { date: '2023-06-15' }];
+
+    expect(items.sort(sorterFor('date'))).toEqual([
+      { date: '2023-05-15' },
+      { date: '2023-06-01' },
+      { date: '2023-06-15' },
+    ]);
+
+    expect(items.sort(sorterFor('date', false))).toEqual([
+      { date: '2023-06-15' },
+      { date: '2023-06-01' },
+      { date: '2023-05-15' },
+    ]);
+  });
+
+  it('sorts by health status', () => {
+    const items = [
+      { healthStatus: 'atRisk' },
+      { healthStatus: 'onTrack' },
+      { healthStatus: 'needsAttention' },
+    ];
+
+    expect(items.sort(sorterFor('healthStatus'))).toEqual([
+      { healthStatus: 'onTrack' },
+      { healthStatus: 'needsAttention' },
+      { healthStatus: 'atRisk' },
+    ]);
+
+    expect(items.sort(sorterFor('healthStatus', false))).toEqual([
+      { healthStatus: 'atRisk' },
+      { healthStatus: 'needsAttention' },
+      { healthStatus: 'onTrack' },
+    ]);
+  });
+
+  it('sorts by state', () => {
+    const items = [
+      { state: 'closed' },
+      { state: 'opened' },
+      { state: 'closed' },
+      { state: 'merged' },
+    ];
+
+    expect(items.sort(sorterFor('state'))).toEqual([
+      { state: 'opened' },
+      { state: 'closed' },
+      { state: 'closed' },
+      { state: 'merged' },
+    ]);
+
+    expect(items.sort(sorterFor('state', false))).toEqual([
+      { state: 'merged' },
+      { state: 'closed' },
+      { state: 'closed' },
+      { state: 'opened' },
+    ]);
+  });
+
+  it('sorts status by category', () => {
+    const items = [
+      { status: { category: 'triage', name: 'Triage' } },
+      { status: { category: 'done', name: 'Done' } },
+      { status: { category: 'to_do', name: 'To do' } },
+      { status: { category: 'triage', name: 'Triage' } },
+      { status: { category: 'in_progress', name: 'In progress' } },
+    ];
+
+    expect(items.sort(sorterFor('status'))).toEqual([
+      { status: { category: 'triage', name: 'Triage' } },
+      { status: { category: 'triage', name: 'Triage' } },
+      { status: { category: 'to_do', name: 'To do' } },
+      { status: { category: 'in_progress', name: 'In progress' } },
+      { status: { category: 'done', name: 'Done' } },
+    ]);
+  });
+
+  it('sorts statuses with the same category alphabetically by name', () => {
+    const items = [
+      { status: { category: 'in_progress', name: 'In review' } },
+      { status: { category: 'in_progress', name: 'In dev' } },
+    ];
+
+    expect(items.sort(sorterFor('status'))).toEqual([
+      { status: { category: 'in_progress', name: 'In dev' } },
+      { status: { category: 'in_progress', name: 'In review' } },
+    ]);
+
+    expect(items.sort(sorterFor('status', false))).toEqual([
+      { status: { category: 'in_progress', name: 'In review' } },
+      { status: { category: 'in_progress', name: 'In dev' } },
+    ]);
+  });
+
+  it('sorts statuses with the same category case-insensitively by name', () => {
+    const items = [
+      { status: { category: 'in_progress', name: 'In review' } },
+      { status: { category: 'in_progress', name: 'in dev' } },
+    ];
+
+    expect(items.sort(sorterFor('status'))).toEqual([
+      { status: { category: 'in_progress', name: 'in dev' } },
+      { status: { category: 'in_progress', name: 'In review' } },
+    ]);
+
+    expect(items.sort(sorterFor('status', false))).toEqual([
+      { status: { category: 'in_progress', name: 'In review' } },
+      { status: { category: 'in_progress', name: 'in dev' } },
+    ]);
+  });
+
+  it('sorts scalar string statuses alphabetically', () => {
+    const items = [
+      { status: 'SUCCESS' },
+      { status: 'FAILED' },
+      { status: 'running' },
+      { status: 'CANCELED' },
+    ];
+
+    expect(items.sort(sorterFor('status'))).toEqual([
+      { status: 'CANCELED' },
+      { status: 'FAILED' },
+      { status: 'running' },
+      { status: 'SUCCESS' },
+    ]);
+
+    expect(items.sort(sorterFor('status', false))).toEqual([
+      { status: 'SUCCESS' },
+      { status: 'running' },
+      { status: 'FAILED' },
+      { status: 'CANCELED' },
+    ]);
+  });
+
+  it('handles null values: they are always pushed to the bottom regardless of the order', () => {
+    const items = [{ value: 'B' }, { value: null }, { value: 'A' }, { value: null }];
+    expect(items.sort(sorterFor('value'))).toEqual([
+      { value: 'A' },
+      { value: 'B' },
+      { value: null },
+      { value: null },
+    ]);
+
+    expect(items.sort(sorterFor('value', false))).toEqual([
+      { value: 'B' },
+      { value: 'A' },
+      { value: null },
+      { value: null },
+    ]);
+  });
+
+  it.each`
+    __typename                     | field         | sortField
+    ${'Epic'}                      | ${'epic'}     | ${'title'}
+    ${'Label'}                     | ${'label'}    | ${'title'}
+    ${'Project'}                   | ${'project'}  | ${'nameWithNamespace'}
+    ${'Group'}                     | ${'group'}    | ${'fullName'}
+    ${'UserCore'}                  | ${'author'}   | ${'username'}
+    ${'MergeRequestAuthor'}        | ${'author'}   | ${'username'}
+    ${'MergeRequestReviewer'}      | ${'reviewer'} | ${'username'}
+    ${'MergeRequestAssignee'}      | ${'assignee'} | ${'username'}
+    ${'Pipeline'}                  | ${'pipeline'} | ${'name'}
+    ${'CiJob'}                     | ${'job'}      | ${'name'}
+    ${'CiStage'}                   | ${'stage'}    | ${'name'}
+    ${'DuoWorkflowsModelMetadata'} | ${'model'}    | ${'name'}
+  `('sorts by $sortField for $__typename', ({ __typename, field, sortField }) => {
+    const items = [
+      { [field]: { __typename, [sortField]: 'foo' } },
+      { [field]: { __typename, [sortField]: 'bar' } },
+      { [field]: { __typename, [sortField]: 'baz' } },
+    ];
+
+    expect(items.sort(sorterFor(field))).toEqual([
+      { [field]: { __typename, [sortField]: 'bar' } },
+      { [field]: { __typename, [sortField]: 'baz' } },
+      { [field]: { __typename, [sortField]: 'foo' } },
+    ]);
+
+    expect(items.sort(sorterFor(field, false))).toEqual([
+      { [field]: { __typename, [sortField]: 'foo' } },
+      { [field]: { __typename, [sortField]: 'baz' } },
+      { [field]: { __typename, [sortField]: 'bar' } },
+    ]);
+  });
+
+  it('sorts typed objects with an empty sort field to the end, like nulls', () => {
+    const model = (name) => ({ __typename: 'DuoWorkflowsModelMetadata', name });
+    const items = [{ model: model('foo') }, { model: model(null) }, { model: model('bar') }];
+
+    expect(items.sort(sorterFor('model'))).toEqual([
+      { model: model('bar') },
+      { model: model('foo') },
+      { model: model(null) },
+    ]);
+
+    expect(items.sort(sorterFor('model', false))).toEqual([
+      { model: model('foo') },
+      { model: model('bar') },
+      { model: model(null) },
+    ]);
+  });
+
+  it.each`
+    fieldKey
+    ${'milestone'}
+    ${'iteration'}
+  `("sorts by $fieldKey's due date", ({ fieldKey }) => {
+    const items = [
+      { [fieldKey]: { dueDate: '2023-06-01' } },
+      { [fieldKey]: { dueDate: '2023-05-15' } },
+      { [fieldKey]: { dueDate: '2023-06-15' } },
+    ];
+
+    expect(items.sort(sorterFor(fieldKey))).toEqual([
+      { [fieldKey]: { dueDate: '2023-05-15' } },
+      { [fieldKey]: { dueDate: '2023-06-01' } },
+      { [fieldKey]: { dueDate: '2023-06-15' } },
+    ]);
+
+    expect(items.sort(sorterFor(fieldKey, false))).toEqual([
+      { [fieldKey]: { dueDate: '2023-06-15' } },
+      { [fieldKey]: { dueDate: '2023-06-01' } },
+      { [fieldKey]: { dueDate: '2023-05-15' } },
+    ]);
+  });
+
+  it('sorts by a field that is a collection of items', () => {
+    const items = [
+      { labels: { nodes: [{ title: 'B' }, { title: 'A' }] } },
+      { labels: { nodes: [{ title: 'C' }, { title: 'A' }] } },
+      { labels: { nodes: [{ title: 'A' }, { title: 'B' }] } },
+    ];
+
+    expect(items.sort(sorterFor('labels'))).toEqual([
+      { labels: { nodes: [{ title: 'A' }, { title: 'B' }] } },
+      { labels: { nodes: [{ title: 'B' }, { title: 'A' }] } },
+      { labels: { nodes: [{ title: 'C' }, { title: 'A' }] } },
+    ]);
+
+    expect(items.sort(sorterFor('labels', false))).toEqual([
+      { labels: { nodes: [{ title: 'C' }, { title: 'A' }] } },
+      { labels: { nodes: [{ title: 'B' }, { title: 'A' }] } },
+      { labels: { nodes: [{ title: 'A' }, { title: 'B' }] } },
+    ]);
+  });
+
+  it('always sorts empty collections to the end', () => {
+    const items = [
+      { labels: { nodes: [{ title: 'B' }, { title: 'A' }] } },
+      { labels: { nodes: [] } },
+      { labels: { nodes: [{ title: 'A' }, { title: 'B' }] } },
+    ];
+
+    expect(items.sort(sorterFor('labels'))).toEqual([
+      { labels: { nodes: [{ title: 'A' }, { title: 'B' }] } },
+      { labels: { nodes: [{ title: 'B' }, { title: 'A' }] } },
+      { labels: { nodes: [] } },
+    ]);
+
+    expect(items.sort(sorterFor('labels', false))).toEqual([
+      { labels: { nodes: [{ title: 'B' }, { title: 'A' }] } },
+      { labels: { nodes: [{ title: 'A' }, { title: 'B' }] } },
+      { labels: { nodes: [] } },
+    ]);
+  });
+
+  it('sorts strings in locale order, regardless of accents and case', () => {
+    const items = [
+      { title: 'Zebra' },
+      { title: 'Évaluation' },
+      { title: 'apple' },
+      { title: 'Ñoño' },
+      { title: 'über' },
+      { title: 'Mango' },
+    ];
+
+    expect(items.sort(sorterFor('title'))).toEqual([
+      { title: 'apple' },
+      { title: 'Évaluation' },
+      { title: 'Mango' },
+      { title: 'Ñoño' },
+      { title: 'über' },
+      { title: 'Zebra' },
+    ]);
+
+    expect(items.sort(sorterFor('title', false))).toEqual([
+      { title: 'Zebra' },
+      { title: 'über' },
+      { title: 'Ñoño' },
+      { title: 'Mango' },
+      { title: 'Évaluation' },
+      { title: 'apple' },
+    ]);
+  });
+
+  it('treats accented and base letters as equal, preserving input order', () => {
+    const items = [{ title: 'résumé' }, { title: 'resume' }];
+
+    expect(items.sort(sorterFor('title'))).toEqual([{ title: 'résumé' }, { title: 'resume' }]);
+  });
+});
+
+describe('sortBy', () => {
+  let items;
+  let sortOptions;
+
+  beforeEach(() => {
+    items = [
+      { id: 3, name: 'Charlie', age: 30 },
+      { id: 1, name: 'Alice', age: 25 },
+      { id: 2, name: 'Bob', age: 35 },
+    ];
+    sortOptions = { fieldName: null, ascending: true };
+  });
+
+  it('sorts by field in ascending order', () => {
+    const { options, items: sortedItems } = sortBy(items, 'name', sortOptions);
+    expect(sortedItems.map((item) => item.name)).toEqual(['Alice', 'Bob', 'Charlie']);
+    expect(options).toEqual({ fieldName: 'name', ascending: true });
+  });
+
+  it('sorts by field in descending order when called twice', () => {
+    let { options, items: sortedItems } = sortBy(items, 'name', sortOptions);
+    ({ options, items: sortedItems } = sortBy(sortedItems, 'name', options));
+
+    expect(sortedItems.map((item) => item.name)).toEqual(['Charlie', 'Bob', 'Alice']);
+    expect(options).toEqual({ fieldName: 'name', ascending: false });
+  });
+
+  it('sorts by different field resets ascending order', () => {
+    let { options, items: sortedItems } = sortBy(items, 'name', sortOptions);
+    ({ options, items: sortedItems } = sortBy(sortedItems, 'age', options));
+
+    expect(sortedItems.map((item) => item.age)).toEqual([25, 30, 35]);
+    expect(options).toEqual({ fieldName: 'age', ascending: true });
+  });
+
+  it('maintains original order for equal values', () => {
+    items = [
+      { id: 3, name: 'Alice', age: 30 },
+      { id: 1, name: 'Alice', age: 25 },
+      { id: 2, name: 'Alice', age: 35 },
+    ];
+    const { options, items: sortedItems } = sortBy(items, 'name', sortOptions);
+    expect(sortedItems.map((item) => item.id)).toEqual([3, 1, 2]);
+    expect(options).toEqual({ fieldName: 'name', ascending: true });
+  });
+});

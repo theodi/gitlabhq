@@ -1,0 +1,16 @@
+# valid only/except values
+only and except as array of strings:
+  script:
+    - echo "hello world"
+  only:
+    - foo
+  except:
+    - bar
+
+only as null value:
+  extends: deploy-template
+  only:
+
+except as null value:
+  extends: deploy-template
+  except:

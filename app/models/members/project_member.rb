@@ -1,97 +1,38 @@
-# == Schema Information
-#
-# Table name: members
-#
-#  id                 :integer          not null, primary key
-#  access_level       :integer          not null
-#  source_id          :integer          not null
-#  source_type        :string(255)      not null
-#  user_id            :integer
-#  notification_level :integer          not null
-#  type               :string(255)
-#  created_at         :datetime
-#  updated_at         :datetime
-#  created_by_id      :integer
-#  invite_email       :string(255)
-#  invite_token       :string(255)
-#  invite_accepted_at :datetime
-#
+# frozen_string_literal: true
 
 class ProjectMember < Member
   SOURCE_TYPE = 'Project'
+  SOURCE_TYPE_FORMAT = /\AProject\z/
 
-  include Gitlab::ShellAdapter
+  self.allow_legacy_sti_class = true
 
-  belongs_to :project, class_name: 'Project', foreign_key: 'source_id'
+  belongs_to :project, foreign_key: 'source_id'
 
+  delegate :namespace_id, to: :project
 
   # Make sure project member points only to project as it source
-  default_value_for :source_type, SOURCE_TYPE
-  default_value_for :notification_level, Notification::N_GLOBAL
-  validates_format_of :source_type, with: /\AProject\z/
-  default_scope { where(source_type: SOURCE_TYPE) }
+  attribute :source_type, default: SOURCE_TYPE
+  validates :source_type, format: { with: SOURCE_TYPE_FORMAT }
+  default_scope { where(source_type: SOURCE_TYPE) } # rubocop:disable Cop/DefaultScope
 
   scope :in_project, ->(project) { where(source_id: project.id) }
-  scope :in_projects, ->(projects) { where(source_id: projects.pluck(:id)) }
-  scope :with_user, ->(user) { where(user_id: user.id) }
+  scope :in_projects, ->(project_ids) { where(source_id: project_ids) }
+  scope :in_namespaces, ->(groups) do
+    joins('INNER JOIN projects ON projects.id = members.source_id')
+      .where(projects: { namespace_id: groups.select(:id) })
+  end
+  scope :with_roles, ->(roles) { where(access_level: roles) }
 
   class << self
-
-    # Add users to project teams with passed access option
-    #
-    # access can be an integer representing a access code
-    # or symbol like :master representing role
-    #
-    # Ex.
-    #   add_users_into_projects(
-    #     project_ids,
-    #     user_ids,
-    #     ProjectMember::MASTER
-    #   )
-    #
-    #   add_users_into_projects(
-    #     project_ids,
-    #     user_ids,
-    #     :master
-    #   )
-    #
-    def add_users_into_projects(project_ids, user_ids, access, current_user = nil)
-      access_level = if roles_hash.has_key?(access)
-                       roles_hash[access]
-                     elsif roles_hash.values.include?(access.to_i)
-                       access
-                     else
-                       raise "Non valid access"
-                     end
-
-      users = user_ids.map { |user_id| Member.user_for_id(user_id) }
-
-      ProjectMember.transaction do
-        project_ids.each do |project_id|
-          project = Project.find(project_id)
-
-          users.each do |user|
-            Member.add_user(project.project_members, user, access_level, current_user)
-          end
-        end
-      end
-
-      true
-    rescue
-      false
-    end
-
     def truncate_teams(project_ids)
       ProjectMember.transaction do
         members = ProjectMember.where(source_id: project_ids)
-        
-        members.each do |member|
-          member.destroy
-        end
+
+        members.each(&:destroy)
       end
 
       true
-    rescue
+    rescue StandardError
       false
     end
 
@@ -99,71 +40,71 @@ class ProjectMember < Member
       truncate_teams [project.id]
     end
 
-    def roles_hash
-      Gitlab::Access.sym_options
+    # For those who get to see a modal with a role dropdown, here are the options presented
+    def permissible_access_level_roles(current_user, project)
+      return {} if current_user.nil?
+
+      project.roles_user_can_assign(current_user)
     end
 
-    def access_roles
+    def access_level_roles
       Gitlab::Access.options
     end
-  end
-
-  def access_field
-    access_level
   end
 
   def project
     source
   end
 
-  def owner?
-    project.owner == user
+  def holder_of_the_personal_namespace?
+    project.personal_namespace_holder?(user)
   end
 
   private
 
-  def send_invite
-    notification_service.invite_project_member(self, @raw_invite_token)
-
-    super
-  end
-
-  def post_create_hook
-    unless owner?
-      event_service.join_project(self.project, self.user)
-      notification_service.new_project_member(self)
+  override :access_level_inclusion
+  def access_level_inclusion
+    unless access_level.in?(Gitlab::Access.all_values)
+      errors.add(:access_level, "is not included in the list")
     end
-    
-    super
   end
 
-  def post_update_hook
-    if access_level_changed?
-      notification_service.update_project_member(self) 
+  # This method is overridden in the test environment, see stubbed_member.rb
+  override :refresh_member_authorized_projects
+  def refresh_member_authorized_projects
+    return unless user
+
+    execute_project_authorizations_refresh
+
+    # Low-priority safety net for the specialized refresh above, to catch
+    # authorizations it may have missed.
+    # rubocop:disable CodeReuse/ServiceClass
+    UserProjectAccessChangedService.new(user_id)
+                                   .execute(priority: UserProjectAccessChangedService::LOW_PRIORITY)
+    # rubocop:enable CodeReuse/ServiceClass
+  end
+
+  def execute_project_authorizations_refresh
+    AuthorizedProjectUpdate::ProjectRecalculatePerUserWorker.perform_async(project.id, user.id)
+  end
+
+  # TODO: https://gitlab.com/groups/gitlab-org/-/epics/7054
+  # temporary until we can we properly remove the source columns
+  override :set_member_namespace_id
+  def set_member_namespace_id
+    self.member_namespace_id = project&.project_namespace_id
+  end
+
+  override :post_destroy_member_hook
+  def post_destroy_member_hook
+    if expired?
+      event_service.expired_leave_project(self.project, self.user)
+    else
+      event_service.leave_project(self.project, self.user)
     end
 
     super
-  end
-
-  def post_destroy_hook
-    event_service.leave_project(self.project, self.user)
-
-    super
-  end
-
-  def after_accept_invite
-    notification_service.accept_project_invite(self)
-
-    super
-  end
-
-  def after_decline_invite
-    notification_service.decline_project_invite(self)
-
-    super
-  end
-
-  def event_service
-    EventCreateService.new
   end
 end
+
+ProjectMember.prepend_mod_with('ProjectMember')

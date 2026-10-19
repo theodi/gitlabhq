@@ -1,47 +1,50 @@
-require_relative "base_service"
+# frozen_string_literal: true
 
 module Files
   class UpdateService < Files::BaseService
-    def execute
-      allowed = ::Gitlab::GitAccess.new(current_user, project).can_push_to_branch?(ref)
+    def create_commit!
+      transformer = Lfs::FileTransformer.new(project, repository, @branch_name, start_branch_name: @start_branch)
 
-      unless allowed
-        return error("You are not allowed to push into this branch")
-      end
+      result = transformer.new_file(@file_path, @file_content)
 
-      unless repository.branch_names.include?(ref)
-        return error("You can only create files if you are on top of a branch")
-      end
+      create_transformed_commit(result.content)
+    end
 
-      blob = repository.blob_at_branch(ref, path)
-
-      unless blob
-        return error("You can only edit text files")
-      end
-
-      content =
-        if params[:encoding] == 'base64'
-          Base64.decode64(params[:content])
-        else
-          params[:content]
-        end
-
-      sha = repository.commit_file(
+    def create_transformed_commit(content_or_lfs_pointer)
+      repository.update_file(
         current_user,
-        path,
-        content,
-        params[:commit_message],
-        params[:new_branch] || ref
+        @file_path,
+        content_or_lfs_pointer,
+        message: @commit_message,
+        branch_name: @branch_name,
+        previous_path: @previous_path,
+        author_email: @author_email,
+        author_name: @author_name,
+        start_project: @start_project,
+        start_branch_name: @start_branch,
+        execute_filemode: @execute_filemode
       )
+    end
 
-      after_commit(sha)
-      success
-    rescue Gitlab::Satellite::CheckoutFailed => ex
-      error("Your changes could not be committed because ref '#{ref}' could not be checked out", 400)
-    rescue Gitlab::Satellite::CommitFailed => ex
-      error("Your changes could not be committed. Maybe there was nothing to commit?", 409)
-    rescue Gitlab::Satellite::PushFailed => ex
-      error("Your changes could not be committed. Maybe the file was changed by another process?", 409)
+    private
+
+    def validate!
+      super
+
+      raise Commits::CreateService::ValidationError, _('Path is a directory, not a file') if path_is_directory?
+
+      if file_has_changed?(@file_path, @last_commit_sha)
+        raise FileChangedError, _('You are attempting to update a file that has changed since you started editing it.')
+      end
+    end
+
+    def path_is_directory?
+      ref = @start_branch.presence || @branch_name
+      commit = @start_project.repository.commit(ref)
+      return false unless commit
+
+      entry = commit.tree_entry(@file_path)
+      entry.present? && entry[:type] == :tree
     end
   end
 end

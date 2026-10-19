@@ -1,0 +1,15 @@
+---
+name: create_variable
+description: Grants the ability to create variables
+boundaries:
+  - project
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - create_variable
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

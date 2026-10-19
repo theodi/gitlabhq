@@ -1,0 +1,43 @@
+# frozen_string_literal: true
+
+module DesignManagement
+  class Repository < ApplicationRecord
+    include ::Gitlab::Utils::StrongMemoize
+    include HasRepository
+
+    belongs_to :project, inverse_of: :design_management_repository
+    belongs_to :namespace
+    validates :project, presence: true, uniqueness: true
+
+    delegate :lfs_enabled?, :storage, :repository_storage, :run_after_commit, :run_after_commit_or_now, to: :project
+
+    def repository
+      DesignManagement::GitRepository.new(
+        full_path,
+        self,
+        shard: repository_storage,
+        disk_path: disk_path,
+        repo_type: repo_type
+      )
+    end
+    strong_memoize_attr :repository
+
+    def full_path
+      raise ActiveRecord::RecordNotFound, "Project not found for DesignManagement::Repository ##{id}" unless project
+
+      project.full_path + repo_type.path_suffix
+    end
+
+    def disk_path
+      raise ActiveRecord::RecordNotFound, "Project not found for DesignManagement::Repository ##{id}" unless project
+
+      project.disk_path + repo_type.path_suffix
+    end
+
+    def repo_type
+      Gitlab::GlRepository::DESIGN
+    end
+  end
+end
+
+DesignManagement::Repository.prepend_mod_with('DesignManagement::Repository')

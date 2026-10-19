@@ -1,0 +1,147 @@
+# frozen_string_literal: true
+
+RSpec.shared_context 'with merge request approval settings' do
+  let(:instance_prevents_author_approval) { false }
+  let(:group_prevents_author_approval) { false }
+  let(:project_prevents_author_approval) { false }
+  let(:approval_policy_prevents_author_approval) { false }
+
+  let(:instance_prevents_committer_approval) { false }
+  let(:group_prevents_committer_approval) { false }
+  let(:project_prevents_committer_approval) { false }
+  let(:approval_policy_prevents_committer_approval) { false }
+
+  let(:policy_config) do
+    create(:security_orchestration_policy_configuration, project: approval_rule_project)
+  end
+
+  let(:policy_approval_settings) do
+    {
+      prevent_approval_by_author: approval_policy_prevents_author_approval,
+      prevent_approval_by_commit_author: approval_policy_prevents_committer_approval
+    }.select { |_, prevented| prevented }
+  end
+
+  let(:policy_rule) do
+    next if policy_approval_settings.empty?
+
+    policy = create(:security_policy,
+      security_orchestration_policy_configuration: policy_config,
+      content: { approval_settings: policy_approval_settings })
+    create(:approval_policy_rule, security_policy: policy)
+  end
+
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be_with_reload(:group_setting) { group.create_group_merge_request_approval_setting! }
+
+  before do
+    stub_licensed_features(admin_merge_request_approvers_rules: true)
+
+    approval_rule_project.update!(group: group)
+
+    Gitlab::CurrentSettings.update!(
+      prevent_merge_requests_author_approval: instance_prevents_author_approval,
+      prevent_merge_requests_committers_approval: instance_prevents_committer_approval
+    )
+
+    group_setting.update!(
+      allow_author_approval: !group_prevents_author_approval,
+      allow_committer_approval: !group_prevents_committer_approval
+    )
+
+    approval_rule_project.update!(
+      merge_requests_author_approval: !project_prevents_author_approval,
+      merge_requests_disable_committers_approval: project_prevents_committer_approval
+    )
+
+    rule.update!(approval_policy_rule: policy_rule) if policy_rule
+  end
+end
+
+RSpec.shared_examples 'approval rules filtering' do
+  include_context 'with merge request approval settings'
+
+  describe '#prevents_author_approval?' do
+    subject(:prevents_author_approval) { rule.prevents_author_approval? }
+
+    it { is_expected.to be(false) }
+
+    context 'when instance prevents author approval' do
+      let(:instance_prevents_author_approval) { true }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when parent group prevents author approval' do
+      let(:group_prevents_author_approval) { true }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when target project prevents author approval' do
+      let(:project_prevents_author_approval) { true }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when approval policy prevents author approval' do
+      let(:approval_policy_prevents_author_approval) { true }
+
+      before do
+        stub_licensed_features(security_orchestration_policies: true)
+      end
+
+      it { is_expected.to be(true) }
+
+      context 'without licensed feature' do
+        before do
+          stub_licensed_features(security_orchestration_policies: false)
+        end
+
+        it { is_expected.to be(false) }
+      end
+    end
+  end
+
+  describe '#prevents_committer_approval?' do
+    subject(:prevents_committer_approval) { rule.prevents_committer_approval? }
+
+    it { is_expected.to be(false) }
+
+    context 'when instance prevents committer approval' do
+      let(:instance_prevents_committer_approval) { true }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when parent group prevents committer approval' do
+      let(:group_prevents_committer_approval) { true }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when target project prevents committer approval' do
+      let(:project_prevents_committer_approval) { true }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when approval policy prevents committer approval' do
+      before do
+        stub_licensed_features(security_orchestration_policies: true)
+      end
+
+      let(:approval_policy_prevents_committer_approval) { true }
+
+      it { is_expected.to be(true) }
+
+      context 'without licensed feature' do
+        before do
+          stub_licensed_features(security_orchestration_policies: false)
+        end
+
+        it { is_expected.to be(false) }
+      end
+    end
+  end
+end

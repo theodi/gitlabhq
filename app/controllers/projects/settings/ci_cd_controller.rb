@@ -1,0 +1,245 @@
+# frozen_string_literal: true
+
+module Projects
+  module Settings
+    class CiCdController < Projects::ApplicationController
+      include RunnerSetupScripts
+
+      layout 'project_settings'
+      before_action :authorize_admin_pipeline!, except: [:reset_cache, :show, :update]
+      before_action :authorize_show_cicd_settings!, only: :show
+      before_action :authorize_update_cicd_settings!, only: :update
+      before_action :authorize_reset_cache!, only: :reset_cache
+      before_action :check_builds_available!
+      before_action :define_variables, only: :show
+
+      before_action do
+        push_frontend_feature_flag(:ci_variables_pages, current_user)
+        push_frontend_feature_flag(:vue3_migrate_admin_runners, current_user)
+        push_frontend_feature_flag(:vue3_migrate_pipelines, current_user)
+        push_frontend_ability(ability: :admin_project, resource: @project, user: current_user)
+        push_frontend_ability(ability: :admin_protected_environments, resource: @project, user: current_user)
+      end
+
+      helper_method :highlight_badge
+
+      feature_category :continuous_integration
+      urgency :low
+
+      def show
+        @entity = :project
+        @variable_limit = ::GitlabSubscriptions::SystemDefined::Plan.default.actual_limits.project_ci_variables
+
+        triggers = ::Ci::TriggerSerializer.new.represent(
+          @project.triggers.with_last_used, current_user: current_user, project: @project
+        )
+
+        @triggers_json = Gitlab::Json.dump(triggers)
+
+        audit_project_cicd_settings_access
+
+        render
+      end
+
+      def update
+        Projects::UpdateService.new(project, current_user, update_params).tap do |service|
+          result = service.execute
+          if result[:status] == :success
+            flash[:toast] = safe_format(_("Pipelines settings for '%{project_name}' were successfully updated."),
+              project_name: @project.name)
+
+            run_autodevops_pipeline(service)
+
+            redirect_to project_settings_ci_cd_path(@project)
+          else
+            redirect_to project_settings_ci_cd_path(@project), alert: result[:message]
+          end
+        end
+      end
+
+      def reset_cache
+        if ResetProjectCacheService.new(@project, current_user).execute
+          respond_to do |format|
+            format.json { head :ok }
+          end
+        else
+          respond_to do |format|
+            format.json { head :bad_request }
+          end
+        end
+      end
+
+      def reset_registration_token
+        ::Ci::Runners::ResetRegistrationTokenService.new(@project, current_user).execute
+
+        flash[:toast] = _("New runners registration token has been generated.")
+        redirect_to namespace_project_settings_ci_cd_path
+      end
+
+      def runner_setup_scripts
+        private_runner_setup_scripts
+      end
+
+      def export_job_token_authorizations
+        response = ::Ci::JobToken::ExportAuthorizationsService
+          .new(current_user: current_user, accessed_project: @project)
+          .execute
+
+        respond_to do |format|
+          format.csv do
+            if response.success?
+              send_data(response.payload.fetch(:data),
+                type: 'text/csv; charset=utf-8',
+                filename: response.payload.fetch(:filename))
+            else
+              flash[:alert] = _('Failed to generate export')
+
+              redirect_to project_settings_ci_cd_path(@project)
+            end
+          end
+        end
+      end
+
+      private
+
+      def ref_param
+        params.permit(:ref)[:ref]
+      end
+
+      def audit_project_cicd_settings_access
+        audit_context = {
+          name: 'project_ci_cd_settings_accessed',
+          author: current_user,
+          scope: project,
+          target: project,
+          message: 'User accessed CI/CD settings for project',
+          additional_details: {
+            project_path: project.full_path,
+            project_id: project.id,
+            organization_id: project.organization_id,
+            ip_address: request.remote_ip,
+            timestamp: Time.current.iso8601,
+            action: 'project_ci_cd_settings_page_viewed',
+            user_agent: Gitlab::Audit::Sanitizer.sanitize_user_agent(request.user_agent)
+          }
+        }
+
+        ::Gitlab::Audit::Auditor.audit(audit_context)
+      end
+
+      def authorize_reset_cache!
+        return if can?(current_user, :clear_runner_cache, project)
+
+        access_denied!
+      end
+
+      def authorize_show_cicd_settings!
+        return if can_any?(current_user, [
+          :admin_cicd_variables,
+          :admin_protected_environments,
+          :read_runners
+        ], project)
+
+        access_denied!
+      end
+
+      def authorize_update_cicd_settings!
+        return if can_any?(current_user, [
+          :admin_pipeline,
+          :admin_protected_environments
+        ], project)
+
+        access_denied!
+      end
+
+      def highlight_badge(name, content, language = nil)
+        Gitlab::Highlight.highlight(name, content, language: language)
+      end
+
+      def update_params
+        params.require(:project).permit(*permitted_project_params)
+      end
+
+      def permitted_project_params
+        [
+          :runners_token, :builds_enabled, :build_allow_git_fetch,
+          :build_timeout_human_readable, :public_builds, :ci_separated_caches,
+          :auto_cancel_pending_pipelines, :ci_config_path, :auto_rollback_enabled,
+          :protect_merge_request_pipelines,
+          :ci_display_pipeline_variables,
+          { auto_devops_attributes: [:id, :domain, :enabled, :deploy_strategy],
+            ci_cd_settings_attributes: permitted_project_ci_cd_settings_params }
+        ].tap do |list|
+          list << :max_artifacts_size if can?(current_user, :update_max_artifacts_size, project)
+        end
+      end
+
+      def permitted_project_ci_cd_settings_params
+        [:default_git_depth, :forward_deployment_enabled, :forward_deployment_rollback_allowed,
+          :skip_branch_pipelines_for_mrs].tap do |list|
+          list << :delete_pipelines_in_human_readable if can?(current_user, :destroy_pipeline, project)
+        end
+      end
+
+      def run_autodevops_pipeline(service)
+        return unless service.run_auto_devops_pipeline?
+
+        if @project.empty_repo?
+          flash[:notice] = _(
+            "This repository is currently empty. " \
+              "A new Auto DevOps pipeline will be created after a new file has been pushed to a branch."
+          )
+          return
+        end
+
+        # rubocop:disable CodeReuse/Worker
+        CreatePipelineWorker.perform_async(project.id, current_user.id, project.default_branch, :web,
+          ignore_skip_ci: true, save_on_errors: false)
+        # rubocop:enable CodeReuse/Worker
+
+        flash[:toast] = _("A new Auto DevOps pipeline has been created, go to the Pipelines page for details")
+      end
+
+      def define_variables
+        define_ci_variables
+        define_triggers_variables
+        define_badges_variables
+        define_auto_devops_variables
+      end
+
+      def define_ci_variables
+        @variable = ::Ci::Variable.new(project: project)
+          .present(current_user: current_user)
+        @variables = project.variables.order_key_asc
+          .map { |variable| variable.present(current_user: current_user) }
+      end
+
+      def define_triggers_variables
+        @triggers = @project.triggers.with_last_used
+          .present(current_user: current_user)
+
+        @trigger = ::Ci::Trigger.new
+          .present(current_user: current_user)
+      end
+
+      def define_badges_variables
+        @ref = ref_param || @project.default_branch_or_main
+
+        @badges = [Gitlab::Ci::Badge::Pipeline::Status,
+          Gitlab::Ci::Badge::Coverage::Report]
+
+        @badges.map! do |badge|
+          badge.new(@project, @ref).metadata
+        end
+
+        @badges.append(Gitlab::Ci::Badge::Release::LatestRelease.new(@project, current_user).metadata)
+      end
+
+      def define_auto_devops_variables
+        @auto_devops = @project.auto_devops || ProjectAutoDevops.new
+      end
+    end
+  end
+end
+
+Projects::Settings::CiCdController.prepend_mod_with('Projects::Settings::CiCdController')

@@ -1,0 +1,18 @@
+- expanded = integration_expanded?('hide_third_party_')
+
+= render ::Layouts::SettingsBlockComponent.new(_('Customer experience improvement and third-party offers'),
+  id: 'js-third-party-offers-settings',
+  testid: 'third-party-offers-settings',
+  expanded: expanded) do |c|
+  - c.with_description do
+    = _('Control whether to display customer experience improvement content and third-party offers in GitLab.')
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-third-party-offers-settings'), html: { class: 'fieldset-form', id: 'third-party-offers-settings' } do |f|
+      = form_errors(@application_setting) if expanded
+
+      %fieldset
+        .form-group
+          = f.gitlab_ui_checkbox_component :hide_third_party_offers,
+          _('Do not display content for customer experience improvement and offers from third parties')
+
+      = f.submit _('Save changes'), pajamas_button: true

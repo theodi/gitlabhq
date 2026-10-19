@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Settings for Organizations",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "restricted_visibility_levels": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "default_group_visibility": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "security_tracked_context_quota": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "policy_store_experiment_enabled": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  }
+}

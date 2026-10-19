@@ -1,0 +1,14 @@
+query getRunnerPlatforms {
+  runnerPlatforms {
+    nodes {
+      name
+      humanReadableName
+      architectures {
+        nodes {
+          name
+          downloadLocation
+        }
+      }
+    }
+  }
+}

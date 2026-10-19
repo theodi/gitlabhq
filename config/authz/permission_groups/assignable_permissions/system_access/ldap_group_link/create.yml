@@ -1,0 +1,9 @@
+---
+name: create_ldap_group_link
+description: Grants the ability to add LDAP group links
+boundaries:
+  - group
+available_for:
+  - granular_access_token
+permissions:
+  - create_ldap_group_link

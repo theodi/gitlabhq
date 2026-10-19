@@ -1,0 +1,18 @@
+---
+description: Use pagination on projects explore
+internal_events: true
+action: use_pagination_projects_explore
+identifiers:
+- user
+additional_properties:
+  label:
+    description: Pagination button (next or prev)
+product_group: organizations
+product_categories:
+- groups_and_projects
+milestone: '17.3'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/158282
+tiers:
+- free
+- premium
+- ultimate

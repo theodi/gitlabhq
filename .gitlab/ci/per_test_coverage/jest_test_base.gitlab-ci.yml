@@ -1,0 +1,15 @@
+# Base for the per-test-coverage jest child pipeline. A child pipeline can't
+# include the full frontend.gitlab-ci.yml, because GitLab validates every
+# included job's `extends` and `stage`, and frontend's jobs depend on stages,
+# a remote template, and anchors that only exist in the assembled main
+# pipeline. This includes only .frontend-test-base plus the anchor providers
+# it needs.
+#
+# .frontend-test-base is shared verbatim with the main frontend pipeline
+# through .gitlab/ci/frontend/test-base.gitlab-ci.yml, so the two no longer
+# drift. Its empty `needs` are harmless in the child: the jest per-test-coverage
+# job sets its own needs.
+include:
+  - local: .gitlab/ci/global.gitlab-ci.yml
+  - local: .gitlab/ci/ci-images.gitlab-ci.yml
+  - local: .gitlab/ci/frontend/test-base.gitlab-ci.yml

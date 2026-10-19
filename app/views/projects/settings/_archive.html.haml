@@ -1,0 +1,6 @@
+- return unless archiving_available?(project)
+
+- if project.self_or_ancestors_archived?
+  #js-unarchive-settings{ data: project_unarchive_settings_app_data(project) }
+- else
+  #js-archive-settings{ data: project_archive_settings_app_data(project) }

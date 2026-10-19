@@ -1,54 +1,1748 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe SearchHelper do
+RSpec.describe SearchHelper, :with_current_organization, feature_category: :global_search do
+  include MarkupHelper
+  include BadgesHelper
+
+  before do
+    stub_feature_flags(work_item_legacy_url: true)
+    # create the AI settings row up front to prevent N+1
+    Ai::Setting.for_organization(current_organization) if Gitlab.ee?
+  end
+
   # Override simple_sanitize for our testing purposes
   def simple_sanitize(str)
     str
   end
 
-  describe 'search_autocomplete_source' do
+  describe 'search_autocomplete_opts' do
     context "with no current user" do
       before do
         allow(self).to receive(:current_user).and_return(nil)
       end
 
-      it "it returns nil" do
-        expect(search_autocomplete_opts("q")).to be_nil
+      it "returns an empty array" do
+        expect(search_autocomplete_opts("q")).to eq([])
       end
     end
 
-    context "with a user" do
-      let(:user)   { create(:user) }
+    context "with a standard user" do
+      let_it_be(:user) { create(:user) }
+      let_it_be(:user_group) { create(:group, owners: user) }
+      let_it_be(:project1) { create(:project, namespace: user.namespace) }
 
       before do
         allow(self).to receive(:current_user).and_return(user)
       end
 
       it "includes Help sections" do
-        expect(search_autocomplete_opts("hel").size).to eq(9)
+        expect(search_autocomplete_opts("hel").size).to eq(8)
       end
 
       it "includes default sections" do
-        expect(search_autocomplete_opts("adm").size).to eq(1)
+        expect(search_autocomplete_opts("dash").size).to eq(1)
+      end
+
+      it "does not include admin sections" do
+        expect(search_autocomplete_opts("admin").size).to eq(0)
+      end
+
+      it "does not allow regular expression in search term" do
+        expect(search_autocomplete_opts("(webhooks|api)").size).to eq(0)
       end
 
       it "includes the user's groups" do
-        create(:group).add_owner(user)
         expect(search_autocomplete_opts("gro").size).to eq(1)
       end
 
+      it "includes nested group" do
+        create(:group, :nested, name: 'foo').add_owner(user)
+        expect(search_autocomplete_opts('foo').size).to eq(1)
+      end
+
       it "includes the user's projects" do
-        project = create(:project, namespace: create(:namespace, owner: user))
-        expect(search_autocomplete_opts(project.name).size).to eq(1)
+        expect(search_autocomplete_opts(project1.name).size).to eq(1)
+      end
+
+      shared_examples 'for users' do
+        let_it_be(:another_user) { create(:user, name: 'Jane Doe') }
+        let(:term) { 'jane' }
+        let_it_be_with_refind(:project) { create(:project, developers: user) }
+
+        it 'returns users matching the term' do
+          project.add_developer(another_user)
+          result = search_autocomplete_opts(term)
+          expect(result.size).to eq(1)
+          expect(result.first[:id]).to eq(another_user.id)
+        end
+
+        context 'when current_user cannot read_users_list' do
+          before do
+            allow(Ability).to receive(:allowed?).and_return(true)
+            allow(Ability).to receive(:allowed?).with(current_user, :read_users_list).and_return(false)
+          end
+
+          it 'returns an empty array' do
+            expect(search_autocomplete_opts(term)).to eq([])
+          end
+        end
+
+        describe 'permissions' do
+          let(:term) { 'jane@doe' }
+          let(:private_email_user) { create(:user, email: term) }
+          let(:public_email_user) { create(:user, :public_email, email: term) }
+          let(:banned_user) { create(:user, :banned, email: term) }
+          let(:user_with_other_email) { create(:user, email: 'something@else') }
+          let(:secondary_email) { create(:email, :confirmed, user: user_with_other_email, email: term) }
+          let(:ids) { search_autocomplete_opts(term).pluck(:id) }
+
+          context 'when current_user is an admin', :enable_admin_mode do
+            let_it_be(:admin_user) { create(:admin) }
+
+            before do
+              allow(self).to receive(:current_user).and_return(admin_user)
+            end
+
+            it 'includes users with matching public emails' do
+              public_email_user
+              project.add_developer(public_email_user)
+
+              expect(ids).to include(public_email_user.id)
+            end
+
+            it 'includes users in forbidden states' do
+              banned_user
+              project.add_developer(banned_user)
+
+              expect(ids).to include(banned_user.id)
+            end
+
+            it 'includes users without matching public emails but with matching private emails' do
+              private_email_user
+              project.add_developer(private_email_user)
+
+              expect(ids).to include(private_email_user.id)
+            end
+
+            it 'includes users matching on secondary email' do
+              secondary_email
+              project.add_developer(user_with_other_email)
+
+              expect(ids).to include(secondary_email.user_id)
+            end
+          end
+
+          context 'when current_user is not an admin' do
+            it 'includes users with matching public emails' do
+              public_email_user
+              project.add_developer(public_email_user)
+
+              expect(ids).to include(public_email_user.id)
+            end
+
+            it 'does not include users in forbidden states' do
+              banned_user
+              project.add_developer(banned_user)
+
+              expect(ids).not_to include(banned_user.id)
+            end
+
+            it 'does not include users without matching public emails but with matching private emails' do
+              private_email_user
+              project.add_developer(private_email_user)
+
+              expect(ids).not_to include(private_email_user.id)
+            end
+
+            it 'does not include users matching on secondary email' do
+              secondary_email
+              project.add_developer(secondary_email)
+
+              expect(ids).not_to include(secondary_email.user_id)
+            end
+          end
+        end
+
+        context 'with limiting' do
+          let_it_be(:users) { create_list(:user, 6, name: 'Jane Doe') }
+
+          before_all do
+            users.each do |user|
+              project.add_developer(user)
+            end
+          end
+
+          it 'only returns the first 5 users' do
+            result = search_autocomplete_opts(term)
+            expect(result.size).to eq(5)
+          end
+        end
+      end
+
+      include_examples 'for users'
+
+      it "includes the required project attrs" do
+        result = search_autocomplete_opts(project1.name).first
+
+        expect(result.keys).to match_array(%i[category id value label url avatar_url])
+      end
+
+      it "includes the required group attrs" do
+        result = search_autocomplete_opts("gro").first
+
+        expect(result.keys).to match_array(%i[category id value label url avatar_url])
+      end
+
+      context 'for recently reviewed items' do
+        let(:search_term) { 'the search term' }
+        let(:recent_merge_requests) { instance_double(::Gitlab::Search::RecentMergeRequests) }
+        let(:recent_wiki_pages) { instance_double(::Gitlab::Search::RecentWikiPages) }
+
+        let_it_be(:project2) { create(:project) }
+
+        shared_examples 'recently viewed work items or issues' do
+          let(:recent_items_class) { ::Gitlab::Search::RecentWorkItems }
+          let(:recent_items) { instance_double(recent_items_class) }
+          let(:category_name) { 'Recent work items' }
+
+          it 'includes the users recently viewed items and project with correct order', :aggregate_failures do
+            project = create(:project, :with_avatar, title: 'the search term')
+            project.add_developer(user)
+
+            issue1 = create(:issue, title: 'issue 1', project: project)
+            issue2 = create(:issue, title: 'issue 2', project: project2)
+
+            expect(recent_items_class).to receive(:new).with(user: user).and_return(recent_items)
+            expect(recent_items).to receive(:search).with(search_term)
+              .and_return(Issue.id_in_ordered([issue1.id, issue2.id]))
+
+            results = search_autocomplete_opts(search_term)
+
+            expect(results.count).to eq(3)
+
+            expect(results[0]).to include({
+              category: category_name,
+              id: issue1.id,
+              label: 'issue 1',
+              url: work_item_path(issue1),
+              avatar_url: project.avatar_url
+            })
+
+            expect(results[1]).to include({
+              category: category_name,
+              id: issue2.id,
+              label: 'issue 2',
+              url: work_item_path(issue2),
+              avatar_url: ''
+            })
+
+            expect(results[2]).to include({
+              category: 'Projects',
+              id: project.id,
+              label: project.full_name,
+              url: Gitlab::Routing.url_helpers.project_path(project)
+            })
+          end
+
+          it 'includes the users recently viewed items with the exact same name', :aggregate_failures do
+            expect(recent_items_class).to receive(:new).with(user: user).and_return(recent_items)
+            project3 = create(:project, :with_avatar, namespace: user.namespace)
+            issue1 = create(:issue, title: 'issue same_name', project: project3)
+            issue2 = create(:issue, title: 'issue same_name', project: project2)
+
+            expect(recent_items).to receive(:search).with(search_term)
+              .and_return(Issue.id_in_ordered([issue1.id, issue2.id]))
+
+            results = search_autocomplete_opts(search_term)
+
+            expect(results.count).to eq(2)
+
+            expect(results[0]).to include({
+              category: category_name,
+              id: issue1.id,
+              label: 'issue same_name',
+              url: work_item_path(issue1),
+              avatar_url: project3.avatar_url
+            })
+
+            expect(results[1]).to include({
+              category: category_name,
+              id: issue2.id,
+              label: 'issue same_name',
+              url: work_item_path(issue2),
+              avatar_url: ''
+            })
+          end
+
+          it 'does not have an N+1 for recently viewed items', :request_store do
+            issue1 = create(:issue, title: 'issue 1', project: project1)
+            issue2 = create(:issue, title: 'issue 2', project: project2)
+            issue_ids = [issue1.id, issue2.id]
+
+            allow(recent_items_class).to receive(:new).with(user: user).and_return(recent_items)
+            search_result = Issue.id_in_ordered(issue_ids)
+            search_result = search_result.preload_namespace.preload_routables
+            expect(recent_items).to receive(:search).with(search_term).and_return(search_result)
+
+            control = ActiveRecord::QueryRecorder.new(skip_cached: true) { search_autocomplete_opts(search_term) }
+
+            issue_ids += create_list(:issue, 3).map(&:id)
+            search_result = Issue.id_in_ordered(issue_ids)
+            search_result = search_result.preload_namespace.preload_routables
+            expect(recent_items).to receive(:search).with(search_term).and_return(search_result)
+
+            # Threshold of 6 allows for 2 additional queries per new issue (3 new issues = 6 queries)
+            # These queries are needed for URL determination logic (work_item_type, namespace checks)
+            # introduced by the URL centralization in https://gitlab.com/gitlab-org/gitlab/-/merge_requests/213411
+            # and temporary until full migration to Work Items URLs
+            expect { search_autocomplete_opts(search_term) }.to issue_same_number_of_queries_as(control).allow_skip_cache_inconsistency.with_threshold(6)
+          end
+        end
+
+        it_behaves_like 'recently viewed work items or issues'
+
+        it 'builds URLs using work_item_path helper for issues', :aggregate_failures do
+          issue = create(:issue, title: 'test work item', project: project1)
+
+          recent_work_items = instance_double(::Gitlab::Search::RecentWorkItems)
+          expect(::Gitlab::Search::RecentWorkItems).to receive(:new).with(user: user).and_return(recent_work_items)
+          expect(recent_work_items).to receive(:search).with(search_term).and_return(Issue.id_in_ordered([issue.id]))
+
+          expected_url = work_item_path(issue)
+
+          results = search_autocomplete_opts(search_term)
+
+          work_item_result = results.find { |r| r[:category] == 'Recent work items' }
+          expect(work_item_result).to be_present
+          expect(work_item_result[:url]).to eq(expected_url)
+          expect(work_item_result[:url]).to include(project1.full_path)
+          expect(work_item_result[:url]).to match(%r{/-/(issues|work_items)/\d+})
+        end
+
+        it 'builds URLs using work_item_path helper for work items', :aggregate_failures do
+          work_item = create(:work_item, project: project1, title: 'test work item')
+
+          recent_work_items = instance_double(::Gitlab::Search::RecentWorkItems)
+          expect(::Gitlab::Search::RecentWorkItems).to receive(:new).with(user: user).and_return(recent_work_items)
+          expect(recent_work_items).to receive(:search).with(search_term).and_return(Issue.id_in_ordered([work_item.id]))
+
+          expected_url = work_item_path(work_item)
+
+          results = search_autocomplete_opts(search_term)
+
+          work_item_result = results.find { |r| r[:category] == 'Recent work items' }
+          expect(work_item_result).to be_present
+          expect(work_item_result[:url]).to eq(expected_url)
+          expect(work_item_result[:url]).to include(project1.full_path)
+          expect(work_item_result[:url]).to match(%r{/-/(issues|work_items)/\d+})
+        end
+
+        it 'includes the users recently viewed wiki pages', :aggregate_failures do
+          expect(::Gitlab::Search::RecentWikiPages).to receive(:new).with(user: user)
+            .and_return(recent_wiki_pages)
+
+          wiki_page_meta1 = create(:wiki_page_meta, title: 'Wiki page 1', project: project1,
+            canonical_slug: 'wiki-page-1')
+          wiki_page_meta2 = create(:wiki_page_meta, title: 'Wiki page 2', project: project2,
+            canonical_slug: 'wiki-page-2')
+
+          expect(recent_wiki_pages).to receive(:search).with(search_term)
+            .and_return(WikiPage::Meta.id_in_ordered([wiki_page_meta1.id, wiki_page_meta2.id]))
+
+          results = search_autocomplete_opts(search_term)
+
+          expect(results.count).to eq(2)
+
+          expect(results[0]).to include({
+            category: 'Recent wiki pages',
+            id: wiki_page_meta1.id,
+            label: 'Wiki page 1',
+            url: Gitlab::UrlBuilder.build(wiki_page_meta1)
+          })
+
+          expect(results[1]).to include({
+            category: 'Recent wiki pages',
+            id: wiki_page_meta2.id,
+            label: 'Wiki page 2',
+            url: Gitlab::UrlBuilder.build(wiki_page_meta2)
+          })
+        end
+
+        context 'with recently viewed merge requests' do
+          let_it_be(:merge_request1) do
+            create(:merge_request, :unique_branches,
+              title: 'Merge request 1', target_project: project1, source_project: project1)
+          end
+
+          let_it_be(:merge_request2) do
+            create(:merge_request, :unique_branches,
+              title: 'Merge request 2', target_project: project2, source_project: project2)
+          end
+
+          it 'includes the users recently viewed merge requests', :aggregate_failures do
+            expect(::Gitlab::Search::RecentMergeRequests).to receive(:new).with(user: user)
+              .and_return(recent_merge_requests)
+
+            expect(recent_merge_requests).to receive(:search).with(search_term)
+              .and_return(MergeRequest.id_in_ordered([merge_request1.id, merge_request2.id]))
+
+            results = search_autocomplete_opts(search_term)
+
+            expect(results.count).to eq(2)
+
+            expect(results[0]).to include({
+              category: 'Recent merge requests',
+              id: merge_request1.id,
+              label: 'Merge request 1',
+              url: Gitlab::Routing.url_helpers.project_merge_request_path(merge_request1.project, merge_request1),
+              avatar_url: '' # This project didn't have an avatar so set this to ''
+            })
+
+            expect(results[1]).to include({
+              category: 'Recent merge requests',
+              id: merge_request2.id,
+              label: 'Merge request 2',
+              url: Gitlab::Routing.url_helpers.project_merge_request_path(merge_request2.project, merge_request2),
+              avatar_url: '' # This project didn't have an avatar so set this to ''
+            })
+          end
+
+          it 'does not have an N+1 for recently viewed merge_requests' do
+            merge_request_ids = [merge_request1.id, merge_request2.id]
+
+            expect(::Gitlab::Search::RecentMergeRequests).to receive(:new).with(user: user)
+              .and_return(recent_merge_requests).twice
+            expect(recent_merge_requests).to receive(:search).with(search_term)
+              .and_return(MergeRequest.id_in_ordered(merge_request_ids))
+
+            control = ActiveRecord::QueryRecorder.new(skip_cached: true) { search_autocomplete_opts(search_term) }
+
+            merge_request_ids += create_list(:merge_request, 3, :unique_branches).map(&:id)
+            expect(recent_merge_requests).to receive(:search).with(search_term)
+              .and_return(MergeRequest.id_in_ordered(merge_request_ids))
+
+            expect { search_autocomplete_opts(search_term) }.to issue_same_number_of_queries_as(control).allow_skip_cache_inconsistency
+          end
+        end
+      end
+
+      it "does not include the public group" do
+        group = build_stubbed(:group)
+        expect(search_autocomplete_opts(group.name).size).to eq(0)
       end
 
       context "with a current project" do
-        before { @project = create(:project) }
+        let_it_be(:project) { create(:project, :small_repo) }
 
-        it "includes project-specific sections" do
+        before do
+          @project = project
+
+          allow(self).to receive(:can?).and_return(true)
+          allow(self).to receive(:can?).with(user, :read_feature_flag, project).and_return(false)
+        end
+
+        it 'returns repository related labels based on users abilities', :aggregate_failures do
           expect(search_autocomplete_opts("Files").size).to eq(1)
           expect(search_autocomplete_opts("Commits").size).to eq(1)
+          expect(search_autocomplete_opts("Network").size).to eq(1)
+          expect(search_autocomplete_opts("Graph").size).to eq(1)
+
+          allow(self).to receive(:can?).with(user, :read_code, project).and_return(false)
+
+          expect(search_autocomplete_opts("Files").size).to eq(0)
+          expect(search_autocomplete_opts("Commits").size).to eq(0)
+
+          allow(self).to receive(:can?).with(user, :read_repository_graphs, project).and_return(false)
+
+          expect(search_autocomplete_opts("Network").size).to eq(0)
+          expect(search_autocomplete_opts("Graph").size).to eq(0)
         end
+
+        context 'when user does not have access to project' do
+          it 'does not include issues by iid' do
+            issue = build_stubbed(:issue, project: project)
+            results = search_autocomplete_opts("\##{issue.iid}")
+
+            expect(results.count).to eq(0)
+          end
+        end
+
+        context 'when user has project access' do
+          let_it_be(:project) { create(:project, namespace: user.namespace) }
+
+          before do
+            @project = project
+            allow(self).to receive(:can?).with(user, :read_feature_flag, project).and_return(true)
+          end
+
+          it 'includes issues by iid', :aggregate_failures do
+            issue = create(:issue, project: project, title: 'test title')
+            results = search_autocomplete_opts("\##{issue.iid}")
+
+            expect(results.count).to eq(1)
+
+            expect(results.first).to include({
+              category: 'In this project',
+              id: issue.id,
+              label: "test title (##{issue.iid})",
+              url: ::Gitlab::UrlBuilder.instance.issue_path(issue),
+              avatar_url: '' # project has no avatar
+            })
+          end
+        end
+
+        context 'with a search scope' do
+          let(:term) { 'bla' }
+          let(:scope) { 'project' }
+
+          it 'returns scoped resource results' do
+            expect(self).to receive(:resource_results).with(term, scope: scope).and_return([])
+
+            search_autocomplete_opts(term, filter: :search, scope: scope)
+          end
+        end
+      end
+    end
+
+    context 'with an admin user' do
+      let(:admin) { build_stubbed(:admin) }
+
+      before do
+        allow(self).to receive(:current_user).and_return(admin)
+      end
+
+      context 'when admin mode setting is disabled', :do_not_mock_admin_mode_setting do
+        it 'includes admin sections' do
+          expect(search_autocomplete_opts('admin').size).to eq(1)
+        end
+      end
+
+      context 'when admin mode setting is enabled' do
+        context 'when in admin mode', :enable_admin_mode do
+          it 'includes admin sections' do
+            expect(search_autocomplete_opts('admin').size).to eq(1)
+          end
+        end
+
+        context 'when not in admin mode' do
+          it 'does not include admin sections' do
+            expect(search_autocomplete_opts('admin').size).to eq(0)
+          end
+        end
+      end
+    end
+  end
+
+  describe 'resource_results' do
+    using RSpec::Parameterized::TableSyntax
+
+    let_it_be(:user) { create(:user, name: 'User') }
+    let_it_be(:group) { create(:group, name: 'Group', owners: user) }
+    let_it_be(:project) { create(:project, name: 'Project', owners: user) }
+    let_it_be(:issue) { create(:issue, project: project) }
+    let(:issue_iid) { "\##{issue.iid}" }
+
+    before do
+      allow(self).to receive(:current_user).and_return(user)
+      @project = project
+    end
+
+    where(:term, :size, :category) do
+      'g'             | 0 | 'Groups'
+      'gr'            | 1 | 'Groups'
+      'gro'           | 1 | 'Groups'
+      'p'             | 0 | 'Projects'
+      'pr'            | 1 | 'Projects'
+      'pro'           | 1 | 'Projects'
+      'u'             | 0 | 'Users'
+      'us'            | 1 | 'Users'
+      'use'           | 1 | 'Users'
+      ref(:issue_iid) | 1 | 'In this project'
+    end
+
+    with_them do
+      it 'returns results only if the term is more than or equal to Search::Params::MIN_TERM_LENGTH' do
+        results = resource_results(term)
+
+        expect(results.size).to eq(size)
+        expect(results.first[:category]).to eq(category) if size == 1
+      end
+    end
+
+    context 'with a search scope' do
+      let(:term) { 'bla' }
+      let(:scope) { 'projects' }
+
+      it 'returns only scope-specific results' do
+        expect(self).to receive(:scope_specific_results).with(term, scope).and_return([])
+        expect(self).not_to receive(:groups_autocomplete)
+        expect(self).not_to receive(:projects_autocomplete)
+        expect(self).not_to receive(:users_autocomplete)
+        expect(self).not_to receive(:issue_autocomplete)
+
+        resource_results(term, scope: scope)
+      end
+    end
+
+    context 'when global_search_users_enabled setting is disabled' do
+      before do
+        stub_application_setting(global_search_users_enabled: false)
+      end
+
+      it 'does not return results' do
+        results = resource_results('use')
+
+        expect(results).to be_empty
+      end
+    end
+  end
+
+  describe 'scope_specific_results' do
+    using RSpec::Parameterized::TableSyntax
+
+    let_it_be(:user) { create(:user, name: 'Searched') }
+    let_it_be(:project) { create(:project, name: 'Searched', developers: user) }
+    let_it_be(:issue) { create(:issue, title: 'Searched', project: project) }
+
+    before do
+      allow(self).to receive(:current_user).and_return(user)
+      allow_next_instance_of(Gitlab::Search::RecentWorkItems) do |recent_work_items|
+        allow(recent_work_items).to receive(:search).and_return(WorkItem.id_in(issue.id))
+      end
+    end
+
+    where(:scope, :category) do
+      'users'    | 'Users'
+      'projects' | 'Projects'
+      'issues'   | 'Recent work items'
+    end
+
+    with_them do
+      it 'returns results only for the specific scope' do
+        results = scope_specific_results('sea', scope)
+        expect(results.size).to eq(1)
+        expect(results.first[:category]).to eq(category)
+      end
+    end
+
+    context 'when scope is unknown' do
+      it 'does not return any results' do
+        expect(scope_specific_results('sea', 'other')).to eq([])
+      end
+    end
+
+    context 'when global_search_users_enabled setting is disabled' do
+      before do
+        stub_application_setting(global_search_users_enabled: false)
+      end
+
+      it 'does not return results' do
+        results = scope_specific_results('sea', 'users')
+
+        expect(results).to be_empty
+      end
+    end
+  end
+
+  describe 'groups_autocomplete' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:group_1) { create(:group, name: 'test 1') }
+    let_it_be_with_refind(:group_2) { create(:group, name: 'test 2') }
+    let(:search_term) { 'test' }
+
+    before do
+      allow(self).to receive(:current_user).and_return(user)
+    end
+
+    context 'when the user does not have access to groups' do
+      it 'does not return any results' do
+        expect(groups_autocomplete(search_term)).to eq([])
+      end
+    end
+
+    context 'when the user has access to one group' do
+      before_all do
+        group_2.add_developer(user)
+      end
+
+      it 'returns the group' do
+        expect(groups_autocomplete(search_term).pluck(:id)).to eq([group_2.id])
+      end
+
+      context 'when the search term is Search::Params::MIN_TERM_LENGTH characters long' do
+        let(:search_term) { 'te' }
+
+        it 'returns the group' do
+          expect(groups_autocomplete(search_term).pluck(:id)).to eq([group_2.id])
+        end
+      end
+    end
+  end
+
+  describe 'projects_autocomplete' do
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_refind(:project_1) { create(:project, name: 'test 1', star_count: 5) }
+    let_it_be_with_refind(:project_2) { create(:project, name: 'test 2', star_count: 2) }
+    let(:search_term) { 'test' }
+
+    before do
+      allow(self).to receive(:current_user).and_return(user)
+    end
+
+    context 'when the user does not have access to projects' do
+      it 'does not return any results' do
+        expect(projects_autocomplete(search_term)).to eq([])
+      end
+    end
+
+    context 'when the user has access to one project' do
+      before_all do
+        project_2.add_developer(user)
+      end
+
+      it 'delegates to search_using_search_service with projects scope and autocomplete flag' do
+        expect(self).to receive(:search_using_search_service)
+          .with(user, 'projects', search_term, 5, { autocomplete: true })
+          .and_call_original
+
+        projects_autocomplete(search_term)
+      end
+
+      it 'returns results in the expected format' do
+        results = projects_autocomplete(search_term)
+
+        expect(results).to all(include(:category, :id, :value, :label, :url, :avatar_url))
+        expect(results.first[:category]).to eq('Projects')
+      end
+    end
+  end
+
+  describe 'search_entries_info' do
+    using RSpec::Parameterized::TableSyntax
+
+    where(:scope, :label) do
+      'blobs'          | 'code result'
+      'commits'        | 'commit'
+      'issues'         | 'issue'
+      'merge_requests' | 'merge request'
+      'milestones'     | 'milestone'
+      'notes'          | 'comment'
+      'projects'       | 'project'
+      'snippet_titles' | 'snippet'
+      'users'          | 'user'
+      'wiki_blobs'     | 'wiki result'
+    end
+
+    with_them do
+      it 'uses the correct singular label' do
+        collection = Kaminari.paginate_array([:foo]).page(1).per(10)
+
+        expect(helper.search_entries_info(collection, scope, 'foo'))
+         .to eq("Showing 1 #{label} for <span> <code>foo</code> </span>")
+      end
+
+      it 'uses the correct plural label' do
+        collection = Kaminari.paginate_array([:foo] * 23).page(1).per(10)
+
+        expect(helper.search_entries_info(collection, scope, 'foo'))
+          .to eq("Showing 1 - 10 of 23 #{label.pluralize} for <span> <code>foo</code> </span>")
+      end
+    end
+
+    it 'raises an error for unrecognized scopes' do
+      expect do
+        collection = Kaminari.paginate_array([:foo]).page(1).per(10)
+        helper.search_entries_info(collection, 'unknown', 'foo')
+      end.to raise_error(RuntimeError)
+    end
+  end
+
+  describe 'search_entries_empty_message' do
+    let(:group) { build_stubbed(:group) }
+    let(:project) { build_stubbed(:project, group: group) }
+
+    context 'for global search' do
+      let(:message) { helper.search_entries_empty_message('projects', '<h1>foo</h1>', nil, nil) }
+
+      it 'returns the formatted entry message' do
+        expect(message).to eq("We couldn&#39;t find any projects matching <code>&lt;h1&gt;foo&lt;/h1&gt;</code>")
+        expect(message).to be_html_safe
+      end
+    end
+
+    context 'for group search' do
+      let(:message) { helper.search_entries_empty_message('projects', '<h1>foo</h1>', group, nil) }
+
+      it 'returns the formatted entry message' do
+        expect(message).to start_with('We couldn&#39;t find any projects matching <code>&lt;h1&gt;foo&lt;/h1&gt;</code> in group <a')
+        expect(message).to be_html_safe
+      end
+    end
+
+    context 'for project search' do
+      let(:message) { helper.search_entries_empty_message('projects', '<h1>foo</h1>', group, project) }
+
+      it 'returns the formatted entry message' do
+        expect(message).to start_with('We couldn&#39;t find any projects matching <code>&lt;h1&gt;foo&lt;/h1&gt;</code> in project <a')
+        expect(message).to be_html_safe
+      end
+    end
+  end
+
+  describe 'search_filter_input_options' do
+    context 'for project' do
+      let(:project) { build_stubbed(:project) }
+
+      before do
+        @project = project
+      end
+
+      it 'includes id with type' do
+        expect(search_filter_input_options('type')[:id]).to eq('filtered-search-type')
+      end
+
+      it 'includes project-id' do
+        expect(search_filter_input_options('')[:data]['project-id']).to eq(project.id)
+      end
+
+      it 'includes project endpoints' do
+        expect(search_filter_input_options('')[:data]['labels-endpoint']).to eq(project_labels_path(project))
+        expect(search_filter_input_options('')[:data]['milestones-endpoint']).to eq(project_milestones_path(project))
+        expect(search_filter_input_options('')[:data]['releases-endpoint']).to eq(project_releases_path(project))
+      end
+
+      it 'includes autocomplete=off flag' do
+        expect(search_filter_input_options('')[:autocomplete]).to eq('off')
+      end
+    end
+
+    context 'for group' do
+      let(:group) { build_stubbed(:group, name: 'group') }
+
+      before do
+        @group = group
+      end
+
+      it 'does not includes project-id' do
+        expect(search_filter_input_options('')[:data]['project-id']).to be_nil
+      end
+
+      it 'includes group endpoints' do
+        expect(search_filter_input_options('')[:data]['labels-endpoint']).to eq(group_labels_path(group))
+        expect(search_filter_input_options('')[:data]['milestones-endpoint']).to eq(group_milestones_path(group))
+      end
+    end
+
+    context 'for dashboard' do
+      it 'does not include group-id and project-id' do
+        expect(search_filter_input_options('')[:data]['project-id']).to be_nil
+        expect(search_filter_input_options('')[:data]['group-id']).to be_nil
+      end
+
+      it 'includes dashboard endpoints' do
+        expect(search_filter_input_options('')[:data]['labels-endpoint']).to eq(dashboard_labels_path)
+        expect(search_filter_input_options('')[:data]['milestones-endpoint']).to eq(dashboard_milestones_path)
+      end
+    end
+  end
+
+  describe 'search_history_storage_prefix' do
+    context 'for project' do
+      let(:project) { build_stubbed(:project) }
+
+      before do
+        @project = project
+      end
+
+      it 'returns project full_path' do
+        expect(search_history_storage_prefix).to eq(project.full_path)
+      end
+    end
+
+    context 'for group' do
+      let(:group) { build_stubbed(:group, :nested, name: 'group-name') }
+
+      before do
+        @group = group
+      end
+
+      it 'returns group full_path' do
+        expect(search_history_storage_prefix).to eq(group.full_path)
+      end
+    end
+
+    context 'for dashboard' do
+      it 'returns dashboard' do
+        expect(search_history_storage_prefix).to eq("dashboard")
+      end
+    end
+  end
+
+  describe 'search_md_sanitize' do
+    let(:project) { create(:project) }
+
+    before do
+      @project = project
+    end
+
+    it 'does not do extra sql queries for partial markdown rendering' do
+      description = FFaker::Lorem.characters(210)
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) { search_md_sanitize(description) }
+
+      issues = create_list(:issue, 4, project: project)
+
+      description_with_issues = "#{description} #{issues.map { |issue| "##{issue.iid}" }.join(' ')}"
+      expect { search_md_sanitize(description_with_issues) }.not_to exceed_all_query_limit(control)
+    end
+  end
+
+  describe '#repository_ref' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:project) { build_stubbed(:project) }
+    let(:default_branch) { project.default_branch }
+    let(:params) { { repository_ref: ref, project_id: project_id } }
+
+    subject { repository_ref(project) }
+
+    where(:project_id, :ref, :expected_ref) do
+      123 | 'ref-param' | 'ref-param'
+      123 | nil         | ref(:default_branch)
+      123 | 111111      | '111111'
+      nil | 'ref-param' | ref(:default_branch)
+    end
+
+    with_them do
+      it 'returns expected_ref' do
+        expect(repository_ref(project)).to eq(expected_ref)
+      end
+    end
+  end
+
+  describe '#highlight_and_truncate_issuable' do
+    let(:issue) { build_stubbed(:issue) }
+    let(:highlight_and_truncate) { highlight_and_truncate_issuable(issue, 'test', {}) }
+
+    before do
+      allow(self).to receive(:current_user).and_return(build_stubbed(:user))
+    end
+
+    it 'calls simple_search_highlight_and_truncate' do
+      expect(self).to receive(:simple_search_highlight_and_truncate).with(issue.description, 'test')
+
+      highlight_and_truncate
+    end
+  end
+
+  describe '#simple_search_highlight_and_truncate' do
+    using RSpec::Parameterized::TableSyntax
+
+    where(:text, :expected) do
+      '' | nil
+      nil | nil
+      123 | nil
+      'test' | '<mark>test</mark>'
+      'charset ëòä test' | 'charset ëòä <mark>test</mark>'
+      '<span style="color: blue;">this test should not be blue</span>' | 'this <mark>test</mark> should not be blue'
+      '<a href="#" onclick="alert(\'XSS\')">Click Me test</a>' | '<a href="#">Click Me <mark>test</mark></a>'
+      '<script type="text/javascript">alert(\'Another XSS\');</script> test' | ' <mark>test</mark>'
+      'Lorem test ipsum dolor sit amet, consectetuer adipiscing elit. Aenean commodo ligula eget dolor. Aenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Donec quam felis, ultricies nec, pellentesque eu, pretium quis, sem. Nulla consequat massa quis enim. Donec.' | 'Lorem <mark>test</mark> ipsum dolor sit amet, consectetuer adipiscing elit. Aenean commodo ligula eget dolor. Aenean massa. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Don...'
+      '<img src="https://random.foo.com/test.png" width="128" height="128" />some image' | 'some image'
+      '<h2 data-sourcepos="11:1-11:26" dir="auto"><a id="user-content-additional-information" class="anchor" href="#additional-information" aria-hidden="true"></a>Additional information test:</h2><textarea data-update-url="/freepascal.org/fpc/source/-/issues/6163.json" dir="auto" data-testid="textarea" class="hidden js-task-list-field"></textarea>' | '<a class="anchor" href="#additional-information"></a>Additional information <mark>test</mark>:'
+    end
+
+    with_them do
+      it 'sanitizes, truncates, and highlights the search term' do
+        expect(simple_search_highlight_and_truncate(text, 'test')).to eq(expected)
+      end
+    end
+  end
+
+  describe '#search_service' do
+    let(:params) { { include_archived: true } }
+
+    before do
+      allow(self).to receive(:current_user).and_return(:the_current_user)
+    end
+
+    it 'instantiates a new SearchService with current_user and params' do
+      expect(::SearchService).to receive(:new).with(
+        :the_current_user,
+        hash_including(include_archived: true, organization_id: current_organization.id)
+      )
+
+      search_service
+    end
+  end
+
+  describe '#issuable_state_to_badge_class' do
+    context 'with merge request' do
+      it 'returns correct badge based on status' do
+        expect(issuable_state_to_badge_class(build_stubbed(:merge_request, :merged))).to eq(:info)
+        expect(issuable_state_to_badge_class(build_stubbed(:merge_request, :closed))).to eq(:danger)
+        expect(issuable_state_to_badge_class(build_stubbed(:merge_request, :opened))).to eq(:success)
+      end
+    end
+
+    context 'with an issue' do
+      it 'returns correct badge based on status' do
+        expect(issuable_state_to_badge_class(build_stubbed(:issue, :closed))).to eq(:info)
+        expect(issuable_state_to_badge_class(build_stubbed(:issue, :opened))).to eq(:success)
+      end
+    end
+  end
+
+  describe '#issuable_state_text' do
+    context 'with merge request' do
+      it 'returns correct badge based on status' do
+        expect(issuable_state_text(build_stubbed(:merge_request, :merged))).to eq(_('Merged'))
+        expect(issuable_state_text(build_stubbed(:merge_request, :closed))).to eq(_('Closed'))
+        expect(issuable_state_text(build_stubbed(:merge_request, :opened))).to eq(_('Open'))
+      end
+    end
+
+    context 'with an issue' do
+      it 'returns correct badge based on status' do
+        expect(issuable_state_text(build_stubbed(:issue, :closed))).to eq(_('Closed'))
+        expect(issuable_state_text(build_stubbed(:issue, :opened))).to eq(_('Open'))
+      end
+    end
+  end
+
+  describe '#search_sort_options' do
+    let(:user) { build_stubbed(:user) }
+
+    mock_created_sort = [
+      {
+        title: _('Created date'),
+        sortable: true,
+        sortParam: {
+          asc: 'created_asc',
+          desc: 'created_desc'
+        }
+      },
+      {
+        title: _('Updated date'),
+        sortable: true,
+        sortParam: {
+          asc: 'updated_asc',
+          desc: 'updated_desc'
+        }
+      }
+    ]
+
+    before do
+      allow(self).to receive(:current_user).and_return(user)
+    end
+
+    it 'returns the correct data' do
+      expect(search_sort_options).to eq(mock_created_sort)
+    end
+  end
+
+  describe '#header_search_context' do
+    let(:user) { build_stubbed(:user) }
+    let(:can_download) { false }
+    let_it_be(:group) { nil }
+    let_it_be(:project) { nil }
+    let(:scope) { nil }
+    let(:ref) { nil }
+    let(:snippet) { nil }
+
+    before do
+      @project = project
+      @group = group
+      @ref = ref
+      @snippet = snippet
+
+      allow(self).to receive_messages(current_user: user, search_scope: scope, can?: can_download)
+    end
+
+    context 'when no group or project data' do
+      it 'does not add :group, :group_metadata, or :scope to hash' do
+        expect(header_search_context[:group]).to be_nil
+        expect(header_search_context[:group_metadata]).to be_nil
+        expect(header_search_context[:scope]).to be_nil
+      end
+
+      it 'does not add :project, :project_metadata, :code_search, or :ref' do
+        expect(header_search_context[:project]).to be_nil
+        expect(header_search_context[:project_metadata]).to be_nil
+        expect(header_search_context[:code_search]).to be_nil
+        expect(header_search_context[:ref]).to be_nil
+      end
+    end
+
+    context 'when group data' do
+      let(:group) { build_stubbed(:group) }
+
+      let(:group_metadata) do
+        {
+          issues_path: issues_group_path(group),
+          mr_path: merge_requests_group_path(group, assignee_username: user.username)
+        }
+      end
+
+      let(:scope) { 'issues' }
+
+      it 'adds the :group, :group_metadata, and :scope correctly to hash' do
+        expect(header_search_context[:group]).to eq({ id: group.id, name: group.name, full_name: group.full_name })
+        expect(header_search_context[:group_metadata]).to eq(group_metadata)
+        expect(header_search_context[:scope]).to eq(scope)
+      end
+
+      it 'does not add :project, :project_metadata, :code_search, or :ref' do
+        expect(header_search_context[:project]).to be_nil
+        expect(header_search_context[:project_metadata]).to be_nil
+        expect(header_search_context[:code_search]).to be_nil
+        expect(header_search_context[:ref]).to be_nil
+      end
+    end
+
+    context 'when project data' do
+      let(:project_group) { build_stubbed(:group) }
+      let(:project) { build_stubbed(:project, group: project_group) }
+      let(:project_metadata) do
+        {
+          issues_path: project_issues_path(project),
+          mr_path: project_merge_requests_path(project, assignee_username: user.username)
+        }
+      end
+
+      let(:group_metadata) do
+        {
+          issues_path: issues_group_path(project_group),
+          mr_path: merge_requests_group_path(project_group, assignee_username: user.username)
+        }
+      end
+
+      it 'adds the :group and :group-metadata from the project correctly to hash' do
+        expect(header_search_context[:group])
+          .to eq(id: project_group.id, name: project_group.name, full_name: project_group.full_name)
+        expect(header_search_context[:group_metadata]).to eq(group_metadata)
+      end
+
+      it 'adds the :project and :project-metadata correctly to hash' do
+        expect(header_search_context[:project]).to eq({ id: project.id, name: project.name })
+        expect(header_search_context[:project_metadata]).to eq(project_metadata)
+      end
+
+      context 'when feature issues is not available' do
+        let(:feature_available) { false }
+
+        before do
+          allow(project).to receive(:feature_available?).and_call_original
+          allow(project).to receive(:feature_available?).with(:issues, current_user).and_return(feature_available)
+          allow(project).to receive(:feature_available?).with(:merge_requests,
+            current_user).and_return(feature_available)
+        end
+
+        it 'adds the :project and :project-metadata without mr_path' do
+          expect(header_search_context[:project]).to eq({ id: project.id, name: project.name })
+          expect(header_search_context[:project_metadata]).to eq({})
+        end
+      end
+
+      context 'with scope' do
+        let(:scope) { 'issues' }
+
+        it 'adds :scope and false :code_search to hash' do
+          expect(header_search_context[:scope]).to eq(scope)
+          expect(header_search_context[:code_search]).to be(false)
+        end
+      end
+
+      context 'without scope' do
+        it 'adds code_search true to hash and not :scope' do
+          expect(header_search_context[:scope]).to be_nil
+          expect(header_search_context[:code_search]).to be(true)
+        end
+      end
+    end
+
+    context 'for ref data' do
+      let(:project) { build_stubbed(:project) }
+      let(:ref) { 'test-branch' }
+
+      context 'when user can? download project data' do
+        let(:can_download) { true }
+
+        it 'adds the :ref correctly to hash' do
+          expect(header_search_context[:ref]).to eq(ref)
+        end
+      end
+
+      context 'when user cannot download project data' do
+        let(:can_download) { false }
+
+        it 'does not add the :ref to hash' do
+          expect(header_search_context[:ref]).to be_nil
+        end
+      end
+    end
+
+    context 'for snippet' do
+      context 'when searching from snippets' do
+        let(:snippet) { build_stubbed(:project_snippet) }
+
+        it 'adds :for_snippets true correctly to hash' do
+          expect(header_search_context[:for_snippets]).to be(true)
+        end
+      end
+
+      context 'when not searching from snippets' do
+        it 'adds :for_snippets nil correctly to hash' do
+          expect(header_search_context[:for_snippets]).to be_nil
+        end
+      end
+    end
+  end
+
+  describe '.search_navigation_json' do
+    using RSpec::Parameterized::TableSyntax
+
+    context 'with some tab conditions set to false' do
+      example_data_1 = {
+        projects: { label: _("Projects"), condition: true },
+        blobs: { label: _("Code"), condition: false }
+      }
+
+      example_data_2 = {
+        projects: { label: _("Projects"), condition: false },
+        blobs: { label: _("Code"), condition: false }
+      }
+
+      example_data_3 = {
+        projects: { label: _("Projects"), condition: true },
+        blobs: { label: _("Code"), condition: true },
+        epics: { label: _("Epics"), condition: true }
+      }
+
+      where(:data, :matcher) do
+        example_data_1 | -> { include("projects") }
+        example_data_2 | -> { eq("{}") }
+        example_data_3 | -> { include("projects", "blobs", "epics") }
+      end
+
+      with_them do
+        it 'renders data correctly' do
+          allow(self).to receive(:current_user).and_return(build_stubbed(:user))
+          allow_next_instance_of(Search::Navigation) do |search_nav|
+            allow(search_nav).to receive(:tabs).and_return(data)
+          end
+
+          expect(search_navigation_json).to instance_exec(&matcher)
+        end
+      end
+    end
+
+    context 'when all options enabled' do
+      before do
+        allow(self).to receive(:current_user).and_return(build_stubbed(:user))
+        allow(search_service).to receive(:show_snippets?).and_return(true)
+        allow_next_instance_of(Search::Navigation) do |search_nav|
+          allow(search_nav).to receive_messages(tab_enabled_for_project?: true)
+        end
+
+        @project = nil
+      end
+
+      it 'returns items in order' do
+        expect(Gitlab::Json.safe_parse(search_navigation_json).keys)
+          .to eq(%w[projects groups blobs work_items merge_requests wiki_blobs commits notes milestones users snippet_titles])
+      end
+    end
+  end
+
+  describe '.search_filter_link_json' do
+    using RSpec::Parameterized::TableSyntax
+
+    context 'with data' do
+      where(:scope, :label, :data, :search, :active_scope) do
+        "projects"       | "Projects"                | { testid: 'projects-tab' } | nil                  | "projects"
+        "snippet_titles" | "Snippets"                | nil                        | { snippets: "test" } | "code"
+        "projects"       | "Projects"                | { testid: 'projects-tab' } | nil                  | "issue"
+        "snippet_titles" | "Snippets"                | nil                        | { snippets: "test" } | "snippet_titles"
+      end
+
+      with_them do
+        it 'converts correctly' do
+          search_results = double
+          @timeout = false
+          @scope = active_scope
+          @search_results = search_results
+          dummy_count = 1000
+          allow(self).to receive(:search_path).with(any_args).and_return("link test")
+
+          allow(search_results).to receive(:formatted_count).with(scope).and_return(dummy_count)
+          allow(self).to receive(:search_count_path).with(any_args).and_return("test count link")
+
+          current_scope = scope == active_scope
+
+          expected = {
+            label: label,
+            scope: scope,
+            data: data,
+            link: "link test",
+            active: current_scope
+          }
+
+          expected[:count] = dummy_count if current_scope
+          expected[:count_link] = "test count link" unless current_scope
+
+          expect(search_filter_link_json(scope, label, data, search, nil)).to eq(expected)
+        end
+      end
+    end
+  end
+
+  describe '#wiki_blob_link' do
+    let(:project) { build_stubbed(:project) }
+    let(:wiki_blob) do
+      Gitlab::Search::FoundBlob.new(path: 'test', basename: 'test', ref: 'master',
+        data: 'foo', startline: 2, project: project, project_id: project.id)
+    end
+
+    it 'returns link' do
+      expect(wiki_blob_link(wiki_blob)).to eq("/#{project.namespace.path}/#{project.path}/-/wikis/#{wiki_blob.path}")
+    end
+  end
+
+  describe '#should_show_zoekt_results?' do
+    before do
+      allow(self).to receive(:current_user).and_return(nil)
+    end
+
+    it 'returns false for any scope and search type' do
+      expect(should_show_zoekt_results?(:some_scope, :some_type)).to be false
+    end
+  end
+
+  describe '#formatted_count' do
+    let(:scope) { 'projects' }
+
+    context 'when @timeout is set' do
+      before do
+        @timeout = true
+        @scope = scope
+      end
+
+      it 'returns "0"' do
+        expect(formatted_count(scope)).to eq("0")
+      end
+    end
+
+    context 'when @search_results is defined' do
+      let(:search_results) { double }
+
+      before do
+        @scope = scope
+        @search_results = search_results
+      end
+
+      it 'delegates formatted_count to @search_results' do
+        expect(search_results).to receive(:formatted_count).with(scope)
+
+        formatted_count(scope)
+      end
+    end
+
+    context 'when @search_results is not defined' do
+      before do
+        @scope = scope
+      end
+
+      it 'returns "0"' do
+        expect(formatted_count(scope)).to eq("0")
+      end
+    end
+  end
+
+  describe '#parse_navigation' do
+    let(:navigation) do
+      {
+        projects: {
+          sort: 1,
+          label: "Projects",
+          data: { testid: "projects-tab" },
+          condition: true
+        },
+        blobs: {
+          sort: 2,
+          label: "Code",
+          data: { testid: "code-tab" },
+          condition: true
+        },
+        epics: {
+          sort: 3,
+          label: "Epics",
+          condition: true
+        },
+        issues: {
+          sort: 4, label: "Work items", condition: true, sub_items: {
+            issue: {
+              scope: "issues",
+              label: "Issue",
+              type: :issue,
+              condition: true
+            },
+            incident: {
+              scope: "issues",
+              label: "Incident",
+              type: :incident,
+              condition: true
+            },
+            test_case: {
+              scope: "issues",
+              label: "Test Case",
+              type: :test_case,
+              condition: true
+            },
+            requirement: {
+              scope: "issues",
+              label: "Requirement",
+              type: :requirement,
+              condition: true
+            },
+            task: {
+              scope: "issues",
+              label: "Task",
+              type: :task,
+              condition: true
+            },
+            objective: {
+              scope: "issues",
+              label: "Objective",
+              type: :objective,
+              condition: true
+            },
+            key_result: {
+              scope: "issues",
+              label: "Key Result",
+              type: :key_result,
+              condition: true
+            },
+            epic: {
+              scope: "issues",
+              label: "Epic",
+              type: :epic,
+              condition: true
+            },
+            ticket: {
+              scope: "issues",
+              label: "Ticket",
+              type: :ticket,
+              condition: true
+            }
+          }
+        },
+        merge_requests: {
+          sort: 5,
+          label: "Merge requests",
+          condition: true
+        },
+        wiki_blobs: {
+          sort: 6,
+          label: "Wiki",
+          condition: true
+        },
+        commits: {
+          sort: 7,
+          label: "Commits",
+          condition: true
+        },
+        notes: {
+          sort: 8,
+          label: "Comments",
+          condition: true
+        },
+        milestones: {
+          sort: 9,
+          label: "Milestones",
+          condition: true
+        },
+        users: {
+          sort: 10,
+          label: "Users",
+          condition: true
+        },
+        snippet_titles: {
+          sort: 11,
+          label: "Snippets",
+          condition: false
+        }
+      }
+    end
+
+    context 'with positive conditions' do
+      let(:parse) { parse_navigation(navigation) }
+
+      it 'includes items where condition is true' do
+        expect(parse.keys).to include(:projects, :blobs, :epics, :issues, :merge_requests, :wiki_blobs, :commits,
+          :notes, :milestones, :users)
+      end
+
+      it 'excludes items where condition is false' do
+        expect(parse.keys).not_to include(:snippet_titles)
+      end
+
+      it 'includes correct data for a navigation item' do
+        expect(parse[:projects]).to eq(
+          scope: "projects",
+          label: "Projects",
+          data: { testid: "projects-tab" },
+          active: false,
+          count_link: "/search/count?scope=projects",
+          link: "/search?scope=projects"
+        )
+      end
+    end
+  end
+
+  describe '#blob_data_oversize_message' do
+    it 'returns the correct message for empty files' do
+      expect(helper.blob_data_oversize_message).to eq('The file could not be displayed because it is empty.')
+    end
+  end
+
+  describe '#search_scope' do
+    let(:user) { build_stubbed(:user) }
+
+    before do
+      allow(helper).to receive_messages(current_user: user, current_controller?: false)
+    end
+
+    context 'when custom default search scope is set' do
+      before do
+        stub_application_setting(default_search_scope: 'issues')
+      end
+
+      it 'returns nil' do
+        expect(helper.search_scope).to be_nil
+      end
+    end
+
+    context 'when custom default search scope is not set' do
+      before do
+        stub_application_setting(default_search_scope: ::ApplicationSetting::SEARCH_SCOPE_SYSTEM_DEFAULT)
+      end
+
+      context 'when on issues controller' do
+        it 'returns issues' do
+          allow(helper).to receive(:current_controller?).with(:issues).and_return(true)
+
+          expect(helper.search_scope).to eq('issues')
+        end
+      end
+
+      context 'when on merge_requests controller' do
+        it 'returns merge_requests' do
+          allow(helper).to receive(:current_controller?).with(:merge_requests).and_return(true)
+
+          expect(helper.search_scope).to eq('merge_requests')
+        end
+      end
+
+      context 'when on wikis controller' do
+        it 'returns wiki_blobs' do
+          allow(helper).to receive(:current_controller?).with(:wikis).and_return(true)
+
+          expect(helper.search_scope).to eq('wiki_blobs')
+        end
+      end
+
+      context 'when on commits controller' do
+        it 'returns commits' do
+          allow(helper).to receive(:current_controller?).with(:commits).and_return(true)
+
+          expect(helper.search_scope).to eq('commits')
+        end
+      end
+
+      context 'when on groups controller' do
+        let(:controller_double) { instance_double(GroupsController) }
+
+        before do
+          allow(helper).to receive(:current_controller?).with(:groups).and_return(true)
+          allow(helper).to receive(:controller).and_return(controller_double)
+        end
+
+        context 'when action is issues' do
+          it 'returns issues' do
+            allow(controller_double).to receive(:action_name).and_return('issues')
+
+            expect(helper.search_scope).to eq('issues')
+          end
+        end
+
+        context 'when action is merge_requests' do
+          it 'returns merge_requests' do
+            allow(controller_double).to receive(:action_name).and_return('merge_requests')
+
+            expect(helper.search_scope).to eq('merge_requests')
+          end
+        end
+
+        context 'when action is show' do
+          it 'returns nil' do
+            allow(controller_double).to receive(:action_name).and_return('show')
+
+            expect(helper.search_scope).to be_nil
+          end
+        end
+
+        context 'when action is edit' do
+          it 'returns nil' do
+            allow(controller_double).to receive(:action_name).and_return('edit')
+
+            expect(helper.search_scope).to be_nil
+          end
+        end
+      end
+
+      context 'when on other controllers' do
+        before do
+          allow(helper).to receive(:current_controller?).and_return(false)
+        end
+
+        it 'returns nil' do
+          expect(helper.search_scope).to be_nil
+        end
+      end
+    end
+  end
+
+  describe '#work_item_types_for_filter' do
+    before do
+      allow(helper).to receive(:current_user).and_return(nil)
+    end
+
+    context 'without a container (global search)' do
+      it 'returns an empty array' do
+        expect(helper.work_item_types_for_filter).to eq([])
+      end
+    end
+
+    context 'with a project container' do
+      let_it_be(:project) { create(:project) }
+
+      before do
+        assign(:project, project)
+      end
+
+      it 'returns an array' do
+        expect(helper.work_item_types_for_filter).to be_an(Array)
+      end
+
+      it 'returns work item types with correct structure' do
+        types = helper.work_item_types_for_filter
+
+        expect(types).to all(have_key(:name))
+        expect(types).to all(have_key(:label))
+        expect(types).to all(have_key(:icon_name))
+      end
+
+      it 'includes work item types available to the project' do
+        types = helper.work_item_types_for_filter
+        type_names = types.pluck(:name)
+
+        # Should include FOSS types
+        expect(type_names).to include('issue')
+        expect(type_names).to include('incident')
+        expect(type_names).to include('task')
+        expect(type_names).to include('ticket')
+      end
+
+      it 'excludes epic type for projects in FOSS' do
+        types = helper.work_item_types_for_filter
+        type_names = types.pluck(:name)
+
+        # Epic should not be available for projects in FOSS (project_epics_enabled? is not defined)
+        expect(type_names).not_to include('epic')
+      end
+
+      it 'returns stringified type keys, human-readable labels, and icon names' do
+        types = helper.work_item_types_for_filter
+        issue_type = types.find { |t| t[:name] == 'issue' }
+
+        expect(issue_type[:name]).to eq('issue')
+        expect(issue_type[:label]).to eq('Issue')
+        expect(issue_type[:icon_name]).to eq('work-item-issue')
+      end
+    end
+
+    context 'with a group container' do
+      let_it_be(:group) { create(:group) }
+
+      before do
+        assign(:group, group)
+      end
+
+      it 'returns work item types available to the group' do
+        types = helper.work_item_types_for_filter
+
+        expect(types).to be_an(Array)
+        expect(types).to all(have_key(:name))
+        expect(types).to all(have_key(:label))
+        expect(types).to all(have_key(:icon_name))
+      end
+
+      it 'includes epic type for groups', if: Gitlab.ee? do
+        stub_licensed_features(epics: true)
+
+        types = helper.work_item_types_for_filter
+        type_names = types.pluck(:name)
+
+        # Epic should be available for groups
+        expect(type_names).to include('epic')
+      end
+    end
+  end
+
+  describe '#search_result_tracking_attrs' do
+    before do
+      helper.instance_variable_set(:@scope, 'issues')
+    end
+
+    context 'when the controller minted a search request ID' do
+      let(:search_request_id) { '11111111-2222-3333-4444-555555555555' }
+
+      before do
+        helper.instance_variable_set(:@search_request_id, search_request_id)
+      end
+
+      it 'includes the join key in event_property' do
+        attrs = helper.search_result_tracking_attrs(3)
+
+        expect(attrs).to eq(
+          event_tracking: 'click_search_result',
+          event_label: 'issues',
+          event_value: 3,
+          event_property: search_request_id
+        )
+      end
+
+      it 'uses the same join key for every result on the page' do
+        first = helper.search_result_tracking_attrs(1)
+        second = helper.search_result_tracking_attrs(2)
+
+        expect(first[:event_property]).to eq(search_request_id)
+        expect(second[:event_property]).to eq(search_request_id)
+      end
+    end
+
+    context 'when no search request ID was minted' do
+      it 'omits event_property so the payload matches the pre-flag shape' do
+        attrs = helper.search_result_tracking_attrs(3)
+
+        expect(attrs.keys).to eq(%i[event_tracking event_label event_value])
+        expect(attrs).to eq(
+          event_tracking: 'click_search_result',
+          event_label: 'issues',
+          event_value: 3
+        )
       end
     end
   end

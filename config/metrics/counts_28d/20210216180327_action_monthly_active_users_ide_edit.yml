@@ -1,0 +1,29 @@
+---
+data_category: operational
+key_path: usage_activity_by_stage_monthly.create.action_monthly_active_users_ide_edit
+description: Number of unique users per month who edited a file from any web editor
+product_group: remote_development
+product_categories:
+- web_ide
+value_type: number
+status: active
+time_frame: 28d
+instrumentation_class: RedisHLLMetric
+data_source: redis_hll
+events:
+- name: g_edit_by_web_ide
+  unique: user.id
+- name: g_edit_by_sfe
+  unique: user.id
+- name: g_edit_by_snippet_ide
+  unique: user.id
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type:
+- gmau
+- paid_gmau
+- customer_health_score
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

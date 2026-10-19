@@ -1,0 +1,133 @@
+<script>
+import { GlFilteredSearchSuggestion } from '@gitlab/ui';
+
+import { TYPENAME_CRM_CONTACT } from '~/graphql_shared/constants';
+import { getIdFromGraphQLId, convertToGraphQLId } from '~/graphql_shared/utils';
+import { createAlert } from '~/alert';
+import { NAMESPACE_GROUP, NAMESPACE_PROJECT } from '~/issues/constants';
+import { isPositiveInteger } from '~/lib/utils/number_utils';
+import { __ } from '~/locale';
+import { glListenersMixin } from '~/lib/utils/vue3compat/gl_listeners_mixin';
+import searchCrmContactsQuery from '../queries/search_crm_contacts.query.graphql';
+
+import BaseToken from './base_token.vue';
+
+export default {
+  name: 'CrmContactToken',
+  components: {
+    BaseToken,
+    GlFilteredSearchSuggestion,
+  },
+  mixins: [glListenersMixin],
+  props: {
+    config: {
+      type: Object,
+      required: true,
+    },
+    value: {
+      type: Object,
+      required: true,
+    },
+    active: {
+      type: Boolean,
+      required: true,
+    },
+  },
+  data() {
+    return {
+      contacts: this.config.initialContacts || [],
+      loading: false,
+    };
+  },
+  computed: {
+    defaultContacts() {
+      return this.config.defaultContacts;
+    },
+    namespace() {
+      return this.config.isProject ? NAMESPACE_PROJECT : NAMESPACE_GROUP;
+    },
+  },
+  methods: {
+    getActiveContact(contacts, data) {
+      return contacts.find((contact) => {
+        return `${this.formatContactId(contact)}` === data;
+      });
+    },
+    getContactName(contact) {
+      return `${contact.firstName} ${contact.lastName}`;
+    },
+    fetchContacts(searchTerm) {
+      let searchString = null;
+      let searchId = null;
+      if (isPositiveInteger(searchTerm)) {
+        searchId = this.formatContactGraphQLId(searchTerm);
+      } else {
+        searchString = searchTerm;
+      }
+
+      this.loading = true;
+
+      this.$apollo
+        .query({
+          query: searchCrmContactsQuery,
+          variables: {
+            fullPath: this.config.fullPath,
+            searchString,
+            searchIds: searchId ? [searchId] : null,
+            isProject: this.config.isProject,
+          },
+        })
+        .then(({ data }) => {
+          this.contacts = this.config.isProject
+            ? data[this.namespace]?.group.contacts.nodes
+            : data[this.namespace]?.contacts.nodes;
+        })
+        .catch(() =>
+          createAlert({
+            message: __('There was a problem fetching CRM contacts.'),
+          }),
+        )
+        .finally(() => {
+          this.loading = false;
+        });
+    },
+    formatContactId(contact) {
+      return `${getIdFromGraphQLId(contact.id)}`;
+    },
+    formatContactGraphQLId(id) {
+      return convertToGraphQLId(TYPENAME_CRM_CONTACT, id);
+    },
+  },
+};
+</script>
+
+<template>
+  <base-token
+    :config="config"
+    :value="value"
+    :active="active"
+    :suggestions-loading="loading"
+    :suggestions="contacts"
+    :get-active-token-value="getActiveContact"
+    :default-suggestions="defaultContacts"
+    v-bind="$attrs"
+    @fetch-suggestions="fetchContacts"
+    v-on="glListeners()"
+  >
+    <template #view="{ viewTokenProps: { inputValue, activeTokenValue } }">
+      {{ activeTokenValue ? getContactName(activeTokenValue) : inputValue }}
+    </template>
+    <template #suggestions-list="{ suggestions }">
+      <gl-filtered-search-suggestion
+        v-for="contact in suggestions"
+        :key="formatContactId(contact)"
+        :value="formatContactId(contact)"
+      >
+        <div>
+          <div>{{ getContactName(contact) }}</div>
+          <div class="gl-text-sm">{{ contact.email }}</div>
+        </div>
+      </gl-filtered-search-suggestion>
+    </template>
+  </base-token>
+</template>

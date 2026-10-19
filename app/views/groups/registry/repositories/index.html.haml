@@ -1,0 +1,18 @@
+- page_title _("Container registry")
+- add_page_startup_graphql_call('container_registry/get_container_repositories', { fullPath: @group.full_path, first: 10, name: nil, isGroupPage: true, sort: nil})
+
+%section
+  #js-container-registry{ data: { endpoint: group_container_registries_path(@group),
+    "no_containers_image" => image_path('illustrations/status/status-nothing-md.svg'),
+    "containers_error_image" => image_path('illustrations/status/status-fail-md.svg'),
+    "registry_host_url_with_port" => escape_once(registry_config.host_port),
+    "is_admin": current_user&.admin.to_s,
+    is_group_page: "true",
+    "group_path": @group.full_path,
+    "gid_prefix": container_repository_gid_prefix,
+    connection_error: (!!@connection_error).to_s,
+    invalid_path_error: (!!@invalid_path_error).to_s,
+    user_callouts_path: callouts_path,
+    user_callout_id: Users::CalloutsHelper::UNFINISHED_TAG_CLEANUP_CALLOUT,
+    is_metadata_database_enabled: ContainerRegistry::GitlabApiClient.supports_gitlab_api?.to_s,
+    show_unfinished_tag_cleanup_callout: show_unfinished_tag_cleanup_callout?.to_s } }

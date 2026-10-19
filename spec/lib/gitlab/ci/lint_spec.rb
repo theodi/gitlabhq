@@ -1,0 +1,1574 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require 'labkit/rspec/matchers'
+
+RSpec.describe Gitlab::Ci::Lint, feature_category: :pipeline_composition do
+  let_it_be_with_refind(:project) { create(:project, :repository) }
+  let_it_be(:user) { create(:user) }
+
+  let(:sha) { nil }
+  let(:verify_project_sha) { nil }
+  let(:ref) { project&.default_branch }
+  let(:kwargs) do
+    {
+      project: project,
+      current_user: user,
+      sha: sha,
+      verify_project_sha: verify_project_sha,
+      surface: :rest_post
+    }.compact
+  end
+
+  let(:lint) { described_class.new(project: project, **kwargs) }
+
+  shared_examples 'returns jobs ordered by stage' do
+    let(:content) do
+      <<~YAML
+      stages: [build, test, deploy]
+      deploy:
+        stage: deploy
+        script: deploy
+      rspec:
+        stage: test
+        script: rspec
+      compile:
+        stage: build
+        script: compile
+      jest:
+        stage: test
+        script: jest
+      YAML
+    end
+
+    it 'orders jobs by stage, then by definition order' do
+      expect(subject.jobs.map { |job| job[:name] }).to eq(%w[compile rspec jest deploy])
+    end
+
+    it 'computes the builds only once' do
+      expect_next_instance_of(Gitlab::Ci::YamlProcessor::Result) do |result|
+        expect(result).to receive(:builds).once.and_call_original
+      end
+
+      subject
+    end
+  end
+
+  describe '#initialize' do
+    described_class::SURFACES.each do |surface|
+      it "accepts the #{surface} surface" do
+        expect { described_class.new(project: project, current_user: user, surface: surface) }.not_to raise_error
+      end
+    end
+
+    it 'raises for an unknown surface' do
+      expect { described_class.new(project: project, current_user: user, surface: :bogus) }
+        .to raise_error(ArgumentError, 'unknown lint surface: bogus')
+    end
+  end
+
+  describe '#legacy_validate' do
+    subject { lint.legacy_validate(content, dry_run: dry_run, ref: ref) }
+
+    shared_examples 'content is valid' do
+      let(:content) do
+        <<~YAML
+        build:
+          stage: build
+          before_script:
+            - before_build
+          script: echo
+          environment: staging
+          when: manual
+        rspec:
+          stage: test
+          script: rspec
+          after_script:
+            - after_rspec
+          tags: [docker]
+        YAML
+      end
+
+      it 'returns a valid result', :aggregate_failures do
+        expect(subject).to be_valid
+
+        expect(subject.errors).to be_empty
+        expect(subject.warnings).to be_empty
+        expect(subject.jobs).to be_present
+
+        build_job = subject.jobs.first
+        expect(build_job[:name]).to eq('build')
+        expect(build_job[:stage]).to eq('build')
+        expect(build_job[:before_script]).to eq(['before_build'])
+        expect(build_job[:script]).to eq(['echo'])
+        expect(build_job.fetch(:after_script)).to eq([])
+        expect(build_job[:tag_list]).to eq([])
+        expect(build_job[:environment]).to eq('staging')
+        expect(build_job[:when]).to eq('manual')
+        expect(build_job[:allow_failure]).to be(true)
+
+        rspec_job = subject.jobs.last
+        expect(rspec_job[:name]).to eq('rspec')
+        expect(rspec_job[:stage]).to eq('test')
+        expect(rspec_job.fetch(:before_script)).to eq([])
+        expect(rspec_job[:script]).to eq(['rspec'])
+        expect(rspec_job[:after_script]).to eq(['after_rspec'])
+        expect(rspec_job[:tag_list]).to eq(['docker'])
+        expect(rspec_job.fetch(:environment)).to be_nil
+        expect(rspec_job[:when]).to eq('on_success')
+        expect(rspec_job[:allow_failure]).to be(false)
+      end
+    end
+
+    shared_examples 'sets config metadata' do
+      let(:content) do
+        <<~YAML
+        :include:
+          :local: another-gitlab-ci.yml
+        :test_job:
+          :stage: test
+          :script: echo
+        YAML
+      end
+
+      let(:included_content) do
+        <<~YAML
+        :another_job:
+          :script: echo
+        YAML
+      end
+
+      before do
+        project.repository.create_file(
+          project.creator,
+          'another-gitlab-ci.yml',
+          included_content,
+          message: 'Automatically created another-gitlab-ci.yml',
+          branch_name: 'master'
+        )
+      end
+
+      after do
+        project.repository.delete_file(
+          project.creator,
+          'another-gitlab-ci.yml',
+          message: 'Remove another-gitlab-ci.yml',
+          branch_name: 'master'
+        )
+      end
+
+      it 'sets merged_config' do
+        root_config = YAML.safe_load(content, permitted_classes: [Symbol])
+        included_config = YAML.safe_load(included_content, permitted_classes: [Symbol])
+        expected_config = included_config.merge(root_config).except(:include).deep_stringify_keys
+
+        expect(subject.merged_yaml).to eq(expected_config.to_yaml)
+      end
+
+      it 'sets includes' do
+        expect(subject.includes).to contain_exactly(
+          {
+            type: :local,
+            location: 'another-gitlab-ci.yml',
+            blob: "http://localhost/#{project.full_path}/-/blob/#{project.commit.sha}/another-gitlab-ci.yml",
+            raw: "http://localhost/#{project.full_path}/-/raw/#{project.commit.sha}/another-gitlab-ci.yml",
+            extra: {},
+            context_project: project.full_path,
+            context_sha: project.commit.sha
+          }
+        )
+      end
+    end
+
+    shared_examples 'content with errors and warnings' do
+      context 'when content has errors' do
+        let(:content) do
+          <<~YAML
+          build:
+            invalid: syntax
+          YAML
+        end
+
+        it 'returns a result with errors' do
+          expect(subject).not_to be_valid
+          expect(subject.errors).to include(/jobs build config should implement the script:, run:, or trigger: keyword/)
+        end
+      end
+
+      context 'when content has warnings' do
+        let(:content) do
+          <<~YAML
+          rspec:
+            script: rspec
+            rules:
+              - when: always
+          YAML
+        end
+
+        it 'returns a result with warnings' do
+          expect(subject).to be_valid
+          expect(subject.warnings).to include(/rspec may allow multiple pipelines to run/)
+        end
+      end
+
+      context 'when content has more warnings than max limit' do
+        # content will result in 2 warnings
+        let(:content) do
+          <<~YAML
+          rspec:
+            script: rspec
+            rules:
+              - when: always
+          rspec2:
+            script: rspec
+            rules:
+              - when: always
+          YAML
+        end
+
+        before do
+          stub_const('Gitlab::Ci::Warnings::MAX_LIMIT', 1)
+        end
+
+        it 'returns a result with warnings' do
+          expect(subject).to be_valid
+          expect(subject.warnings.size).to eq(1)
+        end
+      end
+
+      context 'when content has errors and warnings' do
+        let(:content) do
+          <<~YAML
+          rspec:
+            script: rspec
+            rules:
+              - when: always
+          karma:
+            script: karma
+            unknown: key
+          YAML
+        end
+
+        it 'returns a result with errors and warnings' do
+          expect(subject).not_to be_valid
+          expect(subject.errors).to include(/karma config contains unknown keys/)
+          expect(subject.warnings).to include(/rspec may allow multiple pipelines to run/)
+        end
+      end
+    end
+
+    shared_context 'advanced validations' do
+      let(:content) do
+        <<~YAML
+        build:
+          stage: build
+          script: echo
+          rules:
+            - if: '$CI_MERGE_REQUEST_ID'
+        test:
+          stage: test
+          script: echo
+          needs: [build]
+        YAML
+      end
+    end
+
+    context 'when a pipeline ref variable is used in an `include`' do
+      let(:dry_run) { false }
+
+      let(:content) do
+        <<~YAML
+          include:
+            - project: "#{project.full_path}"
+              ref: ${CI_COMMIT_REF_NAME}
+              file: '.gitlab-ci-include.yml'
+
+          show-parent-variable:
+            stage : .pre
+            script:
+              - echo I am running a variable ${CI_COMMIT_REF_NAME}
+        YAML
+      end
+
+      let(:included_content) do
+        <<~YAML
+          another_job:
+            script: echo
+        YAML
+      end
+
+      before do
+        project.add_developer(user)
+
+        project.repository.create_file(
+          project.creator,
+          '.gitlab-ci-include.yml',
+          included_content,
+          message: 'Add .gitlab-ci-include.yml',
+          branch_name: 'master'
+        )
+      end
+
+      after do
+        project.repository.delete_file(
+          project.creator,
+          '.gitlab-ci-include.yml',
+          message: 'Remove .gitlab-ci-include.yml',
+          branch_name: 'master'
+        )
+      end
+
+      it 'passes the ref name to YamlProcessor' do
+        expect(Gitlab::Ci::YamlProcessor)
+          .to receive(:new)
+          .with(content, a_hash_including(ref: project.default_branch))
+          .and_call_original
+
+        expect(subject.includes).to contain_exactly(
+          {
+            type: :project,
+            location: '.gitlab-ci-include.yml',
+            blob: "http://localhost/#{project.full_path}/-/blob/#{project.commit.sha}/.gitlab-ci-include.yml",
+            raw: "http://localhost/#{project.full_path}/-/raw/#{project.commit.sha}/.gitlab-ci-include.yml",
+            extra: { project: project.full_path, ref: project.default_branch },
+            context_project: project.full_path,
+            context_sha: project.commit.sha
+          }
+        )
+      end
+
+      context 'when the ref is a tag' do
+        before do
+          project.repository.add_tag(project.creator, 'test', project.commit.id)
+          allow(project.repository).to receive(:branch_names_contains).and_return([])
+        end
+
+        after do
+          project.repository.rm_tag(project.creator, 'test')
+        end
+
+        it 'passes the ref name to YamlProcessor' do
+          expect(Gitlab::Ci::YamlProcessor)
+            .to receive(:new)
+            .with(content, a_hash_including(ref: 'test'))
+            .and_call_original
+
+          expect(subject.includes).to contain_exactly(
+            {
+              type: :project,
+              location: '.gitlab-ci-include.yml',
+              blob: "http://localhost/#{project.full_path}/-/blob/#{project.commit.sha}/.gitlab-ci-include.yml",
+              raw: "http://localhost/#{project.full_path}/-/raw/#{project.commit.sha}/.gitlab-ci-include.yml",
+              extra: { project: project.full_path, ref: 'test' },
+              context_project: project.full_path,
+              context_sha: project.commit.sha
+            }
+          )
+        end
+      end
+    end
+
+    context 'when user has permissions to write the ref' do
+      before do
+        project.add_developer(user)
+      end
+
+      context 'when using default static mode' do
+        let(:dry_run) { false }
+
+        it_behaves_like 'content with errors and warnings'
+
+        it_behaves_like 'content is valid' do
+          it 'includes extra attributes' do
+            subject.jobs.each do |job|
+              expect(job[:only]).to eq(refs: %w[branches tags])
+              expect(job.fetch(:except)).to be_nil
+            end
+          end
+        end
+
+        it_behaves_like 'sets config metadata'
+
+        it_behaves_like 'returns jobs ordered by stage'
+
+        include_context 'advanced validations' do
+          it 'does not catch advanced logical errors' do
+            expect(subject).to be_valid
+            expect(subject.errors).to be_empty
+          end
+        end
+
+        it 'uses YamlProcessor' do
+          expect(Gitlab::Ci::YamlProcessor)
+            .to receive(:new)
+            .and_call_original
+
+          subject
+        end
+
+        shared_examples 'when sha is not provided' do
+          it 'runs YamlProcessor with verify_project_sha: false' do
+            expect(Gitlab::Ci::YamlProcessor)
+              .to receive(:new)
+              .with(content, a_hash_including(verify_project_sha: false))
+              .and_call_original
+
+            subject
+          end
+        end
+
+        it_behaves_like 'when sha is not provided'
+
+        context 'when the content contains protected variables' do
+          let(:content) do
+            <<~HEREDOC
+            include:
+              - 'https://test.example.com/${SECRET_TOKEN}.yml'
+
+            rubocop:
+              script:
+                - bundle exec rubocop
+            HEREDOC
+          end
+
+          before do
+            create(:ci_variable, key: 'SECRET_TOKEN', value: 'secret!!!!!', project: project, protected: true)
+
+            project.add_maintainer(user)
+
+            stub_request(:get, "https://test.example.com/secret!!!!!.yml")
+          end
+
+          context 'when the ref is a protected branch' do
+            before do
+              create(:protected_branch, project: project, name: 'master')
+            end
+
+            it 'expands the protected variables' do
+              expect(subject).not_to be_valid
+              expect(subject.errors).to include(
+                'Included file `https://test.example.com/secret!!!!!.yml` is empty or does not exist!'
+              )
+            end
+          end
+
+          context 'when the ref is a protected tag' do
+            let(:sha) do
+              project.repository.create_file(
+                project.creator,
+                'test.yml',
+                '',
+                message: 'Created test.yml',
+                branch_name: 'new-branch'
+              )
+            end
+
+            before do
+              project.repository.add_tag(project.creator, '6.6.6', sha)
+              project.repository.rm_branch(project.creator, 'new-branch')
+
+              create(:protected_tag, project: project, name: '6.6.6')
+            end
+
+            after do
+              project.repository.rm_tag(project.creator, '6.6.6')
+            end
+
+            # We don't mark pipelines as `tag` during static validation, so we never expand protected variables for
+            # tags even if the tag is protected.
+            it 'does not expand protected variables' do
+              expect(subject).not_to be_valid
+              expect(subject.errors).to include(
+                'Included file `https://test.example.com/.yml` does not have YAML extension!'
+              )
+            end
+          end
+        end
+
+        context 'when sha is provided' do
+          let(:sha) { project.commit.sha }
+
+          it 'runs YamlProcessor with verify_project_sha: true' do
+            expect(Gitlab::Ci::YamlProcessor)
+              .to receive(:new)
+              .with(content, a_hash_including(verify_project_sha: true))
+              .and_call_original
+
+            subject
+          end
+
+          it_behaves_like 'content is valid'
+
+          context 'when the sha is invalid' do
+            let(:sha) { 'invalid-sha' }
+
+            it_behaves_like 'content is valid'
+          end
+
+          context 'when the sha is from a fork' do
+            include_context 'when a project repository contains a forked commit'
+
+            let(:sha) { forked_commit_sha }
+
+            context 'when a project ref contains the sha' do
+              before do
+                mock_branch_contains_forked_commit_sha
+              end
+
+              it_behaves_like 'content is valid'
+            end
+
+            context 'when a project ref does not contain the sha' do
+              it 'returns an error' do
+                expect(subject).not_to be_valid
+                expect(subject.errors).to include(
+                  /configuration originates from an external project or a commit not associated with a Git reference/)
+              end
+            end
+          end
+
+          context 'when verify_project_sha is false' do
+            let(:verify_project_sha) { false }
+
+            it_behaves_like 'when sha is not provided'
+          end
+        end
+      end
+
+      context 'when using dry run mode' do
+        let(:dry_run) { true }
+
+        it_behaves_like 'content with errors and warnings'
+
+        it_behaves_like 'content is valid' do
+          it 'does not include extra attributes' do
+            subject.jobs.each do |job|
+              expect(job.key?(:only)).to be_falsey
+              expect(job.key?(:except)).to be_falsey
+            end
+          end
+        end
+
+        context 'when using a ref other than the default branch' do
+          let(:ref) { 'feature' }
+          let(:content) do
+            <<~YAML
+            build:
+              stage: build
+              script: echo 1
+              rules:
+                - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+            test:
+              stage: test
+              script: echo 2
+              rules:
+                - if: "$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH"
+            YAML
+          end
+
+          it 'includes only jobs that are excluded on the default branch' do
+            expect(subject.jobs.size).to eq(1)
+            expect(subject.jobs[0][:name]).to eq('test')
+          end
+        end
+
+        it_behaves_like 'sets config metadata'
+
+        include_context 'advanced validations' do
+          it 'runs advanced logical validations' do
+            expect(subject).not_to be_valid
+            expect(subject.errors.first).to include(
+              "'test' job needs 'build' job, but 'build' does not exist in the pipeline"
+            )
+          end
+        end
+
+        it 'uses Ci::CreatePipelineService' do
+          expect(::Ci::CreatePipelineService)
+            .to receive(:new)
+            .and_call_original
+
+          subject
+        end
+      end
+    end
+
+    context 'when user does not have permissions to write the ref' do
+      let(:content) do
+        <<~HEREDOC
+        include:
+          - 'https://test.example.com/${SECRET_TOKEN}.yml'
+
+        rubocop:
+          script:
+            - bundle exec rubocop
+        HEREDOC
+      end
+
+      before do
+        project.add_reporter(user)
+      end
+
+      context 'when using default static mode' do
+        let(:dry_run) { false }
+
+        before do
+          create(:ci_variable, key: 'SECRET_TOKEN', value: 'secret!!!!!', project: project, protected: true)
+        end
+
+        context 'when the ref is a protected branch' do
+          before do
+            sha = project.repository.commit.sha
+            ref = Gitlab::Ci::RefFinder.new(project).find_by_sha(sha)
+
+            create(:protected_branch, project: project, name: ref)
+          end
+
+          it 'does not expand protected variables' do
+            expect(subject).not_to be_valid
+            expect(subject.errors).to include(
+              'Included file `https://test.example.com/.yml` does not have YAML extension!'
+            )
+          end
+        end
+
+        context 'when the ref is a protected tag' do
+          let(:sha) do
+            project.repository.create_file(
+              project.creator,
+              'test.yml',
+              '',
+              message: 'Created test.yml',
+              branch_name: 'new-branch'
+            )
+          end
+
+          before do
+            project.repository.add_tag(project.creator, '6.6.6', sha)
+            project.repository.rm_branch(project.creator, 'new-branch')
+
+            create(:protected_tag, project: project, name: '6.6.6')
+          end
+
+          after do
+            project.repository.rm_tag(project.creator, '6.6.6')
+          end
+
+          it 'does not expand protected variables' do
+            expect(subject).not_to be_valid
+            expect(subject.errors).to include(
+              'Included file `https://test.example.com/.yml` does not have YAML extension!'
+            )
+          end
+        end
+      end
+
+      context 'when using dry run mode' do
+        let(:dry_run) { true }
+
+        let(:content) do
+          <<~YAML
+          job:
+            script: echo
+          YAML
+        end
+
+        it 'does not allow validation' do
+          expect(subject).not_to be_valid
+          expect(subject.errors).to include('Insufficient permissions to create a new pipeline')
+        end
+      end
+    end
+  end
+
+  describe '#validate' do
+    subject(:validate) { lint.validate(content, dry_run: dry_run, ref: ref) }
+
+    shared_examples 'sets merged_yaml when the pipeline would be skipped' do
+      let(:content) do
+        <<~YAML
+        build:
+          stage: build
+          script: echo
+        YAML
+      end
+
+      before do
+        allow_next_instance_of(::Ci::Pipeline) do |pipeline|
+          allow(pipeline).to receive(:git_commit_message).and_return('commit message [skip ci]')
+        end
+      end
+
+      it 'still returns the merged configuration', :aggregate_failures do
+        expect(subject).to be_valid
+        expect(subject.merged_yaml).to be_present
+        expect(subject.merged_yaml).to eq({ 'build' => { 'stage' => 'build', 'script' => 'echo' } }.to_yaml)
+      end
+    end
+
+    shared_examples 'content is valid' do
+      let(:content) do
+        <<~YAML
+        build:
+          stage: build
+          before_script:
+            - before_build
+          script: echo
+          environment: staging
+          when: manual
+        rspec:
+          stage: test
+          script: rspec
+          after_script:
+            - after_rspec
+          tags: [docker]
+        YAML
+      end
+
+      it 'returns a valid result' do
+        expect(subject).to be_valid
+
+        expect(subject.errors).to be_empty
+        expect(subject.warnings).to be_empty
+        expect(subject.jobs).to be_present
+
+        build_job = subject.jobs.first
+        expect(build_job[:name]).to eq('build')
+        expect(build_job[:stage]).to eq('build')
+        expect(build_job[:before_script]).to eq(['before_build'])
+        expect(build_job[:script]).to eq(['echo'])
+        expect(build_job.fetch(:after_script)).to eq([])
+        expect(build_job[:tag_list]).to eq([])
+        expect(build_job[:environment]).to eq('staging')
+        expect(build_job[:when]).to eq('manual')
+        expect(build_job[:allow_failure]).to be(true)
+
+        rspec_job = subject.jobs.last
+        expect(rspec_job[:name]).to eq('rspec')
+        expect(rspec_job[:stage]).to eq('test')
+        expect(rspec_job.fetch(:before_script)).to eq([])
+        expect(rspec_job[:script]).to eq(['rspec'])
+        expect(rspec_job[:after_script]).to eq(['after_rspec'])
+        expect(rspec_job[:tag_list]).to eq(['docker'])
+        expect(rspec_job.fetch(:environment)).to be_nil
+        expect(rspec_job[:when]).to eq('on_success')
+        expect(rspec_job[:allow_failure]).to be(false)
+      end
+    end
+
+    shared_examples 'sets config metadata' do
+      let(:content) do
+        <<~YAML
+        :include:
+          :local: another-gitlab-ci.yml
+        :test_job:
+          :stage: test
+          :script: echo
+        YAML
+      end
+
+      let(:included_content) do
+        <<~YAML
+        :another_job:
+          :script: echo
+        YAML
+      end
+
+      before do
+        project.repository.create_file(
+          project.creator,
+          'another-gitlab-ci.yml',
+          included_content,
+          message: 'Automatically created another-gitlab-ci.yml',
+          branch_name: 'master'
+        )
+      end
+
+      after do
+        project.repository.delete_file(
+          project.creator,
+          'another-gitlab-ci.yml',
+          message: 'Remove another-gitlab-ci.yml',
+          branch_name: 'master'
+        )
+      end
+
+      it 'sets merged_config' do
+        root_config = YAML.safe_load(content, permitted_classes: [Symbol])
+        included_config = YAML.safe_load(included_content, permitted_classes: [Symbol])
+        expected_config = included_config.merge(root_config).except(:include).deep_stringify_keys
+
+        expect(subject.merged_yaml).to eq(expected_config.to_yaml)
+      end
+
+      it 'sets includes' do
+        expect(subject.includes).to contain_exactly(
+          {
+            type: :local,
+            location: 'another-gitlab-ci.yml',
+            blob: "http://localhost/#{project.full_path}/-/blob/#{project.commit.sha}/another-gitlab-ci.yml",
+            raw: "http://localhost/#{project.full_path}/-/raw/#{project.commit.sha}/another-gitlab-ci.yml",
+            extra: {},
+            context_project: project.full_path,
+            context_sha: project.commit.sha
+          }
+        )
+      end
+    end
+
+    shared_examples 'content with errors and warnings' do
+      context 'when content has errors' do
+        let(:content) do
+          <<~YAML
+          build:
+            invalid: syntax
+          YAML
+        end
+
+        it 'returns a result with errors' do
+          expect(subject).not_to be_valid
+          expect(subject.errors).to include(/jobs build config should implement the script:, run:, or trigger: keyword/)
+        end
+      end
+
+      context 'when content has warnings' do
+        let(:content) do
+          <<~YAML
+          rspec:
+            script: rspec
+            rules:
+              - when: always
+          YAML
+        end
+
+        it 'returns a result with warnings' do
+          expect(subject).to be_valid
+          expect(subject.warnings).to include(/rspec may allow multiple pipelines to run/)
+        end
+      end
+
+      context 'when content has more warnings than max limit' do
+        # content will result in 2 warnings
+        let(:content) do
+          <<~YAML
+          rspec:
+            script: rspec
+            rules:
+              - when: always
+          rspec2:
+            script: rspec
+            rules:
+              - when: always
+          YAML
+        end
+
+        before do
+          stub_const('Gitlab::Ci::Warnings::MAX_LIMIT', 1)
+        end
+
+        it 'returns a result with warnings' do
+          expect(subject).to be_valid
+          expect(subject.warnings.size).to eq(1)
+        end
+      end
+
+      context 'when content has errors and warnings' do
+        let(:content) do
+          <<~YAML
+          rspec:
+            script: rspec
+            rules:
+              - when: always
+          karma:
+            script: karma
+            unknown: key
+          YAML
+        end
+
+        it 'returns a result with errors and warnings' do
+          expect(subject).not_to be_valid
+          expect(subject.errors).to include(/karma config contains unknown keys/)
+          expect(subject.warnings).to include(/rspec may allow multiple pipelines to run/)
+        end
+      end
+    end
+
+    shared_context 'advanced validations' do
+      let(:content) do
+        <<~YAML
+        build:
+          stage: build
+          script: echo
+          rules:
+            - if: '$CI_MERGE_REQUEST_ID'
+        test:
+          stage: test
+          script: echo
+          needs: [build]
+        YAML
+      end
+    end
+
+    context 'when a pipeline ref variable is used in an `include`' do
+      let(:dry_run) { false }
+
+      let(:content) do
+        <<~YAML
+          include:
+            - project: "#{project.full_path}"
+              ref: ${CI_COMMIT_REF_NAME}
+              file: '.gitlab-ci-include.yml'
+
+          show-parent-variable:
+            stage : .pre
+            script:
+              - echo I am running a variable ${CI_COMMIT_REF_NAME}
+        YAML
+      end
+
+      let(:included_content) do
+        <<~YAML
+          another_job:
+            script: echo
+        YAML
+      end
+
+      before do
+        project.add_developer(user)
+
+        project.repository.create_file(
+          project.creator,
+          '.gitlab-ci-include.yml',
+          included_content,
+          message: 'Add .gitlab-ci-include.yml',
+          branch_name: 'master'
+        )
+      end
+
+      after do
+        project.repository.delete_file(
+          project.creator,
+          '.gitlab-ci-include.yml',
+          message: 'Remove .gitlab-ci-include.yml',
+          branch_name: 'master'
+        )
+      end
+
+      it 'expands the ref' do
+        expect(subject.includes).to contain_exactly(
+          {
+            type: :project,
+            location: '.gitlab-ci-include.yml',
+            blob: "http://localhost/#{project.full_path}/-/blob/#{project.commit.sha}/.gitlab-ci-include.yml",
+            raw: "http://localhost/#{project.full_path}/-/raw/#{project.commit.sha}/.gitlab-ci-include.yml",
+            extra: { project: project.full_path, ref: project.default_branch },
+            context_project: project.full_path,
+            context_sha: project.commit.sha
+          }
+        )
+      end
+
+      context 'when the ref is a tag' do
+        let_it_be(:project) { create(:project, :repository) }
+        let(:ref) { 'test' }
+
+        before do
+          project.repository.add_tag(project.creator, 'test', project.commit.id)
+        end
+
+        after do
+          project.repository.rm_tag(project.creator, 'test')
+        end
+
+        it 'expands the ref' do
+          expect(subject.includes).to contain_exactly(
+            {
+              type: :project,
+              location: '.gitlab-ci-include.yml',
+              blob: "http://localhost/#{project.full_path}/-/blob/#{project.commit.sha}/.gitlab-ci-include.yml",
+              raw: "http://localhost/#{project.full_path}/-/raw/#{project.commit.sha}/.gitlab-ci-include.yml",
+              extra: { project: project.full_path, ref: 'test' },
+              context_project: project.full_path,
+              context_sha: project.commit.sha
+            }
+          )
+        end
+      end
+    end
+
+    context 'when user has permissions to write the ref' do
+      before do
+        project.add_developer(user)
+      end
+
+      context 'when using default static mode' do
+        let(:dry_run) { false }
+
+        it_behaves_like 'content with errors and warnings'
+
+        it_behaves_like 'content is valid' do
+          it 'includes extra attributes' do
+            subject.jobs.each do |job|
+              expect(job[:only]).to eq(refs: %w[branches tags])
+              expect(job.fetch(:except)).to be_nil
+            end
+          end
+        end
+
+        it_behaves_like 'sets config metadata'
+
+        it_behaves_like 'sets merged_yaml when the pipeline would be skipped'
+
+        it_behaves_like 'returns jobs ordered by stage'
+
+        include_context 'advanced validations' do
+          it 'does not catch advanced logical errors' do
+            expect(subject).to be_valid
+            expect(subject.errors).to be_empty
+          end
+        end
+
+        context 'when the content contains protected variables' do
+          let(:content) do
+            <<~HEREDOC
+            include:
+              - 'https://test.example.com/${SECRET_TOKEN}.yml'
+
+            rubocop:
+              script:
+                - bundle exec rubocop
+            HEREDOC
+          end
+
+          before do
+            create(:ci_variable, key: 'SECRET_TOKEN', value: 'secret!!!!!', project: project, protected: true)
+
+            project.add_maintainer(user)
+
+            stub_request(:get, "https://test.example.com/secret!!!!!.yml")
+          end
+
+          context 'when the ref is a protected branch' do
+            before do
+              create(:protected_branch, project: project, name: 'master')
+            end
+
+            it 'expands the protected variables' do
+              expect(subject).not_to be_valid
+              expect(subject.errors).to include(
+                'Included file `https://test.example.com/secret!!!!!.yml` is empty or does not exist!'
+              )
+            end
+          end
+
+          context 'when the ref is a protected tag' do
+            let(:sha) do
+              project.repository.create_file(
+                project.creator,
+                'test.yml',
+                '',
+                message: 'Created test.yml',
+                branch_name: 'new-branch'
+              )
+            end
+
+            before do
+              project.repository.add_tag(project.creator, '6.6.6', sha)
+              project.repository.rm_branch(project.creator, 'new-branch')
+
+              create(:protected_tag, project: project, name: '6.6.6')
+            end
+
+            after do
+              project.repository.rm_tag(project.creator, '6.6.6')
+            end
+
+            # We don't mark pipelines as `tag` during static validation, so we never expand protected variables for
+            # tags even if the tag is protected.
+            it 'does not expand protected variables' do
+              expect(subject).not_to be_valid
+              expect(subject.errors).to include(
+                'Included file `https://test.example.com/.yml` does not have YAML extension!'
+              )
+            end
+          end
+        end
+      end
+
+      context 'when using dry run mode' do
+        let(:dry_run) { true }
+
+        it_behaves_like 'content with errors and warnings'
+
+        it_behaves_like 'content is valid' do
+          it 'does not include extra attributes' do
+            subject.jobs.each do |job|
+              expect(job.key?(:only)).to be_falsey
+              expect(job.key?(:except)).to be_falsey
+            end
+          end
+        end
+
+        context 'when using a ref other than the default branch' do
+          let(:ref) { 'feature' }
+          let(:content) do
+            <<~YAML
+            build:
+              stage: build
+              script: echo 1
+              rules:
+                - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"
+            test:
+              stage: test
+              script: echo 2
+              rules:
+                - if: "$CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH"
+            YAML
+          end
+
+          it 'includes only jobs that are excluded on the default branch' do
+            expect(subject.jobs.size).to eq(1)
+            expect(subject.jobs[0][:name]).to eq('test')
+          end
+        end
+
+        it_behaves_like 'sets config metadata'
+
+        include_context 'advanced validations' do
+          it 'runs advanced logical validations' do
+            expect(subject).not_to be_valid
+            expect(subject.errors.first).to include(
+              "'test' job needs 'build' job, but 'build' does not exist in the pipeline"
+            )
+          end
+        end
+
+        it 'uses Ci::CreatePipelineService' do
+          expect(::Ci::CreatePipelineService)
+            .to receive(:new)
+            .and_call_original
+
+          subject
+        end
+
+        it_behaves_like 'sets merged_yaml when the pipeline would be skipped'
+      end
+    end
+
+    context 'when user does not have permissions to write the ref' do
+      let(:content) do
+        <<~YAML
+        job:
+          script: echo
+        YAML
+      end
+
+      before do
+        project.add_reporter(user)
+      end
+
+      shared_examples 'not allowing validation' do
+        it 'does not allow validation' do
+          expect(subject).not_to be_valid
+          expect(subject.errors).to include('Insufficient permissions to create a new pipeline')
+        end
+      end
+
+      context 'when using default static mode' do
+        let(:dry_run) { false }
+
+        it_behaves_like 'not allowing validation'
+      end
+
+      context 'when using dry run mode' do
+        let(:dry_run) { true }
+
+        it_behaves_like 'not allowing validation'
+      end
+    end
+  end
+
+  describe 'pipeline logger' do
+    let(:expected_data) do
+      {
+        'class' => 'Gitlab::Ci::Pipeline::Logger',
+        'config_build_context_duration_s' => a_kind_of(Numeric),
+        'config_build_variables_duration_s' => a_kind_of(Numeric),
+        'config_root_duration_s' => a_kind_of(Numeric),
+        'config_root_compose_duration_s' => a_kind_of(Numeric),
+        'config_root_compose_jobs_factory_duration_s' => a_kind_of(Numeric),
+        'config_root_compose_jobs_create_duration_s' => a_kind_of(Numeric),
+        'config_expand_duration_s' => a_kind_of(Numeric),
+        'config_external_process_duration_s' => a_kind_of(Numeric),
+        'config_stages_inject_duration_s' => a_kind_of(Numeric),
+        'config_tags_resolve_duration_s' => a_kind_of(Numeric),
+        'config_yaml_extend_duration_s' => a_kind_of(Numeric),
+        'config_yaml_load_duration_s' => a_kind_of(Numeric),
+        'pipeline_creation_caller' => 'Gitlab::Ci::Lint',
+        'pipeline_creation_service_duration_s' => a_kind_of(Numeric),
+        'pipeline_persisted' => false,
+        'pipeline_source' => 'unknown',
+        'project_id' => project&.id,
+        'yaml_process_duration_s' => a_kind_of(Numeric)
+      }
+    end
+
+    let(:content) do
+      <<~YAML
+      build:
+        script: echo
+      YAML
+    end
+
+    subject(:validate) { lint.legacy_validate(content, dry_run: false) }
+
+    before do
+      project&.add_developer(user)
+    end
+
+    context 'when the duration is under the threshold' do
+      it 'does not create a log entry' do
+        expect(Gitlab::AppJsonLogger).not_to receive(:info)
+
+        validate
+      end
+    end
+
+    context 'when the durations exceeds the threshold' do
+      let(:timer) do
+        proc do
+          @timer = @timer.to_i + 30
+        end
+      end
+
+      before do
+        allow(Gitlab::Ci::Pipeline::Logger)
+          .to receive(:current_monotonic_time) { timer.call }
+      end
+
+      it 'creates a log entry' do
+        expect(Gitlab::AppJsonLogger).to receive(:info).with(a_hash_including(expected_data))
+
+        validate
+      end
+
+      context 'when the feature flag is disabled' do
+        before do
+          stub_feature_flags(ci_pipeline_creation_logger: false)
+        end
+
+        it 'does not create a log entry' do
+          expect(Gitlab::AppJsonLogger).not_to receive(:info)
+
+          validate
+        end
+      end
+
+      context 'when project is not provided' do
+        let(:lint) { described_class.new(project: nil, **kwargs) }
+
+        let(:project_nil_loggable_data) do
+          expected_data.except('project_id')
+        end
+
+        it 'creates a log entry without project_id' do
+          expect(Gitlab::AppJsonLogger).to receive(:info).with(a_hash_including(project_nil_loggable_data))
+
+          validate
+        end
+      end
+    end
+  end
+
+  describe 'ci_lint rate limiting', :clean_gitlab_redis_rate_limiting do
+    let(:content) do
+      <<~YAML
+      build:
+        script: echo
+      YAML
+    end
+
+    before do
+      project&.add_developer(user)
+    end
+
+    it 'does not break when the limiter is scoped to a nil user' do
+      expect { Gitlab::ApplicationRateLimiter.throttled?(:ci_lint, scope: { user: nil }) }
+        .not_to raise_error
+    end
+
+    shared_examples 'rate-limited lint entry point' do
+      context 'when the ci_lint limit is exceeded' do
+        before do
+          allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_call_original
+          allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+            .with(:ci_lint, scope: { user: user }).and_return(true)
+        end
+
+        context 'when ci_enforce_ci_lint_rate_limit is enabled' do
+          it 'raises a rate limit error without validating', :aggregate_failures do
+            expect(Gitlab::Ci::YamlProcessor).not_to receive(:new)
+
+            expect { subject }.to raise_error(described_class::RateLimitError)
+          end
+
+          it 'logs the throttled request' do
+            expect(Gitlab::AppJsonLogger).to receive(:info).with(
+              a_hash_including(
+                Labkit::Fields::CLASS_NAME => described_class.name,
+                Labkit::Fields::GL_PROJECT_ID => project&.id,
+                Labkit::Fields::GL_USER_ID => user.id,
+                throttled: true,
+                message: 'CI Lint rate limit exceeded'
+              )
+            )
+
+            expect { subject }.to raise_error(described_class::RateLimitError)
+          end
+        end
+
+        context 'when ci_enforce_ci_lint_rate_limit is disabled (log-only mode)' do
+          before do
+            stub_feature_flags(ci_enforce_ci_lint_rate_limit: false)
+          end
+
+          it 'validates normally and does not raise' do
+            expect { subject }.not_to raise_error
+          end
+
+          it 'logs the throttled request as not enforced' do
+            # Validation proceeds in log-only mode and may emit its own log entries.
+            allow(Gitlab::AppJsonLogger).to receive(:info)
+            expect(Gitlab::AppJsonLogger).to receive(:info).with(
+              a_hash_including(
+                Labkit::Fields::GL_USER_ID => user.id,
+                throttled: false,
+                message: 'CI Lint rate limit exceeded'
+              )
+            )
+
+            subject
+          end
+        end
+      end
+
+      context 'when the ci_lint limit is not exceeded' do
+        it 'does not raise a rate limit error' do
+          expect { subject }.not_to raise_error
+        end
+      end
+    end
+
+    describe '#legacy_validate' do
+      subject { lint.legacy_validate(content, dry_run: false) }
+
+      it_behaves_like 'rate-limited lint entry point'
+
+      context 'when there is no current user' do
+        let(:lint) { described_class.new(project: project, current_user: nil, surface: :rest_post) }
+
+        it 'checks the rate limit scoped to a nil user and does not raise', :aggregate_failures do
+          expect(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+            .with(:ci_lint, scope: { user: nil }).and_call_original
+
+          expect { subject }.not_to raise_error
+        end
+
+        context 'when the ci_lint limit is exceeded' do
+          before do
+            allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_call_original
+            allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+              .with(:ci_lint, scope: { user: nil }).and_return(true)
+          end
+
+          it 'logs a nil user id and raises without a NoMethodError', :aggregate_failures do
+            expect(Gitlab::AppJsonLogger).to receive(:info).with(
+              a_hash_including(
+                Labkit::Fields::GL_USER_ID => nil,
+                throttled: true,
+                message: 'CI Lint rate limit exceeded'
+              )
+            )
+
+            expect { subject }.to raise_error(described_class::RateLimitError)
+          end
+        end
+      end
+    end
+
+    describe '#validate' do
+      subject { lint.validate(content, dry_run: false, ref: ref) }
+
+      it_behaves_like 'rate-limited lint entry point'
+    end
+  end
+
+  describe 'lint_ci_config UX SLI', :freeze_time do
+    let(:lint) { described_class.new(project: project, current_user: user, surface: :rest_post) }
+    let(:sli_logger) { Labkit::UserExperienceSli.configuration.logger }
+    let(:dry_run) { false }
+    let(:content) { valid_content }
+
+    let(:valid_content) do
+      <<~YAML
+      build:
+        script: echo
+      YAML
+    end
+
+    before_all do
+      project.add_developer(user)
+    end
+
+    before do
+      allow(sli_logger).to receive(:info).and_call_original
+    end
+
+    shared_examples 'measured lint entry point' do
+      it 'observes the experience and logs a valid result', :aggregate_failures do
+        expect { lint_call }.to observed_user_experience(:lint_ci_config)
+
+        expect(sli_logger).to have_received(:info).with(
+          hash_including(
+            checkpoint: 'end', lint_result: :valid, lint_surface: :rest_post,
+            Labkit::Fields::GL_PROJECT_ID => project.id
+          )
+        )
+      end
+
+      context 'when the content is invalid' do
+        let(:content) do
+          <<~YAML
+          build:
+            invalid: syntax
+          YAML
+        end
+
+        it 'observes without an SLI error and logs an invalid result', :aggregate_failures do
+          expect { lint_call }.to observed_user_experience(:lint_ci_config, error: false)
+
+          expect(sli_logger).to have_received(:info).with(hash_including(checkpoint: 'end', lint_result: :invalid))
+        end
+      end
+
+      context 'when resolving includes times out' do
+        let(:content) do
+          <<~YAML
+          include: other.yml
+          build:
+            script: echo
+          YAML
+        end
+
+        before do
+          allow_next_instance_of(Gitlab::Ci::Config::External::Context) do |instance|
+            allow(instance).to receive(:execution_expired?).and_return(true)
+          end
+        end
+
+        it 'observes an SLI error and still returns the invalid lint result', :aggregate_failures do
+          result = nil
+
+          expect { result = lint_call }.to observed_user_experience(:lint_ci_config, error: true)
+
+          expect(result.status).to eq(:invalid)
+          expect(result.errors).to include(Gitlab::Ci::Config::TIMEOUT_MESSAGE)
+          expect(sli_logger).to have_received(:info)
+            .with(hash_including(checkpoint: 'end', lint_result: :timeout, error: true))
+        end
+      end
+
+      context 'when validation raises' do
+        before do
+          allow_next_instance_of(collaborator_class) do |instance|
+            allow(instance).to receive(:execute).and_raise(StandardError, 'boom')
+          end
+        end
+
+        it 'observes an SLI error, logs the outcome, and re-raises', :aggregate_failures do
+          expect do
+            expect { lint_call }.to raise_error(StandardError, 'boom')
+          end.to observed_user_experience(:lint_ci_config, error: true)
+
+          expect(sli_logger).to have_received(:info)
+            .with(hash_including(checkpoint: 'end', lint_result: :error, error: true))
+        end
+      end
+
+      context 'when the SLI emission raises' do
+        before do
+          allow(Labkit::UserExperienceSli).to receive(:observed).and_raise(StandardError, 'labkit down')
+        end
+
+        it 'tracks the exception and still returns the lint result', :aggregate_failures do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+            an_instance_of(StandardError), lint_surface: :rest_post, Labkit::Fields::GL_PROJECT_ID.to_sym => project.id
+          )
+
+          expect(lint_call.status).to eq(:valid)
+        end
+      end
+
+      context 'when dry_run is set' do
+        let(:dry_run) { true }
+
+        it 'does not start the experience' do
+          expect { lint_call }.not_to start_user_experience(:lint_ci_config)
+        end
+      end
+
+      context 'when called from the Rails console' do
+        let(:lint) { described_class.new(project: project, current_user: user, surface: :rails_console) }
+
+        it 'returns the lint result without starting the experience', :aggregate_failures do
+          result = nil
+
+          expect { result = lint_call }.not_to start_user_experience(:lint_ci_config)
+
+          expect(result.status).to eq(:valid)
+        end
+      end
+
+      context 'when the request is rate limited' do
+        before do
+          allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_call_original
+          allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+            .with(:ci_lint, scope: { user: user }).and_return(true)
+        end
+
+        it 'raises before starting the experience' do
+          expect do
+            expect { lint_call }.to raise_error(described_class::RateLimitError)
+          end.not_to start_user_experience(:lint_ci_config)
+        end
+      end
+    end
+
+    describe '#legacy_validate' do
+      subject(:lint_call) { lint.legacy_validate(content, dry_run: dry_run) }
+
+      let(:collaborator_class) { Gitlab::Ci::YamlProcessor }
+
+      it_behaves_like 'measured lint entry point'
+
+      context 'when there is no project' do
+        let(:lint) { described_class.new(project: nil, current_user: user, surface: :rest_post) }
+
+        it 'observes the experience without a project id', :aggregate_failures do
+          expect { lint_call }.to observed_user_experience(:lint_ci_config)
+
+          expect(sli_logger).to have_received(:info)
+            .with(hash_including(checkpoint: 'end', lint_result: :valid, lint_surface: :rest_post))
+        end
+      end
+    end
+
+    describe '#validate' do
+      subject(:lint_call) { lint.validate(content, dry_run: dry_run, ref: ref) }
+
+      let(:collaborator_class) { ::Ci::CreatePipelineService }
+
+      it_behaves_like 'measured lint entry point'
+    end
+  end
+end

@@ -1,0 +1,69 @@
+# frozen_string_literal: true
+
+module MergeRequests
+  module LookAheadPreloads
+    extend ActiveSupport::Concern
+
+    prepended do
+      include ::LooksAhead
+    end
+
+    private
+
+    def unconditional_includes
+      [:target_project, :author]
+    end
+
+    def preloads
+      {
+        assignees: [:assignees],
+        award_emoji: { award_emoji: [:awardable] },
+        reviewers: [:reviewers],
+        participants: MergeRequest.participant_includes,
+        author: [:author],
+        merged_at: [:metrics],
+        closed_at: [:metrics],
+        commit_count: [:metrics],
+        diff_stats_summary: [:metrics],
+        approved_by: [:approved_by_users],
+        merge_after: [:merge_schedule],
+        merge_before: [:merge_schedule],
+        mergeable: [:merge_schedule],
+        detailed_merge_status: [:merge_schedule, :latest_merge_request_diff],
+        mergeability_checks: [
+          :merge_schedule,
+          :unresolved_notes,
+          {
+            target_project: [:lfs_file_locks],
+            source_project: [:route, { namespace: :route }],
+            latest_merge_request_diff: [:merge_request_diff_commits]
+          }
+        ],
+        milestone: [:milestone, { milestone: [:project, :group] }],
+        security_auto_fix: [:author],
+        head_pipeline: [:latest_merge_request_diff, { head_pipeline: [:merge_request, :project] }],
+        timelogs: [:timelogs],
+        pipelines: [:merge_request_diffs], # used by `recent_diff_head_shas` to load pipelines
+        committers: [merge_request_diff: [:merge_request_diff_commits]],
+        suggested_reviewers: [:predictions],
+        diff_stats: [latest_merge_request_diff: [:merge_request_diff_commits]],
+        source_branch_exists: [:source_project, { source_project: [:route] }],
+        squash_read_only: { target_project: :project_setting },
+        web_path: { target_project: [:route, { namespace: [:route] }] },
+        web_url: { target_project: [:route, { namespace: [:route] }] },
+        reference: { target_project: [:route, { namespace: [:route] }] },
+        project: { target_project: [:route, { namespace: [:route] }] },
+        risk_assessment: [
+          :risk_assessment,
+          {
+            target_project: [
+              :project_setting,
+              :enabled_foundational_flow_records,
+              { namespace: :enabled_foundational_flow_records }
+            ]
+          }
+        ]
+      }
+    end
+  end
+end

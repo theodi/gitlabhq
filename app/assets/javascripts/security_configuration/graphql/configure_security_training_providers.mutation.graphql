@@ -1,0 +1,10 @@
+mutation updateSecurityTraining($input: SecurityTrainingUpdateInput!) {
+  securityTrainingUpdate(input: $input) {
+    errors
+    training {
+      id
+      isEnabled
+      isPrimary
+    }
+  }
+}

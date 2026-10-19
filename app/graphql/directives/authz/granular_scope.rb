@@ -1,0 +1,46 @@
+# frozen_string_literal: true
+
+module Directives
+  module Authz
+    class GranularScope < GraphQL::Schema::Directive
+      description <<~DESC.squish
+        Declares the granular personal access token permissions required to access a field or type,
+        along with the authorization boundary (project, group, user, or instance) those permissions apply to.
+        A field or type can also opt out of granular token authorization by giving a skip reason.
+      DESC
+
+      repeatable true
+
+      argument :permissions, [GraphQL::Types::String],
+        required: false,
+        description: 'Granular scope permissions required to access the field or type.'
+
+      argument :boundary_type, Types::Authz::AccessTokens::BoundaryEnum,
+        required: false,
+        description: 'The type of authorization boundary (project, group, user, instance). ' \
+          'Used for validation and documentation of the permission boundary.'
+
+      argument :skip_reason, GraphQL::Types::String,
+        required: false,
+        description: 'Reason the field or type intentionally opts out of granular token authorization. '
+
+      argument :boundary, GraphQL::Types::String,
+        required: false,
+        description: 'Method name to call on the resolved object to extract the authorization boundary ' \
+          '(Project/Group). Use when the object is already resolved (fields on types, nested fields).'
+
+      argument :boundary_argument, GraphQL::Types::String,
+        required: false,
+        description: 'Argument name containing the authorization boundary (path or GlobalID). ' \
+          'Use for mutations and query fields where the boundary is passed as an argument.'
+
+      argument :assignable_when, [GraphQL::Types::String],
+        required: false,
+        description: 'Conditions the current user must meet for the permissions to be offered in the token ' \
+          'creation UI. Not a security control: the type, mutation, or field must still enforce the conditions. ' \
+          "Valid values: #{::Authz::PermissionGroups::AssignableCondition::EVALUATORS.keys.join(', ')}."
+
+      locations FIELD_DEFINITION, OBJECT
+    end
+  end
+end

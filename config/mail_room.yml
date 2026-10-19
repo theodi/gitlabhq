@@ -1,0 +1,91 @@
+:mailboxes:
+  <%
+    require_relative "../lib/gitlab/mail_room" unless defined?(Gitlab::MailRoom)
+    Gitlab::MailRoom.enabled_configs.each do |key, config|
+  %>
+    -
+      :host: <%= config[:host].to_json %>
+      :port: <%= config[:port].to_json %>
+      :ssl: <%= config[:ssl].to_json %>
+      :start_tls: <%= config[:start_tls].to_json %>
+      :email: <%= config[:user].to_json %>
+      :password: <%= config[:password].to_json %>
+      :idle_timeout: <%= config[:idle_timeout].to_json %>
+      :logger:
+        :log_path: <%= config[:log_path].to_json %>
+
+      :name: <%= config[:mailbox].to_json %>
+
+      :delete_after_delivery: <%= config.fetch(:delete_after_delivery, true).to_json %>
+      :expunge_deleted: <%= config[:expunge_deleted].to_json %>
+
+      <% if config[:inbox_method] %>
+      :inbox_method: <%= config[:inbox_method] %>
+      <% end %>
+      <% if config[:inbox_options].is_a?(Hash) %>
+      <%= config.slice(:inbox_options).to_yaml(indentation: 8).gsub(/^---\n/, '') %>
+      <% end %>
+
+      <% if config[:delivery_method] == Gitlab::MailRoom::DELIVERY_METHOD_SIDEKIQ %>
+      :delivery_method: sidekiq
+      :delivery_options:
+        :redis_url: <%= config[:redis_url].to_json %>
+        <% if config[:redis_ssl_params] %>
+        :redis_ssl_params: <%= config[:redis_ssl_params].to_json %>
+        <% end %>
+        :redis_db: <%= config[:redis_db] %>
+        :queue: <%= config[:queue] %>
+        :worker: <%= config[:worker] %>
+        <% if config[:sentinels] %>
+        :sentinels:
+          <% config[:sentinels].each do |sentinel| %>
+          -
+            :host: <%= sentinel[:host] %>
+            :port: <%= sentinel[:port] %>
+            <% if sentinel[:ssl] %>
+            :ssl: <%= sentinel[:ssl] %>
+            <% end %>
+            <% if sentinel[:ssl_params] %>
+            :ssl_params: <%= sentinel[:ssl_params].to_json %>
+            <% end %>
+          <% end %>
+        <% if config[:sentinel_password] %>
+        :sentinel_password: <%= config[:sentinel_password].to_json %>
+        <% end %>
+        <% end %>
+      <% elsif config[:delivery_method] == Gitlab::MailRoom::DELIVERY_METHOD_WEBHOOK %>
+      :delivery_method: postback
+      :delivery_options:
+        :delivery_url: <%= config[:gitlab_url] %>/api/v4/internal/mail_room/<%= key %>
+        :content_type: text/plain
+        :jwt_auth_header: <%= Gitlab::MailRoom::INTERNAL_API_REQUEST_HEADER %>
+        :jwt_issuer: <%= Gitlab::MailRoom::INTERNAL_API_REQUEST_JWT_ISSUER %>
+        :jwt_algorithm: "HS256"
+        :jwt_secret_path: <%= config[:secret_file] %>
+      <% end %>
+
+      :arbitration_method: redis
+      :arbitration_options:
+        :redis_url: <%= config[:redis_url].to_json %>
+        <% if config[:redis_ssl_params] %>
+        :redis_ssl_params: <%= config[:redis_ssl_params].to_json %>
+        <% end %>
+        :namespace: <%= Gitlab::Redis::Queues::MAILROOM_NAMESPACE %>
+        <% if config[:sentinels] %>
+        :sentinels:
+          <% config[:sentinels].each do |sentinel| %>
+          -
+            :host: <%= sentinel[:host] %>
+            :port: <%= sentinel[:port] %>
+            <% if sentinel[:ssl] %>
+            :ssl: <%= sentinel[:ssl] %>
+            <% end %>
+            <% if sentinel[:ssl_params] %>
+            :ssl_params: <%= sentinel[:ssl_params].to_json %>
+            <% end %>
+          <% end %>
+        <% if config[:sentinel_password] %>
+        :sentinel_password: <%= config[:sentinel_password].to_json %>
+        <% end %>
+        <% end %>
+  <% end %>

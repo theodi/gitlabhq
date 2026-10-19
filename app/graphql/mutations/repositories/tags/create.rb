@@ -1,0 +1,81 @@
+# frozen_string_literal: true
+
+module Mutations
+  module Repositories
+    module Tags
+      class Create < BaseMutation
+        graphql_name 'TagCreate'
+
+        description <<~MD
+          Creates a tag in a project repository.
+          Rate limited per project by the `tags_create_limit` application setting.
+        MD
+
+        include FindsProject
+
+        argument :project_path, GraphQL::Types::ID,
+          required: true,
+          description: 'Project full path the branch is associated with.'
+
+        argument :name, GraphQL::Types::String,
+          required: true,
+          description: 'Name of the tag.'
+
+        argument :ref,
+          GraphQL::Types::String,
+          required: true,
+          description: 'Tag name or commit SHA to create tag from.'
+
+        argument :message,
+          GraphQL::Types::String,
+          required: false,
+          default_value: '',
+          description: 'Tagging message.'
+
+        field :tag,
+          Types::Repositories::TagType,
+          null: true,
+          description: 'Tag after mutation.'
+
+        authorize :admin_tag
+        authorize_granular_token permissions: :create_repository_tag, boundary_argument: :project_path,
+          boundary_type: :project
+
+        def resolve(project_path:, name:, ref:, message:)
+          project = authorized_find!(project_path)
+
+          verify_rate_limit!(project)
+
+          result = ::Tags::CreateService.new(project, current_user)
+                     .execute(name, ref, message)
+
+          {
+            tag: (result[:tag] if result[:status] == :success),
+            errors: Array.wrap(result[:message])
+          }
+        end
+
+        private
+
+        def verify_rate_limit!(project)
+          return unless throttled?(project)
+
+          raise_resource_not_available_error!(Gitlab::ApplicationRateLimiter.throttled_error_message)
+        end
+
+        def throttled?(project)
+          scope = { project: project }
+          request = context[:request]
+
+          # Absent on non-HTTP entry points such as GraphqlChannel. Still count
+          # those, just without the request log entry and the bypass header.
+          return ::Gitlab::ApplicationRateLimiter.throttled?(:tags_create, scope: scope) unless request
+
+          ::Gitlab::ApplicationRateLimiter.throttled_request?(
+            request, current_user, :tags_create, scope: scope
+          )
+        end
+      end
+    end
+  end
+end

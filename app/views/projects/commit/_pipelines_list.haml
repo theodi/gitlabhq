@@ -1,0 +1,7 @@
+#commit-pipeline-table-view{ data: { endpoint: endpoint,
+  graphql_path: api_graphql_path,
+  new_pipeline_path: new_project_pipeline_path(@project),
+  project_full_path: @project.full_path,
+  commit_sha: @commit&.id,
+  "project-id": @project.id,
+} }

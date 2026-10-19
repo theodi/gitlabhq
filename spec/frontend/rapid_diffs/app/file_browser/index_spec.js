@@ -1,0 +1,396 @@
+import MockAdapter from 'axios-mock-adapter';
+import { setActivePinia } from 'pinia';
+import { nextTick } from 'vue';
+import { pinia } from '~/pinia/instance';
+import axios from '~/lib/utils/axios_utils';
+import { resetHTMLFixture, setHTMLFixture } from 'helpers/fixtures';
+import { initFileBrowser } from '~/rapid_diffs/app/file_browser';
+import { DiffFile } from '~/rapid_diffs/web_components/diff_file';
+import { HTTP_STATUS_OK } from '~/lib/utils/http_status';
+import { useMainContainer } from '~/pinia/global_stores/main_container';
+import { useApp } from '~/rapid_diffs/stores/app';
+import { useDiffsList } from '~/rapid_diffs/stores/diffs_list';
+import { useDiffsView } from '~/rapid_diffs/stores/diffs_view';
+import setWindowLocation from 'helpers/set_window_location_helper';
+import { Mousetrap } from '~/lib/mousetrap';
+import { keysFor, MR_FOCUS_FILE_BROWSER } from '~/behaviors/shortcuts/keybindings';
+import { keyboardShortcutsDisabled } from '~/behaviors/shortcuts/shortcuts_disabled';
+import { useFileBrowser } from '~/diffs/stores/file_browser';
+
+jest.mock('~/rapid_diffs/app/file_browser/file_browser.vue', () => ({
+  props: jest.requireActual('~/rapid_diffs/app/file_browser/file_browser.vue').default.props,
+  render(h) {
+    return h('div', {
+      attrs: {
+        'data-file-browser-component': true,
+        'data-group-blobs-list-items': JSON.stringify(this.groupBlobsListItems),
+        'data-linked-file-path': this.linkedFilePath,
+      },
+      on: {
+        click: () => {
+          this.$emit('click-file', { fileHash: 'first' });
+        },
+      },
+    });
+  },
+}));
+
+jest.mock('~/rapid_diffs/app/file_browser/file_browser_drawer.vue', () => ({
+  props: jest.requireActual('~/rapid_diffs/app/file_browser/file_browser_drawer.vue').default.props,
+  render(h) {
+    return h('div', {
+      attrs: {
+        'data-file-browser-drawer-component': true,
+        'data-group-blobs-list-items': JSON.stringify(this.groupBlobsListItems),
+        'data-linked-file-path': this.linkedFilePath,
+      },
+      on: {
+        click: () => {
+          this.$emit('click-file', { fileHash: 'first' });
+        },
+      },
+    });
+  },
+}));
+
+jest.mock('~/diffs/components/file_browser_toggle.vue', () => ({
+  render(h) {
+    return h('div', {
+      attrs: {
+        'data-file-browser-toggle-component': true,
+      },
+    });
+  },
+}));
+
+jest.mock('~/rapid_diffs/app/file_browser/file_browser_drawer_toggle.vue', () => ({
+  render(h) {
+    return h('div', {
+      attrs: {
+        'data-file-browser-drawer-toggle-component': true,
+      },
+    });
+  },
+}));
+
+jest.mock('~/behaviors/shortcuts/shortcuts_disabled');
+
+const focusHotkeys = keysFor(MR_FOCUS_FILE_BROWSER);
+
+describe('Init file browser', () => {
+  let mockAxios;
+  let appData;
+
+  const getFileBrowserTarget = () => document.querySelector('[data-file-browser]');
+  const getFileBrowserToggleTarget = () => document.querySelector('[data-file-browser-toggle]');
+  const getFileBrowser = () => document.querySelector('[data-file-browser-component]');
+  const getFileBrowserDrawer = () => document.querySelector('[data-file-browser-drawer-component]');
+  const getFileBrowserToggle = () => document.querySelector('[data-file-browser-toggle-component]');
+  const getFileBrowserDrawerToggle = () =>
+    document.querySelector('[data-file-browser-drawer-toggle-component]');
+
+  const createDiffFiles = () => [
+    {
+      conflict_type: null,
+      added_lines: 3,
+      removed_lines: 3,
+      new_path: '.gitlab/ci/as-if-foss.gitlab-ci.yml',
+      old_path: '.gitlab/ci/as-if-foss.gitlab-ci.yml',
+      new_file: false,
+      deleted_file: false,
+      submodule: false,
+      file_identifier_hash: 'b7e76d4365caabb99ccd17ed3b871470df920aa2',
+      file_hash: '6e9c59ba18901dfd9c99bb432c515d498f49690d',
+    },
+    {
+      conflict_type: null,
+      added_lines: 2,
+      removed_lines: 1,
+      new_path: '.gitlab/ci/setup.gitlab-ci.yml',
+      old_path: '.gitlab/ci/setup.gitlab-ci.yml',
+      new_file: false,
+      deleted_file: false,
+      submodule: false,
+      file_identifier_hash: '14f542137408c86fa0fd8df56e4775855dc3ff53',
+      file_hash: '12dc3d87e90313d83a236a944f8a4869f1dc97e2',
+    },
+  ];
+
+  const initAppData = ({
+    diffFilesEndpoint = '/diff-files-metadata',
+    shouldSortMetadataFiles = true,
+  } = {}) => {
+    appData = {
+      diffFilesEndpoint,
+      shouldSortMetadataFiles,
+    };
+  };
+
+  const init = () => {
+    return initFileBrowser({
+      toggleTarget: getFileBrowserToggleTarget(),
+      browserTarget: getFileBrowserTarget(),
+      appData,
+    });
+  };
+
+  beforeEach(() => {
+    // createTestingPinia wouldn't work here because Pinia instance is explicitly imported
+    setActivePinia(pinia);
+    keyboardShortcutsDisabled.mockReturnValue(false);
+    initAppData();
+    // eslint-disable-next-line no-underscore-dangle
+    useMainContainer()._setCurrentBreakpoint('md');
+    useApp().$reset();
+    useDiffsList().$reset();
+    useDiffsView().$reset();
+
+    mockAxios = new MockAdapter(axios);
+    mockAxios
+      .onGet(appData.diffFilesEndpoint)
+      .reply(HTTP_STATUS_OK, { diff_files: createDiffFiles() });
+
+    setHTMLFixture(`
+      <div>
+        <div id="js-page-breadcrumbs-extra"></div>
+        <div data-file-browser-toggle></div>
+        <div data-file-browser data-metadata-endpoint="/metadata"></div>
+        <diff-file data-file-data="{}" id="first"><div></div></diff-file>
+      </div>
+    `);
+
+    DiffFile.getAll().forEach((file) =>
+      file.mount({ adapterConfig: {}, appData: {}, unobserve: jest.fn() }),
+    );
+  });
+
+  beforeAll(() => {
+    customElements.define('diff-file', DiffFile);
+  });
+
+  afterEach(() => {
+    Mousetrap.reset();
+    resetHTMLFixture();
+  });
+
+  describe.each`
+    breakpoint | getBrowserElement       | getBrowserToggleElement
+    ${'lg'}    | ${getFileBrowser}       | ${getFileBrowserToggle}
+    ${'sm'}    | ${getFileBrowserDrawer} | ${getFileBrowserDrawerToggle}
+  `(
+    'when breakpoint is $breakpoint',
+    ({ breakpoint, getBrowserElement, getBrowserToggleElement }) => {
+      beforeEach(() => {
+        // eslint-disable-next-line no-underscore-dangle
+        useMainContainer()._setCurrentBreakpoint(breakpoint);
+      });
+
+      it('mounts the components', async () => {
+        await init();
+
+        expect(getBrowserElement()).not.toBe(null);
+        expect(getBrowserToggleElement()).not.toBe(null);
+      });
+
+      it('handles file clicks', async () => {
+        const selectFile = jest.fn();
+        const spy = jest.spyOn(DiffFile, 'findByFileHash').mockReturnValue({ selectFile });
+
+        await init();
+
+        const fileBrowser = getBrowserElement();
+        fileBrowser.click();
+
+        expect(spy).toHaveBeenCalledWith('first');
+        expect(selectFile).toHaveBeenCalled();
+      });
+
+      it('navigates via goToFile in single-file mode', async () => {
+        mockAxios.onGet(appData.diffFilesEndpoint).reply(HTTP_STATUS_OK, {
+          diff_files: [{ ...createDiffFiles()[0], file_hash: 'first' }, ...createDiffFiles()],
+        });
+
+        const selectFile = jest.fn();
+        jest.spyOn(DiffFile, 'findByFileHash').mockReturnValue({ selectFile });
+        useDiffsView().$patch({ singleFileMode: true, diffFileEndpoint: '/diff_file' });
+        const goToFileSpy = jest.spyOn(useDiffsView(), 'goToFile').mockImplementation(() => {});
+
+        await init();
+
+        const fileBrowser = getBrowserElement();
+        fileBrowser.click();
+
+        expect(selectFile).not.toHaveBeenCalled();
+        expect(goToFileSpy).toHaveBeenCalledWith(0);
+      });
+
+      it('passes sorting configuration to components', async () => {
+        await init();
+        expect(document.querySelector('[data-group-blobs-list-items="true"]')).not.toBe(null);
+      });
+
+      it('disables sorting when configured', async () => {
+        initAppData({ shouldSortMetadataFiles: false });
+        await init();
+        expect(document.querySelector('[data-group-blobs-list-items="false"]')).not.toBe(null);
+      });
+    },
+  );
+
+  it('loads diff files data', async () => {
+    await init();
+
+    expect(mockAxios.history.get).toHaveLength(1);
+    expect(mockAxios.history.get[0].url).toBe('/diff-files-metadata');
+  });
+
+  it('adds href to diff files', async () => {
+    setWindowLocation('http://example.com/merge_requests/1/diffs');
+
+    const setTreeData = jest.spyOn(useFileBrowser(), 'setTreeData');
+
+    await init();
+
+    expect(setTreeData).toHaveBeenCalled();
+    const [diffFiles] = setTreeData.mock.calls[0];
+    expect(diffFiles).toHaveLength(2);
+    expect(diffFiles[0].href).toContain('file_path=.gitlab%2Fci%2Fas-if-foss.gitlab-ci.yml');
+    expect(diffFiles[0].href).toContain('#6e9c59ba18901dfd9c99bb432c515d498f49690d');
+    expect(diffFiles[1].href).toContain('file_path=.gitlab%2Fci%2Fsetup.gitlab-ci.yml');
+    expect(diffFiles[1].href).toContain('#12dc3d87e90313d83a236a944f8a4869f1dc97e2');
+  });
+
+  it('hides drawer toggle when app is hidden', async () => {
+    // eslint-disable-next-line no-underscore-dangle
+    useMainContainer()._setCurrentBreakpoint('sm');
+    await init();
+    useApp().appVisible = false;
+    await nextTick();
+    expect(getFileBrowserDrawerToggle()).toBe(null);
+  });
+
+  describe('linkedFileData', () => {
+    it('passes linkedFilePath from linkedFileData old_path first', async () => {
+      useDiffsList().setLinkedFileData({ old_path: 'old.txt', new_path: 'new.txt' });
+      await init();
+      const fileBrowser = getFileBrowser();
+      expect(fileBrowser.dataset.linkedFilePath).toBe('old.txt');
+    });
+
+    it('uses new_path when old_path is not available', async () => {
+      useDiffsList().setLinkedFileData({ new_path: 'new.txt' });
+      await init();
+      const fileBrowser = getFileBrowser();
+      expect(fileBrowser.dataset.linkedFilePath).toBe('new.txt');
+    });
+
+    it('uses old_path when new_path is not available', async () => {
+      useDiffsList().setLinkedFileData({ old_path: 'old.txt' });
+      await init();
+      const fileBrowser = getFileBrowser();
+      expect(fileBrowser.dataset.linkedFilePath).toBe('old.txt');
+    });
+
+    it('passes null if linkedFileData is null', async () => {
+      await init();
+      const fileBrowser = getFileBrowser();
+      expect(fileBrowser.dataset.linkedFilePath).toBeUndefined();
+    });
+  });
+
+  describe('focus shortcut', () => {
+    beforeEach(() => {
+      setHTMLFixture(`
+        <div>
+          <div id="js-page-breadcrumbs-extra"></div>
+          <div data-file-browser-toggle></div>
+          <div data-file-browser data-metadata-endpoint="/metadata"></div>
+          <input id="diff-tree-search" />
+        </div>
+      `);
+    });
+
+    it('binds a single handler regardless of layout', async () => {
+      const bindSpy = jest.spyOn(Mousetrap, 'bind');
+      await init();
+      const focusBinds = bindSpy.mock.calls.filter(([keys]) => keys === focusHotkeys);
+      expect(focusBinds).toHaveLength(1);
+    });
+
+    describe('when keyboard shortcuts are disabled', () => {
+      beforeEach(() => {
+        keyboardShortcutsDisabled.mockReturnValue(true);
+      });
+
+      it('does not bind the handler', async () => {
+        const bindSpy = jest.spyOn(Mousetrap, 'bind');
+        await init();
+        const focusBinds = bindSpy.mock.calls.filter(([keys]) => keys === focusHotkeys);
+        expect(focusBinds).toHaveLength(0);
+      });
+    });
+
+    describe('when on the wide layout', () => {
+      beforeEach(() => {
+        // eslint-disable-next-line no-underscore-dangle
+        useMainContainer()._setCurrentBreakpoint('lg');
+      });
+
+      it('opens the desktop browser and requests search focus', async () => {
+        const setVisibility = jest.spyOn(useFileBrowser(), 'setFileBrowserVisibility');
+        const requestSearchFocus = jest.spyOn(useFileBrowser(), 'requestSearchFocus');
+        await init();
+
+        Mousetrap.trigger(focusHotkeys[0]);
+        await nextTick();
+
+        expect(setVisibility).toHaveBeenCalledWith(true);
+        expect(requestSearchFocus).toHaveBeenCalled();
+      });
+    });
+
+    describe('when on the compact layout', () => {
+      beforeEach(() => {
+        // eslint-disable-next-line no-underscore-dangle
+        useMainContainer()._setCurrentBreakpoint('sm');
+      });
+
+      it('opens the drawer and requests search focus', async () => {
+        const setDrawerVisibility = jest.spyOn(useFileBrowser(), 'setFileBrowserDrawerVisibility');
+        const requestSearchFocus = jest.spyOn(useFileBrowser(), 'requestSearchFocus');
+        await init();
+
+        Mousetrap.trigger(focusHotkeys[0]);
+        await nextTick();
+
+        expect(setDrawerVisibility).toHaveBeenCalledWith(true);
+        expect(requestSearchFocus).toHaveBeenCalled();
+      });
+    });
+
+    describe('when the viewport transitions between layouts', () => {
+      beforeEach(() => {
+        // eslint-disable-next-line no-underscore-dangle
+        useMainContainer()._setCurrentBreakpoint('lg');
+      });
+
+      it('stays bound and targets the active layout', async () => {
+        const setVisibility = jest.spyOn(useFileBrowser(), 'setFileBrowserVisibility');
+        const setDrawerVisibility = jest.spyOn(useFileBrowser(), 'setFileBrowserDrawerVisibility');
+        await init();
+
+        Mousetrap.trigger(focusHotkeys[0]);
+        await nextTick();
+        expect(setVisibility).toHaveBeenCalledWith(true);
+
+        // eslint-disable-next-line no-underscore-dangle
+        useMainContainer()._setCurrentBreakpoint('sm');
+        await nextTick();
+
+        Mousetrap.trigger(focusHotkeys[0]);
+        await nextTick();
+        expect(setDrawerVisibility).toHaveBeenCalledWith(true);
+      });
+    });
+  });
+});

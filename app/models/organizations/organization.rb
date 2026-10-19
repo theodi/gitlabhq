@@ -1,0 +1,281 @@
+# frozen_string_literal: true
+
+module Organizations
+  class Organization < ApplicationRecord
+    include Gitlab::Utils::StrongMemoize
+    include Gitlab::SQL::Pattern
+    include Gitlab::VisibilityLevel
+    include Gitlab::Routing.url_helpers
+    include FeatureGate
+    include Organizations::Isolatable
+    include Organizations::Stateful
+    include Cells::Claimable
+
+    cells_claims_attribute :path, type: CLAIMS_CLAIM_TYPE::CLAIM_TYPE_ORGANIZATION_PATH
+    cells_claims_attribute :id, type: CLAIMS_CLAIM_TYPE::CLAIM_TYPE_ORGANIZATION_ID
+
+    cells_claims_metadata subject_type: CLAIMS_SUBJECT_TYPE::ORGANIZATION, subject_key: :id
+
+    DEFAULT_ORGANIZATION_ID = 1
+
+    scope :without_default, -> { id_not_in(DEFAULT_ORGANIZATION_ID) }
+    scope :with_user, ->(user) {
+      joins(:organization_users).merge(Organizations::OrganizationUser.by_user(user))
+                                .order(:id)
+    }
+    scope :by_path, ->(path) { where(path: path) }
+    scope :with_isolation_record, -> { eager_load(:isolated_record) }
+    scope :with_states, ->(states) { where(state: states) }
+
+    before_destroy :check_if_default_organization
+    before_destroy :check_if_last_organization
+
+    has_many :namespaces
+    has_many :groups
+    has_many :pool_repositories
+    has_many :projects
+    has_many :snippets
+    has_many :snippet_repositories, inverse_of: :organization
+    has_many :topics, class_name: "Projects::Topic"
+    has_many :integrations
+    has_many :system_hooks
+
+    has_one :settings, class_name: "OrganizationSetting"
+    has_one :isolated_record, class_name: 'Organizations::OrganizationIsolation',
+      inverse_of: :organization, autosave: true
+
+    has_one :organization_detail, inverse_of: :organization, autosave: true
+
+    has_many :organization_users, inverse_of: :organization
+    has_many :organization_user_details, inverse_of: :organization
+    has_many :teams, class_name: 'Organizations::Team', inverse_of: :organization
+    # if considering disable_joins on the below see:
+    # https://gitlab.com/gitlab-org/gitlab/-/merge_requests/140343#note_1705047949
+    has_many :users, through: :organization_users, inverse_of: :organizations
+
+    validates :name,
+      presence: true,
+      length: { maximum: 255 }
+
+    validates :path,
+      presence: true,
+      uniqueness: { case_sensitive: false },
+      'organizations/path': true,
+      length: { minimum: 2, maximum: 255 }
+
+    validate :check_visibility_level_broader_than_groups,
+      :check_visibility_level_allowed,
+      if: -> { new_record? || visibility_level_changed? }
+    validate :check_organization_reserved_name, if: -> { new_record? }
+    validate :validate_single_organization_on_self_managed, on: :create
+
+    delegate :description,
+      :description_html,
+      :avatar,
+      :avatar_url,
+      :remove_avatar!,
+      :hard_deletion_error,
+      :hard_deletion_error=,
+      :state_metadata,
+      :state_metadata=,
+      :soft_deleted_at,
+      :soft_deleted_at=,
+      :maintenance_reason,
+      :maintenance_reason=,
+      to: :organization_detail
+
+    accepts_nested_attributes_for :organization_detail
+    accepts_nested_attributes_for :organization_users
+
+    def self.search(query, use_minimum_char_limit: true)
+      fuzzy_search(query, [:name, :path], use_minimum_char_limit: use_minimum_char_limit)
+    end
+
+    def self.default_organization
+      find_by(id: DEFAULT_ORGANIZATION_ID)
+    end
+
+    def self.find_by_id_with_isolation_record(id)
+      with_isolation_record.find_by(id: id)
+    end
+
+    def self.find_by_path_with_isolation_record(path)
+      return unless path
+
+      with_isolation_record.where("LOWER(path) = ?", path.downcase).first
+    end
+
+    # The Organization owning the namespace with the given full path. Matches
+    # Routable#find_by_full_path semantics (case-insensitive, and following
+    # redirect routes of renamed namespaces) in one query per route source.
+    def self.find_by_namespace_path_with_isolation_record(path)
+      organization_via_namespace_route(Route, path) || organization_via_namespace_route(RedirectRoute, path)
+    end
+
+    def self.find_by_personal_snippet_id_with_isolation_record(snippet_id)
+      organization_ids = PersonalSnippet.where(id: snippet_id).select(:organization_id)
+
+      with_isolation_record.where(id: organization_ids).first
+    end
+
+    def self.organization_via_namespace_route(route_model, path)
+      namespace_ids = route_model.where(source_type: Namespace.name).iwhere(path: path.to_s).select(:source_id)
+
+      with_isolation_record.where(id: Namespace.where(id: namespace_ids).select(:organization_id)).first
+    end
+    private_class_method :organization_via_namespace_route
+
+    def self.default?(id)
+      id == DEFAULT_ORGANIZATION_ID
+    end
+
+    # Required for Gitlab::VisibilityLevel module
+    def visibility_level_field
+      :visibility_level
+    end
+
+    def organization_detail
+      super.presence || build_organization_detail
+    end
+
+    def default?
+      self.class.default?(id)
+    end
+
+    def empty?
+      groups.none? && projects.none?
+    end
+
+    def under_maintenance?
+      maintenance? || maintenance_initialization?
+    end
+
+    def to_param
+      path
+    end
+
+    def owner_user_ids
+      # rubocop:disable Database/AvoidUsingPluckWithoutLimit -- few owners, and not used with IN clause
+      organization_users.owners.pluck(:user_id)
+      # rubocop:enable Database/AvoidUsingPluckWithoutLimit
+    end
+    strong_memoize_attr :owner_user_ids
+
+    def user?(user)
+      organization_users.exists?(user: user)
+    end
+
+    def membership_for(user)
+      organization_users.by_user(user).first
+    end
+
+    def owner?(user)
+      organization_users.owners.exists?(user: user)
+    end
+
+    def add_owner(user)
+      organization_users.owners.create(user: user)
+    end
+
+    def web_url(only_path: nil)
+      Gitlab::UrlBuilder.build(self, only_path: only_path)
+    end
+
+    # For example:
+    # scoped path   - /o/my-org/my-group/my-project
+    # unscoped path - /my-group/my-project
+    def scoped_paths?
+      !default?
+    end
+
+    def scoped_path
+      scoped_paths? ? path : nil
+    end
+
+    def inspect
+      "#<#{self.class.name} id:#{id} path:#{path}>"
+    end
+
+    # Root path in the context of this organization instance.
+    def root_path
+      return organization_root_path(self) if scoped_paths?
+
+      unscoped_root_path
+    end
+
+    # Deprecated, use root_path instead.
+    # Will be removed in future commit.
+    def full_path
+      return '' unless scoped_paths?
+
+      "/o/#{path}"
+    end
+
+    def max_group_visibility_level
+      groups.where(parent_id: nil).maximum(:visibility_level)
+    end
+
+    private
+
+    # The visibility must be broader than the visibility of any contained root groups.
+    def check_visibility_level_broader_than_groups
+      max_group_level = max_group_visibility_level
+      return unless max_group_level
+
+      return if visibility_level >= max_group_level
+
+      errors.add(:visibility_level, _("can not be more restrictive than group visibility levels"))
+    end
+
+    def check_visibility_level_allowed
+      return true if visibility_level.in? [Gitlab::VisibilityLevel::PUBLIC, Gitlab::VisibilityLevel::PRIVATE]
+
+      errors.add(:visibility_level, _("must be private or public"))
+    end
+
+    # The 'o' path is reserved as it's used for routing organization resources
+    # Example: /o/:organization_path
+    def check_organization_reserved_name
+      return if default?
+      return unless Namespace.filter_by_path('o').top_level.exists?
+
+      errors.add(
+        :base,
+        _('Cannot create organization. The `o` namespace is a reserved path. ' \
+          'Please rename the group or user before creating an organization.')
+      )
+    end
+
+    def check_if_default_organization
+      return unless default?
+
+      raise ActiveRecord::RecordNotDestroyed, s_('Organization|Cannot delete the default organization')
+    end
+
+    def check_if_last_organization
+      return if self.class.where.not(id: id).exists?
+
+      raise ActiveRecord::RecordNotDestroyed, s_('Organization|Cannot delete the last organization')
+    end
+
+    # https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/organization/decisions/007_self_managed_dedicated_single_organization/
+    # This is a bridge solution until key features like billing are moved to Organization level for self-managed
+    def validate_single_organization_on_self_managed
+      return if Gitlab.com? # rubocop:disable Gitlab/AvoidGitlabInstanceChecks -- FOSS has no Saas module
+
+      # Multi-organization support is not available on self-managed for now.
+      # dev and test should follow SaaS and allow multiple organizations
+      return if Gitlab.dev_or_test_env?
+
+      return unless self.class.exists?
+
+      errors.add(:base, s_('Organization|Only one organization is allowed on this instance.'))
+    end
+
+    def unique_attributes
+      [:path]
+    end
+  end
+end
+
+::Organizations::Organization.prepend_mod_with('Organizations::Organization')

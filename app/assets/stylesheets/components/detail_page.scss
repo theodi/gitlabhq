@@ -1,0 +1,63 @@
+.detail-page-header {
+  padding-top: $gl-spacing-scale-4;
+  @apply gl-text-default;
+  line-height: 34px;
+  display: flex;
+
+  .author-link {
+    white-space: nowrap;
+  }
+
+  @include gl-container-width-down(sm, panel) {
+    display: block;
+  }
+}
+
+.detail-page-header a {
+  @apply gl-text-default;
+}
+
+.detail-page-header a.link,
+.detail-page-header .title a {
+  color: var(--gl-text-color-link);
+}
+
+.detail-page-header-body {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1;
+  min-width: 0;
+
+  @include gl-container-width-up(sm, panel) {
+    padding-left: 0;
+    padding-right: 0;
+  }
+}
+
+.detail-page-header-actions {
+  flex: 0 0 auto;
+}
+
+.detail-page-description {
+  .title {
+    margin: 0 0 $gl-spacing-scale-4;
+    @apply gl-text-heading;
+    padding: 0 0 0.3em;
+  }
+
+  .description {
+    @include clearfix;
+
+    margin-top: 6px;
+
+    + .edited-text {
+      display: inline-block;
+      margin-top: $gl-spacing-scale-4;
+    }
+  }
+
+  .author-link {
+    @apply gl-text-default;
+  }
+}

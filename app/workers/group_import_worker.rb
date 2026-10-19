@@ -1,0 +1,35 @@
+# frozen_string_literal: true
+
+class GroupImportWorker # rubocop:disable Scalability/IdempotentWorker
+  include ApplicationWorker
+
+  data_consistency :always
+
+  sidekiq_options retry: false, dead: false
+  feature_category :importers
+
+  concurrency_limit -> { Gitlab::CurrentSettings.import_jobs_concurrency_limit }
+
+  def perform(user_id, group_id)
+    Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/464675', new_threshold: 225)
+
+    current_user = User.find_by_id(user_id)
+    return unless current_user
+
+    group = Group.find_by_id(group_id)
+    return unless group
+
+    group_import_state = group.import_state
+
+    group_import_state.jid = self.jid
+    group_import_state.start!
+
+    ::Groups::ImportExport::ImportService.new(group: group, user: current_user).execute
+
+    group_import_state.finish!
+  rescue StandardError => e
+    group_import_state&.fail_op(e.message)
+
+    raise e
+  end
+end

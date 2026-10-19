@@ -1,0 +1,276 @@
+---
+stage: Software Supply Chain Security
+group: Compliance
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Audit event schema and examples
+---
+
+## Audit event schema
+
+Audit events have a predictable schema in the body of the response.
+
+| Field            | Description                                                | Notes                                                                             | Streaming Only Field |
+|------------------|------------------------------------------------------------|-----------------------------------------------------------------------------------|----------------------|
+| `author_id`      | User ID of the user who triggered the event                |                                                                                   | {{< no >}}           |
+| `author_name`    | Human-readable name of the author that triggered the event | Helpful when the author no longer exists                                          | {{< yes >}}          |
+| `created_at`     | Timestamp when event was triggered                         |                                                                                   | {{< no >}}           |
+| `details`        | JSON object containing additional metadata                 | Has no defined schema but often contains additional information about an event    | {{< no >}}           |
+| `entity_id`      | ID of the audit event's entity                             |                                                                                   | {{< no >}}           |
+| `entity_path`    | Full path of the entity affected by the auditable event    |                                                                                   | {{< yes >}}          |
+| `entity_type`    | String representation of the type of entity                | Acceptable values include `User`, `Group`, and `Key`. This list is not exhaustive | {{< no >}}           |
+| `event_type`     | String representation of the type of audit event           |                                                                                   | {{< yes >}}          |
+| `id`             | Unique identifier for the audit event                      | Can be used for deduplication if required                                         | {{< no >}}           |
+| `ip_address`     | IP address of the host used to trigger the event           |                                                                                   | {{< yes >}}          |
+| `target_details` | Additional details about the target                        |                                                                                   | {{< yes >}}          |
+| `target_id`      | ID of the audit event's target                             |                                                                                   | {{< yes >}}          |
+| `target_type`    | String representation of the target's type                 |                                                                                   | {{< yes >}}          |
+
+### Audit event JSON schema
+
+```json
+{
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "author_id": {
+      "type": "integer"
+    },
+    "author_name": {
+      "type": "string"
+    },
+    "details": {},
+    "ip_address": {
+      "type": "string"
+    },
+    "entity_id": {
+      "type": "integer"
+    },
+    "entity_path": {
+      "type": "string"
+    },
+    "entity_type": {
+      "type": "string"
+    },
+    "event_type": {
+      "type": "string"
+    },
+    "target_id": {
+      "type": "integer"
+    },
+    "target_type": {
+      "type": "string"
+    },
+    "target_details": {
+      "type": "string"
+    },
+  },
+  "type": "object"
+}
+```
+
+### GitLab Duo-related events
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/239648) in GitLab 19.3.
+
+{{< /history >}}
+
+When an audit event is related to the GitLab Duo Agent Platform, the `details` object
+includes a `duo_related` field set to `true`.
+
+The following events can include this field:
+
+| Event type                    | Description                                                                 |
+|-------------------------------|-----------------------------------------------------------------------------|
+| `application_setting_updated` | An application setting related to the GitLab Duo Agent Platform is updated. |
+| `member_destroyed`            | The membership of a GitLab Duo Agent Platform service account is removed.   |
+
+Use this field to identify GitLab Duo Agent Platform activity in your Security Information and
+Event Management (SIEM) tool or other external tools, instead of service account naming patterns.
+
+### Events created with a composite identity
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/240418) in GitLab 19.3.
+
+{{< /history >}}
+
+When a service account performs an action on behalf of a human user with a
+[composite identity](../duo_agent_platform/composite_identity.md), the audit event is attributed
+to the service account:
+
+- `author_id` contains the user ID of the service account.
+- `author_name` contains `<service account name> on behalf of @<human username>`, truncated to
+  255 characters. This value appears in the **Author** column on audit event pages and in CSV exports.
+
+The `details` object records the human user who authorized the action:
+
+| Field                   | Description                     |
+|-------------------------|---------------------------------|
+| `human_author_id`       | User ID of the human user       |
+| `human_author_name`     | Name of the human user          |
+| `human_author_username` | Username of the human user      |
+
+These fields are included in streamed audit events and in the `details` object returned by the
+[audit events API](../../api/audit_events.md).
+
+For these events, the `author_class` field in the `details` object contains
+`Gitlab::Audit::CompositeIdentityAuthor`. Use this value to identify composite identity events
+in your SIEM or other external tools.
+
+AI agent session events, such as `ai_agent_session_started` and `ai_tool_invoked`, also record
+the `human_author_*` fields but do not use this `author_class` value. To match both kinds of
+events, filter on the presence of `human_author_id` instead.
+
+When a human user performs the action and a service account only participates in the action, for example
+when the human user assigns a service account as a merge request reviewer, the audit event is
+attributed to the human user and the `human_author_*` fields are not added.
+
+### Headers
+
+Headers are formatted as follows:
+
+```plaintext
+POST /logs HTTP/1.1
+Host: <DESTINATION_HOST>
+Content-Type: application/x-www-form-urlencoded
+X-Gitlab-Event-Streaming-Token: <DESTINATION_TOKEN>
+X-Gitlab-Audit-Event-Type: repository_git_operation
+```
+
+## Git operation events
+
+Streaming audit events can be sent when authenticated users push, pull, or clone a project's remote Git repositories:
+
+- [Using SSH](../ssh.md).
+- Using HTTP or HTTPS.
+- Using **Download** ({{< icon name="download" >}}) in GitLab UI.
+
+Audit events are not captured for users that are not signed in. For example, when downloading a public project.
+
+### Git operation fields
+
+{{< history >}}
+
+- `gl_key_type` and `gl_key_id` fields in `custom_message` [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/244603) in GitLab 19.3.
+- `ca_fingerprint`, `certificate_identity`, and `certificate_trust_source` fields in `custom_message` [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/259751) in GitLab 19.6.
+
+{{< /history >}}
+
+The `custom_message` object includes data transfer size fields for Git operations:
+
+- `written_bytes`: Number of bytes sent to the client during the Git operation (for example, during a clone, fetch, or pull).
+- `received_bytes`: Number of bytes received from the client during the Git operation (for example, during a push).
+
+These fields are omitted when no bytes are transferred, such as when a request fails before any data is exchanged.
+
+The `custom_message` object includes key information for Git operations authenticated with an SSH key or deploy key:
+
+- `gl_key_type`: Type of the key used for authentication. Either `key` for user SSH keys, or `deploy_key` for deploy keys.
+- `gl_key_id`: ID of the key used for authentication.
+
+These fields are omitted when the operation is not authenticated with a key, for example HTTP(S) with a username and password, or a deploy token.
+
+The `custom_message` object includes certificate information for Git operations authenticated with an SSH certificate through `gitlab-sshd`:
+
+- `ca_fingerprint`: SHA256 fingerprint of the certificate authority (CA) that signed the certificate, including the `SHA256:` prefix.
+- `certificate_identity`: The certificate `KeyId`.
+  Values longer than 1024 characters are truncated to 1024 characters, ending in `...`.
+  For `file` and `instance` trust, this value is the GitLab username.
+  For `group` trust, this value can be the username or the user's primary email address.
+  Several certificates can share the same `KeyId`, so this value does not identify a single certificate.
+- `certificate_trust_source`: Where the CA is trusted. Possible values:
+  - `file`: A CA key file in the [`gitlab-sshd` configuration](../../administration/operations/gitlab_sshd_ssh_certificates.md#configure-trusted-ca-keys).
+  - `group`: A CA added to a [top-level group](../group/ssh_certificates.md).
+  - `instance`: A CA added in the [**Admin** area](../../administration/operations/gitlab_sshd_ssh_certificates.md#manage-trusted-ca-keys-in-the-admin-area)
+    or with the [instance SSH certificates API](../../api/instance_ssh_certificates.md).
+
+These fields are omitted when the operation is not authenticated with an SSH certificate through `gitlab-sshd`.
+For example, they are omitted for an SSH key, or for an SSH certificate through [OpenSSH](../../administration/operations/ssh_certificates.md).
+
+### Example: Git over SSH with a deploy key
+
+Fetch:
+
+```json
+{
+  "id": "1",
+  "author_id": -3,
+  "entity_id": 29,
+  "entity_type": "Project",
+  "details": {
+    "author_name": "deploy-key-name",
+    "author_class": "DeployKey",
+    "target_id": 29,
+    "target_type": "Project",
+    "target_details": "example-project",
+    "custom_message": {
+      "protocol": "ssh",
+      "action": "git-upload-pack",
+      "written_bytes": 1048576,
+      "received_bytes": 2048,
+      "gl_key_type": "deploy_key",
+      "gl_key_id": 24
+    },
+    "ip_address": "127.0.0.1",
+    "entity_path": "example-group/example-project"
+  },
+  "ip_address": "127.0.0.1",
+  "author_name": "deploy-key-name",
+  "entity_path": "example-group/example-project",
+  "target_details": "example-project",
+  "created_at": "2022-07-26T05:43:53.662Z",
+  "target_type": "Project",
+  "target_id": 29,
+  "event_type": "repository_git_operation"
+}
+```
+
+### Example: Git over SSH with an SSH certificate
+
+Fetch:
+
+```json
+{
+  "id": "1",
+  "author_id": 1,
+  "entity_id": 29,
+  "entity_type": "Project",
+  "details": {
+    "author_name": "Sidney Jones",
+    "author_class": "User",
+    "target_id": 29,
+    "target_type": "Project",
+    "target_details": "example-project",
+    "custom_message": {
+      "protocol": "ssh",
+      "action": "git-upload-pack",
+      "written_bytes": 1048576,
+      "received_bytes": 2048,
+      "ca_fingerprint": "SHA256:2bXp0Hk2X0yL8wN1aRk6vY0oZ3cQ4mT5sU7eF9gH1jI",
+      "certificate_identity": "sidney_jones@example.com",
+      "certificate_trust_source": "group"
+    },
+    "ip_address": "127.0.0.1",
+    "entity_path": "example-group/example-project"
+  },
+  "ip_address": "127.0.0.1",
+  "author_name": "Sidney Jones",
+  "entity_path": "example-group/example-project",
+  "target_details": "example-project",
+  "created_at": "2022-07-26T05:43:53.662Z",
+  "target_type": "Project",
+  "target_id": 29,
+  "event_type": "repository_git_operation"
+}
+```

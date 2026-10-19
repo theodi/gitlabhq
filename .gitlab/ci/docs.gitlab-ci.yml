@@ -1,0 +1,420 @@
+.docs-markdown-lint-image:
+  # When updating the image version here, update it in /scripts/lint-doc.sh too.
+  image: ${REGISTRY_HOST}/${REGISTRY_GROUP}/technical-writing/docs-gitlab-com/lint-markdown:alpine-3.24-vale-3.21.0-markdownlint2-0.23.2-lychee-0.24.2-rumdl-0.2.69
+
+docs-lint markdown:
+  extends:
+    - .docs:rules:docs-lint
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  script:
+    - |
+      cat << EOF >> .markdownlint-cli2.yaml
+      outputFormatters:
+        - - 'markdownlint-cli2-formatter-default'
+        - - 'markdownlint-cli2-formatter-codequality'
+          - severity: 'blocker'
+      EOF
+    - source ./scripts/utils.sh
+    - install_gitlab_gem
+    - scripts/lint-doc.sh
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - markdownlint-cli2-codequality.json
+    reports:
+      codequality: markdownlint-cli2-codequality.json
+
+# This job runs on merge requests that add or change release notes.
+# It validates that every H3 feature heading has a <!-- categories: ... --> tag
+# and that the category name(s) exactly match a 'name' field in categories.yml in the www-gitlab-com repo.
+#
+# Only the release notes changed in the MR are validated. Already-published notes are
+# left alone, so renaming a category in categories.yml can't retroactively fail them.
+
+docs-lint release-note-categories:
+  extends:
+    - .docs:rules:release-note-categories
+  image: $DEFAULT_CI_IMAGE
+  stage: lint
+  needs: []
+  script:
+    - |
+      # Compare against the target branch tip so merged results pipelines only diff the MR's own
+      # changes. Fall back to the diff base SHA for non-merged-results pipelines.
+      compare_sha="${CI_MERGE_REQUEST_TARGET_BRANCH_SHA:-$CI_MERGE_REQUEST_DIFF_BASE_SHA}"
+      # Fetch the compare commit so we can diff against it (the CI clone is shallow).
+      git fetch --depth=1 origin "$compare_sha"
+      # The 'doc/releases/*.md' git pathspec matches .md files at any depth ('*' spans '/'), so no extra grep is needed.
+      changed_files="$(git diff --name-only --diff-filter=d "$compare_sha" HEAD -- 'doc/releases/*.md')"
+      if [ -z "$changed_files" ]; then
+        echo "No release note files changed in this merge request; skipping category validation."
+        exit 0
+      fi
+      echo "Validating changed release notes:"
+      echo "$changed_files"
+      # shellcheck disable=SC2086 # Word splitting is intentional to pass each path as a separate arg.
+      ruby scripts/lint/validate_release_categories.rb --release-notes $changed_files
+
+docs-lint mermaid:
+  extends:
+    - .docs:rules:docs-lint
+    - .docs-markdown-lint-image
+    - .yarn-cache
+    - .lint-base
+  stage: lint
+  script:
+    - source ./scripts/utils.sh
+    - yarn_install_script
+    - scripts/lint/check_mermaid.mjs
+
+docs code_quality:
+  extends:
+    - .reports:rules:docs_code_quality
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  allow_failure: true
+  script:
+    - vale --output=doc/.vale/vale-json.tmpl --minAlertLevel warning doc > gl-code-quality-report-docs.json || exit_code=$?
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report-docs.json
+    paths:
+      - gl-code-quality-report-docs.json
+    expire_in: 2 weeks
+    when: always
+
+docs hugo_build:
+  image: ${REGISTRY_HOST}/${REGISTRY_GROUP}/technical-writing/docs-gitlab-com/docs-gitlab-com-builder:hugo-0.154.5
+  extends:
+    - .docs:rules:docs-all-lint
+    - .lint-base
+  stage: lint
+  variables:
+    DOCS_BRANCH: 'main'
+  before_script:
+    # Check if this a release branch, which would be the case for a backport.
+    # If this is a backport MR, we need to checkout the appropriate version
+    # of the Docs website.
+    - |
+      if [[ $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ [0-9]+-[0-9]+-stable ]]; then
+        BRANCH_NAME=$CI_MERGE_REQUEST_TARGET_BRANCH_NAME
+        echo "Detected merge request to stable branch: $BRANCH_NAME"
+      # Check if we're directly on a stable branch (direct push/commit)
+      elif [[ $CI_COMMIT_BRANCH =~ [0-9]+-[0-9]+-stable ]]; then
+        BRANCH_NAME=$CI_COMMIT_BRANCH
+        echo "Detected direct commit to stable branch: $BRANCH_NAME"
+      fi
+
+      # Extract version info if we found a stable branch
+      if [[ -n $BRANCH_NAME ]]; then
+        MAJOR=$(echo $BRANCH_NAME | cut -d '-' -f 1)
+        MINOR=$(echo $BRANCH_NAME | cut -d '-' -f 2)
+        # Convert GitLab style (17-9-stable-ee) to Docs style (17.9)
+        DOCS_BRANCH_CANDIDATE="$MAJOR.$MINOR"
+
+        # Check if the branch exists in the Docs website repo, fallback to main if not
+        if git ls-remote --heads --exit-code https://gitlab.com/gitlab-org/technical-writing/docs-gitlab-com.git "refs/heads/$DOCS_BRANCH_CANDIDATE" >/dev/null 2>&1; then
+          DOCS_BRANCH="$DOCS_BRANCH_CANDIDATE"
+          echo "Using docs-gitlab-com branch $DOCS_BRANCH for release branch"
+        else
+          DOCS_BRANCH="main"
+          echo "Branch $DOCS_BRANCH_CANDIDATE does not exist, falling back to main"
+        fi
+      fi
+    # Clone the Docs website project
+    - git clone --depth 1 --filter=tree:0 --branch $DOCS_BRANCH https://gitlab.com/gitlab-org/technical-writing/docs-gitlab-com.git
+    - cd docs-gitlab-com
+    - make add-latest-icons
+  script:
+    # Test that Hugo will build
+    - hugo --gc --printPathWarnings --panicOnWarning  --environment test
+    # Test for invalid index pages
+    # See https://gitlab.com/gitlab-org/technical-writing/docs-gitlab-com/-/blob/main/scripts/check-index-filenames.sh
+    - make check-index-pages SEARCH_DIR="../doc" SEARCH_PROJECT="gitlab"
+    - make check-index-pages SEARCH_DIR="../doc-locale" SEARCH_PROJECT="gitlab"
+
+docs-lint links:
+  extends:
+    - .docs:rules:docs-lint
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  before_script:
+    - source scripts/utils.sh
+  script:
+    - lychee --offline --no-progress --include-fragments doc tooling/docs/api/tags
+
+docs-lint generated-content:
+  variables:
+    SETUP_DB: 'false'
+  extends:
+    - .ruby-cache
+    - .default-before_script
+    - .docs:rules:generated-content
+    - .lint-base
+  stage: lint
+  needs:
+    - !reference [.lint-base, needs]
+    - job: cache:ruby-gems
+      optional: true
+  script:
+    - bundle exec rake gitlab:docs:check_deprecations
+    - bundle exec rake gitlab:docs:check_windows
+    - bundle exec rake gitlab:docs:check_events
+    - bundle exec rake gitlab:organizations:release:check_docs
+
+ai-principles-manifest:
+  # Intentionally lightweight: the validator is Rails-free and its only runtime
+  # dependency is the `rainbow` gem, so this runs on a bare Ruby image with a
+  # single `gem install rainbow` instead of the full bundle/Rails-gems setup.
+  # The trigger is deliberately broad (any doc/** change can orphan a manifest
+  # reference), so keeping the job cheap is what makes the broad trigger
+  # acceptable. See gitlab-org/gitlab#604077.
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}
+  stage: lint
+  needs: []
+  extends:
+    - .default-retry
+    - .docs:rules:ai-principles-manifest
+  variables:
+    GIT_DEPTH: '1'
+    RUBY_RUN: 'ruby'
+  before_script:
+    - gem install rainbow --no-document
+  script:
+    - scripts/lint-ai-principles-manifest.sh
+
+# Lints changed `.ai/` and `AGENTS.md` files. `.vale.ini` limits them to the British spelling rule.
+# Only changed files, so legacy spellings in distilled principles do not block unrelated MRs.
+docs-lint ai-spelling:
+  extends:
+    - .default-retry
+    - .docs:rules:ai-spelling
+    - .docs-markdown-lint-image
+  stage: lint
+  needs: []
+  script:
+    - |
+      compare_sha="${CI_MERGE_REQUEST_TARGET_BRANCH_SHA:-$CI_MERGE_REQUEST_DIFF_BASE_SHA}"
+      git fetch --depth=1 origin "$compare_sha"
+      changed_files="$(git diff --name-only --diff-filter=d "$compare_sha" HEAD -- '.ai/*.md' '*AGENTS.md' ':!doc/')"
+      if [ -z "$changed_files" ]; then
+        echo "No AI instruction files changed in this merge request; skipping."
+        exit 0
+      fi
+      # shellcheck disable=SC2086 # Word splitting is intentional to pass each path as a separate arg.
+      vale --minAlertLevel error $changed_files
+
+# Read-only drift guard: detects Duo Code Review instruction fences in
+# .gitlab/duo/mr-review-instructions.yaml that are stale, malformed, or
+# orphaned relative to .ai/principles/distilled/. Rails-free; only runtime
+# dependency is the `rainbow` gem (same bare-Ruby execution model as the
+# sibling ai-principles-manifest job). To fix: re-run the principles sync to
+# regenerate stale fences, or correct/remove malformed or orphaned markers.
+#
+# Fence regeneration is decoupled from distillation (gitlab-org/gitlab#604890):
+# a team's distilled MR merges independently and the fence-reconcile job
+# catches the fences up from merged master afterwards. So fence STALENESS is
+# expected transient state on ordinary MRs and on master, not something those
+# refs can fix. The guard therefore runs as two jobs:
+#
+# - `ai-duo-review-instructions` (STRICT) fires on the reconcile MR and on MRs
+#   touching the fence's OWNED files (the Duo instructions file, the distiller
+#   gem, or the guard script). There, staleness is a real, ref-fixable drift
+#   and blocks.
+# - `ai-duo-review-instructions-warn` (WARN-STALE) fires on master and on
+#   ordinary MRs caught by the broad manifest trigger. It sets WARN_STALE=1, so
+#   staleness only warns — but malformed and orphaned fences still fail (they
+#   are ref-fixable breakage regardless of the reconcile). It is NOT
+#   allow_failure for that reason.
+#
+# See gitlab-org/gitlab#604738.
+.ai-duo-review-instructions-base:
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}
+  stage: lint
+  needs: []
+  variables:
+    GIT_DEPTH: '1'
+    RUBY_RUN: 'ruby'
+  before_script:
+    - gem install rainbow --no-document
+  script:
+    - scripts/lint-duo-review-instructions.sh
+
+ai-duo-review-instructions:
+  extends:
+    - .ai-duo-review-instructions-base
+    - .default-retry
+    - .docs:rules:ai-duo-review-instructions-strict
+
+ai-duo-review-instructions-warn:
+  extends:
+    - .ai-duo-review-instructions-base
+    - .default-retry
+    - .docs:rules:ai-duo-review-instructions-warn
+  variables:
+    GIT_DEPTH: '1'
+    RUBY_RUN: 'ruby'
+    WARN_STALE: '1'
+
+docs-lint redirects:
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}-alpine
+  stage: lint
+  extends:
+    - .docs:rules:redirect-check
+    - .lint-base
+  before_script:
+    - source scripts/utils.sh
+  script: ./scripts/lint-docs-redirects.rb
+
+docs-lint ui-text:
+  # Rails-free, so this runs on a bare Ruby image with a plain `gem install`
+  # instead of the full bundle. `simple_po_parser` is pure Ruby with no
+  # dependencies of its own, and keeping the job cheap is what makes the broad
+  # `doc/**` trigger acceptable.
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}-alpine
+  stage: lint
+  extends:
+    - .docs:rules:ui-text-check
+    - .lint-base
+  before_script:
+    # Install the version Gemfile.lock resolved, so this job and the specs that
+    # cover the script parse with the same gem. An empty version installs the
+    # latest, so stop if the lockfile stops matching.
+    - SIMPLE_PO_PARSER_VERSION=$(sed -n 's/^    simple_po_parser (\(.*\))$/\1/p' Gemfile.lock)
+    - test -n "$SIMPLE_PO_PARSER_VERSION"
+    - gem install simple_po_parser --no-document -v "$SIMPLE_PO_PARSER_VERSION"
+  script: ./scripts/lint/check_ui_text.rb doc
+
+docs-i18n-lint markdown:
+  extends:
+    - .docs:rules:docs-i18n-lint
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  script:
+    - source ./scripts/utils.sh
+    - install_gitlab_gem
+    - scripts/i18n_lint_doc.sh
+
+# Reports on broken links in the localized docs (doc-locale). The localization
+# team is building up translations incrementally, so many crosslinks point to
+# pages that are not translated yet. This job is therefore a report rather than
+# a lint check: it always runs green and writes the lychee output to an artifact
+# that can be reviewed when needed. See #602393.
+docs-i18n-report links:
+  extends:
+    - .docs:rules:docs-i18n-lint
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  when: manual
+  before_script:
+    - source scripts/utils.sh
+  script:
+    - lychee --offline --include-fragments --exclude "\.(png|jpg|gif|svg)$" --exclude "(ja-jp|ko-kr|fr-fr)/development" doc-locale | tee docs-i18n-links-report.txt
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths:
+      - docs-i18n-links-report.txt
+
+# Japanese-specific Vale linting with language-specific rules
+docs-i18n-lint japanese-vale:
+  extends:
+    - .docs:rules:docs-i18n-lint-japanese
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  variables:
+    LANGUAGE_CODE: 'ja-jp'
+    LANGUAGE_NAME: 'Japanese'
+  script:
+    - source ./scripts/utils.sh
+    - install_gitlab_gem
+    - scripts/i18n_lint_language_vale.sh
+
+# Korean-specific Vale linting with language-specific rules
+docs-i18n-lint korean-vale:
+  extends:
+    - .docs:rules:docs-i18n-lint-korean
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  variables:
+    LANGUAGE_CODE: 'ko-kr'
+    LANGUAGE_NAME: 'Korean'
+  script:
+    - source ./scripts/utils.sh
+    - install_gitlab_gem
+    - scripts/i18n_lint_language_vale.sh
+
+# French-specific Vale linting with language-specific rules
+docs-i18n-lint french-vale:
+  extends:
+    - .docs:rules:docs-i18n-lint-french
+    - .docs-markdown-lint-image
+    - .lint-base
+  stage: lint
+  variables:
+    LANGUAGE_CODE: 'fr-fr'
+    LANGUAGE_NAME: 'French'
+  script:
+    - source ./scripts/utils.sh
+    - install_gitlab_gem
+    - scripts/i18n_lint_language_vale.sh
+
+# Verify localized documentation files have corresponding English versions
+docs-i18n-lint paths:
+  extends:
+    - .docs:rules:docs-i18n-lint
+    - .docs-markdown-lint-image
+    - .lint-base
+  allow_failure: true
+  stage: lint
+  script:
+    - source ./scripts/utils.sh
+    - install_gitlab_gem
+    - scripts/i18n_verify_paths.sh
+
+# Auto-fix GLFM alert-box callouts (e.g. [!note], [!warning]) in localized
+# markdown files. Runs on files changed in the MR; commits fixes back as
+# the GitLab Argo Bot. See: gitlab-com/localization/docs-site-localization#912
+docs-i18n-fix-alert-boxes:
+  extends:
+    - .default-retry
+    - .docs-markdown-lint-image
+  stage: prepare
+  needs: []
+  variables:
+    GIT_DEPTH: 1
+    GIT_SUBMODULE_STRATEGY: none
+  rules:
+    - if: '$CI_PIPELINE_SOURCE != "merge_request_event"'
+      when: never
+    - if: '$GITLAB_ARGO_BOT_TOKEN == null'
+      when: never
+    - !reference [.docs:rules:docs-i18n-lint, rules]
+  before_script:
+    - apk add --no-cache perl
+    - |
+      # Fork MRs: source branch lives in the fork, not origin (the CI project).
+      if [ "$CI_MERGE_REQUEST_SOURCE_PROJECT_ID" != "$CI_MERGE_REQUEST_PROJECT_ID" ]; then
+        SOURCE_URL="https://oauth2:${GITLAB_ARGO_BOT_TOKEN}@gitlab.com/${CI_MERGE_REQUEST_SOURCE_PROJECT_PATH}.git"
+        if git remote get-url source >/dev/null 2>&1; then
+          git remote set-url source "$SOURCE_URL"
+        else
+          git remote add source "$SOURCE_URL"
+        fi
+        SOURCE_REMOTE=source
+      else
+        SOURCE_REMOTE=origin
+      fi
+      git fetch --depth=20 "$SOURCE_REMOTE" "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+      git fetch --depth=20 origin "$CI_MERGE_REQUEST_DIFF_BASE_SHA"
+  script:
+    - scripts/i18n_fix_alert_box.sh --ci

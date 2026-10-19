@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+module Import
+  module Offline
+    class ExportController < ApplicationController
+      before_action :check_feature_flag
+
+      feature_category :importers
+
+      def show; end
+
+      def history; end
+
+      private
+
+      def check_feature_flag
+        render_404 if Feature.disabled?(:offline_transfer_ui, current_user) ||
+          Feature.disabled?(:offline_transfer_exports, current_user) ||
+          !Gitlab::CurrentSettings.offline_transfer_exports_enabled
+      end
+    end
+  end
+end

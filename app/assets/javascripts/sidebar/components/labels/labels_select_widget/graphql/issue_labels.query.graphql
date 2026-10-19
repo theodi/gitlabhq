@@ -1,0 +1,15 @@
+#import "~/graphql_shared/fragments/label.fragment.graphql"
+# @feature_category: team_planning
+query issueLabels($fullPath: ID!, $iid: String) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: issue(iid: $iid) {
+      id
+      labels {
+        nodes {
+          ...Label
+        }
+      }
+    }
+  }
+}

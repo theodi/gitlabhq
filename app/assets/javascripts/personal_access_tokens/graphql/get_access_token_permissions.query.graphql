@@ -1,0 +1,13 @@
+query getAccessTokenPermissions {
+  accessTokenPermissions {
+    name
+    action
+    description
+    category
+    categoryName
+    resource
+    resourceName
+    resourceDescription
+    boundaries
+  }
+}

@@ -1,0 +1,12 @@
+@import 'mixins_and_variables_and_functions';
+
+.welcome-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: $gl-spacing-scale-5;
+  margin: auto;
+}
+
+.dashboard-projects {
+  max-width: 90ch;
+}

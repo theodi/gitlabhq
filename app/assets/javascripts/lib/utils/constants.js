@@ -1,0 +1,36 @@
+export const BYTES_IN_KIB = 1024;
+export const DEFAULT_DEBOUNCE_AND_THROTTLE_MS = 250;
+export const THOUSAND = 1000;
+export const MILLION = THOUSAND ** 2;
+export const TRUNCATE_WIDTH_DEFAULT_WIDTH = 80;
+export const TRUNCATE_WIDTH_DEFAULT_FONT_SIZE = 12;
+export const BV_SHOW_MODAL = 'bv::show::modal';
+export const BV_HIDE_MODAL = 'bv::hide::modal';
+export const BV_HIDE_TOOLTIP = 'bv::hide::tooltip';
+export const BV_SHOW_TOOLTIP = 'bv::show::tooltip';
+export const BV_DROPDOWN_SHOW = 'bv::dropdown::show';
+export const BV_DROPDOWN_HIDE = 'bv::dropdown::hide';
+export const BV_HIDE_POPOVER = 'bv::hide::popover';
+
+// We set the drawer's z-index to 252 to clear flash messages that might
+// be displayed in the page and that have a z-index of 251.
+export const DRAWER_Z_INDEX = 252;
+
+export const MIN_USERNAME_LENGTH = 2;
+
+export const DEFAULT_CI_CONFIG_PATH = '.gitlab-ci.yml';
+export const CI_CONFIG_PATH_EXTENSION = /(\.gitlab-ci\.yml)/;
+
+export const PREFERS_DARK = '(prefers-color-scheme: dark)';
+
+export const IMAGE_FORMATS = /^[\w.\-+]+\.(png|jpg|jpeg|gif|bmp|tiff|ico|webp)$/;
+
+export const VIDEO_FORMATS = [
+  { mime: 'video/mp4', ext: 'mp4' },
+  { mime: 'video/quicktime', ext: 'mov' },
+  { mime: 'video/webm', ext: 'webm' },
+  { mime: 'video/ogg', ext: 'ogv' },
+  { mime: 'video/x-m4v', ext: 'm4v' },
+];
+
+export const NO_SCROLL_TO_HASH_CLASS = 'js-no-scroll-to-hash';

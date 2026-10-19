@@ -1,38 +1,18 @@
+- page_itemtype 'https://schema.org/Organization'
+- @skip_current_level_breadcrumb = true
+- add_page_specific_style 'page_bundles/group'
+
+= render_if_exists 'shared/qrtly_reconciliation_alert', group: @group
+
 = content_for :meta_tags do
-  - if current_user
-    = auto_discovery_link_tag(:atom, group_url(@group, format: :atom, private_token: current_user.private_token), title: "#{@group.name} activity")
+  = auto_discovery_link_tag(:atom, group_url(@group, rss_url_options), title: "#{@group.name} activity")
 
-.dashboard
-  .header-with-avatar.clearfix
-    = image_tag group_icon(@group), class: "avatar group-avatar s90"
-    %h3
-      = @group.name
-    .username
-      @#{@group.path}
-    - if @group.description.present?
-      .description
-        = escaped_autolink(@group.description)
-  %hr
+= render partial: 'flash_messages'
 
-  = render 'shared/show_aside'
+= render 'groups/home_panel'
 
-  .row
-    %section.activities.col-md-8
-      .hidden-xs
-        - if current_user
-          = render "events/event_last_push", event: @last_push
+= render_if_exists 'groups/group_activity_analytics', group: @group
 
-          - if current_user
-            %ul.nav.nav-pills.event_filter.pull-right
-              %li
-                = link_to group_path(@group, { format: :atom, private_token: current_user.private_token }), title: "Feed", class: 'rss-btn' do
-                  %i.fa.fa-rss
-                  Activity Feed
+#js-groups-show-app{ data: { app_data: groups_show_app_data(@group) } }
 
-          = render 'shared/event_filter'
-          %hr
-
-      .content_list
-      = spinner
-    %aside.side.col-md-4
-      = render "projects", projects: @projects
+= render partial: 'groups/group_readme', locals: { group: @group }

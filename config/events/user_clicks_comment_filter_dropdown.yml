@@ -1,0 +1,17 @@
+---
+description: A user clicks the merge request comment filter dropdown
+internal_events: true
+action: user_clicks_comment_filter_dropdown
+identifiers:
+- project
+- namespace
+- user
+product_group: code_review
+product_categories:
+- code_review_workflow
+milestone: '16.10'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/145998
+tiers:
+- free
+- premium
+- ultimate

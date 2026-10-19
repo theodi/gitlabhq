@@ -1,0 +1,69 @@
+#import "~/graphql_shared/fragments/author.fragment.graphql"
+
+fragment Release on Release {
+  id
+  name
+  tagName
+  tagPath
+  descriptionHtml
+  releasedAt
+  createdAt
+  upcomingRelease
+  historicalRelease
+  assets {
+    count
+    sources {
+      nodes {
+        format
+        url
+      }
+    }
+    links {
+      nodes {
+        id
+        name
+        url
+        directAssetUrl
+        linkType
+      }
+    }
+  }
+  evidences {
+    nodes {
+      id
+      filepath
+      collectedAt
+      sha
+    }
+  }
+  links {
+    editUrl
+    selfUrl
+    openedIssuesUrl
+    closedIssuesUrl
+    openedMergeRequestsUrl
+    mergedMergeRequestsUrl
+    closedMergeRequestsUrl
+  }
+  commit {
+    id
+    sha
+    webUrl
+    title
+  }
+  author {
+    ...Author
+  }
+  milestones {
+    nodes {
+      id
+      title
+      description
+      webPath
+      stats {
+        totalIssuesCount
+        closedIssuesCount
+      }
+    }
+  }
+}

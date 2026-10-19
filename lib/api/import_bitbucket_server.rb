@@ -1,0 +1,76 @@
+# frozen_string_literal: true
+
+module API
+  class ImportBitbucketServer < ::API::Base
+    feature_category :importers
+    urgency :low
+
+    helpers do
+      def client
+        @client ||= BitbucketServer::Client.new(
+          credentials.merge(
+            logger: Gitlab::BitbucketServerImport::Logger
+          ),
+          http_client: Import::Clients::HTTP
+        )
+      end
+
+      def credentials
+        @credentials ||= {
+          base_uri: params[:bitbucket_server_url],
+          user: params[:bitbucket_server_username],
+          password: params[:personal_access_token]
+        }
+      end
+    end
+
+    desc 'Import repository from Bitbucket Server' do
+      detail 'Imports a repository from Bitbucket Server to GitLab. The Bitbucket Project Key is only used for ' \
+        'finding the repository in Bitbucket. You must specify a `target_namespace` if you want to import the ' \
+        'repository to a GitLab group.'
+      success ::ProjectEntity
+      failure [
+        { code: 400, message: 'Bad request' },
+        { code: 401, message: 'Unauthorized' },
+        { code: 403, message: 'Forbidden' },
+        { code: 422, message: 'Unprocessable entity' },
+        { code: 503, message: 'Service unavailable' }
+      ]
+      tags ['project_import']
+    end
+
+    params do
+      requires :bitbucket_server_url, type: String, desc: 'URL of the Bitbucket Server instance.'
+      requires :bitbucket_server_username, type: String, desc: 'Bitbucket Server username.'
+      requires :personal_access_token, type: String, desc: 'Bitbucket Server personal access token or password.'
+      requires :bitbucket_server_project, type: String, desc: 'Key of the Bitbucket Server project. Must contain ' \
+                                                          'only letters, numbers, hyphens, underscores, ' \
+                                                          'periods, or whitespace characters. Personal ' \
+                                                          'project keys start with `~`.'
+      requires :bitbucket_server_repo, type: String, desc: 'Name of the Bitbucket Server repository. Must contain ' \
+                                                       'only letters, numbers, hyphens, underscores, periods, or ' \
+                                                       'whitespace characters.'
+      optional :new_name, type: String, desc: 'Name of the new project. Also used as the new path, so it must not ' \
+                                          'start or end with a special character and must not contain ' \
+                                          'consecutive special characters.'
+      optional :new_namespace, type: String, desc: 'Namespace to import the repository into.'
+      optional :timeout_strategy, type: String, values: ::ProjectImportData::TIMEOUT_STRATEGIES,
+        desc: 'Strategy for handling import timeouts. `optimistic` continues to the next stage of the import. ' \
+          '`pessimistic` fails the import immediately. Defaults to `pessimistic`.'
+    end
+
+    route_setting :authorization, permissions: :create_bitbucket_server_import, boundary_type: :instance
+    post 'import/bitbucket_server' do
+      import_service = Import::BitbucketServerService.new(client, current_user,
+        params.merge(organization_id: Current.organization.id))
+      import_service.request_channel = ::Gitlab::Import::RequestChannel.detect(request)
+      result = import_service.execute(credentials)
+
+      if result[:status] == :success
+        present ProjectSerializer.new.represent(result[:project], serializer: :import)
+      else
+        render_api_error!({ error: result[:message] }, result[:http_status])
+      end
+    end
+  end
+end

@@ -1,0 +1,36 @@
+<%- cache current_appearance do %>
+{
+  "name": "<%= appearance_pwa_name %>",
+  "short_name": "<%= appearance_pwa_short_name %>",
+  "description": "<%= appearance_pwa_description %>",
+  "start_url": "<%= root_path %>",
+  "scope": "<%= root_path %>",
+  "display": "standalone",
+  "background_color": "#fff",
+  "theme_color": "<%= user_theme_primary_color %>",
+  "icons": [
+  <% widths = Appearance::ALLOWED_PWA_ICON_SCALER_WIDTHS %>
+  <% widths.each do |width| -%>
+  {
+    <% if source = appearance_pwa_icon_path_scaled(width) -%>
+    "src": "<%= source %>",
+    "sizes": "<%=  width.to_s + "x" + width.to_s %>",
+    "type": "image/png"
+    <% else -%>
+    "error": "<%= "#{width} is not an allowed PWA scale" %>"
+    <% end -%>
+  }
+  <% unless width == widths.last -%>
+  ,
+  <% end -%>
+  <% end -%>
+  <% unless current_appearance&.pwa_icon.present? -%>
+  ,{
+    "src": "<%= appearance_maskable_logo %>",
+    "sizes": "512x512",
+    "type": "image/png",
+    "purpose": "maskable"
+  }
+  <% end -%>]
+}
+<% end %>

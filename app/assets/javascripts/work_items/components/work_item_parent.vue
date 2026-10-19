@@ -1,0 +1,414 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlIcon, GlLink, GlPopover } from '@gitlab/ui';
+import { uniqueId } from 'lodash-es';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { s__, sprintf } from '~/locale';
+import WorkItemSidebarDropdownWidget from '~/work_items/components/shared/work_item_sidebar_dropdown_widget.vue';
+import updateParentMutation from '~/work_items/graphql/update_parent.mutation.graphql';
+import { isValidURL } from '~/lib/utils/url_utility';
+import SafeHtml from '~/vue_shared/directives/safe_html';
+import { titleInLinkSafeHtmlConfig } from '~/lib/dompurify';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+
+import {
+  findMilestoneWidget,
+  findHierarchyWidgetDefinition,
+  isReference,
+  newWorkItemId,
+} from '~/work_items/utils';
+import { updateParent } from '../graphql/cache_utils';
+import groupWorkItemsQuery from '../graphql/group_work_items.query.graphql';
+import projectWorkItemsQuery from '../graphql/project_work_items.query.graphql';
+import workItemsByReferencesQuery from '../graphql/work_items_by_references.query.graphql';
+import workItemAllowedParentTypesQuery from '../graphql/work_item_allowed_parent_types.query.graphql';
+import { I18N_WORK_ITEM_ERROR_UPDATING, WIDGET_TYPE_HIERARCHY } from '../constants';
+
+export default {
+  linkId: uniqueId('work-item-parent-link-'),
+  name: 'WorkItemParent',
+  components: {
+    GlLink,
+    GlIcon,
+    GlPopover,
+    WorkItemPopover: defineAsyncComponent(
+      () => import('~/issuable/popover/components/work_item_popover.vue'),
+    ),
+    WorkItemSidebarDropdownWidget,
+  },
+  directives: {
+    SafeHtml,
+  },
+  titleInLinkSafeHtmlConfig,
+  mixins: [glFeatureFlagsMixin()],
+  inject: ['getWorkItemTypeConfiguration', 'workItemTypesConfiguration'],
+  props: {
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    fullPath: {
+      required: true,
+      type: String,
+    },
+    parent: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    workItemType: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    canUpdate: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    groupPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    allowedParentTypesForNewWorkItem: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    hasParent: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['error', 'parent-milestone', 'update-widget-draft'],
+  data() {
+    return {
+      searchTerm: '',
+      updateInProgress: false,
+      searchStarted: false,
+      localSelectedItem: this.parent?.id,
+      oldParent: this.parent,
+      namespaceWorkItems: [],
+      workItemsByReference: [],
+      allowedParentTypes: [],
+    };
+  },
+  computed: {
+    isLoading() {
+      return (
+        this.$apollo.queries.namespaceWorkItems.loading ||
+        this.$apollo.queries.workItemsByReference.loading
+      );
+    },
+    availableWorkItems() {
+      return this.isSearchingByReference ? this.workItemsByReference : this.namespaceWorkItems;
+    },
+    shouldAddParent() {
+      if (!this.parent) return false;
+
+      const parentInList = this.availableWorkItems.some(({ id }) => id === this.parent.id);
+      if (parentInList) return false;
+
+      if (!this.searchTerm) return true;
+
+      return this.parent.title?.toLowerCase().includes(this.searchTerm.toLowerCase());
+    },
+    listboxText() {
+      return (
+        this.workItems.find(({ value }) => this.localSelectedItem === value)?.text ||
+        this.parent?.title ||
+        s__('WorkItem|None')
+      );
+    },
+    selectedParentTitleHtml() {
+      return (
+        this.workItems.find(({ value }) => this.localSelectedItem === value)?.textHtml ||
+        this.parent?.titleHtml
+      );
+    },
+    workItems() {
+      const items = this.shouldAddParent
+        ? [this.parent, ...this.availableWorkItems]
+        : this.availableWorkItems;
+
+      return (items || []).map(({ id, title, titleHtml }) => ({
+        text: title,
+        textHtml: titleHtml,
+        value: id,
+      }));
+    },
+    parentWebUrl() {
+      return this.parent?.webUrl;
+    },
+    visibleWorkItems() {
+      return this.workItemsByReference.concat(this.namespaceWorkItems);
+    },
+    isSelectedParentAvailable() {
+      return this.localSelectedItem && this.visibleWorkItems.length;
+    },
+    selectedParentMilestone() {
+      const selectedParent = this.visibleWorkItems?.find(({ id }) => id === this.localSelectedItem);
+      return findMilestoneWidget(selectedParent)?.milestone || null;
+    },
+    showCustomNoneValue() {
+      return this.hasParent && this.parent === null;
+    },
+    isSearchingByReference() {
+      return isReference(this.searchTerm) || isValidURL(this.searchTerm);
+    },
+    workItemConfig() {
+      return this.getWorkItemTypeConfiguration(this.workItemType) || {};
+    },
+    propagatesMilestone() {
+      const hierarchyWidgetDefinition = this.workItemConfig?.widgetDefinitions?.find(
+        (widgetDefinition) => widgetDefinition.type === WIDGET_TYPE_HIERARCHY,
+      );
+      return hierarchyWidgetDefinition?.propagatesMilestone;
+    },
+    areAnyAllowedParentTypesGroupWorkItems() {
+      return [...this.allowedParentTypes, ...this.allowedParentTypesForNewWorkItem].some(
+        ({ id }) =>
+          this.workItemTypesConfiguration.find((type) => type.id === id)?.isGroupWorkItemType,
+      );
+    },
+  },
+  watch: {
+    parent: {
+      handler(newVal) {
+        this.localSelectedItem = newVal?.id;
+      },
+    },
+    localSelectedItem() {
+      if (this.propagatesMilestone) this.handleSelectedParentMilestone();
+    },
+  },
+  apollo: {
+    namespaceWorkItems: {
+      query() {
+        // The logic to fetch the Parent seems to be different than other pages
+        // Below issue targets to have a common logic across work items app
+        // https://gitlab.com/gitlab-org/gitlab/-/issues/571302
+        return this.areAnyAllowedParentTypesGroupWorkItems
+          ? groupWorkItemsQuery
+          : projectWorkItemsQuery;
+      },
+      variables() {
+        const baseVariables = {
+          fullPath: this.areAnyAllowedParentTypesGroupWorkItems ? this.groupPath : this.fullPath,
+          searchTerm: this.searchTerm,
+          workItemTypeIds: [
+            ...this.allowedParentTypes,
+            ...this.allowedParentTypesForNewWorkItem,
+          ].map((type) => type.id),
+          in: this.searchTerm ? 'TITLE' : undefined,
+          iid: null,
+          isNumber: false,
+          includeAncestors: true,
+        };
+
+        // We don't consume any widgets in the project query
+        const conditionalVariables = this.areAnyAllowedParentTypesGroupWorkItems
+          ? { useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField) }
+          : {};
+
+        return { ...baseVariables, ...conditionalVariables };
+      },
+      skip() {
+        return !this.searchStarted && !this.allowedChildTypes?.length;
+      },
+      update(data) {
+        return data.namespace?.workItems?.nodes?.filter((wi) => this.workItemId !== wi.id) || [];
+      },
+      error() {
+        this.$emit(
+          'error',
+          s__('WorkItem|Something went wrong while fetching items. Please try again.'),
+        );
+      },
+    },
+    workItemsByReference: {
+      query: workItemsByReferencesQuery,
+      variables() {
+        return {
+          contextNamespacePath: this.fullPath,
+          refs: [this.searchTerm],
+        };
+      },
+      skip() {
+        return !this.isSearchingByReference;
+      },
+      update(data) {
+        return data?.workItemsByReference?.nodes || [];
+      },
+      error() {
+        this.$emit(
+          'error',
+          s__('WorkItem|Something went wrong while fetching items. Please try again.'),
+        );
+      },
+    },
+    allowedParentTypes: {
+      query: workItemAllowedParentTypesQuery,
+      variables() {
+        return {
+          id: this.workItemId,
+        };
+      },
+      skip() {
+        return this.workItemId === newWorkItemId(this.workItemType);
+      },
+      update(data) {
+        return findHierarchyWidgetDefinition(data.workItem)?.allowedParentTypes?.nodes ?? [];
+      },
+    },
+  },
+  methods: {
+    searchWorkItems(value) {
+      this.searchTerm = value;
+      this.searchStarted = true;
+    },
+    async updateParent() {
+      try {
+        if (this.parent?.id === this.localSelectedItem) return;
+
+        this.updateInProgress = true;
+
+        if (this.workItemId === newWorkItemId(this.workItemType)) {
+          this.$emit('update-widget-draft', {
+            parent: this.isSelectedParentAvailable
+              ? {
+                  ...this.visibleWorkItems.find(({ id }) => id === this.localSelectedItem),
+                }
+              : null,
+          });
+
+          this.searchStarted = false;
+          this.updateInProgress = false;
+          return;
+        }
+
+        const {
+          data: {
+            workItemUpdate: { errors },
+          },
+        } = await this.$apollo.mutate({
+          mutation: updateParentMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              hierarchyWidget: {
+                parentId: this.localSelectedItem,
+              },
+            },
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          },
+          update: (cache) =>
+            updateParent({
+              cache,
+              fullPath: this.fullPath,
+              iid: this.oldParent?.iid,
+              workItem: { id: this.workItemId },
+            }),
+        });
+
+        if (errors.length) {
+          this.$emit('error', errors.join('\n'));
+          this.localSelectedItem = this.parent?.id;
+        }
+      } catch (error) {
+        this.$emit(
+          'error',
+          sprintf(I18N_WORK_ITEM_ERROR_UPDATING, {
+            workItemType: this.workItemType,
+          }),
+        );
+        Sentry.captureException(error);
+      } finally {
+        this.searchStarted = false;
+        this.updateInProgress = false;
+      }
+    },
+    handleItemClick(item) {
+      this.localSelectedItem = item;
+      this.searchStarted = false;
+      this.searchTerm = '';
+      this.updateParent();
+    },
+    onListboxShown() {
+      this.searchStarted = true;
+    },
+    onListboxHide() {
+      this.searchStarted = false;
+      this.searchTerm = '';
+    },
+    handleSelectedParentMilestone() {
+      this.$emit('parent-milestone', this.selectedParentMilestone);
+    },
+  },
+};
+</script>
+
+<template>
+  <work-item-sidebar-dropdown-widget
+    :dropdown-label="__('Parent')"
+    :can-update="canUpdate"
+    dropdown-name="parent"
+    :list-items="workItems"
+    :loading="isLoading"
+    :item-value="localSelectedItem"
+    :header-text="s__('WorkItem|Select parent')"
+    :update-in-progress="updateInProgress"
+    :reset-button-label="s__('WorkItem|Clear')"
+    :toggle-dropdown-text="listboxText"
+    :search-placeholder="s__('WorkItem|Search or enter URL')"
+    data-testid="work-item-parent"
+    @dropdown-shown="onListboxShown"
+    @dropdown-hidden="onListboxHide"
+    @search-started="searchWorkItems"
+    @update-value="handleItemClick"
+  >
+    <template #readonly>
+      <template v-if="localSelectedItem">
+        <gl-link
+          :id="$options.linkId"
+          data-testid="work-item-parent-link"
+          class="gl-inline-block gl-max-w-full gl-overflow-hidden gl-text-ellipsis gl-whitespace-nowrap gl-align-top gl-text-default"
+          :href="parentWebUrl"
+        >
+          <span
+            v-if="selectedParentTitleHtml"
+            v-safe-html:[$options.titleInLinkSafeHtmlConfig]="selectedParentTitleHtml"
+          ></span>
+          <template v-else>{{ s__('WorkItem|None') }}</template>
+        </gl-link>
+        <work-item-popover
+          v-if="parent"
+          :cached-title="parent.title"
+          :iid="parent.iid"
+          :namespace-path="parent.namespace.fullPath"
+          :target="$options.linkId"
+        />
+      </template>
+    </template>
+    <template v-if="showCustomNoneValue" #none>
+      <span id="parent-not-available" class="gl-cursor-help">
+        <gl-popover
+          data-testid="inaccessible-parent-popover"
+          triggers="hover focus"
+          placement="bottom"
+          target="parent-not-available"
+        >
+          <span>{{
+            s__(`WorkItem|You don't have the necessary permission to view the ancestor.`)
+          }}</span>
+        </gl-popover>
+        <gl-icon name="eye-slash" class="gl-mr-2" variant="subtle" />
+        <span data-testid="ancestor-not-available">{{
+          s__('WorkItem|Ancestor not available')
+        }}</span></span
+      >
+    </template>
+  </work-item-sidebar-dropdown-widget>
+</template>

@@ -1,0 +1,431 @@
+# frozen_string_literal: true
+
+module Organizations
+  module Transfer
+    class UsersService
+      include Gitlab::Utils::StrongMemoize
+      include Organizations::Transfer::Concerns::OrganizationUpdater
+
+      BATCH_SIZE = 50
+
+      class << self
+        include Gitlab::Utils::StrongMemoize
+
+        # Ensure Rails.application.eager_load! returns true before calling this method
+        def migratable_models
+          ApplicationRecord.descendants.select do |model|
+            !model.to_s.in?(skipped_transfer_models) &&
+              model.reflect_on_all_associations.one? { |assoc| assoc.class_name == 'User' } &&
+              model.reflect_on_all_associations.one? { |assoc| assoc.class_name == 'Organizations::Organization' }
+          end
+        end
+        strong_memoize_attr :migratable_models
+
+        def skipped_transfer_models
+          # Kept in alphabetical order.
+          [
+            # AbuseReport has three User associations (reporter, user, resolved_by), so it can never
+            # be auto-discovered. It follows its reporter, handled in #update_abuse_reports.
+            "AbuseReport",
+            "Ai::Catalog::ItemConsumer",
+            # AntiAbuse::Event would be auto-discovered through its only User association, the
+            # reported user. Its organization_id derives from the parent report instead, so
+            # #update_abuse_reports transfers it by abuse_report_id. Events with a NULL
+            # abuse_report_id are not moved; the only writer,
+            # AntiAbuse::SpamAbuseEventsWorker, always sets it.
+            "AntiAbuse::Event",
+            "Authz::AdminRole",
+            "Authz::GranularScope",
+            "Authz::OauthApplicationGranularScope",
+            "Authz::OauthConsentGrantGranularScope",
+            "Authz::PersonalAccessTokenGranularScope",
+            # BulkImports::Export is scoped to a project or group, so it must not follow the user
+            # to a new organization, otherwise it would diverge from its project/group. The model
+            # declares no organization association today, so it is already excluded; this entry
+            # makes the intent explicit.
+            "BulkImports::Export",
+            "Clusters::Cluster",
+            # Dependencies::DependencyListExport is scoped to one of project/group/pipeline per
+            # `only_one_exportable`. Its organization_id is derived from the project/group and
+            # cannot be updated independently under the
+            # num_nonnulls(group_id, organization_id, project_id) = 1 check constraint.
+            "Dependencies::DependencyListExport",
+            "GitlabSubscriptions::AddOnPurchase",
+            "GitlabSubscriptions::SeatAssignment",
+            "GitlabSubscriptions::UserAddOnAssignment",
+            # Govern::PolicyEvaluation is an audit-style record sharded by its policy's
+            # organization; user_id is only the evaluation principal, so a user transfer
+            # must not move it.
+            "Govern::PolicyEvaluation",
+            "Group", # migrated by a dedicated service
+            "ImportFailure",
+            # Import::Sync::Repository follows the project instead of connected_by_user. It
+            # declares no organization association today, so it's already excluded; this entry
+            # makes the intent explicit.
+            "Import::Sync::Repository",
+            "MemberRole",
+            "Project", # migrated by a dedicated service
+            "ProjectSnippet",
+            "Snippet",
+            "User", # migrated by a dedicated service
+            "Vulnerabilities::Export" # scoped to group/project; transferred by SecurityExportsService
+          ]
+        end
+      end
+
+      def initialize(users:, new_organization:)
+        @users = users
+        @new_organization = new_organization
+      end
+
+      def execute
+        return ServiceResponse.error(message: transfer_error) unless can_transfer_users?
+        return ServiceResponse.error(message: already_transferred_error) if already_transferred?
+
+        # Only create a transaction if we're not already in one
+        # This allows the related organization group transfer
+        # service to manage the outer transaction
+        in_outer_transaction = User.connection.transaction_open?
+
+        if in_outer_transaction
+          perform_transfer
+        else
+          User.transaction do
+            perform_transfer
+          end
+        end
+
+        ServiceResponse.success
+      rescue StandardError => e
+        # When in outer transaction: re-raise to propagate and trigger rollback
+        # When managing own transaction: return error (transaction already rolled back)
+        raise e if in_outer_transaction
+
+        ServiceResponse.error(message: e.message)
+      end
+
+      # Pre-create bot users before the transaction to avoid exclusive lease errors
+      # This is called by the group transfer service before starting the transaction
+      def prepare_bots
+        new_organization_bots
+      end
+
+      def can_transfer_users?
+        return false unless users_belong_to_single_organization?
+        return false unless old_organization.present?
+
+        true
+      end
+
+      def transfer_error
+        return organization_not_found_error unless old_organization.present?
+
+        users_different_organizations_error unless users_belong_to_single_organization?
+      end
+
+      # rubocop:disable CodeReuse/ActiveRecord -- Query specific to this service
+      # rubocop:disable Database/AvoidUsingPluckWithoutLimit -- Using batches of 50
+      def users_belong_to_single_organization?
+        organization_ids = users.distinct.pluck(:organization_id).compact
+
+        # All users must belong to exactly one organization
+        organization_ids.size == 1
+      end
+      # rubocop:enable Database/AvoidUsingPluckWithoutLimit
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      private
+
+      attr_reader :users, :new_organization
+
+      def perform_transfer
+        users.each_batch(of: BATCH_SIZE) do |user_batch|
+          user_ids = user_batch.ids # rubocop:disable CodeReuse/ActiveRecord -- .ids is reasonable here
+          next if user_ids.empty?
+
+          update_users(user_ids)
+          update_user_projects(user_ids)
+          update_todos(user_ids)
+          update_import_failures(user_ids)
+          update_granular_scopes(user_ids)
+          update_oauth_consent_grant_granular_scopes(user_ids)
+          update_associated_organization_ids(user_ids)
+          update_personal_snippet_notes(user_ids)
+          update_user_agent_details(user_ids)
+          update_clusters(user_ids)
+          update_oauth_application_granular_scopes(user_ids)
+          update_oauth_applications(user_ids)
+          update_abuse_reports(user_ids)
+          transfer_ee_associations(user_ids)
+          update_personal_snippet_uploads(user_ids)
+        end
+      end
+
+      # Add simple associated organization_id updates here.
+      # Use a block to define the where clause/scopes for the query.
+      # `.where(organization_id: old_organization.id)` is automatically added to all queries.
+      # See Organizations::Transfer::Concerns::OrganizationUpdater#update_organization_id_for for more details.
+      def update_associated_organization_ids(user_ids)
+        self.class.migratable_models.each do |model_class|
+          user_assoc = model_class.reflect_on_all_associations.find { |assoc| assoc.class_name == "User" }
+
+          user_key = user_assoc.foreign_key
+
+          update_organization_id_for(model_class) do |relation|
+            relation.where(user_key => user_ids) # rubocop:disable CodeReuse/ActiveRecord -- cannot guarantee each model has a specific user scope
+          end
+        end
+      end
+
+      def update_users(user_ids)
+        User.id_in(user_ids).update_all(user_transfer_attributes)
+        user_namespaces(user_ids).update_all(transfer_attributes)
+      end
+
+      # rubocop:disable CodeReuse/ActiveRecord -- Only for .ids and .pluck which are reasonable uses
+      def update_user_projects(user_ids)
+        user_namespace_batch_ids = user_namespaces(user_ids).ids
+        projects_scope = Project.in_namespace(user_namespace_batch_ids)
+
+        projects_scope.each_batch(of: BATCH_SIZE) do |project_batch|
+          project_ids = project_batch.ids
+          next if project_ids.empty?
+
+          # rubocop:disable Database/AvoidUsingPluckWithoutLimit -- Using batches of 50
+          project_namespace_ids = project_batch.pluck(:project_namespace_id)
+          # rubocop:enable Database/AvoidUsingPluckWithoutLimit
+
+          Namespaces::ProjectNamespace.where(id: project_namespace_ids).update_all(transfer_attributes)
+          Project.id_in(project_ids).update_all(transfer_attributes)
+        end
+      end
+
+      def update_todos(user_ids)
+        old_organization_bots.each do |user_type, old_bot|
+          new_bot = new_organization_bots[user_type]
+
+          Todo.for_author(old_bot&.id).for_user(user_ids).update_all(author_id: new_bot.id)
+        end
+
+        update_organization_id_for(Todo) do |relation|
+          relation.where(user_id: user_ids)
+        end
+      end
+
+      def update_import_failures(user_ids)
+        update_organization_id_for(ImportFailure) do |relation|
+          relation.where(user_id: user_ids)
+        end
+      end
+
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      def new_organization_bots
+        # rubocop:disable GitlabSecurity/PublicSend -- Safe usage
+        old_organization_bots.keys.index_with do |user_type|
+          ::Users::Internal.in_organization(new_organization).public_send(user_type.to_sym)
+        end
+        # rubocop:enable GitlabSecurity/PublicSend
+      end
+      strong_memoize_attr :new_organization_bots
+
+      def old_organization
+        # This is safe because can_transfer_users? ensures all users belong to the same organization
+        users.pick(:organization_id).then { |id| Organizations::Organization.find_by_id(id) }
+      end
+      strong_memoize_attr :old_organization
+
+      def already_transferred?
+        old_organization.id == new_organization.id
+      end
+
+      # These are organization-specific bots that may be the author of Todos.
+      def old_organization_bots
+        bot_types =
+          %i[ghost support_bot alert_bot security_bot automation_bot duo_code_review_bot admin_bot]
+
+        bot_types.index_with do |user_type|
+          User.with_user_types(user_type).in_organization(old_organization).first
+        end.compact
+      end
+      strong_memoize_attr :old_organization_bots
+
+      def transfer_attributes
+        {
+          organization_id: new_organization.id,
+          visibility_level: Arel.sql('LEAST(?, visibility_level)', new_organization.visibility_level)
+        }
+      end
+
+      def user_transfer_attributes
+        attrs = { organization_id: new_organization.id }
+        attrs[:private_profile] = true unless new_organization.public?
+        attrs
+      end
+
+      def user_namespaces(user_ids)
+        Namespaces::UserNamespace.for_owner(user_ids)
+      end
+
+      # rubocop:disable CodeReuse/ActiveRecord -- Query specific to this service
+      def update_granular_scopes(user_ids)
+        token_ids = PersonalAccessToken.where(user_id: user_ids, organization_id: old_organization.id).select(:id)
+
+        update_granular_scopes_through(Authz::PersonalAccessTokenGranularScope, personal_access_token_id: token_ids)
+      end
+
+      def update_oauth_consent_grant_granular_scopes(user_ids)
+        grant_ids = Authz::OauthConsentGrant.where(user_id: user_ids, organization_id: old_organization.id).select(:id)
+
+        update_granular_scopes_through(Authz::OauthConsentGrantGranularScope, oauth_consent_grant_id: grant_ids)
+      end
+
+      def update_oauth_application_granular_scopes(user_ids)
+        application_ids = Authn::OauthApplication
+          .where(owner_type: 'User', owner_id: user_ids, organization_id: old_organization.id)
+          .select(:id)
+
+        update_granular_scopes_through(Authz::OauthApplicationGranularScope, application_id: application_ids)
+      end
+
+      def update_granular_scopes_through(join_model, owner_condition)
+        update_organization_id_for(join_model) do |relation|
+          relation.where(owner_condition)
+        end
+
+        granular_scope_ids = join_model.where(owner_condition).select(:granular_scope_id)
+
+        update_organization_id_for(Authz::GranularScope) do |relation|
+          relation.where(id: granular_scope_ids)
+        end
+      end
+
+      def update_personal_snippet_notes(user_ids)
+        personal_snippets = PersonalSnippet.where(author_id: user_ids)
+
+        Note
+          .where(noteable: personal_snippets, organization: old_organization)
+          .each_batch(of: BATCH_SIZE) do |notes_batch|
+            update_attributes = note_transfer_attributes(user_ids)
+
+            notes_batch.update_all(update_attributes)
+          end
+
+        [
+          SnippetRepository,
+          SnippetStatistics,
+          SnippetUserMention,
+          Snippets::RepositoryStorageMove
+        ].each do |snippet_class|
+          update_organization_id_for(snippet_class, organization_key: :snippet_organization_id) do |relation|
+            relation.where(snippet_id: personal_snippets)
+          end
+        end
+      end
+
+      def update_user_agent_details(user_ids)
+        update_organization_id_for(UserAgentDetail) do |relation|
+          relation.where(
+            subject_type: 'Snippet',
+            subject_id: PersonalSnippet.where(author_id: user_ids).select(:id)
+          )
+        end
+      end
+
+      def note_transfer_attributes(transferring_user_ids)
+        table = Note.arel_table
+        ghost_id = new_organization_bots[:ghost].id
+
+        attributes = { organization_id: new_organization.id }
+
+        %i[author_id updated_by_id resolved_by_id].each do |column|
+          attributes[column] = Arel::Nodes::Case.new
+            .when(table[column].eq(nil)).then(nil)
+            .when(table[column].in(transferring_user_ids)).then(table[column])
+            .else(ghost_id)
+        end
+
+        attributes
+      end
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      # rubocop:disable CodeReuse/ActiveRecord -- Query specific to this service
+      def update_clusters(user_ids)
+        cluster_ids = Clusters::Cluster.where(user_id: user_ids).select(:id)
+
+        update_organization_id_for(Clusters::Cluster) do |relation|
+          relation.where(id: cluster_ids)
+        end
+
+        [
+          Clusters::Platforms::Kubernetes,
+          Clusters::Providers::Gcp,
+          Clusters::Providers::Aws,
+          Clusters::KubernetesNamespace
+        ].each do |model_class|
+          update_organization_id_for(model_class) do |relation|
+            relation.where(cluster_id: cluster_ids)
+          end
+        end
+      end
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      # rubocop:disable CodeReuse/ActiveRecord -- Query specific to this service
+      # Abuse reports follow their reporter, matching AntiAbuse::AbuseReport::CreateService which
+      # sets organization_id from params[:reporter].organization_id.
+      #
+      # report_ids is scoped to the old organization, so the AbuseReport update must stay last
+      # here. Same ordering contract as #update_granular_scopes.
+      def update_abuse_reports(user_ids)
+        report_ids = AbuseReport
+          .by_reporter_id(user_ids)
+          .where(organization_id: old_organization.id)
+          .select(:id)
+
+        update_abuse_report_uploads(report_ids)
+
+        update_organization_id_for(AntiAbuse::Event) do |relation|
+          relation.where(abuse_report_id: report_ids)
+        end
+
+        update_organization_id_for(AbuseReport) do |relation|
+          relation.by_reporter_id(user_ids)
+        end
+      end
+
+      def update_abuse_report_uploads(report_ids)
+        update_organization_id_for(AntiAbuse::AbuseReportUpload) do |relation|
+          relation.where(model_id: report_ids)
+        end
+      end
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      # rubocop:disable CodeReuse/ActiveRecord -- Query specific to this service
+      def update_oauth_applications(user_ids)
+        update_organization_id_for(Authn::OauthApplication) do |relation|
+          relation.where(owner_type: 'User', owner_id: user_ids)
+        end
+      end
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      def transfer_ee_associations(user_ids); end
+
+      def update_personal_snippet_uploads(user_ids); end
+
+      def organization_not_found_error
+        s_("TransferOrganization|Cannot transfer users because the existing organization could not be found.")
+      end
+
+      def users_different_organizations_error
+        s_("TransferOrganization|Cannot transfer users to a different organization " \
+          "if all users do not belong to the same organization as the top-level group.")
+      end
+
+      def already_transferred_error
+        s_("TransferOrganization|Users are already in the target organization.")
+      end
+    end
+  end
+end
+
+Organizations::Transfer::UsersService.prepend_mod

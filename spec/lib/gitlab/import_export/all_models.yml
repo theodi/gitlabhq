@@ -1,0 +1,1284 @@
+---
+issues:
+- subscriptions
+- award_emoji
+- author
+- assignees
+- assignees_by_name_and_id
+- updated_by
+- milestone
+- iteration
+- notes
+- resource_label_events
+- resource_weight_events
+- resource_milestone_events
+- resource_state_events
+- resource_iteration_events
+- assignment_events
+- sent_notifications
+- sentry_issue
+- issuable_severity
+- label_links
+- labels
+- own_notes
+- own_resource_state_events
+- own_resource_label_events
+- own_description_versions
+- own_events
+- own_subscriptions
+- sync_object
+- last_edited_by
+- todos
+- user_agent_detail
+- moved_to
+- moved_from
+- duplicated_to
+- events
+- merge_request_issues
+- merge_request_closing_issues
+- metrics
+- metric_images
+- timelogs
+- issuable_severity
+- issuable_sla
+- issue_assignees
+- issue_stage_events
+- search_data
+- closed_by
+- epic_issue
+- epic
+- feature_flag_issues
+- feature_flags
+- designs
+- design_versions
+- description_versions
+- zoom_meetings
+- vulnerability_links
+- related_vulnerabilities
+- user_mentions
+- alert_management_alert
+- alert_management_alerts
+- status_page_published_incident
+- namespace
+- notes_with_possible_mentions
+- note_authors
+- user_note_authors
+- issue_email_participants
+- test_reports
+- requirement
+- incident_management_issuable_escalation_status
+- incident_management_timeline_events
+- pending_escalations
+- customer_relations_contacts
+- issue_customer_relations_contacts
+- email
+- issuable_resource_links
+- synced_epic
+- observability_metrics
+- observability_logs
+- observability_traces
+- dates_source
+- current_status
+- work_item_transition
+- work_item_position
+- duo_workflows
+work_item_transition:
+- namespace
+- work_item
+- promoted_to_epic
+- duplicated_to
+- moved_to
+work_item_position:
+- namespace
+- work_item
+events:
+- author
+- group
+- target
+- push_event_payload
+- personal_namespace
+notes:
+- award_emoji
+- namespace
+- organization
+- noteable
+- author
+- updated_by
+- resolved_by
+- todos
+- events
+- system_note_metadata
+- note_diff_file
+- suggestions
+- diff_note_positions
+- review
+- note_metadata
+- duo_metadata
+- user_agent_detail
+- duo_workflow_links
+- linked_duo_workflows
+- duo_created_workflow_link
+note_metadata:
+  - note
+  - email_participant
+commit_notes:
+- namespace
+- organization
+- award_emoji
+- noteable
+- author
+- updated_by
+- resolved_by
+- todos
+- events
+- system_note_metadata
+- note_diff_file
+- suggestions
+- diff_note_positions
+- review
+- note_metadata
+- duo_metadata
+- user_agent_detail
+- duo_workflow_links
+- linked_duo_workflows
+- duo_created_workflow_link
+label_links:
+- target
+- label
+- own_label
+- namespace
+label:
+- subscriptions
+- parent_container
+- lists
+- label_links
+- issues
+- merge_requests
+- priorities
+- epic_board_labels
+- epic_lists
+- group
+- organization
+- resource_label_events
+milestone:
+- group
+- issues
+- labels
+- merge_requests
+- events
+- boards
+- milestone_releases
+- releases
+- user_agent_detail
+snippets:
+- author
+- notes
+- award_emoji
+- user_agent_detail
+- user_mentions
+- snippet_repository
+- statistics
+- repository_storage_moves
+- organization
+releases:
+- author
+- links
+- sorted_links
+- milestone_releases
+- milestones
+- evidences
+- catalog_resource_version
+links:
+- release
+project_members:
+- created_by
+- user
+- source
+- member_namespace
+- member_role
+- member_approvals
+member_roles:
+- members
+- namespace
+- base_access_level
+- download_code
+merge_requests:
+- status_check_responses
+- subscriptions
+- award_emoji
+- author
+- reviewers
+- reviewed_by_users
+- updated_by
+- milestone
+- notes
+- resource_label_events
+- resource_milestone_events
+- resource_state_events
+- resource_iteration_events
+- assignment_events
+- label_links
+- labels
+- last_edited_by
+- todos
+- target_project
+- source_project
+- merge_data
+- merge_user
+- merge_request_diffs
+- merge_request_diff
+- merge_head_diff
+- merge_request_context_commits
+- merge_request_context_commit_diff_files
+- merge_request_stage_events
+- merge_schedule
+- risk_assessment
+- events
+- merge_request_issues
+- merge_request_closing_issues
+- cached_closes_issues
+- metrics
+- timelogs
+- head_pipeline
+- latest_merge_request_diff
+- pipelines_for_merge_request
+- merge_request_assignees
+- merge_request_reviewers
+- suggestions
+- unresolved_notes
+- assignees
+- reviews
+- approval_rules
+- approval_merge_request_rule_sources
+- approval_project_rules
+- approvals
+- approved_by_users
+- v2_approval_rules
+- v2_approval_rules_merge_requests
+- draft_notes
+- merge_train_car
+- blocks_as_blocker
+- blocks_as_blockee
+- blocking_merge_requests
+- blocked_merge_requests
+- description_versions
+- deployment_merge_requests
+- deployments
+- user_mentions
+- notes_with_possible_mentions
+- note_authors
+- user_note_authors
+- cleanup_schedule
+- compliance_violations
+- created_environments
+- predictions
+- user_agent_detail
+- scan_result_policy_violations
+- applicable_post_merge_approval_rules
+- requested_changes
+- change_requesters
+- scan_result_policy_reads_through_violations
+- security_policies_through_violations
+- scan_result_policy_reads_through_approval_rules
+- running_scan_result_policy_violations
+- failed_scan_result_policy_violations
+- approval_metrics
+- approval_policy_merge_request_bypass_events
+- generated_ref_commits
+- policy_dismissals
+- duo_workflows
+- ai_suggested_reviewers
+- vulnerability_merge_request_links
+- duo_workflow_links
+- linked_duo_workflows
+external_pull_requests:
+merge_data:
+- merge_request
+- project
+- merge_user
+merge_request_diff:
+- merge_request
+- merge_request_diff_commits
+- merge_request_diff_detail
+- merge_request_diff_files
+merge_request_diff_commits:
+- merge_request_diff
+- commit_author
+- committer
+- merge_request_commits_metadata
+merge_request_commits_metadata:
+- commit_author
+- committer
+- merge_request_diff_commits
+merge_request_diff_detail:
+- merge_request_diff
+merge_request_diff_files:
+- merge_request_diff
+merge_request_context_commits:
+- merge_request
+- diff_files
+merge_schedule:
+- merge_request
+cleanup_schedule:
+- merge_request
+ci_pipelines: &pipeline_definition
+- user
+- ci_ref
+- stages
+- statuses
+- statuses_order_id_desc
+- latest_statuses
+- all_jobs
+- current_jobs
+- all_processable_jobs
+- current_processable_jobs
+- builds
+- bridges
+- latest_bridges
+- processables
+- generic_commit_statuses
+- trigger
+- variables
+- auto_canceled_by
+- auto_canceled_pipelines
+- auto_canceled_jobs
+- pending_builds
+- failed_builds
+- limited_failed_builds
+- limited_failed_jobs
+- retryable_builds
+- cancelable_statuses
+- manual_actions
+- scheduled_actions
+- downloadable_artifacts
+- pipeline_schedule
+- merge_requests_as_head_pipeline
+- merge_request
+- external_pull_request
+- job_environments
+- chat_data
+- source_pipeline
+- source_bridge
+- source_job
+- sourced_pipelines
+- source_project
+- triggered_by_pipeline
+- triggered_pipelines
+- child_pipelines
+- parent_pipeline
+- downstream_bridges
+- job_artifacts
+- security_scans
+- security_findings
+- daily_build_group_report_results
+- latest_builds
+- latest_successful_jobs
+- latest_finished_jobs
+- latest_builds_report_results
+- messages
+- pipeline_artifacts
+- pipeline_artifacts_code_coverage
+- pipeline_artifacts_code_quality_mr_diff
+- pipeline_artifacts_pipeline_variables
+- dast_profile
+- dast_profiles_pipeline
+- build_trace_chunks
+- pipeline_metadata
+- pipeline_processing_data
+- project_mirror
+- workload
+- sbom_occurrence_refs
+- duo_workflow_links
+- linked_duo_workflows
+pipeline_metadata:
+- pipeline
+pipeline_processing_data:
+- pipeline
+- project
+ci_refs:
+- project
+- ci_pipelines
+pipeline_variables:
+- pipeline
+stages:
+- pipeline
+- statuses
+- processables
+- builds
+- bridges
+- generic_commit_statuses
+- latest_statuses
+- retried_statuses
+statuses:
+- project
+- pipeline
+- stage
+- user
+- auto_canceled_by
+- needs
+- ci_stage
+builds:
+- user
+- auto_canceled_by
+- ci_stage
+- needs
+- resource
+- pipeline
+- sourced_pipeline
+- resource_group
+- runner
+- trigger
+- erased_by
+- deployment
+- job_environment
+- pending_state
+- queuing_entry
+- runtime_metadata
+- trace_chunks
+- report_results
+- namespace
+- inputs
+- job_artifacts
+- job_variables
+- sourced_pipelines
+- pages_deployments
+- job_artifacts_archive
+- job_artifacts_metadata
+- job_artifacts_trace
+- job_artifacts_junit
+- job_artifacts_sast
+- job_artifacts_dependency_scanning
+- job_artifacts_container_scanning
+- job_artifacts_dast
+- job_artifacts_codequality
+- job_artifacts_license_scanning
+- job_artifacts_performance
+- job_artifacts_metrics
+- job_artifacts_metrics_referee
+- job_artifacts_network_referee
+- job_artifacts_lsif
+- job_artifacts_dotenv
+- job_artifacts_cobertura
+- job_artifacts_jacoco
+- job_artifacts_terraform
+- job_artifacts_accessibility
+- job_artifacts_cluster_applications
+- job_artifacts_secret_detection
+- job_artifacts_requirements
+- job_artifacts_coverage_fuzzing
+- job_artifacts_browser_performance
+- job_artifacts_load_performance
+- job_artifacts_api_fuzzing
+- job_artifacts_cluster_image_scanning
+- job_artifacts_cyclonedx
+- job_artifacts_sarif
+- job_artifacts_requirements_v2
+- job_artifacts_repository_xray
+- job_definition
+- job_definition_instance
+- job_messages
+- error_job_messages
+- runner_manager
+- runner_manager_build
+- job_runtime_environment
+- runner_session
+- trace_metadata
+- terraform_state_versions
+- security_scans
+- dast_site_profiles_build
+- dast_site_profile
+- dast_scanner_profiles_build
+- dast_scanner_profile
+- job_annotations
+- job_artifacts_annotations
+- project_mirror
+- job_source
+- supply_chain_attestation
+bridges:
+- user
+- pipeline
+- auto_canceled_by
+- ci_stage
+- job_definition
+- job_definition_instance
+- needs
+- resource
+- sourced_pipeline
+- deployment
+- job_environment
+- job_messages
+- error_job_messages
+- resource_group
+- trigger
+- downstream_pipeline
+- upstream_pipeline
+- job_source
+- supply_chain_attestation
+generic_commit_statuses:
+- user
+- pipeline
+- auto_canceled_by
+- ci_stage
+- needs
+variables:
+- project
+triggers:
+- project
+- owner
+pipeline_schedules:
+- owner
+- pipelines
+- variables
+- inputs
+pipeline_schedule:
+- pipelines
+pipeline_schedule_variables:
+- pipeline_schedule
+deploy_tokens:
+- project_deploy_tokens
+- projects
+deploy_keys:
+- user
+- deploy_keys_projects
+- projects
+integrations:
+- project
+- service_hook
+- jira_tracker_data
+- zentao_tracker_data
+- issue_tracker_data
+# dingtalk_tracker_data JiHu-specific, see https://jihulab.com/gitlab-cn/gitlab/-/merge_requests/417
+- dingtalk_tracker_data
+hooks:
+- project
+- web_hook_logs
+protected_branches:
+- group
+- merge_access_levels
+- push_access_levels
+- unprotect_access_levels
+- approval_project_rules
+- approval_project_rules_with_unique_policies
+- external_status_checks
+- required_code_owners_sections
+- squash_option
+- merge_request_approval_setting
+protected_tags:
+- create_access_levels
+merge_access_levels:
+- protected_branch
+- user
+- group
+- member_role
+push_access_levels:
+- protected_branch
+- user
+- group
+- deploy_key
+- member_role
+create_access_levels:
+- user
+- protected_tag
+- group
+- deploy_key
+squash_option:
+- protected_branch
+container_repositories:
+- project
+- name
+project:
+- ai_flow_triggers
+- instance_runner_monthly_usages
+- hosted_runner_monthly_usages
+- catalog_resource
+- catalog_resource_sync_events
+- catalog_resource_versions
+- import_sync_repository
+- ci_components
+- ci_component_last_usages
+- external_status_checks
+- project_topics
+- topics
+- clusters
+- cluster_agents
+- ci_access_project_authorizations
+- cluster_project
+- workspaces
+- workspace_agentk_states
+- creator
+- group
+- namespace
+- project_namespace
+- management_clusters
+- boards
+- last_event
+- integrations
+- push_hooks_integrations
+- tag_push_hooks_integrations
+- issue_hooks_integrations
+- confidential_issue_hooks_integrations
+- merge_request_hooks_integrations
+- note_hooks_integrations
+- confidential_note_hooks_integrations
+- job_hooks_integrations
+- archive_trace_hooks_integrations
+- pipeline_hooks_integrations
+- wiki_page_hooks_integrations
+- deployment_hooks_integrations
+- alert_hooks_integrations
+- incident_hooks_integrations
+- vulnerability_hooks_integrations
+- ready_active_context_code_repository
+- apple_app_store_integration
+- google_cloud_platform_artifact_registry_integration
+- google_cloud_platform_workload_identity_federation_integration
+- campfire_integration
+- confluence_integration
+- datadog_integration
+- discord_integration
+- drone_ci_integration
+- emails_on_push_integration
+- google_play_integration
+- pipelines_email_integration
+- mattermost_slash_commands_integration
+- matrix_integration
+- harbor_integration
+- irker_integration
+- packagist_integration
+- phorge_integration
+- pivotaltracker_integration
+- prometheus_integration
+- assembla_integration
+- asana_integration
+- beyond_identity_integration
+- slack_integration
+- microsoft_teams_integration
+- mattermost_integration
+- hangouts_chat_integration
+- unify_circuit_integration
+- buildkite_integration
+- diffblue_cover_integration
+- bamboo_integration
+- teamcity_integration
+- pushover_integration
+- jira_integration
+- jira_cloud_app_integration
+- zentao_integration
+# dingtalk_integration JiHu-specific, see https://jihulab.com/gitlab-cn/gitlab/-/merge_requests/417
+# dingtalk_integration JiHu-specific, see https://jihulab.com/gitlab-cn/gitlab/-/merge_requests/640
+- redmine_integration
+- youtrack_integration
+- custom_issue_tracker_integration
+- bugzilla_integration
+- ewm_integration
+- clickup_integration
+- external_wiki_integration
+- linear_integration
+- mock_ci_integration
+- mock_monitoring_integration
+- squash_tm_integration
+- forked_to_members
+- forked_from_project
+- forks
+- merge_requests
+- issues
+- work_items
+- labels
+- events
+- milestones
+- notes
+- snippets
+- snippet_repositories
+- hooks
+- all_protected_branches
+- protected_branches
+- protected_tags
+- project_members
+- project_repository
+- users
+- maintainers
+- owners_and_maintainers
+- requesters
+- namespace_members
+- namespace_requesters
+- namespace_members_and_requesters
+- deploy_keys_projects
+- deploy_keys
+- users_star_projects
+- starrers
+- releases
+- lfs_objects_projects
+- lfs_objects
+- project_group_links
+- invited_groups
+- todos
+- notification_settings
+- import_data
+- commit_statuses
+- ci_pipelines
+- all_pipelines
+- stages
+- ci_refs
+- builds
+- bridges
+- processables
+- runner_projects
+- runners
+- variables
+- triggers
+- pipeline_schedules
+- environments
+- environments_for_dashboard
+- deployments
+- project_feature
+- auto_devops
+- pages_domains
+- pages_metadatum
+- pages_deployments
+- active_pages_deployments
+- authorized_users
+- project_authorizations
+- remote_mirrors
+- route
+- redirect_routes
+- statistics
+- container_repositories
+- container_registry_protection_rules
+- container_registry_protection_tag_rules
+- uploads
+- file_uploads
+- import_state
+- members_and_requesters
+- job_artifacts
+- root_of_fork_network
+- fork_network_member
+- fork_network
+- fork_network_projects
+- custom_attributes
+- lfs_file_locks
+- project_badges
+- source_of_merge_requests
+- internal_ids
+- project_deploy_tokens
+- deploy_tokens
+- ci_cd_settings
+- import_export_uploads
+- repository_languages
+- pool_repository
+- kubernetes_namespaces
+- error_tracking_setting
+- gitlab_slack_application_integration
+- github_integration
+- amazon_q_integration
+- git_guardian_integration
+- protected_environments
+- mirror_user
+- push_rule
+- jenkins_integration
+- index_status
+- feature_usage
+- regular_or_any_approver_approval_rules
+- approval_rules
+- approval_merge_request_rules
+- v2_approval_rules
+- v2_approval_rules_projects
+- path_locks
+- wiki_repository
+- source_pipelines
+- sourced_pipelines
+- vulnerabilities
+- vulnerability_archives
+- vulnerability_exports
+- vulnerability_findings
+- vulnerability_feedback
+- vulnerability_identifiers
+- vulnerability_scanners
+- dast_profiles
+- dast_site_profiles
+- dast_scanner_profiles
+- dast_sites
+- dast_site_tokens
+- operations_feature_flags
+- operations_feature_flags_client
+- operations_feature_flags_user_lists
+- software_license_policies
+- custom_software_licenses
+- packages
+- package_protection_rules
+- rpm_repository_files
+- npm_metadata_caches
+- helm_metadata_caches
+- rubygems_spec_files
+- packages_cleanup_policy
+- dependency_proxy_packages_setting
+- project_setting
+- webide_pipelines
+- reviews
+- incident_management_setting
+- merge_train_cars
+- designs
+- project_aliases
+- external_pull_requests
+- deleting_user
+- upstream_projects
+- upstream_project_subscriptions
+- downstream_project_subscriptions
+- service_desk_setting
+- service_desk_custom_email_verification
+- service_desk_custom_email_credential
+- security_setting
+- import_failures
+- container_expiration_policy
+- resource_groups
+- status_page_setting
+- requirements
+- export_jobs
+- daily_build_group_report_results
+- jira_imports
+- compliance_framework_settings
+- compliance_management_frameworks
+- alert_management_alerts
+- repository_storage_moves
+- freeze_periods
+- pumble_integration
+- webex_teams_integration
+- telegram_integration
+- build_report_results
+- vulnerability_statistic
+- vulnerability_historical_statistics
+- vulnerability_remediations
+- pipeline_artifacts
+- terraform_states
+- terraform_state_protection_rules
+- alert_management_http_integrations
+- exported_protected_branches
+- incident_management_oncall_schedules
+- incident_management_oncall_rotations
+- incident_management_escalation_policies
+- incident_management_issuable_escalation_statuses
+- incident_management_timeline_event_tags
+- debian_distributions
+- merge_request_metrics
+- security_orchestration_policy_configuration
+- timelogs
+- error_tracking_client_keys
+- pending_builds
+- security_scans
+- security_ascp_scans
+- security_ascp_components
+- ci_feature_usages
+- bulk_import_exports
+- ci_project_mirror
+- ci_project_metric
+- sync_events
+- secure_files
+- security_trainings
+- vulnerability_reads
+- build_artifacts_size_refresh
+- project_callouts
+- pipeline_metadata
+- dependency_list_exports
+- sbom_occurrences
+- sbom_occurrence_refs
+- analytics_dashboards_configuration_project
+- analytics_dashboards_pointer
+- targeting_dashboards_pointers
+- targeting_dashboards_pointer_projects
+- design_management_repository
+- compliance_standards_adherence
+- scan_result_policy_reads
+- scan_result_policy_violations
+- project_state
+- security_policy_bots
+- target_branch_rules
+- organization
+- dora_performance_scores
+- xray_reports
+- member_approvals
+- zoekt_repositories
+- security_policy_management_project_linked_configurations
+- security_policy_project_linked_projects
+- security_policy_project_linked_namespaces
+- security_policy_project_linked_groups
+- relation_import_trackers
+- saved_replies
+- security_policy_project_links
+- security_policies
+- approval_policy_rule_project_links
+- approval_policy_rules
+- security_pipeline_execution_config_links
+- secrets_manager
+- project_secret_rotation_infos
+- observability_metrics
+- observability_traces
+- observability_logs
+- observability_project_o11y_setting
+- security_exclusions
+- security_statistics
+- vulnerability_management_policies
+- project_control_compliance_statuses
+- approval_policies
+- project_requirement_compliance_statuses
+- analyzer_statuses
+- security_inventory_filters
+- configured_ai_catalog_items
+- security_project_tracked_contexts
+- security_attributes
+- project_to_security_attributes
+- security_scan_profile_triggers
+- policy_dismissals
+- security_scan_profiles
+- security_scan_profiles_projects
+- security_scan_profile_project_statuses
+- enabled_foundational_flow_records
+- provisioned_user_details
+- provisioned_users
+- relation_export_uploads
+award_emoji:
+- awardable
+- user
+- namespace
+- organization
+priorities:
+- label
+timelogs:
+- issue
+- merge_request
+- user
+- note
+- timelog_category
+- namespace
+push_event_payload:
+- event
+issue_assignees:
+- issue
+- assignee
+- namespace
+search_data:
+- issue
+merge_request_assignees:
+- merge_request
+- assignee
+merge_request_reviewers:
+- merge_request
+- reviewer
+lfs_file_locks:
+- user
+project_badges:
+metrics:
+- target_project
+- merge_request
+- latest_closed_by
+- merged_by
+- pipeline
+resource_label_events:
+- user
+- issue
+- work_item
+- merge_request
+- epic
+- label
+- namespace
+error_tracking_setting:
+suggestions:
+- note
+- namespace
+diff_note_positions:
+- note
+- namespace
+protected_environments:
+- group
+- deploy_access_levels
+- approval_rules
+deploy_access_levels:
+- protected_environment
+- user
+- group
+unprotect_access_levels:
+- user
+- protected_branch
+- group
+- member_role
+epic_issues:
+- issue
+- epic
+- work_item
+- work_item_parent_link
+feature_flag_issues:
+- issue
+- feature_flag
+reviews:
+- project
+- merge_request
+- author
+- notes
+incident_management_setting:
+- project
+merge_trains:
+- project
+merge_train_cars:
+- merge_request
+boards:
+- group
+- lists
+- destroyable_lists
+- milestone
+- iteration
+- iteration_cadence
+- board_labels
+- board_assignee
+- assignee
+- labels
+- user_preferences
+- boards_epic_user_preferences
+lists:
+- user
+- milestone
+- iteration
+- board
+- label
+- list_user_preferences
+- group
+- custom_status
+milestone_releases:
+- milestone
+- release
+evidences:
+- release
+design: &design
+- authors
+- issue
+- actions
+- versions
+- notes
+- user_mentions
+- events
+- subscriptions
+- namespace
+designs: *design
+actions:
+- design
+- version
+- uploads
+- file_uploads
+- namespace
+versions: &version
+- author
+- issue
+- designs
+- actions
+- namespace
+zoom_meetings:
+- issue
+sentry_issue:
+- issue
+issuable_severity:
+- issue
+design_versions: *version
+epic:
+- subscriptions
+- award_emoji
+- description_versions
+- author
+- assignee
+- issues
+- epic_issues
+- milestone
+- notes
+- label_links
+- labels
+- own_notes
+- own_resource_state_events
+- own_resource_label_events
+- own_description_versions
+- own_events
+- sync_object
+- todos
+- group
+- parent
+- updated_by
+- last_edited_by
+- closed_by
+- start_date_sourcing_milestone
+- due_date_sourcing_milestone
+- start_date_sourcing_epic
+- due_date_sourcing_epic
+- events
+- resource_label_events
+- resource_state_events
+- user_mentions
+- notes_with_possible_mentions
+- note_authors
+- user_note_authors
+- boards_epic_user_preferences
+- epic_board_positions
+- work_item
+- own_subscriptions
+- work_item_parent_link
+epic_issue:
+- epic
+- issue
+- work_item
+- work_item_parent_link
+- namespace
+system_note_metadata:
+- note
+- description_version
+- namespace
+status_page_published_incident:
+- issue
+issuable_sla:
+  - issue
+push_rule:
+  - organization
+bulk_import_export:
+  - group
+service_desk_setting:
+  - file_template_project
+service_desk_custom_email_verification:
+  - triggerer
+approvals:
+  - user
+  - merge_request
+resource_milestone_events:
+  - user
+  - issue
+  - work_item
+  - merge_request
+  - milestone
+  - namespace
+resource_state_events:
+  - user
+  - issue
+  - work_item
+  - merge_request
+  - source_merge_request
+  - epic
+  - namespace
+iteration:
+  - group
+  - iterations_cadence
+  - issues
+  - labels
+  - merge_requests
+resource_iteration_events:
+  - user
+  - issue
+  - work_item
+  - merge_request
+  - iteration
+  - triggered_by_work_item
+  - namespace
+iterations_cadence:
+  - group
+  - iterations
+catalog_resource:
+  - project
+  - catalog_resource_components
+  - catalog_resource_versions
+  - catalog_resource_sync_events
+catalog_resource_versions:
+  - project
+  - release
+  - catalog_resource
+  - catalog_resource_components
+approval_rules:
+  - users
+  - groups
+  - group_users
+  - group_members
+  - security_orchestration_policy_configuration
+  - protected_branches
+  - approval_merge_request_rule_sources
+  - approval_merge_request_rules
+  - approval_project_rules_users
+  - approval_project_rules_protected_branches
+  - scan_result_policy_read
+  - approval_policy_rule
+approval_project_rules_users:
+  - user
+  - approval_project_rule
+approval_project_rules_protected_branches:
+  - protected_branch
+  - approval_project_rule
+timelog_category:
+  - name
+  - description
+  - billable
+  - billing_rate
+note_diff_file:
+  - diff_note
+vulnerabilities:
+  - vulnerability_finding
+  - findings
+  - vulnerability_read
+  - award_emoji
+  - author
+  - resolved_by
+  - dismissed_by
+  - confirmed_by
+  - group
+  - representation_information
+  - dismissed_findings
+  - merge_request_links
+  - merge_requests
+  - external_issue_links
+  - issue_links
+  - related_issues
+  - latest_severity_override
+  - severity_overrides
+  - state_transitions
+  - notes
+  - user_mentions
+  - sbom_occurrences_vulnerabilities
+  - sbom_occurrences
+  - security_finding_enrichments
+vulnerability_finding:
+  - scanner
+  - primary_identifier
+  - vulnerability
+  - one_vulnerability
+  - ascp_component_link
+  - ascp_component
+  - state_transitions
+  - issue_links
+  - external_issue_links
+  - merge_request_links
+  - finding_identifiers
+  - identifiers
+  - finding_links
+  - finding_remediations
+  - remediations
+  - initial_finding_pipeline
+  - latest_finding_pipeline
+  - signatures
+  - vulnerability_flags
+  - feedbacks
+  - finding_evidence
+  - security_findings
+  - finding_token_status
+  - finding_risk_score
+  - cve_identifiers
+  - cve_enrichments
+  - triggered_workflows
+  - flip_guard
+  - detection_transitions
+  - project_tracked_context
+  - security_finding_enrichments
+  - finding_due_date
+scanner:
+  - findings
+  - security_findings
+identifiers: &identifiers_definition
+  - finding_identifiers
+  - findings
+  - primary_findings
+  - cve_enrichment
+primary_identifier: *identifiers_definition
+initial_finding_pipeline: *pipeline_definition
+latest_finding_pipeline: *pipeline_definition
+vulnerability_read:
+  - vulnerability
+  - scanner
+  - vulnerability_occurrence
+  - tracked_context

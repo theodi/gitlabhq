@@ -1,0 +1,11 @@
+---
+name: update_runner_controller
+description: Grants the ability to update runner controllers
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - update_runner_controller
+assignable_when:
+  - condition: admin

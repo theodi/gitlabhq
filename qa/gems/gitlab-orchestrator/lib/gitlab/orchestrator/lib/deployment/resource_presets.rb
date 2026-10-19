@@ -1,0 +1,195 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Orchestrator
+    module Deployment
+      # Kubernetes resource request/limit presets optimized for different usecases
+      #
+      # Prefer vertical scaling over hpa for test stability
+      #   as waiting for new pods to scale will lead to test flakiness
+      # Configure most pods with minReplicas: 1 to simplify debugging
+      #   by having less logs files to review
+      # To scale webservice and sidekiq, concurrency parameters need to be adjusted together
+      #   with cpu and memory values
+      class ResourcePresets
+        DEFAULT = "default"
+        HIGH = "high"
+        PERFORMANCE = "performance"
+
+        PRESETS = [DEFAULT, HIGH, PERFORMANCE].freeze
+
+        class << self
+          # Kubernetes resources values for given preset
+          #
+          # @param [String] preset_name
+          # @return [Hash]
+          def resource_values(preset_name)
+            raise ArgumentError, "'#{preset_name}' is not a valid preset name" unless PRESETS.include?(preset_name)
+
+            send(preset_name) # rubocop:disable GitlabSecurity/PublicSend -- send with user input is prevented by validating PRESETS
+          end
+
+          private
+
+          # Default resource preset for local deployments
+          #
+          # @return [Hash]
+          def default
+            @default ||= {
+              gitlab: {
+                webservice: {
+                  workerProcesses: 2,
+                  minReplicas: 1,
+                  resources: resources("1500m", "3Gi")
+                },
+                sidekiq: {
+                  concurrency: 20,
+                  minReplicas: 1,
+                  resources: resources("900m", "2Gi"),
+                  hpa: {
+                    cpu: { targetAverageValue: "800m" }
+                  }
+                },
+                kas: {
+                  minReplicas: 1,
+                  resources: resources("40m", "96Mi")
+                },
+                # TODO: if limits are defined, git operations start failing in e2e tests, investigate potential cause
+                # https://gitlab.com/gitlab-org/quality/quality-engineering/team-tasks/-/issues/3699
+                "gitlab-shell": {
+                  minReplicas: 1,
+                  resources: resources("30m", "16Mi", no_limits: true)
+                },
+                gitaly: {
+                  resources: resources("300m", "300Mi")
+                },
+                toolbox: {
+                  resources: resources("50m", "128Mi", no_limits: true)
+                }
+              },
+              registry: {
+                resources: resources("40m", "96Mi"),
+                hpa: {
+                  minReplicas: 1,
+                  **cpu_utilization
+                }
+              },
+              "nginx-ingress": {
+                controller: {
+                  resources: resources("30m", "256Mi")
+                }
+              }
+            }
+          end
+
+          # High resource preset optimized for running e2e tests in parallel
+          #
+          # @return [Hash]
+          def high
+            @high ||= {
+              gitlab: {
+                webservice: {
+                  workerProcesses: 4,
+                  minReplicas: 1,
+                  # See https://docs.gitlab.com/charts/charts/gitlab/webservice/#memory-requestslimits
+                  resources: resources(3, "5Gi", 3, "7Gi"),
+                  hpa: cpu_utilization
+                },
+                sidekiq: {
+                  concurrency: 30,
+                  minReplicas: 1,
+                  # Coverage recording adds ~120Mi, enough to hit a 2Gi cap and restart sidekiq
+                  resources: resources("1200m", "2Gi", "1200m", "2304Mi"),
+                  hpa: cpu_utilization
+                },
+                kas: {
+                  minReplicas: 1,
+                  resources: resources("60m", "96Mi"),
+                  hpa: cpu_utilization
+                },
+                # TODO: if limits are defined, git operations start failing in e2e tests, investigate potential cause
+                # https://gitlab.com/gitlab-org/quality/quality-engineering/team-tasks/-/issues/3699
+                "gitlab-shell": {
+                  minReplicas: 2,
+                  resources: resources("60m", "32Mi", no_limits: true),
+                  hpa: cpu_utilization
+                },
+                gitaly: {
+                  resources: resources("400m", "384Mi")
+                },
+                # Toolbox create peak load during startup but then consumes very little
+                # Set high limit value but don't request full amount to avoid unnecessary lock
+                toolbox: {
+                  resources: resources("50m", "128Mi", no_limits: true)
+                }
+              },
+              registry: {
+                resources: resources("50m", "128Mi"),
+                hpa: {
+                  minReplicas: 1,
+                  **cpu_utilization
+                }
+              },
+              "nginx-ingress": {
+                controller: {
+                  resources: resources("30m", "256Mi")
+                }
+              }
+            }
+          end
+
+          # Resource preset optimized for performance tests
+          #
+          # @return [Hash]
+          def performance
+            high
+          end
+
+          # Kubernetes resources configuration
+          #
+          # Set limits equal to requests by default for simplicity
+          #
+          # @param [<String, Integer>] cpu_r
+          # @param [String] memory_r
+          # @param [<String, Integer>] cpu_l
+          # @param [String] memory_l
+          # @param [Boolean] no_limits if true, skip limit definition
+          # @return [Hash]
+          def resources(cpu_r, memory_r, cpu_l = nil, memory_l = nil, no_limits: false)
+            cpu_l ||= cpu_r
+            memory_l ||= memory_r
+
+            {
+              requests: {
+                cpu: cpu_r,
+                memory: memory_r
+              }
+            }.tap do |definition|
+              next if no_limits
+
+              definition[:limits] = {
+                cpu: cpu_l,
+                memory: memory_l
+              }
+            end
+          end
+
+          # Common hpa cpu utilization config
+          #
+          # It is recommended to keep value high to avoid scaling entirely
+          # To improve test stability, prefer vertical scaling over horizontal
+          #
+          # @return [Hash]
+          def cpu_utilization
+            @cpu_utilization ||= {
+              cpu: {
+                targetType: "Utilization",
+                targetAverageUtilization: 90
+              }
+            }
+          end
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,886 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require Rails.root.join('ee/spec/db/schema_support') if Gitlab.ee?
+
+RSpec.describe 'Database schema',
+  # These skip a bit of unnecessary setup for each spec invocation,
+  # and there are thousands of specs in this file. In total, this improves runtime by roughly 30%
+  :do_not_mock_admin_mode_setting, :do_not_stub_snowplow_by_default,
+  stackprof: { interval: 101000 },
+  feature_category: :database do
+  prepend_mod_with('DB::SchemaSupport')
+
+  let_it_be(:columns_name_with_jsonb) { retrieve_columns_name_with_jsonb }
+
+  # If splitting FK and table removal into two MRs as suggested in the docs, use this constant in the initial FK removal MR.
+  # In the subsequent table removal MR, remove the entries.
+  # See: https://docs.gitlab.com/development/migration_style_guide/#dropping-a-database-table
+  let_it_be(:removed_fks_map) do
+    {
+      # example_table: %w[example_column]
+      search_namespace_index_assignments: [%w[search_index_id index_type]],
+      # FKs removed here; table dropped in a follow-up MR (see https://gitlab.com/gitlab-org/gitlab/-/work_items/627149).
+      merge_request_diff_files_archived: %w[merge_request_diff_id project_id]
+    }.with_indifferent_access.freeze
+  end
+
+  # List of columns, ending with `_id` but missing a FK
+  # See: https://docs.gitlab.com/ee/development/database/foreign_keys.html#naming-foreign-keys
+  # TODO: Automate this to reduce the list of exceptions: https://gitlab.com/gitlab-org/gitlab/-/issues/544795
+  let_it_be(:ignored_fk_columns_map) do
+    {
+      abuse_reports: %w[user_id],
+      conversational_development_index_metrics: %w[usage_data_id],
+      ai_audit_events: %w[author_id workflow_id cloud_event_id ai_governance_session_id],
+      ai_usage_events: %w[user_id],
+      ai_events_counts: %w[user_id namespace_id],
+      ai_flow_schedules: %w[project_id],
+      ai_governance_sessions: %w[project_id user_id workflow_id],
+      application_settings: %w[performance_bar_allowed_group_id slack_app_id snowplow_app_id eks_account_id
+        eks_access_key_id],
+      approvals: %w[user_id],
+      approver_groups: %w[target_id],
+      approvers: %w[target_id user_id],
+      # ar_namespace_id is the Artifact Registry service's namespace UUID, not a GitLab
+      # namespaces reference, so it has no foreign key by design (ADR-022).
+      artifact_registry_namespace_mappings: %w[ar_namespace_id],
+      analytics_cycle_analytics_aggregations: %w[last_full_issues_id last_full_merge_requests_id
+        last_incremental_issues_id
+        last_incremental_merge_requests_id last_consistency_check_issues_stage_event_hash_id
+        last_consistency_check_issues_issuable_id last_consistency_check_merge_requests_stage_event_hash_id
+        last_consistency_check_merge_requests_issuable_id],
+      analytics_cycle_analytics_merge_request_stage_events: %w[author_id group_id merge_request_id milestone_id
+        project_id stage_event_hash_id state_id],
+      analytics_cycle_analytics_issue_stage_events: %w[author_id group_id issue_id milestone_id project_id
+        stage_event_hash_id state_id sprint_id],
+      analytics_cycle_analytics_stage_aggregations: %w[last_issues_id last_merge_requests_id],
+      audit_events: %w[author_id entity_id target_id],
+      user_audit_events: %w[author_id user_id target_id],
+      group_audit_events: %w[author_id group_id target_id],
+      project_audit_events: %w[author_id project_id target_id],
+      iam_outbox: %w[entity_id], # generic source-row id (entity_type, entity_id), not a single-table FK
+      import_sync_repositories: %w[provider_repository_node_id], # GitHub's opaque node ID, not a GitLab FK
+      govern_policy_enforcements: %w[project_id], # No FK: the Policy Store owns its integrity so it can be extracted, per GOVERN-008
+      govern_policy_evaluations: %w[project_id environment_id user_id], # No FK per GOVERN-008; audit-style rows keep their scope/principal refs after deletion
+      instance_audit_events: %w[author_id target_id],
+      project_compliance_violations: %w[audit_event_id], # audit_events table doesn't have id as the primary key instead the primary key is btree (id, created_at)
+      award_emoji: %w[awardable_id user_id],
+      aws_roles: %w[role_external_id],
+      # No FK: deleting a namespace must not delete billing data that has not been exported yet.
+      billable_usage_daily_namespace_aggregates: %w[root_namespace_id],
+      boards: %w[milestone_id iteration_id],
+      burned_project_routes: %w[project_id], # No FK constraint: tombstones must outlive the project they reference.
+      catalog_resource_component_last_usages: %w[used_by_project_id], # No FK constraint because we want to preserve usage data even if project is deleted.
+      chat_names: %w[chat_id team_id],
+      chat_teams: %w[team_id],
+      ci_build_pending_states: %w[project_id],
+      ci_build_trace_chunks: %w[project_id],
+      ci_builds_runner_session: %w[project_id],
+      ci_deleted_objects: %w[project_id],
+      ci_gitlab_hosted_runner_monthly_usages: %w[root_namespace_id project_id runner_id],
+      ci_namespace_monthly_usages: %w[namespace_id],
+      ci_pipeline_chat_data: %w[project_id],
+      ci_pipeline_messages: %w[project_id],
+      ci_pipeline_schedule_variables: %w[project_id],
+      ci_pipelines_config: %w[partition_id project_id],
+      ci_secure_file_states: %w[project_id],
+      ci_test_balancing_assignments: %w[project_id pipeline_id test_split_id job_group_id], # No FKs needed as rows are dropped after retention period
+      ci_unit_test_failures: %w[project_id],
+      ci_resources: %w[project_id],
+      p_ci_pipelines: %w[partition_id],
+      p_ci_job_runtime_environments: %w[partition_id runtime_environment_id], # runtime_environment_id is a bare pointer that may dangle after the runtime env partition is dropped
+      ci_runner_taggings: %w[runner_id],
+      ci_runner_taggings_instance_type: %w[tag_id organization_id], # organization_id is always NULL in this partition, tag_id is handled on ci_runner_taggings.
+      ci_runner_taggings_group_type: %w[tag_id organization_id], # tag_id is handled on ci_runner_taggings.
+      ci_runner_taggings_project_type: %w[tag_id organization_id], # tag_id is handled on ci_runner_taggings.
+      instance_type_ci_runners: %w[creator_id organization_id], # No need for LFKs on partition, already handled on ci_runners routing table.
+      group_type_ci_runners: %w[creator_id organization_id], # No need for LFKs on partition, already handled on ci_runners routing table.
+      project_type_ci_runners: %w[creator_id organization_id], # No need for LFKs on partition, already handled on ci_runners routing table.
+      ci_runner_machines: %w[runner_id], # The runner_id field will be removed with https://gitlab.com/gitlab-org/gitlab/-/issues/503749.
+      instance_type_ci_runner_machines: %w[organization_id], # This field is always NULL in this partition.
+      group_type_ci_runner_machines: %w[organization_id], # No need for LFK, rows will be deleted by the FK to ci_runners.
+      project_type_ci_runner_machines: %w[organization_id], # No need for LFK, rows will be deleted by the FK to ci_runners.
+      ci_job_artifact_states: %w[project_id],
+      cluster_providers_aws: %w[security_group_id vpc_id access_key_id],
+      cluster_providers_gcp: %w[gcp_project_id operation_id],
+      compliance_management_frameworks: %w[source_id template_id],
+      commit_user_mentions: %w[commit_id],
+      dast_scanner_profiles_builds: %w[project_id],
+      dast_profiles_pipelines: %w[project_id],
+      dependency_list_export_parts: %w[start_id end_id],
+      dep_ci_build_trace_sections: %w[build_id],
+      deploy_keys_projects: %w[deploy_key_id],
+      deployments: %w[deployable_id user_id],
+      draft_notes: %w[discussion_id commit_id],
+      # No FK as a cascade would delete rows and leave their object storage files undeleted.
+      # Rows are removed by a cleanup worker once the workflow delete nullifies workflow_id.
+      duo_workflows_session_files: %w[namespace_id project_id],
+      # No FK to preserve attribution when the trigger/schedule is deleted
+      duo_workflows_workflows: %w[trigger_flow_trigger_id trigger_flow_schedule_id],
+      epics: %w[updated_by_id last_edited_by_id state_id],
+      events: %w[target_id],
+      forked_project_links: %w[forked_from_project_id],
+      geo_node_statuses: %w[last_event_id cursor_last_event_id],
+      geo_nodes: %w[oauth_application_id],
+      geo_repository_deleted_events: %w[project_id],
+      ghost_user_migrations: %w[initiator_user_id],
+      gitlab_subscription_histories: %w[gitlab_subscription_id hosted_plan_id namespace_id],
+      issues: %w[last_edited_by_id state_id work_item_type_id],
+      issue_emails: %w[email_message_id],
+      # Jira site (cloud) id: an Atlassian identifier, not a GitLab foreign key
+      jira_connect_installations: %w[cloud_id],
+      jira_tracker_data: %w[jira_issue_transition_id],
+      keys: %w[user_id],
+      label_links: %w[target_id],
+      ldap_group_links: %w[group_id],
+      members: %w[source_id created_by_id],
+      merge_requests: %w[last_edited_by_id state_id],
+      merge_request_commits_metadata: %w[project_id commit_author_id committer_id],
+      merge_request_diff_commits: %w[project_id commit_author_id committer_id merge_request_commits_metadata_id],
+      # merge_request_diff_commits_b5377a7a34 is the temporary table for the merge_request_diff_commits partitioning
+      # backfill. It will get foreign keys after the partitioning is finished.
+      merge_request_diff_commits_b5377a7a34: %w[merge_request_commits_metadata_id merge_request_diff_id project_id
+        commit_author_id committer_id],
+      namespaces: %w[owner_id],
+      namespace_descendants: %w[namespace_id],
+      notes: %w[author_id commit_id updated_by_id resolved_by_id discussion_id],
+      notification_settings: %w[source_id],
+      oauth_access_grants: %w[resource_owner_id application_id],
+      oauth_access_tokens: %w[resource_owner_id application_id],
+      oauth_applications: %w[owner_id],
+      # client_id FK dropped for cross-cell consents in gitlab-org/gitlab#597595.
+      # Cross-cell orphan cleanup is tracked in gitlab-org/gitlab#598601.
+      oauth_consents: %w[client_id],
+      oauth_device_grants: %w[resource_owner_id],
+      packages_nuget_symbols: %w[project_id],
+      packages_package_files: %w[project_id],
+      # Sharding key copied from the parents above, which may reference a deleted project.
+      # Cleanup happens via the loose foreign keys on the parents.
+      # https://gitlab.com/gitlab-org/gitlab/-/work_items/606941
+      packages_nuget_symbol_states: %w[project_id],
+      packages_package_file_states: %w[project_id],
+      # packages_helm_metadata_caches lacks a hard FK for a different reason: its LFK marks
+      # the parent pending_destruction, CleanupStaleMetadataCacheWorker destroys it, and this
+      # child row is removed via the ON DELETE CASCADE on packages_helm_metadata_cache_id.
+      packages_helm_metadata_cache_states: %w[project_id],
+      p_ci_builds: %w[erased_by_id scoped_user_id],
+      p_ci_build_trace_metadata: %w[project_id],
+      p_batched_git_ref_updates_deletions: %w[project_id partition_id],
+      p_catalog_resource_sync_events: %w[catalog_resource_id project_id partition_id],
+      p_catalog_resource_component_usages: %w[used_by_project_id], # No FK constraint because we want to preserve historical usage data
+      p_ci_finished_build_ch_sync_events: %w[build_id],
+      p_ci_finished_pipeline_ch_sync_events: %w[pipeline_id],
+      p_ci_job_annotations: %w[project_id],
+      p_ci_job_definitions: %w[partition_id],
+      p_ci_pipeline_artifact_states: %w[partition_id],
+      p_ci_pipeline_variables: %w[project_id],
+      p_ci_pipelines_config: %w[partition_id project_id],
+      p_duo_workflows_checkpoint_blobs: %w[project_id namespace_id],
+      p_duo_workflows_checkpoint_headers: %w[project_id namespace_id],
+      p_duo_workflows_checkpoints: %w[project_id namespace_id],
+      # No LFK needed: daily partitions are dropped after 1 day via retain_for
+      # https://gitlab.com/gitlab-org/gitlab/-/blob/ccc2459924e2805e43ad8f97eec15a6932d84f68/ee/app/models/analytics/knowledge_graph/code_indexing_task.rb#L13
+      p_knowledge_graph_code_indexing_tasks: %w[project_id],
+      programming_languages: %w[language_id],
+      project_build_artifacts_size_refreshes: %w[last_job_artifact_id],
+      project_data_transfers: %w[project_id namespace_id],
+      project_error_tracking_settings: %w[sentry_project_id],
+      project_statistics: %w[namespace_id],
+      projects: %w[mirror_user_id],
+      push_rules: %w[organization_id], # Legacy column; org rules live in organization_push_rules. Column drop tracked in gitlab-org/gitlab#623433
+      redirect_routes: %w[source_id],
+      repository_languages: %w[programming_language_id language_id],
+      routes: %w[source_id],
+      security_findings: %w[project_id],
+      security_finding_enrichments: %w[cve_enrichment_id],
+      sent_notifications: %w[project_id noteable_id recipient_id commit_id in_reply_to_discussion_id namespace_id], # namespace_id FK will be added to partitioned table
+      p_sent_notifications: %w[project_id noteable_id recipient_id commit_id in_reply_to_discussion_id],
+      slack_integrations: %w[team_id user_id bot_user_id], # these are external Slack IDs
+      snippets: %w[author_id],
+      # snippet_organization_id is copied from snippets.organization_id, which has no hard FK to organizations.
+      # Cleanup happens via the hard snippet_id -> snippets ON DELETE CASCADE FK.
+      # https://gitlab.com/gitlab-org/gitlab/-/work_items/613747
+      snippet_repositories: %w[snippet_organization_id],
+      snippet_repository_states: %w[snippet_organization_id],
+      snippet_repository_storage_moves: %w[snippet_organization_id],
+      snippet_statistics: %w[snippet_organization_id],
+      snippet_user_mentions: %w[snippet_organization_id],
+      spam_logs: %w[target_id],
+      status_check_responses: %w[external_approval_rule_id],
+      # FK removed while the table is converted to a FixedItemsModel
+      # https://gitlab.com/groups/gitlab-org/-/work_items/19981
+      subscription_add_on_purchases: %w[subscription_add_on_id],
+      subscriptions: %w[subscribable_id],
+      suggestions: %w[commit_id],
+      timelogs: %w[user_id],
+      todos: %w[target_id commit_id],
+      uploads: %w[model_id],
+      abuse_report_uploads: %w[model_id],
+      achievement_uploads: %w[model_id],
+      ai_vectorizable_file_uploads: %w[model_id],
+      alert_management_alert_metric_image_uploads: %w[model_id],
+      appearance_uploads: %w[model_id],
+      bulk_import_export_upload_uploads: %w[model_id],
+      dependency_list_export_part_uploads: %w[model_id],
+      dependency_list_export_uploads: %w[model_id],
+      design_management_action_uploads: %w[model_id],
+      import_export_upload_uploads: %w[model_id],
+      issuable_metric_image_uploads: %w[model_id],
+      namespace_uploads: %w[model_id],
+      organization_detail_uploads: %w[model_id],
+      project_import_export_relation_export_upload_uploads: %w[model_id],
+      project_topic_uploads: %w[model_id],
+      project_uploads: %w[model_id],
+      snippet_uploads: %w[model_id],
+      user_permission_export_upload_uploads: %w[model_id],
+      user_uploads: %w[model_id],
+      vulnerability_export_part_uploads: %w[model_id],
+      vulnerability_export_uploads: %w[model_id],
+      vulnerability_archive_export_uploads: %w[model_id],
+      vulnerability_remediation_uploads: %w[model_id],
+      user_agent_details: %w[subject_id],
+      users: %w[color_mode_id color_scheme_id created_by_id theme_id managing_group_id accepted_term_id],
+      user_preferences: %w[dark_color_scheme_id],
+      users_star_projects: %w[user_id],
+      vulnerabilities: %w[partition_id],
+      vulnerability_finding_links: %w[project_id],
+      vulnerability_historical_statistics: %w[security_project_tracked_context_id], # cannot be a foreign key yet
+      vulnerability_identifiers: %w[external_id partition_id],
+      vulnerability_occurrences: %w[security_project_tracked_context_id], # cannot be a foreign key yet
+      vulnerability_occurrence_identifiers: %w[project_id],
+      vulnerability_scanners: %w[external_id],
+      vulnerability_statistics: %w[security_project_tracked_context_id], # cannot be a foreign key yet
+      vulnerability_issue_links: %w[vulnerability_occurrence_id], # foreign key will be added at a later date
+      vulnerability_merge_request_links: %w[vulnerability_occurrence_id], # foreign key will be added at a later date
+      vulnerability_severity_overrides: %w[vulnerability_occurrence_id], # foreign key will be added at a later date
+      sbom_occurrences_vulnerabilities: %w[vulnerability_occurrence_id], # foreign key will be added at a later date
+      vulnerability_representation_information: %w[vulnerability_occurrence_id], # foreign key will be added at a later date
+      vulnerability_user_mentions: %w[vulnerability_occurrence_id], # foreign key will be added at a later date
+      vulnerability_state_transitions: %w[vulnerability_occurrence_id], # foreign key will be added at a later date
+      security_scans: %w[pipeline_id scanner_external_id], # pipeline_id: ci_pipeline table moving to different db; scanner_external_id: denormalized text identifier, no FK target
+      vulnerability_archived_records: %w[archive_id], # having a FK on this table prevents partitions from being detached. See: https://gitlab.com/gitlab-org/gitlab/-/issues/547116
+      backup_finding_evidences: %w[finding_id], # having a FK on this table prevents partitions from being detached
+      backup_finding_flags: %w[finding_id], # having a FK on this table prevents partitions from being detached
+      backup_finding_identifiers: %w[finding_id], # having a FK on this table prevents partitions from being detached
+      backup_finding_links: %w[finding_id], # having a FK on this table prevents partitions from being detached
+      backup_finding_remediations: %w[finding_id], # having a FK on this table prevents partitions from being detached
+      backup_finding_signatures: %w[finding_id], # having a FK on this table prevents partitions from being detached
+      backup_findings: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      backup_vulnerability_external_issue_links: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      backup_vulnerability_issue_links: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      backup_vulnerability_merge_request_links: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      backup_vulnerability_reads: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      backup_vulnerability_severity_overrides: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      backup_vulnerability_state_transitions: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      backup_vulnerability_user_mentions: %w[vulnerability_id], # having a FK on this table prevents partitions from being detached
+      vulnerability_reads: %w[cluster_agent_id security_project_tracked_context_id partition_id], # tracked_contexts cannot be a foreign key yet. vulnerability_occurrence_id foreign key will be added at a later date
+      # See: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/87584
+      # Fixes performance issues with the deletion of web-hooks with many log entries
+      web_hook_logs: %w[web_hook_id],
+      web_hook_logs_daily: %w[web_hook_id organization_id group_id project_id],
+      ml_candidates: %w[internal_id],
+      value_stream_dashboard_counts: %w[namespace_id],
+      vulnerability_export_parts: %w[start_id end_id],
+      zoekt_indices: %w[namespace_id], # needed for cells sharding key
+      zoekt_tasks: %w[partition_id zoekt_repository_id zoekt_node_id], # needed for: cells sharding key, partitioning, and performance reasons
+      p_knowledge_graph_tasks: %w[partition_id knowledge_graph_replica_id zoekt_node_id namespace_id], # needed for: partitioning, and performance reasons
+      project_secrets_manager_maintenance_tasks: %w[user_id project_id root_namespace_id parent_group_id], # plain ID columns for task service path resolution, no FK needed
+      group_secrets_manager_maintenance_tasks: %w[user_id group_id root_namespace_id organization_id], # plain ID columns for task service path resolution, no FK needed
+      project_secrets_managers: %w[organization_id root_namespace_id], # denormalized ids for the trigger-based deprovision flow, no FK needed. Sharding key FK is on project_id
+      group_secrets_managers: %w[organization_id root_namespace_id], # denormalized ids for the trigger-based deprovision flow, no FK needed. Sharding key FK is on group_id
+      ai_testing_terms_acceptances: %w[user_id], # testing terms only have 1 entry, and if the user is deleted the record should remain
+      namespace_settings: %w[early_access_program_joined_by_id], # isn't used inside product itself. Only through Snowflake
+      workspaces_agent_config_versions: %w[item_id], # polymorphic associations
+      work_item_types: %w[correct_id old_id], # temporary columns that are not foreign keys
+      instance_integrations: %w[project_id group_id inherit_from_id], # these columns are not used in instance integrations
+      secret_detection_token_statuses: %w[project_id],
+      security_finding_token_statuses: %w[security_finding_id],
+      subscription_user_add_on_assignment_versions: %w[item_id user_id purchase_id], # Managed by paper_trail gem, no need for FK on the historical data
+      virtual_registries_packages_maven_cache_entries: %w[group_id], # We can't use a foreign key due to object storage references
+      virtual_registries_packages_maven_local_upstreams: %w[local_group_id local_project_id], # local upstreams need asynchronous deletion
+      # system_defined_status_id reference to fixed items model which is stored in code
+      work_item_current_statuses: %w[system_defined_status_id],
+      work_item_positions: %w[relative_positioning_namespace_id], # denormalized positioning root; row lifecycle is tied to work_item_id (cascade), so no FK needed
+      work_item_decisions: %w[discussion_id], # discussion_id is a SHA (as on notes)
+      # we can't use a foreign key reference because we want to preserve namespace_id  for asynchronous deletion
+      p_knowledge_graph_replicas: %w[namespace_id],
+      # temp entry, removing FK on source_type_id and target_type_id until table is dropped in follow up MR
+      work_item_related_link_restrictions: %w[source_type_id target_type_id],
+      sbom_vulnerability_scans: %w[project_id build_id], # referenced records are in different DB and no LFK as the table contains references to object storage
+      sbom_vulnerability_scan_results: %w[project_id], # referenced records are in different DB and no LFK as the table contains references to object storage
+      security_trainings: %w[training_provider_id provider_id], # training_provider_id is a fixed items model reference.
+      background_operation_jobs_cell_local: %w[worker_id], # background operation workers partitions have to dropped independently.
+      background_operation_jobs: %w[worker_id], # background operation workers partitions have to dropped independently.
+      sbom_occurrences: %w[partition_id],
+      work_item_type_visibilities: %w[work_item_type_id], # work_item_type_id spans system-defined (in-memory) and custom (DB) types; integrity enforced by validate_work_item_type_id_is_valid trigger
+      work_item_type_visibility_defaults: %w[work_item_type_id], # work_item_type_id spans system-defined (in-memory) and custom (DB) types; integrity enforced by validate_work_item_type_id_is_valid trigger
+      lfs_objects_projects: %w[lfs_object_id], # Referential integrity will be handled by application code
+      project_repositories: %w[shard_id], # Referential integrity will be handled by application code
+      group_wiki_repositories: %w[shard_id], # Referential integrity will be handled by application code
+      # Sharding key columns (organization_id, namespace_id, project_id, user_id) for LFK deleted records intentionally have no foreign key constraints.
+      # These tables track record deletions for async LFK cleanup. The referenced parent record may already be deleted by the time the LFK record is inserted or processed.
+      loose_foreign_keys_organization_deleted_records: %w[organization_id],
+      loose_foreign_keys_namespace_deleted_records: %w[namespace_id],
+      loose_foreign_keys_project_deleted_records: %w[project_id],
+      loose_foreign_keys_user_deleted_records: %w[user_id]
+    }.with_indifferent_access.freeze
+  end
+
+  let_it_be(:ignored_tables_with_too_many_indexes) do
+    {
+      deployments: 18,
+      epics: 19,
+      events: 16,
+      ci_runners: 16,
+      group_type_ci_runners: 17,
+      instance_type_ci_runners: 17,
+      issues: 35,
+      members: 19,
+      merge_requests: 29,
+      namespaces: 23,
+      notes: 17, # Increased by one for the temporary cleanup BBM index https://gitlab.com/gitlab-org/gitlab/-/merge_requests/238033
+      p_ci_builds: 23,
+      p_ci_pipelines: 25,
+      packages_package_files: 16,
+      packages_packages: 28,
+      project_type_ci_runners: 17,
+      projects: 54, # Decrement by 2 after the removal of temporary indexes https://gitlab.com/gitlab-org/gitlab/-/merge_requests/217449
+      sbom_occurrences: 25,
+      # Decrement by 1 after the removal of a temporary index https://gitlab.com/gitlab-org/gitlab/-/merge_requests/184848
+      # Decremented by 1 after dropping index_users_on_static_object_token in
+      # https://gitlab.com/gitlab-org/gitlab/-/merge_requests/256528
+      users: 33,
+      vulnerability_reads: 25 # Increased by one for tmp index on BBM https://gitlab.com/gitlab-org/gitlab/-/merge_requests/235514
+    }.with_indifferent_access.freeze
+  end
+
+  # For partitioned CI references we do not require a composite index starting with `partition_id` as each partition
+  # only contains records with a single `partition_id`. As such the index on the other id in the foreign key will be
+  # sufficient.
+  def ci_partitioned_foreign_key?(foreign_key)
+    target = foreign_key.to_table.split('.').last
+    schema = Gitlab::Database::GitlabSchema.table_schema!(target)
+    schema == :gitlab_ci &&
+      Array.wrap(foreign_key.column).many? &&
+      foreign_key.column.first.end_with?('partition_id')
+  end
+
+  context 'for table' do
+    Gitlab::Database::EachDatabase.each_connection do |connection, _|
+      schemas_for_connection = Gitlab::Database.gitlab_schemas_for_connection(connection)
+      connection.tables.sort.each do |table|
+        table_schema = Gitlab::Database::GitlabSchema.table_schema(table)
+        next unless schemas_for_connection.include?(table_schema)
+
+        describe table do
+          let_it_be(:indexes) { connection.indexes(table) + [primary_key_index(table, connection)] }
+          let_it_be(:columns) { connection.columns(table) }
+          let_it_be(:foreign_keys) do
+            to_foreign_keys(Gitlab::Database::PostgresForeignKey.by_constrained_table_name(table))
+          end
+
+          let_it_be(:loose_foreign_keys) { loose_foreign_keys_by_from_table.fetch(table, []) }
+
+          let_it_be(:all_foreign_keys) { foreign_keys + loose_foreign_keys }
+          let_it_be(:composite_primary_key) { Array.wrap(connection.primary_key(table)) }
+
+          context 'with all foreign keys' do
+            # for index to be effective, the FK constraint has to be at first place
+            it 'are indexed', :aggregate_failures do
+              indexed_columns = indexes.filter_map do |index|
+                columns = index.columns
+
+                # In cases of complex composite indexes, a string is returned eg:
+                # "lower((extern_uid)::text), group_id"
+                columns = columns.split(',').map(&:chomp) if columns.is_a?(String)
+
+                # A partial index is not suitable for a foreign key column, unless
+                # the only condition is for the presence of the foreign key itself
+                columns if index.where.nil? || index.where == "(#{columns.first} IS NOT NULL)"
+              end
+
+              required_indexed_foreign_keys = all_foreign_keys.reject do |fk|
+                ci_partitioned_foreign_key?(fk) ||
+                  fk.options[:conditions]&.any?
+              end
+
+              # Add the composite primary key to the list of indexed columns because
+              # postgres and mysql both automatically create an index on the primary
+              # key. Also, the rails connection.indexes() method does not return
+              # automatically generated indexes (like the primary key index).
+              indexed_columns.push(composite_primary_key)
+
+              required_indexed_foreign_keys.each do |required_indexed_foreign_key| # rubocop:disable RSpec/IteratedExpectation -- We want to aggregate all failures
+                expect(required_indexed_foreign_key).to be_indexed_by(indexed_columns)
+              end
+            end
+          end
+
+          context 'with columns ending with _id' do
+            let_it_be(:column_names) { columns.map(&:name) }
+            let_it_be(:all_foreign_keys_columns) do
+              to_columns(
+                exclude_id_conversion_columns(all_foreign_keys)
+              )
+            end
+
+            let_it_be(:column_names_with_id) { column_names.select { |column_name| column_name.ends_with?('_id') } }
+            let_it_be(:ignored_columns) { ignored_fk_columns(table) }
+
+            def exclude_id_conversion_columns(columns)
+              columns
+                .reject { |fk| fk.name&.end_with?("_id_convert_to_bigint") }
+                .map(&:column)
+            end
+
+            specify 'ignored columns exist' do
+              expect(column_names).to include(*ignored_columns) if ignored_columns.present?
+            end
+
+            it 'do have the foreign keys' do
+              expect(column_names_with_id - ignored_columns).to be_a_foreign_key_column_of(all_foreign_keys_columns)
+            end
+
+            it 'does not contain additional columns (not ending with _id) in the ignore list' do
+              expect(ignored_columns - column_names_with_id).to be_empty
+            end
+
+            it 'ensures foreign key columns are not ignored' do
+              overlapping_columns = ignored_columns & all_foreign_keys_columns.flatten
+              expect(overlapping_columns).to be_empty,
+                "Found ignored columns that are foreign keys: #{overlapping_columns}"
+            end
+          end
+
+          context 'with btree indexes' do
+            it 'only has existing indexes in the ignored duplicate indexes duplicate_indexes.yml' do
+              table_ignored_indexes = (ignored_indexes[table] || {}).to_a.flatten.uniq
+              indexes_by_name = indexes.map(&:name)
+              expect(indexes_by_name).to include(*table_ignored_indexes) unless table_ignored_indexes.empty?
+            end
+
+            it 'does not have any duplicated indexes' do
+              duplicate_indexes = Database::DuplicateIndexes.new(table, indexes).duplicate_indexes
+              expect(duplicate_indexes).to be_an_instance_of Hash
+
+              table_ignored_indexes = ignored_indexes[table] || {}
+
+              # We ignore all the indexes that are explicitly ignored in duplicate_indexes.yml
+              duplicate_indexes.each do |index, matching_indexes|
+                duplicate_indexes[index] = matching_indexes.reject do |matching_index|
+                  table_ignored_indexes.fetch(index.name, []).include?(matching_index.name) ||
+                    table_ignored_indexes.fetch(matching_index.name, []).include?(index.name)
+                end
+
+                duplicate_indexes.delete(index) if duplicate_indexes[index].empty?
+              end
+
+              if duplicate_indexes.present?
+                btree_index = duplicate_indexes.each_key.first
+                matching_indexes = duplicate_indexes[btree_index]
+
+                error_message = <<~ERROR
+                    Table: #{table}
+                    Duplicate index: #{btree_index.name} with #{matching_indexes.map(&:name)}
+                    #{btree_index.name} : #{btree_index.columns.inspect}
+                    #{matching_indexes.first.name} : #{matching_indexes.first.columns.inspect}.
+                    Consider dropping the indexes #{matching_indexes.map(&:name).join(', ')}
+                ERROR
+                raise error_message
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  context 'for partition foreign keys' do
+    # Validates that foreign keys on partitions have supporting indexes.
+    # This catches cases where add_concurrent_partitioned_foreign_key creates FKs
+    # on partitions only (before validation), which the main table check misses.
+    Gitlab::Database::EachDatabase.each_connection do |connection, _|
+      Gitlab::Database::PostgresPartition.all.find_each do |partition|
+        # Get non-inherited FKs on this partition (inherited FKs are covered by parent table check)
+        partition_fks = Gitlab::Database::PostgresForeignKey
+          .by_constrained_table_identifier(partition.identifier)
+          .not_inherited
+          .to_a
+
+        next if partition_fks.empty?
+
+        describe partition.identifier do
+          let_it_be(:partition_indexes) do
+            schema, table_name = partition.identifier.split('.')
+            # A partial index is not suitable for a foreign key column, unless
+            # the only condition is for the presence of the first column itself.
+            # This matches the Ruby logic at line 372 for parent tables.
+            connection.execute(<<~SQL).map { |row| row['column_names'].split(',') }
+              SELECT string_agg(a.attname, ',' ORDER BY array_position(i.indkey, a.attnum)) AS column_names
+              FROM pg_index i
+              JOIN pg_class c ON c.oid = i.indrelid
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+              JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(i.indkey)
+              WHERE n.nspname = '#{schema}'
+                AND c.relname = '#{table_name}'
+                AND (
+                  i.indpred IS NULL
+                  OR pg_get_expr(i.indpred, i.indrelid) = '(' || (
+                    SELECT a2.attname FROM pg_attribute a2
+                    WHERE a2.attrelid = c.oid AND a2.attnum = i.indkey[0]
+                  ) || ' IS NOT NULL)'
+                )
+              GROUP BY i.indexrelid
+            SQL
+          end
+
+          let_it_be(:foreign_keys) { to_foreign_keys(partition_fks) }
+
+          it 'has indexes for all foreign keys', :aggregate_failures do
+            required_fks = foreign_keys.reject { |fk| ci_partitioned_foreign_key?(fk) }
+
+            required_fks.each do |fk| # rubocop:disable RSpec/IteratedExpectation -- We want to aggregate all failures
+              expect(fk).to be_indexed_by(partition_indexes)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  context 'for enums', :eager_load do
+    # These pre-existing enums have limits > 2 bytes
+    let_it_be(:ignored_limit_enums_map) do
+      {
+        'Ai::UsageEvent' => %w[event],
+        'Analytics::CycleAnalytics::Stage' => %w[start_event_identifier end_event_identifier],
+        'Ci::Bridge' => %w[failure_reason],
+        'Ci::Build' => %w[failure_reason],
+        'Ci::BuildTraceChunk' => %w[data_store],
+        'Ci::DailyReportResult' => %w[param_type],
+        'Ci::JobArtifact' => %w[file_type],
+        'Ci::Pipeline' => %w[source config_source failure_reason],
+        'Ci::Processable' => %w[failure_reason],
+        'Ci::Runner' => %w[access_level executor_type],
+        'Ci::Stage' => %w[status],
+        'Clusters::Cluster' => %w[platform_type provider_type],
+        'CommitStatus' => %w[failure_reason],
+        'GenericCommitStatus' => %w[failure_reason],
+        'InternalId' => %w[usage],
+        'List' => %w[list_type],
+        'NotificationSetting' => %w[level],
+        'Project' => %w[auto_cancel_pending_pipelines],
+        'ProjectAutoDevops' => %w[deploy_strategy],
+        'ResourceLabelEvent' => %w[action],
+        'User' => %w[layout dashboard project_view role],
+        'Users::Callout' => %w[feature_name],
+        'Vulnerability' => %w[confidence], # this enum is in the process of being deprecated
+        'Packages::Composer::Package' => %w[package_type] # temporary, until the packages_packages table is split
+      }.freeze
+    end
+
+    # skip model if it is an abstract class as it would not have an associated DB table
+    let(:models) { ApplicationRecord.descendants.reject(&:abstract_class?) }
+
+    it 'uses smallint for enums in all models', :aggregate_failures do
+      models.each do |model|
+        ignored_enums = ignored_limit_enums(model.name)
+        enums = model.defined_enums.keys - ignored_enums
+
+        expect(model).to use_smallint_for_enums(enums)
+      end
+    end
+  end
+
+  # We are skipping GEO models for now as it adds up complexity
+  describe 'for jsonb columns' do
+    # These pre-existing columns does not use a schema validation yet
+    let_it_be(:ignored_jsonb_columns_map) do
+      {
+        "Ai::Conversation::Message" => %w[extras error_details],
+        "Ai::DuoWorkflows::Checkpoint" => %w[checkpoint metadata], # https://gitlab.com/gitlab-org/gitlab/-/issues/468632
+        "Ai::DuoWorkflows::CheckpointHeader" => %w[checkpoint metadata], # slim langgraph checkpoint header; schema is externally defined
+
+        "ApplicationSetting" => %w[repository_storages_weighted oauth_provider rate_limits_unauthenticated_git_http],
+        "AlertManagement::Alert" => %w[payload],
+        "AlertManagement::HttpIntegration" => %w[payload_example],
+        "Ci::Runner" => %w[config],
+        "ExperimentSubject" => %w[context],
+        "ExperimentUser" => %w[context],
+        "Geo::Event" => %w[payload],
+        "GeoNodeStatus" => %w[status],
+        "GitlabSubscriptions::UserAddOnAssignmentVersion" => %w[object], # Managed by paper_trail gem
+        "Operations::FeatureFlagScope" => %w[strategies],
+        "Operations::FeatureFlags::Strategy" => %w[parameters],
+        "Organizations::OrganizationSetting" => %w[settings], # Custom validations
+        "Packages::Composer::Metadatum" => %w[composer_json],
+        "RawUsageData" => %w[payload], # Usage data payload changes often, we cannot use one schema
+        "Sbom::Occurrence" => %w[ancestors],
+        "Security::ApprovalPolicyRule" => %w[content],
+        "Security::Policy" => %w[metadata],
+        "ServicePing::NonSqlServicePing" => %w[payload metadata], # Usage data payloads change often, we cannot use one schema
+        "ServicePing::QueriesServicePing" => %w[payload], # Usage data payload changes often, we cannot use one schema
+        "Security::ScanExecutionPolicyRule" => %w[content],
+        "Security::VulnerabilityManagementPolicyRule" => %w[content],
+        "Releases::Evidence" => %w[summary],
+        "RemoteDevelopment::WorkspacesAgentConfigVersion" => %w[object object_changes], # Managed by paper_trail gem
+        "RemoteDevelopment::WorkspacesAgentConfig" => %w[annotations labels],
+        "RemoteDevelopment::RemoteDevelopmentAgentConfig" => %w[annotations image_pull_secrets labels],
+        "Vulnerabilities::Finding" => %w[location],
+        "Vulnerabilities::Finding::Evidence" => %w[data] # Validation work in progress
+      }.freeze
+    end
+
+    def failure_message(model, column)
+      <<~FAILURE_MESSAGE
+              Expected #{model.name} to validate the schema of #{column}.
+
+              Use JsonSchemaValidator in your model when using a jsonb column.
+              See doc/development/migration_style_guide.html#storing-json-in-database for more information.
+
+              To fix this, please add `validates :#{column}, json_schema: { filename: "filename" }` in your model file, for example:
+
+              class #{model.name}
+                validates :#{column}, json_schema: { filename: "filename" }
+              end
+      FAILURE_MESSAGE
+    end
+
+    it 'uses json schema validator', :eager_load, :aggregate_failures,
+      quarantine: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/issues/9460' do
+      columns_name_with_jsonb.each do |jsonb_column|
+        column_name = jsonb_column["column_name"]
+        models = models_by_table_name[jsonb_column["table_name"]] || []
+
+        models.each do |model|
+          # Skip migration models
+          next if model.name.match?(/Gitlab::Background(?:Migration|Operation)/)
+
+          next if ignored_jsonb_columns(model.name).include?(column_name)
+
+          has_validator = model.validators.any? do |v|
+            v.is_a?(JsonSchemaValidator) && v.attributes.include?(column_name.to_sym)
+          end
+
+          expect(has_validator).to be(true), failure_message(model, column_name)
+        end
+      end
+    end
+  end
+
+  context 'with existence of Postgres schemas' do
+    let_it_be(:schemas) do
+      sql = <<~SQL
+        SELECT schema_name FROM
+        information_schema.schemata
+        WHERE
+        NOT schema_name ~* '^pg_' AND NOT schema_name = 'information_schema'
+        AND catalog_name = current_database()
+      SQL
+
+      ApplicationRecord.connection.select_all(sql).map do |row|
+        row['schema_name']
+      end
+    end
+
+    it 'we have a public schema' do
+      expect(schemas).to include('public')
+    end
+
+    Gitlab::Database::EXTRA_SCHEMAS.each do |schema|
+      it "we have a '#{schema}' schema'" do
+        expect(schemas).to include(schema.to_s)
+      end
+    end
+
+    it 'we do not have unexpected schemas' do
+      expect(schemas.size).to eq(Gitlab::Database::EXTRA_SCHEMAS.size + 1)
+    end
+  end
+
+  context 'with primary keys' do
+    it 'expects every table to have a primary key defined' do
+      Gitlab::Database::EachDatabase.each_connection do |connection, _|
+        schemas_for_connection = Gitlab::Database.gitlab_schemas_for_connection(connection)
+
+        problematic_tables = connection.tables.select do |table|
+          table_schema = Gitlab::Database::GitlabSchema.table_schema(table)
+          schemas_for_connection.include?(table_schema) && !connection.primary_key(table).present?
+        end.map(&:to_sym)
+
+        expect(problematic_tables).to be_empty
+      end
+    end
+
+    context 'for CI partitioned table' do
+      # Check that each partitionable model with more than 1 column has the partition_id column at the trailing
+      # position. Using .partitionable_models instead of iterating tables since when partitioning existing tables,
+      # the routing table only gets created after the PK has already been created, which would be too late for a check.
+
+      skip_tables = %w[]
+      partitionable_models = Ci::Partitionable::Testing.partitionable_models
+      (partitionable_models - skip_tables).each do |klass|
+        model = klass.safe_constantize
+        next unless model
+
+        table_name = model.table_name
+
+        primary_key_columns = Array.wrap(model.connection.primary_key(table_name))
+        next if primary_key_columns.count == 1
+
+        describe table_name do
+          it 'expects every PK to have partition_id at trailing position' do
+            expect(primary_key_columns).to match([an_instance_of(String), 'partition_id'])
+          end
+        end
+      end
+    end
+  end
+
+  context 'with indexes' do
+    it 'disallows index names with a _ccnew[0-9]* suffix' do
+      # During REINDEX operations, Postgres generates a temporary index with a _ccnew[0-9]* suffix
+      # Since indexes are being considered temporary and subject to removal if they stick around for longer.
+      # See Gitlab::Database::Reindexing.
+      #
+      # Hence we disallow adding permanent indexes with this suffix.
+      problematic_indexes = Gitlab::Database::PostgresIndex.match(
+        "#{Gitlab::Database::Reindexing::ReindexConcurrently::TEMPORARY_INDEX_PATTERN}$").all
+
+      expect(problematic_indexes).to be_empty
+    end
+
+    context 'when exceeding the authorized limit' do
+      let_it_be(:max) { Gitlab::Database::MAX_INDEXES_ALLOWED_PER_TABLE }
+      let_it_be(:known_offences) { ignored_tables_with_too_many_indexes }
+      let_it_be(:actual_offences) do
+        Gitlab::Database::PostgresIndex
+          .where(schema: 'public')
+          .group(:tablename)
+          .having("COUNT(*) > #{max}")
+          .count
+      end
+
+      let_it_be(:corrected_offences) { known_offences.keys.to_set - actual_offences.keys.to_set }
+      let_it_be(:new_offences) { actual_offences.keys.to_set - known_offences.keys.to_set }
+
+      it 'checks for corrected_offences' do
+        expect(corrected_offences).to validate_index_limit(:corrected)
+      end
+
+      it 'checks for new_offences' do
+        expect(new_offences).to validate_index_limit(:new)
+      end
+
+      it 'checks for outdated_offences' do
+        outdated_offences = known_offences.filter_map do |table, expected|
+          actual = actual_offences[table]
+
+          "#{table} (expected #{expected}, actual #{actual})" if actual && expected != actual
+        end
+
+        expect(outdated_offences).to validate_index_limit(:outdated)
+      end
+    end
+  end
+
+  context 'with ID columns' do
+    it_behaves_like 'All IDs are bigint'
+  end
+
+  private
+
+  def retrieve_columns_name_with_jsonb
+    sql = <<~SQL
+        SELECT table_name, column_name, data_type
+          FROM information_schema.columns
+        WHERE table_catalog = '#{ApplicationRecord.connection_db_config.database}'
+          AND table_schema = 'public'
+          AND table_name NOT LIKE 'pg_%'
+          AND data_type = 'jsonb'
+      ORDER BY table_name, column_name, data_type
+    SQL
+
+    ApplicationRecord.connection.select_all(sql).to_a
+  end
+
+  def to_foreign_keys(constraints)
+    constraints.map do |constraint|
+      from_table = constraint.constrained_table_identifier
+      ActiveRecord::ConnectionAdapters::ForeignKeyDefinition.new(
+        from_table,
+        constraint.referenced_table_identifier,
+        {
+          name: constraint.name,
+          column: constraint.constrained_columns,
+          on_delete: constraint.on_delete_action&.to_sym,
+          gitlab_schema: Gitlab::Database::GitlabSchema.table_schema!(from_table)
+        }
+      )
+    end
+  end
+
+  def to_columns(items)
+    items.map { |item| Array.wrap(item) }.uniq
+  end
+
+  def models_by_table_name
+    @models_by_table_name ||= ApplicationRecord.descendants.reject(&:abstract_class).group_by(&:table_name)
+  end
+
+  def loose_foreign_keys_by_from_table
+    @loose_foreign_keys_by_from_table ||= Gitlab::Database::LooseForeignKeys.definitions.group_by(&:from_table)
+  end
+
+  def ignored_fk_columns(table)
+    removed_fks_map.merge(ignored_fk_columns_map).fetch(table, [])
+  end
+
+  def ignored_limit_enums(model)
+    ignored_limit_enums_map.fetch(model, [])
+  end
+
+  def ignored_jsonb_columns(model)
+    ignored_jsonb_columns_map.fetch(model, [])
+  end
+
+  def primary_key_index(table_name, connection)
+    pk_column = connection.primary_key(table_name)
+
+    row = connection.select_one(<<~SQL)
+      SELECT
+        i.relname AS index_name,
+        pg_get_indexdef(d.indexrelid) AS inddef,
+        pg_catalog.obj_description(i.oid, 'pg_class') AS comment,
+        d.indisvalid AS valid
+      FROM
+        pg_class t
+        INNER JOIN pg_index d ON t.oid = d.indrelid
+        INNER JOIN pg_class i ON d.indexrelid = i.oid
+        LEFT JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE
+        d.indisprimary = 't'
+        AND t.relname = '#{table_name}'
+        AND n.nspname = 'public'
+    SQL
+
+    using = row["inddef"].match(/USING (\w+)/)[1]
+
+    ActiveRecord::ConnectionAdapters::IndexDefinition.new(
+      table_name,
+      row["index_name"],
+      true,
+      Array(pk_column),
+      using: using.to_sym,
+      nulls_not_distinct: false,
+      comment: row["comment"].presence,
+      valid: row["valid"]
+    )
+  end
+
+  def ignored_indexes
+    duplicate_indexes_file_path = "spec/support/helpers/database/duplicate_indexes.yml"
+    @ignored_indexes ||= YAML.load_file(Rails.root.join(duplicate_indexes_file_path)) || {}
+  end
+end

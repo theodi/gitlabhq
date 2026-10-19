@@ -1,0 +1,12 @@
+description: First commits on new project README experiment
+category: experiment name
+action: write
+extra_properties:
+identifiers:
+product_group: activation
+milestone: "13.12"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/59713
+tiers:
+- free
+- premium
+- ultimate

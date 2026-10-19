@@ -1,0 +1,18 @@
+---
+description: Count usage of /remove_email quickaction with multiple arguments
+internal_events: true
+action: i_quickactions_remove_email_multiple
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: work_items
+product_categories:
+- service_desk
+milestone: "16.7"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/138178
+tiers:
+- free
+- premium
+- ultimate

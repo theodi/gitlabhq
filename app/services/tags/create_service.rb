@@ -1,0 +1,45 @@
+# frozen_string_literal: true
+
+module Tags
+  class CreateService < BaseService
+    def execute(tag_name, target, message)
+      return error('Target is empty', 400) if target.blank?
+
+      valid_tag = Gitlab::GitRefValidator.validate(tag_name)
+      return error(tag_name_error(tag_name), 400) unless valid_tag
+
+      repository = project.repository
+      message = message&.strip
+
+      new_tag = nil
+
+      begin
+        new_tag = repository.add_tag(current_user, tag_name, target, message)
+      rescue Gitlab::Git::Repository::TagExistsError
+        return error("Tag #{tag_name} already exists", 409)
+      rescue Gitlab::Git::PreReceiveError => ex
+        return error(ex.message)
+      rescue Gitlab::Git::Repository::NoRepository
+        return error("Failed to create a tag: #{tag_name}", 400)
+      end
+
+      if new_tag
+        repository.expire_tags_cache
+
+        success.merge(tag: new_tag)
+      else
+        error("Target #{target} is invalid", 400)
+      end
+    end
+
+    private
+
+    def tag_name_error(tag_name)
+      if Gitlab::GitRefValidator.has_space?(tag_name)
+        'Tag name invalid. Tag names cannot have spaces in them.'
+      else
+        'Tag name invalid'
+      end
+    end
+  end
+end

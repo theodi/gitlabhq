@@ -1,0 +1,407 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ProjectSetting, feature_category: :groups_and_projects do
+  using RSpec::Parameterized::TableSyntax
+  it { is_expected.to belong_to(:project) }
+
+  it_behaves_like 'cells claimable model',
+    subject_type: Cells::Claimable::CLAIMS_SUBJECT_TYPE::PROJECT,
+    subject_key: :project_id,
+    source_type: Cells::Claimable::CLAIMS_SOURCE_TYPE::RAILS_TABLE_PROJECT_SETTINGS,
+    claiming_attributes: [:pages_unique_domain]
+
+  describe 'default values' do
+    it { expect(subject.legacy_open_source_license_available).to be_truthy }
+  end
+
+  describe 'scopes' do
+    let_it_be(:project_1) { create(:project) }
+    let_it_be(:project_2) { create(:project) }
+    let_it_be(:project_setting_1) { create(:project_setting, project: project_1) }
+    let_it_be(:project_setting_2) do
+      create(:project_setting, project: project_2, pages_unique_domain_enabled: true,
+        pages_unique_domain: 'unique.example.com')
+    end
+
+    it 'returns project setting for the given projects' do
+      expect(described_class.for_projects(project_1)).to contain_exactly(project_setting_1)
+    end
+
+    it 'returns project settings using the namespace domain' do
+      expect(described_class.with_pages_namespace_domain).to contain_exactly(project_setting_1)
+    end
+  end
+
+  describe '#feature_flags_management_allowed?', feature_category: :feature_flags do
+    let(:setting) { build(:project_setting, feature_flags_minimum_role: minimum_role) }
+
+    it 'defaults to the developer minimum role' do
+      expect(build(:project_setting).feature_flags_minimum_role).to eq('developer')
+    end
+
+    where(:minimum_role, :access_level, :expected) do
+      :developer      | Gitlab::Access::REPORTER   | false
+      :developer      | Gitlab::Access::DEVELOPER  | true
+      :developer      | Gitlab::Access::MAINTAINER | true
+      :maintainer     | Gitlab::Access::DEVELOPER  | false
+      :maintainer     | Gitlab::Access::MAINTAINER | true
+      :maintainer     | Gitlab::Access::OWNER      | true
+      :owner          | Gitlab::Access::MAINTAINER | false
+      :owner          | Gitlab::Access::OWNER      | true
+      :no_one_allowed | Gitlab::Access::OWNER      | false
+    end
+
+    with_them do
+      it 'returns whether the access level meets the configured minimum role' do
+        expect(setting.feature_flags_management_allowed?(access_level, nil)).to eq(expected)
+      end
+    end
+
+    context 'when the minimum role is no_one_allowed', :enable_admin_mode do
+      let_it_be(:admin) { create(:admin) }
+
+      let(:minimum_role) { :no_one_allowed }
+
+      it 'is disallowed even for an admin' do
+        # The no_one_allowed early return fires before the can_admin_all_resources?
+        # check, so no one - including admins - may manage feature flags.
+        expect(setting.feature_flags_management_allowed?(Gitlab::Access::OWNER, admin)).to be(false)
+      end
+    end
+
+    context 'when the user is an admin', :enable_admin_mode do
+      let_it_be(:admin) { create(:admin) }
+
+      let(:minimum_role) { :owner }
+
+      it 'allows the admin regardless of access level' do
+        expect(setting.feature_flags_management_allowed?(Gitlab::Access::DEVELOPER, admin)).to be(true)
+      end
+    end
+
+    context 'when the user is an admin without admin mode' do
+      let_it_be(:admin) { create(:admin) }
+
+      let(:minimum_role) { :owner }
+
+      it 'disallows the admin' do
+        expect(setting.feature_flags_management_allowed?(Gitlab::Access::DEVELOPER, admin)).to be(false)
+      end
+    end
+  end
+
+  describe '#feature_flags_minimum_role_privileged?', feature_category: :feature_flags do
+    where(:minimum_role, :expected) do
+      :developer      | false
+      :maintainer     | false
+      :owner          | true
+      :no_one_allowed | true
+    end
+
+    with_them do
+      it 'returns true for stricter (privileged) minimum roles' do
+        setting = build(:project_setting, feature_flags_minimum_role: minimum_role)
+
+        expect(setting.feature_flags_minimum_role_privileged?).to eq(expected)
+      end
+    end
+  end
+
+  describe 'validations' do
+    it { is_expected.not_to allow_value(nil).for(:target_platforms) }
+    it { is_expected.to allow_value([]).for(:target_platforms) }
+    it { is_expected.to validate_length_of(:issue_branch_template).is_at_most(255) }
+
+    it 'validates length of mr_default_title_template' do
+      is_expected.to validate_length_of(:mr_default_title_template)
+        .is_at_most(Project::MAX_MR_TITLE_TEMPLATE_LENGTH)
+    end
+
+    context 'for mr_default_title_template single-line validation' do
+      it 'rejects values containing newlines' do
+        setting = build(:project_setting, mr_default_title_template: "first line\nsecond line")
+        setting.valid?
+        expect(setting.errors[:mr_default_title_template]).to include('must be a single line')
+        expect(setting.errors.full_messages)
+          .to include('Merge request default title template must be a single line')
+      end
+
+      it 'rejects values containing carriage returns' do
+        setting = build(:project_setting, mr_default_title_template: "first line\rsecond line")
+        setting.valid?
+        expect(setting.errors[:mr_default_title_template]).to include('must be a single line')
+      end
+
+      it 'allows a single-line value' do
+        setting = build(:project_setting, mr_default_title_template: '%{source_branch} - %{first_commit}')
+        expect(setting).to be_valid
+      end
+    end
+
+    it 'validates the length of merge_request_title_regex_description' do
+      is_expected.to validate_length_of(:merge_request_title_regex_description)
+        .is_at_most(Project::MAX_MERGE_REQUEST_TITLE_REGEX_DESCRIPTION)
+    end
+
+    it 'validates the length of merge_request_title_regex' do
+      is_expected.to validate_length_of(:merge_request_title_regex)
+        .is_at_most(Project::MAX_MERGE_REQUEST_TITLE_REGEX)
+    end
+
+    it 'allows any combination of the allowed target platforms' do
+      valid_target_platform_combinations.each do |target_platforms|
+        expect(subject).to allow_value(target_platforms).for(:target_platforms)
+      end
+    end
+
+    [nil, 'not_allowed', :invalid].each do |invalid_value|
+      it { is_expected.not_to allow_value([invalid_value]).for(:target_platforms) }
+    end
+
+    context "when pages_unique_domain is required", feature_category: :pages do
+      it "is not required if pages_unique_domain_enabled is false" do
+        project_setting = build(:project_setting, pages_unique_domain_enabled: false)
+
+        expect(project_setting).to be_valid
+        expect(project_setting.errors.full_messages).not_to include("Pages unique domain can't be blank")
+      end
+
+      it "is required when pages_unique_domain_enabled is true" do
+        project_setting = build(:project_setting, pages_unique_domain_enabled: true)
+
+        expect(project_setting).not_to be_valid
+        expect(project_setting.errors.full_messages).to include("Pages unique domain can't be blank")
+      end
+
+      it "is required if it is already saved in the database" do
+        project_setting = create(
+          :project_setting,
+          pages_unique_domain: "random-unique-domain-here",
+          pages_unique_domain_enabled: true
+        )
+
+        project_setting.pages_unique_domain = nil
+
+        expect(project_setting).not_to be_valid
+        expect(project_setting.errors.full_messages).to include("Pages unique domain can't be blank")
+      end
+    end
+
+    it "validates uniqueness of pages_unique_domain", feature_category: :pages do
+      create(:project_setting, pages_unique_domain: "random-unique-domain-here")
+
+      project_setting = build(:project_setting, pages_unique_domain: "random-unique-domain-here")
+
+      expect(project_setting).not_to be_valid
+      expect(project_setting.errors.full_messages).to include("Pages unique domain has already been taken")
+    end
+
+    it "validates if the pages_unique_domain already exist as a project path" do
+      stub_pages_setting(host: 'example.com')
+
+      create(:project, path: "random-unique-domain.example.com")
+      project_setting = build(:project_setting, pages_unique_domain: "random-unique-domain")
+
+      expect(project_setting).not_to be_valid
+      expect(project_setting.errors.full_messages_for(:pages_unique_domain))
+        .to match(["Pages unique domain already in use"])
+    end
+
+    context "when updating" do
+      it "validates if the pages_unique_domain already exist as a project path" do
+        stub_pages_setting(host: 'example.com')
+        project_setting = create(:project_setting)
+
+        create(:project, path: "random-unique-domain.example.com")
+
+        expect(project_setting.update(pages_unique_domain: "random-unique-domain")).to be(false)
+        expect(project_setting.errors.full_messages_for(:pages_unique_domain))
+          .to match(["Pages unique domain already in use"])
+      end
+    end
+  end
+
+  describe 'target_platforms=' do
+    it 'stringifies and sorts' do
+      project_setting = build(:project_setting, target_platforms: [:watchos, :ios])
+      expect(project_setting.target_platforms).to eq %w[ios watchos]
+    end
+  end
+
+  it_behaves_like 'projects squash option'
+
+  describe '#automatic_rebase_enabled' do
+    it 'defaults to false' do
+      project_setting = build(:project_setting)
+      expect(project_setting.automatic_rebase_enabled).to be(false)
+    end
+
+    it 'can be set to true' do
+      project_setting = build(:project_setting, automatic_rebase_enabled: true)
+      expect(project_setting.automatic_rebase_enabled).to be(true)
+    end
+
+    it 'can be set to false' do
+      project_setting = build(:project_setting, automatic_rebase_enabled: false)
+      expect(project_setting.automatic_rebase_enabled).to be(false)
+    end
+  end
+
+  def valid_target_platform_combinations
+    target_platforms = described_class::ALLOWED_TARGET_PLATFORMS
+
+    0.upto(target_platforms.size).flat_map do |n|
+      target_platforms.permutation(n).to_a
+    end
+  end
+
+  describe '#show_diff_preview_in_email?' do
+    context 'when a project has no parent group' do
+      let(:project_settings) { build_stubbed(:project_setting, show_diff_preview_in_email: false) }
+      let(:project) { build_stubbed(:project, project_setting: project_settings) }
+
+      context 'when show_diff_preview_in_email is disabled' do
+        it 'returns false' do
+          expect(project).not_to be_show_diff_preview_in_email
+        end
+      end
+
+      context 'when show_diff_preview_in_email is enabled' do
+        let(:project_settings) { build_stubbed(:project_setting, show_diff_preview_in_email: true) }
+
+        it 'returns true' do
+          expect(project).to be_show_diff_preview_in_email
+        end
+      end
+    end
+
+    context 'when a parent group overrides project settings' do
+      let(:namespace_settings) { create(:namespace_settings, show_diff_preview_in_email: false) }
+      let(:project_settings) { create(:project_setting, show_diff_preview_in_email: true) }
+      let(:group) { create(:group, namespace_settings: namespace_settings) }
+      let(:project) { create(:project, namespace_id: group.id, project_setting: project_settings) }
+
+      context 'when show_diff_preview_in_email is disabled for the parent group' do
+        it 'returns false' do
+          expect(project).not_to be_show_diff_preview_in_email
+        end
+      end
+
+      context 'when all ancestors have enabled diff previews' do
+        let(:namespace_settings) { create(:namespace_settings, show_diff_preview_in_email: true) }
+
+        it 'returns true' do
+          expect(project).to be_show_diff_preview_in_email
+        end
+      end
+    end
+  end
+
+  describe '#emails_enabled?' do
+    context "when a project does not have a parent group" do
+      let_it_be_with_reload(:project_settings) { create(:project_setting, emails_enabled: true) }
+      let_it_be_with_reload(:project) { create(:project, project_setting: project_settings) }
+
+      it "returns true" do
+        expect(project.emails_enabled?).to be_truthy
+      end
+
+      it "returns false when project_settings are set to false" do
+        project.project_setting.clear_memoization(:emails_enabled?)
+        project.update_attribute(:emails_enabled, false)
+
+        expect(project.emails_enabled?).to be_falsey
+      end
+    end
+
+    context "when a project has a parent group" do
+      let(:namespace_settings) { create(:namespace_settings, emails_enabled: true) }
+      let(:project_settings) { create(:project_setting, emails_enabled: true) }
+      let(:group) { create(:group, namespace_settings: namespace_settings) }
+      let(:project) do
+        create(:project, namespace_id: group.id,
+          project_setting: project_settings)
+      end
+
+      context 'when emails have been disabled in parent group' do
+        it 'returns false' do
+          group.update_attribute(:emails_enabled, false)
+
+          expect(project.emails_enabled?).to be_falsey
+        end
+      end
+
+      context 'when emails are enabled in parent group' do
+        before do
+          allow(project.namespace).to receive(:emails_enabled?).and_return(true)
+        end
+
+        it 'returns true' do
+          expect(project.emails_enabled?).to be_truthy
+        end
+
+        it 'returns false when disabled at the project' do
+          project.update_attribute(:emails_enabled, false)
+
+          expect(project.emails_enabled?).to be_falsey
+        end
+      end
+    end
+  end
+
+  describe '#runner_registration_enabled' do
+    let_it_be_with_reload(:settings) { create(:project_setting) }
+    let_it_be_with_reload(:group) { create(:group) }
+    let_it_be_with_reload(:project) { create(:project, project_setting: settings, group: group) }
+
+    it 'returns true' do
+      expect(project.runner_registration_enabled).to be true
+    end
+
+    context 'when project has runner registration disabled' do
+      before do
+        project.update!(runner_registration_enabled: false)
+      end
+
+      it 'returns false' do
+        expect(project.runner_registration_enabled).to be false
+      end
+    end
+
+    context 'when all projects have runner registration disabled' do
+      before do
+        stub_application_setting(valid_runner_registrars: ['group'])
+      end
+
+      it 'returns false' do
+        expect(project.runner_registration_enabled).to be false
+      end
+    end
+  end
+
+  describe '#web_based_commit_signing_enabled' do
+    it_behaves_like 'a cascading project setting boolean attribute',
+      settings_attribute_name: :web_based_commit_signing_enabled
+  end
+
+  describe '#reviewer_auto_assignment_available?', feature_category: :code_review_workflow do
+    let_it_be_with_reload(:project) { create(:project) }
+
+    it 'returns false' do
+      expect(project.project_setting.reviewer_auto_assignment_available?).to be(false)
+    end
+  end
+
+  describe '#reviewer_auto_assignment_enabled?', feature_category: :code_review_workflow do
+    let_it_be_with_reload(:project) { create(:project) }
+    let(:project_setting) { project.project_setting }
+
+    it 'returns false regardless of strategy' do
+      project_setting.update!(reviewer_assignment_strategy: 'code_owners')
+
+      expect(project_setting.reviewer_auto_assignment_enabled?).to be(false)
+    end
+  end
+end

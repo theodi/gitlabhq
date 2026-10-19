@@ -1,0 +1,224 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module RackAttack
+    module LabkitRateLimit
+      # A request that classifies itself for Labkit::RateLimit independently of
+      # Rack::Attack. It is a Rack::Request with the shared
+      # Gitlab::RateLimit::RequestClassification primitives (logical_path,
+      # frontend_request?, authenticated_identifier, ...) mixed in - the same
+      # primitives the legacy Gitlab::RackAttack::Request predicates build on, so
+      # the auth path behaves identically to the legacy stack, with no dependency
+      # on Rack::Attack. It does not call the legacy throttled_identifer: the
+      # requester discriminator is computed here from the auth primitive and
+      # exposed as explicit (id, type) facts.
+      #
+      # #labkit_facts exposes the request as a flat context the Labkit rules match
+      # on (see Limiters / ThrottleRegistry). It deliberately does not call the
+      # Rack::Attack throttle_*? predicates: a throttle's applicability is expressed
+      # as an ordered Labkit rule whose matcher operates on these facts, not echoed
+      # from the predicate. The facts are the raw building blocks the rules combine:
+      #
+      #   - identity values (ip, requester_id/type, runner_id, aid, path, method) are
+      #     what a rule counts by, what path/method matchers compare, and the auth-state
+      #     presence facts rules gate on; never coerced.
+      #   - classification facts are booleans a rule matches on (the handful of
+      #     conditions that cannot be a static path matcher), coerced to strict
+      #     true/false.
+      #   - setting_* facts mirror the per-throttle admin enable settings, matched
+      #     by each rule so an admin toggling a throttle takes effect immediately
+      #     (the rule stops matching and the request falls through to the next rule
+      #     in order), without rebuilding the limiter.
+      #
+      # Most throttle conditions that used to be derived booleans (api/git/packages/
+      # files paths) are now expressed directly as { path: { re: REGEX } } matchers
+      # in the registry, so they do not appear here. Auth state is the requester_id /
+      # runner_id presence facts. What remains as classification facts are the
+      # conditions a matcher cannot express: the web/frontend disjunction, the
+      # admin-dynamic protected-path match, the param-derived deprecated condition,
+      # and the auth-method-dependent runner-jobs condition.
+      class ClassifiedRequest < ::Rack::Request
+        include ::Gitlab::Utils::StrongMemoize
+        include ::Gitlab::RateLimit::RequestClassification
+
+        def labkit_facts
+          identity_facts.merge(classification_facts.transform_values { |value| !!value })
+        end
+
+        private
+
+        # Identity / discriminator and matcher-input values. Never coerced: a rule
+        # counts by the identity values and the path/method matchers compare them as
+        # String. `path` is the logical path (relative-URL-root prefix stripped, as
+        # RequestClassification#matches? does), so the registry path regexes
+        # match correctly on a self-managed install mounted under a relative URL.
+        #
+        # The requester is resolved once with the widest format list ([:api, :rss,
+        # :ics]) and shared by every rule. The api throttles used to resolve it with
+        # [:api] only, but on an api path the two agree: rss/ics auth needs an
+        # .atom/.ics path (or format), which api routes are not, so the extra formats
+        # are inert there. requester_id/runner_id are the two auth-state presence
+        # facts: requester_id present is an authenticated user/deploy/job-user,
+        # runner_id present is a runner, and both nil is unauthenticated? (see the
+        # unauthenticated rules' `requester_id: nil, runner_id: nil` guard).
+        def identity_facts
+          {
+            ip: ip,
+            requester_id: requester[:id],
+            requester_type: requester[:type],
+            runner_id: runner_id,
+            aid: params['aid'],
+            path: logical_path,
+            method: request_method
+          }
+        end
+
+        # The requester discriminator as an explicit { id:, type: } pair, computed
+        # without the legacy Gitlab::RackAttack::Request#throttled_identifer so this
+        # classifier carries no dependency on the throttle-identifier-string method. It reuses
+        # the lower-level auth primitive #authenticated_identifier (a pure auth
+        # lookup with no throttle semantics and no side effects).
+        #
+        # An allowlisted user keeps their real id here: the exemption is the
+        # user_allowlist :skip rule in Limiters, not a classifier concern.
+        #
+        # The id is stringified: requester.id is an Integer, but the presence gate
+        # (requester_id: /./) and Labkit's redis-key encoding compare it as a
+        # String, and Regexp#match? raises a TypeError on an Integer (which the
+        # Labkit evaluator catches and then fails open), so an unstringified id would
+        # silently stop authenticated requests being throttled.
+        #
+        # The (type, id) pair is counted by as two ordered characteristics, which
+        # Labkit joins into one redis key - equivalent to the old "type:id" string,
+        # and keeping a DeployToken and a User with the same numeric id on distinct
+        # counters via the type segment.
+        #
+        def requester
+          identifier = authenticated_identifier(REQUESTER_FORMATS)
+          return {} unless identifier
+
+          {
+            id: identifier[:identifier_id].to_s,
+            type: identifier[:identifier_type].to_s
+          }
+        end
+        strong_memoize_attr :requester
+
+        # Boolean facts a rule matches on, coerced to strict true/false in
+        # #labkit_facts. EE extends this (incident management, Geo). These are only
+        # the conditions a matcher cannot express directly (auth state is not here: it
+        # is the requester_id / runner_id presence facts in #identity_facts):
+        #   - web_or_frontend: web_request? || frontend_request?, the web throttles'
+        #     disjunction, computed once so each web throttle is one rule with one
+        #     Redis counter (an OR is not expressible in an AND-only match, and two
+        #     rules would split the counter Rack::Attack keeps as one);
+        #   - frontend: frontend_request? (a verified CSRF token) on its own, matched
+        #     as `frontend: false` by the general API rules;
+        #   - protected_path: the protected-paths list is admin configured and takes
+        #     effect immediately, so it cannot be baked into a static matcher regex. One
+        #     method-aware fact for both the POST and GET protected-path throttles: the
+        #     list to match against depends on the request method (see #protected_path?),
+        #     and each rule's own `method:` gate ensures the fact was computed against the
+        #     matching list;
+        #   - deprecated: a path match plus the with_projects param default;
+        #   - runner_jobs: a path match plus the auth method (runner or job token),
+        #     which no path matcher or presence fact can see (see #runner_jobs?);
+        #   - dependency_proxy: a path match plus, on EE, the virtual-registry
+        #     exclusion (see EE's #dependency_proxy_path? override), which a static
+        #     path matcher cannot see;
+        #   - git_http_non_lfs: for predicates that treat LFS as web rather than git.
+        #     Rack::Attack spells it `git_path? && !git_lfs_path?`, whose negation is an
+        #     OR that no list of path matchers expresses under AND;
+        #   - bypass: the safelist header, matched by the bypass rule.
+        def classification_facts
+          settings = ::Gitlab::Throttle.settings
+
+          {
+            web_or_frontend: web_request? || frontend_request?,
+            frontend: frontend_request?, # frontend_request checks HTTP_X_CSRF_TOKEN header - not a regex
+            protected_path: protected_path?,
+            deprecated: deprecated_api_request?, # TODO use path matchers for deprecated API requests: https://gitlab.com/gitlab-org/ruby/gems/labkit-ruby/-/work_items/71
+            runner_jobs: runner_jobs?,
+            dependency_proxy: dependency_proxy_path?,
+            git_http_non_lfs: git_path? && !git_lfs_path?,
+            bypass: labkit_bypassed?,
+
+            # per-throttle enable settings each rule matches on (option 2: matched
+            # per request so an admin change takes effect immediately)
+            setting_unauthenticated_api: settings.throttle_unauthenticated_api_enabled,
+            setting_authenticated_api: settings.throttle_authenticated_api_enabled,
+            # TODO: legacy column name, renamed in https://gitlab.com/gitlab-org/gitlab/-/issues/340031
+            setting_unauthenticated_web: settings.throttle_unauthenticated_enabled,
+            setting_authenticated_web: settings.throttle_authenticated_web_enabled,
+            setting_unauthenticated_packages: settings.throttle_unauthenticated_packages_api_enabled,
+            setting_authenticated_packages: settings.throttle_authenticated_packages_api_enabled,
+            setting_unauthenticated_files: settings.throttle_unauthenticated_files_api_enabled,
+            setting_authenticated_files: settings.throttle_authenticated_files_api_enabled,
+            setting_unauthenticated_deprecated: settings.throttle_unauthenticated_deprecated_api_enabled,
+            setting_authenticated_deprecated: settings.throttle_authenticated_deprecated_api_enabled,
+            setting_unauthenticated_git_http: settings.throttle_unauthenticated_git_http_enabled,
+            setting_authenticated_git_http: settings.throttle_authenticated_git_http_enabled,
+            setting_authenticated_git_lfs: settings.throttle_authenticated_git_lfs_enabled,
+            setting_authenticated_dependency_proxy: settings.throttle_authenticated_dependency_proxy_enabled,
+            setting_authenticated_mcp: settings.throttle_authenticated_mcp_enabled,
+            setting_protected_paths: ::Gitlab::Throttle.protected_paths_enabled?
+          }
+        end
+
+        # The runner registration id (stringified, so a rule comparing it never trips
+        # Regexp#match?'s TypeError-on-Integer and fails open), or nil when the request
+        # is not runner-authenticated. Signifies only the runner itself: a job token is
+        # deliberately not folded in, so it never enters a redis counter identifier.
+        # Used purely as a presence fact: a runner-authenticated request has no
+        # requester, so the unauthenticated rules' `runner_id: nil` guard is what keeps
+        # it out of the IP throttles (mirroring unauthenticated? accounting for runners).
+        # Memoized because #runner_jobs? reads it too and the underlying runner lookup
+        # is a token query the authenticator does not cache.
+        def runner_id
+          request_authenticator.runner&.id&.to_s
+        end
+        strong_memoize_attr :runner_id
+
+        # The auth half of Gitlab::RackAttack::Request#runner_jobs_request?, paired
+        # with its path half: a request on the runner-jobs API path authenticated as
+        # a runner or with a CI job token. The legacy authenticated API throttle
+        # excludes exactly these via !runner_jobs_request?, and the runner_jobs skip
+        # rule (see Limiters) matches this fact to mirror that. The auth method
+        # matters, not just requester presence: a job token resolves to the job's
+        # user, so a job-token request and a PAT request are indistinguishable by
+        # requester_id alone, yet Rack::Attack skips the former and counts the
+        # latter (a PAT-driven bot polling job status is real API usage).
+        def runner_jobs?
+          runner_jobs_api_path? && (runner_id.present? || job_from_token.present?)
+        end
+
+        # Memoized for the same reason as runner_id: the authenticator re-runs the
+        # job lookup on every call, and EE's plan facts read it too.
+        def job_from_token
+          request_authenticator.job_from_token
+        end
+        strong_memoize_attr :job_from_token
+
+        # Combines the module's protected_path? (POST list) and
+        # get_request_protected_path? (GET list) into one method-aware predicate: it
+        # picks the list to match against from the request method, so a single
+        # `protected_path` fact serves both the POST and GET protected-path throttles.
+        # This mirrors the legacy stack, where protected_path? was always paired with
+        # post? and get_request_protected_path? with get?; here each registry rule's own
+        # `method:` gate provides that pairing, so the fact is only read against the
+        # list its rule's method selected. protected_paths / protected_paths_for_get_request
+        # and matches_protected_path? come from the RequestClassification mixin.
+        def protected_path?
+          matches_protected_path?(get? ? protected_paths_for_get_request : protected_paths)
+        end
+
+        def labkit_bypassed?
+          header = ::Gitlab::Throttle.bypass_header
+          header.present? && get_header(header) == '1'
+        end
+      end
+    end
+  end
+end
+
+::Gitlab::RackAttack::LabkitRateLimit::ClassifiedRequest.prepend_mod

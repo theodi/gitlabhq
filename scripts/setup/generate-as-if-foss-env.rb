@@ -1,0 +1,166 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# We need to take some precautions when using the `gitlab` gem in this project.
+#
+# See https://docs.gitlab.com/ee/development/pipelines/internals.html#using-the-gitlab-ruby-gem-in-the-canonical-project.
+#
+# In spec/scripts/setup/generate_as_if_foss_env_spec.rb we completely stub it
+if Object.const_defined?(:RSpec)
+  # Ok, we're testing, we know we're going to stub `Gitlab`, so we just ignore
+else
+  require 'gitlab'
+
+  if Gitlab.singleton_class.method_defined?(:com?)
+    abort 'lib/gitlab.rb is loaded, and this means we can no longer load the client and we cannot proceed'
+  end
+end
+
+class GenerateAsIfFossEnv
+  PARALLEL = %r{(?: \d+/\d+)}
+  PG_JOB = %r{\S+ pg\d+}
+
+  # Map job names to environment variables. One job can match multiple variables.
+  # For example: "rspec unit 1/2" returns `ENABLE_RSPEC` and `ENABLE_RSPEC_UNIT`.
+  JOB_VARIABLES = {
+    'compile-production-assets' => 'ENABLE_COMPILE_PRODUCTION_ASSETS',
+    'compile-storybook' => 'ENABLE_COMPILE_STORYBOOK',
+    'compile-test-assets' => 'ENABLE_COMPILE_TEST_ASSETS',
+    'detect-tests' => 'ENABLE_DETECT_TESTS',
+    'eslint' => 'ENABLE_ESLINT',
+    'generate-apollo-graphql-schema' => 'ENABLE_GENERATE_APOLLO_GRAPHQL_SCHEMA',
+    'graphql-schema-dump' => 'ENABLE_GRAPHQL_SCHEMA_DUMP',
+    'rspec-predictive:pipeline-generate' => 'ENABLE_RSPEC_PREDICTIVE_PIPELINE_GENERATE',
+    'rspec:predictive:trigger' => 'ENABLE_RSPEC_PREDICTIVE_TRIGGER',
+    'rspec:predictive:trigger single-db' => 'ENABLE_RSPEC_PREDICTIVE_TRIGGER_SINGLE_DB',
+    'rspec:predictive:trigger single-db-ci-connection' => 'ENABLE_RSPEC_PREDICTIVE_TRIGGER_SINGLE_DB_CI_CONNECTION',
+    'rubocop' => 'ENABLE_RUBOCOP',
+    'qa:internal' => 'ENABLE_QA_INTERNAL',
+    'qa:selectors' => 'ENABLE_QA_SELECTORS',
+    'static-analysis' => 'ENABLE_STATIC_ANALYSIS',
+    # Jest
+    /^jest#{PARALLEL}/ => 'ENABLE_JEST',
+    /^jest-integration/ => 'ENABLE_JEST_INTEGRATION',
+    /^jest predictive#{PARALLEL}/ => 'ENABLE_JEST_PREDICTIVE',
+    # RSpec
+    /^rspec/ => 'ENABLE_RSPEC',
+    /^rspec(?:-all)? frontend_fixture/ => 'ENABLE_RSPEC_FRONTEND_FIXTURE',
+    /^rspec unit/ => 'ENABLE_RSPEC_UNIT',
+    /^rspec fast_spec_helper/ => 'ENABLE_RSPEC_FAST_SPEC_HELPER',
+    /^rspec migration/ => 'ENABLE_RSPEC_MIGRATION',
+    /^rspec background_migration/ => 'ENABLE_RSPEC_BACKGROUND_MIGRATION',
+    /^rspec integration/ => 'ENABLE_RSPEC_INTEGRATION',
+    /^rspec graphql-document-integration/ => 'ENABLE_RSPEC_GRAPHQL_DOCUMENT_INTEGRATION',
+    /^rspec system/ => 'ENABLE_RSPEC_SYSTEM',
+    /^rspec #{PG_JOB} praefect\b/ => 'ENABLE_RSPEC_PRAEFECT',
+    /^rspec #{PG_JOB} single-db\b/ => 'ENABLE_RSPEC_SINGLE_DB',
+    /^rspec #{PG_JOB} single-db-ci-connection\b/ => 'ENABLE_RSPEC_SINGLE_DB_CI_CONNECTION',
+    /^rspec #{PG_JOB} single-redis\b/ => 'ENABLE_RSPEC_SINGLE_REDIS'
+  }.freeze
+
+  PREDICTIVE_VARIABLES = %w[
+    ENABLE_DETECT_TESTS
+    ENABLE_COMPILE_TEST_ASSETS
+    ENABLE_RSPEC
+    ENABLE_RSPEC_FRONTEND_FIXTURE
+    ENABLE_RSPEC_PREDICTIVE_PIPELINE_GENERATE
+    ENABLE_RSPEC_PREDICTIVE_TRIGGER
+    ENABLE_RSPEC_PREDICTIVE_TRIGGER_SINGLE_DB
+    ENABLE_RSPEC_PREDICTIVE_TRIGGER_SINGLE_DB_CI_CONNECTION
+    ENABLE_JEST_PREDICTIVE
+    ENABLE_RUBOCOP
+    ENABLE_ESLINT
+    ENABLE_STATIC_ANALYSIS
+  ].freeze
+
+  AS_IF_FOSS_RUN_PREDICTIVE_LABEL = 'pipeline:as-if-foss-run-predictive'
+  RUN_AS_IF_FOSS_LABEL = 'pipeline:run-as-if-foss'
+
+  def initialize
+    @client = Gitlab.client(
+      endpoint: ENV['CI_API_V4_URL'],
+      private_token: ENV['PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE'] || '')
+  end
+
+  def variables
+    @variables ||= generate_variables
+  end
+
+  def display
+    variables.each do |key, value|
+      puts "#{key}=#{value}"
+    end
+  end
+
+  private
+
+  attr_reader :client
+
+  def generate_variables
+    {
+      START_AS_IF_FOSS: 'true',
+      RUBY_VERSION: ENV['RUBY_VERSION'],
+      FIND_CHANGES_MERGE_REQUEST_PROJECT_PATH: ENV['CI_MERGE_REQUEST_PROJECT_PATH'],
+      FIND_CHANGES_MERGE_REQUEST_IID: ENV['CI_MERGE_REQUEST_IID'],
+      GLCI_USE_TEST_BALANCING: ENV['GLCI_USE_TEST_BALANCING'],
+      **enable_variables
+    }
+  end
+
+  def enable_variables
+    if force_predictive?
+      predictive_variables
+    else
+      variables_mirrored_from_parent_pipeline
+    end
+  end
+
+  def force_predictive?
+    labels = ENV['CI_MERGE_REQUEST_LABELS'].to_s
+
+    labels.include?(AS_IF_FOSS_RUN_PREDICTIVE_LABEL) && !labels.include?(RUN_AS_IF_FOSS_LABEL) # rubocop:disable Rails/NegateInclude -- plain ruby script
+  end
+
+  def predictive_variables
+    PREDICTIVE_VARIABLES.to_h { |v| [v.to_sym, 'true'] }
+  end
+
+  # Reads jobs from the parent pipeline via the API and maps them
+  # to ENABLE_* variables, so the child as-if-foss pipeline mirrors
+  # the same set of jobs as the parent.
+  def variables_mirrored_from_parent_pipeline
+    variable_set = Set.new
+
+    each_parent_pipeline_job do |job|
+      variable_set.merge(variables_matching_job(job.name))
+    end
+
+    mirrored = variable_set.to_h { |v| [v.to_sym, 'true'] }
+
+    # RUN_ALL_RUBOCOP is only set by the merge request rules of the `rubocop`
+    # job. Those rules don't match in the downstream (triggered) as-if-foss
+    # pipeline, so the job defaults to running RuboCop in predictive mode on the
+    # changed files only. Predictive mode runs a plain `rubocop` invocation that
+    # bypasses the graceful formatter, and therefore ignores cops in their
+    # "grace period" -- causing offenses that are silenced in the parent
+    # pipeline to fail here. When we mirror the parent pipeline (a full run), run
+    # the full graceful RuboCop too so the two pipelines stay consistent.
+    mirrored[:RUN_ALL_RUBOCOP] = 'true' if mirrored.key?(:ENABLE_RUBOCOP)
+
+    mirrored
+  end
+
+  def each_parent_pipeline_job
+    %i[pipeline_jobs pipeline_bridges].each do |kind|
+      client.public_send(kind, ENV['CI_PROJECT_ID'], ENV['CI_PIPELINE_ID']).auto_paginate do |job| # rubocop:disable GitlabSecurity/PublicSend -- We're sending with static values, no concerns
+        yield(job)
+      end
+    end
+  end
+
+  def variables_matching_job(job_name)
+    JOB_VARIABLES.select { |match, _| match === job_name }.map(&:last)
+  end
+end
+
+GenerateAsIfFossEnv.new.display if $PROGRAM_NAME == __FILE__

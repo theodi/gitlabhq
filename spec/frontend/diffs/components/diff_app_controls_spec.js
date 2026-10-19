@@ -1,0 +1,140 @@
+import { shallowMount } from '@vue/test-utils';
+import { GlButton } from '@gitlab/ui';
+import DiffAppControls from '~/diffs/components/diff_app_controls.vue';
+import DiffStats from '~/diffs/components/diff_stats.vue';
+import SettingsDropdown from '~/diffs/components/settings_dropdown.vue';
+import {
+  keysFor,
+  MR_COLLAPSE_ALL_FILES,
+  MR_EXPAND_ALL_FILES,
+} from '~/behaviors/shortcuts/keybindings';
+import { Mousetrap } from '~/lib/mousetrap';
+
+const DEFAULT_PROPS = {
+  diffsCount: '5',
+  addedLines: 10,
+  removedLines: 5,
+  showWhitespace: true,
+  diffViewType: 'inline',
+  viewDiffsFileByFile: false,
+};
+
+describe('DiffAppControls', () => {
+  let wrapper;
+
+  const createComponent = (props = {}) => {
+    wrapper = shallowMount(DiffAppControls, {
+      propsData: {
+        ...DEFAULT_PROPS,
+        ...props,
+      },
+    });
+  };
+
+  const findButtonByIcon = (icon) =>
+    wrapper
+      .findAllComponents(GlButton)
+      .filter((buttonWrapper) => buttonWrapper.props('icon') === icon)
+      .at(0);
+
+  describe('when has changes', () => {
+    beforeEach(() => {
+      createComponent({ hasChanges: true });
+    });
+
+    it('renders diff stats', () => {
+      expect(wrapper.findComponent(DiffStats).exists()).toBe(true);
+      expect(wrapper.findComponent(DiffStats).props()).toMatchObject({
+        diffsCount: DEFAULT_PROPS.diffsCount,
+        addedLines: DEFAULT_PROPS.addedLines,
+        removedLines: DEFAULT_PROPS.removedLines,
+        hideOnNarrowScreen: true,
+      });
+    });
+
+    it('renders expand buttons', () => {
+      expect(findButtonByIcon('expand').exists()).toBe(true);
+      expect(findButtonByIcon('collapse').exists()).toBe(true);
+    });
+
+    it('emits expand-all-files', () => {
+      findButtonByIcon('expand').vm.$emit('click');
+      expect(wrapper.emitted('expand-all-files')).toStrictEqual([[]]);
+    });
+
+    it('emits expand-all-files on hotkey', () => {
+      Mousetrap.trigger(keysFor(MR_EXPAND_ALL_FILES)[0]);
+      expect(wrapper.emitted('expand-all-files')).toStrictEqual([[]]);
+    });
+
+    it('emits collapse-all-files', () => {
+      findButtonByIcon('collapse').vm.$emit('click');
+      expect(wrapper.emitted('collapse-all-files')).toStrictEqual([[]]);
+    });
+
+    it('emits collapse-all-files on hotkey', () => {
+      Mousetrap.trigger(keysFor(MR_COLLAPSE_ALL_FILES)[0]);
+      expect(wrapper.emitted('collapse-all-files')).toStrictEqual([[]]);
+    });
+
+    it('renders settings', () => {
+      expect(wrapper.findComponent(SettingsDropdown).exists()).toBe(true);
+    });
+  });
+
+  describe('when has no changes', () => {
+    beforeEach(() => {
+      createComponent({
+        hasChanges: false,
+        showWhitespace: false,
+        diffViewType: 'parallel',
+        viewDiffsFileByFile: true,
+      });
+    });
+
+    it('renders settings', () => {
+      expect(wrapper.findComponent(SettingsDropdown).exists()).toBe(true);
+      expect(wrapper.findComponent(SettingsDropdown).props()).toStrictEqual({
+        showWhitespace: false,
+        diffViewType: 'parallel',
+        viewDiffsFileByFile: true,
+        fileByFileSupported: true,
+      });
+    });
+
+    it('emits events', () => {
+      wrapper.findComponent(SettingsDropdown).vm.$emit('update-diff-view-type');
+      wrapper.findComponent(SettingsDropdown).vm.$emit('toggle-whitespace');
+      wrapper.findComponent(SettingsDropdown).vm.$emit('toggle-file-by-file');
+      expect(wrapper.emitted('update-diff-view-type')).toStrictEqual([[undefined]]);
+      expect(wrapper.emitted('toggle-whitespace')).toStrictEqual([[undefined]]);
+      expect(wrapper.emitted('toggle-file-by-file')).toStrictEqual([[undefined]]);
+    });
+  });
+
+  it('disables expand controls when loading', () => {
+    createComponent({
+      hasChanges: true,
+      isLoading: true,
+    });
+    expect(findButtonByIcon('expand').props('disabled')).toBe(true);
+    expect(findButtonByIcon('collapse').props('disabled')).toBe(true);
+  });
+
+  it('disables collapse-all-files hotkey when loading', () => {
+    createComponent({ hasChanges: true, isLoading: true });
+    Mousetrap.trigger(keysFor(MR_COLLAPSE_ALL_FILES)[0]);
+    expect(wrapper.emitted('collapse-all-files')).toBe(undefined);
+  });
+
+  it('disables expand-all-files hotkey when loading', () => {
+    createComponent({ hasChanges: true, isLoading: true });
+    Mousetrap.trigger(keysFor(MR_EXPAND_ALL_FILES)[0]);
+    expect(wrapper.emitted('expand-all-files')).toBe(undefined);
+  });
+
+  it('hides non-existent diff stats', () => {
+    createComponent({ hasChanges: true, diffsCount: '' });
+    expect(wrapper.findComponent(DiffStats).exists()).toBe(false);
+  });
+});

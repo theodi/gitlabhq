@@ -1,0 +1,530 @@
+<script>
+import { GlAlert, GlBadge, GlKeysetPagination, GlPagination } from '@gitlab/ui';
+import EmptyResult from '~/vue_shared/components/empty_result.vue';
+import LocalStorageSync from '~/vue_shared/components/local_storage_sync.vue';
+import PageSizeSelector from '~/vue_shared/components/page_size_selector.vue';
+import { updateHistory, setUrlParams } from '~/lib/utils/url_utility';
+import { __ } from '~/locale';
+import { DRAG_DELAY } from '~/sortable/constants';
+import { getIdFromGraphQLId } from '~/graphql_shared/utils';
+import FilteredSearchBar from '~/vue_shared/components/filtered_search_bar/filtered_search_bar_root.vue';
+import ResourceListsLoadingStateList from '~/vue_shared/components/resource_lists/loading_state_list.vue';
+import { glSlotsMixin } from '~/lib/utils/vue3compat/gl_slots_mixin';
+import { DEFAULT_SKELETON_COUNT, PAGE_SIZE_STORAGE_KEY } from '../constants';
+import IssuableBulkEditSidebar from './issuable_bulk_edit_sidebar.vue';
+import IssuableItem from './issuable_item.vue';
+import IssuableTabs from './issuable_tabs.vue';
+
+const VueDraggable = () => import('~/lib/utils/vue3compat/draggable_compat.vue');
+
+export default {
+  name: 'IssuableListRoot',
+  vueDraggableAttributes: {
+    animation: 200,
+    forceFallback: false,
+    ghostClass: 'gl-invisible',
+    tag: 'ul',
+    delay: DRAG_DELAY,
+    delayOnTouchOnly: true,
+  },
+  components: {
+    GlAlert,
+    GlBadge,
+    GlKeysetPagination,
+    IssuableTabs,
+    FilteredSearchBar,
+    IssuableItem,
+    IssuableBulkEditSidebar,
+    GlPagination,
+    VueDraggable,
+    PageSizeSelector,
+    ResourceListsLoadingStateList,
+    LocalStorageSync,
+    EmptyResult,
+  },
+  mixins: [glSlotsMixin],
+  props: {
+    namespace: {
+      type: String,
+      required: true,
+    },
+    fullPath: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    recentSearchesStorageKey: {
+      type: String,
+      required: true,
+    },
+    searchInputPlaceholder: {
+      type: String,
+      required: false,
+      default: __('Search or filter results…'),
+    },
+    searchTokens: {
+      type: Array,
+      required: true,
+    },
+    sortOptions: {
+      type: Array,
+      required: true,
+    },
+    urlParams: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    initialFilterValue: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    initialSortBy: {
+      type: String,
+      required: false,
+      default: 'created_desc',
+    },
+    issuables: {
+      type: Array,
+      required: true,
+    },
+    tabs: {
+      type: Array,
+      required: true,
+    },
+    tabCounts: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    truncateCounts: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    currentTab: {
+      type: String,
+      required: true,
+    },
+    issuableSymbol: {
+      type: String,
+      required: false,
+      default: '#',
+    },
+    issuablesLoading: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    showPaginationControls: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    showBulkEditSidebar: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    defaultPageSize: {
+      type: Number,
+      required: false,
+      default: 20,
+    },
+    totalItems: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    currentPage: {
+      type: Number,
+      required: false,
+      default: 1,
+    },
+    previousPage: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    nextPage: {
+      type: Number,
+      required: false,
+      default: 2,
+    },
+    hasScopedLabelsFeature: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    labelFilterParam: {
+      type: String,
+      required: false,
+      default: undefined,
+    },
+    isManualOrdering: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    useKeysetPagination: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasNextPage: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasPreviousPage: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    error: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    syncFilterAndSort: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    showFilteredSearchFriendlyText: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    showPageSizeSelector: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    showWorkItemTypeIcon: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    activeIssuable: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    preventRedirect: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    issuableItemClass: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    detailLoading: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hiddenMetadataKeys: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    alwaysAllowCustomEmptyState: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    searchTimeout: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    maxCount: {
+      type: Number,
+      required: false,
+      default: null,
+    },
+  },
+  emits: [
+    'click-tab',
+    'dismiss-alert',
+    'filter',
+    'next-page',
+    'page-change',
+    'page-size-change',
+    'previous-page',
+    'reorder',
+    'select-issuable',
+    'sort',
+    'update-legacy-bulk-edit',
+  ],
+  data() {
+    return {
+      checkedIssuableIds: [],
+    };
+  },
+  computed: {
+    skeletonItemCount() {
+      const { totalItems, defaultPageSize, currentPage } = this;
+      const totalPages = Math.ceil(totalItems / defaultPageSize);
+
+      if (totalPages) {
+        return currentPage < totalPages
+          ? defaultPageSize
+          : totalItems % defaultPageSize || defaultPageSize;
+      }
+      return DEFAULT_SKELETON_COUNT;
+    },
+    allIssuablesChecked() {
+      return this.checkedIssuables.length === this.issuables.length;
+    },
+    checkedIssuables() {
+      return this.issuables.filter((issuable) => this.checkedIssuableIds.includes(issuable.id));
+    },
+    issuablesWrapper() {
+      return this.isManualOrdering ? VueDraggable : 'ul';
+    },
+    hasItems() {
+      return this.issuables.length > 0;
+    },
+  },
+  watch: {
+    urlParams: {
+      deep: true,
+      immediate: true,
+      handler(params) {
+        if (Object.keys(params).length) {
+          updateHistory({
+            url: setUrlParams(params, {
+              url: window.location.href,
+              clearParams: true,
+              decodeParams: true,
+            }),
+            title: document.title,
+            replace: true,
+          });
+        }
+      },
+    },
+    showBulkEditSidebar() {
+      this.checkedIssuableIds = [];
+    },
+  },
+  methods: {
+    isIssuableChecked(issuable) {
+      return this.checkedIssuableIds.includes(issuable.id);
+    },
+    updateCheckedIssuableIds(issuable, toCheck) {
+      const isIdChecked = this.checkedIssuableIds.includes(issuable.id);
+      if (toCheck && !isIdChecked) {
+        this.checkedIssuableIds.push(issuable.id);
+      }
+      if (!toCheck && isIdChecked) {
+        const indexToDelete = this.checkedIssuableIds.findIndex((id) => id === issuable.id);
+        this.checkedIssuableIds.splice(indexToDelete, 1);
+      }
+    },
+    handleIssuableCheckedInput(issuable, value) {
+      this.updateCheckedIssuableIds(issuable, value);
+      this.$emit('update-legacy-bulk-edit');
+    },
+    handleAllIssuablesCheckedInput(value) {
+      this.issuables.forEach((issuable) => this.updateCheckedIssuableIds(issuable, value));
+      this.$emit('update-legacy-bulk-edit');
+    },
+    handleVueDraggableUpdate({ newIndex, oldIndex }) {
+      this.$emit('reorder', { newIndex, oldIndex });
+    },
+    handlePageSizeChange(newPageSize) {
+      this.$emit('page-size-change', newPageSize);
+    },
+    isIssuableActive(issuable) {
+      return Boolean(
+        getIdFromGraphQLId(issuable.id) === getIdFromGraphQLId(this.activeIssuable?.id),
+      );
+    },
+  },
+  PAGE_SIZE_STORAGE_KEY,
+};
+</script>
+
+<template>
+  <div class="issuable-list-container">
+    <slot name="list-header">
+      <issuable-tabs
+        :tabs="tabs"
+        :tab-counts="tabCounts"
+        :current-tab="currentTab"
+        :truncate-counts="truncateCounts"
+        :max-count="maxCount"
+        @click="$emit('click-tab', $event)"
+      >
+        <template v-if="glSlots()['nav-actions']" #nav-actions>
+          <slot name="nav-actions"></slot>
+        </template>
+      </issuable-tabs>
+    </slot>
+    <filtered-search-bar
+      :namespace="namespace"
+      :recent-searches-storage-key="recentSearchesStorageKey"
+      :search-input-placeholder="searchInputPlaceholder"
+      :tokens="searchTokens"
+      :sort-options="sortOptions"
+      :initial-filter-value="initialFilterValue"
+      :initial-sort-by="initialSortBy"
+      :sync-filter-and-sort="syncFilterAndSort"
+      :show-checkbox="showBulkEditSidebar"
+      :checkbox-checked="allIssuablesChecked"
+      :show-friendly-text="showFilteredSearchFriendlyText"
+      terms-as-tokens
+      class="row-content-block gl-top-2 gl-z-3 gl-grow gl-border-t-0 @sm/panel:gl-flex @md/panel:gl-sticky"
+      data-testid="issuable-search-container"
+      @checked-input="handleAllIssuablesCheckedInput"
+      @on-filter="$emit('filter', $event)"
+      @on-sort="$emit('sort', $event)"
+    >
+      <template v-if="glSlots()['user-preference']" #user-preference>
+        <slot name="user-preference"></slot>
+      </template>
+    </filtered-search-bar>
+    <gl-alert
+      v-if="error && !searchTimeout"
+      variant="danger"
+      :class="{ 'gl-mt-5': !hasItems && !issuablesLoading }"
+      :dismissible="hasItems"
+      @dismiss="$emit('dismiss-alert')"
+    >
+      {{ error }}
+    </gl-alert>
+    <issuable-bulk-edit-sidebar :expanded="showBulkEditSidebar">
+      <template v-if="glSlots()['bulk-edit-actions']" #bulk-edit-actions>
+        <slot name="bulk-edit-actions" :checked-issuables="checkedIssuables"></slot>
+      </template>
+      <template v-if="glSlots()['sidebar-items']" #sidebar-items>
+        <slot name="sidebar-items" :checked-issuables="checkedIssuables"></slot>
+      </template>
+    </issuable-bulk-edit-sidebar>
+    <resource-lists-loading-state-list
+      v-if="issuablesLoading"
+      :left-lines-count="3"
+      :list-length="skeletonItemCount"
+    />
+    <template v-else>
+      <component
+        :is="issuablesWrapper"
+        v-if="issuables.length > 0"
+        :value="issuables"
+        item-key="id"
+        class="content-list issuable-list issues-list"
+        :class="{ 'manual-ordering': isManualOrdering }"
+        v-bind="$options.vueDraggableAttributes"
+        @update="handleVueDraggableUpdate"
+      >
+        <issuable-item
+          v-for="issuable in issuables"
+          :key="issuable.id"
+          :class="[{ 'gl-cursor-grab': isManualOrdering }, issuableItemClass]"
+          data-testid="issuable-container"
+          :data-qa-issuable-title="issuable.title"
+          :has-scoped-labels-feature="hasScopedLabelsFeature"
+          :issuable-symbol="issuableSymbol"
+          :issuable="issuable"
+          :label-filter-param="labelFilterParam"
+          :full-path="fullPath"
+          :show-checkbox="showBulkEditSidebar"
+          :checked="isIssuableChecked(issuable)"
+          :show-work-item-type-icon="showWorkItemTypeIcon"
+          :prevent-redirect="preventRedirect"
+          :is-active="isIssuableActive(issuable)"
+          :detail-loading="detailLoading"
+          :hidden-metadata-keys="hiddenMetadataKeys"
+          @checked-input="handleIssuableCheckedInput(issuable, $event)"
+          @select-issuable="$emit('select-issuable', $event)"
+        >
+          <template v-if="glSlots().reference" #reference>
+            <slot name="reference" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots().author" #author>
+            <slot name="author" :author="issuable.author"></slot>
+          </template>
+          <template v-if="glSlots().timeframe" #timeframe>
+            <slot name="timeframe" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots()['target-branch']" #target-branch>
+            <slot name="target-branch" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots().status" #status>
+            <slot name="status" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots().statistics" #statistics>
+            <slot name="statistics" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots()['approval-status']" #approval-status>
+            <slot name="approval-status" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots()['pipeline-status']" #pipeline-status>
+            <slot name="pipeline-status" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots().reviewers" #reviewers>
+            <slot name="reviewers" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots()['title-icons']" #title-icons>
+            <slot name="title-icons" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots().discussions" #discussions>
+            <slot name="discussions" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots()['health-status']" #health-status>
+            <slot name="health-status" :issuable="issuable"></slot>
+          </template>
+          <template v-if="glSlots()['custom-status']" #custom-status>
+            <slot name="custom-status" :issuable="issuable"></slot>
+          </template>
+        </issuable-item>
+      </component>
+      <empty-result v-else-if="!alwaysAllowCustomEmptyState && initialFilterValue.length > 0" />
+      <slot v-else-if="searchTimeout" name="search-timeout"></slot>
+      <slot v-else-if="!error" name="empty-state"></slot>
+    </template>
+
+    <div
+      data-testid="list-footer"
+      class="gl-relative gl-mt-6 gl-flex gl-justify-between @md/panel:!gl-justify-center"
+    >
+      <gl-keyset-pagination
+        v-if="showPaginationControls && useKeysetPagination"
+        :has-next-page="hasNextPage"
+        :has-previous-page="hasPreviousPage"
+        @next="$emit('next-page')"
+        @prev="$emit('previous-page')"
+      />
+      <gl-pagination
+        v-else-if="showPaginationControls"
+        :per-page="defaultPageSize"
+        :total-items="totalItems"
+        :value="currentPage"
+        :prev-page="previousPage"
+        :next-page="nextPage"
+        align="center"
+        class="gl-pagination gl-mt-3"
+        @input="$emit('page-change', $event)"
+      />
+
+      <local-storage-sync
+        v-if="showPageSizeSelector"
+        :value="defaultPageSize"
+        :storage-key="$options.PAGE_SIZE_STORAGE_KEY"
+        @input="handlePageSizeChange"
+      >
+        <page-size-selector
+          :value="defaultPageSize"
+          class="gl-relative gl-right-0 @md/panel:gl-absolute"
+          @input="handlePageSizeChange"
+        />
+      </local-storage-sync>
+    </div>
+  </div>
+</template>

@@ -1,0 +1,12 @@
+---
+Fips/MD5:
+  Exclude:
+    - 'app/models/concerns/checksummable.rb'
+    - 'app/services/packages/maven/metadata/append_package_file_service.rb'
+    - 'ee/app/models/license.rb'
+    - 'lib/tasks/migrate/setup_postgresql.rake'
+    - 'qa/qa/specs/features/api/3_create/repository/project_archive_compare_spec.rb'
+    - 'spec/controllers/invites_controller_spec.rb'
+    - 'spec/lib/gitlab/ci/trace/archive_spec.rb'
+    - 'spec/lib/gitlab/ci/trace/remote_checksum_spec.rb'
+    - 'spec/models/concerns/checksummable_spec.rb'

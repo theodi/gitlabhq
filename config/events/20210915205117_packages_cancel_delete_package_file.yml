@@ -1,0 +1,14 @@
+description: "Cancel deletion of items from the package file list"
+category: "`UI:[MavenPackages | NpmPackages | ConanPackages | undefined]`"
+action: cancel_delete_package_file
+extra_properties:
+identifiers:
+product_group: package_registry
+product_categories:
+- package_registry
+milestone: "14.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/62179
+tiers:
+- free
+- premium
+- ultimate

@@ -1,0 +1,2109 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Auth::AuthFinders, feature_category: :system_access do
+  include described_class
+  include HttpBasicAuthHelpers
+
+  let_it_be(:organization) { create(:organization) }
+
+  # Create the feed_token and static_object_token for the user
+  let_it_be(:user, freeze: true) { create(:user).tap(&:feed_token).tap(&:static_object_token) }
+  let_it_be(:personal_access_token, freeze: true) { create(:personal_access_token, user: user) }
+
+  let_it_be(:project, freeze: true) { create(:project, :private, developers: user) }
+  let_it_be(:pipeline, freeze: true) { create(:ci_pipeline, project: project) }
+  let_it_be(:job, freeze: true) { create(:ci_build, :running, pipeline: pipeline, user: user) }
+  let_it_be(:failed_job, freeze: true) { create(:ci_build, :failed, pipeline: pipeline, user: user) }
+
+  let_it_be(:project2, freeze: true) { create(:project, :private, developers: user) }
+  let_it_be(:pipeline2, freeze: true) { create(:ci_pipeline, project: project2) }
+  let_it_be(:job2, freeze: true) { create(:ci_build, :running, pipeline: pipeline2, user: user) }
+
+  let(:env) do
+    {
+      'rack.input' => ''
+    }
+  end
+
+  let(:request) { ActionDispatch::Request.new(env) }
+  let(:params) { {} }
+
+  def set_param(key, value)
+    request.update_param(key, value)
+  end
+
+  def set_header(key, value)
+    env[key] = value
+  end
+
+  def set_basic_auth_header(username, password)
+    env.merge!(basic_auth_header(username, password))
+  end
+
+  def set_bearer_token(token)
+    env['HTTP_AUTHORIZATION'] = "Bearer #{token}"
+  end
+
+  shared_examples 'find user from job token' do |without_job_token_allowed|
+    context 'when route is allowed to be authenticated', :request_store do
+      let(:route_authentication_setting) { { job_token_allowed: true } }
+
+      context 'for an invalid token' do
+        let(:token) { 'invalid token' }
+
+        it "returns an Unauthorized exception" do
+          expect { auth_subject }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          expect(@current_authenticated_job).to be_nil
+        end
+      end
+
+      context 'with a running job' do
+        let(:token) { job.token }
+
+        it 'return user' do
+          expect(auth_subject).to eq(user)
+          expect(@current_authenticated_job).to eq job
+          expect(auth_subject).to be_from_ci_job_token
+          expect(auth_subject.ci_job_token_scope.current_project).to eq(job.project)
+        end
+      end
+
+      context 'with a job that is not running' do
+        let(:token) { failed_job.token }
+
+        it 'returns an Unauthorized exception' do
+          expect { auth_subject }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          expect(@current_authenticated_job).to be_nil
+        end
+      end
+
+      context 'for an array of tokens' do
+        let(:token) { [job.token, 'invalid token'] }
+
+        it "returns an Unauthorized exception" do
+          expect { auth_subject }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          expect(@current_authenticated_job).to be_nil
+        end
+      end
+    end
+
+    context 'when route is not allowed to be authenticated', :request_store do
+      let(:route_authentication_setting) { { job_token_allowed: false } }
+
+      context 'with a running job' do
+        let(:token) { job.token }
+
+        case without_job_token_allowed
+        when :error
+          it 'returns an Unauthorized exception' do
+            expect { auth_subject }.to raise_error(Gitlab::Auth::UnauthorizedError)
+            expect(@current_authenticated_job).to be_nil
+          end
+        when :user
+          it 'returns the user' do
+            expect(auth_subject).to eq(user)
+            expect(@current_authenticated_job).to eq job
+            expect(auth_subject).to be_from_ci_job_token
+            expect(auth_subject.ci_job_token_scope.current_project).to eq(job.project)
+          end
+        else
+          it 'returns nil' do
+            is_expected.to be_nil
+            expect(@current_authenticated_job).to be_nil
+          end
+        end
+      end
+    end
+  end
+
+  shared_examples 'rejects tokens that are too large' do
+    let(:token) { 'x' * (described_class::MAX_JOB_TOKEN_SIZE_BYTES + 1) }
+
+    it { expect { auth_subject }.to raise_error Gitlab::Auth::InvalidTokenError, 'Token exceeds maximum size' }
+  end
+
+  shared_examples 'composite identity authentication' do
+    context 'with composite identity', :request_store do
+      let_it_be(:oauth_application) { create(:oauth_application) }
+      let_it_be_with_reload(:primary_user) { create(:user, :service_account, composite_identity_enforced: true) }
+      let_it_be(:scoped_user) { create(:user) }
+
+      let(:scopes) { ['api', "user:#{scoped_user.id}"] }
+
+      let(:oauth_access_token) do
+        create(:oauth_access_token,
+          application_id: oauth_application.id,
+          resource_owner_id: primary_user.id,
+          scopes: scopes,
+          organization_id: organization.id)
+      end
+
+      before do
+        set_bearer_token(oauth_access_token.plaintext_token)
+      end
+
+      context 'when the token resource owner has composite_identity_enforced' do
+        context 'when linked composite identity is available' do
+          it 'returns the scoped user' do
+            expect(auth_subject).to eq(scoped_user)
+          end
+
+          it 'sets the scoped user to composite_identity_enforced' do
+            expect(auth_subject.composite_identity_enforced?).to be(true)
+          end
+        end
+
+        context 'when linked composite identity is not available' do
+          before do
+            allow(Gitlab::Auth::Identity).to(receive(:currently_linked).and_return(nil))
+          end
+
+          it 'raises an error' do
+            expect { auth_subject }.to raise_error(::Gitlab::Auth::UnauthorizedError)
+          end
+        end
+      end
+
+      context 'when the token resource owner does not have composite_identity_enforced' do
+        before do
+          primary_user.update!(composite_identity_enforced: false)
+        end
+
+        it 'returns the resource owner user' do
+          expect(auth_subject).to eq(primary_user)
+        end
+
+        it 'does not set the user to composite_identity_enforced' do
+          expect(auth_subject.composite_identity_enforced?).to be(false)
+        end
+      end
+    end
+  end
+
+  describe 'BEARER_PATTERN' do
+    it 'matches Bearer prefix case-insensitively' do
+      expect(described_class::BEARER_PATTERN).to match('Bearer token')
+      expect(described_class::BEARER_PATTERN).to match('bearer token')
+      expect(described_class::BEARER_PATTERN).to match('BEARER token')
+      expect(described_class::BEARER_PATTERN).not_to match('token')
+    end
+  end
+
+  describe '#find_user_from_bearer_token' do
+    context 'with composite CI_JOB_TOKEN (JWT)', :request_store do
+      let_it_be(:scoped_user) { create(:user) }
+      let_it_be(:service_account) { create(:user, :service_account, composite_identity_enforced: true) }
+      let_it_be_with_reload(:project) { create(:project, :private, developers: scoped_user) }
+      let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project, user: service_account) }
+      let_it_be_with_reload(:job) do
+        create(:ci_build, :running, pipeline: pipeline, project: project, user: service_account, options: { scoped_user_id: scoped_user.id })
+      end
+
+      let(:route_authentication_setting) { { job_token_allowed: true } }
+
+      it 'returns the scoped human user' do
+        set_bearer_token(job.token)
+        expect(find_user_from_bearer_token).to eq(scoped_user)
+        expect(@current_authenticated_job).to eq(job)
+      end
+
+      it 'raises UnauthorizedError if linked identity missing' do
+        set_bearer_token(job.token)
+        allow(Gitlab::Auth::Identity).to receive(:currently_linked).and_return(nil)
+
+        expect { find_user_from_bearer_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+      end
+    end
+
+    subject(:auth_subject) { find_user_from_bearer_token }
+
+    context 'when the token is passed as an oauth token' do
+      before do
+        set_bearer_token(token)
+      end
+
+      it_behaves_like 'find user from job token', :error
+    end
+
+    context 'with oauth token' do
+      let_it_be(:oauth_application) { create(:oauth_application, owner: user) }
+      let(:oauth_access_token) do
+        create(:oauth_access_token,
+          application_id: oauth_application.id,
+          resource_owner_id: user.id,
+          scopes: 'api',
+          organization_id: organization.id)
+      end
+
+      before do
+        set_bearer_token(oauth_access_token.plaintext_token)
+      end
+
+      it { is_expected.to eq user }
+    end
+
+    context 'with a personal access token' do
+      before do
+        env[described_class::PRIVATE_TOKEN_HEADER] = personal_access_token.token
+      end
+
+      it { is_expected.to eq user }
+    end
+  end
+
+  describe '#find_user_from_warden' do
+    context 'with CSRF token' do
+      before do
+        allow(Gitlab::RequestForgeryProtection).to receive(:verified?).and_return(true)
+      end
+
+      context 'with invalid credentials' do
+        it 'returns nil' do
+          expect(find_user_from_warden).to be_nil
+        end
+      end
+
+      context 'with valid credentials' do
+        it 'returns the user' do
+          set_header('warden', double("warden", authenticate: user))
+
+          expect(find_user_from_warden).to eq user
+        end
+      end
+    end
+
+    context 'without CSRF token' do
+      it 'returns nil' do
+        allow(Gitlab::RequestForgeryProtection).to receive(:verified?).and_return(false)
+        set_header('warden', double("warden", authenticate: user))
+
+        expect(find_user_from_warden).to be_nil
+      end
+    end
+  end
+
+  describe '#find_user_from_feed_token' do
+    context 'when the request format is atom' do
+      before do
+        set_header('SCRIPT_NAME', 'url.atom')
+        set_header('HTTP_ACCEPT', 'application/atom+xml')
+      end
+
+      context 'when old format feed_token param is provided' do
+        it 'returns user if valid feed_token' do
+          set_param(:feed_token, user.feed_token)
+
+          expect(find_user_from_feed_token(:rss)).to eq user
+        end
+
+        it 'returns nil if valid feed_token and disabled' do
+          allow(Gitlab::CurrentSettings).to receive_messages(disable_feed_token: true)
+          set_param(:feed_token, user.feed_token)
+
+          expect(find_user_from_feed_token(:rss)).to be_nil
+        end
+
+        it 'returns nil if feed_token is blank' do
+          expect(find_user_from_feed_token(:rss)).to be_nil
+        end
+
+        it 'returns exception if invalid feed_token' do
+          set_param(:feed_token, 'invalid_token')
+
+          expect { find_user_from_feed_token(:rss) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+      end
+
+      context 'when path-dependent format feed_token param is provided' do
+        let_it_be(:feed_user, freeze: true) { create(:user, feed_token: 'KNOWN VALUE').tap(&:feed_token) }
+        # The middle part is the output of OpenSSL::HMAC.hexdigest("SHA256", 'KNOWN VALUE', 'url.atom')
+        let(:feed_token) { "glft-a8cc74ccb0de004d09a968705ba49099229b288b3de43f26c473a9d8d7fb7693-#{feed_user.id}" }
+
+        it 'returns user if valid feed_token' do
+          set_param(:feed_token, feed_token)
+
+          expect(find_user_from_feed_token(:rss)).to eq feed_user
+        end
+
+        it 'returns nil if valid feed_token and disabled' do
+          allow(Gitlab::CurrentSettings).to receive_messages(disable_feed_token: true)
+          set_param(:feed_token, feed_token)
+
+          expect(find_user_from_feed_token(:rss)).to be_nil
+        end
+
+        it 'returns exception if token has same HMAC but different user ID' do
+          set_param(:feed_token, "glft-a8cc74ccb0de004d09a968705ba49099229b288b3de43f26c473a9d8d7fb7693-#{user.id}")
+
+          expect { find_user_from_feed_token(:rss) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+
+        it 'returns exception if token has wrong HMAC but same user ID' do
+          set_param(:feed_token, "glft-aaaaaaaaaade004d09a968705ba49099229b288b3de43f26c473a9d8d7fb7693-#{feed_user.id}")
+
+          expect { find_user_from_feed_token(:rss) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+
+        it 'returns exception if user does not exist' do
+          set_param(:feed_token, "glft-a8cc74ccb0de004d09a968705ba49099229b288b3de43f26c473a9d8d7fb7693-#{non_existing_record_id}")
+
+          expect { find_user_from_feed_token(:rss) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+
+        it 'returns exception if an array is passed' do
+          set_param(:feed_token, [feed_token, 'fake'])
+
+          expect { find_user_from_feed_token(:rss) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+
+        context 'with instance prefix' do
+          let(:instance_prefix) { 'instanceprefix' }
+          let(:feed_token_with_prefix) { "#{instance_prefix}-#{feed_token}" }
+
+          before do
+            stub_application_setting(instance_token_prefix: instance_prefix)
+          end
+
+          it 'returns user if valid feed_token' do
+            set_param(:feed_token, feed_token)
+
+            expect(find_user_from_feed_token(:rss)).to eq feed_user
+          end
+
+          it 'returns user if valid feed_token_with_prefix' do
+            set_param(:feed_token, feed_token_with_prefix)
+
+            expect(find_user_from_feed_token(:rss)).to eq feed_user
+          end
+
+          it 'returns exception if invalid feed_token prefix' do
+            set_param(:feed_token, "invalid#{feed_token}")
+
+            expect { find_user_from_feed_token(:rss) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          end
+        end
+      end
+
+      context 'when old format rss_token param is provided' do
+        it 'returns user if valid rss_token' do
+          set_param(:rss_token, user.feed_token)
+
+          expect(find_user_from_feed_token(:rss)).to eq user
+        end
+
+        it 'returns nil if rss_token is blank' do
+          expect(find_user_from_feed_token(:rss)).to be_nil
+        end
+
+        it 'returns exception if invalid rss_token' do
+          set_param(:rss_token, 'invalid_token')
+
+          expect { find_user_from_feed_token(:rss) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+      end
+    end
+
+    context 'when the request format is not atom' do
+      it 'returns nil' do
+        set_header('SCRIPT_NAME', 'json')
+
+        set_param(:feed_token, user.feed_token)
+
+        expect(find_user_from_feed_token(:rss)).to be_nil
+      end
+    end
+
+    context 'when the request format is empty' do
+      it 'the method call does not modify the original value' do
+        set_header('SCRIPT_NAME', 'url.atom')
+
+        env.delete('action_dispatch.request.formats')
+
+        find_user_from_feed_token(:rss)
+
+        expect(env['action_dispatch.request.formats']).to be_nil
+      end
+    end
+  end
+
+  describe '#find_user_from_static_object_token' do
+    shared_examples 'static object request' do
+      before do
+        set_header('SCRIPT_NAME', path)
+      end
+
+      context 'when token header param is present' do
+        context 'when token is correct' do
+          it 'returns the user' do
+            request.headers['X-Gitlab-Static-Object-Token'] = user.static_object_token
+
+            expect(find_user_from_static_object_token(format)).to eq(user)
+          end
+        end
+
+        context 'when token is incorrect' do
+          it 'returns an error' do
+            request.headers['X-Gitlab-Static-Object-Token'] = 'foobar'
+
+            expect { find_user_from_static_object_token(format) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          end
+        end
+
+        context 'when token is an array' do
+          it 'returns an error' do
+            request.headers['X-Gitlab-Static-Object-Token'] = [user.static_object_token, 'foobar']
+
+            expect { find_user_from_static_object_token(format) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          end
+        end
+      end
+
+      context 'when token query param is present' do
+        context 'when token is correct' do
+          it 'returns the user' do
+            set_param(:token, user.static_object_token)
+
+            expect(find_user_from_static_object_token(format)).to eq(user)
+          end
+        end
+
+        context 'when token is incorrect' do
+          it 'raises an error' do
+            set_param(:token, 'foobar')
+
+            expect { find_user_from_static_object_token(format) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          end
+        end
+
+        context 'when token is an array' do
+          it 'raises an error' do
+            set_param(:token, [user.static_object_token, 'foobar'])
+
+            expect { find_user_from_static_object_token(format) }.to raise_error(Gitlab::Auth::UnauthorizedError)
+          end
+        end
+      end
+    end
+
+    context 'when request format is archive' do
+      it_behaves_like 'static object request' do
+        let_it_be(:path) { 'project/-/archive/master.zip' }
+        let_it_be(:format) { :archive }
+      end
+    end
+
+    context 'when request format is blob' do
+      it_behaves_like 'static object request' do
+        let_it_be(:path) { 'project/raw/master/README.md' }
+        let_it_be(:format) { :blob }
+      end
+    end
+
+    context 'when request format is not archive nor blob' do
+      before do
+        set_header('script_name', 'url')
+      end
+
+      it 'returns nil' do
+        expect(find_user_from_static_object_token(:foo)).to be_nil
+      end
+    end
+  end
+
+  describe '#deploy_token_from_request' do
+    let_it_be(:deploy_token, freeze: true) { create(:deploy_token) }
+    let_it_be(:route_authentication_setting) { { deploy_token_allowed: true } }
+
+    subject(:auth_subject) { deploy_token_from_request }
+
+    it { is_expected.to be_nil }
+
+    shared_examples 'an unauthenticated route' do
+      context 'when route is not allowed to use deploy_tokens' do
+        let(:route_authentication_setting) { { deploy_token_allowed: false } }
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    context 'with deploy token headers' do
+      context 'with valid deploy token' do
+        before do
+          set_header(described_class::DEPLOY_TOKEN_HEADER, deploy_token.token)
+        end
+
+        it { is_expected.to eq deploy_token }
+      end
+
+      it_behaves_like 'an unauthenticated route'
+
+      context 'with incorrect token' do
+        before do
+          set_header(described_class::DEPLOY_TOKEN_HEADER, 'invalid_token')
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    context 'with oauth headers' do
+      context 'with valid token' do
+        before do
+          set_bearer_token(deploy_token.token)
+        end
+
+        it { is_expected.to eq deploy_token }
+
+        it_behaves_like 'an unauthenticated route'
+      end
+
+      context 'with invalid token' do
+        before do
+          set_bearer_token('invalid_token')
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    context 'with basic auth headers' do
+      before do
+        set_basic_auth_header(deploy_token.username, deploy_token.token)
+      end
+
+      it { is_expected.to eq deploy_token }
+
+      it_behaves_like 'an unauthenticated route'
+
+      context 'with incorrect token' do
+        before do
+          set_basic_auth_header(deploy_token.username, 'invalid')
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    context 'when the the deploy token is restricted with external_authorization' do
+      before do
+        allow(Gitlab::ExternalAuthorization).to receive(:allow_deploy_tokens_and_deploy_keys?).and_return(false)
+        set_header(described_class::DEPLOY_TOKEN_HEADER, deploy_token.token)
+      end
+
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe '#find_user_from_access_token' do
+    before do
+      set_header('SCRIPT_NAME', 'url.atom')
+    end
+
+    it 'returns nil if no access_token present' do
+      expect(find_user_from_access_token).to be_nil
+    end
+
+    context 'when run for kubernetes internal API endpoint' do
+      before do
+        set_bearer_token('AgentToken')
+        set_header('SCRIPT_NAME', '/api/v4/internal/kubernetes/modules/starboard_vulnerability/policies_configuration')
+      end
+
+      it 'returns nil' do
+        expect(find_user_from_access_token).to be_nil
+      end
+    end
+
+    context 'when validate_access_token! returns valid' do
+      it 'returns user' do
+        set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+
+        expect(find_user_from_access_token).to eq user
+      end
+
+      it 'returns exception if token has no user' do
+        set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+        allow_any_instance_of(PersonalAccessToken).to receive(:user).and_return(nil)
+
+        expect { find_user_from_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+      end
+    end
+
+    context 'when PAT with glpat- prefix is provided' do
+      before do
+        set_header('SCRIPT_NAME', '/api/endpoint')
+        set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+      end
+
+      it 'returns user without performing OAuth token lookup' do
+        expect(self).not_to receive(:find_oauth_access_token)
+
+        expect(find_user_from_access_token).to eq(user)
+      end
+    end
+
+    context 'with OAuth headers' do
+      context 'with valid personal access token' do
+        before do
+          set_bearer_token(personal_access_token.token)
+        end
+
+        it 'returns user' do
+          expect(find_user_from_access_token).to eq user
+        end
+      end
+
+      context 'with invalid personal_access_token' do
+        before do
+          set_bearer_token('invalid_20byte_token')
+        end
+
+        it 'returns exception' do
+          expect { find_personal_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+      end
+
+      context 'when using a non-prefixed access token' do
+        let_it_be(:personal_access_token, freeze: true) { create(:personal_access_token, :no_prefix, user: user) }
+
+        before do
+          set_bearer_token(personal_access_token.token)
+        end
+
+        it 'returns user after OAuth lookup fails and falls back to PAT lookup' do
+          expect(find_user_from_access_token).to eq user
+        end
+      end
+    end
+
+    it_behaves_like 'composite identity authentication' do
+      subject(:auth_subject) { find_user_from_access_token }
+    end
+
+    context 'automatic reuse detection' do
+      let(:token_3) { create(:personal_access_token, :revoked) }
+      let(:token_2) { create(:personal_access_token, :revoked, previous_personal_access_token_id: token_3.id) }
+      let(:token_1) { create(:personal_access_token, previous_personal_access_token_id: token_2.id) }
+
+      context 'when a revoked token is used' do
+        before do
+          set_bearer_token(token_3.token)
+        end
+
+        context 'with url related to access tokens' do
+          before do
+            set_header('SCRIPT_NAME', "/personal_access_tokens/#{token_3.id}/rotate")
+          end
+
+          it 'revokes the latest rotated token' do
+            expect(token_1).not_to be_revoked
+
+            expect { find_user_from_access_token }.to raise_error(Gitlab::Auth::RevokedError)
+
+            expect(token_1.reload).to be_revoked
+          end
+        end
+
+        context 'with url not related to access tokens' do
+          before do
+            set_header('SCRIPT_NAME', '/epics/1')
+          end
+
+          it 'does not revoke the latest rotated token' do
+            expect(token_1).not_to be_revoked
+
+            expect { find_user_from_access_token }.to raise_error(Gitlab::Auth::RevokedError)
+
+            expect(token_1.reload).not_to be_revoked
+          end
+        end
+      end
+    end
+
+    context 'with IAM JWT token' do
+      include_context 'with IAM authentication setup'
+
+      let(:iam_scopes) { %w[api] }
+      let(:iam_jwt_token) do
+        create_iam_access_token(user: user, scopes: iam_scopes, issuer: iam_issuer, private_key: private_key, kid: kid)
+      end
+
+      before do
+        stub_feature_flags(iam_svc_oauth: user)
+        set_bearer_token(iam_jwt_token)
+      end
+
+      it 'returns user for valid IAM JWT token' do
+        expect(find_user_from_access_token).to eq(user)
+      end
+    end
+  end
+
+  describe '#find_user_from_web_access_token' do
+    context 'with personal access tokens' do
+      before do
+        set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+      end
+
+      it 'returns exception if token has no user' do
+        allow_any_instance_of(PersonalAccessToken).to receive(:user).and_return(nil)
+
+        expect { find_user_from_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+      end
+
+      context 'no feed, API, archive, download or design requests' do
+        it 'returns nil if the request is not RSS' do
+          expect(find_user_from_web_access_token(:rss)).to be_nil
+        end
+
+        it 'returns nil if the request is not ICS' do
+          expect(find_user_from_web_access_token(:ics)).to be_nil
+        end
+
+        it 'returns nil if the request is not API' do
+          expect(find_user_from_web_access_token(:api)).to be_nil
+        end
+
+        it 'returns nil if the request is not ARCHIVE' do
+          expect(find_user_from_web_access_token(:archive)).to be_nil
+        end
+
+        it 'returns nil if the request is not DOWNLOAD' do
+          expect(find_user_from_web_access_token(:download)).to be_nil
+        end
+
+        it 'returns nil if the request is not DESIGN' do
+          expect(find_user_from_web_access_token(:design)).to be_nil
+        end
+      end
+
+      it 'returns the user for RSS requests' do
+        set_header('SCRIPT_NAME', 'url.atom')
+
+        expect(find_user_from_web_access_token(:rss)).to eq(user)
+      end
+
+      it 'returns the user for ICS requests' do
+        set_header('SCRIPT_NAME', 'url.ics')
+
+        expect(find_user_from_web_access_token(:ics)).to eq(user)
+      end
+
+      it 'returns the user for ARCHIVE requests' do
+        set_header('SCRIPT_NAME', '/-/archive/main.zip')
+
+        expect(find_user_from_web_access_token(:archive)).to eq(user)
+      end
+
+      it 'returns the user for DOWNLOAD requests' do
+        set_header('SCRIPT_NAME', '/-/1.0.0/downloads/main.zip')
+
+        expect(find_user_from_web_access_token(:download)).to eq(user)
+      end
+
+      it 'returns the user for DESIGN requests' do
+        set_header('SCRIPT_NAME', '/group/project/-/design_management/designs/1/sha/raw_image')
+
+        expect(find_user_from_web_access_token(:design)).to eq(user)
+      end
+
+      context 'for API requests' do
+        it 'returns the user' do
+          set_header('SCRIPT_NAME', '/api/endpoint')
+
+          expect(find_user_from_web_access_token(:api)).to eq(user)
+        end
+
+        it 'returns nil if URL does not start with /api/' do
+          set_header('SCRIPT_NAME', '/relative_root/api/endpoint')
+
+          expect(find_user_from_web_access_token(:api)).to be_nil
+        end
+
+        context 'when the token has read_api scope' do
+          let_it_be(:personal_access_token, freeze: true) { create(:personal_access_token, user: user, scopes: ['read_api']) }
+
+          before do
+            set_header('SCRIPT_NAME', '/api/endpoint')
+          end
+
+          it 'raises InsufficientScopeError by default' do
+            expect { find_user_from_web_access_token(:api) }.to raise_error(Gitlab::Auth::InsufficientScopeError)
+          end
+
+          it 'finds the user when the read_api scope is passed' do
+            expect(find_user_from_web_access_token(:api, scopes: [:api, :read_api])).to eq(user)
+          end
+        end
+
+        context 'when relative_url_root is set' do
+          before do
+            stub_config_setting(relative_url_root: '/relative_root')
+          end
+
+          it 'returns the user' do
+            set_header('SCRIPT_NAME', '/relative_root/api/endpoint')
+
+            expect(find_user_from_web_access_token(:api)).to eq(user)
+          end
+        end
+
+        context 'with IAM JWT token' do
+          include_context 'with IAM authentication setup'
+
+          let(:iam_scopes) { %w[api] }
+          let(:iam_jwt_token) do
+            create_iam_access_token(user: user, scopes: iam_scopes, issuer: iam_issuer, private_key: private_key, kid: kid)
+          end
+
+          before do
+            stub_feature_flags(iam_svc_oauth: user)
+            set_header(described_class::PRIVATE_TOKEN_HEADER, nil)
+            set_bearer_token(iam_jwt_token)
+            set_header('SCRIPT_NAME', '/api/endpoint')
+          end
+
+          it 'returns the user for API requests' do
+            expect(find_user_from_web_access_token(:api)).to eq(user)
+          end
+
+          it 'does not call LastUsedService for stateless IAM tokens' do
+            expect(::PersonalAccessTokens::LastUsedService).not_to receive(:new)
+
+            find_user_from_web_access_token(:api)
+          end
+        end
+      end
+    end
+
+    it_behaves_like 'composite identity authentication' do
+      subject(:auth_subject) { find_user_from_web_access_token(:api) }
+
+      before do
+        set_header('SCRIPT_NAME', '/api/endpoint')
+      end
+    end
+  end
+
+  describe '#resolve_access_token' do
+    context 'when namespace_inheritable authentication is registered but empty' do
+      let(:inheritable_setting) { Struct.new(:namespace_inheritable).new({ authentication: {} }) }
+
+      before do
+        allow(self).to receive(:inheritable_setting).and_return(inheritable_setting)
+      end
+
+      # access_token_from_namespace_inheritable only exists on real Grape
+      # endpoints (API::Helpers::Authentication), not on AuthFinders alone, so
+      # this can only assert delegation, not the full downstream outcome.
+      it 'delegates to the namespace-inheritable lookup instead of falling back to the generic OAuth/PAT lookup' do
+        expect(self).to receive(:access_token_from_namespace_inheritable)
+
+        resolve_access_token
+      end
+    end
+  end
+
+  describe '#revoke_token_family' do
+    context 'when the token is not a PersonalAccessToken' do
+      # Any duck-typed access token with a non-integer `id` (e.g. a JWT's
+      # `jti`) would raise a DB type error if it reached the query below.
+      let(:token) { double('token', id: 'a-jwt-jti') }
+
+      before do
+        set_header('SCRIPT_NAME', "/personal_access_tokens/self/rotate")
+      end
+
+      it 'does not attempt to revoke a token family' do
+        expect(PersonalAccessTokens::RevokeTokenFamilyService).not_to receive(:new)
+
+        revoke_token_family(token)
+      end
+    end
+  end
+
+  describe '#find_personal_access_token' do
+    before do
+      set_header('SCRIPT_NAME', 'url.atom')
+    end
+
+    context 'passed as header' do
+      it 'returns token if valid personal_access_token' do
+        set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+
+        expect(find_personal_access_token).to eq personal_access_token
+      end
+    end
+
+    context 'passed as param' do
+      it 'returns token if valid personal_access_token' do
+        set_param(described_class::PRIVATE_TOKEN_PARAM, personal_access_token.token)
+
+        expect(find_personal_access_token).to eq personal_access_token
+      end
+    end
+
+    it 'returns nil if no personal_access_token' do
+      expect(find_personal_access_token).to be_nil
+    end
+
+    it 'returns nil if PAT looks like a build token' do
+      set_header('SCRIPT_NAME', nil)
+      set_header('PATH_INFO', '/api/v4/jobs/1')
+      set_header(described_class::PRIVATE_TOKEN_HEADER, "#{::Ci::Build::TOKEN_PREFIX}ABCD")
+
+      expect(find_personal_access_token).to be_nil
+    end
+
+    context 'with instance wide prefix configured' do
+      let(:instance_prefix) { 'instanceprefix' }
+
+      before do
+        stub_application_setting(instance_token_prefix: instance_prefix)
+      end
+
+      it 'returns nil if PAT looks like a build token with instance wide prefix' do
+        set_header('SCRIPT_NAME', nil)
+        set_header('PATH_INFO', '/api/v4/jobs/1')
+        set_header(described_class::PRIVATE_TOKEN_HEADER, "#{instance_prefix}-#{::Ci::Build::TOKEN_PREFIX}ABCD")
+
+        expect(find_personal_access_token).to be_nil
+      end
+    end
+
+    it 'returns exception if invalid personal_access_token' do
+      set_header(described_class::PRIVATE_TOKEN_HEADER, 'invalid_token')
+
+      expect { find_personal_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+    end
+  end
+
+  describe '#find_oauth_access_token' do
+    let_it_be(:oauth_application) { create(:oauth_application, owner: user) }
+    let(:scopes) { 'api' }
+    let(:oauth_access_token) do
+      create(:oauth_access_token,
+        application_id: oauth_application.id,
+        resource_owner_id: user.id,
+        scopes: scopes,
+        organization_id: organization.id)
+    end
+
+    context 'passed as header' do
+      before do
+        set_bearer_token(oauth_access_token.plaintext_token)
+      end
+
+      it 'returns token if valid oauth_access_token' do
+        expect(find_oauth_access_token.token).to eq oauth_access_token.token
+      end
+
+      it 'calls find_caught_up_replica to ensure a recent replica is used' do
+        # The model lookup sticks as well while stick_new_oauth_tokens_to_primary rolls out
+        #
+        # Revert https://gitlab.com/gitlab-org/gitlab/-/merge_requests/211007 after
+        # rollouts for oauth_lookups_use_load_balancer_sticking and stick_new_oauth_tokens_to_primary
+        # are completed and change this expectation to
+        # expect(OauthAccessToken.sticking).to receive(:find_caught_up_replica)
+        expect(OauthAccessToken.sticking).to receive(:find_caught_up_replica).at_least(:once)
+
+        find_oauth_access_token
+      end
+    end
+
+    context 'passed as param' do
+      it 'returns user if valid oauth_access_token' do
+        set_param(:access_token, oauth_access_token.plaintext_token)
+
+        expect(find_oauth_access_token.token).to eq oauth_access_token.token
+      end
+    end
+
+    it 'returns nil if no oauth_access_token' do
+      expect(find_oauth_access_token).to be_nil
+    end
+
+    context 'with invalid token' do
+      before do
+        set_bearer_token('invalid_token')
+      end
+
+      it 'returns exception if invalid oauth_access_token' do
+        expect { find_oauth_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+      end
+    end
+
+    context 'with composite identity', :request_store do
+      let_it_be(:user) { create(:user, :service_account, composite_identity_enforced: true) }
+
+      before do
+        set_bearer_token(oauth_access_token.plaintext_token)
+      end
+
+      context 'when scoped user is specified' do
+        let(:scoped_user) { create(:user) }
+        let(:scopes) { "user:#{scoped_user.id}" }
+
+        context 'when linking composite identitiy succeeds' do
+          it 'returns the oauth token' do
+            expect(find_oauth_access_token.token).to eq(oauth_access_token.token)
+          end
+        end
+
+        context 'when linking composite identity raises an error' do
+          before do
+            allow(Gitlab::Auth::Identity).to(
+              receive(:link_from_oauth_token).and_raise(::Gitlab::Auth::Identity::IdentityLinkMismatchError)
+            )
+          end
+
+          it 'raises an error' do
+            expect { find_oauth_access_token }.to raise_error(::Gitlab::Auth::Identity::IdentityLinkMismatchError)
+          end
+        end
+      end
+
+      context 'when composite identity link can not be created' do
+        let(:scopes) { 'api' }
+
+        it 'raises an exception' do
+          expect { find_oauth_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+      end
+    end
+
+    context 'with IAM JWT token' do
+      include_context 'with IAM authentication setup'
+
+      let(:iam_scopes) { %w[api] }
+      let(:iam_jwt_token) do
+        create_iam_access_token(user: user, scopes: iam_scopes, issuer: iam_issuer, private_key: private_key, kid: kid)
+      end
+
+      before do
+        set_bearer_token(iam_jwt_token)
+      end
+
+      context 'when IAM service is disabled' do
+        before do
+          allow(Authn::IamAuthService).to receive(:enabled?).and_return(false)
+        end
+
+        it 'raises UnauthorizedError' do
+          expect { find_oauth_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+      end
+
+      context 'when feature flag is disabled' do
+        before do
+          stub_feature_flags(iam_svc_oauth: false)
+        end
+
+        it 'raises UnauthorizedError' do
+          expect { find_oauth_access_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+      end
+
+      context 'when feature flag is enabled' do
+        before do
+          stub_feature_flags(iam_svc_oauth: user)
+        end
+
+        it 'returns IamOauthToken when valid' do
+          token = find_oauth_access_token
+
+          expect(token).to be_a(Authn::Tokens::IamOauthToken)
+          expect(token.user_id).to eq(user.id)
+          expect(token.scopes).to eq(iam_scopes)
+        end
+
+        context 'with composite identity', :request_store do
+          let_it_be(:service_account) { create(:user, :service_account, composite_identity_enforced: true) }
+          let_it_be(:scoped_user) { create(:user) }
+          let(:iam_scopes) { ['api', "user:#{scoped_user.id}"] }
+          let(:iam_jwt_token) do
+            create_iam_access_token(user: service_account, scopes: iam_scopes,
+              issuer: iam_issuer, private_key: private_key, kid: kid)
+          end
+
+          before do
+            stub_feature_flags(iam_svc_oauth: service_account)
+          end
+
+          it 'links composite identity from IAM token' do
+            expect(::Gitlab::Auth::Identity).to receive(:link_from_oauth_token).and_call_original
+
+            token = find_oauth_access_token
+
+            expect(token).to be_a(Authn::Tokens::IamOauthToken)
+            expect(token.scope_user).to eq(scoped_user)
+          end
+
+          context 'when identity link fails' do
+            before do
+              allow(Gitlab::Auth::Identity).to(
+                receive(:link_from_oauth_token).and_raise(::Gitlab::Auth::Identity::IdentityLinkMismatchError)
+              )
+            end
+
+            it 'raises an error' do
+              expect { find_oauth_access_token }.to raise_error(::Gitlab::Auth::Identity::IdentityLinkMismatchError)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe '#find_personal_access_token_from_http_basic_auth' do
+    def auth_header_with(token)
+      set_basic_auth_header('username', token)
+    end
+
+    context 'access token is valid' do
+      let(:route_authentication_setting) { { basic_auth_personal_access_token: true } }
+
+      it 'finds the token from basic auth' do
+        auth_header_with(personal_access_token.token)
+
+        expect(find_personal_access_token_from_http_basic_auth).to eq personal_access_token
+      end
+    end
+
+    context 'access token is not valid' do
+      let(:route_authentication_setting) { { basic_auth_personal_access_token: true } }
+
+      it 'returns nil' do
+        auth_header_with('failing_token')
+
+        expect(find_personal_access_token_from_http_basic_auth).to be_nil
+      end
+    end
+
+    context 'route_setting is not set' do
+      it 'returns nil' do
+        auth_header_with(personal_access_token.token)
+
+        expect(find_personal_access_token_from_http_basic_auth).to be_nil
+      end
+    end
+
+    context 'route_setting is not correct' do
+      let(:route_authentication_setting) { { basic_auth_personal_access_token: false } }
+
+      it 'returns nil' do
+        auth_header_with(personal_access_token.token)
+
+        expect(find_personal_access_token_from_http_basic_auth).to be_nil
+      end
+    end
+  end
+
+  describe '#find_user_from_job_token_basic_auth' do
+    context 'with composite CI_JOB_TOKEN over basic auth', :request_store do
+      let_it_be(:scoped_user) { create(:user) }
+      let_it_be(:service_account) { create(:user, :service_account, composite_identity_enforced: true) }
+      let_it_be_with_reload(:project) { create(:project, :private, developers: scoped_user) }
+      let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project, user: service_account) }
+      let_it_be_with_reload(:job) do
+        create(:ci_build, :running, pipeline: pipeline, project: project, user: service_account, options: { scoped_user_id: scoped_user.id })
+      end
+
+      let(:route_authentication_setting) { { job_token_allowed: :basic_auth } }
+
+      it 'returns the scoped human user' do
+        set_basic_auth_header(::Gitlab::Auth::CI_JOB_USER, job.token)
+        expect(find_user_from_job_token_basic_auth).to eq(scoped_user)
+        expect(@current_authenticated_job).to eq(job)
+      end
+    end
+
+    subject(:auth_subject) { find_user_from_job_token_basic_auth }
+
+    context 'when the request does not have AUTHORIZATION header' do
+      it { is_expected.to be_nil }
+    end
+
+    context 'with wrong credentials' do
+      it 'returns nil without user and password' do
+        set_basic_auth_header(nil, nil)
+
+        is_expected.to be_nil
+      end
+
+      it 'returns nil without password' do
+        set_basic_auth_header('some-user', nil)
+
+        is_expected.to be_nil
+      end
+
+      it 'returns nil without user' do
+        set_basic_auth_header(nil, 'password')
+
+        is_expected.to be_nil
+      end
+
+      it 'returns nil without CI username' do
+        set_basic_auth_header('user', 'password')
+
+        is_expected.to be_nil
+      end
+    end
+
+    context 'with CI username' do
+      let(:username) { ::Gitlab::Auth::CI_JOB_USER }
+
+      before do
+        set_basic_auth_header(username, token)
+      end
+
+      it_behaves_like 'find user from job token', :user
+    end
+  end
+
+  describe '#find_user_from_basic_auth_password_for_git' do
+    subject(:auth_subject) { find_user_from_basic_auth_password_for_git }
+
+    context 'when the request does not have AUTHORIZATION header' do
+      it { is_expected.to be_nil }
+    end
+
+    it 'returns nil without user and password' do
+      set_basic_auth_header(nil, nil)
+
+      is_expected.to be_nil
+    end
+
+    it 'returns nil without password' do
+      set_basic_auth_header('some-user', nil)
+
+      is_expected.to be_nil
+    end
+
+    it 'returns nil without user' do
+      set_basic_auth_header(nil, 'password')
+
+      is_expected.to be_nil
+    end
+
+    it 'returns nil with CI username' do
+      set_basic_auth_header(::Gitlab::Auth::CI_JOB_USER, 'password')
+
+      is_expected.to be_nil
+    end
+
+    it 'returns nil with wrong password' do
+      set_basic_auth_header(user.username, 'wrong-password')
+
+      is_expected.to be_nil
+    end
+
+    context 'with correct password' do
+      before do
+        set_basic_auth_header(user.username, user.password)
+      end
+
+      it 'returns user' do
+        is_expected.to eq(user)
+      end
+
+      context "with password authentication disabled for Git" do
+        before do
+          stub_application_setting(password_authentication_enabled_for_git: false)
+        end
+
+        it 'returns nil' do
+          is_expected.to be_nil
+        end
+      end
+    end
+  end
+
+  describe '#find_user_from_lfs_token' do
+    subject(:auth_subject) { find_user_from_lfs_token }
+
+    context 'when the request does not have AUTHORIZATION header' do
+      it { is_expected.to be_nil }
+    end
+
+    it 'returns nil without user and token' do
+      set_basic_auth_header(nil, nil)
+
+      is_expected.to be_nil
+    end
+
+    it 'returns nil without token' do
+      set_basic_auth_header('some-user', nil)
+
+      is_expected.to be_nil
+    end
+
+    it 'returns nil without user' do
+      set_basic_auth_header(nil, 'token')
+
+      is_expected.to be_nil
+    end
+
+    it 'returns nil with wrong token' do
+      set_basic_auth_header(user.username, 'wrong-token')
+
+      is_expected.to be_nil
+    end
+
+    it 'returns user with correct user and correct token' do
+      lfs_token = Gitlab::LfsToken.new(user, nil).token
+      set_basic_auth_header(user.username, lfs_token)
+
+      is_expected.to eq(user)
+    end
+
+    it 'returns user even if the project does not belong to the user' do
+      another_project = create(:project)
+
+      lfs_token = Gitlab::LfsToken.new(user, another_project).token
+      set_basic_auth_header(user.username, lfs_token)
+
+      is_expected.to eq(user)
+    end
+
+    it 'returns nil with wrong user and correct token' do
+      lfs_token = Gitlab::LfsToken.new(user, nil).token
+      other_user = create(:user)
+      set_basic_auth_header(other_user.username, lfs_token)
+
+      is_expected.to be_nil
+    end
+  end
+
+  describe '#find_user_from_personal_access_token' do
+    subject(:auth_subject) { find_user_from_personal_access_token }
+
+    it 'returns nil without access token' do
+      allow_any_instance_of(described_class).to receive(:access_token).and_return(nil)
+
+      is_expected.to be_nil
+    end
+
+    it 'returns user with correct access token' do
+      personal_access_token = create(:personal_access_token, user: user)
+      allow_any_instance_of(described_class).to receive(:access_token).and_return(personal_access_token)
+
+      is_expected.to eq(user)
+    end
+
+    it 'returns exception if access token has no user' do
+      personal_access_token = create(:personal_access_token, user: user)
+      allow_any_instance_of(described_class).to receive(:access_token).and_return(personal_access_token)
+      allow_any_instance_of(PersonalAccessToken).to receive(:user).and_return(nil)
+
+      expect { auth_subject }.to raise_error(Gitlab::Auth::UnauthorizedError)
+    end
+  end
+
+  describe '#validate_access_token!' do
+    subject(:auth_subject) { validate_and_save_access_token! }
+
+    context 'with a job token' do
+      let(:route_authentication_setting) { { job_token_allowed: true } }
+
+      before do
+        env['HTTP_AUTHORIZATION'] = "Bearer #{job.token}"
+        find_user_from_bearer_token
+      end
+
+      it 'does not raise an error' do
+        expect { auth_subject }.not_to raise_error
+      end
+    end
+
+    it 'returns nil if no access_token present' do
+      expect(validate_and_save_access_token!).to be_nil
+    end
+
+    context 'with a personal access token' do
+      let_it_be_with_reload(:personal_access_token) { create(:personal_access_token, user: user) }
+
+      before do
+        allow_any_instance_of(described_class).to receive(:access_token).and_return(personal_access_token)
+      end
+
+      it 'saves the token info in the environment' do
+        auth_subject
+
+        expect(::Current.token_info).not_to be_nil
+      end
+
+      it 'includes auth_header_type in token info' do
+        set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+
+        auth_subject
+
+        expect(::Current.token_info[:auth_header_type]).to eq('private_token_header')
+      end
+
+      context 'when a previous failed validation left auth failure context' do
+        before do
+          set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+        end
+
+        it 'clears auth failure context on successful validation', :aggregate_failures do
+          # Simulate a prior failed auth attempt (e.g. wrong scope) that set auth failure context
+          expect { validate_and_save_access_token!(scopes: [:sudo]) }
+            .to raise_error(Gitlab::Auth::InsufficientScopeError)
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_reason']).to eq('insufficient_scope')
+
+          validate_and_save_access_token!
+
+          expect(Gitlab::ApplicationContext.current).not_to include(
+            'meta.auth_fail_reason',
+            'meta.auth_fail_token_id',
+            'meta.auth_fail_requested_scopes',
+            'meta.auth_fail_token_type',
+            'meta.auth_fail_auth_header_type'
+          )
+        end
+      end
+
+      context 'when the token is not valid' do
+        before do
+          set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+        end
+
+        it 'returns Gitlab::Auth::ExpiredError if token expired', :aggregate_failures do
+          personal_access_token.update!(expires_at: 1.day.ago)
+
+          expect { validate_and_save_access_token!(scopes: %w[api read_api]) }.to raise_error(Gitlab::Auth::ExpiredError)
+          expect(::Current.token_info).to be_nil
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_reason']).to eq('token_expired')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_id']).to eq("PersonalAccessToken/#{personal_access_token.id}")
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_requested_scopes']).to eq("api read_api")
+          expect(Gitlab::ApplicationContext.current['meta.user']).to eq(user.username)
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_type']).to eq('PersonalAccessToken')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_auth_header_type']).to eq('private_token_header')
+        end
+
+        it 'returns Gitlab::Auth::RevokedError if token revoked', :aggregate_failures do
+          personal_access_token.revoke!
+
+          expect { validate_and_save_access_token! }.to raise_error(Gitlab::Auth::RevokedError)
+          expect(::Current.token_info).to be_nil
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_reason']).to eq('token_revoked')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_id']).to eq("PersonalAccessToken/#{personal_access_token.id}")
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_requested_scopes']).to be_nil
+          expect(Gitlab::ApplicationContext.current['meta.user']).to eq(user.username)
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_type']).to eq('PersonalAccessToken')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_auth_header_type']).to eq('private_token_header')
+        end
+
+        it 'returns Gitlab::Auth::InsufficientScopeError if invalid token scope', :aggregate_failures do
+          expect { validate_and_save_access_token!(scopes: [:sudo]) }.to raise_error(Gitlab::Auth::InsufficientScopeError)
+          expect(::Current.token_info).to be_nil
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_reason']).to eq('insufficient_scope')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_id']).to eq("PersonalAccessToken/#{personal_access_token.id}")
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_requested_scopes']).to eq('sudo')
+          expect(Gitlab::ApplicationContext.current['meta.user']).to eq(user.username)
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_type']).to eq('PersonalAccessToken')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_auth_header_type']).to eq('private_token_header')
+        end
+
+        context 'when token in header has CI job token prefix' do
+          before do
+            set_header(described_class::PRIVATE_TOKEN_HEADER, "#{Ci::Build::TOKEN_PREFIX}random_string")
+          end
+
+          it 'logs CiJobToken as auth_fail_token_type', :aggregate_failures do
+            expect { validate_and_save_access_token!(scopes: [:sudo]) }.to raise_error(Gitlab::Auth::InsufficientScopeError)
+            expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_type']).to eq('CiJobToken')
+          end
+        end
+
+        context 'when token is not delivered via standard auth headers' do
+          before do
+            set_header(described_class::PRIVATE_TOKEN_HEADER, nil)
+          end
+
+          it 'logs other as auth_fail_auth_header_type', :aggregate_failures do
+            expect { validate_and_save_access_token!(scopes: [:sudo]) }.to raise_error(Gitlab::Auth::InsufficientScopeError)
+            expect(Gitlab::ApplicationContext.current['meta.auth_fail_auth_header_type']).to eq('other')
+          end
+        end
+      end
+    end
+
+    context 'with impersonation token' do
+      let_it_be(:personal_access_token, freeze: true) { create(:personal_access_token, :impersonation, user: user) }
+
+      context 'when impersonation is disabled' do
+        before do
+          stub_config_setting(impersonation_enabled: false)
+          allow_any_instance_of(described_class).to receive(:access_token).and_return(personal_access_token)
+          set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+        end
+
+        it 'returns Gitlab::Auth::ImpersonationDisabled' do
+          expect { validate_and_save_access_token! }.to raise_error(Gitlab::Auth::ImpersonationDisabled)
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_reason']).to eq('impersonation_disabled')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_id']).to eq("PersonalAccessToken/#{personal_access_token.id}")
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_requested_scopes']).to be_nil
+          expect(Gitlab::ApplicationContext.current['meta.user']).to eq(user.username)
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_token_type']).to eq('PersonalAccessToken')
+          expect(Gitlab::ApplicationContext.current['meta.auth_fail_auth_header_type']).to eq('private_token_header')
+        end
+      end
+    end
+  end
+
+  describe '#validate_and_save_access_token!' do
+    context 'when token is a personal access token' do
+      let(:personal_access_token) { create(:personal_access_token, user: user) }
+
+      before do
+        allow_any_instance_of(described_class).to receive(:access_token).and_return(personal_access_token)
+      end
+
+      it 'records the token as legacy in the token info' do
+        validate_and_save_access_token!
+
+        expect(::Current.token_info).to include(token_granularity: 'legacy')
+      end
+
+      context 'when the token is granular' do
+        let(:personal_access_token) { create(:granular_pat, user: user) }
+
+        it 'records the token as granular in the token info' do
+          validate_and_save_access_token!
+
+          expect(::Current.token_info).to include(token_granularity: 'granular')
+        end
+      end
+
+      context 'when reset_token is true' do
+        it 'reloads the access token before validation' do
+          expect(personal_access_token).to receive(:reload)
+
+          validate_and_save_access_token!(reset_token: true)
+        end
+
+        it 'uses the reloaded token for validation' do
+          allow(personal_access_token).to receive(:reload) do
+            personal_access_token.expires_at = 1.day.ago
+          end
+
+          expect { validate_and_save_access_token!(reset_token: true) }.to raise_error(Gitlab::Auth::ExpiredError)
+        end
+      end
+
+      context 'when reset_token is false' do
+        it 'does not reload the access token before validation' do
+          expect(personal_access_token).not_to receive(:reload)
+
+          validate_and_save_access_token!(reset_token: false)
+        end
+      end
+
+      context 'when reset_token is not specified' do
+        it 'does not reload the access token before validation' do
+          expect(personal_access_token).not_to receive(:reload)
+
+          validate_and_save_access_token!
+        end
+      end
+    end
+
+    context 'when token is a OAuth access token' do
+      let!(:oauth_access_token) { create(:oauth_access_token, resource_owner: user) }
+
+      before do
+        allow_any_instance_of(described_class).to receive(:access_token).and_return(oauth_access_token)
+      end
+
+      it 'includes the OAuth application ID in the token info' do
+        validate_and_save_access_token!(reset_token: true)
+
+        expect(::Current.token_info).to match(a_hash_including({
+          token_application_id: oauth_access_token.application_id
+        }))
+      end
+
+      it 'records the token as legacy in the token info' do
+        validate_and_save_access_token!
+
+        expect(::Current.token_info).to include(token_granularity: 'legacy')
+      end
+
+      context 'when the token is granular' do
+        let!(:oauth_access_token) { create(:oauth_access_token, :granular, resource_owner: user) }
+
+        it 'records the token as granular in the token info' do
+          validate_and_save_access_token!
+
+          expect(::Current.token_info).to include(token_granularity: 'granular')
+        end
+      end
+
+      context 'when reset_token is true' do
+        it 'reloads the access token before validation' do
+          expect(oauth_access_token).to receive(:reload)
+
+          validate_and_save_access_token!(reset_token: true)
+        end
+
+        it 'uses the reloaded token for validation' do
+          allow(oauth_access_token).to receive(:reload) do
+            allow(oauth_access_token).to receive(:expired?).and_return(true)
+          end
+
+          expect { validate_and_save_access_token!(reset_token: true) }.to raise_error(Gitlab::Auth::ExpiredError)
+        end
+      end
+
+      context 'when reset_token is false' do
+        it 'does not reload the access token before validation' do
+          expect(oauth_access_token).not_to receive(:reload)
+
+          validate_and_save_access_token!(reset_token: false)
+        end
+      end
+
+      context 'when reset_token is not specified' do
+        it 'does not reload the access token before validation' do
+          expect(oauth_access_token).not_to receive(:reload)
+
+          validate_and_save_access_token!
+        end
+      end
+    end
+  end
+
+  describe '#find_job_from_job_token' do
+    let(:token) { job.token }
+
+    subject(:auth_subject) { find_job_from_job_token }
+
+    shared_examples "job from token" do
+      it { is_expected.to eq(job) }
+
+      context 'when the job is not running' do
+        let(:token) { failed_job.token }
+
+        it 'raises UnauthorizedError' do
+          expect { auth_subject }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+      end
+    end
+
+    context 'with API requests' do
+      before do
+        set_header('SCRIPT_NAME', '/api/endpoint')
+      end
+
+      context 'when the token is in the headers' do
+        before do
+          set_header(described_class::JOB_TOKEN_HEADER, token)
+        end
+
+        it_behaves_like "job from token"
+      end
+
+      context 'when the token is in the job_token param' do
+        before do
+          set_param(described_class::JOB_TOKEN_PARAM, token)
+        end
+
+        it_behaves_like "job from token"
+      end
+
+      context 'when the token is in the token param' do
+        before do
+          set_param(described_class::RUNNER_JOB_TOKEN_PARAM, token)
+        end
+
+        it_behaves_like "job from token"
+
+        it_behaves_like 'rejects tokens that are too large'
+      end
+    end
+
+    context 'not in an API request' do
+      before do
+        set_header('SCRIPT_NAME', 'url.ics')
+      end
+
+      context 'when the token is in the headers' do
+        before do
+          set_header(described_class::JOB_TOKEN_HEADER, token)
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+  end
+
+  describe '#find_user_from_job_token' do
+    let(:token) { job.token }
+
+    subject(:auth_subject) { find_user_from_job_token }
+
+    shared_examples 'finds user when job token allowed' do
+      context 'when the token is in the headers' do
+        before do
+          set_header(described_class::JOB_TOKEN_HEADER, token)
+        end
+
+        it_behaves_like 'find user from job token'
+      end
+
+      context 'when the token is in the job_token param' do
+        before do
+          set_param(described_class::JOB_TOKEN_PARAM, token)
+        end
+
+        it_behaves_like 'find user from job token'
+
+        it_behaves_like 'rejects tokens that are too large'
+      end
+
+      context 'when the token is in the token param' do
+        before do
+          set_param(described_class::RUNNER_JOB_TOKEN_PARAM, token)
+        end
+
+        it_behaves_like 'find user from job token'
+
+        it_behaves_like 'rejects tokens that are too large'
+      end
+    end
+
+    context 'for route_authentication_setting[job_token_allowed]' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:route_setting, :expect_user_via_request, :expect_user_via_basic_auth) do
+        true                    | true  | false
+        :request                | true  | false
+        [:request]              | true  | false
+        :basic_auth             | false | true
+        [:basic_auth]           | false | true
+        [:request, :basic_auth] | true  | true
+
+        # unexpected values
+        :foo                    | false | false
+        [:foo]                  | false | false
+        [:foo, :bar]            | false | false
+      end
+
+      with_them do
+        let(:route_authentication_setting) { { job_token_allowed: route_setting } }
+
+        context 'when the token is in the headers' do
+          before do
+            set_header(described_class::JOB_TOKEN_HEADER, token)
+          end
+
+          it { is_expected.to eq(expect_user_via_request ? user : nil) }
+        end
+
+        context 'when the token is in the job_token param' do
+          before do
+            set_param(described_class::JOB_TOKEN_PARAM, token)
+          end
+
+          it { is_expected.to eq(expect_user_via_request ? user : nil) }
+        end
+
+        context 'when the token is in the token param' do
+          before do
+            set_param(described_class::RUNNER_JOB_TOKEN_PARAM, token)
+          end
+
+          it { is_expected.to eq(expect_user_via_request ? user : nil) }
+        end
+
+        context 'when the token is in basic auth header' do
+          before do
+            set_basic_auth_header(::Gitlab::Auth::CI_JOB_USER, token)
+          end
+
+          it { is_expected.to eq(expect_user_via_basic_auth ? user : nil) }
+        end
+      end
+    end
+
+    context 'when route setting allows job_token' do
+      let(:route_authentication_setting) { { job_token_allowed: true } }
+
+      include_examples 'finds user when job token allowed'
+    end
+
+    context 'when route setting is basic auth' do
+      let(:route_authentication_setting) { { job_token_allowed: :basic_auth } }
+
+      context 'when the token is provided via basic auth' do
+        let(:username) { ::Gitlab::Auth::CI_JOB_USER }
+
+        before do
+          set_basic_auth_header(username, token)
+        end
+
+        it { is_expected.to eq(user) }
+      end
+    end
+
+    context 'when route setting job_token_allowed is invalid' do
+      let(:route_authentication_setting) { { job_token_allowed: false } }
+
+      context 'when the token is provided' do
+        before do
+          set_header(described_class::JOB_TOKEN_HEADER, token)
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+  end
+
+  describe '#cluster_agent_token_from_authorization_token' do
+    let_it_be_with_reload(:agent_token) { create(:cluster_agent_token) }
+
+    subject(:auth_subject) { cluster_agent_token_from_authorization_token }
+
+    context 'when route_setting is empty' do
+      it { is_expected.to be_nil }
+    end
+
+    context 'when route_setting allows cluster agent token' do
+      let(:route_authentication_setting) { { cluster_agent_token_allowed: true } }
+
+      context 'Gitlab-Agent-Api-Request header is empty' do
+        it { is_expected.to be_nil }
+      end
+
+      context 'Gitlab-Agent-Api-Request header does not matches the agent token' do
+        before do
+          request.headers['Gitlab-Agent-Api-Request'] = 'ABCD'
+        end
+
+        it { is_expected.to be_nil }
+      end
+
+      context 'Gitlab-Agent-Api-Request header matches agent token' do
+        before do
+          request.headers['Gitlab-Agent-Api-Request'] = agent_token.token
+        end
+
+        it { is_expected.to eq(agent_token) }
+
+        context 'agent token has been revoked' do
+          before do
+            agent_token.revoked!
+          end
+
+          it { is_expected.to be_nil }
+        end
+      end
+    end
+  end
+
+  describe '#find_runner_from_token' do
+    let_it_be(:runner, freeze: true) { create(:ci_runner) }
+
+    context 'with API requests' do
+      before do
+        set_header('SCRIPT_NAME', '/api/endpoint')
+      end
+
+      it 'returns the runner if token is valid' do
+        set_param(:token, runner.token)
+
+        expect(find_runner_from_token).to eq(runner)
+      end
+
+      it 'returns nil if token is not present' do
+        expect(find_runner_from_token).to be_nil
+      end
+
+      it 'returns nil if token is blank' do
+        set_param(:token, '')
+
+        expect(find_runner_from_token).to be_nil
+      end
+
+      it 'returns exception if invalid token' do
+        set_param(:token, 'invalid_token')
+
+        expect { find_runner_from_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+      end
+
+      context 'with a Runner-Token header' do
+        let_it_be(:other_runner, freeze: true) { create(:ci_runner) }
+
+        it 'returns the runner if the header token is valid' do
+          set_header(described_class::RUNNER_TOKEN_HEADER, runner.token)
+
+          expect(find_runner_from_token).to eq(runner)
+        end
+
+        it 'returns nil if the header is blank' do
+          set_header(described_class::RUNNER_TOKEN_HEADER, '')
+
+          expect(find_runner_from_token).to be_nil
+        end
+
+        it 'returns exception if the header token is invalid' do
+          set_header(described_class::RUNNER_TOKEN_HEADER, 'invalid_token')
+
+          expect { find_runner_from_token }.to raise_error(Gitlab::Auth::UnauthorizedError)
+        end
+
+        it 'prefers the token param' do
+          set_param(:token, runner.token)
+          set_header(described_class::RUNNER_TOKEN_HEADER, other_runner.token)
+
+          expect(find_runner_from_token).to eq(runner)
+        end
+
+        it 'falls back to the header when the token param is blank' do
+          set_param(:token, '')
+          set_header(described_class::RUNNER_TOKEN_HEADER, runner.token)
+
+          expect(find_runner_from_token).to eq(runner)
+        end
+      end
+    end
+
+    context 'without API requests' do
+      before do
+        set_header('SCRIPT_NAME', 'url.ics')
+      end
+
+      it 'returns nil if the header token is valid' do
+        set_header(described_class::RUNNER_TOKEN_HEADER, runner.token)
+
+        expect(find_runner_from_token).to be_nil
+      end
+
+      it 'returns nil if token is valid' do
+        set_param(:token, runner.token)
+
+        expect(find_runner_from_token).to be_nil
+      end
+
+      it 'returns nil if token is blank' do
+        expect(find_runner_from_token).to be_nil
+      end
+
+      it 'returns nil if invalid token' do
+        set_param(:token, 'invalid_token')
+
+        expect(find_runner_from_token).to be_nil
+      end
+    end
+  end
+
+  describe '#authentication_token_present?' do
+    subject(:auth_subject) { authentication_token_present? }
+
+    context 'no auth header/param/oauth' do
+      before do
+        request.headers['Random'] = 'Something'
+        set_param(:random, 'something')
+      end
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'with auth header' do
+      before do
+        request.headers[header] = 'invalid'
+      end
+
+      context 'with private-token' do
+        let(:header) { 'Private-Token' }
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'with job-token' do
+        let(:header) { 'Job-Token' }
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'with deploy-token' do
+        let(:header) { 'Deploy-Token' }
+
+        it { is_expected.to be(true) }
+      end
+    end
+
+    context 'with authorization bearer (oauth token)' do
+      before do
+        request.headers['Authorization'] = 'Bearer invalid'
+      end
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'with auth param' do
+      context 'with private_token' do
+        it 'returns true' do
+          set_param(:private_token, 'invalid')
+
+          expect(auth_subject).to be(true)
+        end
+      end
+
+      context 'with job_token' do
+        it 'returns true' do
+          set_param(:job_token, 'invalid')
+
+          expect(auth_subject).to be(true)
+        end
+      end
+
+      context 'with token' do
+        it 'returns true' do
+          set_param(:token, 'invalid')
+
+          expect(auth_subject).to be(true)
+        end
+      end
+    end
+  end
+
+  describe '#pat_prefix_token?' do
+    subject(:auth_subject) { pat_prefix_token? }
+
+    context 'when token has glpat- prefix' do
+      before do
+        set_header(described_class::PRIVATE_TOKEN_HEADER, personal_access_token.token)
+      end
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when token has custom PAT prefix' do
+      let(:custom_prefix) { 'myorg-pat-' }
+
+      before do
+        stub_application_setting(personal_access_token_prefix: custom_prefix)
+        set_header(described_class::PRIVATE_TOKEN_HEADER, "#{custom_prefix}abc123")
+      end
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when token does not have glpat- prefix' do
+      before do
+        set_bearer_token('some_oauth_token_without_prefix')
+      end
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'when no token is present' do
+      it { is_expected.to be(false) }
+    end
+  end
+end

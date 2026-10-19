@@ -1,0 +1,20 @@
+.gl-single-stat.gl-flex.gl-flex-col.gl-py-2
+  .gl-flex.gl-items-center.gl-text-subtle.gl-mb-4
+    - if title_icon?
+      = sprite_icon(@title_icon, css_class: 'gl-mr-2 gl-fill-icon-subtle')
+    = content_tag @title_tag, class: 'gl-text-base gl-font-normal gl-text-subtle gl-leading-reset gl-m-0', data: { testid: 'title-text' } do
+      = title || @title
+  .gl-single-stat-content.gl-flex.gl-items-baseline.gl-font-bold.gl-text-default.gl-mb-4
+    %span.gl-single-stat-number.gl-leading-1{ class: unit_class, data: { testid: 'displayValue' } }
+      %span{ data: { testid: @stat_value_testid } }
+        = stat_value || @stat_value
+    - if unit?
+      %span.gl-text-sm.gl-mx-2.gl-transition-all.gl-opacity-10{ data: { testid: 'unit' } }
+        = @unit
+    - if meta_icon? && !meta_text?
+      = sprite_icon(@meta_icon, css_class: @text_color)
+    - elsif meta_text?
+      = render Pajamas::BadgeComponent.new(@meta_text,
+        variant: @variant,
+        icon: @meta_icon,
+        data: { testid: 'meta-badge' })

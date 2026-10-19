@@ -1,0 +1,530 @@
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { cloneDeep } from 'lodash-es';
+import { sortNameAlphabetically, newWorkItemId, newWorkItemFullPath } from '~/work_items/utils';
+import WorkItemAssignees from '~/work_items/components/work_item_assignees.vue';
+import WorkItemSidebarDropdownWidget from '~/work_items/components/shared/work_item_sidebar_dropdown_widget.vue';
+import groupUsersSearchQuery from '~/graphql_shared/queries/group_users_search.query.graphql';
+import usersSearchQuery from '~/graphql_shared/queries/workspace_autocomplete_users.query.graphql';
+import currentUserQuery from '~/graphql_shared/queries/current_user.query.graphql';
+import InviteMembersTrigger from '~/invite_members/components/invite_members_trigger.vue';
+import UncollapsedAssigneeList from '~/sidebar/components/assignees/uncollapsed_assignee_list.vue';
+import workItemByIidQuery from '~/work_items/graphql/work_item_by_iid.query.graphql';
+import updateWorkItemMutation from '~/work_items/graphql/update_work_item.mutation.graphql';
+import { resolvers } from '~/graphql_shared/issuable_client';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { shallowMountExtended, mountExtended } from 'helpers/vue_test_utils_helper';
+import { mockTracking } from 'helpers/tracking_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import {
+  updateWorkItemMutationResponse,
+  workItemResponseFactory,
+  projectMembersAutocompleteResponseWithCurrentUser,
+  mockAssignees,
+  mockParticipants,
+  currentUserResponse,
+  currentUserNullResponse,
+  projectMembersAutocompleteResponseWithNoMatchingUsers,
+  projectMembersAutocompleteResponseWithoutCurrentUser,
+} from 'ee_else_ce_jest/work_items/mock_data';
+import { i18n, TRACKING_CATEGORY_SHOW, NEW_WORK_ITEM_IID } from '~/work_items/constants';
+import { ISSUE_MR_CHANGE_ASSIGNEE } from '~/behaviors/shortcuts/keybindings';
+
+describe('WorkItemAssignees component', () => {
+  Vue.use(VueApollo);
+
+  let wrapper;
+  const fullPath = 'test-project-path';
+
+  const workItemQueryResponse = workItemResponseFactory({
+    canUpdate: true,
+    canDelete: true,
+    participantsWidgetPresent: false,
+  });
+
+  const findInviteMembersTrigger = () => wrapper.findComponent(InviteMembersTrigger);
+  const findAssignSelfButton = () => wrapper.findComponentByTestId('assign-self');
+  const findSidebarDropdownWidget = () => wrapper.findComponent(WorkItemSidebarDropdownWidget);
+  const findAssigneeList = () => wrapper.findComponent(UncollapsedAssigneeList);
+
+  const successSearchQueryHandler = jest
+    .fn()
+    .mockResolvedValue(projectMembersAutocompleteResponseWithCurrentUser);
+  const successGroupSearchQueryHandler = jest
+    .fn()
+    .mockResolvedValue(projectMembersAutocompleteResponseWithCurrentUser);
+  const successCurrentUserQueryHandler = jest.fn().mockResolvedValue(currentUserResponse);
+  const noCurrentUserQueryHandler = jest.fn().mockResolvedValue(currentUserNullResponse);
+  const successUpdateWorkItemMutationHandler = jest
+    .fn()
+    .mockResolvedValue(updateWorkItemMutationResponse);
+  const successSearchWithNoMatchingUsers = jest
+    .fn()
+    .mockResolvedValue(projectMembersAutocompleteResponseWithNoMatchingUsers);
+  const successSearchWithoutCurrentUser = jest
+    .fn()
+    .mockResolvedValue(projectMembersAutocompleteResponseWithoutCurrentUser);
+
+  const errorHandler = jest.fn().mockRejectedValue('Houston, we have a problem');
+
+  const showDropdown = () => {
+    findSidebarDropdownWidget().vm.$emit('dropdown-shown');
+  };
+
+  const hideDropdown = () => {
+    findSidebarDropdownWidget().vm.$emit('dropdown-hidden');
+  };
+
+  const newWorkItemPath = newWorkItemFullPath(fullPath, 'task');
+
+  const createComponent = ({
+    workItemId = 'gid://gitlab/WorkItem/1',
+    mountFn = shallowMountExtended,
+    assignees = mockAssignees,
+    participants = [],
+    searchQueryHandler = successSearchQueryHandler,
+    currentUserQueryHandler = successCurrentUserQueryHandler,
+    updateMutationHandler = successUpdateWorkItemMutationHandler,
+    allowsMultipleAssignees = false,
+    canInviteMembers = false,
+    canUpdate = true,
+    provide = {},
+  } = {}) => {
+    const apolloProvider = createMockApollo(
+      [
+        [usersSearchQuery, searchQueryHandler],
+        [groupUsersSearchQuery, successGroupSearchQueryHandler],
+        [currentUserQuery, currentUserQueryHandler],
+        [updateWorkItemMutation, updateMutationHandler],
+      ],
+      resolvers,
+    );
+
+    apolloProvider.clients.defaultClient.cache.writeQuery({
+      query: workItemByIidQuery,
+      variables: {
+        fullPath: newWorkItemPath,
+        iid: NEW_WORK_ITEM_IID,
+      },
+      data: {
+        namespace: {
+          id: newWorkItemPath,
+          ...workItemQueryResponse.data,
+        },
+      },
+    });
+
+    wrapper = mountFn(WorkItemAssignees, {
+      propsData: {
+        assignees,
+        participants,
+        fullPath,
+        workItemId,
+        allowsMultipleAssignees,
+        workItemType: 'Task',
+        canUpdate,
+        canInviteMembers,
+        isGroup: false,
+      },
+      provide,
+      apolloProvider,
+    });
+  };
+
+  it('has "Assignee" label for single select', () => {
+    createComponent();
+
+    expect(findSidebarDropdownWidget().props('dropdownLabel')).toBe('Assignee');
+  });
+
+  it('has key shortcut tooltip', () => {
+    createComponent();
+
+    expect(findSidebarDropdownWidget().props('shortcut')).toBe(ISSUE_MR_CHANGE_ASSIGNEE);
+  });
+
+  describe('Dropdown search', () => {
+    it('includes participants in the results when there are matching results', async () => {
+      const expectedParticipant = {
+        ...mockParticipants[0],
+        text: mockParticipants[0].name,
+        value: mockParticipants[0].id,
+        matcher: `${mockParticipants[0].name} ${mockParticipants[0].username}`,
+      };
+
+      createComponent({
+        participants: mockParticipants,
+        searchQueryHandler: successSearchWithNoMatchingUsers,
+      });
+
+      showDropdown();
+
+      await waitForPromises();
+
+      findSidebarDropdownWidget().vm.$emit('search-started', expectedParticipant.username);
+
+      await nextTick();
+
+      expect(findSidebarDropdownWidget().props('listItems')).toEqual([expectedParticipant]);
+    });
+
+    it('shows no items in the dropdown when no results matching', async () => {
+      createComponent({ searchQueryHandler: successSearchWithNoMatchingUsers });
+      showDropdown();
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('listItems')).toEqual([]);
+    });
+
+    it('emits error event if search users query fails', async () => {
+      createComponent({ searchQueryHandler: errorHandler });
+      showDropdown();
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toEqual([[i18n.fetchError]]);
+    });
+
+    it('clears search text on item select', () => {
+      createComponent();
+
+      expect(findSidebarDropdownWidget().props('clearSearchOnItemSelect')).toBe(true);
+    });
+  });
+
+  describe('when assigning to current user', () => {
+    it('does not show `Assign yourself` button if current user is loading', () => {
+      createComponent();
+
+      expect(findAssignSelfButton().exists()).toBe(false);
+    });
+
+    it('does now show `Assign yourself` button if user is not logged in', async () => {
+      createComponent({ currentUserQueryHandler: noCurrentUserQueryHandler, assignees: [] });
+      await waitForPromises();
+
+      expect(findAssignSelfButton().exists()).toBe(false);
+    });
+  });
+
+  describe('Dropdown options', () => {
+    beforeEach(() => {
+      createComponent({ canUpdate: true });
+    });
+
+    describe('when dropdown is opened', () => {
+      beforeEach(() => {
+        showDropdown();
+      });
+
+      it('calls successSearchQueryHandler with variables', () => {
+        expect(successSearchQueryHandler).toHaveBeenCalledWith({
+          isProject: true,
+          fullPath,
+          search: '',
+        });
+      });
+
+      it('shows the loading state', () => {
+        expect(findSidebarDropdownWidget().props('loading')).toBe(true);
+      });
+
+      describe('when items have loaded', () => {
+        beforeEach(async () => {
+          await waitForPromises();
+        });
+
+        it('does not show the loading icon', () => {
+          expect(findSidebarDropdownWidget().props('loading')).toBe(false);
+        });
+
+        it('shows the assignees in dropdown', () => {
+          expect(findSidebarDropdownWidget().props('listItems')).toHaveLength(
+            projectMembersAutocompleteResponseWithCurrentUser.data.namespace.users.length,
+          );
+        });
+      });
+    });
+
+    it('shows the current user first if they are an assignee', async () => {
+      showDropdown();
+
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('listItems')[0].options[0]).toMatchObject({
+        text: currentUserResponse.data.currentUser.name,
+      });
+    });
+  });
+
+  describe('when the current user is not in the autocomplete results', () => {
+    beforeEach(async () => {
+      createComponent({
+        assignees: [],
+        searchQueryHandler: successSearchWithoutCurrentUser,
+        currentUserQueryHandler: successCurrentUserQueryHandler,
+      });
+      showDropdown();
+      await waitForPromises();
+    });
+
+    it('pins the current user to the top of the list', () => {
+      expect(findSidebarDropdownWidget().props('listItems')[0]).toMatchObject({
+        text: currentUserResponse.data.currentUser.name,
+        value: currentUserResponse.data.currentUser.id,
+      });
+    });
+  });
+
+  describe('when user is logged in and there are no assignees', () => {
+    beforeEach(() => {
+      createComponent({ assignees: [] });
+      return waitForPromises();
+    });
+
+    it('renders `Assign yourself` button', () => {
+      expect(findAssignSelfButton().exists()).toBe(true);
+    });
+
+    it('calls update work item assignees mutation with current user as a variable on button click', async () => {
+      const { currentUser } = currentUserResponse.data;
+      findAssignSelfButton().vm.$emit('click', new MouseEvent('click'));
+      await nextTick();
+
+      expect(successUpdateWorkItemMutationHandler).toHaveBeenCalledWith({
+        input: {
+          id: 'gid://gitlab/WorkItem/1',
+          assigneesWidget: {
+            assigneeIds: [currentUser.id],
+          },
+        },
+        useWorkItemFeatures: false,
+      });
+
+      expect(findAssigneeList().props('users')).toHaveLength(1);
+      expect(findAssigneeList().props('users')[0].id).toBe(currentUser.id);
+    });
+
+    it('calls the update work item local mutation for new work items', async () => {
+      createComponent({ workItemId: newWorkItemId('task') });
+
+      await waitForPromises();
+
+      const { currentUser } = currentUserResponse.data;
+      findAssignSelfButton().vm.$emit('click', new MouseEvent('click'));
+      await nextTick();
+
+      expect(findAssigneeList().props('users')).toHaveLength(1);
+      expect(findAssigneeList().props('users')[0].id).toBe(currentUser.id);
+    });
+  });
+
+  describe('when multiple assignees are allowed', () => {
+    beforeEach(() => {
+      createComponent({ allowsMultipleAssignees: true, assignees: [] });
+      return waitForPromises();
+    });
+
+    it('renders `Assignees` as label and `Select assignees` as dropdown button header', () => {
+      expect(findSidebarDropdownWidget().props()).toMatchObject({
+        dropdownLabel: 'Assignees',
+        headerText: 'Select assignees',
+      });
+    });
+
+    it('adds multiple assignees when collapsible listbox provides multiple values', async () => {
+      showDropdown();
+      await waitForPromises();
+
+      findSidebarDropdownWidget().vm.$emit('update-value', [
+        'gid://gitlab/User/5',
+        'gid://gitlab/User/6',
+      ]);
+      await nextTick();
+
+      expect(findSidebarDropdownWidget().props('itemValue')).toHaveLength(2);
+    });
+
+    it('shows current user first if they are an assignee', async () => {
+      showDropdown();
+      const { currentUser } = currentUserResponse.data;
+
+      await waitForPromises();
+
+      findSidebarDropdownWidget().vm.$emit('update-value', [
+        'gid://gitlab/User/5',
+        currentUser.id,
+        'gid://gitlab/User/6',
+      ]);
+      await nextTick();
+
+      expect(findAssigneeList().props('users')[0].id).toBe(currentUser.id);
+    });
+  });
+
+  describe('tracking', () => {
+    let trackingSpy;
+
+    beforeEach(() => {
+      createComponent();
+      trackingSpy = mockTracking(undefined, wrapper.element, jest.spyOn);
+    });
+
+    afterEach(() => {
+      trackingSpy = null;
+    });
+
+    it('tracks editing the assignees on dropdown widget `update-value`', async () => {
+      showDropdown();
+      await waitForPromises();
+
+      findSidebarDropdownWidget().vm.$emit('update-value', mockAssignees[0].id);
+      await waitForPromises();
+
+      expect(trackingSpy).toHaveBeenCalledWith(TRACKING_CATEGORY_SHOW, 'updated_assignees', {
+        category: TRACKING_CATEGORY_SHOW,
+        label: 'item_assignees',
+        property: 'type_Task',
+        extra: { viewContext: 'full_screen' },
+      });
+    });
+  });
+
+  describe('when the update mutation returns errors', () => {
+    it('emits the specific error messages instead of the generic update error', async () => {
+      const mutationError = 'You can assign only one service account at a time.';
+      const errorResponse = cloneDeep(updateWorkItemMutationResponse);
+      errorResponse.data.workItemUpdate.errors = [mutationError];
+      const updateMutationErrorHandler = jest.fn().mockResolvedValue(errorResponse);
+
+      createComponent({ updateMutationHandler: updateMutationErrorHandler, assignees: [] });
+      await waitForPromises();
+
+      findAssignSelfButton().vm.$emit('click', new MouseEvent('click'));
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toEqual([[mutationError]]);
+    });
+  });
+
+  describe('sorting', () => {
+    it('sorts assignees based on alphabetical order on the frontend', async () => {
+      createComponent({ mountFn: mountExtended });
+      await waitForPromises();
+
+      expect(findAssigneeList().exists()).toBe(true);
+      expect(findAssigneeList().props('users')).toHaveLength(mockAssignees.length);
+      expect(findAssigneeList().props('users')).toStrictEqual(
+        mockAssignees.sort(sortNameAlphabetically),
+      );
+    });
+
+    it('sorts selected assignees first', async () => {
+      const [unselected, selected] =
+        projectMembersAutocompleteResponseWithCurrentUser.data.namespace.users;
+
+      createComponent({
+        assignees: [selected],
+      });
+      showDropdown();
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('listItems')).toMatchObject(
+        cloneDeep([
+          { options: [selected], text: 'Selected' },
+          { options: [unselected], text: 'All users', textSrOnly: true },
+        ]),
+      );
+    });
+
+    it('shows current user above other users', async () => {
+      const [unselected, currentUser] = cloneDeep(
+        projectMembersAutocompleteResponseWithCurrentUser.data.namespace.users,
+      );
+
+      createComponent({
+        assignees: [],
+      });
+      showDropdown();
+      await waitForPromises();
+
+      findSidebarDropdownWidget().vm.$emit('update-value', currentUser.id);
+
+      expect(findSidebarDropdownWidget().props('listItems')).toMatchObject([
+        { text: currentUser.name },
+        { text: unselected.name },
+      ]);
+    });
+
+    it('does not move newly selected assignees to the top until dropdown is closed', async () => {
+      const [unselected, currentUser] = cloneDeep(
+        projectMembersAutocompleteResponseWithCurrentUser.data.namespace.users,
+      );
+
+      createComponent({
+        assignees: [],
+      });
+      showDropdown();
+      await waitForPromises();
+
+      findSidebarDropdownWidget().vm.$emit('update-value', currentUser.id);
+
+      expect(findSidebarDropdownWidget().props('listItems')).toMatchObject([
+        { text: currentUser.name },
+        { text: unselected.name },
+      ]);
+
+      hideDropdown();
+      await waitForPromises();
+      showDropdown();
+      await waitForPromises();
+
+      expect(findSidebarDropdownWidget().props('listItems')).toMatchObject([
+        { options: [currentUser], text: 'Selected' },
+        { options: [unselected], text: 'All users', textSrOnly: true },
+      ]);
+    });
+  });
+
+  describe('invite members', () => {
+    it('does not render `Invite members` link if user has no permission to invite members', () => {
+      createComponent();
+
+      expect(findSidebarDropdownWidget().props('showFooter')).toBe(false);
+      expect(findInviteMembersTrigger().exists()).toBe(false);
+    });
+
+    it('renders `Invite members` link if user has a permission to invite members', () => {
+      createComponent({ canInviteMembers: true });
+
+      expect(findSidebarDropdownWidget().props('showFooter')).toBe(true);
+      expect(findInviteMembersTrigger().exists()).toBe(true);
+    });
+  });
+
+  describe('when workItemFeaturesField feature flag is enabled', () => {
+    beforeEach(async () => {
+      createComponent({
+        assignees: [],
+        canUpdate: true,
+        provide: { glFeatures: { workItemFeaturesField: true } },
+      });
+      await waitForPromises();
+    });
+
+    it('passes useWorkItemFeatures as true to the mutation', async () => {
+      const { currentUser } = currentUserResponse.data;
+      findAssignSelfButton().vm.$emit('click', new MouseEvent('click'));
+      await nextTick();
+
+      expect(successUpdateWorkItemMutationHandler).toHaveBeenCalledWith({
+        input: {
+          id: 'gid://gitlab/WorkItem/1',
+          assigneesWidget: {
+            assigneeIds: [currentUser.id],
+          },
+        },
+        useWorkItemFeatures: true,
+      });
+    });
+  });
+});

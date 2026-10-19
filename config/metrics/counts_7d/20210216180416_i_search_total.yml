@@ -1,0 +1,23 @@
+---
+data_category: optional
+key_path: search_unique_visits.i_search_total
+description: Removed as duplicate of redis_hll_counters.search.i_search_total_weekly
+product_group: global_search
+product_categories:
+- global_search
+value_type: number
+status: removed
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - i_search_total
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+milestone_removed: "17.0"
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/150302

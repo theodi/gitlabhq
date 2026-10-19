@@ -1,0 +1,23 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+#import "./state_version.fragment.graphql"
+
+fragment State on TerraformState {
+  _showDetails @client
+  errorMessages @client
+  loadingLock @client
+  loadingRemove @client
+
+  id
+  name
+  lockedAt
+  updatedAt
+  deletedAt
+
+  lockedByUser {
+    ...User
+  }
+
+  latestVersion {
+    ...StateVersion
+  }
+}

@@ -1,0 +1,9 @@
+- if viewer.valid?
+  = sprite_icon('check')
+  This Route Map is valid.
+- else
+  = sprite_icon('warning-solid')
+  This Route Map is invalid:
+  = viewer.validation_message
+
+= link_to _('Learn more'), help_page_path('ci/environments/_index.md', anchor: 'go-from-source-files-to-public-pages')

@@ -1,0 +1,13 @@
+- page_title _("You're about to leave GitLab")
+
+- url = local_assigns.fetch(:url)
+- rel = local_assigns.fetch(:rel)
+
+.gl-max-w-62.gl-h-full.gl-flex.gl-justify-center.gl-items-center.gl-flex-col.gl-mr-auto.gl-ml-auto.gl-px-3
+  = render Pajamas::EmptyStateComponent.new(title: page_title,
+    svg_path: 'illustrations/status/status-alert-sm.svg',
+    primary_button_text: _("Proceed"),
+    primary_button_link: url,
+    primary_button_options: rel.present? ? { rel: rel } : {}) do |c|
+    - c.with_description do
+      = safe_format(_('This link will redirect you to %{url}. If this URL looks wrong, please go back or close this window. Do you want to continue?'), url: content_tag(:code, url, class: 'gl-bg-default'))

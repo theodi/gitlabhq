@@ -1,0 +1,19 @@
+---
+description: A snippet has been edited from the Web IDE
+internal_events: true
+action: g_edit_by_snippet_ide
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: "16.3"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/128592
+tiers:
+- free
+- premium
+- ultimate
+

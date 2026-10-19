@@ -1,0 +1,112 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::EntitiesFinder, feature_category: :importers do
+  let_it_be(:user, freeze: false) { create(:user) }
+
+  let_it_be(:user_import_1, freeze: false) { create(:bulk_import, user: user) }
+  let_it_be(:started_entity_1, freeze: false) { create(:bulk_import_entity, :started, bulk_import: user_import_1) }
+  let_it_be(:finished_entity_1, freeze: false) { create(:bulk_import_entity, :finished, bulk_import: user_import_1) }
+  let_it_be(:failed_entity_1, freeze: false) { create(:bulk_import_entity, :failed, bulk_import: user_import_1) }
+
+  let_it_be(:user_import_2, freeze: false) { create(:bulk_import, user: user) }
+  let_it_be(:started_entity_2, freeze: false) { create(:bulk_import_entity, :started, bulk_import: user_import_2) }
+  let_it_be(:finished_entity_2, freeze: false) { create(:bulk_import_entity, :finished, bulk_import: user_import_2) }
+  let_it_be(:failed_entity_2, freeze: false) { create(:bulk_import_entity, :failed, bulk_import: user_import_2) }
+
+  let_it_be(:not_user_import, freeze: false) { create(:bulk_import) }
+  let_it_be(:started_entity_3, freeze: false) { create(:bulk_import_entity, :started, bulk_import: not_user_import) }
+  let_it_be(:finished_entity_3, freeze: false) { create(:bulk_import_entity, :finished, bulk_import: not_user_import) }
+  let_it_be(:failed_entity_3, freeze: false) { create(:bulk_import_entity, :failed, bulk_import: not_user_import) }
+
+  subject { described_class.new(user: user) }
+
+  describe '#execute' do
+    it 'returns a list of import entities associated with user' do
+      expect(subject.execute)
+        .to contain_exactly(
+          started_entity_1, finished_entity_1, failed_entity_1,
+          started_entity_2, finished_entity_2, failed_entity_2
+        )
+    end
+
+    context 'when bulk import is specified' do
+      subject { described_class.new(user: user, bulk_import: user_import_1) }
+
+      it 'returns a list of import entities filtered by bulk import' do
+        expect(subject.execute)
+          .to contain_exactly(
+            started_entity_1, finished_entity_1, failed_entity_1
+          )
+      end
+
+      context 'when specified import is not associated with user' do
+        subject { described_class.new(user: user, bulk_import: not_user_import) }
+
+        it 'does not return entities' do
+          expect(subject.execute).to be_empty
+        end
+      end
+    end
+
+    context 'when status is specified' do
+      subject { described_class.new(user: user, params: { status: 'failed' }) }
+
+      it 'returns a list of import entities filtered by status' do
+        expect(subject.execute)
+          .to contain_exactly(
+            failed_entity_1, failed_entity_2
+          )
+      end
+
+      context 'when invalid status is specified' do
+        subject { described_class.new(user: user, params: { status: 'invalid' }) }
+
+        it 'does not filter entities by status' do
+          expect(subject.execute)
+            .to contain_exactly(
+              started_entity_1, finished_entity_1, failed_entity_1,
+              started_entity_2, finished_entity_2, failed_entity_2
+            )
+        end
+      end
+    end
+
+    context 'when bulk import and status are specified' do
+      subject { described_class.new(user: user, bulk_import: user_import_2, params: { status: 'finished' }) }
+
+      it 'returns matched import entities' do
+        expect(subject.execute).to contain_exactly(finished_entity_2)
+      end
+    end
+
+    context 'when order is specified' do
+      subject { described_class.new(user: user, params: { sort: order }) }
+
+      context 'when order is specified as asc' do
+        let(:order) { :asc }
+
+        it 'returns entities sorted ascending' do
+          expect(subject.execute).to eq(
+            [
+              started_entity_1, finished_entity_1, failed_entity_1,
+              started_entity_2, finished_entity_2, failed_entity_2
+            ])
+        end
+      end
+
+      context 'when order is specified as desc' do
+        let(:order) { :desc }
+
+        it 'returns entities sorted descending' do
+          expect(subject.execute).to eq(
+            [
+              failed_entity_2, finished_entity_2, started_entity_2,
+              failed_entity_1, finished_entity_1, started_entity_1
+            ])
+        end
+      end
+    end
+  end
+end

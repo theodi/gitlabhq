@@ -1,0 +1,44 @@
+# frozen_string_literal: true
+
+module QA
+  RSpec.describe 'Create', feature_category: :source_code_management do
+    describe 'Branch with unusual name' do
+      let(:branch_name) { 'unUsually/named#br--anch' }
+      let(:project) { create(:project, :with_readme, name: 'unusually-named-branch-project') }
+
+      before do
+        Flow::Login.sign_in
+      end
+
+      context 'when branch name contains slash, hash, double dash, and capital letter' do
+        it 'renders repository file tree correctly' do
+          create(:commit,
+            project: project,
+            branch: branch_name,
+            start_branch: project.default_branch,
+            commit_message: 'Add new file', actions: [
+              { action: 'create', file_path: 'test-folder/test-file.md', content: 'new content' }
+            ])
+
+          project.visit!
+
+          Page::Project::Show.perform do |show|
+            show.switch_to_branch(branch_name)
+
+            # To prevent false positives: https://gitlab.com/gitlab-org/gitlab/-/issues/383863
+            expect(show).to have_no_content('An error occurred')
+
+            show.close_dap_panel_if_exists
+            show.click_file('test-folder')
+
+            expect(show).to have_file('test-file.md')
+
+            show.click_file('test-file.md')
+
+            expect(show).to have_content('new content')
+          end
+        end
+      end
+    end
+  end
+end

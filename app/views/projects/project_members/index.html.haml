@@ -1,36 +1,45 @@
-- page_title "Members"
-%h3.page-title
-  Users with access to this project
+- add_page_specific_style 'page_bundles/members'
+- page_title _("Members")
+- show_the_header = can_invite_members_for_project?(@project) || project_can_be_shared?
+- content_for :reload_on_member_invite_success, true
+- content_for :hide_invite_members_button, true
 
-%p.light
-  Read more about project permissions
-  %strong= link_to "here", help_page_path("permissions", "permissions"), class: "vlink"
+= render ::Layouts::IndexLayout.new(heading: _("Project members"), page_heading_sr_only: !show_the_header) do |c|
+  - if show_the_header
+    - c.with_description do
+      - if can_invite_members_for_project?(@project)
+        = project_member_header_subtext(@project)
+        - if current_appearance&.member_guidelines?
+          .md
+            = brand_member_guidelines
+      - elsif project_can_be_shared?
+        - if can?(current_user, :admin_project_member, @project)
+          = project_member_header_subtext(@project)
+        - else
+          = html_escape(_("Members can be added by project %{i_open}Maintainers%{i_close} or %{i_open}Owners%{i_close}")) % { i_open: '<i>'.html_safe, i_close: '</i>'.html_safe }
 
-%hr
+    - if can_invite_members_for_project?(@project)
+      - c.with_actions do
+        - if can?(current_user, :invite_member, @project)
+          .js-import-project-members-trigger{ data: { classes: '@md/panel:gl-w-auto gl-w-full' } }
+          .js-import-project-members-modal{ data: { project_id: @project.id,
+            project_name: @project.name,
+            reload_page_on_submit: true.to_s }.merge(common_invite_modal_dataset(@project).slice(:users_limit_dataset, :add_seats_href)) }
+        - if @project.allowed_to_share_with_group? && can?(current_user, :create_group_link, @project)
+          .js-invite-group-trigger{ data: { classes: "@md/panel:gl-w-auto gl-w-full",
+            display_text: _('Invite a group'),
+            trigger_source: 'project_members_page' } }
+          = render 'projects/invite_groups_modal', project: @project, reload_page_on_submit: true
+        - if can?(current_user, :invite_member, @project)
+          .js-invite-members-trigger{ data: { variant: 'confirm',
+            classes: '@md/panel:gl-w-auto gl-w-full',
+            trigger_source: 'project_members_page',
+            display_text: _('Invite members') } }
 
-.clearfix.js-toggle-container
-  = form_tag namespace_project_project_members_path(@project.namespace, @project), method: :get, class: 'form-inline member-search-form'  do
-    .form-group
-      = search_field_tag :search, params[:search], { placeholder: 'Find existing member by name', class: 'form-control search-text-input input-mn-300' }
-    = button_tag 'Search', class: 'btn'
-
-  - if can?(current_user, :admin_project_member, @project)
-    %span.pull-right
-      = button_tag class: 'btn btn-new btn-grouped js-toggle-button', type: 'button' do
-        Add members
-        %i.fa.fa-chevron-down
-      = link_to import_namespace_project_project_members_path(@project.namespace, @project), class: "btn btn-grouped", title: "Import members from another project" do
-        Import members
-
-    .js-toggle-content.hide.new-group-member-holder
-      = render "new_project_member"
-
-= render "team", members: @project_members
-
-- if @group
-  = render "group_members", members: @group_members
-
-:coffeescript
-  $('form.member-search-form').on 'submit', (event) ->
-    event.preventDefault()
-    Turbolinks.visit @.action + '?' + $(@).serialize()
+  .js-project-members-list-app{ data: { members_data: project_members_app_data_json(@project,
+                                                                                    members: @project_members,
+                                                                                    invited: @invited_members,
+                                                                                    links: @group_member_links,
+                                                                                    access_requests: @requesters,
+                                                                                    pending_members_count: @pending_promotion_members_count) } }
+    = gl_loading_icon(css_class: 'gl-my-5', size: 'md')

@@ -1,0 +1,9 @@
+# @feature_category: team_planning
+query projectGenerateDescriptionPermissions($fullPath: ID!) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    userPermissions {
+      generateDescription
+    }
+  }
+}

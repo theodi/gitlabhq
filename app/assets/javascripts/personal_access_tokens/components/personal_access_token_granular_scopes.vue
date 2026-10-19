@@ -1,0 +1,176 @@
+<script>
+import { GlButton, GlCollapse, GlIcon, GlLink } from '@gitlab/ui';
+import { camelCase, uniqBy, xor } from 'lodash-es';
+import { groupPermissionsByResourceAndCategory } from '~/personal_access_tokens/utils';
+import { s__, n__, sprintf } from '~/locale';
+import ProjectAvatar from '~/vue_shared/components/project_avatar.vue';
+import {
+  ACCESS_PERSONAL_PROJECTS_ENUM,
+  ACCESS_SELECTED_MEMBERSHIPS_ENUM,
+  ACCESS_ALL_MEMBERSHIPS_ENUM,
+  ACCESS_USER_ENUM,
+  ACCESS_INSTANCE_ENUM,
+} from '../constants';
+
+export default {
+  name: 'PersonalAccessTokenGranularScopes',
+  components: {
+    GlButton,
+    GlCollapse,
+    GlIcon,
+    GlLink,
+    ProjectAvatar,
+  },
+  props: {
+    scopes: {
+      type: Array,
+      required: true,
+    },
+  },
+  data() {
+    return {
+      expanded: [],
+    };
+  },
+  computed: {
+    sections() {
+      const sectionDefs = [
+        {
+          type: 'namespace',
+          accessList: [
+            ACCESS_PERSONAL_PROJECTS_ENUM,
+            ACCESS_SELECTED_MEMBERSHIPS_ENUM,
+            ACCESS_ALL_MEMBERSHIPS_ENUM,
+          ],
+        },
+        { type: 'user', accessList: [ACCESS_USER_ENUM] },
+        { type: 'instance', accessList: [ACCESS_INSTANCE_ENUM] },
+      ];
+
+      return sectionDefs.map(({ type, accessList }) => {
+        const scopes = this.scopes.filter(({ access }) => accessList.includes(access));
+
+        const allPermissions = uniqBy(
+          scopes.flatMap(({ permissions }) => permissions),
+          'name',
+        );
+        const categories = groupPermissionsByResourceAndCategory(allPermissions);
+        const actionsCount = allPermissions.length;
+
+        return {
+          type,
+          access: scopes.at(0)?.access,
+          namespaces: scopes
+            .map(({ project, group, namespace }) => project || group || namespace)
+            .filter(Boolean),
+          categories,
+          actionsCount,
+        };
+      });
+    },
+  },
+  methods: {
+    namespaceAccessDescription(access) {
+      return this.$options.i18n.namespace[camelCase(access)];
+    },
+    subGroupCount({ descendantGroupsCount }) {
+      return sprintf(n__('%{count} subgroup', '%{count} subgroups', descendantGroupsCount), {
+        count: descendantGroupsCount,
+      });
+    },
+    projectCount({ projectsCount }) {
+      return sprintf(n__('%{count} project', '%{count} projects', projectsCount), {
+        count: projectsCount,
+      });
+    },
+    hasDescendantsCount({ descendantGroupsCount, projectsCount }) {
+      return descendantGroupsCount != null && projectsCount != null;
+    },
+    toggle(key) {
+      this.expanded = xor(this.expanded, [key]);
+    },
+    isExpanded(key) {
+      return this.expanded.includes(key);
+    },
+    formatActions(actions) {
+      return actions.map(({ name }) => name).join(', ');
+    },
+  },
+  i18n: {
+    scope: s__('AccessTokens|Token scope'),
+    namespace: {
+      access: s__('AccessTokens|Group and project access'),
+      permissions: s__('AccessTokens|Group and project permissions'),
+      personalProjects: s__('AccessTokens|Only my personal projects, including future ones'),
+      allMemberships: s__(
+        'AccessTokens|All groups and projects I have access to, including future ones',
+      ),
+      selectedMemberships: s__('AccessTokens|Only specific groups or projects I have access to'),
+    },
+    user: {
+      permissions: s__('AccessTokens|User permissions'),
+    },
+    instance: {
+      permissions: s__('AccessTokens|Global permissions'),
+    },
+    noResources: s__('AccessTokens|No resources added'),
+  },
+};
+</script>
+
+<template>
+  <div>
+    <div v-for="section in sections" :key="section.type" class="gl-border-b gl-py-4">
+      <div class="gl-pl-5">
+        <template v-if="namespaceAccessDescription(section.access)">
+          <div class="gl-mb-2 gl-font-bold">{{ $options.i18n.namespace.access }}</div>
+          <div class="gl-mb-4 gl-text-subtle">
+            <gl-icon name="group" />
+            {{ namespaceAccessDescription(section.access) }}
+          </div>
+
+          <div v-for="namespace in section.namespaces" :key="namespace.id" class="gl-mb-5 gl-flex">
+            <project-avatar
+              :alt="namespace.name"
+              :project-id="namespace.id"
+              :project-name="namespace.fullName"
+              :project-avatar-url="namespace.avatarUrl"
+              class="gl-mr-3"
+              :size="24"
+            />
+            <div>
+              <gl-link :href="namespace.webUrl">{{ namespace.fullPath }}</gl-link>
+              <div
+                v-if="hasDescendantsCount(namespace)"
+                class="gl-text-sm gl-text-subtle"
+                data-testid="descendant-counts"
+              >
+                {{ subGroupCount(namespace) }}, {{ projectCount(namespace) }}
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <gl-button category="tertiary" class="gl-font-bold" @click="toggle(section.type)">
+        <gl-icon :name="isExpanded(section.type) ? 'chevron-down' : 'chevron-right'" />
+        {{ $options.i18n[section.type].permissions }} ({{ section.actionsCount }})
+      </gl-button>
+
+      <gl-collapse :visible="isExpanded(section.type)">
+        <span v-if="!section.categories.length" class="gl-my-2 gl-ml-7 gl-text-subtle">{{
+          $options.i18n.noResources
+        }}</span>
+
+        <div v-for="category in section.categories" :key="category.key" class="gl-ml-7 gl-py-3">
+          <span>{{ category.name }}</span>
+          <div v-for="resource in category.resources" :key="resource.key" class="gl-my-2">
+            <gl-icon name="check-sm" variant="success" class="gl-mr-2" />
+            <span>{{ resource.name }}:</span>
+            <span class="gl-capitalize">{{ formatActions(resource.actions) }}</span>
+          </div>
+        </div>
+      </gl-collapse>
+    </div>
+  </div>
+</template>

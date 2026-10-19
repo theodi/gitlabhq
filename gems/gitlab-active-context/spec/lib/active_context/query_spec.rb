@@ -1,0 +1,363 @@
+# frozen_string_literal: true
+
+RSpec.describe ActiveContext::Query do
+  describe 'class methods' do
+    describe '.all' do
+      it 'creates an all query' do
+        query = described_class.all
+        expect(query.type).to eq(:all)
+        expect(query.value).to be_nil
+        expect(query.children).to be_empty
+      end
+    end
+
+    describe '.filter' do
+      it 'creates a filter query with valid conditions' do
+        query = described_class.filter(project_id: 1)
+        expect(query.type).to eq(:filter)
+        expect(query.value).to eq(project_id: 1)
+      end
+
+      it 'raises an error for empty conditions' do
+        expect { described_class.filter }.to raise_error(ArgumentError, "Filter cannot be empty")
+      end
+    end
+
+    describe '.prefix' do
+      it 'creates a prefix query with valid conditions' do
+        query = described_class.prefix(traversal_ids: '9970-')
+        expect(query.type).to eq(:prefix)
+        expect(query.value).to eq(traversal_ids: '9970-')
+      end
+
+      it 'raises an error for empty conditions' do
+        expect { described_class.prefix }.to raise_error(ArgumentError, "Prefix cannot be empty")
+      end
+    end
+
+    describe '.missing' do
+      it 'creates a missing query with a field name' do
+        query = described_class.missing('embedding')
+        expect(query.type).to eq(:missing)
+        expect(query.value).to eq('embedding')
+      end
+    end
+
+    describe '.exists' do
+      it 'creates an exists query with a field name' do
+        query = described_class.exists('embedding')
+        expect(query.type).to eq(:exists)
+        expect(query.value).to eq('embedding')
+      end
+    end
+
+    describe '.or' do
+      it 'creates an OR query with multiple queries' do
+        query1 = described_class.filter(project_id: 1)
+        query2 = described_class.prefix(traversal_ids: 1)
+
+        or_query = described_class.or(query1, query2)
+
+        expect(or_query.type).to eq(:or)
+        expect(or_query.children).to contain_exactly(query1, query2)
+      end
+
+      it 'raises an error for empty queries' do
+        expect { described_class.or }.to raise_error(ArgumentError, "Or cannot be empty")
+      end
+    end
+
+    describe '.and' do
+      it 'creates an AND query with multiple queries' do
+        query1 = described_class.filter(project_id: 1)
+        query2 = described_class.filter(status: 'active')
+
+        and_query = described_class.and(query1, query2)
+
+        expect(and_query.type).to eq(:and)
+        expect(and_query.children).to contain_exactly(query1, query2)
+      end
+
+      it 'raises an error for empty queries' do
+        expect { described_class.and }.to raise_error(ArgumentError, "And cannot be empty")
+      end
+    end
+  end
+
+  describe 'instance methods' do
+    describe '#or' do
+      it 'creates a new query with OR logic' do
+        base_query = described_class.filter(project_id: 1)
+        additional_query1 = described_class.filter(status: 'active')
+        additional_query2 = described_class.prefix(traversal_ids: '9970-')
+
+        or_query = base_query.or(additional_query1, additional_query2)
+
+        expect(or_query.type).to eq(:and)
+        expect(or_query.children.size).to eq(2)
+        expect(or_query.children.first).to eq(base_query)
+
+        or_child = or_query.children.last
+        expect(or_child.type).to eq(:or)
+        expect(or_child.children).to contain_exactly(additional_query1, additional_query2)
+      end
+
+      it 'raises an error for empty queries' do
+        base_query = described_class.filter(project_id: 1)
+        expect { base_query.or }.to raise_error(ArgumentError, "Or cannot be empty")
+      end
+    end
+
+    describe '#and' do
+      it 'creates a new query with AND logic' do
+        base_query = described_class.filter(project_id: 1)
+        additional_query = described_class.filter(status: 'active')
+
+        and_query = base_query.and(additional_query)
+
+        expect(and_query.type).to eq(:and)
+        expect(and_query.children).to contain_exactly(base_query, additional_query)
+      end
+
+      it 'raises an error for empty queries' do
+        base_query = described_class.filter(project_id: 1)
+        expect { base_query.and }.to raise_error(ArgumentError, "And cannot be empty")
+      end
+    end
+
+    describe '#limit' do
+      it 'creates a limit query' do
+        base_query = described_class.filter(project_id: 1)
+        limited_query = base_query.limit(5)
+
+        expect(limited_query.type).to eq(:limit)
+        expect(limited_query.value).to eq(5)
+        expect(limited_query.children).to contain_exactly(base_query)
+      end
+
+      it 'raises an error for nil limit' do
+        base_query = described_class.filter(project_id: 1)
+        expect { base_query.limit(nil) }.to raise_error(ArgumentError, "Limit cannot be empty")
+      end
+
+      it 'raises an error for non-integer limit' do
+        base_query = described_class.filter(project_id: 1)
+        expect { base_query.limit('5') }.to raise_error(ArgumentError, /Limit must be a number/)
+      end
+    end
+
+    describe '#missing' do
+      it 'creates a missing query chained with the base query as a child' do
+        base_query = described_class.filter(project_id: 1)
+        missing_query = base_query.missing('embedding')
+
+        expect(missing_query.type).to eq(:missing)
+        expect(missing_query.value).to eq('embedding')
+        expect(missing_query.children).to contain_exactly(base_query)
+      end
+
+      it 'chains multiple missing queries' do
+        base_query = described_class.filter(project_id: 1)
+        missing_query = base_query.missing('embedding_v1').missing('embedding_v2')
+
+        expect(missing_query.type).to eq(:missing)
+        expect(missing_query.value).to eq('embedding_v2')
+        expect(missing_query.children.first.type).to eq(:missing)
+        expect(missing_query.children.first.value).to eq('embedding_v1')
+      end
+    end
+
+    describe '#exists' do
+      it 'creates an exists query chained with the base query as a child' do
+        base_query = described_class.filter(project_id: 1)
+        exists_query = base_query.exists('embedding')
+
+        expect(exists_query.type).to eq(:exists)
+        expect(exists_query.value).to eq('embedding')
+        expect(exists_query.children).to contain_exactly(base_query)
+      end
+
+      it 'chains multiple exists queries' do
+        base_query = described_class.filter(project_id: 1)
+        exists_query = base_query.exists('embedding_v1').exists('embedding_v2')
+
+        expect(exists_query.type).to eq(:exists)
+        expect(exists_query.value).to eq('embedding_v2')
+        expect(exists_query.children.first.type).to eq(:exists)
+        expect(exists_query.children.first.value).to eq('embedding_v1')
+      end
+    end
+
+    describe '#knn' do
+      it 'creates a KNN query with limit' do
+        base_query = described_class.filter(project_id: 1)
+        vector = [0.1, 0.2, 0.3]
+        knn_query = base_query.knn(target: 'similarity', vector: vector, k: 5)
+
+        expect(knn_query.type).to eq(:knn)
+        expect(knn_query.value).to eq(
+          target: 'similarity',
+          vector: vector,
+          k: 5
+        )
+        expect(knn_query.children).to contain_exactly(base_query)
+      end
+
+      it 'passes content when specified' do
+        content = 'something'
+        base_query = described_class.filter(project_id: 1)
+        knn_query = base_query.knn(content: content, k: 5)
+
+        expect(knn_query.type).to eq(:knn)
+        expect(knn_query.value).to eq(
+          content: content,
+          k: 5
+        )
+        expect(knn_query.children).to contain_exactly(base_query)
+      end
+
+      it 'raises an error for nil target and content' do
+        base_query = described_class.filter(project_id: 1)
+        vector = [0.1, 0.2, 0.3]
+        expect { base_query.knn(target: nil, vector: vector, k: 5) }
+          .to raise_error(ArgumentError, /:content must be provided OR both :target AND :vector must be provided/)
+      end
+
+      it 'raises an error for nil limit' do
+        base_query = described_class.filter(project_id: 1)
+        vector = [0.1, 0.2, 0.3]
+        expect { base_query.knn(target: 'similarity', vector: vector, k: nil) }
+          .to raise_error(ArgumentError, /K must be a positive number/)
+      end
+
+      it 'raises an error for non-array vector' do
+        base_query = described_class.filter(project_id: 1)
+        expect do
+          base_query.knn(target: 'similarity', vector: 'not an array', k: 5)
+        end.to raise_error(ArgumentError, "Vector must be an array")
+      end
+
+      it 'raises an error for non-positive limit' do
+        base_query = described_class.filter(project_id: 1)
+        vector = [0.1, 0.2, 0.3]
+
+        expect do
+          base_query.knn(target: 'similarity', vector: vector, k: 0)
+        end.to raise_error(ArgumentError, /K must be a positive number/)
+
+        expect do
+          base_query.knn(target: 'similarity', vector: vector, k: -1)
+        end.to raise_error(ArgumentError, /K must be a positive number/)
+      end
+    end
+
+    describe '#inspect_ast' do
+      it 'generates a readable AST representation for a simple all query' do
+        query = described_class.all
+        ast = query.inspect_ast
+        expect(ast).to eq('all')
+      end
+
+      it 'generates a readable AST representation for an all query with limit' do
+        query = described_class.all.limit(10)
+        ast = query.inspect_ast
+        expect(ast).to eq("limit(10)\n  all")
+      end
+
+      it 'generates a readable AST representation for a simple filter query' do
+        query = described_class.filter(project_id: 1)
+        ast = query.inspect_ast
+        expect(ast).to eq('filter(project_id: 1)')
+      end
+
+      it 'generates a readable AST representation for a complex nested query' do
+        complex_query = described_class.filter(hello: :foo)
+          .or(
+            described_class.filter(project_id: 1),
+            described_class.prefix(traversal_ids: '9970-')
+          )
+
+        ast = complex_query.inspect_ast
+        expect(ast).to include('and')
+        expect(ast).to include('filter(hello: foo)')
+        expect(ast).to include('or')
+        expect(ast).to include('filter(project_id: 1)')
+        expect(ast).to include('prefix(traversal_ids: 9970-)')
+      end
+
+      it 'generates a readable AST representation for a KNN query with limit' do
+        base_query = described_class.filter(project_id: 1)
+        vector = [0.1, 0.2, 0.3]
+        knn_query = base_query.knn(target: 'similarity', vector: vector, k: 5)
+
+        ast = knn_query.inspect_ast
+        expect(ast).to eq("knn(target: similarity, vector: [0.1, 0.2, 0.3], k: 5)\n  filter(project_id: 1)")
+      end
+
+      it 'generates a readable AST representation for a KNN query with content' do
+        base_query = described_class.filter(project_id: 1)
+        knn_query = base_query.knn(content: 'something', k: 5)
+
+        ast = knn_query.inspect_ast
+        expect(ast).to eq("knn(content: something, k: 5)\n  filter(project_id: 1)")
+      end
+
+      it 'generates a readable AST representation for a KNN query without a base query' do
+        vector = [0.1, 0.2, 0.3]
+        knn_query = described_class.knn(target: 'similarity', vector: vector, k: 5)
+
+        ast = knn_query.inspect_ast
+        expect(ast).to eq('knn(target: similarity, vector: [0.1, 0.2, 0.3], k: 5)')
+      end
+
+      it 'generates a readable AST representation for a missing query' do
+        query = described_class.missing('embedding')
+        ast = query.inspect_ast
+        expect(ast).to eq('missing(embedding)')
+      end
+
+      it 'generates a readable AST representation for multiple missing queries with OR' do
+        query = described_class.or(
+          described_class.missing('embedding_v1'),
+          described_class.missing('embedding_v2')
+        )
+        ast = query.inspect_ast
+        expect(ast).to include('or')
+        expect(ast).to include('missing(embedding_v1)')
+        expect(ast).to include('missing(embedding_v2)')
+      end
+
+      it 'generates a readable AST representation for an exists query' do
+        query = described_class.exists('embedding')
+        ast = query.inspect_ast
+        expect(ast).to eq('exists(embedding)')
+      end
+
+      it 'generates a readable AST representation for an exists query with filter' do
+        query = described_class.filter(project_id: 1).exists('embedding')
+        ast = query.inspect_ast
+        expect(ast).to eq("exists(embedding)\n  filter(project_id: 1)")
+      end
+
+      it 'generates a readable AST representation for multiple exists queries with OR' do
+        query = described_class.or(
+          described_class.exists('embedding_v1'),
+          described_class.exists('embedding_v2')
+        )
+        ast = query.inspect_ast
+        expect(ast).to include('or')
+        expect(ast).to include('exists(embedding_v1)')
+        expect(ast).to include('exists(embedding_v2)')
+      end
+    end
+
+    describe 'initialization' do
+      it 'raises an error for invalid query type' do
+        expect { described_class.new(type: :invalid) }.to raise_error(
+          ArgumentError,
+          /Invalid type: invalid\. Allowed types are: all, filter, prefix, limit, knn, and, or/
+        )
+      end
+    end
+  end
+end

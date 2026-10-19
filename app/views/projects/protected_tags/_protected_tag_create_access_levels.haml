@@ -1,0 +1,5 @@
+- protected_tag = local_assigns.fetch(:protected_tag)
+- create_access_level = local_assigns.fetch(:create_access_level)
+
+= hidden_field_tag "allowed_to_create_#{protected_tag.id}", create_access_level.first&.access_level
+.js-allowed-to-create{ data: { preselected_items: access_levels_data(create_access_level).to_json } }

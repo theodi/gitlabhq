@@ -1,155 +1,513 @@
+# frozen_string_literal: true
+
 module API
-  # Projects API
-  class Files < Grape::API
-    before { authenticate! }
+  class Files < ::API::Base
+    include ::API::Concerns::AiWorkflowsAccess
+    include APIGuard
 
-    resource :projects do
-      # Get file from repository
-      # File content is Base64 encoded
-      #
-      # Parameters:
-      #   file_path (required) - The path to the file. Ex. lib/class.rb
-      #   ref (required) - The name of branch, tag or commit
-      #
-      # Example Request:
-      #   GET /projects/:id/repository/files
-      #
-      # Example response:
-      # {
-      #   "file_name": "key.rb",
-      #   "file_path": "app/models/key.rb",
-      #   "size": 1476,
-      #   "encoding": "base64",
-      #   "content": "IyA9PSBTY2hlbWEgSW5mb3...",
-      #   "ref": "master",
-      #   "blob_id": "79f7bbd25901e8334750839545a9bd021f0e4c83",
-      #   "commit_id": "d5a3ff139356ce33e37e73add446f16869741b50"
-      # }
-      #
-      get ":id/repository/files" do
-        authorize! :download_code, user_project
+    FILE_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS.merge(file_path: ::API::NO_SLASH_URL_PART_REGEX)
 
-        required_attributes! [:file_path, :ref]
-        attrs = attributes_for_keys [:file_path, :ref]
-        ref = attrs.delete(:ref)
-        file_path = attrs.delete(:file_path)
+    # Workhorse and the Duo Workflow Service cap each agent message at 4 MiB, which the
+    # Base64-encoded content of a larger file does not fit into.
+    MAX_AI_WORKFLOW_BLOB_SIZE = 3_000_000
 
-        commit = user_project.commit(ref)
-        not_found! 'Commit' unless commit
+    # Prevents returning plain/text responses for files with .txt extension
+    after_validation { content_type "application/json" }
 
-        blob = user_project.repository.blob_at(commit.sha, file_path)
+    feature_category :source_code_management
 
-        if blob
-          status(200)
+    allow_access_with_scope :read_repository, if: ->(request) { request.get? || request.head? }
+    allow_ai_workflows_access
 
-          {
-            file_name: blob.name,
-            file_path: blob.path,
-            size: blob.size,
-            encoding: "base64",
-            content: Base64.encode64(blob.data),
-            ref: ref,
-            blob_id: blob.id,
-            commit_id: commit.id,
+    helpers ::API::Helpers::HeadersHelpers
+    helpers ::API::Helpers::BlobHelpers
+    helpers ::API::Helpers::CommitsBodyUploaderHelper
+
+    rescue_from Oj::ParseError do |e|
+      Gitlab::ErrorTracking.log_exception(e)
+
+      message = 'Invalid json'
+      render_structured_api_error!({ message: message, error: message }, 400)
+    end
+
+    helpers do
+      def commit_params(attrs)
+        {
+          file_path: attrs[:file_path],
+          start_branch: attrs[:start_branch] || attrs[:branch],
+          branch_name: attrs[:branch],
+          commit_message: attrs[:commit_message],
+          file_content: attrs[:content],
+          file_content_encoding: attrs[:encoding],
+          author_email: attrs[:author_email],
+          author_name: attrs[:author_name],
+          last_commit_sha: attrs[:last_commit_id],
+          execute_filemode: attrs[:execute_filemode]
+        }
+      end
+
+      def assign_file_vars!
+        authorize_read_code!
+        authorize_ai_access! if ai_workflow_scope?
+
+        @commit = user_project.commit(params[:ref])
+
+        verify_gitaly_availability! unless @commit
+        not_found!('Commit') unless @commit
+
+        @repo = user_project.repository
+        @blob = @repo.blob_at(@commit.sha, params[:file_path], limit: Gitlab::Git::Blob::LFS_POINTER_MAX_SIZE)
+
+        not_found!('File') unless @blob
+
+        audit_repository_file_api_access
+      rescue Gitlab::Git::CommandError
+        service_unavailable!
+      end
+
+      def verify_gitaly_availability!
+        storage = user_project.repository.storage
+        result = Gitlab::GitalyClient::HealthCheckService.new(storage).check
+
+        return if result[:success]
+
+        raise Gitlab::Git::CommandError, result[:message] || 'Gitaly is not available'
+      end
+
+      def audit_repository_file_api_access
+        return unless current_user
+
+        ::Gitlab::Audit::Auditor.audit({
+          name: 'repository_file_accessed_api',
+          author: current_user,
+          scope: user_project,
+          target: user_project,
+          message: "User accessed repository file '#{params[:file_path]}' at ref '#{params[:ref]}' via API",
+          additional_details: {
+            file_path: params[:file_path],
+            ref: params[:ref],
+            project_path: user_project.full_path,
+            project_id: user_project.id
           }
-        else
-          not_found! 'File'
+        })
+      end
+
+      def ai_workflow_scope?
+        token_info = ::Current.token_info
+        return false unless token_info
+
+        Array.wrap(token_info[:token_scopes]).include?(:ai_workflows)
+      end
+
+      def authorize_ai_access!
+        return if can?(current_user, :duo_workflow, user_project) || can?(current_user, :access_duo_agentic_chat, user_project)
+
+        forbidden!('Insufficient permissions for Duo Agent Platform')
+      end
+
+      def check_ai_workflow_blob_size!
+        return unless ai_workflow_scope?
+        return unless @blob.size > MAX_AI_WORKFLOW_BLOB_SIZE
+        return unless Feature.enabled?(:limit_repository_file_size_for_ai_workflows, user_project)
+
+        file_too_large!(
+          "413 File is too large to read: #{@blob.size} bytes exceeds the limit of " \
+            "#{MAX_AI_WORKFLOW_BLOB_SIZE} bytes. Search the repository for the code you need instead."
+        )
+      end
+
+      def user_access
+        @user_access ||= Gitlab::UserAccess.new(current_user, container: user_project)
+      end
+
+      def authorize_push_to_branch!(branch)
+        authenticate!
+
+        return if user_access.can_push_to_branch?(branch)
+
+        forbidden!("You are not allowed to push into this branch")
+      end
+
+      def commit_response(attrs)
+        {
+          file_path: attrs[:file_path],
+          branch: attrs[:branch]
+        }
+      end
+
+      def content_sha
+        cache_client.fetch(
+          "blob_content_sha256:#{user_project.full_path}:#{@blob.id}",
+          nil,
+          {
+            cache_identifier: 'API::Files#content_sha',
+            backing_resource: :gitaly
+          }
+        ) do
+          @blob.load_all_data!
+
+          Digest::SHA256.hexdigest(@blob.data)
         end
       end
 
-      # Create new file in repository
-      #
-      # Parameters:
-      #   file_path (required) - The path to new file. Ex. lib/class.rb
-      #   branch_name (required) - The name of branch
-      #   content (required) - File content
-      #   commit_message (required) - Commit message
-      #
-      # Example Request:
-      #   POST /projects/:id/repository/files
-      #
-      post ":id/repository/files" do
-        authorize! :push_code, user_project
+      def cache_client
+        @cache_client ||= Gitlab::Cache::Client.new(
+          Gitlab::Cache::Metrics.new(Gitlab::Cache::Metadata.new(feature_category: :source_code_management))
+        )
+      end
 
-        required_attributes! [:file_path, :branch_name, :content, :commit_message]
-        attrs = attributes_for_keys [:file_path, :branch_name, :content, :commit_message, :encoding]
-        branch_name = attrs.delete(:branch_name)
-        file_path = attrs.delete(:file_path)
-        result = ::Files::CreateService.new(user_project, current_user, attrs, branch_name, file_path).execute
+      def check_blame_rate_limit!
+        if current_user
+          check_rate_limit!(:project_repositories_blame, scope: { user: current_user, project: user_project })
+        else
+          check_rate_limit!(:project_repositories_blame_unauthenticated, scope: { ip: ip_address })
+        end
+      end
+
+      def fetch_blame_range(blame_params)
+        return if blame_params[:range].blank?
+
+        range = Range.new(blame_params[:range][:start], blame_params[:range][:end])
+
+        render_api_error!('range[start] must be less than or equal to range[end]', 400) if range.begin > range.end
+
+        range
+      end
+
+      def blob_data
+        {
+          file_name: @blob.name,
+          file_path: @blob.path,
+          size: @blob.size,
+          encoding: "base64",
+          content_sha256: content_sha,
+          ref: params[:ref],
+          blob_id: @blob.id,
+          commit_id: @commit.id,
+          last_commit_id: @repo.last_commit_id_for_path(@commit.sha, params[:file_path], literal_pathspec: true),
+          execute_filemode: @blob.executable?
+        }
+      end
+
+      def validate_file_params!(params)
+        validate_string_param!(params, :branch)
+        validate_string_param!(params, :commit_message)
+        validate_string_param!(params, :start_branch)
+        validate_string_param!(params, :author_email)
+        validate_string_param!(params, :author_name)
+        validate_string_param!(params, :last_commit_id)
+
+        bad_request!('branch is required') if params[:branch].blank?
+        bad_request!('commit_message is required') if params[:commit_message].blank?
+        bad_request!('content is required') unless params.key?(:content)
+
+        if params.key?(:encoding)
+          bad_request!('encoding must be text or base64') if %w[text base64].exclude?(params[:encoding])
+        else
+          params[:encoding] = 'text'
+        end
+
+        if params.key?(:execute_filemode)
+          if [true, false, "true", "false"].exclude?(params[:execute_filemode])
+            bad_request!('execute_filemode must be a boolean')
+          end
+
+          params[:execute_filemode] = ActiveModel::Type::Boolean.new.cast(params[:execute_filemode])
+        end
+
+        filter_file_params!(params)
+      end
+
+      def filter_file_params!(params)
+        params.slice!(
+          :branch,
+          :commit_message,
+          :content,
+          :start_branch,
+          :author_email,
+          :author_name,
+          :encoding,
+          :last_commit_id,
+          :execute_filemode
+        )
+
+        params
+      end
+    end
+
+    params do
+      requires :id, type: String, desc: 'ID or URL-encoded path of the project.', documentation: { example: 'gitlab-org/gitlab' }
+    end
+    resource :projects, requirements: FILE_ENDPOINT_REQUIREMENTS do
+      desc 'Retrieve file blame metadata' do
+        detail 'Retrieves blame metadata for lines in a specified file.'
+        success code: 200
+        tags %w[files]
+      end
+      params do
+        requires :file_path, type: String, file_path: true,
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+        requires :ref, type: String,
+          desc: 'Commit SHA or name of a repository branch or tag.', allow_blank: false, documentation: { example: 'main' }
+      end
+      route_setting :authorization, permissions: :read_repository_file_blame, boundary_type: :project
+      head ":id/repository/files/:file_path/blame", requirements: FILE_ENDPOINT_REQUIREMENTS do
+        assign_file_vars!
+
+        set_http_headers(blob_data)
+      end
+
+      desc 'Retrieve file blame history from a repository' do
+        detail 'Retrieves blame history for a specified file in a repository. Each blame range contains lines and ' \
+          'their corresponding commit information. This endpoint is rate-limited for each authenticated user for ' \
+          'a given project, and for each IP address for unauthenticated requests. On GitLab Self-Managed and ' \
+          'GitLab Dedicated, an administrator can change these limits in the application settings.'
+        success [Entities::BlameRange]
+        failure [{ code: 429, message: 'Too many requests' }]
+        tags %w[files]
+      end
+      params do
+        requires :file_path, type: String, file_path: true,
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+        requires :ref, type: String,
+          desc: 'Commit SHA or name of a repository branch or tag.', allow_blank: false, documentation: { example: 'main' }
+        optional :range, type: Hash, desc: 'Range of lines to return blame information for.' do
+          requires :start, type: Integer,
+            desc: 'First line number of the range to blame.', values: 1.., allow_blank: false
+          requires :end, type: Integer,
+            desc: 'Last line number of the range to blame.', values: 1.., allow_blank: false
+        end
+      end
+      route_setting :authorization, permissions: :read_repository_file_blame, boundary_type: :project
+      get ":id/repository/files/:file_path/blame", requirements: FILE_ENDPOINT_REQUIREMENTS do
+        check_blame_rate_limit!
+
+        blame_params = declared_params(include_missing: false)
+
+        assign_file_vars!
+
+        set_http_headers(blob_data)
+
+        blame_ranges = Gitlab::Blame.new(@blob, @commit, range: fetch_blame_range(blame_params)).groups(highlight: false)
+        present blame_ranges, with: Entities::BlameRange
+      end
+
+      desc 'Retrieve a raw file from a repository' do
+        detail 'Retrieves the raw file contents for a specified file in a repository.'
+        success File
+        tags %w[files]
+      end
+      params do
+        requires :file_path, type: String, file_path: { allow_initial_path_separator: true },
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+        optional :ref, type: String,
+          desc: 'Commit SHA or name of a repository branch or tag.', allow_blank: false, documentation: { example: 'main' }
+        optional :lfs, type: Boolean,
+          desc: "If `true`, returns the Git LFS file contents instead of the pointer. Ignored if the file isn't tracked by Git LFS.",
+          default: false
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :read_repository_file, boundary_type: :project,
+        job_token_policies: :read_repositories, allow_public_access_for_enabled_project_features: :repository
+      get ":id/repository/files/:file_path/raw", requirements: FILE_ENDPOINT_REQUIREMENTS, urgency: :low do
+        assign_file_vars!
+        check_ai_workflow_blob_size!
+
+        if params[:lfs] && @blob.stored_externally?
+          lfs_object = LfsObject.find_by_oid(@blob.lfs_oid)
+          not_found! unless lfs_object&.project_allowed_access?(@project)
+
+          present_carrierwave_file!(lfs_object.file)
+        else
+          no_cache_headers
+          set_http_headers(blob_data)
+
+          send_git_blob @repo, @blob
+        end
+      end
+
+      desc 'Retrieve file metadata' do
+        detail 'Retrieves metadata for a specified file in a repository.'
+        success code: 200
+        tags %w[files]
+      end
+      params do
+        requires :file_path, type: String, file_path: true,
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+        requires :ref, type: String,
+          desc: 'Commit SHA or name of a repository branch or tag.', allow_blank: false, documentation: { example: 'main' }
+      end
+      route_setting :authorization, permissions: :read_repository_file, boundary_type: :project
+      head ":id/repository/files/:file_path", requirements: FILE_ENDPOINT_REQUIREMENTS, urgency: :low do
+        assign_file_vars!
+
+        set_http_headers(blob_data)
+      end
+
+      desc 'Retrieve a file from a repository' do
+        detail 'Retrieves information about a specified file in a repository. This includes information like the ' \
+          'name, size, and the file contents. File content is Base64 encoded.'
+        success code: 200
+        tags %w[files]
+      end
+      params do
+        requires :file_path, type: String, file_path: true,
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+        requires :ref, type: String,
+          desc: 'Commit SHA or name of a repository branch or tag.', allow_blank: false, documentation: { example: 'main' }
+      end
+      route_setting :authorization, permissions: :read_repository_file, boundary_type: :project
+      get ":id/repository/files/:file_path", requirements: FILE_ENDPOINT_REQUIREMENTS do
+        # Loads metadata for @blob as a side effect, but not not the actual data
+        #
+        assign_file_vars!
+        check_ai_workflow_blob_size!
+        check_rate_limit_for_blob(@blob, :repository_files)
+
+        # If #check_rate_limit_for_blob hasn't stopped the request, allow data
+        #   to actually be loaded without limit.
+        #
+        @blob.load_all_data!
+
+        data = blob_data
+
+        set_http_headers(data)
+
+        data.merge(content: Base64.strict_encode64(@blob.data))
+      end
+
+      desc 'Authorize create files upload' do
+        success code: 200
+        tags %w[files]
+        failure [
+          { code: 400, message: 'Bad Request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        hidden true
+      end
+      route_setting :authorization, skip_granular_token_authorization: :workhorse_pre_authorization
+      post ':id/repository/files/:file_path/authorize' do
+        workhorse_authorize_commits_body_upload!
+      end
+
+      desc 'Create a file in a repository' do
+        detail 'Creates a file in a specified repository. Use the Commits API to create multiple files with a ' \
+          'single request.'
+        success code: 201
+        tags %w[files]
+      end
+      params do
+        requires :file, type: ::API::Validations::Types::WorkhorseFile, desc: 'The file content to be created (generated by Multipart middleware)', documentation: { type: 'file' }
+        requires :file_path, type: String, file_path: true,
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+      end
+      route_setting :authorization, permissions: :create_repository_file, boundary_type: :project
+      post ":id/repository/files/:file_path", requirements: FILE_ENDPOINT_REQUIREMENTS, urgency: :low do
+        require_gitlab_workhorse!
+        authenticate!
+
+        file_params = validate_file_params!(file_params_from_body_upload)
+        file_params[:file_path] = params[:file_path]
+        authorize_push_to_branch!(file_params[:branch])
+
+        result = ::Files::CreateService.new(user_project, current_user, commit_params(file_params)).execute
 
         if result[:status] == :success
           status(201)
-
-          {
-            file_path: file_path,
-            branch_name: branch_name
-          }
+          commit_response(file_params)
         else
           render_api_error!(result[:message], 400)
         end
       end
 
-      # Update existing file in repository
-      #
-      # Parameters:
-      #   file_path (optional) - The path to file. Ex. lib/class.rb
-      #   branch_name (required) - The name of branch
-      #   content (required) - File content
-      #   commit_message (required) - Commit message
-      #
-      # Example Request:
-      #   PUT /projects/:id/repository/files
-      #
-      put ":id/repository/files" do
-        authorize! :push_code, user_project
+      desc 'Authorize update files upload' do
+        success code: 200
+        failure [
+          { code: 400, message: 'Bad Request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[files]
+        hidden true
+      end
+      route_setting :authorization, skip_granular_token_authorization: :workhorse_pre_authorization
+      put ':id/repository/files/:file_path/authorize' do
+        workhorse_authorize_commits_body_upload!
+      end
 
-        required_attributes! [:file_path, :branch_name, :content, :commit_message]
-        attrs = attributes_for_keys [:file_path, :branch_name, :content, :commit_message, :encoding]
-        branch_name = attrs.delete(:branch_name)
-        file_path = attrs.delete(:file_path)
-        result = ::Files::UpdateService.new(user_project, current_user, attrs, branch_name, file_path).execute
+      desc 'Update a file in a repository' do
+        detail 'Updates a specified file in a repository. Use the Commits API to update multiple files with a ' \
+          'single request.'
+        success code: 200
+        tags %w[files]
+      end
+      params do
+        requires :file, type: ::API::Validations::Types::WorkhorseFile, desc: 'The file content to be updated (generated by Multipart middleware)', documentation: { type: 'file' }
+        requires :file_path, type: String, file_path: true,
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+      end
+      route_setting :authorization, permissions: :update_repository_file, boundary_type: :project
+      put ":id/repository/files/:file_path", requirements: FILE_ENDPOINT_REQUIREMENTS, urgency: :low do
+        require_gitlab_workhorse!
+        authenticate!
+
+        file_params = validate_file_params!(file_params_from_body_upload)
+        file_params[:file_path] = params[:file_path]
+        authorize_push_to_branch!(file_params[:branch])
+
+        begin
+          result = ::Files::UpdateService.new(user_project, current_user, commit_params(file_params)).execute
+        rescue ::Files::UpdateService::FileChangedError => e
+          render_api_error!(e.message, 400)
+        end
 
         if result[:status] == :success
           status(200)
-
-          {
-            file_path: file_path,
-            branch_name: branch_name
-          }
+          commit_response(file_params)
         else
           http_status = result[:http_status] || 400
           render_api_error!(result[:message], http_status)
         end
       end
 
-      # Delete existing file in repository
-      #
-      # Parameters:
-      #   file_path (optional) - The path to file. Ex. lib/class.rb
-      #   branch_name (required) - The name of branch
-      #   content (required) - File content
-      #   commit_message (required) - Commit message
-      #
-      # Example Request:
-      #   DELETE /projects/:id/repository/files
-      #
-      delete ":id/repository/files" do
+      desc 'Delete a file in a repository' do
+        detail 'Deletes a specified file in a repository. Use the Commits API to delete multiple files with a ' \
+          'single request.'
+        success code: 204
+        tags %w[files]
+      end
+      params do
+        requires :file_path, type: String, file_path: true,
+          desc: 'URL-encoded full path to the file, for example `lib%2Fclass%2Erb`.', documentation: { example: 'lib%2Fclass%2Erb' }
+        requires :branch, type: String,
+          desc: 'Name of the branch to commit the deletion into. Combine with `start_branch` to create a new branch.', allow_blank: false,
+          documentation: { example: 'main' }
+        requires :commit_message, type: String,
+          allow_blank: false, desc: 'Commit message.', documentation: { example: 'Initial commit' }
+        optional :start_branch, type: String,
+          desc: 'Name of the base branch to create the branch from.', documentation: { example: 'main' }
+        optional :author_email, type: String,
+          desc: 'Email address of the commit author.', documentation: { example: 'johndoe@example.com' }
+        optional :author_name, type: String,
+          desc: 'Name of the commit author.', documentation: { example: 'John Doe' }
+        optional :last_commit_id, type: String,
+          desc: 'Last known file commit ID.', documentation: { example: '2695effb5807a22ff3d138d593fd856244e155e7' }
+      end
+      route_setting :authorization, permissions: :delete_repository_file, boundary_type: :project
+      delete ":id/repository/files/:file_path", requirements: FILE_ENDPOINT_REQUIREMENTS do
         authorize! :push_code, user_project
 
-        required_attributes! [:file_path, :branch_name, :commit_message]
-        attrs = attributes_for_keys [:file_path, :branch_name, :commit_message]
-        branch_name = attrs.delete(:branch_name)
-        file_path = attrs.delete(:file_path)
-        result = ::Files::DeleteService.new(user_project, current_user, attrs, branch_name, file_path).execute
+        file_params = declared_params(include_missing: false)
+        begin
+          result = ::Files::DeleteService.new(user_project, current_user, commit_params(file_params)).execute
+        rescue ::Files::UpdateService::FileChangedError => e
+          render_api_error!(e.message, 400)
+        end
 
-        if result[:status] == :success
-          status(200)
-
-          {
-            file_path: file_path,
-            branch_name: branch_name
-          }
-        else
+        if result[:status] != :success
           render_api_error!(result[:message], 400)
         end
       end

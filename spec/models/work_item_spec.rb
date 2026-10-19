@@ -1,0 +1,1000 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe WorkItem, feature_category: :portfolio_management do
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:reusable_project) { create(:project) }
+  let_it_be(:reusable_group) { create(:group) }
+
+  describe 'associations' do
+    it { is_expected.to belong_to(:namespace) }
+    it { is_expected.to have_one(:work_item_parent).class_name('WorkItem') }
+
+    it 'has one `parent_link`' do
+      is_expected.to have_one(:parent_link)
+        .class_name('::WorkItems::ParentLink')
+        .inverse_of(:work_item)
+
+      expect(described_class.reflect_on_association(:parent_link).foreign_key).to eq('work_item_id')
+    end
+
+    it 'has many `work_item_children`' do
+      is_expected.to have_many(:work_item_children)
+        .class_name('WorkItem')
+        .with_foreign_key('work_item_id')
+    end
+
+    it 'has many `work_item_children_by_relative_position`' do
+      is_expected.to have_many(:work_item_children_by_relative_position)
+        .class_name('WorkItem')
+        .with_foreign_key('work_item_id')
+    end
+
+    it 'has many `child_links`' do
+      is_expected.to have_many(:child_links)
+        .class_name('::WorkItems::ParentLink')
+        .with_foreign_key('work_item_parent_id')
+    end
+  end
+
+  describe '.work_item_children_by_relative_position' do
+    subject { parent_item.reload.work_item_children_by_relative_position }
+
+    let_it_be(:parent_item) { create(:work_item, :issue, project: reusable_project) }
+    let_it_be(:oldest_item) { create(:work_item, :task, project: reusable_project) }
+    let_it_be(:middle_item) { create(:work_item, :task, project: reusable_project) }
+    let_it_be(:newest_item) { create(:work_item, :task, project: reusable_project) }
+
+    let_it_be_with_reload(:link_to_oldest_item) do
+      create(:parent_link, work_item_parent: parent_item, work_item: oldest_item)
+    end
+
+    let_it_be_with_reload(:link_to_middle_item) do
+      create(:parent_link, work_item_parent: parent_item, work_item: middle_item)
+    end
+
+    let_it_be_with_reload(:link_to_newest_item) do
+      create(:parent_link, work_item_parent: parent_item, work_item: newest_item)
+    end
+
+    context 'when ordered by relative position' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:oldest_item_position, :middle_item_position, :newest_item_position, :expected_order) do
+        nil | nil | nil | lazy { [oldest_item, middle_item, newest_item] }
+        nil | nil | 1   | lazy { [newest_item, oldest_item, middle_item] }
+        nil | 1   | 2   | lazy { [middle_item, newest_item, oldest_item] }
+        2   | 3   | 1   | lazy { [newest_item, oldest_item, middle_item] }
+        1   | 2   | 3   | lazy { [oldest_item, middle_item, newest_item] }
+        1   | 3   | 2   | lazy { [oldest_item, newest_item, middle_item] }
+        2   | 1   | 3   | lazy { [middle_item, oldest_item, newest_item] }
+        3   | 1   | 2   | lazy { [middle_item, newest_item, oldest_item] }
+        3   | 2   | 1   | lazy { [newest_item, middle_item, oldest_item] }
+        1   | 2   | 1   | lazy { [oldest_item, newest_item, middle_item] }
+      end
+
+      with_them do
+        before do
+          link_to_oldest_item.update!(relative_position: oldest_item_position)
+          link_to_middle_item.update!(relative_position: middle_item_position)
+          link_to_newest_item.update!(relative_position: newest_item_position)
+        end
+
+        it { is_expected.to eq(expected_order) }
+      end
+    end
+  end
+
+  describe ".with_enabled_widget_definition" do
+    let_it_be(:issue) { create(:work_item, :issue) }
+    let_it_be(:task) { create(:work_item, :task) }
+
+    subject(:with_enabled_widget_definition) { described_class.with_enabled_widget_definition(:iteration) }
+
+    before do
+      # Ensure that the widget definition does not exists.
+      allow(::WorkItems::TypesFramework::SystemDefined::Type)
+        .to receive(:with_widget_definition)
+        .with(:iteration)
+        .and_return([task.work_item_type])
+    end
+
+    it "returns the items with widget iteration enabled" do
+      expect(with_enabled_widget_definition).not_to include(issue)
+    end
+  end
+
+  describe '.with_parent_ids' do
+    let_it_be(:parent_item) { create(:work_item, :issue, project: reusable_project) }
+
+    context 'when given valid parent IDs' do
+      let_it_be(:child_item) { create(:work_item, :task, project: reusable_project) }
+
+      before do
+        create(:parent_link, work_item_parent: parent_item, work_item: child_item)
+      end
+
+      it 'returns the work items with the specified parent IDs' do
+        expect(described_class.with_work_item_parent_ids([parent_item.id])).to contain_exactly(child_item)
+      end
+    end
+
+    context 'when work item does not have parent link' do
+      let_it_be(:work_item_without_parent) { create(:work_item, :task, project: reusable_project) }
+
+      it 'does not return the work item' do
+        expect(described_class.with_work_item_parent_ids([parent_item.id])).to be_empty
+      end
+    end
+  end
+
+  describe '.with_group_level_and_project_issues_enabled' do
+    let_it_be(:group) { create(:group) }
+    let_it_be(:project_with_issues, freeze: false) { create(:project, group: group) }
+    let_it_be(:project_without_issues, freeze: false) { create(:project, group: group) }
+
+    let_it_be(:group_work_item) { create(:work_item, namespace: group) }
+    let_it_be(:project_with_issues_work_item) { create(:work_item, :issue, project: project_with_issues) }
+    let_it_be(:project_without_issues_work_item) { create(:work_item, :issue, project: project_without_issues) }
+
+    before_all do
+      project_with_issues.project_feature.update!(issues_access_level: ProjectFeature::ENABLED)
+      project_without_issues.project_feature.update!(issues_access_level: ProjectFeature::DISABLED)
+    end
+
+    context 'when include_group_level is true (default)' do
+      it 'returns group-level and work items from projects with issues enabled' do
+        result = described_class.with_group_level_and_project_issues_enabled
+
+        expect(result).to contain_exactly(group_work_item, project_with_issues_work_item)
+        expect(result).not_to include(project_without_issues_work_item)
+      end
+    end
+
+    context 'when include_group_level is false' do
+      it 'returns only work items from projects with issues enabled' do
+        result = described_class.with_group_level_and_project_issues_enabled(include_group_level_items: false)
+
+        expect(result).to contain_exactly(project_with_issues_work_item)
+        expect(result).not_to include(group_work_item, project_without_issues_work_item)
+      end
+    end
+  end
+
+  describe '#create_dates_source_from_current_dates' do
+    let_it_be(:start_date) { nil }
+    let_it_be(:due_date) { nil }
+    let(:dates_source) { work_item.dates_source }
+
+    let_it_be_with_reload(:work_item) do
+      create(:work_item, project: reusable_project, start_date: start_date, due_date: due_date)
+    end
+
+    before do
+      work_item.update!(start_date: start_date, due_date: due_date)
+    end
+
+    subject(:create_dates_source_from_current_dates) { work_item.create_dates_source_from_current_dates }
+
+    context 'when both due_date and start_date are present' do
+      let_it_be(:due_date) { Time.zone.tomorrow }
+      let_it_be(:start_date) { Time.zone.today }
+
+      it 'creates dates_source with correct attributes' do
+        expect { create_dates_source_from_current_dates }.to change { WorkItems::DatesSource.count }.by(1)
+
+        expect(dates_source.reload).to have_attributes(
+          due_date: due_date,
+          start_date: start_date,
+          start_date_is_fixed: true,
+          due_date_is_fixed: true,
+          start_date_fixed: start_date,
+          due_date_fixed: due_date
+        )
+      end
+    end
+
+    context 'when only due_date is present' do
+      let_it_be(:due_date) { Time.zone.tomorrow }
+      let_it_be(:start_date) { nil }
+
+      it 'creates dates_source with correct attributes' do
+        create_dates_source_from_current_dates
+
+        expect(dates_source).to have_attributes(
+          due_date: work_item.due_date,
+          start_date: nil,
+          start_date_is_fixed: true,
+          due_date_is_fixed: true,
+          start_date_fixed: nil,
+          due_date_fixed: work_item.due_date
+        )
+      end
+    end
+
+    context 'when only start_date is present' do
+      let_it_be(:due_date) { nil }
+      let_it_be(:start_date) { Time.zone.today }
+
+      it 'creates dates_source with correct attributes' do
+        create_dates_source_from_current_dates
+
+        expect(dates_source).to have_attributes(
+          due_date: nil,
+          start_date: work_item.start_date,
+          start_date_is_fixed: true,
+          due_date_is_fixed: true,
+          start_date_fixed: work_item.start_date,
+          due_date_fixed: nil
+        )
+      end
+    end
+
+    context 'when neither due_date nor start_date is present' do
+      it 'creates dates_source with correct attributes' do
+        dates_source = work_item.create_dates_source_from_current_dates
+
+        expect(dates_source).to have_attributes(
+          due_date: nil,
+          start_date: nil,
+          start_date_is_fixed: false,
+          due_date_is_fixed: false,
+          start_date_fixed: nil,
+          due_date_fixed: nil
+        )
+      end
+    end
+  end
+
+  describe '#noteable_target_type_name' do
+    it 'returns `issue` as the target name' do
+      work_item = build(:work_item)
+
+      expect(work_item.noteable_target_type_name).to eq('issue')
+    end
+  end
+
+  describe '#todoable_target_type_name' do
+    it 'returns correct target name' do
+      work_item = build(:work_item)
+
+      expect(work_item.todoable_target_type_name).to contain_exactly('Issue', 'WorkItem')
+    end
+  end
+
+  describe '#widgets' do
+    subject(:work_item) { build(:work_item) }
+
+    it 'returns instances of supported widgets' do
+      expect(work_item.widgets).to match_array([
+        instance_of(WorkItems::Widgets::Assignees),
+        instance_of(WorkItems::Widgets::AwardEmoji),
+        instance_of(WorkItems::Widgets::CrmContacts),
+        instance_of(WorkItems::Widgets::CurrentUserTodos),
+        instance_of(WorkItems::Widgets::Description),
+        instance_of(WorkItems::Widgets::Designs),
+        instance_of(WorkItems::Widgets::Development),
+        instance_of(WorkItems::Widgets::EmailParticipants),
+        instance_of(WorkItems::Widgets::ErrorTracking),
+        instance_of(WorkItems::Widgets::Hierarchy),
+        instance_of(WorkItems::Widgets::Labels),
+        instance_of(WorkItems::Widgets::LinkedItems),
+        instance_of(WorkItems::Widgets::LinkedResources),
+        instance_of(WorkItems::Widgets::Milestone),
+        instance_of(WorkItems::Widgets::Notes),
+        instance_of(WorkItems::Widgets::Notifications),
+        instance_of(WorkItems::Widgets::Participants),
+        instance_of(WorkItems::Widgets::StartAndDueDate),
+        instance_of(WorkItems::Widgets::TimeTracking)
+      ])
+    end
+
+    context 'when filters are given' do
+      context 'when both only_types and except_types are given' do
+        it 'raises an error' do
+          expect { work_item.widgets(only_types: [true], except_types: [true]) }
+            .to raise_error(ArgumentError, 'Only one filter is allowed')
+        end
+      end
+
+      context 'when filtering by only_types' do
+        it 'only returns widgets on the given list' do
+          expect(work_item.widgets(only_types: [:milestone, :description])).to match_array([
+            instance_of(WorkItems::Widgets::Milestone),
+            instance_of(WorkItems::Widgets::Description)
+          ])
+        end
+      end
+
+      context 'when passing explicitly nil to except_types' do
+        it 'only returns widgets on the given list' do
+          expect(work_item.widgets(only_types: [:milestone, :description], except_types: nil)).to match_array([
+            instance_of(WorkItems::Widgets::Milestone),
+            instance_of(WorkItems::Widgets::Description)
+          ])
+        end
+      end
+
+      context 'when filtering by except_types' do
+        it 'only returns widgets on the given list' do
+          expect(work_item.widgets(except_types: [:milestone, :description])).to match_array([
+            instance_of(WorkItems::Widgets::Assignees),
+            instance_of(WorkItems::Widgets::AwardEmoji),
+            instance_of(WorkItems::Widgets::CrmContacts),
+            instance_of(WorkItems::Widgets::CurrentUserTodos),
+            instance_of(WorkItems::Widgets::Designs),
+            instance_of(WorkItems::Widgets::Development),
+            instance_of(WorkItems::Widgets::EmailParticipants),
+            instance_of(WorkItems::Widgets::ErrorTracking),
+            instance_of(WorkItems::Widgets::Hierarchy),
+            instance_of(WorkItems::Widgets::Labels),
+            instance_of(WorkItems::Widgets::LinkedItems),
+            instance_of(WorkItems::Widgets::LinkedResources),
+            instance_of(WorkItems::Widgets::Notes),
+            instance_of(WorkItems::Widgets::Notifications),
+            instance_of(WorkItems::Widgets::Participants),
+            instance_of(WorkItems::Widgets::StartAndDueDate),
+            instance_of(WorkItems::Widgets::TimeTracking)
+          ])
+        end
+      end
+    end
+  end
+
+  describe '#get_widget' do
+    let(:work_item) { build(:work_item, description: 'foo') }
+
+    it 'returns widget object' do
+      expect(work_item.get_widget(:description)).to be_an_instance_of(WorkItems::Widgets::Description)
+    end
+
+    context 'when widget does not exist' do
+      it 'returns nil' do
+        expect(work_item.get_widget(:nop)).to be_nil
+      end
+    end
+  end
+
+  describe '#has_widget?' do
+    let(:work_item) { build(:work_item) }
+
+    it 'returns true for a widget the type supports' do
+      expect(work_item.has_widget?(:description)).to be(true)
+    end
+
+    it 'returns false for a widget the type does not support' do
+      expect(work_item.has_widget?(:nop)).to be(false)
+    end
+
+    it 'resolves the widget list once for repeated calls' do
+      work_item_type = work_item.work_item_type
+      allow(work_item).to receive(:work_item_type).and_return(work_item_type)
+      expect(work_item_type).to receive(:widgets).once.and_call_original
+
+      work_item.has_widget?(:description)
+      work_item.has_widget?(:labels)
+      work_item.get_widget(:description)
+    end
+  end
+
+  describe '#supports_assignee?' do
+    WorkItems::TypesFramework::SystemDefined::Type::BASE_TYPES.pluck(:base_type).each do |base_type|
+      specify do
+        work_item = build(:work_item, base_type.to_sym)
+        widgets = WorkItems::TypesFramework::SystemDefined::Definitions
+          .const_get(base_type.camelize, false).widgets
+        supports_assignee = widgets.include?('assignees')
+
+        expect(work_item.supports_assignee?).to eq(supports_assignee)
+      end
+    end
+  end
+
+  describe '#supports_time_tracking?' do
+    WorkItems::TypesFramework::SystemDefined::Type::BASE_TYPES.pluck(:base_type).each do |base_type|
+      specify do
+        work_item = build(:work_item, base_type.to_sym)
+        widgets = WorkItems::TypesFramework::SystemDefined::Definitions
+          .const_get(base_type.camelize, false).widgets
+        supports_time_tracking = widgets.include?('time_tracking')
+
+        expect(work_item.supports_time_tracking?).to eq(supports_time_tracking)
+      end
+    end
+  end
+
+  describe '#supported_quick_action_commands' do
+    shared_examples "supports quick action commands" do
+      let_it_be(:work_item_with_widgets) { build(:work_item, work_item_type: custom_work_item_type) }
+      let_it_be(:work_item_without_widgets) { build(:work_item, work_item_type: custom_type_without_widgets) }
+
+      let(:work_item) { work_item_without_widgets }
+
+      subject { work_item.supported_quick_action_commands }
+
+      it 'returns quick action commands supported for all work items' do
+        is_expected.to include(:title, :reopen, :close, :tableflip, :shrug, :type, :promote_to, :checkin_reminder,
+          :subscribe, :unsubscribe, :confidential, :award, :move, :clone, :copy_metadata, :duplicate,
+          :promote_to_incident, :board_move, :convert_to_ticket, :zoom, :remove_zoom)
+      end
+
+      it 'omits quick action commands from assignees widget' do
+        is_expected.not_to include(:assign, :unassign, :reassign)
+      end
+
+      it 'omits quick action commands from labels widget' do
+        is_expected.not_to include(:label, :labels, :relabel, :remove_label, :unlabel)
+      end
+
+      it 'omits quick action commands from start and due date widget' do
+        is_expected.not_to include(:due, :remove_due_date)
+      end
+
+      it 'omits quick action commands from current user todos widget' do
+        is_expected.not_to include(:todo, :done)
+      end
+
+      context 'when work item type has relevant widgets' do
+        let(:work_item) { work_item_with_widgets }
+
+        it 'returns quick action commands from assignee widget' do
+          is_expected.to include(:assign, :unassign, :reassign)
+        end
+
+        it 'returns quick action commands from labels widget' do
+          is_expected.to include(:label, :labels, :relabel, :remove_label, :unlabel)
+        end
+
+        it 'returns quick action commands from start and due date widget' do
+          is_expected.to include(:due, :remove_due_date)
+        end
+
+        it 'returns quick action commands from current user todos widget' do
+          is_expected.to include(:todo, :done)
+        end
+
+        it 'returns quick action commands from development widget' do
+          is_expected.to include(:create_merge_request)
+        end
+      end
+    end
+
+    context "when using the system defined work_item_type model" do
+      before do
+        allow(custom_type_without_widgets).to receive(:widget_definitions).and_return([])
+      end
+
+      let_it_be(:custom_type_without_widgets) { build(:work_item_system_defined_type, :task) }
+      let_it_be(:custom_work_item_type) { build(:work_item_system_defined_type) }
+
+      it_behaves_like "supports quick action commands"
+    end
+  end
+
+  describe 'transform_quick_action_params' do
+    let(:command_params) { { title: 'bar', assignee_ids: ['foo'] } }
+    let(:work_item) { build(:work_item, :task) }
+
+    subject(:transformed_params) { work_item.transform_quick_action_params(command_params) }
+
+    it 'correctly separates widget params from regular params' do
+      expect(transformed_params).to eq({
+        common: {
+          title: 'bar'
+        },
+        widgets: {
+          assignees_widget: {
+            assignee_ids: ['foo']
+          }
+        }
+      })
+    end
+
+    context 'with current user todos widget' do
+      let(:command_params) { { title: 'bar', todo_event: param } }
+
+      where(:param, :expected) do
+        'done' | 'mark_as_done'
+        'add'  | 'add'
+      end
+
+      with_them do
+        it 'correctly transform todo_event param' do
+          expect(transformed_params).to eq({
+            common: {
+              title: 'bar'
+            },
+            widgets: {
+              current_user_todos_widget: {
+                action: expected
+              }
+            }
+          })
+        end
+      end
+    end
+  end
+
+  describe 'callbacks' do
+    describe 'record_create_action', :clean_gitlab_redis_shared_state do
+      let_it_be(:user) { create(:user) }
+
+      it 'records the creation action after saving' do
+        # During the work item transition we also want to track work items as issues
+        expect(Gitlab::UsageDataCounters::IssueActivityUniqueCounter).to receive(:track_issue_created_action)
+
+        create(:work_item)
+      end
+
+      it "triggers an internal event" do
+        expect { create(:work_item, project: reusable_project, author: user) }
+          .to trigger_internal_events('users_creating_work_items').with(
+            project: reusable_project,
+            namespace: reusable_project.project_namespace,
+            user: user,
+            additional_properties: {
+              label: 'issue'
+            }
+          ).and increment_usage_metrics(
+            'counts_weekly.aggregated_metrics.users_work_items',
+            'counts_monthly.aggregated_metrics.users_work_items'
+          ).and not_increment_usage_metrics(
+            'redis_hll_counters.count_distinct_user_id_from_create_work_type_epic_monthly',
+            'redis_hll_counters.count_distinct_user_id_from_create_work_type_epic_weekly'
+          )
+      end
+
+      it "triggers an internal event for group-level work items" do
+        group = create(:group)
+        expect { create(:work_item, namespace: group, author: user) }
+          .to trigger_internal_events('users_creating_work_items').with(
+            namespace: group,
+            project: nil,
+            user: user,
+            additional_properties: {
+              label: 'issue'
+            }
+          )
+      end
+
+      it_behaves_like 'internal event tracking' do
+        let(:event) { Gitlab::UsageDataCounters::IssueActivityUniqueCounter::ISSUE_CREATED }
+        let(:project) { reusable_project }
+        let(:user) { create(:user) }
+
+        subject(:service_action) { create(:work_item, project: reusable_project, author: user) }
+      end
+    end
+
+    context 'work item namespace' do
+      let(:work_item) { build(:work_item, project: reusable_project) }
+
+      it 'sets the namespace_id' do
+        expect(work_item).to be_valid
+        expect(work_item.namespace).to eq(reusable_project.project_namespace)
+      end
+
+      context 'when work item is saved' do
+        it 'sets the namespace_id' do
+          work_item.save!
+          expect(work_item.reload.namespace).to eq(reusable_project.project_namespace)
+        end
+      end
+
+      context 'when existing work item is saved' do
+        let(:work_item) { create(:work_item) }
+
+        before do
+          work_item.update!(namespace_id: nil)
+        end
+
+        it 'sets the namespace id' do
+          work_item.update!(title: "#{work_item.title} and something extra")
+
+          expect(work_item.namespace).to eq(work_item.project.project_namespace)
+        end
+      end
+    end
+
+    context 'with title containing preceding or trailing spaces' do
+      let_it_be(:work_item, freeze: false) { build(:work_item, project: reusable_project, title: " some title ") }
+
+      it 'removes spaces from title' do
+        work_item.save!
+
+        expect(work_item.title).to eq("some title")
+      end
+    end
+  end
+
+  describe 'validations' do
+    subject { work_item.valid? }
+
+    describe 'confidentiality' do
+      let_it_be(:project) { create(:project) }
+
+      context 'when parent and child are confidential' do
+        let_it_be(:parent, freeze: false) { create(:work_item, confidential: true, project: project) }
+        let_it_be(:child, freeze: false) { create(:work_item, :task, confidential: true, project: project) }
+        let_it_be(:link) { create(:parent_link, work_item: child, work_item_parent: parent) }
+
+        it 'does not allow to make child non-confidential' do
+          child.confidential = false
+
+          expect(child).not_to be_valid
+          expect(child.errors[:base])
+            .to include(_('A non-confidential work item cannot have a confidential parent.'))
+        end
+
+        it 'allows to make parent non-confidential' do
+          parent.confidential = false
+
+          expect(parent).to be_valid
+        end
+      end
+
+      context 'when parent and child are non-confidential' do
+        let_it_be(:parent, freeze: false) { create(:work_item, project: project) }
+        let_it_be(:child, freeze: false) { create(:work_item, :task, project: project) }
+        let_it_be(:link) { create(:parent_link, work_item: child, work_item_parent: parent) }
+
+        it 'does not allow to make parent confidential' do
+          parent.confidential = true
+
+          expect(parent).not_to be_valid
+          expect(parent.errors[:base]).to include(
+            _('All child items must be confidential in order to turn on confidentiality.')
+          )
+        end
+
+        it 'allows to make child confidential' do
+          child.confidential = true
+
+          expect(child).to be_valid
+        end
+      end
+
+      context 'when creating new child' do
+        let_it_be(:child, freeze: false) { build(:work_item, project: project) }
+
+        it 'does not allow to set confidential parent' do
+          child.work_item_parent = create(:work_item, confidential: true, project: project)
+
+          expect(child).not_to be_valid
+          expect(child.errors[:base])
+            .to include('A non-confidential work item cannot have a confidential parent.')
+        end
+      end
+    end
+  end
+
+  describe '#link_reference_pattern' do
+    let(:match_data) { described_class.link_reference_pattern.match(link_reference_url) }
+
+    before_all do
+      # Required on the unlikely event that factory lint specs load the WorkItem class for the first time as
+      # those will define the instance's URL to be gitlab.com and link_reference_pattern is memoized in the class
+      described_class.instance_variable_set(:@link_reference_pattern, nil)
+    end
+
+    context 'with work item url' do
+      let(:link_reference_url) { "#{Gitlab.config.gitlab.url}/namespace/project/-/work_items/1" }
+
+      it 'matches with expected attributes' do
+        expect(match_data['group_or_project_namespace']).to eq('namespace/project')
+        expect(match_data['work_item']).to eq('1')
+      end
+
+      context 'when work item exists in a group' do
+        let(:link_reference_url) { "#{Gitlab.config.gitlab.url}/groups/group/sub_group/-/work_items/1" }
+
+        it 'matches with expected attributes' do
+          expect(match_data['group_or_project_namespace']).to eq('group/sub_group')
+          expect(match_data['work_item']).to eq('1')
+        end
+      end
+    end
+  end
+
+  describe '.linked_items_keyset_order' do
+    subject { described_class.linked_items_keyset_order }
+
+    it { is_expected.to eq('"issue_links"."id" DESC') }
+  end
+
+  describe '.linked_items_for' do
+    let_it_be(:items) { create_list(:work_item, 3, project: reusable_project) }
+    let_it_be(:linked_items) { create_list(:work_item, 3, project: reusable_project) }
+
+    let(:work_item_ids) { items.pluck(:id) }
+
+    subject(:linked) { described_class.linked_items_for(work_item_ids) }
+
+    before do
+      items.each_with_index do |item, i|
+        create(:work_item_link, source: item, target: linked_items[i])
+      end
+    end
+
+    it 'returns the linked items' do
+      expect(linked.map(&:issue_link_target_id)).to match_array(work_item_ids)
+      expect(linked.map(&:issue_link_source_id)).to match_array(linked_items.map(&:id))
+      expect(linked.map(&:issue_link_type).uniq).to contain_exactly('relates_to')
+    end
+  end
+
+  describe '#allowed_work_item_type_change' do
+    context "when using the WorkItems::TypesFramework::SytemDefined::Type model" do
+      let_it_be(:all_types) { ::WorkItems::TypesFramework::Provider.new.all }
+
+      it 'is possible to change between all types', :aggregate_failures do
+        all_types.each do |type|
+          work_item = build(:work_item, work_item_type: type, project: reusable_project)
+
+          (all_types - [type]).each do |new_type|
+            work_item.work_item_type_id = new_type
+
+            expect(work_item).to be_valid, "#{type} to #{new_type}"
+          end
+        end
+      end
+    end
+
+    context 'with ParentLink relation' do
+      describe 'type conversion validations' do
+        let_it_be_with_reload(:issue_without_children) { create(:work_item, :issue, project: reusable_project) }
+        let_it_be_with_reload(:issue_with_task) { create(:work_item, :issue, project: reusable_project) }
+        let_it_be_with_reload(:task_child) { create(:work_item, :task, project: reusable_project) }
+
+        before do
+          create(:parent_link, work_item_parent: issue_with_task, work_item: task_child)
+        end
+
+        it 'allows type conversion when no children exist' do
+          supported = issue_without_children.work_item_type.supported_conversion_types(
+            reusable_project,
+            issue_without_children.author
+          )
+
+          issue_without_children.work_item_type = supported.first
+          expect(issue_without_children).to be_valid
+        end
+
+        it 'prevents type conversion when it would break hierarchy rules' do
+          # Task with a parent shouldn't be able to convert
+          task_child.reload # Make sure it knows about its parent
+
+          # Try to change task to issue (which would create Issue->Issue, not allowed)
+          issue_type = build(:work_item_system_defined_type, :issue)
+          task_child.work_item_type_id = issue_type.id
+
+          expect(task_child).not_to be_valid
+          expect(task_child.errors[:work_item_type_id]).to contain_exactly(
+            "cannot be changed to issue when linked to a parent issue.")
+        end
+      end
+    end
+  end
+
+  describe '#validate_child_restrictions' do
+    let_it_be(:project) { create(:project) }
+    let_it_be_with_refind(:parent_work_item) { create(:work_item, :issue, project: project) }
+    let_it_be(:task_child) { create(:work_item, :task, project: project) }
+
+    context 'when there are no child links' do
+      it 'does not add any errors' do
+        parent_work_item.send(:validate_child_restrictions, parent_work_item.child_links)
+        expect(parent_work_item.errors[:work_item_type_id]).to be_empty
+      end
+    end
+
+    context 'when there are child links' do
+      let_it_be(:parent_link) { create(:parent_link, work_item_parent: parent_work_item, work_item: task_child) }
+
+      context 'when restriction exists for the parent-child combination' do
+        it 'does not add errors' do
+          parent_work_item.send(:validate_child_restrictions, parent_work_item.child_links)
+
+          expect(parent_work_item.errors[:work_item_type_id]).to be_empty
+        end
+      end
+
+      context 'when restriction does not exist for the parent-child combination' do
+        before do
+          parent_work_item.work_item_type_id = build(:work_item_system_defined_type, :task).id
+        end
+
+        it 'adds an error' do
+          parent_work_item.send(:validate_child_restrictions, parent_work_item.child_links)
+
+          expect(parent_work_item.errors[:work_item_type_id])
+            .to include("cannot be changed to Task with these child item types.")
+        end
+      end
+    end
+  end
+
+  describe '#linked_work_items' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:authorized_project) { create(:project) }
+    let_it_be(:authorized_project2) { create(:project) }
+    let_it_be(:unauthorized_project) { create(:project, :private) }
+
+    let_it_be(:authorized_item_a) { create(:work_item, project: authorized_project) }
+    let_it_be(:authorized_item_b) { create(:work_item, project: authorized_project) }
+    let_it_be(:authorized_item_c) { create(:work_item, project: authorized_project2) }
+    let_it_be(:unauthorized_item) { create(:work_item, project: unauthorized_project) }
+
+    let_it_be(:work_item_link_a) { create(:work_item_link, source: authorized_item_a, target: authorized_item_b) }
+    let_it_be(:work_item_link_b) { create(:work_item_link, source: authorized_item_a, target: unauthorized_item) }
+    let_it_be(:work_item_link_c, freeze: false) do
+      create(:work_item_link, source: authorized_item_a, target: authorized_item_c)
+    end
+
+    before_all do
+      authorized_project.add_guest(user)
+      authorized_project2.add_guest(user)
+    end
+
+    it 'returns only authorized linked work items for given user' do
+      expect(authorized_item_a.linked_work_items(user)).to contain_exactly(authorized_item_b, authorized_item_c)
+    end
+
+    it 'returns work items with valid work_item_link_type' do
+      link_types = authorized_item_a.linked_work_items(user).map(&:issue_link_type)
+
+      expect(link_types).not_to be_empty
+      expect(link_types).not_to include(nil)
+    end
+
+    it 'returns work items including the link creation time' do
+      dates = authorized_item_a.linked_work_items(user).map(&:issue_link_created_at)
+
+      expect(dates).not_to be_empty
+      expect(dates).not_to include(nil)
+    end
+
+    it 'returns work items including the link update time' do
+      dates = authorized_item_a.linked_work_items(user).map(&:issue_link_updated_at)
+
+      expect(dates).not_to be_empty
+      expect(dates).not_to include(nil)
+    end
+
+    context 'when a user cannot read cross project' do
+      it 'only returns work items within the same project' do
+        allow(Gitlab::ExternalAuthorization).to receive_messages(perform_check?: true, access_allowed?: true)
+
+        expect(authorized_item_a.linked_work_items(user)).to contain_exactly(authorized_item_b)
+      end
+    end
+
+    context 'when filtering by link type' do
+      before do
+        work_item_link_c.update!(link_type: 'blocks')
+      end
+
+      it 'returns authorized work items with given link type' do
+        expect(authorized_item_a.linked_work_items(user, link_type: 'relates_to')).to contain_exactly(authorized_item_b)
+      end
+    end
+
+    context 'when authorize option is true and current_user is nil' do
+      it 'returns empty result' do
+        expect(authorized_item_a.linked_work_items).to be_empty
+      end
+    end
+
+    context 'when authorize option is false' do
+      it 'returns all work items linked to the work item' do
+        expect(authorized_item_a.linked_work_items(authorize: false))
+          .to contain_exactly(authorized_item_b, authorized_item_c, unauthorized_item)
+      end
+    end
+
+    context 'when work item is a new record' do
+      let(:new_work_item) { build(:work_item, project: authorized_project) }
+
+      it { expect(new_work_item.linked_work_items(user)).to be_empty }
+    end
+  end
+
+  describe '#linked_items_count' do
+    let_it_be(:item1) { create(:work_item, :issue, project: reusable_project) }
+    let_it_be(:item2) { create(:work_item, :issue, project: reusable_project) }
+    let_it_be(:item3) { create(:work_item, :issue, project: reusable_project) }
+    let_it_be(:item4) { build(:work_item, :issue, project: reusable_project) }
+
+    it 'returns number of items linked to the work item' do
+      create(:work_item_link, source: item1, target: item2)
+      create(:work_item_link, source: item1, target: item3)
+
+      expect(item1.linked_items_count).to eq(2)
+      expect(item2.linked_items_count).to eq(1)
+      expect(item3.linked_items_count).to eq(1)
+      expect(item4.linked_items_count).to eq(0)
+    end
+  end
+
+  context 'work item participants' do
+    context 'project level work item' do
+      let_it_be(:work_item, freeze: false) { create(:work_item, project: reusable_project) }
+
+      it 'has participants' do
+        expect(work_item.participants).to match_array([work_item.author])
+      end
+    end
+
+    context 'group level work item' do
+      let_it_be(:work_item, freeze: false) { create(:work_item, namespace: reusable_group) }
+
+      it 'has participants' do
+        expect(work_item.participants).to match_array([work_item.author])
+      end
+    end
+  end
+
+  describe '#due_date' do
+    let_it_be(:work_item, freeze: false) { create(:work_item, :issue) }
+
+    context 'when work_item have no dates_source fallbacks to work_item due_date' do
+      before do
+        work_item.update!(due_date: 1.day.from_now)
+      end
+
+      specify { expect(work_item.due_date).to eq(work_item.due_date) }
+    end
+
+    context 'when work_item have dates_source use it instead of work_item due_date value' do
+      before do
+        work_item.create_dates_source!(due_date: 1.day.ago)
+        work_item.reload.update!(due_date: nil)
+      end
+
+      specify { expect(work_item.due_date).to eq(work_item.dates_source.due_date) }
+    end
+  end
+
+  describe '#start_date' do
+    let_it_be(:work_item, freeze: false) { create(:work_item, :issue) }
+
+    context 'when work_item have no dates_source fallbacks to work_item start_date' do
+      before do
+        work_item.update!(start_date: 1.day.ago)
+      end
+
+      specify { expect(work_item.start_date).to eq(work_item.start_date) }
+    end
+
+    context 'when work_item have dates_source use it instead of work_item start_date value' do
+      before do
+        work_item.create_dates_source!(start_date: 1.day.from_now)
+        work_item.reload.update!(start_date: nil)
+      end
+
+      specify { expect(work_item.start_date).to eq(work_item.dates_source.start_date) }
+    end
+  end
+
+  describe '#supports_parent?' do
+    context 'when the work item type is an issue' do
+      let_it_be(:issue_work_item) { create(:work_item, :issue) }
+
+      it 'returns false' do
+        expect(issue_work_item).not_to receive(:hierarchy_supports_parent?)
+        expect(issue_work_item.supports_parent?).to be false
+      end
+    end
+
+    context 'when the work item type is not an issue' do
+      let_it_be(:task_work_item) { create(:work_item, :task) }
+
+      it 'defers to hierarchy_supports_parent?' do
+        expect(task_work_item).to receive(:hierarchy_supports_parent?).and_call_original
+        expect(task_work_item.supports_parent?).to be true
+      end
+    end
+  end
+end

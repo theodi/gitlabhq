@@ -1,0 +1,203 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::PipelineArtifactUploader, feature_category: :continuous_integration do
+  include DbKeyBaseHelpers
+
+  let(:pipeline_artifact) { create(:ci_pipeline_artifact) }
+  let(:uploader) { described_class.new(pipeline_artifact, :file) }
+
+  subject { uploader }
+
+  it_behaves_like "builds correct paths",
+    store_dir: %r[\h{2}/\h{2}/\h{64}/pipelines/\d+/artifacts/\d+],
+    cache_dir: %r{artifacts/tmp/cache},
+    work_dir: %r{artifacts/tmp/work}
+
+  context 'when object store is REMOTE' do
+    before do
+      stub_artifacts_object_storage(described_class)
+    end
+
+    include_context 'with storage', described_class::Store::REMOTE
+
+    it_behaves_like 'builds correct paths', store_dir: %r[\h{2}/\h{2}/\h{64}/pipelines/\d+/artifacts/\d+]
+  end
+
+  describe '#stored_file_missing?' do
+    let(:pipeline_artifact) { create(:ci_pipeline_artifact, :with_pipeline_variables, file_store: file_store) }
+    let(:uploader) { Ci::PipelineArtifact.find(pipeline_artifact.id).file }
+
+    subject(:stored_file_missing) { uploader.stored_file_missing? }
+
+    context 'with local storage' do
+      let(:file_store) { described_class::Store::LOCAL }
+
+      it { is_expected.to be(false) }
+
+      context 'when the file is missing' do
+        before do
+          pipeline_artifact.file.remove!
+        end
+
+        it { is_expected.to be(true) }
+      end
+    end
+
+    context 'with object storage' do
+      let(:file_store) { described_class::Store::REMOTE }
+
+      before do
+        stub_artifacts_object_storage(described_class)
+      end
+
+      it { is_expected.to be(false) }
+
+      context 'when the file is missing' do
+        before do
+          pipeline_artifact.file.remove!
+        end
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'when a HEAD request returns no file but the file exists' do
+        before do
+          allow(uploader.file).to receive(:exists?).and_return(false)
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the GET request fails' do
+        before do
+          allow(uploader.file).to receive(:exists?).and_return(false)
+          allow_next_instance_of(Fog::AWS::Storage::Files) do |files|
+            allow(files).to receive(:get).and_raise(Excon::Error::Timeout)
+          end
+        end
+
+        it 'raises the error' do
+          expect { stored_file_missing }.to raise_error(Excon::Error::Timeout)
+        end
+      end
+    end
+  end
+
+  context 'when file is stored in valid local_path' do
+    let(:file) do
+      fixture_file_upload('spec/fixtures/pipeline_artifacts/code_coverage.json', 'application/json')
+    end
+
+    before do
+      uploader.store!(file)
+    end
+
+    subject { uploader.file.path }
+
+    it { is_expected.to match(%r[#{uploader.root}/#{uploader.class.base_dir}\h{2}/\h{2}/\h{64}/pipelines/#{pipeline_artifact.pipeline_id}/artifacts/#{pipeline_artifact.id}/code_coverage.json]) }
+  end
+
+  describe 'encryption' do
+    context 'when file_type is pipeline_variables' do
+      let(:pipeline_artifact) { create(:ci_pipeline_artifact, :with_pipeline_variables) }
+      let(:expected_content) { [{ key: 'TEST_VAR', value: 'test_value', variable_type: 'env_var', raw: false }].to_json }
+
+      it 'encrypts the file content' do
+        raw_stored_data = pipeline_artifact.file.file.read
+        expect(raw_stored_data).not_to eq(expected_content)
+      end
+
+      it 'decrypts the file content when reading' do
+        expect(pipeline_artifact.file.read).to eq(expected_content)
+      end
+    end
+
+    context 'when file_type is code_coverage' do
+      let(:pipeline_artifact) { create(:ci_pipeline_artifact, :with_coverage_report) }
+
+      it 'does not encrypt the file content' do
+        original_content = File.read(Rails.root.join('spec/fixtures/pipeline_artifacts/code_coverage.json'))
+        expect(pipeline_artifact.file.file.read).to eq(original_content)
+        expect(pipeline_artifact.file.read).to eq(original_content)
+      end
+    end
+
+    context 'when file_type is code_quality_mr_diff' do
+      let(:pipeline_artifact) { create(:ci_pipeline_artifact, :with_codequality_mr_diff_report) }
+
+      it 'does not encrypt the file content' do
+        original_content = File.read(Rails.root.join('spec/fixtures/pipeline_artifacts/code_quality_mr_diff.json'))
+        expect(pipeline_artifact.file.file.read).to eq(original_content)
+        expect(pipeline_artifact.file.read).to eq(original_content)
+      end
+    end
+
+    context 'when stored data is nil' do
+      let(:pipeline_artifact) { create(:ci_pipeline_artifact, :with_pipeline_variables) }
+
+      it 'returns nil without attempting to decrypt' do
+        uploader = described_class.new(pipeline_artifact, :file)
+
+        expect(uploader.read).to be_nil
+      end
+    end
+  end
+
+  describe 'db_key_base rotation' do
+    let_it_be(:pipeline) { create(:ci_pipeline) }
+
+    let(:old_key) { Settings.db_key_base_keys.last }
+    let(:new_key) { SecureRandom.hex(64) }
+    let(:content) { [{ key: 'TEST_VAR', value: 'test_value', variable_type: 'env_var', raw: false }].to_json }
+
+    def create_pipeline_artifact
+      create(:ci_pipeline_artifact, :with_pipeline_variables, pipeline: pipeline)
+    end
+
+    it 'reads files encrypted with the previous key' do
+      pipeline_artifact = create_pipeline_artifact
+      stub_db_key_base_keys(old_key, new_key)
+
+      expect(Ci::PipelineArtifact.find(pipeline_artifact.id).file.read).to eq(content)
+    end
+
+    it 'encrypts new files with the current key' do
+      stub_db_key_base_keys(old_key, new_key)
+      pipeline_artifact = create_pipeline_artifact
+      stub_db_key_base_keys(new_key)
+
+      expect(Ci::PipelineArtifact.find(pipeline_artifact.id).file.read).to eq(content)
+    end
+  end
+
+  describe '#encryption_key' do
+    let(:pipeline_artifact) { create(:ci_pipeline_artifact) }
+    let(:uploader) { described_class.new(pipeline_artifact, :file) }
+
+    it 'generates a deterministic key based on project_id' do
+      key1 = uploader.send(:encryption_key)
+      key2 = uploader.send(:encryption_key)
+
+      expect(key1).to eq(key2)
+    end
+
+    it 'derives the key from db_key_base and the project id' do
+      expect(uploader.send(:encryption_key)).to eq(
+        OpenSSL::HMAC.digest('SHA256', Settings.db_key_base_keys.last,
+          "pipeline_artifact:#{pipeline_artifact.project_id}")
+      )
+    end
+
+    it 'generates different keys for different projects' do
+      other_artifact = create(:ci_pipeline_artifact)
+      other_uploader = described_class.new(other_artifact, :file)
+
+      key1 = uploader.send(:encryption_key)
+      key2 = other_uploader.send(:encryption_key)
+
+      expect(key1).not_to eq(key2)
+    end
+  end
+end

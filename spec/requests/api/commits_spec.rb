@@ -1,148 +1,4278 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 require 'mime/types'
 
-describe API::API, api: true  do
-  include ApiHelpers
-  let(:user) { create(:user) }
-  let(:user2) { create(:user) }
-  let!(:project) { create(:project, creator_id: user.id) }
-  let!(:master) { create(:project_member, user: user, project: project, access_level: ProjectMember::MASTER) }
-  let!(:guest) { create(:project_member, user: user2, project: project, access_level: ProjectMember::GUEST) }
-  let!(:note) { create(:note_on_commit, author: user, project: project, commit_id: project.repository.commit.id, note: 'a comment on a commit') }
+RSpec.describe API::Commits, feature_category: :source_code_management do
+  include ProjectForksHelper
+  include SessionHelpers
+  include WorkhorseHelpers
 
-  before { project.team << [user, :reporter] }
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+  let_it_be(:guest) { create(:user, guest_of: project) }
+  let_it_be(:developer) { create(:user, developer_of: project) }
 
-  describe "GET /projects/:id/repository/commits" do
-    context "authorized user" do
-      before { project.team << [user2, :reporter] }
+  let(:branch_with_dot) { project.repository.find_branch('ends-with.json') }
+  let(:branch_with_slash) { project.repository.find_branch('improve/awesome') }
+  let(:project_id) { project.id }
+  let(:current_user) { nil }
+  let(:group) { create(:group, :public) }
+  let(:inherited_guest) { create(:user, guest_of: group) }
 
-      it "should return project commits" do
-        get api("/projects/#{project.id}/repository/commits", user)
-        expect(response.status).to eq(200)
+  before do
+    project.add_maintainer(user)
+  end
 
+  describe 'GET /projects/:id/repository/commits' do
+    let(:route) { "/projects/#{project_id}/repository/commits" }
+
+    shared_examples_for 'project commits' do |schema: 'public_api/v4/commits'|
+      it "returns project commits" do
+        commit = project.repository.commit
+
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema(schema)
+        expect(json_response.first['id']).to eq(commit.id)
+        expect(json_response.first['committer_name']).to eq(commit.committer_name)
+        expect(json_response.first['committer_email']).to eq(commit.committer_email)
+      end
+
+      it 'include correct pagination headers' do
+        get api(route, current_user)
+
+        expect(response).to include_limited_pagination_headers
+      end
+
+      describe "commit trailers" do
+        it "doesn't include the commit trailers by default" do
+          get api(route, current_user), params: { page: 2 }
+
+          commit_with_trailers = json_response.find { |c| c["trailers"].any? }
+
+          expect(commit_with_trailers).to be_nil
+          expect(json_response.first["trailers"]).to eq({})
+        end
+
+        it "does include the commit trailers when specified in the params" do
+          # Test repo commits with trailers are further down the list, so use a
+          # higher page number.
+          get api(route, current_user), params: { page: 2, trailers: true }
+
+          commit_with_trailers = json_response.find { |c| c["trailers"].any? }
+
+          expect(commit_with_trailers["trailers"]).to be_a(Hash)
+          expect(commit_with_trailers["extended_trailers"]).to be_a(Hash)
+          expect(commit_with_trailers["trailers"].size).to be > 0
+          expect(commit_with_trailers["extended_trailers"].size).to be > 0
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let_it_be(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'project commits'
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated' do
+      context 'when user is a direct project member' do
+        context 'and user is a maintainer' do
+          let(:current_user) { user }
+
+          it_behaves_like 'project commits'
+
+          it_behaves_like 'authorizing granular token permissions', :read_commit do
+            let(:boundary_object) { project }
+            let(:request) do
+              get api(route, personal_access_token: pat)
+            end
+          end
+
+          context 'when repository does not have commits' do
+            let_it_be(:project) { create(:project, :empty_repo) }
+
+            it 'returns an empty array' do
+              get api("/projects/#{project_id}/repository/commits", user)
+
+              expect(json_response).to eq([])
+            end
+          end
+
+          context "since optional parameter" do
+            it "returns project commits since provided parameter" do
+              commits = project.repository.commits("master", limit: 2)
+              after = commits.second.created_at
+
+              get api("/projects/#{project_id}/repository/commits?since=#{after.utc.iso8601}", user)
+
+              expect(json_response.size).to eq 2
+              expect(json_response.first["id"]).to eq(commits.first.id)
+              expect(json_response.second["id"]).to eq(commits.second.id)
+            end
+
+            it 'include correct pagination headers' do
+              commits = project.repository.commits("master", limit: 2)
+              after = commits.second.created_at
+
+              get api("/projects/#{project_id}/repository/commits?since=#{after.utc.iso8601}", user)
+
+              expect(response).to include_limited_pagination_headers
+              expect(response.headers['X-Page']).to eql('1')
+            end
+          end
+
+          context "until optional parameter" do
+            it "returns project commits until provided parameter" do
+              commits = project.repository.commits("master", limit: 20)
+              before = commits.second.created_at
+
+              get api("/projects/#{project_id}/repository/commits?until=#{before.utc.iso8601}", user)
+
+              if commits.size == 20
+                expect(json_response.size).to eq(20)
+              else
+                expect(json_response.size).to eq(commits.size - 1)
+              end
+
+              expect(json_response.first["id"]).to eq(commits.second.id)
+              expect(json_response.second["id"]).to eq(commits.third.id)
+            end
+
+            it 'include correct pagination headers' do
+              commits = project.repository.commits("master", limit: 2)
+              before = commits.second.created_at
+
+              get api("/projects/#{project_id}/repository/commits?until=#{before.utc.iso8601}", user)
+
+              expect(response).to include_limited_pagination_headers
+              expect(response.headers['X-Page']).to eql('1')
+            end
+          end
+
+          context "invalid xmlschema date parameters" do
+            it "returns an invalid parameter error message" do
+              get api("/projects/#{project_id}/repository/commits?since=invalid-date", user)
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+              expect(json_response['error']).to eq('since is invalid')
+            end
+          end
+
+          context "with empty ref_name parameter" do
+            let(:route) { "/projects/#{project_id}/repository/commits?ref_name=" }
+
+            it_behaves_like 'project commits'
+          end
+
+          context 'with a range of refs' do
+            let(:route) { "/projects/#{project_id}/repository/commits?ref_name=#{Gitlab::Git::SHA1_EMPTY_TREE_ID}..HEAD" }
+
+            it_behaves_like 'project commits'
+          end
+
+          context 'with HEAD' do
+            let(:route) { "/projects/#{project_id}/repository/commits?ref_name=HEAD" }
+
+            it_behaves_like 'project commits'
+          end
+
+          context 'with incorrect ref_name parameter' do
+            context 'when starts with -' do
+              let(:route) { "/projects/#{project_id}/repository/commits?ref_name=-main" }
+
+              it_behaves_like '400 response' do
+                let(:request) { get api(route, user) }
+                let(:message) { 'ref_name is invalid' }
+              end
+            end
+
+            context 'when includes a whitespace' do
+              let(:route) { "/projects/#{project_id}/repository/commits?ref_name=main branch" }
+
+              it_behaves_like '400 response' do
+                let(:request) { get api(route, user) }
+                let(:message) { 'ref_name is invalid' }
+              end
+            end
+          end
+
+          context 'with author parameter' do
+            let(:params) { { author: 'Zaporozhets' } }
+
+            it 'returns only this author commits' do
+              get api(route, user), params: params
+
+              expect(response).to have_gitlab_http_status(:ok)
+
+              author_names = json_response.map { |commit| commit['author_name'] }.uniq
+
+              expect(author_names).to contain_exactly('Dmitriy Zaporozhets')
+            end
+
+            context 'when author is missing' do
+              let(:params) { { author: '' } }
+
+              it 'returns all commits' do
+                get api(route, user), params: params
+
+                expect(response).to have_gitlab_http_status(:ok)
+                expect(json_response.count).to eq(20)
+              end
+            end
+
+            context 'when author does not exists' do
+              let(:params) { { author: 'does not exist' } }
+
+              it 'returns an empty list' do
+                get api(route, user), params: params
+
+                expect(response).to have_gitlab_http_status(:ok)
+                expect(json_response).to eq([])
+              end
+            end
+          end
+
+          context 'when repository does not exist' do
+            let(:project) { create(:project, creator: user, path: 'my.project') }
+
+            it_behaves_like '404 response' do
+              let(:request) { get api(route, current_user) }
+              let(:message) { '404 Repository Not Found' }
+            end
+          end
+
+          context "path optional parameter" do
+            it "returns current directory commits when provided path parameter is '.'" do
+              path = '.'
+
+              get api("/projects/#{project_id}/repository/commits?path=#{path}", user)
+
+              expect(json_response.size).to eq(20)
+              expect(json_response.first["id"]).to eq("498214de67004b1da3d820901307bed2a68a8ef6")
+              expect(response).to include_limited_pagination_headers
+            end
+
+            it "returns default project commits when provided path parameter is '/'" do
+              path = '/'
+
+              get api("/projects/#{project_id}/repository/commits?path=#{path}", user)
+
+              expect(json_response.size).to eq(20)
+              expect(json_response.first["id"]).to eq("b83d6e391c22777fca1ed3012fce84f633d7fed0")
+              expect(response).to include_limited_pagination_headers
+            end
+
+            it "returns project commits matching provided path parameter that starts with '/'" do
+              path = '/files/ruby/popen.rb'
+
+              get api("/projects/#{project_id}/repository/commits?path=#{path}", user)
+
+              expect(json_response.size).to eq(3)
+              expect(json_response.first["id"]).to eq("570e7b2abdd848b95f2f578043fc23bd6f6fd24d")
+              expect(response).to include_limited_pagination_headers
+            end
+
+            it "returns project commits matching provided path parameter" do
+              path = 'files/ruby/popen.rb'
+
+              get api("/projects/#{project_id}/repository/commits?path=#{path}", user)
+
+              expect(json_response.size).to eq(3)
+              expect(json_response.first["id"]).to eq("570e7b2abdd848b95f2f578043fc23bd6f6fd24d")
+              expect(response).to include_limited_pagination_headers
+            end
+
+            it 'include correct pagination headers' do
+              path = 'files/ruby/popen.rb'
+
+              get api("/projects/#{project_id}/repository/commits?path=#{path}", user)
+
+              expect(response).to include_limited_pagination_headers
+              expect(response.headers['X-Page']).to eql('1')
+            end
+          end
+
+          context 'all optional parameter' do
+            it 'returns all project commits' do
+              expected_commit_ids = project.repository.commits(nil, all: true, limit: 50).map(&:id)
+
+              get api("/projects/#{project_id}/repository/commits?all=true&per_page=50", user)
+
+              commit_ids = json_response.map { |c| c['id'] }
+
+              expect(response).to include_limited_pagination_headers
+              expect(commit_ids).to eq(expected_commit_ids)
+              expect(response.headers['X-Page']).to eql('1')
+            end
+          end
+
+          context 'first_parent optional parameter' do
+            it 'returns all first_parent commits' do
+              expected_commit_ids = project.repository.commits(SeedRepo::Commit::ID, limit: 50, first_parent: true).map(&:id)
+
+              get api("/projects/#{project_id}/repository/commits?per_page=50", user), params: { ref_name: SeedRepo::Commit::ID, first_parent: 'true' }
+
+              commit_ids = json_response.map { |c| c['id'] }
+
+              expect(response).to include_limited_pagination_headers
+              expect(expected_commit_ids.size).to eq(12)
+              expect(commit_ids).to eq(expected_commit_ids)
+            end
+          end
+
+          context 'follow optional parameter' do
+            let(:get_commits) { get api("/projects/#{project_id}/repository/commits", user), params: params }
+            let(:params) { { path: path, follow: follow } }
+            let(:path) { 'files/ruby/popen.rb' }
+
+            context 'when follow is false' do
+              let(:follow) { false }
+
+              it 'passes follow: false to the repository' do
+                expect_next_instance_of(Repository) do |repo|
+                  expect(repo).to receive(:commits).with(
+                    anything,
+                    hash_including(follow: false, path: path)
+                  ).and_call_original
+                end
+
+                get_commits
+
+                expect(response).to have_gitlab_http_status(:ok)
+              end
+            end
+
+            context 'when follow is true' do
+              let(:follow) { true }
+
+              it 'passes follow: true to the repository' do
+                expect_next_instance_of(Repository) do |repo|
+                  expect(repo).to receive(:commits).with(
+                    anything,
+                    hash_including(follow: true, path: path)
+                  ).and_call_original
+                end
+
+                get_commits
+
+                expect(response).to have_gitlab_http_status(:ok)
+              end
+            end
+
+            context 'when follow is not set' do
+              let(:params) { { path: path } }
+
+              it 'passes follow: nil to the repository' do
+                expect_next_instance_of(Repository) do |repo|
+                  expect(repo).to receive(:commits).with(
+                    anything,
+                    hash_including(follow: nil, path: path)
+                  ).and_call_original
+                end
+
+                get_commits
+
+                expect(response).to have_gitlab_http_status(:ok)
+              end
+            end
+          end
+
+          context 'with_stats optional parameter' do
+            let(:project) { create(:project, :public, :repository) }
+
+            it_behaves_like 'project commits', schema: 'public_api/v4/commits_with_stats' do
+              let(:route) { "/projects/#{project_id}/repository/commits?with_stats=true" }
+
+              it 'include commits details' do
+                commit = project.repository.commit
+                get api(route, current_user)
+
+                expect(json_response.first['stats']['additions']).to eq(commit.stats.additions)
+                expect(json_response.first['stats']['deletions']).to eq(commit.stats.deletions)
+                expect(json_response.first['stats']['total']).to eq(commit.stats.total)
+              end
+            end
+          end
+
+          context 'with ref_name + path params' do
+            let(:params) { { ref_name: ref_name, path: 'files/ruby/popen.rb' } }
+            let(:ref_name) { 'master' }
+
+            it 'returns project commits matching provided path parameter' do
+              get api("/projects/#{project_id}/repository/commits", user), params: params
+
+              expect(json_response.size).to eq(3)
+              expect(json_response.first["id"]).to eq("570e7b2abdd848b95f2f578043fc23bd6f6fd24d")
+              expect(response).to include_limited_pagination_headers
+            end
+
+            context 'when ref_name does not exist' do
+              let(:ref_name) { 'does-not-exist' }
+
+              it 'returns an empty response' do
+                get api("/projects/#{project_id}/repository/commits", user), params: params
+
+                expect(json_response).to eq([])
+              end
+            end
+          end
+
+          context 'with pagination params' do
+            let(:page) { 1 }
+            let(:per_page) { 5 }
+            let(:ref_name) { 'master' }
+            let(:request) do
+              get api("/projects/#{project_id}/repository/commits?page=#{page}&per_page=#{per_page}&ref_name=#{ref_name}", user)
+            end
+
+            it 'returns correct headers' do
+              request
+
+              expect(response).to include_limited_pagination_headers
+              expect(response.headers['Link']).to match(/page=1&.*per_page=5/)
+              expect(response.headers['Link']).to match(/page=2&.*per_page=5/)
+            end
+
+            it 'does not include the last page link' do
+              request
+
+              expect(response.headers['Link']).not_to include("rel=\"last\"")
+            end
+
+            context 'viewing the first page' do
+              it 'returns the first 5 commits' do
+                request
+
+                commit = project.repository.commit
+
+                expect(json_response.size).to eq(per_page)
+                expect(json_response.first['id']).to eq(commit.id)
+                expect(response.headers['X-Page']).to eq('1')
+              end
+            end
+
+            context 'viewing the third page' do
+              let(:page) { 3 }
+
+              it 'returns the third 5 commits' do
+                request
+
+                commit = project.repository.commits('HEAD', limit: per_page, offset: (page - 1) * per_page).first
+
+                expect(json_response.size).to eq(per_page)
+                expect(json_response.first['id']).to eq(commit.id)
+                expect(response.headers['X-Page']).to eq('3')
+              end
+            end
+
+            context 'when per_page is over 100' do
+              let(:per_page) { 101 }
+
+              it 'returns 100 commits (maximum)' do
+                expect(Gitlab::Git::Commit).to receive(:where).with(
+                  hash_including(ref: ref_name, limit: 100, offset: 0)
+                )
+
+                request
+              end
+            end
+
+            context 'when pagination params are invalid' do
+              let_it_be(:project) { create(:project, :repository) }
+
+              using RSpec::Parameterized::TableSyntax
+
+              where(:page, :per_page, :error_message) do
+                0   | nil | 'page does not have a valid value'
+                -1  | nil | 'page does not have a valid value'
+                'a' | nil | 'page is invalid'
+                nil | 0   | 'per_page does not have a valid value'
+                nil | -1  | 'per_page does not have a valid value'
+                nil | 'a' | 'per_page is invalid'
+              end
+
+              with_them do
+                it 'returns 400 response' do
+                  request
+
+                  expect(response).to have_gitlab_http_status(:bad_request)
+                  expect(json_response['error']).to eq(error_message)
+                end
+              end
+
+              context 'when FF is off' do
+                before do
+                  stub_feature_flags(only_positive_pagination_values: false)
+                end
+
+                where(:page, :per_page, :error_message, :status) do
+                  0   | nil  | nil                               | :success
+                  -10 | nil  | nil                               | :success
+                  'a' | nil | 'page is invalid'                  | :bad_request
+                  nil | 0   | 'per_page has a value not allowed' | :bad_request
+                  nil | -1  | nil                                | :success
+                  nil | 'a' | 'per_page is invalid'              | :bad_request
+                end
+
+                with_them do
+                  it 'returns a response' do
+                    request
+
+                    expect(response).to have_gitlab_http_status(status)
+
+                    if error_message
+                      expect(json_response['error']).to eq(error_message)
+                    end
+                  end
+                end
+
+                context 'when per_page is below 0' do
+                  let(:per_page) { -100 }
+
+                  it 'returns 20 commits (default)' do
+                    expect(Gitlab::Git::Commit).to receive(:where).with(
+                      hash_including(ref: ref_name, limit: 20, offset: 0)
+                    )
+
+                    request
+                  end
+                end
+              end
+            end
+          end
+
+          context 'with order parameter' do
+            let(:route) { "/projects/#{project_id}/repository/commits?ref_name=0031876&per_page=6&order=#{order}" }
+
+            context 'set to topo' do
+              let(:order) { 'topo' }
+
+              # git log --graph -n 6 --pretty=format:"%h" --topo-order 0031876
+              # *   0031876
+              # |\
+              # | * 48ca272
+              # | * 335bc94
+              # * | bf6e164
+              # * | 9d526f8
+              # |/
+              # * 1039376
+              it 'returns project commits ordered by topo order' do
+                commits = project.repository.commits("0031876", limit: 6, order: 'topo')
+
+                get api(route, current_user)
+
+                expect(json_response.size).to eq(6)
+                expect(json_response.map { |entry| entry["id"] }).to eq(commits.map(&:id))
+              end
+            end
+
+            context 'set to default' do
+              let(:order) { 'default' }
+
+              # git log --graph -n 6 --pretty=format:"%h" --date-order 0031876
+              # *   0031876
+              # |\
+              # * | bf6e164
+              # | * 48ca272
+              # * | 9d526f8
+              # | * 335bc94
+              # |/
+              # * 1039376
+              it 'returns project commits ordered by default order' do
+                commits = project.repository.commits("0031876", limit: 6, order: 'default')
+
+                get api(route, current_user)
+
+                expect(json_response.size).to eq(6)
+                expect(json_response.map { |entry| entry["id"] }).to eq(commits.map(&:id))
+              end
+            end
+
+            context 'set to an invalid parameter' do
+              let(:order) { 'invalid' }
+
+              it_behaves_like '400 response' do
+                let(:request) { get api(route, current_user) }
+              end
+            end
+          end
+
+          context 'with the optional trailers parameter' do
+            it 'includes the Git trailers' do
+              get api("/projects/#{project_id}/repository/commits?ref_name=6d394385cf567f80a8fd85055db1ab4c5295806f&trailers=true", current_user)
+
+              commit = json_response[0]
+
+              expect(commit['trailers']).to eq(
+                'Signed-off-by' => 'Dmitriy Zaporozhets <dmitriy.zaporozhets@gmail.com>'
+              )
+
+              expect(commit['extended_trailers']).to eq(
+                'Signed-off-by' => ['Dmitriy Zaporozhets <dmitriy.zaporozhets@gmail.com>']
+              )
+            end
+          end
+        end
+      end
+
+      context 'when user is an inherited member from the group' do
+        context 'when project is public with private repository' do
+          let(:project) { create(:project, :public, :repository, :repository_private, group: group) }
+
+          context 'and user is a guest' do
+            let(:current_user) { inherited_guest }
+
+            it_behaves_like 'project commits'
+          end
+        end
+
+        context 'when project is private' do
+          let(:project) { create(:project, :private, :repository, group: group) }
+
+          context 'and user is a guest' do
+            let(:current_user) { inherited_guest }
+
+            it_behaves_like '404 response' do
+              let(:request) { get api(route) }
+              let(:message) { '404 Project Not Found' }
+            end
+          end
+        end
+      end
+
+      context 'when authenticated with a token that has the ai_workflows scope' do
+        let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+        let(:commits) { project.repository.commits("master", limit: 2) }
+
+        before do
+          get api("/projects/#{project_id}/repository/commits", oauth_access_token: oauth_token)
+        end
+
+        it 'is successful' do
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.first["id"]).to eq(commits.first.id)
+        end
+      end
+    end
+
+    context 'with keyset pagination' do
+      include PaginationHelpers
+
+      let(:current_user) { user }
+
+      shared_examples 'rejects unsupported keyset parameter' do |params|
+        it 'returns a 400 with a descriptive message', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset' }.merge(params)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to include(::Repositories::CommitsFinder::KEYSET_PARAM_ERROR_SUFFIX)
+        end
+      end
+
+      shared_examples 'paginates across keyset pages preserving order' do
+        it 'paginates across pages preserving commit order', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', per_page: 2 }.merge(keyset_params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          first_page = json_response.map { |c| c['id'] }
+
+          cursor = pagination_params_from_next_url(response)['page_token']
+          expect(cursor).to be_present
+
+          get api(route, current_user),
+            params: { pagination: 'keyset', per_page: 2, page_token: cursor }.merge(keyset_params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          second_page = json_response.map { |c| c['id'] }
+
+          expected = project.repository.commits(project.default_branch, keyset_params.merge(limit: 4)).map(&:id)
+          expect(first_page + second_page).to eq(expected)
+        end
+      end
+
+      shared_examples 'paginates across keyset pages without overlap' do
+        it 'paginates across pages without dropping or duplicating commits', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', per_page: 2 }.merge(keyset_params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          first_page = json_response.map { |c| c['id'] }
+
+          cursor = pagination_params_from_next_url(response)['page_token']
+          expect(cursor).to be_present
+
+          get api(route, current_user),
+            params: { pagination: 'keyset', per_page: 2, page_token: cursor }.merge(keyset_params)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          second_page = json_response.map { |c| c['id'] }
+
+          expect(second_page).not_to eq(first_page)
+          expect(first_page & second_page).to be_empty
+        end
+      end
+
+      it 'returns commits and a next-page Link header for a full page', :aggregate_failures do
+        get api(route, current_user), params: { pagination: 'keyset', per_page: 2 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_an(Array)
+        expect(json_response.size).to eq(2)
+        expect(response.headers['Link']).to match(/rel="next"/)
+        expect(pagination_params_from_next_url(response)).to include('page_token')
+      end
+
+      it 'paginates using the cursor from the next page', :aggregate_failures do
+        get api(route, current_user), params: { pagination: 'keyset', per_page: 2 }
+        first_page = json_response
+
+        cursor = pagination_params_from_next_url(response)['page_token']
+
+        get api(route, current_user), params: { pagination: 'keyset', per_page: 2, page_token: cursor }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).not_to eq(first_page)
+      end
+
+      it 'does not emit a next-page Link header on the last page', :aggregate_failures do
+        get api(route, current_user), params: { pagination: 'keyset', ref_name: '1039376', per_page: 100 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['Link']).to be_nil
+      end
+
+      context 'with all=true' do
+        it_behaves_like 'paginates across keyset pages without overlap' do
+          let(:keyset_params) { { all: true } }
+        end
+      end
+
+      context 'with an unsupported parameter' do
+        it_behaves_like 'rejects unsupported keyset parameter', { follow: true }
+      end
+
+      context 'with trailers=true' do
+        # The tip of this ref carries a Signed-off-by trailer in its message.
+        let(:ref_name) { '6d394385cf567f80a8fd85055db1ab4c5295806f' }
+        let(:signed_off_by) { 'Dmitriy Zaporozhets <dmitriy.zaporozhets@gmail.com>' }
+
+        it 'includes the Git trailers', :aggregate_failures do
+          get api(route, current_user),
+            params: { pagination: 'keyset', ref_name: ref_name, trailers: true, per_page: 1 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.first['trailers']).to eq('Signed-off-by' => signed_off_by)
+          expect(json_response.first['extended_trailers']).to eq('Signed-off-by' => [signed_off_by])
+        end
+
+        it 'omits the trailers when they are not requested', :aggregate_failures do
+          get api(route, current_user),
+            params: { pagination: 'keyset', ref_name: ref_name, per_page: 1 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.first['trailers']).to eq({})
+          expect(json_response.first['extended_trailers']).to eq({})
+        end
+      end
+
+      context 'with first_parent=true' do
+        it 'returns only first-parent history', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', first_parent: true, per_page: 100 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_an(Array)
+          expect(json_response).to be_present
+
+          returned_ids = json_response.map { |c| c['id'] }
+          expected_ids = project.repository.commits(project.default_branch, first_parent: true, limit: 100).map(&:id)
+          expect(returned_ids).to eq(expected_ids)
+        end
+
+        it 'returns fewer commits than first_parent=false (proves the filter takes effect)', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', first_parent: true, per_page: 100 }
+          first_parent_ids = json_response.map { |c| c['id'] }
+
+          get api(route, current_user), params: { pagination: 'keyset', first_parent: false, per_page: 100 }
+          full_ids = json_response.map { |c| c['id'] }
+
+          expect(first_parent_ids.size).to be < full_ids.size
+        end
+
+        it_behaves_like 'paginates across keyset pages preserving order' do
+          let(:keyset_params) { { first_parent: true } }
+        end
+      end
+
+      context 'with order=topo' do
+        it 'returns commits in topological order', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', order: 'topo', per_page: 100 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_an(Array)
+          expect(json_response).to be_present
+
+          expected = project.repository.commits(project.default_branch, order: 'topo', limit: 100).map(&:id)
+          expect(json_response.map { |c| c['id'] }).to eq(expected)
+        end
+
+        it_behaves_like 'paginates across keyset pages preserving order' do
+          let(:keyset_params) { { order: 'topo' } }
+        end
+      end
+
+      context 'with order=default' do
+        it 'accepts order=default and returns commits', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', order: 'default', per_page: 5 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_present
+        end
+      end
+
+      context 'with a path filter' do
+        let(:path) { 'files/ruby/popen.rb' }
+
+        it 'returns only commits that touch the path and matches offset pagination', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', path: path, per_page: 100 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_an(Array)
+          expect(json_response).to be_present
+
+          returned_ids = json_response.map { |c| c['id'] }
+          expected_ids = project.repository.commits(project.default_branch, path: path, limit: 100).map(&:id)
+          expect(returned_ids).to eq(expected_ids)
+        end
+
+        it 'strips a leading slash from the path', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', path: "/#{path}", per_page: 100 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.map { |c| c['id'] })
+            .to match_array(project.repository.commits(project.default_branch, path: path, limit: 100).map(&:id))
+        end
+
+        context 'with all=true' do
+          it 'succeeds and filters by path', :aggregate_failures do
+            get api(route, current_user), params: { pagination: 'keyset', path: path, all: true, per_page: 100 }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response).to be_present
+
+            returned_ids = json_response.map { |c| c['id'] }
+            expected_ids = project.repository.commits(nil, all: true, path: path, limit: 100).map(&:id)
+            expect(returned_ids).to match_array(expected_ids)
+          end
+        end
+
+        it_behaves_like 'paginates across keyset pages without overlap' do
+          let(:keyset_params) { { path: path } }
+        end
+
+        context 'with a glob metacharacter in the path' do
+          let_it_be(:literal_path) { 'files/ruby/star*.rb' }
+          let_it_be(:glob_branch) do
+            project.repository.create_file(
+              user, literal_path, 'puts "star"',
+              message: 'Add file with a literal glob metacharacter',
+              branch_name: 'glob-metacharacter-test',
+              start_branch_name: project.default_branch
+            )
+
+            'glob-metacharacter-test'
+          end
+
+          it 'matches offset pagination for the literal path', :aggregate_failures do
+            get api(route, current_user),
+              params: { pagination: 'keyset', ref_name: glob_branch, path: literal_path, per_page: 100 }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            keyset_ids = json_response.map { |c| c['id'] }
+            offset_ids = project.repository.commits(glob_branch, path: literal_path, limit: 100).map(&:id)
+
+            expect(keyset_ids).to be_present
+            expect(offset_ids).to be_present
+            expect(keyset_ids).to match_array(offset_ids)
+          end
+
+          it 'treats the path literally rather than expanding the glob', :aggregate_failures do
+            get api(route, current_user),
+              params: { pagination: 'keyset', ref_name: glob_branch, path: 'files/ruby/*.rb', per_page: 100 }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            keyset_ids = json_response.map { |c| c['id'] }
+            offset_ids = project.repository.commits(glob_branch, path: 'files/ruby/*.rb', limit: 100).map(&:id)
+
+            expect(keyset_ids).to be_empty
+            expect(offset_ids).to be_empty
+            expect(keyset_ids).to match_array(offset_ids)
+          end
+        end
+
+        context 'with a path that never existed' do
+          it 'returns an empty array with a 200', :aggregate_failures do
+            get api(route, current_user), params: { pagination: 'keyset', path: 'does/not/exist', per_page: 100 }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response).to eq([])
+          end
+        end
+
+        context 'when the path was renamed in its history' do
+          let(:ref_name) { 'blame-on-renamed' }
+          let(:path) { 'files/plain_text/renamed' }
+
+          it 'returns literal-path history, unlike offset pagination with follow=true', :aggregate_failures do
+            get api(route, current_user),
+              params: { ref_name: ref_name, path: path, follow: true, per_page: 100 }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            followed_ids = json_response.map { |c| c['id'] }
+            expect(followed_ids).to be_present
+
+            get api(route, current_user),
+              params: { pagination: 'keyset', ref_name: ref_name, path: path, per_page: 100 }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            keyset_ids = json_response.map { |c| c['id'] }
+            literal_ids = project.repository.commits(ref_name, path: path, limit: 100).map(&:id)
+
+            expect(literal_ids).to be_present
+            expect(keyset_ids).to match_array(literal_ids)
+            expect(keyset_ids).not_to match_array(followed_ids)
+          end
+        end
+      end
+
+      context 'when the finder raises a generic ArgumentError' do
+        it 'surfaces the ref_name is invalid fallback, not the keyset message', :aggregate_failures do
+          allow_next_instance_of(::Repositories::CommitsFinder) do |finder|
+            allow(finder).to receive(:execute).and_raise(ArgumentError, 'some unrelated gitaly error')
+          end
+
+          get api(route, current_user), params: { pagination: 'keyset', per_page: 2 }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq('ref_name is invalid')
+        end
+      end
+
+      context 'with an invalid pagination value' do
+        it 'is rejected by Grape with a 400', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'banana' }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to include('pagination')
+        end
+      end
+
+      context 'with a malformed page_token' do
+        # Unlike the tags endpoint (which validates the ref and returns 422),
+        # the commits keyset path passes page_token straight to Gitaly's
+        # ListCommits RPC without pre-validation. Gitaly treats an unknown
+        # cursor as a starting point with no matching commits, so the endpoint
+        # returns 200 with an empty page and no next-page Link header.
+        it 'returns 200 with an empty page and no next-page Link header', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', per_page: 2, page_token: 'not-a-real-cursor' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to eq([])
+          expect(response.headers['Link']).to be_nil
+        end
+      end
+
+      context 'with an empty repository' do
+        let_it_be(:empty_project) { create(:project, :empty_repo, creator: user) }
+
+        let(:route) { "/projects/#{empty_project.id}/repository/commits" }
+
+        before do
+          empty_project.add_maintainer(user)
+          stub_feature_flags(commits_keyset_pagination: empty_project)
+        end
+
+        it 'returns an empty array without erroring', :aggregate_failures do
+          get api(route, current_user), params: { pagination: 'keyset', per_page: 2 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to eq([])
+        end
+      end
+    end
+
+    context 'when commits_keyset_pagination is disabled' do
+      let(:current_user) { user }
+
+      before do
+        stub_feature_flags(commits_keyset_pagination: false)
+      end
+
+      it 'falls back to legacy offset pagination instead of erroring', :aggregate_failures do
+        get api(route, current_user), params: { pagination: 'keyset', per_page: 2 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_an(Array)
+        expect(json_response.size).to eq(2)
+        # Legacy offset pagination uses page-number headers, never a keyset page_token cursor.
+        expect(response.headers['Link'].to_s).not_to include('page_token')
+        expect(response.headers['X-Page']).to eq('1')
+      end
+
+      it 'still honors ?page=N under the legacy path (different commits per page)', :aggregate_failures do
+        get api(route, current_user), params: { pagination: 'keyset', per_page: 2, page: 1 }
+        first_page = json_response.map { |c| c['id'] }
+
+        get api(route, current_user), params: { pagination: 'keyset', per_page: 2, page: 2 }
+        second_page = json_response.map { |c| c['id'] }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(second_page).not_to eq(first_page)
+      end
+
+      it 'does not reject params that are unsupported under keyset pagination' do
+        get api(route, current_user), params: { pagination: 'keyset', first_parent: true }
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  describe 'POST /projects/:id/repository/commits/authorize' do
+    include_context 'workhorse headers'
+
+    let(:url) { "/projects/#{project_id}/repository/commits/authorize" }
+
+    subject(:request) { post api(url, user), headers: workhorse_headers }
+
+    context 'with workhorse headers' do
+      it 'authorizes the upload' do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.media_type).to eq(Gitlab::Workhorse::INTERNAL_API_CONTENT_TYPE)
+        expect(json_response['TempPath']).to be_present
+        expect(json_response['MaximumSize']).to eq(300.megabytes)
+      end
+
+      it 'uses the correct upload path' do
+        request
+
+        expect(json_response['TempPath']).to eq(::Repositories::CommitsUploader.workhorse_local_upload_path)
+      end
+    end
+
+    context 'without workhorse headers' do
+      it 'returns forbidden' do
+        post api(url, user)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'without an authenticated user' do
+      let_it_be(:public_project) { create(:project, :public, :repository) }
+
+      let(:url) { "/projects/#{public_project.id}/repository/commits/authorize" }
+
+      subject(:request) { post api(url, nil), headers: workhorse_headers }
+
+      it 'returns unauthorized' do
+        request
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+  end
+
+  describe 'POST /projects/:id/repository/commits' do
+    include_context 'for workhorse body uploads'
+
+    let_it_be(:file_path_sequencer) { FactoryBot::Sequence.new(:new_file_path) { |n| "files/test/#{n}.rb" } }
+    let!(:url) { api("/projects/#{project_id}/repository/commits", user) }
+    let(:params) do
+      {
+        branch: 'master',
+        commit_message: 'message',
+        actions: [
+          {
+            action: 'create',
+            file_path: '/test.rb',
+            content: 'puts 8'
+          }
+        ]
+      }
+    end
+
+    shared_examples 'param validations' do
+      shared_examples 'returns bad request - validation error' do |expected_message|
+        it 'returns error' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq("400 Bad request - #{expected_message}")
+        end
+      end
+
+      context 'without workhorse headers', :verify_workhorse_jwt do
+        let(:workhorse_headers) { {} }
+
+        it 'returns forbidden' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'when unauthenticated', 'and project is public' do
+        let_it_be(:project) { create(:project, :public, :repository) }
+        let!(:url) { api("/projects/#{project_id}/repository/commits", nil) }
+
+        it_behaves_like '401 response' do
+          let(:request) { workhorse_body_upload(url, params) }
+        end
+      end
+
+      context 'with a user without permissions' do
+        let!(:url) { api("/projects/#{project_id}/repository/commits", guest) }
+
+        it 'returns a 403 unauthorized' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      it 'returns a 400 bad request if no params are given' do
+        workhorse_body_upload(url, {})
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      context 'missing branch' do
+        let(:params) { super().except(:branch) }
+
+        it_behaves_like 'returns bad request - validation error', "branch is required"
+      end
+
+      context 'blank branch' do
+        let(:params) { super().merge(branch: '') }
+
+        it_behaves_like 'returns bad request - validation error', "branch is required"
+      end
+
+      context 'missing commit_message' do
+        let(:params) { super().except(:commit_message) }
+
+        it_behaves_like 'returns bad request - validation error', "commit_message is required"
+      end
+
+      context 'missing actions' do
+        let(:params) { super().except(:actions) }
+
+        it_behaves_like 'returns bad request - validation error', "Provide at least one action, or set allow_empty to true"
+      end
+
+      context 'when actions is not an array' do
+        let(:params) { super().merge(actions: 'not an array') }
+
+        it_behaves_like 'returns bad request - validation error', "actions must be an array"
+      end
+
+      context 'actions validation' do
+        context 'missing action' do
+          let(:params) { super().merge(actions: [{ file_path: '/test.rb', content: 'puts 8' }]) }
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][action] is required"
+        end
+
+        context 'missing file_path' do
+          let(:params) { super().merge(actions: [{ action: 'create', content: 'puts 8' }]) }
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][file_path] is required"
+        end
+
+        context 'invalid action' do
+          let(:params) { super().merge(actions: [{ action: 'invalid', file_path: '/test.rb', content: 'puts 8' }]) }
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][action] must be one of: create, update, move, delete, chmod"
+        end
+
+        context 'update action missing content' do
+          let(:params) { super().merge(actions: [{ action: 'update', file_path: '/test.rb' }]) }
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][content] is required for update action"
+        end
+
+        context 'move action missing previous_path' do
+          let(:params) { super().merge(actions: [{ action: 'move', file_path: '/new_test.rb', content: 'puts 8' }]) }
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][previous_path] is required for move action"
+        end
+
+        context 'invalid encoding' do
+          let(:params) do
+            super().merge(actions: [{ action: 'create', file_path: '/test.rb', content: 'puts 8', encoding: 'invalid' }])
+          end
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][encoding] must be text or base64"
+        end
+
+        context 'chmod action missing execute_filemode' do
+          let(:params) { super().merge(actions: [{ action: 'chmod', file_path: '/test.rb' }]) }
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][execute_filemode] is required for chmod action"
+        end
+
+        context 'chmod action with invalid execute_filemode' do
+          let(:params) do
+            super().merge(actions: [{ action: 'chmod', file_path: '/test.rb', execute_filemode: 'invalid' }])
+          end
+
+          it_behaves_like 'returns bad request - validation error', "actions[0][execute_filemode] must be a boolean"
+        end
+      end
+
+      context 'with non-string parameter types' do
+        using RSpec::Parameterized::TableSyntax
+
+        context 'for top-level parameters' do
+          where(:param_name, :param_value) do
+            :branch         | { nested: 'object' }
+            :commit_message | { nested: 'object' }
+            :start_branch   | { nested: 'object' }
+            :start_sha      | { nested: 'object' }
+            :author_email   | { nested: 'object' }
+            :author_name    | { nested: 'object' }
+            :branch         | ['array']
+            :commit_message | ['array']
+            :start_branch   | ['array']
+            :start_sha      | ['array']
+            :author_email   | ['array']
+            :author_name    | ['array']
+          end
+
+          with_them do
+            let(:params) { super().merge(param_name => param_value) }
+
+            it 'returns bad request with type validation error' do
+              workhorse_body_upload(url, params)
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+              expect(json_response['message']).to eq("400 Bad request - #{param_name} must be a string")
+            end
+          end
+        end
+
+        context 'for action parameters' do
+          where(:param_name, :param_value) do
+            :file_path      | { nested: 'object' }
+            :previous_path  | { nested: 'object' }
+            :last_commit_id | { nested: 'object' }
+            :file_path      | ['array']
+            :previous_path  | ['array']
+            :last_commit_id | ['array']
+          end
+
+          with_them do
+            let(:params) do
+              super().merge(actions: [{ action: 'create', file_path: '/test.rb', content: 'puts 8', param_name => param_value }])
+            end
+
+            it 'returns bad request with type validation error' do
+              workhorse_body_upload(url, params)
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+              expect(json_response['message']).to eq("400 Bad request - actions[0][#{param_name}] must be a string")
+            end
+          end
+        end
+      end
+    end
+
+    shared_examples 'create actions' do
+      let(:new_file_path) { file_path_sequencer.next }
+      let(:message) { 'Created a new file with a very very looooooooooooooooooooooooooooooooooooooooooooooong commit message' }
+      let(:create_content) { 'puts 8' }
+
+      let(:invalid_c_params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'create',
+              file_path: 'files/ruby/popen.rb',
+              content: 'puts 8'
+            }
+          ]
+        }
+      end
+
+      let(:valid_c_params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'create',
+              file_path: new_file_path,
+              content: create_content
+            }
+          ]
+        }
+      end
+
+      let(:valid_utf8_c_params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'create',
+              file_path: new_file_path,
+              content: 'puts 🦊'
+            }
+          ]
+        }
+      end
+
+      shared_examples_for 'successfully creates the commit' do
+        before do
+          workhorse_body_upload(url, params)
+        end
+
+        it 'creates the commit' do
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['title']).to eq(message)
+          expect(json_response['committer_name']).to eq(user.name)
+          expect(json_response['committer_email']).to eq(user.email)
+        end
+      end
+
+      context 'when using oauth access token authentication' do
+        let!(:url) { api("/projects/#{project_id}/repository/commits", user, oauth_access_token: oauth_token) }
+
+        subject(:request) { workhorse_body_upload(url, valid_c_params) }
+
+        context 'when using Web IDE OAuth token', :snowplow, :clean_gitlab_redis_sessions do
+          let(:web_ide_oauth_app) { create(:oauth_application, name: 'GitLab Web IDE', trusted: true, confidential: false, scopes: "api") }
+          let(:oauth_token) { create(:oauth_access_token, user: user, application: web_ide_oauth_app) }
+
+          before do
+            allow(ApplicationSetting).to receive(:current).and_return(ApplicationSetting.new)
+            stub_application_setting(web_ide_oauth_application: web_ide_oauth_app)
+          end
+
+          it_behaves_like 'internal event tracking' do
+            let(:event) { 'create_commit_from_web_ide' }
+            let(:namespace) { project.namespace.reload }
+          end
+
+          it_behaves_like 'internal event tracking' do
+            let(:event) { 'g_edit_by_web_ide' }
+            let(:namespace) { project.namespace.reload }
+          end
+
+          describe 'CI config file creation tracking' do
+            let_it_be_with_reload(:project) { create(:project, :repository) }
+            let!(:url) { api("/projects/#{project.id}/repository/commits", user, oauth_access_token: oauth_token) }
+            let(:event) { 'create_ci_config_file_from_web_ide' }
+
+            before do
+              project.add_maintainer(user)
+            end
+
+            context 'when creating CI config file on default branch' do
+              let(:valid_c_params) do
+                {
+                  branch: project.default_branch,
+                  commit_message: message,
+                  actions: [{ action: 'create', file_path: project.ci_config_path_or_default, content: 'image: ruby:3.0' }]
+                }
+              end
+
+              it 'tracks create_ci_config_file_from_web_ide event' do
+                expect { request }
+                  .to trigger_internal_events(event)
+                  .with(user: user, project: project, namespace: project.namespace, category: 'InternalEventTracking')
+              end
+            end
+
+            context 'when creating CI config file on feature branch' do
+              let_it_be(:feature_branch_project) { create(:project, :repository) }
+              let!(:url) { api("/projects/#{feature_branch_project.id}/repository/commits", user, oauth_access_token: oauth_token) }
+
+              let(:valid_c_params) do
+                {
+                  branch: 'feature-branch',
+                  start_branch: feature_branch_project.default_branch,
+                  commit_message: message,
+                  actions: [{ action: 'create', file_path: feature_branch_project.ci_config_path_or_default, content: 'image: ruby:3.0' }]
+                }
+              end
+
+              before do
+                feature_branch_project.add_maintainer(user)
+              end
+
+              it 'tracks create_ci_config_file_from_web_ide event' do
+                expect { request }
+                  .to trigger_internal_events(event)
+                  .with(user: user, project: feature_branch_project, namespace: feature_branch_project.namespace, category: 'InternalEventTracking')
+              end
+            end
+
+            context 'when updating CI config file' do
+              let(:valid_c_params) do
+                {
+                  branch: project.default_branch,
+                  commit_message: message,
+                  actions: [{ action: 'update', file_path: project.ci_config_path_or_default, content: 'image: ruby:3.1' }]
+                }
+              end
+
+              before do
+                Files::CreateService.new(
+                  project, user,
+                  start_branch: project.default_branch,
+                  branch_name: project.default_branch,
+                  commit_message: 'Add CI config',
+                  file_path: project.ci_config_path_or_default,
+                  file_content: 'image: ruby:3.0'
+                ).execute
+              end
+
+              it_behaves_like 'internal event not tracked'
+            end
+
+            context 'when creating non-CI config file' do
+              let(:valid_c_params) do
+                {
+                  branch: project.default_branch,
+                  commit_message: message,
+                  actions: [{ action: 'create', file_path: 'README.md', content: '# Hello' }]
+                }
+              end
+
+              it_behaves_like 'internal event not tracked'
+            end
+
+            context 'when project has custom CI config path' do
+              let_it_be(:custom_project) { create(:project, :repository, ci_config_path: 'custom/ci.yml') }
+              let!(:url) { api("/projects/#{custom_project.id}/repository/commits", user, oauth_access_token: oauth_token) }
+
+              let(:valid_c_params) do
+                {
+                  branch: custom_project.default_branch,
+                  commit_message: message,
+                  actions: [{ action: 'create', file_path: 'custom/ci.yml', content: 'image: ruby:3.0' }]
+                }
+              end
+
+              before do
+                custom_project.add_maintainer(user)
+              end
+
+              it 'tracks create_ci_config_file_from_web_ide event' do
+                expect { request }
+                  .to trigger_internal_events(event)
+                  .with(user: user, project: custom_project, namespace: custom_project.namespace, category: 'InternalEventTracking')
+              end
+            end
+
+            context 'when commit fails' do
+              let(:valid_c_params) do
+                {
+                  branch: project.default_branch,
+                  commit_message: message,
+                  actions: [{ action: 'create', file_path: project.ci_config_path_or_default, content: 'image: ruby:3.0' }]
+                }
+              end
+
+              before do
+                allow_next_instance_of(Files::MultiService) do |service|
+                  allow(service).to receive(:execute).and_return({ status: :error, message: 'Commit failed' })
+                end
+              end
+
+              it_behaves_like 'internal event not tracked'
+            end
+          end
+        end
+
+        context 'when using non-Web IDE OAuth token' do
+          let(:other_oauth_app) { create(:oauth_application, name: "Other App", scopes: "api") }
+          let(:oauth_token) { create(:oauth_access_token, user: user, application: other_oauth_app) }
+          let(:web_ide_oauth_app) { create(:oauth_application, name: 'GitLab Web IDE', trusted: true, confidential: false, scopes: "api") }
+
+          before do
+            allow(ApplicationSetting).to receive(:current).and_return(ApplicationSetting.new)
+            stub_application_setting(web_ide_oauth_application: web_ide_oauth_app)
+          end
+
+          it 'does not increment the usage counters' do
+            expect(::Gitlab::InternalEvents).not_to receive(:track_event)
+
+            request
+          end
+        end
+
+        context 'when Web IDE OAuth application is not configured' do
+          let(:oauth_token) { create(:oauth_access_token, user: user) }
+
+          before do
+            stub_application_setting({ web_ide_oauth_application: nil })
+          end
+
+          it 'does not increment the usage counters' do
+            expect(::Gitlab::InternalEvents).not_to receive(:track_event)
+
+            request
+          end
+        end
+      end
+
+      context 'when using OAuth token with nil application' do
+        let(:oauth_token) { create(:oauth_access_token, user: user, application: nil, scopes: 'api') }
+
+        it 'successfully creates the commit without raising NoMethodError' do
+          workhorse_body_upload(url, valid_c_params)
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['title']).to eq(message)
+        end
+      end
+
+      context 'when using personal access token', :snowplow, :clean_gitlab_redis_sessions do
+        let(:personal_access_token) { create(:personal_access_token, scopes: ['api'], user: user) }
+        let(:web_ide_oauth_app) { create(:oauth_application, name: 'GitLab Web IDE', trusted: true, confidential: false, scopes: "api") }
+
+        let!(:url) { api("/projects/#{project_id}/repository/commits", user, personal_access_token: personal_access_token) }
+
+        before do
+          allow(ApplicationSetting).to receive(:current).and_return(ApplicationSetting.new)
+          stub_application_setting(web_ide_oauth_application: web_ide_oauth_app)
+
+          workhorse_body_upload(url, valid_c_params)
+        end
+
+        it 'does not increment the usage counters' do
+          expect(::Gitlab::InternalEvents).not_to receive(:track_event)
+        end
+
+        it 'sends successful response code' do
+          expect(response).to have_gitlab_http_status(:created)
+        end
+      end
+
+      context 'when using warden', :snowplow, :clean_gitlab_redis_sessions do
+        before do
+          stub_session(session_data: { 'warden.user.user.key' => [[user.id], user.authenticatable_salt] })
+          workhorse_body_upload(url, valid_c_params)
+        end
+
+        it 'does not increment the usage counters' do
+          expect(::Gitlab::InternalEvents).not_to receive(:track_event)
+        end
+      end
+
+      context 'when actions does not touch files' do
+        let(:base_params) do
+          {
+            branch: 'master',
+            commit_message: 'message'
+          }
+        end
+
+        shared_examples 'warns the user' do
+          it 'returns a 400 with the proper message' do
+            expect(response).to have_gitlab_http_status(:bad_request)
+
+            msg = "400 Bad request - Provide at least one action, or set allow_empty to true"
+            expect(json_response['message']).to eq(msg)
+          end
+        end
+
+        shared_examples 'creates an empty commit' do
+          it 'returns 200 and creates the empty commit' do
+            expect(response).to have_gitlab_http_status(:created)
+            expect(json_response['title']).to eq('message')
+            expect(json_response['stats']['additions']).to eq(0)
+            expect(json_response['stats']['deletions']).to eq(0)
+            expect(json_response['stats']['total']).to eq(0)
+          end
+        end
+
+        context 'when actions is empty' do
+          let(:params) { base_params.merge(actions: [], allow_empty: allow_empty) }
+
+          context 'when allow_empty is true' do
+            let(:allow_empty) { true }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'creates an empty commit'
+          end
+
+          context 'when allow_empty is false' do
+            let(:allow_empty) { false }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'warns the user'
+          end
+
+          context 'when allow_empty is nil' do
+            let(:allow_empty) { nil }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'warns the user'
+          end
+
+          context 'when allow_empty is not passed' do
+            let(:params) { base_params.merge(actions: []) }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'warns the user'
+          end
+        end
+
+        context 'when actions is not passed' do
+          let(:params) { base_params.merge(allow_empty: allow_empty) }
+
+          context 'when allow_empty is true' do
+            let(:allow_empty) { true }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'creates an empty commit'
+          end
+
+          context 'when allow_empty is false' do
+            let(:allow_empty) { false }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'warns the user'
+          end
+
+          context 'when allow_empty is nil' do
+            let(:allow_empty) { nil }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'warns the user'
+          end
+
+          context 'when allow_empty is not passed' do
+            let(:params) { base_params }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'warns the user'
+          end
+        end
+      end
+
+      context 'a new file in project repo' do
+        context 'when user is a direct project member' do
+          let(:params) { valid_c_params }
+
+          it_behaves_like 'successfully creates the commit'
+        end
+
+        context 'when user is an inherited guest from the group' do
+          let!(:url) { api("/projects/#{project.id}/repository/commits", inherited_guest) }
+
+          context 'when project is public with private repository' do
+            let(:project) { create(:project, :public, :repository, :repository_private, group: group) }
+
+            it_behaves_like '403 response' do
+              let(:request) { workhorse_body_upload(url, valid_c_params) }
+              let(:message) { '403 Forbidden' }
+            end
+          end
+
+          context 'when project is private' do
+            let(:project) { create(:project, :private, :repository, group: group) }
+
+            it_behaves_like '403 response' do
+              let(:request) { workhorse_body_upload(url, valid_c_params) }
+              let(:message) { '403 Forbidden' }
+            end
+          end
+        end
+
+        context 'when creating a commit with file actions' do
+          let(:base_params) do
+            {
+              branch: 'master',
+              commit_message: message,
+              actions: [
+                {
+                  action: 'create',
+                  file_path: new_file_path,
+                  content: 'puts 8'
+                }
+              ]
+            }
+          end
+
+          shared_examples 'creates a commit' do
+            it 'creates the commit' do
+              expect(response).to have_gitlab_http_status(:created)
+              expect(json_response['title']).to eq(message)
+              expect(json_response['stats']['additions']).to eq(1)
+              expect(json_response['stats']['deletions']).to eq(0)
+              expect(json_response['stats']['total']).to eq(1)
+            end
+          end
+
+          context 'when allow_empty is true' do
+            let(:params) { base_params.merge(allow_empty: true) }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'creates a commit'
+          end
+
+          context 'when allow_empty is false' do
+            let(:params) { base_params.merge(allow_empty: false) }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'creates a commit'
+          end
+
+          context 'when allow_empty is nil' do
+            let(:params) { base_params.merge(allow_empty: nil) }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'creates a commit'
+          end
+
+          context 'when allow_empty is missing' do
+            let(:params) { base_params }
+
+            before do
+              workhorse_body_upload(url, params)
+            end
+
+            include_examples 'creates a commit'
+          end
+        end
+      end
+
+      context 'when repository is empty' do
+        let!(:project) { create(:project, :empty_repo) }
+
+        context 'when params are valid' do
+          let(:params) { valid_c_params }
+
+          it_behaves_like 'successfully creates the commit'
+        end
+
+        context 'when branch name is invalid' do
+          before do
+            workhorse_body_upload(url, valid_c_params.merge(branch: 'wrong:name'))
+          end
+
+          it { expect(response).to have_gitlab_http_status(:bad_request) }
+        end
+      end
+
+      context 'a new file with utf8 chars in project repo' do
+        let(:params) { valid_utf8_c_params }
+
+        it_behaves_like 'successfully creates the commit'
+      end
+
+      it 'returns a 400 bad request if file exists' do
+        workhorse_body_upload(url, invalid_c_params)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      context 'with project path containing a dot in URL' do
+        let(:url) { api("/projects/#{CGI.escape(project.full_path)}/repository/commits", user) }
+
+        it 'a new file in project repo' do
+          workhorse_body_upload(url, valid_c_params)
+
+          expect(response).to have_gitlab_http_status(:created)
+        end
+      end
+
+      context 'when committing to a new branch' do
+        def last_commit_id(project, branch_name)
+          project.repository.find_branch(branch_name)&.dereferenced_target&.id
+        end
+
+        before do
+          valid_c_params[:start_branch] = 'master'
+          valid_c_params[:branch] = new_branch_name
+        end
+
+        context 'when the API user is a guest' do
+          let(:public_project) { create(:project, :public, :repository) }
+          let(:url) { api("/projects/#{public_project.id}/repository/commits", guest) }
+          let(:guest) { create(:user, guest_of: public_project) }
+
+          it 'returns a 403' do
+            workhorse_body_upload(url, valid_c_params)
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+
+          context 'when start_project is provided' do
+            context 'when posting to a forked project the user owns' do
+              let(:forked_project) { fork_project(public_project, guest, namespace: guest.namespace, repository: true) }
+              let(:url) { api("/projects/#{forked_project.id}/repository/commits", guest) }
+
+              context 'identified by Integer (id)' do
+                before do
+                  valid_c_params[:start_project] = public_project.id
+                end
+
+                it 'adds a new commit to forked_project and returns a 201', :sidekiq_might_not_need_inline do
+                  expect_request_with_status(201) { workhorse_body_upload(url, valid_c_params) }
+                    .to change { last_commit_id(forked_project, valid_c_params[:branch]) }
+                    .and not_change { last_commit_id(public_project, valid_c_params[:start_branch]) }
+                end
+              end
+
+              context 'identified by String (full_path)' do
+                before do
+                  valid_c_params[:start_project] = public_project.full_path
+                end
+
+                it 'adds a new commit to forked_project and returns a 201', :sidekiq_might_not_need_inline do
+                  expect_request_with_status(201) { workhorse_body_upload(url, valid_c_params) }
+                    .to change { last_commit_id(forked_project, valid_c_params[:branch]) }
+                    .and not_change { last_commit_id(public_project, valid_c_params[:start_branch]) }
+                end
+              end
+
+              context 'when branch already exists', :sidekiq_might_not_need_inline do
+                before do
+                  valid_c_params.delete(:start_branch)
+                  valid_c_params[:branch] = 'master'
+                  valid_c_params[:start_project] = public_project.id
+                end
+
+                it 'returns a 400' do
+                  workhorse_body_upload(url, valid_c_params)
+
+                  expect(response).to have_gitlab_http_status(:bad_request)
+                  expect(json_response['message']).to eq("A branch called 'master' already exists. Switch to that branch in order to make changes")
+                end
+
+                context 'when force is set to true' do
+                  before do
+                    valid_c_params[:force] = true
+                  end
+
+                  it 'adds a new commit to forked_project and returns a 201' do
+                    expect_request_with_status(201) { workhorse_body_upload(url, valid_c_params) }
+                      .to change { last_commit_id(forked_project, valid_c_params[:branch]) }
+                      .and not_change { last_commit_id(public_project, valid_c_params[:branch]) }
+                  end
+                end
+              end
+
+              context 'when start_sha is also provided' do
+                let(:forked_project) { fork_project(public_project, guest, namespace: guest.namespace, repository: false) }
+                let(:start_sha) { public_project.repository.commit.parent.sha }
+
+                before do
+                  # initialize an empty repository to force fetching from the original project
+                  forked_project.repository.create_if_not_exists
+
+                  valid_c_params[:start_project] = public_project.id
+                  valid_c_params[:start_sha] = start_sha
+                  valid_c_params.delete(:start_branch)
+                end
+
+                it 'fetches the start_sha from the original project to use as parent commit and returns a 201' do
+                  expect_request_with_status(201) { workhorse_body_upload(url, valid_c_params) }
+                    .to change { last_commit_id(forked_project, valid_c_params[:branch]) }
+                    .and not_change { last_commit_id(forked_project, 'master') }
+
+                  last_commit = forked_project.repository.find_branch(valid_c_params[:branch]).dereferenced_target
+                  expect(last_commit.parent_id).to eq(start_sha)
+                end
+              end
+            end
+
+            context 'when project repository access becomes restricted after being forked' do
+              let!(:fork_owner) { create(:user) }
+              let!(:forked_project) { fork_project(public_project, fork_owner, namespace: fork_owner.namespace, repository: true) }
+              let(:url) { api("/projects/#{forked_project.id}/repository/commits", fork_owner) }
+
+              before do
+                # Restrict repository visibility of the public project
+                public_project.merge_requests_access_level = 'private'
+                public_project.builds_access_level = 'private'
+                public_project.repository_access_level = 'private'
+                public_project.save!
+
+                valid_c_params[:start_branch] = 'master'
+                valid_c_params[:branch] = new_branch_name
+                valid_c_params[:start_project] = public_project.id
+              end
+
+              after do
+                # Reopen repository visibility of the public project
+                public_project.merge_requests_access_level = 'enabled'
+                public_project.repository_access_level = 'enabled'
+                public_project.builds_access_level = 'enabled'
+                public_project.save!
+              end
+
+              it 'returns a 403' do
+                workhorse_body_upload(url, valid_c_params)
+
+                expect(response).to have_gitlab_http_status(:forbidden)
+              end
+            end
+
+            context 'when fork owner has no more access to a private repository' do
+              let_it_be(:private_project) { create(:project, :private, :repository) }
+              let_it_be(:fork_owner) { create(:user) }
+              let_it_be(:fork_owner_membership) { private_project.add_developer(fork_owner) }
+              let_it_be(:forked_project) { fork_project(private_project, fork_owner, namespace: fork_owner.namespace, repository: true) }
+              let(:url) { api("/projects/#{forked_project.id}/repository/commits", fork_owner) }
+
+              before do
+                # Restrict user from repository
+                Members::DestroyService.new(fork_owner_membership, current_user: private_project.owner).execute
+                Sidekiq::Worker.drain_all
+
+                valid_c_params[:start_branch] = 'master'
+                valid_c_params[:branch] = new_branch_name
+                valid_c_params[:start_project] = private_project.id
+              end
+
+              it 'returns a 404' do
+                workhorse_body_upload(url, valid_c_params)
+
+                expect(response).to have_gitlab_http_status(:not_found)
+              end
+            end
+
+            context 'when the target project is not part of the fork network of start_project' do
+              let(:unrelated_project) { create(:project, :public, :repository, creator: guest) }
+              let(:url) { api("/projects/#{unrelated_project.id}/repository/commits", guest) }
+
+              before do
+                valid_c_params[:start_branch] = 'master'
+                valid_c_params[:branch] = new_branch_name
+                valid_c_params[:start_project] = public_project.id
+              end
+
+              it 'returns a 403' do
+                workhorse_body_upload(url, valid_c_params)
+
+                expect(response).to have_gitlab_http_status(:forbidden)
+              end
+            end
+          end
+
+          context 'when posting to a forked project the user does not have write access' do
+            let(:forked_project) { fork_project(public_project, user, namespace: user.namespace, repository: true) }
+            let(:url) { api("/projects/#{forked_project.id}/repository/commits", guest) }
+
+            before do
+              valid_c_params[:start_branch] = 'master'
+              valid_c_params[:branch] = new_branch_name
+              valid_c_params[:start_project] = public_project.id
+            end
+
+            it 'returns a 403' do
+              workhorse_body_upload(url, valid_c_params)
+
+              expect(response).to have_gitlab_http_status(:forbidden)
+            end
+          end
+        end
+
+        context 'when start_project is the same as the current project' do
+          before do
+            valid_c_params[:start_project] = project.id
+            valid_c_params[:start_branch] = 'master'
+            valid_c_params[:branch] = "#{new_branch_name}-same-project"
+          end
+
+          it 'allows the commit and returns a 201', :sidekiq_might_not_need_inline do
+            expect_request_with_status(201) { workhorse_body_upload(url, valid_c_params) }
+              .to change { last_commit_id(project, valid_c_params[:branch]) }
+              .and not_change { last_commit_id(project, valid_c_params[:start_branch]) }
+          end
+        end
+
+        context 'when start_sha is provided' do
+          let(:start_sha) { project.repository.commit.parent.sha }
+
+          before do
+            valid_c_params[:start_sha] = start_sha
+            valid_c_params.delete(:start_branch)
+          end
+
+          it 'returns a 400 if start_branch is also provided' do
+            valid_c_params[:start_branch] = 'master'
+            workhorse_body_upload(url, valid_c_params)
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to include('start_branch, start_sha are mutually exclusive')
+          end
+
+          it 'returns a 400 if branch already exists' do
+            valid_c_params[:branch] = 'master'
+            workhorse_body_upload(url, valid_c_params)
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to eq("A branch called 'master' already exists. Switch to that branch in order to make changes")
+          end
+
+          it 'returns a 400 if start_sha does not exist' do
+            valid_c_params[:start_sha] = '1' * 40
+            workhorse_body_upload(url, valid_c_params)
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to eq("Cannot find start_sha '#{valid_c_params[:start_sha]}'")
+          end
+
+          it 'returns a 400 if start_sha is not a full SHA' do
+            valid_c_params[:start_sha] = start_sha.slice(0, 7)
+            workhorse_body_upload(url, valid_c_params)
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to eq("Invalid start_sha '#{valid_c_params[:start_sha]}'")
+          end
+
+          it 'uses the start_sha as parent commit and returns a 201' do
+            expect_request_with_status(201) { workhorse_body_upload(url, valid_c_params) }
+              .to change { last_commit_id(project, valid_c_params[:branch]) }
+              .and not_change { last_commit_id(project, 'master') }
+
+            last_commit = project.repository.find_branch(valid_c_params[:branch]).dereferenced_target
+            expect(last_commit.parent_id).to eq(start_sha)
+          end
+
+          context 'when force is set to true and branch already exists' do
+            before do
+              valid_c_params[:force] = true
+              valid_c_params[:branch] = 'master'
+            end
+
+            it 'uses the start_sha as parent commit and returns a 201' do
+              expect_request_with_status(201) { workhorse_body_upload(url, valid_c_params) }
+                .to change { last_commit_id(project, valid_c_params[:branch]) }
+
+              last_commit = project.repository.find_branch(valid_c_params[:branch]).dereferenced_target
+              expect(last_commit.parent_id).to eq(start_sha)
+            end
+          end
+        end
+      end
+
+      context 'when authenticated with a token that has the ai_workflows scope' do
+        let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+        let!(:url) { api("/projects/#{project_id}/repository/commits", user, oauth_access_token: oauth_token) }
+        let(:params) { valid_c_params }
+
+        it_behaves_like 'successfully creates the commit'
+      end
+
+      context 'rate limiting for large commit content' do
+        context 'when file size is above threshold' do
+          before do
+            stub_const('Repositories::CommitsUploader::MAX_RATE_LIMITED_REQUEST_SIZE', 1.byte)
+          end
+
+          it 'applies rate limiting' do
+            allow_next_instance_of(described_class) do |controller|
+              expect(controller).to receive(:check_rate_limit!).with(:user_large_commit_request, scope: { user: user })
+            end
+
+            workhorse_body_upload(url, valid_c_params)
+          end
+        end
+
+        it 'does not apply rate limiting when file size is below threshold' do
+          allow_next_instance_of(described_class) do |controller|
+            expect(controller).not_to receive(:check_rate_limit!)
+          end
+
+          workhorse_body_upload(url, valid_c_params)
+        end
+      end
+
+      context 'with empty content' do
+        let(:create_content) { '' }
+        let(:params) { valid_c_params }
+
+        it_behaves_like 'successfully creates the commit'
+      end
+
+      context 'with content encoding' do
+        it 'defaults to text' do
+          expect(::Files::MultiService).to receive(:new).with(
+            anything, anything, a_hash_including(actions: array_including(hash_including(encoding: 'text')))
+          )
+
+          workhorse_body_upload(url, valid_c_params)
+        end
+
+        context 'base64 content encoding' do
+          let(:valid_c_params) { super().tap { |p| p[:actions].first[:encoding] = 'base64' } }
+
+          it 'uses base64' do
+            expect(::Files::MultiService).to receive(:new).with(
+              anything, anything, a_hash_including(actions: array_including(hash_including(encoding: 'base64')))
+            )
+
+            workhorse_body_upload(url, valid_c_params)
+          end
+        end
+      end
+    end
+
+    shared_examples 'delete actions' do
+      let(:message) { 'Deleted file' }
+
+      let(:valid_d_params) do
+        {
+          branch: 'markdown',
+          commit_message: message,
+          actions: [
+            {
+              action: 'delete',
+              file_path: file_to_delete
+            }
+          ]
+        }
+      end
+
+      it 'an existing file in project repo' do
+        workhorse_body_upload(url, valid_d_params)
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['title']).to eq(message)
+      end
+
+      it 'returns a 400 bad request if file does not exist' do
+        workhorse_body_upload(url, valid_d_params)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    shared_examples 'move actions' do
+      let(:message) { 'Moved file' }
+      let(:invalid_m_params) do
+        {
+          branch: 'feature',
+          commit_message: message,
+          actions: [
+            {
+              action: 'move',
+              file_path: 'CHANGELOG',
+              previous_path: 'VERSION',
+              content: '6.7.0.pre'
+            }
+          ]
+        }
+      end
+
+      let(:valid_m_params) do
+        {
+          branch: 'feature',
+          commit_message: message,
+          actions: [
+            {
+              action: 'move',
+              file_path: file_path,
+              previous_path: previous_path,
+              content: '6.7.0.pre'
+            }
+          ]
+        }
+      end
+
+      it 'an existing file in project repo' do
+        workhorse_body_upload(url, valid_m_params)
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['title']).to eq(message)
+      end
+
+      it 'returns a 400 bad request if file does not exist' do
+        workhorse_body_upload(url, invalid_m_params)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    shared_examples 'update actions' do
+      let(:message) { 'Updated file' }
+      let(:content) { 'puts 8' }
+
+      let(:invalid_u_params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'update',
+              file_path: 'foo/bar.baz',
+              content: content
+            }
+          ]
+        }
+      end
+
+      let(:valid_u_params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'update',
+              file_path: 'files/ruby/popen.rb',
+              content: content
+            }
+          ]
+        }
+      end
+
+      it 'an existing file in project repo' do
+        workhorse_body_upload(url, valid_u_params)
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['title']).to eq(message)
+      end
+
+      it 'returns a 400 bad request if file does not exist' do
+        workhorse_body_upload(url, invalid_u_params)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      context 'with empty content' do
+        let(:content) { nil }
+
+        it 'creates the commit' do
+          workhorse_body_upload(url, valid_u_params)
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['title']).to eq(message)
+        end
+      end
+    end
+
+    shared_examples 'multiple operations' do
+      let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+      let(:message) { 'Multiple actions' }
+      let(:invalid_mo_params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'create',
+              file_path: 'files/ruby/popen.rb',
+              content: 'puts 8'
+            },
+            {
+              action: 'delete',
+              file_path: 'doc/api/projects.md'
+            },
+            {
+              action: 'move',
+              file_path: 'CHANGELOG',
+              previous_path: 'VERSION',
+              content: '6.7.0.pre'
+            },
+            {
+              action: 'update',
+              file_path: 'foo/bar.baz',
+              content: 'puts 8'
+            },
+            {
+              action: 'chmod',
+              file_path: 'files/ruby/popen.rb',
+              execute_filemode: true
+            }
+          ]
+        }
+      end
+
+      let(:valid_mo_params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'create',
+              file_path: 'foo/bar/baz.txt',
+              content: 'puts 8'
+            },
+            {
+              action: 'delete',
+              file_path: 'Gemfile.zip'
+            },
+            {
+              action: 'move',
+              file_path: 'VERSION.txt',
+              previous_path: 'VERSION',
+              content: '6.7.0.pre'
+            },
+            {
+              action: 'update',
+              file_path: 'files/ruby/popen.rb',
+              content: 'puts 8'
+            },
+            {
+              action: 'chmod',
+              file_path: 'files/ruby/popen.rb',
+              execute_filemode: true
+            }
+          ]
+        }
+      end
+
+      it 'is committed as one in project repo and includes stats' do
+        workhorse_body_upload(url, valid_mo_params)
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['title']).to eq(message)
+        expect(json_response).to include 'stats'
+      end
+
+      it "doesn't include the commit stats when stats is false" do
+        workhorse_body_upload(url, valid_mo_params.merge(stats: false))
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response).not_to include 'stats'
+      end
+
+      it 'return a 400 bad request if there are any issues' do
+        workhorse_body_upload(url, invalid_mo_params)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    shared_examples 'chmod actions' do
+      let(:message) { 'Chmod +x file' }
+      let(:file_path) { 'files/ruby/popen.rb' }
+      let(:execute_filemode) { true }
+      let(:params) do
+        {
+          branch: 'master',
+          commit_message: message,
+          actions: [
+            {
+              action: 'chmod',
+              file_path: file_path,
+              execute_filemode: execute_filemode
+            }
+          ]
+        }
+      end
+
+      it 'responds with success' do
+        workhorse_body_upload(url, params)
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['title']).to eq(message)
+      end
+
+      context 'when execute_filemode is false' do
+        let(:execute_filemode) { false }
+
+        it 'responds with success' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['title']).to eq(message)
+        end
+      end
+
+      context "when the file doesn't exists" do
+        let(:file_path) { 'foo/bar.baz' }
+
+        it "responds with 400" do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq("A file with this name doesn't exist")
+        end
+      end
+    end
+
+    shared_examples 'committing into a fork as a maintainer' do
+      include_context 'merge request allowing collaboration'
+
+      let(:project_id) { forked_project.id }
+
+      def push_params(branch_name)
+        {
+          branch: branch_name,
+          commit_message: 'Hello world',
+          actions: [
+            {
+              action: 'create',
+              file_path: 'foo/bar/baz.txt',
+              content: 'puts 8'
+            }
+          ]
+        }
+      end
+
+      it 'allows pushing to the source branch of the merge request', :sidekiq_might_not_need_inline do
+        workhorse_body_upload(url, push_params('feature'))
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+
+      it 'denies pushing to another branch' do
+        workhorse_body_upload(url, push_params('other-branch'))
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    shared_examples 'does not filter content type in logs' do |content_type|
+      let(:params) do
+        {
+          branch: 'master',
+          commit_message: 'hello world',
+          actions: [
+            {
+              action: 'create',
+              file_path: 'foo/bar/baz.txt',
+              content: 'puts 8'
+            }
+          ]
+        }
+      end
+
+      it 'does not filter content-type in logs' do
+        expect(::API::API::LOGGER).to receive(:info).with(
+          hash_including(params: hash_including("Content-Type" => content_type))
+        )
+
+        workhorse_body_upload(url, params)
+      end
+    end
+
+    context 'with json encoding' do
+      it_behaves_like 'param validations'
+      it_behaves_like 'update actions'
+      it_behaves_like 'multiple operations'
+      it_behaves_like 'chmod actions'
+      it_behaves_like 'committing into a fork as a maintainer'
+      it_behaves_like 'does not filter content type in logs', 'application/json'
+
+      it 'returns a 400 bad request with invalid json' do
+        perform_workhorse_json_body_upload(url, 'not valid json {')
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      context 'for create actions' do
+        let(:new_branch_name) { 'json-patch' }
+
+        it_behaves_like 'create actions'
+      end
+
+      context 'for delete actions' do
+        let(:file_to_delete) { 'CONTRIBUTING.md' }
+
+        it_behaves_like 'delete actions'
+      end
+
+      context 'for move actions' do
+        let(:file_path) { 'VERSION.txt' }
+        let(:previous_path) { 'VERSION' }
+
+        it_behaves_like 'move actions'
+      end
+
+      context 'when the declared file size is below the actual file size' do
+        it 'rate limits based on the actual file size' do
+          body = params.to_json
+          stub_const('Repositories::CommitsUploader::MAX_RATE_LIMITED_REQUEST_SIZE', body.bytesize - 1)
+
+          allow_next_instance_of(described_class) do |controller|
+            expect(controller).to receive(:check_rate_limit!).with(:user_large_commit_request, scope: { user: user })
+          end
+
+          perform_workhorse_json_body_upload(url, body, params: { 'file.size': 1 })
+        end
+      end
+
+      context 'when the local file is not present' do
+        it 'returns a bad request' do
+          perform_workhorse_json_body_upload(url, params.to_json, params: { 'file.path': '' })
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    context 'with multipart form encoding' do
+      let(:body_encoding) { :multipart_form }
+
+      it_behaves_like 'param validations'
+      it_behaves_like 'update actions'
+      it_behaves_like 'multiple operations'
+      it_behaves_like 'chmod actions'
+      it_behaves_like 'committing into a fork as a maintainer'
+      it_behaves_like 'does not filter content type in logs', 'multipart/form-data; boundary=XXX'
+
+      context 'for create actions' do
+        let(:new_branch_name) { 'multipart-form-patch' }
+
+        it_behaves_like 'create actions'
+      end
+
+      context 'for delete actions' do
+        let(:file_to_delete) { 'MAINTENANCE.md' }
+
+        it_behaves_like 'delete actions'
+      end
+
+      context 'for move actions' do
+        let(:file_path) { 'PROCESS.txt' }
+        let(:previous_path) { 'PROCESS.md' }
+
+        it_behaves_like 'move actions'
+      end
+
+      context 'with a file upload' do
+        let(:file) do
+          Tempfile.new('name').tap do |f|
+            f.write('file content')
+          end
+        end
+
+        let(:params) { super().merge(actions: [{ action: 'create', file_path: '/test.rb', content: file }]) }
+
+        it 'returns bad request' do
+          workhorse_body_upload(url, params)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          msg = "400 Bad request - This endpoint does not support form encoded file uploads"
+          expect(json_response['message']).to eq(msg)
+        end
+      end
+    end
+
+    context 'with form encoding' do
+      let(:body_encoding) { :form }
+
+      it_behaves_like 'param validations'
+      it_behaves_like 'update actions'
+      it_behaves_like 'multiple operations'
+      it_behaves_like 'chmod actions'
+      it_behaves_like 'committing into a fork as a maintainer'
+
+      context 'for create actions' do
+        let(:new_branch_name) { 'form-patch' }
+
+        it_behaves_like 'create actions'
+      end
+
+      context 'for delete actions' do
+        let(:file_to_delete) { 'README.md' }
+
+        it_behaves_like 'delete actions'
+      end
+
+      context 'for move actions' do
+        let(:file_path) { 'Gemfile_2.zip' }
+        let(:previous_path) { 'Gemfile.zip' }
+
+        it_behaves_like 'move actions'
+      end
+
+      context 'with an invalid form encoding' do
+        context 'with a query limit error' do
+          it 'returns bad request' do
+            allow(Rack::Utils).to receive(:parse_nested_query).and_call_original
+            expect(Rack::Utils).to receive(:parse_nested_query).with("").and_raise(Rack::QueryParser::QueryLimitError)
+
+            workhorse_body_upload(url, {})
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to include('Invalid form data exceeded query limit')
+          end
+        end
+
+        context 'with a parameter type error' do
+          it 'returns bad request' do
+            allow(Rack::Utils).to receive(:parse_nested_query).and_call_original
+            expect(Rack::Utils).to receive(:parse_nested_query).with("").and_raise(Rack::QueryParser::ParameterTypeError)
+
+            workhorse_body_upload(url, {})
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to include('Invalid parameter type')
+          end
+        end
+
+        context 'with a invalid parameter error' do
+          it 'returns bad request' do
+            allow(Rack::Utils).to receive(:parse_nested_query).and_call_original
+            expect(Rack::Utils).to receive(:parse_nested_query).with("").and_raise(Rack::QueryParser::InvalidParameterError)
+
+            workhorse_body_upload(url, {})
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']).to include('Invalid parameter')
+          end
+        end
+      end
+    end
+
+    context 'with an invalid encoding' do
+      it 'returns bad request' do
+        perform_workhorse_json_body_upload(url, "", params: { 'Content-Type': 'application/octet-stream' })
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to include('Unsupported Content-Type: application/octet-stream')
+      end
+    end
+
+    context 'when Workhorse did not rewrite the file param (route-matching bypass)' do
+      let(:leaked_file) { Tempfile.new('leaked-commit-payload') }
+
+      subject(:request) do
+        post url, params: { file: '', 'file.path' => leaked_file.path }, headers: workhorse_headers
+      end
+
+      before do
+        leaked_file.write(
+          {
+            branch: 'master', commit_message: 'leaked',
+            actions: [{ action: 'create', file_path: "leaked-#{SecureRandom.hex}.rb", content: 'x' }]
+          }.to_json
+        )
+        leaked_file.close
+      end
+
+      after do
+        leaked_file.unlink
+      end
+
+      it 'does not read the attacker-supplied file.path param', :aggregate_failures do
+        expect { request }.not_to change { project.repository.commit_count }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(response.body).not_to include('leaked')
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_commit do
+      let(:url) { "/projects/#{project_id}/repository/commits" }
+      let(:boundary_object) { project }
+
+      let(:granular_commit_params) do
+        {
+          branch: 'master',
+          commit_message: 'Created via granular PAT',
+          actions: [
+            {
+              action: 'create',
+              file_path: "files/test/granular-#{SecureRandom.hex(4)}.rb",
+              content: 'puts 8'
+            }
+          ]
+        }
+      end
+
+      let(:request) do
+        workhorse_body_upload(
+          api("/projects/#{project_id}/repository/commits", personal_access_token: pat),
+          granular_commit_params
+        )
+      end
+
+      before do
+        project.add_developer(user)
+      end
+    end
+
+    context 'for arbitrary local file read (security issue #627748)' do
+      let_it_be(:public_project) { create(:project, :public, :repository) }
+
+      let(:canary) { "SECRET-CANARY-627748-%%%\n" }
+      let(:unsigned_upload_url) { api("/projects/#{public_project.id}/repository/commits", nil) }
+      let(:non_existing_file_path) { '/tmp/this-file-does-not-exist-627748' }
+
+      it_behaves_like 'rejects unsigned Workhorse upload metadata', :post
+
+      it 'does not leak file contents in error messages', :aggregate_failures do
+        authed_url = api("/projects/#{project_id}/repository/commits", user)
+
+        perform_workhorse_json_body_upload(
+          authed_url,
+          "invalid %-encoding #{canary}",
+          params: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        )
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(response.body).not_to include('SECRET-CANARY-627748')
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/commits/:sha/refs' do
+    let_it_be(:project) { create(:project, :public, :repository) }
+
+    let(:tag) { project.repository.find_tag('v1.1.0') }
+    let(:commit_id) { tag.dereferenced_target.id }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/refs" }
+
+    context 'when ref does not exist' do
+      let(:commit_id) { 'unknown' }
+
+      it_behaves_like '404 response' do
+        let(:request) { get api(route, current_user) }
+        let(:message) { '404 Commit Not Found' }
+      end
+    end
+
+    context 'when repository is disabled' do
+      let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+
+      include_context 'disabled repository'
+
+      it_behaves_like '404 response' do
+        let(:request) { get api(route, current_user) }
+      end
+    end
+
+    context 'for a valid commit' do
+      it 'returns all refs with no scope' do
+        get api(route, current_user), params: { per_page: 100 }
+
+        refs = project.repository.branch_names_contains(commit_id).map { |name| ['branch', name] }
+        refs.concat(project.repository.tag_names_contains(commit_id).map { |name| ['tag', name] })
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_limited_pagination_headers
         expect(json_response).to be_an Array
-        expect(json_response.first['id']).to eq(project.repository.commit.id)
+        expect(json_response.map { |r| [r['type'], r['name']] }.compact).to eq(refs)
+      end
+
+      it 'returns all refs' do
+        get api(route, current_user), params: { type: 'all', per_page: 100 }
+
+        refs = project.repository.branch_names_contains(commit_id).map { |name| ['branch', name] }
+        refs.concat(project.repository.tag_names_contains(commit_id).map { |name| ['tag', name] })
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.map { |r| [r['type'], r['name']] }.compact).to eq(refs)
+      end
+
+      it 'returns the branch refs' do
+        get api(route, current_user), params: { type: 'branch', per_page: 100 }
+
+        refs = project.repository.branch_names_contains(commit_id).map { |name| ['branch', name] }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.map { |r| [r['type'], r['name']] }.compact).to eq(refs)
+      end
+
+      it 'returns the tag refs' do
+        get api(route, current_user), params: { type: 'tag', per_page: 100 }
+
+        refs = project.repository.tag_names_contains(commit_id).map { |name| ['tag', name] }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.map { |r| [r['type'], r['name']] }.compact).to eq(refs)
+      end
+
+      it 'applies per_page limit to Gitaly calls' do
+        expect_next_instance_of(Gitlab::Repositories::ContainingCommitFinder, project.repository, commit_id, limit: 51, type: 'all') do |finder|
+          expect(finder).to receive(:execute).and_call_original
+        end
+
+        get api(route, current_user), params: { type: 'all', per_page: 50 }
+        expect(response).to have_gitlab_http_status(:ok)
+
+        expect(response).to include_limited_pagination_headers
+        expect(response.headers).not_to include('X-Total', 'X-Total-Pages')
+        expected_page_number = 2
+        expect(response).to include_offset_url_params_in_next_link(expected_page_number)
+      end
+
+      context 'when second page is requested' do
+        it 'fetches enough records to display the second page' do
+          expect_next_instance_of(Gitlab::Repositories::ContainingCommitFinder, project.repository, commit_id, limit: 101, type: 'all') do |finder|
+            expect(finder).to receive(:execute).and_call_original
+          end
+
+          get api(route, current_user), params: { type: 'all', per_page: 50, page: 2 }
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        it 'returns correct response headers for last page' do
+          expect_next_instance_of(Gitlab::Repositories::ContainingCommitFinder, project.repository, commit_id, limit: 101, type: 'all') do |finder|
+            expect(finder).to receive(:execute).and_call_original
+          end
+
+          get api(route, current_user), params: { type: 'all', per_page: 50, page: 2 }
+          expect(response).to have_gitlab_http_status(:ok)
+
+          expect(response.headers).not_to include('X-Total', 'X-Total-Pages')
+          expect(response.headers['Link']).not_to include('rel="next"')
+          expect(response.headers['Link']).to include('rel="prev"')
+          expect(response.headers['x-next-page']).to eq('')
+          expect(response.headers['x-prev-page']).to include('1')
+        end
       end
     end
 
-    context "unauthorized user" do
-      it "should not return project commits" do
-        get api("/projects/#{project.id}/repository/commits")
-        expect(response.status).to eq(401)
+    it_behaves_like 'authorizing granular token permissions', :read_commit_ref do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_repositories,
+      allow_public_access_for_enabled_project_features: [:repository] do
+      let(:request) do
+        get api(route), params: { job_token: target_job.token }
       end
     end
   end
 
-  describe "GET /projects:id/repository/commits/:sha" do
-    context "authorized user" do
-      it "should return a commit by sha" do
-        get api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}", user)
-        expect(response.status).to eq(200)
-        expect(json_response['id']).to eq(project.repository.commit.id)
-        expect(json_response['title']).to eq(project.repository.commit.title)
-      end
+  describe 'GET /projects/:id/repository/commits/:sha' do
+    let(:commit) { project.repository.commit }
+    let(:commit_id) { commit.id }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}" }
 
-      it "should return a 404 error if not found" do
-        get api("/projects/#{project.id}/repository/commits/invalid_sha", user)
-        expect(response.status).to eq(404)
+    it_behaves_like 'enforcing job token policies', :read_repositories,
+      allow_public_access_for_enabled_project_features: [:repository] do
+      let(:request) do
+        get api(route), params: { job_token: target_job.token }
       end
     end
 
-    context "unauthorized user" do
-      it "should not return the selected commit" do
-        get api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}")
-        expect(response.status).to eq(401)
+    shared_examples_for 'ref commit' do
+      it 'returns the ref last commit' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/commit/detail')
+        expect(json_response['id']).to eq(commit.id)
+        expect(json_response['short_id']).to eq(commit.short_id)
+        expect(json_response['title']).to eq(commit.full_title)
+        expect(json_response['message']).to eq(commit.safe_message)
+        expect(json_response['author_name']).to eq(commit.author_name)
+        expect(json_response['author_email']).to eq(commit.author_email)
+        expect(json_response['authored_date']).to eq(commit.authored_date.iso8601(3))
+        expect(json_response['committer_name']).to eq(commit.committer_name)
+        expect(json_response['committer_email']).to eq(commit.committer_email)
+        expect(json_response['committed_date']).to eq(commit.committed_date.iso8601(3))
+        expect(json_response['parent_ids']).to eq(commit.parent_ids)
+        expect(json_response['stats']['additions']).to eq(commit.stats.additions)
+        expect(json_response['stats']['deletions']).to eq(commit.stats.deletions)
+        expect(json_response['stats']['total']).to eq(commit.stats.total)
+        expect(json_response['status']).to be_nil
+        expect(json_response['last_pipeline']).to be_nil
+      end
+
+      context 'when ref does not exist' do
+        let(:commit_id) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+          let(:message) { '404 Commit Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+    end
+
+    shared_examples_for 'ref with pipeline' do
+      let!(:pipeline) do
+        create(:ci_pipeline, project: project, status: :created, source: :push, ref: 'master', sha: commit.sha, protected: false)
+      end
+
+      it 'includes status as "created" and a last_pipeline object' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/commit/detail')
+        expect(json_response['status']).to eq('created')
+        expect(json_response['last_pipeline']['id']).to eq(pipeline.id)
+        expect(json_response['last_pipeline']['ref']).to eq(pipeline.ref)
+        expect(json_response['last_pipeline']['sha']).to eq(pipeline.sha)
+        expect(json_response['last_pipeline']['status']).to eq(pipeline.status)
+      end
+
+      context 'when pipeline succeeds' do
+        before do
+          pipeline.update!(status: 'success')
+        end
+
+        it 'includes a "success" status' do
+          get api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/commit/detail')
+          expect(json_response['status']).to eq('success')
+        end
+      end
+    end
+
+    shared_examples_for 'ref with unaccessible pipeline' do
+      let(:pipeline) do
+        create(:ci_pipeline,
+          project: project,
+          status: :created,
+          source: :push,
+          ref: 'master',
+          sha: commit.sha,
+          protected: false)
+      end
+
+      it 'does not include last_pipeline' do
+        get api(route, current_user)
+
+        expect(response).to match_response_schema('public_api/v4/commit/detail')
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['last_pipeline']).to be_nil
+      end
+    end
+
+    context 'when stat param' do
+      let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}" }
+
+      it 'is not present return stats by default' do
+        get api(route, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to include 'stats'
+      end
+
+      it "is false it does not include stats" do
+        get api(route, user), params: { stats: false }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).not_to include 'stats'
+      end
+
+      it "is true it includes stats" do
+        get api(route, user), params: { stats: true }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to include 'stats'
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let_it_be_with_reload(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'ref commit'
+      it_behaves_like 'ref with pipeline'
+
+      context 'with private builds' do
+        before do
+          project.project_feature.update!(builds_access_level: ProjectFeature::PRIVATE)
+        end
+
+        it_behaves_like 'ref with unaccessible pipeline'
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      it_behaves_like 'ref commit'
+      it_behaves_like 'ref with pipeline'
+
+      context 'when builds are disabled' do
+        before do
+          project
+            .reload
+            .project_feature
+            .update!(builds_access_level: ProjectFeature::DISABLED)
+        end
+
+        it_behaves_like 'ref with unaccessible pipeline'
+      end
+
+      context 'when branch contains a dot' do
+        let(:commit) { project.repository.commit(branch_with_dot.name) }
+        let(:commit_id) { branch_with_dot.name }
+
+        it_behaves_like 'ref commit'
+      end
+
+      context 'when branch contains a slash' do
+        let(:commit_id) { branch_with_slash.name }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when branch contains an escaped slash' do
+        let(:commit) { project.repository.commit(branch_with_slash.name) }
+        let(:commit_id) { CGI.escape(branch_with_slash.name) }
+
+        it_behaves_like 'ref commit'
+      end
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'ref commit'
+
+        context 'when branch contains a dot' do
+          let(:commit) { project.repository.commit(branch_with_dot.name) }
+          let(:commit_id) { branch_with_dot.name }
+
+          it_behaves_like 'ref commit'
+        end
+      end
+    end
+
+    context 'when authenticated', 'as a developer' do
+      let(:current_user) { developer }
+
+      it_behaves_like 'ref commit'
+      it_behaves_like 'ref with pipeline'
+
+      context 'with private builds' do
+        before do
+          project.reload.project_feature.update!(builds_access_level: ProjectFeature::PRIVATE)
+        end
+
+        it_behaves_like 'ref with pipeline'
+      end
+    end
+
+    context 'when authenticated', 'as a guest' do
+      let(:current_user) { guest }
+
+      it_behaves_like '403 response' do
+        let(:request) { get api(route, guest) }
+        let(:message) { '403 Forbidden' }
+      end
+    end
+
+    context 'when authenticated', 'as a non member' do
+      let(:current_user) { create(:user) }
+
+      it_behaves_like '403 response' do
+        let(:request) { get api(route, guest) }
+        let(:message) { '403 Forbidden' }
+      end
+    end
+
+    context 'when authenticated', 'as non_member and project is public' do
+      let_it_be(:current_user) { create(:user) }
+      let_it_be_with_reload(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'ref with pipeline'
+
+      context 'with private builds' do
+        before do
+          project.project_feature.update!(builds_access_level: ProjectFeature::PRIVATE)
+        end
+
+        it_behaves_like 'ref with unaccessible pipeline'
+      end
+    end
+
+    context 'when authenticated', 'with a token that has the ai_workflows scope' do
+      let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+      let(:commit) { project.repository.commit }
+      let(:commit_id) { commit.id }
+
+      before do
+        get api(route, oauth_access_token: oauth_token)
+      end
+
+      it 'is successful' do
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['id']).to eq(commit.id)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_commit do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
       end
     end
   end
 
-  describe "GET /projects:id/repository/commits/:sha/diff" do
-    context "authorized user" do
-      before { project.team << [user2, :reporter] }
+  describe 'GET /projects/:id/repository/commits/:sha/diff' do
+    let(:commit) { project.repository.commit }
+    let(:commit_id) { commit.id }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/diff" }
 
-      it "should return the diff of the selected commit" do
-        get api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}/diff", user)
-        expect(response.status).to eq(200)
+    shared_examples_for 'ref diff' do
+      it 'returns the diff of the selected commit' do
+        get api(route, current_user)
 
-        expect(json_response).to be_an Array
-        expect(json_response.length).to be >= 1
-        expect(json_response.first.keys).to include "diff"
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_limited_pagination_headers
+        expect(json_response.size).to be >= 1
+        expect(json_response.first.keys).to include 'diff'
       end
 
-      it "should return a 404 error if invalid commit" do
-        get api("/projects/#{project.id}/repository/commits/invalid_sha/diff", user)
-        expect(response.status).to eq(404)
+      context 'when hard limits are lower than the number of files' do
+        before do
+          allow(Commit).to receive(:max_diff_options).and_return(max_files: 1)
+        end
+
+        it 'respects the limit' do
+          get api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to include_limited_pagination_headers
+          expect(json_response.size).to be <= 1
+        end
+      end
+
+      context 'when ref does not exist' do
+        let(:commit_id) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+          let(:message) { '404 Commit Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
       end
     end
 
-    context "unauthorized user" do
-      it "should not return the diff of the selected commit" do
-        get api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}/diff")
-        expect(response.status).to eq(401)
+    context 'when unauthenticated', 'and project is public' do
+      let_it_be(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'ref diff'
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      it_behaves_like 'ref diff'
+
+      context 'when branch contains a dot' do
+        let(:commit_id) { branch_with_dot.name }
+
+        it_behaves_like 'ref diff'
+      end
+
+      context 'when branch contains a slash' do
+        let(:commit_id) { branch_with_slash.name }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when branch contains an escaped slash' do
+        let(:commit_id) { CGI.escape(branch_with_slash.name) }
+
+        it_behaves_like 'ref diff'
+      end
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'ref diff'
+
+        context 'when branch contains a dot' do
+          let(:commit_id) { branch_with_dot.name }
+
+          it_behaves_like 'ref diff'
+        end
+      end
+
+      context 'when binary diff are treated as text' do
+        let(:commit_id) { TestEnv::BRANCH_SHA['add-pdf-text-binary'] }
+
+        it_behaves_like 'ref diff'
+      end
+
+      context 'when unidiff format is requested' do
+        it 'returns the diff in Unified format' do
+          get api(route, current_user), params: { unidiff: true }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to include_limited_pagination_headers
+          expect(json_response.dig(0, 'diff')).to eq(commit.diffs.diffs.first.unidiff)
+        end
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_commit_diff do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
       end
     end
   end
 
-  describe 'GET /projects:id/repository/commits/:sha/comments' do
-    context 'authorized user' do
-      it 'should return merge_request comments' do
-        get api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}/comments", user)
-        expect(response.status).to eq(200)
-        expect(json_response).to be_an Array
-        expect(json_response.length).to eq(1)
-        expect(json_response.first['note']).to eq('a comment on a commit')
-        expect(json_response.first['author']['id']).to eq(user.id)
+  describe 'GET /projects/:id/repository/commits/:sha/comments' do
+    let(:commit) { project.repository.commit }
+    let(:commit_id) { commit.id }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/comments" }
+
+    shared_examples_for 'ref comments' do
+      context 'when ref exists' do
+        before do
+          create(:note_on_commit, author: user, project: project, commit_id: commit.id, note: 'a comment on a commit')
+          create(:note_on_commit, author: user, project: project, commit_id: commit.id, note: 'another comment on a commit')
+        end
+
+        it 'returns the diff of the selected commit' do
+          get api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/commit_notes')
+          expect(json_response.size).to eq(2)
+          expect(json_response.first['note']).to eq('a comment on a commit')
+          expect(json_response.first['author']['id']).to eq(user.id)
+        end
       end
 
-      it 'should return a 404 error if merge_request_id not found' do
-        get api("/projects/#{project.id}/repository/commits/1234ab/comments", user)
-        expect(response.status).to eq(404)
+      context 'when ref does not exist' do
+        let(:commit_id) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+          let(:message) { '404 Commit Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
       end
     end
 
-    context 'unauthorized user' do
-      it 'should not return the diff of the selected commit' do
-        get api("/projects/#{project.id}/repository/commits/1234ab/comments")
-        expect(response.status).to eq(401)
+    it_behaves_like 'authorizing granular token permissions', :read_commit_comment do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let_it_be(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'ref comments'
+
+      context 'when a system note references a confidential issue' do
+        let_it_be(:confidential_issue) { create(:issue, :confidential, project: project) }
+
+        it 'filters out the system note', :aggregate_failures do
+          create(:note_on_commit, :system, project: project, commit_id: commit.id,
+            note: "mentioned in issue #{confidential_issue.to_reference(project)}")
+
+          get api(route)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_empty
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      it_behaves_like 'ref comments'
+
+      context 'when branch contains a dot' do
+        let(:commit) { project.repository.commit(branch_with_dot.name) }
+        let(:commit_id) { branch_with_dot.name }
+
+        it_behaves_like 'ref comments'
+      end
+
+      context 'when branch contains a slash' do
+        let(:commit) { project.repository.commit(branch_with_slash.name) }
+        let(:commit_id) { branch_with_slash.name }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when branch contains an escaped slash' do
+        let(:commit) { project.repository.commit(branch_with_slash.name) }
+        let(:commit_id) { CGI.escape(branch_with_slash.name) }
+
+        it_behaves_like 'ref comments'
+      end
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'ref comments'
+
+        context 'when branch contains a dot' do
+          let(:commit) { project.repository.commit(branch_with_dot.name) }
+          let(:commit_id) { branch_with_dot.name }
+
+          it_behaves_like 'ref comments'
+        end
+      end
+
+      context 'multiple notes' do
+        let!(:note) { create(:diff_note_on_commit, project: project) }
+        let(:commit) { note.commit }
+        let(:commit_id) { note.commit_id }
+
+        it 'are returned without N + 1' do
+          get api(route, current_user) # warm up the cache
+
+          control = ActiveRecord::QueryRecorder.new { get api(route, current_user) }
+
+          create(:diff_note_on_commit, project: project, author: create(:user))
+
+          result = ActiveRecord::QueryRecorder.new { get api(route, current_user) }
+
+          notes_query = /SELECT "note_diff_files".*/
+          authors_query = /SELECT "users".*/
+
+          aggregate_failures "preloads authors and notes_diff_files" do
+            expect(result.occurrences_starting_with(authors_query).count)
+              .to eq(control.occurrences_starting_with(authors_query).count)
+            expect(result.occurrences_starting_with(notes_query).count)
+              .to eq(control.occurrences_starting_with(notes_query).count)
+          end
+        end
+      end
+    end
+
+    context 'when the commit is present on two projects' do
+      let(:forked_project) { create(:project, :repository, creator: guest, namespace: guest.namespace) }
+      let!(:forked_project_note) { create(:note_on_commit, author: guest, project: forked_project, commit_id: forked_project.repository.commit.id, note: 'a comment on a commit for fork') }
+      let(:project_id) { forked_project.id }
+      let(:commit_id) { forked_project.repository.commit.id }
+
+      it 'returns the comments for the target project' do
+        get api(route, guest)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/commit_notes')
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['note']).to eq('a comment on a commit for fork')
+        expect(json_response.first['author']['id']).to eq(guest.id)
+      end
+    end
+
+    context 'with cross-reference system note from a private project' do
+      let_it_be(:public_project) { create(:project, :public, :repository) }
+      let_it_be(:private_project) { create(:project, :private) }
+      let_it_be(:private_issue) { create(:issue, project: private_project) }
+      let(:commit) { public_project.repository.commit }
+
+      let(:project_id) { public_project.id }
+      let(:commit_id) { commit.id }
+
+      before do
+        create(:note_on_commit, :system,
+          project: public_project,
+          commit_id: commit.id,
+          note: "mentioned in #{private_issue.to_reference(public_project)}")
+      end
+
+      it 'excludes the system note for unauthenticated users' do
+        get api(route)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_empty
+      end
+
+      it 'excludes the system note for users without access to the private project' do
+        other_user = create(:user)
+        get api(route, other_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_empty
+      end
+
+      context 'when the user has access to the private project' do
+        before do
+          private_project.add_guest(user)
+        end
+
+        it 'includes the system note' do
+          get api(route, user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.size).to eq(1)
+          expect(json_response.first['note']).to include(private_issue.to_reference(public_project))
+        end
+      end
+
+      context 'when there is also a regular comment' do
+        before do
+          create(:note_on_commit,
+            project: public_project,
+            commit_id: commit.id,
+            note: "a normal comment")
+        end
+
+        it 'returns only the regular comment and excludes the private cross-reference' do
+          get api(route)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.size).to eq(1)
+          expect(json_response.first['note']).to eq("a normal comment")
+        end
       end
     end
   end
 
-  describe 'POST /projects:id/repository/commits/:sha/comments' do
-    context 'authorized user' do
-      it 'should return comment' do
-        post api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}/comments", user), note: 'My comment'
-        expect(response.status).to eq(201)
+  describe 'GET /projects/:id/repository/commits/:sha/sequence' do
+    let(:current_user) { user }
+    let(:commit) { project.repository.commit }
+    let(:commit_id) { commit.id }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/sequence" }
+
+    it_behaves_like 'authorizing granular token permissions', :read_commit_sequence do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
+      end
+    end
+
+    context 'when commit does not exist' do
+      let(:commit_id) { 'unknown' }
+
+      it_behaves_like '404 response' do
+        let(:request) { get api(route, current_user) }
+        let(:message) { '404 Commit Not Found' }
+      end
+    end
+
+    context 'when commit exists' do
+      it 'returns correct JSON' do
+        expected_count = project.repository.count_commits(revisions: commit_id, first_parent: false)
+
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['count']).to eq(expected_count)
+      end
+    end
+
+    context 'when commit exists first-parent' do
+      let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/sequence?first_parent=true" }
+
+      it 'returns correct JSON' do
+        expected_count = project.repository.count_commits(revisions: commit_id, first_parent: true)
+
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['count']).to eq(expected_count)
+      end
+    end
+  end
+
+  describe 'POST :id/repository/commits/:sha/cherry_pick' do
+    let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+    let(:commit) { project.commit('7d3b0f7cff5f37573aea97cebfd5692ea1689924') }
+    let(:commit_id) { commit.id }
+    let(:branch) { 'master' }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/cherry_pick" }
+
+    shared_examples_for 'ref cherry-pick' do
+      context 'when ref exists' do
+        it 'cherry-picks the ref commit' do
+          post api(route, current_user), params: { branch: branch }
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(response).to match_response_schema('public_api/v4/commit/basic')
+          expect(json_response['title']).to eq(commit.full_title)
+          expect(json_response['message']).to eq(
+            "#{commit.cherry_pick_message(user)}\n\nCo-authored-by: #{commit.author_name} <#{commit.author_email}>"
+          )
+          expect(json_response['author_name']).to eq(user.name)
+          expect(json_response['committer_name']).to eq(user.name)
+        end
+
+        it 'supports dry-run without applying changes' do
+          head = project.commit(branch)
+
+          post api(route, current_user), params: { branch: branch, dry_run: true }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to eq("dry_run" => "success")
+          expect(project.commit(branch)).to eq(head)
+        end
+
+        it 'supports the use of a custom commit message' do
+          post api(route, user), params: { branch: branch, message: 'foo' }
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response["message"]).to eq('foo')
+        end
+      end
+
+      context 'when repository is disabled' do
+        let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { branch: 'master' } }
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let_it_be(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like '401 response' do
+        let(:request) { post api(route), params: { branch: 'master' } }
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { post api(route), params: { branch: 'master' } }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as an owner' do
+      let(:current_user) { user }
+
+      it_behaves_like 'ref cherry-pick'
+
+      context 'when ref does not exist' do
+        let(:commit_id) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { branch: 'master' } }
+          let(:message) { '404 Commit Not Found' }
+        end
+      end
+
+      context 'when branch is missing' do
+        it_behaves_like '400 response' do
+          let(:request) { post api(route, current_user) }
+        end
+      end
+
+      context 'when branch is empty' do
+        ['', ' '].each do |branch|
+          it_behaves_like '400 response' do
+            let(:request) { post api(route, current_user), params: { branch: branch } }
+          end
+        end
+      end
+
+      context 'when branch does not exist' do
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { branch: 'foo' } }
+          let(:message) { '404 Branch Not Found' }
+        end
+      end
+
+      context 'when commit is already included in the target branch' do
+        it_behaves_like '400 response' do
+          let(:request) { post api(route, current_user), params: { branch: 'markdown' } }
+        end
+
+        it 'includes an error_code in the response' do
+          post api(route, current_user), params: { branch: 'markdown' }
+
+          expect(json_response['error_code']).to eq 'empty'
+        end
+
+        it 'includes an additional dry_run error field when enabled' do
+          post api(route, current_user), params: { branch: 'markdown', dry_run: true }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error_code']).to eq 'empty'
+          expect(json_response['dry_run']).to eq 'error'
+        end
+      end
+
+      context 'when ref contains a dot' do
+        let(:commit) { project.repository.commit(branch_with_dot.name) }
+        let(:commit_id) { branch_with_dot.name }
+
+        it_behaves_like 'ref cherry-pick'
+      end
+
+      context 'when ref contains a slash' do
+        let(:commit_id) { branch_with_slash.name }
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { branch: 'master' } }
+        end
+      end
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'ref cherry-pick'
+
+        context 'when ref contains a dot' do
+          let(:commit) { project.repository.commit(branch_with_dot.name) }
+          let(:commit_id) { branch_with_dot.name }
+
+          it_behaves_like 'ref cherry-pick'
+        end
+      end
+    end
+
+    context 'when authenticated', 'as a developer' do
+      let(:current_user) { guest }
+
+      before do
+        project.add_developer(guest)
+      end
+
+      context 'when branch is protected' do
+        before do
+          create(:protected_branch, project: project, name: 'feature')
+        end
+
+        it 'returns 400 if you are not allowed to push to the target branch' do
+          post api(route, current_user), params: { branch: 'feature' }
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to match(/You are not allowed to push into this branch/)
+        end
+      end
+    end
+
+    context 'when cherry picking to a fork as a maintainer' do
+      include_context 'merge request allowing collaboration'
+
+      let(:project_id) { forked_project.id }
+
+      it 'allows access from a maintainer that to the source branch', :sidekiq_might_not_need_inline do
+        post api(route, user), params: { branch: 'feature' }
+
+        expect(response).to have_gitlab_http_status(:created)
+      end
+
+      it 'denies cherry picking to another branch' do
+        post api(route, user), params: { branch: 'master' }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :cherry_pick_commit do
+      let(:boundary_object) { project }
+      let(:request) do
+        post api(route, personal_access_token: pat), params: { branch: branch }
+      end
+    end
+  end
+
+  describe 'POST :id/repository/commits/:sha/revert' do
+    let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+    let(:commit_id) { 'b83d6e391c22777fca1ed3012fce84f633d7fed0' }
+    let(:commit)    { project.commit(commit_id) }
+    let(:branch)    { 'master' }
+    let(:route)     { "/projects/#{project_id}/repository/commits/#{commit_id}/revert" }
+
+    it_behaves_like 'authorizing granular token permissions', :revert_commit do
+      let(:boundary_object) { project }
+      let(:request) do
+        post api(route, personal_access_token: pat), params: { branch: branch }
+      end
+    end
+
+    shared_examples_for 'ref revert' do
+      context 'when ref exists' do
+        it 'reverts the ref commit' do
+          post api(route, current_user), params: { branch: branch }
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(response).to match_response_schema('public_api/v4/commit/basic')
+
+          expect(json_response['message']).to eq(commit.revert_message(user))
+          expect(json_response['author_name']).to eq(user.name)
+          expect(json_response['committer_name']).to eq(user.name)
+          expect(json_response['parent_ids']).to contain_exactly(commit_id)
+        end
+
+        it 'supports dry-run without applying changes' do
+          head = project.commit(branch)
+
+          post api(route, current_user), params: { branch: branch, dry_run: true }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to eq("dry_run" => "success")
+          expect(project.commit(branch)).to eq(head)
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { branch: branch } }
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let_it_be(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like '401 response' do
+        let(:request) { post api(route), params: { branch: branch } }
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { post api(route), params: { branch: branch } }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as an owner' do
+      let(:current_user) { user }
+
+      it_behaves_like 'ref revert'
+
+      context 'when ref does not exist' do
+        let(:commit_id) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { branch: branch } }
+          let(:message) { '404 Commit Not Found' }
+        end
+      end
+
+      context 'when branch is missing' do
+        it_behaves_like '400 response' do
+          let(:request) { post api(route, current_user) }
+        end
+      end
+
+      context 'when branch is empty' do
+        ['', ' '].each do |branch|
+          it_behaves_like '400 response' do
+            let(:request) { post api(route, current_user), params: { branch: branch } }
+          end
+        end
+      end
+
+      context 'when branch does not exist' do
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { branch: 'foo' } }
+          let(:message) { '404 Branch Not Found' }
+        end
+      end
+
+      context 'when ref contains a dot' do
+        let(:commit_id) { branch_with_dot.name }
+        let(:commit) { project.repository.commit(commit_id) }
+
+        it_behaves_like '400 response' do
+          let(:request) { post api(route, current_user) }
+        end
+      end
+
+      context 'when commit is already reverted in the target branch' do
+        it 'includes an error_code in the response' do
+          # First one actually reverts
+          post api(route, current_user), params: { branch: 'markdown' }
+
+          # Second one is redundant and should be empty
+          post api(route, current_user), params: { branch: 'markdown' }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error_code']).to eq 'empty'
+        end
+
+        it 'includes an additional dry_run error field when enabled' do
+          # First one actually reverts
+          post api(route, current_user), params: { branch: 'markdown' }
+
+          # Second one is redundant and should be empty
+          post api(route, current_user), params: { branch: 'markdown', dry_run: true }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error_code']).to eq 'empty'
+          expect(json_response['dry_run']).to eq 'error'
+        end
+      end
+    end
+
+    context 'when authenticated', 'as a developer' do
+      let(:current_user) { user }
+
+      before do
+        project.add_developer(user)
+      end
+
+      context 'when branch is protected' do
+        before do
+          create(:protected_branch, project: project, name: 'feature')
+        end
+
+        it 'returns 400 if you are not allowed to push to the target branch' do
+          post api(route, current_user), params: { branch: 'feature' }
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to match(/You are not allowed to push into this branch/)
+        end
+      end
+    end
+  end
+
+  describe 'POST /projects/:id/repository/commits/:sha/comments' do
+    let(:project) { create(:project, :repository, :private) }
+    let(:commit) { project.repository.commit }
+    let(:commit_id) { commit.id }
+    let(:note) { 'My comment' }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/comments" }
+
+    shared_examples_for 'ref new comment' do
+      context 'when ref exists' do
+        it 'creates the comment' do
+          post api(route, current_user), params: { note: note }
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(response).to match_response_schema('public_api/v4/commit_note')
+          expect(json_response['note']).to eq('My comment')
+          expect(json_response['path']).to be_nil
+          expect(json_response['line']).to be_nil
+          expect(json_response['line_type']).to be_nil
+        end
+      end
+
+      context 'when repository is disabled' do
+        let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { note: 'My comment' } }
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let_it_be(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like '400 response' do
+        let(:request) { post api(route), params: { note: 'My comment' } }
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { post api(route), params: { note: 'My comment' } }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as an owner' do
+      let(:current_user) { user }
+
+      it_behaves_like 'ref new comment'
+
+      it 'returns the inline comment' do
+        path = project.repository.commit.raw_diffs.first.new_path
+        post api(route, current_user), params: { note: 'My comment', path: path, line: 1, line_type: 'new' }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(response).to match_response_schema('public_api/v4/commit_note')
         expect(json_response['note']).to eq('My comment')
-        expect(json_response['path']).to be_nil
-        expect(json_response['line']).to be_nil
-        expect(json_response['line_type']).to be_nil
-      end
-
-      it 'should return the inline comment' do
-        post api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}/comments", user), note: 'My comment', path: project.repository.commit.diffs.first.new_path, line: 7, line_type: 'new'
-        expect(response.status).to eq(201)
-        expect(json_response['note']).to eq('My comment')
-        expect(json_response['path']).to eq(project.repository.commit.diffs.first.new_path)
-        expect(json_response['line']).to eq(7)
+        expect(json_response['path']).to eq(path)
+        expect(json_response['line']).to eq(1)
         expect(json_response['line_type']).to eq('new')
       end
 
-      it 'should return 400 if note is missing' do
-        post api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}/comments", user)
-        expect(response.status).to eq(400)
+      it 'creates a tag with /tag quick action' do
+        path = project.repository.commit.raw_diffs.first.new_path
+        post api(route, current_user), params: { note: '/tag quick-action-tag-test some commit message', path: path, line: 1, line_type: 'new' }
+
+        expect(response).to have_gitlab_http_status(:accepted)
+        expect(json_response['commands_changes']).to be_present
+        expect(json_response.dig('commands_changes', 'tag_message')).to eq('some commit message')
+        expect(json_response.dig('commands_changes', 'tag_name')).to eq('quick-action-tag-test')
+        expect(json_response['summary']).to eq(['Tagged this commit to quick-action-tag-test with "some commit message".'])
       end
 
-      it 'should return 404 if note is attached to non existent commit' do
-        post api("/projects/#{project.id}/repository/commits/1234ab/comments", user), note: 'My comment'
-        expect(response.status).to eq(404)
+      it 'correctly adds a note for the "old" line type' do
+        commit    = project.repository.commit("markdown")
+        commit_id = commit.id
+        route     = "/projects/#{project_id}/repository/commits/#{commit_id}/comments"
+
+        post api(route, current_user), params: {
+          note: 'My comment',
+          path: commit.raw_diffs.first.old_path,
+          line: 4,
+          line_type: 'old'
+        }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(response).to match_response_schema('public_api/v4/commit_note')
+        expect(json_response['note']).to eq('My comment')
+        expect(json_response['path']).to eq(commit.raw_diffs.first.old_path)
+        expect(json_response['line']).to eq(4)
+        expect(json_response['line_type']).to eq('old')
+      end
+
+      context 'when ref does not exist' do
+        let(:commit_id) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { note: 'My comment' } }
+          let(:message) { '404 Commit Not Found' }
+        end
+      end
+
+      it 'returns 400 if note is missing' do
+        post api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      context 'when ref contains a dot' do
+        let(:commit_id) { branch_with_dot.name }
+
+        it_behaves_like 'ref new comment'
+      end
+
+      context 'when ref contains a slash' do
+        let(:commit_id) { branch_with_slash.name }
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user), params: { note: 'My comment' } }
+        end
+      end
+
+      context 'when ref contains an escaped slash' do
+        let(:commit_id) { CGI.escape(branch_with_slash.name) }
+
+        it_behaves_like 'ref new comment'
+      end
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'ref new comment'
+
+        context 'when ref contains a dot' do
+          let(:commit_id) { branch_with_dot.name }
+
+          it_behaves_like 'ref new comment'
+        end
       end
     end
 
-    context 'unauthorized user' do
-      it 'should not return the diff of the selected commit' do
-        post api("/projects/#{project.id}/repository/commits/#{project.repository.commit.id}/comments")
-        expect(response.status).to eq(401)
+    it_behaves_like 'authorizing granular token permissions', :create_commit_comment do
+      let(:boundary_object) { project }
+      let(:request) do
+        post api(route, personal_access_token: pat), params: { note: note }
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/commits/:sha/merge_requests' do
+    let_it_be(:project) { create(:project, :repository, :private) }
+
+    let(:merged_mr) { create(:merge_request, source_project: project, source_branch: 'master', target_branch: 'feature') }
+    let(:commit) { merged_mr.merge_request_diff.commits.last }
+
+    it_behaves_like 'enforcing job token policies', :read_repositories,
+      allow_public_access_for_enabled_project_features: [:repository, :merge_requests] do
+      let(:request) do
+        get api("/projects/#{project.id}/repository/commits/#{commit.id}/merge_requests"),
+          params: { job_token: target_job.token }
+      end
+    end
+
+    def perform_request(user)
+      get api("/projects/#{project.id}/repository/commits/#{commit.id}/merge_requests", user)
+    end
+
+    it 'returns the correct merge request' do
+      perform_request(user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_limited_pagination_headers
+      expect(json_response.length).to eq(1)
+      expect(json_response[0]['id']).to eq(merged_mr.id)
+    end
+
+    it 'returns 403 for an unauthorized user' do
+      project.add_guest(user)
+
+      perform_request(user)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+
+    it 'responds 404 when the commit does not exist' do
+      get api("/projects/#{project.id}/repository/commits/a7d26f00c35b/merge_requests", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context 'public project' do
+      let_it_be(:project) { create(:project, :repository, :public, :merge_requests_private) }
+
+      let(:non_member) { create(:user) }
+
+      it 'responds 403 when only members are allowed to read merge requests' do
+        perform_request(non_member)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it 'returns multiple merge requests without N + 1' do
+      perform_request(user)
+
+      control = ActiveRecord::QueryRecorder.new { perform_request(user) }
+
+      # 5 queries are intermittently seen to update user_preferences, and select scan_result_policy_violations
+      query_buffer = 5
+
+      # Make query_buffer + 1 new merge requests to ensure an n + 1 introduces more than query_buffer queries
+      (query_buffer + 1).times do
+        create(:merge_request, :closed, source_project: project, source_branch: 'master', target_branch: 'feature')
+      end
+
+      expect { perform_request(user) }.not_to exceed_query_limit(control).with_threshold(query_buffer)
+    end
+
+    context 'merge-requests filtered by state' do
+      it 'returns the correct opened merge-request' do
+        get api("/projects/#{project.id}/repository/commits/#{commit.id}/merge_requests?state=opened", user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_limited_pagination_headers
+        expect(json_response.length).to eq(1)
+        expect(json_response[0]['id']).to eq(merged_mr.id)
+      end
+
+      it 'does not found closed merge-request' do
+        get api("/projects/#{project.id}/repository/commits/#{commit.id}/merge_requests?state=closed", user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_limited_pagination_headers
+        expect(json_response.length).to eq(0)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_commit_merge_request do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api("/projects/#{project.id}/repository/commits/#{commit.id}/merge_requests", personal_access_token: pat)
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/commits/:sha/signature' do
+    let_it_be(:project) { create(:project, :repository, :public) }
+    let(:project_id) { project.id }
+    let(:commit_id) { project.repository.commit.id }
+    let(:route) { "/projects/#{project_id}/repository/commits/#{commit_id}/signature" }
+
+    context 'when commit does not exist' do
+      let(:commit_id) { 'unknown' }
+
+      it_behaves_like '404 response' do
+        let(:request) { get api(route, current_user) }
+        let(:message) { '404 Commit Not Found' }
+      end
+    end
+
+    context 'unsigned commit' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route, current_user) }
+        let(:message) { '404 Signature Not Found' }
+      end
+    end
+
+    context 'gpg signed commit' do
+      let!(:commit) { project.commit(GpgHelpers::SIGNED_COMMIT_SHA) }
+      let(:commit_id) { commit.id }
+
+      it 'returns correct JSON' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['signature_type']).to eq('PGP')
+        expect(json_response['gpg_key_id']).to eq(commit.signature.gpg_key_id)
+        expect(json_response['gpg_key_subkey_id']).to eq(commit.signature.gpg_key_subkey_id)
+        expect(json_response['gpg_key_primary_keyid']).to eq(commit.signature.gpg_key_primary_keyid)
+        expect(json_response['verification_status']).to eq(commit.signature.verification_status)
+      end
+    end
+
+    context 'x509 signed commit' do
+      let(:commit_id) { '189a6c924013fc3fe40d6f1ec1dc20214183bc97' }
+      let!(:commit) { project.commit(commit_id) }
+
+      it 'returns correct JSON' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['signature_type']).to eq('X509')
+        expect(json_response['verification_status']).to eq(commit.signature.verification_status)
+        expect(json_response['x509_certificate']['id']).to eq(commit.signature.x509_certificate.id)
+        expect(json_response['x509_certificate']['subject']).to eq(commit.signature.x509_certificate.subject)
+        expect(json_response['x509_certificate']['subject_key_identifier']).to eq(commit.signature.x509_certificate.subject_key_identifier)
+        expect(json_response['x509_certificate']['email']).to eq(commit.signature.x509_certificate.email)
+        expect(json_response['x509_certificate']['serial_number']).to eq(commit.signature.x509_certificate.serial_number)
+        expect(json_response['x509_certificate']['certificate_status']).to eq(commit.signature.x509_certificate.certificate_status)
+        expect(json_response['x509_certificate']['x509_issuer']['id']).to eq(commit.signature.x509_certificate.x509_issuer.id)
+        expect(json_response['x509_certificate']['x509_issuer']['subject']).to eq(commit.signature.x509_certificate.x509_issuer.subject)
+        expect(json_response['x509_certificate']['x509_issuer']['subject_key_identifier']).to eq(commit.signature.x509_certificate.x509_issuer.subject_key_identifier)
+        expect(json_response['x509_certificate']['x509_issuer']['crl_url']).to eq(commit.signature.x509_certificate.x509_issuer.crl_url)
+        expect(json_response['commit_source']).to eq('gitaly')
+      end
+    end
+
+    context 'with ssh signed commit' do
+      let_it_be_with_reload(:project) { create(:project, :repository, :public, :in_group) }
+
+      let(:commit_id) { '7b5160f9bb23a3d58a0accdbe89da13b96b1ece9' }
+      let!(:commit) { project.commit(commit_id) }
+
+      context 'when key belonging to author does not exist' do
+        it 'returns data without key' do
+          get api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['signature_type']).to eq('SSH')
+          expect(json_response['verification_status']).to eq(commit.signature.verification_status)
+          expect(json_response['key']).to be_nil
+          expect(json_response['commit_source']).to eq('gitaly')
+        end
+      end
+
+      context 'when key belonging to author exists' do
+        let(:user) { create(:user, email: commit.committer_email) }
+        let!(:key) { create(:key, user: user, key: extract_public_key_from_commit(commit), expires_at: 2.days.from_now) }
+
+        def extract_public_key_from_commit(commit)
+          ssh_commit = Gitlab::Ssh::Commit.new(commit)
+          signature_data = ::SSHData::Signature.parse_pem(ssh_commit.signature_text)
+          signature_data.public_key.openssh
+        end
+
+        it 'returns data including key' do
+          get api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['signature_type']).to eq('SSH')
+          expect(json_response['verification_status']).to eq(commit.signature.verification_status)
+          expect(json_response['key']['id']).to eq(key.id)
+          expect(json_response['key']['title']).to eq(key.title)
+          expect(json_response['key']['key']).to eq(key.publishable_key)
+          expect(Time.parse(json_response['key']['created_at'])).to be_like_time(key.created_at)
+          expect(Time.parse(json_response['key']['expires_at'])).to be_like_time(key.expires_at)
+          expect(json_response['commit_source']).to eq('gitaly')
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_commit_signature do
+        let(:boundary_object) { project }
+        let(:user) { create(:user, email: commit.committer_email) }
+        let(:request) do
+          get api(route, personal_access_token: pat)
+        end
       end
     end
   end

@@ -1,0 +1,191 @@
+---
+stage: AI Clients
+group: Developer Clients
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Connect and use GitLab Duo in Neovim.
+title: Install and set up the GitLab plugin for Neovim
+---
+
+{{< details >}}
+
+- Tier: [Free](../../subscriptions/gitlab_credits.md#for-the-free-tier), Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Prerequisites:
+
+- For both GitLab.com and GitLab Self-Managed, you have GitLab version 16.1 or later.
+  While many extension features might work with earlier versions, they are unsupported.
+  - The GitLab Duo Code Suggestions feature requires GitLab version 16.8 or later.
+- You have [Neovim](https://neovim.io/) version 0.9 or later.
+- You have [NPM](https://docs.npmjs.com/downloading-and-installing-node-js-and-npm/) installed. NPM is required for the Code Suggestions install.
+- For Code Suggestions, you meet the [additional prerequisites](../../user/project/repository/code_suggestions/set_up.md#prerequisites).
+
+To install the extension, follow the installation steps for your chosen plugin manager:
+
+{{< tabs >}}
+
+{{< tab title="No plugin manager" >}}
+
+Run this command to include this project with
+[`packadd`](https://neovim.io/doc/user/repeat.html#%3Apackadd) on startup:
+
+```shell
+git clone https://gitlab.com/gitlab-org/editor-extensions/gitlab.vim.git ~/.local/share/nvim/site/pack/gitlab/start/gitlab.vim
+```
+
+{{< /tab >}}
+
+{{< tab title="`lazy.nvim`" >}}
+
+Add this plugin to your [lazy.nvim](https://github.com/folke/lazy.nvim) configuration:
+
+```lua
+{
+  'https://gitlab.com/gitlab-org/editor-extensions/gitlab.vim.git',
+  -- Activate when a file is created/opened
+  event = { 'BufReadPre', 'BufNewFile' },
+  -- Activate when a supported filetype is open
+  ft = { 'go', 'javascript', 'python', 'ruby' },
+  cond = function()
+    -- Only activate if token is present in environment variable.
+    -- Remove this line to use the interactive workflow.
+    return vim.env.GITLAB_TOKEN ~= nil and vim.env.GITLAB_TOKEN ~= ''
+  end,
+  opts = {
+    statusline = {
+      -- Hook into the built-in statusline to indicate the status
+      -- of the GitLab Duo Code Suggestions integration
+      enabled = true,
+    },
+  },
+}
+```
+
+{{< /tab >}}
+
+{{< tab title="`packer.nvim`" >}}
+
+Declare the plugin in your [packer.nvim](https://github.com/wbthomason/packer.nvim) configuration:
+
+```lua
+use {
+  "git@gitlab.com:gitlab-org/editor-extensions/gitlab.vim.git",
+}
+```
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+## Authenticate with GitLab
+
+To connect this extension to your GitLab account, configure your environment variables:
+
+| Environment variable | Default              | Description |
+|----------------------|----------------------|-------------|
+| `GITLAB_TOKEN`       | not applicable       | The default GitLab personal access token to use for authenticated requests. If provided, skips interactive authentication. |
+| `GITLAB_VIM_URL`     | `https://gitlab.com` | Override the GitLab instance to connect with. Defaults to `https://gitlab.com`. |
+
+A full list of environment variables is available in the extension's help text at
+[`doc/gitlab.txt`](https://gitlab.com/gitlab-org/editor-extensions/gitlab.vim/-/blob/main/doc/gitlab.txt).
+
+## Configure the extension
+
+Code Suggestions is on by default but you need to configure additional settings to start using it.
+
+To configure this extension:
+
+1. Configure your desired file types. For example, because this plugin supports Ruby, it adds a `FileType ruby` auto-command.
+   To configure this behavior for more file types, add more file types to the `code_suggestions.auto_filetypes` setup option:
+
+   ```lua
+   require('gitlab').setup({
+     statusline = {
+       enabled = false
+     },
+     code_suggestions = {
+       -- For the full list of default languages, see the 'auto_filetypes' array in
+       -- https://gitlab.com/gitlab-org/editor-extensions/gitlab.vim/-/blob/main/lua/gitlab/config/defaults.lua
+       auto_filetypes = { 'ruby', 'javascript' }, -- Default is { 'ruby' }
+       ghost_text = {
+         enabled = false, -- ghost text is an experimental feature
+         toggle_enabled = "<C-h>",
+         accept_suggestion = "<C-l>",
+         clear_suggestions = "<C-k>",
+         stream = true,
+       },
+     }
+   })
+   ```
+
+1. [Configure Omni Completion](#configure-omni-completion) to set up the key mapping to trigger Code Suggestions.
+1. Optional. [Configure `<Plug>` key mappings](#configure-plug-key-mappings).
+1. Optional. Set up helptags using `:helptags ALL` for access to
+   [`:help gitlab.txt`](https://gitlab.com/gitlab-org/editor-extensions/gitlab.vim/-/blob/main/doc/gitlab.txt).
+
+### Configure Omni Completion
+
+To enable [Omni Completion](https://neovim.io/doc/user/insert.html#compl-omni-filetypes)
+with Code Suggestions:
+
+1. Create a [personal access token](../../user/profile/personal_access_tokens.md#create-a-personal-access-token) with the `api` scope.
+1. Add the token to your shell as `GITLAB_TOKEN` environment variable.
+1. Install the Code Suggestions [language server](https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp) by running the `:GitLabCodeSuggestionsInstallLanguageServer` vim command.
+1. Start the Language Server by running the `:GitLabCodeSuggestionsStart` vim command. Optionally, [Configure `<Plug>` key mappings](#configure-plug-key-mappings) to toggle the language server.
+1. Optional. Consider configuring Omni Completion's dialog even for a single suggestion:
+
+   ```lua
+   vim.o.completeopt = 'menu,menuone'
+   ```
+
+When working in a supported file type, open the Omni Completion menu by pressing <kbd>Control</kbd>+<kbd>x</kbd>
+then <kbd>Control</kbd>+<kbd>o</kbd>.
+
+Code Suggestions provides a Language Server Protocol (LSP) server, to support the built-in
+<kbd>Control</kbd>+<kbd>x</kbd>, <kbd>Control</kbd>+<kbd>o</kbd> Omni Completion key mapping:
+
+| Mode     | Key mappings                          | Type      | Description |
+|----------|---------------------------------------|-----------|-------------|
+| `INSERT` | <kbd>Control</kbd>+<kbd>x</kbd>, <kbd>Control</kbd>+<kbd>o</kbd> | Built-in | Requests completions from GitLab Duo Code Suggestions through the language server. |
+| `NORMAL` | `<Plug>(GitLabToggleCodeSuggestions)` | `<Plug>`  | Toggles Code Suggestions on or off for the current buffer. Requires [configuration](#configure-plug-key-mappings). |
+
+### Turn Code Suggestions on or off
+
+Code Suggestions is on by default.
+
+To turn Code Suggestions on or off:
+
+1. Go to the [Neovim `defaults.lua` settings file](https://gitlab.com/gitlab-org/editor-extensions/gitlab.vim/-/blob/main/lua/gitlab/config/defaults.lua).
+1. Under `code_suggestions`, set the `enabled` flag to `true` or `false`.
+
+   For example, to turn suggestions off:
+
+   ```lua
+   code_suggestions = {
+   ...
+    enabled = false,
+   ```
+
+To turn Code Suggestions on or off for a single buffer rather than globally,
+[configure `<Plug>` key mappings](#configure-plug-key-mappings).
+
+## Configure `<Plug>` key mappings
+
+For convenience, this plugin provides `<Plug>` key mappings. To use the `<Plug>(GitLab...)` key mapping,
+you must include your own key mapping that references it:
+
+```lua
+-- Toggle Code Suggestions on/off with Control-G in normal mode:
+vim.keymap.set('n', '<C-g>', '<Plug>(GitLabToggleCodeSuggestions)')
+```
+
+## Uninstall the extension
+
+To uninstall the extension, remove this plugin and any language server binaries with these commands:
+
+```shell
+rm -r ~/.local/share/nvim/site/pack/gitlab/start/gitlab.vim
+rm ~/.local/share/nvim/gitlab-code-suggestions-language-server-*
+```

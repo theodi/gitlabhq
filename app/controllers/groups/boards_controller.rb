@@ -1,0 +1,33 @@
+# frozen_string_literal: true
+
+class Groups::BoardsController < Groups::ApplicationController
+  include BoardsActions
+  include RecordUserLastActivity
+  include Gitlab::Utils::StrongMemoize
+
+  before_action do
+    push_force_frontend_feature_flag(:work_item_tasks_on_boards,
+      !!group&.work_item_tasks_on_boards_feature_flag_enabled?)
+  end
+
+  feature_category :planning_views
+  urgency :low
+
+  private
+
+  def board_finder
+    Boards::BoardsFinder.new(parent, current_user, board_id: params.permit(:id)[:id])
+  end
+  strong_memoize_attr :board_finder
+
+  def board_create_service
+    Boards::CreateService.new(parent, current_user)
+  end
+  strong_memoize_attr :board_create_service
+
+  def authorize_read_board!
+    access_denied! unless can?(current_user, :read_issue_board, group)
+  end
+end
+
+Groups::BoardsController.prepend_mod

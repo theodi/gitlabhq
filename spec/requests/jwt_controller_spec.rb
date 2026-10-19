@@ -1,0 +1,928 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe JwtController, :aggregate_failures, feature_category: :system_access do
+  include_context 'parsed logs'
+
+  let(:service) { double(execute: {}) }
+  let(:service_class) { Auth::ContainerRegistryAuthenticationService }
+  let(:service_name) { 'container_registry' }
+  let(:parameters) { { service: service_name } }
+
+  before do
+    allow(service_class).to receive(:new).and_return(service)
+  end
+
+  shared_examples 'user logging' do
+    it 'logs username and ID' do
+      subject
+
+      expect(log_data['username']).to eq(user.username)
+      expect(log_data['user_id']).to eq(user.id)
+      expect(log_data['meta.user']).to eq(user.username)
+    end
+  end
+
+  shared_examples 'rejecting a blocked user' do
+    context 'with blocked user' do
+      let(:user) { create(:user, :blocked) }
+
+      it_behaves_like 'with invalid credentials'
+    end
+
+    context 'with blocked auth bot_users' do
+      [:project_bot, :service_account].each do |user_type|
+        context "when #{user_type}" do
+          let(:user) { create(:user, user_type, :blocked) }
+
+          it_behaves_like 'with invalid credentials'
+        end
+      end
+    end
+  end
+
+  shared_examples 'a token that expires today' do
+    let(:personal_access_token) { create(:personal_access_token, user: user, scopes: ['api'], expires_at: Date.today) }
+    let(:headers) { { authorization: credentials('personal_access_token', personal_access_token.token) } }
+
+    it 'fails authentication' do
+      expect(::Gitlab::AuthLogger).to receive(:warn).with(
+        hash_including(message: 'JWT authentication failed', http_user: 'personal_access_token')
+      ).and_call_original
+
+      get '/jwt/auth', params: parameters, headers: headers
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+  end
+
+  shared_examples "with invalid credentials" do
+    it "returns a generic error message" do
+      subject
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+      expect(json_response).to eq(
+        {
+          "errors" => [{
+            "code" => "UNAUTHORIZED",
+            "message" => "HTTP Basic: Access denied. If a password was provided for Git authentication, the password was incorrect or you're required to use a token instead of a password. If a token was provided, it was either incorrect, expired, or improperly scoped. See http://www.example.com/help/user/profile/account/two_factor_authentication_troubleshooting.md#error-http-basic-access-denied-if-a-password-was-provided-for-git-authentication-"
+          }]
+        }
+      )
+    end
+  end
+
+  shared_examples 'a Docker v2 JSON error envelope' do |status:, code:, message:|
+    it 'responds with a Docker v2 JSON error envelope' do
+      subject
+
+      expect(response).to have_gitlab_http_status(status)
+      expect(response.media_type).to eq('application/json')
+      expect(json_response).to eq('errors' => [{ 'code' => code, 'message' => message }])
+    end
+  end
+
+  shared_examples 'IAM JWT authentication' do
+    include_context 'with IAM authentication setup'
+
+    let(:iam_jwt_token) do
+      create_iam_access_token(user: user, scopes: iam_scopes, issuer: iam_issuer, private_key: private_key, kid: kid)
+    end
+
+    let(:expected_auth_type) { :oauth }
+
+    subject(:jwt_request) { get '/jwt/auth', params: parameters, headers: headers }
+
+    context 'when IAM service is disabled' do
+      before do
+        allow(Authn::IamAuthService).to receive(:enabled?).and_return(false)
+      end
+
+      it_behaves_like 'returning response status', :unauthorized
+    end
+
+    context 'when IAM service is enabled' do
+      context 'when feature flag is disabled' do
+        before do
+          stub_feature_flags(iam_svc_oauth: false)
+        end
+
+        it_behaves_like 'with invalid credentials'
+      end
+
+      context 'when feature flag is enabled' do
+        before do
+          stub_feature_flags(iam_svc_oauth: user)
+        end
+
+        it 'authenticates successfully' do
+          jwt_request
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        it 'passes the user and correct auth_type to the service' do
+          jwt_request
+
+          expect(service_class).to have_received(:new)
+                                     .with(nil, user, hash_including(auth_type: expected_auth_type))
+        end
+
+        it 'logs username and ID' do
+          jwt_request
+
+          expect(log_data['username']).to eq(user.username)
+          expect(log_data['user_id']).to eq(user.id)
+          expect(log_data['meta.user']).to eq(user.username)
+        end
+
+        it_behaves_like 'rejecting a blocked user'
+
+        context 'with expired token' do
+          let(:iam_jwt_token) do
+            create_iam_access_token(user: user, scopes: iam_scopes, expires_at: 1.hour.ago,
+              issuer: iam_issuer, private_key: private_key, kid: kid)
+          end
+
+          it_behaves_like 'with invalid credentials'
+        end
+
+        context 'when JWKS endpoint times out' do
+          let(:iam_jwt_token) do
+            create_iam_access_token(user: user, scopes: iam_scopes,
+              issuer: iam_issuer, private_key: private_key, kid: 'timeout_kid')
+          end
+
+          before do
+            # Clear JWKS cache to force fetch
+            Rails.cache.delete("iam:jwks:#{iam_issuer}")
+
+            # Simulate timeout when fetching JWKS
+            stub_request(:get, "#{iam_issuer}/.well-known/jwks.json")
+              .to_timeout
+          end
+
+          it 'returns unauthorized status' do
+            jwt_request
+
+            expect(response).to have_gitlab_http_status(:unauthorized)
+          end
+        end
+
+        context 'with malformed JWT' do
+          let(:iam_jwt_token) { 'invalid.jwt.token' }
+
+          it 'returns unauthorized status' do
+            jwt_request
+
+            expect(response).to have_gitlab_http_status(:unauthorized)
+          end
+        end
+
+        context 'with wrong audience claim' do
+          let(:iam_jwt_token) do
+            create_iam_access_token(user: user, scopes: iam_scopes,
+              issuer: iam_issuer, private_key: private_key, kid: kid,
+              aud: 'wrong-audience')
+          end
+
+          it 'returns unauthorized status' do
+            jwt_request
+
+            expect(response).to have_gitlab_http_status(:unauthorized)
+          end
+        end
+
+        context 'when JWKS service is unavailable' do
+          let(:iam_jwt_token) do
+            create_iam_access_token(user: user, scopes: iam_scopes,
+              issuer: iam_issuer, private_key: private_key, kid: 'unavailable_kid')
+          end
+
+          before do
+            Rails.cache.delete("iam:jwks:#{iam_issuer}")
+            stub_request(:get, "#{iam_issuer}/.well-known/jwks.json")
+              .to_return(status: 503, body: 'Service Unavailable')
+          end
+
+          it 'returns unauthorized status' do
+            jwt_request
+
+            expect(response).to have_gitlab_http_status(:unauthorized)
+          end
+        end
+      end
+    end
+  end
+
+  context 'POST /jwt/auth' do
+    it 'returns 404' do
+      post '/jwt/auth'
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+  end
+
+  context 'POST /jwt/auth when in maintenance mode' do
+    before do
+      stub_maintenance_mode_setting(true)
+    end
+
+    it 'returns 404' do
+      post '/jwt/auth'
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+  end
+
+  context 'authenticating against container registry' do
+    context 'existing service' do
+      subject! { get '/jwt/auth', params: parameters }
+
+      it { expect(response).to have_gitlab_http_status(:ok) }
+
+      context 'returning custom http code' do
+        let(:service) { double(execute: { http_status: 505 }) }
+
+        it { expect(response).to have_gitlab_http_status(:http_version_not_supported) }
+      end
+    end
+
+    context 'when the registry is not enabled' do
+      subject { get '/jwt/auth', params: parameters }
+
+      before do
+        allow(service_class).to receive(:new).and_call_original
+        stub_container_registry_config(enabled: false)
+      end
+
+      it_behaves_like 'a Docker v2 JSON error envelope',
+        status: :not_found,
+        code: 'UNAVAILABLE',
+        message: 'registry not enabled'
+    end
+
+    context 'when using authenticated request' do
+      context 'using tokens' do
+        let(:user) { create(:user) }
+        let(:build) { create(:ci_build, :running, user: user) }
+        let(:project) { build.project }
+        let(:headers) { {} }
+
+        context 'using CI token' do
+          let(:headers) { { authorization: credentials('gitlab-ci-token', build.token) } }
+
+          context 'project with enabled CI' do
+            subject! { get '/jwt/auth', params: parameters, headers: headers }
+
+            it { expect(service_class).to have_received(:new).with(project, user, ActionController::Parameters.new(parameters.merge(auth_type: :build)).permit!) }
+
+            it_behaves_like 'user logging'
+          end
+
+          context 'project with disabled CI' do
+            before do
+              project.project_feature.update_attribute(:builds_access_level, ProjectFeature::DISABLED)
+            end
+
+            subject! { get '/jwt/auth', params: parameters, headers: headers }
+
+            it { expect(response).to have_gitlab_http_status(:unauthorized) }
+          end
+        end
+
+        context 'using deploy tokens' do
+          let(:deploy_token) { create(:deploy_token, read_registry: true, projects: [project]) }
+          let(:headers) { { authorization: credentials(deploy_token.username, deploy_token.token) } }
+
+          subject! { get '/jwt/auth', params: parameters, headers: headers }
+
+          it 'authenticates correctly' do
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(service_class).to have_received(:new)
+              .with(
+                nil,
+                nil,
+                ActionController::Parameters.new(parameters.merge(deploy_token: deploy_token, auth_type: :deploy_token)).permit!
+              )
+          end
+
+          it 'does not log a user' do
+            expect(log_data.keys).not_to include(%w[username user_id])
+          end
+        end
+
+        context 'using personal access tokens' do
+          let(:personal_access_token) { create(:personal_access_token, user: user, scopes: ['read_registry']) }
+          let(:headers) { { authorization: credentials('personal_access_token', personal_access_token.token) } }
+
+          before do
+            stub_container_registry_config(enabled: true)
+          end
+
+          subject(:jwt_request) { get '/jwt/auth', params: parameters, headers: headers }
+
+          it 'authenticates correctly' do
+            jwt_request
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(service_class).to have_received(:new)
+              .with(
+                nil,
+                user,
+                ActionController::Parameters.new(parameters.merge(auth_type: :personal_access_token, raw_token: personal_access_token.token)).permit!
+              )
+          end
+
+          it_behaves_like 'rejecting a blocked user'
+          it_behaves_like 'user logging'
+          it_behaves_like 'a token that expires today'
+          it_behaves_like 'updating personal access token last used'
+        end
+      end
+
+      context 'using User login' do
+        let(:user) { create(:user) }
+        let(:headers) { { authorization: credentials(user.username, user.password) } }
+
+        subject(:request_jwt_auth) { get '/jwt/auth', params: parameters, headers: headers }
+
+        it 'initializes the service class with arguments' do
+          request_jwt_auth
+
+          expect(service_class).to have_received(:new).with(nil, user, ActionController::Parameters.new(parameters.merge(auth_type: :gitlab_or_ldap)).permit!)
+        end
+
+        it 'accepts the authorization attempt' do
+          request_jwt_auth
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        it_behaves_like 'rejecting a blocked user'
+
+        context 'when internal auth is disabled' do
+          before do
+            stub_application_setting(password_authentication_enabled_for_git: false)
+          end
+
+          it_behaves_like 'with invalid credentials'
+        end
+
+        context 'when passing a flat array of scopes' do
+          # We use this trick to make rails to generate a query_string:
+          # scope=scope1&scope=scope2
+          # It works because :scope and 'scope' are the same as string, but different objects
+          let(:parameters) do
+            {
+              :service => service_name,
+              :scope => 'scope1',
+              'scope' => 'scope2'
+            }
+          end
+
+          let(:service_parameters) do
+            ActionController::Parameters.new({ service: service_name, scopes: %w[scope1 scope2] }).permit!
+          end
+
+          it 'initializes the service class with arguments' do
+            request_jwt_auth
+
+            expect(service_class).to have_received(:new).with(nil, user, service_parameters.merge(auth_type: :gitlab_or_ldap))
+          end
+
+          it_behaves_like 'user logging'
+        end
+
+        context 'when passing a space-delimited list of scopes' do
+          let(:parameters) do
+            {
+              service: service_name,
+              scope: 'scope1 scope2'
+            }
+          end
+
+          let(:service_parameters) do
+            ActionController::Parameters.new({ service: service_name, scopes: %w[scope1 scope2] }).permit!
+          end
+
+          it 'initializes service class with arguments' do
+            request_jwt_auth
+
+            expect(service_class).to have_received(:new).with(nil, user, service_parameters.merge(auth_type: :gitlab_or_ldap))
+          end
+        end
+
+        context 'when user has 2FA enabled' do
+          let(:user) { create(:user, :two_factor) }
+
+          context 'without personal token' do
+            it_behaves_like 'with invalid credentials'
+          end
+
+          context 'with personal token' do
+            let(:access_token) { create(:personal_access_token, user: user) }
+            let(:headers) { { authorization: credentials(user.username, access_token.token) } }
+
+            it 'accepts the authorization attempt' do
+              request_jwt_auth
+
+              expect(response).to have_gitlab_http_status(:ok)
+            end
+          end
+        end
+
+        context 'when user is enrolled in email-based OTP' do
+          let(:user) { create(:user, email_otp_required_after: 1.second.ago) }
+
+          it 'accepts the authorization attempt' do
+            request_jwt_auth
+
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+
+          context 'when email_otp_enabled application setting is enabled' do
+            before do
+              stub_application_setting(email_otp_enabled: true)
+            end
+
+            context 'without personal token' do
+              it_behaves_like 'with invalid credentials'
+            end
+
+            context 'with personal token' do
+              let(:access_token) { create(:personal_access_token, user: user) }
+              let(:headers) { { authorization: credentials(user.username, access_token.token) } }
+
+              it 'accepts the authorization attempt' do
+                request_jwt_auth
+
+                expect(response).to have_gitlab_http_status(:ok)
+              end
+            end
+          end
+        end
+
+        # Ensuring the valid state of `email_otp_required_after`, by
+        # `set_email_otp_required_after_based_on_restrictions` method, is
+        # tested in depth in spec/models/concerns/users/email_otp_enrollment_spec.rb
+        context 'for ensuring the valid state of `email_otp_required_after`' do
+          context 'when email_otp_required_after is unset despite instance requirement' do
+            let_it_be_with_reload(:user) do
+              create(:user, email_otp_required_after: nil)
+            end
+
+            before do
+              stub_application_setting(require_minimum_email_based_otp_for_users_with_passwords: true)
+            end
+
+            context 'when username and password are provided' do
+              it 'accepts the authorization attempt' do
+                request_jwt_auth
+
+                expect(response).to have_gitlab_http_status(:ok)
+              end
+
+              context 'when email_otp_enabled application setting is enabled' do
+                before do
+                  stub_application_setting(email_otp_enabled: true)
+                end
+
+                it_behaves_like 'with invalid credentials'
+
+                it 'calls set_email_otp_required_after_based_on_restrictions' do
+                  allow_next_instance_of(User) do |instance|
+                    expect(instance).to receive(:set_email_otp_required_after_based_on_restrictions)
+                      .with(save: true).and_call_original
+                  end
+
+                  request_jwt_auth
+
+                  expect(response).to have_gitlab_http_status(:unauthorized)
+                end
+              end
+            end
+
+            context 'with personal token' do
+              let(:access_token) { create(:personal_access_token, user: user) }
+              let(:headers) { { authorization: credentials(user.username, access_token.token) } }
+
+              it 'accepts the authorization attempt' do
+                request_jwt_auth
+
+                expect(response).to have_gitlab_http_status(:ok)
+              end
+            end
+          end
+        end
+
+        it 'does not cause session based checks to be activated' do
+          expect(Gitlab::Session).not_to receive(:with_session)
+
+          request_jwt_auth
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        context 'when the user is admin' do
+          let(:admin) { create(:admin) }
+          let(:access_token) { create(:personal_access_token, user: admin) }
+          let(:headers) { { authorization: credentials(admin.username, access_token.token) } }
+
+          # We are bypassing admin mode for registry operations
+          # since that should not matter for data based operations
+          context 'when admin mode is enabled', :enable_admin_mode do
+            it 'accepts the authorization attempt' do
+              request_jwt_auth
+
+              expect(response).to have_gitlab_http_status(:ok)
+            end
+          end
+
+          context 'when admin mode is disabled' do
+            it 'accepts the authorization attempt' do
+              request_jwt_auth
+
+              expect(response).to have_gitlab_http_status(:ok)
+            end
+          end
+        end
+      end
+
+      context 'when using IAM JWT tokens' do
+        let(:user) { create(:user) }
+        let(:iam_scopes) { %w[api read_registry write_registry] }
+        let(:headers) { { authorization: credentials(user.username, iam_jwt_token) } }
+
+        before do
+          stub_container_registry_config(enabled: true, key: 'spec/fixtures/x509_certificate_pk.key')
+          # We want to test the real service for proper integration coverage
+          allow(Auth::ContainerRegistryAuthenticationService).to receive(:new).and_call_original
+        end
+
+        it_behaves_like 'IAM JWT authentication'
+      end
+
+      context 'using invalid login' do
+        let(:headers) { { authorization: credentials('invalid', 'password') } }
+        let(:subject) { get '/jwt/auth', params: parameters, headers: headers }
+
+        context 'when internal auth is enabled' do
+          it_behaves_like 'with invalid credentials'
+        end
+
+        context 'when internal auth is disabled' do
+          before do
+            stub_application_setting(password_authentication_enabled_for_git: false)
+          end
+
+          it_behaves_like 'with invalid credentials'
+        end
+      end
+    end
+
+    context 'when using unauthenticated request' do
+      it 'accepts the authorization attempt' do
+        get '/jwt/auth', params: parameters
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'allows read access' do
+        expect(service).to receive(:execute).with(
+          authentication_abilities: Gitlab::Auth.read_only_authentication_abilities,
+          personal_access_token: nil
+        )
+
+        get '/jwt/auth', params: parameters
+      end
+    end
+
+    context 'when authenticating with a granular (fine-grained) personal access token' do
+      let_it_be(:user) { create(:user) }
+      let_it_be(:project) { create(:project, :private) }
+      let_it_be(:granular_pat) do
+        create(:granular_pat,
+          user: user,
+          boundary: ::Authz::Boundary.for(project),
+          permissions: [:read_container_repository])
+      end
+
+      let(:headers) { { authorization: credentials('personal_access_token', granular_pat.token) } }
+
+      it 'passes the granular personal access token to the registry service' do
+        expect(service).to receive(:execute).with(
+          authentication_abilities: [],
+          personal_access_token: granular_pat
+        )
+
+        get '/jwt/auth', params: parameters, headers: headers
+      end
+    end
+
+    context 'unknown service' do
+      subject! { get '/jwt/auth', params: { service: 'unknown' } }
+
+      it 'responds with a Docker v2 JSON error envelope instead of an empty body' do
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(response.media_type).to eq('application/json')
+        expect(json_response).to eq(
+          'errors' => [{
+            'code' => 'UNSUPPORTED',
+            'message' => 'The requested authentication service is not supported. Verify the registry token ' \
+              'service is configured correctly.'
+          }]
+        )
+      end
+    end
+
+    context 'when the request is rejected by abuse protections' do
+      let(:login) { 'user' }
+      let(:password) { 'pass' }
+      let(:headers) { { authorization: credentials(login, password) } }
+
+      subject(:request_jwt_auth) { get '/jwt/auth', params: parameters, headers: headers }
+
+      context 'when the IP is blocklisted' do
+        before do
+          allow(Gitlab::Auth).to receive(:find_for_git_client).and_raise(Gitlab::Auth::IpBlocked)
+        end
+
+        it_behaves_like 'a Docker v2 JSON error envelope',
+          status: :forbidden,
+          code: 'DENIED',
+          message: 'Access denied: too many failed authentication attempts from this network. ' \
+            'Try again later or from a different network. ' \
+            'See http://www.example.com/help/user/packages/container_registry/authenticate_with_container_registry.md#error-docker-login-fails-with-an-authentication-error'
+
+        it 'logs the Rack_Attack event with the documented fields and no PII' do
+          expect(Gitlab::AuthLogger).to receive(:error) do |payload|
+            expect(payload.keys).to contain_exactly(:message, :env, :remote_ip, :request_method, :path)
+            expect(payload).to include(message: 'Rack_Attack', env: :blocklist)
+          end
+
+          request_jwt_auth
+        end
+      end
+
+      context 'when IpRateLimiter#banned? raises IpBlocked' do
+        let(:ip_rate_limiter) { instance_double(Gitlab::Auth::IpRateLimiter, banned?: true) }
+
+        before do
+          allow(Gitlab::Auth::IpRateLimiter).to receive(:new).and_return(ip_rate_limiter)
+        end
+
+        it 'responds with a Docker v2 JSON error envelope' do
+          request_jwt_auth
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(response.media_type).to eq('application/json')
+          expect(json_response.dig('errors', 0, 'code')).to eq('DENIED')
+        end
+
+        it 'logs the Rack_Attack event' do
+          expect(Gitlab::AuthLogger).to receive(:error).with(
+            hash_including(message: 'Rack_Attack', env: :blocklist)
+          )
+
+          request_jwt_auth
+        end
+      end
+
+      context 'when too many distinct IPs are used for the account' do
+        let(:user_id) { 1 }
+        let(:source_ip) { '1.2.3.4' }
+        let(:unique_ips_count) { 100 }
+        let(:too_many_ips_error) { Gitlab::Auth::TooManyIps.new(user_id, source_ip, unique_ips_count) }
+
+        before do
+          allow(Gitlab::Auth).to receive(:find_for_git_client).and_raise(too_many_ips_error)
+        end
+
+        it_behaves_like 'a Docker v2 JSON error envelope',
+          status: :forbidden,
+          code: 'DENIED',
+          message: 'Access denied: too many distinct sources for this account. Try again later. ' \
+            'See http://www.example.com/help/user/packages/container_registry/authenticate_with_container_registry.md#error-docker-login-fails-with-an-authentication-error'
+
+        it 'sets the Retry-After header' do
+          request_jwt_auth
+
+          expect(response.headers['Retry-After']).to eq(
+            Gitlab::Auth::UniqueIpsLimiter.config.unique_ips_limit_time_window.to_s
+          )
+        end
+
+        it 'does not emit an additional AuthLogger entry (UniqueIpsLimiter already logs the raise event)' do
+          expect(Gitlab::AuthLogger).not_to receive(:warn)
+          expect(Gitlab::AuthLogger).not_to receive(:error)
+
+          request_jwt_auth
+        end
+      end
+    end
+
+    def credentials(login, password)
+      ActionController::HttpAuthentication::Basic.encode_credentials(login, password)
+    end
+  end
+
+  context 'authenticating against dependency proxy' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:personal_access_token) { create(:personal_access_token, user: user) }
+    let_it_be(:personal_access_token_without_required_scopes) do
+      create(:personal_access_token, user: user, scopes: ['read_user'])
+    end
+
+    let_it_be(:group) { create(:group) }
+    let_it_be(:project) { create(:project, :private, group: group) }
+    let_it_be(:bot_user) { create(:user, :project_bot) }
+    let_it_be_with_reload(:group_access_token) { create(:personal_access_token, :dependency_proxy_scopes, user: bot_user) }
+    let_it_be_with_reload(:group_deploy_token) { create(:deploy_token, :group, :dependency_proxy_scopes) }
+    let_it_be(:gdeploy_token) { create(:group_deploy_token, deploy_token: group_deploy_token, group: group) }
+    let_it_be(:project_deploy_token) { create(:deploy_token, :project, :dependency_proxy_scopes) }
+    let_it_be(:pdeploy_token) { create(:project_deploy_token, deploy_token: project_deploy_token, project: project) }
+    let_it_be(:service_name) { 'dependency_proxy' }
+
+    let(:headers) { { authorization: credentials(credential_user, credential_password) } }
+    let(:params) { { account: credential_user, client_id: 'docker', offline_token: true, service: service_name } }
+
+    before do
+      stub_config(dependency_proxy: { enabled: true })
+    end
+
+    subject { get '/jwt/auth', params: params, headers: headers }
+
+    shared_examples 'with valid credentials' do
+      it 'returns token successfully' do
+        subject
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(json_response['token']).to be_present
+      end
+    end
+
+    shared_examples 'a rejected dependency proxy login' do
+      it_behaves_like 'a Docker v2 JSON error envelope',
+        status: :forbidden,
+        code: 'DENIED',
+        message: 'access forbidden'
+    end
+
+    context 'when the dependency proxy is not enabled' do
+      let(:credential_user) { nil }
+      let(:credential_password) { personal_access_token.token }
+
+      before do
+        stub_config(dependency_proxy: { enabled: false })
+      end
+
+      it_behaves_like 'a Docker v2 JSON error envelope',
+        status: :not_found,
+        code: 'UNAVAILABLE',
+        message: 'dependency proxy not enabled'
+    end
+
+    context 'with personal access token' do
+      let(:credential_user) { nil }
+      let(:credential_password) { personal_access_token.token }
+
+      it_behaves_like 'with valid credentials'
+      it_behaves_like 'a token that expires today'
+
+      context 'without the required scopes' do
+        let(:credential_password) { personal_access_token_without_required_scopes.token }
+
+        it_behaves_like 'a rejected dependency proxy login'
+      end
+    end
+
+    context 'with user credentials token' do
+      let(:credential_user) { user.username }
+      let(:credential_password) { user.password }
+
+      it_behaves_like 'with valid credentials'
+
+      context 'when internal auth is disabled' do
+        before do
+          stub_application_setting(password_authentication_enabled_for_git: false)
+        end
+
+        it_behaves_like 'with invalid credentials'
+      end
+    end
+
+    context 'with group access token' do
+      let(:credential_user) { group_access_token.user.username }
+      let(:credential_password) { group_access_token.token }
+
+      before_all do
+        group.add_guest(bot_user)
+      end
+
+      context 'with the required scopes' do
+        it_behaves_like 'with valid credentials'
+        it_behaves_like 'a token that expires today'
+
+        context 'revoked' do
+          before do
+            group_access_token.update!(revoked: true)
+          end
+
+          it_behaves_like 'returning response status', :unauthorized
+        end
+
+        context 'expired' do
+          before do
+            group_access_token.update!(expires_at: Date.yesterday)
+          end
+
+          it_behaves_like 'returning response status', :unauthorized
+        end
+      end
+
+      context 'without the required scopes' do
+        before do
+          group_access_token.update!(scopes: [::Gitlab::Auth::READ_REPOSITORY_SCOPE])
+        end
+
+        it_behaves_like 'a rejected dependency proxy login'
+      end
+    end
+
+    context 'with group deploy token' do
+      let(:credential_user) { group_deploy_token.username }
+      let(:credential_password) { group_deploy_token.token }
+
+      it_behaves_like 'with valid credentials'
+    end
+
+    context 'with job token' do
+      let_it_be_with_reload(:job) { create(:ci_build, user: user, status: :running, project: project) }
+      let_it_be(:credential_user) { 'gitlab-ci-token' }
+
+      let(:credential_password) { job.token }
+
+      it_behaves_like 'with valid credentials'
+    end
+
+    context 'with project deploy token' do
+      let(:credential_user) { project_deploy_token.username }
+      let(:credential_password) { project_deploy_token.token }
+
+      it_behaves_like 'a rejected dependency proxy login'
+    end
+
+    context 'with revoked group deploy token' do
+      let(:credential_user) { group_deploy_token.username }
+      let(:credential_password) { project_deploy_token.token }
+
+      before do
+        group_deploy_token.update_column(:revoked, true)
+      end
+
+      it_behaves_like 'returning response status', :unauthorized
+    end
+
+    context 'with group deploy token with insufficient scopes' do
+      let(:credential_user) { group_deploy_token.username }
+      let(:credential_password) { project_deploy_token.token }
+
+      before do
+        group_deploy_token.update_column(:write_registry, false)
+      end
+
+      it_behaves_like 'returning response status', :unauthorized
+    end
+
+    context 'with invalid credentials' do
+      let(:credential_user) { 'foo' }
+      let(:credential_password) { 'bar' }
+
+      it_behaves_like 'returning response status', :unauthorized
+    end
+
+    context 'with IAM JWT token' do
+      let(:user) { create(:user) }
+      let(:iam_scopes) { %w[api read_virtual_registry write_virtual_registry] }
+      let(:service_class) { Auth::ContainerProxyAuthenticationService }
+
+      let(:credential_user) { user.username }
+      let(:credential_password) { iam_jwt_token }
+      let(:headers) { { authorization: credentials(credential_user, credential_password) } }
+      let(:params) { { account: credential_user, client_id: 'docker', offline_token: true, service: service_name } }
+      let(:parameters) { params }
+
+      before do
+        allow(Auth::ContainerProxyAuthenticationService).to receive(:new).and_call_original
+      end
+
+      it_behaves_like 'IAM JWT authentication'
+    end
+  end
+
+  def credentials(login, password)
+    ActionController::HttpAuthentication::Basic.encode_credentials(login, password)
+  end
+end

@@ -1,25 +1,47 @@
-.file-holder.file
-  .file-title
-    .editor-ref
-      %i.fa.fa-code-fork
-      = ref
-    %span.editor-file-name
-      - if @path
-        %span.monospace
-          = @path
+- action = current_action?(:edit, :update) ? 'edit' : 'create'
+- is_markdown = Gitlab::MarkupHelper.gitlab_markdown?(local_assigns[:path])
+- error_partial = capture do
+  .js-filepath-error.gl-text-danger.gl-font-regular.gl-hidden
+    = _("Please enter a valid file name.")
 
-      - if current_action?(:new) || current_action?(:create)
-        \/
-        = text_field_tag 'file_name', params[:file_name], placeholder: "File name",
-          required: true, class: 'form-control new-file-name'
-      .pull-right
-        = select_tag :encoding, options_for_select([ "base64", "text" ], "text"), class: 'form-control'
+.file-holder.file.gl-mb-3
+  .js-file-title.file-title.gl-flex.gl-items-center.gl-rounded-t-base{ data: { current_action: action } }
+    .editor-ref.gl-truncate.has-tooltip{ title: current_action?(:edit, :update) ? ref : params[:id] }
+      = sprite_icon('branch', size: 12)
+      - if current_action?(:edit, :update)
+        %span#editor_ref
+          = ref
+      - if current_action?(:new, :create)
+        %span#editor_path
+          = params[:id]
+    - if current_action?(:edit, :update)
+      - input_options = { label: _('File path'), id: 'file_path', name: 'file_path', value: params[:file_path] || @path, class: 'new-file-path js-file-path-name-input' }
+      = render 'filepath_form', input_options: input_options
+      = error_partial
 
-  .file-content.code
-    %pre.js-edit-mode-pane#editor
-      = params[:content] || local_assigns[:blob_data]
+    - if current_action?(:new, :create)
+      - input_options = { label: _('File name'), id: 'file_name', name: 'file_name', value: params[:file_name] || '', required: true, placeholder: "Filename", testid: 'file-name-field', class: 'new-file-name js-file-path-name-input' }
+      = render 'filepath_form', input_options: input_options
+      = error_partial
+
+    .file-buttons.gl-flex.gl-items-center.gl-justify-end.gl-gap-3
+      - if is_markdown
+        .md-header.gl-flex.gl-p-0.gl-rounded-base.gl-m-0
+          .gl-flex.gl-items-center.gl-flex-wrap.gl-justify-between
+            .md-header-toolbar.gl-flex.gl-py-2.gl-flex-wrap{ class: "!gl-m-0" }
+              = render 'shared/blob/markdown_buttons', supports_file_upload: false
+      %span.soft-wrap-toggle.soft-wrap-active
+        = render Pajamas::ButtonComponent.new(icon: 'soft-unwrap', button_options: { class: 'no-wrap' }) do
+          = _("No wrap")
+        = render Pajamas::ButtonComponent.new(icon: 'soft-wrap', button_options: { class: 'soft-wrap' }) do
+          = _("Soft wrap")
+  .file-help.gl-px-5.gl-py-3.gl-bg-subtle.gl-border-b
+    = link_to s_('Editor|Editor accessibility guide'), help_page_path('user/project/repository/web_editor.md', anchor: 'editor-accessibility-options'), target: '_blank', rel: 'noopener noreferrer'
+
+  .file-editor.code
+    .js-edit-mode-pane#editor{ data: { 'editor-loading': true, testid: 'source-editor-preview-container', ref: ref } }<
+      %pre.editor-loading-content= params[:content] || local_assigns[:blob_data]
     - if local_assigns[:path]
       .js-edit-mode-pane#preview.hide
         .center
-          %h2
-            %i.icon-spinner.icon-spin
+          = gl_loading_icon(size: 'lg')

@@ -1,0 +1,46 @@
+# @feature_category: continuous_integration
+query getFailedJobs($fullPath: ID!, $pipelineIid: ID!) {
+  project(fullPath: $fullPath) {
+    id
+    pipeline(iid: $pipelineIid) {
+      id
+      jobs(statuses: FAILED, retried: false, jobKind: BUILD) {
+        nodes {
+          status
+          detailedStatus {
+            id
+            detailsPath
+            group
+            icon
+            label
+            text
+            tooltip
+            action {
+              id
+              buttonTitle
+              icon
+              method
+              path
+              title
+            }
+          }
+          id
+          stage {
+            id
+            name
+          }
+          name
+          retryable
+          userPermissions {
+            readBuild
+            updateBuild
+          }
+          trace {
+            htmlSummary
+          }
+          failureMessage
+        }
+      }
+    }
+  }
+}

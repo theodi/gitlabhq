@@ -1,0 +1,108 @@
+# frozen_string_literal: true
+
+class PlanLimits < ApplicationRecord
+  include SafelyChangeColumnDefault
+  include ActiveRecord::FixedItemsModel::HasOne
+
+  columns_changing_default :active_versioned_pages_deployments_limit_by_namespace, :ai_flow_schedules
+
+  attribute :ai_flow_schedules, default: 100
+
+  ALLOWED_LIMITS_HISTORY_ATTRIBUTES = %i[notification_limit enforcement_limit storage_size_limit
+    dashboard_limit_enabled_at].freeze
+
+  ignore_column :ci_max_artifact_size_running_container_scanning, remove_with: '14.3', remove_after: '2021-08-22'
+  ignore_column :ci_max_artifact_size_scip, remove_with: '19.4', remove_after: '2026-07-01'
+
+  attribute :limits_history, ::Gitlab::Database::Type::IndifferentJsonb.new, default: -> { {} }
+  validates :limits_history, json_schema: { filename: 'plan_limits_history' }
+
+  LimitUndefinedError = Class.new(StandardError)
+
+  belongs_to_fixed_items :plan, fixed_items_class: ::GitlabSubscriptions::SystemDefined::Plan,
+    foreign_key: 'plan_name_uid'
+
+  before_save :sync_plan_id
+
+  validates :plan_name_uid, inclusion: { in: ::GitlabSubscriptions::SystemDefined::Plan.all.map(&:id) }
+  validates :notification_limit, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
+  validates :enforcement_limit, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
+  validates :web_hook_calls, numericality: { only_integer: true, greater_than_or_equal_to: 0 },
+    if: :web_hook_calls_changed?
+  validates :web_hook_calls_mid, numericality: { only_integer: true, greater_than_or_equal_to: 0 },
+    if: :web_hook_calls_mid_changed?
+  validates :web_hook_calls_low, numericality: { only_integer: true, greater_than_or_equal_to: 0 },
+    if: :web_hook_calls_low_changed?
+  validates :max_pipelines_per_merge_train, numericality: { only_integer: true, greater_than_or_equal_to: 1 }
+
+  def exceeded?(limit_name, subject, alternate_limit: 0)
+    limit = limit_for(limit_name, alternate_limit: alternate_limit)
+    return false unless limit
+
+    case subject
+    when Integer
+      subject >= limit
+    when ActiveRecord::Relation
+      # We intentionally not accept just plain ApplicationRecord classes to
+      # enforce the subject to be scoped down to a relation first.
+      #
+      # subject.count >= limit value is slower than checking
+      # if a record exists at the limit value - 1 position.
+      subject.offset(limit - 1).exists?
+    else
+      raise ArgumentError, "#{subject.class} is not supported as a limit value"
+    end
+  end
+
+  def limit_for(limit_name, alternate_limit: 0)
+    limit = read_attribute(limit_name)
+    raise LimitUndefinedError, "The limit `#{limit_name}` is undefined" if limit.nil?
+
+    alternate_limit = alternate_limit.call if alternate_limit.respond_to?(:call)
+
+    limits = [limit, alternate_limit]
+    limits.map(&:to_i).select(&:positive?).min
+  end
+
+  # Overridden in EE
+  def dashboard_storage_limit_enabled?
+    false
+  end
+
+  def format_limits_history(user, new_limits)
+    allowed_limits = new_limits.slice(*ALLOWED_LIMITS_HISTORY_ATTRIBUTES)
+    return {} if allowed_limits.empty?
+
+    allowed_limits.each do |attribute, value|
+      next if value == self[attribute]
+
+      limits_history[attribute] ||= []
+      limits_history[attribute] << {
+        "user_id" => user.id,
+        "username" => user.username,
+        "timestamp" => Time.current.utc.to_i,
+        "value" => value
+      }
+    end
+
+    limits_history
+  end
+
+  private
+
+  def sync_plan_id
+    return unless plan_name_uid_changed?
+
+    # plan_name_uid is the authoritative write input; plan_id stays in sync only for
+    # fk_rails_69f8b6184f until plan_id is dropped (https://gitlab.com/gitlab-org/gitlab/-/work_items/600314).
+    # rubocop:disable Performance/ActiveRecordSubtransactionMethods -- creates the missing plans row
+    plan_for_uid = Plan.safe_find_or_create_by(plan_name_uid: plan_name_uid) do |new_plan|
+      new_plan.name = plan.name
+      new_plan.title = plan.title
+    end
+    # rubocop:enable Performance/ActiveRecordSubtransactionMethods
+    self.plan_id = plan_for_uid.id if plan_for_uid && plan_for_uid.id != plan_id
+  end
+end
+
+PlanLimits.prepend_mod_with('PlanLimits')

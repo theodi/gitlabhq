@@ -1,0 +1,63 @@
+# frozen_string_literal: true
+
+# == EnforcesAdminAuthentication
+#
+# Controller concern to enforce that users are authenticated as admins
+#
+# Upon inclusion, adds `authenticate_admin!` as a before_action
+#
+module EnforcesAdminAuthentication
+  extend ActiveSupport::Concern
+
+  included do
+    before_action :authenticate_admin!
+
+    def self.authorize!(ability, only:)
+      actions = Array(only)
+
+      skip_before_action :authenticate_admin!, only: actions
+      prepend_before_action -> { authorize_ability!(ability) }, only: actions
+    end
+  end
+
+  def authenticate_admin!
+    attempt_admin_mode unless current_user&.can_admin_all_resources?
+  end
+
+  def storable_location?
+    request.path != new_admin_session_path
+  end
+
+  private
+
+  # The authorization subject for admin ability checks. Defaults to `:global`
+  # for the instance admin area. The organization admin area overrides this to
+  # return the current organization.
+  def authorization_subject
+    :global
+  end
+
+  def authorize_ability!(ability)
+    attempt_admin_mode unless current_user&.can?(ability, authorization_subject)
+  end
+
+  def attempt_admin_mode
+    return render_404 if in_admin_mode? || !current_user&.can_access_admin_area?
+
+    current_user_mode.request_admin_mode!
+
+    # Without this guard the browser would follow the redirect itself
+    # and respond 200 OK to the caller, which is considered by the frontend as a success.
+    if request.xhr?
+      return render json: { message: _('Admin mode is inactive. Please re-authenticate.') },
+        status: :unauthorized
+    end
+
+    store_location_for(:redirect, request.fullpath) if storable_location?
+    redirect_to(new_admin_session_path, notice: _('Re-authentication required'))
+  end
+
+  def in_admin_mode?
+    Gitlab::CurrentSettings.admin_mode && current_user_mode.admin_mode?
+  end
+end

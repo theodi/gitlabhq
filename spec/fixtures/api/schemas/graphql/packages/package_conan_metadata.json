@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "createdAt",
+    "updatedAt",
+    "packageUsername",
+    "packageChannel",
+    "recipe",
+    "recipePath"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "packageUsername": {
+      "type": "string"
+    },
+    "packageChannel": {
+      "type": "string"
+    },
+    "recipe": {
+      "type": "string"
+    },
+    "recipePath": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Remove cluster confirmation modal renders buttons with modal included 1`] = `
+<div
+  class="gl-flex"
+>
+  <button
+    class="btn btn-danger btn-md gl-button gl-mr-3"
+    data-testid="remove-integration-and-resources-button"
+    type="button"
+  >
+    <span
+      class="gl-button-text"
+    >
+      Remove integration and resources
+    </span>
+  </button>
+  <button
+    class="btn btn-danger btn-danger-secondary btn-md gl-button"
+    data-testid="remove-integration-button"
+    type="button"
+  >
+    <span
+      class="gl-button-text"
+    >
+      Remove integration
+    </span>
+  </button>
+</div>
+`;

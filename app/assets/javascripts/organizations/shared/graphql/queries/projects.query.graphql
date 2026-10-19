@@ -1,0 +1,31 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "~/graphql_shared/fragments/project.fragment.graphql"
+
+query getOrganizationProjects(
+  $id: OrganizationsOrganizationID!
+  $search: String
+  $sort: String
+  $first: Int
+  $last: Int
+  $before: String
+  $after: String
+) {
+  organization(id: $id) {
+    id
+    projects(
+      search: $search
+      sort: $sort
+      first: $first
+      last: $last
+      before: $before
+      after: $after
+    ) {
+      nodes {
+        ...Project
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

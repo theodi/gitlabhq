@@ -1,0 +1,56 @@
+# frozen_string_literal: true
+
+module Search
+  # This class has the same interface as SearchResults except
+  # it is empty and does not do any work.
+  class EmptySearchResults
+    def initialize(error: nil, error_type: nil)
+      @error = error
+      @error_type = error_type
+    end
+
+    def objects(*)
+      Kaminari.paginate_array([])
+    end
+
+    def formatted_count(*)
+      '0'
+    end
+
+    def highlight_map(*)
+      {}
+    end
+
+    def aggregations(*)
+      []
+    end
+
+    def counts(*)
+      {}
+    end
+
+    def error(*)
+      @error
+    end
+
+    def error_type(*)
+      @error_type
+    end
+
+    def failed?(*)
+      error.present?
+    end
+
+    def server_error?
+      false
+    end
+
+    def blobs_count
+      0
+    end
+
+    def file_count
+      0
+    end
+  end
+end

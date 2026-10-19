@@ -1,54 +1,36 @@
-%h3.page-title= @milestone.new_record? ? "New Milestone" : "Edit Milestone ##{@milestone.iid}"
-.back-link
-  = link_to namespace_project_milestones_path(@project.namespace, @project) do
-    &larr; To milestones
+= gitlab_ui_form_for [@project, @milestone], html: { class: 'milestone-form common-note-form js-quick-submit' } do |f|
+  = form_errors(@milestone)
 
-%hr
+  - if @conflict
+    = render 'shared/model_version_conflict', model_name: _('milestone'), link_path: project_milestone_path(@project, @milestone)
 
-= form_for [@project.namespace.becomes(Namespace), @project, @milestone], html: {class: 'form-horizontal milestone-form gfm-form'}  do |f|
-  -if @milestone.errors.any?
-    .alert.alert-danger
-      %ul
-        - @milestone.errors.full_messages.each do |msg|
-          %li= msg
-  .row
-    .col-md-6
-      .form-group
-        = f.label :title, "Title", class: "control-label"
-        .col-sm-10
-          = f.text_field :title, maxlength: 255, class: "form-control"
-          %p.hint Required
-      .form-group.milestone-description
-        = f.label :description, "Description", class: "control-label"
-        .col-sm-10
-          = render layout: 'projects/md_preview', locals: { preview_class: "wiki" } do
-            = render 'projects/zen', f: f, attr: :description, classes: 'description form-control'
-            .hint
-              .pull-left Milestones are parsed with #{link_to "GitLab Flavored Markdown", help_page_path("markdown", "markdown"), target: '_blank'}.
-              .pull-left Attach files by dragging & dropping or #{link_to "selecting them", '#', class: 'markdown-selector' }.
-          .clearfix
-          .error-alert
-    .col-md-6
-      .form-group
-        = f.label :due_date, "Due Date", class: "control-label"
-        .col-sm-10= f.hidden_field :due_date
-        .col-sm-10
-          .datepicker
+  - if @redirect_path.present?
+    = f.hidden_field(:redirect_path, name: :redirect_path, id: :redirect_path, value: @redirect_path)
+  .form-group
+    = f.label :title, _('Title')
+    = f.text_field :title, maxlength: 255, class: 'form-control gl-form-input', data: { testid: 'milestone-title-field' }, required: true, autofocus: true
+  = render 'shared/milestones/form_dates', f: f
+  .form-group
+    = f.label :description, _('Description')
+    - @gfm_form = true
+    .js-markdown-editor{ data: { render_markdown_path: preview_markdown_path(@project),
+                               markdown_docs_path: help_page_path('user/markdown.md'),
+                               testid: 'milestone-description-field',
+                               form_field_placeholder: _('Write milestone description...'),
+                               supports_quick_actions: 'false',
+                               supports_table_of_contents: 'true',
+                               enable_autocomplete: 'true',
+                               autofocus: 'false',
+                               form_field_classes: 'note-textarea js-gfm-input markdown-area' } }
+      = f.hidden_field :description
+    .gl-clearfix
+    .error-alert
 
-  .form-actions
-    - if @milestone.new_record?
-      = f.submit 'Create milestone', class: "btn-create btn"
-      = link_to "Cancel", namespace_project_milestones_path(@project.namespace, @project), class: "btn btn-cancel"
-    -else
-      = f.submit 'Save changes', class: "btn-save btn"
-      = link_to "Cancel", namespace_project_milestone_path(@project.namespace, @project, @milestone), class: "btn btn-cancel"
+  = f.hidden_field :lock_version
 
-
-:javascript
-  disableButtonIfEmptyField("#milestone_title", ".btn-save");
-  $( ".datepicker" ).datepicker({
-    dateFormat: "yy-mm-dd",
-    onSelect: function(dateText, inst) { $("#milestone_due_date").val(dateText) }
-  }).datepicker("setDate", $.datepicker.parseDate('yy-mm-dd', $('#milestone_due_date').val()));
-
-  window.project_uploads_path = "#{namespace_project_uploads_path @project.namespace, @project}";
+  - if @milestone.new_record?
+    = f.submit _('Create milestone'), data: { testid: 'create-milestone-button' }, class: 'gl-mr-2 js-reset-autosave', pajamas_button: true
+    = link_button_to _('Cancel'), project_milestones_path(@project)
+  - else
+    = f.submit _('Save changes'), class: 'gl-mr-2 js-reset-autosave', pajamas_button: true
+    = link_button_to _('Cancel'), project_milestone_path(@project, @milestone)

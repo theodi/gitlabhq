@@ -1,0 +1,331 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Observability::AccessRequestService, feature_category: :observability do
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:group) { create(:group) }
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, group: group) }
+  let_it_be(:experimental_group) { create(:group) }
+  let_it_be(:deployer_project) { create(:project, group: experimental_group, path: 'o11y_aws_deployer') }
+
+  subject(:service) { described_class.new(group, user) }
+
+  describe '#execute' do
+    shared_examples 'returns error with status' do |message, status|
+      it "returns #{status} error: #{message}" do
+        result = service.execute
+        expect(result).to be_error
+        expect(result.message).to eq(message)
+        expect(result.http_status).to eq(status)
+      end
+    end
+
+    context 'with invalid parameters' do
+      it_behaves_like 'returns error with status', 'Namespace is required', :bad_request do
+        subject(:service) { described_class.new(nil, user) }
+      end
+
+      it_behaves_like 'returns error with status', 'User is required', :bad_request do
+        subject(:service) { described_class.new(group, nil) }
+      end
+    end
+
+    context 'when user has developer access' do
+      before_all do
+        group.add_developer(user)
+      end
+
+      context 'with valid parameters' do
+        it 'creates a confidential issue with correct content and author' do
+          result = service.execute
+
+          expect(result).to be_success
+
+          issue = result[:issue]
+          expect(issue).to be_confidential
+          expect(issue.title).to eq("Request Observability Access for #{group.name}")
+          expect(issue.author).to eq(Users::Internal.admin_bot)
+          expect(issue.project.namespace).to eq(group)
+
+          description = issue.description
+          expect(description).to include(user.name)
+          expect(description).to include("@#{user.username}")
+          expect(description).to include(user.email)
+          expect(description).to include(group.name)
+          expect(description).to include("Namespace ID:** #{group.id}")
+          expect(description).to include("Member Count:** #{group.members.count}")
+        end
+
+        it 'returns existing issue when one already exists and does not create a new one' do
+          existing_issue = create(:issue,
+            project: project,
+            title: "Request Observability Access for #{group.name}",
+            author: Users::Internal.admin_bot,
+            confidential: true,
+            state: 'opened'
+          )
+
+          expect(Issues::CreateService).not_to receive(:new)
+          expect(Observability::CreateGroupO11ySettingWorker).not_to receive(:perform_async)
+          result = service.execute
+
+          expect(result).to be_success
+          expect(result[:issue]).to eq(existing_issue)
+          expect(Issue.count).to eq(1)
+        end
+
+        it 'uses automation bot to create the issue' do
+          expect(Issues::CreateService).to receive(:new).with(
+            container: instance_of(Project),
+            current_user: Users::Internal.admin_bot,
+            params: hash_including(
+              title: "Request Observability Access for #{group.name}",
+              confidential: true
+            )
+          ).and_call_original
+
+          service.execute
+        end
+
+        it 'passes authorization when user has developer access and feature flag is enabled' do
+          expect(Ability.allowed?(user, :create_observability_access_request, group)).to be true
+          expect(::Feature.enabled?(:observability_sass_features, group)).to be true
+
+          result = service.execute
+          expect(result).to be_success
+        end
+
+        it 'enqueues CreateGroupO11ySettingWorker job when issue creation succeeds' do
+          expect(Observability::CreateGroupO11ySettingWorker).to receive(:perform_async)
+            .with(user.id, group.id, nil)
+
+          result = service.execute
+          expect(result).to be_success
+        end
+
+        it 'creates a temporary observability setting for the group when issue creation succeeds' do
+          allow(Observability::CreateGroupO11ySettingWorker).to receive(:perform_async)
+
+          expect { service.execute }.to change { group.reload.observability_group_o11y_setting }.from(nil)
+
+          setting = group.observability_group_o11y_setting
+          expect(setting.o11y_service_url).to eq("https://#{group.id}.gitlab-o11y.com")
+          expect(setting.o11y_service_name).to eq(group.id.to_s)
+          expect(setting.o11y_service_user_email).to eq("#{group.id}@gitlab-o11y.com")
+          expect(setting.o11y_service_password).to match(/\A[a-f0-9]{32}\z/)
+          expect(setting.o11y_service_post_message_encryption_key).to match(/\A[a-f0-9]{64}\z/)
+        end
+
+        it 'does not create a temporary observability setting when one already exists' do
+          allow(Observability::CreateGroupO11ySettingWorker).to receive(:perform_async)
+          existing_setting = create(:observability_group_o11y_setting, group: group)
+
+          expect(::Observability::GroupO11ySettingsUpdateService).not_to receive(:new)
+          expect { service.execute }.not_to change { ::Observability::GroupO11ySetting.count }
+          expect(group.reload.observability_group_o11y_setting).to eq(existing_setting)
+        end
+      end
+
+      context 'with system dependencies unavailable' do
+        it_behaves_like 'returns error with status', 'Project not found', :not_found do
+          before do
+            allow(Rails.env).to receive(:production?).and_return(false)
+            allow(group).to receive_message_chain(:projects, :projects_order_id_asc, :first).and_return(nil)
+          end
+        end
+      end
+
+      context 'with issue creation failures' do
+        it_behaves_like 'returns error with status', 'Issue creation failed', :unprocessable_entity do
+          before do
+            allow_next_instance_of(Issues::CreateService) do |instance|
+              allow(instance).to receive(:execute).and_return(ServiceResponse.error(message: 'Issue creation failed'))
+            end
+          end
+
+          it 'does not enqueue CreateGroupO11ySettingWorker when issue creation fails' do
+            expect(Observability::CreateGroupO11ySettingWorker).not_to receive(:perform_async)
+            service.execute
+          end
+        end
+
+        it 'handles multiple validation errors' do
+          allow_next_instance_of(Issues::CreateService) do |instance|
+            allow(instance).to receive(:execute)
+              .and_return(ServiceResponse.error(message: ['Title required', 'Description too long']))
+          end
+
+          expect(Observability::CreateGroupO11ySettingWorker).not_to receive(:perform_async)
+          result = service.execute
+          expect(result).to be_error
+          expect(result.message).to eq('Title required, Description too long')
+        end
+      end
+    end
+
+    context 'when user lacks developer access' do
+      context 'when feature flag is disabled' do
+        it_behaves_like 'returns error with status', 'You are not authorized to request observability access',
+          :forbidden do
+          before do
+            allow(::Feature).to receive(:enabled?).with(:observability_sass_features, group).and_return(false)
+          end
+        end
+      end
+
+      context 'when user lacks required ability' do
+        it_behaves_like 'returns error with status', 'You are not authorized to request observability access',
+          :forbidden
+      end
+
+      context 'when user has insufficient access level' do
+        it_behaves_like 'returns error with status', 'You are not authorized to request observability access',
+          :forbidden do
+          before_all do
+            group.add_guest(user)
+          end
+        end
+      end
+    end
+
+    context 'with personal namespace' do
+      let_it_be(:owner) { create(:user, :with_namespace) }
+      let_it_be(:user_namespace) { owner.namespace }
+      let_it_be(:personal_project) { create(:project, :empty_repo, namespace: user_namespace) }
+      let_it_be(:other_user) { create(:user) }
+      let_it_be(:other_project) { create(:project) }
+
+      subject(:service) { described_class.new(user_namespace, owner, project: personal_project) }
+
+      context 'with valid parameters' do
+        it 'creates a confidential issue with namespace-based content' do
+          result = service.execute
+
+          expect(result).to be_success
+
+          issue = result[:issue]
+          expect(issue).to be_confidential
+          expect(issue.title).to eq("Request Observability Access for #{user_namespace.name}")
+
+          description = issue.description
+          expect(description).to include(owner.name)
+          expect(description).to include("Namespace ID:** #{user_namespace.id}")
+          expect(description).to include('Namespace Type:** Personal namespace')
+          expect(description).to include('Member Count:** 1')
+        end
+
+        it 'enqueues worker with namespace id and project id' do
+          expect(Observability::CreateGroupO11ySettingWorker).to receive(:perform_async)
+            .with(owner.id, user_namespace.id, personal_project.id)
+
+          service.execute
+        end
+      end
+
+      context 'when the feature flag is disabled' do
+        before do
+          stub_feature_flags(observability_saas_features_user_namespace: false)
+        end
+
+        it 'returns forbidden error' do
+          result = service.execute
+
+          expect(result).to be_error
+          expect(result.http_status).to eq(:forbidden)
+        end
+      end
+
+      context 'when access is forbidden' do
+        where(:scenario, :service_user, :service_project) do
+          'user is not the namespace owner'   | ref(:other_user) | ref(:personal_project)
+          'project is nil'                    | ref(:owner)      | nil
+          'project does not belong to namespace' | ref(:owner)   | ref(:other_project)
+        end
+
+        with_them do
+          subject(:service) { described_class.new(user_namespace, service_user, project: service_project) }
+
+          it 'returns forbidden error' do
+            result = service.execute
+            expect(result).to be_error
+            expect(result.http_status).to eq(:forbidden)
+          end
+        end
+      end
+    end
+  end
+
+  describe 'issue content edge cases' do
+    before_all do
+      group.add_developer(user)
+    end
+
+    context 'with special characters and edge data' do
+      let(:special_user) { create(:user, name: 'Test "User" & Co.', username: 'test_user_123') }
+
+      subject(:service) { described_class.new(group, special_user) }
+
+      it 'handles special characters and zero counts correctly' do
+        group.add_developer(special_user)
+        result = service.execute
+        description = result[:issue].description
+
+        expect(description).to include('Test "User" & Co.')
+        expect(description).to include('@test_user_123')
+      end
+    end
+
+    it 'includes properly formatted timestamp' do
+      freeze_time do
+        result = service.execute
+        expected_time = Time.current.strftime('%Y-%m-%d %H:%M:%S UTC')
+        expect(result[:issue].description).to include("Request Date:** #{expected_time}")
+      end
+    end
+  end
+
+  describe 'project selection' do
+    before_all do
+      group.add_developer(user)
+    end
+
+    shared_examples 'uses correct project container' do
+      it 'passes the correct container to Issues::CreateService' do
+        expected_container = expected_container_proc.call
+        expect(Issues::CreateService).to receive(:new).with(
+          container: expected_container,
+          current_user: Users::Internal.admin_bot,
+          params: anything
+        ).and_call_original
+
+        service.execute
+      end
+    end
+
+    context 'in non-production environment' do
+      before do
+        allow(Rails.env).to receive(:production?).and_return(false)
+      end
+
+      it_behaves_like 'uses correct project container' do
+        let(:expected_container_proc) { -> { group.projects.first } }
+      end
+    end
+
+    context 'in production environment' do
+      before do
+        allow(Rails.env).to receive(:production?).and_return(true)
+        allow(Project).to receive(:find_by_id)
+          .with(described_class::DEPLOYER_PROJECT_ID)
+          .and_return(deployer_project)
+      end
+
+      it_behaves_like 'uses correct project container' do
+        let(:expected_container_proc) { -> { deployer_project } }
+      end
+    end
+  end
+end

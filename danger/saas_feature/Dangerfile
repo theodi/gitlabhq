@@ -1,0 +1,61 @@
+# frozen_string_literal: true
+
+SF_SEE_DOC = "see the [SaaS feature documentation](https://docs.gitlab.com/development/ee_features/#saas-only-feature)."
+
+SF_SUGGEST_MR_COMMENT = <<~SUGGEST_COMMENT.freeze
+  ```suggestion
+  group: "%<group>s"
+  ```
+
+  #{SF_SEE_DOC.capitalize}
+SUGGEST_COMMENT
+
+def check_yaml(saas_feature)
+  mr_group_label = helper.group_label
+
+  if saas_feature.group.nil?
+    message_for_missing_group!(saas_feature: saas_feature, mr_group_label: mr_group_label)
+  else
+    message_for_group!(saas_feature: saas_feature, mr_group_label: mr_group_label)
+  end
+rescue Psych::Exception
+  # YAML could not be parsed, fail the build.
+  fail "#{helper.html_link(saas_feature.path)} isn't valid YAML! #{SF_SEE_DOC.capitalize}"
+rescue StandardError => e
+  warn "There was a problem trying to check the SaaS feature file. Exception: #{e.class.name} - #{e.message}"
+end
+
+def message_for_missing_group!(saas_feature:, mr_group_label:)
+  mr_line = saas_feature.raw.lines.find_index do |line|
+    line.start_with?('group:')
+  end
+
+  if mr_line
+    markdown(format(SF_SUGGEST_MR_COMMENT, group: mr_group_label), file: saas_feature.path, line: mr_line.succ)
+  elsif mr_group_label
+    warn %(
+    Consider setting `group: "#{mr_group_label}"` in #{helper.html_link(saas_feature.path)}. #{SF_SEE_DOC.capitalize}
+    )
+  else
+    warn "Consider setting `group` in #{helper.html_link(saas_feature.path)}. #{SF_SEE_DOC.capitalize}"
+  end
+end
+
+def message_for_group!(saas_feature:, mr_group_label:)
+  return if saas_feature.group_match_mr_label?(mr_group_label)
+
+  if mr_group_label
+    fail %(`group` is set to ~"#{saas_feature.group}" in #{helper.html_link(saas_feature.path)},
+            which does not match ~"#{mr_group_label}" set on the MR!)
+  end
+
+  helper.labels_to_add << saas_feature.group
+end
+
+def added_files
+  saas_feature.files(change_type: :added)
+end
+
+added_files.each do |saas_feature|
+  check_yaml(saas_feature)
+end

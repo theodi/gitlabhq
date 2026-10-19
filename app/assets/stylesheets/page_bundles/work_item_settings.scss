@@ -1,0 +1,77 @@
+@import '@gitlab/ui/src/scss/variables';
+
+.workflow-container {
+  position: relative;
+}
+
+.workflow-step {
+  position: relative;
+  padding-left: 2rem;
+  margin-bottom: 2rem;
+
+  &::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    z-index: 2;
+    transition: all 0.2s ease;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 18px;
+    width: 2px;
+    height: calc(100% + 2rem - 22px);
+    background-color: var(--gl-status-info-icon-color);
+    z-index: 2;
+    transition: all 0.2s ease;
+  }
+
+  // Hide line after the last step
+  &:last-child::after {
+    display: none;
+  }
+
+  &.active::after {
+    top: 20px;
+  }
+
+  // Active step (current step)
+  &.active::before {
+    background-color: var(--gl-status-info-icon-color);
+    box-shadow: 0 0 0 2px var(--gl-status-info-icon-color);
+  }
+
+  // Completed steps
+  &.completed::before {
+    background-color: var(--gl-status-info-icon-color);
+    border: 1px solid var(--gl-background-color-default);
+  }
+
+  // Future/disabled steps
+  &.disabled::before {
+    background-color: var(--gl-background-color-default);
+    border: 1px solid var(--gl-status-neutral-icon-color);
+  }
+}
+
+.icon-selection-set {
+  label {
+    box-sizing: border-box;
+    border: 1px solid transparent;
+
+    &:not(.selected-icon):hover {
+      border: 1px solid var(--gl-control-border-color-hover);
+    }
+
+    &:not(.selected-icon):focus-visible {
+      border: 1px solid var(--gl-control-border-color-focus);
+    }
+  }
+}

@@ -1,0 +1,105 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module GithubImport
+    class Settings
+      OPTIONAL_STAGES = {
+        attachments_import: { selected: false },
+        collaborators_import: { selected: true },
+        continuous_sync: { selected: false }
+      }.freeze
+
+      def self.stages_array(current_user, oauth: false)
+        available_stages(current_user, oauth: oauth).map do |stage_name, data|
+          {
+            name: stage_name.to_s,
+            label: stage_label(stage_name),
+            selected: data[:selected],
+            details: stage_details(stage_name)
+          }
+        end
+      end
+
+      # Continuous sync is a licensed feature, so it is only offered by the EE override.
+      def self.available_stages(_current_user, oauth: false) # rubocop:disable Lint/UnusedMethodArgument -- used by the EE override
+        OPTIONAL_STAGES.except(:continuous_sync)
+      end
+      private_class_method :available_stages
+
+      def self.stage_label(stage_name)
+        {
+          attachments_import: s_('GitHubImporter|Import Markdown attachments (links)'),
+          collaborators_import: s_('GitHubImporter|Import collaborators'),
+          continuous_sync: s_('GitHubImporter|Keep this project updated from GitHub')
+        }[stage_name]
+      end
+      private_class_method :stage_label
+
+      def self.stage_details(stage_name)
+        {
+          attachments_import: s_('GitHubImporter|Import Markdown attachments (links) from repository ' \
+            'comments, release posts, issue descriptions, and pull request ' \
+            'descriptions. These can include images, text, or binary attachments. ' \
+            'If not imported, links in Markdown to attachments break after you ' \
+            'remove the attachments from GitHub.'),
+          collaborators_import: s_('GitHubImporter|Import direct repository collaborators who are not ' \
+            'outside collaborators. Imported collaborators who aren\'t members ' \
+            'of the group you imported the project into consume seats on your ' \
+            'GitLab instance.'),
+          continuous_sync: s_('GitHubImporter|Keep the imported project up to date with changes from ' \
+            'GitHub. Requires GitLab Premium or Ultimate.')
+        }[stage_name]
+      end
+      private_class_method :stage_details
+
+      def initialize(project)
+        @project = project
+      end
+
+      def write(user_settings)
+        user_settings = user_settings.to_h.with_indifferent_access
+
+        optional_stages = fetch_stages_from_params(user_settings[:optional_stages])
+
+        import_data = project.build_or_assign_import_data(
+          data: {
+            optional_stages: optional_stages,
+            timeout_strategy: user_settings[:timeout_strategy],
+            user_contribution_mapping_enabled: true,
+            pagination_limit: user_settings[:pagination_limit]
+          },
+          credentials: project.import_data&.credentials
+        )
+
+        import_data.save!
+      end
+
+      def enabled?(stage_name)
+        project.import_data&.data&.dig('optional_stages', stage_name.to_s) || false
+      end
+
+      def disabled?(stage_name)
+        !enabled?(stage_name)
+      end
+
+      def map_to_personal_namespace_owner?
+        project.root_ancestor.user_namespace?
+      end
+
+      private
+
+      attr_reader :project
+
+      def fetch_stages_from_params(user_settings)
+        user_settings = user_settings.to_h.with_indifferent_access
+
+        OPTIONAL_STAGES.keys.to_h do |stage_name|
+          enabled = Gitlab::Utils.to_boolean(user_settings[stage_name], default: false)
+          [stage_name, enabled]
+        end
+      end
+    end
+  end
+end
+
+Gitlab::GithubImport::Settings.prepend_mod

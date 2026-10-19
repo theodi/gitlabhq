@@ -1,0 +1,2247 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe GitlabSchema.types['Project'], feature_category: :groups_and_projects do
+  include GraphqlHelpers
+  include ProjectForksHelper
+  using RSpec::Parameterized::TableSyntax
+
+  specify { expect(described_class).to expose_permissions_using(Types::PermissionTypes::Project) }
+
+  specify { expect(described_class.graphql_name).to eq('Project') }
+
+  specify { expect(described_class).to require_graphql_authorizations(:read_project) }
+
+  specify { expect(described_class.interfaces).to include(Types::TodoableInterface) }
+
+  specify { expect(described_class.interfaces).to include(::Types::Projects::ProjectInterface) }
+
+  it 'has the expected fields' do
+    expected_fields = %w[
+      user_permissions id full_path path name_with_namespace
+      name description description_html tag_list topics ssh_url_to_repo
+      http_url_to_repo web_url web_path edit_path admin_show_path admin_edit_path star_count forks_count
+      created_at updated_at last_activity_at archived is_self_archived visibility
+      container_registry_enabled shared_runners_enabled
+      lfs_enabled merge_requests_ff_only_enabled merge_requests_default_target_self avatar_url
+      default_merge_request_target
+      issues_enabled merge_requests_enabled wiki_enabled
+      forking_access_level issues_access_level merge_requests_access_level
+      snippets_enabled jobs_enabled public_jobs open_issues_count open_merge_requests_count import_status
+      only_allow_merge_if_pipeline_succeeds request_access_enabled
+      only_allow_merge_if_all_discussions_are_resolved printing_merge_request_link_enabled
+      namespace group root_group statistics statistics_details_paths repository merge_requests merge_request issues
+      sourced_merge_requests
+      issue milestones pipelines removeSourceBranchAfterMerge pipeline_counts sentryDetailedError snippets
+      grafanaIntegration autocloseReferencedIssues suggestion_commit_message environments
+      environment boards jira_import_status jira_imports services releases release
+      alert_management_alerts alert_management_alert alert_management_alert_status_counts
+      incident_management_timeline_event incident_management_timeline_events
+      container_expiration_policy service_desk_enabled service_desk_address
+      issue_status_counts terraform_states alert_management_integrations
+      container_protection_repository_rules container_repositories container_repositories_count max_access_level
+      pipeline_analytics squash_read_only sast_ci_configuration
+      cluster_agent cluster_agents agent_configurations ci_access_authorized_agents user_access_authorized_agents
+      ci_template timelogs merge_commit_template squash_commit_template work_item_types
+      recent_issue_boards ci_config_path_or_default packages_cleanup_policy ci_variables
+      timelog_categories fork_targets forked_from branch_rules ci_config_variables pipeline_schedules languages
+      incident_management_timeline_event_tags visible_forks inherited_ci_variables autocomplete_users
+      ci_cd_settings detailed_import_status value_streams ml_models
+      allows_multiple_merge_request_assignees allows_multiple_merge_request_reviewers is_forked
+      unprotected_branches protectable_branches available_deploy_keys explore_catalog_path is_published
+      container_protection_tag_rules pages_force_https pages_use_unique_domain ci_pipeline_creation_request
+      ci_pipeline_creation_inputs marked_for_deletion_on permanent_deletion_date
+      webhook custom_attributes
+    ]
+
+    expect(described_class).to include_graphql_fields(*expected_fields)
+  end
+
+  describe 'count' do
+    let_it_be(:user) { create(:user, :with_namespace) }
+
+    let(:query) do
+      %(
+        query {
+          projects {
+              count
+              edges {
+                node {
+                  id
+              }
+            }
+          }
+        }
+      )
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    before do
+      ::Current.organization = user.namespace.organization
+    end
+
+    it 'returns valid projects count' do
+      create(:project, namespace: user.namespace)
+      create(:project, namespace: user.namespace)
+
+      expect(subject.dig('data', 'projects', 'count')).to eq(2)
+    end
+  end
+
+  describe 'archived' do
+    let_it_be_with_reload(:parent_group) { create(:group) }
+    let_it_be_with_reload(:project) { create(:project, :public, namespace: parent_group) }
+
+    let(:project_full_path) { project.full_path }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project_full_path}") {
+            archived
+          }
+        }
+      )
+    end
+
+    subject(:project_archived_result) do
+      result = GitlabSchema.execute(query).as_json
+      result.dig('data', 'project', 'archived')
+    end
+
+    where(:project_archived, :parent_archived, :expected_result) do
+      false | false | false
+      false | true  | true
+      true  | false | true
+      true  | true  | true
+    end
+
+    with_them do
+      before do
+        parent_group.update!(archived: parent_archived)
+        project.update!(archived: project_archived)
+      end
+
+      it 'returns expected archived result' do
+        expect(project_archived_result).to eq(expected_result)
+      end
+    end
+  end
+
+  describe 'container_registry_enabled' do
+    let_it_be_with_reload(:project) { create(:project, :public) }
+    let_it_be(:user) { create(:user) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            containerRegistryEnabled
+          }
+        }
+      )
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    context 'with `enabled` visibility' do
+      before do
+        project.project_feature.update_column(:container_registry_access_level, ProjectFeature::ENABLED)
+      end
+
+      context 'with non member user' do
+        it 'returns true' do
+          expect(subject.dig('data', 'project', 'containerRegistryEnabled')).to be(true)
+        end
+      end
+    end
+
+    context 'with `private` visibility' do
+      before do
+        project.project_feature.update_column(:container_registry_access_level, ProjectFeature::PRIVATE)
+      end
+
+      context 'with reporter user' do
+        before do
+          project.add_reporter(user)
+        end
+
+        it 'returns true' do
+          expect(subject.dig('data', 'project', 'containerRegistryEnabled')).to be(true)
+        end
+      end
+
+      context 'with guest user' do
+        before do
+          project.add_guest(user)
+        end
+
+        it 'returns false' do
+          expect(subject.dig('data', 'project', 'containerRegistryEnabled')).to be(false)
+        end
+      end
+    end
+  end
+
+  describe 'ci_config_path_or_default' do
+    let_it_be(:ci_config_path) { '.gitlab-ci.yml@group/private-project:refs/heads/secret-branch' }
+    let_it_be_with_reload(:project) do
+      create(:project, :public, :repository_private, ci_config_path: ci_config_path)
+    end
+
+    let_it_be(:member) { create(:user, developer_of: project) }
+    let_it_be(:non_member) { create(:user) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            ciConfigPathOrDefault
+          }
+        }
+      )
+    end
+
+    subject(:result) do
+      GitlabSchema.execute(query, context: { current_user: current_user })
+        .as_json.dig('data', 'project', 'ciConfigPathOrDefault')
+    end
+
+    context 'when the user can read the repository' do
+      let(:current_user) { member }
+
+      it { is_expected.to eq(ci_config_path) }
+
+      context 'when ci_config_path is not set' do
+        before do
+          project.update!(ci_config_path: nil)
+        end
+
+        it { is_expected.to eq(Ci::Pipeline::DEFAULT_CONFIG_PATH) }
+      end
+    end
+
+    context 'when the user cannot read the repository' do
+      where(:current_user) { [nil, ref(:non_member)] }
+
+      with_them do
+        it { is_expected.to eq('') }
+
+        context 'when ci_config_path is not set' do
+          before do
+            project.update!(ci_config_path: nil)
+          end
+
+          it { is_expected.to eq('') }
+        end
+      end
+    end
+  end
+
+  describe 'sast_ci_configuration' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:user) { create(:user) }
+
+    let(:query) do
+      %(
+        query {
+            project(fullPath: "#{project.full_path}") {
+                sastCiConfiguration {
+                  global {
+                    nodes {
+                      type
+                      options {
+                        nodes {
+                          label
+                          value
+                        }
+                      }
+                      field
+                      label
+                      defaultValue
+                      value
+                      size
+                    }
+                  }
+                  pipeline {
+                    nodes {
+                      type
+                      options {
+                        nodes {
+                          label
+                          value
+                        }
+                      }
+                      field
+                      label
+                      defaultValue
+                      value
+                      size
+                    }
+                  }
+                  analyzers {
+                    nodes {
+                      name
+                      label
+                      enabled
+                    }
+                  }
+                }
+              }
+        }
+      )
+    end
+
+    before do
+      stub_licensed_features(security_dashboard: true)
+      project.add_developer(user)
+      allow(project.repository).to receive(:blob_data_at).and_return(gitlab_ci_yml_content)
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    include_context 'read ci configuration for sast enabled project'
+
+    it "returns the project's sast configuration for global variables" do
+      secure_analyzers = subject.dig('data', 'project', 'sastCiConfiguration', 'global', 'nodes').first
+      expect(secure_analyzers['type']).to eq('string')
+      expect(secure_analyzers['field']).to eq('SECURE_ANALYZERS_PREFIX')
+      expect(secure_analyzers['label']).to eq('Image prefix')
+      expect(secure_analyzers['defaultValue']).to eq('$CI_TEMPLATE_REGISTRY_HOST/security-products')
+      expect(secure_analyzers['value']).to eq('$CI_TEMPLATE_REGISTRY_HOST/security-products')
+      expect(secure_analyzers['size']).to eq('LARGE')
+      expect(secure_analyzers['options']).to be_nil
+    end
+
+    it "returns the project's sast configuration for pipeline variables" do
+      pipeline_stage = subject.dig('data', 'project', 'sastCiConfiguration', 'pipeline', 'nodes').first
+      expect(pipeline_stage['type']).to eq('string')
+      expect(pipeline_stage['field']).to eq('stage')
+      expect(pipeline_stage['label']).to eq('Stage')
+      expect(pipeline_stage['defaultValue']).to eq('test')
+      expect(pipeline_stage['value']).to eq('test')
+      expect(pipeline_stage['size']).to eq('MEDIUM')
+    end
+
+    it "returns the project's sast configuration for analyzer variables" do
+      analyzer = subject.dig('data', 'project', 'sastCiConfiguration', 'analyzers', 'nodes').first
+      expect(analyzer['name']).to eq('brakeman')
+      expect(analyzer['label']).to eq('Brakeman')
+      expect(analyzer['enabled']).to be(true)
+    end
+
+    context 'with guest user' do
+      before do
+        project.add_guest(user)
+      end
+
+      context 'when project is private' do
+        let(:project) { create(:project, :private, :repository) }
+
+        it 'returns no configuration' do
+          secure_analyzers_prefix = subject.dig('data', 'project', 'sastCiConfiguration')
+          expect(secure_analyzers_prefix).to be_nil
+        end
+      end
+
+      context 'when project is public' do
+        let(:project) { create(:project, :public, :repository) }
+
+        context 'when repository is accessible by everyone' do
+          it "returns the project's sast configuration for global variables" do
+            secure_analyzers_prefix = subject.dig('data', 'project', 'sastCiConfiguration', 'global', 'nodes').first
+
+            expect(secure_analyzers_prefix['type']).to eq('string')
+            expect(secure_analyzers_prefix['field']).to eq('SECURE_ANALYZERS_PREFIX')
+          end
+        end
+      end
+    end
+
+    context 'with non-member user', :sidekiq_inline do
+      before do
+        project.team.truncate
+      end
+
+      context 'when project is private' do
+        let(:project) { create(:project, :private, :repository) }
+
+        it 'returns no configuration' do
+          secure_analyzers_prefix = subject.dig('data', 'project', 'sastCiConfiguration')
+          expect(secure_analyzers_prefix).to be_nil
+        end
+      end
+
+      context 'when project is public' do
+        let(:project) { create(:project, :public, :repository) }
+
+        context 'when repository is accessible by everyone' do
+          it "returns the project's sast configuration for global variables" do
+            secure_analyzers_prefix = subject.dig('data', 'project', 'sastCiConfiguration', 'global', 'nodes').first
+            expect(secure_analyzers_prefix['type']).to eq('string')
+            expect(secure_analyzers_prefix['field']).to eq('SECURE_ANALYZERS_PREFIX')
+          end
+        end
+
+        context 'when repository is accessible only by team members' do
+          it 'returns no configuration' do
+            project.project_feature.update!(
+              merge_requests_access_level: ProjectFeature::DISABLED,
+              builds_access_level: ProjectFeature::DISABLED,
+              repository_access_level: ProjectFeature::PRIVATE
+            )
+
+            secure_analyzers_prefix = subject.dig('data', 'project', 'sastCiConfiguration')
+            expect(secure_analyzers_prefix).to be_nil
+          end
+        end
+      end
+    end
+
+    context 'with empty repository' do
+      let_it_be(:project) { create(:project_empty_repo) }
+
+      it 'raises an error' do
+        expect(subject['errors'][0]['message']).to eq(
+          'You must <a target="_blank" rel="noopener noreferrer" ' \
+            'href="http://localhost/help/user/project/repository/_index.md#' \
+            'add-files-to-a-repository">add at least one file to the ' \
+            'repository</a> before using Security features.'
+        )
+      end
+    end
+  end
+
+  describe 'issue field' do
+    subject { described_class.fields['issue'] }
+
+    it { is_expected.to have_graphql_type(Types::IssueType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::ProjectIssuesResolver.single) }
+  end
+
+  describe 'issues field' do
+    subject { described_class.fields['issues'] }
+
+    it { is_expected.to have_graphql_type(Types::IssueType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::ProjectIssuesResolver) }
+  end
+
+  describe 'merge_request field' do
+    subject { described_class.fields['mergeRequest'] }
+
+    it { is_expected.to have_graphql_type(Types::MergeRequestType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::MergeRequestsResolver.single) }
+    it { is_expected.to have_graphql_arguments(:iid) }
+  end
+
+  describe 'merge_requests field' do
+    subject { described_class.fields['mergeRequests'] }
+
+    it { is_expected.to have_graphql_type(Types::MergeRequestType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::ProjectMergeRequestsResolver) }
+
+    it do
+      is_expected.to include_graphql_arguments(
+        :iids,
+        :source_branches,
+        :target_branches,
+        :state,
+        :draft,
+        :labels,
+        :label_name,
+        :before,
+        :after,
+        :first,
+        :last,
+        :merged_after,
+        :merged_before,
+        :created_after,
+        :created_before,
+        :deployed_after,
+        :deployed_before,
+        :deployment_id,
+        :updated_after,
+        :updated_before,
+        :author_username,
+        :approved_by,
+        :my_reaction_emoji,
+        :merged_by,
+        :release_tag,
+        :assignee_username,
+        :assignee_wildcard_id,
+        :reviewer_username,
+        :reviewer_wildcard_id,
+        :review_state,
+        :review_states,
+        :milestone_title,
+        :milestone_wildcard_id,
+        :not,
+        :sort,
+        :subscribed
+      )
+    end
+  end
+
+  describe 'pipelineCounts field' do
+    subject { described_class.fields['pipelineCounts'] }
+
+    it { is_expected.to have_graphql_type(Types::Ci::PipelineCountsType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Ci::ProjectPipelineCountsResolver) }
+  end
+
+  describe 'snippets field' do
+    subject { described_class.fields['snippets'] }
+
+    it { is_expected.to have_graphql_type(Types::SnippetType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Projects::SnippetsResolver) }
+  end
+
+  describe 'grafana_integration field' do
+    subject { described_class.fields['grafanaIntegration'] }
+
+    let_it_be(:project) { create(:project) }
+
+    it { is_expected.to have_graphql_type(Types::GrafanaIntegrationType) }
+    it { is_expected.to have_graphql_resolver(nil) }
+
+    it 'returns nil for grafana_integration' do
+      expect(resolve_field(:grafana_integration, project, current_user: project.owner)).to be_nil
+    end
+  end
+
+  describe 'only_allow_merge_if_pipeline_succeeds field' do
+    let_it_be(:project) { create(:project) }
+
+    it 'resolves the value inherited from the parent group' do
+      expect(project).to receive(:only_allow_merge_if_pipeline_succeeds?)
+        .with(inherit_group_setting: true).and_return(true)
+
+      expect(resolve_field(:only_allow_merge_if_pipeline_succeeds, project, current_user: project.owner)).to be(true)
+    end
+  end
+
+  describe 'allow_merge_on_skipped_pipeline field' do
+    let_it_be(:project) { create(:project) }
+
+    it 'resolves the value inherited from the parent group' do
+      expect(project).to receive(:allow_merge_on_skipped_pipeline?)
+        .with(inherit_group_setting: true).and_return(true)
+
+      expect(resolve_field(:allow_merge_on_skipped_pipeline, project, current_user: project.owner)).to be(true)
+    end
+  end
+
+  describe 'environments field' do
+    subject { described_class.fields['environments'] }
+
+    it { is_expected.to have_graphql_type(Types::EnvironmentType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::EnvironmentsResolver) }
+  end
+
+  describe 'environment field' do
+    subject { described_class.fields['environment'] }
+
+    it { is_expected.to have_graphql_type(Types::EnvironmentType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::EnvironmentsResolver.single) }
+  end
+
+  describe 'members field' do
+    subject { described_class.fields['projectMembers'] }
+
+    it { is_expected.to have_graphql_type(Types::MemberInterface.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::ProjectMembersResolver) }
+  end
+
+  describe 'boards field' do
+    subject { described_class.fields['boards'] }
+
+    it { is_expected.to have_graphql_type(Types::BoardType.connection_type) }
+  end
+
+  describe 'jira_imports field' do
+    subject { described_class.fields['jiraImports'] }
+
+    it { is_expected.to have_graphql_type(Types::JiraImportType.connection_type) }
+  end
+
+  describe 'services field' do
+    subject { described_class.fields['services'] }
+
+    it { is_expected.to have_graphql_type(Types::Projects::ServiceType.connection_type) }
+  end
+
+  describe 'releases field' do
+    subject { described_class.fields['release'] }
+
+    it { is_expected.to have_graphql_type(Types::ReleaseType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::ReleaseResolver) }
+  end
+
+  describe 'release field' do
+    subject { described_class.fields['releases'] }
+
+    it { is_expected.to have_graphql_type(Types::ReleaseType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::ReleasesResolver) }
+  end
+
+  describe 'pipelineScheduleStatusCount field' do
+    subject { described_class.fields['pipelineScheduleStatusCounts'] }
+
+    it { is_expected.to have_graphql_type(Types::Ci::PipelineScheduleStatusCountType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Ci::ProjectPipelineScheduleStatusCountsResolver) }
+  end
+
+  describe 'container tags expiration policy field' do
+    subject { described_class.fields['containerTagsExpirationPolicy'] }
+
+    it { is_expected.to have_graphql_type(Types::ContainerRegistry::ContainerTagsExpirationPolicyType) }
+    it { expect(subject.instance_variable_get(:@authorize)).to include(:read_container_image) }
+  end
+
+  describe 'container expiration policy field' do
+    subject { described_class.fields['containerExpirationPolicy'] }
+
+    it { is_expected.to have_graphql_type(Types::ContainerExpirationPolicyType) }
+  end
+
+  describe 'container protection repository rules' do
+    subject { described_class.fields['containerProtectionRepositoryRules'] }
+
+    it { is_expected.to have_graphql_type(Types::ContainerRegistry::Protection::RuleType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::ProjectContainerRegistryProtectionRulesResolver) }
+  end
+
+  describe 'packages cleanup policy field' do
+    subject { described_class.fields['packagesCleanupPolicy'] }
+
+    it { is_expected.to have_graphql_type(Types::Packages::Cleanup::PolicyType) }
+  end
+
+  describe 'terraform state field' do
+    subject { described_class.fields['terraformState'] }
+
+    it { is_expected.to have_graphql_type(Types::Terraform::StateType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Terraform::StatesResolver.single) }
+  end
+
+  describe 'terraform states field' do
+    subject { described_class.fields['terraformStates'] }
+
+    it { is_expected.to have_graphql_type(Types::Terraform::StateType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Terraform::StatesResolver) }
+  end
+
+  describe 'timelogs field' do
+    subject { described_class.fields['timelogs'] }
+
+    it 'finds timelogs for project' do
+      is_expected.to have_graphql_resolver(Resolvers::TimelogResolver)
+      is_expected.to have_graphql_type(Types::TimelogType.connection_type)
+    end
+  end
+
+  it_behaves_like 'a GraphQL type with labels' do
+    let(:labels_resolver_arguments) do
+      [:search_term, :includeAncestorGroups, :searchIn, :title, :archived, :fuzzySearch]
+    end
+  end
+
+  describe 'jira_imports' do
+    subject { resolve_field(:jira_imports, project) }
+
+    let_it_be(:project) { create(:project, :public) }
+
+    context 'when project has Jira imports' do
+      let_it_be(:jira_import1) do
+        create(:jira_import_state, :finished, project: project, jira_project_key: 'AA', created_at: 2.days.ago)
+      end
+
+      let_it_be(:jira_import2) do
+        create(:jira_import_state, :finished, project: project, jira_project_key: 'BB', created_at: 5.days.ago)
+      end
+
+      it 'retrieves the imports' do
+        expect(subject).to contain_exactly(jira_import1, jira_import2)
+      end
+    end
+
+    context 'when project does not have Jira imports' do
+      it 'returns an empty result' do
+        expect(subject).to be_empty
+      end
+    end
+  end
+
+  describe 'pipeline_analytics field' do
+    subject { described_class.fields['pipelineAnalytics'] }
+
+    it { is_expected.to have_graphql_type(Types::Ci::AnalyticsType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Ci::PipelineAnalyticsResolver) }
+  end
+
+  describe 'jobs field' do
+    subject { described_class.fields['jobs'] }
+
+    it { is_expected.to have_graphql_type(Types::Ci::JobType.connection_type) }
+
+    it do
+      is_expected.to have_graphql_arguments(:statuses, :with_artifacts, :name, :sources,
+        :after, :before, :first, :last, :kind, :pipeline_iid)
+    end
+  end
+
+  describe 'ci_template field' do
+    subject { described_class.fields['ciTemplate'] }
+
+    it { is_expected.to have_graphql_type(Types::Ci::TemplateType) }
+    it { is_expected.to have_graphql_arguments(:name) }
+  end
+
+  describe 'ci_job_token_scope field' do
+    subject { described_class.fields['ciJobTokenScope'] }
+
+    it { is_expected.to have_graphql_type(Types::Ci::JobTokenScopeType) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Ci::JobTokenScopeResolver) }
+  end
+
+  describe 'incident_management_timeline_event_tags field' do
+    subject { described_class.fields['incidentManagementTimelineEventTags'] }
+
+    it { is_expected.to have_graphql_type(Types::IncidentManagement::TimelineEventTagType) }
+  end
+
+  describe 'mlModels field' do
+    subject { described_class.fields['mlModels'] }
+
+    it { is_expected.to have_graphql_type(Types::Ml::ModelType.connection_type) }
+    it { is_expected.to have_graphql_resolver(Resolvers::Ml::FindModelsResolver) }
+  end
+
+  describe 'agent_configurations' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:user) { create(:user) }
+    let_it_be(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            agentConfigurations {
+              nodes {
+                agentName
+              }
+            }
+          }
+        }
+      )
+    end
+
+    let(:agent_name) { 'example-agent-name' }
+    let(:kas_client) { instance_double(Gitlab::Kas::Client, list_agent_config_files: [double(agent_name: agent_name)]) }
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    before do
+      project.add_maintainer(user)
+      allow(Gitlab::Kas::Client).to receive(:new).and_return(kas_client)
+    end
+
+    it 'returns configured agents' do
+      agents = subject.dig('data', 'project', 'agentConfigurations', 'nodes')
+
+      expect(agents.count).to eq(1)
+      expect(agents.first['agentName']).to eq(agent_name)
+    end
+  end
+
+  describe 'cluster_agents' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:user) { create(:user) }
+    let_it_be(:cluster_agent) { create(:cluster_agent, project: project, name: 'agent-name') }
+    let_it_be(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            clusterAgents {
+              count
+              nodes {
+                id
+                name
+                createdAt
+                updatedAt
+
+                project {
+                  id
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    before do
+      project.add_maintainer(user)
+    end
+
+    it 'returns associated cluster agents' do
+      agents = subject.dig('data', 'project', 'clusterAgents', 'nodes')
+
+      expect(agents.count).to be(1)
+      expect(agents.first['id']).to eq(cluster_agent.to_global_id.to_s)
+      expect(agents.first['name']).to eq('agent-name')
+      expect(agents.first['createdAt']).to be_present
+      expect(agents.first['updatedAt']).to be_present
+      expect(agents.first['project']['id']).to eq(project.to_global_id.to_s)
+    end
+
+    it 'returns count of cluster agents' do
+      count = subject.dig('data', 'project', 'clusterAgents', 'count')
+
+      expect(count).to be(project.cluster_agents.size)
+    end
+  end
+
+  describe 'cluster_agent' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:user) { create(:user) }
+    let_it_be(:cluster_agent) { create(:cluster_agent, project: project, name: 'agent-name') }
+    let_it_be(:agent_token) { create(:cluster_agent_token, agent: cluster_agent) }
+    let_it_be(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            clusterAgent(name: "#{cluster_agent.name}") {
+              id
+
+              tokens {
+                count
+                nodes {
+                  id
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    before do
+      project.add_maintainer(user)
+    end
+
+    it 'returns associated cluster agents' do
+      agent = subject.dig('data', 'project', 'clusterAgent')
+      tokens = agent.dig('tokens', 'nodes')
+
+      expect(agent['id']).to eq(cluster_agent.to_global_id.to_s)
+
+      expect(tokens.count).to be(1)
+      expect(tokens.first['id']).to eq(agent_token.to_global_id.to_s)
+    end
+
+    it 'returns count of agent tokens' do
+      agent = subject.dig('data', 'project', 'clusterAgent')
+      count = agent.dig('tokens', 'count')
+
+      expect(cluster_agent.agent_tokens.size).to be(count)
+    end
+  end
+
+  describe 'service_desk_address' do
+    let(:user) { create(:user) }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            id
+            serviceDeskAddress
+          }
+        }
+      )
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    before do
+      allow(::Gitlab::Email::ServiceDeskEmail).to receive_messages(
+        enabled?: true,
+        address_for_key: 'address-suffix@example.com'
+      )
+    end
+
+    context 'when a user can admin issues' do
+      let(:project) { create(:project, :public, :service_desk_enabled) }
+
+      before do
+        project.add_reporter(user)
+      end
+
+      it 'is present' do
+        expect(subject.dig('data', 'project', 'serviceDeskAddress')).to be_present
+      end
+    end
+
+    context 'when a user can not admin issues' do
+      let(:project) { create(:project, :public, :service_desk_disabled) }
+
+      it 'is empty' do
+        expect(subject.dig('data', 'project', 'serviceDeskAddress')).to be_blank
+      end
+    end
+  end
+
+  describe 'project features access level' do
+    let_it_be(:project) { create(:project, :public) }
+
+    where(project_feature: %w[forkingAccessLevel issuesAccessLevel mergeRequestsAccessLevel])
+
+    with_them do
+      let(:query) do
+        %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            #{project_feature} {
+              integerValue
+              stringValue
+            }
+          }
+        }
+      )
+      end
+
+      subject { GitlabSchema.execute(query).as_json.dig('data', 'project', project_feature) }
+
+      it { is_expected.to eq({ "integerValue" => ProjectFeature::ENABLED, "stringValue" => "ENABLED" }) }
+    end
+  end
+
+  describe 'open_merge_requests_count' do
+    let_it_be_with_reload(:project) { create(:project, :public) }
+    let_it_be(:open_merge_request) { create(:merge_request, source_project: project) }
+    let_it_be(:closed_merge_request) { create(:merge_request, :closed, source_project: project) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            openMergeRequestsCount
+          }
+        }
+      )
+    end
+
+    subject(:open_merge_requests_count) do
+      GitlabSchema.execute(query).as_json.dig('data', 'project', 'openMergeRequestsCount')
+    end
+
+    context 'when the user can access merge requests' do
+      it { is_expected.to eq(1) }
+    end
+
+    context 'when the user cannot access merge requests' do
+      before do
+        project.project_feature.update!(merge_requests_access_level: ProjectFeature::PRIVATE)
+      end
+
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe 'is_forked' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:unforked_project) { create(:project, :public) }
+    let!(:forked_project) { fork_project(unforked_project) }
+    let(:project) { nil }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            isForked
+          }
+        }
+      )
+    end
+
+    let(:response) { GitlabSchema.execute(query).as_json }
+
+    subject(:is_forked) { response.dig('data', 'project', 'isForked') }
+
+    context 'when project has a fork network' do
+      context 'when fork is itself' do
+        let(:project) { unforked_project }
+
+        it { is_expected.to be false }
+      end
+
+      context 'when fork is not itself' do
+        let(:project) { forked_project }
+
+        it { is_expected.to be true }
+
+        it 'avoids N+1 queries' do
+          query_count = ActiveRecord::QueryRecorder.new { response }
+
+          expect(query_count).not_to exceed_query_limit(8)
+        end
+      end
+    end
+
+    context 'when project does not have a fork network' do
+      let(:project) { unforked_project }
+
+      before do
+        allow(project).to receive(:fork_network).and_return(nil)
+      end
+
+      it { is_expected.to be false }
+    end
+  end
+
+  describe 'branch_rules' do
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project, :public) }
+    let_it_be(:name) { 'feat/*' }
+    let_it_be(:protected_branch) do
+      create(:protected_branch, project: project, name: name)
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            branchRules {
+              nodes {
+                name
+              }
+            }
+          }
+        }
+      )
+    end
+
+    let(:branch_rules_data) do
+      subject.dig('data', 'project', 'branchRules', 'nodes')
+    end
+
+    let(:field) { described_class.fields['branchRules'] }
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    context 'when a user can read protected branches' do
+      before do
+        project.add_maintainer(user)
+      end
+
+      it 'is present and correct' do
+        expect(branch_rules_data.count).to eq(2)
+        expect(branch_rules_data.first['name']).to eq('All branches')
+        expect(branch_rules_data.last['name']).to eq(name)
+      end
+    end
+
+    context 'when a user cannot read protected branches' do
+      before do
+        project.add_guest(user)
+      end
+
+      it 'is empty' do
+        expect(branch_rules_data.count).to eq(0)
+      end
+    end
+
+    it 'has forward-only pagination extension' do
+      expect(field.extensions).to include(
+        an_instance_of(Gitlab::Graphql::Extensions::ForwardOnlyExternallyPaginatedArrayExtension)
+      )
+    end
+
+    it 'has correct pagination settings' do
+      expect(field.max_page_size).to eq(100)
+    end
+  end
+
+  describe 'timeline_event_tags' do
+    let_it_be(:user) { create(:user, :with_namespace) }
+    let_it_be(:project) do
+      create(
+        :project,
+        :private,
+        :repository,
+        creator_id: user.id,
+        namespace: user.namespace
+      )
+    end
+
+    let_it_be(:tag1) do
+      create(
+        :incident_management_timeline_event_tag,
+        project: project,
+        name: 'Tag 1'
+      )
+    end
+
+    let_it_be(:tag2) do
+      create(
+        :incident_management_timeline_event_tag,
+        project: project,
+        name: 'Tag 2'
+      )
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            incidentManagementTimelineEventTags {
+              name
+              id
+            }
+          }
+        }
+      )
+    end
+
+    let(:tags) do
+      subject.dig('data', 'project', 'incidentManagementTimelineEventTags')
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    context 'when user has permissions to read project' do
+      before do
+        project.add_developer(user)
+      end
+
+      it 'contains timeline event tags' do
+        expect(tags.count).to eq(2)
+        expect(tags.first['name']).to eq(tag1.name)
+        expect(tags.last['name']).to eq(tag2.name)
+      end
+    end
+  end
+
+  describe 'languages' do
+    let_it_be(:user) { create(:user, :with_namespace) }
+    let_it_be(:project) do
+      create(
+        :project,
+        :private,
+        :repository,
+        creator_id: user.id,
+        namespace: user.namespace
+      )
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            languages {
+              name
+              share
+              color
+            }
+          }
+        }
+      )
+    end
+
+    let(:mock_languages) { [] }
+    let(:languages) { subject.dig('data', 'project', 'languages') }
+
+    before do
+      allow_next_instance_of(::Projects::RepositoryLanguagesService) do |service|
+        allow(service).to receive(:execute).and_return(mock_languages)
+      end
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    context "when the languages haven't been detected yet" do
+      it 'returns an empty array' do
+        expect(languages).to eq([])
+      end
+    end
+
+    context 'when the languages were detected before' do
+      let(:mock_languages) do
+        [{ share: 66.69, name: "Ruby", color: "#701516" },
+          { share: 22.98, name: "JavaScript", color: "#f1e05a" },
+          { share: 7.91, name: "HTML", color: "#e34c26" },
+          { share: 2.42, name: "CoffeeScript", color: "#244776" }]
+      end
+
+      it 'returns the repository languages' do
+        expect(languages).to eq(mock_languages.map(&:stringify_keys))
+      end
+    end
+  end
+
+  describe 'visible_forks' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:project) { create(:project, :public) }
+    let_it_be(:fork_reporter) { fork_project(project, nil, { repository: true }) }
+    let_it_be(:fork_developer) { fork_project(project, nil, { repository: true }) }
+    let_it_be(:fork_group_developer) { fork_project(project, nil, { repository: true }) }
+    let_it_be(:fork_public) { fork_project(project, nil, { repository: true }) }
+    let_it_be_with_reload(:fork_private) { fork_project(project, nil, { repository: true }) }
+
+    let(:minimum_access_level) { '' }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            visibleForks#{minimum_access_level} {
+              nodes {
+                fullPath
+              }
+            }
+          }
+        }
+      )
+    end
+
+    let(:forks) do
+      subject.dig('data', 'project', 'visibleForks', 'nodes')
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    before_all do
+      fork_reporter.add_reporter(user)
+      fork_developer.add_developer(user)
+      fork_group_developer.group.add_developer(user)
+      fork_private.update!(visibility_level: Gitlab::VisibilityLevel::PRIVATE)
+    end
+
+    it 'contains all forks' do
+      expect(forks.count).to eq(4)
+    end
+
+    context 'with minimum_access_level DEVELOPER' do
+      let(:minimum_access_level) { '(minimumAccessLevel: DEVELOPER)' }
+
+      it 'contains forks with developer access' do
+        expect(forks).to contain_exactly(
+          a_hash_including('fullPath' => fork_developer.full_path),
+          a_hash_including('fullPath' => fork_group_developer.full_path)
+        )
+      end
+
+      context 'when current user is not set' do
+        let(:user) { nil }
+
+        it 'does not return any forks' do
+          expect(forks.count).to eq(0)
+        end
+      end
+    end
+  end
+
+  describe 'detailed_import_status' do
+    let_it_be_with_reload(:project) { create(:project, :with_import_url) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            detailedImportStatus {
+              status
+              url
+              lastError
+            }
+          }
+        }
+      )
+    end
+
+    let(:detailed_import_status) do
+      subject.dig('data', 'project', 'detailedImportStatus')
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: current_user }).as_json }
+
+    context 'when project is not imported' do
+      let(:current_user) { create(:user) }
+
+      before do
+        project.add_developer(current_user)
+        project.import_state.destroy!
+      end
+
+      it 'returns nil' do
+        expect(detailed_import_status).to be_nil
+      end
+    end
+
+    context 'when current_user is not set' do
+      let(:current_user) { nil }
+
+      it 'returns nil' do
+        expect(detailed_import_status).to be_nil
+      end
+    end
+
+    context 'when current_user has no permission' do
+      let(:current_user) { create(:user) }
+
+      it 'returns nil' do
+        expect(detailed_import_status).to be_nil
+      end
+    end
+
+    context 'when current_user has guest permission' do
+      let_it_be(:current_user) { create(:user) }
+
+      before do
+        project.add_guest(current_user)
+      end
+
+      it 'does not leak the import url' do
+        expect(detailed_import_status).to include(
+          'status' => project.import_state.status,
+          'url' => nil
+        )
+      end
+    end
+
+    context 'when current_user has developer permission' do
+      let_it_be(:current_user) { create(:user) }
+
+      before do
+        project.add_developer(current_user)
+        project.import_state.last_error = 'Some error'
+        project.import_state.save!
+      end
+
+      it 'returns detailed information but hides the import url' do
+        expect(detailed_import_status).to include(
+          'status' => project.import_state.status,
+          'url' => nil,
+          'lastError' => nil
+        )
+      end
+    end
+
+    context 'when current_user has maintainer permission' do
+      let_it_be(:current_user) { create(:user) }
+
+      before do
+        project.add_maintainer(current_user)
+        project.import_state.last_error = 'Some error'
+        project.import_state.save!
+      end
+
+      it 'returns detailed information but hides the import url' do
+        expect(detailed_import_status).to include(
+          'status' => project.import_state.status,
+          'url' => nil,
+          'lastError' => 'Some error'
+        )
+      end
+    end
+
+    context 'when current_user has owner permission' do
+      let_it_be(:current_user) { create(:user) }
+
+      before do
+        project.add_owner(current_user)
+        project.import_state.last_error = 'Some error'
+        project.import_state.save!
+      end
+
+      it 'returns detailed information including the import url' do
+        expect(detailed_import_status).to include(
+          'status' => project.import_state.status,
+          'url' => project.safe_import_url,
+          'lastError' => 'Some error'
+        )
+      end
+    end
+  end
+
+  describe 'protectable_branches' do
+    subject { GitlabSchema.execute(query, context: { current_user: current_user }).as_json }
+
+    let_it_be(:current_user) { create(:user) }
+    let_it_be_with_refind(:project) { create(:project, :empty_repo) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            id
+            protectableBranches
+          }
+        }
+      )
+    end
+
+    let(:protectable_branches) do
+      subject.dig('data', 'project', 'protectableBranches')
+    end
+
+    before_all do
+      project.add_maintainer(current_user)
+    end
+
+    describe 'an empty repository' do
+      let(:project) { create(:project, :empty_repo, maintainers: current_user) }
+
+      it 'returns an empty array' do
+        expect(protectable_branches).to be_empty
+      end
+    end
+
+    describe 'a repository with branches' do
+      let(:branch_names) { %w[master feat/dropdown] }
+
+      before_all do
+        project.add_maintainer(current_user)
+        project.repository.create_file(
+          current_user, 'test.txt', 'content', message: 'init', branch_name: 'master'
+        )
+        project.repository.create_branch('feat/dropdown', 'master')
+      end
+
+      context 'and no protections' do
+        it 'returns all the branch names' do
+          expect(protectable_branches).to match_array(branch_names)
+        end
+      end
+
+      context 'and all branches are protected with specific rules' do
+        before do
+          branch_names.each do |name|
+            create(:protected_branch, project: project, name: name)
+          end
+        end
+
+        it 'returns an empty array' do
+          expect(protectable_branches).to be_empty
+        end
+      end
+
+      context 'and all branches are protected with a wildcard rule' do
+        before do
+          create(:protected_branch, name: '*')
+        end
+
+        it 'returns all the branch names' do
+          expect(protectable_branches).to match_array(branch_names)
+        end
+      end
+
+      context 'without read_code permissions' do
+        before do
+          project.add_guest(current_user)
+        end
+
+        it 'returns an empty array' do
+          expect(protectable_branches).to be_nil
+        end
+      end
+
+      context 'with read_code permissions' do
+        before do
+          project.add_member(current_user, Gitlab::Access::REPORTER)
+        end
+
+        it 'returns all the branch names' do
+          expect(protectable_branches).to match_array(branch_names)
+        end
+      end
+    end
+  end
+
+  describe 'available_deploy_keys' do
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            availableDeployKeys{
+              nodes{
+                id
+                title
+                user {
+                  username
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    let_it_be(:project) { create :project }
+    let_it_be(:deploy_key) { create(:deploy_keys_project, :write_access, project: project).deploy_key }
+    let_it_be(:maintainer) { create(:user) }
+    let(:available_deploy_keys) { subject.dig('data', 'project', 'availableDeployKeys', 'nodes') }
+
+    subject { GitlabSchema.execute(query, context: { current_user: current_user }).as_json }
+
+    context 'when there are deploy keys' do
+      before_all do
+        project.add_maintainer(maintainer)
+      end
+
+      context 'and the current user has access' do
+        let(:current_user) { maintainer }
+
+        it 'returns the deploy keys' do
+          expect(available_deploy_keys[0]).to include({
+            'id' => deploy_key.to_global_id.to_s,
+            'title' => deploy_key.title,
+            'user' => {
+              'username' => deploy_key.user.username
+            }
+          })
+        end
+      end
+
+      context 'and the current user does not have access' do
+        let(:current_user) { create(:user) }
+
+        it 'does not return any deploy keys' do
+          expect(available_deploy_keys).to be_nil
+        end
+      end
+    end
+  end
+
+  describe 'web_path' do
+    let_it_be(:current_user) { create(:user) }
+    let_it_be(:project) { create(:project, :public) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            webPath
+          }
+        }
+      )
+    end
+
+    subject(:web_path) do
+      GitlabSchema
+        .execute(query, context: { current_user: current_user })
+        .as_json
+        .dig('data', 'project', 'webPath')
+    end
+
+    it 'returns web_path field' do
+      expect(web_path).to eq("/#{project.path_with_namespace}")
+    end
+  end
+
+  describe 'edit_path' do
+    let_it_be(:current_user) { create(:user) }
+    let_it_be(:project) { create(:project, :public) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            editPath
+          }
+        }
+      )
+    end
+
+    subject(:edit_path) do
+      GitlabSchema
+        .execute(query, context: { current_user: current_user })
+        .as_json
+        .dig('data', 'project', 'editPath')
+    end
+
+    it 'returns edit_path field' do
+      expect(edit_path).to eq("/#{project.path_with_namespace}/edit")
+    end
+  end
+
+  describe 'admin_show_path' do
+    let_it_be(:project) { create(:project, :public) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            adminShowPath
+          }
+        }
+      )
+    end
+
+    subject(:admin_show_path) do
+      GitlabSchema
+        .execute(query, context: { current_user: current_user })
+        .as_json
+        .dig('data', 'project', 'adminShowPath')
+    end
+
+    context 'when current user is an admin', :enable_admin_mode do
+      let_it_be(:current_user) { create(:user, :admin) }
+
+      it 'returns admin_show_path field' do
+        expect(admin_show_path).to eq("/admin/projects/#{project.full_path}")
+      end
+    end
+
+    context 'when current user is not an admin' do
+      let_it_be(:current_user) { create(:user) }
+
+      it 'returns admin_show_path field as null' do
+        expect(admin_show_path).to be_nil
+      end
+    end
+  end
+
+  describe 'admin_edit_path' do
+    let_it_be(:project) { create(:project, :public) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            adminEditPath
+          }
+        }
+      )
+    end
+
+    subject(:admin_edit_path) do
+      GitlabSchema
+        .execute(query, context: { current_user: current_user })
+        .as_json
+        .dig('data', 'project', 'adminEditPath')
+    end
+
+    context 'when current user is an admin', :enable_admin_mode do
+      let_it_be(:current_user) { create(:user, :admin) }
+
+      it 'returns admin_edit_path field' do
+        expect(admin_edit_path).to eq("/admin/projects/#{project.full_path}/edit")
+      end
+    end
+
+    context 'when current user is not an admin' do
+      let_it_be(:current_user) { create(:user) }
+
+      it 'returns admin_edit_path field as null' do
+        expect(admin_edit_path).to be_nil
+      end
+    end
+  end
+
+  describe 'organization_edit_path' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:organization) { create(:organization) }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            organizationEditPath
+          }
+        }
+      )
+    end
+
+    let(:response) { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    subject(:organization_edit_path) { response.dig('data', 'project', 'organizationEditPath') }
+
+    context 'when project has an organization associated with it' do
+      let_it_be(:project) { create(:project, :public, organization: organization) }
+
+      it 'returns edit path scoped to organization' do
+        expect(organization_edit_path).to eq(
+          "/o/#{organization.path}/-/projects/#{project.path_with_namespace}/edit"
+        )
+      end
+    end
+  end
+
+  describe 'explore_catalog_path' do
+    let_it_be(:user) { create(:user) }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            exploreCatalogPath
+          }
+        }
+      )
+    end
+
+    let(:response) { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    subject(:explore_catalog_path) { response.dig('data', 'project', 'exploreCatalogPath') }
+
+    context 'when project is not a catalog resource' do
+      let_it_be(:project) { create(:project, :public) }
+
+      it 'returns nil for explore_catalog_path' do
+        expect(explore_catalog_path).to be_nil
+      end
+    end
+
+    context 'when project is a catalog resource' do
+      let_it_be(:project) do
+        create(:project, :public, :catalog_resource_with_components, create_tag: '1.0.0')
+      end
+
+      let_it_be(:catalog_resource) { create(:ci_catalog_resource, project: project) }
+
+      it 'returns correct path for explore_catalog_path' do
+        expect(explore_catalog_path).to eq("/explore/catalog/#{project.path_with_namespace}")
+      end
+    end
+  end
+
+  describe 'is_published' do
+    let_it_be(:user) { create(:user) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            isPublished
+          }
+        }
+      )
+    end
+
+    let(:response) { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    subject(:is_published) { response.dig('data', 'project', 'isPublished') }
+
+    context 'when project is not a catalog resource' do
+      let_it_be(:project) { create(:project, :public) }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when project is a catalog resource and is not published' do
+      let_it_be(:project) { create(:project, :public) }
+      let_it_be(:catalog_resource) { create(:ci_catalog_resource, project: project) }
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'when project is a catalog resource and is published' do
+      let_it_be(:project) do
+        create(:project, :public, :catalog_resource_with_components, create_tag: '1.0.0')
+      end
+
+      let_it_be(:catalog_resource) { create(:ci_catalog_resource, project: project, state: :published) }
+
+      it { is_expected.to be(true) }
+    end
+  end
+
+  describe 'pages_force_https' do
+    let_it_be(:current_user) { create(:user) }
+    let_it_be(:project) { create(:project, :repository) }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pagesForceHttps
+          }
+        }
+      )
+    end
+
+    let(:response) { GitlabSchema.execute(query, context: { current_user: current_user }).as_json }
+
+    subject(:result) { response.dig('data', 'project', 'pagesForceHttps') }
+
+    before do
+      project.add_maintainer(current_user)
+    end
+
+    context 'when the redirect from unsecured connections to HTTPS is disabled' do
+      it 'returns "false"' do
+        expect(result).to be false
+      end
+    end
+
+    context 'when the redirect from unsecured connections to HTTPS is enabled' do
+      it 'returns "true"' do
+        allow(Gitlab.config.pages).to receive(:external_https).and_return(true)
+
+        expect(result).to be true
+      end
+    end
+  end
+
+  describe 'pages_use_unique_domain' do
+    let_it_be(:current_user) { create(:user) }
+    let(:project) { create(:project, :repository, project_setting: project_settings) }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pagesUseUniqueDomain
+          }
+        }
+      )
+    end
+
+    let(:response) { GitlabSchema.execute(query, context: { current_user: current_user }).as_json }
+
+    subject(:result) { response.dig('data', 'project', 'pagesUseUniqueDomain') }
+
+    before do
+      project.add_maintainer(current_user)
+    end
+
+    context 'when the project pages site uses a unique subdomain' do
+      let(:project_settings) do
+        create(:project_setting, pages_unique_domain_enabled: true, pages_unique_domain: "test-unique-domain")
+      end
+
+      it 'returns "true"' do
+        expect(result).to be true
+      end
+    end
+
+    context 'when the project pages site does not use a unique subdomain' do
+      let(:project_settings) { create(:project_setting, pages_unique_domain_enabled: false) }
+
+      it 'returns "false"' do
+        expect(result).to be false
+      end
+    end
+  end
+
+  describe 'project adjourned deletion fields', time_travel_to: '2025-06-01', feature_category: :groups_and_projects do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:project) { create(:project) }
+    let_it_be(:marked_for_deletion_at) { Time.new(2025, 5, 25) }
+    let_it_be(:pending_delete_group) do
+      create(:group_with_deletion_schedule, marked_for_deletion_on: marked_for_deletion_at, developers: user)
+    end
+
+    let_it_be(:project_being_deleted) do
+      create(:project, pending_delete: true, developers: user)
+    end
+
+    let_it_be(:pending_delete_project) { create(:project, marked_for_deletion_at: marked_for_deletion_at) }
+    let_it_be(:parent_pending_delete_project) { create(:project, group: pending_delete_group) }
+
+    let(:project_full_path) { pending_delete_project.full_path }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project_full_path}") {
+            markedForDeletion
+            markedForDeletionOn
+            permanentDeletionDate
+            isSelfDeletionInProgress
+            isSelfDeletionScheduled
+          }
+        }
+      )
+    end
+
+    before do
+      pending_delete_project.add_developer(user)
+      project.add_developer(user)
+      stub_application_setting(deletion_adjourned_period: 7)
+    end
+
+    subject(:project_data) do
+      result = GitlabSchema.execute(query, context: { current_user: user }).as_json
+      {
+        marked_for_deletion: result.dig('data', 'project', 'markedForDeletion'),
+        marked_for_deletion_on: result.dig('data', 'project', 'markedForDeletionOn'),
+        permanent_deletion_date: result.dig('data', 'project', 'permanentDeletionDate'),
+        is_self_deletion_in_progress: result.dig('data', 'project', 'isSelfDeletionInProgress'),
+        is_self_deletion_scheduled: result.dig('data', 'project', 'isSelfDeletionScheduled')
+      }
+    end
+
+    it 'marked_for_deletion returns true' do
+      expect(project_data[:marked_for_deletion]).to be true
+    end
+
+    it 'marked_for_deletion_on returns correct date' do
+      marked_for_deletion_on_time = Time.zone.parse(project_data[:marked_for_deletion_on])
+
+      expect(marked_for_deletion_on_time).to eq(pending_delete_project.marked_for_deletion_at.iso8601)
+    end
+
+    it 'returns false for is_self_deletion_in_progress' do
+      expect(project_data[:is_self_deletion_in_progress]).to be false
+    end
+
+    context 'when project is scheduled for deletion' do
+      it 'returns date project will be permanently deleted for permanent_deletion_date' do
+        expect(project_data[:permanent_deletion_date])
+          .to eq(
+            ::Gitlab::CurrentSettings.deletion_adjourned_period.days.since(marked_for_deletion_at).strftime('%F')
+          )
+      end
+
+      it 'returns true for is_self_deletion_scheduled' do
+        expect(project_data[:is_self_deletion_scheduled]).to be true
+      end
+    end
+
+    context 'when parent is scheduled for deletion' do
+      let(:project_full_path) { parent_pending_delete_project.full_path }
+
+      it 'marked_for_deletion returns true' do
+        expect(project_data[:marked_for_deletion]).to be true
+      end
+
+      it 'returns false for is_self_deletion_scheduled' do
+        expect(project_data[:is_self_deletion_scheduled]).to be false
+      end
+    end
+
+    context 'when project is not scheduled for deletion' do
+      let(:project_full_path) { project.full_path }
+
+      it 'marked_for_deletion returns false' do
+        expect(project_data[:marked_for_deletion]).to be false
+      end
+
+      it 'returns false for is_self_deletion_scheduled' do
+        expect(project_data[:is_self_deletion_scheduled]).to be false
+      end
+
+      it 'returns theoretical date project will be permanently deleted for permanent_deletion_date' do
+        expect(project_data[:permanent_deletion_date])
+          .to eq(::Gitlab::CurrentSettings.deletion_adjourned_period.days.since(Date.current).strftime('%F'))
+      end
+    end
+
+    context 'when project is being deleted' do
+      let(:project_full_path) { project_being_deleted.full_path }
+
+      it 'returns true for is_self_deletion_in_progress' do
+        expect(project_data[:is_self_deletion_in_progress]).to be true
+      end
+    end
+  end
+
+  describe 'container_protection_tag_rules', unless: Gitlab.ee? do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:user) { create(:user) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            containerProtectionTagRules {
+              nodes {
+                id
+                tagNamePattern
+                minimumAccessLevelForPush
+                minimumAccessLevelForDelete
+              }
+            }
+          }
+        }
+      )
+    end
+
+    before_all do
+      create(:container_registry_protection_tag_rule,
+        project: project,
+        minimum_access_level_for_push: Gitlab::Access::MAINTAINER,
+        minimum_access_level_for_delete: Gitlab::Access::OWNER,
+        tag_name_pattern: 'mutable'
+      )
+    end
+
+    subject do
+      GitlabSchema.execute(query, context: { current_user: user })
+        .as_json.dig('data', 'project', 'containerProtectionTagRules', 'nodes')
+    end
+
+    before do
+      project.add_maintainer(user)
+    end
+
+    it do
+      is_expected.to have_attributes(size: 1).and contain_exactly(
+        a_hash_including(
+          'tagNamePattern' => 'mutable',
+          'minimumAccessLevelForPush' => 'MAINTAINER',
+          'minimumAccessLevelForDelete' => 'OWNER'
+        )
+      )
+    end
+  end
+
+  describe '.authorization_scopes' do
+    it 'includes :ai_workflows' do
+      expect(described_class.authorization_scopes).to include(:ai_workflows)
+    end
+  end
+
+  describe 'fields with :ai_workflows scope' do
+    %w[id fullPath workItems languages statisticsDetailsPaths
+      namespace group rootGroup pipelines pipeline labels].each do |field_name|
+      it "includes :ai_workflows scope for the #{field_name} field" do
+        field = described_class.fields[field_name]
+        expect(field.instance_variable_get(:@scopes)).to include(:ai_workflows)
+      end
+    end
+  end
+
+  describe 'ci_config_variables field' do
+    let_it_be(:project) { create(:project, :repository) }
+    let_it_be(:user) { create(:user, developer_of: project) }
+    let(:ref) { project.default_branch }
+    let(:fail_on_cache_miss) { nil }
+
+    let(:query) do
+      fail_on_cache_miss_arg = fail_on_cache_miss.nil? ? '' : ", failOnCacheMiss: #{fail_on_cache_miss}"
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            ciConfigVariables(ref: "#{ref}"#{fail_on_cache_miss_arg}) {
+              key
+              value
+              description
+            }
+          }
+        }
+      )
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    def mock_config_variables_service(return_value)
+      allow_next_instance_of(::Ci::ListConfigVariablesService) do |service|
+        allow(service).to receive(:execute).and_return(return_value)
+      end
+    end
+
+    context 'when service returns nil and fail_on_cache_miss is enabled' do
+      let(:fail_on_cache_miss) { true }
+
+      before do
+        mock_config_variables_service(nil)
+      end
+
+      it 'returns GraphQL error with expected message' do
+        expect(subject['errors']).to be_present
+        expect(subject['errors'].first['message']).to eq('Failed to retrieve CI/CD variables from cache.')
+        expect(subject['data']['project']['ciConfigVariables']).to be_nil
+      end
+
+      it 'includes error path information' do
+        expect(subject['errors'].first['path']).to eq(%w[project ciConfigVariables])
+      end
+    end
+
+    context 'when variables are successfully fetched' do
+      let_it_be(:ci_config_variables) do
+        {
+          KEY1: { value: 'val 1', description: 'description 1' },
+          KEY2: { value: 'val 2', description: '' },
+          KEY3: { value: 'val 3' }
+        }
+      end
+
+      before do
+        mock_config_variables_service(ci_config_variables)
+      end
+
+      it 'returns variables list' do
+        variables = subject.dig('data', 'project', 'ciConfigVariables')
+
+        expect(variables).to contain_exactly(
+          { 'key' => 'KEY1', 'value' => 'val 1', 'description' => 'description 1' },
+          { 'key' => 'KEY2', 'value' => 'val 2', 'description' => '' },
+          { 'key' => 'KEY3', 'value' => 'val 3', 'description' => nil }
+        )
+      end
+
+      it 'does not return any errors' do
+        expect(subject['errors']).to be_nil
+      end
+    end
+
+    context 'with fail_on_cache_miss argument' do
+      context 'when service is called with fail_on_cache_miss parameter' do
+        before do
+          mock_config_variables_service({})
+        end
+
+        shared_examples 'calls service with expected fail_on_cache_miss value' do |expected_value|
+          it "calls service with fail_on_cache_miss: #{expected_value}" do
+            expect_next_instance_of(::Ci::ListConfigVariablesService) do |service|
+              expect(service).to receive(:execute).with(ref)
+            end
+
+            subject
+          end
+        end
+
+        context 'with default value (not specified)' do
+          it_behaves_like 'calls service with expected fail_on_cache_miss value', false
+        end
+
+        context 'with fail_on_cache_miss: true' do
+          let(:fail_on_cache_miss) { true }
+
+          it_behaves_like 'calls service with expected fail_on_cache_miss value', true
+        end
+      end
+    end
+  end
+
+  describe 'ci_pipeline_creation_inputs field' do
+    include ReactiveCachingHelpers
+
+    let_it_be(:project) { create(:project, :repository) }
+    let_it_be(:user) { create(:user, developer_of: project) }
+    let(:ref) { project.default_branch }
+    let(:fail_on_cache_miss) { nil }
+
+    let(:query) do
+      fail_on_cache_miss_arg = fail_on_cache_miss.nil? ? '' : ", failOnCacheMiss: #{fail_on_cache_miss}"
+      %(
+      query {
+        project(fullPath: "#{project.full_path}") {
+          ciPipelineCreationInputs(ref: "#{ref}"#{fail_on_cache_miss_arg}) {
+            name
+            default
+            required
+          }
+        }
+      }
+    )
+    end
+
+    subject { GitlabSchema.execute(query, context: { current_user: user }).as_json }
+
+    def mock_service_response(return_value)
+      allow_next_instance_of(::Ci::PipelineCreation::FindPipelineInputsService) do |service|
+        allow(service).to receive(:execute).and_return(return_value)
+      end
+    end
+
+    context 'when service returns nil (cache miss) and fail_on_cache_miss is true' do
+      let(:fail_on_cache_miss) { true }
+
+      before do
+        mock_service_response(nil)
+      end
+
+      it 'returns GraphQL error with expected message' do
+        expect(subject['errors']).to be_present
+        expect(subject['errors'].first['message']).to eq('Failed to retrieve pipeline inputs from cache.')
+        expect(subject['data']['project']['ciPipelineCreationInputs']).to be_nil
+      end
+    end
+
+    context 'when service returns nil (cache miss) and fail_on_cache_miss is false' do
+      let(:fail_on_cache_miss) { false }
+
+      before do
+        mock_service_response(nil)
+      end
+
+      it 'returns nil without error' do
+        expect(subject['errors']).to be_nil
+        expect(subject['data']['project']['ciPipelineCreationInputs']).to be_nil
+      end
+    end
+
+    context 'when service returns nil (cache miss) and fail_on_cache_miss is not specified' do
+      before do
+        mock_service_response(nil)
+      end
+
+      it 'returns nil without error (default behavior)' do
+        expect(subject['errors']).to be_nil
+        expect(subject['data']['project']['ciPipelineCreationInputs']).to be_nil
+      end
+    end
+
+    context 'when service returns an error response' do
+      before do
+        mock_service_response(ServiceResponse.error(message: 'Some error'))
+      end
+
+      it 'returns GraphQL error with the service error message' do
+        expect(subject['errors']).to be_present
+        expect(subject['errors'].first['message']).to eq('Some error')
+      end
+    end
+
+    context 'when service returns success with inputs' do
+      let(:inputs_builder) do
+        Ci::Inputs::Builder.new({
+          'environment' => { type: 'string', default: 'production' }
+        })
+      end
+
+      before do
+        mock_service_response(ServiceResponse.success(payload: { inputs: inputs_builder }))
+      end
+
+      it 'returns the inputs' do
+        inputs = subject.dig('data', 'project', 'ciPipelineCreationInputs')
+        expect(inputs).to be_present
+        expect(inputs.first['name']).to eq('environment')
+        expect(inputs.first['default']).to eq('production')
+      end
+    end
+  end
+
+  describe 'transferInProgress field', feature_category: :groups_and_projects do
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project, :public, developers: user) }
+    let_it_be_with_reload(:transfer_in_progress_project) { create(:project, :public, developers: user) }
+
+    let(:project_full_path) { project.full_path }
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project_full_path}") {
+            transferInProgress
+          }
+        }
+      )
+    end
+
+    before_all do
+      transfer_in_progress_project.project_namespace.update_column(:state, Namespace.states[:transfer_in_progress])
+    end
+
+    subject(:transfer_in_progress) do
+      GitlabSchema.execute(query, context: { current_user: user }).as_json
+        .dig('data', 'project', 'transferInProgress')
+    end
+
+    context 'when project namespace is in transfer_in_progress state' do
+      let(:project_full_path) { transfer_in_progress_project.full_path }
+
+      it 'returns true' do
+        expect(transfer_in_progress).to be true
+      end
+    end
+
+    context 'when project is not being transferred' do
+      it 'returns false' do
+        expect(transfer_in_progress).to be false
+      end
+    end
+  end
+end

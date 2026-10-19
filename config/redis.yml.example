@@ -1,0 +1,64 @@
+---
+development:
+  chat:
+    cluster:
+      - redis://localhost:7001
+  cache:
+    cluster:
+      - redis://localhost:7001
+  concurrency_limit:
+    url: redis://localhost:6379
+  cluster_shared_state:
+    cluster:
+      - redis://localhost:7001
+  feature_flag:
+    cluster:
+      - redis://localhost:7001
+  rate_limiting:
+    cluster:
+      - redis://localhost:7001
+  queues_metadata:
+    cluster:
+      - redis://localhost:7001
+  sessions:
+    cluster:
+      - redis://localhost:7001
+  shared_state:
+    cluster:
+      - redis://localhost:7001
+  workhorse:
+    url: redis://localhost:6379
+
+test:
+  action_cable:
+    url: redis://localhost:6379
+  chat:
+    cluster:
+      - redis://localhost:7001
+  cache:
+    cluster:
+      - redis://localhost:7001
+  concurrency_limit:
+    url: redis://localhost:6379
+  cluster_shared_state:
+    cluster:
+      - redis://localhost:7001
+  feature_flag:
+    cluster:
+      - redis://localhost:7001
+  rate_limiting:
+    cluster:
+      - redis://localhost:7001
+  queues_metadata:
+    cluster:
+      - redis://localhost:7001
+  sessions:
+    cluster:
+      - redis://localhost:7001
+  shared_state:
+    cluster:
+      - redis://localhost:7001
+  # pubsub and workhorse are not redis-cluster compatible
+  # even though they fall-back to shared_state
+  workhorse:
+    url: redis://localhost:6379

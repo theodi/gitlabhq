@@ -1,0 +1,31 @@
+# frozen_string_literal: true
+
+require 'fast_spec_helper'
+require 'action_dispatch'
+require 'grape_logging'
+
+RSpec.describe Gitlab::GrapeLogging::Loggers::CloudflareLogger do
+  subject { described_class.new }
+
+  describe "#parameters" do
+    let(:mock_request) { ActionDispatch::Request.new({}) }
+
+    describe 'with no Cloudflare headers' do
+      it 'returns an empty hash' do
+        expect(subject.parameters(mock_request, nil)).to eq({})
+      end
+    end
+
+    describe 'with Cloudflare headers' do
+      before do
+        mock_request.headers['Cf-Request-Id'] = SecureRandom.hex
+      end
+
+      it 'returns the correct duration in seconds' do
+        data = subject.parameters(mock_request, nil)
+
+        expect(data.keys).to contain_exactly(:cf_request_id)
+      end
+    end
+  end
+end

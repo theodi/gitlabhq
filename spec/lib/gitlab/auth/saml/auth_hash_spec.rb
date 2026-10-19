@@ -1,0 +1,199 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Auth::Saml::AuthHash, feature_category: :system_access do
+  include LoginHelpers
+
+  let(:raw_info_attr) { { 'groups' => %w[Developers Freelancers] } }
+
+  let(:info_hash) do
+    {
+      name: 'John',
+      email: 'john@mail.com'
+    }
+  end
+
+  let(:omniauth_auth_hash) do
+    OmniAuth::AuthHash.new(
+      uid: 'my-uid',
+      provider: 'saml',
+      info: info_hash,
+      extra: { raw_info: OneLogin::RubySaml::Attributes.new(raw_info_attr) }
+    )
+  end
+
+  subject(:saml_auth_hash) { described_class.new(omniauth_auth_hash) }
+
+  before do
+    stub_saml_group_config(%w[Developers Freelancers Designers])
+  end
+
+  describe '#groups' do
+    it 'returns array of groups' do
+      expect(saml_auth_hash.groups).to eq(%w[Developers Freelancers])
+    end
+
+    context 'raw info hash attributes empty' do
+      let(:raw_info_attr) { {} }
+
+      it 'returns an empty array' do
+        expect(saml_auth_hash.groups).to be_a(Array)
+      end
+    end
+  end
+
+  describe '#location' do
+    context 'when the location attribute is provided' do
+      before do
+        info_hash[:location] = 'Köln, Germany'
+      end
+
+      it 'returns the location attribute' do
+        expect(saml_auth_hash.location).to eq 'Köln, Germany'
+      end
+
+      context 'when the address attribute is also provided' do
+        before do
+          info_hash[:address] = 'Berlin, Germany'
+        end
+
+        it 'prefers the address attribute' do
+          expect(saml_auth_hash.location).to eq 'Berlin, Germany'
+        end
+      end
+
+      context 'when the address attribute is blank' do
+        before do
+          info_hash[:address] = ''
+        end
+
+        it 'falls back to the location attribute' do
+          expect(saml_auth_hash.location).to eq 'Köln, Germany'
+        end
+      end
+    end
+
+    context 'when neither address nor location attributes are provided' do
+      it 'is nil' do
+        expect(saml_auth_hash.location).to be_nil
+      end
+    end
+  end
+
+  describe '#has_attribute?' do
+    context 'for location' do
+      it 'is true when the location attribute is provided' do
+        info_hash[:location] = 'Köln, Germany'
+
+        expect(saml_auth_hash.has_attribute?(:location)).to be(true)
+      end
+
+      it 'is true when the address attribute is provided' do
+        info_hash[:address] = 'Berlin, Germany'
+
+        expect(saml_auth_hash.has_attribute?(:location)).to be(true)
+      end
+
+      it 'is false when neither address nor location attributes are provided' do
+        expect(saml_auth_hash.has_attribute?(:location)).to be(false)
+      end
+    end
+  end
+
+  describe '#azure_group_overage_claim?' do
+    context 'when the claim is not present' do
+      let(:raw_info_attr) { {} }
+
+      it 'is false' do
+        expect(saml_auth_hash.azure_group_overage_claim?).to be(false)
+      end
+    end
+
+    context 'when the claim is present' do
+      # The value of the claim is irrelevant, but it's still included
+      # in the test response to keep tests as real-world as possible.
+      # https://learn.microsoft.com/en-us/security/zero-trust/develop/configure-tokens-group-claims-app-roles#group-overages
+      let(:raw_info_attr) do
+        {
+          'http://schemas.microsoft.com/claims/groups.link' =>
+            ['https://graph.windows.net/8c750e43/users/e631c82c/getMemberObjects']
+        }
+      end
+
+      it 'is true' do
+        expect(saml_auth_hash.azure_group_overage_claim?).to be(true)
+      end
+    end
+  end
+
+  describe '#authn_context' do
+    let(:auth_hash_data) do
+      {
+        provider: 'saml',
+        uid: 'some_uid',
+        info:
+          {
+            name: 'mockuser',
+            email: 'mock@email.ch',
+            image: 'mock_user_thumbnail_url'
+          },
+        credentials:
+          {
+            token: 'mock_token',
+            secret: 'mock_secret'
+          },
+        extra:
+          {
+            raw_info:
+              {
+                info:
+                  {
+                    name: 'mockuser',
+                    email: 'mock@email.ch',
+                    image: 'mock_user_thumbnail_url'
+                  }
+              }
+          }
+      }
+    end
+
+    subject(:saml_auth_hash) { described_class.new(OmniAuth::AuthHash.new(auth_hash_data)) }
+
+    context 'with response_object' do
+      before do
+        auth_hash_data[:extra][:response_object] = saml_xml(File.read('spec/fixtures/authentication/saml_response.xml'))
+      end
+
+      it 'can extract authn_context' do
+        expect(saml_auth_hash.authn_context).to eq 'urn:oasis:names:tc:SAML:2.0:ac:classes:Password'
+      end
+    end
+
+    context 'with SAML 2.0 response_object' do
+      before do
+        auth_hash_data[:extra][:response_object] = saml_xml(File.read('spec/fixtures/authentication/saml2_response.xml'))
+      end
+
+      it 'can extract authn_context' do
+        expect(saml_auth_hash.authn_context).to eq 'urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport'
+      end
+    end
+
+    context 'with ADFS SAML response_object' do
+      before do
+        auth_hash_data[:extra][:response_object] = saml_xml(File.read('spec/fixtures/authentication/adfs_saml_response.xml'))
+      end
+
+      it 'can extract authn_context' do
+        expect(saml_auth_hash.authn_context).to eq 'urn:federation:authentication:windows'
+      end
+    end
+
+    context 'without response_object' do
+      it 'returns an empty string' do
+        expect(saml_auth_hash.authn_context).to be_nil
+      end
+    end
+  end
+end

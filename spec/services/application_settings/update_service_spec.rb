@@ -1,0 +1,700 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ApplicationSettings::UpdateService, feature_category: :shared do
+  include ExternalAuthorizationServiceHelpers
+
+  let(:application_settings) { ::Gitlab::CurrentSettings.current_application_settings }
+  let(:admin) { create(:user, :admin) }
+  let(:params) { {} }
+
+  subject { described_class.new(application_settings, admin, params) }
+
+  before do
+    # So the caching behaves like it would in production
+    stub_env('IN_MEMORY_APPLICATION_SETTINGS', 'false')
+
+    # Creating these settings first ensures they're used by other factories
+    application_settings
+  end
+
+  describe 'managed settings' do
+    before do
+      Gitlab::ManagedSettings.reset!
+      stub_const('Gitlab::ManagedSettings::PATH',
+        Rails.root.join('spec/fixtures/managed_settings/valid.yml'))
+    end
+
+    after do
+      Gitlab::ManagedSettings.reset!
+    end
+
+    context 'when a managed setting is changed' do
+      let(:params) { { sidekiq_timezone_override: 'UTC' } }
+
+      it 'rejects the update and adds an error' do
+        expect(subject.execute).to be(false)
+        expect(application_settings.errors[:base])
+          .to include('The sidekiq_timezone_override is a managed setting and cannot be changed.')
+        expect(application_settings.reload.sidekiq_timezone_override).not_to eq('UTC')
+      end
+    end
+
+    context 'when only unmanaged settings are changed' do
+      let(:params) { { home_page_url: 'http://foo.bar' } }
+
+      it 'updates successfully' do
+        expect(subject.execute).to be(true)
+        expect(application_settings.reload.home_page_url).to eq('http://foo.bar')
+      end
+    end
+
+    context 'when a managed setting is resubmitted with the enforced value' do
+      let(:params) { { sidekiq_timezone_override: 'Europe/London', home_page_url: 'http://foo.bar' } }
+
+      before do
+        application_settings.update!(sidekiq_timezone_override: 'Europe/London')
+      end
+
+      it 'allows the update and applies the unmanaged changes' do
+        expect(subject.execute).to be(true)
+        expect(application_settings.reload.home_page_url).to eq('http://foo.bar')
+      end
+    end
+
+    context 'when no managed settings file is present' do
+      let(:params) { { sidekiq_timezone_override: 'UTC' } }
+
+      before do
+        stub_const('Gitlab::ManagedSettings::PATH',
+          Rails.root.join('spec/fixtures/managed_settings/does_not_exist.yml'))
+      end
+
+      it 'allows the update' do
+        expect(subject.execute).to be(true)
+        expect(application_settings.reload.sidekiq_timezone_override).to eq('UTC')
+      end
+    end
+  end
+
+  describe 'updating terms' do
+    context 'when the passed terms are blank' do
+      let(:params) { { terms: '' } }
+
+      it 'does not create terms' do
+        expect { subject.execute }.not_to change { ApplicationSetting::Term.count }
+      end
+    end
+
+    context 'when passing terms' do
+      let(:params) { { terms: 'Be nice!  ' } }
+
+      it 'creates the terms' do
+        expect { subject.execute }.to change { ApplicationSetting::Term.count }.by(1)
+      end
+
+      it 'does not create terms if they are the same as the existing ones' do
+        create(:term, terms: 'Be nice!')
+
+        expect { subject.execute }.not_to change { ApplicationSetting::Term.count }
+      end
+
+      it 'updates terms if they already existed' do
+        create(:term, terms: 'Other terms')
+
+        subject.execute
+
+        expect(application_settings.terms).to eq('Be nice!')
+      end
+
+      it 'only queries once when the terms are changed' do
+        create(:term, terms: 'Other terms')
+        expect(application_settings.terms).to eq('Other terms')
+
+        subject.execute
+
+        expect(application_settings.terms).to eq('Be nice!')
+        expect { 2.times { application_settings.terms } }
+          .not_to exceed_query_limit(0)
+      end
+    end
+  end
+
+  describe 'updating outbound_local_requests_whitelist' do
+    context 'when params is blank' do
+      let(:params) { {} }
+
+      it 'does not add to allowlist' do
+        expect { subject.execute }.not_to change {
+          application_settings.outbound_local_requests_whitelist
+        }
+      end
+    end
+
+    context 'when param add_to_outbound_local_requests_whitelist contains values' do
+      before do
+        application_settings.outbound_local_requests_whitelist = ['127.0.0.1']
+      end
+
+      let(:params) { { add_to_outbound_local_requests_whitelist: ['example.com', ''] } }
+
+      it 'adds to allowlist' do
+        expect { subject.execute }.to change {
+          application_settings.outbound_local_requests_whitelist
+        }
+
+        expect(application_settings.outbound_local_requests_whitelist).to contain_exactly(
+          '127.0.0.1', 'example.com'
+        )
+      end
+    end
+
+    context 'when param outbound_local_requests_allowlist_raw is passed' do
+      before do
+        application_settings.outbound_local_requests_whitelist = ['127.0.0.1']
+      end
+
+      let(:params) { { outbound_local_requests_allowlist_raw: 'example.com;gitlab.com' } }
+
+      it 'overwrites the existing allowlist' do
+        expect { subject.execute }.to change {
+          application_settings.outbound_local_requests_whitelist
+        }
+
+        expect(application_settings.outbound_local_requests_whitelist).to contain_exactly(
+          'example.com', 'gitlab.com'
+        )
+      end
+    end
+  end
+
+  describe 'markdown cache invalidators', feature_category: :markdown do
+    shared_examples 'invalidates markdown cache' do |attribute|
+      let(:params) { attribute }
+
+      it 'increments cache' do
+        expect { subject.execute }.to change { application_settings.local_markdown_version }.by(1)
+      end
+    end
+
+    it_behaves_like 'invalidates markdown cache', { asset_proxy_enabled: true }
+    it_behaves_like 'invalidates markdown cache', { asset_proxy_url: 'http://test.com' }
+    it_behaves_like 'invalidates markdown cache', { asset_proxy_secret_key: 'another secret' }
+    it_behaves_like 'invalidates markdown cache', { asset_proxy_allowlist: ['domain.com'] }
+    it_behaves_like 'invalidates markdown cache', { asset_proxy_whitelist: ['domain.com'] }
+
+    context 'when also setting the local_markdown_version' do
+      let(:params) { { asset_proxy_enabled: true, local_markdown_version: 12 } }
+
+      it 'does not increment' do
+        expect { subject.execute }.to change { application_settings.local_markdown_version }.to(12)
+      end
+    end
+
+    context 'do not invalidate if value does not change' do
+      let(:params) { { asset_proxy_enabled: true, asset_proxy_secret_key: 'secret', asset_proxy_url: 'http://test.com' } }
+
+      it 'does not increment' do
+        described_class.new(application_settings, admin, params).execute
+
+        expect { described_class.new(application_settings, admin, params).execute }.not_to change { application_settings.local_markdown_version }
+      end
+    end
+  end
+
+  describe 'performance bar settings', feature_category: :performance_tooling do
+    using RSpec::Parameterized::TableSyntax
+
+    where(
+      :params_performance_bar_enabled,
+      :params_performance_bar_allowed_group_path,
+      :previous_performance_bar_allowed_group_id,
+      :expected_performance_bar_allowed_group_id,
+      :expected_valid
+    ) do
+      true | '' | nil | nil | true
+      true | '' | 42_000_000 | nil | true
+      true | nil | nil | nil | true
+      true | nil | 42_000_000 | nil | true
+      true | 'foo' | nil | nil | false
+      true | 'foo' | 42_000_000 | 42_000_000 | false
+      true | 'group_a' | nil | 42_000_000 | true
+      true | 'group_b' | 42_000_000 | 43_000_000 | true
+      true | 'group_b/' | 42_000_000 | 43_000_000 | true
+      true | 'group_a' | 42_000_000 | 42_000_000 | true
+      false | '' | nil | nil | true
+      false | '' | 42_000_000 | nil | true
+      false | nil | nil | nil | true
+      false | nil | 42_000_000 | nil | true
+      false | 'foo' | nil | nil | true
+      false | 'foo' | 42_000_000 | nil | true
+      false | 'group_a' | nil | nil | true
+      false | 'group_b' | 42_000_000 | nil | true
+      false | 'group_a' | 42_000_000 | nil | true
+      nil | '' | nil | nil | true
+      nil | 'foo' | nil | nil | false
+      nil | 'group_a' | nil | 42_000_000 | true
+    end
+
+    with_them do
+      let(:params) do
+        {
+          performance_bar_allowed_group_path: params_performance_bar_allowed_group_path
+        }.tap do |params_hash|
+          # Treat nil in the table as missing
+          unless params_performance_bar_enabled.nil?
+            params_hash[:performance_bar_enabled] = params_performance_bar_enabled
+          end
+        end
+      end
+
+      before do
+        if previous_performance_bar_allowed_group_id == 42_000_000 || params_performance_bar_allowed_group_path == 'group_a'
+          create(:group, id: 42_000_000, path: 'group_a')
+        end
+
+        if expected_performance_bar_allowed_group_id == 43_000_000 || params_performance_bar_allowed_group_path == 'group_b'
+          create(:group, id: 43_000_000, path: 'group_b')
+        end
+
+        application_settings.update!(performance_bar_allowed_group_id: previous_performance_bar_allowed_group_id)
+      end
+
+      it 'sets performance_bar_allowed_group_id when present and performance_bar_enabled == true' do
+        expect(application_settings.performance_bar_allowed_group_id).to eq(previous_performance_bar_allowed_group_id)
+
+        if previous_performance_bar_allowed_group_id != expected_performance_bar_allowed_group_id
+          expect { subject.execute }
+            .to change { application_settings.performance_bar_allowed_group_id }
+            .from(previous_performance_bar_allowed_group_id).to(expected_performance_bar_allowed_group_id)
+        else
+          expect { subject.execute }
+            .not_to change { application_settings.performance_bar_allowed_group_id }
+        end
+      end
+
+      it 'adds errors to the model for invalid params' do
+        expect(subject.execute).to eq(expected_valid)
+
+        unless expected_valid
+          expect(application_settings.errors[:performance_bar_allowed_group_id]).to be_present
+        end
+      end
+    end
+
+    context 'when :performance_bar_allowed_group_path is not present' do
+      let(:group) { create(:group) }
+
+      before do
+        application_settings.update!(performance_bar_allowed_group_id: group.id)
+      end
+
+      it 'does not change the performance bar settings' do
+        expect { subject.execute }
+          .not_to change { application_settings.performance_bar_allowed_group_id }
+      end
+    end
+
+    context 'when :performance_bar_enabled is not present' do
+      let(:group) { create(:group) }
+      let(:params) { { performance_bar_allowed_group_path: group.full_path } }
+
+      it 'implicitly defaults to true' do
+        expect { subject.execute }
+          .to change { application_settings.performance_bar_allowed_group_id }
+          .from(nil).to(group.id)
+      end
+    end
+  end
+
+  context 'when external authorization is enabled', feature_category: :system_access do
+    before do
+      enable_external_authorization_service_check
+    end
+
+    it 'does not validate labels if external authorization gets disabled' do
+      expect_any_instance_of(described_class).not_to receive(:validate_classification_label_param!)
+
+      described_class.new(application_settings, admin, { external_authorization_service_enabled: false }).execute
+    end
+
+    it 'does validate labels if external authorization gets enabled' do
+      expect_any_instance_of(described_class).to receive(:validate_classification_label_param!)
+
+      described_class.new(application_settings, admin, { external_authorization_service_enabled: true }).execute
+    end
+
+    it 'does validate labels if external authorization is left unchanged' do
+      expect_any_instance_of(described_class).to receive(:validate_classification_label_param!)
+
+      described_class.new(application_settings, admin, { external_authorization_service_default_label: 'new-label' }).execute
+    end
+
+    it 'does not save the settings with an error if the service denies access' do
+      expect(::Gitlab::ExternalAuthorization).to receive(:access_allowed?).with(admin, 'new-label').and_return(false)
+
+      described_class.new(application_settings, admin, { external_authorization_service_default_label: 'new-label' }).execute
+
+      expect(application_settings.errors[:external_authorization_service_default_label]).to be_present
+    end
+
+    it 'saves the setting when the user has access to the label' do
+      expect(::Gitlab::ExternalAuthorization).to receive(:access_allowed?).with(admin, 'new-label').and_return(true)
+
+      described_class.new(application_settings, admin, { external_authorization_service_default_label: 'new-label' }).execute
+
+      # Read the attribute directly to avoid the stub from
+      # `enable_external_authorization_service_check`
+      expect(application_settings[:external_authorization_service_default_label]).to eq('new-label')
+    end
+
+    it 'does not validate the label if it was not passed' do
+      expect(::Gitlab::ExternalAuthorization)
+        .not_to receive(:access_allowed?)
+
+      described_class.new(application_settings, admin, { home_page_url: 'http://foo.bar' }).execute
+    end
+  end
+
+  context 'when raw_blob_request_limit is passsed' do
+    let(:params) do
+      {
+        raw_blob_request_limit: 600
+      }
+    end
+
+    it 'updates raw_blob_request_limit value' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.raw_blob_request_limit).to eq(600)
+    end
+  end
+
+  context 'when default_branch_protection is updated' do
+    let(:expected) { ::Gitlab::Access::BranchProtection.protected_against_developer_pushes.stringify_keys }
+    let(:params) { { default_branch_protection: ::Gitlab::Access::PROTECTION_DEV_CAN_MERGE } }
+
+    it "updates default_branch_protection_defaults from the default_branch_protection param" do
+      default_value = ::Gitlab::Access::BranchProtection.protected_fully.deep_stringify_keys
+
+      expect { subject.execute }.to change { application_settings.default_branch_protection_defaults }.from(default_value).to(expected)
+    end
+  end
+
+  context 'when default_branch_protection_defaults is updated' do
+    let(:expected) { ::Gitlab::Access::BranchProtection.protected_against_developer_pushes.stringify_keys }
+    let(:params) { { default_branch_protection_defaults: expected.deep_stringify_keys } }
+
+    it "updates default_branch_protection_defaults from the default_branch_protection_defaults param" do
+      default_value = ::Gitlab::Access::BranchProtection.protected_fully.deep_stringify_keys
+
+      expect { subject.execute }.to change { application_settings.default_branch_protection_defaults }.from(default_value).to(expected)
+    end
+  end
+
+  context 'when protected path settings are passed' do
+    let(:params) do
+      {
+        throttle_protected_paths_enabled: 1,
+        throttle_protected_paths_period_in_seconds: 600,
+        throttle_protected_paths_requests_per_period: 100,
+        protected_paths_raw: "/users/password\r\n/users/sign_in\r\n",
+        protected_paths_for_get_request_raw: "/users/password\r\n/users/sign_up\r\n"
+      }
+    end
+
+    it 'updates protected path settings' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.throttle_protected_paths_enabled).to be_truthy
+      expect(application_settings.throttle_protected_paths_period_in_seconds).to eq(600)
+      expect(application_settings.throttle_protected_paths_requests_per_period).to eq(100)
+      expect(application_settings.protected_paths).to eq(['/users/password', '/users/sign_in'])
+      expect(application_settings.protected_paths_for_get_request).to match_array(['/users/password', '/users/sign_up'])
+    end
+  end
+
+  context 'when general rate limits are passed' do
+    let(:params) do
+      {
+        throttle_authenticated_api_enabled: true,
+        throttle_authenticated_api_period_in_seconds: 10,
+        throttle_authenticated_api_requests_per_period: 20,
+        throttle_authenticated_web_enabled: true,
+        throttle_authenticated_web_period_in_seconds: 30,
+        throttle_authenticated_web_requests_per_period: 40,
+        throttle_unauthenticated_api_enabled: true,
+        throttle_unauthenticated_api_period_in_seconds: 50,
+        throttle_unauthenticated_api_requests_per_period: 60,
+        throttle_unauthenticated_enabled: true,
+        throttle_unauthenticated_period_in_seconds: 50,
+        throttle_unauthenticated_requests_per_period: 60
+      }
+    end
+
+    it 'updates general throttle settings' do
+      subject.execute
+
+      expect(application_settings.reload).to have_attributes(params)
+    end
+  end
+
+  context 'when package registry rate limits are passed' do
+    let(:params) do
+      {
+        throttle_unauthenticated_packages_api_enabled: 1,
+        throttle_unauthenticated_packages_api_period_in_seconds: 500,
+        throttle_unauthenticated_packages_api_requests_per_period: 20,
+        throttle_authenticated_packages_api_enabled: 1,
+        throttle_authenticated_packages_api_period_in_seconds: 600,
+        throttle_authenticated_packages_api_requests_per_period: 10
+      }
+    end
+
+    it 'updates package registry throttle settings' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.throttle_unauthenticated_packages_api_enabled).to be_truthy
+      expect(application_settings.throttle_unauthenticated_packages_api_period_in_seconds).to eq(500)
+      expect(application_settings.throttle_unauthenticated_packages_api_requests_per_period).to eq(20)
+      expect(application_settings.throttle_authenticated_packages_api_enabled).to be_truthy
+      expect(application_settings.throttle_authenticated_packages_api_period_in_seconds).to eq(600)
+      expect(application_settings.throttle_authenticated_packages_api_requests_per_period).to eq(10)
+    end
+  end
+
+  context 'when files API rate limits are passed' do
+    let(:params) do
+      {
+        throttle_unauthenticated_files_api_enabled: 1,
+        throttle_unauthenticated_files_api_period_in_seconds: 500,
+        throttle_unauthenticated_files_api_requests_per_period: 20,
+        throttle_authenticated_files_api_enabled: 1,
+        throttle_authenticated_files_api_period_in_seconds: 600,
+        throttle_authenticated_files_api_requests_per_period: 10
+      }
+    end
+
+    it 'updates files API throttle settings' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.throttle_unauthenticated_files_api_enabled).to be_truthy
+      expect(application_settings.throttle_unauthenticated_files_api_period_in_seconds).to eq(500)
+      expect(application_settings.throttle_unauthenticated_files_api_requests_per_period).to eq(20)
+      expect(application_settings.throttle_authenticated_files_api_enabled).to be_truthy
+      expect(application_settings.throttle_authenticated_files_api_period_in_seconds).to eq(600)
+      expect(application_settings.throttle_authenticated_files_api_requests_per_period).to eq(10)
+    end
+  end
+
+  context 'when deprecated API rate limits are passed' do
+    let(:params) do
+      {
+        throttle_unauthenticated_deprecated_api_enabled: 1,
+        throttle_unauthenticated_deprecated_api_period_in_seconds: 500,
+        throttle_unauthenticated_deprecated_api_requests_per_period: 20,
+        throttle_authenticated_deprecated_api_enabled: 1,
+        throttle_authenticated_deprecated_api_period_in_seconds: 600,
+        throttle_authenticated_deprecated_api_requests_per_period: 10
+      }
+    end
+
+    it 'updates deprecated API throttle settings' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.throttle_unauthenticated_deprecated_api_enabled).to be_truthy
+      expect(application_settings.throttle_unauthenticated_deprecated_api_period_in_seconds).to eq(500)
+      expect(application_settings.throttle_unauthenticated_deprecated_api_requests_per_period).to eq(20)
+      expect(application_settings.throttle_authenticated_deprecated_api_enabled).to be_truthy
+      expect(application_settings.throttle_authenticated_deprecated_api_period_in_seconds).to eq(600)
+      expect(application_settings.throttle_authenticated_deprecated_api_requests_per_period).to eq(10)
+    end
+  end
+
+  context 'when git lfs rate limits are passed' do
+    let(:params) do
+      {
+        throttle_authenticated_git_lfs_enabled: 1,
+        throttle_authenticated_git_lfs_period_in_seconds: 600,
+        throttle_authenticated_git_lfs_requests_per_period: 10
+      }
+    end
+
+    it 'updates git lfs throttle settings' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.throttle_authenticated_git_lfs_enabled).to be_truthy
+      expect(application_settings.throttle_authenticated_git_lfs_period_in_seconds).to eq(600)
+      expect(application_settings.throttle_authenticated_git_lfs_requests_per_period).to eq(10)
+    end
+  end
+
+  context 'when issues_create_limit is passed' do
+    let(:params) do
+      {
+        issues_create_limit: 600
+      }
+    end
+
+    it 'updates issues_create_limit value' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.issues_create_limit).to eq(600)
+    end
+  end
+
+  context 'when users_get_by_id_limit and users_get_by_id_limit_allowlist_raw are passed' do
+    let(:params) do
+      {
+        users_get_by_id_limit: 456,
+        users_get_by_id_limit_allowlist_raw: 'someone, someone_else'
+      }
+    end
+
+    it 'updates users_get_by_id_limit and users_get_by_id_limit_allowlist value' do
+      subject.execute
+
+      application_settings.reload
+
+      expect(application_settings.users_get_by_id_limit).to eq(456)
+      expect(application_settings.users_get_by_id_limit_allowlist).to eq(%w[someone someone_else])
+    end
+  end
+
+  context 'when require_admin_approval_after_user_signup changes' do
+    context 'when it goes from enabled to disabled' do
+      let(:params) { { require_admin_approval_after_user_signup: false } }
+
+      describe 'when auto approval is enabled' do
+        let(:params) { { require_admin_approval_after_user_signup: false, auto_approve_pending_users: 'true' } }
+
+        it 'calls ApproveBlockedPendingApprovalUsersWorker' do
+          expect(ApproveBlockedPendingApprovalUsersWorker).to receive(:perform_async)
+
+          subject.execute
+        end
+      end
+
+      it 'does not call ApproveBlockedPendingApprovalUsersWorker' do
+        application_settings.update!(require_admin_approval_after_user_signup: false)
+
+        expect(ApproveBlockedPendingApprovalUsersWorker).not_to receive(:perform_async)
+
+        subject.execute
+      end
+    end
+
+    context 'when it goes from disabled to enabled' do
+      let(:params) { { require_admin_approval_after_user_signup: true } }
+
+      it 'does not call ApproveBlockedPendingApprovalUsersWorker' do
+        application_settings.update!(require_admin_approval_after_user_signup: false)
+
+        expect(ApproveBlockedPendingApprovalUsersWorker).not_to receive(:perform_async)
+
+        subject.execute
+      end
+    end
+  end
+
+  context 'when dynamic_client_registration_enabled changes', feature_category: :system_access do
+    let(:worker) { Authn::OauthApplications::CleanupDynamicApplicationsWorker }
+
+    context 'when it goes from enabled to disabled' do
+      let(:params) { { dynamic_client_registration_enabled: false } }
+
+      it 'enqueues CleanupDynamicApplicationsWorker' do
+        expect(worker).to receive(:perform_async)
+
+        subject.execute
+      end
+
+      context 'when the update fails' do
+        before do
+          allow(application_settings).to receive(:save).and_return(false)
+        end
+
+        it 'does not enqueue CleanupDynamicApplicationsWorker' do
+          expect(worker).not_to receive(:perform_async)
+
+          subject.execute
+        end
+      end
+    end
+
+    context 'when it goes from disabled to enabled' do
+      let(:params) { { dynamic_client_registration_enabled: true } }
+
+      before do
+        application_settings.update!(dynamic_client_registration_enabled: false)
+      end
+
+      it 'does not enqueue CleanupDynamicApplicationsWorker' do
+        expect(worker).not_to receive(:perform_async)
+
+        subject.execute
+      end
+    end
+
+    context 'when it is unchanged' do
+      let(:params) { { dynamic_client_registration_enabled: true } }
+
+      it 'does not enqueue CleanupDynamicApplicationsWorker' do
+        expect(worker).not_to receive(:perform_async)
+
+        subject.execute
+      end
+    end
+  end
+
+  context 'when code_dropdown_custom_clients changes', feature_category: :source_code_management do
+    let(:event) { 'admin_updates_code_dropdown_custom_clients' }
+    let(:clients) { [{ 'name' => 'VSCodium', 'ssh_url_template' => 'vscodium://vscode.git/clone?url={url}' }] }
+
+    context 'when the setting is updated' do
+      let(:params) { { code_dropdown_custom_clients: clients } }
+
+      it 'tracks the internal event' do
+        expect { subject.execute }.to trigger_internal_events(event)
+          .with(user: admin, category: 'InternalEventTracking')
+      end
+
+      context 'when the update fails' do
+        before do
+          allow(application_settings).to receive(:save).and_return(false)
+        end
+
+        it 'does not track the internal event' do
+          expect { subject.execute }.to not_trigger_internal_events(event)
+        end
+      end
+    end
+
+    context 'when it is unchanged' do
+      let(:params) { { code_dropdown_custom_clients: clients } }
+
+      before do
+        application_settings.update!(code_dropdown_custom_clients: clients)
+      end
+
+      it 'does not track the internal event' do
+        expect { subject.execute }.to not_trigger_internal_events(event)
+      end
+    end
+  end
+end

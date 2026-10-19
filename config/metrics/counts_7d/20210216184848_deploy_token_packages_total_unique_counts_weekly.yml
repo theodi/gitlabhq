@@ -1,0 +1,42 @@
+---
+data_category: optional
+key_path: redis_hll_counters.deploy_token_packages.deploy_token_packages_total_unique_counts_weekly
+description: A weekly count of distinct deploy tokens used for interacting with packages in the registry
+product_group: package_registry
+product_categories:
+- package_registry
+value_type: number
+status: active
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+events:
+- name: i_package_composer_deploy_token
+  unique: user.id
+- name: i_package_conan_deploy_token
+  unique: user.id
+- name: i_package_generic_deploy_token
+  unique: user.id
+- name: i_package_helm_deploy_token
+  unique: user.id
+- name: i_package_maven_deploy_token
+  unique: user.id
+- name: i_package_npm_deploy_token
+  unique: user.id
+- name: i_package_nuget_deploy_token
+  unique: user.id
+- name: i_package_pypi_deploy_token
+  unique: user.id
+- name: i_package_rubygems_deploy_token
+  unique: user.id
+- name: i_package_terraform_module_deploy_token
+  unique: user.id
+- name: i_package_rpm_deploy_token
+  unique: user.id
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/60541

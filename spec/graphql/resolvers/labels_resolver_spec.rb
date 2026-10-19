@@ -1,0 +1,157 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Resolvers::LabelsResolver do
+  include GraphqlHelpers
+
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:current_user) { create(:user) }
+  let_it_be_with_reload(:group) { create(:group, :private) }
+  let_it_be_with_reload(:subgroup) { create(:group, :private, parent: group) }
+  let_it_be_with_reload(:sub_subgroup) { create(:group, :private, parent: subgroup) }
+  let_it_be_with_reload(:project) { create(:project, :private, group: subgroup) }
+  let_it_be(:label1) { create(:label, project: project, name: 'project feature') }
+  let_it_be(:label2) { create(:label, project: project, name: 'new project feature') }
+  let_it_be(:group_label1) { create(:group_label, group: group, name: 'group feature') }
+  let_it_be(:group_label2) { create(:group_label, group: group, name: 'new group feature') }
+  let_it_be(:subgroup_label1) { create(:group_label, group: subgroup, name: 'subgroup feature') }
+  let_it_be(:subgroup_label2) { create(:group_label, group: subgroup, name: 'new subgroup feature') }
+  let_it_be(:sub_subgroup_label1) { create(:group_label, group: sub_subgroup, name: 'sub_subgroup feature') }
+  let_it_be(:sub_subgroup_label2) { create(:group_label, group: sub_subgroup, name: 'new sub_subgroup feature') }
+
+  specify do
+    expect(described_class).to have_nullable_graphql_type(Types::LabelType.connection_type)
+  end
+
+  describe '#resolve' do
+    context 'with unauthorized user' do
+      it 'returns no labels' do
+        expect_graphql_error_to_be_created(Gitlab::Graphql::Errors::ResourceNotAvailable) do
+          resolve_labels(project)
+        end
+      end
+    end
+
+    context 'with authorized user' do
+      it 'returns no labels' do
+        group.add_guest(current_user)
+
+        expect { resolve_labels(project) }.not_to raise_error
+      end
+    end
+
+    context 'without parent' do
+      it 'returns no labels' do
+        expect(resolve_labels(nil)).to be_empty
+      end
+    end
+
+    context 'with mutually exclusive arguments' do
+      let(:params) do
+        {
+          title: 'matching', search_term: 'anything'
+        }
+      end
+
+      it 'returns a top-level error' do
+        expect_graphql_error_to_be_created(GraphQL::Schema::Validator::ValidationFailedError) do
+          resolve_labels(project, params)
+        end
+      end
+    end
+
+    describe 'association preloading' do
+      let_it_be(:project) { create(:project, :private, group: sub_subgroup) }
+
+      let(:params) do
+        {
+          include_ancestor_groups: true
+        }
+      end
+
+      before do
+        group.add_developer(current_user)
+
+        # warmup
+        resolve_labels(project, params).to_a
+      end
+
+      it 'prevents N+1 queries' do
+        control = Gitlab::SafeRequestStore.ensure_request_store do
+          ActiveRecord::QueryRecorder.new { resolve_labels(project, params).to_a }
+        end
+
+        another_project = create(:project, :private, group: subgroup)
+        another_subgroup = create(:group, :private, parent: group)
+        create(:label, project: another_project, name: 'another project feature')
+        create(:group_label, group: another_subgroup, name: 'another group feature')
+
+        expect do
+          Gitlab::SafeRequestStore.ensure_request_store do
+            resolve_labels(project, params).to_a
+          end
+        end.not_to exceed_query_limit(control)
+      end
+    end
+
+    context 'with a parent project' do
+      before_all do
+        group.add_developer(current_user)
+      end
+
+      # the expected result is wrapped in a lambda to get around the phase restrictions of RSpec::Parameterized
+      where(:include_ancestor_groups, :search_term, :expected_labels) do
+        nil   | nil   | -> { [label1, label2, subgroup_label1, subgroup_label2] }
+        false | nil   | -> { [label1, label2, subgroup_label1, subgroup_label2] }
+        true  | nil   | -> { [label1, label2, group_label1, group_label2, subgroup_label1, subgroup_label2] }
+        nil   | 'new' | -> { [label2, subgroup_label2] }
+        false | 'new' | -> { [label2, subgroup_label2] }
+        true  | 'new' | -> { [label2, group_label2, subgroup_label2] }
+      end
+
+      with_them do
+        let(:params) do
+          {
+            include_ancestor_groups: include_ancestor_groups,
+            search_term: search_term
+          }
+        end
+
+        subject { resolve_labels(project, params) }
+
+        specify { expect(subject).to match_array(instance_exec(&expected_labels)) }
+      end
+
+      context 'with fuzzy_search' do
+        subject { resolve_labels(project, search_term: 'prjct', fuzzy_search: true) }
+
+        it 'matches the searched characters in order' do
+          expect(subject).to match_array([label1, label2])
+        end
+
+        context 'when the fuzzy_label_search flag is disabled' do
+          before do
+            stub_feature_flags(fuzzy_label_search: false)
+          end
+
+          it 'ignores fuzzy_search' do
+            expect(subject).to be_empty
+          end
+        end
+      end
+    end
+  end
+
+  describe '.authorization_scopes' do
+    it 'adds ai_workflows to the scopes inherited from BaseResolver', :aggregate_failures do
+      expect(described_class.authorization_scopes).to match_array([:api, :read_api, :ai_workflows])
+      expect(described_class.authorization.permitted_scopes).to match_array([:api, :read_api, :ai_workflows])
+    end
+  end
+
+  def resolve_labels(parent, args = {}, context = { current_user: current_user })
+    resolve(described_class, obj: parent, args: args, ctx: context)
+  end
+end

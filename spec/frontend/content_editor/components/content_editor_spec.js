@@ -1,0 +1,484 @@
+import { GlAlert, GlLink, GlSprintf, GlLoadingIcon } from '@gitlab/ui';
+import { EditorContent, Editor } from '@tiptap/vue-2';
+import { nextTick } from 'vue';
+import MockAdapter from 'axios-mock-adapter';
+import axios from '~/lib/utils/axios_utils';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { CONTENT_EDITOR_PASTE } from '~/vue_shared/constants';
+import markdownEditorEventHub from '~/vue_shared/components/markdown/eventhub';
+import ContentEditor from '~/content_editor/components/content_editor.vue';
+import { ContentEditor as ContentEditorService } from '~/content_editor/services/content_editor';
+import ContentEditorAlert from '~/content_editor/components/content_editor_alert.vue';
+import ContentEditorProvider from '~/content_editor/components/content_editor_provider.vue';
+import EditorStateObserver from '~/content_editor/components/editor_state_observer.vue';
+import CodeBlockBubbleMenu from '~/content_editor/components/bubble_menus/code_block_bubble_menu.vue';
+import AlertBubbleMenu from '~/content_editor/components/bubble_menus/alert_bubble_menu.vue';
+import LinkBubbleMenu from '~/content_editor/components/bubble_menus/link_bubble_menu.vue';
+import MediaBubbleMenu from '~/content_editor/components/bubble_menus/media_bubble_menu.vue';
+import ReferenceBubbleMenu from '~/content_editor/components/bubble_menus/reference_bubble_menu.vue';
+import FormattingToolbar from '~/content_editor/components/formatting_toolbar.vue';
+import waitForPromises from 'helpers/wait_for_promises';
+import { KEYDOWN_EVENT } from '~/content_editor/constants';
+import EditorModeSwitcher from '~/vue_shared/components/markdown/editor_mode_switcher.vue';
+import { HTTP_STATUS_OK } from '~/lib/utils/http_status';
+import { mockChainedCommands } from '../test_utils';
+
+describe('ContentEditor', () => {
+  let wrapper;
+  let renderMarkdown;
+  let mock;
+  const uploadsPath = '/uploads';
+
+  const findEditorElement = () => wrapper.findByTestId('content-editor');
+  const findEditorContent = () => wrapper.findComponent(EditorContent);
+  const findEditorStateObserver = () => wrapper.findComponent(EditorStateObserver);
+  const findLoadingIndicator = () => wrapper.findComponent(GlLoadingIcon);
+  const findContentEditorAlert = () => wrapper.findComponent(ContentEditorAlert);
+  const findEditorDom = () => findEditorContent().props('editor').view.dom;
+  const createWrapper = ({ markdown, autofocus, ...props } = {}) => {
+    wrapper = shallowMountExtended(ContentEditor, {
+      propsData: {
+        renderMarkdown,
+        markdownDocsPath: '/docs/markdown',
+        uploadsPath,
+        markdown,
+        autofocus,
+        placeholder: 'Enter some text here...',
+        ...props,
+      },
+      stubs: {
+        EditorStateObserver,
+        ContentEditorProvider,
+        ContentEditorAlert,
+        GlLink,
+        GlSprintf,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    mock = new MockAdapter(axios);
+    // ignore /-/emojis requests
+    mock.onGet().reply(HTTP_STATUS_OK, []);
+
+    renderMarkdown = jest.fn();
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it('triggers initialized event', () => {
+    createWrapper();
+
+    expect(wrapper.emitted('initialized')).toHaveLength(1);
+  });
+
+  it('renders EditorContent component and provides tiptapEditor instance', async () => {
+    const markdown = 'hello world';
+
+    createWrapper({ markdown });
+
+    renderMarkdown.mockResolvedValueOnce({ body: markdown });
+
+    await nextTick();
+
+    const editorContent = findEditorContent();
+
+    expect(editorContent.props().editor).toBeInstanceOf(Editor);
+    expect(editorContent.classes()).toContain('md');
+  });
+
+  it('allows setting the tiptap editor to autofocus', async () => {
+    createWrapper({ autofocus: 'start' });
+
+    await nextTick();
+
+    expect(findEditorContent().props().editor.options.autofocus).toBe('start');
+  });
+
+  it('renders ContentEditorProvider component', () => {
+    createWrapper();
+
+    expect(wrapper.findComponent(ContentEditorProvider).exists()).toBe(true);
+  });
+
+  it('renders toolbar component', () => {
+    createWrapper();
+
+    expect(wrapper.findComponent(FormattingToolbar).exists()).toBe(true);
+  });
+
+  it('displays an attachment button', () => {
+    createWrapper();
+
+    expect(wrapper.findComponent(FormattingToolbar).props().hideAttachmentButton).toBe(false);
+  });
+
+  it('hides the attachment button if attachments are disabled', () => {
+    createWrapper({ disableAttachments: true });
+
+    expect(wrapper.findComponent(FormattingToolbar).props().hideAttachmentButton).toBe(true);
+  });
+
+  it('shows the footer', () => {
+    createWrapper({ disableAttachments: true });
+
+    expect(wrapper.findByTestId('content-editor-footer').exists()).toBe(true);
+  });
+
+  it('does not show the immersive class', () => {
+    createWrapper();
+
+    expect(wrapper.findByTestId('content-editor-container').classes()).not.toContain('immersive');
+  });
+
+  describe('when setting initial content', () => {
+    it('displays loading indicator', async () => {
+      createWrapper();
+
+      await nextTick();
+
+      expect(findLoadingIndicator().exists()).toBe(true);
+    });
+
+    it('emits loading event', async () => {
+      createWrapper();
+
+      await nextTick();
+
+      expect(wrapper.emitted('loading')).toHaveLength(1);
+    });
+
+    describe('succeeds', () => {
+      beforeEach(async () => {
+        renderMarkdown.mockResolvedValueOnce({ body: '' });
+
+        createWrapper({ markdown: '' });
+        await nextTick();
+      });
+
+      it('hides loading indicator', async () => {
+        await nextTick();
+        expect(findLoadingIndicator().exists()).toBe(false);
+      });
+
+      it('shows placeholder text', () => {
+        expect(wrapper.text()).toContain('Enter some text here...');
+      });
+    });
+
+    describe('fails', () => {
+      beforeEach(async () => {
+        renderMarkdown.mockRejectedValueOnce(new Error());
+
+        createWrapper({ markdown: 'hello world' });
+        await nextTick();
+      });
+
+      it('sets the content editor as read only when loading content fails', async () => {
+        await nextTick();
+
+        expect(findEditorContent().props().editor.isEditable).toBe(false);
+      });
+
+      it('hides loading indicator', async () => {
+        await nextTick();
+
+        expect(findLoadingIndicator().exists()).toBe(false);
+      });
+
+      it('displays error alert indicating that the content editor failed to load', () => {
+        expect(findContentEditorAlert().text()).toContain(
+          'An error occurred while trying to render the rich text editor. Please try again.',
+        );
+      });
+
+      describe('when clicking the retry button in the loading error alert and loading succeeds', () => {
+        beforeEach(async () => {
+          renderMarkdown.mockResolvedValueOnce({ body: 'hello markdown' });
+          await wrapper.findComponent(GlAlert).vm.$emit('primary-action');
+        });
+
+        it('hides the loading error alert', () => {
+          expect(findContentEditorAlert().text()).toBe('');
+        });
+
+        it('sets the content editor as writable', async () => {
+          await nextTick();
+
+          expect(findEditorContent().props().editor.isEditable).toBe(true);
+        });
+      });
+    });
+  });
+
+  describe('when loading markdown', () => {
+    let setSerializedContent;
+
+    const findTiptapEditor = () => findEditorContent().props('editor');
+
+    beforeEach(async () => {
+      renderMarkdown.mockResolvedValue({ body: '<p>hello</p>' });
+      setSerializedContent = jest.spyOn(ContentEditorService.prototype, 'setSerializedContent');
+
+      createWrapper({ markdown: 'hello' });
+      await waitForPromises();
+    });
+
+    it('loads the initial markdown outside the undo history', () => {
+      expect(setSerializedContent).toHaveBeenCalledTimes(1);
+      expect(setSerializedContent.mock.calls[0]).toEqual(['hello', undefined]);
+    });
+
+    it('loads a changed markdown prop as an undoable replacement', async () => {
+      await wrapper.setProps({ markdown: 'replaced' });
+
+      expect(setSerializedContent).toHaveBeenCalledWith('replaced', { addToHistory: true });
+    });
+
+    describe('when a changed markdown prop fails to load and Retry succeeds', () => {
+      beforeEach(async () => {
+        renderMarkdown.mockRejectedValueOnce(new Error());
+        await wrapper.setProps({ markdown: 'replaced' });
+        await waitForPromises();
+
+        renderMarkdown.mockResolvedValueOnce({ body: '<p>replaced</p>' });
+        await wrapper.findComponent(GlAlert).vm.$emit('primary-action');
+        await waitForPromises();
+      });
+
+      it('loads the replacement as undoable on both attempts', () => {
+        expect(setSerializedContent.mock.calls).toEqual([
+          ['hello', undefined],
+          ['replaced', { addToHistory: true }],
+          ['replaced', { addToHistory: true }],
+        ]);
+      });
+
+      it('restores the previous content when undo is pressed', () => {
+        const tiptapEditor = findTiptapEditor();
+
+        expect(tiptapEditor.state.doc.textContent).toBe('replaced');
+
+        expect(tiptapEditor.commands.undo()).toBe(true);
+        expect(tiptapEditor.state.doc.textContent).toBe('hello');
+
+        expect(tiptapEditor.commands.undo()).toBe(false);
+      });
+    });
+  });
+
+  describe('when focused event is emitted', () => {
+    beforeEach(async () => {
+      createWrapper();
+
+      findEditorStateObserver().vm.$emit('focus');
+
+      await nextTick();
+    });
+
+    it('adds is-focused class when focus event is emitted', () => {
+      expect(findEditorElement().classes()).toContain('is-focused');
+    });
+
+    it('removes is-focused class when blur event is emitted', async () => {
+      findEditorStateObserver().vm.$emit('blur');
+
+      await nextTick();
+
+      expect(findEditorElement().classes()).not.toContain('is-focused');
+    });
+
+    it('hides placeholder text', () => {
+      expect(wrapper.text()).not.toContain('Enter some text here...');
+    });
+
+    it('emits focus event', () => {
+      expect(wrapper.emitted('focus')).toHaveLength(1);
+    });
+
+    it('emits blur event when editorStateObserver emits blur event', async () => {
+      findEditorStateObserver().vm.$emit('blur');
+
+      await nextTick();
+
+      expect(wrapper.emitted('blur')).toHaveLength(1);
+    });
+  });
+  describe('when editorStateObserver emits doc-update event', () => {
+    let markdown;
+
+    beforeEach(async () => {
+      markdown = 'Loaded content';
+
+      renderMarkdown.mockResolvedValueOnce({ body: markdown });
+
+      createWrapper({ markdown: 'initial content' });
+
+      await nextTick();
+      await waitForPromises();
+
+      findEditorStateObserver().vm.$emit('doc-update');
+    });
+
+    it('emits change event with the latest markdown', () => {
+      expect(wrapper.emitted('change')).toEqual([[{ markdown }]]);
+    });
+
+    it('hides the placeholder text', () => {
+      expect(wrapper.text()).not.toContain('Enter some text here...');
+    });
+  });
+
+  describe('when editorStateObserver emits keydown event', () => {
+    it('bubbles up event', () => {
+      const event = new Event('keydown');
+
+      createWrapper();
+
+      findEditorStateObserver().vm.$emit(KEYDOWN_EVENT, event);
+      expect(wrapper.emitted(KEYDOWN_EVENT)).toEqual([[event]]);
+    });
+  });
+
+  it.each`
+    name           | component
+    ${'alert'}     | ${AlertBubbleMenu}
+    ${'link'}      | ${LinkBubbleMenu}
+    ${'media'}     | ${MediaBubbleMenu}
+    ${'codeBlock'} | ${CodeBlockBubbleMenu}
+    ${'reference'} | ${ReferenceBubbleMenu}
+  `('renders $name bubble menu', ({ component }) => {
+    createWrapper();
+
+    expect(wrapper.findComponent(component).exists()).toBe(true);
+  });
+
+  it('renders an editor mode dropdown', () => {
+    createWrapper();
+
+    expect(wrapper.findComponent(EditorModeSwitcher).exists()).toBe(true);
+  });
+
+  it('emits `enable-markdown-editor` when the editor mode dropdown switches', () => {
+    createWrapper();
+
+    wrapper.findComponent(EditorModeSwitcher).vm.$emit('switch');
+
+    expect(wrapper.emitted('enable-markdown-editor')).toEqual([[]]);
+  });
+
+  it('pastes content when CONTENT_EDITOR_READY_PASTE event is emitted', async () => {
+    const markdown = 'hello world';
+
+    createWrapper({ markdown });
+
+    renderMarkdown.mockResolvedValueOnce({ body: markdown });
+
+    await waitForPromises();
+
+    const editorContent = findEditorContent();
+    const commands = mockChainedCommands(editorContent.props('editor'), [
+      'focus',
+      'pasteContent',
+      'run',
+    ]);
+
+    markdownEditorEventHub.$emit(CONTENT_EDITOR_PASTE, 'Paste content');
+
+    await waitForPromises();
+
+    expect(commands.focus).toHaveBeenCalled();
+    expect(commands.pasteContent).toHaveBeenCalledWith('Paste content');
+    expect(commands.run).toHaveBeenCalled();
+  });
+
+  describe('aria attributes', () => {
+    it('uses the default aria-label when no ariaLabel prop is provided', () => {
+      createWrapper();
+
+      expect(findEditorDom().getAttribute('aria-label')).toBe('Rich text editor');
+    });
+
+    it('uses the provided ariaLabel prop', () => {
+      createWrapper({ ariaLabel: 'Description' });
+
+      expect(findEditorDom().getAttribute('aria-label')).toBe('Description');
+    });
+
+    it('uses aria-labelledby when ariaLabelledBy prop is provided', () => {
+      createWrapper({ ariaLabelledBy: 'my-label-id' });
+
+      expect(findEditorDom().getAttribute('aria-labelledby')).toBe('my-label-id');
+      expect(findEditorDom().hasAttribute('aria-label')).toBe(false);
+    });
+
+    it('uses aria-describedby when ariaDescribedBy prop is provided with ariaLabelledBy', () => {
+      createWrapper({ ariaLabelledBy: 'my-label-id', ariaDescribedBy: 'my-desc-id' });
+
+      expect(findEditorDom().getAttribute('aria-labelledby')).toBe('my-label-id');
+      expect(findEditorDom().getAttribute('aria-describedby')).toBe('my-desc-id');
+    });
+
+    it('uses aria-describedby with aria-label fallback when ariaLabelledBy is not provided', () => {
+      createWrapper({ ariaLabel: 'Description', ariaDescribedBy: 'my-desc-id' });
+
+      expect(findEditorDom().getAttribute('aria-label')).toBe('Description');
+      expect(findEditorDom().getAttribute('aria-describedby')).toBe('my-desc-id');
+      expect(findEditorDom().hasAttribute('aria-labelledby')).toBe(false);
+    });
+
+    it('updates aria attributes reactively when props change', async () => {
+      createWrapper({ ariaLabel: 'Initial label' });
+
+      expect(findEditorDom().getAttribute('aria-label')).toBe('Initial label');
+
+      await wrapper.setProps({ ariaLabel: 'Updated label' });
+      await nextTick();
+
+      expect(findEditorDom().getAttribute('aria-label')).toBe('Updated label');
+    });
+
+    it('removes the stale aria-label when switching to aria-labelledby after mount', async () => {
+      createWrapper({ ariaLabel: 'Description' });
+
+      expect(findEditorDom().getAttribute('aria-label')).toBe('Description');
+      expect(findEditorDom().hasAttribute('aria-labelledby')).toBe(false);
+
+      await wrapper.setProps({ ariaLabel: '', ariaLabelledBy: 'work-item-description-label' });
+      await nextTick();
+
+      expect(findEditorDom().getAttribute('aria-labelledby')).toBe('work-item-description-label');
+      expect(findEditorDom().hasAttribute('aria-label')).toBe(false);
+    });
+  });
+
+  describe('immersive mode', () => {
+    beforeEach(() => {
+      createWrapper({ immersive: true });
+    });
+
+    it('does show the immersive class when immersive prop is true', () => {
+      expect(wrapper.findByTestId('content-editor-container').classes()).toContain('immersive');
+    });
+
+    it('removes relative positioning, so it can be positioned by the parent', () => {
+      expect(wrapper.findByTestId('content-editor-container').classes()).not.toContain(
+        'gl-relative',
+      );
+    });
+
+    it('has a sticky header', () => {
+      expect(wrapper.findByTestId('content-editor-header').classes()).toContain('gl-sticky');
+    });
+
+    it('hides the footer', () => {
+      expect(wrapper.findByTestId('content-editor-footer').exists()).toBe(false);
+    });
+
+    it('renders an editor mode dropdown', () => {
+      expect(wrapper.findComponent(EditorModeSwitcher).exists()).toBe(true);
+    });
+  });
+});

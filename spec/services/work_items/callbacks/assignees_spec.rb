@@ -1,0 +1,214 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe WorkItems::Callbacks::Assignees, :request_store, :freeze_time, feature_category: :portfolio_management do
+  let_it_be(:reporter) { create(:user) }
+  let_it_be(:project) { create(:project, :private, reporters: reporter) }
+  let_it_be(:new_assignee) { create(:user, guest_of: project) }
+
+  let(:work_item) do
+    create(:work_item, project: project, updated_at: 1.day.ago)
+  end
+
+  let(:current_user) { reporter }
+  let(:params) { { assignee_ids: [new_assignee.id] } }
+  let(:service) { described_class.new(issuable: work_item, current_user: current_user, params: params) }
+
+  shared_examples 'assignee callback' do
+    it 'updates the assignees' do
+      assignees_callback
+
+      expect(work_item.assignee_ids).to contain_exactly(new_assignee.id)
+    end
+
+    context 'when passing an empty array' do
+      let(:params) { { assignee_ids: [] } }
+
+      before do
+        work_item.assignee_ids = [reporter.id]
+      end
+
+      it 'removes existing assignees' do
+        assignees_callback
+
+        expect(work_item.assignee_ids).to be_empty
+      end
+    end
+
+    context 'when user does not have access' do
+      let(:current_user) { create(:user) }
+
+      it 'does not update the assignees' do
+        assignees_callback
+
+        expect(work_item.assignee_ids).to be_empty
+      end
+    end
+
+    context 'when user has permission on parent' do
+      let(:public_project) { create(:project, :public, reporters: reporter) }
+      let(:confidential_wi) { create(:work_item, :confidential, project: public_project, updated_at: 1.day.ago) }
+
+      let(:params) { { assignee_ids: [new_assignee.id] } }
+      let(:service) { described_class.new(issuable: confidential_wi, current_user: current_user, params: params) }
+
+      it 'updates the assignees' do
+        assignees_callback
+
+        expect(confidential_wi.assignee_ids).to contain_exactly(new_assignee.id)
+      end
+    end
+
+    context 'when multiple assignees are given' do
+      let(:params) { { assignee_ids: [new_assignee.id, reporter.id] } }
+
+      context 'when work item allows multiple assignees' do
+        before do
+          allow(work_item).to receive(:allows_multiple_assignees?).and_return(true)
+        end
+
+        it 'sets all the given assignees' do
+          assignees_callback
+
+          expect(work_item.assignee_ids).to contain_exactly(new_assignee.id, reporter.id)
+        end
+      end
+
+      context 'when work item does not allow multiple assignees' do
+        before do
+          allow(work_item).to receive(:allows_multiple_assignees?).and_return(false)
+        end
+
+        it 'only sets the first assignee' do
+          assignees_callback
+
+          expect(work_item.assignee_ids).to contain_exactly(new_assignee.id)
+        end
+      end
+    end
+
+    context 'when assignee does not have access to the work item' do
+      let(:params) { { assignee_ids: [create(:user).id] } }
+
+      it 'does not set the assignee' do
+        assignees_callback
+
+        expect(work_item.assignee_ids).to be_empty
+      end
+    end
+
+    context 'when assignee ids are the same as the existing ones' do
+      before do
+        work_item.assignee_ids = [new_assignee.id]
+      end
+
+      it 'does not touch updated_at' do
+        assignees_callback
+
+        expect(work_item.assignee_ids).to contain_exactly(new_assignee.id)
+      end
+    end
+
+    context 'when assignee is a service account with composite_identity_enforced' do
+      let_it_be(:new_assignee) do
+        create(:user, :service_account, composite_identity_enforced: true, developer_of: project)
+      end
+
+      it 'sets the service account as an assignee' do
+        expect(::Gitlab::Auth::Identity).to receive(:link_from_scoped_user).and_call_original
+
+        assignees_callback
+
+        expect(work_item.assignee_ids).to contain_exactly(new_assignee.id)
+      end
+
+      context 'when composite identity linking raises TooManyIdentitiesLinkedError' do
+        before do
+          allow(::Gitlab::Auth::Identity).to receive(:link_from_scoped_user)
+            .and_raise(::Gitlab::Auth::Identity::TooManyIdentitiesLinkedError)
+        end
+
+        it 'logs a warning and raises a callback error with a user-facing message' do
+          expect(::Gitlab::AppLogger).to receive(:warn).with(hash_including(
+            message: 'Composite identity linking failed during assignment',
+            error: 'Gitlab::Auth::Identity::TooManyIdentitiesLinkedError'
+          ))
+
+          expect { assignees_callback }.to raise_error(
+            ::Issuable::Callbacks::Base::Error,
+            /You can assign only one service account at a time\./
+          )
+        end
+      end
+    end
+
+    context 'when two service accounts with composite_identity_enforced are given' do
+      let_it_be(:first_account) do
+        create(:user, :service_account, composite_identity_enforced: true, developer_of: project)
+      end
+
+      let_it_be(:second_account) do
+        create(:user, :service_account, composite_identity_enforced: true, developer_of: project)
+      end
+
+      let(:params) { { assignee_ids: [first_account.id, second_account.id] } }
+
+      before do
+        allow(work_item).to receive(:allows_multiple_assignees?).and_return(true)
+      end
+
+      it 'links both accounts for permission checks and sets both as assignees' do
+        assignees_callback
+
+        expect(work_item.assignee_ids).to contain_exactly(first_account.id, second_account.id)
+        expect(::Gitlab::Auth::Identity.new(first_account).scoped_user).to eq(current_user)
+        expect(::Gitlab::Auth::Identity.new(second_account).scoped_user).to eq(current_user)
+      end
+    end
+
+    context 'when assignee is a regular user with composite_identity_enforced' do
+      let_it_be(:new_assignee) do
+        create(:user, developer_of: project)
+      end
+
+      before do
+        new_assignee.composite_identity_enforced!
+        allow(User).to receive(:id_in).and_return([new_assignee])
+      end
+
+      it 'does not link the identities' do
+        expect(::Gitlab::Auth::Identity).not_to receive(:link_from_scoped_user)
+
+        assignees_callback
+      end
+    end
+
+    context 'when widget does not exist in new type' do
+      let(:params) { {} }
+
+      before do
+        allow(service).to receive(:excluded_in_new_type?).and_return(true)
+        work_item.assignee_ids = [new_assignee.id]
+      end
+
+      it "resets the work item's assignees" do
+        assignees_callback
+
+        expect(work_item.assignee_ids).to be_empty
+      end
+    end
+  end
+
+  describe '#before_create' do
+    subject(:assignees_callback) { service.before_create }
+
+    it_behaves_like 'assignee callback'
+  end
+
+  describe '#before_update' do
+    subject(:assignees_callback) { service.before_update }
+
+    it_behaves_like 'assignee callback'
+  end
+end

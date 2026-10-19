@@ -1,0 +1,65 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'RunnerCacheClear', feature_category: :runner_core do
+  include GraphqlHelpers
+
+  let_it_be(:current_user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project, jobs_cache_index: 1) }
+
+  let(:mutation) do
+    graphql_mutation(:runner_cache_clear, { project_id: project.to_global_id.to_s }, 'errors')
+  end
+
+  let(:mutation_response) { graphql_mutation_response(:runner_cache_clear) }
+
+  it_behaves_like 'authorizing granular token permissions for GraphQL', :clear_runner_cache do
+    let(:user) { current_user }
+    let(:boundary_object) { project }
+
+    before_all do
+      project.add_maintainer(current_user)
+    end
+
+    let(:request) { post_graphql_mutation(mutation, token: { personal_access_token: pat }) }
+  end
+
+  context 'when the user is a maintainer of the project' do
+    before_all do
+      project.add_maintainer(current_user)
+    end
+
+    it 'clears the runner cache' do
+      expect do
+        post_graphql_mutation(mutation, current_user: current_user)
+      end.to change { project.reload.jobs_cache_index }.by(1)
+
+      expect(mutation_response['errors']).to be_empty
+    end
+  end
+
+  context 'when the user is a developer' do
+    before_all do
+      project.add_developer(current_user)
+    end
+
+    it 'clears the runner cache' do
+      expect do
+        post_graphql_mutation(mutation, current_user: current_user)
+      end.to change { project.reload.jobs_cache_index }.by(1)
+
+      expect(mutation_response['errors']).to be_empty
+    end
+  end
+
+  context 'when the user is not a project member' do
+    it_behaves_like 'a mutation that returns a top-level access error'
+
+    it 'does not clear the runner cache' do
+      expect do
+        post_graphql_mutation(mutation, current_user: current_user)
+      end.not_to change { project.reload.jobs_cache_index }
+    end
+  end
+end

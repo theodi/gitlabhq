@@ -1,0 +1,283 @@
+import { merge } from 'lodash-es';
+import { shallowMount } from '@vue/test-utils';
+import DiscussionNotes from '~/rapid_diffs/app/discussions/discussion_notes.vue';
+import DraftNote from '~/rapid_diffs/app/discussions/draft_note.vue';
+import NoteableNote from '~/rapid_diffs/app/discussions/noteable_note.vue';
+import SystemNote from '~/rapid_diffs/app/discussions/system_note.vue';
+import LineRangeHeadline from '~/rapid_diffs/app/discussions/line_range_headline.vue';
+import ToggleRepliesWidget from '~/notes/components/toggle_replies_widget.vue';
+import PlaceholderNote from '~/rapid_diffs/app/discussions/placeholder_note.vue';
+import PlaceholderSystemNote from '~/rapid_diffs/app/discussions/placeholder_system_note.vue';
+import { SYSTEM_NOTE } from '~/notes/constants';
+
+describe('DiscussionNotes', () => {
+  let wrapper;
+
+  const defaultProvisions = {
+    userPermissions: {
+      can_create_note: false,
+    },
+  };
+
+  const createComponent = (propsData = {}, { provide = {}, scopedSlots = {} } = {}) => {
+    wrapper = shallowMount(DiscussionNotes, {
+      propsData,
+      provide: merge(defaultProvisions, provide),
+      scopedSlots,
+    });
+  };
+
+  it('shows replies toggle', () => {
+    const reply = { id: 'bar' };
+    createComponent({ notes: [{ id: 'foo' }, reply] });
+    const repliesComponent = wrapper.findComponent(ToggleRepliesWidget);
+    expect(repliesComponent.props('replies')).toStrictEqual([reply]);
+    expect(repliesComponent.props('collapsed')).toBe(false);
+  });
+
+  it('propagates toggle event', () => {
+    createComponent({ notes: [{ id: 'foo' }, { id: 'bar' }] });
+    wrapper.findComponent(ToggleRepliesWidget).vm.$emit('toggle');
+    expect(wrapper.emitted('toggle-discussion-replies')).toStrictEqual([[]]);
+  });
+
+  it('provides footer slot when expanded', () => {
+    const footer = jest.fn();
+    createComponent(
+      { notes: [{ id: 'foo' }, { id: 'bar' }], expanded: true },
+      { scopedSlots: { footer } },
+    );
+    expect(footer).toHaveBeenCalledWith({ hasReplies: true });
+  });
+
+  describe('noteable notes', () => {
+    describe('first note', () => {
+      it('renders as first note', () => {
+        const note = { id: 'foo' };
+        createComponent({ notes: [note] });
+        const noteComponent = wrapper.findComponent(NoteableNote);
+        expect(noteComponent.props('note')).toBe(note);
+        expect(noteComponent.props('showReplyButton')).toBe(
+          defaultProvisions.userPermissions.can_create_note,
+        );
+      });
+    });
+
+    describe('draft replies', () => {
+      it('renders draft replies via DraftNote component', () => {
+        const draftReply = { id: 'draft-1', isDraft: true };
+        createComponent(
+          { notes: [{ id: 'first' }, draftReply] },
+          { provide: { store: {}, endpoints: {}, userPermissions: { can_create_note: true } } },
+        );
+        expect(wrapper.findComponent(DraftNote).exists()).toBe(true);
+        expect(wrapper.findComponent(DraftNote).props('draft')).toBe(draftReply);
+      });
+
+      it('excludes draft replies from toggle replies widget', () => {
+        const draftReply = { id: 'draft-1', isDraft: true };
+        createComponent(
+          { notes: [{ id: 'first' }, { id: 'regular' }, draftReply] },
+          { provide: { userPermissions: { can_create_note: true } } },
+        );
+        const replies = wrapper.findComponent(ToggleRepliesWidget).props('replies');
+        expect(replies).toHaveLength(1);
+        expect(replies[0].id).toBe('regular');
+      });
+
+      it('shows draft replies even when collapsed', () => {
+        const draftReply = { id: 'draft-1', isDraft: true };
+        createComponent(
+          { notes: [{ id: 'first' }, { id: 'regular' }, draftReply], expanded: false },
+          { provide: { store: {}, endpoints: {}, userPermissions: { can_create_note: true } } },
+        );
+        expect(wrapper.findComponent(DraftNote).exists()).toBe(true);
+      });
+
+      it('propagates start-replying event', () => {
+        const note = { id: 'foo' };
+        createComponent({ notes: [note] });
+        wrapper.findComponent(NoteableNote).vm.$emit('start-replying');
+        expect(wrapper.emitted('start-replying')).toStrictEqual([[]]);
+      });
+
+      it('propagates note-edited event', () => {
+        const value = 'smile';
+        const note = { id: 'foo' };
+        createComponent({ notes: [note] });
+        wrapper.findComponent(NoteableNote).vm.$emit('note-edited', value);
+        expect(wrapper.emitted('note-edited')).toStrictEqual([[{ note, value }]]);
+      });
+    });
+
+    describe('all notes', () => {
+      const notes = [{ id: 'first' }, { id: 'second' }];
+
+      describe.each(notes)('for %s note', (note) => {
+        const findNoteableNote = () => {
+          return wrapper
+            .findAllComponents(NoteableNote)
+            .filter((component) => component.props('note') === note)
+            .at(0);
+        };
+
+        it('renders note', () => {
+          createComponent({ notes });
+          expect(findNoteableNote().exists()).toBe(true);
+        });
+
+        it.each(['start-editing', 'cancel-editing'])('propagates %s event', (event) => {
+          createComponent({ notes });
+          findNoteableNote().vm.$emit(event, note);
+          expect(wrapper.emitted(event)).toStrictEqual([[note]]);
+        });
+
+        it('propagates note-edited event', () => {
+          const value = 'smile';
+          createComponent({ notes });
+          findNoteableNote().vm.$emit('note-edited', value);
+          expect(wrapper.emitted('note-edited')).toStrictEqual([[{ note, value }]]);
+        });
+      });
+    });
+  });
+
+  describe('system notes', () => {
+    it('renders as first note', () => {
+      const note = { id: 'foo', system: true };
+      createComponent({ notes: [note] });
+      expect(wrapper.findComponent(SystemNote).props('note')).toBe(note);
+    });
+
+    it('renders as reply', () => {
+      const reply = { id: 'bar', system: true };
+      createComponent({ notes: [{ id: 'foo' }, reply] });
+      expect(wrapper.findComponent(SystemNote).props('note')).toBe(reply);
+    });
+
+    it('passes isLastDiscussion to system note', () => {
+      const note = { id: 'foo', system: true };
+      createComponent({ notes: [note], isLastDiscussion: true });
+      expect(wrapper.findComponent(SystemNote).props('isLastDiscussion')).toBe(true);
+    });
+  });
+
+  describe('placeholder notes', () => {
+    const placeholderNote = {
+      id: 'placeholder',
+      isPlaceholderNote: true,
+      notes: [{ body: 'wip' }],
+    };
+
+    it('renders a placeholder reply via PlaceholderNote with the inner note', () => {
+      createComponent({ notes: [{ id: 'foo' }, placeholderNote] });
+      const placeholder = wrapper.findComponent(PlaceholderNote);
+      expect(placeholder.exists()).toBe(true);
+      expect(placeholder.props('note')).toBe(placeholderNote.notes[0]);
+      expect(wrapper.findAllComponents(NoteableNote)).toHaveLength(1);
+    });
+
+    it('renders a system placeholder reply via PlaceholderSystemNote', () => {
+      const systemPlaceholder = {
+        id: 'placeholder',
+        isPlaceholderNote: true,
+        placeholderType: SYSTEM_NOTE,
+        notes: [{ body: 'applying command' }],
+      };
+      createComponent({ notes: [{ id: 'foo' }, systemPlaceholder] });
+      const placeholder = wrapper.findComponent(PlaceholderSystemNote);
+      expect(placeholder.exists()).toBe(true);
+      expect(placeholder.props('note')).toBe(systemPlaceholder.notes[0]);
+      expect(wrapper.findComponent(SystemNote).exists()).toBe(false);
+    });
+
+    it('renders multiple same-type placeholders with distinct keys in one discussion', () => {
+      const first = { id: 'placeholder-1', isPlaceholderNote: true, notes: [{ body: 'wip' }] };
+      const second = { id: 'placeholder-2', isPlaceholderNote: true, notes: [{ body: 'command' }] };
+      createComponent({ notes: [{ id: 'foo' }, first, second] });
+      const placeholders = wrapper.findAllComponents(PlaceholderNote);
+      expect(placeholders).toHaveLength(2);
+      const keys = placeholders.wrappers.map((placeholder) => placeholder.vm.$vnode.key);
+      expect(keys).toStrictEqual(['placeholder-1', 'placeholder-2']);
+    });
+  });
+
+  describe('timelineLayout prop', () => {
+    it('passes timelineLayout to NoteableNote', () => {
+      const note = { id: 'foo' };
+      createComponent({ notes: [note], timelineLayout: true });
+      expect(wrapper.findComponent(NoteableNote).props('timelineLayout')).toBe(true);
+    });
+
+    it('defaults timelineLayout to false', () => {
+      const note = { id: 'foo' };
+      createComponent({ notes: [note] });
+      expect(wrapper.findComponent(NoteableNote).props('timelineLayout')).toBe(false);
+    });
+  });
+
+  describe('isLastDiscussion prop', () => {
+    it('passes isLastDiscussion to NoteableNote', () => {
+      const note = { id: 'foo' };
+      createComponent({ notes: [note], isLastDiscussion: true });
+      expect(wrapper.findComponent(NoteableNote).props('isLastDiscussion')).toBe(true);
+    });
+
+    it('defaults isLastDiscussion to false', () => {
+      const note = { id: 'foo' };
+      createComponent({ notes: [note] });
+      expect(wrapper.findComponent(NoteableNote).props('isLastDiscussion')).toBe(false);
+    });
+  });
+
+  describe('isFirstNote prop', () => {
+    it('passes isFirstNote to the first NoteableNote', () => {
+      const note = { id: 'foo' };
+      createComponent({ notes: [note] });
+      expect(wrapper.findComponent(NoteableNote).props('isFirstNote')).toBe(true);
+    });
+
+    it('does not pass isFirstNote to the second NoteableNote', () => {
+      createComponent({ notes: [{ id: 'foo' }, { id: 'bar' }] });
+      expect(wrapper.findAllComponents(NoteableNote).at(1).props('isFirstNote')).toBe(false);
+    });
+  });
+
+  describe('multiline comment headline', () => {
+    const multiLineRange = {
+      start: { old_line: 5, new_line: 5, type: null },
+      end: { old_line: 8, new_line: 8, type: null },
+    };
+
+    const singleLineRange = {
+      start: { old_line: 5, new_line: 5, type: null },
+      end: { old_line: 5, new_line: 5, type: null },
+    };
+
+    const findHeadline = () => wrapper.findComponent(LineRangeHeadline);
+
+    it('does not render headline when note has no position', () => {
+      createComponent({ notes: [{ id: 'foo' }] });
+      expect(findHeadline().exists()).toBe(false);
+    });
+
+    it('does not render headline when note has no line range', () => {
+      createComponent({ notes: [{ id: 'foo', position: {} }] });
+      expect(findHeadline().exists()).toBe(false);
+    });
+
+    it('does not render headline for a single-line comment', () => {
+      createComponent({
+        notes: [{ id: 'foo', position: { line_range: singleLineRange } }],
+      });
+      expect(findHeadline().exists()).toBe(false);
+    });
+
+    it('renders the headline with the line range for a multi-line comment', () => {
+      createComponent({
+        notes: [{ id: 'foo', position: { line_range: multiLineRange } }],
+      });
+      expect(findHeadline().props('lineRange')).toEqual(multiLineRange);
+    });
+  });
+});

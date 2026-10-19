@@ -1,0 +1,188 @@
+# frozen_string_literal: true
+
+module Observability
+  class GroupO11ySetting < ApplicationRecord
+    include Gitlab::Utils::StrongMemoize
+
+    HUMANIZED_ATTRIBUTES = {
+      o11y_service_url: 'O11y service name'
+    }.freeze
+    SETUP_WINDOW = 5.minutes
+    URL_ATTRIBUTES = %i[o11y_service_url o11y_otel_url o11y_mcp_url].freeze
+
+    belongs_to :namespace, foreign_key: :group_id, inverse_of: :observability_group_o11y_setting
+    # Deprecated aliases retained until Part 2 (issue #119) lands and call sites are
+    # migrated to `namespace`. The underlying FK column is still `group_id`.
+    alias_method :group, :namespace
+    alias_method :group=, :namespace=
+
+    validates :o11y_service_url, length: { maximum: 255 }, addressable_url: { message: 'is invalid' }
+    validates :o11y_otel_url, length: { maximum: 255 },
+      addressable_url: { message: 'is invalid' }, allow_blank: true
+    validates :o11y_mcp_url, length: { maximum: 255 },
+      addressable_url: { message: 'is invalid' }, allow_blank: true
+    validate :validate_email_format
+    validate :validate_url_hosts
+    encrypts :o11y_service_password, :o11y_service_post_message_encryption_key
+    validates :o11y_service_password, length: { maximum: 510 },
+      json_schema: {
+        filename: 'o11y_service_password',
+        size_limit: 64.kilobytes,
+        message: 'is invalid'
+      }
+    validates :o11y_service_post_message_encryption_key, length: { maximum: 510 },
+      json_schema: {
+        filename: 'o11y_service_post_message_encryption_key',
+        size_limit: 64.kilobytes,
+        message: 'is invalid'
+      }
+
+    scope :with_namespace, -> { includes(:namespace) }
+    # Deprecated alias retained until call sites migrate to `with_namespace`.
+    scope :with_group, -> { with_namespace }
+    scope :search_by_group_id, ->(group_id) { where(group_id: group_id) }
+
+    attr_writer :o11y_service_name
+
+    def self.find_by_group_id(group_id)
+      find_by(group_id: group_id)
+    end
+
+    def self.human_attribute_name(attribute, *options)
+      HUMANIZED_ATTRIBUTES[attribute.to_sym] || super
+    end
+
+    def self.observability_setting_for(resource)
+      return unless resource
+
+      namespace = resource.is_a?(Project) ? resource.namespace : resource
+      return unless namespace.is_a?(Namespace)
+
+      ancestor_ids = namespace.traversal_ids.reverse
+      return if ancestor_ids.empty?
+
+      # Find the first setting matching any ancestor, maintaining hierarchy order
+      # by using array_position to preserve the order from ancestor_ids.
+      # For personal (user) namespaces, traversal_ids is [id], so this matches
+      # only a setting on the user namespace itself.
+      group_id_attribute = arel_table[:group_id]
+      array_sql = "array_position(ARRAY[#{ancestor_ids.join(',')}]::bigint[], " \
+        "#{group_id_attribute.relation.name}.#{group_id_attribute.name})"
+      where(group_id: ancestor_ids)
+        .order(Arel.sql(array_sql))
+        .first
+    end
+
+    def o11y_service_name
+      @o11y_service_name || name_from_url || name_from_group
+    end
+
+    def name_from_url
+      return unless o11y_service_url
+
+      o11y_service_url.to_s.gsub(%r{https://|\.gitlab-o11y\.com}, '')
+    end
+
+    def name_from_group
+      group&.full_path&.to_s&.tr('/', '-')
+    end
+
+    def validate_email_format
+      if o11y_service_user_email.blank?
+        errors.add(:o11y_service_user_email, I18n.t(:invalid, scope: 'activerecord.errors.messages'))
+        return
+      end
+
+      return if ValidateEmail.valid?(o11y_service_user_email)
+
+      errors.add(:o11y_service_user_email, I18n.t(:invalid, scope: 'valid_email.validations.email'))
+    end
+
+    # Rejects fragment (`#`) or userinfo (`@`) components, which let a crafted
+    # value make the parsed host resolve to a different host than the URL string
+    # appears to reference, enabling SSRF/credential exfiltration.
+    def validate_url_hosts
+      URL_ATTRIBUTES.each { |attribute| validate_url_host(attribute) }
+    end
+
+    def validate_url_host(attribute)
+      value = read_attribute(attribute)
+      return if value.blank?
+
+      uri = Addressable::URI.parse(value)
+      return if uri.fragment.blank? && uri.userinfo.blank?
+
+      errors.add(attribute, 'is invalid')
+    rescue Addressable::URI::InvalidURIError
+      errors.add(attribute, 'is invalid')
+    end
+
+    # Returns the group-level GITLAB_OBSERVABILITY_EXPORT CI variable.
+    # For personal (user) namespaces this always returns nil; use
+    # #observability_export_variable_for(project) instead.
+    def gitlab_observability_export_variable
+      return unless namespace.is_a?(Group)
+
+      namespace.variables.by_key('GITLAB_OBSERVABILITY_EXPORT').first
+    end
+    strong_memoize_attr :gitlab_observability_export_variable
+
+    # Namespace-aware lookup: checks group variables for groups, project
+    # variables for personal namespaces. The +project+ argument is only
+    # required for personal namespaces and is ignored for groups.
+    def observability_export_variable_for(project = nil)
+      if namespace.is_a?(Group)
+        gitlab_observability_export_variable
+      elsif project
+        project.variables.by_key('GITLAB_OBSERVABILITY_EXPORT').first
+      end
+    end
+
+    def provisioning?
+      within_provisioning_window? || new_record?
+    end
+
+    def otel_http_endpoint
+      "http://#{otel_address}:4318"
+    end
+
+    def otel_grpc_endpoint
+      "http://#{otel_address}:4317"
+    end
+
+    def otel_https_endpoint
+      uri = Addressable::URI.parse(o11y_otel_url)
+      "https://#{uri.host}:#{uri.port || 14318}"
+    end
+
+    def otel_grpcs_endpoint
+      "https://#{otel_address}:14317"
+    end
+
+    def otel_address
+      Addressable::URI.parse(o11y_otel_url).host
+    end
+
+    def o11y_otel_url
+      super.presence || "https://#{o11y_service_name}.otel.gitlab-o11y.com:14318"
+    end
+
+    def o11y_mcp_url
+      super.presence || "https://#{o11y_service_name}.mcp.gitlab-o11y.com/mcp"
+    end
+
+    def read_attribute_for_validation(attribute)
+      return read_attribute(attribute) if %i[o11y_otel_url o11y_mcp_url].include?(attribute.to_sym)
+
+      super
+    end
+
+    private
+
+    def within_provisioning_window?
+      return false unless persisted?
+
+      Time.current.before?(created_at + SETUP_WINDOW)
+    end
+  end
+end

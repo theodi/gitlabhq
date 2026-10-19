@@ -1,0 +1,79 @@
+# frozen_string_literal: true
+
+module WorkItems
+  class UpdateService < ::Issues::UpdateService
+    extend Gitlab::Utils::Override
+    include WidgetableService
+
+    def initialize(container:, current_user: nil, params: {}, perform_spam_check: false, widget_params: {})
+      @extra_params = params.delete(:extra_params) || {}
+
+      super(container: container, current_user: current_user, params: params, perform_spam_check: perform_spam_check)
+
+      @widget_params = widget_params
+    end
+
+    def execute(work_item)
+      updated_work_item = super
+
+      if updated_work_item.valid?
+        success(payload(work_item))
+      else
+        error(updated_work_item.errors.full_messages, :unprocessable_entity, pass_back: payload(updated_work_item))
+      end
+    rescue ::Issuable::Callbacks::Base::Error => e
+      error(e.message, :unprocessable_entity)
+    end
+
+    private
+
+    attr_reader :extra_params
+
+    override :handle_date_changes
+    def handle_date_changes(work_item)
+      return if work_item.dates_source&.previous_changes.blank? &&
+        work_item.previous_changes.slice('due_date', 'start_date').none?
+
+      GraphqlTriggers.issuable_dates_updated(work_item)
+    end
+
+    override :associations_before_update
+    def associations_before_update(work_item)
+      super.merge(
+        work_item_parent_id: work_item.work_item_parent&.id,
+        confidential: work_item.confidential
+        # confidentiality is cleared from work_item.previous_changes before events are tracked
+      )
+    end
+
+    override :after_update
+    def after_update(work_item, old_associations)
+      super
+
+      ::Gitlab::WorkItems::Instrumentation::TrackingService.new(
+        work_item: work_item,
+        current_user: current_user,
+        old_associations: old_associations
+      ).execute
+      GraphqlTriggers.issuable_title_updated(work_item) if work_item.previous_changes.key?(:title)
+    end
+
+    def payload(work_item)
+      { work_item: work_item }
+    end
+
+    def handle_label_changes(issuable, old_labels)
+      return false unless super
+
+      Gitlab::UsageDataCounters::WorkItemActivityUniqueCounter.track_work_item_labels_changed_action(
+        author: current_user
+      )
+    end
+
+    def parent
+      container
+    end
+  end
+end
+
+WorkItems::UpdateService.prepend_mod

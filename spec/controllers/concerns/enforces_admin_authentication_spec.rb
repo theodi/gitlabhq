@@ -1,0 +1,273 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe EnforcesAdminAuthentication, feature_category: :system_access do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:admin) { create(:admin) }
+
+  before do
+    sign_in(user)
+  end
+
+  describe '.authorize!' do
+    controller(ApplicationController) do
+      include EnforcesAdminAuthentication
+
+      authorize! :read_admin_users, only: :index
+
+      def index
+        head :ok
+      end
+    end
+
+    context 'when the user is an admin' do
+      let(:user) { admin }
+
+      context 'when not in admin mode' do
+        it 'renders redirect for re-authentication and does not set admin mode' do
+          get :index
+
+          expect(response).to redirect_to new_admin_session_path
+          expect(assigns(:current_user_mode)&.admin_mode?).to be(false)
+        end
+      end
+
+      context 'when in admin mode', :enable_admin_mode do
+        it 'renders ok' do
+          get :index
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        context 'when the ability is not allowed' do
+          before do
+            allow(Ability).to receive(:allowed?).and_call_original
+            allow(Ability).to receive(:allowed?).with(user, :read_admin_users, :global).and_return(false)
+          end
+
+          it 'renders a 404' do
+            get :index
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+    end
+
+    context 'when the user is a regular user' do
+      it 'renders a 404' do
+        get :index
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+
+      context 'when an ability grants access' do
+        before do
+          allow(Ability).to receive(:allowed?).and_call_original
+          allow(Ability).to receive(:allowed?).with(user, :read_admin_users, :global).and_return(true)
+        end
+
+        it 'renders ok' do
+          get :index
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+    end
+  end
+
+  describe '.authenticate_admin!' do
+    controller(ApplicationController) do
+      include EnforcesAdminAuthentication
+
+      def index
+        head :ok
+      end
+    end
+
+    context 'application setting :admin_mode is enabled' do
+      describe 'authenticate_admin!' do
+        context 'as an admin' do
+          let(:user) { admin }
+
+          it 'renders redirect for re-authentication and does not set admin mode' do
+            get :index
+
+            expect(response).to redirect_to new_admin_session_path
+            expect(assigns(:current_user_mode)&.admin_mode?).to be(false)
+          end
+
+          it 'stores the path so re-authentication returns the admin to it' do
+            get :index
+
+            expect(controller.stored_location_for(:redirect)).to eq(request.fullpath)
+          end
+
+          context 'when the request is an XHR' do
+            shared_examples 'a request rejected with a JSON error' do
+              it 'renders a JSON error with 401 and does not set admin mode', :aggregate_failures do
+                get :index, format: request_format, xhr: true
+
+                expect(response).to have_gitlab_http_status(:unauthorized)
+                expect(response.media_type).to eq('application/json')
+                # `message` is the key the frontend renders, i.e. `onError` in
+                # new_access_token_app.vue and formatErrors in the Pinia store. Renaming it
+                # turns the error back into a silent no-op in the UI.
+                expect(json_response['message']).to eq('Admin mode is inactive. Please re-authenticate.')
+                expect(assigns(:current_user_mode)&.admin_mode?).to be(false)
+                # An XHR has no page to come back to, and PUT-only endpoints 404 on that GET.
+                expect(controller.stored_location_for(:redirect)).to be_nil
+              end
+            end
+
+            context 'when the format is JSON' do
+              let(:request_format) { :json }
+
+              it_behaves_like 'a request rejected with a JSON error'
+            end
+
+            context 'when the format is JS' do
+              let(:request_format) { :js }
+
+              it_behaves_like 'a request rejected with a JSON error'
+            end
+          end
+
+          context 'when a non-HTML format is requested without an XHR' do
+            # A CSV export under /admin is a plain navigation. It has to keep redirecting, so the
+            # admin re-authenticates and is then returned to the download.
+            it 'redirects to the re-authentication page' do
+              get :index, format: :csv
+
+              expect(response).to redirect_to(new_admin_session_path)
+            end
+          end
+
+          context 'when admin mode is active', :enable_admin_mode do
+            it 'renders ok' do
+              get :index
+
+              expect(response).to have_gitlab_http_status(:ok)
+            end
+          end
+        end
+
+        context 'as a user' do
+          it 'renders a 404' do
+            get :index
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+
+          it 'does not set admin mode' do
+            get :index
+
+            # check for nil too since on 404, current_user_mode might not be initialized
+            expect(assigns(:current_user_mode)&.admin_mode?).to be_falsey
+          end
+        end
+      end
+    end
+
+    context 'application setting :admin_mode is disabled' do
+      before do
+        stub_application_setting(admin_mode: false)
+      end
+
+      describe 'authenticate_admin!' do
+        before do
+          get :index
+        end
+
+        context 'as an admin' do
+          let(:user) { admin }
+
+          it 'allows direct access to page' do
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+
+          it 'does not set admin mode' do
+            expect(assigns(:current_user_mode)&.admin_mode?).to be_falsey
+          end
+        end
+
+        context 'as a user' do
+          it 'renders a 404' do
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+
+          it 'does not set admin mode' do
+            # check for nil too since on 404, current_user_mode might not be initialized
+            expect(assigns(:current_user_mode)&.admin_mode?).to be_falsey
+          end
+        end
+      end
+    end
+  end
+
+  describe '.authorize! when authorization_subject is overridden' do
+    controller(ApplicationController) do
+      include EnforcesAdminAuthentication
+
+      authorize! :read_admin_users, only: :index
+
+      def index
+        head :ok
+      end
+
+      private
+
+      def authorization_subject
+        ::Current.organization
+      end
+    end
+
+    context 'when the user is an admin' do
+      let(:user) { admin }
+
+      context 'when not in admin mode' do
+        it 'renders redirect for re-authentication' do
+          get :index
+
+          expect(response).to redirect_to new_admin_session_path
+        end
+      end
+
+      context 'when in admin mode', :enable_admin_mode do
+        it 'checks the ability with the organization as subject and renders ok' do
+          allow(Ability).to receive(:allowed?).and_call_original
+          expect(Ability).to receive(:allowed?).with(user, :read_admin_users, current_organization)
+            .and_call_original.at_least(:once)
+
+          get :index
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        context 'when the ability is not allowed' do
+          before do
+            allow(Ability).to receive(:allowed?).and_call_original
+            allow(Ability).to receive(:allowed?)
+              .with(user, :read_admin_users, current_organization)
+              .and_return(false)
+          end
+
+          it 'renders a 404' do
+            get :index
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+    end
+
+    context 'when the user is a regular user' do
+      it 'renders a 404' do
+        get :index
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+end

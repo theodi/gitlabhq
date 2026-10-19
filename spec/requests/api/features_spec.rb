@@ -1,0 +1,437 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Features, :clean_gitlab_redis_feature_flag, stub_feature_flags: false, feature_category: :feature_flags do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:opted_out) { create(:user) }
+  let_it_be(:admin) { create(:admin) }
+
+  # Find any `development` feature flag name
+  let(:known_feature_flag) do
+    Feature::Definition.definitions
+      .values.find(&:development?)
+  end
+
+  let(:known_feature_flag_definition_hash) do
+    a_hash_including(
+      'type' => 'development'
+    )
+  end
+
+  before do
+    Feature.reset
+    Flipper.unregister_groups
+    Flipper.register(:perf_team) do |actor|
+      actor.respond_to?(:admin) && actor.admin?
+    end
+
+    skip_default_enabled_yaml_check
+  end
+
+  describe 'GET /features' do
+    let(:path) { '/features' }
+
+    let(:expected_features) do
+      [
+        {
+          'name' => 'feature_1',
+          'state' => 'on',
+          'gates' => [
+            { 'key' => 'boolean', 'value' => true },
+            { 'key' => 'expression', 'value' => nil },
+            { 'key' => 'actors', 'value' => ["#{opted_out.flipper_id}:opt_out"] }
+          ],
+          'definition' => nil
+        },
+        {
+          'name' => 'feature_2',
+          'state' => 'off',
+          'gates' => [{ 'key' => 'boolean', 'value' => false }, { 'key' => 'expression', 'value' => nil }],
+          'definition' => nil
+        },
+        {
+          'name' => 'feature_3',
+          'state' => 'conditional',
+          'gates' => [
+            { 'key' => 'boolean', 'value' => false },
+            { 'key' => 'expression', 'value' => nil },
+            { 'key' => 'groups', 'value' => ['perf_team'] }
+          ],
+          'definition' => nil
+        },
+        {
+          'name' => known_feature_flag.name,
+          'state' => 'on',
+          'gates' => [{ 'key' => 'boolean', 'value' => true }, { 'key' => 'expression', 'value' => nil }],
+          'definition' => known_feature_flag_definition_hash
+        }
+      ]
+    end
+
+    before do
+      # Undefined feature flags can only be mutated in production environment
+      allow(Gitlab).to receive(:dev_or_test_env?).and_return(false)
+
+      # Mutate undefined feature flags (flags with no YAML definition)
+      Feature.enable('feature_1')
+      Feature.opt_out('feature_1', opted_out)
+      Feature.disable('feature_2')
+      Feature.enable('feature_3', Feature.group(:perf_team))
+
+      # Mutate a known feature flag to verify that definition is included in the response
+      Feature.enable(known_feature_flag.name)
+    end
+
+    it_behaves_like 'GET request permissions for admin mode'
+
+    it 'returns a 401 for anonymous users' do
+      get api(path)
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'returns the feature list for admins' do
+      get api(path, admin, admin_mode: true)
+
+      expect(json_response).to match_array(expected_features)
+    end
+  end
+
+  describe 'POST /feature' do
+    let(:feature_name) { known_feature_flag.name }
+    let(:path) { "/features/#{feature_name}" }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { { value: 'true' } }
+    end
+
+    it 'returns a 401 for anonymous users' do
+      post api(path)
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    context 'when the service responds with any error' do
+      before do
+        allow_next_instance_of(Admin::SetFeatureFlagService) do |service|
+          allow(service).to receive(:execute).and_return(ServiceResponse.error(message: 'error'))
+        end
+      end
+
+      it 'returns a 400 with the error message' do
+        post api(path, admin, admin_mode: true), params: { value: 'true' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response).to eq({ 'message' => '400 Bad request - error' })
+      end
+    end
+
+    shared_examples 'enables the flag for the actor' do |actor_type|
+      it 'sets the feature gate' do
+        post api(path, admin, admin_mode: true), params: { value: 'true', actor_type => actor_value }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response).to match(
+          'name' => feature_name,
+          'state' => 'conditional',
+          'gates' => [
+            { 'key' => 'boolean', 'value' => false },
+            { 'key' => 'expression', 'value' => nil },
+            { 'key' => 'actors', 'value' => [actor.flipper_id] }
+          ],
+          'definition' => known_feature_flag_definition_hash
+        )
+      end
+    end
+
+    context 'when enabling for a project by path' do
+      it_behaves_like 'enables the flag for the actor', :project do
+        let(:actor) { create(:project) }
+        let(:actor_value) { actor.full_path }
+      end
+    end
+
+    context 'when enabling for a group by path' do
+      it_behaves_like 'enables the flag for the actor', :group do
+        let(:actor) { create(:group) }
+        let(:actor_value) { actor.full_path }
+      end
+    end
+
+    context 'when enabling for a namespace by path' do
+      it_behaves_like 'enables the flag for the actor', :namespace do
+        let(:actor) { create(:namespace) }
+        let(:actor_value) { actor.full_path }
+      end
+    end
+
+    context 'when enabling for a repository by path' do
+      it_behaves_like 'enables the flag for the actor', :repository do
+        let_it_be_with_reload(:actor) { create(:project).repository }
+        let(:actor_value) { actor.full_path }
+      end
+    end
+
+    context 'when enabling for a runner by ID' do
+      it_behaves_like 'enables the flag for the actor', :runner do
+        let_it_be_with_reload(:actor) { create(:ci_runner) }
+        let(:actor_value) { actor.id.to_s }
+      end
+
+      context 'with multiple runners' do
+        let_it_be(:runner) { create(:ci_runner) }
+        let_it_be(:runner2) { create(:ci_runner) }
+
+        it 'sets the feature gate for all runners' do
+          post api(path, admin, admin_mode: true), params: { value: 'true', runner: "#{runner.id},#{runner2.id}" }
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['gates']).to include(
+            { 'key' => 'actors', 'value' => contain_exactly(runner.flipper_id, runner2.flipper_id) }
+          )
+        end
+      end
+
+      context 'when runner does not exist' do
+        it 'returns a 400' do
+          post api(path, admin, admin_mode: true), params: { value: 'true', runner: '999999' }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    context 'when enabling for an endpoint by caller_id' do
+      it_behaves_like 'enables the flag for the actor', :endpoint do
+        let(:actor) { Feature::Endpoint.new('GET /api/v4/projects/:id') }
+        let(:actor_value) { actor.caller_id }
+      end
+    end
+
+    context 'when enabling for an organization by ID' do
+      it_behaves_like 'enables the flag for the actor', :organization do
+        let_it_be_with_reload(:actor) { create(:organization) }
+        let(:actor_value) { actor.id.to_s }
+      end
+
+      context 'with multiple organizations' do
+        let_it_be(:organization) { create(:organization) }
+        let_it_be(:organization2) { create(:organization) }
+
+        it 'sets the feature gate for all organizations' do
+          organization_ids = "#{organization.id},#{organization2.id}"
+          post api(path, admin, admin_mode: true), params: { value: 'true', organization: organization_ids }
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['gates']).to include(
+            { 'key' => 'actors', 'value' => contain_exactly(organization.flipper_id, organization2.flipper_id) }
+          )
+        end
+      end
+
+      context 'when organization does not exist' do
+        it 'returns a 400' do
+          post api(path, admin, admin_mode: true), params: { value: 'true', organization: '999999' }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    context 'when enabling for an organization by path' do
+      it_behaves_like 'enables the flag for the actor', :organization do
+        let_it_be_with_reload(:actor) { create(:organization) }
+        let(:actor_value) { actor.path }
+      end
+    end
+
+    context 'when the value argument is missing' do
+      it 'returns a 400' do
+        post api("/features/#{feature_name}", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response).to eq('error' => 'value is missing')
+      end
+    end
+
+    describe 'invalid key parameter' do
+      shared_examples 'rejects the key' do
+        it 'returns an error instead of silently ignoring the key' do
+          post api("/features/#{feature_name}", admin, admin_mode: true),
+            params: { value: value, key: 'percentage_of_actor' }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to match(/key does not have a valid value/)
+          expect(Feature.persisted_name?(feature_name)).to be(false)
+        end
+      end
+
+      context 'with a boolean value' do
+        let(:value) { 'true' }
+
+        it_behaves_like 'rejects the key'
+      end
+
+      context 'with a percentage value' do
+        let(:value) { '50' }
+
+        it_behaves_like 'rejects the key'
+      end
+    end
+
+    describe 'mutually exclusive parameters' do
+      shared_examples 'fails to set the feature flag' do
+        before do
+          post api("/features/#{feature_name}", admin, admin_mode: true),
+            params: { value: '0.01', key: 'percentage_of_actors' }.merge(extra_params)
+        end
+
+        it 'returns an error' do
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to match(/key, \w+ are mutually exclusive/)
+        end
+      end
+
+      context 'when key and feature_group are provided' do
+        let(:extra_params) { { feature_group: 'some-value' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+
+      context 'when key and user are provided' do
+        let(:extra_params) { { user: 'some-user' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+
+      context 'when key and group are provided' do
+        let(:extra_params) { { group: 'somepath' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+
+      context 'when key and namespace are provided' do
+        let(:extra_params) { { namespace: 'somepath' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+
+      context 'when key and project are provided' do
+        let(:extra_params) { { project: 'somepath' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+
+      context 'when key and runner are provided' do
+        let(:extra_params) { { runner: '1' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+
+      context 'when key and endpoint are provided' do
+        let(:extra_params) { { endpoint: 'GET /api/v4/projects' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+
+      context 'when key and organization are provided' do
+        let(:extra_params) { { organization: '1' } }
+
+        it_behaves_like 'fails to set the feature flag'
+      end
+    end
+  end
+
+  describe 'DELETE /feature/:name' do
+    let(:feature_name) { 'my_feature' }
+    let(:path) { "/features/#{feature_name}" }
+
+    it_behaves_like 'DELETE request permissions for admin mode'
+
+    context 'when the user has no access' do
+      it 'returns a 401 for anonymous users' do
+        delete api(path)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when the user has access' do
+      it 'returns 204 when the value is not set' do
+        delete api(path, admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+
+      context 'when the gate value was set' do
+        before do
+          stub_feature_flag_definition(feature_name)
+          Feature.enable(feature_name)
+        end
+
+        it 'deletes an enabled feature' do
+          expect do
+            delete api("/features/#{feature_name}", admin, admin_mode: true)
+            Feature.reset
+          end.to change { Feature.persisted_name?(feature_name) }
+            .and change { Feature.enabled?(feature_name) }
+
+          expect(response).to have_gitlab_http_status(:no_content)
+        end
+
+        it 'logs the event' do
+          expect(Feature.logger).to receive(:info).once
+
+          delete api("/features/#{feature_name}", admin, admin_mode: true)
+        end
+      end
+    end
+  end
+end
+
+# Separate describe without `stub_feature_flags: false` so the granular-PAT
+# factory (which needs default feature-flag stubbing) builds correctly.
+RSpec.describe API::Features, :clean_gitlab_redis_feature_flag, feature_category: :feature_flags do
+  let_it_be(:admin) { create(:admin) }
+
+  let(:known_feature_flag) { Feature::Definition.definitions.values.find(&:development?) }
+
+  before do
+    skip_default_enabled_yaml_check
+  end
+
+  describe 'GET /features' do
+    it_behaves_like 'authorizing granular token permissions', :read_feature do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { get api('/features', personal_access_token: pat) }
+    end
+  end
+
+  describe 'GET /features/definitions' do
+    it_behaves_like 'authorizing granular token permissions', :read_feature do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { get api('/features/definitions', personal_access_token: pat) }
+    end
+  end
+
+  describe 'POST /features/:name' do
+    it_behaves_like 'authorizing granular token permissions', :update_feature do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        post api("/features/#{known_feature_flag.name}", personal_access_token: pat), params: { value: 'true' }
+      end
+    end
+  end
+
+  describe 'DELETE /features/:name' do
+    it_behaves_like 'authorizing granular token permissions', :delete_feature do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { delete api('/features/my_feature', personal_access_token: pat) }
+    end
+  end
+end

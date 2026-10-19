@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "required": ["id", "project_id", "sha", "ref", "status", "created_at", "updated_at", "web_url"],
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "project_id": {
+      "type": "integer"
+    },
+    "sha": {
+      "type": "string"
+    },
+    "ref": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "web_url": {
+      "type": "string"
+    }
+  }
+}

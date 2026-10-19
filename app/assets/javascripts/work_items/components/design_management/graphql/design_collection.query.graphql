@@ -1,0 +1,26 @@
+#import "./fragments/designs_widget.fragment.graphql"
+
+# @feature_category: design_management
+query getWorkItemDesignList(
+  $id: WorkItemID!
+  $atVersion: DesignManagementVersionID
+  $useWorkItemFeatures: Boolean = false
+) {
+  workItem(id: $id) {
+    id
+    workItemType {
+      id
+      name
+    }
+    widgets @skip(if: $useWorkItemFeatures) {
+      ... on WorkItemWidgetDesigns {
+        ...DesignsWidgetFragment
+      }
+    }
+    features @include(if: $useWorkItemFeatures) {
+      designs {
+        ...DesignsWidgetFragment
+      }
+    }
+  }
+}

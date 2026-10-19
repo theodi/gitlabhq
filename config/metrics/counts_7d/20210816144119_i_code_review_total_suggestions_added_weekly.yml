@@ -1,0 +1,22 @@
+---
+key_path: redis_hll_counters.code_review.i_code_review_total_suggestions_added_weekly
+description: Total number of weekly suggestions
+product_group: code_review
+product_categories:
+- code_review_workflow
+value_type: number
+status: active
+milestone: "14.3"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/67525
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+    - i_code_review_total_suggestions_added
+data_category: optional
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

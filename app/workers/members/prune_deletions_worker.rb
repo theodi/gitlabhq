@@ -1,0 +1,107 @@
+# frozen_string_literal: true
+
+module Members
+  class PruneDeletionsWorker
+    include ApplicationWorker
+    include CronjobChildWorker
+    include LimitedCapacity::Worker
+    include Gitlab::Utils::StrongMemoize
+
+    data_consistency :sticky
+    feature_category :seat_cost_management
+    urgency :low
+    idempotent!
+
+    MAX_RUNNING_JOBS = 1
+    MEMBER_BATCH_SIZE = 100
+    SCHEDULE_BATCH_SIZE = 10
+
+    def perform_work
+      @execution_tracker = Gitlab::Utils::ExecutionTracker.new
+
+      return unless member_deletion_schedules.any?
+
+      process_member_deletion_schedules
+    end
+
+    def remaining_work_count(*_args)
+      Members::DeletionSchedule.limit(max_running_jobs + 1).count
+    end
+
+    def max_running_jobs
+      MAX_RUNNING_JOBS
+    end
+
+    private
+
+    attr_reader :execution_tracker
+
+    def process_member_deletion_schedules
+      member_deletion_schedules.each do |member_deletion_schedule|
+        remove_user_from_namespace(member_deletion_schedule)
+      end
+    end
+
+    def remove_user_from_namespace(member_deletion_schedule)
+      destroyed_count = 0
+      namespace = member_deletion_schedule.namespace
+      user = member_deletion_schedule.user
+      memberships = ::Member.in_hierarchy(namespace).with_user(user).limit(MEMBER_BATCH_SIZE)
+
+      destroy_duration = Benchmark.realtime do
+        memberships.each do |member|
+          # limit deletion to execute only for 60s (execution_tracker::MAX_RUNTIME)
+          break if execution_tracker.over_limit?
+
+          destroy_member(member, member_deletion_schedule)
+          destroyed_count += 1
+        end
+      end
+
+      log_monitoring_data(user.id, namespace.id, destroyed_count, destroy_duration)
+
+      # when all memberships removed, cleanup schedule:
+      cleanup_schedule(member_deletion_schedule) if memberships.count === 0
+    rescue Gitlab::Access::AccessDeniedError
+      cleanup_schedule(member_deletion_schedule)
+    ensure
+      refresh_authorized_projects(user) if destroyed_count > 0 || member_deletion_schedule.destroyed?
+    end
+
+    def member_deletion_schedules
+      Members::DeletionSchedule.first(SCHEDULE_BATCH_SIZE)
+    end
+    strong_memoize_attr :member_deletion_schedules
+
+    def destroy_member(member, member_deletion_schedule)
+      scheduled_by = member_deletion_schedule.scheduled_by
+
+      ::Members::DestroyService.new(
+        member,
+        current_user: scheduled_by,
+        skip_subresources: true,
+        skip_authorized_projects_refresh: true
+      ).execute
+    end
+
+    def refresh_authorized_projects(user)
+      UserProjectAccessChangedService.new(user.id).execute(priority: UserProjectAccessChangedService::MEDIUM_PRIORITY)
+    end
+
+    def log_monitoring_data(user_id, namespace_id, destroyed_count, destroy_duration)
+      Gitlab::AppLogger.info(
+        message: 'Processed scheduled member deletion',
+        user_id: user_id,
+        namespace_id: namespace_id,
+        destroyed_count: destroyed_count,
+        destroy_duration_s: destroy_duration
+      )
+    end
+
+    def cleanup_schedule(member_deletion_schedule)
+      member_deletion_schedule.destroy!
+    end
+  end
+end
+
+::Members::PruneDeletionsWorker.prepend_mod_with('Members::PruneDeletionsWorker')

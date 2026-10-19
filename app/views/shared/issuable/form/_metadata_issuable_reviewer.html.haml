@@ -1,0 +1,11 @@
+= form.label :reviewer_id, issuable.allows_multiple_reviewers? ? _('Reviewers') : _('Reviewer'), class: "gl-col-12"
+.gl-col-12
+  .issuable-form-select-holder.selectbox
+    - issuable.reviewers.each do |reviewer|
+      = hidden_field_tag "#{issuable.to_ability_name}[reviewer_ids][]", reviewer.id, id: nil, data: { meta: reviewer.name, avatar_url: reviewer.avatar_url, name: reviewer.name, username: reviewer.username }
+
+    - if issuable.reviewers.empty?
+      = hidden_field_tag "#{issuable.to_ability_name}[reviewer_ids][]", 0, id: nil, data: { meta: '' }
+
+    = dropdown_tag(users_dropdown_label(issuable.reviewers), options: reviewers_dropdown_options(issuable.to_ability_name, issuable.iid, issuable.target_branch))
+  = render_if_exists 'shared/issuable/approver_suggestion', issuable: issuable, presenter: presenter

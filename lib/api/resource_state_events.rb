@@ -1,0 +1,66 @@
+# frozen_string_literal: true
+
+module API
+  class ResourceStateEvents < ::API::Base
+    include PaginationParams
+
+    helpers ::API::Helpers::NotesHelpers
+    helpers ::API::Helpers::ResourceEventsHelpers
+
+    before do
+      authenticate!
+    end
+
+    Helpers::ResourceEventsHelpers.eventable_types.each do |eventable_type, details|
+      parent_type = eventable_type.parent_class.to_s.underscore
+      eventables_str = eventable_type.to_s.underscore.pluralize
+      human_eventable_str = eventable_type.to_s.underscore.humanize.downcase
+      eventable_article = human_eventable_str.match?(/\A[aeiou]/i) ? 'an' : 'a'
+      feature_category = details[:feature_category]
+
+      params do
+        requires :id, type: String, desc: "ID or URL-encoded path of the #{parent_type}."
+      end
+      resource parent_type.pluralize.to_sym, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc "List all #{parent_type} #{human_eventable_str} state events" do
+          detail "Lists all state events for a specified #{human_eventable_str}."
+          success Entities::ResourceStateEvent
+          tags ['resource_events']
+        end
+        params do
+          requires :eventable_id, types: Integer, desc: "The #{details[:id_field]} of the #{human_eventable_str}"
+          use :pagination
+        end
+
+        route_setting :tier, details[:tier] if details[:tier]
+        route_setting :authorization, permissions: :"read_#{eventable_type.to_s.underscore}_state_event", boundary_type: parent_type.to_sym
+        get ":id/#{eventables_str}/:eventable_id/resource_state_events", feature_category: feature_category, urgency: :low do
+          eventable = find_noteable(eventable_type, params[:eventable_id])
+
+          events = ResourceStateEventFinder.new(current_user, eventable).execute
+
+          present_resource_state_event_collection(paginate(events), eventable, eventable_type)
+        end
+
+        desc "Retrieve #{eventable_article} #{human_eventable_str} state event" do
+          detail "Retrieves a state event for a specified #{parent_type} #{human_eventable_str}."
+          success Entities::ResourceStateEvent
+          tags ['resource_events']
+        end
+        params do
+          requires :eventable_id, types: Integer, desc: "The #{details[:id_field]} of the #{human_eventable_str}"
+          requires :event_id, type: Integer, desc: 'ID of the resource state event.'
+        end
+        route_setting :tier, details[:tier] if details[:tier]
+        route_setting :authorization, permissions: :"read_#{eventable_type.to_s.underscore}_state_event", boundary_type: parent_type.to_sym
+        get ":id/#{eventables_str}/:eventable_id/resource_state_events/:event_id", feature_category: feature_category do
+          eventable = find_noteable(eventable_type, params[:eventable_id])
+
+          event = ResourceStateEventFinder.new(current_user, eventable).find(params[:event_id])
+
+          present_single_resource_state_event(event, eventable, eventable_type)
+        end
+      end
+    end
+  end
+end

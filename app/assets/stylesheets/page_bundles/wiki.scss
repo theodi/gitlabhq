@@ -1,0 +1,552 @@
+@import 'mixins_and_variables_and_functions';
+@import 'components/content_editor';
+
+$wiki-page-gap: var(--gl-spacing-scale-6);
+
+.wiki-page-header {
+  @apply gl-flex;
+  @apply gl-items-center;
+
+  > * {
+      @apply gl-flex-grow;
+  }
+
+  .wiki-sidebar-header-toggle {
+    flex-grow: 0;
+  }
+
+  @include gl-container-width-up(md) {
+    button.sidebar-toggle {
+      display: none;
+    }
+  }
+}
+
+.wiki-overview {
+  @apply gl-flex;
+  @apply gl-justify-center;
+  @apply gl-relative;
+  gap: $wiki-page-gap;
+}
+
+.has-wiki-sidebar {
+  .content-wrapper {
+    padding-right: 0 !important;
+    @apply gl-transition-padding;
+    @apply motion-reduce:gl-transition-none;
+  }
+}
+
+@mixin wiki-screen-lg {
+  .wiki-sidebar {
+    left: unset;
+    right: unset;
+    position: relative;
+  }
+
+  .wiki-sidebar .sidebar-container {
+    position: sticky;
+  }
+}
+
+.wiki-sidebar {
+  @apply gl-border-r;
+  @apply gl-bg-default;
+  top: 0;
+  bottom: 0;
+  position: fixed;
+  right: auto;
+  left: 0;
+  z-index: 2;
+
+  &.transition-enabled {
+    @apply gl-transition-all;
+    @apply gl-duration-fast;
+    @apply motion-reduce:gl-transition-none;
+
+    &.sidebar-collapsed {
+      /* This transition delay ensures both the width transition
+      and the faster border color transition end at the same time */
+      transition-delay: calc($gl-transition-duration-medium - $gl-transition-duration-fast);
+    }
+
+    .sidebar-container {
+      @apply gl-transition-all;
+      @apply gl-duration-medium;
+      @apply motion-reduce:gl-transition-none;
+    }
+
+    &.sidebar-expanded {
+      .wiki-sidebar-toggle.toggle-action-open {
+        @apply gl-transition-all;
+        @apply gl-duration-medium;
+        /* wait until the sidebar has finished opening to hide the toggle */
+        transition-delay: $gl-transition-duration-medium;
+      }
+    }
+
+    + * .toggle-with-hide-transition {
+      @apply gl-transition-all;
+      @apply gl-overflow-hidden;
+      @apply gl-duration-medium;
+    }
+  }
+
+  &.sidebar-expanded {
+    /* Hide the open toggle. It can be both a descendant...
+    visibility (not just opacity/clipping) so the hidden toggle also leaves
+    the tab order and cannot anchor its tooltip; with transition: all in
+    place it flips hidden only after the collapse animation ends. */
+    .wiki-sidebar-toggle.toggle-action-open {
+      @apply gl-opacity-0;
+      @apply gl-invisible;
+    }
+
+    /* ...as well as a descendant of a sibling to the wiki sidebar. Clipping
+    must apply here too, not only under .transition-enabled: in the settled
+    expanded state (e.g. page load with the sidebar open) the zero-width box
+    otherwise keeps overflow: visible and paints the toggle under the title. */
+    + * .toggle-with-hide-transition {
+      @apply gl-w-0;
+      @apply gl-px-0;
+      @apply gl-overflow-hidden;
+
+      .wiki-sidebar-toggle {
+        @apply gl-invisible;
+      }
+    }
+  }
+
+  &.sidebar-collapsed {
+    @apply gl-border-transparent;
+
+    ~ .wiki-page-details .wiki-sticky-header {
+      margin-left: 0;
+    }
+
+    .sidebar-container {
+      width: 0 !important;
+      overflow: hidden;
+      visibility: hidden;
+    }
+
+    .resizer {
+      display: none;
+    }
+
+    + * .toggle-with-hide-transition {
+      @apply gl-w-8;
+    }
+  }
+
+  .sidebar-container {
+    top: $calc-application-header-height;
+    bottom: $calc-application-footer-height;
+    z-index: 3;
+    @apply gl-overflow-hidden;
+    -webkit-overflow-scrolling: touch;
+    width: var(--wiki-sidebar-width, #{$wiki-sidebar-inner-width});
+    position: relative;
+    @apply gl-flex;
+    @apply gl-flex-col;
+    @apply gl-bg-default;
+
+    .blocks-container {
+      @apply gl-flex;
+      @apply gl-flex-col;
+      @apply gl-overflow-hidden;
+      @apply gl-grow;
+    }
+
+    .blocks-container > * {
+      @apply gl-px-3;
+      min-width: 200px;
+    }
+
+    .wiki-pages-list-container, .wiki-sidebar-custom-content  {
+      @apply gl-grow;
+      @apply gl-overflow-y-auto;
+    }
+  }
+
+  li > .wiki-list {
+    &:hover,
+    &.active {
+      @apply gl-bg-neutral-50;
+      @apply dark:gl-bg-neutral-900;
+    }
+
+    a {
+      color: var(--gl-text-color-default);
+    }
+
+    &:hover, &:focus-visible, &:focus-within {
+      .wiki-list-create-child-button {
+        display: inline-flex;
+      }
+    }
+  }
+
+  ul.wiki-pages,
+  ul.wiki-pages li {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  ul.wiki-pages ul {
+    padding-left: 20px;
+  }
+
+  .wiki-sidebar-custom-content {
+    h1 {
+      @apply gl-heading-3;
+    }
+
+    h2 {
+      @apply gl-heading-4;
+    }
+
+    h3 {
+      @apply gl-heading-5;
+    }
+
+    h1, h2, h3 {
+      @apply gl-mb-4;
+    }
+
+    h4, h5, h6 {
+      @apply gl-text-base;
+      @apply gl-mt-0;
+      @apply gl-mb-2;
+    }
+
+    h5 {
+      @apply gl-font-semibold;
+    }
+
+    h6 {
+      @apply gl-font-normal;
+    }
+
+    ul, ol {
+      @apply gl-p-0;
+      @apply gl-mb-5;
+
+      ul, ol {
+        @apply gl-mb-0;
+      }
+
+      li {
+        @apply gl-ml-6;
+        @apply gl-leading-20;
+      }
+    }
+  }
+}
+
+/* Sidebar in edit mode */
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific wiki-overview element
+.wiki-overview:has(.wiki-form) .wiki-sidebar {
+
+  /* Hide the floating `open`-toggle since the edit header has its own */
+  .wiki-sidebar-toggle.toggle-action-open {
+    @apply gl-hidden;
+  }
+}
+
+.wiki-page-details, .wiki-comments {
+  @apply gl-mx-auto;
+  @apply gl-relative;
+  min-width: 0;
+  flex: 1 1 0;
+  max-width: 100%;
+}
+
+.wiki-overview.layout-limited-width {
+  .wiki-page-details, .wiki-comments {
+    max-width: $wiki-content-default-width;
+  }
+
+  .wiki-sticky-header > div {
+    max-width: $wiki-content-default-width;
+  }
+}
+
+.wiki-sticky-header {
+  margin-left: var(--wiki-sidebar-width, #{$wiki-sidebar-inner-width});
+
+  @include gl-container-width-up(lg) {
+    padding-left: $wiki-page-gap;
+  }
+
+  > div {
+    max-width: $wiki-content-max-width;
+  }
+}
+
+.wiki-overview {
+  @apply gl-justify-stretch;
+}
+
+.layout-fluid .wiki-page-details {
+  max-width: $wiki-content-max-width;
+}
+
+ul.wiki-pages-list.content-list {
+  ul {
+    list-style: none;
+    margin-left: 0;
+    padding-left: 15px;
+
+    li {
+      margin-top: $gl-spacing-scale-2;
+    }
+  }
+}
+
+.wiki-pages-list:not(.wiki-templates-list) {
+  margin-top: $gl-spacing-scale-4;
+
+  li {
+    border-bottom: 0 !important;
+    padding: 0 !important;
+  }
+
+  li, ul, .wiki-list {
+    margin-bottom: $gl-spacing-scale-3;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-has -- WARNING: this code can be potentially very slow, refactor ASAP
+.content:has(.wiki-overview),
+.panel-content:has(.wiki-overview) {
+  padding-bottom: 0;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- WARNING: this code can be potentially very slow, refactor ASAP
+.panel-content-inner:has(.wiki-overview) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific wiki-overview element
+.wiki-overview:has(.wiki-form) {
+  gap: 0;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific wiki-page-details element
+.wiki-page-details:has(.wiki-form) {
+  max-width: none;
+}
+
+.wiki-form .markdown-area,
+.wiki-form .ProseMirror {
+  min-height: min(20vh, 320px);
+  max-height: 55vh;
+}
+
+.wiki-form {
+  --immersive-editor-text-width: #{$wiki-content-default-width};
+
+  .markdown-area, .ProseMirror, .md-write-holder {
+    min-height: max(60vh, 320px);
+    max-height: none;
+  }
+
+  .md-area:hover,
+  .md-area:focus-within {
+    @apply gl-shadow-none;
+  }
+
+  .flexible-input-container {
+    @apply gl-w-full;
+  }
+
+  @supports (field-sizing: content) {
+    .flexible-input {
+      // stylelint-disable-next-line property-no-unknown
+      field-sizing: content;
+      overflow-wrap: break-word;
+      max-width: 100%;
+      @apply gl-overflow-auto;
+    }
+
+    .flexible-input-container {
+      @apply gl-w-auto;
+    }
+  }
+}
+
+.wiki-list {
+  .wiki-list-create-child-button {
+    display: none;
+  }
+
+  .wiki-list-expand-button {
+    display: none;
+  }
+
+  &.collapsed {
+    .wiki-list-collapse-button {
+      display: none;
+    }
+
+    .wiki-list-expand-button {
+      display: block;
+    }
+  }
+
+  &.collapsed + .wiki-pages-list-container {
+    display: none;
+  }
+}
+
+/** Remove the below when the vue-wiki-sidebar FF is removed */
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific blocks-container element
+.blocks-container:has(.wiki-list.collapsed) {
+  flex-grow: 0;
+}
+
+.drawio-editor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 100vw;
+  height: 100vh;
+  border: 0;
+  z-index: 1100;
+  visibility: hidden;
+}
+
+@media print {
+  .panel-header {
+    display: none;
+  }
+
+  .wiki-sidebar {
+    display: none;
+  }
+
+  .ai-panel-wrapper {
+    display: none;
+  }
+
+  .content-wrapper {
+    padding: 0;
+  }
+
+  .container-limited.limit-container-width {
+    max-width: 100%;
+  }
+
+  // Table print overrides. Each table is zoomed to fit the page width, and
+  // these rules stop the containers from re-clipping the scaled content. The
+  // `data-print-scale-*` attributes are set at render time, and the scale
+  // factor is measured at `beforeprint` – see wikis/utils/print_table_scale.js.
+  //
+  // These live under `.md` (and name the `table` element) deliberately: they
+  // must override the Markdown table defaults in framework/typography.scss,
+  // so we match their specificity.
+  .md {
+    // The scale factor has to be measured on screen (at `beforeprint`), but
+    // must only take effect here, in print, so that hitting print leaves the
+    // screen layout alone. See wikis/utils/print_table_scale.js.
+    [data-print-scale-target] {
+      zoom: var(--print-table-scale, 1);
+    }
+
+    [data-print-scale-container] {
+      overflow: visible;
+      max-height: none;
+      animation: none;
+    }
+
+    // The rules above leave the container with nothing to scroll, so a sticky
+    // header has nothing to stick to. The browser still offsets it by however
+    // far the container was scrolled on screen, pushing the header down into
+    // the middle of the printed page. Unstick it and let the browser repeat
+    // `<thead>` across page breaks instead.
+    [data-print-scale-container][data-sticky-header] > table:not(.code) {
+      > thead > tr:first-child > th,
+      > tbody > tr:first-child > th {
+        position: static;
+      }
+    }
+
+    // Regular tables (where the target is its own container) render as
+    // `display: block; overflow-x: auto` on screen; restore `display: table`
+    // in print so the browser can repeat `<thead>` across page breaks, lay out
+    // columns correctly, and stop clipping the scaled table's right edge.
+    table[data-print-scale-target][data-print-scale-container] {
+      display: table;
+      overflow: visible;
+    }
+
+    // The mix-blend-mode trick used by .gl-table-shadow to render shadows in
+    // both light and dark mode relies on a white background layer; in print
+    // that layer can bleed through as an opaque white rectangle. Remove it.
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-table-shadow > table:not(.code) {
+      mix-blend-mode: normal;
+    }
+  }
+}
+
+.discussion {
+  .toggle-replies-widget {
+    border: 0;
+  }
+}
+
+@include gl-container-width-up(lg) {
+  @include wiki-screen-lg;
+}
+
+.paneled-view {
+  .wiki-overview {
+    @include gl-container-width-up(lg) {
+      .wiki-sidebar {
+        position: relative;
+        right: auto;
+      }
+    }
+  }
+
+  // stylelint-disable-next-line gitlab/no-has -- WARNING: this code can be potentially very slow, refactor ASAP
+  &.content-wrapper:has(.wiki-page-header),
+  &.content-wrapper:has(.wiki-page-details) {
+    .container-limited.project-highlight-puc {
+      max-width: 100%;
+    }
+
+    @include gl-container-width-up(lg) {
+      padding-right: 0 !important;
+    }
+  }
+
+  .wiki-sidebar {
+    .sidebar-container {
+      top: 0;
+      height: var(--panel-content-inner-height); /* This variable is subject to change */
+    }
+  }
+}
+
+/*
+* Remove the below after the UI has been fully migrated to paneled views.
+* These make the breakpoint queries backwards compatible when gl-container-width
+* is not available.
+*/
+html:not(.page-with-panels) {
+  @include media-breakpoint-up(lg) {
+    @include wiki-screen-lg;
+  }
+
+  .wiki-sidebar {
+    .sidebar-container {
+      height: $calc-application-viewport-height;
+    }
+  }
+}

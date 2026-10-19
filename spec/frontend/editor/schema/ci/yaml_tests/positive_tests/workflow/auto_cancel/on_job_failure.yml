@@ -1,0 +1,9 @@
+accepts workflow:auto_cancel:on_job_failure value none:
+  workflow:
+    auto_cancel:
+      on_job_failure: none
+
+accepts workflow:auto_cancel:on_job_failure value all:
+  workflow:
+    auto_cancel:
+      on_job_failure: all

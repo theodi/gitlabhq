@@ -1,0 +1,20 @@
+---
+data_category: operational
+key_path: usage_activity_by_stage_monthly.verify.ci_pipeline_config_repository
+description: Monthly count of unique users creating pipelines from CI files in the repository
+product_group: pipeline_authoring
+product_categories:
+- pipeline_composition
+value_type: number
+status: active
+time_frame: 28d
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type:
+- customer_health_score
+- leading_indicator
+milestone: "12.9"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/26441"

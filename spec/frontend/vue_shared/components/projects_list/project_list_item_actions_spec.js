@@ -1,0 +1,606 @@
+import { nextTick } from 'vue';
+import { GlLoadingIcon } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import {
+  deleteParams,
+  renderArchiveSuccessToast,
+  renderDeleteSuccessToast,
+  renderRestoreSuccessToast,
+  renderTransferSuccessToast,
+  renderUnarchiveSuccessToast,
+} from '~/vue_shared/components/projects_list/utils';
+import { archiveProject, deleteProject, restoreProject, unarchiveProject } from '~/rest_api';
+import ListActions from '~/vue_shared/components/list_actions/list_actions.vue';
+import ProjectListItemActions from '~/vue_shared/components/projects_list/project_list_item_actions.vue';
+import DeleteModal from '~/projects/components/shared/delete_modal.vue';
+import TransferModal from '~/projects/components/transfer_modal.vue';
+import ProjectListItemLeaveModal from '~/vue_shared/components/projects_list/projects_list_item_leave_modal.vue';
+import {
+  ACTION_ARCHIVE,
+  ACTION_COPY_ID,
+  ACTION_DELETE,
+  ACTION_DELETE_IMMEDIATELY,
+  ACTION_EDIT,
+  ACTION_LEAVE,
+  ACTION_REQUEST_ACCESS,
+  ACTION_RESTORE,
+  ACTION_TRANSFER,
+  ACTION_UNARCHIVE,
+  ACTION_WITHDRAW_ACCESS_REQUEST,
+} from '~/vue_shared/components/list_actions/constants';
+import { createAlert } from '~/alert';
+import { copyToClipboard } from '~/lib/utils/copy_to_clipboard';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import { RESOURCE_TYPES } from '~/groups_projects/constants';
+import { projects } from './mock_data';
+
+const MOCK_DELETE_PARAMS = {
+  testParam: true,
+};
+
+const mockToast = {
+  show: jest.fn(),
+};
+
+jest.mock('~/vue_shared/components/projects_list/utils', () => ({
+  ...jest.requireActual('~/vue_shared/components/projects_list/utils'),
+  renderRestoreSuccessToast: jest.fn(),
+  renderArchiveSuccessToast: jest.fn(),
+  renderUnarchiveSuccessToast: jest.fn(),
+  renderDeleteSuccessToast: jest.fn(),
+  renderTransferSuccessToast: jest.fn(),
+  deleteParams: jest.fn(() => MOCK_DELETE_PARAMS),
+}));
+jest.mock('~/alert');
+jest.mock('~/api/projects_api');
+jest.mock('~/lib/utils/copy_to_clipboard');
+jest.mock('~/sentry/sentry_browser_wrapper');
+
+describe('ProjectListItemActions', () => {
+  let wrapper;
+
+  const { bindInternalEventDocument } = useMockInternalEventsTracking();
+
+  const [project] = projects;
+
+  const editPath = '/foo/bar/edit';
+  const projectWithActions = {
+    ...project,
+    availableActions: [ACTION_EDIT, ACTION_RESTORE, ACTION_LEAVE, ACTION_DELETE, ACTION_TRANSFER],
+    editPath,
+  };
+
+  const defaultProps = {
+    project: projectWithActions,
+  };
+
+  const createComponent = ({ props = {} } = {}) => {
+    wrapper = shallowMountExtended(ProjectListItemActions, {
+      provide: { triggerRestoreLocation: 'list' },
+      propsData: { ...defaultProps, ...props },
+      mocks: {
+        $toast: mockToast,
+      },
+    });
+  };
+
+  const findListActions = () => wrapper.findComponent(ListActions);
+  const findListActionsLoadingIcon = () => wrapper.findComponent(GlLoadingIcon);
+  const findDeleteModal = () => wrapper.findComponent(DeleteModal);
+  const findTransferModal = () => wrapper.findComponent(TransferModal);
+  const findLeaveModal = () => wrapper.findComponent(ProjectListItemLeaveModal);
+  const fireAction = async (action) => {
+    findListActions().props('actions')[action].action();
+    await nextTick();
+  };
+  const deleteModalFirePrimaryEvent = async () => {
+    findDeleteModal().vm.$emit('primary');
+    await nextTick();
+  };
+
+  describe('template', () => {
+    it('displays actions dropdown', () => {
+      createComponent();
+
+      expect(findListActions().props()).toMatchObject({
+        actions: {
+          [ACTION_COPY_ID]: {
+            text: `Copy project ID: ${defaultProps.project.id}`,
+            action: expect.any(Function),
+          },
+          [ACTION_EDIT]: {
+            href: editPath,
+          },
+          [ACTION_ARCHIVE]: {
+            action: expect.any(Function),
+          },
+          [ACTION_UNARCHIVE]: {
+            action: expect.any(Function),
+          },
+          [ACTION_RESTORE]: {
+            action: expect.any(Function),
+          },
+          [ACTION_DELETE]: {
+            action: expect.any(Function),
+          },
+          [ACTION_LEAVE]: {
+            action: expect.any(Function),
+          },
+          [ACTION_TRANSFER]: {
+            action: expect.any(Function),
+          },
+        },
+        availableActions: [
+          ACTION_EDIT,
+          ACTION_RESTORE,
+          ACTION_LEAVE,
+          ACTION_DELETE,
+          ACTION_TRANSFER,
+        ],
+      });
+    });
+  });
+
+  describe('when copy ID action is fired', () => {
+    it('tracks event', async () => {
+      copyToClipboard.mockResolvedValueOnce();
+      createComponent();
+      const { trackEventSpy } = bindInternalEventDocument(wrapper.element);
+      await fireAction(ACTION_COPY_ID);
+
+      expect(trackEventSpy).toHaveBeenCalledWith(
+        'click_copy_id_in_project_quick_actions',
+        {},
+        undefined,
+      );
+    });
+
+    describe('when copy to clipboard is successful', () => {
+      it('shows toast', async () => {
+        copyToClipboard.mockResolvedValueOnce();
+        createComponent();
+        await fireAction(ACTION_COPY_ID);
+        await waitForPromises();
+
+        expect(copyToClipboard).toHaveBeenCalledWith(defaultProps.project.id);
+        expect(mockToast.show).toHaveBeenCalledWith('Project ID copied to clipboard.');
+      });
+    });
+
+    describe('when copy to clipboard is not successful', () => {
+      it('logs error in Sentry', async () => {
+        const error = new Error('Copy command failed');
+        copyToClipboard.mockRejectedValueOnce(error);
+        createComponent();
+        await fireAction(ACTION_COPY_ID);
+        await waitForPromises();
+
+        expect(Sentry.captureException).toHaveBeenCalledWith(error);
+      });
+    });
+  });
+
+  describe('when archive action is fired', () => {
+    it('should call trackEvent method', async () => {
+      createComponent();
+      const { trackEventSpy } = bindInternalEventDocument(wrapper.element);
+
+      await fireAction(ACTION_ARCHIVE);
+      await waitForPromises();
+
+      expect(trackEventSpy).toHaveBeenCalledWith(
+        'archive_namespace_in_quick_action',
+        {
+          label: RESOURCE_TYPES.PROJECT,
+          property: 'archive',
+        },
+        undefined,
+      );
+    });
+
+    describe('when API call is successful', () => {
+      it('calls archiveProject, properly sets loading state, and emits action event', async () => {
+        createComponent();
+        archiveProject.mockResolvedValueOnce();
+
+        await fireAction(ACTION_ARCHIVE);
+        expect(archiveProject).toHaveBeenCalledWith(projectWithActions.id);
+
+        expect(findListActionsLoadingIcon().exists()).toBe(true);
+        expect(findListActions().exists()).toBe(false);
+
+        await waitForPromises();
+
+        expect(findListActionsLoadingIcon().exists()).toBe(false);
+        expect(findListActions().exists()).toBe(true);
+
+        expect(wrapper.emitted('action')).toEqual([[ACTION_ARCHIVE]]);
+        expect(renderArchiveSuccessToast).toHaveBeenCalledWith(projectWithActions);
+        expect(createAlert).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('when API call is not successful', () => {
+      const error = new Error();
+
+      it('calls archiveProject, properly sets loading state, and shows error alert', async () => {
+        createComponent();
+        archiveProject.mockRejectedValue(error);
+
+        await fireAction(ACTION_ARCHIVE);
+        expect(archiveProject).toHaveBeenCalledWith(projectWithActions.id);
+
+        expect(findListActionsLoadingIcon().exists()).toBe(true);
+        expect(findListActions().exists()).toBe(false);
+
+        await waitForPromises();
+
+        expect(findListActionsLoadingIcon().exists()).toBe(false);
+        expect(findListActions().exists()).toBe(true);
+
+        expect(wrapper.emitted('action')).toBeUndefined();
+        expect(createAlert).toHaveBeenCalledWith({
+          message: 'An error occurred archiving the project. Please refresh the page to try again.',
+          error,
+          captureError: true,
+        });
+        expect(renderArchiveSuccessToast).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('when unarchive action is fired', () => {
+    it('should call trackEvent method', async () => {
+      createComponent();
+      const { trackEventSpy } = bindInternalEventDocument(wrapper.element);
+
+      await fireAction(ACTION_UNARCHIVE);
+      await waitForPromises();
+
+      expect(trackEventSpy).toHaveBeenCalledWith(
+        'archive_namespace_in_quick_action',
+        {
+          label: RESOURCE_TYPES.PROJECT,
+          property: 'unarchive',
+        },
+        undefined,
+      );
+    });
+
+    describe('when API call is successful', () => {
+      it('calls unarchiveProject, properly sets loading state, and emits action event', async () => {
+        createComponent();
+        unarchiveProject.mockResolvedValueOnce();
+
+        await fireAction(ACTION_UNARCHIVE);
+        expect(unarchiveProject).toHaveBeenCalledWith(projectWithActions.id);
+
+        expect(findListActionsLoadingIcon().exists()).toBe(true);
+        expect(findListActions().exists()).toBe(false);
+
+        await waitForPromises();
+
+        expect(findListActionsLoadingIcon().exists()).toBe(false);
+        expect(findListActions().exists()).toBe(true);
+
+        expect(wrapper.emitted('action')).toEqual([[ACTION_UNARCHIVE]]);
+        expect(renderUnarchiveSuccessToast).toHaveBeenCalledWith(projectWithActions);
+        expect(createAlert).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('when API call is not successful', () => {
+      const error = new Error();
+
+      it('calls unarchiveProject, properly sets loading state, and shows error alert', async () => {
+        createComponent();
+        unarchiveProject.mockRejectedValue(error);
+
+        await fireAction(ACTION_UNARCHIVE);
+        expect(unarchiveProject).toHaveBeenCalledWith(projectWithActions.id);
+
+        expect(findListActionsLoadingIcon().exists()).toBe(true);
+        expect(findListActions().exists()).toBe(false);
+
+        await waitForPromises();
+
+        expect(findListActionsLoadingIcon().exists()).toBe(false);
+        expect(findListActions().exists()).toBe(true);
+
+        expect(wrapper.emitted('action')).toBeUndefined();
+        expect(createAlert).toHaveBeenCalledWith({
+          message:
+            'An error occurred unarchiving the project. Please refresh the page to try again.',
+          error,
+          captureError: true,
+        });
+        expect(renderUnarchiveSuccessToast).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('when restore action is fired', () => {
+    it('should call trackEvent method', async () => {
+      createComponent();
+
+      const { trackEventSpy } = bindInternalEventDocument(wrapper.element);
+
+      await fireAction(ACTION_RESTORE);
+      await waitForPromises();
+
+      expect(trackEventSpy).toHaveBeenCalledWith(
+        'trigger_restore_on_project',
+        {
+          label: 'list',
+        },
+        undefined,
+      );
+    });
+
+    describe('when API call is successful', () => {
+      it('calls restoreProject, properly sets loading state, and emits action event', async () => {
+        createComponent();
+        restoreProject.mockResolvedValueOnce();
+
+        await fireAction(ACTION_RESTORE);
+        expect(restoreProject).toHaveBeenCalledWith(projectWithActions.id);
+
+        expect(findListActionsLoadingIcon().exists()).toBe(true);
+        expect(findListActions().exists()).toBe(false);
+
+        await waitForPromises();
+
+        expect(findListActionsLoadingIcon().exists()).toBe(false);
+        expect(findListActions().exists()).toBe(true);
+
+        expect(wrapper.emitted('action')).toEqual([[ACTION_RESTORE]]);
+        expect(renderRestoreSuccessToast).toHaveBeenCalledWith(projectWithActions);
+        expect(createAlert).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('when API call is not successful', () => {
+      const error = new Error();
+
+      it('calls restoreProject, properly sets loading state, and shows error alert', async () => {
+        createComponent();
+        restoreProject.mockRejectedValue(error);
+
+        await fireAction(ACTION_RESTORE);
+        expect(restoreProject).toHaveBeenCalledWith(projectWithActions.id);
+
+        expect(findListActionsLoadingIcon().exists()).toBe(true);
+        expect(findListActions().exists()).toBe(false);
+
+        await waitForPromises();
+
+        expect(findListActionsLoadingIcon().exists()).toBe(false);
+        expect(findListActions().exists()).toBe(true);
+
+        expect(wrapper.emitted('action')).toBeUndefined();
+        expect(createAlert).toHaveBeenCalledWith({
+          message: 'An error occurred restoring the project. Please refresh the page to try again.',
+          error,
+          captureError: true,
+        });
+        expect(renderRestoreSuccessToast).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('when delete action is fired', () => {
+    beforeEach(async () => {
+      createComponent();
+      await fireAction(ACTION_DELETE);
+    });
+
+    it('displays confirmation modal with correct props', () => {
+      expect(findDeleteModal().props()).toMatchObject({
+        visible: true,
+        confirmPhrase: project.fullPath,
+        nameWithNamespace: project.nameWithNamespace,
+        isFork: false,
+        mergeRequestsCount: 0,
+        issuesCount: 0,
+        forksCount: 0,
+        starsCount: 0,
+        markedForDeletion: false,
+        permanentDeletionDate: project.permanentDeletionDate,
+      });
+    });
+
+    describe('when deletion is confirmed', () => {
+      describe('when API call is successful', () => {
+        it('calls deleteProject, properly sets loading state, and emits action event', async () => {
+          createComponent();
+          deleteProject.mockResolvedValueOnce();
+
+          await deleteModalFirePrimaryEvent();
+          expect(deleteParams).toHaveBeenCalledWith(projectWithActions);
+          expect(deleteProject).toHaveBeenCalledWith(projectWithActions.id, MOCK_DELETE_PARAMS);
+          expect(findDeleteModal().props('confirmLoading')).toBe(true);
+
+          await waitForPromises();
+
+          expect(findDeleteModal().props('confirmLoading')).toBe(false);
+          expect(wrapper.emitted('action')).toEqual([[ACTION_DELETE]]);
+          expect(renderDeleteSuccessToast).toHaveBeenCalledWith(projectWithActions);
+          expect(createAlert).not.toHaveBeenCalled();
+        });
+
+        describe('when project is marked for deletion', () => {
+          it('emits action event with ACTION_DELETE_IMMEDIATELY', async () => {
+            createComponent({
+              props: {
+                project: { ...projectWithActions, markedForDeletion: true },
+              },
+            });
+
+            deleteProject.mockResolvedValueOnce();
+
+            await deleteModalFirePrimaryEvent();
+            await waitForPromises();
+
+            expect(wrapper.emitted('action')).toEqual([[ACTION_DELETE_IMMEDIATELY]]);
+          });
+        });
+      });
+
+      describe('when API call is not successful', () => {
+        const error = new Error();
+
+        it('calls deleteProject, properly sets loading state, and shows error alert', async () => {
+          createComponent();
+          deleteProject.mockRejectedValue(error);
+          await deleteModalFirePrimaryEvent();
+
+          expect(deleteParams).toHaveBeenCalledWith(projectWithActions);
+          expect(deleteProject).toHaveBeenCalledWith(projectWithActions.id, MOCK_DELETE_PARAMS);
+          expect(findDeleteModal().props('confirmLoading')).toBe(true);
+
+          await waitForPromises();
+
+          expect(findDeleteModal().props('confirmLoading')).toBe(false);
+
+          expect(wrapper.emitted('action')).toBeUndefined();
+          expect(createAlert).toHaveBeenCalledWith({
+            message:
+              'An error occurred deleting the project. Please refresh the page to try again.',
+            error,
+            captureError: true,
+          });
+          expect(renderDeleteSuccessToast).not.toHaveBeenCalled();
+        });
+      });
+    });
+  });
+
+  describe('when leave action is fired', () => {
+    beforeEach(async () => {
+      createComponent();
+      await fireAction(ACTION_LEAVE);
+    });
+
+    it('shows leave modal', () => {
+      expect(findLeaveModal().props('visible')).toBe(true);
+    });
+
+    describe('when leave modal emits visibility change', () => {
+      it("updates the modal's visibility prop", async () => {
+        findLeaveModal().vm.$emit('change', false);
+
+        await nextTick();
+
+        expect(findLeaveModal().props('visible')).toBe(false);
+      });
+    });
+
+    describe('when leave modal emits success event', () => {
+      it('emits action event', () => {
+        findLeaveModal().vm.$emit('success');
+
+        expect(wrapper.emitted('action')).toEqual([[ACTION_LEAVE]]);
+      });
+    });
+  });
+
+  describe('when project does not have requestAccessPath', () => {
+    it('does not display Request access action', () => {
+      createComponent();
+
+      expect(findListActions().props('actions')[ACTION_REQUEST_ACCESS]).toBeUndefined();
+    });
+  });
+
+  describe('when project has requestAccessPath', () => {
+    it('displays Request access action', () => {
+      const requestAccessPath = '/request_access';
+
+      createComponent({
+        props: { project: { ...projectWithActions, requestAccessPath } },
+      });
+
+      expect(findListActions().props('actions')[ACTION_REQUEST_ACCESS]).toEqual({
+        href: requestAccessPath,
+        extraAttrs: {
+          'data-method': 'post',
+          'data-testid': 'request-access-link',
+          rel: 'nofollow',
+        },
+      });
+    });
+  });
+
+  describe('when project does not have withdrawAccessRequestPath', () => {
+    it('does not display Withdraw access request action', () => {
+      createComponent();
+
+      expect(findListActions().props('actions')[ACTION_WITHDRAW_ACCESS_REQUEST]).toBeUndefined();
+    });
+  });
+
+  describe('when project has withdrawAccessRequestPath', () => {
+    it('displays Withdraw access request action', () => {
+      const withdrawAccessRequestPath = '/withdraw_access_request';
+
+      createComponent({
+        props: { project: { ...projectWithActions, withdrawAccessRequestPath } },
+      });
+
+      expect(findListActions().props('actions')[ACTION_WITHDRAW_ACCESS_REQUEST]).toEqual({
+        href: withdrawAccessRequestPath,
+        extraAttrs: {
+          'data-method': 'delete',
+          'data-testid': 'withdraw-access-link',
+          'data-confirm': `Are you sure you want to withdraw your access request for the ${projectWithActions.nameWithNamespace} project?`,
+          rel: 'nofollow',
+        },
+      });
+    });
+  });
+
+  describe('when transfer action is available', () => {
+    describe('when transfer action is fired', () => {
+      beforeEach(async () => {
+        createComponent();
+        await fireAction(ACTION_TRANSFER);
+      });
+
+      it('shows transfer modal', () => {
+        expect(findTransferModal().props('visible')).toBe(true);
+      });
+
+      describe('when transfer modal emits success event', () => {
+        it('emits action event and shows success toast', () => {
+          findTransferModal().vm.$emit('success');
+
+          expect(wrapper.emitted('action')).toEqual([[ACTION_TRANSFER]]);
+          expect(renderTransferSuccessToast).toHaveBeenCalledWith(projectWithActions);
+        });
+      });
+    });
+  });
+
+  describe('when transfer action is not available', () => {
+    beforeEach(() => {
+      createComponent({
+        props: {
+          project: {
+            ...projectWithActions,
+            availableActions: [ACTION_EDIT, ACTION_RESTORE, ACTION_LEAVE, ACTION_DELETE],
+          },
+        },
+      });
+    });
+
+    it('does not display transfer action', () => {
+      expect(findListActions().props('availableActions')).not.toContain(ACTION_TRANSFER);
+    });
+
+    it('does not display transfer modal', () => {
+      expect(findTransferModal().exists()).toBe(false);
+    });
+  });
+});

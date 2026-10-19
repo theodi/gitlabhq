@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+
+# frozen_string_literal: true
+
+# This script uses the glab cli to check if any of your local branches have
+# been merged and then deletes any that have.
+#
+# This needs the glab cli to function
+# https://gitlab.com/gitlab-org/cli/#installation
+
+require 'json'
+require 'rainbow/refinement'
+using Rainbow
+
+if `git rev-parse --abbrev-ref HEAD`.strip != 'master'
+  puts 'Please checkout the '.white + 'master'.blue + ' branch before continuing'.white
+  exit
+end
+
+branches = `git branch --format='%(refname:short)'`.split("\n").filter_map do |b|
+  stripped = b.strip
+  stripped unless stripped.empty? || stripped == 'master'
+end
+
+deleted = 0
+
+branches.each do |branch|
+  puts 'Checking 👀:'.white + " #{branch}".blue
+
+  # A branch with no commits ahead of master is already merged (or empty), even
+  # when no merged MR is discoverable by its source-branch name (renamed branch,
+  # squashed MR, or a stale branch left pointing at a master merge commit).
+  #
+  if system('git', 'merge-base', '--is-ancestor', branch, 'origin/master', out: File::NULL, err: File::NULL)
+    `git branch -D #{branch} 2>&1`
+
+    if $?.exitstatus == 0
+      puts 'Deleting ✅:'.white + " #{branch}".red + ' (in master)'.white
+      deleted += 1
+    end
+
+    next
+  end
+
+  output = `glab mr list -s #{branch} -F=json -M 2>/dev/null`
+  if $?.exitstatus != 0
+    puts 'API Error:'.red + " #{output.inspect}".white
+    next
+  end
+
+  begin
+    result = JSON.parse(output)
+
+    if result.empty?
+      puts 'Skipping ⛔️:'.white + " #{branch}".green
+      next
+    end
+
+    `git branch -D #{branch} 2>&1`
+
+    if $?.exitstatus == 0
+      puts 'Deleting ✅:'.white + " #{branch}".red
+      deleted += 1
+    end
+  rescue JSON::ParserError
+    puts "Warning: Failed to parse JSON for branch '#{branch}'"
+    next
+  end
+end
+
+puts ('-' * 80).white
+puts 'Deleted '.blue + deleted.to_s.red + " branch#{'es' unless deleted == 1}".blue
+puts ('-' * 80).white

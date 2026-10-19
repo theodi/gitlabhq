@@ -1,0 +1,85 @@
+import {
+  COLLAPSE_FILE,
+  COLLAPSE_FILE_BY_USER,
+  EXPAND_FILE,
+  MOUNTED,
+} from '~/rapid_diffs/adapter_events';
+import { scrollPastCoveringElements } from '~/lib/utils/sticky';
+
+function getDetails(root) {
+  return root.querySelector('[data-file-body]');
+}
+
+function getOppositeToggleButton(clicked) {
+  const isOpened = clicked.dataset.opened;
+  const parent = clicked.parentElement;
+
+  return isOpened === ''
+    ? parent.querySelector('button[data-closed]')
+    : parent.querySelector('button[data-opened]');
+}
+
+function collapse(root = this.diffElement) {
+  // eslint-disable-next-line no-param-reassign
+  root.dataset.collapsed = true;
+  getDetails(root).removeAttribute('open');
+}
+
+function collapseByUser(root = this.diffElement) {
+  collapse(root);
+  root.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+  scrollPastCoveringElements(root);
+}
+
+function expand(root = this.diffElement) {
+  // eslint-disable-next-line no-param-reassign
+  delete root.dataset.collapsed;
+  getDetails(root).open = true;
+}
+
+function stopTransition(element) {
+  element.style.transition = 'none';
+  requestAnimationFrame(() => {
+    element.style.transition = '';
+  });
+}
+
+export const toggleFileAdapter = {
+  clicks: {
+    toggleFile(event, button) {
+      const collapsed = this.diffElement.dataset.collapsed === 'true';
+      if (collapsed) {
+        expand.call(this);
+      } else {
+        collapseByUser.call(this);
+      }
+      const oppositeButton = getOppositeToggleButton(button);
+      oppositeButton.focus();
+      // a replaced button triggers another transition that we need to stop
+      stopTransition(oppositeButton);
+    },
+  },
+  [EXPAND_FILE]() {
+    expand.call(this);
+  },
+  [COLLAPSE_FILE]() {
+    collapse.call(this);
+  },
+  [COLLAPSE_FILE_BY_USER]() {
+    collapseByUser.call(this);
+  },
+  [MOUNTED](onUnmounted) {
+    const details = getDetails(this.diffElement);
+    const handleToggle = () => {
+      if (details.open) {
+        expand.call(this);
+      } else {
+        collapse.call(this);
+      }
+    };
+    details.addEventListener('toggle', handleToggle);
+    onUnmounted(() => {
+      details.removeEventListener('toggle', handleToggle);
+    });
+  },
+};

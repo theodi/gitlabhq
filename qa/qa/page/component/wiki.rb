@@ -1,0 +1,100 @@
+# frozen_string_literal: true
+
+module QA
+  module Page
+    module Component
+      module Wiki
+        extend QA::Page::PageConcern
+
+        def self.included(base)
+          super
+
+          base.view 'app/views/shared/wikis/show.html.haml' do
+            element 'wiki-app'
+          end
+
+          base.view 'app/views/shared/wikis/_wiki_content.html.haml' do
+            element 'wiki-page-content'
+          end
+
+          base.view 'app/views/shared/empty_states/_wikis.html.haml' do
+            element 'wiki-empty-state'
+          end
+
+          base.view 'app/assets/javascripts/wikis/components/wiki_sidebar_toggle.vue' do
+            element 'wiki-sidebar-toggle'
+          end
+
+          base.view 'app/assets/javascripts/wikis/components/wiki_more_dropdown.vue' do
+            element 'wiki-more-dropdown'
+          end
+
+          base.view 'app/assets/javascripts/wikis/components/delete_wiki_modal.vue' do
+            element 'page-delete-button'
+          end
+        end
+
+        def click_create_your_first_page
+          click_link 'Create your first page'
+        end
+
+        def click_new_page
+          click_element('wiki-more-dropdown')
+          click_element('page-new-button')
+        end
+
+        def click_page_history
+          click_element('wiki-more-dropdown')
+          click_element('page-history-button')
+        end
+
+        def delete_page
+          click_element('wiki-more-dropdown')
+          click_element('page-delete-button', Page::Modal::DeleteWiki)
+          Page::Modal::DeleteWiki.perform(&:confirm_deletion)
+        end
+
+        def click_edit
+          click_element('wiki-edit-button')
+        end
+
+        def has_title?(title)
+          has_element?('page-heading', title)
+        end
+
+        def has_content?(content)
+          has_element?('wiki-page-content', content)
+        end
+
+        def has_no_content?(content)
+          has_no_element?('wiki-page-content', content)
+        end
+
+        def has_no_page?
+          has_css?('[data-testid="wiki-empty-state"]')
+        end
+
+        def has_heading?(heading_type, text)
+          within_element('wiki-page-content') do
+            has_css?(heading_type, text: text)
+          end
+        end
+
+        def has_image?(image_file_name)
+          within_element('wiki-page-content') do
+            has_css?("img[src$='#{image_file_name}']")
+          end
+        end
+
+        def expand_sidebar_if_collapsed
+          QA::Support::Retrier.retry_until(retry_on_exception: true, message: "Sidebar failed to expand") do
+            break true unless has_css?('.wiki-sidebar.sidebar-collapsed', wait: 1)
+
+            click_element('wiki-sidebar-toggle')
+            has_css?('.wiki-sidebar.sidebar-expanded')
+          end
+        end
+      end
+    end
+  end
+end

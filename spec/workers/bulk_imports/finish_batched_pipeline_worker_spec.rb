@@ -1,0 +1,197 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::FinishBatchedPipelineWorker, feature_category: :importers do
+  let_it_be_with_reload(:bulk_import) { create(:bulk_import) }
+  let_it_be(:config) { create(:bulk_import_configuration, bulk_import: bulk_import) }
+  let_it_be_with_reload(:project) { create(:project) }
+  let_it_be(:entity, freeze: false) do
+    create(
+      :bulk_import_entity,
+      :project_entity,
+      project: project,
+      bulk_import: bulk_import
+    )
+  end
+
+  let(:pipeline_class) do
+    Class.new do
+      def self.relation
+        'fake_relation'
+      end
+
+      def initialize(_); end
+
+      def on_finish; end
+    end
+  end
+
+  let(:pipeline_tracker) do
+    create(
+      :bulk_import_tracker,
+      :started,
+      :batched,
+      entity: entity,
+      pipeline_name: 'FakePipeline'
+    )
+  end
+
+  let!(:batch_1) { create(:bulk_import_batch_tracker, :finished, tracker: pipeline_tracker) }
+
+  subject(:worker) { described_class.new }
+
+  describe '#perform' do
+    before do
+      stub_const('FakePipeline', pipeline_class)
+
+      allow_next_instance_of(BulkImports::Projects::Stage) do |instance|
+        allow(instance).to receive(:pipelines)
+          .and_return([{ stage: 0, pipeline: pipeline_class }])
+      end
+
+      allow(BulkImports::ExportStatus).to receive(:new)
+        .and_return(instance_double(BulkImports::ExportStatus, batches_count: 1))
+    end
+
+    context 'when tracker is not found' do
+      let(:non_existing_tracker_id) { non_existing_record_id }
+
+      it 'logs a warning and does not execute any side effects', :aggregate_failures do
+        expect(Sidekiq.logger).to receive(:warn).with(
+          class: described_class.name,
+          pipeline_tracker_id: non_existing_tracker_id,
+          message: 'Tracker not found'
+        )
+
+        expect(pipeline_class).not_to receive(:new)
+        expect(described_class).not_to receive(:perform_in)
+
+        worker.perform(non_existing_tracker_id)
+      end
+    end
+
+    it 'marks the tracker as finished' do
+      expect_next_instance_of(BulkImports::Logger) do |logger|
+        expect(logger).to receive(:with_tracker).with(pipeline_tracker).and_call_original
+        expect(logger).to receive(:with_entity).with(entity).and_call_original
+
+        expect(logger).to receive(:info).with(
+          a_hash_including('message' => 'Tracker finished')
+        )
+      end
+
+      expect { subject.perform(pipeline_tracker.id) }
+        .to change { pipeline_tracker.reload.finished? }
+        .from(false).to(true)
+    end
+
+    it "calls the pipeline's `#on_finish`" do
+      expect_next_instance_of(pipeline_class) do |pipeline|
+        expect(pipeline).to receive(:on_finish)
+      end
+
+      subject.perform(pipeline_tracker.id)
+    end
+
+    context 'when import is in progress' do
+      it 're-enqueues for any started batches' do
+        create(:bulk_import_batch_tracker, :started, tracker: pipeline_tracker)
+
+        expect(described_class)
+          .to receive(:perform_in)
+          .with(described_class::REQUEUE_DELAY, pipeline_tracker.id)
+
+        subject.perform(pipeline_tracker.id)
+      end
+
+      it 're-enqueues for any created batches' do
+        create(:bulk_import_batch_tracker, :created, tracker: pipeline_tracker)
+
+        expect(described_class)
+          .to receive(:perform_in)
+          .with(described_class::REQUEUE_DELAY, pipeline_tracker.id)
+
+        subject.perform(pipeline_tracker.id)
+      end
+
+      context 'when not all batches have been created yet' do
+        it 're-enqueues when export has more batches than have been created' do
+          export_status = instance_double(BulkImports::ExportStatus, batches_count: 2)
+          allow(BulkImports::ExportStatus).to receive(:new).and_return(export_status)
+
+          expect(described_class)
+            .to receive(:perform_in)
+            .with(described_class::REQUEUE_DELAY, pipeline_tracker.id)
+
+          subject.perform(pipeline_tracker.id)
+        end
+
+        it 'finishes the tracker when all expected batches are created and done' do
+          export_status = instance_double(BulkImports::ExportStatus, batches_count: 1)
+          allow(BulkImports::ExportStatus).to receive(:new).and_return(export_status)
+
+          expect { subject.perform(pipeline_tracker.id) }
+            .to change { pipeline_tracker.reload.finished? }
+            .from(false).to(true)
+        end
+      end
+    end
+
+    context 'when pipeline tracker is stale' do
+      before do
+        batch_1.update!(updated_at: 5.hours.ago)
+      end
+
+      it 'fails pipeline tracker and its batches' do
+        expect_next_instance_of(BulkImports::Logger) do |logger|
+          expect(logger).to receive(:with_tracker).with(pipeline_tracker).and_call_original
+          expect(logger).to receive(:with_entity).with(entity).and_call_original
+
+          expect(logger).to receive(:error).with(
+            a_hash_including('message' => 'Batch stale. Failing batches and tracker')
+          )
+        end
+
+        subject.perform(pipeline_tracker.id)
+
+        expect(pipeline_tracker.reload.failed?).to be(true)
+        expect(pipeline_tracker.batches.first.reload.failed?).to be(true)
+      end
+    end
+  end
+
+  shared_examples 'does nothing' do
+    it "does not call the tracker's `#finish!`" do
+      expect_next_found_instance_of(BulkImports::Tracker) do |instance|
+        expect(instance).not_to receive(:finish!)
+      end
+
+      subject.perform(pipeline_tracker.id)
+    end
+
+    it "does not call the pipeline's `#on_finish`" do
+      expect(pipeline_class).not_to receive(:new)
+
+      subject.perform(pipeline_tracker.id)
+    end
+  end
+
+  context 'when tracker is not batched' do
+    let(:pipeline_tracker) { create(:bulk_import_tracker, :started, entity: entity, batched: false) }
+
+    include_examples 'does nothing'
+  end
+
+  context 'when tracker is not started' do
+    let(:pipeline_tracker) { create(:bulk_import_tracker, :batched, :finished, entity: entity) }
+
+    include_examples 'does nothing'
+  end
+
+  context 'when pipeline is enqueued' do
+    let(:pipeline_tracker) { create(:bulk_import_tracker, status: 3, entity: entity) }
+
+    include_examples 'does nothing'
+  end
+end

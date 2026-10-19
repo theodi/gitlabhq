@@ -1,0 +1,3 @@
+mutation updateItem($id: ID!, $propsToUpdate: Item!) {
+  updateToolbarItem(id: $id, propsToUpdate: $propsToUpdate) @client
+}

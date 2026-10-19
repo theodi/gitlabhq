@@ -1,0 +1,19 @@
+---
+description: Load Project-level Secure Files list in CI/CD settings
+category: projects:settings:ci_cd:show
+action: render
+extra_properties:
+identifiers:
+  - project
+  - user
+  - namespace
+product_group: secrets_manager_application
+product_categories:
+- secrets_management
+milestone: "15.2"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/90449
+tiers:
+  - free
+  - premium
+  - ultimate
+

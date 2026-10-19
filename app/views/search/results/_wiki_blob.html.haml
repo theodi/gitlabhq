@@ -1,9 +1,10 @@
-.blob-result
-  .file-holder
-    .file-title
-      = link_to namespace_project_wiki_path(@project.namespace, @project, wiki_blob.filename) do
-        %i.fa.fa-file
-        %strong
-          = wiki_blob.filename
-    .file-content.code.term
-      = render 'shared/file_highlight', blob: wiki_blob, first_line_number: wiki_blob.startline, user_color_scheme_class: 'white'
+- index = local_assigns.fetch(:index, nil)
+- wiki_blob = local_assigns.fetch(:result, nil)
+- position = index + 1
+
+%div{ class: 'search-result-row !gl-pb-3 gl-mt-5 !gl-mb-0' }
+  %span.gl-flex.gl-items-center
+    = link_to wiki_blob_link(wiki_blob), data: search_result_tracking_attrs(position), class: 'gl-w-full' do
+      %span.term.str-truncated.gl-font-bold= ::Wiki.canonicalize_filename(wiki_blob.path)
+  .description.term.gl-col-sm-10.gl-px-0
+    = simple_search_highlight_and_truncate(wiki_blob.data, @search_term)

@@ -1,0 +1,17 @@
+query rebaseQuery($projectPath: ID!, $iid: String!) {
+  project(fullPath: $projectPath) {
+    id
+    allowMergeOnSkippedPipeline
+    mergeRequest(iid: $iid) {
+      id
+      rebaseInProgress
+      headPipeline {
+        id
+        project {
+          id
+          fullPath
+        }
+      }
+    }
+  }
+}

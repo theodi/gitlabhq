@@ -1,0 +1,515 @@
+{
+  "AccessLevelInterface": [
+    "ContainerProtectionAccessLevel",
+    "ContainerProtectionTagRule"
+  ],
+  "AiCatalogCustomAndFoundationalItem": [
+    "AiCatalogAgent",
+    "AiCatalogFlow",
+    "AiCatalogSkill",
+    "AiCatalogThirdPartyFlow",
+    "AiFoundationalChatAgent"
+  ],
+  "AiCatalogItem": [
+    "AiCatalogAgent",
+    "AiCatalogFlow",
+    "AiCatalogSkill",
+    "AiCatalogThirdPartyFlow"
+  ],
+  "AiCatalogItemVersion": [
+    "AiCatalogAgentVersion",
+    "AiCatalogFlowVersion",
+    "AiCatalogSkillVersion",
+    "AiCatalogThirdPartyFlowVersion"
+  ],
+  "AlertManagementIntegration": [
+    "AlertManagementHttpIntegration",
+    "AlertManagementPrometheusIntegration"
+  ],
+  "AmazonS3ConfigurationInterface": [
+    "AmazonS3ConfigurationType",
+    "InstanceAmazonS3ConfigurationType"
+  ],
+  "ArtifactRegistryPackage": [
+    "ArtifactRegistryMavenPackage",
+    "ArtifactRegistryNpmPackage"
+  ],
+  "ArtifactRegistryPackageDetails": [
+    "ArtifactRegistryMavenPackageDetails",
+    "ArtifactRegistryNpmPackageDetails"
+  ],
+  "ArtifactRegistryVersionFile": [
+    "ArtifactRegistryMavenVersionFile",
+    "ArtifactRegistryNpmVersionFile"
+  ],
+  "AuditEventStreamingDestinationInterface": [
+    "GroupAuditEventStreamingDestination",
+    "InstanceAuditEventStreamingDestination"
+  ],
+  "BaseDiscussionInterface": [
+    "Discussion"
+  ],
+  "BaseHeaderInterface": [
+    "AuditEventStreamingHeader",
+    "AuditEventsStreamingInstanceHeader"
+  ],
+  "BaseNoteInterface": [
+    "Note"
+  ],
+  "CiJobInterface": [
+    "CiJob",
+    "CiJobMinimalAccess"
+  ],
+  "CiJobTokenScopeTarget": [
+    "CiJobTokenAccessibleGroup",
+    "CiJobTokenAccessibleProject"
+  ],
+  "CiRunnerCloudProvisioning": [
+    "CiRunnerGkeProvisioning",
+    "CiRunnerGoogleCloudProvisioning"
+  ],
+  "CiVariable": [
+    "CiGroupVariable",
+    "CiInstanceVariable",
+    "CiManualVariable",
+    "CiProjectVariable",
+    "PipelineScheduleVariable"
+  ],
+  "CommitSignature": [
+    "GpgSignature",
+    "SshSignature",
+    "X509Signature"
+  ],
+  "CurrentUserTodos": [
+    "BoardEpic",
+    "Design",
+    "Epic",
+    "EpicIssue",
+    "Issue",
+    "MergeRequest",
+    "WorkItemWidgetCurrentUserTodos"
+  ],
+  "CustomDashboardInterface": [
+    "CustomDashboard",
+    "CustomSystemDashboard"
+  ],
+  "CustomRoleInterface": [
+    "AdminMemberRole",
+    "MemberRole"
+  ],
+  "DependencyInterface": [
+    "Dependency",
+    "DependencyAggregation"
+  ],
+  "DependencyLinkMetadata": [
+    "NugetDependencyLinkMetadata"
+  ],
+  "DesignFields": [
+    "Design",
+    "DesignAtVersion"
+  ],
+  "Entry": [
+    "Blob",
+    "Submodule",
+    "TreeEntry"
+  ],
+  "EntryInterface": [
+    "ContainerUpstreamCacheEntry",
+    "MavenUpstreamCacheEntry"
+  ],
+  "EventTargetType": [
+    "Design",
+    "Issue",
+    "MergeRequest",
+    "Milestone",
+    "Note",
+    "Project",
+    "Snippet",
+    "UserCore",
+    "WikiPage"
+  ],
+  "Eventable": [
+    "BoardEpic",
+    "Epic"
+  ],
+  "ExpressionInterface": [
+    "BooleanExpression",
+    "IntegerExpression",
+    "StringExpression"
+  ],
+  "ExpressionValue": [
+    "BooleanExpression",
+    "IntegerExpression",
+    "StringExpression"
+  ],
+  "ExternalAuditEventDestinationInterface": [
+    "ExternalAuditEventDestination",
+    "InstanceExternalAuditEventDestination"
+  ],
+  "GitlabSubscriptionUsageEventLocation": [
+    "Group",
+    "Project"
+  ],
+  "GoogleCloudArtifactRegistryArtifact": [
+    "GoogleCloudArtifactRegistryDockerImage"
+  ],
+  "GoogleCloudArtifactRegistryArtifactDetails": [
+    "GoogleCloudArtifactRegistryDockerImageDetails"
+  ],
+  "GoogleCloudLoggingConfigurationInterface": [
+    "GoogleCloudLoggingConfigurationType",
+    "InstanceGoogleCloudLoggingConfigurationType"
+  ],
+  "GroupInterface": [
+    "Group",
+    "GroupMinimalAccess"
+  ],
+  "Issuable": [
+    "Epic",
+    "Issue",
+    "MergeRequest",
+    "WorkItem"
+  ],
+  "JobNeedUnion": [
+    "CiBuildNeed",
+    "CiJob"
+  ],
+  "LabelInterface": [
+    "Label"
+  ],
+  "MarkdownPaths": [
+    "GroupNamespaceMarkdownPaths",
+    "ProjectNamespaceMarkdownPaths",
+    "UserNamespaceMarkdownPaths"
+  ],
+  "MavenTargetUpstream": [
+    "MavenLocalUpstream",
+    "MavenUpstream"
+  ],
+  "MemberInterface": [
+    "GroupMember",
+    "PendingGroupMember",
+    "PendingProjectMember",
+    "ProjectMember"
+  ],
+  "NamespaceMetadata": [
+    "GroupNamespaceMetadata",
+    "ProjectNamespaceMetadata",
+    "UserNamespaceMetadata"
+  ],
+  "NamespaceUnion": [
+    "CiDeletedNamespace",
+    "Namespace"
+  ],
+  "NamespacesLinkPaths": [
+    "GroupNamespaceLinks",
+    "ProjectNamespaceLinks",
+    "UserNamespaceLinks"
+  ],
+  "NoteableInterface": [
+    "AlertManagementAlert",
+    "BoardEpic",
+    "Commit",
+    "CountableVulnerability",
+    "Design",
+    "Epic",
+    "EpicIssue",
+    "Issue",
+    "MergeRequest",
+    "ProjectComplianceViolation",
+    "Snippet",
+    "Vulnerability",
+    "WikiPage"
+  ],
+  "NoteableType": [
+    "AlertManagementAlert",
+    "Commit",
+    "Design",
+    "Epic",
+    "Issue",
+    "MergeRequest",
+    "ProjectComplianceViolation",
+    "Snippet",
+    "Vulnerability",
+    "WikiPage"
+  ],
+  "OrchestrationPolicy": [
+    "ApprovalPolicy",
+    "PipelineExecutionPolicy",
+    "PipelineExecutionSchedulePolicy",
+    "ScanExecutionPolicy",
+    "ScanResultPolicy",
+    "SecurityPolicyType",
+    "VulnerabilityManagementPolicy"
+  ],
+  "PackageFileMetadata": [
+    "ConanFileMetadata",
+    "HelmFileMetadata"
+  ],
+  "PackageMetadata": [
+    "ComposerMetadata",
+    "ConanMetadata",
+    "MavenMetadata",
+    "NugetMetadata",
+    "PypiMetadata",
+    "TerraformModuleMetadata"
+  ],
+  "PendingMemberInterface": [
+    "PendingGroupMember",
+    "PendingProjectMember"
+  ],
+  "PersonalAccessTokenScope": [
+    "AccessTokenGranularScope",
+    "AccessTokenLegacyScope"
+  ],
+  "PipelineInterface": [
+    "Pipeline",
+    "PipelineMinimalAccess"
+  ],
+  "PolicyAttributesUnion": [
+    "ApprovalPolicyAttributesType",
+    "DependencyFirewallPolicyAttributesType",
+    "PipelineExecutionPolicyAttributesType",
+    "PipelineExecutionScheduledPolicyAttributesType",
+    "ScanExecutionPolicyAttributesType",
+    "VulnerabilityManagementPolicyAttributesType"
+  ],
+  "ProjectInterface": [
+    "Project",
+    "ProjectMinimalAccess"
+  ],
+  "RecentlyViewedItemUnion": [
+    "Epic",
+    "Issue",
+    "MergeRequest",
+    "WikiPage",
+    "WorkItem"
+  ],
+  "Registrable": [
+    "AbuseReportUploadRegistry",
+    "AchievementUploadRegistry",
+    "AiVectorizableFileUploadRegistry",
+    "AlertManagementMetricImageUploadRegistry",
+    "AppearanceUploadRegistry",
+    "BulkImportExportUploadUploadRegistry",
+    "CiSecureFileRegistry",
+    "ContainerRepositoryRegistry",
+    "DependencyListExportPartUploadRegistry",
+    "DependencyListExportUploadRegistry",
+    "DependencyProxyBlobRegistry",
+    "DependencyProxyManifestRegistry",
+    "DesignManagementActionUploadRegistry",
+    "DesignManagementRepositoryRegistry",
+    "GroupUploadRegistry",
+    "GroupWikiRepositoryRegistry",
+    "ImportExportUploadUploadRegistry",
+    "IssuableMetricImageUploadRegistry",
+    "JobArtifactRegistry",
+    "LfsObjectRegistry",
+    "MergeRequestDiffRegistry",
+    "OrganizationDetailUploadRegistry",
+    "PackageFileRegistry",
+    "PackagesDebianProjectComponentFileRegistry",
+    "PackagesHelmMetadataCacheRegistry",
+    "PackagesNugetSymbolRegistry",
+    "PagesDeploymentRegistry",
+    "PersonalSnippetUploadRegistry",
+    "PipelineArtifactRegistry",
+    "ProjectImportExportRelationExportUploadUploadRegistry",
+    "ProjectRepositoryRegistry",
+    "ProjectTopicUploadRegistry",
+    "ProjectUploadRegistry",
+    "ProjectWikiRepositoryRegistry",
+    "SnippetRepositoryRegistry",
+    "TerraformStateVersionRegistry",
+    "UploadRegistry",
+    "UserPermissionExportUploadUploadRegistry",
+    "UserUploadRegistry",
+    "VulnerabilityArchiveExportUploadRegistry",
+    "VulnerabilityExportPartUploadRegistry",
+    "VulnerabilityExportUploadRegistry",
+    "VulnerabilityRemediationUploadRegistry"
+  ],
+  "RegistryInterface": [
+    "ContainerRegistry",
+    "ContainerRegistryDetails",
+    "MavenRegistry",
+    "MavenRegistryDetails"
+  ],
+  "RegistryUpstreamInterface": [
+    "ContainerRegistryUpstreamWithRegistry",
+    "ContainerRegistryUpstreamWithUpstream",
+    "MavenRegistryUpstreamWithRegistry",
+    "MavenRegistryUpstreamWithUpstream"
+  ],
+  "ResolvableInterface": [
+    "Discussion",
+    "Note"
+  ],
+  "RoleInterface": [
+    "AdminMemberRole",
+    "MemberRole",
+    "StandardRole"
+  ],
+  "RuleInterface": [
+    "MavenUpstreamRule"
+  ],
+  "ScanProfileConfiguration": [
+    "AutoRemediationConfiguration",
+    "DependencyScanningConfiguration",
+    "SastConfiguration",
+    "SastFalsePositiveConfiguration",
+    "SastVulnerabilityResolutionConfiguration",
+    "SecretDetectionConfiguration",
+    "SecretDetectionFalsePositiveConfiguration",
+    "VulnerabilityEnrichmentConfiguration"
+  ],
+  "SecurityPolicySource": [
+    "GroupSecurityPolicySource",
+    "ProjectSecurityPolicySource"
+  ],
+  "Service": [
+    "BaseService",
+    "JiraService"
+  ],
+  "TerraformModuleMetadataSharedFields": [
+    "TerraformModuleMetadataExample",
+    "TerraformModuleMetadataRoot",
+    "TerraformModuleMetadataSubmodule"
+  ],
+  "TimeboxReportInterface": [
+    "Iteration",
+    "Milestone"
+  ],
+  "Todoable": [
+    "AddOnUser",
+    "AlertManagementAlert",
+    "AutocompletedUser",
+    "BoardEpic",
+    "Commit",
+    "CountableVulnerability",
+    "CurrentUser",
+    "Design",
+    "DuoWorkflow",
+    "Epic",
+    "EpicIssue",
+    "Group",
+    "Issue",
+    "Key",
+    "MergeRequest",
+    "MergeRequestAssignee",
+    "MergeRequestAuthor",
+    "MergeRequestParticipant",
+    "MergeRequestReviewer",
+    "Namespace",
+    "Project",
+    "ProjectComplianceViolation",
+    "UserCore",
+    "Vulnerability",
+    "WikiPage",
+    "WorkItem"
+  ],
+  "UpstreamInterface": [
+    "ContainerUpstream",
+    "ContainerUpstreamDetails",
+    "MavenUpstream",
+    "MavenUpstreamDetails"
+  ],
+  "User": [
+    "AddOnUser",
+    "AutocompletedUser",
+    "CurrentUser",
+    "MergeRequestAssignee",
+    "MergeRequestAuthor",
+    "MergeRequestParticipant",
+    "MergeRequestReviewer",
+    "UserCore"
+  ],
+  "VulnerabilityDetail": [
+    "VulnerabilityDetailBase",
+    "VulnerabilityDetailBoolean",
+    "VulnerabilityDetailCode",
+    "VulnerabilityDetailCodeFlows",
+    "VulnerabilityDetailCommit",
+    "VulnerabilityDetailDiff",
+    "VulnerabilityDetailFileLocation",
+    "VulnerabilityDetailInt",
+    "VulnerabilityDetailList",
+    "VulnerabilityDetailMarkdown",
+    "VulnerabilityDetailModuleLocation",
+    "VulnerabilityDetailNamedList",
+    "VulnerabilityDetailTable",
+    "VulnerabilityDetailText",
+    "VulnerabilityDetailUrl"
+  ],
+  "VulnerabilityLocation": [
+    "VulnerabilityLocationClusterImageScanning",
+    "VulnerabilityLocationContainerScanning",
+    "VulnerabilityLocationCoverageFuzzing",
+    "VulnerabilityLocationDast",
+    "VulnerabilityLocationDependencyScanning",
+    "VulnerabilityLocationGeneric",
+    "VulnerabilityLocationSast",
+    "VulnerabilityLocationSecretDetection"
+  ],
+  "VulnerabilityStatisticInterface": [
+    "VulnerabilityNamespaceStatisticType",
+    "VulnerabilityStatisticType"
+  ],
+  "WorkItemCustomFieldValue": [
+    "WorkItemDateFieldValue",
+    "WorkItemNumberFieldValue",
+    "WorkItemSelectFieldValue",
+    "WorkItemTextFieldValue"
+  ],
+  "WorkItemWidget": [
+    "WorkItemWidgetAgentPlan",
+    "WorkItemWidgetAiSession",
+    "WorkItemWidgetAssignees",
+    "WorkItemWidgetAwardEmoji",
+    "WorkItemWidgetColor",
+    "WorkItemWidgetCrmContacts",
+    "WorkItemWidgetCurrentUserTodos",
+    "WorkItemWidgetCustomFields",
+    "WorkItemWidgetDecisionLog",
+    "WorkItemWidgetDescription",
+    "WorkItemWidgetDesigns",
+    "WorkItemWidgetDevelopment",
+    "WorkItemWidgetEmailParticipants",
+    "WorkItemWidgetErrorTracking",
+    "WorkItemWidgetEscalationPolicy",
+    "WorkItemWidgetEscalationStatus",
+    "WorkItemWidgetHealthStatus",
+    "WorkItemWidgetHierarchy",
+    "WorkItemWidgetIteration",
+    "WorkItemWidgetLabels",
+    "WorkItemWidgetLinkedItems",
+    "WorkItemWidgetLinkedResources",
+    "WorkItemWidgetMilestone",
+    "WorkItemWidgetNotes",
+    "WorkItemWidgetNotifications",
+    "WorkItemWidgetParticipants",
+    "WorkItemWidgetProgress",
+    "WorkItemWidgetRequester",
+    "WorkItemWidgetRequirementLegacy",
+    "WorkItemWidgetSeverity",
+    "WorkItemWidgetStartAndDueDate",
+    "WorkItemWidgetStatus",
+    "WorkItemWidgetTestReports",
+    "WorkItemWidgetTimeTracking",
+    "WorkItemWidgetVerificationStatus",
+    "WorkItemWidgetVulnerabilities",
+    "WorkItemWidgetWeight"
+  ],
+  "WorkItemWidgetDefinition": [
+    "WorkItemWidgetDefinitionAssignees",
+    "WorkItemWidgetDefinitionCustomFields",
+    "WorkItemWidgetDefinitionGeneric",
+    "WorkItemWidgetDefinitionHierarchy",
+    "WorkItemWidgetDefinitionLabels",
+    "WorkItemWidgetDefinitionProgress",
+    "WorkItemWidgetDefinitionStartAndDueDate",
+    "WorkItemWidgetDefinitionStatus",
+    "WorkItemWidgetDefinitionWeight"
+  ]
+}

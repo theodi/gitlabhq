@@ -1,0 +1,63 @@
+!!! 5
+%html{ lang: I18n.locale }
+  %head
+    %meta{ :content => "width=device-width, initial-scale=1", :name => "viewport" }
+    %title= yield(:title)
+    - if vite_enabled?
+      = universal_stylesheet_link_tag 'errors'
+    - else
+      %style
+        = error_css
+    :css
+      svg {
+        width: 280px;
+        height: 280px;
+        display: block;
+        margin: 40px auto;
+      }
+
+      .tv-screen path {
+        animation: move-lines 1s linear infinite;
+      }
+
+
+      @keyframes move-lines {
+        0% {transform: translateY(0)}
+        50% {transform: translateY(-10px)}
+        100% {transform: translateY(-20px)}
+      }
+
+      .tv-screen path:nth-child(1) {
+        animation-delay: .2s
+      }
+
+      .tv-screen path:nth-child(2) {
+        animation-delay: .4s
+      }
+
+      .tv-screen path:nth-child(3) {
+        animation-delay: .6s
+      }
+
+      .tv-screen path:nth-child(4) {
+        animation-delay: .8s
+      }
+
+      .tv-screen path:nth-child(5) {
+        animation-delay: 2s
+      }
+
+      .text-422 {
+        animation: flicker 1s infinite;
+      }
+
+      @keyframes flicker {
+        0% {opacity: 0.3;}
+        10% {opacity: 1;}
+        15% {opacity: .3;}
+        20% {opacity: .5;}
+        25% {opacity: 1;}
+      }
+
+%body
+  = yield

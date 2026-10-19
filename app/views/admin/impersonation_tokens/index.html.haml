@@ -1,0 +1,33 @@
+- add_to_breadcrumbs _('Users'), admin_users_path
+- breadcrumb_title @user.name
+- page_title _('Impersonation Tokens'), @user.name, _('Users')
+- type = _('impersonation token')
+
+= render 'admin/users/head'
+
+#js-new-access-token-app{ data: { access_token_type: type } }
+
+= render ::Layouts::CrudComponent.new(_('Impersonation tokens'),
+  icon: 'token',
+  count: @active_impersonation_tokens.size,
+  count_options: { class: 'js-token-count' },
+  toggle_text: _('Add new token'),
+  toggle_options: { data: { testid: 'add-new-token-button' } },
+  form_options: { class: 'js-add-new-token-form' },
+  options: { class: 'gl-mt-5 js-token-card' }) do |c|
+  - c.with_description do
+    = _("To see all the user's personal access tokens you must impersonate them first.")
+
+  - c.with_form do
+    = render 'shared/access_tokens/form',
+      ajax: true,
+      type: type,
+      title: _('Add an impersonation token'),
+      path: admin_user_impersonation_tokens_path,
+      impersonation: true,
+      token: @impersonation_token,
+      scopes: @scopes,
+      help_path: help_page_path('api/rest/authentication.md', anchor: 'impersonation-tokens')
+
+  - c.with_body do
+    #js-access-token-table-app{ data: { access_token_type: type, no_active_tokens_message: _('This user has no active impersonation tokens.'), initial_active_access_tokens: @active_impersonation_tokens.to_json } }

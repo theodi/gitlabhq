@@ -1,0 +1,26 @@
+fragment WorkItemTypeFragment on WorkItemType {
+  id
+  name
+  iconName
+  supportedConversionTypes {
+    id
+    name
+  }
+  widgetDefinitions {
+    type
+    ... on WorkItemWidgetDefinitionHierarchy {
+      allowedChildTypes {
+        nodes {
+          id
+          name
+        }
+      }
+      allowedParentTypes {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+  }
+}

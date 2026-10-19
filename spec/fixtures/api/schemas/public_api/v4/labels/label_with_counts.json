@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "label.json"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "open_issues_count": {
+          "type": "integer"
+        },
+        "closed_issues_count": {
+          "type": "integer"
+        },
+        "open_merge_requests_count": {
+          "type": "integer"
+        }
+      }
+    }
+  ]
+}

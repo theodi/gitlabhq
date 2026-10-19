@@ -1,0 +1,338 @@
+const { dirname } = require('path');
+const resolve = require('resolve');
+const IS_EE = require('./config/helpers/is_ee_env');
+const isESLint = require('./config/helpers/is_eslint');
+const IS_JH = require('./config/helpers/is_jh_env');
+const { CONTEXT_ALIASES } = require('./config/vue3migration/aliases');
+
+const { VUE_VERSION: EXPLICIT_VUE_VERSION } = process.env;
+const { VUE_COMPILER_VERSION } = process.env;
+if (![undefined, '2', '3'].includes(EXPLICIT_VUE_VERSION)) {
+  throw new Error(
+    `Invalid VUE_VERSION value: ${EXPLICIT_VUE_VERSION}. Only '2' and '3' are supported`,
+  );
+}
+const USE_VUE_3 = EXPLICIT_VUE_VERSION === '3';
+const USE_VUE3_COMPILER = USE_VUE_3 && VUE_COMPILER_VERSION === '3';
+
+const { TEST_HOST } = require('./spec/frontend/__helpers__/test_constants');
+
+module.exports = (path, options = {}) => {
+  const {
+    moduleNameMapper: extModuleNameMapper = {},
+    moduleNameMapperEE: extModuleNameMapperEE = {},
+    moduleNameMapperJH: extModuleNameMapperJH = {},
+    roots: extRoots = [],
+    rootsEE: extRootsEE = [],
+    rootsJH: extRootsJH = [],
+    isEE = IS_EE,
+    isJH = IS_JH,
+  } = options;
+
+  const reporters = ['default'];
+  const VUE_JEST_TRANSFORMER = USE_VUE3_COMPILER
+    ? '@vue/vue3-jest'
+    : '<rootDir>/spec/frontend/__helpers__/vue2_jest_transformer.js';
+  const setupFilesAfterEnv = [`<rootDir>/${path}/test_setup.js`, 'jest-canvas-mock'];
+  const vueModuleNameMappers = {
+    // consume @gitlab-ui from source to allow us to compile in either Vue 2 or Vue 3
+    '@gitlab/ui/dist/charts$': '@gitlab/ui/src/charts',
+    '@gitlab/ui$': '@gitlab/ui/src',
+  };
+  const globals = {};
+
+  if (USE_VUE_3) {
+    setupFilesAfterEnv.unshift('<rootDir>/spec/frontend/vue_compat_test_setup.js');
+
+    const contextAliasMappers = Object.fromEntries(
+      Object.entries(CONTEXT_ALIASES)
+        // Skip `@vue/compat`: CONTEXT_ALIASES points it at the ESM-bundler build. Forcing
+        // Jest to require() that file breaks (its export syntax isn't covered by
+        // transformIgnorePatterns). Jest never needed an entry for it,
+        // `vue3compat/vue.js` is its only importer.
+        .filter(([specifier]) => specifier !== '@vue/compat')
+
+        // Skip `vuedraggable`: its Vue 3 replacement (`@gitlab/vuedraggable-vue3`) itself
+        // imports `sortablejs` with raw ESM `import` syntax, which
+        // transformIgnorePatterns also doesn't cover.
+        .filter(([specifier]) => specifier !== 'vuedraggable')
+        .map(([specifier, target]) => [`^${specifier}$`, target]),
+    );
+
+    Object.assign(vueModuleNameMappers, {
+      ...contextAliasMappers,
+      // Jest-only: not part of the Vite/webpack build, so not in CONTEXT_ALIASES.
+      '^@vue/test-utils$': '@vue/test-utils-vue3',
+    });
+    if (USE_VUE3_COMPILER) {
+      Object.assign(globals, {
+        'vue-jest': {
+          experimentalCSSCompile: false,
+          compiler: require.resolve('./config/vue3migration/compilers/vue3_template'),
+          compilerOptions: {
+            whitespace: 'preserve',
+            compatConfig: {
+              MODE: 2,
+            },
+          },
+        },
+      });
+    } else {
+      Object.assign(globals, {
+        'vue-jest': {
+          experimentalCSSCompile: false,
+          compiler: require.resolve('./config/vue3migration/compilers/vue2_template'),
+        },
+      });
+    }
+  } else {
+    setupFilesAfterEnv.unshift('<rootDir>/spec/frontend/__helpers__/vtu1_dom_find_parity.js');
+  }
+
+  // To have consistent date time parsing both in local and CI environments we set
+  // the timezone of the Node process. https://gitlab.com/gitlab-org/gitlab-foss/merge_requests/27738
+  process.env.TZ = 'GMT';
+
+  if (process.env.CI) {
+    reporters.push([
+      'jest-junit',
+      {
+        outputName: './junit_jest.xml',
+        addFileAttribute: 'true',
+      },
+    ]);
+
+    reporters.push(['@gitlab/jest-metrics-exporter', {}]);
+    reporters.push(['<rootDir>/scripts/frontend/jest_json_reporter.js', {}]);
+    reporters.push(['<rootDir>/scripts/frontend/jest_test_map_reporter.js', {}]);
+
+    // Per-test coverage capture. Off unless the caller sets GLCI_PER_TEST_COVERAGE;
+    // standard MR/master jest runs do not.
+    if (process.env.GLCI_PER_TEST_COVERAGE === 'true') {
+      reporters.push(['<rootDir>/scripts/frontend/per_test_coverage_reporter.js', {}]);
+    }
+  }
+
+  const glob = `${path}/**/*@([._])spec.js`;
+  let testMatch = [`<rootDir>/${glob}`];
+  if (isEE) {
+    testMatch.push(`<rootDir>/ee/${glob}`);
+  }
+
+  if (isJH) {
+    testMatch.push(`<rootDir>/jh/${glob}`);
+  }
+  // workaround for eslint-import-resolver-jest only resolving in test files
+  // see https://github.com/JoinColony/eslint-import-resolver-jest#note
+  if (isESLint(module)) {
+    testMatch = testMatch.map((modulePath) => modulePath.replace('_spec.js', ''));
+  }
+
+  const TEST_FIXTURES_PATTERN = 'test_fixtures(/.*)$';
+  const TEST_FIXTURES_HOME = '/tmp/tests/frontend/fixtures';
+  const TEST_FIXTURES_HOME_EE = '/tmp/tests/frontend/fixtures-ee';
+  const TEST_FIXTURES_STATIC_HOME = '/spec/frontend/fixtures/static';
+  const TEST_FIXTURES_RAW_LOADER_PATTERN = `(${TEST_FIXTURES_HOME}|${TEST_FIXTURES_STATIC_HOME}).*\\.html$`;
+
+  const moduleNameMapper = {
+    [TEST_FIXTURES_PATTERN]: `<rootDir>${TEST_FIXTURES_HOME}$1`,
+    '^test_fixtures_static(/.*)$': `<rootDir>${TEST_FIXTURES_STATIC_HOME}$1`,
+    '\\.css$': '<rootDir>/spec/frontend/__mocks__/file_mock.js',
+    '^~(/.*)$': '<rootDir>/app/assets/javascripts$1',
+    '^images/(.*)$': '<rootDir>/app/assets/images/$1',
+    '^ee_images/(.*)$': '<rootDir>/ee/app/assets/images/$1',
+    '^jh_images/(.*)$': '<rootDir>/jh/app/assets/images/$1',
+    '^ee_component(/.*)$':
+      '<rootDir>/app/assets/javascripts/vue_shared/components/empty_component.js',
+    '^jh_component(/.*)$':
+      '<rootDir>/app/assets/javascripts/vue_shared/components/empty_component.js',
+    '^shared_queries(/.*)$': '<rootDir>/app/graphql/queries$1',
+    '^ee_else_ce(/.*)$': '<rootDir>/app/assets/javascripts$1',
+    '^jh_else_ce(/.*)$': '<rootDir>/app/assets/javascripts$1',
+    '^jh_else_ee(/.*)$':
+      '<rootDir>/app/assets/javascripts/vue_shared/components/empty_component.js',
+    '^any_else_ce(/.*)$': '<rootDir>/app/assets/javascripts$1',
+    '^helpers(/.*)$': '<rootDir>/spec/frontend/__helpers__$1',
+    '^vendor(/.*)$': '<rootDir>/vendor/assets/javascripts$1',
+    '^public(/.*)$': '<rootDir>/public$1',
+    'emojis(/.*).json': '<rootDir>/fixtures/emojis$1.json',
+    '^spec/test_constants$': '<rootDir>/spec/frontend/__helpers__/test_constants',
+    '^jest/(.*)$': '<rootDir>/spec/frontend/$1',
+    '^ee_else_ce_jest/(.*)$': '<rootDir>/spec/frontend/$1',
+    '^jquery$': 'jquery/dist/jquery.slim.js',
+    // `resolve` reaches files that these packages' `exports` fields hide from Jest.
+    '^dexie$': resolve.sync('dexie/dist/dexie.min.js'),
+    // From @gitlab/duo-ui, which depends on it.
+    '^remend$': resolve.sync('remend/dist/index.js', {
+      basedir: dirname(resolve.sync('@gitlab/duo-ui/package.json')),
+    }),
+    // The ESM build the bundler loads; patches/@tiptap+vue-2+*.patch only patches this one.
+    '^@tiptap/vue-2$': resolve.sync('@tiptap/vue-2/dist/index.js'),
+    '^eve$': 'eve-raphael',
+    ...extModuleNameMapper,
+    ...vueModuleNameMappers,
+  };
+
+  const collectCoverageFrom = ['<rootDir>/app/assets/javascripts/**/*.{js,vue}'];
+
+  if (isEE) {
+    const rootDirEE = '<rootDir>/ee/app/assets/javascripts$1';
+    const specDirEE = '<rootDir>/ee/spec/frontend/$1';
+    Object.assign(moduleNameMapper, {
+      '^ee(/.*)$': rootDirEE,
+      '^ee_component(/.*)$': rootDirEE,
+      '^ee_else_ce(/.*)$': rootDirEE,
+      '^ee_jest/(.*)$': specDirEE,
+      '^ee_else_ce_jest/(.*)$': specDirEE,
+      '^any_else_ce(/.*)$': rootDirEE,
+      '^jh_else_ee(/.*)$': rootDirEE,
+      [TEST_FIXTURES_PATTERN]: `<rootDir>${TEST_FIXTURES_HOME_EE}$1`,
+      ...extModuleNameMapperEE,
+    });
+
+    collectCoverageFrom.push(rootDirEE.replace('$1', '/**/*.{js,vue}'));
+  }
+
+  if (isJH) {
+    // DO NOT add additional path to Jihu side, it might break things.
+    const rootDirJH = '<rootDir>/jh/app/assets/javascripts$1';
+    const specDirJH = '<rootDir>/jh/spec/frontend/$1';
+    Object.assign(moduleNameMapper, {
+      '^jh(/.*)$': rootDirJH,
+      '^jh_component(/.*)$': rootDirJH,
+      '^jh_jest/(.*)$': specDirJH,
+      // jh path alias https://gitlab.com/gitlab-org/gitlab/-/merge_requests/74305#note_732793956
+      '^jh_else_ce(/.*)$': rootDirJH,
+      '^jh_else_ee(/.*)$': rootDirJH,
+      '^any_else_ce(/.*)$': rootDirJH,
+      ...extModuleNameMapperJH,
+    });
+
+    collectCoverageFrom.push(rootDirJH.replace('$1', '/**/*.{js,vue}'));
+  }
+
+  const coverageDirectory = () => {
+    if (process.env.CI_NODE_INDEX && process.env.CI_NODE_TOTAL) {
+      return `<rootDir>/coverage-frontend/jest-${process.env.CI_NODE_INDEX}-${process.env.CI_NODE_TOTAL}`;
+    }
+
+    return '<rootDir>/coverage-frontend/';
+  };
+
+  const transformIgnoreNodeModules = [
+    'vue-test-utils-compat',
+    'vue-demi',
+    '@gitlab/svgs',
+    '@gitlab/ui',
+    '@gitlab/duo-ui',
+    '@gitlab/favicon-overlay',
+    '@gitlab/cluster-client',
+    '@gitlab/web-ide',
+    '@gitlab/query-language',
+    'bootstrap-vue',
+    'portal-vue',
+    'gridstack',
+    'leaflet',
+    'three',
+    'monaco-editor',
+    'monaco-yaml',
+    'monaco-marker-data-provider',
+    'monaco-worker-manager',
+    'fast-mersenne-twister',
+    'pdfjs-dist',
+    'prosemirror-markdown',
+    'marked',
+    'fault',
+    'dateformat',
+    'lowlight',
+    '@tiptap/vue-2',
+    'vscode-languageserver-types',
+    'yaml',
+    'dexie',
+    'markdown-table',
+    'mdast-util-.*',
+    'micromark.*',
+    'is-plain-obj',
+    'decode-named-character-reference',
+    'character-entities*',
+    'escape-string-regexp',
+    'lodash-es',
+    'remend',
+  ];
+
+  return {
+    globals,
+    clearMocks: true,
+    testMatch,
+    moduleFileExtensions: ['js', 'json', 'vue', 'gql', 'graphql', 'yaml', 'yml', 'html'],
+    moduleNameMapper,
+    collectCoverageFrom,
+    coverageDirectory: coverageDirectory(),
+    coverageReporters: ['json', 'lcov', 'text-summary', 'clover'],
+    coveragePathIgnorePatterns: [
+      '<rootDir>/node_modules/',
+      // We need ignore _worker code coverage since we are manually transforming it
+      '_worker\\.js$',
+      // we're using import.meta in main entrypoint with Vite which confuses Babel, so we just ignore it
+      '<rootDir>/app/assets/javascripts/entrypoints/main',
+    ],
+    cacheDirectory: '<rootDir>/tmp/cache/jest',
+    modulePathIgnorePatterns: ['<rootDir>/.yarn-cache/'],
+    reporters,
+    resolver: './jest_resolver.js',
+    setupFilesAfterEnv,
+    restoreMocks: true,
+    // actual test timeouts
+    // Increased from 10000 to 15000 for CI to accommodate gVisor's syscall overhead
+    // gVisor's system call interception adds ~10-20% latency which can cause
+    // timing-sensitive tests to exceed the 10s timeout on edge cases
+    testTimeout: process.env.CI ? 15000 : 5000,
+    transform: {
+      '^.+\\.(gql|graphql)$': './spec/frontend/__helpers__/graphql_transformer.js',
+      '^.+_worker\\.js$': './spec/frontend/__helpers__/web_worker_transformer.js',
+      '^.+\\.m?js$': 'babel-jest',
+      '^.+\\.(svg|gif|png|mp4)$': './spec/frontend/__helpers__/static_file_transformer.js',
+      '^.+\\.vue$': VUE_JEST_TRANSFORMER,
+      'spec/frontend/editor/schema/ci/yaml_tests/.+\\.(yml|yaml)$':
+        './spec/frontend/__helpers__/yaml_transformer.js',
+      '^.+\\.(md|zip|png|yml|yaml|sh|ps1)$': './spec/frontend/__helpers__/raw_transformer.js',
+      [TEST_FIXTURES_RAW_LOADER_PATTERN]: './spec/frontend/__helpers__/raw_transformer.js',
+    },
+    transformIgnorePatterns: [`node_modules/(?!(${transformIgnoreNodeModules.join('|')}))`],
+    fakeTimers: {
+      enableGlobally: true,
+      doNotFake: ['nextTick', 'setImmediate'],
+      legacyFakeTimers: true,
+    },
+    testEnvironment: '<rootDir>/spec/frontend/environment.js',
+    testEnvironmentOptions: {
+      IS_EE: isEE,
+      IS_JH: isJH,
+      url: TEST_HOST,
+      customExportConditions: ['node', 'node-addons'],
+    },
+    testRunner: 'jest-jasmine2',
+    prettierPath: undefined,
+    snapshotSerializers: [
+      '<rootDir>/spec/frontend/__helpers__/html_string_serializer.js',
+      '<rootDir>/spec/frontend/__helpers__/clean_html_element_serializer.js',
+    ],
+    roots: [
+      '<rootDir>/app/assets/javascripts/',
+      ...extRoots,
+      ...(isEE ? ['<rootDir>/ee/app/assets/javascripts/', ...extRootsEE] : []),
+      ...(isJH ? ['<rootDir>/jh/app/assets/javascripts/', ...extRootsJH] : []),
+    ],
+    /*
+    Reduce the amount of max workers in development mode.
+    If we use all available cores, on machines with efficiency cores, we actually will be slower
+
+    Set nothing for CI, because we want to use the auto-logic for the cores
+     */
+    maxWorkers: process.env.CI ? '' : '60%',
+    testPathIgnorePatterns: [
+      // Frontend integration tests are EE-only and run via jest.config.integration.js.
+      '<rootDir>/ee/spec/frontend/integration/',
+    ],
+  };
+};

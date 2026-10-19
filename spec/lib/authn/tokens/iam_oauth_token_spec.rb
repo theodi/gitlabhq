@@ -1,0 +1,328 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Authn::Tokens::IamOauthToken, feature_category: :system_access do
+  include_context 'with IAM authentication setup'
+
+  let_it_be_with_reload(:user) { create(:user) }
+
+  let(:scopes) { %w[api read_repository] }
+  let(:expires_at) { 1.hour.from_now }
+  let(:sub) { user.id.to_s }
+  let(:valid_token_string) do
+    create_iam_access_token(user: user, scopes: scopes, expires_at: expires_at, issuer: iam_issuer,
+      private_key: private_key, kid: kid, sub: sub)
+  end
+
+  subject(:token) { described_class.from_jwt(valid_token_string) }
+
+  describe '.from_jwt' do
+    context 'when IAM is disabled' do
+      before do
+        stub_iam_service_config(enabled: false, url: iam_service_url, jwt_audience: iam_audience,
+          jwt_issuer: iam_issuer)
+      end
+
+      it 'returns nil' do
+        is_expected.to be_nil
+      end
+
+      it 'logs the authentication attempt' do
+        expect(Gitlab::AuthLogger).to receive(:info).with(
+          message: 'IAM JWT authentication attempt when disabled'
+        )
+
+        token
+      end
+
+      it 'does not log for tokens without the gliamat- prefix' do
+        expect(Gitlab::AuthLogger).not_to receive(:info)
+
+        expect(described_class.from_jwt('some-doorkeeper-token')).to be_nil
+        expect(described_class.from_jwt(nil)).to be_nil
+      end
+    end
+
+    context 'when IAM is enabled' do
+      context 'when feature flag is disabled for user' do
+        before do
+          stub_feature_flags(iam_svc_oauth: false)
+        end
+
+        it 'returns nil' do
+          expect(token).to be_nil
+        end
+      end
+
+      context 'when feature flag is enabled for user' do
+        before do
+          stub_feature_flags(iam_svc_oauth: user)
+        end
+
+        context 'when token is IAM-issued JWT format' do
+          it 'returns token with correct attributes', :freeze_time do
+            is_expected.to be_a(described_class)
+            expect(token.user_id).to eq(user.id)
+            expect(token.scopes).to eq(scopes)
+            expect(token.id).to be_present
+            expect(token.expires_at).to eq(expires_at)
+            expect(token.issued_at).to be_within(1.second).of(Time.current)
+          end
+        end
+
+        context 'when token is missing the gliamat- prefix' do
+          it 'returns nil' do
+            expect(described_class.from_jwt('not-a-jwt')).to be_nil
+            expect(described_class.from_jwt(nil)).to be_nil
+            expect(described_class.from_jwt('only.two')).to be_nil
+            expect(described_class.from_jwt(valid_token_string.delete_prefix('gliamat-'))).to be_nil
+          end
+        end
+
+        context 'when token has the gliamat- prefix but is not a valid JWT' do
+          it 'returns nil' do
+            expect(described_class.from_jwt('gliamat-not-a-jwt')).to be_nil
+          end
+        end
+
+        context 'when validation fails' do
+          let(:expires_at) { 1.hour.ago }
+
+          it { is_expected.to be_nil }
+        end
+
+        context 'when token refers to non-existent user' do
+          let(:sub) { non_existing_record_id.to_s }
+
+          it 'returns nil when user does not exist in database' do
+            expect(token).to be_nil
+          end
+        end
+
+        context 'when token has a non-numeric subject that collides with a real user via to_i coercion' do
+          # sub.to_i silently truncates trailing garbage (e.g. "#{user.id}x".to_i
+          # == user.id), so without the user_id.to_s == sub check this would
+          # resolve to a real, existing user rather than being rejected.
+          let(:sub) { "#{user.id}x" }
+
+          it 'returns nil rather than resolving to the colliding user' do
+            expect(token).to be_nil
+          end
+
+          it 'logs the validation failure' do
+            expect(Gitlab::AuthLogger).to receive(:error).with(
+              message: 'IAM JWT validation failed',
+              Labkit::Fields::ERROR_MESSAGE => 'Invalid token subject'
+            )
+
+            token
+          end
+        end
+
+        context 'when token subject is not a valid positive integer string' do
+          let(:sub) { '0' }
+
+          it 'returns nil' do
+            expect(token).to be_nil
+          end
+        end
+
+        context 'when from_validated_jwt returns nil' do
+          before do
+            allow(described_class).to receive(:from_validated_jwt).and_return(nil)
+          end
+
+          it 'returns nil' do
+            expect(described_class.from_jwt(valid_token_string)).to be_nil
+          end
+        end
+      end
+    end
+  end
+
+  describe '#acceptable?' do
+    it 'returns true when the token is accessible and includes a required scope' do
+      expect(token.acceptable?([:api])).to be(true)
+    end
+
+    it 'returns true when no scopes are required' do
+      expect(token.acceptable?([])).to be(true)
+    end
+
+    it 'returns false when the token does not include any required scope' do
+      expect(token.acceptable?([:openid])).to be(false)
+    end
+
+    it 'returns false when the token is not accessible' do
+      token
+
+      travel_to(2.hours.from_now) do
+        expect(token.acceptable?([:api])).to be(false)
+      end
+    end
+  end
+
+  describe '#accessible?' do
+    it 'returns true for valid token' do
+      expect(token.accessible?).to be(true)
+    end
+
+    it 'returns false when token is expired' do
+      token
+
+      travel_to(2.hours.from_now) do
+        expect(token.accessible?).to be(false)
+      end
+    end
+
+    it 'returns false when the user is blocked' do
+      user.block!
+
+      expect(token.accessible?).to be(false)
+    end
+  end
+
+  describe '#active?' do
+    it 'returns true for valid token' do
+      expect(token.active?).to be(true)
+    end
+
+    it 'returns false when token is expired' do
+      token
+
+      travel_to(2.hours.from_now) do
+        expect(token.active?).to be(false)
+      end
+    end
+  end
+
+  describe '#application' do
+    it 'returns nil' do
+      expect(token.application).to be_nil
+    end
+  end
+
+  describe '#expired?' do
+    it 'returns false for valid token' do
+      expect(token.expired?).to be(false)
+    end
+
+    it 'returns true when token expires in the past' do
+      token
+
+      travel_to(2.hours.from_now) do
+        expect(token.expired?).to be(true)
+      end
+    end
+  end
+
+  describe '#id' do
+    it 'returns the id' do
+      expect(token.id).to be_present
+    end
+  end
+
+  describe '#includes_scope?' do
+    it 'returns true when required scopes are blank' do
+      expect(token.includes_scope?).to be(true)
+    end
+
+    it 'returns true when any required scope matches' do
+      expect(token.includes_scope?(:openid, :api)).to be(true)
+    end
+
+    it 'returns false when no required scope matches' do
+      expect(token.includes_scope?(:openid, :profile)).to be(false)
+    end
+  end
+
+  describe '#reload' do
+    it 'clears memoized user' do
+      token.user
+      token.reload
+
+      expect(User).to receive(:find_by_id).with(user.id).and_call_original
+      token.user
+    end
+
+    context 'when token has scope_user' do
+      let_it_be(:scope_user) { create(:user) }
+      let(:scopes) { ['api', "user:#{scope_user.id}"] }
+
+      it 'clears memoized scope_user' do
+        token.scope_user
+        token.reload
+
+        expect(User).to receive(:find_by_id).with(scope_user.id).and_call_original
+        token.scope_user
+      end
+    end
+  end
+
+  describe '#resource_owner_id' do
+    it 'returns the user_id' do
+      expect(token.resource_owner_id).to eq(user.id)
+    end
+  end
+
+  describe '#revoked?' do
+    it 'always returns false' do
+      expect(token.revoked?).to be(false)
+    end
+  end
+
+  describe '#scope_user' do
+    context 'when scopes include user scope' do
+      let_it_be(:scope_user) { create(:user) }
+      let(:scopes) { ['api', "user:#{scope_user.id}"] }
+
+      it 'returns the scoped user' do
+        expect(token.scope_user).to eq(scope_user)
+      end
+    end
+
+    context 'when scopes include non-existent user' do
+      let(:scopes) { ['api', "user:#{non_existing_record_id}"] }
+
+      it 'returns nil' do
+        expect(token.scope_user).to be_nil
+      end
+    end
+
+    context 'when scopes do not include user scope' do
+      let(:scopes) { %w[api read_repository] }
+
+      it 'returns nil' do
+        expect(token.scope_user).to be_nil
+      end
+    end
+
+    context 'when token has no scopes' do
+      let(:scopes) { nil }
+
+      it 'returns nil' do
+        expect(token.scope_user).to be_nil
+      end
+    end
+  end
+
+  describe '#scopes' do
+    it 'returns a Doorkeeper::OAuth::Scopes instance with the token scopes', :aggregate_failures do
+      expect(token.scopes).to be_a(Doorkeeper::OAuth::Scopes)
+      expect(token.scopes.to_a).to eq(scopes)
+    end
+  end
+
+  describe '#user' do
+    it 'returns the user' do
+      expect(token.user).to eq(user)
+    end
+  end
+
+  describe '#to_s' do
+    it 'returns a string representation with id and user_id' do
+      expect(token.to_s).to eq("Authn::Tokens::IamOauthToken(id: #{token.id}, user_id: #{user.id})")
+    end
+  end
+end

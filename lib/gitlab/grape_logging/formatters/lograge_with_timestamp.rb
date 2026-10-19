@@ -1,0 +1,53 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module GrapeLogging
+    module Formatters
+      class LogrageWithTimestamp
+        include Gitlab::EncodingHelper
+
+        EMPTY_ARRAY = [].freeze
+
+        def call(severity, datetime, _, data)
+          time = data.delete :time
+          # grape_logging 2.1.0+ adds `request_id` from `action_dispatch.request_id`, the same value
+          # already logged as `correlation_id`. Drop it to keep api_json.log parity with grape_logging 1.8.4.
+          data.delete(:request_id)
+          data[:params] = process_params(data)
+
+          attributes = {
+            time: datetime.utc.iso8601(3),
+            severity: severity,
+            duration_s: Gitlab::Utils.ms_to_round_sec(time[:total]),
+            db_duration_s: Gitlab::Utils.ms_to_round_sec(time[:db]),
+            view_duration_s: Gitlab::Utils.ms_to_round_sec(time[:view])
+          }.merge!(data)
+
+          ::Lograge.formatter.call(attributes) << "\n"
+        end
+
+        private
+
+        def process_params(data)
+          return EMPTY_ARRAY unless data.has_key?(:params)
+
+          # Parameters are already truncated by TruncateParameters logger
+          data[:params].map { |k, v| { key: k, value: utf8_encode_values(v) } }
+        end
+
+        def utf8_encode_values(data)
+          case data
+          when Hash
+            data.merge!(data) { |k, v| utf8_encode_values(v) }
+          when Array
+            data.map! { |v| utf8_encode_values(v) }
+          when String
+            encode_utf8(data)
+          else
+            data
+          end
+        end
+      end
+    end
+  end
+end

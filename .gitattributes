@@ -1,1 +1,5 @@
-CHANGELOG merge=union
+VERSION merge=ours
+Dangerfile gitlab-language=ruby
+*.rb diff=ruby
+workhorse/testdata/*.pdf -filter -diff -merge
+fixtures/emojis/skin_tones.json gitlab-generated

@@ -1,0 +1,587 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::Catalog::Resource, feature_category: :pipeline_composition do
+  let_it_be(:current_user, freeze: false) { create(:user) }
+
+  let_it_be(:project_a, freeze: false) { create(:project, name: 'A', star_count: 20) }
+  let_it_be(:project_b, freeze: false) { create(:project, name: 'B', star_count: 10) }
+  let_it_be(:project_c, freeze: false) { create(:project, name: 'C', description: 'B', star_count: 30) }
+
+  let_it_be_with_reload(:resource_a) do
+    create(:ci_catalog_resource, project: project_a, latest_released_at: '2023-02-01T00:00:00Z',
+      last_30_day_usage_count: 150, verification_level: 100)
+  end
+
+  let_it_be(:resource_b, freeze: false) do
+    create(:ci_catalog_resource, project: project_b, latest_released_at: '2023-01-01T00:00:00Z',
+      last_30_day_usage_count: 100, verification_level: 10)
+  end
+
+  let_it_be(:resource_c, freeze: false) { create(:ci_catalog_resource, project: project_c, verification_level: 50) }
+
+  it { is_expected.to belong_to(:project) }
+
+  it do
+    is_expected.to(
+      have_many(:components).class_name('Ci::Catalog::Resources::Component').with_foreign_key(:catalog_resource_id))
+  end
+
+  it do
+    is_expected.to(
+      have_many(:component_last_usages).class_name('Ci::Catalog::Resources::Components::LastUsage')
+        .with_foreign_key(:catalog_resource_id))
+  end
+
+  it do
+    is_expected.to(
+      have_many(:versions).class_name('Ci::Catalog::Resources::Version').with_foreign_key(:catalog_resource_id))
+  end
+
+  it do
+    is_expected.to(
+      have_many(:sync_events).class_name('Ci::Catalog::Resources::SyncEvent').with_foreign_key(:catalog_resource_id))
+  end
+
+  it { is_expected.to delegate_method(:avatar_path).to(:project) }
+  it { is_expected.to delegate_method(:star_count).to(:project) }
+
+  it { is_expected.to define_enum_for(:state).with_values({ unpublished: 0, published: 1 }) }
+
+  it 'defines verification levels matching the source of truth in VerifiedNamespace' do
+    is_expected.to define_enum_for(:verification_level)
+      .with_values(::Namespaces::VerifiedNamespace::VERIFICATION_LEVELS)
+  end
+
+  describe '.for_projects' do
+    it 'returns catalog resources for the given project IDs' do
+      resources_for_projects = described_class.for_projects(project_a.id)
+
+      expect(resources_for_projects).to contain_exactly(resource_a)
+    end
+  end
+
+  describe '.search' do
+    it 'returns catalog resources whose name or description match the search term' do
+      resources = described_class.search('B')
+
+      expect(resources).to contain_exactly(resource_b, resource_c)
+    end
+  end
+
+  describe '.order_by_created_at_desc' do
+    it 'returns catalog resources sorted by descending created at' do
+      ordered_resources = described_class.order_by_created_at_desc
+
+      expect(ordered_resources.to_a).to eq([resource_c, resource_b, resource_a])
+    end
+  end
+
+  describe '.order_by_created_at_asc' do
+    it 'returns catalog resources sorted by ascending created at' do
+      ordered_resources = described_class.order_by_created_at_asc
+
+      expect(ordered_resources.to_a).to eq([resource_a, resource_b, resource_c])
+    end
+  end
+
+  describe '.order_by_name_desc' do
+    subject(:ordered_resources) { described_class.order_by_name_desc }
+
+    it 'returns catalog resources sorted by descending name' do
+      expect(ordered_resources.pluck(:name)).to eq(%w[C B A])
+    end
+
+    it 'returns catalog resources sorted by descending name with nulls last' do
+      resource_a.update!(name: nil)
+
+      expect(ordered_resources.pluck(:name)).to eq(['C', 'B', nil])
+    end
+  end
+
+  describe '.order_by_name_asc' do
+    subject(:ordered_resources) { described_class.order_by_name_asc }
+
+    it 'returns catalog resources sorted by ascending name' do
+      expect(ordered_resources.pluck(:name)).to eq(%w[A B C])
+    end
+
+    it 'returns catalog resources sorted by ascending name with nulls last' do
+      resource_a.update!(name: nil)
+
+      expect(ordered_resources.pluck(:name)).to eq(['B', 'C', nil])
+    end
+  end
+
+  describe '.order_by_latest_released_at_desc' do
+    it 'returns catalog resources sorted by latest_released_at descending with nulls last' do
+      ordered_resources = described_class.order_by_latest_released_at_desc
+
+      expect(ordered_resources).to eq([resource_a, resource_b, resource_c])
+    end
+  end
+
+  describe '.order_by_latest_released_at_asc' do
+    it 'returns catalog resources sorted by latest_released_at ascending with nulls last' do
+      ordered_resources = described_class.order_by_latest_released_at_asc
+
+      expect(ordered_resources).to eq([resource_b, resource_a, resource_c])
+    end
+  end
+
+  describe 'order_by_star_count_desc' do
+    it 'returns catalog resources sorted by project star count in descending order' do
+      ordered_resources = described_class.order_by_star_count(:desc)
+
+      expect(ordered_resources).to eq([resource_c, resource_a, resource_b])
+    end
+  end
+
+  describe 'order_by_star_count_asc' do
+    it 'returns catalog resources sorted by project star count in ascending order' do
+      ordered_resources = described_class.order_by_star_count(:asc)
+
+      expect(ordered_resources).to eq([resource_b, resource_a, resource_c])
+    end
+  end
+
+  describe 'order_by_last_30_day_usage_count_desc' do
+    it 'returns catalog resources sorted by last 30-day usage count in descending order' do
+      ordered_resources = described_class.order_by_last_30_day_usage_count_desc
+
+      expect(ordered_resources).to eq([resource_a, resource_b, resource_c])
+    end
+  end
+
+  describe 'order_by_last_30_day_usage_count_asc' do
+    it 'returns catalog resources sorted by last 30-day usage count in ascending order' do
+      ordered_resources = described_class.order_by_last_30_day_usage_count_asc
+
+      expect(ordered_resources).to eq([resource_c, resource_b, resource_a])
+    end
+  end
+
+  describe '.for_verification_level' do
+    it 'returns catalog resources for required verification_level' do
+      verified_resources = described_class
+        .for_verification_level(Namespaces::VerifiedNamespace::VERIFICATION_LEVELS[:gitlab_maintained])
+
+      expect(verified_resources).to eq([resource_a])
+    end
+  end
+
+  describe '.with_topics' do
+    let_it_be(:topic_ruby, freeze: false) { create(:topic, name: 'ruby') }
+    let_it_be(:topic_rails, freeze: false) { create(:topic, name: 'rails') }
+    let_it_be(:topic_gitlab, freeze: false) { create(:topic, name: 'gitlab') }
+
+    before_all do
+      create(:project_topic, project: project_a, topic: topic_ruby)
+      create(:project_topic, project: project_a, topic: topic_rails)
+      create(:project_topic, project: project_b, topic: topic_gitlab)
+    end
+
+    it 'returns resources with projects matching any of the given topic names' do
+      expect(described_class.with_topics(%w[ruby gitlab]))
+        .to contain_exactly(resource_a, resource_b)
+    end
+
+    it 'returns a resource only once even if it matches multiple topics' do
+      expect(described_class.with_topics(%w[ruby rails]))
+        .to contain_exactly(resource_a)
+    end
+
+    it 'returns no resources when searching for non-existent topics' do
+      expect(described_class.with_topics(%w[nonexistent]))
+        .to be_empty
+    end
+  end
+
+  describe '.in_namespaces' do
+    let_it_be(:group_a, freeze: false) { create(:group) }
+    let_it_be(:group_b, freeze: false) { create(:group) }
+    let_it_be(:group_c, freeze: false) { create(:group) }
+
+    let_it_be(:project_in_a, freeze: false) { create(:project, namespace: group_a) }
+    let_it_be(:project_in_b, freeze: false) { create(:project, namespace: group_b) }
+    let_it_be(:project_in_c, freeze: false) { create(:project, namespace: group_c) }
+
+    let_it_be(:resource_in_a, freeze: false) { create(:ci_catalog_resource, project: project_in_a) }
+    let_it_be(:resource_in_b, freeze: false) { create(:ci_catalog_resource, project: project_in_b) }
+    let_it_be(:resource_in_c, freeze: false) { create(:ci_catalog_resource, project: project_in_c) }
+
+    it 'returns only catalog resources whose project namespace matches one of the given ids' do
+      expect(described_class.in_namespaces([group_a.id]))
+        .to contain_exactly(resource_in_a)
+    end
+
+    it 'returns the union of catalog resources for multiple namespaces' do
+      expect(described_class.in_namespaces([group_a.id, group_c.id]))
+        .to contain_exactly(resource_in_a, resource_in_c)
+    end
+
+    it 'returns no resources for a namespace with no catalog resources' do
+      empty_group = create(:group)
+
+      expect(described_class.in_namespaces([empty_group.id])).to be_empty
+    end
+
+    it 'does not include catalog resources whose project belongs to a descendant of the given namespace' do
+      child_group = create(:group, parent: group_a)
+      child_project = create(:project, namespace: child_group)
+      create(:ci_catalog_resource, project: child_project)
+
+      expect(described_class.in_namespaces([group_a.id]))
+        .to contain_exactly(resource_in_a)
+    end
+  end
+
+  describe 'authorized catalog resources' do
+    let_it_be(:namespace, freeze: false) { create(:group) }
+    let_it_be(:other_namespace, freeze: false) { create(:group) }
+    let_it_be(:other_user, freeze: false) { create(:user) }
+
+    let_it_be(:public_project, freeze: false) { create(:project, :public) }
+    let_it_be(:internal_project, freeze: false) { create(:project, :internal) }
+    let_it_be(:internal_namespace_project, freeze: false) { create(:project, :internal, namespace: namespace) }
+    let_it_be(:private_namespace_project, freeze: false) { create(:project, namespace: namespace) }
+    let_it_be(:other_private_namespace_project, freeze: false) { create(:project, namespace: other_namespace) }
+
+    let_it_be(:public_resource, freeze: false) { create(:ci_catalog_resource, project: public_project) }
+    let_it_be(:internal_resource, freeze: false) { create(:ci_catalog_resource, project: internal_project) }
+    let_it_be(:internal_namespace_resource, freeze: false) do
+      create(:ci_catalog_resource, project: internal_namespace_project)
+    end
+
+    let_it_be(:private_namespace_resource, freeze: false) do
+      create(:ci_catalog_resource, project: private_namespace_project)
+    end
+
+    let_it_be(:other_private_namespace_resource, freeze: false) do
+      create(:ci_catalog_resource, project: other_private_namespace_project)
+    end
+
+    before_all do
+      namespace.add_reporter(current_user)
+      other_namespace.add_guest(other_user)
+    end
+
+    describe '.public_or_visible_to_user' do
+      subject(:resources) { described_class.public_or_visible_to_user(current_user) }
+
+      it 'returns all resources visible to the user' do
+        expect(resources).to contain_exactly(
+          public_resource, internal_resource, internal_namespace_resource, private_namespace_resource)
+      end
+
+      context 'with a different user' do
+        let(:current_user) { other_user }
+
+        it 'returns all resources visible to the user' do
+          expect(resources).to contain_exactly(
+            public_resource, internal_resource, internal_namespace_resource, other_private_namespace_resource)
+        end
+      end
+
+      context 'when the user is nil' do
+        let(:current_user) { nil }
+
+        it 'returns only public resources' do
+          expect(resources).to contain_exactly(public_resource)
+        end
+      end
+    end
+
+    describe '.visible_to_user' do
+      subject(:resources) { described_class.visible_to_user(current_user) }
+
+      it "returns resources belonging to the user's authorized namespaces" do
+        expect(resources).to contain_exactly(internal_namespace_resource, private_namespace_resource)
+      end
+
+      context 'with a different user' do
+        let(:current_user) { other_user }
+
+        it "returns resources belonging to the user's authorized namespaces" do
+          expect(resources).to contain_exactly(other_private_namespace_resource)
+        end
+      end
+
+      context 'when the user is nil' do
+        let(:current_user) { nil }
+
+        it 'does not return any resources' do
+          expect(resources).to be_empty
+        end
+      end
+    end
+
+    # rubocop:disable RSpec/MultipleMemoizedHelpers -- Inherits helpers from parent context
+    describe '.visible_to_user_with_access_level' do
+      let_it_be(:access_level_user, freeze: false) { create(:user) }
+      let_it_be(:maintainer_project, freeze: false) { create(:project, :private) }
+      let_it_be(:developer_project, freeze: false) { create(:project, :private) }
+      let_it_be(:reporter_project, freeze: false) { create(:project, :private) }
+      let_it_be(:guest_project, freeze: false) { create(:project, :private) }
+      let_it_be(:owner_project, freeze: false) { create(:project, :private) }
+      let_it_be(:maintainer_resource, freeze: false) { create(:ci_catalog_resource, project: maintainer_project) }
+      let_it_be(:developer_resource, freeze: false) { create(:ci_catalog_resource, project: developer_project) }
+      let_it_be(:reporter_resource, freeze: false) { create(:ci_catalog_resource, project: reporter_project) }
+      let_it_be(:guest_resource, freeze: false) { create(:ci_catalog_resource, project: guest_project) }
+      let_it_be(:owner_resource, freeze: false) { create(:ci_catalog_resource, project: owner_project) }
+
+      subject(:resources) { described_class.visible_to_user_with_access_level(access_level_user, min_access_level) }
+
+      before_all do
+        maintainer_project.add_maintainer(access_level_user)
+        developer_project.add_developer(access_level_user)
+        reporter_project.add_reporter(access_level_user)
+        guest_project.add_guest(access_level_user)
+        owner_project.add_owner(access_level_user)
+      end
+
+      context 'when min_access_level is MAINTAINER' do
+        let(:min_access_level) { Gitlab::Access::MAINTAINER }
+
+        it 'returns only resources where user has maintainer or higher access' do
+          expect(resources).to contain_exactly(maintainer_resource, owner_resource)
+        end
+      end
+
+      context 'when min_access_level is DEVELOPER' do
+        let(:min_access_level) { Gitlab::Access::DEVELOPER }
+
+        it 'returns resources where user has developer or higher access' do
+          expect(resources).to contain_exactly(developer_resource, maintainer_resource, owner_resource)
+        end
+      end
+
+      context 'when min_access_level is REPORTER' do
+        let(:min_access_level) { Gitlab::Access::REPORTER }
+
+        it 'returns resources where user has reporter or higher access' do
+          expect(resources).to contain_exactly(reporter_resource, developer_resource, maintainer_resource,
+            owner_resource)
+        end
+      end
+
+      context 'when min_access_level is GUEST' do
+        let(:min_access_level) { Gitlab::Access::GUEST }
+
+        it 'returns resources where user has guest or higher access' do
+          expect(resources).to contain_exactly(guest_resource, reporter_resource, developer_resource,
+            maintainer_resource, owner_resource)
+        end
+      end
+
+      context 'when min_access_level is OWNER' do
+        let(:min_access_level) { Gitlab::Access::OWNER }
+
+        it 'returns only resources where user has owner access' do
+          expect(resources).to contain_exactly(owner_resource)
+        end
+      end
+
+      context 'when min_access_level is nil' do
+        let(:min_access_level) { nil }
+
+        it 'falls back to visible_to_user behavior' do
+          expect(resources).to contain_exactly(guest_resource, reporter_resource, developer_resource,
+            maintainer_resource, owner_resource)
+        end
+      end
+
+      context 'when user is nil' do
+        subject(:resources) { described_class.visible_to_user_with_access_level(nil, Gitlab::Access::MAINTAINER) }
+
+        it 'returns none' do
+          expect(resources).to be_empty
+        end
+      end
+
+      context 'with a different user' do
+        let_it_be(:different_user, freeze: false) { create(:user) }
+        let_it_be(:different_user_project, freeze: false) { create(:project, :private) }
+        let_it_be(:different_user_resource, freeze: false) do
+          create(:ci_catalog_resource, project: different_user_project)
+        end
+
+        subject(:resources) { described_class.visible_to_user_with_access_level(different_user, Gitlab::Access::GUEST) }
+
+        before_all do
+          different_user_project.add_guest(different_user)
+        end
+
+        it "returns resources where the different user has guest or higher access" do
+          expect(resources).to contain_exactly(different_user_resource)
+        end
+      end
+    end
+    # rubocop:enable RSpec/MultipleMemoizedHelpers
+  end
+
+  describe '#archived' do
+    using RSpec::Parameterized::TableSyntax
+
+    let_it_be_with_reload(:root_group) { create(:group) }
+    let_it_be_with_reload(:subgroup) { create(:group, parent: root_group) }
+    let_it_be_with_reload(:project) { create(:project, namespace: subgroup) }
+    let_it_be_with_reload(:resource) { create(:ci_catalog_resource, project: project) }
+
+    where(:project_archived, :subgroup_archived, :root_group_archived, :expected_result) do
+      false | false | false | false
+      true  | false | false | true
+      false | true  | false | true
+      false | false | true  | true
+    end
+
+    with_them do
+      before do
+        project.update!(archived: project_archived)
+        subgroup.update!(archived: subgroup_archived)
+        root_group.update!(archived: root_group_archived)
+      end
+
+      it 'returns the expected archived status' do
+        expect(resource.archived).to eq(expected_result)
+      end
+    end
+  end
+
+  describe '#state' do
+    it 'defaults to unpublished' do
+      expect(resource_a.state).to eq('unpublished')
+    end
+  end
+
+  describe '#publish!' do
+    context 'when the catalog resource is in an unpublished state' do
+      it 'updates the state of the catalog resource to published' do
+        expect(resource_a.state).to eq('unpublished')
+
+        resource_a.publish!
+
+        expect(resource_a.reload.state).to eq('published')
+      end
+    end
+
+    context 'when the catalog resource already has a published state' do
+      it 'leaves the state as published' do
+        resource_a.update!(state: :published)
+        expect(resource_a.state).to eq('published')
+
+        resource_a.publish!
+
+        expect(resource_a.state).to eq('published')
+      end
+    end
+  end
+
+  describe 'synchronizing denormalized columns with `projects` table using SyncEvents processing', :sidekiq_inline do
+    let_it_be_with_reload(:project) { create(:project, name: 'Test project', description: 'Test description') }
+
+    context 'when the catalog resource is created' do
+      let(:resource) { build(:ci_catalog_resource, project: project) }
+
+      it 'updates the catalog resource columns to match the project' do
+        resource.save!
+        resource.reload
+
+        expect(resource.name).to eq(project.name)
+        expect(resource.description).to eq(project.description)
+        expect(resource.visibility_level).to eq(project.visibility_level)
+      end
+    end
+
+    context 'when the project is updated' do
+      let_it_be(:resource, freeze: false) { create(:ci_catalog_resource, project: project) }
+
+      context 'when project name is updated' do
+        it 'updates the catalog resource name to match' do
+          project.update!(name: 'New name')
+
+          expect(resource.reload.name).to eq(project.name)
+        end
+      end
+
+      context 'when project description is updated' do
+        it 'updates the catalog resource description to match' do
+          project.update!(description: 'New description')
+
+          expect(resource.reload.description).to eq(project.description)
+        end
+      end
+
+      context 'when project visibility_level is updated' do
+        it 'updates the catalog resource visibility_level to match' do
+          project.update!(visibility_level: Gitlab::VisibilityLevel::INTERNAL)
+
+          expect(resource.reload.visibility_level).to eq(project.visibility_level)
+        end
+      end
+    end
+  end
+
+  describe 'updating latest_released_at using model callbacks' do
+    let_it_be(:project, freeze: false) { create(:project) }
+    let_it_be(:resource, freeze: false) { create(:ci_catalog_resource, project: project) }
+
+    let_it_be_with_refind(:january_release) do
+      create(:release, :with_catalog_resource_version, project: project, tag: '1.0.0',
+        released_at: '2023-01-01T00:00:00Z')
+    end
+
+    let_it_be_with_refind(:february_release) do
+      create(:release, :with_catalog_resource_version, project: project, tag: '2.0.0',
+        released_at: '2023-02-01T00:00:00Z')
+    end
+
+    it 'has the expected latest_released_at value' do
+      expect(resource.reload.latest_released_at).to eq(february_release.released_at)
+    end
+
+    context 'when a new catalog resource version is created' do
+      it 'updates the latest_released_at value' do
+        march_release = create(:release, :with_catalog_resource_version, project: project, tag: '3.0.0',
+          released_at: '2023-03-01T00:00:00Z')
+
+        expect(resource.reload.latest_released_at).to eq(march_release.released_at)
+      end
+    end
+
+    context 'when a catalog resource version is destroyed' do
+      it 'updates the latest_released_at value' do
+        february_release.catalog_resource_version.destroy!
+
+        expect(resource.reload.latest_released_at).to eq(january_release.released_at)
+      end
+    end
+
+    context 'when the released_at value of a release is updated' do
+      it 'updates the latest_released_at value' do
+        january_release.update!(released_at: '2024-03-01T00:00:00Z')
+
+        january_release.catalog_resource_version.update!(semver: '4.0.0')
+
+        expect(resource.reload.latest_released_at).to eq(january_release.released_at)
+      end
+    end
+
+    context 'when a release is destroyed' do
+      it 'updates the latest_released_at value' do
+        february_release.destroy!
+        expect(resource.reload.latest_released_at).to eq(january_release.released_at)
+      end
+    end
+
+    context 'when all releases associated with the catalog resource are destroyed' do
+      it 'updates the latest_released_at value to nil' do
+        january_release.destroy!
+        february_release.destroy!
+
+        expect(resource.reload.latest_released_at).to be_nil
+      end
+    end
+  end
+end

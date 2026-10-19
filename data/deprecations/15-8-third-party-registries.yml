@@ -1,0 +1,24 @@
+- title: "Use of third party container registries is deprecated"  # (required) Actionable title. e.g., The `confidential` field for a `Note` is deprecated. Use `internal` instead.
+  announcement_milestone: "15.8"  # (required) The milestone when this feature was first announced as deprecated.
+  removal_milestone: "16.0"  # (required) The milestone when this feature is planned to be removed
+  breaking_change: true  # (required) If this deprecation is a breaking change, set this value to true
+  reporter: trizzi  # (required) GitLab username of the person reporting the deprecation
+  stage: Package  # (required) String value of the stage that the feature was created in. e.g., Growth
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/376216  # (required) Link to the deprecation issue in GitLab
+  body: |  # (required) Do not modify this line, instead modify the lines below.
+    Using third-party container registries with GitLab as an auth endpoint is deprecated in GitLab 15.8 and the [end of support](https://docs.gitlab.com/development/deprecation_guidelines/#terminology) is scheduled for GitLab 16.0. This impacts users on GitLab Self-Managed that have connected their external registry to the GitLab user interface to find, view, and delete container images.
+
+    Supporting both the GitLab container registry as well as third-party container registries is challenging for maintenance, code quality, and backward compatibility, and hinders our ability to stay efficient. As a result we will not support this functionality moving forward.
+
+    This change will not impact your ability to pull and push container images to external registries using pipelines.
+
+    Since we released the new [GitLab container registry](https://gitlab.com/groups/gitlab-org/-/epics/5523) version for GitLab.com, we've started to implement additional features that are not available in third-party container registries. These new features have allowed us to achieve significant performance improvements, such as [cleanup policies](https://gitlab.com/groups/gitlab-org/-/epics/8379). We are focusing on delivering [new features](https://gitlab.com/groups/gitlab-org/-/epics/5136), most of which will require functionalities only available on the GitLab container registry. This deprecation allows us to reduce fragmentation and user frustration in the long term by focusing on delivering a more robust integrated registry experience and feature set.
+
+    Moving forward, we'll continue to invest in developing and releasing new features that will only be available in the GitLab container registry.
+#
+# OPTIONAL END OF SUPPORT FIELDS
+#
+# If an End of Support period applies, the announcement should be shared with GitLab Support
+# in the `#spt_managers` channel in Slack, and mention `@gitlab-com/support` in this MR.
+#
+  end_of_support_milestone:  # (optional) Use "XX.YY" format. The milestone when support for this feature will end.

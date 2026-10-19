@@ -1,0 +1,21 @@
+- membership_source = local_assigns.fetch(:membership_source)
+- requesters = local_assigns.fetch(:requesters)
+- group = local_assigns.fetch(:group)
+- current_user_is_group_owner = group && group.has_owner?(current_user)
+
+- return if requesters.empty?
+
+= render Pajamas::CardComponent.new(card_options: { class: 'gl-mb-5', data: { testid: 'access-requests' } }, body_options: { class: 'gl-p-0' }) do |c|
+  - c.with_header do
+    = _('Users requesting access to')
+    %strong= membership_source.name
+    = gl_badge_tag requesters.size
+    - if current_user.can?(:admin_member_access_request, membership_source)
+      = render 'shared/members/manage_access_button', path: membership_source.is_a?(Project) ? project_project_members_path(@project, tab: 'access_requests') : group_group_members_path(@group, tab: 'access_requests')
+  - c.with_body do
+    %ul.content-list.members-list
+      = render partial: 'shared/members/member',
+              collection: requesters, as: :member,
+              locals: { membership_source: membership_source,
+                       group: group,
+                       current_user_is_group_owner: current_user_is_group_owner }

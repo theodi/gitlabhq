@@ -1,23 +1,56 @@
-- page_title "Applications"
-%h3.page-title
-  System OAuth applications
-%p.light
-  System OAuth application does not belong to certain user and can be managed only by admins
-%hr
-%p= link_to 'New Application', new_admin_application_path, class: 'btn btn-success'
-%table.table.table-striped
-  %thead
-    %tr
-      %th Name
-      %th Callback URL
-      %th Clients
-      %th
-      %th
-  %tbody.oauth-applications
-    - @applications.each do |application|
-      %tr{:id => "application_#{application.id}"}
-        %td= link_to application.name, admin_application_path(application)
-        %td= application.redirect_uri
-        %td= application.access_tokens.map(&:resource_owner_id).uniq.count
-        %td= link_to 'Edit', edit_admin_application_path(application), class: 'btn btn-link'
-        %td= render 'delete_form', application: application
+- page_title s_('AdminArea|Instance OAuth applications')
+- button_text = _('Add new application')
+- button_link = new_admin_application_path
+- button_options = { data: { testid: 'new-application-button' } }
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_applications_pageload' } }
+
+- if @applications.empty?
+  = render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-admin-apps-md.svg',
+    title: s_('AdminArea|No applications found'),
+    primary_button_text: button_text,
+    primary_button_link: button_link,
+    primary_button_options: button_options)  do |c|
+
+    - c.with_description do
+      = s_('AdminArea|Manage applications for your instance that can use GitLab as an OAuth provider.')
+
+- else
+  = render ::Layouts::CrudComponent.new(s_('AdminArea|Instance OAuth applications'),
+    icon: 'applications',
+    count: @applications_total_count,
+    options: { class: 'gl-mt-5', data: { testid: 'oauth-applications' } }) do |c|
+    - c.with_description do
+      - docs_link_path = help_page_path('integration/oauth_provider.md')
+      - docs_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer nofollow">'.html_safe % { url: docs_link_path }
+      = s_('AdminArea|Manage applications for your instance that can use GitLab as an %{docs_link_start}OAuth provider%{docs_link_end}.').html_safe % { docs_link_start: docs_link_start, docs_link_end: '</a>'.html_safe }
+    - c.with_actions do
+      = render Pajamas::ButtonComponent.new(size: :small, href: button_link, button_options: button_options) do
+        = button_text
+    - c.with_body do
+      .table-holder
+        %table.table.b-table.gl-table.b-table-stacked-md{ role: 'table' }
+          %thead
+            %tr
+              %th= _('Name')
+              %th= _('Callback URL')
+              %th= _('Trusted')
+              %th= _('Confidential')
+              %th= _('Device authorization grant')
+              %th.gl-text-right= _('Actions')
+          %tbody
+            - @applications.each do |application|
+              %tr{ id: "application_#{application.id}" }
+                %td{ data: { label: _('Name') } }= link_to application.name, admin_application_path(application)
+                %td{ data: { label: _('Callback URL') } }= application.redirect_uri
+                %td{ data: { label: _('Trusted') } }= application.trusted? ? _('Yes'): _('No')
+                %td{ data: { label: _('Confidential') } }= application.confidential? ? _('Yes'): _('No')
+                %td{ data: { label: _('Device authorization grant') } }= application.device_code_enabled? ? _('Yes'): _('No')
+                %td{ data: { label: _('Actions') } }
+                  .gl-flex.gl-justify-end.gl-gap-2{ class: '!-gl-my-3' }
+                    = render Pajamas::ButtonComponent.new(href: edit_admin_application_path(application), category: :tertiary, icon: 'pencil', button_options: { title: _('Edit'), class: 'has-tooltip' })
+                    = render Pajamas::ButtonComponent.new(category: :tertiary, icon: 'remove', button_options: { data: { path: admin_application_path(application), name: application.name }, title: _('Destroy'), class: 'has-tooltip js-application-delete-button' })
+    - c.with_pagination do
+      = keyset_paginate @applications, without_first_and_last_pages: true
+
+.js-application-delete-modal

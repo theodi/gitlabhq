@@ -1,0 +1,301 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::SourceUsersController, feature_category: :importers do
+  shared_examples 'it requires the user to be signed in' do
+    context 'when the user is not signed in' do
+      it 'redirects to the login screen' do
+        subject
+
+        expect(response).to redirect_to(new_user_session_path)
+      end
+    end
+  end
+
+  shared_examples 'it notifies about unavailable reassignments' do
+    it 'shows error message' do
+      source_user.accept!
+
+      expect { subject }.not_to change { source_user.reload.status }
+
+      expect(response).to redirect_to(root_path)
+      expect(flash[:raw]).to match(/Reassignment not available/)
+    end
+  end
+
+  shared_examples 'it requires the user is the reassign to user' do
+    it 'shows error message' do
+      source_user.update!(reassign_to_user: create(:user))
+
+      expect { subject }.not_to change { source_user.reload.status }
+
+      expect(response).to redirect_to(root_path)
+      expect(flash[:raw]).to match(/Reassignment not available/)
+    end
+  end
+
+  let(:current_organization) { source_user.reassign_to_user.organization }
+
+  let_it_be_with_reload(:source_user) do
+    create(:import_source_user, :with_reassigned_by_user, :awaiting_approval)
+  end
+
+  let!(:reassignment_token) { source_user.reassignment_token }
+
+  describe 'POST /accept' do
+    let(:path) { accept_import_source_user_path(reassignment_token: reassignment_token) }
+
+    subject(:accept_invite) { post path }
+
+    context 'when signed in' do
+      before do
+        sign_in(source_user.reassign_to_user)
+      end
+
+      it { expect { accept_invite }.to change { source_user.reload.reassignment_in_progress? }.from(false).to(true) }
+
+      it 'enqueues the job to reassign contributions' do
+        expect(Import::ReassignPlaceholderUserRecordsWorker).to receive(:perform_async).with(source_user.id)
+
+        accept_invite
+      end
+
+      it 'redirects with a notice when accepted' do
+        accept_invite
+
+        expect(response).to redirect_to(root_path)
+        expect(flash[:raw]).to match(/Reassignment approved/)
+      end
+
+      it 'cannot be accepted twice' do
+        allow(Import::SourceUser).to receive(:find_by_reassignment_token).and_return(source_user)
+        allow(source_user).to receive(:accept).and_return(false)
+
+        accept_invite
+
+        expect(response).to redirect_to(root_path)
+        expect(flash[:alert]).to match(/The invitation could not be accepted/)
+      end
+
+      it_behaves_like 'it notifies about unavailable reassignments'
+      it_behaves_like 'it requires the user is the reassign to user'
+    end
+
+    it_behaves_like 'it requires the user to be signed in'
+  end
+
+  describe 'POST /decline' do
+    let(:path) { decline_import_source_user_path(reassignment_token: reassignment_token) }
+
+    let(:message_delivery) { instance_double(ActionMailer::MessageDelivery) }
+
+    subject(:reject_invite) { post path }
+
+    context 'when signed in' do
+      before do
+        sign_in(source_user.reassign_to_user)
+        allow(message_delivery).to receive(:deliver_now)
+        allow(Notify).to receive(:import_source_user_rejected).and_return(message_delivery)
+      end
+
+      it { expect { reject_invite }.to change { source_user.reload.rejected? }.from(false).to(true) }
+
+      it 'redirects with a notice' do
+        reject_invite
+
+        expect(response).to redirect_to(root_path)
+        expect(flash[:raw]).to match(/Reassignment rejected/)
+      end
+
+      it 'cannot be declined twice' do
+        allow(Import::SourceUser).to receive(:find_by_reassignment_token).and_return(source_user)
+        allow(source_user).to receive(:reject).and_return(false)
+
+        reject_invite
+
+        expect(response).to redirect_to(root_path)
+        expect(flash[:alert]).to match(/The invitation could not be declined/)
+      end
+
+      it_behaves_like 'it notifies about unavailable reassignments'
+      it_behaves_like 'it requires the user is the reassign to user'
+    end
+
+    it_behaves_like 'it requires the user to be signed in'
+  end
+
+  describe 'GET /show' do
+    let(:path) { import_source_user_path(reassignment_token: reassignment_token) }
+    let(:reassignment_token) { source_user.reassignment_token }
+
+    subject(:show_invite) { get path }
+
+    context 'when signed in' do
+      before do
+        sign_in(source_user.reassign_to_user)
+      end
+
+      it 'returns a 200 response' do
+        show_invite
+
+        expect(response).to have_gitlab_http_status(:success)
+      end
+
+      it 'states that the reassignment can be revoked later' do
+        show_invite
+
+        expect(response.body).to include(
+          s_('UserMapping|Approve reassignments only from users you trust. After you approve, contributions ' \
+            'are assigned to you. You can revoke the reassignment later in your account settings, but ' \
+            'contributions that were already reassigned to you are not removed.')
+        )
+      end
+
+      context 'when revoke_import_source_user_reassignment feature flag is disabled' do
+        before do
+          stub_feature_flags(revoke_import_source_user_reassignment: false)
+        end
+
+        it 'states that contributions are assigned permanently' do
+          show_invite
+
+          expect(response.body).to include(
+            s_('UserMapping|Approve reassignments only from users you trust. After you approve, contributions ' \
+              'are assigned to you permanently.')
+          )
+        end
+      end
+
+      it_behaves_like 'it notifies about unavailable reassignments'
+      it_behaves_like 'it requires the user is the reassign to user'
+    end
+
+    it_behaves_like 'it requires the user to be signed in'
+  end
+
+  describe 'POST /accept with namespace_id' do
+    let(:namespace_id) { source_user.namespace_id }
+    let(:path) do
+      namespaced_accept_import_source_users_path(
+        namespace_id: namespace_id,
+        reassignment_token: reassignment_token
+      )
+    end
+
+    subject(:accept_invite) { post path }
+
+    context 'when signed in' do
+      before do
+        sign_in(source_user.reassign_to_user)
+      end
+
+      it { expect { accept_invite }.to change { source_user.reload.reassignment_in_progress? }.from(false).to(true) }
+
+      it 'enqueues the job to reassign contributions' do
+        expect(Import::ReassignPlaceholderUserRecordsWorker).to receive(:perform_async).with(source_user.id)
+
+        accept_invite
+      end
+
+      it 'redirects with a notice when accepted' do
+        accept_invite
+
+        expect(response).to redirect_to(root_path)
+        expect(flash[:raw]).to match(/Reassignment approved/)
+      end
+
+      it_behaves_like 'it notifies about unavailable reassignments'
+      it_behaves_like 'it requires the user is the reassign to user'
+    end
+
+    it_behaves_like 'it requires the user to be signed in'
+  end
+
+  describe 'POST /decline with namespace_id' do
+    let(:message_delivery) { instance_double(ActionMailer::MessageDelivery) }
+    let(:namespace_id) { source_user.namespace_id }
+    let(:path) do
+      namespaced_decline_import_source_users_path(
+        namespace_id: namespace_id,
+        reassignment_token: reassignment_token
+      )
+    end
+
+    subject(:reject_invite) { post path }
+
+    context 'when signed in' do
+      before do
+        sign_in(source_user.reassign_to_user)
+        allow(message_delivery).to receive(:deliver_now)
+        allow(Notify).to receive(:import_source_user_rejected).and_return(message_delivery)
+      end
+
+      it { expect { reject_invite }.to change { source_user.reload.rejected? }.from(false).to(true) }
+
+      it 'redirects with a notice' do
+        reject_invite
+
+        expect(response).to redirect_to(root_path)
+        expect(flash[:raw]).to match(/Reassignment rejected/)
+      end
+
+      it_behaves_like 'it notifies about unavailable reassignments'
+      it_behaves_like 'it requires the user is the reassign to user'
+    end
+
+    it_behaves_like 'it requires the user to be signed in'
+  end
+
+  describe 'GET /show with namespace_id' do
+    let(:namespace_id) { source_user.namespace_id }
+    let(:offline_warning) do
+      s_('UserMapping|This import was created from a file. ' \
+        'The source hostname was supplied by the importing user and GitLab cannot verify it.')
+    end
+
+    let(:path) do
+      namespaced_show_import_source_users_path(
+        namespace_id: namespace_id,
+        reassignment_token: reassignment_token
+      )
+    end
+
+    subject(:show_invite) { get path }
+
+    context 'when signed in' do
+      before do
+        sign_in(source_user.reassign_to_user)
+      end
+
+      it 'returns a 200 response' do
+        show_invite
+
+        expect(response).to have_gitlab_http_status(:success)
+      end
+
+      it 'does not show the offline transfer warning for other imports' do
+        show_invite
+
+        expect(response.body).not_to include(offline_warning)
+      end
+
+      context 'when the source user was imported through offline transfer' do
+        before do
+          source_user.update!(import_type: Import::SOURCE_OFFLINE_TRANSFER.to_s)
+        end
+
+        it 'shows the unverified source hostname warning' do
+          show_invite
+
+          expect(response.body).to include(offline_warning)
+        end
+      end
+
+      it_behaves_like 'it notifies about unavailable reassignments'
+      it_behaves_like 'it requires the user is the reassign to user'
+    end
+
+    it_behaves_like 'it requires the user to be signed in'
+  end
+end

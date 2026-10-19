@@ -1,0 +1,398 @@
+post-commit:
+  scripts:
+    'lint_commit_message':
+      runner: bash
+      skip: rebase
+
+pre-push:
+  parallel: true
+  skip:
+    - ref: master
+  commands:
+    danger:
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      # We need to specify {files} as part of the command, otherwise it won't execute the hook
+      run: echo {files} >/dev/null && FROM_LEFTHOOK=1 bundle exec rake danger_local
+    eslint:
+      tags: frontend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.{js,vue}'
+      run: REVEAL_ESLINT_TODO=0 yarn run lint:eslint --no-warn-ignored {files}
+    dependency-rules:
+      tags: frontend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.{js,mjs,cjs,vue}'
+      run: yarn run deps:check {files}
+    jsonlint:
+      tags: style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.{json}'
+      run: scripts/lint-json -v {files}
+    haml-lint:
+      tags: view haml style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.html.haml'
+      run: REVEAL_RUBOCOP_TODO=0 bundle exec haml-lint --parallel --config .haml-lint.yml {files}
+    markdownlint:
+      tags: documentation style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      exclude: 'doc/api/graphql/reference/_index.md'
+      glob: 'doc/*.md'
+      run: markdownlint-cli2 {files}
+    yamllint:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.{yml,yaml}{,.*}'
+      run: scripts/lint-yaml.sh {files}
+    mermaidlint:
+      tags: documentation style,backend style,frontend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{app,lib,ee,spec,doc,scripts}/*.md'
+      run: scripts/lint/check_mermaid.mjs {files}
+    stylelint:
+      tags: stylesheet css style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.scss{,.css}'
+      run: yarn stylelint {files}
+    prettier:
+      tags: frontend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.{js,vue,graphql}'
+      run: yarn run prettier --check {files}
+    sidekiq-queues:
+      tags: backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{,ee/}app/workers/*.rb'
+      run: bundle exec rake gitlab:sidekiq:queues:check
+    graphql_docs:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{,ee/}app/graphql/*.rb'
+      run: bundle exec rake gitlab:graphql:check_docs
+    graphql_introspection_check:
+      tags: graphql schema backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{,ee/}app/graphql/**/*.rb'
+      run: bundle exec rake gitlab:graphql:check_introspection_sync
+    openapi_docs:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{doc/api/openapi/openapi_v3.yaml,tooling/docs/api/tags/*.md,*.rb}'
+      run: GITLAB_SIMULATE_SAAS=false bundle exec rake gitlab:openapi:v3:check_docs
+    openapi_tag_docs:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: 'tooling/docs/api/tags/*'
+      run: bundle exec rake gitlab:openapi:v3:validate_tag_docs
+    vale: # Requires Vale: https://docs.gitlab.com/development/documentation/testing/vale/
+      tags: documentation style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      exclude: 'doc/api/graphql/reference/_index.md'
+      glob: '{doc/*.md,.ai/*.md,*AGENTS.md}'
+      run: 'if [ $VALE_WARNINGS ]; then minWarnings=warning; else minWarnings=error; fi; if command -v vale > /dev/null 2>&1; then if ! vale --config .vale.ini --minAlertLevel $minWarnings {files}; then echo "ERROR: Fix any linting errors and make sure you are using the latest version of Vale."; exit 1; fi; else echo "ERROR: Vale not found. For more information, see https://vale.sh/docs/vale-cli/installation/."; exit 1; fi'
+    gettext:
+      tags: backend frontend view haml
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD | while read file;do git diff --unified=1 $(git merge-base origin/master HEAD)..HEAD $file | grep -Fqe '_(' && echo $file;done; true
+      glob: '*.{haml,rb,js,vue}'
+      run: tooling/bin/gettext_extractor /dev/stdout --silent | diff - locale/gitlab.pot
+      fail_text: PO files need to be updated. Try running tooling/bin/gettext_extractor locale/gitlab.pot
+    js-routes:
+      tags: frontend backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{config/routes.rb,ee/config/routes.rb,config/routes/**,ee/config/routes/**,lib/gitlab/js_routes.rb}'
+      run: echo {files} >/dev/null && RAILS_ENV=test GITLAB_CONFIG=config/gitlab.yml.example bundle exec rake gitlab:js:routes:updated_check
+      fail_text: JavaScript path helpers are out of sync. Run `bin/rake gitlab:js:routes` and commit the changes.
+    cells-routes:
+      tags: backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{config/routes.rb,ee/config/routes.rb,config/routes/**,ee/config/routes/**,lib/api/**,ee/lib/api/**,gems/gitlab-cells-http_router/**}'
+      run: echo {files} >/dev/null && RAILS_ENV=test CI=true GITLAB_CONFIG=config/gitlab.yml.example bundle exec rake gitlab:cells:routes:updated_check
+      fail_text: HTTP Router routing snapshot is out of sync. Run `bin/rake gitlab:cells:routes:generate` and commit the changes.
+    docs-deprecations:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: 'data/deprecations/*.yml'
+      run: echo "Changes to deprecation files detected. Checking deprecations..\n"; bundle exec rake gitlab:docs:check_deprecations
+    docs-link-check:
+      tags: documentation
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      glob: 'doc/*.md'
+      run: scripts/lint-docs-link-check.sh
+    db-schema-changes:
+      tags: database
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: 'db/structure.sql'
+      run: scripts/validate_schema_changes
+    db-migration-name-collisions:
+      tags: database
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{db/migrate/*.rb,db/post_migrate/*.rb,ee/elastic/migrate/*.rb}'
+      run: scripts/validate_name_collisions_between_migrations
+    db-migration-timestamp:
+      tags: database
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{db/migrate/*.rb,db/post_migrate/*.rb}'
+      run: scripts/validate_migration_timestamps
+    db-migration-checksum:
+      tags: database
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{db/migrate/*.rb,db/post_migrate/*.rb}'
+      run: scripts/validate_migration_checksum
+    static-verification:
+      skip: true # This is disabled by default. You can enable this check by adding skip: false in lefthook-local.yml https://github.com/evilmartians/lefthook/blob/master/docs/configuration.md#skip
+      tags: backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.{rb}'
+      run: bundle exec rake lint:static_verification
+    bundler-lint:
+      tags: backend bundler
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: 'Gemfile*'
+      run: FROM_LEFTHOOK=1 bundle exec rake bundler:gemfile:check
+      fail_text: Gemfiles not in sync, please run 'bundle exec rake bundler:gemfile:sync'
+    audit_event_types_docs:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{config/audit_events/types/*.yml,ee/config/audit_events/types/*yml,doc/user/compliance/audit_event_types.md,tooling/audit_events/docs/templates/audit_event_types.md.erb}'
+      run: bundle exec rake gitlab:audit_event_types:check_docs
+    custom_roles_docs:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{ee/config/feature_flags/**/custom_ability_*.yml,ee/config/custom_abilities/*.yml,doc/user/custom_roles/abilities.md,tooling/custom_roles/docs/templates/custom_abilities.md.erb,ee/{lib/,spec/}tasks/gitlab/custom_roles/*}'
+      run: bundle exec rake gitlab:custom_roles:check_docs
+    verify_job_token_policies:
+      tags: backend
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      glob: '{{,ee/}lib/api/*.rb,app/validators/json_schemas/ci_job_token_policies.json,doc/ci/jobs/granular_permissions.md,tooling/ci/job_tokens/docs/templates/granular_permissions.md.erb}'
+      run: bundle exec rake ci:job_tokens:check_policies
+    rubocop:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      # foo.rb, foo.rake or Foofile
+      glob: '{*.{rb,rake},[A-Z]*file}'
+      run: REVEAL_RUBOCOP_TODO=0 bundle exec rubocop --parallel --force-exclusion --no-server {files}
+    verify-tff-mapping:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '{tests.yml,*.rb,scripts/verify-tff-mapping}'
+      run: scripts/verify-tff-mapping
+    commit-message-linting:
+      tags: style
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      run: echo {files} >/dev/null && bundle exec ruby scripts/lint/commit_linter.rb
+    skills-version-bump:
+      tags: claude tooling
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD)..HEAD
+      glob: '.claude/skills/**'
+      run: echo {files} >/dev/null && scripts/lint/check-skills-version-bump.sh
+    secrets-detection:
+      tags: secrets
+      run: .lefthook/gitleaks.sh pre-push
+    permissions-verify:
+      tags: documentation
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      glob: '{config/authz/{,**/}*,lib/tasks/gitlab/permissions/{,**/}*.rb,{,ee/}app/policies/{,**/}*.rb,{,ee/}app/graphql/{,**/}*.rb,{,ee/}lib/{,**/}api/{,**/}*.rb,doc/api/graphql/reference/_index.md,doc/auth/tokens/fine_grained_access_tokens_{rest,graphql}.md,tooling/authz/permissions/docs/templates/*}'
+      run: bundle exec rake gitlab:permissions:validate
+    unused-code-linter:
+      tags: backend
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      glob: '*.{haml,rb,erb,builder}'
+      # Detects unused methods, scopes, constants, delegations, and attributes
+      run: bundle exec keela
+    validate-fast-spec-helper:
+      tags: backend test
+      files: git diff --name-only --diff-filter=A $(git merge-base origin/master HEAD)..HEAD
+      glob: '{spec,ee/spec}/**/*_spec.rb'
+      run: scripts/lint/validate_fast_spec_helper_usage.rb
+    secrets-detection-clickhouse:
+      tags: backend database
+      files: git diff --name-only --diff-filter=A $(git merge-base origin/master HEAD)..HEAD
+      glob: 'db/click_house/main.sql'
+      run: scripts/lint-clickhouse-migrations.sh
+    ai-harness-doctor:
+      tags: ai-harness
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      # We need to specify {files} as part of the command, otherwise it won't execute the hook
+      run: echo {files} >/dev/null && scripts/ai_harness/doctor
+    ai-principles-manifest:
+      tags: ai-harness documentation
+      # Omit --diff-filter=d (unlike sibling hooks): a deleted doc must still trigger the check.
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      glob: '{.ai/*.md,.ai/principles/distillation_prompt.md,.ai/principles/manifest.yml,.ai/principles/baselines/**/*.md,doc/**/*.md}'
+      run: echo {files} >/dev/null && scripts/lint-ai-principles-manifest.sh
+    duo-review-instructions:
+      tags: ai-harness documentation
+      # Omit --diff-filter=d (unlike sibling hooks): a deleted distilled file must still trigger the check.
+      files: git diff --name-only $(git merge-base origin/master HEAD)..HEAD
+      glob: '{.ai/principles/distilled/**/*.md,.ai/principles/manifest.yml,.gitlab/duo/mr-review-instructions.yaml}'
+      run: echo {files} >/dev/null && scripts/lint-duo-review-instructions.sh
+
+  scripts:
+    'merge_conflicts':
+      skip: true # This is disabled by default. You can enable this check by adding skip: false in lefthook-local.yml https://github.com/evilmartians/lefthook/blob/master/docs/configuration.md#skip
+      runner: bash
+    'security_harness':
+      tags: security
+      runner: bash
+
+pre-commit:
+  parallel: true
+  commands:
+    ai-harness-doctor:
+      tags: ai-harness
+      run: scripts/ai_harness/doctor
+    ai-principles-manifest:
+      tags: ai-harness documentation
+      # Omit --diff-filter=d (unlike sibling hooks): a deleted doc must still trigger the check.
+      files: git diff --name-only --staged
+      glob: '{.ai/*.md,.ai/principles/distillation_prompt.md,.ai/principles/manifest.yml,.ai/principles/baselines/**/*.md,doc/**/*.md}'
+      run: echo {files} >/dev/null && scripts/lint-ai-principles-manifest.sh
+    duo-review-instructions:
+      tags: ai-harness documentation
+      # Omit --diff-filter=d (unlike sibling hooks): a deleted distilled file must still trigger the check.
+      files: git diff --name-only --staged
+      glob: '{.ai/principles/distilled/**/*.md,.ai/principles/manifest.yml,.gitlab/duo/mr-review-instructions.yaml}'
+      run: echo {files} >/dev/null && scripts/lint-duo-review-instructions.sh
+    rubocop:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d --staged
+      # foo.rb, foo.rake or Foofile
+      glob: '{*.{rb,rake},[A-Z]*file}'
+      run: REVEAL_RUBOCOP_TODO=0 bundle exec rubocop --parallel --force-exclusion --no-server {files}
+    verify-tff-mapping:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d --staged
+      glob: 'tests.yml'
+      run: scripts/verify-tff-mapping
+    secrets-detection:
+      tags: secrets
+      run: .lefthook/gitleaks.sh pre-commit
+    docs-deprecations:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d --staged
+      glob: 'data/deprecations/*.yml'
+      run: echo "Changes to deprecation files detected. Checking deprecations..\n"; bundle exec rake gitlab:docs:check_deprecations
+    docs-link-check:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d --staged
+      glob: 'doc/*.md'
+      run: scripts/lint-docs-link-check.sh
+    markdownlint:
+      tags: documentation style
+      files: git diff --name-only --diff-filter=d --staged
+      exclude: 'doc/api/graphql/reference/_index.md'
+      glob: 'doc/*.md'
+      run: markdownlint-cli2 {files}
+    mermaidlint:
+      tags: documentation style,backend style,frontend style
+      files: git diff --name-only --diff-filter=d --staged
+      glob: '{app,lib,ee,spec,doc,scripts}/*.md'
+      run: scripts/lint/check_mermaid.mjs {files}
+    loose-foreign-keys-ordering:
+      tags: database
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: 'config/gitlab_loose_foreign_keys.yml'
+      run: scripts/validate_loose_foreign_keys_ordering
+    db-migration-checksum:
+      skip: false
+      tags: database
+      files: git diff --name-only --staged
+      glob: '{db/migrate/*.rb,db/post_migrate/*.rb,db/schema_migrations/*}'
+      run: scripts/validate_migration_checksum
+    schema-migrations-format:
+      tags: database
+      files: git diff --name-only --cached
+      glob: 'db/schema_migrations/20*'
+      run: ruby scripts/lint/validate_schema_migrations_format.rb
+    prevent_graphql_schema_deletion:
+      tags: graphql schema
+      run: |
+        if git diff --cached --name-only --diff-filter=D | grep -q "public/-/graphql/introspection_result.json"; then
+          echo "🚫 Cannot delete GraphQL introspection schema file!"
+          echo "Regenerate it with: bundle exec rake gitlab:graphql:generate_introspection_schema"
+          exit 1
+        fi
+    vale: # Requires Vale: https://docs.gitlab.com/development/documentation/testing/vale/
+      tags: documentation style
+      files: git diff --name-only --diff-filter=d --staged
+      exclude: 'doc/api/graphql/reference/_index.md'
+      glob: '{doc/*.md,.ai/*.md,*AGENTS.md}'
+      run: 'if [ $VALE_WARNINGS ]; then minWarnings=warning; else minWarnings=error; fi; if command -v vale > /dev/null 2>&1; then if ! vale --config .vale.ini --minAlertLevel $minWarnings {files}; then echo "ERROR: Fix any linting errors and make sure you are using the latest version of Vale."; exit 1; fi; else echo "ERROR: Vale not found. For more information, see https://vale.sh/docs/vale-cli/installation/."; exit 1; fi'
+    role-permissions-ordering:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d --staged
+      glob: 'config/authz/roles/*.yml'
+      run: ruby scripts/lint/sort_role_permissions.rb
+    secrets-detection-clickhouse:
+      tags: backend database
+      glob: 'db/click_house/main.sql'
+      run: scripts/lint-clickhouse-migrations.sh
+    gitaly-version-check:
+      tags: gitaly
+      glob: '{Gemfile.lock,VERSION}'
+      run: 'scripts/lint/gitaly_version.rb'
+    skills-parity:
+      tags: claude tooling
+      files: git diff --name-only --diff-filter=d --staged
+      glob: '{.claude/skills/**,.agents/skills/**}'
+      run: scripts/check-skills-parity.sh
+
+auto-fix:
+  parallel: true
+  commands:
+    frontend:
+      tags: frontend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '*.{js,vue}'
+      run: 'REVEAL_ESLINT_TODO=0 yarn run lint:eslint:fix {files} && yarn run prettier --write --list-different {files}'
+    jsonlint:
+      tags: style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '*.{json}'
+      run: scripts/lint-json --format --verbose {files}
+    prettier-graphql:
+      tags: frontend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '*.{graphql}'
+      run: yarn run prettier --write --list-different {files}
+    rubocop:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '*.{rb,rake}'
+      run: REVEAL_RUBOCOP_TODO=0 bundle exec rubocop --parallel --autocorrect --force-exclusion --no-server {files}
+    gettext:
+      tags: backend frontend view haml
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached | while read file;do git diff --unified=1 $(git merge-base origin/master HEAD) $file | grep -Fqe '_(' && echo $file;done; true
+      glob: '*.{haml,rb,js,vue}'
+      run: tooling/bin/gettext_extractor locale/gitlab.pot
+    js-routes:
+      tags: frontend backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '{config/routes.rb,ee/config/routes.rb,config/routes/**,ee/config/routes/**,lib/gitlab/js_routes.rb}'
+      run: echo {files} >/dev/null && RAILS_ENV=test GITLAB_CONFIG=config/gitlab.yml.example bundle exec rake gitlab:js:routes
+    cells-routes:
+      tags: backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '{config/routes.rb,ee/config/routes.rb,config/routes/**,ee/config/routes/**,lib/api/**,ee/lib/api/**,gems/gitlab-cells-http_router/**}'
+      run: echo {files} >/dev/null && RAILS_ENV=test CI=true GITLAB_CONFIG=config/gitlab.yml.example bundle exec rake gitlab:cells:routes:generate
+    graphql_docs_compile:
+      tags: documentation
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '{,ee/}app/graphql/*.rb'
+      run: bundle exec rake gitlab:graphql:compile_docs
+    role-permissions-ordering:
+      tags: backend style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: 'config/authz/roles/*.yml'
+      run: ruby scripts/lint/sort_role_permissions.rb --fix
+    markdownlint:
+      tags: documentation style
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      exclude: 'doc/api/graphql/reference/_index.md'
+      glob: 'doc/*.md'
+      run: markdownlint-cli2 --fix {files}
+    openapi_generate:
+      tags: documentation backend
+      files: git diff --name-only --diff-filter=d $(git merge-base origin/master HEAD) --cached
+      glob: '{{,ee/}lib/api/**/*.rb,tooling/docs/api/tags/*.md}'
+      run: GITLAB_SIMULATE_SAAS=false bundle exec rake gitlab:openapi:v3:generate

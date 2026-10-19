@@ -1,0 +1,377 @@
+# This pipeline runs E2E tests against CNG build which is deployed via helm chart on a job local kind kubernetes cluster
+
+include:
+  - local: .gitlab/ci/cng/main.gitlab-ci.yml
+  - local: .gitlab/ci/qa-common/main.gitlab-ci.yml
+  - local: .gitlab/ci/qa-common/variables.gitlab-ci.yml
+  - local: .gitlab/ci/qa-common/rules.gitlab-ci.yml
+  - local: .gitlab/ci/test-on-cng/caproni.gitlab-ci.yml
+
+.default-branch: &default-branch
+  if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+.cng-deploy-cmd:
+  script:
+    # save extra values to be available for after_script if created dynamically
+    - echo "${EXTRA_DEPLOY_VALUES}" > $CI_PROJECT_DIR/EXTRA_DEPLOY_VALUES
+    - export GITLAB_DOMAIN="$(getent hosts docker | awk '{ print $1 }' | head -n1).nip.io"
+    - |
+      bundle exec orchestrator create deployment "${DEPLOYMENT_TYPE:-kind}" \
+        --gitlab-domain "${GITLAB_DOMAIN}" \
+        --timeout "${DEPLOY_TIMEOUT:-10m}" \
+        --chart-sha "${GITLAB_HELM_CHART_REF}" \
+        --admin-token "${GITLAB_QA_ADMIN_ACCESS_TOKEN}" \
+        --retry 1 \
+        --resource-preset high \
+        --kind-image "${KIND_NODE_IMAGE}" \
+        --ci \
+        ${EXTRA_DEPLOY_VALUES}
+    - export QA_GITLAB_URL="http://gitlab.${GITLAB_DOMAIN}${QA_RELATIVE_URL_ROOT}"
+
+.cng-test:
+  image: "${REGISTRY_HOST}/${REGISTRY_GROUP}/gitlab-build-images/ci/${BUILD_OS}-${OS_VERSION}-slim-ruby-${RUBY_VERSION}:rubygems-${RUBYGEMS_VERSION}-git-${GIT_VERSION}-lfs-${LFS_VERSION}-chrome-${CHROME_VERSION}-docker-${DOCKER_VERSION}-kubectl-${KUBECTL_VERSION}-helm-${HELM_VERSION}-kind-${KIND_VERSION}"
+  stage: test
+  extends:
+    - .e2e-test-base
+    - .cng-qa-cache  # cng-cache includes additional cached helm chart
+  needs:
+    - job: build-cng-env
+    - job: build-cng
+    - pipeline: $PARENT_PIPELINE_ID
+      job: clone-gitlab-repo
+  tags:
+    - e2e
+  variables:
+    NAMESPACE: gitlab
+    KUBECONFIG: /root/.kube/config
+    RSPEC_LAST_RUN_RESULTS_FILE: "$CI_PROJECT_DIR/qa/tmp/examples.txt"
+    ORCHESTRATOR_FORCE_COLOR: "true"
+    DEPLOYMENT_TYPE: kind
+    QA_DOCKER_NETWORK: host
+    QA_RUN_IN_PARALLEL: "true"
+    QA_PARALLEL_PROCESSES: 4
+    GITLAB_QA_ADMIN_ACCESS_TOKEN: $QA_ADMIN_ACCESS_TOKEN
+    GIT_STRATEGY: "none"
+  before_script:
+    - !reference [.qa-install, before_script]
+    - !reference [.cng-deploy-cmd, script]
+    - bundle exec orchestrator metrics start --interval 1
+  after_script:
+    - !reference [.gitlab-qa-report, after_script]
+    - source $CI_PROJECT_DIR/scripts/utils.sh
+    - |
+      section_start "logs_section" "Saving environment logs"
+      bundle exec orchestrator log events --save || true
+      bundle exec orchestrator log pods --save --containers all --no-fail-on-missing-pods || true
+      section_end "logs_section"
+    - |
+      section_start "cpu_metrics" "CNG Env CPU Utilization Graphs"
+      bundle exec orchestrator metrics serve --type cpu || true
+      section_end "cpu_metrics"
+    - |
+      section_start "memory_metrics" "CNG Env Memory Utilization Graphs"
+      bundle exec orchestrator metrics serve --type memory || true
+      section_end "memory_metrics"
+    # This command prints all the necessary arguments to be able to recreate the same deployment as on CI
+    - |
+      bundle exec orchestrator create deployment "${DEPLOYMENT_TYPE}" \
+        --chart-sha "${GITLAB_HELM_CHART_REF}" \
+        --resource-preset high \
+        --kind-image ${KIND_NODE_IMAGE} \
+        --ci \
+        --print-deploy-args \
+        $(cat $CI_PROJECT_DIR/EXTRA_DEPLOY_VALUES)
+  artifacts:
+    expire_in: 7 days
+    when: always
+    reports:
+      junit: qa/tmp/rspec-*.xml
+      dotenv: $QA_SUITE_STATUS_ENV_FILE
+    paths:
+      - qa/tmp
+      - ${CI_PROJECT_DIR}/qa/*.log
+
+.cng-test-parallel:
+  extends: .cng-test
+  parallel: 10
+
+.with-coverband-arg:
+  variables:
+    # the layout reads BABEL_ENV at runtime to load coverage_persistence
+    EXTRA_DEPLOY_VALUES: --env COVERBAND_ENABLED=${COVERBAND_ENABLED} --env BABEL_ENV=${BABEL_ENV}
+
+# pipeline variables outrank job variables, so export it instead
+.without-coverband:
+  before_script:
+    - export COVERBAND_ENABLED=false
+    - export BABEL_ENV=
+    - !reference [.qa-install, before_script]
+    - !reference [.cng-deploy-cmd, script]
+    - bundle exec orchestrator metrics start --interval 1
+
+# ==========================================
+# Pre stage
+# ==========================================
+build-cng-env:
+  stage: .pre
+  extends: .build-cng-env
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: clone-gitlab-repo
+  variables:
+    CNG_COMMIT_SHA: $GITLAB_CNG_MIRROR_REF
+    CNG_ACCESS_TOKEN: $CNG_MIRROR_ACCESS_TOKEN
+    CNG_SKIP_REDUNDANT_JOBS: "true"
+    GIT_STRATEGY: none
+  before_script:
+    # dotenv from needs outranks job variables, so pick the tag here
+    - |
+      if [[ "$BABEL_ENV" == "istanbul" ]]; then
+        export GLCI_ASSETS_IMAGE_TAG="$GLCI_ISTANBUL_ASSETS_IMAGE_TAG"
+        # image tags ignore which assets are inside, so keep these images separate
+        export CONTAINER_VERSION_SUFFIX="${CI_PROJECT_PATH_SLUG}-istanbul"
+      fi
+    - !reference [.build-cng-env, before_script]
+  # when running in backport, override CNG_COMMIT so it defaults to release branch instead
+  # this ensures images are built using same stable release branch in CNG repository
+  # this is needed in case CNG repository backports some fixes related to specific release
+  rules:
+    - if: $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^[\d-]+-stable(-ee|-jh)?$/
+      variables:
+        CNG_COMMIT_SHA: ''
+    - when: always
+
+build-cng:
+  stage: .pre
+  extends: .build-cng
+  needs: [build-cng-env]
+  variables:
+    # use larger runner for complex rails build jobs
+    HIGH_CAPACITY_RUNNER_TAG: e2e
+
+# ==========================================
+# Test stage
+# ==========================================
+cng-helm-cache:
+  extends:
+    - .cng-test
+    - .cng-deploy-cmd
+    - .cng-qa-cache-push
+  before_script:
+    - !reference [.qa-install, before_script]
+  after_script: []
+  rules:
+    - <<: *default-branch
+      allow_failure: true
+      changes:
+        - .gitlab/ci/qa-common/variables.gitlab-ci.yml
+        - qa/gems/gitlab-orchestrator/lib/gitlab/orchestrator/lib/kind/cluster.rb
+
+cng-instance:
+  extends:
+    - .cng-test-parallel
+    - .with-coverband-arg
+
+cng-instance-ff-inverse:
+  extends: .caproni-test
+  allow_failure: false
+  variables:
+    QA_RUN_IN_PARALLEL: "true"
+    QA_PARALLEL_PROCESSES: 4
+    QA_FEATURE_FLAGS: $FEATURE_FLAGS
+  rules:
+    - !reference [.rules:test:feature-flags-set, rules]
+
+cng-registry:
+  extends:
+    - .cng-test
+    - .with-coverband-arg
+  variables:
+    QA_SCENARIO: Test::Integration::Registry
+    QA_RUN_IN_PARALLEL: "false"
+
+cng-secrets-manager:
+  extends:
+    - .cng-test
+    - .with-coverband-arg
+  variables:
+    QA_SCENARIO: Test::Integration::SecretsManager
+    QA_RSPEC_TAGS: --tag secrets_manager
+    QA_FEATURE_FLAGS: "secrets_manager_api_access=enabled"
+    DEPLOY_TIMEOUT: 15m
+
+# Canary for the Vue 3 rollout mechanism. The flag is set once before the
+# suite rather than inside the spec, so the test never races with the
+# per-process feature flag cache.
+cng-vue3-rollout:
+  extends:
+    - .cng-test
+    # one example, so the mapping adds nothing
+    - .without-coverband
+  variables:
+    QA_SCENARIO: Test::Instance::Vue3Rollout
+    QA_RSPEC_TAGS: --tag vue3_rollout
+    QA_RUN_IN_PARALLEL: "false"
+    QA_FEATURE_FLAGS: "vue3_migrate_jobs=enabled"
+
+cng-relative-url:
+  extends:
+    - cng-instance
+    # smoke specs duplicate cng-instance, so this mapping adds nothing
+    - .without-coverband
+  variables:
+    QA_SCENARIO: Test::Instance::Smoke
+    QA_RELATIVE_URL_ROOT: "/relative"
+    EXTRA_DEPLOY_VALUES: "--set global.appConfig.relativeUrlRoot=${QA_RELATIVE_URL_ROOT}"
+
+cng-oauth:
+  extends:
+    - .cng-test
+  variables:
+    QA_SCENARIO: Test::Integration::OAuth
+    QA_RSPEC_TAGS: --tag oauth
+    QA_RUN_IN_PARALLEL: "false"
+    QA_GITHUB_OAUTH_APP_ID: $QA_GITHUB_OAUTH_APP_ID
+    QA_GITHUB_OAUTH_APP_SECRET: $QA_GITHUB_OAUTH_APP_SECRET
+  before_script:
+    - export COVERBAND_ENABLED=false
+    - export BABEL_ENV=
+    # Install 1Password CLI for GitHub 2FA authentication
+    - |
+      curl -sSfO https://downloads.1password.com/linux/debian/amd64/stable/1password-cli-amd64-latest.deb
+      dpkg -i 1password-cli-amd64-latest.deb || apt-get install -f -y
+      rm 1password-cli-amd64-latest.deb
+      op --version
+    - !reference [.qa-install, before_script]
+    # Set up gitlab.test domain with hosts file
+    - export CLUSTER_IP="$(getent hosts docker | awk '{ print $1 }' | head -n1)"
+    - echo "${CLUSTER_IP} gitlab.test" >> /etc/hosts
+    - export GITLAB_DOMAIN="test"
+    # Deploy with test domain (don't use reference to avoid override)
+    - echo "${EXTRA_DEPLOY_VALUES}" > $CI_PROJECT_DIR/EXTRA_DEPLOY_VALUES
+    - |
+      bundle exec orchestrator create deployment "${DEPLOYMENT_TYPE:-kind}" \
+        --gitlab-domain "${GITLAB_DOMAIN}" \
+        --timeout 10m \
+        --chart-sha "${GITLAB_HELM_CHART_REF}" \
+        --admin-token "${GITLAB_QA_ADMIN_ACCESS_TOKEN}" \
+        --retry 1 \
+        --resource-preset high \
+        --ci ${EXTRA_DEPLOY_VALUES}
+    - export QA_GITLAB_URL="http://gitlab.${GITLAB_DOMAIN}${QA_RELATIVE_URL_ROOT}"
+    - bundle exec orchestrator metrics start --interval 1
+
+# Caproni shadows of the jobs above. Defined here, not in caproni.gitlab-ci.yml,
+# so PipelineCreator can apply E2E test selection to them.
+
+# No QA_SCENARIO: run_e2e_specs defaults to Test::Instance::All
+cng-instance-caproni:
+  extends: .caproni-test
+  parallel: 10
+  variables:
+    QA_RUN_IN_PARALLEL: "true"
+    QA_PARALLEL_PROCESSES: 4
+    E2E_CODE_PATHS_MAPPING: "true"
+
+cng-relative-url-caproni:
+  extends: .caproni-test
+  variables:
+    QA_SCENARIO: Test::Instance::Smoke
+    QA_RUN_IN_PARALLEL: "true"
+    QA_PARALLEL_PROCESSES: 4
+    QA_RELATIVE_URL_ROOT: "/relative"
+
+cng-registry-caproni:
+  extends: .caproni-test
+  variables:
+    QA_SCENARIO: Test::Integration::Registry
+    QA_RUN_IN_PARALLEL: "false"
+    E2E_CODE_PATHS_MAPPING: "true"
+
+# Runs login_via_oauth_and_oidc_with_gitlab_as_idp_spec.rb against the CNG consumer that
+# caproni.oidc-consumer.yaml deploys next to the instance under test
+# Not in pipeline_mappings: the selection dry run reports its only spec, which is
+# `only: { job: /cng-oauth-caproni/ }`, as pending, so it would always be set to never
+cng-oauth-caproni:
+  extends: .caproni-test
+  variables:
+    QA_TESTS: ""
+    QA_SCENARIO: Test::Integration::OAuth
+    QA_RSPEC_TAGS: --tag oauth
+    QA_RUN_IN_PARALLEL: "false"
+    QA_GITHUB_OAUTH_APP_ID: $QA_GITHUB_OAUTH_APP_ID
+    QA_GITHUB_OAUTH_APP_SECRET: $QA_GITHUB_OAUTH_APP_SECRET
+
+cng-secrets-manager-caproni:
+  extends: .caproni-test
+  variables:
+    QA_SCENARIO: Test::Integration::SecretsManager
+    QA_RSPEC_TAGS: --tag secrets_manager
+    QA_RUN_IN_PARALLEL: "true"
+    QA_PARALLEL_PROCESSES: 4
+    QA_FEATURE_FLAGS: "secrets_manager_api_access=enabled"
+    E2E_CODE_PATHS_MAPPING: "true"
+  before_script:
+    - !reference [.caproni-test, before_script]
+    # The *_ci_access_failure specs pass with OpenBao unreachable, so the route is asserted here
+    - curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 "http://openbao.${GITLAB_DOMAIN}/v1/sys/health"
+
+# ==========================================
+# Post test stage
+# ==========================================
+e2e-test-report:
+  extends: .rules:report:allure-report
+  variables:
+    ALLURE_REPORT_RESULTS_GLOB: "qa/tmp/allure-results"
+
+notify-slack:
+  extends:
+    - .notify-slack
+    - .rules:report:process-results
+
+upload-test-runtime-data:
+  extends:
+    - .upload-test-runtime-data
+    - .rules:report:upload-test-runtime-data
+
+export-code-paths-mapping:
+  extends:
+    - .export-code-paths-mapping
+  # Caproni jobs upload under their own run type
+  needs:
+    - job: cng-instance
+      optional: true
+    - job: cng-registry
+      optional: true
+    - job: cng-secrets-manager
+      optional: true
+
+export-code-paths-mapping-caproni:
+  extends:
+    - .export-code-paths-mapping
+  needs:
+    - job: cng-instance-caproni
+      optional: true
+    - job: cng-registry-caproni
+      optional: true
+    - job: cng-secrets-manager-caproni
+      optional: true
+  script:
+    # The trigger job's QA_RUN_TYPE outranks job variables
+    - export QA_RUN_TYPE=e2e-test-on-cng-caproni
+    - !reference [.export-code-paths-mapping, script]
+
+export-frontend-code-paths-mapping:
+  extends:
+    - .export-frontend-code-paths-mapping
+
+process-e2e-coverage:
+  extends:
+    - .process-e2e-coverage
+  needs:
+    - job: cng-instance
+      optional: true
+    - job: cng-registry
+      optional: true
+    - job: cng-secrets-manager
+      optional: true

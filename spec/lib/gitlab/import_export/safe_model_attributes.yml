@@ -1,0 +1,1160 @@
+---
+Issue:
+- id
+- title
+- assignee_id
+- author_id
+- project_id
+- created_at
+- updated_at
+- position
+- branch_name
+- description
+- state
+- state_id
+- iid
+- updated_by_id
+- confidential
+- closed_at
+- closed_by_id
+- due_date
+- moved_to_id
+- duplicated_to_id
+- promoted_to_epic_id
+- lock_version
+- milestone_id
+- weight
+- time_estimate
+- relative_position
+- external_author
+- last_edited_at
+- last_edited_by_id
+- discussion_locked
+- health_status
+- issue_type
+- email_message_id
+- imported
+- imported_from
+Event:
+- id
+- target_type
+- project_id
+- group_id
+- created_at
+- updated_at
+- action
+- author_id
+- fingerprint
+- imported
+- imported_from
+WikiPage::Meta:
+- id
+- title
+- project_id
+WikiPage::Slug:
+- id
+- wiki_page_meta_id
+- slug
+PushEventPayload:
+- commit_count
+- action
+- ref_type
+- commit_from
+- commit_to
+- ref
+- commit_title
+- ref_count
+Note:
+- id
+- note
+- noteable_type
+- author_id
+- created_at
+- updated_at
+- project_id
+- attachment
+- line_code
+- commit_id
+- system
+- st_diff
+- updated_by_id
+- type
+- position
+- original_position
+- change_position
+- resolved_at
+- resolved_by_id
+- resolved_by_push
+- discussion_id
+- original_discussion_id
+- confidential
+- last_edited_at
+- internal
+- imported
+- imported_from
+Notes::NoteMetadata:
+- note_id
+- email_participant
+- created_at
+- updated_at
+LabelLink:
+- id
+- target_type
+- created_at
+- updated_at
+ProjectLabel:
+- id
+- title
+- color
+- group_id
+- project_id
+- type
+- created_at
+- updated_at
+- template
+- description
+- priority
+Milestone:
+- id
+- title
+- project_id
+- group_id
+- description
+- due_date
+- start_date
+- created_at
+- updated_at
+- state
+- iid
+MilestoneRelease:
+- project_id
+ProjectSnippet:
+- id
+- title
+- description
+- content
+- author_id
+- project_id
+- created_at
+- updated_at
+- file_name
+- type
+- visibility_level
+- imported
+- imported_from
+Release:
+- id
+- name
+- tag
+- sha
+- description
+- author_id
+- project_id
+- created_at
+- updated_at
+- released_at
+Releases::Evidence:
+- id
+- summary
+- created_at
+- updated_at
+Releases::Link:
+- id
+- url
+- name
+- filepath
+- link_type
+- created_at
+- updated_at
+ProjectMember:
+- id
+- access_level
+- source_type
+- user_id
+- notification_level
+- type
+- created_at
+- updated_at
+- created_by_id
+- invite_email
+- invite_token
+- invite_accepted_at
+- requested_at
+- expires_at
+- ldap
+- override
+- invite_email_success
+User:
+- id
+- username
+- name
+- public_email
+MergeRequest:
+- id
+- target_branch
+- source_branch
+- source_project_id
+- author_id
+- assignee_id
+- title
+- created_at
+- updated_at
+- state
+- state_id
+- merge_status
+- target_project_id
+- iid
+- description
+- position
+- updated_by_id
+- merge_error
+- merge_params
+- merge_when_pipeline_succeeds
+- merge_user_id
+- merge_commit_sha
+- squash_commit_sha
+- in_progress_merge_commit_sha
+- lock_version
+- milestone_id
+- approvals_before_merge
+- rebase_commit_sha
+- time_estimate
+- squash
+- last_edited_at
+- last_edited_by_id
+- head_pipeline_id
+- discussion_locked
+- allow_maintainer_to_push
+- merge_ref_sha
+- draft
+- imported
+- imported_from
+MergeRequestDiff:
+- id
+- state
+- merge_request_id
+- created_at
+- updated_at
+- base_commit_sha
+- real_size
+- head_commit_sha
+- start_commit_sha
+- commits_count
+- files_count
+- sorted
+- diff_type
+MergeRequestDiffCommit:
+- merge_request_diff_id
+- relative_order
+- sha
+- authored_date
+- committed_date
+- author_name
+- author_email
+- committer_name
+- committer_email
+- message
+- trailers
+MergeRequest::DiffCommitUser:
+- id
+- name
+- email
+MergeRequest::CommitsMetadata:
+- sha
+- message
+- trailers
+- authored_date
+- committed_date
+MergeRequestDiffFile:
+- merge_request_diff_id
+- relative_order
+- new_file
+- renamed_file
+- deleted_file
+- new_path
+- old_path
+- a_mode
+- b_mode
+- too_large
+- binary
+- encoded_file_path
+MergeRequestContextCommit:
+- id
+- authored_date
+- committed_date
+- relative_order
+- sha
+- author_name
+- author_email
+- committer_name
+- committer_email
+- message
+- merge_request_id
+- trailers
+MergeRequestContextCommitDiffFile:
+- sha
+- relative_order
+- new_file
+- renamed_file
+- deleted_file
+- new_path
+- old_path
+- a_mode
+- b_mode
+- too_large
+- binary
+- text
+MergeRequest::Metrics:
+- id
+- created_at
+- updated_at
+- merge_request_id
+- pipeline_id
+- latest_closed_by_id
+- latest_closed_at
+- merged_by_id
+- merged_at
+- latest_build_started_at
+- latest_build_finished_at
+- first_deployed_to_production_at
+- first_comment_at
+- first_commit_at
+- last_commit_at
+- diff_size
+- modified_paths_size
+- commits_count
+- first_approved_at
+- first_reassigned_at
+- added_lines
+- target_project_id
+- removed_lines
+Ci::Pipeline:
+- id
+- project_id
+- source
+- ref
+- sha
+- before_sha
+- source_sha
+- target_sha
+- push_data
+- created_at
+- updated_at
+- tag
+- yaml_errors
+- committed_at
+- status
+- started_at
+- finished_at
+- duration
+- user_id
+- lock_version
+- auto_canceled_by_id
+- pipeline_schedule_id
+- config_source
+- failure_reason
+- protected
+- iid
+- merge_request_id
+- external_pull_request_id
+Ci::PipelineMetadata:
+- id
+- project_id
+- pipeline_id
+- name
+Ci::Stage:
+- id
+- name
+- status
+- position
+- lock_version
+- project_id
+- pipeline_id
+- created_at
+- updated_at
+Ci::Build:
+- id
+- project_id
+- status
+- finished_at
+- trace
+- created_at
+- updated_at
+- started_at
+- runner_id
+- coverage
+- commit_id
+- commands
+- job_id
+- name
+- deploy
+- options
+- allow_failure
+- stage
+- stage_idx
+- stage_id
+- tag
+- ref
+- user_id
+- type
+- target_url
+- description
+- artifacts_file
+- artifacts_file_store
+- artifacts_metadata
+- artifacts_metadata_store
+- erased_by_id
+- erased_at
+- artifacts_expire_at
+- environment
+- artifacts_size
+- when
+- yaml_variables
+- queued_at
+- token
+- lock_version
+- coverage_regex
+- auto_canceled_by_id
+- retried
+- protected
+- failure_reason
+- scheduled_at
+- upstream_pipeline_id
+- interruptible
+- processed
+- scheduling_type
+Ci::Bridge:
+- id
+- project_id
+- status
+- finished_at
+- trace
+- created_at
+- updated_at
+- started_at
+- runner_id
+- coverage
+- commit_id
+- commands
+- job_id
+- name
+- deploy
+- options
+- allow_failure
+- stage
+- stage_idx
+- stage_id
+- tag
+- ref
+- user_id
+- type
+- target_url
+- description
+- artifacts_file
+- artifacts_file_store
+- artifacts_metadata
+- artifacts_metadata_store
+- erased_by_id
+- erased_at
+- artifacts_expire_at
+- environment
+- artifacts_size
+- when
+- yaml_variables
+- queued_at
+- token
+- lock_version
+- coverage_regex
+- auto_canceled_by_id
+- retried
+- protected
+- failure_reason
+- scheduled_at
+- upstream_pipeline_id
+- interruptible
+- processed
+- scheduling_type
+GenericCommitStatus:
+- id
+- project_id
+- status
+- finished_at
+- trace
+- created_at
+- updated_at
+- started_at
+- runner_id
+- coverage
+- commit_id
+- commands
+- job_id
+- name
+- deploy
+- options
+- allow_failure
+- stage
+- stage_idx
+- stage_id
+- tag
+- ref
+- user_id
+- type
+- target_url
+- description
+- artifacts_file
+- artifacts_file_store
+- artifacts_metadata
+- artifacts_metadata_store
+- erased_by_id
+- erased_at
+- artifacts_expire_at
+- environment
+- artifacts_size
+- when
+- yaml_variables
+- queued_at
+- token
+- lock_version
+- coverage_regex
+- auto_canceled_by_id
+- retried
+- protected
+- failure_reason
+- scheduled_at
+- upstream_pipeline_id
+- interruptible
+- processed
+- scheduling_type
+Ci::Variable:
+- id
+- project_id
+- key
+- value
+- encrypted_value
+- encrypted_value_salt
+- encrypted_value_iv
+Ci::PipelineSchedule:
+- id
+- description
+- ref
+- cron
+- cron_timezone
+- next_run_at
+- project_id
+- owner_id
+- active
+- created_at
+- updated_at
+Clusters::Cluster:
+- id
+- user_id
+- enabled
+- name
+- provider_type
+- platform_type
+- created_at
+- updated_at
+Clusters::Project:
+- id
+- project_id
+- cluster_id
+- created_at
+- updated_at
+Clusters::Providers::Gcp:
+- id
+- cluster_id
+- status
+- status_reason
+- gcp_project_id
+- zone
+- num_nodes
+- machine_type
+- operation_id
+- endpoint
+- encrypted_access_token
+- encrypted_access_token_iv
+- created_at
+- updated_at
+Clusters::Platforms::Kubernetes:
+- id
+- cluster_id
+- api_url
+- ca_cert
+- namespace
+- username
+- encrypted_password
+- encrypted_password_iv
+- encrypted_token
+- encrypted_token_iv
+- created_at
+- updated_at
+DeployKey:
+- id
+- user_id
+- created_at
+- updated_at
+- key
+- title
+- type
+- fingerprint
+- public
+- can_push
+- last_used_at
+ProjectHook:
+- id
+- url
+- project_id
+- created_at
+- updated_at
+- type
+- service_id
+- push_events
+- push_events_branch_filter
+- issues_events
+- merge_requests_events
+- tag_push_events
+- note_events
+- pipeline_events
+- enable_ssl_verification
+- job_events
+- wiki_page_events
+- token
+- group_id
+- confidential_issues_events
+- confidential_note_events
+- repository_update_events
+- releases_events
+- milestone_events
+- emoji_events
+- resource_access_token_events
+- resource_deploy_token_events
+ProtectedBranch:
+- id
+- project_id
+- name
+- created_at
+- updated_at
+- allow_force_push
+- code_owner_approval_required
+ProtectedTag:
+- id
+- project_id
+- name
+- created_at
+- updated_at
+Project:
+- description
+- issues_enabled
+- merge_requests_enabled
+- wiki_enabled
+- snippets_enabled
+- visibility_level
+- archived
+- created_at
+- updated_at
+- last_activity_at
+- star_count
+- ci_id
+- shared_runners_enabled
+- build_allow_git_fetchs
+- build_timeout
+- pending_delete
+- public_builds
+- last_repository_check_failed
+- last_repository_check_at
+- collapse_outdated_diff_comments
+- container_registry_enabled
+- only_allow_merge_if_pipeline_succeeds
+- has_external_issue_tracker
+- request_access_enabled
+- has_external_wiki
+- only_allow_merge_if_all_discussions_are_resolved
+- remove_source_branch_after_merge
+- auto_cancel_pending_pipelines
+- printing_merge_request_link_enabled
+- resolve_outdated_diff_discussions
+- build_allow_git_fetch
+- merge_requests_template
+- merge_requests_rebase_enabled
+- approvals_before_merge
+- merge_requests_author_approval
+- reset_approvals_on_push
+- disable_overriding_approvers_per_merge_request
+- merge_requests_ff_only_enabled
+- issues_template
+- sync_time
+- service_desk_enabled
+- last_repository_updated_at
+- ci_config_path
+- merge_requests_ff_only_enabled
+- merge_requests_rebase_enabled
+- jobs_cache_index
+- external_authorization_classification_label
+- pages_https_only
+- merge_requests_disable_committers_approval
+- require_password_to_approve
+- autoclose_referenced_issues
+- suggestion_commit_message
+- merge_commit_template
+- squash_commit_template
+- issue_branch_template
+- merge_request_title_regex
+- merge_request_title_regex_description
+- max_artifacts_size
+- name
+Author:
+- name
+ProjectFeature:
+- id
+- project_id
+- merge_requests_access_level
+- forking_access_level
+- issues_access_level
+- wiki_access_level
+- snippets_access_level
+- builds_access_level
+- repository_access_level
+- pages_access_level
+- metrics_dashboard_access_level
+- requirements_access_level
+- analytics_access_level
+- operations_access_level
+- security_and_compliance_access_level
+- container_registry_access_level
+- package_registry_access_level
+- environments_access_level
+- feature_flags_access_level
+- releases_access_level
+- monitor_access_level
+- infrastructure_access_level
+- model_experiments_access_level
+- model_registry_access_level
+- created_at
+- updated_at
+ProtectedBranch::MergeAccessLevel:
+- id
+- protected_branch_id
+- access_level
+- created_at
+- updated_at
+- user_id
+- group_id
+ProtectedBranch::PushAccessLevel:
+- id
+- protected_branch_id
+- access_level
+- created_at
+- updated_at
+- user_id
+- group_id
+- deploy_key_id
+ProtectedBranch::UnprotectAccessLevel:
+- id
+- protected_branch_id
+- access_level
+- created_at
+- updated_at
+- user_id
+- group_id
+ProtectedTag::CreateAccessLevel:
+- id
+- protected_tag_id
+- access_level
+- created_at
+- updated_at
+- user_id
+- group_id
+AwardEmoji:
+- id
+- user_id
+- name
+- awardable_type
+- created_at
+- updated_at
+LabelPriority:
+- id
+- project_id
+- priority
+- created_at
+- updated_at
+Timelog:
+- id
+- time_spent
+- merge_request_id
+- user_id
+- project_id
+- spent_at
+- created_at
+- updated_at
+- summary
+- timelog_category_id
+ProjectAutoDevops:
+- id
+- enabled
+- domain
+- deploy_strategy
+- project_id
+- created_at
+- updated_at
+IssueAssignee:
+- user_id
+ProjectCustomAttribute:
+- id
+- created_at
+- updated_at
+- project_id
+- key
+- value
+Badge:
+- id
+- name
+- link_url
+- image_url
+- project_id
+- group_id
+- created_at
+- updated_at
+- type
+ProjectCiCdSetting:
+- group_runners_enabled
+- merge_pipelines_enabled
+- default_git_depth
+- forward_deployment_enabled
+- merge_trains_enabled
+- auto_rollback_enabled
+- keep_latest_artifact
+- job_token_scope_enabled
+- runner_token_expiration_interval
+- separated_caches
+- allow_fork_pipelines_to_run_in_parent_project
+- inbound_job_token_scope_enabled
+- forward_deployment_rollback_allowed
+- merge_trains_skip_train_allowed
+- restrict_pipeline_cancellation_role
+- pipeline_variables_minimum_override_role
+- push_repository_for_job_token_allowed
+- id_token_sub_claim_components
+- delete_pipelines_in_seconds
+- allow_composite_identities_to_run_pipelines
+- display_pipeline_variables
+- resource_group_default_process_mode
+ProjectSetting:
+- merge_commit_template
+- squash_commit_template
+- mr_default_title_template
+- squash_option
+- allow_merge_on_skipped_pipeline
+- only_allow_merge_if_all_status_checks_passed
+- has_confluence
+- has_vulnerabilities
+ProtectedEnvironment:
+- id
+- project_id
+- group_id
+- name
+- created_at
+- updated_at
+ProtectedEnvironments::DeployAccessLevel:
+- id
+- protected_environment_id
+- access_level
+- created_at
+- updated_at
+- user_id
+- group_id
+ResourceLabelEvent:
+- id
+- action
+- merge_request_id
+- label_id
+- user_id
+- created_at
+ErrorTracking::ProjectErrorTrackingSetting:
+- api_url
+- project_id
+- project_name
+- organization_name
+SentryIssue:
+- id
+- sentry_issue_identifier
+Suggestion:
+- id
+- relative_order
+- applied
+- commit_id
+- from_content
+- to_content
+- outdated
+- lines_above
+- lines_below
+MergeRequestAssignee:
+- id
+- user_id
+- merge_request_id
+- created_at
+- state
+MergeRequestReviewer:
+- id
+- user_id
+- merge_request_id
+- created_at
+- state
+ProjectMetricsSetting:
+- project_id
+- external_dashboard_url
+- created_at
+- updated_at
+- dashboard_timezone
+Board:
+- id
+- project_id
+- created_at
+- updated_at
+- group_id
+- milestone_id
+- iteration_id
+- iteration_cadence_id
+- weight
+- name
+- hide_backlog_list
+- hide_closed_list
+List:
+- id
+- board_id
+- label_id
+- list_type
+- position
+- created_at
+- updated_at
+- milestone_id
+- user_id
+- max_issue_count
+- max_issue_weight
+- limit_metric
+Ci::ExternalPullRequest:
+- id
+- created_at
+- updated_at
+- project_id
+- pull_request_iid
+- status
+- source_branch
+- target_branch
+- source_repository
+- target_repository
+- source_sha
+- target_sha
+DesignManagement::Design:
+- id
+- iid
+- project_id
+- filename
+- relative_position
+DesignManagement::Action:
+- id
+- event
+- image_v432x230
+DesignManagement::Version:
+- id
+- created_at
+- sha
+- author_id
+- namespace_id
+ZoomMeeting:
+- id
+- project_id
+- issue_status
+- url
+- created_at
+- updated_at
+ServiceDeskSetting:
+- project_id
+- issue_template_key
+- project_key
+ContainerExpirationPolicy:
+- created_at
+- updated_at
+- next_run_at
+- project_id
+- name_regex
+- name_regex_keep
+- cadence
+- older_than
+- keep_n
+- enabled
+Epic:
+  - id
+  - milestone_id
+  - group_id
+  - author_id
+  - assignee_id
+  - iid
+  - updated_by_id
+  - last_edited_by_id
+  - lock_version
+  - start_date
+  - end_date
+  - last_edited_at
+  - created_at
+  - updated_at
+  - title
+  - description
+  - start_date_sourcing_milestone_id
+  - due_date_sourcing_milestone_id
+  - start_date_fixed
+  - due_date_fixed
+  - start_date_is_fixed
+  - due_date_is_fixed
+  - closed_by_id
+  - closed_at
+  - parent_id
+  - relative_position
+  - state_id
+  - start_date_sourcing_epic_id
+  - due_date_sourcing_epic_id
+  - health_status
+  - confidential
+  - color
+  - total_opened_issue_weight
+  - total_closed_issue_weight
+  - total_opened_issue_count
+  - total_closed_issue_count
+  - imported
+  - imported_from
+EpicIssue:
+  - id
+  - relative_position
+  - namespace_id
+SystemNoteMetadata:
+  - id
+  - commit_count
+  - action
+  - created_at
+  - updated_at
+ProjectSecuritySetting:
+  - project_id
+  - created_at
+  - updated_at
+IssuableSla:
+  - issue_id
+  - due_at
+PushRule:
+  - commit_message_regex
+  - author_email_regex
+  - file_name_regex
+  - branch_name_regex
+  - commit_message_negative_regex
+  - max_file_size
+  - deny_delete_tag
+  - member_check
+  - is_sample
+  - prevent_secrets
+  - reject_unsigned_commits
+  - commit_committer_check
+  - regexp_uses_re2
+  - reject_non_dco_commits
+  - organization_id
+MergeRequest::CleanupSchedule:
+- id
+- scheduled_at
+- completed_at
+- created_at
+- updated_at
+Approval:
+  - user_id
+  - created_at
+  - updated_at
+ResourceMilestoneEvent:
+  - user_id
+  - action
+  - state
+  - created_at
+ResourceStateEvent:
+  - user_id
+  - created_at
+  - state
+  - source_commit
+  - close_after_error_tracking_resolve
+  - close_auto_resolve_prometheus_alert
+Iteration:
+  - created_at
+  - updated_at
+  - start_date
+  - due_date
+  - group_id
+  - iid
+  - description
+ResourceIterationEvent:
+  - user_id
+  - created_at
+  - action
+Iterations::Cadence:
+  - title
+ApprovalProjectRule:
+  - approvals_required
+  - name
+  - rule_type
+  - scanners
+  - vulnerabilities_allowed
+  - severity_levels
+  - report_type
+  - vulnerability_states
+  - orchestration_policy_idx
+  - applies_to_all_protected_branches
+ApprovalProjectRulesUser:
+  - user_id
+  - approval_project_rule_id
+ApprovalProjectRulesProtectedBranch:
+  - protected_branch_id
+  - approval_project_rule_id
+  - branch_name
+WorkItems::Type:
+  - base_type
+TimeTracking::TimelogCategories:
+  - id
+  - name
+  - description
+  - billable
+  - billing_rate
+NoteDiffFile:
+  - new_file
+  - renamed_file
+  - deleted_file
+  - a_mode
+  - b_mode
+  - new_path
+  - old_path
+Vulnerability:
+  - project_id
+  - author_id
+  - title
+  - description
+  - severity
+  - report_type
+Vulnerabilities::Finding:
+  - severity
+  - report_type
+  - project_id
+  - location_fingerprint
+  - name
+  - metadata_version
+  - raw_metadata
+  - detection_method
+  - uuid
+Vulnerabilities::Scanner:
+  - project_id
+  - external_id
+  - name
+  - vendor
+Vulnerabilities::Identifier:
+  - project_id
+  - fingerprint
+  - external_type
+  - external_id
+  - name
+  - url
+Vulnerabilities::Read:
+  - project_id
+Projects::BranchRules::SquashOption:
+  - squash_option
+  - project_id

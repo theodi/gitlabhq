@@ -1,0 +1,324 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'iframe rendering', :js, feature_category: :markdown do
+  let_it_be(:group) { create(:group) }
+  let_it_be(:subgroup) { create(:group, parent: group) }
+  let_it_be(:project) { create(:project, :public, :repository, group: subgroup) }
+
+  # No registration of .example domains is possible:
+  # https://en.wikipedia.org/wiki/.example
+  let(:markdown) do
+    <<~MARKDOWN
+    ![](https://iframe.example/some-video)
+    MARKDOWN
+  end
+
+  let(:expected_selector) do
+    'iframe[src="https://iframe.example/embed/some-video"][sandbox="allow-scripts"]'
+  end
+
+  let(:untouched_selector) do
+    'img[data-src="https://iframe.example/some-video"],
+     img[src="https://iframe.example/some-video"]'
+  end
+
+  let(:require_activation) { false }
+
+  before do
+    stub_iframe_providers(
+      'example' => {
+        'name' => 'Example',
+        'matches' => [{ 'host' => 'iframe.example', 'path' => '/{id}' }],
+        'src' => 'https://iframe.example/embed/{id}',
+        'sandbox' => %w[allow-scripts],
+        'require_activation' => require_activation
+      })
+  end
+
+  shared_examples_for 'an iframe renderer' do
+    before do
+      stub_application_setting(iframe_rendering_enabled: true, iframe_rendering_allowlist: %w[example])
+    end
+
+    context 'in an issue' do
+      let(:issue) { create(:issue, project: project, description: markdown) }
+
+      it 'includes iframe embed correctly' do
+        visit project_issue_path(project, issue)
+
+        expect(page).to have_css(expected_selector)
+        expect(page).to have_content(
+          'You are viewing external content from iframe.example. GitLab does not control this content.'
+        )
+      end
+
+      context 'when the provider requires activation' do
+        let(:require_activation) { true }
+
+        it 'includes the iframe only after the user activates it' do
+          visit project_issue_path(project, issue)
+
+          expect(page).to have_content('External content from Example (iframe.example)')
+          expect(page).to have_no_css(expected_selector)
+          expect(page).to have_no_css('[src*="iframe.example"]', visible: :all)
+
+          click_button 'Load external content'
+
+          expect(page).to have_css(expected_selector)
+        end
+      end
+    end
+
+    context 'in a merge request' do
+      let(:merge_request) { create(:merge_request_with_diffs, source_project: project, description: markdown) }
+
+      it 'renders diffs and includes iframe correctly' do
+        visit(diffs_project_merge_request_path(project, merge_request))
+
+        page.within('.tab-content') do
+          expect(page).to have_selector('.diffs')
+        end
+
+        visit(project_merge_request_path(project, merge_request))
+
+        page.within('.merge-request') do
+          expect(page).to have_css(expected_selector)
+        end
+      end
+    end
+
+    context 'in a project milestone' do
+      let(:milestone) { create(:project_milestone, project: project, description: markdown) }
+
+      it 'includes iframe correctly' do
+        visit(project_milestone_path(project, milestone))
+
+        expect(page).to have_css(expected_selector)
+      end
+    end
+
+    context 'in a project home page' do
+      let(:project) { create(:project, :public, group: subgroup) }
+      let!(:wiki) { create(:project_wiki, project: project) }
+      let!(:wiki_page) { create(:wiki_page, wiki: wiki, title: 'home', content: markdown) }
+
+      before do
+        project.project_feature.update_attribute(:repository_access_level, ProjectFeature::DISABLED)
+      end
+
+      it 'includes iframe correctly' do
+        visit(project_path(project))
+
+        page.within '.js-wiki-content' do
+          expect(page).to have_css(expected_selector)
+        end
+      end
+    end
+  end
+
+  shared_examples_for 'an iframe renderer in a group' do
+    before do
+      stub_application_setting(iframe_rendering_enabled: true, iframe_rendering_allowlist: %w[example])
+    end
+
+    context 'in a group milestone' do
+      let(:group_milestone) { create(:group_milestone, group: subgroup, description: markdown) }
+
+      it 'includes iframe correctly' do
+        visit(group_milestone_path(subgroup, group_milestone))
+
+        expect(page).to have_css(expected_selector)
+      end
+    end
+  end
+
+  context 'when feature is configured and enabled for the project' do
+    before do
+      stub_feature_flags(allow_iframes_in_markdown: project)
+    end
+
+    it_behaves_like 'an iframe renderer'
+
+    context 'with explicit dimensions' do
+      let(:issue) { create(:issue, project: project, description: markdown) }
+
+      before do
+        stub_application_setting(iframe_rendering_enabled: true, iframe_rendering_allowlist: %w[example])
+      end
+
+      def overflowing?(selector)
+        find(selector).evaluate_script('this.scrollWidth > this.clientWidth')
+      end
+
+      context 'when both are set' do
+        where(:dimensions) do
+          ['{width=560 height=315}', '{width=560px height=315px}']
+        end
+
+        with_them do
+          let(:markdown) { "![](https://iframe.example/some-video)#{dimensions}\n" }
+
+          it 'keeps the aspect ratio' do
+            visit project_issue_path(project, issue)
+
+            expect(page).to have_css(expected_selector)
+            aspect_ratio = "getComputedStyle(document.querySelector(#{expected_selector.to_json})).aspectRatio"
+            width, height = page.evaluate_script(
+              "(r => [r.width, r.height])(document.querySelector(#{expected_selector.to_json}).getBoundingClientRect())"
+            )
+
+            expect(page.evaluate_script(aspect_ratio)).to eq('560 / 315')
+            expect([width, height]).to eq([560, 315])
+          end
+        end
+      end
+
+      context 'when the requested width is below the minimum' do
+        let(:markdown) { "![](https://iframe.example/some-video){width=10 height=10}\n" }
+
+        it 'widens the frame without growing its height' do
+          visit project_issue_path(project, issue)
+
+          expect(page).to have_css(expected_selector)
+          width, height = page.evaluate_script(
+            "(r => [r.width, r.height])(document.querySelector(#{expected_selector.to_json}).getBoundingClientRect())"
+          )
+
+          expect(width).to eq(272)
+          expect(height).to eq(10)
+        end
+      end
+
+      context 'when the container is narrower than the minimum' do
+        where(:dimensions) do
+          ['{width=10 height=10}', '{width=560 height=315}']
+        end
+
+        with_them do
+          let(:markdown) { "![](https://iframe.example/some-video)#{dimensions}\n" }
+
+          it 'fits the frame to the container' do
+            visit project_issue_path(project, issue)
+
+            expect(page).to have_css(expected_selector)
+            frame, container = page.evaluate_script(<<~JS)
+              (iframe => {
+                iframe.closest('p').style.width = '200px';
+                return [iframe, iframe.closest('p')].map(el => {
+                  const r = el.getBoundingClientRect();
+                  return { left: r.left, right: r.right };
+                });
+              })(document.querySelector(#{expected_selector.to_json}))
+            JS
+
+            expect(frame).to eq(container)
+          end
+
+          context 'when activation is required' do
+            let(:require_activation) { true }
+
+            it 'keeps the placeholder and the warning within the container' do
+              visit project_issue_path(project, issue)
+
+              expect(page).to have_button('Load external content')
+              find('p:has(> .media-container)').execute_script("this.style.width = '200px'")
+
+              expect(overflowing?('p:has(> .media-container)')).to be(false)
+              expect(overflowing?('[data-testid="external-content-placeholder"]')).to be(false)
+
+              click_button 'Load external content'
+
+              expect(page).to have_css(expected_selector)
+              find('p:has(> .media-container)').execute_script("this.style.width = '100px'")
+
+              expect(overflowing?('p:has(> .media-container)')).to be(false)
+              expect(overflowing?('[data-testid="external-content-warning"]')).to be(false)
+            end
+          end
+        end
+      end
+
+      context 'when the width is too narrow for the external content chrome' do
+        let(:markdown) { "![](https://iframe.example/some-video){width=10}\n" }
+        let(:require_activation) { true }
+
+        it 'keeps the placeholder and the warning within their bounds' do
+          visit project_issue_path(project, issue)
+
+          expect(page).to have_button('Load external content')
+          expect(overflowing?('[data-testid="external-content-placeholder"]')).to be(false)
+
+          click_button 'Load external content'
+
+          expect(page).to have_css(expected_selector)
+          expect(overflowing?('[data-testid="external-content-warning"]')).to be(false)
+        end
+      end
+    end
+  end
+
+  context 'when feature is configured and enabled for the project, without dimensions' do
+    let(:issue) { create(:issue, project: project, description: markdown) }
+    let(:require_activation) { true }
+
+    before do
+      stub_feature_flags(allow_iframes_in_markdown: project)
+      stub_application_setting(iframe_rendering_enabled: true, iframe_rendering_allowlist: %w[example])
+    end
+
+    def rendered_size(selector)
+      find(selector).evaluate_script('(r => [r.width, r.height])(this.getBoundingClientRect())')
+    end
+
+    it 'loads the frame into the space the placeholder held' do
+      visit project_issue_path(project, issue)
+
+      placeholder_size = rendered_size('[data-testid="external-content-placeholder"]')
+
+      click_button 'Load external content'
+
+      expect(rendered_size(expected_selector)).to eq(placeholder_size)
+      expect(placeholder_size).to eq([560, 315])
+    end
+  end
+
+  context 'when feature is configured and enabled for the immediate group' do
+    before do
+      stub_feature_flags(allow_iframes_in_markdown: subgroup)
+    end
+
+    it_behaves_like 'an iframe renderer'
+    it_behaves_like 'an iframe renderer in a group'
+  end
+
+  context 'when feature is configured and enabled for an ancestor group' do
+    before do
+      stub_feature_flags(allow_iframes_in_markdown: group)
+    end
+
+    it_behaves_like 'an iframe renderer'
+    it_behaves_like 'an iframe renderer in a group'
+  end
+
+  context 'when feature is enabled but not configured' do
+    before do
+      stub_feature_flags(allow_iframes_in_markdown: true)
+      stub_application_setting(iframe_rendering_enabled: false)
+    end
+
+    context 'in an issue' do
+      let(:issue) { create(:issue, project: project, description: markdown) }
+
+      it 'no iframe is added, the image tag is left untouched' do
+        visit project_issue_path(project, issue)
+
+        # The image may be considered invisible because of the invalid target;
+        # the main thing is it's there, and it's not an iframe.
+        expect(page).to have_css(untouched_selector, visible: :all)
+        expect(page).to have_no_css(expected_selector)
+      end
+    end
+  end
+end

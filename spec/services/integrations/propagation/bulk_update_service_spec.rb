@@ -1,0 +1,411 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Integrations::Propagation::BulkUpdateService, feature_category: :integrations do
+  include JiraIntegrationHelpers
+
+  before_all do
+    stub_jira_integration_test
+  end
+
+  let(:excluded_attributes) do
+    %w[
+      id project_id group_id inherit_from_id instance template
+      created_at updated_at encrypted_properties encrypted_properties_iv
+      event_filters
+    ]
+  end
+
+  let(:batch) do
+    Integration
+      .inherited_descendants_from_self_or_ancestors_from(subgroup_integration)
+      .where(id: group_integration.id..integration.id)
+  end
+
+  # `freeze: false` is required in this spec: one or more `let_it_be` subjects
+  # cannot be frozen by default (deep_freeze traversal failure, a non-AR
+  # subject, or an in-memory mutation that survives reload/refind). Do not
+  # drop these opt-outs or convert them to `let_it_be_with_reload`/`refind`
+  # (see gitlab-org/gitlab#602925).
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be(:subgroup, freeze: false) { create(:group, parent: group) }
+  let_it_be(:group_integration, freeze: false) { create(:jira_integration, :group, group: group, url: 'http://group.jira.com') }
+  let_it_be(:excluded_integration, freeze: false) { create(:jira_integration, :group, group: create(:group), url: 'http://another.jira.com', push_events: false) }
+  let_it_be(:subgroup_integration, freeze: false) do
+    create(:jira_integration, :group,
+      group: subgroup,
+      inherit_from_id: group_integration.id,
+      url: 'http://subgroup.jira.com',
+      push_events: true
+    )
+  end
+
+  let_it_be(:integration, freeze: false) do
+    create(:jira_integration,
+      project: create(:project, group: subgroup),
+      inherit_from_id: subgroup_integration.id,
+      url: 'http://project.jira.com',
+      push_events: false
+    )
+  end
+
+  context 'with inherited integration' do
+    it 'updates the integration', :aggregate_failures do
+      described_class.new(subgroup_integration.reload, batch).execute
+
+      expect(integration.reload.inherit_from_id).to eq(group_integration.id)
+      expect(integration.reload.attributes.except(*excluded_attributes))
+        .to eq(subgroup_integration.reload.attributes.except(*excluded_attributes))
+
+      expect(excluded_integration.reload.inherit_from_id).not_to eq(group_integration.id)
+      expect(excluded_integration.reload.attributes.except(*excluded_attributes))
+        .not_to eq(subgroup_integration.attributes.except(*excluded_attributes))
+    end
+
+    it 'does not change the created_at timestamp' do
+      subgroup_integration.update_column(:created_at, Time.utc(2022, 1, 1))
+
+      expect do
+        described_class.new(subgroup_integration, batch).execute
+      end.not_to change { integration.reload.created_at }
+    end
+
+    it 'sets the updated_at timestamp to the current time', time_travel_to: Time.utc(2022, 1, 1) do
+      expect do
+        described_class.new(subgroup_integration, batch).execute
+      end.to change { integration.reload.updated_at }.to(Time.current)
+    end
+
+    context 'with integration with data fields' do
+      let(:excluded_attributes) do
+        %w[
+          id integration_id created_at updated_at encrypted_properties encrypted_properties_iv
+          group_id project_id
+        ]
+      end
+
+      it 'updates the data fields from the integration', :aggregate_failures do
+        described_class.new(subgroup_integration, batch).execute
+
+        expect(integration.reload.data_fields.attributes.except(*excluded_attributes))
+          .to eq(subgroup_integration.reload.data_fields.attributes.except(*excluded_attributes))
+
+        expect(integration.data_fields.attributes.except(*excluded_attributes))
+          .not_to eq(excluded_integration.data_fields.attributes.except(*excluded_attributes))
+      end
+
+      it 'does not change the created_at timestamp' do
+        subgroup_integration.data_fields.update_column(:created_at, Time.utc(2022, 1, 2))
+
+        expect do
+          described_class.new(subgroup_integration, batch).execute
+        end.not_to change { integration.data_fields.reload.created_at }
+      end
+
+      it 'sets the updated_at timestamp to the current time', time_travel_to: Time.utc(2022, 1, 1) do
+        expect do
+          described_class.new(subgroup_integration, batch).execute
+        end.to change { integration.data_fields.reload.updated_at }.to(Time.current)
+      end
+
+      it 'updates JSONB filters data correctly' do
+        filter = {
+          'global' => {
+            'rules' => [
+              { 'field' => 'user.id', 'operator' => 'eq', 'value' => 1 }
+            ]
+          },
+          'push' => {
+            'rules' => [
+              { 'field' => 'object_kind', 'operator' => 'eq', 'value' => 'work_item' }
+            ]
+          }
+        }
+        subgroup_integration.update!(filter: filter)
+
+        described_class.new(subgroup_integration, batch).execute
+
+        expect(integration.reload.filter).to eq(filter)
+      end
+    end
+  end
+
+  it 'works with batch as an ActiveRecord::Relation' do
+    expect do
+      described_class.new(group_integration, Integration.where(id: integration.id)).execute
+    end.to change { integration.reload.url }.to(group_integration.url)
+  end
+
+  it 'works with batch as an array of ActiveRecord objects' do
+    expect do
+      described_class.new(group_integration, [integration]).execute
+    end.to change { integration.reload.url }.to(group_integration.url)
+  end
+
+  context 'with different foreign key of data_fields' do
+    let(:integration) { create(:zentao_integration, project: create(:project, group: group)) }
+    let(:group_integration) do
+      create(:zentao_integration, :group,
+        group: group,
+        url: 'https://group.zentao.net',
+        api_token: 'GROUP_TOKEN',
+        zentao_product_xid: '1'
+      )
+    end
+
+    it 'works with batch as an array of ActiveRecord objects' do
+      expect do
+        described_class.new(group_integration, [integration]).execute
+      end.to change { integration.reload.url }.to(group_integration.url)
+    end
+  end
+
+  context 'with a GitLab for Slack app integration' do
+    let_it_be(:subgroup, freeze: false) { create(:group, parent: group) }
+    # `freeze: false` is required in this spec: one or more `let_it_be` subjects
+    # cannot be frozen by default (deep_freeze traversal failure, a non-AR
+    # subject, or an in-memory mutation that survives reload/refind). Do not
+    # drop these opt-outs or convert them to `let_it_be_with_reload`/`refind`
+    # (see gitlab-org/gitlab#602925).
+    let_it_be(:project, freeze: false) { create(:project, group: subgroup) }
+
+    let_it_be(:group_integration, freeze: false) do
+      create(:gitlab_slack_application_integration, :group,
+        group: group,
+        slack_integration: build(:slack_integration,
+          :group,
+          group: group,
+          team_id: 'group_integration_team_id',
+          team_name: 'group_integration_team_name',
+          alias: 'group_alias',
+          bot_access_token: 'group_integration_token',
+          authorized_scope_names: %w[group_scope]
+        )
+      )
+    end
+
+    let_it_be(:subgroup_integration, freeze: false) do
+      create(:gitlab_slack_application_integration, :group,
+        group: subgroup,
+        inherit_from_id: group_integration.id,
+        slack_integration: build(:slack_integration,
+          :group,
+          group: subgroup,
+          team_id: 'subgroup_integration_team_id',
+          team_name: 'subgroup_integration_team_name',
+          alias: 'subgroup_alias',
+          bot_access_token: 'subgroup_integration_token',
+          authorized_scope_names: %w[subgroup_scope]
+        )
+      )
+    end
+
+    let_it_be(:integration, freeze: false) do
+      create(:gitlab_slack_application_integration,
+        project: project,
+        inherit_from_id: subgroup_integration.id,
+        slack_integration: build(:slack_integration,
+          :project,
+          project: project,
+          alias: 'project_alias',
+          authorized_scope_names: %w[project_scope]
+        )
+      )
+    end
+
+    let_it_be(:excluded_integration, freeze: false) do
+      create(:gitlab_slack_application_integration,
+        slack_integration: build(:slack_integration,
+          :instance,
+          team_id: 'excluded_team_id',
+          alias: 'excluded_alias',
+          authorized_scope_names: %w[excluded_scope]
+        )
+      )
+    end
+
+    let(:group_slack_integration) { group_integration.slack_integration }
+
+    let(:batch) { Integration.id_in([subgroup_integration, integration]) }
+
+    subject(:execute_service) do
+      described_class.new(group_integration, batch).execute
+    end
+
+    it 'updates the SlackIntegration records and scopes, but not aliases' do
+      execute_service
+
+      expect(subgroup_integration.reload.slack_integration).to have_attributes(
+        team_id: group_slack_integration.team_id,
+        team_name: group_slack_integration.team_name,
+        alias: 'subgroup_alias',
+        user_id: group_slack_integration.user_id,
+        bot_user_id: group_slack_integration.bot_user_id,
+        bot_access_token: group_slack_integration.bot_access_token,
+        created_at: be_present,
+        updated_at: be_present,
+        authorized_scope_names: group_slack_integration.authorized_scope_names
+      )
+
+      expect(integration.reload.slack_integration).to have_attributes(
+        team_id: group_slack_integration.team_id,
+        team_name: group_slack_integration.team_name,
+        alias: 'project_alias',
+        user_id: group_slack_integration.user_id,
+        bot_user_id: group_slack_integration.bot_user_id,
+        bot_access_token: group_slack_integration.bot_access_token,
+        created_at: be_present,
+        updated_at: be_present,
+        authorized_scope_names: group_slack_integration.authorized_scope_names
+      )
+
+      expect(excluded_integration.reload.slack_integration).to have_attributes(
+        team_id: 'excluded_team_id',
+        alias: 'excluded_alias',
+        authorized_scope_names: %w[excluded_scope]
+      )
+    end
+
+    it 'sets the correct sharding key on updated records' do
+      execute_service
+
+      expect(subgroup_integration.reload.slack_integration.slack_integrations_scopes).to contain_exactly(
+        have_attributes(
+          organization_id: nil,
+          group_id: subgroup.id,
+          project_id: nil
+        )
+      )
+      expect(integration.reload.slack_integration.slack_integrations_scopes).to contain_exactly(
+        have_attributes(
+          organization_id: nil,
+          group_id: nil,
+          project_id: project.id
+        )
+      )
+    end
+
+    context 'when integration is disabled' do
+      before do
+        group_integration.update!(active: false)
+      end
+
+      it 'deletes associated SlackIntegration records' do
+        expect { execute_service }.to change { SlackIntegration.count }.by(-2)
+        expect(integration.reload.slack_integration).to be_nil
+        expect(subgroup_integration.reload.slack_integration).to be_nil
+        expect(excluded_integration.reload.slack_integration).to be_kind_of(SlackIntegration)
+      end
+
+      it 'deletes associated IntegrationApiScope records' do
+        expect { execute_service }
+          .to change { Integrations::SlackWorkspace::IntegrationApiScope.count }
+          .by(-2)
+
+        ids = Integrations::SlackWorkspace::IntegrationApiScope.pluck(:slack_integration_id)
+
+        expect(ids).to contain_exactly(
+          group_integration.slack_integration.id,
+          excluded_integration.slack_integration.id
+        )
+      end
+
+      context 'and re-enabled again' do
+        before do
+          described_class.new(group_integration, batch).execute # Propagate disable
+
+          group_integration.update!(active: true)
+        end
+
+        it 'recreates SlackIntegration records and scopes using default alias' do
+          expect { execute_service }.to change { SlackIntegration.count }.by(2)
+
+          expect(subgroup_integration.reload.slack_integration).to have_attributes(
+            team_id: group_slack_integration.team_id,
+            team_name: group_slack_integration.team_name,
+            alias: subgroup.full_path,
+            user_id: group_slack_integration.user_id,
+            bot_user_id: group_slack_integration.bot_user_id,
+            bot_access_token: group_slack_integration.bot_access_token,
+            created_at: be_present,
+            updated_at: be_present,
+            authorized_scope_names: group_slack_integration.authorized_scope_names,
+            organization_id: nil,
+            group_id: subgroup.id,
+            project_id: nil
+          )
+
+          expect(integration.reload.slack_integration).to have_attributes(
+            team_id: group_slack_integration.team_id,
+            team_name: group_slack_integration.team_name,
+            alias: project.full_path,
+            user_id: group_slack_integration.user_id,
+            bot_user_id: group_slack_integration.bot_user_id,
+            bot_access_token: group_slack_integration.bot_access_token,
+            created_at: be_present,
+            updated_at: be_present,
+            authorized_scope_names: group_slack_integration.authorized_scope_names,
+            organization_id: nil,
+            group_id: nil,
+            project_id: project.id
+          )
+
+          expect(excluded_integration.reload.slack_integration).to have_attributes(
+            team_id: 'excluded_team_id',
+            alias: 'excluded_alias',
+            authorized_scope_names: %w[excluded_scope]
+          )
+        end
+      end
+    end
+
+    it 'avoids N+1 database queries' do
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) { execute_service }
+
+      project_2 = create(:project, group: subgroup)
+      project_2_integration = create(:gitlab_slack_application_integration,
+        project: project_2,
+        inherit_from_id: subgroup_integration.id,
+        slack_integration: build(:slack_integration,
+          :project,
+          project: project_2,
+          alias: 'project_2_alias',
+          authorized_scope_names: %w[project_2_scope]
+        )
+      )
+
+      batch = Integration.id_in([subgroup_integration, integration, project_2_integration])
+
+      expect do
+        described_class.new(group_integration, batch).execute
+      end.to issue_same_number_of_queries_as(control)
+      expect(project_2_integration.reload.slack_integration).to have_attributes(
+        team_id: group_slack_integration.team_id,
+        authorized_scope_names: group_slack_integration.authorized_scope_names
+      )
+    end
+
+    describe 'propagation from instance integration' do
+      # `freeze: false` is required in this spec: one or more `let_it_be` subjects
+      # cannot be frozen by default (deep_freeze traversal failure, a non-AR
+      # subject, or an in-memory mutation that survives reload/refind). Do not
+      # drop these opt-outs or convert them to `let_it_be_with_reload`/`refind`
+      # (see gitlab-org/gitlab#602925).
+      let_it_be(:instance_integration, freeze: false) { create(:jira_integration, :instance) }
+
+      let_it_be(:integration, freeze: false) do
+        create(:jira_integration, project: create(:project), inherit_from_id: instance_integration.id)
+      end
+
+      it 'does not propagate organization' do
+        batch = Integration.id_in([integration])
+
+        described_class.new(integration.reload, batch).execute
+
+        expect(instance_integration.organization).not_to be_nil
+        expect(integration.reload.organization).to be_nil
+      end
+    end
+  end
+end

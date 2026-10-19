@@ -1,0 +1,444 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Resolvers::Ci::Catalog::ResourcesResolver, feature_category: :pipeline_composition do
+  include GraphqlHelpers
+
+  let_it_be(:namespace, freeze: false) { create(:group) }
+  let_it_be(:private_namespace_project, freeze: false) do
+    create(:project, :private, name: 'z private test', namespace: namespace)
+  end
+
+  let_it_be(:private_namespace_project_2, freeze: false) do
+    create(:project, :private, name: 'a private test', namespace: namespace)
+  end
+
+  let_it_be(:public_namespace_project, freeze: false) do
+    create(:project, :public, name: 'public', description: 'Test', namespace: namespace)
+  end
+
+  let_it_be(:internal_project, freeze: false) { create(:project, :internal, name: 'internal') }
+  let_it_be(:private_resource, freeze: false) do
+    create(:ci_catalog_resource, :published, project: private_namespace_project)
+  end
+
+  let_it_be(:private_resource_2, freeze: false) { create(:ci_catalog_resource, project: private_namespace_project_2) }
+  let_it_be(:public_resource, freeze: false) do
+    create(:ci_catalog_resource, :published, project: public_namespace_project, verification_level: 100)
+  end
+
+  let_it_be(:internal_resource, freeze: false) { create(:ci_catalog_resource, :published, project: internal_project) }
+  let_it_be(:user, freeze: false) { create(:user) }
+
+  let(:ctx) { { current_user: user } }
+  let(:search) { nil }
+  let(:sort) { nil }
+  let(:scope) { nil }
+  let(:project_path) { nil }
+  let(:verification_level) { nil }
+  let(:topics) { [] }
+  let(:min_access_level) { nil }
+  let(:group_ids) { nil }
+
+  let(:args) do
+    {
+      project_path: project_path,
+      sort: sort,
+      search: search,
+      scope: scope,
+      verification_level: verification_level,
+      topics: topics,
+      min_access_level: min_access_level,
+      group_ids: group_ids
+    }.compact
+  end
+
+  subject(:result) { resolve(described_class, ctx: ctx, args: args) }
+
+  describe '#resolve' do
+    context 'with an authorized user' do
+      before_all do
+        namespace.add_reporter(user)
+        internal_project.add_reporter(user)
+      end
+
+      context 'when sort argument is not provided' do
+        it 'returns all catalog resources sorted by descending created date' do
+          expect(result.items.pluck(:name)).to eq(['internal', 'public', 'z private test'])
+        end
+      end
+
+      context 'when the sort argument is provided' do
+        let(:sort) { 'NAME_DESC' }
+
+        it 'returns all published catalog resources sorted by descending name' do
+          expect(result.items.pluck(:name)).to eq(['z private test', 'public', 'internal'])
+        end
+      end
+
+      context 'when the search argument is provided' do
+        let(:search) { 'test' }
+
+        it 'returns published catalog resources that match the search term' do
+          expect(result.items.pluck(:name)).to contain_exactly('z private test', 'public')
+        end
+      end
+
+      context 'with scope argument' do
+        it 'defaults to :all and returns all catalog resources' do
+          expect(result.items.to_a.size).to be(3)
+          expect(result.items.pluck(:name)).to contain_exactly('public', 'internal', 'z private test')
+        end
+
+        context 'when the scope argument is :namespaces' do
+          let(:scope) { 'NAMESPACES' }
+
+          it 'returns projects of the namespaces the user is a member of' do
+            namespace = create(:namespace, owner: user)
+            internal_public_project = create(:project, :internal, name: 'internal public', namespace: namespace)
+            create(:ci_catalog_resource, :published, project: internal_public_project)
+
+            expect(result.items.to_a.size).to be(4)
+            expect(result.items.pluck(:name)).to contain_exactly('public', 'internal public', 'internal',
+              'z private test')
+          end
+
+          # rubocop:disable RSpec/MultipleMemoizedHelpers -- Inherits helpers from parent context
+          context 'with min_access_level argument' do
+            let_it_be(:access_level_user, freeze: false) { create(:user) }
+            let_it_be(:maintainer_project, freeze: false) { create(:project, :private, name: 'maintainer project') }
+            let_it_be(:developer_project, freeze: false) { create(:project, :private, name: 'developer project') }
+            let_it_be(:reporter_project, freeze: false) { create(:project, :private, name: 'reporter project') }
+            let_it_be(:owner_project, freeze: false) { create(:project, :private, name: 'owner project') }
+            let_it_be(:maintainer_resource, freeze: false) do
+              create(:ci_catalog_resource, :published, project: maintainer_project)
+            end
+
+            let_it_be(:developer_resource, freeze: false) do
+              create(:ci_catalog_resource, :published, project: developer_project)
+            end
+
+            let_it_be(:reporter_resource, freeze: false) do
+              create(:ci_catalog_resource, :published, project: reporter_project)
+            end
+
+            let_it_be(:owner_resource, freeze: false) do
+              create(:ci_catalog_resource, :published, project: owner_project)
+            end
+
+            let(:ctx) { { current_user: access_level_user } }
+
+            before_all do
+              maintainer_project.add_maintainer(access_level_user)
+              developer_project.add_developer(access_level_user)
+              reporter_project.add_reporter(access_level_user)
+              owner_project.add_owner(access_level_user)
+            end
+
+            context 'when min_access_level is MAINTAINER' do
+              let(:min_access_level) { 'MAINTAINER' }
+
+              it 'returns only resources where user has maintainer or higher access' do
+                expect(result.items.pluck(:name)).to contain_exactly('maintainer project', 'owner project')
+              end
+            end
+
+            context 'when min_access_level is DEVELOPER' do
+              let(:min_access_level) { 'DEVELOPER' }
+
+              it 'returns resources where user has developer or higher access' do
+                expect(result.items.pluck(:name)).to contain_exactly('developer project', 'maintainer project',
+                  'owner project')
+              end
+            end
+
+            context 'when min_access_level is REPORTER' do
+              let(:min_access_level) { 'REPORTER' }
+
+              it 'returns resources where user has reporter or higher access' do
+                expect(result.items.pluck(:name)).to contain_exactly('reporter project', 'developer project',
+                  'maintainer project', 'owner project')
+              end
+            end
+
+            context 'when min_access_level is OWNER' do
+              let(:min_access_level) { 'OWNER' }
+
+              it 'returns only resources where user has owner access' do
+                expect(result.items.pluck(:name)).to contain_exactly('owner project')
+              end
+            end
+
+            context 'when min_access_level is not provided' do
+              let(:min_access_level) { nil }
+
+              it 'returns all visible resources regardless of access level' do
+                expect(result.items.pluck(:name)).to include('reporter project', 'developer project',
+                  'maintainer project', 'owner project')
+              end
+            end
+
+            context 'when combined with other filters' do
+              let(:min_access_level) { 'MAINTAINER' }
+
+              context 'with search' do
+                let(:search) { 'maintainer' }
+
+                it 'returns resources matching both min_access_level and search' do
+                  expect(result.items.pluck(:name)).to contain_exactly('maintainer project')
+                end
+              end
+
+              context 'with sort' do
+                let(:sort) { 'NAME_ASC' }
+
+                it 'returns filtered resources in sorted order' do
+                  expect(result.items.pluck(:name)).to eq(['maintainer project', 'owner project'])
+                end
+              end
+            end
+          end
+          # rubocop:enable RSpec/MultipleMemoizedHelpers
+        end
+
+        context 'when the scope is invalid' do
+          let(:scope) { 'INVALID' }
+
+          it 'defaults to :all and returns all catalog resources' do
+            expect(result.items.to_a.size).to be(3)
+            expect(result.items.pluck(:name)).to contain_exactly('public', 'internal', 'z private test')
+          end
+        end
+      end
+
+      context 'with verification_level argument' do
+        let(:verification_level) { :gitlab_maintained }
+
+        it 'returns published catalog resources that match the verification level' do
+          expect(result.items.pluck(:name)).to contain_exactly('public')
+        end
+      end
+
+      context 'with topics argument' do
+        let_it_be(:topic_ruby, freeze: false) { create(:topic, name: 'ruby') }
+        let_it_be(:topic_rails, freeze: false) { create(:topic, name: 'rails') }
+        let_it_be(:topic_gitlab, freeze: false) { create(:topic, name: 'gitlab') }
+
+        before_all do
+          create(:project_topic, project: public_namespace_project, topic: topic_ruby)
+          create(:project_topic, project: public_namespace_project, topic: topic_rails)
+          create(:project_topic, project: internal_project, topic: topic_gitlab)
+        end
+
+        context 'when filtering by multiple topics' do
+          let(:topics) { %w[ruby gitlab] }
+
+          it 'returns resources with projects matching any of the given topic names' do
+            ordered_names = result.items.reorder('catalog_resources.name DESC').pluck(:name)
+            expect(ordered_names).to eq(%w[public internal])
+          end
+        end
+
+        context 'when filtering by a single topic' do
+          let(:topics) { %w[ruby] }
+
+          it 'returns resources with projects matching the topic name' do
+            ordered_names = result.items.reorder('catalog_resources.name DESC').pluck(:name)
+            expect(ordered_names).to contain_exactly('public')
+          end
+        end
+
+        context 'when combining with other filters' do
+          context 'with search' do
+            let(:topics) { %w[ruby] }
+            let(:search) { 'Test' }
+
+            it 'returns resources matching both filters' do
+              ordered_names = result.items.reorder('catalog_resources.name DESC').pluck(:name)
+              expect(ordered_names).to contain_exactly('public')
+            end
+          end
+
+          context 'with verification level' do
+            let(:topics) { %w[ruby] }
+            let(:verification_level) { :gitlab_maintained }
+
+            it 'returns resources matching both filters' do
+              ordered_names = result.items.reorder('catalog_resources.name DESC').pluck(:name)
+              expect(ordered_names).to contain_exactly('public')
+            end
+          end
+
+          context 'with scope' do
+            let(:topics) { %w[ruby] }
+            let(:scope) { 'NAMESPACES' }
+
+            it 'returns resources matching both filters' do
+              ordered_names = result.items.reorder('catalog_resources.name DESC').pluck(:name)
+              expect(ordered_names).to contain_exactly('public')
+            end
+          end
+
+          context 'with sort' do
+            let(:topics) { %w[ruby gitlab] }
+            let(:sort) { 'NAME_DESC' }
+
+            it 'returns filtered resources in sorted order' do
+              ordered_names = result.items.reorder('catalog_resources.name DESC').pluck(:name)
+              expect(ordered_names).to eq(%w[public internal])
+            end
+          end
+        end
+
+        context 'when filtering by non-existent topics' do
+          let(:topics) { %w[nonexistent] }
+
+          it 'returns no resources' do
+            expect(result.items).to be_empty
+          end
+        end
+
+        context 'when topics argument is empty' do
+          let(:topics) { [] }
+
+          it 'returns all visible resources' do
+            ordered_names = result.items.reorder('catalog_resources.name DESC').pluck(:name)
+            expect(ordered_names).to contain_exactly('public', 'internal', 'z private test')
+          end
+        end
+      end
+
+      context 'with group_ids argument' do
+        let_it_be(:other_namespace, freeze: false) { create(:group) }
+        let_it_be(:other_namespace_project, freeze: false) do
+          create(:project, :public, name: 'other group resource', namespace: other_namespace, reporters: user)
+        end
+
+        let_it_be(:other_namespace_resource, freeze: false) do
+          create(:ci_catalog_resource, :published, project: other_namespace_project)
+        end
+
+        context 'when filtering by a single group' do
+          let(:group_ids) { [namespace.to_global_id] }
+
+          it 'returns only resources whose project namespace matches' do
+            expect(result.items.pluck(:name)).to contain_exactly('public', 'z private test')
+          end
+        end
+
+        context 'when filtering by multiple groups' do
+          let(:group_ids) { [namespace.to_global_id, other_namespace.to_global_id] }
+
+          it 'returns the union of resources across the given namespaces' do
+            expect(result.items.pluck(:name))
+              .to contain_exactly('public', 'z private test', 'other group resource')
+          end
+        end
+
+        context 'when group_ids does not match any namespace' do
+          let_it_be(:empty_namespace, freeze: false) { create(:group) }
+          let(:group_ids) { [empty_namespace.to_global_id] }
+
+          it 'returns no resources' do
+            expect(result.items).to be_empty
+          end
+        end
+
+        context 'when group_ids is empty' do
+          let(:group_ids) { [] }
+
+          it 'returns all visible resources' do
+            expect(result.items.pluck(:name)).to contain_exactly('public', 'internal', 'z private test',
+              'other group resource')
+          end
+        end
+
+        context 'when combined with other filters' do
+          context 'with search' do
+            let(:group_ids) { [namespace.to_global_id] }
+            let(:search) { 'public' }
+
+            it 'returns resources matching both filters' do
+              expect(result.items.pluck(:name)).to contain_exactly('public')
+            end
+          end
+
+          context 'with scope' do
+            let(:group_ids) { [namespace.to_global_id] }
+            let(:scope) { 'NAMESPACES' }
+
+            it 'returns resources matching both filters' do
+              expect(result.items.pluck(:name)).to contain_exactly('public', 'z private test')
+            end
+          end
+        end
+      end
+    end
+
+    context 'when the user is anonymous' do
+      let_it_be(:user, freeze: false) { nil }
+
+      it 'returns only public projects' do
+        expect(result.items.to_a.size).to be(1)
+        expect(result.items.pluck(:name)).to contain_exactly('public')
+      end
+    end
+  end
+
+  describe 'preloads' do
+    before_all do
+      namespace.add_reporter(user)
+      internal_project.add_reporter(user)
+    end
+
+    it 'avoids N+1 queries when accessing versions and archived fields' do
+      # Create versions with components for resources
+      version1 = create(:ci_catalog_resource_version, catalog_resource: public_resource,
+        project: public_namespace_project)
+      create(:ci_catalog_resource_component, version: version1, catalog_resource: public_resource,
+        project: public_namespace_project)
+
+      version2 = create(:ci_catalog_resource_version, catalog_resource: private_resource,
+        project: private_namespace_project)
+      create(:ci_catalog_resource_component, version: version2, catalog_resource: private_resource,
+        project: private_namespace_project)
+
+      # Query that requests versions and archived fields
+      query = <<~GQL
+        query {
+          ciCatalogResources {
+            nodes {
+              id
+              archived
+              versions {
+                nodes {
+                  id
+                  components {
+                    nodes {
+                      id
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      GQL
+
+      control = ActiveRecord::QueryRecorder.new do
+        GitlabSchema.execute(query, context: { current_user: user }).to_h
+      end
+
+      # Add more resources with versions
+      version3 = create(:ci_catalog_resource_version, catalog_resource: internal_resource,
+        project: internal_project)
+      create(:ci_catalog_resource_component, version: version3, catalog_resource: internal_resource,
+        project: internal_project)
+
+      expect do
+        GitlabSchema.execute(query, context: { current_user: user }).to_h
+      end.not_to exceed_query_limit(control)
+    end
+  end
+end

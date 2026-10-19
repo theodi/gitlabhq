@@ -1,0 +1,10 @@
+.page-title-holder {
+  .page-title {
+    margin: $gl-spacing-scale-4 0;
+    @apply gl-text-heading;
+  }
+
+  .page-title-controls {
+    margin-left: auto;
+  }
+}

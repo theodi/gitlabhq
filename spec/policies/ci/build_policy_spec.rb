@@ -1,0 +1,739 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::BuildPolicy, feature_category: :continuous_integration do
+  include Ci::PipelineVariableHelpers
+
+  let(:user) { create(:user) }
+  let(:build) { create(:ci_build, pipeline: pipeline) }
+  let(:pipeline) { create(:ci_pipeline, project: project) }
+  let(:overrides) do
+    %i[
+      create_build_service_proxy
+      create_build_terminal
+      read_build_metadata
+      read_build_trace
+      read_ci_minutes_limited_summary
+      read_job_artifacts
+      read_web_ide_terminal
+      troubleshoot_job_with_ai
+      update_web_ide_terminal
+    ]
+  end
+
+  subject(:policy) do
+    described_class.new(user, build)
+  end
+
+  it_behaves_like 'a deployable job policy', :ci_build
+
+  shared_context 'public pipelines disabled' do
+    before do
+      project.update_columns(public_builds: false)
+    end
+  end
+
+  shared_context 'pipeline and build for project' do
+    let_it_be(:pipeline) { create(:ci_pipeline, project: project) }
+    let_it_be(:build) { create(:ci_build, pipeline: pipeline) }
+  end
+
+  describe 'delegation' do
+    let_it_be_with_reload(:project) { create(:project) }
+
+    include_context 'pipeline and build for project'
+
+    it { expect(policy).to delegate_to(ProjectPolicy) }
+    it { expect(described_class).to override_delegates_for(*overrides) }
+  end
+
+  describe 'artifacts access config with access keyword' do
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project, :public, developers: user) }
+
+    include_context 'public pipelines disabled'
+
+    context 'when job artifact access is set to all' do
+      let(:build) { create(:ci_build, :artifacts, pipeline: pipeline) }
+
+      it 'allows read_job_artifacts to project members' do
+        expect_allowed(:read_job_artifacts)
+      end
+    end
+
+    context 'when job artifact is private to developers' do
+      let(:build) { create(:ci_build, :private_artifacts, pipeline: pipeline) }
+
+      it 'allows read_job_artifacts to project members' do
+        expect_allowed(:read_job_artifacts)
+      end
+
+      context 'when user is anon' do
+        let(:user2) { create(:user) }
+
+        subject { described_class.new(user2, build) }
+
+        it 'disallows read_job_artifacts to anon user' do
+          expect_disallowed(:read_job_artifacts)
+        end
+      end
+    end
+
+    context 'when job artifacts are restricted by different roles' do
+      using RSpec::Parameterized::TableSyntax
+
+      let_it_be(:role_users) do
+        {
+          maintainer: create(:user, maintainer_of: project),
+          owner: create(:user, owner_of: project),
+          developer: user,
+          guest: create(:user, guest_of: project)
+        }
+      end
+
+      where(:artifact_trait, :config_build_access_trait, :role, :allowed) do
+        # --- Maintainer-only access ---
+        :artifacts           | :with_public_artifacts_config | :maintainer | true
+        :artifacts           | :with_public_artifacts_config | :owner      | true
+        :artifacts           | :with_public_artifacts_config | :developer  | true
+        :artifacts           | :with_public_artifacts_config | :guest      | false
+
+        # -- Guest cannot read builds when public_builds is false (set by shared context above) --
+        :artifacts           | :with_none_access_artifacts   | :guest      | false
+
+        :private_artifacts   | :with_private_artifacts_config | :maintainer | true
+        :private_artifacts   | :with_private_artifacts_config | :owner      | true
+        :private_artifacts   | :with_private_artifacts_config | :developer  | true
+        :private_artifacts   | :with_private_artifacts_config | :guest      | false
+
+        :private_artifacts   | :with_none_access_artifacts    | :developer  | true
+
+        :no_access_artifacts | :with_none_access_artifacts | :maintainer | false
+        :no_access_artifacts | :with_none_access_artifacts | :owner      | false
+        :no_access_artifacts | :with_none_access_artifacts | :developer  | false
+        :no_access_artifacts | :with_none_access_artifacts | :guest      | false
+
+        :no_access_artifacts | :with_developer_access_artifacts | :developer | false
+
+        :artifacts_with_maintainer_access | :with_maintainer_access_artifacts | :maintainer | true
+        :artifacts_with_maintainer_access | :with_maintainer_access_artifacts | :owner      | true
+        :artifacts_with_maintainer_access | :with_maintainer_access_artifacts | :developer  | false
+        :artifacts_with_maintainer_access | :with_maintainer_access_artifacts | :guest      | false
+
+        # -- We match developer access to private access level on job artifacts --
+        :private_artifacts   | :with_developer_access_artifacts | :maintainer | true
+        :private_artifacts   | :with_developer_access_artifacts | :owner      | true
+        :private_artifacts   | :with_developer_access_artifacts | :developer  | true
+        :private_artifacts   | :with_developer_access_artifacts | :guest      | false
+      end
+
+      with_them do
+        let(:user) { role_users[role] }
+        let(:build)  { create(:ci_build, artifact_trait, config_build_access_trait, pipeline: pipeline, project: project) }
+        let(:policy) { described_class.new(user, build) }
+
+        it 'applies the expected permission' do
+          allowed ? expect_allowed(:read_job_artifacts) : expect_disallowed(:read_job_artifacts)
+        end
+      end
+    end
+
+    context 'when job artifact access is set to none' do
+      let(:build) { create(:ci_build, :no_access_artifacts, pipeline: pipeline) }
+
+      it 'disallows read_job_artifacts to project members' do
+        expect_disallowed(:read_job_artifacts)
+      end
+    end
+
+    context 'when no job artifacts on the build' do
+      let(:build) { create(:ci_build, pipeline: pipeline) }
+      let_it_be(:user) { create(:user) }
+      let_it_be_with_reload(:project) { create(:project, :public, developers: user) }
+
+      it 'allows read_job_artifacts to project members' do
+        expect_allowed(:read_job_artifacts)
+      end
+    end
+  end
+
+  describe ':read_build_trace' do
+    using RSpec::Parameterized::TableSyntax
+
+    let_it_be(:public_project) { create(:project, :public) }
+    let_it_be(:duo_workflow_build) do
+      create(:ci_build, pipeline: create(:ci_pipeline, project: public_project, source: :duo_workflow))
+    end
+
+    let_it_be(:push_build) do
+      create(:ci_build, pipeline: create(:ci_pipeline, project: public_project, source: :push))
+    end
+
+    let_it_be(:non_member) { create(:user) }
+    let_it_be(:guest) { create(:user, guest_of: public_project) }
+    let_it_be(:planner) { create(:user, planner_of: public_project) }
+    let_it_be(:reporter) { create(:user, reporter_of: public_project) }
+    let_it_be(:security_manager) { create(:user, security_manager_of: public_project) }
+    let_it_be(:developer) { create(:user, developer_of: public_project) }
+    let_it_be(:maintainer) { create(:user, maintainer_of: public_project) }
+    let_it_be(:owner) { create(:user, owner_of: public_project) }
+
+    where(:build, :user, :allowed) do
+      ref(:duo_workflow_build) | nil                    | false
+      ref(:duo_workflow_build) | ref(:non_member)       | false
+      ref(:duo_workflow_build) | ref(:guest)            | false
+      ref(:duo_workflow_build) | ref(:planner)          | false
+      ref(:duo_workflow_build) | ref(:reporter)         | false
+      ref(:duo_workflow_build) | ref(:security_manager) | false
+      ref(:duo_workflow_build) | ref(:developer)        | true
+      ref(:duo_workflow_build) | ref(:maintainer)       | true
+      ref(:duo_workflow_build) | ref(:owner)            | true
+      ref(:push_build)         | nil                    | true
+      ref(:push_build)         | ref(:non_member)       | true
+      ref(:push_build)         | ref(:guest)            | true
+      ref(:push_build)         | ref(:planner)          | true
+      ref(:push_build)         | ref(:reporter)         | true
+      ref(:push_build)         | ref(:security_manager) | true
+      ref(:push_build)         | ref(:developer)        | true
+      ref(:push_build)         | ref(:maintainer)       | true
+      ref(:push_build)         | ref(:owner)            | true
+    end
+
+    with_them do
+      it { allowed ? expect_allowed(:read_build_trace) : expect_disallowed(:read_build_trace) }
+    end
+
+    context 'when user is an admin' do
+      let_it_be(:user) { create(:admin) }
+      let(:build) { duo_workflow_build }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { expect_allowed(:read_build_trace) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { expect_disallowed(:read_build_trace) }
+      end
+    end
+
+    context 'when the project is archived' do
+      let_it_be(:archived_project) { create(:project, :public, :archived) }
+      let_it_be(:user) { create(:user, developer_of: archived_project) }
+      let_it_be(:build) do
+        create(:ci_build, pipeline: create(:ci_pipeline, project: archived_project, source: :duo_workflow))
+      end
+
+      it 'allows developers to read the log of a duo_workflow job' do
+        expect_allowed(:read_build_trace)
+      end
+    end
+
+    context 'when the pipeline variables file is missing from storage' do
+      let_it_be(:pipeline) { create(:ci_pipeline, project: public_project) }
+      let_it_be(:build) { create(:ci_build, pipeline: pipeline) }
+
+      before_all do
+        create_or_replace_pipeline_variables(pipeline, { key: 'SOME_VARIABLE', value: 'value' })
+        pipeline.pipeline_artifacts_pipeline_variables.file.remove!
+        pipeline.association(:pipeline_artifacts_pipeline_variables).reset
+      end
+
+      context 'when the user is a reporter' do
+        let(:user) { reporter }
+
+        it { expect_disallowed(:read_build_trace) }
+      end
+
+      context 'when the user is a developer' do
+        let(:user) { developer }
+
+        it { expect_allowed(:read_build_trace) }
+      end
+    end
+  end
+
+  describe '#rules' do
+    context 'when anonymous user has access to the project' do
+      let_it_be_with_reload(:project) { create(:project, :public) }
+
+      context 'when public builds are disabled' do
+        include_context 'public pipelines disabled'
+
+        it 'does not include ability to read build' do
+          expect_disallowed(:read_build)
+        end
+      end
+    end
+
+    context 'when team member has access to the project' do
+      context 'team member is a reporter' do
+        let_it_be(:user) { create(:user) }
+        let_it_be_with_reload(:project) { create(:project, :public, reporters: user) }
+
+        context 'when public builds are disabled' do
+          include_context 'public pipelines disabled'
+
+          it 'includes ability to read build' do
+            expect_allowed(:read_build)
+          end
+        end
+      end
+
+      context 'when maintainer is allowed to push to pipeline branch' do
+        let(:project) { create(:project, :public) }
+
+        before do
+          project.add_maintainer(user)
+
+          allow(project).to receive_messages(empty_repo?: false, branch_allows_collaboration?: true)
+        end
+
+        it 'enables updates if user is maintainer', :aggregate_failures do
+          expect_allowed(:cancel_build, :update_build)
+        end
+      end
+
+      context 'when branch allows collaboration and user is a non-member' do
+        subject { policy }
+
+        before do
+          allow(project).to receive_messages(empty_repo?: false, branch_allows_collaboration?: true)
+        end
+
+        context 'on a public project' do
+          let_it_be_with_reload(:project) { create(:project, :public) }
+
+          it { expect_allowed(:cancel_build, *described_class.all_job_update_abilities) }
+        end
+
+        context 'on an internal project' do
+          let_it_be_with_reload(:project) { create(:project, :internal) }
+
+          it { expect_allowed(:cancel_build, *described_class.all_job_update_abilities) }
+
+          context 'when the user is external' do
+            let_it_be(:user) { create(:user, external: true) }
+
+            it { expect_disallowed(:cancel_build) }
+          end
+        end
+
+        context 'on a private project' do
+          let_it_be_with_reload(:project) { create(:project, :private) }
+
+          it { expect_disallowed(:cancel_build) }
+        end
+      end
+    end
+
+    describe 'rules for archived jobs' do
+      let_it_be(:user) { create(:user) }
+      let_it_be_with_reload(:project) { create(:project, :repository, developers: user) }
+
+      let(:build) { create(:ci_build, user: user, pipeline: pipeline, ref: 'feature') }
+
+      context 'when job is not archived' do
+        it 'allows update and cleanup job abilities' do
+          described_class.all_job_update_abilities.each do |perm|
+            expect_allowed(perm)
+          end
+
+          described_class.all_job_cleanup_abilities.each do |perm|
+            expect_allowed(perm)
+          end
+        end
+      end
+
+      context 'when job is archived' do
+        before do
+          allow(build).to receive(:archived?).and_return(true)
+        end
+
+        it 'prevents user facing update job abilities while allowing cleanup job abilities' do
+          described_class.job_user_facing_update_abilities.each do |perm|
+            expect_disallowed(perm)
+          end
+
+          described_class.all_job_cleanup_abilities.each do |perm|
+            expect_allowed(perm)
+          end
+        end
+      end
+    end
+
+    describe 'rules for protected ref', :clean_gitlab_redis_cache do
+      let_it_be_with_reload(:user) { create(:user) }
+      let_it_be_with_reload(:project) { create(:project, :repository, developers: user) }
+      let(:build) { create(:ci_build, ref: 'some-ref', pipeline: pipeline) }
+
+      context 'when no one can push or merge to the branch' do
+        before do
+          create(:protected_branch, :no_one_can_push, name: build.ref, project: project)
+        end
+
+        it 'does not include ability to update build' do
+          expect_disallowed(:cancel_build, :update_build)
+        end
+
+        context 'when the user is admin', :enable_admin_mode do
+          before do
+            user.update!(admin: true)
+          end
+
+          it 'does not include ability to update build' do
+            expect_disallowed(:cancel_build, :update_build)
+          end
+        end
+      end
+
+      context 'when developers can push to the branch' do
+        before do
+          create(:protected_branch, :developers_can_merge, name: build.ref, project: project)
+        end
+
+        it 'includes ability to update build' do
+          expect_allowed(:cancel_build, :update_build)
+        end
+      end
+
+      context 'when no one can create the tag' do
+        before do
+          create(:protected_tag, :no_one_can_create, name: build.ref, project: project)
+
+          build.update!(tag: true)
+        end
+
+        it 'does not include ability to update build' do
+          expect_disallowed(:cancel_build, :update_build)
+        end
+      end
+
+      context 'when no one can create the tag but it is not a tag' do
+        before do
+          create(:protected_tag, :no_one_can_create, name: build.ref, project: project)
+        end
+
+        it 'includes ability to update build' do
+          expect_allowed(:cancel_build, :update_build)
+        end
+      end
+    end
+
+    describe 'rules for erase build', :clean_gitlab_redis_cache do
+      let_it_be_with_reload(:user) { create(:user) }
+      let_it_be_with_reload(:project) { create(:project, :repository) }
+      let(:build) { create(:ci_build, pipeline: pipeline, ref: 'some-ref', user: owner) }
+
+      context 'when a developer erases a build' do
+        let_it_be_with_reload(:project) { create(:project, :repository, developers: user) }
+
+        context 'when developers can push to the branch' do
+          context 'when the build was created by the developer' do
+            let(:owner) { user }
+
+            context 'when the build was created for a protected ref' do
+              before do
+                create(:protected_branch, :developers_can_push, name: build.ref, project: project)
+              end
+
+              it { expect_disallowed(:erase_build) }
+            end
+
+            context 'when the build was created for an unprotected ref' do
+              it { expect_allowed(:erase_build) }
+            end
+          end
+
+          context 'when the build was created by the other' do
+            let(:owner) { create(:user) }
+
+            it { expect_disallowed(:erase_build) }
+          end
+        end
+
+        context 'when no one can push or merge to the branch' do
+          let(:owner) { user }
+
+          before do
+            create(:protected_branch, :no_one_can_push, :no_one_can_merge, name: build.ref, project: project)
+          end
+
+          it { expect_disallowed(:erase_build) }
+        end
+      end
+
+      context 'when a maintainer erases a build' do
+        let_it_be_with_reload(:project) { create(:project, :repository, maintainers: user) }
+
+        context 'when maintainers can push to the branch' do
+          before do
+            create(:protected_branch, :maintainers_can_push, name: build.ref, project: project)
+          end
+
+          context 'when the build was created by the maintainer' do
+            let(:owner) { user }
+
+            it { expect_allowed(:erase_build) }
+          end
+
+          context 'when the build was created by the other' do
+            let(:owner) { create(:user) }
+
+            it { expect_allowed(:erase_build) }
+          end
+        end
+
+        context 'when no one can push or merge to the branch' do
+          let(:owner) { user }
+
+          before do
+            create(:protected_branch, :no_one_can_push, :no_one_can_merge, name: build.ref, project: project)
+          end
+
+          it { expect_disallowed(:erase_build) }
+        end
+      end
+
+      context 'when an admin erases a build', :enable_admin_mode do
+        let(:owner) { create(:user) }
+
+        before do
+          user.update!(admin: true)
+        end
+
+        context 'when the build was created for a protected branch' do
+          before do
+            create(:protected_branch, :developers_can_push, name: build.ref, project: project)
+          end
+
+          it { expect_disallowed(:erase_build) }
+        end
+
+        context 'when the build was created for a protected tag' do
+          before do
+            create(:protected_tag, :developers_can_create, name: build.ref, project: project)
+
+            build.update!(tag: true)
+          end
+
+          it { expect_disallowed(:erase_build) }
+        end
+
+        context 'when the build was created for an unprotected ref' do
+          it { expect_allowed(:erase_build) }
+        end
+      end
+    end
+  end
+
+  describe 'manage a web ide terminal' do
+    let(:build_permissions) { %i[read_web_ide_terminal create_build_terminal update_web_ide_terminal create_build_service_proxy] }
+
+    let_it_be(:owner) { create(:owner) }
+    let_it_be(:admin) { create(:admin) }
+    let_it_be(:maintainer) { create(:user) }
+    let_it_be(:developer) { create(:user) }
+    let_it_be(:reporter) { create(:user) }
+    let_it_be(:guest) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project, :public, namespace: owner.namespace, maintainers: maintainer, developers: developer, reporters: reporter, guests: guest) }
+
+    let_it_be(:pipeline) { create(:ci_pipeline, project: project, source: :webide) }
+    let(:build) { create(:ci_build, pipeline: pipeline) }
+
+    before do
+      allow(build).to receive(:has_terminal?).and_return(true)
+    end
+
+    subject { described_class.new(current_user, build) }
+
+    context 'when create_web_ide_terminal access enabled' do
+      context 'with admin' do
+        let(:current_user) { admin }
+
+        context 'when admin mode enabled', :enable_admin_mode do
+          it { expect_allowed(*build_permissions) }
+        end
+
+        context 'when admin mode disabled' do
+          it { expect_disallowed(*build_permissions) }
+        end
+
+        context 'when build is not from a webide pipeline' do
+          let(:pipeline) { create(:ci_pipeline, project: project, source: :chat) }
+
+          it { expect_disallowed(:read_web_ide_terminal, :update_web_ide_terminal, :create_build_service_proxy) }
+        end
+
+        context 'when build has no runner terminal' do
+          before do
+            allow(build).to receive(:has_terminal?).and_return(false)
+          end
+
+          context 'when admin mode enabled', :enable_admin_mode do
+            it { expect_allowed(:read_web_ide_terminal, :update_web_ide_terminal) }
+            it { expect_disallowed(:create_build_terminal, :create_build_service_proxy) }
+          end
+
+          context 'when admin mode disabled' do
+            it { expect_disallowed(:read_web_ide_terminal, :update_web_ide_terminal) }
+            it { expect_disallowed(:create_build_terminal, :create_build_service_proxy) }
+          end
+        end
+
+        context 'feature flag "build_service_proxy" is disabled' do
+          before do
+            stub_feature_flags(build_service_proxy: false)
+          end
+
+          it { expect_disallowed(:create_build_service_proxy) }
+        end
+      end
+
+      shared_examples 'allowed build owner access' do
+        it { expect_disallowed(*build_permissions) }
+
+        context 'when user is the owner of the job' do
+          let(:build) { create(:ci_build, pipeline: pipeline, user: current_user) }
+
+          it { expect_allowed(*build_permissions) }
+        end
+      end
+
+      shared_examples 'forbidden access' do
+        it { expect_disallowed(*build_permissions) }
+
+        context 'when user is the owner of the job' do
+          let(:build) { create(:ci_build, pipeline: pipeline, user: current_user) }
+
+          it { expect_disallowed(*build_permissions) }
+        end
+      end
+
+      context 'with owner' do
+        let(:current_user) { owner }
+
+        it_behaves_like 'allowed build owner access'
+      end
+
+      context 'with maintainer' do
+        let(:current_user) { maintainer }
+
+        it_behaves_like 'allowed build owner access'
+      end
+
+      context 'with developer' do
+        let(:current_user) { developer }
+
+        it_behaves_like 'forbidden access'
+      end
+
+      context 'with reporter' do
+        let(:current_user) { reporter }
+
+        it_behaves_like 'forbidden access'
+      end
+
+      context 'with guest' do
+        let(:current_user) { guest }
+
+        it_behaves_like 'forbidden access'
+      end
+
+      context 'with non member' do
+        let(:current_user) { create(:user) }
+
+        it_behaves_like 'forbidden access'
+      end
+    end
+  end
+
+  describe 'ability :create_build_terminal' do
+    subject { described_class.new(user, build) }
+
+    let_it_be(:user) { create(:user) }
+
+    context 'when user can update_build' do
+      let_it_be_with_reload(:project) { create(:project, :private, maintainers: user) }
+
+      context 'when job has terminal' do
+        before do
+          allow(build).to receive(:has_terminal?).and_return(true)
+        end
+
+        context 'when current user is the job owner' do
+          before do
+            build.update!(user: user)
+          end
+
+          it { expect_allowed(:create_build_terminal) }
+        end
+
+        context 'when current user is not the job owner' do
+          it { expect_disallowed(:create_build_terminal) }
+        end
+      end
+
+      context 'when job does not have terminal' do
+        before do
+          allow(build).to receive(:has_terminal?).and_return(false)
+          build.update!(user: user)
+        end
+
+        it { expect_disallowed(:create_build_terminal) }
+      end
+    end
+
+    context 'when user cannot update build' do
+      let_it_be_with_reload(:project) { create(:project, :private, guests: user) }
+
+      before do
+        allow(build).to receive(:has_terminal?).and_return(true)
+      end
+
+      it { expect_disallowed(:create_build_terminal) }
+    end
+
+    context 'when user is an admin who is not the job owner' do
+      let_it_be(:user) { create(:admin) }
+      let_it_be_with_reload(:project) { create(:project, :private) }
+
+      before do
+        allow(build).to receive(:has_terminal?).and_return(true)
+      end
+
+      context 'when the admin mode setting is enabled' do
+        context 'when admin mode is enabled', :enable_admin_mode do
+          it { expect_allowed(:create_build_terminal) }
+
+          context 'when job does not have terminal' do
+            before do
+              allow(build).to receive(:has_terminal?).and_return(false)
+            end
+
+            it { expect_disallowed(:create_build_terminal) }
+          end
+
+          context 'when the job ran on a protected ref' do
+            let_it_be_with_reload(:project) { create(:project, :private, :repository) }
+
+            before do
+              create(:protected_branch, project: project, name: build.ref)
+            end
+
+            it { expect_disallowed(:create_build_terminal) }
+          end
+        end
+
+        context 'when admin mode is disabled' do
+          it { expect_disallowed(:create_build_terminal) }
+        end
+      end
+
+      # Without the setting, `admin` is a plain `User#admin?` check, so no admin mode step applies.
+      context 'when the admin mode setting is disabled', :do_not_mock_admin_mode_setting do
+        it { expect_allowed(:create_build_terminal) }
+      end
+    end
+  end
+end

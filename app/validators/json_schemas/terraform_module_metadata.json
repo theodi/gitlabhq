@@ -1,0 +1,163 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "description": "Terraform module metadata",
+  "type": "object",
+  "definitions": {
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "default": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ]
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "dependencies": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/dependency"
+          }
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/dependency"
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "properties": {
+    "root": {
+      "type": "object",
+      "properties": {
+        "readme": {
+          "type": "string"
+        },
+        "inputs": {
+          "$ref": "#/definitions/inputs"
+        },
+        "outputs": {
+          "$ref": "#/definitions/outputs"
+        },
+        "dependencies": {
+          "$ref": "#/definitions/dependencies"
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        }
+      },
+      "additionalProperties": false
+    },
+    "submodules": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z0-9_-]+$": {
+          "type": "object",
+          "properties": {
+            "readme": {
+              "type": "string"
+            },
+            "inputs": {
+              "$ref": "#/definitions/inputs"
+            },
+            "outputs": {
+              "$ref": "#/definitions/outputs"
+            },
+            "dependencies": {
+              "$ref": "#/definitions/dependencies"
+            },
+            "resources": {
+              "$ref": "#/definitions/resources"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "examples": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z0-9_-]+$": {
+          "type": "object",
+          "properties": {
+            "readme": {
+              "type": "string"
+            },
+            "inputs": {
+              "$ref": "#/definitions/inputs"
+            },
+            "outputs": {
+              "$ref": "#/definitions/outputs"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "root"
+  ]
+}

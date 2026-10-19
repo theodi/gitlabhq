@@ -1,0 +1,392 @@
+---
+stage: Data Access
+group: Database Frameworks
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Date range partitioning
+---
+
+## Description
+
+The scheme best supported by the GitLab migration helpers is date-range partitioning,
+where each partition in the table contains data for a single month. In this case,
+the partitioning key must be a timestamp or date column. For this type of
+partitioning to work well, most queries must access data in a
+certain date range.
+
+For a more concrete example, consider using the `audit_events` table.
+It was the first table to be partitioned in the application database. This
+table tracks audit entries of security events that happen in the
+application. In almost all cases, users want to see audit activity that
+occurs in a certain time frame. As a result, date-range partitioning
+was a natural fit for how the data would be accessed.
+
+To look at this in more detail, imagine a simplified `audit_events` schema:
+
+```sql
+CREATE TABLE audit_events (
+  id SERIAL NOT NULL PRIMARY KEY,
+  author_id INT NOT NULL,
+  details jsonb NOT NULL,
+  created_at timestamptz NOT NULL);
+```
+
+Now imagine typical queries in the UI would display the data in a
+certain date range, like a single week:
+
+```sql
+SELECT *
+FROM audit_events
+WHERE created_at >= '2020-01-01 00:00:00'
+  AND created_at < '2020-01-08 00:00:00'
+ORDER BY created_at DESC
+LIMIT 100
+```
+
+If the table is partitioned on the `created_at` column the base table would
+look like:
+
+```sql
+CREATE TABLE audit_events (
+  id SERIAL NOT NULL,
+  author_id INT NOT NULL,
+  details jsonb NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (id, created_at))
+PARTITION BY RANGE(created_at);
+```
+
+> [!note]
+> The primary key of a partitioned table must include the partition key as
+> part of the primary key definition.
+
+And we might have a list of partitions for the table, such as:
+
+```sql
+audit_events_202001 FOR VALUES FROM ('2020-01-01') TO ('2020-02-01')
+audit_events_202002 FOR VALUES FROM ('2020-02-01') TO ('2020-03-01')
+audit_events_202003 FOR VALUES FROM ('2020-03-01') TO ('2020-04-01')
+```
+
+Each partition is a separate physical table, with the same structure as
+the base `audit_events` table, but contains only data for rows where the
+partition key falls in the specified range. For example, the partition
+`audit_events_202001` contains rows where the `created_at` column is
+greater than or equal to `2020-01-01` and less than `2020-02-01`.
+
+Now, if we look at the previous example query again, the database can
+use the `WHERE` to recognize that all matching rows are in the
+`audit_events_202001` partition. Rather than searching all of the data
+in all of the partitions, it can search only the single month's worth
+of data in the appropriate partition. In a large table, this can
+dramatically reduce the amount of data the database needs to access.
+However, imagine a query that does not filter based on the partitioning
+key, such as:
+
+```sql
+SELECT *
+FROM audit_events
+WHERE author_id = 123
+ORDER BY created_at DESC
+LIMIT 100
+```
+
+In this example, the database can't prune any partitions from the search,
+because matching data could exist in any of them. As a result, it has to
+query each partition individually, and aggregate the rows into a single result
+set. Because `author_id` would be indexed, the performance impact could
+likely be acceptable, but on more complex queries the overhead can be
+substantial. Partitioning should only be leveraged if the access patterns
+of the data support the partitioning strategy, otherwise performance
+suffers.
+
+## Time-range partitioning strategies
+
+GitLab supports three strategies for time-range partitioning:
+
+- Daily partitioning
+- Weekly partitioning
+- Monthly partitioning
+
+### Using time-range partitioning
+
+To use time-range partitioning in your model, include the `PartitionedTable` module and configure the partition settings:
+
+```ruby
+class WebHookLog < ApplicationRecord
+  include PartitionedTable
+
+  partitioned_by :created_at, strategy: :monthly, retain_for: 1.month
+end
+```
+
+### Available strategies
+
+#### Daily strategy (`:daily`)
+
+The daily strategy creates one partition per day:
+
+```ruby
+partitioned_by :created_at, strategy: :daily, retain_for: 7.days
+```
+
+#### Weekly strategy (`:weekly`)
+
+The weekly strategy creates one partition per week. Weeks start on Monday:
+
+```ruby
+partitioned_by :created_at, strategy: :weekly, retain_for: 4.weeks
+```
+
+#### Monthly strategy (`:monthly`)
+
+The monthly strategy creates one partition per month:
+
+```ruby
+partitioned_by :created_at, strategy: :monthly, retain_for: 3.months, analyze_interval: 3.days
+```
+
+### Configuration Options
+
+- `column`: The column to partition on (required, must be a timestamp or date column)
+- `strategy`: One of `:daily`, `:weekly`, or `:monthly` (required)
+- `retain_for`: How long to retain partitions: a duration, or `:ever` (required, see [Retention](#retention))
+- `analyze_interval`: How often to run ANALYZE on new partitions (optional)
+- `retain_detached_partitions_for`: How long to keep a detached partition before dropping it: a duration (optional,
+  see [Post-detach retention](#post-detach-retention))
+
+Choose `:daily` for high-volume tables that need fine-grained partitioning, `:weekly` for an intermediate granularity, or `:monthly` for tables with moderate data volume where daily partitioning would be excessive.
+
+### Retention
+
+Time-based strategies require `retain_for` so each table makes a conscious retention
+decision. Without retention, the table keeps every partition forever, which costs
+storage and slows down queries that do not bound the partition key.
+
+Pass a duration to prune old partitions automatically:
+
+```ruby
+partitioned_by :created_at, strategy: :monthly, retain_for: 6.months
+```
+
+To keep all partitions, opt out explicitly with `retain_for: :ever` and a comment that
+explains why:
+
+```ruby
+# Audit events are retained indefinitely for compliance.
+partitioned_by :created_at, strategy: :monthly, retain_for: :ever
+```
+
+`retain_for` must be a duration or `:ever`. Omitting it, or passing any other value
+such as `nil`, raises an `ArgumentError`.
+
+### Post-detach retention
+
+After the partition manager detaches a partition, it keeps the detached table around for a
+grace period before dropping it, in case the data is still needed. `PartitionManager` defaults
+this grace period to `RETAIN_DETACHED_PARTITIONS_FOR` (one week) for every partitioned table.
+
+Raising `retain_for`, or setting it to `:ever`, does not restore partitions that are already
+detached. They are still dropped when their grace period ends. Until a detached table is
+dropped, the partition manager does not create a partition with its name, such as the one that
+starts at `MINVALUE`. Writes in that range fail until the partition manager creates the
+partition, empty, on its first run after the drop. To keep the detached data, re-attach the
+detached tables with their original bounds before the grace period ends.
+
+To use a shorter or longer grace period for a specific table, pass `retain_detached_partitions_for`:
+
+```ruby
+partitioned_by :created_at, strategy: :daily, retain_for: 14.days, retain_detached_partitions_for: 2.days
+```
+
+`retain_detached_partitions_for` must be a duration. If not set, the table uses the
+default grace period.
+
+## Example
+
+### Step 1: Creating the partitioned copy (Release N)
+
+The first step is to add a migration to create the partitioned copy of
+the original table. This migration creates the appropriate
+partitions based on the data in the original table, and installs a
+trigger that syncs writes from the original table into the
+partitioned copy.
+
+An example migration of partitioning the `audit_events` table by its
+`created_at` column would look like:
+
+```ruby
+class PartitionAuditEvents < Gitlab::Database::Migration[2.1]
+  include Gitlab::Database::PartitioningMigrationHelpers
+
+  def up
+    partition_table_by_date :audit_events, :created_at
+  end
+
+  def down
+    drop_partitioned_table_for :audit_events
+  end
+end
+```
+
+Next, register the temporary partitioned table in
+`config/initializers/postgres_partitioning.rb`. This registration ensures the
+partition manager creates new partitions as the trigger syncs data. For example:
+
+```ruby
+Gitlab::Database::Partitioning.register_tables(
+  [
+    {
+      limit_connection_names: %i[main],
+      table_name: 'audit_events_partitioned_table_name',
+      partitioned_column: :created_at, strategy: :monthly, retain_for: :ever
+    }
+  ]
+)
+```
+
+The example includes the following:
+
+- `table_name`: The name of your temporary partitioned table
+  (for example, `audit_events_b8088ecbd2`).
+- `partitioned_column`: The column used for partitioning.
+- `strategy`: One of `:daily`, `:weekly`, or `:monthly`.
+- `retain_for`: Set to `:ever` for this registration (see the following warning).
+
+> [!warning]
+> Set `retain_for: :ever` for this registration. Time-based strategies require `retain_for`,
+> but you must not set a real duration here, even if your data should be deleted after a
+> certain period. During the backfill, the partition manager might detach old partitions if
+> `retain_for` is set to a duration, causing the backfill to fail when it tries to copy data
+> into detached partitions. Set the real `retain_for` on your model only after the table swap
+> is complete (Step 4).
+
+After the table swap is complete (Step 4), you can remove this registration.
+
+After the migration has executed, any inserts, updates, or deletes in the
+original table are also duplicated in the new table. For updates and
+deletes, the operation only has an effect if the corresponding row
+exists in the partitioned table.
+
+### Step 2: Backfill the partitioned copy (Release N)
+
+The second step is to add a post-deployment migration that schedules
+the background jobs that backfill existing data from the original table
+into the partitioned copy.
+
+Continuing the above example, the migration would look like:
+
+```ruby
+class BackfillPartitionAuditEvents < Gitlab::Database::Migration[2.1]
+  include Gitlab::Database::PartitioningMigrationHelpers
+
+  disable_ddl_transaction!
+
+  restrict_gitlab_migration gitlab_schema: :gitlab_main_org
+  MIGRATION = 'BackfillPartitionedAuditEvents'
+
+  def up
+    enqueue_partitioning_data_migration :audit_events, MIGRATION
+  end
+
+  def down
+    cleanup_partitioning_data_migration :audit_events, MIGRATION
+  end
+end
+```
+
+Batched background migrations are tracked under `db/docs/batched_background_migrations/`
+and require unique names. Create a subclass of `BackfillPartitionedTable` in
+`lib/gitlab/background_migration/` and reference it in your migration:
+
+```ruby
+class BackfillPartitionedAuditEvents < BackfillPartitionedTable; end
+```
+
+This step [queues a batched background migration](../batched_background_migrations.md#enqueue-a-batched-background-migration) internally with BATCH_SIZE and SUB_BATCH_SIZE as `50,000` and `2,500`. Refer to [Batched Background migrations guide](../batched_background_migrations.md) for more details.
+
+### Step 3: Post-backfill cleanup (Release after a required stop post Step 2)
+
+> [!warning]
+> A [required stop](../required_stops.md) must occur between steps 2 and 3 to allow the background migration from step 2 to complete successfully
+> in GitLab Self-Managed instances.
+
+In this step,
+add another post-deployment migration that cleans up after the
+background migration. This includes forcing any remaining jobs to
+execute, and copying data that might have been missed, due to dropped or
+failed jobs.
+
+Once again, continuing the example, this migration would look like:
+
+```ruby
+class CleanupPartitionedAuditEventsBackfill < Gitlab::Database::Migration[2.1]
+  include Gitlab::Database::PartitioningMigrationHelpers
+
+  disable_ddl_transaction!
+
+  restrict_gitlab_migration gitlab_schema: :gitlab_main_org
+
+  def up
+    finalize_backfilling_partitioned_table :audit_events
+  end
+
+  def down
+    # no op
+  end
+end
+```
+
+After this migration completes, the original table and partitioned
+table should contain identical data. The trigger installed on the
+original table guarantees that the data remains in sync going forward.
+
+### Step 4: Swap the partitioned and non-partitioned tables (Release N+1)
+
+This step replaces the non-partitioned table with its partitioned copy. Use this step only after all other migration steps have completed successfully.
+
+Some limitations to this method MUST be handled before, or during, the swap migration:
+
+- Secondary indexes and foreign keys are not automatically recreated on the partitioned table.
+- Some types of constraints (UNIQUE and EXCLUDE) which rely on indexes, are not automatically recreated
+  on the partitioned table, since the underlying index will not be present.
+- Foreign keys referencing the original non-partitioned table should be updated to reference the
+  partitioned table. This is not supported in PostgreSQL 11.
+- Views referencing the original table are not automatically updated to reference the partitioned table.
+
+```ruby
+# frozen_string_literal: true
+
+class SwapPartitionedAuditEvents < ActiveRecord::Migration[6.0]
+  include Gitlab::Database::PartitioningMigrationHelpers
+
+  def up
+    replace_with_partitioned_table :audit_events
+  end
+
+  def down
+    rollback_replace_with_partitioned_table :audit_events
+  end
+end
+```
+
+After this migration completes:
+
+- The partitioned table replaces the non-partitioned (original) table.
+- The sync trigger created earlier is dropped.
+
+The partitioned table is now ready for use by the application.
+
+If you registered the temporary partitioned table in `config/initializers/postgres_partitioning.rb`
+(as described in Step 1), remove that registration now because the temporary table no longer exists after swap.
+
+To retain your data for a specific period only, add `retain_for` to your model:
+
+```ruby
+class ProjectDailyStatistic < ApplicationRecord
+  include PartitionedTable
+
+  partitioned_by :date, strategy: :monthly, retain_for: 3.months
+end
+```
+
+This ensures old partitions are automatically dropped by the partition manager.

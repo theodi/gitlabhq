@@ -1,0 +1,128 @@
+- breadcrumb_title _("General")
+- page_title _("General")
+- add_page_specific_style 'page_bundles/settings'
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_application_settings_general_pageload' } }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Visibility and access controls'),
+  id: 'js-visibility-settings',
+  testid: 'admin-visibility-access-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('AdminSettings|Set visibility of project contents and configure Git access protocols.')
+  - c.with_body do
+    = render 'visibility_and_access'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Account and limit'),
+  id: 'js-account-settings',
+  testid: 'account-and-limit-settings-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set projects and maximum size limits, session duration, user options, and check feature availability for namespace plan.')
+  - c.with_body do
+    = render 'account_and_limit'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Import and export settings'),
+  id: 'js-import-export-settings',
+  testid: 'admin-import-export-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure import sources and settings related to import and export features.')
+  - c.with_body do
+    = render 'import_and_export'
+
+= render_if_exists 'admin/application_settings/integrations_settings'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Merge requests'),
+  id: 'js-merge-requests-settings',
+  testid: 'merge-requests-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure merge request settings.')
+  - c.with_body do
+    = render 'merge_requests'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Diff limits'),
+  id: 'js-merge-request-settings',
+  testid: 'diff-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set size limits for displaying diffs in the browser.')
+  - c.with_body do
+    = render 'diff_limits'
+
+= render ::Layouts::SettingsBlockComponent.new(_('New user account restrictions'),
+  id: 'js-signup-settings',
+  testid: 'sign-up-restrictions-settings-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure restrictions for new user accounts.')
+  - c.with_body do
+    = render 'signup'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Sign-in restrictions'),
+  id: 'js-signin-settings',
+  testid: 'signin-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set sign-in restrictions for all users.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/sign_in_restrictions.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'signin'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Terms of Service and Privacy Policy'),
+  id: 'js-terms-settings',
+  testid: 'terms-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Add a Terms of Service agreement and Privacy Policy for users of this GitLab instance.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/terms.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'terms'
+
+= render 'admin/application_settings/external_authorization_service_form', expanded: expanded_by_default?
+= render_if_exists 'admin/application_settings/microsoft_application'
+= render_if_exists 'admin/application_settings/scim'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Web terminal'),
+  id: 'js-terminal-settings',
+  testid: 'terminal-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set the maximum session time for a web terminal.')
+    = link_to _('How do I use a web terminal?'), help_page_path('ci/environments/_index.md', anchor: 'web-terminals-deprecated'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'terminal'
+
+= render_if_exists 'admin/application_settings/maintenance_mode_settings_form'
+= render 'admin/application_settings/silent_mode_settings_form'
+= render 'admin/application_settings/gitpod'
+= render 'admin/application_settings/mailgun'
+= render 'admin/application_settings/kroki'
+= render 'admin/application_settings/plantuml'
+= render 'admin/application_settings/diagramsnet'
+= render 'admin/application_settings/iframe'
+= render 'admin/application_settings/sourcegraph'
+-# this partial is from JiHu, see details in https://jihulab.com/gitlab-cn/gitlab/-/merge_requests/417
+= render_if_exists 'admin/application_settings/dingtalk_integration'
+-# this partial is from JiHu, see details in https://jihulab.com/gitlab-cn/gitlab/-/merge_requests/640
+= render_if_exists 'admin/application_settings/feishu_integration'
+= render 'admin/application_settings/third_party_offers'
+= render 'admin/application_settings/snowplow' if Feature.disabled?(:product_usage_data, :instance)
+= render_if_exists 'admin/application_settings/product_analytics'
+= render 'admin/application_settings/error_tracking' if Feature.enabled?(:gitlab_error_tracking)
+= render 'admin/application_settings/eks'
+= render 'admin/application_settings/floc'
+= render_if_exists 'admin/application_settings/add_license'
+= render 'admin/application_settings/cluster_agents'
+= render_if_exists 'admin/application_settings/workspaces/agent_availability'
+= render 'admin/application_settings/jira_connect'
+= render 'admin/application_settings/slack'
+= render_if_exists 'admin/application_settings/secrets_manager_instance_enrollment'
+= render 'admin/application_settings/security_txt', expanded: expanded_by_default?
+= render 'admin/application_settings/analytics'
+= render_if_exists 'admin/application_settings/amazon_q'
+= render_if_exists 'admin/application_settings/duo_code_review_settings'
+= render 'admin/application_settings/web_ide'
+= render 'admin/application_settings/extension_marketplace'
+= render 'admin/application_settings/editor_extensions'

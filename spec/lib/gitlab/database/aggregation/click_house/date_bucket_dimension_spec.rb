@@ -1,0 +1,316 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Database::Aggregation::ClickHouse::DateBucketDimension, :click_house,
+  feature_category: :value_stream_management do
+  include_context 'with agent_platform_sessions ClickHouse aggregation engine'
+
+  let(:engine_definition) do
+    Gitlab::Database::Aggregation::ClickHouse::Engine.build do
+      self.table_name = 'agent_platform_sessions'
+
+      dimensions do
+        date_bucket :started_event_at, :date, -> { sql('anyIfMerge(started_event_at)') }
+      end
+
+      metrics do
+        count
+        count :users, :integer, -> { sql('user_id') }, distinct: true
+      end
+    end
+  end
+
+  let(:session1) do # march bucket
+    created_at = DateTime.parse('2025-03-01 00:00:00 UTC')
+    { session_id: 1, user_id: 1, project_id: 1, namespace_path: '1/2/', flow_type: 'chat', environment: 'prod',
+      session_year: 2025,
+      created_event_at: created_at,
+      started_event_at: created_at + 1.second,
+      finished_event_at: created_at + 10.minutes,
+      resumed_event_at: created_at + 9.minutes }
+  end
+
+  let(:session2) do # march bucket
+    created_at = DateTime.parse('2025-03-12 00:00:00 UTC')
+    { session_id: 2, user_id: 2, project_id: 1, namespace_path: '1/2/', flow_type: 'chat', environment: 'prod',
+      session_year: 2025,
+      created_event_at: created_at,
+      started_event_at: created_at + 1.second,
+      finished_event_at: created_at + 3.minutes,
+      resumed_event_at: created_at + 2.minutes }
+  end
+
+  let(:session3) do # april bucket
+    created_at = DateTime.parse('2025-04-04 00:00:00 UTC')
+    { session_id: 3, user_id: 1, project_id: 1, namespace_path: '1/2/', flow_type: 'code_review', environment: 'prod',
+      session_year: 2025,
+      created_event_at: created_at,
+      started_event_at: created_at + 1.second,
+      dropped_event_at: created_at + 10.minutes,
+      resumed_event_at: created_at + 9.minutes }
+  end
+
+  let(:all_data_rows) do
+    [session1, session2, session3]
+  end
+
+  def request_for(parameters)
+    Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :started_event_at, parameters: parameters }],
+      metrics: [{ identifier: :total_count }]
+    )
+  end
+
+  describe 'default parameters' do
+    it 'declares granularity and origin without an engine-level declaration' do
+      expect(engine_definition.dimensions.first.parameters).to eq(described_class::DEFAULT_PARAMETERS)
+    end
+
+    it 'accepts daily buckets' do
+      expect(engine).to execute_aggregation(request_for(granularity: 'daily')).and_return(match_array([
+        { started_event_at_granularity_daily: Date.parse('2025-03-01'), total_count: 1 },
+        { started_event_at_granularity_daily: Date.parse('2025-03-12'), total_count: 1 },
+        { started_event_at_granularity_daily: Date.parse('2025-04-04'), total_count: 1 }
+      ]))
+    end
+
+    it 'lets an explicit declaration override a default parameter' do
+      granularity = { type: :string, in: %w[monthly] }
+      definition = described_class.new(:created_at, :date, parameters: { granularity: granularity })
+
+      expect(definition.parameters).to eq(described_class::DEFAULT_PARAMETERS.merge(granularity: granularity))
+    end
+  end
+
+  it 'returns monthly buckets by default' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :started_event_at }],
+      metrics: [{ identifier: :total_count }]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      { started_event_at: Date.parse('2025-03-01'), total_count: 2 },
+      { started_event_at: Date.parse('2025-04-01'), total_count: 1 }
+    ])
+  end
+
+  it 'returns specified buckets if provided' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :started_event_at, parameters: { granularity: 'weekly' } }],
+      metrics: [{ identifier: :total_count }]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      { started_event_at_granularity_weekly: Date.parse('2025-03-01').beginning_of_week, total_count: 1 },
+      { started_event_at_granularity_weekly: Date.parse('2025-03-12').beginning_of_week, total_count: 1 },
+      { started_event_at_granularity_weekly: Date.parse('2025-04-01').beginning_of_week, total_count: 1 }
+    ])
+  end
+
+  it 'returns errors if granularity is not allowed' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :started_event_at, parameters: { granularity: 'yearly' } }],
+      metrics: [{ identifier: :total_count }]
+    )
+
+    expect(engine).to execute_aggregation(request).with_errors(array_including(
+      a_string_matching(%r{Invalid value\(s\) for parameter `granularity`: yearly})
+    ))
+  end
+
+  context 'with a dynamic day granularity' do
+    it 'returns fixed-length day buckets aligned to the unix epoch' do
+      # 30-day grid aligned to the unix epoch: sessions 1 and 2 fall into the
+      # bucket starting 2025-02-11, session 3 into the one starting 2025-03-13.
+      expect(engine).to execute_aggregation(request_for(granularity: '30d')).and_return([
+        { started_event_at_granularity_30d: Date.parse('2025-02-11'), total_count: 2 },
+        { started_event_at_granularity_30d: Date.parse('2025-03-13'), total_count: 1 }
+      ])
+    end
+
+    context 'with an origin' do
+      let(:dimension_definition) { engine_definition.dimensions.first }
+      let(:origin) { Time.utc(2025, 3, 20) }
+
+      def origin_request(origin_value, metrics: [{ identifier: :total_count }])
+        Gitlab::Database::Aggregation::Request.new(
+          dimensions: [
+            { identifier: :started_event_at, parameters: { granularity: '30d', origin: origin_value } }
+          ],
+          metrics: metrics
+        )
+      end
+
+      it 'returns one row per origin-anchored period for a current-vs-previous comparison' do
+        instance_key = dimension_definition.instance_key(parameters: { granularity: '30d', origin: origin })
+        request = origin_request(origin, metrics: [{ identifier: :total_count }, { identifier: :users_count }])
+
+        # Buckets anchored at the origin: sessions 1 and 2 precede the origin and
+        # land in the previous period [Feb 18, Mar 20) thanks to the epoch phase
+        # normalization; session 3 lands in the current period [Mar 20, Apr 19).
+        expect(engine).to execute_aggregation(request).and_return([
+          { instance_key => Time.utc(2025, 2, 18), total_count: 2, users_count: 2 },
+          { instance_key => origin, total_count: 1, users_count: 1 }
+        ])
+      end
+
+      context 'when the bucketed column is Nullable' do
+        # `anyIfMerge` yields NULL for a session that never started, and ClickHouse
+        # evaluates `toStartOfInterval` over the whole block, so that NULL reaches it
+        # as the type default 1970-01-01.
+        # See https://gitlab.com/gitlab-org/gitlab/-/issues/629599.
+        let(:session_without_start) do
+          { session_id: 4, user_id: 4, project_id: 1, namespace_path: '1/2/', flow_type: 'chat',
+            environment: 'prod', session_year: 2025,
+            created_event_at: DateTime.parse('2025-04-05 00:00:00 UTC') }
+        end
+
+        let(:all_data_rows) { [session3, session_without_start] }
+
+        it 'buckets the non-null rows and keeps a null bucket' do
+          instance_key = dimension_definition.instance_key(parameters: { granularity: '30d', origin: origin })
+
+          expect(engine).to execute_aggregation(origin_request(origin)).and_return(an_array_matching([
+            { instance_key => nil, total_count: 1 },
+            { instance_key => origin, total_count: 1 }
+          ]))
+        end
+      end
+
+      it 'raises for a non-Time origin instead of anchoring silently' do
+        # GraphQL inputs are coerced to Time by the API layer; direct callers
+        # must do the same.
+        expect { engine.execute(origin_request('2025-03-20T00:00:00Z')) }
+          .to raise_error(ArgumentError, /origin must be a Time, got String/)
+      end
+
+      it 'returns errors if origin is combined with a calendar granularity' do
+        request = Gitlab::Database::Aggregation::Request.new(
+          dimensions: [
+            { identifier: :started_event_at, parameters: { granularity: 'monthly', origin: origin } }
+          ],
+          metrics: [{ identifier: :total_count }]
+        )
+
+        expect(engine).to execute_aggregation(request).with_errors(array_including(
+          a_string_matching(/Parameter `origin` requires a dynamic day granularity/)
+        ))
+      end
+
+      context 'when the granularity is not a fixed-day one' do
+        let(:context) do
+          # `validate_origin` rejects this combination, so this only guards the
+          # rendering path against being reached without that validation.
+          {
+            started_event_at: { parameters: { granularity: 'monthly', origin: origin } },
+            inner_query_name: 'inner_query',
+            scope: query_builder
+          }
+        end
+
+        it 'drops the origin' do
+          sql = dimension_definition.to_outer_arel(context).to_sql
+
+          expect(sql).to include('INTERVAL 1 month')
+          expect(sql).not_to include('toDateTime64')
+        end
+      end
+
+      it 'rejects an arbitrarily long day count without parsing it' do
+        request = Gitlab::Database::Aggregation::Request.new(
+          dimensions: [
+            { identifier: :started_event_at, parameters: { granularity: "#{'9' * 5000}d", origin: origin } }
+          ],
+          metrics: [{ identifier: :total_count }]
+        )
+
+        expect(engine).to execute_aggregation(request).with_errors(array_including(
+          a_string_matching(%r{Invalid value\(s\) for parameter `granularity`})
+        ))
+      end
+
+      it 'returns errors if origin is given without a granularity' do
+        request = Gitlab::Database::Aggregation::Request.new(
+          dimensions: [{ identifier: :started_event_at, parameters: { origin: origin } }],
+          metrics: [{ identifier: :total_count }]
+        )
+
+        expect(engine).to execute_aggregation(request).with_errors(array_including(
+          a_string_matching(/Parameter `origin` requires a dynamic day granularity/)
+        ))
+      end
+    end
+
+    it 'accepts the lower boundary day count of 1d' do
+      expect(engine).to execute_aggregation(request_for(granularity: '1d')).and_return(match_array([
+        { started_event_at_granularity_1d: Time.utc(2025, 3, 1), total_count: 1 },
+        { started_event_at_granularity_1d: Time.utc(2025, 3, 12), total_count: 1 },
+        { started_event_at_granularity_1d: Time.utc(2025, 4, 4), total_count: 1 }
+      ]))
+    end
+
+    it 'accepts the upper boundary day count of 399d' do
+      # All three sessions fall into the epoch-aligned 399-day bucket
+      # starting 2024-08-15.
+      expect(engine).to execute_aggregation(request_for(granularity: '399d')).and_return([
+        { started_event_at_granularity_399d: Date.parse('2024-08-15'), total_count: 3 }
+      ])
+    end
+
+    it 'returns errors if the day count exceeds 399' do
+      expect(engine).to execute_aggregation(request_for(granularity: '400d')).with_errors(array_including(
+        a_string_matching(%r{Invalid value\(s\) for parameter `granularity`: 400d})
+      ))
+    end
+
+    it 'returns errors if the day count is zero' do
+      expect(engine).to execute_aggregation(request_for(granularity: '0d')).with_errors(array_including(
+        a_string_matching(%r{Invalid value\(s\) for parameter `granularity`: 0d})
+      ))
+    end
+
+    it 'returns errors if the format is malformed' do
+      expect(engine).to execute_aggregation(request_for(granularity: '30days')).with_errors(array_including(
+        a_string_matching(%r{Invalid value\(s\) for parameter `granularity`: 30days})
+      ))
+    end
+
+    it 'rejects day counts with more than three digits by pattern' do
+      expect(engine).to execute_aggregation(request_for(granularity: '1000d')).with_errors(array_including(
+        a_string_matching(%r{Invalid value\(s\) for parameter `granularity`: 1000d})
+      ))
+    end
+
+    it 'rejects arbitrarily long digit strings without parsing them' do
+      # Validation must reject by pattern alone; parsing this would needlessly
+      # build a multi-kilobyte Integer.
+      expect(engine).to execute_aggregation(request_for(granularity: "#{'9' * 5000}d"))
+        .with_errors(array_including(a_string_matching(%r{Invalid value\(s\) for parameter `granularity`})))
+    end
+
+    context 'when the engine allowlist permits day counts beyond 399' do
+      let(:engine_definition) do
+        Gitlab::Database::Aggregation::ClickHouse::Engine.build do
+          self.table_name = 'agent_platform_sessions'
+
+          dimensions do
+            date_bucket :started_event_at, :date, -> { sql('anyIfMerge(started_event_at)') }, parameters: {
+              granularity: { type: :string, in: [/\A\d{1,4}d\z/] }
+            }
+          end
+
+          metrics do
+            count
+          end
+        end
+      end
+
+      it 'buckets by the engine-allowed day count' do
+        expect(engine).to execute_aggregation(request_for(granularity: '400d')).and_return([
+          { started_event_at_granularity_400d: Date.parse('2024-10-04'), total_count: 3 }
+        ])
+      end
+    end
+  end
+end

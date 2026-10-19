@@ -1,0 +1,40 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Phorge
+description: Configure the Phorge integration to link a GitLab project to a Phorge instance and reference Phorge tasks in GitLab.
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can use [Phorge](https://we.phorge.it/) as an
+[external issue tracker](../../../integration/external-issue-tracker.md) in GitLab.
+
+## Configure the integration
+
+To configure Phorge in a GitLab project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **Integrations**.
+1. Select **Phorge**.
+1. Under **Enable integration**, select the **Active** checkbox.
+1. In **Project URL**, enter the URL to the Phorge project.
+1. In **Issue URL**, enter the URL to the Phorge project issue.
+   The URL must contain `:id`. GitLab replaces this token with the Maniphest task ID (for example, `T123`).
+   Because the task ID already includes the `T` prefix, GitLab removes an uppercase `T` typed directly in front
+   of `:id` (for example, `https://phorge.example.com/T:id` is saved as `https://phorge.example.com/:id`).
+   A lowercase `t` is kept, because it is more often the last letter of a path than a mistyped prefix.
+1. In **New issue URL**, enter the URL to a new Phorge project issue.
+   To prefill tags related to this project, you can use `?tags=`.
+1. Optional. Select **Test settings**.
+1. Select **Save changes**.
+
+In that GitLab project, you can see a link to your Phorge project.
+You can now reference your Phorge issues and tasks in GitLab with
+`T<ID>`, where `<ID>` is a Maniphest task ID (for example, `T123`).

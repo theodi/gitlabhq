@@ -1,0 +1,17 @@
+---
+description: Searched for files by triggering Go to file shortcut.
+internal_events: true
+action: click_go_to_file_shortcut
+identifiers:
+- project
+- namespace
+- user
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: '17.1'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/155457
+tiers:
+- free
+- premium
+- ultimate

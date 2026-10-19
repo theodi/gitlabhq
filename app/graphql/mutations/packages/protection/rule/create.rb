@@ -1,0 +1,65 @@
+# frozen_string_literal: true
+
+module Mutations
+  module Packages
+    module Protection
+      module Rule
+        class Create < ::Mutations::BaseMutation
+          graphql_name 'CreatePackagesProtectionRule'
+          description 'Creates a protection rule to restrict access to project packages.'
+
+          include FindsProject
+
+          authorize :admin_package
+          authorize_granular_token permissions: :create_package_protection_rule,
+            boundary_argument: :project_path, boundary_type: :project
+
+          argument :project_path,
+            GraphQL::Types::ID,
+            required: true,
+            description: 'Full path of the project where a protection rule is located.'
+
+          argument :package_name_pattern,
+            GraphQL::Types::String,
+            required: true,
+            description: copy_field_description(Types::Packages::Protection::RuleType, :package_name_pattern)
+
+          argument :package_type,
+            Types::Packages::Protection::RulePackageTypeEnum,
+            required: true,
+            description: copy_field_description(Types::Packages::Protection::RuleType, :package_type)
+
+          argument :minimum_access_level_for_delete,
+            Types::Packages::Protection::RuleAccessLevelForDeleteEnum,
+            required: false,
+            experiment: { milestone: '17.10' },
+            description: copy_field_description(Types::Packages::Protection::RuleType, :minimum_access_level_for_delete)
+
+          argument :minimum_access_level_for_push,
+            Types::Packages::Protection::RuleAccessLevelEnum,
+            required: false,
+            description: copy_field_description(Types::Packages::Protection::RuleType, :minimum_access_level_for_push)
+
+          field :package_protection_rule,
+            Types::Packages::Protection::RuleType,
+            null: true,
+            description: 'Packages protection rule after mutation.'
+
+          def resolve(project_path:, **kwargs)
+            project = authorized_find!(project_path)
+
+            kwargs.except!(:minimum_access_level_for_delete) if Feature.disabled?(:packages_protected_packages_delete,
+              project)
+
+            response =
+              ::Packages::Protection::CreateRuleService
+                .new(project: project, current_user: current_user, params: kwargs)
+                .execute
+
+            { package_protection_rule: response.payload[:package_protection_rule], errors: response.errors }
+          end
+        end
+      end
+    end
+  end
+end

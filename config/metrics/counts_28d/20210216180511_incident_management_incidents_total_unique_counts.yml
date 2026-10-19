@@ -1,0 +1,42 @@
+---
+data_category: optional
+key_path: counts_monthly.aggregated_metrics.incident_management_incidents_total_unique_counts
+description: Count of unique users per month to take an action on an incident
+product_group: platform_insights
+product_categories:
+- incident_management
+value_type: number
+status: active
+time_frame: 28d
+instrumentation_class: RedisHLLMetric
+data_source: redis_hll
+events:
+- name: incident_management_incident_created
+  unique: user.id
+- name: incident_management_incident_reopened
+  unique: user.id
+- name: incident_management_incident_closed
+  unique: user.id
+- name: incident_management_incident_assigned
+  unique: user.id
+- name: incident_management_incident_todo
+  unique: user.id
+- name: incident_management_incident_comment
+  unique: user.id
+- name: incident_management_incident_zoom_meeting
+  unique: user.id
+- name: incident_management_incident_published
+  unique: user.id
+- name: incident_management_incident_relate
+  unique: user.id
+- name: incident_management_incident_unrelate
+  unique: user.id
+- name: incident_management_incident_change_confidential
+  unique: user.id
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

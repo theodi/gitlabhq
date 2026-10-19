@@ -1,0 +1,9 @@
+---
+Gitlab/PreventOrganizationFirst:
+  Exclude:
+    - 'app/helpers/admin/users_helper.rb'
+    - 'app/workers/gitlab_service_ping_worker.rb'
+    - 'ee/app/services/gitlab_subscriptions/add_on_purchases/create_service.rb'
+    - 'ee/app/workers/sync_seat_link_request_worker.rb'
+    - 'lib/banzai/filter/references/user_reference_filter.rb'
+    - 'lib/users/internal.rb'

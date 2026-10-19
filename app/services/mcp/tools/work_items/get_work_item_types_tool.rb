@@ -1,0 +1,44 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    module WorkItems
+      class GetWorkItemTypesTool < BaseTool
+        register_version VERSIONS[:v0_1_0], {
+          operation_name: 'namespace',
+          graphql_operation: load_graphql('work_items/get_work_item_types.query.graphql')
+        }
+
+        def build_variables
+          parent_info = resolve_parent
+
+          { fullPath: parent_info[:full_path] }
+        end
+
+        protected
+
+        def build_variables_v0_1_0
+          build_variables
+        end
+
+        private
+
+        def process_result(result)
+          processed = super
+          return processed if processed[:isError]
+
+          types = extract_work_item_types(processed[:structuredContent])
+          return ::Mcp::Tools::Base::Response.error("Work item types not found or inaccessible") if types.nil?
+
+          payload = { 'workItemTypes' => types }
+          formatted_content = [{ type: 'text', text: Gitlab::Json.dump(payload) }]
+          ::Mcp::Tools::Base::Response.success(formatted_content, payload)
+        end
+
+        def extract_work_item_types(structured_content)
+          structured_content.dig('workItemTypes', 'nodes')
+        end
+      end
+    end
+  end
+end

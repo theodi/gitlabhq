@@ -1,0 +1,9 @@
+query issueDueDate($fullPath: ID!, $iid: String) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: issue(iid: $iid) {
+      id
+      dueDate
+    }
+  }
+}

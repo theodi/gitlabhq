@@ -1,0 +1,231 @@
+# frozen_string_literal: true
+
+class DeployToken < ApplicationRecord
+  include Expirable
+  include TokenAuthenticatable
+  include PolicyActor
+  include Gitlab::Utils::StrongMemoize
+
+  AVAILABLE_SCOPES = %i[read_repository read_registry write_registry
+    read_package_registry write_package_registry
+    read_virtual_registry write_virtual_registry].freeze
+  GITLAB_DEPLOY_TOKEN_NAME = 'gitlab-deploy-token'
+  DEPLOY_TOKEN_PREFIX = 'gldt-'
+
+  NOTIFICATION_INTERVALS = {
+    seven_days: 0..7,
+    thirty_days: 8..30,
+    sixty_days: 31..60
+  }.freeze
+
+  add_authentication_token_field :token, encrypted: :required, format_with_prefix: :prefix_for_deploy_token
+
+  attribute :expires_at, default: -> { Forever.date }
+
+  # Do NOT use this `user` for the authentication/authorization of the deploy tokens.
+  # It's for the auditing purpose on Credential Inventory, only.
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/353467#note_859774246 for more information.
+  belongs_to :user, foreign_key: :creator_id, optional: true
+  belongs_to :owner_project, class_name: 'Project', foreign_key: :project_id, optional: true
+  belongs_to :owner_group, class_name: 'Group', foreign_key: :group_id, optional: true
+
+  has_many :project_deploy_tokens, inverse_of: :deploy_token
+  has_many :projects, through: :project_deploy_tokens
+
+  has_many :group_deploy_tokens, inverse_of: :deploy_token
+  has_many :groups, through: :group_deploy_tokens
+
+  validate :no_groups, unless: :group_type?
+  validate :no_projects, unless: :project_type?
+  validate :ensure_at_least_one_scope
+  validates :username,
+    length: { maximum: 255 },
+    allow_nil: true,
+    format: {
+      with: /\A[a-zA-Z0-9\.\+_-]+\z/,
+      message: "can contain only letters, digits, '_', '-', '+', and '.'"
+    }
+  validates :name, length: { maximum: 255 }, if: :name_changed?
+
+  validates :expires_at, iso8601_date: true, on: :create
+  validates :deploy_token_type, presence: true
+  enum :deploy_token_type, {
+    group_type: 1,
+    project_type: 2
+  }
+
+  before_save :ensure_token
+
+  accepts_nested_attributes_for :project_deploy_tokens
+
+  scope :active, -> { where(revoked: false).not_expired }
+  scope :project_token, -> { where(deploy_token_type: :project_type) }
+  scope :group_token, -> { where(deploy_token_type: :group_type) }
+  scope :order_expires_at_asc, -> { order(expires_at: :asc) }
+  scope :with_project_owners_and_maintainers, -> { includes(projects: :owners_and_maintainers) }
+
+  def self.gitlab_deploy_token
+    active.find_by(name: GITLAB_DEPLOY_TOKEN_NAME)
+  end
+
+  def self.prefix_for_deploy_token
+    ::Authn::TokenField::PrefixHelper.prepend_instance_prefix(DEPLOY_TOKEN_PREFIX)
+  end
+
+  def self.notification_interval(interval)
+    NOTIFICATION_INTERVALS.fetch(interval).max
+  end
+
+  def self.scope_for_notification_interval(interval, min_expires_at: nil, max_expires_at: nil)
+    interval_range = NOTIFICATION_INTERVALS.fetch(interval).minmax
+    min_expiry_date, max_expiry_date = interval_range.map { |range| Date.current + range }
+    min_expiry_date = min_expires_at if min_expires_at
+    max_expiry_date = max_expires_at if max_expires_at
+    interval_attr = "#{interval}_notification_sent_at"
+
+    where(revoked: false)
+      .where(interval_attr => nil)
+      .where(expires_at: min_expiry_date..max_expiry_date)
+  end
+
+  def self.ordered_for_keyset_pagination
+    order(:expires_at, :id)
+  end
+
+  def self.update_notification_timestamps(token_ids, interval, timestamp = Time.current)
+    where(id: token_ids).update_all("#{interval}_notification_sent_at" => timestamp)
+  end
+
+  def valid_for_dependency_proxy?
+    group_type? &&
+      active? &&
+      (has_scopes?(Gitlab::Auth::REGISTRY_SCOPES) || has_scopes?(Gitlab::Auth::VIRTUAL_REGISTRY_SCOPES))
+  end
+
+  def revoke!
+    update!(revoked: true)
+  end
+
+  def active?
+    !revoked && !expired?
+  end
+
+  def deactivated?
+    !active?
+  end
+
+  def bot?
+    true
+  end
+
+  def scopes
+    AVAILABLE_SCOPES.select { |token_scope| read_attribute(token_scope) }
+  end
+
+  def username
+    super || default_username
+  end
+
+  def has_access_to?(requested_project)
+    return false unless active?
+    return false unless holder
+
+    holder.has_access_to?(requested_project)
+  end
+
+  def hook_attrs
+    Gitlab::HookData::ResourceDeployTokenBuilder.new(self).build
+  end
+
+  def has_access_to_group?(requested_group)
+    return false unless active?
+    return false unless group_type?
+    return false unless holder
+
+    holder.has_access_to_group?(requested_group)
+  end
+
+  # Deploy tokens have no user; the organization is reachable only through
+  # the sharding key (project_id and group_id are mutually exclusive).
+  def organization_id
+    owner_project&.organization_id || owner_group&.organization_id
+  end
+
+  # This is temporal. Currently we limit DeployToken
+  # to a single project or group, later we're going to
+  # extend that to be for multiple projects and namespaces.
+  def project
+    strong_memoize(:project) do
+      projects.first
+    end
+  end
+
+  def group
+    strong_memoize(:group) do
+      groups.first
+    end
+  end
+
+  def accessible_projects
+    if project_type?
+      projects
+    elsif group_type?
+      group.all_projects
+    end
+  end
+
+  def holder
+    strong_memoize(:holder) do
+      if project_type?
+        project_deploy_tokens.first
+      elsif group_type?
+        group_deploy_tokens.first
+      end
+    end
+  end
+
+  def impersonated?
+    false
+  end
+
+  def expires_at
+    expires_at = read_attribute(:expires_at)
+    expires_at != Forever.date ? expires_at : nil
+  end
+
+  def expires_at=(value)
+    write_attribute(:expires_at, value.presence || Forever.date)
+  end
+
+  def prefix_for_deploy_token
+    self.class.prefix_for_deploy_token
+  end
+
+  private
+
+  def expired?
+    return false unless expires_at
+
+    expires_at < Date.today
+  end
+
+  def ensure_at_least_one_scope
+    errors.add(:base, _("Scopes can't be blank")) unless scopes.any?
+  end
+
+  def default_username
+    "gitlab+deploy-token-#{id}" if persisted?
+  end
+
+  def no_groups
+    errors.add(:deploy_token, 'cannot have groups assigned') if group_deploy_tokens.any?
+  end
+
+  def no_projects
+    errors.add(:deploy_token, 'cannot have projects assigned') if project_deploy_tokens.any?
+  end
+
+  def has_scopes?(required_scopes)
+    (required_scopes & scopes).size == required_scopes.size
+  end
+end

@@ -1,0 +1,20 @@
+---
+description: Set runner maintenance note
+internal_events: true
+action: set_runner_maintenance_note
+identifiers:
+- project
+- namespace
+- user
+additional_properties:
+  label:
+    description: The runner type, which can be `project_type`, `group_type`, or `instance_type`
+product_group: runner_core
+product_categories:
+- runner_core
+milestone: '17.6'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/170483
+tiers:
+- free
+- premium
+- ultimate

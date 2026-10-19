@@ -1,0 +1,953 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Tags, feature_category: :source_code_management do
+  let(:user) { create(:user) }
+  let(:guest) { create(:user, guest_of: project) }
+  let(:project) { create(:project, :repository, creator: user, path: 'my.project') }
+  let(:tag_name) { project.repository.find_tag('v1.1.0').name }
+  let(:tag_message) { project.repository.find_tag('v1.1.0').message }
+
+  let(:project_id) { project.id }
+  let(:current_user) { nil }
+
+  before do
+    project.add_developer(user)
+  end
+
+  describe 'GET /projects/:id/repository/tags', :use_clean_rails_memory_store_caching do
+    let(:route) { "/projects/#{project_id}/repository/tags" }
+
+    it_behaves_like 'authorizing granular token permissions', :read_repository_tag do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_repositories,
+      allow_public_access_for_enabled_project_features: :repository do
+      let(:request) do
+        get api(route), params: { job_token: target_job.token }
+      end
+    end
+
+    context 'sorting' do
+      let(:current_user) { user }
+
+      it 'sorts by descending order by default' do
+        get api(route, current_user)
+
+        desc_order_tags = project.repository.tags.sort_by { |tag| tag.dereferenced_target.committed_date }
+        desc_order_tags.reverse!.map! { |tag| tag.dereferenced_target.id }
+
+        expect(json_response.map { |tag| tag['commit']['id'] }).to eq(desc_order_tags)
+      end
+
+      it 'sorts by ascending order if specified' do
+        get api("#{route}?sort=asc", current_user)
+
+        asc_order_tags = project.repository.tags.sort_by { |tag| tag.dereferenced_target.committed_date }
+        asc_order_tags.map! { |tag| tag.dereferenced_target.id }
+
+        expect(json_response.map { |tag| tag['commit']['id'] }).to eq(asc_order_tags)
+      end
+
+      it 'sorts by name in descending order when requested' do
+        get api("#{route}?order_by=name", current_user)
+
+        ordered_by_name = project.repository.tags.map { |tag| tag.name }.sort.reverse
+
+        expect(json_response.map { |tag| tag['name'] }).to eq(ordered_by_name)
+      end
+
+      it 'sorts by name in ascending order when requested' do
+        get api("#{route}?order_by=name&sort=asc", current_user)
+
+        ordered_by_name = project.repository.tags.map { |tag| tag.name }.sort
+
+        expect(json_response.map { |tag| tag['name'] }).to eq(ordered_by_name)
+      end
+
+      it 'sorts by version in ascending order when requested' do
+        repository = project.repository
+        repository.add_tag(user, 'v1.2.0', repository.commit.id)
+        repository.add_tag(user, 'v1.10.0', repository.commit.id)
+
+        get api("#{route}?order_by=version&sort=asc", current_user)
+
+        ordered_by_version = VersionSorter.sort(project.repository.tags.map { |tag| tag.name })
+
+        expect(json_response.map { |tag| tag['name'] }).to eq(ordered_by_version)
+      end
+    end
+
+    context 'with pagination parameters' do
+      let(:token) { create(:personal_access_token, user: user) }
+      let(:headers) { { 'PRIVATE-TOKEN' => token.token } }
+
+      context 'when only the page size is supplied' do
+        it 'returns the first tags and an offset next link', :aggregate_failures do
+          get api(route), params: { per_page: 2 }, headers: headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(%w[v1.1.1 v1.1.0])
+
+          next_link = response.headers.fetch('Link').split(',').find { |link| link.include?('rel="next"') }
+          expected_query = { id: project.id, order_by: 'updated', page: 2, per_page: 2, sort: 'desc' }.to_query
+
+          expect(next_link.strip).to eq(
+            %(<#{Gitlab.config.gitlab.url}/api/v4/projects/#{project.id}/repository/tags?#{expected_query}>; rel="next")
+          )
+        end
+      end
+
+      context 'when a cursor is supplied without a pagination mode' do
+        it 'returns tags after the cursor and an offset next link', :aggregate_failures do
+          get api(route), params: { page_token: 'v1.1.1', per_page: 2 }, headers: headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(%w[v1.1.0 v1.0.0])
+
+          next_link = response.headers.fetch('Link').split(',').find { |link| link.include?('rel="next"') }
+          expected_query = {
+            id: project.id, order_by: 'updated', page: 2, page_token: 'v1.1.1', per_page: 2, sort: 'desc'
+          }.to_query
+
+          expect(next_link.strip).to eq(
+            %(<#{Gitlab.config.gitlab.url}/api/v4/projects/#{project.id}/repository/tags?#{expected_query}>; rel="next")
+          )
+        end
+      end
+
+      context 'when a cursor and page number are supplied without a pagination mode' do
+        it 'ignores the cursor and returns the second page without a next link', :aggregate_failures do
+          get api(route), params: { page_token: 'v1.1.1', page: 2, per_page: 2 }, headers: headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(['v1.0.0'])
+          expect(response.headers.fetch('Link')).not_to include('rel="next"')
+        end
+      end
+
+      context 'when keyset pagination is requested without a cursor' do
+        it 'returns the first tags and a next link with the last returned tag as the cursor', :aggregate_failures do
+          get api(route), params: { pagination: 'keyset', per_page: 2 }, headers: headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(%w[v1.1.1 v1.1.0])
+
+          next_link = response.headers.fetch('Link').split(',').find { |link| link.include?('rel="next"') }
+          expected_query = {
+            id: project.id, order_by: 'updated', page: 1, page_token: 'v1.1.0',
+            pagination: 'keyset', per_page: 2, sort: 'desc'
+          }.to_query
+
+          expect(next_link.strip).to eq(
+            %(<#{Gitlab.config.gitlab.url}/api/v4/projects/#{project.id}/repository/tags?#{expected_query}>; rel="next")
+          )
+        end
+      end
+
+      context 'when keyset pagination includes a page number but no cursor' do
+        it 'returns the first tags and retains the page number in the next link', :aggregate_failures do
+          get api(route), params: { pagination: 'keyset', page: 2, per_page: 2 }, headers: headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(%w[v1.1.1 v1.1.0])
+
+          next_link = response.headers.fetch('Link').split(',').find { |link| link.include?('rel="next"') }
+          expected_query = {
+            id: project.id, order_by: 'updated', page: 2, page_token: 'v1.1.0',
+            pagination: 'keyset', per_page: 2, sort: 'desc'
+          }.to_query
+
+          expect(next_link.strip).to eq(
+            %(<#{Gitlab.config.gitlab.url}/api/v4/projects/#{project.id}/repository/tags?#{expected_query}>; rel="next")
+          )
+        end
+      end
+
+      context 'when keyset pagination includes a cursor' do
+        it 'returns tags after the cursor and updates the cursor in the next link', :aggregate_failures do
+          get api(route), params: { pagination: 'keyset', page_token: 'v1.1.1', per_page: 2 }, headers: headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(%w[v1.1.0 v1.0.0])
+
+          next_link = response.headers.fetch('Link').split(',').find { |link| link.include?('rel="next"') }
+          expected_query = {
+            id: project.id, order_by: 'updated', page: 1, page_token: 'v1.0.0',
+            pagination: 'keyset', per_page: 2, sort: 'desc'
+          }.to_query
+
+          expect(next_link.strip).to eq(
+            %(<#{Gitlab.config.gitlab.url}/api/v4/projects/#{project.id}/repository/tags?#{expected_query}>; rel="next")
+          )
+        end
+      end
+
+      context 'when keyset pagination includes both a cursor and a page number' do
+        it 'uses the cursor and retains the page number while updating the next cursor', :aggregate_failures do
+          get api(route), params: { pagination: 'keyset', page_token: 'v1.1.1', page: 2, per_page: 2 }, headers: headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(%w[v1.1.0 v1.0.0])
+
+          next_link = response.headers.fetch('Link').split(',').find { |link| link.include?('rel="next"') }
+          expected_query = {
+            id: project.id, order_by: 'updated', page: 2, page_token: 'v1.0.0',
+            pagination: 'keyset', per_page: 2, sort: 'desc'
+          }.to_query
+
+          expect(next_link.strip).to eq(
+            %(<#{Gitlab.config.gitlab.url}/api/v4/projects/#{project.id}/repository/tags?#{expected_query}>; rel="next")
+          )
+        end
+      end
+    end
+
+    # The repository fixture has 3 tags.
+    context 'when the request is at or beyond the end of the tag list' do
+      context 'when the last page has fewer tags than the requested page size' do
+        it 'returns only the remaining tag', :aggregate_failures do
+          get api(route, user), params: { page: 2, per_page: 2 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.pluck('name')).to eq(['v1.0.0'])
+        end
+      end
+
+      context 'when the requested page is beyond the last page' do
+        it 'returns an empty array', :aggregate_failures do
+          get api(route, user), params: { page: 3, per_page: 2 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to eq([])
+        end
+      end
+    end
+
+    context 'searching' do
+      it 'only returns searched tags' do
+        get api(route.to_s, user), params: { search: 'v1.1.0' }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+        expect(json_response.size).to eq(1)
+        expect(json_response[0]['name']).to eq('v1.1.0')
+      end
+
+      context 'with page parameters' do
+        it 'returns a paginated first page' do
+          get api(route.to_s, user), params: { search: '^v', page: 1, per_page: 2 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.size).to eq(2)
+        end
+
+        it 'returns a paginated first page when page is nil' do
+          get api(route.to_s, user), params: { search: '^v', per_page: 2 }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.size).to eq(2)
+        end
+      end
+    end
+
+    shared_examples_for 'repository tags' do
+      it 'returns the repository tags' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/tags')
+        expect(response).to include_pagination_headers
+        expect(json_response.map { |r| r['name'] }).to include(tag_name)
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '403 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when repository does not exist' do
+        it_behaves_like '404 response' do
+          let(:project) { create(:project, creator: user) }
+          let(:request) { get api(route, current_user) }
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'repository tags'
+
+      context 'and releases are private' do
+        before do
+          create(:release, project: project, tag: tag_name)
+          project.project_feature.update!(releases_access_level: ProjectFeature::PRIVATE)
+        end
+
+        it 'returns the repository tags without release information' do
+          get api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/tags')
+          expect(response).to include_pagination_headers
+          expect(json_response.map { |r| r.has_key?('release') }).to all(be_falsey)
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      it_behaves_like 'repository tags'
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'repository tags'
+      end
+    end
+
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { get api(route, guest) }
+      end
+    end
+
+    context 'with releases' do
+      let(:description) { 'Awesome release!' }
+
+      let!(:release) do
+        create(:release, :legacy, project: project, tag: tag_name, description: description)
+      end
+
+      it 'returns an array of project tags with release info' do
+        get api(route, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/tags')
+        expect(response).to include_pagination_headers
+
+        expected_tag = json_response.find { |r| r['name'] == tag_name }
+        expect(expected_tag['message']).to eq(tag_message)
+        expect(expected_tag['release']['description']).to eq(description)
+      end
+    end
+
+    context 'with releases preload' do
+      it 'does not cause N+1 problem' do
+        control = ActiveRecord::QueryRecorder.new do
+          get api(route, user)
+        end
+
+        expect(control.log).to include(/SELECT "releases"/).once
+      end
+    end
+
+    context 'with keyset pagination option', :aggregate_failures do
+      let(:base_params) { { pagination: 'keyset' } }
+
+      context 'with gitaly pagination params' do
+        context 'with high limit' do
+          let(:params) { base_params.merge(per_page: 100) }
+
+          it 'returns all repository tags' do
+            get api(route, user), params: params
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response).to match_response_schema('public_api/v4/tags')
+            expect(response.headers).not_to include('Link')
+            tag_names = json_response.map { |x| x['name'] }
+            expect(tag_names).to match_array(project.repository.tag_names)
+          end
+        end
+
+        context 'with low limit' do
+          let(:params) { base_params.merge(per_page: 2) }
+
+          it 'returns limited repository tags' do
+            get api(route, user), params: params
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response).to match_response_schema('public_api/v4/tags')
+            expect(response.headers).to include('Link')
+            tag_names = json_response.map { |x| x['name'] }
+            expect(tag_names).to match_array(%w[v1.1.0 v1.1.1])
+          end
+        end
+
+        context 'with missing page token' do
+          let(:params) { base_params.merge(page_token: 'unknown') }
+
+          it_behaves_like '422 response' do
+            let(:request) { get api(route, user), params: params }
+            let(:message) { 'Invalid page token: refs/tags/unknown' }
+          end
+        end
+      end
+    end
+
+    describe "cache expiry" do
+      let(:route) { "/projects/#{project_id}/repository/tags" }
+      let(:current_user) { user }
+
+      before do
+        # Set the cache
+        get api(route, current_user)
+      end
+
+      it "is cached" do
+        expect(API::Entities::Tag).not_to receive(:represent)
+
+        get api(route, current_user)
+      end
+
+      shared_examples "cache expired" do
+        it "isn't cached" do
+          expect(API::Entities::Tag).to receive(:represent).exactly(3).times
+
+          get api(route, current_user)
+        end
+      end
+
+      context "when protected tag is changed" do
+        before do
+          create(:protected_tag, name: tag_name, project: project)
+        end
+
+        it_behaves_like "cache expired"
+      end
+
+      context "when release is changed" do
+        before do
+          create(:release, :legacy, project: project, tag: tag_name)
+        end
+
+        it_behaves_like "cache expired"
+      end
+
+      context "when project is changed" do
+        before do
+          project.touch
+        end
+
+        it_behaves_like "cache expired"
+      end
+
+      context 'when user is not allowed to :read_release' do
+        before do
+          project.update!(visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+          project.project_feature.update!(releases_access_level: ProjectFeature::PRIVATE)
+
+          get api(route, user) # Cache as a user allowed to :read_release
+        end
+
+        it "isn't cached" do
+          expect(API::Entities::Tag).to receive(:represent).exactly(3).times
+
+          get api(route, nil)
+        end
+      end
+    end
+
+    context 'when gitaly is unavailable' do
+      let(:route) { "/projects/#{project_id}/repository/tags" }
+
+      before do
+        expect_next_instance_of(TagsFinder) do |finder|
+          allow(finder).to receive(:execute).and_raise(Gitlab::Git::CommandError)
+        end
+      end
+
+      it_behaves_like '503 response' do
+        let(:request) { get api(route, user) }
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/tags/:tag_name' do
+    let(:route) { "/projects/#{project_id}/repository/tags/#{tag_name}" }
+
+    it_behaves_like 'authorizing granular token permissions', :read_repository_tag do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_repositories,
+      allow_public_access_for_enabled_project_features: :repository do
+      let(:request) do
+        get api(route), params: { job_token: target_job.token }
+      end
+    end
+
+    shared_examples_for 'repository tag' do
+      it 'returns the repository branch' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/tag')
+        expect(json_response['name']).to eq(tag_name)
+      end
+
+      context 'when tag does not exist' do
+        let(:tag_name) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+          let(:message) { '404 Tag Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '403 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      let(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'repository tag'
+
+      context 'and releases are private' do
+        before do
+          create(:release, project: project, tag: tag_name)
+          project.project_feature.update!(releases_access_level: ProjectFeature::PRIVATE)
+        end
+
+        it 'returns the repository tags without release information' do
+          get api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/tag')
+          expect(json_response.has_key?('release')).to be_falsey
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      it_behaves_like 'repository tag'
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'repository tag'
+      end
+    end
+
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { get api(route, guest) }
+      end
+    end
+
+    context 'with releases' do
+      let(:description) { 'Awesome release!' }
+
+      before do
+        create(:release, project: project, tag: tag_name, description: description)
+      end
+
+      it 'returns release information' do
+        get api(route, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/tag')
+
+        expect(json_response['message']).to eq(tag_message)
+        expect(json_response.dig('release', 'description')).to eq(description)
+      end
+    end
+  end
+
+  describe 'POST /projects/:id/repository/tags' do
+    let(:tag_name) { 'new_tag' }
+    let(:route) { "/projects/#{project_id}/repository/tags" }
+
+    it_behaves_like 'authorizing granular token permissions', :create_repository_tag do
+      let(:boundary_object) { project }
+      let(:request) do
+        post api(route, personal_access_token: pat), params: { tag_name: tag_name, ref: 'master' }
+      end
+    end
+
+    shared_examples_for 'repository new tag' do
+      it 'creates a new tag' do
+        post api(route, current_user), params: { tag_name: tag_name, ref: 'master' }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(response).to match_response_schema('public_api/v4/tag')
+        expect(json_response['name']).to eq(tag_name)
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '403 response' do
+          let(:request) { post api(route, current_user) }
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { post api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { post api(route, guest) }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      context "when a protected branch doesn't already exist" do
+        it_behaves_like 'repository new tag'
+
+        context 'when tag contains a dot' do
+          let(:tag_name) { 'v7.0.1' }
+
+          it_behaves_like 'repository new tag'
+        end
+
+        context 'requesting with the escaped project full path' do
+          let(:project_id) { CGI.escape(project.full_path) }
+
+          it_behaves_like 'repository new tag'
+
+          context 'when tag contains a dot' do
+            let(:tag_name) { 'v7.0.1' }
+
+            it_behaves_like 'repository new tag'
+          end
+        end
+      end
+
+      it 'returns 400 if tag name contains spaces' do
+        post api(route, current_user), params: { tag_name: 'new design', ref: 'master' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq('Tag name invalid. Tag names cannot have spaces in them.')
+      end
+
+      it 'returns 400 if tag name is invalid' do
+        post api(route, current_user), params: { tag_name: 'HEAD', ref: 'master' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq('Tag name invalid')
+      end
+
+      it 'returns 400 if tag already exists' do
+        post api(route, current_user), params: { tag_name: 'new_design1', ref: 'master' }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(response).to match_response_schema('public_api/v4/tag')
+
+        post api(route, current_user), params: { tag_name: 'new_design1', ref: 'master' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq('Tag new_design1 already exists')
+      end
+
+      it 'returns 400 if ref name is invalid' do
+        post api(route, current_user), params: { tag_name: 'new_design3', ref: 'foo' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq('Target foo is invalid')
+      end
+
+      context 'annotated tag' do
+        it 'creates a new annotated tag' do
+          post api(route, current_user), params: { tag_name: 'v7.1.0', ref: 'master', message: 'Release 7.1.0' }
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(response).to match_response_schema('public_api/v4/tag')
+          expect(json_response['name']).to eq('v7.1.0')
+          expect(json_response['message']).to eq('Release 7.1.0')
+        end
+      end
+    end
+
+    context 'when rate limited' do
+      it_behaves_like 'rate limited endpoint', rate_limit_key: :tags_create do
+        let(:current_user) { user }
+        let_it_be(:user) { create(:user) }
+        let_it_be(:other_project) { create(:project, :repository, creator: user, developers: user) }
+
+        def request
+          post api(route, current_user), params: { tag_name: 'rate-limited-tag', ref: 'master' }
+        end
+
+        def request_with_second_scope
+          post api("/projects/#{other_project.id}/repository/tags", current_user),
+            params: { tag_name: 'rate-limited-tag-2', ref: 'master' }
+        end
+      end
+
+      context 'with the real limit applied', :clean_gitlab_redis_rate_limiting do
+        let(:other_developer) { create(:user, developer_of: project) }
+
+        before do
+          stub_application_setting(tags_create_limit: 1)
+        end
+
+        it 'shares the bucket between users of the same project' do
+          post api(route, user), params: { tag_name: 'shared-bucket-1', ref: 'master' }
+
+          expect(response).to have_gitlab_http_status(:created)
+
+          post api(route, other_developer), params: { tag_name: 'shared-bucket-2', ref: 'master' }
+
+          expect(response).to have_gitlab_http_status(:too_many_requests)
+        end
+
+        it 'does not consume the budget for requests rejected by authorization' do
+          public_project = create(:project, :repository, :public, creator: user, developers: user)
+          public_route = "/projects/#{public_project.id}/repository/tags"
+
+          post api(public_route), params: { tag_name: 'anonymous-tag', ref: 'master' }
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+
+          post api(public_route, user), params: { tag_name: 'authorized-tag', ref: 'master' }
+
+          expect(response).to have_gitlab_http_status(:created)
+        end
+      end
+    end
+  end
+
+  describe 'DELETE /projects/:id/repository/tags/:tag_name' do
+    let(:route) { "/projects/#{project_id}/repository/tags/#{tag_name}" }
+
+    before do
+      allow_next_instance_of(Repository) do |instance|
+        allow(instance).to receive(:rm_tag).and_return(true)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_repository_tag do
+      let(:boundary_object) { project }
+      let(:request) do
+        delete api(route, personal_access_token: pat)
+      end
+    end
+
+    shared_examples_for 'repository delete tag' do
+      it 'deletes a tag' do
+        delete api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+
+      it_behaves_like '412 response' do
+        let(:request) { api(route, current_user) }
+      end
+
+      context 'when tag does not exist' do
+        let(:tag_name) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { delete api(route, current_user) }
+          let(:message) { '404 Tag Not Found' }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '403 response' do
+          let(:request) { delete api(route, current_user) }
+        end
+      end
+    end
+
+    context 'when authenticated as a guest' do
+      let(:current_user) { create(:user, guest_of: project) }
+
+      it_behaves_like '403 response' do
+        let(:request) { delete api(route, current_user) }
+      end
+    end
+
+    context 'when authenticated as a developer' do
+      let(:current_user) { create(:user, developer_of: project) }
+
+      it_behaves_like 'repository delete tag'
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'repository delete tag'
+      end
+
+      context 'when the tag is protected' do
+        before do
+          create(:protected_tag, project: project, name: tag_name)
+        end
+
+        it_behaves_like '403 response' do
+          let(:request) { delete api(route, current_user) }
+        end
+      end
+    end
+
+    context 'when authenticated as a maintainer' do
+      let(:current_user) { create(:user, maintainer_of: project) }
+
+      it_behaves_like 'repository delete tag'
+
+      context 'when the tag is protected' do
+        before do
+          create(:protected_tag, project: project, name: tag_name)
+        end
+
+        it_behaves_like 'repository delete tag'
+      end
+    end
+
+    context 'when authenticated as an owner' do
+      let(:current_user) { create(:user, owner_of: project) }
+
+      context 'when the tag is protected' do
+        before do
+          create(:protected_tag, project: project, name: tag_name)
+        end
+
+        it_behaves_like 'repository delete tag'
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/repository/tags/:tag_name/signature' do
+    let_it_be(:project) { create(:project, :repository, :public) }
+    let(:project_id) { project.id }
+    let(:route) { "/projects/#{project_id}/repository/tags/#{tag_name}/signature" }
+
+    context 'when tag does not exist' do
+      let(:tag_name) { 'unknown' }
+
+      it_behaves_like '404 response' do
+        let(:request) { get api(route, current_user) }
+        let(:message) { '404 Tag Not Found' }
+      end
+    end
+
+    context 'unsigned tag' do
+      let(:tag_name) { 'v1.1.0' }
+
+      it_behaves_like '404 response' do
+        let(:request) { get api(route, current_user) }
+        let(:message) { '404 Signature Not Found' }
+      end
+    end
+
+    context 'x509 signed tag' do
+      let(:tag_name) { 'v1.1.1' }
+      let(:tag) { project.repository.find_tag(tag_name) }
+      let(:signature) { tag.signature }
+      let(:x509_certificate) { signature.x509_certificate }
+      let(:x509_issuer) { x509_certificate.x509_issuer }
+
+      it_behaves_like 'authorizing granular token permissions', :read_repository_tag_signature do
+        let(:boundary_object) { project }
+        let(:request) do
+          get api(route, personal_access_token: pat)
+        end
+      end
+
+      it 'returns correct JSON' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to eq(
+          'signature_type' => 'X509',
+          'verification_status' => signature.verification_status.to_s,
+          'x509_certificate' => {
+            'id' => x509_certificate.id,
+            'subject' => x509_certificate.subject,
+            'subject_key_identifier' => x509_certificate.subject_key_identifier,
+            'email' => x509_certificate.email,
+            'serial_number' => x509_certificate.serial_number,
+            'certificate_status' => x509_certificate.certificate_status,
+            'x509_issuer' => {
+              'id' => x509_issuer.id,
+              'subject' => x509_issuer.subject,
+              'subject_key_identifier' => x509_issuer.subject_key_identifier,
+              'crl_url' => x509_issuer.crl_url
+            }
+          }
+        )
+      end
+    end
+  end
+
+  context 'when authenticated with a token that has the ai_workflows scope' do
+    let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+    it 'returns the repository tags' do
+      get api("/projects/#{project.id}/repository/tags", oauth_access_token: oauth_token)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'returns a single repository tag' do
+      get api("/projects/#{project.id}/repository/tags/#{tag_name}", oauth_access_token: oauth_token)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'allows HEAD requests' do
+      head api("/projects/#{project.id}/repository/tags", oauth_access_token: oauth_token)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'does not allow creating a tag' do
+      post api("/projects/#{project.id}/repository/tags", oauth_access_token: oauth_token),
+        params: { tag_name: 'new-tag', ref: 'master' }
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+
+    it 'does not allow deleting a tag' do
+      delete api("/projects/#{project.id}/repository/tags/#{tag_name}", oauth_access_token: oauth_token)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+  end
+end

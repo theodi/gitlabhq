@@ -1,0 +1,17 @@
+description: "Click button to export issuable as CSV"
+category: default
+action: click_button
+extra_properties:
+identifiers:
+product_group: work_items
+product_categories:
+- team_planning
+milestone: "13.10"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54214
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`export_[issuable_type]_csv`"

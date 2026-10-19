@@ -1,0 +1,46 @@
+{
+  "type": "object",
+  "properties" : {
+    "id": { "type": "integer" },
+    "iid": { "type": "integer" },
+    "type": { "type": "string" },
+    "title": { "type": "string" },
+    "confidential": { "type": "boolean" },
+    "closed": { "type": "boolean" },
+    "due_date": { "type": ["string", "null"] },
+    "project_id": { "type": "integer" },
+    "relative_position": { "type": ["integer", "null"] },
+    "time_estimate": { "type": "integer" },
+    "total_time_spent": { "type": "integer" },
+    "human_time_estimate": { "type": ["string", "null"] },
+    "human_total_time_spent": { "type": ["string", "null"] },
+    "weight": { "type": ["integer", "null"] },
+    "project": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "path": { "type": "string" },
+        "path_with_namespace": { "type": "string" }
+      }
+    },
+    "milestone": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "title": { "type": "string" }
+      }
+    },
+    "assignees": { "type": ["array", "null"] },
+    "labels": {
+      "type": "array",
+      "items": { "$ref": "label.json" }
+    },
+    "reference_path": { "type": "string" },
+    "real_path": { "type": "string" },
+    "issue_sidebar_endpoint": { "type": "string" },
+    "toggle_subscription_endpoint": { "type": "string" },
+    "assignable_labels_endpoint": { "type": "string" },
+    "blocked": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

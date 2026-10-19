@@ -1,0 +1,283 @@
+# frozen_string_literal: true
+
+module ActiveContext
+  module Databases
+    module Postgresql
+      class Executor
+        include ActiveContext::Databases::Concerns::Executor
+
+        RESERVED_FIELDS = %w[id partition_id ref_id ref_version].freeze
+
+        private
+
+        def do_create_collection(name:, number_of_partitions:, fields:, options: {})
+          strategy = PartitionStrategy.new(
+            name: name,
+            number_of_partitions: number_of_partitions
+          )
+
+          return if collection_exists?(strategy)
+
+          create_parent_table(strategy.collection_name, fields, options) unless table_exists?(strategy.collection_name)
+
+          strategy.each_partition do |partition_name|
+            next if table_exists?(partition_name)
+
+            create_partition_table(
+              partition_name,
+              strategy.collection_name,
+              get_partition_remainder(partition_name)
+            )
+          end
+
+          create_indices(strategy, fields)
+        end
+
+        def create_parent_table(name, fields, options = {})
+          fixed_columns, variable_columns = sort_fields_by_size(fields)
+
+          adapter.client.with_connection do |connection|
+            connection.create_table(name, primary_key: [:id, :partition_id],
+              options: 'PARTITION BY LIST (partition_id)') do |table|
+              # Add partition_id first as it's required for partitioning
+              table.integer :partition_id, null: false
+
+              # Add fixed columns first for better memory alignment
+              fixed_columns.each do |field|
+                add_column_from_field(table, field)
+              end
+
+              # Add id columns
+              table.string :id, null: false
+
+              # Add reference tracking columns if enabled
+              if options.fetch(:include_ref_fields, true)
+                table.string :ref_id, null: false
+                table.bigint :ref_version, null: false
+              end
+
+              # Add variable width columns last
+              variable_columns.each do |field|
+                add_column_from_field(table, field)
+              end
+            end
+          end
+        end
+
+        def sort_fields_by_size(fields)
+          fixed_columns = []
+          variable_columns = []
+
+          fields.each do |field|
+            case field
+            when Field::Bigint
+              # Bigint is 8 bytes
+              fixed_columns << [field, 8]
+            when Field::Integer
+              # Integer is 4 bytes
+              fixed_columns << [field, 4]
+            when Field::Smallint
+              # Smallint is 2 bytes
+              fixed_columns << [field, 2]
+            when Field::Boolean
+              # Boolean is 1 byte
+              fixed_columns << [field, 1]
+            when Field::Keyword, Field::Text
+              # Text fields are variable width
+              variable_columns << field
+            when Field::Vector
+              # Vector fields have fixed size based on dimensions
+              fixed_columns << [field, field.options[:dimensions] * 4]
+            else
+              raise ArgumentError, "Unknown field type: #{field.class}"
+            end
+          end
+
+          # Sort fixed-size columns by size in descending order for best alignment
+          [fixed_columns.sort_by { |_, size| -size }.map(&:first), variable_columns]
+        end
+
+        def add_column_from_field(table, field)
+          return if RESERVED_FIELDS.include?(field.name.to_s)
+
+          case field
+          when Field::Bigint
+            table.bigint(field.name, **field.options.except(:index))
+          when Field::Integer
+            table.integer(field.name, **field.options.except(:index))
+          when Field::Smallint
+            table.integer(field.name, limit: 2, **field.options.except(:index))
+          when Field::Boolean
+            table.boolean(field.name, **field.options.except(:index))
+          when Field::Keyword, Field::Text
+            table.text(field.name, **field.options.except(:index))
+          when Field::Vector
+            table.column(field.name, "vector(#{field.options[:dimensions]})")
+          else
+            raise ArgumentError, "Unknown field type: #{field.class}"
+          end
+        end
+
+        def add_column_from_definition(table, column_def, _connection)
+          name, type_info = parse_column_definition(column_def)
+
+          if type_info[:type] == :virtual
+            # For vector columns, use raw SQL type
+            table.column(name, type_info[:options][:as])
+          else
+            table.column(name, type_info[:type], **type_info[:options])
+          end
+        end
+
+        def create_partition_table(partition_name, parent_name, partition_id)
+          adapter.client.with_connection do |connection|
+            sql = <<~SQL.squish
+              CREATE TABLE #{connection.quote_table_name(partition_name)}
+              PARTITION OF #{connection.quote_table_name(parent_name)}
+              FOR VALUES IN (#{partition_id});
+            SQL
+
+            connection.execute(sql)
+          end
+        end
+
+        def create_indices(strategy, fields)
+          fields.each do |field|
+            next unless field.options[:index]
+
+            if field.is_a?(Field::Vector)
+              strategy.each_partition do |partition_name|
+                next if index_exists?(partition_name, field)
+
+                create_vector_index(partition_name, field)
+              end
+            else
+              create_standard_index(strategy.collection_name, field)
+            end
+          end
+        end
+
+        def create_standard_index(table_name, field)
+          adapter.client.with_connection do |connection|
+            next if index_exists?(table_name, field)
+
+            connection.add_index(
+              table_name,
+              field.name,
+              name: index_name_for(table_name, field)
+            )
+          end
+        end
+
+        def create_vector_index(table_name, field)
+          adapter.client.with_connection do |connection|
+            next if index_exists?(table_name, field)
+
+            index_name = index_name_for(table_name, field)
+
+            connection.execute(<<~SQL.squish)
+              CREATE INDEX #{connection.quote_column_name(index_name)}
+              ON #{connection.quote_table_name(table_name)}
+              USING hnsw (#{connection.quote_column_name(field.name)} vector_l2_ops)
+            SQL
+          end
+        end
+
+        def index_exists?(table_name, field)
+          adapter.client.with_connection do |connection|
+            index_name = index_name_for(table_name, field)
+            connection.index_exists?(table_name, field.name, name: index_name)
+          end
+        end
+
+        def index_name_for(table_name, field)
+          "#{table_name}_#{field.name}_idx"
+        end
+
+        def collection_exists?(strategy)
+          adapter.client.with_connection do |connection|
+            exists = connection.table_exists?(strategy.collection_name)
+            next false unless exists
+
+            strategy.partition_names.all? do |partition_name|
+              connection.table_exists?(partition_name)
+            end
+          end
+        end
+
+        def table_exists?(name)
+          adapter.client.with_connection do |connection|
+            connection.table_exists?(name)
+          end
+        end
+
+        def get_partition_remainder(partition_name)
+          partition_name.split('_').last.to_i
+        end
+
+        def do_drop_collection(collection)
+          adapter.client.with_connection do |connection|
+            connection.drop_table(collection.name, if_exists: true)
+          end
+        end
+
+        def do_add_field(collection, field)
+          return if RESERVED_FIELDS.include?(field.name.to_s)
+
+          strategy = PartitionStrategy.new(
+            name: collection.name,
+            number_of_partitions: collection.number_of_partitions
+          )
+
+          adapter.client.with_connection do |connection|
+            add_column_to_existing_table(connection, strategy.collection_name, field)
+          end
+
+          create_indices(strategy, [field])
+        end
+
+        def do_nullify_field(collection, field_name, batch_size:)
+          adapter.client.with_connection do |connection|
+            next 0 unless connection.column_exists?(collection.name, field_name)
+
+            quoted_table = connection.quote_table_name(collection.name)
+            quoted_column = connection.quote_column_name(field_name)
+
+            sql = <<~SQL.squish
+              UPDATE #{quoted_table}
+              SET #{quoted_column} = NULL
+              WHERE (id, partition_id) IN (
+                SELECT id, partition_id FROM #{quoted_table}
+                WHERE #{quoted_column} IS NOT NULL
+                LIMIT #{batch_size}
+              )
+            SQL
+
+            connection.update(sql)
+          end
+        end
+
+        def add_column_to_existing_table(connection, table_name, field)
+          return if connection.column_exists?(table_name, field.name)
+
+          case field
+          when Field::Bigint
+            connection.add_column(table_name, field.name, :bigint, **field.options.except(:index))
+          when Field::Integer
+            connection.add_column(table_name, field.name, :integer, **field.options.except(:index))
+          when Field::Smallint
+            connection.add_column(table_name, field.name, :integer, limit: 2, **field.options.except(:index))
+          when Field::Boolean
+            connection.add_column(table_name, field.name, :boolean, **field.options.except(:index))
+          when Field::Keyword, Field::Text
+            connection.add_column(table_name, field.name, :text, **field.options.except(:index))
+          when Field::Vector
+            connection.add_column(table_name, field.name, "vector(#{field.options[:dimensions]})")
+          else
+            raise ArgumentError, "Unknown field type: #{field.class}"
+          end
+        end
+      end
+    end
+  end
+end

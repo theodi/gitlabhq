@@ -1,0 +1,151 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Utils formOptionsGenerator returns an object containing cadence 1`] = `
+[
+  {
+    "default": true,
+    "key": "EVERY_DAY",
+    "label": "Every day",
+  },
+  {
+    "default": false,
+    "key": "EVERY_WEEK",
+    "label": "Every week",
+  },
+  {
+    "default": false,
+    "key": "EVERY_TWO_WEEKS",
+    "label": "Every two weeks",
+  },
+  {
+    "default": false,
+    "key": "EVERY_MONTH",
+    "label": "Every month",
+  },
+  {
+    "default": false,
+    "key": "EVERY_THREE_MONTHS",
+    "label": "Every three months",
+  },
+]
+`;
+
+exports[`Utils formOptionsGenerator returns an object containing keepN 1`] = `
+[
+  {
+    "key": null,
+    "label": "",
+  },
+  {
+    "default": false,
+    "key": "ONE_TAG",
+    "label": "1 tag per image name",
+    "variable": 1,
+  },
+  {
+    "default": false,
+    "key": "FIVE_TAGS",
+    "label": "5 tags per image name",
+    "variable": 5,
+  },
+  {
+    "default": true,
+    "key": "TEN_TAGS",
+    "label": "10 tags per image name",
+    "variable": 10,
+  },
+  {
+    "default": false,
+    "key": "TWENTY_FIVE_TAGS",
+    "label": "25 tags per image name",
+    "variable": 25,
+  },
+  {
+    "default": false,
+    "key": "FIFTY_TAGS",
+    "label": "50 tags per image name",
+    "variable": 50,
+  },
+  {
+    "default": false,
+    "key": "ONE_HUNDRED_TAGS",
+    "label": "100 tags per image name",
+    "variable": 100,
+  },
+]
+`;
+
+exports[`Utils formOptionsGenerator returns an object containing olderThan 1`] = `
+[
+  {
+    "key": null,
+    "label": "",
+  },
+  {
+    "default": false,
+    "key": "ONE_DAY",
+    "label": "1 day",
+    "variable": 1,
+  },
+  {
+    "default": false,
+    "key": "THREE_DAYS",
+    "label": "3 days",
+    "variable": 3,
+  },
+  {
+    "default": false,
+    "key": "SEVEN_DAYS",
+    "label": "7 days",
+    "variable": 7,
+  },
+  {
+    "default": false,
+    "key": "FOURTEEN_DAYS",
+    "label": "14 days",
+    "variable": 14,
+  },
+  {
+    "default": false,
+    "key": "THIRTY_DAYS",
+    "label": "30 days",
+    "variable": 30,
+  },
+  {
+    "default": false,
+    "key": "SIXTY_DAYS",
+    "label": "60 days",
+    "variable": 60,
+  },
+  {
+    "default": true,
+    "key": "NINETY_DAYS",
+    "label": "90 days",
+    "variable": 90,
+  },
+  {
+    "default": false,
+    "key": "ONE_HUNDRED_EIGHTY_DAYS",
+    "label": "180 days",
+    "variable": 180,
+  },
+  {
+    "default": false,
+    "key": "THREE_HUNDRED_SIXTY_FIVE_DAYS",
+    "label": "1 year",
+    "variable": 365,
+  },
+  {
+    "default": false,
+    "key": "SEVEN_HUNDRED_THIRTY_DAYS",
+    "label": "2 years",
+    "variable": 730,
+  },
+  {
+    "default": false,
+    "key": "ONE_THOUSAND_NINETY_FIVE_DAYS",
+    "label": "3 years",
+    "variable": 1095,
+  },
+]
+`;

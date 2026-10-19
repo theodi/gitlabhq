@@ -1,0 +1,34 @@
+# frozen_string_literal: true
+
+module Ci
+  class CancelRedundantPipelinesWorker
+    include ApplicationWorker
+
+    data_consistency :sticky
+    feature_category :continuous_integration
+    idempotent!
+    deduplicate :until_executed
+    urgency :low
+
+    # rubocop: disable CodeReuse/ActiveRecord -- we already use partition pruning
+    def perform(pipeline_id, options = {})
+      relation = Ci::Pipeline.all
+      relation = relation.in_partition(options['partition_id']) if options['partition_id'].present?
+
+      relation.find_by(id: pipeline_id).try do |pipeline|
+        cancel_redundant_pipelines(pipeline)
+      end
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    private
+
+    def cancel_redundant_pipelines(pipeline)
+      if Feature.enabled?(:ci_redundant_pipeline_cancel_from_cache, pipeline.project)
+        Ci::RedundantPipelines::CancelOlderPipelinesService.for(pipeline).execute
+      else
+        Ci::PipelineCreation::CancelRedundantPipelinesService.new(pipeline).execute
+      end
+    end
+  end
+end

@@ -1,0 +1,88 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+
+query getPipelineSchedulesQuery(
+  $projectPath: ID!
+  $status: PipelineScheduleStatus
+  $ids: [ID!] = null
+  $sortValue: PipelineScheduleSort
+  $first: Int
+  $last: Int
+  $prevPageCursor: String = ""
+  $nextPageCursor: String = ""
+) {
+  currentUser {
+    id
+    username
+  }
+  project(fullPath: $projectPath) {
+    id
+    projectPlanLimits {
+      ciPipelineSchedules
+    }
+    pipelineSchedules(
+      status: $status
+      ids: $ids
+      sort: $sortValue
+      first: $first
+      last: $last
+      after: $nextPageCursor
+      before: $prevPageCursor
+    ) {
+      count
+      nodes {
+        id
+        description
+        cron
+        cronTimezone
+        ref
+        forTag
+        editPath
+        refPath
+        refForDisplay
+        lastPipeline {
+          id
+          detailedStatus {
+            id
+            group
+            icon
+            label
+            text
+            detailsPath
+          }
+        }
+        active
+        nextRunAt
+        realNextRun
+        owner {
+          id
+          username
+          avatarUrl
+          name
+          webPath
+        }
+        inputs {
+          nodes {
+            name
+            value
+          }
+        }
+        variables {
+          nodes {
+            id
+            variableType
+            key
+            value
+          }
+        }
+        userPermissions {
+          playPipelineSchedule
+          updatePipelineSchedule
+          adminPipelineSchedule
+        }
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

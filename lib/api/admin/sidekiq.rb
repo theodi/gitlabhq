@@ -1,0 +1,45 @@
+# frozen_string_literal: true
+
+module API
+  module Admin
+    class Sidekiq < ::API::Base
+      before { authenticated_as_admin! }
+
+      feature_category :sidekiq
+
+      namespace 'admin' do
+        namespace 'sidekiq' do
+          namespace 'queues' do
+            desc 'Delete jobs from a Sidekiq queue' do
+              detail 'Deletes jobs from a Sidekiq queue that match the specified metadata.'
+              tags ['sidekiq']
+            end
+            params do
+              requires :queue_name, type: String, desc: 'Name of the queue to delete jobs from.'
+
+              Gitlab::SidekiqQueue::ALLOWED_KEYS.each do |key|
+                optional key, type: String, desc: 'Metadata key to match', allow_blank: false
+              end
+
+              at_least_one_of(*Gitlab::SidekiqQueue::ALLOWED_KEYS)
+            end
+            route_setting :authorization, permissions: :drop_sidekiq_job, boundary_type: :instance,
+              assignable_when: [:admin]
+            delete ':queue_name' do
+              result =
+                Gitlab::SidekiqQueue
+                  .new(params[:queue_name])
+                  .drop_jobs!(declared_params, timeout: 30)
+
+              present result
+            rescue Gitlab::SidekiqQueue::NoMetadataError
+              render_api_error!("Invalid metadata: #{declared_params}", 400)
+            rescue Gitlab::SidekiqQueue::InvalidQueueError
+              not_found!(params[:queue_name])
+            end
+          end
+        end
+      end
+    end
+  end
+end

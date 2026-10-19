@@ -1,0 +1,355 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::Offline::Imports::ScheduleImportService, :aggregate_failures, feature_category: :importers do
+  describe '#execute' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:destination_group) { create(:group, owners: user) }
+    let(:bulk_import) { create(:bulk_import, :with_offline_configuration, user: user) }
+    let(:fake_metadata) do
+      {
+        instance_version: "19.0.0",
+        instance_enterprise: true,
+        export_prefix: "export_2025-09-18_1hrwkrv",
+        source_hostname: "https://offline-environment-gitlab.example.com",
+        source_ghost_user_id: 123,
+        batched: true,
+        entities_mapping:
+          {
+            "top_level_group" => "group_1",
+            "top_level_group/group" => "group_2",
+            "top_level_group/group/first_project" => "project_1",
+            "top_level_group/group/second_project" => "project_2",
+            "top_level_group/another_group" => "group_3"
+          }
+      }
+    end
+
+    let(:object_storage_configuration) { build(:import_offline_configuration) }
+
+    let(:entities) do
+      [
+        {
+          "source_type" => 'group_entity',
+          "source_full_path" => 'top_level_group',
+          "destination_namespace" => destination_group.full_path,
+          "destination_slug" => 'dest-grp-0123'
+        }
+      ]
+    end
+
+    subject(:service) do
+      described_class.new(
+        bulk_import,
+        entities
+      )
+    end
+
+    before do
+      stub_offline_import_object_storage(object_storage_configuration)
+
+      allow_next_instance_of(Import::Offline::Imports::MetadataFileReader) do |reader|
+        allow(reader).to receive(:read).and_return(fake_metadata)
+      end
+    end
+
+    it 'returns a success result' do
+      expect(service.execute).to be_success
+    end
+
+    it 'enqueues BulkImportWorker' do
+      expect(BulkImportWorker).to receive(:perform_async).with(bulk_import.id)
+
+      service.execute
+    end
+
+    it 'caches the source ghost user ID before enqueuing BulkImportWorker' do
+      expect(BulkImports::SourceInternalUserFinder).to receive(:cache_ghost_user_id)
+        .with(bulk_import.id, fake_metadata[:source_ghost_user_id])
+        .ordered
+      expect(BulkImportWorker).to receive(:perform_async).with(bulk_import.id).ordered
+
+      service.execute
+    end
+
+    context 'when the metadata file raises MetadataError for unsupported version' do
+      before do
+        allow_next_instance_of(Import::Offline::Imports::MetadataFileReader) do |reader|
+          allow(reader).to receive(:read).and_raise(
+            Import::Offline::Imports::MetadataFileReader::MetadataError, 'Invalid source version'
+          )
+        end
+      end
+
+      it 'returns an error result and fails the import' do
+        result = service.execute
+
+        expect(result).to be_error
+        expect(result.message).to eq('Invalid source version')
+        expect(bulk_import.reload.failed?).to be(true)
+      end
+
+      it 'logs the failure tagged as offline transfer' do
+        logger = instance_double(BulkImports::Logger)
+        allow(BulkImports::Logger).to receive(:build).and_return(logger)
+
+        expect(logger).to receive(:error).with(
+          message: 'Invalid source version',
+          bulk_import_id: bulk_import.id,
+          importer: Import::SOURCE_OFFLINE_TRANSFER.to_s
+        )
+
+        service.execute
+      end
+    end
+
+    context 'when the entity path has no mapping in metadata' do
+      let(:entities) do
+        [{ "source_type" => 'group_entity', "source_full_path" => 'unmapped_group',
+           "destination_namespace" => destination_group.full_path, "destination_slug" => 'dest' }]
+      end
+
+      it 'returns an error result and fails the import' do
+        result = service.execute
+
+        expect(result).to be_error
+        expect(result.message).to match(/no mapping for entity path 'unmapped_group'/)
+        expect(bulk_import.reload.failed?).to be(true)
+      end
+    end
+
+    context 'when the metadata file cannot be parsed' do
+      before do
+        allow_next_instance_of(Import::Offline::Imports::MetadataFileReader) do |reader|
+          allow(reader).to receive(:read).and_raise(
+            Import::Offline::Imports::MetadataFileReader::MetadataError, 'Failed to parse metadata'
+          )
+        end
+      end
+
+      it 'returns an error result and fails the import' do
+        result = service.execute
+
+        expect(result).to be_error
+        expect(result.message).to eq('Failed to parse metadata')
+        expect(bulk_import.reload.failed?).to be(true)
+      end
+    end
+
+    it 'updates the bulk import record' do
+      expect { service.execute }
+        .to change { bulk_import.reload.source_version }.to("19.0.0")
+        .and change { bulk_import.reload.source_enterprise }.to(true)
+    end
+
+    it 'updates the offline configuration with the entity prefix mapping' do
+      expect { service.execute }
+        .to change { bulk_import.offline_configuration.reload.entity_prefix_mapping }
+        .to(fake_metadata[:entities_mapping].stringify_keys)
+    end
+
+    it 'updates the offline configuration with the source hostname' do
+      expect { service.execute }
+        .to change { bulk_import.offline_configuration.reload.source_hostname }
+        .to(fake_metadata[:source_hostname])
+    end
+
+    it 'creates a bulk import entity for the group' do
+      expect { service.execute }
+        .to change { BulkImports::Entity.count }.by(1)
+
+      expect(BulkImports::Entity.last).to have_attributes(
+        source_type: "group_entity",
+        source_full_path: "top_level_group",
+        destination_name: "dest-grp-0123",
+        destination_namespace: destination_group.full_path
+      )
+    end
+
+    it 'is safe to retry - clears existing entities before creating new ones' do
+      described_class.new(bulk_import.reload, entities).execute
+      expect { described_class.new(bulk_import.reload, entities).execute }.not_to change { BulkImports::Entity.count }
+      expect(BulkImports::Entity.count).to eq(1)
+    end
+
+    it 'tracks the user role' do
+      service.execute
+
+      expect_snowplow_event(
+        category: 'Import::Offline::Imports::ScheduleImportService',
+        action: 'create',
+        label: 'import_access_level',
+        user: user,
+        extra: { user_role: 'Owner', import_type: 'offline_import_group' }
+      )
+    end
+
+    context 'when import_all is given' do
+      let(:fake_metadata) do
+        super().merge(
+          entities_mapping: {
+            "top_level_group" => "group_1",
+            "top_level_group/group" => "group_2",
+            "top_level_group/group/first_project" => "project_1",
+            "another_top_level_group" => "group_3",
+            "unexported_root/orphaned_group" => "group_4",
+            "unexported_root/orphaned_group/project" => "project_2"
+          }
+        )
+      end
+
+      let(:destination_namespace) { destination_group.full_path }
+      let(:import_all) { { "destination_namespace" => destination_namespace } }
+
+      subject(:service) { described_class.new(bulk_import, [], import_all) }
+
+      it 'returns a success result' do
+        expect(service.execute).to be_success
+      end
+
+      it 'creates an entity for each top-level group in the export' do
+        expect { service.execute }.to change { BulkImports::Entity.count }.by(2)
+
+        expect(BulkImports::Entity.all).to contain_exactly(
+          have_attributes(
+            source_type: 'group_entity',
+            source_full_path: 'top_level_group',
+            destination_name: 'top_level_group',
+            destination_namespace: destination_namespace
+          ),
+          have_attributes(
+            source_type: 'group_entity',
+            source_full_path: 'another_top_level_group',
+            destination_name: 'another_top_level_group',
+            destination_namespace: destination_namespace
+          )
+        )
+      end
+
+      it 'logs the paths whose top-level group was not exported' do
+        logger = instance_double(BulkImports::Logger)
+        allow(BulkImports::Logger).to receive(:build).and_return(logger)
+
+        expect(logger).to receive(:warn).with(
+          message: 'Skipping entities whose top-level group is not in the export',
+          skipped_paths: ['unexported_root/orphaned_group', 'unexported_root/orphaned_group/project'],
+          bulk_import_id: bulk_import.id,
+          importer: Import::SOURCE_OFFLINE_TRANSFER.to_s
+        )
+
+        service.execute
+      end
+
+      it 'is safe to retry - clears existing entities before creating new ones' do
+        described_class.new(bulk_import.reload, [], import_all).execute
+
+        expect { described_class.new(bulk_import.reload, [], import_all).execute }
+          .not_to change { BulkImports::Entity.count }
+        expect(BulkImports::Entity.count).to eq(2)
+      end
+
+      context 'when destination_namespace is empty' do
+        let(:destination_namespace) { '' }
+
+        it 'creates the entities at the instance root' do
+          service.execute
+
+          expect(BulkImports::Entity.all.map(&:destination_namespace)).to all(eq(''))
+        end
+      end
+
+      context 'when the export contains no top-level groups' do
+        let(:fake_metadata) do
+          super().merge(entities_mapping: { "unexported_root/orphaned_group" => "group_4" })
+        end
+
+        it 'returns an error result and fails the import' do
+          result = service.execute
+
+          expect(result).to be_error
+          expect(result.message).to eq('Export contains no top-level groups to import')
+          expect(bulk_import.reload.failed?).to be(true)
+        end
+
+        it 'creates no entities' do
+          expect { service.execute }.not_to change { BulkImports::Entity.count }
+        end
+
+        it 'does not log a misleading partial skip' do
+          logger = instance_double(BulkImports::Logger, error: nil)
+          allow(BulkImports::Logger).to receive(:build).and_return(logger)
+          expect(logger).not_to receive(:warn)
+
+          service.execute
+        end
+      end
+
+      context 'when a top-level group path is not a valid destination slug' do
+        let(:fake_metadata) do
+          super().merge(
+            entities_mapping: {
+              "-invalid-group" => "group_1",
+              "another_top_level_group" => "group_3"
+            }
+          )
+        end
+
+        it 'skips the invalid entity but creates the rest' do
+          expect { service.execute }.to change { BulkImports::Entity.count }.by(1)
+
+          expect(BulkImports::Entity.last).to have_attributes(source_full_path: 'another_top_level_group')
+        end
+
+        it 'logs the skipped entity' do
+          logger = instance_double(BulkImports::Logger, warn: nil)
+          allow(BulkImports::Logger).to receive(:build).and_return(logger)
+
+          service.execute
+
+          expect(logger).to have_received(:warn).with(
+            message: a_string_matching(/Skipping import_all entity.*can only include non-accented letters/),
+            source_full_path: '-invalid-group',
+            bulk_import_id: bulk_import.id,
+            importer: Import::SOURCE_OFFLINE_TRANSFER.to_s
+          )
+        end
+      end
+
+      context 'when a top-level group destination path already exists' do
+        let(:fake_metadata) do
+          super().merge(
+            entities_mapping: {
+              "top_level_group" => "group_1",
+              "another_top_level_group" => "group_3"
+            }
+          )
+        end
+
+        before do
+          create(:group, path: 'top_level_group', parent: destination_group)
+        end
+
+        it 'skips the colliding entity but creates the rest' do
+          expect { service.execute }.to change { BulkImports::Entity.count }.by(1)
+
+          expect(BulkImports::Entity.last).to have_attributes(source_full_path: 'another_top_level_group')
+        end
+      end
+
+      context 'when every top-level group has an invalid destination' do
+        let(:fake_metadata) do
+          super().merge(entities_mapping: { "-invalid-group" => "group_1" })
+        end
+
+        it 'returns an error result and fails the import' do
+          result = service.execute
+
+          expect(result).to be_error
+          expect(result.message).to eq('No top-level groups have a valid destination')
+          expect(bulk_import.reload.failed?).to be(true)
+        end
+      end
+    end
+  end
+end

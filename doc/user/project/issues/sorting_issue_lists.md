@@ -1,0 +1,154 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Sorting and ordering issue lists
+description: Sort issue lists by due date, priority, popularity, milestone, health status, or other criteria to find and organize work items.
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can sort a list of issues several ways.
+The available sorting options can change based on the context of the list.
+To change how a list is sorted, see [sort work items](../../work_items/_index.md#sort-work-items).
+
+## Sorting by blocking issues
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+When you sort by **Blocking**, the issue list changes to sort descending by the
+number of issues each issue is [blocking](related_issues.md#blocking-issues).
+
+## Sorting by created, updated, or closed date
+
+When you sort by **Created**, **Updated**, or **Closed date**, the issue list changes to
+sort descending by the respective date and timestamp. Issues created, updated, or closed most recently are first.
+
+## Sorting by due date
+
+When you sort by **Due date**, the issue list changes to sort ascending by the issue
+[due date](due_dates.md). Issues with the earliest due date are first,
+and issues without a due date are last.
+
+## Sorting by label priority
+
+When you sort by **Label priority**, the issue list changes to sort descending.
+Issues with the highest priority label are first, then all other issues.
+
+Ties are broken arbitrarily. Only the highest prioritized label is checked,
+and labels with a lower priority are ignored.
+For more information, see [issue 14523](https://gitlab.com/gitlab-org/gitlab/-/issues/14523).
+
+For more information, see [label priority](../labels.md#set-label-priority).
+
+## Manual sorting
+
+When you sort by **Manual** order, you can change
+the order by dragging and dropping the issues. The changed order persists, and
+everyone who visits the same list sees the updated issue order, with some exceptions.
+
+Each issue is assigned a relative order value, representing its relative
+order with respect to the other issues on the list. When you drag-and-drop reorder
+an issue, its relative order value changes.
+
+In addition, any time an issue appears in a manually sorted list,
+the updated relative order value is used for the ordering.
+So, if anyone drags issue `A` above issue `B` in your GitLab instance,
+this ordering is maintained whenever they appear together in any list.
+
+This ordering also affects [issue boards](../issue_board.md#ordering-issues-in-a-list).
+Changing the order in an issue list changes the ordering in an issue board,
+and the other way around.
+
+## Sorting by milestone due date
+
+When you sort by **Milestone due date**, the issue list changes to sort ascending by the
+assigned milestone due date. Issues with milestones with the earliest due date are first,
+then issues with a milestone without a due date.
+
+## Sorting by popularity
+
+When you sort by **Popularity**, the issue order changes to sort descending by the
+number of upvotes ([emoji reactions](../../emoji_reactions.md) with the "thumbs up")
+on each issue. You can use this to identify issues that are in high demand.
+
+The total number of votes is not summed up. An issue with 18 upvotes and 5
+downvotes is considered more popular than an issue with 17 upvotes and no
+downvotes.
+
+## Sorting by priority
+
+When you sort by **Priority**, the issue order changes to sort in this order:
+
+1. Issues with milestones that have due dates, where the soonest assigned milestone is listed first.
+1. Issues with milestones with no due dates.
+1. Issues with a higher priority label.
+1. Issues without a prioritized label.
+
+Ties are broken arbitrarily.
+
+For more information, see [label priority](../labels.md#set-label-priority).
+
+## Sorting by title
+
+When you sort by **Title**, the issue order changes to sort alphabetically by the issue
+title in this order:
+
+- Emoji
+- Special characters
+- Numbers
+- Letters: first Latin, then accented (for example, `ö`)
+
+## Sorting by health status
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+When you sort by **Health**, the issue list changes to sort by the
+[health status](managing_issues.md#health-status) of the issues.
+When in descending order, the issues are shown in the following order:
+
+1. **At risk** issues
+1. **Needs attention** issues
+1. **On track** issues
+1. All other issues
+
+## Sorting by weight
+
+When you sort by **Weight**, the issue list changes to sort ascending by the
+[issue weight](../../work_items/weight.md).
+Issues with lowest weight are first, and issues without a weight are last.
+
+## Sorting by status
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/550262) in GitLab 18.5 [with a feature flag](../../../administration/feature_flags/_index.md) named `work_item_status_mvc2`. Enabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/issues/576610) in GitLab 18.6. Feature flag `work_item_status_mvc2` removed.
+
+{{< /history >}}
+
+When you sort by **Status**, the issue list changes to sort ascending by the
+[issue status](../../work_items/status.md).
+Issues are first sorted by their status category. If two issues share the same category, the system falls back to sorting by issue ID.

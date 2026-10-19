@@ -1,0 +1,105 @@
+# frozen_string_literal: true
+
+module Ci
+  class Trigger < Ci::ApplicationRecord
+    include Presentable
+    include Limitable
+    include Expirable
+    include Gitlab::EncryptedAttribute
+    include TokenAuthenticatable
+
+    TRIGGER_TOKEN_PREFIX = 'glptt-'
+    TRIGGER_TOKEN_PREFIX_PATTERN = ::Authn::TokenField::PrefixHelper.optional_instance_prefix_pattern(TRIGGER_TOKEN_PREFIX)
+
+    EXPIRED_TOKEN_RETENTION = 30.days
+    MAX_DESCRIPTION_LENGTH = 2048
+
+    self.limit_name = 'pipeline_triggers'
+    self.limit_scope = :project
+
+    belongs_to :project
+    belongs_to :owner, class_name: "User"
+
+    has_many :pipelines, class_name: 'Ci::Pipeline'
+
+    validates :token_encrypted, presence: true, uniqueness: true
+    validates :owner, presence: true
+    validates :project, presence: true
+    validates :description, length: { maximum: MAX_DESCRIPTION_LENGTH }, if: :description_changed?
+
+    validate :expires_at_before_instance_max_expiry_date, on: :create
+
+    before_validation :ensure_token
+
+    add_authentication_token_field(:token, encrypted: :required, format_with_prefix: :token_prefix)
+
+    scope :with_last_used, -> do
+      ci_pipelines = Ci::Pipeline.arel_table
+      last_used_pipelines =
+        ci_pipelines
+          .project(ci_pipelines[:created_at].as('last_used'))
+          .where(ci_pipelines[:trigger_id].eq(arel_table[:id]))
+          .order(ci_pipelines[:id].desc)
+          .take(1)
+      query = joins(Arel.sql("LEFT JOIN LATERAL (#{last_used_pipelines.to_sql}) last_used_pipelines ON TRUE"))
+      query = query.select(default_select_columns) if query.select_values.blank?
+      query.select(:last_used)
+    end
+
+    scope :with_token, ->(tokens) {
+      tokens = Array.wrap(tokens).reject(&:blank?)
+      encrypted_tokens = tokens.flat_map { |token| Ci::Trigger.encode_candidates(token) }
+      where(token_encrypted: encrypted_tokens)
+    }
+
+    scope :ready_for_deletion, -> {
+      where(expires_at: ...EXPIRED_TOKEN_RETENTION.ago)
+    }
+
+    def self.prefix_for_trigger_token
+      ::Authn::TokenField::PrefixHelper.prepend_instance_prefix(TRIGGER_TOKEN_PREFIX)
+    end
+
+    def token=(token_value)
+      set_token(token_value)
+    end
+
+    def last_used
+      # The instance should be preloaded by `.with_last_used` for performance reason
+      return attributes['last_used'] if attributes.has_key?('last_used')
+
+      pipelines.order(id: :desc).pick(:created_at)
+    end
+
+    def short_token
+      return unless token.present?
+
+      token.sub(TRIGGER_TOKEN_PREFIX_PATTERN, '')[0...4]
+    end
+    alias_method :trigger_short_token, :short_token
+
+    def can_access_project?
+      Ability.allowed?(owner, :create_build, project)
+    end
+
+    protected
+
+    def token_prefix
+      Ci::Trigger.prefix_for_trigger_token
+    end
+
+    def expires_at_before_instance_max_expiry_date
+      return unless expires_at
+
+      max_expiry_date = Date.current.advance(days: PersonalAccessToken::MAX_PERSONAL_ACCESS_TOKEN_LIFETIME_IN_DAYS)
+      return if expires_at.before?(max_expiry_date)
+
+      errors.add(
+        :expires_at,
+        format(_("must be before %{expiry_date}"), expiry_date: max_expiry_date)
+      )
+    end
+  end
+end
+
+Ci::Trigger.prepend_mod_with('Ci::Trigger')

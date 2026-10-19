@@ -1,0 +1,217 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Sidebars::Projects::Menus::SettingsMenu, feature_category: :navigation do
+  let(:project) { build_stubbed(:project) }
+
+  let(:user) { project.first_owner }
+  let(:context) { Sidebars::Projects::Context.new(current_user: user, container: project) }
+
+  subject { described_class.new(context) }
+
+  describe '#render?' do
+    it 'returns false when menu does not have any menu items' do
+      allow(subject).to receive(:has_renderable_items?).and_return(false)
+
+      expect(subject.render?).to be false
+    end
+  end
+
+  describe '#separated?' do
+    it 'returns true' do
+      expect(subject.separated?).to be true
+    end
+  end
+
+  describe 'Menu items' do
+    let(:menu) { described_class.new(context) }
+
+    subject { menu.renderable_items.find { |e| e.item_id == item_id } }
+
+    shared_examples 'access rights checks' do
+      it { is_expected.not_to be_nil }
+
+      describe 'when the user does not have access' do
+        let(:user) { nil }
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    describe 'General' do
+      let(:item_id) { :general }
+
+      it_behaves_like 'access rights checks'
+    end
+
+    describe 'Integrations' do
+      let(:item_id) { :integrations }
+
+      it_behaves_like 'access rights checks'
+    end
+
+    describe 'Webhooks' do
+      let(:item_id) { :webhooks }
+
+      it_behaves_like 'access rights checks'
+    end
+
+    describe 'Access tokens' do
+      let(:item_id) { :access_tokens }
+
+      it_behaves_like 'access rights checks'
+    end
+
+    describe 'Repository' do
+      let(:item_id) { :repository }
+
+      it_behaves_like 'access rights checks'
+
+      context 'when the user does not have admin_project but has manage_merge_request_settings' do
+        let(:user) { build_stubbed(:user) }
+
+        before do
+          allow(Ability).to receive(:allowed?).and_call_original
+          allow(Ability).to receive(:allowed?).with(user, :manage_merge_request_settings, project).and_return(true)
+        end
+
+        it { is_expected.not_to be_nil }
+      end
+
+      context 'when the user does not have admin_project but has read_deploy_token' do
+        let(:user) { build_stubbed(:user) }
+
+        before do
+          allow(Ability).to receive(:allowed?).and_call_original
+          allow(Ability).to receive(:allowed?).with(user, :read_deploy_token, project).and_return(true)
+        end
+
+        it { is_expected.not_to be_nil }
+      end
+    end
+
+    describe 'CI/CD' do
+      let(:item_id) { :ci_cd }
+
+      context 'when project or its ancestor is archived' do
+        before do
+          allow(project).to receive(:self_or_ancestors_archived?).and_return(true)
+        end
+
+        it { is_expected.to be_nil }
+      end
+
+      context 'when project and ancestors are not archived' do
+        it { is_expected.not_to be_nil }
+
+        context 'when the user cannot admin_project but can read_runners' do
+          before do
+            allow(menu).to receive(:can?).with(user, :read_runners, project).and_return(true)
+          end
+
+          it { is_expected.not_to be_nil }
+        end
+
+        context 'when the user does not have access' do
+          let(:user) { nil }
+
+          it { is_expected.to be_nil }
+        end
+      end
+    end
+
+    describe 'Monitor' do
+      let(:item_id) { :monitor }
+
+      describe 'when project or its ancestor is archived' do
+        before do
+          allow(project).to receive(:self_or_ancestors_archived?).and_return(true)
+        end
+
+        it { is_expected.to be_nil }
+      end
+
+      describe 'when project and ancestors are not archived' do
+        it { is_expected.not_to be_nil }
+
+        specify { expect(subject.title).to eq 'Monitor' }
+
+        describe 'when the user does not have access' do
+          let(:user) { nil }
+
+          it { is_expected.to be_nil }
+        end
+      end
+    end
+
+    describe 'Merge requests' do
+      let(:item_id) { :merge_requests }
+
+      it_behaves_like 'access rights checks'
+    end
+
+    describe 'Packages and registries' do
+      let(:item_id) { :packages_and_registries }
+      let(:packages_enabled) { false }
+
+      before do
+        stub_container_registry_config(enabled: container_enabled)
+        stub_config(packages: { enabled: packages_enabled })
+      end
+
+      describe 'when container registry setting is disabled' do
+        let(:container_enabled) { false }
+
+        it { is_expected.to be_nil }
+      end
+
+      describe 'when container registry setting is enabled' do
+        let(:container_enabled) { true }
+
+        it { is_expected.not_to be_nil }
+
+        describe 'when the user does not have access' do
+          let(:user) { nil }
+
+          it { is_expected.to be_nil }
+        end
+      end
+
+      describe 'when package registry setting is enabled' do
+        let(:container_enabled) { false }
+        let(:packages_enabled) { true }
+
+        it { is_expected.not_to be_nil }
+
+        describe 'when the user does not have access' do
+          let(:user) { nil }
+
+          it { is_expected.to be_nil }
+        end
+      end
+    end
+
+    describe 'Usage quotas' do
+      let(:item_id) { :usage_quotas }
+
+      it { is_expected.not_to be_nil }
+
+      describe 'when the user does not have access' do
+        let(:user) { nil }
+
+        it { is_expected.to be_nil }
+      end
+    end
+  end
+
+  describe 'Feature Library metadata' do
+    let(:menu) { described_class.new(context) }
+
+    it 'gives every renderable item the settings library_icon' do
+      serialized = menu.renderable_items.map(&:serialize_for_super_sidebar)
+
+      expect(serialized).to all(include(library_icon: 'settings'))
+    end
+  end
+end

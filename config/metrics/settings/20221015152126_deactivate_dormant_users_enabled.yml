@@ -1,0 +1,19 @@
+---
+key_path: deactivate_dormant_users_enabled
+description: Whether Dormant User Deactivation is enabled
+product_group: utilization
+product_categories:
+- seat_cost_management
+value_type: boolean
+status: active
+milestone: "15.6"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/101125
+time_frame: none
+data_source: system
+data_category: optional
+instrumentation_class: DormantUserSettingEnabledMetric
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

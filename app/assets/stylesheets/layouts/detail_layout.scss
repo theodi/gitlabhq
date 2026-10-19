@@ -1,0 +1,96 @@
+/* stylelint-disable gitlab/no-gl-class */
+$detail-layout-sidebar-width: px-to-rem(290px);
+$detail-layout-gap: 2rem;
+
+.gl-detail-layout-container {
+  --gl-detail-layout-gap: #{$detail-layout-gap};
+  display: grid;
+  gap: var(--gl-detail-layout-gap);
+}
+
+.gl-detail-layout-content,
+.gl-detail-layout-sidebar,
+.gl-detail-layout-activity,
+.gl-detail-layout-widgets {
+  min-width: 0; // Allow grid item to shrink below its content size, preventing overflow of the visible area
+
+  // Remove margin from first widget
+  > div:first-child,
+  > section:first-child {
+    margin-top: 0 !important;
+  }
+}
+
+.gl-detail-layout-container-has-sidebar {
+  // Set explicit minimum grid column size instead of implicit `auto`
+  // so contents don't overflow in smaller viewports
+  grid-template-columns: minmax(0, 1fr);
+
+  @include gl-container-width-up(md) {
+    $detail-layout-sidebar-min-width: 13rem;
+    grid-template-columns: minmax(67%, 1fr) minmax($detail-layout-sidebar-min-width, $detail-layout-sidebar-width);
+    grid-template-rows: auto auto 1fr;
+    grid-template-areas:
+      'content sidebar'
+      'widgets sidebar'
+      'activity sidebar';
+
+    > .gl-detail-layout-content {
+      grid-area: content;
+    }
+
+    > .gl-detail-layout-sidebar {
+      grid-area: sidebar;
+      position: sticky;
+      top: var(--detail-layout-sidebar-top, var(--layout-sticky-header-height, 0));
+      align-self: start;
+      // Cap (not force) the height so a short sidebar can't cause a phantom scrollbar.
+      // --detail-layout-sidebar-space is set in detail_layout.vue.
+      min-height: 0;
+      max-height: var(
+        --detail-layout-sidebar-height,
+        calc(
+          var(--panel-content-inner-height, #{$calc-application-viewport-height}) -
+            var(--detail-layout-sidebar-space, 0px)
+        )
+      );
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+      outline: none;
+      @apply gl-px-3;
+      // Adding top spacing and aligning it back to the baseline with the negative margin
+      @apply gl-py-4;
+      @apply -gl-mt-4;
+    }
+
+    > .gl-detail-layout-widgets {
+      grid-area: widgets;
+    }
+
+    > .gl-detail-layout-activity {
+      grid-area: activity;
+    }
+    // stylelint-disable-next-line gitlab/no-has -- need to adjust grid template areas based on presence of slots
+    &:not(:has(> .gl-detail-layout-activity)) {
+      grid-template-rows: auto 1fr;
+      grid-template-areas:
+        'content sidebar'
+        'widgets sidebar';
+    }
+
+    // stylelint-disable-next-line gitlab/no-has -- need to adjust grid template areas based on presence of slots
+    &:not(:has(> .gl-detail-layout-widgets)) {
+      grid-template-rows: auto 1fr;
+      grid-template-areas:
+        'content sidebar'
+        'activity sidebar';
+    }
+
+    // stylelint-disable-next-line gitlab/no-has -- need to adjust grid template areas based on presence of slots
+    &:not(:has(> .gl-detail-layout-widgets)):not(:has(> .gl-detail-layout-activity)) {
+      grid-template-rows: 1fr;
+      grid-template-areas: 'content sidebar';
+    }
+  }
+}

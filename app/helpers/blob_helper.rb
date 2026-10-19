@@ -1,66 +1,103 @@
-module BlobHelper
-  def highlight(blob_name, blob_content, nowrap: false, continue: false)
-    @formatter ||= Rugments::Formatters::HTML.new(
-      nowrap: nowrap,
-      cssclass: 'code highlight',
-      lineanchors: true,
-      lineanchorsid: 'LC'
-    )
+# frozen_string_literal: true
 
-    begin
-      @lexer ||= Rugments::Lexer.guess(filename: blob_name, source: blob_content).new
-      result = @formatter.format(@lexer.lex(blob_content, continue: continue)).html_safe
-    rescue
-      lexer = Rugments::Lexers::PlainText
-      result = @formatter.format(lexer.lex(blob_content)).html_safe
+module BlobHelper
+  include WebIdeButtonHelper
+
+  def edit_blob_path(project = @project, ref = @ref, path = @path, options = {})
+    project_edit_blob_path(project, tree_join(ref, path), options[:link_opts])
+  end
+
+  def ide_edit_path(project = @project, ref = @ref, path = @path)
+    project_path =
+      if !current_user || can?(current_user, :push_code, project)
+        project.full_path
+      else
+        # We currently always fork to the user's namespace
+        # in edit_fork_button_tag
+        "#{current_user.namespace.full_path}/#{project.path}"
+      end
+
+    segments = [ide_path, 'project', project_path, 'edit', encode_ide_path(ref)]
+    segments.concat(['-', encode_ide_path(path)]) if path.present?
+    File.join(segments)
+  end
+
+  def ide_merge_request_path(merge_request, path = '')
+    target_project = merge_request.target_project
+    source_project = merge_request.source_project
+
+    if merge_request.merged?
+      branch = merge_request.target_branch_exists? ? merge_request.target_branch : target_project.default_branch
+
+      return ide_edit_path(target_project, branch, path)
     end
 
+    # Build IDE path using file path
+    # Format: /-/ide/project/{project_path}/-/{encoded_path}?merge_request_id={id}&target_project={target}
+    segments = [ide_path, 'project', source_project.full_path]
+    segments.concat(['-', encode_ide_path(path)]) if path.present?
+    result = File.join(segments)
+
+    params = { merge_request_id: merge_request.to_param }
+    params[:target_project] = target_project.full_path if target_project != source_project
+
+    result += "?#{params.to_query}"
     result
   end
 
-  def no_highlight_files
-    %w(credits changelog news copying copyright license authors)
+  def ide_fork_and_edit_path(project = @project, ref = @ref, path = @path, with_notice: true)
+    fork_path_for_current_user(project, ide_edit_path(project, ref, path), with_notice: with_notice)
   end
 
-  def edit_blob_link(project, ref, path, options = {})
-    blob =
-      begin
-        project.repository.blob_at(ref, path)
-      rescue
-        nil
-      end
-
-    if blob && blob.text?
-      text = 'Edit'
-      after = options[:after] || ''
-      from_mr = options[:from_merge_request_id]
-      link_opts = {}
-      link_opts[:from_merge_request_id] = from_mr if from_mr
-      cls = 'btn btn-small'
-      if allowed_tree_edit?(project, ref)
-        link_to(text,
-                namespace_project_edit_blob_path(project.namespace, project,
-                                                 tree_join(ref, path),
-                                                 link_opts),
-                class: cls
-               )
-      else
-        content_tag :span, text, class: cls + ' disabled'
-      end + after.html_safe
-    else
-      ''
-    end
+  def fork_and_edit_path(project = @project, ref = @ref, path = @path, options = {})
+    fork_path_for_current_user(project, edit_blob_path(project, ref, path, options))
   end
 
-  def leave_edit_message
-    "Leave edit mode?\nAll unsaved changes will be lost."
+  def fork_path_for_current_user(project, path, with_notice: true)
+    return unless current_user
+
+    project_forks_path(
+      project,
+      namespace_key: current_user.namespace&.id,
+      continue: edit_blob_fork_params(path, with_notice: with_notice)
+    )
+  end
+
+  def encode_ide_path(path)
+    ERB::Util.url_encode(path).gsub('%2F', '/')
+  end
+
+  def edit_blob_button(project = @project, ref = @ref, path = @path, options = {})
+    return unless blob = readable_blob(options, path, project, ref)
+
+    common_classes = "js-edit-blob gl-ml-3 #{options[:extra_class]}"
+
+    edit_button_tag(
+      blob,
+      common_classes,
+      _('Edit'),
+      edit_blob_path(project, ref, path, options),
+      project,
+      ref
+    )
+  end
+
+  # Used for single file Web Editor, Delete and Replace UI actions.
+  # can_edit_tree checks if ref is on top of the branch.
+  def can_modify_blob?(blob, project = @project, ref = @ref)
+    !blob.stored_externally? && can_edit_tree?(project, ref)
+  end
+
+  # Used for WebIDE editor where editing is possible even if ref is not on top of the branch.
+  def can_modify_blob_with_web_ide?(blob, project = @project)
+    !blob.stored_externally? && can_collaborate_with_project?(project)
   end
 
   def editing_preview_title(filename)
     if Gitlab::MarkupHelper.previewable?(filename)
-      'Preview'
+      _('Preview')
     else
-      'Preview changes'
+      _('Preview changes')
     end
   end
 
@@ -69,6 +106,334 @@ module BlobHelper
   # mode - File unix mode
   # mode - File name
   def blob_icon(mode, name)
-    icon("#{file_type_icon_class('file', mode, name)} fw")
+    sprite_icon(file_type_icon_class('file', mode, name))
+  end
+
+  def blob_raw_url(**kwargs)
+    if @build && @entry
+      raw_project_job_artifacts_url(@project, @build, path: @entry.path, **kwargs)
+    elsif @snippet
+      gitlab_raw_snippet_url(@snippet)
+    elsif @blob
+      project_raw_url(@project, @id, **kwargs)
+    end
+  end
+
+  def blob_raw_path(**kwargs)
+    blob_raw_url(**kwargs, only_path: true)
+  end
+
+  def parent_dir_raw_path
+    "#{blob_raw_path.rpartition('/').first}/"
+  end
+
+  # SVGs can contain malicious JavaScript; only include allowlisted
+  # elements and attributes. Note that this allowlist is by no means complete
+  # and may omit some elements.
+  def sanitize_svg_data(data)
+    Gitlab::Sanitizers::SVG.clean(data)
+  end
+
+  def ref_project
+    @ref_project ||= @target_project || @project
+  end
+
+  def licenses_for_select(project)
+    @licenses_for_select ||= TemplateFinder.all_template_names(project, :licenses)
+  end
+
+  def gitignore_names(project)
+    @gitignore_names ||= TemplateFinder.all_template_names(project, :gitignores)
+  end
+
+  def gitlab_ci_ymls(project)
+    @gitlab_ci_ymls ||= TemplateFinder.all_template_names(project, :gitlab_ci_ymls)
+  end
+
+  def dockerfile_names(project)
+    @dockerfile_names ||= TemplateFinder.all_template_names(project, :dockerfiles)
+  end
+
+  def blob_editor_paths(project, method)
+    {
+      'relative-url-root' => Rails.application.config.relative_url_root,
+      'assets-prefix' => Gitlab::Application.config.assets.prefix,
+      'blob-filename' => @blob && @blob.path,
+      'project-id' => project.id,
+      'project-path': project.full_path,
+      'preview-markdown-path' => preview_markdown_path(project),
+      'form-method' => method
+    }
+  end
+
+  def copy_file_path_button(file_path)
+    clipboard_button(text: file_path, gfm: "`#{file_path}`", title: _('Copy file path'))
+  end
+
+  def copy_blob_source_button(blob)
+    return unless blob.rendered_as_text?(ignore_errors: false)
+
+    content_tag(:span, class: 'btn-group has-tooltip js-copy-blob-source-btn-tooltip') do
+      clipboard_button(target: ".blob-content[data-blob-id='#{blob.id}'] > pre", class: "js-copy-blob-source-btn", size: :medium)
+    end
+  end
+
+  def open_raw_blob_button(blob)
+    return if blob.empty?
+    return if blob.binary? || blob.stored_externally?
+
+    title = _('Open raw')
+    render Pajamas::ButtonComponent.new(href: external_storage_url_or_path(blob_raw_path), target: '_blank', icon: 'doc-code', button_options: { title: title, class: 'has-tooltip', rel: 'noopener noreferrer', data: { container: 'body' } })
+  end
+
+  def download_blob_button(blob)
+    return if blob.empty?
+
+    title = _('Download')
+    render Pajamas::ButtonComponent.new(href: external_storage_url_or_path(blob_raw_path(inline: false)), target: '_blank', icon: 'download', button_options: { download: @path, title: title, class: 'has-tooltip', rel: 'noopener noreferrer', data: { container: 'body' } })
+  end
+
+  def blob_render_error_reason(viewer)
+    case viewer.render_error
+    when :collapsed
+      "it is larger than #{number_to_human_size(viewer.collapse_limit)}"
+    when :too_large
+      "it is larger than #{number_to_human_size(viewer.size_limit)}"
+    when :server_side_but_stored_externally
+      case viewer.blob.external_storage
+      when :lfs
+        'it is stored in LFS'
+      when :build_artifact
+        'it is stored as a job artifact'
+      else
+        'it is stored externally'
+      end
+    end
+  end
+
+  def blob_render_error_options(viewer)
+    error = viewer.render_error
+    options = []
+
+    if error == :collapsed
+      options << link_to('load it anyway', url_for(safe_params.merge(viewer: viewer.type, expanded: true, format: nil)))
+    end
+
+    # If the error is `:server_side_but_stored_externally`, the simple viewer will show the same error,
+    # so don't bother switching.
+    if viewer.rich? && viewer.blob.rendered_as_text? && error != :server_side_but_stored_externally
+      options << link_to('view the source', '#', class: 'js-blob-viewer-switch-btn', data: { viewer: 'simple' })
+    end
+
+    options << link_to('download it', blob_raw_path, target: '_blank', rel: 'noopener noreferrer')
+
+    options
+  end
+
+  def contribution_options(project)
+    options = []
+
+    options << link_to("submit an issue", new_project_issue_path(project)) if can?(current_user, :create_issue, project)
+
+    merge_project = merge_request_source_project_for_project(@project)
+    options << link_to("create a merge request", project_new_merge_request_path(project)) if merge_project
+
+    options
+  end
+
+  def readable_blob(options, path, project, ref)
+    blob = options.fetch(:blob) do
+      project.repository.blob_at(ref, path)
+    rescue StandardError
+      nil
+    end
+
+    blob if blob&.readable_text?
+  end
+
+  def edit_blob_fork_params(path, with_notice: true)
+    {
+      to: path,
+      notice: (edit_in_new_fork_notice if with_notice),
+      notice_now: (edit_in_new_fork_notice_now if with_notice)
+    }.compact
+  end
+
+  def edit_fork_button_tag(common_classes, project, label, params, action = 'edit')
+    fork_path = project_forks_path(project, namespace_key: current_user.namespace.id, continue: params)
+
+    render Pajamas::ButtonComponent.new(variant: :confirm, button_options: { class: "#{common_classes} js-edit-blob-link-fork-toggler", data: { action: action, fork_path: fork_path } }) do
+      label
+    end
+  end
+
+  def edit_disabled_button_tag(button_text, common_classes)
+    button = render Pajamas::ButtonComponent.new(disabled: true, variant: :confirm, button_options: { class: common_classes }) do
+      button_text
+    end
+
+    # Disabled buttons with tooltips should have the tooltip attached
+    # to a wrapper element https://bootstrap-vue.org/docs/components/tooltip#disabled-elements
+    content_tag(:span, button, class: 'has-tooltip', title: _('You can only edit files when you are on a branch'), data: { container: 'body' })
+  end
+
+  def edit_link_tag(link_text, edit_path, common_classes)
+    render Pajamas::ButtonComponent.new(variant: :confirm, href: edit_path, button_options: { class: common_classes }) do
+      link_text
+    end
+  end
+
+  def edit_button_tag(blob, common_classes, text, edit_path, project, ref)
+    if !on_top_of_branch?(project, ref)
+      edit_disabled_button_tag(text, common_classes)
+      # This condition only applies to users who are logged in
+    elsif !current_user || (current_user && can_modify_blob?(blob, project, ref))
+      edit_link_tag(text, edit_path, common_classes)
+    elsif can?(current_user, :fork_project, project) && can?(current_user, :create_merge_request_in, project)
+      edit_fork_button_tag(common_classes, project, text, edit_blob_fork_params(edit_path))
+    end
+  end
+
+  def vue_blob_app_data(project, blob, ref)
+    {
+      blob_path: blob.path,
+      project_path: project.full_path,
+      resource_id: project.to_global_id,
+      original_branch: ref,
+      escaped_ref: ActionDispatch::Journey::Router::Utils.escape_path(ref),
+      can_download_code: can?(current_user, :download_code, project).to_s,
+      full_name: project.name_with_namespace,
+      has_revs_file: (!project.repository.ignore_revs_file_blob.nil?).to_s
+    }
+  end
+
+  def vue_blob_header_app_data(project, blob, ref)
+    archive_prefix = ref ? "#{project.path}-#{ref.tr('/', '-')}" : ''
+
+    {
+      blob_path: blob.path,
+      is_binary: blob.binary?,
+      breadcrumbs: breadcrumb_data_attributes,
+      escaped_ref: ActionDispatch::Journey::Router::Utils.escape_path(ref),
+      history_link: project_commits_path(project, ref),
+      project_id: project.id,
+      project_root_path: project_path(project),
+      project_path: project.full_path,
+      project_short_path: project.path,
+      ref_type: @ref_type.to_s,
+      ref: ref,
+      root_ref: project.repository.root_ref,
+      ssh_url: ssh_enabled? ? ssh_clone_url_to_repo(project) : '',
+      http_url: http_enabled? ? http_clone_url_to_repo(project) : '',
+      xcode_url: show_xcode_link?(project) ? xcode_uri_to_repo(project) : '',
+      download_links: archive_download_links(project, ref, archive_prefix, @ref_type).to_json,
+      web_ide_button_options: repository_header_web_ide_button_options(blob),
+      show_no_ssh_key_message: ssh_enabled? ? show_no_ssh_key_message?(project).to_s : '',
+      user_settings_ssh_keys_path: ssh_enabled? ? user_settings_ssh_keys_path : '',
+      custom_code_dropdown_clients: custom_code_dropdown_clients_for(project).to_json
+    }
+  end
+
+  def edit_blob_app_data(project, id, blob, ref, action)
+    is_update = action == 'update'
+    is_create = action == 'create'
+    can_push_to_project = can?(current_user, :push_code, project)
+    can_push_to_branch = project.present(current_user: current_user).can_current_user_push_to_branch?(ref)
+    can_push_to_project_or_branch = can_push_to_project || can_push_to_branch
+    next_fork_branch_name = edit_blob_next_fork_branch_name(project, can_push_to_project_or_branch)
+
+    data = {
+      action: action.to_s,
+      update_path: edit_blob_update_path(project, id, is_update, is_create),
+      cancel_path: edit_blob_cancel_path(project, id, is_update, is_create),
+      original_branch: ref,
+      target_branch: selected_branch,
+      can_push_code: can_push_to_project.to_s,
+      can_push_to_branch: can_push_to_branch.to_s,
+      empty_repo: project.empty_repo?.to_s,
+      blob_name: is_update ? blob.name : nil,
+      branch_allows_collaboration: project.branch_allows_collaboration?(current_user, ref).to_s,
+      last_commit_sha: @last_commit_sha,
+      project_id: project.id,
+      project_path: project.full_path,
+      new_merge_request_path: project_new_merge_request_path(project),
+      target_project_id: edit_blob_target_project_id(project, ref, can_push_to_project_or_branch),
+      target_project_path: edit_blob_target_project_path(project, can_push_to_project_or_branch)
+    }
+
+    # Only include next_fork_branch_name if we're actually using a fork
+    data[:next_fork_branch_name] = next_fork_branch_name if next_fork_branch_name
+
+    data
+  end
+
+  private
+
+  def edit_blob_target_project_id(project, ref, can_push_to_project_or_branch)
+    return project.id if can_push_to_project_or_branch
+
+    edit_blob_fork_project_id(project, ref) || project.id
+  end
+
+  def edit_blob_target_project_path(project, can_push_to_project_or_branch)
+    return project.full_path if can_push_to_project_or_branch
+
+    edit_blob_fork_project_path(project) || project.full_path
+  end
+
+  def edit_blob_update_path(project, id, is_update, is_create)
+    if is_update
+      project_update_blob_path(project, id)
+    elsif is_create
+      project_create_blob_path(project, id)
+    end
+  end
+
+  def edit_blob_cancel_path(project, id, is_update, is_create)
+    if is_update
+      project_blob_path(project, id)
+    elsif is_create
+      project_tree_path(project, id)
+    end
+  end
+
+  def edit_blob_fork_project_id(project, ref)
+    return unless can_collaborate_with_project?(project, ref: ref)
+
+    current_user&.fork_of(project)&.id
+  end
+
+  def edit_blob_fork_project_path(project)
+    return unless current_user&.namespace
+
+    fork_of_project = current_user.fork_of(project)
+    return unless fork_of_project
+
+    fork_of_project.full_path
+  end
+
+  def edit_blob_fork_project(project)
+    return unless current_user&.namespace
+
+    current_user.fork_of(project)
+  end
+
+  def edit_blob_next_fork_branch_name(project, can_push_to_project_or_branch)
+    return if can_push_to_project_or_branch
+
+    edit_blob_fork_project(project)&.repository&.next_branch('patch')
+  end
+
+  def archive_download_links(project, ref, archive_prefix, ref_type = nil)
+    Gitlab::Workhorse::ARCHIVE_FORMATS.map do |fmt|
+      {
+        text: fmt,
+        path: external_storage_url_or_path(
+          project_archive_path(project, id: tree_join(ref, archive_prefix), format: fmt, ref_type: ref_type)
+        )
+      }
+    end
   end
 end
+
+BlobHelper.prepend_mod_with('BlobHelper')

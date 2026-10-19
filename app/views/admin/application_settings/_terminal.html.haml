@@ -1,0 +1,10 @@
+= gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-terminal-settings'), html: { class: 'fieldset-form', id: 'terminal-settings' } do |f|
+  = form_errors(@application_setting)
+
+  %fieldset
+    .form-group
+      = f.label :terminal_max_session_time, _('Max session time'), class: 'label-bold'
+      = f.number_field :terminal_max_session_time, class: 'form-control gl-form-input'
+      .form-text.gl-text-subtle
+        = _('Maximum time, in seconds, for a web terminal websocket connection. 0 for unlimited.')
+  = f.submit _('Save changes'), pajamas_button: true

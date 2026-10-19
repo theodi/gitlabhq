@@ -1,0 +1,12 @@
+---
+name: gitlab_docs.InternalLinksCode
+description: |
+  Checks that internal links don't link to files outside the doc directory.
+extends: existence
+message: "Use full URLs for files outside the docs directory."
+link: https://docs.gitlab.com/development/documentation/styleguide/#links
+vocab: false
+level: error
+scope: raw
+raw:
+  - '\[[^\]]*\]\([\.\/]*(ee|app|bin|config|db|data|fixtures|gems|lib|locale|qa|scripts|spec)\/'

@@ -1,0 +1,31 @@
+- messages = wiki_empty_state_messages(@wiki)
+- hide_create = local_assigns[:hide_create]
+
+- illustration = 'illustrations/empty-state/empty-wiki-md.svg'
+- title = messages.dig(:readonly, :title)
+- description = messages.dig(:readonly, :body)
+- primary_button_text = nil
+- primary_button_link = nil
+- secondary_button_text = nil
+- secondary_button_link = nil
+
+- if !hide_create && can?(current_user, :create_wiki, @wiki.container)
+  - title = messages.dig(:writable, :title)
+  - primary_button_text = s_('WikiEmpty|Create your first page')
+  - primary_button_link = wiki_page_path(@wiki, params[:id], view: 'create')
+  - description = messages.dig(:writable, :body)
+
+  - if show_enable_confluence_integration?(@wiki.container)
+    - secondary_button_text = s_('WikiEmpty|Enable the Confluence Wiki integration')
+    - secondary_button_link = edit_project_settings_integration_path(@project, :confluence)
+
+= render Pajamas::EmptyStateComponent.new(svg_path: illustration,
+  title: title,
+  primary_button_text: primary_button_text,
+  primary_button_link: primary_button_link,
+  secondary_button_text: secondary_button_text,
+  secondary_button_link: secondary_button_link,
+  empty_state_options: { data: { testid: 'wiki-empty-state' } }) do |c|
+
+  - c.with_description do
+    = description

@@ -1,0 +1,50 @@
+- label = label.present(issuable_subject: local_assigns[:subject])
+- label_css_id = dom_id(label)
+- status = label_subscription_status(label, @project).inquiry if current_user
+- use_label_priority = local_assigns.fetch(:use_label_priority, false)
+- force_priority = local_assigns.fetch(:force_priority, use_label_priority ? label.priority.present? : false)
+- toggle_subscription_path = toggle_subscription_label_path(label, @project) if current_user
+- tooltip_title = label_status_tooltip(label, status) if status
+- group = label.group || label.project&.group
+
+%li.js-label-list-item.gl-list-none.gl-border-b.last-of-type:gl-border-b-0{ id: label_css_id, data: { id: label.id } }
+  .label-content.gl-flex.gl-justify-between.gl-pl-3.gl-pr-2.gl-py-3
+    = render "shared/label_row", label: label, force_priority: force_priority
+    %ul.label-actions-list{ class: '@md/panel:gl-mt-4' }
+      - if can?(current_user, :update_label, @project) && !label.archived
+        %li.gl-inline-block.js-toggle-priority.gl-ml-3{ data: { url: remove_priority_project_label_path(@project, label),
+          dom_id: dom_id(label), type: label.type } }
+          = render Pajamas::ButtonComponent.new(category: :tertiary,
+            size: :small,
+            icon: 'star',
+            button_options: { class: 'remove-priority has-tooltip', 'title': _('Remove priority'), 'aria_label': _('Deprioritize label'), data: { placement: 'bottom' } })
+          = render Pajamas::ButtonComponent.new(category: :tertiary,
+            size: :small,
+            icon: 'star-o',
+            button_options: { class: 'add-priority has-tooltip', title: _('Prioritize'), aria_label: _('Prioritize label'), data: { placement: 'bottom' } })
+      - if current_user && !label.archived
+        %li.gl-inline-block.label-subscription.js-label-subscription.gl-ml-3.gl-mt-1
+          - if label.can_subscribe_to_label_in_different_levels?
+            = render Pajamas::ButtonComponent.new(size: :small, button_options: { class: "js-unsubscribe-button gl-w-full #{'hidden' if status.unsubscribed?}", data: { url: toggle_subscription_path, toggle: 'tooltip', container: 'body' }, title: tooltip_title }) do
+              = _('Unsubscribe')
+            .dropdown.dropdown-group-label{ class: ('hidden' unless status.unsubscribed?) }
+              = render Pajamas::ButtonComponent.new(size: :small, button_options: { class: "gl-w-full", data: { toggle: 'dropdown' } }) do
+                = _('Subscribe')
+                = sprite_icon('chevron-down')
+              .dropdown-menu.dropdown-menu-right
+                %ul
+                  %li
+                    = render Pajamas::ButtonComponent.new(category: :tertiary, button_options: { class: "js-subscribe-button #{'hidden' unless status.unsubscribed?}", data: { status: status, url: toggle_subscription_project_label_path(@project, label) } }) do
+                      = _('Subscribe at project level')
+                  %li
+                    = render Pajamas::ButtonComponent.new(category: :tertiary, button_options: { class: "js-subscribe-button js-group-level #{'hidden' unless status.unsubscribed?}", data: { status: status, url: toggle_subscription_group_label_path(label.group, label) } }) do
+                      = _('Subscribe at group level')
+          - else
+            = render Pajamas::ButtonComponent.new(size: :small, button_options: { class: 'js-subscribe-button gl-w-full', data: { status: status, url: toggle_subscription_path, toggle: 'tooltip', container: 'body' }, title: tooltip_title }) do
+              = label_subscription_toggle_button_text(label, @project)
+      - if can?(current_user, :update_label, label)
+        %li.gl-inline-block
+          - can_promote = label.project_label? && group && can?(current_user, :promote_label, group)
+          - label_data = { label_id: label.id, label_name: label.name, label_color: label.color, label_text_color: label.text_color, subject_name: label.subject_name, edit_path: label.edit_path, destroy_path: label.destroy_path, promote_path: can_promote ? promote_project_label_path(label.project, label) : '', group_name: can_promote ? label.project.group.name : '' }
+          - label_data[:archived] = label.archived.to_s
+          .js-vue-label-actions{ data: label_data }

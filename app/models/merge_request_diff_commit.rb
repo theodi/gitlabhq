@@ -1,0 +1,368 @@
+# frozen_string_literal: true
+
+class MergeRequestDiffCommit < ApplicationRecord
+  include BulkInsertSafe
+  include ShaAttribute
+  include CachedCommit
+  include FromUnion
+
+  CouldNotCreateMetadataError = Class.new(StandardError)
+
+  belongs_to :merge_request_diff
+
+  # This relation is called `commit_author` and not `author`, as the project
+  # import/export logic treats relations named `author` as instances of the
+  # `User` class.
+  #
+  # NOTE: these columns are _not_ indexed, nor do they use foreign keys.
+  #
+  # This is deliberate, as creating these indexes on GitLab.com takes a _very_
+  # long time. In addition, there's no real need for them either based on how
+  # this data is used.
+  #
+  # For more information, refer to the following:
+  #
+  # - https://gitlab.com/gitlab-com/gl-infra/production/-/issues/5038#note_614592881
+  # - https://gitlab.com/gitlab-org/gitlab/-/merge_requests/63669
+  belongs_to :commit_author, class_name: 'MergeRequest::DiffCommitUser'
+  belongs_to :committer, class_name: 'MergeRequest::DiffCommitUser'
+
+  belongs_to :merge_request_commits_metadata,
+    ->(diff_commit) { where(project_id: diff_commit.project_id) },
+    class_name: 'MergeRequest::CommitsMetadata',
+    inverse_of: :merge_request_diff_commits
+
+  sha_attribute :sha
+
+  attribute :trailers, ::Gitlab::Database::Type::IndifferentJsonb.new
+  validates :trailers, json_schema: { filename: 'git_trailers' }
+
+  scope :for_merge_request_diff, ->(diff_id, project_id = nil) {
+    relation = where(merge_request_diff_id: diff_id)
+    relation = relation.where(project_id: project_id) if project_id
+    relation
+  }
+
+  # A list of keys of which their values need to be trimmed before they can be
+  # inserted into the merge_request_diff_commit_users table.
+  TRIM_USER_KEYS =
+    %i[author_name author_email committer_name committer_email].freeze
+
+  # A list of columns we should NOT write to the merge_request_diff_commits table
+  # when deduplication of commit data is confirmed to be stable.
+  DEDUPLICATED_COLUMNS =
+    %i[commit_author_id committer_id authored_date committed_date sha message].freeze
+
+  BULK_INSERT_BATCH_SIZE = 1000
+
+  # Pre-partitioning table, kept on GitLab.com after SwapMergeRequestDiffCommitsTable.
+  ARCHIVED_TABLE = 'merge_request_diff_commits_archived'
+
+  # Deprecated; use `bulk_insert!` from `BulkInsertSafe` mixin instead.
+  # cf. https://gitlab.com/gitlab-org/gitlab/issues/207989 for progress
+  def self.create_bulk(merge_request_diff_id, commits, project, skip_commit_data: false)
+    organization_id = project.organization_id
+    commit_hashes, user_triples = prepare_commits_for_bulk_insert(commits, organization_id)
+    users = MergeRequest::DiffCommitUser.bulk_find_or_create(user_triples)
+
+    rows = commit_hashes.map.with_index do |commit_hash, index|
+      raw_sha = commit_hash.delete(:id)
+
+      author = users[[commit_hash[:author_name], commit_hash[:author_email], organization_id]]
+      committer = users[[commit_hash[:committer_name], commit_hash[:committer_email], organization_id]]
+
+      # Author/committer names and emails are only used to determine the IDs;
+      # they are not stored on the diff_commits row. Trailers and
+      # extended_trailers are also dropped here - trailers was not migrated to
+      # the partitioned diff_commits table or to merge_request_commits_metadata,
+      # so we stop writing it in preparation for the table swap.
+      commit_hash = commit_hash
+        .except(:author_name, :author_email, :committer_name, :committer_email, :extended_trailers, :trailers)
+
+      commit_hash = commit_hash.merge(
+        commit_author_id: author.id,
+        committer_id: committer.id,
+        merge_request_diff_id: merge_request_diff_id,
+        relative_order: index,
+        sha: Gitlab::Database::ShaAttribute.serialize(raw_sha),
+        authored_date: Gitlab::Database.sanitize_timestamp(commit_hash[:authored_date]),
+        committed_date: Gitlab::Database.sanitize_timestamp(commit_hash[:committed_date])
+      )
+
+      # Need to add `raw_sha` to commit_hash as we will use that when
+      # inserting the `sha` in `merge_request_commits_metadata` table.
+      commit_hash[:raw_sha] = raw_sha
+
+      commit_hash[:project_id] = project.id
+      commit_hash = commit_hash.merge(message: '') if skip_commit_data
+
+      commit_hash
+    end
+
+    rows = commit_rows_with_metadata(project.id, merge_request_diff_id, rows)
+
+    transaction do
+      rows.each_slice(BULK_INSERT_BATCH_SIZE) do |batch|
+        ApplicationRecord.legacy_bulk_insert(self.table_name, batch) # rubocop:disable Gitlab/BulkInsert
+      end
+    end
+  end
+
+  def self.prepare_commits_for_bulk_insert(commits, organization_id)
+    user_triples = Set.new
+    hashes = commits.map do |commit|
+      hash = commit.to_hash.except(:parent_ids, :referenced_by)
+
+      TRIM_USER_KEYS.each do |key|
+        hash[key] = MergeRequest::DiffCommitUser.prepare(hash[key])
+      end
+
+      user_triples << [hash[:author_name], hash[:author_email], organization_id]
+      user_triples << [hash[:committer_name], hash[:committer_email], organization_id]
+
+      hash
+    end
+
+    [hashes, user_triples]
+  end
+
+  def self.oldest_merge_request_id_per_commit(project_id, shas)
+    # This method is defined here and not on MergeRequest, otherwise the SHA
+    # values used in the WHERE below won't be encoded correctly.
+    select(['merge_request_diff_commits.sha AS sha', 'min(merge_requests.id) AS merge_request_id'])
+      .joins(:merge_request_diff)
+      .joins(
+        'INNER JOIN merge_requests ' \
+          'ON merge_requests.latest_merge_request_diff_id = merge_request_diffs.id'
+      )
+      .where(sha: shas)
+      .where(
+        merge_requests: {
+          target_project_id: project_id,
+          state_id: MergeRequest.available_states[:merged]
+        }
+      )
+      .group(:sha)
+  end
+
+  def self.commit_shas_from_metadata(project_id:, limit:)
+    return commit_shas_from_new_table(project_id: project_id, limit: limit) if read_new_commits_table?(project_id)
+
+    # Until `merge_request_commits_metadata` records are backfilled, SHAs data may be in found in either table
+    metadata_join_sql = <<~SQL.squish
+      LEFT JOIN LATERAL (
+        SELECT sha
+        FROM merge_request_commits_metadata
+        WHERE merge_request_commits_metadata.id = merge_request_diff_commits.merge_request_commits_metadata_id
+        AND merge_request_commits_metadata.project_id = ?
+        LIMIT 1
+      ) merge_request_commits_metadata ON TRUE
+    SQL
+
+    # raw SQL in pluck() bypass ActiveRecord's type casting, so encode() is needed to convert bytea to hex
+    shas_sql = Arel.sql("encode(COALESCE(merge_request_commits_metadata.sha, merge_request_diff_commits.sha), 'hex')")
+
+    relation = self.joins(self.sanitize_sql_array([metadata_join_sql, project_id])).order(:relative_order)
+
+    relation = relation.limit(limit) if limit
+
+    # rubocop:disable Database/AvoidUsingPluckWithoutLimit -- limit may be applied in the caller
+    relation.pluck(shas_sql)
+    # rubocop:enable Database/AvoidUsingPluckWithoutLimit
+  end
+
+  def self.archived_table_exists?
+    connection.table_exists?(ARCHIVED_TABLE)
+  end
+
+  # Copies one diff's rows back from the archived table. The partitioning backfill
+  # skipped deduplicated rows (NULL sha, only a metadata pointer), which still
+  # exist there, so this is a straight copy of the four reference columns.
+  # Same statement as BackfillMissedDiffCommitsToPartitioned, scoped to a diff and
+  # inserting in the same order, so the two never deadlock on the same keys.
+  def self.restore_from_archived(merge_request_diff_id)
+    connection.exec_update(sanitize_sql_array([<<~SQL, merge_request_diff_id]))
+      INSERT INTO #{table_name} (
+        merge_request_commits_metadata_id,
+        merge_request_diff_id,
+        project_id,
+        relative_order
+      )
+      SELECT
+        archived.merge_request_commits_metadata_id,
+        archived.merge_request_diff_id,
+        mr_diffs.project_id,
+        archived.relative_order
+      FROM #{ARCHIVED_TABLE} AS archived
+      INNER JOIN merge_request_diffs AS mr_diffs
+        ON mr_diffs.id = archived.merge_request_diff_id
+      WHERE archived.merge_request_diff_id = ?
+        AND archived.merge_request_commits_metadata_id IS NOT NULL
+      ORDER BY archived.relative_order
+      ON CONFLICT DO NOTHING
+    SQL
+  end
+
+  def self.read_new_commits_table?(project_id)
+    read_new_commits_table_for_actor?(Project.actor_from_id(project_id))
+  end
+
+  def self.read_new_commits_table_for_actor?(actor)
+    return false unless Feature.enabled?(:mr_diff_commits_read_new_table, actor)
+
+    commits_table_partitioned?
+  end
+
+  def self.commits_table_partitioned?
+    Gitlab::SafeRequestStore.fetch(:merge_request_diff_commits_partitioned) do
+      connection.select_value(
+        sanitize_sql_array(
+          ['SELECT true FROM pg_partitioned_table WHERE partrelid = to_regclass(?)::oid', table_name]
+        )
+      ).present?
+    end
+  end
+  private_class_method :commits_table_partitioned?
+
+  def self.commit_shas_from_new_table(project_id:, limit:)
+    # LATERAL with LIMIT 1 pins the planner to a per-row PK lookup on
+    # merge_request_commits_metadata.id, rather than a hash join over every
+    # metadata row for the project.
+    join_sql = <<~SQL.squish
+      INNER JOIN LATERAL (
+        SELECT sha
+        FROM merge_request_commits_metadata
+        WHERE merge_request_commits_metadata.id = #{quoted_table_name}.merge_request_commits_metadata_id
+        AND merge_request_commits_metadata.project_id = ?
+        LIMIT 1
+      ) merge_request_commits_metadata ON TRUE
+    SQL
+
+    # raw SQL in pluck() bypasses ActiveRecord's type casting, so encode() is needed to convert bytea to hex
+    shas_sql = Arel.sql("encode(merge_request_commits_metadata.sha, 'hex')")
+    relation = joins(sanitize_sql_array([join_sql, project_id]))
+      .where(project_id: project_id)
+      .order(:relative_order)
+    relation = relation.limit(limit) if limit
+
+    # rubocop:disable Database/AvoidUsingPluckWithoutLimit -- limit may be applied in the caller
+    relation.pluck(shas_sql)
+    # rubocop:enable Database/AvoidUsingPluckWithoutLimit
+  end
+  private_class_method :commit_shas_from_new_table
+
+  def self.commit_rows_with_metadata(project_id, merge_request_diff_id, rows)
+    commits_metadata_mapping = MergeRequest::CommitsMetadata.bulk_find_or_create(
+      project_id,
+      rows
+    )
+
+    rows.each do |row|
+      row[:merge_request_commits_metadata_id] = commits_metadata_mapping[row[:raw_sha]]
+
+      # At this point, we no longer need the `raw_sha` so we delete it from
+      # the row that will be inserted into `merge_request_diff_commits` table.
+      row.delete(:raw_sha)
+      DEDUPLICATED_COLUMNS.each { |column| row.delete(column) }
+      row.delete(:trailers) if read_new_commits_table?(project_id)
+    end
+
+    rows_without_metadata = rows.select { |row| row[:merge_request_commits_metadata_id].nil? }
+
+    return rows unless rows_without_metadata.any?
+
+    raise CouldNotCreateMetadataError, format(
+      "Failed to create metadata for commits: %{relative_orders}, project_id: %{project_id}, " \
+        "merge_request_diff_id: %{merge_request_diff_id}. " \
+        "Commits in batch: %{total_count}, failed: %{failed_count}",
+      failed_count: rows_without_metadata.size,
+      total_count: rows.size,
+      merge_request_diff_id: merge_request_diff_id,
+      project_id: project_id,
+      relative_orders: rows_without_metadata.filter_map { |r| r[:relative_order] }
+    )
+  end
+
+  # Placeholder while the trailers references are being removed.
+  # Tracked in https://gitlab.com/gitlab-org/gitlab/-/work_items/603480
+  def trailers
+    {}
+  end
+
+  def author_name
+    commit_author&.name
+  end
+
+  def author_email
+    commit_author&.email
+  end
+
+  def committer_name
+    committer&.name
+  end
+
+  def committer_email
+    committer&.email
+  end
+
+  def message
+    fetch_message
+  end
+
+  def to_hash
+    super(exclude_keys: [:message]).merge({
+      'id' => sha,
+      message: fetch_message
+    })
+  end
+
+  def project_id
+    read_attribute(:project_id) || project&.id
+  end
+
+  def authored_date
+    has_commit_metadata? ? merge_request_commits_metadata.authored_date : super
+  end
+
+  def committed_date
+    has_commit_metadata? ? merge_request_commits_metadata.committed_date : super
+  end
+
+  def sha
+    has_commit_metadata? ? merge_request_commits_metadata.sha : super
+  end
+
+  def commit_author
+    has_commit_metadata? ? merge_request_commits_metadata.commit_author : super
+  end
+
+  def committer
+    has_commit_metadata? ? merge_request_commits_metadata.committer : super
+  end
+
+  private
+
+  def fetch_message
+    if ::Feature.enabled?(:disable_message_attribute_on_mr_diff_commits, project)
+      ""
+    else
+      has_commit_metadata? ? merge_request_commits_metadata.message : read_attribute("message")
+    end
+  end
+
+  # As of %17.10, we still don't have `project_id` on merge_request_diff_commit
+  #   records. Until we do, we have to fetch it from merge_request_diff.
+  # Also, it's possible that `merge_request_diff` is `nil` when accessing this method from an object
+  # that has not been persisted.
+  def project
+    @_project ||= merge_request_diff&.project
+  end
+
+  def has_commit_metadata?
+    merge_request_commits_metadata_id.present?
+  rescue ActiveModel::MissingAttributeError => e
+    Gitlab::ErrorTracking.track_exception(e, self.attributes)
+
+    false
+  end
+end

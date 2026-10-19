@@ -1,0 +1,25 @@
+#import "./jira_import.fragment.graphql"
+
+query getJiraImportDetails($fullPath: ID!) {
+  project(fullPath: $fullPath) {
+    id
+    jiraImportStatus
+    jiraImports {
+      nodes {
+        ...JiraImport
+      }
+    }
+    services(active: true, type: JIRA_SERVICE) {
+      nodes {
+        ... on JiraService {
+          projects {
+            nodes {
+              key
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}

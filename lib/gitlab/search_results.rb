@@ -1,81 +1,325 @@
+# frozen_string_literal: true
+
 module Gitlab
   class SearchResults
-    attr_reader :query
+    include ::Search::ScopeHandlers::Delegation
 
-    # Limit search results by passed project ids
+    COUNT_LIMIT = 100
+    COUNT_LIMIT_MESSAGE = "#{COUNT_LIMIT - 1}+".freeze
+    DEFAULT_PAGE = 1
+    DEFAULT_PER_PAGE = 20
+
+    attr_reader :current_user, :query, :order_by, :sort, :filters
+
+    # Limit search results by passed projects
     # It allows us to search only for projects user has access to
-    attr_reader :limit_project_ids
+    attr_reader :limit_projects
 
-    def initialize(limit_project_ids, query)
-      @limit_project_ids = limit_project_ids || Project.all
-      @query = Shellwords.shellescape(query) if query.present?
+    # Whether a custom filter is used to restrict scope of projects.
+    # If the default filter (which lists all projects user has access to)
+    # is used, we can skip it when filtering merge requests and optimize the
+    # query
+    attr_reader :default_project_filter
+
+    def initialize(
+      current_user,
+      query,
+      limit_projects = nil,
+      order_by: nil,
+      sort: nil,
+      default_project_filter: false,
+      filters: {}
+    )
+      @current_user = current_user
+      @query = query
+      @limit_projects = limit_projects || Project.all
+      @default_project_filter = default_project_filter
+      @order_by = order_by
+      @sort = sort
+      @filters = filters
     end
 
-    def objects(scope, page = nil)
+    def objects(scope, page: nil, per_page: DEFAULT_PER_PAGE, preload_method: nil)
+      if handler_for_scope(scope)
+        return delegate_to_handler(scope, :objects, page: page, per_page: per_page, preload_method: preload_method)
+      end
+
+      should_preload = preload_method.present?
+      collection = collection_for(scope)
+      collection = collection.public_send(preload_method) if should_preload # rubocop:disable GitlabSecurity/PublicSend
+      collection = collection.page(page).per(per_page)
+      collection.without_count
+    end
+
+    def formatted_count(scope)
+      return delegate_to_handler(scope, :formatted_count) if handler_for_scope(scope)
+
       case scope
       when 'projects'
-        projects.page(page).per(per_page)
-      when 'issues'
-        issues.page(page).per(per_page)
+        formatted_limited_count(limited_projects_count)
+      when 'issues', 'work_items'
+        formatted_limited_count(limited_issues_count)
       when 'merge_requests'
-        merge_requests.page(page).per(per_page)
-      else
-        Kaminari.paginate_array([]).page(page).per(per_page)
+        formatted_limited_count(limited_merge_requests_count)
+      when 'milestones'
+        formatted_limited_count(limited_milestones_count)
+      when 'users'
+        formatted_limited_count(limited_users_count)
       end
     end
 
-    def total_count
-      @total_count ||= projects_count + issues_count + merge_requests_count
+    def formatted_limited_count(count)
+      if count >= COUNT_LIMIT
+        COUNT_LIMIT_MESSAGE
+      else
+        count.to_s
+      end
     end
 
-    def projects_count
-      @projects_count ||= projects.count
+    def limited_projects_count
+      @limited_projects_count ||= limited_count(projects)
     end
 
-    def issues_count
-      @issues_count ||= issues.count
+    def limited_issues_count
+      return @limited_issues_count if @limited_issues_count
+
+      # By default getting limited count (e.g. 1000+) is fast on issuable
+      # collections except for issues, where filtering both not confidential
+      # and confidential issues user has access to, is too complex.
+      # It's faster to try to fetch all public issues first, then only
+      # if necessary try to fetch all issues.
+      sum = limited_count(issues(confidential: false))
+      @limited_issues_count = sum < count_limit ? limited_count(issues) : sum
     end
 
-    def merge_requests_count
-      @merge_requests_count ||= merge_requests.count
+    def limited_merge_requests_count
+      @limited_merge_requests_count ||= limited_count(merge_requests)
     end
 
-    def empty?
-      total_count.zero?
+    def limited_milestones_count
+      @limited_milestones_count ||= limited_count(milestones)
+    end
+
+    def limited_users_count
+      @limited_users_count ||= limited_count(users)
+    end
+
+    def count_limit
+      COUNT_LIMIT
+    end
+
+    def users
+      return User.none unless Ability.allowed?(current_user, :read_users_list)
+
+      params = { search: query, use_minimum_char_limit: false }
+
+      if current_user && filters[:autocomplete]
+        params[:group_member_source_ids] = current_user_authorized_group_ids
+        params[:project_member_source_ids] = current_user_authorized_project_ids
+      end
+
+      UsersFinder.new(current_user, params).execute
+    end
+
+    # highlighting is only performed by Elasticsearch backed results
+    def highlight_map(*)
+      {}
+    end
+
+    # aggregations are only performed by Elasticsearch backed results
+    def aggregations(*)
+      []
+    end
+
+    # direct counts are only performed by Elasticsearch backed results
+    def counts(*)
+      {}
+    end
+
+    def failed?(*)
+      false
+    end
+
+    def server_error?
+      false
+    end
+
+    def error_type(*)
+      nil
+    end
+
+    def error(*)
+      nil
+    end
+
+    def work_items(finder_params = {})
+      # In CE, work items are just issues since group-level work items are EE-only
+      by_work_item_type_ids(issues(finder_params))
     end
 
     private
 
-    def projects
-      Project.where(id: limit_project_ids).search(query)
+    def collection_for(scope)
+      case scope
+      when 'projects'
+        projects
+      when 'issues'
+        issues
+      when 'work_items'
+        work_items
+      when 'merge_requests'
+        merge_requests
+      when 'milestones'
+        milestones
+      when 'users'
+        users
+      end
     end
 
-    def issues
-      issues = Issue.where(project_id: limit_project_ids)
-      if query =~ /#(\d+)\z/
-        issues = issues.where(iid: $1)
-      else
-        issues = issues.full_search(query)
+    # rubocop:disable CodeReuse/ActiveRecord -- scoping search results by type
+    def by_work_item_type_ids(items)
+      return items unless filters[:work_item_type_ids].present?
+
+      items.where(work_item_type_id: filters[:work_item_type_ids])
+    end
+    # rubocop:enable CodeReuse/ActiveRecord
+
+    # rubocop: disable CodeReuse/ActiveRecord
+    def apply_sort(results, scope: nil)
+      # Due to different uses of sort param we prefer order_by when
+      # present
+      sort_by = ::Search::SortOptions.sort_and_direction(order_by, sort)
+
+      # Reset sort to default if the chosen one is not supported by scope
+      if ::Search::SortOptions::SCOPE_ONLY_SORT[sort_by] &&
+          ::Search::SortOptions::SCOPE_ONLY_SORT[sort_by].exclude?(scope)
+        sort_by = nil
       end
-      issues.order('updated_at DESC')
+
+      case sort_by
+      when :created_at_asc
+        results.reorder('created_at ASC')
+      when :updated_at_asc
+        results.reorder('updated_at ASC')
+      when :updated_at_desc
+        results.reorder('updated_at DESC')
+      when :popularity_asc
+        results.reorder('upvotes_count ASC')
+      when :popularity_desc
+        results.reorder('upvotes_count DESC')
+      when :title_asc
+        # Break ties with the ID column so LIMIT/OFFSET pages stay stable, as
+        # Issuable.sort_by_attribute does for the same two sorts.
+        results.order_title_asc.with_order_id_desc
+      when :title_desc
+        results.order_title_desc.with_order_id_desc
+      else
+        # :created_at_desc is default
+        results.reorder('created_at DESC')
+      end
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def projects
+      scope = limit_projects
+      scope = scope.self_and_ancestors_non_archived unless filters[:include_archived]
+      scope = scope.id_in(current_user_authorized_project_ids) if filters[:autocomplete] && current_user
+
+      scope.search(query, include_namespace: true, use_minimum_char_limit: false)
+    end
+
+    def issues(finder_params = {})
+      issues = IssuesFinder.new(current_user, issuable_params.merge(finder_params)).execute
+
+      unless default_project_filter
+        project_ids = project_ids_relation
+        project_ids = project_ids.self_and_ancestors_non_archived unless filters[:include_archived]
+
+        issues = issues.in_projects(project_ids)
+                       .allow_cross_joins_across_databases(url: 'https://gitlab.com/gitlab-org/gitlab/-/issues/420046')
+      end
+
+      apply_sort(issues, scope: 'issues')
+    end
+
+    def milestones
+      milestones = Milestone.search(query)
+      filter_milestones_by_project(milestones).order_updated_desc
     end
 
     def merge_requests
-      merge_requests = MergeRequest.in_projects(limit_project_ids)
-      if query =~ /[#!](\d+)\z/
-        merge_requests = merge_requests.where(iid: $1)
-      else
-        merge_requests = merge_requests.full_search(query)
+      merge_requests = MergeRequestsFinder.new(current_user, issuable_params).execute
+
+      unless default_project_filter
+        project_ids = project_ids_relation
+
+        project_ids = project_ids.self_and_ancestors_non_archived unless filters[:include_archived]
+
+        merge_requests = merge_requests.of_projects(project_ids)
       end
-      merge_requests.order('updated_at DESC')
+
+      apply_sort(merge_requests, scope: 'merge_requests')
     end
 
     def default_scope
       'projects'
     end
 
-    def per_page
-      20
+    # Filter milestones by authorized projects.
+    # For performance reasons project_id is being plucked
+    # to be used on a smaller query.
+    def filter_milestones_by_project(milestones)
+      candidate_project_ids = project_ids_relation
+
+      candidate_project_ids = candidate_project_ids.self_and_ancestors_non_archived unless filters[:include_archived]
+
+      project_ids = milestones.of_projects(candidate_project_ids).select(:project_id).distinct.pluck(:project_id) # rubocop: disable CodeReuse/ActiveRecord
+
+      return Milestone.none if project_ids.nil?
+
+      authorized_project_ids_relation = Project.id_in(project_ids).ids_with_issuables_available_for(current_user)
+
+      milestones.of_projects(authorized_project_ids_relation)
+    end
+
+    def project_ids_relation
+      limit_projects.select(:id).without_order
+    end
+
+    def issuable_params
+      {}.tap do |params|
+        params[:sort] = 'updated_desc'
+
+        if query =~ /#(\d+)\z/
+          params[:iids] = Regexp.last_match(1)
+        else
+          params[:search] = query
+        end
+
+        params[:state] = filters[:state] if filters.key?(:state)
+
+        params[:confidential] = filters[:confidential] if [true, false].include?(filters[:confidential])
+      end
+    end
+
+    def current_user_authorized_group_ids
+      GroupsFinder
+        .new(current_user, { all_available: false })
+        .execute
+        .pluck("#{Group.table_name}.#{Group.primary_key}") # rubocop: disable CodeReuse/ActiveRecord -- need to find ids
+    end
+
+    def current_user_authorized_project_ids
+      ProjectsFinder
+        .new(current_user: current_user, params: { non_public: true })
+        .execute
+        .pluck_primary_key
+    end
+
+    def limited_count(relation)
+      relation.without_order.limit(count_limit).size
     end
   end
 end
+
+Gitlab::SearchResults.prepend_mod_with('Gitlab::SearchResults')

@@ -1,0 +1,29 @@
+- page_title _("Labels")
+- add_page_specific_style 'page_bundles/labels'
+- page_description = s_('AdminLabels|Labels created here will be automatically added to new projects.')
+
+%h1.gl-sr-only= page_title
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_labels_pageload' } }
+
+- if @labels.present?
+  = render ::Layouts::CrudComponent.new(_('Labels'), description: page_description, count: number_with_delimiter(@labels.total_count), count_options: { class: 'js-admin-labels-count' }, icon: 'label', options: { class: 'labels other-labels gl-mt-5 js-admin-labels-container' }) do |c|
+    - c.with_actions do
+      = render Pajamas::ButtonComponent.new(variant: :default,
+        size: :small,
+        href: new_admin_label_path) do
+        = _('New label')
+    - c.with_body do
+      %ul.content-list.manage-labels-list.js-other-labels
+        = render @labels
+    - c.with_pagination do
+      = paginate @labels, theme: 'gitlab'
+
+.js-admin-labels-empty-state{ class: ('gl-hidden' if @labels.present?) }
+  = render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-labels-md.svg',
+    title: s_('AdminLabels|Define your default set of project labels'),
+    primary_button_text: _('New label'),
+    primary_button_link: new_admin_label_path) do |c|
+
+    - c.with_description do
+      = s_('AdminLabels|They can be used to categorize issues and merge requests.')

@@ -1,0 +1,8 @@
+query environmentToRollback {
+  environmentToRollback @client {
+    id
+    name
+    lastDeployment
+    retryUrl
+  }
+}

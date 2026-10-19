@@ -1,0 +1,1070 @@
+---
+stage: Data Access
+group: Database Frameworks
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Avoiding downtime in migrations
+---
+
+When working with a database, certain operations might require downtime. As we
+cannot have downtime in migrations, we need to use a set of steps to get the
+same end result without downtime. This guide describes various operations that
+might appear to need downtime, their impact, and how to perform them without
+requiring downtime.
+
+## Dropping columns
+
+Removing columns is tricky because running GitLab processes expect these columns to exist.
+ActiveRecord caches the tables schema when it boots even if the columns are not referenced.
+
+This happens if the columns are not explicitly marked as ignored.
+
+In addition, any database view that references such columns needs to be considered as well.
+
+To work around this safely, you need three steps in three releases:
+
+1. [Ignoring the column](#ignoring-the-column-release-m) (release M)
+1. [Dropping the column](#dropping-the-column-release-m1) (release M+1)
+1. [Removing the ignore rule](#removing-the-ignore-rule-release-m2) (release M+2)
+
+The reason we spread this out across three releases is that dropping a column is
+a destructive operation that can't be rolled back easily.
+
+Following this procedure helps us to make sure there are no deployments to GitLab.com
+and upgrade processes for GitLab Self-Managed instances that lump together any of these steps.
+
+### Ignoring the column (release M)
+
+The first step is to ignore the column in the application code and remove all code references to it including
+model validations.
+This step is necessary because Rails caches the columns and re-uses this cache in various
+places. This can be done by defining the columns to ignore. For example, in release `12.5`, to ignore
+`updated_at` in the User model you'd use the following:
+
+```ruby
+class User < ApplicationRecord
+  ignore_column :updated_at, remove_with: '12.7', remove_after: '2019-12-22'
+end
+```
+
+Multiple columns can be ignored, too:
+
+```ruby
+ignore_columns %i[updated_at created_at], remove_with: '12.7', remove_after: '2019-12-22'
+```
+
+If the model exists in CE and EE, the column has to be ignored in the CE model. If the
+model only exists in EE, then it has to be added there.
+
+We require indication of when it is safe to remove the column ignore rule with:
+
+- `remove_with`: set to a GitLab release typically two releases (M+2) (`12.7` in our example) after adding the
+  column ignore.
+- `remove_after`: set to a date after which we consider it safe to remove the column
+  ignore, typically after the M+1 release date, during the M+2 development cycle. For example, since the development cycle of `12.7` is between `2019-12-18` and `2020-01-17`, and `12.6` is the release to [drop the column](#dropping-the-column-release-m1), it's safe to set the date to the release date of `12.6` as `2019-12-22`.
+
+This information allows us to reason better about column ignores and makes sure we
+don't remove column ignores too early for both regular releases and deployments to GitLab.com. For
+example, this avoids a situation where we deploy a bulk of changes that include both changes
+to ignore the column and subsequently remove the column ignore (which would result in a downtime).
+
+In this example, the change to ignore the column went into release `12.5`.
+
+> [!note]
+> Ignoring and dropping columns should not occur simultaneously in the same release. Dropping a column before properly ignoring it in the model can cause problems with zero-downtime migrations,
+> where the running instances can fail trying to look up the removed column until the Rails schema cache expires. This can be an issue for GitLab Self-Managed customers who attempt to follow zero-downtime upgrades,
+> forcing them to explicitly restart all running GitLab instances to re-load the updated schema. To avoid this scenario, first, ignore the column (release M), then, drop it in the next release (release M+1).
+
+#### Ignoring columns referenced by database views
+
+When the column is also referenced by a database view, as in the follow example:
+
+```sql
+CREATE VIEW recently_updated_users_view(id, username, updated_at) AS
+SELECT id, username, updated_at
+FROM users
+WHERE updated_at > now() - interval '30 day'
+```
+
+The `ignore_columns` instruction should also be included on the corresponding model class:
+
+```ruby
+class RecentlyUpdatedUsersView < ApplicationRecord
+  self.table_name = 'recently_updated_users_view'
+
+  ignore_columns :updated_at
+end
+```
+
+### Dropping the column (release M+1)
+
+Continuing our example, dropping the column goes into a _post-deployment_ migration in release `12.6`:
+
+Start by creating the **post-deployment migration**:
+
+```shell
+bundle exec rails g post_deployment_migration remove_users_updated_at_column
+```
+
+You must consider these scenarios when you write a migration that removes a column:
+
+- [The removed column has no indexes or constraints that belong to it](#the-removed-column-has-no-indexes-or-constraints-that-belong-to-it)
+- [The removed column has an index or constraint that belongs to it](#the-removed-column-has-an-index-or-constraint-that-belongs-to-it)
+
+#### The removed column has no indexes or constraints that belong to it
+
+In this case, a **transactional migration** can be used:
+
+```ruby
+class RemoveUsersUpdatedAtColumn < Gitlab::Database::Migration[2.1]
+  def up
+    remove_column :users, :updated_at
+  end
+
+  def down
+    add_column :users, :updated_at, :datetime
+  end
+end
+```
+
+#### The removed column has an index or constraint that belongs to it
+
+If the `down` method requires adding back any dropped indexes or constraints, that cannot
+be done in a transactional migration. The migration would look like this:
+
+```ruby
+class RemoveUsersUpdatedAtColumn < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    remove_column :users, :updated_at
+  end
+
+  def down
+    add_column(:users, :updated_at, :datetime, if_not_exists: true)
+
+    # Make sure to add back any indexes or constraints,
+    # that were dropped in the `up` method. For example:
+    add_concurrent_index(:users, :updated_at)
+  end
+end
+```
+
+In the `down` method, we check to see if the column already exists before adding it again.
+We do this because the migration is non-transactional and might have failed while it was running.
+
+The [`disable_ddl_transaction!`](../migration_style_guide.md#usage-with-non-transactional-migrations)
+is used to disable the transaction that wraps the whole migration.
+
+You can refer to the page [Migration Style Guide](../migration_style_guide.md)
+for more information about database migrations.
+
+#### The removed column is referenced by a database view
+
+When a column is referenced by a database view, it behaves as if the column had a constraint attached to it
+so the view needs to be updated first before dropping the column:
+
+1. Recreate the view excluding the column
+1. Drop the column from the original table
+
+The `down` method should perform the operation in reverse order as the column must exist before it is referenced
+by the view:
+
+1. Reintroduce the column to the original table
+1. Recreate the view including the column again
+
+The migration would look like this:
+
+```ruby
+class RemoveUsersUpdatedAtColumn < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    execute <<-SQL
+      DROP VIEW IF EXISTS recently_updated_users_view;
+
+      CREATE VIEW recently_updated_users_view(id, username) AS
+        SELECT id, username
+        FROM users;
+    SQL
+
+    remove_column :users, :updated_at
+  end
+
+  def down
+    add_column :users, :updated_at, :datetime
+
+    execute <<-SQL
+      DROP VIEW IF EXISTS recently_updated_users_view;
+
+      CREATE VIEW recently_updated_users_view(id, username, updated_at) AS
+        SELECT id, username, updated_at
+        FROM users
+        WHERE updated_at > now() - interval '30 day'
+    SQL
+  end
+end
+```
+
+### Removing the ignore rule (release M+2)
+
+With the next release, in this example `12.7`, we set up another merge request to remove the ignore rule.
+This removes the `ignore_column` line and, if not needed anymore, also the inclusion of `IgnoreableColumns`.
+
+This should only get merged with the release indicated with `remove_with` and once
+the `remove_after` date has passed.
+
+## Renaming columns
+
+> [!note]
+> The below procedure is only appropriate for small tables. The procedure copies
+> all the data from one column to the other in a regular migration, which might take
+> too long for large tables. For large tables you should look at using
+> [Batched Background Migrations](batched_background_migrations.md) to copy
+> the data over and perform the rename over multiple milestones.
+
+Renaming columns the standard way requires downtime, as an application might continue
+to use the old column names during or after a database migration. To rename a column
+without requiring downtime, we need two migrations: a regular migration and a
+post-deployment migration. Both these migrations can go in the same release.
+The steps:
+
+1. [Add the regular migration](#add-the-regular-migration-release-m) (release M)
+1. [Ignore the column](#ignore-the-column-release-m) (release M)
+1. [Add a post-deployment migration](#add-a-post-deployment-migration-release-m) (release M)
+1. [Remove the ignore rule](#remove-the-ignore-rule-release-m1) (release M+1)
+
+When renaming a column that is referenced by a database view in the regular way, it requires no additional step as
+views are updated to the new column name while preserving the `SELECT` portion intact.
+
+With no downtime there are additional considerations mentioned in the steps above.
+
+### Add the regular migration (release M)
+
+First we need to create the regular migration. This migration should use
+`Gitlab::Database::MigrationHelpers#rename_column_concurrently` to perform the
+renaming. For example:
+
+```ruby
+# A regular migration in db/migrate
+class RenameUsersUpdatedAtToUpdatedAtTimestamp < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    rename_column_concurrently :users, :updated_at, :updated_at_timestamp
+  end
+
+  def down
+    undo_rename_column_concurrently :users, :updated_at, :updated_at_timestamp
+  end
+end
+```
+
+This takes care of renaming the column, ensuring data stays in sync, and
+copying over indexes and foreign keys.
+
+If a column contains one or more indexes that don't contain the name of the
+original column, the previously described procedure fails. In that case,
+you need to rename these indexes.
+
+When the column is referenced by a database view, the view needs to be recreated
+and pointed to the new column. The `down` operation needs to restore it back
+before executing the `undo_rename_column_concurrently`:
+
+```ruby
+# A regular migration in db/migrate including database view recreation
+class RenameUsersUpdatedAtToUpdatedAtTimestamp < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    rename_column_concurrently :users, :updated_at, :updated_at_timestamp
+
+    execute <<-SQL
+      DROP VIEW IF EXISTS recently_updated_users_view;
+
+      CREATE VIEW recently_updated_users_view(id, username, updated_at) AS
+        SELECT id, username, updated_at_timestamp
+        FROM users
+        WHERE updated_at > now() - interval '30 day'
+    SQL
+  end
+
+  def down
+    execute <<-SQL
+      DROP VIEW IF EXISTS recently_updated_users_view;
+
+      CREATE VIEW recently_updated_users_view(id, username, updated_at) AS
+        SELECT id, username, updated_at
+        FROM users
+        WHERE updated_at > now() - interval '30 day'
+    SQL
+
+    undo_rename_column_concurrently :users, :updated_at, :updated_at_timestamp
+  end
+end
+```
+
+### Ignore the column (release M)
+
+The next step is to ignore the column in the application code, and make sure it is not used. This step is
+necessary because Rails caches the columns and re-uses this cache in various places.
+This step is similar to [the first step when column is dropped](#ignoring-the-column-release-m), and the same requirements apply.
+
+```ruby
+class User < ApplicationRecord
+  ignore_column :updated_at, remove_with: '12.7', remove_after: '2019-12-22'
+end
+```
+
+### Add a post-deployment migration (release M)
+
+The renaming procedure requires some cleaning up in a post-deployment migration.
+We can perform this cleanup using
+`Gitlab::Database::MigrationHelpers#cleanup_concurrent_column_rename`:
+
+```ruby
+# A post-deployment migration in db/post_migrate
+class CleanupUsersUpdatedAtRename < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    cleanup_concurrent_column_rename :users, :updated_at, :updated_at_timestamp
+  end
+
+  def down
+    undo_cleanup_concurrent_column_rename :users, :updated_at, :updated_at_timestamp
+  end
+end
+```
+
+If you're renaming a [large table](https://gitlab.com/gitlab-org/gitlab/-/blob/master/rubocop/rubocop-migrations.yml#L3), carefully consider the state when the first migration has run but the second cleanup migration hasn't been run yet.
+With [Canary](https://gitlab.com/gitlab-com/gl-infra/readiness/-/tree/master/library/canary/) it is possible that the system runs in this state for a significant amount of time.
+
+### Remove the ignore rule (release M+1)
+
+Same as when column is dropped, after the rename is completed, we need to [remove the ignore rule](#removing-the-ignore-rule-release-m2) in a subsequent release.
+
+## Changing column constraints
+
+Adding or removing a `NOT NULL` clause (or another constraint) can typically be
+done without requiring downtime. Adding a `NOT NULL` constraint requires that any application
+changes are deployed _first_, so it should happen in a post-deployment migration.
+In contrary removing a `NOT NULL` constraint should be done in a regular migration.
+This way any code which inserts `NULL` values can safely run for the column.
+
+Avoid using `change_column` as it produces an inefficient query because it re-defines
+the whole column type.
+
+You can check the following guides for each specific use case:
+
+- [Adding foreign-key constraints](foreign_keys.md)
+- [Adding `NOT NULL` constraints](not_null_constraints.md)
+- [Adding limits to text columns](strings_and_the_text_data_type.md)
+
+## Changing column types
+
+Changing the type of a column can be done using
+`Gitlab::Database::MigrationHelpers#change_column_type_concurrently`. This
+method works similarly to `rename_column_concurrently`. For example, if
+we want to change the type of `users.username` from `string` to `text`:
+
+1. [Create a regular migration](#create-a-regular-migration)
+1. [Create a post-deployment migration](#create-a-post-deployment-migration)
+1. [Casting data to a new type](#casting-data-to-a-new-type)
+
+When changing columns type that are referenced by a database view the view needs to be recreated as part of the process.
+
+### Create a regular migration
+
+A regular migration is used to create a new column with a temporary name along
+with setting up some triggers to keep data in sync. Such a migration would look
+as follows:
+
+```ruby
+# A regular migration in db/migrate
+class ChangeUsersUsernameStringToText < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    change_column_type_concurrently :users, :username, :text
+  end
+
+  def down
+    undo_change_column_type_concurrently :users, :username
+  end
+end
+```
+
+When the column is referenced by a database view, the view needs to be recreated
+and pointed to the new temporary column.
+
+When in the later step the temporary column is renamed back to the original name, the view updates
+itself internally and doesn't require any other change:
+
+```ruby
+# A regular migration in db/migrate including database view recreation
+class ChangeUsersUsernameStringToText < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    change_column_type_concurrently :users, :username, :text
+
+    # temporary column name follows this pattern: `"#{column}_for_type_change"`
+    # so the column named `username` becomes `username_for_type_change`
+
+    execute <<-SQL
+      DROP VIEW IF EXISTS recently_updated_users_view;
+
+      CREATE VIEW recently_updated_users_view(id, username, updated_at) AS
+        SELECT id, username_for_type_change, updated_at
+        FROM users
+        WHERE updated_at > now() - interval '30 day'
+    SQL
+  end
+
+  def down
+    execute <<-SQL
+      DROP VIEW IF EXISTS recently_updated_users_view;
+
+      CREATE VIEW recently_updated_users_view(id, username, updated_at) AS
+        SELECT id, username, updated_at_timestamp
+        FROM users
+        WHERE updated_at > now() - interval '30 day'
+    SQL
+
+    undo_change_column_type_concurrently :users, :username
+  end
+end
+```
+
+### Create a post-deployment migration
+
+Next we need to clean up our changes using a post-deployment migration:
+
+```ruby
+# A post-deployment migration in db/post_migrate
+class ChangeUsersUsernameStringToTextCleanup < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  def up
+    cleanup_concurrent_column_type_change :users, :username
+  end
+
+  def down
+    undo_cleanup_concurrent_column_type_change :users, :username, :string
+  end
+end
+```
+
+And that's it, we're done!
+
+### Casting data to a new type
+
+Some type changes require casting data to a new type. For example when changing from `text` to `jsonb`.
+In this case, use the `type_cast_function` option.
+Make sure there is no bad data and the cast always succeeds. You can also provide a custom function that handles
+casting errors.
+
+Example migration:
+
+```ruby
+  def up
+    change_column_type_concurrently :users, :settings, :jsonb, type_cast_function: 'jsonb'
+  end
+```
+
+## Changing column defaults
+
+Changing or removing a column default is difficult because of how Rails handles values that are equal to the default.
+
+> [!note]
+> With the [`partial_inserts`](https://gitlab.com/gitlab-org/gitlab/-/blob/55ac06c9083434e6c18e0a2aaf8be5f189ef34eb/config/application.rb#L40) configuration enabled, Rails omits a column from an `INSERT` when its in-memory value equals the column default, and lets the database supply the value.
+> When a migration changes a column default, running processes are unaware of the change because of the schema cache.
+
+During a zero-downtime deployment, a post-deployment migration runs while older processes still serve traffic, and each process can hold a stale schema cache for the duration of the window.
+A process that relies on the database default then writes the wrong value.
+If the column has a `NOT NULL` constraint and the migration removes its default, the omitted column has no value to fall back to and the `INSERT` fails.
+
+To change or remove a column default safely, force the application to write the column explicitly instead of relying on the database default.
+
+Doing this requires steps in two minor releases:
+
+1. [Add the `SafelyChangeColumnDefault` concern to the model](#add-the-safelychangecolumndefault-concern-to-the-model-and-change-the-default-in-a-post-migration) and change the default in a post-migration.
+1. [Clean up the `SafelyChangeColumnDefault` concern](#clean-up-the-safelychangecolumndefault-concern-in-the-next-minor-release) in the next minor release.
+
+We must wait a minor release before cleaning up the `SafelyChangeColumnDefault` because GitLab Self-Managed
+releases bundle an entire minor release into a single zero-downtime deployment.
+
+### Add the `SafelyChangeColumnDefault` concern to the model and change the default in a post-migration
+
+The first step is to mark the column so the application always writes it into every `INSERT`:
+
+```ruby
+class Ci::Build < ApplicationRecord
+  include SafelyChangeColumnDefault
+
+  columns_changing_default :partition_id
+end
+```
+
+`SafelyChangeColumnDefault` forces the listed columns into every `INSERT`, but the value written still comes from the model.
+That value must not depend on the schema cache.
+
+For a constant default, declare it with a Rails `attribute` default, which is owned by the code and never stale:
+
+```ruby
+class Ci::Build < ApplicationRecord
+  include SafelyChangeColumnDefault
+
+  attribute :partition_id, default: 101
+  columns_changing_default :partition_id
+end
+```
+
+A Rails `attribute` default cannot compute a value from the record, because Rails evaluates the default without the record as context.
+For a default that depends on the record, such as an association, compute it in an `after_initialize` callback and assign it only when the value did not come from the user:
+
+```ruby
+class ProjectFeature < ApplicationRecord
+  include SafelyChangeColumnDefault
+
+  columns_changing_default :model_experiments_access_level
+
+  after_initialize(if: :new_record?) do
+    unless @attributes['model_experiments_access_level'].came_from_user?
+      self.model_experiments_access_level = project&.public? ? ENABLED : PRIVATE
+    end
+  end
+end
+```
+
+Do not guard the assignment with `||=`.
+On a process with a stale schema cache, the attribute already holds the cached default, so `||=` skips the assignment and the concern writes the stale value instead of the computed one.
+The `came_from_user?` check is true only when the value was set explicitly, regardless of the schema cache.
+
+**Nullable column where `NULL` is unsafe: use an unconditional `before_create` callback.**
+
+A Rails `attribute` default does not override an explicit `nil`.
+If a caller runs `Model.new(col: nil).save!`, the column is written as `NULL` even when an attribute default is declared.
+When the column is nullable and `NULL` is unsafe (for example, a `NULL` row escapes a partial unique index), use an unconditional `before_create` callback instead:
+
+```ruby
+class ProjectAuthorization < ApplicationRecord
+  include SafelyChangeColumnDefault
+
+  columns_changing_default :is_unique
+
+  before_create :assign_is_unique
+
+  private
+
+  def assign_is_unique
+    self.is_unique = true
+  end
+end
+```
+
+Unlike an `attribute` default, the callback runs unconditionally at save time and overrides any in-memory `nil`.
+The column is never written as `NULL` through the model.
+
+Then create a **post-deployment migration** to change the default:
+
+```shell
+bundle exec rails g post_deployment_migration change_ci_builds_default
+```
+
+```ruby
+class ChangeCiBuildsDefault < Gitlab::Database::Migration[2.1]
+  def change
+    change_column_default('ci_builds', 'partition_id', from: 100, to: 101)
+  end
+end
+```
+
+### Clean up the `SafelyChangeColumnDefault` concern in the next minor release
+
+In the next minor release, create a new merge request to remove the `columns_changing_default` call. Also remove the `SafelyChangeColumnDefault` include
+if it is not needed for a different column.
+
+## Changing the schema for large tables
+
+While `change_column_type_concurrently` and `rename_column_concurrently` can be
+used for changing the schema of a table without downtime, it doesn't work very
+well for large tables. Because all of the work happens in sequence the migration
+can take a very long time to complete, preventing a deployment from proceeding.
+They can also produce a lot of pressure on the database due to it rapidly
+updating many rows in sequence.
+
+To reduce database pressure you should instead use a background migration
+when migrating a column in a large table (for example, `issues`). Background
+migrations spread the work / load over a longer time period, without slowing
+down deployments.
+
+For more information, see [the documentation on cleaning up batched background migrations](batched_background_migrations.md#cleaning-up-a-batched-background-migration).
+
+## Adding indexes
+
+Adding indexes does not require downtime when `add_concurrent_index`
+is used.
+
+See also [Migration Style Guide](../migration_style_guide.md#adding-indexes)
+for more information.
+
+## Dropping indexes
+
+Dropping an index does not require downtime.
+
+## Adding tables
+
+This operation is safe as there's no code using the table just yet.
+
+## Dropping tables
+
+Dropping tables requires a multi-release process to avoid downtime:
+
+1. **Release M**: Remove all application code that uses the table.
+1. **Release M+1**: In separate post-deployment migrations for each, remove the foreign keys, then drop the table.
+
+Add the table to [`db/docs/deleted_tables`](https://gitlab.com/gitlab-org/gitlab/-/tree/master/db/docs/deleted_tables) using the process described in [database dictionary](database_dictionary.md#dropping-tables).
+Even though the table is deleted, it is still referenced in database migrations.
+
+### Remove foreign keys before dropping the table
+
+If the table has foreign keys, remove each foreign key in its own post-deployment
+migration before the migration that drops the table. Dropping a table that still
+references another table also locks that referenced table. A foreign key to a
+high-traffic table can then make the `DROP TABLE` time out.
+
+When a foreign key references a [high-traffic table](https://gitlab.com/gitlab-org/gitlab/-/blob/master/rubocop/rubocop-migrations.yml)
+(for example `users`, `projects`, or `namespaces`), removing it takes an
+`ACCESS EXCLUSIVE` lock on that table. Without lock retries, this lock can time
+out and require a manual retry. Wrap the removal in `with_lock_retries`. The
+migration then locks the referenced table first, with retries, before it removes
+the foreign key:
+
+```ruby
+class RemoveUploadsArchivedToUsersForeignKey < Gitlab::Database::Migration[2.3]
+  disable_ddl_transaction!
+
+  milestone '19.1'
+
+  SOURCE_TABLE_NAME = :uploads_archived
+  COLUMN = :uploaded_by_user_id
+  FOREIGN_KEY_NAME = :fk_b94f059d73
+
+  def up
+    with_lock_retries do
+      remove_foreign_key_if_exists SOURCE_TABLE_NAME, column: COLUMN, name: FOREIGN_KEY_NAME
+    end
+  end
+
+  def down
+    add_concurrent_foreign_key SOURCE_TABLE_NAME, :users,
+      column: COLUMN, on_delete: :nullify, name: FOREIGN_KEY_NAME
+  end
+end
+```
+
+`with_lock_retries` runs the removal in a transaction with a short `lock_timeout`
+and retries when it cannot acquire the lock, instead of blocking until a timeout.
+`remove_foreign_key_if_exists` defaults to `reverse_lock_order: true`, which locks
+the referenced table before the source table to prevent deadlocks with concurrent
+application transactions. For more information, see
+[`reverse_lock_order`](foreign_keys.md#reverse_lock_order).
+
+After all foreign keys are removed, drop the table in a separate post-deployment
+migration.
+
+## Renaming tables
+
+Renaming tables requires downtime, as an application might continue
+using the old table name during/after a database migration.
+
+If the table and the ActiveRecord model is not in use yet, removing the old
+table and creating a new one is the preferred way to "rename" the table.
+
+Renaming a table is possible without downtime by following our multi-release
+[rename table process](rename_database_tables.md).
+
+## Adding foreign keys
+
+Adding foreign keys can potentially cause downtime. See the [FK: Avoiding downtime and migration failures](foreign_keys.md#avoiding-downtime-and-migration-failures)
+documentation for details.
+
+## Migrating `integer` primary keys to `bigint`
+
+To [prevent the overflow risk](https://gitlab.com/groups/gitlab-org/-/work_items/4785) for some tables
+with `integer` primary key (PK), we have to migrate their PK to `bigint`. The process to do this
+without downtime and causing too much load on the database is described below.
+
+### Initialize the conversion and start migrating existing data (release N)
+
+To start the process, add a regular migration to create the new `bigint` columns. Use the provided
+`initialize_conversion_of_integer_to_bigint` helper. The helper also creates a database trigger
+to keep in sync both columns for any new records ([code](https://gitlab.com/gitlab-org/gitlab/-/blob/97aee76c4bfc2043dc0a1ef9ffbb71c58e0e2857/db/migrate/20230127093353_initialize_conversion_of_merge_request_metrics_to_bigint.rb)):
+
+```ruby
+# frozen_string_literal: true
+
+class InitializeConversionOfMergeRequestMetricsToBigint < Gitlab::Database::Migration[2.1]
+  disable_ddl_transaction!
+
+  TABLE = :merge_request_metrics
+  COLUMNS = %i[id]
+
+  def up
+    initialize_conversion_of_integer_to_bigint(TABLE, COLUMNS)
+  end
+
+  def down
+    revert_initialize_conversion_of_integer_to_bigint(TABLE, COLUMNS)
+  end
+end
+```
+
+Ignore the new `bigint` columns:
+
+```ruby
+# frozen_string_literal: true
+
+class MergeRequest::Metrics < ApplicationRecord
+  ignore_column :id_convert_to_bigint, remove_with: '16.0', remove_after: '2023-05-22'
+end
+```
+
+Enqueue batched background migration ([code](https://gitlab.com/gitlab-org/gitlab/-/blob/97aee76c4bfc2043dc0a1ef9ffbb71c58e0e2857/db/post_migrate/20230127101834_backfill_merge_request_metrics_for_bigint_conversion.rb))
+to migrate the existing data:
+
+```ruby
+# frozen_string_literal: true
+
+class BackfillMergeRequestMetricsForBigintConversion < Gitlab::Database::Migration[2.1]
+  restrict_gitlab_migration gitlab_schema: :gitlab_main_org
+
+  TABLE = :merge_request_metrics
+  COLUMNS = %i[id]
+
+  def up
+    backfill_conversion_of_integer_to_bigint(TABLE, COLUMNS, sub_batch_size: 200)
+  end
+
+  def down
+    revert_backfill_conversion_of_integer_to_bigint(TABLE, COLUMNS)
+  end
+end
+```
+
+> [!note]
+>
+> - With [Issue#438124](https://gitlab.com/gitlab-org/gitlab/-/issues/438124) new instances have all ID columns in bigint.
+>   The list of IDs yet to be converted to bigint in old instances (including GitLab.com) is maintained in `db/integer_ids_not_yet_initialized_to_bigint.yml`. Do not edit this file manually. It gets automatically updated during the [cleanup process](https://gitlab.com/gitlab-org/gitlab/-/blob/c6f4ea1bf1d693f1a0379964dd83a4bfec3e2f8d/lib/gitlab/database/migrations/conversions/bigint_converter.rb#L17-23).
+> - Since the schema file already has all IDs in `bigint`, don't push any changes to `db/structure.sql`.
+
+### Monitor the background migration
+
+Check how the migration is performing while it's running. Multiple ways to do this are described below.
+
+#### High-level status of batched background migrations
+
+See how to [check the status of batched background migrations](../../update/background_migrations.md).
+
+#### Query the database
+
+We can query the related database tables directly. Requires access to read-only replica.
+Example queries:
+
+```sql
+-- Get details for batched background migration for given table
+SELECT * FROM batched_background_migrations WHERE table_name = 'namespaces'\gx
+
+-- Get count of batched background migration jobs by status for given table
+SELECT
+  batched_background_migrations.id, batched_background_migration_jobs.status, COUNT(*)
+FROM
+  batched_background_migrations
+  JOIN batched_background_migration_jobs ON batched_background_migrations.id = batched_background_migration_jobs.batched_background_migration_id
+WHERE
+  table_name = 'namespaces'
+GROUP BY
+  batched_background_migrations.id, batched_background_migration_jobs.status;
+
+-- Batched background migration progress for given table (based on estimated total number of tuples)
+SELECT
+  m.table_name,
+  LEAST(100 * sum(j.batch_size) / pg_class.reltuples, 100) AS percentage_complete
+FROM
+  batched_background_migrations m
+  JOIN batched_background_migration_jobs j ON j.batched_background_migration_id = m.id
+  JOIN pg_class ON pg_class.relname = m.table_name
+WHERE
+  j.status = 3 AND m.table_name = 'namespaces'
+GROUP BY m.id, pg_class.reltuples;
+```
+
+#### Sidekiq logs
+
+We can also use the Sidekiq logs to monitor the worker that executes the batched background
+migrations:
+
+1. Sign in to [Kibana](https://log.gprd.gitlab.net) with a `@gitlab.com` email address.
+1. Change the index pattern to `pubsub-sidekiq-inf-gprd*`.
+1. Add filter for `json.queue: cronjob:database_batched_background_migration`.
+
+#### PostgreSQL slow queries log
+
+Slow queries log keeps track of low queries that took above 1 second to execute. To see them
+for batched background migration:
+
+1. Sign in to [Kibana](https://log.gprd.gitlab.net) with a `@gitlab.com` email address.
+1. Change the index pattern to `pubsub-postgres-inf-gprd*`.
+1. Add filter for `json.endpoint_id.keyword: Database::BatchedBackgroundMigrationWorker`.
+1. Optional. To see only updates, add a filter for `json.command_tag.keyword: UPDATE`.
+1. Optional. To see only failed statements, add a filter for `json.error_severity.keyword: ERROR`.
+1. Optional. Add a filter by table name.
+
+#### Grafana dashboards
+
+To monitor the health of the database, use these additional metrics:
+
+- [PostgreSQL Tuple Statistics](https://dashboards.gitlab.net/d/postgresql-postgresql-tuple-stats): if you see high rate of updates for the tables being actively converted, or increasing percentage of dead tuples for this table, it might mean that `autovacuum` cannot keep up.
+- [PostgreSQL Overview](https://dashboards.gitlab.net/d/postgresql-postgresql-overview): if you see high system usage or transactions per second (TPS) on the primary database server, it might mean that the migration is causing problems.
+
+### Prometheus metrics
+
+Number of [metrics](https://gitlab.com/gitlab-org/gitlab/-/blob/294a92484ce4611f660439aa48eee4dfec2230b5/lib/gitlab/database/background_migration/batched_migration_wrapper.rb#L90-128)
+for each batched background migration are published to Prometheus. These metrics can be searched for and
+visualized in Grafana ([see an example](https://dashboards.gitlab.net/explore?schemaVersion=1&panes=%7B%22m95%22:%7B%22datasource%22:%22e58c2f51-20f8-4f4b-ad48-2968782ca7d6%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22expr%22:%22sum%20%28rate%28batched_migration_job_updated_tuples_total%7Benv%3D%5C%22gprd%5C%22%7D%5B5m%5D%29%29%20by%20%28migration_id%29%20%22,%22range%22:true,%22instant%22:true,%22datasource%22:%7B%22type%22:%22prometheus%22,%22uid%22:%22e58c2f51-20f8-4f4b-ad48-2968782ca7d6%22%7D,%22editorMode%22:%22code%22,%22legendFormat%22:%22__auto%22%7D%5D,%22range%22:%7B%22from%22:%22now-3d%22,%22to%22:%22now%22%7D%7D%7D&orgId=1)).
+
+### Swap the columns (release N + 1)
+
+After the background migration is complete and the new `bigint` columns are populated for all records, we can
+swap the columns. Swapping is done with post-deployment migration. The exact process depends on the
+table being converted, but in general it's done in the following steps:
+
+1. Using the provided `ensure_backfill_conversion_of_integer_to_bigint_is_finished` helper, make sure the batched
+   migration has finished.
+   If the migration has not completed, the subsequent steps fail anyway. By checking in advance we
+   aim to have more helpful error message.
+
+   ```ruby
+   disable_ddl_transaction!
+
+   restrict_gitlab_migration gitlab_schema: :gitlab_ci
+
+   def up
+     ensure_backfill_conversion_of_integer_to_bigint_is_finished(
+       :ci_builds,
+       %i[
+         project_id
+         runner_id
+         user_id
+       ],
+       # optional. Only needed when there is no primary key, for example, like schema_migrations.
+       primary_key: :id
+     )
+   end
+
+   def down; end
+   ```
+
+1. Use the `add_bigint_column_indexes` helper method from `Gitlab::Database::MigrationHelpers::ConvertToBigint` module
+   to create indexes with the `bigint` columns that match the existing indexes using the `integer` column.
+   - The helper method is expected to create all required `bigint` indexes, but it's advised to recheck to make sure
+     we are not missing any of the existing indexes. More information about the helper can be
+     found in merge request [135781](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/135781).
+1. Create foreign keys (FK) using the `bigint` columns that match the existing FK using the
+   `integer` column. Do this both for FK referencing other tables, and FK that reference the table
+   that is being migrated ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L36-43)).
+1. Inside a transaction, swap the columns:
+   1. Lock the tables involved. To reduce the chance of hitting a deadlock, we recommended to do this in parent to child order ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L47)).
+   1. Rename the columns to swap names ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L49-54))
+   1. Reset the trigger function ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L56-57)).
+      This only clears cached function plans. It does not change which columns a trigger
+      fires on, which is handled by `swap_columns` as described in
+      [Triggers that reference a swapped column](#triggers-that-reference-a-swapped-column).
+   1. Swap the defaults ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L59-62)).
+   1. Swap the PK constraint (if any) ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L64-68)).
+   1. Remove old indexes and rename new ones ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L70-72)).
+      - Names of the `bigint` indexes created using `add_bigint_column_indexes` helper can be retrieved by calling
+        `bigint_index_name` from `Gitlab::Database::MigrationHelpers::ConvertToBigint` module.
+   1. Remove old foreign keys (if still present) and rename new ones ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb#L74)).
+1. Remove the temporary foreign keys created against the conversion columns, using `tmp_foreign_key_name` from the
+   `Gitlab::Database::MigrationHelpers::ConvertToBigint` module to get their names.
+   Remove foreign keys before indexes, because a live foreign key with no supporting index
+   makes deletes from the referenced table time out. For more information, see
+   [Indexes](foreign_keys.md#indexes).
+   Put each foreign key removal in its own migration, so one removal failing to acquire its lock does
+   not block the others ([see an example](https://gitlab.com/gitlab-org/gitlab/-/blob/fb670dc88ce4175ca209aaaa27065031eda34a79/db/post_migrate/20260102015630_drop_tmp_bigint_indexes_and_fks_on_merge_requests_stage_two.rb)).
+1. Remove the temporary indexes created against the conversion columns, using `bigint_index_name` from the
+   `Gitlab::Database::MigrationHelpers::ConvertToBigint` module to get their names.
+
+See example [merge request](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/66088), and [migration](https://gitlab.com/gitlab-org/gitlab/-/blob/41fbe34a4725a4e357a83fda66afb382828767b2/db/post_migrate/20210707210916_finalize_ci_stages_bigint_conversion.rb).
+
+#### Triggers that reference a swapped column
+
+A trigger can reference specific columns in two ways: an `UPDATE OF column_name` list, which
+limits when it fires, and a `WHEN` condition. PostgreSQL stores both as attribute numbers
+rather than column names, so renaming the columns would leave the trigger pointing at the old
+column.
+
+A trigger with a stale `UPDATE OF` list stops firing for application writes, and because
+[changes made by `BEFORE` triggers are not considered](https://www.postgresql.org/docs/17/sql-createtrigger.html),
+the conversion's own sync trigger does not compensate. A stale `WHEN` condition keeps firing
+but evaluates the wrong column.
+
+`swap_columns` handles both: it captures the definition of any trigger that depends on the
+columns being swapped, and recreates it afterwards so the trigger refers to the same column
+names as before. No extra step is needed in the migration.
+
+Four cases are worth knowing about:
+
+- On a partitioned table, replacing the trigger on the parent recurses into the clones on the
+  partitions, so they are updated along with it.
+- Constraint triggers cannot be replaced by PostgreSQL. If one depends on a column being
+  swapped, `swap_columns` raises before renaming anything, and the trigger has to be dropped
+  and recreated around the swap.
+- Recreating a trigger resets its firing mode, and the mode is not part of the definition that
+  gets replayed. `swap_columns` therefore captures the mode before the swap and reapplies it
+  afterwards, including a mode set on an individual partition.
+- `swap_columns` must run inside a transaction, so that the renames, the recreated triggers and
+  the restored firing modes all become visible at once. Transactional migrations and
+  `with_lock_retries` both satisfy this, and `swap_columns` raises when neither applies.
+
+To list the triggers that depend on a given table's columns before writing the migration:
+
+```sql
+SELECT t.tgname, a.attname
+FROM pg_trigger t
+JOIN pg_depend d ON d.classid = 'pg_trigger'::regclass AND d.objid = t.oid
+JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
+WHERE t.tgrelid = 'your_table'::regclass
+  AND NOT t.tgisinternal
+  AND d.refobjsubid > 0;
+```
+
+### Remove the trigger and old `integer` columns (release N + 2)
+
+Using post-deployment migration and the provided `cleanup_conversion_of_integer_to_bigint` helper,
+drop the database trigger and the old `integer` columns ([see an example](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/70351)).
+
+If a column-specific trigger is still attached to a `*_convert_to_bigint` column, this step fails
+with `cannot drop column ... because other objects depend on it`, because PostgreSQL records the
+dependency as a normal one rather than an automatic one. Do not resolve this with `CASCADE`, which
+drops the whole trigger instead of only its reference to the column. Recreate the trigger so it
+refers to the current column names, as described in
+[Triggers that reference a swapped column](#triggers-that-reference-a-swapped-column).
+
+### Remove ignore rules (release N + 3)
+
+In the next release after the columns were dropped, remove the ignore rules as we do not need them
+anymore ([see an example](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/71161)).
+
+## Database Views
+
+GitLab makes light usage of database views, as they might introduce additional complexity when handling
+migrations.
+
+There are currently two situations where views are used:
+
+- To [expose Postgres internal metrics](virtual_tables.md)
+- To expose limited read-only data for the Unified Backup CLI
+
+### Postgres internal metrics
+
+Postgres internal metrics are accessible via `Gitlab::Database::Postgres*` models (in `lib/gitlab/database`),
+and rely on the `Gitlab::Database::SharedModel` class.
+
+### Unified Backup CLI
+
+The Unified Backup CLI relies on a couple of views to retrieve a limited amount of information necessary
+to trigger `gitaly-backup` for the many repository types. The views are accessible via `Gitlab::Backup::Cli::Models::*`
+(in `gems/gitlab-backup-cli/lib/gitlab/backup/cli/models`) and rely on the `Gitlab::Backup::Cli::Models::Base`
+class to handle the connection.
+
+As the Unified Backup CLI code is in a separate gem, the main codebase also contains specs to ensure the required views
+return the information needed by the tool. This ensures a "contract" between the two codebases.
+
+In case any of the columns needed by this view needs to change, follow those steps:
+
+- To drop a column
+  - Coordinate with Durability team (responsible for the Unified Backup) and Gitaly (responsible for `gitaly-backup`)
+- To rename a column
+  - Follow [Renaming Columns](#renaming-columns) including the view specific considerations
+- To change a column type
+  - Follow [Changing column types](#changing-column-types) including the view specific considerations
+
+## Data migrations
+
+Data migrations can be tricky. The usual approach to migrate data is to take a 3
+step approach:
+
+1. Migrate the initial batch of data
+1. Deploy the application code
+1. Migrate any remaining data
+
+Usually this works, but not always. For example, if a field's format is to be
+changed from JSON to something else we have a bit of a problem. If we were to
+change existing data before deploying application code we would most likely run
+into errors. On the other hand, if we were to migrate after deploying the
+application code we could run into the same problems.
+
+If you merely need to correct some invalid data, then a post-deployment
+migration is usually enough. If you need to change the format of data (for example, from
+JSON to something else) it's typically best to add a new column for the new data
+format, and have the application use that. In such a case the procedure would
+be:
+
+1. Add a new column in the new format
+1. Copy over existing data to this new column
+1. Deploy the application code
+1. In a post-deployment migration, copy over any remaining data
+
+In general there is no one-size-fits-all solution, therefore it's best to
+discuss these kind of migrations in a merge request to make sure they are
+implemented in the best way possible.
+
+## Changing JSON/JSONB columns with schema validation
+
+JSON and JSONB columns validated with `JsonSchemaValidator` require a multi-step
+process to avoid failures during deployments when the JSON schema uses
+`additionalProperties: false`. Schemas that allow additional properties are not affected.
+
+This validation is triggered by model declarations like:
+
+```ruby
+validates :onboarding_status, json_schema: { filename: 'user_detail_onboarding_status' }
+```
+
+The `filename` maps to a JSON schema file in `app/validators/json_schemas/` or
+`ee/app/validators/json_schemas/`.
+
+During zero-downtime deployments, different application instances might temporarily run
+different code versions. If schema changes and code changes deploy together, instances
+running the older code version fail validation when processing data with unrecognized properties.
+
+### Adding a property
+
+Adding a new property requires two steps:
+
+1. Add the property to the JSON schema file in `app/validators/json_schemas/` or `ee/app/validators/json_schemas/`.
+   Do not add the new property to the [`required` list](https://json-schema.org/understanding-json-schema/reference/object#required)
+   in this step. Instances running the older code version do not populate the new property,
+   and marking it as required causes validation failures on those instances.
+1. After the schema change is fully deployed, add code that uses the new property.
+   If the property must be required, add it to the `required` list in this step or a later step,
+   after all instances populate it.
+
+### Removing a property
+
+Removing a property requires at least three steps:
+
+1. Remove all code that uses the property.
+1. After the code change is fully deployed, remove the property values from existing database records.
+1. After the data migration is complete, remove the property from the JSON schema file.
+
+### Deployment timing
+
+For properties only used in GitLab.com deployments, wait for each change to fully
+deploy before merging the next step. You do not need to wait for a new release.
+
+For all other properties, each step must be in a separate release to ensure
+customers following zero-downtime upgrade procedures do not encounter validation failures.

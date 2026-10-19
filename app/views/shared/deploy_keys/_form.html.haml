@@ -1,0 +1,42 @@
+- form = local_assigns.fetch(:form)
+- deploy_key = local_assigns.fetch(:deploy_key)
+- deploy_keys_project = deploy_key.deploy_keys_project_for(@project)
+
+= form_errors(deploy_key)
+
+.form-group
+  = form.label :title
+  = form.text_field :title, class: 'form-control gl-form-input', data: { testid: 'deploy-key-title-field' }, readonly: ('readonly' unless can?(current_user, :update_deploy_key_title, deploy_key))
+
+- if deploy_key.new_record?
+  .form-group
+    = form.label :key
+
+    %p.gl-text-subtle
+      - link_start = "<a href='#{help_page_path('user/ssh.md')}' target='_blank' rel='noreferrer noopener'>".html_safe
+      - link_end = '</a>'
+      = _('Paste a public key here. %{link_start}How do I generate it?%{link_end}').html_safe % { link_start: link_start, link_end: link_end.html_safe }
+    = form.text_area :key, class: 'form-control gl-form-input thin_area', rows: 5, data: { testid: 'deploy-key-field' }
+
+  .form-group
+    = form.label :expires_at, _('Expiration date (optional)'), class: 'label-bold'
+    = form.gitlab_ui_datepicker :expires_at
+- else
+  - if deploy_key.fingerprint_sha256.present?
+    .form-group
+      = form.label :fingerprint, _('Fingerprint (SHA256)')
+      = form.text_field :fingerprint_sha256, class: 'form-control gl-form-input', readonly: 'readonly'
+  - if deploy_key.fingerprint.present?
+    .form-group
+      = form.label :fingerprint, _('Fingerprint (MD5)')
+      = form.text_field :fingerprint, class: 'form-control gl-form-input', readonly: 'readonly'
+  - if deploy_key.expires_at.present?
+    .form-group
+      = form.label :expires_at, _('Expiration date'), class: 'label-bold'
+      = form.gitlab_ui_datepicker :expires_at, class: 'form-control gl-form-input', readonly: 'readonly'
+
+- if deploy_keys_project.present?
+  = form.fields_for :deploy_keys_projects, deploy_keys_project do |deploy_keys_project_form|
+    .form-group
+      = deploy_keys_project_form.gitlab_ui_checkbox_component :can_push, _('Grant write permissions to this key'),
+        help_text: _('Allow this key to push to this repository')

@@ -1,0 +1,213 @@
+---
+stage: Verify
+group: Runner Core
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Auto DevOps
+description: Automated DevOps, language detection, deployment, and customization.
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Auto DevOps turns your code into production-ready applications without the usual configuration overhead.
+The entire DevOps lifecycle is pre-configured using industry best practices. Start with the defaults
+to ship quickly, then customize when you need more control. No complex configuration files or deep
+DevOps expertise is required.
+
+With Auto DevOps you get:
+
+- CI/CD pipelines that automatically detect your language and framework
+- Built-in security scanning to find vulnerabilities before they reach production
+- Code quality and performance testing on every commit
+- Ready-to-use review apps for previewing changes in a live environment
+- Quick deployments to Kubernetes clusters
+- Progressive deployment strategies that reduce risk and downtime
+
+<i class="fa-youtube-play" aria-hidden="true"></i>
+For an introduction to Auto DevOps, watch [Auto DevOps](https://youtu.be/0Tc0YYBxqi4).
+<!-- Video published on 2018-06-22 -->
+
+## Auto DevOps features
+
+Auto DevOps supports development during each of the [DevOps stages](stages.md).
+
+| Stage  | Auto DevOps feature |
+|--------|---------------------|
+| Build  | [Auto build](stages.md#auto-build) |
+| Build  | [Auto dependency scanning](stages.md#auto-dependency-scanning) |
+| Test   | [Auto test](stages.md#auto-test) |
+| Test   | [Auto browser performance testing](stages.md#auto-browser-performance-testing) |
+| Test   | [Auto code intelligence](stages.md#auto-code-intelligence) |
+| Test   | [Auto code quality](stages.md#auto-code-quality) |
+| Test   | [Auto container scanning](stages.md#auto-container-scanning) |
+| Deploy | [Auto review apps](stages.md#auto-review-apps) |
+| Deploy | [Auto deploy](stages.md#auto-deploy) |
+| Secure | [Auto dynamic application security testing (DAST)](stages.md#auto-dast) |
+| Secure | [Auto static application security testing (SAST)](stages.md#auto-sast) |
+| Secure | [Auto secret detection](stages.md#auto-secret-detection) |
+
+### Comparison to application platforms and PaaS
+
+Auto DevOps provides features often included in an application
+platform or in a Platform as a Service (PaaS).
+
+Inspired by [Heroku](https://www.heroku.com/), Auto DevOps goes beyond it
+in multiple ways:
+
+- Auto DevOps works with any Kubernetes cluster.
+- There is no additional cost.
+- You can use a cluster hosted by yourself or on any public cloud.
+- Auto DevOps offers an incremental graduation path. If you need to [customize](customize.md), start by changing the templates and evolve from there.
+
+## Get started with Auto DevOps
+
+To get started, you only need to [enable Auto DevOps](#enable-or-disable-auto-devops).
+This is enough to run an Auto DevOps pipeline to build and
+test your application.
+
+If you want to build, test, and deploy your app:
+
+1. View the [requirements for deployment](requirements.md).
+1. [Enable Auto DevOps](#enable-or-disable-auto-devops).
+1. [Deploy your app to a cloud provider](#deploy-your-app-to-a-cloud-provider).
+
+### Enable or disable Auto DevOps
+
+Auto DevOps runs pipelines automatically only if a [`Dockerfile` or matching buildpack](stages.md#auto-build) exists.
+
+You can enable or disable Auto DevOps for a project or an entire group. Instance administrators
+can also [set Auto DevOps as the default](../../administration/settings/continuous_integration.md#configure-auto-devops-for-all-projects)
+for all projects in an instance.
+
+Before enabling Auto DevOps, consider [preparing it for deployment](requirements.md).
+If you don't, Auto DevOps can build and test your app, but cannot deploy it.
+
+#### Per project
+
+To use Auto DevOps for individual projects, you can enable it on a
+project-by-project basis. If you intend to use it for more projects,
+you can enable it for a [group](#per-group) or an
+[instance](../../administration/settings/continuous_integration.md#configure-auto-devops-for-all-projects).
+This can save you the time of enabling it in each project.
+
+Prerequisites:
+
+- You must have the Maintainer or Owner role for the project.
+- Ensure your project does not have a `.gitlab-ci.yml` present. If present, your CI/CD configuration takes
+  precedence over the Auto DevOps pipeline.
+
+To enable Auto DevOps for a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **Auto DevOps**.
+1. Select the **Default to Auto DevOps pipeline** checkbox.
+1. Optional but recommended. Add the [base domain](requirements.md#auto-devops-base-domain).
+1. Optional but recommended. Choose the [deployment strategy](requirements.md#auto-devops-deployment-strategy).
+1. Select **Save changes**.
+
+GitLab triggers the Auto DevOps pipeline on the default branch.
+
+To verify that Auto DevOps is working:
+
+1. In the left sidebar, select **Build** > **Pipelines**.
+1. Find the pipeline triggered on the default branch.
+   It should be running or recently completed.
+1. Select the pipeline to view its jobs and stages.
+
+The pipeline includes jobs for the Auto DevOps stages like `build`, `test`, `code_quality`, and `sast`
+configured for your project.
+
+If the pipeline does not run or is missing these jobs:
+
+- Ensure your project meets the [Auto DevOps requirements](requirements.md).
+- Ensure **Default to Auto DevOps pipeline** is selected in **Settings** > **CI/CD** > **Auto DevOps**.
+
+To disable it, follow the same process and clear the
+**Default to Auto DevOps pipeline** checkbox.
+
+#### Per group
+
+When you enable Auto DevOps for a group, the subgroups and
+projects in that group inherit the configuration. You can save time by
+enabling Auto DevOps for a group instead of enabling it for each
+subgroup or project.
+
+When enabled for a group, you can still disable Auto DevOps
+for the subgroups and projects where you don't want to use it.
+
+Prerequisites:
+
+- You must have the Owner role for the group.
+
+To enable Auto DevOps for a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **Auto DevOps**.
+1. Select the **Default to Auto DevOps pipeline** checkbox.
+1. Select **Save changes**.
+
+To disable Auto DevOps for a group, follow the same process and
+clear the **Default to Auto DevOps pipeline** checkbox.
+
+After enabling Auto DevOps for a group, you can trigger the
+Auto DevOps pipeline for any project that belongs to that group:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. Make sure the project doesn't contain a `.gitlab-ci.yml` file.
+1. Select **Build** > **Pipelines**.
+1. To trigger the Auto DevOps pipeline, select **New pipeline**.
+
+### Deploy your app to a cloud provider
+
+- [Use Auto DevOps to deploy to a Kubernetes cluster on Google Kubernetes Engine (GKE)](cloud_deployments/auto_devops_with_gke.md)
+- [Use Auto DevOps to deploy to a Kubernetes cluster on Amazon Elastic Kubernetes Service (EKS)](cloud_deployments/auto_devops_with_eks.md)
+- [Use Auto DevOps to deploy to EC2](cloud_deployments/auto_devops_with_ec2.md)
+- [Use Auto DevOps to deploy to ECS](cloud_deployments/auto_devops_with_ecs.md)
+
+## Upgrade Auto DevOps dependencies when updating GitLab
+
+When updating GitLab, you might need to upgrade Auto DevOps dependencies to
+match your new GitLab version:
+
+- [Upgrading Auto DevOps resources](upgrading_auto_deploy_dependencies.md):
+  - Auto DevOps template.
+  - Auto Deploy template.
+  - Auto Deploy image.
+  - Helm.
+  - Kubernetes.
+  - Environment variables.
+- [Upgrading PostgreSQL](upgrading_postgresql.md).
+
+## Private registry support
+
+There is no guarantee that you can use a private container registry with Auto DevOps.
+
+Instead, use the [GitLab container registry](../../user/packages/container_registry/_index.md) with Auto DevOps to
+simplify configuration and prevent any unforeseen issues.
+
+## Install applications behind a proxy
+
+The GitLab integration with Helm does not support installing applications when
+behind a proxy.
+
+If you want to do so, you must inject proxy settings into the
+installation pods at runtime.
+
+## Related topics
+
+- [Continuous methodologies](../../ci/_index.md)
+- [Docker](https://docs.docker.com)
+- [GitLab Runner](https://docs.gitlab.com/runner/)
+- [Helm](https://helm.sh/docs/)
+- [Kubernetes](https://kubernetes.io/docs/home/)
+- [Prometheus](https://prometheus.io/docs/introduction/overview/)
+
+## Troubleshooting
+
+See [troubleshooting Auto DevOps](troubleshooting.md).

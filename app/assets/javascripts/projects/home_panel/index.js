@@ -1,0 +1,105 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+
+import HomePanelApp from './components/app.vue';
+
+Vue.use(VueApollo);
+
+const apolloProvider = new VueApollo({
+  defaultClient: createDefaultClient(),
+});
+
+const initHomePanel = () => {
+  const container = document.getElementById('js-home-panel');
+
+  if (container === null) {
+    return null;
+  }
+
+  const {
+    // HomePanel component
+    adminPath,
+    canReadProject,
+    isProjectEmpty,
+    projectId,
+    projectFullPath,
+
+    // Dropdown component
+    canRequestAccess,
+    canWithdrawAccessRequest,
+    requestAccessPath,
+    withdrawAccessRequestPath,
+    dashboardPath,
+
+    // Fork component
+    canForkProject,
+    canReadCode,
+    forksCount,
+    newForkUrl,
+    projectForksUrl,
+    userForkUrl,
+
+    // Notification component
+    emailsDisabled,
+    notificationDropdownItems,
+    notificationHelpPagePath,
+    notificationLevel,
+
+    // Star component
+    signInPath,
+    starCount,
+    starred,
+    starrersPath,
+  } = container.dataset;
+
+  return initVueApp({
+    apolloProvider,
+    el: container,
+    name: 'HomePanelRoot',
+    provide: {
+      // HomePanel component
+      adminPath,
+      canReadProject: parseBoolean(canReadProject),
+      isProjectEmpty: parseBoolean(isProjectEmpty),
+      projectId: parseInt(projectId, 10),
+      projectFullPath,
+
+      // Dropdown component
+      triggerDeleteLocation: 'header',
+      triggerRestoreLocation: 'header',
+
+      // Fork component
+      canForkProject: parseBoolean(canForkProject),
+      canReadCode: parseBoolean(canReadCode),
+      forksCount: parseInt(forksCount, 10) || 0,
+      newForkUrl,
+      projectForksUrl,
+      userForkUrl,
+
+      // Notification component
+      dropdownItems: JSON.parse(notificationDropdownItems || null),
+      emailsDisabled: parseBoolean(emailsDisabled),
+      helpPagePath: notificationHelpPagePath,
+      initialNotificationLevel: notificationLevel,
+
+      // Star component
+      signInPath,
+      starCount: parseInt(starCount, 10) || 0,
+      starred: parseBoolean(starred),
+      starrersPath,
+    },
+    component: HomePanelApp,
+    props: {
+      canRequestAccess: parseBoolean(canRequestAccess),
+      canWithdrawAccessRequest: parseBoolean(canWithdrawAccessRequest),
+      requestAccessPath,
+      withdrawAccessRequestPath,
+      dashboardPath,
+    },
+  });
+};
+
+export { initHomePanel };

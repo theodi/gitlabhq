@@ -1,0 +1,537 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Route do
+  let(:group) { create(:group, path: 'git_lab', name: 'git_lab') }
+  let(:route) { group.route }
+
+  it_behaves_like 'cells claimable model',
+    subject_type: Cells::Claimable::CLAIMS_SUBJECT_TYPE::NAMESPACE,
+    subject_key: :namespace_id,
+    source_type: Cells::Claimable::CLAIMS_SOURCE_TYPE::RAILS_TABLE_ROUTES,
+    claiming_attributes: [:path]
+
+  describe '.cells_claims_scope' do
+    let_it_be(:top_level_route) { create(:group, path: 'top-level').route }
+    let_it_be(:sub_route) { create(:group, parent: create(:group), path: 'child').route }
+
+    it 'returns only top-level routes without a slash in the path' do
+      scope = described_class.cells_claims_scope
+
+      expect(scope).to include(top_level_route)
+      expect(scope).not_to include(sub_route)
+    end
+  end
+
+  describe 'relationships' do
+    it { is_expected.to belong_to(:source) }
+    it { is_expected.to belong_to(:namespace) }
+  end
+
+  describe 'validations' do
+    before do
+      expect(route).to be_persisted
+    end
+
+    it { is_expected.to validate_presence_of(:source) }
+    it { is_expected.to validate_presence_of(:path) }
+    it { is_expected.to validate_uniqueness_of(:path).case_insensitive }
+  end
+
+  describe 'callbacks' do
+    context 'after update' do
+      it 'calls #create_redirect_for_old_path' do
+        expect(route).to receive(:create_redirect_for_old_path)
+        route.update!(path: 'foo')
+      end
+
+      it 'calls #delete_conflicting_redirects' do
+        expect(route).to receive(:delete_conflicting_redirects)
+        route.update!(path: 'foo')
+      end
+    end
+
+    context 'after create' do
+      it 'calls #delete_conflicting_redirects' do
+        route.destroy!
+        new_route = described_class.new(source: group, path: group.path, namespace: group)
+        expect(new_route).to receive(:delete_conflicting_redirects)
+        new_route.save!
+      end
+    end
+  end
+
+  describe '.inside_path' do
+    let!(:nested_group) { create(:group, path: 'test', name: 'test', parent: group) }
+    let!(:deep_nested_group) { create(:group, path: 'foo', name: 'foo', parent: nested_group) }
+    let!(:another_group) { create(:group, path: 'other') }
+    let!(:similar_group) { create(:group, path: 'gitllab') }
+    let!(:another_group_nested) { create(:group, path: 'another', name: 'another', parent: similar_group) }
+
+    it 'returns correct routes' do
+      expect(described_class.inside_path('git_lab')).to match_array([nested_group.route, deep_nested_group.route])
+    end
+  end
+
+  describe '.for_routable_type' do
+    let_it_be(:group) { create(:group, path: 'git_lab', name: 'git_lab') }
+    let_it_be(:nested_group) { create(:group, path: 'foo', name: 'foo', parent: group) }
+    let_it_be(:project) { create(:project, path: 'other-project') }
+
+    it 'returns correct routes' do
+      expect(described_class.for_routable_type(Project.name)).to match_array([project.route])
+    end
+  end
+
+  describe '.by_paths' do
+    let_it_be(:group) { create(:group, path: 'git_lab', name: 'git_lab') }
+    let_it_be(:nested_group) { create(:group, path: 'foo', name: 'foo', parent: group) }
+    let_it_be(:project) { create(:project, path: 'other-project', namespace: group) }
+
+    it 'returns correct routes' do
+      expect(described_class.by_paths(%w[git_lab/foo git_lab/other-project])).to match_array(
+        [nested_group.route, project.route]
+      )
+    end
+
+    context 'with all mismatched paths' do
+      it 'returns no routes' do
+        expect(described_class.by_paths(%w[foo other-project])).to be_empty
+      end
+    end
+
+    context 'with some mismatched paths' do
+      it 'returns no routes' do
+        expect(described_class.by_paths(%w[foo git_lab/other-project])).to match_array([project.route])
+      end
+    end
+  end
+
+  describe '.root_namespace_id_by_path', feature_category: :groups_and_projects do
+    let_it_be(:root_group) { create(:group, path: 'git_lab', name: 'git_lab') }
+    let_it_be(:nested_group) { create(:group, path: 'foo', name: 'foo', parent: root_group) }
+    let_it_be(:project) { create(:project, path: 'other-project', namespace: nested_group) }
+
+    it 'folds a group, a subgroup and a project route onto the root namespace', :aggregate_failures do
+      expect(described_class.root_namespace_id_by_path('git_lab')).to eq(root_group.id)
+      expect(described_class.root_namespace_id_by_path('git_lab/foo')).to eq(root_group.id)
+      expect(described_class.root_namespace_id_by_path('git_lab/foo/other-project')).to eq(root_group.id)
+    end
+
+    it 'matches a path whose case differs from the stored route' do
+      expect(described_class.root_namespace_id_by_path('GIT_LAB/FOO')).to eq(root_group.id)
+    end
+
+    it 'returns nothing for a path with no route' do
+      expect(described_class.root_namespace_id_by_path('no/such/route')).to be_nil
+    end
+  end
+
+  describe '.namespace_ids_matching', feature_category: :knowledge_graph do
+    let_it_be(:root_group) { create(:group, path: 'git_lab', name: 'Git Lab') }
+    let_it_be(:nested_group) { create(:group, path: 'foo', name: 'Foo', parent: root_group) }
+    let_it_be(:other_group) { create(:group, path: 'git_lab_other', name: 'Git Lab other') }
+    let_it_be(:project) { create(:project, path: 'git_lab_project', namespace: root_group) }
+
+    def matching_ids(query, within:)
+      Namespace.id_in(described_class.namespace_ids_matching(query, within: within)).pluck(:id)
+    end
+
+    it 'matches the full path and full name, so a subgroup matches by its parent', :aggregate_failures do
+      expect(matching_ids('git_lab', within: [nested_group.id])).to contain_exactly(nested_group.id)
+      expect(matching_ids('Git Lab', within: [nested_group.id])).to contain_exactly(nested_group.id)
+    end
+
+    it 'matches only the given namespaces' do
+      expect(matching_ids('git_lab', within: [root_group.id])).to contain_exactly(root_group.id)
+    end
+
+    it 'leaves out project routes' do
+      expect(matching_ids('git_lab_project', within: [project.id])).to be_empty
+    end
+  end
+
+  describe '#rename_descendants' do
+    let!(:nested_group) { create(:group, path: 'test', name: 'test', parent: group) }
+    let!(:deep_nested_group) { create(:group, path: 'foo', name: 'foo', parent: nested_group) }
+    let!(:similar_group) { create(:group, path: 'gitlab-org', name: 'gitlab-org') }
+    let!(:another_group) { create(:group, path: 'gittlab', name: 'gitllab') }
+    let!(:another_group_nested) { create(:group, path: 'git_lab', name: 'git_lab', parent: another_group) }
+
+    context 'path update' do
+      context 'when route name is set' do
+        before do
+          route.update!(path: 'bar')
+        end
+
+        it 'updates children routes with new path' do
+          expect(described_class.exists?(path: 'bar')).to be_truthy
+          expect(described_class.exists?(path: 'bar/test')).to be_truthy
+          expect(described_class.exists?(path: 'bar/test/foo')).to be_truthy
+          expect(described_class.exists?(path: 'gitlab-org')).to be_truthy
+          expect(described_class.exists?(path: 'gittlab')).to be_truthy
+          expect(described_class.exists?(path: 'gittlab/git_lab')).to be_truthy
+        end
+      end
+
+      context 'when route name is nil' do
+        before do
+          route.update_column(:name, nil)
+        end
+
+        it "does not fail" do
+          expect(route.update(path: 'bar')).to be_truthy
+        end
+      end
+
+      context 'when conflicting redirects exist' do
+        let(:route) { create(:project).route }
+        let!(:conflicting_redirect1) { route.create_redirect('bar/test') }
+        let!(:conflicting_redirect2) { route.create_redirect('bar/test/foo') }
+        let!(:conflicting_redirect3) { route.create_redirect('gitlab-org') }
+
+        it 'deletes the conflicting redirects' do
+          route.update!(path: 'bar')
+
+          expect(RedirectRoute.exists?(path: 'bar/test')).to be_falsey
+          expect(RedirectRoute.exists?(path: 'bar/test/foo')).to be_falsey
+          expect(RedirectRoute.exists?(path: 'gitlab-org')).to be_truthy
+        end
+      end
+    end
+
+    context 'name update' do
+      it 'updates children routes with new path' do
+        route.update!(name: 'bar')
+
+        expect(described_class.exists?(name: 'bar')).to be_truthy
+        expect(described_class.exists?(name: 'bar / test')).to be_truthy
+        expect(described_class.exists?(name: 'bar / test / foo')).to be_truthy
+        expect(described_class.exists?(name: 'gitlab-org')).to be_truthy
+      end
+
+      it 'handles a rename from nil' do
+        # Note: using `update_columns` to skip all validation and callbacks
+        route.update_columns(name: nil)
+
+        expect { route.update!(name: 'bar') }
+          .to change { route.name }.from(nil).to('bar')
+      end
+    end
+  end
+
+  describe '#create_redirect_for_old_path' do
+    context 'if the path changed' do
+      it 'creates a RedirectRoute for the old path' do
+        redirect_scope = route.source.redirect_routes.where(path: 'git_lab')
+        expect(redirect_scope.exists?).to be_falsey
+        route.path = 'new-path'
+        route.save!
+        expect(redirect_scope.exists?).to be_truthy
+      end
+    end
+  end
+
+  describe '#create_redirect' do
+    it 'creates a RedirectRoute with the same source' do
+      redirect_route = route.create_redirect('foo')
+      expect(redirect_route).to be_a(RedirectRoute)
+      expect(redirect_route).to be_persisted
+      expect(redirect_route.source).to eq(route.source)
+      expect(redirect_route.path).to eq('foo')
+    end
+
+    context 'when the source is a Project' do
+      it 'creates a RedirectRoute' do
+        project = create(:project)
+        route = project.route
+        redirect_route = route.create_redirect('foo')
+        expect(redirect_route).not_to be_nil
+      end
+    end
+
+    context 'when the source is not a project' do
+      it 'creates a RedirectRoute' do
+        redirect_route = route.create_redirect('foo')
+        expect(redirect_route).not_to be_nil
+      end
+    end
+  end
+
+  describe '#delete_conflicting_redirects' do
+    let(:route) { create(:project).route }
+
+    it 'deletes the redirect' do
+      route.create_redirect("#{route.path}/foo")
+
+      expect do
+        route.delete_conflicting_redirects
+      end.to change { RedirectRoute.count }.by(-1)
+    end
+
+    context 'when a redirect route with the same path exists' do
+      context 'when the redirect route has matching case' do
+        let(:route) { create(:project).route }
+        let!(:redirect1) { route.create_redirect(route.path) }
+
+        it 'deletes the redirect' do
+          expect do
+            route.delete_conflicting_redirects
+          end.to change { RedirectRoute.count }.by(-1)
+        end
+
+        context 'when redirect routes with paths descending from the route path exists' do
+          let!(:redirect2) { route.create_redirect("#{route.path}/foo") }
+          let!(:redirect3) { route.create_redirect("#{route.path}/foo/bar") }
+          let!(:redirect4) { route.create_redirect("#{route.path}/baz/quz") }
+          let!(:other_redirect) { route.create_redirect("other") }
+
+          it 'deletes all redirects with paths that descend from the route path' do
+            expect do
+              route.delete_conflicting_redirects
+            end.to change { RedirectRoute.count }.by(-4)
+          end
+        end
+      end
+
+      context 'when the redirect route is differently cased' do
+        let(:route) { create(:project).route }
+        let!(:redirect1) { route.create_redirect(route.path.upcase) }
+
+        it 'deletes the redirect' do
+          expect do
+            route.delete_conflicting_redirects
+          end.to change { RedirectRoute.count }.by(-1)
+        end
+      end
+    end
+  end
+
+  describe '#delete_conflicting_redirects cells claims' do
+    let(:route) { create(:project).route }
+
+    context 'when cells claims are enabled for RedirectRoute' do
+      before do
+        stub_config_cell(enabled: true)
+        # Only the bulk claims path is under test here, so keep the save-time
+        # claim callbacks from reaching Topology Service.
+        allow(Cells::TransactionRecord).to receive(:current_transaction).and_return(nil)
+      end
+
+      it 'collects destroy metadata from conflicting redirects' do
+        redirect = route.create_redirect("#{route.path}/foo")
+
+        expect(redirect).to respond_to(:build_destroy_metadata_for_worker)
+
+        metadata = redirect.build_destroy_metadata_for_worker(:path)
+        expect(metadata).to be_a(Hash)
+        expect(metadata).to include(
+          'bucket_type', 'bucket_value', 'subject_type', 'subject_id', 'source_type', 'primary_key'
+        )
+      end
+
+      it 'queues BulkClaimsWorker in after_commit when conflicting redirects exist' do
+        redirect = route.create_redirect("#{route.path}/foo")
+        metadata = redirect.build_destroy_metadata_for_worker(:path)
+
+        expect(metadata).to be_present
+
+        # Verify the method collects metadata and passes it to run_after_commit
+        expect(route).to receive(:run_after_commit).and_yield
+
+        expect(Cells::BulkClaimsWorker).to receive(:perform_async).with(
+          'RedirectRoute', 'path', hash_including('destroy_metadata' => [metadata])
+        )
+
+        route.delete_conflicting_redirects
+      end
+
+      it 'deletes the redirect routes' do
+        route.create_redirect("#{route.path}/foo")
+
+        expect { route.delete_conflicting_redirects }.to change { RedirectRoute.count }.by(-1)
+      end
+    end
+
+    context 'when cells claims are disabled' do
+      before do
+        stub_config_cell(enabled: false)
+      end
+
+      it 'does not schedule BulkClaimsWorker' do
+        route.create_redirect("#{route.path}/foo")
+
+        expect(Cells::BulkClaimsWorker).not_to receive(:perform_async)
+
+        route.delete_conflicting_redirects
+      end
+    end
+  end
+
+  describe '#conflicting_redirects' do
+    let(:route) { create(:project).route }
+
+    it 'returns an ActiveRecord::Relation' do
+      expect(route.conflicting_redirects).to be_an(ActiveRecord::Relation)
+    end
+
+    it 'returns the redirect routes' do
+      redirect1 = route.create_redirect("#{route.path}/foo")
+      redirect2 = route.create_redirect("#{route.path}/foo/bar")
+      redirect3 = route.create_redirect("#{route.path}/baz/quz")
+
+      expect(route.conflicting_redirects).to match_array([redirect1, redirect2, redirect3])
+    end
+
+    context 'when a redirect route with the same path exists' do
+      let(:route) { create(:project).route }
+
+      context 'when the redirect route has matching case' do
+        let!(:redirect1) { route.create_redirect(route.path) }
+
+        it 'returns the redirect route' do
+          expect(route.conflicting_redirects).to match_array([redirect1])
+        end
+
+        context 'when redirect routes with paths descending from the route path exists' do
+          let!(:redirect2) { route.create_redirect("#{route.path}/foo") }
+          let!(:redirect3) { route.create_redirect("#{route.path}/foo/bar") }
+          let!(:redirect4) { route.create_redirect("#{route.path}/baz/quz") }
+          let!(:other_redirect) { route.create_redirect("other") }
+
+          it 'returns the redirect routes' do
+            expect(route.conflicting_redirects).to match_array([redirect1, redirect2, redirect3, redirect4])
+          end
+        end
+      end
+
+      context 'when the redirect route is differently cased' do
+        let!(:redirect1) { route.create_redirect(route.path.upcase) }
+
+        it 'returns the redirect route' do
+          expect(route.conflicting_redirects).to match_array([redirect1])
+        end
+      end
+    end
+  end
+
+  describe 'conflicting routes validation' do
+    context 'when there is a conflicting route' do
+      let_it_be(:conflicting_group) { create(:group, path: 'foo') }
+
+      before do
+        route.path = conflicting_group.route.path
+      end
+
+      context 'when deleting the conflicting route' do
+        let_it_be(:offending_route) { conflicting_group.route }
+
+        it 'does not delete the original route' do
+          # before deleting the route, check its there
+          expect(described_class.where(path: offending_route.path).count).to eq(1)
+
+          expect do
+            Group.delete(conflicting_group) # delete group with conflicting route
+          end.to change { described_class.count }.by(-1)
+
+          # check the conflicting route is gone
+          expect(described_class.where(path: offending_route.path).count).to eq(0)
+          expect(route.path).to eq(offending_route.path)
+          expect(route.valid?).to be_truthy
+        end
+      end
+
+      it 'fails validation' do
+        expect(route.valid?).to be_falsey
+      end
+    end
+
+    context 'when there are no conflicting routes' do
+      it 'passes validation' do
+        expect(route.valid?).to be_truthy
+      end
+    end
+  end
+
+  describe 'project path burn hooks', feature_category: :system_access do
+    describe 'before_destroy' do
+      context 'for a Project route' do
+        let(:project) { create(:project) }
+
+        it 'writes a tombstone for the project path' do
+          expect { project.destroy! }
+            .to change { Authn::BurnedProjectRoute.for_path(project.full_path).count }.by(1)
+
+          row = Authn::BurnedProjectRoute.for_path(project.full_path).order(:id).first
+          expect(row).to have_attributes(
+            project_id: project.id,
+            organization_id: project.organization_id
+          )
+        end
+
+        # Regression: project teardown may detach the polymorphic association
+        # in memory (nulling source_id) before the route's own before_destroy
+        # fires. The burn hook must still capture the original project id
+        # from the persisted column so the tombstone is not orphaned.
+        it 'captures source_id from the database even when the in-memory attribute is nil' do
+          route = project.route
+          route.assign_attributes(source_id: nil)
+
+          expect { route.destroy! }
+            .to change { Authn::BurnedProjectRoute.for_path(project.full_path).count }.by(1)
+
+          row = Authn::BurnedProjectRoute.for_path(project.full_path).order(:id).first
+          expect(row.project_id).to eq(project.id)
+        end
+      end
+
+      context 'for a Group route' do
+        let(:group) { create(:group) }
+
+        it 'does not write a tombstone (project scope only)' do
+          expect { group.destroy! }
+            .not_to change { Authn::BurnedProjectRoute.count }
+        end
+      end
+    end
+
+    describe 'after_update when path changes' do
+      context 'for a Project route' do
+        let(:project) { create(:project, path: 'original-name') }
+
+        it 'writes a tombstone for the old path' do
+          old_full_path = project.full_path
+
+          project.update!(path: 'new-name')
+
+          expect(Authn::BurnedProjectRoute.for_path(old_full_path)).to exist
+        end
+
+        it 'does not write a tombstone for the new path' do
+          project.update!(path: 'new-name')
+
+          expect(Authn::BurnedProjectRoute.for_path(project.full_path)).not_to exist
+        end
+      end
+
+      context 'for a Group route' do
+        let(:group) { create(:group, path: 'original-group') }
+
+        it 'does not write a tombstone (project scope only)' do
+          expect { group.update!(path: 'new-group') }
+            .not_to change { Authn::BurnedProjectRoute.count }
+        end
+      end
+    end
+
+    describe 'after_update when only the name changes' do
+      let(:project) { create(:project) }
+
+      it 'does not write a tombstone' do
+        expect { project.update!(name: 'Renamed Project') }
+          .not_to change { Authn::BurnedProjectRoute.count }
+      end
+    end
+  end
+end

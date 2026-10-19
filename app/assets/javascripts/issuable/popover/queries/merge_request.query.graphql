@@ -1,0 +1,20 @@
+query mergeRequest($projectPath: ID!, $iid: String!) {
+  project(fullPath: $projectPath) {
+    id
+    mergeRequest(iid: $iid) {
+      id
+      title
+      titleHtml
+      createdAt
+      state
+      headPipeline {
+        id
+        detailedStatus {
+          id
+          icon
+          group
+        }
+      }
+    }
+  }
+}

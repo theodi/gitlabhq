@@ -1,0 +1,31 @@
+@import 'mixins_and_variables_and_functions';
+
+.file-tree-container {
+  width: 100%;
+
+  @include gl-container-width-up(md, panel) {
+    width: 300px;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.file-tree-container > div.gl-overflow-y-auto {
+  max-height: 220px;
+
+  @include gl-container-width-up(md, panel) {
+    max-height: 700px;
+  }
+}
+
+.file-tree-includes-link:hover > svg {
+  display: block;
+  top: 2px;
+}
+
+.job-assistant-drawer {
+  width: 100%;
+
+  @include gl-container-width-up(sm, panel) {
+    width: 560px;
+  }
+}

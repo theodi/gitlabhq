@@ -1,0 +1,50 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Pumble
+description: "Configure GitLab to send notifications to a Pumble channel."
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can configure GitLab to send notifications to a Pumble channel:
+
+1. Create a webhook for the channel.
+1. Add the webhook to GitLab.
+
+## Create a webhook for your Pumble channel
+
+1. Follow the steps in [Incoming Webhooks for Pumble](https://pumble.com/help/integrations/add-pumble-apps/incoming-webhooks-for-pumble/) in the Pumble documentation.
+1. Copy the webhook URL.
+
+## Configure settings in GitLab
+
+Prerequisites:
+
+- Administrator access to turn on the integration for an instance.
+- The Owner role to turn on the integration for a group.
+- The Maintainer or Owner role to turn on the integration for a project.
+
+After you have a webhook URL for your Pumble channel, configure GitLab to send
+notifications:
+
+1. To turn on the integration for your group or project:
+   1. In your group or project, in the left sidebar, select **Settings** > **Integrations**.
+1. To turn on the integration for your instance:
+   1. In the upper-right corner, select **Admin**.
+   1. In the left sidebar, select **Settings** > **Integrations**.
+1. Select the **Pumble** integration.
+1. Under **Enable integration**, select the **Active** checkbox.
+1. Select the checkboxes corresponding to the GitLab events you want to receive in Pumble.
+1. Paste the **Webhook** URL for the Pumble channel.
+1. Configure the remaining options.
+1. Optional. Select **Test settings**.
+1. Select **Save changes**.
+
+The Pumble channel begins to receive all applicable GitLab events.

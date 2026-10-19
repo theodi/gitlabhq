@@ -1,0 +1,338 @@
+---
+stage: Package
+group: Package Registry
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Maven virtual registry
+description: Use the Maven virtual registry to configure and manage multiple private and public upstream registries.
+---
+
+{{< details >}}
+
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+- Status: Beta
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/14137) in GitLab 18.0 [with a feature flag](../../../../administration/feature_flags/_index.md) named `virtual_registry_maven`. Disabled by default.
+- Feature flag [renamed](https://gitlab.com/gitlab-org/gitlab/-/issues/540276) to `maven_virtual_registry` in GitLab 18.1.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/issues/540276) from experiment to beta in GitLab 18.1.
+- [Enabled on GitLab.com, GitLab Self-Managed, and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/197432) in GitLab 18.2.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+> This feature is available in [beta](../../../../policy/development_stages_support.md#beta).
+> Review the documentation carefully before you use this feature.
+
+The Maven virtual registry uses a single, well-known URL to manage and distribute
+packages from multiple external registries in GitLab.
+
+Use the Maven virtual registry to:
+
+- Create a virtual registry.
+- Connect the virtual registry to public and private upstream registries.
+- Configure Maven clients to pull packages from configured upstreams.
+- Manage cache entries for available upstreams.
+
+This approach provides better package performance over time,
+and makes it easier to manage your Maven packages.
+
+For general information about managing virtual registries and upstream registries, see
+[Virtual registry](../_index.md).
+
+## Prerequisites
+
+Before you can use the Maven virtual registry:
+
+- Review the [prerequisites](../_index.md#prerequisites) to use the virtual registry.
+- Configure authentication to the virtual registry. For more information, see [Authenticate to the virtual registry](../_index.md#authenticate-to-the-virtual-registry).
+- On GitLab Self-Managed: Allow outbound requests to the local network. For more information, see [allow requests to the local network](../../../../security/webhooks.md#allow-requests-to-the-local-network-from-webhooks-and-integrations).
+
+When using the Maven virtual registry, remember the following restrictions:
+
+- You can create up to `20` Maven virtual registries per top-level group.
+- You can set only `20` upstreams to a given Maven virtual registry.
+- For technical reasons, the `proxy_download` setting is force enabled, no matter what the value in the [object storage configuration](../../../../administration/object_storage.md#proxy-download) is configured to.
+- Geo support is not implemented. You can follow its development in [issue 473033](https://gitlab.com/gitlab-org/gitlab/-/issues/473033).
+
+## Manage virtual registries
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/15090) in GitLab 18.5 [with a feature flag](../../../../administration/feature_flags/_index.md) named `ui_for_virtual_registries`. Enabled by default.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/issues/525934) in GitLab 18.6 to a flag named `maven_virtual_registry`. Enabled by default. Feature flag `ui_for_virtual_registries` removed.
+
+{{< /history >}}
+
+Manage Maven virtual registries for your group.
+
+You can also [use the API](../../../../api/maven_virtual_registries.md#manage-maven-virtual-registries).
+
+### Create a Maven virtual registry
+
+To create a Maven virtual registry:
+
+1. In the top bar, select **Search or go to** and find your group. This group must be at the top level.
+1. Select **Deploy** > **Virtual registry**.
+1. If you:
+   - Have an existing registry, select **Create registry**. From the dropdown list, select **Maven**.
+   - Do not have an existing registry, from the dropdown list, select **Maven**. Then, select **Create registry**.
+1. Enter a **Name** and optional **Description**.
+1. Select **Create registry**.
+
+## Manage upstream registries
+
+Manage upstream Maven registries in a virtual registry.
+
+### Create a Maven upstream registry
+
+Create a Maven upstream registry to connect to the virtual registry.
+
+Prerequisites:
+
+- You must have a Maven virtual registry. For more information, see [Create a virtual registry](#create-a-maven-virtual-registry).
+
+To create a Maven upstream registry:
+
+1. In the top bar, select **Search or go to** and find your group. This group must be at the top level.
+1. Select **Deploy** > **Virtual registry**.
+1. Under **Registry types**, select **View registries**.
+1. Under the **Registries** tab, select a registry.
+1. Select **Add upstream**. If the virtual registry has existing upstreams, from the dropdown list, select either:
+   - **Create new upstream** to configure the upstream.
+   - **Link existing upstream** > **Select existing upstream**.
+     1. From the dropdown list, select an upstream.
+     1. Optional. Select **Test upstream** to test the upstream connection before you create it.
+     1. Select **Add upstream**.
+1. Complete the fields.
+   - Include both a **username** and **password**, or neither. If not set, a public (anonymous) request is used to access the upstream.
+   - If you want to connect the upstream to Maven Central, use the following as the **Upstream URL**:
+
+      ```plaintext
+      https://repo1.maven.org/maven2
+      ```
+
+   - **Artifact caching period** and **Metadata caching period** default to 24 hours. Set to `0` to disable cache entry checks, or if you're using Maven Central.
+   - If you want to test the upstream connection before you create it, select **Test upstream**.
+
+1. Select **Create upstream**.
+
+For more information about cache validity settings, see [Set the cache validity period](../_index.md#set-the-cache-validity-period).
+
+## Use the Maven virtual registry
+
+After you create a virtual registry, you must configure Maven clients to pull dependencies through the virtual registry.
+
+### Configure Maven clients
+
+The Maven virtual registry supports the following Maven clients:
+
+- [`mvn`](https://maven.apache.org/index.html)
+- [`gradle`](https://gradle.org/)
+- [`sbt`](https://www.scala-sbt.org/)
+
+You must declare virtual registries in the Maven client configuration.
+
+All clients must be authenticated. For the client authentication, you can use a custom HTTP header or Basic Auth.
+You should use one of the configurations below for each client.
+
+{{< tabs >}}
+
+{{< tab title="mvn" >}}
+
+| Token type            | Name must be    | Token                                                                   |
+| --------------------- | --------------- | ----------------------------------------------------------------------- |
+| Personal access token | `Private-Token` | Paste token as-is, or define an environment variable to hold the token. |
+| Group deploy token    | `Deploy-Token`  | Paste token as-is, or define an environment variable to hold the token. |
+| Group access token    | `Private-Token` | Paste token as-is, or define an environment variable to hold the token. |
+| CI/CD Job token          | `Job-Token`     | `${CI_JOB_TOKEN}`                                                       |
+| OAuth 2.0 token       | `Authorization` | `Bearer <your_oauth_token>`                                             |
+
+Add the following section to your
+[`settings.xml`](https://maven.apache.org/settings.html) file.
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>gitlab-maven</id>
+      <configuration>
+        <httpHeaders>
+          <property>
+            <name>REPLACE_WITH_NAME</name>
+            <value>REPLACE_WITH_TOKEN</value>
+          </property>
+        </httpHeaders>
+      </configuration>
+    </server>
+  </servers>
+</settings>
+```
+
+You can configure the virtual registry in `mvn` applications in one of two ways:
+
+- As an additional registry on top of the default registry (Maven central). In this configuration, you can pull the project dependencies that are present in both the virtual registry and the default registry from any of the declared registries.
+- As a replacement of the default registry (Maven central). With this configuration, dependencies are pulled through the virtual registry. You should configure Maven central as the last upstream of the virtual registry to avoid missing required public dependencies.
+
+To configure a Maven virtual registry as an additional registry, in the `pom.xml` file, add a `repository` element:
+
+```xml
+<repositories>
+  <repository>
+    <id>gitlab-maven</id>
+    <url>https://gitlab.example.com/api/v4/virtual_registries/packages/maven/<registry_id></url>
+  </repository>
+</repositories>
+```
+
+- `<id>`: The same ID of the `<server>` used in the `settings.xml`.
+- `<registry_id>`: The ID of the Maven virtual registry.
+
+To configure a Maven virtual registry as a replacement of the default registry, in the `settings.xml`, add a `mirrors` element:
+
+```xml
+<settings>
+  <servers>
+    ...
+  </servers>
+  <mirrors>
+    <mirror>
+      <id>central-proxy</id>
+      <name>GitLab proxy of central repo</name>
+      <url>https://gitlab.example.com/api/v4/virtual_registries/packages/maven/<registry_id></url>
+      <mirrorOf>central</mirrorOf>
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+- `<registry_id>`: The ID of the Maven virtual registry.
+
+{{< /tab >}}
+
+{{< tab title="gradle" >}}
+
+| Token type            | Name must be    | Token                                                                   |
+| --------------------- | --------------- | ----------------------------------------------------------------------- |
+| Personal access token | `Private-Token` | Paste token as-is, or define an environment variable to hold the token. |
+| Group deploy token    | `Deploy-Token`  | Paste token as-is, or define an environment variable to hold the token. |
+| Group access token    | `Private-Token` | Paste token as-is, or define an environment variable to hold the token. |
+| CI/CD Job token          | `Job-Token`     | `${CI_JOB_TOKEN}`                                                       |
+| OAuth 2.0 token       | `Authorization` | `Bearer <your_oauth_token>`                                             |
+
+In [your `GRADLE_USER_HOME` directory](https://docs.gradle.org/current/userguide/directory_layout.html#dir:gradle_user_home),
+create a file `gradle.properties` with the following content:
+
+```properties
+gitLabPrivateToken=REPLACE_WITH_YOUR_TOKEN
+```
+
+Add a `repositories` section to your
+[`build.gradle`](https://docs.gradle.org/current/userguide/tutorial_using_tasks.html).
+
+- In Groovy DSL:
+
+  ```groovy
+  repositories {
+      maven {
+          url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/<registry_id>"
+          name "GitLab"
+          credentials(HttpHeaderCredentials) {
+              name = 'REPLACE_WITH_NAME'
+              value = gitLabPrivateToken
+          }
+          authentication {
+              header(HttpHeaderAuthentication)
+          }
+      }
+  }
+  ```
+
+- In Kotlin DSL:
+
+  ```kotlin
+  repositories {
+      maven {
+          url = uri("https://gitlab.example.com/api/v4/virtual_registries/packages/maven/<registry_id>")
+          name = "GitLab"
+          credentials(HttpHeaderCredentials::class) {
+              name = "REPLACE_WITH_NAME"
+              value = findProperty("gitLabPrivateToken") as String?
+          }
+          authentication {
+              create("header", HttpHeaderAuthentication::class)
+          }
+      }
+  }
+  ```
+
+- `<registry_id>`: The ID of the Maven virtual registry.
+
+{{< /tab >}}
+
+{{< tab title="sbt" >}}
+
+| Token type            | Username must be                                        | Token                                                                   |
+| --------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Personal access token | The username of the user                                | Paste token as-is, or define an environment variable to hold the token. |
+| Group deploy token    | The username of deploy token                            | Paste token as-is, or define an environment variable to hold the token. |
+| Group access token    | The username of the user linked to the access token     | Paste token as-is, or define an environment variable to hold the token. |
+| CI/CD Job token          | `gitlab-ci-token`                                       | `sys.env.get("CI_JOB_TOKEN").get`                                       |
+
+Authentication for [SBT](https://www.scala-sbt.org/index.html) is based on
+[basic HTTP Authentication](https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication).
+You must provide a name and a password.
+
+In your [`build.sbt`](https://www.scala-sbt.org/1.x/docs/Directories.html#sbt+build+definition+files), add the following lines:
+
+```scala
+resolvers += ("gitlab" at "<endpoint_url>")
+
+credentials += Credentials("GitLab Virtual Registry", "<host>", "<username>", "<token>")
+```
+
+- `<endpoint_url>`: The Maven virtual registry URL.
+  For example, `https://gitlab.example.com/api/v4/virtual_registries/packages/maven/<registry_id>`, where `<registry_id>` is the ID of the Maven virtual registry.
+- `<host>`: The host present in the `<endpoint_url>` without the protocol scheme or the port. For example, `gitlab.example.com`.
+- `<username>`: The username.
+- `<token>`: The configured token.
+
+Make sure that the first argument of `Credentials` is `"GitLab Virtual Registry"`. This realm name must exactly match the [Basic Auth realm](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Authentication#www-authenticate_and_proxy-authenticate_headers) sent by the Maven virtual registry.
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+## Troubleshooting
+
+When working with Maven virtual registries, you might encounter the following issues.
+
+### Error: `Connect to gitlab.example.com:443 failed: Connection timed out`
+
+You might get intermittent connection timeout errors when pulling
+Maven dependencies through the virtual registry, such as:
+
+```plaintext
+Connect to gitlab.example.com:443 failed: Connect timed out
+```
+
+This issue can occur on GitLab Self-Managed instances when the upstream
+registry URL resolves to a local network address. By default, GitLab
+blocks outbound requests to local network addresses for security reasons.
+
+To resolve this issue:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings > Network**.
+1. Expand **Outbound requests**.
+1. Select the **Allow requests to the local network from webhooks and integrations** checkbox.
+1. Optional. If you prefer to allow only specific addresses instead of all local network requests,
+   in **Local IP addresses and domain names that hooks and integrations can access**,
+   add the hostname or IP address of your upstream registry.
+1. Select **Save changes**.
+
+For more information, see [allow requests to the local network](../../../../security/webhooks.md#allow-requests-to-the-local-network-from-webhooks-and-integrations).

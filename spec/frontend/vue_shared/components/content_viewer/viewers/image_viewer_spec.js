@@ -1,0 +1,84 @@
+import { shallowMount } from '@vue/test-utils';
+import { nextTick } from 'vue';
+import { GREEN_BOX_IMAGE_URL, DUMMY_IMAGE_BLOB_PATH } from 'spec/test_constants';
+import ImageViewer from '~/vue_shared/components/content_viewer/viewers/image_viewer.vue';
+
+describe('Image Viewer', () => {
+  let wrapper;
+
+  it('renders image preview', () => {
+    wrapper = shallowMount(ImageViewer, {
+      propsData: { path: GREEN_BOX_IMAGE_URL, fileSize: 1024 },
+    });
+
+    expect(wrapper.find('img').element.src).toBe(GREEN_BOX_IMAGE_URL);
+  });
+
+  describe('file sizes', () => {
+    it.each`
+      fileSize | renderInfo | elementExists | humanizedFileSize
+      ${1024}  | ${true}    | ${true}       | ${'1.00 KiB'}
+      ${0}     | ${true}    | ${true}       | ${''}
+      ${1024}  | ${false}   | ${false}      | ${undefined}
+    `(
+      'shows file size as "$humanizedFileSize", if fileSize=$fileSize and renderInfo=$renderInfo',
+      ({ fileSize, renderInfo, elementExists, humanizedFileSize }) => {
+        wrapper = shallowMount(ImageViewer, {
+          propsData: { path: GREEN_BOX_IMAGE_URL, fileSize, renderInfo },
+        });
+
+        const imageInfo = wrapper.find('.image-info');
+
+        expect(imageInfo.exists()).toBe(elementExists);
+        if (imageInfo.exists()) {
+          expect(imageInfo.element.textContent.trim()).toBe(humanizedFileSize);
+        }
+      },
+    );
+  });
+
+  describe('file path', () => {
+    it('should output a valid URL path for the image', () => {
+      wrapper = shallowMount(ImageViewer, {
+        propsData: { path: '/url/hello#1.jpg' },
+      });
+
+      expect(wrapper.find('img').element.src).toBe('/url/hello%231.jpg');
+    });
+
+    it('outputs path without transformations when outputting a Blob', () => {
+      const file = new File([], DUMMY_IMAGE_BLOB_PATH);
+      const path = window.URL.createObjectURL(file);
+      wrapper = shallowMount(ImageViewer, {
+        propsData: { path },
+      });
+      expect(wrapper.find('img').element.src).toBe(path);
+    });
+
+    it('outputs path without transformations when a prop is set', () => {
+      wrapper = shallowMount(ImageViewer, {
+        propsData: { path: '/url/hello%20.jpg', encodePath: false },
+      });
+
+      expect(wrapper.find('img').element.src).toBe('/url/hello%20.jpg');
+    });
+  });
+
+  describe('img-loaded event', () => {
+    it('emits img-loaded with the image dimensions when the image loads', async () => {
+      jest.spyOn(global, 'requestIdleCallback').mockImplementation((cb) => cb());
+      wrapper = shallowMount(ImageViewer, { propsData: { path: GREEN_BOX_IMAGE_URL } });
+
+      const img = wrapper.find('img');
+      Object.defineProperty(img.element, 'naturalWidth', { value: 300 });
+      Object.defineProperty(img.element, 'naturalHeight', { value: 200 });
+
+      await img.trigger('load');
+      await nextTick();
+
+      expect(wrapper.emitted('img-loaded').at(-1)).toEqual([
+        { width: 300, height: 200, renderedWidth: 0, renderedHeight: 0 },
+      ]);
+    });
+  });
+});

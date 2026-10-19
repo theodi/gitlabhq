@@ -1,0 +1,42 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+fragment RunnerDetailsShared on CiRunner {
+  id
+  shortSha
+  runnerType
+  paused
+  accessLevel
+  runUntagged
+  locked
+  description
+  maximumTimeout
+  jobCount
+  tagList
+  createdAt
+  createdBy {
+    ...User
+  }
+  status
+  contactedAt
+  tokenExpiresAt
+  editAdminUrl
+  managers {
+    count
+  }
+  userPermissions {
+    updateRunner
+    deleteRunner
+  }
+  groups {
+    # Only a single group can be loaded here, while projects
+    # are loaded separately using the query with pagination
+    # parameters `runner_projects.query.graphql`.
+    nodes {
+      id
+      avatarUrl
+      name
+      fullName
+      webUrl
+    }
+  }
+}

@@ -1,0 +1,297 @@
+---
+stage: GitLab Dedicated
+group: Import
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Migrate groups and projects by using offline transfer
+description: "Migrate GitLab groups and projects through object storage."
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed
+- Status: Experiment
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/8985) as an [experiment](../../../policy/development_stages_support.md#experiment) in GitLab 19.3 [with feature flags](../../../administration/feature_flags/_index.md) named `offline_transfer_exports`, `offline_transfer_imports`, and `offline_transfer_ui`. Disabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by feature flags.
+> For more information, see the history.
+> This feature is available for testing, but not ready for production use.
+
+Offline transfer copies GitLab groups and projects between instances through object storage,
+without a direct network connection between the source and destination instances.
+The source instance exports data to a storage bucket, and the destination instance imports the
+data from a bucket it can read.
+
+Unlike [migration by direct transfer](../../group/import/direct_transfer_migrations.md), which requires the
+destination instance to connect to the source instance, offline transfer decouples the export
+and import. The export bucket and import bucket do not have to be the same bucket, or use the
+same object storage provider. If the destination instance cannot access the export bucket, move
+the export files to a bucket the destination can access. GitLab does not move these files for you.
+
+Preserve the object key structure when you move the files. Offline transfer builds every object key
+from the export prefix:
+
+- `<export_prefix>/metadata.json.gz`
+- `<export_prefix>/<entity_prefix>/<relation>.<extension>`
+- `<export_prefix>/<entity_prefix>/<relation>/batch_<number>.<extension>`
+
+For example, `2026-04-16_19-39-00_export_dJtnb3CV/project_1/repository.tar.gz`.
+
+You can rename the top-level export prefix because you supply it when you start the import.
+Everything below the export prefix must keep the same structure and file names.
+
+Having no direct connection between instances does not mean either instance is offline.
+Both the source and destination instances still need network access to an object store to
+perform the export or import.
+
+Offline transfer is gated by both feature flags and application settings. All of them are off by
+default, and for a given operation both layers must be on:
+
+- Exports: the `offline_transfer_exports_enabled` application setting.
+- Imports: the `offline_transfer_imports_enabled` application setting.
+
+To perform exports and imports, use the [offline transfer REST API](https://api.gitlab.com/rest/#gitlab/tag/offline-transfers).
+Support for offline transfers in the GitLab UI is proposed in [work item 19870](https://gitlab.com/groups/gitlab-org/-/work_items/19870).
+
+## Version requirements
+
+To create an offline transfer export, the source instance must run GitLab 19.3 or later.
+To import an export, the destination instance must run GitLab 19.3 or later.
+
+Every export records the version of the source instance that created it. If that version is earlier
+than the minimum version the destination instance supports, the import fails with an
+`Unsupported GitLab version` error.
+
+## Supported object storage providers
+
+Offline transfer supports these object storage providers:
+
+| Provider | Description |
+| -------- | ----------- |
+| AWS S3 | Amazon S3 object storage. |
+| S3-compatible | MinIO and other S3-compatible providers. Requires an administrator to [turn on S3-compatible object storage](../../../administration/settings/import_and_export_settings.md#allow-s3-compatible-object-storage-for-offline-transfer). |
+| Google Cloud Storage (service account) | Google Cloud Storage authenticated with a service account JSON key. |
+| Google Cloud Storage (HMAC) | Google Cloud Storage authenticated with S3-interoperability HMAC keys. |
+| Google Cloud Storage with Application Default Credentials | Google Cloud Storage authenticated with Application Default Credentials (ADC). Restricted to administrators and to specific buckets, and not available on GitLab.com. For more information, see [Application Default Credentials](#application-default-credentials). |
+
+### Required permissions
+
+The object storage credentials you provide must have the following permissions.
+
+For AWS S3:
+
+- Export: `s3:PutObject` and `s3:ListBucket`
+- Import: `s3:GetObject` and `s3:ListBucket`
+
+For Google Cloud Storage with a service account:
+
+- Export: `storage.buckets.get`, `storage.objects.create`, and `storage.objects.list`
+- Import: `storage.objects.get`
+
+Google Cloud Storage with ADC needs the same permissions, held by the service account of the instance
+instead of by a key you supply.
+
+Google Cloud Storage HMAC keys authenticate through the S3 interoperability API, so they require the
+AWS S3 permissions listed above rather than the `storage.*` permissions.
+
+Permissions for other S3-compatible providers vary by provider. Configure your provider with read
+and write permissions equivalent to the AWS S3 permissions listed above.
+
+### Application Default Credentials
+
+Google Cloud Storage with ADC authenticates as the service account of the instance that runs GitLab,
+not as the user who starts the transfer. Because that service account is usually more privileged than
+any individual user, GitLab restricts ADC transfers to administrators and to buckets whose name
+starts with `gitlab-offline-transfer-`.
+
+An administrator must also turn on ADC for the instance. For the security implications and the full
+list of restrictions, see
+[Allow application default credentials for offline transfer](../../../administration/settings/import_and_export_settings.md#allow-application-default-credentials-for-offline-transfer).
+
+## Migrated items
+
+{{< history >}}
+
+- Importing of group and project memberships [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/538356)
+  in GitLab 19.5.
+- Importing of group and project badges [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/538355)
+  in GitLab 19.5.
+
+{{< /history >}}
+
+Offline transfer imports the same group and project items as migration by direct transfer.
+For the full list, see [migrated group items](../../group/import/migrated_items.md#migrated-group-items) and
+[migrated project items](../../group/import/migrated_items.md#migrated-project-items).
+
+The following items are not imported by offline transfer:
+
+- Wikis. Support for wiki import is proposed in [work item 538858](https://gitlab.com/gitlab-org/gitlab/-/work_items/538858).
+- Snippets. Support for snippet import is proposed in [work item 538347](https://gitlab.com/gitlab-org/gitlab/-/work_items/538347).
+
+When you import a group, its subgroups and projects are always imported if they are present in
+the export.
+
+## User contribution mapping
+
+Offline transfer never creates real users on the destination instance. Instead, imported contributions
+are mapped to [placeholder users](../../import/mapping/post_migration_mapping.md#placeholder-users).
+After the import finishes,
+[reassign the placeholder users](../../import/mapping/reassignment.md) to users on the destination
+instance.
+
+Offline transfer imports group and project memberships as placeholder memberships. When you reassign
+placeholder users, GitLab reassigns their memberships to the corresponding users.
+
+## Visibility rules
+
+Offline transfer applies the same visibility rules as migration by direct transfer. For more
+information, see [visibility rules](../../group/import/_index.md#visibility-rules).
+
+## Group export and import scope
+
+GitLab exports whole group structures, every descendant subgroup and
+project, no matter how deeply nested. You cannot export a subset of a group's subgroups or
+projects.
+
+GitLab can import a subset of an exported group. If you want to migrate a group in waves:
+
+1. Export the whole group once.
+1. Choose which of its subgroups and projects to bring in for each wave as you import.
+
+Alternatively, you can export individual projects instead of their parent group, by giving the full
+path of each project as its own entity in the export request.
+
+## Migrate a group or project
+
+Prerequisites:
+
+- To export a project, you must have at least the Maintainer role for the project.
+- To export a group, you must have the Owner role for the group.
+- To import into a group, you must have the Owner role for the destination group.
+- To import a group as a top-level group, you must have permission to create groups.
+- To use Application Default Credentials for an export or an import, you must have administrator
+  access.
+
+To migrate a group or project:
+
+1. On the source instance, use the REST API to [create an offline transfer export](https://api.gitlab.com/rest/#gitlab/tag/offline-transfers/POST/api/v4/offline_exports) to an object storage bucket.
+1. When the export finishes, GitLab sends you an email with the export prefix. You need this prefix
+   to start the import. If you do not receive the email, the export prefix can be viewed in the object storage service.
+1. If the destination instance cannot access the export bucket, move the export files to a bucket
+   the destination can access.
+1. On the destination instance, [create an offline transfer import](https://api.gitlab.com/rest/#gitlab/tag/offline-transfers/POST/api/v4/offline_imports) from the bucket and export prefix.
+1. Monitor the import with the [group and project migration by direct transfer API](../../../api/bulk_imports.md#retrieve-a-group-or-project-migration).
+
+## Import an entire export
+
+By default, an offline transfer import requires an `entities` array that lists every group or project to
+import and where to put it. Instead, you can pass an `import_all` object to import every top-level group
+in the export, together with its subgroups and projects, recreating the source instance's structure
+under a destination namespace. Exactly one of `entities` or `import_all` is required.
+
+To import an entire export, pass `import_all` with a `destination_namespace` attribute to the
+[create an offline transfer import](https://api.gitlab.com/rest/#tag/offline-transfers/POST/api/v4/offline_imports) API:
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --header "Content-Type: application/json" \
+  --url "https://gitlab.example.com/api/v4/offline_imports" \
+  --data '{
+    "bucket": "example-bucket",
+    "export_prefix": "example-export-prefix",
+    "aws_s3_configuration": {
+      "aws_access_key_id": "<aws_access_key_id>",
+      "aws_secret_access_key": "<aws_secret_access_key>",
+      "region": "us-east-1"
+    },
+    "import_all": {
+      "destination_namespace": "dest-group"
+    }
+  }'
+```
+
+Set `destination_namespace` to the full path of an existing group, for example `dest-group/subgroup`, to
+recreate the structure under that group. Set it to an empty string (`""`) to recreate the structure as
+new top-level groups.
+
+Only top-level groups are imported:
+
+- If the export contains a path whose top-level group was not itself exported (for example, the export
+  contains `group-a/subgroup-b` but not `group-a`), GitLab skips that path instead of creating the
+  missing parent group.
+- If a top-level group's path conflicts with an existing group in the destination namespace, GitLab
+  skips that group and everything under it. The rest of the export still imports.
+- If every top-level group collides with an existing destination path, the import fails.
+- If the export contains no top-level groups, the import fails.
+
+Monitor the import with the [group and project migration by direct transfer API](../../../api/bulk_imports.md#retrieve-a-group-or-project-migration).
+
+## Rate limits
+
+Offline transfer exports and imports are rate limited.
+For more information, see [non-configurable rate limits](../../../rate_limits/non_configurable.md).
+
+## File size limits
+
+Offline transfer imports enforce the same maximum download file size as migration by direct
+transfer.
+This limit applies to each relation file individually, so a large repository bundle can hit it
+even when the rest of the migration fits under the limit.
+Because GitLab checks the limit during import, a file that exceeds it fails only after you
+already moved the export across to the destination environment.
+
+If your migration includes large repositories, ask an administrator on the destination instance to
+increase this limit before you start the import.
+For more information, see [Maximum download file size for imports by direct or offline transfer](../../../administration/settings/import_and_export_settings.md#maximum-download-file-size-for-imports-by-direct-or-offline-transfer).
+
+## Object storage bucket lifecycle
+
+GitLab does not delete export files from the bucket after an import finishes.
+Exports include repository bundles, LFS objects, uploaded files, and design bundles, as well as
+newline-delimited JSON (NDJSON) files containing issue and merge request descriptions and notes.
+Treat the bucket with the same data handling and residency controls you apply to the rest of your
+GitLab data.
+
+Retaining and deleting export files after a migration is your responsibility.
+
+## Related topics
+
+- [Migrate groups and projects by using direct transfer](../../group/import/direct_transfer_migrations.md)
+
+## Troubleshooting
+
+If you have any problems with a migration performed by using offline transfer, see the following sections
+for possible solutions.
+
+### Clear export data from object storage
+
+Each export generates a fresh prefix in object storage, so one export does not overwrite another.
+Deleting stored data from failed exports is not necessary for retrying the export, but might reduce your object storage costs.
+
+To remove export data from object storage, use the bucket you provided and the `export_prefix` returned by the export API to identify and delete the data.
+Depending on your object storage configuration, this might be irreversible.
+
+### Identify import errors
+
+- Review `exceptions_json.log` and `importer.log` for relevant errors.
+- See [Troubleshooting direct transfer migrations](../../group/import/troubleshooting.md) for advice on extracting errors from the Rails console.
+
+### Retry an import
+
+To retry an import:
+
+1. Delete the groups or projects you want to retry. You can retry the entire import or target a subset of groups or projects:
+
+   - [Delete a group immediately](../../group/_index.md#delete-a-group-immediately)
+   - [Delete a project immediately](../../project/working_with_projects.md#delete-a-project-immediately)
+
+1. Use the REST API to retry the entire import or specify only previously failed entities in the `entities` parameter.

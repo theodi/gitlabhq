@@ -1,0 +1,19 @@
+mutation UpdateTimelineEvent($input: TimelineEventUpdateInput!) {
+  timelineEventUpdate(input: $input) {
+    timelineEvent {
+      id
+      note
+      noteHtml
+      action
+      occurredAt
+      createdAt
+      timelineEventTags {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+    errors
+  }
+}

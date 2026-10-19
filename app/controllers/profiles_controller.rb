@@ -1,55 +1,61 @@
+# frozen_string_literal: true
+
 class ProfilesController < Profiles::ApplicationController
   include ActionView::Helpers::SanitizeHelper
+  include Gitlab::Tracking
+  include SafeFormatHelper
 
   before_action :user
   before_action :authorize_change_username!, only: :update_username
-  skip_before_action :require_email, only: [:show, :update]
-
-  def show
+  before_action only: :update_username do
+    check_rate_limit!(:profile_update_username, scope: { user: current_user })
   end
 
-  def design
+  feature_category :user_profile, [:reset_incoming_email_token, :reset_feed_token,
+    :reset_static_object_token, :update_username]
+
+  def reset_incoming_email_token
+    Users::UpdateService.new(current_user, user: @user).execute!(&:reset_incoming_email_token!)
+
+    flash[:notice] = s_("Profiles|Incoming email token was successfully reset")
+
+    redirect_to user_settings_personal_access_tokens_path
   end
 
-  def applications
-    @applications = current_user.oauth_applications
-    @authorized_tokens = current_user.oauth_authorized_tokens
-    @authorized_apps = @authorized_tokens.map(&:application).uniq
-  end
+  def reset_feed_token
+    service = Users::ResetFeedTokenService.new(current_user, user: @user).execute
 
-  def update
-    user_params.except!(:email) if @user.ldap_user?
-
-    if @user.update_attributes(user_params)
-      flash[:notice] = "Profile was successfully updated"
+    if service.success?
+      flash[:notice] = service.message
     else
-      messages = @user.errors.full_messages.uniq.join('. ')
-      flash[:alert] = "Failed to update profile. #{messages}"
+      flash[:alert] = service.message
     end
 
-    respond_to do |format|
-      format.html { redirect_to :back }
-      format.js
-    end
+    redirect_to user_settings_personal_access_tokens_path
   end
 
-  def reset_private_token
-    if current_user.reset_authentication_token!
-      flash[:notice] = "Token was successfully updated"
-    end
+  def reset_static_object_token
+    Users::UpdateService.new(current_user, user: @user).execute!(&:reset_static_object_token!)
 
-    redirect_to profile_account_path
-  end
-
-  def history
-    @events = current_user.recent_events.page(params[:page]).per(PER_PAGE)
+    redirect_to user_settings_personal_access_tokens_path,
+      notice: s_('Profiles|Static object token was successfully reset')
   end
 
   def update_username
-    @user.update_attributes(username: user_params[:username])
+    result = Users::UpdateService.new(current_user, user: @user, username: username_param).execute
 
     respond_to do |format|
-      format.js
+      if result[:status] == :success
+        message = s_("Profiles|Username successfully changed")
+
+        format.html { redirect_back_or_default(default: user_settings_profile_path, options: { notice: message }) }
+        format.json { render json: { message: message }, status: :ok }
+      else
+        message = safe_format(s_("Profiles|Username change failed - %{message}"), message: result[:message])
+
+        format.html { redirect_back_or_default(default: user_settings_profile_path, options: { alert: message }) }
+        format.json { render json: { message: message }, status: :unprocessable_entity }
+      end
     end
   end
 
@@ -60,15 +66,51 @@ class ProfilesController < Profiles::ApplicationController
   end
 
   def authorize_change_username!
-    return render_404 unless @user.can_change_username?
+    render_404 unless @user.can_change_username?
+  end
+
+  def username_param
+    @username_param ||= user_params.require(:username)
+  end
+
+  def user_params_attributes
+    [
+      :achievements_enabled,
+      :avatar,
+      :bio,
+      :bluesky,
+      :commit_email,
+      :discord,
+      :email,
+      :gitpod_enabled,
+      :hide_no_password,
+      :hide_no_ssh_key,
+      :hide_project_limit,
+      :include_private_contributions,
+      :job_title,
+      :linkedin,
+      :location,
+      :mastodon,
+      :name,
+      :company,
+      :private_profile,
+      :pronouns,
+      :pronunciation,
+      :public_email,
+      :role,
+      :timezone,
+      :twitter,
+      :username,
+      :validation_password,
+      :website_url,
+      :github,
+      { status: [:emoji, :message, :availability, :clear_status_after] }
+    ]
   end
 
   def user_params
-    params.require(:user).permit(
-      :email, :password, :password_confirmation, :bio, :name,
-      :username, :skype, :linkedin, :twitter, :website_url,
-      :color_scheme_id, :theme_id, :avatar, :hide_no_ssh_key,
-      :hide_no_password, :location, :public_email
-    )
+    @user_params ||= params.require(:user).permit(user_params_attributes)
   end
 end
+
+ProfilesController.prepend_mod

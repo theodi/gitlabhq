@@ -1,0 +1,550 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Authn::OauthApplication, feature_category: :system_access do
+  let_it_be_with_reload(:application) { create(:oauth_application) }
+
+  describe 'associations' do
+    it { is_expected.to belong_to(:organization).class_name('Organizations::Organization').required }
+
+    it 'has many consent grants' do
+      is_expected.to have_many(:oauth_consent_grants).class_name('Authz::OauthConsentGrant')
+        .with_foreign_key(:application_id).inverse_of(:application)
+    end
+
+    it 'has many declared granular scopes' do
+      is_expected.to have_many(:oauth_application_granular_scopes).class_name('Authz::OauthApplicationGranularScope')
+        .with_foreign_key(:application_id).inverse_of(:application).autosave(true)
+      is_expected.to have_many(:granular_scopes).through(:oauth_application_granular_scopes)
+        .class_name('Authz::GranularScope')
+    end
+
+    it 'is invalid without an organization' do
+      expect(build(:oauth_application, organization: nil)).not_to be_valid
+    end
+  end
+
+  it 'uses a prefixed secret' do
+    expect(application.plaintext_secret).to match(/gloas-\h{64}/)
+  end
+
+  describe 'feature flag actor' do
+    it 'acts as a Flipper actor via FeatureGate' do
+      expect(described_class.include?(FeatureGate)).to be(true)
+      expect(application.flipper_id).to eq("Authn::OauthApplication:#{application.id}")
+    end
+
+    it 'is registered as a supported feature flag model' do
+      expect(Feature::SUPPORTED_MODELS).to include('Authn::OauthApplication')
+    end
+  end
+
+  describe '#granular?' do
+    let_it_be(:group) { create(:group) }
+
+    it 'is false when the application declares no granular scopes' do
+      expect(application.granular?).to be(false)
+    end
+
+    it 'is true when the application declares granular scopes' do
+      granular_application = create(:oauth_application, :granular,
+        boundary: Authz::Boundary.for(group), permissions: :read_member_role)
+
+      expect(granular_application.granular?).to be(true)
+      expect(granular_application.granular_scopes).to contain_exactly(
+        have_attributes(namespace: group, access: 'selected_memberships', permissions: ['read_member_role'])
+      )
+    end
+  end
+
+  describe 'syncing the granular scope' do
+    it 'adds granular when an application is created with a declared set' do
+      granular_application = create(:oauth_application, :granular, scopes: 'read_api')
+
+      expect(granular_application.reload.scopes.to_a).to contain_exactly('read_api', 'granular')
+    end
+
+    it 'adds granular when a set is declared on an existing application' do
+      granular_scope = build(:granular_scope, namespace: nil, access: :user)
+
+      expect { application.update!(granular_scopes: [granular_scope]) }
+        .to change { application.reload.scopes.to_a }.from([]).to(['granular'])
+    end
+
+    it 'keeps granular when the application form saves the scopes without it' do
+      granular_application = create(:oauth_application, :granular)
+
+      granular_application.update!(scopes: 'read_api')
+
+      expect(granular_application.reload.scopes.to_a).to contain_exactly('read_api', 'granular')
+    end
+
+    it 'removes granular from an application without declared granular scopes' do
+      new_application = create(:oauth_application, scopes: 'read_api granular')
+
+      expect(new_application.reload.scopes.to_a).to eq(['read_api'])
+    end
+  end
+
+  describe '#iam_routing_enabled?' do
+    let(:other_application) { create(:oauth_application) }
+
+    it 'is false when the feature flag is disabled' do
+      stub_feature_flags(proxy_oauth_requests_to_iam_service: false)
+
+      expect(application.iam_routing_enabled?).to be(false)
+    end
+
+    it 'is true only for the targeted application when the flag is enabled for it' do
+      stub_feature_flags(proxy_oauth_requests_to_iam_service: application)
+
+      expect(application.iam_routing_enabled?).to be(true)
+      expect(other_application.iam_routing_enabled?).to be(false)
+    end
+  end
+
+  it 'allows dynamic scopes' do
+    application.scopes = 'api user:*'
+    expect(application).to be_valid
+  end
+
+  describe '.dynamic' do
+    let_it_be(:dynamic_app) { create(:oauth_application, :dynamic) }
+
+    it 'returns only dynamic applications' do
+      expect(described_class.dynamic).to include(dynamic_app)
+    end
+
+    it 'excludes non-dynamic applications' do
+      expect(described_class.dynamic).not_to include(application)
+    end
+  end
+
+  describe '#secret_matches?' do
+    let_it_be(:plaintext_secret) { 'CzOBzBfU9F-HvsqfTaTXF4ivuuxYZuv3BoAK4pnvmyw' }
+    let_it_be_with_reload(:application) { create(:oauth_application, secret: plaintext_secret) }
+
+    it 'returns false when input is nil' do
+      expect(application.secret_matches?(nil)).to be false
+    end
+
+    it 'matches plain text secret with current strategy' do
+      expect(application.secret_matches?(plaintext_secret)).to be true
+    end
+
+    it 'matches PBKDF2+SHA512 hashed secret via fallback' do
+      hashed = Gitlab::DoorkeeperSecretStoring::Pbkdf2Sha512.transform_secret(plaintext_secret)
+      application.update_column(:secret, hashed)
+      expect(application.secret_matches?(plaintext_secret)).to be true
+    end
+
+    context "with FIPS mode", :fips_mode do
+      it 'does not match PBKDF2+SHA512 hashed secret via fallback' do
+        hashed = Gitlab::DoorkeeperSecretStoring::Pbkdf2Sha512.transform_secret(plaintext_secret)
+        application.update_column(:secret, hashed)
+        expect(application.secret_matches?(plaintext_secret)).to be false
+      end
+    end
+
+    context "with legacy FIPS", :fips_mode do
+      before do
+        allow(described_class).to receive(:fips_140_3?).and_return(false)
+      end
+
+      it 'matches PBKDF2+SHA512 hashed secret via fallback' do
+        hashed = Gitlab::DoorkeeperSecretStoring::Pbkdf2Sha512.transform_secret(plaintext_secret)
+        application.update_column(:secret, hashed)
+        expect(application.secret_matches?(plaintext_secret)).to be true
+      end
+    end
+
+    it 'matches SHA512 hashed secret' do
+      hashed = Gitlab::DoorkeeperSecretStoring::Sha512Hash.transform_secret(plaintext_secret)
+      application.update_column(:secret, hashed)
+      expect(application.secret_matches?(plaintext_secret)).to be true
+    end
+
+    it 'returns false for incorrect secret' do
+      expect(application.secret_matches?('wrong_secret')).to be false
+    end
+  end
+
+  describe 'set_device_code_enabled after_initialize' do
+    it 'returns a new instance but with device_code_enabled disabled' do
+      expect(described_class.new.device_code_enabled).to be_falsy
+    end
+  end
+
+  describe '.find_by_fallback_token' do
+    let(:plain_secret) { 'CzOBzBfU9F-HvsqfTaTXF4ivuuxYZuv3BoAK4pnvmyw' }
+    let(:pbkdf2_secret) { '$pbkdf2-sha512$20000$$.c0G5XJV...' }
+    let(:sha512_secret) { 'a' * 128 }
+    let(:attr) { :secret }
+
+    context 'when token is already hashed' do
+      it 'returns nil for PBKDF2 formatted tokens' do
+        expect(described_class.find_by_fallback_token(attr, pbkdf2_secret)).to be_nil
+      end
+
+      it 'returns nil for SHA512 formatted tokens (128 hex chars)' do
+        expect(described_class.find_by_fallback_token(attr, sha512_secret)).to be_nil
+      end
+    end
+
+    context 'with actual fallback strategies' do
+      let_it_be_with_reload(:pbkdf2_token) { create(:oauth_application) }
+      let_it_be_with_reload(:sha512_token) { create(:oauth_application) }
+      let_it_be_with_reload(:plain_token) { create(:oauth_application) }
+
+      before do
+        allow(described_class).to receive(:upgrade_fallback_value).and_call_original
+      end
+
+      it 'finds application stored with PBKDF2 strategy' do
+        pbkdf2_hash = Gitlab::DoorkeeperSecretStoring::Pbkdf2Sha512.transform_secret(plain_secret)
+        pbkdf2_token.update_column(:secret, pbkdf2_hash)
+
+        result = described_class.find_by_fallback_token(:secret, plain_secret)
+
+        expect(result).to eq(pbkdf2_token)
+        expect(described_class).to have_received(:upgrade_fallback_value).with(pbkdf2_token, :secret,
+          plain_secret)
+      end
+
+      context "with FIPS mode", :fips_mode do
+        it 'does not find application stored with PBKDF2 strategy' do
+          pbkdf2_hash = Gitlab::DoorkeeperSecretStoring::Pbkdf2Sha512.transform_secret(plain_secret)
+          pbkdf2_token.update_column(:secret, pbkdf2_hash)
+
+          result = described_class.find_by_fallback_token(:secret, plain_secret)
+
+          expect(result).not_to eq(pbkdf2_token)
+        end
+      end
+
+      it 'finds application stored with Plain strategy when SHA512 fails' do
+        # Create a different plain secret that won't match any SHA512 token
+        different_secret = 'different_plain_token_xyz'
+        plain_token.update_column(:secret, different_secret)
+
+        result = described_class.find_by_fallback_token(:secret, different_secret)
+
+        expect(result).to eq(plain_token)
+        expect(described_class).to have_received(:upgrade_fallback_value).with(plain_token, :secret,
+          different_secret)
+      end
+
+      it 'upgrade legacy plain text tokens' do
+        described_class.find_by_fallback_token(:secret, plain_token.plaintext_secret)
+        sha512_hash = Gitlab::DoorkeeperSecretStoring::Sha512Hash.transform_secret(plain_token.plaintext_secret)
+        expect(plain_token.reload.secret).to eq(sha512_hash)
+      end
+
+      it 'returns nil when no strategy finds a match' do
+        non_existent_secret = 'this_token_does_not_exist_anywhere'
+
+        result = described_class.find_by_fallback_token(:secret, non_existent_secret)
+
+        expect(result).to be_nil
+        expect(described_class).not_to have_received(:upgrade_fallback_value)
+      end
+    end
+  end
+
+  describe '.with_token_digests' do
+    let_it_be(:hashed_token_1) { described_class.encode('hashed_token_1') }
+    let_it_be(:app1) { create(:oauth_application, secret: hashed_token_1) }
+
+    let_it_be(:hashed_token_2) { described_class.encode('hashed_token_2') }
+    let_it_be(:app2) { create(:oauth_application, secret: hashed_token_2) }
+
+    let_it_be(:app3) { create(:oauth_application, secret: 'different_token') }
+
+    context 'when hashed_tokens is provided' do
+      it 'returns applications with matching secret digests' do
+        hashed_tokens = [hashed_token_1, hashed_token_2]
+
+        result = described_class.with_token_digests(hashed_tokens)
+
+        expect(result).to contain_exactly(app1, app2)
+      end
+
+      it 'returns empty relation when no matches found' do
+        hashed_tokens = ['non_existent_token']
+
+        result = described_class.with_token_digests(hashed_tokens)
+
+        expect(result).to be_empty
+      end
+
+      it 'handles single token in array' do
+        hashed_tokens = [hashed_token_1]
+
+        result = described_class.with_token_digests(hashed_tokens)
+
+        expect(result).to contain_exactly(app1)
+      end
+    end
+
+    context 'when hashed_tokens is blank' do
+      it 'returns none scope for nil' do
+        result = described_class.with_token_digests(nil)
+
+        expect(result).to eq(described_class.none)
+      end
+
+      it 'returns none scope for empty array' do
+        result = described_class.with_token_digests([])
+
+        expect(result).to eq(described_class.none)
+      end
+
+      it 'returns none scope for empty string' do
+        result = described_class.with_token_digests('')
+
+        expect(result).to eq(described_class.none)
+      end
+    end
+  end
+
+  describe '.exists_for_uid?' do
+    let_it_be(:application) { create(:oauth_application) }
+
+    it 'returns true when an application has the given uid' do
+      expect(described_class.exists_for_uid?(application.uid)).to be(true)
+    end
+
+    it 'returns false when no application has the given uid' do
+      expect(described_class.exists_for_uid?('this-uid-does-not-exist')).to be(false)
+    end
+  end
+
+  describe '.revoke_non_granular_tokens_and_grants_for' do
+    let_it_be(:user) { create(:user) }
+
+    let!(:legacy_token) { create(:oauth_access_token, resource_owner: user, application: application, scopes: 'api') }
+    let!(:unscoped_token) { create(:oauth_access_token, resource_owner: user, application: application, scopes: nil) }
+    let!(:granular_token) { create(:oauth_access_token, :granular, resource_owner: user, application: application) }
+    let!(:other_user_token) { create(:oauth_access_token, application: application, scopes: 'api') }
+    let!(:other_application_token) { create(:oauth_access_token, resource_owner: user, scopes: 'api') }
+    let!(:legacy_code) { create_code(scopes: 'api') }
+    let!(:granular_code) { create_code(scopes: 'api granular') }
+
+    def create_code(scopes:)
+      create(:oauth_access_grant, resource_owner_id: user.id, application: application,
+        organization: user.organization, scopes: scopes)
+    end
+
+    before do
+      stub_const("#{described_class}::REVOKE_BATCH_SIZE", 1)
+    end
+
+    it 'revokes the non-granular tokens and codes of the user and application only', :aggregate_failures do
+      described_class.revoke_non_granular_tokens_and_grants_for(application.id, user)
+
+      expect(legacy_token.reload).to be_revoked
+      expect(unscoped_token.reload).to be_revoked
+      expect(legacy_code.reload).to be_revoked
+      expect(granular_token.reload).not_to be_revoked
+      expect(granular_code.reload).not_to be_revoked
+      expect(other_user_token.reload).not_to be_revoked
+      expect(other_application_token.reload).not_to be_revoked
+    end
+  end
+
+  describe '.encode' do
+    let(:raw_token) { 'my_secret_token_123' }
+
+    it 'encodes raw token using Sha512Hash' do
+      expect(::Gitlab::DoorkeeperSecretStoring::Sha512Hash)
+        .to receive(:transform_secret)
+        .with(raw_token)
+        .and_return('encoded_token_hash')
+
+      result = described_class.encode(raw_token)
+
+      expect(result).to eq('encoded_token_hash')
+    end
+  end
+
+  describe 'IAM outbox replication' do
+    let(:client) do
+      instance_double(Authn::IamService::GrpcClient, upsert_oauth_application: nil, delete_oauth_application: nil)
+    end
+
+    before do
+      allow(::Authn::IamAuthService).to receive(:enabled?).and_return(true)
+      allow(Authn::IamService::GrpcClient).to receive(:new).and_return(client)
+    end
+
+    it 'declares its IAM entity type' do
+      expect(described_class.iam_outbox_entity_type).to eq('oauth_application')
+    end
+
+    context 'on create' do
+      it 'records an upsert row with an empty payload and the sharding key' do
+        app = create(:oauth_application)
+
+        row = Authn::IamOutbox.where(event_type: :upsert, entity_id: app.id).sole
+
+        expect(row.payload).to eq({})
+        expect(row.entity_type).to eq('oauth_application')
+        expect(row.organization_id).to eq(app.organization_id)
+      end
+
+      it 'schedules an upsert drain after create, keyed on the entity' do
+        expect(Authn::IamReplication::DrainWorker).to receive(:perform_in).with(
+          Authn::IamReplication::DrainWorker::SCHEDULE_DELAY, 'oauth_application', kind_of(Integer), 'upsert'
+        )
+
+        create(:oauth_application)
+      end
+
+      it 'delivers immediately (fire-and-forget) without marking the outbox row delivered',
+        :aggregate_failures do
+        app = create(:oauth_application)
+
+        expect(Authn::IamService::GrpcClient).to have_received(:new)
+          .with(timeout: Authn::IamReplication::Outboxable::IMMEDIATE_WRITE_TIMEOUT_SECONDS)
+        expect(client).to have_received(:upsert_oauth_application).with(hash_including(client_id: app.uid))
+
+        outbox_rows = Authn::IamOutbox.where(event_type: :upsert, entity_id: app.id)
+        expect(outbox_rows.count).to eq(1)
+        expect(outbox_rows.first.l0_delivered_at).to be_nil
+      end
+
+      context 'when the replicator raises' do
+        before do
+          allow(client).to receive(:upsert_oauth_application)
+            .and_raise(Authn::IamService::GrpcClient::RequestError.new('down', reason: :unavailable))
+        end
+
+        it 'swallows the error and leaves the outbox row for the drain to retry', :aggregate_failures do
+          expect(Authn::IamReplication::DrainWorker).to receive(:perform_in)
+
+          app = create(:oauth_application)
+          row = Authn::IamOutbox.where(event_type: :upsert, entity_id: app.id).sole
+
+          expect(row.l0_delivered_at).to be_nil
+          expect(row.l0_attempts).to eq(0)
+          expect(row.l0_last_error).to be_nil
+        end
+
+        it 'logs the failure with the error label and outbox context', :aggregate_failures do
+          expect(::Gitlab::AuthLogger).to receive(:warn)
+            .with(hash_including(
+              'message' => 'IAM immediate write failed',
+              'layer' => 2,
+              'entity_type' => 'oauth_application',
+              'event_type' => 'upsert',
+              'error_type' => 'unavailable'
+            ))
+
+          create(:oauth_application)
+        end
+      end
+
+      context 'when the IAM auth service is disabled' do
+        before do
+          allow(::Authn::IamAuthService).to receive(:enabled?).and_return(false)
+        end
+
+        it 'does not deliver immediately but still schedules the drain', :aggregate_failures do
+          expect(Authn::IamReplication::DrainWorker).to receive(:perform_in)
+
+          app = create(:oauth_application)
+
+          expect(client).not_to have_received(:upsert_oauth_application)
+          expect(Authn::IamOutbox.where(event_type: :upsert, entity_id: app.id).sole.l0_delivered_at).to be_nil
+        end
+      end
+    end
+
+    context 'on update' do
+      it 'records an upsert row' do
+        app = create(:oauth_application)
+
+        expect { app.update!(redirect_uri: 'https://example.com/new') }
+          .to change { Authn::IamOutbox.where(event_type: :upsert, entity_id: app.id).count }.by(1)
+      end
+
+      it 'schedules an upsert drain after update' do
+        app = create(:oauth_application)
+
+        expect(Authn::IamReplication::DrainWorker).to receive(:perform_in).with(
+          Authn::IamReplication::DrainWorker::SCHEDULE_DELAY, 'oauth_application', app.id, 'upsert'
+        )
+
+        app.update!(redirect_uri: 'https://example.com/new')
+      end
+
+      it 'delivers immediately (fire-and-forget) without marking the outbox row delivered' do
+        app = create(:oauth_application)
+
+        app.update!(redirect_uri: 'https://example.com/new')
+
+        row = Authn::IamOutbox.where(event_type: :upsert, entity_id: app.id).order(:id).last
+        expect(row.l0_delivered_at).to be_nil
+      end
+    end
+
+    context 'on destroy' do
+      it 'records a delete row carrying the uid' do
+        app = create(:oauth_application)
+
+        app.destroy!
+
+        row = Authn::IamOutbox.where(event_type: :delete, entity_id: app.id).sole
+
+        expect(row.payload).to eq({ 'uid' => app.uid })
+        expect(row.entity_type).to eq('oauth_application')
+        expect(row.organization_id).to eq(app.organization_id)
+      end
+
+      it 'schedules a delete drain after destroy' do
+        app = create(:oauth_application)
+
+        expect(Authn::IamReplication::DrainWorker).to receive(:perform_in).with(
+          Authn::IamReplication::DrainWorker::SCHEDULE_DELAY, 'oauth_application', app.id, 'delete'
+        )
+
+        app.destroy!
+      end
+
+      it 'delivers the delete immediately (fire-and-forget) without marking the outbox row delivered',
+        :aggregate_failures do
+        # Real replicator + real payload: a key drift in iam_outbox_delete_payload breaks this.
+        app = create(:oauth_application)
+
+        app.destroy!
+
+        expect(client).to have_received(:delete_oauth_application).with(client_id: app.uid).once
+        expect(Authn::IamOutbox.where(event_type: :delete, entity_id: app.id).sole.l0_delivered_at).to be_nil
+      end
+    end
+
+    context 'when the surrounding transaction rolls back' do
+      it 'records no outbox row' do
+        expect do
+          ApplicationRecord.transaction do
+            create(:oauth_application)
+            raise ActiveRecord::Rollback
+          end
+        end.not_to change { Authn::IamOutbox.count }
+      end
+    end
+
+    context 'when IAM replication is disabled' do
+      before do
+        stub_feature_flags(iam_data_replication: false)
+      end
+
+      it 'records no outbox row' do
+        app = create(:oauth_application)
+
+        expect { app.destroy! }.not_to change { Authn::IamOutbox.count }
+      end
+    end
+  end
+end

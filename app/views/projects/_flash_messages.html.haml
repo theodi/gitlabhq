@@ -1,0 +1,11 @@
+- project = local_assigns.fetch(:project)
+
+= content_for :flash_message do
+  = render partial: 'deletion_failed', locals: { project: project }
+  - if current_user && can?(current_user, :read_code, project)
+    = render 'shared/invalid_gpg_key', project: project
+    = render 'shared/no_password'
+    = render_if_exists 'projects/above_size_limit_warning', project: project
+    = render_if_exists 'shared/shared_runners_minutes_limit', project: project
+    = render 'projects/lfs_misconfiguration_banner', project: project
+    = render_if_exists 'projects/pages_deployments_limit_warning', project: project

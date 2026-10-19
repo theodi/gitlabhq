@@ -1,0 +1,1534 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Ci::JobArtifacts, feature_category: :job_artifacts do
+  include HttpBasicAuthHelpers
+  include DependencyProxyHelpers
+  include Ci::JobTokenScopeHelpers
+
+  include HttpIOHelpers
+
+  let_it_be_with_reload(:project) do
+    create(:project, :repository, public_builds: false)
+  end
+
+  let_it_be_with_reload(:other_project) do
+    create(:project, :repository)
+  end
+
+  let_it_be_with_reload(:pipeline) do
+    create(:ci_pipeline, project: project, sha: project.commit.id, ref: project.default_branch)
+  end
+
+  let(:developer) { create(:user) }
+  let(:user) { developer }
+  let(:api_user) { user }
+  let(:reporter) { create(:project_member, :reporter, project: project).user }
+  let(:guest) { create(:project_member, :guest, project: project).user }
+
+  let!(:job) do
+    create(:ci_build, :success, :tags, pipeline: pipeline, artifacts_expire_at: 1.day.since)
+  end
+
+  before do
+    project.add_developer(developer) # -- Does not work in before_all because developer uses let, not let_it_be
+  end
+
+  shared_examples 'returns unauthorized' do
+    it 'returns unauthorized' do
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+  end
+
+  describe 'DELETE /projects/:id/jobs/:job_id/artifacts' do
+    let!(:job) { create(:ci_build, :artifacts, pipeline: pipeline, user: api_user) }
+
+    context 'when project is not undergoing stats refresh' do
+      before do
+        delete api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user)
+      end
+
+      context 'when user is anonymous' do
+        let(:api_user) { nil }
+
+        it 'does not delete artifacts' do
+          expect(job.job_artifacts.size).to eq 2
+        end
+
+        it 'returns status 401 (unauthorized)' do
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+
+      context 'with developer' do
+        it 'does not delete artifacts' do
+          expect(job.job_artifacts.size).to eq 2
+        end
+
+        it 'returns status 403 (forbidden)' do
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'with authorized user' do
+        let(:maintainer) { create(:project_member, :maintainer, project: project).user }
+        let!(:api_user) { maintainer }
+
+        it 'deletes artifacts' do
+          expect(job.job_artifacts.size).to eq 0
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :delete_job_artifact do
+          let(:boundary_object) { project }
+          let(:user) { maintainer }
+          let(:request) { delete api("/projects/#{project.id}/jobs/#{job.id}/artifacts", personal_access_token: pat) }
+        end
+
+        it 'returns status 204 (no content)' do
+          expect(response).to have_gitlab_http_status(:no_content)
+        end
+      end
+    end
+
+    context 'when project is undergoing stats refresh' do
+      it_behaves_like 'preventing request because of ongoing project stats refresh' do
+        let(:maintainer) { create(:project_member, :maintainer, project: project).user }
+        let(:api_user) { maintainer }
+        let(:make_request) { delete api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user) }
+
+        it 'does not delete artifacts' do
+          make_request
+
+          expect(job.job_artifacts.size).to eq 2
+        end
+      end
+    end
+  end
+
+  describe 'DELETE /projects/:id/artifacts' do
+    context 'when user is anonymous' do
+      let(:api_user) { nil }
+
+      it 'does not execute Ci::JobArtifacts::DeleteProjectArtifactsService' do
+        expect(Ci::JobArtifacts::DeleteProjectArtifactsService)
+          .not_to receive(:new)
+
+        delete api("/projects/#{project.id}/artifacts", api_user)
+      end
+
+      it 'returns status 401 (unauthorized)' do
+        delete api("/projects/#{project.id}/artifacts", api_user)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'with developer' do
+      it 'does not execute Ci::JobArtifacts::DeleteProjectArtifactsService' do
+        expect(Ci::JobArtifacts::DeleteProjectArtifactsService)
+          .not_to receive(:new)
+
+        delete api("/projects/#{project.id}/artifacts", api_user)
+      end
+
+      it 'returns status 403 (forbidden)' do
+        delete api("/projects/#{project.id}/artifacts", api_user)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'with authorized user' do
+      let(:maintainer) { create(:project_member, :maintainer, project: project).user }
+      let!(:api_user) { maintainer }
+
+      it 'executes Ci::JobArtifacts::DeleteProjectArtifactsService' do
+        expect_next_instance_of(Ci::JobArtifacts::DeleteProjectArtifactsService, project: project) do |service|
+          expect(service).to receive(:execute).and_call_original
+        end
+
+        delete api("/projects/#{project.id}/artifacts", api_user)
+      end
+
+      it 'returns status 202 (accepted)' do
+        delete api("/projects/#{project.id}/artifacts", api_user)
+
+        expect(response).to have_gitlab_http_status(:accepted)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :delete_artifact do
+        let(:boundary_object) { project }
+        let(:user) { maintainer }
+        let(:request) { delete api("/projects/#{project.id}/artifacts", personal_access_token: pat) }
+      end
+
+      context 'when project is undergoing stats refresh' do
+        let!(:job) { create(:ci_build, :artifacts, pipeline: pipeline, user: api_user) }
+
+        it_behaves_like 'preventing request because of ongoing project stats refresh' do
+          let(:maintainer) { create(:project_member, :maintainer, project: project).user }
+          let(:api_user) { maintainer }
+          let(:make_request) { delete api("/projects/#{project.id}/artifacts", api_user) }
+
+          it 'does not delete artifacts' do
+            make_request
+
+            expect(job.job_artifacts.size).to eq 2
+          end
+        end
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/jobs/:job_id/artifacts/:artifact_path' do
+    include_context 'workhorse headers'
+
+    context 'when job has artifacts' do
+      let(:job) { create(:ci_build, :artifacts, pipeline: pipeline) }
+
+      let(:artifact) do
+        'other_artifacts_0.1.2/another-subdirectory/banana_sample.gif'
+      end
+
+      it_behaves_like 'enforcing job token policies', :read_jobs do
+        before do
+          stub_licensed_features(cross_project_pipelines: true)
+        end
+
+        around do |example|
+          Sidekiq::Testing.inline! { example.run }
+        end
+
+        let(:request) do
+          get api("/projects/#{source_project.id}/jobs/#{job.id}/artifacts/#{artifact}"),
+            params: { job_token: target_job.token },
+            headers: workhorse_headers
+        end
+      end
+
+      context 'when user is anonymous' do
+        let(:api_user) { nil }
+
+        context 'when project is public' do
+          it 'allows to access artifacts and sends the artifact entry via Workhorse', :aggregate_failures do
+            project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+            project.update_column(:public_builds, true)
+
+            get_artifact_file(artifact)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response.headers.to_h).to include(
+              'Content-Type' => 'application/json',
+              'Gitlab-Workhorse-Send-Data' => /artifacts-entry/
+            )
+            expect(response.headers.to_h)
+              .not_to include('Gitlab-Workhorse-Detect-Content-Type' => 'true')
+            expect(response.parsed_body).to be_empty
+          end
+        end
+
+        context 'when project is public with artifacts that are non public' do
+          let(:job) { create(:ci_build, :private_artifacts, :with_private_artifacts_config, pipeline: pipeline) }
+
+          it 'rejects access to artifacts' do
+            project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+            project.update_column(:public_builds, true)
+
+            get_artifact_file(artifact)
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+        end
+
+        context 'when project is public with builds access disabled' do
+          it 'rejects access to artifacts' do
+            project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+            project.update_column(:public_builds, false)
+
+            get_artifact_file(artifact)
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+        end
+
+        context 'when project is private' do
+          it 'rejects access and hides existence of artifacts' do
+            project.update_column(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+            project.update_column(:public_builds, true)
+
+            get_artifact_file(artifact)
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+
+      context 'when user is authorized' do
+        it 'returns a specific artifact file for a valid path' do
+          expect(Gitlab::Workhorse)
+            .to receive(:send_artifacts_entry)
+            .and_call_original
+
+          get_artifact_file(artifact)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.headers.to_h)
+            .to include('Content-Type' => 'application/json', 'Gitlab-Workhorse-Send-Data' => /artifacts-entry/)
+          expect(response.headers.to_h)
+            .not_to include('Gitlab-Workhorse-Detect-Content-Type' => 'true')
+          expect(response.parsed_body).to be_empty
+        end
+
+        context 'when artifacts are locked' do
+          it 'allows access to expired artifact' do
+            pipeline.artifacts_locked!
+            job.update!(artifacts_expire_at: Time.now - 7.days)
+
+            get_artifact_file(artifact)
+
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :download_job_artifact do
+          let(:boundary_object) { project }
+          let(:request) { get api("/projects/#{project.id}/jobs/#{job.id}/artifacts/#{artifact}", personal_access_token: pat), headers: workhorse_headers }
+        end
+      end
+    end
+
+    context 'when job does not have artifacts' do
+      it 'does not return job artifact file' do
+        get_artifact_file('some/artifact')
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    def get_artifact_file(artifact_path)
+      get api("/projects/#{project.id}/jobs/#{job.id}/" \
+              "artifacts/#{artifact_path}", api_user), headers: workhorse_headers
+    end
+  end
+
+  describe 'GET /projects/:id/jobs/:job_id/artifacts' do
+    include_context 'workhorse headers'
+
+    shared_examples 'downloads artifact' do
+      let(:download_headers) do
+        { 'Content-Transfer-Encoding' => 'binary',
+          'Content-Disposition' => %q(attachment; filename="ci_build_artifacts.zip"; filename*=UTF-8''ci_build_artifacts.zip),
+          'X-Sendfile' => job.artifacts_file.file.path }
+      end
+
+      let(:expected_params) { { artifact_size: job.artifacts_file.size } }
+      let(:subject_proc) { proc { subject } }
+
+      it 'returns specific job artifacts' do
+        subject
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers.to_h).to include(download_headers)
+      end
+
+      it_behaves_like 'storing arguments in the application context'
+      it_behaves_like 'not executing any extra queries for the application context'
+    end
+
+    context 'normal authentication' do
+      context 'job with artifacts' do
+        context 'when artifacts are stored locally' do
+          let(:job) { create(:ci_build, :artifacts, pipeline: pipeline, project: project) }
+
+          subject { get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), headers: workhorse_headers }
+
+          context 'authorized user' do
+            it_behaves_like 'downloads artifact'
+
+            it_behaves_like 'authorizing granular token permissions', :download_job_artifact do
+              let(:boundary_object) { project }
+              let(:request) { get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", personal_access_token: pat), headers: workhorse_headers }
+            end
+          end
+
+          context 'when job token is used' do
+            let(:other_job) { create(:ci_build, :running, user: user) }
+
+            subject(:request) { get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", job_token: other_job.token), headers: workhorse_headers }
+
+            before do
+              stub_licensed_features(cross_project_pipelines: true)
+            end
+
+            it_behaves_like 'enforcing job token policies', :read_jobs do
+              let(:other_job) { target_job }
+            end
+
+            context 'when job token scope is enabled' do
+              before do
+                other_job.project.ci_cd_settings.update!(
+                  job_token_scope_enabled: true,
+                  inbound_job_token_scope_enabled: true
+                )
+              end
+
+              it 'does not allow downloading artifacts' do
+                subject
+
+                expect(response).to have_gitlab_http_status(:forbidden)
+              end
+
+              context 'when project is added to the job token scope' do
+                before do
+                  make_project_fully_accessible(other_job.project, job.project)
+                end
+
+                it_behaves_like 'downloads artifact'
+
+                # https://gitlab.com/gitlab-org/gitlab/-/issues/459908
+                it 'logs context data about the job and route' do
+                  allow(Gitlab::AppLogger).to receive(:info)
+
+                  expect(::Gitlab::AppLogger).to receive(:info).with a_hash_including({
+                    job_id: other_job.id,
+                    job_user_id: other_job.user_id,
+                    job_project_id: other_job.project_id,
+                    'meta.caller_id' => 'GET /api/:version/projects/:id/jobs/:job_id/artifacts'
+                  })
+
+                  subject
+                end
+              end
+            end
+
+            it_behaves_like 'logs inbound authorizations via job token', :ok, :forbidden do
+              before do
+                allow(::Gitlab::CurrentSettings).to receive(:enforce_ci_inbound_job_token_scope_enabled?).and_return(false)
+              end
+
+              let(:accessed_project) { project }
+              let(:origin_project) { other_job.project }
+
+              let(:perform_request) do
+                get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", job_token: job_token), headers: workhorse_headers
+              end
+            end
+          end
+
+          context 'unauthorized user' do
+            let(:api_user) { nil }
+
+            it 'does not return specific job artifacts' do
+              subject
+
+              expect(response).to have_gitlab_http_status(:not_found)
+            end
+          end
+        end
+
+        context 'when artifacts are stored remotely' do
+          let(:proxy_download) { false }
+          let(:job) { create(:ci_build, pipeline: pipeline) }
+          let(:fixed_time) { Time.new(2001, 1, 1) }
+          let(:artifact) { create(:ci_job_artifact, :archive, :remote_store, job: job, created_at: fixed_time) }
+
+          before do
+            stub_artifacts_object_storage(proxy_download: proxy_download)
+
+            artifact
+            job.reload
+            travel_to fixed_time
+
+            get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), headers: workhorse_headers
+          end
+
+          context 'when proxy download is enabled' do
+            let(:proxy_download) { true }
+
+            it 'responds with the workhorse send-url' do
+              expect(response.headers[Gitlab::Workhorse::SEND_DATA_HEADER]).to start_with("send-url:")
+            end
+          end
+
+          context 'when proxy download is disabled' do
+            it 'returns location redirect' do
+              expect(response).to have_gitlab_http_status(:found)
+            end
+          end
+
+          context 'when proxy download is enabled and direct mode is allowed' do
+            let(:proxy_download) { true }
+
+            before do
+              stub_artifacts_object_storage(proxy_download: proxy_download, allowed_download_modes: %w[proxy direct])
+            end
+
+            it 'returns location redirect when download_mode=direct is requested' do
+              get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user),
+                params: { download_mode: 'direct' }, headers: workhorse_headers
+
+              expect(response).to have_gitlab_http_status(:found)
+            end
+
+            it 'responds with the workhorse send-url when download_mode is not requested' do
+              get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), headers: workhorse_headers
+
+              expect(response.headers[Gitlab::Workhorse::SEND_DATA_HEADER]).to start_with("send-url:")
+            end
+          end
+
+          context 'when Google CDN is configured' do
+            let(:cdn_config) do
+              {
+                'provider' => 'Google',
+                'url' => 'https://cdn.example.org',
+                'key_name' => 'stanhu-key',
+                'key' => Base64.urlsafe_encode64(SecureRandom.hex)
+              }
+            end
+
+            before do
+              stub_object_storage_uploader(
+                config: Gitlab.config.artifacts.object_store,
+                uploader: JobArtifactUploader,
+                proxy_download: proxy_download,
+                cdn: cdn_config
+              )
+              allow(Gitlab::ApplicationContext).to receive(:push).and_call_original
+            end
+
+            subject { get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), env: { REMOTE_ADDR: '18.245.0.1' }, headers: workhorse_headers }
+
+            it 'returns CDN-signed URL' do
+              expect(Gitlab::ApplicationContext).to receive(:push).with(artifact_used_cdn: true).and_call_original
+
+              subject
+
+              expect(response.redirect_url).to start_with("https://cdn.example.org/#{artifact.file.path}")
+            end
+          end
+
+          context 'authorized user' do
+            it 'returns the file remote URL', :freeze_time do
+              # Signed URLs contain timestamps. Freeze time to avoid flakiness.
+              expect(response).to redirect_to(artifact.file.url)
+            end
+          end
+
+          context 'unauthorized user' do
+            let(:api_user) { nil }
+
+            it 'does not return specific job artifacts' do
+              expect(response).to have_gitlab_http_status(:not_found)
+            end
+          end
+        end
+
+        context 'when public project guest and artifacts are non public' do
+          let(:api_user) { guest }
+          let(:job) { create(:ci_build, :private_artifacts, :with_private_artifacts_config, pipeline: pipeline) }
+
+          before do
+            project.update_column(:visibility_level,
+              Gitlab::VisibilityLevel::PUBLIC)
+            project.update_column(:public_builds, true)
+            get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), headers: workhorse_headers
+          end
+
+          it 'rejects access and hides existence of artifacts' do
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+        end
+
+        it 'does not return job artifacts if not uploaded' do
+          get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), headers: workhorse_headers
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'with file_type' do
+      let(:job) { create(:ci_build, :artifacts, pipeline: pipeline, project: project) }
+
+      subject(:request) do
+        get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user),
+          params: { file_type: file_type }, headers: workhorse_headers
+      end
+
+      context 'when the requested type is present' do
+        let!(:artifact) { create(:ci_job_artifact, :junit, job: job) }
+        let(:file_type) { 'junit' }
+
+        it 'serves that artifact instead of the archive' do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.headers['Content-Disposition']).to include(artifact.filename)
+          expect(response.headers['Content-Disposition']).not_to include('ci_build_artifacts.zip')
+        end
+      end
+
+      context 'when the requested type cannot be served' do
+        using RSpec::Parameterized::TableSyntax
+
+        where(:reason, :file_type, :status) do
+          'not present on the job' | 'dotenv' | :not_found
+          'not downloadable'       | 'trace'  | :bad_request
+          'unknown'                | 'bogus'  | :bad_request
+        end
+
+        with_them do
+          it 'returns an error' do
+            request
+
+            expect(response).to have_gitlab_http_status(status)
+          end
+        end
+      end
+
+      context 'when the archive is public but the requested artifact is not' do
+        let(:api_user) { guest }
+        let(:file_type) { 'dotenv' }
+
+        before do
+          create(:ci_job_artifact, :dotenv, :private, job: job)
+          project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+          project.update_column(:public_builds, true)
+        end
+
+        it 'rejects access to the non-public artifact' do
+          request
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+
+        it 'still serves the public archive' do
+          get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), headers: workhorse_headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'when a job token is used' do
+        let(:other_job) { create(:ci_build, :running, user: user) }
+        let(:file_type) { 'junit' }
+
+        before do
+          create(:ci_job_artifact, :junit, job: job)
+          stub_licensed_features(cross_project_pipelines: true)
+          make_project_fully_accessible(other_job.project, job.project)
+        end
+
+        it 'serves the requested artifact' do
+          get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", job_token: other_job.token),
+            params: { file_type: file_type }, headers: workhorse_headers
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/artifacts/:ref_name/download?job=name' do
+    include_context 'workhorse headers'
+
+    let(:api_user) { reporter }
+    let(:job) { create(:ci_build, :artifacts, pipeline: pipeline, user: api_user) }
+
+    before do
+      stub_artifacts_object_storage
+      job.success
+    end
+
+    def get_for_ref(ref = pipeline.ref, job_name = job.name, search_recent_successful_pipelines: false)
+      params = { job: job_name, search_recent_successful_pipelines: search_recent_successful_pipelines }
+
+      get api("/projects/#{project.id}/jobs/artifacts/#{ref}/download", api_user), params: params, headers: workhorse_headers
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_jobs do
+      before do
+        stub_licensed_features(cross_project_pipelines: true)
+        pipeline.update!(status: :success)
+      end
+
+      let(:request) do
+        get api("/projects/#{source_project.id}/jobs/artifacts/#{pipeline.ref}/download"),
+          params: { job: job.name, job_token: target_job.token },
+          headers: workhorse_headers
+      end
+    end
+
+    context 'when not logged in' do
+      let(:api_user) { nil }
+
+      before do
+        get_for_ref
+      end
+
+      it 'does not find a resource in a private project' do
+        expect(project).to be_private
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when logging as guest' do
+      let(:api_user) { guest }
+
+      before do
+        get_for_ref
+      end
+
+      it 'gives 403' do
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'non-existing job' do
+      shared_examples 'not found' do
+        it { expect(response).to have_gitlab_http_status(:not_found) }
+      end
+
+      context 'has no such ref' do
+        before do
+          get_for_ref('TAIL')
+        end
+
+        it_behaves_like 'not found'
+      end
+
+      context 'has no such job' do
+        before do
+          get_for_ref(pipeline.ref, 'NOBUILD')
+        end
+
+        it_behaves_like 'not found'
+      end
+    end
+
+    context 'find proper job' do
+      let(:job_with_artifacts) { job }
+
+      shared_examples 'a valid file' do
+        context 'when artifacts are stored locally', :sidekiq_might_not_need_inline do
+          let(:download_headers) do
+            { 'Content-Transfer-Encoding' => 'binary',
+              'Content-Disposition' =>
+              %(attachment; filename="#{job_with_artifacts.artifacts_file.filename}"; filename*=UTF-8''#{job.artifacts_file.filename}) }
+          end
+
+          it { expect(response).to have_gitlab_http_status(:ok) }
+          it { expect(response.headers.to_h).to include(download_headers) }
+        end
+
+        context 'when artifacts are stored remotely' do
+          let(:job) { create(:ci_build, pipeline: pipeline, user: api_user) }
+          let!(:artifact) { create(:ci_job_artifact, :archive, :remote_store, job: job) }
+
+          before do
+            job.reload
+
+            get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", api_user), headers: workhorse_headers
+          end
+
+          it 'returns location redirect' do
+            expect(response).to have_gitlab_http_status(:found)
+          end
+        end
+      end
+
+      context 'with regular branch' do
+        before do
+          pipeline.reload
+          pipeline.update!(ref: 'master', sha: project.commit('master').sha)
+
+          get_for_ref('master')
+        end
+
+        it_behaves_like 'a valid file'
+      end
+
+      context 'with branch name containing slash' do
+        before do
+          pipeline.reload
+          pipeline.update!(ref: 'improve/awesome', sha: project.commit('improve/awesome').sha)
+          get_for_ref('improve/awesome')
+        end
+
+        it_behaves_like 'a valid file'
+      end
+
+      context 'with job name in a child pipeline' do
+        let(:child_pipeline) { create(:ci_pipeline, child_of: pipeline) }
+        let!(:child_job) { create(:ci_build, :artifacts, :success, name: 'rspec', pipeline: child_pipeline) }
+        let(:job_with_artifacts) { child_job }
+
+        before do
+          get_for_ref('master', child_job.name)
+        end
+
+        it_behaves_like 'a valid file'
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :download_job_artifact do
+        let(:boundary_object) { project }
+        let(:user) { reporter }
+        let(:request) do
+          get api("/projects/#{project.id}/jobs/artifacts/#{pipeline.ref}/download", personal_access_token: pat), params: { job: job.name }, headers: workhorse_headers
+        end
+
+        before_all do
+          pipeline.update!(status: :success)
+        end
+      end
+    end
+
+    context 'when search_recent_successful_pipelines parameter is used' do
+      let(:ref_name) { 'master' }
+
+      before do
+        pipeline.reload
+        pipeline.update!(ref: ref_name, sha: project.commit(ref_name).sha, status: :success)
+        stub_const('Ci::Build::MAX_PIPELINES_TO_SEARCH', 2)
+      end
+
+      it 'returns artifacts when build exists within search limit' do
+        # Create older pipeline with artifacts
+        older_pipeline = create(:ci_pipeline, :success, project: project, ref: ref_name,
+          created_at: 2.days.ago)
+        job_with_artifacts = create(:ci_build, :success, :artifacts,
+          name: 'test-job', pipeline: older_pipeline)
+
+        # Create newer pipeline without this job
+        create(:ci_pipeline, :success, project: project, ref: ref_name,
+          created_at: 1.day.ago)
+
+        get_for_ref(ref_name, 'test-job', search_recent_successful_pipelines: true)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['X-Sendfile']).to eq(job_with_artifacts.artifacts_file.file.path)
+      end
+
+      it 'returns 404 when build has no artifacts in recent pipelines' do
+        create(:ci_build, :success, name: 'test-job', pipeline: pipeline)
+
+        get_for_ref(ref_name, 'test-job', search_recent_successful_pipelines: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+
+      it 'returns 404 when job exists beyond search limit' do
+        # Create pipeline with artifacts (will be beyond limit)
+        old_pipeline = create(:ci_pipeline, :success, project: project, ref: ref_name,
+          created_at: 5.days.ago)
+        create(:ci_build, :success, :artifacts, name: 'old-job', pipeline: old_pipeline)
+
+        # Create 2 newer successful pipelines without this job (exceeds MAX_PIPELINES_TO_SEARCH=2)
+        2.times do
+          create(:ci_pipeline, :success, project: project, ref: ref_name,
+            created_at: 1.day.ago)
+        end
+
+        get_for_ref(ref_name, 'old-job', search_recent_successful_pipelines: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'GET id/jobs/artifacts/:ref_name/raw/*artifact_path?job=name' do
+    include_context 'workhorse headers'
+
+    context 'when job has artifacts' do
+      let(:job) { create(:ci_build, :artifacts, pipeline: pipeline, user: api_user) }
+      let(:artifact) { 'other_artifacts_0.1.2/another-subdirectory/banana_sample.gif' }
+      let(:visibility_level) { Gitlab::VisibilityLevel::PUBLIC }
+      let(:public_builds) { true }
+
+      before do
+        stub_artifacts_object_storage
+        job.success
+
+        project.update!(visibility_level: visibility_level, public_builds: public_builds)
+
+        get_artifact_file(artifact)
+      end
+
+      context 'when user is anonymous' do
+        let(:api_user) { nil }
+
+        context 'when project is public' do
+          let(:visibility_level) { Gitlab::VisibilityLevel::PUBLIC }
+          let(:public_builds) { true }
+
+          it 'allows to access artifacts', :sidekiq_might_not_need_inline do
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response.headers.to_h).to include(
+              'Content-Type' => 'application/json',
+              'Gitlab-Workhorse-Send-Data' => /artifacts-entry/,
+              'Gitlab-Workhorse-Detect-Content-Type' => 'true'
+            )
+          end
+        end
+
+        context 'when project is public with builds access disabled' do
+          let(:visibility_level) { Gitlab::VisibilityLevel::PUBLIC }
+          let(:public_builds) { false }
+
+          it 'rejects access to artifacts' do
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response).to have_key('message')
+            expect(response.headers.to_h)
+              .not_to include('Gitlab-Workhorse-Send-Data' => /artifacts-entry/)
+          end
+        end
+
+        context 'when project is public with non public artifacts' do
+          let(:job) { create(:ci_build, :private_artifacts, :with_private_artifacts_config, pipeline: pipeline, user: api_user) }
+          let(:visibility_level) { Gitlab::VisibilityLevel::PUBLIC }
+          let(:public_builds) { true }
+
+          it 'rejects access and hides existence of artifacts', :sidekiq_might_not_need_inline do
+            get_artifact_file(artifact)
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response).to have_key('message')
+            expect(response.headers.to_h)
+              .not_to include('Gitlab-Workhorse-Send-Data' => /artifacts-entry/)
+          end
+        end
+
+        context 'when project is private' do
+          let(:visibility_level) { Gitlab::VisibilityLevel::PRIVATE }
+          let(:public_builds) { true }
+
+          it 'rejects access and hides existence of artifacts' do
+            expect(response).to have_gitlab_http_status(:not_found)
+            expect(json_response).to have_key('message')
+            expect(response.headers.to_h)
+              .not_to include('Gitlab-Workhorse-Send-Data' => /artifacts-entry/)
+          end
+
+          it_behaves_like 'enforcing job token policies', :read_jobs,
+            allow_public_access_for_enabled_project_features: [:repository, :builds] do
+            before do
+              stub_licensed_features(cross_project_pipelines: true)
+              pipeline.update!(status: :success)
+            end
+
+            let(:request) do
+              get api("/projects/#{source_project.id}/jobs/artifacts/#{pipeline.ref}/raw/#{artifact}"),
+                params: { job: job.name, job_token: target_job.token },
+                headers: workhorse_headers
+            end
+          end
+        end
+      end
+
+      context 'when user is authorized' do
+        let(:visibility_level) { Gitlab::VisibilityLevel::PRIVATE }
+        let(:public_builds) { true }
+
+        it 'returns a specific artifact file for a valid path', :sidekiq_might_not_need_inline do
+          expect(Gitlab::Workhorse)
+            .to receive(:send_artifacts_entry)
+                  .and_call_original
+
+          get_artifact_file(artifact)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.headers.to_h).to include(
+            'Content-Type' => 'application/json',
+            'Gitlab-Workhorse-Send-Data' => /artifacts-entry/,
+            'Gitlab-Workhorse-Detect-Content-Type' => 'true'
+          )
+          expect(response.parsed_body).to be_empty
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :download_job_artifact do
+          let(:boundary_object) { project }
+          let(:request) do
+            get api("/projects/#{project.id}/jobs/artifacts/#{pipeline.ref}/raw/#{artifact}", personal_access_token: pat), params: { job: job.name }, headers: workhorse_headers
+          end
+
+          before_all do
+            pipeline.update!(status: :success)
+          end
+        end
+      end
+
+      context 'with branch name containing slash' do
+        before do
+          pipeline.reload
+          pipeline.update!(ref: 'improve/awesome', sha: project.commit('improve/awesome').sha)
+        end
+
+        it 'returns a specific artifact file for a valid path', :sidekiq_might_not_need_inline do
+          get_artifact_file(artifact, 'improve/awesome')
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.headers.to_h).to include(
+            'Content-Type' => 'application/json',
+            'Gitlab-Workhorse-Send-Data' => /artifacts-entry/,
+            'Gitlab-Workhorse-Detect-Content-Type' => 'true'
+          )
+        end
+      end
+
+      context 'non-existing job' do
+        shared_examples 'not found' do
+          it { expect(response).to have_gitlab_http_status(:not_found) }
+        end
+
+        context 'has no such ref' do
+          before do
+            get_artifact_file('some/artifact', 'wrong-ref')
+          end
+
+          it_behaves_like 'not found'
+        end
+
+        context 'has no such job' do
+          before do
+            get_artifact_file('some/artifact', pipeline.ref, 'wrong-job-name')
+          end
+
+          it_behaves_like 'not found'
+        end
+      end
+
+      context 'when search_recent_successful_pipelines parameter is used' do
+        let(:ref_name) { project.default_branch }
+
+        before do
+          pipeline.reload
+          pipeline.update!(ref: ref_name, sha: project.commit(ref_name).sha, status: :success)
+          job.reload
+          stub_const('Ci::Build::MAX_PIPELINES_TO_SEARCH', 2)
+        end
+
+        it 'returns artifact file when build exists within search limit', :sidekiq_might_not_need_inline do
+          older_pipeline = create(:ci_pipeline, :success, project: project, ref: ref_name,
+            created_at: 2.days.ago)
+          create(:ci_build, :success, :artifacts, name: 'test-job', pipeline: older_pipeline)
+
+          get_artifact_file(artifact, ref_name, 'test-job', search_recent_successful_pipelines: true)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.headers.to_h).to include(
+            'Content-Type' => 'application/json',
+            'Gitlab-Workhorse-Send-Data' => /artifacts-entry/
+          )
+        end
+
+        it 'returns 404 when job exists beyond search limit' do
+          old_pipeline = create(:ci_pipeline, :success, project: project, ref: ref_name,
+            created_at: 5.days.ago)
+          create(:ci_build, :success, :artifacts, name: 'old-job', pipeline: old_pipeline)
+
+          2.times do
+            create(:ci_pipeline, :success, project: project, ref: ref_name,
+              created_at: 1.day.ago)
+          end
+
+          get_artifact_file(artifact, ref_name, 'old-job', search_recent_successful_pipelines: true)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'when job does not have artifacts' do
+      let(:job) { create(:ci_build, pipeline: pipeline, user: api_user) }
+
+      it 'does not return job artifact file' do
+        get_artifact_file('some/artifact')
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+
+      context 'when search_recent_successful_pipelines parameter is used' do
+        let(:artifact) { 'other_artifacts_0.1.2/another-subdirectory/banana_sample.gif' }
+        let(:ref_name) { project.default_branch }
+
+        before do
+          pipeline.reload
+          pipeline.update!(ref: ref_name, sha: project.commit(ref_name).sha, status: :success)
+          stub_const('Ci::Build::MAX_PIPELINES_TO_SEARCH', 2)
+        end
+
+        it 'returns 404 when build has no artifacts in recent pipelines' do
+          create(:ci_build, :success, name: 'test-job', pipeline: pipeline)
+
+          get_artifact_file(artifact, ref_name, 'test-job', search_recent_successful_pipelines: true)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    def get_artifact_file(artifact_path, ref = pipeline.ref, job_name = job.name, search_recent_successful_pipelines: false)
+      get api("/projects/#{project.id}/jobs/artifacts/#{ref}/raw/#{artifact_path}", api_user),
+        params: { job: job_name, search_recent_successful_pipelines: search_recent_successful_pipelines },
+        headers: workhorse_headers
+    end
+  end
+
+  describe 'GET /projects/:id/jobs/:job_id/artifacts/tree' do
+    let_it_be(:job) { create(:ci_build, :artifacts, pipeline: pipeline) }
+
+    def get_tree(params = {})
+      get api("/projects/#{project.id}/jobs/#{job.id}/artifacts/tree", api_user), params: params
+    end
+
+    context 'when user is anonymous' do
+      let(:api_user) { nil }
+
+      context 'when project is public with public builds' do
+        before do
+          project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+          project.update_column(:public_builds, true)
+        end
+
+        it 'returns artifact tree entries' do
+          get_tree
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_an(Array)
+        end
+      end
+
+      context 'when project is public with builds access disabled' do
+        before do
+          project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+          project.update_column(:public_builds, false)
+        end
+
+        it 'rejects access' do
+          get_tree
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'when project is private' do
+        it 'returns not found' do
+          get_tree
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'when user is authorized' do
+      it 'returns artifact tree entries' do
+        get_tree
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_an(Array)
+      end
+
+      it 'returns entries with correct attributes for files' do
+        get_tree
+
+        file_entries = json_response.select { |e| e['type'] == 'file' }
+        expect(file_entries).to all(match(
+          'name' => an_instance_of(String),
+          'path' => an_instance_of(String),
+          'type' => 'file',
+          'size' => an_instance_of(Integer),
+          'mode' => an_instance_of(String)
+        ))
+      end
+
+      it 'returns entries with correct attributes for directories' do
+        get_tree
+
+        dir_entries = json_response.select { |e| e['type'] == 'directory' }
+        expect(dir_entries).to all(match(
+          'name' => an_instance_of(String),
+          'path' => an_instance_of(String),
+          'type' => 'directory',
+          'mode' => an_instance_of(String)
+        ))
+      end
+
+      context 'with path parameter' do
+        it 'returns entries for the specified directory' do
+          get_tree(path: 'other_artifacts_0.1.2')
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_an(Array)
+          expect(json_response).not_to be_empty
+        end
+
+        it 'returns 404 for non-existent path' do
+          get_tree(path: 'non/existent/path')
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'with recursive parameter' do
+        it 'returns only immediate children when recursive=false' do
+          get_tree(recursive: false)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          # All returned paths should be at root level (no nested paths beyond one level)
+          entry_depths = json_response.map do |entry|
+            entry['path'].count('/') - (entry['type'] == 'directory' ? 1 : 0)
+          end
+          expect(entry_depths).to all(be <= 1)
+        end
+
+        it 'returns all entries recursively when recursive=true' do
+          get_tree(recursive: false)
+          non_recursive_count = json_response.size
+
+          get_tree(recursive: true)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          # Recursive listing should typically have more or equal entries
+          expect(json_response.size).to be >= non_recursive_count
+        end
+      end
+
+      context 'pagination' do
+        let(:per_page) { 1 }
+
+        it 'paginates the results' do
+          get_tree(per_page: per_page)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to include_pagination_headers
+          expect(json_response.size).to eq(per_page)
+          expect(response.headers['X-Total'].to_i).to be > 1
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :download_job_artifact do
+        let(:boundary_object) { project }
+        let(:request) do
+          get api("/projects/#{project.id}/jobs/#{job.id}/artifacts/tree", personal_access_token: pat)
+        end
+      end
+    end
+
+    context 'when job has no artifacts' do
+      let(:job) { create(:ci_build, :success, pipeline: pipeline) }
+
+      it 'returns 404' do
+        get_tree
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when job has archive but no metadata' do
+      let(:job) { create(:ci_build, :success, :with_archive_artifact, pipeline: pipeline) }
+
+      it 'returns 404 with metadata message' do
+        get_tree
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 Artifacts metadata Not Found')
+      end
+    end
+
+    context 'when artifacts are locked' do
+      let(:job) { create(:ci_build, :artifacts, pipeline: pipeline, artifacts_expire_at: 7.days.ago) }
+
+      before do
+        pipeline.artifacts_locked!
+      end
+
+      it 'allows access to expired artifacts' do
+        get_tree
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    context 'when using job token' do
+      it_behaves_like 'enforcing job token policies', :read_jobs do
+        before do
+          stub_licensed_features(cross_project_pipelines: true)
+        end
+
+        let(:request) do
+          get api("/projects/#{source_project.id}/jobs/#{job.id}/artifacts/tree"),
+            params: { job_token: target_job.token }
+        end
+      end
+    end
+
+    context 'when project has non-public artifacts' do
+      let(:job) { create(:ci_build, :private_artifacts, :with_private_artifacts_config, pipeline: pipeline) }
+
+      context 'when user is anonymous' do
+        let(:api_user) { nil }
+
+        before do
+          project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+          project.update_column(:public_builds, true)
+        end
+
+        it 'rejects access to artifacts' do
+          get_tree
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+  end
+
+  describe 'POST /projects/:id/jobs/:job_id/artifacts/keep' do
+    before do
+      post api("/projects/#{project.id}/jobs/#{job.id}/artifacts/keep", user)
+    end
+
+    context 'artifacts did not expire' do
+      let(:job) do
+        create(
+          :ci_build,
+          :trace_artifact,
+          :artifacts,
+          :success,
+          project: project,
+          pipeline: pipeline,
+          artifacts_expire_at: Time.now + 7.days
+        )
+      end
+
+      it 'keeps artifacts' do
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(job.reload.artifacts_expire_at).to be_nil
+      end
+
+      context 'when user does not have permissions' do
+        let(:user) { create(:user) }
+
+        it 'responds with :not_found' do
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :preserve_job_artifact do
+        let(:boundary_object) { project }
+        let(:request) { post api("/projects/#{project.id}/jobs/#{job.id}/artifacts/keep", personal_access_token: pat) }
+      end
+    end
+
+    context 'no artifacts' do
+      let(:job) { create(:ci_build, project: project, pipeline: pipeline) }
+
+      it 'responds with not found' do
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'with an ai_workflows OAuth token' do
+    include_context 'workhorse headers'
+
+    let_it_be(:maintainer) { create(:user, maintainer_of: project) }
+
+    let(:user) { maintainer }
+    let(:token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+    let!(:job) { create(:ci_build, :success, :artifacts, pipeline: pipeline, user: user) }
+
+    def api_path(suffix = '')
+      "/projects/#{project.id}/jobs/#{job.id}/artifacts#{suffix}"
+    end
+
+    describe 'reading artifacts' do
+      it 'downloads the artifacts archive' do
+        get api(api_path, oauth_access_token: token), headers: workhorse_headers
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'responds to HEAD on the artifacts archive' do
+        head api(api_path, oauth_access_token: token), headers: workhorse_headers
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'lists the artifacts tree' do
+        get api(api_path('/tree'), oauth_access_token: token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_an(Array)
+      end
+
+      context 'when the job has non-public artifacts and the user is a guest' do
+        let(:user) { guest }
+        let!(:job) { create(:ci_build, :private_artifacts, :with_private_artifacts_config, pipeline: pipeline) }
+
+        before do
+          project.update_column(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+          project.update_column(:public_builds, true)
+        end
+
+        it 'still rejects the download' do
+          get api(api_path, oauth_access_token: token), headers: workhorse_headers
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+
+        it 'still rejects the tree' do
+          get api(api_path('/tree'), oauth_access_token: token)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+
+    describe 'writing artifacts' do
+      it 'rejects keep with insufficient_scope and leaves the expiry alone' do
+        job.update!(artifacts_expire_at: 7.days.from_now)
+
+        expect { post api(api_path('/keep'), oauth_access_token: token) }
+          .not_to change { job.reload.artifacts_expire_at }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(json_response['error']).to eq('insufficient_scope')
+      end
+
+      it 'rejects deleting a job\'s artifacts with insufficient_scope and keeps them' do
+        expect { delete api(api_path, oauth_access_token: token) }
+          .not_to change { job.reload.job_artifacts.count }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(json_response['error']).to eq('insufficient_scope')
+      end
+
+      it 'rejects deleting all project artifacts with insufficient_scope and never calls the service' do
+        expect(Ci::JobArtifacts::DeleteProjectArtifactsService).not_to receive(:new)
+
+        delete api("/projects/#{project.id}/artifacts", oauth_access_token: token)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(json_response['error']).to eq('insufficient_scope')
+      end
+    end
+  end
+
+  describe 'ETag caching' do
+    let(:job) { create(:ci_build, :artifacts, pipeline: pipeline, user: developer) }
+    let(:archive_sha256) { job.job_artifacts_archive.file_sha256 }
+    let(:artifact_path) { 'other_artifacts_0.1.2/another-subdirectory/banana_sample.gif' }
+    let(:archive_etag) { %("#{archive_sha256}") }
+
+    def etag_for(sha256, path)
+      %("#{Digest::SHA256.hexdigest("#{sha256}:#{path}")}")
+    end
+
+    before do
+      stub_artifacts_object_storage
+      job.success
+      pipeline.update!(status: :success)
+    end
+
+    context 'GET /projects/:id/jobs/:job_id/artifacts' do
+      let(:url) { "/projects/#{project.id}/jobs/#{job.id}/artifacts" }
+
+      it 'returns the archive sha256 as the ETag' do
+        get api(url, developer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['ETag']).to eq(archive_etag)
+      end
+
+      it 'returns 304 when the If-None-Match matches the artifact sha256' do
+        get api(url, developer), headers: { 'If-None-Match' => archive_etag }
+
+        expect(response).to have_gitlab_http_status(:not_modified)
+      end
+
+      it 'returns 200 when the If-None-Match does not match' do
+        get api(url, developer), headers: { 'If-None-Match' => %("stale") }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['ETag']).to eq(archive_etag)
+      end
+    end
+
+    context 'GET /projects/:id/jobs/:job_id/artifacts/*artifact_path' do
+      let(:url) { "/projects/#{project.id}/jobs/#{job.id}/artifacts/#{artifact_path}" }
+      let(:expected_etag) { etag_for(archive_sha256, artifact_path) }
+
+      it 'returns an ETag derived from the archive sha256 and the path' do
+        get api(url, developer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['ETag']).to eq(expected_etag)
+      end
+
+      it 'returns 304 when the If-None-Match matches' do
+        get api(url, developer), headers: { 'If-None-Match' => expected_etag }
+
+        expect(response).to have_gitlab_http_status(:not_modified)
+      end
+
+      it 'returns a distinct ETag for a different artifact_path within the same archive' do
+        get api("/projects/#{project.id}/jobs/#{job.id}/artifacts/other/path.txt", developer)
+
+        expect(response.headers['ETag']).not_to eq(expected_etag)
+      end
+    end
+
+    context 'GET /projects/:id/jobs/artifacts/:ref_name/download' do
+      let(:url) { "/projects/#{project.id}/jobs/artifacts/#{pipeline.ref}/download" }
+      let(:params) { { job: job.name } }
+
+      it 'returns the archive sha256 as the ETag' do
+        get api(url, developer), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['ETag']).to eq(archive_etag)
+      end
+
+      it 'returns 304 when the If-None-Match matches' do
+        get api(url, developer), params: params, headers: { 'If-None-Match' => archive_etag }
+
+        expect(response).to have_gitlab_http_status(:not_modified)
+      end
+    end
+
+    context 'GET /projects/:id/jobs/artifacts/:ref_name/raw/*artifact_path' do
+      let(:url) { "/projects/#{project.id}/jobs/artifacts/#{pipeline.ref}/raw/#{artifact_path}" }
+      let(:params) { { job: job.name } }
+      let(:expected_etag) { etag_for(archive_sha256, artifact_path) }
+
+      it 'returns an ETag derived from the archive sha256 and the path' do
+        get api(url, developer), params: params
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['ETag']).to eq(expected_etag)
+      end
+
+      it 'returns 304 when the If-None-Match matches' do
+        get api(url, developer), params: params, headers: { 'If-None-Match' => expected_etag }
+
+        expect(response).to have_gitlab_http_status(:not_modified)
+      end
+    end
+
+    context 'when the artifact has no sha256' do
+      before do
+        job.job_artifacts_archive.update_column(:file_sha256, nil)
+      end
+
+      it 'suppresses Rack::ETag instead of emitting a bogus ETag' do
+        get api("/projects/#{project.id}/jobs/#{job.id}/artifacts", developer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.headers['ETag']).to be_nil
+        expect(response.headers['Last-Modified']).to eq('0')
+      end
+    end
+  end
+end

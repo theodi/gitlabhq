@@ -1,0 +1,195 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::Releases::EvidencesController, :with_license do
+  let!(:project) { create(:project, :repository, :public) }
+  let_it_be(:private_project, freeze: false) { create(:project, :repository, :private) }
+  let_it_be(:developer, freeze: false)  { create(:user) }
+  let_it_be(:reporter, freeze: false)   { create(:user) }
+
+  let(:user) { developer }
+
+  before do
+    project.add_developer(developer)
+    project.add_reporter(reporter)
+  end
+
+  shared_examples_for 'successful request' do
+    it 'renders a 200' do
+      subject
+
+      expect(response).to have_gitlab_http_status(:success)
+    end
+  end
+
+  shared_examples_for 'not found' do
+    it 'renders 404' do
+      subject
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+  end
+
+  describe 'GET #show' do
+    let(:tag_name) { "v1.1.0-evidence" }
+    let!(:release) { create(:release, project: project, tag: tag_name) }
+    let(:evidence) { release.evidences.first }
+    let(:tag) { CGI.escape(release.tag) }
+    let(:format) { :json }
+
+    subject do
+      get :show, params: {
+        namespace_id: project.namespace.to_param,
+        project_id: project,
+        tag: tag,
+        id: evidence.id,
+        format: format
+      }
+    end
+
+    before do
+      ::Releases::CreateEvidenceService.new(release).execute
+
+      sign_in(user)
+    end
+
+    context 'when the user is a developer' do
+      it 'returns the correct evidence summary as a json' do
+        subject
+
+        expect(json_response).to eq(evidence.summary)
+      end
+
+      context 'when the release was created before evidence existed' do
+        before do
+          evidence.destroy!
+        end
+
+        it_behaves_like 'not found'
+      end
+    end
+
+    context 'when the user is a guest for the project' do
+      before do
+        project.add_guest(user)
+      end
+
+      context 'when the project is private' do
+        let(:project) { private_project }
+
+        it_behaves_like 'not found'
+      end
+
+      context 'when the project is public' do
+        it_behaves_like 'successful request'
+      end
+    end
+
+    context 'when release is associated to a milestone which includes an issue' do
+      let(:issue) { create(:issue, project: project) }
+      let(:milestone) { create(:milestone, project: project, issues: [issue]) }
+      let(:release) { create(:release, project: project, tag: tag_name, milestones: [milestone]) }
+
+      shared_examples_for 'evidence not found' do
+        it do
+          subject
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when user is non-project member' do
+        let(:user) { create(:user) }
+
+        it 'does not show the issue in evidence' do
+          subject
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['release']['milestones']
+            .all? { |milestone| milestone['issues'].nil? }).to be(true)
+        end
+
+        context 'when project is private' do
+          let(:project) { create(:project, :repository, :private) }
+
+          it_behaves_like 'evidence not found'
+        end
+
+        context 'when project restricts the visibility of issues to project members only' do
+          let(:project) { create(:project, :repository, :issues_private) }
+
+          it_behaves_like 'evidence not found'
+        end
+      end
+
+      context 'when external authorization control is enabled' do
+        let(:user) { create(:user) }
+
+        before do
+          stub_application_setting(external_authorization_service_enabled: true)
+        end
+
+        it_behaves_like 'evidence not found'
+      end
+    end
+
+    context 'when tag name contains a plus sign' do
+      let(:tag_name) { "v1.0.0+rc1" }
+      let!(:release) { create(:release, project: project, tag: tag_name) }
+      let(:evidence) { release.evidences.first }
+
+      context 'when accessing with literal plus sign' do
+        let(:tag) { tag_name } # No escaping, raw "v1.0.0+rc1"
+
+        it 'returns the evidence successfully' do
+          get :show, params: {
+            namespace_id: project.namespace.to_param,
+            project_id: project,
+            tag: tag,
+            id: evidence.id,
+            format: :json
+          }
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response).to eq(evidence.summary)
+        end
+      end
+    end
+
+    context 'when tag name contains special characters' do
+      where(:tag_name) do
+        [
+          'v1.0.0+rc1',
+          'release+candidate+1',
+          'v1.0.0+build.123',
+          'release with+plus'
+        ]
+      end
+
+      with_them do
+        let!(:release) { create(:release, project: project, tag: tag_name) }
+        let(:evidence) { release.evidences.first }
+        let(:tag) { tag_name }
+
+        before do
+          ::Releases::CreateEvidenceService.new(release).execute
+          sign_in(developer)
+        end
+
+        it 'handles the tag name correctly' do
+          get :show, params: {
+            namespace_id: project.namespace.to_param,
+            project_id: project,
+            tag: tag,
+            id: evidence.id,
+            format: :json
+          }
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response).to eq(evidence.summary)
+        end
+      end
+    end
+  end
+end

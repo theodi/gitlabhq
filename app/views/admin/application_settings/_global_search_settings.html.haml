@@ -1,0 +1,23 @@
+= render ::Layouts::SettingsBlockComponent.new(_('Visibility and access controls'),
+  id: 'js-global-search-settings',
+  testid: 'admin-global-search-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure search access and visibility settings for search scopes.')
+    = link_to _('Learn more.'), help_page_path('user/search/_index.md', anchor: 'restrict-search-access'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-global-search-settings'), html: { class: 'fieldset-form', id: 'global-search-settings' } do |f|
+      = form_errors(@application_setting)
+      %fieldset
+        .form-group
+          - global_search_settings_checkboxes(f).each do |checkbox|
+            = checkbox
+        .form-group
+          = f.label :default_search_scope, _('Default search scope'), class: 'label-bold'
+          = f.select :default_search_scope,
+            options_for_select(default_search_scope_options_for_select, @application_setting.default_search_scope),
+            {},
+            class: 'form-control'
+          %span.form-text{ class: '!gl-text-subtle' }
+            = _('Select a default search scope. For the system default, a scope is selected automatically based on context and availability.')
+      = f.submit _('Save changes'), pajamas_button: true

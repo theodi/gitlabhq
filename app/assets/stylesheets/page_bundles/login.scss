@@ -1,0 +1,25 @@
+@import 'mixins_and_variables_and_functions';
+
+.html-devise-layout {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+/* Login Page */
+.login-page {
+  .container {
+    max-width: 960px;
+  }
+
+  .g-recaptcha {
+    > div {
+      margin-left: auto;
+      margin-right: auto;
+    }
+  }
+}
+
+.devise-errors {
+  @include devise-errors;
+}

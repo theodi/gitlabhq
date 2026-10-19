@@ -1,17 +1,5 @@
-- page_title "Compare"
-= render "projects/commits/head"
+- breadcrumb_title s_("CompareRevisions|Compare revisions")
 
-%h3.page-title
-  Compare View
-%p.slead
-  Compare branches, tags or commit ranges.
-  %br
-  Fill input field with commit id like
-  %code.label-branch 4eedf23
-  or branch/tag name like
-  %code.label-branch master
-  and press compare button for the commits list and a code diff.
-  %br
-  Changes are shown <b>from</b> the version in the first field <b>to</b> the version in the second field.
+- page_title s_("CompareRevisions|Compare revisions")
 
-= render "form"
+#js-compare-selector{ data: project_compare_selector_data(@project, @merge_request, @compare_params) }

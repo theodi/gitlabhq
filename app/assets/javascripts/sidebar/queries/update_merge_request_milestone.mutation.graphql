@@ -1,0 +1,15 @@
+mutation mergeRequestSetMilestone($fullPath: ID!, $iid: String!, $attributeId: MilestoneID) {
+  issuableSetAttribute: mergeRequestSetMilestone(
+    input: { projectPath: $fullPath, iid: $iid, milestoneId: $attributeId }
+  ) {
+    errors
+    issuable: mergeRequest {
+      id
+      attribute: milestone {
+        title
+        id
+        state
+      }
+    }
+  }
+}

@@ -1,0 +1,165 @@
+<script>
+import { GlTooltip, GlDisclosureDropdown } from '@gitlab/ui';
+import { uniqueId } from 'lodash-es';
+import Tracking from '~/tracking';
+import { __ } from '~/locale';
+import { updateText } from '~/lib/utils/text_markdown';
+import { formatMarkdownTable } from '~/lib/utils/markdown_table_cleanup';
+import { DEFAULT_GLQL_VIEW_CONTENT } from '~/content_editor/extensions/code_block_highlight';
+import {
+  DEFAULT_MERMAID_CONTENT,
+  DEFAULT_PLANTUML_CONTENT,
+} from '~/content_editor/extensions/diagram';
+import { TOOLBAR_CONTROL_TRACKING_ACTION, MARKDOWN_EDITOR_TRACKING_LABEL } from './tracking';
+
+export default {
+  name: 'ToolbarMoreDropdown',
+  components: {
+    GlDisclosureDropdown,
+    GlTooltip,
+  },
+  /* eslint-disable @gitlab/require-i18n-strings */
+  data() {
+    return {
+      isDropdownOpen: false,
+      toggleId: uniqueId('dropdown-toggle-btn-'),
+      items: [
+        {
+          text: __('Alert'),
+          icon: 'warning',
+          action: () => this.insertMarkdown('> [!NOTE]\n> {text}', 'alert'),
+        },
+        {
+          text: __('Code block'),
+          icon: 'code',
+          action: () => this.insertMarkdown('```\n{text}\n```', 'codeBlock'),
+        },
+        {
+          text: __('Collapsible section'),
+          icon: 'details-block',
+          action: () =>
+            this.insertMarkdown(
+              '<details>\n<summary>Click to expand</summary>\n\n{text}\n\n</details>',
+              'details',
+              'Click to expand',
+            ),
+        },
+        {
+          text: __('Bullet list'),
+          icon: 'list-bulleted',
+          action: () => this.insertMarkdown('- {text}', 'bulletList'),
+          wrapperClass: '@sm/panel:!gl-hidden',
+        },
+        {
+          text: __('Ordered list'),
+          icon: 'list-numbered',
+          action: () => this.insertMarkdown('1. {text}', 'orderedList'),
+          wrapperClass: '@sm/panel:!gl-hidden',
+        },
+        {
+          text: __('Task list'),
+          icon: 'list-task',
+          action: () => this.insertMarkdown('- [ ] {text}', 'taskList'),
+          wrapperClass: '@sm/panel:!gl-hidden',
+        },
+        {
+          text: __('Horizontal rule'),
+          icon: 'dash',
+          action: () => this.insertMarkdown('\n---\n', 'horizontalRule'),
+        },
+        {
+          text: __('Embedded view'),
+          icon: 'kind',
+          action: () =>
+            this.insertMarkdown(`\`\`\`glql\n${DEFAULT_GLQL_VIEW_CONTENT}\n\`\`\``, 'glqlView'),
+        },
+        {
+          text: __('Mermaid diagram'),
+          icon: 'diagram',
+          action: () =>
+            this.insertMarkdown(`\`\`\`mermaid\n${DEFAULT_MERMAID_CONTENT}\n\`\`\``, 'diagram'),
+        },
+        {
+          text: __('PlantUML diagram'),
+          icon: 'diagram',
+          action: () =>
+            this.insertMarkdown(`\`\`\`plantuml\n${DEFAULT_PLANTUML_CONTENT}\n\`\`\``, 'diagram'),
+        },
+        {
+          text: __('Table of contents'),
+          icon: 'title',
+          action: () => this.insertMarkdown('[[_TOC_]]', 'tableOfContents'),
+        },
+        {
+          text: __('Reformat table'),
+          icon: 'table',
+          action: () => this.reformatTable('reformatTable'),
+        },
+      ],
+    };
+  },
+  methods: {
+    getCurrentTextArea() {
+      return this.$el.closest('.md-area')?.querySelector('textarea.js-gfm-input');
+    },
+    insertMarkdown(markdownText, trackingProperty, selectText) {
+      const textArea = this.getCurrentTextArea();
+      if (!textArea) return;
+
+      updateText({
+        textArea,
+        tag: markdownText,
+        cursorOffset: 0,
+        wrap: false,
+        select: selectText,
+      });
+
+      Tracking.event(undefined, TOOLBAR_CONTROL_TRACKING_ACTION, {
+        label: MARKDOWN_EDITOR_TRACKING_LABEL,
+        property: trackingProperty,
+      });
+    },
+    reformatTable(trackingProperty) {
+      const textArea = this.getCurrentTextArea();
+      if (!textArea) return;
+
+      const text = textArea.value;
+      const selectedText = text.substring(textArea.selectionStart, textArea.selectionEnd);
+      const reformattedText = formatMarkdownTable(selectedText);
+
+      updateText({
+        textArea,
+        tag: reformattedText,
+        cursorOffset: 0,
+        wrap: false,
+        replaceText: true,
+      });
+
+      Tracking.event(undefined, TOOLBAR_CONTROL_TRACKING_ACTION, {
+        label: MARKDOWN_EDITOR_TRACKING_LABEL,
+        property: trackingProperty,
+      });
+    },
+  },
+};
+</script>
+<template>
+  <div class="gl-inline-flex gl-align-middle">
+    <gl-disclosure-dropdown
+      id="toolbar-more-dropdown"
+      :items="items"
+      :toggle-id="toggleId"
+      size="small"
+      category="tertiary"
+      icon="plus"
+      :toggle-text="__('More options')"
+      text-sr-only
+      right
+      @shown="isDropdownOpen = true"
+      @hidden="isDropdownOpen = false"
+    />
+    <gl-tooltip v-if="!isDropdownOpen" :target="toggleId" placement="top">
+      {{ __('More options') }}
+    </gl-tooltip>
+  </div>
+</template>

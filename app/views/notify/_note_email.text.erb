@@ -1,0 +1,41 @@
+<% note = local_assigns.fetch(:note, @note) -%>
+<% diff_limit = local_assigns.fetch(:diff_limit, nil) -%>
+<% target_url = local_assigns.fetch(:target_url, @target_url) -%>
+<% author = local_assigns.fetch(:author) { note.author } -%>
+<% discussion = local_assigns.fetch(:discussion) { note.discussion } if note.part_of_discussion? -%>
+<% project = local_assigns.fetch(:project, @project) -%>
+<% show_header = local_assigns.fetch(:show_header, true) -%>
+
+<% if note.noteable.respond_to?(:confidential?) && note.noteable.confidential? -%>
+<%= _('[Confidential work item]') %>
+<% end -%>
+<% if note.internal? -%>
+[<%= s_('Notify|Internal note') %>]
+
+<% end -%>
+<% if show_header -%>
+<%= sanitize_name(author.name) -%>
+<%  if discussion.nil? -%>
+ <%= 'commented' -%>
+<%  else -%>
+<%    if discussion.first_note == note -%>
+ <%=    'started a new discussion' -%>
+<%    else -%>
+ <%=    'commented on a discussion' -%>
+<%    end -%>
+<%    if discussion.diff_discussion? -%>
+ <%=    "on #{discussion.file_path}" -%>
+<%    end -%>
+<%  end -%>
+<%= ':' -%>
+<%= " #{target_url}" -%>
+<% end -%>
+
+
+<%  if discussion&.diff_discussion? && discussion.on_text? && project.show_diff_preview_in_email? -%>
+<%    discussion.truncated_diff_lines(highlight: false, diff_limit: diff_limit).each do |line| -%>
+ <%=     "> #{line.text}\n" -%>
+ <%  end -%>
+<%  end -%>
+
+<%= note_email_body(note, format: :text) -%>

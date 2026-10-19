@@ -1,0 +1,21 @@
+@import '../page_bundles/mixins_and_variables_and_functions';
+
+table.ml-candidate-table {
+  tr td,
+  tr th {
+    padding: $gl-padding-8;
+    min-width: 100px;
+
+    > * {
+      display: block;
+      @apply gl-truncate;
+    }
+  }
+}
+
+.experiment-metadata table,
+table.candidate-details {
+  td {
+    padding: $gl-spacing-scale-3 $gl-spacing-scale-3 $gl-spacing-scale-3 0;
+  }
+}

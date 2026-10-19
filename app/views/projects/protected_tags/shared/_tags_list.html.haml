@@ -1,0 +1,27 @@
+.protected-tags-list.js-protected-tags-list
+  - if @protected_tags.empty?
+    .gl-text-subtle
+      = s_('ProtectedBranch|No tags are protected.')
+  - else
+    - can_admin_project = can?(current_user, :admin_project, @project)
+
+    %table.table.b-table.gl-table.b-table-stacked-md
+      %colgroup
+        %col{ width: "25%" }
+        %col{ width: "25%" }
+        %col{ width: "50%" }
+        - if can_admin_project
+          %col
+      %thead.gl-hidden{ class: "@md/panel:gl-table-header-group" }
+        %tr
+          %th
+            = s_('ProtectedBranch|Tag')
+          %th
+            = s_('ProtectedBranch|Last commit')
+          %th
+            = s_('ProtectedBranch|Allowed to create')
+          - if can_admin_project
+            %th
+      %tbody= yield
+
+    = paginate @protected_tags, theme: 'gitlab', params: { anchor: 'js-protected-tags-settings' }

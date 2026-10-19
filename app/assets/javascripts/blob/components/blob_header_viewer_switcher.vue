@@ -1,0 +1,141 @@
+<script>
+import { GlButton, GlButtonGroup, GlTooltipDirective, GlHoverLoadDirective } from '@gitlab/ui';
+import { InternalEvents } from '~/tracking';
+import InlineBlamePopover from '~/blob/components/inline_blame_popover.vue';
+import UserCalloutDismisser from '~/vue_shared/components/user_callout_dismisser.vue';
+import {
+  RICH_BLOB_VIEWER,
+  RICH_BLOB_VIEWER_TITLE,
+  RICH_BLOB_VIEWER_LABEL,
+  SIMPLE_BLOB_VIEWER,
+  SIMPLE_BLOB_VIEWER_TITLE,
+  SIMPLE_BLOB_VIEWER_LABEL,
+  BLAME_VIEWER,
+  BLAME_TITLE,
+} from './constants';
+
+export default {
+  name: 'BlobHeaderViewerSwitcher',
+  components: {
+    GlButtonGroup,
+    GlButton,
+    InlineBlamePopover,
+    UserCalloutDismisser,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+    GlHoverLoad: GlHoverLoadDirective,
+  },
+  mixins: [InternalEvents.mixin()],
+  props: {
+    value: {
+      type: String,
+      default: SIMPLE_BLOB_VIEWER,
+      required: false,
+    },
+    showViewerToggles: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    showBlameToggle: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['blame-loading-started', 'blame', 'input', 'preload-blame'],
+  computed: {
+    isSimpleViewer() {
+      return this.value === SIMPLE_BLOB_VIEWER;
+    },
+    isRichViewer() {
+      return this.value === RICH_BLOB_VIEWER;
+    },
+    isBlameViewer() {
+      return this.value === BLAME_VIEWER;
+    },
+  },
+  methods: {
+    switchToViewer(viewer) {
+      if (viewer === BLAME_VIEWER) {
+        this.$emit('blame-loading-started');
+        this.$emit('blame');
+        this.trackEvent('open_blame_viewer_on_blob_page');
+      }
+
+      if (viewer !== this.value) {
+        this.$emit('input', viewer);
+      }
+    },
+  },
+  SIMPLE_BLOB_VIEWER,
+  RICH_BLOB_VIEWER,
+  SIMPLE_BLOB_VIEWER_TITLE,
+  SIMPLE_BLOB_VIEWER_LABEL,
+  RICH_BLOB_VIEWER_TITLE,
+  RICH_BLOB_VIEWER_LABEL,
+  BLAME_TITLE,
+  BLAME_VIEWER,
+};
+</script>
+
+<template>
+  <gl-button-group class="js-blob-viewer-switcher">
+    <gl-button
+      v-if="showViewerToggles"
+      v-gl-tooltip.hover
+      :aria-label="$options.SIMPLE_BLOB_VIEWER_TITLE"
+      :title="$options.SIMPLE_BLOB_VIEWER_TITLE"
+      :selected="isSimpleViewer"
+      :aria-pressed="String(isSimpleViewer)"
+      data-testid="simple-blob-viewer-button"
+      category="primary"
+      variant="default"
+      class="js-blob-viewer-switch-btn"
+      data-viewer="simple"
+      @click="switchToViewer($options.SIMPLE_BLOB_VIEWER)"
+      >{{ $options.SIMPLE_BLOB_VIEWER_LABEL }}</gl-button
+    >
+    <gl-button
+      v-if="showViewerToggles"
+      v-gl-tooltip.hover
+      :aria-label="$options.RICH_BLOB_VIEWER_TITLE"
+      :title="$options.RICH_BLOB_VIEWER_TITLE"
+      :selected="isRichViewer"
+      :aria-pressed="String(isRichViewer)"
+      icon=""
+      data-testid="rich-blob-viewer-button"
+      category="primary"
+      variant="default"
+      class="js-blob-viewer-switch-btn"
+      data-viewer="rich"
+      @click="switchToViewer($options.RICH_BLOB_VIEWER)"
+      >{{ $options.RICH_BLOB_VIEWER_LABEL }}</gl-button
+    >
+    <gl-button
+      v-if="showBlameToggle"
+      ref="blameButton"
+      v-gl-tooltip.hover
+      v-gl-hover-load="() => $emit('preload-blame')"
+      data-testid="blame-button"
+      :title="$options.BLAME_TITLE"
+      :selected="isBlameViewer"
+      :aria-pressed="String(isBlameViewer)"
+      category="primary"
+      variant="default"
+      @focus="$emit('preload-blame')"
+      @click="switchToViewer($options.BLAME_VIEWER)"
+      >{{ __('Blame') }}</gl-button
+    >
+    <user-callout-dismisser v-if="showBlameToggle" feature-name="inline_blame_popover">
+      <template #default="{ dismiss, shouldShowCallout }">
+        <inline-blame-popover
+          v-if="shouldShowCallout"
+          :target-element="() => $refs.blameButton?.$el"
+          @dismiss="dismiss"
+        />
+      </template>
+    </user-callout-dismisser>
+  </gl-button-group>
+</template>

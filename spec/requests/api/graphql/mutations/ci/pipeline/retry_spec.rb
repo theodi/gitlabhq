@@ -1,0 +1,73 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'PipelineRetry', feature_category: :pipeline_composition do
+  include GraphqlHelpers
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, maintainers: user) }
+  let_it_be(:pipeline) { create(:ci_pipeline, project: project, user: user) }
+
+  let(:mutation) do
+    variables = {
+      id: pipeline.to_global_id.to_s
+    }
+    graphql_mutation(
+      :pipeline_retry,
+      variables,
+      <<-QL
+        errors
+        pipeline {
+          id
+        }
+      QL
+    )
+  end
+
+  let(:mutation_response) { graphql_mutation_response(:pipeline_retry) }
+
+  it_behaves_like 'authorizing granular token permissions for GraphQL', :retry_pipeline do
+    let(:boundary_object) { project }
+    let(:mutation) do
+      graphql_mutation(
+        :pipeline_retry,
+        { id: pipeline.to_global_id.to_s },
+        'errors'
+      )
+    end
+
+    let(:request) { post_graphql_mutation(mutation, token: { personal_access_token: pat }) }
+  end
+
+  it 'returns an error if the user is not allowed to retry the pipeline' do
+    post_graphql_mutation(mutation, current_user: create(:user))
+
+    expect(graphql_errors).not_to be_empty
+  end
+
+  it 'retries a pipeline' do
+    pipeline_id = ::Gitlab::GlobalId.build(pipeline, id: pipeline.id).to_s
+    post_graphql_mutation(mutation, current_user: user)
+
+    expect(response).to have_gitlab_http_status(:success)
+    expect(mutation_response['pipeline']['id']).to eq(pipeline_id)
+  end
+
+  context 'when the pipeline retry rate limit is exceeded', :clean_gitlab_redis_rate_limiting, :freeze_time do
+    before do
+      stub_application_setting(pipeline_retry_limit_per_user_project: 1)
+    end
+
+    it 'surfaces the throttle in the mutation errors', :aggregate_failures do
+      post_graphql_mutation(mutation, current_user: user)
+      expect(graphql_mutation_response(:pipeline_retry)['errors']).to be_empty
+
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      expect(graphql_mutation_response(:pipeline_retry)['errors'])
+        .to contain_exactly(_('This endpoint has been requested too many times. Try again later.'))
+    end
+  end
+end

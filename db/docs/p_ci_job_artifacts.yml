@@ -1,0 +1,17 @@
+---
+table_name: p_ci_job_artifacts
+classes:
+- Ci::JobArtifact
+feature_categories:
+- job_artifacts
+description: Routing table for ci_job_artifacts
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/143039
+milestone: '16.10'
+gitlab_schema: gitlab_ci
+sharding_key:
+  project_id: projects
+table_size: small
+schema_inconsistencies:
+- type: missing_indexes
+  object_name: p_ci_job_artifacts_file_final_path_idx
+  introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/192700

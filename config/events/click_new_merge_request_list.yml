@@ -1,0 +1,17 @@
+---
+description: User clicks New merge request on MR list
+internal_events: true
+action: click_new_merge_request_list
+identifiers:
+  - project
+  - namespace
+  - user
+product_group: activation
+product_categories:
+- code_review_workflow
+milestone: '16.9'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/143036
+tiers:
+  - free
+  - premium
+  - ultimate

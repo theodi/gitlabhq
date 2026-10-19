@@ -1,0 +1,554 @@
+import { nextTick } from 'vue';
+import {
+  GlTooltipDirective,
+  GlDisclosureDropdown,
+  GlDisclosureDropdownItem,
+  GlDisclosureDropdownGroup,
+  GlButton,
+} from '@gitlab/ui';
+import { shallowMount } from '@vue/test-utils';
+import waitForPromises from 'helpers/wait_for_promises';
+import { stubComponent } from 'helpers/stub_component';
+import { mockTracking } from 'helpers/tracking_helper';
+import NoteActions from '~/rapid_diffs/app/discussions/note_actions.vue';
+import UserAccessRoleBadge from '~/vue_shared/components/user_access_role_badge.vue';
+import ReplyButton from '~/notes/components/note_actions/reply_button.vue';
+import AbuseCategorySelector from '~/abuse_reports/components/abuse_category_selector.vue';
+import EmojiPicker from '~/emoji/components/picker.vue';
+import { isLoggedIn } from '~/lib/utils/common_utils';
+import { copyToClipboard } from '~/lib/utils/copy_to_clipboard';
+import * as constants from '~/notes/constants';
+
+jest.mock('~/lib/utils/common_utils');
+jest.mock('~/lib/utils/copy_to_clipboard');
+// Vue 3 compat doesn't like async components
+jest.mock('~/emoji/components/picker.vue', () => {
+  return {
+    render() {
+      return null;
+    },
+  };
+});
+
+describe('NoteActions', () => {
+  let wrapper;
+  let toast;
+
+  const defaultProps = {
+    authorId: 1,
+    showReply: false,
+    canReportAsAbuse: false,
+    isAuthor: false,
+    isContributor: false,
+    accessLevel: '',
+    noteableType: '',
+    projectName: 'Project Name',
+    canEdit: false,
+    canAwardEmoji: false,
+    canDelete: false,
+    noteUrl: '',
+  };
+
+  const findAccessRoleBadgeByText = (text) =>
+    wrapper
+      .findAllComponents(UserAccessRoleBadge)
+      .filter((component) => component.text() === text)
+      .at(0);
+  const findEmojiPicker = () => wrapper.findComponent(EmojiPicker);
+  const findReplyButton = () => wrapper.findComponent(ReplyButton);
+  const findEditButton = () =>
+    wrapper
+      .findAllComponents(GlButton)
+      .filter((item) => item.props('icon') === 'pencil')
+      .at(0);
+  const findAllDeleteButtons = () =>
+    wrapper.findAllComponents(GlButton).filter((item) => item.props('icon') === 'remove');
+  const findDeleteButton = () => findAllDeleteButtons().at(0);
+  const findMoreActionsDropdown = () => wrapper.findComponent(GlDisclosureDropdown);
+  const findReportAbuseItem = () => wrapper.findComponent('[data-testid="report-abuse-button"]');
+  const findAbuseDrawer = () => wrapper.findComponent(AbuseCategorySelector);
+  const findDropdownDeleteButton = () =>
+    wrapper
+      .findAllComponents(GlDisclosureDropdownItem)
+      .filter((item) => item.text() === 'Delete comment')
+      .at(0);
+  const findCopyLinkButton = () =>
+    wrapper
+      .findAllComponents(GlDisclosureDropdownItem)
+      .filter((item) => item.text() === 'Copy link')
+      .at(0);
+  const findFeedbackButton = () => wrapper.find('[data-testid="amazon-q-feedback-button"]');
+  const findFeedbackModal = () => wrapper.findComponent({ ref: 'feedbackModal' });
+  const findCompactActionsGroup = () => wrapper.find('[data-testid="compact-actions-group"]');
+  const findEditMenuItem = () => wrapper.findComponent('[data-testid="edit-note-action"]');
+  const findViewSessionMenuItem = () =>
+    wrapper.findComponent('[data-testid="view-session-action"]');
+  const findInlineViewSessionButton = () =>
+    wrapper
+      .findAllComponents({ name: 'ViewSessionButton' })
+      .filter((button) => !button.props('asDropdownItem'))
+      .at(0);
+
+  const createComponent = (props = {}) => {
+    wrapper = shallowMount(NoteActions, {
+      propsData: {
+        ...defaultProps,
+        ...props,
+      },
+      directives: {
+        GlTooltip: GlTooltipDirective,
+      },
+      mocks: {
+        $toast: toast,
+      },
+      stubs: {
+        EmojiPicker,
+        ViewSessionButton: stubComponent({
+          name: 'ViewSessionButton',
+          props: {
+            sessionId: { type: Number, required: true },
+            asDropdownItem: { type: Boolean, required: false, default: false },
+          },
+        }),
+      },
+    });
+  };
+
+  beforeEach(() => {
+    toast = {
+      show: jest.fn(),
+    };
+    isLoggedIn.mockReturnValue(true);
+  });
+
+  describe('User Access Role Badges', () => {
+    describe('Author Badge', () => {
+      const getBadge = () => findAccessRoleBadgeByText('Author');
+
+      it('renders the badge when isAuthor is true', () => {
+        createComponent({ isAuthor: true, noteableType: constants.COMMIT_NOTEABLE_TYPE });
+        const badge = getBadge();
+        expect(badge.exists()).toBe(true);
+        expect(badge.text()).toBe('Author');
+      });
+
+      it.each`
+        noteableType                             | expectedTitle
+        ${constants.COMMIT_NOTEABLE_TYPE}        | ${'Commit author'}
+        ${constants.MERGE_REQUEST_NOTEABLE_TYPE} | ${'Merge request author'}
+        ${'Issue'}                               | ${undefined}
+      `('sets the correct tooltip title for $noteableType', ({ noteableType, expectedTitle }) => {
+        createComponent({ isAuthor: true, noteableType });
+        const badge = getBadge();
+        expect(badge.attributes('title')).toBe(expectedTitle);
+      });
+    });
+
+    describe('Member Badge', () => {
+      const getBadge = () => findAccessRoleBadgeByText('Maintainer');
+
+      it('renders the badge when accessLevel is provided', () => {
+        createComponent({ accessLevel: 'Maintainer', projectName: 'GitLab' });
+        const badge = getBadge();
+        expect(badge.exists()).toBe(true);
+        expect(badge.attributes('title')).toBe(
+          'This user has the maintainer role in the GitLab project.',
+        );
+      });
+    });
+
+    describe('Contributor Badge', () => {
+      const getBadge = () => findAccessRoleBadgeByText('Contributor');
+
+      it('renders the badge when isContributor is true and no accessLevel is provided', () => {
+        createComponent({ isContributor: true, projectName: 'GitLab' });
+        const badge = getBadge();
+        expect(badge.exists()).toBe(true);
+        expect(badge.attributes('title')).toBe(
+          'This user has previously committed to the GitLab project.',
+        );
+      });
+
+      it('does not render if accessLevel is present', () => {
+        createComponent({ isContributor: true, accessLevel: 'Developer' });
+        expect(findAccessRoleBadgeByText('Developer').exists()).toBe(true);
+        expect(
+          wrapper
+            .findAllComponents(UserAccessRoleBadge)
+            .filter((component) => component.text() === 'Contributor'),
+        ).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Main Actions', () => {
+    it('renders the EmojiPicker when canAwardEmoji is true', () => {
+      createComponent({ canAwardEmoji: true });
+      expect(findEmojiPicker().exists()).toBe(true);
+    });
+
+    it('emits award event when EmojiPicker is clicked', () => {
+      createComponent({ canAwardEmoji: true });
+      findEmojiPicker().vm.$emit('click', 'thumbsup');
+      expect(wrapper.emitted('award')).toEqual([['thumbsup']]);
+    });
+
+    it('renders the ReplyButton when showReply is true', () => {
+      createComponent({ showReply: true });
+      expect(findReplyButton().exists()).toBe(true);
+    });
+
+    it('emits start-replying when ReplyButton emits start-replying', () => {
+      createComponent({ showReply: true });
+      findReplyButton().vm.$emit('start-replying');
+      expect(wrapper.emitted('start-replying')).toEqual([[]]);
+    });
+
+    it('renders the Edit button when canEdit is true', () => {
+      createComponent({ canEdit: true });
+      const editButton = findEditButton();
+      expect(editButton.exists()).toBe(true);
+      expect(editButton.attributes('icon')).toBe('pencil');
+      expect(editButton.attributes('title')).toBe('Edit comment');
+    });
+
+    it('emits start-editing when the Edit button is clicked', () => {
+      createComponent({ canEdit: true });
+      findEditButton().vm.$emit('click');
+      expect(wrapper.emitted('start-editing')).toEqual([[]]);
+    });
+
+    describe('Delete Button', () => {
+      it('renders the standalone Delete button when canDelete is true and canReportAsAbuse and noteUrl are false', () => {
+        createComponent({ canDelete: true, canReportAsAbuse: false, noteUrl: '' });
+        const deleteButton = findDeleteButton();
+        expect(deleteButton.exists()).toBe(true);
+        expect(deleteButton.attributes('icon')).toBe('remove');
+        expect(deleteButton.attributes('title')).toBe('Delete comment');
+      });
+
+      it('emits delete event when the standalone Delete button is clicked', () => {
+        createComponent({ canDelete: true, canReportAsAbuse: false, noteUrl: '' });
+        findDeleteButton().vm.$emit('click');
+        expect(wrapper.emitted('delete')).toEqual([[]]);
+      });
+
+      it.each`
+        canDelete | canReportAsAbuse | noteUrl  | shouldShowStandalone
+        ${true}   | ${false}         | ${''}    | ${true}
+        ${false}  | ${false}         | ${''}    | ${false}
+        ${true}   | ${true}          | ${''}    | ${false}
+        ${true}   | ${false}         | ${'url'} | ${false}
+      `(
+        'showDeleteAction is $shouldShowStandalone when canDelete is $canDelete, canReportAsAbuse is $canReportAsAbuse, and noteUrl is "$noteUrl"',
+        ({ canDelete, canReportAsAbuse, noteUrl, shouldShowStandalone }) => {
+          createComponent({ canDelete, canReportAsAbuse, noteUrl });
+          expect(findAllDeleteButtons()).toHaveLength(shouldShowStandalone ? 1 : 0);
+        },
+      );
+    });
+  });
+
+  describe('More Actions Dropdown', () => {
+    it('does not render the dropdown if not logged in and no standalone delete button', () => {
+      isLoggedIn.mockReturnValue(false);
+      createComponent({ canEdit: false, canReportAsAbuse: false, canDelete: false });
+      expect(findMoreActionsDropdown().exists()).toBe(false);
+    });
+
+    it('renders the dropdown when standalone delete button is not shown and logged in', () => {
+      createComponent({ canReportAsAbuse: true });
+      expect(findMoreActionsDropdown().exists()).toBe(true);
+    });
+
+    describe('Copy Link Action', () => {
+      it('shows Copy Link when noteUrl is provided', () => {
+        createComponent({ noteUrl: 'http://note.url' });
+        expect(findMoreActionsDropdown().text().includes('Copy link')).toBe(true);
+      });
+
+      it('hides Copy Link when noteUrl is empty', () => {
+        createComponent({ noteUrl: '' });
+        expect(findMoreActionsDropdown().text().includes('Copy link')).toBe(false);
+      });
+
+      it('copies URL and shows toast when copy link is clicked', async () => {
+        copyToClipboard.mockResolvedValue();
+        createComponent({ noteUrl: 'http://note.url' });
+
+        findCopyLinkButton().vm.$emit('action');
+        await waitForPromises();
+
+        expect(copyToClipboard).toHaveBeenCalledWith('http://note.url');
+        expect(toast.show).toHaveBeenCalledWith('Link copied to clipboard.');
+      });
+
+      it('shows toast even when clipboard copy fails', async () => {
+        copyToClipboard.mockRejectedValue(new Error('Copy failed'));
+        createComponent({ noteUrl: 'http://note.url' });
+
+        findCopyLinkButton().vm.$emit('action');
+        await waitForPromises();
+
+        expect(toast.show).toHaveBeenCalledWith('Link copied to clipboard.');
+      });
+    });
+
+    describe('Grouped Actions', () => {
+      it('renders a bordered group for reporting abuse and editing', () => {
+        createComponent({ canReportAsAbuse: true, canEdit: true });
+        const groups = wrapper.findAllComponents(GlDisclosureDropdownGroup);
+        expect(groups).toHaveLength(2);
+        expect(groups.at(1).props('bordered')).toBe(true);
+      });
+
+      it('renders Report abuse when canReportAsAbuse is true', () => {
+        createComponent({ canReportAsAbuse: true });
+        expect(findReportAbuseItem().exists()).toBe(true);
+        expect(findReportAbuseItem().text()).toBe('Report abuse');
+      });
+
+      it('renders Delete comment dropdown item when canEdit is true', () => {
+        createComponent({ canEdit: true, canReportAsAbuse: true });
+        expect(findDropdownDeleteButton().exists()).toBe(true);
+      });
+
+      it('does not render Delete comment dropdown item when canEdit is false', () => {
+        createComponent({ canEdit: false, canReportAsAbuse: true });
+        expect(
+          wrapper
+            .findAllComponents(GlDisclosureDropdownItem)
+            .filter((item) => item.text() === 'Delete comment'),
+        ).toHaveLength(0);
+      });
+
+      it('emits delete event when the dropdown Delete comment item is clicked', () => {
+        createComponent({ canEdit: true, canReportAsAbuse: true });
+        findDropdownDeleteButton().vm.$emit('action');
+        expect(wrapper.emitted('delete')).toEqual([[]]);
+      });
+    });
+  });
+
+  describe('Resolve Button', () => {
+    const findResolveButton = () =>
+      wrapper.findComponent('[data-testid="resolve-discussion-button"]');
+
+    it('renders when canResolve is true', () => {
+      createComponent({ canResolve: true });
+      expect(findResolveButton().exists()).toBe(true);
+    });
+
+    it('does not render when canResolve is false', () => {
+      createComponent({ canResolve: false });
+      expect(findResolveButton().exists()).toBe(false);
+    });
+
+    it('shows check-circle icon when unresolved', () => {
+      createComponent({ canResolve: true, isResolved: false });
+      expect(findResolveButton().props('icon')).toBe('check-circle');
+    });
+
+    it('shows check-circle-filled icon when resolved', () => {
+      createComponent({ canResolve: true, isResolved: true });
+      expect(findResolveButton().props('icon')).toBe('check-circle-filled');
+    });
+
+    it('applies success text class when resolved', () => {
+      createComponent({ canResolve: true, isResolved: true });
+      expect(findResolveButton().classes()).toContain('!gl-text-success');
+    });
+
+    it('shows loading state when resolving', () => {
+      createComponent({ canResolve: true, isResolving: true });
+      expect(findResolveButton().props('loading')).toBe(true);
+    });
+
+    it('emits resolve event when clicked', () => {
+      createComponent({ canResolve: true });
+      findResolveButton().vm.$emit('click');
+      expect(wrapper.emitted('resolve')).toEqual([[]]);
+    });
+
+    it('shows correct tooltip for unresolved thread', () => {
+      createComponent({ canResolve: true, isResolved: false });
+      expect(findResolveButton().attributes('title')).toBe('Resolve thread');
+    });
+
+    it('shows correct tooltip for resolved thread', () => {
+      createComponent({ canResolve: true, isResolved: true });
+      expect(findResolveButton().attributes('title')).toBe('Reopen thread');
+    });
+  });
+
+  describe('Abuse Category Selector', () => {
+    it('does not render the drawer by default', () => {
+      createComponent({ canReportAsAbuse: true });
+      expect(findAbuseDrawer().exists()).toBe(false);
+    });
+
+    it('opens the drawer when Report abuse is clicked', async () => {
+      createComponent({ canReportAsAbuse: true, noteUrl: 'url' });
+      findReportAbuseItem().vm.$emit('action');
+      await nextTick();
+      const abuseDrawer = findAbuseDrawer();
+
+      expect(abuseDrawer.exists()).toBe(true);
+      expect(abuseDrawer.props()).toMatchObject({
+        reportedUserId: defaultProps.authorId,
+        reportedFromUrl: 'url',
+        showDrawer: true,
+      });
+    });
+
+    it('closes the drawer when close-drawer is emitted', async () => {
+      createComponent({ canReportAsAbuse: true });
+      findReportAbuseItem().vm.$emit('action');
+
+      await nextTick();
+
+      const abuseDrawer = findAbuseDrawer();
+      abuseDrawer.vm.$emit('close-drawer');
+      await nextTick();
+
+      expect(findAbuseDrawer().exists()).toBe(false);
+    });
+  });
+
+  describe('Amazon Q code review feedback', () => {
+    describe('when isAmazonQCodeReview is true', () => {
+      beforeEach(() => {
+        createComponent({ isAmazonQCodeReview: true, canReportAsAbuse: true, noteId: 1 });
+      });
+
+      it('renders the feedback button', () => {
+        expect(findFeedbackButton().exists()).toBe(true);
+      });
+
+      it('renders the feedback modal when feedback has not been received', () => {
+        expect(findFeedbackModal().exists()).toBe(true);
+      });
+
+      it('tracks feedback with the correct parameters when submitted', () => {
+        const trackingSpy = mockTracking(undefined, wrapper.element, jest.spyOn);
+        const feedbackData = {
+          feedbackOptions: ['helpful'],
+          extendedFeedback: 'Great review!',
+        };
+
+        findFeedbackModal().vm.$emit('feedback-submitted', feedbackData);
+
+        expect(trackingSpy).toHaveBeenCalledWith(undefined, 'amazon_q_code_review_feedback', {
+          action: 'amazon_q',
+          label: 'code_review_feedback',
+          property: feedbackData.feedbackOptions,
+          extra: {
+            extendedFeedback: feedbackData.extendedFeedback,
+            note_id: 1,
+          },
+        });
+      });
+
+      it('hides the feedback button and modal after feedback is received', async () => {
+        findFeedbackModal().vm.$emit('feedback-submitted', { feedbackOptions: ['helpful'] });
+        await nextTick();
+
+        expect(findFeedbackButton().exists()).toBe(false);
+        expect(findFeedbackModal().exists()).toBe(false);
+      });
+    });
+
+    describe('when isAmazonQCodeReview is false', () => {
+      beforeEach(() => {
+        createComponent({ isAmazonQCodeReview: false, canReportAsAbuse: true });
+      });
+
+      it('does not render the feedback button', () => {
+        expect(findFeedbackButton().exists()).toBe(false);
+      });
+
+      it('does not render the feedback modal', () => {
+        expect(findFeedbackModal().exists()).toBe(false);
+      });
+    });
+  });
+
+  describe('view session button', () => {
+    const findViewSessionButton = () => wrapper.findComponent({ name: 'ViewSessionButton' });
+
+    describe('when the note has no linked session', () => {
+      beforeEach(() => {
+        createComponent();
+      });
+
+      it('does not render the view session button', () => {
+        expect(findViewSessionButton().exists()).toBe(false);
+      });
+    });
+
+    describe('when the note has a linked session', () => {
+      beforeEach(() => {
+        createComponent({ duoSessionId: 42 });
+      });
+
+      it('renders the view session button', () => {
+        expect(findViewSessionButton().exists()).toBe(true);
+      });
+
+      it('passes the session id to the view session button', () => {
+        expect(findViewSessionButton().props('sessionId')).toBe(42);
+      });
+    });
+  });
+
+  describe('narrow-width actions', () => {
+    it('hides the inline view session and edit buttons below the discussion sm breakpoint', () => {
+      createComponent({ canEdit: true, duoSessionId: 42 });
+
+      expect(findInlineViewSessionButton().classes()).toContain('@max-sm/discussion:gl-hidden');
+      expect(findEditButton().classes()).toContain('@max-sm/discussion:gl-hidden');
+    });
+
+    it('renders the actions group first in the overflow menu, hidden at the discussion sm breakpoint', () => {
+      createComponent({ canEdit: true, duoSessionId: 42 });
+
+      expect(findCompactActionsGroup().classes()).toContain('@sm/discussion:gl-hidden');
+      expect(wrapper.findAllComponents(GlDisclosureDropdownGroup).at(0).element).toBe(
+        findCompactActionsGroup().element,
+      );
+    });
+
+    it('renders the view session menu item when the note has a linked session', () => {
+      createComponent({ duoSessionId: 42 });
+
+      expect(findViewSessionMenuItem().props()).toMatchObject({
+        sessionId: 42,
+        asDropdownItem: true,
+      });
+      expect(findEditMenuItem().exists()).toBe(false);
+    });
+
+    it('renders only the edit menu item when there is no linked session', () => {
+      createComponent({ canEdit: true });
+
+      expect(findViewSessionMenuItem().exists()).toBe(false);
+      expect(findEditMenuItem().text()).toBe('Edit comment');
+    });
+
+    it('does not render the actions group without a linked session or edit permission', () => {
+      createComponent({ canReportAsAbuse: true });
+
+      expect(findMoreActionsDropdown().exists()).toBe(true);
+      expect(findCompactActionsGroup().exists()).toBe(false);
+    });
+
+    it('emits start-editing from the edit menu item, like the inline button', () => {
+      createComponent({ canEdit: true });
+
+      findEditMenuItem().vm.$emit('action');
+      findEditButton().vm.$emit('click');
+
+      expect(wrapper.emitted('start-editing')).toEqual([[], []]);
+    });
+  });
+});

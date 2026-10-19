@@ -1,0 +1,12 @@
+- breadcrumb_title s_('Integrations|Instance-level integration management')
+- page_title s_('Integrations|Instance-level integration management')
+- add_page_specific_style 'page_bundles/settings'
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_application_settings_integrations_pageload' } }
+
+= render ::Layouts::PageHeadingComponent.new(s_('Integrations|Instance-level integration management')) do |c|
+  - c.with_description do
+    - integrations_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: integrations_help_page_path }
+    = s_("Integrations|GitLab administrators can set up integrations that all groups and projects inherit and use by default. These integrations apply to all groups and projects that don't already use custom settings. You can override custom settings for a group or project if the settings are necessary at that level. Learn more about %{integrations_link_start}instance-level integration management%{link_end}.").html_safe % { integrations_link_start: integrations_link_start, link_end: "</a>".html_safe }
+
+= render 'shared/integrations/index', integrations: @integrations

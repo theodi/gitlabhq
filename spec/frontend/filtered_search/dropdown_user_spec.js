@@ -1,0 +1,116 @@
+import htmlMergeRequestList from 'test_fixtures_static/merge_request_list.html';
+import { setHTMLFixture, resetHTMLFixture } from 'helpers/fixtures';
+import { useConfigurePathHelpers } from 'helpers/configure_path_helpers';
+import DropdownUser from '~/filtered_search/dropdown_user';
+import DropdownUtils from '~/filtered_search/dropdown_utils';
+import FilteredSearchTokenizer from '~/filtered_search/filtered_search_tokenizer';
+import IssuableFilteredTokenKeys from '~/filtered_search/issuable_filtered_search_token_keys';
+
+describe('Dropdown User', () => {
+  describe('getSearchInput', () => {
+    let dropdownUser;
+
+    beforeEach(() => {
+      jest.spyOn(DropdownUser.prototype, 'bindEvents').mockImplementation(() => {});
+      jest.spyOn(DropdownUser.prototype, 'getProjectId').mockImplementation(() => {});
+      jest.spyOn(DropdownUser.prototype, 'getGroupId').mockImplementation(() => {});
+      jest.spyOn(DropdownUtils, 'getSearchInput').mockImplementation(() => {});
+
+      dropdownUser = new DropdownUser({
+        tokenKeys: IssuableFilteredTokenKeys,
+      });
+    });
+
+    it('should not return the double quote found in value', () => {
+      jest.spyOn(FilteredSearchTokenizer, 'processTokens').mockReturnValue({
+        lastToken: '"johnny appleseed',
+      });
+
+      expect(dropdownUser.getSearchInput()).toBe('johnny appleseed');
+    });
+
+    it('should not return the single quote found in value', () => {
+      jest.spyOn(FilteredSearchTokenizer, 'processTokens').mockReturnValue({
+        lastToken: "'larry boy",
+      });
+
+      expect(dropdownUser.getSearchInput()).toBe('larry boy');
+    });
+  });
+
+  describe("config AjaxFilter's endpoint", () => {
+    beforeEach(() => {
+      jest.spyOn(DropdownUser.prototype, 'bindEvents').mockImplementation(() => {});
+      jest.spyOn(DropdownUser.prototype, 'getProjectId').mockImplementation(() => {});
+      jest.spyOn(DropdownUser.prototype, 'getGroupId').mockImplementation(() => {});
+    });
+
+    it('should return endpoint', () => {
+      window.gon = {
+        relative_url_root: '',
+      };
+      const dropdown = new DropdownUser();
+
+      expect(dropdown.config.AjaxFilter.endpoint).toBe('/-/autocomplete/users.json');
+    });
+
+    it('should return endpoint when relative_url_root is undefined', () => {
+      const dropdown = new DropdownUser();
+
+      expect(dropdown.config.AjaxFilter.endpoint).toBe('/-/autocomplete/users.json');
+    });
+
+    describe('when relative URL root is configured', () => {
+      useConfigurePathHelpers('/gitlab_directory');
+
+      it('should return endpoint with relative url when available', () => {
+        const dropdown = new DropdownUser();
+
+        expect(dropdown.config.AjaxFilter.endpoint).toBe(
+          '/gitlab_directory/-/autocomplete/users.json',
+        );
+      });
+    });
+  });
+
+  describe('hideCurrentUser', () => {
+    let dropdown;
+    let authorFilterDropdownElement;
+
+    beforeEach(() => {
+      setHTMLFixture(htmlMergeRequestList);
+      authorFilterDropdownElement = document.querySelector('#js-dropdown-author');
+      const dummyInput = document.createElement('div');
+      dropdown = new DropdownUser({
+        dropdown: authorFilterDropdownElement,
+        input: dummyInput,
+      });
+    });
+
+    afterEach(() => {
+      resetHTMLFixture();
+    });
+
+    const findCurrentUserElement = () =>
+      authorFilterDropdownElement.querySelector('.js-current-user');
+
+    it('hides the current user from dropdown', () => {
+      const currentUserElement = findCurrentUserElement();
+
+      expect(currentUserElement).not.toBe(null);
+
+      dropdown.hideCurrentUser();
+
+      expect(currentUserElement.classList).toContain('hidden');
+    });
+
+    it('does nothing if no user is logged in', () => {
+      const currentUserElement = findCurrentUserElement();
+      currentUserElement.parentNode.removeChild(currentUserElement);
+
+      expect(findCurrentUserElement()).toBe(null);
+
+      dropdown.hideCurrentUser();
+    });
+  });
+});

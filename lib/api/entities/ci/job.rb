@@ -1,0 +1,28 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    module Ci
+      class Job < JobBasic
+        # artifacts_file is included in job_artifacts, but kept for backward compatibility (remove in api/v5)
+        expose :artifacts_file, using: ::API::Entities::Ci::JobArtifactFile,
+          if: ->(job, _opts) { job.is_a?(::Ci::Build) && job.available_artifacts? }
+        expose :job_artifacts, as: :artifacts,
+          using: ::API::Entities::Ci::JobArtifact,
+          documentation: { is_array: true }
+        expose :runner, with: ::API::Entities::Ci::Runner
+        expose :runner_manager, with: ::API::Entities::Ci::RunnerManager, if: ->(job) { job.is_a?(::Ci::Build) }
+        expose :artifacts_expire_at,
+          documentation: { type: 'DateTime', example: '2016-01-19T09:05:50.355Z' }
+        expose :archived?, as: :archived, documentation: { type: 'Boolean', example: false }
+
+        expose(
+          :tag_list,
+          documentation: { type: 'String', is_array: true, example: ['ubuntu18', 'docker runner'] }
+        ) do |job|
+          job.tag_list.sort
+        end
+      end
+    end
+  end
+end

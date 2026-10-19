@@ -1,0 +1,14 @@
+description: "Show alert integrations list"
+category: "`Alert Integrations`"
+action: view_alert_integrations_list
+extra_properties:
+identifiers:
+product_group: platform_insights
+product_categories:
+- incident_management
+milestone: "13.5"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/44549
+tiers:
+- free
+- premium
+- ultimate

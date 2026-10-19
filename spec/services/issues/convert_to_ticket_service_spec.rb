@@ -1,0 +1,243 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Issues::ConvertToTicketService, feature_category: :service_desk do
+  shared_examples 'a successful service execution' do
+    it 'converts issue to ticket', :aggregate_failures do
+      original_author = work_item.author
+
+      response = service.execute
+      expect(response).to be_success
+      expect(response.message).to eq(success_message)
+
+      work_item.reset
+
+      expect(work_item).to have_attributes(
+        confidential: expected_confidentiality,
+        author: support_bot,
+        service_desk_reply_to: 'user@example.com'
+      )
+
+      expect(work_item.work_item_type.base_type).to eq('ticket')
+
+      external_participant = work_item.issue_email_participants.last
+      expect(external_participant.email).to eq(email)
+
+      note = work_item.notes.last
+      expect(note.author).to eq(support_bot)
+      expect(note).to be_confidential
+      expect(note.note).to include(email)
+      expect(note.note).to include(original_author.to_reference)
+    end
+  end
+
+  shared_examples 'a failed service execution' do
+    it 'returns error ServiceResponse with message', :aggregate_failures do
+      response = service.execute
+      expect(response).to be_error
+      expect(response.message).to eq(error_message)
+    end
+  end
+
+  describe '#execute' do
+    let_it_be_with_reload(:project) { create(:project, :private) }
+    let_it_be(:user) { create(:user) }
+    let_it_be(:support_bot) { Users::Internal.in_organization(project.organization_id).support_bot }
+    let_it_be_with_reload(:work_item) { create(:work_item, :issue, project: project) }
+
+    let(:email) { nil }
+    let(:service) { described_class.new(target: work_item, current_user: user, email: email) }
+    let(:expected_confidentiality) { true }
+
+    let(:error_service_desk_disabled) { s_("ServiceDesk|Cannot convert to ticket because Service Desk is disabled.") }
+    let(:error_underprivileged) { _("You don't have permission to manage this issue.") }
+    let(:error_already_ticket) { s_("ServiceDesk|Cannot convert to ticket because it is already a ticket.") }
+    let(:error_invalid_email) do
+      s_("ServiceDesk|Cannot convert issue to ticket because no email was provided or the format was invalid.")
+    end
+
+    let(:success_message) { s_('ServiceDesk|Converted issue to Service Desk ticket.') }
+
+    before do
+      # Support bot only has abilities in project if Service Desk enabled
+      allow(::ServiceDesk).to receive(:enabled?).with(project).and_return(true)
+    end
+
+    context 'when the user is not a project member' do
+      let(:error_message) { error_underprivileged }
+
+      it_behaves_like 'a failed service execution'
+    end
+
+    context 'when user has the reporter role in project' do
+      before_all do
+        project.add_reporter(user)
+      end
+
+      context 'without email' do
+        let(:error_message) { error_invalid_email }
+
+        it_behaves_like 'a failed service execution'
+      end
+
+      context 'with invalid email' do
+        let(:email) { 'not-a-valid-email' }
+        let(:error_message) { error_invalid_email }
+
+        it_behaves_like 'a failed service execution'
+      end
+
+      context 'with valid email' do
+        let(:email) { 'user@example.com' }
+
+        it_behaves_like 'a successful service execution'
+
+        context 'when work item already is confidential' do
+          before do
+            work_item.update!(confidential: true)
+          end
+
+          it_behaves_like 'a successful service execution'
+        end
+
+        context 'when email participant already exists for the email' do
+          before do
+            create(:issue_email_participant, issue: work_item, email: email)
+          end
+
+          it_behaves_like 'a successful service execution'
+
+          it 'does not create a duplicate participant' do
+            expect { service.execute }.not_to change { work_item.issue_email_participants.count }
+          end
+        end
+
+        context 'when email participant exists with different casing' do
+          before do
+            create(:issue_email_participant, issue: work_item, email: 'User@Example.com')
+          end
+
+          it 'converts the issue to a ticket without creating a duplicate participant', :aggregate_failures do
+            expect { service.execute }.not_to change { work_item.issue_email_participants.count }
+
+            work_item.reset
+            expect(work_item.work_item_type.base_type).to eq('ticket')
+          end
+        end
+
+        context 'with legacy issue' do
+          let_it_be_with_reload(:work_item) { create(:issue, project: project) }
+
+          it_behaves_like 'a successful service execution'
+        end
+
+        context 'with work item of type epic' do
+          let_it_be_with_reload(:epic) { create(:work_item, :epic) }
+
+          let_it_be(:support_bot) { Users::Internal.in_organization(epic.namespace.organization_id).support_bot }
+
+          it_behaves_like 'a successful service execution'
+        end
+
+        context 'with service desk setting' do
+          let_it_be_with_reload(:service_desk_setting) { create(:service_desk_setting, project: project) }
+
+          it_behaves_like 'a successful service execution'
+
+          context 'when tickets should not be confidential by default' do
+            let(:expected_confidentiality) { false }
+
+            before do
+              service_desk_setting.update!(tickets_confidential_by_default: false)
+            end
+
+            it_behaves_like 'a successful service execution'
+
+            context 'when project is public' do
+              # Tickets are always confidential by default in public projects
+              let(:expected_confidentiality) { true }
+
+              before do
+                project.update!(visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+              end
+
+              it_behaves_like 'a successful service execution'
+            end
+
+            context 'when issue already is confidential' do
+              # Do not change the confidentiality of an already confidential work item
+              let(:expected_confidentiality) { true }
+
+              before do
+                work_item.update!(confidential: true)
+              end
+
+              it_behaves_like 'a successful service execution'
+            end
+          end
+        end
+
+        context 'when work item is Service Desk issue' do
+          before do
+            work_item.update!(
+              author: support_bot,
+              service_desk_reply_to: 'user@example.com'
+            )
+          end
+
+          it 'converts issue to ticket', :aggregate_failures do
+            original_author = work_item.author
+
+            response = service.execute
+            expect(response).to be_success
+            expect(response.message).to eq(success_message)
+
+            work_item.reset
+
+            expect(work_item).to have_attributes(
+              confidential: expected_confidentiality,
+              author: support_bot,
+              service_desk_reply_to: 'user@example.com'
+            )
+
+            expect(work_item.work_item_type.base_type).to eq('ticket')
+
+            external_participant = work_item.issue_email_participants.last
+            expect(external_participant.email).to eq(email)
+
+            note = work_item.notes.last
+            expect(note.author).to eq(support_bot)
+            expect(note).to be_confidential
+            expect(note.note).to include(email)
+            expect(note.note).to include(original_author.to_reference)
+          end
+        end
+
+        context 'when work item is ticket' do
+          let(:error_message) { error_already_ticket }
+
+          before do
+            work_item.update!(
+              work_item_type_id: 9,
+              author: support_bot,
+              service_desk_reply_to: 'user@example.com'
+            )
+          end
+
+          it_behaves_like 'a failed service execution'
+        end
+
+        context 'when Service Desk is disabled' do
+          let(:error_message) { error_service_desk_disabled }
+
+          before do
+            allow(::ServiceDesk).to receive(:enabled?).with(project).and_return(false)
+          end
+
+          it_behaves_like 'a failed service execution'
+        end
+      end
+    end
+  end
+end

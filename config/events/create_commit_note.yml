@@ -1,0 +1,17 @@
+---
+description: Commit comment created
+internal_events: true
+action: create_commit_note
+identifiers:
+- project
+- namespace
+- user
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: '17.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/150768
+tiers:
+- free
+- premium
+- ultimate

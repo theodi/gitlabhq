@@ -1,0 +1,22 @@
+---
+data_category: optional
+key_path: counts.package_events_i_package_conan_pull_package
+description: A count of Conan packages that have been downloaded
+product_group: package_registry
+product_categories:
+- package_registry
+value_type: number
+status: active
+time_frame: all
+data_source: internal_events
+events:
+  - name: pull_package_from_registry
+    filter:
+      label: conan
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

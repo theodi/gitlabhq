@@ -1,0 +1,132 @@
+# frozen_string_literal: true
+
+module Ci
+  module Catalog
+    module Resources
+      module Versions
+        # This service is called from the Versions::CreateService and
+        # responsible for building components for a release version.
+        class BuildComponentsService
+          MAX_COMPONENTS = Ci::Catalog::ComponentsProject::COMPONENTS_LIMIT
+
+          def initialize(release, version, components_data)
+            @release = release
+            @version = version
+            @components_data = components_data
+            @project = release.project
+            @components_project = Ci::Catalog::ComponentsProject.new(project)
+            @errors = []
+          end
+
+          def execute
+            components = if components_data
+                           build_components_from_passed_data
+                         else
+                           build_components_from_fetched_data
+                         end
+
+            if errors.empty?
+              ServiceResponse.success(payload: components)
+            else
+              ServiceResponse.error(message: errors.flatten.first(10).join(', '))
+            end
+          end
+
+          private
+
+          attr_reader :release, :version, :project, :components_project, :components_data, :errors
+
+          def build_components_from_passed_data
+            check_number_of_components(components_data.size)
+            return if errors.present?
+
+            components_data.map do |component_data|
+              build_catalog_resource_component(component_data)
+            end
+          end
+
+          def build_components_from_fetched_data
+            component_paths = components_project.fetch_component_paths(release.sha, limit: MAX_COMPONENTS + 1)
+
+            check_number_of_components(component_paths.size)
+            return if errors.present?
+
+            build_components_from_paths(component_paths)
+          end
+
+          def build_components_from_paths(component_paths)
+            paths_with_oids = component_paths.map { |path| [release.sha, path] }
+            blobs = project.repository.blobs_at(paths_with_oids)
+
+            blobs.map do |blob|
+              metadata = extract_metadata(blob)
+              build_catalog_resource_component(metadata)
+            end
+          rescue ::Gitlab::Config::Loader::FormatError => e
+            error(e)
+          end
+
+          def extract_metadata(blob)
+            component_name = components_project.extract_component_name(blob.path)
+
+            {
+              name: component_name,
+              spec: components_project.extract_spec(blob.data, path: blob.path),
+              component_type: 'template'
+            }
+          end
+
+          def check_number_of_components(size)
+            return if size <= MAX_COMPONENTS
+
+            error("Release cannot contain more than #{MAX_COMPONENTS} components")
+          end
+
+          def build_catalog_resource_component(metadata)
+            return if errors.present?
+
+            component = Ci::Catalog::Resources::Component.new(
+              name: metadata[:name],
+              project: version.project,
+              spec: spec_with_inputs_order(metadata[:spec]),
+              component_type: metadata[:component_type],
+              version: version,
+              catalog_resource: version.catalog_resource,
+              created_at: Time.current
+            )
+
+            return component if component.valid?
+
+            error("Build component error: #{component.errors.full_messages.join(', ')}")
+          rescue ArgumentError => e
+            # In Rails 7.1, we'll have a better way to handle this error; https://github.com/rails/rails/pull/49100
+            # Ci::Catalog::Resources::Component: `enum resource_type: { template: 1 }, validate: true`
+            error(e.message)
+          end
+
+          # `spec` is a `jsonb` column. Postgres reorders object keys by length, so the
+          # YAML order of `spec:inputs:` is lost. Record that order in `inputs_order`,
+          # because `jsonb` keeps the order of array elements. See issue #550261.
+          #
+          # `inputs_order` is server-owned. A value from the author is always replaced.
+          # Keys are stringified, because the spec is symbol-keyed when it comes from
+          # `Gitlab::Ci::Config::Yaml::Loader`, and string-keyed when it comes from
+          # passed-in component data.
+          def spec_with_inputs_order(spec)
+            return spec unless spec.is_a?(Hash)
+
+            spec = spec.deep_stringify_keys
+            inputs = spec['inputs']
+            return spec.except('inputs_order') unless inputs.is_a?(Hash)
+
+            spec.merge('inputs_order' => inputs.keys)
+          end
+
+          def error(message)
+            errors << message
+          end
+        end
+      end
+    end
+  end
+end

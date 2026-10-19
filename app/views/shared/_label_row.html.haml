@@ -1,0 +1,25 @@
+- subject_or_group_defined = defined?(@project) || defined?(@group)
+- show_label_work_items_link = subject_or_group_defined && show_label_issuables_link?(label, :issues)
+- show_label_merge_requests_link = subject_or_group_defined && show_label_issuables_link?(label, :merge_requests)
+
+.label-name.gl-shrink-0.gl-mr-5.gl-mt-1
+  = render_label(label, link: '#', tooltip: true, tooltip_shows_title: true)
+  - if show_labels_full_path?(@project, @group)
+    .gl-mt-2
+      = render 'shared/label_full_path', label: label
+.label-description.gl-w-full{ class: '@md/panel:gl-mt-4' }
+  .gl-flex.gl-items-stretch.gl-flex-wrap
+    .gl-grow.gl-mt-1.gl-mr-5{ class: 'gl-basis-1/2' }
+      - if label.description.present?
+        = markdown_field(label, :description)
+    %ul.label-links.gl-m-0.gl-mt-1.gl-p-0.gl-whitespace-nowrap.gl-flex.gl-gap-5
+      - if label.lock_on_merge
+        %li.gl-inline-flex.gl-self-start.gl-mt-1
+          = render Pajamas::BadgeComponent.new(_('Lock on merge'), icon: 'lock', variant: :neutral)
+      - if show_label_work_items_link
+        %li.gl-inline-flex
+          = link_to_label(label, type: :work_item) { _('Work items') }
+      - if show_label_merge_requests_link
+        %li.gl-inline-flex
+          = link_to_label(label, type: :merge_request) { _('Merge requests') }
+      = render_if_exists 'shared/label_row_epics_link', label: label

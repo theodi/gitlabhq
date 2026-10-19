@@ -1,0 +1,43 @@
+- runner_name = runner_short_name(@runner)
+- breadcrumb_title _('Edit')
+- page_title _('Edit'), runner_name
+- add_to_breadcrumbs _('Runners'), admin_runners_path
+- add_to_breadcrumbs runner_name, admin_runner_path(@runner)
+
+#js-admin-runner-edit{ data: {runner_id: @runner.id, runner_path: admin_runner_path(@runner) } }
+
+- if @runner.project_type?
+  = render ::Layouts::SettingsSectionComponent.new(s_('Runners|Assign this runner to projects'), options: { class: 'gl-mt-7 gl-pt-6 gl-border-t' }) do |c|
+    - c.with_body do
+      .gl-flex.gl-flex-col.gl-gap-5
+        = render ::Layouts::CrudComponent.new(_('Assigned projects'), icon: 'project', count: @runner.runner_projects.count) do |c|
+          - c.with_body do
+            - if @runner.runner_projects.any?
+              %ul.content-list{ data: { testid: 'assigned-projects' } }
+                - @runner.runner_projects.each do |runner_project|
+                  - project = runner_project.project
+                  - if project
+                    - is_owner = project == @runner.owner
+                    = render "project", project: project, is_owner: is_owner, is_assigned: true do
+                      - if !is_owner
+                        = render Pajamas::ButtonComponent.new(variant: :danger, category: :secondary, size: :small, href: admin_namespace_project_runner_project_path(project.namespace, project, runner_project), method: :delete, button_options: { class: 'gl-self-center' }) do
+                          = s_('Runners|Unassign')
+
+        = render ::Layouts::CrudComponent.new(s_('Runners|Select projects to assign to this runner')) do |c|
+          - c.with_body do
+            = form_tag edit_admin_runner_path(@runner), class: 'gl-w-full gl-p-5', method: :get do
+              .input-group
+                = search_field_tag :search, params[:search], class: 'form-control gl-form-input', spellcheck: false
+                .input-group-append
+                  = render Pajamas::ButtonComponent.new(type: 'submit', variant: :default, icon: 'search', button_options: { 'aria-label': _('Search') })
+
+            %ul.content-list.gl-border-t.gl-border-t-section{ data: { testid: 'unassigned-projects' } }
+              - @projects.each do |project|
+                = render "project", project: project do
+                  = gitlab_ui_form_for project.runner_projects.new, url: admin_namespace_project_runner_projects_path(project.namespace, project), method: :post, html: { class: 'gl-self-center' } do |f|
+                    = f.hidden_field :runner_id, value: @runner.id
+                    = render Pajamas::ButtonComponent.new(size: :small, type: :submit) do
+                      = s_('Runners|Assign')
+
+          - c.with_pagination do
+            = paginate_without_count @projects

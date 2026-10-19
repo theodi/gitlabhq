@@ -1,0 +1,55 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Schema
+    module Validation
+      module Validators
+        class Base
+          ERROR_MESSAGE = 'A schema inconsistency has been found'
+
+          def self.all_validators
+            [
+              ExtraTables,
+              ExtraTableColumns,
+              ExtraIndexes,
+              ExtraTriggers,
+              ExtraForeignKeys,
+              MissingTables,
+              MissingTableColumns,
+              MissingIndexes,
+              MissingTriggers,
+              MissingForeignKeys,
+              MissingSequences,
+              DifferentDefinitionTables,
+              DifferentDefinitionIndexes,
+              DifferentDefinitionTriggers,
+              DifferentDefinitionForeignKeys,
+              DifferentSequenceOwners
+            ]
+          end
+
+          def initialize(structure_sql, database)
+            @structure_sql = structure_sql
+            @database = database
+          end
+
+          def execute
+            raise NoMethodError, "subclasses of #{self.class.name} must implement #{__method__}"
+          end
+
+          private
+
+          attr_reader :structure_sql, :database
+
+          def partition_index_matcher
+            @partition_index_matcher ||= PartitionIndexMatcher.new(structure_sql, database)
+          end
+
+          def build_inconsistency(validator_class, structure_sql_object, database_object, details: {})
+            Inconsistency.new(validator_class, structure_sql_object, database_object, details: details)
+          end
+        end
+      end
+    end
+  end
+end

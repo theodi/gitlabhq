@@ -1,0 +1,933 @@
+# frozen_string_literal: true
+
+RSpec.shared_examples 'wiki controller actions' do
+  let_it_be(:user, freeze: false) { create(:user) }
+  let_it_be(:other_user, freeze: false) { create(:user) }
+
+  let(:container) { raise NotImplementedError }
+  let(:routing_params) { raise NotImplementedError }
+  let(:wiki) { Wiki.for_container(container, user) }
+  let(:wiki_title) { 'page title test' }
+
+  before do
+    create(:wiki_page, wiki: wiki, title: wiki_title, content: 'hello world')
+
+    sign_in(user)
+  end
+
+  shared_context 'when the page was renamed' do
+    let!(:version_before_rename) { wiki.find_page(wiki_title).version.id }
+
+    before do
+      wiki.update_page(wiki.find_page(wiki_title).page, title: 'renamed', content: 'hello world')
+      wiki.update_page(wiki.find_page('renamed').page, title: 'renamed', content: 'hello again')
+    end
+  end
+
+  shared_examples 'renders 404 with CTA to create page' do
+    it 'shows the 404 page with CTA button' do
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(response).to render_template('shared/wikis/404')
+      expect(response.body).to include('Create this page…')
+      create_page_link = "#{controller.wiki_page_path(wiki, id)}?view=create"
+      expect(response.body).to include(create_page_link)
+    end
+  end
+
+  shared_examples 'recovers from git errors' do
+    let(:method_name) { :page }
+
+    context 'when we encounter CommandTimedOut error' do
+      it 'renders the appropriate template', :aggregate_failures do
+        expect(controller)
+          .to receive(method_name)
+          .and_raise(::Gitlab::Git::CommandTimedOut, 'Deadline Exceeded')
+
+        request
+
+        expect(response).to render_template('shared/wikis/git_error')
+      end
+    end
+
+    context 'when we encounter a NoRepository error' do
+      it 'renders the appropriate template', :aggregate_failures do
+        expect(controller)
+          .to receive(method_name)
+          .and_raise(Gitlab::Git::Repository::NoRepository)
+
+        request
+
+        expect(response).to render_template('shared/wikis/empty')
+        expect(assigns(:error)).to eq('Could not access the Wiki Repository at this time.')
+      end
+    end
+  end
+
+  describe 'GET #new' do
+    subject(:request) { get :new, params: routing_params }
+
+    it 'redirects to #show and appends a `random_title` param' do
+      request
+
+      expect(response).to be_redirect
+      expect(response.redirect_url).to match(%r{
+        #{Regexp.quote(wiki.wiki_base_path)} # wiki base path
+        /[-\h]{36}                           # page slug
+        \?random_title=true(&view=create)\Z                # random_title param
+      }x)
+    end
+
+    context 'when the wiki repository cannot be created' do
+      before do
+        expect(Wiki).to receive(:for_container).and_return(wiki)
+        expect(wiki).to receive(:create_wiki_repository) { raise Wiki::CouldNotCreateWikiError }
+      end
+
+      it 'redirects to the wiki container and displays an error message' do
+        request
+
+        expect(response).to redirect_to(container)
+        expect(flash[:notice]).to eq('Could not create Wiki Repository at this time. Please try again later.')
+      end
+    end
+  end
+
+  describe 'GET #pages' do
+    before do
+      get :pages, params: routing_params.merge(id: wiki_title)
+    end
+
+    it_behaves_like 'recovers from git errors' do
+      subject(:request) { get :pages, params: routing_params.merge(id: wiki_title) }
+
+      let(:method_name) { :pages_list }
+    end
+
+    it 'assigns the page collections' do
+      expect(assigns(:pages_list)).to contain_exactly(an_instance_of(WikiPage))
+      expect(assigns(:wiki_entries)).to contain_exactly(an_instance_of(WikiPage))
+    end
+
+    it 'does not load the page content' do
+      expect(assigns(:page)).to be_nil
+    end
+
+    context 'when the request is of non-html format' do
+      it 'returns a 404 error' do
+        get :pages, params: routing_params.merge(format: 'json')
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when wiki contains upload pages' do
+      let!(:file_in_uploads_directory) do
+        create(:wiki_page, wiki: wiki, title: 'uploads/image')
+      end
+
+      before do
+        get :pages, params: routing_params.merge(id: wiki_title)
+      end
+
+      it 'excludes upload pages from pages_list' do
+        titles = assigns(:pages_list).map(&:title)
+
+        expect(titles).to contain_exactly('page title test')
+      end
+    end
+  end
+
+  describe 'GET #history' do
+    before do
+      allow(controller)
+        .to receive(:can?)
+        .with(any_args)
+        .and_call_original
+
+      # The :create_wiki permission is irrelevant to reading history.
+      expect(controller)
+        .not_to receive(:can?)
+        .with(anything, :create_wiki, any_args)
+
+      allow(controller)
+        .to receive(:can?)
+        .with(anything, :read_wiki, any_args)
+        .and_return(allow_read_wiki)
+    end
+
+    shared_examples 'fetching history' do |expected_status|
+      before do
+        get :history, params: routing_params.merge(id: wiki_title)
+      end
+
+      it "returns status #{expected_status}" do
+        expect(response).to have_gitlab_http_status(expected_status)
+      end
+    end
+
+    it_behaves_like 'recovers from git errors' do
+      subject(:request) { get :history, params: routing_params.merge(id: wiki_title) }
+
+      let(:allow_read_wiki)   { true }
+    end
+
+    it_behaves_like 'fetching history', :ok do
+      let(:allow_read_wiki)   { true }
+
+      it 'assigns @commits' do
+        expect(assigns(:commits)).to be_present
+      end
+    end
+
+    it_behaves_like 'fetching history', :not_found do
+      let(:allow_read_wiki)   { false }
+    end
+
+    context 'when the page was renamed' do
+      include_context 'when the page was renamed'
+
+      let(:allow_read_wiki) { true }
+
+      it 'counts and lists the commits from before the rename', :aggregate_failures do
+        get :history, params: routing_params.merge(id: 'renamed')
+
+        expect(assigns(:commits_count)).to eq(3)
+        expect(assigns(:commits).size).to eq(3)
+        expect(assigns(:commits).last.message).to match(/created page: #{wiki_title}/)
+      end
+
+      context 'when wiki_page_history_follow_renames is disabled' do
+        before do
+          stub_feature_flags(wiki_page_history_follow_renames: false)
+        end
+
+        it 'counts and lists only the commits on the current path', :aggregate_failures do
+          get :history, params: routing_params.merge(id: 'renamed')
+
+          expect(assigns(:commits_count)).to eq(2)
+          expect(assigns(:commits).size).to eq(2)
+        end
+      end
+    end
+  end
+
+  describe 'GET #diff' do
+    context 'when commit exists' do
+      it 'renders the diff' do
+        get :diff, params: routing_params.merge(id: wiki_title, version_id: wiki.repository.commit.id)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to render_template('shared/wikis/diff')
+        expect(assigns(:diffs)).to be_a(Gitlab::Diff::FileCollection::Base)
+        expect(assigns(:diff_notes_disabled)).to be(true)
+        expect(assigns(:page).content).to be_empty
+      end
+    end
+
+    context 'when commit does not exist' do
+      it 'returns a 404 error' do
+        get :diff, params: routing_params.merge(id: wiki_title, version_id: 'invalid')
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when page does not exist' do
+      it 'returns a 404 error' do
+        get :diff, params: routing_params.merge(id: 'invalid')
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+
+      context 'when a version is given' do
+        it 'returns a 404 error' do
+          get :diff, params: routing_params.merge(id: 'invalid', version_id: wiki.repository.commit.id)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    it_behaves_like 'recovers from git errors' do
+      subject(:request) { get :diff, params: routing_params.merge(id: wiki_title, version_id: wiki.repository.commit.id) }
+    end
+
+    context 'when the commit renamed the page' do
+      include_context 'when the page was renamed'
+
+      let(:rename_commit) { wiki.repository.commits(wiki.default_branch, path: 'renamed.md', follow: false, limit: 2).last }
+
+      subject(:request) { get :diff, params: routing_params.merge(id: 'renamed', version_id: rename_commit.id) }
+
+      it 'renders the diff as a rename', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(assigns(:diffs).diff_files).to contain_exactly(
+          have_attributes(renamed_file?: true, old_path: 'page-title-test.md', new_path: 'renamed.md')
+        )
+      end
+
+      context 'when wiki_page_history_follow_renames is disabled' do
+        before do
+          stub_feature_flags(wiki_page_history_follow_renames: false)
+        end
+
+        it 'renders the diff of the current path only' do
+          request
+
+          expect(assigns(:diffs).diff_files).to contain_exactly(
+            have_attributes(new_file?: true, new_path: 'renamed.md')
+          )
+        end
+      end
+    end
+
+    context 'when the commit is from before the page was renamed' do
+      include_context 'when the page was renamed'
+
+      subject(:request) { get :diff, params: routing_params.merge(id: 'renamed', version_id: version_before_rename) }
+
+      it 'renders the diff of the page at its previous path as a version of the current page', :aggregate_failures do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(assigns(:diffs).diff_files.map(&:new_path)).to eq(['page-title-test.md'])
+        expect(assigns(:page).slug).to eq('renamed')
+      end
+
+      context 'when wiki_page_history_follow_renames is disabled' do
+        before do
+          stub_feature_flags(wiki_page_history_follow_renames: false)
+        end
+
+        it 'returns a 404 error' do
+          request
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'when the commit deleted the page at its previous path' do
+      let!(:deletion) do
+        wiki.delete_page(wiki.find_page(wiki_title).page)
+        wiki.repository.commit.id
+      end
+
+      before do
+        create(:wiki_page, wiki: wiki, title: wiki_title, content: 'hello world')
+        wiki.update_page(wiki.find_page(wiki_title).page, title: 'renamed', content: 'hello world')
+      end
+
+      it 'returns a 404 error' do
+        get :diff, params: routing_params.merge(id: 'renamed', version_id: deletion)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'GET #show' do
+    render_views
+
+    let(:random_title) { nil }
+
+    subject(:request) { get :show, params: routing_params.merge(id: id, random_title: random_title) }
+
+    context 'when page exists' do
+      let(:id) { wiki_title }
+
+      it_behaves_like 'recovers from git errors'
+
+      it 'renders the page' do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to render_template('shared/wikis/show')
+        expect(assigns(:page).title).to eq(wiki_title)
+      end
+
+      it_behaves_like 'pushes frontend feature flag', :wiki_collaborative_editing do
+        let(:feature_args) { [container.root_ancestor] }
+        let(:make_request) { request }
+      end
+
+      context 'page view tracking' do
+        it_behaves_like 'internal event tracking' do
+          let(:event) { 'view_wiki_page' }
+          let(:project) { container if container.is_a?(Project) }
+          let(:namespace) { container.is_a?(Group) ? container : container.namespace }
+
+          subject(:track_event) { request }
+        end
+      end
+
+      context 'recently viewed wiki pages tracking' do
+        it 'logs the wiki page view for the current user' do
+          expect_next_instance_of(::Gitlab::Search::RecentWikiPages) do |service|
+            expect(service).to receive(:log_view).with(an_instance_of(WikiPage::Meta))
+          end
+
+          request
+        end
+      end
+
+      context 'when viewing a version from before the page was renamed' do
+        include_context 'when the page was renamed'
+
+        subject(:request) { get :show, params: routing_params.merge(id: 'renamed', version_id: version_before_rename) }
+
+        it 'renders the old content as a version of the current page', :aggregate_failures do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+
+          app = Nokogiri::HTML(response.body).at_css('#js-vue-wiki-app')
+
+          expect(Gitlab::Json::SafeParser.parse(app['data-page-info'])).to include(
+            'slug' => 'renamed',
+            'title' => 'renamed',
+            'path' => controller.wiki_page_path(wiki, 'renamed'),
+            'last_commit_sha' => wiki.find_page('renamed').last_commit_sha,
+            'content' => 'hello world'
+          )
+          expect(app['data-content-api']).to end_with("/wikis/page-title-test?version=#{version_before_rename}")
+        end
+
+        it 'logs the view against the current page' do
+          expect_next_instance_of(::Gitlab::Search::RecentWikiPages) do |service|
+            expect(service).to receive(:log_view).with(have_attributes(canonical_slug: 'renamed'))
+          end
+
+          request
+        end
+
+        context 'when wiki_page_history_follow_renames is disabled' do
+          before do
+            stub_feature_flags(wiki_page_history_follow_renames: false)
+          end
+
+          it 'does not find the version' do
+            request
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+
+      context 'when page content encoding is invalid' do
+        it 'sets flash error' do
+          allow(controller).to receive(:valid_encoding?).and_return(false)
+
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to render_template('shared/wikis/show')
+          expect(flash[:notice]).to eq(_('The content of this page is not encoded in UTF-8. Edits can only be made via the Git repository.'))
+        end
+      end
+    end
+
+    context 'when the page does not exist' do
+      let(:id) { 'does not exist' }
+
+      context 'when the user can create pages' do
+        before do
+          request
+        end
+
+        it_behaves_like 'renders 404 with CTA to create page'
+      end
+
+      context 'when the user cannot create pages' do
+        before do
+          sign_out(:user)
+        end
+
+        it 'shows the empty state' do
+          request
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(response).to render_template('shared/wikis/404')
+        end
+      end
+    end
+
+    context 'when page is a file' do
+      include WikiHelpers
+
+      where(:file_name) { ['dk.png', 'unsanitized.svg', 'sample.pdf'] }
+
+      with_them do
+        let(:id) { upload_file_to_wiki(wiki, user, file_name) }
+
+        it 'delivers the file with the correct headers' do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response.headers['Content-Disposition']).to match(/^inline/)
+          expect(response.headers[Gitlab::Workhorse::DETECT_HEADER]).to eq('true')
+          expect(response.cache_control[:public]).to be(false)
+          expect(response.headers['Cache-Control']).to eq('max-age=60, private, must-revalidate, stale-while-revalidate=60, stale-if-error=300, s-maxage=60')
+        end
+      end
+    end
+
+    context 'when the redirected page has leading and trailing slashes' do
+      let(:id) { 'PageA' }
+
+      before do
+        wiki.repository.update_file(
+          user,
+          '.gitlab/redirects.yml',
+          "PageA: PageB\nPageB: PageC\nPageC: /PageA/\n",
+          message: 'Create redirects file',
+          branch_name: wiki.default_branch
+        )
+      end
+
+      it 'renders the edit page with a notice' do
+        request
+
+        expect(response).to redirect_to_wiki(wiki, 'PageA', redirect_limit_reached: true)
+        expect(flash[:notice]).to eq('The page at <code>PageA</code> redirected too many times. You are now editing the page at <code>PageA</code>.')
+      end
+    end
+
+    context 'when the page redirects to another page' do
+      before do
+        redirect_limit_yml = ''
+        51.times do |i|
+          redirect_limit_yml += "Page#{i}: Page#{i + 1}\n"
+        end
+
+        wiki.repository.update_file(
+          user,
+          '.gitlab/redirects.yml',
+          "PageA: PageB\nLoopA: LoopB\nLoopB: LoopA\n#{redirect_limit_yml}",
+          message: 'Create redirects file',
+          branch_name: wiki.default_branch
+        )
+      end
+
+      context 'that exists' do
+        let(:id) { 'PageA' }
+
+        before do
+          create(:wiki_page, wiki: wiki, title: 'PageB', content: 'Page B content')
+        end
+
+        it 'redirects to the target page' do
+          request
+
+          expect(response).to redirect_to_wiki(wiki, 'PageB', redirected_from: 'PageA')
+          expect(flash[:notice]).to eq('The page at <code>PageA</code> has been moved to <code>PageB</code>.')
+        end
+      end
+
+      context 'that results in a redirect loop' do
+        let(:id) { 'LoopA' }
+
+        it 'renders the edit page with a notice' do
+          request
+
+          expect(response).to redirect_to_wiki(wiki, 'LoopA', redirect_limit_reached: true)
+          expect(flash[:notice]).to eq('The page at <code>LoopA</code> redirected too many times. You are now editing the page at <code>LoopA</code>.')
+        end
+      end
+
+      context 'that results in a redirect limit' do
+        let(:id) { 'Page0' }
+
+        it 'renders the edit page with a notice' do
+          request
+
+          expect(response).to redirect_to_wiki(wiki, 'Page0', redirect_limit_reached: true)
+          expect(flash[:notice]).to eq('The page at <code>Page0</code> redirected too many times. You are now editing the page at <code>Page0</code>.')
+        end
+      end
+
+      context 'but the original page also exists' do
+        let(:id) { 'PageA' }
+
+        before do
+          create(:wiki_page, wiki: wiki, title: 'PageA', content: 'Page A content')
+        end
+
+        it 'renders the page instead of redirecting' do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to render_template('shared/wikis/show')
+          expect(assigns(:page).title).to eq('PageA')
+        end
+      end
+
+      context 'when the destination page does not exist' do
+        let(:redirected_from) { 'PageA' }
+        let(:id) { 'PageB' }
+
+        render_views
+
+        before do
+          routing_params[:redirected_from] = redirected_from
+          request
+        end
+
+        it_behaves_like 'renders 404 with CTA to create page'
+      end
+    end
+
+    context 'when the redirects file exceeds the size limit' do
+      let(:id) { 'non-existent-page' }
+
+      before do
+        blob = instance_double(Gitlab::Git::Blob, truncated?: true)
+        allow(Wiki).to receive(:for_container).and_return(wiki)
+        allow(wiki.repository).to receive(:blob_at).and_call_original
+        allow(wiki.repository).to receive(:blob_at)
+          .with(wiki.default_branch, Wiki::REDIRECTS_YML, limit: Wiki::REDIRECTS_YML_SIZE_LIMIT)
+          .and_return(blob)
+      end
+
+      it 'renders a 404' do
+        request
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'POST #preview_markdown' do
+    let(:text) { '*Markdown* text' }
+
+    it 'renders json in a correct format' do
+      wiki_page = wiki.list_pages(load_content: true).first
+
+      expect(Markup::RenderingService).to receive(:new)
+        .with(text,
+          context: hash_including(
+            pipeline: :wiki,
+            wiki: wiki,
+            page_slug: wiki_page.slug,
+            repository: wiki.repository,
+            requested_path: wiki_page.path,
+            issuable_reference_expansion_enabled: true
+          ),
+          postprocess_context: anything)
+        .and_call_original
+
+      post :preview_markdown, params: routing_params.merge(id: wiki_page.slug, text: text)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.keys).to match_array(%w[body references])
+    end
+  end
+
+  shared_examples 'edit action' do
+    context 'when the page does not exist' do
+      let(:id_param) { 'invalid' }
+
+      it 'redirects to show' do
+        request
+
+        expect(response).to redirect_to_wiki(wiki, 'invalid')
+      end
+    end
+
+    context 'when id param is blank' do
+      let(:id_param) { ' ' }
+
+      it 'redirects to the home page' do
+        request
+
+        expect(response).to redirect_to_wiki(wiki, 'home')
+      end
+    end
+
+    context 'when page content encoding is invalid' do
+      it 'redirects to show' do
+        allow(controller).to receive(:valid_encoding?).and_return(false)
+
+        request
+
+        expect(response).to redirect_to_wiki(wiki, wiki.list_pages.first)
+      end
+    end
+
+    context 'when the page has nil content' do
+      let(:page) { create(:wiki_page) }
+
+      it 'redirects to show' do
+        allow(page).to receive(:content).and_return(nil)
+        allow(controller).to receive(:page).and_return(page)
+
+        request
+
+        expect(response).to redirect_to_wiki(wiki, page)
+      end
+    end
+  end
+
+  describe 'GET #edit' do
+    let(:id_param) { wiki_title }
+
+    subject(:request) { get(:edit, params: routing_params.merge(id: id_param)) }
+
+    it_behaves_like 'edit action'
+    it_behaves_like 'recovers from git errors'
+
+    context 'when page content encoding is valid' do
+      it 'redirects to the show page with edit param' do
+        request
+
+        expect(response).to have_gitlab_http_status(:redirect)
+        expect(response.location).to include('edit=true')
+      end
+    end
+  end
+
+  describe 'PATCH #update' do
+    let(:new_title) { 'New title' }
+    let(:new_content) { 'New content' }
+    let(:id_param) { wiki_title }
+
+    subject(:request) do
+      patch(:update, params: routing_params.merge(
+        id: id_param,
+        wiki: { title: new_title, content: new_content }
+      ))
+    end
+
+    it_behaves_like 'edit action'
+
+    context 'when page content encoding is valid' do
+      render_views
+
+      it 'updates the page' do
+        request
+
+        wiki_page = wiki.list_pages(load_content: true).first
+
+        expect(wiki_page.title).to eq new_title
+        expect(wiki_page.content).to eq new_content
+      end
+    end
+
+    context 'when the update fails' do
+      let(:new_title) { '' }
+
+      it 'redirects to the show page with edit=true and sets flash[:error]' do
+        request
+
+        expect(response).to redirect_to_wiki(wiki, wiki.list_pages.first, edit: 'true')
+        expect(flash[:error]).to be_present
+      end
+    end
+
+    context 'when the page was changed concurrently' do
+      let(:wiki_params) do
+        routing_params.merge(
+          id: id_param,
+          wiki: { title: new_title, content: new_content, last_commit_sha: 'outdated' }
+        )
+      end
+
+      subject(:request) { patch(:update, params: wiki_params) }
+
+      it 'redirects to the edit form and surfaces the conflict message on show' do
+        request
+
+        expect(response).to redirect_to_wiki(wiki, wiki.list_pages.first, edit: 'true')
+        expect(flash[:error]).to include('%{wikiLinkStart}')
+
+        get(:show, params: routing_params.merge(id: id_param, edit: 'true'))
+
+        expect(assigns(:error)).to include('%{wikiLinkStart}')
+        expect(flash[:error]).to be_nil
+      end
+    end
+
+    context 'when user does not have edit permissions' do
+      before do
+        sign_out(:user)
+      end
+
+      it 'renders the empty state' do
+        request
+
+        expect(response).to render_template('shared/wikis/empty')
+      end
+    end
+  end
+
+  describe 'POST #create' do
+    let(:new_title) { 'New title' }
+    let(:new_content) { 'New content' }
+
+    subject(:request) do
+      post(:create, params: routing_params.merge(
+        wiki: { title: new_title, content: new_content }
+      ))
+    end
+
+    context 'when page is valid' do
+      it 'creates the page' do
+        expect do
+          request
+        end.to change { wiki.list_pages.size }.by 1
+
+        wiki_page = wiki.find_page(new_title)
+
+        expect(wiki_page.title).to eq new_title
+        expect(wiki_page.content).to eq new_content
+      end
+    end
+
+    context 'when page is not valid' do
+      let(:new_title) { '' }
+
+      it 'renders the show page with an error' do
+        expect do
+          request
+        end.not_to change { wiki.list_pages.size }
+
+        expect(response).to render_template('shared/wikis/show')
+        expect(assigns(:error)).to be_present
+      end
+    end
+  end
+
+  describe 'DELETE #destroy' do
+    let(:id_param) { wiki_title }
+    let(:delete_user) { user }
+
+    subject(:request) do
+      delete(:destroy, params: routing_params.merge(
+        id: id_param
+      ))
+    end
+
+    before do
+      sign_in(delete_user)
+    end
+
+    context 'when page exists' do
+      shared_examples 'deletes the page' do
+        specify do
+          aggregate_failures do
+            expect do
+              request
+            end.to change { wiki.list_pages.size }.by(-1)
+
+            expect(assigns(:page).content).to be_empty
+          end
+        end
+      end
+
+      it_behaves_like 'deletes the page'
+
+      context 'but page cannot be deleted' do
+        before do
+          allow_next_instance_of(WikiPage) do |page|
+            allow(page).to receive(:delete).and_return(false)
+          end
+        end
+
+        it 'redirects with an error' do
+          expect do
+            request
+          end.not_to change { wiki.list_pages.size }
+
+          expect(response).to have_gitlab_http_status(:redirect)
+          expect(flash[:error]).to eq('Could not delete wiki page')
+        end
+      end
+
+      context 'when user is a developer' do
+        let(:delete_user) { other_user }
+
+        before do
+          container.add_developer(other_user)
+        end
+
+        it_behaves_like 'deletes the page'
+      end
+
+      context 'when user is a reporter' do
+        let(:delete_user) { other_user }
+
+        before do
+          container.add_reporter(other_user)
+        end
+
+        it 'returns 404' do
+          is_expected.to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'when page does not exist' do
+      let(:id_param) { 'nil' }
+
+      it 'renders 404' do
+        expect do
+          request
+        end.not_to change { wiki.list_pages.size }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'GET #index' do
+    subject(:request) { get :index, params: routing_params }
+
+    context 'when wiki has home page' do
+      before do
+        create(:wiki_page, wiki: wiki, title: 'home', content: 'Home')
+        create(:wiki_page, wiki: wiki, title: 'aaa-first', content: 'First')
+      end
+
+      it 'redirects to home page' do
+        request
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(response).to redirect_to(controller.wiki_page_path(wiki, 'home'))
+      end
+    end
+
+    context 'when wiki has pages but no home page' do
+      before do
+        create(:wiki_page, wiki: wiki, title: 'other-page', content: 'Content')
+      end
+
+      it 'redirects to pages list' do
+        request
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(response).to redirect_to(controller.wiki_path(wiki, action: :pages))
+      end
+    end
+
+    context 'when wiki is empty' do
+      before do
+        # Delete all pages (including the one created in setup)
+        wiki.list_pages.each { |page| wiki.delete_page(page) }
+      end
+
+      it 'redirects to home page for empty state' do
+        request
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(response).to redirect_to(controller.wiki_page_path(wiki, 'home'))
+      end
+    end
+  end
+
+  def redirect_to_wiki(wiki, page, query_params = {})
+    query = query_params.empty? ? '' : "?#{query_params.to_query}"
+    redirect_to("#{controller.wiki_page_path(wiki, page)}#{query}")
+  end
+end

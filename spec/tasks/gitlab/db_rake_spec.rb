@@ -1,0 +1,2272 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'gitlab:db namespace rake task', :silence_stdout, feature_category: :database do
+  before(:all) do
+    Rake.application.rake_require 'active_record/railties/databases'
+    Rake.application.rake_require 'tasks/seed_fu'
+    Rake.application.rake_require 'tasks/gitlab/click_house/migration'
+    Rake.application.rake_require 'tasks/gitlab/db'
+    Rake.application.rake_require 'tasks/gitlab/db/lock_writes'
+    Rake.application.rake_require 'tasks/gitlab/db/alter_cell_sequences_range'
+  end
+
+  before do
+    # Stub out db tasks
+    allow(Rake::Task['db:migrate']).to receive(:invoke).and_return(true)
+    allow(Rake::Task['db:schema:load']).to receive(:invoke).and_return(true)
+    allow(Rake::Task['db:seed_fu']).to receive(:invoke).and_return(true)
+    allow(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke).and_return(true)
+
+    # Prevent rake tasks from modifying `db/structure.sql`.
+    # A modified structure.sql makes `ActiveRecord::Migration.maintain_test_schema!`
+    # silently rebuild all test databases at the boot of the next RSpec
+    # process (the CI failed-spec retry), resetting ID sequences and
+    # colliding with repositories Gitaly still has on disk from the first process.
+    allow(ActiveRecord::Tasks::DatabaseTasks).to receive(:dump_schema)
+
+    stub_feature_flags(disallow_database_ddl_feature_flags: false)
+  end
+
+  shared_examples 'AlterCellSequencesRange is not called' do
+    it 'does not instantiate AlterCellSequencesRange' do
+      expect(Gitlab::Database::AlterCellSequencesRange).not_to receive(:new)
+    end
+  end
+
+  shared_examples 'topology service unavailable' do |multiple_databases|
+    it 'skips loading the schema, seeding the database and altering cell sequences range' do
+      if multiple_databases
+        expect(Rake::Task['db:schema:load:main']).not_to receive(:invoke)
+        expect(Rake::Task['db:schema:load:ci']).not_to receive(:invoke)
+
+        expect(Rake::Task['db:migrate:main']).not_to receive(:invoke)
+        expect(Rake::Task['db:migrate:ci']).not_to receive(:invoke)
+      else
+        expect(Rake::Task['db:schema:load']).not_to receive(:invoke)
+        expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+      end
+
+      expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+      expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+      expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+      expect { run_rake_task('gitlab:db:configure') }.to(
+        raise_error('Error: Topology Service is `UNAVAILABLE`. Exiting DB configuration.')
+      )
+    end
+  end
+
+  describe 'gitlab:db:sos task' do
+    before do
+      Rake::Task['gitlab:db:sos'].reenable
+
+      allow(Gitlab::AppLogger).to receive(:info)
+    end
+
+    context 'when an output path is provided' do
+      let(:custom_path) { 'custom/path/to/folder' }
+
+      it 'executes Gitlab::Database::Sos.run with the output path' do
+        expect(Gitlab::Database::Sos).to receive(:run).with(custom_path)
+        expect { Rake::Task['gitlab:db:sos'].invoke(custom_path) }.not_to raise_error
+      end
+    end
+
+    context 'when an output path is not provided' do
+      it 'executes Gitlab::Database::Sos.run with the default output path' do
+        expect(Gitlab::Database::Sos).to receive(:run).with("tmp/sos.zip")
+        expect { Rake::Task['gitlab:db:sos'].invoke }.not_to raise_error
+      end
+    end
+  end
+
+  describe 'mark_migration_complete' do
+    context 'with a single database' do
+      let(:main_model) { ApplicationRecord }
+
+      before do
+        skip_if_database_exists(:ci)
+        skip_if_database_exists(:sec)
+      end
+
+      it 'marks the migration complete on the given database' do
+        expect(main_model.connection).to receive(:quote).and_call_original
+        expect(main_model.connection).to receive(:execute)
+          .with("INSERT INTO schema_migrations (version) VALUES ('123')")
+
+        run_rake_task('gitlab:db:mark_migration_complete', '[123]')
+      end
+    end
+
+    context 'with multiple databases' do
+      let(:main_model) { double(:model, connection: double(:connection)) }
+      let(:ci_model) { double(:model, connection: double(:connection)) }
+      let(:sec_model) { double(:model, connection: double(:connection)) }
+      let(:base_models) do
+        models = { 'main' => main_model, 'ci' => ci_model }
+        models['sec'] = sec_model if database_exists?('sec')
+        models
+      end
+
+      before do
+        skip_if_shared_database(:ci)
+
+        allow(Gitlab::Database).to receive(:database_base_models_with_gitlab_shared).and_return(base_models)
+      end
+
+      it 'marks the migration complete on each database' do
+        expect(main_model.connection).to receive(:quote).with('123').and_return("'123'")
+        expect(main_model.connection).to receive(:execute)
+          .with("INSERT INTO schema_migrations (version) VALUES ('123')")
+
+        expect(ci_model.connection).to receive(:quote).with('123').and_return("'123'")
+        expect(ci_model.connection).to receive(:execute)
+          .with("INSERT INTO schema_migrations (version) VALUES ('123')")
+
+        if database_exists?('sec')
+          expect(sec_model.connection).to receive(:quote).with('123').and_return("'123'")
+          expect(sec_model.connection).to receive(:execute)
+            .with("INSERT INTO schema_migrations (version) VALUES ('123')")
+        end
+
+        run_rake_task('gitlab:db:mark_migration_complete', '[123]')
+      end
+
+      context 'when the single database task is used' do
+        it 'marks the migration complete for the given database' do
+          expect(main_model.connection).to receive(:quote).with('123').and_return("'123'")
+          expect(main_model.connection).to receive(:execute)
+            .with("INSERT INTO schema_migrations (version) VALUES ('123')")
+
+          expect(ci_model.connection).not_to receive(:quote)
+          expect(ci_model.connection).not_to receive(:execute)
+
+          if database_exists?('sec')
+            expect(sec_model.connection).not_to receive(:quote)
+            expect(sec_model.connection).not_to receive(:execute)
+          end
+
+          run_rake_task('gitlab:db:mark_migration_complete:main', '[123]')
+        end
+      end
+
+      context 'with geo configured' do
+        before do
+          skip_unless_geo_configured
+        end
+
+        it 'does not create a task for the geo database' do
+          expect { run_rake_task('gitlab:db:mark_migration_complete:geo') }
+            .to raise_error(/Don't know how to build task 'gitlab:db:mark_migration_complete:geo'/)
+        end
+      end
+    end
+
+    context 'when the migration is already marked complete' do
+      let(:main_model) { double(:model, connection: double(:connection)) }
+      let(:base_models) { { 'main' => main_model } }
+
+      before do
+        allow(Gitlab::Database).to receive(:database_base_models_with_gitlab_shared).and_return(base_models)
+      end
+
+      it 'prints a warning message' do
+        allow(main_model.connection).to receive(:quote).with('123').and_return("'123'")
+
+        expect(main_model.connection).to receive(:execute)
+          .with("INSERT INTO schema_migrations (version) VALUES ('123')")
+          .and_raise(ActiveRecord::RecordNotUnique)
+
+        expect { run_rake_task('gitlab:db:mark_migration_complete', '[123]') }
+          .to output(/Migration version '123' is already marked complete on database main/).to_stdout
+      end
+    end
+
+    context 'when an invalid version is given' do
+      let(:main_model) { double(:model, connection: double(:connection)) }
+      let(:base_models) { { 'main' => main_model } }
+
+      before do
+        allow(Gitlab::Database).to receive(:database_base_models_with_gitlab_shared).and_return(base_models)
+      end
+
+      it 'prints an error and exits' do
+        expect(main_model).not_to receive(:quote)
+        expect(main_model.connection).not_to receive(:execute)
+
+        expect { run_rake_task('gitlab:db:mark_migration_complete', '[abc]') }
+          .to output(/Must give a version argument that is a non-zero integer/).to_stdout
+          .and raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+      end
+    end
+  end
+
+  describe 'configure' do
+    let(:configured_cell) { true }
+    let(:skip_sequence_alteration) { false }
+    let(:sequence_ranges) { [Gitlab::Cells::TopologyService::SequenceRange.new(minval: 1, maxval: 1000)] }
+    let(:topology_service_healthy) { true }
+
+    before do
+      if configured_cell
+        stub_config(cell: { enabled: true, id: 1, database: { skip_sequence_alteration: skip_sequence_alteration } })
+      else
+        stub_config(cell: { enabled: false })
+      end
+    end
+
+    context 'with a single database' do
+      let(:connection) { Gitlab::Database.database_base_models[:main].connection }
+      let(:main_config) { double(:config, name: 'main') }
+
+      before do
+        skip_if_database_exists(:ci)
+
+        allow_next_instance_of(Gitlab::TopologyServiceClient::HealthService) do |instance|
+          allow(instance).to receive(:service_healthy?).and_return(topology_service_healthy)
+        end
+
+        allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+          allow(instance).to receive(:cell_sequence_ranges).and_return(sequence_ranges)
+        end
+      end
+
+      context 'when geo is not configured' do
+        before do
+          allow(ActiveRecord::Base).to receive_message_chain('configurations.configs_for').and_return([main_config])
+          allow(ActiveRecord::Base.configurations).to receive(:primary?).and_return(false)
+          allow(Gitlab::Database).to receive(:has_config?).with(:geo).and_return(false)
+        end
+
+        context 'when the schema is already loaded' do
+          it 'migrates the database' do
+            allow(connection).to receive(:tables).and_return(%w[table1 table2])
+
+            expect(Rake::Task['db:migrate']).to receive(:invoke)
+            expect(Rake::Task['db:schema:load']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when the schema is not loaded' do
+          it 'loads the schema and seeds the database' do
+            allow(connection).to receive(:tables).and_return([])
+
+            expect(Rake::Task['db:schema:load']).to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).to receive(:invoke).with(1, 1000)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when only OpenBao tables exist' do
+          it 'loads the schema and seeds the database' do
+            allow(connection).to receive(:tables).and_return(%w[openbao_kv_store openbao_ha_locks])
+
+            expect(Rake::Task['db:schema:load']).to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).to receive(:invoke).with(1, 1000)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when only a single table is present' do
+          it 'loads the schema and seeds the database' do
+            allow(connection).to receive(:tables).and_return(['default'])
+
+            expect(Rake::Task['db:schema:load']).to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).to receive(:invoke).with(1, 1000)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when loading the schema fails' do
+          it 'does not seed the database' do
+            allow(connection).to receive(:tables).and_return([])
+
+            expect(Rake::Task['db:schema:load']).to receive(:invoke).and_raise('error')
+            expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            expect { run_rake_task('gitlab:db:configure') }.to raise_error(RuntimeError, 'error')
+          end
+        end
+
+        context 'SKIP_POST_DEPLOYMENT_MIGRATIONS environment variable set' do
+          let(:rails_paths) { { 'db' => ['db'], 'db/migrate' => ['db/migrate'] } }
+
+          before do
+            stub_env('SKIP_POST_DEPLOYMENT_MIGRATIONS', true)
+
+            # Our environment has already been loaded, so we need to pretend like post_migrations were not
+            allow(Rails.application.config).to receive(:paths).and_return(rails_paths)
+            allow(ActiveRecord::Migrator).to receive(:migrations_paths).and_return(rails_paths['db/migrate'].dup)
+          end
+
+          context 'when the schema is not loaded' do
+            it 'adds the post deployment migration path before schema load' do
+              allow(connection).to receive(:tables).and_return([])
+
+              expect(Gitlab::Database).to receive(:add_post_migrate_path_to_rails).and_call_original
+              expect(Rake::Task['db:schema:load']).to receive(:invoke)
+              expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+              expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+              expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+              expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).to receive(:invoke).with(1, 1000)
+
+              run_rake_task('gitlab:db:configure')
+
+              expect(rails_paths['db/migrate'].include?(File.join(Rails.root, 'db', 'post_migrate'))).to be(true)
+            end
+          end
+
+          context 'when the schema is loaded' do
+            it 'ignores post deployment migrations' do
+              allow(connection).to receive(:tables).and_return(%w[table1 table2])
+
+              expect(Rake::Task['db:migrate']).to receive(:invoke)
+              expect(Gitlab::Database).not_to receive(:add_post_migrate_path_to_rails)
+              expect(Rake::Task['db:schema:load']).not_to receive(:invoke)
+              expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+              expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+              expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+              run_rake_task('gitlab:db:configure')
+
+              expect(rails_paths['db/migrate'].include?(File.join(Rails.root, 'db', 'post_migrate'))).to be(false)
+            end
+          end
+        end
+
+        context 'when has cell disabled' do
+          let(:configured_cell) { false }
+
+          it 'loads the schema, seeds the database but skips altering cell sequences range' do
+            allow(connection).to receive(:tables).and_return([])
+
+            expect(Rake::Task['db:schema:load']).to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when has cell configuration but cell ID is not found in topology service' do
+          before do
+            allow(connection).to receive(:tables).and_return([])
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::HealthService) do |instance|
+              allow(instance).to receive(:service_healthy?).and_return(topology_service_healthy)
+            end
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+              allow(instance).to receive(:cell_sequence_ranges)
+                .and_raise(Gitlab::TopologyServiceClient::CellNotFoundError, "Cell '1' not found on Topology Service")
+            end
+          end
+
+          it 'fails the rake task with CellNotFoundError' do
+            expect(Rake::Task['db:schema:load']).to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            expect { run_rake_task('gitlab:db:configure') }
+              .to raise_error(Gitlab::TopologyServiceClient::CellNotFoundError, "Cell '1' not found on Topology Service")
+          end
+        end
+
+        context 'when has cell configuration but has no sequence range available' do
+          before do
+            allow(connection).to receive(:tables).and_return([])
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::HealthService) do |instance|
+              allow(instance).to receive(:service_healthy?).and_return(topology_service_healthy)
+            end
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+              allow(instance).to receive(:cell_sequence_ranges).and_return(nil)
+            end
+          end
+
+          it 'loads the schema but raises before creating partitions, seeding, or altering cell sequences range', :aggregate_failures do
+            # create_dynamic_partitions is invoked once as a no-op (skip) during schema load,
+            # but must NOT be re-enabled and re-invoked because the raise happens before that step.
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions']).to receive(:invoke).once
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions']).not_to receive(:reenable)
+
+            expect(Rake::Task['db:schema:load']).to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            expect { run_rake_task('gitlab:db:configure') }
+              .to raise_error(RuntimeError, /No sequence ranges provided from Topology Service/)
+          end
+        end
+
+        context 'when has cell configuration but config skips altering cell sequences' do
+          let(:skip_sequence_alteration) { true }
+
+          it 'loads the schema, seeds the database and skip altering cell sequences range' do
+            allow(connection).to receive(:tables).and_return([])
+
+            expect(Rake::Task['db:schema:load']).to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+            expect(Rake::Task['db:migrate']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when has cell configuration but topology service is unavailable' do
+          let(:topology_service_healthy) { false }
+
+          it_behaves_like 'topology service unavailable', false
+        end
+      end
+
+      context 'when geo is configured' do
+        context 'when the main database is also configured' do
+          before do
+            skip_unless_geo_configured
+          end
+
+          it 'only configures the main database' do
+            allow(connection).to receive(:tables).and_return(%w[table1 table2])
+
+            expect(Rake::Task['db:migrate:main']).to receive(:invoke)
+
+            expect(Rake::Task['db:migrate:geo']).not_to receive(:invoke)
+            expect(Rake::Task['db:schema:load:geo']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+      end
+    end
+
+    context 'with multiple databases' do
+      let(:main_model) { double(:model, connection: double(:connection)) }
+      let(:ci_model) { double(:model, connection: double(:connection)) }
+      let(:sec_model) { double(:model, connection: double(:connection)) }
+      let(:base_models) do
+        models = { 'main' => main_model, 'ci' => ci_model }.with_indifferent_access
+        models['sec'] = sec_model if database_exists?('sec')
+        models
+      end
+
+      let(:main_config) { double(:config, name: 'main') }
+      let(:ci_config) { double(:config, name: 'ci') }
+
+      before do
+        skip_if_shared_database(:ci)
+
+        allow(Gitlab::Database).to receive(:database_base_models_with_gitlab_shared).and_return(base_models)
+
+        allow_next_instance_of(Gitlab::TopologyServiceClient::HealthService) do |instance|
+          allow(instance).to receive(:service_healthy?).and_return(topology_service_healthy)
+        end
+
+        allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+          allow(instance).to receive(:cell_sequence_ranges).and_return(sequence_ranges)
+        end
+      end
+
+      context 'when geo is not configured' do
+        before do
+          allow(ActiveRecord::Base).to receive_message_chain('configurations.configs_for')
+            .and_return([main_config, ci_config])
+        end
+
+        context 'when no database has the schema loaded' do
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+            allow(ci_model.connection).to receive(:tables).and_return([])
+          end
+
+          it 'loads the schema, seeds all the databases and alter cell sequences range' do
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:invoke).twice
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:reenable)
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).to receive(:invoke).twice
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).to receive(:reenable)
+
+            expect(Rake::Task['db:schema:load:main']).to receive(:invoke)
+            expect(Rake::Task['db:schema:load:ci']).to receive(:invoke)
+
+            expect(Rake::Task['db:migrate:main']).not_to receive(:invoke)
+            expect(Rake::Task['db:migrate:ci']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).to receive(:invoke).with(1, 1000)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when both databases have the schema loaded' do
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[table1 table2])
+            allow(ci_model.connection).to receive(:tables).and_return(%w[table1 table2])
+          end
+
+          it 'migrates the databases without seeding them and alter cell sequences range' do
+            expect(Rake::Task['db:migrate:main']).to receive(:invoke)
+            expect(Rake::Task['db:migrate:ci']).to receive(:invoke)
+
+            expect(Rake::Task['db:schema:load:main']).not_to receive(:invoke)
+            expect(Rake::Task['db:schema:load:ci']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when only one database has the schema loaded' do
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[table1 table2])
+            allow(ci_model.connection).to receive(:tables).and_return([])
+          end
+
+          it 'migrates, loads the schema correctly and alter cell sequences without seeding the databases' do
+            expect(Rake::Task['db:migrate:main']).to receive(:invoke)
+            expect(Rake::Task['db:schema:load:main']).not_to receive(:invoke)
+
+            expect(Rake::Task['db:schema:load:ci']).to receive(:invoke)
+            expect(Rake::Task['db:migrate:ci']).not_to receive(:invoke)
+
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when has cell disabled' do
+          let(:configured_cell) { false }
+
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+            allow(ci_model.connection).to receive(:tables).and_return([])
+          end
+
+          it 'loads the schema, seeds the database but skips altering cell sequences range' do
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:invoke).twice
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:reenable)
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).to receive(:invoke).twice
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).to receive(:reenable)
+
+            expect(Rake::Task['db:schema:load:main']).to receive(:invoke)
+            expect(Rake::Task['db:schema:load:ci']).to receive(:invoke)
+
+            expect(Rake::Task['db:migrate:main']).not_to receive(:invoke)
+            expect(Rake::Task['db:migrate:ci']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when has cell configuration but has no sequence range available' do
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+            allow(ci_model.connection).to receive(:tables).and_return([])
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::HealthService) do |instance|
+              allow(instance).to receive(:service_healthy?).and_return(topology_service_healthy)
+            end
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+              allow(instance).to receive(:cell_sequence_ranges).and_return(nil)
+            end
+          end
+
+          it 'loads the schema but raises before creating partitions, seeding, or altering cell sequences range', :aggregate_failures do
+            # create_dynamic_partitions is invoked once as a no-op (skip) during schema load,
+            # but must NOT be re-enabled and re-invoked because the raise happens before that step.
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:invoke).once
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).not_to receive(:reenable)
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).to receive(:invoke).once
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).not_to receive(:reenable)
+
+            expect(Rake::Task['db:schema:load:main']).to receive(:invoke)
+            expect(Rake::Task['db:schema:load:ci']).to receive(:invoke)
+
+            expect(Rake::Task['db:migrate:main']).not_to receive(:invoke)
+            expect(Rake::Task['db:migrate:ci']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            expect do
+              run_rake_task('gitlab:db:configure')
+            end.to raise_error(
+              RuntimeError,
+              /No sequence ranges provided from Topology Service/
+            )
+          end
+        end
+
+        context 'when has cell configuration but cell ID is not found in topology service' do
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+            allow(ci_model.connection).to receive(:tables).and_return([])
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::HealthService) do |instance|
+              allow(instance).to receive(:service_healthy?).and_return(topology_service_healthy)
+            end
+
+            allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+              allow(instance).to receive(:cell_sequence_ranges)
+                .and_raise(Gitlab::TopologyServiceClient::CellNotFoundError, "Cell '1' not found on Topology Service")
+            end
+          end
+
+          it 'fails the rake task with CellNotFoundError' do
+            expect(Rake::Task['db:schema:load:main']).to receive(:invoke)
+            expect(Rake::Task['db:schema:load:ci']).to receive(:invoke)
+            expect(Rake::Task['db:migrate:main']).not_to receive(:invoke)
+            expect(Rake::Task['db:migrate:ci']).not_to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:lock_writes']).not_to receive(:invoke)
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            expect { run_rake_task('gitlab:db:configure') }
+              .to raise_error(Gitlab::TopologyServiceClient::CellNotFoundError, "Cell '1' not found on Topology Service")
+          end
+        end
+
+        context 'when has cell configuration but config skips altering cell sequences' do
+          let(:skip_sequence_alteration) { true }
+
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+            allow(ci_model.connection).to receive(:tables).and_return([])
+          end
+
+          it 'migrates the databases without seeding them and skip altering cell sequences range' do
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:invoke).twice
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:reenable)
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).to receive(:invoke).twice
+            expect(Rake::Task['gitlab:db:create_dynamic_partitions:ci']).to receive(:reenable)
+
+            expect(Rake::Task['db:schema:load:main']).to receive(:invoke)
+            expect(Rake::Task['db:schema:load:ci']).to receive(:invoke)
+
+            expect(Rake::Task['db:migrate:main']).not_to receive(:invoke)
+            expect(Rake::Task['db:migrate:ci']).not_to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:lock_writes']).to receive(:invoke)
+            expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+
+            expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).not_to receive(:invoke)
+
+            run_rake_task('gitlab:db:configure')
+          end
+        end
+
+        context 'when has cell configuration but topology service is unavailable' do
+          let(:topology_service_healthy) { false }
+
+          before do
+            allow(main_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+            allow(ci_model.connection).to receive(:tables).and_return([])
+          end
+
+          it_behaves_like 'topology service unavailable', true
+        end
+      end
+
+      context 'when geo is configured' do
+        let(:geo_config) { double(:config, name: 'geo') }
+
+        before do
+          skip_unless_geo_configured
+
+          allow(main_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+          allow(ci_model.connection).to receive(:tables).and_return(%w[schema_migrations])
+        end
+
+        it 'does not run tasks against geo' do
+          expect(Rake::Task['db:schema:load:main']).to receive(:invoke)
+          expect(Rake::Task['db:schema:load:ci']).to receive(:invoke)
+          expect(Rake::Task['db:seed_fu']).to receive(:invoke)
+
+          expect(Rake::Task['db:migrate:geo']).not_to receive(:invoke)
+          expect(Rake::Task['db:schema:load:geo']).not_to receive(:invoke)
+
+          expect(Rake::Task['gitlab:db:alter_cell_sequences_range']).to receive(:invoke)
+
+          run_rake_task('gitlab:db:configure')
+        end
+      end
+    end
+
+    describe 'clickhouse migrations' do
+      let(:connection) { Gitlab::Database.database_base_models[:main].connection }
+      let(:main_config) { double(:config, name: 'main') }
+
+      before do
+        # stub normal migrations
+        allow(ActiveRecord::Base).to receive_message_chain('configurations.configs_for').and_return([main_config])
+        allow(ActiveRecord::Base.configurations).to receive(:primary?).and_return(false)
+        allow(connection).to receive(:tables).and_return(%w[table1 table2])
+        allow(Rake::Task['db:migrate']).to receive(:invoke)
+
+        allow_next_instance_of(Gitlab::TopologyServiceClient::HealthService) do |instance|
+          allow(instance).to receive(:service_healthy?).and_return(topology_service_healthy)
+        end
+      end
+
+      it 'migrates clickhouse database' do
+        expect(Rake::Task['gitlab:clickhouse:migrate']).to receive(:invoke).with(true)
+
+        run_rake_task('gitlab:db:configure')
+      end
+
+      it 'does not fail if clickhouse is not configured' do
+        allow(::ClickHouse::Client).to receive(:configuration).and_return(::ClickHouse::Client::Configuration.new)
+
+        Rake::Task['gitlab:clickhouse:migrate'].reenable
+        Rake::Task['gitlab:clickhouse:migrate:main'].reenable
+
+        expect do
+          run_rake_task('gitlab:db:configure')
+        end.to output(/The 'main' ClickHouse database is not configured, skipping migrations/).to_stdout
+      end
+    end
+  end
+
+  describe 'schema inconsistencies' do
+    let(:runner) { instance_double(Gitlab::Schema::Validation::Runner, execute: inconsistencies) }
+    let(:inconsistency_class) { Gitlab::Schema::Validation::Inconsistency }
+
+    let(:inconsistencies) do
+      [
+        instance_double(inconsistency_class, display: 'index_statement_1', type: 'wrong_indexes'),
+        instance_double(inconsistency_class, display: 'index_statement_2', type: 'missing_indexes'),
+        instance_double(inconsistency_class, display: 'table_statement_1', type: 'extra_tables',
+          table_name: 'test_replication'),
+        instance_double(inconsistency_class, display: 'trigger_statement', type: 'missing_triggers',
+          object_name: 'gitlab_schema_write_trigger_for_users')
+      ]
+    end
+
+    let(:diagnostic_message) do
+      'This task is a diagnostic tool to be used under the guidance of GitLab Support. ' \
+        'You should not use the task for routine checks as database inconsistencies might be expected.'
+    end
+
+    before do
+      allow(Gitlab::Schema::Validation::Runner).to receive(:new).and_return(runner)
+    end
+
+    def run_schema_checker(*args)
+      task = Rake::Task['gitlab:db:schema_checker:run']
+      task.reenable
+      task.invoke(*args)
+    end
+
+    context 'without a mode argument' do
+      it 'runs all validators, prints the inconsistencies and the diagnostic message, and does not exit' do
+        expect(Gitlab::Schema::Validation::Runner).to receive(:new)
+          .with(anything, anything, validators: Gitlab::Schema::Validation::Validators::Base.all_validators)
+          .and_return(runner)
+
+        expect { run_schema_checker }
+          .to output(a_string_including('index_statement_1', 'index_statement_2', diagnostic_message)).to_stdout
+      end
+    end
+
+    context 'with the stable mode' do
+      it 'runs only the stable validators and exits with a non-zero code' do
+        expect(Gitlab::Schema::Validation::Runner).to receive(:new)
+          .with(anything, anything, validators: STABLE_VALIDATORS)
+          .and_return(runner)
+
+        expect { run_schema_checker(:stable) }
+          .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+      end
+
+      it 'prints the inconsistencies without the diagnostic message' do
+        expect { run_schema_checker(:stable) }
+          .to output(
+            satisfy do |output|
+              output.include?('index_statement_1') &&
+                output.include?('index_statement_2') &&
+                output.exclude?(diagnostic_message)
+            end
+          ).to_stdout
+          .and raise_error(SystemExit)
+      end
+    end
+
+    context 'when there are no inconsistencies' do
+      let(:inconsistencies) { [] }
+
+      it 'does not exit with an error in stable mode' do
+        expect { run_schema_checker(:stable) }
+          .not_to raise_error
+      end
+
+      it 'does not exit with an error in all mode' do
+        expect { run_schema_checker }
+          .not_to raise_error
+      end
+    end
+
+    context 'with an invalid mode' do
+      it 'raises an error' do
+        expect { run_schema_checker(:unknown) }
+          .to raise_error(RuntimeError, /Invalid mode: 'unknown'/)
+      end
+    end
+  end
+
+  describe 'validate_schema' do
+    let(:schema_checker_task) { Rake::Task['gitlab:db:schema_checker:run'] }
+
+    before do
+      allow(schema_checker_task).to receive(:invoke)
+    end
+
+    it 'runs the schema checker in stable mode' do
+      expect(schema_checker_task).to receive(:invoke).with(:stable)
+
+      run_rake_task('gitlab:db:validate_schema')
+    end
+
+    context 'when the schema checker exits due to inconsistencies' do
+      before do
+        allow(schema_checker_task).to receive(:invoke).and_raise(SystemExit.new(1))
+      end
+
+      it 'propagates the exit without tracking it as an error' do
+        expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+
+        expect { run_rake_task('gitlab:db:validate_schema') }
+          .to raise_error(SystemExit) { |error| expect(error.status).to eq(1) }
+      end
+    end
+
+    context 'when the schema checker raises an error' do
+      before do
+        allow(schema_checker_task).to receive(:invoke).and_raise(StandardError, 'boom')
+      end
+
+      it 'tracks the exception and exits with code 2 (operational error)' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception).with(instance_of(StandardError))
+
+        expect { run_rake_task('gitlab:db:validate_schema') }
+          .to output(/Schema validation failed: boom/).to_stderr
+          .and raise_error(SystemExit) { |error| expect(error.status).to eq(2) }
+      end
+    end
+  end
+
+  describe 'collation_checker' do
+    let(:logger_double) { instance_double(Logger, level: nil, info: nil, warn: nil, error: nil, debug: true) }
+    let(:backup_connection) { instance_double(Backup::DatabaseConnection) }
+    let(:connection_double) { double(:connection) }
+
+    before do
+      allow(Logger).to receive(:new).with($stdout).and_return(logger_double)
+      allow(Logger).to receive(:new).and_return(logger_double)
+
+      allow(Backup::DatabaseConnection).to receive(:new).and_return(backup_connection)
+      allow(backup_connection).to receive(:connection).and_return(connection_double)
+    end
+
+    context 'with a single database' do
+      before do
+        skip_if_multiple_databases_are_setup
+      end
+
+      it 'runs Gitlab::Database::CollationChecker for single database' do
+        expect(Gitlab::Database::CollationChecker).to receive(:new).with(
+          connection_double,
+          'main',
+          logger_double,
+          1.gigabyte
+        ).and_return(double(run: {}))
+
+        run_rake_task('gitlab:db:collation_checker')
+      end
+
+      it 'uses custom table size limit when MAX_TABLE_SIZE is set' do
+        stub_env('MAX_TABLE_SIZE', 10.gigabytes.to_s)
+
+        expect(Gitlab::Database::CollationChecker).to receive(:new).with(
+          connection_double,
+          'main',
+          logger_double,
+          10.gigabytes
+        ).and_return(double(run: {}))
+
+        run_rake_task('gitlab:db:collation_checker')
+      end
+    end
+
+    context 'with multiple databases' do
+      before do
+        skip_if_shared_database(:ci)
+      end
+
+      it 'runs Gitlab::Database::CollationChecker for multiple databases' do
+        allow(Gitlab::Database::CollationChecker).to receive(:new)
+          .and_return(double(run: {}))
+
+        run_rake_task('gitlab:db:collation_checker')
+
+        expect(Gitlab::Database::CollationChecker).to have_received(:new)
+          .with(connection_double, "main", logger_double, 1.gigabyte)
+
+        expect(Gitlab::Database::CollationChecker).to have_received(:new)
+          .with(connection_double, "ci", logger_double, 1.gigabyte)
+
+        if database_exists?('sec')
+          expect(Gitlab::Database::CollationChecker).to have_received(:new)
+            .with(connection_double, "sec", logger_double, 1.gigabyte)
+        end
+      end
+
+      it 'uses custom table size limit when MAX_TABLE_SIZE is set' do
+        stub_env('MAX_TABLE_SIZE', 15.gigabytes.to_s)
+
+        received_sizes = []
+        allow(Gitlab::Database::CollationChecker).to receive(:new) do |_, _, _, size|
+          received_sizes << size
+          double(run: {})
+        end
+
+        run_rake_task('gitlab:db:collation_checker')
+
+        expect(received_sizes.uniq).to eq([15.gigabytes])
+      end
+
+      context 'when the single database task is used' do
+        it 'runs Gitlab::Database::CollationChecker with the main database' do
+          expect(Backup::DatabaseConnection).to receive(:new).with('main').and_return(backup_connection)
+          expect(Gitlab::Database::CollationChecker).to receive(:new)
+            .with(
+              connection_double,
+              'main',
+              logger_double,
+              1.gigabyte
+            ).and_return(double(run: {}))
+
+          run_rake_task('gitlab:db:collation_checker:main')
+        end
+
+        it 'runs Gitlab::Database::CollationChecker with the ci database' do
+          expect(Backup::DatabaseConnection).to receive(:new).with('ci').and_return(backup_connection)
+          expect(Gitlab::Database::CollationChecker).to receive(:new)
+            .with(
+              connection_double,
+              'ci',
+              logger_double,
+              1.gigabyte
+            ).and_return(double(run: {}))
+
+          run_rake_task('gitlab:db:collation_checker:ci')
+        end
+
+        it 'uses custom table size limit when MAX_TABLE_SIZE is set' do
+          stub_env('MAX_TABLE_SIZE', 12.gigabytes.to_s)
+
+          expect(Backup::DatabaseConnection).to receive(:new).with('main').and_return(backup_connection)
+          expect(Gitlab::Database::CollationChecker).to receive(:new).with(
+            connection_double,
+            'main',
+            logger_double,
+            12.gigabytes
+          ).and_return(double(run: {}))
+
+          run_rake_task('gitlab:db:collation_checker:main')
+        end
+      end
+
+      context 'with geo configured' do
+        before do
+          skip_unless_geo_configured
+        end
+
+        it 'does not create a task for the geo database' do
+          expect { run_rake_task('gitlab:db:collation_checker:geo') }
+            .to raise_error(/Don't know how to build task 'gitlab:db:collation_checker:geo'/)
+        end
+      end
+    end
+  end
+
+  describe 'repair_index' do
+    let(:logger_double) { instance_double(Logger, level: nil, info: nil, warn: nil, error: nil, debug: true) }
+    let(:backup_connection) { instance_double(Backup::DatabaseConnection) }
+    let(:connection_double) { double(:connection) }
+
+    before do
+      allow(Logger).to receive(:new).with($stdout).and_return(logger_double)
+      allow(Logger).to receive(:new).and_return(logger_double)
+      allow(Backup::DatabaseConnection).to receive(:new).and_return(backup_connection)
+      allow(backup_connection).to receive(:connection).and_return(connection_double)
+    end
+
+    context 'with a single database' do
+      before do
+        skip_if_multiple_databases_are_setup
+      end
+
+      it 'runs Gitlab::Database::RepairIndex with correct arguments' do
+        expect(Backup::DatabaseConnection).to receive(:new).with('main').and_return(backup_connection)
+        expect(Gitlab::Database::RepairIndex).to receive(:new).with(
+          connection_double,
+          'main',
+          Gitlab::Database::RepairIndex::INDEXES_TO_REPAIR,
+          logger_double,
+          false
+        ).and_return(double(run: {}))
+
+        run_rake_task('gitlab:db:repair_index')
+      end
+
+      it 'respects DRY_RUN environment variable' do
+        stub_env('DRY_RUN', 'true')
+
+        expect(Backup::DatabaseConnection).to receive(:new).with('main').and_return(backup_connection)
+        expect(Gitlab::Database::RepairIndex).to receive(:new).with(
+          connection_double,
+          'main',
+          Gitlab::Database::RepairIndex::INDEXES_TO_REPAIR,
+          logger_double,
+          true
+        ).and_return(double(run: {}))
+
+        run_rake_task('gitlab:db:repair_index')
+      end
+    end
+
+    context 'with multiple databases' do
+      before do
+        skip_if_shared_database(:ci)
+      end
+
+      it 'runs Gitlab::Database::RepairIndex for multiple databases' do
+        allow(Gitlab::Database::RepairIndex).to receive(:new)
+          .and_return(double(run: {}))
+
+        run_rake_task('gitlab:db:repair_index')
+
+        expect(Gitlab::Database::RepairIndex).to have_received(:new)
+          .with(connection_double, 'main', Gitlab::Database::RepairIndex::INDEXES_TO_REPAIR, logger_double, false)
+        expect(Gitlab::Database::RepairIndex).to have_received(:new)
+          .with(connection_double, 'ci', Gitlab::Database::RepairIndex::INDEXES_TO_REPAIR, logger_double, false)
+      end
+
+      context 'when the single database task is used' do
+        it 'runs Gitlab::Database::RepairIndex with the main database' do
+          expect(Backup::DatabaseConnection).to receive(:new).with('main').and_return(backup_connection)
+          expect(Gitlab::Database::RepairIndex).to receive(:new).with(
+            connection_double,
+            'main',
+            Gitlab::Database::RepairIndex::INDEXES_TO_REPAIR,
+            logger_double,
+            false
+          ).and_return(double(run: {}))
+
+          run_rake_task('gitlab:db:repair_index:main')
+        end
+
+        it 'runs Gitlab::Database::RepairIndex with the ci database' do
+          expect(Backup::DatabaseConnection).to receive(:new).with('ci').and_return(backup_connection)
+          expect(Gitlab::Database::RepairIndex).to receive(:new).with(
+            connection_double,
+            'ci',
+            Gitlab::Database::RepairIndex::INDEXES_TO_REPAIR,
+            logger_double,
+            false
+          ).and_return(double(run: {}))
+
+          run_rake_task('gitlab:db:repair_index:ci')
+        end
+
+        it 'respects DRY_RUN environment variable' do
+          stub_env('DRY_RUN', 'true')
+
+          expect(Backup::DatabaseConnection).to receive(:new).with('main').and_return(backup_connection)
+          expect(Gitlab::Database::RepairIndex).to receive(:new).with(
+            connection_double,
+            'main',
+            Gitlab::Database::RepairIndex::INDEXES_TO_REPAIR,
+            logger_double,
+            true
+          ).and_return(double(run: {}))
+
+          run_rake_task('gitlab:db:repair_index:main')
+        end
+      end
+
+      context 'with geo configured' do
+        before do
+          skip_unless_geo_configured
+        end
+
+        it 'does not create a task for the geo database' do
+          expect { run_rake_task('gitlab:db:repair_index:geo') }
+            .to raise_error(/Don't know how to build task 'gitlab:db:repair_index:geo'/)
+        end
+      end
+    end
+  end
+
+  describe 'dictionary generate' do
+    let(:db_config) { instance_double(ActiveRecord::DatabaseConfigurations::HashConfig, name: 'fake_db', database: 'fake_db') }
+
+    let(:model) { ActiveRecord::Base }
+    let(:connection) { model.connection }
+
+    let(:base_models) { { 'fake_db' => model }.with_indifferent_access }
+
+    let(:tables) { %w[table1 _test_dictionary_table_name openbao_kv_store openbao_ha_locks] }
+    let(:views) { %w[view1] }
+
+    let(:table_file_path) { 'db/docs/table1.yml' }
+    let(:view_file_path) { 'db/docs/views/view1.yml' }
+    let(:test_table_path) { 'db/docs/_test_dictionary_table_name.yml' }
+    let(:openbao_kv_store_table_path) { 'db/docs/openbao_kv_store.yml' }
+    let(:openbao_ha_locks_table_path) { 'db/docs/openbao_ha_locks.yml' }
+
+    before do
+      allow(Gitlab::Database).to receive_messages(
+        db_config_for_connection: db_config,
+        database_base_models: base_models
+      )
+
+      allow(connection).to receive_messages(tables: tables, views: views)
+    end
+
+    after do
+      File.delete(table_file_path)
+      File.delete(view_file_path)
+    end
+
+    context 'when the dictionary files do not exist' do
+      it 'generate the dictionary files' do
+        run_rake_task('gitlab:db:dictionary:generate')
+
+        expect(File).to exist(File.join(table_file_path))
+        expect(File).to exist(File.join(view_file_path))
+      end
+
+      it 'do not generate the dictionary files for test tables' do
+        run_rake_task('gitlab:db:dictionary:generate')
+
+        expect(File).not_to exist(File.join(test_table_path))
+      end
+
+      it 'do not generate the dictionary files for OpenBao tables' do
+        run_rake_task('gitlab:db:dictionary:generate')
+
+        expect(File).not_to exist(File.join(openbao_kv_store_table_path))
+        expect(File).not_to exist(File.join(openbao_ha_locks_table_path))
+      end
+    end
+
+    context 'when a new model class is added to the codebase' do
+      let(:table_class) do
+        Class.new(ApplicationRecord) do
+          self.table_name = 'table1'
+        end
+      end
+
+      let(:migration_table_class) do
+        Class.new(Gitlab::Database::Migration[1.0]::MigrationRecord) do
+          self.table_name = 'table1'
+        end
+      end
+
+      let(:view_class) do
+        Class.new(ApplicationRecord) do
+          self.table_name = 'view1'
+        end
+      end
+
+      let(:table_without_model) do
+        Class.new(Gitlab::Database::Partitioning::TableWithoutModel) do
+          self.table_name = 'table1'
+        end
+      end
+
+      table_metadata = {
+        'table_name' => 'table1',
+        'classes' => ['TableClass'],
+        'feature_categories' => [],
+        'description' => nil,
+        'introduced_by_url' => nil,
+        'milestone' => 14.3
+      }
+      view_metadata = {
+        'view_name' => 'view1',
+        'classes' => ['ViewClass'],
+        'feature_categories' => [],
+        'description' => nil,
+        'introduced_by_url' => nil,
+        'milestone' => 14.3
+      }
+
+      before do
+        stub_const('TableClass1', table_class)
+        stub_const('MIgrationTableClass1', migration_table_class)
+        stub_const('ViewClass1', view_class)
+
+        File.write(table_file_path, table_metadata.to_yaml)
+        File.write(view_file_path, view_metadata.to_yaml)
+
+        allow(model).to receive(:descendants).and_return([table_class, migration_table_class, view_class, table_without_model])
+      end
+
+      it 'appends new classes to the dictionary' do
+        run_rake_task('gitlab:db:dictionary:generate')
+
+        table_metadata = YAML.safe_load(File.read(table_file_path))
+        expect(table_metadata['classes']).to match_array(%w[TableClass TableClass1])
+
+        view_metadata = YAML.safe_load(File.read(view_file_path))
+        expect(view_metadata['classes']).to match_array(%w[ViewClass ViewClass1])
+      end
+    end
+
+    context 'when a model class is removed from the codebase' do
+      table_metadata = {
+        'table_name' => 'table1',
+        'classes' => ['TableClass'],
+        'feature_categories' => [],
+        'description' => nil,
+        'introduced_by_url' => nil,
+        'milestone' => 14.3
+      }
+      view_metadata = {
+        'view_name' => 'view1',
+        'classes' => ['ViewClass'],
+        'feature_categories' => [],
+        'description' => nil,
+        'introduced_by_url' => nil,
+        'milestone' => 14.3
+      }
+
+      before do
+        File.write(table_file_path, table_metadata.to_yaml)
+        File.write(view_file_path, view_metadata.to_yaml)
+
+        allow(model).to receive(:descendants).and_return([])
+      end
+
+      it 'keeps the dictionary classes' do
+        run_rake_task('gitlab:db:dictionary:generate')
+
+        table_metadata = YAML.safe_load(File.read(table_file_path))
+        expect(table_metadata['classes']).to match_array(%w[TableClass])
+
+        view_metadata = YAML.safe_load(File.read(view_file_path))
+        expect(view_metadata['classes']).to match_array(%w[ViewClass])
+      end
+    end
+  end
+
+  describe 'unattended' do
+    using RSpec::Parameterized::TableSyntax
+
+    where(:schema_migration_table_exists, :needs_migrations, :rake_output) do
+      false | false | "unattended_migrations_completed"
+      false | true | "unattended_migrations_completed"
+      true | false | "unattended_migrations_static"
+      true | true | "unattended_migrations_completed"
+    end
+
+    before do
+      allow(Rake::Task['gitlab:db:configure']).to receive(:invoke).and_return(true)
+    end
+
+    with_them do
+      it 'outputs changed message for automation after operations happen' do
+        connection_pool = ActiveRecord::Base.connection_pool
+        allow(connection_pool).to receive_message_chain(:schema_migration, :table_exists?).and_return(schema_migration_table_exists)
+        allow_any_instance_of(ActiveRecord::MigrationContext).to receive(:needs_migration?).and_return(needs_migrations)
+
+        expect { run_rake_task('gitlab:db:unattended') }.to output(/^#{rake_output}$/).to_stdout
+      end
+    end
+  end
+
+  describe 'clean_structure_sql' do
+    let(:clean_rake_task) { 'gitlab:db:clean_structure_sql' }
+    let(:test_task_name) { 'gitlab:db:_test_multiple_structure_cleans' }
+    let(:input) { 'this is structure data' }
+
+    let(:output) { StringIO.new }
+
+    before do
+      structure_files = %w[structure.sql ci_structure.sql sec_structure.sql]
+
+      allow(File).to receive(:open).and_call_original
+
+      structure_files.each do |structure_file_name|
+        structure_file = File.join(ActiveRecord::Tasks::DatabaseTasks.db_dir, structure_file_name)
+        stub_file_read(structure_file, content: input)
+        allow(File).to receive(:open).with(structure_file.to_s, any_args).and_yield(output)
+      end
+
+      if Gitlab.ee?
+        allow(File).to receive(:open).with(Rails.root.join('ee/db/geo/structure.sql').to_s, any_args).and_yield(output)
+        allow(File).to receive(:open).with(Rails.root.join('ee/db/embedding/structure.sql').to_s, any_args).and_yield(output)
+      end
+
+      if Gitlab.jh?
+        allow(File).to receive(:open).with(Rails.root.join('jh/db/structure.sql').to_s, any_args).and_yield(output)
+      end
+    end
+
+    after do
+      Rake::Task[test_task_name].clear if Rake::Task.task_defined?(test_task_name)
+    end
+
+    it 'can be executed multiple times within another rake task' do
+      expect_multiple_executions_of_task(test_task_name, clean_rake_task, count: 2) do
+        database_count = ActiveRecord::Base.configurations.configs_for(env_name: Rails.env).size
+
+        expect_next_instances_of(Gitlab::Database::SchemaCleaner, database_count) do |cleaner|
+          expect(cleaner).to receive(:clean).with(output)
+        end
+      end
+    end
+  end
+
+  describe 'db:migrate:reset' do
+    it 'does not dump the schema before the database is migrated' do
+      expect(Rake::Task['db:migrate:reset'].prerequisites).to eq(%w[db:drop db:create db:migrate])
+    end
+  end
+
+  describe 'drop_tables' do
+    let(:tables) { %w[one two schema_migrations] }
+    let(:views) { %w[three four pg_stat_statements] }
+    let(:schemas) { Gitlab::Database::EXTRA_SCHEMAS }
+    let(:ignored_views) { double(ActiveRecord::Relation, pluck: ['pg_stat_statements']) }
+
+    before do
+      allow(Gitlab::Database::PgDepend).to receive(:from_pg_extension).with('VIEW').and_return(ignored_views)
+    end
+
+    context 'with a single database' do
+      let(:connection) { ActiveRecord::Base.connection }
+
+      before do
+        skip_if_multiple_databases_are_setup
+
+        allow(connection).to receive_messages(execute: nil, tables: tables, views: views)
+
+        allow(Backup::DatabaseConnection).to receive(:new).with('main')
+          .and_return(instance_double(Backup::DatabaseConnection, connection: connection))
+      end
+
+      it 'drops all objects for the database', :aggregate_failures do
+        expect_objects_to_be_dropped(connection)
+
+        run_rake_task('gitlab:db:drop_tables')
+      end
+    end
+
+    context 'with multiple databases', :aggregate_failures do
+      let(:main_model) { double(:model, connection: double(:connection, tables: tables, views: views)) }
+      let(:ci_model) { double(:model, connection: double(:connection, tables: tables, views: views)) }
+      let(:base_models) { { 'main' => main_model, 'ci' => ci_model } }
+
+      before do
+        skip_if_shared_database(:ci)
+
+        allow(Gitlab::Database).to receive(:database_base_models_with_gitlab_shared).and_return(base_models)
+
+        allow(main_model.connection).to receive(:table_exists?).with('schema_migrations').and_return(true)
+        allow(ci_model.connection).to receive(:table_exists?).with('schema_migrations').and_return(true)
+
+        (tables + views + schemas).each do |name|
+          allow(main_model.connection).to receive(:quote_table_name).with(name).and_return("\"#{name}\"")
+          allow(ci_model.connection).to receive(:quote_table_name).with(name).and_return("\"#{name}\"")
+        end
+
+        allow(Backup::DatabaseConnection).to receive(:new).with('main')
+          .and_return(instance_double(Backup::DatabaseConnection, connection: main_model.connection))
+        allow(Backup::DatabaseConnection).to receive(:new).with('ci')
+          .and_return(instance_double(Backup::DatabaseConnection, connection: ci_model.connection))
+      end
+
+      it 'does not use PgDepend.using_connection to avoid SharedModel connection conflicts' do
+        expect(Gitlab::Database::PgDepend).not_to receive(:using_connection)
+
+        allow(main_model.connection).to receive(:execute).and_return(nil)
+        allow(ci_model.connection).to receive(:execute).and_return(nil)
+
+        run_rake_task('gitlab:db:drop_tables')
+      end
+
+      it 'drops all objects for all databases', :aggregate_failures do
+        expect_objects_to_be_dropped(main_model.connection)
+        expect_objects_to_be_dropped(ci_model.connection)
+
+        run_rake_task('gitlab:db:drop_tables')
+      end
+
+      context 'when the single database task is used' do
+        it 'drops all objects for the given database', :aggregate_failures do
+          expect_objects_to_be_dropped(main_model.connection)
+
+          expect(ci_model.connection).not_to receive(:execute)
+
+          run_rake_task('gitlab:db:drop_tables:main')
+        end
+      end
+
+      context 'with geo configured' do
+        before do
+          skip_unless_geo_configured
+        end
+
+        it 'does not create a task for the geo database' do
+          expect { run_rake_task('gitlab:db:drop_tables:geo') }
+            .to raise_error(/Don't know how to build task 'gitlab:db:drop_tables:geo'/)
+        end
+      end
+    end
+
+    def expect_objects_to_be_dropped(connection)
+      expect(connection).to receive(:execute).with('DROP TABLE IF EXISTS "one" CASCADE')
+      expect(connection).to receive(:execute).with('DROP TABLE IF EXISTS "two" CASCADE')
+
+      expect(connection).to receive(:execute).with('DROP VIEW IF EXISTS "three" CASCADE')
+      expect(connection).to receive(:execute).with('DROP VIEW IF EXISTS "four" CASCADE')
+      expect(Gitlab::Database::PgDepend).to receive(:from_pg_extension).with('VIEW')
+      expect(connection).not_to receive(:execute).with('DROP VIEW IF EXISTS "pg_stat_statements" CASCADE')
+
+      expect(connection).to receive(:execute).with('TRUNCATE schema_migrations')
+
+      Gitlab::Database::EXTRA_SCHEMAS.each do |schema|
+        expect(connection).to receive(:execute).with("DROP SCHEMA IF EXISTS \"#{schema}\" CASCADE")
+      end
+    end
+  end
+
+  describe 'create_dynamic_partitions' do
+    context 'with a single database' do
+      before do
+        skip_if_multiple_databases_are_setup
+      end
+
+      it 'delegates syncing of partitions without limiting databases or analyzing default-interval tables' do
+        expect(Gitlab::Database::Partitioning).to receive(:sync_partitions).with(no_args)
+
+        run_rake_task('gitlab:db:create_dynamic_partitions')
+      end
+    end
+
+    context 'with multiple databases' do
+      before do
+        skip_if_shared_database(:ci)
+      end
+
+      context 'when running the multi-database variant' do
+        it 'delegates syncing of partitions without limiting databases' do
+          expect(Gitlab::Database::Partitioning).to receive(:sync_partitions).with(no_args)
+
+          run_rake_task('gitlab:db:create_dynamic_partitions')
+        end
+      end
+
+      context 'when running a single-database variant' do
+        it 'delegates syncing of partitions for the chosen database' do
+          expect(Gitlab::Database::Partitioning).to receive(:sync_partitions).with(only_on: 'main')
+
+          run_rake_task('gitlab:db:create_dynamic_partitions:main')
+        end
+      end
+    end
+
+    context 'when partitions are synced' do
+      it 'prints nothing' do
+        expect(Gitlab::Database::Partitioning).to receive(:sync_partitions).and_return(true)
+
+        expect { run_rake_task('gitlab:db:create_dynamic_partitions') }.not_to output.to_stdout
+      end
+    end
+
+    context 'when partition_manager_sync_partitions is disabled' do
+      let(:note) { /partition_manager_sync_partitions feature is currently disabled/ }
+
+      before do
+        stub_feature_flags(partition_manager_sync_partitions: false)
+      end
+
+      it 'prints a note naming the flag' do
+        expect { run_rake_task('gitlab:db:create_dynamic_partitions') }.to output(note).to_stdout
+      end
+
+      context 'when running a single-database variant' do
+        before do
+          skip_if_shared_database(:ci)
+        end
+
+        it 'prints a note naming the flag' do
+          expect { run_rake_task('gitlab:db:create_dynamic_partitions:main') }.to output(note).to_stdout
+        end
+      end
+    end
+
+    context 'when disallow_database_ddl_feature_flags is enabled' do
+      before do
+        stub_feature_flags(disallow_database_ddl_feature_flags: true)
+      end
+
+      it 'prints a note naming the flag' do
+        expect { run_rake_task('gitlab:db:create_dynamic_partitions') }
+          .to output(/disallow_database_ddl_feature_flags feature is currently enabled/).to_stdout
+      end
+    end
+
+    context 'with geo configured' do
+      before do
+        skip_unless_geo_configured
+      end
+
+      it 'does not create a task for the geo database' do
+        expect { run_rake_task('gitlab:db:create_dynamic_partitions:geo') }
+          .to raise_error(/Don't know how to build task 'gitlab:db:create_dynamic_partitions:geo'/)
+      end
+    end
+
+    context 'with jh configured' do
+      before do
+        skip 'Skipping because the jh database is not configured' unless
+          !!ActiveRecord::Base.configurations.configs_for(env_name: Rails.env, name: 'jh')
+      end
+
+      it 'does not create a task for the jh database' do
+        expect { run_rake_task('gitlab:db:create_dynamic_partitions:jh') }
+          .to raise_error(/Don't know how to build task 'gitlab:db:create_dynamic_partitions:jh'/)
+      end
+    end
+  end
+
+  describe 'reindex' do
+    context 'with a single database' do
+      before do
+        skip_if_shared_database(:ci)
+      end
+
+      it 'delegates to Gitlab::Database::Reindexing' do
+        expect(Gitlab::Database::Reindexing).to receive(:invoke).with(no_args)
+
+        run_rake_task('gitlab:db:reindex')
+      end
+
+      context 'when reindexing is not enabled' do
+        it 'is a no-op' do
+          expect(Gitlab::Database::Reindexing).to receive(:enabled?).and_return(false)
+          expect(Gitlab::Database::Reindexing).not_to receive(:invoke)
+
+          expect { run_rake_task('gitlab:db:reindex') }.to raise_error(SystemExit)
+        end
+      end
+    end
+
+    context 'with multiple databases' do
+      let(:base_models) { { 'main' => double(:model), 'ci' => double(:model) } }
+
+      before do
+        skip_if_multiple_databases_not_setup(:ci)
+
+        allow(Gitlab::Database).to receive(:database_base_models_with_gitlab_shared).and_return(base_models)
+      end
+
+      it 'delegates to Gitlab::Database::Reindexing without a specific database' do
+        expect(Gitlab::Database::Reindexing).to receive(:invoke).with(no_args)
+
+        run_rake_task('gitlab:db:reindex')
+      end
+
+      context 'when the single database task is used' do
+        before do
+          skip_if_shared_database(:ci)
+        end
+
+        it 'delegates to Gitlab::Database::Reindexing with a specific database' do
+          expect(Gitlab::Database::Reindexing).to receive(:invoke).with('ci')
+
+          run_rake_task('gitlab:db:reindex:ci')
+        end
+
+        context 'when reindexing is not enabled' do
+          it 'is a no-op' do
+            expect(Gitlab::Database::Reindexing).to receive(:enabled?).and_return(false)
+            expect(Gitlab::Database::Reindexing).not_to receive(:invoke)
+
+            expect { run_rake_task('gitlab:db:reindex:ci') }.to raise_error(SystemExit)
+          end
+        end
+      end
+
+      context 'with geo configured' do
+        before do
+          skip_unless_geo_configured
+        end
+
+        it 'does not create a task for the geo database' do
+          expect { run_rake_task('gitlab:db:reindex:geo') }
+            .to raise_error(/Don't know how to build task 'gitlab:db:reindex:geo'/)
+        end
+      end
+    end
+  end
+
+  describe 'reindex:stats' do
+    it 'delegates to Gitlab::Database::Reindexing.stats' do
+      expect(Gitlab::Database::Reindexing).to receive(:stats).with(no_args)
+
+      run_rake_task('gitlab:db:reindex:stats')
+    end
+  end
+
+  describe 'enqueue_reindexing_action' do
+    let(:index_name) { 'public.users_pkey' }
+
+    it 'creates an entry in the queue' do
+      expect do
+        run_rake_task('gitlab:db:enqueue_reindexing_action', "[#{index_name}, main]")
+      end.to change { Gitlab::Database::PostgresIndex.find(index_name).queued_reindexing_actions.size }.from(0).to(1)
+    end
+
+    it 'defaults to main database' do
+      expect(Gitlab::Database::SharedModel).to receive(:using_connection).with(ActiveRecord::Base.connection).and_call_original
+
+      expect do
+        run_rake_task('gitlab:db:enqueue_reindexing_action', "[#{index_name}]")
+      end.to change { Gitlab::Database::PostgresIndex.find(index_name).queued_reindexing_actions.size }.from(0).to(1)
+    end
+  end
+
+  describe 'execute_async_index_operations' do
+    before do
+      skip_if_shared_database(:ci)
+    end
+
+    it 'delegates ci task to Gitlab::Database::AsyncIndexes' do
+      expect(Gitlab::Database::AsyncIndexes).to receive(:execute_pending_actions!).with(how_many: 2)
+
+      run_rake_task('gitlab:db:execute_async_index_operations:ci')
+    end
+
+    it 'delegates ci task to Gitlab::Database::AsyncIndexes with specified argument' do
+      expect(Gitlab::Database::AsyncIndexes).to receive(:execute_pending_actions!).with(how_many: 5)
+
+      run_rake_task('gitlab:db:execute_async_index_operations:ci', '[5]')
+    end
+
+    it 'delegates main task to Gitlab::Database::AsyncIndexes' do
+      expect(Gitlab::Database::AsyncIndexes).to receive(:execute_pending_actions!).with(how_many: 2)
+
+      run_rake_task('gitlab:db:execute_async_index_operations:main')
+    end
+
+    it 'delegates main task to Gitlab::Database::AsyncIndexes with specified argument' do
+      expect(Gitlab::Database::AsyncIndexes).to receive(:execute_pending_actions!).with(how_many: 7)
+
+      run_rake_task('gitlab:db:execute_async_index_operations:main', '[7]')
+    end
+
+    it 'delegates all task to every database with higher default for dev' do
+      expect(Rake::Task['gitlab:db:execute_async_index_operations:ci']).to receive(:invoke).with(1000)
+      expect(Rake::Task['gitlab:db:execute_async_index_operations:main']).to receive(:invoke).with(1000)
+
+      run_rake_task('gitlab:db:execute_async_index_operations:all')
+    end
+
+    it 'delegates all task to every database with lower default for prod' do
+      allow(Gitlab).to receive(:dev_or_test_env?).and_return(false)
+
+      expect(Rake::Task['gitlab:db:execute_async_index_operations:ci']).to receive(:invoke).with(2)
+      expect(Rake::Task['gitlab:db:execute_async_index_operations:main']).to receive(:invoke).with(2)
+
+      run_rake_task('gitlab:db:execute_async_index_operations:all')
+    end
+
+    it 'delegates all task to every database with specified argument' do
+      expect(Rake::Task['gitlab:db:execute_async_index_operations:ci']).to receive(:invoke).with('50')
+      expect(Rake::Task['gitlab:db:execute_async_index_operations:main']).to receive(:invoke).with('50')
+
+      run_rake_task('gitlab:db:execute_async_index_operations:all', '[50]')
+    end
+
+    context 'when feature is not enabled' do
+      it 'is a no-op' do
+        stub_feature_flags(database_async_index_operations: false)
+
+        expect(Gitlab::Database::AsyncIndexes).not_to receive(:execute_pending_actions!)
+
+        expect { run_rake_task('gitlab:db:execute_async_index_operations:main') }.to raise_error(SystemExit)
+      end
+    end
+
+    context 'when database ddl feature flag is enabled' do
+      it 'is a no-op' do
+        stub_feature_flags(disallow_database_ddl_feature_flags: true)
+
+        expect(Gitlab::Database::AsyncIndexes).not_to receive(:execute_pending_actions!)
+
+        expect { run_rake_task('gitlab:db:execute_async_index_operations:main') }.to raise_error(SystemExit)
+      end
+    end
+
+    context 'with geo configured' do
+      before do
+        skip_unless_geo_configured
+      end
+
+      it 'does not create a task for the geo database' do
+        expect { run_rake_task('gitlab:db:execute_async_index_operations:geo') }
+          .to raise_error(/Don't know how to build task 'gitlab:db:execute_async_index_operations:geo'/)
+      end
+    end
+  end
+
+  describe 'validate_async_constraints' do
+    before do
+      skip_if_shared_database(:ci)
+    end
+
+    it 'delegates ci task to Gitlab::Database::AsyncConstraints' do
+      expect(Gitlab::Database::AsyncConstraints).to receive(:validate_pending_entries!).with(how_many: 2)
+
+      run_rake_task('gitlab:db:validate_async_constraints:ci')
+    end
+
+    it 'delegates ci task to Gitlab::Database::AsyncConstraints with specified argument' do
+      expect(Gitlab::Database::AsyncConstraints).to receive(:validate_pending_entries!).with(how_many: 5)
+
+      run_rake_task('gitlab:db:validate_async_constraints:ci', '[5]')
+    end
+
+    it 'delegates main task to Gitlab::Database::AsyncConstraints' do
+      expect(Gitlab::Database::AsyncConstraints).to receive(:validate_pending_entries!).with(how_many: 2)
+
+      run_rake_task('gitlab:db:validate_async_constraints:main')
+    end
+
+    it 'delegates main task to Gitlab::Database::AsyncConstraints with specified argument' do
+      expect(Gitlab::Database::AsyncConstraints).to receive(:validate_pending_entries!).with(how_many: 7)
+
+      run_rake_task('gitlab:db:validate_async_constraints:main', '[7]')
+    end
+
+    it 'delegates all task to every database with higher default for dev' do
+      expect(Rake::Task['gitlab:db:validate_async_constraints:ci']).to receive(:invoke).with(1000)
+      expect(Rake::Task['gitlab:db:validate_async_constraints:main']).to receive(:invoke).with(1000)
+
+      run_rake_task('gitlab:db:validate_async_constraints:all')
+    end
+
+    it 'delegates all task to every database with lower default for prod' do
+      allow(Gitlab).to receive(:dev_or_test_env?).and_return(false)
+
+      expect(Rake::Task['gitlab:db:validate_async_constraints:ci']).to receive(:invoke).with(2)
+      expect(Rake::Task['gitlab:db:validate_async_constraints:main']).to receive(:invoke).with(2)
+
+      run_rake_task('gitlab:db:validate_async_constraints:all')
+    end
+
+    it 'delegates all task to every database with specified argument' do
+      expect(Rake::Task['gitlab:db:validate_async_constraints:ci']).to receive(:invoke).with('50')
+      expect(Rake::Task['gitlab:db:validate_async_constraints:main']).to receive(:invoke).with('50')
+
+      run_rake_task('gitlab:db:validate_async_constraints:all', '[50]')
+    end
+
+    context 'when feature is not enabled' do
+      it 'is a no-op' do
+        stub_feature_flags(database_async_foreign_key_validation: false)
+
+        expect(Gitlab::Database::AsyncConstraints).not_to receive(:validate_pending_entries!)
+
+        expect { run_rake_task('gitlab:db:validate_async_constraints:main') }.to raise_error(SystemExit)
+      end
+    end
+
+    context 'when database ddl feature flag is enabled' do
+      it 'is a no-op' do
+        stub_feature_flags(disallow_database_ddl_feature_flags: true)
+
+        expect(Gitlab::Database::AsyncConstraints).not_to receive(:validate_pending_entries!)
+
+        expect { run_rake_task('gitlab:db:validate_async_constraints:main') }.to raise_error(SystemExit)
+      end
+    end
+
+    context 'with geo configured' do
+      before do
+        skip_unless_geo_configured
+      end
+
+      it 'does not create a task for the geo database' do
+        expect { run_rake_task('gitlab:db:validate_async_constraints:geo') }
+          .to raise_error(/Don't know how to build task 'gitlab:db:validate_async_constraints:geo'/)
+      end
+    end
+  end
+
+  describe 'active' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:task) { 'gitlab:db:active' }
+
+    where(:needs_migration, :project_count, :exit_status, :exit_code) do
+      true  | nil | 1 | false
+      false | 1 | 0 | true
+      false | 0 | 1 | false
+      false | 2 | 0 | true
+    end
+
+    with_them do
+      it 'exits 0 or 1 depending on user modifications to the database' do
+        allow_any_instance_of(ActiveRecord::MigrationContext).to receive(:needs_migration?).and_return(needs_migration)
+        allow(Project).to receive(:count).and_return(project_count)
+
+        expect { run_rake_task(task) }.to raise_error do |error|
+          expect(error).to be_a(SystemExit)
+          expect(error.status).to eq(exit_status)
+          expect(error.success?).to be(exit_code)
+        end
+      end
+    end
+  end
+
+  describe '#migrate_with_instrumentation' do
+    let(:runner) { instance_double(::Gitlab::Database::Migrations::Runner) }
+
+    where(:db) do
+      ::Gitlab::Database.db_config_names(with_schema: :gitlab_shared).map(&:to_sym)
+    end
+
+    with_them do
+      describe '#up' do
+        subject { run_rake_task("gitlab:db:migration_testing:up:#{db}") }
+
+        let(:migrations_id_runner) do
+          instance_double('Gitlab::Database::Migrations::BatchedMigrationLastId', store: true)
+        end
+
+        before do
+          allow(::Gitlab::Database::Migrations::Runner).to(
+            receive(:batched_migrations_last_id).and_return(migrations_id_runner)
+          )
+        end
+
+        it 'delegates to the migration runner' do
+          expect(::Gitlab::Database::Migrations::Runner).to receive(:up).with(database: db).and_return(runner)
+          expect(runner).to receive(:run)
+
+          subject
+        end
+      end
+
+      describe '#down' do
+        subject { run_rake_task("gitlab:db:migration_testing:down:#{db}") }
+
+        it 'delegates to the migration runner' do
+          expect(::Gitlab::Database::Migrations::Runner).to receive(:down).with(database: db).and_return(runner)
+          expect(runner).to receive(:run)
+
+          subject
+        end
+      end
+
+      describe '#sample_batched_background_migrations' do
+        let(:batched_runner) { instance_double(::Gitlab::Database::Migrations::TestBatchedBackgroundRunner) }
+
+        it 'delegates to the migration runner for a specified database with a default sample duration' do
+          expect(::Gitlab::Database::Migrations::Runner).to receive(:batched_background_migrations)
+                                                               .with(for_database: db).and_return(batched_runner)
+          expect(batched_runner).to receive(:run_jobs).with(for_duration: 30.minutes)
+
+          run_rake_task("gitlab:db:migration_testing:sample_batched_background_migrations:#{db}")
+        end
+
+        it 'delegates to the migration runner for a specified database and sample duration' do
+          expect(::Gitlab::Database::Migrations::Runner).to receive(:batched_background_migrations)
+                                                              .with(for_database: db).and_return(batched_runner)
+          expect(batched_runner).to receive(:run_jobs).with(for_duration: 100.seconds)
+
+          run_rake_task("gitlab:db:migration_testing:sample_batched_background_migrations:#{db}", '[100]')
+        end
+      end
+    end
+  end
+
+  describe '#execute_batched_migrations' do
+    subject(:execute_batched_migrations) { run_rake_task('gitlab:db:execute_batched_migrations') }
+
+    let(:connections) do
+      {
+        main: instance_double(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter),
+        ci: instance_double(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter)
+      }
+    end
+
+    let(:runners) do
+      {
+        main: instance_double('Gitlab::Database::BackgroundMigration::BatchedMigrationRunner'),
+        ci: instance_double('Gitlab::Database::BackgroundMigration::BatchedMigrationRunner')
+      }
+    end
+
+    let(:migrations) do
+      {
+        main: build_list(:batched_background_migration, 1),
+        ci: build_list(:batched_background_migration, 1)
+      }
+    end
+
+    before do
+      each_database = class_double('Gitlab::Database::EachDatabase').as_stubbed_const
+
+      allow(each_database).to receive(:each_connection)
+        .and_yield(connections[:main], 'main')
+        .and_yield(connections[:ci], 'ci')
+
+      keys = migrations.keys
+      allow(Gitlab::Database::BackgroundMigration::BatchedMigration)
+        .to receive_message_chain(:with_status, :queue_order) { migrations[keys.shift] }
+    end
+
+    it 'executes all migrations' do
+      [:main, :ci].each do |name|
+        expect(Gitlab::Database::BackgroundMigration::BatchedMigrationRunner).to receive(:new)
+          .with(connection: connections[name])
+          .and_return(runners[name])
+
+        expect(runners[name]).to receive(:run_entire_migration).with(migrations[name].first)
+      end
+
+      execute_batched_migrations
+    end
+  end
+
+  context 'with multiple databases', :reestablished_active_record_base do
+    before do
+      skip_if_shared_database(:ci)
+    end
+
+    describe 'db:schema:dump against a single database' do
+      it 'invokes gitlab:db:clean_structure_sql' do
+        expect(Rake::Task['gitlab:db:clean_structure_sql']).to receive(:invoke).once.and_return(true)
+
+        expect { run_rake_task('db:schema:dump:main') }.not_to raise_error
+      end
+    end
+
+    describe 'db:migrate against a single database' do
+      it 'invokes gitlab:db:create_dynamic_partitions for the same database' do
+        expect(Rake::Task['gitlab:db:create_dynamic_partitions:main']).to receive(:invoke).once.and_return(true)
+
+        expect { run_rake_task('db:migrate:main') }.not_to raise_error
+      end
+    end
+
+    describe 'db:migrate:geo' do
+      before do
+        skip_unless_geo_configured
+      end
+
+      it 'does not invoke gitlab:db:create_dynamic_partitions' do
+        expect(Rake::Task['gitlab:db:create_dynamic_partitions']).not_to receive(:invoke)
+
+        expect { run_rake_task('db:migrate:geo') }.not_to raise_error
+      end
+    end
+  end
+
+  describe 'gitlab:db:reset_as_non_superuser' do
+    let(:connection_pool) { instance_double(ActiveRecord::ConnectionAdapters::ConnectionPool) }
+    let(:owner_pool) { instance_double(ActiveRecord::ConnectionAdapters::ConnectionPool, db_config: configuration) }
+    let(:owner_connection) { instance_double(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter) }
+    let(:guard_pool) { instance_double(ActiveRecord::ConnectionAdapters::ConnectionPool) }
+    let(:guard_connection) { instance_double(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter) }
+    let(:migration_context) { instance_double(ActiveRecord::MigrationContext, needs_migration?: false) }
+    let(:configurations) { double(ActiveRecord::DatabaseConfigurations) }
+    let(:configuration) do
+      instance_double(
+        ActiveRecord::DatabaseConfigurations::HashConfig,
+        env_name: 'test',
+        name: 'main',
+        database: 'gitlabhq_test',
+        configuration_hash: { host: 'localhost' }
+      )
+    end
+
+    before do
+      skip_if_shared_database(:ci)
+
+      allow(Rake::Task['db:drop']).to receive(:invoke)
+      allow(Rake::Task['db:create']).to receive(:invoke)
+      allow(Rake::Task['db:migrate:main']).to receive(:invoke)
+      allow(ActiveRecord).to receive(:dump_schema_after_migration=)
+      allow(ActiveRecord::Base).to receive(:configurations=)
+      allow(configurations).to receive(:configs_for).with(env_name: 'test').and_return([configuration])
+      allow(configurations).to receive(:configs_for).with(include_hidden: true).and_return([configuration])
+      allow(ActiveRecord::Tasks::DatabaseTasks)
+        .to receive(:with_temporary_pool_for_each).with(env: 'test').and_yield(owner_pool)
+      allow(ActiveRecord::Tasks::DatabaseTasks)
+        .to receive(:with_temporary_pool_for_each).with(name: 'main').and_yield(guard_pool)
+      allow(owner_pool).to receive(:with_connection).and_yield(owner_connection)
+      allow(owner_connection).to receive(:execute)
+      allow(owner_connection).to receive(:quote_column_name) { |name| %("#{name}") }
+      allow(guard_pool).to receive(:with_connection).and_yield(guard_connection)
+      allow(guard_pool).to receive(:migration_context).and_return(migration_context)
+      allow(guard_connection).to receive(:select_value).and_return(42)
+      allow(ActiveRecord::Base).to receive_messages(
+        configurations: configurations,
+        establish_connection: connection_pool
+      )
+      allow(Gitlab::Database).to receive(:check_for_non_superuser)
+    end
+
+    it 'transfers database ownership to the default username before migrating' do
+      expect(owner_connection).to receive(:execute).with('ALTER DATABASE "gitlabhq_test" OWNER TO "gitlab"')
+      expect(Rake::Task['db:migrate:main']).to receive(:invoke)
+
+      run_rake_task('gitlab:db:reset_as_non_superuser')
+    end
+
+    it 'transfers database ownership to the specified username' do
+      expect(owner_connection).to receive(:execute).with('ALTER DATABASE "gitlabhq_test" OWNER TO "foo"')
+
+      run_rake_task('gitlab:db:reset_as_non_superuser', '[foo]')
+    end
+
+    it 'rebuilds the configurations with the username and with schema_dump disabled' do
+      expect(ActiveRecord::DatabaseConfigurations::HashConfig).to receive(:new)
+        .with('test', 'main', hash_including(username: 'gitlab', schema_dump: false)).and_call_original
+      expect(ActiveRecord::Base).to receive(:configurations=)
+
+      run_rake_task('gitlab:db:reset_as_non_superuser')
+    end
+
+    it 'checks the connection user is not a superuser' do
+      expect(Gitlab::Database).to receive(:check_for_non_superuser)
+
+      run_rake_task('gitlab:db:reset_as_non_superuser')
+    end
+
+    it 'skips dumping the schema after migrating' do
+      expect(ActiveRecord).to receive(:dump_schema_after_migration=).with(false)
+
+      run_rake_task('gitlab:db:reset_as_non_superuser')
+    end
+
+    it 'raises when no migrations were applied' do
+      allow(guard_connection).to receive(:select_value).and_return(0)
+
+      expect { run_rake_task('gitlab:db:reset_as_non_superuser') }
+        .to raise_error(/No migrations were applied on the main database/)
+    end
+
+    it 'raises when migrations are still pending' do
+      allow(migration_context).to receive(:needs_migration?).and_return(true)
+
+      expect { run_rake_task('gitlab:db:reset_as_non_superuser') }
+        .to raise_error(/Migrations are still pending on the main database/)
+    end
+
+    context 'with a configuration belonging to another environment' do
+      let(:other_env_configuration) do
+        instance_double(ActiveRecord::DatabaseConfigurations::HashConfig, env_name: 'development', name: 'main')
+      end
+
+      before do
+        allow(configurations).to receive(:configs_for).with(include_hidden: true)
+          .and_return([configuration, other_env_configuration])
+      end
+
+      it 'rebuilds only the current environment configs and passes the rest through unchanged' do
+        expect(ActiveRecord::DatabaseConfigurations::HashConfig).to receive(:new)
+          .with('test', 'main', hash_including(username: 'gitlab', schema_dump: false)).and_call_original
+        expect(ActiveRecord::DatabaseConfigurations::HashConfig).not_to receive(:new)
+          .with('development', anything, anything)
+        expect(ActiveRecord::Base).to receive(:configurations=) do |rebuilt|
+          expect(rebuilt.configurations).to include(other_env_configuration)
+        end
+
+        run_rake_task('gitlab:db:reset_as_non_superuser')
+      end
+    end
+  end
+
+  describe 'gitlab:db:increase_sequences_range task' do
+    before do
+      allow(Gitlab.config.cell).to receive(:enabled).and_return(true)
+
+      acsr = Gitlab::Database::AlterCellSequencesRange.new(
+        1,
+        100000,
+        connection
+      )
+
+      connection.execute(acsr.alter_new_sequences_range_function)
+      connection.execute(acsr.alter_new_sequences_range_trigger)
+
+      connection.execute(<<~SQL)
+        CREATE SEQUENCE test_sequence_range_0_90000 START 1 MINVALUE 1 MAXVALUE 90000;
+        CREATE SEQUENCE test_sequence_range_300000_390000 START 300000 MINVALUE 300000 MAXVALUE 390000;
+        CREATE SEQUENCE test_sequence_range_700000_790000 START 700000 MINVALUE 700000 MAXVALUE 790000;
+
+        SELECT nextval('test_sequence_range_0_90000');
+        SELECT nextval('test_sequence_range_300000_390000');
+        SELECT nextval('test_sequence_range_700000_790000');
+      SQL
+    end
+
+    after do
+      connection.execute(<<~SQL)
+        DROP EVENT TRIGGER IF EXISTS alter_new_sequences_range;
+        DROP FUNCTION IF EXISTS alter_new_sequences_range;
+      SQL
+    end
+
+    let(:sequence_ranges) do
+      [
+        Gitlab::Cells::TopologyService::SequenceRange.new(minval: 1, maxval: 100000),
+        Gitlab::Cells::TopologyService::SequenceRange.new(minval: 300000, maxval: 399999),
+        Gitlab::Cells::TopologyService::SequenceRange.new(minval: 600000, maxval: 699999)
+      ]
+    end
+
+    let(:connection) { ApplicationRecord.connection }
+
+    subject(:run_db_increase_sequences_range_rake) do
+      run_rake_task(
+        'gitlab:db:increase_sequences_range',
+        "[test_sequence_range_0_90000 test_sequence_range_300000_390000 test_sequence_range_700000_790000]"
+      )
+    end
+
+    context 'with cells disabled' do
+      before do
+        allow(Gitlab.config.cell).to receive(:enabled).and_return(false)
+        run_db_increase_sequences_range_rake
+      end
+
+      it_behaves_like 'AlterCellSequencesRange is not called'
+    end
+
+    context 'with cells enabled' do
+      context 'without cells.sequence_ranges' do
+        before do
+          allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+            allow(instance).to receive(:cell_sequence_ranges).and_return(nil)
+          end
+          run_db_increase_sequences_range_rake
+        end
+
+        it_behaves_like 'AlterCellSequencesRange is not called'
+      end
+
+      context 'with cells.sequence_ranges' do
+        before do
+          allow_next_instance_of(Gitlab::TopologyServiceClient::CellService) do |instance|
+            allow(instance).to receive(:cell_sequence_ranges).and_return(sequence_ranges)
+          end
+        end
+
+        it 'updates the given sequences minval, maxval with the smallest possible range' do
+          allow(Gitlab::AppLogger).to receive(:info).and_call_original
+
+          expect(Gitlab::AppLogger)
+            .to receive(:info)
+                  .with("No additional sequence range could be found for sequence: test_sequence_range_700000_790000")
+
+          run_db_increase_sequences_range_rake
+
+          sequence_0_90000 = Gitlab::Database::PostgresSequence.find_by(seq_name: 'test_sequence_range_0_90000')
+          expect(sequence_0_90000.seq_min).to eq(sequence_ranges[1].minval)
+          expect(sequence_0_90000.seq_max).to eq(sequence_ranges[1].maxval)
+
+          test_sequence_range_300000_390000 = Gitlab::Database::PostgresSequence.find_by(seq_name: 'test_sequence_range_300000_390000')
+          expect(test_sequence_range_300000_390000.seq_min).to eq(sequence_ranges[2].minval)
+          expect(test_sequence_range_300000_390000.seq_max).to eq(sequence_ranges[2].maxval)
+        end
+      end
+    end
+  end
+
+  def run_rake_task(task_name, arguments = '')
+    Rake::Task[task_name].reenable
+    Rake.application.invoke_task("#{task_name}#{arguments}")
+  end
+
+  def expect_multiple_executions_of_task(test_task_name, task_to_invoke, count: 2)
+    Rake::Task.define_task(test_task_name => :environment) do
+      count.times do
+        yield
+
+        Rake::Task[task_to_invoke].invoke
+      end
+    end
+
+    run_rake_task(test_task_name)
+  end
+
+  def skip_unless_geo_configured
+    skip 'Skipping because the geo database is not configured' unless geo_configured?
+  end
+
+  def geo_configured?
+    !!ActiveRecord::Base.configurations.configs_for(env_name: Rails.env, name: 'geo')
+  end
+end

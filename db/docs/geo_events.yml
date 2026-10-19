@@ -1,0 +1,12 @@
+---
+table_name: geo_events
+classes:
+- Geo::Event
+feature_categories:
+- geo_replication
+description: Geo events implemented generically, used by the SSF where all object
+  types can generate an event to be processed by the secondary sites.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/23447
+milestone: '12.8'
+gitlab_schema: gitlab_main_cell_local
+table_size: small

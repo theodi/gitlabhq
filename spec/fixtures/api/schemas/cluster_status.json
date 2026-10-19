@@ -1,0 +1,111 @@
+{
+  "type": "object",
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "status_reason": {
+      "$ref": "types/nullable_string.json"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "application_status": {
+      "type": "object",
+      "required": [
+        "name",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "installable",
+            "scheduled",
+            "installing",
+            "installed",
+            "errored",
+            "not_installable"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "status_reason": {
+          "$ref": "types/nullable_string.json"
+        },
+        "external_ip": {
+          "$ref": "types/nullable_string.json"
+        },
+        "external_hostname": {
+          "$ref": "types/nullable_string.json"
+        },
+        "hostname": {
+          "$ref": "types/nullable_string.json"
+        },
+        "email": {
+          "$ref": "types/nullable_string.json"
+        },
+        "stack": {
+          "$ref": "types/nullable_string.json"
+        },
+        "host": {
+          "$ref": "types/nullable_string.json"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "protocol": {
+          "type": "integer"
+        },
+        "update_available": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "can_uninstall": {
+          "type": "boolean"
+        },
+        "available_domains": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/domain"
+          }
+        },
+        "pages_domain": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/definitions/domain"
+            }
+          ]
+        }
+      }
+    },
+    "domain": {
+      "type": "object",
+      "required": [
+        "id",
+        "domain"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "domain": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

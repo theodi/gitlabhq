@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: counts.in_product_marketing_email_experience_0_sent
+description: Total sent emails of the experience track's first email
+product_group: activation
+product_categories:
+- onboarding
+value_type: number
+status: removed
+milestone: "13.12"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/61347
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/92280
+milestone_removed: "15.2"
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+- ultimate

@@ -1,0 +1,71 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe NoteEntity, feature_category: :team_planning do
+  include Gitlab::Routing
+
+  # rubocop:disable RSpec/FactoryBot/AvoidCreate -- Persisted records required
+  # `freeze: false` is required in this spec: one or more `let_it_be` subjects
+  # cannot be frozen by default (deep_freeze traversal failure, a non-AR
+  # subject, or an in-memory mutation that survives reload/refind). Do not
+  # drop these opt-outs or convert them to `let_it_be_with_reload`/`refind`
+  # (see gitlab-org/gitlab#602925).
+  let_it_be(:note, freeze: false) { create(:note) }
+  let_it_be(:user, freeze: false) { create(:user) }
+  let_it_be(:email) { 'user@example.com' }
+  # rubocop:enable RSpec/FactoryBot/AvoidCreate
+
+  let(:request) { double('request', current_user: user, noteable: note.noteable) }
+
+  let(:entity) { described_class.new(note, request: request) }
+  let(:obfuscated_email) { 'us*****@e*****.c**' }
+
+  subject(:entity_hash) { entity.as_json }
+
+  it_behaves_like 'note entity'
+
+  context 'when the current user is the note author' do
+    # rubocop:disable RSpec/FactoryBot/AvoidCreate -- Persisted records required
+    let_it_be(:project) { create(:project) }
+    let_it_be(:author) { create(:user, developer_of: project) }
+    let_it_be(:authored_note) { create(:note, project: project, author: author) }
+    # rubocop:enable RSpec/FactoryBot/AvoidCreate
+
+    let(:request) { double('request', current_user: author, noteable: authored_note.noteable) }
+    let(:entity) { described_class.new(authored_note, request: request) }
+
+    it 'lets them edit the note' do
+      expect(entity_hash[:current_user][:can_edit]).to be(true)
+    end
+  end
+
+  context 'when note from external participant', feature_category: :service_desk do
+    let!(:note_metadata) { build(:note_metadata, note: note) }
+
+    subject { entity.as_json[:external_author] }
+
+    it_behaves_like 'a field with obfuscated email address'
+  end
+
+  context 'when system note with issue_email_participants action', feature_category: :service_desk do
+    let_it_be(:note_text) { "added #{email}" }
+    # rubocop:disable RSpec/FactoryBot/AvoidCreate -- Notes::RenderService updates #note and #cached_markdown_version
+    let_it_be(:note, freeze: false) { create(:note, :system, note: note_text, author: create(:support_bot)) }
+
+    let_it_be(:system_note_metadata) { create(:system_note_metadata, note: note, action: :issue_email_participants) }
+    # rubocop:enable RSpec/FactoryBot/AvoidCreate
+
+    describe 'note' do
+      subject { entity_hash[:note] }
+
+      it_behaves_like 'a field with obfuscated email address'
+    end
+
+    describe 'note_html' do
+      subject { entity_hash[:note_html] }
+
+      it_behaves_like 'a field with obfuscated email address'
+    end
+  end
+end

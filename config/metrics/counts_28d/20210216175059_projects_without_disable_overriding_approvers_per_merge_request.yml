@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage_monthly.create.projects_without_disable_overriding_approvers_per_merge_request
+description: Count of the number of projects without setting to disable overriding
+  approvers per merge request
+product_group: source_code
+product_categories:
+- source_code_management
+value_type: number
+status: active
+time_frame: 28d
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

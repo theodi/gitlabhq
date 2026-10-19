@@ -1,0 +1,10 @@
+query getUser {
+  currentUser {
+    id
+    callouts {
+      nodes {
+        featureName
+      }
+    }
+  }
+}

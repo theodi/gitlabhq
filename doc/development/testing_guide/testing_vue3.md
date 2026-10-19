@@ -1,0 +1,390 @@
+---
+stage: none
+group: unassigned
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Vue 3 Testing
+---
+
+As we transition to using Vue 3, it's important that our tests pass in Vue 3 mode.
+We're adding progressively stricter checks to our pipelines to enforce proper Vue 3 testing.
+
+Right now, we fail pipelines if:
+
+1. A new test file is added that fails in Vue 3 mode.
+1. An existing test file fails under Vue 3 that was previously passing.
+
+## Running unit tests locally with Vue 3
+
+To run unit tests using Vue 3, set the `VUE_VERSION` environment variable to `3` when executing jest.
+
+```shell
+VUE_VERSION=3 yarn jest #[file-path]
+```
+
+Pipelines run the unit tests suite as well.
+
+## Running system tests (spec/features) locally with Vue 3
+
+To run system tests using Vue 3, [GDK must be running with Vue 3 enabled](../fe_guide/vue3_migration.md#switching-between-vue-versions). You may enable it with these commands:
+
+```shell
+gdk config set rspack.vue_version 3 # or 2, to return to vue 2
+gdk reconfigure
+gdk restart
+```
+
+Run your test with `rspec` as usual.
+
+```shell
+bundle exec rspec spec/features/abuse_report_spec.rb
+```
+
+> [!note]
+> When you visit your local instance on your browser, it is also running Vue 3 (`@vue/compat`).
+> This allows you to test your feature in Vue 3 manually.
+
+### Running the system test suite with Vue 3 for your MR
+
+To ensure your merge request changes are Vue 3 compatible, run the system
+tests suite in your pipeline by adding the label `~pipeline:run-rspec-vue3`.
+
+RSpec jobs with the names `rspec system pg17 vue3` and `rspec-ee system pg17 vue3` are added and run
+in parallel to the usual `rspec system` jobs, except they use the Vue 3 build!
+
+## Unit testing Caveats
+
+### Ref management when mocking composables
+
+A common pattern when testing Vue 3 composables is to mock the `ref` or `computed` values that these files return.
+
+Consider the following demo composable:
+
+```javascript
+export const useCounter = () => {
+  const counter = ref(1)
+  const increase = () => { counter.value += 1 }
+
+  return { counter, increase }
+}
+```
+
+If we have a component that is currently using this composable and exposing the counter, we will want to write a test to cover the functionality. In _some_ cases such as with this simple example we can get away with not mocking the composable at all, but with more complicated features such as Tanstack Query wrappers or Apollo wrappers leveraging `jest.mock` may be necessary.
+
+In such cases the test file will require mocking the composable:
+
+```html
+<script setup>
+const { counter, increase } = useCounter()
+</script>
+
+<template>
+  <p>Super useful counter: {{ counter }}</p>
+  <button @click="increase">+</button>
+</template>
+```
+
+```javascript
+import { ref } from 'vue'
+import { useCounter } from '~/composables/useCounter'
+
+jest.mock('~/composables/useCounter')
+
+describe('MyComponent', () => {
+  const increaseMock = jest.fn()
+  const counter = ref(1)
+
+  beforeEach(() => {
+    useCounter.mockReturnValue({
+      increase: increaseMock,
+      counter
+    })
+  })
+
+  describe('When the counter is 2', () => {
+    beforeEach(() => {
+      counter.value = 2
+      createComponent()
+    })
+
+    it('...', () => {})
+  })
+
+  it('should default to 1', () => {
+    createComponent()
+
+    expect(findSuperUsefulCounter().text()).toBe(1)
+    // failure
+  })
+})
+```
+
+Note in the above example that we are creating both a mock of the function that is returned by the composable and the `counter` ref - however a very important step is missing from the example.
+
+The `counter` constant is a `ref`, which means that on every test when we modify it the value we assign to it will be retained. In the example the second `it` block will fail as the `counter` will retain the value assigned in some of our previous tests.
+
+The solution and best practice is to _always_ reset your `ref`s on the top most level `beforeEach` block.
+
+```javascript
+import { ref } from 'vue'
+import { useCounter } from '~/composables/useCounter'
+
+jest.mock('~/composables/useCounter')
+
+describe('MyComponent', () => {
+  const increaseMock = jest.fn()
+
+  // We can initialize to `undefined` to be extra careful
+  const counter = ref(undefined)
+
+  beforeEach(() => {
+    counter.value = 1
+    useCounter.mockReturnValue({
+      increase: increaseMock,
+      counter
+    })
+  })
+
+  describe('When the counter is 2', () => {
+    beforeEach(() => {
+      counter.value = 2
+      createComponent()
+    })
+
+    it('...', () => {})
+  })
+
+  it('should default to 1', () => {
+    createComponent()
+
+    expect(findSuperUsefulCounter().text()).toBe(1)
+    // pass
+  })
+})
+```
+
+### Vue router
+
+If you are testing a Vue Router configuration using a real (not mocked) `VueRouter` object, read the following
+[guidelines](https://test-utils.vuejs.org/guide/advanced/vue-router.html#Using-a-Real-Router). A
+source of failure is that Vue Router 4 handles routing asynchronously, therefore we should
+`await` for the routing operations to be completed. You can use the `waitForPromises` utility to
+wait until all promises are flushed.
+
+In the following example, a test asserts that VueRouter navigated to a page after clicking a button. If
+`waitForPromises` is not invoked after clicking the button, the assertion would fail because the router's
+state hasn't transitioned to the target page.
+
+```javascript
+it('navigates to /create when clicking New workspace button', async () => {
+  expect(findWorkspacesListPage().exists()).toBe(true);
+
+  await findNewWorkspaceButton().trigger('click');
+  await waitForPromises();
+
+  expect(findCreateWorkspacePage().exists()).toBe(true);
+});
+```
+
+### Vue Apollo troubleshooting
+
+You might encounter some unit test failures on components that execute Apollo mutations and
+update the in-memory query cache, for example:
+
+```shell
+ApolloError: 'get' on proxy: property '[property]' is a read-only and non-configurable data property on the proxy target but the proxy did not return its actual value (expected '#<Object>' but got '#<Object>')
+```
+
+This error happens because Apollo tries to modify a [Vue reactive object](https://vuejs.org/guide/essentials/reactivity-fundamentals.html)
+when we call the `writeQuery` or `updateQuery` methods. Avoid using objects passed through a component's
+property in operations that update Apollo's cache. You should always rely on constructing new objects or
+data that already exists in the Apollo's cache. As a last resort, use the `cloneDeep` utility to remove
+the Vue's reactivity proxy from the target object.
+
+In the following example, the component updates the Apollo's in-memory cache after the mutation succeeds
+by swapping the `agent` object between two arrays. The `agent` object is also available in the `agent`
+property, but it is a reactive object. The incorrect approach references the `agent` object passed to
+the component as a property which causes the proxy error. The correct approach finds the `agent`
+object that is already stored in the Apollo's cache.
+
+```html
+<script>
+import { toRaw } from 'vue';
+
+export default {
+  props: {
+    namespace: {
+      type: String,
+      required: true,
+    },
+    agent: {
+      type: Object,
+      required: true,
+    },
+  },
+
+  methods: {
+    async execute() {
+      try {
+        await this.$apollo.mutate({
+          mutation: createClusterAgentMappingMutation,
+          update(store) {
+            store.updateQuery(
+              {
+                query: getAgentsWithAuthorizationStatusQuery,
+                variables: { namespace },
+              },
+              (sourceData) =>
+                produce(sourceData, (draftData) => {
+                  const { mappedAgents, unmappedAgents } = draftData.namespace;
+
+                  /*
+                  * BAD: The error described in this section is caused by adding a Vue reactive
+                  * object the nodes array. `this.agent` is a component property hence it is wrapped
+                  * with a reactivity proxy.
+                  */
+                  mappedAgents.nodes.push(this.agent);
+                  unmappedAgents.nodes = removeFrom.nodes.filter((node) => node.id !== agent.id);
+
+                  /*
+                  * PREFERRED FIX: Only use data that already exists in the in-memory cache.
+                  */
+                  const targetAgentIndex = removeFrom.nodes.findIndex((node) => node.id === agent.id);
+
+                  mappedAgents.nodes.push(removeFrom.nodes[targetAgentIndex]);
+                  unmappedAgents.nodes.splice(targetAgentIndex, 1);
+
+
+                  /*
+                  * ALTERNATIVE (LAST RESORT) FIX: Use lodash `cloneDeep` to create a clone
+                  * of the object without Vue reactivity:
+                  */
+                  mappedAgents.nodes.push(cloneDeep(this.agent));
+                  unmappedAgents.nodes = removeFrom.nodes.filter((node) => node.id !== agent.id);
+
+                }),
+            );
+          },
+        });
+      } catch (e) {
+        Sentry.captureException(e);
+        this.$emit('error', e);
+      }
+    },
+  },
+};
+</script>
+
+```
+
+### Testing Vue router
+
+When testing a full non-mocked `vue-router@4` there are a few caveats to keep in consideration for compatibility with Vue 2.
+
+#### Window location
+
+`vue-router@4` will not detect changes in window location, so setting a current URL with helpers such as `setWindowLocation` will not have an effect.
+
+Instead, set an initial route or navigate to another route manually.
+
+#### Initial route
+
+When setting an initial route for your tests, `vue-router@4` will default to a `/` route. If the router configuration doesn't define a route for `/` path the test will error out by default. In this case, it is important to navigate to one of the defined routes before a component is created.
+
+```javascript
+router = createRouter();
+
+await router.push({ name: 'tab', params: { tabId }})
+```
+
+Note the `await` is necessary, since [all navigations are always asynchronous](https://router.vuejs.org/guide/migration/#All-navigations-are-now-always-asynchronous).
+
+#### Navigating to another route
+
+To navigate to another route on an already mounted component, it is necessary to `await` calls to `push` or `replace` on the router.
+
+```javascript
+createComponent()
+
+await router.push('/different-route')
+```
+
+When access to the `push` method is not available, for example in cases where we are triggering a `push` _inside the component's code_ through an event, `await waitForPromises` will be sufficient.
+
+Consider the following component:
+
+```html
+<script>
+export default {
+  methods: {
+    nextPage() {
+      this.$router.push({
+        path: 'some path'
+      })
+    }
+  }
+}
+</script>
+<template>
+  <gl-keyset-pagination @push="nextPage" />
+</template>
+```
+
+If we want to be able to test that the `$router.push` call is made, we must trigger the navigation through the `next` event on the `gl-keyset-pagination` component.
+
+```javascript
+wrapper.findComponent(GlKeysetNavigation).vm.$emit('push');
+// $router.push is triggered in the component
+await waitForPromises()
+```
+
+#### Navigation guards
+
+Navigation guards must call their third argument `next` exactly once in any given pass through the navigation guard. This is necessary in both `vue-router@3` and `vue-router@4`, but is more important in `vue-router@4` as all navigations are asynchronous and must be awaited.
+
+Failing to call `next` can produce [hard to debug errors](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/181946#note_2355522500). For example:
+
+```shell
+Timeout - Async callback was not invoked within the 5000 ms timeout specified by jest.setTimeout
+```
+
+#### Debugging
+
+More often than not you will find yourself running into cryptic errors like the one below.
+
+```shell
+Unexpected calls to console (1) with:
+
+        [1] warn: [Vue Router warn]: uncaught error during route navigation:
+
+      23 |     .join('\n');
+      24 |
+    > 25 |   throw new Error(
+         |         ^
+      26 |     `Unexpected calls to console (${consoleCalls.length}) with:\n${consoleCallsList}\n`,
+      27 |   );
+      28 | };
+```
+
+In order to better understand what Vue router needs, use `jest.fn()` to override `console.warn` so you can see the output of the error.
+
+```javascript
+console.warn = jest.fn()
+
+afterEach(() => {
+  console.log(console.warn.mock.calls)
+})
+```
+
+This will turn the above into a digestible error. Don't forget to remove this code before you submit your MR.
+
+```shell
+'[Vue Router warn]: Record with path "/" is either missing a "component(s)" or "children" property.'
+```
+
+#### Component and Children property
+
+Unlike Vue router 3 (Vue 2), Vue router 4 requires a `component` or `children` property (with their respective `component`) to be defined. In some scenarios we have historically used Vue router to manage router query variables without a `router-view`, for example in `app/assets/javascripts/projects/your_work/components/app.vue`.
+
+This is an anti-pattern, as Vue router is overkill, a preferable approach would be to use vanilla JS to manage query routes with [URL searchParams](https://developer.mozilla.org/en-US/docs/Web/API/URL/searchParams) for example.
+
+When rewriting the component is not possible, passing the `App` component that the application is rendering without the use of `router-view` will let the tests pass, however, this opens up the possibility of introducing unwanted behavior in the future if a `<router-view />` is added to the component and should be used with care.

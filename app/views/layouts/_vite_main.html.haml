@@ -1,0 +1,35 @@
+- if Rails.env.development?
+  = vite_client_tag
+
+-# Not `vite_javascript_tag`: `webpack_bundle_tag` first resolves a Vue 3
+-# rollout entry, such as `main.vue3`, then calls `vite_javascript_tag` itself.
+= webpack_bundle_tag('main', data: { vite: 'main' })
+- vite_page_entrypoint_paths(@js_action_name).each do |entrypoint|
+  = vite_javascript_tag(entrypoint, data: { vite: entrypoint })
+
+-# Vite can oversaturate browser networking during development due to the sheer amount of network requests
+-# To resolve this we'll try to reload the page when this happens for the first time
+-# If you encounter this bug again you will see 'net:ERR_FAILED' in the console
+-# Refreshing the page again should help with this
+- if ViteRuby.instance.dev_server_running?
+  = javascript_tag nonce: content_security_policy_nonce do
+    :plain
+      const viteScripts = document.querySelectorAll('script[data-vite]');
+      let loadingRemainder = viteScripts.length;
+      Array.from(viteScripts).forEach((script) => {
+        script.addEventListener('error', (event) => {
+          console.error(`Failed to load '${event.target.dataset.vite}' entrypoint`, event);
+          if (sessionStorage.getItem('vite-failed')) {
+            console.warn('Page reload skipped. If you see "net:ERR_FAILED" in the console please reload the page manually.');
+            return;
+          }
+          sessionStorage.setItem('vite-failed', 'true');
+          window.location.reload();
+        });
+        script.addEventListener('load', () => {
+          loadingRemainder -= 1;
+          if (loadingRemainder === 0) {
+            sessionStorage.removeItem('vite-failed');
+          }
+        });
+      });

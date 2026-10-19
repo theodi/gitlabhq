@@ -1,0 +1,1400 @@
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { cloneDeep } from 'lodash-es';
+import { PiniaVuePlugin } from 'pinia';
+import { createTestingPinia } from '@pinia/testing';
+import waitForPromises from 'helpers/wait_for_promises';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { useMockIntersectionObserver } from 'helpers/mock_dom_observer';
+import TreeList from '~/repository/file_tree_browser/components/tree_list.vue';
+import FileTreeSearch from '~/repository/file_tree_browser/components/file_tree_search.vue';
+import FileRow from '~/vue_shared/components/file_row.vue';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import paginatedTreeQuery from 'shared_queries/repository/paginated_tree.query.graphql';
+import refQuery from '~/repository/queries/ref.query.graphql';
+import blobInfoQuery from 'shared_queries/repository/blob_info.query.graphql';
+import FileTreeBrowserToggle from '~/repository/file_tree_browser/components/file_tree_browser_toggle.vue';
+import FileTreeBrowserPopover from '~/repository/file_tree_browser/components/file_tree_browser_popover.vue';
+import UserCalloutDismisser from '~/vue_shared/components/user_callout_dismisser.vue';
+import { makeMockUserCalloutDismisser } from 'helpers/mock_user_callout_dismisser';
+import { visitUrl } from '~/lib/utils/url_utility';
+import { scrollUp } from '~/lib/utils/scroll_utils';
+import { createMockDirective, getBinding } from 'helpers/vue_mock_directive';
+import { useFileTreeBrowserVisibility } from '~/repository/stores/file_tree_browser_visibility';
+import { useConfigurePathHelpers } from 'helpers/configure_path_helpers';
+import { mockResponse } from '../mock_data';
+
+Vue.use(VueApollo);
+Vue.use(PiniaVuePlugin);
+
+jest.mock('~/repository/utils/ref_type', () => ({ getRefType: jest.fn(() => 'MOCK_REF_TYPE') }));
+jest.mock('~/lib/utils/url_utility', () => ({
+  joinPaths: jest.fn((...args) => args.join('/').replace(/\/+/g, '/')),
+  buildURLwithRefType: jest.fn(({ path, refType }) =>
+    refType ? `${path}?ref_type=${refType.toLowerCase()}` : path,
+  ),
+  visitUrl: jest.fn(),
+}));
+jest.mock('~/lib/utils/dom_utils');
+jest.mock('~/lib/utils/scroll_utils');
+
+describe('Tree List', () => {
+  let store;
+  let wrapper;
+  let apolloProvider;
+  let pinia;
+  let getQueryHandlerSuccess;
+  let userCalloutDismissSpy;
+
+  const { trigger: triggerIntersection } = useMockIntersectionObserver();
+  const triggerIntersectionForAll = () => {
+    const listItems = wrapper.element.querySelectorAll('[data-item-id]');
+    listItems.forEach((item) => {
+      triggerIntersection(item, { entry: { isIntersecting: true } });
+    });
+  };
+
+  const createComponent = async (apiResponse = mockResponse, options = {}) => {
+    const currentRef = 'main';
+    getQueryHandlerSuccess = jest.fn().mockResolvedValue(apiResponse);
+    userCalloutDismissSpy = jest.fn();
+
+    apolloProvider = createMockApollo([
+      [paginatedTreeQuery, getQueryHandlerSuccess],
+      ...(options.blobQueryHandler ? [[blobInfoQuery, options.blobQueryHandler]] : []),
+    ]);
+    apolloProvider.defaultClient.cache.writeQuery({
+      query: refQuery,
+      data: { ref: currentRef, escapedRef: currentRef },
+    });
+    wrapper = shallowMountExtended(TreeList, {
+      apolloProvider,
+      pinia,
+      propsData: {
+        projectPath: 'group/project',
+        currentRef: 'main',
+        refType: 'heads',
+        ...options.propsData,
+      },
+      directives: {
+        GlHoverLoad: createMockDirective('gl-hover-load'),
+      },
+      mocks: {
+        $router: { push: jest.fn() },
+        $route: { params: {}, $apollo: { query: jest.fn() }, ...options.mocks?.$route },
+      },
+      stubs: {
+        UserCalloutDismisser: makeMockUserCalloutDismisser({
+          dismiss: userCalloutDismissSpy,
+          shouldShowCallout: options.shouldShowCallout ?? false,
+        }),
+      },
+    });
+
+    await waitForPromises();
+    triggerIntersectionForAll();
+  };
+
+  beforeEach(() => {
+    pinia = createTestingPinia();
+    store = useFileTreeBrowserVisibility();
+    return createComponent();
+  });
+
+  const findFileTreeToggle = () => wrapper.findComponent(FileTreeBrowserToggle);
+  const findFileTreeSearch = () => wrapper.findComponent(FileTreeSearch);
+  const findTree = () => wrapper.find('[role="tree"]');
+  const findHeader = () => wrapper.find('h3');
+  const findTreeItems = () => wrapper.findAll('[role="treeitem"]');
+  const findFileRows = () => wrapper.findAllComponents(FileRow);
+  const findFileRowPlaceholders = () => wrapper.findAll('[data-placeholder-item]');
+  const findUserCalloutDismisser = () => wrapper.findComponent(UserCalloutDismisser);
+  const findFileTreeBrowserPopover = () => wrapper.findComponent(FileTreeBrowserPopover);
+
+  const { bindInternalEventDocument } = useMockInternalEventsTracking();
+
+  it('calls apollo query with correct parameters', () => {
+    expect(getQueryHandlerSuccess).toHaveBeenCalledWith({
+      projectPath: 'group/project',
+      ref: 'main',
+      refType: 'MOCK_REF_TYPE',
+      path: '/',
+      nextPageCursor: '',
+      pageSize: 100,
+    });
+  });
+
+  it('renders the file tree search component', () => {
+    expect(findFileTreeSearch().exists()).toBe(true);
+  });
+
+  it('renders a title', () => {
+    expect(findHeader().text()).toBe('Files');
+  });
+
+  it('renders file tree browser toggle', () => {
+    expect(findFileTreeToggle().exists()).toBe(true);
+  });
+
+  it('passes isAnimating prop to file tree browser toggle', async () => {
+    await createComponent(mockResponse, { propsData: { isAnimating: true } });
+
+    expect(findFileTreeToggle().props('isAnimating')).toBe(true);
+  });
+
+  it('renders file rows with correct props', () => {
+    const fileRows = findFileRows();
+
+    expect(fileRows.at(0).props()).toMatchObject({
+      file: {
+        id: '/dir_1/dir_2-gid://123-0',
+        level: 0,
+        name: 'dir_2',
+        path: '/dir_1/dir_2',
+        routerPath: '/-/tree/main/dir_1/dir_2?ref_type=heads',
+        href: 'http://test.host/group/project/-/tree/main/dir_1/dir_2?ref_type=heads',
+        type: 'tree',
+      },
+      level: 0,
+    });
+
+    // File row
+    expect(fileRows.at(1).props()).toMatchObject({
+      file: {
+        fileHash: 'abc123',
+        id: '/dir_1/file.txt-gid://456-0',
+        level: 0,
+        mode: '100644',
+        name: 'file.txt',
+        path: '/dir_1/file.txt',
+        routerPath: '/-/blob/main/dir_1/file.txt?ref_type=heads',
+        href: 'http://test.host/group/project/-/blob/main/dir_1/file.txt?ref_type=heads',
+      },
+      level: 0,
+    });
+  });
+
+  describe('with a relative URL root', () => {
+    useConfigurePathHelpers('/gitlab');
+
+    beforeEach(() => createComponent());
+
+    it('includes the relative URL root in file row hrefs', () => {
+      const fileRows = findFileRows();
+
+      expect(fileRows.at(0).props('file').href).toBe(
+        'http://test.host/gitlab/group/project/-/tree/main/dir_1/dir_2?ref_type=heads',
+      );
+      expect(fileRows.at(1).props('file').href).toBe(
+        'http://test.host/gitlab/group/project/-/blob/main/dir_1/file.txt?ref_type=heads',
+      );
+    });
+  });
+
+  describe('under an organization-scoped URL', () => {
+    beforeEach(() => {
+      window.gon.organization_path = 'my-org';
+      return createComponent();
+    });
+
+    afterEach(() => {
+      delete window.gon.organization_path;
+    });
+
+    it('matches the router base in file row hrefs', () => {
+      expect(findFileRows().at(1).props('file').href).toBe(
+        'http://test.host/o/my-org/group/project/-/blob/main/dir_1/file.txt?ref_type=heads',
+      );
+    });
+  });
+
+  it('fetches directory contents when tree row is clicked', async () => {
+    const subdirResponse = cloneDeep(mockResponse);
+    subdirResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+    subdirResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+    getQueryHandlerSuccess.mockResolvedValueOnce(subdirResponse);
+
+    findFileRows().at(0).vm.$emit('click-tree');
+    await waitForPromises();
+
+    expect(getQueryHandlerSuccess).toHaveBeenLastCalledWith(
+      expect.objectContaining({ path: 'dir_1/dir_2' }),
+    );
+  });
+
+  it.each`
+    toggleClose | expectedOpened | description
+    ${true}     | ${false}       | ${'collapses'}
+    ${false}    | ${true}        | ${'stays expanded'}
+  `(
+    '$description when clicked with toggleClose: $toggleClose',
+    async ({ toggleClose, expectedOpened }) => {
+      await createComponent();
+      const subdirResponse = cloneDeep(mockResponse);
+      subdirResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+      subdirResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+      getQueryHandlerSuccess.mockResolvedValueOnce(subdirResponse);
+
+      findFileRows().at(0).vm.$emit('click-tree');
+      await waitForPromises();
+
+      expect(findFileRows().at(0).props('file').opened).toBe(true);
+
+      if (toggleClose) {
+        findFileRows().at(0).vm.$emit('toggle-tree', { stopPropagation: jest.fn() });
+      } else {
+        findFileRows().at(0).vm.$emit('click-tree');
+      }
+      await nextTick();
+
+      expect(findFileRows().at(0).props('file').opened).toBe(expectedOpened);
+    },
+  );
+
+  it('sets aria-setsize and aria-posinset relative to siblings at same level', async () => {
+    await createComponent();
+    const treeItems = findTreeItems();
+
+    expect(treeItems.at(0).attributes('aria-setsize')).toBe('2');
+    expect(treeItems.at(0).attributes('aria-posinset')).toBe('1');
+
+    expect(treeItems.at(1).attributes('aria-setsize')).toBe('2');
+    expect(treeItems.at(1).attributes('aria-posinset')).toBe('2');
+  });
+
+  it('renders a gl-hover-load directive on file rows', () => {
+    const fileRow = findFileRows().at(0); // tree item (type: 'tree')
+    const hoverLoadDirective = getBinding(fileRow.element, 'gl-hover-load');
+
+    expect(hoverLoadDirective).not.toBeUndefined();
+    expect(hoverLoadDirective.value).toBeInstanceOf(Function);
+  });
+
+  it('renders a gl-hover-load directive on blob rows', () => {
+    const fileRow = findFileRows().at(1); // blob item (type: 'blob')
+    const hoverLoadDirective = getBinding(fileRow.element, 'gl-hover-load');
+
+    expect(hoverLoadDirective).not.toBeUndefined();
+    expect(hoverLoadDirective.value).toBeInstanceOf(Function);
+  });
+
+  describe('pagination', () => {
+    beforeEach(() => {
+      const paginatedResponse = cloneDeep(mockResponse);
+      paginatedResponse.data.project.repository.paginatedTree.pageInfo.hasNextPage = true;
+      return createComponent(paginatedResponse);
+    });
+
+    it('renders a show more button when hasNextPage is true', () => {
+      expect(findFileRows().at(2).props('file')).toMatchObject({ isShowMore: true });
+    });
+
+    it('fetches the next page', async () => {
+      const secondPageResponse = cloneDeep(mockResponse);
+      secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+      secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+      getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+      const mockFocus = jest.fn();
+      const mockEvent = {
+        target: {
+          closest: jest.fn(() => ({
+            previousElementSibling: {
+              nextElementSibling: {
+                focus: mockFocus,
+              },
+            },
+          })),
+        },
+      };
+
+      findFileRows().at(2).vm.$emit('show-more', mockEvent);
+
+      await waitForPromises();
+
+      expect(getQueryHandlerSuccess).toHaveBeenCalledWith({
+        projectPath: 'group/project',
+        ref: 'main',
+        refType: 'MOCK_REF_TYPE',
+        path: '/',
+        nextPageCursor: 'cursor123',
+        pageSize: 100,
+      });
+
+      expect(mockFocus).toHaveBeenCalled();
+    });
+  });
+
+  describe('skeleton loader', () => {
+    const mockEvent = {
+      target: {
+        closest: jest.fn(() => ({
+          previousElementSibling: {
+            nextElementSibling: { focus: jest.fn() },
+          },
+        })),
+      },
+    };
+
+    describe('when last item is a file', () => {
+      beforeEach(() => {
+        const paginatedResponse = cloneDeep(mockResponse);
+        paginatedResponse.data.project.repository.paginatedTree.pageInfo.hasNextPage = true;
+        return createComponent(paginatedResponse);
+      });
+
+      it('shows skeleton item and hides show more button when show more is clicked', async () => {
+        const secondPageResponse = cloneDeep(mockResponse);
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+        findFileRows().at(2).vm.$emit('show-more', mockEvent);
+        await nextTick();
+        await nextTick();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        const files = findFileRows().wrappers.map((w) => w.props('file'));
+        expect(files.some((f) => f.isSkeleton)).toBe(true);
+        expect(files.some((f) => f.isShowMore)).toBe(false);
+      });
+
+      it('removes skeleton item after data loads', async () => {
+        const secondPageResponse = cloneDeep(mockResponse);
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+        findFileRows().at(2).vm.$emit('show-more', mockEvent);
+        await waitForPromises();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        const files = findFileRows().wrappers.map((w) => w.props('file'));
+        expect(files.some((f) => f.isSkeleton)).toBe(false);
+      });
+    });
+
+    describe('when last item is a directory', () => {
+      beforeEach(() => {
+        const dirResponse = cloneDeep(mockResponse);
+        dirResponse.data.project.repository.paginatedTree.pageInfo.hasNextPage = true;
+        dirResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        return createComponent(dirResponse);
+      });
+
+      it('shows skeleton item and hides show more button when show more is clicked', async () => {
+        const secondPageResponse = cloneDeep(mockResponse);
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+        findFileRows().at(1).vm.$emit('show-more', mockEvent);
+        await nextTick();
+        await nextTick();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        const files = findFileRows().wrappers.map((w) => w.props('file'));
+        expect(files.some((f) => f.isSkeleton)).toBe(true);
+        expect(files.some((f) => f.isShowMore)).toBe(false);
+      });
+
+      it('removes skeleton item after data loads', async () => {
+        const secondPageResponse = cloneDeep(mockResponse);
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+        findFileRows().at(1).vm.$emit('show-more', mockEvent);
+        await waitForPromises();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        const files = findFileRows().wrappers.map((w) => w.props('file'));
+        expect(files.some((f) => f.isSkeleton)).toBe(false);
+      });
+    });
+
+    describe('when last item is a submodule', () => {
+      beforeEach(() => {
+        const subResponse = cloneDeep(mockResponse);
+        subResponse.data.project.repository.paginatedTree.pageInfo.hasNextPage = true;
+        subResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        subResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        subResponse.data.project.repository.paginatedTree.nodes[0].submodules.nodes = [
+          {
+            __typename: 'Submodule',
+            id: 'gid://Submodule123',
+            sha: '1234567890abcdef',
+            name: 'submodule-project',
+            flatPath: 'submodule-project',
+            type: 'commit',
+            path: 'submodule-project',
+            treeUrl: 'https://example.com/submodule-project',
+            webUrl: 'https://example.com/submodule-project',
+          },
+        ];
+        return createComponent(subResponse);
+      });
+
+      it('shows skeleton item and hides show more button when show more is clicked', async () => {
+        const secondPageResponse = cloneDeep(mockResponse);
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+        findFileRows().at(1).vm.$emit('show-more', mockEvent);
+        await nextTick();
+        await nextTick();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        const files = findFileRows().wrappers.map((w) => w.props('file'));
+        expect(files.some((f) => f.isSkeleton)).toBe(true);
+        expect(files.some((f) => f.isShowMore)).toBe(false);
+      });
+
+      it('removes skeleton item after data loads', async () => {
+        const secondPageResponse = cloneDeep(mockResponse);
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+        findFileRows().at(1).vm.$emit('show-more', mockEvent);
+        await waitForPromises();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        const files = findFileRows().wrappers.map((w) => w.props('file'));
+        expect(files.some((f) => f.isSkeleton)).toBe(false);
+      });
+    });
+  });
+
+  describe('deep path navigation with pagination', () => {
+    it('paginates to find directories not on first page', async () => {
+      const page1 = cloneDeep(mockResponse);
+      page1.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+      page1.data.project.repository.paginatedTree.pageInfo = {
+        __typename: 'PageInfo',
+        hasNextPage: true,
+        startCursor: null,
+        endCursor: 'page1_cursor',
+      };
+
+      const page2 = cloneDeep(mockResponse);
+      page2.data.project.repository.paginatedTree.nodes[0].trees.nodes = [
+        { id: 'gid://dir_100', name: 'dir_100', path: 'dir_100', webPath: 'dir_100' },
+      ];
+
+      const dir100Contents = cloneDeep(mockResponse);
+      dir100Contents.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [
+        {
+          id: 'gid://file',
+          name: 'file.txt',
+          path: 'dir_100/file.txt',
+          sha: 'abc123',
+          webPath: 'dir_100/file.txt',
+        },
+      ];
+
+      getQueryHandlerSuccess
+        .mockResolvedValueOnce(page1) // Root page 1
+        .mockResolvedValueOnce(page2) // Root page 2
+        .mockResolvedValueOnce(dir100Contents); // dir_100 contents
+
+      wrapper = shallowMountExtended(TreeList, {
+        apolloProvider: createMockApollo([[paginatedTreeQuery, getQueryHandlerSuccess]]),
+        propsData: { projectPath: 'group/project', currentRef: 'main' },
+        mocks: { $route: { params: { path: 'dir_100/file.txt' } } },
+        stubs: {
+          UserCalloutDismisser: makeMockUserCalloutDismisser({
+            shouldShowCallout: true,
+          }),
+        },
+      });
+
+      await waitForPromises();
+      expect(getQueryHandlerSuccess).toHaveBeenCalledTimes(3);
+    });
+
+    it('respects default maxPages limit (5)', async () => {
+      getQueryHandlerSuccess.mockReset();
+
+      for (let i = 0; i < 10; i += 1) {
+        const page = cloneDeep(mockResponse);
+        page.data.project.repository.paginatedTree.pageInfo = {
+          __typename: 'PageInfo',
+          hasNextPage: i < 9,
+          startCursor: null,
+          endCursor: `cursor_${i}`,
+        };
+
+        page.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+        page.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+        getQueryHandlerSuccess.mockResolvedValueOnce(page);
+      }
+
+      wrapper = shallowMountExtended(TreeList, {
+        apolloProvider: createMockApollo([[paginatedTreeQuery, getQueryHandlerSuccess]]),
+        propsData: { projectPath: 'group/project', currentRef: 'main' },
+        mocks: { $route: { params: { path: 'dir_99/file.txt' } } },
+        stubs: {
+          UserCalloutDismisser: makeMockUserCalloutDismisser({
+            shouldShowCallout: true,
+          }),
+        },
+      });
+
+      await waitForPromises();
+      expect(getQueryHandlerSuccess).toHaveBeenCalledTimes(6); // 1 + 5 pages
+    });
+
+    it('respects default maxDepth limit (20)', async () => {
+      const deepPath = Array.from({ length: 30 }, (_, i) => `dir_${i}`).join('/');
+
+      wrapper = shallowMountExtended(TreeList, {
+        apolloProvider: createMockApollo([[paginatedTreeQuery, getQueryHandlerSuccess]]),
+        propsData: { projectPath: 'group/project', currentRef: 'main' },
+        mocks: { $route: { params: { path: deepPath } } },
+        UserCalloutDismisser: makeMockUserCalloutDismisser({
+          shouldShowCallout: true,
+        }),
+      });
+
+      await waitForPromises();
+      expect(getQueryHandlerSuccess).toHaveBeenCalledTimes(2); // root + dir_0
+    });
+
+    it('expands path ancestors when route changes', async () => {
+      const treeNode = mockResponse.data.project.repository.paginatedTree.nodes[0];
+      const response = cloneDeep(mockResponse);
+      response.data.project.repository.paginatedTree.nodes[0].trees.nodes = [
+        { ...treeNode.trees.nodes[0], name: 'test_dir', path: 'test_dir', flatPath: 'test_dir' },
+      ];
+
+      getQueryHandlerSuccess = jest.fn().mockResolvedValueOnce(response);
+
+      // eslint-disable-next-line no-restricted-properties
+      const route = Vue.observable({ params: {} });
+      wrapper = shallowMountExtended(TreeList, {
+        apolloProvider: createMockApollo([[paginatedTreeQuery, getQueryHandlerSuccess]]),
+        pinia,
+        propsData: { projectPath: 'group/project', currentRef: 'main' },
+        mocks: { $router: { push: jest.fn() }, $route: route },
+        stubs: {
+          UserCalloutDismisser: makeMockUserCalloutDismisser({
+            shouldShowCallout: true,
+          }),
+        },
+      });
+      await waitForPromises();
+
+      route.params = { path: 'test_dir/file.txt' };
+      await nextTick();
+      await waitForPromises();
+
+      expect(getQueryHandlerSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({ path: 'test_dir' }),
+      );
+    });
+  });
+
+  describe('keyboard navigation', () => {
+    const mockDir = (items = []) => {
+      const response = cloneDeep(mockResponse);
+      response.data.project.repository.paginatedTree.nodes[0].trees.nodes = items.filter(
+        (i) => !i.sha,
+      );
+      response.data.project.repository.paginatedTree.nodes[0].blobs.nodes = items.filter(
+        (i) => i.sha,
+      );
+      return response;
+    };
+
+    it.each([
+      ['ArrowDown', 1],
+      ['ArrowUp', 0],
+    ])('moves focus with %s key', async (key, expectedIndex) => {
+      await createComponent();
+      await nextTick();
+
+      const items = findTreeItems();
+      findTree().trigger('keydown', { key });
+      await nextTick();
+
+      expect(items.at(expectedIndex).attributes('tabindex')).toBe('0');
+    });
+
+    it.each(['Enter', ' '])('expands directory with %s key', async (key) => {
+      await createComponent();
+
+      const subdirResponse = cloneDeep(mockResponse);
+      subdirResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+      subdirResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+      getQueryHandlerSuccess.mockResolvedValueOnce(subdirResponse);
+
+      findTree().trigger('keydown', { key }); // Trigger keyboard
+      await waitForPromises();
+
+      expect(getQueryHandlerSuccess).toHaveBeenLastCalledWith(
+        expect.objectContaining({ path: 'dir_1/dir_2' }),
+      );
+    });
+
+    it.each(['Enter', ' '])('triggers show more with %s key', async (key) => {
+      const paginatedResponse = cloneDeep(mockResponse);
+      paginatedResponse.data.project.repository.paginatedTree.pageInfo.hasNextPage = true;
+      await createComponent(paginatedResponse);
+
+      const secondPageResponse = cloneDeep(mockResponse);
+      secondPageResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+      secondPageResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+      getQueryHandlerSuccess.mockResolvedValueOnce(secondPageResponse);
+
+      findTree().trigger('keydown', { key: 'ArrowDown' });
+      findTree().trigger('keydown', { key: 'ArrowDown' });
+      await nextTick();
+
+      findTree().trigger('keydown', { key, preventDefault: jest.fn() });
+      await waitForPromises();
+
+      expect(getQueryHandlerSuccess).toHaveBeenLastCalledWith(
+        expect.objectContaining({ nextPageCursor: 'cursor123' }),
+      );
+    });
+
+    it.each(['Enter', ' '])('navigates to file with %s key', async (key) => {
+      await createComponent();
+      await nextTick();
+
+      findTree().trigger('keydown', { key: 'ArrowDown' });
+      await nextTick();
+
+      findTree().trigger('keydown', { key });
+      await nextTick();
+
+      expect(wrapper.vm.$router.push).toHaveBeenCalledWith(
+        '/-/blob/main/dir_1/file.txt?ref_type=heads',
+      );
+    });
+
+    it.each(['Enter', ' '])(
+      'does not call resetFileTreeBrowserAllStates with %s key when peek is on but item is a directory',
+      async (key) => {
+        store.fileTreeBrowserIsPeekOn = true;
+        await createComponent();
+        await nextTick();
+
+        // spy on toggleDirectory to prevent the actual GraphQL call
+        // this prevents maxiumum call stack exceeded error
+        jest.spyOn(wrapper.vm, 'toggleDirectory').mockImplementation(() => {});
+
+        findTree().trigger('keydown', { key });
+        await nextTick();
+
+        expect(store.resetFileTreeBrowserAllStates).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['Enter', ' '])(
+      'calls resetFileTreeBrowserAllStates with %s key when item is file and peek is on',
+      async (key) => {
+        store.fileTreeBrowserIsPeekOn = true;
+        await createComponent();
+        await nextTick();
+
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        await nextTick();
+
+        findTree().trigger('keydown', { key });
+        await nextTick();
+
+        expect(store.resetFileTreeBrowserAllStates).toHaveBeenCalled();
+      },
+    );
+
+    it.each(['Enter', ' '])(
+      'does not call resetFileTreeBrowserAllStates with %s key when peek is off',
+      async (key) => {
+        await createComponent();
+        await nextTick();
+
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        await nextTick();
+
+        findTree().trigger('keydown', { key });
+        await nextTick();
+
+        expect(store.resetFileTreeBrowserAllStates).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not move focus beyond list boundaries', async () => {
+      await createComponent();
+      await nextTick();
+
+      const items = findTreeItems();
+
+      findTree().trigger('keydown', { key: 'ArrowUp' });
+      await nextTick();
+      expect(items.at(0).attributes('tabindex')).toBe('0');
+
+      findTree().trigger('keydown', { key: 'ArrowDown' });
+      await nextTick();
+      findTree().trigger('keydown', { key: 'ArrowDown' });
+      await nextTick();
+
+      expect(items.at(1).attributes('tabindex')).toBe('0');
+    });
+
+    it.each([
+      ['Home', 'dir_2'],
+      ['End', 'file.txt'],
+    ])('moves focus to %s item with %s key', async (key, expectedName) => {
+      await createComponent();
+
+      findTree().trigger('keydown', { key });
+      await nextTick();
+
+      const items = findTreeItems();
+      const focusedItem = items.wrappers.find((item) => item.attributes('tabindex') === '0');
+      const fileRow = focusedItem.findComponent(FileRow);
+      expect(fileRow.props('file').name).toBe(expectedName);
+    });
+
+    it.each([
+      { metaKey: true, ctrlKey: false, altKey: false },
+      { metaKey: false, ctrlKey: true, altKey: false },
+      { metaKey: false, ctrlKey: false, altKey: true },
+    ])('does not intercept keydown when a modifier key is pressed', async (modifiers) => {
+      await createComponent();
+
+      const activeItemBefore = findTreeItems().wrappers.find(
+        (item) => item.attributes('tabindex') === '0',
+      );
+      const activeItemIdBefore = activeItemBefore?.attributes('data-item-id');
+
+      const event = new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        ...modifiers,
+        bubbles: true,
+      });
+
+      findTree().element.dispatchEvent(event);
+      await waitForPromises();
+
+      const activeItemAfter = findTreeItems().wrappers.find(
+        (item) => item.attributes('tabindex') === '0',
+      );
+
+      expect(activeItemAfter.attributes('data-item-id')).toBe(activeItemIdBefore);
+    });
+
+    it('expands sibling directories at same level with * key', async () => {
+      const response = cloneDeep(mockResponse);
+      const treeNode = response.data.project.repository.paginatedTree.nodes[0];
+      const baseTree = treeNode.trees.nodes[0];
+      treeNode.trees.nodes = [
+        {
+          ...baseTree,
+          id: 'gid://gitlab/Tree/1',
+          name: 'dir_1',
+          path: 'dir_1',
+          flatPath: 'dir_1',
+          webPath: '/dir_1',
+        },
+        {
+          ...baseTree,
+          id: 'gid://gitlab/Tree/2',
+          name: 'dir_2',
+          path: 'dir_2',
+          flatPath: 'dir_2',
+          webPath: '/dir_2',
+        },
+      ];
+      treeNode.blobs.nodes = [];
+      await createComponent(response);
+
+      const emptyResponse = cloneDeep(mockResponse);
+      emptyResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes = [];
+      emptyResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [];
+      getQueryHandlerSuccess.mockResolvedValue(emptyResponse);
+
+      findTree().trigger('keydown', { key: '*' });
+      await waitForPromises();
+
+      const fileRows = findFileRows();
+      expect(fileRows.at(0).props('file').opened).toBe(true);
+      expect(fileRows.at(1).props('file').opened).toBe(true);
+      expect(findTreeItems().at(0).attributes('tabindex')).toBe('0');
+    });
+
+    describe('ArrowRight', () => {
+      it('opens closed node', async () => {
+        await createComponent();
+        getQueryHandlerSuccess.mockResolvedValueOnce(mockDir());
+        findTree().trigger('keydown', { key: 'ArrowRight' });
+        await waitForPromises();
+
+        expect(findFileRows().at(0).props('file').opened).toBe(true);
+      });
+
+      it('moves to first child on open node', async () => {
+        await createComponent();
+        getQueryHandlerSuccess.mockResolvedValueOnce(
+          mockDir([
+            { id: 'gid://child', name: 'child_dir', path: 'dir_1/dir_2/child_dir', webPath: '...' },
+          ]),
+        );
+        findTree().trigger('keydown', { key: 'ArrowRight' });
+        await waitForPromises();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        findTree().trigger('keydown', { key: 'ArrowRight' });
+        await nextTick();
+
+        expect(findTreeItems().at(1).attributes('tabindex')).toBe('0');
+      });
+
+      it('does nothing on end node', async () => {
+        await createComponent();
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        findTree().trigger('keydown', { key: 'ArrowRight' });
+        await nextTick();
+
+        expect(findTreeItems().at(1).attributes('tabindex')).toBe('0');
+      });
+    });
+
+    describe('ArrowLeft', () => {
+      it('closes open node', async () => {
+        await createComponent();
+        getQueryHandlerSuccess.mockResolvedValueOnce(mockDir());
+        findTree().trigger('keydown', { key: 'ArrowRight' });
+        await waitForPromises();
+
+        findTree().trigger('keydown', { key: 'ArrowLeft' });
+        await nextTick();
+
+        expect(findFileRows().at(0).props('file').opened).toBe(false);
+      });
+
+      it('moves to parent from child node', async () => {
+        await createComponent();
+        getQueryHandlerSuccess.mockResolvedValueOnce(
+          mockDir([
+            { id: 'gid://child', name: 'child_dir', path: 'dir_1/dir_2/child_dir', webPath: '...' },
+          ]),
+        );
+        findTree().trigger('keydown', { key: 'ArrowRight' });
+        await waitForPromises();
+        triggerIntersectionForAll();
+        await nextTick();
+
+        findTree().trigger('keydown', { key: 'ArrowRight' });
+        await nextTick();
+
+        expect(findTreeItems().at(1).attributes('tabindex')).toBe('0'); // Verify we're on child
+
+        findTree().trigger('keydown', { key: 'ArrowLeft' });
+        await nextTick();
+
+        expect(findTreeItems().at(0).attributes('tabindex')).toBe('0'); // Should be back on parent
+      });
+
+      it('does nothing on root node', async () => {
+        await createComponent();
+        findTree().trigger('keydown', { key: 'ArrowLeft' });
+        await nextTick();
+
+        expect(findTreeItems().at(0).attributes('tabindex')).toBe('0');
+      });
+    });
+
+    describe('letter navigation', () => {
+      it.each([
+        ['f', 'file.txt', 'moves to next match'],
+        ['F', 'file.txt', 'is case-insensitive'],
+      ])('pressing "%s" %s', async (key, expectedName) => {
+        await createComponent();
+
+        findTree().trigger('keydown', { key });
+        await nextTick();
+
+        const focusedItem = findTreeItems().wrappers.find((w) => w.attributes('tabindex') === '0');
+        expect(focusedItem.findComponent(FileRow).props('file').name).toBe(expectedName);
+      });
+
+      it('wraps around to find match from beginning', async () => {
+        await createComponent();
+
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        await nextTick();
+        findTree().trigger('keydown', { key: 'd' });
+        await nextTick();
+
+        const focusedItem = findTreeItems().wrappers.find((w) => w.attributes('tabindex') === '0');
+        expect(focusedItem.findComponent(FileRow).props('file').name).toBe('dir_2');
+      });
+    });
+
+    describe('RAF throttling', () => {
+      beforeEach(() => {
+        jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+          cb();
+          return 1;
+        });
+        jest.spyOn(window, 'cancelAnimationFrame');
+      });
+
+      it('throttles focus operations using requestAnimationFrame', async () => {
+        await createComponent();
+        await nextTick();
+
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        await nextTick();
+
+        expect(window.requestAnimationFrame).toHaveBeenCalled();
+      });
+
+      it('does not schedule multiple RAF callbacks when navigating rapidly', async () => {
+        await createComponent();
+        await nextTick();
+
+        window.requestAnimationFrame.mockImplementation(() => {
+          // Don't execute callback immediately to simulate pending RAF
+          return 1;
+        });
+
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        await nextTick();
+
+        // Should only schedule one RAF callback since previous ones are pending
+        expect(window.requestAnimationFrame).toHaveBeenCalledTimes(1);
+      });
+
+      it('cancels pending RAF on component destroy', async () => {
+        await createComponent();
+        await nextTick();
+
+        window.requestAnimationFrame.mockImplementation(() => 123); // Return a mock RAF ID
+
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        await nextTick();
+
+        wrapper.destroy();
+
+        expect(window.cancelAnimationFrame).toHaveBeenCalledWith(123);
+      });
+
+      it('focuses correct item after RAF callback executes', async () => {
+        let rafCallback;
+        window.requestAnimationFrame.mockImplementation((cb) => {
+          rafCallback = cb;
+          return 1;
+        });
+
+        await createComponent();
+        await nextTick();
+
+        const items = findTreeItems();
+        const secondItem = items.at(1).element;
+
+        expect(items.at(0).attributes('tabindex')).toBe('0');
+        jest.spyOn(secondItem, 'focus');
+
+        findTree().trigger('keydown', { key: 'ArrowDown' });
+        await nextTick();
+
+        // Active item ID changed but focus() not called yet (RAF pending)
+        expect(items.at(1).attributes('tabindex')).toBe('0');
+        expect(secondItem.focus).not.toHaveBeenCalled();
+
+        // Execute the RAF callback
+        rafCallback();
+        await nextTick();
+
+        // Now focus() should have been called
+        expect(secondItem.focus).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Tree toggle', () => {
+    it('passes show-tree-toggle="true" prop to all FileRow components', () => {
+      findFileRows().wrappers.forEach((fileRow) =>
+        expect(fileRow.props('showTreeToggle')).toBe(true),
+      );
+    });
+
+    it('fetches directory contents when chevron is clicked', async () => {
+      const subdirResponse = cloneDeep(mockResponse);
+      subdirResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [
+        {
+          id: 'gid://file1',
+          name: 'subfile.txt',
+          path: 'dir_1/dir_2/subfile.txt',
+          sha: 'xyz789',
+          webPath: 'dir_1/dir_2/subfile.txt',
+        },
+      ];
+      getQueryHandlerSuccess.mockResolvedValueOnce(subdirResponse);
+
+      const treeFileRow = findFileRows().at(0); // First row is the tree based on mockResponse
+      treeFileRow.vm.$emit('click-tree', treeFileRow.props('file').path);
+
+      await waitForPromises();
+
+      expect(getQueryHandlerSuccess).toHaveBeenLastCalledWith(
+        expect.objectContaining({ path: 'dir_1/dir_2' }),
+      );
+    });
+  });
+
+  describe('intersection observer', () => {
+    it('renders placeholders before intersection and FileRows after', async () => {
+      getQueryHandlerSuccess = jest.fn().mockResolvedValue(mockResponse);
+      apolloProvider = createMockApollo([[paginatedTreeQuery, getQueryHandlerSuccess]]);
+
+      wrapper = shallowMountExtended(TreeList, {
+        apolloProvider,
+        pinia,
+        propsData: { projectPath: 'group/project', currentRef: 'main', refType: 'branch' },
+        mocks: { $route: { params: {} } },
+        stubs: {
+          UserCalloutDismisser: makeMockUserCalloutDismisser({
+            shouldShowCallout: true,
+          }),
+        },
+      });
+
+      await waitForPromises();
+      await nextTick();
+
+      // Before intersection: placeholders only
+      expect(findFileRowPlaceholders()).toHaveLength(2);
+      expect(findFileRows()).toHaveLength(0);
+
+      // After intersection: FileRows rendered
+      triggerIntersectionForAll();
+      await nextTick();
+
+      expect(findFileRows()).toHaveLength(2);
+      expect(findFileRowPlaceholders()).toHaveLength(0);
+    });
+  });
+
+  describe('special character encoding', () => {
+    it('correctly encodes special characters in file paths', async () => {
+      const specialCharResponse = cloneDeep(mockResponse);
+      specialCharResponse.data.project.repository.paginatedTree.nodes[0].blobs.nodes.push({
+        __typename: 'Blob',
+        id: 'gid://special',
+        sha: 'xyz789',
+        name: 'file with spaces & special#chars.txt',
+        path: 'dir_1/file with spaces & special#chars.txt',
+        mode: '100644',
+        webPath: '/dir_1/file with spaces & special#chars.txt',
+        flatPath: 'dir_1/file with spaces & special#chars.txt',
+        type: 'text',
+        lfsOid: null,
+      });
+
+      await createComponent(specialCharResponse);
+
+      const fileRows = findFileRows();
+      expect(fileRows.at(2).props('file')).toMatchObject({
+        name: 'file with spaces & special#chars.txt',
+        path: '/dir_1/file with spaces & special#chars.txt',
+        routerPath:
+          '/-/blob/main/dir_1/file%20with%20spaces%20%26%20special%23chars.txt?ref_type=heads',
+      });
+    });
+
+    it('correctly encodes special characters in directory paths', async () => {
+      const specialCharResponse = cloneDeep(mockResponse);
+      specialCharResponse.data.project.repository.paginatedTree.nodes[0].trees.nodes.push({
+        __typename: 'TreeEntry',
+        id: 'gid://special-dir',
+        sha: 'def456',
+        name: 'dir with spaces & special#chars',
+        path: 'dir_1/dir with spaces & special#chars',
+        flatPath: 'dir_1/dir with spaces & special#chars',
+        type: 'tree',
+        webPath: '/root/jerasmus-test-project/-/tree/master/dir_1/dir with spaces & special#chars',
+      });
+
+      await createComponent(specialCharResponse);
+
+      expect(findFileRows().at(1).props('file')).toMatchObject({
+        name: 'dir with spaces & special#chars',
+        path: '/dir_1/dir with spaces & special#chars',
+        routerPath: '/-/tree/main/dir_1/dir%20with%20spaces%20%26%20special%23chars?ref_type=heads',
+      });
+    });
+  });
+
+  describe('ref_type preservation in URLs', () => {
+    it('includes ref_type in router paths when refType prop is provided', async () => {
+      await createComponent();
+
+      const fileRows = findFileRows();
+
+      expect(fileRows.at(0).props('file').routerPath).toBe(
+        '/-/tree/main/dir_1/dir_2?ref_type=heads',
+      );
+      expect(fileRows.at(1).props('file').routerPath).toBe(
+        '/-/blob/main/dir_1/file.txt?ref_type=heads',
+      );
+    });
+
+    it('excludes ref_type when refType prop is empty', async () => {
+      await createComponent(mockResponse, { propsData: { refType: '' } });
+
+      const fileRows = findFileRows();
+
+      expect(fileRows.at(0).props('file').routerPath).toBe('/-/tree/main/dir_1/dir_2');
+      expect(fileRows.at(1).props('file').routerPath).toBe('/-/blob/main/dir_1/file.txt');
+    });
+  });
+
+  describe('submodule handling', () => {
+    const webUrl = 'https://example.com/submodule-project';
+    beforeEach(async () => {
+      const response = cloneDeep(mockResponse);
+      response.data.project.repository.paginatedTree.nodes[0].submodules.nodes.push({
+        __typename: 'Submodule',
+        id: 'gid://Submodule123',
+        sha: '1234567890abcdef',
+        name: 'submodule-project',
+        flatPath: 'submodule-project',
+        type: 'commit',
+        path: 'submodule-project',
+        treeUrl: webUrl,
+        webUrl,
+      });
+
+      await createComponent(response);
+    });
+
+    it('renders submodules with correct properties', () => {
+      expect(findFileRows().at(1).props('file')).toMatchObject({
+        webUrl,
+        submodule: true,
+        href: webUrl,
+      });
+    });
+
+    it('navigates to submodule when clicked', () => {
+      findFileRows().at(1).vm.$emit('click-submodule', webUrl);
+
+      expect(visitUrl).toHaveBeenCalledWith(webUrl);
+    });
+
+    it.each(['Enter', ' '])('navigates to submodule with %s key', async (key) => {
+      findTree().trigger('keydown', { key: 'ArrowDown' });
+      await nextTick();
+      findTree().trigger('keydown', { key });
+
+      expect(visitUrl).toHaveBeenCalledWith(webUrl);
+    });
+
+    it('sorts content in correct order: directories, submodules, then files', () => {
+      const fileRows = findFileRows();
+
+      expect(fileRows.at(0).props('file').path).toBe('/dir_1/dir_2');
+      expect(fileRows.at(1).props('file').path).toBe('/submodule-project');
+      expect(fileRows.at(2).props('file').path).toBe('/dir_1/file.txt');
+    });
+  });
+
+  describe('file tree browser popover and user callout', () => {
+    describe('when `shouldShowCallout` is true', () => {
+      beforeEach(async () => {
+        await createComponent(mockResponse, { shouldShowCallout: true });
+        await waitForPromises();
+        await nextTick();
+      });
+
+      it('renders UserCalloutDismisser with correct feature-name', () => {
+        expect(findUserCalloutDismisser().props('featureName')).toBe('file_tree_browser_popover');
+      });
+
+      it('passes targetElement prop to FileTreeBrowserPopover', () => {
+        expect(findFileTreeBrowserPopover().props('targetElement')).not.toBeNull();
+      });
+
+      it('calls dismiss when popover emits dismiss event', async () => {
+        findFileTreeBrowserPopover().vm.$emit('dismiss');
+        await nextTick();
+
+        expect(userCalloutDismissSpy).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('hover preload', () => {
+    let getBlobQueryHandlerSuccess;
+
+    beforeEach(async () => {
+      getBlobQueryHandlerSuccess = jest.fn().mockResolvedValue({ data: { project: null } });
+      await createComponent(mockResponse, { blobQueryHandler: getBlobQueryHandlerSuccess });
+    });
+
+    it('preloads folder data on hover over a tree item', async () => {
+      const hoverLoadDirective = getBinding(findFileRows().at(0).element, 'gl-hover-load');
+      hoverLoadDirective.value();
+      await waitForPromises();
+
+      expect(getQueryHandlerSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({ path: 'dir_1/dir_2' }),
+      );
+    });
+
+    it('preloads blob data on hover over a blob item', () => {
+      const hoverLoadDirective = getBinding(findFileRows().at(1).element, 'gl-hover-load');
+      hoverLoadDirective.value();
+
+      expect(getBlobQueryHandlerSuccess).toHaveBeenCalledWith(
+        expect.objectContaining({ filePath: ['dir_1/file.txt'] }),
+      );
+    });
+
+    it('does not preload on hover over a submodule item', async () => {
+      const response = cloneDeep(mockResponse);
+      response.data.project.repository.paginatedTree.nodes[0].submodules.nodes.push({
+        __typename: 'Submodule',
+        id: 'gid://Submodule123',
+        sha: '1234567890abcdef',
+        name: 'submodule-project',
+        flatPath: 'submodule-project',
+        type: 'commit',
+        path: 'submodule-project',
+        treeUrl: 'https://example.com/submodule-project',
+        webUrl: 'https://example.com/submodule-project',
+      });
+      await createComponent(response, { blobQueryHandler: getBlobQueryHandlerSuccess });
+      triggerIntersectionForAll();
+      await nextTick();
+
+      const callCountBefore = getQueryHandlerSuccess.mock.calls.length;
+      const submoduleRow = findFileRows().wrappers.find((w) => w.props('file').submodule);
+      const hoverLoadDirective = getBinding(submoduleRow.element, 'gl-hover-load');
+      hoverLoadDirective.value();
+      await waitForPromises();
+
+      expect(getQueryHandlerSuccess.mock.calls).toHaveLength(callCountBefore);
+      expect(getBlobQueryHandlerSuccess).not.toHaveBeenCalled();
+    });
+  });
+
+  it('does not render UserCalloutDismisser when it has been dismissed', async () => {
+    await createComponent(mockResponse, { shouldShowCallout: false });
+    await waitForPromises();
+    expect(findFileTreeBrowserPopover().exists()).toBe(false);
+  });
+
+  it('navigates when clicking on file', () => {
+    findFileRows().at(1).vm.$emit('click-file');
+
+    expect(wrapper.vm.$router.push).toHaveBeenCalledWith(
+      '/-/blob/main/dir_1/file.txt?ref_type=heads',
+    );
+  });
+
+  it('calls resetFileTreeBrowserAllStates when clicking on file when peek is on', () => {
+    store.fileTreeBrowserIsPeekOn = true;
+
+    findFileRows().at(1).vm.$emit('click-file');
+    expect(store.resetFileTreeBrowserAllStates).toHaveBeenCalled();
+  });
+
+  it('does not call resetFileTreeBrowserAllStates when clicking on directory even when peek is on', () => {
+    store.fileTreeBrowserIsPeekOn = true;
+
+    findFileRows().at(0).vm.$emit('click-file');
+    expect(store.resetFileTreeBrowserAllStates).not.toHaveBeenCalled();
+  });
+
+  it('does not call resetFileTreeBrowserAllStates when clicking on file when peek is off', () => {
+    findFileRows().at(1).vm.$emit('click-file');
+    expect(store.resetFileTreeBrowserAllStates).not.toHaveBeenCalled();
+  });
+
+  it('calls scrollUp when file is clicked', () => {
+    findFileRows().at(0).vm.$emit('click-row');
+
+    expect(scrollUp).toHaveBeenCalled();
+  });
+
+  it('tracks event when row is clicked', async () => {
+    const { trackEventSpy } = bindInternalEventDocument(wrapper.element);
+
+    findFileRows().at(1).vm.$emit('click-row');
+    await nextTick();
+
+    expect(trackEventSpy).toHaveBeenCalledWith(
+      'click_file_tree_browser_on_repository_page',
+      {},
+      undefined,
+    );
+  });
+
+  it('does not throw and renders no tree when paginatedTree.nodes is empty', async () => {
+    const response = cloneDeep(mockResponse);
+    response.data.project.repository.paginatedTree.nodes = [];
+
+    await createComponent(response);
+    expect(findTree().exists()).toBe(false);
+  });
+
+  it('scrolls element into view on initial load', async () => {
+    const scrollIntoViewSpy = jest.fn();
+    jest.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(scrollIntoViewSpy);
+
+    const response = cloneDeep(mockResponse);
+    response.data.project.repository.paginatedTree.nodes[0].blobs.nodes = [
+      {
+        __typename: 'Blob',
+        id: 'gid://gitlab/Blob/root1',
+        sha: 'abc123',
+        name: 'file.txt',
+        path: 'file.txt',
+        mode: '100644',
+        webPath: '/file.txt',
+        flatPath: 'file.txt',
+        type: 'text',
+        lfsOid: null,
+      },
+    ];
+
+    wrapper = shallowMountExtended(TreeList, {
+      apolloProvider: createMockApollo([
+        [paginatedTreeQuery, jest.fn().mockResolvedValueOnce(response)],
+      ]),
+      pinia,
+      propsData: { projectPath: 'group/project', currentRef: 'main', refType: 'heads' },
+      mocks: {
+        $router: { push: jest.fn() },
+        $route: { params: { path: 'file.txt' } },
+      },
+      stubs: {
+        UserCalloutDismisser: makeMockUserCalloutDismisser({ shouldShowCallout: false }),
+      },
+    });
+
+    await waitForPromises();
+
+    expect(scrollIntoViewSpy).toHaveBeenCalledWith({
+      behavior: 'instant',
+      block: 'center',
+    });
+  });
+});

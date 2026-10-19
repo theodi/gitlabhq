@@ -1,0 +1,11 @@
+query getProjectEnvironments($fullPath: ID!, $first: Int, $search: String) {
+  project(fullPath: $fullPath) {
+    id
+    environments(first: $first, search: $search) {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}

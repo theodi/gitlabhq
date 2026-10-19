@@ -1,0 +1,41 @@
+= gitlab_ui_form_for @group, html: { multipart: true, class: 'gl-show-field-errors js-general-settings-form' }, authenticity_token: true do |f|
+  %input{ type: 'hidden', name: 'update_section', value: 'js-general-settings' }
+  = form_errors(@group)
+
+  %fieldset
+    .row
+      .form-group.gl-col-md-5
+        = f.label :name, s_('Groups|Group name'), class: 'label-bold', for: 'group_name_edit'
+        = f.text_field :name, class: 'form-control gl-field-error-ignore', id: 'group_name_edit', maxlength: 255, required: true, data: { testid: 'group-name-field' }, aria: { invalid: false }
+        %span.form-text.gl-text-subtle#js-group-name-edit-description
+          = s_('Groups|Start with a letter, digit, basic emoji, or underscore.')
+        #js-group-name-edit-error.gl-field-error.gl-mt-2.gl-hidden{ role: 'alert' }
+
+      .form-group.gl-col-md-4
+        = f.label :id, s_('Groups|Group ID'), class: 'label-bold'
+        = f.text_field :id, class: 'form-control gl-form-input', readonly: true
+
+    .form-group.gl-mt-4.gl-mb-9
+      = render Pajamas::AvatarComponent.new(@group, size: 96, alt: '', class: 'gl-float-left gl-mr-5')
+      = f.label :avatar, s_('Groups|Group avatar'), class: 'label-bold gl-block'
+      = render 'shared/choose_avatar_button', f: f
+      - if @group.avatar?
+        %hr
+        = link_button_to s_('Groups|Remove avatar'), group_avatar_path(@group.to_param), aria: { label: s_('Groups|Remove avatar') }, data: { confirm: s_('Groups|Avatar will be removed. Are you sure?'), 'confirm-btn-variant': 'danger' }, method: :delete, variant: :danger, category: :secondary
+
+    .row
+      .form-group.gl-col-md-9
+        = f.label :description, s_('Groups|Group description (optional)'), class: 'label-bold'
+        = f.text_area :description, class: 'form-control', rows: 4, maxlength: 500
+
+    = render 'shared/repository_size_limit_setting_registration_features_cta', form: f
+    = render_if_exists 'shared/repository_size_limit_setting', form: f, type: :group
+
+    .row
+      .form-group.gl-col-md-5
+        = f.label :description, s_('Groups|Group README'), class: 'label-bold'
+        #js-group-settings-readme{ data: group_settings_readme_app_data(@group) }
+
+  .form-group.gl-form-group
+    = render 'shared/visibility_level', f: f, visibility_level: @group.visibility_level, can_change_visibility_level: can_change_group_visibility_level?(@group), form_model: @group
+  = f.submit s_('Groups|Save changes'), pajamas_button: true, data: { testid: 'save-name-visibility-settings-button' }

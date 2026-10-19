@@ -1,0 +1,158 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Packages::CreateEventService, feature_category: :package_registry do
+  let_it_be(:project) { create(:project) }
+  let(:scope) { 'generic' }
+  let(:event_name) { 'pull_package' }
+
+  let(:params) do
+    {
+      scope: scope,
+      event_name: event_name
+    }
+  end
+
+  subject(:service) { described_class.new(project, user, params).execute }
+
+  describe '#execute' do
+    let(:label) { 'generic' }
+    let(:event_attrs) do
+      {
+        category: 'InternalEventTracking',
+        label: label,
+        namespace: project.namespace,
+        project: project,
+        property: property,
+        user: nil
+      }
+    end
+
+    let(:common_metrics) do
+      ['counts.package_events_i_package_pull_package', "counts.package_events_i_package_#{label}_pull_package"]
+    end
+
+    shared_examples 'updates the correct metrics' do
+      context 'with a user' do
+        let_it_be(:user) { create(:user) }
+
+        let(:property) { 'user' }
+        let(:event_attrs) { super().merge(user: user) }
+
+        it 'updates the correct metrics' do
+          expect { service }.to trigger_internal_events('pull_package_from_registry').with(event_attrs)
+            .and increment_usage_metrics(
+              'counts.package_events_i_package_pull_package_by_user',
+              *common_metrics,
+              'redis_hll_counters.user_packages.user_packages_total_unique_counts_monthly',
+              'redis_hll_counters.user_packages.user_packages_total_unique_counts_weekly',
+              "redis_hll_counters.user_packages.i_package_#{label}_user_monthly",
+              "redis_hll_counters.user_packages.i_package_#{label}_user_weekly"
+            ).and not_increment_usage_metrics(
+              'counts.package_events_i_package_pull_package_by_deploy_token',
+              'counts.package_events_i_package_pull_package_by_guest',
+              'redis_hll_counters.deploy_token_packages.deploy_token_packages_total_unique_counts_monthly',
+              'redis_hll_counters.deploy_token_packages.deploy_token_packages_total_unique_counts_weekly'
+            )
+        end
+
+        it 'writes to the legacy Redis HLL key via key override' do
+          legacy_key_prefix = "{hll_counters}_i_package_#{label}_user-"
+
+          allow(Gitlab::Redis::HLL).to receive(:add).and_call_original
+
+          service
+
+          expect(Gitlab::Redis::HLL).to have_received(:add)
+            .with(hash_including(key: start_with(legacy_key_prefix)))
+            .at_least(:once)
+        end
+
+        it 'reads the migrated metric using the legacy Redis key' do
+          metric_key = "redis_hll_counters.user_packages.i_package_#{label}_user_monthly"
+          definition = Gitlab::Usage::MetricDefinition.definitions[metric_key]
+
+          expect(Gitlab::Redis::HLL).to receive(:count) do |args|
+            expect(args[:keys]).to all(start_with("{hll_counters}_i_package_#{label}_user-"))
+          end
+
+          Gitlab::Usage::Metric.new(definition).with_value
+        end
+      end
+
+      context 'with a deploy token' do
+        let_it_be(:user) { create(:deploy_token) }
+        let(:hashed_deploy_token_id) { 'hashed-deploy-token-id-sha256' }
+        let(:event_attrs) { super().merge(additional_properties: { deploy_token_id: hashed_deploy_token_id }) }
+
+        let(:property) { 'deploy_token' }
+
+        before do
+          allow(Gitlab::CryptoHelper).to receive(:sha256).and_return(hashed_deploy_token_id)
+        end
+
+        it 'updates the correct metrics' do
+          expect { service }.to trigger_internal_events('pull_package_from_registry').with(event_attrs)
+            .and increment_usage_metrics(
+              'counts.package_events_i_package_pull_package_by_deploy_token',
+              *common_metrics,
+              'redis_hll_counters.deploy_token_packages.deploy_token_packages_total_unique_counts_monthly',
+              'redis_hll_counters.deploy_token_packages.deploy_token_packages_total_unique_counts_weekly'
+            ).and not_increment_usage_metrics(
+              'counts.package_events_i_package_pull_package_by_guest',
+              'counts.package_events_i_package_pull_package_by_user',
+              'redis_hll_counters.user_packages.user_packages_total_unique_counts_monthly',
+              'redis_hll_counters.user_packages.user_packages_total_unique_counts_weekly'
+            )
+        end
+      end
+
+      context 'with no user' do
+        let_it_be(:user) { nil }
+
+        let(:property) { 'guest' }
+
+        it 'updates the correct metrics' do
+          expect { service }.to trigger_internal_events('pull_package_from_registry').with(event_attrs)
+            .and increment_usage_metrics(
+              'counts.package_events_i_package_pull_package_by_guest',
+              *common_metrics
+            ).and not_increment_usage_metrics(
+              'counts.package_events_i_package_pull_package_by_deploy_token',
+              'counts.package_events_i_package_pull_package_by_user',
+              'redis_hll_counters.user_packages.user_packages_total_unique_counts_monthly',
+              'redis_hll_counters.user_packages.user_packages_total_unique_counts_weekly',
+              'redis_hll_counters.deploy_token_packages.deploy_token_packages_total_unique_counts_monthly',
+              'redis_hll_counters.deploy_token_packages.deploy_token_packages_total_unique_counts_weekly',
+              "redis_hll_counters.user_packages.i_package_#{label}_user_monthly"
+            )
+        end
+      end
+    end
+
+    it_behaves_like 'updates the correct metrics'
+
+    context 'with a package as scope' do
+      let(:scope) { create(:npm_package) }
+      let(:label) { 'npm' }
+
+      it_behaves_like 'updates the correct metrics'
+    end
+
+    context "with not allowed event_name used" do
+      let(:event_name) { 'boil_package' }
+      let_it_be(:user) { create(:user) }
+
+      it "doesn't trigger internal events" do
+        expect { service }.not_to trigger_internal_events
+      end
+
+      it "doesn't update RedisHLL keys" do
+        expect(::Gitlab::UsageDataCounters::HLLRedisCounter).not_to receive(:track_event)
+
+        service
+      end
+    end
+  end
+end

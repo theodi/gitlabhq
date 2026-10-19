@@ -1,0 +1,31 @@
+- expanded = integration_expanded?('eks_')
+
+= render ::Layouts::SettingsBlockComponent.new(_('Amazon EKS'),
+  id: 'js-eks-settings',
+  expanded: expanded) do |c|
+  - c.with_description do
+    = _('Amazon EKS integration allows you to provision EKS clusters from GitLab.')
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-eks-settings'), html: { class: 'fieldset-form', id: 'eks-settings' } do |f|
+      = form_errors(@application_setting)
+
+      %fieldset
+        .form-group
+          = f.gitlab_ui_checkbox_component :eks_integration_enabled,
+            _('Enable Amazon EKS integration')
+        .form-group
+          = f.label :eks_account_id, _('Account ID'), class: 'label-bold'
+          = f.text_field :eks_account_id, class: 'form-control gl-form-input'
+        .form-group
+          = f.label :eks_access_key_id, _('AWS access key ID (Optional)'), class: 'label-bold'
+          = f.text_field :eks_access_key_id, class: 'form-control gl-form-input'
+          .form-text.gl-text-subtle
+            = _('Only required if not using role instance credentials.')
+
+        .form-group
+          = f.label :eks_secret_access_key, _('AWS secret access key (Optional)'), class: 'label-bold'
+          = f.password_field :eks_secret_access_key, autocomplete: 'off', class: 'form-control gl-form-input'
+          .form-text.gl-text-subtle
+            = _('Only required if not using role instance credentials.')
+
+      = f.submit _('Save changes'), pajamas_button: true

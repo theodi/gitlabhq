@@ -1,0 +1,21 @@
+---
+data_category: optional
+key_path: signup_enabled
+description: Whether public signup is enabled
+product_group: authentication
+product_categories:
+- system_access
+value_type: boolean
+status: active
+time_frame: none
+data_source: system
+instrumentation_class: GitlabSettingsMetric
+options:
+  setting_method: allow_signup?
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/51974

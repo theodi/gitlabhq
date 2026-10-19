@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage.create.suggestions
+description: Count of unique users who create suggestions in merge request comments
+product_group: code_review
+product_categories:
+- code_review_workflow
+value_type: number
+status: removed
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+milestone_removed: '14.7'
+removed_by_url:

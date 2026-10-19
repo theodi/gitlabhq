@@ -1,0 +1,296 @@
+---
+stage: AI Platform
+group: AI Model Services
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Configure GitLab Duo for your GitLab instance.
+title: Configure GitLab Duo
+---
+
+{{< details >}}
+
+- Offering: GitLab Self-Managed, GitLab Dedicated for Government
+
+{{< /details >}}
+
+GitLab Duo is an AI-native assistant that helps you across the software development lifecycle.
+
+You can configure GitLab Duo to use:
+
+- Cloud-based AI Gateway (default): GitLab-hosted AI Gateway with vendor language models.
+- Self-hosted models: Your own AI Gateway and language models
+  for full control over your data and security.
+- Hybrid configuration: Self-hosted models for some features
+  and cloud-based models for others.
+
+## Prerequisites
+
+- Silent Mode is [turned off](../../silent_mode/_index.md#turn-off-silent-mode).
+- [Your instance is activated with an activation code](../../license.md#activate-gitlab-ee).
+  - You cannot use a license key.
+  - You cannot use GitLab Duo with an offline license, with the exception of [GitLab Duo Self-Hosted](../../gitlab_duo_self_hosted/_index.md).
+- The host that runs your instance can resolve public hostnames with DNS, even when using an HTTP/S proxy server.
+
+## Allow outbound connections from the GitLab instance to GitLab Duo
+
+- GitLab application nodes must connect to the GitLab Duo Workflow at `https://duo-workflow-svc.runway.gitlab.net` with HTTP/2. The application and service communicate with gRPC.
+- For GitLab Duo Agent Platform features, your firewalls and HTTP/S proxy servers must allow outbound
+  connections to `duo-workflow-svc.runway.gitlab.net` on port `443` with `https://` and support for
+  HTTP/2 traffic.
+- If your instance connects through an HTTP/S proxy server, the host must still be
+  able to resolve public hostnames with DNS. If hostnames can be resolved only
+  through the proxy server, GitLab Duo features like the GitLab Duo health check,
+  the GitLab Credits dashboard, and GitLab Duo Agent Platform might time out or fail.
+  For more information, see [issue 602538](https://gitlab.com/gitlab-org/gitlab/-/issues/602538).
+- AI features stream responses over long-lived HTTP connections. An HTTP/S proxy server
+  or firewall that enforces a maximum request duration or idle timeout can cut off long
+  responses without an error. Configure your proxy with a longer timeout than the other
+  components in the path.
+
+## Allow inbound connections from clients to the GitLab instance
+
+Your GitLab instance must allow inbound connections from IDE clients.
+
+1. Allow WebSocket Protocol upgrade requests with headers:
+   - `Connection: upgrade`
+   - `Upgrade: websocket`
+   - `HTTP/2` protocol support
+   - Standard WebSocket security headers: `Sec-WebSocket-*`
+1. Enable `wss://` (WebSocket Secure) protocol support.
+1. Add specific endpoints to allow:
+   - Primary endpoint: `wss://<customer-instance>/-/cable`
+   - Ensure `HTTP/2` protocol is not downgraded to `HTTP/1.1`.
+   - Port: `443` (HTTPS/WSS)
+
+If you have issues:
+
+- Check for restrictions on WebSocket traffic to `wss://gitlab.example.com/-/cable` and other `.com` domains.
+- If you use reverse proxies like Apache, you might see GitLab Duo Chat connection issues in your
+  logs, like **WebSocket connection to .... failures**.
+
+To resolve this issue, edit your proxy settings.
+
+For Apache 2.4.47 and later, add `upgrade=websocket` to the `ProxyPass` directive
+so that Apache upgrades the connection for WebSocket traffic:
+
+```apache
+# Needs proxy_http and proxy_wstunnel enabled
+ProxyPass / http://127.0.0.1:8181/ upgrade=websocket
+ProxyPassReverse / http://127.0.0.1:8181/
+```
+
+For earlier Apache versions, use rewrite rules to route WebSocket
+traffic to the `ws://` protocol:
+
+```apache
+# Enable WebSocket reverse Proxy
+# Needs proxy_wstunnel enabled
+  RewriteCond %{HTTP:Upgrade} websocket [NC]
+  RewriteCond %{HTTP:Connection} upgrade [NC]
+  RewriteRule ^/?(.*) "ws://127.0.0.1:8181/$1" [P,L]
+```
+
+A missing WebSocket upgrade on the proxy also breaks other GitLab features that
+stream over Action Cable (`/-/cable`), like live updates of merge request and
+pipeline status.
+
+## Allow connections from the runner
+
+For GitLab Duo Agent Platform features that make use of runners, like flows,
+the runner must be able to connect to the GitLab instance.
+For more information, see
+[configure runners to execute flows](../../../user/duo_agent_platform/flows/execution/_index.md#configure-runners-to-execute-flows).
+
+The same [inbound connections from clients to the GitLab instance](#allow-inbound-connections-from-clients-to-the-gitlab-instance)
+must be allowed as outbound connections from the runner to the GitLab instance.
+
+In addition, runners must be able to connect to:
+
+| Destination | Port | Purpose |
+|-------------|------|---------|
+| `gitlab.com` | `443` | Download the GitLab Duo CLI binary from the package registry at runtime |
+| `registry.gitlab.com` | `443` | Download the default Docker image (unless using a [custom image](../../../user/duo_agent_platform/flows/execution/images.md#change-the-default-docker-image)) |
+
+If your organization cannot allow access to `gitlab.com`, you can use a
+[custom Docker image](../../../user/duo_agent_platform/flows/execution/images.md#change-the-default-docker-image)
+with the GitLab Duo CLI already installed.
+
+> [!note]
+> The runner's connection to the GitLab Duo Agent Platform Service is routed through the
+> GitLab instance. Runners do not connect directly to `duo-workflow-svc.runway.gitlab.net`.
+> The firewall requirement for `duo-workflow-svc.runway.gitlab.net` on port `443` applies to the
+> GitLab instance, not the runner. Your runner network configuration must allow outbound HTTPS
+> traffic to the GitLab instance.
+
+## Share usage data with GitLab
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/587976) in GitLab 18.9.1.
+
+{{< /history >}}
+
+To help improve service quality, you can share usage data about GitLab Duo Agent Platform features with GitLab.
+
+When you turn on data collection, GitLab logs information about GitLab Duo feature usage.
+This data is used exclusively for service improvement and debugging, and not for training AI models.
+
+For more information about what data is collected, see [Agent Platform usage data](../../../user/gitlab_duo/data_usage.md#agent-platform-usage-data).
+
+Prerequisites:
+
+- Have GitLab 18.9.1 or later
+
+To turn on extended logging:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **GitLab Duo**.
+1. Select **Change configuration**.
+1. Select the **Collect usage data** checkbox.
+1. Select **Save changes**.
+
+### Data usage with self-hosted models
+
+If you use a self-hosted AI gateway and self-hosted models, detailed logs are stored
+on your infrastructure and are not shared with GitLab. To share data with GitLab, you must
+configure your self-hosted AI Gateway to send traces to an external observability service.
+
+You can use [Service Ping](../../settings/usage_statistics.md#service-ping)
+to send usage data to GitLab. This data is different from the [telemetry data](../../../user/gitlab_duo/data_usage.md#telemetry).
+
+## Run a health check for GitLab Duo
+
+{{< details >}}
+
+- Status: Beta
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/161997) in GitLab 17.3.
+- [Download health check report added](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/165032) in GitLab 17.5.
+- Foundational flows readiness checks [added](https://gitlab.com/gitlab-org/gitlab/-/work_items/599536) in GitLab 19.1.
+
+{{< /history >}}
+
+You can determine if your instance meets the requirements to use GitLab Duo.
+When the health check completes, it displays a pass or fail result and the types of issues.
+If the health check fails any of the tests, users might not be able to use GitLab Duo features in your instance.
+
+The health check is a [beta](../../../policy/development_stages_support.md) feature.
+
+Prerequisites:
+
+- You must be an administrator.
+
+To run a health check:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **GitLab Duo**.
+1. In the upper-right corner, select **Run health check**.
+1. Optional. In GitLab 17.5 and later, after the health check is complete, you can select **Download report** to save a detailed report of the health check results.
+
+These tests are performed:
+
+| Test                      | Description |
+|---------------------------|-------------|
+| AI Gateway                | GitLab Duo Self-Hosted models only. Tests whether the AI Gateway URL is configured as an environment variable. This connectivity is required for self-hosted model deployments that use the AI Gateway. |
+| Network                   | Tests whether your instance can connect to `customers.gitlab.com` and `cloud.gitlab.com`.<br><br>If your instance cannot connect to either destination, ensure that your firewall or proxy server settings [allow connection](#allow-outbound-connections-from-the-gitlab-instance-to-gitlab-duo). |
+| Synchronization           | Tests whether your subscription: <br>- Has been activated with an activation code and can be synchronized with `customers.gitlab.com`.<br>- Has correct access credentials.<br>- Has been synchronized recently. If it hasn't or the access credentials are missing or expired, you can [manually synchronize](../../../subscriptions/manage_subscription.md#manually-synchronize-subscription-data) your subscription data. |
+| Code Suggestions          | GitLab Duo Self-Hosted models only. Tests whether Code Suggestions is available: <br>- Your license includes access to Code Suggestions.<br>- You have the necessary permissions to use the feature. |
+| GitLab Duo Agent Platform | Tests whether the backend service is operational and accessible. This service is required for agentic features like the Agent Platform and GitLab Duo Agentic Chat.<br><br>For GitLab Duo Self-Hosted, this test does not pass until you [select a self-hosted model for the GitLab Duo Agent Platform feature](../../gitlab_duo_self_hosted/configure_duo_features.md#select-a-self-hosted-model-for-a-feature).<br><br>Also verifies the following foundational flows prerequisites:<br>- The instance-level flow execution setting is enabled.<br>- The instance-level foundational flows setting is enabled.<br>- At least one active instance runner with the `gitlab--duo` tag is registered and connected, and uses a Docker-compatible executor.|
+| System exchange           | Tests whether Code Suggestions can be used in your instance. If the system exchange assessment fails, users might not be able to use GitLab Duo features. |
+| Usage billing | Tests whether your instance can connect to usage billing endpoints, including Customers Portal, the AI Gateway, and GitLab Duo Workflow Service. |
+
+For GitLab instances earlier than version 17.10, if you are encountering any issues with the health check,
+see the [troubleshooting page](../../../user/gitlab_duo/troubleshooting.md).
+
+## Run a functional verification check for Agentic Chat
+
+{{< details >}}
+
+- Status: Beta
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/253398) in GitLab 19.4 as a [beta](../../../policy/development_stages_support.md#beta) [with a feature flag](../../../administration/feature_flags/_index.md) named `duo_agentic_chat_verification_check`. Enabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+
+Run a functional verification check to send an Agentic Chat request
+through your self-hosted model and confirm that a full response is returned.
+
+This check is available only for GitLab Duo Self-Hosted deployments
+and does not consume GitLab Credits.
+
+Prerequisites:
+
+- Administrator access.
+- A [self-hosted model selected for the feature](../../gitlab_duo_self_hosted/configure_duo_features.md#select-a-self-hosted-model-for-a-feature).
+
+To run a functional verification check:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **GitLab Duo**.
+1. By **Functional verification checks**, select a group.
+1. Next to **Agentic Chat**, select **Run**.
+
+The check reports one of these states:
+
+- Passed: The Agentic Chat request returned a full response from the configured model.
+- Failed: The Agentic Chat request did not complete successfully.
+
+If the check fails, select it to view the reported message. For more information, see
+[errors when running a functional verification check for Agentic Chat](#errors-when-running-a-functional-verification-check-for-agentic-chat).
+
+## Other hosting options
+
+By default, GitLab Duo uses supported AI vendor language models and sends data through a cloud-based AI Gateway that's hosted by GitLab.
+
+If you want to host your own language models or AI Gateway:
+
+- You can [use GitLab Duo Self-Hosted to host the AI Gateway and use any of the supported self-hosted models](../../gitlab_duo_self_hosted/_index.md#self-hosted-ai-gateway-and-llms).
+  This option provides full control over your data and security.
+- Use a [hybrid configuration](../../gitlab_duo_self_hosted/_index.md#hybrid-ai-gateway-and-model-configuration),
+  where you host your own AI Gateway and models for some features, but configure other features to use the GitLab AI Gateway and vendor models.
+
+## GitLab Dedicated for Government
+
+For GitLab Dedicated for Government, you must use
+GitLab Duo Self-Hosted with FedRAMP-approved models.
+The cloud-based AI Gateway and vendor models are not available for GitLab Dedicated for Government.
+
+For more information, see
+[configure GitLab Duo on GitLab Dedicated for Government](gitlab_dedicated_for_government.md).
+
+## Related topics
+
+- [Summary of GitLab Duo features](../../../user/gitlab_duo/feature_summary.md)
+- [Control GitLab Duo availability](../../../user/gitlab_duo/turn_on_off.md)
+- [Troubleshooting GitLab Duo](../../../user/gitlab_duo/troubleshooting.md)
+
+## Troubleshooting
+
+When you configure GitLab Duo, you might encounter the following issues.
+
+### Errors when running a functional verification check for Agentic Chat
+
+When you [run a functional verification check for Agentic Chat](#run-a-functional-verification-check-for-agentic-chat),
+the check might fail with one of these messages:
+
+- `Verification check timed out`: The check did not complete before its time limit.
+  To resolve this issue, select **Run** again.
+- A message that starts with `Reason: handshake_failed`: Your browser could not open the
+  WebSocket connection used to stream the response. If you use a reverse proxy,
+  verify that it supports WebSocket upgrades. For more information, see
+  [allow inbound connections from clients to the GitLab instance](#allow-inbound-connections-from-clients-to-the-gitlab-instance).
+- A message that starts with `Reason: timeout` or `Reason: abnormal_close`:
+  The WebSocket connection timed out or closed before the model finished responding.
+- `Duo not enabled for namespace`: The selected group does not have GitLab Duo turned on.
+  To resolve this issue, [turn on GitLab Duo Agent Platform](../../../user/duo_agent_platform/turn_on_off.md) for the group.

@@ -1,0 +1,595 @@
+---
+stage: AI Coding
+group: Code Review
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Code Review Flow
+---
+
+{{< details >}}
+
+- Tier: [Free](../../../../../subscriptions/gitlab_credits.md#for-the-free-tier), Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< collapsible title="Model information" >}}
+
+- LLM: Anthropic Claude Sonnet 5.5 Gemini Enterprise Agent Platform
+- LLM for GitLab 19.0 or earlier: [Default LLM](../../../../gitlab_duo/model_selection.md#default-models) for GitLab Duo Code Review, the non-agentic version.
+- On GitLab.com, [select a different model](../../../model_selection.md#select-a-model-for-a-feature) using the **Agentic Code Review** setting.
+- On GitLab Self-Managed and GitLab Dedicated, [select a different model](../../../../../administration/gitlab_duo/model_selection.md#select-a-model-for-code-review-flow) using the setting appropriate for your GitLab version.
+- Available on [GitLab Duo with self-hosted models](../../../../../administration/gitlab_duo_self_hosted/_index.md)
+
+{{< /collapsible >}}
+
+{{< history >}}
+
+- Introduced as [a beta](../../../../../policy/development_stages_support.md) in GitLab [18.7](https://gitlab.com/groups/gitlab-org/-/epics/18645) [with a feature flag](../../../../../administration/feature_flags/_index.md) named `duo_code_review_on_agent_platform`. Disabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/work_items/585273) in GitLab 18.8. Feature flag `duo_code_review_on_agent_platform` [removed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/217209).
+- Available on the Free tier on GitLab.com with GitLab Credits in GitLab 18.10.
+- LLM [updated](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/merge_requests/5555) to Claude Sonnet 4.6 Vertex on May 20, 2026.
+- LLM [updated](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/merge_requests/6422) to Claude Sonnet 5 Vertex on August 6, 2026.
+- LLM [updated](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/merge_requests/7238) to Claude Sonnet 5.5 Gemini Enterprise Agent Platform on October 5, 2026.
+
+{{< /history >}}
+
+> [!note]
+> Depending on your add-on and group settings, GitLab runs one of two code review features:
+>
+> - Code Review Flow: the agentic version, part of GitLab Duo Agent Platform.
+> - GitLab Duo Code Review: the non-agentic version, available only for users with the GitLab Duo Enterprise add-on.
+>
+> This page describes the agentic version.
+>
+> For more information about how the two features compare and how to turn on Code Review Flow for GitLab Duo Enterprise seats,
+> see [use GitLab Duo to review your code](../../../../project/merge_requests/duo_in_merge_requests.md#use-gitlab-duo-to-review-your-code).
+
+The Code Review Flow helps you streamline code reviews with agentic AI.
+
+This flow:
+
+- Analyzes code changes.
+- Provides enhanced contextual understanding of repository structure and cross-file dependencies.
+- Delivers detailed review comments with actionable feedback.
+- Supports custom review instructions tailored to your project.
+
+## Prerequisites
+
+- Meet the [prerequisites for the GitLab Duo Agent Platform](../../../_index.md#prerequisites).
+- Turn on **Allow foundational flows** and **Code Review** [for the top-level group](../_index.md#turn-foundational-flows-on-or-off).
+- Have the Developer, Maintainer, or Owner role for the project.
+- If you belong to multiple GitLab Duo namespaces, [set a default GitLab Duo namespace](../../../../profile/preferences.md#set-a-default-gitlab-duo-namespace).
+- [Configure your own runners](../../execution/_index.md#configure-runners-to-execute-flows) with the `gitlab--duo` tag and
+  an executor that supports Docker images, or turn on [GitLab hosted runners](../../../../../ci/runners/hosted_runners/_index.md)
+  for your project. Code Review Flow runs as a CI/CD job and requires a runner to execute.
+- Recommended. Create an [agent configuration file](../../execution/_index.md#create-the-agent-configuration-file) so the flow has access to your project's toolchain and dependencies.
+
+## Use the flow
+
+The Code Review Flow is available in the GitLab UI and through the REST API.
+
+### Request a review in the GitLab UI
+
+{{< history >}}
+
+- Using a flow in a GitLab Duo Agentic Chat conversation [introduced](https://gitlab.com/groups/gitlab-org/-/work_items/20484) in GitLab 19.2 [with a feature flag](../../../../../administration/feature_flags/_index.md) named `agentic_foundational_flow_tool`. Enabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/work_items/605446) in GitLab 19.5. Feature flag `agentic_foundational_flow_tool` removed.
+
+{{< /history >}}
+
+To request a review in the GitLab UI:
+
+1. In the left sidebar, select **Code** > **Merge requests** and find your merge request.
+1. Use one of these methods to request a review:
+   - Assign `@GitLabDuo` as a reviewer.
+   - In a comment box, enter the quick action `/assign_reviewer @GitLabDuo`.
+   - In a comment box, mention `@GitLabDuo` and ask for a review.
+   - In the GitLab Duo sidebar, open a new or existing Agentic Chat conversation.
+     Ask Agentic Chat to review the merge request.
+1. To monitor progress, in the left sidebar, select **AI** > **Sessions**.
+
+   If you are in Agentic Chat, you can also do the following:
+   - See the progress in the Chat conversation.
+   - Select **View Agent Session** in the conversation.
+
+### Request a review through the REST API
+
+{{< details >}}
+
+- Status: Experiment
+
+{{< /details >}}
+
+{{< history >}}
+
+- Trigger code review through the REST API [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/250117) in GitLab 19.4.
+
+{{< /history >}}
+
+To request a review through the REST API, [trigger the flow](../../../../../api/duo_agent_platform_flows.md#trigger-a-flow)
+with these parameters:
+
+- Set `project_id` to the project that contains the merge request.
+- Set `goal` to either the IID of the merge request to review, or the full URL of that merge request.
+- Set `workflow_definition` to `code_review/v1`. Alternatively, set `ai_catalog_item_consumer_id`
+  to the [consumer ID](../../../../../api/duo_agent_platform_flows.md#look-up-the-consumer-id) for Code Review Flow.
+- Set `start_workflow` to `true` to start the review immediately.
+
+The following example triggers a code review of merge request `42`:
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --header "Content-Type: application/json" \
+  --data '{
+    "project_id": "5",
+    "goal": "42",
+    "workflow_definition": "code_review/v1",
+    "start_workflow": true
+  }' \
+  --url "https://gitlab.example.com/api/v4/ai/duo_workflows/workflows"
+```
+
+## Interact with GitLab Duo in reviews
+
+After a review, you can discuss the feedback with GitLab Duo in comment interactions.
+Interactions are a separate feature from Code Review Flow.
+
+For more information, see [interact with GitLab Duo](../../../../project/merge_requests/duo_in_merge_requests.md#interact-with-gitlab-duo).
+
+## Approvals and change requests
+
+{{< details >}}
+
+- Status: Beta
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/254981) as a [beta](../../../../../policy/development_stages_support.md#beta) in GitLab 19.5 [with a feature flag](../../../../../administration/feature_flags/_index.md) named `duo_code_review_decisions`. Disabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+
+GitLab Duo can approve or request changes on a merge request based on its review findings:
+
+- When GitLab Duo finds nothing to comment on, it approves the merge request.
+  An approval from GitLab Duo does not count toward required approvals.
+
+- When GitLab Duo finds something to comment on, it requests changes. If a user's request for
+  changes blocks a merge request on your project, a request from GitLab Duo has the same effect.
+  The request for changes remains until GitLab Duo approves in a follow-up review, or a user
+  [bypasses the request for changes](../../../../project/merge_requests/reviews/_index.md#bypass-a-request-for-changes).
+
+Provide feedback on this feature in [issue 634068](https://gitlab.com/gitlab-org/gitlab/-/work_items/634068).
+
+You can turn on this setting for a project, a group, or an instance.
+
+{{< tabs >}}
+
+{{< tab title="Project" >}}
+
+Prerequisites:
+
+- The Maintainer or Owner role for the project.
+
+To turn on GitLab Duo approvals and requests for changes for a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **Merge requests**.
+1. In the **GitLab Duo Code Review** section, select **GitLab Duo can approve and request changes**.
+1. Select **Save changes**.
+
+{{< /tab >}}
+
+{{< tab title="Group" >}}
+
+Prerequisites:
+
+- The Owner role for the group.
+
+To turn on GitLab Duo approvals and requests for changes for a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Merge requests** section.
+1. In the **GitLab Duo Code Review** section, select **GitLab Duo can approve and request changes**.
+1. Select **Save changes**.
+
+Settings cascade from group to project. More specific settings override broader ones.
+
+{{< /tab >}}
+
+{{< tab title="Instance" >}}
+
+Prerequisites:
+
+- Administrator access
+
+To turn on GitLab Duo approvals and requests for changes for an instance:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **General**.
+1. In the **GitLab Duo Code Review** section, select **GitLab Duo can approve and request changes**.
+1. Select **Save changes**.
+
+Settings cascade from instance to group to project. More specific settings override broader ones.
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+## Follow-up reviews
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/608172) in GitLab 19.4 [with a feature flag](../../../../../administration/feature_flags/_index.md) named `duo_code_review_previous_discussions`. Disabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/258170) in GitLab 19.5. Feature flag `duo_code_review_previous_discussions` removed.
+
+{{< /history >}}
+
+To start a follow-up review, ask GitLab Duo to review the merge request again.
+If [**Start a new review on push**](#start-a-new-review-on-push) is turned on, pushing new changes also starts a follow-up review.
+
+When GitLab Duo re-reviews a merge request, it uses context from its earlier reviews to evaluate the new changes.
+
+### Context from earlier reviews
+
+A follow-up review uses this context:
+
+- Inline comment threads that GitLab Duo started in earlier reviews, including every reply and whether the thread is resolved.
+- The most recent commit that GitLab Duo left inline review comments on.
+
+GitLab Duo reads the whole diff and follows these rules when it comments:
+
+- It places comments on lines that were added after the last commit it commented on.
+- If no lines were added after that commit, it places comments anywhere in the diff.
+- If it identifies a correctness problem, such as a bug, security vulnerability, or data loss, it places comments anywhere in the diff.
+- It does not repeat points that its earlier threads already make, even if a thread is resolved.
+
+A follow-up review does not use threads that people started, general merge request comments, or the previous summary comment.
+If there are no previous inline comments from GitLab Duo, the next review is a full first-pass review.
+
+### Work with follow-up reviews
+
+GitLab Duo does not reply to or resolve its earlier threads.
+
+To get the most from follow-up reviews:
+
+- Reply on the thread to explain why the code is correct. GitLab Duo accepts the explanation and does not raise the point again.
+  Without a reply, GitLab Duo lists the finding as outstanding in the review summary, even if the thread is resolved.
+- Push fixes and let GitLab Duo verify them in the next review.
+- Keep discussion of a GitLab Duo finding in its thread. Follow-up reviews do not read comments outside GitLab Duo threads.
+
+## Contextual awareness
+
+Code Review Flow runs in two stages:
+
+1. Pre-scan: The flow inspects the merge request diffs and uses them to identify related
+   context to fetch from the project repository. The pre-scan typically includes directory
+   listings and the contents of related files, such as tests and dependencies referenced by the
+   changes. The exact context fetched depends on the diff analysis.
+1. Review: The flow runs the review with the following data in the large language model. The review stage cannot fetch additional context on demand.
+
+   - Results from the pre-scan step.
+   - Merge request title.
+   - Merge request description.
+   - Merge request diffs.
+   - Original versions of the files.
+   - Filenames.
+   - On follow-up reviews, comment threads from previous GitLab Duo reviews, including replies.
+   - Custom review instructions.
+
+To specify content to exclude, see
+[exclude context from GitLab Duo](../../../context.md#exclude-context-from-gitlab-duo).
+
+### File and context limits
+
+Code Review Flow applies two limits to keep the prompt within a workable size:
+
+- For files longer than 10,000 lines, only the diff is sent to the model. The full file contents are not included.
+- The total context that the pre-scan gathers is capped at approximately 1 MiB. When the cap is
+  exceeded, the context is truncated to approximately 800 KiB before the review stage runs.
+
+These limits apply to the data the flow gathers and are separate from the
+[selected model's](../../../model_selection.md) context window.
+
+For very large merge requests, the review might miss context that was truncated. To reduce the
+risk:
+
+- Split the merge request into smaller merge requests.
+- [Exclude context](../../../context.md#exclude-context-from-gitlab-duo) for files that are not
+  relevant to the review.
+- Ask a group Owner or instance administrator to select a different model for
+  [GitLab.com](../../../model_selection.md#select-a-model-for-a-feature)
+  or [GitLab Self-Managed and GitLab Dedicated](../../../../../administration/gitlab_duo/model_selection.md#select-a-model-for-code-review-flow).
+
+## Custom code review instructions
+
+Customize the behavior of Code Review Flow with an `mr-review-instructions.yaml` file.
+
+You can guide GitLab Duo with repository-specific review instructions:
+
+- Focus on specific code quality aspects (such as security, performance, and maintainability).
+- Enforce coding standards and best practices unique to your project.
+- Target specific file patterns with tailored review criteria.
+- Provide more detailed explanations for certain types of changes.
+
+Code Review Flow does not reference `AGENTS.md` and `SKILL.md` files.
+
+To configure custom instructions, see [customize review instructions for GitLab Duo](../../../customize/review_instructions.md).
+
+## Automatic reviews
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/issues/506537) automatic reviews for projects to a UI setting in GitLab 18.0.
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/554070) automatic reviews for groups in GitLab 18.4 as a [beta](../../../../../policy/development_stages_support.md#beta) [with a feature flag](../../../../../administration/feature_flags/_index.md) named `cascading_auto_duo_code_review_settings`. Disabled by default.
+- Feature flag `cascading_auto_duo_code_review_settings` [removed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/213240) in GitLab 18.7.
+- Automatic reviews for groups and applications [turned on by default](https://gitlab.com/gitlab-org/gitlab/-/work_items/592822) for new GitLab Duo trials on GitLab.com in GitLab 19.1.
+- Automatic reviews [turned on by default](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/255855) when groups add their first GitLab Duo add-on on GitLab.com in GitLab 19.5 [with a feature flag](../../../../../administration/feature_flags/_index.md) named `auto_enable_duo_code_review_on_duo_add_on_purchase`. Disabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+
+Automatic reviews from GitLab Duo ensure that all merge requests in your project or group
+receive an initial review.
+
+When a user creates a merge request, GitLab Duo automatically reviews it unless:
+
+- It's marked as draft. For GitLab Duo to review the merge request, mark it ready.
+- It contains no changes. For GitLab Duo to review the merge request, add changes to it.
+- It matches one or more exclusion rules you set. For GitLab Duo to review the merge request,
+  manually request a review.
+
+Automatic reviews are turned on by default for groups:
+
+- With new GitLab Duo trials on GitLab.com in GitLab 19.1 and later.
+- That add their first [GitLab Duo add-on](../../../../../subscriptions/subscription-add-ons.md),
+  including those with new Premium and Ultimate subscriptions, on GitLab.com in GitLab 19.5 and later.
+
+{{< tabs >}}
+
+{{< tab title="Project" >}}
+
+Prerequisites:
+
+- The Maintainer or Owner role for the project.
+
+To turn on automatic reviews for a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **Merge requests**.
+1. In the **GitLab Duo Code Review** section, select **Enable automatic reviews by GitLab Duo**.
+1. Select **Save changes**.
+
+{{< /tab >}}
+
+{{< tab title="Group" >}}
+
+Prerequisites:
+
+- The Owner role for the group.
+
+To turn on automatic reviews for a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Merge requests** section.
+1. In the **GitLab Duo Code Review** section, select **Enable automatic reviews by GitLab Duo**.
+1. Select **Save changes**.
+
+Settings cascade from group to project. More specific settings override broader ones.
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+After you enable automatic reviews, you can specify rules to exclude specific merge requests.
+
+For information on how credit usage is attributed for automatic reviews, see
+[determine which code review feature runs](../../../../project/merge_requests/duo_in_merge_requests.md#determine-which-review-feature-runs).
+
+### Start a new review on push
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/254523) in GitLab 19.5.
+
+{{< /history >}}
+
+When a user pushes to the source branch of a merge request, GitLab Duo starts a
+[follow-up review](#follow-up-reviews) if all of the following are true:
+
+- Automatic reviews are turned on for the project.
+- Code Review Flow, not GitLab Duo Code Review, runs for the merge request author.
+- The merge request is open and not a draft.
+- GitLab Duo is already a reviewer on the merge request.
+- The push changes the diff.
+
+A push that does not change the diff, such as a rebase with no content change, does not start a new
+review.
+If a GitLab Duo review is in progress when the push occurs, GitLab stops that review and starts a
+new one.
+
+**Start a new review on push** is turned on by default. You can turn it off for a project or group.
+
+{{< tabs >}}
+
+{{< tab title="Project" >}}
+
+Prerequisites:
+
+- The Maintainer or Owner role for the project.
+- Automatic reviews are turned on.
+
+To change this setting for a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **Merge requests**.
+1. In the **GitLab Duo Code Review** section, select or clear **Start a new review on push**.
+1. Select **Save changes**.
+
+{{< /tab >}}
+
+{{< tab title="Group" >}}
+
+Prerequisites:
+
+- The Owner role for the group.
+- Automatic reviews are turned on.
+
+To change this setting for a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Merge requests** section.
+1. In the **GitLab Duo Code Review** section, select or clear **Start a new review on push**.
+1. Select **Save changes**.
+
+Settings cascade from group to project. More specific settings override broader ones.
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+### Exclude merge requests for a project
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/240236) in GitLab 19.2 as a [beta](../../../../../policy/development_stages_support.md#beta) [with a flag](../../../../../administration/feature_flags/_index.md) named `duo_code_review_automated_rules`. Enabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/245852) in GitLab 19.3. Feature flag `duo_code_review_automated_rules` removed.
+
+{{< /history >}}
+
+When automatic reviews are turned on for a project,
+GitLab Duo reviews every eligible merge request.
+To exclude specific merge requests, define exclusion rules in a
+`.gitlab/duo/mr-review-automated-rules.yaml` file.
+
+Exclusion rules only prevent automatic reviews.
+You can still request a review manually for any excluded merge request.
+
+To define exclusion rules:
+
+1. In the root of your repository, create a `.gitlab/duo` directory if one doesn't already exist.
+1. In the `.gitlab/duo` directory, create a file named `mr-review-automated-rules.yaml`.
+1. Add exclusion rules using the following format:
+
+   ```yaml
+   exclude:
+     target_branches:
+       - <pattern>
+     source_branches:
+       - <pattern>
+     authors:
+       - <pattern>
+   ```
+
+   Each key is optional.
+   GitLab Duo skips the automatic review when a merge request matches any pattern in any category:
+
+   - `target_branches`: Matches the target branch name of the merge request.
+   - `source_branches`: Matches the source branch name of the merge request.
+   - `authors`: Matches the username of the merge request author.
+
+   Patterns support wildcard (glob) matching.
+   For example, `dependabot/*` matches any source branch that starts with `dependabot/`.
+
+   For example, to skip automatic reviews for merge requests that target a release branch or
+   that a bot account creates:
+
+   ```yaml
+   exclude:
+     target_branches:
+       - "release/*"
+     authors:
+       - "*-bot"
+   ```
+
+1. Commit the file to the default branch of your repository.
+
+GitLab Duo reads the exclusion rules from the default branch of your repository.
+GitLab Duo does not apply rules on other branches.
+
+### Exclude merge requests for a group
+
+To define exclusion rules for all projects in a group and its subgroups, specify a project to use
+as a template.
+The template project must contain a `.gitlab/duo/mr-review-automated-rules.yaml` file.
+
+GitLab Duo combines the exclusion rules from the group template project with the rules defined
+in the individual project.
+If the same category is defined at both levels, the project's rules take
+precedence.
+When a group and its subgroups each set a template project, GitLab Duo combines the rules from
+every level.
+
+> [!note]
+> If you already configured a project to store [custom review instructions](../../../customize/review_instructions.md#configure-custom-review-instructions-for-a-group)
+> for your group, store your `mr-review-automated-rules.yaml` in the same project.
+> You can only specify a single project to customize code review for a group, so GitLab automatically
+> checks that project for exclusion rules as well. You do not need to follow the steps below again.
+
+Prerequisites:
+
+- The Owner role for the group.
+- A project in the group contains the exclusion rules that you want to set.
+
+To configure exclusion rules for a group:
+
+{{< tabs >}}
+
+{{< tab title="GitLab.com" >}}
+
+For a top-level group:
+
+1. In the top bar, select **Search or go to** and find your top-level group.
+1. In the left sidebar, select **Settings** > **GitLab Duo**.
+1. Select **Change configuration**.
+1. Under **GitLab Duo features** > **Customize code review**, select the project that contains
+   the `.gitlab/duo/mr-review-automated-rules.yaml` file.
+1. Select **Save changes**.
+
+For a group or subgroup:
+
+1. In the top bar, select **Search or go to** and find your group or subgroup.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **GitLab Duo features**.
+1. Under **Customize code review**, select the project that contains the
+   `.gitlab/duo/mr-review-automated-rules.yaml` file.
+1. Select **Save changes**.
+
+{{< /tab >}}
+
+{{< tab title="GitLab Self-Managed and GitLab Dedicated" >}}
+
+1. In the top bar, select **Search or go to** and find your group or subgroup.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **GitLab Duo features**.
+1. Under **Customize code review**, select the project that contains the
+   `.gitlab/duo/mr-review-automated-rules.yaml` file.
+1. Select **Save changes**.
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+## Troubleshooting
+
+When working with Code Review Flow, you might encounter issues.
+
+For information on how to resolve these issues, see [troubleshooting](troubleshooting.md).
+
+## Related topics
+
+- [GitLab Duo in merge requests](../../../../project/merge_requests/duo_in_merge_requests.md)
+- [Agent Platform AI models](../../../model_selection.md)
+- [Turn on Code Review Flow for GitLab Duo Enterprise seats](../../../../project/merge_requests/duo_in_merge_requests.md#turn-on-code-review-flow-for-gitlab-duo-enterprise-seats).

@@ -1,0 +1,5 @@
+%p
+  - if @domain.remove_at
+    = s_('Notify|Unless you verify your domain by %{time_start}%{time}%{time_end} it will be removed from your GitLab project.').html_safe % { time_start: '<strong>'.html_safe, time_end: '</strong>'.html_safe, time: @domain.remove_at.strftime('%F %T,') }
+  - else
+    = s_('Notify|If you no longer wish to use this domain with GitLab Pages, please remove it from your GitLab project and delete any related DNS records.')

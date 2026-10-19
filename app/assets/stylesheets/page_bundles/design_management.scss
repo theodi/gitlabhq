@@ -1,0 +1,238 @@
+@import 'mixins_and_variables_and_functions';
+
+$design-pin-diameter: 28px;
+$design-pin-diameter-sm: 24px;
+
+// Fix design management fullscreen display in panels
+.design-detail-layout .panel-content {
+  @apply gl-fixed;
+  @apply gl-inset-0;
+  @apply gl-z-1;
+  @apply gl-max-w-none;
+  @apply gl-h-screen;
+}
+
+.layout-page.design-detail-layout {
+  max-height: 100vh;
+
+  .super-sidebar, .panel-header-inner {
+    z-index: 0;
+  }
+}
+
+.design-detail {
+  top: $calc-system-headers-height;
+  bottom: $calc-application-footer-height;
+  z-index: 1030;
+
+  .comment-indicator {
+    border-radius: 50%;
+  }
+
+  .comment-indicator,
+  .frame .design-note-pin {
+    &:active {
+      cursor: grabbing;
+    }
+  }
+}
+
+.design-disclosure {
+  min-width: 400px;
+  flex-shrink: 4;
+
+  @include gl-container-width-up(lg, panel) {
+    width: 400px !important;
+    flex-shrink: 0;
+  }
+}
+
+// These are composite classes for use with Vue Transition
+// https://vuejs.org/guide/built-ins/transition
+.design-disclosure-enter-to {
+  transform: translateX(0);
+}
+
+.design-disclosure-enter,
+.design-disclosure-leave-to {
+  transform: translateX(100%);
+}
+
+.design-disclosure-enter-active,
+.design-disclosure-leave-active {
+  transition: all .2s ease;
+}
+
+.design-list-item {
+  height: 160px;
+  text-decoration: none;
+}
+
+.design-note-pin {
+  display: flex;
+  height: $design-pin-diameter-sm;
+  width: $design-pin-diameter-sm;
+  box-sizing: content-box;
+  @apply gl-text-neutral-0;
+  background-color: var(--gl-status-brand-icon-color);
+  font-weight: $gl-font-weight-bold;
+  border-radius: 50%;
+  z-index: 1;
+  padding: 0;
+  border: 0;
+
+  &.draft {
+    background-color: var(--gl-status-warning-icon-color);
+  }
+
+  &.resolved {
+    @apply gl-bg-strong;
+    @apply gl-text-strong;
+  }
+
+  &.on-image {
+    box-shadow: 0 2px 4px var(--gl-color-alpha-dark-8), 0 0 1px var(--gl-color-alpha-dark-24);
+    @apply gl-border-2;
+    @apply gl-border-solid;
+    @apply gl-border-neutral-0;
+    will-change: transform, box-shadow, opacity;
+    // NOTE: verbose transition property required for Safari
+    transition: transform $general-hover-transition-duration linear, box-shadow $general-hover-transition-duration linear, opacity $general-hover-transition-duration linear;
+    transform-origin: 0 0;
+    transform: translate(-50%, -50%);
+
+    &:hover {
+      transform: scale(1.2) translate(-50%, -50%);
+    }
+
+    &:active {
+      box-shadow: 0 0 4px var(--gl-shadow-color-default), 0 4px 12px var(--gl-shadow-color-default);
+    }
+
+    &.inactive {
+      opacity: 0.5;
+
+      &:hover {
+        opacity: 1;
+      }
+    }
+  }
+
+  &.small {
+    position: absolute;
+    @apply gl-border-1;
+    @apply gl-border-solid;
+    @apply gl-border-neutral-0;
+    height: $design-pin-diameter-sm;
+    width: $design-pin-diameter-sm;
+  }
+
+  &.user-avatar {
+    top: 25px;
+    right: 8px;
+  }
+}
+
+.design-scaler-wrapper {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.image-notes {
+  overflow-y: auto;
+  padding: $gl-padding;
+  padding-top: 50px;
+  @apply gl-bg-default;
+
+  .link-inherit-color {
+    &,
+    &:hover,
+    &:active,
+    &:focus-visible {
+      color: inherit;
+    }
+  }
+
+  .toggle-comments {
+    line-height: 20px;
+
+    &[aria-expanded="true"] {
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+
+    .toggle-comments-button:focus-visible {
+      text-decoration: none;
+      color: var(--blue-600, $blue-600);
+    }
+  }
+
+  .toggle-comments ~ .design-note {
+    @apply gl-bg-subtle;
+  }
+
+  .design-discussion {
+    margin: $gl-padding 0;
+
+    &::before {
+      content: '';
+      @apply gl-border-l;
+      position: absolute;
+      left: 11px;
+      top: -17px;
+      height: 17px;
+    }
+
+    .design-note:first-child {
+      @apply gl-bg-section;
+      @apply gl-border-b;
+      @apply gl-border-b-section;
+      @apply gl-rounded-t-base;
+    }
+
+    .design-note:not(:first-child) {
+      @apply gl-bg-subtle;
+    }
+
+    &.active-discussion {
+      .design-note:first-child {
+        background-color: var(--timeline-entry-target-background-color) !important;
+      }
+    }
+
+    .design-note {
+      padding: $gl-padding-8;
+      list-style: none;
+      @apply gl-transition-background;
+
+      video {
+        width: 100%;
+      }
+    }
+
+    .reply-wrapper, .disabled-comment {
+      padding: $gl-padding-8;
+      @apply gl-bg-subtle;
+      @apply gl-border-0;
+      @apply gl-rounded-b-base;
+    }
+  }
+
+  .new-discussion-disclaimer {
+    line-height: 20px;
+  }
+}
+
+@include gl-container-width-down(lg, panel) {
+  .design-detail {
+    overflow-y: scroll;
+  }
+
+  .image-notes {
+    overflow-y: auto;
+    min-width: 100%;
+    flex-grow: 1;
+    flex-basis: auto;
+  }
+}

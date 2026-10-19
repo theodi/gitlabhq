@@ -1,0 +1,22 @@
+---
+description: Triggered from backend layer when merge request is merged
+category: merge_request_action
+action: merge
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: code_review
+product_categories:
+- code_review_workflow
+milestone: "15.1"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/89544
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: Constant string that match with ServicePing metric name of merge_requests_users
+

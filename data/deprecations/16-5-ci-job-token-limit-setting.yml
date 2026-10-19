@@ -1,0 +1,63 @@
+#
+# REQUIRED FIELDS
+#
+- title: "CI/CD job token - **Authorized groups and projects** allowlist enforcement"  # (required) Clearly explain the change, or planned change. For example, "The `confidential` field for a `Note` is deprecated" or "CI/CD job names will be limited to 250 characters."
+  announcement_milestone: "16.5"  # (required) The milestone when this feature was first announced as deprecated.
+  removal_milestone: "18.0"  # (required) The milestone when this feature is planned to be removed
+  breaking_change: true  # (required) If this deprecation is a breaking change, set this value to true
+  window: 1
+  reporter: jocelynjane  # (required) GitLab username of the person reporting the deprecation
+  stage: Software Supply Chain Security  # (required) String value of the stage that the feature was created in. e.g., Growth
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/383084  # (required) Link to the deprecation issue in GitLab
+  check_impact: Refer to the [Understanding this change](https://gitlab.com/gitlab-org/gitlab/-/issues/383084#understanding-this-change) section for details.
+  impact: high  # Can be one of: [critical, high, medium, low]
+  scope: project  # Can be one or a combination of: [instance, group, project]
+  resolution_role: Maintainer  # Can be one of: [Admin, Owner, Maintainer, Developer]
+  manual_task: true  # Can be true or false. Use this to denote whether a resolution action must be performed manually (true), or if it can be automated by using the API or other automation (false).
+  body: |  # (required) Do not modify this line, instead modify the lines below.
+    With the [**Authorized groups and projects** setting](https://docs.gitlab.com/ci/jobs/ci_job_token/#add-a-group-or-project-to-the-job-token-allowlist)
+    introduced in GitLab 15.9 (renamed from **Limit access _to_ this project** in GitLab 16.3), you can control CI/CD job token access to your project.
+    When set to **Only this project and any groups and projects in the allowlist**,
+    only groups or projects added to the allowlist can use job tokens to access your project.
+
+    For projects created before GitLab 15.9, the allowlist was disabled by default
+    ([**All groups and projects**](https://docs.gitlab.com/ci/jobs/ci_job_token/#allow-any-project-to-access-your-project)
+    access setting selected), allowing job token access from any project.
+    The allowlist is now enabled by default in all new projects. In older
+    projects, it might still be disabled or you might have manually selected
+    the **All groups and projects** option to make access unrestricted.
+
+    Starting in GitLab 17.6, administrators for GitLab Self-Managed and GitLab Dedicated instances can optionally
+    [enforce this more secure setting for all projects](https://docs.gitlab.com/administration/settings/continuous_integration/#job-token-permissions).
+    This setting prevents project maintainers from selecting **All groups and projects**.
+    This change ensures a higher level of security between projects.
+
+    In GitLab 18.0, this instance setting will be enabled by default on GitLab.com, GitLab Self-Managed, and GitLab Dedicated.
+    GitLab Self-Managed and GitLab Dedicated administrators can disable the setting after upgrading to GitLab 18.0
+    to restore the pre-upgrade behavior. No project settings will be changed in GitLab 18.0 for GitLab Self-Managed and
+    GitLab Dedicated, though the status of the instance setting impacts all projects on the instance.
+
+    To prepare for this change, project maintainers using job tokens for cross-project authentication
+    should populate their project's **Authorized groups and projects** allowlists. They should then change
+    the setting to **Only this project and any groups and projects in the allowlist**.
+
+    To help identify projects that need access to your project by authenticating with a CI/CD job token, in GitLab 17.6 we also introduced a method to [track job token authentications](https://docs.gitlab.com/releases/17/gitlab-17-6-released/#track-cicd-job-token-authentications) to your projects. You can use that data to populate your CI/CI job token allowlist.
+
+    From GitLab 17.10 to 18.6, you can use [migration tooling](https://archives.docs.gitlab.com/18.6/ci/jobs/ci_job_token/#auto-populate-a-projects-allowlist) to automatically populate the CI/CD job token allowlist from the job token authentication log. We encourage you to use this migration tool to populate and use the allowlist before [general enforcement of allowlists in GitLab 18.0](https://docs.gitlab.com/update/deprecations/?removal_milestone=18.0#cicd-job-token-authorized-groups-and-projects-allowlist-enforcement). In GitLab 18.0, automatic population and enforcement of the allowlist will occur on GitLab.com as previously announced.
+
+    This migration tool [was removed](https://gitlab.com/gitlab-org/gitlab/-/work_items/498305) in GitLab 18.7.
+  #
+  # OPTIONAL END OF SUPPORT FIELDS
+  #
+  # If an End of Support period applies, the announcement should be shared with GitLab Support
+  # in the `#spt_managers` channel in Slack, and mention `@gitlab-com/support` in this MR.
+  #
+  end_of_support_milestone:  # (optional) Use "XX.YY" format. The milestone when support for this feature will end.
+  end_of_support_date:  # (optional) The date of the milestone release when support for this feature will end.
+  #
+  # OTHER OPTIONAL FIELDS
+  #
+  tiers:  # (optional - may be required in the future) An array of tiers that the feature is available in currently.  e.g., [Free, Silver, Gold, Core, Premium, Ultimate]
+  documentation_url: "https://docs.gitlab.com/ci/jobs/ci_job_token/#add-a-group-or-project-to-the-job-token-allowlist"  # (optional) This is a link to the current documentation page
+  image_url:  # (optional) This is a link to a thumbnail image depicting the feature
+  video_url:  # (optional) Use the youtube thumbnail URL with the structure of https://img.youtube.com/vi/UNIQUEID/hqdefault.jpg

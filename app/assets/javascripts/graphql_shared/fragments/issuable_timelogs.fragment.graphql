@@ -1,0 +1,18 @@
+fragment TimelogFragment on Timelog {
+  __typename
+  id
+  timeSpent
+  user {
+    id
+    name
+  }
+  spentAt
+  note {
+    id
+    body
+  }
+  summary
+  userPermissions {
+    adminTimelog
+  }
+}

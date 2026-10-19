@@ -1,0 +1,17 @@
+---
+description: A note was created for a merge request
+internal_events: true
+action: create_merge_request_note
+identifiers:
+- project
+- user
+- namespace
+product_group: code_review
+product_categories:
+- code_review_workflow
+milestone: '17.1'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/151474
+tiers:
+- free
+- premium
+- ultimate

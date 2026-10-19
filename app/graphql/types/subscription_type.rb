@@ -1,0 +1,137 @@
+# frozen_string_literal: true
+
+module Types
+  class SubscriptionType < ::Types::BaseObject
+    graphql_name 'Subscription'
+
+    # Authorization is enforced per subscription and by each payload type's directive; the root
+    # type opts out to avoid failing closed on the payload object passed to `authorized?` at delivery.
+    authorize_granular_token skip_reason: :subscription_root
+
+    field :ci_job_processed,
+      subscription: Subscriptions::Ci::Jobs::JobProcessed, null: true,
+      description: 'Triggered when a job changes state.'
+
+    field :ci_job_status_updated,
+      subscription: Subscriptions::Ci::Jobs::StatusUpdated, null: true,
+      description: 'Triggered when a job status is updated.'
+
+    field :ci_stage_updated,
+      subscription: Subscriptions::Ci::Stages::JobsUpdated, null: true,
+      description: 'Triggered when jobs in a stage are updated.',
+      experiment: { milestone: '18.7' }
+
+    field :ci_stage_status_updated,
+      subscription: Subscriptions::Ci::Stages::StatusUpdated, null: true,
+      description: 'Triggered when a stage status is updated.',
+      experiment: { milestone: '18.10' }
+
+    field :ci_pipeline_creation_requests_updated,
+      subscription: Subscriptions::Ci::PipelineCreationRequestsUpdated, null: true,
+      description: 'Triggered when pipeline creation requests are updated for a merge request.'
+
+    field :ci_pipeline_status_updated,
+      subscription: Subscriptions::Ci::Pipelines::StatusUpdated, null: true,
+      description: 'Triggered when a pipeline status is updated.',
+      experiment: { milestone: '17.10' }
+
+    field :ci_pipeline_statuses_updated,
+      subscription: Subscriptions::Ci::Pipelines::StatusesUpdated, null: true,
+      description: 'Triggered when any pipeline status is updated.',
+      experiment: { milestone: '18.6' }
+
+    field :ci_pipeline_schedule_status_updated,
+      subscription: Subscriptions::Ci::PipelineSchedule::StatusUpdated, null: true,
+      description: 'Triggered when a pipeline schedule is updated.',
+      experiment: { milestone: '18.4' }
+
+    field :issuable_assignees_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the assignees of an issuable are updated.'
+
+    field :issue_crm_contacts_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the crm contacts of an issuable are updated.'
+
+    field :issuable_title_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the title of an issuable is updated.'
+
+    field :issuable_description_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the description of an issuable is updated.'
+
+    field :issuable_labels_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the labels of an issuable are updated.'
+
+    field :issuable_dates_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the due date or start date of an issuable is updated.'
+
+    field :issuable_milestone_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the milestone of an issuable is updated.'
+
+    field :work_item_note_created,
+      subscription: ::Subscriptions::Notes::Created, null: true,
+      description: 'Triggered when a note is created.',
+      experiment: { milestone: '15.9' }
+
+    field :work_item_note_deleted,
+      subscription: ::Subscriptions::Notes::Deleted, null: true,
+      description: 'Triggered when a note is deleted.',
+      experiment: { milestone: '15.9' }
+
+    field :work_item_note_updated,
+      subscription: ::Subscriptions::Notes::Updated, null: true,
+      description: 'Triggered when a note is updated.',
+      experiment: { milestone: '15.9' }
+
+    field :work_item_updated,
+      subscription: Subscriptions::WorkItemUpdated,
+      null: true,
+      description: 'Triggered when a work item is updated.'
+
+    field :namespace_work_item_changes,
+      subscription: Subscriptions::WorkItems::NamespaceWorkItemChanges,
+      null: true,
+      description: 'Triggered when a work item in a namespace is created, updated, or deleted.',
+      experiment: { milestone: '19.3' }
+
+    field :work_item_saved_view_updated,
+      subscription: Subscriptions::WorkItems::SavedViewUpdated,
+      null: true,
+      description: 'Triggered when the configuration of a work item saved view is updated.',
+      experiment: { milestone: '19.4' }
+
+    field :merge_request_reviewers_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the reviewers of a merge request are updated.'
+
+    field :merge_request_merge_status_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when the merge status of a merge request is updated.'
+
+    field :merge_request_approval_state_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when approval state of a merge request is updated.'
+
+    field :merge_request_diff_generated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when a merge request diff is generated.'
+
+    field :issuable_todo_updated,
+      subscription: Subscriptions::IssuableUpdated, null: true,
+      description: 'Triggered when a todo on an issuable is updated.',
+      experiment: { milestone: '17.5' }
+
+    field :user_merge_request_updated,
+      subscription: Subscriptions::User::MergeRequestUpdated,
+      null: true,
+      description: 'Triggered when a merge request the user is an assignee or a reviewer of is updated.',
+      experiment: { milestone: '17.9' }
+  end
+end
+
+Types::SubscriptionType.prepend_mod

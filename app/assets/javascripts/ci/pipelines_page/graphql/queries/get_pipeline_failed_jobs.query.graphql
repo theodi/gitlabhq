@@ -1,0 +1,42 @@
+#import "ee_else_ce/ci/pipelines_page/graphql/fragments/troubleshoot_job.fragment.graphql"
+
+query getPipelineFailedJobs($fullPath: ID!, $pipelineIid: ID!) {
+  project(fullPath: $fullPath) {
+    id
+    pipeline(iid: $pipelineIid) {
+      id
+      active
+      ...TroubleshootJob
+      jobs(statuses: [FAILED], retried: false) {
+        count
+        nodes {
+          id
+          allowFailure
+          detailedStatus {
+            id
+            detailsPath
+            group
+            icon
+            action {
+              id
+              path
+              icon
+            }
+          }
+          kind
+          name
+          retried
+          retryable
+          stage {
+            id
+            name
+          }
+          userPermissions {
+            readBuild
+            updateBuild
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,191 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe VerifiesWithEmailHelper, feature_category: :system_access do
+  include Devise::Test::ControllerHelpers
+
+  let(:user_unlock_token) { nil }
+  let(:user) { build_stubbed(:user, unlock_token: user_unlock_token) }
+  let(:today) { Time.zone.parse('2025-09-10 12:00') }
+
+  describe '#trusted_ip_address?' do
+    let(:trusted) { false }
+
+    before do
+      allow(AuthenticationEvent)
+          .to receive(:initial_login_or_known_ip_address?)
+          .and_return(trusted)
+    end
+
+    subject { helper.trusted_ip_address?(user) }
+
+    context 'when AuthenticationEvent.initial_login_or_known_ip_address returns false' do
+      it { is_expected.to be false }
+    end
+
+    context 'when AuthenticationEvent.initial_login_or_known_ip_address returns true' do
+      let(:trusted) { true }
+
+      it { is_expected.to be true }
+    end
+  end
+
+  describe '#show_email_otp_resend_after', :freeze_time do
+    subject { helper.show_email_otp_resend_after(user) }
+
+    context 'when user is not locked and email_otp_last_sent_at is nil' do
+      it { is_expected.to be_nil }
+    end
+
+    context 'when user is not locked and email_otp_last_sent_at is set recently' do
+      let(:user) do
+        build_stubbed(:user, user_detail: build_stubbed(:user_detail, email_otp_last_sent_at: Time.current))
+      end
+
+      it { is_expected.to eq((Time.current + VerifiesWithEmailHelper::RESEND_COOLDOWN_PERIOD).to_i * 1000) }
+    end
+
+    context 'when user is not locked and email_otp_last_sent_at is well in the past' do
+      let(:user) do
+        build_stubbed(:user, user_detail: build_stubbed(:user_detail, email_otp_last_sent_at: 10.minutes.ago))
+      end
+
+      it 'returns a Unix ms timestamp in the past, allowing an immediate resend' do
+        is_expected.to be < Time.current.to_i * 1000
+      end
+    end
+  end
+
+  describe '#treat_as_locked?' do
+    subject { helper.treat_as_locked?(user) }
+
+    context 'when user access is not locked and has no unlock token' do
+      it { is_expected.to be false }
+    end
+
+    context 'when user access is locked' do
+      before do
+        allow(user).to receive(:access_locked?).and_return(true)
+      end
+
+      it { is_expected.to be true }
+    end
+
+    context 'when user unlock token is present' do
+      let(:user_unlock_token) { 'some token' }
+
+      it { is_expected.to be true }
+    end
+  end
+
+  describe '#permitted_to_skip_email_otp_in_warning_period?' do
+    let(:trusted_ip) { true }
+    let(:user_unlock_token) { nil }
+    let(:in_warning_period) { true }
+
+    before do
+      allow(AuthenticationEvent)
+          .to receive(:initial_login_or_known_ip_address?)
+          .and_return(trusted_ip)
+      allow(helper).to receive(:in_email_otp_warning_period?).and_return(in_warning_period)
+    end
+
+    subject { helper.permitted_to_skip_email_otp_in_warning_period?(user) }
+
+    it { is_expected.to be false }
+
+    context 'when email_otp_enabled application setting is enabled' do
+      before do
+        stub_application_setting(email_otp_enabled: true)
+      end
+
+      it { is_expected.to be true }
+
+      context 'when user has two factor authentication enabled' do
+        before do
+          allow(user).to receive(:two_factor_enabled?).and_return(true)
+        end
+
+        it { is_expected.to be false }
+      end
+
+      context 'when IP address is not trusted' do
+        let(:trusted_ip) { false }
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user is treated as locked due to access_locked' do
+        before do
+          allow(user).to receive(:access_locked?).and_return(true)
+        end
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user is treated as locked due to unlock token' do
+        let(:user_unlock_token) { 'some_token' }
+
+        it { is_expected.to be false }
+      end
+
+      context 'when user is not in email OTP warning period' do
+        let(:in_warning_period) { false }
+
+        it { is_expected.to be false }
+      end
+    end
+  end
+
+  describe '#in_email_otp_warning_period?' do
+    let(:email_otp_required_after) { today + 15.days }
+    let(:user) { build_stubbed(:user, email_otp_required_after: email_otp_required_after) }
+
+    before do
+      travel_to(today)
+    end
+
+    after do
+      travel_back
+    end
+
+    subject { helper.send(:in_email_otp_warning_period?, user) }
+
+    context 'when email_otp_required_after is nil' do
+      let(:email_otp_required_after) { nil }
+
+      it { is_expected.to be false }
+    end
+
+    context 'when email_otp_required_after is in the past' do
+      let(:email_otp_required_after) { today - 1.day }
+
+      it { is_expected.to be false }
+    end
+
+    context 'when email_otp_required_after equals current time' do
+      let(:email_otp_required_after) { today }
+
+      it { is_expected.to be false }
+    end
+
+    context 'when email_otp_required_after is almost at the end of the warning period' do
+      let(:email_otp_required_after) { today + 1.minute }
+
+      it { is_expected.to be true }
+    end
+
+    context 'when at the start of warning period' do
+      let(:email_otp_required_after) { today + 7.days }
+
+      it { is_expected.to be true }
+    end
+
+    context 'when before warning period starts' do
+      let(:email_otp_required_after) { today + 7.days + 1.hour }
+
+      it { is_expected.to be false }
+    end
+  end
+end

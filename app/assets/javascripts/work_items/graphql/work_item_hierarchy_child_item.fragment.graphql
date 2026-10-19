@@ -1,0 +1,58 @@
+#import "~/work_items/graphql/work_item_parent_fields.fragment.graphql"
+#import "ee_else_ce/work_items/graphql/work_item_metadata_widgets.fragment.graphql"
+#import "ee_else_ce/work_items/graphql/work_item_child_metadata_features.fragment.graphql"
+
+fragment WorkItemHierarchyChildItemFields on WorkItemWidgetHierarchy {
+  type
+  hasChildren
+  rolledUpCountsByType {
+    countsByState {
+      all
+      closed
+    }
+    workItemType {
+      id
+      name
+      iconName
+    }
+  }
+  parent {
+    ...WorkItemParentFields
+  }
+}
+
+fragment WorkItemHierarchyChildItem on WorkItem {
+  id
+  iid
+  confidential
+  workItemType {
+    id
+    name
+    iconName
+  }
+  namespace {
+    id
+    fullPath
+    name
+  }
+  title
+  titleHtml
+  state
+  createdAt
+  closedAt
+  webUrl
+  reference(full: true)
+  widgets(onlyTypes: [HIERARCHY, ASSIGNEES, LABELS, LINKED_ITEMS, MILESTONE, START_AND_DUE_DATE])
+    @skip(if: $useWorkItemFeatures) {
+    ... on WorkItemWidgetHierarchy {
+      ...WorkItemHierarchyChildItemFields
+    }
+    ...WorkItemMetadataWidgets
+  }
+  features @include(if: $useWorkItemFeatures) {
+    hierarchy {
+      ...WorkItemHierarchyChildItemFields
+    }
+    ...WorkItemChildMetadataFeatures
+  }
+}

@@ -1,20 +1,70 @@
+# frozen_string_literal: true
+
 module Issues
   class ReopenService < Issues::BaseService
-    def execute(issue)
-      if issue.reopen
-        event_service.reopen_issue(issue, current_user)
-        create_note(issue)
-        notification_service.reopen_issue(issue, current_user)
-        execute_hooks(issue, 'reopen')
-      end
+    def execute(issue, skip_authorization: false, status: nil)
+      return issue unless can_reopen?(issue, skip_authorization: skip_authorization)
+
+      after_reopen(issue, status) if reopen_issue(issue)
 
       issue
     end
 
     private
 
-    def create_note(issue)
-      SystemNoteService.change_status(issue, issue.project, current_user, issue.state, nil)
+    # overridden in EE
+    def after_reopen(issue, _status, old_associations: {})
+      event_service.reopen_issue(issue, current_user)
+
+      if current_user.project_bot?
+        log_audit_event(issue, current_user, "#{issue.issue_type}_reopened_by_project_bot",
+          "Reopened #{issue.issue_type.humanize(capitalize: false)} #{issue.title}")
+      end
+
+      create_note(issue, 'reopened')
+      user = current_user
+      issue.run_after_commit_or_now { NotificationService.new.async.reopen_issue(issue, user) }
+      perform_incident_management_actions(issue)
+      execute_hooks(issue, 'reopen', old_associations: old_associations)
+      invalidate_cache_counts(issue, users: issue.assignees)
+      issue.invalidate_project_counter_caches
+      Milestones::ClosedIssuesCountService.new(issue.milestone).delete_cache if issue.milestone
+      track_incident_action(current_user, issue, :incident_reopened)
+      GraphqlTriggers.work_item_updated(issue)
+      track_work_item_reopen(issue)
+    end
+
+    # overridden in EE
+    def reopen_issue(issue)
+      issue.reopen
+    end
+
+    def can_reopen?(issue, skip_authorization: false)
+      skip_authorization || can?(current_user, :reopen_issue, issue)
+    end
+
+    def perform_incident_management_actions(issue)
+      return unless issue.work_item_type&.incident?
+
+      create_timeline_event(issue)
+    end
+
+    def create_note(issue, state = issue.state)
+      SystemNoteService.change_status(issue, issue.project, current_user, state, nil)
+    end
+
+    def create_timeline_event(issue)
+      IncidentManagement::TimelineEvents::CreateService.reopen_incident(issue, current_user)
+    end
+
+    def track_work_item_reopen(work_item)
+      Gitlab::WorkItems::Instrumentation::TrackingService.new(
+        work_item: work_item,
+        current_user: current_user,
+        event: Gitlab::WorkItems::Instrumentation::EventActions::REOPEN
+      ).execute
     end
   end
 end
+
+Issues::ReopenService.prepend_mod_with('Issues::ReopenService')

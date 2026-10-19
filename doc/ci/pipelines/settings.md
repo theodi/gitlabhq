@@ -1,0 +1,352 @@
+---
+stage: Verify
+group: Pipeline Execution
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Customize pipeline configuration
+description: Configure pipeline settings for visibility, timeouts, Git strategy, auto-cancel behavior, and automatic cleanup.
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can customize how pipelines run for your project.
+
+## Change which users can view your pipelines
+
+For public and internal projects, you can change who can see your:
+
+- Pipelines
+- Job output logs
+- Job artifacts
+
+The **Project-based pipeline visibility** setting does not change who can view the
+[pipeline security report](../../user/application_security/detect/security_scanning_results.md#view-pipeline-security-report).
+
+To change the visibility of your pipelines and related features:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. Select or clear the **Project-based pipeline visibility** checkbox.
+   When it is selected, pipelines and related features are visible:
+
+   - For [**Public**](../../user/public_access.md) projects, to everyone.
+   - For **Internal** projects, to all authenticated users except [external users](../../administration/external_users.md).
+   - For **Private** projects, to all project members (Guest or higher).
+
+   When it is cleared:
+
+   - For **Public** projects, job logs, job artifacts,
+     and the **CI/CD** menu items are visible only to project members (Reporter or higher).
+     Other users, including guest users, can only view the status of pipelines and jobs, and only
+     when viewing merge requests or commits.
+   - For **Internal** projects, pipelines and related features are visible only to project members (Reporter or higher).
+     Other authenticated users, except [external users](../../administration/external_users.md),
+     can only view the status of pipelines and jobs, and only when viewing merge requests or commits.
+   - For **Private** projects, pipelines and related features are visible to project members (Reporter or higher) only.
+
+### Change pipeline visibility for non-project members in public projects
+
+You can control the visibility of pipelines for non-project members in [public projects](../../user/public_access.md).
+
+This setting has no effect when:
+
+- Project visibility is set to [**Internal** or **Private**](../../user/public_access.md),
+  because non-project members cannot access internal or private projects.
+- The [**Project-based pipeline visibility**](#change-which-users-can-view-your-pipelines) setting is disabled.
+
+To change the pipeline visibility for non-project members:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **Visibility, project features, permissions**.
+1. For **CI/CD**, choose:
+   - **Only project members**: Only project members can view pipelines.
+   - **Everyone With Access**: Non-project members can also view pipelines.
+1. Select **Save changes**.
+
+The [CI/CD permissions table](../../user/permissions.md#project-cicd)
+lists the pipeline features non-project members can access when **Everyone With Access**
+is selected.
+
+## Auto-cancel redundant pipelines
+
+You can set pending or running pipelines to cancel automatically when a pipeline for new changes runs on the same branch. You can enable this in the project settings:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General Pipelines**.
+1. Select the **Auto-cancel redundant pipelines** checkbox.
+1. Select **Save changes**.
+
+Use the [`interruptible`](../yaml/_index.md#interruptible) keyword to indicate if a
+running job can be canceled before it completes. After a job with
+`interruptible: false` starts, the entire pipeline is no longer considered interruptible.
+
+## Skip branch pipelines for merge requests
+
+{{< details >}}
+
+- Status: Beta
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/6044) as a [beta](../../policy/development_stages_support.md#beta) in GitLab 19.2.
+- [Added](https://gitlab.com/gitlab-org/gitlab/-/issues/607869) to the projects REST API in GitLab 19.4.
+
+{{< /history >}}
+
+This feature is in [beta](../../policy/development_stages_support.md#beta).
+
+When you push to a branch with an open merge request, GitLab tries to create
+both a branch pipeline and a merge request pipeline by default.
+This can waste CI/CD resources and cause confusion about which pipeline
+determines merge readiness.
+For more information about this problem, see
+[avoid duplicate pipelines](../jobs/job_rules.md#avoid-duplicate-pipelines).
+
+To create only a merge request pipeline when pushing to a branch with an open merge request:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. Select the **Skip branch pipelines for merge requests** checkbox.
+1. Select **Save changes**.
+
+When this setting is enabled:
+
+- GitLab does not try to create a branch pipeline when you `git push` to a branch
+  that is the source branch of a merge request. GitLab only tries to create a merge request pipeline.
+- If the branch is not the source branch of an open or previously closed merge request,
+  then GitLab does try to create a branch pipeline.
+- On the first push that creates a merge request, a branch pipeline is still created
+  because the pipeline starts before the merge request is created.
+  Starting from the next push, branch pipelines are skipped.
+- Mergeability checks, like [**Pipelines must succeed**](../../user/project/merge_requests/auto_merge.md#require-a-successful-pipeline-for-merge),
+  only consider merge request pipelines. Branch pipelines
+  do not affect merge readiness.
+- Jobs without explicit `rules`, `only`, or `except` sections are automatically
+  included in merge request pipelines. The implicit `only: [branches, tags]` default is removed for these jobs.
+- Only push-triggered pipelines are affected. All other pipeline types, including
+  manual, API, scheduled, and triggered pipelines are not affected.
+- If you configure your pipeline or jobs to run only branch pipelines,
+  enabling this setting can cause no pipelines to run for your merge requests.
+
+## Prevent outdated deployment jobs
+
+Your project may have multiple concurrent deployment jobs that are
+scheduled to run in the same time frame.
+
+This can lead to a situation where an older deployment job runs after a
+newer one, which may not be what you want.
+
+To avoid this scenario:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. Select the **Prevent outdated deployment jobs** checkbox.
+1. Optional. Clear the **Allow job retries for rollback deployments** checkbox.
+1. Select **Save changes**.
+
+For more information, see [Deployment safety](../environments/deployment_safety.md#prevent-outdated-deployment-jobs).
+
+## Restrict roles that can cancel pipelines or jobs
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can customize which roles have permission to cancel pipelines or jobs.
+
+By default, users with the Developer, Maintainer, or Owner role can cancel pipelines or jobs.
+You can restrict cancellation permission to only users with the Maintainer or Owner role,
+or completely prevent cancellation of any pipelines or jobs.
+
+To change the permissions to cancel pipelines or jobs:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. Select an option from **Minimum role required to cancel a pipeline or job**.
+1. Select **Save changes**.
+
+## Specify a custom CI/CD configuration file
+
+GitLab expects to find the CI/CD configuration file (`.gitlab-ci.yml`) in the project's root
+directory. However, you can specify an alternate filename path, including locations outside the project.
+
+To customize the path:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. In the **CI/CD configuration file** field, enter the filename. If the file:
+   - Is not in the root directory, include the path.
+   - Is in a different project, include the group and project name.
+   - Is on an external site, enter the full URL.
+1. Select **Save changes**.
+
+> [!note]
+> You cannot use your project's [pipeline editor](../pipeline_editor/_index.md) to
+> edit CI/CD configuration files in other projects or on an external site.
+
+### Custom CI/CD configuration file examples
+
+If the CI/CD configuration file is not in the root directory, the path must be relative to it.
+For example:
+
+- `my/path/.gitlab-ci.yml`
+- `my/path/.my-custom-file.yml`
+
+If the CI/CD configuration file is on an external site, the URL must end with `.yml`:
+
+- `http://example.com/generate/ci/config.yml`
+
+If the CI/CD configuration file is in a different project:
+
+- The file must exist on its default branch, or specify the branch as refname.
+- The path must be relative to the root directory in the other project.
+- The path must be followed by an `@` symbol and the full group and project path.
+
+For example:
+
+- `.gitlab-ci.yml@namespace/another-project`
+- `my/path/.my-custom-file.yml@namespace/subgroup/another-project`
+- `my/path/.my-custom-file.yml@namespace/subgroup1/subgroup2/another-project:refname`
+
+If the configuration file is in a separate project, you can set more granular permissions. For example:
+
+- Create a public project to host the configuration file.
+- Give write permissions on the project only to users who are allowed to edit the file.
+
+Then other users and projects can access, but not edit, the configuration file.
+
+## Choose the default Git strategy
+
+You can choose how your repository is fetched from GitLab when a job runs.
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. Under **Git strategy**, select an option:
+   - `git clone` is slower because it clones the repository from scratch
+     for every job. However, the local working copy is always pristine.
+   - `git fetch` is faster because it re-uses the local working copy (and falls
+     back to clone if it doesn't exist). Use this command, especially for
+     [large repositories](../../user/project/repository/monorepos/_index.md#use-git-fetch-in-cicd-operations).
+
+The configured Git strategy can be overridden by the [`GIT_STRATEGY` variable](../runners/configure_runners.md#git-strategy)
+in the `.gitlab-ci.yml` file.
+
+## Limit the number of changes fetched during clone
+
+You can limit the number of changes that GitLab CI/CD fetches when it clones
+a repository.
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. Under **Git strategy**, under **Git shallow clone**, enter a value.
+   The maximum value is `1000`. To disable shallow clone and make GitLab CI/CD
+   fetch all branches and tags each time, keep the value empty or set to `0`.
+
+Newly created projects have a default `git depth` value of `20`.
+
+This value can be overridden by the [`GIT_DEPTH` variable](../../user/project/repository/monorepos/_index.md#use-shallow-clones-and-filters-in-cicd-processes)
+in the `.gitlab-ci.yml` file.
+
+## Set a limit for how long jobs can run
+
+You can define how long a job can run before it times out.
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. In the **Timeout** field, enter the number of minutes, or a human-readable value like `2 hours`.
+   Must be 10 minutes or more, and less than one month. Default is 60 minutes.
+   Pending jobs are dropped after 24 hours of inactivity.
+
+Jobs that exceed the timeout are marked as failed.
+
+When both a project timeout and a [runner timeout](../runners/configure_runners.md#set-the-maximum-job-timeout)
+are set, the lower value takes precedence.
+
+Jobs without an output for one hour are dropped regardless of the timeout. To prevent this from happening, add a script to continuously output progress. For more information, see [issue 25359](https://gitlab.com/gitlab-org/gitlab/-/issues/25359#workaround).
+
+## Pipeline badges
+
+You can use [pipeline badges](../../user/project/badges.md) to indicate the pipeline status and
+test coverage of your projects. These badges are determined by the latest successful pipeline.
+
+## Disable GitLab CI/CD pipelines
+
+GitLab CI/CD pipelines are enabled by default on all new projects. If you use an external CI/CD server like
+Jenkins or Drone CI, you can disable GitLab CI/CD to avoid conflicts with the commits status API.
+
+You can disable GitLab CI/CD per project or [for all new projects on an instance](../../administration/cicd/_index.md).
+
+When you disable GitLab CI/CD:
+
+- The **CI/CD** item in the left sidebar is removed.
+- The `/pipelines` and `/jobs` pages are no longer available.
+- Existing jobs and pipelines are hidden, not removed.
+
+To disable GitLab CI/CD in your project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **Visibility, project features, permissions**.
+1. In the **Repository** section, turn off **CI/CD**.
+1. Select **Save changes**.
+
+These changes do not apply to projects in an [external integration](../../user/project/integrations/_index.md#available-integrations).
+
+## Automatic pipeline cleanup
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/498969) in GitLab 17.7 [with a feature flag](../../administration/feature_flags/_index.md) named `ci_delete_old_pipelines`. Disabled by default.
+- [Feature flag `ci_delete_old_pipelines`](https://gitlab.com/gitlab-org/gitlab/-/issues/503153) removed in GitLab 17.9.
+
+{{< /history >}}
+
+Set a retention period to help manage pipeline storage and improve system performance.
+Pipelines older than the configured duration are deleted automatically by a background job.
+Cleanup runs periodically in the background, not immediately when a pipeline becomes eligible. Projects with a large backlog of old pipelines are cleaned up gradually over multiple runs.
+
+When a pipeline is deleted, its jobs, job logs, and artifacts are also permanently deleted.
+All pipelines older than the configured retention period are eligible for deletion, regardless of their status
+or whether they are the most recent pipeline for a given branch or tag.
+
+Prerequisites:
+
+- The Owner role for the project.
+
+To configure automatic pipeline cleanup:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **CI/CD**.
+1. Expand **General pipelines**.
+1. In the **Automatic pipeline cleanup** field, enter a duration, for example `2 weeks` or `30 days`.
+   The value must be at least one day, and no more than the instance maximum (1 year by default). Leave empty to never delete pipelines automatically.
+1. Select **Save changes**.
+
+For GitLab Self-Managed, administrators can increase the upper limit for
+[automatic pipeline cleanup](../../administration/cicd/limits.md#maximum-retention-period-for-automatic-pipeline-cleanup).

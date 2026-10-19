@@ -1,0 +1,17 @@
+description: "Select comment type from dropdown"
+category: default
+action: click_button
+extra_properties:
+identifiers:
+product_group: portfolio_planning
+product_categories:
+- portfolio_management
+milestone: "13.10"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/50933
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`[comment_button_title]_button`"

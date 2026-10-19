@@ -1,0 +1,23 @@
+- show_icon = !@loading || content
+- tag = @label ? 'span' : 'button'
+= content_for :pajamas_button_content, flush: true do
+  - if @loading
+    = gl_loading_icon(inline: true, css_class: 'gl-button-icon gl-button-loading-indicator')
+  - if @icon && show_icon
+    = sprite_icon(@icon, css_class: "gl-icon gl-button-icon #{@icon_classes}")
+  - elsif icon_content? && show_icon
+    = icon_content
+  - if content
+    %span.gl-button-text{ class: @button_text_classes }
+      = content
+
+- if form?
+  -# workaround for link_to dropping snowplow tracking. Issue: https://gitlab.com/gitlab-org/gitlab/-/issues/417815
+  = button_to @href, { **@button_options, **base_attributes, class: button_class, target: @target, method: @method } do
+    = content_for :pajamas_button_content
+- elsif link?
+  = link_to @href, { **@button_options, **base_attributes, class: button_class, target: @target, method: @method } do
+    = content_for :pajamas_button_content
+- else
+  = content_tag tag, { **@button_options, **base_attributes, class: button_class } do
+    = content_for :pajamas_button_content

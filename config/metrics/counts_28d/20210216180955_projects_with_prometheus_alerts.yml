@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage_monthly.configure.projects_with_prometheus_alerts
+description: Projects with Prometheus alerting enabled
+product_group: platform_insights
+product_categories:
+- incident_management
+value_type: number
+status: removed
+milestone_removed: '14.0'
+time_frame: 28d
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+removed_by_url:

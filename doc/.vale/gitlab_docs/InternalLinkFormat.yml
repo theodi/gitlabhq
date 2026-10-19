@@ -1,0 +1,12 @@
+---
+name: gitlab_docs.InternalLinkFormat
+description: |
+  Checks that internal link paths don't use `//`, or start with '/' or './'.
+extends: existence
+message: "Edit the link so it does not use `//`, or start with '/' or './'."
+link: https://docs.gitlab.com/development/documentation/styleguide/#links
+vocab: false
+level: error
+scope: raw
+raw:
+  - '\[[^\]]+\]\((\.?\/(?!uploads|documentation|page-from-root|home)|[^:)]*\/\/)[^)]*\)'

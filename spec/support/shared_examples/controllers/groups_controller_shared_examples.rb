@@ -1,0 +1,60 @@
+# frozen_string_literal: true
+
+RSpec.shared_examples 'groups controller with active parameter' do
+  let_it_be(:active_group, freeze: false) { create(:group, :public, developers: [user]) }
+  let_it_be(:inactive_group, freeze: false) { create(:group, :archived, :public, developers: [user]) }
+
+  let(:params) { {} }
+
+  before do
+    get :index, params: params, format: :json
+  end
+
+  context 'when true' do
+    let(:params) { { active: true } }
+
+    it 'returns active group', :aggregate_failures do
+      expect(assigns(:groups)).to include(active_group)
+      expect(assigns(:groups)).not_to include(inactive_group)
+    end
+  end
+
+  context 'when false' do
+    let(:params) { { active: false } }
+
+    it 'returns inactive group' do
+      expect(assigns(:groups)).to contain_exactly(inactive_group)
+    end
+
+    context 'when active group has inactive subgroup' do
+      let_it_be(:active_subgroup, freeze: false) { create(:group, parent: active_group) }
+      let_it_be(:inactive_subgroup, freeze: false) { create(:group, :archived, parent: active_group) }
+
+      it 'returns inactive subgroup' do
+        expect(assigns(:groups)).to contain_exactly(inactive_group, inactive_subgroup)
+      end
+    end
+
+    context 'when inactive group has subgroups' do
+      let_it_be(:inactive_subgroup, freeze: false) { create(:group, parent: inactive_group) }
+      let_it_be(:active_inactive_subgroup, freeze: false) { create(:group, :archived, parent: active_group) }
+
+      it 'returns inactive subgroups' do
+        expect(assigns(:groups))
+          .to contain_exactly(inactive_group, inactive_subgroup, active_inactive_subgroup)
+      end
+    end
+
+    context "when filter matches lower-level subgroup" do
+      let_it_be(:inactive_subgroup, freeze: false) { create(:group, :archived, parent: active_group) }
+      let_it_be(:inactive_subsubgroup, freeze: false) { create(:group, parent: inactive_subgroup) }
+
+      let(:params) { { active: false, filter: inactive_subsubgroup.name } }
+
+      it 'returns inactive subgroup with its inactive parents' do
+        expect(json_response.first['id']).to eq(inactive_subgroup.id)
+        expect(json_response.first['children'].first['id']).to eq(inactive_subsubgroup.id)
+      end
+    end
+  end
+end

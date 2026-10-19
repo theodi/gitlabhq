@@ -1,0 +1,194 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Organizations::OrganizationUserPolicy, feature_category: :organization do
+  let_it_be(:organization) { create(:organization) }
+  let_it_be_with_refind(:current_user) { create :user }
+
+  subject(:policy) { described_class.new(current_user, organization_user) }
+
+  shared_examples 'organization owner policy' do
+    context 'when the current user is not a member of the organization' do
+      let_it_be_with_refind(:organization_user) do
+        create(:organization_user, organization: organization, user: create(:user))
+      end
+
+      it { expect_disallowed(permission) }
+    end
+
+    context 'when the current user is a member but not an owner' do
+      let_it_be_with_refind(:organization_user) do
+        create(:organization_user, organization: organization, user: create(:user))
+      end
+
+      before_all do
+        create(:organization_user, organization: organization, user: current_user)
+      end
+
+      it { expect_disallowed(permission) }
+    end
+
+    context 'when the current user is an owner' do
+      let_it_be_with_refind(:organization_user) do
+        create(:organization_user, :owner, organization: organization, user: current_user)
+      end
+
+      context 'when the current user is the last owner' do
+        it { expect_disallowed(permission) }
+      end
+
+      context 'when the current user is not the last owner' do
+        before do
+          create(:organization_user, :owner, organization: organization)
+        end
+
+        it { expect_allowed(permission) }
+      end
+    end
+
+    context 'for admin user' do
+      let_it_be_with_refind(:current_user) { create(:admin) }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        context 'when the user is not an owner' do
+          let_it_be_with_refind(:organization_user) { create(:organization_user, organization: organization) }
+
+          it { expect_allowed(permission) }
+        end
+
+        context 'when the user is an owner' do
+          let_it_be_with_refind(:organization_user) do
+            create(:organization_user, :owner, organization: organization)
+          end
+
+          context 'when the user is the last owner' do
+            it { expect_disallowed(permission) }
+          end
+
+          context 'when the user is not the last owner' do
+            before do
+              create(:organization_user, :owner, organization: organization)
+            end
+
+            it { expect_allowed(permission) }
+          end
+        end
+      end
+
+      context 'when admin mode is disabled' do
+        context 'when the user is not an owner' do
+          let_it_be_with_refind(:organization_user) { create(:organization_user, organization: organization) }
+
+          it { expect_disallowed(permission) }
+        end
+
+        context 'when the user is an owner' do
+          let_it_be_with_refind(:organization_user) do
+            create(:organization_user, :owner, organization: organization)
+          end
+
+          context 'when the user is the last owner' do
+            it { expect_disallowed(permission) }
+          end
+
+          context 'when the user is not the last owner' do
+            before do
+              create(:organization_user, :owner, organization: organization)
+            end
+
+            it { expect_disallowed(permission) }
+          end
+        end
+      end
+    end
+  end
+
+  context 'for the create_organization_user permission' do
+    # Refind so the memoized `owner_user_ids` used by the policy is not shared between examples.
+    let_it_be_with_refind(:organization) { create(:organization) }
+
+    let(:organization_user) { organization.organization_users.new }
+
+    context 'when the current user is not a member of the organization' do
+      it { expect_disallowed(:create_organization_user) }
+    end
+
+    context 'when the current user is not an owner' do
+      before_all do
+        create(:organization_user, organization: organization, user: current_user)
+      end
+
+      it { expect_disallowed(:create_organization_user) }
+    end
+
+    context 'when the current user is an owner' do
+      before_all do
+        create(:organization_user, :owner, organization: organization, user: current_user)
+      end
+
+      it { expect_allowed(:create_organization_user) }
+    end
+
+    context 'for admin user' do
+      let_it_be_with_refind(:current_user) { create(:admin) }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { expect_allowed(:create_organization_user) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { expect_disallowed(:create_organization_user) }
+      end
+    end
+  end
+
+  context 'for the update_organization_user permission' do
+    let(:permission) { :update_organization_user }
+
+    it_behaves_like 'organization owner policy'
+
+    context 'when the current user is a non-owner acting on their own membership' do
+      let_it_be_with_refind(:organization_user) do
+        create(:organization_user, organization: organization, user: current_user)
+      end
+
+      it { expect_disallowed(:update_organization_user) }
+    end
+  end
+
+  context 'for the delete_organization_user permission' do
+    let(:permission) { :delete_organization_user }
+
+    it_behaves_like 'organization owner policy'
+
+    context 'when the current user is an owner acting on another member\'s membership' do
+      let_it_be_with_refind(:current_user) { create(:user) }
+      let_it_be_with_refind(:organization_user) do
+        create(:organization_user, organization: organization, user: create(:user))
+      end
+
+      before_all do
+        create(:organization_user, :owner, organization: organization, user: current_user)
+      end
+
+      it { expect_allowed(:delete_organization_user) }
+    end
+
+    context 'when the current user is a non-owner acting on their own membership' do
+      let_it_be_with_refind(:organization_user) do
+        create(:organization_user, organization: organization, user: current_user)
+      end
+
+      it { expect_allowed(:delete_organization_user) }
+
+      context 'when the membership is in the user home organization' do
+        before do
+          current_user.update!(organization: organization)
+        end
+
+        it { expect_disallowed(:update_organization_user, :delete_organization_user) }
+      end
+    end
+  end
+end

@@ -1,0 +1,9 @@
+- content_for :merge_access_levels do
+  .merge_access_levels-container
+    .js-allowed-to-merge
+
+- content_for :push_access_levels do
+  .push_access_levels-container
+    .js-allowed-to-push
+
+= render 'protected_branches/shared/create_protected_branch', protected_branch_entity: protected_branch_entity

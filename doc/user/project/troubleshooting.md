@@ -1,0 +1,147 @@
+---
+stage: Tenant Scale
+group: Organizations
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Troubleshooting projects
+description: Problem solving, common issues, debugging, and error resolution.
+---
+
+When working with projects, you might encounter the following issues, or require alternate methods to complete specific tasks.
+
+## `An error occurred while fetching commit data`
+
+When you visit a project, the message `An error occurred while fetching commit data` might be displayed
+if you use an ad blocker in your browser. The solution is to disable your ad blocker
+for the GitLab instance you are trying to access.
+
+## Find projects using an SQL query
+
+While in [a Rails console session](../../administration/operations/rails_console.md#starting-a-rails-console-session), you can find and store an array of projects based on a SQL query:
+
+```ruby
+# Finds projects that end with '%ject'
+projects = Project.find_by_sql("SELECT * FROM projects WHERE name LIKE '%ject'")
+=> [#<Project id:12 root/my-first-project>>, #<Project id:13 root/my-second-project>>]
+```
+
+## Clear a project's or repository's cache
+
+If a project or repository has been updated but the state is not reflected in the UI, you might need to clear the project's or repository's cache.
+You can do so through [a Rails console session](../../administration/operations/rails_console.md#starting-a-rails-console-session) and one of the following:
+
+> [!warning]
+> Commands that change data can cause damage if not run correctly or under the right conditions. Always run commands in a test environment first and have a backup instance ready to restore.
+
+```ruby
+## Clear project cache
+ProjectCacheWorker.perform_async(project.id)
+
+## Clear repository .exists? cache
+project.repository.expire_exists_cache
+```
+
+## Find projects that are pending deletion
+
+If you need to find all projects marked for deletion but that have not yet been deleted,
+[start a Rails console session](../../administration/operations/rails_console.md#starting-a-rails-console-session) and run the following:
+
+```ruby
+projects = Project.where(pending_delete: true)
+projects.each do |p|
+  puts "Project ID: #{p.id}"
+  puts "Project name: #{p.name}"
+  puts "Repository path: #{p.repository.full_path}"
+end
+```
+
+### Transfer a project using console
+
+If transferring a project through the UI or API is not working, you can attempt the transfer in a [Rails console session](../../administration/operations/rails_console.md#starting-a-rails-console-session).
+
+```ruby
+p = Project.find_by_full_path('<project_path>')
+
+# To set the owner of the project
+current_user = p.creator
+
+# Namespace where you want this to be moved
+namespace = Namespace.find_by_full_path("<new_namespace>")
+
+Projects::TransferService.new(p, current_user).execute(namespace)
+```
+
+## Project transfer stuck in `transfer_in_progress` or `transfer_scheduled` state
+
+A project transfer can stall when the asynchronous transfer job fails, for example due to
+lock contention or statement timeouts. Retrying the transfer returns:
+
+`Unable to initiate transfer. The project may already have a transfer in progress.`
+
+In GitLab 19.1 and later, retry the transfer. GitLab reschedules the transfer even when the
+project namespace is still in the `transfer_in_progress` or `transfer_scheduled` state.
+
+In GitLab versions earlier than 19.1, cancel the stale transfer state in a
+[Rails console session](../../administration/operations/rails_console.md#starting-a-rails-console-session)
+before you retry the transfer:
+
+> [!warning]
+> Commands that change data can cause damage if not run correctly or under the right conditions.
+> Always run commands in a test environment first and have a backup instance ready to restore.
+
+```ruby
+Project.find_by_full_path('<group>/<project_name>').project_namespace.cancel_transfer!
+```
+
+## Delete a project using console
+
+If a project cannot be deleted, you can attempt to delete it through [Rails console](../../administration/operations/rails_console.md#starting-a-rails-console-session).
+
+> [!warning]
+> Commands that change data can cause damage if not run correctly or under the right conditions. Always run commands in a test environment first and have a backup instance ready to restore.
+
+```ruby
+project = Project.find_by_full_path('<project_path>')
+user = User.find_by_username('<username>')
+Projects::DestroyService.new(project, user, {}).execute
+```
+
+If this fails, display why it doesn't work with:
+
+```ruby
+project = Project.find_by_full_path('<project_path>')
+project.deletion_error
+```
+
+## Toggle a feature for all projects within a group
+
+While toggling a feature in a project can be done through the [projects API](../../api/projects.md),
+you might need to do this for a large number of projects.
+
+To toggle a specific feature, you can [start a Rails console session](../../administration/operations/rails_console.md#starting-a-rails-console-session)
+and run the following function:
+
+> [!warning]
+> Commands that change data can cause damage if not run correctly or under the right conditions. Always run commands in a test environment first and have a backup instance ready to restore.
+
+```ruby
+projects = Group.find_by_name('_group_name').projects
+projects.each do |p|
+  ## replace <feature-name> with the appropriate feature name in all instances
+  state = p.<feature-name>
+
+  if state != 0
+    puts "#{p.name} has <feature-name> already enabled. Skipping..."
+  else
+    puts "#{p.name} didn't have <feature-name> enabled. Enabling..."
+    p.project_feature.update!(<feature-name>: ProjectFeature::PRIVATE)
+  end
+end
+```
+
+To find features that can be toggled, run `pp p.project_feature`.
+Available permission levels are listed in
+[concerns/featurable.rb](https://gitlab.com/gitlab-org/gitlab/blob/master/app/models/concerns/featurable.rb).
+
+## Support knowledge base
+
+If you're still having issues, see the [GitLab Support knowledge base](https://support.gitlab.com/hc/en-us/).

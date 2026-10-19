@@ -1,0 +1,66 @@
+# @feature_category: package_registry
+#import "~/packages_and_registries/package_registry/graphql/fragments/package_data.fragment.graphql"
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+
+query getPackages(
+  $fullPath: ID!
+  $isGroupPage: Boolean!
+  $sort: PackageSort
+  $groupSort: PackageGroupSort
+  $packageName: String
+  $packageType: PackageTypeEnum
+  $packageVersion: String
+  $packageStatus: PackageStatus
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+) {
+  project(fullPath: $fullPath) @skip(if: $isGroupPage) {
+    id
+    packages(
+      sort: $sort
+      packageName: $packageName
+      packageType: $packageType
+      packageVersion: $packageVersion
+      status: $packageStatus
+      after: $after
+      before: $before
+      first: $first
+      last: $last
+    ) {
+      nodes {
+        ...PackageData
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+  group(fullPath: $fullPath) @include(if: $isGroupPage) {
+    id
+    packages(
+      sort: $groupSort
+      packageName: $packageName
+      packageType: $packageType
+      packageVersion: $packageVersion
+      status: $packageStatus
+      after: $after
+      before: $before
+      first: $first
+      last: $last
+    ) {
+      nodes {
+        ...PackageData
+        project {
+          id
+          name
+          webUrl
+        }
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

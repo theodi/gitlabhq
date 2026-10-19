@@ -1,0 +1,510 @@
+# frozen_string_literal: true
+
+RSpec.shared_examples 'an elastic executor' do
+  let(:connection) { double('Connection') }
+  let(:adapter) do
+    double('Adapter', connection: connection, separator: '_', full_collection_name: ->(name) {
+      "prefix_#{name}"
+    })
+  end
+
+  let(:raw_client) { double('RawClient') }
+  let(:indices_client) { double('IndicesClient') }
+  let(:client) { double('Client', client: raw_client) }
+
+  subject(:executor) { described_class.new(adapter) }
+
+  before do
+    allow(ActiveContext).to receive(:adapter).and_return(adapter)
+    allow(adapter).to receive(:client).and_return(client)
+    allow(raw_client).to receive(:indices).and_return(indices_client)
+  end
+
+  describe '#initialize' do
+    it 'sets the adapter' do
+      expect(executor.adapter).to eq(adapter)
+    end
+  end
+
+  describe '#create_collection' do
+    let(:collection_name) { 'test_collection' }
+    let(:number_of_partitions) { 2 }
+    let(:fields) do
+      [
+        ActiveContext::Databases::Field::Keyword.new(:title),
+        ActiveContext::Databases::Field::Text.new(:description),
+        ActiveContext::Databases::Field::Integer.new(:count)
+      ]
+    end
+
+    let(:collection_record) { double('Collection', save!: true) }
+
+    before do
+      allow(connection).to receive_message_chain(:collections, :find_or_initialize_by).and_return(collection_record)
+      allow(collection_record).to receive(:update)
+      allow(indices_client).to receive_messages(exists?: false, exists_alias?: false)
+      allow(indices_client).to receive(:create)
+      allow(indices_client).to receive(:update_aliases)
+    end
+
+    it 'creates partitions and alias' do
+      executor.create_collection(collection_name, number_of_partitions: number_of_partitions) do |builder|
+        builder.keyword(:title)
+        builder.text(:description)
+        builder.integer(:count)
+      end
+
+      expect(indices_client).to have_received(:create).twice
+      expect(indices_client).to have_received(:update_aliases)
+    end
+
+    it 'creates collection record with correct attributes' do
+      executor.create_collection(collection_name, number_of_partitions: number_of_partitions) do |builder|
+        builder.keyword(:title)
+      end
+
+      expect(collection_record).to have_received(:update).with(
+        number_of_partitions: number_of_partitions,
+        include_ref_fields: true
+      )
+      expect(collection_record).to have_received(:save!)
+    end
+
+    it 'respects include_ref_fields option' do
+      executor.create_collection(collection_name, number_of_partitions: number_of_partitions,
+        options: { include_ref_fields: false }) do |builder|
+        builder.keyword(:title)
+      end
+
+      expect(collection_record).to have_received(:update).with(
+        number_of_partitions: number_of_partitions,
+        include_ref_fields: false
+      )
+    end
+
+    context 'when collection already exists' do
+      before do
+        allow(indices_client).to receive_messages(exists?: true, exists_alias?: true)
+      end
+
+      it 'does not create partitions or alias' do
+        executor.create_collection(collection_name, number_of_partitions: number_of_partitions) do |builder|
+          builder.keyword(:title)
+        end
+
+        expect(indices_client).not_to have_received(:create)
+        expect(indices_client).not_to have_received(:update_aliases)
+      end
+    end
+  end
+
+  describe '#drop_collection' do
+    let(:collection_name) { 'test_collection' }
+    let(:collection) { double('Collection', name: 'prefix_test_collection', number_of_partitions: 2, destroy!: true) }
+
+    before do
+      allow(connection).to receive_message_chain(:collections, :find_by).and_return(collection)
+      allow(indices_client).to receive_messages(exists?: true,
+        exists_alias?: true,
+        get_alias: {
+          'prefix_test_collection_0' => {},
+          'prefix_test_collection_1' => {}
+        }
+      )
+      allow(indices_client).to receive(:delete_alias)
+      allow(indices_client).to receive(:delete)
+    end
+
+    it 'removes alias and deletes partitions' do
+      executor.drop_collection(collection_name)
+
+      expect(indices_client).to have_received(:delete_alias).twice
+      expect(indices_client).to have_received(:delete).twice
+    end
+
+    it 'destroys collection record' do
+      executor.drop_collection(collection_name)
+
+      expect(collection).to have_received(:destroy!)
+    end
+
+    context 'when collection does not exist' do
+      before do
+        allow(connection).to receive_message_chain(:collections, :find_by).and_return(nil)
+      end
+
+      it 'does not attempt to drop anything' do
+        executor.drop_collection(collection_name)
+
+        expect(indices_client).not_to have_received(:delete_alias)
+        expect(indices_client).not_to have_received(:delete)
+      end
+    end
+  end
+
+  describe '#mappings' do
+    it 'builds mappings for all field types' do
+      fields = [
+        ActiveContext::Databases::Field::Bigint.new(:bigint_field),
+        ActiveContext::Databases::Field::Integer.new(:integer_field),
+        ActiveContext::Databases::Field::Smallint.new(:smallint_field),
+        ActiveContext::Databases::Field::Boolean.new(:boolean_field),
+        ActiveContext::Databases::Field::Keyword.new(:keyword_field),
+        ActiveContext::Databases::Field::Text.new(:text_field)
+      ]
+
+      mappings = executor.send(:mappings, fields)
+
+      expect(mappings).to include(
+        'bigint_field' => { type: 'long' },
+        'integer_field' => { type: 'integer' },
+        'smallint_field' => { type: 'short' },
+        'boolean_field' => { type: 'boolean' },
+        'keyword_field' => { type: 'keyword' },
+        'text_field' => { type: 'text' },
+        ref_id: { type: 'keyword' },
+        ref_version: { type: 'long' }
+      )
+    end
+
+    it 'excludes ref fields when include_ref_fields is false' do
+      fields = [ActiveContext::Databases::Field::Keyword.new(:title)]
+
+      mappings = executor.send(:mappings, fields, include_ref_fields: false)
+
+      expect(mappings).to include('title' => { type: 'keyword' })
+      expect(mappings).not_to include(:ref_id, :ref_version)
+    end
+
+    it 'raises error for unknown field type' do
+      unknown_field = Class.new(ActiveContext::Databases::Field).new(:unknown)
+      fields = [unknown_field]
+
+      expect { executor.send(:mappings, fields) }.to raise_error(ArgumentError, /Unknown field type/)
+    end
+  end
+
+  describe '#collection_exists?' do
+    let(:strategy) do
+      double('PartitionStrategy', collection_name: 'test_collection',
+        partition_names: %w[test_collection_0 test_collection_1])
+    end
+
+    context 'when alias and all partitions exist' do
+      before do
+        allow(indices_client).to receive(:exists_alias?).with(name: 'test_collection').and_return(true)
+        allow(indices_client).to receive(:exists?).and_return(true)
+        allow(strategy).to receive(:fully_exists?).and_yield('test_collection_0')
+          .and_yield('test_collection_1').and_return(true)
+      end
+
+      it 'returns true' do
+        expect(executor.send(:collection_exists?, strategy)).to be true
+      end
+    end
+
+    context 'when alias does not exist' do
+      before do
+        allow(indices_client).to receive(:exists_alias?).with(name: 'test_collection').and_return(false)
+      end
+
+      it 'returns false' do
+        expect(executor.send(:collection_exists?, strategy)).to be false
+      end
+    end
+
+    context 'when some partitions are missing' do
+      before do
+        allow(indices_client).to receive(:exists_alias?).with(name: 'test_collection').and_return(true)
+        allow(strategy).to receive(:fully_exists?).and_return(false)
+      end
+
+      it 'returns false' do
+        expect(executor.send(:collection_exists?, strategy)).to be false
+      end
+    end
+  end
+
+  describe '#index_exists?' do
+    it 'returns true when index exists' do
+      allow(indices_client).to receive(:exists?).with(index: 'test_index').and_return(true)
+
+      expect(executor.send(:index_exists?, 'test_index')).to be true
+    end
+
+    it 'returns false when index does not exist' do
+      allow(indices_client).to receive(:exists?).with(index: 'test_index').and_return(false)
+
+      expect(executor.send(:index_exists?, 'test_index')).to be false
+    end
+  end
+
+  describe '#alias_exists?' do
+    it 'returns true when alias exists' do
+      allow(indices_client).to receive(:exists_alias?).with(name: 'test_alias').and_return(true)
+
+      expect(executor.send(:alias_exists?, 'test_alias')).to be true
+    end
+
+    it 'returns false when alias does not exist' do
+      allow(indices_client).to receive(:exists_alias?).with(name: 'test_alias').and_return(false)
+
+      expect(executor.send(:alias_exists?, 'test_alias')).to be false
+    end
+  end
+
+  describe '#create_partition' do
+    let(:fields) { [ActiveContext::Databases::Field::Keyword.new(:title)] }
+
+    it 'creates index with correct mappings and settings' do
+      expect(indices_client).to receive(:create).with(
+        index: 'test_partition',
+        body: hash_including(
+          mappings: hash_including(
+            dynamic: 'strict',
+            properties: hash_including('title' => { type: 'keyword' })
+          ),
+          settings: kind_of(Hash)
+        )
+      )
+
+      executor.send(:create_partition, 'test_partition', fields)
+    end
+
+    # On Elasticsearch 9.2+ and OpenSearch 3.0+, new indices exclude vector
+    # fields from _source by default. Sending any _source configuration in the
+    # mappings, or index.mapping/derived-source settings, would override that
+    # server-side default and silently reinstate vector duplication
+    # (~6 KiB per document).
+    context 'with a vector field' do
+      let(:fields) do
+        [
+          ActiveContext::Databases::Field::Keyword.new(:title),
+          ActiveContext::Databases::Field::Vector.new(:embeddings_v1, dimensions: 768)
+        ]
+      end
+
+      it 'preserves server-side _source defaults for vector fields' do
+        expect(indices_client).to receive(:create) do |args|
+          expect(args[:body][:mappings]).not_to have_key(:_source)
+
+          settings_keys = []
+          collect_keys = ->(hash) do
+            hash.each do |key, value|
+              settings_keys << key.to_s
+              collect_keys.call(value) if value.is_a?(Hash)
+            end
+          end
+          collect_keys.call(args[:body][:settings])
+
+          expect(settings_keys).not_to include(a_string_matching(/mapping|source/))
+        end
+
+        executor.send(:create_partition, 'test_partition', fields)
+      end
+    end
+  end
+
+  describe '#create_alias' do
+    let(:strategy) do
+      double('PartitionStrategy', collection_name: 'test_collection',
+        partition_names: %w[test_collection_0 test_collection_1])
+    end
+
+    it 'creates alias for all partitions' do
+      expect(indices_client).to receive(:update_aliases).with(
+        body: {
+          actions: [{
+            add: {
+              indices: %w[test_collection_0 test_collection_1],
+              alias: 'test_collection'
+            }
+          }]
+        }
+      )
+
+      executor.send(:create_alias, strategy)
+    end
+  end
+
+  describe '#remove_alias' do
+    let(:strategy) { double('PartitionStrategy', collection_name: 'test_collection') }
+
+    it 'removes alias from all indices' do
+      allow(indices_client).to receive(:get_alias).with(name: 'test_collection').and_return({
+        'test_collection_0' => {},
+        'test_collection_1' => {}
+      })
+
+      expect(indices_client).to receive(:delete_alias).with(index: 'test_collection_0', name: 'test_collection')
+      expect(indices_client).to receive(:delete_alias).with(index: 'test_collection_1', name: 'test_collection')
+
+      executor.send(:remove_alias, strategy)
+    end
+  end
+
+  describe '#remove_index' do
+    it 'deletes the index' do
+      expect(indices_client).to receive(:delete).with(index: 'test_index')
+
+      executor.send(:remove_index, 'test_index')
+    end
+  end
+
+  describe '#add_field' do
+    let(:collection_name) { 'test_collection' }
+    let(:collection) { double('Collection', name: 'prefix_test_collection', number_of_partitions: 2) }
+
+    before do
+      allow(connection).to receive_message_chain(:collections, :find_by).and_return(collection)
+      allow(indices_client).to receive(:exists?).and_return(true)
+      allow(indices_client).to receive(:put_mapping)
+    end
+
+    it 'adds field to all partitions' do
+      executor.add_field(collection_name) do |c|
+        c.text(:description)
+      end
+
+      expect(indices_client).to have_received(:put_mapping).twice
+    end
+
+    it 'uses correct mapping for text field' do
+      executor.add_field(collection_name) do |c|
+        c.text(:description)
+      end
+
+      expect(indices_client).to have_received(:put_mapping).with(
+        index: 'prefix_test_collection_0',
+        body: {
+          properties: {
+            'description' => { type: 'text' }
+          }
+        }
+      )
+    end
+
+    it 'uses correct mapping for keyword field' do
+      executor.add_field(collection_name) do |c|
+        c.keyword(:status)
+      end
+
+      expect(indices_client).to have_received(:put_mapping).with(
+        index: 'prefix_test_collection_0',
+        body: {
+          properties: {
+            'status' => { type: 'keyword' }
+          }
+        }
+      )
+    end
+
+    it 'uses correct mapping for vector field' do
+      executor.add_field(collection_name) do |c|
+        c.vector(:embeddings_v2, dimensions: 768)
+      end
+
+      expect(indices_client).to have_received(:put_mapping).with(
+        index: 'prefix_test_collection_0',
+        body: {
+          properties: {
+            'embeddings_v2' => expected_vector_mapping
+          }
+        }
+      )
+    end
+
+    it 'adds multiple fields' do
+      executor.add_field(collection_name) do |c|
+        c.text(:description)
+        c.keyword(:status)
+      end
+
+      expect(indices_client).to have_received(:put_mapping).at_least(2).times
+    end
+
+    context 'when collection does not exist' do
+      before do
+        allow(connection).to receive_message_chain(:collections, :find_by).and_return(nil)
+      end
+
+      it 'raises an error' do
+        expect do
+          executor.add_field(collection_name) do |c|
+            c.text(:description)
+          end
+        end.to raise_error(/Collection .* not found/)
+      end
+    end
+
+    context 'when partition does not exist' do
+      before do
+        allow(indices_client).to receive(:exists?).and_return(false)
+      end
+
+      it 'skips adding field to non-existent partition' do
+        executor.add_field(collection_name) do |c|
+          c.text(:description)
+        end
+
+        expect(indices_client).not_to have_received(:put_mapping)
+      end
+    end
+  end
+
+  describe '#nullify_field' do
+    let(:collection_name) { 'test_collection' }
+    let(:field_name) { 'description' }
+    let(:collection) { double('Collection', name: 'prefix_test_collection', number_of_partitions: 2) }
+
+    before do
+      allow(connection).to receive_message_chain(:collections, :find_by).and_return(collection)
+      allow(raw_client).to receive(:update_by_query).and_return({ 'updated' => 10 })
+    end
+
+    it 'calls update_by_query with correct parameters' do
+      executor.nullify_field(collection_name, field_name, batch_size: 100)
+
+      expect(raw_client).to have_received(:update_by_query).with(
+        index: 'prefix_test_collection',
+        max_docs: 100,
+        conflicts: 'proceed',
+        body: hash_including(
+          query: { exists: { field: field_name } },
+          script: hash_including(
+            lang: 'painless',
+            source: "ctx._source.remove('#{field_name}')"
+          )
+        )
+      )
+    end
+
+    it 'returns the number of updated documents' do
+      allow(raw_client).to receive(:update_by_query).and_return({ 'updated' => 42 })
+
+      result = executor.nullify_field(collection_name, field_name, batch_size: 100)
+
+      expect(result).to eq(42)
+    end
+
+    it 'returns 0 when no documents are updated' do
+      allow(raw_client).to receive(:update_by_query).and_return({})
+
+      result = executor.nullify_field(collection_name, field_name, batch_size: 100)
+
+      expect(result).to eq(0)
+    end
+
+    context 'when collection does not exist' do
+      before do
+        allow(connection).to receive_message_chain(:collections, :find_by).and_return(nil)
+      end
+
+      it 'raises an error' do
+        expect do
+          executor.nullify_field(collection_name, field_name, batch_size: 100)
+        end.to raise_error(/Collection .* not found/)
+      end
+    end
+  end
+end

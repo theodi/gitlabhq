@@ -1,0 +1,646 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Query.project.ciPipelineCreationInputs', feature_category: :pipeline_composition do
+  include GraphqlHelpers
+  include ReactiveCachingHelpers
+
+  let_it_be(:project) { create(:project, :small_repo) }
+  let_it_be(:user) { create(:user) }
+
+  let_it_be(:config_yaml_without_inputs) do
+    <<~YAML
+    job:
+      script: echo hello world
+    YAML
+  end
+
+  let_it_be(:config_yaml) do
+    <<~YAML
+    spec:
+      inputs:
+        mandatory_string_input:
+        mandatory_number_input:
+          type: number
+        mandatory_boolean_input:
+          type: boolean
+          description: 'Mandatory boolean input'
+        mandatory_array_input:
+          type: array
+        optional_string_input:
+          type: string
+          default: 'default-value'
+        optional_number_input:
+          type: number
+          default: 1
+        optional_boolean_input:
+          type: boolean
+          default: true
+          description: 'Optional boolean input'
+        optional_array_input:
+          type: array
+          default: [{ a: 1 }, { b: 2}]
+        string_input_with_options:
+          options: ['option1', 'option2', 'option3']
+        number_input_with_options:
+          type: number
+          options: [1, 2, 3]
+        string_input_with_regex:
+          regex: '[a-z]+'
+    ---
+    job:
+      script: echo hello world
+    YAML
+  end
+
+  let_it_be(:config_yaml_with_rules) do
+    <<~YAML
+    spec:
+      inputs:
+        environment:
+          type: string
+          options: ['dev', 'staging', 'prod']
+          default: 'dev'
+        instance_type:
+          type: string
+          rules:
+            - if: '$[[ inputs.environment ]] == "dev"'
+              options: ['t3.micro', 't3.small']
+              default: 't3.micro'
+            - if: '$[[ inputs.environment ]] == "prod"'
+              options: ['m5.large', 'm5.xlarge']
+              default: 'm5.large'
+    ---
+    job:
+      script: echo hello world
+    YAML
+  end
+
+  let(:query) do
+    <<~GQL
+      query {
+        project(fullPath: "#{project.full_path}") {
+          ciPipelineCreationInputs(ref: "#{ref}") {
+            name
+            type
+            description
+            required
+            default
+            options
+            regex
+          }
+        }
+      }
+    GQL
+  end
+
+  before_all do
+    project.repository.create_file(
+      project.creator,
+      '.gitlab-ci.yml',
+      config_yaml,
+      message: 'Add CI',
+      branch_name: 'master')
+
+    project.repository.create_file(
+      project.creator,
+      '.gitlab-ci.yml',
+      config_yaml_without_inputs,
+      message: 'Add CI',
+      branch_name: 'feature-no-inputs')
+
+    project.repository.create_file(
+      project.creator,
+      '.gitlab-ci.yml',
+      config_yaml_with_rules,
+      message: 'Add CI with rules',
+      branch_name: 'feature-with-rules')
+  end
+
+  context 'when current user has access to the project' do
+    before_all do
+      project.add_developer(user)
+    end
+
+    let(:service) do
+      Ci::PipelineCreation::FindPipelineInputsService.new(
+        current_user: user,
+        project: project,
+        ref: ref
+      )
+    end
+
+    before do
+      allow(Ci::PipelineCreation::FindPipelineInputsService)
+        .to receive(:new)
+        .and_return(service)
+      synchronous_reactive_cache(service)
+    end
+
+    context 'when inputs exist' do
+      let(:ref) { 'master' }
+
+      it 'returns the inputs' do
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data['project']).to eq({
+          'ciPipelineCreationInputs' => [
+            {
+              'name' => 'mandatory_string_input',
+              'type' => 'STRING',
+              'description' => nil,
+              'required' => true,
+              'default' => nil,
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'mandatory_number_input',
+              'type' => 'NUMBER',
+              'description' => nil,
+              'required' => true,
+              'default' => nil,
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'mandatory_boolean_input',
+              'type' => 'BOOLEAN',
+              'description' => 'Mandatory boolean input',
+              'required' => true,
+              'default' => nil,
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'mandatory_array_input',
+              'type' => 'ARRAY',
+              'description' => nil,
+              'required' => true,
+              'default' => nil,
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'optional_string_input',
+              'type' => 'STRING',
+              'description' => nil,
+              'required' => false,
+              'default' => 'default-value',
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'optional_number_input',
+              'type' => 'NUMBER',
+              'description' => nil,
+              'required' => false,
+              'default' => 1,
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'optional_boolean_input',
+              'type' => 'BOOLEAN',
+              'description' => 'Optional boolean input',
+              'required' => false,
+              'default' => true,
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'optional_array_input',
+              'type' => 'ARRAY',
+              'description' => nil,
+              'required' => false,
+              'default' => [{ 'a' => 1 }, { 'b' => 2 }],
+              'options' => nil,
+              'regex' => nil
+            },
+            {
+              'name' => 'string_input_with_options',
+              'type' => 'STRING',
+              'description' => nil,
+              'required' => true,
+              'default' => nil,
+              'options' => %w[option1 option2 option3],
+              'regex' => nil
+            },
+            {
+              'name' => 'number_input_with_options',
+              'type' => 'NUMBER',
+              'description' => nil,
+              'required' => true,
+              'default' => nil,
+              'options' => [1, 2, 3],
+              'regex' => nil
+            },
+            {
+              'name' => 'string_input_with_regex',
+              'type' => 'STRING',
+              'description' => nil,
+              'required' => true,
+              'default' => nil,
+              'options' => nil,
+              'regex' => '[a-z]+'
+            }
+          ]
+        })
+      end
+    end
+
+    context 'when input does not exist' do
+      let(:ref) { 'feature-no-inputs' }
+
+      it 'returns no inputs' do
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data['project'])
+          .to eq({ 'ciPipelineCreationInputs' => [] })
+      end
+    end
+
+    context 'when ref is not found' do
+      let(:ref) { 'non-existent-ref' }
+
+      it 'returns an error' do
+        post_graphql(query, current_user: user)
+
+        expect(graphql_errors)
+          .to include(a_hash_including('message' => 'The branch or tag does not exist'))
+      end
+    end
+
+    context 'when inputs have rules' do
+      let(:ref) { 'feature-with-rules' }
+
+      let(:query_with_rules) do
+        <<~GQL
+          query {
+            project(fullPath: "#{project.full_path}") {
+              ciPipelineCreationInputs(ref: "#{ref}") {
+                name
+                type
+                description
+                required
+                default
+                options
+                rules {
+                  if
+                  options
+                  default
+                }
+              }
+            }
+          }
+        GQL
+      end
+
+      it 'returns inputs with rules' do
+        post_graphql(query_with_rules, current_user: user)
+
+        expect(graphql_data['project']['ciPipelineCreationInputs']).to contain_exactly(
+          a_hash_including(
+            'name' => 'environment',
+            'type' => 'STRING',
+            'default' => 'dev',
+            'options' => %w[dev staging prod],
+            'rules' => nil
+          ),
+          a_hash_including(
+            'name' => 'instance_type',
+            'type' => 'STRING',
+            'rules' => contain_exactly(
+              a_hash_including(
+                'if' => '$[[ inputs.environment ]] == "dev"',
+                'options' => %w[t3.micro t3.small],
+                'default' => 't3.micro'
+              ),
+              a_hash_including(
+                'if' => '$[[ inputs.environment ]] == "prod"',
+                'options' => %w[m5.large m5.xlarge],
+                'default' => 'm5.large'
+              )
+            )
+          )
+        )
+      end
+    end
+
+    context 'when inputs have mixed types and rules' do
+      let_it_be(:config_yaml_comprehensive) do
+        <<~YAML
+        spec:
+          inputs:
+            string_with_description:
+              type: string
+              description: 'A string input with description'
+              default: 'test-value'
+            string_with_options:
+              type: string
+              options: ['option1', 'option2', 'option3']
+              default: 'option1'
+            string_with_regex:
+              type: string
+              regex: '^[a-z]+$'
+              default: 'abc'
+            number_input:
+              type: number
+              default: 42
+            boolean_input:
+              type: boolean
+              default: true
+            required_input:
+              type: string
+            rules_based_input:
+              type: string
+              rules:
+                - if: '$[[ inputs.string_with_options ]] == "option1"'
+                  options: ['a', 'b']
+                  default: 'a'
+                - if: '$[[ inputs.string_with_options ]] == "option2"'
+                  options: ['c', 'd']
+                  default: 'c'
+        ---
+        job:
+          script: echo "All input types"
+        YAML
+      end
+
+      let(:comprehensive_query) do
+        <<~GQL
+          query {
+            project(fullPath: "#{project.full_path}") {
+              ciPipelineCreationInputs(ref: "#{ref}") {
+                name
+                type
+                description
+                required
+                default
+                options
+                regex
+                rules {
+                  if
+                  options
+                  default
+                }
+              }
+            }
+          }
+        GQL
+      end
+
+      let(:ref) { 'feature-comprehensive' }
+
+      before_all do
+        project.repository.create_file(
+          project.creator,
+          '.gitlab-ci.yml',
+          config_yaml_comprehensive,
+          message: 'Add comprehensive inputs CI',
+          branch_name: 'feature-comprehensive')
+      end
+
+      it 'returns all input types correctly formatted as hashes' do
+        post_graphql(comprehensive_query, current_user: user)
+
+        inputs = graphql_data['project']['ciPipelineCreationInputs']
+
+        expect(inputs).to contain_exactly(
+          a_hash_including(
+            'name' => 'string_with_description',
+            'type' => 'STRING',
+            'description' => 'A string input with description',
+            'default' => 'test-value',
+            'required' => false,
+            'options' => nil,
+            'regex' => nil,
+            'rules' => nil
+          ),
+          a_hash_including(
+            'name' => 'string_with_options',
+            'type' => 'STRING',
+            'default' => 'option1',
+            'options' => %w[option1 option2 option3],
+            'required' => false,
+            'regex' => nil,
+            'rules' => nil
+          ),
+          a_hash_including(
+            'name' => 'string_with_regex',
+            'type' => 'STRING',
+            'default' => 'abc',
+            'regex' => '^[a-z]+$',
+            'required' => false,
+            'options' => nil,
+            'rules' => nil
+          ),
+          a_hash_including(
+            'name' => 'number_input',
+            'type' => 'NUMBER',
+            'default' => 42,
+            'required' => false,
+            'options' => nil,
+            'regex' => nil,
+            'rules' => nil
+          ),
+          a_hash_including(
+            'name' => 'boolean_input',
+            'type' => 'BOOLEAN',
+            'default' => true,
+            'required' => false,
+            'options' => nil,
+            'regex' => nil,
+            'rules' => nil
+          ),
+          a_hash_including(
+            'name' => 'required_input',
+            'type' => 'STRING',
+            'required' => true,
+            'default' => nil,
+            'options' => nil,
+            'regex' => nil,
+            'rules' => nil
+          ),
+          a_hash_including(
+            'name' => 'rules_based_input',
+            'type' => 'STRING',
+            'required' => false,
+            'rules' => contain_exactly(
+              a_hash_including(
+                'if' => '$[[ inputs.string_with_options ]] == "option1"',
+                'options' => %w[a b],
+                'default' => 'a'
+              ),
+              a_hash_including(
+                'if' => '$[[ inputs.string_with_options ]] == "option2"',
+                'options' => %w[c d],
+                'default' => 'c'
+              )
+            )
+          )
+        )
+      end
+
+      it 'successfully queries all input fields' do
+        expect { post_graphql(comprehensive_query, current_user: user) }.not_to raise_error
+        expect(graphql_errors).to be_nil
+      end
+    end
+
+    context 'when cache is empty' do
+      let(:ref) { 'master' }
+
+      before do
+        # Override the parent `before` block to simulate cache miss
+        allow(Ci::PipelineCreation::FindPipelineInputsService)
+          .to receive(:new)
+          .and_call_original
+      end
+
+      context 'when failOnCacheMiss is false' do
+        let(:query_without_fail) do
+          <<~GQL
+            query {
+              project(fullPath: "#{project.full_path}") {
+                ciPipelineCreationInputs(ref: "#{ref}", failOnCacheMiss: false) {
+                  name
+                  type
+                }
+              }
+            }
+          GQL
+        end
+
+        it 'returns nothing' do
+          post_graphql(query_without_fail, current_user: user)
+
+          expect(graphql_data['project']['ciPipelineCreationInputs']).to be_nil
+        end
+      end
+
+      context 'when failOnCacheMiss is true' do
+        let(:query_with_fail) do
+          <<~GQL
+            query {
+              project(fullPath: "#{project.full_path}") {
+                ciPipelineCreationInputs(ref: "#{ref}", failOnCacheMiss: true) {
+                  name
+                  type
+                }
+              }
+            }
+          GQL
+        end
+
+        it 'returns an error' do
+          post_graphql(query_with_fail, current_user: user)
+
+          expect(graphql_errors).to include(
+            a_hash_including(
+              'message' => 'Failed to retrieve pipeline inputs from cache.'
+            )
+          )
+        end
+      end
+    end
+
+    context 'when inputs have rules with conditionTree' do
+      let_it_be(:config_yaml_with_boolean_rules) do
+        <<~YAML
+        spec:
+          inputs:
+            enable_feature:
+              type: boolean
+              default: false
+            feature_option:
+              type: string
+              rules:
+                - if: '$[[ inputs.enable_feature ]] == true'
+                  options: ['option1', 'option2']
+                  default: 'option1'
+        ---
+        job:
+          script: echo hello world
+        YAML
+      end
+
+      let(:ref) { 'feature-with-boolean-rules' }
+
+      let(:query_with_condition_tree) do
+        <<~GQL
+          query {
+            project(fullPath: "#{project.full_path}") {
+              ciPipelineCreationInputs(ref: "#{ref}") {
+                name
+                type
+                rules {
+                  conditionTree {
+                    operator
+                    field
+                    value
+                    children {
+                      operator
+                      field
+                      value
+                    }
+                  }
+                  options
+                  default
+                }
+              }
+            }
+          }
+        GQL
+      end
+
+      before_all do
+        project.repository.create_file(
+          project.creator,
+          '.gitlab-ci.yml',
+          config_yaml_with_boolean_rules,
+          message: 'Add CI with boolean rules',
+          branch_name: 'feature-with-boolean-rules')
+      end
+
+      it 'returns conditionTree with boolean values properly serialized' do
+        post_graphql(query_with_condition_tree, current_user: user)
+
+        expect(graphql_data['project']['ciPipelineCreationInputs']).to include(
+          a_hash_including(
+            'name' => 'feature_option',
+            'type' => 'STRING',
+            'rules' => contain_exactly(
+              a_hash_including(
+                'conditionTree' => a_hash_including(
+                  'operator' => 'equals',
+                  'field' => 'enable_feature',
+                  'value' => true,
+                  'children' => nil
+                ),
+                'options' => %w[option1 option2],
+                'default' => 'option1'
+              )
+            )
+          )
+        )
+      end
+    end
+  end
+
+  context 'when current user cannot access the project' do
+    let(:ref) { 'master' }
+
+    before_all do
+      project.add_guest(user)
+    end
+
+    it 'returns an error' do
+      post_graphql(query, current_user: user)
+
+      expect(graphql_data['project'])
+        .to eq('ciPipelineCreationInputs' => nil)
+    end
+  end
+end

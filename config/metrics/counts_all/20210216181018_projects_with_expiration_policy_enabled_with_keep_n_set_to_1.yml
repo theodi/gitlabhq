@@ -1,0 +1,22 @@
+---
+data_category: optional
+key_path: counts.projects_with_expiration_policy_enabled_with_keep_n_set_to_1
+description: A count of projects with the cleanup policy set to keep 1 tag
+product_group: container_registry
+product_categories:
+- container_registry
+value_type: number
+status: active
+time_frame: all
+data_source: database
+instrumentation_class: DistinctCountProjectsWithExpirationPolicyMetric
+options:
+  enabled: true
+  keep_n: 1
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

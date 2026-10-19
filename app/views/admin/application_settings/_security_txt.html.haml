@@ -1,0 +1,17 @@
+= render ::Layouts::SettingsBlockComponent.new(s_('SecurityTxt|Add security contact information'),
+  id: 'js-security-txt-setting',
+  expanded: expanded) do |c|
+  - c.with_description do
+    = s_('SecurityTxt|Configure a %{codeOpen}security.txt%{codeClose} file.').html_safe % {codeOpen: '<code>'.html_safe, codeClose: '</code>'.html_safe}
+    = link_to _('Learn more.'), help_page_path('administration/settings/security_contact_information.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-security-txt-setting'), html: { class: 'fieldset-form', id: 'security-txt-settings' } do |f|
+      = form_errors(@application_setting)
+
+      .form-group
+        = f.label :security_txt_content do
+          = s_("SecurityTxt|Content for security.txt")
+        = f.text_area :security_txt_content, class: 'form-control gl-form-input', rows: 8
+        .form-text.gl-text-subtle
+          = s_('SecurityTxt|When present, this will be publicly available at %{codeOpen}https://gitlab.example.com/.well-known/security.txt%{codeClose}. Maximum 2048 characters.').html_safe % {codeOpen: '<code>'.html_safe, codeClose: '</code>'.html_safe}
+      = f.submit _('Save changes'), pajamas_button: true

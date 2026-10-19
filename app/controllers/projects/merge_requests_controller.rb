@@ -1,285 +1,810 @@
-require 'gitlab/satellite/satellite'
+# frozen_string_literal: true
 
-class Projects::MergeRequestsController < Projects::ApplicationController
-  before_action :module_enabled
-  before_action :merge_request, only: [
-    :edit, :update, :show, :diffs, :commits, :automerge, :automerge_check,
-    :ci_status, :toggle_subscription
+class Projects::MergeRequestsController < Projects::MergeRequests::ApplicationController
+  include ToggleSubscriptionAction
+  include IssuableActions
+  include RendersCommits
+  include RendersAssignees
+  include ToggleAwardEmoji
+  include IssuableCollections
+  include RecordUserLastActivity
+  include SourcegraphDecorator
+  include DiffHelper
+  include Gitlab::Cache::Helpers
+  include MergeRequestsHelper
+  include ParseCommitDate
+  include RapidDiffs::Resource
+  include ProductAnalyticsTracking
+
+  prepend_before_action(only: [:index]) { authenticate_sessionless_user!(:rss, permission: :read_merge_request) }
+  skip_before_action :merge_request, only: [:index, :bulk_update, :export_csv]
+  before_action :apply_diff_view_cookie!, only: [:show, :diffs]
+  before_action :disable_query_limiting, only: [:assign_related_issues, :update, :show]
+  before_action :authorize_update_issuable!, only: [:close, :edit, :update, :remove_wip, :sort]
+  before_action :authorize_read_diff_head_pipeline!, only: [
+    :test_reports,
+    :exposed_artifacts,
+    :coverage_reports,
+    :terraform_reports,
+    :accessibility_reports,
+    :codequality_reports,
+    :codequality_mr_diff_reports
   ]
-  before_action :closes_issues, only: [:edit, :update, :show, :diffs, :commits]
-  before_action :validates_merge_request, only: [:show, :diffs, :commits]
-  before_action :define_show_vars, only: [:show, :diffs, :commits]
+  before_action :set_issuables_index, only: [:index]
+  before_action :check_search_rate_limit!, only: [:index], if: -> { permitted_params[:search].present? }
+  before_action :authenticate_user!, only: [:assign_related_issues]
+  before_action :check_user_can_push_to_source_branch!, only: [:rebase]
 
-  # Allow read any merge_request
-  before_action :authorize_read_merge_request!
+  before_action only: [:index, :show] do
+    push_frontend_feature_flag(:show_merge_request_status_draft, current_user)
+  end
 
-  # Allow write(create) merge_request
-  before_action :authorize_write_merge_request!, only: [:new, :create]
+  before_action only: [:show, :diffs, :reports] do
+    push_frontend_feature_flag(:mr_pipelines_graphql, project)
+    push_frontend_feature_flag(:rapid_diffs_on_mr_show, current_user, type: :beta)
+    push_frontend_feature_flag(:explicit_mr_work_item_relations, project)
+    push_frontend_feature_flag(:merge_button_shimmer, current_user, type: :beta)
+    push_frontend_feature_flag(:merge_request_reports_widget_group, project)
+    gon.push({ rapid_diffs_page_enabled: rapid_diffs_page_enabled? })
+  end
 
-  # Allow modify merge_request
-  before_action :authorize_modify_merge_request!, only: [:close, :edit, :update, :sort]
+  before_action do
+    push_frontend_feature_flag(:merge_widget_stop_polling, current_user)
+    push_frontend_feature_flag(:improved_review_email, project)
+  end
+
+  around_action :allow_gitaly_ref_name_caching, only: [:index, :show, :diffs, :reports, :discussions]
+
+  after_action :log_merge_request_show, only: [:show, :diffs, :reports]
+
+  feature_category :code_review_workflow, [
+    :assign_related_issues, :bulk_update, :cancel_auto_merge,
+    :commit_change_content, :commits, :context_commits, :destroy,
+    :discussions, :edit, :index, :merge, :rebase, :remove_wip,
+    :show, :diffs, :reports, :toggle_award_emoji, :toggle_subscription, :update,
+    :versions
+  ]
+
+  feature_category :code_testing, [:test_reports, :coverage_reports]
+  feature_category :code_quality, [:codequality_reports, :codequality_mr_diff_reports]
+  feature_category :code_testing, [:accessibility_reports]
+  feature_category :infrastructure_as_code, [:terraform_reports]
+  feature_category :continuous_integration, [:pipeline_status, :pipelines, :exposed_artifacts]
+  feature_category :continuous_delivery, [:ci_environments_status]
+
+  urgency :high, [:export_csv]
+  urgency :low, [
+    :index,
+    :show,
+    :diffs,
+    :diff_files_metadata,
+    :diffs_stats,
+    :reports,
+    :commits,
+    :bulk_update,
+    :edit,
+    :update,
+    :cancel_auto_merge,
+    :merge,
+    :ci_environments_status,
+    :destroy,
+    :rebase,
+    :discussions,
+    :pipelines,
+    :coverage_reports,
+    :test_reports,
+    :codequality_mr_diff_reports,
+    :codequality_reports,
+    :terraform_reports,
+    :versions
+  ]
+  urgency :low, [:pipeline_status, :pipelines, :exposed_artifacts]
+
+  helper_method :rapid_diffs_page_enabled?
+
+  track_internal_event :diffs, name: 'view_merge_request_diffs',
+    conditions: -> { !rapid_diffs_page_enabled? }, additional_properties: { label: 'legacy_diffs' }
+  track_internal_event :diffs, name: 'view_merge_request_diffs',
+    conditions: -> { rapid_diffs_page_enabled? }, additional_properties: { label: 'rapid_diffs' }
 
   def index
-    terms = params['issue_search']
-    @merge_requests = get_merge_requests_collection
-
-    if terms.present?
-      if terms =~ /\A[#!](\d+)\z/
-        @merge_requests = @merge_requests.where(iid: $1)
-      else
-        @merge_requests = @merge_requests.full_search(terms)
-      end
-    end
-
-    @merge_requests = @merge_requests.page(params[:page]).per(PER_PAGE)
+    @merge_requests = @issuables
 
     respond_to do |format|
       format.html
-      format.json do
-        render json: {
-          html: view_to_html_string("projects/merge_requests/_merge_requests")
-        }
-      end
+      format.atom { render layout: 'xml' }
     end
   end
 
   def show
-    @note_counts = Note.where(commit_id: @merge_request.commits.map(&:id)).
-      group(:commit_id).count
-
-    respond_to do |format|
-      format.html
-      format.json { render json: @merge_request }
-      format.diff { render text: @merge_request.to_diff(current_user) }
-      format.patch { render text: @merge_request.to_patch(current_user) }
-    end
+    show_merge_request
   end
 
   def diffs
-    @commit = @merge_request.last_commit
-    @comments_allowed = @reply_allowed = true
-    @comments_target = {
-      noteable_type: 'MergeRequest',
-      noteable_id: @merge_request.id
-    }
-    @line_notes = @merge_request.notes.where("line_code is not null")
+    return show_merge_request unless rapid_diffs_page_enabled?
 
-    respond_to do |format|
-      format.html
-      format.json { render json: { html: view_to_html_string("projects/merge_requests/show/_diffs") } }
-    end
+    show_rapid_diffs
+  end
+
+  def reports
+    show_merge_request
   end
 
   def commits
-    render 'show'
+    # Get context commits from repository
+    @context_commits =
+      set_commits_for_rendering(
+        @merge_request.recent_context_commits
+      )
+
+    per_page = [
+      (permitted_params[:per_page] || MergeRequestDiff::COMMITS_SAFE_SIZE).to_i,
+      MergeRequestDiff::COMMITS_SAFE_SIZE
+    ].min
+    recent_commits = @merge_request
+      .recent_commits(load_from_gitaly: true, limit: per_page, page: permitted_params[:page])
+      .with_latest_pipeline(@merge_request.source_branch)
+      .with_markdown_cache
+    @next_page = recent_commits.next_page
+    @commits = set_commits_for_rendering(
+      recent_commits,
+      commits_count: @merge_request.commits_count
+    )
+
+    commits_count = if @merge_request.preparing?
+                      '-'
+                    else
+                      @merge_request.commits_count + @merge_request.context_commits_count
+                    end
+
+    render json: {
+      html: view_to_html_string('projects/merge_requests/_commits'),
+      next_page: @next_page,
+      count: commits_count
+    }
   end
 
-  def new
-    params[:merge_request] ||= ActionController::Parameters.new(source_project: @project)
-    @merge_request = MergeRequests::BuildService.new(project, current_user, merge_request_params).execute
+  def pipelines
+    set_pipeline_variables
+    # Capture total count before pagination to ensure accurate count regardless of current page
+    @pipelines_count = @pipelines.count
+    @pipelines = @pipelines.page(permitted_params[:page])
 
-    @target_branches = if @merge_request.target_project
-                         @merge_request.target_project.repository.branch_names
-                       else
-                         []
-                       end
+    Gitlab::PollingInterval.set_header(response, interval: 10_000)
 
-    @target_project = merge_request.target_project
-    @source_project = merge_request.source_project
-    @commits = @merge_request.compare_commits
-    @commit = @merge_request.compare_commits.last
-    @diffs = @merge_request.compare_diffs
-    @note_counts = Note.where(commit_id: @commits.map(&:id)).
-      group(:commit_id).count
+    render json: {
+      pipelines: PipelineSerializer
+        .new(project: @project, current_user: @current_user)
+        .with_pagination(request, response)
+        .represent(
+          @pipelines,
+          disable_coverage: true,
+          disable_failed_builds: true,
+          disable_manual_and_scheduled_actions: true,
+          preload: true,
+          preload_statuses: false,
+          preload_downstream_statuses: false,
+          disable_stage_actions: true
+        ),
+      count: {
+        all: @pipelines_count
+      }
+    }
+  end
+
+  def context_commits
+    # Get commits from repository
+    # or from cache if already merged
+    commits = ContextCommitsFinder.new(project, @merge_request, {
+      search: context_commits_params[:search],
+      author: context_commits_params[:author],
+      committed_before: convert_date_to_epoch(context_commits_params[:committed_before]),
+      committed_after: convert_date_to_epoch(context_commits_params[:committed_after]),
+      limit: context_commits_params[:limit]
+    }).execute
+    render json: CommitEntity.represent(commits, { type: :full, request: merge_request })
+  end
+
+  def test_reports
+    reports_response(@merge_request.compare_test_reports(current_user))
+  end
+
+  def accessibility_reports
+    if @merge_request.has_accessibility_reports?
+      reports_response(@merge_request.compare_accessibility_reports(current_user))
+    else
+      head :no_content
+    end
+  end
+
+  def coverage_reports
+    if @merge_request.has_coverage_reports?
+      reports_response(@merge_request.find_coverage_reports)
+    else
+      head :no_content
+    end
+  end
+
+  # documented in doc/development/rails_endpoints/index.md
+  def codequality_mr_diff_reports
+    reports_response(@merge_request.find_codequality_mr_diff_reports, head_pipeline)
+  end
+
+  # documented in doc/development/rails_endpoints/index.md
+  def codequality_reports
+    reports_response(@merge_request.compare_codequality_reports(current_user))
+  end
+
+  def terraform_reports
+    reports_response(@merge_request.find_terraform_reports(current_user))
+  end
+
+  def exposed_artifacts
+    if @merge_request.has_exposed_artifacts?
+      reports_response(@merge_request.find_exposed_artifacts)
+    else
+      head :no_content
+    end
   end
 
   def edit
-    @source_project = @merge_request.source_project
-    @target_project = @merge_request.target_project
-    @target_branches = @merge_request.target_project.repository.branch_names
-  end
-
-  def create
-    @target_branches ||= []
-    @merge_request = MergeRequests::CreateService.new(project, current_user, merge_request_params).execute
-
-    if @merge_request.valid?
-      redirect_to(merge_request_path(@merge_request))
-    else
-      @source_project = @merge_request.source_project
-      @target_project = @merge_request.target_project
-      render action: "new"
-    end
+    define_edit_vars
   end
 
   def update
-    @merge_request = MergeRequests::UpdateService.new(project, current_user, merge_request_params).execute(@merge_request)
-
-    if @merge_request.valid?
-      respond_to do |format|
-        format.js
-        format.html do
-          redirect_to([@merge_request.target_project.namespace.becomes(Namespace),
-                       @merge_request.target_project, @merge_request])
-        end
-        format.json do
-          render json: {
-            saved: @merge_request.valid?,
-            assignee_avatar_url: @merge_request.assignee.try(:avatar_url)
-          }
-        end
-      end
-    else
-      render "edit"
-    end
-  end
-
-  def automerge_check
-    if @merge_request.unchecked?
-      @merge_request.check_if_can_be_merged
-    end
-
-    render json: { merge_status: @merge_request.automerge_status }
-  end
-
-  def automerge
-    return access_denied! unless allowed_to_merge?
-
-    if @merge_request.automergeable?
-      AutoMergeWorker.perform_async(@merge_request.id, current_user.id, params)
-      @status = true
-    else
-      @status = false
-    end
-  end
-
-  def branch_from
-    #This is always source
-    @source_project = @merge_request.nil? ? @project : @merge_request.source_project
-    @commit = @repository.commit(params[:ref]) if params[:ref].present?
-  end
-
-  def branch_to
-    @target_project = selected_target_project
-    @commit = @target_project.commit(params[:ref]) if params[:ref].present?
-  end
-
-  def update_branches
-    @target_project = selected_target_project
-    @target_branches = @target_project.repository.branch_names
+    @merge_request = ::MergeRequests::UpdateService
+      .new(project: project, current_user: current_user, params: merge_request_update_params)
+      .execute(@merge_request)
 
     respond_to do |format|
-      format.js
+      format.html do
+        if @merge_request.errors.present?
+          define_edit_vars
+
+          render :edit
+        else
+          redirect_to project_merge_request_path(@merge_request.target_project, @merge_request)
+        end
+      end
+
+      format.json do
+        if merge_request.errors.present?
+          render json: @merge_request.errors, status: :bad_request
+        else
+          render json: serializer.represent(@merge_request, serializer: permitted_params[:serializer] || 'basic')
+        end
+      end
+    end
+  rescue ActiveRecord::StaleObjectError
+    define_edit_vars if request.format.html?
+
+    render_conflict_response
+  end
+
+  def remove_wip
+    @merge_request = ::MergeRequests::UpdateService
+      .new(project: project, current_user: current_user, params: { wip_event: 'ready' })
+      .execute(@merge_request)
+
+    render json: serialize_widget(@merge_request)
+  end
+
+  def commit_change_content
+    render partial: 'projects/merge_requests/widget/commit_change_content', layout: false
+  end
+
+  def cancel_auto_merge
+    return access_denied! unless @merge_request.can_cancel_auto_merge?(current_user)
+
+    AutoMergeService.new(project, current_user).cancel(@merge_request)
+
+    render json: serialize_widget(@merge_request)
+  end
+
+  def merge
+    access_check_result = merge_access_check
+
+    return access_check_result if access_check_result
+
+    status = merge!
+
+    Gitlab::ApplicationContext.push(merge_action_status: status.to_s)
+
+    if @merge_request.merge_error
+      render json: { status: status, merge_error: @merge_request.merge_error }
+    else
+      render json: { status: status }
     end
   end
 
-  def ci_status
-    ci_service = @merge_request.source_project.ci_service
-    status = ci_service.commit_status(merge_request.last_commit.sha, merge_request.source_branch)
+  def assign_related_issues
+    result = ::MergeRequests::AssignIssuesService
+      .new(project: project, current_user: current_user, params: { merge_request: @merge_request })
+      .execute
 
-    if ci_service.respond_to?(:commit_coverage)
-      coverage = ci_service.commit_coverage(merge_request.last_commit.sha, merge_request.source_branch)
+    case result[:count]
+    when 0
+      flash[:alert] = _("Failed to assign you issues related to the merge request.")
+    else
+      flash[:notice] = n_("An issue has been assigned to you.", "%d issues have been assigned to you.", result[:count])
     end
 
-    response = {
-      status: status,
-      coverage: coverage
-    }
-
-    render json: response
+    redirect_to(merge_request_path(@merge_request))
   end
 
-  def toggle_subscription
-    @merge_request.toggle_subscription(current_user)
+  def pipeline_status
+    render json: PipelineSerializer
+      .new(project: @project, current_user: @current_user)
+      .represent_status(head_pipeline)
+  end
 
-    render nothing: true
+  def ci_environments_status
+    environments =
+      if ci_environments_status_on_merge_result?
+        EnvironmentStatus.for_deployed_merge_request(@merge_request, current_user)
+      else
+        EnvironmentStatus.for_merge_request(@merge_request, current_user)
+      end
+
+    render json: EnvironmentStatusSerializer.new(current_user: current_user).represent(environments)
+  end
+
+  def rebase
+    # Measure the web UI rebase journey: from clicking the Rebase button here
+    # until RebaseWorker completes it. Started only on this path so the SLI is
+    # scoped to the button; rebase_async's other callers (REST API, the /rebase
+    # quick action) do not start it.
+    experience = Labkit::UserExperienceSli.start(:ui_button_rebase)
+
+    @merge_request
+      .rebase_async(current_user.id, skip_ci: Gitlab::Utils.to_boolean(merge_params[:skip_ci], default: false))
+
+    head :ok
+  rescue MergeRequest::RebaseLockTimeout => e
+    experience.error!(e.message).complete
+    render json: { merge_error: e.message }, status: :conflict
+  end
+
+  def discussions
+    super do |discussion_notes|
+      note_ids = discussion_notes.flat_map { |x| x.notes.collect(&:id) }
+      merge_request.discussions_diffs.load_highlight(diff_note_ids: note_ids)
+    end
+  end
+
+  def export_csv
+    IssuableExportCsvWorker.perform_async(:merge_request, current_user.id, project.id, finder_options.to_h) # rubocop:disable CodeReuse/Worker
+
+    index_path = project_merge_requests_path(project)
+    message = format(_('Your CSV export has started. It will be emailed to %{email} when complete.'),
+      email: current_user.notification_email_or_default)
+    redirect_to(index_path, notice: message)
+  end
+
+  def versions
+    return render_404 unless ::Feature.enabled?(:rapid_diffs_on_mr_show, current_user, type: :beta)
+
+    render json: RapidDiffs::DiffCompareVersionsEntity.represent(
+      @merge_request,
+      diff_id: rapid_diff_options[:diff_id],
+      start_sha: rapid_diff_options[:start_sha]
+    )
   end
 
   protected
 
-  def selected_target_project
-    if @project.id.to_s == params[:target_project_id] || @project.forked_project_link.nil?
-      @project
-    else
-      @project.forked_project_link.forked_from_project
+  alias_method :subscribable_resource, :merge_request
+  alias_method :issuable, :merge_request
+  alias_method :awardable, :merge_request
+
+  def sorting_field
+    MergeRequest::SORTING_PREFERENCE_FIELD
+  end
+
+  def merge_params
+    params.permit(merge_params_attributes)
+  end
+
+  def merge_params_attributes
+    MergeRequest::KNOWN_MERGE_PARAMS
+  end
+
+  def auto_merge_requested?
+    # Support params[:merge_when_pipeline_succeeds] during the transition period
+    auto_merge_params[:auto_merge_strategy].present? ||
+      auto_merge_params[:merge_when_pipeline_succeeds].present?
+  end
+
+  private
+
+  def permitted_params
+    params.permit(:search, :per_page, :page, :file, :serializer)
+  end
+
+  def diff_lookup_params
+    params.permit(:diff_id, :start_sha)
+  end
+
+  def merge_action_params
+    params.permit(:sha, :squash, :merge_request_diff_head_sha, :environment_target)
+  end
+
+  def context_commits_params
+    params.permit(:search, :author, :committed_before, :committed_after, :limit)
+  end
+
+  def auto_merge_params
+    params.permit(:auto_merge_strategy, :merge_when_pipeline_succeeds)
+  end
+
+  def rapid_diffs_params
+    params.permit(:rapid_diffs, :rapid_diffs_disabled)
+  end
+
+  def set_issuables_index
+    return if request.format.html?
+
+    super
+  end
+
+  def show_rapid_diffs
+    @js_action_name = 'rapid_diffs'
+    rapid_diffs_presenter.baseline_offset = 5
+
+    show_merge_request
+  end
+
+  def show_merge_request
+    close_merge_request_if_no_source_project
+    @merge_request.check_mergeability(async: true)
+
+    # We need to handle the exception that the auto merge was missed
+    # For example, the approval group was changed and now the approvals are passing
+    if @merge_request.auto_merge_enabled? && @merge_request.mergeability_checks_pass?
+      Gitlab::EventStore.publish(
+        MergeRequests::MergeableEvent.new(
+          data: { merge_request_id: @merge_request.id }
+        )
+      )
+    end
+
+    display_limit_warnings
+
+    respond_to do |format|
+      format.html do
+        render_html_page
+      end
+
+      format.json do
+        Gitlab::PollingInterval.set_header(response, interval: 10_000)
+
+        if permitted_params[:serializer] == 'sidebar_extras'
+          cache_context = [
+            permitted_params[:serializer],
+            current_user&.cache_key,
+            @merge_request.merge_request_assignees.map(&:cache_key),
+            @merge_request.merge_request_reviewers.map(&:cache_key)
+          ]
+
+          render_cached(
+            @merge_request,
+            with: serializer,
+            cache_context: ->(_) { [Digest::SHA256.hexdigest(cache_context.to_s)] },
+            serializer: permitted_params[:serializer]
+          )
+        else
+          render json: serializer.represent(@merge_request, serializer: permitted_params[:serializer])
+        end
+      end
+
+      format.patch do
+        next render_404 unless @merge_request.diff_refs
+
+        send_git_patch @project.repository, @merge_request.diff_refs
+      end
+
+      format.diff do
+        next render_404 unless @merge_request.diff_refs
+
+        send_git_diff @project.repository, @merge_request.diff_refs
+      end
     end
   end
 
-  def merge_request
-    @merge_request ||= @project.merge_requests.find_by!(iid: params[:id])
-  end
+  def render_html_page
+    preload_assignees_for_render(@merge_request)
 
-  def closes_issues
-    @closes_issues ||= @merge_request.closes_issues
-  end
-
-  def authorize_modify_merge_request!
-    return render_404 unless can?(current_user, :modify_merge_request, @merge_request)
-  end
-
-  def authorize_admin_merge_request!
-    return render_404 unless can?(current_user, :admin_merge_request, @merge_request)
-  end
-
-  def module_enabled
-    return render_404 unless @project.merge_requests_enabled
-  end
-
-  def validates_merge_request
-    # If source project was removed (Ex. mr from fork to origin)
-    return invalid_mr unless @merge_request.source_project
-
-    # Show git not found page
-    # if there is no saved commits between source & target branch
-    if @merge_request.commits.blank?
-      # and if target branch doesn't exist
-      return invalid_mr unless @merge_request.target_branch_exists?
-
-      # or if source branch doesn't exist
-      return invalid_mr unless @merge_request.source_branch_exists?
-    end
-  end
-
-  def define_show_vars
     # Build a note object for comment form
     @note = @project.notes.new(noteable: @merge_request)
-    @notes = @merge_request.mr_and_commit_notes.inc_author.fresh
-    @discussions = Note.discussions_from_notes(@notes)
+
     @noteable = @merge_request
 
-    # Get commits from repository
-    # or from cache if already merged
-    @commits = @merge_request.commits
+    @commits_count = if @merge_request.preparing?
+                       0
+                     else
+                       @merge_request.commits_count.to_i + @merge_request.context_commits_count.to_i
+                     end
 
-    @merge_request_diff = @merge_request.merge_request_diff
-    @allowed_to_merge = allowed_to_merge?
-    @show_merge_controls = @merge_request.open? && @commits.any? && @allowed_to_merge
-    @source_branch = @merge_request.source_project.repository.find_branch(@merge_request.source_branch).try(:name)
+    @diffs_count = get_diffs_count
+    @issuable_sidebar = serializer.represent(@merge_request, serializer: 'sidebar')
+    @current_user_data = Gitlab::Json
+      .dump(UserSerializer.new(project: @project)
+      .represent(current_user, {}, MergeRequestCurrentUserEntity))
+    @show_whitespace_default = current_user.nil? || current_user.show_whitespace_in_diffs
+    @file_by_file_default = current_user&.view_diffs_file_by_file
+    if @merge_request.has_coverage_reports?
+      @coverage_path = coverage_reports_project_merge_request_path(@project, @merge_request, format: :json)
+    end
 
-    if @merge_request.locked_long_ago?
-      @merge_request.unlock_mr
-      @merge_request.close
+    @update_current_user_path = expose_path(api_v4_user_preferences_path)
+    @endpoint_metadata_url = endpoint_metadata_url(@project, @merge_request)
+    @endpoint_diff_batch_url = endpoint_diff_batch_url(@project, @merge_request)
+    @linked_file_url = linked_file_url(@project, @merge_request) if permitted_params[:file]
+
+    @diffs_batch_cache_key = @merge_request.diffs_batch_cache_key
+
+    set_pipeline_variables
+
+    @number_of_pipelines = @pipelines.size
+
+    render action: @js_action_name || action_name
+  end
+
+  def get_diffs_count
+    return if commit
+    return @merge_request.context_commits_diff.raw_diffs.size if show_only_context_commits?
+
+    diff_id = diff_lookup_params[:diff_id]
+    return @merge_request.merge_request_diffs.find_by_id(diff_id)&.size if diff_id
+
+    start_sha = diff_lookup_params[:start_sha]
+    return @merge_request.merge_head_diff.size if @merge_request.diffable_merge_ref? && start_sha.blank?
+
+    @merge_request.diff_size
+  end
+
+  def merge_request_update_params
+    merge_request_params.merge!(merge_action_params.slice(:merge_request_diff_head_sha))
+  end
+
+  def head_pipeline
+    pipeline = @merge_request.head_pipeline
+    pipeline if can?(current_user, :read_pipeline, pipeline)
+  end
+  strong_memoize_attr :head_pipeline
+
+  def ci_environments_status_on_merge_result?
+    merge_action_params[:environment_target] == 'merge_commit'
+  end
+
+  def target_branch_missing?
+    @merge_request.has_no_commits? && !@merge_request.target_branch_exists?
+  end
+
+  def merge!
+    if auto_merge_requested?
+      return :failed unless @merge_request.auto_merge_eligible?(strategy: auto_merge_strategy)
+    else
+      return :failed unless @merge_request.mergeable?
+    end
+
+    squashing = merge_action_params.fetch(:squash, false)
+    merge_service = ::MergeRequests::MergeService
+      .new(project: @project, current_user: current_user, params: merge_params)
+
+    unless merge_service.hooks_validation_pass?(@merge_request, validate_squash_message: squashing)
+      return :hook_validation_error
+    end
+
+    return :sha_mismatch if merge_action_params[:sha] != @merge_request.diff_head_sha
+
+    @merge_request.update(merge_error: nil, squash: squashing)
+
+    if auto_merge_requested?
+      if merge_request.auto_merge_enabled?
+        # TODO: We should have a dedicated endpoint for updating merge params.
+        #       See https://gitlab.com/gitlab-org/gitlab-foss/issues/63130.
+        AutoMergeService.new(project, current_user, merge_params).update(merge_request)
+      else
+        AutoMergeService.new(project, current_user, merge_params)
+          .execute(
+            merge_request,
+            auto_merge_strategy
+          )
+      end
+    else
+      # Measure the immediate web merge journey end to end: from accepting the
+      # merge here until MergeWorker completes it. This captures Sidekiq enqueue
+      # and execution latency that no single request can measure. Started only on
+      # this path so the SLI is scoped to immediate web merges; MergeWorker's
+      # other callers (GraphQL, auto-merge) do not start it.
+      Labkit::UserExperienceSli.start(:immediate_web_merge)
+
+      @merge_request.merge_async(current_user.id, merge_params)
+
+      :success
     end
   end
 
-  def allowed_to_merge?
-    allowed_to_push_code?(project, @merge_request.target_branch)
+  def serialize_widget(merge_request)
+    cached_data = serializer.represent(merge_request, serializer: 'poll_cached_widget')
+    widget_data = serializer.represent(merge_request, serializer: 'poll_widget')
+    cached_data.merge!(widget_data)
   end
 
-  def invalid_mr
-    # Render special view for MR with removed source or target branch
-    render 'invalid'
+  def serializer
+    @serializer ||= MergeRequestSerializer.new(current_user: current_user, project: merge_request.project)
   end
 
-  def allowed_to_push_code?(project, branch)
-    ::Gitlab::GitAccess.new(current_user, project).can_push_to_branch?(branch)
+  def define_edit_vars
+    @source_project = @merge_request.source_project
+    @target_project = @merge_request.target_project
+    @noteable = @merge_request
+
+    # FIXME: We have to assign a presenter to another instance variable
+    # due to class_name checks being made with issuable classes
+    @mr_presenter = @merge_request.present(current_user: current_user)
   end
 
-  def merge_request_params
-    params.require(:merge_request).permit(
-      :title, :assignee_id, :source_project_id, :source_branch,
-      :target_project_id, :target_branch, :milestone_id,
-      :state_event, :description, :task_num, label_ids: []
+  def finder_type
+    MergeRequestsFinder
+  end
+
+  def check_user_can_push_to_source_branch!
+    result = MergeRequests::RebaseService
+      .new(project: @merge_request.source_project, current_user: current_user)
+      .validate(@merge_request)
+
+    return if result.success?
+
+    render json: { merge_error: result.message }, status: :forbidden
+  end
+
+  def merge_access_check
+    access_denied! unless @merge_request.can_be_merged_by?(current_user)
+  end
+
+  def disable_query_limiting
+    # Also see https://gitlab.com/gitlab-org/gitlab/-/issues/20827
+    Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/20824')
+  end
+
+  def reports_response(report_comparison, pipeline = nil)
+    if pipeline&.active?
+      ::Gitlab::PollingInterval.set_header(response, interval: 3000)
+
+      return render json: '', status: :no_content
+    end
+
+    case report_comparison[:status]
+    when :parsing
+      ::Gitlab::PollingInterval.set_header(response, interval: 3000)
+
+      render json: '', status: :no_content
+    when :parsed
+      render json: Gitlab::Json.dump(report_comparison[:data]), status: :ok
+    when :error
+      render json: {
+               errors: [report_comparison[:status_reason]],
+               status_reason: report_comparison[:status_reason]
+             },
+        status: :bad_request
+    else
+      raise "Failed to build comparison response as comparison yielded unknown status '#{report_comparison[:status]}'"
+    end
+  end
+
+  def log_merge_request_show
+    return unless current_user && @merge_request
+
+    ::Gitlab::Search::RecentMergeRequests.new(user: current_user).log_view(@merge_request)
+  end
+
+  def authorize_read_diff_head_pipeline!
+    render_404 unless can?(current_user, :read_build, merge_request.diff_head_pipeline)
+  end
+
+  def show_whitespace
+    current_user&.show_whitespace_in_diffs ? '0' : '1'
+  end
+
+  def endpoint_metadata_url(project, merge_request)
+    params = request.query_parameters.merge(view: 'inline', diff_head: true, w: show_whitespace)
+
+    diffs_metadata_project_json_merge_request_path(project, merge_request, 'json', params)
+  end
+
+  def endpoint_diff_batch_url(project, merge_request)
+    per_page = current_user&.view_diffs_file_by_file ? '1' : DIFF_BATCH_ENDPOINT_PER_PAGE.to_s
+    params = request
+      .query_parameters
+      .merge(view: 'inline', diff_head: true, w: show_whitespace, page: '0', per_page: per_page)
+    params[:ck] = merge_request.diffs_batch_cache_key if merge_request.diffs_batch_cache_key
+
+    diffs_batch_project_json_merge_request_path(project, merge_request, 'json', params)
+  end
+
+  def linked_file_url(project, merge_request)
+    diff_by_file_hash_namespace_project_merge_request_path(
+      format: 'json',
+      id: merge_request.iid,
+      namespace_id: project&.namespace.to_param,
+      project_id: project&.path,
+      file_hash: permitted_params[:file],
+      diff_head: true
     )
   end
+
+  def append_info_to_payload(payload)
+    super
+
+    return unless action_name == 'diffs' && @merge_request&.merge_request_diff.present?
+
+    payload[:metadata] ||= {}
+    payload[:metadata]['meta.diffs_files_count'] = @merge_request.merge_request_diff.files_count
+  end
+
+  def display_limit_warnings
+    if @merge_request.reached_versions_limit?
+      flash[:alert] = format(
+        _("This merge request has reached the maximum limit of %{limit} versions and cannot be updated further. " \
+          "Close this merge request and create a new one instead."), limit: Gitlab::CurrentSettings.diff_max_versions)
+      return
+    end
+
+    return unless @merge_request.reached_diff_commits_limit?
+
+    flash[:alert] = format(
+      _("This merge request has reached the maximum limit of %{limit} diff commits and cannot be updated further. " \
+        "Close this merge request and create a new one instead."), limit: Gitlab::CurrentSettings.diff_max_commits)
+  end
+
+  def diff_file_component(base_args)
+    ::RapidDiffs::MergeRequestDiffFileComponent.new(
+      **base_args.merge({
+        merge_request: @merge_request,
+        conflict_resolution_path: rapid_diffs_presenter.conflict_resolution_path,
+        can_merge: rapid_diffs_presenter.can_merge
+      })
+    )
+  end
+
+  def complete_diff_path
+    return project_commit_path(project, commit, format: :diff) if commit
+
+    merge_request_path(merge_request, format: :diff)
+  end
+
+  def email_format_path
+    return project_commit_path(project, commit, format: :patch) if commit
+
+    merge_request_path(merge_request, format: :patch)
+  end
+
+  def rapid_diffs_page_enabled?
+    return false unless ::Feature.enabled?(:rapid_diffs_on_mr_show, current_user, type: :beta)
+    return false if rapid_diffs_params[:rapid_diffs_disabled] == 'true'
+    return true if rapid_diffs_params[:rapid_diffs] == 'true'
+
+    if ::Feature.enabled?(:rapid_diffs_default_on_mr_show, current_user, type: :beta)
+      cookies[:rapid_diffs_enabled] != 'false'
+    else
+      cookies[:rapid_diffs_enabled] == 'true'
+    end
+  end
+  strong_memoize_attr :rapid_diffs_page_enabled?
+
+  def auto_merge_strategy
+    auto_merge_params[:auto_merge_strategy] || merge_request.default_auto_merge_strategy
+  end
+
+  def tracking_namespace_source
+    project.namespace
+  end
+
+  def tracking_project_source
+    project
+  end
 end
+
+Projects::MergeRequestsController.prepend_mod_with('Projects::MergeRequestsController')

@@ -1,0 +1,55 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Pivotal Tracker
+description: Configure the Pivotal Tracker integration to add commit messages as comments to Pivotal Tracker stories and close stories from commits.
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+The Pivotal Tracker integration adds commit messages as comments to Pivotal Tracker stories.
+
+After you turn on the integration, commit messages are checked for square brackets
+containing a hash mark followed by the story ID (for example, `[#555]`).
+Every story ID found gets the commit comment added to it.
+
+You can also close a story with a message containing: `fix [#555]`.
+You can use any of these words:
+
+- `fix`
+- `fixed`
+- `fixes`
+- `complete`
+- `completes`
+- `completed`
+- `finish`
+- `finished`
+- `finishes`
+- `delivers`
+
+For more information about the source commits endpoint, see the
+[Pivotal Tracker API](https://www.pivotaltracker.com/help/api/rest/v5#Source_Commits).
+
+For more information about Pivotal Tracker integration, see the [project integrations API](../../../api/project_integrations.md#pivotal-tracker).
+
+## Set up Pivotal Tracker
+
+In Pivotal Tracker, [create an API token](https://www.pivotaltracker.com/help/articles/api_token/).
+
+Complete these steps in GitLab:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **Integrations**.
+1. Select **Pivotal Tracker**.
+1. Under **Enable integration**, select the **Active** checkbox.
+1. Paste the token you generated in Pivotal Tracker.
+1. Optional. To restrict this setting to specific branches, list them in the **Restrict to branch**
+   field, separated with commas.
+1. Optional. Select **Test settings**.
+1. Select **Save changes**.

@@ -1,0 +1,29 @@
+- title: "Mattermost bundled with Linux package"
+  announcement_milestone: "18.9"
+  removal_milestone: "19.0"
+  breaking_change: true
+  # window:  # Does not impact .com so no rollout window.
+  reporter: mbruemmer
+  stage: gitlab-delivery
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/work_items/590798
+  check_impact:
+  impact: low
+  impact_details: https://gitlab-com.gitlab.io/gl-infra/breaking-change-impact-calculator/?usage=edge_case&migration_complexity=major_manual&scope=instance&identification_complexity=single&additional_complexity=no&base_impact=none&pipeline_impact=none&compliance_impact=none&availability_impact=minor&authorization_impact=none&API_impact=none
+  impact_offering: self-managed
+  scope: instance
+  resolution_role: Admin
+  manual_task: true
+  body: |
+    In GitLab 19.0, we plan to remove bundled Mattermost from the Linux package.
+
+    Mattermost was first bundled with GitLab in 2015 as an open source team messaging solution, with GitLab SSO included
+    to support the integration. Since then, Mattermost has significantly matured its own packaging and deployment
+    options, and adoption of the bundled Mattermost among GitLab customers has remained relatively low.
+
+    With Mattermost v11, [Mattermost has deprecated GitLab SSO from their free offering](https://forum.mattermost.com/t/mattermost-v11-changes-in-free-offerings/25126).
+    Given this change, the maturity of Mattermost standalone deployment options, and the low adoption in our customer
+    base, we are removing Mattermost from the Linux package.
+
+    If you currently use Mattermost bundled with GitLab, refer to
+    [Migrating from GitLab Omnibus to Mattermost Standalone](https://docs.mattermost.com/administration-guide/onboard/migrate-gitlab-omnibus.html)
+    in the Mattermost documentation for migration instructions and available Mattermost editions.

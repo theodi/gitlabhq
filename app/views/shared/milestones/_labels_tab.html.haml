@@ -1,0 +1,30 @@
+- if labels.any?
+  = render ::Layouts::CrudComponent.new(_('Labels'),
+    icon: 'label',
+    count: labels.size,
+    options: { class: 'gl-mt-5' },
+    body_options: { class: '!gl-m-0' }) do |c|
+    - c.with_body do
+      %ul.manage-labels-list.gl-px-0.gl-mb-0
+        - labels.each do |label|
+          - options = { milestone_title: @milestone.title, label_name: label.title }
+          - open_issues = milestone_issues_by_label_count(@milestone, label, state: :opened)
+          - closed_issues = milestone_issues_by_label_count(@milestone, label, state: :closed)
+
+          %li.gl-list-none.gl-border-b.gl-px-5.gl-py-4.gl-gap-5.gl-items-baseline.last-of-type:gl-border-b-0{ class: "@md/panel:gl-flex" }
+            .gl-shrink-0.gl-grow.gl-mb-4{ class: "@md/panel:gl-w-20 @md/panel:gl-mb-0" }
+              = render_label(label, tooltip: false, link: milestones_issues_path(options))
+            - if markdown_field(label, :description).present?
+              .gl-w-full.gl-mb-4{ class: "@md/panel:gl-mb-0" }
+                = markdown_field(label, :description)
+            = render Pajamas::ButtonComponent.new(variant: :link, disabled: open_issues == 0, href: milestones_issues_path(options.merge(state: 'opened'))) do
+              = open_issues
+              = n_('Open issue', 'Open issues', open_issues)
+            = render Pajamas::ButtonComponent.new(variant: :link, disabled: closed_issues == 0, href: milestones_issues_path(options.merge(state: 'closed'))) do
+              = closed_issues
+              = n_('Closed issue', 'Closed issues', closed_issues)
+- else
+  = render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-labels-md.svg',
+    title: s_('Milestones|No labels found')) do |c|
+    - c.with_description do
+      = s_('Milestones|Labels from issues in this milestone will appear here.')

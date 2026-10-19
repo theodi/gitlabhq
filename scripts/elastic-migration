@@ -1,0 +1,113 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Generate an Elastic migration file, spec and dictionary record with the current timestamp.
+
+require 'yaml'
+require_relative 'lib/migration_creator'
+
+module GitLab
+  module MigrationTools
+    class ElasticMigrationCreator < BaseMigrationCreator
+      protected
+
+      def create_options_struct
+        Struct.new(
+          :name,
+          :description,
+          :group,
+          :introduced_by_url,
+          :milestone,
+          :obsolete,
+          :marked_obsolete_by_url,
+          :marked_obsolete_in_milestone
+        )
+      end
+
+      def collect_input
+        options.name = read_name.camelize
+        options.description = read_variable('description', 'Description of what the migration does')
+        options.group = read_variable('group', 'The group introducing the migration, like: `global search`')
+        options.introduced_by_url = read_url('URL of the MR introducing the migration')
+        options.milestone = current_milestone
+        options.obsolete = false
+        options.marked_obsolete_by_url = nil
+        options.marked_obsolete_in_milestone = nil
+      end
+
+      def write
+        super
+        write_file(dictionary_file_path, dictionary_contents)
+      end
+
+      def display_success_message
+        super
+        puts "\e[32mcreated\e[0m #{dictionary_file_path}"
+      end
+
+      def display_additional_info
+        puts "\n=> Please consult the documentation for Advanced Search Migrations: #{documentation_reference}"
+      end
+
+      def file_path
+        "ee/elastic/migrate/#{file_name}.rb"
+      end
+
+      def spec_file_path
+        "ee/spec/elastic/migrate/#{file_name}_spec.rb"
+      end
+
+      def dictionary_file_path
+        "ee/elastic/docs/#{file_name}.yml"
+      end
+
+      def file_contents
+        <<~RUBY
+          # frozen_string_literal: true
+
+          class #{options.name} < Elastic::Migration
+          end
+        RUBY
+      end
+
+      def spec_contents
+        <<~RUBY
+          # frozen_string_literal: true
+
+          require 'spec_helper'
+          require File.expand_path('#{file_path}')
+
+          # See https://docs.gitlab.com/ee/development/testing_guide/best_practices.html#elasticsearch-specs
+          # for more information on how to write search migration specs for GitLab.
+          RSpec.describe #{options.name}, :elastic, feature_category: :#{options.group.parameterize.underscore} do
+            let(:version) { #{timestamp} }
+          end
+        RUBY
+      end
+
+      def dictionary_contents
+        dictionary_config_hash.to_yaml
+      end
+
+      def dictionary_config_hash
+        {
+          'name' => options.name,
+          'version' => timestamp,
+          'description' => options.description,
+          'group' => "group::#{options.group}",
+          'milestone' => options.milestone.to_s,
+          'introduced_by_url' => options.introduced_by_url,
+          'obsolete' => options.obsolete,
+          'marked_obsolete_by_url' => options.marked_obsolete_by_url,
+          'marked_obsolete_in_milestone' => options.marked_obsolete_in_milestone
+        }
+      end
+
+      def documentation_reference
+        'https://docs.gitlab.com/ee/development/search/advanced_search_migration_styleguide.html'
+      end
+    end
+  end
+end
+
+GitLab::MigrationTools::ElasticMigrationCreator.new.execute if $PROGRAM_NAME == __FILE__

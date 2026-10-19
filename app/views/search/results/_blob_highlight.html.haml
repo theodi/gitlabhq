@@ -1,0 +1,28 @@
+- offset = defined?(first_line_number) ? first_line_number : 1
+- highlight = defined?(highlight_line) && highlight_line ? highlight_line - offset : nil
+
+#search-blob-content.file-content.code.js-syntax-highlight
+  - if blob.present?
+    .blob-content{ data: { blob_id: blob.id, path: blob.path, highlight_line: highlight } }
+      - blob_highlight = blob.present.highlight_and_trim(trim_length: 1024, ellipsis_svg: sprite_icon('ellipsis_h', size: 12, css_class: "gl-fill-icon-default"))
+      - blob_highlight.lines.each_with_index do |line, index|
+        - i = index + offset
+        .line_holder.code-search-line.gl-flex
+          .line-numbers
+            .gl-flex
+              %span.diff-line-num.gl-pl-3
+                %a.has-tooltip{ href: "#{blame_link}#L#{i}",
+                                id: "blame-L#{i}",
+                                data: { "line_number" => i,
+                                        "track_action" => 'click_link',
+                                        "track_label" => 'git_blame',
+                                        "track_property" => 'search_result' },
+                                title: _('View blame') }
+                  = sprite_icon('git')
+              %span{ class: "diff-line-num !gl-grow gl-pr-3" }
+                %a{ href: "#{blob_link}#L#{i}", id: "blob-L#{i}", 'data-line-number' => i, class: '!gl-flex gl-items-center gl-justify-end' }
+                  = i
+          %pre{ class: "code highlight !gl-grow" }
+            %code
+              = line.html_safe
+

@@ -1,0 +1,792 @@
+import { cloneDeep } from 'lodash-es';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { GlAlert } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import setWindowLocation from 'helpers/set_window_location_helper';
+import { createAlert } from '~/alert';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import CrudComponent from '~/vue_shared/components/crud_component.vue';
+import WorkItemTree from '~/work_items/components/work_item_links/work_item_tree.vue';
+import WorkItemChildrenWrapper from '~/work_items/components/work_item_links/work_item_children_wrapper.vue';
+import WorkItemLinksForm from '~/work_items/components/work_item_links/work_item_links_form.vue';
+import WorkItemActionsSplitButton from '~/work_items/components/work_item_links/work_item_actions_split_button.vue';
+import WorkItemMoreActions from '~/work_items/components/shared/work_item_more_actions.vue';
+import WorkItemToggleClosedItems from '~/work_items/components/shared/work_item_toggle_closed_items.vue';
+import WorkItemRolledUpData from '~/work_items/components/work_item_links/work_item_rolled_up_data.vue';
+import WorkItemRolledUpCount from '~/work_items/components/work_item_links/work_item_rolled_up_count.vue';
+import getWorkItemTreeQuery from '~/work_items/graphql/work_item_tree.query.graphql';
+import namespaceWorkItemTypesQuery from '~/work_items/graphql/namespace_work_item_types.query.graphql';
+import { config as issuableClientConfig } from '~/graphql_shared/issuable_client';
+import {
+  FORM_TYPES,
+  WORK_ITEM_TYPE_NAME_EPIC,
+  WORK_ITEM_TYPE_NAME_OBJECTIVE,
+  WORKITEM_TREE_SHOWCLOSED_LOCALSTORAGEKEY,
+  WORKITEM_TREE_METADATA_LOCALSTORAGEKEY,
+  WORK_ITEM_TYPE_NAME_KEY_RESULT,
+  WORK_ITEM_TYPE_NAME_ISSUE,
+} from '~/work_items/constants';
+import { useLocalStorageSpy } from 'helpers/local_storage_helper';
+import * as utils from '~/work_items/utils';
+import {
+  mockRolledUpCountsByType,
+  namespaceWorkItemTypesQueryResponse,
+  workItemHierarchyTreeResponse,
+  workItemHierarchyPaginatedTreeResponse,
+  workItemHierarchyTreeEmptyResponse,
+  workItemHierarchyNoUpdatePermissionResponse,
+  workItemHierarchyTreeSingleClosedItemResponse,
+  buildFeaturesTreeResponse,
+} from 'ee_else_ce_jest/work_items/mock_data';
+
+jest.mock('~/alert');
+jest.mock('~/sentry/sentry_browser_wrapper');
+
+Vue.use(VueApollo);
+
+describe('WorkItemTree', () => {
+  let wrapper;
+
+  const workItemHierarchyTreeResponseHandler = jest
+    .fn()
+    .mockResolvedValue(workItemHierarchyTreeResponse);
+  const namespaceWorkItemTypesQueryHandler = jest
+    .fn()
+    .mockResolvedValue(namespaceWorkItemTypesQueryResponse);
+
+  const findEmptyState = () => wrapper.findByTestId('crud-empty');
+  const findToggleFormSplitButton = () => wrapper.findComponent(WorkItemActionsSplitButton);
+  const findForm = () => wrapper.findComponent(WorkItemLinksForm);
+  const findErrorMessage = () => wrapper.findComponent(GlAlert);
+  const findWorkItemLinkChildrenWrapper = () => wrapper.findComponent(WorkItemChildrenWrapper);
+  const findMoreActions = () => wrapper.findComponent(WorkItemMoreActions);
+  const findShowClosedButton = () => wrapper.findComponent(WorkItemToggleClosedItems);
+  const findCrudComponent = () => wrapper.findComponent(CrudComponent);
+  const findCrudCollapseToggle = () => wrapper.findComponentByTestId('crud-collapse-toggle');
+  const findRolledUpData = () => wrapper.findComponent(WorkItemRolledUpData);
+  const findRolledUpCount = () => wrapper.findComponent(WorkItemRolledUpCount);
+
+  const createComponent = async ({
+    workItemType = 'Objective',
+    workItemIid = '2',
+    allowedChildTypes = [],
+    parentWorkItemType = 'Objective',
+    confidential = false,
+    canUpdate = true,
+    canUpdateChildren = true,
+    hasSubepicsFeature = true,
+    workItemHierarchyTreeHandler = workItemHierarchyTreeResponseHandler,
+    shouldWaitForPromise = true,
+    closedChildrenCount = 0,
+    workItemFeaturesField = false,
+  } = {}) => {
+    wrapper = shallowMountExtended(WorkItemTree, {
+      propsData: {
+        fullPath: 'test/project',
+        workItemType,
+        workItemIid,
+        allowedChildTypes,
+        parentWorkItemType,
+        workItemId: 'gid://gitlab/WorkItem/2',
+        confidential,
+        canUpdate,
+        canUpdateChildren,
+      },
+      apolloProvider: createMockApollo(
+        [
+          [getWorkItemTreeQuery, workItemHierarchyTreeHandler],
+          [namespaceWorkItemTypesQuery, namespaceWorkItemTypesQueryHandler],
+        ],
+        {},
+        // Use the real `issuable_client` cache typePolicies so tests exercise the
+        // actual children-pagination merge (the default mock apollo uses the
+        // global typePolicies, which don't include it).
+        { typePolicies: issuableClientConfig.cacheConfig.typePolicies },
+      ),
+      provide: {
+        hasSubepicsFeature,
+        closedChildrenCount,
+        glFeatures: { workItemFeaturesField },
+      },
+      stubs: { CrudComponent },
+    });
+
+    if (shouldWaitForPromise) {
+      await waitForPromises();
+    }
+  };
+
+  beforeEach(() => {
+    utils.saveToggleToLocalStorage(WORKITEM_TREE_SHOWCLOSED_LOCALSTORAGEKEY, true);
+  });
+
+  it('displays Add button, with options excluding "Add ticket"', () => {
+    createComponent({
+      allowedChildTypes: [
+        { __typename: 'WorkItemType', id: 'gid://gitlab/WorkItems::Type/8', name: 'Epic' },
+        { __typename: 'WorkItemType', id: 'gid://gitlab/WorkItems::Type/1', name: 'Issue' },
+        { __typename: 'WorkItemType', id: 'gid://gitlab/WorkItems::Type/9', name: 'Ticket' },
+      ],
+    });
+    const actions = findToggleFormSplitButton()
+      .props('actions')
+      .flatMap((action) => action.items)
+      .map((action) => action.text);
+
+    expect(actions).not.toContain('New ticket');
+    expect(actions).toEqual([
+      'New issue',
+      'Existing issue',
+      'New epic',
+      'Existing epic',
+      'Existing ticket',
+    ]);
+  });
+
+  it('displays empty state if there are no children', async () => {
+    await createComponent({
+      workItemHierarchyTreeHandler: jest.fn().mockResolvedValue(workItemHierarchyTreeEmptyResponse),
+    });
+
+    expect(findEmptyState().exists()).toBe(true);
+  });
+
+  it('displays loading-icon while children are being loaded', () => {
+    createComponent();
+
+    expect(findCrudComponent().props('isLoading')).toBe(true);
+  });
+
+  it('renders hierarchy widget children container', async () => {
+    await createComponent();
+
+    expect(findWorkItemLinkChildrenWrapper().exists()).toBe(true);
+    expect(findWorkItemLinkChildrenWrapper().props().children).toHaveLength(1);
+  });
+
+  it('does not display form by default', () => {
+    createComponent();
+
+    expect(findForm().exists()).toBe(false);
+  });
+
+  it('shows an error message on error', async () => {
+    const errorMessage = 'Some error';
+    await createComponent();
+
+    findWorkItemLinkChildrenWrapper().vm.$emit('error', errorMessage);
+    await nextTick();
+
+    expect(findErrorMessage().text()).toBe(errorMessage);
+  });
+
+  it.each`
+    option                   | formType             | childType
+    ${'New objective'}       | ${FORM_TYPES.create} | ${WORK_ITEM_TYPE_NAME_OBJECTIVE}
+    ${'Existing objective'}  | ${FORM_TYPES.add}    | ${WORK_ITEM_TYPE_NAME_OBJECTIVE}
+    ${'New key result'}      | ${FORM_TYPES.create} | ${WORK_ITEM_TYPE_NAME_KEY_RESULT}
+    ${'Existing key result'} | ${FORM_TYPES.add}    | ${WORK_ITEM_TYPE_NAME_KEY_RESULT}
+  `(
+    'when triggering action $option, renders the form passing $formType and $childType',
+    async ({ formType, childType }) => {
+      createComponent();
+
+      wrapper.vm.showAddForm(formType, { id: 'gid://gitlab/WorkItems::Type/1', name: childType });
+      await nextTick();
+
+      expect(findForm().exists()).toBe(true);
+      expect(findForm().props()).toMatchObject({
+        formType,
+        childrenType: expect.objectContaining({ name: childType }),
+        parentWorkItemType: 'Objective',
+        parentConfidential: false,
+      });
+    },
+  );
+
+  describe('when subepics are not available', () => {
+    it.each`
+      option              | formType             | childType
+      ${'New issue'}      | ${FORM_TYPES.create} | ${WORK_ITEM_TYPE_NAME_ISSUE}
+      ${'Existing issue'} | ${FORM_TYPES.add}    | ${WORK_ITEM_TYPE_NAME_ISSUE}
+    `(
+      'when triggering action $option, renders the form passing $formType and $childType',
+      async ({ formType, childType }) => {
+        createComponent({ hasSubepicsFeature: false, workItemType: 'Epic' });
+
+        wrapper.vm.showAddForm(formType, { id: 'gid://gitlab/WorkItems::Type/1', name: childType });
+        await nextTick();
+
+        expect(findForm().exists()).toBe(true);
+        expect(findForm().props()).toMatchObject({
+          formType,
+          childrenType: expect.objectContaining({ name: childType }),
+        });
+      },
+    );
+  });
+
+  describe('when subepics are available', () => {
+    it.each`
+      option              | formType             | childType
+      ${'New issue'}      | ${FORM_TYPES.create} | ${WORK_ITEM_TYPE_NAME_ISSUE}
+      ${'Existing issue'} | ${FORM_TYPES.add}    | ${WORK_ITEM_TYPE_NAME_ISSUE}
+      ${'New epic'}       | ${FORM_TYPES.create} | ${WORK_ITEM_TYPE_NAME_EPIC}
+      ${'Existing epic'}  | ${FORM_TYPES.add}    | ${WORK_ITEM_TYPE_NAME_EPIC}
+    `(
+      'when triggering action $option, renders the form passing $formType and $childType',
+      async ({ formType, childType }) => {
+        createComponent({ hasSubepicsFeature: true, workItemType: 'Epic' });
+
+        wrapper.vm.showAddForm(formType, { id: 'gid://gitlab/WorkItems::Type/1', name: childType });
+        await nextTick();
+
+        expect(findForm().exists()).toBe(true);
+        expect(findForm().props()).toMatchObject({
+          formType,
+          childrenType: expect.objectContaining({ name: childType }),
+        });
+      },
+    );
+  });
+
+  describe('when no permission to update', () => {
+    beforeEach(async () => {
+      await createComponent({
+        canUpdate: false,
+        canUpdateChildren: false,
+        workItemHierarchyTreeHandler: jest
+          .fn()
+          .mockResolvedValue(workItemHierarchyNoUpdatePermissionResponse),
+      });
+    });
+
+    it('does not display button to toggle Add form', () => {
+      expect(findToggleFormSplitButton().exists()).toBe(false);
+    });
+
+    it('passes correct `canUpdate` prop to children wrapper', () => {
+      expect(findWorkItemLinkChildrenWrapper().props('canUpdate')).toBe(false);
+    });
+  });
+
+  describe('pagination', () => {
+    const findWorkItemChildrenLoadMore = () => wrapper.findComponentByTestId('work-item-load-more');
+    let workItemTreeQueryHandler;
+
+    beforeEach(async () => {
+      workItemTreeQueryHandler = jest
+        .fn()
+        .mockResolvedValue(workItemHierarchyPaginatedTreeResponse);
+
+      await createComponent({
+        workItemHierarchyTreeHandler: workItemTreeQueryHandler,
+      });
+    });
+
+    it('shows work-item-children-load-more component when hasNextPage is true and node is expanded', () => {
+      const loadMore = findWorkItemChildrenLoadMore();
+      expect(loadMore.exists()).toBe(true);
+      expect(loadMore.props('fetchNextPageInProgress')).toBe(false);
+    });
+
+    it('does not render the `work-item-toggle-closed-items` component when hasNextPage is true', () => {
+      expect(findShowClosedButton().exists()).toBe(false);
+    });
+
+    it('queries next page children when work-item-children-load-more emits "fetch-next-page"', async () => {
+      findWorkItemChildrenLoadMore().vm.$emit('fetch-next-page');
+      await waitForPromises();
+
+      expect(workItemTreeQueryHandler).toHaveBeenCalled();
+    });
+
+    // Covered for both data paths so appending stays agnostic of the
+    // `work_item_features_field` flag: `widgets[]` (off) and `features` (on).
+    describe.each`
+      dataPath       | workItemFeaturesField
+      ${'widgets[]'} | ${false}
+      ${'features'}  | ${true}
+    `('with the $dataPath data path', ({ workItemFeaturesField }) => {
+      const secondPageChildId = 'gid://gitlab/WorkItem/99999';
+      let initialChildIds;
+
+      // When the flag is on the tree reads children from `features.hierarchy`
+      // instead of `widgets[]`, so reshape the fixtures to match that path.
+      const toResponse = (widgetsResponse) =>
+        workItemFeaturesField ? buildFeaturesTreeResponse(widgetsResponse) : widgetsResponse;
+
+      beforeEach(async () => {
+        // A distinct second page so we can tell "append" from "replace".
+        const secondPageSource = cloneDeep(workItemHierarchyPaginatedTreeResponse);
+        const hierarchyWidget = utils.findHierarchyWidget(secondPageSource.data.workItem);
+        hierarchyWidget.children.nodes = [
+          { ...hierarchyWidget.children.nodes[0], id: secondPageChildId, iid: '99999' },
+        ];
+        hierarchyWidget.children.pageInfo = {
+          ...hierarchyWidget.children.pageInfo,
+          hasNextPage: false,
+          endCursor: 'second-page-cursor',
+        };
+
+        const paginatedHandler = jest
+          .fn()
+          .mockResolvedValueOnce(toResponse(workItemHierarchyPaginatedTreeResponse))
+          .mockResolvedValueOnce(toResponse(secondPageSource));
+
+        await createComponent({
+          workItemHierarchyTreeHandler: paginatedHandler,
+          workItemFeaturesField,
+        });
+
+        initialChildIds = findWorkItemLinkChildrenWrapper()
+          .props('children')
+          .map((child) => child.id);
+      });
+
+      it('renders only the first page of children', () => {
+        expect(initialChildIds).not.toContain(secondPageChildId);
+      });
+
+      describe('when "Load more" is clicked', () => {
+        beforeEach(async () => {
+          findWorkItemChildrenLoadMore().vm.$emit('fetch-next-page');
+          await waitForPromises();
+        });
+
+        it('appends the next page of children instead of replacing the existing ones', () => {
+          const childIds = findWorkItemLinkChildrenWrapper()
+            .props('children')
+            .map((child) => child.id);
+
+          expect(childIds).toEqual([...initialChildIds, secondPageChildId]);
+        });
+      });
+    });
+
+    it('shows alert message when fetching next page fails', async () => {
+      jest.spyOn(wrapper.vm.$apollo.queries.hierarchyWidget, 'fetchMore').mockRejectedValueOnce({});
+      findWorkItemChildrenLoadMore().vm.$emit('fetch-next-page');
+      await waitForPromises();
+
+      expect(createAlert).toHaveBeenCalledWith({
+        captureError: true,
+        error: expect.any(Object),
+        message: 'Something went wrong while fetching children.',
+      });
+    });
+  });
+
+  it('emits `addChild` event when form emits `addChild` event', async () => {
+    createComponent();
+
+    wrapper.vm.showAddForm(FORM_TYPES.create, {
+      id: 'gid://gitlab/WorkItems::Type/1',
+      name: WORK_ITEM_TYPE_NAME_OBJECTIVE,
+    });
+    await nextTick();
+    findForm().vm.$emit('add-child');
+
+    expect(wrapper.emitted('add-child')).toEqual([[]]);
+  });
+
+  describe('more actions', () => {
+    useLocalStorageSpy();
+
+    beforeEach(async () => {
+      jest.spyOn(utils, 'getToggleFromLocalStorage');
+      jest.spyOn(utils, 'saveToggleToLocalStorage');
+      jest.spyOn(utils, 'getHiddenMetadataKeysFromLocalStorage');
+      jest.spyOn(utils, 'saveHiddenMetadataKeysToLocalStorage');
+      await createComponent();
+    });
+
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    it.each`
+      visible | workItemType
+      ${true} | ${WORK_ITEM_TYPE_NAME_EPIC}
+      ${true} | ${WORK_ITEM_TYPE_NAME_OBJECTIVE}
+    `('renders when the work item type is $workItemType', async ({ workItemType, visible }) => {
+      await createComponent({ workItemType });
+
+      expect(findMoreActions().exists()).toBe(visible);
+    });
+
+    it('renders `View on a roadmap` action', async () => {
+      await createComponent();
+
+      expect(findMoreActions().props('showViewRoadmapAction')).toBe(true);
+    });
+
+    it.each`
+      toggleName      | toggleEvent
+      ${'showClosed'} | ${'toggle-show-closed'}
+    `(
+      'toggles `$toggleName` when `$toggleEvent` is emitted',
+      async ({ toggleName, toggleEvent }) => {
+        await createComponent();
+
+        expect(findMoreActions().props(toggleName)).toBe(true);
+
+        await findMoreActions().vm.$emit(toggleEvent);
+
+        expect(findMoreActions().props(toggleName)).toBe(false);
+
+        await findMoreActions().vm.$emit(toggleEvent);
+
+        expect(findMoreActions().props(toggleName)).toBe(true);
+      },
+    );
+
+    it('handles metadata display option toggle', async () => {
+      await createComponent();
+
+      expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual(['parent']);
+
+      await findMoreActions().vm.$emit('update-hidden-metadata-keys', ['labels']);
+      await nextTick();
+
+      expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual(['labels']);
+
+      await findMoreActions().vm.$emit('update-hidden-metadata-keys', []);
+      await nextTick();
+
+      expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual([]);
+    });
+
+    it('calls saveToggleToLocalStorage on toggle-show-closed', () => {
+      findMoreActions().vm.$emit('toggle-show-closed');
+      expect(utils.saveToggleToLocalStorage).toHaveBeenCalled();
+    });
+
+    it('calls getToggleFromLocalStorage on mount for showClosed', () => {
+      expect(utils.getToggleFromLocalStorage).toHaveBeenCalledWith(
+        WORKITEM_TREE_SHOWCLOSED_LOCALSTORAGEKEY,
+      );
+    });
+
+    it('calls getHiddenMetadataKeysFromLocalStorage on mount for metadata', () => {
+      expect(utils.getHiddenMetadataKeysFromLocalStorage).toHaveBeenCalledWith(
+        WORKITEM_TREE_METADATA_LOCALSTORAGEKEY,
+        ['parent'],
+      );
+    });
+  });
+
+  it('renders crud component', async () => {
+    await createComponent();
+
+    expect(findCrudComponent().exists()).toBe(true);
+  });
+
+  it('renders rolled up data only when query is loaded', async () => {
+    createComponent({ shouldWaitForPromise: false });
+
+    expect(findRolledUpData().exists()).toBe(false);
+    expect(findRolledUpCount().exists()).toBe(false);
+
+    await waitForPromises();
+
+    expect(findRolledUpData().exists()).toBe(true);
+    expect(findRolledUpCount().exists()).toBe(true);
+
+    expect(findRolledUpData().props()).toEqual({
+      workItemIid: '2',
+      fullPath: 'test/project',
+    });
+
+    expect(findRolledUpCount().props()).toEqual({
+      hideCountWhenZero: false,
+      infoType: 'badge',
+      rolledUpCountsByType: mockRolledUpCountsByType,
+    });
+  });
+
+  it('fetches widget definitions and passes formatted allowed children by type to children wrapper', async () => {
+    await createComponent();
+
+    expect(namespaceWorkItemTypesQueryHandler).toHaveBeenCalled();
+    await nextTick();
+
+    expect(findWorkItemLinkChildrenWrapper().props('allowedChildrenByType')).toMatchObject({
+      Incident: ['Task'],
+      Issue: ['Task'],
+      Objective: ['Key Result', 'Objective'],
+      Ticket: ['Task'],
+    });
+  });
+
+  describe('work item show closed button', () => {
+    beforeEach(async () => {
+      await createComponent({
+        workItemHierarchyTreeHandler: jest
+          .fn()
+          .mockResolvedValue(workItemHierarchyTreeSingleClosedItemResponse),
+      });
+      await findMoreActions().vm.$emit('toggle-show-closed');
+    });
+
+    it('displays show closed button', () => {
+      expect(findShowClosedButton().exists()).toBe(true);
+    });
+
+    it('shows the closed item when the show closed button is clicked', async () => {
+      await findShowClosedButton().vm.$emit('show-closed');
+
+      expect(findShowClosedButton().exists()).toBe(false);
+
+      expect(wrapper.findByTestId('work-item-no-child-items-open').exists()).toBe(false);
+    });
+  });
+
+  it('displays no child items open message', async () => {
+    await createComponent({
+      workItemHierarchyTreeHandler: jest
+        .fn()
+        .mockResolvedValue(workItemHierarchyTreeSingleClosedItemResponse),
+    });
+
+    expect(wrapper.findByTestId('work-item-no-child-items-open').exists()).toBe(false);
+
+    await findMoreActions().vm.$emit('toggle-show-closed');
+
+    expect(wrapper.findByTestId('work-item-no-child-items-open').text()).toBe(
+      'No child items are currently open.',
+    );
+
+    expect(findShowClosedButton().exists()).toBe(true);
+  });
+
+  it('does not render the component if there are no children and user does not have permission to update children', async () => {
+    await createComponent({
+      workItemHierarchyTreeHandler: jest.fn().mockResolvedValue(workItemHierarchyTreeEmptyResponse),
+      canUpdateChildren: false,
+    });
+
+    expect(wrapper.findByTestId('work-item-tree').exists()).toBe(false);
+  });
+
+  describe('when there is show URL parameter', () => {
+    it('emits `select-child` event when child work item id is encoded in the URL', async () => {
+      const encodedWorkItemId = btoa(JSON.stringify({ id: 31 }));
+      setWindowLocation(`?show=${encodedWorkItemId}`);
+      await createComponent();
+
+      expect(wrapper.emitted('select-child')).toEqual([
+        [{ child: expect.objectContaining({ id: 'gid://gitlab/WorkItem/31' }) }],
+      ]);
+    });
+
+    it('does not emit `select-child` event when child work item id is not encoded in the URL', async () => {
+      const encodedWorkItemId = btoa(JSON.stringify({ id: 1 }));
+      setWindowLocation(`?show=${encodedWorkItemId}`);
+      await createComponent();
+
+      expect(wrapper.emitted('select-child')).toBeUndefined();
+    });
+
+    // A contextual panel puts its own key in `show`, which is not an encoded child reference.
+    describe.each(['work-item-detail', 'workplan', 'decision-log'])(
+      'when the URL requests the %s panel',
+      (panel) => {
+        beforeEach(async () => {
+          setWindowLocation(`?show=${panel}`);
+          await createComponent();
+        });
+
+        it('does not emit `select-child` event', () => {
+          expect(wrapper.emitted('select-child')).toBeUndefined();
+        });
+
+        it('does not report an error', () => {
+          expect(Sentry.captureException).not.toHaveBeenCalled();
+        });
+      },
+    );
+
+    describe('when the URL holds neither a panel key nor an encoded child reference', () => {
+      beforeEach(async () => {
+        setWindowLocation('?show=not-a-panel');
+        await createComponent();
+      });
+
+      it('does not emit `select-child` event', () => {
+        expect(wrapper.emitted('select-child')).toBeUndefined();
+      });
+
+      it('reports the error', () => {
+        expect(Sentry.captureException).toHaveBeenCalledWith(expect.any(Error));
+      });
+    });
+
+    it('emits `select-child` event with child work item id on window `popstate` event', async () => {
+      const encodedWorkItemId = btoa(JSON.stringify({ id: 31 }));
+      await createComponent();
+
+      expect(wrapper.emitted('select-child')).toEqual([[{ child: null }]]);
+
+      setWindowLocation(`?show=${encodedWorkItemId}`);
+      window.dispatchEvent(new Event('popstate'));
+
+      await waitForPromises();
+
+      expect(wrapper.emitted('select-child')).toEqual([
+        [{ child: null }],
+        [{ child: expect.objectContaining({ id: 'gid://gitlab/WorkItem/31' }) }],
+      ]);
+    });
+
+    it('emits `select-child` event with `null` id on window `popstate` event when there is no show URL parameter', async () => {
+      const encodedWorkItemId = btoa(JSON.stringify({ id: 31 }));
+      setWindowLocation(`?show=${encodedWorkItemId}`);
+      await createComponent();
+
+      expect(wrapper.emitted('select-child')).toEqual([
+        [{ child: expect.objectContaining({ id: 'gid://gitlab/WorkItem/31' }) }],
+      ]);
+
+      setWindowLocation('?otherThing=true');
+      window.dispatchEvent(new Event('popstate'));
+      await waitForPromises();
+
+      expect(wrapper.emitted('select-child')).toEqual([
+        [{ child: expect.objectContaining({ id: 'gid://gitlab/WorkItem/31' }) }],
+        [{ child: null }],
+      ]);
+    });
+
+    describe('tracks collapse/expand events', () => {
+      it.each`
+        type          | eventLabel           | collapsed
+        ${'collapse'} | ${'click-collapsed'} | ${true}
+        ${'expand'}   | ${'click-expanded'}  | ${false}
+      `('tracks user $type events', async ({ eventLabel, collapsed }) => {
+        utils.saveToggleToLocalStorage(WORKITEM_TREE_SHOWCLOSED_LOCALSTORAGEKEY, collapsed);
+        await createComponent();
+
+        findCrudCollapseToggle().vm.$emit('click');
+
+        expect(findCrudComponent().emitted(eventLabel)).toEqual([[]]);
+      });
+    });
+  });
+
+  describe('collapses by default when empty', () => {
+    it('is not collapsed while the query is loading', async () => {
+      await createComponent({ shouldWaitForPromise: false });
+
+      expect(findCrudComponent().props('collapsed')).toBe(false);
+    });
+
+    it('is collapsed once the query resolves with no children', async () => {
+      await createComponent({
+        workItemHierarchyTreeHandler: jest
+          .fn()
+          .mockResolvedValue(workItemHierarchyTreeEmptyResponse),
+      });
+
+      expect(findCrudComponent().props('collapsed')).toBe(true);
+      expect(wrapper.findByTestId('crud-body').isVisible()).toBe(false);
+    });
+
+    it('is not collapsed when children exist', async () => {
+      await createComponent();
+
+      expect(findCrudComponent().props('collapsed')).toBe(false);
+      expect(wrapper.findByTestId('crud-body').isVisible()).toBe(true);
+    });
+
+    it('is not collapsed when there are no children but an error occurred', async () => {
+      await createComponent({
+        workItemHierarchyTreeHandler: jest.fn().mockRejectedValue(new Error('Some error')),
+      });
+
+      expect(findCrudComponent().props('collapsed')).toBe(false);
+      expect(wrapper.findByTestId('crud-body').isVisible()).toBe(true);
+      expect(findErrorMessage().exists()).toBe(true);
+    });
+  });
+
+  describe('metadata visibility', () => {
+    useLocalStorageSpy();
+
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    it('initializes metadata visibility state from localStorage on mount', async () => {
+      const hiddenKeys = ['labels', 'milestone'];
+      utils.saveHiddenMetadataKeysToLocalStorage(
+        WORKITEM_TREE_METADATA_LOCALSTORAGEKEY,
+        hiddenKeys,
+      );
+
+      await createComponent();
+
+      expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual(hiddenKeys);
+    });
+
+    it('initializes metadata visibility state with defaults when localStorage is empty', async () => {
+      await createComponent();
+
+      expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual(['parent']);
+    });
+
+    describe('metadata computed properties', () => {
+      it.each(['labels', 'weight', 'milestone'])(
+        'updates %s visibility when hiddenMetadataKeys changes',
+        async (key) => {
+          await createComponent();
+
+          expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys').includes(key)).toBe(
+            false,
+          );
+
+          await findMoreActions().vm.$emit('update-hidden-metadata-keys', [key]);
+          await nextTick();
+
+          expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys').includes(key)).toBe(
+            true,
+          );
+        },
+      );
+    });
+
+    describe('localStorage persistence', () => {
+      beforeEach(() => {
+        jest.spyOn(utils, 'saveToggleToLocalStorage');
+        jest.spyOn(utils, 'saveHiddenMetadataKeysToLocalStorage');
+      });
+
+      it('updates hiddenMetadataKeys state when metadata visibility is changed', async () => {
+        await createComponent();
+
+        await findMoreActions().vm.$emit('update-hidden-metadata-keys', ['labels']);
+
+        expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual(['labels']);
+      });
+
+      it('persists metadata visibility state on remount', async () => {
+        const hiddenKeys = ['labels', 'weight'];
+        utils.saveHiddenMetadataKeysToLocalStorage(
+          WORKITEM_TREE_METADATA_LOCALSTORAGEKEY,
+          hiddenKeys,
+        );
+
+        await createComponent();
+        expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual(hiddenKeys);
+
+        wrapper.destroy();
+        await createComponent();
+
+        expect(findWorkItemLinkChildrenWrapper().props('hiddenMetadataKeys')).toEqual(hiddenKeys);
+      });
+    });
+  });
+});

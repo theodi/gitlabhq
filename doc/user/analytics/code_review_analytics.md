@@ -1,0 +1,57 @@
+---
+stage: Analytics
+group: Optimize
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Learn how long your open merge requests have spent in code review, and what distinguishes the longest-running.
+title: Code review analytics
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Code review analytics displays a table of open merge requests that have at least one non-author comment.
+The review time is the amount of time since the first comment by a non-author in a merge request.
+
+You can use code review analytics to view review metrics per merge request
+and improve your code review process.
+
+- A high number of comments or commits may indicate:
+  - Code that is too complex.
+  - Authors who require more training.
+- A long review time may indicate:
+  - Types of work that move slower than other types.
+  - Opportunities to accelerate your development cycle.
+- Few comments and approvers may indicate a lack of available team members.
+
+<i class="fa-youtube-play" aria-hidden="true"></i>
+For a video explanation, see [Code review analytics: Faster code review](https://www.youtube.com/watch?v=849o0XD991M).
+
+## View code review analytics
+
+Prerequisites:
+
+- You must have the Reporter, Developer, Maintainer, or Owner role.
+
+To view code review analytics:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Analyze** > **Code review analytics**.
+1. Optional. Filter results:
+   1. Select the filter bar.
+   1. Select a parameter. You can filter merge requests by milestone and label.
+   1. Select a value for the selected parameter.
+
+The table shows up to 20 merge requests in review per page,
+and includes the following information about each merge request:
+
+- Merge request title
+- Review time
+- Author
+- Approvers
+- Comments
+- Commits
+- Line changes

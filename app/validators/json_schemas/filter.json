@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "scheduled": {
+      "$ref": "#/definitions/schedule_config"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/definitions/group"
+  },
+  "definitions": {
+    "schedule_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "frequency": {
+          "type": "string",
+          "enum": [
+            "EVERY_15_MINUTES",
+            "EVERY_30_MINUTES",
+            "HOURLY",
+            "DAILY",
+            "WEEKDAYS",
+            "WEEKLY",
+            "MONTHLY"
+          ]
+        },
+        "minute": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59
+        },
+        "hour": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23
+        },
+        "dayOfWeek": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "dayOfMonth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 28
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "frequency"
+      ]
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "group"
+        },
+        "match": {
+          "type": "string",
+          "enum": [
+            "all",
+            "any"
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/definitions/group"
+              },
+              {
+                "$ref": "#/definitions/rule"
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "rules"
+      ]
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string",
+          "enum": [
+            "eq",
+            "ne",
+            "gt",
+            "lt",
+            "contains",
+            "not_contains",
+            "in",
+            "not_in"
+          ]
+        },
+        "value": {}
+      },
+      "required": [
+        "field",
+        "operator",
+        "value"
+      ]
+    }
+  }
+}

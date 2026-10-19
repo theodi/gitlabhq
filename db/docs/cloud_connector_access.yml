@@ -1,0 +1,11 @@
+---
+table_name: cloud_connector_access
+classes:
+- CloudConnector::Access
+feature_categories:
+- plan_provisioning
+description: Information about Cloud Connector features
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/140456
+milestone: '16.8'
+gitlab_schema: gitlab_main_cell_setting
+table_size: small

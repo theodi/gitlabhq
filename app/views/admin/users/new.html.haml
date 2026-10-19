@@ -1,5 +1,10 @@
-- page_title "New User"
-%h3.page-title
-  New user
-%hr
+- page_title s_('AdminUsers|New user')
+
+= render ::Layouts::PageHeadingComponent.new(page_title)
+
+- if show_admin_new_user_organization_field?
+  - content_for :organization_section do
+    = render ::Layouts::SettingsSectionComponent.new(_('Organization'), testid: 'organization-section') do |c|
+      - c.with_body do
+        #js-admin-new-user-organization-field{ data: { app_data: admin_new_user_organization_field_app_data } }
 = render 'form'

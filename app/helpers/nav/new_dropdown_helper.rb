@@ -1,0 +1,209 @@
+# frozen_string_literal: true
+
+module Nav
+  module NewDropdownHelper
+    def new_dropdown_view_model(group:, project:)
+      return unless current_user
+
+      menu_sections = []
+      data = { title: _('Create new…') }
+
+      if project&.persisted?
+        menu_sections.push(project_menu_section(project))
+      elsif group&.persisted?
+        menu_sections.push(group_menu_section(group))
+      end
+
+      menu_sections.push(general_menu_section)
+
+      data[:menu_sections] = menu_sections.select { |x| x.fetch(:menu_items).any? }
+
+      data
+    end
+
+    private
+
+    def group_menu_section(group)
+      menu_items = []
+      path_options = organization_path_options(group.organization)
+
+      if can?(current_user, :create_projects, group)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'new_project',
+            title: _('New project/repository'),
+            href: new_project_path(namespace_id: group.id, **path_options)
+          )
+        )
+      end
+
+      if can?(current_user, :create_subgroup, group)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'new_subgroup',
+            title: _('New subgroup'),
+            href: new_group_path(parent_id: group.id, anchor: 'create-group-pane', **path_options)
+          )
+        )
+      end
+
+      if can?(current_user, :create_work_item, group)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'new_group_work_item',
+            title: _('New work item'),
+            component: 'create_new_work_item_modal'
+          )
+        )
+      end
+
+      menu_items.push(create_group_wiki_menu_item(group))
+
+      if can?(current_user, :admin_group_member, group)
+        menu_items.push(invite_members_menu_item(partial: 'groups/invite_members_top_nav_link'))
+      end
+
+      {
+        title: _('In this group'),
+        menu_items: menu_items.compact
+      }
+    end
+
+    def project_menu_section(project)
+      menu_items = []
+      merge_project = merge_request_source_project_for_project(project)
+
+      if show_new_issue_link?(project)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'new_work_item',
+            title: _('New work item'),
+            component: 'create_new_work_item_modal'
+          )
+        )
+      end
+
+      if merge_project
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'new_mr',
+            title: _('New merge request'),
+            href: project_new_merge_request_path(merge_project)
+          )
+        )
+      end
+
+      if can?(current_user, :create_wiki, project)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'new_wiki_page',
+            title: _('New wiki page'),
+            href: project_wikis_new_path(project)
+          )
+        )
+      end
+
+      if can?(current_user, :create_snippet, project)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'new_snippet',
+            title: _('New snippet'),
+            href: new_project_snippet_path(project)
+          )
+        )
+      end
+
+      if can?(current_user, :invite_member, project)
+        menu_items.push(invite_members_menu_item(partial: 'projects/invite_members_top_nav_link'))
+      end
+
+      {
+        title: _('In this project'),
+        menu_items: menu_items
+      }
+    end
+
+    def general_menu_section
+      menu_items = []
+      organization = ::Current.organization_resolver&.from_params
+      path_options = organization_path_options(organization)
+      organization_scoped = path_options[:organization_path].present?
+      section_title = organization_scoped ? _('In this organization') : _('In GitLab')
+
+      if current_user.can_create_project?
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'general_new_project',
+            title: _('New project/repository'),
+            href: new_project_path(**path_options)
+          )
+        )
+      end
+
+      if current_user.can_create_group?
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'general_new_group',
+            title: _('New group'),
+            href: new_group_path(**path_options)
+          )
+        )
+      end
+
+      if !organization_scoped && ::Organizations::Release.enabled?(:org_creation, current_user) &&
+          current_user.can?(:create_organization)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'general_new_organization',
+            title: s_('Organization|New organization'),
+            href: new_organization_path
+          )
+        )
+      end
+
+      if !organization_scoped && current_user.can?(:create_snippet)
+        menu_items.push(
+          ::Gitlab::Nav::TopNavMenuItem.build(
+            id: 'general_new_snippet',
+            title: _('New snippet'),
+            href: new_snippet_path(**path_options)
+          )
+        )
+      end
+
+      {
+        title: section_title,
+        menu_items: menu_items
+      }
+    end
+
+    def organization_scoped_new_dropdown?
+      return false unless Feature.enabled?(:organization_scoped_new_dropdown, current_user)
+
+      ::Organizations::Release.enrolled?(current_user)
+    end
+
+    def organization_path_options(organization)
+      return { organization_path: nil } unless organization_scoped_new_dropdown?
+
+      { organization_path: organization&.scoped_path }
+    end
+
+    def invite_members_menu_item(partial:)
+      ::Gitlab::Nav::TopNavMenuItem.build(
+        id: 'invite',
+        title: s_('InviteMember|Invite members'),
+        icon: 'shaking_hands',
+        partial: partial,
+        component: 'invite_members'
+      )
+    end
+
+    # Overridden in EE
+    def create_group_wiki_menu_item(group)
+      nil
+    end
+  end
+end
+
+Nav::NewDropdownHelper.prepend_mod

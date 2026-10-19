@@ -1,0 +1,19 @@
+#import "../fragments/mr_pipeline_list_item.fragment.graphql"
+
+query getPipelineCreationRequests($fullPath: ID!, $mergeRequestIid: String!) {
+  project(fullPath: $fullPath) {
+    id
+    mergeRequest(iid: $mergeRequestIid) {
+      id
+      pipelineCreationRequests {
+        id
+        status
+        error
+        userInitiated
+        pipeline {
+          ...MergeRequestPipelineListItem
+        }
+      }
+    }
+  }
+}

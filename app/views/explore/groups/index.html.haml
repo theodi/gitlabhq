@@ -1,51 +1,18 @@
-- page_title "Groups"
-.clearfix
-  .pull-left
-    = form_tag explore_groups_path, method: :get, class: 'form-inline form-tiny' do |f|
-      = hidden_field_tag :sort, @sort
-      .form-group
-        = search_field_tag :search, params[:search], placeholder: "Filter by name", class: "form-control search-text-input input-mn-300", id: "groups_search"
-      .form-group
-        = button_tag 'Search', class: "btn btn-primary wide"
+- breadcrumb_title _("Groups")
+- page_title    _("Explore groups")
+- header_title  _("Groups"), dashboard_groups_path
 
-  .pull-right
-    .dropdown.inline
-      %button.dropdown-toggle.btn{type: 'button', 'data-toggle' => 'dropdown'}
-        %span.light sort:
-        - if @sort.present?
-          = sort_options_hash[@sort]
-        - else
-          = sort_title_recently_created
-        %b.caret
-      %ul.dropdown-menu
-        %li
-          = link_to explore_groups_path(sort: sort_value_recently_created) do
-            = sort_title_recently_created
-          = link_to explore_groups_path(sort: sort_value_oldest_created) do
-            = sort_title_oldest_created
-          = link_to explore_groups_path(sort: sort_value_recently_updated) do
-            = sort_title_recently_updated
-          = link_to explore_groups_path(sort: sort_value_oldest_updated) do
-            = sort_title_oldest_updated
+= render_dashboard_ultimate_trial(current_user)
 
-%hr
+.page-title-holder.gl-flex.gl-align-items
+  %div
+    %h1.page-title.gl-text-size-h-display= page_title
+    %p
+      = _("Below you will find all the groups that are public or internal. Contribute by requesting to join a group.")
+      #{link_to _('Learn more'), help_page_path('user/group/_index.md', { anchor: 'explore-groups' })}.
+  .page-title-controls.gl-mt-4
+    - if current_user&.can_create_group?
+      = render Pajamas::ButtonComponent.new(href: new_group_path, variant: :confirm) do
+        = _("New group")
 
-%ul.bordered-list
-  - @groups.each do |group|
-    %li
-      .clearfix
-        %h4
-          = link_to group_path(id: group.path) do
-            %i.fa.fa-users
-            = group.name
-      .clearfix
-        %p
-          = truncate group.description, length: 150
-      .clearfix
-        %p.light
-          #{pluralize(group.members.size, 'member')}, #{pluralize(group.projects.count, 'project')}
-  - unless @groups.present?
-    .nothing-here-block No public groups
-
-
-= paginate @groups, theme: "gitlab"
+#js-explore-groups{ data: explore_groups_app_data }

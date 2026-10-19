@@ -1,0 +1,291 @@
+---
+stage: Software Supply Chain Security
+group: Compliance
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Explore the GitLab compliance violations report to view and manage non-compliance issues across your projects and groups.
+title: Compliance violations report
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- Dynamic compliance violations report
+  - [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/12774) in GitLab 18.2 [with feature flags](../../../administration/feature_flags/_index.md) named `compliance_violations_report` and `enable_project_compliance_violations`. Disabled by default.
+  - [Enabled on GitLab Self-Managed and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/201027) in GitLab 18.3.
+  - [Generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/201027) in GitLab 18.5. Feature flags `compliance_violations_report` and `enable_project_compliance_violations` removed.
+
+{{< /history >}}
+
+Use the compliance violations report to see a comprehensive view of compliance violations across all projects in
+your group. The report provides detailed information about violated controls, associated audit events, and allows you
+to manage violation statuses.
+
+## Enable compliance violations report
+
+Before violations appear in the compliance violations report, you must:
+
+1. [Create a compliance framework with controls](../compliance_frameworks/_index.md).
+1. [Apply the framework to your projects](../compliance_frameworks/_index.md#apply-a-compliance-framework-to-a-project).
+
+When you've completed these steps, violations appear in the compliance violations report as they are detected.
+
+Violations are automatically detected when audit events violate the controls defined in your framework. The system continuously monitors audit events and compares them against your framework's control definitions to identify non-compliance.
+
+### Supported controls
+
+The following compliance controls are supported for violation detection:
+
+- `minimum_approvals_required_1`
+- `minimum_approvals_required_2`
+- `merge_request_prevent_author_approval`
+- `merge_request_prevent_committers_approval`
+
+For more information about compliance controls, see [Compliance frameworks](../compliance_frameworks/_index.md).
+
+## View the compliance violations report
+
+Prerequisites:
+
+- You must be an administrator or have the Security Manager or Owner role for the project or group.
+
+To view the compliance violations report:
+
+1. In the top bar, select **Search or go to** and find your project or group.
+1. In the left sidebar, select **Secure** > **Compliance center**.
+
+The compliance violations report displays:
+
+- **Status**: The current status of the violation. For example, Needs Review, Resolved, or Dismissed.
+- **Violated control and framework**: The specific compliance control that was violated and its associated framework.
+- **Audit Event**: Details about the event that triggered the violation.
+- **Project**: The project where the violation occurred.
+- **Date detected**: When the violation was identified.
+- **Action**: Link to view detailed information about the violation.
+
+In the report, you can:
+
+- Sort the report by selecting column headers.
+- Change the status of violations using the status dropdown list.
+- Navigate through multiple pages of violations by using pagination.
+- View detailed information about each violation.
+- Export the report as a CSV file.
+
+### Filter compliance violations
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/555541) in GitLab 18.7.
+- **Detected before** and **Detected after** filters [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/582497) in GitLab 19.1.
+
+{{< /history >}}
+
+You can filter the compliance violations report to focus on specific violations:
+
+1. In the compliance violations report, use the filter options at the top of the page.
+1. Select one or more filters:
+   - **Status**: Filter by violation status (Detected, Dismissed, In Review, or Resolved).
+   - **Project**: Filter by specific projects in your group.
+   - **Control**: Filter by compliance control.
+   - **Detected before**: Show violations detected before a specific date.
+   - **Detected after**: Show violations detected on or after a specific date.
+
+Combine **Detected before** and **Detected after** to limit the report to a date range.
+
+The report updates automatically to show only violations matching your selected filters.
+
+To clear filters, clear the filter options or select **Clear**.
+
+## Violation details
+
+When you select **Details** for a specific violation, you can view:
+
+- The violation ID and status.
+- Location (project) where the violation occurred.
+- Comprehensive audit event information including:
+  - Event author.
+  - Event target.
+  - Event details.
+  - IP address.
+  - Target type.
+- Violated control information including:
+  - Control name and description.
+  - Associated compliance framework.
+  - Requirements.
+- Fix suggestions with links to resolve the violation.
+- Comments and discussion threads related to the violation.
+
+### Add comments to violations
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/541095) in GitLab 18.7.
+
+{{< /history >}}
+
+You can add comments to violations to collaborate with your team on remediation efforts:
+
+1. In the violation details view, scroll to the comments section.
+1. Enter your comment in the text field.
+1. Select **Comment** to post your comment.
+
+Your comment is added to the violation and visible to all users with access to the compliance violations report.
+
+## Manage violation statuses
+
+You can update the status of compliance violations to track their remediation progress. Available statuses include:
+
+- **Needs Review**: Default status for new violations
+- **In Progress**: Violation is being addressed
+- **Resolved**: Violation has been remediated
+- **Dismissed**: Violation has been reviewed and dismissed
+
+To change a violation status:
+
+1. In the compliance violations report, locate the violation you want to update.
+1. Select the current status dropdown list in the **Status** column.
+1. Choose the new status from the dropdown list menu.
+
+The status updates immediately and is reflected in the report.
+
+## Export compliance violations report
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/551244) in GitLab 18.3.
+
+{{< /history >}}
+
+Export a CSV report of compliance violations for all projects in a group. The exported report includes:
+
+- Detected at (DateTime most current first)
+- Violation ID
+- Status
+- Framework
+- Compliance Control
+- Compliance Requirement
+- Audit Event Author
+- Audit Event Type
+- Audit Event Name
+- Audit Event Message
+- Project ID
+
+Reports:
+
+- Are truncated at 15 MB so the email attachment is not too large.
+- Include all violations regardless of current filters applied to the web interface.
+
+Prerequisites:
+
+- You must be an administrator or have the Security Manager or Owner role for the group.
+
+To export a compliance violations report:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Compliance center**.
+1. In the upper-right corner, select **Export**.
+1. Select **Export violations report**.
+
+A report is compiled and delivered to your email inbox as an attachment.
+
+## Static compliance violations report
+
+> [!warning]
+> This feature was [deprecated](https://gitlab.com/gitlab-org/gitlab/-/issues/551236) in GitLab 18.2
+> and is planned for removal in 18.8.
+
+The static compliance violations report provides a high-level view of merge request activity for all projects in the group.
+
+When you select a row in the static compliance violations report, a drawer appears that provides:
+
+- The project name and [compliance framework label](../../project/working_with_projects.md#add-a-compliance-framework-to-a-project),
+  if the project has one assigned.
+- A link to the merge request that introduced the violation.
+- The merge request's branch path in the format `[source] into [target]`.
+- A list of users that committed changes to the merge request.
+- A list of users that commented on the merge request.
+- A list of users that approved the merge request.
+- The user that merged the merge request.
+
+### View the static compliance violations report
+
+Prerequisites:
+
+- You must be an administrator or have the Security Manager or Owner role for the project or group.
+
+To view the static compliance violations report:
+
+1. In the top bar, select **Search or go to** and find your project or group.
+1. In the left sidebar, select **Secure** > **Compliance center**.
+
+You can sort the compliance report on:
+
+- Severity level.
+- Type of violation.
+- Merge request title.
+
+You can filter the compliance violations report on:
+
+- The project that the violation was found on.
+- The date range of violation.
+- The target branch of the violation.
+
+Select a row to see details of the compliance violation.
+
+### Severity levels
+
+Each compliance violation has one of the following severities.
+
+<!-- vale gitlab_base.SubstitutionWarning = NO -->
+
+| Icon                                  | Severity level |
+|:--------------------------------------|:---------------|
+| {{< icon name="severity-critical" >}} | Critical       |
+| {{< icon name="severity-high" >}}     | High           |
+| {{< icon name="severity-medium" >}}   | Medium         |
+| {{< icon name="severity-low" >}}      | Low            |
+| {{< icon name="severity-info" >}}     | Info           |
+
+<!-- vale gitlab_base.SubstitutionWarning = YES -->
+
+### Violation types
+
+| Violation                         | Severity level | Category                                      | Description                                                                                                                                                                                                                                            |
+|:----------------------------------|:---------------|:----------------------------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Author approved merge request     | High           | [Separation of duties](#separation-of-duties) | Author of the merge request approved their own merge request. For more information, see [Prevent approval by merge request creator](../../project/merge_requests/approvals/settings.md#prevent-approval-by-merge-request-creator).                     |
+| Committers approved merge request | High           | [Separation of duties](#separation-of-duties) | Committers of the merge request approved the merge request they contributed to. For more information, see [Prevent approvals by users who add commits](../../project/merge_requests/approvals/settings.md#prevent-approvals-by-users-who-add-commits). |
+| Fewer than two approvals          | High           | [Separation of duties](#separation-of-duties) | Merge request was merged with fewer than two approvals. For more information, see [Merge request approval rules](../../project/merge_requests/approvals/rules.md).                                                                                     |
+
+#### Separation of duties
+
+GitLab supports a separation of duties policy between users who create and approve merge requests. Our criteria for the
+separation of duties is:
+
+- [A merge request creator is not allowed to approve their merge request](../../project/merge_requests/approvals/settings.md#prevent-approval-by-merge-request-creator).
+- [A merge request committer is not allowed to approve a merge request they have added commits to](../../project/merge_requests/approvals/settings.md#prevent-approvals-by-users-who-add-commits).
+- [The minimum number of approvals required to merge a merge request is at least two](../../project/merge_requests/approvals/rules.md).
+
+### Export a report of merge request compliance violations on projects in a group
+
+Export a report of merge request compliance violations on merge requests belonging to projects in a group. Reports:
+
+- Do not use filters on the violations report.
+- Are truncated at 15 MB so the email attachment is not too large.
+
+Prerequisites:
+
+- You must be an administrator or have the Security Manager or Owner role for the group.
+
+To export a report of merge request compliance violations for projects in a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Compliance center**.
+1. In the upper-right corner, select **Export**.
+1. Select **Export violations report**.
+
+A report is compiled and delivered to your email inbox as an attachment.

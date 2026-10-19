@@ -1,0 +1,122 @@
+import VueApollo from 'vue-apollo';
+import Vue from 'vue';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import { pinia } from '~/pinia/instance';
+import createDefaultClient from '~/lib/graphql';
+import PersonalAccessTokensApp from './components/app.vue';
+import CreateGranularPersonalAccessTokenForm from './components/create_granular_token/create_granular_personal_access_token_form.vue';
+import CreateLegacyPersonalAccessTokenForm from './components/create_legacy_token/create_legacy_personal_access_token_form.vue';
+
+Vue.use(VueApollo);
+
+const apolloProvider = new VueApollo({
+  defaultClient: createDefaultClient(),
+});
+
+export const initPersonalAccessTokenApp = () => {
+  const el = document.querySelector('#js-personal-access-token-app');
+
+  if (!el) {
+    return null;
+  }
+
+  const {
+    accessTokenGranularNew,
+    accessTokenGranularTokensEnforced,
+    accessTokenLegacyNew,
+    accessTokenMaxDate,
+    accessTokenMinDate,
+  } = el.dataset;
+
+  return initVueApp({
+    el,
+    name: 'PersonalAccessTokensRoot',
+    apolloProvider,
+    provide: {
+      accessTokenGranularNewUrl: accessTokenGranularNew,
+      accessTokenLegacyNewUrl: accessTokenLegacyNew,
+      accessTokenMaxDate,
+      accessTokenMinDate,
+      granularTokensEnforced: parseBoolean(accessTokenGranularTokensEnforced),
+    },
+    component: PersonalAccessTokensApp,
+  });
+};
+
+export const initCreateGranularTokenApp = () => {
+  const el = document.querySelector('#js-create-granular-token-app');
+
+  if (!el) {
+    return null;
+  }
+
+  const {
+    accessTokenMaxDate,
+    accessTokenMinDate,
+    accessTokenTableUrl,
+    accessTokenAgenticAvailable,
+    accessTokenCanEnableSudo,
+  } = el.dataset;
+
+  return initVueApp({
+    el,
+    name: 'CreateGranularTokenRoot',
+    apolloProvider,
+    provide: {
+      accessTokenMaxDate,
+      accessTokenMinDate,
+      accessTokenTableUrl,
+      agenticAvailable: parseBoolean(accessTokenAgenticAvailable),
+      canEnableSudo: parseBoolean(accessTokenCanEnableSudo),
+    },
+    component: CreateGranularPersonalAccessTokenForm,
+  });
+};
+
+export const initCreateLegacyTokenApp = () => {
+  const el = document.querySelector('#js-create-legacy-token-app');
+
+  if (!el) {
+    return null;
+  }
+
+  const {
+    accessTokenMaxDate,
+    accessTokenMinDate,
+    accessTokenAvailableScopes,
+    accessTokenName,
+    accessTokenDescription,
+    accessTokenScopes,
+    accessTokenCreate,
+    accessTokenNew,
+    accessTokenRevoke,
+    accessTokenRotate,
+    accessTokenShow,
+    accessTokenTableUrl,
+  } = el.dataset;
+
+  return initVueApp({
+    el,
+    name: 'CreateLegacyTokenRoot',
+    pinia,
+    provide: {
+      accessTokenAvailableScopes: JSON.parse(accessTokenAvailableScopes),
+      accessTokenMaxDate,
+      accessTokenMinDate,
+      accessTokenName,
+      accessTokenDescription,
+      accessTokenScopes: JSON.parse(accessTokenScopes),
+      accessTokenCreate,
+      accessTokenNew,
+      accessTokenRevoke,
+      accessTokenRotate,
+      accessTokenShow,
+      accessTokenTableUrl,
+    },
+    component: CreateLegacyPersonalAccessTokenForm,
+    props: {
+      id: gon.current_user_id,
+    },
+  });
+};

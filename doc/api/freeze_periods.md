@@ -1,0 +1,202 @@
+---
+stage: Verify
+group: Runner Core
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Freeze Periods API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to interact with deployment [freeze periods](../user/project/releases/_index.md#prevent-unintentional-releases-by-setting-a-deploy-freeze).
+
+## List freeze periods
+
+Paginated list of freeze periods, sorted by `created_at` in ascending order.
+
+Prerequisites:
+
+- You must have the Reporter, Developer, Maintainer, or Owner role for the project.
+
+```plaintext
+GET /projects/:id/freeze_periods
+```
+
+| Attribute     | Type           | Required | Description                                                                         |
+| ------------- | -------------- | -------- | ----------------------------------------------------------------------------------- |
+| `id`          | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/19/freeze_periods"
+```
+
+Example response:
+
+```json
+[
+   {
+      "id":1,
+      "freeze_start":"0 23 * * 5",
+      "freeze_end":"0 8 * * 1",
+      "cron_timezone":"UTC",
+      "created_at":"2020-05-15T17:03:35.702Z",
+      "updated_at":"2020-05-15T17:06:41.566Z"
+   }
+]
+```
+
+## Retrieve a freeze period
+
+Retrieves a freeze period for a specified `freeze_period_id`.
+
+Prerequisites:
+
+- You must have the Reporter, Developer, Maintainer, or Owner role for the project.
+
+```plaintext
+GET /projects/:id/freeze_periods/:freeze_period_id
+```
+
+| Attribute     | Type           | Required | Description                                                                         |
+| ------------- | -------------- | -------- | ----------------------------------------------------------------------------------- |
+| `id`          | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `freeze_period_id`    | integer         | yes      | The ID of the freeze period.                                     |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/19/freeze_periods/1"
+```
+
+Example response:
+
+```json
+{
+   "id":1,
+   "freeze_start":"0 23 * * 5",
+   "freeze_end":"0 8 * * 1",
+   "cron_timezone":"UTC",
+   "created_at":"2020-05-15T17:03:35.702Z",
+   "updated_at":"2020-05-15T17:06:41.566Z"
+}
+```
+
+## Create a freeze period
+
+Creates a freeze period for a specified project.
+
+Prerequisites:
+
+- You must have the Maintainer or Owner role for the project.
+
+```plaintext
+POST /projects/:id/freeze_periods
+```
+
+| Attribute          | Type            | Required                    | Description                                                                                                                      |
+| -------------------| --------------- | --------                    | -------------------------------------------------------------------------------------------------------------------------------- |
+| `id`               | integer or string  | yes                         | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths).                                              |
+| `freeze_start`     | string          | yes                         | Start of the freeze period in [cron](https://crontab.guru/) format.                                                              |
+| `freeze_end`       | string          | yes                         | End of the freeze period in [cron](https://crontab.guru/) format.                                                                |
+| `cron_timezone`    | string          | no                          | The time zone for the cron fields, defaults to UTC if not provided.                                                               |
+
+Example request:
+
+```shell
+curl --request POST \
+  --header 'Content-Type: application/json' \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --data '{ "freeze_start": "0 23 * * 5", "freeze_end": "0 7 * * 1", "cron_timezone": "UTC" }' \
+  --url "https://gitlab.example.com/api/v4/projects/19/freeze_periods"
+```
+
+Example response:
+
+```json
+{
+   "id":1,
+   "freeze_start":"0 23 * * 5",
+   "freeze_end":"0 7 * * 1",
+   "cron_timezone":"UTC",
+   "created_at":"2020-05-15T17:03:35.702Z",
+   "updated_at":"2020-05-15T17:03:35.702Z"
+}
+```
+
+## Update a freeze period
+
+Updates a freeze period for a specified `freeze_period_id`.
+
+Prerequisites:
+
+- You must have the Maintainer or Owner role for the project.
+
+```plaintext
+PUT /projects/:id/freeze_periods/:freeze_period_id
+```
+
+| Attribute     | Type            | Required | Description                                                                                                 |
+| ------------- | --------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `id`          | integer or string  | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths).                         |
+| `freeze_period_id`    | integer          | yes      | The ID of the freeze period.                                                              |
+| `freeze_start`     | string          | no                         | Start of the freeze period in [cron](https://crontab.guru/) format.                                                              |
+| `freeze_end`       | string          | no                         | End of the freeze period in [cron](https://crontab.guru/) format.                                                                |
+| `cron_timezone`    | string          | no                          | The time zone for the cron fields.                                                               |
+
+Example request:
+
+```shell
+curl --request PUT \
+  --header 'Content-Type: application/json' \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --data '{ "freeze_end": "0 8 * * 1" }' \
+  --url "https://gitlab.example.com/api/v4/projects/19/freeze_periods/1"
+```
+
+Example response:
+
+```json
+{
+   "id":1,
+   "freeze_start":"0 23 * * 5",
+   "freeze_end":"0 8 * * 1",
+   "cron_timezone":"UTC",
+   "created_at":"2020-05-15T17:03:35.702Z",
+   "updated_at":"2020-05-15T17:06:41.566Z"
+}
+```
+
+## Delete a freeze period
+
+Deletes a freeze period for a specified `freeze_period_id`.
+
+Prerequisites:
+
+- You must have the Maintainer or Owner role for the project.
+
+```plaintext
+DELETE /projects/:id/freeze_periods/:freeze_period_id
+```
+
+| Attribute     | Type           | Required | Description                                                                         |
+| ------------- | -------------- | -------- | ----------------------------------------------------------------------------------- |
+| `id`          | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `freeze_period_id`    | integer         | yes      | The ID of the freeze period.                                     |
+
+Example request:
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/19/freeze_periods/1"
+```

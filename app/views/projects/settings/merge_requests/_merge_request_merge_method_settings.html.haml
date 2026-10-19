@@ -1,0 +1,39 @@
+- form = local_assigns.fetch(:form)
+
+- labelMerge = s_('ProjectSettings|Merge commit')
+- everyMergeCommit = s_('ProjectSettings|Every merge creates a merge commit.')
+
+- labelRebase = s_('ProjectSettings|Merge commit with semi-linear history')
+- rebaseUpToDate = s_('ProjectSettings|Merging is only allowed when the source branch is up-to-date with its target.')
+- rebaseSemiLinear = s_('ProjectSettings|When semi-linear merge is not possible, the user is given the option to rebase.')
+
+- labelFastForward = s_('ProjectSettings|Fast-forward merge')
+- noMergeCommit = s_('ProjectSettings|No merge commits are created.')
+- ffOnly = s_('ProjectSettings|Fast-forward merges only.')
+- ffConflictRebase = s_('ProjectSettings|When there is a merge conflict, the user is given the option to rebase.')
+- ffTrains = s_('ProjectSettings|If merge trains are enabled, merging is only possible if the branch can be rebased without conflicts.')
+- ffTrainsHelp = link_to s_('ProjectSettings|What are merge trains?'), help_page_path('ci/pipelines/merge_trains.md'), target: '_blank', rel: 'noopener noreferrer'
+
+- ffTrainsHelpFullHelpText = (noMergeCommit + "<br />" + ffOnly + "<br />" + ffConflictRebase + "<br />" + ffTrains + " " + ffTrainsHelp).html_safe
+
+%fieldset.form-group{ aria: { describedby: :merge_methods_description } }
+  %legend{ class: 'gl-m-0 gl-heading-5 gl-border-0' }
+    = s_('ProjectSettings|Merge method')
+  %p.gl-text-subtle{ id: :merge_methods_description }
+    = s_('ProjectSettings|Determine what happens to the commit history when you merge a merge request.')
+    = link_to s_('ProjectSettings|How do they differ?'), help_page_path('user/project/merge_requests/methods/_index.md'), target: '_blank', rel: 'noopener noreferrer'
+  = form.gitlab_ui_radio_component :merge_method,
+    :merge,
+    labelMerge,
+    help_text: everyMergeCommit
+  = form.gitlab_ui_radio_component :merge_method,
+    :rebase_merge,
+    labelRebase,
+    help_text: (everyMergeCommit + "<br />" + rebaseUpToDate + "<br />" + rebaseSemiLinear).html_safe
+  .js-rebase-merge-container{ 'aria-live': 'polite' }
+  = form.gitlab_ui_radio_component :merge_method,
+    :ff,
+    labelFastForward,
+    help_text: ffTrainsHelpFullHelpText,
+    radio_options: { data: { testid: 'merge-ff-radio' } }
+  .js-fast-forward-container{ 'aria-live': 'polite' }

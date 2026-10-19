@@ -1,0 +1,88 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    module WorkItems
+      class LinkWorkItemsService < Base::GraphqlService
+        container_arguments record: :work_items_ids
+
+        override :governed_containers
+        def governed_containers(arguments)
+          ids = Array(arguments[:work_items_ids])
+          reject_oversized_argument!(:work_items_ids, ids)
+
+          also_governed_by_all(super, :work_items_ids, ids.select { |id| global_work_item_id?(id) }) do |gids|
+            work_item_containers(gids)
+          end
+        end
+
+        register_version '0.1.0', {
+          toolset: :work_items,
+          description:
+            'Link a work item to other work items with a relationship type (relates_to)',
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: false
+          },
+          input_schema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'GitLab URL for the source work item.'
+              },
+              group_id: {
+                type: 'string',
+                description: 'ID or path of the group. Required if URL and project_id are not provided.'
+              },
+              project_id: {
+                type: 'string',
+                description: 'ID or path of the project. Required if URL and group_id are not provided.'
+              },
+              work_item_iid: {
+                type: 'integer',
+                description: 'Internal ID of the source work item. Required if URL is not provided.'
+              },
+              work_items_ids: {
+                type: 'array',
+                description:
+                  'Work items to link to: plain iids (resolved in the same project or group as the ' \
+                  'source) or global IDs (gid://gitlab/WorkItem/<id>) for work items in other ' \
+                  'projects or groups. Maximum 10 items.',
+                items: {
+                  anyOf: [{ type: 'integer' }, { type: 'string' }]
+                },
+                minItems: 1,
+                maxItems: 10
+              },
+              link_type: {
+                type: 'string',
+                description: 'Type of relationship between the work items. Defaults to "relates_to".',
+                enum: %w[relates_to],
+                default: 'relates_to'
+              }
+            },
+            required: ['work_items_ids']
+          }
+        }
+
+        protected
+
+        def graphql_tool_class
+          Mcp::Tools::WorkItems::LinkWorkItemsTool
+        end
+
+        def perform_v0_1_0(arguments)
+          execute_graphql_tool(arguments)
+        end
+
+        override :perform_default
+        def perform_default(arguments = {})
+          perform_v0_1_0(arguments)
+        end
+      end
+    end
+  end
+end
+
+Mcp::Tools::WorkItems::LinkWorkItemsService.prepend_mod

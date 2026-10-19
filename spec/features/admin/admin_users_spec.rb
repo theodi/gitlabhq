@@ -1,109 +1,84 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe "Admin::Users", feature: true  do
-  before { login_as :admin }
+RSpec.describe "Admin::Users", feature_category: :user_management do
+  let(:current_user) { create(:admin) }
 
-  describe "GET /admin/users" do
-    before do
+  before do
+    sign_in(current_user)
+    enable_admin_mode!(current_user)
+  end
+
+  describe 'Tabs' do
+    let(:tabs_selector) { '[data-testid="admin-users-tabs"]' }
+    let(:active_tab_selector) { '.nav-link.active' }
+
+    it 'links to the Users tab' do
+      visit admin_cohorts_path
+
+      within tabs_selector do
+        click_link 'Users'
+
+        expect(page).to have_selector active_tab_selector, text: 'Users'
+      end
+
+      expect(page).to have_current_path(admin_users_path)
+    end
+
+    it 'links to the Cohorts tab' do
       visit admin_users_path
+
+      within tabs_selector do
+        click_link 'Cohorts'
+
+        expect(page).to have_selector active_tab_selector, text: 'Cohorts'
+      end
+
+      expect(page).to have_current_path(admin_cohorts_path)
+      expect(page).to have_selector active_tab_selector, text: 'Cohorts'
     end
 
-    it "should be ok" do
-      expect(current_path).to eq(admin_users_path)
-    end
+    it 'redirects legacy route' do
+      visit admin_users_path(tab: 'cohorts')
 
-    it "should have users list" do
-      expect(page).to have_content(@user.email)
-      expect(page).to have_content(@user.name)
+      expect(page).to have_current_path(admin_cohorts_path)
     end
   end
 
-  describe "GET /admin/users/new" do
-    before do
-      visit new_admin_user_path
-      fill_in "user_name", with: "Big Bang"
-      fill_in "user_username", with: "bang"
-      fill_in "user_email", with: "bigbang@mail.com"
-    end
+  describe 'Cohorts tab content' do
+    it 'shows users count per month' do
+      stub_application_setting(usage_ping_enabled: false)
 
-    it "should create new user" do
-      expect { click_button "Create user" }.to change {User.count}.by(1)
-    end
+      create_list(:user, 2)
 
-    it "should apply defaults to user" do
-      click_button "Create user"
-      user = User.find_by(username: 'bang')
-      expect(user.projects_limit).
-        to eq(Gitlab.config.gitlab.default_projects_limit)
-      expect(user.can_create_group).
-        to eq(Gitlab.config.gitlab.default_can_create_group)
-    end
+      visit admin_users_path(tab: 'cohorts')
 
-    it "should create user with valid data" do
-      click_button "Create user"
-      user = User.find_by(username: 'bang')
-      expect(user.name).to eq('Big Bang')
-      expect(user.email).to eq('bigbang@mail.com')
-    end
-
-    it "should call send mail" do
-      expect(Notify).to receive(:new_user_email)
-
-      click_button "Create user"
-    end
-
-    it "should send valid email to user with email & password" do
-      click_button "Create user"
-      user = User.find_by(username: 'bang')
-      email = ActionMailer::Base.deliveries.last
-      expect(email.subject).to have_content('Account was created')
-      expect(email.text_part.body).to have_content(user.email)
-      expect(email.text_part.body).to have_content('password')
+      expect(page).to have_content("#{Time.zone.now.strftime('%b %Y')} 3 0")
     end
   end
 
-  describe "GET /admin/users/:id" do
-    before do
-      visit admin_users_path
-      click_link "#{@user.name}"
-    end
+  it 'does not perform N+1 queries' do
+    control_queries = ActiveRecord::QueryRecorder.new { visit admin_users_path }
 
-    it "should have user info" do
-      expect(page).to have_content(@user.email)
-      expect(page).to have_content(@user.name)
-    end
+    expect { create(:user) }.to change { User.count }.by(1)
+
+    expect { visit admin_users_path }.not_to exceed_query_limit(control_queries)
   end
 
-  describe "GET /admin/users/:id/edit" do
-    before do
-      @simple_user = create(:user)
-      visit admin_users_path
-      click_link "edit_user_#{@simple_user.id}"
+  describe 'user search', :js do
+    let_it_be(:user) { create(:user) }
+
+    it 'allows searching by name' do
+      visit admin_users_path(search_query: user.name)
+
+      expect(page).to have_content(user.name)
     end
 
-    it "should have user edit page" do
-      expect(page).to have_content('Name')
-      expect(page).to have_content('Password')
-    end
+    it 'allows searching by email' do
+      visit admin_users_path(search_query: user.email)
 
-    describe "Update user" do
-      before do
-        fill_in "user_name", with: "Big Bang"
-        fill_in "user_email", with: "bigbang@mail.com"
-        check "user_admin"
-        click_button "Save changes"
-      end
-
-      it "should show page with  new data" do
-        expect(page).to have_content('bigbang@mail.com')
-        expect(page).to have_content('Big Bang')
-      end
-
-      it "should change user entry" do
-        @simple_user.reload
-        expect(@simple_user.name).to eq('Big Bang')
-        expect(@simple_user.is_admin?).to be_truthy
-      end
+      expect(page).to have_content(user.name)
     end
   end
 end

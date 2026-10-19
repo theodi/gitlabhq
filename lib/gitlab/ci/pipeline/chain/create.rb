@@ -1,0 +1,299 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    module Pipeline
+      module Chain
+        class Create < Chain::Base
+          include Chain::Helpers
+          include Gitlab::Utils::StrongMemoize
+
+          BULK_INSERT_BATCH_SIZE = 500
+
+          def perform!
+            with_iid_retry(cleanup_on_failure: true) do
+              logger.instrument_once_with_sql(:pipeline_save) do
+                ::Gitlab::Ci::Pipeline::Create::JobDefinitionBuilder.new(pipeline, statuses).run
+
+                pipeline.validate!
+                validate_records!(pipeline.stages)
+                validate_records!(statuses)
+
+                stages_to_insert = pipeline.stages.to_a
+                statuses_to_insert = statuses.to_a
+
+                pipeline.stages.clear
+
+                pipeline.save!
+
+                bulk_insert_stages!(stages_to_insert)
+                bulk_insert_statuses!(statuses_to_insert)
+
+                pipeline.association(:stages).target = stages_to_insert
+              end
+
+              stick_merge_request_to_primary!
+            end
+          rescue ActiveRecord::RecordInvalid => e
+            error("Failed to persist the pipeline: #{e}")
+            cleanup_bulk_insert_on_failure!
+          rescue ActiveRecord::ValueTooLong => e
+            error("Failed to persist the pipeline: #{e.message}")
+            cleanup_bulk_insert_on_failure!
+          end
+
+          def break?
+            !pipeline.persisted?
+          end
+
+          private
+
+          # Records the main database WAL location for the pipeline's merge request so that
+          # downstream consumers can ensure they read a copy of the merge request that is at least
+          # as up-to-date as pipeline creation, from a caught-up replica. This is especially
+          # important for build serialization for the runner.
+          def stick_merge_request_to_primary!
+            return unless pipeline.merge_request_id
+
+            ::MergeRequest.sticking.stick(:merge_request, pipeline.merge_request_id)
+          end
+
+          def with_iid_retry(cleanup_on_failure: false)
+            max_retries = 3
+            retries = 0
+
+            begin
+              yield
+            rescue ActiveRecord::RecordNotUnique => e
+              raise unless e.message.include?('iid')
+
+              ::InternalId.flush_records!(project: project, usage: :ci_pipelines)
+              cleanup_bulk_insert_on_failure! if cleanup_on_failure
+
+              pipeline.write_attribute(:iid, nil) unless pipeline.frozen?
+
+              retries += 1
+              retry if retries < max_retries
+
+              raise
+            end
+          end
+
+          def validate_records!(records)
+            records.each(&:validate!)
+          end
+
+          def cleanup_bulk_insert_on_failure!
+            return unless pipeline.persisted?
+
+            pipeline.destroy!
+          end
+
+          def bulk_insert_with_pipeline_refs!(model_class, records, returning: [:id])
+            return if records.empty?
+
+            records.each { |record| record.prepare_for_bulk_insert(pipeline) }
+
+            records.each_slice(BULK_INSERT_BATCH_SIZE) do |batch|
+              insert_records_and_restore_ids(model_class, batch, returning: returning)
+            end
+          end
+
+          def bulk_insert_stages!(stages)
+            bulk_insert_with_pipeline_refs!(::Ci::Stage, stages)
+          end
+
+          def bulk_insert_statuses!(builds)
+            return if builds.empty?
+
+            builds.each { |build| build.prepare_for_bulk_insert(pipeline) }
+
+            builds.each_slice(BULK_INSERT_BATCH_SIZE) do |batch|
+              result = insert_records_and_restore_ids(::CommitStatus, batch, returning: [:id, :partition_id])
+              bulk_insert_job_definition_instances!(batch, result)
+            end
+
+            bulk_insert_needs!(builds)
+            bulk_insert_job_sources!(builds)
+            bulk_insert_job_environments!(builds)
+            bulk_insert_job_runtime_environments!(builds)
+          end
+
+          def bulk_insert_job_definition_instances!(builds, result)
+            instances = builds.filter_map.with_index do |build, index|
+              next unless build.job_definition_instance
+
+              build.job_definition_instance.tap do |instance|
+                instance.job_id = result[index]['id']
+                instance.partition_id = result[index]['partition_id']
+              end
+            end
+
+            return if instances.empty?
+
+            insert_records_and_restore_ids(::Ci::JobDefinitionInstance, instances, returning: [])
+          end
+
+          def bulk_insert_needs!(builds)
+            needs = builds.flat_map do |build|
+              build.needs.map do |need|
+                need.build_id = build.id
+                need.partition_id = build.partition_id
+                need.project_id ||= build.project_id
+                need
+              end
+            end
+
+            return if needs.empty?
+
+            ::Ci::BuildNeed.bulk_insert!(needs, batch_size: BULK_INSERT_BATCH_SIZE, validate: false)
+          end
+
+          def bulk_insert_job_sources!(builds)
+            job_sources = builds.filter_map do |build|
+              source = build.job_source
+              next unless source
+
+              source.tap do |s|
+                s.build_id = build.id
+                s.partition_id = build.partition_id
+              end
+            end
+
+            return if job_sources.empty?
+
+            job_sources.each_slice(BULK_INSERT_BATCH_SIZE) do |batch|
+              insert_records_and_restore_ids(::Ci::BuildSource, batch, returning: [])
+            end
+          end
+
+          def bulk_insert_job_environments!(builds)
+            job_environments = builds.filter_map do |build|
+              next unless build.has_environment_keyword?
+
+              environment = build.persisted_environment
+              next if environment.nil?
+
+              ::Environments::Job.new(
+                environment_id: environment.id,
+                expanded_environment_name: environment.name,
+                project_id: build.project_id,
+                ci_pipeline_id: pipeline.id,
+                ci_job_id: build.id,
+                options: build.environment_options_for_permanent_storage
+              )
+            end
+
+            return if job_environments.empty?
+
+            job_environments.each_slice(BULK_INSERT_BATCH_SIZE) do |batch|
+              insert_records_and_restore_ids(::Environments::Job, batch, returning: [])
+            end
+          end
+
+          def bulk_insert_job_runtime_environments!(builds)
+            return unless ::Feature.enabled?(:ci_suspendable_environment_runner_routing, project,
+              type: :gitlab_com_derisk)
+
+            suspend_options = command.suspend_options
+            return if suspend_options.blank?
+
+            suspend_on_success = !!suspend_options[:suspend_on_success]
+            suspend_on_failure = !!suspend_options[:suspend_on_failure]
+            runtime_environment_key = suspend_options[:runtime_environment_key]
+
+            return unless suspend_on_success || suspend_on_failure || runtime_environment_key.present?
+
+            runtime_environment_id = find_runtime_environment_id(runtime_environment_key)
+
+            job_runtime_environments = builds.filter_map do |build|
+              next unless build.is_a?(::Ci::Build)
+
+              ::Ci::JobRuntimeEnvironment.new(
+                build: build,
+                partition_id: build.partition_id,
+                project_id: build.project_id,
+                suspend_on_success: suspend_on_success,
+                suspend_on_failure: suspend_on_failure,
+                runtime_environment_id: runtime_environment_id,
+                runner_machine_id: nil
+              )
+            end
+
+            job_runtime_environments.each_slice(BULK_INSERT_BATCH_SIZE) do |batch|
+              insert_records_and_restore_ids(::Ci::JobRuntimeEnvironment, batch, returning: [])
+            end
+          end
+
+          def find_runtime_environment_id(runtime_environment_key)
+            return if runtime_environment_key.blank?
+
+            ::Ci::RuntimeEnvironment
+              .find_by_key_and_project(runtime_environment_key, project.id)
+              &.id
+          end
+
+          def insert_records_and_restore_ids(model_class, records, returning:)
+            if model_class.column_names.include?('created_at')
+              timestamp = Time.current
+              records.each do |record|
+                record.created_at ||= timestamp
+                record.updated_at ||= timestamp
+              end
+            end
+
+            column_names = model_class.column_names - ['id']
+            attributes = records.map { |record| record.attributes.slice(*column_names) }
+
+            # Build SQL manually to avoid ActiveRecord's unique index validation on partitioned tables
+            table_name = model_class.quoted_table_name
+            columns = format_columns(model_class, column_names)
+
+            values_list = attributes.map do |attrs|
+              values = column_names.map do |col|
+                value = attrs[col]
+                type = model_class.type_for_attribute(col)
+                serialized = type.serialize(value)
+                model_class.connection.quote(serialized)
+              end.join(', ')
+              "(#{values})"
+            end.join(', ')
+
+            sql = "INSERT INTO #{table_name} (#{columns}) VALUES #{values_list}"
+            sql += " RETURNING #{format_columns(model_class, returning)}" if returning.any?
+
+            result = model_class.connection.execute(sql)
+
+            restore_ids_from_result(records, result, returning)
+
+            result
+          end
+
+          def format_columns(model_class, columns)
+            columns.map { |c| model_class.connection.quote_column_name(c) }.join(', ')
+          end
+
+          def restore_ids_from_result(records, result, returning)
+            if returning.any?
+              result.to_a.each_with_index do |row_hash, index|
+                returning.each do |field|
+                  records[index].write_attribute(field, row_hash[field.to_s])
+                end
+                records[index].instance_variable_set(:@new_record, false)
+              end
+            else
+              records.each { |record| record.instance_variable_set(:@new_record, false) }
+            end
+          end
+
+          def statuses
+            pipeline
+              .stages
+              .flat_map(&:statuses)
+          end
+          strong_memoize_attr :statuses
+        end
+      end
+    end
+  end
+end

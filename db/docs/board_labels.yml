@@ -1,0 +1,15 @@
+---
+table_name: board_labels
+classes:
+- BoardLabel
+feature_categories:
+- team_planning
+description: Used by issue boards to filter issues by label as part of the default
+  scope
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/2912
+milestone: '10.2'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  group_id: namespaces
+  project_id: projects
+table_size: small

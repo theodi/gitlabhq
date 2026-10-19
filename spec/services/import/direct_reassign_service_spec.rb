@@ -1,0 +1,367 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::DirectReassignService, feature_category: :importers do
+  let_it_be(:import_source_user) do
+    create(:import_source_user, :reassignment_in_progress)
+  end
+
+  let_it_be(:import_user_source_user) do
+    create(:import_source_user, placeholder_user: create(:user, :import_user))
+  end
+
+  describe '.model_list' do
+    it 'includes expected models and their attributes' do
+      model_list = described_class.model_list
+
+      expect(model_list['Issue']).to eq(%w[author_id updated_by_id closed_by_id])
+      expect(model_list['MergeRequest']).to eq(%w[author_id updated_by_id merge_user_id])
+      expect(model_list['Note']).to eq(%w[author_id])
+      expect(model_list['Approval']).to eq(['user_id'])
+    end
+
+    it 'only contains attributes with database indexes set', :aggregate_failures do
+      def failure_message(model, column)
+        <<-MSG
+          The column '#{column}' is listed in #{described_class.name}.model_list["#{model}"]
+          but '#{model}#{column}' lacks a proper database index.
+
+          Action required:
+          - If this is a new column: Add the missing database index
+          - If an existing index was removed: Create a replacement index
+
+          Without a proper index, placeholder user reassignment will fail due to poor query performance.
+        MSG
+      end
+
+      described_class.model_list.each do |model, attributes|
+        indexes = ApplicationRecord.connection.indexes(model.constantize.table_name).map { |i| i.columns.first }.uniq
+
+        attributes.each do |attribute|
+          next if indexes.include?(attribute)
+
+          expect(described_class.model_list[model].to_a).to exclude(attribute), failure_message(model, attribute)
+        end
+      end
+    end
+
+    it 'contains only base class of models that uses STI' do
+      models = described_class.model_list.keys
+      base_classes = models.map { |model| model.constantize.base_class.name }.uniq
+
+      expect(models).to match_array(base_classes)
+    end
+
+    shared_examples 'includes all supported models and attributes' do
+      def relation_class(relation_key)
+        relation_key.to_s.classify.constantize
+      rescue NameError
+        relation_key.to_s.constantize
+      end
+
+      def extract_relation_names(hash, keys = [])
+        keys += hash.keys
+        hash.each_value do |value|
+          keys += extract_relation_names(value, keys)
+        end
+        keys.uniq
+      end
+
+      def missing_model_message(model)
+        <<-MSG
+        #{model} models references a user and it is not defined in #{described_class}::MODEL_LIST.
+        Please define the mapping in #{described_class}::MODEL_LIST.
+        MSG
+      end
+
+      def missing_attribute_message(model, attribute)
+        <<-MSG
+        #{model}##{attribute} references a user and it is not defined in #{described_class}::MODEL_LIST.
+        Please add the attribute in the columns key in the #{described_class}::MODEL_LIST['#{model}'] hash.
+        MSG
+      end
+
+      it "includes all supported models which are imported resources that references users", :eager_load do
+        relation_names = extract_relation_names(config_tree).reject { |name| ignore_relations.include?(name.to_sym) }
+
+        relation_names.each do |relation_name|
+          relation_name = overrides[relation_name] || relation_name
+          model_class = relation_class(relation_name)
+          next unless model_class.respond_to?(:columns)
+
+          table_columns = model_class.columns.collect(&:name)
+          user_associations = model_class.reflect_on_all_associations(:belongs_to)
+            .reject(&:polymorphic?)
+            .filter { |association| association.klass == User }
+            .reject { |association| table_columns.exclude?(association.foreign_key) }
+
+          next unless user_associations.any?
+
+          expect(described_class.model_list[model_class.base_class.to_s]).to be_present,
+            missing_model_message(model_class)
+
+          user_associations.each do |association|
+            foreign_key = association.foreign_key
+            attributes = described_class.model_list[model_class.base_class.to_s]
+
+            next if not_supported_due_missing_index[model_class.base_class.to_s]&.include?(foreign_key)
+
+            expect(attributes).to include(foreign_key), missing_attribute_message(model_class.base_class, foreign_key)
+          end
+        end
+      end
+    end
+
+    describe 'include project models' do
+      let(:overrides) { Gitlab::ImportExport::Project::RelationFactory.overrides }
+      let(:ignore_relations) { %i[project_members user_contributions author user] }
+      let(:not_supported_due_missing_index) do
+        {
+          'Issue' => %w[last_edited_by_id],
+          'MergeRequest' => %w[last_edited_by_id],
+          'Note' => %w[updated_by_id resolved_by_id],
+          'Epic' => %w[updated_by_id],
+          'CommitStatus' => %w[erased_by_id]
+        }
+      end
+
+      let(:config_tree) do
+        Gitlab::ImportExport::Config.new(config: Gitlab::ImportExport.config_file).to_h[:tree][:project]
+      end
+
+      it_behaves_like 'includes all supported models and attributes'
+    end
+
+    describe 'include group models' do
+      let(:overrides) { Gitlab::ImportExport::Group::RelationFactory.overrides }
+      let(:ignore_relations) { %i[members user_contributions author user] }
+      let(:not_supported_due_missing_index) do
+        {
+          'Epic' => %w[updated_by_id],
+          'Note' => %w[updated_by_id resolved_by_id]
+        }
+      end
+
+      let(:config_tree) do
+        Gitlab::ImportExport::Config.new(config: Gitlab::ImportExport.group_config_file).to_h[:tree][:group]
+      end
+
+      it_behaves_like 'includes all supported models and attributes'
+    end
+  end
+
+  describe '.supported?' do
+    let(:model_class) { Issue }
+    let(:attribute) { 'author_id' }
+    let(:source_user) { import_source_user }
+
+    subject { described_class.supported?(model_class, attribute, source_user) }
+
+    context 'when placeholder user is a import user type' do
+      let(:source_user) { import_user_source_user }
+
+      it { is_expected.to be false }
+    end
+
+    context 'when placeholder user is a placeholder user type' do
+      let(:source_user) { import_source_user }
+
+      context 'when attribute is in the model list' do
+        it { is_expected.to be true }
+      end
+
+      context 'when attribute is not in the model list' do
+        let(:attribute) { 'resolved_by_id' }
+
+        it { is_expected.to be false }
+      end
+
+      context 'with attribute as a symbol' do
+        let(:attribute) { :author_id }
+
+        it { is_expected.to be true }
+      end
+
+      context 'when model class is not in the model list' do
+        let(:model_class) { DesignManagement::Design }
+
+        it { is_expected.to be false }
+      end
+
+      context 'when model class descends from another class and attribute is on the list' do
+        let(:model_class) { DiffNote }
+
+        it { is_expected.to be true }
+      end
+    end
+  end
+
+  describe '#execute' do
+    let_it_be_with_reload(:other_source_user) do
+      create(:import_source_user, :with_reassigned_by_user, :reassignment_in_progress)
+    end
+
+    let_it_be(:reassign_to_user_id) { import_source_user.reassign_to_user.id }
+    let_it_be(:placeholder_user_id) { import_source_user.placeholder_user.id }
+    let_it_be(:other_placeholder_user_id) { other_source_user.placeholder_user.id }
+
+    # MergeRequests
+    let_it_be_with_reload(:merge_requests) { create_list(:merge_request, 3, author_id: placeholder_user_id) }
+
+    let_it_be_with_reload(:other_merge_request) do
+      create(:merge_request, author_id: other_placeholder_user_id)
+    end
+
+    # Approvals
+    let_it_be_with_reload(:merge_request_approval) do
+      create(:approval, merge_request: other_merge_request, user_id: placeholder_user_id)
+    end
+
+    let_it_be_with_reload(:merge_request_approval_placeholder) do
+      create(:approval, merge_request: merge_requests[0], user_id: placeholder_user_id)
+    end
+
+    let_it_be_with_reload(:merge_request_approval_reassign_to_user) do
+      create(:approval, merge_request: merge_requests[0], user_id: reassign_to_user_id)
+    end
+
+    let_it_be_with_reload(:other_merge_request_approval) do
+      create(:approval, merge_request: merge_requests[0], user_id: other_placeholder_user_id)
+    end
+
+    # Issues
+    let_it_be_with_reload(:issue) { create(:issue, author_id: placeholder_user_id, closed_by_id: placeholder_user_id) }
+    let_it_be_with_reload(:issue_closed) { create(:issue, closed_by_id: placeholder_user_id) }
+
+    # IssueAssignees
+    let_it_be_with_reload(:issue_assignee) do
+      issue.issue_assignees.create!(user_id: placeholder_user_id)
+    end
+
+    let_it_be_with_reload(:issue_assignee_placeholder_user) do
+      issue_closed.issue_assignees.create!(user_id: placeholder_user_id)
+    end
+
+    let_it_be_with_reload(:issue_assignee_reassign_to_user) do
+      issue_closed.issue_assignees.create!(user_id: reassign_to_user_id)
+    end
+
+    # Notes
+    let_it_be_with_reload(:authored_note) { create(:note, author_id: placeholder_user_id) }
+
+    # Ci::Builds - schema is gitlab_ci
+    let_it_be_with_reload(:ci_build) { create(:ci_build, user_id: placeholder_user_id) }
+
+    let(:reassignment_throttling) { Import::ReassignPlaceholderThrottling.new(import_source_user) }
+
+    subject(:direct_reassign) do
+      described_class.new(import_source_user, reassignment_throttling: reassignment_throttling, sleep_time: 0)
+    end
+
+    it 'updates records ownership' do
+      expect { direct_reassign.execute }.to change { merge_requests[0].reload.author_id }
+          .from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { merge_requests[1].reload.author_id }.from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { merge_requests[2].reload.author_id }.from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { merge_request_approval.reload.user_id }.from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { issue.reload.author_id }.from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { issue.reload.closed_by_id }.from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { issue_closed.reload.closed_by_id }.from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { authored_note.reload.author_id }.from(placeholder_user_id).to(reassign_to_user_id)
+          .and change { IssueAssignee.where({ user_id: reassign_to_user_id, issue_id: issue.id }).count }.from(0).to(1)
+    end
+
+    it 'does not touch records that would get duplicated' do
+      direct_reassign.execute
+
+      expect { direct_reassign.execute }.to not_change { issue_assignee_reassign_to_user.reload.user_id }
+        .and not_change { merge_request_approval_reassign_to_user.reload.user_id }
+    end
+
+    it 'destroy duplicated records associated with the placeholder user' do
+      expect(Import::Framework::Logger).to receive(:warn).with(
+        hash_including(
+          {
+            message: "Destroying contribution due to uniqueness constraint",
+            source_user_id: import_source_user.id,
+            model: 'Approval'
+          }
+        )
+      )
+
+      expect(Import::Framework::Logger).to receive(:warn).with(
+        hash_including(
+          {
+            message: "Destroying contribution due to uniqueness constraint",
+            source_user_id: import_source_user.id,
+            model: 'IssueAssignee'
+          }
+        )
+      )
+
+      expect { direct_reassign.execute }.to change { Approval.count }.by(-1)
+        .and change { IssueAssignee.count }.by(-1)
+
+      expect(Approval.where(user_id: placeholder_user_id).count).to eq(0)
+      expect(IssueAssignee.where(user_id: placeholder_user_id).count).to eq(0)
+    end
+
+    it 'raises ExecutionTimeOutError if execution time exceeds the limit' do
+      expect_next_instance_of(Gitlab::Utils::ExecutionTracker) do |tracker|
+        expect(tracker).to receive(:over_limit?).and_return(false)
+        expect(tracker).to receive(:over_limit?).and_return(false)
+        expect(tracker).to receive(:over_limit?).and_return(true)
+      end
+
+      expect { direct_reassign.execute }.to raise_error(Gitlab::Utils::ExecutionTracker::ExecutionTimeOutError)
+    end
+
+    context 'when database is unhealthy' do
+      before do
+        allow_next_instance_of(Import::ReassignPlaceholderThrottling) do |throttling|
+          allow(throttling).to receive(:db_health_check!)
+            .and_raise(Import::ReassignPlaceholderThrottling::DatabaseHealthError, 'Database unhealthy')
+        end
+      end
+
+      it 'returns early without processing and raises DatabaseHealthError' do
+        expect(direct_reassign).not_to receive(:direct_reassign_model_user_references)
+
+        expect { direct_reassign.execute }
+          .to raise_error Import::ReassignPlaceholderThrottling::DatabaseHealthError, 'Database unhealthy'
+      end
+    end
+
+    context 'when transaction block is executed' do
+      it 'executes the transaction block for model reassignment' do
+        # Create a simple record to reassign
+        test_issue = create(:issue, author_id: placeholder_user_id)
+
+        # Call the private method directly to test the transaction block
+        direct_reassign.send(:direct_reassign_model_user_references, 'Issue', 'author_id')
+
+        # Verify the record was reassigned
+        expect(test_issue.reload.author_id).to eq(reassign_to_user_id)
+      end
+    end
+
+    context 'when tables were not available' do
+      before do
+        allow(described_class).to receive(:model_list)
+          .and_return({ "Issue" => ['author_id'], "MergeRequest" => ['author_id'] })
+
+        allow_next_instance_of(Import::ReassignPlaceholderThrottling) do |throttling|
+          allow(throttling).to receive(:db_health_check!)
+          allow(throttling).to receive(:db_table_unavailable?).with(MergeRequest).and_return(true)
+          allow(throttling).to receive(:db_table_unavailable?).with(Issue).and_return(false)
+        end
+      end
+
+      it 'does not reassign unavailable tables' do
+        expect { direct_reassign.execute }.to not_change { merge_requests[0].reload.author_id }
+          .and change { issue.reload.author_id }.from(placeholder_user_id).to(reassign_to_user_id)
+      end
+    end
+  end
+end

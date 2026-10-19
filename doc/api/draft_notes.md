@@ -1,0 +1,244 @@
+---
+stage: AI Coding
+group: Code Review
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Documentation for the REST API for draft notes (unpublished comments) in GitLab.
+title: Draft Notes API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to manage draft notes. These notes are pending, unpublished comments on merge requests.
+Draft notes can start a discussion, or continue an existing discussion as a reply.
+
+Before publishing, draft notes are visible only to the author.
+
+When you publish a draft note, GitLab might change its body.
+For more information, see [note body normalization](notes.md#note-body-normalization).
+
+## List all merge request draft notes
+
+Lists all merge request draft notes.
+
+```plaintext
+GET /projects/:id/merge_requests/:merge_request_iid/draft_notes
+```
+
+| Attribute           | Type              | Required | Description |
+|---------------------|-------------------|----------|-------------|
+| `id`                | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths) |
+| `merge_request_iid` | integer           | yes      | The IID of a project merge request |
+
+```json
+[
+  {
+    "id": 5,
+    "author_id": 23,
+    "merge_request_id": 11,
+    "resolve_discussion": false,
+    "discussion_id": null,
+    "note": "Example title",
+    "commit_id": null,
+    "line_code": null,
+    "position": {
+      "base_sha": null,
+      "start_sha": null,
+      "head_sha": null,
+      "old_path": null,
+      "new_path": null,
+      "position_type": "text",
+      "old_line": null,
+      "new_line": null,
+      "line_range": null
+    }
+  }
+]
+```
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/14/merge_requests/11/draft_notes"
+```
+
+## Retrieve a draft note
+
+Retrieves a draft note for a merge request.
+
+```plaintext
+GET /projects/:id/merge_requests/:merge_request_iid/draft_notes/:draft_note_id
+```
+
+| Attribute           | Type              | Required | Description |
+|---------------------|-------------------|----------|-------------|
+| `id`                | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `draft_note_id`     | integer           | yes      | The ID of a draft note. |
+| `merge_request_iid` | integer           | yes      | The IID of a project merge request. |
+
+```json
+[
+  {
+    "id": 5,
+    "author_id": 23,
+    "merge_request_id": 11,
+    "resolve_discussion": false,
+    "discussion_id": null,
+    "note": "Example title",
+    "commit_id": null,
+    "line_code": null,
+    "position": {
+      "base_sha": null,
+      "start_sha": null,
+      "head_sha": null,
+      "old_path": null,
+      "new_path": null,
+      "position_type": "text",
+      "old_line": null,
+      "new_line": null,
+      "line_range": null
+    }
+  }
+]
+```
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/14/merge_requests/11/draft_notes/5"
+```
+
+## Create a draft note
+
+Creates a draft note for a merge request.
+
+```plaintext
+POST /projects/:id/merge_requests/:merge_request_iid/draft_notes
+```
+
+| Attribute                   | Type              | Required    | Description           |
+| ----------------------------| ----------------- | ----------- | --------------------- |
+| `id`                        | integer or string | yes         | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `merge_request_iid`         | integer           | yes         | The IID of a project merge request. |
+| `note`                      | string            | yes         | The content of a note. |
+| `commit_id`                 | string            | no          | The SHA of a commit to associate the draft note to. |
+| `in_reply_to_discussion_id` | string            | no          | The ID of a discussion the draft note replies to. |
+| `resolve_discussion`        | boolean           | no          | The associated discussion should be resolved. |
+| `position`                  | hash              | no          | Position when creating a diff note. If omitted, creates a regular discussion note. |
+| `position[base_sha]`        | string            | yes (if `position` is provided) | Base commit SHA in the source branch. |
+| `position[head_sha]`        | string            | yes (if `position` is provided) | SHA referencing HEAD of this merge request. |
+| `position[start_sha]`       | string            | yes (if `position` is provided) | SHA referencing commit in target branch. |
+| `position[new_path]`        | string            | yes (if the position type is `text`) | File path after change. |
+| `position[old_path]`        | string            | yes (if the position type is `text`) | File path before change. |
+| `position[position_type]`   | string            | yes (if `position` is provided) | Type of the position reference. Allowed values: `text`, `image`, or `file`. |
+| `position[new_line]`        | integer           | no          | For `text` diff notes, the line number after change. |
+| `position[old_line]`        | integer           | no          | For `text` diff notes, the line number before change. |
+| `position[line_range]`      | hash              | no          | Line range for a multi-line diff note. |
+| `position[width]`           | integer           | no          | For `image` diff notes, width of the image. |
+| `position[height]`          | integer           | no          | For `image` diff notes, height of the image. |
+| `position[x]`               | float             | no          | For `image` diff notes, X coordinate. |
+| `position[y]`               | float             | no          | For `image` diff notes, Y coordinate. |
+
+```shell
+curl --request POST --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/14/merge_requests/11/draft_notes?note=note"
+```
+
+## Update a draft note
+
+Updates a draft note for a merge request.
+
+```plaintext
+PUT /projects/:id/merge_requests/:merge_request_iid/draft_notes/:draft_note_id
+```
+
+| Attribute                 | Type              | Required | Description |
+| ------------------------- | ----------------- | -------- | ----------- |
+| `id`                      | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `draft_note_id`           | integer           | yes      | The ID of a draft note. |
+| `merge_request_iid`       | integer           | yes      | The IID of a project merge request. |
+| `note`                    | string            | no       | The content of a note. |
+| `position`                | hash              | no       | New position of a diff note. If omitted, the existing position is kept. |
+| `position[base_sha]`      | string            | yes (if `position` is provided) | Base commit SHA in the source branch. |
+| `position[head_sha]`      | string            | yes (if `position` is provided) | SHA referencing HEAD of this merge request. |
+| `position[start_sha]`     | string            | yes (if `position` is provided) | SHA referencing commit in target branch. |
+| `position[new_path]`      | string            | yes (if the position type is `text`) | File path after change. |
+| `position[old_path]`      | string            | yes (if the position type is `text`) | File path before change. |
+| `position[position_type]` | string            | yes (if `position` is provided) | Type of the position reference. Allowed values: `text`, `image`, or `file`. |
+| `position[new_line]`      | integer           | no       | For `text` diff notes, the line number after change. |
+| `position[old_line]`      | integer           | no       | For `text` diff notes, the line number before change. |
+| `position[line_range]`    | hash              | no       | Line range for a multi-line diff note. |
+| `position[width]`         | integer           | no       | For `image` diff notes, width of the image. |
+| `position[height]`        | integer           | no       | For `image` diff notes, height of the image. |
+| `position[x]`             | float             | no       | For `image` diff notes, X coordinate. |
+| `position[y]`             | float             | no       | For `image` diff notes, Y coordinate. |
+
+```shell
+curl --request PUT \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/14/merge_requests/11/draft_notes/5"
+```
+
+## Delete a draft note
+
+Deletes a draft note for a merge request.
+
+```plaintext
+DELETE /projects/:id/merge_requests/:merge_request_iid/draft_notes/:draft_note_id
+```
+
+| Attribute           | Type              | Required | Description |
+|---------------------|-------------------|----------|-------------|
+| `draft_note_id`     | integer           | yes      | The ID of a draft note. |
+| `id`                | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `merge_request_iid` | integer           | yes      | The IID of a project merge request. |
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/14/merge_requests/11/draft_notes/5"
+```
+
+## Publish a draft note
+
+Publishes a draft note for a merge request.
+
+```plaintext
+PUT /projects/:id/merge_requests/:merge_request_iid/draft_notes/:draft_note_id/publish
+```
+
+| Attribute           | Type              | Required | Description |
+|---------------------|-------------------|----------|-------------|
+| `draft_note_id`     | integer           | yes      | The ID of a draft note. |
+| `id`                | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `merge_request_iid` | integer           | yes      | The IID of a project merge request. |
+
+```shell
+curl --request PUT \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/14/merge_requests/11/draft_notes/5/publish"
+```
+
+## Publish all pending draft notes
+
+Publishes all pending draft notes for a merge request that belong to the user.
+
+```plaintext
+POST /projects/:id/merge_requests/:merge_request_iid/draft_notes/bulk_publish
+```
+
+| Attribute           | Type              | Required | Description |
+| ------------------- | ----------------- | -------- | ----------- |
+| `id`                | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `merge_request_iid` | integer           | yes      | The IID of a project merge request. |
+| `note`              | string            | no       | Text of a summary note to add to the merge request. |
+| `internal`          | boolean           | no       | If `true`, the summary note is internal. |
+| `reviewer_state`    | string            | no       | If defined, sets the review state after publishing. Does not record a formal approval. Possible values: `requested_changes`, `reviewed`. |
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/14/merge_requests/11/draft_notes/bulk_publish"
+```

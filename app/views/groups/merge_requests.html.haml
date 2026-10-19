@@ -1,14 +1,9 @@
-- page_title "Merge Requests"
-%h3.page-title
-  Merge Requests
+- has_bulk_update_permission = can?(current_user, :admin_merge_request, @group) && @group.licensed_feature_available?(:group_bulk_edit)
+- page_title _("Merge requests")
+- add_page_specific_style 'page_bundles/issuable_list'
 
-%p.light
-  Only merge requests from
-  %strong #{@group.name}
-  group are listed here.
-  - if current_user
-    To see all merge requests you should visit #{link_to 'dashboard', merge_requests_dashboard_path} page.
-%hr
-.append-bottom-20
-  = render 'shared/issuable_filter', type: :merge_requests
-= render 'shared/merge_requests'
+%h1.gl-sr-only= page_title
+
+.js-merge-request-list-root{ data: group_merge_requests_list_data(@group, current_user) }
+- if has_bulk_update_permission
+  = render_if_exists 'groups/group_bulk_update_sidebar', group: @group, type: :merge_requests

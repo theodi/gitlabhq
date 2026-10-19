@@ -1,0 +1,295 @@
+<script>
+import { GlLoadingIcon, GlToastMixin } from '@gitlab/ui';
+import { __, s__, sprintf } from '~/locale';
+import { copyToClipboard } from '~/lib/utils/copy_to_clipboard';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { createAlert } from '~/alert';
+import { archiveProject, restoreProject, unarchiveProject, deleteProject } from '~/rest_api';
+import ListActions from '~/vue_shared/components/list_actions/list_actions.vue';
+import DeleteModal from '~/projects/components/shared/delete_modal.vue';
+import TransferModal from '~/projects/components/transfer_modal.vue';
+import {
+  ACTION_COPY_ID,
+  ACTION_ARCHIVE,
+  ACTION_DELETE,
+  ACTION_DELETE_IMMEDIATELY,
+  ACTION_EDIT,
+  ACTION_RESTORE,
+  ACTION_UNARCHIVE,
+  ACTION_REQUEST_ACCESS,
+  ACTION_WITHDRAW_ACCESS_REQUEST,
+  ACTION_LEAVE,
+  ACTION_TRANSFER,
+} from '~/vue_shared/components/list_actions/constants';
+import { RESOURCE_TYPES } from '~/groups_projects/constants';
+import { InternalEvents } from '~/tracking';
+import {
+  renderArchiveSuccessToast,
+  renderRestoreSuccessToast,
+  renderUnarchiveSuccessToast,
+  renderDeleteSuccessToast,
+  renderTransferSuccessToast,
+  deleteParams,
+} from './utils';
+import ProjectsListItemLeaveModal from './projects_list_item_leave_modal.vue';
+
+export default {
+  name: 'ProjectListItemActions',
+  components: {
+    GlLoadingIcon,
+    ListActions,
+    DeleteModal,
+    TransferModal,
+    ProjectsListItemLeaveModal,
+  },
+  mixins: [InternalEvents.mixin(), GlToastMixin],
+  inject: ['triggerRestoreLocation'],
+  i18n: {
+    project: __('Project'),
+  },
+  props: {
+    project: {
+      type: Object,
+      required: true,
+    },
+  },
+  emits: ['action'],
+  data() {
+    return {
+      actionsLoading: false,
+      isDeleteModalVisible: false,
+      isDeleteLoading: false,
+      isLeaveModalVisible: false,
+      isTransferModalVisible: false,
+    };
+  },
+  computed: {
+    actions() {
+      const baseActions = {
+        [ACTION_COPY_ID]: {
+          text: sprintf(s__('Projects|Copy project ID: %{id}'), { id: this.project.id }),
+          action: this.onCopyId,
+        },
+        [ACTION_EDIT]: {
+          href: this.project.editPath,
+        },
+        [ACTION_ARCHIVE]: {
+          action: () =>
+            this.onActionWithLoading({
+              action: this.archive,
+              errorMessage: s__(
+                'Projects|An error occurred archiving the project. Please refresh the page to try again.',
+              ),
+            }),
+        },
+        [ACTION_UNARCHIVE]: {
+          action: () =>
+            this.onActionWithLoading({
+              action: this.unarchive,
+              errorMessage: s__(
+                'Projects|An error occurred unarchiving the project. Please refresh the page to try again.',
+              ),
+            }),
+        },
+        [ACTION_RESTORE]: {
+          action: () =>
+            this.onActionWithLoading({
+              action: this.restore,
+              errorMessage: s__(
+                'Projects|An error occurred restoring the project. Please refresh the page to try again.',
+              ),
+            }),
+        },
+        [ACTION_DELETE]: {
+          action: this.onActionDelete,
+        },
+        [ACTION_DELETE_IMMEDIATELY]: {
+          action: this.onActionDelete,
+        },
+        [ACTION_LEAVE]: {
+          text: __('Leave project'),
+          action: this.onActionLeave,
+          extraAttrs: {
+            class: 'js-leave-link',
+          },
+        },
+        [ACTION_TRANSFER]: {
+          action: this.onActionTransfer,
+        },
+      };
+
+      if (this.project.requestAccessPath) {
+        baseActions[ACTION_REQUEST_ACCESS] = {
+          href: this.project.requestAccessPath,
+          extraAttrs: {
+            'data-method': 'post',
+            'data-testid': 'request-access-link',
+            rel: 'nofollow',
+          },
+        };
+      }
+
+      if (this.project.withdrawAccessRequestPath) {
+        baseActions[ACTION_WITHDRAW_ACCESS_REQUEST] = {
+          href: this.project.withdrawAccessRequestPath,
+          extraAttrs: {
+            'data-method': 'delete',
+            'data-testid': 'withdraw-access-link',
+            'data-confirm': sprintf(
+              s__(
+                'Projects|Are you sure you want to withdraw your access request for the %{nameWithNamespace} project?',
+              ),
+              { nameWithNamespace: this.project.nameWithNamespace },
+            ),
+            rel: 'nofollow',
+          },
+        };
+      }
+
+      return baseActions;
+    },
+    hasActionDelete() {
+      return (
+        this.project.availableActions?.includes(ACTION_DELETE) ||
+        this.project.availableActions?.includes(ACTION_DELETE_IMMEDIATELY)
+      );
+    },
+    hasActionLeave() {
+      return this.project.availableActions?.includes(ACTION_LEAVE);
+    },
+    hasActionTransfer() {
+      return this.project.availableActions?.includes(ACTION_TRANSFER);
+    },
+  },
+  methods: {
+    async archive() {
+      await archiveProject(this.project.id);
+      this.$emit('action', ACTION_ARCHIVE);
+      renderArchiveSuccessToast(this.project);
+
+      this.trackEvent('archive_namespace_in_quick_action', {
+        label: RESOURCE_TYPES.PROJECT,
+        property: 'archive',
+      });
+    },
+    async unarchive() {
+      await unarchiveProject(this.project.id);
+      this.$emit('action', ACTION_UNARCHIVE);
+      renderUnarchiveSuccessToast(this.project);
+
+      this.trackEvent('archive_namespace_in_quick_action', {
+        label: RESOURCE_TYPES.PROJECT,
+        property: 'unarchive',
+      });
+    },
+    async restore() {
+      await restoreProject(this.project.id);
+      this.$emit('action', ACTION_RESTORE);
+      renderRestoreSuccessToast(this.project);
+
+      this.trackEvent('trigger_restore_on_project', {
+        label: this.triggerRestoreLocation,
+      });
+    },
+    async onActionWithLoading({ action, errorMessage }) {
+      this.actionsLoading = true;
+
+      try {
+        await action();
+      } catch (error) {
+        createAlert({ message: errorMessage, error, captureError: true });
+      } finally {
+        this.actionsLoading = false;
+      }
+    },
+    async onCopyId() {
+      this.trackEvent('click_copy_id_in_project_quick_actions');
+
+      try {
+        await copyToClipboard(this.project.id);
+        this.$toast.show(s__('Projects|Project ID copied to clipboard.'));
+      } catch (error) {
+        Sentry.captureException(error);
+      }
+    },
+    onActionDelete() {
+      this.isDeleteModalVisible = true;
+    },
+    async onDeleteModalPrimary() {
+      this.isDeleteLoading = true;
+
+      try {
+        await deleteProject(this.project.id, deleteParams(this.project));
+
+        this.$emit(
+          'action',
+          this.project.markedForDeletion ? ACTION_DELETE_IMMEDIATELY : ACTION_DELETE,
+        );
+        renderDeleteSuccessToast(this.project);
+      } catch (error) {
+        createAlert({
+          message: s__(
+            'Projects|An error occurred deleting the project. Please refresh the page to try again.',
+          ),
+          error,
+          captureError: true,
+        });
+      } finally {
+        this.isDeleteLoading = false;
+      }
+    },
+    onActionLeave() {
+      this.isLeaveModalVisible = true;
+    },
+    onLeaveSuccess() {
+      this.$emit('action', ACTION_LEAVE);
+    },
+    onActionTransfer() {
+      this.isTransferModalVisible = true;
+    },
+    onTransferSuccess() {
+      this.$emit('action', ACTION_TRANSFER);
+      renderTransferSuccessToast(this.project);
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <gl-loading-icon v-if="actionsLoading" size="sm" class="gl-px-3" />
+    <list-actions
+      v-else
+      data-testid="projects-list-item-actions"
+      :actions="actions"
+      :available-actions="project.availableActions"
+    />
+    <delete-modal
+      v-if="hasActionDelete"
+      v-model="isDeleteModalVisible"
+      :confirm-phrase="project.fullPath"
+      :name-with-namespace="project.nameWithNamespace"
+      :is-fork="project.isForked"
+      :confirm-loading="isDeleteLoading"
+      :merge-requests-count="project.openMergeRequestsCount"
+      :issues-count="project.openIssuesCount"
+      :forks-count="project.forksCount"
+      :stars-count="project.starCount"
+      :marked-for-deletion="project.markedForDeletion"
+      :permanent-deletion-date="project.permanentDeletionDate"
+      @primary="onDeleteModalPrimary"
+    />
+    <projects-list-item-leave-modal
+      v-if="hasActionLeave"
+      v-model="isLeaveModalVisible"
+      :project="project"
+      @success="onLeaveSuccess"
+    />
+    <transfer-modal
+      v-if="hasActionTransfer"
+      v-model="isTransferModalVisible"
+      :project="project"
+      @success="onTransferSuccess"
+    />
+  </div>
+</template>

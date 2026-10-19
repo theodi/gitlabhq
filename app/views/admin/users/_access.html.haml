@@ -1,0 +1,56 @@
+.settings-section
+  .settings-sticky-header
+    .settings-sticky-header-inner
+      %h4.gl-my-0
+        = s_('AdminUsers|Access')
+
+  .form-group.gl-form-group{ role: 'group' }
+    = f.label :projects_limit, s_('AdminUsers|Projects limit'), class: 'gl-block col-form-label'
+    = f.number_field :projects_limit, min: 0, max: Gitlab::Database::MAX_INT_VALUE, class: 'form-control gl-form-input gl-form-input-sm'
+
+  .form-group.gl-form-group{ role: 'group' }
+    - if @user.allow_user_to_create_group_and_project?
+      = f.gitlab_ui_checkbox_component :can_create_group, s_('AdminUsers|Can create top-level group')
+    = f.gitlab_ui_checkbox_component :private_profile, s_('AdminUsers|Private profile')
+
+  - editing_current_user = (current_user == @user)
+  - user_type = render_if_exists 'admin/users/user_type', is_current_user: editing_current_user
+  - if user_type
+    = user_type
+  - else
+    %fieldset.form-group.gl-form-group#access_levels
+      %legend.col-form-label.col-form-label
+        = s_('AdminUsers|Access level')
+
+      = f.gitlab_ui_radio_component :access_level, :regular,
+          s_('AdminUsers|Regular'),
+          radio_options: { disabled: editing_current_user },
+          help_text: s_('AdminUsers|Regular users have access to their groups and projects.')
+
+      = render_if_exists 'admin/users/auditor_access_level_radio', f: f, disabled: editing_current_user
+
+      - help_text = s_('AdminUsers|The user has unlimited access to all groups, projects, users, and features.')
+      - help_text += ' ' + s_('AdminUsers|You cannot remove your own administrator access.') if editing_current_user
+      = f.gitlab_ui_radio_component :access_level, :admin,
+          s_('AdminUsers|Administrator'),
+          radio_options: { disabled: editing_current_user },
+          help_text: help_text
+
+  .form-group.gl-form-group{ role: 'group' }
+    = f.gitlab_ui_checkbox_component :external,
+      s_('AdminUsers|External'),
+      help_text: s_('AdminUsers|External users cannot see internal or private projects unless access is explicitly granted. Also, external users cannot create projects, groups, or personal snippets.')
+    .hidden{ data: user_internal_regex_data }
+    .gl-flex.gl-items-baseline
+      %row.hidden#warning_external_automatically_set
+        = gl_badge_tag s_('AdminUsers|Automatically marked as default internal user'), variant: :warning
+
+  - if Gitlab::CurrentSettings.email_otp_enabled?
+    .form-group.gl-form-group{ role: 'group' }
+      = f.label :email_otp_required_after, s_('AdminUsers|Email OTP required after'), class: 'gl-block col-form-label'
+      = f.datetime_field :email_otp_required_after,
+        class: 'form-control gl-form-input gl-form-input-md'
+      .gl-text-subtle.gl-text-md.gl-mt-2
+        = s_('AdminUsers|Control when a user will need to enter an OTP during sign in.')
+        - if @user.must_require_email_otp?
+          = s_('AdminUsers|Cannot be nil.')

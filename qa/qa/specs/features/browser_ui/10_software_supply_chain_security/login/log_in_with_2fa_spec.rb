@@ -1,0 +1,101 @@
+# frozen_string_literal: true
+
+module QA
+  RSpec.describe 'Software Supply Chain Security', :requires_admin, feature_category: :system_access do
+    describe '2FA' do
+      let!(:owner_user) { create(:user, username: "owner_user_#{SecureRandom.hex(4)}") }
+
+      # We are intentionally using the UI to create a PAT, other tests should use the API for this flow.
+      let!(:personal_access_token) do
+        QA::Resource::PersonalAccessToken.fabricate_via_browser_ui! do |resource|
+          resource.username = owner_user.username
+          resource.password = owner_user.password
+        end
+      end
+
+      let!(:owner_api_client) { Runtime::API::Client.new(:gitlab, personal_access_token: personal_access_token.token) }
+
+      let(:sandbox_group) do
+        Flow::Login.sign_in(as: owner_user)
+        Resource::Sandbox.fabricate! do |sandbox_group|
+          sandbox_group.path = "gitlab-qa-2fa-sandbox-group-#{SecureRandom.hex(8)}"
+          sandbox_group.api_client = owner_api_client
+        end
+      end
+
+      let(:group) do
+        create(:group, sandbox: sandbox_group, api_client: owner_api_client,
+          path: "group-with-2fa-#{SecureRandom.hex(8)}")
+      end
+
+      let(:developer_user) do
+        create(:user, username: "developer_user_#{SecureRandom.hex(4)}")
+      end
+
+      let(:two_fa_expected_text) do
+        'Secure your account with two-factor authentication (2FA)'
+      end
+
+      before do
+        group.add_member(developer_user, Resource::Members::AccessLevel::DEVELOPER)
+      end
+
+      it(
+        'allows enforcing 2FA via UI and logging in with 2FA'
+      ) do
+        enforce_two_factor_authentication_on_group(group)
+
+        otp = enable_two_factor_authentication_for_user(developer_user)
+
+        Flow::Login.sign_in(as: developer_user, skip_page_validation: true)
+
+        Flow::Login.submit_2fa_code('000000')
+
+        expect(page).to have_text('Invalid two-factor code')
+
+        Flow::Login.submit_2fa_code(otp.fresh_otp)
+
+        expect(Page::Main::Menu.perform(&:has_personal_area?)).to be_truthy
+      end
+
+      # We are intentionally using the UI to enforce 2FA to exercise the flow with UI.
+      # Any future tests should use the API for this purpose.
+      def enforce_two_factor_authentication_on_group(group)
+        Flow::Login.while_signed_in(as: owner_user) do
+          group.visit!
+
+          Page::Group::Menu.perform(&:go_to_general_settings)
+          Page::Group::Settings::General.perform(&:set_require_2fa_enabled)
+
+          QA::Support::Retrier.retry_on_exception(reload_page: page) do
+            expect(page).to have_text(two_fa_expected_text)
+          end
+
+          Page::Profile::PasswordAndAuth.perform(&:click_configure_it_later_button)
+
+          expect(page).not_to have_text(two_fa_expected_text)
+        end
+      end
+
+      def enable_two_factor_authentication_for_user(user)
+        Flow::Login.while_signed_in(as: user) do
+          expect(page).to have_text(two_fa_expected_text)
+
+          Page::Profile::PasswordAndAuth.perform do |two_fa_auth|
+            otp = QA::Support::OTP.new(two_fa_auth.otp_secret_content)
+
+            two_fa_auth.set_pin_code(otp.fresh_otp)
+            two_fa_auth.set_current_password(user.password)
+            two_fa_auth.click_register_2fa_app_button
+
+            two_fa_auth.click_copy_and_proceed
+
+            expect(two_fa_auth).to have_text('2FA setup complete!')
+
+            otp
+          end
+        end
+      end
+    end
+  end
+end

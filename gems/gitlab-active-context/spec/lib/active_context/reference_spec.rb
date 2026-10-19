@@ -1,0 +1,304 @@
+# frozen_string_literal: true
+
+RSpec.describe ActiveContext::Reference, :aggregate_failures do
+  describe '.deserialize' do
+    context 'when ref_klass exists' do
+      let(:mock_ref_klass) { class_double("ActiveContext::References::TestReference") }
+      let(:mock_instance) { instance_double("ActiveContext::References::TestReference") }
+
+      before do
+        allow(described_class).to receive(:ref_klass).and_return(mock_ref_klass)
+        allow(mock_ref_klass).to receive(:new).and_return(mock_instance)
+      end
+
+      it 'instantiates the ref_klass with the string' do
+        expect(mock_ref_klass).to receive(:instantiate).with('test|string')
+        described_class.deserialize('test|string')
+      end
+    end
+
+    context 'when ref_klass does not exist' do
+      before do
+        allow(described_class).to receive(:ref_klass).and_return(nil)
+        stub_const('Search::Elastic::Reference', Class.new)
+      end
+
+      it 'returns nil' do
+        expect(described_class.deserialize('test|string')).to be_nil
+      end
+    end
+  end
+
+  describe '.ref_klass' do
+    before do
+      stub_const('ActiveContext::References::TestReference', Class.new(described_class))
+    end
+
+    it 'returns the correct class when it exists' do
+      expect(described_class.ref_klass('ActiveContext::References::TestReference|some|data'))
+        .to eq(ActiveContext::References::TestReference)
+    end
+
+    it 'returns nil when the class does not exist' do
+      expect(described_class.ref_klass('ActiveContext::References::NonExistantReference|some|data')).to be_nil
+    end
+  end
+
+  describe 'ReferenceUtils methods' do
+    describe '.delimit' do
+      it 'splits the string by the delimiter' do
+        expect(described_class.delimit('a|b|c')).to eq(%w[a b c])
+      end
+    end
+
+    describe '.join_delimited' do
+      it 'joins the array with the delimiter' do
+        expect(described_class.join_delimited(%w[a b c])).to eq('ActiveContext::Reference|a|b|c')
+      end
+    end
+
+    describe '.ref_module' do
+      it 'returns the pluralized class name' do
+        expect(described_class.ref_module).to eq('ActiveContext::References')
+      end
+    end
+  end
+
+  describe 'attributes' do
+    before do
+      allow(ActiveContext::CollectionCache).to receive(:fetch).and_return(double)
+    end
+
+    let(:reference_class) { Class.new(Test::References::Mock) }
+    let(:reference) { reference_class.new(collection_id: 1, routing: 2, args: 3) }
+
+    it 'sets project_id and root_namespace_id as nil' do
+      expect(reference.project_id).to be_nil
+      expect(reference.root_namespace_id).to be_nil
+    end
+  end
+
+  describe '#jsons' do
+    let(:reference_class) { Class.new(Test::References::Mock) }
+    let(:reference) { reference_class.new(collection_id: 1, routing: 2, args: 3) }
+    let(:mock_collection) { double(include_ref_fields: include_ref_fields) }
+    let(:include_ref_fields) { false }
+
+    before do
+      allow(ActiveContext::CollectionCache).to receive(:fetch).and_return(mock_collection)
+      allow(reference).to receive(:identifier).and_return('test-id')
+      allow(reference).to receive(:unique_identifier).with(0).and_return('test-id:0')
+      allow(reference).to receive(:unique_identifier).with(1).and_return('test-id:1')
+      reference.instance_variable_set(:@ref_version, 12345)
+    end
+
+    context 'when documents are already set' do
+      before do
+        reference.documents = [{ field1: 'value1' }, { field1: 'value2' }]
+      end
+
+      it 'uses the existing documents' do
+        expect(reference).not_to receive(:as_indexed_jsons)
+
+        result = reference.jsons
+        expect(result).to contain_exactly(
+          { field1: 'value1', unique_identifier: 'test-id:0' },
+          { field1: 'value2', unique_identifier: 'test-id:1' }
+        )
+      end
+    end
+
+    context 'when documents are not set' do
+      before do
+        allow(reference).to receive(:as_indexed_jsons).and_return([
+          { field1: 'value1' },
+          { field1: 'value2' }
+        ])
+      end
+
+      it 'calls as_indexed_jsons to get documents' do
+        expect(reference).to receive(:as_indexed_jsons)
+
+        result = reference.jsons
+        expect(result).to contain_exactly(
+          { field1: 'value1', unique_identifier: 'test-id:0' },
+          { field1: 'value2', unique_identifier: 'test-id:1' }
+        )
+      end
+    end
+
+    context 'when the class responds to shared_attributes' do
+      before do
+        reference.documents = [{ field1: 'value1' }, { field1: 'value2' }]
+        allow(reference).to receive(:shared_attributes).and_return({ shared_field: 'shared_value' })
+      end
+
+      it 'merges shared attributes with each document' do
+        result = reference.jsons
+        expect(result).to contain_exactly(
+          { field1: 'value1', shared_field: 'shared_value', unique_identifier: 'test-id:0' },
+          { field1: 'value2', shared_field: 'shared_value', unique_identifier: 'test-id:1' }
+        )
+      end
+    end
+
+    context 'when include_ref_fields is true' do
+      let(:include_ref_fields) { true }
+
+      before do
+        reference.documents = [{ field1: 'value1' }]
+      end
+
+      it 'adds ref_id and ref_version to each document' do
+        result = reference.jsons
+        expect(result).to contain_exactly(
+          {
+            field1: 'value1',
+            unique_identifier: 'test-id:0',
+            ref_id: 'test-id',
+            ref_version: 12345
+          }
+        )
+      end
+    end
+  end
+
+  describe '#indexing_embedding_models' do
+    before do
+      allow(ActiveContext::CollectionCache).to receive(:fetch).and_return(mock_collection_record)
+    end
+
+    let(:mock_collection_record) do
+      double(
+        "Collection",
+        include_ref_fields: true, collection_class: 'Test::Collections::Mock',
+        current_indexing_embedding_model: nil,
+        next_indexing_embedding_model: nil
+      )
+    end
+
+    let(:reference) { Test::References::Mock.new(collection_id: 1, routing: 2, args: 3) }
+
+    subject(:indexing_embedding_models) { reference.indexing_embedding_models }
+
+    it 'delegates to the collection_class.indexing_embedding_models' do
+      expect(Test::Collections::Mock).to receive(:indexing_embedding_models).and_call_original
+
+      indexing_embedding_models
+    end
+
+    it 'is empty when the indexing models are not set in the collection record' do
+      expect(indexing_embedding_models).to be_empty
+    end
+
+    context 'when the indexing models metadata are set in the collection record' do
+      before do
+        allow(mock_collection_record).to receive_messages(
+          current_indexing_embedding_model: { model_ref: 'model-001', field: 'embeddings_v1' },
+          next_indexing_embedding_model: { model_ref: 'model-002', field: 'embeddings_v2' }
+        )
+      end
+
+      it 'returns the expected ::ActiveContext::EmbeddingModel objects' do
+        expect(indexing_embedding_models).to all(be_a(::ActiveContext::EmbeddingModel))
+
+        model_1 = indexing_embedding_models.first
+        expect(model_1.model_ref).to eq('model-001')
+        expect(model_1.field).to eq(:embeddings_v1)
+
+        model_2 = indexing_embedding_models.second
+        expect(model_2.model_ref).to eq('model-002')
+        expect(model_2.field).to eq(:embeddings_v2)
+      end
+    end
+
+    context 'with next_model_only parameter' do
+      before do
+        allow(mock_collection_record).to receive_messages(
+          current_indexing_embedding_model: { model_ref: 'model-001', field: 'embeddings_v1' },
+          next_indexing_embedding_model: { model_ref: 'model-002', field: 'embeddings_v2' }
+        )
+      end
+
+      it 'returns only the next indexing embedding model when next_model_only is true' do
+        models = reference.indexing_embedding_models(next_model_only: true)
+
+        expect(models.length).to eq(1)
+        expect(models.first.model_ref).to eq('model-002')
+        expect(models.first.field).to eq(:embeddings_v2)
+      end
+
+      it 'returns all indexing embedding models when next_model_only is false' do
+        models = reference.indexing_embedding_models(next_model_only: false)
+
+        expect(models.length).to eq(2)
+        expect(models.map(&:model_ref)).to eq(%w[model-001 model-002])
+      end
+
+      it 'returns empty array when next_model_only is true but next model is not set' do
+        allow(mock_collection_record).to receive(:next_indexing_embedding_model).and_return(nil)
+
+        models = reference.indexing_embedding_models(next_model_only: true)
+
+        expect(models).to be_empty
+      end
+    end
+
+    context 'with current_model_only parameter' do
+      before do
+        allow(mock_collection_record).to receive_messages(
+          current_indexing_embedding_model: { model_ref: 'model-001', field: 'embeddings_v1' },
+          next_indexing_embedding_model: { model_ref: 'model-002', field: 'embeddings_v2' }
+        )
+      end
+
+      it 'returns only the current indexing embedding model when current_model_only is true' do
+        models = reference.indexing_embedding_models(current_model_only: true)
+
+        expect(models.size).to eq(1)
+        expect(models.first.model_ref).to eq('model-001')
+        expect(models.first.field).to eq(:embeddings_v1)
+      end
+
+      it 'returns all indexing embedding models when current_model_only is false' do
+        models = reference.indexing_embedding_models(current_model_only: false)
+
+        expect(models.size).to eq(2)
+        expect(models.map(&:model_ref)).to eq(%w[model-001 model-002])
+      end
+
+      it 'returns empty array when current_model_only is true but current model is not set' do
+        allow(mock_collection_record).to receive(:current_indexing_embedding_model).and_return(nil)
+
+        models = reference.indexing_embedding_models(current_model_only: true)
+
+        expect(models).to be_empty
+      end
+
+      it 'prefers next_model_only over current_model_only when both are true' do
+        models = reference.indexing_embedding_models(next_model_only: true, current_model_only: true)
+
+        expect(models.size).to eq(1)
+        expect(models.first.model_ref).to eq('model-002')
+      end
+    end
+
+    context 'when collection_class is nil' do
+      before do
+        allow(mock_collection_record).to receive(:collection_class).and_return(nil)
+      end
+
+      it 'returns an empty array' do
+        expect(reference.indexing_embedding_models).to be_empty
+      end
+
+      it 'returns an empty array even with next_model_only true' do
+        expect(reference.indexing_embedding_models(next_model_only: true)).to be_empty
+      end
+
+      it 'returns an empty array even with current_model_only true' do
+        expect(reference.indexing_embedding_models(current_model_only: true)).to be_empty
+      end
+    end
+  end
+end

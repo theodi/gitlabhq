@@ -1,0 +1,57 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`StatisticsList displays the counts data with labels 1`] = `
+<div
+  class="gl-flex gl-flex-wrap gl-gap-6 gl-mb-6"
+>
+  <div>
+    <gl-single-stat-stub
+      animationdecimalplaces="0"
+      id="reference-0"
+      metatooltip=""
+      shouldanimate="true"
+      title="Total pipeline runs"
+      titleiconclass=""
+      unit=""
+      usedelimiters="true"
+      value="40,000"
+      variant="neutral"
+    />
+  </div>
+  <div>
+    <gl-single-stat-stub
+      animationdecimalplaces="0"
+      id="reference-1"
+      metatooltip=""
+      shouldanimate="true"
+      title="Failure rate"
+      titleiconclass=""
+      unit="%"
+      usedelimiters="true"
+      value="50"
+      variant="neutral"
+    />
+    <gl-link-stub
+      class="gl-p-2"
+      data-event-tracking="click_view_all_link_in_pipeline_analytics"
+      href="/flightjs/Flight/-/pipelines?page=1&scope=all&status=failed"
+    >
+      View all
+    </gl-link-stub>
+  </div>
+  <div>
+    <gl-single-stat-stub
+      animationdecimalplaces="0"
+      id="reference-2"
+      metatooltip=""
+      shouldanimate="true"
+      title="Success rate"
+      titleiconclass=""
+      unit="%"
+      usedelimiters="true"
+      value="50"
+      variant="neutral"
+    />
+  </div>
+</div>
+`;

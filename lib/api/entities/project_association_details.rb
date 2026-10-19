@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    class ProjectAssociationDetails < Entities::ProjectIdentity
+      expose :access_levels, documentation: { type: 'Hash' } do
+        # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+        expose :project_access_level, documentation: { type: 'Integer', example: 50 } do |project, options|
+          project.member(options[:current_user])&.access_level
+        end
+
+        expose :group_access_level, documentation: { type: 'Integer', example: 50 } do |project, options|
+          project.group.highest_group_member(options[:current_user])&.access_level if project.group
+        end
+        # rubocop:enable API/AccessLevelStringType
+      end
+
+      expose :visibility, documentation: { type: 'String', example: 'public' }
+      expose :web_url, documentation: { type: 'String', example: 'https://gitlab.example.com/gitlab/gitlab' }
+      expose :namespace, using: ::API::Entities::NamespaceBasic
+    end
+  end
+end

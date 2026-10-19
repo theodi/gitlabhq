@@ -1,0 +1,26 @@
+# frozen_string_literal: true
+
+module Ci
+  module PipelineSchedules
+    class PlayService < BaseService
+      include Services::ReturnServiceResponses
+
+      def execute(schedule)
+        check_access!(schedule)
+
+        if !project.persisted? || project.self_or_ancestors_archived?
+          return error("Failed to schedule pipeline.",
+            :bad_request)
+        end
+
+        RunPipelineScheduleWorker.perform_async(schedule.id, current_user&.id)
+      end
+
+      private
+
+      def check_access!(schedule)
+        raise Gitlab::Access::AccessDeniedError unless can?(current_user, :play_pipeline_schedule, schedule)
+      end
+    end
+  end
+end

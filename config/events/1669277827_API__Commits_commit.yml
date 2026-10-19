@@ -1,0 +1,22 @@
+---
+description: Mirrored Service Ping Redis metric counts.web_ide_commits - Count of commits made from the Web IDE
+category: API::Commits
+action: commit
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: remote_development
+product_categories:
+- web_ide
+milestone: "15.7"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/104947
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: key_path of Service Ping metric counts.web_ide_commits
+

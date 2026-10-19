@@ -1,0 +1,35 @@
+# frozen_string_literal: true
+
+class Projects::BoardsController < Projects::ApplicationController
+  include BoardsActions
+  include IssuableCollections
+
+  before_action :check_issues_available!
+  before_action do
+    push_force_frontend_feature_flag(:work_item_tasks_on_boards,
+      !!project&.work_item_tasks_on_boards_feature_flag_enabled?)
+  end
+
+  feature_category :planning_views
+  urgency :low
+
+  private
+
+  def board_finder
+    strong_memoize :board_finder do
+      Boards::BoardsFinder.new(parent, current_user, board_id: params.permit(:id)[:id])
+    end
+  end
+
+  def board_create_service
+    strong_memoize :board_create_service do
+      Boards::CreateService.new(parent, current_user)
+    end
+  end
+
+  def authorize_read_board!
+    access_denied! unless can?(current_user, :read_issue_board, project)
+  end
+end
+
+Projects::BoardsController.prepend_mod

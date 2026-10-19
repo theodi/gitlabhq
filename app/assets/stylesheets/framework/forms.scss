@@ -1,0 +1,247 @@
+textarea {
+  resize: vertical;
+}
+
+input {
+  border-radius: $border-radius-base;
+  @apply gl-text-default;
+  background-color: var(--gl-control-background-color-default);
+}
+
+input[type='text'].danger {
+  background: $input-danger-bg !important;
+  border-color: $red-400;
+  text-shadow: 0 1px 1px $white;
+}
+
+/**
+ * When form input type is search, browsers add a clear input button inside
+ * the input field. This overlaps with the input field we have already added.
+ */
+
+/* stylelint-disable property-no-vendor-prefix */
+input[type='search'] {
+  -webkit-appearance: textfield;
+  -moz-appearance: textfield;
+  appearance: textfield;
+
+  &::-webkit-search-cancel-button,
+  &::-webkit-search-results-button {
+    display: none;
+  }
+}
+/* stylelint-enable property-no-vendor-prefix */
+
+.form-actions {
+  @apply gl-mt-0;
+  @apply -gl-mb-5;
+  @apply gl-p-5;
+  @apply gl-bg-subtle;
+  @apply gl-border-t;
+}
+
+label {
+  font-weight: $gl-font-weight-bold;
+
+  &.inline-label {
+    margin: 0;
+  }
+
+  &.form-check-label,
+  &.custom-control-label {
+    font-weight: $gl-font-weight-normal;
+  }
+
+  &.label-bold {
+    font-weight: $gl-font-weight-bold;
+  }
+}
+
+.custom-form-control {
+  width: 150px;
+}
+
+@include gl-container-width-up(sm, panel) {
+  .custom-form-control {
+    width: 150px;
+  }
+}
+
+/* Medium devices (desktops, 992px and up) */
+@include gl-container-width-up(md, panel) {
+  .custom-form-control {
+    width: 170px;
+  }
+}
+
+/* Large devices (large desktops, 1200px and up) */
+@include gl-container-width-up(lg, panel) {
+  .custom-form-control {
+    width: 200px;
+  }
+}
+
+.help-form .form-group {
+  margin-left: 0;
+  margin-right: 0;
+
+  .form-control {
+    font-family: $monospace-font;
+  }
+
+  @include gl-container-width-down(sm, panel) {
+    padding: 0 $gl-padding;
+  }
+}
+
+.fieldset-form fieldset {
+  margin-bottom: 20px;
+}
+
+.form-control {
+  @include box-shadow(none);
+  background: var(--gl-control-background-color-default);
+  @apply gl-text-default;
+  border-radius: var(--gl-control-border-radius);
+  padding: $gl-vert-padding $gl-input-padding;
+
+  &.input-short {
+    width: $input-short-width;
+
+    @include gl-container-width-up(md, panel) {
+      width: $input-short-md-width;
+    }
+  }
+}
+
+.form-control,
+[contenteditable=true] {
+  &:focus-visible {
+    background: var(--gl-control-background-color-default);
+    border-color: var(--gl-control-border-color-default);
+    @apply gl-text-default;
+    @apply gl-focus;
+  }
+}
+
+.select-control {
+  line-height: 1.3;
+  padding-left: 10px;
+  padding-right: 10px;
+  appearance: none;
+  /* stylelint-disable property-no-vendor-prefix */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  /* stylelint-enable property-no-vendor-prefix */
+
+  &::-ms-expand {
+    display: none;
+  }
+}
+
+.form-control::placeholder {
+  color: var(--gl-control-placeholder-color);
+}
+
+.input-group {
+  .input-group-prepend:not(:first-child):not(:last-child),
+  .input-group-append:not(:first-child):not(:last-child) {
+    border-left: 0;
+    border-right: 0;
+  }
+}
+
+.form-text {
+  margin-bottom: 0;
+  margin-top: #{$grid-size * 0.5};
+  font-size: $gl-font-size;
+
+  .invisible {
+    visibility: hidden;
+  }
+}
+
+.gl-field-error,
+.invalid-feedback {
+  @apply gl-text-danger;
+  font-size: $gl-font-size;
+  margin-top: 0.5rem; // Match Pajamas error message spacing
+}
+
+.gl-show-field-errors {
+  .form-control:not(textarea) {
+    height: $input-height;
+  }
+
+  .gl-field-success-outline {
+    border: 1px solid $green-600;
+
+    &:focus-visible {
+      box-shadow: 0 0 0 1px $green-600 inset, 0 1px 1px $gl-field-focus-shadow inset,
+        0 0 4px 0 $green-600;
+      border: 0 none;
+    }
+  }
+
+  .gl-field-error-outline {
+    border: 1px solid $red-500;
+
+    &:focus-visible {
+      box-shadow: 0 0 0 1px $red-500 inset, 0 1px 1px $gl-field-focus-shadow inset,
+        0 0 4px 0 $gl-field-focus-shadow-error;
+      border: 0 none;
+    }
+  }
+
+  .gl-field-success-message {
+    @apply gl-text-success;
+  }
+
+  .gl-field-error-message {
+    @apply gl-text-danger;
+  }
+}
+
+.show-password-complexity-errors {
+  .form-control:not(textarea) {
+    height: $input-height;
+  }
+
+  .password-complexity-error-outline {
+    border: 1px solid $red-500;
+
+    &:focus-visible {
+      box-shadow: 0 0 0 1px $red-500 inset, 0 1px 1px $gl-field-focus-shadow inset,
+        0 0 4px 0 $gl-field-focus-shadow-error;
+      border: 0 none;
+    }
+  }
+}
+
+.select-wrapper {
+  position: relative;
+}
+
+.input-lg {
+  max-width: $input-lg-width;
+  width: 100%;
+}
+
+.input-group-text {
+  max-height: $input-height;
+}
+
+.add-issuable-form-input-wrapper {
+  &.focus {
+    border-color: var(--gl-control-border-color-focus);
+  }
+
+  .gl-show-field-errors &.form-control:not(textarea) {
+    height: auto;
+  }
+}
+
+.add-issuable-form-input-wrapper.focus,
+.issue-token-remove-button:focus-visible {
+  @apply gl-focus;
+}

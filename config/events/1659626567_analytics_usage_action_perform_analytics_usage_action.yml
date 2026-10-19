@@ -1,0 +1,24 @@
+---
+description: Analytics usage event
+category: class of the controller triggering given event
+action: perform_analytics_usage_action
+extra_properties:
+identifiers:
+- user
+- namespace
+product_group: optimize
+product_categories:
+- value_stream_management
+- devops_reports
+milestone: "15.3"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/94369
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: key_path of corresponding redis hll total metric
+  property:
+    description: the name of the performed action, corresponding to migrated redis hll event name
+

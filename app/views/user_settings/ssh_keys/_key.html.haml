@@ -1,0 +1,44 @@
+- icon_classes = 'settings-list-icon gl-hidden @sm/panel:gl-block'
+
+%tr.key-list-item
+  %td{ data: { label: _('Title'), testid: 'title' } }
+    = link_to path_to_key(key, is_admin) do
+      = key.title
+
+  %td{ data: { label: s_('Profiles|Key'), testid: 'key' } }
+    .gl-items-center{ class: '!gl-flex !gl-pl-0' }
+      - if key.valid? && !key.expired?
+        = sprite_icon('key', css_class: icon_classes)
+      - else
+        %span.gl-inline-block.has-tooltip{ title: ssh_key_expiration_tooltip(key) }
+          = sprite_icon('warning-solid', css_class: icon_classes)
+      %span.gl-truncate{ class: "@sm/panel:gl-ml-3" }
+        = key.fingerprint
+
+  %td{ data: { label: s_('Profiles|Usage type'), testid: 'usage-type' } }
+    = ssh_key_usage_types.invert[key.usage_type]
+
+  %td{ data: { label: s_('Profiles|Created'), testid: 'created' } }
+    = html_escape(_('%{time_ago}')) % { time_ago: time_ago_with_tooltip(key.created_at).html_safe}
+
+  %td{ data: { label: s_('Profiles|Last used'), testid: 'last-used' } }
+    = key.last_used_at ? time_ago_with_tooltip(key.last_used_at) : _('Never')
+
+  %td{ data: { label: s_('Profiles|Expires'), testid: 'expires' } }
+    - if key.expired?
+      %span.gl-text-danger
+        = s_('Profiles|Expired')
+        = key.expires_at.to_date
+    - elsif key.expires_at
+      = key.expires_at.to_date
+    - else
+      = _('Never')
+
+  %td{ data: { label: _('Actions'), testid: 'actions' } }
+    .gl-flex.gl-items-center.gl-justify-end.gl-gap-3.-gl-m-3
+      - if key.can_delete?
+        - if key.signing? && !is_admin
+          = render Pajamas::ButtonComponent.new(size: :small, category: :secondary, variant: :danger, button_options: { class: 'js-confirm-modal-button', 'aria-label' => _('Revoke'), data: ssh_key_revoke_modal_data(key, revoke_user_settings_ssh_key_path(key)) }) do
+            = _('Revoke')
+
+        = render Pajamas::ButtonComponent.new(icon: 'remove', category: :tertiary, button_options: { title: _('Remove'), 'aria-label' => _('Remove'), class: 'js-confirm-modal-button', data: ssh_key_delete_modal_data(key, path_to_key(key, is_admin)) })

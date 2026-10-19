@@ -1,0 +1,145 @@
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import { addShortcutsExtension } from '~/behaviors/shortcuts';
+import ShortcutsNavigation from '~/behaviors/shortcuts/shortcuts_navigation';
+import initClustersDeprecationAlert from '~/projects/clusters_deprecation_alert';
+import leaveByUrl, { NAMESPACE_TYPES } from '~/namespaces/leave_by_url';
+import { initUploadFileTrigger } from '~/projects/upload_file';
+import initReadMore from '~/read_more';
+import initAmbiguousRefModal from '~/vue_shared/components/ref/init_ambiguous_ref_modal';
+import EmptyProject from '~/pages/projects/show/empty_project';
+import initHeaderApp from '~/repository/init_header_app';
+import { initWebIdeLink } from '~/pages/projects/shared/web_ide_link/init_web_ide_link';
+import CompactCodeDropdown from 'ee_else_ce/repository/components/code_dropdown/compact_code_dropdown.vue';
+import { convertObjectPropsToCamelCase } from '~/lib/utils/common_utils';
+import apolloProvider from '~/repository/graphql';
+import { renderGFM } from '~/behaviors/markdown/render_gfm';
+import { initHomePanel } from '~/projects/home_panel';
+
+// Project show page loads different overview content based on user preferences
+if (document.getElementById('js-tree-list')) {
+  import(/* webpackChunkName: 'treeList' */ 'ee_else_ce/repository')
+    .then(({ default: initTree }) => {
+      initTree();
+    })
+    .catch(() => {});
+}
+
+if (document.querySelector('.blob-viewer')) {
+  import(/* webpackChunkName: 'blobViewer' */ '~/blob/viewer')
+    .then(({ BlobViewer }) => {
+      new BlobViewer(); // eslint-disable-line no-new
+      initHeaderApp({ isReadmeView: true });
+    })
+    .catch(() => {});
+}
+
+if (document.querySelector('.project-show-activity')) {
+  import(/* webpackChunkName: 'activitiesList' */ '~/activities')
+    .then(({ default: Activities }) => {
+      new Activities(); // eslint-disable-line no-new
+    })
+    .catch(() => {});
+}
+
+addShortcutsExtension(ShortcutsNavigation);
+
+initUploadFileTrigger();
+initClustersDeprecationAlert();
+initReadMore();
+initAmbiguousRefModal();
+initHomePanel();
+
+if (document.querySelector('.js-autodevops-banner')) {
+  import(/* webpackChunkName: 'userCallOut' */ '~/user_callout')
+    .then(({ default: UserCallout }) => {
+      // eslint-disable-next-line no-new
+      new UserCallout({
+        setCalloutPerProject: false,
+        className: 'js-autodevops-banner',
+      });
+    })
+    .catch(() => {});
+}
+
+leaveByUrl(NAMESPACE_TYPES.PROJECT);
+
+const initCodeDropdown = () => {
+  const codeDropdownEl = document.querySelector('#js-project-show-empty-page #js-code-dropdown');
+
+  if (!codeDropdownEl) return false;
+
+  const {
+    sshUrl,
+    httpUrl,
+    kerberosUrl,
+    xcodeUrl,
+    ideData,
+    directoryDownloadLinks,
+    showNoSshKeyMessage,
+    userSettingsSshKeysPath,
+    newWorkspacePath,
+    projectId,
+    projectPath,
+    organizationId,
+    customCodeDropdownClients,
+  } = codeDropdownEl.dataset;
+
+  let parsedCustomClients = [];
+  try {
+    const parsed = JSON.parse(customCodeDropdownClients || '[]');
+    if (Array.isArray(parsed)) {
+      parsedCustomClients = parsed.map((client) => convertObjectPropsToCamelCase(client));
+    }
+  } catch (_e) {
+    parsedCustomClients = [];
+  }
+
+  const { gitpodEnabled, showWebIdeButton, showGitpodButton, webIdeUrl, gitpodUrl } =
+    convertObjectPropsToCamelCase(ideData ? JSON.parse(ideData) : {});
+
+  return initVueApp({
+    el: codeDropdownEl,
+    name: 'CompactCodeDropdownRoot',
+    provide: { newWorkspacePath, organizationId },
+    apolloProvider,
+    component: CompactCodeDropdown,
+    props: {
+      sshUrl,
+      httpUrl,
+      kerberosUrl,
+      xcodeUrl,
+      webIdeUrl,
+      gitpodUrl,
+      showWebIdeButton,
+      isGitpodEnabledForInstance: parseBoolean(showGitpodButton),
+      isGitpodEnabledForUser: parseBoolean(gitpodEnabled),
+      directoryDownloadLinks: directoryDownloadLinks ? JSON.parse(directoryDownloadLinks) : [],
+      showNoSshKeyMessage: parseBoolean(showNoSshKeyMessage),
+      userSettingsSshKeysPath,
+      projectId,
+      projectPath,
+      customClients: parsedCustomClients,
+    },
+  });
+};
+
+const initEmptyProjectTabs = () => {
+  const emptyProjectEl = document.querySelector('#js-project-show-empty-page');
+
+  if (!emptyProjectEl) return;
+
+  new EmptyProject(); // eslint-disable-line no-new
+};
+
+const initWikiContent = () => {
+  const el = document.querySelector('.js-wiki-content');
+  if (!el) return;
+
+  renderGFM(el);
+};
+
+initCodeDropdown();
+initEmptyProjectTabs();
+initWebIdeLink({ el: document.getElementById('js-tree-web-ide-link') });
+initWikiContent();

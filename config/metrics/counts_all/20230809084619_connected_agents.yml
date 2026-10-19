@@ -1,0 +1,19 @@
+---
+key_path: counts.connected_agents
+description: Count of connected cluster agents
+product_group: runner_core
+product_categories:
+- environment_management
+value_type: number
+status: active
+milestone: "16.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/128580
+time_frame: all
+data_source: database
+data_category: optional
+instrumentation_class: CountConnectedAgentsMetric
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

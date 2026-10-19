@@ -1,0 +1,85 @@
+type ClientBulkImportAvailableNamespace {
+  id: ID!
+  fullPath: String!
+}
+
+type ClientBulkImportTarget {
+  targetNamespace: String!
+  newName: String!
+}
+
+type ClientBulkImportSourceGroupConnection {
+  nodes: [ClientBulkImportSourceGroup!]!
+  pageInfo: ClientBulkImportPageInfo!
+  versionValidation: ClientBulkImportVersionValidation!
+}
+
+type ClientBulkImportProgress {
+  id: ID!
+  status: String!
+  hasFailures: Boolean
+  message: String
+}
+
+type ClientBulkImportValidationError {
+  field: String!
+  message: String!
+}
+
+type ClientBulkImportSourceGroup {
+  id: ID!
+  webUrl: String!
+  fullPath: String!
+  fullName: String!
+  lastImportTarget: ClientBulkImportTarget
+  progress: ClientBulkImportProgress
+}
+
+type ClientBulkImportPageInfo {
+  page: Int!
+  perPage: Int!
+  total: Int!
+  totalPages: Int!
+}
+
+type ClientBulkImportNamespaceSuggestion {
+  id: ID!
+  exists: Boolean!
+  suggestions: [String!]!
+}
+
+type ClientBulkImportVersionValidation {
+  features: ClientBulkImportVersionValidationFeatures!
+}
+
+type ClientBulkImportVersionValidationFeatures {
+  project_migration: ClientBulkImportVersionValidationFeature!
+  sourceInstanceVersion: String!
+}
+
+type ClientBulkImportVersionValidationFeature {
+  available: Boolean!
+  min_version: String!
+}
+
+extend type Query {
+  bulkImportSourceGroups(
+    page: Int!
+    perPage: Int!
+    filter: String!
+  ): ClientBulkImportSourceGroupConnection!
+  availableNamespaces: [ClientBulkImportAvailableNamespace!]!
+}
+
+input ImportRequestInput {
+  sourceGroupId: ID!
+  targetNamespace: String!
+  newName: String!
+  migrateProjects: Boolean!
+  migrateMemberships: Boolean!
+}
+
+extend type Mutation {
+  importGroups(importRequests: [ImportRequestInput!]!): [ClientBulkImportSourceGroup!]!
+  updateImportStatus(id: ID, status: String!, hasFailures: Boolean): ClientBulkImportProgress
+}

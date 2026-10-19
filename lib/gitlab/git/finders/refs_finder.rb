@@ -1,0 +1,144 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Git
+    module Finders
+      class RefsFinder
+        UnknownRefTypeError = Class.new(StandardError)
+
+        ALLOWED_SORT_OPTIONS = %w[name_asc name_desc updated_asc updated_desc].freeze
+
+        # @param repository [Gitlab::Git::Repository] The Git repository to search in
+        # @param ref_type [Symbol] The type of references to find (:branches or :tags)
+        # @param search [String, nil] Search pattern to filter refs by name (supports wildcards)
+        # @param sort_by [String, nil] Sort order for results ('name_asc', 'name_desc', 'updated_asc', 'updated_desc')
+        # @param per_page [Integer, nil] Number of results per page for pagination
+        # @param page_token [String, nil] Token for pagination to get next page of results
+        # @param ref_names [Array<String>] List of specific ref names to find (exact match, overrides search)
+        # @param max_per_page [Integer, nil] Maximum allowed results per page for pagination
+        # @param ignore_case [Boolean] When true, makes pattern matching and sorting case-insensitive
+        # @param exclude_ref_names [Array<String>] Unqualified ref names to exclude from results (exact match);
+        #   the finder prepends the ref prefix automatically
+        #
+        # @example Basic search
+        #   RefsFinder.new(repo, ref_type: :branches, search: "feat")
+        #
+        # @example Exact match for specific refs
+        #   RefsFinder.new(repo, ref_type: :branches, ref_names: ["master", "develop"])
+        #
+        # @example With pagination and sorting
+        #   RefsFinder.new(repo, ref_type: :tags, sort_by: "name_desc", per_page: 10)
+        # rubocop:disable Metrics/ParameterLists -- explicit keywords keep the finder initializer contract clear
+        def initialize(
+          repository, ref_type:, search: nil, sort_by: nil, per_page: nil, page_token: nil,
+          ref_names: [], max_per_page: nil, ignore_case: false,
+          exclude_ref_names: [])
+          @repository = repository
+          @search = search
+          @ref_type = ref_type
+          @sort_by = sort_by
+          @per_page = per_page
+          @page_token = page_token
+          @ref_names = Array(ref_names)
+          @max_per_page = max_per_page
+          @ignore_case = ignore_case
+          @exclude_ref_names = Array(exclude_ref_names)
+
+          validate_sort_by!
+        end
+        # rubocop:enable Metrics/ParameterLists
+
+        attr_reader :next_cursor
+
+        def execute
+          raw_refs = repository.list_refs(
+            patterns,
+            sort_by: sort_by,
+            pagination_params: pagination_params,
+            ignore_case: ignore_case,
+            exclude_patterns: all_exclude_patterns
+          )
+          @next_cursor = raw_refs.next_cursor
+
+          raw_refs.map { |ref| Ref.new(repository, ref.name, ref.target, nil) }
+        rescue ArgumentError => e
+          raise Gitlab::Git::InvalidPageToken, "Invalid page token: #{page_token}" if e.message.include?('page token')
+
+          raise
+        end
+
+        private
+
+        attr_reader :repository, :search, :ref_type, :sort_by, :page_token, :ref_names, :max_per_page, :ignore_case,
+          :exclude_ref_names
+
+        def validate_sort_by!
+          return if sort_by.blank?
+          return if ALLOWED_SORT_OPTIONS.include?(sort_by)
+
+          raise ArgumentError, "Invalid sort_by option: #{sort_by}. Allowed values: #{ALLOWED_SORT_OPTIONS.join(', ')}"
+        end
+
+        def patterns
+          exact_match_pattern || search_pattern
+        end
+
+        def exact_match_pattern
+          ref_names.select(&:present?).map { |name| [prefix, name].join } if ref_names.present?
+        end
+
+        def search_pattern
+          if wildcard_search?
+            [[prefix, glob_safe_search].compact.join]
+          else
+            # **/* allows to match any level of nesting
+            [[prefix, "**/*", glob_safe_search, "*"].compact.join]
+          end
+        end
+
+        def all_exclude_patterns
+          exclude_ref_names.map { |name| [prefix, glob_escape(name)].join }
+        end
+
+        # Escape every git-wildmatch metacharacter except '*' so Gitaly's ListRefs agrees with RefMatcher.
+        # wildmatch has no brace expansion, so {} stay literal in both engines.
+        def glob_escape(value)
+          value.gsub(/[?\[\]\\]/) { |char| "\\#{char}" }
+        end
+
+        def glob_safe_search
+          glob_escape(search) if search
+        end
+
+        def wildcard_search?
+          search.present? && search.include?('*')
+        end
+
+        def pagination_params
+          return unless @per_page
+
+          { limit: per_page, page_token: page_token }.compact
+        end
+
+        def per_page
+          options = { max_per_page: max_per_page }.compact
+
+          Gitlab::PaginationDelegate.new(
+            per_page: @per_page.presence, page: nil, count: nil, options: options
+          ).limit_value
+        end
+
+        def prefix
+          case ref_type
+          when :branches
+            Gitlab::Git::BRANCH_REF_PREFIX
+          when :tags
+            Gitlab::Git::TAG_REF_PREFIX
+          else
+            raise UnknownRefTypeError, "ref_type must be one of [:branches, :tags]"
+          end
+        end
+      end
+    end
+  end
+end

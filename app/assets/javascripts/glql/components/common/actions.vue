@@ -1,0 +1,80 @@
+<script>
+import { GlDisclosureDropdown, GlTooltipDirective } from '@gitlab/ui';
+import { identity, uniqueId } from 'lodash-es';
+import { __ } from '~/locale';
+
+export default {
+  name: 'GlqlActions',
+  components: {
+    GlDisclosureDropdown,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  props: {
+    showCopyContents: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['copy-as-gfm', 'copy-source', 'reload', 'view-source'],
+  data() {
+    return {
+      toggleId: uniqueId('dropdown-toggle-btn-'),
+      isDropdownVisible: false,
+      cachedShowCopy: this.showCopyContents,
+    };
+  },
+  computed: {
+    items() {
+      return [
+        {
+          text: __('View source'),
+          action: () => this.$emit('view-source'),
+        },
+        {
+          text: __('Copy source'),
+          action: () => this.$emit('copy-source'),
+        },
+        this.cachedShowCopy && {
+          text: __('Copy contents'),
+          action: () => this.$emit('copy-as-gfm'),
+        },
+        {
+          text: __('Reload'),
+          action: () => this.$emit('reload'),
+        },
+      ].filter(identity);
+    },
+    moreActionsTooltip() {
+      return !this.isDropdownVisible ? __('Embedded view options') : '';
+    },
+  },
+  methods: {
+    handleDropdownShown() {
+      this.cachedShowCopy = this.showCopyContents;
+      this.isDropdownVisible = true;
+    },
+  },
+};
+</script>
+<template>
+  <div class="gl-inline-flex gl-self-start gl-align-middle">
+    <gl-disclosure-dropdown
+      v-gl-tooltip.top.viewport="moreActionsTooltip"
+      class="glql-actions"
+      :items="items"
+      :toggle-id="toggleId"
+      :no-caret="true"
+      size="small"
+      category="tertiary"
+      icon="ellipsis_v"
+      :toggle-text="__('Embedded view options')"
+      text-sr-only
+      placement="bottom-end"
+      @shown="handleDropdownShown"
+      @hidden="isDropdownVisible = false"
+    />
+  </div>
+</template>

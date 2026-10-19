@@ -1,0 +1,16 @@
+---
+table_name: lfs_objects_projects
+classes:
+- LfsObjectsProject
+feature_categories:
+- source_code_management
+description: Join table relating lfs_objects and projects
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab-foss/-/merge_requests/1727
+milestone: '8.2'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: over_limit
+data_migration:
+  ignore_columns:
+    - lfs_object_id

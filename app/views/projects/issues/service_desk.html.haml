@@ -1,0 +1,14 @@
+- page_title _('Service Desk')
+- add_work_items_stylesheet
+
+%h1.gl-sr-only= page_title
+
+#js-work-items{ data: work_item_views_only_data(@project).merge(
+  router_path: project_issues_path(@project),
+  is_service_desk_enabled: ::ServiceDesk.enabled?(@project).to_s,
+  is_service_desk_supported: ::ServiceDesk.supported?.to_s,
+  service_desk_callout_svg_path: image_path('illustrations/service-desk-sm.svg'),
+  service_desk_email_address: can?(current_user, :admin_issue, @project) ? ::ServiceDesk::Emails.new(@project).address : nil,
+  service_desk_help_path: help_page_path('user/project/service_desk/_index.md'),
+  service_desk_settings_path: edit_project_path(@project, anchor: 'js-service-desk')
+) }

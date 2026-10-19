@@ -1,0 +1,12 @@
+query addReviewerPermissions($fullPath: ID!, $iid: String!) {
+  project(fullPath: $fullPath) {
+    id
+    mergeRequest(iid: $iid) {
+      id
+      userPermissions {
+        adminMergeRequest
+        canMerge
+      }
+    }
+  }
+}

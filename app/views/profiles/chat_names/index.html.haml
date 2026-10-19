@@ -1,0 +1,23 @@
+- page_title s_('Integrations|Integration accounts')
+
+= render ::Layouts::SettingsSectionComponent.new(page_title) do |c|
+  - c.with_description do
+    = s_('Integrations|Manage your integration accounts in GitLab. Use these connected integrations to perform actions in GitLab.')
+  - c.with_body do
+    = render ::Layouts::CrudComponent.new(s_('Integrations|Connected integration accounts'),
+      count: @chat_names.size,
+      icon: 'connected') do |c|
+      - c.with_body do
+        - if @chat_names.present?
+          .table-responsive
+            %table.table.gl-table
+              %thead
+                %tr
+                  %th= _('Team domain')
+                  %th= _('Nickname')
+                  %th= _('Last used')
+                  %th
+              %tbody
+                = render @chat_names
+        - else
+          .gl-text-subtle= s_('Integrations|You do not have any connected integration accounts.')

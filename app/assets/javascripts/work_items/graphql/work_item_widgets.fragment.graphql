@@ -1,0 +1,6 @@
+#import "./base_work_item_widgets.fragment.graphql"
+
+fragment WorkItemWidgets on WorkItemWidget {
+  type
+  ...BaseWorkItemWidgets
+}

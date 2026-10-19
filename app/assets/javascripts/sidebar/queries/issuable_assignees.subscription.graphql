@@ -1,0 +1,18 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+subscription issuableAssigneesUpdated($issuableId: IssuableID!) {
+  issuableAssigneesUpdated(issuableId: $issuableId) {
+    ... on Issue {
+      id
+      assignees {
+        nodes {
+          ...User
+          compositeIdentityEnforced @gl_introduced(version: "18.8.0")
+          status {
+            availability
+          }
+        }
+      }
+    }
+  }
+}

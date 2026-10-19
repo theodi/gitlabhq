@@ -1,381 +1,848 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe SystemNoteService do
-  let(:project)  { create(:project) }
-  let(:author)   { create(:user) }
+RSpec.describe SystemNoteService, feature_category: :shared do
+  include Gitlab::Routing
+  include RepoHelpers
+  include AssetsHelpers
+  include DesignManagementTestHelpers
+
+  let_it_be(:group)    { create(:group) }
+  let_it_be(:project)  { create(:project, :repository, group: group) }
+  let_it_be(:author)   { create(:user) }
+
   let(:noteable) { create(:issue, project: project) }
+  let(:issue)    { noteable }
 
-  shared_examples_for 'a system note' do
-    it 'is valid' do
-      expect(subject).to be_valid
-    end
+  describe '.add_commits' do
+    let(:new_commits) { double }
+    let(:old_commits) { double }
+    let(:oldrev)      { double }
 
-    it 'sets the noteable model' do
-      expect(subject.noteable).to eq noteable
-    end
+    it 'calls CommitService' do
+      expect_next_instance_of(::SystemNotes::CommitService) do |service|
+        expect(service).to receive(:add_commits).with(new_commits, old_commits, oldrev)
+      end
 
-    it 'sets the project' do
-      expect(subject.project).to eq project
-    end
-
-    it 'sets the author' do
-      expect(subject.author).to eq author
-    end
-
-    it 'is a system note' do
-      expect(subject).to be_system
+      described_class.add_commits(noteable, project, author, new_commits, old_commits, oldrev)
     end
   end
 
-  describe '.add_commits' do
-    subject { described_class.add_commits(noteable, project, author, new_commits, old_commits, oldrev) }
+  describe '.tag_commit' do
+    let(:tag_name) { double }
 
-    let(:noteable)    { create(:merge_request, source_project: project) }
-    let(:new_commits) { noteable.commits }
-    let(:old_commits) { [] }
-    let(:oldrev)      { nil }
-
-    it_behaves_like 'a system note'
-
-    describe 'note body' do
-      let(:note_lines) { subject.note.split("\n").reject(&:blank?) }
-
-      context 'without existing commits' do
-        it 'adds a message header' do
-          expect(note_lines[0]).to eq "Added #{new_commits.size} commits:"
-        end
-
-        it 'adds a message line for each commit' do
-          new_commits.each_with_index do |commit, i|
-            # Skip the header
-            expect(note_lines[i + 1]).to eq "* #{commit.short_id} - #{commit.title}"
-          end
-        end
+    it 'calls CommitService' do
+      expect_next_instance_of(::SystemNotes::CommitService) do |service|
+        expect(service).to receive(:tag_commit).with(tag_name)
       end
 
-      describe 'summary line for existing commits' do
-        let(:summary_line) { note_lines[1] }
-
-        context 'with one existing commit' do
-          let(:old_commits) { [noteable.commits.last] }
-
-          it 'includes the existing commit' do
-            expect(summary_line).to eq "* #{old_commits.first.short_id} - 1 commit from branch `feature`"
-          end
-        end
-
-        context 'with multiple existing commits' do
-          let(:old_commits) { noteable.commits[3..-1] }
-
-          context 'with oldrev' do
-            let(:oldrev) { noteable.commits[2].id }
-
-            it 'includes a commit range' do
-              expect(summary_line).to start_with "* #{Commit.truncate_sha(oldrev)}...#{old_commits.last.short_id}"
-            end
-
-            it 'includes a commit count' do
-              expect(summary_line).to end_with " - 2 commits from branch `feature`"
-            end
-          end
-
-          context 'without oldrev' do
-            it 'includes a commit range' do
-              expect(summary_line).to start_with "* #{old_commits[0].short_id}..#{old_commits[-1].short_id}"
-            end
-
-            it 'includes a commit count' do
-              expect(summary_line).to end_with " - 2 commits from branch `feature`"
-            end
-          end
-
-          context 'on a fork' do
-            before do
-              expect(noteable).to receive(:for_fork?).and_return(true)
-            end
-
-            it 'includes the project namespace' do
-              expect(summary_line).to end_with "`#{noteable.target_project_namespace}:feature`"
-            end
-          end
-        end
-      end
+      described_class.tag_commit(noteable, project, author, tag_name)
     end
   end
 
   describe '.change_assignee' do
-    subject { described_class.change_assignee(noteable, project, author, assignee) }
+    let(:assignee) { double }
 
-    let(:assignee) { create(:user) }
-
-    it_behaves_like 'a system note'
-
-    context 'when assignee added' do
-      it 'sets the note text' do
-        expect(subject.note).to eq "Reassigned to @#{assignee.username}"
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_assignee).with(assignee)
       end
-    end
 
-    context 'when assignee removed' do
-      let(:assignee) { nil }
-
-      it 'sets the note text' do
-        expect(subject.note).to eq 'Assignee removed'
-      end
+      described_class.change_assignee(noteable, project, author, assignee)
     end
   end
 
-  describe '.change_label' do
-    subject { described_class.change_label(noteable, project, author, added, removed) }
+  describe '.change_issuable_assignees' do
+    let(:assignees) { [double, double] }
 
-    let(:labels)  { create_list(:label, 2) }
-    let(:added)   { [] }
-    let(:removed) { [] }
-
-    it_behaves_like 'a system note'
-
-    context 'with added labels' do
-      let(:added)   { labels }
-      let(:removed) { [] }
-
-      it 'sets the note text' do
-        expect(subject.note).to eq "Added ~#{labels[0].id} ~#{labels[1].id} labels"
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_issuable_assignees).with(assignees)
       end
-    end
 
-    context 'with removed labels' do
-      let(:added)   { [] }
-      let(:removed) { labels }
-
-      it 'sets the note text' do
-        expect(subject.note).to eq "Removed ~#{labels[0].id} ~#{labels[1].id} labels"
-      end
-    end
-
-    context 'with added and removed labels' do
-      let(:added)   { [labels[0]] }
-      let(:removed) { [labels[1]] }
-
-      it 'sets the note text' do
-        expect(subject.note).to eq "Added ~#{labels[0].id} and removed ~#{labels[1].id} labels"
-      end
+      described_class.change_issuable_assignees(noteable, project, author, assignees)
     end
   end
 
-  describe '.change_milestone' do
-    subject { described_class.change_milestone(noteable, project, author, milestone) }
+  describe '.change_issuable_reviewers' do
+    let(:reviewers) { [double, double] }
 
-    let(:milestone) { create(:milestone, project: project) }
-
-    it_behaves_like 'a system note'
-
-    context 'when milestone added' do
-      it 'sets the note text' do
-        expect(subject.note).to eq "Milestone changed to #{milestone.title}"
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_issuable_reviewers).with(reviewers)
       end
+
+      described_class.change_issuable_reviewers(noteable, project, author, reviewers)
+    end
+  end
+
+  describe '.request_review' do
+    let(:reviewer) { double }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:request_review).with(reviewer, true)
+      end
+
+      described_class.request_review(noteable, project, author, reviewer, true)
+    end
+  end
+
+  describe '.change_issuable_contacts' do
+    let(:added_count) { 5 }
+    let(:removed_count) { 3 }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_issuable_contacts).with(added_count, removed_count)
+      end
+
+      described_class.change_issuable_contacts(noteable, project, author, added_count, removed_count)
+    end
+  end
+
+  describe '.close_after_error_tracking_resolve' do
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:close_after_error_tracking_resolve)
+      end
+
+      described_class.close_after_error_tracking_resolve(noteable, project, author)
+    end
+  end
+
+  describe '.relate_issuable' do
+    let(:noteable_ref) { double }
+    let(:noteable) { double }
+
+    before do
+      allow(noteable).to receive(:project).and_return(double)
     end
 
-    context 'when milestone removed' do
-      let(:milestone) { nil }
-
-      it 'sets the note text' do
-        expect(subject.note).to eq 'Milestone removed'
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:relate_issuable).with(noteable_ref)
       end
+
+      described_class.relate_issuable(noteable, noteable_ref, author)
+    end
+  end
+
+  describe '.unrelate_issuable' do
+    let(:noteable_ref) { double }
+    let(:noteable) { double }
+
+    before do
+      allow(noteable).to receive(:project).and_return(double)
+    end
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:unrelate_issuable).with(noteable_ref)
+      end
+
+      described_class.unrelate_issuable(noteable, noteable_ref, author)
+    end
+  end
+
+  describe '.change_start_date_or_due_date' do
+    let(:changed_dates) { double }
+
+    it 'calls TimeTrackingService' do
+      expect_next_instance_of(::SystemNotes::TimeTrackingService) do |service|
+        expect(service).to receive(:change_start_date_or_due_date).with(changed_dates)
+      end
+
+      described_class.change_start_date_or_due_date(noteable, project, author, changed_dates)
     end
   end
 
   describe '.change_status' do
-    subject { described_class.change_status(noteable, project, author, status, source) }
+    let(:status) { double }
+    let(:source) { double }
 
-    let(:status) { 'new_status' }
-    let(:source) { nil }
-
-    it_behaves_like 'a system note'
-
-    context 'with a source' do
-      let(:source) { double('commit', gfm_reference: 'commit 123456') }
-
-      it 'sets the note text' do
-        expect(subject.note).to eq "Status changed to #{status} by commit 123456"
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_status).with(status, source)
       end
+
+      described_class.change_status(noteable, project, author, status, source)
     end
+  end
 
-    context 'without a source' do
-      it 'sets the note text' do
-        expect(subject.note).to eq "Status changed to #{status}"
+  describe '.merge_when_checks_pass' do
+    it 'calls MergeRequestsService' do
+      sha = double
+
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:merge_when_checks_pass).with(sha)
       end
+
+      described_class.merge_when_checks_pass(noteable, project, author, sha)
+    end
+  end
+
+  describe '.cancel_auto_merge' do
+    it 'calls MergeRequestsService' do
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:cancel_auto_merge)
+      end
+
+      described_class.cancel_auto_merge(noteable, project, author)
+    end
+  end
+
+  describe '.abort_auto_merge' do
+    it 'calls MergeRequestsService' do
+      reason = double
+
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:abort_auto_merge).with(reason)
+      end
+
+      described_class.abort_auto_merge(noteable, project, author, reason)
     end
   end
 
   describe '.change_title' do
-    subject { described_class.change_title(noteable, project, author, 'Old title') }
+    let(:title) { double }
 
-    context 'when noteable responds to `title`' do
-      it_behaves_like 'a system note'
-
-      it 'sets the note text' do
-        expect(subject.note).
-          to eq "Title changed from **Old title** to **#{noteable.title}**"
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_title).with(title)
       end
+
+      described_class.change_title(noteable, project, author, title)
     end
+  end
 
-    context 'when noteable does not respond to `title' do
-      let(:noteable) { double('noteable') }
-
-      it 'returns nil' do
-        expect(subject).to be_nil
+  describe '.change_description' do
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_description)
       end
+
+      described_class.change_description(noteable, project, author)
+    end
+  end
+
+  describe '.change_issue_confidentiality' do
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_issue_confidentiality)
+      end
+
+      described_class.change_issue_confidentiality(noteable, project, author)
     end
   end
 
   describe '.change_branch' do
-    subject { described_class.change_branch(noteable, project, author, 'target', old_branch, new_branch) }
-    let(:old_branch) { 'old_branch'}
-    let(:new_branch) { 'new_branch'}
+    it 'calls MergeRequestsService' do
+      old_branch = double('old_branch')
+      new_branch = double('new_branch')
+      branch_type = double('branch_type')
+      event_type = double('event_type')
 
-    it_behaves_like 'a system note'
-
-    context 'when target branch name changed' do
-      it 'sets the note text' do
-        expect(subject.note).to eq "Target branch changed from `#{old_branch}` to `#{new_branch}`"
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:change_branch).with(branch_type, event_type, old_branch, new_branch)
       end
+
+      described_class.change_branch(noteable, project, author, branch_type, event_type, old_branch, new_branch)
+    end
+  end
+
+  describe '.change_branch_presence' do
+    it 'calls MergeRequestsService' do
+      presence = double
+      branch = double
+      branch_type = double
+
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:change_branch_presence).with(branch_type, branch, presence)
+      end
+
+      described_class.change_branch_presence(noteable, project, author, branch_type, branch, presence)
+    end
+  end
+
+  describe '.new_issue_branch' do
+    it 'calls MergeRequestsService' do
+      branch = double
+      branch_project = double
+
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:new_issue_branch).with(branch, branch_project: branch_project)
+      end
+
+      described_class.new_issue_branch(noteable, project, author, branch, branch_project: branch_project)
+    end
+  end
+
+  describe '.new_merge_request' do
+    it 'calls MergeRequestsService' do
+      merge_request = double
+
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:new_merge_request).with(merge_request)
+      end
+
+      described_class.new_merge_request(noteable, project, author, merge_request)
+    end
+  end
+
+  describe '.zoom_link_added' do
+    it 'calls ZoomService' do
+      expect_next_instance_of(::SystemNotes::ZoomService) do |service|
+        expect(service).to receive(:zoom_link_added)
+      end
+
+      described_class.zoom_link_added(noteable, project, author)
+    end
+  end
+
+  describe '.zoom_link_removed' do
+    it 'calls ZoomService' do
+      expect_next_instance_of(::SystemNotes::ZoomService) do |service|
+        expect(service).to receive(:zoom_link_removed)
+      end
+
+      described_class.zoom_link_removed(noteable, project, author)
     end
   end
 
   describe '.cross_reference' do
-    subject { described_class.cross_reference(noteable, mentioner, author) }
+    let(:mentioned_in) { double }
 
-    let(:mentioner) { create(:issue, project: project) }
-
-    it_behaves_like 'a system note'
-
-    context 'when cross-reference disallowed' do
-      before do
-        expect(described_class).to receive(:cross_reference_disallowed?).and_return(true)
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:cross_reference).with(mentioned_in)
       end
 
-      it 'returns nil' do
-        expect(subject).to be_nil
-      end
-    end
-
-    context 'when cross-reference allowed' do
-      before do
-        expect(described_class).to receive(:cross_reference_disallowed?).and_return(false)
-      end
-
-      describe 'note_body' do
-        context 'cross-project' do
-          let(:project2)  { create(:project) }
-          let(:mentioner) { create(:issue, project: project2) }
-
-          context 'from Commit' do
-            let(:mentioner) { project2.repository.commit }
-
-            it 'references the mentioning commit' do
-              expect(subject.note).to eq "mentioned in commit #{mentioner.to_reference(project)}"
-            end
-          end
-
-          context 'from non-Commit' do
-            it 'references the mentioning object' do
-              expect(subject.note).to eq "mentioned in issue #{mentioner.to_reference(project)}"
-            end
-          end
-        end
-
-        context 'within the same project' do
-          context 'from Commit' do
-            let(:mentioner) { project.repository.commit }
-
-            it 'references the mentioning commit' do
-              expect(subject.note).to eq "mentioned in commit #{mentioner.to_reference}"
-            end
-          end
-
-          context 'from non-Commit' do
-            it 'references the mentioning object' do
-              expect(subject.note).to eq "mentioned in issue #{mentioner.to_reference}"
-            end
-          end
-        end
-      end
-    end
-  end
-
-  describe '.cross_reference?' do
-    it 'is truthy when text begins with expected text' do
-      expect(described_class.cross_reference?('mentioned in something')).to be_truthy
-    end
-
-    it 'is falsey when text does not begin with expected text' do
-      expect(described_class.cross_reference?('this is a note')).to be_falsey
+      described_class.cross_reference(double, mentioned_in, author)
     end
   end
 
   describe '.cross_reference_disallowed?' do
-    context 'when mentioner is not a MergeRequest' do
-      it 'is falsey' do
-        mentioner = noteable.dup
-        expect(described_class.cross_reference_disallowed?(noteable, mentioner)).
-          to be_falsey
-      end
-    end
+    let(:mentioned_in) { double }
 
-    context 'when mentioner is a MergeRequest' do
-      let(:mentioner) { create(:merge_request, :simple, source_project: project) }
-      let(:noteable)  { project.commit }
-
-      it 'is truthy when noteable is in commits' do
-        expect(mentioner).to receive(:commits).and_return([noteable])
-        expect(described_class.cross_reference_disallowed?(noteable, mentioner)).
-          to be_truthy
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:cross_reference_disallowed?).with(mentioned_in)
       end
 
-      it 'is falsey when noteable is not in commits' do
-        expect(mentioner).to receive(:commits).and_return([])
-        expect(described_class.cross_reference_disallowed?(noteable, mentioner)).
-          to be_falsey
-      end
+      described_class.cross_reference_disallowed?(double, mentioned_in)
     end
   end
 
   describe '.cross_reference_exists?' do
-    let(:commit0) { project.commit }
-    let(:commit1) { project.commit('HEAD~2') }
+    let(:mentioned_in) { double }
 
-    context 'issue from commit' do
-      before do
-        # Mention issue (noteable) from commit0
-        described_class.cross_reference(noteable, commit0, author)
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:cross_reference_exists?).with(mentioned_in)
       end
 
-      it 'is truthy when already mentioned' do
-        expect(described_class.cross_reference_exists?(noteable, commit0)).
-          to be_truthy
+      described_class.cross_reference_exists?(double, mentioned_in)
+    end
+  end
+
+  describe '.noteable_moved' do
+    let(:noteable_ref) { double }
+    let(:direction) { double }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:noteable_moved).with(noteable_ref, direction)
       end
 
-      it 'is falsey when not already mentioned' do
-        expect(described_class.cross_reference_exists?(noteable, commit1)).
-          to be_falsey
+      described_class.noteable_moved(double, double, noteable_ref, author, direction: direction)
+    end
+  end
+
+  describe '.noteable_cloned' do
+    let(:noteable_ref) { double }
+    let(:direction) { double }
+    let(:created_at) { double }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:noteable_cloned).with(noteable_ref, direction, created_at: created_at)
+      end
+
+      described_class.noteable_cloned(double, double, noteable_ref, author, direction: direction, created_at: created_at)
+    end
+  end
+
+  describe '.change_time_estimate' do
+    it 'calls TimeTrackingService' do
+      expect_next_instance_of(::SystemNotes::TimeTrackingService) do |service|
+        expect(service).to receive(:change_time_estimate)
+      end
+
+      described_class.change_time_estimate(noteable, project, author)
+    end
+  end
+
+  describe '.discussion_continued_in_issue' do
+    let(:discussion) { create(:diff_note_on_merge_request, project: project).to_discussion }
+    let(:merge_request) { discussion.noteable }
+    let(:issue) { create(:issue, project: project) }
+
+    def reloaded_merge_request
+      MergeRequest.find(merge_request.id)
+    end
+
+    subject { described_class.discussion_continued_in_issue(discussion, project, author, issue) }
+
+    it_behaves_like 'a system note' do
+      let(:expected_noteable) { discussion.first_note.noteable }
+      let(:action)              { 'discussion' }
+    end
+
+    it 'creates a new note in the discussion' do
+      # we need to completely rebuild the merge request object, or the `@discussions` on the merge request are not reloaded.
+      expect { subject }.to change { reloaded_merge_request.discussions.first.notes.size }.by(1)
+    end
+
+    it 'mentions the created issue in the system note' do
+      expect(subject.note).to include(issue.to_reference)
+    end
+  end
+
+  describe '.change_time_spent' do
+    it 'calls TimeTrackingService' do
+      expect_next_instance_of(::SystemNotes::TimeTrackingService) do |service|
+        expect(service).to receive(:change_time_spent)
+      end
+
+      described_class.change_time_spent(noteable, project, author)
+    end
+  end
+
+  describe '.created_timelog' do
+    let(:issue) { create(:issue, project: project) }
+    let(:timelog) { create(:timelog, user: author, issue: issue, time_spent: 1800) }
+
+    it 'calls TimeTrackingService' do
+      expect_next_instance_of(::SystemNotes::TimeTrackingService) do |service|
+        expect(service).to receive(:created_timelog)
+      end
+
+      described_class.created_timelog(noteable, project, author, timelog)
+    end
+  end
+
+  describe '.remove_timelog' do
+    let(:issue) { create(:issue, project: project) }
+    let(:timelog) { create(:timelog, user: author, issue: issue, time_spent: 1800) }
+
+    it 'calls TimeTrackingService' do
+      expect_next_instance_of(::SystemNotes::TimeTrackingService) do |service|
+        expect(service).to receive(:remove_timelog)
+      end
+
+      described_class.remove_timelog(noteable, project, author, timelog)
+    end
+  end
+
+  describe '.handle_merge_request_draft' do
+    it 'calls MergeRequestsService' do
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:handle_merge_request_draft)
+      end
+
+      described_class.handle_merge_request_draft(noteable, project, author)
+    end
+  end
+
+  describe '.add_merge_request_draft_from_commit' do
+    it 'calls MergeRequestsService' do
+      commit = double
+
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:add_merge_request_draft_from_commit).with(commit)
+      end
+
+      described_class.add_merge_request_draft_from_commit(noteable, project, author, commit)
+    end
+  end
+
+  describe '.change_task_status' do
+    let(:new_task) { double }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_task_status).with(new_task)
+      end
+
+      described_class.change_task_status(noteable, project, author, new_task)
+    end
+  end
+
+  describe '.resolve_all_discussions' do
+    it 'calls MergeRequestsService' do
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:resolve_all_discussions)
+      end
+
+      described_class.resolve_all_discussions(noteable, project, author)
+    end
+  end
+
+  describe '.diff_discussion_outdated' do
+    it 'calls MergeRequestsService' do
+      discussion = double
+      change_position = double
+
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:diff_discussion_outdated).with(discussion, change_position)
+      end
+
+      described_class.diff_discussion_outdated(discussion, project, author, change_position)
+    end
+  end
+
+  describe '.mark_duplicate_issue' do
+    let(:canonical_issue) { double }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:mark_duplicate_issue).with(canonical_issue)
+      end
+
+      described_class.mark_duplicate_issue(noteable, project, author, canonical_issue)
+    end
+  end
+
+  describe '.mark_canonical_issue_of_duplicate' do
+    let(:duplicate_issue) { double }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:mark_canonical_issue_of_duplicate).with(duplicate_issue)
+      end
+
+      described_class.mark_canonical_issue_of_duplicate(noteable, project, author, duplicate_issue)
+    end
+  end
+
+  describe '.email_participants' do
+    let(:body) { 'added user@example.com' }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:email_participants).with(body)
+      end
+
+      described_class.email_participants(noteable, project, author, body)
+    end
+  end
+
+  describe '.discussion_lock' do
+    let(:issuable) { double }
+
+    before do
+      allow(issuable).to receive(:project).and_return(double)
+    end
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:discussion_lock)
+      end
+
+      described_class.discussion_lock(issuable, author)
+    end
+  end
+
+  describe '.auto_resolve_prometheus_alert' do
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:auto_resolve_prometheus_alert)
+      end
+
+      described_class.auto_resolve_prometheus_alert(noteable, project, author)
+    end
+  end
+
+  describe '.design_version_added' do
+    let(:version) { create(:design_version) }
+
+    it 'calls DesignManagementService' do
+      expect_next_instance_of(SystemNotes::DesignManagementService) do |service|
+        expect(service).to receive(:design_version_added).with(version)
+      end
+
+      described_class.design_version_added(version)
+    end
+  end
+
+  describe '.design_discussion_added' do
+    let(:discussion_note) { create(:diff_note_on_design) }
+
+    it 'calls DesignManagementService' do
+      expect_next_instance_of(SystemNotes::DesignManagementService) do |service|
+        expect(service).to receive(:design_discussion_added).with(discussion_note)
+      end
+
+      described_class.design_discussion_added(discussion_note)
+    end
+  end
+
+  describe '.approve_mr' do
+    it 'calls MergeRequestsService' do
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:approve_mr)
+      end
+
+      described_class.approve_mr(noteable, author)
+    end
+
+    it 'creates system note' do
+      expect { described_class.approve_mr(noteable, author) }.to change { Note.count }.by(1)
+    end
+  end
+
+  describe '.unapprove_mr' do
+    it 'calls MergeRequestsService' do
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:unapprove_mr)
+      end
+
+      described_class.unapprove_mr(noteable, author)
+    end
+
+    it 'creates system note' do
+      expect { described_class.approve_mr(noteable, author) }.to change { Note.count }.by(1)
+    end
+  end
+
+  describe '.change_alert_status' do
+    let(:alert) { build(:alert_management_alert) }
+
+    context 'with status change reason' do
+      let(:reason) { 'reason for status change' }
+
+      it 'calls AlertManagementService' do
+        expect_next_instance_of(SystemNotes::AlertManagementService) do |service|
+          expect(service).to receive(:change_alert_status).with(reason)
+        end
+
+        described_class.change_alert_status(alert, author, reason)
       end
     end
 
-    context 'commit from commit' do
-      before do
-        # Mention commit1 from commit0
-        described_class.cross_reference(commit0, commit1, author)
+    context 'without status change reason' do
+      it 'calls AlertManagementService' do
+        expect_next_instance_of(SystemNotes::AlertManagementService) do |service|
+          expect(service).to receive(:change_alert_status).with(nil)
+        end
+
+        described_class.change_alert_status(alert, author)
+      end
+    end
+  end
+
+  describe '.new_alert_issue' do
+    let(:alert) { build(:alert_management_alert, :with_incident) }
+
+    it 'calls AlertManagementService' do
+      expect_next_instance_of(SystemNotes::AlertManagementService) do |service|
+        expect(service).to receive(:new_alert_issue).with(alert.issue)
       end
 
-      it 'is truthy when already mentioned' do
-        expect(described_class.cross_reference_exists?(commit0, commit1)).
-          to be_truthy
+      described_class.new_alert_issue(alert, alert.issue, author)
+    end
+  end
+
+  describe '.create_new_alert' do
+    let(:alert) { build(:alert_management_alert) }
+    let(:monitoring_tool) { 'Prometheus' }
+
+    it 'calls AlertManagementService' do
+      expect_next_instance_of(SystemNotes::AlertManagementService) do |service|
+        expect(service).to receive(:create_new_alert).with(monitoring_tool)
       end
 
-      it 'is falsey when not already mentioned' do
-        expect(described_class.cross_reference_exists?(commit1, commit0)).
-          to be_falsey
+      described_class.create_new_alert(alert, monitoring_tool)
+    end
+  end
+
+  describe '.change_incident_severity' do
+    let(:incident) { build(:incident) }
+
+    it 'calls IncidentService' do
+      expect_next_instance_of(SystemNotes::IncidentService) do |service|
+        expect(service).to receive(:change_incident_severity)
       end
+
+      described_class.change_incident_severity(incident, author)
+    end
+  end
+
+  describe '.change_incident_status' do
+    let(:incident) { instance_double('Issue', project: project) }
+
+    context 'with status change reason' do
+      let(:reason) { 'reason for status change' }
+
+      it 'calls IncidentService' do
+        expect_next_instance_of(SystemNotes::IncidentService) do |service|
+          expect(service).to receive(:change_incident_status).with(reason)
+        end
+
+        described_class.change_incident_status(incident, author, reason)
+      end
+    end
+
+    context 'without status change reason' do
+      it 'calls IncidentService' do
+        expect_next_instance_of(SystemNotes::IncidentService) do |service|
+          expect(service).to receive(:change_incident_status).with(nil)
+        end
+
+        described_class.change_incident_status(incident, author)
+      end
+    end
+  end
+
+  describe '.log_resolving_alert' do
+    let(:alert) { build(:alert_management_alert) }
+    let(:monitoring_tool) { 'Prometheus' }
+
+    it 'calls AlertManagementService' do
+      expect_next_instance_of(SystemNotes::AlertManagementService) do |service|
+        expect(service).to receive(:log_resolving_alert).with(monitoring_tool)
+      end
+
+      described_class.log_resolving_alert(alert, monitoring_tool)
+    end
+  end
+
+  describe '.change_issue_type' do
+    let(:incident) { build(:incident) }
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:change_issue_type)
+      end
+
+      described_class.change_issue_type(incident, author)
+    end
+  end
+
+  describe '.add_timeline_event' do
+    let(:timeline_event) { instance_double('IncidentManagement::TimelineEvent', incident: noteable, project: project) }
+
+    it 'calls IncidentsService' do
+      expect_next_instance_of(::SystemNotes::IncidentsService) do |service|
+        expect(service).to receive(:add_timeline_event).with(timeline_event)
+      end
+
+      described_class.add_timeline_event(timeline_event)
+    end
+  end
+
+  describe '.edit_timeline_event' do
+    let(:timeline_event) { instance_double('IncidentManagement::TimelineEvent', incident: noteable, project: project) }
+
+    it 'calls IncidentsService' do
+      expect_next_instance_of(::SystemNotes::IncidentsService) do |service|
+        expect(service).to receive(:edit_timeline_event).with(timeline_event, author, was_changed: :occurred_at)
+      end
+
+      described_class.edit_timeline_event(timeline_event, author, was_changed: :occurred_at)
+    end
+  end
+
+  describe '.delete_timeline_event' do
+    it 'calls IncidentsService' do
+      expect_next_instance_of(::SystemNotes::IncidentsService) do |service|
+        expect(service).to receive(:delete_timeline_event).with(author)
+      end
+
+      described_class.delete_timeline_event(noteable, author)
+    end
+  end
+
+  describe '.relate_work_item' do
+    let(:work_item) { double('work_item', issue_type: :task) }
+    let(:noteable) { double }
+
+    before do
+      allow(noteable).to receive(:project).and_return(double)
+    end
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:hierarchy_changed).with(work_item, 'relate')
+      end
+
+      described_class.relate_work_item(noteable, work_item, author)
+    end
+  end
+
+  describe '.unrelate_wotk_item' do
+    let(:work_item) { double('work_item', issue_type: :task) }
+    let(:noteable) { double }
+
+    before do
+      allow(noteable).to receive(:project).and_return(double)
+    end
+
+    it 'calls IssuableService' do
+      expect_next_instance_of(::SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:hierarchy_changed).with(work_item, 'unrelate')
+      end
+
+      described_class.unrelate_work_item(noteable, work_item, author)
+    end
+  end
+
+  describe '.requested_changes' do
+    it 'calls MergeRequestsService' do
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:requested_changes)
+      end
+
+      described_class.requested_changes(noteable, author)
+    end
+
+    it 'creates system note' do
+      expect { described_class.approve_mr(noteable, author) }.to change { Note.count }.by(1)
+    end
+  end
+
+  describe '.reviewed' do
+    it 'calls MergeRequestsService' do
+      expect_next_instance_of(::SystemNotes::MergeRequestsService) do |service|
+        expect(service).to receive(:reviewed)
+      end
+
+      described_class.reviewed(noteable, author)
+    end
+
+    it 'creates system note' do
+      expect { described_class.reviewed(noteable, author) }.to change { Note.count }.by(1)
+    end
+  end
+
+  describe '.move_child_to_new_parent' do
+    let(:child) { double }
+    let(:new_parent) { double }
+    let(:prev_parent) { double('prev_parent', project: project) }
+
+    it 'calls IssuablesService' do
+      expect_next_instance_of(SystemNotes::IssuablesService) do |service|
+        expect(service).to receive(:move_child_to_new_parent).with(child, new_parent)
+      end
+
+      described_class.move_child_to_new_parent(
+        prev_parent: prev_parent,
+        child: child,
+        new_parent: new_parent,
+        author: author
+      )
     end
   end
 end

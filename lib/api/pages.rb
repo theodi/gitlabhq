@@ -1,0 +1,97 @@
+# frozen_string_literal: true
+
+module API
+  class Pages < ::API::Base
+    feature_category :pages
+
+    before do
+      require_pages_config_enabled!
+    end
+
+    params do
+      requires :id, types: [String, Integer],
+        desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'Unpublish Pages' do
+        detail 'Unpublishes Pages from a specified project. You must have the Maintainer or Owner ' \
+          'role for the project.'
+        success code: 204
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[gitlab_pages]
+      end
+      route_setting :authorization, permissions: :delete_page, boundary_type: :project
+      delete ':id/pages' do
+        authorize! :remove_pages, user_project
+
+        ::Pages::DeleteService.new(user_project, current_user).execute
+
+        no_content!
+      end
+
+      desc 'Update Pages settings for a project' do
+        detail 'Updates Pages settings for a specified project. You must have the Maintainer or ' \
+          'Owner role for the project.'
+        success code: 200
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[gitlab_pages]
+      end
+      params do
+        optional :pages_unique_domain_enabled, type: Boolean, desc: 'If `true`, uses a unique domain.'
+        optional :pages_https_only, type: Boolean, desc: 'If `true`, forces HTTPS.'
+        optional :pages_primary_domain, type: String,
+          desc: 'Primary domain, from the existing assigned domains, to redirect all Pages ' \
+            'requests to. [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/481334) ' \
+            'in GitLab 17.8.'
+      end
+      route_setting :authorization, permissions: :update_page, boundary_type: :project
+      patch ':id/pages' do
+        authorize! :update_pages, user_project
+
+        break not_found! unless user_project.pages_enabled?
+
+        if params[:pages_primary_domain] &&
+            !user_project.pages_domain_present?(params[:pages_primary_domain])
+          bad_request!("The `pages_primary_domain` attribute is missing from the domain list " \
+            "in the Pages project configuration. Assign `pages_primary_domain` to " \
+            "the Pages project or reset it.")
+        end
+
+        response = ::Pages::UpdateService.new(user_project, current_user, params).execute
+
+        if response.success?
+          present ::Pages::ProjectSettings.new(response.payload[:project]), with: Entities::Pages::ProjectSettings
+        elsif response.reason == :forbidden
+          forbidden!(response.message)
+        else
+          unprocessable_entity!(response.message)
+        end
+      end
+
+      desc 'Retrieve Pages settings for a project' do
+        detail 'Retrieves Pages settings for a specified project. You must have the Maintainer or ' \
+          'Owner role for the project.'
+        success code: 200
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[gitlab_pages]
+      end
+      route_setting :authorization, permissions: :read_page, boundary_type: :project
+      get ':id/pages' do
+        authorize! :read_pages, user_project
+
+        break not_found! unless user_project.pages_enabled?
+
+        present ::Pages::ProjectSettings.new(user_project), with: Entities::Pages::ProjectSettings
+      end
+    end
+  end
+end

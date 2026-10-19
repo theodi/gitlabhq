@@ -1,0 +1,24 @@
+---
+stage: GitLab Dedicated
+group: Geo
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Troubleshooting Geo
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+When working with Geo, you might encounter the following issues:
+
+- Basic troubleshooting and [common errors](common.md)
+- [Client and HTTP response code errors](client_http.md)
+- [PostgreSQL replication errors](postgresql_replication.md)
+- [Synchronization and verification errors](synchronization_verification.md)
+- [SSH proxying](ssh_proxying.md)
+
+For procedures to manually retry replication or verification as a standard operational
+action, see [Resync and reverify Geo data](../resync_reverify.md).

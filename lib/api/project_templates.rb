@@ -1,0 +1,107 @@
+# frozen_string_literal: true
+
+module API
+  class ProjectTemplates < ::API::Base
+    include PaginationParams
+
+    TEMPLATE_TYPES = %w[dockerfiles gitignores gitlab_ci_ymls licenses issues merge_requests].freeze
+    # The regex is needed to ensure a period (e.g. agpl-3.0)
+    # isn't confused with a format type. We also need to allow encoded
+    # values (e.g. C%2B%2B for C++), so allow % and + as well.
+    TEMPLATE_NAMES_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS.merge(name: /[\w()%.+-]+/)
+
+    before { authenticate_non_get! }
+
+    feature_category :source_code_management
+
+    helpers do
+      def authorize_template_permissions!
+        permission = params[:type] == 'issues' ? :read_project : :download_code
+
+        authorize! permission, user_project, "Your current role does not have the required permissions to access the #{params[:type]} template. Contact your project administrator for assistance."
+      end
+    end
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+      requires :type, type: String, values: TEMPLATE_TYPES, desc: 'Type of the template.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'List all templates of a particular type' do
+        detail 'Lists all templates of a specified type for a project.'
+        is_array true
+        success Entities::TemplatesList
+        tags ['project_templates']
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+      end
+      params do
+        use :pagination
+      end
+      route_setting :authorization, permissions: :read_template, boundary_type: :project
+      get ':id/templates/:type' do
+        authorize_template_permissions!
+
+        templates = TemplateFinder.all_template_names(user_project, params[:type]).values.flatten
+
+        present paginate(::Kaminari.paginate_array(templates)), with: Entities::TemplatesList
+      end
+
+      desc 'Retrieve a template of a particular type' do
+        detail 'Retrieves a template of a specified type for a project.'
+        success Entities::License
+        tags ['project_templates']
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+      end
+      params do
+        requires :name, type: String,
+          desc: 'Key of the template, as obtained from the collection endpoint.', documentation: { example: 'MIT' }
+        optional :source_template_project_id, type: Integer,
+          desc: 'ID of the project where the template is stored. Useful when multiple templates from different projects have the same name. If omitted, the match from the closest ancestor is returned.',
+          documentation: { example: 1 }
+        optional :project, type: String,
+          desc: 'Project name to use when expanding placeholders in the template. Affects only licenses.',
+          documentation: { example: 'GitLab' }
+        optional :fullname, type: String,
+          desc: 'Full name of the copyright holder to use when expanding placeholders in the template. Affects only licenses.',
+          documentation: { example: 'GitLab B.V.' }
+      end
+
+      route_setting :authorization, permissions: :read_template, boundary_type: :project
+      get ':id/templates/:type/:name', requirements: TEMPLATE_NAMES_ENDPOINT_REQUIREMENTS do
+        authorize_template_permissions!
+
+        begin
+          template = TemplateFinder.build(
+            params[:type],
+            user_project,
+            {
+              name: params[:name],
+              source_template_project_id: params[:source_template_project_id]
+            }
+          ).execute
+        rescue ::Gitlab::Template::Finders::RepoTemplateFinder::FileNotFoundError
+          not_found!('Template')
+        end
+
+        not_found!('Template') unless template.present?
+
+        template.resolve!(
+          project_name: params[:project].presence,
+          fullname: params[:fullname].presence || current_user&.name
+        )
+
+        if template.is_a?(::LicenseTemplate)
+          present template, with: Entities::License
+        else
+          present template, with: Entities::Template
+        end
+      end
+    end
+  end
+end

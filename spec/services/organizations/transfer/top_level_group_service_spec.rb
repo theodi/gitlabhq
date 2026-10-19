@@ -1,0 +1,623 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Organizations::Transfer::TopLevelGroupService, :aggregate_failures, feature_category: :organization do
+  let_it_be(:old_organization) { create(:organization) }
+  let_it_be(:new_organization) { create(:organization) }
+  let_it_be(:user) { create(:user, organization: old_organization) }
+  let_it_be_with_refind(:group) { create(:group, organization: old_organization) }
+
+  let(:groups_param) { group }
+  let(:organization_param) { new_organization }
+  let(:current_user_param) { user }
+  let(:skip_authorization_param) { false }
+
+  subject(:service) do
+    described_class.new(
+      groups: groups_param,
+      new_organization: organization_param,
+      current_user: current_user_param,
+      skip_authorization: skip_authorization_param
+    )
+  end
+
+  before_all do
+    group.add_owner(user)
+    new_organization.add_owner(user)
+  end
+
+  describe '#execute' do
+    context 'when transfer is successful' do
+      it 'returns success ServiceResponse' do
+        result = service.execute
+
+        expect(result).to be_a(ServiceResponse)
+        expect(result).to be_success
+        expect(result.payload[:succeeded]).to match_array([group.id])
+        expect(result.payload[:failed]).to be_empty
+      end
+
+      it 'publishes a GroupTransferredEvent' do
+        expect { service.execute }.to publish_event(Organizations::GroupTransferredEvent).with(
+          group_id: group.id,
+          old_organization_id: old_organization.id,
+          new_organization_id: new_organization.id
+        )
+      end
+
+      it 'updates organization_id for the top-level group only' do
+        service.execute
+
+        expect(group.reload.organization_id).to eq(new_organization.id)
+        expect(group).to be_valid
+      end
+
+      it 'records the source organization on the group before it moves' do
+        persisted_source = nil
+        allow(Group).to receive(:id_in).and_wrap_original do |original, *args|
+          persisted_source ||= group.reload.state_metadata['organization_transfer_source_id']
+          original.call(*args)
+        end
+
+        service.execute
+
+        expect(persisted_source).to eq(old_organization.id)
+      end
+
+      it 'enqueues the namespace sync event worker' do
+        expect(Namespaces::SyncEvent).to receive(:enqueue_worker)
+
+        service.execute
+      end
+
+      it 'does not enqueue the namespace sync event worker when a wrapping transaction rolls back' do
+        expect(Namespaces::SyncEvent).not_to receive(:enqueue_worker)
+
+        ApplicationRecord.transaction do
+          expect(service.execute).to be_success
+
+          raise ActiveRecord::Rollback
+        end
+      end
+
+      context 'with subgroups and projects' do
+        let_it_be_with_refind(:subgroup) { create(:group, parent: group, organization: old_organization) }
+        let_it_be_with_refind(:project) { create(:project, namespace: group, organization: old_organization) }
+
+        it 'does not update organization_id for subgroups or projects' do
+          service.execute
+
+          expect(group.reload.organization_id).to eq(new_organization.id)
+          expect(subgroup.reload.organization_id).to eq(old_organization.id)
+          expect(project.reload.organization_id).to eq(old_organization.id)
+        end
+      end
+
+      it 'logs the successful transfer' do
+        allow(Gitlab::AppLogger).to receive(:info).and_call_original
+        expect(Gitlab::AppLogger).to receive(:info).with(hash_including(
+          message: "Top-level group was transferred to a new organization",
+          group_path: group.full_path,
+          group_id: group.id,
+          new_organization_path: new_organization.full_path,
+          new_organization_id: new_organization.id,
+          error_message: nil
+        )).and_call_original
+
+        service.execute
+      end
+
+      context 'when new organization has lower visibility than group' do
+        let_it_be(:private_organization) do
+          create(:organization, visibility_level: Gitlab::VisibilityLevel::PRIVATE)
+        end
+
+        let_it_be_with_refind(:public_group) do
+          create(:group, :public, organization: old_organization, owners: user)
+        end
+
+        let_it_be_with_refind(:internal_group) do
+          create(:group, :internal, organization: old_organization, owners: user)
+        end
+
+        let_it_be_with_refind(:private_group) do
+          create(:group, :private, organization: old_organization, owners: user)
+        end
+
+        let(:groups_param) { [public_group, internal_group, private_group] }
+        let(:organization_param) { private_organization }
+
+        before_all do
+          private_organization.add_owner(user)
+        end
+
+        it 'clamps public and internal groups to private' do
+          result = service.execute
+
+          expect(result).to be_success
+          expect(public_group.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(internal_group.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(private_group.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(internal_group.visibility_level_allowed_by_organization?).to be(true)
+        end
+      end
+
+      context 'when new organization is public' do
+        let_it_be(:public_organization) do
+          create(:organization, visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+        end
+
+        let_it_be_with_refind(:private_group_for_public_org) do
+          create(:group, :private, organization: old_organization, owners: user)
+        end
+
+        let_it_be_with_refind(:internal_group_for_public_org) do
+          create(:group, :internal, organization: old_organization, owners: user)
+        end
+
+        let_it_be_with_refind(:public_group_for_public_org) do
+          create(:group, :public, organization: old_organization, owners: user)
+        end
+
+        let(:groups_param) do
+          [private_group_for_public_org, internal_group_for_public_org, public_group_for_public_org]
+        end
+
+        let(:organization_param) { public_organization }
+
+        before_all do
+          public_organization.add_owner(user)
+        end
+
+        it 'preserves visibility for all groups' do
+          result = service.execute
+
+          expect(result).to be_success
+          expect(private_group_for_public_org.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(internal_group_for_public_org.reload.visibility_level).to eq(Gitlab::VisibilityLevel::INTERNAL)
+          expect(public_group_for_public_org.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PUBLIC)
+        end
+      end
+
+      describe 'visibility clamping assumptions' do
+        it 'assumes organizations can only be public or private' do
+          internal_org = build(:organization, visibility_level: Gitlab::VisibilityLevel::INTERNAL)
+
+          expect(internal_org).not_to be_valid
+          expect(internal_org.errors[:visibility_level]).to include(_("must be private or public"))
+        end
+      end
+
+      context 'with multiple groups' do
+        let_it_be_with_refind(:group2) { create(:group, organization: old_organization) }
+        let_it_be_with_refind(:group3) { create(:group, organization: old_organization) }
+
+        let(:groups_param) { [group, group2, group3] }
+
+        before_all do
+          group2.add_owner(user)
+          group3.add_owner(user)
+        end
+
+        it 'transfers all groups successfully' do
+          result = service.execute
+
+          expect(result).to be_success
+          expect(result.payload[:succeeded]).to contain_exactly(group.id, group2.id, group3.id)
+          expect(result.payload[:failed]).to be_empty
+          expect(group.reload.organization_id).to eq(new_organization.id)
+          expect(group2.reload.organization_id).to eq(new_organization.id)
+          expect(group3.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'publishes one event per group in a single publish_group call' do
+          published = []
+          expect(Gitlab::EventStore).to receive(:publish_group).once { |events| published = events }
+
+          service.execute
+
+          expect(published.map(&:data)).to contain_exactly(
+            { group_id: group.id, old_organization_id: old_organization.id,
+              new_organization_id: new_organization.id },
+            { group_id: group2.id, old_organization_id: old_organization.id,
+              new_organization_id: new_organization.id },
+            { group_id: group3.id, old_organization_id: old_organization.id,
+              new_organization_id: new_organization.id }
+          )
+        end
+
+        context 'when the groups span several batches' do
+          include_context 'with transfer batch size of 1'
+
+          it 'still publishes a single time rather than once per batch' do
+            expect(Gitlab::EventStore).to receive(:publish_group).once
+
+            service.execute
+          end
+        end
+
+        it 'logs each transfer' do
+          allow(Gitlab::AppLogger).to receive(:info).and_call_original
+          expect(Gitlab::AppLogger).to receive(:info).with(
+            a_hash_including(message: "Top-level group was transferred to a new organization")
+          ).at_least(3).times.and_call_original
+
+          service.execute
+        end
+      end
+    end
+
+    context 'when transfer fails' do
+      context 'when group is not a root group' do
+        let_it_be(:parent_group) { create(:group, organization: old_organization) }
+        let_it_be(:subgroup) { create(:group, parent: parent_group, organization: old_organization) }
+
+        let(:groups_param) { subgroup }
+
+        before_all do
+          parent_group.add_owner(user)
+        end
+
+        it 'returns error ServiceResponse' do
+          result = service.execute
+
+          expect(result).to be_error
+          expect(result.message).to eq(s_('TransferOrganization|Failed to transfer 1 of 1 groups'))
+          expect(result.payload[:failed][subgroup.id]).to eq(
+            s_('TransferOrganization|Only top-level groups can be transferred to a different organization.')
+          )
+        end
+
+        it 'does not update the group organization_id' do
+          expect { service.execute }.not_to change { subgroup.reload.organization_id }
+        end
+
+        it 'does not publish a GroupTransferredEvent' do
+          expect { service.execute }.to not_publish_event(Organizations::GroupTransferredEvent)
+        end
+      end
+
+      context 'when new_organization is nil' do
+        let(:organization_param) { nil }
+
+        it 'returns error ServiceResponse' do
+          result = service.execute
+
+          expect(result).to be_error
+          expect(result.message).to eq(
+            format(
+              s_('TransferOrganization|Top-level group organization transfer failed: %{error_message}'),
+              error_message: s_('TransferOrganization|Target organization must be specified.')
+            )
+          )
+        end
+
+        it 'does not update the group organization_id' do
+          service.execute
+
+          expect(group.reload.organization_id).to eq(old_organization.id)
+        end
+      end
+
+      context 'when user does not have permission' do
+        context 'when user is not a group owner' do
+          let_it_be(:non_owner) { create(:user) }
+          let_it_be(:org_for_non_owner) { create(:organization) }
+
+          let(:organization_param) { org_for_non_owner }
+          let(:current_user_param) { non_owner }
+
+          before_all do
+            org_for_non_owner.add_owner(non_owner)
+          end
+
+          it 'returns error ServiceResponse' do
+            result = service.execute
+
+            expect(result).to be_error
+            expect(result.message).to eq(s_('TransferOrganization|Failed to transfer 1 of 1 groups'))
+            expect(result.payload[:failed][group.id]).to eq(
+              s_('TransferOrganization|You must be an owner of both the group and new organization.')
+            )
+          end
+        end
+
+        context 'when user is not an organization owner' do
+          let_it_be(:group_only_owner) { create(:user) }
+          let_it_be_with_refind(:another_group) { create(:group, organization: old_organization) }
+
+          let(:groups_param) { another_group }
+          let(:current_user_param) { group_only_owner }
+
+          before_all do
+            another_group.add_owner(group_only_owner)
+          end
+
+          it 'returns error ServiceResponse' do
+            result = service.execute
+
+            expect(result).to be_error
+            expect(result.message).to eq(
+              s_('TransferOrganization|You must be an owner of both the group and new organization.')
+            )
+            expect(another_group.reload.organization_id).to eq(old_organization.id)
+          end
+        end
+
+        context 'when target organization is unconfirmed with existing TLGs' do
+          let_it_be(:unconfirmed_organization) { create(:organization, :unconfirmed) }
+          let_it_be_with_reload(:existing_tlg) { create(:group, organization: unconfirmed_organization) }
+          let_it_be_with_reload(:group_to_transfer) { create(:group, organization: old_organization) }
+
+          let(:groups_param) { group_to_transfer }
+          let(:organization_param) { unconfirmed_organization }
+
+          context 'when user owns all existing TLGs in the unconfirmed org' do
+            before_all do
+              existing_tlg.add_owner(user)
+              group_to_transfer.add_owner(user)
+            end
+
+            it 'authorizes based on group ownership and transfers successfully' do
+              result = service.execute
+
+              expect(result).to be_success
+              expect(group_to_transfer.reload.organization_id).to eq(unconfirmed_organization.id)
+            end
+          end
+
+          context 'when user does not own all existing TLGs in the unconfirmed org' do
+            let_it_be(:other_user) { create(:user) }
+
+            before_all do
+              existing_tlg.add_owner(other_user)
+              group_to_transfer.add_owner(user)
+            end
+
+            it 'returns error ServiceResponse' do
+              result = service.execute
+
+              expect(result).to be_error
+              expect(result.message).to eq(
+                s_('TransferOrganization|You must be an owner of both the group and new organization.')
+              )
+              expect(group_to_transfer.reload.organization_id).to eq(old_organization.id)
+            end
+          end
+
+          context 'when unconfirmed org has multiple existing TLGs' do
+            let_it_be_with_reload(:existing_tlg2) { create(:group, organization: unconfirmed_organization) }
+            let_it_be_with_reload(:existing_tlg3) { create(:group, organization: unconfirmed_organization) }
+
+            context 'when user owns all existing TLGs' do
+              before_all do
+                existing_tlg.add_owner(user)
+                existing_tlg2.add_owner(user)
+                existing_tlg3.add_owner(user)
+                group_to_transfer.add_owner(user)
+              end
+
+              it 'authorizes and transfers successfully' do
+                result = service.execute
+
+                expect(result).to be_success
+                expect(group_to_transfer.reload.organization_id).to eq(unconfirmed_organization.id)
+              end
+
+              it 'avoids N+1 queries when checking existing TLG permissions' do
+                unconfirmed_org_for_control = create(:organization, :unconfirmed)
+                [existing_tlg, existing_tlg2, existing_tlg3].each do |group|
+                  group.update!(organization: unconfirmed_org_for_control)
+                end
+
+                control = ActiveRecord::QueryRecorder.new do
+                  described_class.new(
+                    groups: group_to_transfer, new_organization: unconfirmed_org_for_control, current_user: user
+                  ).execute
+                end
+
+                unconfirmed_org_for_test = create(:organization, :unconfirmed)
+                create(:group, organization: unconfirmed_org_for_test, owners: user)
+                [existing_tlg, existing_tlg2, existing_tlg3].each do |group|
+                  group.update!(organization: unconfirmed_org_for_test)
+                end
+                group_to_transfer.update!(organization: old_organization)
+
+                expect do
+                  described_class.new(
+                    groups: group_to_transfer, new_organization: unconfirmed_org_for_test, current_user: user
+                  ).execute
+                end.not_to exceed_query_limit(control)
+
+                [existing_tlg, existing_tlg2, existing_tlg3].each do |group|
+                  group.update!(organization: unconfirmed_organization)
+                end
+              end
+            end
+
+            context 'when user owns only some existing TLGs' do
+              let_it_be(:other_user) { create(:user) }
+
+              before_all do
+                existing_tlg.add_owner(user)
+                existing_tlg2.add_owner(other_user)
+                group_to_transfer.add_owner(user)
+              end
+
+              it 'returns error ServiceResponse' do
+                result = service.execute
+
+                expect(result).to be_error
+                expect(result.message).to eq(
+                  s_('TransferOrganization|You must be an owner of both the group and new organization.')
+                )
+              end
+            end
+          end
+        end
+
+        context 'when target organization is unconfirmed with no existing TLGs' do
+          context 'when user is org owner' do
+            let_it_be(:empty_unconfirmed_org_with_owner) { create(:organization, :unconfirmed) }
+            let_it_be_with_reload(:group_for_empty_org_with_owner) do
+              create(:group, organization: old_organization, owners: user)
+            end
+
+            let(:groups_param) { group_for_empty_org_with_owner }
+            let(:organization_param) { empty_unconfirmed_org_with_owner }
+
+            before_all do
+              empty_unconfirmed_org_with_owner.add_owner(user)
+            end
+
+            it 'authorizes based on org ownership and transfers successfully' do
+              result = service.execute
+
+              expect(result).to be_success
+              expect(group_for_empty_org_with_owner.reload.organization_id).to eq(empty_unconfirmed_org_with_owner.id)
+            end
+          end
+
+          context 'when user is not org owner' do
+            let_it_be(:empty_unconfirmed_org_no_owner) { create(:organization, :unconfirmed) }
+            let_it_be_with_reload(:group_for_empty_org_no_owner) do
+              create(:group, organization: old_organization, owners: user)
+            end
+
+            let(:groups_param) { group_for_empty_org_no_owner }
+            let(:organization_param) { empty_unconfirmed_org_no_owner }
+
+            it 'returns error ServiceResponse' do
+              result = service.execute
+
+              expect(result).to be_error
+              expect(result.message).to eq(
+                s_('TransferOrganization|You must be an owner of both the group and new organization.')
+              )
+            end
+          end
+        end
+      end
+
+      context 'when any group in the batch is invalid' do
+        let_it_be_with_refind(:group2) { create(:group, organization: old_organization) }
+        let_it_be(:parent_group) { create(:group, organization: old_organization) }
+        let_it_be(:subgroup) { create(:group, parent: parent_group, organization: old_organization) }
+
+        let(:groups_param) { [group, group2, subgroup] }
+
+        before_all do
+          group2.add_owner(user)
+          parent_group.add_owner(user)
+        end
+
+        it 'fails the entire transfer and transfers no groups' do
+          result = service.execute
+
+          expect(result).to be_error
+          expect(result.message).to eq(s_('TransferOrganization|Failed to transfer 1 of 3 groups'))
+          expect(result.payload[:failed].keys).to contain_exactly(subgroup.id)
+          expect(result.payload[:failed][subgroup.id]).to eq(
+            s_('TransferOrganization|Only top-level groups can be transferred to a different organization.')
+          )
+          expect(group.reload.organization_id).to eq(old_organization.id)
+          expect(group2.reload.organization_id).to eq(old_organization.id)
+          expect(subgroup.reload.organization_id).to eq(old_organization.id)
+        end
+
+        it 'does not publish a GroupTransferredEvent' do
+          expect { service.execute }.to not_publish_event(Organizations::GroupTransferredEvent)
+        end
+      end
+    end
+
+    context 'with batching' do
+      let_it_be_with_reload(:batched_groups) { create_list(:group, 4, :private, organization: old_organization) }
+
+      let(:groups_param) { batched_groups }
+
+      before_all do
+        batched_groups.each { |g| g.add_owner(user) }
+      end
+
+      it 'processes groups in batches' do
+        stub_const("#{described_class}::BATCH_SIZE", 3)
+        result = service.execute
+
+        expect(result).to be_success
+        expect(result.payload[:succeeded].size).to eq(4)
+        expect(result.payload[:failed]).to be_empty
+        batched_groups.each do |g|
+          expect(g.reload.organization_id).to eq(new_organization.id)
+        end
+      end
+
+      it 'avoids N+1 queries when authorizing groups' do
+        control = ActiveRecord::QueryRecorder.new do
+          described_class.new(
+            groups: batched_groups.first(3), new_organization: new_organization, current_user: user
+          ).execute
+        end
+
+        expect do
+          described_class.new(
+            groups: batched_groups.first(4), new_organization: new_organization, current_user: user
+          ).execute
+        end.not_to exceed_query_limit(control)
+      end
+    end
+
+    context 'with skip_authorization: true' do
+      let(:skip_authorization_param) { true }
+      let_it_be(:unauthorized_user) { create(:user) }
+      let_it_be_with_refind(:unauthorized_group) { create(:group, organization: old_organization) }
+
+      let(:groups_param) { unauthorized_group }
+      let(:current_user_param) { unauthorized_user }
+
+      it 'transfers the group without checking permissions' do
+        result = service.execute
+
+        expect(result).to be_success
+        expect(result.payload[:succeeded]).to contain_exactly(unauthorized_group.id)
+        expect(result.payload[:failed]).to be_empty
+        expect(unauthorized_group.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'still validates that group is a root group' do
+        parent_group = create(:group, organization: old_organization)
+        subgroup = create(:group, parent: parent_group, organization: old_organization)
+
+        result = described_class.new(
+          groups: subgroup,
+          new_organization: new_organization,
+          current_user: unauthorized_user,
+          skip_authorization: true
+        ).execute
+
+        expect(result).to be_error
+        expect(result.payload[:failed][subgroup.id]).to eq(
+          s_('TransferOrganization|Only top-level groups can be transferred to a different organization.')
+        )
+        expect(subgroup.reload.organization_id).to eq(old_organization.id)
+      end
+
+      it 'transfers group even if already in target organization' do
+        unauthorized_group.update!(organization: new_organization)
+
+        result = service.execute
+
+        expect(result).to be_success
+        expect(result.payload[:succeeded]).to contain_exactly(unauthorized_group.id)
+        expect(result.payload[:failed]).to be_empty
+      end
+
+      it 'does not publish a GroupTransferredEvent when already in the target organization' do
+        unauthorized_group.update!(organization: new_organization)
+
+        expect { service.execute }.to not_publish_event(Organizations::GroupTransferredEvent)
+      end
+    end
+  end
+end

@@ -1,0 +1,23 @@
+---
+data_category: optional
+key_path: redis_hll_counters.user_packages.i_package_golang_user_monthly
+description: Count of distinct users that have interacted with Go modules in the package registry in the last 28 days
+product_group: package_registry
+product_categories:
+- package_registry
+value_type: number
+status: removed
+time_frame: 28d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - i_package_golang_user
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+removed_by_url:
+milestone_removed: "<16.4"

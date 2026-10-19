@@ -1,0 +1,13 @@
+---
+table_name: incident_management_pending_alert_escalations
+classes:
+- IncidentManagement::PendingEscalations::Alert
+feature_categories:
+- incident_management
+description: Persists information about pending alert escalations for incidents
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/64274
+milestone: '14.1'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

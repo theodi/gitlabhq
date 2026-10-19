@@ -1,0 +1,15 @@
+---
+Lint/DuplicateBranch:
+  Exclude:
+    - 'app/models/release.rb'
+    - 'app/services/admin/set_feature_flag_service.rb'
+    - 'app/services/ci/job_token_scope/add_project_service.rb'
+    - 'app/services/spam/spam_action_service.rb'
+    - 'ee/app/models/license.rb'
+    - 'lib/event_filter.rb'
+    - 'lib/gitlab/checks/branch_check.rb'
+    - 'lib/gitlab/ci/yaml_processor.rb'
+    - 'lib/gitlab/database/load_balancing/load_balancer.rb'
+    - 'lib/gitlab/import_export/project/relation_factory.rb'
+    - 'lib/mattermost/session.rb'
+    - 'scripts/rubocop-parse'

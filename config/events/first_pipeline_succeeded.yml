@@ -1,0 +1,22 @@
+---
+description: Tracks when a project's first CI pipeline succeeds
+internal_events: true
+action: first_pipeline_succeeded
+identifiers:
+  - project
+  - user
+  - namespace
+additional_properties:
+  value:
+    description: Time-to-first-pipeline in seconds (Time.current - project.created_at)
+  author_source:
+    description: AI agent identifier that generated the project's CI config. Only present when an agent is on record; omitted otherwise. AI-vs-human authorship is observed on the per-commit commit_change_to_ciconfigfile and create_ci_config_file events.
+product_group: pipeline_authoring
+product_categories:
+  - pipeline_composition
+milestone: '19.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/231478
+tiers:
+  - free
+  - premium
+  - ultimate

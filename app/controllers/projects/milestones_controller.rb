@@ -1,28 +1,51 @@
+# frozen_string_literal: true
+
 class Projects::MilestonesController < Projects::ApplicationController
-  before_action :module_enabled
-  before_action :milestone, only: [:edit, :update, :destroy, :show, :sort_issues, :sort_merge_requests]
+  include Gitlab::Utils::StrongMemoize
+  include MilestoneActions
+
+  REDIRECT_TARGETS = [:new_release].freeze
+
+  before_action :check_issuables_available!
+  before_action :milestone,
+    only: [:edit, :update, :destroy, :show, :issues, :merge_requests, :participants, :labels, :promote]
+  before_action :redirect_path, only: [:new, :create]
 
   # Allow read any milestone
   before_action :authorize_read_milestone!
 
   # Allow admin milestone
-  before_action :authorize_admin_milestone!, except: [:index, :show]
+  before_action :authorize_admin_milestone!, except: [:index, :show, :issues, :merge_requests, :participants, :labels]
+
+  # Allow to promote milestone
+  before_action :authorize_promote_milestone!, only: :promote
 
   respond_to :html
 
-  def index
-    @milestones = case params[:state]
-                  when 'all'; @project.milestones.order("state, due_date DESC")
-                  when 'closed'; @project.milestones.closed.order("due_date DESC")
-                  else @project.milestones.active.order("due_date ASC")
-                  end
+  feature_category :team_planning
+  urgency :low
 
-    @milestones = @milestones.includes(:project)
-    @milestones = @milestones.page(params[:page]).per(PER_PAGE)
+  def index
+    @sort = milestone_list_params[:sort] || 'due_date_asc'
+    @milestones = milestones.sort_by_attribute(@sort)
+
+    respond_to do |format|
+      format.html do
+        @milestone_states = Milestone.states_count(@project)
+        # We need to show group milestones in the JSON response
+        # so that people can filter by and assign group milestones,
+        # but we don't need to show them on the project milestones page itself.
+        @milestones = @milestones.for_projects
+        @milestones = @milestones.page(milestone_list_params[:page])
+      end
+      format.json do
+        render json: @milestones.to_json(only: [:id, :title, :due_date], methods: :name)
+      end
+    end
   end
 
   def new
-    @milestone = @project.milestones.new
+    @noteable = @milestone = @project.milestones.new
     respond_with(@milestone)
   end
 
@@ -31,17 +54,20 @@ class Projects::MilestonesController < Projects::ApplicationController
   end
 
   def show
-    @issues = @milestone.issues
-    @users = @milestone.participants.uniq
-    @merge_requests = @milestone.merge_requests
+    respond_to do |format|
+      format.html
+    end
   end
 
   def create
     @milestone = Milestones::CreateService.new(project, current_user, milestone_params).execute
 
-    if @milestone.save
-      redirect_to namespace_project_milestone_path(@project.namespace,
-                                                   @project, @milestone)
+    if @milestone.valid?
+      if @redirect_path == :new_release
+        redirect_to new_project_release_path(@project)
+      else
+        redirect_to project_milestone_path(@project, @milestone)
+      end
     else
       render "new"
     end
@@ -51,66 +77,137 @@ class Projects::MilestonesController < Projects::ApplicationController
     @milestone = Milestones::UpdateService.new(project, current_user, milestone_params).execute(milestone)
 
     respond_to do |format|
-      format.js
       format.html do
         if @milestone.valid?
-          redirect_to namespace_project_milestone_path(@project.namespace,
-                                                   @project, @milestone)
+          redirect_to project_milestone_path(@project, @milestone)
         else
           render :edit
         end
       end
+
+      format.js
+
+      format.json do
+        if @milestone.valid?
+          head :no_content
+        else
+          render json: { errors: @milestone.errors.full_messages }, status: :unprocessable_entity
+        end
+      end
     end
+  rescue ActiveRecord::StaleObjectError
+    respond_to do |format|
+      format.html do
+        @conflict = true
+        render :edit
+      end
+
+      format.json do
+        render json: {
+          errors: [
+            format(
+              _("Someone edited this %{model_name} at the same time you did. " \
+                "Please refresh your browser and make sure your changes will not unintentionally remove theirs."),
+              model_name: _('milestone')
+            )
+          ]
+        }, status: :conflict
+      end
+    end
+  end
+
+  def promote
+    promoted_milestone = Milestones::PromoteService.new(project, current_user).execute(milestone)
+    flash[:notice] = flash_notice_for(promoted_milestone, project_group)
+
+    respond_to do |format|
+      format.html do
+        redirect_to project_milestones_path(project)
+      end
+      format.json do
+        render json: { url: project_milestones_path(project) }
+      end
+    end
+  rescue Milestones::PromoteService::PromoteMilestoneError => e
+    redirect_to milestone, alert: e.message
+  end
+
+  def flash_notice_for(milestone, group)
+    safe_link = view_context.link_to('<u>group milestone</u>'.html_safe, group_milestone_path(group, milestone.iid))
+    view_context.safe_join([ERB::Util.html_escape(milestone.title), " promoted to ", safe_link, "."])
   end
 
   def destroy
-    return access_denied! unless can?(current_user, :admin_milestone, @milestone)
+    return access_denied! unless can?(current_user, :admin_milestone, @project)
 
-    @milestone.destroy
+    Milestones::DestroyService.new(project, current_user).execute(milestone)
+
+    flash[:toast] = _('Milestone deleted.')
 
     respond_to do |format|
-      format.html { redirect_to namespace_project_milestones_path }
-      format.js { render nothing: true }
+      format.html { redirect_to namespace_project_milestones_path, status: :see_other }
+      format.json { render json: { redirect_url: namespace_project_milestones_path } }
     end
-  end
-
-  def sort_issues
-    @issues = @milestone.issues.where(id: params['sortable_issue'])
-    @issues.each do |issue|
-      issue.position = params['sortable_issue'].index(issue.id.to_s) + 1
-      issue.save
-    end
-
-    render json: { saved: true }
-  end
-
-  def sort_merge_requests
-    @merge_requests = @milestone.merge_requests.where(id: params['sortable_merge_request'])
-    @merge_requests.each do |merge_request|
-      merge_request.position = params['sortable_merge_request'].index(merge_request.id.to_s) + 1
-      merge_request.save
-    end
-
-    render json: { saved: true }
   end
 
   protected
 
-  def milestone
-    @milestone ||= @project.milestones.find_by!(iid: params[:id])
+  def milestone_list_params
+    params.permit(:sort, :page)
   end
 
-  def authorize_admin_milestone!
-    return render_404 unless can?(current_user, :admin_milestone, @project)
+  def permitted_params
+    params.permit(:redirect_path, :id)
   end
 
-  def module_enabled
-    unless @project.issues_enabled || @project.merge_requests_enabled
-      return render_404
+  def redirect_path
+    path = permitted_params[:redirect_path]&.to_sym
+    @redirect_path = path if REDIRECT_TARGETS.include?(path)
+  end
+
+  def project_group
+    strong_memoize(:project_group) do
+      project.group
     end
   end
 
+  def milestones
+    strong_memoize(:milestones) do
+      MilestonesFinder.new(search_params).execute
+    end
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def milestone
+    @noteable = @milestone ||= @project.milestones.find_by!(iid: permitted_params[:id])
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def authorize_admin_milestone!
+    render_404 unless can?(current_user, :admin_milestone, @project)
+  end
+
+  def authorize_promote_milestone!
+    render_404 unless can?(current_user, :admin_milestone, project_group)
+  end
+
   def milestone_params
-    params.require(:milestone).permit(:title, :description, :due_date, :state_event)
+    params.require(:milestone)
+          .permit(
+            :description,
+            :due_date,
+            :lock_version,
+            :start_date,
+            :state_event,
+            :title
+          )
+  end
+
+  def search_params
+    if request.format.json? && project_group && can?(current_user, :read_group, project_group)
+      groups = project_group.self_and_ancestors.select(:id)
+    end
+
+    params.permit(:state, :search_title).merge(project_ids: @project.id, group_ids: groups)
   end
 end

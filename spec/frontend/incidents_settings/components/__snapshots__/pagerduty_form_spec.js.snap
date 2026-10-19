@@ -1,0 +1,83 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Alert integration settings form should match the default snapshot 1`] = `
+<div>
+  <p>
+    <gl-sprintf-stub
+      message="Create a GitLab incident for each PagerDuty incident by %{linkStart}configuring a webhook in PagerDuty%{linkEnd}"
+    />
+  </p>
+  <form>
+    <gl-form-group-stub
+      class="gl-col-8 gl-col-md-9 gl-p-0"
+      labeldescription=""
+      optionaltext="(optional)"
+    >
+      <gl-toggle-stub
+        id="reference-0"
+        label="Active"
+        labelposition="top"
+        value="true"
+      />
+    </gl-form-group-stub>
+    <gl-form-group-stub
+      class="gl-col-8 gl-col-md-9 gl-p-0"
+      label="Webhook URL"
+      label-for="url"
+      labeldescription=""
+      optionaltext="(optional)"
+    >
+      <gl-form-input-group-stub
+        data-testid="webhook-url"
+        id="reference-1"
+        inputclass=""
+        predefinedoptions="[object Object]"
+        readonly=""
+        value="pagerduty.webhook.com"
+        wrapperattributes="[object Object]"
+      >
+        <clipboard-button-stub
+          category="secondary"
+          icon="copy-to-clipboard"
+          size="medium"
+          text="pagerduty.webhook.com"
+          title="Copy"
+          tooltipplacement="top"
+          variant="default"
+        />
+      </gl-form-input-group-stub>
+      <gl-button-stub
+        accessibledisabled="true"
+        buttontextclasses=""
+        category="primary"
+        class="gl-mt-5"
+        data-testid="webhook-reset-btn"
+        icon=""
+        role="button"
+        size="medium"
+        tabindex="0"
+        tag="button"
+        type="button"
+        variant="default"
+      >
+        Reset webhook URL
+      </gl-button-stub>
+      <gl-modal-stub
+        actioncancel="[object Object]"
+        actionprimary="[object Object]"
+        arialabel=""
+        dismisslabel="Close"
+        footertag="div"
+        headertag="div"
+        modalclass=""
+        modalid="resetWebhookModal"
+        size="md"
+        title="Reset webhook URL"
+        titletag="h4"
+      >
+        Resetting the webhook URL for this project will require updating this integration's settings in PagerDuty.
+      </gl-modal-stub>
+    </gl-form-group-stub>
+  </form>
+</div>
+`;

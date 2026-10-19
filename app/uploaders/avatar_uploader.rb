@@ -1,32 +1,49 @@
-# encoding: utf-8
+# frozen_string_literal: true
 
-class AvatarUploader < CarrierWave::Uploader::Base
-  storage :file
+class AvatarUploader < GitlabUploader
+  include UploaderHelper
+  include RecordsUploads::Concern
+  include ObjectStorage::Concern
+  prepend ObjectStorage::Extension::RecordsUploads
 
-  after :store, :reset_events_cache
+  MIME_ALLOWLIST = %w[image/png image/jpeg image/gif image/bmp image/tiff image/vnd.microsoft.icon image/webp].freeze
 
-  def store_dir
-    "uploads/#{model.class.to_s.underscore}/#{mounted_as}/#{model.id}"
+  after :store, :clear_avatar_caches
+  after :remove, :clear_avatar_caches
+
+  def exists?
+    model.avatar.file && model.avatar.file.present?
   end
 
-  def image?
-    img_ext = %w(png jpg jpeg gif bmp tiff)
-    if file.respond_to?(:extension)
-      img_ext.include?(file.extension.downcase)
-    else
-      # Not all CarrierWave storages respond to :extension
-      ext = file.path.split('.').last.downcase
-      img_ext.include?(ext)
-    end
-  rescue
+  def move_to_store
     false
   end
 
-  def file_storage?
-    self.class.storage == CarrierWave::Storage::File
+  def move_to_cache
+    false
   end
 
-  def reset_events_cache(file)
-    model.reset_events_cache if model.is_a?(User)
+  def absolute_path
+    self.class.absolute_path(upload)
+  end
+
+  def mounted_as
+    super || 'avatar'
+  end
+
+  def content_type_whitelist
+    MIME_ALLOWLIST
+  end
+
+  private
+
+  def dynamic_segment
+    File.join(model.class.underscore, mounted_as.to_s, model.id.to_s)
+  end
+
+  def clear_avatar_caches(*)
+    return unless model.respond_to?(:verified_emails) && model.verified_emails.any?
+
+    Gitlab::AvatarCache.delete_by_email(*model.verified_emails)
   end
 end

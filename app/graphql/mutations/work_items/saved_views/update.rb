@@ -1,0 +1,108 @@
+# frozen_string_literal: true
+
+module Mutations
+  module WorkItems
+    module SavedViews
+      class Update < BaseMutation
+        graphql_name 'WorkItemSavedViewUpdate'
+
+        include Mutations::SpamProtection
+
+        authorize :update_work_item_saved_view
+        authorize_granular_token permissions: :update_work_item_saved_view,
+          boundaries: [
+            { boundary_argument: :id, boundary: :resource_parent, boundary_type: :project },
+            { boundary_argument: :id, boundary: :resource_parent, boundary_type: :group }
+          ]
+
+        description "Updates a saved view."
+
+        argument :id,
+          ::Types::GlobalIDType[::WorkItems::SavedViews::SavedView],
+          required: true,
+          description: 'Global ID of the saved view.'
+
+        argument :name,
+          GraphQL::Types::String,
+          required: false,
+          description: 'Name of the saved view.'
+
+        argument :description,
+          GraphQL::Types::String,
+          required: false,
+          description: 'Description of the saved view.'
+
+        argument :filters,
+          ::Types::WorkItems::SavedViews::FilterInputType,
+          required: false,
+          description: 'Filters associated with the saved view.'
+
+        # rubocop:disable Graphql/JSONType -- Matching the input type in the user preferences update mutation
+        argument :display_settings,
+          GraphQL::Types::JSON,
+          required: false,
+          description: 'Display settings associated with the saved view.'
+        # rubocop:enable Graphql/JSONType
+
+        argument :sort,
+          ::Types::WorkItems::SortEnum,
+          required: false,
+          description: 'Sorting option associated with the saved view.'
+
+        # TODO: Remove once frontend has migrated to use is_private
+        argument :private,
+          GraphQL::Types::Boolean,
+          required: false,
+          description: 'Whether the saved view is private.',
+          deprecated: {
+            reason: 'Replaced by `isPrivate` argument',
+            milestone: '18.10'
+          }
+
+        argument :is_private,
+          GraphQL::Types::Boolean,
+          required: false,
+          description: 'Whether the saved view is private.'
+
+        field :saved_view,
+          ::Types::WorkItems::SavedViews::SavedViewType,
+          null: true,
+          scopes: [:api],
+          description: 'Updated saved view.'
+
+        field :errors,
+          [GraphQL::Types::String],
+          null: false,
+          scopes: [:api],
+          description: 'Errors encountered during the mutation.'
+
+        validates mutually_exclusive: [:private, :is_private]
+
+        def resolve(id:, **attrs)
+          saved_view = authorized_find!(id: id)
+
+          attrs[:private] = attrs.delete(:is_private) if attrs.key?(:is_private)
+
+          result = ::WorkItems::SavedViews::UpdateService.new(
+            current_user: current_user,
+            saved_view: saved_view,
+            params: attrs
+          ).execute
+
+          if result.success?
+            check_spam_action_response!(saved_view)
+            { saved_view: saved_view, errors: [] }
+          else
+            { saved_view: nil, errors: result.errors }
+          end
+        end
+
+        private
+
+        def find_object(id:)
+          GitlabSchema.object_from_id(id, expected_type: ::WorkItems::SavedViews::SavedView)
+        end
+      end
+    end
+  end
+end

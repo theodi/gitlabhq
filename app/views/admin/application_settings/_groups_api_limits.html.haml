@@ -1,0 +1,50 @@
+= render ::Layouts::SettingsBlockComponent.new(_('Groups API rate limits'),
+  id: 'js-groups-api-limits-settings',
+  testid: 'groups-api-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Set the per-user and per-IP address rate limits for the requests to Groups API.')
+    = link_to _('Learn more.'), help_page_path('rate_limits/api/groups.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: network_admin_application_settings_path(anchor: 'js-groups-api-limits-settings'), html: { class: 'fieldset-form' } do |f|
+      = form_errors(@application_setting)
+
+      %fieldset
+        = _("Set to 0 to disable the limits.")
+
+      %fieldset
+        .form-group
+          = f.label :group_create_limit, safe_format(_('Maximum requests to the %{api_name} API per %{timeframe} per user'), api_name: tag.code('POST /groups'), timeframe: 'day'), class: 'label-bold'
+          = f.number_field :group_create_limit, min: 0, class: 'form-control gl-form-input'
+
+      %fieldset
+        .form-group
+          = f.label :groups_api_limit, safe_format(_('Maximum requests to the %{api_name} API per %{timeframe} per user or IP address'), api_name: tag.code('GET /groups'), timeframe: 'minute'), class: 'label-bold'
+          = f.number_field :groups_api_limit, min: 0, class: 'form-control gl-form-input'
+
+      %fieldset
+        .form-group
+          = f.label :group_api_limit, safe_format(_('Maximum requests to the %{api_name} API per %{timeframe} per user or IP address'), api_name: tag.code('GET /groups/:id'), timeframe: 'minute'), class: 'label-bold'
+          = f.number_field :group_api_limit, min: 0, class: 'form-control gl-form-input'
+
+      %fieldset
+        .form-group
+          = f.label :group_projects_api_limit, safe_format(_('Maximum requests to the %{api_name} API per %{timeframe} per user or IP address'), api_name: tag.code('GET /groups/:id/projects'), timeframe: 'minute'), class: 'label-bold'
+          = f.number_field :group_projects_api_limit, min: 0, class: 'form-control gl-form-input'
+
+      %fieldset
+        .form-group
+          = f.label :group_shared_groups_api_limit, safe_format(_('Maximum requests to the %{api_name} API per %{timeframe} per user or IP address'), api_name: tag.code('GET /groups/:id/groups/shared'), timeframe: 'minute'), class: 'label-bold'
+          = f.number_field :group_shared_groups_api_limit, min: 0, class: 'form-control gl-form-input'
+
+      %fieldset
+        .form-group
+          = f.label :group_invited_groups_api_limit, safe_format(_('Maximum requests to the %{api_name} API per %{timeframe} per user or IP address'), api_name: tag.code('GET /groups/:id/invited_groups'), timeframe: 'minute'), class: 'label-bold'
+          = f.number_field :group_invited_groups_api_limit, min: 0, class: 'form-control gl-form-input'
+
+      %fieldset
+        .form-group
+          = f.label :group_archive_unarchive_api_limit, safe_format(_('Maximum requests to the %{api_name1} and %{api_name2} APIs per %{timeframe} per user or IP address'), api_name1: tag.code('POST /groups/:id/archive'), api_name2: tag.code('POST /groups/:id/unarchive'), timeframe: 'minute'), class: 'label-bold'
+          = f.number_field :group_archive_unarchive_api_limit, min: 0, class: 'form-control gl-form-input'
+
+      = f.submit _('Save changes'), pajamas_button: true

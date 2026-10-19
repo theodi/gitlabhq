@@ -1,0 +1,95 @@
+---
+stage: Analytics
+group: Analytics Instrumentation
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Single Instrumentation Layer
+---
+
+## Single Instrumentation Layer
+
+The Single Instrumentation Layer is an event tracking abstraction you can use to track any events in GitLab using a single interface. It
+uses events definitions from [Internal Event framework](internal_event_instrumentation/event_definition_guide.md) to declare event processing logic.
+
+## Why a Single Instrumentation Layer?
+
+Use the Single Instrumentation Layer to:
+
+- Instrument events and processing logic in a single place
+- Use the same event definitions for both instrumentation and processing
+- Eliminate the need to write duplicate tracking code for the same event
+
+## How a Single Instrumentation Layer works
+
+[See example MR](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/167415/diffs).
+
+[Event definitions](internal_event_instrumentation/event_definition_guide.md) are used as a declarative specification
+for processing logic and are the single source of truth for event properties, tracking parameters, and other metadata.
+
+When the Instrumentation Layer tracking method is called (`InternalEventsTracking.track_internal_event`),
+the Instrumentation Layer passes the payload to Internal Events. If extra trackers are defined for the event,
+they are called in order of declaration and the original payload is passed as a parameter. For more information,
+see [how to implement it for your tracking system](#how-to-implement-it-for-your-tracking-system).
+
+```mermaid
+flowchart TD
+    A[Application code] -->|.track_internal_event| B(Instrumentation Layer)
+    B --> C[Extra trackers]
+    B --> D[Internal Events]
+    C -->|Ai Tracking| E[AiTracking.track_event]
+    C -->|Contribution Analytics| F[ContributionAnalyticsTracking.track_event]
+    D --> G[Redis/HLL Counters, Service Ping metrics]
+    D --> |Snowplow tracking enabled?| H[Snowplow]
+
+```
+
+### Additional tracking systems
+
+When an event is intended to be processed by tracking systems (for example, [AiTracking](https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/tracking/ai_tracking.rb)), the event definition is extended to
+include the additional processing logic. [example](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/167415/diffs#a77ac5c62df6c489c00e9c5dd46960f390c951d0_17_17)
+
+This logic is declared using additional processing classes using standard interface.
+
+## How to implement it for your tracking system
+
+To implement it for your tracking system, you need to:
+
+1. Add a [new event definition](internal_event_instrumentation/event_definition_guide.md) or use existing one ([see events dictionary](https://metrics.gitlab.com/events)).
+1. Implement the processing logic in a new tracking class. The class should have a class method `track_event` that accepts
+   an event name and additional named parameters
+
+   ```ruby
+   module Gitlab
+     module Tracking
+       class NewTrackingSystemProcessor
+         def self.track_event(event_name, **kwargs)
+           # add your tracking logic here
+         end
+       end
+     end
+   end
+   ```
+
+1. Extend the event definition with the new tracking class added in `extra_trackers:` property
+
+   ```yaml
+   extra_trackers:
+    - tracking_class: Gitlab::Tracking::NewTrackingSystemProcessor
+      protected_properties:
+        processor_type:
+          description: The type of the processor
+   ```
+
+   `protected_properties` contains properties to be sent exclusively to the specified tracking class.
+1. [Trigger the event](internal_event_instrumentation/quick_start.md#trigger-events) in your code using Internal Events framework
+
+`**kwargs` is used to pass additional parameters to the tracking class from the Internal Events framework.
+The actual parameters depend on the tracking parameters passed to the event invocation above.
+Usually, it includes `user`, `namespace`, and `project` along with `protected_properties` that can be used to pass any additional data.
+
+The tracking systems are triggered by the order of the `extra_trackers:` property.
+
+## Systems that use the Single Instrumentation Layer
+
+1. [Internal Event](internal_event_instrumentation/quick_start.md). It is the main system that implements the tracking layer.
+1. [AiTracking](https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/tracking/ai_tracking.rb?ref_type=heads).
+1. [Contribution Analytics](https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/tracking/contribution_analytics_tracking.rb?ref_type=heads).

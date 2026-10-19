@@ -1,0 +1,58 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Deletes a release asset link', feature_category: :release_orchestration do
+  include GraphqlHelpers
+
+  let_it_be_with_reload(:project) { create(:project, :private) }
+  let_it_be_with_reload(:release) { create(:release, project: project) }
+  let_it_be(:maintainer) { create(:user, maintainer_of: project) }
+  let_it_be(:release_link) { create(:release_link, release: release) }
+
+  let(:current_user) { maintainer }
+  let(:mutation_name) { :release_asset_link_delete }
+  let(:mutation_arguments) { { id: release_link.to_global_id.to_s } }
+
+  let(:mutation) do
+    graphql_mutation(mutation_name, mutation_arguments, <<~FIELDS)
+      link {
+        id
+        name
+        url
+        linkType
+        directAssetUrl
+      }
+      errors
+    FIELDS
+  end
+
+  let(:delete_link) { post_graphql_mutation(mutation, current_user: current_user) }
+  let(:mutation_response) { graphql_mutation_response(mutation_name)&.with_indifferent_access }
+
+  it_behaves_like 'authorizing granular token permissions for GraphQL', :delete_release_link do
+    let(:user) { maintainer }
+    let(:boundary_object) { project }
+    let(:request) do
+      post_graphql_mutation(
+        graphql_mutation(:release_asset_link_delete, { id: release_link.to_global_id.to_s }, 'errors'),
+        token: { personal_access_token: pat }
+      )
+    end
+  end
+
+  it 'deletes the release asset link and returns the deleted link', :aggregate_failures do
+    delete_link
+
+    expected_response = {
+      id: release_link.to_global_id.to_s,
+      name: release_link.name,
+      url: release_link.url,
+      linkType: release_link.link_type.upcase,
+      directAssetUrl: end_with(release_link.filepath)
+    }.with_indifferent_access
+
+    expect(mutation_response[:link]).to match(expected_response)
+    expect(mutation_response[:errors]).to eq([])
+  end
+end

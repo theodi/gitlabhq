@@ -1,0 +1,292 @@
+# frozen_string_literal: true
+
+module WebHooks
+  module Hook
+    extend ActiveSupport::Concern
+
+    InterpolationError = Class.new(StandardError)
+
+    SECRET_MASK = '************'
+    MAX_PARAM_LENGTH = 8192
+    SIGNING_TOKEN_PREFIX = 'whsec_'
+    # Format of a signing token with 32 encoded bytes.
+    # Base64.strict_encode64(SecureRandom.bytes(32)).length # => 44 (43 chars + 1 padding "=")
+    SIGNING_TOKEN_FORMAT = %r{\A#{SIGNING_TOKEN_PREFIX}[A-Za-z0-9+/]{43}=\z}
+    MAX_CUSTOM_HEADER_NAME_LENGTH = 255
+
+    TEMPLATE_PARSE_LIMITS = {
+      max_depth: 32,
+      max_array_size: 100,
+      max_hash_size: 100,
+      max_total_elements: 500,
+      max_json_size_bytes: 4096
+    }.freeze
+
+    DANGEROUS_EXPONENT_RE = Gitlab::UntrustedRegexp.new('\d+(\.\d+)?[eE][+-]?\d{4,}')
+
+    CUSTOM_TEMPLATE_INTERPOLATION_REGEX = Gitlab::UntrustedRegexp.new('{{(?P<field>.+?)}}')
+
+    # See app/validators/json_schemas/web_hooks_url_variables.json
+    VARIABLE_REFERENCE_RE = /\{([A-Za-z]+[0-9]*(?:[._-][A-Za-z0-9]+)*)\}/
+
+    included do
+      include Sortable
+      include WebHooks::AutoDisabling
+      include Gitlab::EncryptedAttribute
+
+      prevent_from_serialization :signing_token
+
+      encrypts :signing_token
+
+      attr_encrypted :token,
+        mode: :per_attribute_iv,
+        algorithm: 'aes-256-gcm',
+        key: :db_key_base_32
+
+      attr_encrypted :url,
+        mode: :per_attribute_iv,
+        algorithm: 'aes-256-gcm',
+        key: :db_key_base_32
+
+      attr_encrypted :url_variables,
+        mode: :per_attribute_iv,
+        key: :db_key_base_32,
+        algorithm: 'aes-256-gcm',
+        marshal: true,
+        marshaler: ::Gitlab::Json,
+        encode: false,
+        encode_iv: false
+
+      attr_encrypted :custom_headers,
+        mode: :per_attribute_iv,
+        key: :db_key_base_32,
+        algorithm: 'aes-256-gcm',
+        marshal: true,
+        marshaler: ::Gitlab::Json,
+        encode: false,
+        encode_iv: false
+
+      validates :url, presence: true
+      validates :url, length: { maximum: MAX_PARAM_LENGTH }
+      validates :url, public_url: true, if: ->(hook) {
+        # Apply the validation up to the point where the length validation above would make the record invalid.
+        # See https://gitlab.com/gitlab-org/gitlab/-/issues/524020#note_2529307579
+        (hook.url&.length&.<= MAX_PARAM_LENGTH) && hook.validate_public_url? && !hook.url_variables?
+      }
+
+      validates :token, length: { maximum: MAX_PARAM_LENGTH }, format: { without: /\n/ }
+      validates :signing_token, format: { with: SIGNING_TOKEN_FORMAT }, allow_nil: true
+      validate :signing_token_decodable, if: -> { signing_token.present? && errors[:signing_token].empty? }
+
+      after_initialize :initialize_url_variables
+      after_initialize :initialize_custom_headers
+
+      before_validation :reset_token
+      before_validation :reset_url_variables, unless: ->(hook) { hook.is_a?(ServiceHook) }, on: :update
+      before_validation :reset_custom_headers, unless: ->(hook) { hook.is_a?(ServiceHook) }, on: :update
+      before_validation :set_branch_filter_nil, if: :branch_filter_strategy_all_branches?
+      validates :push_events_branch_filter, untrusted_regexp: true, if: :branch_filter_strategy_regex?
+      validates(
+        :push_events_branch_filter, "web_hooks/wildcard_branch_filter": true, if: :branch_filter_strategy_wildcard?
+      )
+
+      validates :url_variables, json_schema: { filename: 'web_hooks_url_variables' }
+      validate :no_missing_url_variables
+      validates :interpolated_url, public_url: true, if: ->(hook) { hook.url_variables? && hook.errors.empty? }
+      validate :validate_custom_header_name_length
+      validates :custom_headers, json_schema: { filename: 'web_hooks_custom_headers' },
+        unless: ->(hook) { hook.errors[:custom_headers].present? }
+      validates :custom_webhook_template, length: { maximum: 4096 }
+      validate :validate_custom_webhook_template_numeric_safety
+      validates :name, length: { maximum: 255 }
+      validates :description, length: { maximum: 2048 }
+
+      validates :filter,
+        json_schema: { filename: 'filter', size_limit: 8.kilobytes }
+
+      enum :branch_filter_strategy, {
+        wildcard: 0,
+        regex: 1,
+        all_branches: 2
+      }, prefix: true
+
+      def execute(data, hook_name, idempotency_key: nil, force: false)
+        # hook.executable? is checked in WebHookService#execute
+        WebHookService.new(self, data, hook_name, idempotency_key: idempotency_key, force: force).execute
+      end
+
+      def async_execute(data, hook_name, idempotency_key: nil)
+        WebHookService.new(self, data, hook_name, idempotency_key: idempotency_key).async_execute if executable?
+      end
+
+      # Allow urls pointing localhost and the local network
+      def allow_local_requests?
+        Gitlab::CurrentSettings.allow_local_requests_from_web_hooks_and_services?
+      end
+
+      def help_path
+        Gitlab::Routing.url_helpers.help_page_path('user/project/integrations/webhooks.md')
+      end
+
+      # @return [Boolean] Whether or not the WebHook is currently throttled.
+      def rate_limited?
+        rate_limiter.rate_limited?
+      end
+
+      # @return [Integer] The rate limit for the WebHook. `0` for no limit.
+      def rate_limit
+        rate_limiter.limit
+      end
+
+      # Returns the associated Project or Group for the WebHook if one exists.
+      # Overridden by inheriting classes.
+      def parent; end
+
+      # Custom attributes to be included in the worker context.
+      def application_context
+        { related_class: self.class.to_s }
+      end
+
+      # Exclude binary columns by default - they have no sensible JSON encoding
+      def serializable_hash(options = nil)
+        options = options.try(:dup) || {}
+        options[:except] = Array(options[:except]).dup
+        options[:except].concat [:encrypted_url_variables, :encrypted_url_variables_iv]
+
+        super
+      end
+
+      def interpolated_url(url = self.url, url_variables = self.url_variables)
+        return url unless url.include?('{')
+
+        vars = url_variables
+        url.gsub(VARIABLE_REFERENCE_RE) do |match|
+          vars.fetch(match.delete_prefix('{').delete_suffix('}'))
+        end
+      rescue KeyError => e
+        raise InterpolationError, "Invalid URL template. Missing key #{e.key}"
+      end
+
+      def masked_token
+        token.present? ? SECRET_MASK : nil
+      end
+
+      def masked_url_variables
+        url_variables.present? ? url_variables.keys.map { |k| { key: k } } : []
+      end
+
+      def masked_custom_headers
+        custom_headers.present? ? custom_headers.keys.map { |k| { key: k } } : []
+      end
+
+      def validate_public_url?
+        true
+      end
+
+      private
+
+      def signing_token_decodable
+        Base64.strict_decode64(signing_token.delete_prefix(SIGNING_TOKEN_PREFIX))
+      rescue ArgumentError
+        errors.add(:signing_token, _('is not a valid base64-encoded string'))
+      end
+
+      def reset_token
+        self.token = nil if url_changed? && !encrypted_token_changed?
+      end
+
+      def reset_url_variables
+        return if url_variables_were.blank? || !interpolated_url_changed?
+
+        self.url_variables = {} if url_variables_were.keys.intersection(url_variables.keys).any?
+        self.url_variables = {} if url_changed? && url_variables_were.to_a.intersection(url_variables.to_a).any?
+      end
+
+      def reset_custom_headers
+        return if url.nil? # checking interpolated_url with a nil url causes errors
+        return unless interpolated_url_changed?
+
+        self.custom_headers = {}
+      rescue InterpolationError
+        # ignore -- record is invalid and won't be saved. no need to reset custom_headers
+      end
+
+      def interpolated_url_changed?
+        interpolated_url_was = interpolated_url(decrypt_url_was, url_variables_were)
+
+        interpolated_url_was != interpolated_url
+      end
+
+      def decrypt_url_was
+        attr_encrypted_decrypt(:url, encrypted_url_was, iv: Base64.decode64(encrypted_url_iv_was))
+      end
+
+      def url_variables_were
+        attr_encrypted_decrypt(:url_variables, encrypted_url_variables_was, iv: encrypted_url_variables_iv_was)
+      end
+
+      def initialize_url_variables
+        self.url_variables = {} if encrypted_url_variables.nil?
+      end
+
+      def initialize_custom_headers
+        self.custom_headers = {} if encrypted_custom_headers.nil?
+      end
+
+      def rate_limiter
+        @rate_limiter ||= Gitlab::WebHooks::RateLimiter.new(self)
+      end
+
+      def no_missing_url_variables
+        return if url.nil?
+
+        variable_names = url_variables.keys
+        used_variables = url.scan(VARIABLE_REFERENCE_RE).map(&:first)
+
+        missing = used_variables - variable_names
+
+        return if missing.empty?
+
+        errors.add(:url, "Invalid URL template. Missing keys: #{missing}")
+      end
+
+      def set_branch_filter_nil
+        self.push_events_branch_filter = nil
+      end
+
+      def validate_custom_webhook_template_numeric_safety
+        return if custom_webhook_template.blank?
+
+        if DANGEROUS_EXPONENT_RE.match?(custom_webhook_template)
+          errors.add(:custom_webhook_template, 'contains a numeric value that is too large')
+          return
+        end
+
+        sanitized = CUSTOM_TEMPLATE_INTERPOLATION_REGEX.replace_gsub(custom_webhook_template) { '0' }
+        parsed = Gitlab::Json.safe_parse(sanitized, parse_limits: TEMPLATE_PARSE_LIMITS)
+        return unless parsed
+
+        Gitlab::Json::LimitedEncoder.check_numbers!(parsed)
+      rescue Gitlab::Json::LimitedEncoder::NumberLimitExceeded
+        errors.add(:custom_webhook_template, 'contains a numeric value that is too large')
+      rescue JSON::ParserError
+        errors.add(:custom_webhook_template, 'exceeds allowed JSON complexity limits')
+      end
+
+      def validate_custom_header_name_length
+        return if custom_headers.blank?
+
+        custom_headers.each_key do |key|
+          next unless key.length > MAX_CUSTOM_HEADER_NAME_LENGTH
+
+          errors.add(
+            :custom_headers,
+            format(_('key is too long (maximum is %{max_length} characters)'),
+              max_length: MAX_CUSTOM_HEADER_NAME_LENGTH)
+          )
+          break
+        end
+      end
+    end
+  end
+end

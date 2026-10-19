@@ -1,0 +1,54 @@
+- note = local_assigns.fetch(:note, @note)
+- diff_limit = local_assigns.fetch(:diff_limit, nil)
+- target_url = local_assigns.fetch(:target_url, @target_url)
+- note_style = local_assigns.fetch(:note_style, "")
+- include_stylesheet_link = local_assigns.fetch(:include_stylesheet_link, true)
+- show_header = local_assigns.fetch(:show_header, true)
+
+- author = local_assigns.fetch(:author) { note.author }
+- discussion = local_assigns.fetch(:discussion) { note.discussion } if note.part_of_discussion?
+- project = local_assigns.fetch(:project, @project)
+
+- note_body, note_render_result = markdown_with_result(note_email_body(note, format: :html), pipeline: :email, author: author, current_user: @recipient, issuable_reference_expansion_enabled: true, no_header_anchors: true)
+- if note_render_result[:blob_embeds_rendered]
+  = content_for :head do
+    = blob_embed_stylesheet_link_tag
+
+- if note.noteable.respond_to?(:confidential?) && note.noteable.confidential?
+  %p{ style: "color: #3a383f; background-color: #fdf1dd; border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; font-size: 13px;" }
+    🔒 #{_('Confidential work item')}
+
+- if note.internal?
+  %p{ style: "color: #8c4a00; background-color: #fff8f0; border: 1px solid #e8a44a; border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; font-size: 13px;" }
+    = s_('Notify|Internal note')
+
+- if show_header
+  %p{ style: "color: #777777;" }
+    = succeed ':' do
+      = link_to author.name, user_url(author)
+      - if discussion.nil?
+        = link_to 'commented', target_url
+      - else
+        - if discussion.first_note == note
+          started a new
+        - else
+          commented on a
+
+        - if discussion&.diff_discussion?
+          discussion on #{link_to(discussion.file_path, target_url)}
+        - else
+          = link_to 'discussion', target_url
+
+- if discussion&.diff_discussion? && discussion.on_text? && project.show_diff_preview_in_email?
+  - if include_stylesheet_link
+    = content_for :head do
+      = universal_stylesheet_link_tag 'mailers/highlighted_diff_email'
+
+  %table.code.gl-mb-5
+    = render partial: "projects/diffs/email_line",
+      collection: discussion.truncated_diff_lines(diff_limit: diff_limit),
+      as: :line,
+      locals: { diff_file: discussion.diff_file }
+
+.md{ style: note_style }
+  = note_body

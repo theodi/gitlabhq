@@ -1,0 +1,197 @@
+#import "~/graphql_shared/client/page_info.typedefs.graphql"
+#import "~/kubernetes_dashboard/graphql/typedefs.graphql"
+
+type LocalEnvironment {
+  id: Int!
+  globalId: ID!
+  name: String!
+  folderPath: String
+  stopPath: String
+  deletePath: String
+  retryUrl: String
+  autoStopPath: String
+}
+
+input LocalEnvironmentInput {
+  id: Int!
+  globalId: ID!
+  name: String!
+  folderPath: String
+  stopPath: String
+  deletePath: String
+  retryUrl: String
+  autoStopPath: String
+}
+
+type NestedLocalEnvironment {
+  name: String!
+  size: Int!
+  latest: LocalEnvironment!
+}
+
+input NestedLocalEnvironmentInput {
+  name: String!
+  size: Int!
+  latest: LocalEnvironmentInput!
+}
+
+type LocalEnvironmentFolder {
+  environments: [LocalEnvironment!]!
+  availableCount: Int!
+  stoppedCount: Int!
+}
+
+type ReviewApp {
+  canSetupReviewApp: Boolean!
+  allClustersEmpty: Boolean!
+  reviewSnippet: String
+}
+
+type LocalEnvironmentApp {
+  stoppedCount: Int!
+  availableCount: Int!
+  environments: [NestedLocalEnvironment!]!
+  reviewApp: ReviewApp!
+}
+
+type LocalErrors {
+  errors: [String!]!
+}
+
+input LocalConfiguration {
+  basePath: String
+  baseOptions: JSON
+}
+
+type k8sNamespaceMetadata {
+  name: String
+}
+type LocalK8sNamespaces {
+  metadata: k8sNamespaceMetadata
+}
+
+type LocalFluxResourceConditions {
+  message: String
+  reason: String
+  status: String
+  type: String
+}
+
+type LocalFluxResourceInventoryItem {
+  id: String
+}
+
+type LocalFluxKustomization {
+  kind: String
+  metadata: LocalWorkloadMetadata
+  status: JSON
+  spec: JSON
+  conditions: [LocalFluxResourceConditions]
+  inventory: [LocalFluxResourceInventoryItem]
+}
+type LocalFluxHelmRelease {
+  kind: String
+  metadata: LocalWorkloadMetadata
+  status: JSON
+  spec: JSON
+  conditions: [LocalFluxResourceConditions]
+}
+
+type K8sResources {
+  k8sPods: K8sResource
+  k8sServices: K8sResource
+}
+type K8sResource {
+  connectionStatus: String
+}
+type LocalK8sDeploymentMetadata {
+  name: String
+}
+
+type LocalK8sDeployment {
+  metadata: LocalK8sDeploymentMetadata
+  status: JSON
+}
+
+type K8sLogsData {
+  logs: [String]
+  error: JSON
+}
+
+type K8sEvent {
+  lastTimestamp: String
+  eventTime: String
+  message: String
+  reason: String
+  source: JSON
+  type: String
+}
+
+type k8sWatcher {
+  watcher: JSON
+}
+
+extend type Query {
+  environmentApp(page: Int, scope: String): LocalEnvironmentApp
+  folder(environment: NestedLocalEnvironmentInput): LocalEnvironmentFolder
+  environmentToDelete: LocalEnvironment
+  pageInfo: LocalPageInfo
+  environmentToRollback: LocalEnvironment
+  environmentToStop: LocalEnvironment
+  isEnvironmentStopping(environment: LocalEnvironmentInput): Boolean
+  isLastDeployment(environment: LocalEnvironmentInput): Boolean
+  k8sPods(configuration: LocalConfiguration, namespace: String): [LocalWorkloadItem]
+  k8sServices(configuration: LocalConfiguration, namespace: String): [LocalWorkloadItem]
+  k8sConnection(configuration: LocalConfiguration): K8sResources
+  fluxKustomization(
+    configuration: LocalConfiguration
+    fluxResourcePath: String
+  ): LocalFluxKustomization
+  fluxHelmRelease(configuration: LocalConfiguration, fluxResourcePath: String): LocalFluxHelmRelease
+  k8sDeployments(configuration: LocalConfiguration, namespace: String): [LocalK8sDeployment]
+  k8sLogs(configuration: LocalConfiguration, namespace: String, podName: String): [K8sLogsData]
+  k8sEvents(
+    configuration: LocalConfiguration
+    namespace: String
+    involvedObjectName: String
+  ): [K8sEvent]
+  k8sPodLogsWatcher(
+    configuration: LocalConfiguration
+    namespace: String
+    podName: String
+    containerName: String
+  ): k8sWatcher
+}
+
+input ResourceTypeParam {
+  resourceType: String
+  connectionParams: JSON
+}
+
+extend type Mutation {
+  stopEnvironmentREST(environment: LocalEnvironmentInput, force: Boolean): LocalErrors
+  deleteEnvironment(environment: LocalEnvironmentInput): LocalErrors
+  rollbackEnvironment(environment: LocalEnvironmentInput): LocalErrors
+  cancelAutoStop(autoStopUrl: String!): LocalErrors
+  reconnectToCluster(
+    configuration: LocalConfiguration
+    namespace: String
+    resourceTypeParam: ResourceTypeParam
+  ): LocalErrors
+  setEnvironmentToDelete(environment: LocalEnvironmentInput): LocalErrors
+  setEnvironmentToRollback(environment: LocalEnvironmentInput): LocalErrors
+  setEnvironmentToStop(environment: LocalEnvironmentInput): LocalErrors
+  setEnvironmentToChangeCanary(environment: LocalEnvironmentInput, weight: Int): LocalErrors
+  action(environment: LocalEnvironmentInput): LocalErrors
+  deleteKubernetesPod(
+    configuration: LocalConfiguration
+    namespace: String
+    podName: String
+  ): LocalErrors
+  abortPodLogsStream(
+    configuration: LocalConfiguration
+    namespace: String
+    podName: String
+    containerName: String
+  ): LocalErrors
+}

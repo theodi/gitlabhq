@@ -1,0 +1,9 @@
+---
+name: create_pipeline_schedule
+description: Grants the ability to create pipeline schedules
+boundaries:
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - create_pipeline_schedule

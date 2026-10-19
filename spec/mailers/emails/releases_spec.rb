@@ -1,0 +1,73 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require 'email_spec'
+
+RSpec.describe Emails::Releases do
+  include EmailSpec::Matchers
+
+  let(:gitlab_sender_display_name) { Gitlab.config.gitlab.email_display_name }
+  let(:gitlab_sender) { Gitlab.config.gitlab.email_from }
+  let(:gitlab_sender_reply_to) { Gitlab.config.gitlab.email_reply_to }
+
+  describe '#new_release_email' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:project, freeze: false) { create(:project) }
+
+    let_it_be_with_reload(:release) { create(:release, project: project) }
+
+    subject { Notify.new_release_email(user.id, release) }
+
+    it_behaves_like 'an email sent from GitLab'
+    it_behaves_like 'an email with X-GitLab headers containing project details'
+
+    context 'when the release has a name' do
+      it 'shows the correct subject' do
+        release.name = 'beta-1'
+        expected_subject = "#{release.project.name} | New release: #{release.name} - #{release.tag}"
+        is_expected.to have_subject(expected_subject)
+      end
+    end
+
+    context 'when the release does not have a name' do
+      it 'shows the correct subject' do
+        release.name = nil
+        expected_subject = "#{release.project.name} | New release: #{release.tag}"
+
+        is_expected.to have_subject(expected_subject)
+      end
+    end
+
+    it 'contains a message linking the project', :aggregate_failures do
+      is_expected.to have_body_text('A new release for')
+      is_expected.to have_body_text(release.project.name)
+      is_expected.to have_body_text('was published.')
+    end
+
+    it 'links to the releases page', :aggregate_failures do
+      is_expected.to have_body_text('Releases page')
+      is_expected.to have_body_text(project_releases_url(release.project))
+    end
+
+    it 'contains the release assets', :aggregate_failures do
+      is_expected.to have_body_text('Assets')
+      release.sources.each do |source|
+        is_expected.to have_body_text("Download #{source.format}")
+      end
+    end
+
+    it 'contains the release notes' do
+      is_expected.to have_body_text('Release notes')
+      is_expected.to have_body_text(release.description)
+    end
+
+    context 'release notes with attachment' do
+      let(:upload_path) { '/uploads/e90decf88d8f96fe9e1389afc2e4a91f/test.jpg' }
+      let(:release) { create(:release, project: project, description: "Attachment: [Test file](#{upload_path})") }
+
+      it 'renders absolute links' do
+        is_expected.to have_body_text(%(<a href="#{root_url}-/project/#{project.id}#{upload_path}" data-canonical-src="#{upload_path}" data-link="true" class="gfm">Test file</a>))
+      end
+    end
+  end
+end

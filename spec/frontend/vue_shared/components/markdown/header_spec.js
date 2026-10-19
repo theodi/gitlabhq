@@ -1,0 +1,966 @@
+import $ from 'jquery';
+import { nextTick } from 'vue';
+import { GlToggle, GlButton } from '@gitlab/ui';
+import { createWrapper as createVueTestWrapper } from '@vue/test-utils';
+import { MARKDOWN_EVENT_SHOW } from '~/behaviors/preview_markdown';
+import HeaderComponent from '~/vue_shared/components/markdown/header.vue';
+import { FIND_AND_REPLACE_FOCUSABLE_SELECTOR } from '~/vue_shared/components/markdown/constants';
+import HeaderDividerComponent from '~/vue_shared/components/markdown/header_divider.vue';
+import CommentTemplatesModal from '~/vue_shared/components/markdown/comment_templates_modal.vue';
+import ToolbarButton from '~/vue_shared/components/markdown/toolbar_button.vue';
+import ToolbarTableButton from '~/content_editor/components/toolbar_table_button.vue';
+import DrawioToolbarButton from '~/vue_shared/components/markdown/drawio_toolbar_button.vue';
+import {
+  mountExtended,
+  shallowMountExtended,
+  extendedWrapper,
+} from 'helpers/vue_test_utils_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { useMockResizeObserver } from 'helpers/mock_dom_observer';
+import { updateText } from '~/lib/utils/text_markdown';
+import { setHTMLFixture, resetHTMLFixture } from 'helpers/fixtures';
+
+jest.mock('~/lib/utils/text_markdown', () => ({
+  ...jest.requireActual('~/lib/utils/text_markdown'),
+  updateText: jest.fn(),
+}));
+
+describe('Markdown field header component', () => {
+  let wrapper;
+
+  const createWrapper = ({ props = {}, provide = {}, attachTo = document.body } = {}) => {
+    wrapper = shallowMountExtended(HeaderComponent, {
+      attachTo,
+      propsData: {
+        previewMarkdown: false,
+        ...props,
+      },
+      stubs: { GlToggle, GlButton },
+      provide: {
+        glFeatures: {
+          findAndReplace: true,
+          ...provide?.glFeatures,
+        },
+        ...provide,
+      },
+    });
+  };
+
+  const findPreviewToggle = () => wrapper.findComponentByTestId('preview-toggle');
+  const findToolbar = () => wrapper.findByTestId('md-header-toolbar');
+  const findToolbarButtons = () => wrapper.findAllComponents(ToolbarButton);
+  const findDividers = () => wrapper.findAllComponents(HeaderDividerComponent);
+  const findToolbarButtonByProp = (prop, value) =>
+    findToolbarButtons()
+      .filter((button) => button.props(prop) === value)
+      .at(0);
+  const findDrawioToolbarButton = () => wrapper.findComponent(DrawioToolbarButton);
+  const findCommentTemplatesModal = () => wrapper.findComponent(CommentTemplatesModal);
+  const findToolbarTableButton = () => wrapper.findComponent(ToolbarTableButton);
+
+  beforeEach(() => {
+    window.gl = {
+      client: {
+        isMac: true,
+      },
+    };
+
+    createWrapper();
+  });
+
+  describe.each`
+    i     | buttonTitle                       | nonMacTitle                                | buttonType
+    ${0}  | ${'Insert suggestion'}            | ${'Insert suggestion'}                     | ${'codeSuggestion'}
+    ${1}  | ${'Add bold text (⌘B)'}           | ${'Add bold text (Ctrl+B)'}                | ${'bold'}
+    ${2}  | ${'Add italic text (⌘I)'}         | ${'Add italic text (Ctrl+I)'}              | ${'italic'}
+    ${3}  | ${'Add strikethrough text (⌘⇧X)'} | ${'Add strikethrough text (Ctrl+Shift+X)'} | ${'strike'}
+    ${4}  | ${'Insert a quote'}               | ${'Insert a quote'}                        | ${'blockquote'}
+    ${5}  | ${'Insert code'}                  | ${'Insert code'}                           | ${'code'}
+    ${6}  | ${'Add a link (⌘K)'}              | ${'Add a link (Ctrl+K)'}                   | ${'link'}
+    ${7}  | ${'Add a bullet list'}            | ${'Add a bullet list'}                     | ${'bulletList'}
+    ${8}  | ${'Add a numbered list'}          | ${'Add a numbered list'}                   | ${'orderedList'}
+    ${9}  | ${'Add a checklist'}              | ${'Add a checklist'}                       | ${'taskList'}
+    ${10} | ${'Indent line (⌘])'}             | ${'Indent line (Ctrl+])'}                  | ${'indent'}
+    ${11} | ${'Outdent line (⌘[)'}            | ${'Outdent line (Ctrl+[)'}                 | ${'outdent'}
+    ${12} | ${'Attach a file or image'}       | ${'Attach a file or image'}                | ${'upload'}
+    ${13} | ${'Go full screen'}               | ${'Go full screen'}                        | ${'fullScreen'}
+    ${14} | ${'Find and replace'}             | ${'Find and replace'}                      | ${null}
+  `('markdown header buttons', ({ i, buttonTitle, nonMacTitle, buttonType }) => {
+    it('renders the buttons with the correct title', () => {
+      expect(findToolbarButtons().wrappers[i].props('buttonTitle')).toBe(buttonTitle);
+    });
+
+    it('renders correct title on non MacOS systems', () => {
+      window.gl = { client: { isMac: false } };
+
+      createWrapper();
+
+      expect(findToolbarButtons().wrappers[i].props('buttonTitle')).toBe(nonMacTitle);
+    });
+
+    it('passes button type to `trackingProperty` prop', () => {
+      expect(findToolbarButtons().wrappers[i].props('trackingProperty')).toBe(buttonType);
+    });
+  });
+
+  describe('markdown header insert table button renders', () => {
+    it('on MacOS', () => {
+      expect(findToolbarTableButton()).toBeDefined();
+    });
+
+    it('on non MacOS system', () => {
+      window.gl = { client: { isMac: false } };
+
+      createWrapper();
+
+      expect(findToolbarTableButton()).toBeDefined();
+    });
+  });
+
+  it('does not render find and replace button when feature flag is turned off', () => {
+    createWrapper({ provide: { glFeatures: { findAndReplace: false } } });
+    expect(findToolbarButtons().wrappers[16]).toBeUndefined();
+  });
+
+  it('attach file button should have data-button-type attribute', () => {
+    const attachButton = findToolbarButtonByProp('icon', 'paperclip');
+
+    // Used for dropzone_input.js as `clickable` property
+    // to prevent triggers upload file by clicking on the edge of textarea
+    expect(attachButton.attributes('data-button-type')).toBe('attach-file');
+  });
+
+  it('hides markdown preview when previewMarkdown is false', () => {
+    expect(findPreviewToggle().text()).toBe('Preview');
+  });
+
+  it('shows markdown preview when previewMarkdown is true', () => {
+    createWrapper({ props: { previewMarkdown: true } });
+
+    expect(findPreviewToggle().text()).toBe('Continue editing');
+  });
+
+  it('hides toolbar in preview mode', () => {
+    createWrapper({ props: { previewMarkdown: true } });
+
+    // only one button is rendered in preview mode
+    expect(findToolbar().findAllComponents(GlButton)).toHaveLength(1);
+  });
+
+  it('hides divider in preview mode', () => {
+    createWrapper({ props: { previewMarkdown: true } });
+
+    expect(findDividers()).toHaveLength(0);
+  });
+
+  it('emits toggle markdown event when clicking preview toggle', async () => {
+    findPreviewToggle().vm.$emit('click', true);
+
+    await nextTick();
+    expect(wrapper.emitted('show-preview')).toHaveLength(1);
+
+    findPreviewToggle().vm.$emit('click', false);
+
+    await nextTick();
+    expect(wrapper.emitted('show-preview')).toHaveLength(2);
+  });
+
+  it('emits `hide-preview` when clicking preview toggle in preview mode', async () => {
+    createWrapper({ props: { previewMarkdown: true } });
+
+    findPreviewToggle().vm.$emit('click');
+
+    await nextTick();
+    expect(wrapper.emitted('hide-preview')).toHaveLength(1);
+  });
+
+  it('does not emit toggle markdown event when triggered from another form', () => {
+    const form = document.createElement('form');
+    form.innerHTML =
+      '<div class="js-vue-markdown-field"><textarea class="markdown-area"></textarea></div>';
+
+    document.dispatchEvent(new CustomEvent(MARKDOWN_EVENT_SHOW, { detail: { form } }));
+
+    expect(wrapper.emitted('show-preview')).toBeUndefined();
+    expect(wrapper.emitted('hide-preview')).toBeUndefined();
+  });
+
+  describe('markdown table button', () => {
+    beforeEach(() => {
+      setHTMLFixture(
+        '<div class="md-area"><textarea class="js-gfm-input"></textarea><div id="root"></div></div>',
+      );
+
+      wrapper = mountExtended(HeaderComponent, {
+        attachTo: '#root',
+        propsData: {
+          previewMarkdown: false,
+        },
+        stubs: { GlToggle },
+        provide: {
+          glFeatures: {
+            findAndReplace: true,
+          },
+        },
+      });
+    });
+
+    afterEach(() => {
+      resetHTMLFixture();
+    });
+
+    it('renders markdown table template', async () => {
+      const tableButton = findToolbarTableButton();
+
+      const button = tableButton.findComponent({ ref: 'table-1-1' });
+      await button.trigger('mouseover');
+      await button.trigger('click');
+
+      expect(updateText).toHaveBeenCalledWith({
+        textArea: document.querySelector('textarea'),
+        tag: '| header |\n| ------ |\n|        |',
+        cursorOffset: 0,
+        wrap: false,
+      });
+    });
+  });
+
+  describe('with multiple textareas (immersive mode regression)', () => {
+    let titleTextarea;
+    let contentTextarea;
+
+    beforeEach(() => {
+      // Simulate immersive mode where a title textarea appears before the content textarea
+      setHTMLFixture(`
+        <div class="md-area">
+          <textarea id="title" class="wiki-title"></textarea>
+          <textarea id="content" class="js-gfm-input"></textarea>
+          <div id="root"></div>
+        </div>
+      `);
+
+      titleTextarea = document.getElementById('title');
+      contentTextarea = document.getElementById('content');
+      titleTextarea.value = 'My Title';
+      contentTextarea.value = 'My content';
+
+      wrapper = mountExtended(HeaderComponent, {
+        attachTo: '#root',
+        propsData: {
+          previewMarkdown: false,
+        },
+        stubs: { GlToggle },
+        provide: {
+          glFeatures: {
+            findAndReplace: true,
+          },
+        },
+      });
+    });
+
+    afterEach(() => {
+      resetHTMLFixture();
+    });
+
+    it('targets the content textarea with js-gfm-input, not the first textarea', async () => {
+      const tableButton = findToolbarTableButton();
+      const button = tableButton.findComponent({ ref: 'table-1-1' });
+
+      await button.trigger('click');
+
+      expect(updateText).toHaveBeenCalledWith({
+        textArea: contentTextarea,
+        tag: expect.stringContaining('header'),
+        cursorOffset: 0,
+        wrap: false,
+      });
+
+      // Verify title textarea was not modified
+      expect(titleTextarea.value).toBe('My Title');
+    });
+
+    it('focuses the content textarea when "Skip to input" is clicked', async () => {
+      const skipButton = wrapper.findByTestId('skip-to-input');
+      const focusSpy = jest.spyOn(contentTextarea, 'focus');
+
+      await skipButton.trigger('click');
+
+      expect(focusSpy).toHaveBeenCalled();
+      expect(document.activeElement).toBe(contentTextarea);
+    });
+  });
+
+  it('renders suggestion template', () => {
+    expect(findToolbarButtonByProp('buttonTitle', 'Insert suggestion').props('tag')).toEqual(
+      '```suggestion:-0+0\n{text}\n```',
+    );
+  });
+
+  it('does not render suggestion button if `canSuggest` is set to false', () => {
+    createWrapper({
+      props: {
+        canSuggest: false,
+      },
+    });
+
+    expect(wrapper.find('.js-suggestion-btn').exists()).toBe(false);
+  });
+
+  it('hides markdown preview when previewMarkdown property is false', () => {
+    createWrapper({
+      props: {
+        enablePreview: false,
+      },
+    });
+
+    expect(wrapper.findByTestId('preview-toggle').exists()).toBe(false);
+  });
+
+  describe('restricted tool bar items', () => {
+    let defaultCount;
+
+    beforeEach(() => {
+      defaultCount = findToolbarButtons().length;
+    });
+
+    it('restricts items as per input', () => {
+      createWrapper({
+        props: {
+          restrictedToolBarItems: ['quote'],
+        },
+      });
+
+      expect(findToolbarButtons()).toHaveLength(defaultCount - 1);
+    });
+
+    it('shows all items by default', () => {
+      expect(findToolbarButtons()).toHaveLength(defaultCount);
+    });
+
+    it("doesn't render dividers when toolbar buttons past them are restricted", () => {
+      createWrapper({
+        props: {
+          enablePreview: false,
+          canSuggest: false,
+          restrictedToolBarItems: [
+            'quote',
+            'strikethrough',
+            'bullet-list',
+            'numbered-list',
+            'task-list',
+            'table',
+            'attach-file',
+            'full-screen',
+            'indent',
+            'outdent',
+          ],
+        },
+      });
+      expect(findDividers()).toHaveLength(2);
+    });
+  });
+
+  describe('when drawIOEnabled is true', () => {
+    const uploadsPath = '/uploads';
+    const markdownPreviewPath = '/preview';
+
+    beforeEach(() => {
+      createWrapper({
+        props: {
+          drawioEnabled: true,
+          uploadsPath,
+          markdownPreviewPath,
+        },
+      });
+    });
+
+    it('renders drawio toolbar button', () => {
+      expect(findDrawioToolbarButton().props()).toEqual({
+        uploadsPath,
+        markdownPreviewPath,
+      });
+    });
+  });
+
+  describe('when selecting a saved reply from the comment templates dropdown', () => {
+    beforeEach(() => {
+      setHTMLFixture(
+        '<div class="md-area"><textarea class="js-gfm-input"></textarea><div id="root"></div></div>',
+      );
+    });
+
+    afterEach(() => {
+      resetHTMLFixture();
+    });
+
+    it('updates the textarea with the saved comment', async () => {
+      createWrapper({
+        attachTo: '#root',
+        provide: {
+          newCommentTemplatePaths: ['some/path'],
+          glFeatures: {
+            savedReplies: true,
+          },
+        },
+      });
+
+      await findCommentTemplatesModal().vm.$emit('select', 'Some saved comment');
+
+      expect(updateText).toHaveBeenCalledWith({
+        textArea: document.querySelector('textarea'),
+        tag: 'Some saved comment',
+        cursorOffset: 0,
+        wrap: false,
+      });
+    });
+
+    it('does not show the saved replies button if newCommentTemplatePaths is not defined', () => {
+      createWrapper({
+        provide: {
+          glFeatures: {
+            savedReplies: true,
+          },
+        },
+      });
+
+      expect(findCommentTemplatesModal().exists()).toBe(false);
+    });
+  });
+
+  describe('find and replace', () => {
+    let form;
+    let formWrapper;
+
+    const createParentForm = () => {
+      form = document.createElement('form');
+      const field = document.createElement('div');
+      const root = document.createElement('div');
+      const textarea = document.createElement('textarea');
+      textarea.value = 'lorem ipsum dolor sit amet lorem <img src="prompt">';
+      textarea.classList.add('js-gfm-input');
+      field.classList = 'js-vue-markdown-field';
+      form.classList = 'md-area';
+      form.appendChild(textarea);
+      form.appendChild(field);
+      field.appendChild(root);
+      document.body.appendChild(form);
+      formWrapper = extendedWrapper(createVueTestWrapper(form));
+      return root;
+    };
+
+    const findFindInput = () => wrapper.findComponentByTestId('find-input');
+    const findReplaceInput = () => wrapper.findComponentByTestId('replace-input');
+    const findReplaceButton = () => wrapper.findByTestId('replace-button');
+    const findReplaceAllButton = () => wrapper.findByTestId('replace-all-button');
+    const findCloneDiv = () => formWrapper.findByTestId('find-and-replace-clone');
+    const findFindAndReplaceBar = () => wrapper.findByTestId('find-and-replace');
+    const findAndReplaceMatchCount = () => wrapper.findByTestId('find-and-replace-matches').text();
+    const findNextButton = () => wrapper.findComponentByTestId('find-next');
+    const findPrevButton = () => wrapper.findComponentByTestId('find-prev');
+    const findCloseButton = () => wrapper.findComponentByTestId('find-and-replace-close');
+    const findTextarea = () => document.querySelector('textarea');
+    const findToggleReplaceSectionButton = () =>
+      wrapper.findByTestId('replace-section-toggle').findComponent(GlButton);
+
+    const showFindAndReplace = async () => {
+      $(document).triggerHandler('markdown-editor:find-and-replace:show', [$('form')]);
+      await nextTick();
+    };
+
+    const closeFindAndReplace = async () => {
+      await findFindAndReplaceBar().trigger('keydown', { key: 'Escape' });
+    };
+
+    const triggerSearch = async (value) => {
+      findFindInput().vm.$emit('keyup', { target: { value } });
+      await nextTick();
+      await nextTick();
+    };
+
+    beforeEach(() => {
+      createWrapper({ attachTo: createParentForm() });
+    });
+
+    afterEach(() => {
+      form.parentNode.removeChild(form);
+    });
+
+    it('does not emit find and replace event when triggered from another form', () => {
+      $(document).triggerHandler('markdown-editor:find-and-replace:show', [
+        $(
+          '<form><div class="js-vue-markdown-field"><textarea class="markdown-area"></textarea></div></form>',
+        ),
+      ]);
+
+      expect(findFindAndReplaceBar().exists()).toBe(false);
+    });
+
+    it('displays find-and-replace bar when shortcut event is emitted', async () => {
+      await showFindAndReplace();
+      expect(findFindAndReplaceBar().exists()).toBe(true);
+    });
+
+    it('prevents submitting the form when Enter key is pressed', async () => {
+      await showFindAndReplace();
+      const preventDefault = jest.fn();
+      findFindInput().vm.$emit('keydown', { preventDefault, key: 'Enter' });
+      expect(preventDefault).toHaveBeenCalled();
+    });
+
+    it('closes the find-and-replace bar when Escape key is pressed', async () => {
+      await showFindAndReplace();
+      expect(findFindAndReplaceBar().exists()).toBe(true);
+      await closeFindAndReplace();
+      expect(findFindAndReplaceBar().exists()).toBe(false);
+    });
+
+    it('closes the bar when Escape is pressed from any element in the dialog', async () => {
+      await showFindAndReplace();
+      wrapper.findByTestId('find-next').element.focus();
+      await findFindAndReplaceBar().trigger('keydown', { key: 'Escape' });
+      expect(findFindAndReplaceBar().exists()).toBe(false);
+    });
+
+    it('returns focus to the textarea when the bar is closed', async () => {
+      await showFindAndReplace();
+      await closeFindAndReplace();
+
+      expect(document.activeElement).toBe(findTextarea());
+    });
+
+    describe('focus trap', () => {
+      beforeEach(async () => {
+        await showFindAndReplace();
+      });
+
+      const getFocusableElements = () =>
+        findFindAndReplaceBar().element.querySelectorAll(FIND_AND_REPLACE_FOCUSABLE_SELECTOR);
+
+      it('wraps Tab forward from the last focusable element to the first', async () => {
+        const focusable = getFocusableElements();
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        last.focus();
+        await findFindAndReplaceBar().trigger('keydown', { key: 'Tab' });
+
+        expect(document.activeElement).toBe(first);
+      });
+
+      it('wraps Shift+Tab backward from the first focusable element to the last', async () => {
+        const focusable = getFocusableElements();
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        first.focus();
+        await findFindAndReplaceBar().trigger('keydown', { key: 'Tab', shiftKey: true });
+
+        expect(document.activeElement).toBe(last);
+      });
+
+      it('does not interfere with Tab when focus is not at a boundary', () => {
+        const middle = wrapper.findByTestId('find-next').element;
+
+        middle.focus();
+        const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+        const preventDefault = jest.spyOn(event, 'preventDefault');
+        findFindAndReplaceBar().element.dispatchEvent(event);
+
+        expect(preventDefault).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('clone div geometry', () => {
+      const { trigger: triggerResize } = useMockResizeObserver();
+
+      const CONTAINER_BORDER = 2;
+      const CONTAINER_RECT = { top: 100, left: 50, width: 600, height: 500 };
+      const TEXTAREA_RECT = { top: 110, left: 60, width: 400, height: 300 };
+
+      const asDomRect = ({ top, left, width, height }) => ({
+        top,
+        left,
+        width,
+        height,
+        right: left + width,
+        bottom: top + height,
+        x: left,
+        y: top,
+        toJSON: () => ({}),
+      });
+
+      const setTextareaRect = (rect) => {
+        findTextarea().getBoundingClientRect = () => asDomRect(rect);
+      };
+
+      const cloneStyle = () => findCloneDiv().element.style;
+
+      const showHighlights = async () => {
+        await showFindAndReplace();
+        await triggerSearch('lorem');
+      };
+
+      beforeEach(() => {
+        form.style.border = `${CONTAINER_BORDER}px solid`;
+        form.getBoundingClientRect = () => asDomRect(CONTAINER_RECT);
+        setTextareaRect(TEXTAREA_RECT);
+
+        jest.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockReturnValue(form);
+      });
+
+      it('aligns the clone with the border box of the textarea', async () => {
+        await showHighlights();
+
+        expect(cloneStyle().top).toBe(
+          `${TEXTAREA_RECT.top - CONTAINER_RECT.top - CONTAINER_BORDER}px`,
+        );
+        expect(cloneStyle().left).toBe(
+          `${TEXTAREA_RECT.left - CONTAINER_RECT.left - CONTAINER_BORDER}px`,
+        );
+        expect(cloneStyle().width).toBe(`${TEXTAREA_RECT.width}px`);
+        expect(cloneStyle().height).toBe(`${TEXTAREA_RECT.height}px`);
+      });
+
+      it('sizes the clone as a border box without a margin of its own', async () => {
+        await showHighlights();
+
+        expect(cloneStyle().boxSizing).toBe('border-box');
+        expect(cloneStyle().margin).toBe('0px');
+      });
+
+      describe('when the textarea is resized', () => {
+        const RESIZED_RECT = { top: 130, left: 70, width: 250, height: 700 };
+
+        it('realigns and resizes the clone', async () => {
+          await showHighlights();
+
+          setTextareaRect(RESIZED_RECT);
+          triggerResize(findTextarea());
+
+          expect(cloneStyle().top).toBe(
+            `${RESIZED_RECT.top - CONTAINER_RECT.top - CONTAINER_BORDER}px`,
+          );
+          expect(cloneStyle().left).toBe(
+            `${RESIZED_RECT.left - CONTAINER_RECT.left - CONTAINER_BORDER}px`,
+          );
+          expect(cloneStyle().width).toBe(`${RESIZED_RECT.width}px`);
+          expect(cloneStyle().height).toBe(`${RESIZED_RECT.height}px`);
+        });
+
+        it('keeps the clone scrolled to the same offset as the textarea', async () => {
+          await showHighlights();
+
+          findTextarea().scrollTop = 40;
+          triggerResize(findTextarea());
+
+          expect(findCloneDiv().element.scrollTop).toBe(40);
+        });
+      });
+
+      describe('when the textarea is not rendered', () => {
+        it('leaves the geometry of the clone untouched', async () => {
+          await showHighlights();
+          const { top, left, width, height } = cloneStyle();
+
+          jest.spyOn(HTMLElement.prototype, 'offsetParent', 'get').mockReturnValue(null);
+          setTextareaRect({ top: 0, left: 0, width: 0, height: 0 });
+          triggerResize(findTextarea());
+
+          expect(cloneStyle()).toMatchObject({ top, left, width, height });
+        });
+      });
+
+      describe('when the find and replace bar is closed', () => {
+        it('stops responding to resizes of the textarea', async () => {
+          await showHighlights();
+          await closeFindAndReplace();
+
+          expect(() => triggerResize(findTextarea())).not.toThrow();
+        });
+      });
+    });
+
+    it('embeds a clone to div to color highlighted text', async () => {
+      await showFindAndReplace();
+      await triggerSearch('my-text');
+      expect(findCloneDiv().exists()).toBe(true);
+
+      // Check that closing the find and replace removes the clone div
+      await closeFindAndReplace();
+      expect(findCloneDiv().exists()).toBe(false);
+    });
+
+    it('highlights text when text matches', async () => {
+      await showFindAndReplace();
+
+      // Text that does not match
+      await triggerSearch('my-text');
+      expect(formWrapper.element.querySelector('.js-highlight')).toBe(null);
+
+      // Text that matches
+      await triggerSearch('lorem');
+      expect(formWrapper.element.querySelector('.js-highlight').innerHTML).toBe('lorem');
+    });
+
+    it('is not vulnerable to XSS', async () => {
+      await showFindAndReplace();
+      await triggerSearch('prompt');
+
+      expect(findCloneDiv().element.innerHTML).toBe(
+        'lorem ipsum dolor sit amet lorem &lt;img src="<span class="js-highlight js-highlight-active">prompt</span>"&gt;',
+      );
+    });
+
+    it('displays total number of matches', async () => {
+      await showFindAndReplace();
+
+      // Text that does not match
+      await triggerSearch('my-text');
+      expect(findAndReplaceMatchCount()).toBe('No results');
+
+      // Text that matches
+      await triggerSearch('lorem');
+      expect(findAndReplaceMatchCount()).toBe('1 of 2');
+    });
+
+    it('highlights first item when there is a match', async () => {
+      await showFindAndReplace();
+
+      // Text that matches
+      await triggerSearch('lorem');
+
+      expect(findCloneDiv().element.querySelectorAll('.js-highlight-active')).toHaveLength(1);
+    });
+
+    it('allows navigating between matches through next and prev buttons', async () => {
+      findTextarea().value = 'lorem ipsum LOREM sit lorem';
+
+      await showFindAndReplace();
+
+      // Text that matches
+      await triggerSearch('lorem');
+
+      const matches = findCloneDiv().element.querySelectorAll('.js-highlight');
+
+      expect(matches).toHaveLength(2);
+      expect(Array.from(matches[0].classList)).toEqual(['js-highlight', 'js-highlight-active']);
+      expect(Array.from(matches[1].classList)).toEqual(['js-highlight']);
+
+      findNextButton().vm.$emit('click');
+      await nextTick();
+
+      expect(Array.from(matches[0].classList)).toEqual(['js-highlight']);
+      expect(Array.from(matches[1].classList)).toEqual(['js-highlight', 'js-highlight-active']);
+
+      findPrevButton().vm.$emit('click');
+      await nextTick();
+
+      expect(Array.from(matches[0].classList)).toEqual(['js-highlight', 'js-highlight-active']);
+      expect(Array.from(matches[1].classList)).toEqual(['js-highlight']);
+
+      // Click again to navigate to last item
+      findPrevButton().vm.$emit('click');
+      await nextTick();
+
+      expect(Array.from(matches[0].classList)).toEqual(['js-highlight']);
+      expect(Array.from(matches[1].classList)).toEqual(['js-highlight', 'js-highlight-active']);
+
+      // Now that we're at last match, clicking next will bring us back to index 0
+      findNextButton().vm.$emit('click');
+      await nextTick();
+
+      expect(Array.from(matches[0].classList)).toEqual(['js-highlight', 'js-highlight-active']);
+      expect(Array.from(matches[1].classList)).toEqual(['js-highlight']);
+    });
+
+    it('is case sensitive', async () => {
+      await showFindAndReplace();
+
+      // Text that matches
+      await triggerSearch('LoReM');
+
+      const matches = findCloneDiv().element.querySelectorAll('.js-highlight');
+      expect(matches).toHaveLength(0);
+    });
+
+    it('should have a close button', async () => {
+      await showFindAndReplace();
+      expect(findFindInput().exists()).toBe(true);
+      findCloseButton().vm.$emit('click', true);
+      await nextTick();
+      expect(findFindInput().exists()).toBe(false);
+    });
+
+    it('hides replace section by default and enables it on click', async () => {
+      await showFindAndReplace();
+
+      expect(findToggleReplaceSectionButton().props('icon')).toBe('chevron-right');
+      expect(findToggleReplaceSectionButton().attributes('aria-expanded')).toBeUndefined();
+
+      expect(findReplaceInput().exists()).toBe(false);
+      expect(findReplaceButton().exists()).toBe(false);
+
+      findToggleReplaceSectionButton().vm.$emit('click');
+
+      await nextTick();
+
+      expect(findToggleReplaceSectionButton().props('icon')).toBe('chevron-down');
+      expect(findToggleReplaceSectionButton().attributes('aria-expanded')).toBe('true');
+
+      expect(findReplaceInput().exists()).toBe(true);
+      expect(findReplaceButton().exists()).toBe(true);
+    });
+
+    it('replaces the currently highlighted match when replace button is clicked', async () => {
+      // This doesn't exist in the jest environment so mock it
+      document.execCommand = jest.fn();
+
+      await showFindAndReplace();
+
+      // Show the replace form section
+      findToggleReplaceSectionButton().vm.$emit('click');
+
+      // We need this one as well as keyup won't set the value
+      findFindInput().vm.$emit('input', 'lorem');
+      await triggerSearch('lorem');
+
+      findReplaceInput().vm.$emit('input', 'LOREM');
+      await nextTick();
+
+      findReplaceButton().trigger('click');
+      await nextTick();
+      await nextTick();
+
+      expect(findTextarea().value).toBe('LOREM ipsum dolor sit amet lorem <img src="prompt">');
+      expect(findAndReplaceMatchCount()).toBe('1 of 1');
+    });
+
+    it('keeps the match index at the replaced position after replacing a single match', async () => {
+      // This doesn't exist in the jest environment so mock it
+      document.execCommand = jest.fn();
+
+      findTextarea().value = 'lorem ipsum lorem ipsum lorem';
+
+      await showFindAndReplace();
+
+      findToggleReplaceSectionButton().vm.$emit('click');
+
+      findFindInput().vm.$emit('input', 'lorem');
+      await triggerSearch('lorem');
+
+      // Navigate to the second match
+      findNextButton().vm.$emit('click');
+      await nextTick();
+      expect(findAndReplaceMatchCount()).toBe('2 of 3');
+
+      findReplaceInput().vm.$emit('input', 'LOREM');
+      findReplaceButton().trigger('click');
+
+      await waitForPromises();
+
+      // Should stay at position 2 (now pointing to the next remaining match),
+      // not reset back to 1.
+      expect(findTextarea().value).toBe('lorem ipsum LOREM ipsum lorem');
+      expect(findAndReplaceMatchCount()).toBe('2 of 2');
+    });
+
+    it('replaces all matches when replace all button is clicked', async () => {
+      // This doesn't exist in the jest environment so mock it
+      document.execCommand = jest.fn();
+
+      await showFindAndReplace();
+
+      // Show the replace section
+      findToggleReplaceSectionButton().vm.$emit('click');
+
+      // We need this one as well as keyup won't set the value
+      findFindInput().vm.$emit('input', 'lorem');
+      await triggerSearch('lorem');
+
+      findReplaceInput().vm.$emit('input', 'LOREM');
+      await nextTick();
+
+      findReplaceAllButton().trigger('click');
+      await nextTick();
+      await nextTick();
+
+      expect(findTextarea().value).toBe('LOREM ipsum dolor sit amet LOREM <img src="prompt">');
+      expect(findAndReplaceMatchCount()).toBe('No results');
+    });
+
+    describe('keyboard shortcuts', () => {
+      beforeEach(async () => {
+        await showFindAndReplace();
+        findFindInput().vm.$emit('input', 'lorem');
+        await triggerSearch('lorem');
+      });
+
+      it('navigates to next match when F3 is pressed', async () => {
+        const matches = findCloneDiv().element.querySelectorAll('.js-highlight');
+        expect(Array.from(matches[0].classList)).toContain('js-highlight-active');
+
+        findFindAndReplaceBar().trigger('keydown', { key: 'F3' });
+        await nextTick();
+
+        expect(Array.from(matches[0].classList)).not.toContain('js-highlight-active');
+        expect(Array.from(matches[1].classList)).toContain('js-highlight-active');
+      });
+
+      it('navigates to previous match when Shift+F3 is pressed', async () => {
+        // Move to second match first
+        findFindAndReplaceBar().trigger('keydown', { key: 'F3' });
+        await nextTick();
+
+        const matches = findCloneDiv().element.querySelectorAll('.js-highlight');
+        expect(Array.from(matches[1].classList)).toContain('js-highlight-active');
+
+        findFindAndReplaceBar().trigger('keydown', { key: 'F3', shiftKey: true });
+        await nextTick();
+
+        expect(Array.from(matches[0].classList)).toContain('js-highlight-active');
+      });
+
+      it('does not replace when Alt+R is pressed and replace section is closed', () => {
+        document.execCommand = jest.fn();
+        const originalValue = findTextarea().value;
+
+        findFindAndReplaceBar().trigger('keydown', { altKey: true, code: 'KeyR' });
+
+        expect(findTextarea().value).toBe(originalValue);
+      });
+
+      it('does not replace when Alt+A is pressed and replace section is closed', () => {
+        document.execCommand = jest.fn();
+        const originalValue = findTextarea().value;
+
+        findFindAndReplaceBar().trigger('keydown', { altKey: true, code: 'KeyA' });
+
+        expect(findTextarea().value).toBe(originalValue);
+      });
+
+      it('replaces next match when Alt+R is pressed and replace section is open', async () => {
+        document.execCommand = jest.fn();
+
+        findToggleReplaceSectionButton().vm.$emit('click');
+        await nextTick();
+
+        findReplaceInput().vm.$emit('input', 'LOREM');
+        findFindAndReplaceBar().trigger('keydown', { altKey: true, code: 'KeyR' });
+
+        expect(findTextarea().value).toBe('LOREM ipsum dolor sit amet lorem <img src="prompt">');
+      });
+
+      it('replaces all matches when Alt+A is pressed and replace section is open', async () => {
+        document.execCommand = jest.fn();
+
+        findToggleReplaceSectionButton().vm.$emit('click');
+        await nextTick();
+
+        findReplaceInput().vm.$emit('input', 'LOREM');
+        findFindAndReplaceBar().trigger('keydown', { altKey: true, code: 'KeyA' });
+
+        expect(findTextarea().value).toBe('LOREM ipsum dolor sit amet LOREM <img src="prompt">');
+      });
+    });
+  });
+});

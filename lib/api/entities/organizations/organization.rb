@@ -1,0 +1,25 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    module Organizations
+      class Organization < Grape::Entity
+        expose :id, documentation: { type: 'Integer', format: 'int64', example: 1 }
+        expose :uuid, documentation: { type: 'String', example: '0192f8c2-1a2b-7cde-89ab-0123456789ab' }
+        expose :name, documentation: { type: 'String', example: 'GitLab' }
+        expose :path, documentation: { type: 'String', example: 'gitlab' }
+        expose :description, documentation: { type: 'String', example: 'My description' }
+        expose :visibility, documentation: { type: 'String', example: 'public' }
+        expose :created_at, documentation: { type: 'DateTime', example: '2022-02-24T20:22:30.097Z' }
+        expose :updated_at, documentation: { type: 'DateTime', example: '2022-02-24T20:22:30.097Z' }
+        expose :web_url, documentation: { type: 'String', example: "https://example.com/o/gitlab/-/overview" }
+        expose(:avatar_url, documentation: {
+          type: 'String',
+          example: 'https://example.com/uploads/-/system/organizations/organization_detail/avatar/1/avatar.png'
+        }) do |organization, _options|
+          organization.avatar_url(only_path: false)
+        end
+      end
+    end
+  end
+end

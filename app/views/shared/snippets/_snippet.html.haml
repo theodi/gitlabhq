@@ -1,0 +1,35 @@
+- link_project = local_assigns.fetch(:link_project, false)
+- notes_count = @noteable_meta_data[snippet.id].user_notes_count
+
+%li.gl-py-4.gl-items-center.gl-justify-between.gl-border-b{ class: "@sm/panel:gl-flex", data: { testid: 'snippet-link', qa_snippet_title: snippet.title } }
+  - unless current_path?('users#snippets')
+    .gl-hidden{ class: "@sm/panel:gl-block @sm/panel:gl-mr-3" }
+      = render Pajamas::AvatarComponent.new(snippet.author, size: 32, alt: "")
+
+  .gl-justify-between.gl-items-center.gl-grow{ class: "@sm/panel:gl-flex" }
+    %div
+      = link_to_markdown_field(snippet, :title, gitlab_snippet_path(snippet), { class: "title gl-text-default gl-font-bold" }, strip_links: true)
+      - if snippet.hidden_due_to_author_ban?
+        %span{ class: 'has-tooltip gl-bg-orange-50 gl-text-orange-600 gl-rounded-base gl-p-2', title: s_("Snippets|This snippet is hidden because its author has been banned") }
+          = sprite_icon('spam', size: '16')
+
+      .snippet-info.gl-text-sm{ class: '!gl-text-subtle' }
+        .gl-inline{ data: { testid: 'snippet-created-at'} }
+          - created_at = time_ago_with_tooltip(snippet.created_at, placement: 'bottom')
+          - author = link_to(snippet.author_name, user_snippets_path(snippet.author), data: { user_id: snippet.author.id }, class: 'gl-text-default')
+          #{snippet.to_reference} &middot;
+          - if link_project && snippet.project_id?
+            - project_link = link_to(snippet.project.full_name, project_path(snippet.project))
+            = _('created %{timeAgo} by %{author} in %{project_link}').html_safe % { timeAgo: created_at, author: author, project_link: project_link }
+          - else
+            = _('created %{timeAgo} by %{author}').html_safe % { timeAgo: created_at, author: author }
+
+    .gl-flex.gl-items-center{ class: "@sm/panel:gl-items-end", data: { testid: 'snippet-file-count-content', qa_snippet_files: snippet.statistics&.file_count } }
+      .gl-flex.gl-gap-3.gl-items-center
+        - if notes_count > 0
+          = render Pajamas::ButtonComponent.new(category: :tertiary, size: :small, icon: 'comments', button_options: { class: 'has-tooltip !gl-bg-transparent !gl-p-0', title: _('Comments'), aria: { label: _('Comments') } }) do
+            = notes_count
+        = snippet_file_count(snippet)
+        = render Pajamas::ButtonComponent.new(category: :tertiary, size: :small, button_options: { class: 'has-tooltip !gl-bg-transparent !gl-p-0', title: _(visibility_level_label(snippet.visibility_level)), aria: { label: _(snippet.visibility_level) }, data: { testid: 'snippet-visibility-content', qa_snippet_visibility: visibility_level_label(snippet.visibility_level) } }) do
+          = visibility_level_icon(snippet.visibility_level)
+      .gl-whitespace-nowrap.gl-text-sm.gl-text-subtle= _('updated %{timeAgo}').html_safe % { timeAgo: time_ago_with_tooltip(snippet.updated_at, placement: 'bottom') }

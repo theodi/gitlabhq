@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "required" : [
+    "status",
+    "summary",
+    "suites"
+  ],
+  "properties": {
+    "status": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total": { "type": "integer" },
+        "resolved": { "type": "integer" },
+        "errored": { "type": "integer" },
+        "failed": { "type": "integer" }
+      },
+      "required": [
+        "total",
+        "resolved",
+        "errored",
+        "failed"
+      ]
+    },
+    "suites": { "type": "array", "items": { "$ref": "test_suite_comparer.json" } }
+  },
+  "additionalProperties": false
+}

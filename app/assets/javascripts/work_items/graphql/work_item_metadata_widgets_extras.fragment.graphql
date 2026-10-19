@@ -1,0 +1,9 @@
+fragment WorkItemMetadataWidgetsExtras on WorkItemWidget {
+  ... on WorkItemWidgetCurrentUserTodos {
+    currentUserTodos(state: pending) {
+      nodes {
+        id
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+- add_to_breadcrumbs _("Topics"), topics_explore_projects_path
+- breadcrumb_title @topic.title_or_name
+- page_title @topic.title_or_name, _("Topics")
+- max_topic_title_length = 50
+
+= render_dashboard_ultimate_trial(current_user)
+
+%div{ class: container_class }
+  = render ::Layouts::PageHeadingComponent.new(_('Topics')) do |c|
+    - c.with_heading do
+      .gl-flex.gl-items-center.gl-gap-3
+        = render Pajamas::AvatarComponent.new(@topic, size: 48, alt: '')
+        - if @topic.title_or_name.length > max_topic_title_length
+          %span.gl-str-truncated.has-tooltip{ title: @topic.title_or_name }
+            = truncate(@topic.title_or_name, length: max_topic_title_length)
+        - else
+          = @topic.title_or_name
+
+    - if @topic.description.present?
+      - c.with_description do
+        .md= markdown(@topic.description)
+
+    - c.with_actions do
+      = link_button_to nil, topic_explore_projects_path(@topic.name, rss_url_options), title: s_("Topics|Subscribe to the new projects feed"), aria: { label: s_("Topics|Subscribe to the new projects feed") }, class: 'gl-inline-flex has-tooltip', icon: 'rss'
+
+%div{ class: container_class }
+  .top-area.gl-p-5.gl-justify-between.gl-bg-subtle.gl-border-t
+    .nav-controls.gl-w-full
+      = render 'shared/projects/search_form', topic_view: true
+      = render 'filter'
+
+  .gl-flex.gl-flex-wrap.gl-gap-3.gl-justify-between.gl-items-center.gl-py-5.gl-w-full.gl-border-b.gl-border-b-subtle
+    %h2.gl-heading-4.gl-m-0= _('Projects with this topic')
+    = render 'shared/projects/dropdown', topic_view: true
+
+  = render 'projects', projects: @projects

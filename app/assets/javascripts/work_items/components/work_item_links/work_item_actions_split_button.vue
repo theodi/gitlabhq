@@ -1,0 +1,112 @@
+<script>
+import { GlDisclosureDropdown, GlPopover, GlLink, GlTooltipDirective } from '@gitlab/ui';
+import { helpPagePath } from '~/helpers/help_page_helper';
+import { s__, sprintf } from '~/locale';
+import HelpIcon from '~/vue_shared/components/help_icon/help_icon.vue';
+import { WORK_ITEM_TYPE_NAME_EPIC, WORK_ITEM_TYPE_NAME_OBJECTIVE } from '../../constants';
+import { lowercaseWorkItemType } from '../../utils';
+
+export default {
+  name: 'WorkItemActionsSplitButton',
+  components: {
+    GlDisclosureDropdown,
+    GlPopover,
+    GlLink,
+    HelpIcon,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  props: {
+    actions: {
+      type: Array,
+      required: true,
+    },
+  },
+  data() {
+    return {
+      isDropdownVisible: false,
+    };
+  },
+  computed: {
+    buttonTooltipText() {
+      return !this.isDropdownVisible ? this.$options.i18n.addItem : '';
+    },
+  },
+  methods: {
+    getPopoverText(workItemType) {
+      return sprintf(
+        s__(
+          'WorkItem|You cannot add another child %{workItemType}. You’ve reached the maximum number of nested levels.',
+        ),
+        { workItemType: lowercaseWorkItemType(workItemType) },
+      );
+    },
+    getPopoverLink(workItemType) {
+      switch (workItemType) {
+        case WORK_ITEM_TYPE_NAME_EPIC:
+          return helpPagePath('/user/work_items/child_items', {
+            anchor: 'work-with-multi-level-hierarchies',
+          });
+        case WORK_ITEM_TYPE_NAME_OBJECTIVE:
+          return helpPagePath('/user/okrs', { anchor: 'child-objectives-and-key-results' });
+        default:
+          return '';
+      }
+    },
+    onBeforeClose({ originalEvent: { target }, preventDefault }) {
+      // Prevents the disclosure dropdown from being closed
+      // if clicking on a link within the popover,
+      // because the dropdown treats it as a click outside and emits before-close event
+      // which prevents the user from visiting the link
+      if (target?.id === 'info-link') preventDefault();
+    },
+    showDropdown() {
+      this.isDropdownVisible = true;
+    },
+    hideDropdown() {
+      this.isDropdownVisible = false;
+    },
+  },
+  i18n: {
+    addItem: s__('WorkItem|Add item'),
+  },
+};
+</script>
+
+<template>
+  <gl-disclosure-dropdown
+    v-gl-tooltip.top="buttonTooltipText"
+    icon="plus"
+    size="small"
+    no-caret
+    placement="bottom-end"
+    :items="actions"
+    category="tertiary"
+    data-testid="add-tree-child-button"
+    @shown="showDropdown"
+    @hidden="hideDropdown"
+    @before-close="onBeforeClose"
+  >
+    <template #group-label="{ group }">
+      <span class="gl-flex gl-items-center gl-justify-between gl-pr-4">
+        {{ group.name }}
+        <gl-popover v-if="group.atDepthLimit" triggers="hover focus" target="info-icon">
+          {{ getPopoverText(group.name) }}
+          <gl-link id="info-link" :href="getPopoverLink(group.name)" target="_blank">
+            {{ __('Learn more.') }}
+          </gl-link>
+        </gl-popover>
+        <span
+          v-if="group.atDepthLimit"
+          id="info-icon"
+          tabindex="0"
+          :aria-label="__(`Help`)"
+          class="gl-leading-1"
+        >
+          <help-icon />
+        </span>
+      </span>
+    </template>
+  </gl-disclosure-dropdown>
+</template>

@@ -1,0 +1,98 @@
+# Default values for elastic-stack.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+elasticsearch:
+  enabled: true
+  # prefix elasticsearch resources with the name of the releases
+  # looks like we can't use {{ .Release.Name }}-elasticsearch
+  # https://github.com/helm/helm/issues/2133
+  clusterName: "elastic-stack-elasticsearch"
+
+filebeat:
+  enabled: true
+  extraVolumes:
+    - name: varlog
+      hostPath:
+        path: /var/log
+  extraVolumeMounts:
+    - name: varlog
+      mountPath: /var/log
+      readOnly: true
+  filebeatConfig:
+    filebeat.yml: |
+      output.file.enabled: false
+      setup.ilm.enabled: false
+      setup.template.name: 'filebeat'
+      setup.template.pattern: 'filebeat-*'
+      output.elasticsearch:
+        hosts: ["http://elastic-stack-elasticsearch-master:9200"]
+        index: "filebeat-%{[agent.version]}-%{+yyyy.MM.dd}"
+      filebeat.inputs:
+      - type: container
+        format: cri
+        paths:
+          - '/var/log/containers/*.log'
+        json.keys_under_root: true
+        json.ignore_decoding_error: true
+        processors:
+          - add_id:
+              target_field: tie_breaker_id
+          - add_cloud_metadata: ~
+          - add_kubernetes_metadata:
+              host: ${NODE_NAME}
+              matchers:
+              - logs_path:
+                  logs_path: "/var/log/containers/"
+          - decode_json_fields:
+              fields: ["message"]
+              when:
+                equals:
+                  kubernetes.container.namespace: "gitlab-managed-apps"
+                  kubernetes.container.name: "modsecurity-log"
+      - type: container
+        format: docker
+        paths:
+          - '/var/lib/docker/containers/*/*.log'
+        json.keys_under_root: true
+        json.ignore_decoding_error: true
+        processors:
+          - add_id:
+              target_field: tie_breaker_id
+          - add_cloud_metadata: ~
+          - add_kubernetes_metadata: ~
+kibana:
+  enabled: false
+  elasticsearchHosts: "http://elastic-stack-elasticsearch-master:9200"
+
+elasticsearch-curator:
+  enabled: true
+  configMaps:
+    config_yml: |-
+      ---
+      client:
+        hosts:
+          - elastic-stack-elasticsearch-master
+        port: 9200
+    action_file_yml: |-
+      ---
+      actions:
+        1:
+          action: delete_indices
+          description: >-
+            Delete indices older than 30 days (based on index name), for filebeat-
+            prefixed indices. Ignore the error if the filter does not result in an
+            actionable list of indices (ignore_empty_list) and exit cleanly.
+          options:
+            ignore_empty_list: True
+            allow_ilm_indices: True
+          filters:
+          - filtertype: pattern
+            kind: prefix
+            value: filebeat-
+          - filtertype: age
+            source: name
+            direction: older
+            timestring: '%Y.%m.%d'
+            unit: days
+            unit_count: 30

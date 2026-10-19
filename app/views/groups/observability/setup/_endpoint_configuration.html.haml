@@ -1,0 +1,16 @@
+-# Group-level endpoint configuration -- delegates to the shared partial
+-# with group-specific paths and variable lookup.
+- setting = local_assigns.fetch(:configuration_settings)
+- has_pipelines = local_assigns.fetch(:has_pipelines_since_setup, false)
+- group_owner_label = s_("Observability|group's")
+- header_title = s_('Observability|Application monitoring, built into GitLab')
+- header_description = s_("Observability|GitLab Observability is an application monitoring backend included with your project. It's an alternative to Datadog, New Relic, and Dynatrace. Instrument your application with OpenTelemetry to send traces, metrics, and logs, then explore them alongside your commits, pipelines, and issues.")
+
+= render 'shared/observability/setup/endpoint_configuration',
+  configuration_settings: setting,
+  has_pipelines_since_setup: has_pipelines,
+  explore_data_path: group_observability_path(setting.group, 'dashboard'),
+  ci_cd_settings_path: group_settings_ci_cd_path(setting.group),
+  export_variable: setting.gitlab_observability_export_variable,
+  ci_cd_owner_label: group_owner_label,
+  header_text: { title: header_title, description: header_description }

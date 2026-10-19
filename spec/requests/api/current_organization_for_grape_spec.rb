@@ -1,0 +1,487 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Current.organization resolution in Grape API', feature_category: :organization do
+  let_it_be(:default_organization) { create(:organization, :default) } # rubocop:disable Gitlab/RSpec/AvoidCreateDefaultOrganization -- needed for fallback
+  let_it_be(:user_organization) { create(:organization) }
+  let_it_be(:project_organization) { create(:organization) }
+  let_it_be(:header_organization) { create(:organization) }
+
+  let_it_be(:user) do
+    create(:user, organizations: [user_organization]).tap do |u|
+      u.update!(organization: user_organization)
+    end
+  end
+
+  let_it_be(:project) do
+    create(:project, :public, organization: project_organization).tap do |p|
+      p.add_developer(user)
+    end
+  end
+
+  def expect_logged_organization_id(expected_id)
+    expect(::API::API::LOG_FORMATTER).to receive(:call) do |_severity, _datetime, _, data|
+      expect(data.stringify_keys).to include('meta.organization_id' => expected_id)
+    end
+  end
+
+  def expect_no_logged_organization_id
+    expect(::API::API::LOG_FORMATTER).to receive(:call) do |_severity, _datetime, _, data|
+      expect(data.stringify_keys).not_to include('meta.organization_id')
+    end
+  end
+
+  describe 'X-GitLab-Organization-ID header' do
+    it 'takes precedence over the authenticated user' do
+      pat = create(:personal_access_token, user: user)
+
+      expect_logged_organization_id(header_organization.id)
+
+      get api("/projects/#{project.id}", personal_access_token: pat),
+        headers: { 'X-GitLab-Organization-ID' => header_organization.id.to_s }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Personal Access Token' do
+    let_it_be(:pat) { create(:personal_access_token, user: user) }
+
+    it 'resolves to the user organization (via private_token query param)' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api("/projects/#{project.id}", personal_access_token: pat)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'resolves to the user organization (via PRIVATE-TOKEN header)' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api("/projects/#{project.id}"), headers: { 'PRIVATE-TOKEN' => pat.token }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'resolves to the user organization (via Authorization: Bearer)' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api("/projects/#{project.id}"), headers: { 'Authorization' => "Bearer #{pat.token}" }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Group access token' do
+    let_it_be(:group) { create(:group, :public, organization: user_organization) }
+    let_it_be(:group_bot) do
+      create(:user, :project_bot, organizations: [user_organization]).tap do |bot|
+        bot.update!(organization: user_organization)
+        group.add_developer(bot)
+      end
+    end
+
+    let_it_be(:group_access_token) { create(:personal_access_token, user: group_bot) }
+
+    it 'resolves to the bot user organization' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api("/projects/#{project.id}", personal_access_token: group_access_token)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Project access token' do
+    let_it_be(:project_bot) do
+      create(:user, :project_bot, organizations: [project_organization]).tap do |bot|
+        bot.update!(organization: project_organization)
+        project.add_developer(bot)
+      end
+    end
+
+    let_it_be(:project_access_token) { create(:personal_access_token, user: project_bot) }
+
+    it 'resolves to the bot user organization' do
+      expect_logged_organization_id(project_organization.id)
+
+      get api("/projects/#{project.id}", personal_access_token: project_access_token)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'OAuth bearer token' do
+    let_it_be(:oauth_token) { create(:oauth_access_token, resource_owner: user, scopes: 'api') }
+
+    it 'resolves to the user organization (via Authorization header)' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api("/projects/#{project.id}"),
+        headers: { 'Authorization' => "Bearer #{oauth_token.plaintext_token}" }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'CI job token' do
+    let_it_be(:pipeline) { create(:ci_pipeline, project: project) }
+    let_it_be(:build) { create(:ci_build, :running, pipeline: pipeline, user: user) }
+
+    # /projects/:id/merge_requests is one of the few endpoints that opts in
+    # via route_setting :authentication, job_token_allowed: true.
+    let(:path) { "/projects/#{project.id}/merge_requests" }
+
+    it 'resolves to the job user organization (via job_token query param)' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api(path, job_token: build.token)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'resolves to the job user organization (via JOB-TOKEN header)' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api(path), headers: { 'JOB-TOKEN' => build.token }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Deploy token' do
+    # The PyPI simple index routes opt into deploy token authentication via
+    # route_setting :authentication, deploy_token_allowed: true.
+    it 'resolves to the organization of the project the token belongs to' do
+      deploy_token = create(:deploy_token, projects: [project], read_package_registry: true)
+
+      expect_logged_organization_id(project_organization.id)
+
+      get api("/projects/#{project.id}/packages/pypi/simple"),
+        headers: { 'Deploy-Token' => deploy_token.token }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'resolves to the organization of the group the token belongs to' do
+      group = create(:group, :public, organization: user_organization)
+      deploy_token = create(:deploy_token, :group, groups: [group], read_package_registry: true)
+
+      expect_logged_organization_id(user_organization.id)
+
+      get api("/groups/#{group.id}/-/packages/pypi/simple"),
+        headers: { 'Deploy-Token' => deploy_token.token }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'lets the X-GitLab-Organization-ID header take precedence over the token' do
+      deploy_token = create(:deploy_token, projects: [project], read_package_registry: true)
+
+      expect_logged_organization_id(header_organization.id)
+
+      get api("/projects/#{project.id}/packages/pypi/simple"),
+        headers: {
+          'Deploy-Token' => deploy_token.token,
+          'X-GitLab-Organization-ID' => header_organization.id.to_s
+        }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Runner authentication token' do
+    let_it_be(:runner_organization) { create(:organization) }
+    let_it_be(:runner_project) { create(:project, organization: runner_organization) }
+    let_it_be(:runner) { create(:ci_runner, :project, projects: [runner_project]) }
+
+    it 'is set by the runner endpoint to the runner organization (global hook opted out)' do
+      expect_logged_organization_id(runner_organization.id)
+
+      post api('/runners/verify'), params: { token: runner.token }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Runner registration token' do
+    let_it_be(:registration_organization) { create(:organization) }
+    # with_refind: the memoized instance caches a nil runners_token from
+    # before the trait enables registration on the namespace settings.
+    let_it_be_with_refind(:registration_group) do
+      create(:group, :allow_runner_registration_token, organization: registration_organization)
+    end
+
+    it 'resolves to the organization of the group the registration token belongs to' do
+      expect_logged_organization_id(registration_organization.id)
+
+      post api('/runners'), params: { token: registration_group.runners_token }
+
+      expect(response).to have_gitlab_http_status(:created)
+    end
+
+    it 'leaves Current.organization unassigned for the instance-wide registration token' do
+      stub_application_setting(runners_registration_token: 'abcdefg123456') # gitleaks:allow
+
+      expect_no_logged_organization_id
+
+      post api('/runners'), params: { token: 'abcdefg123456' } # gitleaks:allow
+
+      expect(response).to have_gitlab_http_status(:created)
+    end
+  end
+
+  describe 'CI job token on runner API endpoints' do
+    let_it_be(:job_organization) { create(:organization) }
+    let_it_be(:job_project) { create(:project, organization: job_organization, developers: user) }
+
+    let_it_be(:job_pipeline) { create(:ci_pipeline, project: job_project) }
+
+    let_it_be(:job) { create(:ci_build, :running, pipeline: job_pipeline, user: user) }
+
+    context 'when updating a job' do
+      subject(:update_job) do
+        put api("/jobs/#{job.id}"), params: { token: job.token, state: 'success' }
+      end
+
+      it 'resolves to the job project organization when updating a job' do
+        expect_logged_organization_id(job_organization.id)
+
+        update_job
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      context 'when an organization is already assigned' do
+        let(:other_organization) { create(:organization) }
+
+        before do
+          allow(::Current).to receive_messages(organization_assigned: true, organization: other_organization)
+        end
+
+        it 'does not overwrite the assigned organization' do
+          expect(::Current).not_to receive(:organization=)
+
+          update_job
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+    end
+
+    context 'when downloading artifacts via a dependent job' do
+      let_it_be(:artifacts_job) { create(:ci_build, :success, :artifacts, pipeline: job_pipeline, user: user) }
+      let_it_be(:dependent_job) { create(:ci_build, :running, pipeline: job_pipeline, user: user) }
+
+      subject(:download_artifacts) do
+        get api("/jobs/#{artifacts_job.id}/artifacts"), params: { token: dependent_job.token }
+      end
+
+      it 'resolves to the job project organization' do
+        expect_logged_organization_id(job_organization.id)
+
+        download_artifacts
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  describe 'Internal API (gitlab-shell shared secret)' do
+    include GitlabShellHelpers
+
+    let_it_be(:key) { create(:key, user: user) }
+
+    it 'resolves to the gitlab-shell actor user organization' do
+      expect_logged_organization_id(user_organization.id)
+
+      get api('/internal/discover'),
+        params: { key_id: key.id },
+        headers: gitlab_shell_internal_api_request_header
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Unauthenticated public endpoint' do
+    it 'falls back to the default organization on the project list' do
+      expect_logged_organization_id(default_organization.id)
+
+      get api('/projects')
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'falls back to the default organization on a single public project' do
+      expect_logged_organization_id(default_organization.id)
+
+      get api("/projects/#{project.id}")
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'falls back to the default organization on a single public group' do
+      public_group = create(:group, :public, organization: project_organization)
+
+      expect_logged_organization_id(default_organization.id)
+
+      get api("/groups/#{public_group.id}")
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'lets the X-GitLab-Organization-ID header override the fallback' do
+      expect_logged_organization_id(header_organization.id)
+
+      get api('/projects'),
+        headers: { 'X-GitLab-Organization-ID' => header_organization.id.to_s }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'Authentication still fails for invalid or wrong-type tokens' do
+    it 'rejects an invalid Personal Access Token with 401' do
+      get api('/personal_access_tokens'),
+        headers: { 'PRIVATE-TOKEN' => 'invalid-pat-token' }
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'rejects a revoked Personal Access Token with 401' do
+      revoked_pat = create(:personal_access_token, :revoked, user: user)
+
+      get api('/personal_access_tokens', personal_access_token: revoked_pat)
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'rejects an expired Personal Access Token with 401' do
+      expired_pat = create(:personal_access_token, :expired, user: user)
+
+      get api('/personal_access_tokens', personal_access_token: expired_pat)
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'rejects a deploy token on an endpoint that requires a user with 401' do
+      deploy_token = create(:deploy_token, projects: [project])
+
+      get api('/personal_access_tokens'),
+        headers: { 'Deploy-Token' => deploy_token.token }
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'rejects a job token on an endpoint that does not opt into job tokens with 401' do
+      pipeline = create(:ci_pipeline, project: project)
+      build = create(:ci_build, :running, pipeline: pipeline, user: user)
+
+      # /personal_access_tokens does not declare job_token_allowed.
+      get api('/personal_access_tokens', job_token: build.token)
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'rejects an invalid runner token with 403' do
+      post api('/runners/verify'), params: { token: 'invalid-runner-token' }
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+  end
+
+  describe 'Anonymous requests against protected endpoints' do
+    it 'returns 401 on GET /user without a token' do
+      get api('/user')
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'returns 401 on GET /personal_access_tokens without a token' do
+      get api('/personal_access_tokens')
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'returns 401 on POST /projects without a token' do
+      post api('/projects'), params: { name: 'test' }
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'returns 404 on GET /projects/:id for a private project without a token' do
+      private_project = create(:project, :private, organization: project_organization)
+
+      get api("/projects/#{private_project.id}")
+
+      # GitLab hides the existence of private projects from anonymous users.
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+  end
+
+  describe 'Cluster agent token (KAS)' do
+    let(:jwt_secret) { SecureRandom.random_bytes(Gitlab::Kas::SECRET_LENGTH) }
+    let(:jwt_token) do
+      JWT.encode(
+        { 'iss' => Gitlab::Kas::JWT_ISSUER, 'aud' => Gitlab::Kas::JWT_AUDIENCE },
+        Gitlab::Kas.secret,
+        'HS256'
+      )
+    end
+
+    before do
+      allow(Gitlab::Kas).to receive(:secret).and_return(jwt_secret)
+    end
+
+    it 'resolves to the organization of the agent project' do
+      agent_organization = create(:organization)
+      agent_project = create(:project, organization: agent_organization)
+      agent_token = create(:cluster_agent_token, agent: create(:cluster_agent, project: agent_project))
+
+      expect_logged_organization_id(agent_organization.id)
+
+      get api('/internal/kubernetes/verify_project_access'),
+        params: { id: agent_project.id },
+        headers: {
+          Gitlab::Kas::INTERNAL_API_KAS_REQUEST_HEADER => jwt_token,
+          Gitlab::Kas::INTERNAL_API_AGENT_REQUEST_HEADER => agent_token.token
+        }
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+
+    context 'when an organization is already assigned' do
+      let(:other_organization) { create(:organization) }
+      let(:agent_project) { create(:project) }
+      let(:agent_token) { create(:cluster_agent_token, agent: create(:cluster_agent, project: agent_project)) }
+
+      before do
+        allow(::Current).to receive_messages(organization_assigned: true, organization: other_organization)
+      end
+
+      it 'does not overwrite the assigned organization' do
+        expect(::Current).not_to receive(:organization=)
+
+        get api('/internal/kubernetes/verify_project_access'),
+          params: { id: agent_project.id },
+          headers: {
+            Gitlab::Kas::INTERNAL_API_KAS_REQUEST_HEADER => jwt_token,
+            Gitlab::Kas::INTERNAL_API_AGENT_REQUEST_HEADER => agent_token.token
+          }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+    end
+
+    it 'leaves Current.organization unassigned for the usage_metrics endpoint, which spans many agents' do
+      expect_no_logged_organization_id
+
+      post api('/internal/kubernetes/usage_metrics'),
+        params: { counters: { gitops_sync: 1 } },
+        headers: { Gitlab::Kas::INTERNAL_API_KAS_REQUEST_HEADER => jwt_token }
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+  end
+end

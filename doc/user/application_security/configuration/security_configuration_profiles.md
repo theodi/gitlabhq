@@ -1,0 +1,587 @@
+---
+stage: Security Governance
+group: Security Controls
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Managing security configuration profiles
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/19802) in GitLab 18.9 [with a feature flag](../../../administration/feature_flags/_index.md) named `security_scan_profiles_feature`. Enabled by default.
+- Secret detection profile [added](https://gitlab.com/groups/gitlab-org/-/epics/19903) in GitLab 18.10.
+- SAST profile [added](https://gitlab.com/groups/gitlab-org/-/epics/19951) in GitLab 18.11.
+- Dependency scanning profile [introduced](https://gitlab.com/groups/gitlab-org/-/epics/19952) in GitLab 19.0 [with a feature flag](../../../administration/feature_flags/_index.md) named `security_scan_profiles_dependency_scanning`. Enabled by default.
+- Dependency scanning auto-remediation profile [introduced](https://gitlab.com/groups/gitlab-org/-/work_items/604588) in GitLab 19.2 [with a feature flag](../../../administration/feature_flags/_index.md) named `security_remediation_profiles`. Enabled by default.
+- Secret detection scan profile configuration [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/606237) in GitLab 19.3 as an [experiment](../../../policy/development_stages_support.md), available through the GraphQL API only.
+- Feature flag `security_scan_profiles_feature` removed in GitLab 19.4.
+- Feature flag `security_remediation_profiles` removed in GitLab 19.4.
+- SAST scan profile configuration [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/617070) in GitLab 19.4 as an [experiment](../../../policy/development_stages_support.md), available through the GraphQL API only.
+- Dependency scanning scan profile configuration [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/629403) in GitLab 19.5 as an [experiment](../../../policy/development_stages_support.md#experiment), available through the GraphQL API only.
+- Custom profiles in the UI [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/624191) in GitLab 19.4 [with a feature flag](../../../administration/feature_flags/_index.md) named `custom_scan_profiles_ui`. Disabled by default.
+- [Enabled on GitLab.com, GitLab Self-Managed, and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/259962) in GitLab 19.5.
+
+{{< /history >}}
+
+Security configuration profiles are centralized settings that define how and when security scanners run across your projects.
+Use security configuration profiles to manage security scanners across your organization efficiently. A profile-based approach applies best practices with minimal manual setup.
+
+<i class="fa-youtube-play" aria-hidden="true"></i>
+For an overview, see [Introducing security configuration profiles](https://www.youtube.com/watch?v=QbnLGzTEqGI).
+
+When you apply a profile to a group, it is applied to each individual project within that group. Profiles are not attached to the group itself, and there is no inheritance between profiles or subgroups.
+
+Use [default profiles](#default-profiles) to enable pre-configured security scanning within minutes and with minimal configuration.
+
+## Configure security scanners
+
+To assess and manage your profiles, use the [security inventory](../security_inventory/_index.md#view-the-security-inventory) for your group as your central dashboard.
+
+### Review test coverage
+
+To view a high-level status (**Enabled**, **Not Enabled**, or **Failed**) of scanners in the group like SAST, dependency scanning, and secret detection:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Security inventory**.
+1. In the security inventory, review the **Test Coverage** column.
+
+### Change individual project coverage
+
+To configure a specific project:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Security inventory**.
+1. Next to the project, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}) and select **Manage tool coverage**.
+1. Turn individual scanners on or off.
+
+### Apply a profile to multiple projects
+
+To save time, you can apply security settings to multiple projects at once:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Security inventory**.
+1. Select multiple projects or an entire subgroup to apply the settings to.
+1. Select the **Bulk Action** dropdown and choose **Manage security scanners**.
+1. Choose **Apply default profile to all** to standardize your security posture across the selection.
+
+## Default profiles
+
+GitLab provides default profiles that are preconfigured scanner settings so you can enable security scanning with minimal configuration.
+
+### Secret detection profile
+
+When you apply the secret detection profile, you enable the recommended baseline protection for secrets across your entire development workflow. The profile activates the following scan triggers:
+
+- **Push protection**: Scans all Git push events and blocks pushes where secrets are detected, preventing secrets from ever entering your codebase.
+- **Merge Request Pipelines**: Automatically runs a scan each time new commits are pushed to a branch with an open merge request. Results are scoped to new vulnerabilities introduced by the merge request. Targets all branches.
+- **Branch Pipelines (default only)**: Runs automatically when changes are merged or pushed to the default branch, providing a complete picture of your default branch's secret detection posture. Targets all branches.
+
+### SAST profile
+
+When you apply the SAST profile, you enable static application security testing across your projects using the recommended configuration. The profile activates the following scan triggers:
+
+- **Merge Request Pipelines**: Automatically runs a SAST scan each time new commits are pushed to a branch with an open merge request. Results include only new vulnerabilities introduced by the merge request. Targets all branches.
+- **Branch Pipelines (default only)**: Runs automatically when changes are merged or pushed to the default branch, providing a complete picture of your default branch's SAST posture. Targets the default branch.
+
+### Dependency scanning profile
+
+When you enable the dependency scanning profile, your project's dependencies are scanned for known vulnerabilities using the recommended configuration. The profile activates the following scan triggers:
+
+- **Merge Request Pipelines**: Automatically runs a dependency scan each time new commits are pushed to a branch with an open merge request. Results include only new vulnerabilities introduced by the merge request. Targets all branches.
+- **Branch Pipelines (default only)**: Runs automatically when changes are merged or pushed to the default branch, providing a complete picture of your default branch's dependency vulnerability posture. Targets the default branch.
+
+### Dependency scanning auto-remediation profile
+
+{{< history >}}
+
+- Triage and remediation profile support for auto-remediation [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/253780) in GitLab 19.4 [with a feature flag](../../../administration/feature_flags/_index.md) named `triage_and_remediation_profile`. Enabled by default.
+
+{{< /history >}}
+
+When you enable the dependency scanning auto-remediation profile, GitLab opens merge requests
+that bump vulnerable dependencies to non-vulnerable versions. For more information about this
+capability, see [dependency scanning auto-remediation](../remediate/dependency_scanning_auto_remediation.md).
+
+Use the [GitLab CLI](../../../editor_extensions/gitlab_cli/_index.md) (`glab`) to attach the
+profile to a project:
+
+```shell
+glab security config enable dependency_scanning_post_processing -R <project-path>
+```
+
+For example, to enable the profile for `my-group/my-project`:
+
+```shell
+glab security config enable dependency_scanning_post_processing -R my-group/my-project
+```
+
+> [!note]
+> A project can have both profiles attached at the same time. In that situation, GitLab only uses the profile that
+> was applied first. The configuration for the other profile is ignored.
+
+### Automated triage and remediation profile
+
+{{< history >}}
+
+- Triage and remediation profile [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/622469) in GitLab 19.4 [with a feature flag](../../../administration/feature_flags/_index.md) named `triage_and_remediation_profile`. Enabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag. For more information, see the
+> history.
+
+Use the triage and remediation profile to turn on GitLab Duo triage flows and dependency scanning
+auto-remediation across projects and groups. The GitLab Duo flows use AI to assess and resolve
+findings. A profile can enable a flow on its own, or replace the equivalent per-project setting
+where one exists.
+
+GitLab provides three presets: Conservative, Standard, and Proactive. Each one applies a
+different configuration to every flow, so you can choose how broadly and how often the flows trigger
+and run. You can also create a profile and configure it yourself.
+
+Prerequisites:
+
+- Meet the [prerequisites for the GitLab Duo Agent Platform](../../duo_agent_platform/_index.md#prerequisites).
+- Turn on **Allow foundational flows** and each flow you want to use
+  [for the top-level group](../../duo_agent_platform/flows/foundational_flows/_index.md#turn-foundational-flows-on-or-off).
+  You turn flows on once for the top-level group, not for each project.
+
+> [!note]
+> Most of these flows are AI-powered and consume [GitLab Credits](../../../subscriptions/gitlab_credits.md).
+> Consumption scales with the number of findings.
+
+#### Presets
+
+| Flow | Conservative | Standard | Proactive |
+| ---- | ------------ | -------- | --------- |
+| SAST false positive detection | `high` and above, on demand | `medium` and above, automatic | `info` and above, automatic |
+| SAST vulnerability resolution | `high` and above, on demand, up to five open merge requests | `medium` and above, automatic, up to 15 open merge requests | `info` and above, automatic, no merge request limit |
+| Secret detection false positive detection | `high` and above, on demand | `medium` and above, automatic | `info` and above, automatic |
+| Dependency scanning auto-remediation | `high` and above, minor version upgrades, up to five open merge requests, skips fix versions from the last seven days | `high` and above, minor version upgrades, up to 10 open merge requests, skips fix versions from the last seven days | `info` and above, major version upgrades, up to 10 open merge requests, skips fix versions from the last seven days |
+
+To apply a preset, use the [GraphQL API](#apply-a-profile-with-the-graphql-api). The presets
+are named `Triage and Remediation (Conservative)`, `Triage and Remediation (Standard)`, and
+`Triage and Remediation (Proactive)`.
+
+#### Related topics
+
+- [Detect false positives automatically](../vulnerabilities/false_positive_detection.md)
+- [Agentic SAST Vulnerability Resolution](../vulnerabilities/agentic_vulnerability_resolution.md)
+- [Secret false positive detection](../vulnerabilities/secret_false_positive_detection.md)
+- [Dependency scanning auto-remediation](../remediate/dependency_scanning_auto_remediation.md)
+
+### Business logic profile
+
+{{< details >}}
+
+- Status: Experiment
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/257199) in GitLab 19.5 [with a feature flag](../../../administration/feature_flags/_index.md) named `bl_security_analyzer`. Disabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag. For more information, see the
+> history.
+
+The business logic profile uses an AI agent to find business logic vulnerabilities, like missing
+authorization, broken object-level access, and mass assignment. When you attach the profile to a project,
+the scan turns on for that project.
+
+When a merge request's head pipeline succeeds, the scan runs on the files the merge request adds or
+modifies. It does not run on default branch pipelines. To cover the default branch,
+[start a scan from GitLab Duo Chat](../business_logic_scanning/_index.md#start-a-scan-from-gitlab-duo-chat).
+If the project has no CI/CD pipelines, no merge request scans run.
+
+Turn on **Allow flow execution**, **Allow foundational flows**, and the **Business Logic Security Scan** flow
+[for the top-level group](../../duo_agent_platform/flows/foundational_flows/_index.md#turn-foundational-flows-on-or-off).
+
+For more information about prerequisites and what the scan finds, see
+[business logic scanning](../business_logic_scanning/_index.md).
+
+### View details about a profile
+
+To view technical details about the secret detection profile:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Security inventory**.
+1. Select the **Secret Detection** profile.
+1. Review the following information:
+   - **Analyzer type**: The type of profile (for example, **Secret Detection**, **SAST**, **Dependency Scanning**).
+   - **Scan triggers**: The triggers that the profile supports (for example, **Push Protection**, **Merge Request Pipelines**, **Branch Pipelines**).
+   - **Status**: Displays whether the profile is currently **Active** or **Disabled** for the current context using coverage status indicators.
+
+## Enable scanners with the Scanner Enablement Wizard
+
+To apply profiles to projects that lack scanner coverage, use the
+[scanner enablement wizard](scanner_enablement_wizard.md). The wizard identifies uncovered projects
+and lets you apply default or custom profiles across your group.
+
+## Apply a profile with the GraphQL API
+
+Use the GraphQL API to apply any security configuration profile, including profiles that
+are not yet available in the UI. You can run these queries with the
+[interactive GraphQL explorer](../../../api/graphql/_index.md#interactive-graphql-explorer),
+or by sending requests directly to the `/api/graphql` endpoint.
+
+For more information about running queries, authentication, and pagination, see
+[run GraphQL API queries and mutations](../../../api/graphql/getting_started.md).
+
+Prerequisites:
+
+- At least the Maintainer role or the Security Manager role for the associated projects or groups.
+
+To apply a security configuration profile:
+
+1. Get the available profiles and their IDs for a group:
+
+```graphql
+   query {
+     group(fullPath: "my-group") {
+       availableSecurityScanProfiles {
+         id
+         name
+         scanType
+       }
+     }
+   }
+```
+
+   A default profile that is not yet saved returns a virtual ID based on its scan type.
+   For example: `gid://gitlab/Security::ScanProfile/dependency_scanning_post_processing`.
+
+   For more information, see the
+   [`Group.availableSecurityScanProfiles` field](../../../api/graphql/reference/_index.md#groupavailablesecurityscanprofiles).
+
+1. Apply the profile with the `securityScanProfileAttach` mutation, using the virtual ID or
+   the real ID of the profile you want:
+
+```graphql
+   mutation {
+     securityScanProfileAttach(input: {
+       securityScanProfileId: "gid://gitlab/Security::ScanProfile/dependency_scanning_post_processing",
+       projectIds: ["gid://gitlab/Project/123"]
+     }) {
+       errors
+     }
+   }
+```
+
+   For more information, see the
+   [`securityScanProfileAttach` mutation](../../../api/graphql/reference/_index.md#mutationsecurityscanprofileattach).
+
+1. To choose where the profile applies, set one or both of these arguments:
+   - `projectIds`: Applies the profile to specific projects.
+   - `groupIds`: Applies the profile to all projects in one or more groups.
+
+   All specified projects and groups must belong to the same top-level group.
+   A single mutation accepts a maximum of 100 IDs, counting project and group IDs together.
+
+1. Check the `errors` field in the response to confirm that the profile was applied.
+
+## Customize a secret detection profile
+
+{{< details >}}
+
+- Status: Experiment
+
+{{< /details >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag. For more information, see the
+> history.
+
+Customize a secret detection profile to override the configuration the scanner uses when it runs.
+Each setting maps to an existing [secret detection CI/CD variable](../secret_detection/_index.md).
+
+You can customize a secret detection profile in the UI or with the GraphQL API.
+
+Prerequisites:
+
+- The Maintainer or Security Manager role for the associated group.
+
+To customize a secret detection profile in the UI:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Security configuration**.
+1. Select the **Scanners** tab.
+1. On the **Secret detection** row, select **Manage profiles**.
+1. Select **Create new profile**.
+1. Enter a **Name** and a **Description**.
+1. Under **Scan triggers**, turn on the triggers you want.
+1. Optional. Under **Advanced configuration**, add the settings to override.
+1. Select **Create profile**.
+
+To change a profile later, select it, then select the vertical ellipsis ({{< icon name="ellipsis_v" >}}) > **Edit**, then **Save changes**.
+Changes apply to every project that uses the profile.
+
+To customize a secret detection profile with the GraphQL API, use the `securityScanProfileCreate` or `securityScanProfileUpdate`
+mutation. Set a `configuration.secretDetection` object on the trigger you want to customize.
+
+| Field | UI setting | Description | Equivalent CI/CD variable |
+| ----- | ---------- | ----------- | ------------------------- |
+| `secureAnalyzersPrefix` | **Analyzer image registry** | Prefix for the container registry the analyzer image is pulled from. | `SECURE_ANALYZERS_PREFIX` |
+| `imageSuffix` | **Image variant** (Default, FIPS) | Suffix appended to the analyzer image name. Set to `DEFAULT` or `FIPS`. | `SECRET_DETECTION_IMAGE_SUFFIX` |
+| `historicScan` | **Historic scan** | Whether to scan the full Git history instead of only the current state. | `SECRET_DETECTION_HISTORIC_SCAN` |
+| `logOptions` | **Log options** | Options passed to `git log` to control the commit range scanned. | `SECRET_DETECTION_LOG_OPTIONS` |
+| `excludedPaths` | **Paths to exclude** | Glob paths excluded from the scan. | `SECRET_DETECTION_EXCLUDED_PATHS` |
+| `rulesetGitReference` | **Ruleset Git reference** | Git reference of the remote ruleset configuration to use. | `SECRET_DETECTION_RULESET_GIT_REFERENCE` |
+
+For example, to create a secret detection profile with a customized merge request pipeline trigger:
+
+```graphql
+mutation {
+  securityScanProfileCreate(input: {
+    namespaceId: "gid://gitlab/Group/123",
+    scanType: SECRET_DETECTION,
+    name: "Custom secret detection profile",
+    description: "Secret detection profile with a historic scan and path exclusions",
+    triggers: [
+      {
+        triggerType: MERGE_REQUEST_PIPELINE,
+        configuration: {
+          secretDetection: {
+            historicScan: true,
+            excludedPaths: ["spec/**/*", "test/**/*"]
+          }
+        }
+      }
+    ]
+  }) {
+    scanProfile {
+      id
+      name
+    }
+    errors
+  }
+}
+```
+
+By default, the `stripDefaults` argument removes trigger configuration values that match the
+defaults before storing the profile, so only your overrides persist.
+
+For the full list of arguments, see the
+[`securityScanProfileCreate` mutation](../../../api/graphql/reference/_index.md#mutationsecurityscanprofilecreate).
+
+## Customize a SAST profile
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag. For more information, see the
+> history.
+
+Customize a SAST profile to override the scanner configuration used when the profile runs.
+Each setting maps to an existing [SAST CI/CD variable](../sast/_index.md).
+
+This feature is an [experiment](../../../policy/development_stages_support.md). You can customize a SAST profile in the UI or with the GraphQL API.
+
+Prerequisites:
+
+- The Maintainer or Security Manager role for the associated group.
+
+To customize a SAST profile in the UI:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Security configuration**.
+1. Select the **Scanners** tab.
+1. On the **Static application security testing (SAST)** row, select **Manage profiles**.
+1. Select **Create new profile**.
+1. Enter a **Name** and a **Description**.
+1. Under **Scan triggers**, turn on the triggers you want.
+1. Optional. Under **Advanced configuration**, add the settings to override.
+1. Select **Create profile**.
+
+To change a profile later, select it, then select the vertical ellipsis ({{< icon name="ellipsis_v" >}}) > **Edit**, then **Save changes**.
+Changes apply to every project that uses the profile.
+
+To customize a SAST profile with the GraphQL API, use the `securityScanProfileCreate` or `securityScanProfileUpdate`
+mutation. Set a `configuration.sast` object on the trigger you want to customize.
+
+| Field | UI setting | Description | Equivalent CI/CD variable |
+| ----- | ---------- | ----------- | ------------------------- |
+| `secureAnalyzersPrefix` | **Analyzer image registry** | Prefix for the container registry the analyzer image is pulled from. | `SECURE_ANALYZERS_PREFIX` |
+| `imageSuffix` | **Image variant** (Default, FIPS) | Suffix appended to the analyzer image name. Set to `DEFAULT` or `FIPS`. | `SAST_IMAGE_SUFFIX` |
+| `analyzerImageTag` | **Analyzer image tag** | Tag of the analyzer image to use. Overrides the pinned image tag for all SAST analyzers, which can cause analyzer failures if a specific version is required. | `SAST_ANALYZER_IMAGE_TAG` |
+| `excludedAnalyzers` | **Analyzers to skip** | Analyzers excluded from the scan. | `SAST_EXCLUDED_ANALYZERS` |
+| `excludedPaths` | **Paths to exclude** | Glob paths excluded from the scan. | `SAST_EXCLUDED_PATHS` |
+| `advancedSastPartialScan` | **Advanced SAST partial scanning** (Enabled, Disabled) | Controls [diff-based scanning](../sast/gitlab_advanced_sast.md) for GitLab Advanced SAST. Set to `DIFFERENTIAL` or `DISABLED`. | `ADVANCED_SAST_PARTIAL_SCAN` |
+| `gitlabAdvSastIncrScan` | **Advanced SAST incremental scanning** | Whether [incremental scanning](../sast/gitlab_advanced_sast.md) is enabled for GitLab Advanced SAST. | `GITLAB_ADV_SAST_INCR_SCAN` |
+
+For example, to create a SAST profile with a customized merge request pipeline trigger:
+
+```graphql
+mutation {
+  securityScanProfileCreate(input: {
+    namespaceId: "gid://gitlab/Group/123",
+    scanType: SAST,
+    name: "Custom SAST profile",
+    description: "SAST profile with custom analyzer exclusions and Advanced SAST settings",
+    triggers: [
+      {
+        triggerType: MERGE_REQUEST_PIPELINE,
+        configuration: {
+          sast: {
+            excludedAnalyzers: ["eslint"],
+            excludedPaths: ["spec/**/*", "test/**/*"],
+            advancedSastPartialScan: DIFFERENTIAL,
+            gitlabAdvSastIncrScan: true
+          }
+        }
+      }
+    ]
+  }) {
+    scanProfile {
+      id
+      name
+    }
+    errors
+  }
+}
+```
+
+You can set only one configuration member per trigger, and it must match the profile's scan type.
+For a SAST profile, that member is `sast`.
+
+By default, the `stripDefaults` argument removes trigger configuration values that match the
+defaults before storing the profile, so only your overrides are persisted.
+
+For the full list of arguments, see the
+[`securityScanProfileCreate` mutation](../../../api/graphql/reference/_index.md#mutationsecurityscanprofilecreate).
+
+## Customize a dependency scanning profile
+
+{{< details >}}
+
+- Status: Experiment
+
+{{< /details >}}
+
+Customize a dependency scanning profile to override the configuration the scanner uses when it runs.
+Each setting maps to an existing [dependency scanning CI/CD variable](../dependency_scanning/dependency_scanning_sbom/_index.md).
+
+This feature is available through the GraphQL API only.
+
+Prerequisites:
+
+- The Security Manager, Maintainer, or Owner role for the top-level group.
+
+To customize a dependency scanning profile:
+
+- In the `securityScanProfileCreate` or `securityScanProfileUpdate` mutation, set a `configuration.dependencyScanning` object on each trigger you want to customize.
+
+The `dependencyScanning` object supports the following fields:
+
+| Field | Description | Equivalent CI/CD variable |
+| ----- | ----------- | ------------------------- |
+| `secureAnalyzersPrefix` | Prefix for the container registry the analyzer image is pulled from. | `SECURE_ANALYZERS_PREFIX` |
+| `additionalCaCertBundle` | CA certificate bundle to trust. The bundle is added to the system's certificates and used by other tools during the scan. | `ADDITIONAL_CA_CERT_BUNDLE` |
+| `secureLogLevel` | Logging level used by the analyzer. Set to `FATAL`, `ERROR`, `WARN`, `INFO`, or `DEBUG`. | `SECURE_LOG_LEVEL` |
+| `excludedPaths` | Glob paths excluded from the scan. | `DS_EXCLUDED_PATHS` |
+| `includeDevDependencies` | Whether to include development and test dependencies when a supported file is scanned. | `DS_INCLUDE_DEV_DEPENDENCIES` |
+| `maxDepth` | Directory depth the analyzer scans. A value of `-1` scans all directories. | `DS_MAX_DEPTH` |
+| `pipDependencyPath` | Path used to install Python packages for analysis. | `DS_PIP_DEPENDENCY_PATH` |
+| `staticReachabilityEnabled` | Whether [static reachability](../dependency_scanning/static_reachability.md) is enabled. | `DS_STATIC_REACHABILITY_ENABLED` |
+| `enableManifestFallback` | Whether to scan manifest files when no lockfile or dependency graph export is available. For more information, see [manifest fallback](../dependency_scanning/dependency_scanning_sbom/_index.md#manifest-fallback). | `DS_ENABLE_MANIFEST_FALLBACK` |
+| `pipcompileLockfileFileNamePattern` | Glob pattern that selects which pip-compile lockfiles to process. The pattern matches filenames only, not directory paths. | `DS_PIPCOMPILE_LOCKFILE_FILE_NAME_PATTERN` |
+| `pipManifestFileNamePattern` | Glob pattern that selects which pip manifest files to process for dependency resolution and manifest scanning. The pattern matches filenames only, not directory paths. | `DS_PIP_MANIFEST_FILE_NAME_PATTERN` |
+| `enableVulnerabilityScan` | Whether vulnerability analysis of generated SBOMs is enabled. | `DS_ENABLE_VULNERABILITY_SCAN` |
+| `apiTimeout` | Vulnerability scanning API request timeout in seconds, from 5 to 300. | `DS_API_TIMEOUT` |
+| `apiScanDownloadDelay` | Vulnerability scanning API initial delay in seconds before downloading scan results, from 1 to 120. | `DS_API_SCAN_DOWNLOAD_DELAY` |
+| `mavenDependencyPluginVersion` | Version of `maven-dependency-plugin` used during resolution. | `DS_MAVEN_DEPENDENCY_PLUGIN_VERSION` |
+| `mavenArgs` | Additional arguments passed to Maven during dependency resolution. | `MAVEN_ARGS` |
+| `gradleCliOpts` | Additional command-line options passed to Gradle during dependency resolution. | `GRADLE_CLI_OPTS` |
+| `disabledResolutionJobs` | List of resolution jobs to disable. Valid values are `MAVEN`, `GRADLE`, and `PYTHON`. By default, all available resolution jobs are enabled. | `DS_DISABLED_RESOLUTION_JOBS` |
+| `mavenResolutionImage` | Image used by the Maven dependency resolution job. | `DS_MAVEN_RESOLUTION_IMAGE` |
+| `gradleResolutionImage` | Image used by the Gradle dependency resolution job. | `DS_GRADLE_RESOLUTION_IMAGE` |
+| `pythonResolutionImage` | Image used by the Python dependency resolution job. | `DS_PYTHON_RESOLUTION_IMAGE` |
+| `pipIndexUrl` | Base URL of the Python Package Index. | `PIP_INDEX_URL` |
+| `pipExtraIndexUrl` | Additional URLs of Python package indexes to use in addition to `pipIndexUrl`. | `PIP_EXTRA_INDEX_URL` |
+| `searchIgnoreHiddenDirs` | Whether to ignore hidden directories when the analyzer searches for supported files. | `SEARCH_IGNORE_HIDDEN_DIRS` |
+
+For example, to create a dependency scanning profile with a customized merge request pipeline trigger:
+
+```graphql
+mutation {
+  securityScanProfileCreate(input: {
+    namespaceId: "gid://gitlab/Group/123",
+    scanType: DEPENDENCY_SCANNING,
+    name: "Custom dependency scanning profile",
+    description: "Dependency scanning profile that excludes development dependencies and scans all directories",
+    triggers: [
+      {
+        triggerType: MERGE_REQUEST_PIPELINE,
+        configuration: {
+          dependencyScanning: {
+            includeDevDependencies: false,
+            excludedPaths: ["spec/**/*", "test/**/*"],
+            maxDepth: -1,
+            staticReachabilityEnabled: true
+          }
+        }
+      }
+    ]
+  }) {
+    scanProfile {
+      id
+      name
+    }
+    errors
+  }
+}
+```
+
+You can set only one configuration member per trigger, and it must match the profile's scan type.
+For a dependency scanning profile, that member is `dependencyScanning`.
+
+For the full list of arguments, see the
+[`securityScanProfileCreate` mutation](../../../api/graphql/reference/_index.md#mutationsecurityscanprofilecreate).
+
+## Coverage status indicators
+
+The system uses visual cues in the inventory to indicate whether your projects are protected:
+
+- **Solid green bar**: The scanner is fully enabled and active.
+- **Gray/empty bar**: The scanner is not yet configured or enabled.
+- **Partial bar**: Some protection is active (for example, some triggers available in the profile are enabled, but others are not).
+- **Tooltips**: Hover over any coverage bar to see the last scan date for pipeline-based scans and specific pipeline status.
+
+Unlike pipeline-based scans, push protection does not have a last scan date because it runs in real time during the push process.
+
+## Troubleshooting
+
+When working with security configuration profiles, you might encounter the following issues.
+
+### No last scan date appears for push protection
+
+Push protection is event-based, not schedule-based. It intercepts secrets in real time during the `git push` process. Because it is active at the moment of the `push` command, there is no last scan date like you would expect with pipeline-based scanners.
+
+### Scanner status is active in the dashboard but not enabled in inventory tooltip
+
+This can occur when a project uses legacy settings while also being assigned a new profile.
+
+To resolve this issue:
+
+1. Check the **Security Configuration** page for the most accurate current profile state.
+1. If needed, remove legacy scanner configurations from your `.gitlab-ci.yml` file to rely solely on the profile-based configuration.
+
+> [!note]
+> The inventory tooltip is being refined to reflect the combined status of both legacy and profile-based settings.
+
+### Understanding legacy versus profile-based configuration
+
+If you're migrating from legacy scanner configuration to profile-based configuration, note the following differences:
+
+- Legacy configuration: Requires manual edits to your YAML files or individual project settings to enable scanners.
+- Profile-based configuration: Uses a centralized system where you can apply a default profile to multiple projects at once without modifying code.
+
+Profile-based configuration is recommended for easier management and greater consistency across projects.

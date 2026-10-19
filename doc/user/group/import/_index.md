@@ -1,0 +1,181 @@
+---
+stage: GitLab Dedicated
+group: Import
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Migrate GitLab data by using direct transfer
+description: "Use a direct connection to migrate GitLab data."
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can migrate GitLab groups:
+
+- From GitLab Self-Managed and GitLab Dedicated to GitLab.com
+- From GitLab.com to GitLab Self-Managed and GitLab Dedicated
+- From one GitLab Self-Managed or GitLab Dedicated instance to another
+- On the same GitLab instance
+
+Migration by direct transfer creates a new copy of the group. If you want to move groups instead of copying groups, you
+can [transfer groups](../manage.md#transfer-a-group) if the groups are in the same GitLab instance. Transferring groups
+instead of migrating them is a faster and more complete option.
+
+You can migrate groups in the following ways:
+
+- By direct transfer (recommended).
+- By [offline transfer](../../import/gitlab_instances/offline-transfer-migrations.md) through object storage, when the
+  destination instance has no direct network connection to the source instance.
+- By [uploading an export file](../../project/settings/import_export.md).
+
+If you migrate from GitLab.com to a GitLab Self-Managed or GitLab Dedicated instance, an administrator can create users on the instance.
+
+On GitLab Self-Managed and GitLab Dedicated, by default [migrating group items](migrated_items.md#migrated-group-items) is not available. To show the
+feature, an administrator can [enable it in application settings](../../../administration/settings/import_and_export_settings.md#enable-migration-of-groups-and-projects-by-direct-transfer).
+
+Migrating groups by direct transfer copies the groups from one place to another. You can:
+
+- Copy many groups at once.
+- In the GitLab UI, copy top-level groups to:
+  - Another top-level group.
+  - The subgroup of any existing top-level group.
+  - Another GitLab instance, including GitLab.com.
+- In the [group and project migration by direct transfer API](../../../api/bulk_imports.md),
+  copy top-level groups and subgroups to these locations.
+- Copy groups with or without projects.
+  Copying groups with projects is available by default on GitLab.com.
+
+Not all group and project resources are copied. See list of copied resources below:
+
+- [Migrated group items](migrated_items.md#migrated-group-items).
+- [Migrated project items](migrated_items.md#migrated-project-items).
+
+After you start a migration, you should not make any changes to imported groups or projects
+on the source instance because these changes might not be copied to the destination instance.
+
+You are encouraged to leave your feedback about migrating by direct transfer in
+[the feedback issue](https://gitlab.com/gitlab-org/gitlab/-/issues/284495).
+
+## Migrating specific projects
+
+Migrating groups by using direct transfer in the GitLab UI migrates all projects in the group. If you want to migrate only specific projects in the group by using direct
+transfer, you must use the [API](../../../api/bulk_imports.md#start-a-group-or-project-migration).
+
+## Known issues
+
+- Because of [issue 406685](https://gitlab.com/gitlab-org/gitlab/-/issues/406685), files with a filename longer than 255 characters are not migrated.
+- When mapped from the source instance, shared members are mapped as direct members on the destination unless those
+  memberships already exist on the destination. This means that importing a top-level group on the source instance to a
+  top-level group on the destination instance always maps to direct members in projects, even though the source top-level
+  group contains the necessary shared membership hierarchy details. Support for full mapping of shared memberships is
+  proposed in [issue 458345](https://gitlab.com/gitlab-org/gitlab/-/issues/458345).
+- In GitLab 17.0, 17.1, and 17.2, imported epics and work items are mapped
+  to the importing user rather than the original author.
+- Direct transfer does not support consolidating groups or projects from different source groups
+  into a single destination group. To consolidate groups or projects, either restructure on the
+  source instance before migration, or restructure on the destination instance [after placeholder user reassignment is complete](../../import/mapping/reassignment.md#completing-the-reassignment). See [issue 589460](https://gitlab.com/gitlab-org/gitlab/-/work_items/589460).
+- If the destination namespace belongs to a different organization than the source, and either
+  organization is marked as isolated, migrations by direct transfer fail. For more information, see
+  [issue 595674](https://gitlab.com/gitlab-org/gitlab/-/issues/595674).
+- Because direct transfer migrations map contributions to unbanned users on the destination instance,
+  banned user contributions that were hidden on the source instance appear again on the destination
+  instance. To hide these contributions, on the destination instance either:
+  - Ban the users.
+  - Remove the contributions.
+  For more information, see [issue 508111](https://gitlab.com/gitlab-org/gitlab/-/work_items/508111).
+- During migration, URL references in notes, issue descriptions, and merge request descriptions are only
+  rewritten for links that belong to the group or project being migrated (the `source_full_path`).
+  URLs that point to other groups or projects on the source instance are not rewritten, even if those groups
+  or projects are also migrated.
+  After migration, you can manually update any external links that still point to the source instance.
+
+## Estimating migration duration
+
+Estimating the duration of migration by direct transfer is difficult. The following factors affect migration duration:
+
+- Hardware and database resources available on the source and destination GitLab instances. More resources on the source and destination instances can result in
+  shorter migration duration because:
+  - The source instance receives API requests, and extracts and serializes the entities to export.
+  - The destination instance runs the jobs and creates the entities in its database.
+- Complexity and size of data to be exported. For example, imagine you want to migrate two different projects with 1000 merge requests each. The two projects can take
+  very different amounts of time to migrate if one of the projects has a lot more attachments, comments, and other items on the merge requests. Therefore, the number
+  of merge requests on a project is a poor predictor of how long a project will take to migrate.
+
+There's no exact formula to reliably estimate a migration. However, the average durations of each pipeline worker
+importing a project {{< glossary-tooltip text="relation" >}} can help you to get an idea of how long importing your
+projects might take.
+
+In this context, a relation is a type of exportable item.
+
+| Project resource type       | Average time (in seconds) to import a record |
+|:----------------------------|:---------------------------------------------|
+| Empty Project               | 2.4                                          |
+| Repository                  | 20                                           |
+| Project Attributes          | 1.5                                          |
+| Members                     | 0.2                                          |
+| Labels                      | 0.1                                          |
+| Milestones                  | 0.07                                         |
+| Badges                      | 0.1                                          |
+| Issues                      | 0.1                                          |
+| Snippets                    | 0.05                                         |
+| Snippet Repositories        | 0.5                                          |
+| Boards                      | 0.1                                          |
+| Merge Requests              | 1                                            |
+| External Pull Requests      | 0.5                                          |
+| Protected Branches          | 0.1                                          |
+| Project Feature             | 0.3                                          |
+| Container Expiration Policy | 0.3                                          |
+| Service Desk Setting        | 0.3                                          |
+| Releases                    | 0.1                                          |
+| CI Pipelines                | 0.2                                          |
+| Commit Notes                | 0.05                                         |
+| Wiki                        | 10                                           |
+| Uploads                     | 0.5                                          |
+| LFS Objects                 | 0.5                                          |
+| Design                      | 0.1                                          |
+| Auto DevOps                 | 0.1                                          |
+| Pipeline Schedules          | 0.5                                          |
+| References                  | 5                                            |
+| Push rule                   | 0.1                                          |
+
+Though it's difficult to predict migration duration, the following have been observed:
+
+- 100 projects (19.9k issues, 83k merge requests, 100k+ pipelines) migrated in 8 hours.
+- 1926 projects (22k issues, 160k merge requests, 1.1 million pipelines) migrated in 34 hours.
+
+If you are migrating large projects and encounter problems with timeouts or duration of the migration, try
+[reducing migration duration](troubleshooting.md#migrations-are-slow-or-timing-out).
+
+## Limits
+
+For default limits, see [migration by direct transfer limits](../../../administration/instance_limits.md#direct-transfer-migration).
+
+You can test the maximum relation size limit by using these APIs:
+
+- [Group relations export API](../../../api/group_relations_export.md).
+- [Project relations export API](../../../api/project_relations_export.md)
+
+If either API produces files larger than the maximum relation size limit, group migration by direct transfer fails.
+
+## Visibility rules
+
+After migration:
+
+- Private groups and projects stay private.
+- Internal groups and projects:
+  - Stay internal when copied into an internal group unless internal visibility is [restricted](../../../administration/settings/visibility_and_access_controls.md#restrict-visibility-levels). In that case, the groups and projects become private.
+  - Become private when copied into a private group.
+- Public groups and projects:
+  - Stay public when copied into a public group unless public visibility is [restricted](../../../administration/settings/visibility_and_access_controls.md#restrict-visibility-levels). In that case, the groups and projects become internal.
+  - Become internal when copied into an internal group unless internal visibility is [restricted](../../../administration/settings/visibility_and_access_controls.md#restrict-visibility-levels). In that case, the groups and projects become private.
+  - Become private when copied into a private group.
+
+If you used a private network on your source instance to hide content from the general public,
+make sure to have a similar setup on the destination instance, or to import into a private group.
+
+## Migration by direct transfer process
+
+See [Migrate groups and projects by using direct transfer](direct_transfer_migrations.md).

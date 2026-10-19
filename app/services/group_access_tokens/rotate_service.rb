@@ -1,0 +1,29 @@
+# frozen_string_literal: true
+
+module GroupAccessTokens
+  class RotateService < ::PersonalAccessTokens::RotateService
+    extend ::Gitlab::Utils::Override
+
+    alias_method :group, :resource
+
+    override :valid_access_level?
+    def valid_access_level?
+      return false unless current_user.can?(:manage_resource_access_tokens, group)
+
+      token_access_level = group.max_member_access_for_user(token.user).to_i
+      group.can_assign_role?(current_user, token_access_level)
+    end
+
+    private
+
+    override :track_rotation_event
+    def track_rotation_event
+      track_internal_event(
+        'rotate_grat',
+        user: target_user,
+        namespace: group,
+        project: nil
+      )
+    end
+  end
+end

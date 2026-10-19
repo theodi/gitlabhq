@@ -1,0 +1,30 @@
+# frozen_string_literal: true
+
+module Resolvers
+  module Organizations
+    class OrganizationsResolver < BaseResolver
+      type Types::Organizations::OrganizationType.connection_type, null: true
+
+      argument :search, GraphQL::Types::String,
+        required: false,
+        description: 'Search query, which can be for the organization name or a path.'
+
+      argument :exclude_default, GraphQL::Types::Boolean,
+        required: false,
+        default_value: false,
+        description: 'Excludes the Default organization from results.',
+        experiment: { milestone: '19.1' }
+
+      argument :state, Types::Organizations::OrganizationStateEnum,
+        required: false,
+        description: 'Filter organizations by state.',
+        experiment: { milestone: '19.1' }
+
+      def resolve(**args)
+        ::Organizations::OrganizationsFinder
+          .new(context[:current_user], args)
+          .execute
+      end
+    end
+  end
+end

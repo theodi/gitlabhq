@@ -1,0 +1,134 @@
+<script>
+import { GlStackedColumnChart } from '@gitlab/ui/src/charts';
+import { foldSeries } from '../bar_list/fold_tail';
+import {
+  buildStackedByDimension,
+  dimensionLabelFormatter,
+  tooltipContentFromParams,
+  tooltipTitleFromParams,
+  baseFieldKeyOf,
+  labelWithParameter,
+} from '../../../utils/chart_data';
+import { formatterFor, axisFormatterFor, dimensionAxisTitleFor } from '../../../utils/value_format';
+import FormattedTooltipContent from '../chart/formatted_tooltip_content.vue';
+
+const EMPTY_VALUE = '-';
+
+export default {
+  name: 'TwoDimensionsColumnChart',
+  components: { GlStackedColumnChart, FormattedTooltipContent },
+  inject: {
+    getVisualizationTitle: { default: () => () => '' },
+  },
+  props: {
+    data: {
+      required: true,
+      type: Object,
+    },
+    primaryDimension: {
+      required: true,
+      type: Object,
+    },
+    secondaryDimension: {
+      required: true,
+      type: Object,
+    },
+    metric: {
+      required: true,
+      type: Object,
+    },
+    maxSeries: {
+      required: false,
+      type: Number,
+      default: null,
+    },
+  },
+  computed: {
+    visualizationTitle() {
+      return this.getVisualizationTitle();
+    },
+    chart() {
+      return buildStackedByDimension({
+        nodes: this.data.nodes,
+        primaryDim: this.primaryDimension,
+        secondaryDim: this.secondaryDimension,
+        metric: this.metric,
+        // ECharts' empty marker; gitlab-ui's tooltip formatter throws on a bare null.
+        missingValue: EMPTY_VALUE,
+      });
+    },
+    // The biggest series by total keep their own segment; the rest fold into Other.
+    bars() {
+      if (!this.maxSeries) return this.chart.bars;
+
+      return foldSeries({
+        bars: this.chart.bars,
+        groups: this.chart.groups,
+        max: this.maxSeries,
+        missingValue: EMPTY_VALUE,
+      });
+    },
+    metricFormatter() {
+      return formatterFor(baseFieldKeyOf(this.metric));
+    },
+    metricAxisFormatter() {
+      return axisFormatterFor(baseFieldKeyOf(this.metric));
+    },
+    xAxisTitle() {
+      return dimensionAxisTitleFor(this.primaryDimension, this.secondaryDimension);
+    },
+    yAxisTitle() {
+      return labelWithParameter(this.metric);
+    },
+    categoryFormatter() {
+      return dimensionLabelFormatter(this.data.nodes, this.primaryDimension);
+    },
+    chartOptions() {
+      // GlStackedColumnChart declares yAxis as an array; pass an array so the
+      // formatter merges in. Axis uses the compact variant for counts; tooltip
+      // keeps full-digit formatting via metricFormatter below.
+      return {
+        xAxis: { axisLabel: { formatter: this.categoryFormatter } },
+        yAxis: [{ axisLabel: { formatter: this.metricAxisFormatter } }],
+      };
+    },
+  },
+  methods: {
+    formatTooltipValue(_label, value) {
+      return this.metricFormatter(value);
+    },
+    tooltipTitle(params) {
+      return tooltipTitleFromParams(params, {
+        formatLabel: this.categoryFormatter,
+        axisName: this.xAxisTitle,
+      });
+    },
+    contentFromParams(params) {
+      const seriesData = params?.seriesData?.filter(({ value }) => value !== EMPTY_VALUE);
+      return tooltipContentFromParams({ ...params, seriesData });
+    },
+  },
+};
+</script>
+
+<template>
+  <gl-stacked-column-chart
+    x-axis-type="category"
+    :x-axis-title="xAxisTitle"
+    :y-axis-title="yAxisTitle"
+    :group-by="chart.groups"
+    :bars="bars"
+    :option="chartOptions"
+    :accessible-title="visualizationTitle"
+    presentation="stacked"
+    :include-legend-avg-max="false"
+  >
+    <template #tooltip-title="{ params }">{{ tooltipTitle(params) }}</template>
+    <template #tooltip-content="{ params }">
+      <formatted-tooltip-content
+        :content="contentFromParams(params)"
+        :format-value="formatTooltipValue"
+      />
+    </template>
+  </gl-stacked-column-chart>
+</template>

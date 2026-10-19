@@ -1,0 +1,665 @@
+import { GlFilteredSearchToken } from '@gitlab/ui';
+import { mockLabels } from 'jest/sidebar/components/labels/labels_select_vue/mock_data';
+import Api from '~/api';
+import {
+  FILTERED_SEARCH_TERM,
+  OPERATORS_IS,
+  TOKEN_TITLE_AUTHOR,
+  TOKEN_TITLE_CONTACT,
+  TOKEN_TITLE_LABEL,
+  TOKEN_TITLE_MILESTONE,
+  TOKEN_TITLE_MY_REACTION,
+  TOKEN_TITLE_ORGANIZATION,
+  TOKEN_TITLE_RELEASE,
+  TOKEN_TITLE_SOURCE_BRANCH,
+  TOKEN_TITLE_GROUP,
+  TOKEN_TITLE_PROJECT,
+  TOKEN_TYPE_AUTHOR,
+  TOKEN_TYPE_CONFIDENTIAL,
+  TOKEN_TYPE_CONTACT,
+  TOKEN_TYPE_LABEL,
+  TOKEN_TYPE_MILESTONE,
+  TOKEN_TYPE_MY_REACTION,
+  TOKEN_TYPE_ORGANIZATION,
+  TOKEN_TYPE_RELEASE,
+  TOKEN_TYPE_SOURCE_BRANCH,
+  TOKEN_TYPE_PROJECT,
+  TOKEN_TYPE_GROUP,
+} from '~/vue_shared/components/filtered_search_bar/constants';
+import { EMOJI_THUMBS_UP } from '~/emoji/constants';
+import UserToken from '~/vue_shared/components/filtered_search_bar/tokens/user_token.vue';
+import BranchToken from '~/vue_shared/components/filtered_search_bar/tokens/branch_token.vue';
+import EmojiToken from '~/vue_shared/components/filtered_search_bar/tokens/emoji_token.vue';
+import LabelToken from '~/vue_shared/components/filtered_search_bar/tokens/label_token.vue';
+import MilestoneToken from '~/vue_shared/components/filtered_search_bar/tokens/milestone_token.vue';
+import ReleaseToken from '~/vue_shared/components/filtered_search_bar/tokens/release_token.vue';
+import ProjectToken from '~/vue_shared/components/filtered_search_bar/tokens/project_token.vue';
+import GroupToken from '~/vue_shared/components/filtered_search_bar/tokens/group_token.vue';
+import CrmContactToken from '~/vue_shared/components/filtered_search_bar/tokens/crm_contact_token.vue';
+import CrmOrganizationToken from '~/vue_shared/components/filtered_search_bar/tokens/crm_organization_token.vue';
+
+export const mockUser1 = {
+  id: 1,
+  name: 'Administrator',
+  username: 'root',
+  state: 'active',
+  avatar_url: 'https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon',
+  web_url: 'http://0.0.0.0:3000/root',
+};
+
+export const mockUser2 = {
+  id: 2,
+  name: 'Claudio Beer',
+  username: 'ericka_terry',
+  state: 'active',
+  avatar_url: 'https://www.gravatar.com/avatar/12a89d115b5a398d5082897ebbcba9c2?s=80&d=identicon',
+  web_url: 'http://0.0.0.0:3000/ericka_terry',
+};
+
+const mockUser3 = {
+  id: 6,
+  name: 'Shizue Hartmann',
+  username: 'junita.weimann',
+  state: 'active',
+  avatar_url: 'https://www.gravatar.com/avatar/9da1abb41b1d4c9c9e81030b71ea61a0?s=80&d=identicon',
+  web_url: 'http://0.0.0.0:3000/junita.weimann',
+};
+
+export const mockUsers = [mockUser1, mockUser2, mockUser3];
+
+export const mockBranches = [{ name: 'Main' }, { name: 'v1.x' }, { name: 'my-Branch' }];
+
+export const mockRegularMilestone = {
+  id: 1,
+  name: '4.0',
+  title: '4.0',
+};
+
+const mockEscapedMilestone = {
+  id: 3,
+  name: '5.0 RC1',
+  title: '5.0 RC1',
+};
+
+export const mockDuplicateMilestones = [
+  {
+    id: 99,
+    name: '99.0',
+    title: '99.0',
+  },
+  {
+    id: 100,
+    name: '99.0',
+    title: '99.0',
+  },
+];
+
+export const mockMilestones = [
+  {
+    id: 2,
+    name: '5.0',
+    title: '5.0',
+  },
+  mockRegularMilestone,
+  mockEscapedMilestone,
+];
+
+export const projectMilestonesResponse = {
+  data: {
+    project: {
+      id: 'gid://gitlab/Project/1',
+      attributes: {
+        nodes: mockMilestones,
+        __typename: 'MilestoneConnection',
+      },
+      __typename: 'Project',
+    },
+  },
+};
+
+export const projectUsersResponse = {
+  data: {
+    project: {
+      id: 'gid://gitlab/Project/1',
+      attributes: {
+        nodes: mockUsers,
+        __typename: 'UserConnection',
+      },
+      __typename: 'Project',
+    },
+  },
+};
+
+export const mockCrmContacts = [
+  {
+    __typename: 'CustomerRelationsContact',
+    id: 'gid://gitlab/CustomerRelations::Contact/1',
+    firstName: 'John',
+    lastName: 'Smith',
+    email: 'john@smith.com',
+  },
+  {
+    __typename: 'CustomerRelationsContact',
+    id: 'gid://gitlab/CustomerRelations::Contact/2',
+    firstName: 'Andy',
+    lastName: 'Green',
+    email: 'andy@green.net',
+  },
+];
+
+export const mockCrmOrganizations = [
+  {
+    __typename: 'CustomerRelationsOrganization',
+    id: 'gid://gitlab/CustomerRelations::Organization/1',
+    name: 'First Org Ltd.',
+  },
+  {
+    __typename: 'CustomerRelationsOrganization',
+    id: 'gid://gitlab/CustomerRelations::Organization/2',
+    name: 'Organizer S.p.a.',
+  },
+];
+
+export const mockProjectCrmContactsQueryResponse = {
+  data: {
+    project: {
+      __typename: 'Project',
+      id: 1,
+      group: {
+        __typename: 'Group',
+        id: 1,
+        contacts: {
+          __typename: 'CustomerRelationsContactConnection',
+          nodes: [
+            {
+              ...mockCrmContacts[0],
+            },
+            {
+              ...mockCrmContacts[1],
+            },
+          ],
+        },
+      },
+    },
+  },
+};
+
+export const mockProjectCrmOrganizationsQueryResponse = {
+  data: {
+    project: {
+      __typename: 'Project',
+      id: 1,
+      group: {
+        __typename: 'Group',
+        id: 1,
+        organizations: {
+          __typename: 'CustomerRelationsOrganizationConnection',
+          nodes: [
+            {
+              ...mockCrmOrganizations[0],
+            },
+            {
+              ...mockCrmOrganizations[1],
+            },
+          ],
+        },
+      },
+    },
+  },
+};
+
+export const mockGroupCrmContactsQueryResponse = {
+  data: {
+    group: {
+      __typename: 'Group',
+      id: 1,
+      contacts: {
+        __typename: 'CustomerRelationsContactConnection',
+        nodes: [
+          {
+            __typename: 'CustomerRelationsContact',
+            ...mockCrmContacts[0],
+          },
+          {
+            __typename: 'CustomerRelationsContact',
+            ...mockCrmContacts[1],
+          },
+        ],
+      },
+    },
+  },
+};
+
+export const mockGroupCrmOrganizationsQueryResponse = {
+  data: {
+    group: {
+      __typename: 'Group',
+      id: 1,
+      organizations: {
+        __typename: 'CustomerRelationsOrganizationConnection',
+        nodes: [
+          {
+            __typename: 'CustomerRelationsOrganization',
+            ...mockCrmOrganizations[0],
+          },
+          {
+            __typename: 'CustomerRelationsOrganization',
+            ...mockCrmOrganizations[1],
+          },
+        ],
+      },
+    },
+  },
+};
+
+export const mockGroupParentWorkItemsQueryResponse = {
+  data: {
+    group: {
+      id: 'gid://gitlab/Group/142',
+      workItems: {
+        nodes: [
+          {
+            id: 'gid://gitlab/WorkItem/1424',
+            iid: '1',
+            title: 'Hire trainers for mammal animals',
+            __typename: 'WorkItem',
+          },
+          {
+            id: 'gid://gitlab/WorkItem/1423',
+            iid: '1',
+            title: 'Hire trainers for avian animals',
+            __typename: 'WorkItem',
+          },
+          {
+            id: 'gid://gitlab/WorkItem/1421',
+            iid: '2',
+            title: 'Hire trainer for land animals',
+            __typename: 'WorkItem',
+          },
+          {
+            id: 'gid://gitlab/WorkItem/1420',
+            iid: '2',
+            title: 'Hire trainers for animals',
+            __typename: 'WorkItem',
+          },
+        ],
+        __typename: 'WorkItemConnection',
+      },
+      __typename: 'Group',
+    },
+  },
+};
+
+export const mockProjectParentWorkItemsQueryResponse = {
+  data: {
+    group: {
+      id: 'gid://gitlab/Group/143',
+      workItems: {
+        nodes: [
+          {
+            id: 'gid://gitlab/WorkItem/2881',
+            iid: '5',
+            title: 'Create a grassland for land animals',
+            __typename: 'WorkItem',
+          },
+          {
+            id: 'gid://gitlab/WorkItem/1564',
+            iid: '4',
+            title: 'Research land types',
+            __typename: 'WorkItem',
+          },
+          {
+            id: 'gid://gitlab/WorkItem/1525',
+            iid: '8',
+            title: 'Dummy epic work item 1',
+            __typename: 'WorkItem',
+          },
+        ],
+        __typename: 'WorkItemConnection',
+      },
+      __typename: 'Group',
+    },
+    project: {
+      id: 'gid://gitlab/Project/41',
+      workItems: {
+        nodes: [
+          {
+            id: 'gid://gitlab/WorkItem/2883',
+            iid: '1',
+            title: 'Order different types of grass',
+            __typename: 'WorkItem',
+          },
+        ],
+        __typename: 'WorkItemConnection',
+      },
+      __typename: 'Project',
+    },
+  },
+};
+
+export const allowedParentTypesResponse = {
+  data: {
+    namespace: {
+      id: 'gid://gitlab/Group/1',
+      workItemTypes: {
+        nodes: [
+          {
+            id: 'gid://gitlab/WorkItems::Type/1',
+            name: 'Issue',
+            widgetDefinitions: [
+              {
+                type: 'HIERARCHY',
+                allowedParentTypes: {
+                  nodes: [
+                    {
+                      id: 'gid://gitlab/WorkItems::Type/8',
+                      name: 'Epic',
+                      __typename: 'WorkItemType',
+                    },
+                    {
+                      id: 'gid://gitlab/WorkItems::Type/6',
+                      name: 'Objective',
+                      __typename: 'WorkItemType',
+                    },
+                    {
+                      id: 'gid://gitlab/WorkItems::Type/1',
+                      name: 'Issue',
+                      __typename: 'WorkItemType',
+                    },
+                  ],
+                  __typename: 'WorkItemTypeConnection',
+                },
+                __typename: 'WorkItemWidgetDefinitionHierarchy',
+              },
+            ],
+            __typename: 'WorkItemType',
+          },
+        ],
+      },
+      __typename: 'Namespace',
+    },
+  },
+};
+
+const mockEmoji1 = {
+  name: EMOJI_THUMBS_UP,
+};
+
+const mockEmoji2 = {
+  name: 'star',
+};
+
+export const mockEmojis = [mockEmoji1, mockEmoji2];
+
+export const mockBranchToken = {
+  type: TOKEN_TYPE_SOURCE_BRANCH,
+  icon: 'branch',
+  title: TOKEN_TITLE_SOURCE_BRANCH,
+  unique: true,
+  token: BranchToken,
+  operators: OPERATORS_IS,
+  fetchBranches: Api.branches.bind(Api),
+};
+
+export const mockAuthorToken = {
+  type: TOKEN_TYPE_AUTHOR,
+  icon: 'user',
+  title: TOKEN_TITLE_AUTHOR,
+  unique: false,
+  symbol: '@',
+  token: UserToken,
+  operators: OPERATORS_IS,
+  fullPath: 'gitlab-org/gitlab-test',
+  isProject: true,
+};
+
+export const mockLabelToken = {
+  type: TOKEN_TYPE_LABEL,
+  icon: 'labels',
+  title: TOKEN_TITLE_LABEL,
+  unique: false,
+  symbol: '~',
+  token: LabelToken,
+  operators: OPERATORS_IS,
+  fetchLabels: () => Promise.resolve(mockLabels),
+};
+
+export const mockMilestoneToken = {
+  type: TOKEN_TYPE_MILESTONE,
+  icon: 'milestone',
+  title: TOKEN_TITLE_MILESTONE,
+  unique: true,
+  symbol: '%',
+  token: MilestoneToken,
+  operators: OPERATORS_IS,
+  fullPath: 'gitlab-org',
+  isProject: true,
+};
+
+export const mockReleaseToken = {
+  type: TOKEN_TYPE_RELEASE,
+  icon: 'rocket',
+  title: TOKEN_TITLE_RELEASE,
+  token: ReleaseToken,
+  fetchReleases: () => Promise.resolve(),
+};
+
+export const mockProjectToken = {
+  icon: 'project',
+  title: TOKEN_TYPE_PROJECT,
+  type: TOKEN_TITLE_PROJECT,
+  token: ProjectToken,
+  operators: OPERATORS_IS,
+};
+
+export const mockGroupToken = {
+  icon: 'group',
+  title: TOKEN_TYPE_GROUP,
+  type: TOKEN_TITLE_GROUP,
+  token: GroupToken,
+  operators: OPERATORS_IS,
+};
+
+export const mockReactionEmojiToken = {
+  type: TOKEN_TYPE_MY_REACTION,
+  icon: 'thumb-up',
+  title: TOKEN_TITLE_MY_REACTION,
+  unique: true,
+  token: EmojiToken,
+  operators: OPERATORS_IS,
+  fetchEmojis: () => Promise.resolve(mockEmojis),
+};
+
+export const mockCrmContactToken = {
+  type: TOKEN_TYPE_CONTACT,
+  title: TOKEN_TITLE_CONTACT,
+  icon: 'user',
+  token: CrmContactToken,
+  isProject: false,
+  fullPath: 'group',
+  operators: OPERATORS_IS,
+  unique: true,
+};
+
+export const mockCrmOrganizationToken = {
+  type: TOKEN_TYPE_ORGANIZATION,
+  title: TOKEN_TITLE_ORGANIZATION,
+  icon: 'user',
+  token: CrmOrganizationToken,
+  isProject: false,
+  fullPath: 'group',
+  operators: OPERATORS_IS,
+  unique: true,
+};
+
+export const mockMembershipToken = {
+  type: 'with_inherited_permissions',
+  icon: 'group',
+  title: 'Membership',
+  token: GlFilteredSearchToken,
+  unique: true,
+  operators: OPERATORS_IS,
+  options: [
+    { value: 'exclude', title: 'Direct' },
+    { value: 'only', title: 'Inherited' },
+  ],
+};
+
+export const mockMembershipTokenOptionsWithoutTitles = {
+  ...mockMembershipToken,
+  options: [{ value: 'exclude' }, { value: 'only' }],
+};
+
+export const mockAvailableTokens = [mockAuthorToken, mockLabelToken, mockMilestoneToken];
+
+export const tokenValueAuthor = {
+  type: TOKEN_TYPE_AUTHOR,
+  value: {
+    data: 'root',
+    operator: '=',
+  },
+};
+
+export const tokenValueLabel = {
+  type: TOKEN_TYPE_LABEL,
+  value: {
+    operator: '=',
+    data: 'bug',
+  },
+};
+
+export const tokenValueMilestone = {
+  type: TOKEN_TYPE_MILESTONE,
+  value: {
+    operator: '=',
+    data: 'v1.0',
+  },
+};
+
+export const tokenValueMembership = {
+  type: 'with_inherited_permissions',
+  value: {
+    operator: '=',
+    data: 'exclude',
+  },
+};
+
+export const tokenValueConfidential = {
+  type: TOKEN_TYPE_CONFIDENTIAL,
+  value: {
+    operator: '=',
+    data: true,
+  },
+};
+
+export const tokenValuePlain = {
+  type: FILTERED_SEARCH_TERM,
+  value: { data: 'foo' },
+};
+
+export const mockHistoryItems = [
+  [tokenValueAuthor, tokenValueLabel, tokenValueMilestone],
+  [tokenValueAuthor],
+  'duo',
+];
+
+export const mockSortOptions = [
+  {
+    id: 1,
+    title: 'Created date',
+    sortDirection: {
+      descending: 'created_desc',
+      ascending: 'created_asc',
+    },
+  },
+  {
+    id: 2,
+    title: 'Last updated',
+    sortDirection: {
+      descending: 'updated_desc',
+      ascending: 'updated_asc',
+    },
+  },
+];
+
+export const mockProjects = [
+  {
+    id: 'gid://gitlab/Project/1000000',
+    name: 'Test',
+    fullPath: 'gitlab-duo/test',
+    avatarUrl: null,
+    __typename: 'Project',
+  },
+  {
+    id: 'gid://gitlab/Project/20',
+    name: 'coverage',
+    fullPath: 'root/coverage',
+    avatarUrl: null,
+    __typename: 'Project',
+  },
+];
+export const mockProjectResponse = {
+  data: {
+    projects: {
+      nodes: mockProjects,
+    },
+  },
+};
+
+export const mockGroups = [
+  {
+    id: 'gid://gitlab/Group/102',
+    name: 'box',
+    fullPath: 'toolbox/drawer/box',
+    fullName: 'toolbox/drawer/box',
+    avatarUrl: null,
+    __typename: 'Group',
+  },
+  {
+    id: 'gid://gitlab/Group/29',
+    name: 'Commit451',
+    fullPath: 'Commit451',
+    fullName: 'Commit451',
+    avatarUrl: null,
+    __typename: 'Group',
+  },
+];
+
+export const mockGroupResponse = {
+  data: {
+    groups: {
+      nodes: mockGroups,
+    },
+  },
+};
+
+export const mockSubGroups = {
+  data: {
+    group: {
+      id: 'gid://gitlab/Group/95',
+      name: 'Code Suggestions Group',
+      fullName: 'Code Suggestions Group',
+      fullPath: 'code-suggestions-group',
+      __typename: 'Group',
+      descendantGroups: {
+        nodes: [
+          {
+            id: 'gid://gitlab/Group/99',
+            name: 'Code Suggestions Subgroup',
+            fullName: 'Code Suggestions Group / Code Suggestions Subgroup',
+            fullPath: 'code-suggestions-group/code-suggestions-subgroup',
+            __typename: 'Group',
+          },
+        ],
+        pageInfo: {
+          hasNextPage: false,
+          hasPreviousPage: false,
+          startCursor: null,
+          endCursor: null,
+          __typename: 'PageInfo',
+        },
+        __typename: 'GroupConnection',
+      },
+    },
+  },
+};

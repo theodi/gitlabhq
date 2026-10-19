@@ -1,0 +1,200 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+RSpec.describe 'Merge request > User sees discussions navigation', :js, feature_category: :code_review_workflow do
+  let_it_be(:project, freeze: false) { create(:project, :public, :repository) }
+  let_it_be(:user) { project.creator }
+  let_it_be(:merge_request, freeze: false) { create(:merge_request, source_project: project) }
+
+  before do
+    project.add_maintainer(user)
+    sign_in(user)
+  end
+
+  def discussion_content_selector(discussion)
+    "[data-testid='discussion-content'][data-discussion-id='#{discussion.id}']"
+  end
+
+  describe 'Code discussions' do
+    let!(:position) do
+      build(
+        :text_diff_position, :added,
+        file: "files/images/wm.svg",
+        new_line: 1,
+        diff_refs: merge_request.diff_refs
+      )
+    end
+
+    let!(:first_discussion) do
+      create(
+        :diff_note_on_merge_request,
+        noteable: merge_request,
+        project: project,
+        position: position
+      ).to_discussion
+    end
+
+    let!(:second_discussion) do
+      create(
+        :diff_note_on_merge_request,
+        noteable: merge_request,
+        project: project,
+        position: position
+      ).to_discussion
+    end
+
+    let!(:third_discussion) do
+      create(
+        :diff_note_on_merge_request, :resolved,
+        noteable: merge_request,
+        project: project,
+        position: position
+      ).to_discussion
+    end
+
+    let(:first_discussion_selector) { discussion_content_selector(first_discussion) }
+    let(:second_discussion_selector) { discussion_content_selector(second_discussion) }
+
+    shared_examples 'a page with a thread navigation' do
+      context 'with active threads' do
+        it 'navigates and cycles back to the first thread' do
+          goto_next_thread
+          expect(page).to have_selector(first_discussion_selector, obscured: false)
+          goto_next_thread
+          expect(page).to have_selector(second_discussion_selector, obscured: false)
+          goto_next_thread
+          expect(page).to have_selector(first_discussion_selector, obscured: false)
+        end
+
+        it 'navigates and cycles back to the last thread' do
+          goto_previous_thread
+          expect(page).to have_selector(second_discussion_selector, obscured: false)
+          goto_previous_thread
+          expect(page).to have_selector(first_discussion_selector, obscured: false)
+          goto_previous_thread
+          expect(page).to have_selector(second_discussion_selector, obscured: false)
+        end
+      end
+    end
+
+    describe "Overview page discussions navigation" do
+      before do
+        visit project_merge_request_path(project, merge_request)
+
+        # Wait for discussions to be rendered before attempting navigation
+        find(first_discussion_selector)
+        find(second_discussion_selector)
+      end
+
+      it_behaves_like 'a page with a thread navigation'
+
+      context 'with collapsed threads' do
+        before do
+          page.within(first_discussion_selector) do
+            click_button text: 'Collapse replies'
+          end
+        end
+
+        it 'expands threads during navigation' do
+          goto_next_thread
+          expect(page).to have_selector "#note_#{first_discussion.first_note.id}"
+        end
+      end
+    end
+
+    describe "Changes page discussions navigation", quarantine: {
+      issue: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/work_items/43816',
+      type: :bug
+    } do
+      before do
+        visit diffs_project_merge_request_path(project, merge_request)
+      end
+
+      it_behaves_like 'a page with a thread navigation'
+    end
+  end
+
+  describe 'Merge request discussions' do
+    let_it_be(:first_discussion, freeze: false) do
+      create(:discussion_note_on_merge_request, noteable: merge_request, project: project).to_discussion
+    end
+
+    let_it_be(:second_discussion) do
+      create(:discussion_note_on_merge_request, noteable: merge_request, project: project).to_discussion
+    end
+
+    let(:first_discussion_selector) { discussion_content_selector(first_discussion) }
+    let(:second_discussion_selector) { discussion_content_selector(second_discussion) }
+
+    shared_examples 'a page with no code discussions' do
+      describe "Changes page discussions navigation" do
+        it 'navigates to the first discussion on the Overview page' do
+          goto_next_thread
+          expect(page).to have_selector(first_discussion_selector, obscured: false)
+        end
+
+        it 'navigates to the last discussion on the Overview page' do
+          goto_previous_thread
+          expect(page).to have_selector(second_discussion_selector, obscured: false)
+        end
+      end
+    end
+
+    context 'on changes page' do
+      before do
+        visit diffs_project_merge_request_path(project, merge_request)
+      end
+
+      it_behaves_like 'a page with no code discussions'
+    end
+
+    context 'on commits page' do
+      before do
+        # we can't go directly to the commits page since it doesn't load discussions
+        visit project_merge_request_path(project, merge_request)
+        within '.merge-request-tabs' do
+          click_link 'Commits'
+        end
+      end
+
+      it_behaves_like 'a page with no code discussions'
+    end
+
+    context 'on pipelines page' do
+      before do
+        visit project_merge_request_path(project, merge_request)
+        within '.merge-request-tabs' do
+          click_link 'Pipelines'
+        end
+      end
+
+      it_behaves_like 'a page with no code discussions'
+    end
+  end
+
+  def goto_next_thread
+    click_button 'Next open thread', obscured: false
+    wait_for_thread_scroll
+  end
+
+  def goto_previous_thread
+    click_button 'Previous open thread', obscured: false
+    wait_for_thread_scroll
+  end
+
+  # Thread navigation scrolls the page asynchronously, so `obscured?` can sample a
+  # position the page is still moving away from. The merge request page scrolls
+  # inside the panel, not the window.
+  def wait_for_thread_scroll
+    previous = nil
+
+    wait_for('thread navigation scroll to settle') do
+      current = page.evaluate_script(
+        "document.querySelector('.js-static-panel-inner')?.scrollTop ?? window.scrollY"
+      )
+      settled = !previous.nil? && current == previous
+      previous = current
+      settled
+    end
+  end
+end

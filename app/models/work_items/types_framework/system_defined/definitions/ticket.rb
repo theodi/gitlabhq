@@ -1,0 +1,83 @@
+# frozen_string_literal: true
+
+module WorkItems
+  module TypesFramework
+    module SystemDefined
+      module Definitions
+        module Ticket
+          class << self
+            def widgets
+              %w[
+                ai_session
+                assignees
+                award_emoji
+                crm_contacts
+                current_user_todos
+                custom_fields
+                description
+                designs
+                development
+                email_participants
+                health_status
+                hierarchy
+                iteration
+                labels
+                linked_items
+                milestone
+                notes
+                notifications
+                participants
+                requester
+                start_and_due_date
+                status
+                time_tracking
+                weight
+              ]
+            end
+
+            def widget_options
+              {}
+            end
+
+            def configuration
+              {
+                id: 9,
+                name: 'Ticket',
+                base_type: 'ticket',
+                icon_name: "work-item-ticket"
+              }
+            end
+
+            def allowed_child_types
+              [{ type: :task, maximum_depth: 1 }]
+            end
+
+            def use_legacy_view?
+              true
+            end
+
+            def service_desk?
+              true
+            end
+
+            def configurable?
+              false
+            end
+
+            def creatable?
+              false
+            end
+
+            def can_be_conversion_target?
+              false
+            end
+
+            def filterable_board_view?
+              true
+            end
+          end
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,37 @@
+= gitlab_ui_form_for @application_setting, url: ci_cd_admin_application_settings_path(anchor: 'js-registry-settings'), html: { class: 'fieldset-form' } do |f|
+  = form_errors(@application_setting)
+
+  %fieldset
+    .form-group
+      = f.label :container_registry_token_expire_delay, _('Authorization token duration (minutes)'), class: 'label-bold'
+      = f.number_field :container_registry_token_expire_delay, class: 'form-control gl-form-input'
+    .form-group
+      - label = _("Enable cleanup policies for projects created earlier than GitLab 12.7.")
+      - label_link = link_to sprite_icon('question-o'), help_page_path('user/packages/container_registry/reduce_container_registry_storage.md', anchor: 'cleanup-policy')
+      - help_text = _("Existing projects will be able to use cleanup policies. Avoid enabling this if an external container registry is being used, as there is a performance risk if many images exist on one project.")
+      - help_link = link_to sprite_icon('question-o'), help_page_path('user/packages/container_registry/reduce_container_registry_storage.md', anchor: 'use-with-external-container-registries')
+      = f.gitlab_ui_checkbox_component :container_expiration_policies_enable_historic_entries,
+        '%{label} %{label_link}'.html_safe % { label: label, label_link: label_link },
+        help_text: '%{help_text} %{help_link}'.html_safe % { help_text: help_text, help_link: help_link }
+      .form-group
+        = f.label :container_registry_delete_tags_service_timeout, _('Cleanup policy maximum processing time (seconds)'), class: 'label-bold'
+        = f.number_field :container_registry_delete_tags_service_timeout, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = _("Tags are deleted until the timeout is reached. Any remaining tags are included the next time the policy runs. To remove the time limit, set it to 0.")
+      .form-group
+        = f.label :container_registry_expiration_policies_worker_capacity, _('Cleanup policy maximum workers running concurrently'), class: 'label-bold'
+        = f.number_field :container_registry_expiration_policies_worker_capacity, min: 0, class: 'form-control'
+        .form-text.gl-text-subtle
+          = _("Cleanup policies are executed by background workers. This setting defines the maximum number of workers that can run concurrently. Set it to 0 to remove all workers and not execute the cleanup policies.")
+      .form-group
+        = f.label :container_registry_cleanup_tags_service_max_list_size, _('Cleanup policy maximum number of tags to be deleted'), class: 'label-bold'
+        = f.number_field :container_registry_cleanup_tags_service_max_list_size, min: 0, class: 'form-control'
+        .form-text.gl-text-subtle
+          = _("The maximum number of tags that a single worker accepts for cleanup. If the number of tags goes above this limit, the list of tags to delete is truncated to this number. To remove this limit, set it to 0.")
+      .form-group
+        - help_text = _("When enabled, cleanup policies execute faster but put more load on Redis.")
+        - help_link = link_to sprite_icon('question-o'), help_page_path('user/packages/container_registry/reduce_container_registry_storage.md', anchor: 'set-cleanup-limits-to-conserve-resources')
+        = f.gitlab_ui_checkbox_component :container_registry_expiration_policies_caching, _("Enable cleanup policy caching."),
+          help_text: '%{help_text} %{help_link}'.html_safe % { help_text: help_text, help_link: help_link }
+
+  = f.submit _('Save changes'), pajamas_button: true

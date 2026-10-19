@@ -1,14 +1,17 @@
-.login-box
-  .login-heading
-    %h3 Reset password
-  .login-body
-    = form_for(resource, as: resource_name, url: password_path(resource_name), html: { method: :post }) do |f|
-      .devise-errors
-        = devise_error_messages!
-      .clearfix.append-bottom-20
-        = f.email_field :email, placeholder: "Email",  class: "form-control", required: true, value: params[:user_email]
-      .clearfix
-        = f.submit "Reset password", class: "btn-primary btn"
+= gitlab_ui_form_for(resource, as: resource_name, url: password_path(resource_name), html: { method: :post, class: 'gl-show-field-errors', aria: { live: 'assertive' }}) do |f|
+  .devise-errors
+    = render "devise/shared/error_messages", resource: resource
+  .form-group
+    = f.label :email, _('Email')
+    = f.email_field :email, class: "form-control gl-form-input", required: true, autocomplete: 'off', value: params[:user_email], autofocus: true, title: _('Please provide a valid email address.')
+    .form-text.gl-text-subtle
+      = _('Requires your primary or verified secondary GitLab email address.')
 
-.clearfix.prepend-top-20
-  = render 'devise/shared/sign_in_link'
+  .form-group
+    - if recaptcha_enabled?
+      = recaptcha_tags nonce: content_security_policy_nonce
+
+  = render Pajamas::ButtonComponent.new(type: :submit, variant: :confirm, block: true) do
+    = _('Reset password')
+
+= render 'devise/shared/sign_in_link'

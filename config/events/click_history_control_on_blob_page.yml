@@ -1,0 +1,17 @@
+---
+description: Navigated from Blob view to Commits view
+internal_events: true
+action: click_history_control_on_blob_page
+identifiers:
+- project
+- namespace
+- user
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: '16.11'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/147673
+tiers:
+- free
+- premium
+- ultimate

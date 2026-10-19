@@ -1,0 +1,72 @@
+import { GlDisclosureDropdownItem } from '@gitlab/ui';
+import { stubComponent } from 'helpers/stub_component';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { I18N_DELETE_RUNNER } from '~/ci/runner/constants';
+import { getSlotFunction } from '~/lib/utils/vue3compat/normalize_render';
+
+import RunnerDeleteDisclosureDropdownItem from '~/ci/runner/components/runner_delete_disclosure_dropdown_item.vue';
+import RunnerDeleteAction from '~/ci/runner/components/runner_delete_action.vue';
+import { allRunnersData } from '../mock_data';
+
+const mockRunner = allRunnersData.data.runners.nodes[0];
+
+jest.mock('~/alert');
+jest.mock('~/sentry/sentry_browser_wrapper');
+
+describe('RunnerDeleteDisclosureDropdownItem', () => {
+  let wrapper;
+  let mockOnClick;
+
+  const findDisclosureDropdownItem = () => wrapper.findComponent(GlDisclosureDropdownItem);
+
+  const createComponent = () => {
+    mockOnClick = jest.fn();
+
+    wrapper = shallowMountExtended(RunnerDeleteDisclosureDropdownItem, {
+      propsData: {
+        runner: mockRunner,
+      },
+      stubs: {
+        RunnerDeleteAction: stubComponent(RunnerDeleteAction, {
+          // Vue 3-style zero-arg render; opt out of @vue/compat's legacy
+          // render-function emulation, which misclassifies it.
+          compatConfig: { RENDER_FUNCTION: false },
+          render() {
+            return getSlotFunction(this)({
+              onClick: mockOnClick,
+            });
+          },
+        }),
+      },
+    });
+  };
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  it('Displays a delete item', () => {
+    expect(findDisclosureDropdownItem().text()).toBe(I18N_DELETE_RUNNER);
+  });
+
+  it('Does not trigger on load', () => {
+    expect(mockOnClick).not.toHaveBeenCalled();
+  });
+
+  it('Triggers delete when clicked', () => {
+    findDisclosureDropdownItem().vm.$emit('action');
+    expect(mockOnClick).toHaveBeenCalledTimes(1);
+  });
+
+  describe('When done after deleting', () => {
+    const doneEvent = { message: 'done!' };
+
+    beforeEach(() => {
+      wrapper.findComponent(RunnerDeleteAction).vm.$emit('done', doneEvent);
+    });
+
+    it('emits deleted event', () => {
+      expect(wrapper.emitted('deleted')).toEqual([[doneEvent]]);
+    });
+  });
+});

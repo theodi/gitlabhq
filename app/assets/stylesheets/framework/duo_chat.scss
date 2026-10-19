@@ -1,0 +1,90 @@
+@import 'framework/variables';
+@import 'framework/variables_overrides';
+
+/**
+ * CSS Custom properties
+ */
+:root {
+  --duo-chat-bubble-foreground-color-default: var(--gl-color-neutral-800);
+  --duo-chat-bubble-background-color-default: var(--gl-color-neutral-50);
+}
+
+:root.gl-dark {
+  --duo-chat-bubble-foreground-color-default: var(--gl-color-neutral-50);
+  --duo-chat-bubble-background-color-default: var(--gl-color-neutral-800);
+}
+
+:root.ui-neutral {
+  --duo-chat-bubble-foreground-color-default: var(--gl-color-blue-800);
+  --duo-chat-bubble-background-color-default: var(--gl-color-blue-50);
+}
+
+:root.ui-neutral.gl-dark {
+  --duo-chat-bubble-foreground-color-default: var(--gl-color-blue-50);
+  --duo-chat-bubble-background-color-default: var(--gl-color-blue-800);
+}
+
+.duo-chat-layout {
+  z-index: #{$zindex-modal-backdrop - 1};
+}
+
+// duo-ui overrides the block background to match the app color mode while
+// token colors still come from the user's syntax highlighting scheme, which
+// can mismatch (e.g. light scheme tokens on a dark panel). Force the
+// scheme's own background/foreground pair instead, like blob viewers do.
+pre.duo-message-pre-block.code-syntax-highlight-theme {
+  background-color: var(--code-background, var(--gl-background-color-preformat));
+  color: var(--code-text-color, var(--gl-text-color-strong));
+
+  // duo-ui sets color directly on the code child (.duo-chat-markdown pre code),
+  // which would bypass the inherited color above on the markdown path.
+  code {
+    color: inherit;
+  }
+}
+
+.duo-chat-message a.anchor {
+ @apply gl-hidden;
+}
+
+.duo-chat-message-container {
+  // stylelint-disable-next-line gitlab/no-has -- scoped to chat message element
+  .duo-chat-message:has(.error-icon) {
+    @apply gl-bg-subtle;
+  }
+}
+
+/**
+ * Your messages styles
+ */
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to chat message container
+.duo-chat-message-container:has(.duo-chat-message .gl-avatar) {
+  @apply gl-justify-end;
+
+  .duo-chat-message {
+    background-color: var(--duo-chat-bubble-background-color-default);
+    @apply gl-rounded-bl-[1rem];
+    @apply gl-rounded-br-none;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to chat message container
+.duo-chat-message-container:has(.duo-chat-message.gl-text-feedback-info) {
+  // stylelint-disable-next-line gitlab/no-has -- scoped to chat message element
+  .duo-chat-message:not(:has(.error-icon)) {
+    background-color: var(--duo-chat-bubble-background-color-default);
+
+    p {
+      color: var(--duo-chat-bubble-foreground-color-default);
+    }
+  }
+}
+
+/**
+ * Queued message styles — pending user prompts, matching your message bubbles
+ */
+.duo-chat-queued-message {
+  background-color: var(--duo-chat-bubble-background-color-default);
+  color: var(--duo-chat-bubble-foreground-color-default);
+}

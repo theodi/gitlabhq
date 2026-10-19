@@ -1,0 +1,184 @@
+.settings-content{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_application_settings_ci_cd_pageload' } }
+  = gitlab_ui_form_for @application_setting, url: ci_cd_admin_application_settings_path(anchor: 'js-continuous-integration-settings'), html: { class: 'fieldset-form' } do |f|
+    = form_errors(@application_setting)
+
+    %fieldset
+      .form-group
+        - devops_help_link_url = help_page_path('topics/autodevops/_index.md')
+        - devops_help_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: devops_help_link_url }
+        = f.gitlab_ui_checkbox_component :auto_devops_enabled, s_('CICD|Default to Auto DevOps pipeline for all projects'), help_text: s_('CICD|The Auto DevOps pipeline runs by default in all projects with no CI/CD configuration file. %{link_start}What is Auto DevOps?%{link_end}').html_safe % { link_start: devops_help_link_start, link_end: '</a>'.html_safe }
+      .form-group
+        = f.label :auto_devops_domain, s_('AdminSettings|Auto DevOps domain'), class: 'label-bold'
+        = f.text_field :auto_devops_domain, class: 'form-control gl-form-input', placeholder: 'example.com'
+        .form-text.gl-text-subtle
+          = s_("AdminSettings|The default domain to use for Auto Review Apps and Auto Deploy stages in all projects.")
+          = link_to _('Learn more.'), help_page_path('topics/autodevops/stages.md', anchor: 'auto-review-apps'), target: '_blank', rel: 'noopener noreferrer'
+
+      .form-group
+        = f.gitlab_ui_checkbox_component :shared_runners_enabled, s_("AdminSettings|Enable instance runners for new projects"), help_text: s_("AdminSettings|All new projects can use instance runners by default.")
+
+      = render_if_exists 'admin/application_settings/shared_runners_minutes_setting', form: f
+
+      .form-group
+        = f.label :shared_runners_text, s_('AdminSettings|Instance runners details'), class: 'label-bold'
+        = f.text_area :shared_runners_text, class: 'form-control gl-form-input', rows: 4
+        .form-text.gl-text-subtle= s_('AdminSettings|Add a custom message with details about instance runners. The message is visible when you view runners for projects and groups. Markdown is supported.')
+      .form-group
+        = f.label :max_artifacts_size, _('Maximum artifacts size (MB)'), class: 'label-bold'
+        = f.number_field :max_artifacts_size, class: 'form-control gl-form-input', min: 0
+        .form-text.gl-text-subtle
+          = _("The maximum file size for job artifacts.")
+          = link_to _('Learn more.'), help_page_path('administration/cicd/limits.md', anchor: 'maximum-artifacts-size')
+      .form-group
+        = f.label :max_artifacts_content_include_size, _('Maximum artifact size for dynamic child pipelines (bytes)'), class: 'label-bold'
+        = f.number_field :max_artifacts_content_include_size, class: 'form-control gl-form-input', min: 0
+        .form-text.gl-text-subtle
+          = _("The maximum size of an artifact used as a CI/CD configuration file in dynamic child pipelines.")
+          = link_to _('Learn more.'), help_page_path('administration/cicd/limits.md', anchor: 'maximum-size-of-the-ci-artifacts-archive')
+      .form-group
+        = f.label :default_artifacts_expire_in, _('Default artifacts expiration'), class: 'label-bold'
+        = f.text_field :default_artifacts_expire_in, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = html_escape(_("Set the default expiration time for job artifacts in all projects. Set to %{code_open}0%{code_close} to never expire artifacts by default. If no unit is written, it defaults to seconds. For example, these are all equivalent: %{code_open}3600%{code_close}, %{code_open}60 minutes%{code_close}, or %{code_open}one hour%{code_close}.")) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }
+          = link_to _('Learn more.'), help_page_path('administration/settings/continuous_integration.md', anchor: 'set-default-artifacts-expiration')
+      .form-group
+        = f.gitlab_ui_checkbox_component :keep_latest_artifact, s_('AdminSettings|Keep the latest artifacts for all jobs in the latest successful pipelines'), help_text: s_('AdminSettings|The latest artifacts for all jobs in the most recent successful pipelines in each project are stored and do not expire.')
+      .form-group
+        = f.label :archive_builds_in_human_readable, _('Archive pipelines'), class: 'label-bold'
+        = f.text_field :archive_builds_in_human_readable, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = html_escape(_("Pipelines older than the configured time are considered archived. Jobs in archived pipelines can no longer be retried. Leave empty to never archive pipelines automatically. The default unit is in days, but you can use other units, for example %{code_open}15 days%{code_close}, %{code_open}1 month%{code_close}, %{code_open}2 years%{code_close}. Minimum value is 1 day.")) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }
+          = link_to _('Learn more.'), help_page_path('administration/settings/continuous_integration.md', anchor: 'archive-pipelines')
+      .form-group
+        = f.gitlab_ui_checkbox_component :protected_ci_variables, s_('AdminSettings|Protect CI/CD variables by default'), help_text: s_('AdminSettings|New CI/CD variables in projects and groups default to protected.')
+      .form-group
+        = f.label :ci_max_includes, s_('AdminSettings|Maximum includes'), class: 'label-bold'
+        = f.number_field :ci_max_includes, class: 'form-control gl-form-input', min: 0
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of included files per pipeline.')
+      .form-group
+        = f.label :ci_max_caches_per_job, class: 'label-bold' do
+          = s_('AdminSettings|Maximum caches per job')
+        = f.number_field :ci_max_caches_per_job, class: 'form-control gl-form-input', min: 1
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of caches that can be defined in a single CI/CD job. Default is 4. Higher values can impact pipeline creation performance.')
+      .form-group
+        = f.label :downstream_pipeline_trigger_limit_per_project_user_sha, s_('AdminSettings|Maximum downstream pipeline trigger rate'), class: 'label-bold'
+        = f.number_field :downstream_pipeline_trigger_limit_per_project_user_sha, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of downstream pipelines that can be triggered per minute (for a given project, user, and commit).')
+      .form-group
+        = f.label :pipeline_cancel_limit_per_user_project, s_('AdminSettings|Maximum pipeline cancellations per project'), class: 'label-bold'
+        = f.number_field :pipeline_cancel_limit_per_user_project, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of pipeline cancellations allowed per minute for a given project. Set to 0 to disable this limit.')
+      .form-group
+        = f.label :pipeline_retry_limit_per_user_project, s_('AdminSettings|Maximum pipeline retries per project'), class: 'label-bold'
+        = f.number_field :pipeline_retry_limit_per_user_project, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of pipeline retries allowed per minute for a given project. Set to 0 to disable this limit.')
+      .form-group
+        = f.label :job_retry_limit_per_user_project, s_('AdminSettings|Maximum job retries per project'), class: 'label-bold'
+        = f.number_field :job_retry_limit_per_user_project, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of job retries allowed per minute for a given project. Set to 0 to disable this limit.')
+      .form-group
+        = f.label :job_play_limit_per_user_project, s_('AdminSettings|Maximum manual job runs per project'), class: 'label-bold'
+        = f.number_field :job_play_limit_per_user_project, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of manual job runs allowed per minute for a given project. Set to 0 to disable this limit.')
+      .form-group
+        = f.label :pipeline_delete_limit_per_user_project, s_('AdminSettings|Maximum pipeline deletions per project'), class: 'label-bold'
+        = f.number_field :pipeline_delete_limit_per_user_project, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of pipeline deletions allowed per minute for a given project. Set to 0 to disable this limit.')
+      .form-group
+        = f.label :job_erase_limit_per_user_project, s_('AdminSettings|Maximum job erasures per project'), class: 'label-bold'
+        = f.number_field :job_erase_limit_per_user_project, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of job erasures allowed per minute for a given project. Set to 0 to disable this limit.')
+      .form-group
+        = f.label :git_push_pipeline_limit, s_('AdminSettings|Pipeline limit per Git push'), class: 'label-bold'
+        = f.number_field :git_push_pipeline_limit, min: 0, class: 'form-control gl-form-input'
+        .form-text.gl-text-subtle
+          = s_('AdminSettings|The maximum number of tag or branch pipelines triggered by a single Git push. Setting the limit to 0 will remove the limit.')
+      .form-group
+        = f.label :ci_config_path, _('Default CI/CD configuration file'), class: 'label-bold'
+        = f.text_field :default_ci_config_path, class: 'form-control gl-form-input', placeholder: '.gitlab-ci.yml'
+        %p.form-text.gl-text-subtle
+          = _("The default CI/CD configuration file and path for new projects.").html_safe
+          = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'specify-a-custom-cicd-configuration-file'), target: '_blank', rel: 'noopener noreferrer'
+      .form-group
+        = f.gitlab_ui_checkbox_component :show_migrate_from_jenkins_banner, s_('AdminSettings|Show the migrate from Jenkins banner'), help_text: s_('AdminSettings|Show a banner on merge requests in projects with Jenkins pipelines to prompt migration to GitLab CI/CD instead.')
+      #js-runner-token-expiration-intervals{ data: runner_token_expiration_interval_attributes }
+      .form-group
+        = f.gitlab_ui_checkbox_component :enable_artifact_external_redirect_warning_page, s_('AdminSettings|Enable the external redirect warning page for job artifacts'), help_text: s_('AdminSettings|Show a redirect page that warns you about user-generated content in GitLab Pages.')
+      - unless Gitlab.com?
+        .form-group
+          = f.gitlab_ui_checkbox_component :block_jwt_for_reclaimed_paths,
+            s_('AdminSettings|Block JWT generation in reclaimed project paths'),
+            help_text: s_('AdminSettings|GitLab prevents namespace reclamation authentication bypass attacks by blocking JWT generation in projects that were moved or renamed to a previously existing project path. Only allow JWT generation for reclaimed project paths if you understand and accept the insider-threat risk. The restriction is enabled by default and should remain enabled on most instances.')
+
+    = f.submit _('Save changes'), pajamas_button: true
+
+  .gl-mt-7
+    %h4
+      = s_('AdminSettings|CI/CD limits')
+    %p
+      = s_('AdminSettings|By default, set a limit to 0 to have no limit.')
+    .scrolling-tabs-container.inner-page-scroll-tabs
+      - if @plans.size > 1
+        %ul.nav-links.scrolling-tabs.mobile-separator.nav.nav-tabs.gl-mb-5
+          - @plans.each_with_index do |plan, index|
+            %li
+              = link_to admin_plan_limits_path(anchor: 'js-ci-cd-settings'), data: { target: "div#plan#{index}", action: "plan#{index}", toggle: 'tab'}, class: index == 0 ? 'active': '' do
+                = plan.name.capitalize
+      .tab-content.gl-tab-content
+        - @plans.each_with_index do |plan, index|
+          .tab-pane{ :id => "plan#{index}", class: index == 0 ? 'active': '' }
+            = gitlab_ui_form_for plan.actual_limits, url: admin_plan_limits_path(anchor: 'js-ci-cd-settings'), html: { class: 'fieldset-form' }, method: :post do |f|
+              = form_errors(plan)
+              %fieldset
+                = f.hidden_field(:plan_name_uid, value: plan.plan_name_uid_before_type_cast)
+                .form-group
+                  = f.label :ci_instance_level_variables, plan_limit_setting_description(:ci_instance_level_variables)
+                  = f.number_field :ci_instance_level_variables, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :dotenv_size, plan_limit_setting_description(:dotenv_size)
+                  = f.number_field :dotenv_size, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :dotenv_variables, plan_limit_setting_description(:dotenv_variables)
+                  = f.number_field :dotenv_variables, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :ci_max_artifact_size_cyclonedx, plan_limit_setting_description(:ci_max_artifact_size_cyclonedx)
+                  = f.number_field :ci_max_artifact_size_cyclonedx, class: 'form-control gl-form-input', min: 0
+                  .form-text.gl-text-subtle= s_('AdminSettings|Set to 0 to use the maximum artifacts size limit instead.')
+                .form-group
+                  = f.label :ci_pipeline_size, plan_limit_setting_description(:ci_pipeline_size)
+                  = f.number_field :ci_pipeline_size, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :ci_active_jobs, plan_limit_setting_description(:ci_active_jobs)
+                  = f.number_field :ci_active_jobs, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :ci_project_subscriptions, plan_limit_setting_description(:ci_project_subscriptions)
+                  = f.number_field :ci_project_subscriptions, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :ci_pipeline_schedules, plan_limit_setting_description(:ci_pipeline_schedules)
+                  = f.number_field :ci_pipeline_schedules, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :ci_needs_size_limit, plan_limit_setting_description(:ci_needs_size_limit)
+                  = f.number_field :ci_needs_size_limit, class: 'form-control gl-form-input', min: 0
+                  .form-text.gl-text-subtle= s_('AdminSettings|This limit cannot be disabled. Set to 0 to block all job (needs) dependencies.')
+                .form-group
+                  = f.label :ci_registered_group_runners, plan_limit_setting_description(:ci_registered_group_runners)
+                  = f.number_field :ci_registered_group_runners, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :ci_registered_project_runners, plan_limit_setting_description(:ci_registered_project_runners)
+                  = f.number_field :ci_registered_project_runners, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :pipeline_hierarchy_size, plan_limit_setting_description(:pipeline_hierarchy_size)
+                  = f.number_field :pipeline_hierarchy_size, class: 'form-control gl-form-input', min: 0
+                .form-group
+                  = f.label :max_pipelines_per_merge_train, plan_limit_setting_description(:max_pipelines_per_merge_train)
+                  = f.number_field :max_pipelines_per_merge_train, class: 'form-control gl-form-input', min: 1
+                = f.submit s_('AdminSettings|Save %{name} limits').html_safe % { name: plan.name.capitalize }, pajamas_button: true

@@ -1,0 +1,9 @@
+query issueReference($fullPath: ID!, $iid: String) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: issue(iid: $iid) {
+      id
+      reference(full: true)
+    }
+  }
+}

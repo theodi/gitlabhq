@@ -1,0 +1,14 @@
+#import "./base_work_item_popover.fragment.graphql"
+#import "./base_work_item_popover_features.fragment.graphql"
+
+query workItemPopover($fullPath: ID!, $iid: String!, $useWorkItemFeatures: Boolean = false) {
+  namespace(fullPath: $fullPath) {
+    id
+    workItem(iid: $iid) {
+      ...BaseWorkItemPopover
+      features @include(if: $useWorkItemFeatures) {
+        ...BaseWorkItemPopoverFeatures
+      }
+    }
+  }
+}

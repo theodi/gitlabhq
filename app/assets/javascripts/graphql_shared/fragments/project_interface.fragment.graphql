@@ -1,0 +1,15 @@
+fragment ProjectInterface on ProjectInterface {
+  id
+  fullPath
+  avatarUrl
+  name
+  nameWithNamespace
+  webUrl
+  userPermissions {
+    archiveProject
+    removeProject
+    viewEditPage
+    canLeave @gl_introduced(version: "18.9.0")
+    changeNamespace
+  }
+}

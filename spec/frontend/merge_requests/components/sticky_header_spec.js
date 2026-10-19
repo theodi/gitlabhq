@@ -1,0 +1,149 @@
+import Vue from 'vue';
+import { GlSprintf } from '@gitlab/ui';
+import { PiniaVuePlugin } from 'pinia';
+import { createTestingPinia } from '@pinia/testing';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import StickyHeader from '~/merge_requests/components/sticky_header.vue';
+import ImportedBadge from '~/vue_shared/components/imported_badge.vue';
+import DiscussionCounter from '~/notes/components/discussion_counter.vue';
+import SubmitReviewButton from '~/batch_comments/components/submit_review_button.vue';
+import RapidDiffsToggle from '~/rapid_diffs/app/rapid_diffs_toggle.vue';
+import { globalAccessorPlugin } from '~/pinia/plugins';
+import { useMrNotes } from '~/mr_notes/store/legacy_mr_notes';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { EVENT_MR_TITLE_UPDATED } from '~/merge_requests/constants';
+
+Vue.use(PiniaVuePlugin);
+
+describe('Merge requests sticky header component', () => {
+  let wrapper;
+  let pinia;
+
+  const createComponent = ({ provide = {}, props = {} } = {}) => {
+    wrapper = shallowMountExtended(StickyHeader, {
+      pinia,
+      provide: {
+        glFeatures: {},
+        ...provide,
+      },
+      propsData: {
+        tabs: [],
+        ...props,
+      },
+      stubs: {
+        GlSprintf,
+      },
+    });
+  };
+
+  const findImportedBadge = () => wrapper.findComponent(ImportedBadge);
+  const findStickyHeaderTitle = () => wrapper.findByTestId('sticky-header-title');
+  const findSubmitReviewButton = () => wrapper.findComponent(SubmitReviewButton);
+
+  beforeEach(() => {
+    pinia = createTestingPinia({ plugins: [globalAccessorPlugin] });
+    useLegacyDiffs();
+    useNotes().doneFetchingBatchDiscussions = true;
+    useNotes().noteableData.id = 1;
+    useNotes().noteableData.source_branch = 'source-branch';
+    useNotes().noteableData.target_branch = 'main';
+    useMrNotes().activeTab = 'overview';
+  });
+
+  describe('forked project', () => {
+    it('renders source branch with source project path', () => {
+      createComponent({
+        provide: {
+          projectPath: 'gitlab-org/gitlab',
+          sourceProjectPath: 'root/gitlab',
+        },
+      });
+
+      expect(wrapper.findByTestId('source-branch').text()).toBe('root/gitlab:source-branch');
+    });
+  });
+
+  describe('imported badge', () => {
+    it('renders when merge request is imported', () => {
+      createComponent({
+        props: { isImported: true },
+      });
+
+      expect(findImportedBadge().exists()).toBe(true);
+    });
+
+    it('does not render when merge request is not imported', () => {
+      createComponent({
+        props: { isImported: false },
+      });
+
+      expect(findImportedBadge().exists()).toBe(false);
+    });
+  });
+
+  describe('discussion counter', () => {
+    it('renders in compact mode', () => {
+      createComponent();
+
+      const counter = wrapper.findComponent(DiscussionCounter);
+
+      expect(counter.exists()).toBe(true);
+      expect(counter.props('compact')).toBe(true);
+    });
+  });
+
+  describe('submit review', () => {
+    it('renders submit review button', () => {
+      createComponent();
+
+      expect(findSubmitReviewButton().exists()).toBe(true);
+    });
+  });
+
+  describe('title updated event', () => {
+    it('updates the sticky header title when EVENT_MR_TITLE_UPDATED is dispatched', async () => {
+      createComponent({ provide: { title: 'Draft: Initial title' } });
+
+      expect(findStickyHeaderTitle().text()).toBe('Draft: Initial title');
+
+      document.dispatchEvent(
+        new CustomEvent(EVENT_MR_TITLE_UPDATED, { detail: { title: 'Initial title' } }),
+      );
+      await Vue.nextTick();
+
+      expect(findStickyHeaderTitle().text()).toBe('Initial title');
+    });
+
+    it('renders the markdown title HTML when provided in the event', async () => {
+      createComponent({ provide: { title: 'Draft: Initial title' } });
+
+      document.dispatchEvent(
+        new CustomEvent(EVENT_MR_TITLE_UPDATED, {
+          detail: { title: 'code title', titleHtml: '<code>code</code> title' },
+        }),
+      );
+      await Vue.nextTick();
+
+      expect(findStickyHeaderTitle().find('code').exists()).toBe(true);
+      expect(findStickyHeaderTitle().text()).toBe('code title');
+    });
+  });
+
+  describe('rapid diffs toggle', () => {
+    it.each`
+      activeTab  | flag     | visible
+      ${'diffs'} | ${true}  | ${true}
+      ${'diffs'} | ${false} | ${false}
+      ${'show'}  | ${true}  | ${false}
+    `(
+      'visible=$visible when activeTab=$activeTab and flag=$flag',
+      ({ activeTab, flag, visible }) => {
+        useMrNotes().activeTab = activeTab;
+        createComponent({ provide: { glFeatures: { rapidDiffsOnMrShow: flag } } });
+
+        expect(wrapper.findComponent(RapidDiffsToggle).exists()).toBe(visible);
+      },
+    );
+  });
+});

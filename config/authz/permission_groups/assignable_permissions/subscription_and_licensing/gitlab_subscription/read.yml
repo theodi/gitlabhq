@@ -1,0 +1,10 @@
+---
+name: read_gitlab_subscription
+description: Grants the ability to read GitLab subscriptions
+boundaries:
+  - group
+  - user
+available_for:
+  - granular_access_token
+permissions:
+  - read_gitlab_subscription

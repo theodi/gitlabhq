@@ -1,42 +1,49 @@
-%html{lang: "en"}
+- note = local_assigns.fetch(:note, @note)
+-# Diff preview text should only appear when a note is available. Default value to be false
+- show_no_diff_preview_message = false
+- unless note.nil?
+  - discussion = local_assigns.fetch(:discussion) { note.discussion } if note.part_of_discussion?
+  - project = local_assigns.fetch(:project, @project)
+  - show_no_diff_preview_message = discussion&.diff_discussion? && discussion.on_text? && !project.show_diff_preview_in_email?
+
+%html{ lang: I18n.locale }
   %head
-    %meta{content: "text/html; charset=utf-8", "http-equiv" => "Content-Type"}
-      %title
-        GitLab
-  :css
-    img {
-      max-width: 100%;
-      height: auto;
-    }
-    p.details {
-      font-style:italic;
-      color:#777
-    }
-    .footer p {
-      font-size:small;
-      color:#777
-    }
-    pre.commit-message {
-      white-space: pre-wrap;
-    }
-    .file-stats a {
-      text-decoration: none;
-    }
-    .file-stats .new-file {
-      color: #090;
-    }
-    .file-stats .deleted-file {
-      color: #B00;
-    }
+    %meta{ content: "text/html; charset=utf-8", "http-equiv" => "Content-Type" }
+    %title
+      GitLab
+    = universal_stylesheet_link_tag 'mailers/notify_enhanced'
+    %style{ type: 'text/css', 'data-premailer': 'ignore' }
+      -# The MUA automatically turns some text into links.
+      -# Match the color of explicit links ($blue-600 from typography.scss).
+      a { color: #1068bf; }
+    = yield :head
   %body
-    %div.content
+    -# Test stub for RSpec testing of Notify and associated modules
+    -# Sometimes we override the chosen layout via `determine_layout` in our Notify mailer
+    -# but ActionMailer doesn't support testing layout in pure Ruby so this HTML comment is
+    -# used for testing the determined layout
+    - if Rails.env.test?
+      / determine_layout returned template notify
+    .content
+      = html_header_message
       = yield
-    %div.footer{style: "margin-top: 10px;"}
+    .footer{ style: "margin-top: 10px;" }
       %p
-        \—
+        &mdash;
         %br
+        - if show_no_diff_preview_message
+          = _('This project does not include diff previews in email notifications.')
+          %br
         - if @target_url
-          #{link_to "View it on GitLab", @target_url}
+          - if @reply_by_email
+            = _('Reply to this email directly or %{view_it_on_gitlab}.').html_safe % { view_it_on_gitlab: link_to(_("view it on GitLab"), @target_url) }
+          - else
+            #{link_to _('View it on GitLab'), @target_url}.
+          %br
+          = notification_reason_text(reason: @reason, show_manage_notifications_link: !@labels_url, show_help_link: true, manage_label_subscriptions_url: @labels_url, unsubscribe_url: @unsubscribe_url, format: :html)
+          = notification_email_marker(@target_url)
+
           = email_action @target_url
-        - if @project && !@disable_footer
-          You're receiving this notification because you are a member of the #{link_to_unless @target_url, @project.name_with_namespace, namespace_project_url(@project.namespace, @project)} project team.
+
+        = render_if_exists 'layouts/email_additional_text'
+        = html_footer_message

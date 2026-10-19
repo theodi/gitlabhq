@@ -1,55 +1,29 @@
-# Shorter routing method for project and project items
-# Since update to rails 4.1.9 we are now allowed to use `/` in project routing
-# so we use nested routing for project resources which include project and
-# project namespace. To avoid writing long methods every time we define shortcuts for
-# some of routing.
-#
-# For example instead of this:
-#
-#   namespace_project_merge_request_path(merge_request.project.namespace, merge_request.projects, merge_request)
-#
-# We can simply use shortcut:
-#
-#   merge_request_path(merge_request)
-#
+# frozen_string_literal: true
+
+# Shorter routing method for some project items
 module GitlabRoutingHelper
-  def project_path(project, *args)
-    namespace_project_path(project.namespace, project, *args)
-  end
+  extend ActiveSupport::Concern
 
-  def edit_project_path(project, *args)
-    edit_namespace_project_path(project.namespace, project, *args)
-  end
-
-  def issue_path(entity, *args)
-    namespace_project_issue_path(entity.project.namespace, entity.project, entity, *args)
-  end
-
-  def merge_request_path(entity, *args)
-    namespace_project_merge_request_path(entity.project.namespace, entity.project, entity, *args)
-  end
-
-  def milestone_path(entity, *args)
-    namespace_project_milestone_path(entity.project.namespace, entity.project, entity, *args)
-  end
-
-  def project_url(project, *args)
-    namespace_project_url(project.namespace, project, *args)
-  end
-
-  def edit_project_url(project, *args)
-    edit_namespace_project_url(project.namespace, project, *args)
-  end
-
-  def issue_url(entity, *args)
-    namespace_project_issue_url(entity.project.namespace, entity.project, entity, *args)
-  end
-
-  def merge_request_url(entity, *args)
-    namespace_project_merge_request_url(entity.project.namespace, entity.project, entity, *args)
-  end
-
-  def project_snippet_url(entity, *args)
-    namespace_project_snippet_url(entity.project.namespace, entity.project, entity, *args)
+  include ::ProjectsHelper
+  include ::ApplicationSettingsHelper
+  include API::Helpers::RelatedResourcesHelpers
+  include ::Routing::ProjectsHelper
+  include ::Routing::Projects::MembersHelper
+  include ::Routing::Projects::ObservabilityHelper
+  include ::Routing::Groups::MembersHelper
+  include ::Routing::Groups::ObservabilityHelper
+  include ::Routing::MembersHelper
+  include ::Routing::ArtifactsHelper
+  include ::Routing::PipelineSchedulesHelper
+  include ::Routing::SnippetsHelper
+  include ::Routing::WikiHelper
+  include ::Routing::GraphqlHelper
+  include ::Routing::PseudonymizationHelper
+  include ::Routing::PackagesHelper
+  include ::Routing::OrganizationsHelper
+  included do
+    Gitlab::Routing.includes_helpers(self)
   end
 end
+
+GitlabRoutingHelper.include_mod_with('GitlabRoutingHelper')

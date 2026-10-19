@@ -1,0 +1,434 @@
+import HealthPresenter from 'ee_else_ce/glql/components/presenters/health.vue';
+import IterationPresenter from 'ee_else_ce/glql/components/presenters/iteration.vue';
+import StatusPresenter from 'ee_else_ce/glql/components/presenters/status.vue';
+import BoolPresenter from '~/glql/components/presenters/bool.vue';
+import CiItemPresenter from '~/glql/components/presenters/ci_item.vue';
+import CiStatusPresenter from '~/glql/components/presenters/ci_status.vue';
+import CodePresenter from '~/glql/components/presenters/code.vue';
+import CollectionPresenter from '~/glql/components/presenters/collection.vue';
+import DateBucketPresenter from '~/glql/components/presenters/date_bucket.vue';
+import TierBandPresenter from '~/glql/components/presenters/tier_band.vue';
+import DurationPresenter from '~/glql/components/presenters/duration.vue';
+import HtmlPresenter from '~/glql/components/presenters/html.vue';
+import IssuablePresenter from '~/glql/components/presenters/issuable.vue';
+import LabelPresenter from '~/glql/components/presenters/label.vue';
+import LinkPresenter from '~/glql/components/presenters/link.vue';
+import MilestonePresenter from '~/glql/components/presenters/milestone.vue';
+import NamedTextPresenter from '~/glql/components/presenters/named_text.vue';
+import NullPresenter from '~/glql/components/presenters/null.vue';
+import NumberPresenter from '~/glql/components/presenters/number.vue';
+import CreditsPresenter from '~/glql/components/presenters/credits.vue';
+import PercentagePresenter from '~/glql/components/presenters/percentage.vue';
+import ProjectPresenter from '~/glql/components/presenters/project.vue';
+import StatePresenter from '~/glql/components/presenters/state.vue';
+import TextPresenter from '~/glql/components/presenters/text.vue';
+import TimePresenter from '~/glql/components/presenters/time.vue';
+import TypePresenter from '~/glql/components/presenters/type.vue';
+import UrlPresenter from '~/glql/components/presenters/url.vue';
+import UserAvatarPresenter from '~/glql/components/presenters/user_avatar.vue';
+import UserPresenter from '~/glql/components/presenters/user.vue';
+import {
+  dataForField,
+  presenterFor,
+  presentersByFieldKey,
+  presentersByObjectType,
+  titleFieldFor,
+} from '~/glql/components/presenters/presenter_registry';
+import {
+  MOCK_ASSIGNEES,
+  MOCK_CI_STAGE,
+  MOCK_DIMENSIONS,
+  MOCK_DUO_USAGE_EVENTS_DIMENSIONS,
+  MOCK_DUO_MODEL,
+  MOCK_EPIC,
+  MOCK_GROUP,
+  MOCK_ISSUE,
+  MOCK_ITERATION,
+  MOCK_JOB,
+  MOCK_LABELS,
+  MOCK_MILESTONE,
+  MOCK_MR_ASSIGNEES,
+  MOCK_MR_AUTHOR,
+  MOCK_MR_REVIEWERS,
+  MOCK_PIPELINE,
+  MOCK_PROJECT,
+  MOCK_STATUS,
+  MOCK_USER,
+  MOCK_WORK_ITEM,
+  MOCK_WORK_ITEM_TYPE,
+} from '../../mock_data';
+
+const MOCK_LINK = { title: 'title', webUrl: 'url' };
+
+describe('presenter_registry', () => {
+  describe('presenterFor', () => {
+    it('returns NullPresenter when the resolved field is null', () => {
+      expect(presenterFor({ key: null }, 'key')).toBe(NullPresenter);
+    });
+
+    describe('typename dispatch (primitive / object types)', () => {
+      it.each`
+        dataType       | field                   | presenter
+        ${'string'}    | ${'text'}               | ${TextPresenter}
+        ${'number'}    | ${100}                  | ${TextPresenter}
+        ${'boolean'}   | ${true}                 | ${BoolPresenter}
+        ${'object'}    | ${MOCK_LINK}            | ${LinkPresenter}
+        ${'date'}      | ${'2021-01-01'}         | ${TimePresenter}
+        ${'user'}      | ${MOCK_USER}            | ${UserPresenter}
+        ${'user'}      | ${MOCK_MR_AUTHOR}       | ${UserPresenter}
+        ${'users'}     | ${MOCK_ASSIGNEES}       | ${CollectionPresenter}
+        ${'users'}     | ${MOCK_MR_ASSIGNEES}    | ${CollectionPresenter}
+        ${'users'}     | ${MOCK_MR_REVIEWERS}    | ${CollectionPresenter}
+        ${'label'}     | ${MOCK_LABELS.nodes[0]} | ${LabelPresenter}
+        ${'labels'}    | ${MOCK_LABELS}          | ${CollectionPresenter}
+        ${'milestone'} | ${MOCK_MILESTONE}       | ${MilestonePresenter}
+        ${'issue'}     | ${MOCK_ISSUE}           | ${IssuablePresenter}
+        ${'work_item'} | ${MOCK_WORK_ITEM}       | ${IssuablePresenter}
+        ${'epic'}      | ${MOCK_EPIC}            | ${IssuablePresenter}
+        ${'iteration'} | ${MOCK_ITERATION}       | ${IterationPresenter}
+        ${'status'}    | ${MOCK_STATUS}          | ${StatusPresenter}
+        ${'type'}      | ${MOCK_WORK_ITEM_TYPE}  | ${TypePresenter}
+        ${'pipeline'}  | ${MOCK_PIPELINE}        | ${CiItemPresenter}
+        ${'job'}       | ${MOCK_JOB}             | ${CiItemPresenter}
+        ${'stage'}     | ${MOCK_CI_STAGE}        | ${NamedTextPresenter}
+        ${'project'}   | ${MOCK_PROJECT}         | ${ProjectPresenter}
+        ${'group'}     | ${MOCK_GROUP}           | ${LinkPresenter}
+        ${'model'}     | ${MOCK_DUO_MODEL}       | ${NamedTextPresenter}
+      `('resolves $dataType to the matching presenter', ({ field, presenter }) => {
+        expect(presenterFor({ key: field }, 'key')).toBe(presenter);
+      });
+    });
+
+    describe('field-key dispatch', () => {
+      it.each`
+        fieldKey                      | field            | presenter
+        ${'user'}                     | ${MOCK_USER}     | ${UserPresenter}
+        ${'health'}                   | ${'onTrack'}     | ${HealthPresenter}
+        ${'healthStatus'}             | ${'onTrack'}     | ${HealthPresenter}
+        ${'state'}                    | ${'opened'}      | ${StatePresenter}
+        ${'lastComment'}              | ${'lastComment'} | ${HtmlPresenter}
+        ${'type'}                     | ${'TASK'}        | ${TypePresenter}
+        ${'duration'}                 | ${3600}          | ${DurationPresenter}
+        ${'webPath'}                  | ${'/foo'}        | ${UrlPresenter}
+        ${'shortSha'}                 | ${'abc123'}      | ${CodePresenter}
+        ${'refName'}                  | ${'main'}        | ${CodePresenter}
+        ${'acceptanceRate'}           | ${0.75}          | ${PercentagePresenter}
+        ${'successRate'}              | ${0.95}          | ${PercentagePresenter}
+        ${'failureRate'}              | ${0.04}          | ${PercentagePresenter}
+        ${'canceledRate'}             | ${0.005}         | ${PercentagePresenter}
+        ${'skippedRate'}              | ${0.001}         | ${PercentagePresenter}
+        ${'acceptedCount'}            | ${1234}          | ${NumberPresenter}
+        ${'rejectedCount'}            | ${567}           | ${NumberPresenter}
+        ${'shownCount'}               | ${1801}          | ${NumberPresenter}
+        ${'totalCount'}               | ${10000}         | ${NumberPresenter}
+        ${'usersCount'}               | ${42}            | ${NumberPresenter}
+        ${'suggestionSizeSum'}        | ${500000}        | ${NumberPresenter}
+        ${'throughputCount'}          | ${25}            | ${NumberPresenter}
+        ${'featuresCount'}            | ${3}             | ${NumberPresenter}
+        ${'returningUsersCount'}      | ${12}            | ${NumberPresenter}
+        ${'previousPeriodUsersCount'} | ${8}             | ${NumberPresenter}
+        ${'durationQuantile'}         | ${3661}          | ${DurationPresenter}
+        ${'timeToMergeQuantile'}      | ${250}           | ${DurationPresenter}
+        ${'timeToMergeMean'}          | ${90}            | ${DurationPresenter}
+        ${'timeToMergeMin'}           | ${30}            | ${DurationPresenter}
+        ${'timeToMergeMax'}           | ${3600}          | ${DurationPresenter}
+        ${'timeToMergeSum'}           | ${3661}          | ${DurationPresenter}
+        ${'queuedDuration'}           | ${90}            | ${DurationPresenter}
+        ${'completionRate'}           | ${0.6}           | ${PercentagePresenter}
+        ${'finishedCount'}            | ${789}           | ${NumberPresenter}
+        ${'durationMean'}             | ${90}            | ${DurationPresenter}
+        ${'durationMin'}              | ${30}            | ${DurationPresenter}
+        ${'durationMax'}              | ${3600}          | ${DurationPresenter}
+        ${'durationSum'}              | ${3661}          | ${DurationPresenter}
+        ${'projectsCount'}            | ${5}             | ${NumberPresenter}
+        ${'creditsUsedMin'}           | ${0.25}          | ${CreditsPresenter}
+        ${'creditsUsedMax'}           | ${41.36}         | ${CreditsPresenter}
+        ${'creditsUsedMean'}          | ${18.456}        | ${CreditsPresenter}
+        ${'creditsUsedSum'}           | ${2214.77}       | ${CreditsPresenter}
+        ${'creditsUsedQuantile'}      | ${19.12}         | ${CreditsPresenter}
+        ${'creditsPerMergedMrRatio'}  | ${543.35}        | ${CreditsPresenter}
+        ${'flowTypesCount'}           | ${3}             | ${NumberPresenter}
+        ${'joinedUsersCount'}         | ${6}             | ${NumberPresenter}
+        ${'churnedUsersCount'}        | ${3}             | ${NumberPresenter}
+        ${'createdMrCountMin'}        | ${0}             | ${NumberPresenter}
+        ${'createdMrCountMax'}        | ${4}             | ${NumberPresenter}
+        ${'createdMrCountMean'}       | ${1.5}           | ${NumberPresenter}
+        ${'createdMrCountSum'}        | ${37}            | ${NumberPresenter}
+        ${'createdMrCountQuantile'}   | ${2}             | ${NumberPresenter}
+        ${'mergedMrCountMin'}         | ${0}             | ${NumberPresenter}
+        ${'mergedMrCountMax'}         | ${4}             | ${NumberPresenter}
+        ${'mergedMrCountMean'}        | ${1.5}           | ${NumberPresenter}
+        ${'mergedMrCountSum'}         | ${37}            | ${NumberPresenter}
+        ${'mergedMrCountQuantile'}    | ${2}             | ${NumberPresenter}
+        ${'closedMrCountMin'}         | ${0}             | ${NumberPresenter}
+        ${'closedMrCountMax'}         | ${4}             | ${NumberPresenter}
+        ${'closedMrCountMean'}        | ${1.5}           | ${NumberPresenter}
+        ${'closedMrCountSum'}         | ${37}            | ${NumberPresenter}
+        ${'closedMrCountQuantile'}    | ${2}             | ${NumberPresenter}
+        ${'openMrCountMin'}           | ${0}             | ${NumberPresenter}
+        ${'openMrCountMax'}           | ${4}             | ${NumberPresenter}
+        ${'openMrCountMean'}          | ${1.5}           | ${NumberPresenter}
+        ${'openMrCountSum'}           | ${37}            | ${NumberPresenter}
+        ${'openMrCountQuantile'}      | ${2}             | ${NumberPresenter}
+      `(
+        'resolves field key $fieldKey to the matching presenter',
+        ({ fieldKey, field, presenter }) => {
+          expect(presenterFor({ [fieldKey]: field }, fieldKey)).toBe(presenter);
+        },
+      );
+    });
+
+    describe('type-scoped field-key dispatch', () => {
+      it('resolves status on a CiJob to CiStatusPresenter', () => {
+        expect(presenterFor({ __typename: 'CiJob', status: 'SUCCESS' }, 'status')).toBe(
+          CiStatusPresenter,
+        );
+      });
+
+      it('resolves status on a Pipeline to CiStatusPresenter', () => {
+        expect(presenterFor({ __typename: 'Pipeline', status: 'FAILED' }, 'status')).toBe(
+          CiStatusPresenter,
+        );
+      });
+
+      it('resolves status on PipelinesAggregationResponseDimensions to CiStatusPresenter', () => {
+        expect(
+          presenterFor(
+            { __typename: 'PipelinesAggregationResponseDimensions', status: 'SUCCESS' },
+            'status',
+          ),
+        ).toBe(CiStatusPresenter);
+      });
+
+      it('does not resolve status on other typenames to CiStatusPresenter', () => {
+        expect(presenterFor({ __typename: 'Issue', status: 'open' }, 'status')).not.toBe(
+          CiStatusPresenter,
+        );
+      });
+
+      it('renders status on Duo workflows dimensions as plain text', () => {
+        expect(
+          presenterFor(
+            { __typename: 'DuoWorkflowsAggregationResponseDimensions', status: 'finished' },
+            'status',
+          ),
+        ).toBe(TextPresenter);
+      });
+
+      it('resolves user on analytics dimensions to UserAvatarPresenter', () => {
+        expect(presenterFor({ ...MOCK_DIMENSIONS, user: MOCK_USER }, 'user')).toBe(
+          UserAvatarPresenter,
+        );
+      });
+
+      it('resolves user on Duo usage events dimensions to UserAvatarPresenter', () => {
+        expect(presenterFor(MOCK_DUO_USAGE_EVENTS_DIMENSIONS, 'user')).toBe(UserAvatarPresenter);
+      });
+
+      it('resolves user on agent platform sessions dimensions to UserAvatarPresenter', () => {
+        expect(
+          presenterFor(
+            { __typename: 'AgentPlatformSessionsAggregationResponseDimensions', user: MOCK_USER },
+            'user',
+          ),
+        ).toBe(UserAvatarPresenter);
+      });
+
+      it('resolves user on Duo workflows dimensions to UserAvatarPresenter', () => {
+        expect(
+          presenterFor(
+            { __typename: 'DuoWorkflowsAggregationResponseDimensions', user: MOCK_USER },
+            'user',
+          ),
+        ).toBe(UserAvatarPresenter);
+      });
+
+      it('resolves user on other typenames to UserPresenter', () => {
+        expect(presenterFor({ user: MOCK_USER }, 'user')).toBe(UserPresenter);
+      });
+
+      it('falls back to primitive type for items missing __typename', () => {
+        expect(presenterFor({ status: 'open' }, 'status')).toBe(TextPresenter);
+      });
+    });
+
+    describe('variant dispatch', () => {
+      const compact = { variant: 'compact' };
+
+      it('resolves user field key with compact variant to UserPresenter', () => {
+        expect(presenterFor({ user: MOCK_USER }, 'user', compact)).toBe(UserPresenter);
+      });
+
+      it('resolves compact even when typename would match a richer presenter', () => {
+        expect(presenterFor({ ...MOCK_DIMENSIONS, user: MOCK_USER }, 'user', compact)).toBe(
+          UserPresenter,
+        );
+      });
+
+      it('falls through to typename dispatch when variant has no match', () => {
+        expect(presenterFor({ __typename: 'Pipeline', status: 'FAILED' }, 'status', compact)).toBe(
+          CiStatusPresenter,
+        );
+      });
+
+      it('resolves a Project with compact variant to LinkPresenter', () => {
+        expect(presenterFor({ key: MOCK_PROJECT }, 'key', compact)).toBe(LinkPresenter);
+      });
+
+      it('resolves a Project with default variant to ProjectPresenter', () => {
+        expect(presenterFor({ key: MOCK_PROJECT }, 'key')).toBe(ProjectPresenter);
+      });
+    });
+
+    describe('decoupled data and presenter keys', () => {
+      it('resolves data by the data key while dispatching by the presenter key', () => {
+        const presenter = presenterFor({ p50: 3661 }, 'p50', {
+          presenterKey: 'durationQuantile',
+        });
+
+        expect(presenter).not.toBe(NullPresenter);
+        expect(presenter).toBe(DurationPresenter);
+      });
+
+      it('routes aliased fields without a registered presenter by primitive type of the data', () => {
+        expect(
+          presenterFor({ Monthly: '2026-06-01' }, 'Monthly', { presenterKey: 'timestamp' }),
+        ).toBe(TimePresenter);
+      });
+
+      it('returns NullPresenter when the value under the data key is null', () => {
+        expect(presenterFor({ p50: null }, 'p50', { presenterKey: 'durationQuantile' })).toBe(
+          NullPresenter,
+        );
+      });
+    });
+
+    describe('date bucket dispatch', () => {
+      const monthly = { parameters: { granularity: 'monthly' } };
+
+      it('routes a bucket-shaped value on a field with a granularity to DateBucketPresenter', () => {
+        expect(presenterFor({ created: '2026-06-01' }, 'created', monthly)).toBe(
+          DateBucketPresenter,
+        );
+      });
+
+      it('routes an aliased bucket dimension to DateBucketPresenter', () => {
+        expect(
+          presenterFor({ Monthly: '2026-06-01' }, 'Monthly', {
+            presenterKey: 'created',
+            ...monthly,
+          }),
+        ).toBe(DateBucketPresenter);
+      });
+
+      it('keeps relative time for date strings without a granularity', () => {
+        expect(presenterFor({ created: '2026-06-01' }, 'created')).toBe(TimePresenter);
+      });
+
+      it('routes any string on a field with a granularity to DateBucketPresenter', () => {
+        expect(presenterFor({ size: 'large' }, 'size', monthly)).toBe(DateBucketPresenter);
+      });
+
+      it('falls through to regular dispatch for non-string values', () => {
+        expect(presenterFor({ size: 42 }, 'size', monthly)).toBe(TextPresenter);
+        expect(presenterFor({ user: MOCK_USER }, 'user', monthly)).toBe(UserPresenter);
+      });
+
+      it('routes a bucket dimension aliased as the title field by its own value', () => {
+        expect(
+          presenterFor({ __typename: 'Issue', title: '2026-06-01' }, 'title', {
+            presenterKey: 'created',
+            ...monthly,
+          }),
+        ).toBe(DateBucketPresenter);
+      });
+
+      it('returns NullPresenter when the bucket value is null', () => {
+        expect(presenterFor({ created: null }, 'created', monthly)).toBe(NullPresenter);
+      });
+    });
+
+    describe('tier band dispatch', () => {
+      const tiers = { parameters: { thresholds: ['5', '25', '100'] } };
+
+      it('routes a tier value on a field with thresholds to TierBandPresenter', () => {
+        expect(presenterFor({ userTier: 'tier_0' }, 'userTier', tiers)).toBe(TierBandPresenter);
+      });
+
+      it('routes an aliased tier dimension to TierBandPresenter', () => {
+        expect(
+          presenterFor({ Tier: 'tier_0' }, 'Tier', { presenterKey: 'userTier', ...tiers }),
+        ).toBe(TierBandPresenter);
+      });
+
+      it('keeps regular dispatch for tier values without thresholds', () => {
+        expect(presenterFor({ userTier: 'tier_0' }, 'userTier')).toBe(TextPresenter);
+      });
+
+      it('returns NullPresenter when the tier value is null', () => {
+        expect(presenterFor({ userTier: null }, 'userTier', tiers)).toBe(NullPresenter);
+      });
+    });
+
+    describe('title-aliased field keys', () => {
+      it('routes a Project item by its `name` field through ProjectPresenter', () => {
+        expect(presenterFor(MOCK_PROJECT, 'name')).toBe(ProjectPresenter);
+      });
+
+      it('still routes an Issue item by its `title` field through IssuablePresenter', () => {
+        expect(presenterFor(MOCK_ISSUE, 'title')).toBe(IssuablePresenter);
+      });
+    });
+  });
+
+  describe('dataForField', () => {
+    it('returns the item itself when fieldKey is empty', () => {
+      expect(dataForField(MOCK_PROJECT, '')).toBe(MOCK_PROJECT);
+    });
+
+    it('returns the item itself when fieldKey matches the title alias for its typename', () => {
+      expect(dataForField(MOCK_PROJECT, 'name')).toBe(MOCK_PROJECT);
+      expect(dataForField(MOCK_ISSUE, 'title')).toBe(MOCK_ISSUE);
+    });
+
+    it('returns the field value for non-title field keys', () => {
+      expect(dataForField({ key: 'value' }, 'key')).toBe('value');
+    });
+
+    it('returns the field value when only the alias matches the title field', () => {
+      expect(dataForField({ ...MOCK_ISSUE, title: '2026-06-01' }, 'title', 'created')).toBe(
+        '2026-06-01',
+      );
+    });
+
+    it('returns the item when the base field is the title field under an alias', () => {
+      const item = { ...MOCK_ISSUE, Name: 'x' };
+      expect(dataForField(item, 'Name', 'title')).toBe(item);
+    });
+  });
+
+  describe('titleFieldFor', () => {
+    it('returns the alias declared on the typename', () => {
+      expect(titleFieldFor('Project')).toBe('name');
+    });
+
+    it('falls back to `title` for typenames without an alias', () => {
+      expect(titleFieldFor('Issue')).toBe('title');
+      expect(titleFieldFor('Unknown')).toBe('title');
+      expect(titleFieldFor(undefined)).toBe('title');
+    });
+  });
+
+  // presenterByFieldKey is checked before presenterByObjectType in the
+  // dispatch chain, so a colliding key would intercept the whole-item
+  // dataForField shortcut and feed an object to a primitive-shaped presenter.
+  it('declares no titleField that collides with presentersByFieldKey', () => {
+    const titleFields = Object.values(presentersByObjectType)
+      .map((config) => config?.titleField)
+      .filter(Boolean);
+
+    titleFields.forEach((field) => {
+      expect(presentersByFieldKey).not.toHaveProperty(field);
+    });
+  });
+});

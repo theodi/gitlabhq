@@ -1,0 +1,81 @@
+---
+stage: Security Governance
+group: Security Controls
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Security attributes
+description: Security attributes allows security teams to apply custom metadata labels to projects and groups, enabling them to filter and prioritize security risks based on business context.
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/18010) in GitLab 18.5 with flags named `security_context_labels` and `security_categories_and_attributes`. Disabled by default. This feature was introduced in [beta](../../../policy/development_stages_support.md).
+- [Enabled on GitLab.com, GitLab Self-Managed, and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/issues/551226) in GitLab 18.6.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/work_items/588619) in GitLab 18.9. Feature flag `security_inventory_dashboard` removed.
+
+{{< /history >}}
+
+Security teams can now apply metadata specific to their own organization and business needs to projects using security attributes.
+
+Security attributes are organized by categories based on:
+
+- Business impact
+- Application
+- Business unit
+- Internet exposure
+- Location
+
+By applying these attributes across your projects, you can much more quickly identify which projects require action based on your own organization's risk posture and business needs. With security attributes, you can:
+
+- Identify projects that are mission critical and require stronger scan coverage.
+- Review scan coverage for each application or business unit.
+- Locate projects that contribute to publicly accessible and exposed applications.
+
+Track the development of the security inventory in [epic 16939](https://gitlab.com/groups/gitlab-org/-/work_items/16939). Share [your feedback](https://gitlab.com/gitlab-org/gitlab/-/issues/553062) as development continues on this feature.
+
+## Manage security attributes for groups
+
+Prerequisites:
+
+- You must have the Security Manager, Maintainer, or Owner role in the top-level group (namespace) to manage security attributes.
+
+To manage security attributes for a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Security configuration**.
+
+## Manage security attributes for projects
+
+Prerequisites:
+
+- You must have the Security Manager, Maintainer, or Owner role in the top-level group (namespace) to manage security attributes.
+
+To manage security attributes for a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Secure** > **Security configuration**.
+1. Select the **Security attributes** tab.
+
+## Related topics
+
+- [Security inventory](../security_inventory/_index.md)
+- [Security dashboard](../security_dashboard/_index.md)
+- [Vulnerability reports](../vulnerability_report/_index.md)
+
+## Troubleshooting
+
+When working with the security attributes, you might encounter the following issues.
+
+### Security configuration menu item missing
+
+Users might not have the required permissions to access the **Security configuration** menu item even if they are a Security Manager, Maintainer, or Owner in that group.
+
+The menu item only displays for groups when the authenticated user has the Security Manager, Maintainer, or Owner role in the top-level group (namespace) that contains the subgroup.
+
+To manage security attributes, ask a maintainer to complete the configuration changes or request the Maintainer role from your administrator.

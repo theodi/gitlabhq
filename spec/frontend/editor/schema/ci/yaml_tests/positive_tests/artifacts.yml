@@ -1,0 +1,97 @@
+# valid artifact:reports:browser_performance
+browser_performance string path:
+  artifacts:
+    reports:
+      browser_performance: foo
+
+# valid artifact:reports:cyclonedx
+cyclonedx string path:
+  artifacts:
+    reports:
+      cyclonedx: foo
+
+cyclonedx glob path:
+  artifacts:
+    reports:
+      cyclonedx: "*.foo"
+
+cylonedx list of string paths:
+  artifacts:
+    reports:
+      cyclonedx:
+        - foo
+        - ./bar/baz
+
+cylonedx mixed list of string paths and globs:
+  artifacts:
+    reports:
+      cyclonedx:
+        - ./foo
+        - "bar/*.baz"
+
+# valid artifacts:reports:coverage_report
+coverage-report-cobertura:
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+
+coverage-report-null:
+  artifacts:
+    reports:
+      coverage_report: null
+
+# valid artifacts:when
+artifacts-when-on-failure:
+  artifacts:
+    when: on_failure
+
+artifacts-no-when:
+  artifacts:
+    paths:
+      - binaries/
+
+artifacts-access-developer:
+  artifacts:
+    access: developer
+
+artifacts-access-all:
+  artifacts:
+    access: all
+
+artifacts-access-none:
+  artifacts:
+    access: none
+
+annotations-report-annotations-normal:
+  artifacts:
+    reports:
+      annotations: upload_report.json
+
+# valid artifacts:reports:accessibility
+accessibility-report-gl-path:
+  artifacts:
+    reports:
+      accessibility: reports/gl-accessibility.json
+
+# valid artifacts:public
+artifacts-public-false:
+  artifacts:
+    public: false
+    paths:
+      - binaries/
+
+# valid artifacts:reports:api_fuzzing
+api-fuzzing-report-string-path:
+  artifacts:
+    reports:
+      api_fuzzing: gl-api-fuzzing-report.json
+
+# valid artifacts:reports:coverage_fuzzing
+coverage-fuzzing-report-list-of-paths:
+  artifacts:
+    reports:
+      coverage_fuzzing:
+        - gl-coverage-fuzzing-report.json
+        - ./reports/gl-coverage-fuzzing-report.json

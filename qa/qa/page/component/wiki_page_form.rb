@@ -1,0 +1,105 @@
+# frozen_string_literal: true
+
+module QA
+  module Page
+    module Component
+      module WikiPageForm
+        extend QA::Page::PageConcern
+
+        def self.included(base)
+          super
+
+          base.view 'app/assets/javascripts/wikis/components/wiki_form.vue' do
+            element 'wiki-title-textbox'
+            element 'wiki-path-textbox'
+            element 'wiki-message-textbox'
+            element 'wiki-submit-button'
+            element 'wiki-confirm-message'
+            element 'commit-message-modal'
+          end
+
+          base.view 'app/assets/javascripts/vue_shared/components/markdown/markdown_editor.vue' do
+            element 'markdown-editor-form-field'
+          end
+
+          base.view 'app/assets/javascripts/vue_shared/components/markdown/editor_mode_switcher.vue' do
+            element 'editing-mode-switcher'
+          end
+
+          base.view 'app/assets/javascripts/wikis/components/delete_wiki_modal.vue' do
+            element 'delete-button'
+          end
+        end
+
+        def set_path(path)
+          if has_css?('#wiki-page-options', wait: 1)
+            find('#wiki-page-options').click
+
+            if has_element?('wiki-path-textbox', wait: 1)
+              fill_element('wiki-path-textbox', path)
+              return
+            end
+          end
+
+          set_title(path)
+        end
+
+        def set_title(title)
+          fill_element('wiki-title-textbox', title)
+        end
+
+        def set_content(content)
+          fill_editor_element('markdown-editor-form-field', content)
+        end
+
+        def close_sidebar
+          find('.wiki-sidebar .toggle-close').click if has_css?('.wiki-sidebar .toggle-close', wait: 1)
+        end
+
+        def set_message(message)
+          fill_element('wiki-message-textbox', message)
+        end
+
+        def click_submit
+          # In case any changes were just made, wait for the hidden content field to be updated via a deferred call
+          # before clicking submit. See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/97693#note_1098728562
+          sleep 0.5
+
+          click_element('wiki-submit-button')
+
+          wait_until(reload: false) do
+            has_element?('commit-message-modal', wait: 0) || has_no_element?('wiki-title-textbox', wait: 0)
+          end
+        end
+
+        def confirm_message
+          sleep 0.5
+
+          click_element('wiki-confirm-message')
+
+          QA::Support::Retrier.retry_on_exception do
+            has_no_element?('wiki-title-textbox')
+          end
+        end
+
+        def delete_page
+          click_element('delete-button', Page::Modal::DeleteWiki)
+          Page::Modal::DeleteWiki.perform(&:confirm_deletion)
+        end
+
+        def use_new_editor
+          return if has_element?('content-editor')
+
+          click_element('editing-mode-switcher')
+
+          wait_until(reload: false) do
+            has_element?('content-editor')
+          end
+
+          # Remove once tabindex error is fixed: https://gitlab.com/gitlab-org/gitlab/-/issues/493891
+          sleep 2
+        end
+      end
+    end
+  end
+end

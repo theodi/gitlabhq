@@ -1,0 +1,105 @@
+# @feature_category: continuous_integration
+# @urgency: low
+fragment LinkedPipelineData on Pipeline {
+  id
+  iid
+  path
+  cancelable
+  retryable
+  status: detailedStatus {
+    id
+    group
+    label
+    icon
+    text
+  }
+  sourceJob {
+    id
+    name
+    retried
+  }
+  project {
+    id
+    name
+    fullPath
+  }
+}
+
+query getPipelineDetails($projectPath: ID!, $iid: ID!) {
+  project(fullPath: $projectPath) {
+    id
+    pipeline(iid: $iid) {
+      id
+      iid
+      usesNeeds
+      downstream {
+        nodes {
+          ...LinkedPipelineData
+          name
+        }
+      }
+      upstream {
+        ...LinkedPipelineData
+      }
+      stages {
+        nodes {
+          id
+          name
+          status: detailedStatus {
+            id
+            action {
+              id
+              icon
+              path
+              title
+              confirmationMessage
+            }
+          }
+          groups {
+            nodes {
+              id
+              status: detailedStatus {
+                id
+                label
+                group
+                icon
+                text
+              }
+              name
+              size
+              jobs {
+                nodes {
+                  id
+                  name
+                  kind
+                  source
+                  scheduled
+                  scheduledAt
+                  status: detailedStatus {
+                    id
+                    icon
+                    tooltip
+                    hasDetails
+                    detailsPath
+                    deploymentDetailsPath
+                    group
+                    label
+                    text
+                    action {
+                      id
+                      buttonTitle
+                      confirmationMessage
+                      icon
+                      path
+                      title
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

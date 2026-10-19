@@ -1,0 +1,15 @@
+---
+table: project_authorizations
+database: main
+replication_targets:
+  - name: clickhouse_main
+    target: siphon_project_authorizations
+    dedup_by_columns_lookup_table: siphon_project_authorizations_pg_pkey_ordered
+    dedup_by:
+      - user_id
+      - project_id
+      - access_level
+    reconcile:
+      column: traversal_path
+      expression_key_columns:
+        - project_id

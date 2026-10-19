@@ -1,0 +1,17 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    class ProtectedRefAccess < Grape::Entity
+      expose :id, documentation: { type: 'Integer', format: 'int64', example: 1 }
+      # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+      expose :access_level, documentation: { type: 'Integer', example: 40 }
+      # rubocop:enable API/AccessLevelStringType
+      expose :humanize, as: :access_level_description, documentation: { type: 'String', example: 'Maintainers' }
+      expose :deploy_key_id, documentation: { type: 'Integer', format: 'int64', example: 1 },
+        if: ->(access) { access.has_attribute?(:deploy_key_id) }
+    end
+  end
+end
+
+API::Entities::ProtectedRefAccess.prepend_mod_with('API::Entities::ProtectedRefAccess')

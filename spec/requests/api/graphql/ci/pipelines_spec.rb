@@ -1,0 +1,1153 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Query.project(fullPath).pipelines', feature_category: :continuous_integration do
+  include GraphqlHelpers
+
+  let_it_be(:project) { create(:project, :repository, :public) }
+  let_it_be(:user) { create(:user) }
+
+  around do |example|
+    travel_to(Time.current) { example.run }
+  end
+
+  describe 'TAGS and BRANCHES scope' do
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+    let_it_be(:branch_pipeline) { create(:ci_pipeline, project: project, ref: 'feature') }
+    let_it_be(:tag_pipeline) { create(:ci_pipeline, project: project, ref: 'v1.0.0', tag: true) }
+
+    let(:scope) { '' }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines(scope: #{scope}) {
+              nodes {
+                ref
+              }
+            }
+          }
+        }
+      )
+    end
+
+    context 'when the scope is branch pipelines' do
+      let(:scope) { 'BRANCHES' }
+
+      it 'returns all branch pipelines' do
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data_at(:project, :pipelines, :nodes, :ref))
+          .to contain_exactly(eq(pipeline.ref), eq(branch_pipeline.ref))
+      end
+    end
+
+    context 'when the scope is tag pipelines' do
+      let(:scope) { 'TAGS' }
+
+      it 'returns all tag pipelines' do
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data_at(:project, :pipelines, :nodes, :ref)).to contain_exactly(eq(tag_pipeline.ref))
+      end
+    end
+  end
+
+  describe 'sha' do
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+
+    let(:pipelines_graphql_data) { graphql_data.dig(*%w[project pipelines nodes]).first }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                fullSha: sha
+                shortSha: sha(format: SHORT)
+                alsoFull: sha(format: LONG)
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it 'returns all formats of the SHA' do
+      post_graphql(query, current_user: user)
+
+      expect(pipelines_graphql_data).to include(
+        'fullSha' => eq(pipeline.sha),
+        'alsoFull' => eq(pipeline.sha),
+        'shortSha' => eq(pipeline.short_sha)
+      )
+    end
+
+    it_behaves_like 'authorizing granular token permissions for GraphQL',
+      [:read_project, :read_pipeline] do
+      let(:boundary_object) { project }
+      let(:request) { post_graphql(query, token: { personal_access_token: pat }) }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+  end
+
+  describe 'commit summary fields' do
+    let_it_be(:private_project) { create(:project, :repository, :private, public_builds: true) }
+    let_it_be(:guest) { create(:user, guest_of: private_project) }
+    let_it_be(:reporter) { create(:user, reporter_of: private_project) }
+    let_it_be(:commit, freeze: false) { private_project.commit }
+    let_it_be(:pipeline) { create(:ci_pipeline, project: private_project, sha: commit.id) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{private_project.full_path}") {
+            pipelines {
+              nodes {
+                iid
+                commitTitle
+                commitAuthorName
+                commitAuthorGravatar
+                commit {
+                  title
+                  authorName
+                  authorGravatar
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    def node_for(pipeline)
+      graphql_data_at(:project, :pipelines, :nodes).find { |node| node['iid'] == pipeline.iid.to_s }
+    end
+
+    context 'when the user is a guest without permission to read code' do
+      it 'returns the summary fields but not the commit' do
+        post_graphql(query, current_user: guest)
+
+        expect(graphql_errors).to be_nil
+        expect(node_for(pipeline)).to eq(
+          'iid' => pipeline.iid.to_s,
+          'commitTitle' => commit.title,
+          'commitAuthorName' => commit.author_name,
+          'commitAuthorGravatar' => GravatarService.new.execute(commit.author_email, 40),
+          'commit' => nil
+        )
+      end
+    end
+
+    context 'when the user is a reporter with permission to read code' do
+      it 'returns the same values as the commit field' do
+        post_graphql(query, current_user: reporter)
+
+        expect(graphql_errors).to be_nil
+        expect(node_for(pipeline)).to eq(
+          'iid' => pipeline.iid.to_s,
+          'commitTitle' => commit.title,
+          'commitAuthorName' => commit.author_name,
+          'commitAuthorGravatar' => GravatarService.new.execute(commit.author_email, 40),
+          'commit' => {
+            'title' => commit.title,
+            'authorName' => commit.author_name,
+            'authorGravatar' => GravatarService.new.execute(commit.author_email, 40)
+          }
+        )
+      end
+    end
+
+    context 'when the user is anonymous' do
+      it 'does not expose the private project' do
+        post_graphql(query)
+
+        expect(graphql_data_at(:project)).to be_nil
+      end
+    end
+
+    context 'when the pipeline SHA is not in the repository' do
+      let_it_be(:orphan_pipeline) do
+        create(:ci_pipeline, project: private_project, sha: '0000000000000000000000000000000000000001')
+      end
+
+      it 'returns nil for the summary fields without an error' do
+        post_graphql(query, current_user: guest)
+
+        expect(graphql_errors).to be_nil
+        expect(node_for(orphan_pipeline)).to include(
+          'commitTitle' => nil,
+          'commitAuthorName' => nil,
+          'commitAuthorGravatar' => nil
+        )
+      end
+    end
+
+    describe 'Gitaly calls' do
+      let(:summary_only_query) do
+        %(
+          query {
+            project(fullPath: "#{private_project.full_path}") {
+              pipelines {
+                nodes {
+                  commitTitle
+                  commitAuthorName
+                  commitAuthorGravatar
+                }
+              }
+            }
+          }
+        )
+      end
+
+      # The request store is cleared when each request ends, so count real client calls instead.
+      def gitaly_calls_for(graphql_query)
+        calls = 0
+        allow(Gitlab::GitalyClient).to receive(:call).and_wrap_original do |original, *args, **kwargs, &block|
+          calls += 1
+          original.call(*args, **kwargs, &block)
+        end
+
+        post_graphql(graphql_query, current_user: reporter)
+        calls
+      end
+
+      before do
+        post_graphql(summary_only_query, current_user: reporter)
+      end
+
+      def create_pipelines_for_other_commits
+        private_project.repository.commits('master', limit: 3).drop(1).each do |other_commit|
+          create(:ci_pipeline, project: private_project, sha: other_commit.id)
+        end
+      end
+
+      it 'does not issue an additional Gitaly call per pipeline' do
+        single_pipeline_calls = gitaly_calls_for(summary_only_query)
+
+        create_pipelines_for_other_commits
+
+        expect(gitaly_calls_for(summary_only_query)).to eq(single_pipeline_calls)
+      end
+
+      it 'shares the batched commit lookup with the commit field' do
+        create_pipelines_for_other_commits
+
+        expect(gitaly_calls_for(query)).to eq(gitaly_calls_for(summary_only_query))
+      end
+    end
+  end
+
+  describe 'duration fields' do
+    let_it_be_with_reload(:pipeline) do
+      create(:ci_pipeline, project: project)
+    end
+
+    let(:query_path) do
+      [
+        [:project, { full_path: project.full_path }],
+        [:pipelines],
+        [:nodes]
+      ]
+    end
+
+    let(:query) do
+      wrap_fields(query_graphql_path(query_path, 'queuedDuration duration'))
+    end
+
+    before do
+      pipeline.update!(
+        created_at: 1.minute.ago,
+        started_at: 55.seconds.ago
+      )
+      create(:ci_build, :success, pipeline: pipeline, started_at: 55.seconds.ago, finished_at: 10.seconds.ago)
+      pipeline.update_duration
+      pipeline.save!
+
+      post_graphql(query, current_user: user)
+    end
+
+    it 'includes the duration fields' do
+      path = query_path.map(&:first)
+      expect(graphql_data_at(*path, :queued_duration)).to eq [5.0]
+      expect(graphql_data_at(*path, :duration)).to eq [45]
+    end
+  end
+
+  describe '.stages' do
+    let_it_be(:project) { create(:project, :repository) }
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+    let_it_be(:stage) { create(:ci_stage, pipeline: pipeline, project: project) }
+    let_it_be(:other_stage) { create(:ci_stage, pipeline: pipeline, project: project, name: 'other') }
+
+    let(:first_n) { var('Int') }
+    let(:query_path) do
+      [
+        [:project, { full_path: project.full_path }],
+        [:pipelines],
+        [:nodes],
+        [:stages, { first: first_n }],
+        [:nodes]
+      ]
+    end
+
+    let(:query) do
+      with_signature([first_n], wrap_fields(query_graphql_path(query_path, :name)))
+    end
+
+    before_all do
+      # see app/services/ci/ensure_stage_service.rb to explain why we use stage_id
+      create(:ci_build, pipeline: pipeline, stage_id: stage.id, name: 'linux: [foo]')
+      create(:ci_build, pipeline: pipeline, stage_id: stage.id, name: 'linux: [bar]')
+      create(:ci_build, pipeline: pipeline, stage_id: other_stage.id, name: 'linux: [baz]')
+    end
+
+    it 'is present if the user has guest access' do
+      project.add_guest(user)
+
+      post_graphql(query, current_user: user)
+
+      expect(graphql_data_at(:project, :pipelines, :nodes, :stages, :nodes, :name))
+        .to contain_exactly(eq(stage.name), eq(other_stage.name))
+    end
+
+    it 'is present if the user has reporter access' do
+      project.add_reporter(user)
+
+      post_graphql(query, current_user: user)
+
+      expect(graphql_data_at(:project, :pipelines, :nodes, :stages, :nodes, :name))
+        .to contain_exactly(eq(stage.name), eq(other_stage.name))
+    end
+
+    describe '.groups' do
+      let(:query_path) do
+        [
+          [:project, { full_path: project.full_path }],
+          [:pipelines],
+          [:nodes],
+          [:stages],
+          [:nodes],
+          [:groups],
+          [:nodes]
+        ]
+      end
+
+      let(:query) do
+        wrap_fields(query_graphql_path(query_path, :name))
+      end
+
+      it 'is present if the user has guest access' do
+        project.add_guest(user)
+
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data_at(:project, :pipelines, :nodes, :stages, :nodes, :groups, :nodes, :name))
+          .to contain_exactly('linux', 'linux')
+      end
+
+      it 'is present if the user has reporter access' do
+        project.add_reporter(user)
+
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data_at(:project, :pipelines, :nodes, :stages, :nodes, :groups, :nodes, :name))
+          .to contain_exactly('linux', 'linux')
+      end
+    end
+  end
+
+  describe '.job' do
+    let(:first_n) { var('Int') }
+    let(:query_path) do
+      [
+        [:project, { full_path: project.full_path }],
+        [:pipelines],
+        [:nodes],
+        [:job, { name: 'Job 1' }]
+      ]
+    end
+
+    let(:query) do
+      wrap_fields(query_graphql_path(query_path, :status))
+    end
+
+    before_all do
+      pipeline = create(:ci_pipeline, project: project)
+      create(:ci_build, pipeline: pipeline, name: 'Job 1', status: :failed, retried: true)
+      create(:ci_build, pipeline: pipeline, name: 'Job 1', status: :success)
+    end
+
+    it 'fetches the latest job with the given name' do
+      post_graphql(query, current_user: user)
+      expect(graphql_data_at(*query_path.map(&:first))).to contain_exactly a_hash_including(
+        'status' => 'SUCCESS'
+      )
+    end
+  end
+
+  describe '.jobs' do
+    let(:first_n) { var('Int') }
+    let(:query_path) do
+      [
+        [:project, { full_path: project.full_path }],
+        [:pipelines, { first: first_n }],
+        [:nodes],
+        [:jobs],
+        [:nodes]
+      ]
+    end
+
+    let(:query) do
+      with_signature([first_n], wrap_fields(query_graphql_path(query_path, :name)))
+    end
+
+    before_all do
+      pipeline = create(:ci_pipeline, project: project)
+      create(:ci_build, pipeline: pipeline, name: 'Job 1')
+      pipeline = create(:ci_pipeline, project: project)
+      create(:ci_build, pipeline: pipeline, name: 'Job 2')
+    end
+
+    it 'limits the results' do
+      post_graphql(query, current_user: user, variables: first_n.with(1))
+
+      expect(graphql_data_at(*query_path.map(&:first))).to contain_exactly a_hash_including(
+        'name' => 'Job 2'
+      )
+    end
+
+    it 'fetches all results' do
+      post_graphql(query, current_user: user)
+
+      expect(graphql_data_at(*query_path.map(&:first))).to contain_exactly(
+        a_hash_including('name' => 'Job 1'),
+        a_hash_including('name' => 'Job 2')
+      )
+    end
+
+    it 'fetches the jobs without an N+1' do
+      first_user = create(:personal_access_token).user
+      second_user = create(:personal_access_token).user
+
+      control_count = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: first_user, variables: first_n.with(1))
+      end
+
+      expect do
+        post_graphql(query, current_user: second_user)
+      end.not_to exceed_query_limit(control_count)
+    end
+  end
+
+  describe '.job_artifacts' do
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+    let_it_be(:pipeline_job_1) { create(:ci_build, pipeline: pipeline, name: 'Job 1') }
+    let_it_be(:pipeline_job_artifact_1) { create(:ci_job_artifact, job: pipeline_job_1) }
+    let_it_be(:pipeline_job_2) { create(:ci_build, pipeline: pipeline, name: 'Job 2') }
+    let_it_be(:pipeline_job_artifact_2) { create(:ci_job_artifact, job: pipeline_job_2) }
+
+    let(:path) { %i[project pipelines nodes jobArtifacts] }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                jobArtifacts {
+                  name
+                  downloadPath
+                  fileType
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    before do
+      post_graphql(query, current_user: user)
+    end
+
+    it_behaves_like 'a working graphql query'
+
+    it_behaves_like 'authorizing granular token permissions for GraphQL',
+      [:read_project, :read_pipeline, :download_job_artifact] do
+      let(:boundary_object) { project }
+      let(:request) { post_graphql(query, token: { personal_access_token: pat }) }
+
+      before_all do
+        project.add_developer(user)
+      end
+    end
+
+    it 'returns the job_artifacts of a pipeline' do
+      job_artifacts_graphql_data = graphql_data_at(*path).flatten
+
+      expect(
+        job_artifacts_graphql_data.map { |pip| pip['name'] }
+      ).to contain_exactly(pipeline_job_artifact_1.filename, pipeline_job_artifact_2.filename)
+    end
+
+    it 'avoids N+1 queries' do
+      first_user = create(:user)
+      second_user = create(:user)
+
+      control_count = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: first_user)
+      end
+
+      pipeline_2 = create(:ci_pipeline, project: project)
+      pipeline_2_job_1 = create(:ci_build, pipeline: pipeline_2, name: 'Pipeline 2 Job 1')
+      create(:ci_job_artifact, job: pipeline_2_job_1)
+      pipeline_2_job_2 = create(:ci_build, pipeline: pipeline_2, name: 'Pipeline 2 Job 2')
+      create(:ci_job_artifact, job: pipeline_2_job_2)
+
+      expect do
+        post_graphql(query, current_user: second_user)
+      end.not_to exceed_query_limit(control_count)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  describe 'errorMessages' do
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+    let_it_be(:error_message) { create(:ci_pipeline_message, pipeline: pipeline, content: 'error', severity: :error) }
+
+    let(:pipelines_graphql_data) { graphql_data.dig(*%w[project pipelines nodes]).first }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                errorMessages {
+                  nodes {
+                    content
+                  }
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it 'returns pipeline errors' do
+      post_graphql(query, current_user: user)
+
+      expect(pipelines_graphql_data['errorMessages']['nodes']).to contain_exactly(
+        a_hash_including('content' => 'error')
+      )
+    end
+
+    it 'avoids N+1 queries' do
+      control_count = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: create(:user))
+      end
+
+      pipeline_2 = create(:ci_pipeline, project: project)
+      create(:ci_pipeline_message, pipeline: pipeline_2, content: 'error')
+
+      expect do
+        post_graphql(query, current_user: create(:user))
+      end.not_to exceed_query_limit(control_count)
+    end
+  end
+
+  describe 'warningMessages' do
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+    let_it_be(:warning_message) { create(:ci_pipeline_message, pipeline: pipeline, content: 'warning') }
+
+    let(:pipelines_graphql_data) { graphql_data.dig(*%w[project pipelines nodes]).first }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                warningMessages {
+                  nodes {
+                    content
+                  }
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it 'returns pipeline warnings' do
+      post_graphql(query, current_user: user)
+
+      expect(pipelines_graphql_data['warningMessages']['nodes']).to contain_exactly(
+        a_hash_including('content' => 'warning')
+      )
+    end
+
+    it 'avoids N+1 queries' do
+      control_count = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: create(:user))
+      end
+
+      pipeline_2 = create(:ci_pipeline, project: project)
+      create(:ci_pipeline_message, pipeline: pipeline_2, content: 'warning')
+
+      expect do
+        post_graphql(query, current_user: create(:user))
+      end.not_to exceed_query_limit(control_count)
+    end
+  end
+
+  describe 'detailedStatus' do
+    let_it_be(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                detailedStatus {
+                  group
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    def create_pipeline_with_warnings
+      create(:ci_pipeline, :success, project: project).tap do |pipeline|
+        create(:ci_build, :failed, :allowed_to_fail, pipeline: pipeline)
+      end
+    end
+
+    it 'batches the warning counts of the pipelines', :request_store, :use_sql_query_cache do
+      create_pipeline_with_warnings
+      post_graphql(query, current_user: user)
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) { post_graphql(query, current_user: user) }
+
+      2.times { create_pipeline_with_warnings }
+
+      expect { post_graphql(query, current_user: user) }.to issue_same_number_of_queries_as(control)
+      expect(graphql_data_at(:project, :pipelines, :nodes, :detailed_status, :group))
+        .to all(eq('success-with-warnings'))
+    end
+  end
+
+  describe '.jobs(securityReportTypes)' do
+    let_it_be(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                jobs(securityReportTypes: [SAST]) {
+                  nodes {
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it 'fetches the jobs matching the report type filter' do
+      pipeline = create(:ci_pipeline, project: project)
+      create(:ci_build, :dast, name: 'DAST Job 1', pipeline: pipeline)
+      create(:ci_build, :sast, name: 'SAST Job 1', pipeline: pipeline)
+
+      post_graphql(query, current_user: user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+
+      pipelines_data = graphql_data.dig('project', 'pipelines', 'nodes')
+
+      job_names = pipelines_data.flat_map do |pipeline_data|
+        jobs_data = pipeline_data.dig('jobs', 'nodes')
+        jobs_data.map { |job_data| job_data['name'] }
+      end
+
+      expect(job_names).to contain_exactly('SAST Job 1')
+    end
+  end
+
+  describe 'upstream' do
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project, user: user) }
+    let_it_be(:upstream_project) { create(:project, :repository, :public) }
+    let_it_be(:upstream_pipeline) { create(:ci_pipeline, project: upstream_project, user: user) }
+
+    let(:upstream_pipelines_graphql_data) { graphql_data.dig(*%w[project pipelines nodes]).first['upstream'] }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                upstream {
+                  iid
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    before do
+      create(:ci_sources_pipeline, source_pipeline: upstream_pipeline, pipeline: pipeline)
+
+      post_graphql(query, current_user: user)
+    end
+
+    it_behaves_like 'a working graphql query'
+
+    it 'returns the upstream pipeline of a pipeline' do
+      expect(upstream_pipelines_graphql_data['iid'].to_i).to eq(upstream_pipeline.iid)
+    end
+
+    context 'when fetching the upstream pipeline from the pipeline' do
+      it 'avoids N+1 queries' do
+        first_user = create(:user)
+        second_user = create(:user)
+
+        control_count = ActiveRecord::QueryRecorder.new do
+          post_graphql(query, current_user: first_user)
+        end
+
+        pipeline_2 = create(:ci_pipeline, project: project, user: user)
+        upstream_pipeline_2 = create(:ci_pipeline, project: upstream_project, user: user)
+        create(:ci_sources_pipeline, source_pipeline: upstream_pipeline_2, pipeline: pipeline_2)
+        pipeline_3 = create(:ci_pipeline, project: project, user: user)
+        upstream_pipeline_3 = create(:ci_pipeline, project: upstream_project, user: user)
+        create(:ci_sources_pipeline, source_pipeline: upstream_pipeline_3, pipeline: pipeline_3)
+
+        expect do
+          post_graphql(query, current_user: second_user)
+        end.not_to exceed_query_limit(control_count)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  describe 'downstream' do
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project, user: user) }
+    let_it_be_with_reload(:pipeline_2) { create(:ci_pipeline, project: project, user: user) }
+
+    let_it_be(:downstream_project) { create(:project, :repository, :public) }
+    let_it_be(:downstream_pipeline_a) { create(:ci_pipeline, project: downstream_project, user: user) }
+    let_it_be(:downstream_pipeline_b) { create(:ci_pipeline, project: downstream_project, user: user) }
+
+    let(:pipelines_graphql_data) { graphql_data.dig(*%w[project pipelines nodes]) }
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                downstream {
+                  nodes {
+                    id
+                    iid
+                    path
+                    cancelable
+                    retryable
+                    status: detailedStatus {
+                      id
+                      group
+                      label
+                      icon
+                      text
+                    }
+                    sourceJob {
+                      id
+                      name
+                      retried
+                    }
+                    project {
+                      id
+                      name
+                      fullPath
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    before do
+      create(:ci_sources_pipeline, source_pipeline: pipeline, source_job: create(:ci_build, pipeline: pipeline),
+        pipeline: downstream_pipeline_a)
+      create(:ci_sources_pipeline, source_pipeline: pipeline_2, source_job: create(:ci_build, pipeline: pipeline_2),
+        pipeline: downstream_pipeline_b)
+
+      post_graphql(query, current_user: user)
+    end
+
+    it_behaves_like 'a working graphql query'
+
+    it 'returns the downstream pipelines of a pipeline' do
+      downstream_pipelines_graphql_data = pipelines_graphql_data.flat_map { |pip| pip['downstream']['nodes'] }
+
+      expect(
+        downstream_pipelines_graphql_data.map { |pip| pip['iid'].to_i }
+      ).to contain_exactly(downstream_pipeline_a.iid, downstream_pipeline_b.iid)
+    end
+
+    context 'when fetching the downstream pipelines from the pipeline' do
+      it 'avoids N+1 queries', :use_sql_query_cache, :request_store do
+        # warm up
+        post_graphql(query, current_user: user)
+
+        control_count = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+          post_graphql(query, current_user: user)
+        end
+
+        downstream_pipeline_2a = create(:ci_pipeline, project: downstream_project, user: user)
+        create(:ci_sources_pipeline, source_pipeline: pipeline, source_job: create(:ci_build, pipeline: pipeline),
+          pipeline: downstream_pipeline_2a)
+
+        downsteam_pipeline_3a = create(:ci_pipeline, project: downstream_project, user: user)
+        create(:ci_sources_pipeline, source_pipeline: pipeline, source_job: create(:ci_build, pipeline: pipeline),
+          pipeline: downsteam_pipeline_3a)
+
+        downstream_pipeline_2b = create(:ci_pipeline, project: downstream_project, user: user)
+        create(:ci_sources_pipeline, source_pipeline: pipeline_2, source_job: create(:ci_build, pipeline: pipeline_2),
+          pipeline: downstream_pipeline_2b)
+
+        downsteam_pipeline_3b = create(:ci_pipeline, project: downstream_project, user: user)
+        create(:ci_sources_pipeline, source_pipeline: pipeline_2, source_job: create(:ci_build, pipeline: pipeline_2),
+          pipeline: downsteam_pipeline_3b)
+
+        expect do
+          post_graphql(query, current_user: user)
+        end.to issue_same_number_of_queries_as(control_count)
+      end
+    end
+
+    context 'with a retried trigger job and more downstream pipelines than the render cap' do
+      let_it_be(:overflow_parent) { create(:ci_pipeline, project: project, user: user) }
+      let_it_be(:visible_children) { create_list(:ci_pipeline, 4, project: downstream_project, user: user) }
+      let_it_be(:superseded_child) { create(:ci_pipeline, project: downstream_project, user: user) }
+
+      before_all do
+        visible_children.each do |child|
+          create(:ci_sources_pipeline,
+            source_pipeline: overflow_parent, pipeline: child,
+            source_job: create(:ci_bridge, pipeline: overflow_parent))
+        end
+
+        create(:ci_sources_pipeline,
+          source_pipeline: overflow_parent, pipeline: superseded_child,
+          source_job: create(:ci_bridge, :retried, pipeline: overflow_parent))
+      end
+
+      def downstream_data(first:)
+        query = %(
+          query {
+            project(fullPath: "#{project.full_path}") {
+              pipeline(iid: "#{overflow_parent.iid}") {
+                downstream(first: #{first}) {
+                  count
+                  nodes { iid }
+                }
+              }
+            }
+          }
+        )
+
+        post_graphql(query, current_user: user)
+        graphql_data.dig('project', 'pipeline', 'downstream')
+      end
+
+      it 'excludes the superseded downstream pipeline from nodes and count' do
+        data = downstream_data(first: 10)
+
+        expect(data['count']).to eq(visible_children.size)
+        expect(data['nodes'].map { |node| node['iid'].to_i })
+          .to match_array(visible_children.map(&:iid))
+      end
+
+      it 'counts all latest downstream pipelines even when nodes are capped (+N overflow)' do
+        data = downstream_data(first: 3)
+
+        expect(data['count']).to eq(visible_children.size)
+        expect(data['nodes'].size).to eq(3)
+      end
+    end
+  end
+
+  shared_examples 'avoids N+1 queries for merge_request-dependent fields' do
+    it 'avoids N+1 queries', :clean_gitlab_redis_shared_state do
+      # Warm up caches so the control and assertion run from the same baseline.
+      post_graphql(query, current_user: user)
+
+      control_count = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: user)
+      end
+
+      # Use a different merge_request to prevent Rails query cache from masking the N+1.
+      another_merge_request = create(:merge_request, source_project: project, source_branch: 'fix')
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: another_merge_request)
+
+      expect do
+        post_graphql(query, current_user: user)
+      end.not_to exceed_query_limit(control_count)
+    end
+  end
+
+  describe 'ref_path' do
+    let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+    let_it_be(:pipeline_1) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let_it_be(:pipeline_2) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                refPath
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it_behaves_like 'avoids N+1 queries for merge_request-dependent fields'
+  end
+
+  describe 'type' do
+    let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+    let_it_be(:pipeline_1) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let_it_be(:pipeline_2) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                type
+              }
+            }
+          }
+        }
+      )
+    end
+
+    let(:pipelines_graphql_data) { graphql_data.dig(*%w[project pipelines nodes]).first }
+
+    it 'returns the correct pipeline type' do
+      post_graphql(query, current_user: user)
+
+      expect(pipelines_graphql_data).to include(
+        'type' => eq(pipeline_1.type)
+      )
+    end
+
+    it_behaves_like 'avoids N+1 queries for merge_request-dependent fields'
+  end
+
+  describe 'filtering' do
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines(updatedAfter: "#{updated_after_arg}", updatedBefore: "#{updated_before_arg}") {
+              nodes {
+                id
+              }}}}
+      )
+    end
+
+    context 'when filtered by updated_at' do
+      let_it_be(:oldish_pipeline) { create(:ci_pipeline, project: project, updated_at: 3.days.ago) }
+      let_it_be(:older_pipeline) { create(:ci_pipeline, project: project, updated_at: 10.days.ago) }
+
+      let(:updated_after_arg) { 5.days.ago }
+      let(:updated_before_arg) { 1.day.ago }
+
+      before do
+        post_graphql(query, current_user: user)
+      end
+
+      it_behaves_like 'a working graphql query'
+
+      it 'accepts filter params' do
+        pipeline_ids = graphql_data.dig('project', 'pipelines', 'nodes').map { |pipeline| pipeline.fetch('id') }
+
+        expect(pipeline_ids).to match_array(oldish_pipeline.to_global_id.to_s)
+      end
+    end
+  end
+
+  describe 'merge_request_event_type' do
+    let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+    let_it_be(:pipeline_1) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let_it_be(:pipeline_2) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                mergeRequestEventType
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it_behaves_like 'avoids N+1 queries for merge_request-dependent fields'
+  end
+
+  describe 'merge_request field' do
+    let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+    let_it_be(:pipeline_1) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let_it_be(:pipeline_2) do
+      create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: merge_request)
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                mergeRequest {
+                  iid
+                }
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it_behaves_like 'avoids N+1 queries for merge_request-dependent fields'
+
+    it 'does not run more queries for merge requests by other authors', :request_store, :use_sql_query_cache do
+      post_graphql(query, current_user: user)
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) { post_graphql(query, current_user: user) }
+
+      other_merge_requests = %w[markdown improve/awesome].map do |branch|
+        create(:merge_request, source_project: project, source_branch: branch, target_branch: 'master',
+          author: create(:user)).tap do |other_merge_request|
+          create(:ci_pipeline, :detached_merge_request_pipeline, user: user, merge_request: other_merge_request)
+        end
+      end
+
+      expect { post_graphql(query, current_user: user) }.not_to exceed_all_query_limit(control)
+      expect(graphql_data_at(:project, :pipelines, :nodes, :merge_request, :iid))
+        .to match_array([merge_request, merge_request, *other_merge_requests].map { |mr| mr.iid.to_s })
+    end
+  end
+
+  describe 'hasManualActions and hasScheduledActions' do
+    let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+    let_it_be(:pipeline_with_manual) do
+      create(:ci_pipeline, project: project, user: user, merge_request: merge_request)
+    end
+
+    let_it_be(:manual_build) { create(:ci_build, :manual, pipeline: pipeline_with_manual) }
+    let_it_be(:pipeline_with_scheduled) do
+      create(:ci_pipeline, project: project, user: user, merge_request: merge_request)
+    end
+
+    let_it_be(:scheduled_build) { create(:ci_build, :scheduled, pipeline: pipeline_with_scheduled) }
+    let_it_be(:pipeline_with_neither) do
+      create(:ci_pipeline, project: project, user: user, merge_request: merge_request)
+    end
+
+    let(:query) do
+      %(
+        query {
+          project(fullPath: "#{project.full_path}") {
+            pipelines {
+              nodes {
+                hasManualActions
+                hasScheduledActions
+              }
+            }
+          }
+        }
+      )
+    end
+
+    it 'avoids N+1 queries' do
+      first_user = create(:user)
+      second_user = create(:user)
+
+      control_count = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: first_user)
+      end
+
+      pipeline_4 = create(:ci_pipeline, project: project, merge_request: merge_request)
+      create(:ci_build, :manual, pipeline: pipeline_4)
+
+      pipeline_5 = create(:ci_pipeline, project: project, merge_request: merge_request)
+      create(:ci_build, :scheduled, pipeline: pipeline_5)
+
+      expect do
+        post_graphql(query, current_user: second_user)
+      end.not_to exceed_query_limit(control_count)
+    end
+
+    it 'returns correct values for manual actions' do
+      post_graphql(query, current_user: user)
+
+      expect(graphql_data_at(:project, :pipelines, :nodes, :has_manual_actions)).to contain_exactly(false, false, true)
+    end
+
+    it 'returns correct values for scheduled actions' do
+      post_graphql(query, current_user: user)
+
+      expect(graphql_data_at(:project, :pipelines, :nodes,
+        :has_scheduled_actions)).to contain_exactly(false, true, false)
+    end
+  end
+end

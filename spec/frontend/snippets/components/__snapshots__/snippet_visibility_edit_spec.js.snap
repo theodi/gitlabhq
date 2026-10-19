@@ -1,0 +1,91 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Snippet Visibility Edit component rendering matches the snapshot 1`] = `
+<div
+  class="form-group"
+>
+  <label>
+    Visibility level
+  </label>
+  <gl-form-group-stub
+    class="gl-mb-0"
+    id="reference-0"
+    labeldescription=""
+    optionaltext="(optional)"
+  >
+    <gl-form-radio-group-stub
+      checked="private"
+      options=""
+      stacked=""
+    >
+      <gl-form-radio-stub
+        class="gl-mb-3"
+        value="private"
+      >
+        <div
+          class="gl-flex gl-items-center"
+        >
+          <gl-icon-stub
+            name="lock"
+            size="16"
+            variant="current"
+          />
+          <span
+            class="gl-font-semibold gl-ml-2 js-visibility-option"
+            data-qa-visibility="Private"
+            data-testid="visibility-content"
+          >
+            Private
+          </span>
+        </div>
+      </gl-form-radio-stub>
+      <gl-form-radio-stub
+        class="gl-mb-3"
+        value="internal"
+      >
+        <div
+          class="gl-flex gl-items-center"
+        >
+          <gl-icon-stub
+            name="shield"
+            size="16"
+            variant="current"
+          />
+          <span
+            class="gl-font-semibold gl-ml-2 js-visibility-option"
+            data-qa-visibility="Internal"
+            data-testid="visibility-content"
+          >
+            Internal
+          </span>
+        </div>
+      </gl-form-radio-stub>
+      <gl-form-radio-stub
+        class="gl-mb-3"
+        value="public"
+      >
+        <div
+          class="gl-flex gl-items-center"
+        >
+          <gl-icon-stub
+            name="earth"
+            size="16"
+            variant="current"
+          />
+          <span
+            class="gl-font-semibold gl-ml-2 js-visibility-option"
+            data-qa-visibility="Public"
+            data-testid="visibility-content"
+          >
+            Public
+          </span>
+        </div>
+      </gl-form-radio-stub>
+    </gl-form-radio-group-stub>
+  </gl-form-group-stub>
+  <div
+    class="gl-text-subtle"
+    data-testid="restricted-levels-info"
+  />
+</div>
+`;

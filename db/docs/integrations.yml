@@ -1,0 +1,71 @@
+---
+table_name: integrations
+classes:
+- Integration
+- Integrations::AmazonQ
+- Integrations::AppleAppStore
+- Integrations::Asana
+- Integrations::Assembla
+- Integrations::Bamboo
+- Integrations::BeyondIdentity
+- Integrations::Bugzilla
+- Integrations::Buildkite
+- Integrations::Campfire
+- Integrations::Clickup
+- Integrations::Confluence
+- Integrations::CustomIssueTracker
+- Integrations::Datadog
+- Integrations::DiffblueCover
+- Integrations::Discord
+- Integrations::DroneCi
+- Integrations::EmailsOnPush
+- Integrations::Ewm
+- Integrations::ExternalWiki
+- Integrations::GitGuardian
+- Integrations::Github
+- Integrations::GitlabSlackApplication
+- Integrations::GoogleCloudPlatform::ArtifactRegistry
+- Integrations::GoogleCloudPlatform::WorkloadIdentityFederation
+- Integrations::GooglePlay
+- Integrations::HangoutsChat
+- Integrations::Harbor
+- Integrations::Irker
+- Integrations::Jenkins
+- Integrations::Jira
+- Integrations::JiraCloudApp
+- Integrations::Linear
+- Integrations::Matrix
+- Integrations::Mattermost
+- Integrations::MattermostSlashCommands
+- Integrations::MicrosoftTeams
+- Integrations::MockCi
+- Integrations::MockMonitoring
+- Integrations::Packagist
+- Integrations::Phorge
+- Integrations::PipelinesEmail
+- Integrations::Pivotaltracker
+- Integrations::Prometheus
+- Integrations::Pumble
+- Integrations::Pushover
+- Integrations::Redmine
+- Integrations::Slack
+- Integrations::SlackSlashCommands
+- Integrations::SquashTm
+- Integrations::Teamcity
+- Integrations::Telegram
+- Integrations::UnifyCircuit
+- Integrations::WebexTeams
+- Integrations::Youtrack
+- Integrations::Zentao
+feature_categories:
+- integrations
+description: 'Support 3rd party integrations: Jira, Slack, etc., formerly services
+  table. https://gitlab.com/gitlab-org/gitlab/-/commit/1dab19d0d7b25cb5af27b8d10c8b615b2d38c2cf'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/64562
+milestone: '9.4'
+gitlab_schema: gitlab_main_org
+table_size: small
+sharding_key:
+  project_id: projects
+  group_id: namespaces
+  organization_id: organizations

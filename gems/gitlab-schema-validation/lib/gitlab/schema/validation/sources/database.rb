@@ -1,0 +1,275 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Schema
+    module Validation
+      module Sources
+        class Database
+          STATIC_PARTITIONS_SCHEMA = 'gitlab_partitions_static'
+
+          def initialize(connection)
+            @connection = Connection.new(connection)
+          end
+
+          def fetch_index_by_name(index_name)
+            index_map[index_name]
+          end
+
+          def fetch_trigger_by_name(trigger_name)
+            trigger_map[trigger_name]
+          end
+
+          def fetch_foreign_key_by_name(foreign_key_name)
+            foreign_key_map[foreign_key_name]
+          end
+
+          def fetch_table_by_name(table_name)
+            table_map[table_name]
+          end
+
+          def fetch_sequence_by_name(sequence_name)
+            sequence_map[sequence_name]
+          end
+
+          def index_exists?(index_name)
+            index = index_map[index_name]
+
+            return false if index.nil?
+
+            true
+          end
+
+          def trigger_exists?(trigger_name)
+            trigger = trigger_map[trigger_name]
+
+            return false if trigger.nil?
+
+            true
+          end
+
+          def foreign_key_exists?(foreign_key_name)
+            foreign_key = fetch_foreign_key_by_name(foreign_key_name)
+
+            return false if foreign_key.nil?
+
+            true
+          end
+
+          def table_exists?(table_name)
+            table = fetch_table_by_name(table_name)
+
+            return false if table.nil?
+
+            true
+          end
+
+          def sequence_exists?(sequence_name)
+            !!fetch_sequence_by_name(sequence_name)
+          end
+
+          # From the rows, not from index_map: a public and a partition index can share a name.
+          def indexes
+            @indexes ||= fetch_indexes.map do |_name, index_stmt, parent_schema, parent_name|
+              parent = [parent_schema, parent_name] if parent_name
+
+              SchemaObjects::Index.new(PgQuery.parse(index_stmt).tree.stmts.first.stmt.index_stmt, parent: parent)
+            end
+          end
+
+          def triggers
+            trigger_map.values
+          end
+
+          def foreign_keys
+            foreign_key_map.values
+          end
+
+          def tables
+            table_map.values
+          end
+
+          def sequences
+            sequence_map.values
+          end
+
+          private
+
+          attr_reader :connection
+
+          def schemas
+            @schemas ||= [STATIC_PARTITIONS_SCHEMA, connection.current_schema]
+          end
+
+          # pg_get_* deparse output depends on these session settings. structure.sql is
+          # dumped with the defaults, so the same defaults are forced for the comparison.
+          def with_default_deparse_settings
+            connection.transaction do
+              connection.exec_query("SET LOCAL timezone TO 'UTC'")
+              connection.exec_query('SET LOCAL standard_conforming_strings TO on')
+              connection.exec_query("SET LOCAL DateStyle TO 'ISO'")
+              connection.exec_query("SET LOCAL IntervalStyle TO 'postgres'")
+
+              yield
+            end
+          end
+
+          def trigger_map
+            @trigger_map ||= fetch_triggers.each_with_object({}) do |(name, trigger_stmt, function_body), map|
+              parsed_stmt = PgQuery.parse(trigger_stmt).tree.stmts.first.stmt.create_trig_stmt
+
+              map[name] = SchemaObjects::Trigger.new(parsed_stmt, function_body: function_body)
+            end
+          end
+
+          def fetch_triggers
+            # rubocop:disable Rails/SquishedSQLHeredocs
+            sql = <<~SQL
+              SELECT triggers.tgname, pg_get_triggerdef(triggers.oid), functions.prosrc
+              FROM pg_catalog.pg_trigger triggers
+              INNER JOIN pg_catalog.pg_class rel ON triggers.tgrelid = rel.oid
+              INNER JOIN pg_catalog.pg_namespace nsp ON nsp.oid = rel.relnamespace
+              LEFT JOIN pg_catalog.pg_proc functions ON functions.oid = triggers.tgfoid
+              WHERE triggers.tgisinternal IS FALSE
+              AND nsp.nspname IN ($1, $2)
+            SQL
+            # rubocop:enable Rails/SquishedSQLHeredocs
+
+            with_default_deparse_settings { connection.select_rows(sql, schemas) }
+          end
+
+          def table_map
+            @table_map ||= fetch_tables.transform_values! do |stmt|
+              columns = stmt.map { |column| SchemaObjects::Column.new(Adapters::ColumnDatabaseAdapter.new(column)) }
+
+              SchemaObjects::Table.new(stmt.first['table_name'], columns)
+            end
+          end
+
+          def sequence_map
+            @sequence_map ||= fetch_sequences.transform_values! do |stmt|
+              SchemaObjects::Sequence.new(Adapters::SequenceDatabaseAdapter.new(stmt.first))
+            end
+          end
+
+          def fetch_tables
+            # rubocop:disable Rails/SquishedSQLHeredocs
+            sql = <<~SQL
+              SELECT
+                table_information.relname  AS table_name,
+                col_information.attname AS column_name,
+                col_information.attnotnull AS not_null,
+                col_information.attnum = ANY(pg_partitioned_table.partattrs) as partition_key,
+                format_type(col_information.atttypid, col_information.atttypmod) AS data_type,
+                pg_get_expr(col_default_information.adbin, col_default_information.adrelid) AS column_default
+              FROM pg_attribute AS col_information
+              JOIN pg_class     AS table_information  ON col_information.attrelid = table_information.oid
+              JOIN pg_namespace AS schema_information ON table_information.relnamespace = schema_information.oid
+              LEFT JOIN pg_partitioned_table ON pg_partitioned_table.partrelid = table_information.oid
+              LEFT JOIN pg_attrdef AS col_default_information ON col_information.attrelid = col_default_information.adrelid
+                AND col_information.attnum = col_default_information.adnum
+              WHERE NOT col_information.attisdropped
+              AND col_information.attnum > 0
+              AND table_information.relkind IN ('r', 'p')
+              AND schema_information.nspname IN ($1, $2)
+            SQL
+            # rubocop:enable Rails/SquishedSQLHeredocs
+
+            with_default_deparse_settings { connection.exec_query(sql, schemas).group_by { |row| row['table_name'] } }
+          end
+
+          def fetch_indexes
+            # rubocop:disable Rails/SquishedSQLHeredocs
+            sql = <<~SQL
+              SELECT i.indexname, i.indexdef, parent_namespace.nspname, parent.relname
+              FROM pg_indexes i
+              LEFT JOIN pg_constraint AS c ON i.indexname = c.conname
+              LEFT JOIN pg_namespace AS index_namespace ON index_namespace.nspname = i.schemaname
+              LEFT JOIN pg_class AS index_class
+                ON index_class.relname = i.indexname AND index_class.relnamespace = index_namespace.oid
+              LEFT JOIN pg_inherits AS inheritance ON inheritance.inhrelid = index_class.oid
+              LEFT JOIN pg_class AS parent ON parent.oid = inheritance.inhparent
+              LEFT JOIN pg_namespace AS parent_namespace ON parent_namespace.oid = parent.relnamespace
+              WHERE i.indexname NOT LIKE '%_pkey' AND i.schemaname IN ($1, $2)
+              AND c.conname IS NULL;
+            SQL
+            # rubocop:enable Rails/SquishedSQLHeredocs
+
+            with_default_deparse_settings { connection.select_rows(sql, schemas) }
+          end
+
+          def index_map
+            @index_map ||= indexes.each_with_object({}) do |index, map| # rubocop:disable Rails/IndexBy -- This gem does not depend on ActiveSupport.
+              map[index.name] = index
+            end
+          end
+
+          def foreign_key_map
+            @foreign_key_map ||= fetch_fks.each_with_object({}) do |stmt, result|
+              adapter = Adapters::ForeignKeyDatabaseAdapter.new(stmt)
+
+              result[adapter.name] = SchemaObjects::ForeignKey.new(adapter)
+            end
+          end
+
+          def fetch_fks
+            # rubocop:disable Rails/SquishedSQLHeredocs
+            sql = <<~SQL
+              SELECT
+                pg_namespace.nspname::text AS schema,
+                pg_class.relname::text AS table_name,
+                pg_constraint.conname AS foreign_key_name,
+                pg_get_constraintdef(pg_constraint.oid) AS foreign_key_definition
+              FROM pg_constraint
+              INNER JOIN pg_class ON pg_constraint.conrelid = pg_class.oid
+              INNER JOIN pg_namespace ON pg_class.relnamespace = pg_namespace.oid
+              WHERE contype = 'f'
+              AND pg_namespace.nspname = $1
+              AND pg_constraint.conparentid = 0
+            SQL
+            # rubocop:enable Rails/SquishedSQLHeredocs
+
+            connection.exec_query(sql, [connection.current_schema])
+          end
+
+          # Fetch all the sequences
+          def fetch_sequences
+            # rubocop:disable Rails/SquishedSQLHeredocs
+            sql = <<~SQL
+              SELECT
+                c.relname AS sequence_name,
+                n.nspname AS schema,
+                pg_catalog.pg_get_userbyid(c.relowner) AS user_owner,
+                s.seqstart AS start_value,
+                s.seqincrement AS increment_by,
+                s.seqmin AS min_value,
+                s.seqmax AS max_value,
+                s.seqcycle AS cycle,
+                s.seqcache AS cache_size,
+                pg_catalog.obj_description(c.oid, 'pg_class') AS comment,
+                CASE
+                  WHEN d.refobjid IS NOT NULL THEN
+                    ref_class.relname || '.' || ref_attr.attname
+                  ELSE NULL
+                END AS owned_by_column
+              FROM pg_catalog.pg_class c
+              INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+              LEFT JOIN pg_catalog.pg_sequence s ON s.seqrelid = c.oid
+              LEFT JOIN pg_catalog.pg_depend d ON d.objid = c.oid
+                AND d.deptype = 'a'
+                AND d.classid = 'pg_class'::regclass
+              LEFT JOIN pg_catalog.pg_class ref_class ON ref_class.oid = d.refobjid
+              LEFT JOIN pg_catalog.pg_attribute ref_attr ON ref_attr.attrelid = d.refobjid
+                AND ref_attr.attnum = d.refobjsubid
+              WHERE c.relkind = 'S'
+                AND n.nspname IN ($1, $2)
+              ORDER BY c.relname, n.nspname
+            SQL
+            # rubocop:enable Rails/SquishedSQLHeredocs
+
+            connection.exec_query(sql, schemas).group_by { |seq| "#{seq['schema']}.#{seq['sequence_name']}" }
+          end
+        end
+      end
+    end
+  end
+end

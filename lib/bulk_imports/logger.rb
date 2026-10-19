@@ -1,0 +1,78 @@
+# frozen_string_literal: true
+
+module BulkImports
+  class Logger < ::Import::Framework::Logger
+    # Derive the importer tag from a bulk import so offline transfer entries are
+    # distinguishable from direct transfer ones. Falls back to the default
+    # gitlab_migration tag when no bulk import is available, preserving backward
+    # compatibility for existing log consumers.
+    # @param bulk_import [BulkImport, nil]
+    def self.importer_for(bulk_import)
+      bulk_import&.import_source&.to_s || Import::SOURCE_DIRECT_TRANSFER.to_s
+    end
+
+    # Extract key information from a provided entity and include it in log
+    # entries created from this logger instance.
+    # @param entity [BulkImports::Entity]
+    def with_entity(entity)
+      @entity = entity
+      self
+    end
+
+    # Extract key information from a provided bulk import and include it in log
+    # entries created from this logger instance.
+    # @param bulk_import [BulkImport]
+    def with_bulk_import(bulk_import)
+      @bulk_import = bulk_import
+      self
+    end
+
+    # Extract key information from a provided tracker and its entity and include
+    # it in log entries created from this logger instance.
+    # @param tracker [BulkImports::Tracker]
+    def with_tracker(tracker)
+      with_entity(tracker.entity)
+      @tracker = tracker
+      self
+    end
+
+    def entity_attributes
+      return {} unless entity
+
+      {
+        bulk_import_id: entity.bulk_import_id,
+        bulk_import_entity_id: entity.id,
+        bulk_import_entity_type: entity.source_type,
+        Labkit::Fields::GL_ORGANIZATION_ID => entity.organization_id,
+        source_full_path: entity.source_full_path,
+        source_version: entity.source_version.to_s
+      }
+    end
+
+    def tracker_attributes
+      return {} unless tracker
+
+      {
+        tracker_id: tracker.id,
+        pipeline_class: tracker.pipeline_name,
+        tracker_state: tracker.human_status_name
+      }
+    end
+
+    def default_attributes
+      super.merge(
+        { importer: importer_name },
+        entity_attributes,
+        tracker_attributes
+      )
+    end
+
+    private
+
+    attr_reader :entity, :tracker
+
+    def importer_name
+      self.class.importer_for(entity&.bulk_import || @bulk_import)
+    end
+  end
+end

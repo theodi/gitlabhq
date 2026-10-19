@@ -1,0 +1,87 @@
+@import 'page_bundles/mixins_and_variables_and_functions';
+
+/**
+ * Deploy boards
+*/
+.deploy-board {
+  @apply gl-bg-strong;
+  min-height: 20px;
+
+  > .loading-icon,
+  > .deploy-board-empty,
+  > .deploy-board-information {
+    padding: 10px;
+  }
+
+  .deploy-board-information {
+    display: flex;
+    justify-content: space-between;
+
+    .deploy-board-status {
+      order: 1;
+      display: flex;
+      width: 70px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 20px 0 0 5px;
+    }
+
+    .deploy-board-instances {
+      order: 2;
+      margin-left: 20px;
+      width: 100%;
+    }
+
+    .deploy-board-canary-ingress {
+      order: 7;
+    }
+
+    .deploy-board-actions {
+      order: 3;
+      align-self: center;
+      min-width: 150px;
+      margin-left: 10px;
+    }
+
+    .deploy-board-empty-state-text {
+      order: 2;
+      flex-wrap: wrap;
+      margin: auto auto 15px 0;
+    }
+
+    .deploy-board-empty-state-title {
+      order: 1;
+      font-size: 17px;
+      line-height: 40px;
+    }
+  }
+
+  .deploy-board-legend .legend-text {
+    color: var(--gray-900, $gray-900);
+    font-size: $gl-font-size-small;
+    font-weight: $gl-font-weight-bold;
+    line-height: 1;
+  }
+}
+
+/**
+* Kubernetes Tree view
+**/
+
+.kubernetes-tree-view {
+  .connector {
+    width: calc(100% + #{$gl-spacing-scale-6});
+    height: calc(100% + #{$gl-spacing-scale-4});
+
+    &::after {
+      content: '';
+      left: calc(50% + #{$gl-spacing-scale-2});
+      top: -4.5px;
+      position: absolute;
+      border-style: solid;
+      border-color: transparent;
+      border-width: $gl-spacing-scale-2 $gl-spacing-scale-3;
+      border-left-color: var(--gray-200, $gray-200);
+    }
+  }
+}

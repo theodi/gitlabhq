@@ -1,0 +1,71 @@
+# frozen_string_literal: true
+
+module BulkImports
+  class FileExportService
+    include Gitlab::ImportExport::CommandLineUtil
+
+    SINGLE_OBJECT_RELATIONS = [
+      FileTransfer::ProjectConfig::REPOSITORY_BUNDLE_RELATION,
+      FileTransfer::ProjectConfig::DESIGN_BUNDLE_RELATION
+    ].freeze
+
+    # @param export [BulkImports::Export] the export record providing portable and relation
+    # @param export_path [String] directory path where the exported file will be written
+    # @param user [User] the user performing the export (currently unused)
+    def initialize(export, export_path, user)
+      @portable = export.portable
+      @export_path = export_path
+      @relation = export.relation
+      @user = user # not used anywhere in this class at the moment
+      @offline_export_id = export.offline_export_id
+    end
+
+    def execute(options = {})
+      export_service.execute(options)
+
+      archive_exported_data
+    end
+
+    def export_batch(ids)
+      execute(batch_ids: ids)
+    end
+
+    def exported_filename
+      "#{relation}.tar"
+    end
+
+    def exported_objects_count
+      case relation
+      when *SINGLE_OBJECT_RELATIONS
+        1
+      else
+        export_service.exported_objects_count
+      end
+    end
+
+    private
+
+    attr_reader :export_path, :portable, :relation, :offline_export_id
+
+    def export_service
+      @export_service ||= case relation
+                          when FileTransfer::BaseConfig::UPLOADS_RELATION
+                            UploadsExportService.new(portable, export_path, offline_export_id)
+                          when FileTransfer::ProjectConfig::LFS_OBJECTS_RELATION
+                            LfsObjectsExportService.new(portable, export_path)
+                          when FileTransfer::ProjectConfig::REPOSITORY_BUNDLE_RELATION
+                            RepositoryBundleExportService.new(portable.repository, export_path, relation)
+                          when FileTransfer::ProjectConfig::DESIGN_BUNDLE_RELATION
+                            RepositoryBundleExportService.new(portable.design_repository, export_path, relation)
+                          else
+                            raise BulkImports::Error, 'Unsupported file relation export type'
+                          end
+    end
+
+    def archive_exported_data
+      archive_file = File.join(export_path, exported_filename)
+
+      tar_cf(archive: archive_file, dir: export_path)
+    end
+  end
+end

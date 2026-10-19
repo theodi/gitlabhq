@@ -1,0 +1,17 @@
+---
+description: Tracks when a user views the source code of a project.
+action: view_source
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: '16.9'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/142146
+tiers:
+  - free
+  - premium
+  - ultimate
+additional_properties:
+  label:
+    description: hardcoded value source_viewer
+  property:
+    description: language of the source

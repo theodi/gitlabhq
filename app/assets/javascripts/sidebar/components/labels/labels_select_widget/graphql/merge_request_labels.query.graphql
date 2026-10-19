@@ -1,0 +1,17 @@
+#import "~/graphql_shared/fragments/label.fragment.graphql"
+
+query mergeRequestLabels($fullPath: ID!, $iid: String!) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: mergeRequest(iid: $iid) {
+      id
+      supportsLockOnMerge
+      labels {
+        nodes {
+          ...Label
+          lockOnMerge
+        }
+      }
+    }
+  }
+}

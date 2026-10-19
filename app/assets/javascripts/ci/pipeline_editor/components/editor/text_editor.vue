@@ -1,0 +1,59 @@
+<script>
+import { EDITOR_READY_EVENT } from '~/editor/constants';
+import { CiSchemaExtension } from '~/editor/extensions/source_editor_ci_schema_ext';
+import SourceEditor from '~/vue_shared/components/source_editor.vue';
+import eventHub, { SCROLL_EDITOR_TO_BOTTOM } from '~/ci/pipeline_editor/event_hub';
+import { glListenersMixin } from '~/lib/utils/vue3compat/gl_listeners_mixin';
+import { SOURCE_EDITOR_DEBOUNCE } from '../../constants';
+
+export default {
+  name: 'TextEditor',
+  editorOptions: {
+    // Quick suggestions is so that monaco can provide
+    // autocomplete for keywords
+    quickSuggestions: true,
+  },
+  debounceValue: SOURCE_EDITOR_DEBOUNCE,
+  components: {
+    SourceEditor,
+  },
+  mixins: [glListenersMixin],
+  inject: ['ciConfigPath'],
+  inheritAttrs: false,
+  emits: ['update-ci-config'],
+  created() {
+    eventHub.$on(SCROLL_EDITOR_TO_BOTTOM, this.scrollEditorToBottom);
+  },
+  beforeDestroy() {
+    eventHub.$off(SCROLL_EDITOR_TO_BOTTOM, this.scrollEditorToBottom);
+  },
+  methods: {
+    onCiConfigUpdate(content) {
+      this.$emit('update-ci-config', content);
+    },
+    registerCiSchema({ detail: { instance } }) {
+      instance.use({ definition: CiSchemaExtension });
+      instance.registerCiSchema();
+    },
+    scrollEditorToBottom() {
+      const editor = this.$refs.editor.getEditor();
+      editor.setScrollTop(editor.getScrollHeight());
+    },
+  },
+  readyEvent: EDITOR_READY_EVENT,
+};
+</script>
+<template>
+  <div class="gl-rounded-b-lg gl-border-1 !gl-border-t-0 gl-border-solid gl-border-default gl-pb-1">
+    <source-editor
+      ref="editor"
+      :debounce-value="$options.debounceValue"
+      :editor-options="$options.editorOptions"
+      :file-name="ciConfigPath"
+      v-bind="$attrs"
+      @[$options.readyEvent]="registerCiSchema($event)"
+      @input="onCiConfigUpdate"
+      v-on="glListeners()"
+    />
+  </div>
+</template>

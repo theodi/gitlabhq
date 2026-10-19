@@ -1,0 +1,22 @@
+---
+description: Wiki page is deleted
+internal_events: true
+action: delete_wiki_page
+identifiers:
+- project
+- namespace
+- user
+additional_properties:
+  label:
+    description: "Is 'template' when the page is a template"
+  property:
+    description: "Name of the markup language used by the page"
+product_group: planner_intelligence
+product_categories:
+- wiki
+milestone: '17.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/149271
+tiers:
+- free
+- premium
+- ultimate

@@ -1,11 +1,12 @@
-.file-content.code{class: user_color_scheme_class}
-  .line-numbers
-    - if blob.data.present?
-      - blob.data.lines.to_a.size.times do |index|
-        - offset = defined?(first_line_number) ? first_line_number : 1
-        - i = index + offset
-        = link_to "#L#{i}", id: "L#{i}", rel: "#L#{i}" do
-          %i.fa.fa-link
-          = i
-  :preserve
-    #{highlight(blob.name, blob.data)}
+-# We're not using `link_to` in the line loop because it is too slow once we get to thousands of lines.
+
+- offset = defined?(first_line_number) ? first_line_number : 1
+- highlight = defined?(highlight_line) && highlight_line ? highlight_line - offset : nil
+
+- highlighted_blob = blob.present.highlight
+
+#blob-content.file-content.code.js-syntax-highlight
+  .blob-content{ data: { blob_id: blob.id, path: blob.path, highlight_line: highlight } }
+    %pre{ class: "code highlight !gl-border-none" }
+      %code.gl-border-none
+        = highlighted_blob

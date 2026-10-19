@@ -1,11 +1,30 @@
+# frozen_string_literal: true
+
 class Explore::GroupsController < Explore::ApplicationController
-  skip_before_action :authenticate_user!,
-                     :reject_blocked, :set_current_user_for_observers
+  include GroupTree
+
+  feature_category :groups_and_projects
+  urgency :low
+
+  MAX_QUERY_SIZE = 10_000
 
   def index
-    @groups = GroupsFinder.new.execute(current_user)
-    @groups = @groups.search(params[:search]) if params[:search].present?
-    @groups = @groups.sort(@sort = params[:sort])
-    @groups = @groups.page(params[:page]).per(PER_PAGE)
+    respond_to do |format|
+      format.html { render :index }
+      format.json { render_groups }
+    end
+  end
+
+  private
+
+  def render_groups
+    finder_params = {
+      active: safe_params[:active],
+      visibility: Gitlab::VisibilityLevel.levels_for_user(current_user)
+    }
+
+    render_group_tree GroupsFinder.new(current_user, finder_params).execute.limit(MAX_QUERY_SIZE)
   end
 end
+
+Explore::GroupsController.prepend_mod_with('Explore::GroupsController')

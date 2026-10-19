@@ -1,0 +1,400 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::Offline::Imports::CreateService, :aggregate_failures, feature_category: :importers do
+  describe '#execute' do
+    let_it_be(:organization) { create(:common_organization) }
+    let_it_be(:user) { create(:user) }
+    let_it_be(:destination_group) { create(:group, owners: user, organization: organization) }
+    let(:destination_namespace) { destination_group.full_path }
+
+    let(:object_storage_configuration) do
+      {
+        bucket: 'my-bucket',
+        provider: 'aws',
+        export_prefix: '2026-02-23_11-52-43_export_iW11t5cQ',
+        object_storage_credentials: {
+          aws_access_key_id: 'AwsUserAccessKey',
+          aws_secret_access_key: 'aws/secret+access/key',
+          region: 'us-east-1',
+          path_style: false
+        }.stringify_keys
+      }
+    end
+
+    let(:params) do
+      {
+        entities: [
+          {
+            source_type: 'group_entity',
+            source_full_path: 'top_level_group',
+            destination_namespace: destination_namespace,
+            destination_slug: 'dest-grp-0123'
+          }
+        ]
+      }
+    end
+
+    subject(:service) do
+      described_class.new(
+        object_storage_configuration,
+        params,
+        current_user: user,
+        fallback_organization: organization
+      )
+    end
+
+    it 'returns a success result' do
+      response = service.execute
+      expect(response).to be_success
+      expect(response.payload).to be_a(BulkImport)
+    end
+
+    it 'triggers the ScheduleImportWorker' do
+      expect(Import::Offline::Imports::ScheduleImportWorker).to receive(:perform_async).with(
+        an_instance_of(Integer),
+        params[:entities].map(&:deep_stringify_keys),
+        nil
+      )
+
+      service.execute
+    end
+
+    it 'creates an empty bulk import for import scaffolding' do
+      expect { service.execute }
+        .to change { BulkImport.count }.by(1)
+
+      expect(BulkImport.last).to have_attributes(
+        user: user,
+        source_version: nil,
+        source_enterprise: false,
+        organization: organization
+      )
+    end
+
+    it 'tracks the start offline transfer import event', :clean_gitlab_redis_shared_state do
+      expect { service.execute }
+        .to trigger_internal_events('start_offline_transfer_import')
+        .with(user: user, additional_properties: { label: 'aws' })
+        .and increment_usage_metrics(
+          'counts.count_total_start_offline_transfer_import',
+          'counts.count_total_start_offline_transfer_import_monthly'
+        )
+    end
+
+    it 'stores request_channel: api in EphemeralData by default', :clean_gitlab_redis_shared_state do
+      bulk_import = service.execute.payload
+
+      expect(::Import::BulkImports::EphemeralData.new(bulk_import.id).request_channel).to eq('api')
+    end
+
+    context 'when initiated by Congregate', :clean_gitlab_redis_shared_state do
+      subject(:service) do
+        described_class.new(
+          object_storage_configuration,
+          params,
+          current_user: user,
+          fallback_organization: organization,
+          request_channel: :congregate
+        )
+      end
+
+      it 'stores request_channel: congregate in EphemeralData' do
+        bulk_import = service.execute.payload
+
+        expect(::Import::BulkImports::EphemeralData.new(bulk_import.id).request_channel).to eq('congregate')
+      end
+    end
+
+    it 'creates the offline transfer configuration' do
+      expect { service.execute }
+        .to change { Import::Offline::Configuration.count }.by(1)
+
+      expect(Import::Offline::Configuration.last).to have_attributes(
+        object_storage_configuration
+      )
+    end
+
+    it 'validates the destination namespace' do
+      expect_next_instance_of(::Import::Framework::DestinationValidator) do |validator|
+        expect(validator).to receive(:validate!)
+      end
+
+      service.execute
+    end
+
+    context 'when no destination namespace is provided' do
+      let_it_be(:organization) { create(:organization) }
+      let(:destination_namespace) { '' }
+
+      it 'uses the fallback organization' do
+        expect { service.execute }
+          .to change { BulkImport.count }.by(1)
+
+        bulk_import = BulkImport.last
+
+        expect(bulk_import.organization_id).to eq(organization.id)
+      end
+    end
+
+    context 'when user does not have permission on specified import destination' do
+      let(:destination_namespace) { 'some/unknown/group' }
+
+      it 'returns an error object' do
+        response = service.execute
+
+        expect(response).to be_error
+        expect(response.message).to eq(s_('OfflineTransfer|One or more destination paths is invalid.'))
+      end
+    end
+
+    context 'when the offline configuration fails validation' do
+      let(:object_storage_configuration) { super().merge(bucket: '') }
+
+      it 'returns an error response instead of raising' do
+        result = nil
+        expect { result = service.execute }.not_to change { BulkImport.count }
+        expect(result).to be_error
+        expect(result.message).to include("Bucket can't be blank")
+      end
+    end
+
+    context 'when using Application Default Credentials' do
+      let(:object_storage_configuration) do
+        {
+          bucket: 'gitlab-offline-transfer-imports',
+          provider: 'gcs_application_default',
+          export_prefix: '2026-02-23_11-52-43_export_iW11t5cQ',
+          object_storage_credentials: {
+            google_project: 'my-project'
+          }.stringify_keys
+        }
+      end
+
+      before do
+        stub_application_setting(allow_application_default_credentials_for_offline_transfer: true)
+      end
+
+      context 'when the user is not an administrator' do
+        it 'returns an error and does not create a BulkImport' do
+          result = nil
+          expect { result = service.execute }.not_to change { BulkImport.count }
+          expect(result).to be_error
+          expect(result.message).to eq(
+            s_('OfflineTransfer|Only administrators can use Application Default Credentials for offline transfer.')
+          )
+        end
+      end
+
+      context 'when the user is an administrator' do
+        before do
+          allow(user).to receive(:can_admin_all_resources?).and_return(true)
+        end
+
+        it 'creates the offline transfer configuration and returns success', :aggregate_failures do
+          result = nil
+          expect { result = service.execute }.to change { Import::Offline::Configuration.count }.by(1)
+          expect(result).to be_success
+        end
+
+        context 'when Application Default Credentials are not enabled for offline transfer' do
+          before do
+            stub_application_setting(allow_application_default_credentials_for_offline_transfer: false)
+          end
+
+          it 'returns an error and does not create a BulkImport', :aggregate_failures do
+            result = nil
+            expect { result = service.execute }.not_to change { BulkImport.count }
+            expect(result).to be_error
+            expect(result.message).to include('Provider is not included in the list')
+          end
+        end
+      end
+    end
+
+    context 'when import_all is given instead of entities' do
+      let(:params) { { import_all: { destination_namespace: destination_namespace } } }
+
+      it 'returns a success result' do
+        response = service.execute
+
+        expect(response).to be_success
+        expect(response.payload).to be_a(BulkImport)
+      end
+
+      it 'triggers the ScheduleImportWorker with the import_all params' do
+        expect(Import::Offline::Imports::ScheduleImportWorker).to receive(:perform_async).with(
+          an_instance_of(Integer),
+          [],
+          { 'destination_namespace' => destination_namespace }
+        )
+
+        service.execute
+      end
+
+      # The entity slugs are not known until ScheduleImportService reads metadata.json,
+      # so only the destination namespace can be validated here.
+      it 'validates the destination namespace only' do
+        expect_next_instance_of(::Import::Framework::DestinationValidator) do |validator|
+          expect(validator).to receive(:validate_destination_namespace!)
+            .with(destination_namespace, ::BulkImports::Entity::GROUP_ENTITY_SOURCE_TYPE)
+          expect(validator).not_to receive(:validate!)
+        end
+
+        service.execute
+      end
+
+      it 'assigns the organization of the destination namespace' do
+        expect(service.execute.payload.organization).to eq(destination_group.organization)
+      end
+
+      context 'when the destination namespace is invalid' do
+        let(:destination_namespace) { 'does-not-exist' }
+
+        it 'returns an error result' do
+          response = service.execute
+
+          expect(response).to be_error
+          expect(response.message).to eq('One or more destination paths is invalid.')
+        end
+      end
+
+      context 'when the destination namespace is empty' do
+        let(:destination_namespace) { '' }
+
+        it 'returns a success result and falls back to the request organization' do
+          response = service.execute
+
+          expect(response).to be_success
+          expect(response.payload.organization).to eq(organization)
+        end
+      end
+    end
+
+    describe 'cross-organization destination validation' do
+      let_it_be_with_reload(:request_organization) { create(:organization, path: 'request-org') }
+      let_it_be_with_reload(:other_organization) { create(:organization, path: 'other-org') }
+      let_it_be(:request_org_group) do
+        create(:group, organization: request_organization, path: 'request-org-group', owners: user)
+      end
+
+      let_it_be(:other_org_group) do
+        create(:group, organization: other_organization, path: 'other-org-group', owners: user)
+      end
+
+      let(:destination_namespace) { other_org_group.full_path }
+
+      subject(:service) do
+        described_class.new(
+          object_storage_configuration,
+          params,
+          current_user: user,
+          fallback_organization: request_organization
+        )
+      end
+
+      shared_examples 'rejects the cross-organization import' do
+        it 'rejects the import and does not create a BulkImport' do
+          result = nil
+          expect { result = service.execute }.not_to change { BulkImport.count }
+          expect(result).to be_error
+          expect(result.message).to include(other_org_group.full_path)
+          expect(result.message).to match(/belongs to a different organization than the current one/)
+        end
+      end
+
+      context 'when neither organization is isolated' do
+        it 'allows the cross-organization import (preserves today’s behavior)' do
+          expect(service.execute).to be_success
+        end
+      end
+
+      context 'when the destination resolves to the request organization' do
+        let(:destination_namespace) { request_org_group.full_path }
+
+        before do
+          request_organization.mark_as_isolated!
+        end
+
+        it 'allows the import to proceed' do
+          expect(service.execute).to be_success
+        end
+      end
+
+      context 'when the request organization is isolated' do
+        before do
+          request_organization.mark_as_isolated!
+        end
+
+        it_behaves_like 'rejects the cross-organization import'
+      end
+
+      context 'when the destination organization is isolated' do
+        before do
+          other_organization.mark_as_isolated!
+        end
+
+        it_behaves_like 'rejects the cross-organization import'
+      end
+
+      context 'when the destination namespace casing differs from the canonical path' do
+        let(:destination_namespace) { other_org_group.full_path.upcase }
+
+        before do
+          request_organization.mark_as_isolated!
+        end
+
+        it 'still resolves the destination and rejects the import' do
+          result = nil
+          expect { result = service.execute }.not_to change { BulkImport.count }
+          expect(result).to be_error
+          expect(result.message).to match(/belongs to a different organization than the current one/)
+        end
+      end
+
+      context 'when import_all targets a cross-organization destination' do
+        let(:params) { { import_all: { destination_namespace: other_org_group.full_path } } }
+
+        before do
+          request_organization.mark_as_isolated!
+        end
+
+        it_behaves_like 'rejects the cross-organization import'
+      end
+
+      context 'when one of multiple entities targets a cross-organization destination' do
+        let(:params) do
+          {
+            entities: [
+              {
+                source_type: 'group_entity',
+                source_full_path: 'grp1',
+                destination_namespace: request_org_group.full_path,
+                destination_slug: 'slug-1'
+              },
+              {
+                source_type: 'group_entity',
+                source_full_path: 'grp2',
+                destination_namespace: other_org_group.full_path,
+                destination_slug: 'slug-2'
+              }
+            ]
+          }
+        end
+
+        before do
+          request_organization.mark_as_isolated!
+        end
+
+        it 'rejects the import and does not create a BulkImport even when the first entity is in-organization' do
+          result = nil
+          expect { result = service.execute }.not_to change { BulkImport.count }
+          expect(result).to be_error
+          expect(result.message).to include(other_org_group.full_path)
+          expect(result.message).to match(/belongs to a different organization than the current one/)
+        end
+      end
+    end
+  end
+end

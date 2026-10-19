@@ -1,0 +1,17 @@
+// We do not consider these nodes in the search index
+export const EXCLUDED_NODES = ['OPTION'];
+
+// Used to hide the sections that do not match * the search term
+export const HIDE_CLASS = 'gl-hidden';
+
+// used to highlight the text that matches the * search term
+export const HIGHLIGHT_CLASS = 'gl-bg-orange-100';
+
+// used to remove padding for text that matches the * search term
+export const NONE_PADDING_CLASS = 'gl-p-0';
+
+// How many seconds to wait until the user * stops typing
+export const TYPING_DELAY = 400;
+
+// Dispatched on the search root when the search term changes, with `{ searchTerm }` as detail
+export const SEARCH_TERM_CHANGED_EVENT = 'settings-search-term-changed';

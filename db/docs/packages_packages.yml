@@ -1,0 +1,28 @@
+---
+table_name: packages_packages
+classes:
+- Packages::Cargo::Package
+- Packages::Composer::Sti::Package
+- Packages::Conan::Package
+- Packages::Debian::Package
+- Packages::Generic::Package
+- Packages::Go::Package
+- Packages::Helm::Package
+- Packages::Maven::Package
+- Packages::MlModel::Package
+- Packages::Npm::Package
+- Packages::Nuget::Package
+- Packages::Package
+- Packages::Pypi::Package
+- Packages::Rpm::Package
+- Packages::Rubygems::Package
+- Packages::TerraformModule::Package
+feature_categories:
+- package_registry
+description: Information for individual packages in the package registry
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/6607
+milestone: '11.3'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: medium

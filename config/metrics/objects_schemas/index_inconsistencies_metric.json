@@ -1,0 +1,19 @@
+{
+  "type": "array",
+  "items": {
+    "type": [
+      {
+        "type": "object",
+        "properties": {
+          "object_name": {
+            "type": "string"
+          },
+          "inconsistency_type": {
+            "type": "string",
+            "description": "Type of index inconsistency"
+          }
+        }
+      }
+    ]
+  }
+}

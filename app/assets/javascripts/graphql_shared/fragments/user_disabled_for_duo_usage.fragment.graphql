@@ -1,0 +1,4 @@
+fragment UserDisabledForDuoUsage on User {
+  id
+  compositeIdentityEnforced
+}

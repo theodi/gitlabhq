@@ -1,0 +1,633 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Tracking::Destinations::Snowplow, :do_not_stub_snowplow_by_default, feature_category: :application_instrumentation do
+  let(:emitter) { SnowplowTracker::Emitter.new(endpoint: 'localhost', options: { buffer_size: 1 }) }
+  let(:event_eligibility_checker) { instance_double(Gitlab::Tracking::EventEligibilityChecker) }
+  let(:event_eligible) { true }
+  let(:track_struct_event_logger) { false }
+  let(:snowplow_sync_emitter) { false }
+  let(:snowplow_emitter_thread_count) { false }
+  let(:snowplow_emitter_http_timeout) { false }
+  let(:snowplow_job_emitter) { false }
+  let(:tracker) do
+    SnowplowTracker::Tracker.new(emitters: [emitter], subject: SnowplowTracker::Subject.new, namespace: 'namespace',
+      app_id: 'app_id')
+  end
+
+  before do
+    stub_feature_flags(
+      track_struct_event_logger: track_struct_event_logger,
+      snowplow_sync_emitter: snowplow_sync_emitter,
+      snowplow_emitter_thread_count: snowplow_emitter_thread_count,
+      snowplow_emitter_http_timeout: snowplow_emitter_http_timeout,
+      snowplow_job_emitter: snowplow_job_emitter
+    )
+    stub_application_setting(
+      snowplow_enabled?: true,
+      snowplow_collector_hostname: 'gitfoo.com',
+      snowplow_app_id: '_abc123_'
+    )
+
+    allow(Gitlab::Tracking::EventEligibilityChecker).to receive(:new).and_return(event_eligibility_checker)
+    allow(event_eligibility_checker).to receive(:eligible?).and_return(event_eligible)
+  end
+
+  around do |example|
+    freeze_time { example.run }
+  end
+
+  context 'when not in test environment' do
+    before do
+      allow(Rails.env).to receive(:test?).and_return(false)
+    end
+
+    describe '#event' do
+      context 'when event is eligible' do
+        before do
+          allow_next_instance_of(Gitlab::Tracking::Destinations::DestinationConfiguration) do |config|
+            allow(config).to receive_messages(hostname: 'gitfoo.com', protocol: 'https')
+          end
+
+          expect(SnowplowTracker::AsyncEmitter)
+            .to receive(:new)
+                  .with(endpoint: 'gitfoo.com',
+                    options: { protocol: 'https',
+                               method: 'post',
+                               buffer_size: 1,
+                               on_success: subject.method(:increment_successful_events_emissions),
+                               on_failure: subject.method(:failure_callback) })
+                  .and_return(emitter)
+
+          expect(SnowplowTracker::Tracker)
+            .to receive(:new)
+                  .with(emitters: [emitter],
+                    subject: an_instance_of(SnowplowTracker::Subject),
+                    namespace: described_class::SNOWPLOW_NAMESPACE,
+                    app_id: '_abc123_')
+                  .and_return(tracker)
+
+          allow(tracker).to receive(:track_struct_event).and_call_original
+        end
+
+        it 'sends event to tracker' do
+          subject.event('category', 'action', label: 'label', property: 'property', value: 1.5)
+
+          expect(tracker)
+            .to have_received(:track_struct_event)
+                  .with(category: 'category', action: 'action', label: 'label', property: 'property', value: 1.5,
+                    context: nil, subject: nil, tstamp: (Time.now.to_f * 1000).to_i)
+        end
+
+        it 'increase total snowplow events counter' do
+          counter = double
+
+          expect(counter).to receive(:increment)
+          expect(Gitlab::Metrics).to receive(:counter)
+                                       .with(:gitlab_snowplow_events_total,
+                                         'Number of Snowplow events')
+                                       .and_return(counter)
+
+          subject.event('category', 'action', label: 'label', property: 'property', value: 1.5)
+        end
+
+        context 'when the current request carries a User-Agent', :request_store do
+          let(:user_agent) { 'GitLabMobile/1.2.0 (iOS 26.0.1; build 45)' }
+
+          before do
+            Gitlab::RequestContext.instance.user_agent = user_agent
+          end
+
+          it 'attributes the event to that client' do
+            subject.event('category', 'action', label: 'label', property: 'property', value: 1.5)
+
+            expect(tracker)
+              .to have_received(:track_struct_event)
+                    .with(hash_including(
+                      subject: an_object_having_attributes(details: hash_including('ua' => user_agent))
+                    ))
+          end
+
+          context 'when the User-Agent is oversized and contains control characters' do
+            let(:user_agent) { "GitLabMobile/1.2.0\u0000 #{'x' * 300}" }
+
+            it 'sends the sanitised value' do
+              subject.event('category', 'action', label: 'label', property: 'property', value: 1.5)
+
+              expect(tracker)
+                .to have_received(:track_struct_event)
+                      .with(hash_including(
+                        subject: an_object_having_attributes(
+                          details: hash_including('ua' => "GitLabMobile/1.2.0 #{'x' * 231}")
+                        )
+                      ))
+            end
+          end
+        end
+      end
+
+      context 'when event is ineligible' do
+        let(:event_eligible) { false }
+
+        it 'does not sends event to tracker' do
+          allow(tracker).to receive(:track_struct_event).and_call_original
+
+          subject.event('category', 'action', label: 'label', property: 'property', value: 1.5)
+
+          expect(tracker).not_to have_received(:track_struct_event)
+        end
+
+        it 'does not increase total snowplow events counter' do
+          expect(Gitlab::Metrics).not_to receive(:counter)
+
+          subject.event('category', 'action', label: 'label', property: 'property', value: 1.5)
+        end
+      end
+    end
+
+    it "initializes POST emitter with buffer_size 1" do
+      allow(SnowplowTracker::Tracker).to receive(:new).and_return(tracker)
+      allow(tracker).to receive(:track_struct_event).and_call_original
+
+      allow_next_instance_of(Gitlab::Tracking::Destinations::DestinationConfiguration) do |config|
+        allow(config).to receive_messages(hostname: 'gitfoo.com', protocol: 'https')
+      end
+
+      expect(SnowplowTracker::AsyncEmitter)
+        .to receive(:new)
+              .with(endpoint: 'gitfoo.com',
+                options: { protocol: 'https',
+                           method: 'post',
+                           buffer_size: 1,
+                           on_success: subject.method(:increment_successful_events_emissions),
+                           on_failure: subject.method(:failure_callback) })
+              .and_return(emitter)
+
+      subject.event('category', 'action', label: 'label', property: 'property', value: 1.5)
+    end
+  end
+
+  describe '#event return value' do
+    it 'returns true when the event is handed to the emitter' do
+      expect(subject.event('category', 'action')).to be(true)
+    end
+
+    context 'when event is ineligible' do
+      let(:event_eligible) { false }
+
+      it 'returns false' do
+        expect(subject.event('category', 'action')).to be(false)
+      end
+    end
+  end
+
+  context 'with snowplow and product usage data disabled' do
+    before do
+      allow(Gitlab::Tracking::EventEligibilityChecker).to receive(:new).and_call_original
+      stub_application_setting(snowplow_enabled?: false)
+      stub_env('GITLAB_PRODUCT_USAGE_DATA_ENABLED', 'false')
+
+      allow(SnowplowTracker::Tracker).to receive(:new).and_return(tracker)
+      allow(tracker).to receive(:track_struct_event).and_call_original
+    end
+
+    it 'drops events on the regular destination', :aggregate_failures do
+      expect(subject.event('category', 'action')).to be(false)
+      expect(tracker).not_to have_received(:track_struct_event)
+    end
+
+    context 'with a billing destination configuration' do
+      subject(:billing_destination) do
+        described_class.new(Gitlab::Tracking::Destinations::DestinationConfiguration.billing_configuration)
+      end
+
+      it 'emits the event', :aggregate_failures do
+        expect(billing_destination.event('category', 'secrets_read')).to be(true)
+        expect(tracker).to have_received(:track_struct_event).with(hash_including(action: 'secrets_read'))
+      end
+    end
+  end
+
+  context 'callbacks' do
+    describe 'on success' do
+      it 'increase gitlab_successful_snowplow_events_total counter' do
+        counter = double
+
+        expect(counter).to receive(:increment).with({}, 2)
+        expect(Gitlab::Metrics).to receive(:counter)
+                                     .with(:gitlab_snowplow_successful_events_total,
+                                       'Number of successful Snowplow events emissions')
+                                     .and_return(counter)
+
+        subject.method(:increment_successful_events_emissions).call(2)
+      end
+    end
+
+    describe 'on failure' do
+      it 'increase gitlab_failed_snowplow_events_total counter and logs failures', :aggregate_failures do
+        counter = double
+        error_message = "Admin::AuditLogsController search_audit_event failed to be reported to collector at gitfoo.com"
+        failures = [{ "e" => "se",
+                      "se_ca" => "Admin::AuditLogsController",
+                      "se_ac" => "search_audit_event" }]
+        allow(Gitlab::Metrics).to receive(:counter)
+                                    .with(:gitlab_snowplow_successful_events_total,
+                                      'Number of successful Snowplow events emissions')
+                                    .and_call_original
+
+        expect(Gitlab::AppLogger).to receive(:error).with(error_message)
+        expect(counter).to receive(:increment).with({}, 1)
+        expect(Gitlab::Metrics).to receive(:counter)
+                                     .with(:gitlab_snowplow_failed_events_total,
+                                       'Number of failed Snowplow events emissions')
+                                     .and_return(counter)
+
+        subject.method(:failure_callback).call(2, failures)
+      end
+    end
+  end
+
+  describe '#emit_event_payload' do
+    let(:payload) { { "event" => "page_view", "user_id" => "123" } }
+
+    before do
+      allow(Gitlab::Testing::SnowplowTestEmitter).to receive(:new).and_return(emitter)
+    end
+
+    it "forwards the payload to the emitter" do
+      expect(emitter).to receive(:input).with(payload)
+      subject.emit_event_payload(payload)
+    end
+  end
+
+  describe '#frontend_client_options' do
+    context 'when snowplow is enabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: true)
+      end
+
+      it 'returns snowplow options' do
+        expected = {
+          namespace: 'gl',
+          hostname: 'gitfoo.com',
+          cookieDomain: nil,
+          appId: '_abc123_',
+          formTracking: true,
+          linkClickTracking: true
+        }
+
+        expect(subject.frontend_client_options).to eq(expected)
+      end
+    end
+
+    context 'when snowplow is disabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: false, snowplow_app_id: nil)
+
+        allow(Gitlab).to receive(:host_with_port).and_return('gitlab.example.com')
+        allow(Gitlab.config.gitlab).to receive(:https).and_return(true)
+        allow(Rails.application.routes.url_helpers).to receive(:event_forwarding_path).and_return('/events')
+      end
+
+      it 'returns product_usage_events options' do
+        expected = {
+          namespace: 'gl',
+          hostname: 'gitlab.example.com',
+          postPath: '/events',
+          forceSecureTracker: true,
+          appId: 'gitlab_sm'
+        }
+
+        expect(subject.frontend_client_options).to eq(expected)
+      end
+    end
+  end
+
+  describe '#hostname' do
+    context 'when snowplow is enabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: true)
+      end
+
+      it 'returns snowplow_collector_hostname' do
+        expect(subject.hostname).to eq('gitfoo.com')
+      end
+    end
+
+    context 'when snowplow is disabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: false)
+      end
+
+      shared_examples 'hostname with staging' do |staging_env, host, expected_endpoint|
+        context "when staging_env=#{staging_env}, host=#{host}" do
+          before do
+            allow(Gitlab).to receive(:staging?).and_return(staging_env)
+            stub_config_setting(host: host) if host
+          end
+
+          it "returns #{expected_endpoint}" do
+            expect(subject.hostname).to eq(expected_endpoint)
+          end
+        end
+      end
+
+      it_behaves_like 'hostname with staging', true, nil, 'events-stg.gitlab.net'
+      it_behaves_like 'hostname with staging', false, 'gitlab-test.example.test', 'events-stg.gitlab.net'
+      it_behaves_like 'hostname with staging', false, 'example.com', 'events.gitlab.net'
+    end
+  end
+
+  describe '#app_id' do
+    subject { described_class.new.app_id }
+
+    context 'when snowplow is enabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: true)
+      end
+
+      it { is_expected.to eq('_abc123_') }
+    end
+
+    context 'when snowplow is disabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: false)
+        stub_application_setting(gitlab_dedicated_instance?: dedicated_instance)
+      end
+
+      shared_examples 'app_id with staging' do |instance_type, staging_env, host, expected_app_id|
+        context "when #{instance_type}, staging_env=#{staging_env}, host=#{host}" do
+          let(:dedicated_instance) { instance_type == 'dedicated' }
+
+          before do
+            allow(Gitlab).to receive(:staging?).and_return(staging_env)
+            stub_config_setting(host: host) if host
+          end
+
+          it { is_expected.to eq(expected_app_id) }
+        end
+      end
+
+      # Dedicated instance tests
+      it_behaves_like 'app_id with staging', 'dedicated', false, 'example.com', 'gitlab_dedicated'
+      it_behaves_like 'app_id with staging', 'dedicated', true, nil, 'gitlab_dedicated_staging'
+      it_behaves_like 'app_id with staging', 'dedicated', false, 'gitlab-test.example.test',
+        'gitlab_dedicated_staging'
+
+      # Self-hosted instance tests
+      it_behaves_like 'app_id with staging', 'self-hosted', false, 'example.com', 'gitlab_sm'
+      it_behaves_like 'app_id with staging', 'self-hosted', true, nil, 'gitlab_sm_staging'
+      it_behaves_like 'app_id with staging', 'self-hosted', false, 'gitlab-test.example.test', 'gitlab_sm_staging'
+
+      context 'when self-hosted instance' do
+        let(:dedicated_instance) { false }
+
+        it { is_expected.to eq('gitlab_sm') }
+      end
+    end
+
+    context 'with app_id_suffix from destination configuration' do
+      let(:dest_config) do
+        Gitlab::Tracking::Destinations::DestinationConfiguration.new(
+          URI('https://billing.prdsub.gitlab.net'), app_id_suffix: '_billing'
+        )
+      end
+
+      subject { described_class.new(dest_config).app_id }
+
+      context 'when snowplow is enabled' do
+        before do
+          stub_application_setting(snowplow_enabled?: true)
+        end
+
+        it 'appends the suffix to the snowplow app_id setting' do
+          is_expected.to eq('_abc123__billing')
+        end
+      end
+
+      context 'when snowplow is disabled' do
+        before do
+          stub_application_setting(snowplow_enabled?: false)
+        end
+
+        context 'when self-managed instance' do
+          before do
+            stub_application_setting(gitlab_dedicated_instance?: false)
+            allow(Gitlab).to receive(:staging?).and_return(false)
+            stub_config_setting(host: 'example.com')
+          end
+
+          it 'appends the suffix to the base app_id' do
+            is_expected.to eq('gitlab_sm_billing')
+          end
+        end
+
+        context 'when self-managed staging instance' do
+          before do
+            stub_application_setting(gitlab_dedicated_instance?: false)
+            allow(Gitlab).to receive(:staging?).and_return(true)
+          end
+
+          it 'appends the suffix before the staging suffix' do
+            is_expected.to eq('gitlab_sm_billing_staging')
+          end
+        end
+
+        context 'when dedicated instance' do
+          before do
+            stub_application_setting(gitlab_dedicated_instance?: true)
+            allow(Gitlab).to receive(:staging?).and_return(false)
+            stub_config_setting(host: 'example.com')
+          end
+
+          it 'appends the suffix to the base app_id' do
+            is_expected.to eq('gitlab_dedicated_billing')
+          end
+        end
+
+        context 'when dedicated staging instance' do
+          before do
+            stub_application_setting(gitlab_dedicated_instance?: true)
+            allow(Gitlab).to receive(:staging?).and_return(true)
+          end
+
+          it 'appends the suffix before the staging suffix' do
+            is_expected.to eq('gitlab_dedicated_billing_staging')
+          end
+        end
+      end
+    end
+  end
+
+  context 'when snowplow_sync_emitter flag is enabled' do
+    let(:snowplow_sync_emitter) { true }
+
+    it 'uses a synchronous Emitter' do
+      expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+      expect(Gitlab::Tracking::SnowplowLoggingEmitter).not_to receive(:new)
+      expect(SnowplowTracker::Emitter).to receive(:new)
+
+      subject.send(:emitter)
+    end
+  end
+
+  context 'when snowplow_job_emitter flag is enabled' do
+    let(:snowplow_job_emitter) { true }
+
+    before do
+      allow(Rails.env).to receive(:test?).and_return(false)
+    end
+
+    it 'uses the custom SnowplowJobEmitter' do
+      expect(Gitlab::Tracking::SnowplowJobEmitter).to receive(:new)
+      expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+      expect(Gitlab::Tracking::SnowplowLoggingEmitter).not_to receive(:new)
+
+      subject.send(:emitter)
+    end
+  end
+
+  context 'when snowplow_emitter_http_timeout flag is enabled' do
+    let(:snowplow_emitter_http_timeout) { true }
+
+    before do
+      allow(Rails.env).to receive(:test?).and_return(false)
+    end
+
+    it 'uses SnowplowTimeoutEmitter' do
+      expect(Gitlab::Tracking::SnowplowTimeoutEmitter).to receive(:new)
+      expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+
+      subject.send(:emitter)
+    end
+  end
+
+  context 'when snowplow_emitter_thread_count flag is enabled' do
+    let(:snowplow_emitter_thread_count) { true }
+
+    it 'initializes emitter with thread_count' do
+      expect(Gitlab::Testing::SnowplowTestEmitter)
+        .to receive(:new).with(endpoint: anything, options: hash_including(thread_count: 15))
+
+      subject.send(:emitter)
+    end
+  end
+
+  context 'when snowplow_emitter_thread_count flag is disabled' do
+    it 'initializes emitter without thread_count' do
+      expect(Gitlab::Testing::SnowplowTestEmitter)
+        .to receive(:new).with(endpoint: anything, options: hash_not_including(:thread_count))
+
+      subject.send(:emitter)
+    end
+  end
+
+  describe 'emitter class' do
+    context 'when snowplow is enabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: true)
+        allow(Rails.env).to receive(:test?).and_return(false)
+      end
+
+      it 'uses AsyncEmitter' do
+        expect(SnowplowTracker::AsyncEmitter).to receive(:new)
+        expect(Gitlab::Tracking::SnowplowLoggingEmitter).not_to receive(:new)
+
+        subject.send(:emitter)
+      end
+    end
+
+    context 'when snowplow is disabled' do
+      before do
+        stub_application_setting(snowplow_enabled?: false)
+        allow(Rails.env).to receive(:test?).and_return(false)
+      end
+
+      context 'when GITLAB_DISABLE_PRODUCT_USAGE_EVENT_LOGGING env variable is true' do
+        it 'uses AsyncEmitter' do
+          stub_env('GITLAB_DISABLE_PRODUCT_USAGE_EVENT_LOGGING', '1')
+
+          expect(SnowplowTracker::AsyncEmitter).to receive(:new)
+          expect(Gitlab::Tracking::SnowplowLoggingEmitter).not_to receive(:new)
+
+          subject.send(:emitter)
+        end
+      end
+
+      context 'when GITLAB_DISABLE_PRODUCT_USAGE_EVENT_LOGGING env variable is falsey' do
+        it 'uses SnowplowLoggingEmitter' do
+          stub_env('GITLAB_DISABLE_PRODUCT_USAGE_EVENT_LOGGING', 'false')
+
+          expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+          expect(Gitlab::Tracking::SnowplowLoggingEmitter).to receive(:new)
+
+          subject.send(:emitter)
+        end
+      end
+
+      context 'when GITLAB_DISABLE_PRODUCT_USAGE_EVENT_LOGGING env variable is not set' do
+        it 'uses SnowplowLoggingEmitter' do
+          expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+          expect(Gitlab::Tracking::SnowplowLoggingEmitter).to receive(:new)
+
+          subject.send(:emitter)
+        end
+      end
+
+      context 'when snowplow_sync_emitter flag is enabled' do
+        let(:snowplow_sync_emitter) { true }
+
+        it 'uses a synchronous Emitter' do
+          expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+          expect(Gitlab::Tracking::SnowplowLoggingEmitter).not_to receive(:new)
+          expect(SnowplowTracker::Emitter).to receive(:new)
+
+          subject.send(:emitter)
+        end
+      end
+
+      context 'when snowplow_job_emitter flag is enabled' do
+        let(:snowplow_job_emitter) { true }
+
+        it 'uses the custom SnowplowJobEmitter' do
+          expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+          expect(Gitlab::Tracking::SnowplowJobEmitter).to receive(:new)
+          expect(Gitlab::Tracking::SnowplowLoggingEmitter).not_to receive(:new)
+
+          subject.send(:emitter)
+        end
+      end
+    end
+
+    context 'in test environment' do
+      it 'uses SnowplowTestEmitter to prevent HTTP requests' do
+        # In test environment, we expect SnowplowTestEmitter to prevent HTTP requests
+        expect(Gitlab::Testing::SnowplowTestEmitter).to receive(:new)
+        expect(SnowplowTracker::AsyncEmitter).not_to receive(:new)
+        expect(Gitlab::Tracking::SnowplowLoggingEmitter).not_to receive(:new)
+        subject.send(:emitter)
+      end
+    end
+
+    context 'with a billing destination configuration' do
+      subject(:billing_destination) { described_class.new(billing_configuration) }
+
+      let(:billing_configuration) do
+        Gitlab::Tracking::Destinations::DestinationConfiguration.billing_configuration
+      end
+
+      before do
+        allow(Rails.env).to receive(:test?).and_return(false)
+      end
+
+      it 'uses the BillingAuthEmitter with the authenticated collector path' do
+        expect(Gitlab::Tracking::BillingAuthEmitter)
+          .to receive(:new)
+                .with(endpoint: anything, options: hash_including(path: described_class::BILLING_AUTH_POST_PATH))
+
+        billing_destination.send(:emitter)
+      end
+    end
+  end
+end

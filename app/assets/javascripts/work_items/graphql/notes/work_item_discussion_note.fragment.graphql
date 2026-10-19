@@ -1,0 +1,34 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+#import "ee_else_ce/work_items/graphql/notes/work_item_note.fragment.graphql"
+
+fragment WorkItemDiscussionNote on Note {
+  id
+  bodyHtml
+  system
+  internal
+  systemNoteIconName
+  createdAt
+  author {
+    ...User
+  }
+  userPermissions {
+    adminNote
+  }
+  discussion {
+    id
+    resolved
+    resolvable
+    resolvedBy {
+      id
+      name
+    }
+    userPermissions {
+      resolveNote
+    }
+    notes {
+      nodes {
+        ...WorkItemNote
+      }
+    }
+  }
+}

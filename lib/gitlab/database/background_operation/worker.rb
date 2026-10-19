@@ -1,0 +1,30 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Database
+    module BackgroundOperation
+      class Worker < SharedModel
+        include CommonWorker
+        include Queueable
+        include Observable
+
+        WORKER_TYPE = :organization_specific
+
+        self.table_name = :background_operation_workers
+
+        has_many :jobs,
+          class_name: 'Gitlab::Database::BackgroundOperation::Job',
+          inverse_of: :worker,
+          foreign_key: [:worker_id, :worker_partition]
+
+        has_one :last_job, -> { order(max_cursor: :desc, created_at: :desc) },
+          class_name: 'Gitlab::Database::BackgroundOperation::Job',
+          inverse_of: :worker,
+          foreign_key: [:worker_id, :worker_partition]
+
+        belongs_to :organization, class_name: '::Organizations::Organization'
+        belongs_to :user, class_name: '::User'
+      end
+    end
+  end
+end

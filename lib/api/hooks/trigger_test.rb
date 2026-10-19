@@ -1,0 +1,63 @@
+# frozen_string_literal: true
+
+module API
+  module Hooks
+    # rubocop: disable API/Base -- re-usable module
+    class TriggerTest < ::Grape::API
+      helpers do
+        # EE::API::Hooks::TriggerTest overrides this helper
+        def hook_test_service(hook, _)
+          TestHooks::ProjectService.new(hook, current_user, params[:trigger])
+        end
+      end
+      desc 'Trigger a test webhook' do
+        detail 'Triggers a test webhook. This endpoint has a rate limit of five requests per minute for each ' \
+          'authenticated user for a given project or group. On GitLab Self-Managed and GitLab Dedicated, an ' \
+          'administrator can change this limit in the application settings.'
+        success code: 201
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not found' },
+          { code: 422, message: 'Unprocessable entity' },
+          { code: 429, message: 'Too many requests' }
+        ]
+        tags ['hooks']
+      end
+      params do
+        requires :hook_id, type: Integer, desc: 'ID of the hook.'
+        requires :trigger,
+          type: String,
+          desc: 'Type of webhook event to test.',
+          values: ProjectHook.triggers.values.map(&:to_s)
+      end
+      given configuration[:tier] do
+        route_setting :tier, configuration[:tier]
+      end
+      route_setting :authorization, permissions: :test_webhook, boundary_type: configuration[:boundary_type]
+      post ":hook_id/test/:trigger" do
+        hook = find_hook
+
+        check_rate_limit!(
+          :web_hook_test,
+          scope: ::Gitlab::ApplicationRateLimiter.parent_scope(hook.parent).merge(user: current_user)
+        )
+
+        service = hook_test_service(hook, configuration[:entity])
+        result = service.execute
+        success = (200..299).cover?(result.payload[:http_status])
+
+        if success
+          created!
+        elsif result.reason == :forbidden
+          forbidden!(result.message)
+        else
+          render_api_error!(result.message, 422)
+        end
+      end
+    end
+    # rubocop: enable API/Base
+  end
+end
+
+API::Hooks::TriggerTest.prepend_mod

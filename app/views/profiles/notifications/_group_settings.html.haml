@@ -1,0 +1,16 @@
+- emails_disabled = group.emails_disabled?
+
+%li
+  .gl-justify-between.gl-items-center{ class: '@md/panel:gl-flex' }
+    .gl-mb-2{ class: '@md/panel:gl-mb-0' }
+      %span.gl-mr-2
+        = notification_icon(notification_icon_level(setting, emails_disabled))
+
+      %span
+        = link_to group.name, group_path(group)
+
+    .gl-flex.gl-gap-3.gl-flex-wrap
+      - if setting
+        .js-vue-notification-dropdown{ data: { disabled: emails_disabled.to_s, dropdown_items: notification_dropdown_items(setting).to_json, notification_level: setting.level, help_page_path: help_page_path('user/profile/notifications.md'), group_id: group.id, show_label: "true" } }
+      = form_for setting, url: profile_group_notifications_path(group), method: :put, html: { class: 'update-notifications gl-flex' } do |f|
+        .js-notification-email-listbox-input{ data: {  name: 'notification_setting[notification_email]', emails: @user.public_verified_emails.to_json, empty_value_text: _('Global notification email') , value: setting.notification_email, placement: 'bottom-end' } }

@@ -1,0 +1,7 @@
+- runner_name = runner_short_name(@runner)
+- breadcrumb_title _('Edit')
+- page_title _('Edit'), runner_name
+- add_to_breadcrumbs _('Runners'), group_runners_path(@group)
+- add_to_breadcrumbs runner_name, group_runner_path(@group, @runner)
+
+#js-group-runner-edit{ data: {runner_id: @runner.id, runner_path: group_runner_path(@group, @runner) } }

@@ -1,0 +1,21 @@
+---
+data_category: optional
+key_path: counts.package_events_i_package_rubygems_delete_package
+description: Total count of RubyGems packages delete events
+product_group: package_registry
+product_categories:
+- package_registry
+value_type: number
+status: active
+milestone: '13.10'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/53480
+time_frame: all
+data_source: internal_events
+events:
+  - name: delete_package_from_registry
+    filter:
+      label: rubygems
+tiers:
+- free
+- premium
+- ultimate

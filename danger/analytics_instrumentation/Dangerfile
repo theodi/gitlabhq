@@ -1,0 +1,21 @@
+# frozen_string_literal: true
+
+return if stable_branch.valid_stable_branch?
+
+analytics_instrumentation.check!
+
+analytics_instrumentation.check_affected_scopes!
+
+analytics_instrumentation.check_usage_data_insertions!
+
+analytics_instrumentation.check_deprecated_data_sources!
+
+analytics_instrumentation.check_removed_metric_fields!
+
+analytics_instrumentation.warn_about_migrated_redis_keys_specs!
+
+analytics_instrumentation.warn_about_potential_pii_tracking
+
+analytics_instrumentation.prohibit_key_path_changes!
+
+analytics_instrumentation.verify_fe_tracking_params

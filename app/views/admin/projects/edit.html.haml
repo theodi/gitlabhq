@@ -1,0 +1,7 @@
+- add_to_breadcrumbs _("Projects"), admin_projects_path
+- add_to_breadcrumbs @project.full_name, admin_project_path(@project)
+- breadcrumb_title _("Edit")
+- page_title _("Edit"), @project.name, _("Projects")
+
+= render ::Layouts::PageHeadingComponent.new(_('Edit project: %{project_name}') % { project_name: @project.name })
+= render 'form'

@@ -1,68 +1,473 @@
+# frozen_string_literal: true
+
 module SearchHelper
-  def search_autocomplete_opts(term)
-    return unless current_user
+  include Gitlab::Utils::StrongMemoize
+  include WorkItemsHelper # Provides work_item_path for recent_work_items_autocomplete
 
-    resources_results = [
-      groups_autocomplete(term),
-      projects_autocomplete(term)
-    ].flatten
+  # params which should persist when a new tab is selected
+  SEARCH_GENERIC_PARAMS = [
+    :search,
+    :scope,
+    :project_id,
+    :group_id,
+    :repository_ref,
+    :snippets,
+    :sort,
+    :force_search_results,
+    :type
+  ].freeze
 
-    generic_results = project_autocomplete + default_autocomplete + help_autocomplete
-    generic_results.select! { |result| result[:label] =~ Regexp.new(term, "i") }
+  def search_autocomplete_opts(term, filter: nil, scope: nil)
+    return [] unless current_user
+
+    results = case filter&.to_sym
+              when :search
+                resource_results(term, scope: scope)
+              when :generic
+                [
+                  recent_items_autocomplete(term),
+                  generic_results(term)
+                ]
+              else
+                [
+                  recent_items_autocomplete(term),
+                  resource_results(term),
+                  generic_results(term)
+                ]
+              end
+
+    results.flatten { |item| item[:label] }
+  end
+
+  def resource_results(term, scope: nil)
+    return [] if term.length < Search::Params::MIN_TERM_LENGTH
+    return scope_specific_results(term, scope) if scope.present?
 
     [
-      resources_results,
-      generic_results
-    ].flatten.uniq do |item|
-      item[:label]
+      groups_autocomplete(term),
+      projects_autocomplete(term),
+      users_autocomplete(term),
+      issue_autocomplete(term)
+    ].flatten
+  end
+
+  def scope_specific_results(term, scope)
+    case scope&.to_sym
+    when :projects
+      projects_autocomplete(term)
+    when :users
+      users_autocomplete(term)
+    when :issues, :work_items
+      recent_work_items_autocomplete(term)
+    else
+      []
     end
+  end
+
+  def generic_results(term)
+    search_pattern = Regexp.new(Regexp.escape(term), "i")
+
+    generic_results = combined_generic_results
+    generic_results.select { |result| result[:label] =~ search_pattern }
+  end
+
+  def recent_items_autocomplete(term)
+    recent_merge_requests_autocomplete(term) +
+      recent_work_items_autocomplete(term) +
+      recent_wiki_pages_autocomplete(term)
+  end
+
+  def search_entries_info(collection, scope, term)
+    return if collection.to_a.empty?
+
+    from = collection.offset_value + 1
+    to = collection.offset_value + collection.to_a.size
+    count = collection.total_count
+    term_element = tag.span(
+      safe_join([' ', tag.code(term), ' '])
+    )
+
+    safe_format(
+      search_entries_info_template(collection),
+      from: from,
+      to: to,
+      count: count,
+      scope: search_entries_scope_label(scope, count),
+      term_element: term_element)
+  end
+
+  def search_entries_scope_label(scope, count)
+    case scope
+    when 'blobs'
+      ns_('SearchResults|code result', 'SearchResults|code results', count)
+    when 'commits'
+      ns_('SearchResults|commit', 'SearchResults|commits', count)
+    when 'issues'
+      ns_('SearchResults|issue', 'SearchResults|issues', count)
+    when 'work_items'
+      ns_('SearchResults|work item', 'SearchResults|work items', count)
+    when 'merge_requests'
+      ns_('SearchResults|merge request', 'SearchResults|merge requests', count)
+    when 'milestones'
+      ns_('SearchResults|milestone', 'SearchResults|milestones', count)
+    when 'notes'
+      ns_('SearchResults|comment', 'SearchResults|comments', count)
+    when 'projects'
+      ns_('SearchResults|project', 'SearchResults|projects', count)
+    when 'groups'
+      ns_('SearchResults|group', 'SearchResults|groups', count)
+    when 'snippet_titles'
+      ns_('SearchResults|snippet', 'SearchResults|snippets', count)
+    when 'users'
+      ns_('SearchResults|user', 'SearchResults|users', count)
+    when 'wiki_blobs'
+      ns_('SearchResults|wiki result', 'SearchResults|wiki results', count)
+    else
+      raise "Unrecognized search scope '#{scope}'"
+    end
+  end
+
+  def search_entries_info_template(collection)
+    if collection.total_pages > 1
+      s_("SearchResults|Showing %{from} - %{to} of %{count} %{scope} for %{term_element}")
+    else
+      s_("SearchResults|Showing %{count} %{scope} for %{term_element}")
+    end
+  end
+
+  def search_entries_empty_message(scope, term, group, project)
+    options = {
+      scope: search_entries_scope_label(scope, 0),
+      term: tag.code(term)
+    }
+
+    # We check project first because we have 3 possible combinations here:
+    # - group && project
+    # - group
+    # - group: nil, project: nil
+    if project
+      safe_format(
+        _("We couldn't find any %{scope} matching %{term} in project %{project}"),
+        options.merge(
+          project: link_to(
+            project.full_name,
+            project_path(project),
+            target: '_blank',
+            rel: 'noopener noreferrer'
+          )
+        )
+      )
+    elsif group
+      safe_format(
+        _("We couldn't find any %{scope} matching %{term} in group %{group}"),
+        options.merge(
+          group: link_to(
+            group.full_name,
+            group_path(group),
+            target: '_blank',
+            rel: 'noopener noreferrer'
+          )
+        )
+      )
+    else
+      safe_format(
+        _("We couldn't find any %{scope} matching %{term}"),
+        options
+      )
+    end
+  end
+
+  def repository_ref(project)
+    return project.default_branch unless params[:project_id]
+
+    # Always #to_s the repository_ref param in case the value is also a number
+    params[:repository_ref].to_s.presence || project.default_branch
+  end
+
+  def search_service
+    @search_service ||= ::SearchService.new(current_user, params.merge(organization_id: Current.organization.id))
+  end
+
+  def search_sort_options
+    options = [
+      {
+        title: _('Created date'),
+        sortable: true,
+        sortParam: {
+          asc: 'created_asc',
+          desc: 'created_desc'
+        }
+      },
+      {
+        title: _('Updated date'),
+        sortable: true,
+        sortParam: {
+          asc: 'updated_asc',
+          desc: 'updated_desc'
+        }
+      }
+    ]
+
+    if search_service.scope == 'issues'
+      options << {
+        title: _('Popularity'),
+        sortable: true,
+        sortParam: {
+          asc: 'popularity_asc',
+          desc: 'popularity_desc'
+        }
+      }
+    end
+
+    options
+  end
+
+  def search_group
+    # group gets derived from the Project in the project's scope
+    @group || @project&.group
+  end
+
+  def search_has_group?
+    search_group.present? && search_group&.persisted?
+  end
+
+  def search_has_project?
+    @project.present? && @project&.persisted?
+  end
+
+  def header_search_context
+    {}.tap do |hash|
+      if search_has_group?
+        hash[:group] = { id: search_group.id, name: search_group.name, full_name: search_group.full_name }
+        hash[:group_metadata] = {
+          issues_path: issues_group_path(search_group, organization_path: nil),
+          mr_path: merge_requests_group_path(
+            search_group,
+            assignee_username: current_user&.username,
+            organization_path: nil
+          )
+        }
+      end
+
+      if search_has_project?
+        hash[:project] = { id: @project.id, name: @project.name }
+        hash[:project_metadata] = {}
+
+        if @project.feature_available?(:merge_requests, current_user)
+          mr_path = project_merge_requests_path(
+            @project,
+            assignee_username: current_user&.username,
+            organization_path: nil
+          )
+          hash[:project_metadata][:mr_path] = mr_path
+        end
+
+        if @project.feature_available?(:issues, current_user)
+          hash[:project_metadata][:issues_path] =
+            project_issues_path(@project, organization_path: nil)
+        end
+
+        hash[:code_search] = search_scope.nil?
+        hash[:ref] = @ref if @ref && can?(current_user, :read_code, @project)
+      end
+
+      hash[:scope] = search_scope if search_has_project? || search_has_group?
+      hash[:for_snippets] = @snippet.present? || @snippets&.any?
+    end
+  end
+
+  def search_scope
+    return if ::Gitlab::CurrentSettings.custom_default_search_scope_set?
+
+    if current_controller?(:issues)
+      'issues'
+    elsif current_controller?(:merge_requests)
+      'merge_requests'
+    elsif current_controller?(:wikis)
+      'wiki_blobs'
+    elsif current_controller?(:commits)
+      'commits'
+    elsif current_controller?(:groups)
+      controller.action_name if %w[issues merge_requests].include?(controller.action_name)
+    end
+  end
+
+  def should_show_zoekt_results?(_scope, _search_type)
+    false
+  end
+
+  def blob_data_oversize_message
+    _('The file could not be displayed because it is empty.')
+  end
+
+  def search_navigation_json
+    search_navigation = Search::Navigation.new(
+      user: current_user,
+      project: @project,
+      group: @group,
+      options: nav_options
+    )
+
+    sorted_navigation = search_navigation.tabs.sort_by { |_, h| h[:sort] }
+    parse_navigation(sorted_navigation).to_json
+  end
+
+  def work_item_types_for_filter
+    container = @project || @group
+
+    if container
+      types = ::WorkItems::TypesFinder
+        .new(container: container)
+        .execute(only_available: false)
+        .map do |type|
+          {
+            name: type.base_type.to_s,
+            label: type.name,
+            icon_name: type.icon_name
+          }
+        end
+      types = types.sort_by { |type| type[:name] }
+
+      # Filter types based on container and feature flags
+      filter_work_item_types(types, container)
+    else
+      # Return empty list for global search - work item type filter is not applicable
+      []
+    end
+  end
+  strong_memoize_attr :work_item_types_for_filter
+
+  # @search_request_id is minted by SearchController#increment_search_counters, which is the
+  # only place a perform_search event is emitted, so a click can only carry a join key that
+  # some search actually emitted.
+  def search_result_tracking_attrs(position)
+    attrs = {
+      event_tracking: 'click_search_result',
+      event_label: @scope,
+      event_value: position
+    }
+
+    attrs[:event_property] = @search_request_id if @search_request_id
+
+    attrs
   end
 
   private
 
+  def filter_work_item_types(types, container)
+    types.reject do |type|
+      # Epic requires the licensed feature; for projects, also requires project_work_item_epics feature flag
+      type[:name] == 'epic' && !epics_enabled_for?(container)
+    end
+  end
+
+  def epics_enabled_for?(container)
+    if container.is_a?(Project)
+      container.try(:project_epics_enabled?)
+    else
+      container.licensed_feature_available?(:epics)
+    end
+  end
+
+  def combined_generic_results
+    project_autocomplete + default_autocomplete + help_autocomplete + default_autocomplete_admin
+  end
+
+  def formatted_count(scope)
+    return "0" if @timeout
+
+    @search_results&.formatted_count(scope) || "0"
+  end
+
   # Autocomplete results for various settings pages
   def default_autocomplete
     [
-      { label: "Profile settings", url: profile_path },
-      { label: "SSH Keys",         url: profile_keys_path },
-      { label: "Dashboard",        url: root_path },
-      { label: "Admin Section",       url: admin_root_path },
+      { category: "Settings", label: _("User settings"),    url: user_settings_profile_path(organization_path: nil) },
+      { category: "Settings", label: _("SSH keys"),         url: user_settings_ssh_keys_path(organization_path: nil) },
+      { category: "Settings", label: _("Dashboard"),        url: root_path(organization_path: nil) }
+    ]
+  end
+
+  # Autocomplete results for settings pages, for admins
+  def default_autocomplete_admin
+    return [] unless current_user.can_read_all_resources?
+
+    [
+      { category: "Jump to", label: _("Admin area / Dashboard"), url: admin_root_path(organization_path: nil) }
     ]
   end
 
   # Autocomplete results for internal help pages
   def help_autocomplete
     [
-      { label: "help: API Help",           url: help_page_path("api", "README") },
-      { label: "help: Markdown Help",      url: help_page_path("markdown", "markdown") },
-      { label: "help: Permissions Help",   url: help_page_path("permissions", "permissions") },
-      { label: "help: Public Access Help", url: help_page_path("public_access", "public_access") },
-      { label: "help: Rake Tasks Help",    url: help_page_path("raketasks", "README") },
-      { label: "help: SSH Keys Help",      url: help_page_path("ssh", "README") },
-      { label: "help: System Hooks Help",  url: help_page_path("system_hooks", "system_hooks") },
-      { label: "help: Web Hooks Help",     url: help_page_path("web_hooks", "web_hooks") },
-      { label: "help: Workflow Help",      url: help_page_path("workflow", "README") },
+      { category: "Help", label: _("API Help"),                     url: help_page_path("api/_index.md") },
+      { category: "Help", label: _("Markdown Help"),                url: help_page_path("user/markdown.md") },
+      { category: "Help", label: _("Permissions Help"),             url: help_page_path("user/permissions.md") },
+      { category: "Help", label: _("Public Access Help"),           url: help_page_path("user/public_access.md") },
+      { category: "Help", label: _("Rake Tasks Help"),
+        url: help_page_path("administration/raketasks/_index.md") },
+      { category: "Help", label: _("SSH keys help"), url: help_page_path("user/ssh.md") },
+      {
+        category: "Help",
+        label: s_("Webhooks|System hooks help"),
+        url: help_page_path("administration/system_hooks.md")
+      },
+      {
+        category: "Help",
+        label: _("Webhooks help"),
+        url: help_page_path("user/project/integrations/webhooks.md")
+      }
     ]
   end
 
   # Autocomplete results for the current project, if it's defined
   def project_autocomplete
-    if @project && @project.repository.exists? && @project.repository.root_ref
-      prefix = search_result_sanitize(@project.name_with_namespace)
-      ref    = @ref || @project.repository.root_ref
+    if @project && @project.repository.root_ref
+      ref = @ref || @project.repository.root_ref
 
-      [
-        { label: "#{prefix} - Files",          url: namespace_project_tree_path(@project.namespace, @project, ref) },
-        { label: "#{prefix} - Commits",        url: namespace_project_commits_path(@project.namespace, @project, ref) },
-        { label: "#{prefix} - Network",        url: namespace_project_network_path(@project.namespace, @project, ref) },
-        { label: "#{prefix} - Graph",          url: namespace_project_graph_path(@project.namespace, @project, ref) },
-        { label: "#{prefix} - Issues",         url: namespace_project_issues_path(@project.namespace, @project) },
-        { label: "#{prefix} - Merge Requests", url: namespace_project_merge_requests_path(@project.namespace, @project) },
-        { label: "#{prefix} - Milestones",     url: namespace_project_milestones_path(@project.namespace, @project) },
-        { label: "#{prefix} - Snippets",       url: namespace_project_snippets_path(@project.namespace, @project) },
-        { label: "#{prefix} - Members",        url: namespace_project_project_members_path(@project.namespace, @project) },
-        { label: "#{prefix} - Wiki",           url: namespace_project_wikis_path(@project.namespace, @project) },
-      ]
+      result = []
+
+      if can?(current_user, :read_code, @project)
+        result.concat([
+          { category: "In this project", label: _("Files"),
+            url: project_tree_path(@project, ref, organization_path: nil) },
+          { category: "In this project", label: _("Commits"),
+            url: project_commits_path(@project, ref, organization_path: nil) }
+        ])
+      end
+
+      if can?(current_user, :read_repository_graphs, @project)
+        result.concat([
+          { category: "In this project", label: _("Network"),
+            url: project_network_path(@project, ref, organization_path: nil) },
+          { category: "In this project", label: _("Graph"),
+            url: project_graph_path(@project, ref, organization_path: nil) }
+        ])
+      end
+
+      result.concat([
+        { category: "In this project", label: _("Issues"), url: project_issues_path(@project, organization_path: nil) },
+        { category: "In this project", label: _("Merge requests"),
+          url: project_merge_requests_path(@project, organization_path: nil) },
+        { category: "In this project", label: _("Milestones"),
+          url: project_milestones_path(@project, organization_path: nil) },
+        { category: "In this project", label: _("Snippets"),
+          url: project_snippets_path(@project, organization_path: nil) },
+        { category: "In this project", label: _("Members"),
+          url: project_project_members_path(@project, organization_path: nil) },
+        { category: "In this project", label: _("Wiki"),
+          url: project_wikis_path(@project, organization_path: nil) }
+      ])
+
+      if can?(current_user, :read_feature_flag, @project)
+        result << {
+          category: "In this project",
+          label: _("Feature Flags"),
+          url: project_feature_flags_path(@project, organization_path: nil)
+        }
+      end
+
+      result
     else
       []
     end
@@ -70,21 +475,124 @@ module SearchHelper
 
   # Autocomplete results for the current user's groups
   def groups_autocomplete(term, limit = 5)
-    current_user.authorized_groups.search(term).limit(limit).map do |group|
+    current_user
+      .search_on_authorized_groups(term, use_minimum_char_limit: false)
+      .order_id_desc
+      .limit(limit)
+      .map do |group|
       {
-        label: "group: #{search_result_sanitize(group.name)}",
-        url: group_path(group)
+        category: "Groups",
+        id: group.id,
+        value: search_result_sanitize(group.name),
+        label: search_result_sanitize(group.full_name),
+        url: group_path(group, organization_path: nil),
+        avatar_url: group.avatar_url || ''
       }
     end
   end
 
+  def issue_autocomplete(term)
+    return [] unless @project.present? && current_user && term =~ /\A#{Issue.reference_prefix}\d+\z/
+
+    iid = term.sub(Issue.reference_prefix, '').to_i
+    issue = @project.issues.find_by_iid(iid)
+    return [] unless issue && Ability.allowed?(current_user, :read_issue, issue)
+
+    [
+      {
+        category: 'In this project',
+        id: issue.id,
+        label: search_result_sanitize("#{issue.title} (#{issue.to_reference})"),
+        url: issue_path(issue, organization_path: nil),
+        avatar_url: issue.project.avatar_url || ''
+      }
+    ]
+  end
+
   # Autocomplete results for the current user's projects
   def projects_autocomplete(term, limit = 5)
-    ProjectsFinder.new.execute(current_user).search_by_title(term).
-      sorted_by_stars.non_archived.limit(limit).map do |p|
+    projects = search_using_search_service(
+      current_user,
+      'projects',
+      term,
+      limit,
+      { autocomplete: true }
+    )
+
+    projects.map do |p|
       {
-        label: "project: #{search_result_sanitize(p.name_with_namespace)}",
-        url: namespace_project_path(p.namespace, p)
+        category: "Projects",
+        id: p.id,
+        value: search_result_sanitize(p.name),
+        label: search_result_sanitize(p.full_name),
+        url: project_path(p, organization_path: nil),
+        avatar_url: p.avatar_url || ''
+      }
+    end
+  end
+
+  def users_autocomplete(term, limit = 5)
+    unless current_user &&
+        Ability.allowed?(current_user, :read_users_list) &&
+        ::Gitlab::CurrentSettings.global_search_users_enabled?
+      return []
+    end
+
+    search_using_search_service(current_user, 'users', term, limit, { autocomplete: true }).map do |user|
+      {
+        category: "Users",
+        id: user.id,
+        value: search_result_sanitize(user.name),
+        label: search_result_sanitize(user.username),
+        url: user_path(user, organization_path: nil),
+        avatar_url: user.avatar_url || ''
+      }
+    end
+  end
+
+  def recent_merge_requests_autocomplete(term)
+    return [] unless current_user
+
+    ::Gitlab::Search::RecentMergeRequests.new(user: current_user).search(term).preload_routables.map do |mr|
+      {
+        category: "Recent merge requests",
+        id: mr.id,
+        label: search_result_sanitize(mr.title),
+        url: merge_request_path(mr, organization_path: nil),
+        avatar_url: mr.target_project.avatar_url || '',
+        project_id: mr.target_project_id,
+        project_name: mr.target_project.name
+      }
+    end
+  end
+
+  def recent_work_items_autocomplete(term)
+    return [] unless current_user
+
+    recent_work_items = ::Gitlab::Search::RecentWorkItems.new(user: current_user)
+    recent_work_items.search(term).map do |wi|
+      # For group-level work items, use namespace (group) avatar; for project-level, use project avatar
+      avatar_url = wi.project&.avatar_url || wi.namespace&.avatar_url || ''
+
+      {
+        category: "Recent work items",
+        id: wi.id,
+        label: search_result_sanitize(wi.title),
+        url: work_item_path(wi, organization_path: nil),
+        avatar_url: avatar_url,
+        project_id: wi.project&.id,
+        project_name: wi.project&.name
+      }
+    end
+  end
+
+  def recent_wiki_pages_autocomplete(term)
+    ::Gitlab::Search::RecentWikiPages.new(user: current_user).search(term).map do |wiki_page_meta|
+      {
+        category: "Recent wiki pages",
+        id: wiki_page_meta.id,
+        label: search_result_sanitize(wiki_page_meta.title),
+        url: Gitlab::UrlBuilder.build(wiki_page_meta, organization_path: nil)
       }
     end
   end
@@ -93,20 +601,173 @@ module SearchHelper
     Sanitize.clean(str)
   end
 
-  def search_filter_path(options={})
-    exist_opts = {
-      search: params[:search],
-      project_id: params[:project_id],
-      group_id: params[:group_id],
-      scope: params[:scope]
-    }
+  def active_nav?(active_scope, active_type, type)
+    return active_scope unless @scope.to_s == 'issues'
+    return active_type if type
+    return active_scope if params[:type].nil?
 
-    options = exist_opts.merge(options)
-    search_path(options)
+    false
   end
 
-  # Sanitize html generated after parsing markdown from issue description or comment
-  def search_md_sanitize(html)
-    sanitize(html, tags: %w(a p ol ul li pre code))
+  def search_filter_link_json(scope, label, data, search, type)
+    scope_name = scope.to_s
+    search_params = params
+      .merge(search)
+      .merge(scope: scope_name)
+      .merge(type: type)
+      .permit(SEARCH_GENERIC_PARAMS)
+
+    active_scope = @scope == scope_name
+    active_type = params[:type].to_s == type.to_s
+
+    result = {
+      label: label,
+      scope: scope_name,
+      data: data,
+      link: search_path(search_params),
+      active: active_nav?(active_scope, active_type, type)
+    }
+    result[:count] = formatted_count(scope_name) if active_scope
+    result[:count_link] = search_count_path(search_params) unless active_scope
+    result
+  end
+
+  def nav_options
+    {
+      show_snippets: search_service.show_snippets?
+    }
+  end
+
+  def parse_navigation(navigation)
+    navigation.each_with_object({}) do |(key, value), hash|
+      next unless value[:condition]
+
+      scope = value[:scope] || key
+      hash[key] = search_filter_link_json(scope, value[:label], value[:data], value[:search], value[:type])
+
+      hash[key][:sub_items] = parse_navigation(value[:sub_items].sort_by { |_, h| h[:sort] }) if value[:sub_items]
+    end
+  end
+
+  def search_filter_input_options(type, placeholder = _('Search or filter results…'))
+    opts =
+      {
+        id: "filtered-search-#{type}",
+        'aria-label': _('Add search filter'),
+        placeholder: placeholder,
+        data: {
+          'username-params' => UserSerializer.new.represent(@users)
+        },
+        autocomplete: 'off'
+      }
+
+    if @project.present?
+      opts[:data]['project-id'] = @project.id
+      opts[:data]['labels-endpoint'] = project_labels_path(@project)
+      opts[:data]['milestones-endpoint'] = project_milestones_path(@project)
+      opts[:data]['releases-endpoint'] = project_releases_path(@project)
+      opts[:data]['environments-endpoint'] =
+        unfoldered_environment_names_project_path(@project)
+    elsif @group.present?
+      opts[:data]['group-id'] = @group.id
+      opts[:data]['labels-endpoint'] = group_labels_path(@group)
+      opts[:data]['milestones-endpoint'] = group_milestones_path(@group)
+      opts[:data]['releases-endpoint'] = group_releases_path(@group)
+      opts[:data]['environments-endpoint'] =
+        unfoldered_environment_names_group_path(@group)
+    else
+      opts[:data]['labels-endpoint'] = dashboard_labels_path
+      opts[:data]['milestones-endpoint'] = dashboard_milestones_path
+    end
+
+    opts
+  end
+
+  def search_history_storage_prefix
+    if @project.present?
+      @project.full_path
+    elsif @group.present?
+      @group.full_path
+    else
+      'dashboard'
+    end
+  end
+
+  def search_md_sanitize(source)
+    search_sanitize(markdown(search_truncate(source)))
+  end
+
+  def simple_search_highlight_and_truncate(text, phrase, options = {})
+    highlight(search_sanitize(search_truncate(text)), phrase.split, options) if text.is_a?(String) && !text.empty?
+  end
+
+  # Sanitize a HTML field for search display. Most tags are stripped out and the
+  # maximum length is set to 200 characters.
+  def search_truncate(source)
+    Truncato.truncate(
+      source,
+      count_tags: false,
+      count_tail: false,
+      filtered_tags: %w[img],
+      max_length: 200
+    )
+  end
+
+  def search_sanitize(html)
+    # Truncato's filtered_tags and filtered_attributes are not quite the same
+    sanitize(html, tags: %w[a p ol ul li pre code])
+  end
+
+  # _search_highlight is used in EE override
+  def highlight_and_truncate_issuable(issuable, search_term, _search_highlight)
+    simple_search_highlight_and_truncate(issuable.description, search_term)
+  end
+
+  def issuable_state_to_badge_class(issuable)
+    # Closed is considered "danger" for MR so we need to handle separately
+    if issuable.is_a?(::MergeRequest)
+      if issuable.merged?
+        :info
+      elsif issuable.closed?
+        :danger
+      else
+        :success
+      end
+    elsif issuable.closed?
+      :info
+    else
+      :success
+    end
+  end
+
+  def issuable_state_text(issuable)
+    case issuable.state
+    when 'merged'
+      _("Merged")
+    when 'closed'
+      _("Closed")
+    else
+      _("Open")
+    end
+  end
+
+  def issuable_visible_target_branch(issuable)
+    return unless issuable.is_a?(::MergeRequest)
+
+    issuable.target_branch unless issuable.target_branch == issuable.project.default_branch
+  end
+
+  def wiki_blob_link(wiki_blob)
+    project_wiki_path(wiki_blob.project, wiki_blob.basename)
+  end
+
+  def search_using_search_service(user, scope, term, limit, additional_params = {})
+    params = { scope: scope, search: term }.merge(additional_params)
+    ::SearchService
+      .new(user, params)
+      .search_objects
+      .first(limit)
   end
 end
+
+SearchHelper.prepend_mod_with('SearchHelper')

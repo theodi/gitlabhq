@@ -1,0 +1,359 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Mcp::Handlers::CallTool, feature_category: :mcp_server do
+  let(:manager) { instance_double(Mcp::Tools::Manager) }
+  let(:request) { instance_double(Rack::Request) }
+  let_it_be(:current_user) { create(:user) }
+
+  subject(:handler) { described_class.new(manager) }
+
+  describe '#invoke' do
+    let(:tool_name) { 'test_tool' }
+    let(:tool_lookup) { { name: tool_name, context: nil } }
+    let(:params) { { name: tool_name, arguments: { param: 'value' } } }
+    # EE resolves the telemetry namespace from the tool's own container declaration.
+    let(:no_containers) do
+      Mcp::Tools::Concerns::GovernanceContainerResolver::GovernanceContainerResolutionResult.none
+    end
+
+    let(:tool) { instance_double(Mcp::Tools::Base::BaseService, governed_containers: no_containers) }
+    let(:logger) { instance_double(Gitlab::Mcp::Logger) }
+
+    before do
+      allow(request).to receive(:[]).with(:id).and_return('1')
+      allow(manager).to receive(:resolve_alias) { |name| name }
+      allow(Gitlab::Mcp::Logger).to receive(:build).and_return(logger)
+      allow(logger).to receive(:conditional_info)
+    end
+
+    context 'when tool is found and version matches' do
+      before do
+        allow(manager).to receive(:get_tool).with(**tool_lookup).and_return(tool)
+        allow(tool).to receive(:is_a?).with(Mcp::Tools::Base::CustomService).and_return(false)
+        allow(tool).to receive(:is_a?).with(Mcp::Tools::Base::GraphqlService).and_return(false)
+        allow(tool).to receive(:execute).and_return({ content: [{ type: 'text', text: 'Success' }] })
+      end
+
+      it 'executes the tool successfully' do
+        result = handler.invoke(request, params, current_user)
+
+        expect(manager).to have_received(:get_tool).with(**tool_lookup)
+        expect(tool).to have_received(:execute).with(request: request, params: params)
+        expect(result).to eq({ content: [{ type: 'text', text: 'Success' }] })
+      end
+
+      it 'logs the successful tool call with indexable fields and gated argument values', :aggregate_failures do
+        handler.invoke(request, params, current_user)
+
+        expect(logger).to have_received(:conditional_info).with(
+          current_user,
+          hash_including(
+            ::Labkit::Fields::DURATION_S,
+            message: 'MCP tool call',
+            event_name: 'tool_call',
+            ai_component: 'mcp_server',
+            tool_name: tool_name,
+            request_id: '1',
+            tool_status: 'ok',
+            argument_keys: ['param'],
+            ::Labkit::Fields::GL_ROOT_NAMESPACE_ID => nil,
+            expanded: { arguments: { 'param' => 'value' } }
+          )
+        )
+        expect(logger).to have_received(:conditional_info).with(
+          current_user, hash_excluding(::Labkit::Fields::ERROR_TYPE)
+        )
+      end
+
+      it 'does not log client fields when the client is unknown' do
+        handler.invoke(request, params, current_user)
+
+        expect(logger).to have_received(:conditional_info).with(
+          current_user, hash_excluding(:mcp_client_name, :mcp_client_version)
+        )
+      end
+
+      context 'when the client identity is known' do
+        let(:client_info) { Gitlab::Mcp::ClientInfo.new(name: 'Cursor', version: '1.0.0') }
+
+        it 'logs the client name and version as indexed fields, outside expanded' do
+          handler.invoke(request, params, current_user, client_info: client_info)
+
+          expect(logger).to have_received(:conditional_info).with(
+            current_user,
+            hash_including(
+              mcp_client_name: 'Cursor',
+              mcp_client_version: '1.0.0',
+              expanded: { arguments: { 'param' => 'value' } }
+            )
+          )
+        end
+      end
+
+      it 'does not log dispatch fields for a tool that is not aggregated' do
+        handler.invoke(request, params, current_user)
+
+        expect(logger).to have_received(:conditional_info).with(
+          current_user, hash_excluding(:dispatched_tool_name)
+        )
+      end
+
+      context 'when the tool returns a result that is not a Hash' do
+        before do
+          allow(tool).to receive(:execute).and_return('Success')
+        end
+
+        it 'returns the result unchanged and logs no dispatch fields', :aggregate_failures do
+          expect(handler.invoke(request, params, current_user)).to eq('Success')
+
+          expect(logger).to have_received(:conditional_info).with(
+            current_user, hash_excluding(:dispatched_tool_name)
+          )
+        end
+      end
+
+      context 'when the tool is aggregated' do
+        let(:dispatch) { { tool_name: 'gitlab_search_in_project' } }
+
+        before do
+          allow(tool).to receive(:execute)
+            .and_return({ content: [{ type: 'text', text: 'Success' }], dispatch: dispatch })
+        end
+
+        it 'logs the dispatched sub-tool as indexed fields' do
+          handler.invoke(request, params, current_user)
+
+          expect(logger).to have_received(:conditional_info).with(
+            current_user,
+            hash_including(dispatched_tool_name: 'gitlab_search_in_project')
+          )
+        end
+
+        it 'does not return the dispatch info to the client' do
+          expect(handler.invoke(request, params, current_user)).to eq({ content: [{ type: 'text', text: 'Success' }] })
+        end
+      end
+
+      it 'does not add canonical_tool_name for a canonical call' do
+        handler.invoke(request, params, current_user)
+
+        expect(logger).to have_received(:conditional_info).with(
+          current_user, hash_excluding(:canonical_tool_name)
+        )
+      end
+
+      context 'when the tool is called by an alias' do
+        let(:tool_name) { 'legacy_tool' }
+
+        before do
+          allow(manager).to receive(:resolve_alias).with('legacy_tool').and_return('test_tool')
+        end
+
+        it 'logs the name as sent alongside the canonical name' do
+          handler.invoke(request, params, current_user)
+
+          expect(logger).to have_received(:conditional_info).with(
+            current_user,
+            hash_including(tool_name: 'legacy_tool', canonical_tool_name: 'test_tool')
+          )
+        end
+      end
+    end
+
+    context 'when the tool raises during execution' do
+      before do
+        allow(manager).to receive(:get_tool).with(**tool_lookup).and_return(tool)
+        allow(tool).to receive(:is_a?).with(Mcp::Tools::Base::CustomService).and_return(false)
+        allow(tool).to receive(:is_a?).with(Mcp::Tools::Base::GraphqlService).and_return(false)
+        allow(tool).to receive(:execute).and_raise(StandardError, 'boom')
+      end
+
+      it 'logs the failure and re-raises' do
+        expect { handler.invoke(request, params, current_user) }.to raise_error(StandardError, 'boom')
+
+        expect(logger).to have_received(:conditional_info).with(
+          current_user,
+          hash_including(
+            tool_name: tool_name,
+            tool_status: 'error',
+            ::Labkit::Fields::ERROR_TYPE => 'StandardError',
+            expanded: hash_including(::Labkit::Fields::ERROR_MESSAGE => 'boom')
+          )
+        )
+      end
+
+      context 'when the tool is called by an alias' do
+        let(:tool_name) { 'legacy_tool' }
+
+        before do
+          allow(manager).to receive(:resolve_alias).with('legacy_tool').and_return('test_tool')
+        end
+
+        it 'records both the name as sent and the canonical name' do
+          expect { handler.invoke(request, params, current_user) }.to raise_error(StandardError, 'boom')
+
+          expect(logger).to have_received(:conditional_info).with(
+            current_user,
+            hash_including(tool_name: 'legacy_tool', canonical_tool_name: 'test_tool')
+          )
+        end
+      end
+    end
+
+    context 'when the tool returns a response-level error' do
+      let(:error_result) do
+        {
+          content: [{ type: 'text', text: 'Validation error: labels is invalid' }],
+          structuredContent: {},
+          isError: true,
+          reason: :bad_request
+        }
+      end
+
+      before do
+        allow(manager).to receive(:get_tool).with(**tool_lookup).and_return(tool)
+        allow(tool).to receive(:is_a?).with(Mcp::Tools::Base::CustomService).and_return(false)
+        allow(tool).to receive(:is_a?).with(Mcp::Tools::Base::GraphqlService).and_return(false)
+        allow(tool).to receive(:execute).and_return(error_result)
+      end
+
+      it 'returns the error result to the agent without the internal reason' do
+        result = handler.invoke(request, params, current_user)
+
+        expect(result).to eq(error_result.except(:reason))
+      end
+
+      it 'logs the reason as tool_status and omits the exception fields', :aggregate_failures do
+        handler.invoke(request, params, current_user)
+
+        expect(logger).to have_received(:conditional_info).with(
+          current_user,
+          hash_including(tool_name: tool_name, tool_status: 'bad_request')
+        )
+        expect(logger).to have_received(:conditional_info).with(
+          current_user, hash_excluding(::Labkit::Fields::ERROR_TYPE)
+        )
+        expect(logger).to have_received(:conditional_info).with(
+          current_user,
+          hash_including(expanded: hash_excluding(::Labkit::Fields::ERROR_MESSAGE))
+        )
+      end
+
+      context 'when an aggregated tool dispatched the call' do
+        let(:error_result) do
+          {
+            content: [{ type: 'text', text: '404 Not Found' }],
+            structuredContent: {},
+            isError: true,
+            reason: :not_found,
+            dispatch: { tool_name: 'update_merge_request' }
+          }
+        end
+
+        it 'logs the dispatched sub-tool and returns the error without the internal keys', :aggregate_failures do
+          result = handler.invoke(request, params, current_user)
+
+          expect(result).to eq(error_result.except(:reason, :dispatch))
+          expect(logger).to have_received(:conditional_info).with(
+            current_user,
+            hash_including(
+              tool_status: 'not_found',
+              dispatched_tool_name: 'update_merge_request'
+            )
+          )
+        end
+      end
+
+      context 'when the error response carries no reason' do
+        let(:error_result) do
+          {
+            content: [{ type: 'text', text: 'Something broke' }],
+            structuredContent: {},
+            isError: true
+          }
+        end
+
+        it 'falls back to the generic error status' do
+          handler.invoke(request, params, current_user)
+
+          expect(logger).to have_received(:conditional_info).with(
+            current_user, hash_including(tool_status: 'error')
+          )
+        end
+      end
+    end
+
+    context 'when tool is a custom service' do
+      let(:access_token) { instance_double(PersonalAccessToken) }
+      let(:request_context) { Mcp::Tools::RequestContext.new(current_user: current_user, access_token: access_token) }
+      let(:tool_lookup) { { name: tool_name, context: request_context } }
+      let(:custom_tool) { instance_double(Mcp::Tools::Base::CustomService, governed_containers: no_containers) }
+
+      before do
+        allow(manager).to receive(:get_tool).with(**tool_lookup).and_return(custom_tool)
+        allow(custom_tool).to receive(:is_a?).with(Mcp::Tools::Base::CustomService).and_return(true)
+        allow(custom_tool).to receive(:is_a?).with(Mcp::Tools::Base::GraphqlService).and_return(false)
+        allow(custom_tool).to receive(:set_cred)
+        allow(custom_tool).to receive(:execute).and_return({ content: [{ type: 'text', text: 'Success' }] })
+      end
+
+      it 'sets credentials before executing' do
+        result = handler.invoke(request, params, current_user, context: request_context)
+
+        expect(custom_tool).to have_received(:set_cred).with(current_user: current_user, access_token: access_token)
+        expect(custom_tool).to have_received(:execute).with(request: request, params: params)
+        expect(result).to eq({ content: [{ type: 'text', text: 'Success' }] })
+      end
+    end
+
+    context 'when tool is a graphql service' do
+      let(:access_token) { instance_double(PersonalAccessToken) }
+      let(:request_context) { Mcp::Tools::RequestContext.new(current_user: current_user, access_token: access_token) }
+      let(:tool_lookup) { { name: tool_name, context: request_context } }
+      let(:graphql_tool) { instance_double(Mcp::Tools::Base::GraphqlService, governed_containers: no_containers) }
+
+      before do
+        allow(manager).to receive(:get_tool).with(**tool_lookup).and_return(graphql_tool)
+        allow(graphql_tool).to receive(:is_a?).with(Mcp::Tools::Base::CustomService).and_return(false)
+        allow(graphql_tool).to receive(:is_a?).with(Mcp::Tools::Base::GraphqlService).and_return(true)
+        allow(graphql_tool).to receive(:set_cred)
+        allow(graphql_tool).to receive(:execute).and_return({ content: [{ type: 'text', text: 'Success' }] })
+      end
+
+      it 'sets credentials before executing' do
+        result = handler.invoke(request, params, current_user, context: request_context)
+
+        expect(graphql_tool).to have_received(:set_cred).with(current_user: current_user, access_token: access_token)
+        expect(graphql_tool).to have_received(:execute).with(request: request, params: params)
+        expect(result).to eq({ content: [{ type: 'text', text: 'Success' }] })
+      end
+    end
+
+    context 'when tool is not found' do
+      before do
+        allow(manager).to receive(:get_tool).with(**tool_lookup)
+          .and_raise(Mcp::Tools::Manager::ToolNotFoundError.new(tool_name))
+      end
+
+      it 'raises ArgumentError' do
+        expect { handler.invoke(request, params, current_user) }
+          .to raise_error(ArgumentError, "Tool '#{tool_name}' not found.")
+      end
+
+      it 'logs the failed tool call' do
+        expect { handler.invoke(request, params, current_user) }.to raise_error(ArgumentError)
+
+        expect(logger).to have_received(:conditional_info).with(
+          current_user,
+          hash_including(
+            tool_name: tool_name,
+            tool_status: 'not_found',
+            ::Labkit::Fields::ERROR_TYPE => 'Mcp::Tools::Manager::ToolNotFoundError'
+          )
+        )
+      end
+    end
+  end
+end

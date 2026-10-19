@@ -1,0 +1,17 @@
+---
+description: Cloud Run pipeline generated
+category: Projects::GoogleCloud::DeploymentsController
+action: generate_cloudrun_pipeline
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: 5-min-app
+milestone: "15.4"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/96683"
+tiers:
+- free
+- premium
+- ultimate
+

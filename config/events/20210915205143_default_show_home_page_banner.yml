@@ -1,0 +1,12 @@
+description: "Show home page banner"
+category: default
+action: show_home_page_banner
+extra_properties:
+identifiers:
+product_group: activation
+milestone: "13.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/39752
+tiers:
+- free
+- premium
+- ultimate

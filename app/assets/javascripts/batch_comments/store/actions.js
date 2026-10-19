@@ -1,0 +1,217 @@
+import { isEmpty, chunk } from 'lodash-es';
+import { createAlert } from '~/alert';
+import { __ } from '~/locale';
+import { FILE_DIFF_POSITION_TYPE } from '~/diffs/constants';
+import diffsEventHub from '~/diffs/event_hub';
+import { CHANGES_TAB, SHOW_TAB } from '../constants';
+import service from '../services/drafts_service';
+import * as types from '../stores/modules/batch_comments/mutation_types';
+
+export function saveDraft(draft) {
+  return this.tryStore('legacyNotes').saveNote({ ...draft, isDraft: true });
+}
+
+export function addDraftToDiscussion({ endpoint, data }) {
+  return service
+    .addDraftToDiscussion(endpoint, data)
+    .then((res) => res.data)
+    .then((res) => {
+      this[types.ADD_NEW_DRAFT](res);
+      return res;
+    })
+    .catch((e) => {
+      throw e.response;
+    });
+}
+
+export function createNewDraft({ endpoint, data }) {
+  return service
+    .createNewDraft(endpoint, data)
+    .then((res) => res.data)
+    .then((res) => {
+      this[types.ADD_NEW_DRAFT](res);
+
+      try {
+        if (res.position?.position_type === FILE_DIFF_POSITION_TYPE) {
+          this.tryStore('legacyDiffs').addDraftToFile({ filePath: res.file_path, draft: res });
+        }
+      } catch {
+        // legacyDiffs store is not available in Rapid Diffs
+      }
+
+      return res;
+    })
+    .catch((e) => {
+      throw e.response;
+    });
+}
+
+export function deleteDraft(draft) {
+  return service
+    .deleteDraft(this.getNotesData.draftsPath, draft.id)
+    .then(() => {
+      this[types.DELETE_DRAFT](draft.id);
+    })
+    .catch(() =>
+      createAlert({
+        message: __('An error occurred while deleting the comment'),
+      }),
+    );
+}
+
+export function fetchDrafts() {
+  if (this.fetchDraftsPromise) return this.fetchDraftsPromise;
+
+  this.fetchDraftsPromise = service
+    .fetchDrafts(this.getNotesData.draftsPath)
+    .then(({ data }) => {
+      this[types.SET_BATCH_COMMENTS_DRAFTS](data);
+      this.drafts.forEach((draft) => {
+        try {
+          if (draft.position?.position_type === FILE_DIFF_POSITION_TYPE) {
+            this.tryStore('legacyDiffs').addDraftToFile({ filePath: draft.file_path, draft });
+          } else if (!draft.line_code) {
+            this.tryStore('legacyNotes').convertToDiscussion(draft.discussion_id);
+          }
+        } catch {
+          // legacyDiffs/legacyNotes stores may not be available in Rapid Diffs
+        }
+      });
+    })
+    .catch((e) => {
+      this.fetchDraftsPromise = null;
+      throw e;
+    })
+    .finally(() => {
+      this.isDraftsFetched = true;
+    });
+
+  return this.fetchDraftsPromise;
+}
+
+export function publishReview(noteData = {}) {
+  this[types.REQUEST_PUBLISH_REVIEW]();
+
+  return service
+    .publish(this.getNotesData.draftsPublishPath, noteData)
+    .then(({ data }) => {
+      this[types.RECEIVE_PUBLISH_REVIEW_SUCCESS]();
+
+      return data;
+    })
+    .catch((e) => {
+      this[types.RECEIVE_PUBLISH_REVIEW_ERROR]();
+
+      throw e.response;
+    });
+}
+
+export async function publishReviewInBatches(noteData = {}, batchSize = 20) {
+  this[types.REQUEST_PUBLISH_REVIEW]();
+
+  const chunks = chunk(this.drafts, batchSize);
+  const { note, reviewer_state, approve, approval_password, ...draftNotesData } = noteData;
+
+  const chunksLen = chunks.length - 1;
+  const singleReview = window.gon?.features?.improvedReviewEmail;
+
+  for (const [i, draftNoteChunk] of chunks.entries()) {
+    const ids = draftNoteChunk.map((d) => d.id);
+    const isLastChunk = i === chunksLen;
+    const data = isLastChunk ? { ids, ...noteData } : { ids, ...draftNotesData };
+
+    if (singleReview) {
+      if (this.publishReviewId) data.review_id = this.publishReviewId;
+      if (!isLastChunk) data.defer_notifications = true;
+    }
+
+    // The publish calls need to happen in the specified order
+    // so that the order of the notes when created matches the order of the draft notes.
+    // eslint-disable-next-line no-await-in-loop
+    const { data: response } = await service.publish(this.getNotesData.draftsPublishPath, data);
+
+    this.publishReviewId = response?.review_id;
+    this.drafts = this.drafts.filter((d) => !draftNoteChunk.find((draft) => draft.id === d.id));
+
+    if (isLastChunk) {
+      this.publishReviewId = null;
+      this[types.RECEIVE_PUBLISH_REVIEW_SUCCESS]();
+
+      return response;
+    }
+  }
+
+  return undefined;
+}
+
+export async function updateDraft({ note, noteText, resolveDiscussion, position }) {
+  const params = {
+    draftId: note.id,
+    note: noteText,
+    resolveDiscussion,
+  };
+  // Stringifying an empty object yields `{}` which breaks graphql queries
+  // https://gitlab.com/gitlab-org/gitlab/-/issues/298827
+  if (!isEmpty(position)) params.position = JSON.stringify(position);
+
+  const { data } = await service.update(this.getNotesData.draftsPath, params);
+  this[types.RECEIVE_DRAFT_UPDATE_SUCCESS](data);
+}
+
+export function scrollToDraft(draft) {
+  const discussion =
+    draft.discussion_id && this.tryStore('legacyNotes').getDiscussion(draft.discussion_id);
+  const tab = draft.file_hash || discussion?.diff_discussion ? CHANGES_TAB : SHOW_TAB;
+  const draftID = `draft_${draft.id}`;
+
+  window.location.hash = draftID;
+
+  if (window.mrTabs.currentAction !== tab) {
+    window.mrTabs.tabShown(tab);
+  }
+
+  const { file_path: filePath } = draft;
+
+  if (filePath) {
+    this.tryStore('legacyDiffs').setFileCollapsedAutomatically({ filePath, collapsed: false });
+  }
+
+  if (discussion) {
+    this.tryStore('legacyNotes').expandDiscussion({ discussionId: discussion.id });
+  }
+
+  if (draft.file_hash) {
+    diffsEventHub.$emit('scrollToFileHash', draft.file_hash);
+  }
+}
+
+export function expandAllDiscussions() {
+  return this.drafts
+    .filter((draft) => draft.discussion_id)
+    .forEach((draft) => {
+      this.tryStore('legacyNotes').expandDiscussion({ discussionId: draft.discussion_id });
+    });
+}
+
+export function clearDrafts() {
+  return this[types.CLEAR_DRAFTS]();
+}
+
+export function discardDrafts() {
+  return service
+    .discard(this.getNotesData.draftsDiscardPath)
+    .then(() => {
+      this[types.CLEAR_DRAFTS]();
+    })
+    .catch((error) =>
+      createAlert({
+        captureError: true,
+        error,
+        message: __('An error occurred while discarding your review. Please try again.'),
+      }),
+    );
+}
+
+export function setDrawerOpened(opened) {
+  this.drawerOpened = opened;
+}

@@ -1,0 +1,551 @@
+import { GlBreadcrumb } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import SuperTopbar from '~/super_sidebar/components/super_topbar.vue';
+import SuperSidebarToggle from '~/super_sidebar/components/super_sidebar_toggle.vue';
+import BrandLogo from 'jh_else_ce/super_sidebar/components/brand_logo.vue';
+import CreateMenu from '~/super_sidebar/components/create_menu.vue';
+import OrganizationSwitcher from '~/super_sidebar/components/organization_switcher.vue';
+import SearchModal from '~/super_sidebar/components/global_search/components/global_search.vue';
+import UserCounts from '~/super_sidebar/components/user_counts.vue';
+import UserMenu from '~/super_sidebar/components/user_menu.vue';
+import PromoMenu from '~/super_sidebar/components/promo_menu.vue';
+import waitForPromises from 'helpers/wait_for_promises';
+import { stubComponent } from 'helpers/stub_component';
+import { defaultOrganization as mockCurrentOrganization } from 'jest/organizations/mock_data';
+import { EVENT_OPEN_GLOBAL_SEARCH } from '~/vue_shared/global_search/constants';
+import { staticBreadcrumbs } from '~/lib/utils/breadcrumbs_state';
+import { sidebarData as mockSidebarData } from '../mock_data';
+
+describe('SuperTopbar', () => {
+  let wrapper;
+
+  const OrganizationSwitcherStub = stubComponent(OrganizationSwitcher);
+  const SearchModalStub = stubComponent(SearchModal, {
+    inject: { showAdminAreaLink: { default: false } },
+    template: '<div :data-show-admin-area-link="String(showAdminAreaLink)"></div>',
+  });
+
+  const findSkipToLink = () => wrapper.findByTestId('super-topbar-skip-to');
+  const findAdminLink = () => wrapper.findByTestId('topbar-admin-link');
+  const findSigninButton = () => wrapper.findByTestId('topbar-signin-button');
+  const findSignupButton = () => wrapper.findByTestId('topbar-signup-button');
+  const findBrandLogo = () => wrapper.findComponent(BrandLogo);
+  const findSidebarToggle = () => wrapper.findComponent(SuperSidebarToggle);
+  const findCreateMenu = () => wrapper.findComponent(CreateMenu);
+  const findOrganizationSwitcher = () => wrapper.findComponent(OrganizationSwitcherStub);
+  const findSearchButton = () => wrapper.findComponentByTestId('super-topbar-search-button');
+  const findSmallSearchButton = () => wrapper.findByTestId('super-topbar-search-button-xs');
+  const findSearchModal = () => wrapper.findComponent(SearchModal);
+  const findUserCounts = () => wrapper.findComponent(UserCounts);
+  const findUserMenu = () => wrapper.findComponent(UserMenu);
+  const findPromoMenu = () => wrapper.findComponent(PromoMenu);
+  const findBreadcrumbComponent = () => wrapper.findComponent(GlBreadcrumb);
+  const findBreadcrumbSlot = () => wrapper.find('#js-super-topbar-breadcrumbs-slot');
+  const findAnalyticsDashboardsButton = () =>
+    wrapper.findByTestId('topbar-analytics-dashboards-button');
+
+  const createComponent = (props = {}, provideOverrides = {}) => {
+    wrapper = shallowMountExtended(SuperTopbar, {
+      propsData: {
+        sidebarData: mockSidebarData,
+        ...props,
+      },
+      provide: {
+        isSaas: false,
+        ...provideOverrides,
+      },
+      stubs: {
+        OrganizationSwitcher: OrganizationSwitcherStub,
+        SearchModal: SearchModalStub,
+      },
+    });
+  };
+
+  describe('template', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('renders the header element with correct `super-topbar` class', () => {
+      expect(wrapper.find('header').classes()).toContain('super-topbar');
+    });
+
+    it('renders skip to main content link when logged in', () => {
+      expect(findSkipToLink().attributes('href')).toBe('#content-body');
+    });
+
+    describe('Mobile sidebar toggle', () => {
+      it('is not shown on large screens', () => {
+        expect(findSidebarToggle().classes()).toContain('xl:gl-hidden');
+      });
+
+      it('is not shown when the sidebar has no menu items', () => {
+        createComponent({
+          sidebarData: { ...mockSidebarData, current_menu_items: [] },
+        });
+        expect(findSidebarToggle().exists()).toBe(false);
+      });
+    });
+
+    describe('Organization switcher', () => {
+      describe.each`
+        orgSwitcher | isLoggedIn | currentOrganization        | hasMultipleOrganizations | expected
+        ${false}    | ${false}   | ${undefined}               | ${false}                 | ${false}
+        ${false}    | ${true}    | ${mockCurrentOrganization} | ${true}                  | ${false}
+        ${true}     | ${false}   | ${undefined}               | ${false}                 | ${false}
+        ${true}     | ${false}   | ${mockCurrentOrganization} | ${true}                  | ${false}
+        ${true}     | ${true}    | ${undefined}               | ${false}                 | ${false}
+        ${true}     | ${true}    | ${undefined}               | ${true}                  | ${false}
+        ${true}     | ${true}    | ${mockCurrentOrganization} | ${false}                 | ${false}
+        ${true}     | ${true}    | ${mockCurrentOrganization} | ${true}                  | ${true}
+      `(
+        'when orgSwitcher is $orgSwitcher, logged in state is $isLoggedIn, current organization $currentOrganization, and has_multiple_organizations is $hasMultipleOrganizations',
+        ({ orgSwitcher, isLoggedIn, currentOrganization, hasMultipleOrganizations, expected }) => {
+          beforeEach(async () => {
+            window.gon.current_organization = currentOrganization;
+            createComponent(
+              {
+                sidebarData: {
+                  ...mockSidebarData,
+                  is_logged_in: isLoggedIn,
+                  has_multiple_organizations: hasMultipleOrganizations,
+                },
+              },
+              { glFeatures: { orgSwitcher } },
+            );
+            await waitForPromises();
+          });
+
+          it(`expects organization switcher existence to be ${expected}`, () => {
+            expect(findOrganizationSwitcher().exists()).toBe(expected);
+          });
+        },
+      );
+    });
+
+    describe('Breadcrumbs', () => {
+      const mockBreadcrumbItems = [{ text: 'Project', href: '/project' }];
+
+      beforeEach(() => {
+        staticBreadcrumbs.items = mockBreadcrumbItems;
+      });
+
+      afterEach(() => {
+        staticBreadcrumbs.items = [];
+        staticBreadcrumbs.hasInjectedBreadcrumbs = false;
+      });
+
+      it('does not render breadcrumbs when pageBreadcrumbsInTopBar feature flag is disabled', () => {
+        createComponent();
+
+        expect(findBreadcrumbComponent().exists()).toBe(false);
+        expect(findBreadcrumbSlot().exists()).toBe(false);
+      });
+
+      it('renders breadcrumbs when pageBreadcrumbsInTopBar feature flag is enabled', () => {
+        createComponent({}, { glFeatures: { pageBreadcrumbsInTopBar: true } });
+
+        expect(findBreadcrumbComponent().exists()).toBe(true);
+        expect(findBreadcrumbComponent().props('items')).toEqual(mockBreadcrumbItems);
+        expect(findBreadcrumbSlot().exists()).toBe(true);
+      });
+
+      it('hides static GlBreadcrumb when hasInjectedBreadcrumbs is true', () => {
+        createComponent({}, { glFeatures: { pageBreadcrumbsInTopBar: true } });
+        staticBreadcrumbs.hasInjectedBreadcrumbs = true;
+
+        expect(wrapper.find('nav.gl-breadcrumbs').exists()).toBe(false);
+      });
+    });
+
+    describe('Search', () => {
+      beforeEach(async () => {
+        createComponent();
+        await waitForPromises();
+      });
+
+      it('should render search button', () => {
+        expect(findSearchButton().exists()).toBe(true);
+      });
+
+      it('should hide the full search button below sm breakpoint', () => {
+        expect(findSearchButton().classes()).toContain('!gl-hidden');
+        expect(findSearchButton().classes()).toContain('sm:!gl-flex');
+      });
+
+      it('should render a small search button for small screens', () => {
+        expect(findSmallSearchButton().exists()).toBe(true);
+        expect(findSmallSearchButton().classes()).toContain('sm:!gl-hidden');
+        expect(findSmallSearchButton().attributes('icon')).toBe('search');
+        expect(findSmallSearchButton().attributes('size')).toBe('small');
+      });
+
+      it('should render search modal', () => {
+        expect(findSearchModal().exists()).toBe(true);
+      });
+
+      describe('drag and drop on search button', () => {
+        it('dispatches EVENT_OPEN_GLOBAL_SEARCH with dropped text when text is dropped on search button', () => {
+          const dispatchEventSpy = jest.spyOn(document, 'dispatchEvent');
+          const droppedText = 'search this text';
+
+          const dropEvent = {
+            preventDefault: jest.fn(),
+            dataTransfer: {
+              getData: jest.fn().mockReturnValue(droppedText),
+            },
+          };
+
+          findSearchButton().vm.$emit('drop', dropEvent);
+
+          expect(dispatchEventSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: EVENT_OPEN_GLOBAL_SEARCH,
+              detail: { searchText: droppedText },
+            }),
+          );
+
+          dispatchEventSpy.mockRestore();
+        });
+
+        it('does not dispatch event when dropped text is empty', () => {
+          const dispatchEventSpy = jest.spyOn(document, 'dispatchEvent');
+
+          const dropEvent = {
+            preventDefault: jest.fn(),
+            dataTransfer: {
+              getData: jest.fn().mockReturnValue(''),
+            },
+          };
+
+          findSearchButton().vm.$emit('drop', dropEvent);
+
+          expect(dispatchEventSpy).not.toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: EVENT_OPEN_GLOBAL_SEARCH,
+            }),
+          );
+
+          dispatchEventSpy.mockRestore();
+        });
+      });
+    });
+
+    describe('"Create new…" menu', () => {
+      describe('when there are no menu items for it', () => {
+        // This scenario usually happens for an "External" user.
+        it('does not render it', () => {
+          createComponent({
+            sidebarData: { ...mockSidebarData, is_logged_in: true, create_new_menu_groups: [] },
+          });
+          expect(findCreateMenu().exists()).toBe(false);
+        });
+      });
+
+      describe('when there are menu items for it', () => {
+        it('passes the "Create new…" menu groups to the create-menu component', () => {
+          expect(findCreateMenu().props('groups')).toBe(mockSidebarData.create_new_menu_groups);
+        });
+      });
+    });
+
+    it('renders BrandLogo component with correct props', () => {
+      expect(findBrandLogo().props('logoUrl')).toBe(mockSidebarData.logo_url);
+    });
+
+    it('renders UserMenu when user is logged in', () => {
+      expect(findUserMenu().props('data')).toEqual(mockSidebarData);
+    });
+
+    it('does not render UserMenu when user is not logged in', () => {
+      createComponent({ sidebarData: { ...mockSidebarData, is_logged_in: false } });
+
+      expect(findUserMenu().exists()).toBe(false);
+    });
+
+    it('renders UserCounts component when user is logged in', () => {
+      expect(findUserCounts().props('sidebarData')).toEqual(mockSidebarData);
+    });
+
+    it('does not render UserCounts when user is not logged in', () => {
+      createComponent({ sidebarData: { ...mockSidebarData, is_logged_in: false } });
+
+      expect(findUserCounts().exists()).toBe(false);
+    });
+
+    describe('Admin link', () => {
+      describe('when user is admin and admin mode feature is not enabled', () => {
+        it('renders', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              admin_mode: { user_is_admin: true, admin_mode_feature_enabled: false },
+            },
+          });
+          expect(findAdminLink().attributes('href')).toBe('/admin');
+        });
+
+        it('provides showAdminAreaLink as true to the search modal', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              admin_mode: { user_is_admin: true, admin_mode_feature_enabled: false },
+            },
+          });
+
+          expect(findSearchModal().attributes('data-show-admin-area-link')).toBe('true');
+        });
+      });
+
+      describe('when user is admin and admin mode is active', () => {
+        it('renders', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              admin_mode: {
+                user_is_admin: true,
+                admin_mode_feature_enabled: true,
+                admin_mode_active: true,
+              },
+            },
+          });
+          expect(findAdminLink().attributes('href')).toBe('/admin');
+        });
+      });
+
+      describe('when user is admin but admin mode feature is enabled and not active', () => {
+        it('does not render', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              admin_mode: {
+                user_is_admin: true,
+                admin_mode_feature_enabled: true,
+                admin_mode_active: false,
+              },
+            },
+          });
+          expect(findAdminLink().exists()).toBe(false);
+        });
+      });
+
+      describe('when user is not admin', () => {
+        it('does not render', () => {
+          createComponent();
+          expect(findAdminLink().exists()).toBe(false);
+        });
+
+        it('provides showAdminAreaLink as false to the search modal', () => {
+          createComponent();
+
+          expect(findSearchModal().attributes('data-show-admin-area-link')).toBe('false');
+        });
+      });
+    });
+
+    describe('Promo menu', () => {
+      it('renders when user is logged out', () => {
+        createComponent({
+          sidebarData: {
+            ...mockSidebarData,
+            is_logged_in: false,
+          },
+        });
+
+        expect(findPromoMenu().exists()).toBe(true);
+
+        createComponent({
+          sidebarData: {
+            ...mockSidebarData,
+            is_logged_in: 'false',
+          },
+        });
+
+        expect(findPromoMenu().exists()).toBe(true);
+      });
+
+      it('does not render when user is logged in', () => {
+        createComponent();
+
+        expect(findPromoMenu().exists()).toBe(false);
+      });
+    });
+
+    describe('Signin button', () => {
+      describe('when user is logged out', () => {
+        it('renders', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              is_logged_in: false,
+            },
+          });
+          expect(findSigninButton().attributes('href')).toBe(
+            '/users/sign_in?redirect_to_referer=yes',
+          );
+
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              is_logged_in: 'false',
+            },
+          });
+          expect(findSigninButton().attributes('href')).toBe(
+            '/users/sign_in?redirect_to_referer=yes',
+          );
+        });
+      });
+
+      describe('when user is logged in', () => {
+        it('does not render', () => {
+          createComponent();
+          expect(findSigninButton().exists()).toBe(false);
+        });
+      });
+    });
+
+    describe('Signup button', () => {
+      describe('when user is logged out', () => {
+        it('does not render when signup is not allowed', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              is_logged_in: false,
+              allow_signup: false,
+            },
+          });
+          expect(findSignupButton().exists()).toBe(false);
+
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              is_logged_in: 'false',
+              allow_signup: 'false',
+            },
+          });
+          expect(findSignupButton().exists()).toBe(false);
+        });
+
+        it('renders register when not in SaaS mode', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              is_logged_in: false,
+            },
+          });
+          expect(findSignupButton().text()).toBe('Register');
+
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              is_logged_in: 'false',
+            },
+          });
+          expect(findSignupButton().text()).toBe('Register');
+          expect(findSignupButton().attributes('href')).toBe('/users/sign_up');
+        });
+
+        it('renders free trial when in Saas Mode', () => {
+          createComponent(
+            {
+              sidebarData: {
+                ...mockSidebarData,
+                is_logged_in: false,
+              },
+            },
+            { isSaas: true },
+          );
+          expect(findSignupButton().text()).toBe('Get free trial');
+          expect(findSignupButton().attributes('href')).toBe(
+            mockSidebarData.trial_registration_path,
+          );
+
+          createComponent(
+            {
+              sidebarData: {
+                ...mockSidebarData,
+                is_logged_in: 'false',
+              },
+            },
+            { isSaas: true },
+          );
+          expect(findSignupButton().text()).toBe('Get free trial');
+          expect(findSignupButton().attributes('href')).toBe(
+            mockSidebarData.trial_registration_path,
+          );
+        });
+
+        it('falls back to registration path when trial_registration_path is not available in SaaS mode', () => {
+          const { trial_registration_path, ...sidebarDataWithoutTrial } = mockSidebarData;
+          createComponent(
+            {
+              sidebarData: {
+                ...sidebarDataWithoutTrial,
+                is_logged_in: false,
+              },
+            },
+            { isSaas: true },
+          );
+          expect(findSignupButton().text()).toBe('Get free trial');
+          expect(findSignupButton().attributes('href')).toBe('/users/sign_up');
+        });
+      });
+
+      describe('when user is logged in', () => {
+        it('does not render', () => {
+          createComponent();
+          expect(findSignupButton().exists()).toBe(false);
+        });
+      });
+    });
+
+    describe('Analytics dashboards button', () => {
+      describe('when sidebar data supplies the path', () => {
+        it('renders with correct href', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              analytics_dashboards_path: '/explore/analytics_dashboards',
+            },
+          });
+
+          expect(findAnalyticsDashboardsButton().exists()).toBe(true);
+          expect(findAnalyticsDashboardsButton().attributes('href')).toBe(
+            '/explore/analytics_dashboards',
+          );
+          expect(findAnalyticsDashboardsButton().attributes('icon')).toBe('chart');
+          expect(findAnalyticsDashboardsButton().attributes('size')).toBe('small');
+          expect(findAnalyticsDashboardsButton().attributes('aria-label')).toBe(
+            'View GitLab Intelligence',
+          );
+        });
+      });
+
+      describe('when sidebar data omits the path', () => {
+        it('does not render', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+            },
+          });
+
+          expect(findAnalyticsDashboardsButton().exists()).toBe(false);
+        });
+      });
+
+      describe('when user is not logged in', () => {
+        it('does not render', () => {
+          createComponent({
+            sidebarData: {
+              ...mockSidebarData,
+              is_logged_in: false,
+              analytics_dashboards_path: '/explore/analytics_dashboards',
+            },
+          });
+
+          expect(findAnalyticsDashboardsButton().exists()).toBe(false);
+        });
+      });
+    });
+  });
+});

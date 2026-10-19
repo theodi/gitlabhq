@@ -1,0 +1,562 @@
+---
+stage: none
+group: unassigned
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Ruby style guide
+---
+
+This is a GitLab-specific style guide for Ruby code. Everything documented in this page can be [reopened for discussion](https://handbook.gitlab.com/handbook/values/#disagree-commit-and-disagree).
+
+We use [RuboCop](../rubocop_development_guide.md) to enforce Ruby style guide rules.
+
+Where a RuboCop rule is absent, refer to the following style guides as general guidelines to write idiomatic Ruby:
+
+- [Ruby Style Guide](https://github.com/rubocop/ruby-style-guide).
+- [Rails Style Guide](https://github.com/rubocop/rails-style-guide).
+- [RSpec Style Guide](https://github.com/rubocop/rspec-style-guide).
+
+Generally, if a style is not covered by existing RuboCop rules or the above style guides, it shouldn't be a blocker.
+
+Some styles we have decided [no one should have a strong opinion on](#styles-we-have-no-opinion-on).
+
+See also:
+
+- [Guidelines for reusing abstractions](../reusing_abstractions.md).
+- [Test-specific style guides and best practices](../testing_guide/_index.md).
+
+## Styles we have no rule for
+
+These styles are not backed by a RuboCop rule.
+
+For every style added to this section, link the discussion from the section's [history note](../documentation/styleguide/availability_details.md#history) to provide context and serve as a reference.
+
+### Instance variable access using `attr_reader`
+
+Instance variables can be accessed in a variety of ways in a class:
+
+```ruby
+# public
+class Foo
+  attr_reader :my_var
+
+  def initialize(my_var)
+    @my_var = my_var
+  end
+
+  def do_stuff
+    puts my_var
+  end
+end
+
+# private
+class Foo
+  def initialize(my_var)
+    @my_var = my_var
+  end
+
+  private
+
+  attr_reader :my_var
+
+  def do_stuff
+    puts my_var
+  end
+end
+
+# direct
+class Foo
+  def initialize(my_var)
+    @my_var = my_var
+  end
+
+  private
+
+  def do_stuff
+    puts @my_var
+  end
+end
+```
+
+Public attributes should only be used if they are accessed outside of the class.
+There is not a strong opinion on what strategy is used when attributes are only
+accessed internally, as long as there is consistency in related code.
+
+### Newlines style guide
+
+In addition to the RuboCop's `Layout/EmptyLinesAroundMethodBody` and `Cop/LineBreakAroundConditionalBlock` that enforce some newline styles, we have the following guidelines that are not backed by RuboCop.
+
+#### Rule: separate code with newlines only to group together related logic
+
+```ruby
+# bad
+def method
+  issue = Issue.new
+
+  issue.save
+
+  render json: issue
+end
+```
+
+```ruby
+# good
+def method
+  issue = Issue.new
+  issue.save
+
+  render json: issue
+end
+```
+
+#### Rule: newline before block
+
+```ruby
+# bad
+def method
+  issue = Issue.new
+  if issue.save
+    render json: issue
+  end
+end
+```
+
+```ruby
+# good
+def method
+  issue = Issue.new
+
+  if issue.save
+    render json: issue
+  end
+end
+```
+
+##### Exception: no need for a newline when code block starts or ends right inside another code block
+
+```ruby
+# bad
+def method
+  if issue
+
+    if issue.valid?
+      issue.save
+    end
+
+  end
+end
+```
+
+```ruby
+# good
+def method
+  if issue
+    if issue.valid?
+      issue.save
+    end
+  end
+end
+```
+
+### Method ordering within classes
+
+For ordering methods at the class level (public, protected, private sections), refer to
+[RuboCop's `Layout/ClassStructure`](https://www.rubydoc.info/gems/rubocop/RuboCop/Cop/Layout/ClassStructure).
+
+Within each visibility section, consider the following principles to improve readability:
+
+#### Rule: Order methods by level of abstraction (high-level before low-level)
+
+Methods should generally be ordered from highest to lowest level of abstraction. This means:
+
+- Methods that orchestrate or coordinate work should come first
+- Helper methods that support those orchestrator methods should come after
+
+This follows the ["newspaper style"](https://medium.com/codex/clean-code-formatting-summary-9a475ba10ac8)
+or ["stepdown rule"](https://dzone.com/articles/the-stepdown-rule) principle,
+where code reads like a story from top to bottom,
+with the most important operations first and implementation details revealed progressively.
+
+```ruby
+# good - orchestrator method before helpers
+class CommitMessageProcessor
+  def execute
+    other_method_calls
+    process_commit_message
+  end
+
+  private
+
+  def process_commit_message
+    title = extract_title(commit.message)
+    body = extract_body(commit.message)
+
+    # ... process title and body
+  end
+
+  def extract_title(message)
+    message.split("\n").first
+  end
+
+  def extract_body(message)
+    message.split("\n")[1..]
+  end
+end
+```
+
+```ruby
+# bad - helper methods before the method that uses them
+class CommitMessageProcessor
+  def execute
+    other_method_calls
+    process_commit_message
+  end
+
+  private
+
+  def extract_title(message)
+    message.split("\n").first
+  end
+
+  def extract_body(message)
+    message.split("\n")[1..]
+  end
+
+  def process_commit_message
+    title = extract_title(commit.message)
+    body = extract_body(commit.message)
+
+    # ... process title and body
+  end
+end
+```
+
+This ordering helps readers understand:
+
+- **What** the code does (by reading the high-level method first)
+- **How** it does it (by reading the helper methods after)
+
+Following this ordering pattern helps reviewers and future maintainers understand code flow more quickly,
+especially in service objects, processors, and other classes with clear orchestration patterns.
+
+Exceptions to this ordering may be appropriate when:
+
+- Methods are grouped by a domain concept that's more important than abstraction level
+- Alphabetical ordering provides significant value for a large number of similar methods
+
+When a class has multiple high-level methods that serve different, unrelated purposes,
+group each high-level method with its supporting helper methods. Alternatively, consider extracting
+the implementation into separate service classes where each class has a single clear responsibility.
+
+> [!note]
+> Beyond two levels of method calls (a method calling a method calling a method),
+> this pattern can become unwieldy and hard to follow. If you find yourself with deep nesting,
+> consider refactoring into separate classes or simplifying the logic.
+
+## Rails / ActiveRecord
+
+This section contains GitLab-specific guidelines for Rails and ActiveRecord usage.
+
+### Avoid ActiveRecord callbacks
+
+[ActiveRecord callbacks](https://guides.rubyonrails.org/active_record_callbacks.html) allow
+you to "trigger logic before or after an alteration of an object's state."
+
+Use callbacks when no superior alternative exists, but employ them only if you
+thoroughly understand the reasons for doing so.
+
+When adding new lifecycle events for ActiveRecord objects, it is preferable to
+add the logic to a service class instead of a callback.
+
+#### Why callbacks should be avoided
+
+In general, callbacks should be avoided because:
+
+- Callbacks are hard to reason about because invocation order is not obvious and
+  they break code narrative.
+- Callbacks are harder to locate and navigate because they rely on reflection to
+  trigger rather than being ordinary method calls.
+- Callbacks make it difficult to apply changes selectively to an object's state
+  because changes always trigger the entire callback chain.
+- Callbacks trap logic in the ActiveRecord class. This tight coupling encourages
+  fat models that contain too much business logic, which could instead live in
+  service objects that are more reusable, composable, and are easier to test.
+- Illegal state transitions of an object can be better enforced through
+  attribute validations.
+- Heavy use of callbacks affects factory creation speed. With some classes
+  having hundreds of callbacks, creating an instance of that object for
+  an automated test can be a very slow operation, resulting in slow specs.
+
+Some of these examples are discussed in this [video from thoughtbot](https://www.youtube.com/watch?v=GLBMfB8N1G8).
+
+The GitLab codebase relies heavily on callbacks and it is hard to refactor them
+once added due to invisible dependencies. As a result, this guideline does not
+call for removing all existing callbacks.
+
+#### When to use callbacks
+
+Callbacks can be used in special cases. Some examples of cases where adding a
+callback makes sense:
+
+- A dependency uses callbacks and we would like to override the callback
+  behavior.
+- Incrementing cache counts.
+- Data normalization that only relates to data on the current model.
+
+#### Example of moving from a callback to a service
+
+There is a project with the following basic data model:
+
+```ruby
+class Project
+  has_one :repository
+end
+
+class Repository
+  belongs_to :project
+end
+```
+
+Say we want to create a repository after a project is created and use the
+project name as the repository name. A developer familiar with Rails might
+immediately think: sounds like a job for an ActiveRecord callback! And add this
+code:
+
+```ruby
+class Project
+  has_one :repository
+
+  after_initialize :create_random_name
+  after_create :create_repository
+
+  def create_random_name
+    SecureRandom.alphanumeric
+  end
+
+  def create_repository
+    Repository.create!(project: self)
+  end
+end
+
+class Repository
+  after_initialize :set_name
+
+  def set_name
+    name = project.name
+  end
+end
+
+class ProjectsController
+  def create
+    Project.create! # also creates a repository and names it
+  end
+end
+```
+
+While this seems pretty harmless for a baby Rails app, adding this type of logic
+via callbacks has many downsides once your Rails app becomes large and complex
+(all of which are listed in this documentation). Instead, we can add this
+logic to a service class:
+
+```ruby
+class Project
+  has_one :repository
+end
+
+class Repository
+  belongs_to :project
+end
+
+class ProjectCreator
+  def self.execute
+    ApplicationRecord.transaction do
+      name = SecureRandom.alphanumeric
+      project = Project.create!(name: name)
+      Repository.create!(project: project, name: name)
+    end
+  end
+end
+
+class ProjectsController
+  def create
+    ProjectCreator.execute
+  end
+end
+```
+
+With an application this simple, it can be hard to see the benefits of the second
+approach. But we already have some benefits:
+
+- We can test `Repository` creation logic separate from `Project` creation logic. Code
+  no longer violates the Law of Demeter (`Repository` class doesn't need to know
+  `project.name`).
+- Clarity of invocation order.
+- Open to change: if we decide there are some scenarios where we do not want a
+  repository created for a project, we can create a new service class rather
+  than needing to refactor to `Project` and `Repository` classes.
+- Each instance of a `Project` factory does not create a second (`Repository`) object.
+
+### ApplicationRecord / ActiveRecord model scopes
+
+When creating a new scope, consider the following prefixes.
+
+#### `for_`
+
+For scopes which filter `where(belongs_to: record)`.
+For example:
+
+```ruby
+scope :for_project, ->(project) { where(project: project) }
+Timelogs.for_project(project)
+```
+
+#### `with_`
+
+For scopes that use `joins`, or filters `where(has_one: record)` or `where(has_many: record)`
+or `where(boolean condition)` where the result set changes.
+
+For example:
+
+```ruby
+scope :with_status, ->(status) { where(status: status) }
+Clusters::AgentToken.with_status(:active)
+
+scope :with_due_date, -> { where.not(due_date: nil) }
+Issue.with_due_date
+
+scope :with_runner_type, ->(type) { joins(:runner).where(runner: { runner_type: type }) }
+Ci::Build.with_runner_type(:instance_type)
+```
+
+It is also fine to use custom scope names, for example:
+
+```ruby
+scope :undeleted, -> { where('policy_index >= 0') }
+Security::Policy.undeleted
+```
+
+#### `including_`
+
+For scopes that eager load associations using `includes`. The result set does not change.
+Use `including_` to avoid N+1 queries when you do not need to control the SQL loading strategy.
+ActiveRecord decides whether to use a JOIN or a subquery.
+
+For example:
+
+```ruby
+scope :including_tags, -> { includes(:tags) }
+Package.including_tags
+
+scope :including_project, -> { includes(:project) }
+Issue.including_project
+```
+
+#### `preload_`
+
+For scopes that eager load associations using `preload`. The result set does not change.
+Use instead of `including_` when loading multiple `has_many` associations, or when a
+separate subquery is explicitly required.
+
+For example:
+
+```ruby
+scope :preload_author, -> { preload(:author) }
+MergeRequest.preload_author
+
+scope :preload_access_levels, -> { preload(:push_access_levels, :merge_access_levels, :unprotect_access_levels) }
+ProtectedBranch.preload_access_levels
+```
+
+#### `order_by_`
+
+For scopes which `order`.
+For example:
+
+```ruby
+scope :order_by_name, -> { order(:name) }
+Namespace.order_by_name
+
+scope :order_by_updated_at, ->(direction = :asc) { order(updated_at: direction) }
+Project.order_by_updated_at(:desc)
+```
+
+### Prefer `excluding` for records already loaded in memory
+
+When you exclude specific records that you already have loaded in memory, prefer
+[`excluding`](https://api.rubyonrails.org/classes/ActiveRecord/QueryMethods.html#method-i-excluding)
+(alias `without`) over a hand-written `where.not(id: record)`, for example
+`collection.excluding(self)`. It expresses the intent more clearly.
+
+Do not use it as a replacement for `where.not(id: relation)`. Passing a relation loads its IDs with
+a separate query and excludes them as a literal list, which wastes memory and can return stale
+results. To exclude the result of a query, use `where.not(id: relation)`, which runs as a single
+subquery.
+
+### Avoid application logic at class load time
+
+Do not call application logic when defining class-level constants.
+These expressions run once at class load time, not at request time, which causes several problems:
+
+- Boot failures occur if the logic raises an error (for example, a missing database).
+- The constant never reflects changes that happen after the process starts.
+- Application boot slows down.
+
+```ruby
+# bad - result is frozen at boot; Gitlab::ProjectTemplate.all returns different results depending on state
+class GroupsController
+  VALID_TEMPLATE_NAMES = Gitlab::ProjectTemplate.all.map(&:name).to_set.freeze
+end
+```
+
+Use a method instead, so the logic runs at call time:
+
+```ruby
+# good
+def valid_template_names
+  Gitlab::ProjectTemplate.all.map(&:name).to_set
+end
+```
+
+Use [memoization](../utilities.md#strongmemoize) in case the result will not change during a request.
+
+This applies to any logic that queries the database, calls services, or invokes I18n helpers such as `_()`.
+
+## Styles we have no opinion on
+
+If a RuboCop rule is proposed and we choose not to add it, we should document that decision in this guide so it is more discoverable and link the relevant discussion as a reference.
+
+### Quoting string literals
+
+Due to the sheer amount of work to rectify, we do not care whether string
+literals are single or double-quoted.
+
+Previous discussions include:
+
+- <https://gitlab.com/gitlab-org/gitlab-foss/-/issues/44234>
+- <https://gitlab.com/gitlab-org/gitlab-foss/-/issues/36076>
+- <https://gitlab.com/gitlab-org/gitlab/-/issues/198046>
+
+Individual groups may [choose to have an opinion](https://gitlab.com/gitlab-org/gitlab/-/blob/master/ee/lib/remote_development/README.md#coding-standards-for-remote-development-domain) on consistency of quoting styles within the [bounded contexts](../software_design.md#bounded-contexts) they own, but these decisions only apply to code within that context.
+
+### Type safety
+
+Now that we've upgraded to Ruby 3, we have more options available
+to enforce [type safety](https://en.wikipedia.org/wiki/Type_safety).
+
+Some of these options are supported as part of the Ruby syntax and do not require the use of specific type safety tools like [Sorbet](https://sorbet.org/) or [RBS](https://github.com/ruby/rbs). However, we might consider these tools in the future as well.
+
+For now, we can use [YARD annotations](../code_comments.md#class-and-method-documentation) to define types.
+IDEs such as RubyMine provide support for YARD when showing type-based inspection errors.
+
+For more information, see [Type safety](https://gitlab.com/gitlab-org/gitlab/-/tree/master/ee/lib/remote_development#type-safety) in the `remote_development` domain README.
+
+### Functional patterns
+
+Although Ruby and especially Rails are primarily based on [object-oriented programming](https://en.wikipedia.org/wiki/Object-oriented_programming) patterns, Ruby is a very flexible language and supports [functional programming](https://en.wikipedia.org/wiki/Functional_programming) patterns as well.
+
+Functional programming patterns, especially in domain logic, can often result in more readable, maintainable, and bug-resistant code while still using idiomatic and familiar Ruby patterns.
+However, functional programming patterns should be used carefully because some patterns would cause confusion and should be avoided even if they're directly supported by Ruby. The [`curry` method](https://www.rubydoc.info/stdlib/core/Method:curry) is a likely example.
+
+For more information, see:
+
+- [Functional patterns](https://gitlab.com/gitlab-org/gitlab/-/tree/master/ee/lib/remote_development#functional-patterns)
+- [Railway-oriented programming and the `Result` class](https://gitlab.com/gitlab-org/gitlab/-/tree/master/ee/lib/remote_development#railway-oriented-programming-and-the-result-class)

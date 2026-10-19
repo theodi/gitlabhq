@@ -1,0 +1,107 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`content/components/wrappers/table_of_contents collects all headings and renders a nested list of headings 1`] = `
+<div
+  class="!gl-p-4 gl-border-1 gl-border-default gl-border-solid gl-mb-5 table-of-contents"
+  data-testid="table-of-contents"
+>
+  Table of contents
+  <li
+    dir="auto"
+  >
+    <a
+      href="#"
+    >
+      Heading 1
+    </a>
+    <ul
+      dir="auto"
+    >
+      <li
+        dir="auto"
+      >
+        <a
+          href="#"
+        >
+          Heading 1.1
+        </a>
+        <ul
+          dir="auto"
+        >
+          <li
+            dir="auto"
+          >
+            <a
+              href="#"
+            >
+              Heading 1.1.1
+            </a>
+          </li>
+        </ul>
+      </li>
+      <li
+        dir="auto"
+      >
+        <a
+          href="#"
+        >
+          Heading 1.2
+        </a>
+        <ul
+          dir="auto"
+        >
+          <li
+            dir="auto"
+          >
+            <a
+              href="#"
+            >
+              Heading 1.2.1
+            </a>
+          </li>
+        </ul>
+      </li>
+      <li
+        dir="auto"
+      >
+        <a
+          href="#"
+        >
+          Heading 1.3
+        </a>
+      </li>
+      <li
+        dir="auto"
+      >
+        <a
+          href="#"
+        >
+          Heading 1.4
+        </a>
+        <ul
+          dir="auto"
+        >
+          <li
+            dir="auto"
+          >
+            <a
+              href="#"
+            >
+              Heading 1.4.1
+            </a>
+          </li>
+        </ul>
+      </li>
+    </ul>
+  </li>
+  <li
+    dir="auto"
+  >
+    <a
+      href="#"
+    >
+      Heading 2
+    </a>
+  </li>
+</div>
+`;

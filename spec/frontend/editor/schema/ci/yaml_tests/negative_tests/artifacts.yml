@@ -1,0 +1,129 @@
+# invalid artifact:reports:browser_performance
+browser_performance no paths:
+  artifacts:
+      reports:
+        browser_performance:
+
+## Lists (or globs) are not allowed!
+browser_performance list of string paths:
+  artifacts:
+    reports:
+      browser_performance:
+        - foo
+        - ./bar/baz
+
+browser_performance mixed list of string paths and globs:
+  artifacts:
+    reports:
+      browser_performance:
+        - ./foo
+        - "bar/*.baz"
+
+browser_performance string array:
+  artifacts:
+    reports:
+      browser_performance: ["foo", "blah"]
+
+# invalid artifact:reports:cyclonedx
+cyclonedx no paths:
+  artifacts:
+    reports:
+      cyclonedx:
+
+cyclonedx not a report:
+  artifacts:
+    cyclonedx: foo
+
+cyclonedx not an array or string:
+  artifacts:
+    reports:
+      cyclonedx:
+        paths:
+          - foo
+          - bar
+
+# invalid artifacts:reports:coverage_report
+coverage-report-is-string:
+  artifacts:
+    reports:
+      coverage_report: cobertura
+
+# invalid artifact:reports:performance
+# Superseded by: artifact:reports:browser_performance
+performance string path:
+  artifacts:
+    reports:
+      performance: foo
+
+# invalid artifacts:when
+artifacts-when-unknown:
+  artifacts:
+    when: unknown
+
+artifacts-when-array:
+  artifacts:
+    when: [always]
+
+artifacts-when-boolean:
+  artifacts:
+    when: true
+
+artifacts-access-all:
+  artifacts:
+    public: true
+    accesss: all
+
+artifacts-access-invalid-value:
+  artifacts:
+    access: random
+
+annotations-report-annotations-not-string:
+  artifacts:
+    reports:
+      annotations: 1
+
+# Negative artifacts:reports:accessibility tests on schema
+accessibility-report-left-blank:
+  artifacts:
+    reports:
+      accessibility:
+
+accessibility-report-not-string:
+  artifacts:
+    reports:
+      accessibility: 1
+
+# invalid artifacts:public
+artifacts-public-not-boolean:
+  artifacts:
+    public: "false"
+
+# invalid artifacts:reports:api_fuzzing
+api-fuzzing-report-left-blank:
+  artifacts:
+    reports:
+      api_fuzzing:
+
+api-fuzzing-report-not-string:
+  artifacts:
+    reports:
+      api_fuzzing: 1
+
+# invalid artifacts:reports:coverage_fuzzing
+coverage-fuzzing-report-left-blank:
+  artifacts:
+    reports:
+      coverage_fuzzing:
+
+coverage-fuzzing-report-not-a-list-of-strings:
+  artifacts:
+    reports:
+      coverage_fuzzing:
+        paths:
+          - gl-coverage-fuzzing-report.json
+
+# artifacts:access and artifacts:public are mutually exclusive
+artifacts-access-and-public-together:
+  artifacts:
+    access: developer
+    public: false

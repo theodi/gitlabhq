@@ -1,0 +1,16 @@
+<% body = @alert.resolved? ? _('An alert has been resolved in %{project_path}.') : _('An alert has been triggered in %{project_path}.') %>
+
+<%= body % { project_path: @alert.project.full_path } %>
+<%= _('View alert details at') %> <%= @alert.details_url %>
+
+<% if description = @alert.description %>
+<%= _('Description:') %> <%= description %>
+<% end %>
+
+<% if env_name = @alert.environment&.name %>
+<%= _('Environment:') %> <%= env_name %>
+<% end %>
+
+<% if @alert.show_incident_issues_link? %>
+<%= _('View incident issues.') %> <%= @alert.incident_issues_link %>
+<% end %>

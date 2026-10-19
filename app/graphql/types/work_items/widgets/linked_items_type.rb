@@ -1,0 +1,32 @@
+# frozen_string_literal: true
+
+module Types
+  module WorkItems
+    module Widgets
+      # rubocop:disable Graphql/AuthorizeTypes
+      class LinkedItemsType < BaseObject
+        graphql_name 'WorkItemWidgetLinkedItems'
+        description 'Represents the linked items widget'
+
+        authorize_granular_token skip_reason: :parent_authorizes
+
+        implements ::Types::WorkItems::WidgetInterface
+
+        def self.authorization_scopes
+          super + [:ai_workflows]
+        end
+
+        field :linked_items, ::Types::WorkItems::LinkedItemType.connection_type,
+          null: true, complexity: 5,
+          scopes: [:api, :read_api, :ai_workflows],
+          experiment: { milestone: '16.3' },
+          extras: [:lookahead],
+          description: 'Linked items for the work item.',
+          resolver: Resolvers::WorkItems::LinkedItemsResolver
+      end
+      # rubocop:enable Graphql/AuthorizeTypes
+    end
+  end
+end
+
+Types::WorkItems::Widgets::LinkedItemsType.prepend_mod

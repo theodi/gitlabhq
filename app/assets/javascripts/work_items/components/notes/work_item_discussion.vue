@@ -1,0 +1,423 @@
+<script>
+import { getIdFromGraphQLId } from '~/graphql_shared/utils';
+import { ASC } from '~/notes/constants';
+import TimelineEntryItem from '~/vue_shared/components/notes/timeline_entry_item.vue';
+import gfmEventHub from '~/vue_shared/components/markdown/eventhub';
+import toggleWorkItemNoteResolveDiscussion from '~/work_items/graphql/notes/toggle_work_item_note_resolve_discussion.mutation.graphql';
+import { resolveDuoQuestionDecision } from 'ee_else_ce/work_items/utils/duo_question_decision';
+import DiscussionNotesRepliesWrapper from '~/notes/components/discussion_notes_replies_wrapper.vue';
+import ToggleRepliesWidget from '~/notes/components/toggle_replies_widget.vue';
+import WorkItemNote from '~/work_items/components/notes/work_item_note.vue';
+import WorkItemNoteReplying from '~/work_items/components/notes/work_item_note_replying.vue';
+import WorkItemAddNote from './work_item_add_note.vue';
+
+export default {
+  name: 'WorkItemDiscussion',
+  components: {
+    TimelineEntryItem,
+    WorkItemNote,
+    WorkItemAddNote,
+    ToggleRepliesWidget,
+    DiscussionNotesRepliesWrapper,
+    WorkItemNoteReplying,
+  },
+  props: {
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    workItemIid: {
+      type: String,
+      required: true,
+    },
+    workItemType: {
+      type: String,
+      required: true,
+    },
+    discussion: {
+      type: Object,
+      required: true,
+    },
+    sortOrder: {
+      type: String,
+      default: ASC,
+      required: false,
+    },
+    markdownPreviewPath: {
+      type: String,
+      required: true,
+    },
+    newCommentTemplatePaths: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    autocompleteDataSources: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    assignees: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    canReply: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canSetWorkItemMetadata: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isDiscussionLocked: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isWorkItemConfidential: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isExpandedOnLoad: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hideFullscreenMarkdownButton: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    uploadsPath: {
+      type: String,
+      required: true,
+    },
+  },
+  emits: [
+    'cancel-editing',
+    'delete-note',
+    'duo-question-answered',
+    'error',
+    'report-abuse',
+    'start-editing',
+  ],
+  data() {
+    return {
+      isExpanded: this.isExpandedOnLoad,
+      autofocus: false,
+      isReplying: false,
+      replyingText: '',
+      showForm: false,
+      isResolving: false,
+      pendingResolve: null,
+    };
+  },
+  computed: {
+    notes() {
+      return this.discussion.notes.nodes;
+    },
+    firstNote() {
+      return this.notes[0];
+    },
+    firstNoteId() {
+      return getIdFromGraphQLId(this.firstNote.id);
+    },
+    hasReplies() {
+      return Boolean(this.replies?.length);
+    },
+    // `replies` is null when a thread has none; the note prop wants an array.
+    replyNotes() {
+      return this.replies ?? [];
+    },
+    replies() {
+      if (this.notes?.length > 1) {
+        return this.notes.slice(1);
+      }
+      return null;
+    },
+    discussionId() {
+      return this.discussion.id || '';
+    },
+    shouldShowReplyForm() {
+      return this.showForm || this.hasReplies;
+    },
+    isOnlyCommentOfAThread() {
+      return !this.hasReplies && !this.showForm;
+    },
+    isDiscussionResolved() {
+      return this.discussion.resolved;
+    },
+    isDiscussionResolvable() {
+      return this.discussion.resolvable && this.discussion.userPermissions.resolveNote;
+    },
+  },
+  watch: {
+    discussion: {
+      handler(newDiscussion) {
+        if (newDiscussion.resolved === false) {
+          this.isExpanded = true;
+        }
+      },
+      deep: true,
+    },
+  },
+  mounted() {
+    gfmEventHub.$on('quote-reply', this.handleQuoteReply);
+  },
+  beforeDestroy() {
+    gfmEventHub.$off('quote-reply', this.handleQuoteReply);
+  },
+  methods: {
+    handleQuoteReply({ event, discussionId, text }) {
+      // Ensure we're using correct discussion block for reply form.
+      if (this.discussion.id === discussionId) {
+        // Prevent 'r' being written.
+        if (event && typeof event.preventDefault === 'function') {
+          event.preventDefault();
+        }
+
+        // Show reply form if not open already.
+        if (!this.showForm) this.showReplyForm();
+
+        // Wait for form rendering.
+        this.$nextTick(() => {
+          // We're using `append` method from ~/vue_shared/components/markdown/markdown_editor.vue
+          this.$refs.addNote.appendText(text);
+        });
+      }
+    },
+    showReplyForm() {
+      this.showForm = true;
+      this.isExpanded = true;
+      this.autofocus = true;
+    },
+    hideReplyForm() {
+      this.showForm = false;
+      this.isExpanded = this.hasReplies;
+      this.autofocus = false;
+      this.$emit('cancel-editing');
+    },
+    toggleDiscussion() {
+      this.isExpanded = !this.isExpanded;
+    },
+    threadKey(note) {
+      return `${note.id}-thread`; // eslint-disable-line @gitlab/require-i18n-strings
+    },
+    async onReplied(note) {
+      this.isExpanded = true;
+      this.isReplying = false;
+      this.replyingText = '';
+
+      const resolving = this.pendingResolve;
+      this.pendingResolve = null;
+      if (!resolving || !(await resolving)) return;
+
+      // The thread is resolved even when the reply failed, so the decision still resolves from
+      // the answers already in the thread, as it would from the Resolve button.
+      this.resolveDuoDecision(note?.discussion?.notes?.nodes?.find(({ id }) => id === note.id));
+    },
+    onReplying(commentText) {
+      this.isReplying = true;
+      this.replyingText = commentText;
+    },
+    getToggledDiscussion(resolved) {
+      let resolvedBy = null;
+      if (resolved) {
+        resolvedBy = {
+          id: gon?.current_user_id,
+          name: gon?.current_user_fullname,
+          __typename: 'UserCore',
+        };
+      }
+
+      return {
+        ...this.discussion,
+        resolved,
+        resolvedBy,
+      };
+    },
+    async resolveDiscussion({ withReply = false } = {}) {
+      const resolving = this.toggleResolveDiscussion();
+
+      // The reply form resolves the thread before posting its reply, and a Duo question's
+      // decision is only resolved once its answer exists, so it waits for `onReplied`.
+      if (withReply) {
+        this.pendingResolve = resolving;
+        return;
+      }
+
+      if (await resolving) this.resolveDuoDecision();
+    },
+    async toggleResolveDiscussion() {
+      this.isResolving = true;
+      try {
+        const { data } = await this.$apollo.mutate({
+          mutation: toggleWorkItemNoteResolveDiscussion,
+          variables: { id: this.discussionId, resolve: !this.isDiscussionResolved },
+          optimisticResponse: {
+            discussionToggleResolve: {
+              errors: [],
+              discussion: this.getToggledDiscussion(!this.isDiscussionResolved),
+              __typename: 'DiscussionToggleResolvePayload',
+            },
+          },
+        });
+
+        return Boolean(data?.discussionToggleResolve?.discussion?.resolved);
+      } catch (error) {
+        this.$emit('error', error.message);
+        return false;
+      } finally {
+        this.isResolving = false;
+      }
+    },
+    resolveDuoDecision(answerNote) {
+      return resolveDuoQuestionDecision({
+        apolloClient: this.$apollo.getClient(),
+        fullPath: this.fullPath,
+        workItemIid: this.workItemIid,
+        discussionId: this.discussionId,
+        questionNote: this.firstNote,
+        replies: this.replyNotes,
+        answerNote,
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <timeline-entry-item
+    :data-note-id="firstNoteId"
+    :data-discussion-id="discussionId"
+    class="note-discussion gl-px-0"
+  >
+    <div class="timeline-content">
+      <div class="discussion">
+        <div class="discussion-body">
+          <div class="discussion-wrapper">
+            <div class="discussion-notes">
+              <ul class="notes" data-testid="note-container">
+                <work-item-note
+                  is-first-note
+                  :is-only-comment-of-a-thread="isOnlyCommentOfAThread"
+                  :note="firstNote"
+                  :discussion-id="discussionId"
+                  :full-path="fullPath"
+                  :has-replies="hasReplies"
+                  :replies="replyNotes"
+                  :work-item-type="workItemType"
+                  :class="{ 'gl-mb-4': hasReplies }"
+                  :autocomplete-data-sources="autocompleteDataSources"
+                  :markdown-preview-path="markdownPreviewPath"
+                  :new-comment-template-paths="newCommentTemplatePaths"
+                  :assignees="assignees"
+                  :work-item-id="workItemId"
+                  :work-item-iid="workItemIid"
+                  :can-reply="canReply"
+                  :can-set-work-item-metadata="canSetWorkItemMetadata"
+                  :is-discussion-resolved="isDiscussionResolved"
+                  :is-discussion-resolvable="isDiscussionResolvable"
+                  :is-resolving="isResolving"
+                  :resolved-by="discussion.resolvedBy"
+                  :hide-fullscreen-markdown-button="hideFullscreenMarkdownButton"
+                  :uploads-path="uploadsPath"
+                  @start-replying="showReplyForm"
+                  @start-editing="$emit('start-editing')"
+                  @delete-note="$emit('delete-note', firstNote)"
+                  @report-abuse="$emit('report-abuse', firstNote)"
+                  @cancel-editing="$emit('cancel-editing')"
+                  @resolve="resolveDiscussion"
+                  @duo-question-answered="$emit('duo-question-answered')"
+                  @error="$emit('error', $event)"
+                />
+                <discussion-notes-replies-wrapper>
+                  <toggle-replies-widget
+                    v-if="hasReplies"
+                    :collapsed="!isExpanded"
+                    :replies="replies"
+                    @toggle="toggleDiscussion({ discussionId })"
+                  />
+                  <template v-if="isExpanded">
+                    <work-item-note
+                      v-for="reply in replies"
+                      :key="threadKey(reply)"
+                      :discussion-id="discussionId"
+                      :full-path="fullPath"
+                      :note="reply"
+                      :work-item-type="workItemType"
+                      :autocomplete-data-sources="autocompleteDataSources"
+                      :markdown-preview-path="markdownPreviewPath"
+                      :new-comment-template-paths="newCommentTemplatePaths"
+                      :assignees="assignees"
+                      :work-item-id="workItemId"
+                      :work-item-iid="workItemIid"
+                      :can-set-work-item-metadata="canSetWorkItemMetadata"
+                      :is-discussion-resolved="isDiscussionResolved"
+                      :is-discussion-resolvable="isDiscussionResolvable"
+                      :is-resolving="isResolving"
+                      :resolved-by="discussion.resolvedBy"
+                      :hide-fullscreen-markdown-button="hideFullscreenMarkdownButton"
+                      :uploads-path="uploadsPath"
+                      @start-replying="showReplyForm"
+                      @delete-note="$emit('delete-note', reply)"
+                      @report-abuse="$emit('report-abuse', reply)"
+                      @start-editing="$emit('start-editing')"
+                      @cancel-editing="$emit('cancel-editing')"
+                      @error="$emit('error', $event)"
+                    />
+                    <work-item-note-replying
+                      v-if="isReplying"
+                      :is-internal-note="firstNote.internal"
+                      :body="replyingText"
+                    />
+                    <work-item-add-note
+                      v-if="shouldShowReplyForm"
+                      ref="addNote"
+                      :notes-form="false"
+                      :autofocus="autofocus"
+                      :full-path="fullPath"
+                      :work-item-id="workItemId"
+                      :work-item-iid="workItemIid"
+                      :discussion-id="discussionId"
+                      :work-item-type="workItemType"
+                      :sort-order="sortOrder"
+                      :add-padding="true"
+                      :autocomplete-data-sources="autocompleteDataSources"
+                      :markdown-preview-path="markdownPreviewPath"
+                      :new-comment-template-paths="newCommentTemplatePaths"
+                      :is-discussion-locked="isDiscussionLocked"
+                      :is-internal-thread="firstNote.internal"
+                      :is-work-item-confidential="isWorkItemConfidential"
+                      :is-discussion-resolved="isDiscussionResolved"
+                      :is-discussion-resolvable="isDiscussionResolvable"
+                      :is-resolving="isResolving"
+                      :has-replies="hasReplies"
+                      :hide-fullscreen-markdown-button="hideFullscreenMarkdownButton"
+                      :uploads-path="uploadsPath"
+                      @start-replying="showReplyForm"
+                      @cancel-editing="hideReplyForm"
+                      @replied="onReplied"
+                      @replying="onReplying"
+                      @resolve="resolveDiscussion"
+                      @error="$emit('error', $event)"
+                      @start-editing="$emit('start-editing')"
+                    />
+                  </template>
+                </discussion-notes-replies-wrapper>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </timeline-entry-item>
+</template>

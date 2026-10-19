@@ -1,0 +1,83 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "enabled",
+    "url",
+    "auth_method",
+    "update_status",
+    "last_update_at",
+    "last_update_started_at",
+    "last_successful_update_at",
+    "last_error",
+    "only_protected_branches",
+    "host_keys"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "url": {
+      "type": "string"
+    },
+    "update_status": {
+      "type": "string"
+    },
+    "last_update_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_update_started_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_successful_update_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "auth_method": {
+      "type": "string",
+      "enum": [
+        "password",
+        "ssh_public_key"
+      ]
+    },
+    "only_protected_branches": {
+      "type": "boolean"
+    },
+    "mirror_branch_regex": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "keep_divergent_refs": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "host_keys": {
+      "type": "array",
+      "items": {
+        "$ref": "entities/host_key.json"
+      }
+    }
+  },
+  "additionalProperties": false
+}

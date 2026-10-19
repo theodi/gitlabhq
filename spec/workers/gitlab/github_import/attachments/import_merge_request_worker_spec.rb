@@ -1,0 +1,43 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::GithubImport::Attachments::ImportMergeRequestWorker, feature_category: :importers do
+  subject(:worker) { described_class.new }
+
+  describe '#import' do
+    let(:import_state) { create(:import_state, :started) }
+    let(:project) { create(:project, import_state: import_state) }
+
+    let(:client) { instance_double('Gitlab::GithubImport::Client', web_endpoint: "https://github.com") }
+
+    let(:mr_hash) do
+      {
+        'record_db_id' => rand(100),
+        'record_type' => 'MergeRequest',
+        'iid' => 2,
+        'text' => <<-TEXT
+          Some text...
+
+          ![special-image](https://user-images.githubusercontent.com...)
+        TEXT
+      }
+    end
+
+    it 'imports an merge request attachments' do
+      expect_next_instance_of(
+        Gitlab::GithubImport::Importer::NoteAttachmentsImporter,
+        an_instance_of(Gitlab::GithubImport::Representation::NoteText),
+        project,
+        client
+      ) do |note_attachments_importer|
+        expect(note_attachments_importer).to receive(:execute)
+      end
+
+      expect(Gitlab::GithubImport::ObjectCounter)
+        .not_to receive(:increment)
+
+      worker.import(project, client, mr_hash)
+    end
+  end
+end

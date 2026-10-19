@@ -1,0 +1,47 @@
+#import "~/graphql_shared/fragments/milestone.fragment.graphql"
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+fragment IssueNode on Issue {
+  id
+  iid
+  author {
+    id
+    username
+  }
+  title
+  titleHtml
+  referencePath: reference(full: true)
+  closedAt
+  dueDate
+  timeEstimate
+  totalTimeSpent
+  emailsDisabled
+  confidential
+  hidden
+  webPath
+  webUrl
+  relativePosition
+  type
+  workItemType @gl_introduced(version: "18.10.0-pre") {
+    id
+    name
+    iconName
+  }
+  severity
+  milestone {
+    ...MilestoneFragment
+  }
+  assignees {
+    nodes {
+      ...User
+    }
+  }
+  labels {
+    nodes {
+      id
+      title
+      color
+      description
+    }
+  }
+}

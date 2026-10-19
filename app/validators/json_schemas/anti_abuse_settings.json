@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Anti abuse settings",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enforce_email_subaddress_restrictions": {
+      "type": "boolean",
+      "description": "Prevents registration and auto-bans users with email subaddresses matching banned users (e.g. if user+spam@example.com is banned, user+new@example.com is affected)."
+    },
+    "require_email_verification_on_account_locked": {
+      "type": "boolean",
+      "description": "Set to `true` to enforce email verification when an account is locked."
+    },
+    "delay_user_account_self_deletion": {
+      "type": "boolean",
+      "description": "Set to `true` to delay deletion of the user's own account after it is marked for removal."
+    }
+  }
+}

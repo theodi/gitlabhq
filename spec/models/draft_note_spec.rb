@@ -1,0 +1,244 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe DraftNote, feature_category: :code_review_workflow do
+  include RepoHelpers
+
+  let_it_be(:project)       { create(:project, :repository) }
+  let_it_be(:merge_request) { create(:merge_request_with_diffs, target_project: project, source_project: project) }
+
+  describe 'associations' do
+    subject { build(:draft_note, merge_request: merge_request) }
+
+    it { is_expected.to belong_to(:author) }
+    it { is_expected.to belong_to(:project) }
+  end
+
+  describe 'validations' do
+    describe '#for_commit?' do
+      let(:draft_note) { build(:draft_note, merge_request: merge_request) }
+
+      it 'returns false even when commit_id is present' do
+        draft_note.commit_id = 'abc123'
+        expect(draft_note.for_commit?).to be false
+      end
+
+      it 'returns false when commit_id is nil' do
+        draft_note.commit_id = nil
+        expect(draft_note.for_commit?).to be false
+      end
+    end
+
+    describe '#valid_commit_id' do
+      let(:draft_note) { build(:draft_note, merge_request: merge_request) }
+
+      it 'is valid when commit_id is nil' do
+        draft_note.commit_id = nil
+        expect(draft_note).to be_valid
+      end
+
+      it 'is valid when commit_id references a real commit' do
+        draft_note.commit_id = project.repository.commit.id
+        expect(draft_note).to be_valid
+      end
+
+      it 'is invalid when commit_id does not reference a real commit' do
+        draft_note.commit_id = 'bad0c1a0'
+        expect(draft_note).not_to be_valid
+        expect(draft_note.errors[:commit_id]).to include('is not a valid commit')
+      end
+    end
+
+    context 'for note' do
+      subject(:draft_note) { build(:draft_note, merge_request: merge_request) }
+
+      before do
+        allow(Gitlab::CurrentSettings).to receive(:description_and_note_max_size).and_return(1)
+      end
+
+      it 'validates size' do
+        is_expected.to validate_length_of(:note).is_at_most(Gitlab::CurrentSettings.description_and_note_max_size)
+          .with_message("is too long (2 B). The maximum size is 1 B.")
+      end
+
+      it 'skips validation when unchanged' do
+        draft_note.note = 'over limit'
+        is_expected.not_to be_valid
+
+        draft_note.save!(validate: false)
+
+        is_expected.to be_valid
+      end
+    end
+  end
+
+  describe 'delegations' do
+    it { is_expected.to delegate_method(:file_path).to(:diff_file).allow_nil }
+    it { is_expected.to delegate_method(:file_hash).to(:diff_file).allow_nil }
+    it { is_expected.to delegate_method(:file_identifier_hash).to(:diff_file).allow_nil }
+  end
+
+  describe 'enums' do
+    let(:note_types) do
+      { Note: 0, DiffNote: 1, DiscussionNote: 2 }
+    end
+
+    it { is_expected.to define_enum_for(:note_type).with_values(**note_types) }
+  end
+
+  describe '#line_code' do
+    describe 'stored line_code' do
+      let(:draft_note) { build(:draft_note, merge_request: merge_request, line_code: '1234567890') }
+
+      it 'returns stored line_code' do
+        expect(draft_note.line_code).to eq('1234567890')
+      end
+    end
+
+    describe 'none stored line_code' do
+      let(:draft_note) { build(:draft_note, merge_request: merge_request) }
+
+      before do
+        allow(draft_note).to receive(:find_line_code).and_return('none stored line_code')
+      end
+
+      it 'returns found line_code' do
+        expect(draft_note.line_code).to eq('none stored line_code')
+      end
+    end
+  end
+
+  describe '#diff_file' do
+    let(:draft_note) { build(:draft_note, merge_request: merge_request) }
+
+    context 'when diff_file exists' do
+      it "returns an unfolded diff_file" do
+        diff_file = instance_double(Gitlab::Diff::File)
+        expect(draft_note.original_position).to receive(:diff_file).with(project.repository).and_return(diff_file)
+        expect(diff_file).to receive(:unfold_diff_lines).with(draft_note.original_position)
+
+        expect(draft_note.diff_file).to be diff_file
+      end
+    end
+
+    context 'when diff_file does not exist' do
+      it 'returns nil' do
+        expect(draft_note.original_position).to receive(:diff_file).with(project.repository).and_return(nil)
+
+        expect(draft_note.diff_file).to be_nil
+      end
+    end
+  end
+
+  describe '#type' do
+    let(:draft_note) { build(:draft_note, merge_request: merge_request) }
+
+    context 'when note_type is present' do
+      before do
+        draft_note.note_type = 'DiffNote'
+      end
+
+      it 'returns the note_type' do
+        expect(draft_note.type).to eq('DiffNote')
+      end
+    end
+
+    context 'when note_type is not present' do
+      context 'when on_diff? is true' do
+        before do
+          allow(draft_note).to receive(:on_diff?).and_return(true)
+        end
+
+        it 'returns "DiffNote"' do
+          expect(draft_note.type).to eq('DiffNote')
+        end
+      end
+
+      context 'when on_diff? is false and discussion_id is present' do
+        before do
+          allow(draft_note).to receive(:on_diff?).and_return(false)
+          draft_note.discussion_id = 'some_id'
+        end
+
+        it 'returns "DiscussionNote"' do
+          expect(draft_note.type).to eq('DiscussionNote')
+        end
+      end
+
+      context 'when on_diff? is false and discussion_id is not present' do
+        before do
+          allow(draft_note).to receive(:on_diff?).and_return(false)
+          draft_note.discussion_id = nil
+        end
+
+        it 'returns "DiscussionNote" to make draft notes resolvable by default' do
+          expect(draft_note.type).to eq('DiscussionNote')
+        end
+      end
+    end
+  end
+
+  describe '#publish_params' do
+    context 'for a diff draft note' do
+      let(:draft_note) { create(:draft_note_on_text_diff, merge_request: merge_request) }
+
+      it 'includes line_code so set_line_code can short-circuit at publish time', :aggregate_failures do
+        expect(draft_note.publish_params).to include(:line_code)
+        expect(draft_note.publish_params[:line_code]).to eq(draft_note.line_code)
+      end
+    end
+
+    context 'for a non-diff draft note' do
+      let(:draft_note) { build(:draft_note, merge_request: merge_request) }
+
+      it 'does not include line_code' do
+        expect(draft_note.publish_params).not_to include(:line_code)
+      end
+    end
+  end
+
+  describe '.bulk_insert_and_keep_commits!' do
+    let_it_be(:user) { create(:user) }
+    let(:drafts) do
+      [
+        build(:draft_note, merge_request: merge_request, author: user),
+        build(:draft_note_on_text_diff, merge_request: merge_request, author: user),
+        build(:draft_note_on_text_diff, merge_request: merge_request, author: user)
+      ]
+    end
+
+    it 'inserts items in the given number of batches' do
+      expect(described_class)
+        .to receive(:bulk_insert!)
+        .with(drafts, batch_size: 5)
+        .and_call_original
+
+      described_class.bulk_insert_and_keep_commits!(drafts, batch_size: 5)
+    end
+
+    it 'calls keep_around_commits on the first draft note on diff' do
+      expect(drafts[0]).not_to receive(:keep_around_commits)
+      expect(drafts[1]).to receive(:keep_around_commits)
+      expect(drafts[2]).not_to receive(:keep_around_commits) # This tests that we only keep around the first commit
+
+      described_class.bulk_insert_and_keep_commits!(drafts, batch_size: 10)
+    end
+  end
+
+  describe '#should_update_position?' do
+    subject(:draft_note) { build(:draft_note_on_text_diff, merge_request: merge_request, commit_id: commit_id) }
+
+    context 'when the draft is not associated with a commit' do
+      let(:commit_id) { nil }
+
+      it { is_expected.to be_should_update_position }
+    end
+
+    context 'when the draft is associated with a commit' do
+      let(:commit_id) { project.repository.commit.id }
+
+      it { is_expected.not_to be_should_update_position }
+    end
+  end
+end

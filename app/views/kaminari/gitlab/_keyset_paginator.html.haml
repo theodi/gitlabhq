@@ -1,0 +1,27 @@
+- return unless paginator.has_previous_page? || paginator.has_next_page?
+
+.gl-pagination.gl-mt-3
+  %ul{ class: "pagination !gl-justify-center" }
+    - unless without_first_and_last_pages
+      %li
+        - first_page = url_for(page_params.merge(cursor: paginator.cursor_for_first_page))
+        = render Pajamas::ButtonComponent.new(category: :tertiary, disabled: !paginator.has_previous_page?, href: first_page, icon: 'chevron-double-lg-left', icon_classes: 'gl-p-1', button_options: { rel: 'first', class: 'gl-pagination-item' } ) do
+          = s_('Pagination|First')
+
+    %li
+      - previous_page = url_for(page_params.merge(cursor: paginator.cursor_for_previous_page))
+      = render Pajamas::ButtonComponent.new(category: :tertiary, disabled: !paginator.has_previous_page?, href: previous_page, icon: 'chevron-left', button_options: { rel: 'prev', class: 'gl-pagination-item' } ) do
+        = s_('Pagination|Previous')
+
+    %li
+      - next_page = url_for(page_params.merge(cursor: paginator.cursor_for_next_page))
+      = render Pajamas::ButtonComponent.new(category: :tertiary, disabled: !paginator.has_next_page?, href: next_page, button_options: { rel: 'next', class: 'gl-pagination-item' } ) do
+        = s_('Pagination|Next')
+        = sprite_icon('chevron-right')
+
+    - unless without_first_and_last_pages
+      %li
+        - last_page = url_for(page_params.merge(cursor: paginator.cursor_for_last_page))
+        = render Pajamas::ButtonComponent.new(category: :tertiary, disabled: !paginator.has_next_page?, href: last_page, button_options: { rel: 'last', class: 'gl-pagination-item' } ) do
+          = s_('Pagination|Last')
+          = sprite_icon('chevron-double-lg-right', css_class: 'gl-p-1')

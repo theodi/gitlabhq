@@ -1,8 +1,33 @@
-- page_title    @project.name_with_namespace
-- header_title  project_title(@project)
-- sidebar       "project" unless sidebar
+- page_title       @project.full_name
+- page_description @project.description_html unless page_description
+- push_project_breadcrumbs(@project)
+- nav              "project"
+- page_itemtype    'http://schema.org/SoftwareSourceCode'
+- display_subscription_banner!
+- @content_class = [@content_class, project_classes(@project)].compact.join(" ")
 
-- content_for :embedded_scripts do
-  = render "layouts/init_auto_complete" if current_user
+- content_for :flash_message do
+  = dispensable_render_if_exists "projects/storage_enforcement_alert", context: @project
+  = dispensable_render_if_exists "shared/namespace_storage_limit_alert", context: @project
+  = dispensable_render_if_exists "shared/namespace_combined_storage_users_alert", context: @project
+  = dispensable_render_if_exists "layouts/header/namespace_seat_alert", context: @project
+  = dispensable_render_if_exists "shared/trials/duo_code_review_enabled_by_default_alert", group: @project.root_ancestor
+
+- content_for :project_javascripts do
+  - project = @target_project || @project
+  - if current_user
+    = javascript_tag do
+      :plain
+        window.uploads_path = "#{project_uploads_path(project)}";
+
+- content_for :before_content do
+  = render 'projects/invite_members_modal', project: @project
+  = dispensable_render_if_exists 'shared/hand_raise_lead_modal', root_namespace: @project.root_ancestor
+  = render_if_exists "shared/saml_reload_modal", group_or_project: @project
+  = render_if_exists 'shared/end_of_trial_modal', group_or_project: @project
+
+= dispensable_render_if_exists "projects/importing_alert", project: @project
+= dispensable_render_if_exists "shared/web_hooks/web_hook_disabled_alert"
+= dispensable_render_if_exists "projects/free_user_cap_alert", project: @project
 
 = render template: "layouts/application"

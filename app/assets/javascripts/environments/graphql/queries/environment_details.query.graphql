@@ -1,0 +1,92 @@
+#import "ee_else_ce/environments/graphql/fragments/environment_protected_data.fragment.graphql"
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+#import "~/environments/graphql/fragments/deployment_job.fragment.graphql"
+
+query getEnvironmentDetails(
+  $projectFullPath: ID!
+  $environmentName: String
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+  $orderBy: DeploymentsOrderByInput
+  $statuses: [DeploymentStatus!]
+) {
+  project(fullPath: $projectFullPath) {
+    id
+    name
+    fullPath
+    environment(name: $environmentName) {
+      ...ProtectedEnvironment
+      name
+      tier
+      lastDeployment(status: SUCCESS) {
+        id
+        job {
+          id
+          name
+        }
+      }
+      deployments(
+        statuses: $statuses
+        orderBy: $orderBy
+        first: $first
+        last: $last
+        after: $after
+        before: $before
+      ) {
+        pageInfo {
+          startCursor
+          endCursor
+          hasNextPage
+          hasPreviousPage
+        }
+        nodes {
+          id
+          iid
+          status
+          ref
+          tag
+          webPath
+          job {
+            ...DeploymentJob
+            retryPath @gl_introduced(version: "18.3.0")
+            deploymentPipeline: pipeline {
+              id
+              path
+              ... on Pipeline {
+                jobs(whenExecuted: ["manual"], retried: false) {
+                  nodes {
+                    ...DeploymentJob
+                    scheduledAt
+                  }
+                }
+              }
+            }
+            downstreamPipeline {
+              id
+              path
+            }
+          }
+          commit {
+            id
+            shortId
+            message
+            webUrl
+            authorGravatar
+            authorName
+            authorEmail
+            author {
+              ...User
+            }
+          }
+          triggerer {
+            ...User
+          }
+          createdAt
+          finishedAt
+        }
+      }
+    }
+  }
+}

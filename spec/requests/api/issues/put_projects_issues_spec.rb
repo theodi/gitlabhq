@@ -1,0 +1,620 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Issues, feature_category: :team_planning do
+  let_it_be(:user, freeze: false) { create(:user) }
+  let_it_be(:owner, freeze: false) { create(:owner) }
+  let_it_be(:user2)       { create(:user) }
+  let(:non_member)        { create(:user) }
+  let_it_be(:guest, freeze: false)       { create(:user) }
+  let_it_be(:author, freeze: false)      { create(:author) }
+  let_it_be(:assignee, freeze: false)    { create(:assignee) }
+  let(:admin)             { create(:user, :admin) }
+  let(:issue_title)       { 'foo' }
+  let(:issue_description) { 'closed' }
+
+  let_it_be_with_reload(:project) do
+    create(:project, :public, creator_id: owner.id, namespace: owner.namespace, reporters: user, guests: guest)
+  end
+
+  let_it_be(:confidential_issue) do
+    create :issue,
+      :confidential,
+      project: project,
+      author: author,
+      assignees: [assignee],
+      created_at: generate(:past_time),
+      updated_at: 2.hours.ago
+  end
+
+  let_it_be(:milestone) { create(:milestone, title: '1.0.0', project: project) }
+
+  let!(:issue) do
+    create :issue,
+      author: user,
+      assignees: [user],
+      project: project,
+      milestone: milestone,
+      created_at: generate(:past_time),
+      updated_at: 1.hour.ago,
+      title: issue_title,
+      description: issue_description
+  end
+
+  let_it_be(:label, freeze: false) do
+    create(:label, title: 'label', color: '#FFAABB', project: project)
+  end
+
+  let!(:label_link) { create(:label_link, label: label, target: issue) }
+
+  let_it_be(:empty_milestone, freeze: false) do
+    create(:milestone, title: '2.0.0', project: project)
+  end
+
+  let(:no_milestone_title) { 'None' }
+  let(:any_milestone_title) { 'Any' }
+  let(:updated_title) { 'updated title' }
+  let(:issue_path) { "/projects/#{project.id}/issues/#{issue.iid}" }
+  let(:api_for_user) { api(issue_path, user) }
+
+  before do
+    stub_licensed_features(multiple_issue_assignees: false, issue_weights: false)
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update only title' do
+    it_behaves_like 'PUT request permissions for admin mode' do
+      let(:path) { "/projects/#{project.id}/issues/#{confidential_issue.iid}" }
+      let(:params) { { title: updated_title } }
+    end
+
+    it 'updates a project issue', :aggregate_failures do
+      put api_for_user, params: { title: updated_title }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['title']).to eq(updated_title)
+    end
+
+    it 'returns 404 error if issue iid not found' do
+      put api("/projects/#{project.id}/issues/#{non_existing_record_id}", user), params: { title: updated_title }
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'returns 404 error if issue id is used instead of the iid' do
+      put api("/projects/#{project.id}/issues/#{issue.id}", user), params: { title: updated_title }
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'allows special label names' do
+      put api_for_user,
+        params: {
+          title: updated_title,
+          labels: 'label, label?, label&foo, ?, &'
+        }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'allows special label names with labels param as array', :aggregate_failures do
+      put api_for_user,
+        params: {
+          title: updated_title,
+          labels: ['label', 'label?', 'label&foo, ?, &']
+        }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly('label', 'label?', 'label&foo', '?', '&')
+    end
+
+    context 'confidential issues' do
+      let(:confidential_issue_path) { "/projects/#{project.id}/issues/#{confidential_issue.iid}" }
+
+      it 'returns 403 for non project members' do
+        put api(confidential_issue_path, non_member), params: { title: updated_title }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+
+      it 'returns 403 for project members with guest role' do
+        put api(confidential_issue_path, guest), params: { title: updated_title }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+
+      it 'updates a confidential issue for project members', :aggregate_failures do
+        put api(confidential_issue_path, user), params: { title: updated_title }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['title']).to eq(updated_title)
+      end
+
+      it 'updates a confidential issue for author', :aggregate_failures do
+        put api(confidential_issue_path, author), params: { title: updated_title }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['title']).to eq(updated_title)
+      end
+
+      it 'updates a confidential issue for admin', :aggregate_failures do
+        put api(confidential_issue_path, admin, admin_mode: true), params: { title: updated_title }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['title']).to eq(updated_title)
+      end
+
+      it 'sets an issue to confidential', :aggregate_failures do
+        put api_for_user, params: { confidential: true }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['confidential']).to be_truthy
+      end
+
+      it 'makes a confidential issue public', :aggregate_failures do
+        put api(confidential_issue_path, user), params: { confidential: false }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['confidential']).to be_falsy
+      end
+
+      it 'does not update a confidential issue with wrong confidential flag', :aggregate_failures do
+        put api(confidential_issue_path, user), params: { confidential: 'foo' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error']).to eq('confidential is invalid')
+      end
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update severity' do
+    let_it_be_with_reload(:incident) { create(:incident, project: project, author: user) }
+    let(:incident_path) { "/projects/#{project.id}/issues/#{incident.iid}" }
+
+    it 'updates the severity of an incident', :aggregate_failures do
+      put api(incident_path, user), params: { severity: 'critical' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(incident.reload.severity).to eq('critical')
+    end
+
+    it 'rejects an invalid severity value' do
+      put api(incident_path, user), params: { severity: 'invalid' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it 'ignores severity on a non-incident issue', :aggregate_failures do
+      put api_for_user, params: { severity: 'high', title: updated_title }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(issue).not_to be_supports_severity
+      expect(issue.reload.severity).to eq(IssuableSeverity::DEFAULT)
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid with spam filtering' do
+    include_context 'includes Spam constants'
+
+    def update_issue
+      put api_for_user, params: params
+    end
+
+    let(:params) do
+      {
+        title: updated_title,
+        description: 'content here',
+        labels: 'label, label2'
+      }
+    end
+
+    before do
+      expect_next_instance_of(Spam::SpamActionService) do |spam_service|
+        expect(spam_service).to receive_messages(check_for_spam?: true)
+      end
+
+      allow_next_instance_of(Spam::AkismetService) do |akismet_service|
+        allow(akismet_service).to receive(:spam?).and_return(true)
+      end
+    end
+
+    context 'when allow_possible_spam application setting is false' do
+      it 'does not update a project issue' do
+        expect { update_issue }.not_to change { issue.reload.title }
+      end
+
+      it 'returns correct status and message', :aggregate_failures do
+        update_issue
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']['base']).to match_array([/issue has been recognized as spam/])
+      end
+
+      it 'creates a new spam log entry' do
+        expect { update_issue }
+          .to log_spam(title: updated_title, description: 'content here', user_id: user.id, noteable_type: 'Issue')
+      end
+    end
+
+    context 'when allow_possible_spam application setting is true' do
+      before do
+        stub_application_setting(allow_possible_spam: true)
+      end
+
+      it 'updates a project issue' do
+        expect { update_issue }.to change { issue.reload.title }
+      end
+
+      it 'returns correct status and message' do
+        update_issue
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'creates a new spam log entry' do
+        expect { update_issue }
+          .to log_spam(title: updated_title, description: 'content here', user_id: user.id, noteable_type: 'Issue')
+      end
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update assignee' do
+    context 'support for deprecated assignee_id' do
+      it 'removes assignee', :aggregate_failures do
+        put api_for_user, params: { assignee_id: 0 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['assignee']).to be_nil
+      end
+
+      it 'updates an issue with new assignee', :aggregate_failures do
+        put api_for_user, params: { assignee_id: user2.id }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['assignee']['name']).to eq(user2.name)
+      end
+    end
+
+    it 'removes assignee', :aggregate_failures do
+      put api_for_user, params: { assignee_ids: [0] }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['assignees']).to be_empty
+    end
+
+    it 'updates an issue with new assignee', :aggregate_failures do
+      put api_for_user, params: { assignee_ids: [user2.id] }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['assignees'].first['name']).to eq(user2.name)
+    end
+
+    context 'single assignee restrictions', :aggregate_failures do
+      it 'updates an issue with several assignees but only one has been applied' do
+        put api_for_user, params: { assignee_ids: [user2.id, guest.id] }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['assignees'].size).to eq(1)
+      end
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update labels' do
+    let_it_be(:label) { create(:label, title: 'dummy', project: project) }
+    let!(:label_link) { create(:label_link, label: label, target: issue) }
+
+    it 'adds relevant labels', :aggregate_failures do
+      put api_for_user, params: { add_labels: '1, 2' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly(label.title, '1', '2')
+    end
+
+    context 'when adding labels past the work item labels limit' do
+      before do
+        stub_const('Issue::MAX_NUMBER_OF_LABELS', 2)
+      end
+
+      it 'returns 400 without persisting the labels', :aggregate_failures do
+        put api_for_user, params: { add_labels: 'one, two' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to include('Cannot add more than 2 labels')
+        expect(issue.reload.labels).to contain_exactly(label)
+      end
+    end
+
+    it 'does not add an archived label', :aggregate_failures do
+      archived_label = create(:label, :archived, project: project)
+
+      expect do
+        put api_for_user, params: { add_labels: archived_label.title }
+      end.to not_change { project.labels.count }
+        .and not_change { issue.resource_label_events.count }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly(label.title)
+      expect(issue.reload.labels).to contain_exactly(label)
+    end
+
+    it 'does not add an archived label when replacing labels', :aggregate_failures do
+      archived_label = create(:label, :archived, project: project)
+
+      put api_for_user, params: { labels: [label.title, archived_label.title].join(',') }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly(label.title)
+      expect(issue.reload.labels).to contain_exactly(label)
+    end
+
+    it 'preserves an existing archived label when adding an active label', :aggregate_failures do
+      archived_label = create(:label, :archived, project: project)
+      active_label = create(:label, project: project)
+      create(:label_link, label: archived_label, target: issue)
+
+      put api_for_user, params: { add_labels: active_label.title }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly(label.title, archived_label.title, active_label.title)
+      expect(issue.reload.labels).to contain_exactly(label, archived_label, active_label)
+    end
+
+    it 'preserves an existing archived label included when replacing labels', :aggregate_failures do
+      archived_label = create(:label, :archived, project: project)
+      create(:label_link, label: archived_label, target: issue)
+
+      put api_for_user, params: { labels: [label.title, archived_label.title].join(',') }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly(label.title, archived_label.title)
+      expect(issue.reload.labels).to contain_exactly(label, archived_label)
+    end
+
+    it 'removes an existing archived label', :aggregate_failures do
+      archived_label = create(:label, :archived, project: project)
+      create(:label_link, label: archived_label, target: issue)
+
+      put api_for_user, params: { remove_labels: archived_label.title }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly(label.title)
+      expect(issue.reload.labels).to contain_exactly(label)
+    end
+
+    it 'adds an active inherited group label but not an archived one', :aggregate_failures do
+      group = create(:group)
+      group_project = create(:project, :public, group: group, reporters: user)
+      group_issue = create(:issue, project: group_project)
+      group_label = create(:group_label, group: group)
+      archived_group_label = create(:group_label, :archived, group: group)
+
+      put api("/projects/#{group_project.id}/issues/#{group_issue.iid}", user),
+        params: { add_labels: [group_label.title, archived_group_label.title].join(',') }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly(group_label.title)
+      expect(group_issue.reload.labels).to contain_exactly(group_label)
+    end
+
+    context 'removes' do
+      let_it_be(:label2) { create(:label, title: 'a-label', project: project) }
+      let!(:label_link2) { create(:label_link, label: label2, target: issue) }
+
+      it 'removes relevant labels', :aggregate_failures do
+        put api_for_user, params: { remove_labels: label2.title }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['labels']).to eq([label.title])
+      end
+
+      it 'removes all labels', :aggregate_failures do
+        put api_for_user, params: { remove_labels: "#{label.title}, #{label2.title}" }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['labels']).to be_empty
+      end
+    end
+
+    it 'does not update labels if not present', :aggregate_failures do
+      put api_for_user, params: { title: updated_title }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to eq([label.title])
+    end
+
+    it 'removes all labels and touches the record', :aggregate_failures do
+      travel_to(2.minutes.from_now) do
+        put api_for_user, params: { labels: '' }
+      end
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to eq([])
+      expect(Time.parse(json_response['updated_at'])).to be_future
+    end
+
+    it 'removes all labels and touches the record with labels param as array', :aggregate_failures do
+      travel_to(2.minutes.from_now) do
+        put api_for_user, params: { labels: [''] }
+      end
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to eq([])
+      expect(Time.parse(json_response['updated_at'])).to be_future
+    end
+
+    it 'updates labels and touches the record', :aggregate_failures do
+      travel_to(2.minutes.from_now) do
+        put api_for_user, params: { labels: 'foo,bar' }
+      end
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly('foo', 'bar')
+      expect(Time.parse(json_response['updated_at'])).to be_future
+    end
+
+    it 'updates labels and touches the record with labels param as array', :aggregate_failures do
+      travel_to(2.minutes.from_now) do
+        put api_for_user, params: { labels: %w[foo bar] }
+      end
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to include 'foo'
+      expect(json_response['labels']).to include 'bar'
+      expect(Time.parse(json_response['updated_at'])).to be_future
+    end
+
+    it 'allows special label names', :aggregate_failures do
+      put api_for_user, params: { labels: 'label:foo, label-bar,label_bar,label/bar,label?bar,label&bar,?,&' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly('label:foo', 'label-bar', 'label_bar', 'label/bar', 'label?bar', 'label&bar', '?', '&')
+    end
+
+    it 'allows special label names with labels param as array', :aggregate_failures do
+      put api_for_user, params: { labels: ['label:foo', 'label-bar', 'label_bar', 'label/bar,label?bar,label&bar,?,&'] }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly('label:foo', 'label-bar', 'label_bar', 'label/bar', 'label?bar', 'label&bar', '?', '&')
+    end
+
+    it 'returns 400 if title is too long', :aggregate_failures do
+      put api_for_user, params: { title: 'g' * 256 }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']['title']).to eq(['is too long (maximum is 255 characters)'])
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update milestone' do
+    context 'with milestone' do
+      context 'by milestone_id' do
+        it 'updates the issue with milestone assigned' do
+          put api_for_user, params: { milestone_id: empty_milestone.id }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['milestone']['id']).to eq(empty_milestone.id)
+        end
+
+        it 'leaves the milestone unchanged when milestone_id is invalid' do
+          put api_for_user, params: { milestone_id: non_existing_record_id }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['milestone']['id']).to eq(milestone.id)
+        end
+      end
+
+      context 'by milestone title' do
+        it 'updates the issue with milestone assigned' do
+          put api_for_user, params: { milestone: empty_milestone.title }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['milestone']['id']).to eq(empty_milestone.id)
+        end
+
+        it 'leaves the milestone unchanged when the milestone title does not match any milestone in scope' do
+          put api_for_user, params: { milestone: 'nonexistent' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['milestone']['id']).to eq(milestone.id)
+        end
+      end
+
+      it 'returns 400 when both milestone and milestone_id are provided' do
+        put api_for_user, params: { milestone: empty_milestone.title, milestone_id: empty_milestone.id }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it 'returns 400 when milestone title exceeds the length limit' do
+        put api_for_user, params: { milestone: 'a' * 256 }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error']).to include('milestone must be less than 255 characters')
+      end
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update state and label' do
+    it 'updates a project issue', :aggregate_failures do
+      put api_for_user, params: { labels: 'label2', state_event: 'close' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['labels']).to contain_exactly('label2')
+      expect(json_response['state']).to eq 'closed'
+    end
+
+    it 'reopens a project isssue', :aggregate_failures do
+      put api(issue_path, user), params: { state_event: 'reopen' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['state']).to eq 'opened'
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update updated_at param' do
+    context 'when reporter makes request' do
+      it 'accepts the update date to be set', :aggregate_failures do
+        update_time = 2.weeks.ago
+
+        put api_for_user, params: { title: 'some new title', updated_at: update_time }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['title']).to eq('some new title')
+        expect(Time.parse(json_response['updated_at'])).not_to be_like_time(update_time)
+      end
+    end
+
+    context 'when admin or owner makes the request' do
+      let(:api_for_owner) { api(issue_path, owner) }
+
+      it 'not allow to set null for updated_at' do
+        put api_for_owner, params: { updated_at: nil }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it 'not allow to set blank for updated_at' do
+        put api_for_owner, params: { updated_at: '' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it 'not allow to set invalid format for updated_at' do
+        put api_for_owner, params: { updated_at: 'invalid-format' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it 'accepts the update date to be set', :aggregate_failures do
+        update_time = 2.weeks.ago
+        put api_for_owner, params: { title: 'some new title', updated_at: update_time }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['title']).to eq('some new title')
+        expect(Time.parse(json_response['updated_at'])).to be_like_time(update_time)
+      end
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update due date' do
+    it 'updates the due date of a project issue', :aggregate_failures do
+      due_date = 2.weeks.from_now.to_date.iso8601
+
+      put api_for_user, params: { due_date: due_date }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['due_date']).to eq(due_date)
+    end
+  end
+
+  describe 'PUT /projects/:id/issues/:issue_iid to update start date' do
+    it 'updates the start date of a project issue', :aggregate_failures do
+      start_date = 2.weeks.from_now.to_date.iso8601
+
+      put api_for_user, params: { start_date: start_date }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['start_date']).to eq(start_date)
+    end
+  end
+end

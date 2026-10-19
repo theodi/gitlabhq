@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+module Ci
+  class PipelineFinishedEvent < ::Gitlab::EventStore::Event
+    def schema
+      {
+        'type' => 'object',
+        'required' => %w[pipeline_id status source partition_id],
+        'properties' => {
+          'pipeline_id' => { 'type' => 'integer' },
+          'status' => { 'type' => 'string' },
+          'source' => { 'type' => 'string' },
+          'partition_id' => { 'type' => 'integer' },
+          'source_ref' => { 'type' => %w[string null] }
+        }
+      }
+    end
+  end
+end

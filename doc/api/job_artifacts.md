@@ -1,0 +1,520 @@
+---
+stage: Verify
+group: Pipeline Execution
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Job Artifacts API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to download, keep, and delete [job artifacts](../ci/jobs/job_artifacts.md).
+
+## Download job artifacts by job ID
+
+{{< history >}}
+
+- `file_type` attribute [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/35805) in GitLab 19.4.
+
+{{< /history >}}
+
+Download a job's artifacts archive using a job ID.
+To download a specific report file (for example, JUnit test results),
+use the `file_type` attribute.
+
+If you use cURL to download artifacts from GitLab.com, use the `--location` parameter
+as the request might redirect through a CDN.
+
+```plaintext
+GET /projects/:id/jobs/:job_id/artifacts
+```
+
+Supported attributes:
+
+| Attribute   | Type              | Required | Description |
+| ----------- | ----------------- | -------- | ----------- |
+| `id`        | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `job_id`    | integer           | Yes      | ID of a job. |
+| `file_type` | string            | No       | Type of artifact to download. Default is `archive`, which returns the full artifacts archive. Set this to a specific report type to download that report file directly instead. Available types: `accessibility`, `api_fuzzing`, `archive`, `browser_performance`, `cluster_image_scanning`, `cobertura`, `codequality`, `container_scanning`, `cyclonedx`, `dast`, `dependency_scanning`, `dotenv`, `jacoco`, `junit`, `license_scanning`, `load_performance`, `lsif`, `metrics`, `performance`, `requirements`, `requirements_v2`, `sarif`, `sast`, and `secret_detection`. `performance` and `browser_performance` share a report group. If the job uploaded both, the requested type is returned. If the job only uploaded one of them, that artifact is returned regardless of which type was requested. |
+| `job_token` | string            | No       | CI/CD job token for multi-project pipelines. Premium and Ultimate only. |
+
+If successful, returns [`200`](rest/troubleshooting.md#status-codes) and serves the artifacts file.
+If `file_type` is not a supported value, returns [`400`](rest/troubleshooting.md#status-codes).
+
+Example request:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/42/artifacts" \
+  --output artifacts.zip
+```
+
+Example request for a JUnit test report:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/42/artifacts?file_type=junit" \
+  --output junit.xml.gz
+```
+
+Example request using a CI/CD job token:
+
+```yaml
+# Uses the job_token parameter
+artifact_download:
+  stage: test
+  script:
+    - 'curl --request GET \
+         --location \
+         --url "https://gitlab.example.com/api/v4/projects/1/jobs/42/artifacts?job_token=$CI_JOB_TOKEN" \
+         --output artifacts.zip'
+```
+
+## Download job artifacts by reference name
+
+{{< history >}}
+
+- `search_recent_successful_pipelines` attribute [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/515864) in GitLab 18.7 [with a feature flag](../administration/feature_flags/_index.md) named `ci_search_recent_successful_pipelines`. Disabled by default.
+- Feature flag `ci_search_recent_successful_pipelines` removed in GitLab 18.10
+
+{{< /history >}}
+
+Download a job's artifacts archive from the latest successful pipeline using a reference name.
+When `search_recent_successful_pipelines=true`, the search includes up to 100 recent successful pipelines for the specified reference.
+
+The latest successful pipeline is determined based on creation time.
+The start or end time of individual jobs does not affect which pipeline is the latest.
+
+For [parent and child pipelines](../ci/pipelines/downstream_pipelines.md#parent-child-pipelines),
+artifacts are searched in hierarchical order from parent to child. If both parent and child pipelines
+have a job with the same name, the artifact from the parent pipeline is returned.
+
+Prerequisites:
+
+- You must have a completed pipeline with a `success` status.
+- If the pipeline includes manual jobs, they must either:
+  - Complete successfully.
+  - Have `allow_failure: true` set.
+
+If you use cURL to download artifacts from GitLab.com, use the `--location` parameter
+as the request might redirect through a CDN.
+
+```plaintext
+GET /projects/:id/jobs/artifacts/:ref_name/download?job=name
+```
+
+Supported attributes:
+
+| Attribute   | Type              | Required | Description |
+| ----------- | ----------------- | -------- | ----------- |
+| `id`        | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `job`       | string            | Yes      | The name of the job. |
+| `ref_name`  | string            | Yes      | Branch or tag name in repository. HEAD or SHA references are not supported. For merge request pipelines, use `refs/merge-requests/:iid/head` instead of the branch name. |
+| `job_token` | string            | No       | CI/CD job token for multi-project pipelines. Premium and Ultimate only. |
+| `search_recent_successful_pipelines` | boolean | No | Search across recent successful pipelines instead of just the latest one. Defaults to `false`. |
+
+If successful, returns [`200`](rest/troubleshooting.md#status-codes) and serves the artifacts file.
+
+If the job or artifacts are not found, returns [`404`](rest/troubleshooting.md#status-codes).
+
+Example request:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/artifacts/main/download?job=test"
+```
+
+Example request using a CI/CD job token:
+
+```yaml
+# Uses the job_token parameter
+artifact_download:
+  stage: test
+  script:
+    - 'curl --request GET \
+         --location \
+         --url "https://gitlab.example.com/api/v4/projects/$CI_PROJECT_ID/jobs/artifacts/main/download?job=test&job_token=$CI_JOB_TOKEN" \
+         --output artifacts.zip'
+```
+
+Example request with recent pipeline search:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/artifacts/main/download?job=test&search_recent_successful_pipelines=true"
+```
+
+## Download a single artifact file by job ID
+
+Download a single file from a job's artifacts using a job ID.
+The file is extracted from the archive and streamed to the client.
+
+If you use cURL to download artifacts from GitLab.com, use the `--location` parameter
+as the request might redirect through a CDN.
+
+```plaintext
+GET /projects/:id/jobs/:job_id/artifacts/*artifact_path
+```
+
+Supported attributes:
+
+| Attribute       | Type              | Required | Description |
+| --------------- | ----------------- | -------- | ----------- |
+| `artifact_path` | string            | Yes      | Path to a file inside the artifacts archive. |
+| `id`            | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `job_id`        | integer           | Yes      | The unique job identifier. |
+| `job_token`     | string            | No       | CI/CD job token for multi-project pipelines. Premium and Ultimate only. |
+
+If successful, returns [`200`](rest/troubleshooting.md#status-codes) and sends a single artifact file.
+
+Example request:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/5/artifacts/some/release/file.pdf"
+```
+
+## List all files in the artifacts archive
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/31448) in GitLab 18.8.
+
+{{< /history >}}
+
+List all files and directories in the artifacts archive of a specified job.
+This operation reads the artifact metadata without extracting the full archive,
+making it efficient for browsing large archives.
+
+```plaintext
+GET /projects/:id/jobs/:job_id/artifacts/tree
+```
+
+Supported attributes:
+
+| Attribute   | Type              | Required | Description |
+| ----------- | ----------------- | -------- | ----------- |
+| `id`        | integer or string | Yes      | ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the project. |
+| `job_id`    | integer           | Yes      | ID of a job. |
+| `path`      | string            | No       | Path to browse in the artifacts archive. Defaults to root directory. |
+| `recursive` | boolean           | No       | If `true`, return all entries recursively. Default: `false`. |
+| `job_token` | string            | No       | CI/CD job token used to trigger a multi-project pipeline. Premium and Ultimate only. |
+
+This endpoint supports [pagination](rest/_index.md#pagination).
+
+If successful, returns [`200`](rest/troubleshooting.md#status-codes) and the following response attributes:
+
+| Attribute | Type    | Description |
+|-----------|---------|-------------|
+| `name`    | string  | File or directory name. |
+| `path`    | string  | Full path in the artifacts archive. Directories include a trailing slash. |
+| `type`    | string  | Type of entry. Possible values: `file`, `directory`. |
+| `size`    | integer | File size in bytes. Only present for files. |
+| `mode`    | string  | Unix file mode in octal format. For example, `100644` for files or `040755` for directories. |
+
+If the job, artifacts, artifact metadata, or specified path are not found, returns [`404`](rest/troubleshooting.md#status-codes).
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/42/artifacts/tree"
+```
+
+Example response:
+
+```json
+[
+  {
+    "name": "ci_build_artifacts.zip",
+    "path": "ci_build_artifacts.zip",
+    "type": "file",
+    "size": 1024,
+    "mode": "100644"
+  },
+  {
+    "name": "other_artifacts_0.1.2",
+    "path": "other_artifacts_0.1.2/",
+    "type": "directory",
+    "mode": "040755"
+  }
+]
+```
+
+Example request to browse a subdirectory:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/42/artifacts/tree?path=coverage/reports"
+```
+
+Example request for recursive listing:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/42/artifacts/tree?recursive=true"
+```
+
+Example request using a CI/CD job token:
+
+```yaml
+# Uses the job_token parameter
+list_artifacts:
+  stage: test
+  script:
+    - 'curl --request GET \
+         --url "https://gitlab.example.com/api/v4/projects/1/jobs/42/artifacts/tree?job_token=$CI_JOB_TOKEN"'
+```
+
+## Download a single artifact file by reference name
+
+{{< history >}}
+
+- `search_recent_successful_pipelines` attribute [introduced](https://gitlab.com/gitlab-org/gitlab/-/work_items/515864) in GitLab 18.9 [with a feature flag](../administration/feature_flags/_index.md) named `ci_search_recent_successful_pipelines`. Disabled by default.
+- Feature flag `ci_search_recent_successful_pipelines` removed in GitLab 18.10
+
+{{< /history >}}
+
+Download a single file from a job's artifacts in the latest successful pipeline
+using the reference name. The file is extracted from the archive and streamed to the client with the `plain/text` content type.
+When `search_recent_successful_pipelines=true`, the search includes up to 100 recent successful pipelines for the specified reference.
+
+For [parent and child pipelines](../ci/pipelines/downstream_pipelines.md#parent-child-pipelines),
+artifacts are searched in hierarchical order from parent to child. If both parent and child pipelines
+have a job with the same name, the artifact from the parent pipeline is returned.
+
+The artifact file provides more detail than what is available in the
+[CSV export](../user/application_security/vulnerability_report/_index.md#exporting).
+
+Prerequisites:
+
+- You must have a completed pipeline with a `success` status.
+- If the pipeline includes manual jobs, they must either:
+  - Complete successfully.
+  - Have `allow_failure: true` set.
+- To search across recent successful pipelines, the `ci_search_recent_successful_pipelines` feature flag must be enabled for the project.
+
+If you use cURL to download artifacts from GitLab.com, use the `--location` parameter
+as the request might redirect through a CDN.
+
+```plaintext
+GET /projects/:id/jobs/artifacts/:ref_name/raw/*artifact_path?job=name
+```
+
+Supported attributes:
+
+| Attribute       | Type              | Required | Description |
+| --------------- | ----------------- | -------- | ----------- |
+| `artifact_path` | string            | Yes      | Path to a file inside the artifacts archive. |
+| `id`            | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `job`           | string            | Yes      | The name of the job. |
+| `ref_name`      | string            | Yes      | Branch or tag name in repository. `HEAD` or `SHA` references are not supported. For merge request pipelines, use `refs/merge-requests/:iid/head` instead of the branch name. |
+| `job_token`     | string            | No       | CI/CD job token for multi-project pipelines. Premium and Ultimate only. |
+| `search_recent_successful_pipelines` | boolean | No | Search across recent successful pipelines instead of just the latest one. Defaults to `false`. |
+
+If successful, returns [`200`](rest/troubleshooting.md#status-codes) and sends a single artifact file.
+
+If the job or artifact file is not found, returns [`404`](rest/troubleshooting.md#status-codes).
+
+Example request:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/artifacts/main/raw/some/release/file.pdf?job=pdf"
+```
+
+Example request with recent pipeline search:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/artifacts/main/raw/some/release/file.pdf?job=pdf&search_recent_successful_pipelines=true"
+```
+
+## Keep job artifacts
+
+Prevent a job's artifacts from being automatically deleted when they reach their expiration date.
+
+```plaintext
+POST /projects/:id/jobs/:job_id/artifacts/keep
+```
+
+Supported attributes:
+
+| Attribute | Type              | Required | Description |
+| --------- | ----------------- | -------- | ----------- |
+| `id`      | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `job_id`  | integer           | Yes      | ID of a job. |
+
+If successful, returns [`200`](rest/troubleshooting.md#status-codes) and the job details.
+
+Example request:
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/1/artifacts/keep"
+```
+
+Example response:
+
+```json
+{
+  "commit": {
+    "author_email": "admin@example.com",
+    "author_name": "Administrator",
+    "created_at": "2015-12-24T16:51:14.000+01:00",
+    "id": "0ff3ae198f8601a285adcf5c0fff204ee6fba5fd",
+    "message": "Test the CI integration.",
+    "short_id": "0ff3ae19",
+    "title": "Test the CI integration."
+  },
+  "coverage": null,
+  "allow_failure": false,
+  "download_url": null,
+  "id": 42,
+  "name": "rubocop",
+  "ref": "main",
+  "artifacts": [],
+  "runner": null,
+  "stage": "test",
+  "created_at": "2016-01-11T10:13:33.506Z",
+  "started_at": "2016-01-11T10:13:33.506Z",
+  "finished_at": "2016-01-11T10:15:10.506Z",
+  "duration": 97.0,
+  "status": "failed",
+  "failure_reason": "script_failure",
+  "tag": false,
+  "web_url": "https://example.com/foo/bar/-/jobs/42",
+  "user": null
+}
+```
+
+## Delete job artifacts
+
+Delete a job's artifacts. This includes archived files, metadata, and [report artifacts](../ci/yaml/artifacts_reports.md)
+such as JUnit reports. This endpoint does not delete the job log. You cannot recover artifacts after deletion.
+
+To delete the job log along with its artifacts, use the [erase a job](jobs.md#erase-a-job) API endpoint.
+
+Prerequisites:
+
+- You must have the Maintainer or Owner role for the project.
+
+```plaintext
+DELETE /projects/:id/jobs/:job_id/artifacts
+```
+
+Supported attributes:
+
+| Attribute | Type              | Required | Description |
+| --------- | ----------------- | -------- | ----------- |
+| `id`      | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `job_id`  | integer           | Yes      | ID of a job. |
+
+If successful, returns [`204 No Content`](rest/troubleshooting.md#status-codes).
+
+Example request:
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/1/artifacts"
+```
+
+## Delete all job artifacts in a project
+
+Delete all job artifacts eligible for deletion in a project. Artifacts cannot be recovered after they are deleted.
+
+By default, GitLab keeps artifacts from the most recently completed pipeline
+and the most recent successful pipeline for each ref, regardless of expiration.
+For more information, see
+[keep artifacts from most recent successful jobs](../ci/jobs/job_artifacts.md#keep-artifacts-from-most-recent-successful-jobs).
+
+Requests to this endpoint set the expiry of all job artifacts that
+can be deleted to the current time. The files are then deleted from the system as part
+of the regular cleanup of expired job artifacts. Job logs are never deleted.
+
+The regular cleanup occurs asynchronously on a schedule, so there might be a short delay
+before artifacts are deleted.
+
+Prerequisites:
+
+- You must have the Maintainer or Owner role for the project.
+
+```plaintext
+DELETE /projects/:id/artifacts
+```
+
+Supported attributes:
+
+| Attribute | Type           | Required | Description |
+|-----------|----------------|----------|-------------|
+| `id`      | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+
+If successful, returns [`202 Accepted`](rest/troubleshooting.md#status-codes).
+
+Example request:
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/artifacts"
+```
+
+## Troubleshooting
+
+### Using branch names with merge request pipelines
+
+You might get a `404 Not Found` error when trying to download job artifacts using a branch name as the `ref_name`.
+
+This issue occurs because merge request pipelines use a different reference format than branch pipelines.
+Merge request pipelines run on `refs/merge-requests/:iid/head`, not directly on the source branch.
+
+To download job artifacts for a merge request pipeline, use `refs/merge-requests/:iid/head`
+as the `ref_name` instead of the branch name, where `:iid` is the merge request ID.
+In merge request pipelines the ID is available from the variable
+`$CI_MERGE_REQUEST_IID` and the full `ref_name` from the variable
+`$CI_MERGE_REQUEST_REF_PATH`.
+
+For example, for merge request `!123`:
+
+```shell
+curl --request GET \
+  --location \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/jobs/artifacts/refs/merge-requests/123/head/raw/file.txt?job=test"
+```
+
+### Downloading `artifacts:reports` files
+
+You might get a `404 Not Found` error when trying to download reports using the job artifacts API.
+
+This issue occurs because [reports](../ci/yaml/_index.md#artifactsreports) are not included in the
+artifacts archive by default.
+
+To resolve this issue, use [download job artifacts by job ID](#download-job-artifacts-by-job-id)
+and set `file_type` to the report type you want.
+
+As a workaround, you can also include the report in the artifacts archive itself by adding its
+filename or `gl-*-report.json` to [`artifacts:paths`](../ci/yaml/_index.md#artifactspaths).

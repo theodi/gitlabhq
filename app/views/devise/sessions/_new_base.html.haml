@@ -1,12 +1,16 @@
-= form_for(resource, as: resource_name, url: session_path(resource_name)) do |f|
-  = f.text_field :login, class: "form-control top", placeholder: "Username or Email", autofocus: "autofocus"
-  = f.password_field :password, class: "form-control bottom", placeholder: "Password"
-  - if devise_mapping.rememberable?
-    .remember-me.checkbox
-      %label{for: "user_remember_me"}
-        = f.check_box :remember_me
-        %span Remember me
-      .pull-right
-        = link_to "Forgot your password?", new_password_path(resource_name)
-  %div
-    = f.submit "Sign in", class: "btn btn-save"
+- if admin_mode
+  = gitlab_ui_form_for(:user, url: admin_session_path, html: { class: 'gl-show-field-errors', aria: { live: 'assertive' }}) do |f|
+    .form-group
+      = f.label :password, _('Password')
+      = f.password_field :password, class: 'form-control gl-form-input js-password', data: { id: 'user_password', name: 'user[password]', testid: 'admin-password-field' }
+    = render Pajamas::ButtonComponent.new(type: :submit, variant: :confirm, block: true, button_options: { data: { testid: 'admin-sign-in-button' }}) do
+      = _('Enter admin mode')
+- else
+  #js-sign-in-form{ data: { app_data: sign_in_form_app_data } }
+    = gl_loading_icon(css_class: 'gl-my-5', size: 'md')
+    -# The below form allows us to generate input names with Rails
+    -# and pass them to the frontend so they never get out of sync
+    = form_for(:user, url: user_session_path) do |f|
+      = f.hidden_field :login, value: @invite_email || @username_or_email, data: { js_name: 'login' }
+      = f.hidden_field :password, data: { js_name: 'password' }
+      = f.hidden_field :remember_me, value: @remember_me, data: { js_name: 'rememberMe' }

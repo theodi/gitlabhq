@@ -1,0 +1,14 @@
+---
+table: namespace_details
+database: main
+ignored_columns:
+  - description_html
+replication_targets:
+  - name: clickhouse_main
+    target: siphon_namespace_details
+    dedup_by:
+      - namespace_id
+    reconcile:
+      column: traversal_path
+      expression_key_columns:
+        - namespace_id

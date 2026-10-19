@@ -1,0 +1,18 @@
+---
+description: Click on a tab on projects explore
+internal_events: true
+action: click_tab_projects_explore
+identifiers:
+- user
+additional_properties:
+  label:
+    description: Tab name
+product_group: organizations
+product_categories:
+- groups_and_projects
+milestone: '17.3'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/158282
+tiers:
+- free
+- premium
+- ultimate

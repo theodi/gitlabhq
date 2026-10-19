@@ -1,0 +1,16 @@
+inherit_from:
+  - ../config/rubocop.yml
+
+Gemfile/MissingFeatureCategory:
+  Enabled: false
+
+# FIXME once Gitlab::Json is in a gem
+Gitlab/Json:
+  Enabled: false
+
+# FIXME
+RSpec/MultipleMemoizedHelpers:
+  Enabled: false
+
+RSpec/VerifiedDoubles:
+  Enabled: false

@@ -1,0 +1,138 @@
+# ===== extensions ======
+.cache-pull-push-base:
+  stage: sync
+  extends:
+    - .default-retry
+    - .caching:rules:update-cache-on-code-changes
+  needs: []
+  variables:
+    GIT_DEPTH: 1
+    GIT_STRATEGY: fetch
+  allow_failure: true
+# =================================
+# Dependencies
+# =================================
+cache:ruby-gems:
+  extends:
+    - .with-ruby-slim-image
+    - .cache-pull-push-base
+    - .ruby-cache-pull-push
+  stage: sync
+  variables:
+    BUNDLE_WITHOUT: ""
+  before_script:
+    - source scripts/utils.sh
+  script:
+    - bundle_install_script
+
+cache:ruby-gems-ubi:
+  extends:
+    - cache:ruby-gems
+    - .with-ruby-ubi-image
+  variables:
+    BUILD_OS: ubi
+    OS_VERSION: $UBI_VERSION
+
+cache:node-modules:
+  extends:
+    - .cache-pull-push-base
+    - .with-ci-node-image
+    - .yarn-cache-pull-push
+  variables:
+    GLCI_SKIP_NODE_MODULES_PATCHING: "true"
+  before_script:
+    - source scripts/utils.sh
+  script:
+    - yarn_install_script
+
+# separate production cache is needed for jobs that run yarn install with NODE_ENV=production
+# if cache generated with NODE_ENV=test is used, yarn install will still take substantial amount of time to run
+cache:node-modules-production:
+  extends: cache:node-modules
+  variables:
+    NODE_ENV: production
+
+cache:e2e-ruby-gems:
+  extends:
+    - .with-ruby-slim-image
+    - .cache-pull-push-base
+    - .qa-cache-pull-push
+  before_script:
+    - (command -v git &> /dev/null && git config --global http.https://gitlab.com/gitlab-org/gitlab.proactiveAuth basic) || true
+    - source scripts/utils.sh
+    - cd qa
+    # e2e tests do not have alternative Gemfile but it could be set by rails-next pipeline
+    # so it needs to be unset explicitly
+    - unset BUNDLE_GEMFILE
+  script:
+    - bundle_install_script
+
+# E2E runners have separate infra setup and different cache bucket
+cache:e2e-ruby-gems-e2e-runners:
+  extends:
+    - cache:e2e-ruby-gems
+    - .caching:rules:e2e-gem-cache-e2e-runners
+  tags:
+    - e2e
+
+cache:orchestrator-gems:
+  extends:
+    - .with-ruby-slim-image
+    - .cache-pull-push-base
+    - .qa-orchestrator-cache-pull-push
+  before_script:
+    - source scripts/utils.sh
+    - cd qa/gems/gitlab-orchestrator
+    # orchestrator doesn't have alternative Gemfile but it could be set by rails-next pipeline
+    # so it needs to be unset explicitly
+    - unset BUNDLE_GEMFILE
+  script:
+    - bundle_install_script
+
+# =================================
+# Workhorse
+# =================================
+cache:workhorse-hash:
+  extends:
+    - .cache-pull-push-base
+    - .with-alpine-image
+    - .rails:rules:setup-test-env
+  script:
+    - echo "GLCI_WORKHORSE_HASH=$(git rev-parse HEAD:workhorse)" > build.env
+    - echo "Calculated workhorse checksum - $(cat build.env)"
+  artifacts:
+    reports:
+      dotenv: build.env
+
+# =================================
+# Frontend
+# =================================
+cache:assets-hash:
+  extends:
+    - .cache-pull-push-base
+    - .with-alpine-ruby-image
+    - .caching:rules:frontend-asset-hash
+  script:
+    - echo "GLCI_GITLAB_ASSETS_HASH=$(ruby scripts/lib/assets_sha.rb)" > build.env
+    - echo "Calculated assets checksum - $(cat build.env)"
+  artifacts:
+    reports:
+      dotenv: build.env
+  allow_failure: false
+
+# ENABLE_RSPACK makes assets_sha.rb append the bundler name, yielding a distinct
+# hash so Rspack assets never share a cache key or image tag with Webpack ones.
+cache:assets-hash-rspack:
+  extends:
+    - .cache-pull-push-base
+    - .with-alpine-ruby-image
+    - .caching:rules:frontend-asset-hash
+  variables:
+    ENABLE_RSPACK: "true"
+  script:
+    - echo "GLCI_GITLAB_ASSETS_HASH=$(ruby scripts/lib/assets_sha.rb)" > build.env
+    - echo "Calculated assets checksum - $(cat build.env)"
+  artifacts:
+    reports:
+      dotenv: build.env
+  allow_failure: false

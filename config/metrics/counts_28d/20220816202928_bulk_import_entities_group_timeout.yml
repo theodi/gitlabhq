@@ -1,0 +1,22 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage_monthly.manage.group_imports.gitlab_migration_timeout
+description: Count of group entities with timeout status in GitLab Migration
+product_group: import
+product_categories:
+- importers
+value_type: number
+status: active
+time_frame: 28d
+data_source: database
+instrumentation_class: CountBulkImportsEntitiesMetric
+options:
+  source_type: group_entity
+  status: 3
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate
+milestone: "15.4"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/96062"

@@ -1,0 +1,215 @@
+<script>
+import { GlDisclosureDropdown, GlTooltipDirective as GlTooltip } from '@gitlab/ui';
+import { selectedRect as getSelectedRect, selectionCell, cellNear } from '@tiptap/pm/tables';
+import { __, n__, s__ } from '~/locale';
+import { getModifierKey } from '~/constants';
+import EditorStateObserver from '../editor_state_observer.vue';
+import Table from '../../extensions/table';
+import TableHeader from '../../extensions/table_header';
+import TableCell from '../../extensions/table_cell';
+import { canReadClipboard } from '../../extensions/copy_paste';
+import { rectUnion } from '../../services/utils';
+import BubbleMenu from './bubble_menu.vue';
+
+/* eslint-disable @gitlab/require-i18n-strings -- key names are not translatable */
+function pasteShortcuts() {
+  const isMac = window.gl?.client?.isMac;
+  return {
+    intoCell: {
+      kbd: isMac ? `${getModifierKey(true)}⌥V` : `${getModifierKey()}Alt+V`,
+      ariaKeyshortcuts: isMac ? 'Meta+Alt+V' : 'Control+Alt+V',
+    },
+    intoTable: {
+      kbd: isMac ? `${getModifierKey(true)}V` : `${getModifierKey()}V`,
+      ariaKeyshortcuts: isMac ? 'Meta+V' : 'Control+V',
+    },
+  };
+}
+/* eslint-enable @gitlab/require-i18n-strings */
+
+function pasteItems() {
+  const { intoCell, intoTable } = pasteShortcuts();
+  return [
+    {
+      text: s__('ContentEditor|Paste into cell'),
+      value: 'pasteFromClipboardIntoCell',
+      kbd: intoCell.kbd,
+      extraAttrs: { 'aria-keyshortcuts': intoCell.ariaKeyshortcuts },
+    },
+    {
+      text: s__('ContentEditor|Paste and merge into table'),
+      value: 'pasteFromClipboardIntoTable',
+      kbd: intoTable.kbd,
+      extraAttrs: { 'aria-keyshortcuts': intoTable.ariaKeyshortcuts },
+    },
+  ];
+}
+
+function headerAlignments({ map, table, left, right }) {
+  return map
+    .cellsInRect({ left, right, top: 0, bottom: 1 })
+    .map((pos) => table.nodeAt(pos).attrs.align);
+}
+
+function getDropdownItems({ selectedRect, cellType, rowspan = 1, colspan = 1, aligns = ['left'] }) {
+  const totalRows = selectedRect?.map.height;
+  const totalCols = selectedRect?.map.width;
+  const isTableBodyCell = cellType === TableCell.name;
+  const selectedRows = selectedRect ? selectedRect.bottom - selectedRect.top : 0;
+  const selectedCols = selectedRect ? selectedRect.right - selectedRect.left : 0;
+  const showSplitCellOption =
+    selectedRows === rowspan && selectedCols === colspan && (rowspan > 1 || colspan > 1);
+  const showMergeCellsOption = selectedRows !== rowspan || selectedCols !== colspan;
+  const numCellsToMerge = (selectedRows - rowspan + 1) * (selectedCols - colspan + 1);
+  const showDeleteRowOption = totalRows > selectedRows + 1 && isTableBodyCell;
+  const showDeleteColumnOption = totalCols > selectedCols;
+
+  const isTableBodyHeader = cellType === TableHeader.name;
+  const isAlignedEverywhere = (value) => aligns.every((align) => align === value);
+  const showAlignLeftOption = isTableBodyHeader && !isAlignedEverywhere('left');
+  const showAlignCenterOption = isTableBodyHeader && !isAlignedEverywhere('center');
+  const showAlignRightOption = isTableBodyHeader && !isAlignedEverywhere('right');
+
+  return [
+    {
+      items: [
+        showAlignLeftOption && { text: __('Align column left'), value: 'alignColumnLeft' },
+        showAlignCenterOption && { text: __('Align column center'), value: 'alignColumnCenter' },
+        showAlignRightOption && { text: __('Align column right'), value: 'alignColumnRight' },
+      ].filter(Boolean),
+    },
+    {
+      items: [
+        { text: __('Insert column left'), value: 'addColumnBefore' },
+        { text: __('Insert column right'), value: 'addColumnAfter' },
+        isTableBodyCell && { text: __('Insert row above'), value: 'addRowBefore' },
+        { text: __('Insert row below'), value: 'addRowAfter' },
+      ].filter(Boolean),
+    },
+    {
+      items: canReadClipboard() ? pasteItems() : [],
+    },
+    {
+      items: [
+        showSplitCellOption && { text: __('Split cell'), value: 'splitCell' },
+        showMergeCellsOption && {
+          text: n__('Merge %d cell', 'Merge %d cells', numCellsToMerge),
+          value: 'mergeCells',
+        },
+      ].filter(Boolean),
+    },
+    {
+      items: [
+        showDeleteRowOption && {
+          text: n__('Delete row', 'Delete %d rows', selectedRows),
+          value: 'deleteRow',
+        },
+        showDeleteColumnOption && {
+          text: n__('Delete column', 'Delete %d columns', selectedCols),
+          value: 'deleteColumn',
+        },
+        { text: __('Delete table'), value: 'deleteTable' },
+      ].filter(Boolean),
+    },
+  ].filter(({ items }) => items.length);
+}
+
+export default {
+  name: 'TableBubbleMenu',
+  components: {
+    BubbleMenu,
+    EditorStateObserver,
+    GlDisclosureDropdown,
+  },
+  directives: {
+    GlTooltip,
+  },
+  inject: ['tiptapEditor'],
+  data() {
+    return {
+      dropdownItems: [],
+    };
+  },
+  computed: {
+    tippyOptions() {
+      return {
+        placement: 'top-end',
+        offset: [-2, -26],
+        getReferenceClientRect: this.getReferenceClientRect.bind(this),
+      };
+    },
+  },
+  methods: {
+    shouldShow: ({ editor }) => {
+      return editor.isActive(Table.name);
+    },
+
+    async updateTableInfo() {
+      const { state } = this.tiptapEditor;
+
+      try {
+        this.selectedRect = getSelectedRect(state);
+        const cell = cellNear(selectionCell(state)).nodeAfter;
+        this.dropdownItems = getDropdownItems({
+          selectedRect: this.selectedRect,
+          cellType: cell.type.name,
+          rowspan: cell.attrs.rowspan,
+          colspan: cell.attrs.colspan,
+          aligns: headerAlignments(this.selectedRect),
+        });
+      } catch (e) {
+        // ignore error if the selection is not in a table
+      }
+    },
+
+    getReferenceClientRect() {
+      const { view } = this.tiptapEditor;
+      const { from } = this.tiptapEditor.state.selection;
+
+      const { node } = view.domAtPos(from);
+      const el = node instanceof Text ? node.parentElement : node;
+
+      let selectedCells = [...el.closest('table').querySelectorAll('.selectedCell')];
+
+      if (!selectedCells.length) {
+        selectedCells = [el.closest('td, th')];
+      }
+
+      return rectUnion(...selectedCells.map((cell) => cell.getBoundingClientRect()));
+    },
+
+    runCommand({ value: command }) {
+      this.tiptapEditor.chain().focus()[command]().run();
+    },
+  },
+};
+</script>
+<template>
+  <bubble-menu plugin-key="bubbleMenuTable" :should-show="shouldShow" :tippy-options="tippyOptions">
+    <editor-state-observer :debounce="0" @transaction="updateTableInfo" />
+    <gl-disclosure-dropdown
+      ref="dropdown"
+      dropup
+      size="small"
+      category="tertiary"
+      boundary="viewport"
+      :aria-label="__('Select action')"
+      :toggle-text="__('Select action')"
+      text-sr-only
+      fluid-width
+      :items="dropdownItems"
+      @action="runCommand"
+    >
+      <template #list-item="{ item }">
+        <span
+          class="gl-flex gl-w-max gl-min-w-full gl-max-w-full gl-items-center gl-justify-between gl-gap-3"
+        >
+          <span>{{ item.text }}</span>
+          <kbd v-if="item.kbd" class="flat gl-shrink-0 !gl-py-0" aria-hidden="true">{{
+            item.kbd
+          }}</kbd>
+        </span>
+      </template>
+    </gl-disclosure-dropdown>
+  </bubble-menu>
+</template>

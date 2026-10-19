@@ -1,0 +1,11 @@
+- page_title _("FogBugz import")
+%h1.page-title.gl-text-size-h-display.gl-flex.gl-items-center
+  .gl-flex.gl-items-center.gl-justify-center
+    = sprite_icon('bug', css_class: 'gl-mr-3', size: 48)
+  = _('Import projects from FogBugz')
+
+%p.light
+  - link_to_customize = link_to('customize', new_user_map_import_fogbugz_path)
+  = _('Optionally, you can %{link_to_customize} how FogBugz email addresses and usernames are imported into GitLab.').html_safe % { link_to_customize: link_to_customize }
+%hr
+= render 'import/githubish_status', provider: 'fogbugz', filterable: false, default_namespace: @namespace

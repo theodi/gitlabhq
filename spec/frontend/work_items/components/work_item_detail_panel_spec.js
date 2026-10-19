@@ -1,0 +1,551 @@
+/* eslint-disable jest/no-disabled-tests */
+import { GlDrawer, GlLink } from '@gitlab/ui';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+
+import createMockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { stubComponent } from 'helpers/stub_component';
+import { resetHTMLFixture, setHTMLFixture } from 'helpers/fixtures';
+import setWindowLocation from 'helpers/set_window_location_helper';
+
+import { TYPE_EPIC, TYPE_ISSUE } from '~/issues/constants';
+import {
+  DETAIL_VIEW_QUERY_PARAM_NAME,
+  DETAIL_VIEW_DESIGN_VERSION_PARAM_NAME,
+} from '~/work_items/constants';
+import WorkItemDetailPanel from '~/work_items/components/work_item_detail_panel.vue';
+import WorkItemDetail from '~/work_items/components/work_item_detail.vue';
+import DynamicPanel from '~/vue_shared/components/dynamic_panel.vue';
+import deleteWorkItemMutation from '~/work_items/graphql/delete_work_item.mutation.graphql';
+import workspacePermissionsQuery from '~/work_items/graphql/workspace_permissions.query.graphql';
+import workItemMetadataQuery from 'ee_else_ce/work_items/graphql/work_item_metadata.query.graphql';
+import { shallowMountExtended, mountExtended } from 'helpers/vue_test_utils_helper';
+import { visitUrl, updateHistory, setUrlParams, removeParams } from '~/lib/utils/url_utility';
+import { makeDetailPanelUrlParam } from '~/work_items/utils';
+import {
+  mockProjectPermissionsQueryResponse,
+  workItemMetadataProviderResponse,
+} from '../mock_data';
+
+jest.mock('~/lib/utils/url_utility', () => ({
+  ...jest.requireActual('~/lib/utils/url_utility'),
+  visitUrl: jest.fn(),
+  updateHistory: jest.fn(),
+  setUrlParams: jest.fn(),
+  removeParams: jest.fn(),
+}));
+
+Vue.use(VueApollo);
+
+const deleteWorkItemMutationHandler = jest
+  .fn()
+  .mockResolvedValue({ data: { workItemDelete: { errors: [] } } });
+const workspacePermissionsHandler = jest
+  .fn()
+  .mockResolvedValue(mockProjectPermissionsQueryResponse());
+
+describe('WorkItemDetailPanel', () => {
+  let wrapper;
+
+  const mockListener = jest.fn();
+  const mockRouterPush = jest.fn();
+
+  const findGlDrawer = () => wrapper.findComponent(GlDrawer);
+  const findWorkItem = () => wrapper.findComponent(WorkItemDetail);
+  const findDynamicPanel = () => wrapper.findComponent(DynamicPanel);
+  const findReferenceLink = () => wrapper.findComponent(GlLink);
+
+  const createComponent = ({
+    open = true,
+    isBoard = false,
+    activeItem = { id: '1', iid: '1', webUrl: 'test', fullPath: 'gitlab-org/gitlab' },
+    issuableType = TYPE_ISSUE,
+    isGroup = true,
+    mountFn = shallowMountExtended,
+    stubs = {
+      WorkItemDetail,
+      MountingPortal: { template: '<div data-testid="mounting-portal"><slot /></div>' },
+      DynamicPanel,
+    },
+  } = {}) => {
+    wrapper = mountFn(WorkItemDetailPanel, {
+      attachTo: document.body,
+      propsData: {
+        activeItem,
+        open,
+        issuableType,
+        isBoard,
+        viewContext: 'drawer_list',
+      },
+      listeners: {
+        'attributes-updated': mockListener,
+      },
+      provide: {
+        fullPath: 'gitlab-org/gitlab',
+        reportAbusePath: '',
+        groupPath: '',
+        hasSubepicsFeature: false,
+        hasLinkedItemsEpicsFeature: true,
+        isGroup,
+      },
+      mocks: {
+        $router: {
+          push: mockRouterPush,
+        },
+      },
+      stubs,
+      apolloProvider: createMockApollo([
+        [deleteWorkItemMutation, deleteWorkItemMutationHandler],
+        [workspacePermissionsQuery, workspacePermissionsHandler],
+        [workItemMetadataQuery, jest.fn().mockResolvedValue(workItemMetadataProviderResponse)],
+      ]),
+    });
+  };
+
+  it.skip('focus on first item when drawer loads the active item', async () => {
+    createComponent({
+      mountFn: mountExtended,
+      stubs: {
+        GlDrawer: stubComponent(GlDrawer, {
+          template: `
+        <div>
+          <slot name="title"></slot>
+          <slot></slot>
+        </div>`,
+        }),
+        WorkItemDetail: stubComponent(WorkItemDetail, {
+          template: `
+          <div>
+            <slot></slot>
+            <a ref="referenceLink" class="reference-link" href="test">gitlab#1</a>
+          </div>`,
+        }),
+        WorkItemMetadataProvider: true,
+      },
+    });
+    await nextTick();
+
+    expect(document.activeElement).toBe(findReferenceLink().element);
+  });
+
+  it('displays correct URL and text in link', () => {
+    createComponent();
+
+    const link = wrapper.findComponent(GlLink);
+    expect(link.attributes('href')).toBe('test');
+    expect(link.text()).toBe('gitlab#1');
+  });
+
+  it('passes the correct URL to the panel maximize button', () => {
+    createComponent();
+
+    expect(findDynamicPanel().props('maximizeUrl')).toBe('test');
+  });
+
+  it('has a copy to clipboard button for the item URL', () => {
+    createComponent();
+
+    expect(
+      wrapper.findByTestId('work-item-detail-panel-copy-button').attributes('data-clipboard-text'),
+    ).toBe('http://test.host/test');
+  });
+
+  // Regression: board drawer items provide `webPath` instead of `webUrl`, so the
+  // panel must fall back to `webPath` for its links and the "Open in full page"
+  // navigation. Otherwise those actions become no-ops on issue boards.
+  describe('when the active item provides `webPath` instead of `webUrl` (board drawer)', () => {
+    const boardItem = {
+      id: '1',
+      iid: '1',
+      webPath: '/gitlab-org/gitlab/-/issues/1',
+      fullPath: 'gitlab-org/gitlab',
+    };
+
+    it('renders `webPath` in the reference link href', () => {
+      createComponent({ activeItem: boardItem });
+
+      expect(wrapper.findByTestId('work-item-detail-panel-ref-link').attributes('href')).toBe(
+        '/gitlab-org/gitlab/-/issues/1',
+      );
+    });
+
+    it('passes `webPath` to the panel maximize button', () => {
+      createComponent({ activeItem: boardItem });
+
+      expect(findDynamicPanel().props('maximizeUrl')).toBe('/gitlab-org/gitlab/-/issues/1');
+    });
+
+    it('copies the absolute URL built from `webPath` to the clipboard', () => {
+      createComponent({ activeItem: boardItem });
+
+      expect(
+        wrapper
+          .findByTestId('work-item-detail-panel-copy-button')
+          .attributes('data-clipboard-text'),
+      ).toBe('http://test.host/gitlab-org/gitlab/-/issues/1');
+    });
+
+    it('navigates to `webPath` when opening in full page from a board', () => {
+      createComponent({ isBoard: true, activeItem: boardItem });
+
+      findDynamicPanel().vm.$emit('maximize', new MouseEvent('click'));
+
+      expect(visitUrl).toHaveBeenCalledWith('/gitlab-org/gitlab/-/issues/1');
+    });
+  });
+
+  describe('when browser history navigates away from the drawer', () => {
+    beforeEach(() => {
+      createComponent({ open: true });
+      updateHistory.mockClear();
+    });
+
+    afterEach(() => {
+      document.body.classList.remove('modal-open');
+      setWindowLocation('/');
+    });
+
+    it('closes without adding another history entry', () => {
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      expect(wrapper.emitted('close')).toHaveLength(1);
+      expect(updateHistory).not.toHaveBeenCalled();
+    });
+
+    it('keeps the drawer open when history navigates to another panel', () => {
+      setWindowLocation('?show=another-panel');
+
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      expect(wrapper.emitted('close')).toBeUndefined();
+      expect(updateHistory).not.toHaveBeenCalled();
+    });
+
+    it('keeps the drawer open when a modal is open', () => {
+      document.body.classList.add('modal-open');
+
+      window.dispatchEvent(new PopStateEvent('popstate'));
+
+      expect(wrapper.emitted('close')).toBeUndefined();
+    });
+  });
+
+  describe.skip('closing the drawer', () => {
+    it('emits `close` event when drawer is closed', () => {
+      createComponent({ open: true });
+
+      findGlDrawer().vm.$emit('close');
+
+      expect(wrapper.emitted('close')).toHaveLength(1);
+    });
+
+    it('calls `upddateHistory`', () => {
+      createComponent({ open: true });
+
+      findGlDrawer().vm.$emit('close');
+
+      expect(updateHistory).toHaveBeenCalled();
+    });
+    it('calls `removeParams` to remove the `show` param', () => {
+      createComponent({ open: true });
+
+      findGlDrawer().vm.$emit('close');
+
+      expect(removeParams).toHaveBeenCalledWith([
+        DETAIL_VIEW_QUERY_PARAM_NAME,
+        DETAIL_VIEW_DESIGN_VERSION_PARAM_NAME,
+      ]);
+    });
+  });
+
+  it('passes listeners correctly to WorkItemDetail', () => {
+    createComponent({ open: true });
+    const mockPayload = { iid: '1' };
+
+    findWorkItem().vm.$emit('attributes-updated', mockPayload);
+
+    expect(mockListener).toHaveBeenCalledWith(mockPayload);
+  });
+
+  describe('when deleting work item', () => {
+    it('calls deleteWorkItemMutation', () => {
+      createComponent({ open: true });
+      findWorkItem().vm.$emit('delete-work-item', { workItemId: '1' });
+
+      expect(deleteWorkItemMutationHandler).toHaveBeenCalledWith({
+        input: { id: '1' },
+      });
+    });
+
+    it('emits `work-item-deleted` event when on successful mutation', async () => {
+      createComponent({ open: true });
+      findWorkItem().vm.$emit('delete-work-item', { workItemId: '1' });
+
+      await waitForPromises();
+
+      expect(wrapper.emitted('work-item-deleted')).toHaveLength(1);
+    });
+
+    it('does not emit `work-item-deleted` event when mutation failed', async () => {
+      deleteWorkItemMutationHandler.mockRejectedValue('Houston, we have a problem');
+
+      createComponent({ open: true });
+      findWorkItem().vm.$emit('delete-work-item', { workItemId: '1' });
+
+      await waitForPromises();
+
+      expect(wrapper.emitted('work-item-deleted')).toBeUndefined();
+    });
+  });
+
+  describe('when calculating activeItemFullPath', () => {
+    it('passes active issuable full path to work item detail if provided', () => {
+      const fullPath = '/gitlab-org';
+      createComponent({ activeItem: { fullPath } });
+
+      expect(findWorkItem().props('workItemFullPath')).toBe(fullPath);
+    });
+
+    describe('when active issuable has no fullPath property', () => {
+      it('uses injected fullPath if active issuable has no reference path or full path', () => {
+        createComponent({ activeItem: {} });
+
+        expect(findWorkItem().props('workItemFullPath')).toBe('gitlab-org/gitlab');
+      });
+
+      it('passes correctly calculated path if active issuable is an issue', () => {
+        createComponent({ activeItem: { referencePath: 'gitlab-org/gitlab#35' } });
+
+        expect(findWorkItem().props('workItemFullPath')).toBe('gitlab-org/gitlab');
+      });
+
+      it('passes correctly calculated fullPath if active issuable is an epic', () => {
+        createComponent({
+          activeItem: { referencePath: 'gitlab-org/gitlab&35' },
+          issuableType: TYPE_EPIC,
+        });
+
+        expect(findWorkItem().props('workItemFullPath')).toBe('gitlab-org/gitlab');
+      });
+    });
+  });
+
+  describe('when redirecting to full screen view', () => {
+    it('calls `visitUrl` when link is not a work item path', () => {
+      createComponent();
+      findDynamicPanel().vm.$emit('maximize', new MouseEvent('click'));
+
+      expect(visitUrl).toHaveBeenCalledWith('test');
+    });
+
+    it('calls `router.push` when link is a group level work item and we are at the group level', () => {
+      createComponent({
+        isGroup: true,
+        activeItem: {
+          iid: '1',
+          webUrl: '/groups/gitlab-org/gitlab/-/work_items/1',
+          fullPath: 'gitlab-org/gitlab',
+        },
+      });
+      findDynamicPanel().vm.$emit('maximize', new MouseEvent('click'));
+
+      expect(visitUrl).not.toHaveBeenCalled();
+      expect(mockRouterPush).toHaveBeenCalledWith({
+        name: 'workItem',
+        params: { iid: '1', type: 'work_items' },
+      });
+    });
+
+    it('calls `router.push` when link is a group level work item and we are at the project level', () => {
+      createComponent({
+        isGroup: false,
+        activeItem: {
+          iid: '1',
+          webUrl: '/groups/gitlab-org/gitlab/-/work_items/1',
+          fullPath: 'gitlab-org/gitlab',
+        },
+      });
+      findDynamicPanel().vm.$emit('maximize', new MouseEvent('click'));
+
+      expect(mockRouterPush).toHaveBeenCalledWith({
+        name: 'workItem',
+        params: { iid: '1', type: 'work_items' },
+      });
+    });
+
+    it('calls `router.push` when work item is in same project', () => {
+      createComponent({
+        isGroup: false,
+        activeItem: {
+          iid: '1',
+          webUrl: '/gitlab-org/gitlab/-/work_items/1',
+          fullPath: 'gitlab-org/gitlab',
+        },
+      });
+
+      findDynamicPanel().vm.$emit('maximize', new MouseEvent('click'));
+
+      expect(visitUrl).not.toHaveBeenCalled();
+      expect(mockRouterPush).toHaveBeenCalledWith({
+        name: 'workItem',
+        params: { iid: '1', type: 'work_items' },
+      });
+    });
+
+    it('does not call `router.push` when work item is in different project', () => {
+      createComponent({
+        isGroup: false,
+        activeItem: {
+          iid: '1',
+          webUrl: '/gitlab-org/gitlab-other/-/work_items/1',
+          fullPath: 'gitlab-org/gitlab',
+        },
+      });
+
+      findDynamicPanel().vm.$emit('maximize', new MouseEvent('click'));
+
+      expect(visitUrl).toHaveBeenCalledWith('/gitlab-org/gitlab-other/-/work_items/1');
+      expect(mockRouterPush).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when `activeItem` prop is changed and it contains an `id`', () => {
+    const activeItem = {
+      iid: '1',
+      webUrl: '/groups/gitlab-org/gitlab/-/work_items/1',
+      fullPath: 'gitlab-org/gitlab',
+      id: 'gid://gitlab/WorkItem/1',
+    };
+    const showParam = makeDetailPanelUrlParam(activeItem, 'gitlab-org/gitlab');
+    beforeEach(async () => {
+      createComponent();
+      await wrapper.setProps({
+        open: true,
+        activeItem,
+      });
+    });
+    it('calls `updateHistory`', () => {
+      expect(updateHistory).toHaveBeenCalled();
+    });
+    it('calls `setUrlParams` with `show` param', () => {
+      expect(setUrlParams).toHaveBeenCalledWith({ [DETAIL_VIEW_QUERY_PARAM_NAME]: showParam });
+    });
+
+    it.skip('focus on first item once drawer loads', async () => {
+      createComponent({
+        mountFn: mountExtended,
+        stubs: {
+          GlDrawer: stubComponent(GlDrawer, {
+            template: `
+          <div>
+            <slot name="title"></slot>
+            <slot></slot>
+          </div>`,
+          }),
+          WorkItemDetail: stubComponent(WorkItemDetail, {
+            template: `
+            <div>
+              <slot></slot>
+              <a ref="referenceLink" class="reference-link" href="test">gitlab#1</a>
+            </div>`,
+          }),
+          WorkItemMetadataProvider: true,
+        },
+      });
+
+      await wrapper.setProps({
+        open: true,
+        activeItem,
+      });
+
+      await nextTick();
+
+      expect(document.activeElement).toBe(findReferenceLink().element);
+    });
+  });
+
+  describe.skip('when drawer is opened from a link', () => {
+    beforeEach(() => {
+      setHTMLFixture(
+        `<div><a id="listItem-gitlab-org/gitlab/1" tabIndex="1">Link 1</a><div id="drawer-container"></div></div>`,
+      );
+    });
+    afterEach(() => {
+      resetHTMLFixture();
+    });
+
+    it('focuses on the link when drawer is closed', async () => {
+      createComponent({ attachTo: '#drawer-container', open: true });
+
+      findGlDrawer().vm.$emit('close');
+
+      await nextTick();
+
+      expect(document.activeElement).toBe(document.getElementById('listItem-gitlab-org/gitlab/1'));
+      expect(wrapper.emitted('close')).toHaveLength(1);
+    });
+  });
+
+  describe('when drawer is opened from a board', () => {
+    let originalWindow;
+
+    beforeEach(() => {
+      originalWindow = global.window;
+      delete global.window;
+
+      global.window = {
+        ...originalWindow,
+        pendingApolloRequests: 2,
+      };
+    });
+
+    afterEach(() => {
+      global.window = originalWindow;
+    });
+
+    it.skip('does not close drawer immediately when `pendingApolloRequests` exist when clicking to close drawer', () => {
+      createComponent({ isBoard: true, open: true });
+
+      findGlDrawer().vm.$emit('close');
+
+      // `close` wasn't called right away, it has a delay
+      expect(wrapper.emitted('close')).toBeUndefined();
+    });
+
+    it('does not close drawer immediately when `pendingApolloRequests` exist when clicking outside', () => {
+      createComponent({ isBoard: true, open: true });
+
+      document.dispatchEvent(new MouseEvent('click'));
+
+      // `close` wasn't called right away, it has a delay
+      expect(wrapper.emitted('close')).toBeUndefined();
+    });
+
+    it.skip('closes drawer when `bypassPendingRequests` is true regardless of pending mutations', () => {
+      createComponent({ isBoard: true, open: true });
+
+      findGlDrawer().vm.$emit('close', false, true);
+
+      // `close` was force called after the timeout by setting `bypassPendingRequests` to true
+      expect(wrapper.emitted('close')).toHaveLength(1);
+    });
+  });
+
+  describe('when paneled view is enabled', () => {
+    beforeEach(() => {
+      createComponent({ open: true });
+    });
+
+    it('renders the work item view in mounting portal', () => {
+      expect(wrapper.findByTestId('mounting-portal').exists()).toBe(true);
+    });
+
+    it('closes the drawer when Escape key is pressed', async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await nextTick();
+
+      expect(wrapper.emitted('close')).toHaveLength(1);
+    });
+  });
+});

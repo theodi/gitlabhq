@@ -1,0 +1,582 @@
+import { GlFormSelect, GlModal } from '@gitlab/ui';
+import { camelCase, cloneDeep } from 'lodash-es';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+
+import WorkItemChangeTypeModal from '~/work_items/components/work_item_change_type_modal.vue';
+import namespaceWorkItemTypesQuery from '~/work_items/graphql/namespace_work_item_types.query.graphql';
+import convertWorkItemMutation from '~/work_items/graphql/work_item_convert.mutation.graphql';
+import getWorkItemDesignListQuery from '~/work_items/components/design_management/graphql/design_collection.query.graphql';
+import {
+  WORK_ITEM_TYPE_NAME_EPIC,
+  WORK_ITEM_TYPE_NAME_INCIDENT,
+  WORK_ITEM_TYPE_NAME_ISSUE,
+  WORK_ITEM_TYPE_NAME_KEY_RESULT,
+  WORK_ITEM_TYPE_NAME_TASK,
+  WORK_ITEM_WIDGETS_NAME_MAP,
+} from '~/work_items/constants';
+
+import {
+  convertWorkItemMutationResponse,
+  namespaceWorkItemTypesQueryResponse,
+  workItemChangeTypeWidgets,
+  workItemQueryResponse,
+  workItemWithEpicParentQueryResponse,
+} from '../mock_data';
+import { designCollectionResponse, mockDesign } from './design_management/mock_data';
+
+describe('WorkItemChangeTypeModal component', () => {
+  Vue.use(VueApollo);
+
+  let wrapper;
+
+  const typesQuerySuccessHandler = jest.fn().mockResolvedValue(namespaceWorkItemTypesQueryResponse);
+  const issueTypeId = namespaceWorkItemTypesQueryResponse.data.namespace.workItemTypes.nodes.find(
+    (type) => type.name === WORK_ITEM_TYPE_NAME_ISSUE,
+  ).id;
+  const taskTypeId = namespaceWorkItemTypesQueryResponse.data.namespace.workItemTypes.nodes.find(
+    (type) => type.name === WORK_ITEM_TYPE_NAME_TASK,
+  ).id;
+  const epicTypeId = namespaceWorkItemTypesQueryResponse.data.namespace.workItemTypes.nodes.find(
+    (item) => item.name === WORK_ITEM_TYPE_NAME_EPIC,
+  ).id;
+
+  namespaceWorkItemTypesQueryResponse.data.namespace.workItemTypes.nodes
+    .find((item) => item.name === WORK_ITEM_TYPE_NAME_TASK)
+    .widgetDefinitions.splice(
+      namespaceWorkItemTypesQueryResponse.data.namespace.workItemTypes.nodes
+        .find((item) => item.name === WORK_ITEM_TYPE_NAME_TASK)
+        .widgetDefinitions.findIndex((item) => item.type === 'CRM_CONTACTS'),
+      1,
+    );
+
+  const convertWorkItemMutationSuccessHandler = jest
+    .fn()
+    .mockResolvedValue(convertWorkItemMutationResponse);
+
+  const graphqlError = 'GraphQL error';
+  const convertWorkItemMutationErrorResponse = {
+    errors: [
+      {
+        message: graphqlError,
+      },
+    ],
+    data: {
+      workItemConvert: null,
+    },
+  };
+
+  const noDesignQueryHandler = jest.fn().mockResolvedValue(designCollectionResponse([]));
+  const oneDesignQueryHandler = jest.fn().mockResolvedValue(designCollectionResponse([mockDesign]));
+
+  const createComponent = ({
+    hasParent = false,
+    hasChildren = false,
+    widgets = [],
+    features = null,
+    workItemType = WORK_ITEM_TYPE_NAME_TASK,
+    namespaceQueryHandler = typesQuerySuccessHandler,
+    convertWorkItemMutationHandler = convertWorkItemMutationSuccessHandler,
+    designQueryHandler = noDesignQueryHandler,
+    hasSubepicsFeature = true,
+    glFeatures = {},
+  } = {}) => {
+    wrapper = shallowMountExtended(WorkItemChangeTypeModal, {
+      apolloProvider: createMockApollo([
+        [namespaceWorkItemTypesQuery, namespaceQueryHandler],
+        [convertWorkItemMutation, convertWorkItemMutationHandler],
+        [getWorkItemDesignListQuery, designQueryHandler],
+      ]),
+      propsData: {
+        workItemId: 'gid://gitlab/WorkItem/1',
+        fullPath: 'gitlab-org/gitlab-test',
+        workItemIid: '1',
+        hasParent,
+        hasChildren,
+        widgets,
+        features,
+        workItemType,
+        allowedChildTypes: [{ name: WORK_ITEM_TYPE_NAME_TASK }],
+      },
+      provide: {
+        hasSubepicsFeature,
+        getWorkItemTypeConfiguration: jest.fn(),
+        glFeatures,
+      },
+    });
+  };
+
+  const findChangeTypeModal = () => wrapper.findComponent(GlModal);
+  const findGlFormSelect = () => wrapper.findComponent(GlFormSelect);
+  const findWarningAlert = () => wrapper.findByTestId('change-type-warning-message');
+  const findNoValuePresentAlert = () =>
+    wrapper.findByTestId('change-type-no-value-present-message');
+
+  beforeEach(async () => {
+    createComponent();
+    await waitForPromises();
+  });
+
+  it('renders change type modal with the select', () => {
+    expect(findGlFormSelect().exists()).toBe(true);
+    expect(findChangeTypeModal().props('actionPrimary')).toEqual({
+      attributes: {
+        disabled: true,
+        variant: 'confirm',
+      },
+      text: 'Change type',
+    });
+  });
+
+  it('calls the `namespaceWorkItemTypesQuery` to get the work item types', () => {
+    expect(typesQuerySuccessHandler).toHaveBeenCalled();
+  });
+
+  it('renders all types as select options', () => {
+    expect(findGlFormSelect().attributes('options').split(',')).toHaveLength(6);
+  });
+
+  describe('work item type change tests', () => {
+    it('does not warn or disable the button when converting to a non-epic type, even with a parent and no subepics feature', async () => {
+      createComponent({
+        workItemType: WORK_ITEM_TYPE_NAME_INCIDENT,
+        hasParent: true,
+        widgets: workItemQueryResponse.data.workItem.widgets,
+        hasSubepicsFeature: false,
+      });
+
+      await waitForPromises();
+
+      findGlFormSelect().vm.$emit('change', issueTypeId);
+
+      await nextTick();
+
+      expect(findWarningAlert().exists()).toBe(false);
+      expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(false);
+    });
+
+    it.each`
+      scenario                                    | widgets                                                      | hasSubepicsFeature | btnDisabled | parentType
+      ${'epic parent with subepics enabled'}      | ${workItemWithEpicParentQueryResponse.data.workItem.widgets} | ${true}            | ${false}    | ${''}
+      ${'epic parent with subepics disabled'}     | ${workItemWithEpicParentQueryResponse.data.workItem.widgets} | ${false}           | ${true}     | ${'epic'}
+      ${'non-epic parent with subepics enabled'}  | ${workItemQueryResponse.data.workItem.widgets}               | ${true}            | ${false}    | ${''}
+      ${'non-epic parent with subepics disabled'} | ${workItemQueryResponse.data.workItem.widgets}               | ${false}           | ${true}     | ${'issue'}
+    `(
+      'when promoting to Epic with $scenario',
+      async ({ widgets, hasSubepicsFeature, btnDisabled, parentType }) => {
+        createComponent({
+          workItemType: WORK_ITEM_TYPE_NAME_INCIDENT,
+          hasParent: true,
+          widgets,
+          hasSubepicsFeature,
+        });
+
+        await waitForPromises();
+
+        findGlFormSelect().vm.$emit('change', epicTypeId);
+
+        await nextTick();
+
+        const hasWarning = parentType !== '';
+        expect(findWarningAlert().exists()).toBe(hasWarning);
+        if (hasWarning) {
+          const warningText = `Parent item type ${parentType} is not supported on epic. Remove the parent item to change type.`;
+          expect(findWarningAlert().text()).toBe(warningText);
+        }
+        expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(btnDisabled);
+      },
+    );
+
+    it.each`
+      targetTypeId   | targetType
+      ${issueTypeId} | ${'issue'}
+      ${epicTypeId}  | ${'epic'}
+    `(
+      'warns and disables the button when converting a Task with a parent to $targetType, even with subepics feature enabled',
+      async ({ targetTypeId, targetType }) => {
+        createComponent({
+          workItemType: WORK_ITEM_TYPE_NAME_TASK,
+          hasParent: true,
+          widgets: workItemQueryResponse.data.workItem.widgets,
+          hasSubepicsFeature: true,
+        });
+
+        await waitForPromises();
+
+        findGlFormSelect().vm.$emit('change', targetTypeId);
+
+        await nextTick();
+
+        expect(findWarningAlert().text()).toBe(
+          `Parent item type issue is not supported on ${targetType}. Remove the parent item to change type.`,
+        );
+        expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(true);
+      },
+    );
+
+    it.each`
+      targetTypeId   | targetType
+      ${issueTypeId} | ${'issue'}
+      ${epicTypeId}  | ${'epic'}
+    `(
+      'warns and disables the button when converting a Key Result with a parent to $targetType, even with subepics feature enabled',
+      async ({ targetTypeId, targetType }) => {
+        createComponent({
+          workItemType: WORK_ITEM_TYPE_NAME_KEY_RESULT,
+          hasParent: true,
+          widgets: workItemQueryResponse.data.workItem.widgets,
+          hasSubepicsFeature: true,
+        });
+
+        await waitForPromises();
+
+        findGlFormSelect().vm.$emit('change', targetTypeId);
+
+        await nextTick();
+
+        expect(findWarningAlert().text()).toBe(
+          `Parent item type issue is not supported on ${targetType}. Remove the parent item to change type.`,
+        );
+        expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(true);
+      },
+    );
+  });
+
+  it('does not allow to change type and disables `Change type` button when the work item has child items', async () => {
+    createComponent({ workItemType: WORK_ITEM_TYPE_NAME_ISSUE, hasChildren: true });
+
+    await waitForPromises();
+
+    findGlFormSelect().vm.$emit('change', taskTypeId);
+
+    await nextTick();
+
+    expect(findWarningAlert().text()).toBe(
+      'Task does not support the Task child item type. Remove child items to change type.',
+    );
+    expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(true);
+  });
+
+  it('falls back to blocking conversion when hasChildren is true but rolledUpCountsByType is missing', async () => {
+    createComponent({
+      workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+      hasChildren: true,
+      widgets: [
+        {
+          type: 'HIERARCHY',
+          hasChildren: true,
+          // rolledUpCountsByType intentionally omitted to exercise the
+          // conservative fallback path in childrenBlockConversion.
+          parent: null,
+          __typename: 'WorkItemWidgetHierarchy',
+        },
+      ],
+    });
+
+    await waitForPromises();
+
+    findGlFormSelect().vm.$emit('change', taskTypeId);
+
+    await nextTick();
+
+    expect(findWarningAlert().exists()).toBe(true);
+    expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(true);
+  });
+
+  describe('when child items are present and the target type supports them', () => {
+    // Mirrors the work item's hierarchy widget as supplied by the parent;
+    // rolledUpCountsByType is what the modal consults to know the actual
+    // types of the children.
+    const hierarchyWithTaskChild = {
+      type: 'HIERARCHY',
+      hasChildren: true,
+      rolledUpCountsByType: [
+        {
+          countsByState: { opened: 1, all: 1, closed: 0, __typename: 'WorkItemStateCountsType' },
+          workItemType: {
+            id: 'gid://gitlab/WorkItems::Type/5',
+            name: 'Task',
+            iconName: 'work-item-task',
+            __typename: 'WorkItemType',
+          },
+          __typename: 'WorkItemTypeCountsByState',
+        },
+      ],
+      parent: null,
+      __typename: 'WorkItemWidgetHierarchy',
+    };
+    const incidentTypeId =
+      namespaceWorkItemTypesQueryResponse.data.namespace.workItemTypes.nodes.find(
+        (type) => type.name === 'Incident',
+      ).id;
+
+    it('allows changing Issue with a Task child to Incident, which also allows Task children', async () => {
+      createComponent({
+        workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+        hasChildren: true,
+        widgets: [hierarchyWithTaskChild],
+      });
+
+      await waitForPromises();
+
+      findGlFormSelect().vm.$emit('change', incidentTypeId);
+
+      await nextTick();
+
+      expect(findWarningAlert().exists()).toBe(false);
+      expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(false);
+    });
+
+    it('blocks converting Issue with a Task child to Task and names Task as the unsupported child type', async () => {
+      createComponent({
+        workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+        hasChildren: true,
+        widgets: [hierarchyWithTaskChild],
+      });
+
+      await waitForPromises();
+
+      findGlFormSelect().vm.$emit('change', taskTypeId);
+
+      await nextTick();
+
+      expect(findWarningAlert().text()).toBe(
+        'Task does not support the Task child item type. Remove child items to change type.',
+      );
+      expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(true);
+    });
+  });
+
+  describe('when widget data has difference', () => {
+    it('shows warning message in case of designs', async () => {
+      createComponent({
+        workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+        designQueryHandler: oneDesignQueryHandler,
+      });
+
+      await waitForPromises();
+
+      findGlFormSelect().vm.$emit('change', taskTypeId);
+
+      await nextTick();
+
+      expect(findWarningAlert().text()).toContain('Design');
+      expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(false);
+    });
+
+    const widgetsProps = (widget) => ({ widgets: [widget] });
+    // With `features`, the detail page still passes `widgets[]`, but each entry only carries `type`.
+    const featuresProps = (widget) => ({
+      widgets: [{ type: widget.type }],
+      features: { [camelCase(widget.type)]: widget },
+    });
+
+    describe.each`
+      source        | widgetDataProps
+      ${'widgets'}  | ${widgetsProps}
+      ${'features'} | ${featuresProps}
+    `('when widget data comes from $source', ({ widgetDataProps }) => {
+      // The detail query only selects `contactsAvailable` for contacts.
+      describe.each`
+        contactsAvailable | warns
+        ${true}           | ${true}
+        ${false}          | ${false}
+      `('when contactsAvailable is $contactsAvailable', ({ contactsAvailable, warns }) => {
+        beforeEach(async () => {
+          createComponent({
+            workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+            ...widgetDataProps({
+              type: 'CRM_CONTACTS',
+              contactsAvailable,
+              __typename: 'WorkItemWidgetCrmContacts',
+            }),
+          });
+
+          await waitForPromises();
+        });
+
+        it(`shows warning message for Contacts is ${warns}`, async () => {
+          expect(findWarningAlert().exists()).toBe(false);
+
+          findGlFormSelect().vm.$emit('change', taskTypeId);
+
+          await nextTick();
+
+          expect(findWarningAlert().exists()).toBe(warns);
+        });
+      });
+
+      describe('when the current type has custom fields and the target type does not', () => {
+        const typesWithIssueCustomFields = cloneDeep(namespaceWorkItemTypesQueryResponse);
+        typesWithIssueCustomFields.data.namespace.workItemTypes.nodes
+          .find((type) => type.name === WORK_ITEM_TYPE_NAME_ISSUE)
+          .widgetDefinitions.push({
+            type: 'CUSTOM_FIELDS',
+            __typename: 'WorkItemWidgetDefinitionGeneric',
+          });
+        const customFieldsWidget = (selectedOptions) => ({
+          type: 'CUSTOM_FIELDS',
+          customFieldValues: [
+            {
+              customField: { id: 'gid://gitlab/Issuables::CustomField/1', name: 'Tier' },
+              selectedOptions,
+              __typename: 'WorkItemSelectFieldValue',
+            },
+          ],
+          __typename: 'WorkItemWidgetCustomFields',
+        });
+
+        it('shows warning message naming Custom fields', async () => {
+          createComponent({
+            workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+            namespaceQueryHandler: jest.fn().mockResolvedValue(typesWithIssueCustomFields),
+            ...widgetDataProps(customFieldsWidget([{ id: '1', value: 'Premium' }])),
+          });
+
+          await waitForPromises();
+
+          expect(findWarningAlert().exists()).toBe(false);
+
+          findGlFormSelect().vm.$emit('change', taskTypeId);
+
+          await nextTick();
+
+          expect(findWarningAlert().text()).toContain('Custom fields');
+        });
+      });
+
+      it.each`
+        widgetType                              | widgetData                             | workItemType                 | typeTobeConverted | expectedString
+        ${WORK_ITEM_WIDGETS_NAME_MAP.ITERATION} | ${workItemChangeTypeWidgets.ITERATION} | ${WORK_ITEM_TYPE_NAME_ISSUE} | ${epicTypeId}     | ${'Iteration'}
+        ${WORK_ITEM_WIDGETS_NAME_MAP.WEIGHT}    | ${workItemChangeTypeWidgets.WEIGHT}    | ${WORK_ITEM_TYPE_NAME_ISSUE} | ${epicTypeId}     | ${'Weight'}
+      `(
+        'shows warning message in case of $widgetType widget',
+        async ({ workItemType, widgetData, typeTobeConverted, expectedString }) => {
+          createComponent({
+            workItemType,
+            ...widgetDataProps(widgetData),
+          });
+
+          await waitForPromises();
+
+          expect(findWarningAlert().exists()).toBe(false);
+          expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(true);
+
+          findGlFormSelect().vm.$emit('change', typeTobeConverted);
+
+          await nextTick();
+
+          expect(findWarningAlert().text()).toContain(expectedString);
+          expect(findChangeTypeModal().props('actionPrimary').attributes.disabled).toBe(false);
+        },
+      );
+
+      it('shows no value present message if value of the widget is not present on conversion', async () => {
+        createComponent({
+          workItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+          ...widgetDataProps(workItemChangeTypeWidgets.MILESTONE),
+        });
+
+        await waitForPromises();
+
+        expect(findNoValuePresentAlert().exists()).toBe(false);
+
+        findGlFormSelect().vm.$emit('change', epicTypeId);
+
+        await nextTick();
+
+        expect(findNoValuePresentAlert().text()).toContain('Milestone: v4.0');
+      });
+    });
+  });
+
+  describe('when the selected type is Epic', () => {
+    it('emits promote-to-epic instead of converting', async () => {
+      createComponent();
+
+      await waitForPromises();
+
+      findGlFormSelect().vm.$emit('change', epicTypeId);
+
+      await nextTick();
+
+      findChangeTypeModal().vm.$emit('primary');
+
+      await waitForPromises();
+
+      expect(wrapper.emitted('promote-to-epic')).toHaveLength(1);
+      expect(convertWorkItemMutationSuccessHandler).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('convert work item mutation', () => {
+    it('successfully changes a work item type when conditions are met', async () => {
+      createComponent();
+
+      await waitForPromises();
+
+      findGlFormSelect().vm.$emit('change', issueTypeId);
+
+      await nextTick();
+
+      findChangeTypeModal().vm.$emit('primary');
+
+      await waitForPromises();
+
+      expect(convertWorkItemMutationSuccessHandler).toHaveBeenCalledWith({
+        input: {
+          id: 'gid://gitlab/WorkItem/1',
+          workItemTypeId: issueTypeId,
+        },
+        useWorkItemFeatures: false,
+      });
+    });
+
+    it('passes useWorkItemFeatures as true when the workItemFeaturesField flag is enabled', async () => {
+      createComponent({ glFeatures: { workItemFeaturesField: true } });
+
+      await waitForPromises();
+
+      findGlFormSelect().vm.$emit('change', issueTypeId);
+
+      await nextTick();
+
+      findChangeTypeModal().vm.$emit('primary');
+
+      await waitForPromises();
+
+      expect(convertWorkItemMutationSuccessHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ useWorkItemFeatures: true }),
+      );
+    });
+
+    it.each`
+      errorType          | expectedErrorMessage | failureHandler
+      ${'graphql error'} | ${graphqlError}      | ${jest.fn().mockResolvedValue(convertWorkItemMutationErrorResponse)}
+      ${'network error'} | ${'Network error'}   | ${jest.fn().mockRejectedValue(new Error('Network error'))}
+    `(
+      'emits an error when there is a $errorType',
+      async ({ expectedErrorMessage, failureHandler }) => {
+        createComponent({
+          convertWorkItemMutationHandler: failureHandler,
+        });
+
+        await waitForPromises();
+
+        findGlFormSelect().vm.$emit('change', issueTypeId);
+
+        await nextTick();
+
+        findChangeTypeModal().vm.$emit('primary');
+
+        await waitForPromises();
+
+        expect(wrapper.emitted('error')[0][0]).toEqual(expectedErrorMessage);
+      },
+    );
+  });
+});

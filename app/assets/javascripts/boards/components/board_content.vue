@@ -1,0 +1,420 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlAlert } from '@gitlab/ui';
+import { sortBy } from 'lodash-es';
+import produce from 'immer';
+import Draggable from '~/lib/utils/vue3compat/draggable_compat.vue';
+import BoardAddNewColumn from 'ee_else_ce/boards/components/board_add_new_column.vue';
+import BoardAddNewColumnTrigger from '~/boards/components/board_add_new_column_trigger.vue';
+import WorkItemDetailPanel from '~/work_items/components/work_item_detail_panel.vue';
+import { s__ } from '~/locale';
+import { removeParams, updateHistory } from '~/lib/utils/url_utility';
+import { defaultSortableOptions, DRAG_DELAY } from '~/sortable/constants';
+import { mapWorkItemWidgetsToIssuableFields } from '~/work_items/list/utils';
+import {
+  DraggableItemTypes,
+  flashAnimationDuration,
+  listsQuery,
+  updateListQueries,
+  ListType,
+  listIssuablesQueries,
+  DEFAULT_BOARD_LIST_ITEMS_SIZE,
+  BoardType,
+} from 'ee_else_ce/boards/constants';
+import { DETAIL_VIEW_QUERY_PARAM_NAME, VIEW_CONTEXT } from '~/work_items/constants';
+import { calculateNewPosition } from 'ee_else_ce/boards/boards_util';
+import { setError } from '../graphql/cache_updates';
+import BoardColumn from './board_column.vue';
+import BoardDrawerWrapper from './board_drawer_wrapper.vue';
+
+export default {
+  name: 'BoardContent',
+  draggableItemTypes: DraggableItemTypes,
+  VIEW_CONTEXT,
+  components: {
+    BoardAddNewColumn,
+    BoardAddNewColumnTrigger,
+    BoardColumn,
+    BoardDrawerWrapper,
+    EpicsSwimlanes: defineAsyncComponent(
+      () => import('ee_component/boards/components/epics_swimlanes.vue'),
+    ),
+    GlAlert,
+    WorkItemDetailPanel,
+  },
+  inject: ['boardType', 'canAdminList', 'disabled', 'issuableType', 'isGroupBoard', 'fullPath'],
+  props: {
+    boardId: {
+      type: String,
+      required: true,
+    },
+    filterParams: {
+      type: Object,
+      required: true,
+    },
+    isSwimlanesOn: {
+      type: Boolean,
+      required: true,
+    },
+    boardLists: {
+      type: Object,
+      required: false,
+      default: () => {},
+    },
+    error: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    listQueryVariables: {
+      type: Object,
+      required: true,
+    },
+    addColumnFormVisible: {
+      type: Boolean,
+      required: true,
+    },
+  },
+  emits: [
+    'drawer-closed',
+    'drawer-opened',
+    'set-active-list',
+    'set-add-column-form-visibility',
+    'set-filters',
+  ],
+  data() {
+    return {
+      highlightedLists: [],
+      columnsThatCannotFindActiveItem: 0,
+      draggedItemId: null,
+      focusedListId: null,
+    };
+  },
+  computed: {
+    boardListsById() {
+      return this.boardLists;
+    },
+    boardListsToUse() {
+      const lists = this.boardLists;
+      return sortBy([...Object.values(lists)], 'position');
+    },
+    visibleBoardLists() {
+      return this.boardListsToUse.filter((list) => !list.collapsed);
+    },
+    effectiveFocusedListId() {
+      if (this.focusedListId && this.visibleBoardLists.some((l) => l.id === this.focusedListId)) {
+        return this.focusedListId;
+      }
+      return this.visibleBoardLists[0]?.id ?? null;
+    },
+    canDragColumns() {
+      return this.canAdminList;
+    },
+    boardColumnWrapper() {
+      return this.canDragColumns ? Draggable : 'div';
+    },
+    draggableOptions() {
+      const options = {
+        ...defaultSortableOptions,
+        disabled: this.disabled,
+        draggable: '.is-draggable',
+        fallbackOnBody: false,
+        group: 'boards-list',
+        tag: 'div',
+        value: this.boardListsToUse,
+        delay: DRAG_DELAY,
+        delayOnTouchOnly: true,
+        filter: 'input',
+        preventOnFilter: false,
+      };
+
+      return this.canDragColumns ? options : {};
+    },
+    backlogListId() {
+      const backlogList = this.boardListsToUse.find((list) => list.listType === ListType.backlog);
+      return backlogList?.id || '';
+    },
+    closedListId() {
+      const closedList = this.boardListsToUse.find((list) => list.listType === ListType.closed);
+      return closedList?.id || '';
+    },
+    namespace() {
+      return this.isGroupBoard ? BoardType.group : BoardType.project;
+    },
+  },
+  watch: {
+    addColumnFormVisible(visible) {
+      if (visible && this.isSwimlanesOn) {
+        this.$nextTick(() => {
+          this.afterFormEnters();
+        });
+      }
+    },
+  },
+  methods: {
+    focusAdjacentList(currentListId, direction) {
+      const lists = this.visibleBoardLists;
+      const currentIndex = lists.findIndex((list) => list.id === currentListId);
+      if (currentIndex === -1) return;
+      const targetIndex = currentIndex + direction;
+      if (targetIndex < 0 || targetIndex >= lists.length) return;
+      this.focusedListId = lists[targetIndex].id;
+    },
+    afterFormEnters() {
+      const formEl = this.$refs.addColumnForm?.$el;
+      if (formEl) {
+        formEl.scrollIntoView({ behavior: 'smooth', inline: 'end', block: 'nearest' });
+      }
+    },
+    highlightList(listId) {
+      this.highlightedLists.push(listId);
+
+      setTimeout(() => {
+        this.highlightedLists = this.highlightedLists.filter((id) => id !== listId);
+      }, flashAnimationDuration);
+    },
+    dismissError() {
+      setError({ message: null, captureError: false });
+    },
+    async updateListPosition({
+      item: {
+        dataset: { listId: movedListId, draggableItemType },
+      },
+      newIndex,
+      to: { children },
+    }) {
+      if (draggableItemType !== DraggableItemTypes.list) {
+        return;
+      }
+
+      const displacedListId = children[newIndex].dataset.listId;
+
+      if (movedListId === displacedListId) {
+        return;
+      }
+      const initialPosition = this.boardListsById[movedListId].position;
+      const targetPosition = this.boardListsById[displacedListId].position;
+
+      try {
+        await this.$apollo.mutate({
+          mutation: updateListQueries[this.issuableType].mutation,
+          variables: {
+            listId: movedListId,
+            position: targetPosition,
+          },
+          update: (store) => {
+            const sourceData = store.readQuery({
+              query: listsQuery[this.issuableType].query,
+              variables: this.listQueryVariables,
+            });
+            const data = produce(sourceData, (draftData) => {
+              // for current list, new position is already set by Apollo via automatic update
+              const affectedNodes = draftData[this.boardType].board.lists.nodes.filter(
+                (node) => node.id !== movedListId,
+              );
+              affectedNodes.forEach((node) => {
+                // eslint-disable-next-line no-param-reassign
+                node.position = calculateNewPosition(
+                  node.position,
+                  initialPosition,
+                  targetPosition,
+                );
+              });
+            });
+            store.writeQuery({
+              query: listsQuery[this.issuableType].query,
+              variables: this.listQueryVariables,
+              data,
+            });
+          },
+          optimisticResponse: {
+            updateBoardList: {
+              __typename: 'UpdateBoardListPayload',
+              errors: [],
+              list: {
+                ...this.boardLists[movedListId],
+                position: targetPosition,
+              },
+            },
+          },
+        });
+      } catch (error) {
+        setError({
+          error,
+          message: s__('Boards|An error occurred while moving the list. Please try again.'),
+        });
+      }
+    },
+    updateBoardCard(workItem, activeCard) {
+      const { cache } = this.$apollo.provider.clients.defaultClient;
+
+      const variables = {
+        id: activeCard.listId,
+        filters: this.filterParams,
+        fullPath: this.fullPath,
+        boardId: this.boardId,
+        isGroup: this.isGroupBoard,
+        isProject: !this.isGroupBoard,
+        first: DEFAULT_BOARD_LIST_ITEMS_SIZE,
+      };
+
+      cache.updateQuery(
+        { query: listIssuablesQueries[this.issuableType].query, variables },
+        (boardList) =>
+          mapWorkItemWidgetsToIssuableFields({
+            list: boardList,
+            workItem,
+            isBoard: true,
+            namespace: this.namespace,
+            type: this.issuableType,
+          }),
+      );
+    },
+    isLastList(index) {
+      return this.boardListsToUse.length - 1 === index;
+    },
+    handleCannotFindActiveItem() {
+      this.columnsThatCannotFindActiveItem += 1;
+      if (this.columnsThatCannotFindActiveItem === this.boardListsToUse.length) {
+        updateHistory({
+          url: removeParams([DETAIL_VIEW_QUERY_PARAM_NAME]),
+        });
+      }
+    },
+    handleDragStart({ itemId }) {
+      this.draggedItemId = itemId;
+    },
+    handleDragStop() {
+      this.draggedItemId = null;
+    },
+  },
+};
+</script>
+
+<template>
+  <div v-cloak data-testid="boards-list" class="gl-flex gl-min-h-0 gl-grow gl-flex-col">
+    <gl-alert v-if="error" variant="danger" :dismissible="true" @dismiss="dismissError">
+      {{ error }}
+    </gl-alert>
+    <div
+      v-if="!isSwimlanesOn"
+      class="boards-list gl-m-0 gl-mb-3 gl-flex gl-min-h-0 gl-w-full gl-overflow-x-auto gl-overflow-y-hidden gl-whitespace-nowrap gl-rounded-b-lg gl-p-0"
+    >
+      <component
+        :is="boardColumnWrapper"
+        ref="list"
+        v-bind="draggableOptions"
+        item-key="id"
+        @end="updateListPosition"
+      >
+        <board-column
+          v-for="(list, index) in boardListsToUse"
+          :key="list.id"
+          ref="board"
+          :column-index="index"
+          :board-id="boardId"
+          :list="list"
+          :filters="filterParams"
+          :highlighted-lists="highlightedLists"
+          :data-draggable-item-type="$options.draggableItemTypes.list"
+          :class="{ '!gl-hidden @sm/panel:!gl-inline-block': addColumnFormVisible }"
+          :last="isLastList(index)"
+          :list-query-variables="listQueryVariables"
+          :lists="boardListsById"
+          :can-admin-list="canAdminList"
+          :dragged-item-id="draggedItemId"
+          :focused="list.id === effectiveFocusedListId"
+          @drag-start="handleDragStart"
+          @drag-stop="handleDragStop"
+          @highlight-list="highlightList"
+          @set-active-list="$emit('set-active-list', $event)"
+          @set-filters="$emit('set-filters', $event)"
+          @cannot-find-active-item="handleCannotFindActiveItem"
+          @focus-adjacent="focusAdjacentList(list.id, $event)"
+        />
+      </component>
+      <div v-if="!addColumnFormVisible && canAdminList" class="gl-inline-block gl-pl-2">
+        <board-add-new-column-trigger
+          :is-new-list-showing="addColumnFormVisible"
+          @set-add-column-form-visibility="$emit('set-add-column-form-visibility', $event)"
+        />
+      </div>
+      <transition mode="out-in" name="slide" @after-enter="afterFormEnters">
+        <board-add-new-column
+          v-if="addColumnFormVisible"
+          ref="addColumnForm"
+          :board-id="boardId"
+          :list-query-variables="listQueryVariables"
+          :lists="boardListsById"
+          @set-add-column-form-visibility="$emit('set-add-column-form-visibility', $event)"
+          @highlight-list="highlightList"
+        />
+      </transition>
+    </div>
+    <epics-swimlanes
+      v-else-if="boardListsToUse.length"
+      ref="swimlanes"
+      :board-id="boardId"
+      :lists="boardListsToUse"
+      :can-admin-list="canAdminList"
+      :filters="filterParams"
+      :highlighted-lists="highlightedLists"
+      @set-active-list="$emit('set-active-list', $event)"
+      @move-list="updateListPosition"
+      @set-filters="$emit('set-filters', $event)"
+    >
+      <template #create-list-button>
+        <div v-if="!addColumnFormVisible" class="gl-sticky gl-top-0 gl-inline-block gl-pl-3">
+          <board-add-new-column-trigger
+            v-if="canAdminList"
+            :is-new-list-showing="addColumnFormVisible"
+            @set-add-column-form-visibility="$emit('set-add-column-form-visibility', $event)"
+          />
+        </div>
+      </template>
+      <div v-if="addColumnFormVisible" class="gl-pl-2">
+        <board-add-new-column
+          ref="addColumnForm"
+          class="gl-sticky"
+          :filter-params="filterParams"
+          :list-query-variables="listQueryVariables"
+          :board-id="boardId"
+          :lists="boardListsById"
+          @set-add-column-form-visibility="$emit('set-add-column-form-visibility', $event)"
+          @highlight-list="highlightList"
+        />
+      </div>
+    </epics-swimlanes>
+    <board-drawer-wrapper :backlog-list-id="backlogListId" :closed-list-id="closedListId">
+      <template
+        #default="{
+          activeIssuable,
+          onDrawerClosed,
+          onAttributeUpdated,
+          onIssuableDeleted,
+          onStateUpdated,
+        }"
+      >
+        <work-item-detail-panel
+          :open="Boolean(activeIssuable && activeIssuable.iid)"
+          :active-item="activeIssuable"
+          :issuable-type="issuableType"
+          :view-context="$options.VIEW_CONTEXT.drawerBoard"
+          click-outside-exclude-selector=".board-card"
+          is-board
+          @close="
+            onDrawerClosed();
+            $emit('drawer-closed');
+          "
+          @work-item-updated="updateBoardCard($event, activeIssuable)"
+          @work-item-deleted="onIssuableDeleted(activeIssuable)"
+          @attributes-updated="onAttributeUpdated"
+          @work-item-state-updated="onStateUpdated"
+          @work-item-type-changed="updateBoardCard($event, activeIssuable)"
+          @opened="$emit('drawer-opened')"
+          @clicked-outside="$emit('drawer-closed')"
+        />
+      </template>
+    </board-drawer-wrapper>
+  </div>
+</template>

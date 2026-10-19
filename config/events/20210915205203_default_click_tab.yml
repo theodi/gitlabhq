@@ -1,0 +1,17 @@
+description: "Click tab on new namespace welcoming component"
+category: default
+action: click_tab
+extra_properties:
+identifiers:
+product_group: import
+product_categories:
+- importers
+milestone: "13.12"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/59452
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "Panel name"

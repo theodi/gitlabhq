@@ -1,28 +1,170 @@
+# frozen_string_literal: true
+
 class Projects::RepositoriesController < Projects::ApplicationController
+  include ExtractsPath
+  include StaticObjectExternalStorage
+  include HotlinkInterceptor
+  include Gitlab::RepositoryArchiveRateLimiter
+  include HandlesGitalyErrors
+
+  prepend_before_action(only: [:archive]) { authenticate_sessionless_user!(:archive) }
+
   # Authorize
+  before_action :check_archive_rate_limiting!, only: :archive
   before_action :require_non_empty_project, except: :create
+  before_action :intercept_hotlinking!, only: :archive
+  before_action :assign_archive_vars, only: :archive
+  before_action :assign_ref_vars, only: :archive
+  before_action :assign_append_sha, only: :archive
   before_action :authorize_download_code!
   before_action :authorize_admin_project!, only: :create
+  before_action :redirect_to_external_storage, only: :archive, if: :static_objects_external_storage_enabled?
+
+  feature_category :source_code_management
 
   def create
-    @project.create_repository
+    return redirect_to project_path(@project) if @project.repository_exists?
 
-    redirect_to project_path(@project)
+    if @project.create_repository
+      @project.track_project_repository
+
+      redirect_to project_path(@project)
+    else
+      redirect_to(project_path(@project), alert: _('Failed to create repository'))
+    end
   end
 
   def archive
-    begin
-      file_path = ArchiveRepositoryService.new(@project, params[:ref], params[:format]).execute
-    rescue
-      return head :not_found
+    set_cache_headers
+
+    return if archive_not_modified?
+
+    # Return early for HEAD requests to avoid generating archives.
+    if request.head?
+      set_archive_content_headers
+      return head(:ok)
     end
 
-    if file_path
-      # Send file to user
-      response.headers["Content-Length"] = File.open(file_path).size.to_s
-      send_file file_path
+    send_git_archive @repository, **repo_params
+  rescue Gitlab::Workhorse::ArchiveNotFoundError => e
+    logger.error("#{self.class.name}: #{e}")
+    git_not_found!
+  end
+
+  private
+
+  def permitted_params
+    params.permit(:append_sha, :format, :id, :path, :ref)
+  end
+
+  def ref
+    @fully_qualified_ref || @ref
+  end
+
+  def repo_params
+    @repo_params ||= {
+      ref: ref,
+      path: permitted_params[:path],
+      format: permitted_params[:format],
+      append_sha: @append_sha,
+      ref_type: @ref_type
+    }
+  end
+
+  def set_cache_headers
+    cache = archive_cache_control
+
+    expires_in(
+      cache.max_age,
+      public: cache.public?,
+      must_revalidate: true,
+      stale_if_error: Gitlab::Repositories::ArchiveCacheControl::STALE_IF_ERROR,
+      stale_while_revalidate: Gitlab::Repositories::ArchiveCacheControl::STALE_WHILE_REVALIDATE,
+      's-maxage': Gitlab::Repositories::ArchiveCacheControl::SHARED_MAX_AGE
+    )
+
+    fresh_when(strong_etag: cache.etag_components)
+  end
+
+  def archive_cache_control
+    @archive_cache_control ||= Gitlab::Repositories::ArchiveCacheControl.new(
+      project,
+      ref: @ref,
+      metadata: archive_metadata
+    )
+  end
+
+  def archive_not_modified?
+    # Check response freshness (Last-Modified and ETag)
+    # against request If-Modified-Since and If-None-Match conditions.
+    request.fresh?(response)
+  end
+
+  def archive_metadata
+    @archive_metadata ||= archive_header_builder.metadata
+  end
+
+  def set_archive_content_headers
+    response.headers['Content-Type'] = archive_header_builder.content_type
+    response.headers['Content-Disposition'] = archive_header_builder.content_disposition
+  end
+
+  def archive_header_builder
+    @archive_header_builder ||= Gitlab::Repositories::ArchiveHeaderBuilder.new(
+      @repository,
+      ref: repo_params[:ref],
+      format: repo_params[:format],
+      append_sha: repo_params[:append_sha],
+      path: repo_params[:path],
+      ref_type: repo_params[:ref_type]
+    )
+  end
+
+  def assign_append_sha
+    @append_sha = permitted_params[:append_sha]
+
+    if @ref
+      shortname = "#{@project.path}-#{@ref.tr('/', '-')}"
+      @append_sha = false if @filename == shortname
+    end
+  end
+
+  def assign_archive_vars
+    if permitted_params[:id]
+      @ref, @filename = extract_ref_and_filename(permitted_params[:id])
     else
-      redirect_to request.fullpath
+      @ref = permitted_params[:ref]
+      @filename = nil
+    end
+  rescue InvalidPathError
+    render_404
+  end
+
+  # path can be of the form:
+  # master
+  # master/first.zip
+  # master/first/second.tar.gz
+  # master/first/second/third.zip
+  #
+  # In the archive case, we know that the last value is always the filename, so we
+  # do a greedy match to extract the ref. This avoid having to pull all ref names
+  # from Redis.
+  def extract_ref_and_filename(id)
+    path = id.strip
+    data = path.match(%r{(.*)/(.*)})
+
+    if data
+      [data[1], data[2]]
+    else
+      [path, nil]
+    end
+  end
+
+  def check_archive_rate_limiting!
+    check_archive_rate_limit!(current_user, @project) do
+      render(plain: _('This archive has been requested too many times. Try again later.'), status: :too_many_requests)
     end
   end
 end
+
+Projects::RepositoriesController.prepend_mod_with('Projects::RepositoriesController')

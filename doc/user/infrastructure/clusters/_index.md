@@ -1,0 +1,76 @@
+---
+stage: Verify
+group: Runner Core
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Kubernetes clusters
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+To connect clusters to GitLab, use the [GitLab agent for Kubernetes](../../clusters/agent/_index.md).
+
+## Certificate-based Kubernetes integration (deprecated)
+
+> [!warning]
+> In GitLab 14.5, the certificate-based method to connect Kubernetes clusters
+> to GitLab was [deprecated](https://gitlab.com/groups/gitlab-org/configure/-/work_items/8),
+> as well as its related [features](#deprecated-features). In GitLab Self-Managed 17.0 and later,
+> this feature is disabled by default. For GitLab.com users, this feature is available until
+> GitLab 15.9 for users who have at least one certificate-based cluster enabled in their namespace hierarchy.
+> For GitLab.com users that never used this feature previously, it is no longer available.
+
+The certificate-based Kubernetes integration with GitLab is deprecated.
+This integration had the following issues:
+
+- There were security issues as it required direct access to the Kubernetes API by GitLab.
+- The configuration options weren't flexible.
+- The integration was flaky.
+- Users were constantly reporting issues with features based on this model.
+
+For this reason, the certificate-based integration was deprecated to focus on the new model,
+[GitLab agent for Kubernetes](../../clusters/agent/_index.md).
+Maintaining both methods in parallel caused a lot of confusion
+and significantly increased the complexity to use, develop, maintain, and
+document them. As a result, both were deprecated in favor of the new model.
+Certificate-based features continue to:
+
+- Receive security and critical fixes.
+- Work with supported Kubernetes versions.
+
+The removal of these features from GitLab is not scheduled yet.
+
+Follow this [epic](https://gitlab.com/groups/gitlab-org/configure/-/work_items/8)
+for updates.
+
+If you need more time to migrate to the GitLab agent for Kubernetes, you can
+[enable the feature flag](../../../administration/feature_flags/_index.md)
+named `certificate_based_clusters`. For more information, see the
+[deprecation notice](../../../update/deprecations.md#gitlab-self-managed-certificate-based-integration-with-kubernetes).
+This feature flag re-enables the certificate-based Kubernetes integration.
+
+## Deprecated features
+
+- [Connect an existing cluster through cluster certificates](../../project/clusters/add_existing_cluster.md)
+- [Access controls](../../project/clusters/cluster_access.md)
+- [GitLab-managed clusters](../../project/clusters/gitlab_managed_clusters.md)
+- [Deploy applications through certificate-based connection](../../project/clusters/deploy_to_cluster.md)
+- [Cluster Management Project](../../clusters/management_project.md)
+- [Cluster environments](../../clusters/environments.md)
+- [Show Canary Ingress deployments on deploy boards](../../project/canary_deployments.md#show-canary-ingress-deployments-on-deploy-boards-deprecated)
+- [Deploy Boards](../../project/deploy_boards.md)
+- [Web terminals](../../../administration/integration/terminal.md)
+
+### Cluster levels
+
+The concept of [project-level](../../project/clusters/_index.md),
+[group-level](../../group/clusters/_index.md), and
+[instance-level](../../instance/clusters/_index.md) clusters becomes
+extinct in the new model, although the functionality remains to some extent.
+
+The agent is always configured in a single GitLab project and you can expose the cluster connection to other projects and groups to [access it from GitLab CI/CD](../../clusters/agent/ci_cd_workflow.md).
+By doing so, you are granting these projects and groups access to the same cluster, which is similar to group-level clusters' use case.

@@ -1,0 +1,21 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    class Application < Grape::Entity
+      expose :id, documentation: { type: 'Integer', format: 'int64', example: 1 }
+      expose :uid, as: :application_id,
+        documentation: { type: 'String',
+                         example: '5832fc6e14300a0d962240a8144466eef4ee93ef0d218477e55f11cf12fc3737' }
+      expose :name, as: :application_name, documentation: { type: 'String', example: 'MyApplication' }
+      expose :redirect_uri, as: :callback_url, documentation: { type: 'String', example: 'https://redirect.uri' }
+      expose :confidential, documentation: { type: 'Boolean', example: true }
+      expose :scopes, documentation: { type: 'Array', example: %w[api read_user] } do |application|
+        application.scopes.to_a
+      end
+      expose :granular_scopes, using: ::API::Entities::GranularScope,
+        if: ->(_, options) { options[:with_granular_scopes] },
+        documentation: { is_array: true }
+    end
+  end
+end

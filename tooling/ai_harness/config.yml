@@ -1,0 +1,41 @@
+# Files within FORBIDDEN_PATTERNS that are intentionally committed as
+# project content. Listed prefixes use start_with? matching, so both
+# exact-file paths and directory prefixes work.
+#
+# To add a new entry, append it here with a comment describing why the
+# exception is needed. Open a small, spec-driven MR to the doctor tool
+# that:
+#   1. Adds the entry to this file
+#   2. Adds an integration spec exercising the new path
+#   3. Updates SPECIFICATION/04_scenarios.md if a new scenario emerges
+allowed_committed_files:
+  # Project-scope skill committed by !232403. Auto-generated from
+  # .ai/principles/manifest.yml; loaded by both OpenCode (.agents/skills/)
+  # and Claude Code (.claude/skills/) to provide the routing table for
+  # the gitlab-coding-principles content.
+  - .claude/skills/gitlab-coding-principles/SKILL.md
+  # Project-scope explainer for the shared Claude Code skills directory
+  # (gitlab-org/gitlab#20880). Committed so every contributor sees the
+  # same conventions; the directory itself is auto-discovered by Claude
+  # Code with no install step.
+  - .claude/skills/README.md
+  # Project-scope glab skill (gitlab-org/gitlab#601836). The directory prefix
+  # allows all of the skill's files.
+  - .claude/skills/glab/
+  # Project-scope split-mr skill. Analyzes all changes on the current branch
+  # (uncommitted or already committed) and reasons about whether they should be
+  # split into smaller, more focused MRs.
+  - .claude/skills/split-mr/
+  # Project-scope gitlab-mcp-tool-builder skill. Scaffolds a GraphQL-backed MCP
+  # server tool following the app/services/mcp/tools/ pattern. Vendored from the
+  # ai/skills repo; the directory prefix allows all of the skill's files.
+  - .claude/skills/gitlab-mcp-tool-builder/
+  # Project-scope ai-principles-review-feedback skill. Mechanics for acting on
+  # automated review feedback on the weekly principles distillation sync merge
+  # requests. The policy it implements lives in
+  # doc/development/ai_instruction_files_review.md.
+  - .claude/skills/ai-principles-review-feedback/
+  # Project-scope postgresai skill. Runs EXPLAIN and index experiments on
+  # PostgresAI Database Lab clones. Source of truth is this repo; the
+  # gitlab-org/ai/skills project syncs it from here.
+  - .claude/skills/postgresai/

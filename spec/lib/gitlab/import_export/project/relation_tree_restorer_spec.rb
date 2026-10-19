@@ -1,0 +1,404 @@
+# frozen_string_literal: true
+
+# This spec is a lightweight version of:
+#   * project/tree_restorer_spec.rb
+#
+# In depth testing is being done in the above specs.
+# This spec tests that restore project works
+# but does not have 100% relation coverage.
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::ImportExport::Project::RelationTreeRestorer, :clean_gitlab_redis_shared_state, feature_category: :importers do
+  let_it_be_with_reload(:importable) do
+    create(:project, :builds_enabled, :issues_disabled, name: 'project', path: 'project')
+  end
+
+  let(:reader) { Gitlab::ImportExport::Reader.new(shared: shared) }
+  let(:relation_tree_restorer) do
+    described_class.new(
+      user: user,
+      shared: shared,
+      relation_reader: relation_reader,
+      object_builder: Gitlab::ImportExport::Project::ObjectBuilder,
+      members_mapper: members_mapper,
+      relation_factory: Gitlab::ImportExport::Project::RelationFactory,
+      reader: reader,
+      importable: importable,
+      importable_path: 'project',
+      importable_attributes: attributes
+    )
+  end
+
+  subject { relation_tree_restorer.restore }
+
+  include_context 'relation tree restorer shared context' do
+    let(:importable_name) { 'project' }
+  end
+
+  shared_examples 'import project successfully' do
+    describe 'imported project' do
+      it 'has the project attributes and relations', :aggregate_failures do
+        expect(subject).to be(true)
+
+        project = Project.find_by_path('project')
+
+        expect(project.name).to eq('Project name')
+        expect(project.description).to eq('Nisi et repellendus ut enim quo accusamus vel magnam.')
+        expect(project.labels.count).to eq(4)
+        expect(project.boards.count).to eq(1)
+        expect(project.project_feature).not_to be_nil
+        expect(project.custom_attributes.count).to eq(2)
+        expect(project.project_badges.count).to eq(2)
+        expect(project.snippets.count).to eq(1)
+        expect(project.commit_notes.count).to eq(3)
+      end
+
+      it 'assigns the correct import source' do
+        expect(subject).to be(true)
+
+        project = Project.find_by_path('project')
+
+        issues = project.issues
+        snippets = project.snippets
+        merge_requests = project.merge_requests
+        notes = project.notes
+
+        expect(issues.map).to all(have_attributes(imported_from: 'gitlab_project'))
+        expect(snippets.map).to all(have_attributes(imported_from: 'gitlab_project'))
+        expect(merge_requests.map).to all(have_attributes(imported_from: 'gitlab_project'))
+        expect(notes.map).to all(have_attributes(imported_from: 'gitlab_project'))
+      end
+    end
+  end
+
+  context 'when inside a group' do
+    let(:path) { 'spec/fixtures/lib/gitlab/import_export/complex/tree' }
+    let(:relation_reader) { Gitlab::ImportExport::Json::NdjsonReader.new(path) }
+
+    let_it_be_with_reload(:group) do
+      create(:group, :shared_runners_disabled_and_unoverridable, maintainers: user)
+    end
+
+    before do
+      importable.update!(shared_runners_enabled: false, group: group)
+    end
+
+    it_behaves_like 'import project successfully'
+
+    context 'when the export contains has_external_issue_tracker' do
+      let(:attributes) do
+        relation_reader.consume_attributes(importable_name).merge('has_external_issue_tracker' => true)
+      end
+
+      it 'does not overwrite has_external_issue_tracker' do
+        expect(relation_tree_restorer.restore).to be(true)
+
+        project = Project.find_by_path('project')
+
+        expect(project.integrations.active.external_issue_trackers).to be_empty
+        expect(project.has_external_issue_tracker).to be_falsy
+      end
+    end
+
+    context 'when importing an archived project' do
+      let(:attributes) { relation_reader.consume_attributes(importable_name).merge('archived' => true) }
+
+      it 'sets the project namespace state to archived' do
+        expect(relation_tree_restorer.restore).to be(true)
+
+        project = Project.find_by_path('project')
+
+        expect(project.project_namespace.state_name).to eq(:archived)
+      end
+    end
+
+    context 'when importing a non-archived project' do
+      let(:attributes) { relation_reader.consume_attributes(importable_name).merge('archived' => false) }
+
+      it 'does not archive the project namespace' do
+        expect(relation_tree_restorer.restore).to be(true)
+
+        project = Project.find_by_path('project')
+
+        expect(project.project_namespace.state_name).not_to eq(:archived)
+      end
+    end
+
+    context 'when archived attribute is not present' do
+      let(:attributes) { relation_reader.consume_attributes(importable_name).except('archived') }
+
+      it 'does not archive the project namespace' do
+        expect(relation_tree_restorer.restore).to be(true)
+
+        project = Project.find_by_path('project')
+
+        expect(project.project_namespace.state_name).not_to eq(:archived)
+      end
+    end
+
+    context 'when archiving fails due to invalid state transition' do
+      let(:attributes) { relation_reader.consume_attributes(importable_name).merge('archived' => true) }
+      let(:transition_error) do
+        error = StateMachines::InvalidTransition.allocate
+        allow(error).to receive(:message).and_return('Cannot transition state')
+        error
+      end
+
+      # rubocop:disable RSpec/AnyInstanceOf -- need to stub all instances since multiple ProjectNamespaces are created
+      it 'logs a warning and continues the import' do
+        allow_any_instance_of(Namespaces::ProjectNamespace).to receive(:archive!).and_raise(transition_error)
+
+        allow(shared.logger).to receive(:warn).and_call_original
+        expect(shared.logger).to receive(:warn).with(
+          hash_including(
+            message: '[Project Import] Failed to archive project namespace',
+            error: 'Cannot transition state'
+          )
+        )
+
+        expect(relation_tree_restorer.restore).to be(true)
+      end
+      # rubocop:enable RSpec/AnyInstanceOf
+    end
+
+    describe 'created_at' do
+      let(:source_created_at) { Time.zone.parse('2019-11-20 17:01:53 UTC') }
+      let(:attributes) { relation_reader.consume_attributes(importable_name).merge('created_at' => source_created_at) }
+
+      context 'when importing from a project template' do
+        before do
+          importable.update!(import_type: 'gitlab_built_in_project_template')
+        end
+
+        it 'preserves the destination project created_at' do
+          destination_created_at = importable.created_at
+
+          expect(relation_tree_restorer.restore).to be(true)
+          expect(importable.reload.created_at).to eq(destination_created_at)
+        end
+      end
+
+      context 'when importing from a project export' do
+        before do
+          importable.update!(import_type: 'gitlab_project')
+        end
+
+        it 'imports the source project created_at' do
+          expect(relation_tree_restorer.restore).to be(true)
+          expect(importable.reload.created_at).to eq(source_created_at)
+        end
+      end
+    end
+
+    describe '#update_archived_state!' do
+      let(:attributes) { relation_reader.consume_attributes(importable_name).merge('archived' => true) }
+
+      context 'when project namespace is not present' do
+        it 'does not attempt to archive' do
+          allow(importable).to receive(:project_namespace).and_return(nil)
+
+          expect { relation_tree_restorer.send(:update_archived_state!) }.not_to raise_error
+        end
+      end
+    end
+  end
+
+  context 'with invalid relations' do
+    let(:path) { 'spec/fixtures/lib/gitlab/import_export/project_with_invalid_relations/tree' }
+    let(:relation_reader) { Gitlab::ImportExport::Json::NdjsonReader.new(path) }
+
+    it 'logs the invalid relation and its errors' do
+      expect(shared.logger)
+        .to receive(:warn)
+        .with(
+          error_messages: "Title can't be blank. Title is invalid",
+          message: '[Project/Group Import] Invalid object relation built',
+          relation_class: 'ProjectLabel',
+          relation_index: 0,
+          relation_key: 'labels'
+        ).once
+
+      relation_tree_restorer.restore
+    end
+  end
+
+  describe '#restore_single_relation' do
+    let_it_be_with_reload(:importable) { create(:project) }
+
+    let(:relation_reader) do
+      Gitlab::ImportExport::Json::NdjsonReader.new(
+        'spec/fixtures/lib/gitlab/import_export/complex/tree'
+      )
+    end
+
+    let(:relation_tree_restorer) do
+      described_class.new(
+        user: user,
+        shared: shared,
+        relation_reader: relation_reader,
+        object_builder: Gitlab::ImportExport::Project::ObjectBuilder,
+        members_mapper: members_mapper,
+        relation_factory: Gitlab::ImportExport::Project::RelationFactory,
+        reader: reader,
+        importable: importable,
+        importable_path: importable_name,
+        importable_attributes: attributes,
+        skip_on_duplicate_iid: skip_on_duplicate_iid
+      )
+    end
+
+    subject(:restore_relations) { relation_tree_restorer.restore_single_relation(relation_key) }
+
+    shared_examples 'saving single relation' do
+      context 'when skipping existing IIDs' do
+        let(:skip_on_duplicate_iid) { true }
+
+        it 'does not attempt to save the duplicate relation' do
+          expect(relation_tree_restorer).not_to receive(:save_relation_object)
+
+          restore_relations
+        end
+      end
+
+      context 'when not skipping existing IIDs' do
+        let(:skip_on_duplicate_iid) { false }
+
+        it 'attempts to save the duplicate relation' do
+          expect(relation_tree_restorer).to receive(:save_relation_object).once
+
+          restore_relations
+        end
+      end
+    end
+
+    describe 'progress tracking' do
+      let(:relation_key) { 'issues' }
+      let(:skip_on_duplicate_iid) { true }
+
+      before do
+        allow(relation_reader)
+          .to receive(:consume_relation)
+          .with(importable_name, 'issues')
+          .and_return([[build(:issue, iid: 123, title: 'Issue', author_id: user.id), 0]])
+      end
+
+      it 'tracks processed entry' do
+        expect(relation_tree_restorer).to receive(:process_relation_item!).once
+
+        restore_relations
+        restore_relations
+
+        expect(
+          relation_tree_restorer.processed_entry?(
+            scope: {
+              'project_id' => importable.id,
+              'relation_key' => 'issues'
+            },
+            data: 0
+          )
+        ).to be(true)
+      end
+
+      context 'when extra tracking scope is provided' do
+        it 'tracks processed entry' do
+          expect(relation_tree_restorer).to receive(:process_relation_item!).once
+
+          relation_tree_restorer.restore_single_relation(relation_key, extra_track_scope: { tracker_id: 1 })
+          relation_tree_restorer.restore_single_relation(relation_key, extra_track_scope: { tracker_id: 1 })
+
+          expect(
+            relation_tree_restorer.processed_entry?(
+              scope: {
+                'project_id' => importable.id,
+                'relation_key' => 'issues',
+                'tracker_id' => 1
+              },
+              data: 0
+            )
+          ).to be(true)
+        end
+      end
+    end
+
+    context 'when importing issues' do
+      let(:relation_key) { 'issues' }
+
+      before do
+        importable.issues.create!(iid: 123, title: 'Issue', author: user)
+
+        allow(relation_reader)
+          .to receive(:consume_relation)
+          .with(importable_name, 'issues')
+          .and_return([[build(:issue, iid: 123, title: 'Issue', author_id: user.id), 0]])
+      end
+
+      include_examples 'saving single relation'
+    end
+
+    context 'when importing milestones' do
+      let(:relation_key) { 'milestones' }
+
+      before do
+        importable.milestones.create!(iid: 123, title: 'Milestone')
+
+        allow(relation_reader)
+          .to receive(:consume_relation)
+          .with(importable_name, 'milestones')
+          .and_return([[build(:milestone, iid: 123, name: 'Milestone'), 0]])
+      end
+
+      include_examples 'saving single relation'
+    end
+
+    context 'when importing CI pipelines' do
+      let(:relation_key) { 'ci_pipelines' }
+
+      before do
+        create(
+          :ci_pipeline,
+          project: importable,
+          iid: 123
+        )
+
+        allow(relation_reader)
+          .to receive(:consume_relation)
+          .with(importable_name, 'ci_pipelines')
+          .and_return([[build(:ci_pipeline, iid: 123), 0]])
+      end
+
+      include_examples 'saving single relation'
+    end
+
+    context 'when importing merge requests' do
+      let(:relation_key) { 'merge_requests' }
+
+      before do
+        create(
+          :merge_request,
+          iid: 123,
+          source_project: importable,
+          target_project: importable
+        )
+
+        allow(relation_reader)
+          .to receive(:consume_relation)
+          .with(importable_name, 'merge_requests')
+          .and_return([[build(:merge_request, iid: 123), 0]])
+      end
+
+      include_examples 'saving single relation'
+    end
+
+    context 'when importing an unknown relation' do
+      let(:relation_key) { 'unknown' }
+      let(:skip_on_duplicate_iid) { false }
+
+      it 'does not attempt an import' do
+        expect(relation_tree_restorer).not_to receive(:save_relation_object)
+
+        restore_relations
+      end
+    end
+  end
+end

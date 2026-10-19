@@ -1,0 +1,549 @@
+<script>
+import { GlButton, GlFormCheckbox, GlTooltipDirective } from '@gitlab/ui';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { helpPagePath } from '~/helpers/help_page_helper';
+import { s__, __ } from '~/locale';
+import { detectAndConfirmSensitiveTokens } from '~/lib/utils/secret_detection';
+import { i18n, STATE_CLOSED, STATE_OPEN, LINKED_CATEGORIES_MAP } from '~/work_items/constants';
+import { getDraft, clearDraft, updateDraft } from '~/lib/utils/autosave';
+import gfmEventHub from '~/vue_shared/components/markdown/eventhub';
+import { confirmAction } from '~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal';
+import { trackSavedUsingEditor } from '~/vue_shared/components/markdown/tracking';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import MarkdownEditor from '~/vue_shared/components/markdown/markdown_editor.vue';
+import HelpIcon from '~/vue_shared/components/help_icon/help_icon.vue';
+import WorkItemStateToggle from '~/work_items/components/work_item_state_toggle.vue';
+import WorkItemCloseConfirmModal from '~/work_items/components/work_item_close_confirm_modal.vue';
+import CommentFieldLayout from '~/notes/components/comment_field_layout.vue';
+import workItemByIidQuery from '../../graphql/work_item_by_iid.query.graphql';
+import workItemEmailParticipantsByIidQuery from '../../graphql/notes/work_item_email_participants_by_iid.query.graphql';
+import {
+  findEmailParticipantsWidget,
+  findLinkedItemsWidget,
+  findHierarchyWidget,
+} from '../../utils';
+import workItemLinkedItemsQuery from '../../graphql/work_item_linked_items.query.graphql';
+import workItemOpenChildCountQuery from '../../graphql/open_child_count.query.graphql';
+
+export default {
+  name: 'WorkItemCommentForm',
+  i18n: {
+    internal: s__('Notes|Make this an internal note'),
+    internalVisibility: s__(
+      'Notes|Internal notes are only visible to members with the role of Planner or higher',
+    ),
+    addInternalNote: __('Add internal note'),
+    cancelButtonText: __('Cancel'),
+  },
+  constantOptions: {
+    markdownDocsPath: helpPagePath('user/markdown'),
+  },
+  components: {
+    CommentFieldLayout,
+    GlButton,
+    MarkdownEditor,
+    GlFormCheckbox,
+    HelpIcon,
+    WorkItemCloseConfirmModal,
+    WorkItemStateToggle,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [glFeatureFlagsMixin()],
+  props: {
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    workItemType: {
+      type: String,
+      required: true,
+    },
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    ariaLabel: {
+      type: String,
+      required: true,
+    },
+    autosaveKey: {
+      type: String,
+      required: true,
+    },
+    autosaveKeyInternalNote: {
+      type: String,
+      required: true,
+    },
+    isSubmitting: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    initialValue: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    commentButtonText: {
+      type: String,
+      required: false,
+      default: __('Comment'),
+    },
+    markdownPreviewPath: {
+      type: String,
+      required: true,
+    },
+    newCommentTemplatePaths: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    autocompleteDataSources: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    isNewDiscussion: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    workItemState: {
+      type: String,
+      required: false,
+      default: STATE_OPEN,
+    },
+    autofocus: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isDiscussionLocked: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isWorkItemConfidential: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    workItemIid: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    isDiscussionInternal: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isDiscussionResolved: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isDiscussionResolvable: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasReplies: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasEmailParticipantsWidget: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    parentId: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    hideFullscreenMarkdownButton: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    uploadsPath: {
+      type: String,
+      required: true,
+    },
+  },
+  emits: [
+    'blur',
+    'cancel-editing',
+    'error',
+    'focus',
+    'start-editing',
+    'stop-editing',
+    'submit-form',
+    'toggle-resolve-discussion',
+  ],
+  data() {
+    return {
+      commentText: getDraft(this.autosaveKey) || this.initialValue || '',
+      updateInProgress: false,
+      isNoteInternal: parseBoolean(getDraft(this.autosaveKeyInternalNote)) || false,
+      toggleResolveChecked: this.isDiscussionResolved,
+      emailParticipants: [],
+      workItem: {},
+      isCancellingEdit: false,
+      blockerItems: [],
+      openChildItemsCount: 0,
+      closeConfirmModalVisible: false,
+    };
+  },
+  computed: {
+    formFieldProps() {
+      return {
+        'aria-label': this.ariaLabel,
+        placeholder: __('Write a comment or drag your files here…'),
+        id: 'work-item-add-or-edit-comment',
+        name: 'work-item-add-or-edit-comment',
+      };
+    },
+    commentButtonTextComputed() {
+      return this.isNoteInternal ? this.$options.i18n.addInternalNote : this.commentButtonText;
+    },
+    getWorkItemData() {
+      return {
+        confidential: this.isWorkItemConfidential,
+        discussion_locked: this.isDiscussionLocked,
+        issue_email_participants: this.emailParticipants,
+      };
+    },
+    workItemTypeId() {
+      return this.workItem?.workItemType?.id;
+    },
+    showResolveDiscussionToggle() {
+      return !this.isNewDiscussion && this.isDiscussionResolvable && this.hasReplies;
+    },
+    resolveCheckboxLabel() {
+      return this.isDiscussionResolved ? __('Reopen thread') : __('Resolve thread');
+    },
+    canMarkNoteAsInternal() {
+      return this.workItem?.userPermissions?.markNoteAsInternal;
+    },
+    canUpdate() {
+      return this.workItem?.userPermissions?.updateWorkItem;
+    },
+    showInternalNoteCheckbox() {
+      return this.canMarkNoteAsInternal && this.isNewDiscussion;
+    },
+    restrictedToolBarItems() {
+      if (this.hideFullscreenMarkdownButton) {
+        return ['full-screen'];
+      }
+      return [];
+    },
+    showStateButton() {
+      return (
+        this.isNewDiscussion &&
+        this.canUpdate &&
+        !(this.workItemState === STATE_CLOSED && this.isDiscussionLocked)
+      );
+    },
+    hasCloseQuickAction() {
+      return /^\s*\/close\s*$/im.test(this.commentText) && this.workItemState === STATE_OPEN;
+    },
+    isBlockedByOpenItems() {
+      return this.hasCloseQuickAction && this.blockerItems.length > 0;
+    },
+    hasOpenChildItems() {
+      return this.hasCloseQuickAction && this.openChildItemsCount > 0;
+    },
+  },
+  apollo: {
+    emailParticipants: {
+      query: workItemEmailParticipantsByIidQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          iid: this.workItemIid,
+        };
+      },
+      skip() {
+        // Don't request email participants if the widget is not available
+        return !this.workItemIid || !this.hasEmailParticipantsWidget;
+      },
+      error() {
+        this.$emit('error', i18n.fetchError);
+      },
+      update(data) {
+        return (
+          findEmailParticipantsWidget(data?.namespace?.workItem)?.emailParticipants?.nodes || []
+        );
+      },
+    },
+    workItem: {
+      query: workItemByIidQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          iid: this.workItemIid,
+          useWorkItemFeatures: Boolean(this.glFeatures.workItemFeaturesField),
+        };
+      },
+      update(data) {
+        return data.namespace?.workItem ?? {};
+      },
+      skip() {
+        return !this.workItemIid;
+      },
+      error() {
+        this.$emit('error', i18n.fetchError);
+      },
+    },
+    blockerItems: {
+      query: workItemLinkedItemsQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          iid: this.workItemIid,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      skip() {
+        return !this.workItemIid || !this.hasCloseQuickAction;
+      },
+      update({ namespace }) {
+        if (!namespace?.workItem) return [];
+        const linkedWorkItems = findLinkedItemsWidget(namespace.workItem)?.linkedItems?.nodes || [];
+        return linkedWorkItems.filter(
+          (item) =>
+            item.linkType === LINKED_CATEGORIES_MAP.IS_BLOCKED_BY &&
+            item.workItemState !== STATE_CLOSED,
+        );
+      },
+      error(e) {
+        this.$emit('error', e.message || i18n.fetchError);
+      },
+    },
+    openChildItemsCount: {
+      query: workItemOpenChildCountQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          iid: this.workItemIid,
+        };
+      },
+      skip() {
+        return !this.workItemIid || !this.hasCloseQuickAction;
+      },
+      update({ namespace }) {
+        if (!namespace?.workItem) return 0;
+        const countsByType = findHierarchyWidget(namespace.workItem)?.rolledUpCountsByType;
+        if (!countsByType) return 0;
+        return countsByType.reduce((acc, curr) => acc + curr.countsByState.opened, 0);
+      },
+    },
+  },
+  methods: {
+    handleKeydownUpArrow(e) {
+      if (this.commentText === '') {
+        gfmEventHub.$emit('edit-current-user-last-note', e);
+      }
+    },
+    setCommentText(newText) {
+      /**
+       * https://gitlab.com/gitlab-org/gitlab/-/issues/388314
+       *
+       * While the form is saving using meta+enter,
+       * avoid updating the data which is cleared after form submission.
+       */
+      if (!this.isSubmitting) {
+        this.commentText = newText;
+        updateDraft(this.autosaveKey, this.commentText);
+        if (this.commentText) {
+          this.$emit('start-editing');
+        } else {
+          this.$emit('stop-editing');
+        }
+      }
+    },
+    setInternalNoteCheckbox(value) {
+      this.isNoteInternal = value;
+      updateDraft(this.autosaveKeyInternalNote, this.isNoteInternal);
+    },
+    async cancelEditing() {
+      if (this.isCancellingEdit) return;
+
+      // Don't cancel if autosuggest open in plain text editor
+      if (
+        this.$refs.markdownEditor.$el.querySelector('textarea')?.classList.contains('at-who-active')
+      ) {
+        return;
+      }
+      if (this.commentText && this.commentText !== this.initialValue) {
+        this.isCancellingEdit = true;
+        try {
+          const msg = s__('WorkItem|Are you sure you want to cancel editing?');
+
+          const confirmed = await confirmAction(msg, {
+            primaryBtnText: __('Discard changes'),
+            cancelBtnText: __('Continue editing'),
+            primaryBtnVariant: 'danger',
+          });
+
+          if (!confirmed) {
+            return;
+          }
+        } finally {
+          this.isCancellingEdit = false;
+        }
+      }
+
+      this.$emit('cancel-editing');
+      clearDraft(this.autosaveKey);
+    },
+    async submitForm() {
+      const isUploadingFile = this.$el.querySelector('.uploading-progress-container:not(.hide)');
+      if (this.isSubmitting || isUploadingFile) {
+        return;
+      }
+
+      const confirmSubmit = await detectAndConfirmSensitiveTokens({ content: this.commentText });
+      if (!confirmSubmit) {
+        return;
+      }
+
+      if (this.isBlockedByOpenItems || this.hasOpenChildItems) {
+        this.closeConfirmModalVisible = true;
+        return;
+      }
+
+      this.proceedWithSubmit();
+    },
+    proceedWithSubmit() {
+      if (this.toggleResolveChecked) {
+        this.$emit('toggle-resolve-discussion');
+      }
+
+      if (this.$refs.markdownEditor) {
+        trackSavedUsingEditor(this.$refs.markdownEditor.isContentEditorActive, 'WorkItem_Comment');
+      }
+
+      this.$emit('submit-form', {
+        commentText: this.commentText,
+        isNoteInternal: this.isNoteInternal,
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="timeline-discussion-body !gl-overflow-visible">
+    <div class="note-body !gl-overflow-visible !gl-p-0">
+      <form class="common-note-form gfm-form js-main-target-form new-note gl-grow">
+        <comment-field-layout
+          :with-alert-container="isWorkItemConfidential"
+          :is-internal-note="isDiscussionInternal || isNoteInternal"
+          :note="commentText"
+          :noteable-data="getWorkItemData"
+        >
+          <markdown-editor
+            ref="markdownEditor"
+            class="js-gfm-wrapper"
+            :value="commentText"
+            :render-markdown-path="markdownPreviewPath"
+            :markdown-docs-path="$options.constantOptions.markdownDocsPath"
+            :new-comment-template-paths="newCommentTemplatePaths"
+            :autocomplete-data-sources="autocompleteDataSources"
+            :form-field-props="formFieldProps"
+            :uploads-path="uploadsPath"
+            :data-work-item-full-path="fullPath"
+            :data-work-item-id="workItemId"
+            :data-work-item-iid="workItemIid"
+            :data-work-item-type-id="workItemTypeId"
+            use-bottom-toolbar
+            supports-quick-actions
+            :supports-table-of-contents="false"
+            :autofocus="autofocus"
+            :restricted-tool-bar-items="restrictedToolBarItems"
+            @focus="$emit('focus')"
+            @blur="$emit('blur')"
+            @input="setCommentText"
+            @keydown.up="handleKeydownUpArrow"
+            @keydown.meta.enter="submitForm()"
+            @keydown.ctrl.enter="submitForm()"
+            @keydown.esc.stop="cancelEditing"
+          />
+        </comment-field-layout>
+        <div class="note-form-actions" data-testid="work-item-comment-form-actions">
+          <div v-if="showResolveDiscussionToggle">
+            <label>
+              <gl-form-checkbox
+                v-model="toggleResolveChecked"
+                data-testid="toggle-resolve-checkbox"
+              >
+                {{ resolveCheckboxLabel }}
+              </gl-form-checkbox>
+            </label>
+          </div>
+          <gl-form-checkbox
+            v-if="showInternalNoteCheckbox"
+            v-model="isNoteInternal"
+            class="gl-mb-2"
+            data-testid="internal-note-checkbox"
+            @input="setInternalNoteCheckbox($event)"
+          >
+            {{ $options.i18n.internal }}
+            <help-icon
+              v-gl-tooltip:tooltipcontainer.bottom
+              :title="$options.i18n.internalVisibility"
+            />
+          </gl-form-checkbox>
+          <div class="gl-flex gl-gap-3">
+            <gl-button
+              category="primary"
+              variant="confirm"
+              data-testid="confirm-button"
+              :disabled="!commentText.length"
+              :loading="isSubmitting"
+              @click="submitForm()"
+              >{{ commentButtonTextComputed }}
+            </gl-button>
+            <work-item-state-toggle
+              v-if="showStateButton"
+              :work-item-id="workItemId"
+              :work-item-iid="workItemIid"
+              :work-item-state="workItemState"
+              :work-item-type="workItemType"
+              :full-path="fullPath"
+              :has-comment="Boolean(commentText.length)"
+              :parent-id="parentId"
+              can-update
+              @submit-comment="submitForm()"
+              @error="$emit('error', $event)"
+            />
+            <gl-button
+              v-else
+              data-testid="cancel-button"
+              category="primary"
+              :loading="updateInProgress"
+              @click="cancelEditing"
+              >{{ $options.i18n.cancelButtonText }}
+            </gl-button>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <work-item-close-confirm-modal
+      v-if="closeConfirmModalVisible"
+      :work-item-type="workItemType"
+      :is-blocked-by-open-items="isBlockedByOpenItems"
+      :blocker-items="blockerItems"
+      :visible="closeConfirmModalVisible"
+      @hide="closeConfirmModalVisible = false"
+      @proceed="proceedWithSubmit"
+    />
+  </div>
+</template>

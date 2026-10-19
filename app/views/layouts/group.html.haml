@@ -1,5 +1,31 @@
-- page_title    @group.name
-- header_title  @group.name, group_path(@group)
-- sidebar       "group"
+- page_title       @group.name
+- page_description @group.description_html unless page_description
+- push_group_breadcrumbs(@group)
+- nav "group"
+- display_subscription_banner!
+- base_layout = local_assigns[:base_layout]
 
-= render template: "layouts/application"
+- content_for :flash_message do
+  = dispensable_render_if_exists "groups/storage_enforcement_alert", context: @group
+  = dispensable_render_if_exists "shared/namespace_storage_limit_alert", context: @group
+  = dispensable_render_if_exists "shared/namespace_combined_storage_users_alert", context: @group
+  = dispensable_render_if_exists "layouts/header/namespace_seat_alert", context: @group
+  = dispensable_render_if_exists "shared/trials/duo_code_review_enabled_by_default_alert", group: @group.root_ancestor
+  = dispensable_render "groups/organizations_available_alert", group: @group
+
+- content_for :page_specific_javascripts do
+  - if current_user
+    = javascript_tag do
+      :plain
+        window.uploads_path = "#{group_uploads_path(@group)}";
+
+- content_for :before_content do
+  = render 'groups/invite_members_modal', group: @group
+  = dispensable_render_if_exists 'shared/hand_raise_lead_modal', root_namespace: @group.root_ancestor
+  = render_if_exists "shared/saml_reload_modal", group_or_project: @group
+  = render_if_exists 'shared/end_of_trial_modal', group_or_project: @group
+
+= dispensable_render_if_exists "shared/web_hooks/group_web_hook_disabled_alert"
+= dispensable_render_if_exists "shared/free_user_cap_alert", source: @group
+
+= render template: base_layout || "layouts/application"

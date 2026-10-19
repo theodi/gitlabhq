@@ -1,0 +1,240 @@
+# frozen_string_literal: true
+
+module Search
+  # Central registry for search scopes across all search contexts
+  # Provides a single source of truth for scope definitions, availability,
+  # and validation logic
+  class Scopes
+    # API-only scopes for backward compatibility
+    # These scopes are maintained for API backward compatibility but are being
+    # phased out in favor of newer scopes (e.g., 'issues' -> 'work_items')
+    API_ONLY_SCOPES = {
+      issues: {
+        availability: {
+          global: %i[advanced basic],
+          group: %i[advanced basic],
+          project: %i[advanced basic]
+        }
+      }
+    }.freeze
+
+    # Scope definitions with metadata
+    # Format: { scope_key => { label:, sort:, availability: } }
+    # availability maps context (:global, :group, :project) to supported search types
+    # EE adds enhanced search types (zoekt, advanced) in ee/lib/ee/search/scopes.rb
+    SCOPE_DEFINITIONS = {
+      projects: {
+        label: -> { _('Projects') },
+        sort: 1,
+        availability: {
+          global: %i[advanced basic],
+          group: %i[advanced basic]
+        }
+      },
+      groups: {
+        label: -> { _('Groups') },
+        sort: 2,
+        availability: {
+          global: %i[advanced basic],
+          group: %i[advanced basic]
+        }
+      },
+      blobs: {
+        label: -> { _('Code') },
+        sort: 3,
+        availability: {
+          global: %i[zoekt advanced],
+          group: %i[zoekt advanced],
+          project: %i[zoekt advanced basic]
+        }
+      },
+      work_items: {
+        label: -> { _('Work items') },
+        sort: 4,
+        availability: {
+          global: %i[advanced basic],
+          group: %i[advanced basic],
+          project: %i[advanced basic]
+        }
+      },
+      merge_requests: {
+        label: -> { _('Merge requests') },
+        sort: 5,
+        availability: {
+          global: %i[advanced basic],
+          group: %i[advanced basic],
+          project: %i[advanced basic]
+        }
+      },
+      wiki_blobs: {
+        label: -> { _('Wiki') },
+        sort: 6,
+        availability: {
+          global: %i[advanced],
+          group: %i[advanced],
+          project: %i[advanced basic]
+        }
+      },
+      commits: {
+        label: -> { _('Commits') },
+        sort: 7,
+        availability: {
+          global: %i[advanced],
+          group: %i[advanced],
+          project: %i[advanced basic]
+        }
+      },
+      notes: {
+        label: -> { _('Comments') },
+        sort: 8,
+        availability: {
+          global: %i[advanced],
+          group: %i[advanced],
+          project: %i[advanced basic]
+        }
+      },
+      milestones: {
+        label: -> { _('Milestones') },
+        sort: 9,
+        availability: {
+          global: %i[advanced basic],
+          group: %i[advanced basic],
+          project: %i[advanced basic]
+        }
+      },
+      users: {
+        label: -> { _('Users') },
+        sort: 10,
+        availability: {
+          global: %i[advanced basic],
+          group: %i[advanced basic],
+          project: %i[advanced basic]
+        }
+      },
+      snippet_titles: {
+        label: -> { _('Snippets') },
+        sort: 11,
+        availability: {
+          global: %i[advanced basic]
+        }
+      }
+    }.freeze
+
+    # Map of search scopes to the ability required to access them on a project.
+    # Used by project-scoped permission checks across the UI (Search::Navigation),
+    # the API (lib/api/search.rb) and the service layer (Search::ProjectService).
+    SEARCH_TAB_ABILITY_MAP = {
+      blobs: :read_code,
+      commits: :read_code,
+      issues: :read_issue, # API backward compatibility
+      merge_requests: :read_merge_request,
+      milestones: :read_milestone,
+      notes: [:read_merge_request, :read_code, :read_issue, :read_snippet],
+      snippets: :read_snippet,
+      users: :read_project_member,
+      wiki_blobs: :read_wiki,
+      work_items: :read_work_item
+    }.freeze
+
+    # Map of scopes to their required application setting for global search
+    # EE settings are added in ee/lib/ee/search/scopes.rb
+    GLOBAL_SEARCH_SETTING_MAP = {
+      'issues' => :global_search_work_items_enabled?, # API backward compatibility
+      'work_items' => :global_search_work_items_enabled?,
+      'merge_requests' => :global_search_merge_requests_enabled?,
+      'snippet_titles' => :global_search_snippet_titles_enabled?,
+      'users' => :global_search_users_enabled?,
+      'groups' => :global_search_groups_enabled?
+    }.freeze
+
+    class << self
+      # Get all scope names
+      def all_scope_names
+        scope_definitions.keys.map(&:to_s)
+      end
+
+      # Get scopes available for a specific context (global, group, project)
+      # @param context [Symbol] :global, :group, or :project
+      # @param container [Project, Group, nil] The container being searched (optional)
+      # @param requested_search_type [String, Symbol] User's requested search type (optional)
+      # @param include_api_only [Boolean] Whether to include API-only backward compatibility scopes
+      # @return [Array<String>] Array of scope names available for the context
+      def available_for_context(context:, container: nil, requested_search_type: nil, include_api_only: true)
+        # Normalize invalid search types to nil
+        # This allows scope determination to work even with invalid search_type params
+        # The actual validation of search_type happens later via search_type_errors
+        requested_search_type = normalize_search_type(requested_search_type)
+
+        scope_definitions(include_api_only: include_api_only).select do |scope, definition|
+          valid_definition?(scope, definition, context, container, requested_search_type)
+        end.keys.map(&:to_s)
+      end
+
+      # Returns the scope definitions (can be overridden in EE)
+      # @param include_api_only [Boolean] Whether to include API-only backward compatibility scopes
+      # @return [Hash] Scope definitions hash
+      def scope_definitions(include_api_only: true)
+        include_api_only ? SCOPE_DEFINITIONS.merge(API_ONLY_SCOPES) : SCOPE_DEFINITIONS
+      end
+
+      # Whether a user is allowed to access a scope on a given project.
+      # Resolves the scope to its required ability via search_tab_ability_map
+      # and checks it against the project (or any project when an array is given).
+      # @param scope [Symbol, String] The scope/tab key (e.g. :work_items, :blobs)
+      # @param user [User] The user requesting access
+      # @param project [Project, Array<Project>, nil] The project(s) being searched
+      # @return [Boolean] True if the user can access the scope on the project
+      def scope_allowed_for_project?(scope, user, project)
+        return false unless project.present?
+
+        abilities = Array(search_tab_ability_map[scope.to_sym])
+        Array.wrap(project).any? { |p| abilities.any? { |ability| ::Ability.allowed?(user, ability, p) } }
+      end
+
+      private
+
+      def search_tab_ability_map
+        SEARCH_TAB_ABILITY_MAP
+      end
+
+      def global_search_setting_map
+        GLOBAL_SEARCH_SETTING_MAP
+      end
+
+      # Check if a scope definition is valid for the given context and search capabilities
+      # @param scope [Symbol] Scope key (e.g., :issues, :epics)
+      # @param definition [Hash] Scope definition
+      # @param context [Symbol] :global, :group, or :project
+      # @param container [Project, Group, nil] The container being searched
+      # @param requested_search_type [String, Symbol] User's explicitly requested search type
+      # @return [Boolean] True if the definition is valid
+      def valid_definition?(scope, definition, context, _container, _requested_search_type = nil)
+        availability = definition[:availability]
+        return false if availability[context].blank?
+        return false if context == :global && global_search_disabled_for_scope?(scope)
+
+        # In CE, only basic search is available
+        availability[context].include?(:basic)
+      end
+
+      # Check if global search is disabled for a specific scope
+      # @param scope [Symbol] Scope key to check
+      # @return [Boolean] True if global search is disabled for this scope
+      def global_search_disabled_for_scope?(scope)
+        setting_method = global_search_setting_map[scope.to_s]
+        setting_method && !::Gitlab::CurrentSettings.public_send(setting_method) # rubocop:disable GitlabSecurity/PublicSend -- setting_method is validated from GLOBAL_SEARCH_SETTING_MAP
+      end
+
+      # Normalize search type, returning nil for invalid values
+      # This allows scope determination to work even with invalid search_type params
+      # The actual validation of search_type happens later via search_type_errors
+      # @param search_type [String, Symbol, nil] The search type to normalize
+      # @return [Symbol, nil] Normalized search type or nil if invalid
+      def normalize_search_type(search_type)
+        ::SearchService.supported_search_types.include?(search_type.to_s) ? search_type.to_sym : nil
+      end
+    end
+  end
+end
+
+Search::Scopes.prepend_mod

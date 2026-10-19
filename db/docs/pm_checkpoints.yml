@@ -1,0 +1,11 @@
+---
+table_name: pm_checkpoints
+classes:
+- PackageMetadata::Checkpoint
+feature_categories:
+- software_composition_analysis
+description: Tracks position of last synced file.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/109713
+milestone: '15.9'
+gitlab_schema: gitlab_pm
+table_size: small

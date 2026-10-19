@@ -1,0 +1,37 @@
+- header_style = 'font-size:24px; text-align:center; line-height:30px;'
+- text_style = 'font-size:16px; text-align:center; line-height:24px; margin-top: 24px;'
+- error_style = 'color:#c91c00;'
+- emphasis_style = 'font-weight:bold;color:#c17d10;'
+- button_style = 'border: 1px solid #694cc0; border-radius: 4px; font-size: 14px; padding: 8px 16px; background-color: #7b58cf; color: #fff; cursor: pointer;'
+
+- strong_tag_pair = tag_pair(tag.strong(style: 'color: #7b58cf'), :strong_open, :strong_close)
+
+%h1{ style: header_style }
+  = @title
+
+- if @has_errors || @skipped_count > 0
+  %p{ style: text_style }
+    = safe_format(s_('BulkImport|Items assigned to placeholder users have been reassigned to users in %{strong_open}%{group}%{strong_close} according to the uploaded CSV file.'), strong_tag_pair, group: @group.name)
+- else
+  %p{ style: text_style }
+    = safe_format(s_('BulkImport|All items assigned to placeholder users have been reassigned to users in %{strong_open}%{group}%{strong_close} according to the uploaded CSV file.'), strong_tag_pair, group: @group.name)
+
+%ul
+  %li
+    %span= safe_format(ns_('BulkImport|%{count} placeholder user has been matched to a user.', 'BulkImport|%{count} placeholder users have been matched to users.', @success_count), count: @success_count)
+  - if @has_errors
+    %li{ style: error_style }
+      %strong= safe_format(ns_('BulkImport|%{count} placeholder user has not been matched to a user.', 'BulkImport|%{count} placeholder users have not been matched to users.', @failed_count), count: @failed_count)
+  - if @skipped_count > 0
+    %li{ style: emphasis_style }
+      = safe_format(ns_('BulkImport|%{count} placeholder user has been skipped.', 'BulkImport|%{count} placeholder users have been skipped.', @skipped_count), count: @skipped_count)
+
+- if @has_errors
+  %p{ style: text_style }
+    = s_('BulkImport|A CSV file with a list of placeholder reassignment errors is attached to this email.')
+
+%p{ style: text_style }
+  - extra_params = @has_errors ? { status: 'failed' } : {}
+  = link_to group_group_members_url(@group, tab: 'placeholders', **extra_params), target: '_blank', rel: 'noopener noreferrer' do
+    %button{ type: 'button', style: button_style }
+      = s_('BulkImport|Review results')

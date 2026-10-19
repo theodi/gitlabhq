@@ -1,0 +1,26 @@
+# @feature_category: portfolio_management
+
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+fragment SavedView on WorkItemSavedViewType {
+  id
+  name
+  description
+  subscribed
+  isPrivate
+  displaySettings
+  filters
+  sort
+  updatedAt
+  author {
+    ...User
+  }
+  lastUpdatedBy {
+    ...User
+  }
+  userPermissions {
+    updateSavedView
+    deleteSavedView
+    updateSavedViewVisibility
+  }
+}

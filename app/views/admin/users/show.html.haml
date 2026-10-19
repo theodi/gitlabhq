@@ -1,232 +1,186 @@
-- page_title @user.name, "Users"
-%h3.page-title
-  User:
-  = @user.name
-  - if @user.blocked?
-    %span.cred (Blocked)
-  - if @user.admin
-    %span.cred (Admin)
+- add_to_breadcrumbs _("Users"), admin_users_path
+- breadcrumb_title @user.name
+- page_title @user.name, _("Users")
+- list_item_classes = '!gl-grid @md/panel:gl-grid-cols-3 gl-gap-x-3'
+= render 'admin/users/head'
 
-  .pull-right
-    = link_to edit_admin_user_path(@user), class: "btn btn-grouped" do
-      %i.fa.fa-pencil-square-o
-      Edit
-%hr
-%ul.nav.nav-tabs
-  %li.active
-    %a{"data-toggle" => "tab", href: "#account"} Account
-  %li
-    %a{"data-toggle" => "tab", href: "#profile"} Profile
-  %li
-    %a{"data-toggle" => "tab", href: "#groups"} Groups
-  %li
-    %a{"data-toggle" => "tab", href: "#projects"} Projects
-  %li
-    %a{"data-toggle" => "tab", href: "#ssh-keys"} SSH keys
+.row
+  .gl-col-md-6
+    = render Pajamas::CardComponent.new(card_options: { class: 'gl-mb-5' }, body_options: { class: 'gl-py-2'}) do |c|
+      - c.with_header do
+        = @user.name
+      - c.with_body do
+        %ul.content-list
+          = render 'admin/users/summary_details'
+          = render_if_exists 'admin/users/audit_events_link', user: @user
+    -# Rendered on mobile only so order of cards can be different on desktop vs mobile
+    %div{ class: "@md/panel:gl-hidden" }
+      = render 'admin/users/profile', user: @user
+      = render 'admin/users/user_detail_note'
+    = render Pajamas::CardComponent.new(card_options: { class: 'gl-mb-5' }, body_options: { class: 'gl-py-2'}) do |c|
+      - c.with_header do
+        = _('Account')
+      - c.with_body do
+        %ul.content-list
+          = render 'admin/users/basic_details'
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Email:')
+            .gl-col-span-2
+              %strong= render partial: 'shared/email_with_badge', locals: { email: mail_to(@user.email), verified: @user.confirmed? }
 
-.tab-content
-  #account.tab-pane.active
-    .row
-      .col-md-6
-        .panel.panel-default
-          .panel-heading
-            Account:
-          %ul.well-list
-            %li
-              %span.light Name:
-              %strong= @user.name
-            %li
-              %span.light Username:
-              %strong
-                = @user.username
-            %li
-              %span.light Email:
-              %strong
-                = mail_to @user.email
-            - @user.emails.each do |email|
-              %li
-                %span.light Secondary email:
-                %strong= email.email
-                = link_to remove_email_admin_user_path(@user, email), data: { confirm: "Are you sure you want to remove #{email.email}?" }, method: :delete, class: "btn-xs btn btn-remove pull-right", title: 'Remove secondary email', id: "remove_email_#{email.id}" do
-                  %i.fa.fa-times
+          %li{ class: list_item_classes, data: { testid: 'email-confirmation-code-last-sent-at' } }
+            %span.gl-text-subtle= s_('UserProfile|Email confirmation code last sent at:')
+            .gl-col-span-2
+              %strong= @user.confirmation_sent_at&.to_fs(:medium) || _('never')
+              - if email_verification_token_expired?(email_sent_at: @user.confirmation_sent_at )
+                %span= _('(code expired)')
+          %li{ class: list_item_classes, data: { testid: 'email-verification-code-last-sent-at' } }
+            %span.gl-text-subtle= s_('UserProfile|Locked account email verification code last sent at:')
+            .gl-col-span-2
+              %strong= @user.locked_at&.to_fs(:medium) || _('never')
+              - if email_verification_token_expired?(email_sent_at: @user.locked_at)
+                %span= _('(code expired)')
 
-            %li
-              %span.light Can create groups:
-              %strong
-                = @user.can_create_group ? "Yes" : "No"
-            %li
-              %span.light Personal projects limit:
-              %strong
-                = @user.projects_limit
-            %li
-              %span.light Member since:
-              %strong
-                = @user.created_at.stamp("Nov 12, 2031")
-            - if @user.confirmed_at
-              %li
-                %span.light Confirmed at:
+          - @user.emails.reject(&:user_primary_email?).each do |email|
+            %li{ class: list_item_classes }
+              %span.gl-text-subtle= _('Secondary email:')
+              .gl-col-span-2
+                %strong= render partial: 'shared/email_with_badge', locals: { email: email.email, verified: email.confirmed? }
+                - if can?(current_user, :admin_all_resources)
+                  = link_button_to nil, remove_email_admin_user_path(@user, email), data: { confirm: _("Are you sure you want to remove %{email}?") % { email: email.email }, 'confirm-btn-variant': 'danger' }, method: :delete, class: 'gl-float-right has-tooltip', title: _('Remove secondary email'), id: "remove_email_#{email.id}", category: :tertiary, size: :small, icon: 'remove'
+          - if @user.placeholder?
+            - placeholder_group = Import::SourceUser.for_placeholder_user(@user)&.take&.namespace
+            %li{ class: list_item_classes }
+              %span.gl-text-subtle= s_('UserMapping|Placeholder top-level group:')
+              .gl-col-span-2
                 %strong
-                  = @user.confirmed_at.stamp("Nov 12, 2031")
-            - else
-              %li
-                %span.light Confirmed:
-                %strong.cred
-                  No
+                  - if placeholder_group
+                    = link_to placeholder_group.name, admin_group_path(placeholder_group)
+                  - else
+                    = _('None')
 
-            %li
-              %span.light Current sign-in at:
-              %strong
-                - if @user.current_sign_in_at
-                  = @user.current_sign_in_at.stamp("Nov 12, 2031")
+          %li.two-factor-status{ class: list_item_classes }
+            %span.gl-text-subtle= _('Two-factor Authentication:')
+            .gl-col-span-2
+              %strong{ class: @user.two_factor_enabled? ? 'gl-text-success' : 'gl-text-danger' }
+                - if @user.two_factor_enabled?
+                  = _('Enabled')
+                  - if current_user.admin?
+                    = link_button_to _('Disable'), disable_two_factor_admin_user_path(@user), aria: { label: _('Disable') }, data: { confirm: _('Are you sure?'), 'confirm-btn-variant': 'danger' }, method: :patch, class: 'gl-float-right', title: _('Disable Two-factor Authentication'), variant: :danger, size: :small
                 - else
-                  never
+                  = _('Disabled')
 
-            %li
-              %span.light Last sign-in at:
-              %strong
-                - if @user.last_sign_in_at
-                  = @user.last_sign_in_at.stamp("Nov 12, 2031")
-                - else
-                  never
+          %li{ class: list_item_classes, data: { testid: 'email-otp' } }
+            %span.gl-text-subtle= _('Email OTP:')
+            .gl-col-span-2
+              %strong= email_otp_status_text(@user)
 
-            %li
-              %span.light Sign-in count:
-              %strong
-                = @user.sign_in_count
+          = render_if_exists 'admin/namespace_plan_info', namespace: @user.namespace
 
-            - if @user.ldap_user?
-              %li
-                %span.light LDAP uid:
-                %strong
-                  = @user.ldap_identity.extern_uid
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('External User:')
+            .gl-col-span-2
+              %strong= @user.external? ? _('Yes') : _('No')
 
-            - if @user.created_by
-              %li
-                %span.light Created by:
-                %strong
-                  = link_to @user.created_by.name, [:admin, @user.created_by]
+          = render_if_exists 'admin/users/provisioned_by', user: @user
+          = render_if_exists 'admin/users/enterprise_group', user: @user
 
-      .col-md-6
-        - unless @user == current_user
-          - if @user.blocked?
-            .panel.panel-info
-              .panel-heading
-                This user is blocked
-              .panel-body
-                %p Blocking user has the following effects:
-                %ul
-                  %li User will not be able to login
-                  %li User will not be able to access git repositories
-                  %li Personal projects will be left
-                  %li Owned groups will be left
-                %br
-                = link_to 'Unblock user', unblock_admin_user_path(@user), method: :put, class: "btn btn-info", data: { confirm: 'Are you sure?' }
+          %li{ class: list_item_classes, 'data-testid': 'admin-can-create-top-level-groups' }
+            %span.gl-text-subtle= _('Can create top-level groups:')
+            .gl-col-span-2
+              %strong= @user.allow_user_to_create_group_and_project? && @user.can_create_group? ? _('Yes') : _('No')
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Private profile:')
+            .gl-col-span-2
+              %strong= @user.private_profile ? _('Yes') : _('No')
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Personal projects limit:')
+            .gl-col-span-2
+              %strong= @user.projects_limit
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Member since:')
+            .gl-col-span-2
+              %strong= @user.created_at.to_fs(:medium)
+          - if @user.confirmed_at
+            %li{ class: list_item_classes }
+              %span.gl-text-subtle= _('Confirmed at:')
+              .gl-col-span-2
+                %strong= @user.confirmed_at.to_fs(:medium)
           - else
-            .panel.panel-warning
-              .panel-heading
-                Block this user
-              .panel-body
-                %p Blocking user has the following effects:
-                %ul
-                  %li User will not be able to login
-                  %li User will not be able to access git repositories
-                  %li User will be removed from joined projects and groups
-                  %li Personal projects will be left
-                  %li Owned groups will be left
-                %br
-                = link_to 'Block user', block_admin_user_path(@user), data: { confirm: 'USER WILL BE BLOCKED! Are you sure?' }, method: :put, class: "btn btn-warning"
+            %li{ class: list_item_classes }
+              %span.gl-text-subtle= _('Confirmed:')
+              .gl-col-span-2
+                %strong.gl-text-danger= _('No')
 
-          .panel.panel-danger
-            .panel-heading
-              Remove user
-            .panel-body
-              - if @user.can_be_removed?
-                %p Deleting a user has the following effects:
-                %ul
-                  %li All user content like authored issues, snippets, comments will be removed
-                  - rp = @user.personal_projects.count
-                  - unless rp.zero?
-                    %li #{pluralize rp, 'personal project'} will be removed and cannot be restored
-                %br
-                = link_to 'Remove user', [:admin, @user], data: { confirm: "USER #{@user.name} WILL BE REMOVED! Are you sure?" }, method: :delete, class: "btn btn-remove"
-              - else
-                - if @user.solo_owned_groups.present?
-                  %p
-                    This user is currently an owner in these groups:
-                    %strong #{@user.solo_owned_groups.map(&:name).join(', ')}
-                  %p
-                    You must transfer ownership or delete these groups before you can delete this user.
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Current sign-in IP:')
+            .gl-col-span-2
+              %strong= @user.current_sign_in_ip || _('never')
 
-  #profile.tab-pane
-    .row
-      .col-md-6
-        .panel.panel-default
-          .panel-heading
-            = @user.name
-          %ul.well-list
-            %li
-              = image_tag avatar_icon(@user.email, 60), class: "avatar s60"
-            %li
-              %span.light Profile page:
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Current sign-in at:')
+            .gl-col-span-2
+              %strong= @user.current_sign_in_at&.to_fs(:medium) || _('never')
+
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Last sign-in IP:')
+            .gl-col-span-2
+              %strong= @user.last_sign_in_ip || _('never')
+
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Last sign-in at:')
+            .gl-col-span-2
+              %strong= @user.last_sign_in_at&.to_fs(:medium) || _('never')
+
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _('Sign-in count:')
+            .gl-col-span-2
+              %strong= @user.sign_in_count
+
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= _("Highest role:")
+            .gl-col-span-2
+              %strong= Gitlab::Access.human_access_with_none(@user.highest_role)
+
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= s_("Profiles|Support Pin:")
+            .gl-col-span-2
               %strong
-                = link_to user_path(@user) do
-                  = @user.username
-      .col-md-6
-        = render 'users/profile', user: @user
+                = @user.support_pin || _('None')
 
-  #groups.tab-pane
-    - if @user.group_members.present?
-      .panel.panel-default
-        .panel-heading Groups:
-        %ul.well-list
-          - @user.group_members.each do |group_member|
-            - group = group_member.group
-            %li.group_member
-              %span{class: ("list-item-name" unless group_member.owner?)}
-                %strong= link_to group.name, admin_group_path(group)
-              .pull-right
-                %span.light= group_member.human_access
-                - unless group_member.owner?
-                  = link_to group_group_member_path(group, group_member), data: { confirm: remove_user_from_group_message(group, group_member) }, method: :delete, remote: true, class: "btn-xs btn btn-remove", title: 'Remove user from group' do
-                    %i.fa.fa-times.fa-inverse
-    - else
-      .nothing-here-block This user has no groups.
+          %li{ class: list_item_classes }
+            %span.gl-text-subtle= s_("Profiles|Support Pin expires at:")
+            .gl-col-span-2
+              %strong
+                - if @user.support_pin_expires_at
+                  = @user.support_pin_expires_at.to_fs(:medium)
+                - else
+                  = _('None')
 
-  #projects.tab-pane
-    - if @user.groups.any?
-      .panel.panel-default
-        .panel-heading Group projects
-        %ul.well-list
-          - @user.groups.each do |group|
-            %li
-              %strong= group.name
-              &ndash; access to
-              #{pluralize(group.projects.count, 'project')}
 
-    .row
-      .col-md-6
-        = render 'users/projects', projects: @personal_projects
+          = render_if_exists 'admin/users/using_license_seat', user: @user
 
-      .col-md-6
-        .panel.panel-default
-          .panel-heading Joined projects (#{@joined_projects.count})
-          %ul.well-list
-            - @joined_projects.sort_by(&:name_with_namespace).each do |project|
-              - member = project.team.find_member(@user.id)
-              %li.project_member
-                .list-item-name
-                  = link_to admin_namespace_project_path(project.namespace, project), class: dom_class(project) do
-                    = project.name_with_namespace
+          - if @user.ldap_user?
+            %li{ class: list_item_classes }
+              %span.gl-text-subtle= _('LDAP uid:')
+              .gl-col-span-2
+                %strong= @user.ldap_identity.extern_uid
 
-                - if member
-                  .pull-right
-                    - if member.owner?
-                      %span.light Owner
-                    - else
-                      %span.light= member.human_access
+          - if @user.created_by
+            %li{ class: list_item_classes }
+              %span.gl-text-subtle= _('Created by:')
+              .gl-col-span-2
+                %strong= link_to @user.created_by.name, [:admin, @user.created_by]
 
-                      - if member.respond_to? :project
-                        = link_to namespace_project_project_member_path(project.namespace, project, member), data: { confirm: remove_from_project_team_message(project, member) }, remote: true, method: :delete, class: "btn-xs btn btn-remove", title: 'Remove user from project' do
-                          %i.fa.fa-times
-  #ssh-keys.tab-pane
-    = render 'profiles/keys/key_table', admin: true
+          = render_if_exists 'namespaces/shared_runner_status', namespace: @user.namespace, list_item_classes: list_item_classes
+
+    = render_if_exists 'admin/users/credit_card_info', user: @user, link_to_match_page: true
+
+    = render_if_exists 'admin/users/phone_info', user: @user, link_to_match_page: true
+
+    = render 'shared/custom_attributes', custom_attributes: @user.custom_attributes
+
+  -# Rendered on desktop only so order of cards can be different on desktop vs mobile
+  .gl-col-md-6.gl-hidden{ class: "@md/panel:gl-block" }
+    = render 'admin/users/profile', user: @user
+    = render 'admin/users/user_detail_note'

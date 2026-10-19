@@ -1,0 +1,139 @@
+import { shallowMount } from '@vue/test-utils';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { createControlledMockApollo } from 'helpers/mock_apollo_helper';
+import BoardNewIssue from '~/boards/components/board_new_issue.vue';
+import BoardNewItem from '~/boards/components/board_new_item.vue';
+import ProjectSelect from '~/boards/components/project_select.vue';
+import groupBoardQuery from '~/boards/graphql/group_board.query.graphql';
+import projectBoardQuery from '~/boards/graphql/project_board.query.graphql';
+import { NAMESPACE_GROUP, NAMESPACE_PROJECT } from '~/issues/constants';
+
+import {
+  mockList,
+  mockGroupProjects,
+  mockProjectBoardResponse,
+  mockGroupBoardResponse,
+} from '../mock_data';
+
+Vue.use(VueApollo);
+
+const projectBoardQueryHandlerSuccess = jest.fn().mockResolvedValue(mockProjectBoardResponse);
+const groupBoardQueryHandlerSuccess = jest.fn().mockResolvedValue(mockGroupBoardResponse);
+
+let mockApollo;
+let resolveQuery;
+
+const createComponent = ({
+  isGroupBoard = true,
+  data = { selectedProject: mockGroupProjects[0] },
+  provide = {},
+} = {}) => {
+  ({ apolloProvider: mockApollo, resolveQuery } = createControlledMockApollo([
+    [projectBoardQuery, projectBoardQueryHandlerSuccess],
+    [groupBoardQuery, groupBoardQueryHandlerSuccess],
+  ]));
+
+  return shallowMount(BoardNewIssue, {
+    apolloProvider: mockApollo,
+    propsData: {
+      list: mockList,
+      boardId: 'gid://gitlab/Board/1',
+    },
+    data: () => data,
+    provide: {
+      groupId: 1,
+      fullPath: mockGroupProjects[0].fullPath,
+      weightFeatureAvailable: false,
+      boardWeight: null,
+      isGroupBoard,
+      boardType: 'group',
+      isEpicBoard: false,
+      ...provide,
+    },
+    stubs: {
+      BoardNewItem,
+    },
+  });
+};
+
+describe('Issue boards new issue form', () => {
+  let wrapper;
+
+  const findBoardNewItem = () => wrapper.findComponent(BoardNewItem);
+
+  beforeEach(async () => {
+    wrapper = createComponent();
+
+    await nextTick();
+  });
+
+  it.each`
+    boardType            | queryHandler                       | notCalledHandler                   | query
+    ${NAMESPACE_GROUP}   | ${groupBoardQueryHandlerSuccess}   | ${projectBoardQueryHandlerSuccess} | ${groupBoardQuery}
+    ${NAMESPACE_PROJECT} | ${projectBoardQueryHandlerSuccess} | ${groupBoardQueryHandlerSuccess}   | ${projectBoardQuery}
+  `(
+    'fetches $boardType board and emits add-new-issue event',
+    async ({ boardType, queryHandler, notCalledHandler, query }) => {
+      projectBoardQueryHandlerSuccess.mockClear();
+      groupBoardQueryHandlerSuccess.mockClear();
+
+      wrapper = createComponent({
+        provide: {
+          boardType,
+          isProjectBoard: boardType === NAMESPACE_PROJECT,
+          isGroupBoard: boardType === NAMESPACE_GROUP,
+        },
+      });
+
+      await resolveQuery(query);
+
+      findBoardNewItem().vm.$emit('form-submit', { title: 'Foo' });
+
+      await nextTick();
+
+      expect(queryHandler).toHaveBeenCalled();
+      expect(notCalledHandler).not.toHaveBeenCalled();
+      expect(wrapper.emitted('add-new-issue')[0][0]).toMatchObject({ title: 'Foo' });
+    },
+  );
+
+  it('renders board-new-item component', () => {
+    const boardNewItem = findBoardNewItem();
+    expect(boardNewItem.exists()).toBe(true);
+    expect(boardNewItem.props()).toEqual({
+      list: mockList,
+      submitButtonTitle: 'Create issue',
+      disableSubmit: false,
+    });
+  });
+
+  it('emits event `toggle-new-form` when `board-new-item` emits form-cancel event', async () => {
+    findBoardNewItem().vm.$emit('form-cancel');
+
+    await nextTick();
+    expect(wrapper.emitted('toggle-new-form')).toHaveLength(1);
+  });
+
+  describe('when in group issue board', () => {
+    it('renders project-select component within board-new-item component', () => {
+      const projectSelect = findBoardNewItem().findComponent(ProjectSelect);
+
+      expect(projectSelect.exists()).toBe(true);
+    });
+  });
+
+  describe('when in project issue board', () => {
+    beforeEach(() => {
+      wrapper = createComponent({
+        isGroupBoard: false,
+      });
+    });
+
+    it('does not render project-select component within board-new-item component', () => {
+      const projectSelect = findBoardNewItem().findComponent(ProjectSelect);
+
+      expect(projectSelect.exists()).toBe(false);
+    });
+  });
+});

@@ -1,0 +1,109 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'PipelineCancel', feature_category: :pipeline_composition do
+  include GraphqlHelpers
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, maintainers: user) }
+  let_it_be(:pipeline) { create(:ci_pipeline, project: project, user: user) }
+
+  let(:mutation) do
+    variables = {
+      id: pipeline.to_global_id.to_s
+    }
+    graphql_mutation(
+      :pipeline_cancel,
+      variables,
+      <<-QL
+        errors
+        pipeline {
+          id
+        }
+      QL
+    )
+  end
+
+  let(:mutation_response) { graphql_mutation_response(:pipeline_cancel) }
+
+  it_behaves_like 'authorizing granular token permissions for GraphQL', :cancel_pipeline do
+    let(:boundary_object) { project }
+    let(:mutation) do
+      graphql_mutation(
+        :pipeline_cancel,
+        { id: pipeline.to_global_id.to_s },
+        'errors'
+      )
+    end
+
+    let(:request) { post_graphql_mutation(mutation, token: { personal_access_token: pat }) }
+  end
+
+  it 'does not cancel any pipelines not owned by the current user' do
+    build = create(:ci_build, :running, pipeline: pipeline)
+
+    post_graphql_mutation(mutation, current_user: create(:user))
+
+    expect(graphql_errors).not_to be_empty
+    expect(build).not_to be_canceled
+  end
+
+  it 'returns a error if the pipline cannot be be canceled' do
+    build = create(:ci_build, :success, pipeline: pipeline)
+    pipeline.update!(status: 'success')
+
+    post_graphql_mutation(mutation, current_user: user)
+
+    expect(mutation_response).to include('errors' => include(eq 'Pipeline is not cancelable'))
+    expect(build).not_to be_canceled
+  end
+
+  context 'when a build is running' do
+    let!(:job) { create(:ci_build, :running, pipeline: pipeline) }
+    let_it_be(:pipeline_id) { ::Gitlab::GlobalId.build(pipeline, id: pipeline.id).to_s }
+
+    context 'when supports canceling is true' do
+      include_context 'when canceling support'
+
+      it 'transitions all running jobs to canceling', :sidekiq_inline do
+        post_graphql_mutation(mutation, current_user: user)
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(job.reload).to be_canceling
+        expect(pipeline.reload).to be_canceling
+        expect(mutation_response['pipeline']['id']).to eq(pipeline_id)
+      end
+    end
+
+    context 'when supports canceling is false' do
+      it 'updates all running jobs to `canceled`', :sidekiq_inline do
+        post_graphql_mutation(mutation, current_user: user)
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(job.reload).to be_canceled
+        expect(pipeline.reload).to be_canceled
+        expect(mutation_response['pipeline']['id']).to eq(pipeline_id)
+      end
+    end
+  end
+
+  context 'when the pipeline cancel rate limit is exceeded', :clean_gitlab_redis_rate_limiting, :freeze_time do
+    let!(:job) { create(:ci_build, :running, pipeline: pipeline) }
+
+    before do
+      stub_application_setting(pipeline_cancel_limit_per_user_project: 1)
+    end
+
+    it 'surfaces the throttle in the mutation errors', :aggregate_failures do
+      post_graphql_mutation(mutation, current_user: user)
+      expect(graphql_mutation_response(:pipeline_cancel)['errors']).to be_empty
+
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      expect(graphql_mutation_response(:pipeline_cancel)['errors'])
+        .to contain_exactly(_('This endpoint has been requested too many times. Try again later.'))
+    end
+  end
+end

@@ -1,0 +1,29 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe 'Project wikis', feature_category: :wiki do
+  let_it_be(:user) { create(:user) }
+
+  let(:wiki) { create(:project_wiki, user: user, project: project) }
+  let(:project) { create(:project, namespace: user.namespace, creator: user) }
+
+  describe 'JS-driven flows', :js do
+    describe 'User creates wiki page', quarantine: {
+      issue: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/issues/43850',
+      type: :test_environment
+    } do
+      it_behaves_like 'User creates wiki page'
+    end
+
+    it_behaves_like 'User deletes wiki page'
+    it_behaves_like 'User updates wiki page'
+    it_behaves_like 'User uses wiki shortcuts'
+    it_behaves_like 'User views a wiki page'
+  end
+
+  describe 'Server-rendered flows' do
+    it_behaves_like 'User views wiki pages'
+    it_behaves_like 'User views wiki templates'
+  end
+end

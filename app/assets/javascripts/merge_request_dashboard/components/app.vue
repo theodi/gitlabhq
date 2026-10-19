@@ -1,0 +1,321 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlBadge, GlButton, GlAlert, GlTabs, GlTab, GlLink } from '@gitlab/ui';
+import Visibility from 'visibilityjs';
+import { TYPENAME_USER } from '~/graphql_shared/constants';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { formatNumber } from '~/locale';
+import IndexLayout from '~/vue_shared/components/index_layout.vue';
+import NewResourceDropdown from '~/vue_shared/components/new_resource_dropdown/new_resource_dropdown.vue';
+import { RESOURCE_TYPE_MERGE_REQUEST } from '~/vue_shared/components/new_resource_dropdown/constants';
+import searchUserProjectsWithMergeRequestsEnabled from '~/vue_shared/components/new_resource_dropdown/graphql/search_user_projects_with_merge_requests_enabled.query.graphql';
+import eventHub from '../event_hub';
+import userMergeRequestUpdatedSubscription from '../queries/user_merge_request_updated.subscription.graphql';
+import ConfigDropdown from './config_dropdown.vue';
+import TabTitle from './tab_title.vue';
+import MergeRequestsQuery from './merge_requests_query.vue';
+import CollapsibleSection from './collapsible_section.vue';
+import MergeRequest from './merge_request.vue';
+import DraftsCount from './drafts_count.vue';
+
+const SEARCH_TAB_KEY = 'search';
+
+export default {
+  name: 'MergeRequestDashboardRoot',
+  resourceType: RESOURCE_TYPE_MERGE_REQUEST,
+  mergeRequestsQuery: searchUserProjectsWithMergeRequestsEnabled,
+  apollo: {
+    $subscribe: {
+      // eslint-disable-next-line @gitlab/vue-no-undef-apollo-properties
+      currentUserUpdated: {
+        query: userMergeRequestUpdatedSubscription,
+        variables() {
+          return {
+            userId: this.currentUserId,
+          };
+        },
+        result({ data: { userMergeRequestUpdated: mergeRequest } }) {
+          if (!mergeRequest) return;
+
+          const isAssignee = mergeRequest.assignees.nodes.some((u) => u.id === this.currentUserId);
+          const isAuthor = mergeRequest.author.id === this.currentUserId;
+          const isReviewer = mergeRequest.reviewers.nodes.some((u) => u.id === this.currentUserId);
+
+          if (isAssignee) eventHub.$emit('refetch-merge-requests', 'assignedMergeRequests');
+          if (isAssignee || isAuthor)
+            eventHub.$emit('refetch-merge-requests', 'authorOrAssigneeMergeRequests');
+          if (isReviewer) eventHub.$emit('refetch-merge-requests', 'reviewRequestedMergeRequests');
+        },
+      },
+    },
+  },
+  components: {
+    IndexLayout,
+    NewResourceDropdown,
+    ConfigDropdown,
+    GlBadge,
+    GlButton,
+    GlAlert,
+    GlTabs,
+    GlTab,
+    GlLink,
+    TabTitle,
+    MergeRequestsQuery,
+    CollapsibleSection,
+    MergeRequest,
+    DraftsCount,
+    SearchList: defineAsyncComponent(() => import('./search_list.vue')),
+  },
+  inject: {
+    mergeRequestsSearchDashboardPath: { default: '' },
+    vueSearchEnabled: { default: false },
+  },
+  props: {
+    tabs: {
+      type: Array,
+      required: true,
+    },
+  },
+  data() {
+    const currentTab = this.$route.params.filter || '';
+
+    return {
+      currentTab,
+      isVisible: !Visibility.hidden(),
+      searchCount: null,
+      visitedTabs: new Set([currentTab]),
+    };
+  },
+  computed: {
+    currentUserId() {
+      return convertToGraphQLId(TYPENAME_USER, gon.current_user_id);
+    },
+    isSearchTab() {
+      return this.currentTab === SEARCH_TAB_KEY;
+    },
+    searchTabAttributes() {
+      return { href: this.$router.resolve(this.searchRoute).href };
+    },
+    searchRoute() {
+      return { path: SEARCH_TAB_KEY, query: { assignee_username: gon.current_username } };
+    },
+    hasSearchCount() {
+      return Number.isInteger(this.searchCount);
+    },
+  },
+  mounted() {
+    Visibility.change(() => this.onVisibilityChange());
+  },
+  methods: {
+    formatNumber,
+    onVisibilityChange() {
+      this.isVisible = !Visibility.hidden();
+    },
+    clickTab({ key }) {
+      if (this.currentTab === key) return;
+
+      this.currentTab = key;
+
+      // For tabs that we have already visited we cache that its been visited
+      // and with this value we then stop the lazy rendering of the tabs
+      // which causes GitLab UI tabs to not destroy and then re-create
+      // the components inside.
+      this.visitedTabs.add(key);
+
+      this.$router.push({ path: key || '/' });
+    },
+    clickSearchTab() {
+      if (this.isSearchTab) return;
+
+      this.currentTab = SEARCH_TAB_KEY;
+
+      this.$router.push(this.searchRoute);
+    },
+    queriesForTab(tab) {
+      return tab.lists
+        .flat()
+        .filter((l) => !l.hideCount)
+        .map((list) => ({ query: list.query, variables: list.variables }));
+    },
+    tabAttributes(tab) {
+      return { href: this.$router.resolve({ path: tab.key }).href };
+    },
+  },
+};
+</script>
+
+<template>
+  <index-layout :heading="__('Merge requests')">
+    <template #actions>
+      <config-dropdown />
+      <new-resource-dropdown
+        :resource-type="$options.resourceType"
+        :query="$options.mergeRequestsQuery"
+      />
+    </template>
+    <gl-tabs no-key-nav>
+      <gl-tab
+        v-for="tab in tabs"
+        :key="tab.title"
+        :active="tab.key === currentTab"
+        :lazy="!visitedTabs.has(tab.key)"
+        :title-link-attributes="tabAttributes(tab)"
+        data-testid="merge-request-dashboard-tab"
+        @click="clickTab(tab)"
+      >
+        <template #title>
+          <tab-title :title="tab.title" :queries="queriesForTab(tab)" />
+        </template>
+        <div v-for="(lists, i) in tab.lists" :key="`lists_${i}`">
+          <div
+            v-if="i === 1"
+            class="gl-mb-5 gl-mt-8 gl-rounded-base gl-bg-strong gl-px-4 gl-py-2 gl-font-bold gl-text-subtle"
+            data-testid="merge-request-count-explanation"
+          >
+            {{ __('Items below are excluded from the active count') }}
+          </div>
+          <merge-requests-query
+            v-for="(list, listIndex) in lists"
+            :key="`list_${list.id}`"
+            :query="list.query"
+            :variables="list.variables"
+            :hide-count="list.hideCount"
+            :is-visible="isVisible"
+          >
+            <template
+              #default="{
+                mergeRequests,
+                newMergeRequestIds,
+                count,
+                hasNextPage,
+                loadMore,
+                loading,
+                error,
+                resetNewMergeRequestIds,
+                draftsCount,
+              }"
+            >
+              <collapsible-section
+                :id="list.id"
+                :hide-count="list.hideCount"
+                :count="count"
+                :has-merge-requests="mergeRequests.length > 0"
+                :title="list.title"
+                :help-content="list.helpContent"
+                :loading="loading"
+                :error="error"
+                :new-merge-request-ids="newMergeRequestIds"
+                :merge-requests="mergeRequests"
+                :active-list="i === 0"
+                :class="{
+                  '!gl-mt-0': listIndex === 0,
+                  '!gl-mt-3': listIndex > 0,
+                }"
+                data-testid="merge-request-dashboard-list"
+                @clear-new="resetNewMergeRequestIds"
+              >
+                <div
+                  class="gl-grid gl-grid-cols-[minmax(200px,1fr),minmax(250px,40%),repeat(2,minmax(110px,1fr)),minmax(200px,1fr)] gl-gap-x-4 gl-overflow-x-auto"
+                  role="table"
+                >
+                  <div
+                    class="gl-border-b gl-col-span-full gl-grid gl-grid-cols-subgrid gl-px-5 gl-pb-3"
+                    role="row"
+                  >
+                    <div class="gl-text-sm gl-font-bold gl-text-subtle" role="columnheader">
+                      {{ __('Status') }}
+                    </div>
+                    <div class="gl-text-sm gl-font-bold gl-text-subtle" role="columnheader">
+                      {{ __('Title') }}
+                    </div>
+                    <div class="gl-text-sm gl-font-bold gl-text-subtle" role="columnheader">
+                      {{ __('Assignee') }}
+                    </div>
+                    <div class="gl-text-sm gl-font-bold gl-text-subtle" role="columnheader">
+                      {{ __('Reviewers') }}
+                    </div>
+                    <div
+                      class="gl-text-right gl-text-sm gl-font-bold gl-text-subtle"
+                      role="columnheader"
+                    >
+                      {{ __('Checks') }}
+                    </div>
+                  </div>
+                  <template v-if="mergeRequests.length">
+                    <merge-request
+                      v-for="(mergeRequest, index) in mergeRequests"
+                      :key="mergeRequest.id"
+                      :merge-request="mergeRequest"
+                      :new-merge-request-ids="newMergeRequestIds"
+                      :list-id="list.id"
+                      data-testid="merge-request"
+                      class="gl-col-span-full gl-grid gl-grid-cols-subgrid gl-px-5 gl-py-4"
+                      :class="{ 'gl-border-b': index < mergeRequests.length - 1 }"
+                    />
+                  </template>
+                  <div
+                    v-else
+                    class="gl-col-span-full"
+                    :class="{ 'gl-py-6 gl-text-center': !error }"
+                    role="row"
+                  >
+                    <template v-if="loading">
+                      {{ __('Loading…') }}
+                    </template>
+                    <gl-alert v-else-if="error" variant="danger" :dismissible="false">
+                      {{ __('There was an error fetching merge requests. Please try again.') }}
+                    </gl-alert>
+                  </div>
+                </div>
+                <template #drafts>
+                  <drafts-count
+                    v-if="draftsCount !== null && !loading"
+                    :count="draftsCount"
+                    class="gl-border-t gl-px-5 gl-py-3"
+                  />
+                </template>
+                <template #pagination>
+                  <div v-if="hasNextPage" class="crud-pagination-container">
+                    <gl-button :loading="loading" data-testid="load-more" @click="loadMore">{{
+                      __('Show more')
+                    }}</gl-button>
+                  </div>
+                </template>
+              </collapsible-section>
+            </template>
+          </merge-requests-query>
+        </div>
+      </gl-tab>
+      <gl-tab
+        v-if="vueSearchEnabled"
+        :active="isSearchTab"
+        lazy
+        :title-link-attributes="searchTabAttributes"
+        data-testid="merge-request-dashboard-search-tab"
+        @click="clickSearchTab"
+      >
+        <template #title>
+          {{ __('Search') }}
+          <gl-badge
+            v-if="hasSearchCount"
+            class="gl-tab-counter-badge"
+            data-testid="search-tab-count"
+            >{{ formatNumber(searchCount) }}</gl-badge
+          >
+        </template>
+        <search-list @count-change="searchCount = $event" />
+      </gl-tab>
+      <template #tabs-end>
+        <li v-if="!vueSearchEnabled" role="presentation" class="nav-item">
+          <gl-link
+            role="tab"
+            :href="mergeRequestsSearchDashboardPath"
+            class="nav-link gl-tab-nav-item !gl-no-underline"
+          >
+            {{ __('Search') }}
+          </gl-link>
+        </li>
+      </template>
+    </gl-tabs>
+  </index-layout>
+</template>

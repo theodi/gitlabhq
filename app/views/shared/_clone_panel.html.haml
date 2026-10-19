@@ -1,25 +1,21 @@
-- project = project || @project
-.git-clone-holder.input-group
-  .input-group-addon.git-protocols
-    .input-group-btn
-      %button{ |
-        class: "btn btn-sm #{ 'active' if default_clone_protocol == 'ssh' }#{ ' has_tooltip' if current_user && current_user.require_ssh_key? }", |
-        :"data-clone" => project.ssh_url_to_repo, |
-        :"data-title" => "Add an SSH key to your profile<br> to pull or push via SSH",
-        :"data-html" => "true",
-        :"data-container" => "body"}
-        SSH
-    .input-group-btn
-      %button{ |
-        class: "btn btn-sm #{ 'active' if default_clone_protocol == 'http' }#{ ' has_tooltip' if current_user && current_user.require_password? }", |
-        :"data-clone" => project.http_url_to_repo, |
-        :"data-title" => "Set a password on your account<br> to pull or push via #{gitlab_config.protocol.upcase}",
-        :"data-html" => "true",
-        :"data-container" => "body"}
-        = gitlab_config.protocol.upcase
-  = text_field_tag :project_clone, default_url_to_repo(project), class: "js-select-on-focus form-control input-sm", readonly: true
-  - if project.kind_of?(Project) && project.empty_repo?
-    .input-group-addon
-      .visibility-level-label.has_tooltip{'data-title' => "#{visibility_level_label(project.visibility_level)} project" }
-        = visibility_level_icon(project.visibility_level)
-        = visibility_level_label(project.visibility_level).downcase
+.js-git-clone-holder.input-group.btn-group
+  .input-group-prepend
+    - if allowed_protocols_present?
+      .input-group-text.btn
+        %span.js-clone-dropdown-label
+          = enabled_protocol_button(container, enabled_protocol)
+    - else
+      = render Pajamas::ButtonComponent.new(href: '#', button_options: { id: 'clone-dropdown', class: 'input-group-text btn-icon hover:gl-no-underline', data: { toggle: 'dropdown', testid: 'clone-dropdown' } }) do
+        %span.js-clone-dropdown-label
+          = default_clone_protocol.upcase
+        = sprite_icon('chevron-down', css_class: 'gl-icon')
+      %ul.dropdown-menu.dropdown-menu-selectable.clone-options-dropdown{ data: { testid: 'clone-dropdown-content' } }
+        %li.js-clone-links
+          = ssh_clone_button(container)
+        %li.js-clone-links
+          = http_clone_button(container)
+        = render_if_exists 'shared/kerberos_clone_button', container: container
+
+  = text_field_tag :clone_url, default_url_to_repo(container), class: "js-select-on-focus gl-form-input form-control", readonly: true, aria: { label: _('Repository clone URL') }, data: { testid: 'clone-url-content' }
+  .input-group-append
+    = clipboard_button(target: '#clone_url', title: _("Copy URL"), variant: :default, category: :primary, size: :medium)

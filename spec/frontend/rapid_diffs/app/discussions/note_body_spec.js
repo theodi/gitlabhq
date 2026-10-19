@@ -1,0 +1,323 @@
+import { shallowMount } from '@vue/test-utils';
+import NoteBody from '~/rapid_diffs/app/discussions/note_body.vue';
+import NoteSuggestions from '~/rapid_diffs/app/discussions/note_suggestions.vue';
+import NoteAttachment from '~/notes/components/note_attachment.vue';
+import NoteEditedText from '~/notes/components/note_edited_text.vue';
+import AwardsList from '~/vue_shared/components/awards_list.vue';
+import NoteForm from '~/rapid_diffs/app/discussions/note_form.vue';
+import { UPDATE_COMMENT_FORM } from '~/notes/i18n';
+
+describe('NoteBody', () => {
+  let wrapper;
+  let defaultProps;
+
+  const createComponent = (props = {}) => {
+    wrapper = shallowMount(NoteBody, {
+      propsData: {
+        ...defaultProps,
+        ...props,
+      },
+    });
+  };
+
+  const findNoteText = () => wrapper.find('.test-note-content');
+  const findNoteForm = () => wrapper.findComponent(NoteForm);
+  const findHiddenTextarea = () => wrapper.find('textarea');
+  const findNoteEditedText = () => wrapper.findComponent(NoteEditedText);
+  const findAwardsList = () => wrapper.findComponent(AwardsList);
+  const findNoteAttachment = () => wrapper.findComponent(NoteAttachment);
+  const findNoteSuggestions = () => wrapper.findComponent(NoteSuggestions);
+  const findDuoReviewFooter = () => wrapper.find('[data-testid="duo-review-feedback"]');
+
+  beforeEach(() => {
+    defaultProps = {
+      note: {
+        id: '123',
+        note: 'Test note content',
+        note_html: '<p class="test-note-content">Test note content</p>',
+        path: '/notes/123',
+        internal: false,
+        author: {
+          id: 1,
+        },
+        current_user: {
+          can_award_emoji: true,
+        },
+      },
+      saveNote: jest.fn().mockResolvedValue(),
+      canEdit: false,
+      isEditing: false,
+    };
+    window.gon = {
+      current_user_id: 1,
+    };
+  });
+
+  it('renders note text with gfm directive', () => {
+    createComponent();
+    const noteText = findNoteText();
+    expect(noteText.exists()).toBe(true);
+  });
+
+  describe('note form', () => {
+    it('does not show form when not editing', () => {
+      createComponent({ isEditing: false });
+      expect(findNoteForm().exists()).toBe(false);
+    });
+
+    it('shows form when editing', () => {
+      createComponent({ isEditing: true });
+      const form = findNoteForm();
+      expect(form.exists()).toBe(true);
+      expect(form.props()).toMatchObject({
+        noteBody: defaultProps.note.note,
+        noteId: defaultProps.note.id,
+        saveButtonTitle: 'Save comment',
+        autosaveKey: '',
+        restoreFromAutosave: false,
+        saveNote: defaultProps.saveNote,
+        saveNoteErrorMessages: UPDATE_COMMENT_FORM,
+      });
+    });
+
+    it('uses edited note', () => {
+      const editedNote = 'edit';
+      createComponent({
+        isEditing: true,
+        note: {
+          ...defaultProps.note,
+          editedNote,
+        },
+      });
+      expect(findNoteForm().props('noteBody')).toBe(editedNote);
+    });
+
+    it('passes autosave key to form', () => {
+      const autosaveKey = 'test-autosave-key';
+      createComponent({ isEditing: true, autosaveKey });
+      expect(findNoteForm().props('autosaveKey')).toBe(autosaveKey);
+    });
+
+    it('passes restore from autosave to form', () => {
+      createComponent({ isEditing: true, restoreFromAutosave: true });
+      expect(findNoteForm().props('restoreFromAutosave')).toBe(true);
+    });
+
+    it('shows internal note save button title for internal notes', () => {
+      createComponent({
+        isEditing: true,
+        note: { ...defaultProps.note, internal: true },
+      });
+      expect(findNoteForm().props('saveButtonTitle')).toBe('Save internal note');
+    });
+
+    it('emits input event when form input changes', () => {
+      createComponent({ isEditing: true });
+      findNoteForm().vm.$emit('input', 'updated content');
+      expect(wrapper.emitted('input')).toStrictEqual([['updated content']]);
+    });
+
+    it('emits cancel-editing event when form is cancelled', () => {
+      createComponent({ isEditing: true });
+      findNoteForm().vm.$emit('cancel', true);
+      expect(wrapper.emitted('cancel-editing')).toStrictEqual([[true]]);
+    });
+  });
+
+  describe('hidden textarea', () => {
+    it('does not show when cannot edit', () => {
+      createComponent({ canEdit: false });
+      expect(findHiddenTextarea().exists()).toBe(false);
+    });
+
+    it('shows when can edit', () => {
+      createComponent({ canEdit: true });
+      const field = findHiddenTextarea();
+      expect(field.exists()).toBe(true);
+      expect(field.attributes('data-update-url')).toBe(defaultProps.note.path);
+    });
+  });
+
+  describe('note edited text', () => {
+    it('does not show when note has not been edited', () => {
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          last_edited_at: null,
+          created_at: '2024-01-01',
+        },
+      });
+      expect(findNoteEditedText().exists()).toBe(false);
+    });
+
+    it('does not show when last edited time equals created time', () => {
+      const timestamp = '2024-01-01T10:00:00Z';
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          last_edited_at: timestamp,
+          created_at: timestamp,
+        },
+      });
+      expect(findNoteEditedText().exists()).toBe(false);
+    });
+
+    it('shows when note has been edited', () => {
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          last_edited_at: '2024-01-02T10:00:00Z',
+          last_edited_by: { name: 'John Doe' },
+          created_at: '2024-01-01T10:00:00Z',
+        },
+      });
+      const editedText = findNoteEditedText();
+      expect(editedText.exists()).toBe(true);
+      expect(editedText.props()).toMatchObject({
+        editedAt: '2024-01-02T10:00:00Z',
+        editedBy: { name: 'John Doe' },
+        actionText: 'Edited',
+      });
+    });
+  });
+
+  describe('awards list', () => {
+    it('does not show when note has no awards', () => {
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          award_emoji: [],
+        },
+      });
+      expect(findAwardsList().exists()).toBe(false);
+    });
+
+    it('does not show when award_emoji is undefined', () => {
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          award_emoji: undefined,
+        },
+      });
+      expect(findAwardsList().exists()).toBe(false);
+    });
+
+    it('shows when note has awards', () => {
+      const awards = [
+        { name: 'thumbsup', user: { id: 1 } },
+        { name: 'heart', user: { id: 2 } },
+      ];
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          award_emoji: awards,
+        },
+      });
+      const awardsList = findAwardsList();
+      expect(awardsList.exists()).toBe(true);
+      expect(awardsList.props()).toMatchObject({
+        awards,
+        canAwardEmoji: true,
+        currentUserId: 1,
+      });
+    });
+
+    it('emits award event when award is toggled', () => {
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          award_emoji: [{ name: 'thumbsup', user: { id: 1 } }],
+        },
+      });
+      findAwardsList().vm.$emit('award', 'thumbsup');
+      expect(wrapper.emitted('award')).toStrictEqual([['thumbsup']]);
+    });
+  });
+
+  describe('suggestions', () => {
+    const createNoteWithSuggestion = () => ({
+      ...defaultProps.note,
+      suggestions: [{ id: 1, appliable: true, applied: false }],
+    });
+
+    it('renders NoteSuggestions when note has suggestions', () => {
+      const note = createNoteWithSuggestion();
+      createComponent({ note });
+      expect(findNoteSuggestions().exists()).toBe(true);
+      expect(findNoteSuggestions().props('note')).toBe(note);
+    });
+
+    it('does not render NoteSuggestions when note has no suggestions', () => {
+      createComponent();
+      expect(findNoteSuggestions().exists()).toBe(false);
+    });
+
+    it('does not render NoteSuggestions when editing', () => {
+      createComponent({ note: createNoteWithSuggestion(), isEditing: true });
+      expect(findNoteSuggestions().exists()).toBe(false);
+    });
+  });
+
+  describe('note attachment', () => {
+    it('does not show when note has no attachment', () => {
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          attachment: null,
+        },
+      });
+      expect(findNoteAttachment().exists()).toBe(false);
+    });
+
+    it('shows when note has attachment', () => {
+      const attachment = {
+        url: 'https://example.com/file.pdf',
+        filename: 'file.pdf',
+      };
+      createComponent({
+        note: {
+          ...defaultProps.note,
+          attachment,
+        },
+      });
+      const noteAttachment = findNoteAttachment();
+      expect(noteAttachment.exists()).toBe(true);
+      expect(noteAttachment.props('attachment')).toEqual(attachment);
+    });
+  });
+
+  describe('Duo first review comment', () => {
+    const duoNote = (overrides = {}) => ({
+      ...defaultProps.note,
+      award_emoji: [],
+      author: {
+        ...defaultProps.note.author,
+        user_type: 'duo_code_review_bot',
+        username: 'GitLabDuo',
+      },
+      ...overrides,
+    });
+
+    it('does not render when author is not the Duo code review bot', () => {
+      createComponent({ isFirstNote: true });
+      expect(findDuoReviewFooter().exists()).toBe(false);
+    });
+
+    it('does not render when the note is not the first note', () => {
+      createComponent({ note: duoNote(), isFirstNote: false });
+      expect(findDuoReviewFooter().exists()).toBe(false);
+    });
+
+    it('renders when the note is the first Duo code review bot note', () => {
+      createComponent({ note: duoNote(), isFirstNote: true });
+      expect(findDuoReviewFooter().exists()).toBe(true);
+    });
+
+    it('shows default awards list with thumbsup and thumbsdown for first DiffNote from GitLabDuo', () => {
+      createComponent({ note: duoNote(), isFirstNote: true });
+
+      expect(findAwardsList().exists()).toBe(true);
+      expect(findAwardsList().props('defaultAwards')).toEqual(['thumbsup', 'thumbsdown']);
+    });
+  });
+});

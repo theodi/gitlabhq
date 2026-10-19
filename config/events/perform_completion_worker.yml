@@ -1,0 +1,22 @@
+---
+description: When a CompletionWorker gets executed to perform an AI request.
+category: Llm::CompletionWorker
+action: perform_completion_worker
+classification: duo
+extra_properties:
+  client:
+    type: string
+identifiers:
+  - user
+product_group: ai_model_services
+product_categories:
+- ai_abstraction_layer
+milestone: '16.7'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/137913
+tiers:
+  - ultimate
+additional_properties:
+  label:
+    description: AI Action that gets performed
+  property:
+    description: Request ID to link to other events of the same AI request.

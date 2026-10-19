@@ -1,0 +1,186 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe MergeRequests::UpdateAssigneesService, :request_store, feature_category: :code_review_workflow do
+  include AfterNextHelpers
+
+  let_it_be(:group) { create(:group, :public) }
+  let_it_be(:user) { create(:user) }
+  let_it_be(:user2) { create(:user) }
+  let_it_be(:user3) { create(:user) }
+  let_it_be(:service_account) { create(:user, :service_account, composite_identity_enforced: true) }
+  let_it_be(:merge_request_author) { create(:user) }
+  let_it_be(:unauthorized_user) { create(:user) }
+  let_it_be(:project) do
+    create(:project, :private, group: group, maintainers: user,
+      developers: [user2, user3, service_account])
+  end
+
+  let_it_be_with_reload(:merge_request) do
+    create(
+      :merge_request,
+      :simple,
+      :unique_branches,
+      title: 'Old title',
+      description: "FYI #{user2.to_reference}",
+      assignee_ids: [user3.id],
+      source_project: project,
+      target_project: project,
+      author: merge_request_author
+    )
+  end
+
+  let(:service) { described_class.new(project: project, current_user: user, params: opts) }
+  let(:opts) { { assignee_ids: [user2.id] } }
+
+  before do
+    merge_request.errors.clear
+  end
+
+  describe 'execute' do
+    def update_merge_request
+      service.execute(merge_request)
+    end
+
+    shared_examples 'it updates and enqueues the job' do
+      it 'correctly updates the MR and enqueues the job' do
+        expect_next(MergeRequests::HandleAssigneesChangeService, project: project, current_user: user) do |service|
+          expect(service)
+            .to receive(:async_execute).with(merge_request, [user3], execute_hooks: true)
+        end
+
+        expect { update_merge_request }
+          .to change { merge_request.reload.assignees }.from([user3]).to(new_users)
+          .and change { merge_request.updated_at }
+          .and change { merge_request.updated_by }.to(user)
+      end
+    end
+
+    shared_examples 'removing all assignees' do
+      it 'removes all assignees' do
+        expect(update_merge_request).to have_attributes(assignees: be_empty, errors: be_none)
+      end
+
+      it 'enqueues the correct background work' do
+        expect_next(MergeRequests::HandleAssigneesChangeService, project: project, current_user: user) do |service|
+          expect(service)
+            .to receive(:async_execute)
+            .with(merge_request, [user3], execute_hooks: true)
+        end
+
+        update_merge_request
+      end
+    end
+
+    context 'when the parameters are valid' do
+      context 'when using sentinel values' do
+        context 'when using assignee_ids' do
+          let(:opts) { { assignee_ids: [0] } }
+
+          it_behaves_like 'removing all assignees'
+        end
+
+        context 'when using assignee_id' do
+          let(:opts) { { assignee_id: 0 } }
+
+          it_behaves_like 'removing all assignees'
+        end
+      end
+
+      context 'when the assignee_ids parameter is the empty list' do
+        let(:opts) { { assignee_ids: [] } }
+
+        it_behaves_like 'removing all assignees'
+      end
+
+      it_behaves_like 'it updates and enqueues the job' do
+        let(:new_users) { [user2] }
+      end
+
+      it 'does not update the assignees if they do not have access' do
+        opts[:assignee_ids] = [unauthorized_user.id]
+
+        expect(update_merge_request).to have_attributes(
+          assignees: [user3],
+          errors: be_any
+        )
+      end
+
+      it 'is more efficient than using the full update-service' do
+        allow_next(MergeRequests::HandleAssigneesChangeService, project: project, current_user: user) do |service|
+          expect(service)
+            .to receive(:async_execute)
+            .with(merge_request, [user3], execute_hooks: true)
+        end
+
+        other_mr = create(
+          :merge_request,
+          :simple,
+          :unique_branches,
+          title: merge_request.title,
+          description: merge_request.description,
+          assignee_ids: merge_request.assignee_ids,
+          source_project: merge_request.project,
+          author: merge_request.author
+        )
+
+        update_service = ::MergeRequests::UpdateService.new(project: project, current_user: user, params: opts)
+
+        expect { service.execute(merge_request) }
+          .to issue_fewer_queries_than { update_service.execute(other_mr) }
+      end
+    end
+
+    context 'when assigning to a service account with composite identity enforced' do
+      let(:opts) { { assignee_ids: [service_account.id] } }
+
+      it 'adds the service account as an assignee' do
+        expect(::Gitlab::Auth::Identity).to receive(:link_from_scoped_user).and_call_original
+
+        update_merge_request
+        expect(merge_request.reload.assignees).to eq([service_account])
+      end
+
+      it 'attributes the system note to the human user, not the service account', :sidekiq_inline do
+        update_merge_request
+
+        system_note = merge_request.notes.system.last
+        expect(system_note.author).to eq(user)
+      end
+    end
+
+    context 'when assigning to a regular account with composite identity enforced' do
+      let_it_be(:user_with_composite_identity_enforced) { create(:user, developer_of: project) }
+
+      let(:opts) { { assignee_ids: [user_with_composite_identity_enforced.id] } }
+
+      before do
+        user_with_composite_identity_enforced.composite_identity_enforced!
+        allow(User).to receive(:id_in).and_return([user_with_composite_identity_enforced])
+      end
+
+      it 'does not link identities' do
+        expect(::Gitlab::Auth::Identity).not_to receive(:link_from_scoped_user)
+
+        update_merge_request
+      end
+    end
+
+    context 'when user has no set_merge_request_metadata permissions' do
+      before do
+        allow(user).to receive(:can?).and_call_original
+
+        allow(user)
+          .to receive(:can?)
+          .with(:set_merge_request_metadata, merge_request)
+          .and_return(false)
+      end
+
+      it 'does not update the MR assignees' do
+        expect { update_merge_request }
+          .not_to change { merge_request.reload.assignees.to_a }
+      end
+    end
+  end
+end

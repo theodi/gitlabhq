@@ -1,0 +1,19 @@
+- event = last_push_event
+- if event && show_last_push_widget?(event)
+  = render Pajamas::AlertComponent.new(variant: :success,
+    alert_options: { class: 'gl-mt-3' },
+    close_button_options: { class: 'js-close-banner' }) do |c|
+    - c.with_body do
+      %span= s_("LastPushEvent|You pushed to")
+      %strong.gl-inline-flex{ class: 'gl-max-w-1/2', data: { toggle: 'tooltip' }, title: event.ref_name }
+        = link_to event.ref_name, project_commits_path(event.project, event.ref_name), class: 'ref-name gl-truncate'
+      %span.gl-ml-1= clipboard_button(text: event.ref_name, title: s_('LastPushEvent|Copy branch name'), variant: :default, category: :tertiary, size: :small)
+      - if event.project != @project
+        %span= s_("LastPushEvent|at")
+        %strong= link_to_project event.project
+      #{time_ago_with_tooltip(event.created_at)}
+
+    - if create_mr_button_from_event?(event)
+      - c.with_actions do
+        = render Pajamas::ButtonComponent.new(size: :small, variant: :confirm, href: create_mr_path_from_push_event(event), button_options: { data: { testid: 'create-merge-request-button' }}) do
+          = _('Create merge request')

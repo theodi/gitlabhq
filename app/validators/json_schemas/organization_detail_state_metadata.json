@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "last_updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_changed_by_user_id": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "last_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hard_deletion_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "correlation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "soft_deletion_scheduled_by_user_id": {
+      "type": "number"
+    },
+    "confirmed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "confirmed_by_user_id": {
+      "type": "number"
+    },
+    "maintenance_reason": {
+      "type": "string",
+      "enum": [
+        "migration",
+        "isolation",
+        "incident",
+        "billing",
+        "legal"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

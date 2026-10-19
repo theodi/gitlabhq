@@ -1,0 +1,602 @@
+<script>
+import { isEmpty, clamp, throttle } from 'lodash-es';
+import MrWidgetApprovals from 'ee_else_ce/vue_merge_request_widget/components/approvals/approvals.vue';
+import MRWidgetService from 'ee_else_ce/vue_merge_request_widget/services/mr_widget_service';
+import MRWidgetStore from 'ee_else_ce/vue_merge_request_widget/stores/mr_widget_store';
+import getStateQuery from 'ee_else_ce/vue_merge_request_widget/queries/get_state.query.graphql';
+import getStateSubscription from 'ee_else_ce/vue_merge_request_widget/queries/get_state.subscription.graphql';
+import { stateToComponentMap as classState } from 'ee_else_ce/vue_merge_request_widget/stores/state_maps';
+import { createAlert } from '~/alert';
+import { STATUS_CLOSED, STATUS_MERGED } from '~/issues/constants';
+import notify from '~/lib/utils/notify';
+import { sprintf, s__, __ } from '~/locale';
+import SmartInterval from '~/smart_interval';
+import { TYPENAME_MERGE_REQUEST } from '~/graphql_shared/constants';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { setFaviconOverlay } from '~/lib/utils/favicon';
+import Loading from './components/loading.vue';
+import MrWidgetAlertMessage from './components/mr_widget_alert_message.vue';
+import MrWidgetPipelineContainer from './components/mr_widget_pipeline_container.vue';
+import SourceBranchRemovalStatus from './components/source_branch_removal_status.vue';
+import ArchivedState from './components/states/mr_widget_archived.vue';
+import MrWidgetAutoMergeEnabled from './components/states/mr_widget_auto_merge_enabled.vue';
+import AutoMergeFailed from './components/states/mr_widget_auto_merge_failed.vue';
+import PreparingState from './components/states/mr_widget_preparing.vue';
+import ClosedState from './components/states/mr_widget_closed.vue';
+import MergedState from './components/states/mr_widget_merged.vue';
+import MergingState from './components/states/mr_widget_merging.vue';
+import MissingBranchState from './components/states/mr_widget_missing_branch.vue';
+import NothingToMergeState from './components/states/nothing_to_merge.vue';
+import ReadyToMergeState from './components/merge_widget.vue';
+import ShaMismatch from './components/states/sha_mismatch.vue';
+import WidgetContainer from './components/widget/app.vue';
+import {
+  STATE_MACHINE,
+  stateToComponentMap,
+  STATE_QUERY_POLLING_INTERVAL_DEFAULT,
+  STATE_QUERY_POLLING_INTERVAL_BACKOFF,
+  FOUR_MINUTES_IN_MS,
+} from './constants';
+import eventHub from './event_hub';
+import mergeRequestQueryVariablesMixin from './mixins/merge_request_query_variables';
+import mergeChecksQuery from './queries/merge_checks.query.graphql';
+import MrWidgetReadyToMerge from './components/states/ready_to_merge.vue';
+import MergeChecks from './components/merge_checks.vue';
+
+export default {
+  name: 'MRWidgetRoot',
+  components: {
+    Loading,
+    WidgetContainer,
+    MrWidgetPipelineContainer,
+    MrWidgetAlertMessage,
+    MrWidgetMerged: MergedState,
+    MrWidgetClosed: ClosedState,
+    MrWidgetMerging: MergingState,
+    MrWidgetArchived: ArchivedState,
+    MrWidgetNothingToMerge: NothingToMergeState,
+    MrWidgetMissingBranch: MissingBranchState,
+    MrWidgetReadyToMerge,
+    ShaMismatch,
+    MrWidgetPreparing: PreparingState,
+    MrWidgetAutoMergeEnabled,
+    MrWidgetAutoMergeFailed: AutoMergeFailed,
+    SourceBranchRemovalStatus,
+    MrWidgetApprovals,
+    ReadyToMerge: ReadyToMergeState,
+    MergeChecks,
+  },
+  apollo: {
+    state: {
+      query: getStateQuery,
+      notifyOnNetworkStatusChange: true,
+      manual: true,
+      skip() {
+        return !this.mr;
+      },
+      throttle: STATE_QUERY_POLLING_INTERVAL_DEFAULT,
+      variables() {
+        return this.mergeRequestQueryVariables;
+      },
+      result(response) {
+        if (!this.initialRequest && response.networkStatus === 6) {
+          this.checkStatus(undefined, undefined, false);
+        }
+
+        // 7 is the value for when the network status is ready
+        if (response.networkStatus !== 7 || response.error) return;
+
+        this.pollInterval = Math.max(
+          STATE_QUERY_POLLING_INTERVAL_DEFAULT,
+          Math.trunc(this.apolloStateQueryPollingInterval() || 0),
+        );
+
+        if (response.data?.project) {
+          this.mr.setGraphqlData(response.data.project);
+          this.initialRequest = false;
+          this.loading = false;
+        }
+      },
+      error() {
+        this.pollInterval = null;
+      },
+      subscribeToMore: {
+        document() {
+          return getStateSubscription;
+        },
+        skip() {
+          return !this.mr?.id || this.loading;
+        },
+        variables() {
+          return {
+            issuableId: convertToGraphQLId(TYPENAME_MERGE_REQUEST, this.mr?.id),
+            targetBranches: this.mergeRequestQueryVariables.targetBranches,
+          };
+        },
+        updateQuery(
+          _,
+          {
+            subscriptionData: {
+              data: { mergeRequestMergeStatusUpdated },
+            },
+          },
+        ) {
+          if (mergeRequestMergeStatusUpdated) {
+            const { userPermissions, mergeabilityChecks, state } = mergeRequestMergeStatusUpdated;
+            const stateChanged = state !== this.mr.mergeRequestState;
+
+            this.mr.setGraphqlSubscriptionData(mergeRequestMergeStatusUpdated);
+            this.mergeChecksState = { userPermissions, mergeabilityChecks };
+
+            // Whether the MR is open and its merged details only come from REST,
+            // which a push never refreshes, so fetch them when the state moves.
+            if (stateChanged) this.checkStatus(undefined, undefined, false);
+          }
+        },
+      },
+    },
+    mergeChecksState: {
+      query: mergeChecksQuery,
+      fetchPolicy: 'no-cache',
+      skip() {
+        return !this.mr;
+      },
+      variables() {
+        return this.mergeRequestQueryVariables;
+      },
+      update: (data) => data?.project?.mergeRequest,
+      error() {
+        this.mergeChecksState = {};
+      },
+    },
+  },
+  mixins: [mergeRequestQueryVariablesMixin],
+  props: {
+    mrData: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+  },
+  data() {
+    const store = this.mrData && new MRWidgetStore(this.mrData);
+
+    return {
+      mr: store,
+      state: store && store.state,
+      service: store && this.createService(store),
+      machineState: store?.machineValue || STATE_MACHINE.definition.initial,
+      loading: true,
+      startingPollInterval: STATE_QUERY_POLLING_INTERVAL_DEFAULT,
+      pollInterval: -1,
+      initialRequest: true,
+      mergeChecksState: {},
+    };
+  },
+  computed: {
+    isLoadingMergeChecks() {
+      return this.$apollo.queries.mergeChecksState.loading;
+    },
+    shouldRenderApprovals() {
+      return !['preparing', 'nothingToMerge'].includes(this.mr.state);
+    },
+    componentName() {
+      return stateToComponentMap[this.machineState] || classState[this.mr.state];
+    },
+    hasPipelineMustSucceedConflict() {
+      return !this.mr.hasCI && this.mr.onlyAllowMergeIfPipelineSucceeds;
+    },
+    shouldRenderPipelines() {
+      return this.mr.hasCI || this.hasPipelineMustSucceedConflict;
+    },
+    shouldRenderCollaborationStatus() {
+      return this.mr.allowCollaboration && this.mr.isOpen;
+    },
+    shouldRenderMergedPipeline() {
+      return this.mr.state === STATUS_MERGED && !isEmpty(this.mr.mergePipeline);
+    },
+    showMergePipelineForkWarning() {
+      return Boolean(
+        this.mr.mergePipelinesEnabled && this.mr.sourceProjectId !== this.mr.targetProjectId,
+      );
+    },
+    showManageStorageDocsLink() {
+      return this.mr.mergeError?.includes(__('Your namespace storage is full'));
+    },
+    mergeError() {
+      let { mergeError } = this.mr;
+
+      if (this.showManageStorageDocsLink) return mergeError;
+
+      if (mergeError && mergeError.slice(-1) === '.') {
+        mergeError = mergeError.slice(0, -1);
+      }
+
+      return sprintf(
+        s__('mrWidget|%{mergeError}. Try again.'),
+        {
+          mergeError,
+        },
+        false,
+      );
+    },
+    hasMergeError() {
+      return this.mr.mergeError && this.state !== STATUS_CLOSED;
+    },
+    hasAlerts() {
+      return this.hasMergeError || this.showMergePipelineForkWarning;
+    },
+    mergeBlockedComponentVisible() {
+      return !(
+        [
+          'preparing',
+          'nothingToMerge',
+          'archived',
+          'missingBranch',
+          'merged',
+          'closed',
+          'merging',
+          'shaMismatch',
+        ].includes(this.mr.state) || this.mr.machineValue === 'MERGING'
+      );
+    },
+    autoMergeEnabled() {
+      return this.mr.autoMergeEnabled;
+    },
+  },
+  watch: {
+    'mr.machineValue': {
+      handler(newValue) {
+        this.machineState = newValue;
+      },
+    },
+    state(newVal, oldVal) {
+      if (newVal !== oldVal && this.shouldRenderMergedPipeline) {
+        // init polling
+        this.initPostMergeDeploymentsPolling();
+      }
+    },
+    'mr.ciStatus': {
+      handler(newValue) {
+        if (!newValue || this.loading) return;
+
+        this.handleNotification();
+      },
+    },
+    pollInterval(newVal) {
+      this.stopPolling();
+
+      if (this.startingPollInterval > 0 && newVal >= STATE_QUERY_POLLING_INTERVAL_DEFAULT) {
+        this.resumePolling();
+      }
+    },
+  },
+  mounted() {
+    MRWidgetService.fetchInitialData()
+      .then(({ data, headers }) => {
+        if (window.gon?.features?.mergeWidgetStopPolling) {
+          this.startingPollInterval = -1;
+        } else {
+          this.startingPollInterval =
+            Number(headers['POLL-INTERVAL']) || STATE_QUERY_POLLING_INTERVAL_DEFAULT;
+        }
+        this.initWidget(data);
+      })
+      .catch(() =>
+        createAlert({
+          message: __('Unable to load the merge request widget. Try reloading the page.'),
+        }),
+      );
+  },
+  beforeDestroy() {
+    this.unbindEventListeners();
+
+    if (this.deploymentsInterval) {
+      this.deploymentsInterval.destroy();
+    }
+
+    if (this.postMergeDeploymentsInterval) {
+      this.postMergeDeploymentsInterval.destroy();
+    }
+  },
+  methods: {
+    initWidget(data = {}) {
+      if (this.mr) {
+        this.mr.setData({ ...window.gl.mrWidgetData, ...data });
+      } else {
+        this.mr = new MRWidgetStore({ ...window.gl.mrWidgetData, ...data });
+      }
+
+      this.machineState = this.mr.machineValue;
+
+      if (!this.state) {
+        this.state = this.mr.state;
+      }
+
+      if (!this.service) {
+        this.service = this.createService(this.mr);
+      }
+
+      this.setFaviconHelper();
+      this.initDeploymentsPolling();
+
+      if (this.shouldRenderMergedPipeline) {
+        this.initPostMergeDeploymentsPolling();
+      }
+
+      this.bindEventHubListeners();
+    },
+    getServiceEndpoints(store) {
+      return {
+        mergePath: store.mergePath,
+        mergeCheckPath: store.mergeCheckPath,
+        cancelAutoMergePath: store.cancelAutoMergePath,
+        removeWIPPath: store.removeWIPPath,
+        sourceBranchPath: store.sourceBranchPath,
+        ciEnvironmentsStatusPath: store.ciEnvironmentsStatusPath,
+        mergeRequestBasicPath: store.mergeRequestBasicPath,
+        mergeRequestWidgetPath: store.mergeRequestWidgetPath,
+        mergeRequestCachedWidgetPath: store.mergeRequestCachedWidgetPath,
+        mergeActionsContentPath: store.mergeActionsContentPath,
+        rebasePath: store.rebasePath,
+        apiApprovalsPath: store.apiApprovalsPath,
+        apiApprovePath: store.apiApprovePath,
+        apiUnapprovePath: store.apiUnapprovePath,
+      };
+    },
+    createService(store) {
+      return new MRWidgetService(this.getServiceEndpoints(store));
+    },
+    async refetchState(cb = () => {}) {
+      await this.$apollo.queries.state.refetch();
+
+      cb();
+    },
+    checkStatus: throttle(function checkStatus(cb, isRebased, refetch = true) {
+      if (refetch) {
+        this.refetchState();
+      }
+
+      return this.service
+        .checkStatus()
+        .then(({ data }) => {
+          if (!Object.keys(data).length) return;
+
+          this.mr.setData(data, isRebased);
+          this.setFaviconHelper();
+
+          if (cb) {
+            cb.call(null, data);
+          }
+        })
+        .catch(() =>
+          createAlert({
+            message: __('Something went wrong. Please try again.'),
+          }),
+        );
+    }, STATE_QUERY_POLLING_INTERVAL_DEFAULT),
+    refreshMergeStatus() {
+      // refetch=false: the strategies come from the REST checkStatus payload; the Apollo
+      // state refetch does not carry them, so skip that extra query (#629566).
+      this.checkStatus(undefined, undefined, false);
+    },
+    setFaviconHelper() {
+      if (this.mr.faviconOverlayPath) {
+        return setFaviconOverlay(this.mr.faviconOverlayPath);
+      }
+      return Promise.resolve();
+    },
+    initDeploymentsPolling() {
+      this.deploymentsInterval = this.deploymentsPoll(this.fetchPreMergeDeployments);
+    },
+    initPostMergeDeploymentsPolling() {
+      this.postMergeDeploymentsInterval = this.deploymentsPoll(this.fetchPostMergeDeployments);
+    },
+    deploymentsPoll(callback) {
+      return new SmartInterval({
+        callback,
+        startingInterval: 30 * 1000,
+        maxInterval: 240 * 1000,
+        incrementByFactorOf: 4,
+        immediateExecution: true,
+      });
+    },
+    fetchDeployments(target) {
+      return this.service.fetchDeployments(target);
+    },
+    fetchPreMergeDeployments() {
+      return this.fetchDeployments()
+        .then(({ data }) => {
+          if (data.length) {
+            this.mr.deployments = data;
+          }
+        })
+        .catch(() => this.throwDeploymentsError());
+    },
+    fetchPostMergeDeployments() {
+      return this.fetchDeployments('merge_commit')
+        .then(({ data }) => {
+          if (data.length) {
+            this.mr.postMergeDeployments = data;
+          }
+        })
+        .catch(() => this.throwDeploymentsError());
+    },
+    throwDeploymentsError() {
+      createAlert({
+        message: __(
+          'Something went wrong while fetching the environments for this merge request. Please try again.',
+        ),
+      });
+    },
+    fetchActionsContent() {
+      this.service
+        .fetchMergeActionsContent()
+        .then((res) => {
+          if (res.data) {
+            const el = document.createElement('div');
+            // eslint-disable-next-line no-unsanitized/property
+            el.innerHTML = res.data;
+            document.body.appendChild(el);
+            document.dispatchEvent(new CustomEvent('merged:UpdateActions'));
+          }
+        })
+        .catch(() =>
+          createAlert({
+            message: __('Something went wrong. Please try again.'),
+          }),
+        );
+    },
+    handleNotification() {
+      const { pipeline } = this.mr;
+
+      if (!pipeline || !Object.keys(pipeline).length) return;
+
+      const { label } = pipeline.details.status;
+      const title = sprintf(__('Pipeline %{label}'), { label });
+      const message = sprintf(
+        __('Pipeline %{label} for "%{dataTitle}"'),
+        {
+          dataTitle: this.mr.title,
+          label,
+        },
+        false,
+      );
+
+      notify.notifyMe(title, message, this.mr.gitlabLogo);
+    },
+    resumePolling: throttle(function resumePollingThrottled() {
+      this.$apollo.queries.state.startPolling(this.pollInterval);
+    }, STATE_QUERY_POLLING_INTERVAL_DEFAULT),
+    stopPolling() {
+      this.$apollo.queries.state.stopPolling();
+    },
+    checkRebasedStatus(cb) {
+      this.checkStatus(cb, true);
+    },
+    setMergeError(mergeError) {
+      this.mr.mergeError = mergeError;
+    },
+    setMrData(data) {
+      this.mr.setData(data);
+    },
+    onFetchDeployments() {
+      this.fetchPreMergeDeployments();
+      if (this.shouldRenderMergedPipeline) {
+        this.fetchPostMergeDeployments();
+      }
+    },
+    bindEventHubListeners() {
+      eventHub.$on('mr-widget-update-requested', this.refetchState);
+      // Strategies are only delivered by the REST checkStatus poll (or the subscription),
+      // not by an Apollo state refetch, so approval triggers this to refresh them promptly.
+      eventHub.$on('mr-widget-check-status', this.refreshMergeStatus);
+      eventHub.$on('mr-widget-rebase-success', this.checkRebasedStatus);
+      eventHub.$on('failed-to-merge', this.setMergeError);
+      eventHub.$on('UpdateWidgetData', this.setMrData);
+      eventHub.$on('fetch-actions-content', this.fetchActionsContent);
+      eventHub.$on('fetch-deployments', this.onFetchDeployments);
+    },
+    unbindEventListeners() {
+      eventHub.$off('mr-widget-update-requested', this.refetchState);
+      eventHub.$off('mr-widget-check-status', this.refreshMergeStatus);
+      eventHub.$off('mr-widget-rebase-success', this.checkRebasedStatus);
+      eventHub.$off('failed-to-merge', this.setMergeError);
+      eventHub.$off('UpdateWidgetData', this.setMrData);
+      eventHub.$off('fetch-actions-content', this.fetchActionsContent);
+      eventHub.$off('fetch-deployments', this.onFetchDeployments);
+    },
+    apolloStateQueryMaxPollingInterval() {
+      return (
+        Math.max(this.startingPollInterval, STATE_QUERY_POLLING_INTERVAL_DEFAULT) +
+        FOUR_MINUTES_IN_MS
+      );
+    },
+    apolloStateQueryPollingInterval() {
+      if (!this.startingPollInterval || this.startingPollInterval <= 0) {
+        return null;
+      }
+
+      const unboundedInterval =
+        STATE_QUERY_POLLING_INTERVAL_BACKOFF *
+        Math.max(STATE_QUERY_POLLING_INTERVAL_DEFAULT, this.pollInterval);
+
+      return clamp(
+        unboundedInterval,
+        this.startingPollInterval,
+        this.apolloStateQueryMaxPollingInterval(),
+      );
+    },
+  },
+};
+</script>
+<template>
+  <div v-if="!loading" id="widget-state" class="mr-state-widget gl-mt-5">
+    <mr-widget-alert-message v-if="shouldRenderCollaborationStatus" type="info">
+      {{ s__('mrWidget|Members who can merge are allowed to add commits.') }}
+    </mr-widget-alert-message>
+    <mr-widget-pipeline-container
+      v-if="shouldRenderPipelines"
+      :mr="mr"
+      data-testid="pipeline-container"
+    />
+    <mr-widget-approvals v-if="shouldRenderApprovals" :mr="mr" :service="service" />
+    <widget-container :mr="mr" />
+    <div class="mr-section-container">
+      <template v-if="hasAlerts">
+        <mr-widget-alert-message
+          v-if="hasMergeError"
+          type="danger"
+          dismissible
+          data-testid="merge-error"
+          class="mr-widget-section gl-rounded-b-none"
+        >
+          <span>{{ mergeError }}</span>
+        </mr-widget-alert-message>
+        <mr-widget-alert-message
+          v-if="showMergePipelineForkWarning"
+          type="warning"
+          :help-path="mr.mergeRequestPipelinesHelpPath"
+          class="mr-widget-section gl-rounded-b-none"
+          data-testid="merge-pipeline-fork-warning"
+        >
+          {{
+            s__(
+              'mrWidget|If the last pipeline ran in the fork project, it may be inaccurate. Before merge, we advise running a pipeline in this project.',
+            )
+          }}
+          <template #link-content>
+            {{ __('Learn more') }}
+          </template>
+        </mr-widget-alert-message>
+      </template>
+
+      <div class="mr-widget-section" data-testid="mr-widget-content">
+        <template v-if="mergeBlockedComponentVisible">
+          <mr-widget-auto-merge-enabled
+            v-if="autoMergeEnabled"
+            :mr="mr"
+            :service="service"
+            class="gl-border-b gl-border-b-section"
+          />
+          <merge-checks
+            :mr="mr"
+            :service="service"
+            :merge-checks-state="mergeChecksState"
+            :is-loading-merge-checks="isLoadingMergeChecks"
+          />
+        </template>
+        <component :is="componentName" v-else :mr="mr" :service="service" />
+        <ready-to-merge v-if="mr.commitsCount" :mr="mr" :service="service" />
+      </div>
+    </div>
+    <mr-widget-pipeline-container
+      v-if="shouldRenderMergedPipeline"
+      class="js-post-merge-pipeline"
+      :mr="mr"
+      is-post-merge
+      data-testid="merged-pipeline-container"
+    />
+  </div>
+  <loading v-else />
+</template>

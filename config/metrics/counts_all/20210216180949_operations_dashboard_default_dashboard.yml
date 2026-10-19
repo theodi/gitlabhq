@@ -1,0 +1,16 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage.monitor.operations_dashboard_default_dashboard
+description: Active users with enabled operations dashboard
+product_group: platform_insights
+product_categories:
+- environment_management
+value_type: number
+status: active
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

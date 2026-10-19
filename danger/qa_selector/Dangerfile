@@ -1,0 +1,92 @@
+# frozen_string_literal: true
+
+return if helper.stable_branch?
+
+data_testids = /testid/
+
+deprecated_qa_selectors = /(?=qa_selector|data-qa-selector)|(?!.*\bdata-qa-)(?=class=.*qa-.*|class: .*qa-.*)/
+
+def filter_changed_lines(files, pattern)
+  files_with_lines = {}
+  files.each do |file|
+    next if file.start_with?('spec/', 'ee/spec/', 'qa/')
+
+    testid_changed_lines = helper.changed_lines(file).select { |line| line =~ pattern }
+    next unless testid_changed_lines.any?
+
+    files_with_lines[file] = testid_changed_lines
+  end
+
+  files_with_lines
+end
+
+changed_code_files = helper.changed_files(/\.(vue|haml|js|rb)$/)
+
+return if changed_code_files.empty?
+
+lines_with_testids  = filter_changed_lines(changed_code_files, data_testids)
+deprecated_qa_class = filter_changed_lines(changed_code_files, deprecated_qa_selectors)
+
+return if lines_with_testids.empty? && deprecated_qa_class.empty?
+
+if lines_with_testids.any?
+  markdown(<<~MARKDOWN)
+    ### `testid` selectors
+
+    The following changed lines in this MR contain `testid` selectors:
+
+  MARKDOWN
+
+  lines_with_testids.each do |file, lines|
+    markdown(<<~MARKDOWN)
+      #### `#{file}`
+
+      ```shell
+      #{lines.join("\n")}
+      ```
+
+    MARKDOWN
+  end
+
+  markdown(<<~MARKDOWN)
+    If the `e2e:test-on-omnibus-ee` job in the `qa` stage has run automatically, please ensure the tests are passing.
+    If the job has not run, please start the `manual:e2e-test-pipeline-generate` job in the `prepare` stage and ensure the tests in `follow-up:e2e:test-on-omnibus-ee` pipeline are passing.
+
+    For the list of known failures please refer to [the latest pipeline triage issue](https://gitlab.com/gitlab-org/quality/pipeline-triage/-/issues).
+
+    If your changes are under a feature flag, please check our [Testing with feature flags](https://docs.gitlab.com/development/testing_guide/end_to_end/feature_flags/#automatic-test-execution-when-a-feature-flag-definition-changes) documentation for instructions.
+
+  MARKDOWN
+
+  warn "This merge request contains lines with testid selectors. Please ensure `e2e:test-on-omnibus-ee` job is run."
+end
+
+if deprecated_qa_class.any?
+  markdown(<<~MARKDOWN)
+    ### Deprecated `data-qa-selector` selectors
+
+  MARKDOWN
+
+  markdown(<<~MARKDOWN)
+    The following lines in this MR contain deprecated `data-qa-selector` selectors:
+
+  MARKDOWN
+
+  deprecated_qa_class.each do |file, lines|
+    markdown(<<~MARKDOWN)
+      #### `#{file}`
+
+      ```shell
+      #{lines.join("\n")}
+      ```
+
+    MARKDOWN
+  end
+
+  markdown(<<~MARKDOWN)
+    Please ensure all deprecated data-qa-selector attributes are replaced with data-testid attributes in accordance with our [Testing Guide](https://docs.gitlab.com/development/testing_guide/end_to_end/page_objects/#data-testid-vs-data-qa-selector).
+
+  MARKDOWN
+
+  warn "This merge request contains deprecated data-qa-selector attribute. Please use data-testid attribute instead."
+end

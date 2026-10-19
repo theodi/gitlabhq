@@ -1,0 +1,32 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+# @feature_category: importers
+
+query offlineTransferSourceOwnedGroups(
+  $search: String
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+) {
+  groups(
+    ownedOnly: true
+    topLevelOnly: true
+    search: $search
+    first: $first
+    last: $last
+    after: $after
+    before: $before
+  ) {
+    nodes {
+      id
+      avatarUrl
+      description
+      fullPath
+      fullName
+      webUrl
+    }
+    pageInfo {
+      ...PageInfo
+    }
+  }
+}

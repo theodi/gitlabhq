@@ -1,0 +1,159 @@
+- rate_limits = @instance_configuration.settings[:rate_limits]
+- audit_events_api_limits_present = rate_limits.present? && rate_limits.values_at(:audit_events_api, :project_audit_events_api, :group_audit_events_api).any?(&:present?)
+- content_for :table_content do
+  - if rate_limits
+    %li= link_to _('Rate Limits'), '#rate-limits'
+    %li= link_to _('Files API rate limits'), '#files-api-rate-limits'
+    %li= link_to _('Users API rate limits'), '#users-api-rate-limits'
+    %li= link_to _('Groups API rate limits'), '#groups-api-rate-limits'
+    %li= link_to _('Projects API rate limits'), '#projects-api-rate-limits'
+    - if Organizations::Release.enabled?(:org_creation, current_user)
+      %li= link_to _('Organizations API rate limits'), '#organizations-api-rate-limits'
+    - if audit_events_api_limits_present
+      %li= link_to s_('AdminSettings|Audit events API rate limits'), '#audit-events-api-rate-limits'
+
+- content_for :settings_content do
+  - if rate_limits
+    %h2#rate-limits
+      = _('Rate Limits')
+
+    %p
+      = _('There are several rate limits in place to protect the system.')
+    .table-responsive
+      %table
+        %thead
+          %tr
+            %th= _('Rate limit')
+            %th= _('Requests per period')
+            %th= _('Period in seconds')
+        %tbody
+          = render 'help/instance_configuration/rate_limit_row', title: _('Unauthenticated requests'), rate_limit: rate_limits[:unauthenticated], public_visible: true
+          = render 'help/instance_configuration/rate_limit_row', title: _('Authenticated API requests'), rate_limit: rate_limits[:authenticated_api]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Authenticated web requests'), rate_limit: rate_limits[:authenticated_web]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Protected Paths: requests'), rate_limit: rate_limits[:protected_paths]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Package registry: unauthenticated API requests'), rate_limit: rate_limits[:unauthenticated_packages_api], public_visible: true
+          = render 'help/instance_configuration/rate_limit_row', title: _('Package registry: authenticated API requests'), rate_limit: rate_limits[:authenticated_packages_api]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Authenticated Git LFS requests'), rate_limit: rate_limits[:authenticated_git_lfs_api]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Issue creation requests'), rate_limit: rate_limits[:issue_creation]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Note creation requests'), rate_limit: rate_limits[:note_creation]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Project export requests'), rate_limit: rate_limits[:project_export]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Project export download requests'), rate_limit: rate_limits[:project_export_download]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Project import requests'), rate_limit: rate_limits[:project_import]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Group export requests'), rate_limit: rate_limits[:group_export]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Group export download requests'), rate_limit: rate_limits[:group_export_download]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Group import requests'), rate_limit: rate_limits[:group_import]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Raw blob requests'), rate_limit: rate_limits[:raw_blob]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Pipeline creation requests per project, commit, and user'), rate_limit: rate_limits[:pipeline_creation]
+          = render 'help/instance_configuration/rate_limit_row', title: _('Git SSH operations'), rate_limit: rate_limits[:git_ssh_operations]
+          - if Gitlab.ee?
+            = render 'help/instance_configuration/rate_limit_row', title: _('Incident management inbound alert requests'), rate_limit: rate_limits[:incident_management_notification]
+
+    %h2#files-api-rate-limits= _('Files API rate limits')
+    %p
+      = _('Rate limits for Repository files API endpoints.')
+      = link_to _('Learn more.'), help_page_path('rate_limits/api/repository-files.md')
+    .table-responsive
+      %table
+        %thead
+          %tr
+            %th= _('Rate limit')
+            %th= _('Requests per period')
+            %th= _('Period in seconds')
+        %tbody
+          = render 'help/instance_configuration/rate_limit_row', title: _('Repository files API (Unauthenticated)'), rate_limit: rate_limits[:files_api_unauthenticated], public_visible: true
+          = render 'help/instance_configuration/rate_limit_row', title: _('Repository files API (Authenticated)'), rate_limit: rate_limits[:files_api_authenticated]
+
+    %h2#users-api-rate-limits= _('Users API rate limits')
+    %p
+      = _('Rate limits for specific Users API endpoints.')
+      = link_to _('Learn more.'), help_page_path('rate_limits/api/users.md')
+    .table-responsive
+      %table
+        %thead
+          %tr
+            %th= _('Rate limit')
+            %th= _('Requests per period')
+            %th= _('Period in seconds')
+        %tbody
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:id/followers', rate_limit: rate_limits[:users_api_followers]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:id/following', rate_limit: rate_limits[:users_api_following]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:id/status', rate_limit: rate_limits[:users_api_status]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:id/keys', rate_limit: rate_limits[:users_api_ssh_keys]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:id/keys/:key_id', rate_limit: rate_limits[:users_api_ssh_key]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:id/gpg_keys', rate_limit: rate_limits[:users_api_gpg_keys]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:id/gpg_keys/:key_id', rate_limit: rate_limits[:users_api_gpg_key]
+
+    %h2#groups-api-rate-limits= _('Groups API rate limits')
+    %p
+      = _('Rate limits for specific Groups API endpoints.')
+      = link_to _('Learn more.'), help_page_path('rate_limits/api/groups.md')
+    .table-responsive
+      %table
+        %thead
+          %tr
+            %th= _('Rate limit')
+            %th= _('Requests per period')
+            %th= _('Period in seconds')
+        %tbody
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /groups', rate_limit: rate_limits[:groups_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /groups/:id', rate_limit: rate_limits[:group_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /groups/:id/projects', rate_limit: rate_limits[:group_projects_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /groups/:id/groups/shared', rate_limit: rate_limits[:group_shared_groups_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /groups/:id/invited_groups', rate_limit: rate_limits[:group_invited_groups_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'POST /groups/:id/archive and POST /groups/:id/unarchive', rate_limit: rate_limits[:group_archive_unarchive_api]
+
+    %h2#projects-api-rate-limits= _('Projects API rate limits')
+    %p
+      = _('Rate limits for specific Projects API endpoints.')
+      = link_to _('Learn more.'), help_page_path('rate_limits/api/projects.md')
+    .table-responsive
+      %table
+        %thead
+          %tr
+            %th= _('Rate limit')
+            %th= _('Requests per period')
+            %th= _('Period in seconds')
+        %tbody
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /projects (Authenticated)', rate_limit: rate_limits[:projects_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /projects (Unauthenticated)', rate_limit: rate_limits[:projects_api_unauthenticated]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /projects/:id', rate_limit: rate_limits[:project_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:user_id/projects', rate_limit: rate_limits[:user_projects_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:user_id/contributed_projects', rate_limit: rate_limits[:user_contributed_projects_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /users/:user_id/starred_projects', rate_limit: rate_limits[:user_starred_projects_api]
+          = render 'help/instance_configuration/rate_limit_row', title: 'GET /projects/:id/members/all', rate_limit: rate_limits[:project_members_api]
+
+    - if Organizations::Release.enabled?(:org_creation, current_user)
+      %h2#organizations-api-rate-limits= _('Organizations API rate limits')
+      %p
+        = _('Rate limits for specific Organizations API endpoints.')
+        = link_to _('Learn more.'), help_page_path('rate_limits/api/organizations.md')
+      .table-responsive
+        %table
+          %thead
+            %tr
+              %th= _('Rate limit')
+              %th= _('Requests per period')
+              %th= _('Period in seconds')
+          %tbody
+            = render 'help/instance_configuration/rate_limit_row', title: 'POST /organizations', rate_limit: rate_limits[:organizations_api]
+
+    - if audit_events_api_limits_present
+      %h2#audit-events-api-rate-limits= s_('AdminSettings|Audit events API rate limits')
+      %p
+        = _('Rate limits for the audit events API.')
+        = link_to _('Learn more.'), help_page_path('administration/settings/rate-limit-on-audit-events-api.md')
+      .table-responsive
+        %table
+          %thead
+            %tr
+              %th= _('Rate limit')
+              %th= _('Requests per period')
+              %th= _('Period in seconds')
+          %tbody
+            - if rate_limits[:audit_events_api].present?
+              = render 'help/instance_configuration/rate_limit_row', title: 'GET /audit_events[/:id]', rate_limit: rate_limits[:audit_events_api]
+            - if rate_limits[:project_audit_events_api].present?
+              = render 'help/instance_configuration/rate_limit_row', title: 'GET /projects/:id/audit_events[/:audit_event_id]', rate_limit: rate_limits[:project_audit_events_api]
+            - if rate_limits[:group_audit_events_api].present?
+              = render 'help/instance_configuration/rate_limit_row', title: 'GET /groups/:id/audit_events[/:audit_event_id]', rate_limit: rate_limits[:group_audit_events_api]
+    %br

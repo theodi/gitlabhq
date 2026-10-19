@@ -1,0 +1,141 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ImportCsv::BaseService, feature_category: :importers do
+  # `freeze: false` is required in this spec: one or more `let_it_be` subjects
+  # cannot be frozen by default (deep_freeze traversal failure, a non-AR
+  # subject, or an in-memory mutation that survives reload/refind). Do not
+  # drop these opt-outs or convert them to `let_it_be_with_reload`/`refind`
+  # (see gitlab-org/gitlab#602925).
+  let_it_be(:user, freeze: false) { create(:user) }
+  let_it_be(:project, freeze: false) { create(:project) }
+  let_it_be(:csv_io, freeze: false) { double }
+
+  subject { described_class.new(user, project, csv_io) }
+
+  shared_examples 'abstract method' do |method, args|
+    it "raises NotImplemented error when #{method} is called" do
+      if args
+        expect { subject.send(method, args) }.to raise_error(NotImplementedError)
+      else
+        expect { subject.send(method) }.to raise_error(NotImplementedError)
+      end
+    end
+  end
+
+  it_behaves_like 'abstract method', :email_results_to_user
+  it_behaves_like 'abstract method', :attributes_for, "any"
+  it_behaves_like 'abstract method', :validate_headers_presence!, "any"
+  it_behaves_like 'abstract method', :create_object_class
+
+  context 'when given a class' do
+    let(:importer_klass) do
+      Class.new(described_class) do
+        def attributes_for(row)
+          { title: row[:title] }
+        end
+
+        def validate_headers_presence!(headers)
+          raise CSV::MalformedCSVError.new("Missing required headers", 1) unless headers.present?
+        end
+
+        def create_object_class
+          Class.new
+        end
+
+        def email_results_to_user
+          # no-op
+        end
+      end
+    end
+
+    let(:service) do
+      uploader = FileUploader.new(project)
+      uploader.store!(file)
+
+      importer_klass.new(user, project, uploader)
+    end
+
+    subject(:import_result) { service.execute }
+
+    it_behaves_like 'correctly handles invalid files'
+
+    describe 'column count validation' do
+      after do
+        file.unlink
+      end
+
+      context 'when column count exceeds limit' do
+        let(:file) do
+          header = (["col"] * (described_class::MAX_COLUMNS + 1)).join(",")
+          csv_tempfile("#{header}\n")
+        end
+
+        it 'returns parse error' do
+          expect(import_result[:parse_error]).to be(true)
+          expect(import_result[:error_lines]).to contain_exactly(1)
+        end
+      end
+
+      context 'when header line exceeds byte size limit' do
+        let(:file) do
+          header = "title,description,#{'a' * described_class::MAX_HEADER_LINE_BYTES}"
+          csv_tempfile("#{header}\nval1,val2,val3\n")
+        end
+
+        it 'returns parse error' do
+          expect(import_result[:parse_error]).to be(true)
+          expect(import_result[:error_lines]).to contain_exactly(1)
+        end
+      end
+
+      context 'when columns contain quoted separators' do
+        let(:file) do
+          csv_tempfile("\"title\",\"description,with comma\",\"extra\"\nval1,val2,val3\n")
+        end
+
+        it 'does not fail header validation' do
+          expect(import_result[:error_lines]).not_to include(1)
+        end
+      end
+    end
+
+    describe '#detect_col_sep' do
+      using RSpec::Parameterized::TableSyntax
+
+      let(:file) { double }
+
+      before do
+        allow(service).to receive_message_chain('csv_data.lines.first').and_return(header)
+      end
+
+      where(:sep_character, :valid) do
+        '&' | false
+        '?' | false
+        ';' | true
+        ',' | true
+        "\t" | true
+      end
+
+      with_them do
+        let(:header) { "Name#{sep_character}email" }
+
+        it 'responds appropriately' do
+          if valid
+            expect(service.send(:detect_col_sep)).to eq sep_character
+          else
+            expect { service.send(:detect_col_sep) }.to raise_error(CSV::MalformedCSVError)
+          end
+        end
+      end
+    end
+  end
+
+  def csv_tempfile(content)
+    Tempfile.new(['test', '.csv']).tap do |f|
+      f.write(content)
+      f.rewind
+    end
+  end
+end

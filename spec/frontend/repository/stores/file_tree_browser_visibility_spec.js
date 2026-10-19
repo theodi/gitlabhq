@@ -1,0 +1,276 @@
+import { createTestingPinia } from '@pinia/testing';
+import { nextTick, reactive } from 'vue';
+import AccessorUtilities from '~/lib/utils/accessor';
+import { useFileTreeBrowserVisibility } from '~/repository/stores/file_tree_browser_visibility';
+import { useMainContainer } from '~/pinia/global_stores/main_container';
+import { FILE_TREE_BROWSER_VISIBILITY } from '~/repository/constants';
+import { useLocalStorageSpy } from 'helpers/local_storage_helper';
+
+jest.mock('~/pinia/global_stores/main_container', () => ({ useMainContainer: jest.fn() }));
+
+describe('useFileTreeBrowserVisibility', () => {
+  let store;
+  let mockMainContainerStore;
+
+  useLocalStorageSpy();
+
+  beforeEach(() => {
+    mockMainContainerStore = reactive({
+      isCompact: false,
+      isIntermediate: false,
+      isWide: true,
+    });
+
+    useMainContainer.mockReturnValue(mockMainContainerStore);
+    createTestingPinia({
+      stubActions: false,
+    });
+    store = useFileTreeBrowserVisibility();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    store.resetFileTreeBrowserAllStates();
+  });
+
+  describe('getters', () => {
+    describe('fileTreeBrowserIsVisible', () => {
+      it.each([
+        { expanded: true, peek: false, expected: true, description: 'when expanded' },
+        { expanded: false, peek: true, expected: true, description: 'when peek is on' },
+        { expanded: true, peek: true, expected: true, description: 'when both are true' },
+        { expanded: false, peek: false, expected: false, description: 'when both are false' },
+      ])('returns $expected $description', ({ expanded, peek, expected }) => {
+        store.fileTreeBrowserIsExpanded = expanded;
+        store.fileTreeBrowserIsPeekOn = peek;
+
+        expect(store.fileTreeBrowserIsVisible).toBe(expected);
+      });
+    });
+  });
+
+  describe('setFileTreeBrowserIsExpanded', () => {
+    it.each([
+      { value: true, description: 'expanded', expectedStorage: 'true' },
+      { value: false, description: 'collapsed', expectedStorage: 'false' },
+    ])(
+      'updates state and saves to localStorage when $description',
+      ({ value, expectedStorage }) => {
+        store.setFileTreeBrowserIsExpanded(value);
+
+        expect(store.fileTreeBrowserIsExpanded).toBe(value);
+        expect(localStorage.setItem).toHaveBeenCalledWith(
+          FILE_TREE_BROWSER_VISIBILITY,
+          expectedStorage,
+        );
+      },
+    );
+
+    it('handles localStorage errors gracefully', () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      localStorage.setItem.mockImplementation(() => {
+        throw new Error('localStorage error');
+      });
+
+      expect(() => store.setFileTreeBrowserIsExpanded(true)).not.toThrow();
+      expect(store.fileTreeBrowserIsExpanded).toBe(true);
+
+      consoleSpy.mockRestore();
+    });
+
+    it('does not write to localStorage when it is unavailable', () => {
+      jest.spyOn(AccessorUtilities, 'canUseLocalStorage').mockReturnValue(false);
+
+      store.setFileTreeBrowserIsExpanded(true);
+
+      expect(store.fileTreeBrowserIsExpanded).toBe(true);
+      expect(localStorage.setItem).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resetFileTreeBrowserAllStates', () => {
+    it('resets all states to false', () => {
+      store.fileTreeBrowserIsExpanded = true;
+      store.fileTreeBrowserIsPeekOn = true;
+
+      store.resetFileTreeBrowserAllStates();
+
+      expect(store.fileTreeBrowserIsExpanded).toBe(false);
+      expect(store.fileTreeBrowserIsPeekOn).toBe(false);
+    });
+  });
+
+  describe('collapseForBlame', () => {
+    it('sets fileTreeBrowserIsExpanded to false and persists to localStorage', () => {
+      store.fileTreeBrowserIsExpanded = true;
+
+      store.collapseForBlame();
+
+      expect(store.fileTreeBrowserIsExpanded).toBe(false);
+      expect(localStorage.setItem).toHaveBeenCalledWith(FILE_TREE_BROWSER_VISIBILITY, 'false');
+    });
+
+    it('sets fileTreeBrowserIsPeekOn to false', () => {
+      store.fileTreeBrowserIsPeekOn = true;
+
+      store.collapseForBlame();
+
+      expect(store.fileTreeBrowserIsPeekOn).toBe(false);
+    });
+  });
+
+  describe('loadFileTreeBrowserExpandedFromLocalStorage', () => {
+    it.each([
+      { storageValue: 'true', expected: true, description: 'true value' },
+      { storageValue: 'false', expected: false, description: 'false value' },
+    ])('loads $description from localStorage', ({ storageValue, expected }) => {
+      localStorage.setItem(FILE_TREE_BROWSER_VISIBILITY, storageValue);
+
+      store.loadFileTreeBrowserExpandedFromLocalStorage();
+
+      expect(store.fileTreeBrowserIsExpanded).toBe(expected);
+    });
+
+    it('defaults to true for first-time users when localStorage is empty', () => {
+      store.loadFileTreeBrowserExpandedFromLocalStorage();
+
+      expect(store.fileTreeBrowserIsExpanded).toBe(true);
+    });
+
+    it('handles localStorage errors gracefully', () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      localStorage.getItem.mockImplementation(() => {
+        throw new Error('localStorage error');
+      });
+
+      expect(() => store.loadFileTreeBrowserExpandedFromLocalStorage()).not.toThrow();
+      expect(store.fileTreeBrowserIsExpanded).toBe(false);
+
+      consoleSpy.mockRestore();
+    });
+
+    it('defaults to expanded and does not read localStorage when it is unavailable', () => {
+      jest.spyOn(AccessorUtilities, 'canUseLocalStorage').mockReturnValue(false);
+
+      store.loadFileTreeBrowserExpandedFromLocalStorage();
+
+      expect(store.fileTreeBrowserIsExpanded).toBe(true);
+      expect(localStorage.getItem).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleFileTreeBrowserToggleClick', () => {
+    it.each`
+      isCompact | initialState                        | expectedResult
+      ${true}   | ${{ peek: false, expanded: false }} | ${{ peek: true, expanded: false }}
+      ${false}  | ${{ peek: false, expanded: false }} | ${{ peek: false, expanded: true }}
+    `(
+      'on $viewport viewport: toggles from $initialState to $expectedResult',
+      ({ isCompact, initialState, expectedResult }) => {
+        mockMainContainerStore.isCompact = isCompact;
+        store.fileTreeBrowserIsPeekOn = initialState.peek;
+        store.fileTreeBrowserIsExpanded = initialState.expanded;
+
+        store.handleFileTreeBrowserToggleClick();
+
+        expect(store.fileTreeBrowserIsPeekOn).toBe(expectedResult.peek);
+        expect(store.fileTreeBrowserIsExpanded).toBe(expectedResult.expanded);
+      },
+    );
+  });
+
+  describe('initializeFileTreeBrowser', () => {
+    it.each`
+      isCompact | localStorageValue | expectedExpanded | description
+      ${false}  | ${'true'}         | ${true}          | ${'loads from localStorage on wide viewport'}
+      ${true}   | ${'true'}         | ${false}         | ${'does not load from localStorage on non-wide viewport'}
+    `('$description', ({ isCompact, localStorageValue, expectedExpanded }) => {
+      localStorage.setItem(FILE_TREE_BROWSER_VISIBILITY, localStorageValue);
+      mockMainContainerStore.isCompact = isCompact;
+
+      store.initializeFileTreeBrowser();
+
+      expect(store.fileTreeBrowserIsExpanded).toBe(expectedExpanded);
+    });
+  });
+
+  describe('focus restoration', () => {
+    describe('shouldRestoreFocusToToggle state', () => {
+      it('initializes to false', () => {
+        expect(store.shouldRestoreFocusToToggle).toBe(false);
+      });
+    });
+
+    describe('handleFileTreeBrowserToggleClick', () => {
+      it('sets shouldRestoreFocusToToggle to true when toggling', () => {
+        store.handleFileTreeBrowserToggleClick();
+
+        expect(store.shouldRestoreFocusToToggle).toBe(true);
+      });
+
+      it('sets flag before toggling expanded state', () => {
+        const initialExpanded = store.fileTreeBrowserIsExpanded;
+
+        store.handleFileTreeBrowserToggleClick();
+
+        // Flag should be set
+        expect(store.shouldRestoreFocusToToggle).toBe(true);
+        // State should have toggled
+        expect(store.fileTreeBrowserIsExpanded).toBe(!initialExpanded);
+      });
+    });
+
+    describe('clearRestoreFocusFlag', () => {
+      it('sets shouldRestoreFocusToToggle to false', () => {
+        store.shouldRestoreFocusToToggle = true;
+
+        store.clearRestoreFocusFlag();
+
+        expect(store.shouldRestoreFocusToToggle).toBe(false);
+      });
+    });
+  });
+
+  describe('setupMainContainerWatcher', () => {
+    beforeEach(() => {
+      store.setupMainContainerWatcher();
+    });
+
+    describe('viewport transitions', () => {
+      it.each`
+        fromViewport      | toViewport   | initialState                       | expectedState                      | description
+        ${'wide'}         | ${'compact'} | ${{ expanded: true, peek: false }} | ${{ expanded: false, peek: true }} | ${'converts expanded to peak'}
+        ${'intermediate'} | ${'compact'} | ${{ expanded: true, peek: false }} | ${{ expanded: false, peek: true }} | ${'converts expanded to peak'}
+      `(
+        '$fromViewport -> $toViewport: $description',
+        async ({
+          fromViewport,
+          toViewport,
+          initialState,
+          expectedState,
+          wasVisibleBeforeCompact,
+        }) => {
+          // Set initial viewport
+          const viewportStates = {
+            compact: { isCompact: true, isIntermediate: false, isWide: false },
+            intermediate: { isCompact: false, isIntermediate: true, isWide: false },
+            wide: { isCompact: false, isIntermediate: false, isWide: true },
+          };
+
+          Object.assign(mockMainContainerStore, viewportStates[fromViewport]);
+          store.fileTreeBrowserIsExpanded = initialState.expanded;
+          store.fileTreeBrowserIsPeekOn = initialState.peek;
+          await nextTick();
+
+          // Transition to new viewport
+          Object.assign(mockMainContainerStore, viewportStates[toViewport]);
+          await nextTick();
+
+          expect(store.fileTreeBrowserIsExpanded).toBe(expectedState.expanded);
+          expect(store.fileTreeBrowserIsPeekOn).toBe(expectedState.peek);
+          expect(store.wasVisibleBeforeCompact).toBe(wasVisibleBeforeCompact);
+        },
+      );
+    });
+  });
+});

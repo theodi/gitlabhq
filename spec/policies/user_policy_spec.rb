@@ -1,0 +1,557 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe UserPolicy, feature_category: :permissions do
+  let_it_be(:admin) { create(:user, :admin) }
+  let_it_be(:regular_user) { create(:user) }
+  let_it_be(:subject_user) { create(:user) }
+
+  let(:current_user) { regular_user }
+  let(:user) { subject_user }
+
+  subject { described_class.new(current_user, user) }
+
+  describe "reading a user's information" do
+    it { is_expected.to be_allowed(:read_user) }
+  end
+
+  describe "reading a different user's Personal access tokens" do
+    let(:token) { create(:personal_access_token, user: user) }
+
+    context 'when user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(:read_personal_access_token) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:read_personal_access_token) }
+      end
+    end
+
+    context 'when user is not an admin' do
+      context 'requesting their own personal access tokens' do
+        subject { described_class.new(current_user, current_user) }
+
+        it { is_expected.to be_allowed(:read_personal_access_token) }
+      end
+
+      context "requesting a different user's personal access tokens" do
+        it { is_expected.not_to be_allowed(:read_personal_access_token) }
+      end
+    end
+  end
+
+  describe "creating a different user's Personal access tokens" do
+    context 'when current_user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled and current_user is not blocked', :enable_admin_mode do
+        it { is_expected.to be_allowed(:create_personal_access_token) }
+      end
+
+      context 'when admin mode is enabled and the target user is blocked', :enable_admin_mode do
+        let(:user) { create(:user, :blocked) }
+
+        it { is_expected.not_to be_allowed(:create_personal_access_token) }
+        it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+      end
+
+      context 'when admin mode is enabled and current_user is blocked', :enable_admin_mode do
+        let(:current_user) { create(:admin, :blocked) }
+
+        it { is_expected.not_to be_allowed(:create_personal_access_token) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:create_personal_access_token) }
+      end
+    end
+
+    context 'when current_user is not an admin' do
+      context 'creating their own personal access tokens' do
+        subject { described_class.new(current_user, current_user) }
+
+        context 'when current_user is not blocked' do
+          it { is_expected.to be_allowed(:create_personal_access_token) }
+        end
+
+        context 'when current_user is blocked' do
+          let(:current_user) { create(:user, :blocked) }
+
+          it { is_expected.not_to be_allowed(:create_personal_access_token) }
+        end
+      end
+
+      context "creating a different user's personal access tokens" do
+        it { is_expected.not_to be_allowed(:create_personal_access_token) }
+      end
+    end
+  end
+
+  describe "reading a user's associations count" do
+    context 'when current_user is not an admin' do
+      context 'fetching their own data' do
+        subject { described_class.new(current_user, current_user) }
+
+        context 'when current_user is not blocked' do
+          it { is_expected.to be_allowed(:get_user_associations_count) }
+        end
+
+        context 'when current_user is blocked' do
+          let(:current_user) { create(:user, :blocked) }
+
+          it { is_expected.not_to be_allowed(:get_user_associations_count) }
+        end
+      end
+
+      context "fetching a different user's data" do
+        it { is_expected.not_to be_allowed(:get_user_associations_count) }
+      end
+    end
+
+    context 'when current_user is an admin' do
+      let(:current_user) { admin }
+
+      context 'fetching their own data', :enable_admin_mode do
+        subject { described_class.new(current_user, current_user) }
+
+        context 'when current_user is not blocked' do
+          it { is_expected.to be_allowed(:get_user_associations_count) }
+        end
+
+        context 'when current_user is blocked' do
+          let(:current_user) { create(:admin, :blocked) }
+
+          it { is_expected.not_to be_allowed(:get_user_associations_count) }
+        end
+      end
+
+      context "fetching a different user's data", :enable_admin_mode do
+        it { is_expected.to be_allowed(:get_user_associations_count) }
+      end
+    end
+  end
+
+  shared_examples 'changing a user' do |ability|
+    context "when a regular user tries to destroy another regular user" do
+      it { is_expected.not_to be_allowed(ability) }
+    end
+
+    context "when a regular user tries to destroy themselves" do
+      let(:current_user) { user }
+
+      it { is_expected.to be_allowed(ability) }
+    end
+
+    context "when an admin user tries to destroy a regular user" do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(ability) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.to be_disallowed(ability) }
+      end
+    end
+
+    context "when an admin user tries to destroy a ghost user" do
+      let(:current_user) { admin }
+      let(:user) { create(:user, :ghost) }
+
+      it { is_expected.not_to be_allowed(ability) }
+    end
+  end
+
+  describe "updating a user's status" do
+    it_behaves_like 'changing a user', :update_user_status
+  end
+
+  describe "destroying a user" do
+    it_behaves_like 'changing a user', :destroy_user
+  end
+
+  describe "updating a user" do
+    it_behaves_like 'changing a user', :update_user
+  end
+
+  describe 'disabling two-factor authentication' do
+    context 'disabling their own two-factor authentication' do
+      let(:user) { current_user }
+
+      it { is_expected.to be_allowed(:disable_two_factor) }
+    end
+
+    context 'disabling the two-factor authentication of another user' do
+      context 'when the executor is an admin', :enable_admin_mode do
+        let(:current_user) { admin }
+
+        it { is_expected.to be_allowed(:disable_two_factor) }
+      end
+
+      context 'when the executor is not an admin' do
+        it { is_expected.not_to be_allowed(:disable_two_factor) }
+      end
+    end
+  end
+
+  describe 'disabling a passkey' do
+    context 'disabling their own passkey' do
+      let(:user) { current_user }
+
+      it { is_expected.to be_allowed(:disable_passkey) }
+    end
+
+    context 'disabling the passkey of another user' do
+      context 'when the executor is an admin', :enable_admin_mode do
+        let(:current_user) { admin }
+
+        it { is_expected.to be_allowed(:disable_passkey) }
+      end
+
+      context 'when the executor is not an admin' do
+        it { is_expected.not_to be_allowed(:disable_passkey) }
+      end
+    end
+  end
+
+  describe ":read_user_membership_counts" do
+    context "when current_user is an admin", :enable_admin_mode do
+      let(:current_user) { admin }
+
+      it { is_expected.to be_allowed(:read_user_membership_counts) }
+    end
+
+    context "for self users" do
+      let(:user) { current_user }
+
+      it { is_expected.to be_allowed(:read_user_membership_counts) }
+    end
+
+    context "when accessing a different user's group count" do
+      it { is_expected.not_to be_allowed(:read_user_membership_counts) }
+    end
+  end
+
+  describe ':read_user_profile' do
+    context 'when the user is unconfirmed' do
+      let(:user) { create(:user, :unconfirmed) }
+
+      it { is_expected.not_to be_allowed(:read_user_profile) }
+    end
+
+    context 'when the user is confirmed' do
+      it { is_expected.to be_allowed(:read_user_profile) }
+    end
+  end
+
+  describe ':read_user_groups' do
+    context 'when user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(:read_user_groups) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:read_user_groups) }
+      end
+    end
+
+    context 'when user is not an admin' do
+      context 'requesting their own manageable groups' do
+        subject { described_class.new(current_user, current_user) }
+
+        it { is_expected.to be_allowed(:read_user_groups) }
+      end
+
+      context "requesting a different user's manageable groups" do
+        it { is_expected.not_to be_allowed(:read_user_groups) }
+      end
+    end
+  end
+
+  describe ':read_user_organizations' do
+    context 'when user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(:read_user_organizations) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:read_user_organizations) }
+      end
+    end
+
+    context 'when user is not an admin' do
+      context 'requesting their own organizations' do
+        subject { described_class.new(current_user, current_user) }
+
+        it { is_expected.to be_allowed(:read_user_organizations) }
+      end
+
+      context "requesting a different user's orgnanizations" do
+        it { is_expected.not_to be_allowed(:read_user_organizations) }
+      end
+    end
+  end
+
+  describe ':read_user_email_address' do
+    context 'when user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(:read_user_email_address) }
+        it { is_expected.to be_allowed(:admin_user_email_address) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:read_user_email_address) }
+        it { is_expected.not_to be_allowed(:admin_user_email_address) }
+      end
+    end
+
+    context 'when user is not an admin' do
+      context 'requesting their own' do
+        subject { described_class.new(current_user, current_user) }
+
+        it { is_expected.to be_allowed(:read_user_email_address) }
+        it { is_expected.to be_allowed(:admin_user_email_address) }
+      end
+
+      context "requesting a different user's" do
+        it { is_expected.not_to be_allowed(:read_user_email_address) }
+        it { is_expected.not_to be_allowed(:admin_user_email_address) }
+      end
+    end
+  end
+
+  describe ':read_user_preference' do
+    context 'when user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(:read_user_preference) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:read_user_preference) }
+      end
+    end
+
+    context 'when user is not an admin' do
+      context 'requesting their own' do
+        subject { described_class.new(current_user, current_user) }
+
+        it { is_expected.to be_allowed(:read_user_preference) }
+      end
+
+      context "requesting a different user's" do
+        it { is_expected.not_to be_allowed(:read_user_preference) }
+      end
+    end
+  end
+
+  describe ':xxxx_custom_attribute permissions' do
+    context 'when user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(:read_custom_attribute) }
+        it { is_expected.to be_allowed(:update_custom_attribute) }
+        it { is_expected.to be_allowed(:delete_custom_attribute) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:read_custom_attribute) }
+        it { is_expected.not_to be_allowed(:update_custom_attribute) }
+        it { is_expected.not_to be_allowed(:delete_custom_attribute) }
+      end
+    end
+
+    context 'when user is not an admin' do
+      it { is_expected.not_to be_allowed(:read_custom_attribute) }
+      it { is_expected.not_to be_allowed(:update_custom_attribute) }
+      it { is_expected.not_to be_allowed(:delete_custom_attribute) }
+
+      context 'requesting their own' do
+        subject { described_class.new(current_user, current_user) }
+
+        it { is_expected.not_to be_allowed(:read_custom_attribute) }
+        it { is_expected.not_to be_allowed(:update_custom_attribute) }
+        it { is_expected.not_to be_allowed(:delete_custom_attribute) }
+      end
+    end
+  end
+
+  describe ':read_user_admin_note' do
+    context 'when user is admin' do
+      let(:current_user) { admin }
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it { is_expected.to be_allowed(:read_user_admin_note) }
+      end
+
+      context 'when admin mode is disabled' do
+        it { is_expected.not_to be_allowed(:read_user_admin_note) }
+      end
+    end
+
+    context 'when user is not an admin' do
+      it { is_expected.not_to be_allowed(:read_user_admin_note) }
+
+      context 'requesting their own' do
+        subject { described_class.new(current_user, current_user) }
+
+        it { is_expected.not_to be_allowed(:read_user_admin_note) }
+      end
+    end
+  end
+
+  describe "managing a service account's personal access tokens" do
+    let_it_be(:group) { create(:group) }
+    let_it_be(:project) { create(:project, group: group) }
+
+    shared_examples 'follows admin_service_accounts on the provisioning scope' do
+      context 'when the actor owns the provisioning scope' do
+        before do
+          scope_owner.add_owner(current_user)
+        end
+
+        it { is_expected.to be_allowed(:create_personal_access_token) }
+        it { is_expected.to be_allowed(:rotate_personal_access_token) }
+
+        context 'when the actor is blocked' do
+          let(:current_user) { create(:user, :blocked) }
+
+          it { is_expected.not_to be_allowed(:create_personal_access_token) }
+          it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+        end
+
+        context 'when the service account is blocked' do
+          before do
+            user.block!
+          end
+
+          it { is_expected.not_to be_allowed(:create_personal_access_token) }
+          it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+        end
+      end
+
+      context 'when the actor is not a member of the provisioning scope' do
+        it { is_expected.not_to be_allowed(:create_personal_access_token) }
+        it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+      end
+    end
+
+    context 'for a group-provisioned service account' do
+      let_it_be_with_reload(:user) { create(:user, :service_account, provisioned_by_group: group) }
+      let(:scope_owner) { group }
+
+      it_behaves_like 'follows admin_service_accounts on the provisioning scope'
+
+      context 'when the actor is a group maintainer (no admin_service_accounts at group level)' do
+        before_all do
+          group.add_maintainer(regular_user)
+        end
+
+        it { is_expected.not_to be_allowed(:create_personal_access_token) }
+        it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+      end
+    end
+
+    context 'for a project-provisioned service account' do
+      let_it_be_with_reload(:user) { create(:user, :service_account, provisioned_by_project: project) }
+      let(:scope_owner) { project }
+
+      it_behaves_like 'follows admin_service_accounts on the provisioning scope'
+
+      context 'when the actor is a project maintainer (has admin_service_accounts at project level)' do
+        before_all do
+          project.add_maintainer(regular_user)
+        end
+
+        it { is_expected.to be_allowed(:create_personal_access_token) }
+        it { is_expected.to be_allowed(:rotate_personal_access_token) }
+      end
+    end
+
+    context 'for a service account with no provisioning scope' do
+      let_it_be_with_reload(:user) { create(:user, :service_account) }
+
+      it { is_expected.not_to be_allowed(:create_personal_access_token) }
+      it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+
+      context 'when the actor is an admin', :enable_admin_mode do
+        let(:current_user) { admin }
+
+        it { is_expected.to be_allowed(:create_personal_access_token) }
+        it { is_expected.to be_allowed(:rotate_personal_access_token) }
+
+        context 'when the service account is blocked' do
+          before do
+            user.block!
+          end
+
+          it { is_expected.not_to be_allowed(:create_personal_access_token) }
+          it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+        end
+      end
+    end
+
+    context 'when the target user is not a service account' do
+      let_it_be(:user) { create(:user) }
+
+      before_all do
+        group.add_owner(regular_user)
+      end
+
+      it { is_expected.not_to be_allowed(:create_personal_access_token) }
+      it { is_expected.not_to be_allowed(:rotate_personal_access_token) }
+    end
+  end
+
+  describe ':create_saved_view' do
+    context 'when creating for themselves' do
+      subject { described_class.new(current_user, current_user) }
+
+      it { expect_allowed(:create_saved_view) }
+    end
+
+    context "when creating for a different user" do
+      it { expect_disallowed(:create_saved_view) }
+    end
+
+    context 'when current_user is an admin creating for another user', :enable_admin_mode do
+      let(:current_user) { admin }
+
+      it { expect_disallowed(:create_saved_view) }
+    end
+
+    context 'when current_user is an admin creating for themselves', :enable_admin_mode do
+      let(:current_user) { admin }
+
+      subject { described_class.new(current_user, current_user) }
+
+      it { expect_allowed(:create_saved_view) }
+    end
+
+    context 'when the subject is a ghost user' do
+      let(:current_user) { create(:user, :ghost) }
+
+      subject { described_class.new(current_user, current_user) }
+
+      it { expect_disallowed(:create_saved_view) }
+    end
+
+    context 'when current_user is anonymous' do
+      let(:current_user) { nil }
+
+      it { expect_disallowed(:create_saved_view) }
+    end
+  end
+end

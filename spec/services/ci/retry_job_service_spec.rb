@@ -1,0 +1,888 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::RetryJobService, :clean_gitlab_redis_shared_state, :clean_gitlab_redis_rate_limiting,
+  feature_category: :continuous_integration do
+  using RSpec::Parameterized::TableSyntax
+  let_it_be(:reporter) { create(:user) }
+  let_it_be(:developer) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project, :repository, developers: developer, reporters: reporter) }
+  let_it_be_with_reload(:pipeline) do
+    create(:ci_pipeline, project: project, sha: 'b83d6e391c22777fca1ed3012fce84f633d7fed0')
+  end
+
+  let_it_be(:stage) do
+    create(:ci_stage, pipeline: pipeline, name: 'test')
+  end
+
+  let_it_be(:deploy_stage) { create(:ci_stage, pipeline: pipeline, name: 'deploy', position: stage.position + 1) }
+
+  let(:job_variables_attributes) { [{ key: 'MANUAL_VAR', value: 'manual test var' }] }
+  let_it_be(:user) { developer }
+
+  let(:service) { described_class.new(project, user) }
+
+  before do
+    project.update!(ci_pipeline_variables_minimum_override_role: :developer)
+  end
+
+  shared_context 'retryable bridge' do
+    let_it_be(:downstream_project) { create(:project) }
+
+    let_it_be_with_refind(:job) do
+      create(:ci_bridge, :success, :teardown_environment,
+        pipeline: pipeline, downstream: downstream_project, description: 'a trigger job', ci_stage: stage
+      )
+    end
+
+    let_it_be_with_refind(:job_to_clone) { job }
+
+    before do
+      job.update!(retried: false)
+    end
+  end
+
+  shared_context 'retryable build' do
+    let_it_be_with_reload(:job) do
+      create(:ci_build, :success, pipeline: pipeline, ci_stage: stage)
+    end
+
+    let_it_be(:another_pipeline) { create(:ci_pipeline, project: project) }
+
+    let_it_be_with_refind(:job_to_clone) do
+      create(
+        :ci_build, :failed, :picked, :expired, :erased, :queued, :coverage, :tags,
+        :allowed_to_fail, :on_tag, :triggered, :teardown_environment, :resource_group,
+        description: 'my-job', ci_stage: stage,
+        pipeline: pipeline, auto_canceled_by: another_pipeline,
+        scheduled_at: 10.seconds.since
+      )
+    end
+
+    before do
+      job.update!(retried: false, status: :success)
+      job_to_clone.update!(retried: false, status: :success)
+    end
+  end
+
+  shared_examples_for 'clones the job' do
+    let(:job) { job_to_clone }
+
+    before_all do
+      job_to_clone.update!(ci_stage: stage)
+
+      create(:ci_build_need, build: job_to_clone)
+    end
+
+    context 'when the user has ability to execute job' do
+      before do
+        stub_not_protect_default_branch
+      end
+
+      context 'when there is a failed job ToDo for the MR' do
+        let_it_be(:merge_request) do
+          create(:merge_request, source_project: project, author: user, head_pipeline: pipeline)
+        end
+
+        let_it_be(:todo) do
+          create(:todo, :build_failed, user: user, project: project, author: user, target: merge_request)
+        end
+
+        it 'resolves the ToDo for the failed job' do
+          expect do
+            service.execute(job)
+          end.to change { todo.reload.state }.from('pending').to('done')
+        end
+      end
+
+      context 'when the job has needs' do
+        before do
+          create_list(:ci_build_need, 2, build: job)
+        end
+
+        it 'bulk inserts all the needs' do
+          expect(Ci::BuildNeed).to receive(:bulk_insert!).and_call_original
+
+          new_job
+        end
+      end
+
+      context 'when the job is related to an environment' do
+        let!(:environment) { create(:environment, project: project, name: job.environment) }
+
+        it 'links the cloned job to the environment' do
+          expect(new_job.reload_job_environment).to be_present
+          expect(new_job.job_environment).to have_attributes(
+            project: project,
+            environment: environment,
+            pipeline: pipeline,
+            expanded_environment_name: environment.name,
+            options: job.environment_options_for_permanent_storage
+          )
+        end
+      end
+
+      it 'marks the old job as retried' do
+        expect(new_job).to be_latest
+        expect(job).to be_retried
+        expect(job).to be_processed
+      end
+    end
+
+    context 'when the user does not have permission to execute the job' do
+      let(:user) { reporter }
+
+      it 'raises an error' do
+        expect { service.execute(job) }
+          .to raise_error Gitlab::Access::AccessDeniedError
+      end
+    end
+
+    context 'when the user does not have permission to set pipeline variables' do
+      before do
+        project.update!(ci_pipeline_variables_minimum_override_role: :no_one_allowed)
+      end
+
+      it 'raises an error' do
+        expect { service.execute(job, variables: job_variables_attributes) }
+          .to raise_error Gitlab::Access::AccessDeniedError
+      end
+    end
+  end
+
+  shared_examples_for 'does not retry the job' do
+    it 'returns :not_retryable and :unprocessable_entity' do
+      expect(subject.message).to be('Job is not retryable')
+      expect(subject.payload[:reason]).to eq(:not_retryable)
+      expect(subject.payload[:job]).to eq(job)
+    end
+  end
+
+  shared_examples_for 'retries the job' do
+    it_behaves_like 'clones the job'
+
+    it 'enqueues the new job' do
+      expect(new_job).to be_pending
+    end
+
+    context 'when there are subsequent processables that are skipped' do
+      let_it_be_with_reload(:subsequent_build) do
+        create(:ci_build, :skipped, pipeline: pipeline, ci_stage: deploy_stage)
+      end
+
+      let_it_be_with_reload(:subsequent_bridge) do
+        create(:ci_bridge, :skipped, pipeline: pipeline, ci_stage: deploy_stage)
+      end
+
+      it 'resumes pipeline processing in the subsequent stage' do
+        service.execute(job)
+
+        expect(subsequent_build.reload).to be_created
+        expect(subsequent_bridge.reload).to be_created
+      end
+
+      it 'updates ownership for subsequent builds' do
+        expect { service.execute(job) }.to change { subsequent_build.reload.user }.to(user)
+      end
+
+      it 'updates ownership for subsequent bridges' do
+        expect { service.execute(job) }.to change { subsequent_bridge.reload.user }.to(user)
+      end
+    end
+
+    context 'when the pipeline is a child pipeline and the bridge uses a strategy' do
+      let_it_be(:parent_pipeline) { create(:ci_pipeline, project: project) }
+
+      context 'when the strategy is strategy:depend' do
+        it 'marks the source bridge as pending' do
+          bridge = create(:ci_bridge, :strategy_depend, pipeline: parent_pipeline, status: 'success',
+            downstream: project)
+          create(:ci_sources_pipeline, pipeline: pipeline, source_job: bridge)
+
+          service.execute(job)
+
+          expect(bridge.reload).to be_pending
+        end
+      end
+
+      context 'when the strategy is strategy:mirror' do
+        it 'marks the source bridge as pending' do
+          bridge = create(:ci_bridge, :strategy_mirror, pipeline: parent_pipeline, status: 'success',
+            downstream: project)
+          create(:ci_sources_pipeline, pipeline: pipeline, source_job: bridge)
+
+          service.execute(job)
+
+          expect(bridge.reload).to be_pending
+        end
+      end
+    end
+  end
+
+  shared_examples_for 'checks enqueue_immediately?' do
+    it "returns enqueue_immediately" do
+      subject
+      expect(new_job.enqueue_immediately?).to eq enqueue_immediately
+    end
+  end
+
+  shared_examples_for 'creates associations for a deployable job' do |factory_type|
+    context 'when a job with a deployment is retried' do
+      let_it_be_with_refind(:job) do
+        create(factory_type, :with_deployment, :deploy_to_production, pipeline: pipeline, ci_stage: stage)
+      end
+
+      it 'creates a new deployment' do
+        expect { new_job }.to change { Deployment.count }.by(1)
+        expect(new_job.job_environment.deployment).to eq(new_job.deployment)
+      end
+
+      it 'does not create a new environment' do
+        expect { new_job }.not_to change { Environment.count }
+        expect(new_job.persisted_environment).to eq(job.persisted_environment)
+      end
+    end
+
+    context 'when a job with a dynamic environment is retried' do
+      let_it_be(:other_developer) { create(:user, developer_of: project) }
+
+      let(:environment_name) { 'review/$CI_COMMIT_REF_SLUG-$GITLAB_USER_ID' }
+
+      let!(:job) do
+        create(factory_type, :with_deployment,
+          environment: environment_name,
+          options: { environment: { name: environment_name } },
+          pipeline: pipeline,
+          ci_stage: stage,
+          user: other_developer)
+      end
+
+      it 'creates a new deployment' do
+        expect { new_job }.to change { Deployment.count }.by(1)
+        expect(new_job.job_environment.deployment).to eq(new_job.deployment)
+      end
+
+      it 'does not create a new environment' do
+        expect { new_job }.not_to change { Environment.count }
+        expect(new_job.persisted_environment).to eq(job.persisted_environment)
+      end
+    end
+  end
+
+  describe '#clone!' do
+    let(:start_pipeline_on_clone) { false }
+    let(:new_job) { service.clone!(job, start_pipeline: start_pipeline_on_clone) }
+
+    it 'raises an error when an unexpected class is passed' do
+      expect { service.clone!(create(:ci_build, pipeline: pipeline).present) }.to raise_error(TypeError)
+    end
+
+    context 'when the job to be cloned is a bridge' do
+      include_context 'retryable bridge'
+
+      it_behaves_like 'clones the job'
+
+      it 'does not create a new deployment' do
+        expect { new_job }.not_to change { Deployment.count }
+      end
+
+      context 'when the pipeline is started automatically' do
+        let(:start_pipeline_on_clone) { true }
+
+        it_behaves_like 'creates associations for a deployable job', :ci_bridge
+      end
+
+      context 'when given variables' do
+        let(:new_job) { service.clone!(job, variables: job_variables_attributes) }
+
+        it 'does not give variables to the new bridge' do
+          expect { new_job }.not_to raise_error
+        end
+      end
+    end
+
+    context 'when the job to be cloned is a build' do
+      include_context 'retryable build'
+
+      it_behaves_like 'clones the job'
+
+      it 'does not create a new deployment' do
+        expect { new_job }.not_to change { Deployment.count }
+      end
+
+      context 'when the pipeline is started automatically' do
+        let(:start_pipeline_on_clone) { true }
+
+        it_behaves_like 'creates associations for a deployable job', :ci_build
+      end
+
+      context 'when given variables' do
+        let(:new_job) { service.clone!(job, variables: job_variables_attributes) }
+
+        context 'when the build is actionable' do
+          let_it_be_with_refind(:job) { create(:ci_build, :actionable, pipeline: pipeline) }
+
+          it 'gives variables to the new build' do
+            expect(new_job.job_variables.count).to be(1)
+            expect(new_job.job_variables.first.key).to eq('MANUAL_VAR')
+            expect(new_job.job_variables.first.value).to eq('manual test var')
+          end
+        end
+
+        context 'when the build is not actionable' do
+          let_it_be_with_refind(:job) { create(:ci_build, pipeline: pipeline) }
+
+          it 'does not give variables to the new build' do
+            expect(new_job.job_variables.count).to be_zero
+          end
+        end
+      end
+    end
+
+    context 'when the source job definition is loaded' do
+      include_context 'retryable build'
+
+      # `start_pipeline` resets the clone, which drops the association cache
+      # populated by `Ci::CloneJobService`.
+      let(:start_pipeline_on_clone) { true }
+
+      it 're-attaches the shared record to the clone after the reset' do
+        shared_definition = job.job_definition
+
+        expect(new_job.association(:job_definition).target).to be(shared_definition)
+      end
+    end
+
+    context 'when enqueue_if_actionable is provided' do
+      let!(:job) do
+        create(:ci_build, *[trait].compact, :failed, pipeline: pipeline, ci_stage: stage)
+      end
+
+      let(:new_job) { subject }
+
+      subject { service.clone!(job, enqueue_if_actionable: enqueue_if_actionable) }
+
+      where(:enqueue_if_actionable, :trait, :enqueue_immediately) do
+        true  | nil                | false
+        true  | :manual            | true
+        true  | :expired_scheduled | true
+
+        false | nil                | false
+        false | :manual            | false
+        false | :expired_scheduled | false
+      end
+
+      with_them do
+        it_behaves_like 'checks enqueue_immediately?'
+      end
+    end
+  end
+
+  describe '#execute' do
+    let(:new_job) { subject[:job] }
+
+    subject { service.execute(job) }
+
+    context 'with rate limiting', :clean_gitlab_redis_rate_limiting, :freeze_time do
+      let(:job) { create(:ci_build, :success, pipeline: pipeline, ci_stage: stage) }
+      let(:other_job) { create(:ci_build, :success, pipeline: pipeline, ci_stage: stage) }
+      let(:throttle_message) { ::Gitlab::ApplicationRateLimiter.throttled_error_message }
+
+      def retry_job(job_to_retry = job, **options)
+        described_class.new(project, user, **options).execute(job_to_retry)
+      end
+
+      it 'does not throttle the first retry' do
+        expect(retry_job).to be_success
+      end
+
+      it 'throttles the fourth retry of the same job in a minute, counting rejected calls' do
+        3.times { retry_job }
+
+        throttled = retry_job
+
+        expect(throttled).to be_error
+        expect(throttled.reason).to eq(:rate_limited)
+        expect(throttled.message).to eq(throttle_message)
+        expect(throttled.payload).to include(job: job, reason: :rate_limited)
+      end
+
+      context 'when the per-project limit is exceeded' do
+        before do
+          stub_application_setting(job_retry_limit_per_user_project: 1)
+        end
+
+        it 'throttles a retry of a different job in the same project' do
+          expect(retry_job).to be_success
+
+          expect(retry_job(other_job).reason).to eq(:rate_limited)
+        end
+      end
+
+      context 'when the per-project limit is disabled with 0' do
+        before do
+          stub_application_setting(job_retry_limit_per_user_project: 0)
+        end
+
+        it 'does not apply the per-project limit but still enforces the per-job limit' do
+          5.times { retry_job(create(:ci_build, :success, pipeline: pipeline, ci_stage: stage)) }
+          expect(retry_job(other_job).reason).not_to eq(:rate_limited)
+
+          3.times { retry_job }
+          expect(retry_job.reason).to eq(:rate_limited)
+        end
+      end
+
+      context 'when the per-job limit is hit repeatedly' do
+        before do
+          # Small enough that blocked calls would exhaust it if they counted.
+          stub_application_setting(job_retry_limit_per_user_project: 4)
+        end
+
+        it 'does not spend the per-project budget on already-blocked per-job calls' do
+          8.times { retry_job }
+          expect(retry_job.reason).to eq(:rate_limited)
+
+          expect(retry_job(other_job).reason).not_to eq(:rate_limited)
+        end
+      end
+
+      context 'with a different user' do
+        let_it_be(:other_user) { create(:user, developer_of: project) }
+
+        before do
+          stub_application_setting(job_retry_limit_per_user_project: 1)
+        end
+
+        it 'keeps separate buckets per user' do
+          expect(retry_job).to be_success
+          expect(retry_job.reason).to eq(:rate_limited)
+
+          expect(described_class.new(project, other_user).execute(other_job)).to be_success
+        end
+      end
+
+      context 'when the user cannot retry the job' do
+        let(:user) { reporter }
+
+        before do
+          stub_application_setting(job_retry_limit_per_user_project: 1)
+        end
+
+        it 'counts the rejected call against the bucket' do
+          expect { retry_job }.to raise_error(Gitlab::Access::AccessDeniedError)
+
+          expect(retry_job.reason).to eq(:rate_limited)
+        end
+      end
+
+      context 'when the caller opts out with rate_limit: false' do
+        before do
+          stub_application_setting(job_retry_limit_per_user_project: 1)
+        end
+
+        # Guards the auto-retry, auto-rollback and play-fallback exemptions.
+        it 'never consults the rate limiter' do
+          allow(::Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_call_original
+          expect(::Gitlab::ApplicationRateLimiter).not_to receive(:throttled?).with(:job_retry, anything)
+          expect(::Gitlab::ApplicationRateLimiter).not_to receive(:throttled?).with(:job_retry_per_project, anything)
+
+          3.times { retry_job(rate_limit: false) }
+        end
+      end
+
+      it 'logs the throttled call' do
+        allow(Gitlab::AppJsonLogger).to receive(:info)
+        stub_application_setting(job_retry_limit_per_user_project: 1)
+
+        2.times { retry_job }
+
+        expect(Gitlab::AppJsonLogger).to have_received(:info).with(
+          a_hash_including(
+            Labkit::Fields::CLASS_NAME => described_class.to_s,
+            message: 'Job retry rate limit exceeded',
+            rate_limit: 'job_retry_per_project',
+            Labkit::Fields::GL_PROJECT_ID => project.id,
+            job_id: job.id,
+            Labkit::Fields::GL_USER_ID => user.id
+          )
+        ).once
+      end
+
+      it 'logs the per-job limit when it fires' do
+        allow(Gitlab::AppJsonLogger).to receive(:info)
+
+        4.times { retry_job }
+
+        expect(Gitlab::AppJsonLogger).to have_received(:info).with(
+          a_hash_including(message: 'Job retry rate limit exceeded', rate_limit: 'job_retry')
+        ).once
+      end
+    end
+
+    context 'when the job to be retried is a bridge' do
+      context 'and it is not retryable' do
+        let_it_be_with_reload(:job) { create(:ci_bridge, :failed, :reached_max_descendant_pipelines_depth) }
+
+        it_behaves_like 'does not retry the job'
+      end
+
+      include_context 'retryable bridge'
+
+      it_behaves_like 'retries the job'
+
+      context 'when given variables' do
+        let(:new_job) { service.clone!(job, variables: job_variables_attributes) }
+
+        it 'does not give variables to the new bridge' do
+          expect { new_job }.not_to raise_error
+        end
+      end
+
+      context "when the retried bridge job has a resource group" do
+        let(:resource_group) { create(:ci_resource_group, project: project) }
+        let(:original_job) do
+          create(
+            :ci_bridge, :retryable,
+            :allowed_to_fail, description: 'bridge-job',
+            pipeline: pipeline,
+            resource_group: resource_group
+          )
+        end
+
+        it "passes the resource group to the newly created job via bridge job retry" do
+          service_response = service.execute(original_job)
+
+          expect { service_response }.not_to raise_error
+          expect(original_job.resource_group_id).to eq(service_response[:job].resource_group_id)
+        end
+
+        it 'prevents a new pipeline from running when retried bridge is running with same resource group' do
+          retried_bridge_job = service.execute(original_job)[:job]
+
+          resource_group.assign_resource_to(retried_bridge_job)
+          retried_bridge_job.update!(status: 'running')
+
+          new_bridge_job = create(
+            :ci_bridge, :waiting_for_resource,
+            pipeline: create(:ci_pipeline, project: project),
+            resource_group: resource_group
+          )
+
+          expect(new_bridge_job.status).to eq('waiting_for_resource')
+
+          retried_bridge_job.update!(status: 'success')
+          resource_group.release_resource_from(retried_bridge_job)
+
+          Ci::ResourceGroups::AssignResourceFromResourceGroupService.new(project, user).execute(resource_group)
+
+          new_bridge_job.reload
+
+          expect(new_bridge_job.status).to eq('pending')
+        end
+      end
+    end
+
+    context 'when the job to be retried is a build' do
+      context 'and it is not retryable' do
+        let_it_be_with_reload(:job) { create(:ci_build, :deployment_rejected, pipeline: pipeline) }
+
+        it_behaves_like 'does not retry the job'
+      end
+
+      include_context 'retryable build'
+
+      it_behaves_like 'retries the job'
+
+      context 'automatic retryable build' do
+        let_it_be_with_refind(:auto_retryable_build) do
+          create(:ci_build, pipeline: pipeline, ci_stage: stage, user: user, options: { retry: 1 })
+        end
+
+        def drop_build!
+          auto_retryable_build.drop_with_exit_code!('test failure', 1)
+        end
+
+        it 'creates a new build and enqueues BuildQueueWorker' do
+          expect { drop_build! }.to change { Ci::Build.count }.by(1)
+                                .and change { BuildQueueWorker.jobs.count }.by(1)
+        end
+      end
+
+      context 'when there are subsequent jobs that are skipped' do
+        let_it_be(:subsequent_build) do
+          create(:ci_build, :skipped, pipeline: pipeline, ci_stage: deploy_stage)
+        end
+
+        let_it_be(:subsequent_bridge) do
+          create(:ci_bridge, :skipped, pipeline: pipeline, ci_stage: deploy_stage)
+        end
+
+        it 'does not cause an N+1 when updating the job ownership' do
+          control = ActiveRecord::QueryRecorder.new(skip_cached: false) { service.execute(job) }
+
+          create_list(:ci_build, 2, :skipped, pipeline: pipeline, ci_stage: deploy_stage)
+
+          expect { service.execute(job) }.not_to exceed_all_query_limit(control)
+        end
+      end
+
+      context 'when given variables' do
+        let(:new_job) { service.clone!(job, variables: job_variables_attributes) }
+
+        context 'when the build is actionable' do
+          let_it_be_with_refind(:job) { create(:ci_build, :actionable, pipeline: pipeline) }
+
+          it 'gives variables to the new build' do
+            expect(new_job.job_variables.count).to be(1)
+            expect(new_job.job_variables.first.key).to eq('MANUAL_VAR')
+            expect(new_job.job_variables.first.value).to eq('manual test var')
+            expect(new_job.job_variables.first.project_id).to eq(job.project_id)
+          end
+        end
+
+        context 'when the build is not actionable' do
+          let_it_be_with_refind(:job) { create(:ci_build, pipeline: pipeline) }
+
+          it 'does not give variables to the new build' do
+            expect(new_job.job_variables.count).to be_zero
+          end
+        end
+      end
+    end
+
+    context 'when job being retried has jobs in previous stages' do
+      let_it_be_with_refind(:job) do
+        create(
+          :ci_build,
+          :failed,
+          name: 'deploy_a',
+          pipeline: pipeline,
+          ci_stage: deploy_stage
+        )
+      end
+
+      before do
+        create(
+          :ci_build,
+          previous_stage_job_status,
+          name: 'test_a',
+          pipeline: pipeline,
+          ci_stage: stage
+        )
+      end
+
+      where(:previous_stage_job_status, :after_status) do
+        :created   | 'created'
+        :pending   | 'created'
+        :running   | 'created'
+        :manual    | 'created'
+        :scheduled | 'created'
+        :success   | 'pending'
+        :failed    | 'skipped'
+        :skipped   | 'pending'
+      end
+
+      with_them do
+        it 'updates the new job status to after_status' do
+          expect(subject).to be_success
+          expect(new_job.status).to eq after_status
+        end
+      end
+    end
+
+    context 'when job being retried has DAG dependencies' do
+      let!(:job) do
+        create(
+          :ci_build,
+          :failed,
+          :dependent,
+          name: 'deploy_a',
+          pipeline: pipeline,
+          ci_stage: deploy_stage,
+          needed: dependency
+        )
+      end
+
+      let(:dependency) do
+        create(
+          :ci_build,
+          dag_dependency_status,
+          name: 'test_a',
+          pipeline: pipeline,
+          ci_stage: stage
+        )
+      end
+
+      where(:dag_dependency_status, :after_status) do
+        :created   | 'created'
+        :pending   | 'created'
+        :running   | 'created'
+        :manual    | 'created'
+        :scheduled | 'created'
+        :success   | 'pending'
+        :failed    | 'skipped'
+        :skipped   | 'skipped'
+      end
+
+      with_them do
+        it 'updates the new job status to after_status' do
+          expect(subject).to be_success
+          expect(new_job.status).to eq after_status
+        end
+      end
+    end
+
+    context 'when there are other manual/scheduled jobs' do
+      let_it_be(:test_manual_build) do
+        create(:ci_build, :manual, pipeline: pipeline, ci_stage: stage)
+      end
+
+      let_it_be(:subsequent_manual_build) do
+        create(:ci_build, :manual, pipeline: pipeline, ci_stage: deploy_stage)
+      end
+
+      let_it_be(:test_scheduled_build) do
+        create(:ci_build, :scheduled, pipeline: pipeline, ci_stage: stage)
+      end
+
+      let_it_be(:subsequent_scheduled_build) do
+        create(:ci_build, :scheduled, pipeline: pipeline, ci_stage: deploy_stage)
+      end
+
+      let!(:job) do
+        create(:ci_build, *[trait].compact, :failed, pipeline: pipeline, ci_stage: stage)
+      end
+
+      where(:trait, :enqueue_immediately) do
+        nil                | false
+        :manual            | true
+        :expired_scheduled | true
+      end
+
+      with_them do
+        it 'retries the given job but not the other manual/scheduled jobs' do
+          expect { subject }
+            .to change { Ci::Build.count }.by(1)
+            .and not_change { test_manual_build.reload.status }
+            .and not_change { subsequent_manual_build.reload.status }
+            .and not_change { test_scheduled_build.reload.status }
+            .and not_change { subsequent_scheduled_build.reload.status }
+
+          expect(new_job).to be_pending
+        end
+
+        it_behaves_like 'checks enqueue_immediately?'
+      end
+    end
+
+    context 'when given job inputs' do
+      let_it_be(:inputs_spec) do
+        {
+          'environment' => { 'type' => 'string', 'default' => 'staging', 'options' => %w[staging production] },
+          'debug' => { 'type' => 'boolean', 'default' => false }
+        }
+      end
+
+      let_it_be_with_refind(:job) do
+        create(:ci_build, :success, pipeline: pipeline, ci_stage: stage, options: { inputs: inputs_spec })
+      end
+
+      subject { service.execute(job, inputs: { environment: 'production', debug: true }) }
+
+      it 'applies the inputs to the retried job' do
+        expect(subject).to be_success
+        expect(new_job.inputs.count).to eq(2)
+
+        environment_input = new_job.inputs.find_by(name: 'environment')
+        expect(environment_input.value).to eq('production')
+        expect(environment_input.project_id).to eq(project.id)
+
+        debug_input = new_job.inputs.find_by(name: 'debug')
+        expect(debug_input.value).to be(true)
+        expect(debug_input.project_id).to eq(project.id)
+      end
+
+      context 'when some inputs match their default values' do
+        subject { service.execute(job, inputs: { environment: 'staging', debug: true }) }
+
+        it 'only saves inputs that differ from defaults' do
+          expect(subject).to be_success
+          expect(new_job.inputs.count).to eq(1)
+
+          debug_input = new_job.inputs.find_by(name: 'debug')
+          expect(debug_input.value).to be(true)
+          expect(debug_input.project_id).to eq(project.id)
+
+          expect(new_job.inputs.find_by(name: 'environment')).to be_nil
+        end
+      end
+
+      context 'when all inputs match their default values' do
+        subject { service.execute(job, inputs: { environment: 'staging', debug: false }) }
+
+        it 'does not save any inputs' do
+          expect(subject).to be_success
+          expect(new_job.inputs.count).to eq(0)
+        end
+      end
+
+      context 'when inputs are invalid' do
+        it 'returns a validation error' do
+          result = service.execute(job, inputs: { environment: 'development' })
+
+          expect(result).to be_error
+          expect(result.message).to eq(
+            '`environment` input: `development` cannot be used because it is not in the list of allowed options'
+          )
+        end
+
+        it 'does not create a new job' do
+          expect { service.execute(job, inputs: { environment: 'development' }) }
+            .not_to change { Ci::Build.count }
+        end
+      end
+
+      context 'when unknown inputs are provided' do
+        it 'returns an error' do
+          result = service.execute(job, inputs: { environment: 'production', unknown_input: 'value' })
+
+          expect(result).to be_error
+          expect(result.message).to eq('Unknown input: unknown_input')
+        end
+
+        it 'does not create a new job' do
+          expect { service.execute(job, inputs: { environment: 'production', unknown_input: 'value' }) }
+            .not_to change { Ci::Build.count }
+        end
+      end
+
+      describe 'job inputs metrics' do
+        it 'tracks when new input values are provided' do
+          expect { service.execute(job, inputs: { environment: 'production', debug: true }) }
+            .to trigger_internal_events('retry_job_with_new_input_values')
+            .with(
+              category: 'Ci::RetryJobService',
+              project: project,
+              user: user
+            )
+        end
+
+        context 'when all inputs match defaults' do
+          it 'does not track the event' do
+            expect { service.execute(job, inputs: { environment: 'staging', debug: false }) }
+              .not_to trigger_internal_events('retry_job_with_new_input_values')
+          end
+        end
+
+        context 'when no inputs are provided' do
+          it 'does not track the event' do
+            expect { service.execute(job, inputs: {}) }
+              .not_to trigger_internal_events('retry_job_with_new_input_values')
+          end
+        end
+      end
+    end
+  end
+end

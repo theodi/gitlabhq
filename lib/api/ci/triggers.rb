@@ -1,0 +1,228 @@
+# frozen_string_literal: true
+
+module API
+  module Ci
+    class Triggers < ::API::Base
+      include PaginationParams
+
+      HTTP_GITLAB_EVENT_HEADER = "HTTP_#{::Gitlab::WebHooks::GITLAB_EVENT_HEADER}".underscore.upcase
+
+      feature_category :pipeline_composition
+      urgency :low
+
+      params do
+        requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.',
+          documentation: { example: 18 }
+      end
+      resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc 'Trigger a pipeline with a token' do
+          detail 'Triggers a pipeline with a token. With a CI/CD job token, the triggered pipeline is a ' \
+            'multi-project pipeline. The job that authenticates the request becomes associated with the upstream ' \
+            'pipeline, which is visible on the pipeline graph. If you use a trigger token in a job, the job ' \
+            'is not associated with the upstream pipeline.'
+          tags ['ci_triggers']
+          success code: 201, model: Entities::Ci::Pipeline
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+        end
+        params do
+          requires :ref, type: String, desc: 'Name of the branch or tag to run the pipeline on.', allow_blank: false,
+            documentation: { example: 'develop' }
+          requires :token, type: String, desc: 'Trigger token or CI/CD job token.',
+            documentation: { example: '6d056f63e50fe6f8c5f8f4aa10edb7' }
+          optional :variables, type: Hash, desc: 'Map of pipeline variables, as key-value pairs, for example `{ ' \
+                                             'VAR1: "value1", VAR2: "value2" }`.',
+            documentation: { example: { VAR1: "value1", VAR2: "value2" } }
+          optional :inputs, type: Hash, desc: 'Map of inputs, as key-value pairs, to use when creating the pipeline. ' \
+                                          '[Generally ' \
+                                          'available](https://gitlab.com/gitlab-org/gitlab/-/issues/536548) in ' \
+                                          'GitLab 18.1. Feature flag `ci_inputs_for_pipelines` removed.'
+        end
+        route_setting :authorization, skip_granular_token_authorization: :trigger_token_auth
+        route_setting :log_safety, { unsafe: %w[inputs] }
+        post ":id/(ref/:ref/)trigger/pipeline", requirements: { ref: /.+/ } do
+          Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/20758')
+
+          forbidden! if gitlab_pipeline_hook_request?
+
+          # validate variables
+          params[:variables] = params[:variables].to_h
+          unless params[:variables].all? { |key, value| key.is_a?(String) && value.is_a?(String) }
+            render_api_error!('variables needs to be a map of key-valued strings', 400)
+          end
+
+          project = find_project(params[:id])
+          not_found! unless project
+
+          result = ::Ci::PipelineTriggerService.new(project, nil, params).execute
+          not_found! unless result
+
+          if result.error?
+            render_api_error!(result[:message], result[:http_status])
+          else
+            present result[:pipeline], with: Entities::Ci::Pipeline
+          end
+        end
+
+        desc 'List all project trigger tokens' do
+          detail 'Lists all pipeline trigger tokens for a specified project.'
+          tags ['ci_triggers']
+          success code: 200, model: Entities::Trigger
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+          is_array true
+        end
+        params do
+          use :pagination
+        end
+        route_setting :authorization, permissions: :read_trigger, boundary_type: :project
+        get ':id/triggers' do
+          authenticate!
+          authorize! :admin_build, user_project
+
+          triggers = user_project.triggers.with_last_used
+
+          present paginate(triggers), with: Entities::Trigger, current_user: current_user
+        end
+        desc 'Retrieve trigger token details' do
+          detail 'Retrieves details of a pipeline trigger token for a project.'
+          tags ['ci_triggers']
+          success code: 200, model: Entities::Trigger
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+        end
+        params do
+          requires :trigger_id, type: Integer, desc: 'ID of the trigger token.', documentation: { example: 10 }
+        end
+        route_setting :authorization, permissions: :read_trigger, boundary_type: :project
+        get ':id/triggers/:trigger_id' do
+          authenticate!
+          authorize! :admin_build, user_project
+
+          trigger = user_project.triggers.find(params.delete(:trigger_id))
+          break not_found!('Trigger') unless trigger
+
+          present trigger, with: Entities::Trigger, current_user: current_user
+        end
+
+        desc 'Create a trigger token' do
+          detail 'Creates a pipeline trigger token for a project.'
+          tags ['ci_triggers']
+          success code: 201, model: Entities::Trigger
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+        end
+        params do
+          requires :description, type: String, desc: 'Description of the trigger token.',
+            documentation: { example: 'my trigger token description' }
+          optional :expires_at, type: DateTime, desc: 'Timestamp of when the pipeline trigger token expires.',
+            documentation: { example: '2024-07-01T00:00:00.000Z' }
+        end
+        route_setting :authorization, permissions: :create_trigger, boundary_type: :project
+        post ':id/triggers' do
+          authenticate!
+          authorize! :manage_trigger, user_project
+
+          response =
+            ::Ci::PipelineTriggers::CreateService.new(
+              project: user_project,
+              user: current_user,
+              description: declared_params(include_missing: false)[:description],
+              expires_at: declared_params(include_missing: true)[:expires_at]
+            ).execute
+
+          if response.success?
+            present response.payload[:trigger], with: Entities::Trigger, current_user: current_user
+          elsif response.reason == :forbidden
+            forbidden!(response.message)
+          else
+            bad_request!(response.message)
+          end
+        end
+
+        desc 'Update a pipeline trigger token' do
+          detail 'Updates a pipeline trigger token for a project.'
+          tags ['ci_triggers']
+          success code: 200, model: Entities::Trigger
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+        end
+        params do
+          requires :trigger_id, type: Integer,  desc: 'ID of the trigger token.'
+          optional :description, type: String,  desc: 'Description of the trigger token.'
+        end
+        route_setting :authorization, permissions: :update_trigger, boundary_type: :project
+        put ':id/triggers/:trigger_id' do
+          authenticate!
+
+          trigger = user_project.triggers.find(params.delete(:trigger_id))
+          break not_found!('Trigger') unless trigger
+
+          response =
+            ::Ci::PipelineTriggers::UpdateService.new(
+              user: current_user,
+              trigger: trigger,
+              description: declared_params(include_missing: false)[:description]
+            ).execute
+
+          if response.success?
+            present response.payload[:trigger], with: Entities::Trigger, current_user: current_user
+          elsif response.reason == :forbidden
+            forbidden!(response.message)
+          else
+            bad_request!(response.message)
+          end
+        end
+
+        desc 'Delete a pipeline trigger token' do
+          detail 'Deletes a pipeline trigger token for a project.'
+          tags ['ci_triggers']
+          success code: 204
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' },
+            { code: 412, message: 'Precondition Failed' }
+          ]
+        end
+        params do
+          requires :trigger_id, type: Integer, desc: 'ID of the trigger token.', documentation: { example: 10 }
+        end
+        route_setting :authorization, permissions: :delete_trigger, boundary_type: :project
+        delete ':id/triggers/:trigger_id' do
+          authenticate!
+          authorize! :manage_trigger, user_project
+
+          trigger = user_project.triggers.find(params.delete(:trigger_id))
+          break not_found!('Trigger') unless trigger
+
+          destroy_conditionally!(trigger)
+        end
+      end
+
+      helpers do
+        def gitlab_pipeline_hook_request?
+          request.get_header(HTTP_GITLAB_EVENT_HEADER) == WebHookService.hook_to_event(:pipeline_hooks)
+        end
+      end
+    end
+  end
+end

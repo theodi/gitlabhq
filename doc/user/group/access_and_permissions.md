@@ -1,0 +1,467 @@
+---
+stage: Tenant Scale
+group: Organizations
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Configure and manage group access and permissions.
+title: Group access and permissions
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Configure your groups to control group permissions and access.
+For more information, see also [Sharing projects and groups](../project/members/sharing_projects_groups.md).
+
+## Restrict Git access protocols
+
+You can set the permitted protocols used to access a group's repositories to either SSH, HTTPS, or both. This setting
+is disabled when the [instance setting](../../administration/settings/visibility_and_access_controls.md#configure-enabled-git-access-protocols) is
+configured by an administrator.
+
+To change the permitted Git access protocols for a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Permissions and group features** section.
+1. Choose the permitted protocols from **Enabled Git access protocols**.
+1. Select **Save changes**.
+
+## Restrict group access by IP address
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+To ensure only people from your organization can access particular resources, you can restrict access to groups by IP
+address. This top-level group setting applies to:
+
+- The GitLab UI, including subgroups, projects, and issues. It does not apply to GitLab Pages.
+- The API.
+- On GitLab Self-Managed you can also configure
+  [globally-allowed IP address ranges](../../administration/settings/visibility_and_access_controls.md#configure-globally-allowed-ip-address-ranges)
+  for the group.
+
+Administrators can combine restricted access by IP address with
+[globally-allowed IP addresses](../../administration/settings/visibility_and_access_controls.md#configure-globally-allowed-ip-address-ranges).
+
+> [!warning]
+> IP restriction requires proper configuration of the `X-Forwarded-For` header. To limit the risk
+> of IP spoofing, you must overwrite, and not append, any `X-Forwarded-For` headers sent by clients.
+>
+> For deployments without an upstream proxy or load balancer, configure the server that receives direct
+> requests from users to preserve the original client IP address and overwrite any `X-Forwarded-For` headers.
+> In NGINX, for example, modify your configuration file to include:
+>
+> ```plaintext
+> proxy_set_header X-Forwarded-For $remote_addr;
+> ```
+>
+> For deployments with an upstream proxy or load balancer, configure the proxy or load balancer to
+> preserve the original client IP address and overwrite any `X-Forwarded-For` headers. This approach ensures that
+> GitLab receives the full chain of IPs, starting from the original client, and can correctly evaluate
+> the IP restrictions. In NGINX, for example, modify your configuration file to include:
+>
+> ```plaintext
+> proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+> ```
+
+To restrict group access by IP address:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Permissions and group features** section.
+1. In the **Restrict access by IP address** text box, enter a list of IPv4 or IPv6
+   address ranges in CIDR notation:
+
+   ```txt
+   192.168.1.0/24
+   10.0.0.0/8
+   2001:db8::/32
+   203.0.113.5/32
+   ```
+
+   You must manually add each IP address entry. Adding multiple entries separated by a comma or space is not supported. Support for bulk entries is proposed in [issue 468998](https://gitlab.com/gitlab-org/gitlab/-/work_items/468998).
+
+   This list:
+   - Has no limit on the number of IP address ranges.
+   - Applies to both SSH or HTTP authorized IP address ranges. You cannot split
+     this list by type of authorization.
+1. Select **Save changes**.
+
+### Security implications
+
+IP access restrictions limit access to groups and projects, but are not a complete firewall.
+While this feature generally limits access to group and project resources, some information
+may still be accessible to restricted users. Keep in mind the following (non-exhaustive)
+list of security implications when accessing GitLab from a disallowed IP address:
+
+- Administrators and group Owners can always access group settings.
+- Administrators can always access projects in the group. This includes cloning code.
+- Group Owners can always access subgroups, but not any projects in the group or subgroups.
+- Users can always access shared resources.
+- Users can always view the names and hierarchies of groups and projects.
+- Users can always use the [reply by email feature](../../administration/reply_by_email.md)
+  to create and edit comments on issues or merge requests.
+- Users can create issues and merge requests by email with their
+  [incoming email token](../../security/tokens/_index.md#incoming-email-token), because
+  incoming email is not subject to IP restrictions.
+- Users can sometimes view push, merge, issue, or comment events on their dashboard.
+- IP restrictions always apply to public projects, but cached project files may sometimes be accessible.
+- IP restrictions always apply to Git operations through SSH on GitLab.com and GitLab Dedicated.
+  GitLab Self-Managed instances should use `gitlab-sshd` with
+  [PROXY protocol](../../administration/operations/gitlab_sshd.md#proxy-protocol-support) enabled.
+- IP restrictions apply to Git clone operations performed by CI/CD jobs, except on GitLab.com hosted runners.
+- IP restrictions do not apply to runner registration. If a runner outside the allowed ranges
+  picks up a job, the job fails with the error
+  `This job could not be executed because group IP address restrictions are enabled, and the runner's IP address is not in the allowed range.`
+- IP restrictions might not apply to forked projects or actions that indirectly interact with issues
+  or artifacts in an IP-restricted group. For example, a merge request that closes an issue in an
+  IP-restricted group by using an issue reference in the merge request description.
+- IP restrictions apply to project and group access tokens, service accounts, deploy keys, and deploy tokens.
+
+### GitLab.com access restrictions
+
+On GitLab.com, group IP address restrictions do not block [hosted runners for GitLab.com](../../ci/runners/hosted_runners/_index.md).
+The hosted runner infrastructure is included in the GitLab.com
+[globally-allowed IP address ranges](../../administration/settings/visibility_and_access_controls.md#configure-globally-allowed-ip-address-ranges),
+so hosted runners can run jobs for projects in your group without being added to your group's allowlist.
+
+To prevent hosted runners from running jobs for projects in your group,
+[disable instance runners for the group](../../ci/runners/runners_scope.md#disable-instance-runners-for-a-group)
+and do not allow projects and subgroups to override the setting.
+Jobs then run only on group or project runners that you register.
+
+## Restrict group access by domain
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can define an email domain allowlist at the top-level namespace to restrict which users can
+access a group and its projects. A user's primary email domain must match an entry in the allowlist
+to access that group. Subgroups inherit the same allowlist.
+
+To restrict group access by domain:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Permissions and group features** section.
+1. In the **Restrict membership by email domain** text box, enter the domain names to allow.
+1. Select **Save changes**.
+
+The next time you attempt to add a user to the group, their [primary email](../profile/_index.md#change-your-primary-email)
+must match one of the allowed domains.
+
+You cannot restrict using the most popular public email domains, such as:
+
+- `aol.com`, `gmail.com`, `hotmail.co.uk`, `hotmail.com`,
+- `hotmail.fr`, `icloud.com`, `live.com`, `mail.com`,
+- `me.com`, `msn.com`, `outlook.com`,
+- `proton.me`, `protonmail.com`, `tutanota.com`,
+- `yahoo.com`, `yandex.com`, `zohomail.com`
+
+When you share a group, both the source and target namespaces must allow the domains of the members' email addresses.
+
+> [!note]
+> Removing a domain from the **Restrict membership by email domain** list does not remove existing users with that domain from the group or its projects.
+> Also, if you share a group or project with another group, the target group can add more email domains to its list that are not in the list of the source group.
+> Hence, this feature does not ensure that the current members always conform to the **Restrict membership by email domain** list.
+
+## Prevent users from requesting access to a group
+
+As a group Owner, you can prevent non-members from requesting access to
+your group.
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Permissions and group features** section.
+1. Clear the **Allow users to request access** checkbox.
+1. Select **Save changes**.
+
+> [!note]
+> Disabling the **Allow users to request access** setting prevents new access requests.
+> Existing pending requests are not removed and can still be approved or denied.
+
+## Prevent project forking outside group
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+By default, projects in a group can be forked.
+However, you can prevent the projects in a group from being forked outside of the current top-level group.
+
+> [!note]
+> Prevent forking outside the top-level group when possible to reduce potential avenues for bad actors.
+> However, if you expect a lot of external collaboration, allowing forks outside the top-level group might be unavoidable.
+
+Prerequisites:
+
+- This setting is enabled on the top-level group only.
+- All subgroups inherit this setting from the top-level group, and it cannot be
+  changed at the subgroup level.
+
+To prevent projects from being forked outside the group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Permissions and group features** section.
+1. Check **Prevent project forking outside current group**.
+1. Select **Save changes**.
+
+Existing forks are not removed.
+
+## Prevent members from being added to projects in a group
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+As a group Owner, you can prevent any new project membership for all
+projects in a group, allowing tighter control over project membership.
+
+For example, if you want to lock the group for an [audit event](../../administration/compliance/audit_event_reports.md),
+you can guarantee that project membership cannot be modified during the audit.
+
+If group membership lock is enabled, the group Owner can still:
+
+- Invite groups or add members to groups to give them access to projects in the **locked** group.
+- Change the role of group members.
+
+The setting does not cascade. Projects in subgroups observe the subgroup configuration, ignoring the parent group.
+
+To prevent members from being added to projects in a group:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand the **Permissions and group features** section.
+1. Under **Membership**, select **Users cannot be added to projects in this group**.
+1. Select **Save changes**.
+
+After you lock the membership for a group:
+
+- All users who previously had permissions can no longer add members to a group.
+- API requests to add a new user to a project are not possible.
+
+## Manage group memberships with LDAP
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- Support for custom roles for users synced in groups [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/435229) in GitLab 17.2.
+
+{{< /history >}}
+
+Group syncing allows LDAP groups to be mapped to GitLab groups. This provides more control over per-group user management. To configure group syncing, edit the `group_base` **DN** (`'OU=Global Groups,OU=GitLab INT,DC=GitLab,DC=org'`). This **OU** contains all groups that are associated with GitLab groups.
+
+Group links can be created by using either a CN or a filter. To create these group links, go to the group's **Settings** > **LDAP Synchronization** page. After configuring the link, it may take more than an hour for the users to sync with the GitLab group. After you have configured the link:
+
+Group Owners can use the [member roles API](../../api/member_roles.md) or [group members API](../../api/group_members.md#add-a-group-member) to add a service account user to or remove a service account user from the group, even when LDAP synchronization is enabled for the group. Group Owners cannot add or remove non-service account users.
+
+When a user belongs to multiple LDAP groups configured for the same GitLab group, GitLab assigns
+them the higher of the two associated roles. For example:
+
+- User is a member of LDAP groups `Owner` and `Dev`.
+- The GitLab Group is configured with these two LDAP groups.
+- When group sync is completed, the user is granted the `Owner` role as this is the higher of the two LDAP group roles.
+
+With custom roles, the same logic applies when the roles have different base access levels. For example:
+
+- If user is a member of LDAP groups `Developer` and `Developer + admin_vulnerability`
+- The user is granted `Developer + admin_vulnerability` as this is the higher of the two LDAP group roles.
+
+When two custom roles share the same base access level, GitLab cannot determine a higher role by
+rank alone. Instead, the custom role from the earliest-created group link takes precedence.
+For example:
+
+- If a user is a member of LDAP groups `Developer + admin_vulnerability` and `Developer + admin_merge_request`
+- Both roles share the `Developer` base access level.
+- The user is granted whichever LDAP group link was created earlier.
+
+For more information on the administration of LDAP and group sync, refer to the [main LDAP documentation](../../administration/auth/ldap/ldap_synchronization.md#group-sync).
+
+> [!note]
+> When you add LDAP group syncing, if an LDAP user is a group member and they are not part of the LDAP group, they are removed from the group.
+
+You can use a workaround to [manage project access through LDAP groups](../project/working_with_projects.md#manage-project-access-through-ldap-groups).
+
+### Create group links with a CN
+
+To create group links with LDAP group CN:
+
+<!-- vale gitlab_base.Spelling = NO -->
+
+1. Select the **LDAP Server** for the link.
+1. As the **Sync method**, select `LDAP Group cn`.
+1. In the **LDAP Group cn** field, begin typing the CN of the group. There is a dropdown list with matching CNs in the configured `group_base`. Select your CN from this list.
+1. In the **LDAP Access** section, choose a [default role](../permissions.md) or [custom member role](../custom_roles/_index.md) for users synced in this group.
+1. Select **Add Synchronization**.
+
+GitLab begins linking the role to any matching LDAP users. This process may take over an hour to complete.
+
+<!-- vale gitlab_base.Spelling = YES -->
+
+### Create group links with a filter
+
+To create group links with an LDAP user filter:
+
+1. Select the **LDAP Server** for the link.
+1. As the **Sync method**, select `LDAP user filter`.
+1. Input your filter in the **LDAP User filter** box. Follow the [documentation on user filters](../../administration/auth/ldap/_index.md#set-up-ldap-user-filter).
+1. In the **LDAP Access** section, choose a [default role](../permissions.md) or [custom member role](../custom_roles/_index.md) for users synced in this group.
+1. Select **Add Synchronization**.
+
+GitLab begins linking the role to any matching LDAP users. This process may take over an hour to complete.
+
+### Remove group links
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **Active synchronization**.
+1. Identify the group link you want to remove and select **Remove**.
+
+> [!note]
+> When you remove LDAP group syncing, the existing memberships and role assignment are retained.
+> If the group has no remaining LDAP group links, you can edit these memberships directly.
+> You do not need to override them first.
+
+### Override user permissions
+
+LDAP user permissions can be manually overridden by an administrator. To override a user's permissions:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Manage** > **Members**. If LDAP synchronization
+   has granted a user a role with:
+   - More permissions than the parent group membership, that user is displayed as having
+     [direct membership](../project/members/_index.md#display-direct-members) of the group.
+   - The same or fewer permissions than the parent group membership, that user is displayed as having
+     [inherited membership](../project/members/_index.md#membership-types) of the group.
+1. Optional. If the user you want to edit is displayed as having inherited membership,
+   [filter the subgroup to show direct members](_index.md#filter-a-group) before
+   overriding LDAP user permissions.
+1. In the row for the user you are editing, select the pencil ({{< icon name="pencil" >}}) icon.
+1. Select **Edit permissions** in the dialog.
+
+Now you can edit the user's permissions from the **Members** page.
+
+## Set the default role that can use pipeline variables
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/513117) in GitLab 17.10.
+
+{{< /history >}}
+
+This group setting controls the default value of the [minimum role allowed to run a new pipeline with pipeline variables](../../ci/variables/_index.md#restrict-pipeline-variables)
+project setting. New projects created in the group have this value selected by default.
+
+Prerequisites:
+
+- You must have the Maintainer or Owner role in the group.
+- The group must be the top-level group, not a subgroup.
+
+To set the default minimum role:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Settings** > **CI/CD** > **Variables**.
+1. Under **Default role to use pipeline variables** select a minimum role, or select
+   **No one allowed** to prevent any user from using pipeline variables.
+1. Select **Save changes**.
+
+After a new project is created, project members with the Maintainer or Owner role
+can change the project setting to another value if needed.
+
+## Allow access to the MCP server
+
+{{< details >}}
+
+- Offering: GitLab.com
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/230311) in GitLab 19.0
+  [with a feature flag](../../administration/feature_flags/_index.md) named `mcp_server_availability_setting`.
+  Disabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/work_items/598279) in GitLab 19.2.
+  Feature flag `mcp_server_availability_setting` removed.
+- [Turned on](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/241093) in GitLab 19.2 for existing
+  top-level groups with GitLab Duo features and experiment and beta features turned on.
+- [Enabled by default](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/256761) for top-level groups
+  created in GitLab 19.5 and later.
+- [Enabled for existing top-level groups](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/257102) in GitLab 19.6, unless an Owner
+  turned it off.
+
+{{< /history >}}
+
+Access to the MCP server is on by default for all top-level groups, unless an Owner turned it off.
+
+Prerequisites:
+
+- The Owner role for the top-level group.
+
+To change access to the MCP server for a top-level group:
+
+1. In the top bar, select **Search or go to** and find your top-level group.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **Permissions and group features**.
+1. In the **MCP client access** section, select or clear the **Allow connection to GitLab** checkbox.
+1. Select **Save changes**.
+
+## Troubleshooting
+
+### Verify if access is blocked by IP restriction
+
+If a user sees a 404 error when they try to access a specific group,
+their access might be blocked by an IP restriction.
+
+Search the `auth.log` rails log for one or more of the following entries:
+
+- `json.message`: `'Attempting to access IP restricted group'`
+- `json.allowed`: `false`
+
+In viewing the log entries, compare `remote.ip` with the list of [allowed IP addresses](#restrict-group-access-by-ip-address) for the group.
+
+### Cannot update permissions for a group member
+
+If a group Owner cannot update permissions for a group member, check which memberships
+are listed. Group Owners can only update direct memberships.
+
+Members added directly to a subgroup are still considered [inherited members](../project/members/_index.md#membership-types)
+if they have the same or a higher role in the parent group.
+
+To view and update direct memberships, [filter the group to show direct members](_index.md#filter-a-group).
+
+[Issue 337539](https://gitlab.com/gitlab-org/gitlab/-/issues/337539#note_1277786161) proposes a redesigned members page that lists both direct and indirect memberships with the ability to filter by type.
+
+### Cannot clone or pull using SSH after enabling IP restrictions
+
+If you have issues with Git SSH operations after adding IP address restrictions,
+check if your connection defaults to IPv6.
+
+Some operating systems prioritize IPv6 over IPv4 when both are available,
+which might not be obvious from the Git terminal feedback.
+
+If your connection uses IPv6, you can resolve this issue by adding the IPv6 address to the allowlist.

@@ -1,0 +1,17 @@
+mutation setReviewers(
+  $projectPath: ID!
+  $iid: String!
+  $reviewerUsernames: [String!]!
+  $operationMode: MutationOperationMode = REPLACE
+) {
+  mergeRequestSetReviewers(
+    input: {
+      projectPath: $projectPath
+      iid: $iid
+      reviewerUsernames: $reviewerUsernames
+      operationMode: $operationMode
+    }
+  ) {
+    errors
+  }
+}

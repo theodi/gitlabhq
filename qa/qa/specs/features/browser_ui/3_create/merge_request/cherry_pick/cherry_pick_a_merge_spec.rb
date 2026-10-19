@@ -1,0 +1,31 @@
+# frozen_string_literal: true
+
+module QA
+  RSpec.describe 'Create', feature_category: :code_review_workflow do
+    describe 'Cherry picking from a merge request', :smoke do
+      let(:project) { create(:project, :with_readme) }
+      let(:feature_mr) { create(:merge_request, project: project, target_branch: 'development') }
+
+      before do
+        Flow::Login.sign_in
+      end
+
+      it 'creates a merge request' do
+        feature_mr.visit!
+
+        Page::MergeRequest::Show.perform do |merge_request|
+          merge_request.close_dap_panel_if_exists
+          merge_request.merge!
+          merge_request.cherry_pick!
+        end
+
+        Page::MergeRequest::New.perform(&:create_merge_request)
+
+        Page::MergeRequest::Show.perform do |merge_request|
+          merge_request.click_diffs_tab
+          expect(merge_request).to have_file(feature_mr.file_name)
+        end
+      end
+    end
+  end
+end

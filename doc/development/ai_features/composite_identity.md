@@ -1,0 +1,188 @@
+---
+stage: none
+group: none
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Composite Identity
+---
+
+For security reasons, you should use composite identity for any AI-generated activity on the GitLab platform that performs write actions.
+
+Features that use Composite Identity:
+
+- [GitLab Duo with Amazon Q](../../user/duo_amazon_q/_index.md)
+
+## Prerequisites
+
+To generate a composite identity token, you must have:
+
+1. A [service account user](../../user/profile/service_accounts.md) who is the primary token owner.
+   1. Can be instance-wide or group-scoped. Instance-wide accounts are typical for GitLab-built features; customer agentic flows should use tightly scoped accounts.
+   1. Only users with specific roles can [create service accounts](../../user/profile/service_accounts.md#create-a-service-account). Plan where/how the account is created accordingly.
+   1. Service accounts can be shared across features, but differentiating actions in the UI is harder if they share the same account (for example, the same user might appear to both create and review an MR).
+
+1. Availability and licensing:
+   1. Service accounts are available on all tiers, with limits on GitLab Free. For more information, see [service accounts](../../user/profile/service_accounts.md).
+   1. Composite identity requires GitLab Premium or Ultimate licenses.
+1. The service account must have `composite_identity_enforced` set to `true`.
+   1. This setting is not available in the service account creation UI and must be configured programmatically.
+1. The OAuth application used for composite identity must enable a dynamic scope of `user:*`.
+   1. This scope is not available in the OAuth application UI and must be configured programmatically.
+
+## How to generate a composite identity token
+
+Only OAuth tokens are supported.
+
+1. Because a service account is a bot user that cannot sign in, the typical [authorization code flow](../../api/oauth2.md) (browser consent) does not work.
+1. If integrating with third-party services:
+   1. Manually generate an OAuth grant for the service account + OAuth app. See this [example for Amazon Q](https://gitlab.com/gitlab-org/gitlab/-/blob/3665a013d3eca00d50cbac4d4aec3053bd5ca9b5/ee/app/services/ai/amazon_q/amazon_q_trigger_service.rb#L135-142).
+   1. Ensure the grant's scopes include the concrete dynamic scope for the human user who originated the AI request, formatted as `user:$ID` (for example, `user:123`). Include other scopes as needed (for example, `api`).
+   1. Exchange the grant for an access token through `https://gitlab.example.com/oauth/token`.
+1. If not integrating with third-party services:
+   1. You can skip the access grant and directly create an OAuth access token, ensuring the scopes include `user:$ID` and any required base scopes.
+   1. Refresh the token through the standard `https://gitlab.example.com/oauth/token>` endpoint using `grant_type=refresh_token`.
+1. The returned access token belongs to the service account but carries `user:$ID` in its scopes. It refreshes like a standard OAuth access token.
+
+### Minimal examples
+
+- Create an OAuth application (note this step is only needed if you want a bespoke OAuth app. The GitLab Duo Workflow default OAuth application and service account are created by calling `ee/app/services/ai/duo_workflows/onboarding_service.rb`):
+
+```ruby
+# Rails console
+app = Authn::OauthApplication.new(
+  name: "Composite Identity App",
+  redirect_uri: Gitlab::Routing.url_helpers.root_url, # unused but cannot be nil
+  scopes: ::Gitlab::Auth::AI_WORKFLOW_SCOPES + [::Gitlab::Auth::DYNAMIC_USER],
+  trusted: false,
+  confidential: false # public client (no secret required)
+)
+app.save!
+```
+
+- Create an authorization grant for a service account + human user:
+
+```ruby
+# Assuming you want to create a composite OAuth token for the GitLab Duo Workflow OAuth application and service account + root user in your GDK.
+org = Organizations::Organization.default_organization
+user = User.first
+
+oauth_token_service = Ai::DuoWorkflows::CreateCompositeOauthAccessTokenService.new(
+  current_user: user,
+  organization: org,
+).execute
+oauth_token_service.payload[:oauth_access_token].plaintext_token
+```
+
+## How authorization is evaluated
+
+A request made with a composite identity token is authorized only if both are true:
+
+- The service account has access to the resource.
+- The human user identified by `user:$ID` in the token scopes has access to the resource.
+
+## How many identities a single request can link
+
+A request links a composite identity for one of two reasons, and the number of allowed links differs:
+
+- One `:authentication` link, at most. This link records the principal the request acts as. If a second service account tries to claim it, the account raises `Gitlab::Auth::Identity::TooManyIdentitiesLinkedError`.
+- Any number of `:permission_check` links. A human can name several AI service accounts in one action, for example by requesting a review from two AI reviewers in a single quick action. Each account is linked so `Ability` can confirm the account has access to the resource.
+
+When more than one identity is linked, `Gitlab::Auth::Identity.currently_linked` returns the authenticated identity. If the request has no authenticated identity, it returns the most recently linked one, so work started for a given service account propagates that account to Gitaly, Workhorse, and background jobs. Because a background job carries a single identity, code that must act as a specific service account should link that account immediately before it starts the work.
+
+## Request context and current_user
+
+When a request includes a composite identity OAuth token, the Rails request context overrides `current_user` to the human user extracted from the `user:$ID` scope. While the token itself still belongs to the service account, the user who originated the request is considered the current user. This means:
+
+- Any code that depends on `current_user` runs as the human user.
+- Use `resolve_composite_identity_actor` to determine the correct actor for attribution. The result depends on how the identity was linked for the current request.
+
+### Attributing actions to the correct actor
+
+Always use `resolve_composite_identity_actor` to resolve the actor for any write operation. You do not need to determine the context yourself - it is set automatically at the request boundary:
+
+```ruby
+actor = Gitlab::Auth::Identity.resolve_composite_identity_actor(current_user)
+```
+
+Use the returned `actor` wherever you set authorship (for example: notes, system notes, pipeline user context).
+
+The method returns the correct actor for the situation:
+
+- **Service account made the request** (OAuth token with `user:$ID` scope, or CI job): internally tagged as `:authentication` context. Returns the service account. The SA is the actor and should be attributed.
+- **Human made the request, SA was linked incidentally** (for example, a human assigns an SA as a reviewer): internally tagged as `:permission_check` context. Returns the human. The human is the actor and should be attributed.
+- **No composite identity**: returns `current_user` unchanged.
+
+You never need to call this method differently depending on the scenario - the identity system records the context when the request is authenticated, and `resolve_composite_identity_actor` uses it automatically.
+
+#### MR authorship and Git commit authorship exception
+
+> [!warning]
+> Do not use `resolve_composite_identity_actor` to set the **author of a merge request**.
+> MR author must always be the human user (`current_user` before composite identity resolution),
+> even when the request is made in the `:authentication` context (service account token).
+
+This exception exists for compliance and segregation-of-duties reasons.
+GitLab enforces that a user cannot approve their own MR (`merge_requests_author_approval` defaults to false).
+If the service account were set as the MR author, the human user could approve the MR themselves, bypassing the self-approval check.
+By keeping the human as the MR author, the self-approval guard remains effective.
+This is the primary compliance guarantee for human-initiated triggers.
+
+For commits the executor pushes directly via the Git CLI, Git records a separate `author` and `committer`,
+and the two get different actors.
+
+- The human user must be the commit `committer`. When `merge_requests_disable_committers_approval`
+  is enabled on a project, GitLab filters approvers by the Git committer email, so keeping the human
+  as the committer keeps them out of the approver pool and preserves segregation of duties.
+  Note that this setting is opt-in and has no database default.
+- In the `:authentication` context, the Git `author` is the service account, because
+  `resolve_composite_identity_actor` returns the service account. This reflects that the agent
+  generated the change.
+
+This committer rule applies only to commits the executor pushes directly via the Git CLI.
+For commits made through the GitLab API or UI, Gitaly may replace the committer with the instance
+identity when signing; the approver filter falls back to the Git author email on that path.
+
+For **autonomous triggers** (no human-initiated request), the service account is both `author` and
+`committer`. The human-as-committer rule applies only to human-initiated triggers.
+
+For the user-facing description of the attribution model, see
+[Understanding the attribution model](../../user/duo_agent_platform/composite_identity.md#understanding-the-attribution-model).
+
+Audit events follow the same attribution rules (GitLab 19.3 and later):
+
+- In the `:authentication` context, `author_id` points to the service account, and `author_name` is
+  stored as `<service account name> on behalf of @<human username>`, truncated to 255 characters.
+  The human user is recorded in the event `details` as `human_author_id`, `human_author_name`, and
+  `human_author_username`. These keys flow to streaming destinations and the audit events REST API.
+- In the `:permission_check` context, the human user remains the audit event author and no
+  `human_author_*` keys are added.
+
+Reference: MR [!204010](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/204010), MR [!223788](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/223788), MR [!240418](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/240418)
+
+## Verify your setup quickly
+
+```shell
+# Expect 200 only if BOTH the human and service account can read the project
+curl --silent --show-error --fail --header "Authorization: Bearer <COMPOSITE_TOKEN>" \
+  "https://gitlab.example.com/api/v4/projects/<NAMESPACE>%2F<PROJECT>"
+```
+
+Common outcomes:
+
+- 403: one of the principals lacks permission.
+- 404: resource not visible to either principal, or not found.
+
+## Local/GDK testing tips
+
+```ruby
+# Rails console
+service_account = User.find_by_username("service_account")
+service_account.update!(composite_identity_enforced: true)
+```
+
+## Troubleshooting
+
+- Dynamic scope rejected or ignored: ensure the OAuth app has `dynamic_scopes: "user:*"`.
+- Token missing `user:$ID`: re-issue the grant/token with the concrete `user:$ID` in scopes.
+- Platform action attributed to human instead of service account (or vice versa): check which context the identity was linked with. OAuth/CI flows use `:authentication` (SA attributed); web/assignment flows use `:permission_check` (human attributed). See [Attributing actions to the correct actor](#attributing-actions-to-the-correct-actor).
+- 422 on token exchange: redirect URI mismatch or expired grant.
+- 403 on API requests: verify both principals have the required project/group permissions and that base scopes (for example, `api`) are present.

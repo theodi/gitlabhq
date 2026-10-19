@@ -1,0 +1,43 @@
+# @feature_category: package_registry
+
+query getPackageVersions(
+  $id: PackagesPackageID!
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+) {
+  package(id: $id) {
+    id
+    versions(after: $after, before: $before, first: $first, last: $last) {
+      count
+      nodes {
+        id
+        name
+        createdAt
+        packageType
+        version
+        status
+        statusMessage
+        _links {
+          webPath
+        }
+        tags(first: 1) {
+          nodes {
+            id
+            name
+          }
+        }
+        userPermissions {
+          destroyPackage
+        }
+      }
+      pageInfo {
+        hasNextPage
+        hasPreviousPage
+        endCursor
+        startCursor
+      }
+    }
+  }
+}

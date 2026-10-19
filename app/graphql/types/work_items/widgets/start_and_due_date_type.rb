@@ -1,0 +1,40 @@
+# frozen_string_literal: true
+
+module Types
+  module WorkItems
+    module Widgets
+      # rubocop:disable Graphql/AuthorizeTypes -- Disabling widget level authorization as it might be too granular
+      # and we already authorize the parent work item
+      class StartAndDueDateType < BaseObject
+        graphql_name 'WorkItemWidgetStartAndDueDate'
+        description 'Represents a start and due date widget'
+
+        authorize_granular_token skip_reason: :parent_authorizes
+
+        implements ::Types::WorkItems::WidgetInterface
+
+        def self.authorization_scopes
+          super + [:ai_workflows]
+        end
+
+        field :due_date,
+          ::Types::DateType,
+          null: true, scopes: [:api, :read_api, :ai_workflows],
+          description: 'Due date of the work item.'
+
+        field :start_date,
+          ::Types::DateType,
+          null: true, scopes: [:api, :read_api, :ai_workflows],
+          description: 'Start date of the work item.'
+
+        field :roll_up,
+          ::GraphQL::Types::Boolean,
+          method: :can_rollup?,
+          null: false,
+          description: 'Indicates if the work item can use rolled up dates.'
+      end
+      # rubocop:enable Graphql/AuthorizeTypes
+    end
+  end
+end
+Types::WorkItems::Widgets::StartAndDueDateType.prepend_mod

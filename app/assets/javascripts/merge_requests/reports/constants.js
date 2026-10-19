@@ -1,0 +1,34 @@
+export const BLOCKERS_ROUTE = 'index';
+export const CODE_QUALITY_ROUTE = 'code-quality';
+export const SECURITY_SCAN_ROUTE = 'security-scan';
+export const LICENSE_COMPLIANCE_ROUTE = 'license-compliance';
+export const BROWSER_PERFORMANCE_ROUTE = 'browser-performance';
+export const LOAD_PERFORMANCE_ROUTE = 'load-performance';
+export const ACCESSIBILITY_ROUTE = 'accessibility';
+export const ROOT_ROUTE = 'reports-root';
+export const METRICS_ROUTE = 'metrics';
+export const TEST_SUMMARY_ROUTE = 'test-summary';
+export const TERRAFORM_ROUTE = 'terraform';
+export const STATUS_CHECKS_ROUTE = 'status-checks';
+
+export const EMPTY_STATE_NO_PIPELINE = 'no-pipeline';
+export const EMPTY_STATE_PIPELINE_RUNNING = 'pipeline-running';
+export const EMPTY_STATE_NO_REPORTS = 'no-reports';
+
+export const VIEW_MERGE_REQUEST_REPORT = 'view_merge_request_report';
+export const CLICK_TAB_ON_MERGE_REQUEST_REPORT = 'click_tab_on_merge_request_report';
+export const CLICK_VIEW_REPORT_ON_MERGE_REQUEST_WIDGET =
+  'click_view_report_on_merge_request_widget';
+
+// Tracking labels use snake_case to match the internal events metric YAML convention.
+export const TRACKING_LABEL_BY_ROUTE = {
+  [SECURITY_SCAN_ROUTE]: 'security_scan',
+  [LICENSE_COMPLIANCE_ROUTE]: 'license_compliance',
+  [CODE_QUALITY_ROUTE]: 'code_quality',
+  [BROWSER_PERFORMANCE_ROUTE]: 'browser_performance',
+  [LOAD_PERFORMANCE_ROUTE]: 'load_performance',
+  [ACCESSIBILITY_ROUTE]: 'accessibility',
+  [TEST_SUMMARY_ROUTE]: 'test_summary',
+  [TERRAFORM_ROUTE]: 'terraform',
+  [STATUS_CHECKS_ROUTE]: 'status_checks',
+};

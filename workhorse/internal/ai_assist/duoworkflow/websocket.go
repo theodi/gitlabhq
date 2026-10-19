@@ -1,0 +1,425 @@
+package duoworkflow
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
+
+	pb "gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/clients/gopb/contract"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/log"
+
+	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/encoding/protojson"
+)
+
+const wsWriteDeadline = 60 * time.Second
+const wsCloseTimeout = 5 * time.Second
+const wsStopWorkflowTimeout = 10 * time.Second
+
+// wsPingInterval controls how often the server sends WebSocket ping frames to
+// the client. This keeps the connection alive through load-balancer idle
+// timeouts and provides early detection of silently-dropped TCP connections.
+// The value must be less than any intermediate idle-connection timeout (GKE's
+// default is 30s for HTTP/1.1 upgrades).
+const wsPingInterval = 20 * time.Second
+
+// wsPongTimeout is the read deadline set after each pong (or at startup before
+// the first ping). If no pong arrives within this window, ReadMessage returns a
+// timeout error and the connection is treated as dead. It is longer than
+// wsPingInterval to tolerate one missed pong before declaring the connection
+// broken.
+const wsPongTimeout = wsPingInterval + 10*time.Second
+
+// Start small and let MarshalAppend grow the buffer to the action's actual
+// size. Reserving the 4MB message ceiling up front costs that much live heap
+// per buffer.
+const initialMarshalBufSize = 4 << 10
+
+// maxPooledMarshalBufSize bounds a single pool entry, and so bounds pool
+// residue to roughly this much per runtime P. Dropping a buffer costs a full
+// regrow on the next write, so this sits well above the largest JSON a legal
+// action can produce: capping near the message size would thrash on exactly
+// the biggest actions. MaxMessageSize bounds the proto we receive, and
+// protojson output runs larger than the proto it came from, so it is not a
+// usable ceiling on its own.
+const maxPooledMarshalBufSize = 2 * MaxMessageSize
+
+// marshalBufPool shares marshaling buffers across all connections. One buffer
+// per connection pinned ~1.4MB for its whole multi-hour life and neared the
+// container memory limit at ~950 concurrent connections. Pooling scales
+// retention with concurrent writes instead of open connections, which matters
+// because connections are idle nearly all the time. It keeps the grown
+// capacity, unlike shrinking after each write, and the GC drains it under
+// pressure.
+var marshalBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, initialMarshalBufSize)
+		return &b
+	},
+}
+
+// shouldPoolMarshalBuf reports whether a buffer with capacity c is worth
+// keeping. It is a plain predicate so the policy can be tested directly:
+// sync.Pool guarantees nothing about what Get returns, so asserting on pool
+// round-trips is flaky.
+func shouldPoolMarshalBuf(c int) bool {
+	return c <= maxPooledMarshalBufSize
+}
+
+// releaseMarshalBuf returns a buffer to marshalBufPool, dropping it if it grew
+// past maxPooledMarshalBufSize. It clears the length first so a pooled buffer
+// never keeps the last action's payload alive in a package-global.
+func releaseMarshalBuf(bufp *[]byte) {
+	if !shouldPoolMarshalBuf(cap(*bufp)) {
+		return
+	}
+
+	*bufp = (*bufp)[:0]
+	marshalBufPool.Put(bufp)
+}
+
+var normalClosureErrCodes = []int{websocket.CloseGoingAway, websocket.CloseNormalClosure}
+
+var marshaler = protojson.MarshalOptions{
+	UseProtoNames:   true,
+	EmitUnpopulated: true,
+}
+
+var unmarshaler = protojson.UnmarshalOptions{
+	DiscardUnknown: true,
+}
+
+type websocketConn interface {
+	ReadMessage() (int, []byte, error)
+	WriteMessage(int, []byte) error
+	WriteControl(int, []byte, time.Time) error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	SetPongHandler(h func(appData string) error)
+	Close() error
+}
+
+type capability string
+
+const (
+	// Client capabilities
+	capabilityIncrementalStreaming capability = "incremental_streaming"
+	capabilityShellCommand         capability = "shell_command"
+	capabilityReadFileChunked      capability = "read_file_chunked"
+	capabilityCommandTimeout       capability = "command_timeout"
+	capabilityWebSearch            capability = "web_search"
+	capabilityToolCallStreaming    capability = "tool_call_streaming"
+	capabilityScheduleNotification capability = "schedule_notification"
+	capabilityGrepFixedStrings     capability = "grep_fixed_strings"
+	capabilityReadFileImage        capability = "read_file_image"
+	capabilityAutoMode             capability = "auto_mode"
+
+	// Server capabilities
+	capabilityAdvancedSearch          capability = "advanced_search"
+	capabilityToolCallApproval        capability = "tool_call_approval"
+	capabilityToolCallPatternApproval capability = "tool_call_pattern_approval"
+	capabilityJobTracePagination      capability = "job_trace_pagination"
+	capabilityIncrementalCheckpoints  capability = "incremental_checkpoints"
+	// The instance stores only the slim checkpoint header and the channel blobs,
+	// so Duo Workflow Service can stop sending channel_values.
+	capabilityIncrementalCheckpointsOnly capability = "incremental_checkpoints_only"
+)
+
+// ClientCapabilities is how gitlab-lsp -> workhorse -> Duo Workflow Service communicates
+// capabilities that can be used by Duo Workflow Service without breaking
+// backwards compatibility. We intersect the capabilities of all parties and
+// then new behavior can only depend on that behavior if it makes it all the
+// way through. Whenever you add to this list you must also update the gitlab-lsp and
+// either updates the constant in ee/app/assets/javascripts/ai/constants.js or
+// conditionally add to the capabilities in passed to buildStartRequest in
+// ee/app/assets/javascripts/ai/duo_agentic_chat/components/duo_agentic_chat.vue.
+var ClientCapabilities = []capability{
+	capabilityIncrementalStreaming,
+	capabilityShellCommand,
+	capabilityReadFileChunked,
+	capabilityCommandTimeout,
+	capabilityWebSearch,
+	capabilityToolCallStreaming,
+	capabilityScheduleNotification,
+	capabilityGrepFixedStrings,
+	capabilityReadFileImage,
+	capabilityAutoMode,
+}
+
+// ServerCapabilities defines the list of allowed server capabilities that
+// can be communicated to Duo Workflow Service. This allowlist ensures only
+// explicitly approved capabilities are sent.
+//
+// To add a new server capability:
+// 1. Add a constant above (e.g., capabilityNewFeature capability = "new_feature")
+// 2. Add it to this ServerCapabilities list
+// 3. Update compute_server_capabilities in ee/lib/api/ai/duo_workflows/workflows.rb
+var ServerCapabilities = []capability{
+	capabilityAdvancedSearch,
+	capabilityToolCallApproval,
+	capabilityToolCallPatternApproval,
+	capabilityJobTracePagination,
+	capabilityIncrementalCheckpoints,
+	capabilityIncrementalCheckpointsOnly,
+}
+
+// intersectClientCapabilities returns the intersection of what gitlab-lsp passed in and what workhorse
+// supports.
+func intersectClientCapabilities(fromClient []string) []string {
+	result := []string{}
+
+	for _, cap := range ClientCapabilities {
+		if slices.Contains(fromClient, string(cap)) {
+			result = append(result, string(cap))
+		}
+	}
+
+	return result
+}
+
+// intersectServerCapabilities returns the intersection of what is passed from server and what workhorse
+// supports.
+func intersectServerCapabilities(fromServer []string) []string {
+	result := []string{}
+
+	for _, cap := range ServerCapabilities {
+		if slices.Contains(fromServer, string(cap)) {
+			result = append(result, string(cap))
+		}
+	}
+
+	return result
+}
+
+// wsManager owns the WebSocket connection and all state needed to read from and
+// write to it. It mirrors the role of streamManager for the gRPC side, and is
+// the WebSocket implementation of clientTransport.
+type wsManager struct {
+	conn websocketConn
+	// closed records that a close frame was sent or the connection is known dead, so
+	// no further frames should be written. Close still releases the transport.
+	closed atomic.Bool
+}
+
+func newWsManager(conn websocketConn) *wsManager {
+	return &wsManager{conn: conn}
+}
+
+// Start registers the pong callback and arms the initial read deadline. The
+// callback resets the deadline on every pong, so a missing pong eventually
+// causes ReadClientEvent to time out and terminate the read loop.
+//
+// In gorilla/websocket pong frames are dispatched inside ReadMessage, so the
+// handler has to be in place before the first read.
+func (w *wsManager) Start() error {
+	w.conn.SetPongHandler(func(string) error {
+		return w.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+	})
+
+	return w.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+}
+
+// KeepaliveInterval returns how often Keepalive should send a ping frame.
+func (w *wsManager) KeepaliveInterval() time.Duration {
+	return wsPingInterval
+}
+
+// Keepalive sends a single WebSocket ping control frame. It marks the
+// connection as closed if the write fails so that subsequent WriteAction calls
+// are skipped.
+func (w *wsManager) Keepalive() error {
+	if err := w.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteDeadline)); err != nil {
+		w.closed.Store(true)
+		return err
+	}
+	return nil
+}
+
+// ReadClientEvent reads the next raw WebSocket message and unmarshals it into a
+// ClientEvent.
+func (w *wsManager) ReadClientEvent() (*pb.ClientEvent, error) {
+	_, message, err := w.conn.ReadMessage()
+	if err != nil {
+		w.closed.Store(true)
+		return nil, err
+	}
+
+	event := &pb.ClientEvent{}
+	if err := unmarshaler.Unmarshal(message, event); err != nil {
+		return nil, fmt.Errorf("ReadClientEvent: failed to unmarshal WS message: %v", err)
+	}
+
+	return event, nil
+}
+
+// WriteAction marshals a proto Action and writes it to the WebSocket connection.
+// It is a no-op when the connection is already closed. It handles ErrCloseSent
+// silently since that indicates the connection is already closing normally.
+func (w *wsManager) WriteAction(ctx context.Context, action *pb.Action) error {
+	if w.closed.Load() {
+		log.WithContextFields(ctx, log.Fields{}).Info("WriteAction: skipping sending WS message because websocket already closed")
+		return nil
+	}
+
+	// The buffer returns to the shared pool when this function returns, so
+	// nothing may hold it afterwards. WriteMessage writes the bytes out
+	// synchronously and keeps no reference.
+	bufp := marshalBufPool.Get().(*[]byte)
+	defer releaseMarshalBuf(bufp)
+
+	buf, err := marshaler.MarshalAppend((*bufp)[:0], action)
+	if err != nil {
+		return fmt.Errorf("WriteAction: failed to marshal action: %v", err)
+	}
+	// Hand the grown capacity back to the pool, not just the original slice.
+	*bufp = buf
+
+	deadline := time.Now().Add(wsWriteDeadline)
+	if deadlineErr := w.conn.SetWriteDeadline(deadline); deadlineErr != nil {
+		return fmt.Errorf("WriteAction: failed to set write deadline: %v", deadlineErr)
+	}
+
+	if err = w.conn.WriteMessage(websocket.BinaryMessage, buf); err != nil {
+		if err == websocket.ErrCloseSent {
+			log.WithContextFields(ctx, log.Fields{}).Info("WriteAction: websocket already closed, skipping write")
+			return nil
+		}
+		return fmt.Errorf("WriteAction: failed to send WS message: %v", err)
+	}
+
+	// Clear the write deadline after a successful write so it does not affect
+	// subsequent operations (including reads on the same net.Conn).
+	if deadlineErr := w.conn.SetWriteDeadline(time.Time{}); deadlineErr != nil {
+		return fmt.Errorf("WriteAction: failed to clear write deadline: %v", deadlineErr)
+	}
+
+	return nil
+}
+
+// ReadError classifies a WebSocket read error into a reason string suitable for
+// a StopWorkflowRequest, or returns ("", err) for unexpected errors that should
+// be propagated directly.
+func (w *wsManager) ReadError(err error) (reason string, ok bool) {
+	if e, ok := err.(*websocket.CloseError); ok && slices.Contains(normalClosureErrCodes, e.Code) {
+		return fmt.Sprintf("%s%d", reasonClosePrefix, e.Code), true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return reasonPongTimeout, true
+	}
+
+	return "", false
+}
+
+// Close reasons carried in the CloseGoingAway frame. The client reconnects on the
+// code alone; the text only tells client-side logs which side went away.
+const (
+	closeReasonWorkhorseShutdown = "server shutdown"
+	closeReasonDWSUnavailable    = "duo workflow service unavailable"
+)
+
+// SendGoingAway sends a CloseGoingAway (1001) frame with the given reason to
+// signal the client to reconnect, and marks the connection as closed on success.
+func (w *wsManager) SendGoingAway(reason string) error {
+	deadline := time.Now().Add(wsCloseTimeout)
+	closeMsg := websocket.FormatCloseMessage(websocket.CloseGoingAway, truncateCloseReason(reason))
+	if err := w.conn.WriteControl(websocket.CloseMessage, closeMsg, deadline); err != nil {
+		return err
+	}
+	w.closed.Store(true)
+	return nil
+}
+
+// closeInvalidRequest is a private-use WebSocket close code (RFC 6455 §7.4.2
+// reserves 4000–4999 for private use). It maps to HTTP 400 Bad Request
+// semantics: the client sent invalid input (e.g. an empty goal on resume) and
+// must not retry with the same request.
+const closeInvalidRequest = 4400
+
+// wsCloseMaxReasonBytes is the maximum byte length of a WebSocket close frame
+// reason string. RFC 6455 limits control frame payloads to 125 bytes; the
+// first 2 bytes are the status code, leaving 123 bytes for the reason text.
+const wsCloseMaxReasonBytes = 123
+
+// truncateCloseReason truncates s to at most wsCloseMaxReasonBytes bytes,
+// cutting on a valid UTF-8 rune boundary so the resulting string is valid.
+// It uses utf8.ValidString to confirm the result rather than hand-rolling
+// byte-pattern logic.
+func truncateCloseReason(s string) string {
+	if len(s) <= wsCloseMaxReasonBytes {
+		return s
+	}
+	t := s[:wsCloseMaxReasonBytes]
+	// Walk back one byte at a time until the truncated string is valid UTF-8.
+	// In the worst case (all 4-byte runes) we walk back at most 3 bytes.
+	for len(t) > 0 && !utf8.ValidString(t) {
+		t = t[:len(t)-1]
+	}
+	return t
+}
+
+// SendInvalidRequest sends a close frame with code 4400 (private-use, Bad
+// Request) to signal that the server rejected the reconnect because the
+// request was invalid (e.g. an empty goal sent to a workflow paused waiting
+// for user input). The reason string is forwarded from the DWS gRPC status
+// message so the client sees the exact cause rather than a hardcoded string.
+// The connection is marked as closed on success. WebSocket control frames cap
+// the payload at 125 bytes, so the close reason must be at most 123 bytes after
+// the 2-byte status code. FormatCloseMessage does NOT truncate, and WriteControl
+// rejects an oversized frame ("websocket: invalid control frame"), which would
+// silently drop the 4400 close and make the client fall back to 1000. Truncate
+// defensively on a UTF-8 boundary to guarantee the frame is sent.
+func (w *wsManager) SendInvalidRequest(reason string) error {
+	deadline := time.Now().Add(wsCloseTimeout)
+	reason = truncateCloseReason(reason)
+	closeMsg := websocket.FormatCloseMessage(closeInvalidRequest, reason)
+	if err := w.conn.WriteControl(websocket.CloseMessage, closeMsg, deadline); err != nil {
+		return err
+	}
+	w.closed.Store(true)
+	return nil
+}
+
+// Close closes the underlying connection, sending CloseNormalClosure (1000) first
+// unless a close frame was already sent or the connection is already known to be
+// dead. gorilla/websocket never closes the net.Conn on its own, so the transport
+// must be closed here in every case or the descriptor lives until the finalizer.
+func (w *wsManager) Close() error {
+	if w.closed.Load() {
+		if err := w.conn.Close(); err != nil {
+			return fmt.Errorf("failed to close connection: %w", err)
+		}
+		return nil
+	}
+
+	deadline := time.Now().Add(wsCloseTimeout)
+	if err := w.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), deadline); err != nil {
+		closeErr := w.conn.Close()
+		if closeErr != nil {
+			return fmt.Errorf("failed to send close message and failed to close connection: %w", closeErr)
+		}
+		return fmt.Errorf("failed to send close message: %w", err)
+	}
+
+	if err := w.conn.SetReadDeadline(deadline); err != nil {
+		closeErr := w.conn.Close()
+		if closeErr != nil {
+			return fmt.Errorf("failed to set read deadline and failed to close connection: %w", closeErr)
+		}
+		return fmt.Errorf("failed to set read deadline: %w", err)
+	}
+
+	if err := w.conn.Close(); err != nil {
+		return fmt.Errorf("failed to close connection: %w", err)
+	}
+
+	return nil
+}

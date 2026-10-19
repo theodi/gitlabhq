@@ -1,0 +1,358 @@
+---
+stage: Package
+group: Container Registry
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Container virtual registry
+description: Use the container virtual registry to cache container images from upstream registries.
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed
+- Status: Beta
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/548794) in GitLab 18.5 [with a feature flag](../../../../administration/feature_flags/_index.md) named `container_virtual_registries`. Disabled by default.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/work_items/589631) from experiment to beta in GitLab 18.9.
+- [Enabled on GitLab.com, GitLab Self-Managed, and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/224250) in GitLab 18.10.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+
+The GitLab container virtual registry is a local proxy you can use to cache container images from
+upstream registries. It acts as a pull-through cache, storing frequently-accessed images locally
+to reduce bandwidth usage and improve build performance.
+
+## Prerequisites
+
+Before you can use the container virtual registry:
+
+- Review the [prerequisites](../_index.md#prerequisites) to use the virtual registry.
+- Configure authentication to the virtual registry. For more information, see [Authenticate with the container virtual registry](#authenticate-with-the-container-virtual-registry).
+
+When using the container virtual registry, remember the following restrictions:
+
+- You can create up to `5` container virtual registries per top-level group.
+- You can set only `5` upstreams to a given container virtual registry.
+- Geo support is not implemented.
+
+## Manage virtual registries
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/19283) in GitLab 18.10 [with a feature flag](../../../../administration/feature_flags/_index.md) named `ui_for_container_virtual_registries`.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/issues/582167) in GitLab 18.11 to a flag named `container_virtual_registries`. Feature flag `ui_for_container_virtual_registries` removed.
+
+{{< /history >}}
+
+Manage container virtual registries for your group.
+
+You can also [use the API](../../../../api/container_virtual_registries.md).
+
+### Create a container virtual registry
+
+To create a container virtual registry:
+
+1. In the top bar, select **Search or go to** and find your group. This group must be at the top level.
+1. Select **Deploy** > **Virtual registry**.
+1. If you:
+   - Have an existing registry, select **Create registry**. From the dropdown list, select **Container**.
+   - Do not have an existing registry, from the dropdown list, select **Container**. Then, select **Create registry**.
+1. Enter a **Name** and optional **Description**.
+1. Select **Create registry**.
+
+## Manage upstream registries
+
+Manage upstream container registries in a virtual registry.
+
+### Create a container upstream registry
+
+Create a container upstream registry to connect to the virtual registry.
+
+Prerequisites:
+
+- You must have a container virtual registry. For more information, see [Create a virtual registry](#create-a-container-virtual-registry).
+
+To create a container upstream registry:
+
+1. In the top bar, select **Search or go to** and find your group. This group must be at the top level.
+1. Select **Deploy** > **Virtual registry**.
+1. Under **Registry types**, select **View registries**.
+1. Under the **Registries** tab, select a registry.
+1. Select **Add upstream**. If the virtual registry has existing upstreams, from the dropdown list, select either:
+   - **Create new upstream** to configure the upstream.
+   - **Link existing upstream** > **Select existing upstream**.
+     1. From the dropdown list, select an upstream.
+     1. Optional. Select **Test upstream** to test the upstream connection before you create it.
+     1. Select **Add upstream**.
+1. Complete the fields.
+   - Include both a **username** and **password**, or neither. If not set, a public (anonymous) request is used to access the upstream.
+   - If you want to connect the upstream to Docker Hardened Images, use the following as the **Upstream URL**:
+
+     ```plaintext
+     https://dhi.io
+     ```
+
+   - If you want to connect the upstream to Docker Hub, use the following as the **Upstream URL**:
+
+     ```plaintext
+     https://registry-1.docker.io
+     ```
+
+     The Docker Hub registry API is hosted at `registry-1.docker.io`, not `docker.io`.
+     Most container tools rewrite `docker.io` automatically, but the virtual registry
+     proxies to the URL you provide.
+
+     If you use `https://docker.io`, the registry returns HTML instead of OCI responses.
+
+   - **Artifact caching period** defaults to 24 hours. Set to `0` to disable cache entry checks.
+   - If you want to test the upstream connection before you create it, select **Test upstream**.
+
+1. Select **Create upstream**.
+
+For more information about cache validity settings, see [Set the cache validity period](../_index.md#set-the-cache-validity-period).
+
+## Authenticate with the container virtual registry
+
+The container virtual registry stores and
+associates container images in a registry associated
+with your top-level group.
+To access container images, you must authenticate
+with your group's container virtual registry.
+
+Prerequisites:
+
+- Your token must have the [required scopes for container images](../_index.md#authenticate-to-the-virtual-registry).
+
+To authenticate manually, run the following command:
+
+```shell
+echo "$CONTAINER_REGISTRY_PASSWORD" | docker login gitlab.example.com/virtual_registries/container/1 --username <your_username> --password-stdin
+```
+
+The container virtual registry follows the [Docker v2 token authentication flow](https://distribution.github.io/distribution/spec/auth/token/):
+
+1. After client authentication, a JWT token issued to the client authorizes the client to pull container images.
+1. The token expires according to its expiration time.
+1. When the token expires, most Docker clients store user credentials and automatically request a new token without further action.
+
+## Pull container images from the virtual registry
+
+To pull a container image through the virtual registry:
+
+1. Authenticate with the virtual registry.
+1. Use the virtual registry URL format to pull images:
+
+   ```plaintext
+   gitlab.example.com/virtual_registries/container/<registry_id>/<image_path>:<tag>
+   ```
+
+For example:
+
+- Pull an image by its tag:
+
+  ```shell
+  docker pull gitlab.example.com/virtual_registries/container/1/library/alpine:latest
+  ```
+
+- Pull an image by digest:
+
+  ```shell
+  docker pull gitlab.example.com/virtual_registries/container/1/library/alpine@sha256:c9375e662992791e3f39e919b26f510e5254b42792519c180aad254e6b38f4dc
+  ```
+
+- Pull an image in a `Dockerfile`:
+
+  ```dockerfile
+  FROM gitlab.example.com/virtual_registries/container/1/library/alpine:latest
+  ```
+
+- Pull an image in a `.gitlab-ci.yml` file:
+
+  ```yaml
+  image: gitlab.example.com/virtual_registries/container/1/library/alpine:latest
+  ```
+
+When you pull an image, the virtual registry:
+
+1. Checks if the image is already cached.
+   1. If the image is cached and still valid based on the upstream's `cache_validity_hours` setting, the image is served from the cache.
+   1. If the image is not cached or the cache is invalid, the image is fetched from the configured upstream registry and cached.
+1. Serves the image to your Docker client.
+
+### Virtual registry cache validation for images
+
+An image tag like `alpine:latest` always pulls the most recent version of the image. The new version contains an updated image manifest. The container virtual registry does not pull a new image when the manifest changes.
+
+Instead, the container virtual registry:
+
+1. Checks the `cache_validity_hours` setting in the upstream to determine when an image manifest is invalid.
+1. Sends a HEAD request to the upstream. If the manifest is invalid, a new image is pulled.
+
+For example, if your pipeline pulls `node:latest` and you've set the `cache_validity_period` to 24 hours, the virtual registry caches the image and updates it either when the cache expires or `node:latest` changes in the upstream.
+
+## Troubleshooting
+
+### Authentication error: `HTTP Basic: Access Denied`
+
+If you receive an `HTTP Basic: Access denied` error when authenticating against the virtual registry,
+refer to [two-factor authentication troubleshooting](../../../profile/account/two_factor_authentication_troubleshooting.md#error-http-basic-access-denied-if-a-password-was-provided-for-git-authentication-).
+
+### Virtual registry connection failure
+
+If a service alias is not set, the `docker:20.10.16` image is unable to find the
+`dind` service, and an error like the following is thrown:
+
+```plaintext
+error during connect: Get http://docker:2376/v1.39/info: dial tcp: lookup docker on 192.168.0.1:53: no such host
+```
+
+To resolve this error, set a service alias for the Docker service:
+
+```yaml
+services:
+  - name: docker:20.10.16-dind
+    alias: docker
+```
+
+### Virtual registry authentication issues from CI/CD jobs
+
+GitLab Runner authenticates automatically using the CI/CD job token. However, the underlying Docker engine
+is still subject to its [authorization resolving process](https://docs.gitlab.com/runner/configuration/advanced-configuration/#precedence-of-docker-authorization-resolving).
+
+Misconfigurations in the authentication mechanism may cause `HTTP Basic: Access denied` and `403: Access forbidden` errors.
+
+You can use the job logs to view the authentication mechanism used to authenticate against the virtual registry:
+
+```plaintext
+Authenticating with credentials from $DOCKER_AUTH_CONFIG
+```
+
+```plaintext
+Authenticating with credentials from /root/.docker/config.json
+```
+
+```plaintext
+Authenticating with credentials from job payload (GitLab Registry)
+```
+
+Make sure you are using the expected authentication mechanism.
+
+### `Not Found` or `404` error when pulling image
+
+Errors like these might indicate that:
+
+- The user running the job does not have the Guest, Planner, Reporter, Developer, Maintainer, or Owner role, or a custom role with minimal access that has the `read_virtual_registry` ability, for the group that owns the virtual registry.
+- The virtual registry ID in the URL is incorrect.
+- The upstream registry does not contain the requested image.
+- The virtual registry has no upstreams configured.
+
+Example error messages:
+
+```plaintext
+ERROR: gitlab.example.com/virtual_registries/container/1/library/alpine:latest: not found
+```
+
+```plaintext
+ERROR: Job failed: failed to pull image "gitlab.example.com/virtual_registries/container/1/library/alpine:latest" with specified policies [always]:
+Error response from daemon: error parsing HTTP 404 response body: unexpected end of JSON input: "" (manager.go:237:1s)
+```
+
+To resolve these errors:
+
+1. Verify you have the Guest, Planner, Reporter, Developer, Maintainer, or Owner role, or a custom role with minimal access that has the `read_virtual_registry` ability, for the group.
+1. Confirm the virtual registry ID is correct.
+1. Check that the virtual registry has at least one upstream configured.
+1. Verify the image exists in the upstream registry.
+
+### Error: `unexpected EOF` when the S3 bucket has Object Lock enabled
+
+When the object storage bucket for the Dependency Proxy has S3 Object Lock
+enabled, container image pulls might fail with `unexpected EOF` partway through
+a layer.
+
+Example error from the Docker client:
+
+```plaintext
+sha256:9db411d588e2: Downloading [==================================================>]  12.18MB/12.18MB
+unexpected EOF
+```
+
+The GitLab Workhorse log shows a `400` response from the upstream S3
+`PutObject` call:
+
+```plaintext
+operation error S3: PutObject, https response error StatusCode: 400, ...
+InvalidRequest: Content-MD5 OR x-amz-checksum- HTTP header is required for
+Put Object requests with Object Lock parameters
+```
+
+When a bucket has Object Lock configured, S3 requires every `PutObject`
+request to include an integrity header. By default, the AWS SDK used by
+Workhorse does not send these headers. The upload fails, which truncates the
+response Workhorse is streaming to the Docker client.
+
+To verify the cause:
+
+1. Check whether the Dependency Proxy bucket has Object Lock enabled:
+
+   ```shell
+   aws s3api get-object-lock-configuration --bucket DEPENDENCY_PROXY_BUCKET
+   ```
+
+   If Object Lock is enabled, the response contains
+   `"ObjectLockEnabled": "Enabled"`.
+1. Inspect the Workhorse log during a failing pull. The
+   `InvalidRequest: Content-MD5 OR x-amz-checksum-` message confirms the cause.
+
+To resolve the issue:
+
+1. Configure the AWS SDK in Workhorse to send checksum headers. Set both of the following environment variables on the Workhorse container:
+
+   - `AWS_REQUEST_CHECKSUM_CALCULATION=when_supported`
+   - `AWS_RESPONSE_CHECKSUM_VALIDATION=when_supported`
+
+1. For:
+   - GitLab installed with the Helm chart, add the variables to your
+`values.yaml`:
+
+   ```yaml
+   gitlab:
+     webservice:
+       extraEnv:
+         AWS_REQUEST_CHECKSUM_CALCULATION: when_supported
+         AWS_RESPONSE_CHECKSUM_VALIDATION: when_supported
+   ```
+
+   Then, apply the values:
+
+   ```shell
+   helm upgrade gitlab gitlab/gitlab -f values.yaml
+   ```
+
+   - GitLab installed with the Linux package, add the variables to
+`/etc/gitlab/gitlab.rb`:
+
+   ```ruby
+   gitlab_workhorse['env'] = {
+     'AWS_REQUEST_CHECKSUM_CALCULATION' => 'when_supported',
+     'AWS_RESPONSE_CHECKSUM_VALIDATION' => 'when_supported'
+   }
+   ```
+
+   Then, reconfigure:
+
+   ```shell
+   sudo gitlab-ctl reconfigure
+   ```
+
+After Workhorse restarts with the new environment variables, retry the pull.
+The next request stores the blob in S3 and returns the full layer to the
+Docker client.

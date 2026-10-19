@@ -1,0 +1,219 @@
+# frozen_string_literal: true
+
+require 'gitlab/configs'
+
+Gitlab::Configs.on_mutation_warning = ->(message, extra) do
+  raise message unless Rails.env.production?
+
+  # `caller` is already captured inside Options#report_mutation_warning
+  # so the frames reflect the real call site, not this dispatch layer.
+  # Gitlab::BacktraceCleaner drops config/initializers, so the gem limits it
+  # to 11 frames (caller[0..10]) before passing it here.
+  payload = { message: message, caller: extra[:caller], method: extra[:method] }
+  Gitlab::AppJsonLogger.warn(payload)
+end
+
+file = ENV.fetch('GITLAB_CONFIG') { Rails.root.join('config/gitlab.yml') }
+
+GITLAB_INSTANCE_UUID_NOT_SET = 'uuid-not-set'
+
+Settings = Gitlab::Configs.load(file, Rails.env) do
+  def gitlab_on_standard_port?
+    on_standard_port?(gitlab)
+  end
+
+  def build_server_fqdn
+    custom_port = ":#{gitlab.port}" unless on_standard_port?(gitlab)
+
+    [
+      gitlab.host,
+      custom_port,
+      gitlab.relative_url_root
+    ].join('')
+  end
+
+  def host_without_www(url)
+    host(url).sub('www.', '')
+  end
+
+  def build_gitlab_ci_url
+    custom_port =
+      if on_standard_port?(gitlab)
+        nil
+      else
+        ":#{gitlab.port}"
+      end
+
+    [
+      gitlab.protocol,
+      "://",
+      gitlab.host,
+      custom_port,
+      gitlab.relative_url_root
+    ].join('')
+  end
+
+  def build_pages_url
+    base_url(pages).join('')
+  end
+
+  def build_gitlab_shell_ssh_path_prefix
+    user = "#{gitlab_shell.ssh_user}@" unless gitlab_shell.ssh_user.empty?
+    user_host = "#{user}#{gitlab_shell.ssh_host}"
+
+    if gitlab_shell.ssh_port != 22
+      "ssh://#{user_host}:#{gitlab_shell.ssh_port}/"
+    elsif gitlab_shell.ssh_host.include? ':'
+      "[#{user_host}]:"
+    else
+      "#{user_host}:"
+    end
+  end
+
+  def build_base_gitlab_url
+    base_url(gitlab).join('')
+  end
+
+  def build_gitlab_url
+    (base_url(gitlab) + [gitlab.relative_url_root]).join('')
+  end
+
+  def build_gitlab_go_url
+    # "Go package paths are not URLs, and do not include port numbers"
+    # https://github.com/golang/go/issues/38213#issuecomment-607851460
+    "#{gitlab.host}#{gitlab.relative_url_root}"
+  end
+
+  def kerberos_protocol
+    kerberos.https ? "https" : "http"
+  end
+
+  def kerberos_port
+    kerberos.use_dedicated_port ? kerberos.port : gitlab.port
+  end
+
+  # Curl expects username/password for authentication. However when using GSS-Negotiate not credentials should be needed.
+  # By inserting in the Kerberos dedicated URL ":@", we give to curl an empty username and password and GSS auth goes ahead
+  # Known bug reported in http://sourceforge.net/p/curl/bugs/440/ and http://curl.haxx.se/docs/knownbugs.html
+  def build_gitlab_kerberos_url
+    [
+      kerberos_protocol,
+      "://:@",
+      gitlab.host,
+      ":#{kerberos_port}",
+      gitlab.relative_url_root
+    ].join('')
+  end
+
+  def alternative_gitlab_kerberos_url?
+    kerberos.enabled && (build_gitlab_kerberos_url != build_gitlab_url)
+  end
+
+  # check that values in `current` (string or integer) is a contant in `modul`.
+  def verify_constant_array(modul, current, default)
+    values = default || []
+    unless current.nil?
+      values = current.filter_map do |constant|
+        value = verify_constant(modul, constant, nil)
+        value unless value.nil?
+      end
+    end
+
+    values
+  end
+
+  # check that `current` (string or integer) is a contant in `modul`.
+  def verify_constant(modul, current, default)
+    constant = modul.constants.find { |name| modul.const_get(name, false) == current }
+    value = constant.nil? ? default : modul.const_get(constant, false)
+    if current.is_a? String
+      value = begin
+        modul.const_get(current.upcase, false)
+      rescue StandardError
+        default
+      end
+    end
+
+    value
+  end
+
+  def absolute(path)
+    File.expand_path(path, Rails.root)
+  end
+
+  # Don't use this in new code, use db_key_base_keys_32_bytes instead!
+  def db_key_base_keys_truncated
+    db_key_base_keys.map do |key|
+      key[0..31]
+    end
+  end
+
+  # Ruby 2.4+ requires passing in the exact required length for OpenSSL keys
+  # (https://github.com/ruby/ruby/commit/ce635262f53b760284d56bb1027baebaaec175d1).
+  # Previous versions quietly truncated the input.
+  #
+  # Makes sure the key is exactly 32 bytes long, either by
+  # truncating or right-padding it with ASCII 0s. Use this when
+  # using :per_attribute_iv mode for attr_encrypted.
+  def db_key_base_keys_32_bytes
+    db_key_base_keys.map do |key|
+      Gitlab::Utils.ensure_utf8_size(key, bytes: 32.bytes)
+    end
+  end
+
+  # This should be used for :per_attribute_iv_and_salt mode. There is no
+  # need to truncate the key because the encryptor will use the salt to
+  # generate a hash of the password:
+  # https://github.com/attr-encrypted/encryptor/blob/c3a62c4a9e74686dd95e0548f9dc2a361fdc95d1/lib/encryptor.rb#L77
+  def db_key_base_keys
+    @db_key_base_keys ||= Array(Gitlab::Application.credentials.db_key_base)
+  end
+
+  def encrypted(path)
+    Gitlab::EncryptedConfiguration.new(
+      content_path: path,
+      base_key: Gitlab::Application.credentials.encrypted_settings_key_base,
+      previous_keys: Gitlab::Application.credentials.rotated_encrypted_settings_key_base || []
+    )
+  end
+
+  # Route all jobs to 'default' queue. This setting is meant for self-managed instances use to keep things simple.
+  # See https://gitlab.com/gitlab-com/gl-infra/scalability/-/issues/1491
+  def build_sidekiq_routing_rules(rules)
+    return rules unless rules.nil? || rules&.empty?
+
+    [[Gitlab::SidekiqConfig::WorkerMatcher::WILDCARD_MATCH, 'default']]
+  end
+
+  def required_topology_service_settings
+    %w[address]
+  end
+
+  private
+
+  def base_url(config)
+    custom_port = on_standard_port?(config) ? nil : ":#{config.port}"
+
+    [
+      config.protocol,
+      "://",
+      config.host,
+      custom_port
+    ]
+  end
+
+  def on_standard_port?(config)
+    config.port.to_i == (config.https ? 443 : 80)
+  end
+
+  # Extract the host part of the given +url+.
+  def host(url)
+    url = url.downcase
+    url = "http://#{url}" unless url.start_with?('http')
+
+    # Get rid of the path so that we don't even have to encode it
+    url_without_path = url.sub(%r{(https?://[^/]+)/?.*}, '\1')
+
+    URI.parse(url_without_path).host
+  end
+end

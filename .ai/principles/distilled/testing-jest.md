@@ -1,0 +1,197 @@
+---
+source_checksum: c13eacb208236ea5
+distilled_at_sha: f881cd88ec49e57cc6d320e2b57c56d80cb06564
+---
+<!-- Auto-generated from docs.gitlab.com by gitlab-ai-principles-distiller — do not edit manually -->
+
+# Frontend Testing Principles
+
+## Checklist
+
+### Test Coverage
+
+- Write unit and feature tests for all new features.
+- Write regression tests for bug fixes to prevent recurrence.
+
+### What to Test
+
+- DO NOT test Vue library internals (computed props, reactivity); test rendered template output instead.
+- DO NOT test that mocks work; use mocks to support tests, not as the target of assertions.
+- DO NOT use imported constants in assertions; use explicit literal values instead.
+- Prefer testing components as close to the user's flow as possible (trigger DOM events, validate markup changes).
+- DO NOT assert against `wrapper.vm` properties; assert against component behavior through side effects: rendered HTML/components, API calls, etc.
+
+### DOM Querying
+
+- Use `findByRole` (DOM Testing Library) as the primary query method to enforce accessibility.
+- Use `findComponent(FooComponent)` or `find('input[name=foo]')` or `find('[data-testid="..."]')` for unit tests.
+- DO NOT use template refs (`wrapper.find({ ref: 'foo' })`) or any CSS classes (including `.js-*`) for test queries.
+- Use `kebab-case` for `data-testid` attribute values.
+- DO NOT add `.js-*` classes solely for testing purposes.
+
+### Naming Conventions
+
+- Name unit/component test files `${componentName}_spec.js`.
+- Use the method name directly (without `#` or `.` prefix) as the `describe` block name when testing specific methods.
+
+### Promises and Async
+
+- Make all Promise-based tests asynchronous using `async/await` or by returning the Promise.
+- DO NOT use `done` or `done.fail` callbacks when working with Promises.
+- DO NOT leave Promise rejections unhandled in tests.
+- Use `await nextTick()` to wait for Vue re-renders.
+- Use `await waitForPromises()` when Promises are triggered in synchronous lifecycle hooks.
+- DO NOT use `setTimeout` or `setImmediate` for waiting in tests; use `jest.runAllTimers`, `jest.runOnlyPendingTimers`, or Promise-based helpers instead.
+
+### Time Manipulation
+
+- Use `jest.runAllTimers` or `jest.runOnlyPendingTimers` instead of real timers; Jest uses fake timers by default.
+- Use `useFakeDate` helper (not inline `Date` manipulation) to change the fake date within a `describe` block.
+- DO NOT call `useFakeDate` or `useRealDate` inside `it`, `beforeEach`, or `beforeAll` blocks.
+- Use `useRealDate` helper when real `Date` behavior is required.
+- Use `setWindowLocation` helper to set `window.location.href` in tests.
+- Use `useMockLocationHelper` when asserting that `window.location` methods were called.
+
+### Test Isolation
+
+- Set up component in `beforeEach`; use `afterEach` to null out Apollo/store references.
+- Test that event listeners and timeouts are cleared when a component is destroyed (`beforeDestroy`/`beforeUnmount`).
+- Modify `gon`/`window.gon` directly in `beforeEach` for tests that depend on it; it resets automatically between tests.
+
+### Jest Matchers
+
+- Use `toBe` (not `toEqual`) when comparing primitive values.
+- Use specific matchers (`toHaveLength`, `toBeUndefined`, etc.) over generic ones for clearer error messages.
+- DO NOT use `toBeTruthy` or `toBeFalsy`; use exact matchers instead.
+- DO NOT use `toBeDefined` to assert element existence; use `.exists()).toBe(true)` instead.
+
+### Mocking
+
+- DO NOT use manual mocks (`__mocks__/` next to source) for non-`node_modules` modules; place them in `spec/frontend/__helpers__/mocks` instead.
+- DO NOT use manual mocks when a mock is only needed by a few specs; use `jest.mock(..)` in the relevant spec file instead.
+- Keep mocks short and focused; add a top-level comment explaining why the mock is necessary.
+- Place manual mocks for `node_modules` packages in `spec/frontend/__mocks__`.
+
+### Apollo / Local-only Queries
+
+- Map resolvers to queries/mutations when creating the wrapper for `@client` directive tests.
+- Pass four arguments to resolver assertions: `{}`, input variables object, `expect.anything()`, `expect.anything()`.
+
+### Data-driven Tests
+
+- Use `it.each` / `describe.each` for parameterized tests to reduce repetition.
+- Use array block syntax (not template literal block) when pretty-printed output is needed (for example, empty strings, nested objects).
+
+### Non-determinism
+
+- Ensure test collaborators (Axios, Apollo, Date) behave consistently; use fakes/mocks for non-deterministic globals.
+- DO NOT create the test subject more than once within a single test.
+- Use `jest.spyOn(Math, 'random').mockReturnValue(...)` when the subject depends on `Math.random`.
+
+### Console Warnings and Errors
+
+- Ensure tests fail on unexpected `console.error` or `console.warn` calls.
+- Use `ignoreConsoleMessages` helper sparingly and only when absolutely necessary for test maintainability.
+
+### Snapshots
+
+- Use snapshot tests only when other methods (VTU element assertions) do not cover the use case.
+- DO NOT use snapshots to assert component logic, predict data structures, or test UI elements from external libraries (for example, GitLab UI).
+- Treat snapshot files as code; review and understand their content.
+- Prefer explicit VTU assertions (`.exists()`, `.text()`, element counts) over snapshots for element visibility, text presence, and complex HTML.
+
+### Frontend Integration Tests
+
+- Default to frontend integration tests (`ee/spec/frontend/integration/`, EE-only) over Capybara feature tests, including for rendering recorded unlicensed payloads; use Capybara when real backend state, navigation across server-rendered pages, server-side validations, multi-Vue-app behavior on the same page, or backend license enforcement are required. DO NOT place integration test files under `spec/frontend/integration/` — ESLint enforces EE-only placement and fails CI on violations.
+- Use `fullMount` from `test_helpers.js` (wraps `mount` and attaches to `document.body`) to mount the root component with the real `apolloProvider`.
+- Use native DOM APIs for all interactions and assertions in integration tests; DO NOT use VTU wrapper methods (`wrapper.find()`, `wrapper.trigger()`, `wrapper.text()`, etc.).
+- Use `screen.queryByTestId` / `screen.queryAllByTestId` (re-exported by `test_helpers.js`) instead of `document.querySelector` for `data-testid` lookups; reserve raw `querySelector` for scoping inside an already-found element or selectors Testing Library cannot express.
+- Scope polled queries (`waitFor`/`waitForElement` finders) with `within` on a container found by test ID, and null-guard the container; DO NOT poll unscoped `ByRole` queries in a `fullMount`. Use role queries for one-shot assertions, and query portaled content (`GlModal`, dropdowns, tooltips) from `screen`.
+- DO NOT key finders off an accessible name that changes with state; address the element once (for example by test ID) and read state from ARIA attributes.
+- DO NOT mock child components in frontend integration tests.
+- Reset the Apollo cache in `beforeEach` to prevent state leakage between tests.
+- DO NOT add `afterEach` cleanup for wrapper destruction or Apollo client teardown in integration test files; `test_setup.js` handles this globally. Exception: add your own `afterEach` for state the harness cannot reach (e.g. websocket, workflow stream, and panel storage teardown, such as `teardownDuoChatTest` in the `ai_duo_panel` specs).
+- Pass apps booted by a real page bootstrap function (not mounted with `fullMount`) to `registerBootstrappedApp` from `test_helpers.js` so the harness unmounts them and clears their Apollo cache.
+- DO NOT add `server.listen`, `server.resetHandlers`, or `server.close` in individual integration test files; these are handled globally by `test_setup.js`.
+- Use `setFeatureFlags` and `setLicensedFeatures` from `setup_utils` before mounting to enable feature flags and licensed features; DO NOT pass `glFeatures`/`glLicensedFeatures` through `provide` or assign `window.gon.licensed_features` directly.
+- Add a handler for every GraphQL operation that fires during an integration test; unhandled operations return 400.
+- Place feature handler files in `<feature>/handlers.js` and register them in the top-level `handlers.js`.
+- Use `assignRouter` from `test_helpers.js` to create a router; DO NOT call router factory functions directly or push routes manually.
+- Use `loadFixturesMap` from `fixture_utils.js` to auto-load fixtures from a directory and map them to operation names by `camelCase` conversion.
+- Add EE-suffixed or otherwise mismatched operation names to `OPERATION_NAME_OVERRIDES` in the handler file.
+- Export new test helpers from `test_helpers.js` to make them available globally in all integration tests (auto-imported via `Object.assign(global, testHelpers)` in `test_setup.js`).
+- Name fixture files so that the `camelCase`-converted filename matches the GraphQL operation name (for example, `get_work_item_state_counts.query.graphql.json` maps to `getWorkItemStateCounts`).
+- Place integration fixture generators in `ee/spec/frontend/fixtures/`; generate their JSON output to `tmp/tests/frontend/fixtures-ee/graphql/` by running the fixture spec (`bundle exec rspec ee/spec/frontend/fixtures/<file>.rb`).
+- Use `snapshotRequests` and `expectGraphQLCalls` from `operation_helpers.js` to assert Apollo cache integrity and verify that mutations do not trigger unwanted network calls.
+- Run all frontend integration tests with `yarn jest:integration`; in CI these run in the `jest-integration` job.
+- Declare fixture variants using `defineFixtureVariants({ query, variants })` in a file at `ee/spec/frontend/integration/<feature>/fixture_variants/<query>.js`; always include a `BASE` key. Build variants with `setFixtureData`, `setFixtureErrors`, or `setFixtureItemsCount` from `fixture_utils.js` — each helper deep-clones its input, so DO NOT clone or mutate the imported fixture directly.
+- Use `defineRestFixtureVariants({ query, variants })` for REST endpoint variants (raw JSON bodies; `query` is only a registry key); set the variant file's default export as the endpoint descriptor's `variants` property instead of `response`, and activate it in the spec with `setQueryVariant`. DO NOT derive a REST response from which GraphQL variant is active.
+- Use `createFixturePaginator` from `fixture_utils.js` (created once per connection at module level, called on every request) with an item-count variant (for example, `setFixtureItemsCount` with `itemCount: 51`) to test pagination without recording each page; prefer recorded page fixtures when the test depends on what Rails returns for a specific page.
+- Activate a fixture variant in a test with `setQueryVariant(queryConstant).<variantKey>()` (for example, `.empty()` for `EMPTY`); the active variant resets to `BASE` automatically in `afterEach`.
+- Generate a manifest of registered queries and variant keys with `yarn integration:variants` (writes to `tmp/tests/frontend/integration_variants.manifest.json`); use it to discover which variants exist for which queries.
+- Import variant files as side-effect imports in the feature handler (not in the spec) so that `defineFixtureVariants` registers the query at module load time.
+- Use `getActiveVariant('operationName') ?? defaultFixture` in handlers so the handler's own default fixture is served when no variant is active.
+- To test a license-gated feature's unlicensed state, record a real fixture with the feature stubbed off (`stub_licensed_features(licensed_features.merge(feature: false))`), register it as a named variant, and activate it in the spec; pair the negative assertion with a positive one confirming the expected state was reached.
+- Record a combined fixture as a single variant when a scenario needs several features unlicensed at once (only one variant is active per operation); activate variants for every response feeding the component (including REST payloads and alternate operation keys a handler branches to) so another response does not reintroduce the data.
+
+### Capybara Feature Tests
+
+- Add `:js` to specs or `describe` blocks that require JavaScript execution.
+- Assert on a visible element before asserting on backend attributes to confirm the operation has completed; DO NOT use `wait_for_requests` to gate assertions — race conditions can occur when the wait is called before the request is made.
+- Use Rails route helpers (for example, `project_pipeline_path`) instead of hardcoded URL strings.
+- Stub feature flags explicitly in a `before do` block when testing the disabled state: `stub_feature_flags(my_feature_flag: false)`.
+- DO NOT stub feature flags to `true`; they are enabled by default in the test environment.
+- Use `expect_page_to_have_no_console_errors` in an `after` block to assert no unexpected browser console errors.
+- Fix browser console errors that fail `:js` specs with `BrowserConsoleError`; when it cannot be fixed in the same MR, add an entry (with `message`, `specs`, and the tracking `issue` URL) to `spec/support/browser_console_allowlist.yml` and remove the entry when the error is fixed.
+- Prefer `data-testid` selectors over CSS class selectors; use `.js-*` or CSS class selectors only as a last resort.
+- Group back-to-back expectations using `:aggregate_failures`.
+
+### Test Fixtures
+
+- Import JSON/HTML fixtures using the `test_fixtures` alias.
+- Generate fixtures with `bin/rake frontend:fixtures` or `bin/rspec spec/frontend/fixtures/<file>.rb` (see Frontend Integration Tests for integration-specific fixture generation).
+- Place CE fixture generators in `spec/frontend/fixtures/` and EE fixture generators in `ee/spec/frontend/fixtures/`.
+- For fixtures from an unmerged branch, run the manual `upload-frontend-fixtures-on-demand` job, then run `scripts/frontend/download_fixtures.sh --branch <fetched-ref>` or `scripts/frontend/download_fixtures.sh --pipeline <pipeline-id>`.
+
+### Test Helpers
+
+- Place new test helpers in `spec/frontend/__helpers__`.
+- Use `testAction` helper (object argument form) for testing Vuex actions.
+- Use `waitFor(url, callback)` or `waitForAll(callback)` from the Axios mock helper when no direct Promise handle is available.
+- Use `shallowMountExtended` or `mountExtended` to access DOM Testing Library queries (`findByTestId`, `findByRole`, etc.) on VTU wrappers.
+
+### Jest Timeout
+
+- Eagerly import async-loaded modules in the spec file to force Jest to transpile and cache them at compile time, preventing runtime timeout errors.
+- DO NOT disregard test timeouts; investigate whether the async import reflects a real production bundle issue.
+
+### Path Helpers
+
+- Do not mock JavaScript path helpers imported from `app/assets/javascripts/lib/utils/path_helpers` or `ee/app/assets/javascripts/lib/utils/path_helpers` in Jest tests. You can assume that `gon.organization_path` and `gon.data_context_organization_path` are both `undefined`, so generated paths are never nested under `/o/:organization_path/`, and that `window.gon?.relative_url_root` will be `''` in Jest tests. There may be existing tests for the `relative_url_root` functionality, for these you can use `useConfigurePathHelpers` in `spec/frontend/__helpers__/configure_path_helpers.js`.
+
+### Test structure
+
+Follow BDD (Behavior-Driven Development) conventions: use `describe` blocks to define the context or state the system is in, `it` blocks to declare the specific behavior being verified, and `beforeEach` to set up shared state. Group related tests together under a shared `describe` block.
+
+```js
+// Bad
+it('does Y when X', () => { ... })
+```
+
+```js
+// Good
+describe('when X', () => {
+  beforeEach(() => { /* set up X */ });
+  it('does Y', () => { ... });
+});
+```
+
+- Perform the setup a `describe` block's name promises (including mounting the component and context such as a signed-in user) in that block's `beforeEach`, not in each `it`.
+- When "when X" appears inside an `it` block description, extract the condition into its own `describe` block with a `beforeEach` that performs the setup; DO NOT re-create the component inside an `it` block when an outer `beforeEach` already does so — move it into its own `describe` with dedicated setup instead.
+
+## Authoritative sources
+
+For the full picture, see:
+
+- doc/development/testing_guide/frontend_testing.md
+

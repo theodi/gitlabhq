@@ -1,0 +1,14 @@
+- issuable = local_assigns.fetch(:issuable)
+- form = local_assigns.fetch(:form)
+
+%div{ data: { testid: 'issue-title-input-field' } }
+  = form.text_field :title, required: true, aria: { required: true }, maxlength: 255, autofocus: true,
+    autocomplete: 'off', class: 'form-control pad js-issuable-title', dir: 'auto', data: { testid: 'issuable-form-title-field' }
+
+  - if issuable.respond_to?(:draft?)
+    .gl-pt-3
+      = render Pajamas::CheckboxTagComponent.new(name: 'mark_as_draft', checkbox_options: { class: 'js-toggle-draft' }) do |c|
+        - c.with_label do
+          = s_('MergeRequests|Mark as draft')
+        - c.with_help_text do
+          = s_('MergeRequests|Drafts cannot be merged until marked ready.')

@@ -1,0 +1,15 @@
+.popup {
+  @include triangle(
+    $gray-10,
+    $gray-50,
+    $popup-triangle-size,
+    $popup-triangle-border-size
+  );
+
+  padding: $gl-padding;
+  @apply gl-bg-subtle;
+  border: 1px solid $gray-50;
+  @apply gl-rounded-base;
+  box-shadow: 0 5px 8px $popup-box-shadow-color;
+  position: relative;
+}

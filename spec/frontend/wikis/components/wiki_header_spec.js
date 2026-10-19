@@ -1,0 +1,282 @@
+import { GlSprintf } from '@gitlab/ui';
+import VueApollo from 'vue-apollo';
+import Vue, { nextTick } from 'vue';
+import TimeAgo from '~/vue_shared/components/time_ago_tooltip.vue';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import PageHeading from '~/vue_shared/components/page_heading.vue';
+import WikiHeader from '~/wikis/components/wiki_header.vue';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import wikiPageQuery from '~/wikis/graphql/wiki_page.query.graphql';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import WikiSidebarToggle from '~/wikis/components/wiki_sidebar_toggle.vue';
+import { queryVariables, wikiPageQueryMockData } from '../notes/mock_data';
+
+Vue.use(VueApollo);
+describe('wikis/components/wiki_header', () => {
+  let wrapper;
+  let fakeApollo;
+  const glModalDirective = jest.fn();
+  const restoreVersionModalId = 'wiki-restore-version-modal';
+
+  const mockToastShow = jest.fn();
+
+  function buildWrapper(provide = {}, mockQueryData = {}) {
+    fakeApollo = createMockApollo([
+      [
+        wikiPageQuery,
+        jest.fn().mockResolvedValue({
+          data: {
+            wikiPage: wikiPageQueryMockData,
+            ...mockQueryData,
+          },
+        }),
+      ],
+    ]);
+
+    wrapper = shallowMountExtended(WikiHeader, {
+      directives: {
+        glModal: {
+          bind(_, { value }) {
+            glModalDirective(value);
+          },
+        },
+      },
+      apolloProvider: fakeApollo,
+      provide: {
+        pageHeading: 'Wiki page heading',
+        queryVariables,
+        isPageTemplate: false,
+        showEditButton: true,
+        showRestoreVersionButton: false,
+        wikiUrl: 'http://wiki.url',
+        lastVersion: '2024-06-03T01:53:28.000Z',
+        pageVersion: {
+          author_name: 'Test author',
+          authored_date: '2024-06-03T01:53:28.000Z',
+        },
+        pagePersisted: true,
+        authorUrl: 'http://author.url',
+        ...provide,
+      },
+      stubs: {
+        GlSprintf,
+        TimeAgo,
+        PageHeading,
+      },
+      mocks: {
+        $toast: {
+          show: mockToastShow,
+        },
+        $options: {
+          modal: {
+            restoreVersionModalId,
+          },
+        },
+      },
+    });
+  }
+
+  const findPageHeading = () => wrapper.findByTestId('page-heading');
+  const findEditButton = () => wrapper.findByTestId('wiki-edit-button');
+  const findSubscribeButton = () => wrapper.findComponentByTestId('wiki-subscribe-button');
+  const findLastVersion = () => wrapper.findByTestId('wiki-page-last-version');
+  const findSidebarToggle = () => wrapper.findComponent(WikiSidebarToggle);
+  const findRestoreVersionButton = () => wrapper.findByTestId('wiki-restore-version-button');
+  const findCreateFromTemplateButton = () =>
+    wrapper.findByTestId('wiki-create-from-template-button');
+
+  describe('create from template functionality', () => {
+    it('renders create from template button if it is a template page', () => {
+      const createFromTemplateUrl =
+        'http://gdk.local/gitlab-org/gitlab/wiki/template/new?template_id=3';
+      buildWrapper({ isPageTemplate: true, createFromTemplateUrl });
+
+      expect(findCreateFromTemplateButton().exists()).toBe(true);
+      expect(findCreateFromTemplateButton().attributes('href')).toBe(createFromTemplateUrl);
+    });
+
+    it('does not render create from template button if it is not a template page', () => {
+      buildWrapper({ isPageTemplate: false, createFromTemplateUrl: 'http://some-url.com' });
+
+      expect(findCreateFromTemplateButton().exists()).toBe(false);
+    });
+
+    it('does not render create from template button if user has no permission', () => {
+      buildWrapper({ showEditButton: false });
+
+      expect(findCreateFromTemplateButton().exists()).toBe(false);
+    });
+  });
+
+  describe('restore version functionality', () => {
+    it('renders restore version button if user has permission', () => {
+      buildWrapper({ showRestoreVersionButton: true });
+
+      expect(findRestoreVersionButton().exists()).toBe(true);
+    });
+
+    it('does not render restore version button if user does not have permission', () => {
+      buildWrapper({ showRestoreVersionButton: false });
+
+      expect(findRestoreVersionButton().exists()).toBe(false);
+    });
+
+    it('renders the restoreVersionModal with valid modalId and calls glModalDirective correctly', () => {
+      buildWrapper({ showRestoreVersionButton: true });
+
+      const restoreVersionModal = wrapper.findComponent({ name: 'RestoreVersionModal' });
+
+      expect(restoreVersionModal.props('modalId')).toBe(restoreVersionModalId);
+      expect(glModalDirective).toHaveBeenCalledWith(restoreVersionModalId);
+    });
+  });
+
+  describe('renders', () => {
+    beforeEach(() => {
+      buildWrapper();
+    });
+
+    it('attaches keyup event listener and removes it properly when user has edit permission', () => {
+      jest.spyOn(document, 'addEventListener');
+      jest.spyOn(document, 'removeEventListener');
+      buildWrapper({ showEditButton: true });
+
+      expect(document.addEventListener).toHaveBeenCalledWith('keyup', wrapper.vm.onKeyUp);
+
+      wrapper.destroy();
+
+      expect(document.removeEventListener).toHaveBeenCalledWith('keyup', wrapper.vm.onKeyUp);
+    });
+
+    it('does not attach or remove keyup event listener when user does not have edit permission', () => {
+      jest.spyOn(document, 'addEventListener');
+      jest.spyOn(document, 'removeEventListener');
+      buildWrapper({ showEditButton: false });
+
+      expect(document.addEventListener).not.toHaveBeenCalled();
+
+      wrapper.destroy();
+
+      expect(document.removeEventListener).not.toHaveBeenCalled();
+    });
+
+    it('renders correct page heading', () => {
+      expect(findPageHeading().text()).toBe('Wiki page heading');
+    });
+
+    it('renders edit button if url is set', () => {
+      expect(findEditButton().exists()).toBe(true);
+
+      buildWrapper({ showEditButton: false });
+
+      expect(findEditButton().exists()).toBe(false);
+    });
+
+    it('renders last version information', () => {
+      expect(findLastVersion().text()).toBe('Last edited by Test author Jun 3, 2024');
+
+      buildWrapper({ lastVersion: false });
+
+      expect(findLastVersion().exists()).toBe(false);
+    });
+
+    it('renders sidebar toggle', () => {
+      expect(findSidebarToggle().exists()).toBe(true);
+      expect(findSidebarToggle().props('action')).toBe('open');
+    });
+  });
+
+  describe('subscribe button functionality', () => {
+    let mutateSpy;
+
+    beforeEach(async () => {
+      buildWrapper();
+      mutateSpy = jest.spyOn(wrapper.vm.$apollo.provider.defaultClient, 'mutate');
+
+      await nextTick();
+    });
+
+    afterEach(() => {
+      mutateSpy.mockRestore();
+    });
+
+    it('calls apollo with the correct variables when the subscribe button is clicked', () => {
+      findSubscribeButton().vm.$emit('click');
+
+      expect(mutateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          variables: {
+            id: 'gid://gitlab/WikiPage/1',
+            subscribed: true,
+          },
+        }),
+      );
+    });
+
+    it('calls apollo with the correct variables when the unsubscribe button is clicked', async () => {
+      const id = 'gid://gitlab/WikiPage/1';
+      buildWrapper(
+        {},
+        {
+          wikiPage: {
+            ...wikiPageQueryMockData,
+            id,
+            subscribed: true,
+          },
+        },
+      );
+
+      const spy = jest.spyOn(wrapper.vm.$apollo.provider.defaultClient, 'mutate');
+
+      await wrapper.vm.$apollo.queries.wikiPage.refetch();
+      await nextTick();
+
+      findSubscribeButton().vm.$emit('click');
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          variables: {
+            id,
+            subscribed: false,
+          },
+        }),
+      );
+    });
+
+    it('calls the toast method if the mutation succeeds', async () => {
+      mutateSpy.mockResolvedValue();
+      findSubscribeButton().vm.$emit('click');
+
+      await wrapper.vm.$apollo.queries.wikiPage.refetch();
+      await nextTick();
+
+      expect(mockToastShow).toHaveBeenCalled();
+    });
+
+    it('calls the toast method and captures error if the mutation fails', async () => {
+      const error = new Error('An error occurred');
+      mutateSpy.mockRejectedValue(error);
+      const sentrySpy = jest.spyOn(Sentry, 'captureException');
+
+      findSubscribeButton().vm.$emit('click');
+
+      await wrapper.vm.$apollo.queries.wikiPage.refetch();
+      await nextTick();
+
+      expect(mockToastShow).toHaveBeenCalled();
+      expect(sentrySpy).toHaveBeenCalledWith(error);
+    });
+
+    it('does not call the apollo mutate method if the state of the subscription has not been resolved', () => {
+      expect(mutateSpy).toHaveBeenCalledTimes(0);
+
+      // first click
+      findSubscribeButton().vm.$emit('click');
+      expect(mutateSpy).toHaveBeenCalledTimes(1);
+
+      // second click, while the subscription state is still resolving
+      findSubscribeButton().vm.$emit('click');
+      // there should be no second mutation call
+      expect(mutateSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+});

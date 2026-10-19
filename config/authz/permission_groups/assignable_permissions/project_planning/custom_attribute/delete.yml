@@ -1,0 +1,13 @@
+---
+name: delete_custom_attribute
+description: Grants the ability to delete custom attributes
+boundaries:
+  - group
+  - project
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - delete_custom_attribute
+assignable_when:
+  - condition: admin

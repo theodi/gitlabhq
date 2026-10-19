@@ -1,0 +1,196 @@
+import { pinia } from '~/pinia/instance';
+import { initViewSettings } from '~/rapid_diffs/app/view_settings';
+import { DiffFile } from '~/rapid_diffs/web_components/diff_file';
+import { useDiffsList } from '~/rapid_diffs/stores/diffs_list';
+import { initFileBrowser } from '~/rapid_diffs/app/file_browser';
+import { StreamingError } from '~/rapid_diffs/web_components/streaming_error';
+import { useDiffsView } from '~/rapid_diffs/stores/diffs_view';
+import { initHiddenFilesWarning } from '~/rapid_diffs/app/init_hidden_files_warning';
+import { createAlert } from '~/alert';
+import { __ } from '~/locale';
+import { DIFF_FILE_MOUNTED } from '~/rapid_diffs/dom_events';
+import { VIEWER_ADAPTERS } from '~/rapid_diffs/app/adapter_configs/base';
+import { camelizeKeys } from '~/lib/utils/object_utils';
+import { disableBrokenContentVisibility } from '~/rapid_diffs/app/quirks/content_visibility_fix';
+import { useApp } from '~/rapid_diffs/stores/app';
+import { createDiffFileMounted } from '~/rapid_diffs/web_components/diff_file_mounted';
+import { initFileByFileNavigation } from '~/rapid_diffs/app/init_file_by_file_navigation';
+
+// This facade interface joins together all the bits and pieces of Rapid Diffs: DiffFile, Settings, File browser, etc.
+// It's a unified entrypoint for Rapid Diffs and all external communications should happen through this interface.
+export class RapidDiffsFacade {
+  root;
+  appData;
+  intersectionObserver;
+  adapterConfig = VIEWER_ADAPTERS;
+
+  #DiffFileImplementation;
+  #DiffFileMounted;
+
+  constructor({ DiffFileImplementation = DiffFile } = {}) {
+    this.#DiffFileImplementation = DiffFileImplementation;
+    this.#DiffFileMounted = createDiffFileMounted(this);
+    this.root = document.querySelector('[data-rapid-diffs]');
+  }
+
+  init() {
+    if (!this.root) {
+      return;
+    }
+
+    this.appData = camelizeKeys(JSON.parse(this.root.dataset.appData));
+    if (this.appData.linkedFileData) {
+      useDiffsList(pinia).setLinkedFileData(this.appData.linkedFileData);
+    }
+    this.#populateLegacyFileFragment();
+    this.#delegateEvents();
+    this.#registerCustomElements();
+    this.#initHeader();
+    this.#initSidebar()
+      .then(() => {
+        if (useDiffsView(pinia).singleFileMode) {
+          if (this.#initialFile) {
+            useDiffsView(pinia).resolveInitialFileIndex({ file: this.#initialFile });
+          } else {
+            useDiffsView(pinia).loadCurrentFile();
+          }
+        }
+      })
+      .catch(() => {});
+    this.#initDiffsList();
+    if (!useDiffsView(pinia).singleFileMode) {
+      if (this.#lazy) {
+        useDiffsList(pinia).streamInitialDiffs(this.appData.reloadStreamUrl);
+      } else {
+        this.#streamRemainingDiffs();
+      }
+    }
+  }
+
+  observe(instance) {
+    this.intersectionObserver.observe(instance);
+  }
+
+  unobserve(instance) {
+    this.intersectionObserver.unobserve(instance);
+  }
+
+  // eslint-disable-next-line class-methods-use-this
+  show() {
+    useApp().appVisible = true;
+  }
+
+  // eslint-disable-next-line class-methods-use-this
+  hide() {
+    useApp().appVisible = false;
+  }
+
+  #delegateEvents() {
+    this.root.addEventListener(
+      'click',
+      (event) => {
+        const diffFile = event.target.closest('diff-file');
+        if (!diffFile) return;
+        diffFile.onClick(event);
+      },
+      /*
+       *  We want to use the capture phase in delegated events because:
+       *  1. Bootstrap dropdowns will be closed before the click event bubbles,
+       *     this prevents using data-click on items inside the dropdown
+       *  2. Delegated events propagation now could be stopped
+       */
+      { capture: true },
+    );
+    this.intersectionObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.onVisible(entry);
+        } else {
+          entry.target.onInvisible(entry);
+        }
+      });
+    });
+  }
+
+  #streamRemainingDiffs() {
+    const streamContainer = this.root.querySelector('[data-stream-remaining-diffs]');
+    if (!streamContainer) return Promise.resolve();
+    return useDiffsList(pinia).streamRemainingDiffs(
+      this.appData.diffsStreamUrl,
+      streamContainer,
+      window.gl.rapidDiffsPreload,
+    );
+  }
+
+  #registerCustomElements() {
+    window.customElements.define('diff-file', this.#DiffFileImplementation);
+    window.customElements.define('diff-file-mounted', this.#DiffFileMounted);
+    window.customElements.define('streaming-error', StreamingError);
+  }
+
+  #initHeader() {
+    useDiffsView(pinia).diffsStatsEndpoint = this.appData.diffsStatsEndpoint;
+    useDiffsView(pinia).streamUrl = this.appData.reloadStreamUrl;
+    useDiffsView(pinia).diffFileEndpoint = this.appData.diffFileEndpoint;
+    useDiffsView(pinia)
+      .loadDiffsStats()
+      .catch((error) => {
+        createAlert({
+          message: __('Failed to load additional diffs information. Try reloading the page.'),
+          error,
+        });
+      });
+    initViewSettings({
+      pinia,
+      target: this.root.querySelector('[data-view-settings]'),
+      appData: this.appData,
+    });
+  }
+
+  #initSidebar() {
+    return initFileBrowser({
+      toggleTarget: this.root.querySelector('[data-file-browser-toggle]'),
+      browserTarget: this.root.querySelector('[data-file-browser]'),
+      appData: this.appData,
+    }).catch((error) => {
+      createAlert({
+        message: __('Failed to load file browser. Try reloading the page.'),
+        error,
+      });
+    });
+  }
+
+  #initDiffsList() {
+    disableBrokenContentVisibility(this.root);
+    initHiddenFilesWarning(this.root.querySelector('[data-hidden-files-warning]'));
+    initFileByFileNavigation(this.root.querySelector('[data-file-by-file-navigation]'));
+    // Files mount hundreds of times per second while streaming; one store update per frame keeps
+    // the file browser from re-rendering on every single file.
+    let mountedIds = [];
+    this.root.addEventListener(DIFF_FILE_MOUNTED, ({ target }) => {
+      if (mountedIds.length === 0) {
+        requestAnimationFrame(() => {
+          useDiffsList(pinia).addLoadedFiles(mountedIds);
+          mountedIds = [];
+        });
+      }
+      mountedIds.push(target.id);
+    });
+  }
+
+  #populateLegacyFileFragment() {
+    if (!window.location.hash) return;
+    const [, fileHash, oldLine, newLine] =
+      window.location.hash.substring(1).match(/^([0-9a-f]{40})(?:_([0-9]+)_([0-9]+))?$/) || [];
+    if (!fileHash) return;
+    this.appData.legacyFileFragment = { fileHash, oldLine, newLine };
+  }
+
+  get #lazy() {
+    return this.appData.lazy;
+  }
+
+  get #initialFile() {
+    return this.appData.initialFile;
+  }
+}

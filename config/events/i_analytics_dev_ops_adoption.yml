@@ -1,0 +1,18 @@
+---
+description: User viewed analytics devops adoption
+internal_events: true
+action: i_analytics_dev_ops_adoption
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: optimize
+product_categories:
+- devops_reports
+milestone: "16.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/131045
+tiers:
+- premium
+- ultimate
+- free

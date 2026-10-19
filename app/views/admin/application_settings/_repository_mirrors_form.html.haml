@@ -1,0 +1,12 @@
+= gitlab_ui_form_for @application_setting, url: repository_admin_application_settings_path(anchor: 'js-mirror-settings') do |f|
+  = form_errors(@application_setting)
+
+  %fieldset
+    .form-group
+      = f.label :mirror_available, _('Repository mirroring configuration'), class: 'label-bold'
+      = f.gitlab_ui_checkbox_component :mirror_available, _('Allow project maintainers to configure repository mirroring'),
+      help_text: _('If disabled, only administrators can configure repository mirroring.')
+
+    = render_if_exists 'admin/application_settings/mirror_settings', form: f
+
+  = f.submit _('Save changes'), pajamas_button: true

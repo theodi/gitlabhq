@@ -1,0 +1,67 @@
+---
+
+extends: default
+
+yaml-files:
+  # defaults
+  - '*.yaml'
+  - '*.yml'
+  - '.yamllint'
+  # match more extensions
+  - '*.yaml.*'
+  - '*.yml.*'
+
+# Ideally, we should have nothing in this ignore section.
+#
+# Please consider removing entries below by fixing them.
+ignore: |
+  #### Files ####
+
+  # Contains ruby code
+  config/mail_room.yml
+  generator_templates/usage_metric_definition/metric_definition.yml
+
+  # Contains ERB code that keeps throwing syntax errors
+  .rubocop.yml
+
+  # Has some special indentation
+  doc/user/project/integrations/samples/cloudwatch.yml
+
+  # Dynamic YAML files have syntax errors sometimes.
+  *.erb
+
+  # Vim temporary files.
+  *.sw[pon]
+
+  # Zipped files (by e.g. asset pipeline)
+  *.gz
+  *.bz2
+
+  #### Folders ####
+  node_modules/
+  tmp/
+  generator_templates/gitlab_internal_events/
+
+# In CI some YAML files are linted using different rules.
+# See `.gitlab/ci/yaml.gitlab-ci.yml`.
+#
+# https://gitlab.com/gitlab-org/gitlab/-/issues/385693 tracks to enable all
+# rules below:
+rules:
+  braces:
+    min-spaces-inside: 1
+    max-spaces-inside: 1
+    min-spaces-inside-empty: 0
+    max-spaces-inside-empty: 0
+
+  colons: disable
+  comments-indentation: disable
+  comments: disable
+  document-start: disable
+  empty-lines: disable
+  indentation: disable
+  key-duplicates: disable
+  line-length: disable
+  new-line-at-end-of-file: disable
+  trailing-spaces: disable
+  truthy: disable

@@ -1,0 +1,29 @@
+@import 'mixins_and_variables_and_functions';
+
+$new-namespace-panel-illustration-width: 215px;
+$new-namespace-panel-height: 240px;
+
+.new-namespace-panel-illustration {
+  width: $new-namespace-panel-illustration-width;
+}
+
+.new-namespace-panel-wrapper {
+  width: 50%;
+
+  @include gl-container-width-down(xl, panel) {
+    width: 100%;
+  }
+}
+
+.new-namespace-panel {
+  &:hover {
+    background-color: var(--gl-background-color-subtle);
+  }
+
+  color: var(--purple-700, $purple-700);
+  min-height: $new-namespace-panel-height;
+  text-align: center;
+  @include gl-container-width-up(lg, panel) {
+    text-align: left;
+  }
+}

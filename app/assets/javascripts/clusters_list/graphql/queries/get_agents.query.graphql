@@ -1,0 +1,22 @@
+#import "../fragments/cluster_agent.fragment.graphql"
+
+query getAgents($fullPath: ID!, $isGroup: Boolean = false) {
+  project(fullPath: $fullPath) @skip(if: $isGroup) {
+    id
+    clusterAgents {
+      nodes {
+        ...ClusterAgentFragment
+      }
+      count
+    }
+  }
+  group(fullPath: $fullPath) @include(if: $isGroup) {
+    id
+    clusterAgents {
+      nodes {
+        ...ClusterAgentFragment
+      }
+      count
+    }
+  }
+}

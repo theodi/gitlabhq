@@ -1,0 +1,111 @@
+- help_link_public_pipelines = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'change-which-users-can-view-your-pipelines'), target: '_blank', rel: 'noopener noreferrer'
+- help_link_auto_canceling = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'auto-cancel-redundant-pipelines'), target: '_blank', rel: 'noopener noreferrer'
+- help_link_prevent_outdated = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'prevent-outdated-deployment-jobs'), target: '_blank', rel: 'noopener noreferrer'
+- help_link_prevent_outdated_allow_rollback = link_to sprite_icon('question-o'), help_page_path('ci/environments/deployment_safety.md', anchor: 'job-retries-for-rollback-deployments'), target: '_blank', rel: 'noopener noreferrer'
+- help_link_separated_caches = link_to sprite_icon('question-o'), help_page_path('ci/caching/_index.md', anchor: 'cache-key-names'), target: '_blank', rel: 'noopener noreferrer'
+- help_link_skip_branch_pipelines_for_mrs = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'skip-branch-pipelines-for-merge-requests'), target: '_blank', rel: 'noopener noreferrer'
+
+.row.gl-mt-3
+  .gl-col-lg-12
+    = gitlab_ui_form_for @project, url: project_settings_ci_cd_path(@project, anchor: 'js-general-pipeline-settings') do |f|
+      = form_errors(@project)
+      %fieldset.builds-feature
+        .form-group
+          = f.gitlab_ui_checkbox_component :public_builds,
+            _("Project-based pipeline visibility"),
+            help_text: (_("Allow access to pipelines and job details, including output logs and artifacts, based on your project's visibility settings.") + ' ' + help_link_public_pipelines).html_safe
+
+        .form-group
+          = f.gitlab_ui_checkbox_component :auto_cancel_pending_pipelines,
+            _("Auto-cancel redundant pipelines"),
+            checked_value: 'enabled',
+            unchecked_value: 'disabled',
+            help_text: (_('Pipelines for new changes cause older pending or running pipelines on the same branch to be cancelled.') + ' ' + help_link_auto_canceling).html_safe
+
+        .form-group
+          - beta_badge = render(Pajamas::ExperimentBadgeComponent.new(type: :beta))
+          = f.fields_for :ci_cd_settings_attributes, @project.ci_cd_settings do |form|
+            = form.gitlab_ui_checkbox_component :skip_branch_pipelines_for_mrs,
+              safe_join([s_("CICD|Skip branch pipelines for merge requests"), ' ', beta_badge]),
+              help_text: (s_("CICD|When enabled, pushing to a branch with an open merge request creates only a merge request pipeline. The branch pipeline is skipped. Merge readiness checks, like pipelines must succeed, only consider merge request pipelines.") + ' ' + help_link_skip_branch_pipelines_for_mrs).html_safe
+
+        .form-group
+          = f.fields_for :ci_cd_settings_attributes, @project.ci_cd_settings do |form|
+            = form.gitlab_ui_checkbox_component :forward_deployment_enabled, _("Prevent outdated deployment jobs"),
+              help_text: (_('When a deployment job is successful, prevent older deployment jobs that are still pending.') + ' ' + help_link_prevent_outdated).html_safe
+          .gl-pl-6
+            = f.fields_for :ci_cd_settings_attributes, @project.ci_cd_settings do |form|
+              = form.gitlab_ui_checkbox_component :forward_deployment_rollback_allowed, _("Allow job retries for rollback deployments"),
+                help_text: (_('Allow job retries even if the deployment job is outdated.') + ' ' + help_link_prevent_outdated_allow_rollback).html_safe,
+                checkbox_options: { class: 'gl-pl-6' }
+
+        .form-group
+          = f.gitlab_ui_checkbox_component :ci_separated_caches,
+            s_("CICD|Use separate caches for protected branches"),
+            help_text: (s_('CICD|Unprotected branches will not have access to the cache from protected branches.') + ' ' + help_link_separated_caches).html_safe
+
+        = render_if_exists 'projects/settings/ci_cd/composite_identities_pipelines', form: f
+        = render_if_exists 'projects/settings/ci_cd/pipeline_cancelation', form: f
+
+        .form-group
+          = f.label :ci_config_path, _('CI/CD configuration file'), class: 'label-bold'
+          = f.text_field :ci_config_path, class: 'form-control', placeholder: '.gitlab-ci.yml'
+          %p.form-text.gl-text-subtle
+            = html_escape(_("The name of the CI/CD configuration file. A path relative to the root directory is optional (for example %{code_open}my/path/.myfile.yml%{code_close}).")) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }
+            = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'specify-a-custom-cicd-configuration-file'), target: '_blank', rel: 'noopener noreferrer'
+
+        %hr
+        .form-group
+          %h5.gl-mt-0.gl-mb-3
+            = _("Git strategy")
+          .gl-mb-3
+            = _("Choose which Git strategy to use when fetching the project.")
+            = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'choose-the-default-git-strategy'), target: '_blank', rel: 'noopener noreferrer'
+          = f.gitlab_ui_radio_component :build_allow_git_fetch,
+            false,
+            "git clone",
+            help_text: _("For each job, clone the repository.")
+          = f.gitlab_ui_radio_component :build_allow_git_fetch,
+            true,
+            "git fetch",
+            help_text: html_escape(_("For each job, re-use the project workspace. If the workspace doesn't exist, use %{code_open}git clone%{code_close}.")) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }
+
+        .form-group
+          = f.fields_for :ci_cd_settings_attributes, @project.ci_cd_settings do |form|
+            = form.label :default_git_depth, _('Git shallow clone'), class: 'label-bold'
+            = form.number_field :default_git_depth, { class: 'form-control gl-form-input', min: 0, max: 1000 }
+            %p.form-text.gl-text-subtle
+              = html_escape(_('The number of changes to fetch from GitLab when cloning a repository. Lower values can speed up pipeline execution. Set to %{code_open}0%{code_close} or blank to fetch all branches and tags for each job')) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }
+              = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'limit-the-number-of-changes-fetched-during-clone'), target: '_blank', rel: 'noopener noreferrer'
+
+        %hr
+        .form-group
+          = f.label :build_timeout_human_readable, _('Timeout'), class: 'label-bold'
+          = f.text_field :build_timeout_human_readable, class: 'form-control gl-form-input'
+          %p.form-text.gl-text-subtle
+            = html_escape(_('Jobs fail if they run longer than the timeout time. Input value is in seconds by default. Human readable input is also accepted, for example %{code_open}1 hour%{code_close}.')) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }
+            = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'set-a-limit-for-how-long-jobs-can-run'), target: '_blank', rel: 'noopener noreferrer'
+
+        - if can?(current_user, :update_max_artifacts_size, @project)
+          .form-group
+            = f.label :max_artifacts_size, _('Maximum artifacts size'), class: 'label-bold'
+            = f.number_field :max_artifacts_size, class: 'form-control gl-form-input'
+            %p.form-text.gl-text-subtle
+              = _("The maximum file size in megabytes for individual job artifacts.")
+              = link_to sprite_icon('question-o'), help_page_path('administration/cicd/limits.md', anchor: 'maximum-artifacts-size'), target: '_blank', rel: 'noopener noreferrer'
+
+        - if can?(current_user, :destroy_pipeline, @project)
+          .form-group
+            = f.fields_for :ci_cd_settings_attributes, @project.ci_cd_settings do |form|
+              = form.label :delete_pipelines_in_human_readable, s_('CICD|Automatic pipeline cleanup'), class: 'label-bold'
+              = form.text_field :delete_pipelines_in_human_readable, { class: 'form-control gl-form-input' }
+              %p.form-text.gl-text-subtle
+                = html_escape(s_("CICD|Pipelines older than the configured time are deleted. Leave empty to never delete pipelines automatically. The default unit is in seconds, but you can use other units, for example %{code_open}15 days%{code_close}, %{code_open}1 month%{code_close}, %{code_open}1 year%{code_close}. Can be between 1 day to %{limit}.")) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe, limit: ::Gitlab::CurrentSettings.ci_delete_pipelines_in_seconds_limit_human_readable_long }
+                = link_to sprite_icon('question-o'), help_page_path('ci/pipelines/settings.md', anchor: 'automatic-pipeline-cleanup'), target: '_blank', rel: 'noopener noreferrer'
+
+        = f.submit _('Save changes'), pajamas_button: true
+
+%hr
+
+.row.gl-mt-3
+  = render partial: 'badge', collection: @badges

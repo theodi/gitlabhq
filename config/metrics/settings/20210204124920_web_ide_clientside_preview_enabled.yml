@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: web_ide_clientside_preview_enabled
+description: Whether Web IDE clientside preview is enabled
+product_group: remote_development
+product_categories:
+- web_ide
+value_type: boolean
+status: removed
+time_frame: none
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/51974
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/136114
+milestone_removed: "16.6"

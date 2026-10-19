@@ -1,0 +1,34 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative '../lib/tooling/gettext_extractor'
+
+silent = ARGV.delete('--silent')
+pot_file = ARGV.shift
+
+if !pot_file || !Dir.exist?(File.dirname(pot_file))
+  abort <<~MSG
+    Please provide a target file name as the first argument, e.g.
+      #{$PROGRAM_NAME} locale/gitlab.pot
+  MSG
+end
+
+unless silent
+  puts <<~MSG
+    Extracting translatable strings from source files...
+  MSG
+end
+
+root_dir = File.expand_path('../../', __dir__)
+
+extractor = Tooling::GettextExtractor.new(
+  glob_base: root_dir
+)
+
+File.write(pot_file, extractor.generate_pot)
+
+unless silent
+  puts <<~MSG
+    All done. Please commit the changes to `#{pot_file}`.
+  MSG
+end

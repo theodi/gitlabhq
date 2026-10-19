@@ -1,0 +1,1032 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Todo, feature_category: :notifications do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:user2) { create(:user) }
+  let_it_be(:group) { create(:group, developers: user) }
+  let_it_be_with_reload(:project) { create(:project, :repository, developers: user) }
+  let_it_be(:project2) { create(:project) }
+  let_it_be(:issue) { create(:issue, project: project) }
+
+  describe 'relationships' do
+    it { is_expected.to belong_to(:author).class_name("User") }
+    it { is_expected.to belong_to(:note) }
+    it { is_expected.to belong_to(:project) }
+    it { is_expected.to belong_to(:group) }
+    it { is_expected.to belong_to(:target).touch(false) }
+    it { is_expected.to belong_to(:user) }
+    it { is_expected.to belong_to(:organization) }
+  end
+
+  describe 'respond to' do
+    it { is_expected.to respond_to(:author_name) }
+    it { is_expected.to respond_to(:author_email) }
+  end
+
+  describe 'validations' do
+    it { is_expected.to validate_presence_of(:action) }
+    it { is_expected.to validate_presence_of(:target_type) }
+    it { is_expected.to validate_presence_of(:user) }
+    it { is_expected.to validate_presence_of(:author) }
+
+    context 'for parentless_type' do
+      let(:todo) { build(:todo, user: nil) }
+
+      context 'when action is a parentless action type' do
+        it 'returns true when action is included in parentless_action_types' do
+          parentless_action = described_class.parentless_action_types.first
+          todo.action = parentless_action
+
+          expect(todo).to be_parentless_type
+          todo.validate
+          expect(todo.errors[:organization]).to include("can't be blank")
+        end
+      end
+
+      context 'when action is not a parentless action type' do
+        it 'returns false when action is not included in parentless_action_types' do
+          non_parentless_action = (described_class::ACTION_NAMES.keys - described_class.parentless_action_types).first
+          todo.action = non_parentless_action
+
+          expect(todo).not_to be_parentless_type
+          todo.validate
+          expect(todo.errors[:organization]).to be_empty
+        end
+      end
+    end
+
+    context "for project and/or group" do
+      using RSpec::Parameterized::TableSyntax
+
+      subject { described_class.new(project: project, group: group) }
+
+      where(:project?, :group?) do
+        true | true
+        true | false
+        false | true
+      end
+
+      with_them do
+        it "are valid" do
+          subject.project = project? ? project : nil
+          subject.group = group? ? group : nil
+          subject.validate
+
+          expect(subject.errors[:project]).to be_empty
+          expect(subject.errors[:group]).to be_empty
+        end
+      end
+
+      it "are both are missing" do
+        subject.project = nil
+        subject.group = nil
+        subject.validate
+
+        expect(subject.errors.messages[:project].first).to eq("can't be blank")
+        expect(subject.errors.messages[:group].first).to eq("can't be blank")
+      end
+
+      it "both are present" do
+        subject.project = project
+        subject.group = group
+        subject.validate
+
+        expect(subject.project).not_to be_nil
+        expect(subject.group).to be_nil
+      end
+    end
+
+    context 'for commits' do
+      subject { described_class.new(target_type: 'Commit') }
+
+      it { is_expected.to validate_presence_of(:commit_id) }
+      it { is_expected.not_to validate_presence_of(:target_id) }
+    end
+
+    context 'for issuables' do
+      subject { described_class.new(target: issue) }
+
+      it { is_expected.to validate_presence_of(:target_id) }
+      it { is_expected.not_to validate_presence_of(:commit_id) }
+    end
+
+    context 'for parentless types' do
+      where(:action_type) do
+        [
+          [Todo::SSH_KEY_EXPIRING_SOON],
+          [Todo::SSH_KEY_EXPIRED]
+        ]
+      end
+
+      with_them do
+        context "for #{params[:action_type]} should not require a target" do
+          subject { described_class.new(target: user, action: action_type) }
+
+          it { is_expected.not_to validate_presence_of(:project) }
+          it { is_expected.not_to validate_presence_of(:group) }
+        end
+      end
+    end
+  end
+
+  describe 'single column sharding key' do
+    it 'prefers the organization when parentless_type?' do
+      todo = build(:todo, project: project, group: group, user: user, target: issue)
+      parentless_action = described_class.parentless_action_types.first
+      todo.action = parentless_action
+      todo.save!
+
+      todo.reload
+      expect(todo.project_id).to be_nil
+      expect(todo.group_id).to be_nil
+      expect(todo.organization_id).to eq(user.organization_id)
+    end
+
+    it 'prefers the project to a group when both are provided' do
+      todo = build(:todo, target: issue)
+      todo.project = project
+      todo.group = group
+      todo.save!
+
+      todo.reload
+      expect(todo.project_id).to eq(project.id)
+      expect(todo.group_id).to be_nil
+    end
+
+    context 'when bypassing activerecord' do
+      let_it_be(:duo_code_review_bot) { Users::Internal.in_organization(user.organization_id).duo_code_review_bot }
+
+      it 'prefers project_id' do
+        todos_attributes = [{
+          state: :pending,
+          user_id: user.id,
+          target_id: user.id,
+          target_type: ::User,
+          action: ::Todo::DUO_ENTERPRISE_ACCESS_GRANTED,
+          author_id: duo_code_review_bot.id,
+          organization_id: user.organization_id,
+          group_id: group.id,
+          project_id: project.id
+        }]
+        ids = []
+        expect { ids = described_class.insert_all(todos_attributes, returning: :id).rows.flatten }.to change { Todo.count }.by(1)
+        todo = described_class.find(ids).first
+        expect(todo.organization_id).to be_nil
+        expect(todo.group_id).to be_nil
+        expect(todo.project_id).to eq(project.id)
+      end
+
+      it 'prefers group_id when project_id IS NULL' do
+        todos_attributes = [{
+          state: :pending,
+          user_id: user.id,
+          target_id: user.id,
+          target_type: ::User,
+          action: ::Todo::DUO_ENTERPRISE_ACCESS_GRANTED,
+          author_id: duo_code_review_bot.id,
+          organization_id: user.organization_id,
+          group_id: group.id,
+          project_id: nil
+        }]
+        ids = []
+        expect { ids = described_class.insert_all(todos_attributes, returning: :id).rows.flatten }.to change { Todo.count }.by(1)
+        todo = described_class.find(ids).first
+        expect(todo.organization_id).to be_nil
+        expect(todo.group_id).to eq(group.id)
+        expect(todo.project_id).to be_nil
+      end
+
+      it 'sets the organization_id when one is not provided and group_id && project_id are NULL' do
+        todos_attributes = [{
+          state: :pending,
+          user_id: user.id,
+          target_id: user.id,
+          target_type: ::User,
+          action: ::Todo::DUO_ENTERPRISE_ACCESS_GRANTED,
+          author_id: duo_code_review_bot.id,
+          organization_id: nil,
+          group_id: nil,
+          project_id: nil
+        }]
+        ids = []
+        expect { ids = described_class.insert_all(todos_attributes, returning: :id).rows.flatten }.to change { Todo.count }.by(1)
+        todo = described_class.find(ids).first
+        expect(todo.organization_id).to eq(user.organization_id)
+        expect(todo.group_id).to be_nil
+        expect(todo.project_id).to be_nil
+      end
+    end
+  end
+
+  describe '#action_name' do
+    let(:todo) { build(:todo) }
+
+    it 'returns the symbolic name for a valid action code on one standard action' do
+      todo.action = Todo::ASSIGNED
+      expect(todo.action_name).to eq(:assigned)
+    end
+
+    it 'returns nil for an undefined action code' do
+      todo.action = 999 # An undefined action code
+      expect(todo.action_name).to be_nil
+    end
+  end
+
+  describe '#parentless_type?' do
+    let(:todo) { build(:todo) }
+
+    context 'when action is a parentless action type' do
+      it 'returns true when action is included in parentless_action_types' do
+        parentless_action = described_class.parentless_action_types.first
+        todo.action = parentless_action
+
+        expect(todo).to be_parentless_type
+      end
+    end
+
+    context 'when action is not a parentless action type' do
+      it 'returns false when action is not included in parentless_action_types' do
+        non_parentless_action = (described_class::ACTION_NAMES.keys - described_class.parentless_action_types).first
+        todo.action = non_parentless_action
+
+        expect(todo).not_to be_parentless_type
+      end
+    end
+  end
+
+  describe '#body' do
+    before do
+      subject.target = build(:issue, title: 'Bugfix')
+    end
+
+    it 'returns target title when note is blank' do
+      subject.note = nil
+
+      expect(subject.body).to eq 'Bugfix'
+    end
+
+    it 'returns note when note is present' do
+      subject.note = build(:note, note: 'quick fix')
+
+      expect(subject.body).to eq 'quick fix'
+    end
+
+    it 'returns full path of target when action is member_access_requested' do
+      subject.target = group
+      subject.action = Todo::MEMBER_ACCESS_REQUESTED
+
+      expect(subject.body).to eq group.full_path
+    end
+
+    it 'returns destination full path when action is transfer_failed for a group' do
+      parent_group = create(:group)
+      destination_group = create(:group, parent: parent_group)
+
+      subject.target = destination_group
+      subject.action = Todo::TRANSFER_FAILED
+      destination_group.state_metadata[:transfer_target_parent_id] = parent_group.id
+      destination_group.namespace_details.save!
+
+      expect(subject.body).to eq("#{parent_group.full_path}/#{destination_group.path}")
+    end
+  end
+
+  describe '#done' do
+    it 'changes state to done' do
+      todo = create(:todo, project: project, state: :pending, target: issue)
+
+      expect { todo.done }.to change { todo.state }.from('pending').to('done')
+    end
+
+    it 'does not raise error when is already done' do
+      todo = create(:todo, project: project, state: :done, target: issue)
+
+      expect { todo.done }.not_to raise_error
+    end
+  end
+
+  describe '#for_commit?' do
+    it 'returns true when target is a commit' do
+      subject.target_type = 'Commit'
+
+      expect(subject.for_commit?).to be true
+    end
+
+    it 'returns false when target is an issuable' do
+      subject.target_type = 'Issue'
+
+      expect(subject.for_commit?).to be false
+    end
+  end
+
+  describe '#for_design?' do
+    it 'returns true when target is a Design' do
+      subject.target_type = 'DesignManagement::Design'
+
+      expect(subject.for_design?).to be(true)
+    end
+
+    it 'returns false when target is not a Design' do
+      subject.target_type = 'Issue'
+
+      expect(subject.for_design?).to be(false)
+    end
+  end
+
+  describe '#target' do
+    context 'for commits' do
+      let(:commit) { project.commit }
+
+      it 'returns an instance of Commit when exists' do
+        subject.project = project
+        subject.target_type = 'Commit'
+        subject.commit_id = commit.id
+
+        expect(subject.target).to be_a(Commit)
+        expect(subject.target).to eq commit
+      end
+
+      it 'returns nil when does not exists' do
+        subject.project = project
+        subject.target_type = 'Commit'
+        subject.commit_id = 'xxxx'
+
+        expect(subject.target).to be_nil
+      end
+    end
+
+    it 'returns the issuable for issuables' do
+      subject.target_id = issue.id
+      subject.target_type = issue.class.name
+
+      expect(subject.target).to eq issue
+    end
+  end
+
+  describe '#target_reference' do
+    shared_examples 'returns full_path' do
+      specify do
+        subject.target = target
+        subject.action = Todo::MEMBER_ACCESS_REQUESTED
+
+        expect(subject.target_reference).to eq target.full_path
+      end
+    end
+
+    it 'returns commit full reference with short id' do
+      commit = project.commit
+
+      subject.project = project
+      subject.target_type = 'Commit'
+      subject.commit_id = commit.id
+
+      expect(subject.target_reference).to eq commit.reference_link_text(full: false)
+    end
+
+    it 'returns full reference for issuables' do
+      subject.target = issue
+
+      expect(subject.target_reference).to eq issue.to_reference(full: false)
+    end
+
+    context 'when target is member access requested' do
+      %i[project group].each do |target_type|
+        it_behaves_like 'returns full_path' do
+          let(:target) { create(target_type, :public) }
+        end
+      end
+    end
+  end
+
+  describe '#target_url' do
+    subject { todo.target_url }
+
+    context 'when the todo is coming from a commit' do
+      let_it_be(:todo) { create(:on_commit_todo, user: user, project: project) }
+
+      it 'returns the commit web path' do
+        is_expected.to eq("http://localhost/#{project.full_path}/-/commit/#{todo.target.sha}")
+      end
+    end
+
+    context 'when the todo is coming from an issue' do
+      let_it_be(:issue) { create(:issue, project: project) }
+      let(:issue_path) { ::Gitlab::UrlBuilder.instance.issue_path(issue) }
+
+      context 'when coming from the issue itself' do
+        let_it_be(:todo) { create(:todo, project: project, user: user, target: issue) }
+
+        it 'returns the issue web path' do
+          is_expected.to eq("http://localhost#{issue_path}")
+        end
+      end
+
+      context 'when coming from a note on the issue' do
+        let_it_be(:note) { create(:note, project: project, noteable: issue) }
+        let_it_be(:todo) { create(:todo, project: project, user: user, note: note, target: issue) }
+
+        it 'returns the issue web path with an anchor to the note' do
+          is_expected.to eq("http://localhost#{issue_path}#note_#{note.id}")
+        end
+      end
+
+      context 'when coming from a design on the issue' do
+        let_it_be(:design) { create(:design, project: project, issue: issue) }
+        let_it_be(:todo) { create(:todo, project: project, user: user, target: design) }
+
+        it 'returns the design web path' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/issues/#{issue.iid}/designs/#{design.filename}")
+        end
+      end
+    end
+
+    context 'when the todo is coming from a work item' do
+      let_it_be(:work_item) { create(:work_item, :task, project: project) }
+
+      context 'when coming from the work item itself' do
+        let_it_be(:todo) { create(:todo, project: project, user: user, target: work_item, target_type: WorkItem.name) }
+
+        it 'returns the work item web path' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/work_items/#{work_item.iid}")
+        end
+      end
+
+      context 'when coming from a note on the work item' do
+        let_it_be(:note) { create(:note, project: project, noteable: work_item) }
+        let_it_be(:todo) { create(:todo, project: project, user: user, note: note, target: work_item, target_type: WorkItem.name) }
+
+        it 'returns the work item web path with an anchor to the note' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/work_items/#{work_item.iid}#note_#{note.id}")
+        end
+      end
+    end
+
+    context 'when the todo is coming from a merge request' do
+      let_it_be(:merge_request) { create(:merge_request, source_project: project) }
+
+      context 'when coming from the merge request itself' do
+        let_it_be(:todo) { create(:todo, project: project, user: user, target: merge_request) }
+
+        it 'returns the merge request web path' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/merge_requests/#{merge_request.iid}")
+        end
+      end
+
+      context 'when coming from a note on the merge request' do
+        let_it_be(:note) { create(:note, project: project, noteable: merge_request) }
+        let_it_be(:todo) { create(:todo, project: project, user: user, note: note, target: merge_request) }
+
+        it 'returns the issue web path with an anchor to the note' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/merge_requests/#{merge_request.iid}#note_#{note.id}")
+        end
+      end
+
+      context 'when coming from a failed pipeline on the merge request' do
+        let_it_be(:todo) { create(:todo, :build_failed, project: project, user: user, target: merge_request) }
+
+        it 'returns the issue web path with an anchor to the note' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/merge_requests/#{merge_request.iid}/pipelines")
+        end
+      end
+    end
+
+    context 'when the todo is coming from a wiki page' do
+      let_it_be_with_reload(:wiki_page_meta) { create(:wiki_page_meta, :for_wiki_page, project: project) }
+
+      context 'when coming from the wiki page itself' do
+        let_it_be(:todo) { create(:todo, project: project, user: user, target: wiki_page_meta) }
+
+        it 'returns the wiki page web path' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/wikis/#{wiki_page_meta.canonical_slug}")
+        end
+      end
+
+      context 'when coming from a note on the wiki page' do
+        let_it_be(:note) { create(:note, project: project, noteable: wiki_page_meta) }
+        let_it_be(:todo) { create(:todo, project: project, user: user, note: note, target: wiki_page_meta) }
+
+        it 'returns the wiki page web path with an anchor to the note' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/wikis/#{wiki_page_meta.canonical_slug}#note_#{note.id}")
+        end
+      end
+    end
+
+    context 'when the todo is coming from an alert' do
+      let_it_be(:alert) { create(:alert_management_alert, project: project) }
+      let_it_be(:todo) { create(:todo, project: project, user: user, target: alert) }
+
+      it 'returns the merge request web path' do
+        is_expected.to eq("http://localhost/#{project.full_path}/-/alert_management/#{alert.iid}/details")
+      end
+    end
+
+    context 'when the todo is for an access request' do
+      context 'when it is a project access request' do
+        let_it_be(:todo) { create(:todo, :member_access_requested, project: project, user: user, target: project) }
+
+        it 'returns project access requests web path' do
+          is_expected.to eq("http://localhost/#{project.full_path}/-/project_members?tab=access_requests")
+        end
+      end
+
+      context 'when it is a group access request' do
+        let_it_be(:todo) { create(:todo, :member_access_requested, project: nil, group: group, user: user, target: group) }
+
+        it 'returns project access requests web path' do
+          is_expected.to eq("http://localhost/groups/#{group.full_path}/-/group_members?tab=access_requests")
+        end
+      end
+    end
+
+    context 'when the todo is for a transfer failure' do
+      context 'when it is a project transfer failure' do
+        let_it_be(:todo) do
+          create(:todo, project: project, user: user, action: Todo::TRANSFER_FAILED, target: project)
+        end
+
+        it 'returns the project source path' do
+          is_expected.to eq(::Gitlab::UrlBuilder.build(project))
+        end
+      end
+
+      context 'when it is a group transfer failure' do
+        let_it_be(:todo) do
+          create(:todo, project: nil, group: group, user: user, action: Todo::TRANSFER_FAILED, target: group)
+        end
+
+        it 'returns the group source path' do
+          is_expected.to eq(::Gitlab::UrlBuilder.build(group))
+        end
+      end
+    end
+
+    context 'when todo is for an expired SSH key' do
+      let_it_be(:key) { create(:key, user: user) }
+      let_it_be(:todo) { build(:todo, target: key, project: nil, group: nil, user: user) }
+
+      it { is_expected.to eq("http://localhost/-/user_settings/ssh_keys/#{key.id}") }
+    end
+  end
+
+  describe '#transfer_failure_reason' do
+    subject { todo.reload.transfer_failure_reason }
+
+    context 'when todo is not transfer_failed' do
+      let_it_be(:todo) { create(:todo, project: project, user: user, target: project) }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when todo is a project transfer failure' do
+      let_it_be(:todo) do
+        create(:todo, project: project, user: user, action: Todo::TRANSFER_FAILED, target: project)
+      end
+
+      it 'returns the error recorded on the project namespace' do
+        project_namespace = project.project_namespace
+        project_namespace.transfer_last_error = 'Namespace already taken'
+        project_namespace.namespace_details.save!
+
+        is_expected.to eq('Namespace already taken')
+      end
+
+      it 'returns nil when no error was recorded' do
+        is_expected.to be_nil
+      end
+    end
+
+    context 'when todo is a group transfer failure' do
+      let_it_be(:todo) do
+        create(:todo, project: nil, group: group, user: user, action: Todo::TRANSFER_FAILED, target: group)
+      end
+
+      it 'returns the error recorded on the group' do
+        group_record = Group.find(group.id)
+        group_record.transfer_last_error = 'Namespace already taken'
+        group_record.namespace_details.save!
+
+        is_expected.to eq('Namespace already taken')
+      end
+    end
+
+    context 'when the target no longer exists' do
+      let(:todo) { build_stubbed(:todo, action: Todo::TRANSFER_FAILED, target: nil) }
+
+      it 'returns nil' do
+        expect(todo.transfer_failure_reason).to be_nil
+      end
+    end
+  end
+
+  describe '#transfer_failed_retry_url' do
+    subject { todo.reload.transfer_failed_retry_url }
+
+    context 'when todo is not transfer_failed' do
+      let_it_be(:todo) { create(:todo, project: project, user: user, target: project) }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when todo is a project transfer failure' do
+      let_it_be(:new_namespace) { create(:group) }
+      let_it_be(:todo) do
+        create(:todo, project: project, user: user, action: Todo::TRANSFER_FAILED, target: project)
+      end
+
+      context 'when transfer target namespace metadata exists' do
+        before do
+          project_namespace = project.project_namespace
+          project_namespace.state_metadata[:transfer_target_parent_id] = new_namespace.id
+          project_namespace.namespace_details.save!
+        end
+
+        it 'returns project transfer URL with new namespace' do
+          is_expected.to eq(::Gitlab::Routing.url_helpers.transfer_project_url(project, new_namespace_id: new_namespace.id))
+        end
+      end
+
+      context 'when transfer target namespace metadata does not exist' do
+        before do
+          project_namespace = project.project_namespace
+          project_namespace.state_metadata.except!('transfer_target_parent_id')
+          project_namespace.namespace_details.save!
+        end
+
+        it 'returns project transfer URL with current namespace as fallback' do
+          is_expected.to eq(::Gitlab::Routing.url_helpers.transfer_project_url(project, new_namespace_id: project.namespace_id))
+        end
+      end
+    end
+
+    context 'when todo is a group transfer failure' do
+      let_it_be(:new_parent_group) { create(:group) }
+      let_it_be(:todo) do
+        create(:todo, project: nil, group: group, user: user, action: Todo::TRANSFER_FAILED, target: group)
+      end
+
+      let(:group_for_retry_metadata) { Group.find(group.id) }
+
+      context 'when transfer target group metadata exists' do
+        before do
+          group_for_retry_metadata.state_metadata[:transfer_target_parent_id] = new_parent_group.id
+          group_for_retry_metadata.namespace_details.save!
+        end
+
+        it 'returns group transfer URL with new parent group' do
+          is_expected.to eq(
+            ::Gitlab::Routing.url_helpers.transfer_group_url(group, new_parent_group_id: new_parent_group.id)
+          )
+        end
+      end
+
+      context 'when transfer target group metadata exists with nil value' do
+        before do
+          group_for_retry_metadata.state_metadata[:transfer_target_parent_id] = nil
+          group_for_retry_metadata.namespace_details.save!
+        end
+
+        it 'returns group transfer URL without a parent group id' do
+          is_expected.to eq(::Gitlab::Routing.url_helpers.transfer_group_url(group, new_parent_group_id: nil))
+        end
+      end
+
+      context 'when transfer target group metadata does not exist' do
+        before do
+          group_for_retry_metadata.state_metadata.except!('transfer_target_parent_id')
+          group_for_retry_metadata.namespace_details.save!
+        end
+
+        it 'returns group transfer URL with current parent group as fallback' do
+          is_expected.to eq(::Gitlab::Routing.url_helpers.transfer_group_url(group, new_parent_group_id: group.parent_id))
+        end
+      end
+    end
+  end
+
+  describe '#done?' do
+    let_it_be(:todo1) { create(:todo, project: project, target: issue, state: :pending) }
+    let_it_be(:todo2) { create(:todo, project: project, target: issue, state: :done) }
+
+    it 'returns true for todos with done state' do
+      expect(todo2.done?).to be_truthy
+    end
+
+    it 'returns false for todos with state pending' do
+      expect(todo1.done?).to be_falsey
+    end
+  end
+
+  describe '.for_action' do
+    it 'returns the todos for a given action' do
+      create(:todo, project: project, action: Todo::MENTIONED, target: issue)
+
+      todo = create(:todo, project: project, action: Todo::ASSIGNED, target: issue)
+
+      expect(described_class.for_action(Todo::ASSIGNED)).to eq([todo])
+    end
+  end
+
+  describe '.for_author' do
+    it 'returns the todos for a given author' do
+      todo = create(:todo, project: project, author: user, target: issue)
+
+      create(:todo, project: project, author: user2, target: issue)
+
+      expect(described_class.for_author(user)).to eq([todo])
+    end
+  end
+
+  describe '.for_project' do
+    it 'returns the todos for a given project' do
+      todo = create(:todo, project: project, target: issue)
+
+      create(:todo, project: project2, target: issue)
+
+      expect(described_class.for_project(project)).to eq([todo])
+    end
+
+    it 'returns the todos for many projects' do
+      project3 = create(:project)
+
+      todo1 = create(:todo, project: project, target: issue)
+      todo2 = create(:todo, project: project2, target: issue)
+      create(:todo, project: project3, target: issue)
+
+      expect(described_class.for_project([project2, project])).to contain_exactly(todo2, todo1)
+    end
+  end
+
+  describe '.for_undeleted_projects' do
+    let_it_be(:project3) { create(:project) }
+
+    let_it_be(:todo1) { create(:todo, project: project, target: issue) }
+    let!(:todo2) { create(:todo, project: project2, target: issue) }
+    let_it_be(:todo3) { create(:todo, project: project3, target: issue) }
+
+    it 'returns the todos for a given project' do
+      expect(described_class.for_undeleted_projects).to contain_exactly(todo1, todo2, todo3)
+    end
+
+    context 'when todo belongs to deleted project' do
+      let(:project2) { create(:project, pending_delete: true) }
+
+      it 'excludes todos of deleted projects' do
+        expect(described_class.for_undeleted_projects).to contain_exactly(todo1, todo3)
+      end
+    end
+  end
+
+  describe '.for_group' do
+    it 'returns the todos for a given group' do
+      group2 = create(:group)
+      todo = create(:todo, project: nil, group: group, user: user, target: issue)
+
+      create(:todo, project: nil, group: group2, user: user, target: issue)
+
+      expect(described_class.for_group(group)).to eq([todo])
+    end
+  end
+
+  describe '.for_type' do
+    it 'returns the todos for a given target type' do
+      todo = create(:todo, project: project, target: issue)
+
+      create(:todo, project: project, target: create(:merge_request, source_project: project))
+
+      expect(described_class.for_type(Issue.name)).to eq([todo])
+    end
+  end
+
+  describe '.for_target' do
+    it 'returns the todos for a given target' do
+      todo = create(:todo, project: project, target: issue)
+
+      create(:todo, project: project, target: create(:merge_request, source_project: project))
+
+      expect(described_class.for_type(Issue.name).for_target(todo.target))
+        .to contain_exactly(todo)
+    end
+  end
+
+  describe '.for_commit' do
+    it 'returns the todos for a commit ID' do
+      todo = create(:todo, project: project, commit_id: '123', target: issue)
+
+      create(:todo, project: project, commit_id: '456', target: issue)
+
+      expect(described_class.for_commit('123')).to eq([todo])
+    end
+  end
+
+  describe '.not_in_users' do
+    it 'returns the expected todos' do
+      todo1 = create(:todo, project: project, user: user, target: issue)
+      todo2 = create(:todo, project: project, user: user, target: issue)
+      create(:todo, project: project, user: user2, target: issue)
+
+      expect(described_class.not_in_users(user2)).to contain_exactly(todo1, todo2)
+    end
+  end
+
+  describe '.for_group_ids_and_descendants' do
+    it 'returns the todos for a group and its descendants' do
+      parent_group = group
+      child_group = create(:group, parent: parent_group)
+
+      todo1 = create(:todo, project: nil, group: parent_group, user: user, target: issue)
+      todo2 = create(:todo, project: nil, group: child_group, user: user, target: issue)
+      todos = described_class.for_group_ids_and_descendants([parent_group.id])
+
+      expect(todos).to contain_exactly(todo1, todo2)
+    end
+  end
+
+  describe '.pending_for_expiring_ssh_keys' do
+    it 'returns only todos matching the given key ids' do
+      todo1 = create(:todo, project: project, target: issue, target_type: Key, target_id: 1, action: described_class::SSH_KEY_EXPIRING_SOON, state: :pending)
+      todo2 = create(:todo, project: project, target: issue, target_type: Key, target_id: 2, action: described_class::SSH_KEY_EXPIRING_SOON, state: :pending)
+      create(:todo, project: project, target: issue, target_type: Key, target_id: 3, action: described_class::SSH_KEY_EXPIRING_SOON, state: :done)
+      create(:todo, project: project, target: issue, target_type: Issue, target_id: 1, action: described_class::ASSIGNED, state: :pending)
+      todos = described_class.pending_for_expiring_ssh_keys([1, 2, 3])
+
+      expect(todos).to contain_exactly(todo1, todo2)
+    end
+  end
+
+  describe '.for_user' do
+    it 'returns the expected todos' do
+      todo1 = create(:todo, project: project, user: user, target: issue)
+      todo2 = create(:todo, project: project, user: user, target: issue)
+      create(:todo, project: project, user: user2, target: issue)
+
+      expect(described_class.for_user(user)).to contain_exactly(todo1, todo2)
+    end
+  end
+
+  describe '.for_note' do
+    it 'returns todos that belongs to notes' do
+      note_1 = create(:note, noteable: issue, project: issue.project)
+      note_2 = create(:note, noteable: issue, project: issue.project)
+      todo_1 = create(:todo, project: project, note: note_1, target: issue)
+      todo_2 = create(:todo, project: project, note: note_2, target: issue)
+      create(:todo, project: project, note: create(:note, project: issue.project, noteable: issue), target: issue)
+
+      expect(described_class.for_note([note_1, note_2])).to contain_exactly(todo_1, todo_2)
+    end
+  end
+
+  describe '.pending_count_by_user_id' do
+    before do
+      create(:todo, project: project, user: user, state: :pending, target: issue)
+      create(:todo, project: project, user: user, state: :pending, target: issue)
+      create(:todo, project: project, user: user, state: :done, target: issue)
+      create(:todo, project: project, user: user2, state: :pending, target: issue)
+    end
+
+    specify do
+      expect(described_class.pending_count_by_user_id).to eq({ user.id => 2, user2.id => 1 })
+    end
+  end
+
+  describe '.any_for_target?' do
+    it 'returns true if there are todos for a given target' do
+      todo = create(:todo, project: project, target: issue)
+
+      expect(described_class.any_for_target?(todo.target)).to be(true)
+    end
+
+    it 'returns true if there is at least one todo for a given target with state pending' do
+      create(:todo, project: project, state: :done, target: issue)
+      create(:todo, project: project, state: :pending, target: issue)
+
+      expect(described_class.any_for_target?(issue)).to be(true)
+    end
+
+    it 'returns false if there are only todos for a given target with state done while searching for pending' do
+      create(:todo, project: project, state: :done, target: issue)
+      create(:todo, project: project, state: :done, target: issue)
+
+      expect(described_class.any_for_target?(issue, :pending)).to be(false)
+    end
+
+    it 'returns false if there are no todos for a given target' do
+      expect(described_class.any_for_target?(issue)).to be(false)
+    end
+  end
+
+  describe '.batch_update' do
+    it 'updates the state of todos' do
+      todo = create(:todo, :pending, project: project, target: issue)
+      ids = described_class.batch_update(state: :done)
+
+      todo.reload
+
+      expect(ids).to eq([todo.id])
+      expect(todo.state).to eq('done')
+    end
+
+    it 'does not update todos that already have the given state' do
+      create(:todo, :pending, project: project, target: issue)
+
+      expect(described_class.batch_update(state: :pending)).to be_empty
+    end
+
+    it 'updates updated_at' do
+      create(:todo, :pending, project: project, target: issue)
+
+      travel_to(1.day.from_now) do
+        expected_update_date = Time.current.utc
+
+        ids = described_class.batch_update(state: :done)
+
+        expect(Todo.where(id: ids).map(&:updated_at)).to all(be_like_time(expected_update_date))
+      end
+    end
+  end
+
+  describe '.sort_by_snoozed_and_creation_dates' do
+    let_it_be(:todo1) { create(:todo, project: project, target: issue) }
+    let_it_be(:todo2) { create(:todo, project: project, created_at: 3.hours.ago, target: issue) }
+    let_it_be(:todo3) { create(:todo, project: project, snoozed_until: 1.hour.ago, target: issue) }
+
+    context 'when sorting by ascending date' do
+      subject { described_class.sort_by_snoozed_and_creation_dates(direction: :asc) }
+
+      it { is_expected.to eq([todo2, todo3, todo1]) }
+    end
+
+    context 'when sorting by descending date' do
+      subject { described_class.sort_by_snoozed_and_creation_dates }
+
+      it { is_expected.to eq([todo1, todo3, todo2]) }
+    end
+  end
+
+  describe '.distinct_user_ids' do
+    subject { described_class.distinct_user_ids }
+
+    before_all do
+      create(:todo, project: project, user: user, target: issue)
+      create(:todo, project: project, user: user, target: issue)
+      create(:todo, project: project, user: user2, target: issue)
+    end
+
+    it { is_expected.to contain_exactly(user.id, user2.id) }
+  end
+
+  describe '.for_internal_notes' do
+    it 'returns todos created from internal notes' do
+      internal_note = create(:note, confidential: true)
+      todo = create(:todo, project: project, note: internal_note, target: issue)
+      create(:todo, project: project, target: issue)
+
+      expect(described_class.for_internal_notes).to contain_exactly(todo)
+    end
+  end
+
+  context 'with todos authored by banned and unbanned users' do
+    let_it_be(:unbanned_author_pending_todo) { create(:todo, :pending, project: project, target: issue) }
+    let_it_be(:unbanned_author_done_todo) { create(:todo, :done, project: project, target: issue) }
+    let_it_be(:banned_user) { create(:user, :banned) }
+    let_it_be(:banned_author_pending_todo) { create(:todo, :pending, project: project, author: banned_user, target: issue) }
+    let_it_be(:banned_author_done_todo) { create(:todo, :done, project: project, author: banned_user, target: issue) }
+
+    describe '.without_banned_user' do
+      it 'only returns todos that are not authored by a banned user' do
+        expect(described_class.without_banned_user).to contain_exactly(unbanned_author_pending_todo, unbanned_author_done_todo)
+      end
+    end
+
+    describe '.pending_without_hidden' do
+      it 'only returns todos that are not pending and authored by a banned user' do
+        expect(described_class.pending_without_hidden).to contain_exactly(unbanned_author_pending_todo)
+      end
+    end
+
+    describe '.all_without_hidden' do
+      it 'only returns todos that are not pending and authored by a banned user' do
+        expect(described_class.all_without_hidden).to contain_exactly(unbanned_author_pending_todo, unbanned_author_done_todo, banned_author_done_todo)
+      end
+    end
+  end
+
+  describe 'snoozed and not_snoozed scopes' do
+    let_it_be(:snoozed_todo) { create(:todo, project: project, snoozed_until: 1.day.from_now, target: issue) }
+    let_it_be(:unsnoozed_todo) { create(:todo, project: project, snoozed_until: 1.day.ago, target: issue) }
+    let_it_be(:never_snoozed_todo) { create(:todo, project: project, snoozed_until: nil, target: issue) }
+
+    describe '.snoozed' do
+      it 'only returns todos that are currently snoozed' do
+        expect(described_class.snoozed).to contain_exactly(snoozed_todo)
+      end
+    end
+
+    describe '.not_snoozed' do
+      it 'returns todos that are not snoozed anymore or never were snoozed' do
+        expect(described_class.not_snoozed).to contain_exactly(unsnoozed_todo, never_snoozed_todo)
+      end
+    end
+  end
+end

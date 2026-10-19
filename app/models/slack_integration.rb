@@ -1,0 +1,162 @@
+# frozen_string_literal: true
+
+class SlackIntegration < ApplicationRecord
+  include EachBatch
+  include Gitlab::EncryptedAttribute
+
+  ALL_FEATURES = %i[commands notifications].freeze
+
+  SCOPE_COMMANDS = 'commands'
+  SCOPE_CHAT_WRITE = 'chat:write'
+  SCOPE_CHAT_WRITE_PUBLIC = 'chat:write.public'
+  SCOPE_APP_MENTIONS_READ = 'app_mentions:read'
+  SCOPE_CHANNELS_HISTORY = 'channels:history'
+  SCOPE_GROUPS_HISTORY = 'groups:history'
+  SCOPE_SEARCH_READ_PUBLIC = 'search:read.public'
+  SCOPE_REACTIONS_WRITE = 'reactions:write'
+  SCOPE_IM_HISTORY = 'im:history'
+  SCOPE_MPIM_HISTORY = 'mpim:history'
+  SCOPE_ASSISTANT_WRITE = 'assistant:write'
+  ORGANIZATION_ALIAS = 'gitlab-organization'
+
+  # These scopes are requested when installing the app, additional scopes
+  # will need reauthorization.
+  # https://api.slack.com/authentication/oauth-v2#asking
+  SCOPES = [SCOPE_COMMANDS, SCOPE_CHAT_WRITE, SCOPE_CHAT_WRITE_PUBLIC].freeze
+
+  # Extended scope set required for the Duo Agent (@mention) feature.
+  # Used when the `slack_duo_agent` feature flag is enabled for the installing user.
+  DUO_SCOPES = [
+    SCOPE_COMMANDS,
+    SCOPE_CHAT_WRITE,
+    SCOPE_CHAT_WRITE_PUBLIC,
+    SCOPE_APP_MENTIONS_READ,
+    SCOPE_CHANNELS_HISTORY,
+    SCOPE_GROUPS_HISTORY,
+    SCOPE_REACTIONS_WRITE
+  ].freeze
+
+  # Scopes for the Slack Agents feature (top bar, DMs). Only requested once the
+  # `slack_duo_agent_app` release flag is on, which must not happen before the
+  # updated marketplace app is published, or new installs fail with invalid_scope.
+  AGENT_APP_SCOPES = [SCOPE_IM_HISTORY, SCOPE_MPIM_HISTORY, SCOPE_ASSISTANT_WRITE].freeze
+
+  MCP_URL = 'https://mcp.slack.com/mcp'
+  MCP_USER_SCOPES = [SCOPE_CHANNELS_HISTORY, SCOPE_SEARCH_READ_PUBLIC].freeze
+
+  DATABASE_ATTRIBUTES = %w[
+    team_id team_name user_id bot_user_id encrypted_bot_access_token encrypted_bot_access_token_iv
+  ].freeze
+
+  belongs_to :integration
+  belongs_to :project, optional: true
+  belongs_to :group, optional: true
+  belongs_to :organization, class_name: 'Organizations::Organization', optional: true
+
+  attr_encrypted :bot_access_token,
+    mode: :per_attribute_iv,
+    key: :db_key_base_32,
+    algorithm: 'aes-256-gcm',
+    encode: false,
+    encode_iv: false
+
+  has_many :slack_integrations_scopes,
+    class_name: '::Integrations::SlackWorkspace::IntegrationApiScope'
+
+  has_many :slack_api_scopes,
+    class_name: '::Integrations::SlackWorkspace::ApiScope',
+    through: :slack_integrations_scopes
+
+  scope :preloaded_sharding_key_parents, -> { preload(:group, :project) }
+  scope :with_bot, -> { where.not(bot_user_id: nil) }
+  scope :by_team, ->(team_id) { where(team_id: team_id) }
+  scope :by_integration, ->(integration_ids) { where(integration_id: integration_ids) }
+
+  validates :team_id, presence: true
+  validates :team_name, presence: true
+  validates :alias, presence: true,
+    uniqueness: { scope: :team_id, message: 'This alias has already been taken' },
+    length: 2..4096
+  validates :user_id, presence: true
+  validates :integration, presence: true
+  # Bot tokens follow the format: xoxb-#####-#####-##### (around 60 characters)
+  # A generous limit of 255 allows for potential future token format changes
+  validates :bot_access_token, length: { maximum: 255 }, if: :bot_access_token_changed?
+
+  after_commit :update_active_status_of_integration, on: [:create, :destroy]
+
+  def self.organization_alias(organization_id)
+    raise ArgumentError, 'organization_id must be an Integer' unless organization_id.is_a?(Integer)
+
+    [SlackIntegration::ORGANIZATION_ALIAS, organization_id].join('-')
+  end
+
+  def self.scopes_for(duo_enabled:)
+    return SCOPES unless duo_enabled
+    return DUO_SCOPES unless agent_app_enabled?
+
+    DUO_SCOPES + AGENT_APP_SCOPES
+  end
+
+  def self.agent_app_enabled?
+    Feature.enabled?(:slack_duo_agent_app, :instance)
+  end
+
+  def feature_available?(feature_name)
+    case feature_name
+    when :commands
+      # The slash commands feature requires 'commands' scope.
+      # All records will support this scope, as this was the original feature.
+      true
+    when :notifications
+      scoped_to?(SCOPE_CHAT_WRITE, SCOPE_CHAT_WRITE_PUBLIC)
+    else
+      false
+    end
+  end
+
+  def upgrade_needed?
+    !all_features_supported?
+  end
+
+  def all_features_supported?
+    ALL_FEATURES.all? { |feature| feature_available?(feature) } # rubocop: disable Gitlab/FeatureAvailableUsage
+  end
+
+  def authorized_scope_names=(names)
+    names = Array.wrap(names).flat_map { |name| name.split(',') }.map(&:strip)
+
+    scopes = ::Integrations::SlackWorkspace::ApiScope.find_or_initialize_by_names(
+      names, organization_id: organization_id_from_parent
+    )
+    self.slack_api_scopes = scopes
+  end
+
+  def authorized_scope_names
+    slack_api_scopes.pluck(:name)
+  end
+
+  def organization_id_from_parent
+    project&.organization_id || group&.organization_id || organization_id
+  end
+
+  def to_database_hash
+    attributes_for_database.slice(*DATABASE_ATTRIBUTES)
+  end
+
+  private
+
+  def update_active_status_of_integration
+    integration.update(active: persisted?)
+  end
+
+  def scoped_to?(*names)
+    return false if names.empty?
+
+    names.to_set <= all_scopes
+  end
+
+  def all_scopes
+    @all_scopes = authorized_scope_names.to_set
+  end
+end

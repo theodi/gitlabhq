@@ -1,0 +1,21 @@
+---
+data_category: optional
+key_path: counts.projects_custom_issue_tracker_active
+description: Count of projects with active integrations for a Custom Issue Tracker
+product_group: import
+product_categories:
+- integrations
+value_type: number
+status: active
+time_frame: all
+data_source: database
+instrumentation_class: ActiveProjectIntegrationsMetric
+options:
+  type: custom_issue_tracker
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

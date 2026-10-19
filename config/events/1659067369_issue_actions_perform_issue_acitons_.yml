@@ -1,0 +1,21 @@
+---
+description: Issue usage event
+category: issues_edit
+action: perform_issue_action
+extra_properties:
+identifiers:
+  - namespace
+  - project
+  - user
+product_group: work_items
+product_categories:
+- team_planning
+milestone: "15.3"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/91659
+tiers:
+  - free
+  - premium
+  - ultimate
+additional_properties:
+  property:
+    description: the name of the performed action

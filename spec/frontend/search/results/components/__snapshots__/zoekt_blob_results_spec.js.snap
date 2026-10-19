@@ -1,0 +1,97 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`ZoektBlobResults when component loads normally renders component properly 1`] = `
+<div
+  class="gl-flex gl-flex-col gl-justify-center"
+>
+  <div
+    class="gl-relative"
+  >
+    <div
+      class="gl-card gl-my-5"
+    >
+      <div
+        class="gl-card-header"
+      >
+        <blob-header-stub
+          filepath="test/test-main.js"
+          fileurl="http://127.0.0.1:3000/flightjs/Flight/-/blob/master/test/test-main.js"
+          projectpath="flightjs/Flight"
+          systemcolorscheme="gl-light"
+        />
+      </div>
+      <div
+        class="gl-card-body gl-p-0"
+      >
+        <blob-body-stub
+          file="[object Object]"
+          position="1"
+        />
+      </div>
+    </div>
+    <div
+      class="gl-card gl-my-5"
+    >
+      <div
+        class="gl-card-header"
+      >
+        <blob-header-stub
+          filepath="test/spec/fn_spec.js"
+          fileurl="http://127.0.0.1:3000/flightjs/Flight/-/blob/master/test/spec/fn_spec.js"
+          projectpath="flightjs/Flight"
+          systemcolorscheme="gl-light"
+        />
+      </div>
+      <div
+        class="gl-card-body gl-p-0"
+      >
+        <blob-body-stub
+          file="[object Object]"
+          position="2"
+        />
+      </div>
+      <div
+        class="gl-card-footer"
+      >
+        <blob-footer-stub
+          file="[object Object]"
+          position="2"
+        />
+      </div>
+    </div>
+    <div
+      class="gl-card gl-my-5"
+    >
+      <div
+        class="!gl-border-b-0 gl-card-header"
+      >
+        <blob-header-stub
+          filepath="test/spec/test_utils_spec.js"
+          fileurl="http://127.0.0.1:3000/flightjs/Flight/-/blob/master/test/spec/utils_spec.js"
+          isheaderonly="true"
+          projectpath="flightjs/Flight"
+          systemcolorscheme="gl-light"
+        />
+      </div>
+      <div
+        class="gl-card-body gl-p-0"
+      />
+    </div>
+  </div>
+  <gl-pagination-stub
+    align="left"
+    class="gl-mx-auto"
+    ellipsistext="…"
+    labelfirstpage="Go to first page"
+    labellastpage="Go to last page"
+    labelnav="Pagination"
+    labelnextpage="Go to next page"
+    labelpage="Go to page %{page}"
+    labelprevpage="Go to previous page"
+    limits="[object Object]"
+    perpage="20"
+    totalitems="3"
+    value="1"
+  />
+</div>
+`;

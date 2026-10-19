@@ -1,0 +1,231 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::FileTransfer::ProjectConfig, feature_category: :importers do
+  let_it_be(:exportable) { create(:project) }
+  let_it_be(:hex) { '123' }
+
+  let(:offline) { false }
+
+  before do
+    allow(SecureRandom).to receive(:hex).and_return(hex)
+  end
+
+  subject { described_class.new(exportable, offline: offline) }
+
+  describe 'portable_tree' do
+    it 'returns portable tree' do
+      expect_next_instance_of(::Gitlab::ImportExport::AttributesFinder) do |finder|
+        expect(finder).to receive(:find_root).with(:project).and_call_original
+      end
+
+      expect(subject.portable_tree).not_to be_empty
+    end
+  end
+
+  describe '#export_path' do
+    it 'returns tmpdir location' do
+      expect(subject.export_path).to include(File.join(Dir.tmpdir, 'bulk_imports'))
+    end
+  end
+
+  describe '#portable_relations' do
+    it 'returns a list of top level exportable relations' do
+      expect(subject.portable_relations).to include('issues', 'labels', 'milestones', 'merge_requests')
+    end
+
+    it 'includes max_iids relation' do
+      expect(subject.portable_relations).to include('max_iids')
+    end
+
+    it 'excludes project and group members for direct transfer' do
+      expect(subject.portable_relations).not_to include('project_members')
+      expect(subject.portable_relations).not_to include('group_members')
+    end
+
+    context 'when exporting for offline transfer' do
+      let(:offline) { true }
+
+      it 'includes project members and excludes group members' do
+        expect(subject.portable_relations).to include('project_members')
+        expect(subject.portable_relations).not_to include('group_members')
+      end
+    end
+  end
+
+  describe '#top_relation_tree' do
+    it 'returns relation tree of a top level relation' do
+      expect(subject.top_relation_tree('labels')).to eq('priorities' => {})
+    end
+
+    it 'returns relation tree with merged with deprecated tree' do
+      expect(subject.top_relation_tree('ci_pipelines')).to match(
+        a_hash_including(
+          {
+            'external_pull_request' => {},
+            'merge_request' => {},
+            'stages' => { 'bridges' => {}, 'builds' => {}, 'generic_commit_statuses' => {}, 'statuses' => {} }
+          }
+        )
+      )
+    end
+  end
+
+  describe '#relation_excluded_keys' do
+    it 'returns excluded keys for relation' do
+      expect(subject.relation_excluded_keys('project')).to include('creator_id')
+    end
+  end
+
+  describe '#relation_included_keys' do
+    it 'returns included keys for relation' do
+      expect(subject.relation_included_keys('project')).to include('approvals_before_merge')
+    end
+
+    it 'includes names for exported members' do
+      expect(subject.relation_included_keys('user')).to include('id', 'name')
+    end
+  end
+
+  describe '#tree_relation?' do
+    context 'when it is a tree relation' do
+      it 'returns true' do
+        expect(subject.tree_relation?('labels')).to be(true)
+      end
+    end
+
+    context 'when it is not a tree relation' do
+      it 'returns false' do
+        expect(subject.tree_relation?('example')).to be(false)
+      end
+    end
+  end
+
+  describe '#file_relation?' do
+    context 'when it is a file relation' do
+      it 'returns true' do
+        expect(subject.file_relation?('uploads')).to be(true)
+      end
+    end
+
+    context 'when it is not a file relation' do
+      it 'returns false' do
+        expect(subject.file_relation?('example')).to be(false)
+      end
+    end
+  end
+
+  describe '#relation_has_user_contributions?' do
+    subject { described_class.new(exportable).relation_has_user_contributions?(relation) }
+
+    context 'when the relation has user contribitions' do
+      let(:relation) { 'issues' }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when the relation does not have user contribitions' do
+      let(:relation) { 'labels' }
+
+      it { is_expected.to be(false) }
+    end
+  end
+
+  describe '#user_contributions_relation?' do
+    it 'returns true for the user_contributions relation' do
+      expect(subject.user_contributions_relation?('user_contributions')).to be(true)
+    end
+
+    it 'returns false for non user_contributions relations' do
+      expect(subject.user_contributions_relation?('milestones')).to be(false)
+    end
+  end
+
+  describe '#tree_relation_definition_for' do
+    it 'returns relation definition' do
+      expected = { service_desk_setting: { except: [:outgoing_name, :file_template_project_id], include: [], only: %i[project_id issue_template_key project_key] } }
+
+      expect(subject.tree_relation_definition_for('service_desk_setting')).to eq(expected)
+    end
+
+    context 'when relation is not tree relation' do
+      it 'returns' do
+        expect(subject.tree_relation_definition_for('example')).to be_nil
+      end
+    end
+  end
+
+  describe '#file_relations' do
+    it 'returns project file relations' do
+      expect(subject.file_relations).to contain_exactly('uploads', 'lfs_objects', 'repository', 'design')
+    end
+  end
+
+  describe '#export_service_for' do
+    context 'when relation is max_iids' do
+      it 'returns MaxIidsExportService' do
+        expect(subject.export_service_for('max_iids')).to eq(Import::BulkImports::MaxIidsExportService)
+      end
+    end
+
+    context 'when relation is commit_notes' do
+      it 'returns CommitNotesExportService' do
+        expect(subject.export_service_for('commit_notes')).to eq(Import::BulkImports::CommitNotesExportService)
+      end
+    end
+  end
+
+  describe '#commit_notes_export_via_git?' do
+    context 'when relation is commit_notes' do
+      it { expect(subject.commit_notes_export_via_git?('commit_notes')).to be(true) }
+    end
+
+    context 'when relation is not commit_notes' do
+      it { expect(subject.commit_notes_export_via_git?('issues')).to be(false) }
+    end
+  end
+
+  describe '#max_iids_relation?' do
+    it 'returns true for max_iids' do
+      expect(subject.max_iids_relation?('max_iids')).to be(true)
+    end
+
+    it 'returns false for other relations' do
+      expect(subject.max_iids_relation?('issues')).to be(false)
+    end
+  end
+
+  describe '#batchable_relation?' do
+    context 'when relation is batchable' do
+      it 'returns true' do
+        expect(subject.batchable_relation?('issues')).to be(true)
+      end
+    end
+
+    context 'when relation is not batchable' do
+      it 'returns false' do
+        expect(subject.batchable_relation?('project_feature')).to be(false)
+      end
+    end
+
+    context 'when relation is not listed as portable' do
+      it 'returns false' do
+        expect(subject.batchable_relation?('foo')).to be(false)
+      end
+    end
+
+    context 'when relation is commit_notes' do
+      it 'returns true (overrides the reflect_on_association check for the method-defined relation)' do
+        expect(subject.batchable_relation?('commit_notes')).to be(true)
+      end
+    end
+  end
+
+  describe '#batchable_relations' do
+    it 'returns a list of collection associations for a project' do
+      expect(subject.batchable_relations).to include('issues', 'merge_requests', 'milestones')
+      expect(subject.batchable_relations).not_to include('project_feature', 'ci_cd_settings')
+    end
+  end
+end

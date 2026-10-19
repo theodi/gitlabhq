@@ -1,0 +1,11 @@
+---
+table_name: cloud_connector_keys
+classes:
+- CloudConnector::Keys
+feature_categories:
+- system_access
+description: Stores Cloud Connector JWT signing keys
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/179559
+milestone: '17.9'
+gitlab_schema: gitlab_main_cell_setting
+table_size: small

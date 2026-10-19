@@ -1,0 +1,48 @@
+{
+  "extends": ["@gitlab/stylelint-config"],
+  "plugins": [
+    "./tooling/stylelint/gitlab_no_gl_class.plugin.js",
+    "./tooling/stylelint/gitlab_split_apply.plugin.js",
+    "./tooling/stylelint/gitlab_no_concat_classes.plugin.js",
+    "./tooling/stylelint/gitlab_no_js_class.plugin.js",
+    "./tooling/stylelint/gitlab_no_has.plugin.js"
+  ],
+  "rules": {
+    "gitlab/no-gl-class": true,
+    "gitlab/split-apply": true,
+    "gitlab/no-sass-class-concat": true,
+    "gitlab/no-js-class": true,
+    "gitlab/no-has": true
+  },
+  "ignoreFiles": [
+    "app/assets/stylesheets/pages/emojis.scss",
+    "app/assets/stylesheets/startup/startup-*.scss",
+    "ee/app/assets/stylesheets/startup/startup-*.scss",
+    "app/assets/stylesheets/highlight/themes/*.scss",
+    "app/assets/stylesheets/lazy_bundles/cropper.css"
+  ],
+  "overrides": [
+    {
+      "files": ["app/assets/stylesheets/mailers/mailer.scss"],
+      "rules": {
+        "color-hex-length": "long"
+      }
+    },
+    {
+      "files": [
+        "app/assets/stylesheets/application_dark.scss",
+        "app/assets/stylesheets/_application_dark_overrides.scss",
+        "app/assets/stylesheets/framework/**/*.scss"
+      ],
+      "rules": {
+        "gitlab/no-gl-class": null
+      }
+    },
+    {
+      "files": ["**/*.css"],
+      "rules": {
+        "gitlab/no-has": null
+      }
+    }
+  ]
+}

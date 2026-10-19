@@ -1,0 +1,21 @@
+---
+data_category: optional
+key_path: gitpod_enabled
+description: Whether Ona is enabled in the instance
+product_group: remote_development
+product_categories:
+- web_ide
+value_type: boolean
+status: active
+time_frame: none
+data_source: system
+instrumentation_class: GitlabSettingsMetric
+options:
+  setting_method: gitpod_enabled?
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

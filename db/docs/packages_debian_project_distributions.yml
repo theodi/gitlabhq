@@ -1,0 +1,13 @@
+---
+table_name: packages_debian_project_distributions
+classes:
+- Packages::Debian::ProjectDistribution
+feature_categories:
+- package_registry
+description: Debian package registry project level distributions
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/49405
+milestone: '13.8'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

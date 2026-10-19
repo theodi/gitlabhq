@@ -1,0 +1,13 @@
+---
+table_name: cluster_agent_migrations
+classes:
+- Clusters::AgentMigration
+feature_categories:
+- deployment_management
+description: Tracks progress when migrating to the GitLab agent from a certificate based cluster
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/179324
+milestone: '17.9'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

@@ -1,0 +1,13 @@
+mutation getJiraUserMapping($input: JiraImportUsersInput!) {
+  jiraImportUsers(input: $input) {
+    jiraUsers {
+      jiraAccountId
+      jiraDisplayName
+      jiraEmail
+      gitlabId
+      gitlabName
+      gitlabUsername
+    }
+    errors
+  }
+}

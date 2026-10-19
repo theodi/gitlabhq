@@ -1,0 +1,15 @@
+---
+name: update_service_account
+description: Grants the ability to update service accounts
+boundaries:
+  - project
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - update_service_account
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

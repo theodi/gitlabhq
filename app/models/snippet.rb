@@ -1,132 +1,414 @@
-# == Schema Information
-#
-# Table name: snippets
-#
-#  id               :integer          not null, primary key
-#  title            :string(255)
-#  content          :text
-#  author_id        :integer          not null
-#  project_id       :integer
-#  created_at       :datetime
-#  updated_at       :datetime
-#  file_name        :string(255)
-#  expires_at       :datetime
-#  type             :string(255)
-#  visibility_level :integer          default(0), not null
-#
+# frozen_string_literal: true
 
-class Snippet < ActiveRecord::Base
+class Snippet < ApplicationRecord
   include Gitlab::VisibilityLevel
-  include Linguist::BlobHelper
+  include Redactable
+  include CacheMarkdownField
+  include Noteable
   include Participable
-  include Referable
   include Sortable
+  include Awardable
+  include Mentionable
+  include Spammable
+  include Editable
+  include Gitlab::SQL::Pattern
+  include FromUnion
+  include HasRepository
+  include CanMoveRepositoryStorage
+  include AfterCommitQueue
+  extend ::Gitlab::Utils::Override
+  include CreatedAtFilterable
+  include EachBatch
+  include Import::HasImportSource
+  include Gitlab::EncryptedAttribute
+  include Cells::Claimable
 
-  default_value_for :visibility_level, Snippet::PRIVATE
+  MAX_FILE_COUNT = 10
+
+  DESCRIPTION_LENGTH_MAX = 1.megabyte
+
+  # A Proc subject_key disables the narrowed SELECT in cells_claims_scope, so preload :project
+  # to avoid an N+1 when the verification worker resolves the org for project snippets in batches.
+  cells_claims_scope { includes(:project) }
+
+  cells_claims_attribute :id, type: CLAIMS_CLAIM_TYPE::CLAIM_TYPE_SNIPPET_ID
+
+  # The snippets check constraint allows exactly one of organization_id/project_id: personal
+  # snippets set organization_id directly, while project snippets keep it NULL and resolve the
+  # owning org via their project. A plain :organization_id key would yield a nil subject for
+  # project snippets, so resolve it through the project as a fallback.
+  cells_claims_metadata subject_type: CLAIMS_SUBJECT_TYPE::ORGANIZATION,
+    subject_key: -> { organization_id || project&.organization_id }
+
+  cache_markdown_field :title, pipeline: :issuable_title
+  cache_markdown_field :description
+  cache_markdown_field :content
+
+  redact_field :description
+
+  # Alias for Editable module
+  alias_attribute :last_edited_at, :updated_at
+
+  # If file_name changes, it invalidates content
+  alias_method :default_content_html_invalidator, :content_html_invalidated?
+  def content_html_invalidated?
+    default_content_html_invalidator || file_name_changed?
+  end
 
   belongs_to :author, class_name: 'User'
   belongs_to :project
+  belongs_to :organization, class_name: 'Organizations::Organization'
+  alias_method :resource_parent, :project
 
-  has_many :notes, as: :noteable, dependent: :destroy
+  has_many :notes, as: :noteable, dependent: :destroy # rubocop:disable Cop/ActiveRecordDependent
+  has_many :user_mentions, class_name: "SnippetUserMention", dependent: :delete_all # rubocop:disable Cop/ActiveRecordDependent
+  has_one :snippet_repository, inverse_of: :snippet
+  has_many :repository_storage_moves, class_name: 'Snippets::RepositoryStorageMove', inverse_of: :container
+
+  # We need to add the `dependent` in order to call the after_destroy callback
+  has_one :statistics, class_name: 'SnippetStatistics', dependent: :destroy # rubocop:disable Cop/ActiveRecordDependent
 
   delegate :name, :email, to: :author, prefix: true, allow_nil: true
 
   validates :author, presence: true
-  validates :title, presence: true, length: { within: 0..255 }
+  validates :title, presence: true, length: { maximum: 255 }
   validates :file_name,
-    presence: true,
-    length: { within: 0..255 },
-    format: { with: Gitlab::Regex.file_name_regex,
-              message: Gitlab::Regex.file_name_regex_message }
+    length: { maximum: 255 }
+  validates :description, bytesize: { maximum: -> { DESCRIPTION_LENGTH_MAX } }, if: :description_changed?
+
   validates :content, presence: true
-  validates :visibility_level, inclusion: { in: Gitlab::VisibilityLevel.values }
+  validates :content, bytesize: { maximum: -> { Gitlab::CurrentSettings.snippet_size_limit } }, if: :content_changed?
+
+  validates_with ExactlyOnePresentValidator, fields: [:project, :organization],
+    message: ->(_fields) { _('must belong to either a project or an organization') }
+
+  after_create :create_statistics
 
   # Scopes
-  scope :are_internal,  -> { where(visibility_level: Snippet::INTERNAL) }
+  scope :are_internal, -> { where(visibility_level: Snippet::INTERNAL) }
   scope :are_private, -> { where(visibility_level: Snippet::PRIVATE) }
-  scope :are_public, -> { where(visibility_level: Snippet::PUBLIC) }
-  scope :public_and_internal, -> { where(visibility_level: [Snippet::PUBLIC, Snippet::INTERNAL]) }
-  scope :fresh,   -> { order("created_at DESC") }
-  scope :expired, -> { where(["expires_at IS NOT NULL AND expires_at < ?", Time.current]) }
-  scope :non_expired, -> { where(["expires_at IS NULL OR expires_at > ?", Time.current]) }
+  scope :are_public, -> { public_only }
+  scope :fresh, -> { order("created_at DESC") }
+  scope :inc_author, -> { includes(:author) }
+  scope :inc_relations_for_view, -> { includes(author: :status) }
+  scope :inc_statistics, -> { includes(:statistics) }
+  scope :with_statistics, -> { joins(:statistics) }
+  scope :with_repository_storage_moves, -> { joins(:repository_storage_moves) }
+  scope :inc_projects_namespace_route, -> { includes(project: [:route, :namespace, :group]) }
 
-  participant :author, :notes
+  scope :in_organization, ->(organization_id) do
+    project_snippets_in_org = only_project_snippets
+      .joins(:project)
+      .where(projects: { organization_id: organization_id })
 
-  def self.reference_prefix
-    '$'
+    personal_snippets_in_org = only_personal_snippets
+      .where(organization_id: organization_id)
+
+    from_union([project_snippets_in_org, personal_snippets_in_org], remove_duplicates: false)
   end
 
-  # Pattern used to extract `$123` snippet references from text
-  #
-  # This pattern supports cross-project references.
-  def self.reference_pattern
-    %r{
+  scope :without_created_by_banned_user, -> do
+    where_not_exists(Users::BannedUser.where('snippets.author_id = banned_users.user_id'))
+  end
+
+  attr_mentionable :description
+
+  participant :author
+  participant :notes_with_associations
+
+  attr_spammable :title, spam_title: true
+  attr_spammable :description, spam_description: true
+
+  attr_encrypted :secret_token,
+    key: :db_key_base_truncated,
+    mode: :per_attribute_iv,
+    algorithm: 'aes-256-cbc'
+
+  class << self
+    # Searches for snippets with a matching title, description or file name.
+    #
+    # This method uses ILIKE on PostgreSQL.
+    #
+    # query - The search query as a String.
+    #
+    # Returns an ActiveRecord::Relation.
+    def search(query)
+      fuzzy_search(query, [:title, :description, :file_name])
+    end
+
+    def parent_class
+      ::Project
+    end
+
+    def sanitized_file_name(file_name)
+      file_name.gsub(/[^a-zA-Z0-9_\-\.]+/, '')
+    end
+
+    def with_optional_visibility(value = nil)
+      if value
+        where(visibility_level: value)
+      else
+        all
+      end
+    end
+
+    def only_personal_snippets
+      where(project_id: nil)
+    end
+
+    def only_project_snippets
+      where.not(project_id: nil)
+    end
+
+    def only_include_projects_visible_to(current_user = nil)
+      levels = Gitlab::VisibilityLevel.levels_for_user(current_user)
+
+      joins(:project).where(projects: { visibility_level: levels })
+    end
+
+    def only_include_projects_with_snippets_enabled(include_private: false)
+      column = ProjectFeature.access_level_attribute(:snippets)
+      levels = [ProjectFeature::ENABLED, ProjectFeature::PUBLIC]
+
+      levels << ProjectFeature::PRIVATE if include_private
+
+      joins(project: :project_feature)
+        .where(project_features: { column => levels })
+    end
+
+    def only_include_authorized_projects(current_user)
+      where(
+        'EXISTS (?)',
+        ProjectAuthorization
+          .select(1)
+          .where('project_id = snippets.project_id')
+          .where(user_id: current_user.id)
+      )
+    end
+
+    def for_project_with_user(project, user = nil)
+      return none unless project.snippets_visible?(user)
+
+      if project.member?(user)
+        project.snippets
+      else
+        project.snippets.public_to_user(user)
+      end
+    end
+
+    def visible_to_or_authored_by(user)
+      query = where(visibility_level: Gitlab::VisibilityLevel.levels_for_user(user))
+      query.or(where(author_id: user.id))
+    end
+
+    def reference_prefix
+      '$'
+    end
+
+    # Pattern used to extract `$123` snippet references from text
+    #
+    # This pattern supports cross-project references.
+    def reference_pattern
+      @reference_pattern ||= %r{
       (#{Project.reference_pattern})?
       #{Regexp.escape(reference_prefix)}(?<snippet>\d+)
     }x
-  end
-
-  def to_reference(from_project = nil)
-    reference = "#{self.class.reference_prefix}#{id}"
-
-    if cross_project_reference?(from_project)
-      reference = project.to_reference + reference
     end
 
-    reference
+    def link_reference_pattern
+      @link_reference_pattern ||= compose_link_reference_pattern('snippets', /(?<snippet>\d+)/)
+    end
+
+    def find_by_id_and_project(id:, project:)
+      Snippet.find_by(id: id, project: project)
+    end
+
+    def find_by_project_title_trunc_created_at(project, title, created_at)
+      where(project: project, title: title)
+        .find_by(
+          "date_trunc('second', created_at at time zone :tz) at time zone :tz = :created_at",
+          tz: created_at.zone, created_at: created_at)
+    end
+
+    def max_file_limit
+      MAX_FILE_COUNT
+    end
   end
 
-  def self.content_types
-    [
-      ".rb", ".py", ".pl", ".scala", ".c", ".cpp", ".java",
-      ".haml", ".html", ".sass", ".scss", ".xml", ".php", ".erb",
-      ".js", ".sh", ".coffee", ".yml", ".md"
-    ]
+  def initialize(attributes = {})
+    # We assign the actual snippet default if no explicit visibility has been initialized.
+    attributes ||= {}
+
+    unless visibility_attribute_present?(attributes)
+      attributes[:visibility_level] = Gitlab::CurrentSettings.default_snippet_visibility
+    end
+
+    super
   end
 
-  def data
-    content
+  def to_reference(from = nil, full: false)
+    reference = "#{self.class.reference_prefix}#{id}"
+
+    if project.present?
+      "#{project.to_reference_base(from, full: full)}#{reference}"
+    else
+      reference
+    end
+  end
+
+  def all_files
+    list_files(default_branch)
+  end
+
+  def blob
+    @blob ||= Blob.decorate(SnippetBlob.new(self), self)
+  end
+
+  def blobs(paths = [])
+    return [] unless repository_exists?
+
+    paths = all_files if paths.empty?
+    items = paths.map { |path| [default_branch, path] }
+
+    repository.blobs_at(items).compact
   end
 
   def hook_attrs
-    attributes
+    {
+      id: id,
+      title: title,
+      description: description,
+      content: content,
+      author_id: author_id,
+      project_id: project_id,
+      created_at: created_at,
+      updated_at: updated_at,
+      file_name: file_name,
+      type: type,
+      visibility_level: visibility_level,
+      url: Gitlab::UrlBuilder.build(self)
+    }
   end
 
-  def size
-    0
-  end
-
-  def name
-    file_name
-  end
-
-  def sanitized_file_name
-    file_name.gsub(/[^a-zA-Z0-9_\-\.]+/, '')
-  end
-
-  def mode
-    nil
-  end
-
-  def expired?
-    expires_at && expires_at < Time.current
+  def file_name
+    super.to_s
   end
 
   def visibility_level_field
-    visibility_level
+    :visibility_level
   end
 
-  class << self
-    def search(query)
-      where('(title LIKE :query OR file_name LIKE :query)', query: "%#{query}%")
-    end
+  def embeddable?
+    Ability.allowed?(nil, :read_snippet, self)
+  end
 
-    def search_code(query)
-      where('(content LIKE :query)', query: "%#{query}%")
-    end
+  def notes_with_associations
+    notes.includes(:author)
+  end
 
-    def accessible_to(user)
-      where('visibility_level IN (?) OR author_id = ?', [Snippet::INTERNAL, Snippet::PUBLIC], user)
+  def check_for_spam?(*)
+    visibility_level_changed?(to: Snippet::PUBLIC) || (public? && spammable_attribute_changed?)
+  end
+
+  def supports_recaptcha?
+    true
+  end
+
+  def to_ability_name
+    'snippet'
+  end
+
+  def as_json(options = {})
+    options = options.dup
+    options[:except] = Array.wrap(options[:except])
+    options[:except] << :secret_token
+
+    super
+  end
+
+  override :repository
+  def repository
+    @repository ||= Gitlab::GlRepository::SNIPPET.repository_for(self)
+  end
+
+  override :repository_size_checker
+  def repository_size_checker
+    strong_memoize(:repository_size_checker) do
+      ::Gitlab::RepositorySizeChecker.new(
+        current_size_proc: -> { repository.size.megabytes },
+        limit: Gitlab::CurrentSettings.snippet_size_limit,
+        namespace: nil
+      )
     end
+  end
+
+  override :storage
+  def storage
+    @storage ||= Storage::Hashed.new(self, prefix: Storage::Hashed::SNIPPET_REPOSITORY_PATH_PREFIX)
+  end
+
+  # This is the full_path used to identify the snippet repository.
+  override :full_path
+  def full_path
+    return unless persisted?
+
+    @full_path ||= begin
+      components = []
+      components << project.full_path if project_id?
+      components << 'snippets'
+      components << self.id
+      components.join('/')
+    end
+  end
+
+  override :default_branch
+  def default_branch
+    super || Gitlab::DefaultBranch.value(object: project)
+  end
+
+  def repository_storage
+    snippet_repository&.shard_name || Repository.pick_storage_shard
+  end
+
+  def create_repository
+    return if repository_exists? && snippet_repository
+
+    repository.create_if_not_exists(default_branch)
+    track_snippet_repository(repository.storage)
+  end
+
+  def track_snippet_repository(shard)
+    snippet_repo = snippet_repository || build_snippet_repository
+    snippet_repo.update!(shard_name: shard, disk_path: disk_path)
+  end
+
+  def can_cache_field?(field)
+    field != :content || Gitlab::MarkupHelper.gitlab_markdown?(file_name)
+  end
+
+  def hexdigest
+    Digest::SHA256.hexdigest("#{title}#{description}#{created_at}#{updated_at}")
+  end
+
+  def file_name_on_repo
+    return if repository.empty?
+
+    list_files(default_branch).first
+  end
+
+  def list_files(ref = nil)
+    return [] if repository.empty?
+
+    repository.ls_files(ref || default_branch)
+  end
+
+  def multiple_files?
+    list_files.size > 1
+  end
+
+  def hidden_due_to_author_ban?
+    author.banned?
   end
 end
+
+Snippet.prepend_mod_with('Snippet')

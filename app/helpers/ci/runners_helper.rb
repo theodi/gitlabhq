@@ -1,0 +1,143 @@
+# frozen_string_literal: true
+
+module Ci
+  module RunnersHelper
+    include IconsHelper
+
+    def runner_short_name(runner)
+      "##{runner.id} (#{runner.short_sha})"
+    end
+
+    def admin_runners_app_data
+      data = {
+        # Runner install help page is external, located at
+        # https://gitlab.com/gitlab-org/gitlab-runner
+        runner_install_help_page: 'https://docs.gitlab.com/runner/install/',
+        new_runner_path: new_admin_runner_path,
+        runner_settings_path: ci_cd_admin_application_settings_path(anchor: 'js-runner-settings'),
+        allow_registration_token: Gitlab::CurrentSettings.allow_runner_registration_token.to_s,
+        registration_token: nil,
+        online_contact_timeout_secs: ::Ci::Runner::ONLINE_CONTACT_TIMEOUT.to_i,
+        stale_timeout_secs: ::Ci::Runner::STALE_TIMEOUT.to_i,
+        tag_suggestions_path: tag_list_admin_runners_path(format: :json),
+        can_admin_runners: false.to_s
+      }
+
+      return data unless current_user.can_admin_all_resources?
+
+      data.merge({
+        registration_token: Gitlab::CurrentSettings.runners_registration_token,
+        can_admin_runners: true.to_s
+      })
+    end
+
+    def admin_runners_fleet_dashboard_data
+      {
+        admin_runners_path: admin_runners_path,
+        new_runner_path: new_admin_runner_path,
+        clickhouse_ci_analytics_available: ::Gitlab::ClickHouse.configured?.to_s,
+        can_admin_runners: current_user.can_admin_all_resources?.to_s
+      }
+    end
+
+    def group_shared_runners_settings_data(group)
+      data = {
+        group_id: group.id,
+        group_name: group.name,
+        group_is_empty: (group.projects.empty? && group.children.empty?).to_s,
+        shared_runners_setting: group.shared_runners_setting,
+
+        runner_enabled_value: Namespace::SR_ENABLED,
+        runner_disabled_value: Namespace::SR_DISABLED_AND_UNOVERRIDABLE,
+        runner_allow_override_value: Namespace::SR_DISABLED_AND_OVERRIDABLE,
+
+        parent_shared_runners_setting: group.parent&.shared_runners_setting,
+        parent_name: nil,
+        parent_settings_path: nil
+      }
+
+      if group.parent && can?(current_user, :admin_group, group.parent)
+        data.merge!({
+          parent_name: group.parent.name,
+          parent_settings_path: group_settings_ci_cd_path(group.parent, anchor: 'runners-settings')
+        })
+      end
+
+      data
+    end
+
+    def group_runners_data_attributes(group)
+      {
+        group_id: group.id,
+        group_full_path: group.full_path,
+        runner_install_help_page: 'https://docs.gitlab.com/runner/install/',
+        online_contact_timeout_secs: ::Ci::Runner::ONLINE_CONTACT_TIMEOUT.to_i,
+        stale_timeout_secs: ::Ci::Runner::STALE_TIMEOUT.to_i
+      }
+    end
+
+    def project_runners_settings_data(project)
+      can_create_runner_for_group =
+        can?(current_user, :create_runners, project.group) || can?(current_user, :register_group_runners, project.group)
+
+      data = {
+        project_id: project.id,
+        can_create_runner: can?(current_user, :create_runners, project).to_s,
+        can_assign_runners: can?(current_user, :admin_runners, project).to_s,
+        can_unassign_runners: can?(current_user, :admin_runners, project).to_s,
+        allow_registration_token: project.namespace.allow_runner_registration_token?.to_s,
+        registration_token: can?(current_user, :read_runners_registration_token, project) ? project.runners_token : nil,
+        project_full_path: project.full_path,
+        new_project_runner_path: new_project_runner_path(project),
+
+        # group runners tab
+        can_create_runner_for_group: can_create_runner_for_group.to_s,
+        can_toggle_group_runners: can?(current_user, :admin_project, project).to_s,
+        group_runners_enabled: project.group_runners_enabled?.to_s,
+        group_runners_path: project&.group ? group_runners_path(project.group) : nil,
+
+        # instance runners tab
+        can_toggle_instance_runners: can?(current_user, :admin_runners, project).to_s,
+        instance_runners_enabled: project.shared_runners_enabled?.to_s,
+        instance_runners_disabled_and_unoverridable: (
+          project.group&.shared_runners_setting == Namespace::SR_DISABLED_AND_UNOVERRIDABLE
+        ).to_s,
+        instance_runners_update_path: toggle_shared_runners_project_runners_path(project),
+        instance_runners_group_settings_path: nil,
+        group_name: nil
+      }
+
+      if project.group && can?(current_user, :admin_group, project.group)
+        data.merge!({
+          instance_runners_group_settings_path: group_settings_ci_cd_path(project.group, anchor: 'runners-settings'),
+          group_name: project.group.name
+        })
+      end
+
+      data
+    end
+
+    def toggle_shared_runners_settings_data(project)
+      data = {
+        is_enabled: project.shared_runners_enabled?.to_s,
+        is_disabled_and_unoverridable: (
+          project.group&.shared_runners_setting == Namespace::SR_DISABLED_AND_UNOVERRIDABLE
+        ).to_s,
+        update_path: toggle_shared_runners_project_runners_path(project),
+        group_name: nil,
+        group_settings_path: nil
+      }
+
+      if project.group && can?(current_user, :admin_group, project.group)
+        data.merge!({
+          group_name: project.group.name,
+          group_settings_path: group_settings_ci_cd_path(project.group, anchor: 'runners-settings')
+        })
+      end
+
+      data
+    end
+  end
+end
+
+Ci::RunnersHelper.prepend_mod_with('Ci::RunnersHelper')

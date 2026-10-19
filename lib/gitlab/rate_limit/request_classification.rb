@@ -1,0 +1,173 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module RateLimit
+    # Request-classification primitives shared by the Labkit rate-limit stack
+    # (ClassifiedRequest, ThrottleRegistry) and, until its removal, the legacy
+    # Gitlab::RackAttack::Request throttle predicates. Mix into a Rack::Request.
+    module RequestClassification
+      include ::Gitlab::Utils::StrongMemoize
+
+      API_PATH_REGEX = %r{^/api/|/oauth/}
+      MCP_PATH_REGEX = %r{^/api/v\d+/mcp(?:/|$)}
+      FILES_PATH_REGEX = %r{^/api/v\d+/projects/[^/]+/repository/files/.+}
+      GROUP_PATH_REGEX = %r{^/api/v\d+/groups/[^/]+/?$}
+      RUNNER_JOBS_PATH_REGEX = %r{^/api/v\d+/jobs/}
+      API_INTERNAL_PATH_REGEX = %r{^/api/v\d+/internal/}
+      HEALTH_CHECK_PATH_REGEX = %r{^/-/(health|liveness|readiness|metrics)}
+      CONTAINER_REGISTRY_EVENT_PATH_REGEX = %r{^/api/v\d+/container_registry_event/}
+      OAUTH_TOKEN_CHECK_PATH_REGEX = %r{\A(?:/o/[^/]+)?/oauth/(?:token/info|userinfo)(?:\.json)?\z}
+      GRAPHQL_PATH_REGEX = %r{^/api/graphql/?$}
+
+      # The widest list, so one resolution covers every caller.
+      REQUESTER_FORMATS = [:api, :rss, :ics].freeze
+
+      def api_request?
+        matches?(API_PATH_REGEX)
+      end
+
+      def logical_path
+        @logical_path ||= path.delete_prefix(Gitlab.config.gitlab.relative_url_root)
+      end
+
+      def matches?(regex)
+        logical_path.match?(regex)
+      end
+
+      def api_internal_request?
+        matches?(API_INTERNAL_PATH_REGEX)
+      end
+
+      def health_check_request?
+        matches?(HEALTH_CHECK_PATH_REGEX)
+      end
+
+      def container_registry_event?
+        matches?(CONTAINER_REGISTRY_EVENT_PATH_REGEX)
+      end
+
+      def product_analytics_collector_request?
+        logical_path.start_with?('/-/collector/i')
+      end
+
+      def web_request?
+        !api_request? && !health_check_request? && !product_analytics_collector_request?
+      end
+
+      private
+
+      def runner_jobs_api_path?
+        matches?(RUNNER_JOBS_PATH_REGEX)
+      end
+
+      def authenticated_identifier(request_formats)
+        requester = authenticated_requester(request_formats)
+
+        return unless requester
+
+        identifier_type = if requester.is_a?(DeployToken)
+                            :deploy_token
+                          else
+                            :user
+                          end
+
+        { identifier_type: identifier_type, identifier_id: requester.id }
+      end
+
+      # Memoized per format list: the callers above and EE's plan facts both need
+      # the record, and a second call would re-run token and session auth.
+      def authenticated_requester(request_formats = REQUESTER_FORMATS)
+        # Not in REQUESTER_FORMATS: this format accepts any token on any path, so only these paths may add it.
+        request_formats += [:oauth_token_check] if oauth_token_check_path?
+
+        strong_memoize_with(:authenticated_requester, request_formats) do
+          request_authenticator.find_authenticated_requester(request_formats) || session_user
+        end
+      end
+
+      # The authenticator skips the session without a valid CSRF token, but GraphqlController still serves
+      # read-only queries from it. Other paths serve such requests anonymously, so only GraphQL falls back.
+      # #user never runs the warden strategies, so a password POST without a token cannot sign anyone in.
+      def session_user
+        return unless matches?(GRAPHQL_PATH_REGEX)
+
+        env['warden']&.user(:user)
+      end
+
+      def request_authenticator
+        @request_authenticator ||= Gitlab::Auth::RequestAuthenticator.new(self)
+      end
+
+      def protected_paths
+        Gitlab::CurrentSettings.current_application_settings.protected_paths
+      end
+
+      def protected_paths_for_get_request
+        Gitlab::CurrentSettings.current_application_settings.protected_paths_for_get_request
+      end
+
+      def matches_protected_path?(paths)
+        if logical_path.start_with?('/o/')
+          matches?(org_scoped_paths_regex(paths))
+        else
+          matches?(paths_regex(paths))
+        end
+      end
+
+      def paths_regex(paths)
+        Regexp.union(paths.map { |path| /\A#{Regexp.escape(path)}/ })
+      end
+
+      def org_scoped_paths_regex(paths)
+        Regexp.union(paths.map { |path| %r{\A/o/[^/]+#{Regexp.escape(path)}} })
+      end
+
+      def packages_api_path?
+        matches?(::Gitlab::Regex::Packages::API_PATH_REGEX)
+      end
+
+      def mcp_path?
+        matches?(MCP_PATH_REGEX)
+      end
+
+      def git_path?
+        matches?(::Gitlab::PathRegex.repository_git_http_route_regex)
+      end
+
+      def git_lfs_path?
+        matches?(::Gitlab::PathRegex.repository_git_lfs_route_regex)
+      end
+
+      def dependency_proxy_path?
+        matches?(::Gitlab::PathRegex.dependency_proxy_route_regex)
+      end
+
+      def oauth_token_check_path?
+        matches?(OAUTH_TOKEN_CHECK_PATH_REGEX)
+      end
+
+      def files_api_path?
+        matches?(FILES_PATH_REGEX)
+      end
+
+      def frontend_request?
+        return false unless env.include?('HTTP_X_CSRF_TOKEN') && session.include?(:_csrf_token)
+
+        # CSRF tokens are not verified for GET/HEAD requests, so we pretend that we always have a POST request.
+        Gitlab::RequestForgeryProtection.verified?(env.merge('REQUEST_METHOD' => 'POST'))
+      end
+      strong_memoize_attr :frontend_request?
+
+      def deprecated_api_request?
+        # The projects member of the groups endpoint is deprecated. If left
+        # unspecified, with_projects defaults to true
+        with_projects = params['with_projects']
+        with_projects = true if with_projects.blank?
+
+        matches?(GROUP_PATH_REGEX) && Gitlab::Utils.to_boolean(with_projects)
+      end
+    end
+  end
+end
+
+::Gitlab::RateLimit::RequestClassification.prepend_mod

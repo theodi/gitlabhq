@@ -1,0 +1,89 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "description",
+    "user_id",
+    "active",
+    "granular",
+    "created_at",
+    "expires_at",
+    "revoked",
+    "access_level",
+    "scopes",
+    "last_used_at",
+    "last_used_ips",
+    "resource_type",
+    "resource_id"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "user_id": {
+      "type": "integer"
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "granular": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "revoked": {
+      "type": "boolean"
+    },
+    "access_level": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "last_used_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_used_ips": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "resource_type": {
+      "type": "string"
+    },
+    "resource_id": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false
+}

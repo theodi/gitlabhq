@@ -1,0 +1,288 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    module Reports
+      module Security
+        class Finding
+          include ::VulnerabilityFindingHelpers
+          include Gitlab::Utils::StrongMemoize
+
+          REQUIRED_KEYS = %i[
+            identifiers
+            location
+            metadata_version
+            name
+            original_data
+            report_type
+            scanner
+            scan
+          ].freeze
+
+          attr_reader :confidence, :identifiers, :flags, :links, :location, :evidence, :metadata_version, :name,
+            :old_location, :report_type, :scanner, :scan, :severity, :remediations, :details, :signatures,
+            :project_id, :original_data, :found_by_pipeline, :cvss, :project_tracked_context
+          attr_accessor :uuid, :context_unaware_uuid, :overridden_uuid
+
+          delegate :file_path, :start_line, :end_line, to: :location
+
+          def initialize(**args)
+            missing_keys = REQUIRED_KEYS.filter { |key| !args.key?(key) }
+
+            if missing_keys.present?
+              raise ArgumentError, "missing keys: #{missing_keys.join(', ')}"
+            end
+
+            @confidence = args[:confidence]
+            @identifiers = args[:identifiers]
+            @flags = args.fetch(:flags, [])
+            @links = args.fetch(:links, [])
+            @location = args[:location]
+            @evidence = args[:evidence]
+            @metadata_version = args[:metadata_version]
+            @name = args[:name]
+            @original_data = args[:original_data]
+            @report_type = args[:report_type]
+            @scanner = args[:scanner]
+            @scan = args[:scan]
+            @severity = args[:severity]
+            @remediations = args.fetch(:remediations, [])
+            @details = args.fetch(:details, {})
+            @signatures = args.fetch(:signatures, [])
+            @project_id = args[:project_id]
+            @vulnerability_finding_signatures_enabled = args.fetch(:vulnerability_finding_signatures_enabled, false)
+            @found_by_pipeline = args[:found_by_pipeline]
+            @cvss = args.fetch(:cvss, [])
+            @project_tracked_context = args[:tracked_context]
+            @uuid = generate_uuid
+            @context_unaware_uuid = generate_context_unaware_uuid
+          end
+
+          def to_hash
+            %i[
+              confidence
+              identifiers
+              flags
+              links
+              location
+              evidence
+              metadata_version
+              name
+              raw_metadata
+              report_type
+              scanner
+              scan
+              severity
+              uuid
+              details
+              signatures
+              description
+              solution
+            ].index_with do |key|
+              public_send(key) # rubocop:disable GitlabSecurity/PublicSend
+            end
+          end
+
+          def primary_identifier
+            identifiers.first
+          end
+
+          def update_location(new_location)
+            @old_location = location
+            @location = new_location
+          end
+
+          def unsafe?(severity_levels, report_types)
+            severity.to_s.in?(severity_levels) && (report_types.blank? || report_type.to_s.in?(report_types))
+          end
+
+          def eql?(other)
+            return false unless report_type == other.report_type && primary_identifier_fingerprint == other.primary_identifier_fingerprint
+
+            if @vulnerability_finding_signatures_enabled
+              matches_signatures(other.signatures, other.uuid)
+            else
+              location.fingerprint == other.location.fingerprint
+            end
+          end
+
+          def hash
+            if @vulnerability_finding_signatures_enabled && !signatures.empty?
+              highest_signature = signatures.max_by(&:priority)
+              [report_type, highest_signature.signature_hex, primary_identifier_fingerprint].hash
+            else
+              [report_type, location.fingerprint, primary_identifier_fingerprint].hash
+            end
+          end
+
+          def valid?
+            scanner.present? && primary_identifier.present? && location.present? && uuid.present?
+          end
+
+          def keys
+            @keys ||= identifiers.reject(&:type_identifier?).flat_map do |identifier|
+              location_fingerprints.map do |location_fingerprint|
+                FindingKey.new(location_fingerprint: location_fingerprint, identifier_fingerprint: identifier.fingerprint)
+              end
+            end.push(uuid)
+          end
+
+          def primary_identifier_fingerprint
+            primary_identifier&.fingerprint
+          end
+
+          def <=>(other)
+            if severity == other.severity
+              uuid <=> other.uuid
+            else
+              ::Enums::Vulnerability.severity_levels[other.severity] <=>
+                ::Enums::Vulnerability.severity_levels[severity]
+            end
+          end
+
+          def scanner_order_to(other)
+            return 1 unless scanner
+            return -1 unless other&.scanner
+
+            scanner <=> other.scanner
+          end
+
+          def has_signatures?
+            signatures.present?
+          end
+
+          def false_positive?
+            flags.any?(&:false_positive?)
+          end
+
+          def remediation_byte_offsets
+            remediations.filter_map(&:byte_offsets)
+          end
+
+          def raw_metadata
+            @raw_metadata ||= original_data.to_json
+          end
+
+          def description
+            original_data['description']
+          end
+
+          def solution
+            original_data['solution']
+          end
+
+          def location_data
+            original_data['location']
+          end
+
+          def assets
+            original_data['assets'] || []
+          end
+
+          def raw_source_code_extract
+            original_data['raw_source_code_extract']
+          end
+
+          # Returns either the max priority signature hex
+          # or the location fingerprint
+          def location_fingerprint
+            location_fingerprints.first
+          end
+
+          def owasp_top_10
+            extract_owasp_top_10
+          end
+          strong_memoize_attr :owasp_top_10
+
+          def has_vulnerability_resolution?
+            extract_vulnerability_resolution
+          end
+          strong_memoize_attr :has_vulnerability_resolution?
+
+          def policy_comparison_uuid
+            context_unaware_uuid || uuid
+          end
+
+          private
+
+          def generate_uuid
+            return if any_uuid_params_invalid?
+
+            ::Security::VulnerabilityUUID.generate(
+              report_type: report_type,
+              primary_identifier_fingerprint: primary_identifier_fingerprint,
+              location_fingerprint: location_fingerprint,
+              project_id: project_id,
+              tracked_context: project_tracked_context
+            )
+          end
+
+          def generate_context_unaware_uuid
+            return if any_uuid_params_invalid?
+
+            ::Security::VulnerabilityUUID.generate_v1(
+              report_type,
+              primary_identifier_fingerprint,
+              location_fingerprint,
+              project_id
+            )
+          end
+
+          def any_uuid_params_invalid?
+            report_type.nil? || primary_identifier_fingerprint.nil? || location_fingerprint.nil? || project_id.nil?
+          end
+
+          def location_fingerprints
+            @location_fingerprints ||= signature_hexes << location&.fingerprint
+          end
+
+          # Returns the signature hexes in reverse priority order
+          def signature_hexes
+            return [] unless @vulnerability_finding_signatures_enabled && signatures.present?
+
+            signatures.sort_by { |sig| -sig.priority }.map(&:signature_hex)
+          end
+
+          def extract_owasp_top_10
+            owasp_identifier = identifiers.find { |id| id.external_type.casecmp?('owasp') && id.external_id.include?('2017') }
+            return ::Vulnerabilities::Read::OWASP_TOP_10_DEFAULT unless owasp_identifier
+
+            map_owasp_external_id(owasp_identifier.external_id)
+          end
+
+          def map_owasp_external_id(external_id)
+            default_value = ::Vulnerabilities::Read::OWASP_TOP_10_DEFAULT
+
+            return default_value unless valid_owasp_external_id?(external_id)
+
+            ::Enums::Vulnerability.owasp_top_10.keys.find { |key| key.include?(external_id) } ||
+              default_value
+          end
+
+          def valid_owasp_external_id?(external_id)
+            arr = external_id.split(':')
+
+            priority_label = arr.first
+            year = arr.second ? arr.second[0..3] : nil
+
+            return false if year.nil? || ::Enums::Vulnerability.owasp_years.exclude?(year)
+
+            Enums::Vulnerability.owasp_categories.include?(priority_label)
+          end
+
+          def extract_vulnerability_resolution
+            report_type_str = report_type.to_s
+            cwe_identifier = identifiers.find { |id| id.external_type == 'cwe' }
+            return false unless cwe_identifier
+
+            cwe_value = cwe_identifier.name
+            return false unless cwe_value
+
+            ::Vulnerabilities::Finding::AI_ALLOWED_REPORT_TYPES.include?(report_type_str) &&
+              ::Vulnerabilities::Finding::HIGH_CONFIDENCE_AI_RESOLUTION_CWES.include?(cwe_value&.upcase)
+          end
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,17 @@
+description: "Click reply comment button"
+category: default
+action: click_button
+extra_properties:
+identifiers:
+product_group: portfolio_planning
+product_categories:
+- portfolio_management
+milestone: "13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/53753
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`reply_comment_button`"

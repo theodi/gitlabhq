@@ -1,5 +1,14 @@
-- page_title    'Snippets'
-- header_title  'Snippets', snippets_path
-- sidebar       "snippets"
+- page_title _("Snippets")
+- header_title _("Your work"), root_path
+- snippets_upload_path = snippets_upload_path(@snippet, current_user)
+
+- if current_user
+  - nav "your_work"
+
+- content_for :page_specific_javascripts do
+  - if snippets_upload_path
+    = javascript_tag do
+      :plain
+        window.uploads_path = "#{snippets_upload_path}";
 
 = render template: "layouts/application"

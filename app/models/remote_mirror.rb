@@ -1,0 +1,367 @@
+# frozen_string_literal: true
+
+class RemoteMirror < ApplicationRecord
+  include AfterCommitQueue
+  include MirrorAuthentication
+  include SafeUrl
+  include Gitlab::EncryptedAttribute
+
+  # Limit push mirrors per project to prevent performance issues from
+  # excessive concurrent sync jobs.
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/580289
+  MAX_MIRRORS_PER_PROJECT = 10
+  MAX_FIRST_RUNTIME = 3.hours
+  MAX_INCREMENTAL_RUNTIME = 1.hour
+  PROTECTED_BACKOFF_DELAY   = 1.minute
+  UNPROTECTED_BACKOFF_DELAY = 5.minutes
+  NO_DELAY_BACKOFF_DELAY    = 30.seconds
+
+  attr_encrypted :credentials,
+    key: :db_key_base,
+    marshal: true,
+    encode: true,
+    mode: :per_attribute_iv_and_salt,
+    insecure_mode: true,
+    algorithm: 'aes-256-cbc'
+
+  belongs_to :project, inverse_of: :remote_mirrors
+
+  validates :project, presence: true
+  validates :url, presence: true, public_url: { schemes: Project::VALID_MIRROR_PROTOCOLS, allow_blank: true, enforce_user: true }
+  validates :only_protected_branches, inclusion: { in: [true, false], message: :blank }
+  validate :validate_mirror_count, on: :create
+  validate :validate_mirror_count, if: :enabling_mirror?
+  validate :url_not_duplicated, if: :revalidate_url?
+  validate :url_not_pointing_to_self, if: :revalidate_url?
+
+  before_validation :store_credentials
+  after_update :reset_fields, if: :saved_change_to_mirror_url?
+  after_save :set_override_remote_mirror_available, unless: -> { Gitlab::CurrentSettings.current_application_settings.mirror_available }
+
+  scope :enabled, -> { where(enabled: true) }
+  scope :started, -> { with_update_status(:started) }
+
+  scope :stuck, -> do
+    started
+      .where('(last_update_started_at < ? AND last_update_at IS NOT NULL)', MAX_INCREMENTAL_RUNTIME.ago)
+      .or(where('(last_update_started_at < ? AND last_update_at IS NULL)', MAX_FIRST_RUNTIME.ago))
+  end
+
+  state_machine :update_status, initial: :none do
+    event :update_start do
+      transition any => :started
+    end
+
+    event :update_finish do
+      transition started: :finished
+    end
+
+    event :update_fail do
+      transition started: :failed
+    end
+
+    event :update_retry do
+      transition started: :to_retry
+    end
+
+    state :started
+    state :finished
+    state :failed
+    state :to_retry
+
+    after_transition any => :started do |remote_mirror, _|
+      Gitlab::Metrics.add_event(:remote_mirrors_running)
+
+      remote_mirror.update(last_update_started_at: Time.current)
+    end
+
+    after_transition started: :finished do |remote_mirror, _|
+      Gitlab::Metrics.add_event(:remote_mirrors_finished)
+
+      timestamp = Time.current
+      remote_mirror.update!(
+        last_update_at: timestamp,
+        last_successful_update_at: timestamp,
+        last_error: nil,
+        error_notification_sent: false
+      )
+    end
+
+    after_transition started: :failed do |remote_mirror|
+      remote_mirror.send_failure_notifications
+    end
+  end
+
+  def update_in_progress?
+    update_status == 'started'
+  end
+
+  def update_repository(resolved_address: '')
+    Gitlab::Git::RemoteMirror.new(
+      project.repository.raw,
+      remote_url,
+      resolved_address: resolved_address,
+      **options_for_update
+    ).update
+  end
+
+  def options_for_update
+    options = {
+      keep_divergent_refs: keep_divergent_refs?
+    }
+
+    if only_protected_branches?
+      options[:only_branches_matching] = project.protected_branches.pluck(:name)
+    end
+
+    if ssh_mirror_url?
+      if ssh_key_auth? && ssh_private_key.present?
+        options[:ssh_key] = ssh_private_key
+      end
+
+      if ssh_known_hosts.present?
+        options[:known_hosts] = ssh_known_hosts
+      end
+    end
+
+    options
+  end
+
+  def sync?
+    enabled?
+  end
+
+  def sync
+    return unless sync?
+
+    if schedule_with_delay?
+      RepositoryUpdateRemoteMirrorWorker.perform_in(backoff_delay, self.id, Time.current)
+    else
+      RepositoryUpdateRemoteMirrorWorker.perform_async(self.id, Time.current)
+    end
+  end
+
+  def enabled
+    return false unless project && super
+    return false unless project.remote_mirror_available?
+    return false unless project.repository_exists?
+    return false if project.pending_delete?
+    return false if Gitlab::SilentMode.enabled?
+
+    true
+  end
+  alias_method :enabled?, :enabled
+
+  def disabled?
+    !enabled?
+  end
+
+  def updated_since?(timestamp)
+    return false if failed?
+
+    last_update_started_at && last_update_started_at > timestamp
+  end
+
+  def mark_for_delete_if_blank_url
+    mark_for_destruction if url.blank?
+  end
+
+  def update_error_message(error_message)
+    self.last_error = Gitlab::UrlSanitizer.sanitize(error_message, user: user, password: password)
+  end
+
+  def mark_as_failed!(error_message)
+    update_error_message(error_message)
+    update_fail!
+  end
+
+  # Force the mrror into the retry state
+  def hard_retry!(error_message)
+    update_error_message(error_message)
+    self.update_status = :to_retry
+
+    save!(validate: false)
+  end
+
+  # Force the mirror into the failed state
+  def hard_fail!(error_message)
+    update_error_message(error_message)
+    self.update_status = :failed
+
+    save!(validate: false)
+
+    send_failure_notifications
+  end
+
+  def url=(value)
+    super(value) && return unless Gitlab::UrlSanitizer.valid?(value)
+
+    mirror_url = Gitlab::UrlSanitizer.new(value)
+    self.credentials ||= {}
+    self.credentials = self.credentials.merge(mirror_url.credentials)
+
+    super(mirror_url.sanitized_url)
+  end
+
+  def url
+    if super
+      Gitlab::UrlSanitizer.new(super, credentials: credentials).full_url
+    end
+  rescue StandardError
+    super
+  end
+
+  def safe_url
+    super(allowed_usernames: %w[git])
+  end
+
+  def bare_url
+    Gitlab::UrlSanitizer.new(read_attribute(:url)).full_url
+  end
+
+  def after_sent_notification
+    update_column(:error_notification_sent, true)
+  end
+
+  def backoff_delay
+    return NO_DELAY_BACKOFF_DELAY if no_delay?
+
+    if self.only_protected_branches
+      PROTECTED_BACKOFF_DELAY
+    else
+      UNPROTECTED_BACKOFF_DELAY
+    end
+  end
+
+  def max_runtime
+    last_update_at.present? ? MAX_INCREMENTAL_RUNTIME : MAX_FIRST_RUNTIME
+  end
+
+  def send_failure_notifications
+    Gitlab::Metrics.add_event(:remote_mirrors_failed)
+
+    run_after_commit do
+      RemoteMirrorNotificationWorker.perform_async(id)
+    end
+
+    self.last_update_at = Time.current
+    save!(validate: false)
+  end
+
+  private
+
+  def no_delay?
+    Feature.enabled?(:remote_mirror_no_delay, project, type: :ops)
+  end
+
+  def enabling_mirror?
+    enabled_changed? && enabled?
+  end
+
+  def store_credentials
+    # This is a necessary workaround for attr_encrypted, which doesn't otherwise
+    # notice that the credentials have changed
+    self.credentials = self.credentials # rubocop:disable Lint/SelfAssignment -- intentional to trigger attr_encrypted
+  end
+
+  # The remote URL omits any password if SSH public-key authentication is in use
+  def remote_url
+    return url unless ssh_key_auth? && password.present?
+
+    Gitlab::UrlSanitizer.new(read_attribute(:url), credentials: { user: user }).full_url
+  rescue StandardError
+    super
+  end
+
+  def schedule_with_delay?
+    return false if no_delay?
+    return false unless self.last_update_started_at
+
+    self.last_update_started_at >= Time.current - backoff_delay
+  end
+
+  def reset_fields
+    update_columns(
+      last_error: nil,
+      last_update_at: nil,
+      last_successful_update_at: nil,
+      update_status: 'finished',
+      error_notification_sent: false
+    )
+  end
+
+  def set_override_remote_mirror_available
+    enabled = read_attribute(:enabled)
+
+    project.update(remote_mirror_available_overridden: enabled)
+  end
+
+  def saved_change_to_mirror_url?
+    saved_change_to_url? || saved_change_to_credentials?
+  end
+
+  def validate_mirror_count
+    return unless project.remote_mirrors.enabled.count >= MAX_MIRRORS_PER_PROJECT
+
+    errors.add(:base, format(_("Maximum number of push mirrors (%{max_mirrors}) exceeded for this project."), max_mirrors: MAX_MIRRORS_PER_PROJECT))
+  end
+
+  def revalidate_url?
+    new_record? || will_save_change_to_url?
+  end
+
+  def url_not_duplicated
+    return unless project
+
+    stored_url = read_attribute(:url)
+    return if stored_url.blank?
+
+    return unless project.remote_mirrors.where(url: stored_url).exists?
+
+    errors.add(:url, _('has already been taken'))
+  end
+
+  def url_not_pointing_to_self
+    return unless project
+
+    mirror_url = normalized_repo_url(read_attribute(:url))
+    return if mirror_url.blank?
+
+    self_urls = [project.http_url_to_repo, project.ssh_url_to_repo]
+      .filter_map { |repo_url| normalized_repo_url(repo_url) }
+
+    return unless self_urls.include?(mirror_url)
+
+    errors.add(:base, _("You cannot mirror a repository to itself."))
+  end
+
+  def normalized_repo_url(value)
+    return if value.blank?
+
+    canonical = canonicalize_scp_style(value)
+    normalized = Addressable::URI.parse(Gitlab::UrlSanitizer.new(canonical).sanitized_url)
+    # Hostnames are case-insensitive, but repository paths may not be.
+    normalized.host = normalized.host&.downcase
+    normalized.to_s.chomp('/').delete_suffix('.git').chomp('/')
+  rescue Addressable::URI::InvalidURIError
+    nil
+  end
+
+  # Rewrites scp-style SSH URLs (git@host:group/project.git) into the RFC form
+  # (ssh://git@host/group/project.git) so both compare equal after sanitizing.
+  def canonicalize_scp_style(value)
+    return value if value.match?(%r{\A[a-z][a-z0-9+.-]*://}i)
+    return value unless value.match?(%r{\A[^/@]+@[^/:]+:})
+
+    user_host, _, path = value.partition(':')
+
+    port_match = path.match(%r{\A(\d+)/(.*)\z})
+    if port_match
+      "ssh://#{user_host}:#{port_match[1]}/#{port_match[2]}"
+    else
+      "ssh://#{user_host}/#{path}"
+    end
+  end
+end
+
+RemoteMirror.prepend_mod_with('RemoteMirror')

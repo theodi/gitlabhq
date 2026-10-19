@@ -1,0 +1,23 @@
+query getAllRunnersCount(
+  $paused: Boolean
+  $status: CiRunnerStatus
+  $type: CiRunnerType
+  $tagList: [String!]
+  $search: String
+  $versionPrefix: String
+  $creator: String
+  $ownerFullPath: String
+) {
+  runners(
+    paused: $paused
+    status: $status
+    type: $type
+    tagList: $tagList
+    search: $search
+    versionPrefix: $versionPrefix
+    creatorUsername: $creator
+    ownerFullPath: $ownerFullPath
+  ) {
+    count
+  }
+}

@@ -1,44 +1,43 @@
-- page_title "Members"
-- show_roles = should_user_see_group_roles?(current_user, @group)
+- add_page_specific_style 'page_bundles/members'
+- page_title _('Group members')
+- content_for :reload_on_member_invite_success, true
+- content_for :hide_invite_members_button, true
+- can_admin = can_admin_group_member?(@group)
 
-%h3.page-title
-  Group members
-- if show_roles
-  %p.light
-    Members of group have access to all group projects.
-    Read more about permissions
-    %strong= link_to "here", help_page_path("permissions", "permissions"), class: "vlink"
+= render_if_exists 'groups/group_members/minimal_access_provisioning_alert'
+- if can_admin
+  = render_if_exists 'groups/group_members/link_to_pending_members'
 
-%hr
+= render ::Layouts::IndexLayout.new(heading: _('Group members'), page_heading_sr_only: !can_admin) do |c|
+  - if can_admin
+    - c.with_description do
+      = group_member_header_subtext(@group)
+      - if current_appearance&.member_guidelines?
+        .gl-w-full.gl-order-md-1.md
+          = brand_member_guidelines
+    - c.with_actions do
+      - if can?(current_user, :create_group_link, @group)
+        .js-invite-group-trigger{ data: { classes: '@md/panel:gl-w-auto gl-w-full',
+          display_text: _('Invite a group'),
+          trigger_source: 'group_members_page' } }
+      - if can_invite_group_member?(@group)
+        .js-invite-members-trigger{ data: { variant: 'confirm',
+          classes: '@md/panel:gl-w-auto gl-w-full',
+          trigger_source: 'group_members_page',
+          display_text: _('Invite members') } }
 
-.clearfix.js-toggle-container
-  = form_tag group_group_members_path(@group), method: :get, class: 'form-inline member-search-form'  do
-    .form-group
-      = search_field_tag :search, params[:search], { placeholder: 'Find existing member by name', class: 'form-control search-text-input input-mn-300' }
-    = button_tag 'Search', class: 'btn'
+  = render 'groups/invite_groups_modal', group: @group, reload_page_on_submit: true
 
-  - if current_user && current_user.can?(:admin_group, @group)
-    .pull-right
-      = button_tag class: 'btn btn-new js-toggle-button', type: 'button' do
-        Add members
-        %i.fa.fa-chevron-down
+  = render_if_exists 'groups/group_members/ldap_sync'
 
-    .js-toggle-content.hide.new-group-member-holder
-      = render "new_group_member"
-
-.panel.panel-default.prepend-top-20
-  .panel-heading
-    %strong #{@group.name}
-    group members
-    %small
-      (#{@members.total_count})
-  %ul.well-list
-    - @members.each do |member|
-      = render 'groups/group_members/group_member', member: member, show_roles: show_roles, show_controls: true
-
-= paginate @members, theme: 'gitlab'
-
-:coffeescript
-  $('form.member-search-form').on 'submit', (event) ->
-    event.preventDefault()
-    Turbolinks.visit @.action + '?' + $(@).serialize()
+  .js-group-members-list-app{ data: { members_data: group_members_app_data(@group,
+                                                                            members: @members,
+                                                                            invited: @invited_members,
+                                                                            access_requests: @requesters,
+                                                                            banned: @banned || [],
+                                                                            include_relations: @include_relations,
+                                                                            pending_members_count: @pending_promotion_members_count,
+                                                                            placeholder_users: @placeholder_users_count,
+                                                                            params: params
+                                                                          ).to_json } }
+    = gl_loading_icon(css_class: 'gl-my-5', size: 'md')

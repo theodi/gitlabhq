@@ -1,0 +1,327 @@
+#!/usr/bin/env ruby
+
+# frozen_string_literal: true
+
+require 'optparse'
+require 'json'
+require 'fileutils'
+require 'erb'
+require_relative '../tooling/quality/test_level'
+
+# Class to generate RSpec test child pipeline with dynamically parallelized jobs.
+class GenerateRspecPipeline
+  SKIP_PIPELINE_YML_FILE = ".gitlab/ci/overrides/skip.yml"
+  TEST_LEVELS = %i[migration background_migration unit integration system].freeze
+  # 44 matches the highest parallelization used in the full (non-predictive) pipeline (unit tests).
+  # Predictive pipelines run a subset of files, so they will never need more than this.
+  MAX_NODES_COUNT = 44
+  # GitLab limits in-pipeline `needs:` to 50 entries total. A collector job whose `needs:`
+  # references parallel:N test-level jobs is expanded by the normalizer into N entries
+  # per referenced job, so the sum across active test-level jobs must not exceed this.
+  # Callers that pass a `max_nodes` greater than MAX_NODES_COUNT signal that they don't
+  # ship an in-pipeline collector, and the trim is skipped (see @skip_needs_limit).
+  GITLAB_MAX_NEEDS_COUNT = 50
+
+  OPTIMAL_TEST_JOB_DURATION_IN_SECONDS = 600 # 10 MINUTES
+  # System tests have much heavier per-file durations than other levels, so the default 10-minute
+  # target produces one-or-two-files-per-shard on the predictive path. A larger target amortises
+  # the fixed per-shard setup cost (gem install, DB setup, autoload) over more useful test time.
+  OPTIMAL_TEST_JOB_DURATION_OVERRIDES_PER_TEST_LEVEL = {
+    system: 900 # 15 MINUTES
+  }.freeze
+  SETUP_DURATION_IN_SECONDS = 180.0 # 3 MINUTES
+  OPTIMAL_TEST_RUNTIME_DURATION_IN_SECONDS = OPTIMAL_TEST_JOB_DURATION_IN_SECONDS - SETUP_DURATION_IN_SECONDS
+
+  # As of 2026-05-19:
+  # $ find spec -type f | wc -l
+  #  18849 (`SPEC_FILES_COUNT`)
+  # and
+  # $ find ee/spec -type f | wc -l
+  #  13761 (`EE_SPEC_FILES_COUNT`)
+  # which gives a total of 32610 test files (`ALL_SPEC_FILES_COUNT`).
+  #
+  # Total time to run all tests (sum of durations in `knapsack/report-master.json`)
+  # is 378332 seconds (`TEST_SUITE_DURATION_IN_SECONDS`).
+  #
+  # This gives an approximate 378332 / 32610 = 11.6 seconds per test file
+  # (`DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS`).
+  #
+  # If we want each test job to finish in 10 minutes, given we have 3 minutes of setup (`SETUP_DURATION_IN_SECONDS`),
+  # then we need to give 7 minutes of testing to each test node (`OPTIMAL_TEST_RUNTIME_DURATION_IN_SECONDS`).
+  # (7 * 60) / 11.6 = 36.21
+  #
+  # So if we'd want to run the full test suites in 10 minutes (`OPTIMAL_TEST_JOB_DURATION_IN_SECONDS`),
+  # we'd need to run at max 36 test files per node (`#optimal_test_file_count_per_node_per_test_level`).
+  SPEC_FILES_COUNT = 18849
+  EE_SPEC_FILES_COUNT = 13761
+  ALL_SPEC_FILES_COUNT = SPEC_FILES_COUNT + EE_SPEC_FILES_COUNT
+  TEST_SUITE_DURATION_IN_SECONDS = 378332
+  DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS = TEST_SUITE_DURATION_IN_SECONDS / ALL_SPEC_FILES_COUNT
+
+  # pipeline_template_path: A YAML pipeline configuration template to generate the final pipeline config from
+  # rspec_files_path: A file containing RSpec files to run, separated by a space
+  # knapsack_report_path: A file containing a Knapsack report
+  # test_suite_prefix: An optional test suite folder prefix (e.g. `ee/` or `jh/`)
+  # generated_pipeline_path: An optional filename where to write the pipeline config (defaults to
+  #                          `"#{pipeline_template_path}.yml"`)
+  def initialize(
+    pipeline_template_path:, rspec_files_path: nil, knapsack_report_path: nil, test_suite_prefix: nil,
+    job_tags: [], generated_pipeline_path: nil, max_nodes: nil)
+    @pipeline_template_path = pipeline_template_path.to_s
+    @rspec_files_path = rspec_files_path.to_s
+    @knapsack_report_path = knapsack_report_path.to_s
+    @test_suite_prefix = test_suite_prefix
+    @job_tags = job_tags
+    @generated_pipeline_path = generated_pipeline_path || "#{pipeline_template_path}.yml"
+    # Treat zero or negative as unset and fall back to the default; rendering parallel: 0
+    # would produce an invalid child pipeline.
+    @max_nodes = max_nodes&.positive? ? max_nodes : MAX_NODES_COUNT
+    # When a caller explicitly raises max_nodes above MAX_NODES_COUNT, bypass enforce_needs_limit!.
+    # That trim exists for collector-style jobs whose `needs:` references parallel:N test jobs in
+    # the same pipeline: GitLab CI's normalizer expands one such entry into N entries against
+    # ci_needs_size_limit (default 50). Callers that don't ship an in-pipeline collector and
+    # instead gather shard artifacts via cross-pipeline `needs:` are not subject to that
+    # expansion, so trimming would just cap parallelism for no gain.
+    @skip_needs_limit = !max_nodes.nil? && max_nodes > MAX_NODES_COUNT
+
+    raise ArgumentError unless File.exist?(@pipeline_template_path)
+  end
+
+  def generate!
+    if all_rspec_files.empty?
+      info "Using #{SKIP_PIPELINE_YML_FILE} due to no RSpec files to run"
+      FileUtils.cp(SKIP_PIPELINE_YML_FILE, generated_pipeline_path)
+      return
+    end
+
+    # Predictive system tests should be skipped in tier3 pipelines, use skip.yml to avoid empty child pipelines.
+    # In tier-2, Duo-predicted subset of system tests are run or the full suite when not confident
+    # Exception: spec-only MRs should still run system tests.
+    if tier_3? && only_system_tests? && !spec_only?
+      info "Using #{SKIP_PIPELINE_YML_FILE} due to only system tests detected in tier-3 pipeline"
+      FileUtils.cp(SKIP_PIPELINE_YML_FILE, generated_pipeline_path)
+      return
+    end
+
+    info "pipeline_template_path: #{pipeline_template_path}"
+    info "generated_pipeline_path: #{generated_pipeline_path}"
+
+    File.open(generated_pipeline_path, 'w') do |handle|
+      pipeline_yaml = ERB.new(File.read(pipeline_template_path), trim_mode: '-').result_with_hash(**erb_binding)
+      handle.write(pipeline_yaml.squeeze("\n").strip)
+    end
+  end
+
+  private
+
+  attr_reader :pipeline_template_path, :rspec_files_path, :knapsack_report_path, :test_suite_prefix,
+    :job_tags, :generated_pipeline_path
+
+  def info(text)
+    puts "[#{self.class.name}] #{text}"
+  end
+
+  def all_rspec_files
+    @all_rspec_files ||= File.exist?(rspec_files_path) ? File.read(rspec_files_path).split(' ').uniq : []
+  end
+
+  def erb_binding
+    {
+      rspec_files_per_test_level: rspec_files_per_test_level,
+      test_suite_prefix: test_suite_prefix,
+      repo_from_artifacts: ENV['CI_FETCH_REPO_GIT_STRATEGY'] == 'none',
+      job_tags: job_tags,
+      medium_runner_tag: ENV['GLCI_MEDIUM_RUNNER_REQUIRED'] || 'gitlab-org-medium'
+    }
+  end
+
+  def rspec_files_per_test_level
+    @rspec_files_per_test_level ||= begin
+      all_remaining_rspec_files = all_rspec_files.dup
+      result = TEST_LEVELS.each_with_object(Hash.new { |h, k| h[k] = {} }) do |test_level, memo|
+        memo[test_level][:files] = all_remaining_rspec_files
+          .grep(test_level_service.regexp(test_level, true))
+          .tap { |files| files.each { |file| all_remaining_rspec_files.delete(file) } }
+        memo[test_level][:parallelization] = optimal_nodes_count(test_level, memo[test_level][:files])
+      end
+
+      @skip_needs_limit ? result : enforce_needs_limit!(result)
+    end
+  end
+
+  # GitLab's `needs:` keyword is limited to GITLAB_MAX_NEEDS_COUNT entries per job.
+  # Since the artifact-collector needs one entry per parallel instance of each active test-level
+  # job, we trim the largest parallelizations until the total fits within the limit.
+  def enforce_needs_limit!(result)
+    loop do
+      active_levels = result.select { |_, config| config[:files].any? }
+      total = active_levels.sum { |_, config| config[:parallelization] }
+      break if total <= GITLAB_MAX_NEEDS_COUNT
+
+      overflow = total - GITLAB_MAX_NEEDS_COUNT
+      max_parallelization = active_levels.map { |_, config| config[:parallelization] }.max
+      largest_levels = active_levels.select do |_, config|
+        config[:parallelization] == max_parallelization && config[:parallelization] > 1
+      end
+
+      if largest_levels.empty?
+        raise "Cannot enforce needs limit: all #{active_levels.size} active test levels are already " \
+              "at parallelization 1 but total (#{total}) still exceeds " \
+              "GITLAB_MAX_NEEDS_COUNT (#{GITLAB_MAX_NEEDS_COUNT}). " \
+              "Lower parallelization so the total needs count fits within the limit."
+      end
+
+      per_level_decrement = [(overflow.to_f / largest_levels.size).ceil, 1].max
+
+      largest_levels.each do |level, config|
+        new_parallelization = [config[:parallelization] - per_level_decrement, 1].max
+        info "Reducing #{level} parallelization from #{config[:parallelization]} " \
+             "to #{new_parallelization} to stay within the #{GITLAB_MAX_NEEDS_COUNT}-entry needs limit."
+        result[level][:parallelization] = new_parallelization
+      end
+    end
+
+    result
+  end
+
+  def optimal_nodes_count(test_level, rspec_files)
+    nodes_count = (rspec_files.size / optimal_test_file_count_per_node_per_test_level(test_level, rspec_files)).ceil
+    info "Optimal node count for #{rspec_files.size} #{test_level} RSpec files is #{nodes_count}."
+
+    if nodes_count > @max_nodes
+      info "We don't want to parallelize to more than #{@max_nodes} jobs for now! " \
+           "Decreasing the parallelization to #{@max_nodes}."
+
+      @max_nodes
+    else
+      nodes_count
+    end
+  end
+
+  def optimal_test_file_count_per_node_per_test_level(test_level, rspec_files)
+    runtime_budget = optimal_test_runtime_duration_for(test_level)
+    [
+      (runtime_budget / average_test_file_duration(test_level, rspec_files)),
+      1
+    ].max
+  end
+
+  def optimal_test_runtime_duration_for(test_level)
+    target_job_duration = OPTIMAL_TEST_JOB_DURATION_OVERRIDES_PER_TEST_LEVEL.fetch(
+      test_level, OPTIMAL_TEST_JOB_DURATION_IN_SECONDS
+    )
+    target_job_duration - SETUP_DURATION_IN_SECONDS
+  end
+
+  def average_test_file_duration(test_level, rspec_files)
+    if rspec_files.any? && knapsack_report.any?
+      rspec_files_duration = rspec_files.sum do |rspec_file|
+        knapsack_report.fetch(
+          rspec_file, average_test_file_duration_per_test_level[test_level])
+      end
+
+      rspec_files_duration / rspec_files.size
+    else
+      average_test_file_duration_per_test_level[test_level]
+    end
+  end
+
+  def average_test_file_duration_per_test_level
+    @optimal_test_file_count_per_node_per_test_level ||=
+      if knapsack_report.any?
+        remaining_knapsack_report = knapsack_report.dup
+        TEST_LEVELS.each_with_object({}) do |test_level, memo|
+          matching_data_per_test_level = remaining_knapsack_report
+            .select { |test_file, _| test_file.match?(test_level_service.regexp(test_level, true)) }
+            .tap { |test_data| test_data.each { |file, _| remaining_knapsack_report.delete(file) } }
+
+          memo[test_level] =
+            if matching_data_per_test_level.empty?
+              DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS
+            else
+              matching_data_per_test_level.values.sum / matching_data_per_test_level.keys.size
+            end
+        end
+      else
+        TEST_LEVELS.each_with_object({}) do |test_level, memo| # rubocop:disable Rails/IndexWith
+          memo[test_level] = DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS
+        end
+      end
+  end
+
+  def knapsack_report
+    @knapsack_report ||=
+      begin
+        File.exist?(knapsack_report_path) ? JSON.parse(File.read(knapsack_report_path)) : {}
+      rescue JSON::ParserError => e
+        info "[ERROR] Knapsack report at #{knapsack_report_path} couldn't be parsed! Error:\n#{e}"
+        {}
+      end
+  end
+
+  def test_level_service
+    @test_level_service ||= Quality::TestLevel.new(test_suite_prefix.to_s)
+  end
+
+  def tier_2_or_above?
+    ENV['CI_MERGE_REQUEST_LABELS']&.match?(/pipeline::tier-[23]/)
+  end
+
+  def tier_3?
+    ENV['CI_MERGE_REQUEST_LABELS']&.include?('pipeline::tier-3')
+  end
+
+  def spec_only?
+    ENV['CI_MERGE_REQUEST_LABELS']&.include?('pipeline:spec-only')
+  end
+
+  def only_system_tests?
+    (TEST_LEVELS - [:system]).all? { |level| rspec_files_per_test_level.dig(level, :files).empty? }
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  options = {}
+
+  OptionParser.new do |opts|
+    opts.on("-f", "--rspec-files-path path", String, "Path to a file containing RSpec files to run, " \
+                                                     "separated by a space") do |value|
+      options[:rspec_files_path] = value
+    end
+
+    opts.on("-t", "--pipeline-template-path PATH", String, "Path to a YAML pipeline configuration template to " \
+                                                           "generate the final pipeline config from") do |value|
+      options[:pipeline_template_path] = value
+    end
+
+    opts.on("-k", "--knapsack-report-path path", String, "Path to a Knapsack report") do |value|
+      options[:knapsack_report_path] = value
+    end
+
+    opts.on("-p", "--test-suite-prefix test_suite_prefix", String, "Test suite folder prefix") do |value|
+      options[:test_suite_prefix] = value
+    end
+
+    opts.on("-j", "--job-tags job_tags", String, "Job tags (default to `[]`) " \
+                                                 "separated by commas") do |value|
+      options[:job_tags] = value.split(',')
+    end
+
+    opts.on("-o", "--generated-pipeline-path generated_pipeline_path", String, "Path where to write the pipeline " \
+                                                                               "config") do |value|
+      options[:generated_pipeline_path] = value
+    end
+
+    opts.on("-n", "--max-nodes COUNT", Integer, "Maximum parallel nodes per job " \
+                                                "(default: #{GenerateRspecPipeline::MAX_NODES_COUNT})") do |value|
+      options[:max_nodes] = value
+    end
+
+    opts.on("-h", "--help", "Prints this help") do
+      puts opts
+      exit
+    end
+  end.parse!
+
+  GenerateRspecPipeline.new(**options).generate!
+end

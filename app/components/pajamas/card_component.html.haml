@@ -1,0 +1,9 @@
+.gl-card{ @card_options }
+  - if parsed_header?
+    .gl-card-header{ @header_options }
+      = parsed_header
+  .gl-card-body{ @body_options }
+    = parsed_body
+  - if parsed_footer?
+    .gl-card-footer{ @footer_options }
+      = parsed_footer

@@ -1,0 +1,131 @@
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :personal_access_token do
+    user
+    organization { user&.organization || association(:common_organization) }
+    sequence(:name) { |n| "PAT #{n}" }
+    description { "Token description" }
+    revoked { false }
+    expires_at { 30.days.from_now }
+    scopes { ['api'] }
+    impersonation { false }
+
+    trait :impersonation do
+      impersonation { true }
+    end
+
+    trait :sudo do
+      sudo { true }
+    end
+
+    trait :revoked do
+      revoked { true }
+    end
+
+    trait :expired do
+      expires_at { 1.day.ago }
+    end
+
+    trait :invalid do
+      token_digest { nil }
+    end
+
+    trait :admin_mode do
+      before(:create) do |personal_access_token|
+        personal_access_token.scopes.append(Gitlab::Auth::ADMIN_MODE_SCOPE) if personal_access_token.user.admin?
+      end
+    end
+
+    trait :no_prefix do
+      after(:build) { |personal_access_token| personal_access_token.set_token(Devise.friendly_token) }
+    end
+
+    trait :dependency_proxy_scopes do
+      before(:create) do |personal_access_token|
+        personal_access_token.scopes = (personal_access_token.scopes + Gitlab::Auth::REPOSITORY_SCOPES).uniq
+      end
+    end
+
+    transient do
+      last_used_ips_count { 3 }
+    end
+
+    trait :with_last_used_ips do
+      last_used_ips do
+        Array.new(last_used_ips_count) do
+          association(:personal_access_token_last_used_ip, personal_access_token: instance,
+            organization: instance.organization)
+        end
+      end
+    end
+  end
+
+  factory :granular_pat, parent: :personal_access_token do
+    transient do
+      boundary { nil }
+      permissions { nil }
+      additional_scopes { [] }
+      granular_scope do
+        next unless permissions.present?
+
+        association(:granular_scope,
+          boundary: boundary,
+          permissions: Array(permissions),
+          organization: organization
+        )
+      end
+    end
+
+    scopes { ['granular'] }
+    granular { true }
+
+    personal_access_token_granular_scopes do
+      extra = additional_scopes.map do |scope|
+        association(:granular_scope,
+          boundary: scope[:boundary], permissions: Array(scope[:permissions]), organization: organization
+        )
+      end
+
+      [granular_scope, *extra].compact.map do |scope|
+        association(:personal_access_token_granular_scope,
+          granular_scope: scope,
+          organization: organization
+        )
+      end
+    end
+  end
+
+  factory :resource_access_token, parent: :personal_access_token do
+    user { association :user, :project_bot }
+
+    transient do
+      rotated_at { 6.months.ago }
+      resource { create(:group) } # rubocop:disable RSpec/FactoryBot/InlineAssociation -- this is not direct association of the factory created here
+      access_level { Gitlab::Access::DEVELOPER }
+    end
+
+    before(:create) do |token, evaluator|
+      bot_namespace = evaluator.resource.is_a?(Group) ? evaluator.resource : evaluator.resource.project_namespace
+      token.user.update!(bot_namespace: bot_namespace)
+
+      evaluator.resource.add_member(token.user, evaluator.access_level)
+    end
+
+    trait :with_rotated_token do
+      after(:create) do |token, evaluator|
+        rotated_at = evaluator.rotated_at
+        previous_access_token = create( # rubocop:disable RSpec/FactoryBot/StrategyInCallback -- this is not direct association of the factory created here
+          :personal_access_token,
+          :revoked,
+          user: token.user,
+          created_at: rotated_at - 6.months,
+          expires_at: rotated_at,
+          updated_at: rotated_at
+        )
+
+        token.update!(previous_personal_access_token_id: previous_access_token.id)
+      end
+    end
+  end
+end

@@ -1,7 +1,9 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe ExternalIssue do
-  let(:project) { double('project', to_reference: 'namespace1/project1') }
+RSpec.describe ExternalIssue do
+  let(:project) { double('project', id: 1, to_reference: 'namespace1/project1') }
   let(:issue)   { described_class.new('EXT-1234', project) }
 
   describe 'modules' do
@@ -20,5 +22,68 @@ describe ExternalIssue do
     it 'returns a title' do
       expect(issue.title).to eq "External Issue #{issue}"
     end
+  end
+
+  describe '#reference_link_text' do
+    context 'if issue id has a prefix' do
+      it 'returns the issue ID' do
+        expect(issue.reference_link_text).to eq 'EXT-1234'
+      end
+    end
+
+    context 'if issue id is a number' do
+      let(:issue) { described_class.new('1234', project) }
+
+      it 'returns the issue ID prefixed by #' do
+        expect(issue.reference_link_text).to eq '#1234'
+      end
+    end
+  end
+
+  describe '#project_id' do
+    it 'returns the ID of the project' do
+      expect(issue.project_id).to eq(project.id)
+    end
+  end
+
+  describe '#hash' do
+    it 'returns the hash of its [class, to_s] pair' do
+      issue_2 = described_class.new(issue.to_s, project)
+
+      expect(issue.hash).to eq(issue_2.hash)
+    end
+  end
+
+  describe '#web_url' do
+    context 'when project has an external issue tracker' do
+      it 'returns the URL for the external issue' do
+        tracker = instance_double(Integrations::Jira, issue_url: 'https://jira.example.com/browse/JIRA-123')
+        allow(project).to receive(:external_issue_tracker).and_return(tracker)
+
+        external_issue = described_class.new('JIRA-123', project)
+        expect(external_issue.web_url).to eq('https://jira.example.com/browse/JIRA-123')
+      end
+    end
+
+    context 'when project has no external issue tracker' do
+      it 'returns nil' do
+        allow(project).to receive(:external_issue_tracker).and_return(nil)
+
+        expect(issue.web_url).to be_nil
+      end
+    end
+
+    context 'when the tracker returns an invalid URI' do
+      it 'returns nil' do
+        tracker = instance_double(Integrations::Jira, issue_url: 'not a valid url %%')
+        allow(project).to receive(:external_issue_tracker).and_return(tracker)
+
+        expect(issue.web_url).to be_nil
+      end
+    end
+  end
+
+  describe '#supports_time_tracking?' do
+    it { expect(issue.supports_time_tracking?).to be(false) }
   end
 end

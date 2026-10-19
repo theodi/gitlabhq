@@ -1,0 +1,24 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage_monthly.create.action_monthly_active_users_wiki_repo
+description: Unique monthly active users of the Wiki
+product_group: planner_intelligence
+product_categories:
+- wiki
+value_type: number
+status: removed
+milestone_removed: "15.10"
+removed_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/114997"
+time_frame: 28d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+    - wiki_action
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

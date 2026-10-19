@@ -1,0 +1,9 @@
+---
+name: delete_virtual_registry_cleanup_policy
+description: Grants the ability to delete virtual registry cleanup policies
+boundaries:
+  - group
+available_for:
+  - granular_access_token
+permissions:
+  - delete_virtual_registry_cleanup_policy

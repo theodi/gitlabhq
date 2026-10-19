@@ -1,0 +1,672 @@
+import { merge } from 'lodash-es';
+import { createTestingPinia } from '@pinia/testing';
+import { GlButton, GlSprintf, GlLink, GlFormCheckbox } from '@gitlab/ui';
+import { nextTick } from 'vue';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import NoteForm from '~/rapid_diffs/app/discussions/note_form.vue';
+import MarkdownEditor from '~/vue_shared/components/markdown/markdown_editor.vue';
+import { trackSavedUsingEditor } from '~/vue_shared/components/markdown/tracking';
+import { ARROW_UP_KEY, ENTER_KEY, ESC_KEY } from '~/lib/utils/keys';
+import { stubComponent } from 'helpers/stub_component';
+import { createAlert } from '~/alert';
+import { HTTP_STATUS_UNPROCESSABLE_ENTITY } from '~/lib/utils/http_status';
+import { COMMENT_FORM } from '~/notes/i18n';
+import { clearDraft } from '~/lib/utils/autosave';
+import { CODE_SUGGESTIONS_OFF } from '~/rapid_diffs/utils/code_suggestions';
+
+jest.mock('~/vue_shared/components/markdown/tracking');
+jest.mock('~/lib/utils/autosave');
+jest.mock('~/alert');
+
+describe('NoteForm', () => {
+  let pinia;
+  let wrapper;
+  let defaultProps;
+
+  const defaultProvisions = {
+    endpoints: {
+      previewMarkdown: '/preview',
+      markdownDocs: '/docs',
+    },
+    noteableType: 'Commit',
+  };
+
+  const createComponent = (props = {}, provide = {}, stubs = {}) => {
+    wrapper = shallowMountExtended(NoteForm, {
+      pinia,
+      propsData: {
+        ...defaultProps,
+        ...props,
+      },
+      provide: merge({}, defaultProvisions, provide),
+      stubs: { GlSprintf, GlLink, ...stubs },
+    });
+  };
+
+  const findEditor = () => wrapper.findComponent(MarkdownEditor);
+  const findSaveButton = () =>
+    wrapper
+      .findAllComponents(GlButton)
+      .filter((buttonWrapper) => buttonWrapper.text() === 'Save comment')
+      .at(0);
+  const findCancelButton = () => wrapper.findComponentByTestId('cancel');
+
+  beforeEach(() => {
+    defaultProps = {
+      saveNote: jest.fn().mockResolvedValue(),
+    };
+    pinia = createTestingPinia();
+    window.gl = {
+      GfmAutoComplete: {
+        dataSources: {},
+      },
+    };
+  });
+
+  it('shows editor', () => {
+    const autosaveKey = 'autosave';
+    const autofocus = true;
+    const restoreFromAutosave = true;
+    createComponent({ autosaveKey, autofocus, restoreFromAutosave });
+    const editor = findEditor();
+    expect(editor.exists()).toBe(true);
+    expect(editor.props()).toMatchObject({
+      value: '',
+      renderMarkdownPath: defaultProvisions.endpoints.previewMarkdown,
+      markdownDocsPath: defaultProvisions.endpoints.markdownDocs,
+      noteableType: defaultProvisions.noteableType,
+      formFieldProps: {
+        id: 'note_note',
+        name: 'note[note]',
+        'aria-label': 'Reply to comment',
+        placeholder: 'Write a comment or drag your files here…',
+        class: expect.any(String),
+        'data-testid': 'reply-field',
+      },
+      autosaveKey,
+      autocompleteDataSources: window.gl.GfmAutoComplete.dataSources,
+      disabled: false,
+      supportsQuickActions: true,
+      autofocus,
+      restoreFromAutosave,
+    });
+  });
+
+  it('opts out of the /internal_note quick action', () => {
+    createComponent();
+
+    expect(findEditor().attributes('data-exclude-commands')).toBe('internal_note');
+  });
+
+  describe('renderMarkdownPath', () => {
+    it('uses base previewMarkdown endpoint when no previewParams', () => {
+      createComponent();
+      expect(findEditor().props('renderMarkdownPath')).toBe(
+        defaultProvisions.endpoints.previewMarkdown,
+      );
+    });
+
+    it('merges previewParams into the markdown path', () => {
+      const previewParams = {
+        preview_suggestions: true,
+        line: 5,
+        file_path: 'app/models/user.rb',
+      };
+      createComponent({}, { codeSuggestions: () => ({ ...CODE_SUGGESTIONS_OFF, previewParams }) });
+      const path = findEditor().props('renderMarkdownPath');
+      expect(path).toContain('preview_suggestions=true');
+      expect(path).toContain('line=5');
+      expect(path).toContain('file_path=app%2Fmodels%2Fuser.rb');
+    });
+  });
+
+  describe('code suggestions', () => {
+    it('passes the suggestions config provided by the thread to the editor', () => {
+      const config = { ...CODE_SUGGESTIONS_OFF, canSuggest: true, lines: ['const a = 1;'] };
+      createComponent({}, { codeSuggestions: () => config });
+
+      expect(findEditor().props('codeSuggestionsConfig')).toEqual(config);
+    });
+
+    it('turns suggestions off when no thread provides them', () => {
+      createComponent();
+
+      expect(findEditor().props('codeSuggestionsConfig')).toEqual(CODE_SUGGESTIONS_OFF);
+    });
+
+    it('turns suggestions off when the thread resolves none', () => {
+      createComponent({}, { codeSuggestions: () => undefined });
+
+      expect(findEditor().props('codeSuggestionsConfig')).toEqual(CODE_SUGGESTIONS_OFF);
+    });
+  });
+
+  describe('editor', () => {
+    it.each`
+      shiftKey | ctrlKey  | metaKey
+      ${true}  | ${false} | ${true}
+      ${true}  | ${true}  | ${false}
+      ${false} | ${false} | ${true}
+      ${false} | ${true}  | ${false}
+    `(`submits form on enter keydown`, async ({ shiftKey, metaKey, ctrlKey }) => {
+      createComponent(undefined, undefined, {
+        MarkdownEditor: stubComponent(MarkdownEditor, {
+          template: '<div></div>',
+          computed: {
+            isContentEditorActive() {
+              return true;
+            },
+          },
+        }),
+      });
+      findEditor().vm.$emit('input', 'edit');
+      findEditor().vm.$emit(
+        'keydown',
+        new KeyboardEvent('keydown', { key: ENTER_KEY, shiftKey, metaKey, ctrlKey }),
+      );
+      await waitForPromises();
+      expect(defaultProps.saveNote).toHaveBeenCalledWith('edit', false);
+      expect(trackSavedUsingEditor).toHaveBeenCalledWith(
+        true,
+        `${defaultProvisions.noteableType}_note`,
+      );
+      expect(findEditor().props('value')).toBe('');
+    });
+
+    it('forces saveNote on shift+cmd+enter', async () => {
+      const saveDraft = jest.fn().mockResolvedValue();
+      createComponent({ saveDraft, noteBody: 'text' }, undefined, {
+        MarkdownEditor: stubComponent(MarkdownEditor, {
+          template: '<div></div>',
+          computed: {
+            isContentEditorActive() {
+              return false;
+            },
+          },
+        }),
+      });
+      findEditor().vm.$emit('input', 'text');
+      findEditor().vm.$emit(
+        'keydown',
+        new KeyboardEvent('keydown', { key: ENTER_KEY, shiftKey: true, metaKey: true }),
+      );
+      await nextTick();
+      expect(defaultProps.saveNote).toHaveBeenCalledWith('text', false);
+      expect(saveDraft).not.toHaveBeenCalled();
+    });
+
+    it('cancels form on escape keydown', () => {
+      createComponent();
+      findEditor().vm.$emit('keydown', new KeyboardEvent('keydown', { key: ESC_KEY }));
+      expect(wrapper.emitted('cancel')).toStrictEqual([[false]]);
+    });
+
+    it('propagates handle-suggest-dismissed event', () => {
+      createComponent();
+      findEditor().vm.$emit('handle-suggest-dismissed');
+      expect(wrapper.emitted('handle-suggest-dismissed')).toStrictEqual([[]]);
+    });
+
+    it('propagates input event', () => {
+      const inputValue = 'foo';
+      createComponent();
+      findEditor().vm.$emit('input', inputValue);
+      expect(wrapper.emitted('input')).toStrictEqual([[inputValue]]);
+    });
+
+    describe('last note edit', () => {
+      it('calls for last note edit', () => {
+        const requestLastNoteEditing = jest.fn().mockReturnValue(true);
+        createComponent({ requestLastNoteEditing });
+        findEditor().vm.$emit('keydown', new KeyboardEvent('keydown', { key: ARROW_UP_KEY }));
+        expect(requestLastNoteEditing).toHaveBeenCalled();
+        expect(wrapper.emitted('cancel')).toStrictEqual([[false]]);
+      });
+
+      it('does not call for last note edit when has edits', () => {
+        const discussion = {};
+        const requestLastNoteEditing = jest.fn().mockReturnValue(true);
+        createComponent({ discussion, requestLastNoteEditing });
+        findEditor().vm.$emit('input', 'edit');
+        findEditor().vm.$emit('keydown', new KeyboardEvent('keydown', { key: ARROW_UP_KEY }));
+        expect(requestLastNoteEditing).not.toHaveBeenCalled();
+        expect(wrapper.emitted('cancel')).toBe(undefined);
+      });
+    });
+
+    it('appends text', () => {
+      const append = jest.fn();
+      createComponent(undefined, undefined, {
+        MarkdownEditor: { methods: { append }, template: '<div></div>' },
+      });
+      wrapper.vm.append('some text');
+      expect(append).toHaveBeenCalledWith('some text');
+    });
+  });
+
+  describe('controls', () => {
+    it('shows controls', () => {
+      createComponent();
+      expect(findSaveButton().exists()).toBe(true);
+      expect(findCancelButton().exists()).toBe(true);
+    });
+
+    it('disables submit when message is empty', () => {
+      createComponent();
+      expect(findSaveButton().props('disabled')).toBe(true);
+    });
+
+    it('enables submit when message is not empty', () => {
+      createComponent({ noteBody: 'foo' });
+      expect(findSaveButton().props('disabled')).toBe(false);
+    });
+
+    it('disables submit when submitting the form', async () => {
+      createComponent({ noteBody: 'foo' });
+      findSaveButton().vm.$emit('click');
+      await nextTick();
+      expect(findSaveButton().props('disabled')).toBe(true);
+    });
+
+    it('cancels form without confirmation', () => {
+      createComponent({ autosaveKey: 'key' });
+      findCancelButton().vm.$emit('click');
+      expect(clearDraft).toHaveBeenCalledWith('key');
+      expect(wrapper.emitted('cancel')).toStrictEqual([[false]]);
+    });
+
+    it('cancels form with confirmation when text is edited', () => {
+      createComponent();
+      findEditor().vm.$emit('input', 'edit');
+      findCancelButton().vm.$emit('click');
+      expect(wrapper.emitted('cancel')).toStrictEqual([[true]]);
+    });
+
+    it('skips form cancel when at-who is active', () => {
+      createComponent(undefined, undefined, {
+        MarkdownEditor: {
+          template: '<textarea class="at-who-active"></textarea>',
+        },
+      });
+      findCancelButton().vm.$emit('click');
+      expect(wrapper.emitted('cancel')).toBe(undefined);
+    });
+
+    it('hides cancel button when canCancel is false', () => {
+      createComponent({ canCancel: false });
+      expect(findCancelButton().exists()).toBe(false);
+    });
+  });
+
+  describe('conflicts', () => {
+    it('shows conflict message with a link to note', async () => {
+      const noteId = 'foo';
+      createComponent({ noteId });
+      await findEditor().vm.$emit('input', 'changed in child');
+      await wrapper.setProps({ noteBody: 'changed in parent' });
+      await nextTick();
+      expect(wrapper.text()).toContain(
+        'This comment changed after you started editing it. Review the updated comment to ensure information is not lost.',
+      );
+      expect(wrapper.find(`a[href="#note_${noteId}"]`).text()).toBe('updated comment');
+    });
+
+    it('shows conflict message without a link to note', async () => {
+      createComponent();
+      await findEditor().vm.$emit('input', 'changed in child');
+      await wrapper.setProps({ noteBody: 'changed in parent' });
+      await nextTick();
+      expect(wrapper.html()).toContain(
+        'This comment changed after you started editing it. Review the updated comment to ensure information is not lost.',
+      );
+    });
+  });
+
+  describe('error handling', () => {
+    it('shows alert with error messages on save failure', async () => {
+      const saveNote = jest.fn().mockRejectedValue({
+        response: {
+          status: HTTP_STATUS_UNPROCESSABLE_ENTITY,
+          data: { errors: 'Validation failed' },
+        },
+      });
+      createComponent({ saveNote, noteBody: 'test' });
+
+      await findSaveButton().vm.$emit('click');
+      await nextTick();
+      await nextTick();
+
+      expect(createAlert).toHaveBeenCalledWith({
+        message: ['Comment could not be submitted: validation failed.'],
+        parent: wrapper.element,
+        error: expect.any(Object),
+      });
+    });
+
+    it('uses custom error messages when provided', async () => {
+      const saveNote = jest.fn().mockRejectedValue({
+        response: {
+          status: HTTP_STATUS_UNPROCESSABLE_ENTITY,
+          data: { errors: 'Custom error' },
+        },
+      });
+      const saveNoteErrorMessages = {
+        error: 'Update failed: %{reason}',
+        defaultError: 'Update error',
+      };
+      createComponent({ saveNote, noteBody: 'test', saveNoteErrorMessages });
+
+      await findSaveButton().vm.$emit('click');
+      await nextTick();
+      await nextTick();
+
+      expect(createAlert).toHaveBeenCalledWith({
+        message: ['Update failed: custom error'],
+        parent: wrapper.element,
+        error: expect.any(Object),
+      });
+    });
+
+    it('shows quick actions error messages', async () => {
+      const saveNote = jest.fn().mockRejectedValue({
+        response: {
+          status: HTTP_STATUS_UNPROCESSABLE_ENTITY,
+          data: {
+            quick_actions_status: {
+              error_messages: ['Quick action error 1', 'Quick action error 2'],
+            },
+          },
+        },
+      });
+      createComponent({ saveNote, noteBody: 'test' });
+
+      await findSaveButton().vm.$emit('click');
+      await nextTick();
+      await nextTick();
+
+      expect(createAlert).toHaveBeenCalledWith({
+        message: ['Quick action error 1', 'Quick action error 2'],
+        parent: wrapper.element,
+        error: expect.any(Object),
+      });
+    });
+
+    it.each`
+      rejection                                                                             | message
+      ${undefined}                                                                          | ${COMMENT_FORM.GENERIC_UNSUBMITTABLE_NETWORK}
+      ${{ status: HTTP_STATUS_UNPROCESSABLE_ENTITY, data: { errors: 'Note is too long' } }} | ${'Comment could not be submitted: note is too long.'}
+    `('shows an alert when the save rejects with $rejection', async ({ rejection, message }) => {
+      const saveNote = jest.fn().mockRejectedValue(rejection);
+      createComponent({ saveNote, noteBody: 'test' });
+
+      findSaveButton().vm.$emit('click');
+      await waitForPromises();
+
+      expect(createAlert).toHaveBeenCalledWith(expect.objectContaining({ message: [message] }));
+    });
+
+    it('shows default error when no specific error message', async () => {
+      const saveNote = jest.fn().mockRejectedValue({ response: null });
+      createComponent({ saveNote, noteBody: 'test' });
+
+      await findSaveButton().vm.$emit('click');
+      await nextTick();
+      await nextTick();
+
+      expect(createAlert).toHaveBeenCalledWith({
+        message: [COMMENT_FORM.GENERIC_UNSUBMITTABLE_NETWORK],
+        parent: wrapper.element,
+        error: expect.any(Object),
+      });
+    });
+  });
+
+  describe('draft review support', () => {
+    const saveDraft = jest.fn().mockResolvedValue();
+    const editorStub = {
+      MarkdownEditor: stubComponent(MarkdownEditor, {
+        template: '<div></div>',
+        computed: {
+          isContentEditorActive: () => false,
+        },
+      }),
+    };
+    const pressCmdEnter = () =>
+      findEditor().vm.$emit(
+        'keydown',
+        new KeyboardEvent('keydown', { key: ENTER_KEY, metaKey: true }),
+      );
+
+    const findAddToReviewButton = () => wrapper.findComponentByTestId('add-to-review-button');
+    const findCommentButton = () => wrapper.findComponentByTestId('reply-comment-button');
+
+    describe('when saveDraft is not provided', () => {
+      it('does not show add-to-review button', () => {
+        createComponent({ noteBody: 'test' });
+        expect(findAddToReviewButton().exists()).toBe(false);
+      });
+
+      it('shows comment button as primary with saveButtonTitle', () => {
+        createComponent({ noteBody: 'test', saveButtonTitle: 'Comment' });
+        expect(findCommentButton().text()).toBe('Comment');
+        expect(findCommentButton().props('category')).toBe('primary');
+      });
+    });
+
+    describe('when saveDraft is provided', () => {
+      it('shows add-to-review button', () => {
+        createComponent({ saveDraft, noteBody: 'test' });
+        expect(findAddToReviewButton().exists()).toBe(true);
+      });
+
+      it('shows "Start a review" when hasDrafts is false', () => {
+        createComponent({ saveDraft, noteBody: 'test', hasDrafts: false });
+        expect(findAddToReviewButton().text()).toBe('Start a review');
+      });
+
+      it('shows "Add to review" when hasDrafts is true', () => {
+        createComponent({ saveDraft, noteBody: 'test', hasDrafts: true });
+        expect(findAddToReviewButton().text()).toBe('Add to review');
+      });
+
+      it('shows comment button as secondary with "Add comment now"', () => {
+        createComponent({ saveDraft, noteBody: 'test' });
+        expect(findCommentButton().text()).toBe('Add comment now');
+        expect(findCommentButton().props('category')).toBe('secondary');
+      });
+
+      it('disables add-to-review button when text is empty', () => {
+        createComponent({ saveDraft });
+        expect(findAddToReviewButton().props('disabled')).toBe(true);
+      });
+
+      it('calls saveDraft on add-to-review button click', async () => {
+        createComponent({ saveDraft, noteBody: 'draft text' }, undefined, {
+          MarkdownEditor: stubComponent(MarkdownEditor, {
+            template: '<div></div>',
+            computed: {
+              isContentEditorActive() {
+                return false;
+              },
+            },
+          }),
+        });
+        await findAddToReviewButton().vm.$emit('click');
+        await nextTick();
+        expect(saveDraft).toHaveBeenCalledWith('draft text', false);
+      });
+
+      it('calls saveDraft on cmd+enter', async () => {
+        createComponent({ saveDraft, noteBody: 'draft text' }, undefined, {
+          MarkdownEditor: stubComponent(MarkdownEditor, {
+            template: '<div></div>',
+            computed: {
+              isContentEditorActive() {
+                return false;
+              },
+            },
+          }),
+        });
+        findEditor().vm.$emit('input', 'draft text');
+        findEditor().vm.$emit(
+          'keydown',
+          new KeyboardEvent('keydown', { key: ENTER_KEY, metaKey: true }),
+        );
+        await nextTick();
+        expect(saveDraft).toHaveBeenCalledWith('draft text', false);
+        expect(defaultProps.saveNote).not.toHaveBeenCalled();
+      });
+
+      it.each(['saveNote', 'saveDraft'])(
+        'keeps the text and the autosave draft when %s fails on cmd+enter',
+        async (handler) => {
+          const rejecting = jest.fn().mockRejectedValue({ response: null });
+          createComponent(
+            { noteBody: 'draft text', autosaveKey: 'key', [handler]: rejecting },
+            undefined,
+            editorStub,
+          );
+
+          pressCmdEnter();
+          await waitForPromises();
+
+          expect(rejecting).toHaveBeenCalledWith('draft text', false);
+          expect(findEditor().props('value')).toBe('draft text');
+          expect(clearDraft).not.toHaveBeenCalled();
+          expect(findEditor().props('disabled')).toBe(false);
+        },
+      );
+
+      it('submits once when cmd+enter is pressed twice during a request', async () => {
+        let resolveSave;
+        const pendingSave = jest.fn(
+          () =>
+            new Promise((resolve) => {
+              resolveSave = resolve;
+            }),
+        );
+        createComponent({ saveDraft: pendingSave, noteBody: 'draft text' }, undefined, editorStub);
+
+        pressCmdEnter();
+        await nextTick();
+        pressCmdEnter();
+        resolveSave();
+        await waitForPromises();
+
+        expect(pendingSave).toHaveBeenCalledTimes(1);
+      });
+
+      it('shows alert on draft save failure', async () => {
+        const failingSaveDraft = jest.fn().mockRejectedValue({ response: null });
+        createComponent({ saveDraft: failingSaveDraft, noteBody: 'test' }, undefined, {
+          MarkdownEditor: stubComponent(MarkdownEditor, {
+            template: '<div></div>',
+            computed: {
+              isContentEditorActive() {
+                return false;
+              },
+            },
+          }),
+        });
+        await findAddToReviewButton().vm.$emit('click');
+        await nextTick();
+        await nextTick();
+        expect(createAlert).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('resolve discussion toggle', () => {
+    const findResolveCheckbox = () => wrapper.findComponentByTestId('resolve-checkbox');
+    const findUnresolveCheckbox = () => wrapper.findComponentByTestId('unresolve-checkbox');
+    const findDraftButton = () => wrapper.findComponentByTestId('add-to-review-button');
+
+    const markdownEditorStub = {
+      MarkdownEditor: stubComponent(MarkdownEditor, {
+        template: '<div></div>',
+        computed: {
+          isContentEditorActive() {
+            return false;
+          },
+        },
+      }),
+    };
+
+    it('does not show resolve checkbox by default', () => {
+      createComponent();
+      expect(wrapper.findComponent(GlFormCheckbox).exists()).toBe(false);
+    });
+
+    it.each`
+      discussionResolved | resolveVisible | unresolveVisible
+      ${false}           | ${true}        | ${false}
+      ${true}            | ${false}       | ${true}
+    `(
+      'shows correct checkbox when discussionResolved=$discussionResolved',
+      ({ discussionResolved, resolveVisible, unresolveVisible }) => {
+        createComponent({ showResolveDiscussionToggle: true, discussionResolved });
+        expect(findResolveCheckbox().exists()).toBe(resolveVisible);
+        expect(findUnresolveCheckbox().exists()).toBe(unresolveVisible);
+      },
+    );
+
+    it.each`
+      scenario                         | discussionResolved | toggleCheckbox | expectedResolve
+      ${'unchecked resolve (default)'} | ${false}           | ${null}        | ${false}
+      ${'checked resolve'}             | ${false}           | ${'resolve'}   | ${true}
+      ${'checked unresolve (default)'} | ${true}            | ${null}        | ${true}
+      ${'unchecked unresolve'}         | ${true}            | ${'unresolve'} | ${false}
+    `(
+      'passes shouldResolve=$expectedResolve to saveNote with $scenario',
+      async ({ discussionResolved, toggleCheckbox, expectedResolve }) => {
+        createComponent(
+          { showResolveDiscussionToggle: true, discussionResolved, noteBody: 'test' },
+          undefined,
+          markdownEditorStub,
+        );
+        if (toggleCheckbox === 'resolve') {
+          findResolveCheckbox().vm.$emit('input', true); // Vue 2
+          findResolveCheckbox().vm.$emit('update:modelValue', true); // Vue 3
+        } else if (toggleCheckbox === 'unresolve') {
+          findUnresolveCheckbox().vm.$emit('input', false); // Vue 2
+          findUnresolveCheckbox().vm.$emit('update:modelValue', false); // Vue 3
+        }
+        await findSaveButton().vm.$emit('click');
+        await nextTick();
+        await nextTick();
+        expect(defaultProps.saveNote).toHaveBeenCalledWith('test', expectedResolve);
+      },
+    );
+
+    it.each`
+      scenario             | discussionResolved | toggleCheckbox | showToggle | expectedResolve
+      ${'resolving'}       | ${false}           | ${'resolve'}   | ${true}    | ${true}
+      ${'reopening'}       | ${true}            | ${null}        | ${true}    | ${false}
+      ${'no toggle shown'} | ${false}           | ${null}        | ${false}   | ${false}
+    `(
+      'passes resolve state to saveDraft when $scenario',
+      async ({ discussionResolved, toggleCheckbox, showToggle, expectedResolve }) => {
+        const saveDraft = jest.fn().mockResolvedValue();
+        createComponent(
+          {
+            saveDraft,
+            showResolveDiscussionToggle: showToggle,
+            discussionResolved,
+            noteBody: 'test',
+          },
+          undefined,
+          markdownEditorStub,
+        );
+        if (toggleCheckbox === 'resolve') {
+          findResolveCheckbox().vm.$emit('input', true); // Vue 2
+          findResolveCheckbox().vm.$emit('update:modelValue', true); // Vue 3
+        }
+        await findDraftButton().vm.$emit('click');
+        await nextTick();
+        await nextTick();
+        expect(saveDraft).toHaveBeenCalledWith('test', expectedResolve);
+      },
+    );
+  });
+});

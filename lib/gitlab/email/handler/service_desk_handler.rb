@@ -1,0 +1,308 @@
+# frozen_string_literal: true
+
+# handles service desk ticket creation emails with these formats:
+#   incoming+gitlab-org-gitlab-ce-20-issue-@incoming.gitlab.com
+#   incoming+gitlab-org/gitlab-ce@incoming.gitlab.com (legacy)
+module Gitlab
+  module Email
+    module Handler
+      class ServiceDeskHandler < BaseHandler
+        extend ::Gitlab::Utils::Override
+
+        include ReplyProcessing
+
+        # Parses an opaque service desk key of the form `<slug>-<key>`. Owned by
+        # the gitlab-email_handler gem so all email key parsing lives in one
+        # place.
+        PROJECT_KEY_PATTERN = ::Gitlab::EmailHandler::Matchers::ServiceDesk::PROJECT_KEY_PATTERN
+
+        def self.gem_handler
+          :service_desk
+        end
+
+        def initialize(mail, mail_key, service_desk_key: nil)
+          if service_desk_key
+            mail_key ||= service_desk_key
+            @service_desk_key = service_desk_key
+          end
+
+          super(mail, mail_key)
+        end
+
+        override :can_handle?
+        def can_handle?
+          ::ServiceDesk.supported? && (project_id || project_path || service_desk_key)
+        end
+
+        def execute
+          raise ProjectNotFound if project.nil?
+
+          log_email_handler
+          # Verification emails should never create tickets
+          return if handled_custom_email_address_verification?
+
+          create_work_item_or_note
+
+          return unless from_address
+
+          add_email_participants
+
+          return if reply_email?
+
+          if email_rate_limiter.rate_limit_batch!(1)
+            email_rate_limiter.post_suppression_notice(@work_item)
+          else
+            send_thank_you_email
+          end
+        end
+
+        def metrics_event
+          :receive_email_service_desk
+        end
+
+        def project
+          project_record = super
+          project_record ||= project_from_key if service_desk_key
+          project_record && ::ServiceDesk.enabled?(project_record) ? project_record : nil
+        end
+        strong_memoize_attr :project
+
+        private
+
+        attr_reader :service_desk_key
+
+        def parent_namespace
+          project.project_namespace
+        end
+
+        def additional_log_data
+          { Labkit::Fields::GL_PROJECT_ID => project.id }
+        end
+
+        def contains_custom_email_address_verification_subaddress?
+          return false unless to_address.present?
+
+          # Verification email only has one recipient
+          to_address.include?(ServiceDeskSetting::CUSTOM_EMAIL_VERIFICATION_SUBADDRESS)
+        end
+
+        def handled_custom_email_address_verification?
+          return false unless contains_custom_email_address_verification_subaddress?
+
+          ::ServiceDesk::CustomEmailVerifications::UpdateService.new(
+            project: project,
+            current_user: nil,
+            params: {
+              mail: mail
+            }
+          ).execute
+
+          true
+        end
+
+        def project_from_key
+          return unless match = service_desk_key.match(PROJECT_KEY_PATTERN)
+
+          projects = Project.with_service_desk_key(match[:key]).select do |project|
+            valid_project_key?(project, match[:slug])
+          end
+
+          # A lossy full_path_slug means different routes can collapse to the
+          # same service desk address (for example an ancestor group rename on a
+          # self-managed instance without a Topology Service claim). Refuse to
+          # route to an arbitrary match: fail closed so the sender receives a
+          # generic ProjectNotFound rejection instead of the email reaching the
+          # wrong project.
+          if projects.size > 1
+            log_service_desk_key_collision(match, projects)
+            return
+          end
+
+          projects.first
+        end
+
+        def valid_project_key?(project, slug)
+          project.present? && slug == project.full_path_slug
+        end
+
+        def log_service_desk_key_collision(match, projects)
+          logger.warn(
+            build_structured_payload_labkit(
+              Labkit::Fields::LOG_MESSAGE => 'Service desk email address slug collision, refusing to route',
+              Labkit::Fields::ADDITIONAL_DETAILS =>
+                "slug: '#{match[:slug]}', key: '#{match[:key]}', " \
+                "colliding_project_ids: #{projects.map(&:id).sort.join(', ')}"
+            )
+          )
+        end
+
+        def create_work_item_or_note
+          if reply_email?
+            create_note_from_reply_email
+          else
+            create_work_item!
+          end
+        end
+
+        def work_item_type_id
+          provider = ::WorkItems::TypesFramework::Provider.new(project)
+
+          # Find type by `service_desk` configuration in the future.
+          # See https://gitlab.com/groups/gitlab-org/-/epics/19879
+          provider.find_by_base_type(:ticket).id
+        end
+
+        def create_work_item!
+          result = ::WorkItems::CreateService.new(
+            container: project,
+            current_user: support_bot,
+            params: {
+              work_item_type_id: work_item_type_id,
+              title: mail.subject.presence || _("(no subject)"),
+              description: message_including_template,
+              confidential: ticket_confidential?,
+              external_author: from_address,
+              extra_params: {
+                cc: mail.cc
+              }
+            },
+            perform_spam_check: false
+          ).execute
+
+          raise InvalidIssueError if result.error?
+
+          @work_item = result[:work_item]
+
+          begin
+            ::Issue::Email.create!(issue_id: @work_item.id, email_message_id: mail.message_id)
+          rescue StandardError => e
+            Gitlab::ErrorTracking.log_exception(e)
+          end
+
+          return unless service_desk_setting&.issue_template_missing?
+
+          create_template_not_found_note
+        end
+
+        def work_item_from_reply_to
+          return unless mail.in_reply_to
+
+          Issue::Email.find_by_email_message_id_and_namespace_id(
+            mail.in_reply_to,
+            @project.project_namespace_id
+          )&.work_item
+        end
+        strong_memoize_attr :work_item_from_reply_to
+
+        def reply_email?
+          work_item_from_reply_to.present?
+        end
+
+        def create_note_from_reply_email
+          @work_item = work_item_from_reply_to
+
+          create_note(message_including_reply)
+
+          reopen_issue_on_external_participant_note(
+            noteable: @work_item,
+            author: author,
+            project: project,
+            support_bot: support_bot
+          )
+        end
+
+        def send_thank_you_email
+          Notify.service_desk_thank_you_email(@work_item.id).deliver_later
+          Gitlab::Metrics::BackgroundTransaction.current&.add_event(:service_desk_thank_you_email)
+        end
+
+        def message_including_template
+          description = message_including_reply_or_only_quotes
+          template_content = service_desk_setting&.issue_template_content
+
+          description += "  \n" + template_content if template_content.present?
+          description
+        end
+
+        def service_desk_setting
+          project.service_desk_setting
+        end
+        strong_memoize_attr :service_desk_setting
+
+        def create_template_not_found_note
+          issue_template_key = service_desk_setting&.issue_template_key
+
+          warning_note = <<-MD.strip_heredoc
+            WARNING: The template file #{issue_template_key}.md used for service desk issues is empty or could not be found.
+            Please check service desk settings and update the file to be used.
+          MD
+
+          create_note(warning_note)
+        end
+
+        def create_note(note)
+          ::Notes::CreateService.new(
+            project,
+            support_bot,
+            noteable: @work_item,
+            note: note,
+            external_author: from_address
+          ).execute
+        end
+
+        def to_address
+          mail.to&.first
+        end
+        strong_memoize_attr :to_address
+
+        def cc_addresses
+          mail.cc || []
+        end
+
+        def author
+          support_bot
+        end
+
+        def add_email_participants
+          # Migrate this to ::IssueEmailParticipants::CreateService
+          # See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/137147#note_1652104416
+          @work_item.issue_email_participants.create(email: from_address)
+
+          add_external_participants_from_cc
+        end
+
+        def add_external_participants_from_cc
+          return if project.service_desk_setting.nil?
+          return unless project.service_desk_setting.add_external_participants_from_cc?
+
+          ::IssueEmailParticipants::CreateService.new(
+            target: @work_item,
+            current_user: support_bot,
+            emails: cc_addresses.excluding(service_desk_addresses)
+          ).execute
+        end
+
+        def service_desk_addresses
+          ::ServiceDesk::Emails.new(project).all_addresses
+        end
+        strong_memoize_attr :service_desk_addresses
+
+        def ticket_confidential?
+          return true if service_desk_setting.nil?
+
+          service_desk_setting.tickets_confidential_by_default?
+        end
+
+        def support_bot
+          Users::Internal.in_organization(project.organization_id).support_bot
+        end
+        strong_memoize_attr :support_bot
+
+        def email_rate_limiter
+          ::ServiceDesk::EmailRateLimiter.new(project)
+        end
+        strong_memoize_attr :email_rate_limiter
+      end
+    end
+  end
+end

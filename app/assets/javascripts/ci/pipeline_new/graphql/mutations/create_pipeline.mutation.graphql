@@ -1,0 +1,23 @@
+# This name is specifically needed for backend logic
+mutation internalPipelineCreate($input: PipelineCreateInput!) {
+  pipelineCreate(input: $input) {
+    clientMutationId
+    errors
+    pipeline {
+      id
+      path
+      errorMessages {
+        nodes {
+          id
+          content
+        }
+      }
+      warningMessages {
+        nodes {
+          id
+          content
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+query epicStartDate($fullPath: ID!, $iid: ID) {
+  namespace: group(fullPath: $fullPath) {
+    id
+    issuable: epic(iid: $iid) {
+      id
+      startDate
+      startDateIsFixed
+      startDateFixed
+      startDateFromMilestones
+    }
+  }
+}

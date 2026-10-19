@@ -1,0 +1,81 @@
+# frozen_string_literal: true
+
+require 'fast_spec_helper'
+require_relative '../../../../../support/shared_examples/lib/gitlab/sidekiq_middleware/strategy_shared_examples'
+
+RSpec.describe Gitlab::SidekiqMiddleware::DuplicateJobs::Strategies::UntilExecuted, feature_category: :scalability do
+  it_behaves_like 'deduplicating jobs when scheduling', :until_executed do
+    before do
+      allow(fake_duplicate_job).to receive(:strategy).and_return(:until_executed)
+    end
+
+    describe '#perform' do
+      let(:proc) { -> {} }
+
+      before do
+        allow(fake_duplicate_job).to receive_messages(
+          scheduled?: false,
+          options: {},
+          latest_wal_locations: {},
+          idempotency_key: 'abc123',
+          reschedulable?: false
+        )
+      end
+
+      it 'deletes the lock after executing' do
+        expect(proc).to receive(:call).ordered
+        expect(fake_duplicate_job).to receive(:delete!).ordered
+
+        strategy.perform({}) do
+          proc.call
+        end
+      end
+
+      it 'deletes the lock even if an error occurs' do
+        expect(fake_duplicate_job).not_to receive(:scheduled?)
+        expect(fake_duplicate_job).to receive(:delete!).once
+
+        perform_strategy_with_error
+      end
+
+      it 'does not reschedule the job even if deduplication happened' do
+        expect(fake_duplicate_job).to receive(:delete!).once
+        expect(fake_duplicate_job).not_to receive(:reschedule)
+
+        strategy.perform({}) do
+          proc.call
+        end
+      end
+
+      context 'when job is reschedulable' do
+        before do
+          allow(fake_duplicate_job).to receive_messages(reschedulable?: true, check_and_del_reschedule_signal: true)
+        end
+
+        it 'reschedules the job if deduplication happened' do
+          expect(fake_duplicate_job).to receive(:delete!).once
+          expect(fake_duplicate_job).to receive(:reschedule).once
+
+          strategy.perform({}) do
+            proc.call
+          end
+        end
+
+        it 'does not reschedule the job if an error occurs' do
+          expect(fake_duplicate_job).to receive(:delete!).once
+          expect(fake_duplicate_job).not_to receive(:reschedule)
+
+          perform_strategy_with_error
+        end
+      end
+
+      def perform_strategy_with_error
+        expect do
+          strategy.perform({}) do
+            raise 'expected error'
+          end
+        end.to raise_error(RuntimeError, 'expected error')
+      end
+    end
+  end
+end

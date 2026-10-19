@@ -1,0 +1,119 @@
+cache-key-files-not-an-array:
+  script: echo "This job uses a cache."
+  cache:
+    key:
+      files: package.json
+    paths:
+      - vendor/ruby
+      - node_modules
+
+cache-key-files-more-than-ten:
+  script: echo "This job uses a cache."
+  cache:
+    key:
+      files:
+        - file1
+        - file2
+        - file3
+        - file4
+        - file5
+        - file6
+        - file7
+        - file8
+        - file9
+        - file10
+        - file11
+    paths:
+      - vendor/ruby
+
+cache-key-files-commits-more-than-two:
+  script: echo "This job uses a cache."
+  cache:
+    key:
+      files_commits:
+        - Gemfile.lock
+        - package.json
+        - yarn.lock
+    paths:
+      - vendor/ruby
+
+cache-key-prefix-array:
+  script: echo "This job uses a cache."
+  cache:
+    key:
+      files:
+        - Gemfile.lock
+      prefix:
+        - binaries-cache-$CI_JOB_NAME
+    paths:
+      - binaries/
+
+cache-key-with-.:
+  script: echo "This job uses a cache."
+  cache:
+    key: .
+    paths:
+      - binaries/
+
+cache-key-with-multiple-.:
+  stage: test
+  script: echo "This job uses a cache."
+  cache:
+    key: ..
+    paths:
+      - binaries/
+
+cache-key-with-/:
+  script: echo "This job uses a cache."
+  cache:
+    key: binaries-ca/che
+    paths:
+      - binaries/
+
+cache-path-not-an-array:
+  script: echo "This job uses a cache."
+  cache:
+    key: binaries-cache
+    paths: binaries/*.apk
+
+cache-untracked-string:
+  script: echo "This job uses a cache."
+  cache:
+    untracked: 'true'
+
+# invalid cache:when
+cache-when-integer:
+  script: echo "This job uses a cache."
+  cache:
+    when: 0
+
+cache-when-array:
+  script: echo "This job uses a cache."
+  cache:
+    when: [always]
+
+cache-when-boolean:
+  script: echo "This job uses a cache."
+  cache:
+    when: true
+
+cache-when-never:
+  script: echo "This job uses a cache."
+  cache:
+    when: 'never'
+
+# invalid cache:policy
+cache-policy-array:
+  script: echo "This job uses a cache."
+  cache:
+    policy: [push]
+
+cache-policy-boolean:
+  script: echo "This job uses a cache."
+  cache:
+    policy: true
+
+cache-when-unknown:
+  script: echo "This job uses a cache."
+  cache:
+    policy: unknown

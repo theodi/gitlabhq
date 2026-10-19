@@ -1,0 +1,103 @@
+@use 'constants';
+
+.rd-page-container {
+  max-width: none;
+}
+
+.rd-app {
+  --rd-app-sticky-top-with-padding: calc(var(--rd-app-sticky-top, 0) + #{constants.$app-header-vertical-padding});
+}
+
+.rd-app-header {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: $gl-spacing-scale-3;
+  padding: constants.$app-header-vertical-padding 0;
+  min-height: 3rem;
+}
+
+.rd-app-settings {
+  display: flex;
+  margin-left: auto;
+}
+
+.rd-app-body {
+  display: flex;
+  // allow for the file browser to consume more height even when the diff list is very small
+  min-height: 50dvh;
+
+  @include gl-container-width-down(constants.$app-vertical-breakpoint) {
+    flex-direction: column;
+  }
+}
+
+.rd-app-content {
+  flex: 1 0;
+  min-width: 0;
+}
+
+.rd-app-diffs-list {
+  --rd-diff-file-bottom-margin: #{$gl-padding};
+  position: relative;
+  // remove bottom margin for the last diff element
+  // we can't just use :last-child and other pseudo classes on diff files because they can be in different containers
+  margin-bottom: calc(var(--rd-diff-file-bottom-margin) * -1);
+}
+
+.rd-app-diffs-list-loading-overlay {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+  background: light-dark($white, $black);
+  opacity: 0;
+  z-index: 100;
+}
+
+.rd-app-diffs-list-loading-overlay[data-loading] {
+  opacity: 0.5;
+  pointer-events: all;
+}
+
+.rd-app-diffs-loading {
+  display: flex;
+  justify-content: center;
+  padding: $gl-spacing-scale-10 0;
+}
+
+.rd-app-sidebar {
+  top: var(--rd-app-sticky-top-with-padding) !important;
+  width: 320px;
+  flex: none;
+  box-sizing: content-box;
+
+  @include gl-container-width-up(constants.$app-vertical-breakpoint) {
+    $drag-handle-width: 4px;
+    padding-right: calc($gl-spacing-scale-4 + $drag-handle-width / 2);
+    margin-right: calc($gl-spacing-scale-4 - $drag-handle-width / 2);
+  }
+
+  @include gl-container-width-down(constants.$app-vertical-breakpoint) {
+    --tree-list-max-height: calc(var(--file-row-height) * 8);
+    flex: 1;
+    margin: 0;
+    // override .diff-tree-list, remove when fully switched to Rapid Diffs
+    width: auto !important;
+    position: static !important;
+    padding: $gl-spacing-scale-4 !important;
+    min-height: 0 !important;
+    box-sizing: border-box;
+  }
+}
+
+.rd-app .rd-app-sidebar {
+  @include gl-container-width-down(constants.$app-vertical-breakpoint) {
+    display: none;
+  }
+}
+
+.rd-app-sidebar-loading {
+  display: flex;
+  justify-content: center;
+  padding: $gl-padding-8;
+}

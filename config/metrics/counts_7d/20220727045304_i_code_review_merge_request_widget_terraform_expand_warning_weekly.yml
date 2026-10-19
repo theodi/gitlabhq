@@ -1,0 +1,23 @@
+---
+key_path: redis_hll_counters.code_review.i_code_review_merge_request_widget_terraform_expand_warning_weekly
+description: The count of unique users (weekly) who expanded the Terraform widget extension while it is in its Warning state
+product_group: code_review
+product_categories:
+- code_review_workflow
+value_type: number
+status: active
+milestone: "15.3"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/93340"
+time_frame: 7d
+data_source: internal_events
+data_category: optional
+events:
+  - name: expand_merge_request_widget
+    unique: user.id
+    filter:
+      label: terraform
+      property: warning
+tiers:
+- free
+- premium
+- ultimate

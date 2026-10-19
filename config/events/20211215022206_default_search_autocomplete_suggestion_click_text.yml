@@ -1,0 +1,21 @@
+description: "Click autocomplete option"
+category: default
+action: click_text
+extra_properties:
+identifiers:
+product_group: global_search
+product_categories:
+- global_search
+milestone: "13.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/40822
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`search_autocomplete_suggestion`"
+  property:
+    description: "Slugged option category"
+  value:
+    description: "Option index"

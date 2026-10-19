@@ -1,0 +1,16 @@
+# @feature_category: team_planning
+query namespacePaths(
+  $fullPath: ID!
+  $iidForAutocompleteSources: String
+  $iidForMarkdownPreview: String
+  $workItemTypeId: String
+) {
+  namespace(fullPath: $fullPath) {
+    id
+    markdownPaths {
+      autocompleteSourcesPath(iid: $iidForAutocompleteSources, workItemTypeId: $workItemTypeId)
+      markdownPreviewPath(iid: $iidForMarkdownPreview)
+      uploadsPath
+    }
+  }
+}

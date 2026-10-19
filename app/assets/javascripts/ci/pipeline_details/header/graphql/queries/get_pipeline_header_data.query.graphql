@@ -1,0 +1,76 @@
+#import "ee_else_ce/ci/pipeline_details/header/graphql/fragments/pipeline_header.fragment.graphql"
+
+# @feature_category: continuous_integration
+query getPipelineHeaderData($fullPath: ID!, $iid: ID!) {
+  project(fullPath: $fullPath) {
+    id
+    pipeline(iid: $iid) {
+      status
+      retryable
+      cancelable
+      userPermissions {
+        destroyPipeline
+        updatePipeline
+        cancelPipeline
+      }
+      detailedStatus {
+        id
+        detailsPath
+        icon
+        text
+        favicon
+      }
+      errorMessages {
+        nodes {
+          id
+          content
+        }
+      }
+      createdAt
+      user {
+        id
+        name
+        username
+        webPath
+        webUrl
+        email
+        avatarUrl
+        status {
+          message
+          emoji
+        }
+      }
+      commitTitle @gl_introduced(version: "19.5.0")
+      commit {
+        id
+        sha
+        shortId
+        title
+        webPath
+      }
+      finishedAt
+      queuedDuration
+      duration
+      name
+      totalJobs
+      refText
+      type
+      triggeredByPath
+      stuck
+      child
+      complete
+      ref
+      latest
+      mergeRequestEventType
+      configSource
+      failureReason
+      source
+      trigger
+      mergeRequest {
+        id
+        sourceBranch
+      }
+      ...PipelineHeaderData
+    }
+  }
+}

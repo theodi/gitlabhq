@@ -1,0 +1,240 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Update of an existing issue', feature_category: :team_planning do
+  include GraphqlHelpers
+
+  let_it_be(:current_user) { create(:user) }
+  let_it_be(:project) { create(:project, :public) }
+  let_it_be_with_reload(:issue) { create(:issue, project: project) }
+  let_it_be(:guest) { create(:user, guest_of: project) }
+  let_it_be(:planner) { create(:user, planner_of: project) }
+  let_it_be(:reporter) { create(:user, reporter_of: project) }
+  let_it_be(:label1) { create(:label, title: "a", project: project) }
+  let_it_be(:label2) { create(:label, title: "b", project: project) }
+
+  let(:input) do
+    {
+      'iid' => issue.iid.to_s,
+      'title' => 'new title',
+      'description' => 'new description',
+      'confidential' => true,
+      'dueDate' => Date.tomorrow.iso8601,
+      'type' => 'ISSUE'
+    }
+  end
+
+  let(:extra_params) { { project_path: project.full_path, locked: true } }
+  let(:input_params) { input.merge(extra_params) }
+  let(:mutation) { graphql_mutation(:update_issue, input_params) }
+  let(:mutation_response) { graphql_mutation_response(:update_issue) }
+
+  context 'the user is not allowed to update issue' do
+    let(:current_user) { guest }
+
+    it_behaves_like 'a mutation that returns a top-level access error'
+
+    context 'when issue type is incident' do
+      let_it_be(:issue) { create(:issue, :incident, project: project) }
+
+      let(:current_user) { planner }
+
+      it_behaves_like 'a mutation that returns a top-level access error'
+    end
+  end
+
+  context 'when user has permissions to update issue' do
+    let(:current_user) { reporter }
+
+    it 'updates the issue' do
+      post_graphql_mutation(mutation, current_user: current_user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      expect(mutation_response['issue']).to include(input)
+      expect(mutation_response['issue']).to include('discussionLocked' => true)
+    end
+
+    context 'when setting milestone with a global id' do
+      let_it_be(:milestone) { create(:milestone, project: project) }
+
+      let(:input_params) do
+        { project_path: project.full_path, iid: issue.iid.to_s, milestoneId: milestone.to_global_id.to_s }
+      end
+
+      let(:mutation) do
+        graphql_mutation(:update_issue, input_params) do
+          <<~QL
+              issue {
+                milestone {
+                  id
+                }
+              }
+              errors
+          QL
+        end
+      end
+
+      it 'updates the milestone' do
+        expect do
+          post_graphql_mutation(mutation, current_user: current_user)
+        end.to change { issue.reload.milestone_id }.from(nil).to(milestone.id)
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(mutation_response['issue']['milestone']['id']).to eq(milestone.to_global_id.to_s)
+      end
+    end
+
+    context 'when issue_type is updated' do
+      let(:input) { { 'iid' => issue.iid.to_s, 'type' => 'INCIDENT' } }
+
+      it 'updates issue_type and work_item_type' do
+        expect do
+          post_graphql_mutation(mutation, current_user: current_user)
+          issue.reload
+        end.to change { issue.work_item_type.base_type }.from('issue').to('incident')
+      end
+    end
+
+    context 'setting labels' do
+      before do
+        # Was 106. Storing the label event reference adds two queries.
+        allow(Gitlab::QueryLimiting::Transaction).to receive(:threshold).and_return(108)
+      end
+
+      let(:mutation) do
+        graphql_mutation(:update_issue, input_params) do
+          <<~QL
+              issue {
+                 labels {
+                   nodes {
+                     id
+                   }
+                 }
+              }
+              errors
+          QL
+        end
+      end
+
+      context 'when adding labels past the work item labels limit' do
+        let(:input_params) { input.merge(extra_params).merge({ addLabelIds: [label1.id, label2.id] }) }
+
+        before do
+          stub_const('Issue::MAX_NUMBER_OF_LABELS', 1)
+        end
+
+        it 'returns the error as mutation errors without persisting the labels' do
+          post_graphql_mutation(mutation, current_user: current_user)
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(mutation_response['errors'].first).to include('Cannot add more than 1 labels')
+          expect(issue.reload.labels).to be_empty
+        end
+      end
+
+      context 'reset labels' do
+        let(:input_params) { input.merge(extra_params).merge({ labelIds: [label1.id, label2.id] }) }
+
+        it 'resets labels' do
+          # 106 -> 112: extra work_item_positions reads from the position write-cutover (MR !254713).
+          # 112 -> 114: storing the label event reference adds two queries.
+          allow(Gitlab::QueryLimiting::Transaction).to receive(:threshold).and_return(114)
+
+          post_graphql_mutation(mutation, current_user: current_user)
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response['errors']).to be_nil
+          expect(mutation_response['issue']['labels']).to include({ "nodes" => [{ "id" => label1.to_global_id.to_s }, { "id" => label2.to_global_id.to_s }] })
+        end
+
+        context 'reset labels and add labels' do
+          let(:input_params) { input.merge(extra_params).merge({ labelIds: [label1.id], addLabelIds: [label2.id] }) }
+
+          it 'returns error for mutually exclusive arguments' do
+            post_graphql_mutation(mutation, current_user: current_user)
+
+            expect(response).to have_gitlab_http_status(:success)
+            expect(json_response['errors'].first['message']).to eq('labelIds is mutually exclusive with any of addLabelIds or removeLabelIds')
+            expect(mutation_response).to be_nil
+          end
+        end
+
+        context 'reset labels and remove labels' do
+          let(:input_params) { input.merge(extra_params).merge({ labelIds: [label1.id], removeLabelIds: [label2.id] }) }
+
+          it 'returns error for mutually exclusive arguments' do
+            post_graphql_mutation(mutation, current_user: current_user)
+
+            expect(response).to have_gitlab_http_status(:success)
+            expect(json_response['errors'].first['message']).to eq('labelIds is mutually exclusive with any of addLabelIds or removeLabelIds')
+            expect(mutation_response).to be_nil
+          end
+        end
+
+        context 'with global label ids' do
+          let(:input_params) { input.merge(extra_params).merge({ labelIds: [label1.to_global_id.to_s, label2.to_global_id.to_s] }) }
+
+          it 'resets labels' do
+            # 106 -> 107: extra work_item_positions read from the position write-cutover (MR !254713).
+            # 107 -> 109: storing the label event reference adds two queries.
+            allow(Gitlab::QueryLimiting::Transaction).to receive(:threshold).and_return(109)
+
+            post_graphql_mutation(mutation, current_user: current_user)
+
+            expect(response).to have_gitlab_http_status(:success)
+            expect(json_response['errors']).to be_nil
+            expect(mutation_response['issue']['labels']).to include({ "nodes" => [{ "id" => label1.to_global_id.to_s }, { "id" => label2.to_global_id.to_s }] })
+          end
+        end
+      end
+
+      context 'add and remove labels' do
+        let(:input_params) { input.merge(extra_params).merge({ addLabelIds: [label1.id], removeLabelIds: [label2.id] }) }
+
+        it 'returns correct labels' do
+          post_graphql_mutation(mutation, current_user: current_user)
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response['errors']).to be_nil
+          expect(mutation_response['issue']['labels']).to include({ "nodes" => [{ "id" => label1.to_global_id.to_s }] })
+        end
+      end
+
+      context 'add labels' do
+        let(:input_params) { input.merge(extra_params).merge({ addLabelIds: [label1.id] }) }
+
+        before do
+          issue.update!({ labels: [label2] })
+        end
+
+        it 'adds labels and keeps the title ordering' do
+          post_graphql_mutation(mutation, current_user: current_user)
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response['errors']).to be_nil
+          expect(mutation_response['issue']['labels']['nodes']).to eq([{ "id" => label1.to_global_id.to_s }, { "id" => label2.to_global_id.to_s }])
+        end
+      end
+    end
+
+    it_behaves_like 'updating time estimate' do
+      let(:resource) { issue }
+      let(:mutation_name) { 'updateIssue' }
+    end
+
+    it_behaves_like 'authorizing granular token permissions for GraphQL', :update_issue do
+      let(:user) { current_user }
+      let(:boundary_object) { project }
+      let(:mutation) do
+        graphql_mutation(
+          :update_issue,
+          { project_path: project.full_path, iid: issue.iid.to_s, title: 'new title' },
+          'errors'
+        )
+      end
+
+      let(:request) { post_graphql_mutation(mutation, token: { personal_access_token: pat }) }
+    end
+  end
+end

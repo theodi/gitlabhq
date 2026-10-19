@@ -1,0 +1,8 @@
+module Gitlab
+  module Backup
+    module Cli
+      Error: StandardError
+      VERSION: String
+    end
+  end
+end

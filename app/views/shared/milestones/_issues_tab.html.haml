@@ -1,0 +1,16 @@
+- args = { show_project_name: local_assigns.fetch(:show_project_name, false) }
+
+- if display_issues_count_warning?(@milestone)
+  .flash-container
+    = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false,
+      alert_options: { id: 'milestone-issue-count-warning' }) do |c|
+      - c.with_body do
+        = milestone_issues_count_message(@milestone)
+
+.row.gl-mt-3
+  .gl-col-md-4
+    = render 'shared/milestones/issuables', args.merge(title: s_('Milestones|Unstarted'), subtitle: _('(open and unassigned)'), issuables: issues.opened.unassigned, id: 'unassigned', show_counter: true)
+  .gl-col-md-4
+    = render 'shared/milestones/issuables', args.merge(title: s_('Milestones|Ongoing'), subtitle: _('(open and assigned)'), issuables: issues.opened.assigned, id: 'ongoing', show_counter: true)
+  .gl-col-md-4
+    = render 'shared/milestones/issuables', args.merge(title: s_('Milestones|Completed'), subtitle: _('(closed)'), issuables: issues.closed, id: 'closed', show_counter: true)

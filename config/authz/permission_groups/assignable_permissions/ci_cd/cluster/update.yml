@@ -1,0 +1,15 @@
+---
+name: update_cluster
+description: Grants the ability to update clusters
+boundaries:
+  - group
+  - project
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - update_cluster
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

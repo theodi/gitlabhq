@@ -1,2 +1,2 @@
 %p
-  = "Issue was closed by #{@updated_by.name}"
+  = closure_reason_text(@closed_via, format: formats.first, name: @updated_by.name)

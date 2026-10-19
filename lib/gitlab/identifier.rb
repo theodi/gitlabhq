@@ -1,23 +1,86 @@
-# Detect user based on identifier like
-# key-13 or user-36 or last commit
+# frozen_string_literal: true
+
+# Detect user, keys, or deploy tokens based on identifier like
+# key-13, user-36, or deploy-token-45
 module Gitlab
   module Identifier
-    def identify(identifier, project, newrev)
-      if identifier.blank?
-        # Local push from gitlab
-        email = project.commit(newrev).author_email rescue nil
-        User.find_by(email: email) if email
-
-      elsif identifier =~ /\Auser-\d+\Z/
+    def identify(identifier)
+      case identifier
+      when /\Auser-\d+\Z/
         # git push over http
-        user_id = identifier.gsub("user-", "")
-        User.find_by(id: user_id)
-
-      elsif identifier =~ /\Akey-\d+\Z/
-        # git push over ssh
-        key_id = identifier.gsub("key-", "")
-        Key.find_by(id: key_id).try(:user)
+        identify_using_user(identifier)
+      when /\Akey-\d+\Z/
+        # git push over ssh. will not return a user for deploy keys.
+        # identify_using_deploy_key instead.
+        identify_using_ssh_key(identifier)
+      when /\Adeploy-token-\d+\Z/
+        identify_using_deploy_token(identifier)
       end
+    end
+
+    # Tries to identify a user based on a user identifier (e.g. "user-123").
+    # rubocop: disable CodeReuse/ActiveRecord
+    def identify_using_user(identifier)
+      user_id = identifier.gsub("user-", "")
+
+      identify_with_cache(:user, user_id) do
+        User.find_by(id: user_id)
+      end
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    # Tries to identify a deploy token based on a deploy token identifier (e.g. "deploy-token-123").
+    def identify_using_deploy_token(identifier)
+      token_id = identifier.gsub("deploy-token-", "")
+
+      identify_with_cache(:deploy_token, token_id) do
+        DeployToken.find_by_id(token_id)
+      end
+    end
+
+    # Tries to identify a user based on an SSH key identifier (e.g. "key-123"). Deploy keys are excluded.
+    def identify_using_ssh_key(identifier)
+      key_id = identifier.gsub("key-", "")
+
+      identify_with_cache(:ssh_key, key_id) do
+        User.find_by_ssh_key_id(key_id)
+      end
+    end
+
+    # Tries to identify a user based on a username identifier (e.g. "username-alice").
+    # Used with SSH certificates, where the username comes from the CA-signed
+    # certificate instead of a key stored in the database.
+    def identify_using_username(identifier)
+      username = identifier.delete_prefix("username-")
+
+      identify_with_cache(:username, username) do
+        User.find_by_username(username)
+      end
+    end
+
+    # Tries to identify a deploy key using a SSH key identifier (e.g. "key-123").
+    def identify_using_deploy_key(identifier)
+      key_id = identifier.gsub("key-", "")
+
+      DeployKey.find_by_id(key_id)
+    end
+
+    def identify_with_cache(category, key)
+      if identification_cache[category].key?(key)
+        identification_cache[category][key]
+      else
+        identification_cache[category][key] = yield
+      end
+    end
+
+    def identification_cache
+      @identification_cache ||= {
+        email: {},
+        user: {},
+        username: {},
+        ssh_key: {},
+        deploy_token: {}
+      }
     end
   end
 end

@@ -1,0 +1,65 @@
+# @feature_category: source_code_management
+query getBlobInfo(
+  $projectPath: ID!
+  $filePath: [String!]!
+  $ref: String!
+  $refType: RefType
+  $shouldFetchRawText: Boolean!
+) {
+  project(fullPath: $projectPath) {
+    __typename
+    id
+    repository {
+      __typename
+      empty
+      blobs(paths: $filePath, ref: $ref, refType: $refType) {
+        __typename
+        nodes {
+          __typename
+          id
+          webPath
+          name
+          size
+          rawSize
+          rawTextBlob @include(if: $shouldFetchRawText)
+          fileType
+          language
+          path
+          blamePath
+          editBlobPath
+          gitpodBlobUrl
+          ideEditPath
+          forkAndEditPath
+          ideForkAndEditPath
+          codeNavigationPath
+          projectBlobPathRoot
+          forkAndViewPath
+          environmentFormattedExternalUrl
+          environmentExternalUrlForRouteMap
+          canModifyBlob
+          canModifyBlobWithWebIde
+          canCurrentUserPushToBranch
+          archived
+          storedExternally
+          externalStorage
+          externalStorageUrl
+          rawPath
+          replacePath
+          pipelineEditorPath
+          simpleViewer {
+            fileType
+            tooLarge
+            type
+            renderError
+          }
+          richViewer {
+            fileType
+            tooLarge
+            type
+            renderError
+          }
+        }
+      }
+    }
+  }
+}

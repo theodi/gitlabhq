@@ -1,0 +1,174 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Tracking::EventValidator, feature_category: :service_ping do
+  let(:event_name) { 'test_event' }
+  let(:additional_properties) { { label: 'test_label', property: 'test_property', value: 1, lang: "eng" } }
+  let(:kwargs) { { user: build(:user), project: build(:project) } }
+  let(:event_definition) { instance_double(Gitlab::Tracking::EventDefinition) }
+
+  subject(:validate) { described_class.new(event_name, additional_properties, kwargs).validate! }
+
+  before do
+    allow(Gitlab::Tracking::EventDefinition).to receive_messages(internal_event_exists?: true, find: event_definition)
+    allow(event_definition).to receive_messages(
+      additional_properties: { lang: { description: 'Language' } },
+      extra_trackers: {}
+    )
+  end
+
+  describe '#validate!' do
+    context 'when event exists and properties are valid' do
+      it 'does not raise an error' do
+        expect { validate }.not_to raise_error
+      end
+    end
+
+    context 'when event does not exist' do
+      before do
+        allow(Gitlab::Tracking::EventDefinition).to receive(:internal_event_exists?).and_return(false)
+      end
+
+      it 'raises an UnknownEventError' do
+        expect { validate }.to raise_error(Gitlab::Tracking::EventValidator::UnknownEventError)
+      end
+    end
+
+    context 'when event is a legacy event' do
+      before do
+        allow(Gitlab::Tracking::EventDefinition).to receive(:internal_event_exists?).and_return(false)
+        allow(Gitlab::UsageDataCounters::HLLRedisCounter).to receive(:legacy_event?).and_return(true)
+        allow(Gitlab).to receive(:dev_or_test_env?).and_return(is_dev_or_test)
+      end
+
+      context 'in production' do
+        let(:is_dev_or_test) { false }
+
+        it 'does not raise an error' do
+          expect { validate }.not_to raise_error
+        end
+      end
+
+      context 'in dev or test' do
+        let(:is_dev_or_test) { true }
+
+        it 'raises an error' do
+          expect { validate }.to raise_error(Gitlab::Tracking::EventValidator::UnknownEventError)
+        end
+      end
+    end
+
+    context 'when properties have invalid types' do
+      [
+        { user: 'invalid_user' },
+        { project: 'invalid_project' },
+        { namespace: 'invalid_namespace' }
+      ].each do |invalid_property|
+        context "when #{invalid_property.each_key.first} is invalid" do
+          let(:kwargs) { invalid_property }
+          let(:expected_class_mapping) do
+            {
+              namespace: [Namespaces::UserNamespace, Group, Namespaces::ProjectNamespace].join(', ')
+            }
+          end
+
+          it 'raises an InvalidPropertyTypeError' do
+            property_name = invalid_property.each_key.first
+            expected_class = expected_class_mapping.fetch(property_name, property_name.capitalize)
+
+            expect { validate }.to raise_error(Gitlab::Tracking::EventValidator::InvalidPropertyTypeError,
+              /#{property_name} should be an instance of #{expected_class}, got String/)
+          end
+        end
+      end
+    end
+
+    context 'when an additional property is invalid' do
+      [
+        { label: 123 },
+        { value: 'test_value' },
+        { property: true },
+        { lang: [1, 2] }
+      ].each do |invalid_property|
+        context "when #{invalid_property.each_key.first} is invalid" do
+          let(:additional_properties) { invalid_property }
+
+          it 'raises an InvalidPropertyTypeError' do
+            property = invalid_property.each_key.first
+            expected_type =
+              described_class::BASE_ADDITIONAL_PROPERTIES[property] || described_class::CUSTOM_PROPERTIES_CLASSES
+            actual_type = invalid_property[property].class
+
+            expect { validate }.to raise_error(Gitlab::Tracking::EventValidator::InvalidPropertyTypeError,
+              /#{property} should be an instance of #{expected_type.join(', ')}, got #{actual_type}/)
+          end
+        end
+      end
+    end
+
+    context 'when a property value is an instance of a subclass' do
+      context 'for a kwargs property' do
+        let(:kwargs) { { user: Class.new(User).new } }
+
+        it 'does not raise an error' do
+          expect { validate }.not_to raise_error
+        end
+      end
+
+      context 'for a base String additional property' do
+        let(:additional_properties) do
+          { label: Class.new(String).new('sub_label'), property: 'test_property', value: 1, lang: 'eng' }
+        end
+
+        it 'does not raise an error' do
+          expect { validate }.not_to raise_error
+        end
+      end
+
+      context 'for a custom String additional property' do
+        let(:additional_properties) do
+          { label: 'test_label', property: 'test_property', value: 1, lang: Class.new(String).new('sub_eng') }
+        end
+
+        it 'does not raise an error' do
+          expect { validate }.not_to raise_error
+        end
+      end
+    end
+
+    context 'when custom additional properties are not defined in event definition' do
+      let(:additional_properties) { { custom_property: 'value' } }
+
+      it 'raises an InvalidPropertyError for unknown properties' do
+        expect { validate }.to raise_error(Gitlab::Tracking::EventValidator::InvalidPropertyError,
+          'Unknown additional property: custom_property for event_name: test_event')
+      end
+    end
+
+    context 'when additional properties are not defined in the event definition files' do
+      let(:additional_properties) { { custom_property: 'value' } }
+
+      before do
+        allow(event_definition).to receive(:additional_properties).and_return({})
+      end
+
+      it 'raises an InvalidPropertyError for unknown properties' do
+        expect { validate }.to raise_error(Gitlab::Tracking::EventValidator::InvalidPropertyError,
+          'Unknown additional property: custom_property for event_name: test_event')
+      end
+
+      context 'when defined in extra trackers' do
+        before do
+          allow(event_definition).to receive(:extra_trackers).and_return({
+            'Test::ExtraTracker' => { protected_properties: [:custom_property] }
+          })
+        end
+
+        it 'does not raise an error' do
+          expect { validate }.not_to raise_error
+        end
+      end
+    end
+  end
+end

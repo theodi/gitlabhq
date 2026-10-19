@@ -1,0 +1,901 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Ci::Trace::Stream, :clean_gitlab_redis_cache, feature_category: :continuous_integration do
+  let_it_be(:build) { create(:ci_build, :running) }
+
+  before do
+    stub_application_setting(ci_job_live_trace_enabled: true)
+  end
+
+  describe 'delegates' do
+    subject { described_class.new { nil } }
+
+    it { is_expected.to delegate_method(:close).to(:stream) }
+    it { is_expected.to delegate_method(:tell).to(:stream) }
+    it { is_expected.to delegate_method(:seek).to(:stream) }
+    it { is_expected.to delegate_method(:size).to(:stream) }
+    it { is_expected.to delegate_method(:path).to(:stream) }
+    it { is_expected.to delegate_method(:truncate).to(:stream) }
+    it { is_expected.to delegate_method(:valid?).to(:stream).as(:present?) }
+  end
+
+  describe '#limit' do
+    shared_examples_for 'limits' do
+      it 'if size is larger we start from beginning' do
+        stream.limit(20)
+
+        expect(stream.tell).to eq(0)
+      end
+
+      it 'if size is smaller we start from the end' do
+        stream.limit(2)
+
+        expect(stream.raw).to eq("8")
+      end
+
+      context 'when the trace contains ANSI sequence and Unicode' do
+        let(:stream) do
+          described_class.new do
+            File.open(expand_fixture_path('trace/ansi-sequence-and-unicode'))
+          end
+        end
+
+        it 'forwards to the next linefeed, case 1' do
+          stream.limit(7)
+
+          result = stream.raw
+
+          expect(result).to eq('')
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+
+        it 'forwards to the next linefeed, case 2' do
+          stream.limit(29)
+
+          result = stream.raw
+
+          expect(result).to eq("\e[01;32m許功蓋\e[0m\n")
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+
+        # See https://gitlab.com/gitlab-org/gitlab-foss/issues/30796
+        it 'reads in binary, output as Encoding.default_external' do
+          stream.limit(52)
+
+          result = stream.html
+
+          expect(result).to eq(
+            "<span>ヾ(´༎ຶД༎ຶ`)ﾉ<br/></span>"\
+            "<span class=\"term-fg-green\">許功蓋</span>"\
+            "<span><br/></span>")
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+      end
+    end
+
+    context 'when stream is StringIO' do
+      let(:stream) do
+        described_class.new do
+          StringIO.new((1..8).to_a.join("\n"))
+        end
+      end
+
+      it_behaves_like 'limits'
+    end
+
+    context 'when stream is ChunkedIO' do
+      let(:stream) do
+        described_class.new do
+          Gitlab::Ci::Trace::ChunkedIO.new(build).tap do |chunked_io|
+            chunked_io.write((1..8).to_a.join("\n"))
+            chunked_io.seek(0, IO::SEEK_SET)
+          end
+        end
+      end
+
+      it_behaves_like 'limits'
+    end
+  end
+
+  describe '#append' do
+    shared_examples_for 'appends' do
+      it "truncates and appends content" do
+        stream.append(+"89", 4)
+        stream.seek(0)
+
+        expect(stream.size).to eq(6)
+        expect(stream.raw).to eq("123489")
+      end
+
+      it 'appends in binary mode' do
+        (+'😺').force_encoding('ASCII-8BIT').each_char.with_index do |byte, offset|
+          stream.append(byte, offset)
+        end
+
+        stream.seek(0)
+
+        expect(stream.size).to eq(4)
+        expect(stream.raw).to eq('😺')
+      end
+    end
+
+    context 'when stream is Tempfile' do
+      let(:tempfile) { Tempfile.new }
+
+      let(:stream) do
+        described_class.new do
+          tempfile.write("12345678")
+          tempfile.rewind
+          tempfile
+        end
+      end
+
+      after do
+        tempfile.unlink
+      end
+
+      it_behaves_like 'appends'
+    end
+
+    context 'when stream is ChunkedIO' do
+      let(:stream) do
+        described_class.new do
+          Gitlab::Ci::Trace::ChunkedIO.new(build).tap do |chunked_io|
+            chunked_io.write('12345678')
+            chunked_io.seek(0, IO::SEEK_SET)
+          end
+        end
+      end
+
+      it_behaves_like 'appends'
+    end
+
+    describe 'metrics' do
+      let(:metrics) { spy('metrics') }
+      let(:io) { StringIO.new }
+      let(:stream) { described_class.new(metrics) { io } }
+
+      it 'increments trace streamed operation' do
+        stream.append(+'123456', 0)
+
+        expect(metrics)
+          .to have_received(:increment_trace_operation)
+          .with(operation: :streamed)
+      end
+
+      it 'increments trace bytes counter' do
+        stream.append(+'123456', 0)
+
+        expect(metrics)
+          .to have_received(:increment_trace_bytes)
+          .with(6)
+      end
+    end
+  end
+
+  describe '#set' do
+    shared_examples_for 'sets' do
+      before do
+        stream.set(+"8901")
+      end
+
+      it "overwrite content" do
+        stream.seek(0)
+
+        expect(stream.size).to eq(4)
+        expect(stream.raw).to eq("8901")
+      end
+    end
+
+    context 'when stream is StringIO' do
+      let(:stream) do
+        described_class.new do
+          StringIO.new(+"12345678")
+        end
+      end
+
+      it_behaves_like 'sets'
+    end
+
+    context 'when stream is ChunkedIO' do
+      let(:stream) do
+        described_class.new do
+          Gitlab::Ci::Trace::ChunkedIO.new(build).tap do |chunked_io|
+            chunked_io.write('12345678')
+            chunked_io.seek(0, IO::SEEK_SET)
+          end
+        end
+      end
+
+      it_behaves_like 'sets'
+    end
+  end
+
+  describe '#raw' do
+    shared_examples_for 'sets' do
+      it 'returns all contents if last_lines is not specified' do
+        result = stream.raw
+
+        expect(result).to eq(lines.join)
+        expect(result.encoding).to eq(Encoding.default_external)
+      end
+
+      context 'limit max lines' do
+        before do
+          # specifying BUFFER_SIZE forces to seek backwards
+          allow(described_class).to receive(:BUFFER_SIZE)
+            .and_return(2)
+        end
+
+        it 'returns last few lines' do
+          result = stream.raw(last_lines: 2)
+
+          expect(result).to eq(lines.last(2).join)
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+
+        it 'returns everything if trying to get too many lines' do
+          result = stream.raw(last_lines: lines.size * 2)
+
+          expect(result).to eq(lines.join)
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+      end
+
+      context 'limit max size' do
+        before do
+          # specifying BUFFER_SIZE forces to seek backwards
+          allow(described_class).to receive(:BUFFER_SIZE)
+            .and_return(2)
+        end
+
+        it 'returns every lines with respect of the size' do
+          all_lines = lines.join
+          max_size = all_lines.bytesize.div(2)
+          result = stream.raw(max_size: max_size)
+
+          expect(result.bytes).to eq(all_lines.bytes[-max_size..])
+          expect(result.lines.count).to be > 1
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+
+        it 'returns everything if trying to get too many bytes' do
+          all_lines = lines.join
+          result = stream.raw(max_size: all_lines.bytesize * 2)
+
+          expect(result).to eq(all_lines)
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+      end
+
+      context 'limit max lines and max size' do
+        before do
+          # specifying BUFFER_SIZE forces to seek backwards
+          allow(described_class).to receive(:BUFFER_SIZE)
+            .and_return(2)
+        end
+
+        it 'returns max lines if max size is greater' do
+          result = stream.raw(last_lines: 2, max_size: lines.join.bytesize * 2)
+
+          expect(result).to eq(lines.last(2).join)
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+
+        it 'returns max size if max lines is greater' do
+          all_lines = lines.join
+          max_size = all_lines.bytesize.div(2)
+          result = stream.raw(last_lines: lines.size * 2, max_size: max_size)
+
+          expect(result.bytes).to eq(all_lines.bytes[-max_size..])
+          expect(result.encoding).to eq(Encoding.default_external)
+        end
+      end
+    end
+
+    let(:path) { __FILE__ }
+    let(:lines) { File.readlines(path) }
+
+    context 'when stream is File' do
+      let(:stream) do
+        described_class.new do
+          File.open(path)
+        end
+      end
+
+      it_behaves_like 'sets'
+    end
+
+    context 'when stream is ChunkedIO' do
+      let(:stream) do
+        described_class.new do
+          Gitlab::Ci::Trace::ChunkedIO.new(build).tap do |chunked_io|
+            chunked_io.write(File.binread(path))
+            chunked_io.seek(0, IO::SEEK_SET)
+          end
+        end
+      end
+
+      it_behaves_like 'sets'
+    end
+
+    context 'when the trace ends with a newline-free segment spanning many buffers' do
+      let(:progress) { "\rprogress 1%\rprogress 2%\rprogress 3%" }
+      let(:data) { "first line\n#{progress}" }
+
+      let(:stream) do
+        described_class.new do
+          StringIO.new(data)
+        end
+      end
+
+      before do
+        stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', 5)
+      end
+
+      it 'returns the whole segment as the last line' do
+        expect(stream.raw(last_lines: 1)).to eq(progress)
+      end
+
+      it 'returns all lines' do
+        expect(stream.raw(last_lines: 10)).to eq(data)
+      end
+
+      it 'truncates the segment to max_size' do
+        result = stream.raw(last_lines: 1, max_size: 10)
+
+        expect(result.bytes).to eq(data.bytes.last(10))
+      end
+    end
+
+    context 'when the trace begins with a newline-free segment spanning many buffers' do
+      let(:progress) { "\rprogress 1%\rprogress 2%\rprogress 3%" }
+      let(:data) { "#{progress}\nlast line" }
+
+      let(:stream) do
+        described_class.new do
+          StringIO.new(data)
+        end
+      end
+
+      before do
+        stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', 5)
+      end
+
+      it 'returns the last line' do
+        expect(stream.raw(last_lines: 1)).to eq('last line')
+      end
+
+      it 'returns the segment and the last line' do
+        expect(stream.raw(last_lines: 2)).to eq(data)
+      end
+    end
+
+    context 'when newlines fall on buffer boundaries' do
+      let(:data) { "abc\ndef\nghi" }
+
+      let(:stream) do
+        described_class.new do
+          StringIO.new(data)
+        end
+      end
+
+      before do
+        stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', 4)
+      end
+
+      it 'preserves line boundaries', :aggregate_failures do
+        expect(stream.raw(last_lines: 1)).to eq("ghi")
+        expect(stream.raw(last_lines: 2)).to eq("def\nghi")
+        expect(stream.raw(last_lines: 3)).to eq(data)
+      end
+    end
+
+    context 'when the trace has CRLF line endings' do
+      let(:data) { "win 1\r\nwin 2\r\nwin 3" }
+
+      let(:stream) do
+        described_class.new do
+          StringIO.new(data)
+        end
+      end
+
+      before do
+        stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', 4)
+      end
+
+      it 'keeps the carriage return attached to its line' do
+        expect(stream.raw(last_lines: 2)).to eq("win 2\r\nwin 3")
+      end
+    end
+
+    context 'when the trace is empty' do
+      let(:stream) do
+        described_class.new do
+          StringIO.new('')
+        end
+      end
+
+      it 'returns an empty string' do
+        expect(stream.raw(last_lines: 2)).to eq('')
+      end
+    end
+
+    context 'with adversarial line structures' do
+      def stream_for(data)
+        described_class.new { StringIO.new(data) }
+      end
+
+      before do
+        stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', 4)
+      end
+
+      let(:corpus) do
+        [
+          "\n",
+          "\n\n\n\n\n",
+          "no newline",
+          "trailing\n",
+          "\nleading",
+          "a\n\nb\n\n\nc",
+          "#{'x' * 9}\n#{'y' * 9}",
+          "\r\r\r\n\r\r"
+        ]
+      end
+
+      it 'reconstructs the trace exactly', :aggregate_failures do
+        corpus.each do |data|
+          expect(stream_for(data).raw(last_lines: 100)).to eq(data)
+        end
+      end
+
+      it 'returns exactly the last N lines', :aggregate_failures do
+        corpus.each do |data|
+          (1..4).each do |n|
+            expect(stream_for(data).raw(last_lines: n)).to eq(data.lines.last(n).join)
+          end
+        end
+      end
+
+      it 'returns exactly the last max_size bytes', :aggregate_failures do
+        corpus.each do |data|
+          caps = [1, 2, data.bytesize - 1, data.bytesize, data.bytesize + 1].select(&:positive?)
+          caps.each do |max_size|
+            result = stream_for(data).raw(last_lines: 100, max_size: max_size)
+
+            expect(result.bytes).to eq(data.bytes.last(max_size))
+          end
+        end
+      end
+    end
+  end
+
+  describe '#html' do
+    shared_examples_for 'htmls' do
+      it "returns html" do
+        expect(stream.html).to eq("<span>12<br/>34<br/>56</span>")
+      end
+
+      it "returns html for last line only" do
+        expect(stream.html(last_lines: 1)).to eq("<span>56</span>")
+      end
+    end
+
+    context 'when stream is StringIO' do
+      let(:stream) do
+        described_class.new do
+          StringIO.new("12\n34\n56")
+        end
+      end
+
+      it_behaves_like 'htmls'
+    end
+
+    context 'when stream is ChunkedIO' do
+      let(:stream) do
+        described_class.new do
+          Gitlab::Ci::Trace::ChunkedIO.new(build).tap do |chunked_io|
+            chunked_io.write("12\n34\n56")
+            chunked_io.seek(0, IO::SEEK_SET)
+          end
+        end
+      end
+
+      it_behaves_like 'htmls'
+    end
+  end
+
+  describe '#extract_coverage' do
+    shared_examples_for 'extract_coverages' do
+      context 'valid content & regex' do
+        let(:data) { 'Coverage 1033 / 1051 LOC (98.29%) covered' }
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        it { is_expected.to eq("98.29") }
+      end
+
+      context 'valid content & bad regex' do
+        let(:data) { 'Coverage 1033 / 1051 LOC (98.29%) covered\n' }
+        let(:regex) { 'very covered' }
+
+        it { is_expected.to be_nil }
+      end
+
+      context 'no coverage content & regex' do
+        let(:data) { 'No coverage for today :sad:' }
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        it { is_expected.to be_nil }
+      end
+
+      context 'multiple results in content & regex' do
+        let(:data) do
+          <<~HEREDOC
+            (98.39%) covered
+            (98.29%) covered
+          HEREDOC
+        end
+
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        it 'returns the last matched coverage' do
+          is_expected.to eq("98.29")
+        end
+      end
+
+      context 'when BUFFER_SIZE is smaller than stream.size' do
+        let(:data) { 'Coverage 1033 / 1051 LOC (98.29%) covered\n' }
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        before do
+          stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', 5)
+        end
+
+        it { is_expected.to eq("98.29") }
+      end
+
+      context 'when regex is multi-byte char' do
+        let(:data) { '95.0 ゴッドファット\n' }
+        let(:regex) { '\d+\.\d+ ゴッドファット' }
+
+        before do
+          stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', 5)
+        end
+
+        it { is_expected.to eq('95.0') }
+      end
+
+      context 'when BUFFER_SIZE is equal to stream.size' do
+        let(:data) { 'Coverage 1033 / 1051 LOC (98.29%) covered\n' }
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        before do
+          stub_const('Gitlab::Ci::Trace::Stream::BUFFER_SIZE', data.length)
+        end
+
+        it { is_expected.to eq("98.29") }
+      end
+
+      context 'using a regex capture' do
+        let(:data) { 'TOTAL      9926   3489    65%' }
+        let(:regex) { 'TOTAL\s+\d+\s+\d+\s+(\d{1,3}\%)' }
+
+        it { is_expected.to eq("65") }
+      end
+
+      context 'using a regex capture with timestamped data' do
+        let(:data) { '2024-08-06T09:24:35.138094Z 00O TOTAL      9926   3489    65%' }
+        let(:regex) { 'TOTAL\s+\d+\s+\d+\s+(\d{1,3}\%)' }
+
+        it { is_expected.to eq('65') }
+      end
+
+      context 'using a regex with alternate captures' do
+        let(:regex) { 'Coverage: (\d+\.\d+)\%|Total coverage: (\d+)\%' }
+
+        context 'when the first alternative matches' do
+          let(:data) { 'Coverage: 98.29%' }
+
+          it { is_expected.to eq('98.29') }
+        end
+
+        context 'when the last alternative matches' do
+          let(:data) { 'Total coverage: 65%' }
+
+          it { is_expected.to eq('65') }
+        end
+      end
+
+      context 'using a regex that can match without capturing' do
+        let(:regex) { 'Coverage: (\d+\.\d+)\%|coverage reported' }
+
+        context 'when nothing is captured' do
+          let(:data) { 'coverage reported' }
+
+          it 'returns nil without tracking an error' do
+            expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+
+            is_expected.to be_nil
+          end
+        end
+
+        context 'when an earlier line captures a value' do
+          let(:data) { "Coverage: 98.29%\ncoverage reported\n" }
+
+          it { is_expected.to eq('98.29') }
+        end
+      end
+
+      context 'malicious regexp' do
+        let(:data) { malicious_text }
+        let(:regex) { malicious_regexp_re2 }
+
+        include_examples 'malicious regexp'
+      end
+
+      context 'multi-line data with rooted regexp' do
+        let(:data) { "\n65%\n" }
+        let(:regex) { '^(\d+)\%$' }
+
+        it { is_expected.to eq('65') }
+      end
+
+      context 'multi-line timestamped data with rooted regexp' do
+        let(:data) do
+          "2024-08-06T09:24:35.138088Z 00O Timestamped!\n" \
+            "2024-08-06T09:24:35.138094Z 00O TOTAL      9926   3489    65%\n"
+        end
+
+        let(:regex) { '^TOTAL\s+\d+\s+\d+\s+(\d{1,3}\%)$' }
+
+        it { is_expected.to eq('65') }
+      end
+
+      context 'long line' do
+        let(:data) { ('a' * 80000) + '100%' + ('a' * 80000) }
+        let(:regex) { '\d+\%' }
+
+        it { is_expected.to eq('100') }
+      end
+
+      context 'many lines' do
+        let(:data) { ("foo\n" * 80000) + "100%\n" + ("foo\n" * 80000) }
+        let(:regex) { '\d+\%' }
+
+        it { is_expected.to eq('100') }
+      end
+
+      context 'match before a long newline-free segment' do
+        let(:data) { "Coverage (98.29%) covered\n" + ("\rprogress 42%   " * 2000) }
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        it { is_expected.to eq('98.29') }
+      end
+
+      context 'empty regex' do
+        let(:data) { 'foo' }
+        let(:regex) { '' }
+
+        it 'skips processing' do
+          expect(stream).not_to receive(:read)
+
+          is_expected.to be_nil
+        end
+      end
+
+      context 'nil regex' do
+        let(:data) { 'foo' }
+        let(:regex) { nil }
+
+        it 'skips processing' do
+          expect(stream).not_to receive(:read)
+
+          is_expected.to be_nil
+        end
+      end
+    end
+
+    subject { stream.extract_coverage(regex) }
+
+    context 'when stream is StringIO' do
+      let(:stream) do
+        described_class.new do
+          StringIO.new(data)
+        end
+      end
+
+      it_behaves_like 'extract_coverages'
+    end
+
+    context 'when stream is ChunkedIO' do
+      include ChunkedIOHelpers
+
+      let(:stream) do
+        described_class.new do
+          Gitlab::Ci::Trace::ChunkedIO.new(build).tap do |chunked_io|
+            chunked_io.write(data)
+            chunked_io.seek(0, IO::SEEK_SET)
+          end
+        end
+      end
+
+      it_behaves_like 'extract_coverages'
+
+      context 'when the first line spans the whole trace' do
+        let(:chunk_size) { 4.kilobytes }
+        let(:tail) { "\n(98.29%) covered\n" }
+        let(:data) { ('a' * ((5 * chunk_size) - tail.bytesize)) + tail }
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        # A ChunkedIO caches the chunks it writes, so read through a fresh one to
+        # make every chunk it visits a fetch.
+        let(:stream) { described_class.new { Gitlab::Ci::Trace::ChunkedIO.new(build) } }
+
+        before do
+          stub_buffer_size(chunk_size)
+
+          Gitlab::Ci::Trace::ChunkedIO.new(build) { |chunked_io| chunked_io.write(data) }
+        end
+
+        it 'fetches only the header chunk and the tail chunk' do
+          stream # open the reader up front, so its size lookup is not recorded
+
+          recorder = ActiveRecord::QueryRecorder.new { is_expected.to eq('98.29') }
+
+          expect(recorder.log.grep(/ci_build_trace_chunks/).size).to eq(2)
+        end
+      end
+    end
+
+    context 'when stream is HttpIO' do
+      include HttpIOHelpers
+
+      let(:url) { 'http://trace.example.com/trace.txt' }
+
+      let(:tempfile) do
+        Tempfile.new('trace').tap do |file|
+          file.binmode
+          file.write(data)
+          file.close
+        end
+      end
+
+      let(:stream) do
+        stub_remote_url_206(url, tempfile.path)
+
+        described_class.new do
+          Gitlab::HttpIO.new(url, data.bytesize)
+        end
+      end
+
+      after do
+        tempfile.unlink
+      end
+
+      it_behaves_like 'extract_coverages'
+
+      context 'when the first line spans the whole trace' do
+        let(:chunk_size) { 4.kilobytes }
+        let(:tail) { "\n(98.29%) covered\n" }
+        let(:data) { ('a' * ((5 * chunk_size) - tail.bytesize)) + tail }
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+
+        before do
+          stub_const('Gitlab::HttpIO::BUFFER_SIZE', chunk_size)
+        end
+
+        it 'reads only the header prefix and the tail chunk' do
+          is_expected.to eq('98.29')
+
+          expect(WebMock).to have_requested(:get, url).twice
+        end
+      end
+    end
+
+    context 'when extraction raises' do
+      let(:data) { 'Coverage 1033 / 1051 LOC (98.29%) covered' }
+      let(:io) { StringIO.new(data) }
+      let(:stream) { described_class.new { io } }
+
+      shared_examples 'a tracked failure' do
+        it 'tracks the exception and returns nil', :aggregate_failures do
+          expect(Gitlab::ErrorTracking)
+            .to receive(:track_exception)
+            .with(instance_of(error_class), stream_class: 'StringIO')
+          expect(stream.metrics)
+            .to receive(:increment_error_counter)
+            .with(error_reason: :coverage_extraction_failed)
+
+          is_expected.to be_nil
+        end
+      end
+
+      context 'when the regex cannot be compiled' do
+        let(:regex) { '(a)\1' }
+        let(:error_class) { RegexpError }
+
+        it_behaves_like 'a tracked failure'
+      end
+
+      context 'when reading the trace fails' do
+        let(:regex) { '\(\d+.\d+\%\) covered' }
+        let(:error_class) { Net::OpenTimeout }
+
+        before do
+          allow(io).to receive(:read).and_raise(Net::OpenTimeout)
+        end
+
+        it_behaves_like 'a tracked failure'
+      end
+    end
+  end
+
+  describe '#raw_range' do
+    let(:data) { 'Hello, this is a trace log output for testing.' }
+
+    shared_examples_for 'raw_range' do
+      it 'returns data from the given byte offset with the given byte limit' do
+        expect(stream.raw_range(byte_offset: 7, byte_limit: 4)).to eq('this')
+      end
+
+      it 'returns data from the beginning when byte_offset is 0' do
+        expect(stream.raw_range(byte_offset: 0, byte_limit: 5)).to eq('Hello')
+      end
+
+      it 'returns remaining data when byte_limit exceeds available bytes' do
+        expect(stream.raw_range(byte_offset: 41, byte_limit: 100)).to eq('ting.')
+      end
+
+      it 'returns empty data when byte_offset is at the end' do
+        expect(stream.raw_range(byte_offset: data.bytesize, byte_limit: 10)).to eq('')
+      end
+
+      it 'returns empty data when byte_offset exceeds total size' do
+        expect(stream.raw_range(byte_offset: data.bytesize + 100, byte_limit: 10)).to eq('')
+      end
+
+      it 'returns data encoded as Encoding.default_external' do
+        result = stream.raw_range(byte_offset: 0, byte_limit: 5)
+
+        expect(result.encoding).to eq(Encoding.default_external)
+      end
+
+      it 'reads all remaining bytes when byte_limit is nil' do
+        expect(stream.raw_range(byte_offset: 7, byte_limit: nil)).to eq(data.byteslice(7..))
+      end
+    end
+
+    context 'when stream is StringIO' do
+      let(:stream) do
+        described_class.new do
+          StringIO.new(data)
+        end
+      end
+
+      it_behaves_like 'raw_range'
+    end
+
+    context 'when stream is ChunkedIO' do
+      let(:stream) do
+        described_class.new do
+          Gitlab::Ci::Trace::ChunkedIO.new(build).tap do |chunked_io|
+            chunked_io.write(data)
+            chunked_io.seek(0, IO::SEEK_SET)
+          end
+        end
+      end
+
+      it_behaves_like 'raw_range'
+    end
+
+    context 'when stream is not valid' do
+      let(:stream) { described_class.new { nil } }
+
+      it 'returns nil' do
+        expect(stream.raw_range(byte_offset: 0, byte_limit: 10)).to be_nil
+      end
+    end
+  end
+end

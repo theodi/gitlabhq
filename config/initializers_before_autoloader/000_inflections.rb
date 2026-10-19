@@ -1,0 +1,83 @@
+# frozen_string_literal: true
+
+# Be sure to restart your server when you modify this file.
+
+# Add new inflection rules using the following format
+# (all these examples are active by default):
+# ActiveSupport::Inflector.inflections do |inflect|
+#   inflect.plural /^(ox)$/i, '\1en'
+#   inflect.singular /^(ox)en/i, '\1'
+#   inflect.irregular 'person', 'people'
+#   inflect.uncountable %w( fish sheep )
+# end
+#
+ActiveSupport::Inflector.inflections do |inflect|
+  inflect.uncountable %w[
+    custom_emoji
+    award_emoji
+    ci_secure_file_registry
+    container_repository_registry
+    dependency_proxy_blob_registry
+    design_management_repository_registry
+    dependency_proxy_manifest_registry
+    discover_premium
+    duo_enterprise
+    duo_pro
+    event_log
+    file_registry
+    group_view
+    group_wiki_repository_registry
+    job_artifact_registry
+    lfs_object_registry
+    merge_request_diff_registry
+    package_file_registry
+    pages_deployment_registry
+    pipeline_artifact_registry
+    project_auto_devops
+    project_registry
+    project_wiki_repository_registry
+    project_repository_registry
+    project_statistics
+    snippet_repository_registry
+    supply_chain_attestation_registry
+    system_note_metadata
+    terraform_state_version_registry
+    vulnerabilities_feedback
+    vulnerability_feedback
+    wiki_page_meta
+    WikiPage::Meta
+    packages_nuget_symbol_registry
+    packages_helm_metadata_cache_registry
+    appearance_upload_registry
+    dependency_list_export_part_upload_registry
+    vulnerability_remediation_upload_registry
+    personal_snippet_upload_registry
+    dependency_list_export_upload_registry
+    organization_detail_upload_registry
+    project_topic_upload_registry
+    vulnerability_export_upload_registry
+    issuable_metric_image_upload_registry
+    vulnerability_export_part_upload_registry
+    alert_management_metric_image_upload_registry
+    vulnerability_archive_export_upload_registry
+    user_permission_export_upload_upload_registry
+    bulk_import_export_upload_upload_registry
+    packages_debian_project_component_file_registry
+    import_export_upload_upload_registry
+    ai_vectorizable_file_upload_registry
+    project_import_export_relation_export_upload_upload_registry
+    design_management_action_upload_registry
+    user_upload_registry
+    achievement_upload_registry
+    group_upload_registry
+    abuse_report_upload_registry
+    project_upload_registry
+  ]
+  inflect.acronym 'CDN'
+  inflect.acronym 'EE'
+  inflect.acronym 'JH'
+  inflect.acronym 'CSP'
+  inflect.acronym 'VSCode'
+  inflect.acronym 'FIPS'
+  inflect.irregular 'cache', 'caches'
+end

@@ -1,0 +1,102 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+
+query getUserPersonalAccessTokens(
+  $id: UserID
+  $first: Int
+  $last: Int
+  $before: String
+  $after: String
+  $sort: AccessTokenSort
+  $state: AccessTokenState
+  $revoked: Boolean
+  $expiresBefore: Date
+  $expiresAfter: Date
+  $createdBefore: Time
+  $createdAfter: Time
+  $lastUsedBefore: Time
+  $lastUsedAfter: Time
+  $search: String
+) {
+  user(id: $id) {
+    id
+    personalAccessTokens(
+      first: $first
+      last: $last
+      before: $before
+      after: $after
+      sort: $sort
+      state: $state
+      revoked: $revoked
+      expiresBefore: $expiresBefore
+      expiresAfter: $expiresAfter
+      createdBefore: $createdBefore
+      createdAfter: $createdAfter
+      lastUsedBefore: $lastUsedBefore
+      lastUsedAfter: $lastUsedAfter
+      search: $search
+    ) {
+      nodes {
+        id
+        name
+        description
+        granular
+        sudo
+        revoked
+        active
+        lastUsedAt
+        createdAt
+        expiresAt
+        lastUsedIps
+        scopes {
+          __typename
+          ... on AccessTokenLegacyScope {
+            value
+          }
+          ... on AccessTokenGranularScope {
+            access
+            namespace {
+              id
+              name
+              fullName
+              fullPath
+              webUrl
+              avatarUrl
+            }
+            group @gl_introduced(version: "19.2.0") {
+              id
+              name
+              fullName
+              fullPath
+              webUrl
+              avatarUrl
+              projectsCount
+              descendantGroupsCount
+            }
+            project {
+              id
+              name
+              fullName: nameWithNamespace
+              fullPath
+              webUrl
+              avatarUrl
+            }
+            permissions {
+              name
+              action
+              description
+              category
+              categoryName
+              resource
+              resourceName
+              resourceDescription
+              boundaries
+            }
+          }
+        }
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

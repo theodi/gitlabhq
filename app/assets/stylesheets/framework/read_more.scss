@@ -1,0 +1,80 @@
+.read-more-container {
+  $scrim: 2rem;
+  $fallback: 320px;
+  $height: 39px;
+
+  // stylelint-disable-next-line gitlab/no-has -- scoped to read-more-container
+  &:not(:has(.read-more-content)) {
+    @include gl-container-width-down(lg, panel) {
+      &:not(.is-expanded) {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+
+        > * {
+          display: inline;
+        }
+      }
+    }
+  }
+
+  // stylelint-disable-next-line gitlab/no-has -- scoped to read-more-container
+  &:has(.read-more-content:not(.is-expanded)) {
+    position: relative;
+    max-height: var(--read-more-height, #{$fallback - $height});
+    scroll-padding-top: 1000vh; // Fix anchor scroll, keep it up top
+    overflow: hidden;
+  }
+
+  // only appears when size is > $height.
+  .read-more-content--has-scrim:not(.is-expanded)::after {
+    content: '';
+    display: block;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(var(--read-more-height, #{$fallback}) - #{$scrim} - #{$height});
+    height: $scrim;
+    background: linear-gradient(180deg, transparent, var(--gl-background-color-default));
+  }
+}
+
+.description-more {
+  position: absolute;
+  bottom: 0;
+  pointer-events: none;
+
+  &::before {
+    content: '';
+    display: block;
+    height: 3rem;
+    width: 100%;
+    background: linear-gradient(180deg, transparent 0%, var(--gl-background-color-default) 100%);
+  }
+
+  .show-all-btn {
+    pointer-events: auto;
+    background-color: var(--gl-background-color-default);
+
+    &::before, &::after {
+      content: '';
+      height: 1px;
+      flex: 1;
+      border-top: 1px solid var(--gl-border-color-subtle);
+    }
+  }
+}
+
+// Table scroll shadows are high-contrast and would bleed through the translucent
+// .description-more gradient, so suppress them while the description is truncated.
+.work-item-description .truncated {
+  .gl-table-shadow-overlay::before,
+  .gl-table-shadow-overlay::after {
+    display: none;
+  }
+
+  .gl-table-shadow {
+    animation: none;
+    box-shadow: none;
+  }
+}

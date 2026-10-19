@@ -1,0 +1,192 @@
+# frozen_string_literal: true
+
+module Import
+  module AfterExportStrategies
+    class BaseAfterExportStrategy
+      extend Gitlab::ImportExport::CommandLineUtil
+      include ActiveModel::Validations
+      extend Forwardable
+
+      StrategyError = Class.new(StandardError)
+      ExportNotReadyError = Class.new(StrategyError)
+
+      private
+
+      attr_reader :project, :current_user, :lock_file, :logger
+
+      public
+
+      def initialize(attributes = {})
+        @options = attributes
+        @logger = Gitlab::Export::Logger.build
+      end
+
+      def method_missing(method, *_args)
+        @options[method]
+      end
+
+      def respond_to_missing?(method, *args)
+        @options.key?(method) || super
+      end
+
+      def execute(current_user, project)
+        @project = project
+
+        ensure_export_ready!(current_user)
+        ensure_lock_files_path!
+        @lock_file = File.join(lock_files_path, SecureRandom.hex)
+        @current_user = current_user
+
+        if invalid?
+          log_validation_errors
+
+          return
+        end
+
+        create_or_update_after_export_lock
+        strategy_execute
+
+        true
+      rescue ExportNotReadyError
+        # Re-raise so the calling worker (e.g. ParallelProjectExportWorker) can
+        # retry the whole export. Other StrategyError failures (e.g. a failed
+        # web upload) keep the existing notify-and-return-false behavior below.
+        raise
+      rescue StandardError => e
+        payload = { message: "After export strategy failed" }
+        Gitlab::ExceptionLogFormatter.format!(e, payload)
+        log_error(payload)
+
+        project.import_export_shared.error(e)
+        false
+      ensure
+        delete_after_export_lock
+        delete_export_file(current_user)
+        delete_archive_path
+      end
+
+      # Sidekiq arguments must be native JSON types, so the enqueue sites pass this Hash
+      # rather than the strategy itself. ProjectExportWorker#build! reads `klass` back and
+      # AfterExportStrategyBuilder rebuilds the strategy from it.
+      def as_json(_options = {})
+        @options.to_h.merge(klass: self.class.name).as_json
+      end
+
+      def to_json(options = {})
+        as_json.to_json(options)
+      end
+
+      def ensure_export_ready!(current_user, max_retries: 5, base_delay: 1)
+        retries = 0
+        diagnostics = {}
+
+        loop do
+          export_ready = Project.uncached do
+            project.association(:import_export_uploads).reset if retries > 0
+            ready = project.export_file_exists?(current_user)
+            diagnostics = capture_export_diagnostics(current_user) unless ready
+            ready
+          end
+
+          break if export_ready
+
+          retries += 1
+          raise ExportNotReadyError if retries > max_retries
+
+          delay = base_delay * (2**(retries - 1))
+          log_info({
+            message: "Export file not ready, retrying",
+            retry_count: retries,
+            backoff_seconds: delay
+          }.merge(diagnostics))
+          sleep(delay)
+        end
+      end
+
+      def ensure_lock_files_path!
+        FileUtils.mkdir_p(lock_files_path)
+      end
+
+      def lock_files_path
+        project.import_export_shared.lock_files_path
+      end
+
+      def archive_path
+        project.import_export_shared.archive_path
+      end
+
+      def locks_present?
+        project.import_export_shared.locks_present?
+      end
+
+      protected
+
+      def strategy_execute
+        raise NotImplementedError
+      end
+
+      def delete_export?
+        true
+      end
+
+      private
+
+      # TODO: Remove these diagnostic helpers once #329982 is resolved.
+      # https://gitlab.com/gitlab-org/gitlab/-/work_items/329982
+      # rubocop:disable CodeReuse/ActiveRecord -- diagnostic-only query; removed with the rest of this code once #329982 is resolved
+      def capture_export_diagnostics(current_user)
+        upload = project.import_export_upload_by_user(current_user)
+
+        {
+          current_user_id: current_user.id,
+          upload_id: upload&.id,
+          upload_count_for_user: project.import_export_uploads.where(user_id: current_user.id).count,
+          export_file_column_present: !upload.nil? && upload[:export_file].present?,
+          export_file_exists: !!upload&.export_file_exists?,
+          export_archive_exists: safe_export_archive_exists?(upload)
+        }
+      end
+      # rubocop:enable CodeReuse/ActiveRecord
+
+      def safe_export_archive_exists?(upload)
+        upload&.export_archive_exists?
+      rescue StandardError
+        nil
+      end
+
+      def delete_export_file(current_user)
+        return if locks_present? || !delete_export?
+
+        project.remove_export_for_user(current_user)
+      end
+
+      def delete_archive_path
+        FileUtils.rm_rf(archive_path) if File.directory?(archive_path)
+      end
+
+      def create_or_update_after_export_lock
+        FileUtils.touch(lock_file)
+      end
+
+      def delete_after_export_lock
+        FileUtils.rm(lock_file) if lock_file.present? && File.exist?(lock_file)
+      end
+
+      def log_validation_errors
+        errors.full_messages.each { |msg| project.import_export_shared.add_error_message(msg) }
+      end
+
+      def log_info(params)
+        logger.info(log_default_params.merge(params))
+      end
+
+      def log_error(params)
+        logger.error(log_default_params.merge(params))
+      end
+
+      def log_default_params
+        { project_name: project.name, project_id: project.id }
+      end
+    end
+  end
+end

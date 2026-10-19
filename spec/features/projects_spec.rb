@@ -1,32 +1,545 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe "Projects", feature: true, js: true do
-  before { login_as :user }
+RSpec.describe 'Project', feature_category: :source_code_management do
+  include ProjectForksHelper
+  include MobileHelpers
+  include ListboxHelpers
+  include Namespaces::DeletableHelper
 
-  describe "DELETE /projects/:id" do
+  describe 'template' do
+    let(:user) { create(:user) }
+
     before do
-      @project = create(:project, namespace: @user.namespace)
-      @project.team << [@user, :master]
-      visit edit_namespace_project_path(@project.namespace, @project)
+      sign_in user
+      visit new_project_path
     end
 
-    it "should remove project" do
-      expect { remove_project }.to change {Project.count}.by(-1)
+    shared_examples 'creates from template' do |template, sub_template_tab = nil|
+      let(:selected_template) { page.find('.project-fields-form .selected-template') }
+
+      choose_template_selector = '.choose-template'
+      template_option_selector = '.template-option'
+      template_name_selector = '.description strong'
+
+      it "is created from template", :js do
+        click_link 'Create from template'
+        find(".project-template #{sub_template_tab}").click if sub_template_tab
+        find("label[for=#{template.name}]").click
+
+        click_on 'Select a group or namespace'
+        select_listbox_item user.username
+
+        fill_in("project_name", with: template.name)
+
+        page.within '#content-body' do
+          click_button "Create project"
+        end
+
+        expect(page).to have_content template.name
+      end
+
+      it 'is created using keyboard navigation', :js do
+        click_link 'Create from template'
+
+        first_template = first(template_option_selector)
+        first_template_name = first_template.find(template_name_selector).text
+        first_template.find(choose_template_selector).click
+
+        expect(selected_template).to have_text(first_template_name)
+
+        click_button "Change template"
+        find("#built-in").click
+
+        # Jumps down 1 template, skipping the `preview` buttons
+        2.times do
+          page.send_keys :tab
+        end
+
+        # Ensure the template with focus is selected
+        project_name = "project from template"
+        focused_template = page.find(':focus').ancestor(template_option_selector)
+        focused_template_name = focused_template.find(template_name_selector).text
+        focused_template.find(choose_template_selector).send_keys :enter
+
+        click_on 'Select a group or namespace'
+        select_listbox_item user.username
+
+        fill_in "project_name", with: project_name
+
+        expect(selected_template).to have_text(focused_template_name)
+
+        page.within '#content-body' do
+          click_button "Create project"
+        end
+
+        expect(page).to have_content project_name
+      end
     end
 
-    it 'should delete the project from disk' do
-      expect(GitlabShellWorker).to(
-        receive(:perform_async).with(:remove_repository,
-                                     /#{@project.path_with_namespace}/)
-      ).twice
+    context 'create with project template' do
+      it_behaves_like 'creates from template', Gitlab::ProjectTemplate.find(:rails)
+    end
 
-      remove_project
+    context 'create with sample data template' do
+      it_behaves_like 'creates from template', Gitlab::SampleDataTemplate.find(:sample)
     end
   end
 
-  def remove_project
-    click_link "Remove project"
-    fill_in 'confirm_name_input', with: @project.path
-    click_button 'Confirm'
+  describe 'shows tip about push to create git command' do
+    let(:user)    { create(:user) }
+
+    before do
+      sign_in user
+      visit new_project_path
+    end
+
+    it 'shows the command in a popover', :js do
+      click_link 'Show command'
+
+      expect(page).to have_css('.popover #push-to-create-tip')
+      expect(page).to have_content 'Private projects can be created in your personal namespace with:'
+    end
+  end
+
+  describe 'description' do
+    let_it_be_with_reload(:project) { create(:project, :repository) }
+    let(:path) { project_path(project) }
+
+    before do
+      sign_in(project.first_owner)
+    end
+
+    it 'parses Markdown' do
+      project.update_attribute(:description, 'This is **my** project')
+      visit path
+      expect(page).to have_css('.home-panel-description .home-panel-description-markdown p > strong')
+    end
+
+    it 'passes through html-pipeline' do
+      project.update_attribute(:description, 'This project is the :poop:')
+      visit path
+      expect(page).to have_css('.home-panel-description .home-panel-description-markdown p > gl-emoji')
+    end
+
+    it 'sanitizes unwanted tags' do
+      project.update_attribute(:description, "```\ncode\n```")
+      visit path
+      expect(page).not_to have_css('.home-panel-description code')
+    end
+
+    it 'permits `rel` attribute on links' do
+      project.update_attribute(:description, 'https://google.com/')
+      visit path
+      expect(page).to have_css('.home-panel-description a[rel]')
+    end
+
+    context 'read more', :js do
+      it 'displays "read more" link', :js do
+        project.update_attribute(:description, "This is **my** project\n\nA\n\nB\n\nC\n\nD\n\nE\n\nF\n\nG\n\nH\n\nI\n\nJ\nK\n\nL\n\nM\n\nN\n\nEnd test.")
+        visit path
+
+        expect(page).to have_css('.home-panel-description .js-read-more-trigger')
+      end
+    end
+
+    context 'page description' do
+      before do
+        project.update_attribute(:description, '**Lorem** _ipsum_ dolor sit [amet](https://example.com)')
+        visit path
+      end
+
+      it_behaves_like 'page meta description', 'Lorem ipsum dolor sit amet'
+    end
+  end
+
+  describe 'project topics' do
+    let_it_be_with_reload(:project) { create(:project, :repository) }
+    let(:path) { project_path(project) }
+
+    before do
+      sign_in(project.first_owner)
+    end
+
+    it 'shows project topics' do
+      project.update_attribute(:topic_list, 'topic1')
+
+      visit path
+
+      expect(page).to have_selector('[data-testid="project_topic_list"]')
+      expect(page).to have_link('topic1', href: topic_explore_projects_path(topic_name: 'topic1'))
+    end
+
+    it 'shows up to 3 project topics' do
+      project.update_attribute(:topic_list, 'topic1, topic2, topic3, topic4')
+
+      visit path
+
+      expect(page).to have_selector('[data-testid="project_topic_list"]')
+      expect(page).to have_link('topic1', href: topic_explore_projects_path(topic_name: 'topic1'))
+      expect(page).to have_link('topic2', href: topic_explore_projects_path(topic_name: 'topic2'))
+      expect(page).to have_link('topic3', href: topic_explore_projects_path(topic_name: 'topic3'))
+      expect(page).to have_content('+ 1 more')
+    end
+  end
+
+  describe 'copy clone URL to clipboard', :js do
+    let_it_be(:project) { create(:project, :repository) }
+    let(:path) { project_path(project) }
+
+    before do
+      sign_in(project.first_owner)
+      visit path
+    end
+
+    it 'shows in the Code dropdown' do
+      within_testid('code-dropdown') do
+        click_button 'Code'
+      end
+      expect(page).to have_button('Copy URL')
+    end
+  end
+
+  describe 'showing information about source of a project fork', :js do
+    let(:user) { create(:user) }
+    let(:base_project) { create(:project, :public, :repository) }
+    let(:forked_project) { fork_project(base_project, user, repository: true) }
+
+    before do
+      sign_in user
+    end
+
+    it 'shows a link to the source project when it is available', :sidekiq_might_not_need_inline do
+      visit project_path(forked_project)
+      wait_for_requests
+
+      expect(page).to have_content('Forked from')
+      expect(page).to have_link(base_project.full_name)
+    end
+
+    it 'does not contain fork network information for the root project' do
+      forked_project
+
+      visit project_path(base_project)
+      wait_for_requests
+
+      expect(page).not_to have_content('In fork network of')
+      expect(page).not_to have_content('Forked from')
+    end
+
+    it 'does not show the name of the deleted project when the source was deleted', :sidekiq_might_not_need_inline do
+      forked_project
+      Projects::DestroyService.new(base_project, base_project.first_owner).execute
+
+      visit project_path(forked_project)
+      wait_for_requests
+      expect(page).to have_content('Forked from an inaccessible project')
+    end
+
+    context 'a fork of a fork' do
+      let(:fork_of_fork) { fork_project(forked_project, user, repository: true) }
+
+      it 'links to the base project if the source project is removed', :sidekiq_might_not_need_inline do
+        fork_of_fork
+        Projects::DestroyService.new(forked_project, user).execute
+
+        visit project_path(fork_of_fork)
+        wait_for_requests
+        expect(page).to have_content("Forked from")
+        expect(page).to have_link(base_project.full_name)
+      end
+    end
+  end
+
+  describe 'when the project repository is disabled', :js do
+    let(:user)    { create(:user) }
+    let(:project) { create(:project, :repository_disabled, :repository, namespace: user.namespace) }
+
+    before do
+      sign_in(user)
+      project.add_maintainer(user)
+      visit project_path(project)
+    end
+
+    it 'does not show an error' do
+      wait_for_requests
+
+      expect(page).not_to have_selector('[data-testid="alert-danger"]')
+    end
+  end
+
+  describe 'project deletion', :with_current_organization, :js, :freeze_time do
+    let_it_be(:user) { create(:user, organization: current_organization) }
+    let_it_be(:admin) { create(:user, :admin, organization: current_organization) }
+    let_it_be(:group) { create(:group, :public, owners: user) }
+    let_it_be_with_reload(:project_to_delete) { create(:project, group: group) }
+
+    before do
+      stub_application_setting(deletion_adjourned_period: 7)
+    end
+
+    def remove_with_confirm(confirm_with)
+      fill_in 'confirm_name_input', with: confirm_with
+      click_button 'Yes, delete project'
+      wait_for_requests
+    end
+
+    context 'when project is not marked for deletion' do
+      before do
+        sign_in user
+        visit edit_project_path(project_to_delete)
+      end
+
+      it 'deletes project delayed and is restorable' do
+        expect(page).to have_content("This action will permanently delete this project, including all its resources, on #{permanent_deletion_date_formatted}. Scheduled pipelines will not run during deletion.")
+
+        click_button 'Delete'
+
+        expect(page).to have_content("This action will place this project, including all its resources, in a pending deletion state for 7 days, and delete it permanently on #{permanent_deletion_date_formatted}.")
+
+        remove_with_confirm(project_to_delete.path_with_namespace)
+
+        expect(page).to have_current_path(dashboard_projects_path, ignore_query: true)
+
+        visit inactive_dashboard_projects_path
+
+        expect(page).to have_content(project_to_delete.name_with_namespace)
+      end
+    end
+
+    context 'when project is marked for deletion' do
+      let_it_be_with_reload(:project_aimed_for_deletion) { create(:project, :aimed_for_deletion, group: group) }
+
+      context 'when "Allow permanent deletion" setting is enabled' do
+        before do
+          sign_in user
+          visit edit_project_path(project_aimed_for_deletion)
+        end
+
+        it 'allows permanent deletion', :sidekiq_inline do
+          click_button 'Delete permanently'
+
+          remove_with_confirm(project_aimed_for_deletion.path_with_namespace)
+
+          expect(page).to have_content "#{project_aimed_for_deletion.name} is being deleted."
+        end
+      end
+    end
+  end
+
+  describe 'tree view (default view is set to Files)', :js do
+    let(:user) { create(:user, project_view: 'files') }
+    let(:project) { create(:forked_project_with_submodules) }
+
+    before do
+      project.add_maintainer(user)
+      sign_in user
+    end
+
+    it 'has working links to files' do
+      visit project_path(project)
+
+      click_link('PROCESS.md')
+
+      expect(page).to have_selector('.file-holder')
+    end
+
+    it 'has working links to directories' do
+      visit project_path(project)
+      click_link('encoding')
+
+      expect(page).to have_selector('.breadcrumb-item', text: 'encoding')
+    end
+
+    it 'has working links to submodules' do
+      visit project_path(project)
+      submodule = find_link('645f6c4c')
+
+      expect(submodule[:href]).to eq('https://gitlab.com/gitlab-org/gitlab-grack/-/tree/645f6c4c82fd3f5e06f67134450a570b795e55a6')
+    end
+
+    context 'for signed commit on default branch', :js do
+      before do
+        project.change_head('33f3729a45c02fc67d00adb1b8bca394b0e761d9')
+      end
+
+      it 'displays a GPG badge' do
+        visit project_path(project)
+        wait_for_requests
+
+        expect(page).not_to have_selector '.js-loading-signature-badge'
+        expect(page).to have_selector '.gl-badge.badge-neutral'
+      end
+    end
+
+    context 'for subgroups', :js do
+      let(:group) { create(:group) }
+      let(:subgroup) { create(:group, parent: group) }
+      let(:project) { create(:project, :repository, group: subgroup) }
+
+      it 'renders tree table without errors' do
+        visit project_path(project)
+        wait_for_requests
+
+        expect(page).to have_selector('.tree-item')
+        expect(page).not_to have_selector('[data-testid="alert-danger"]')
+      end
+
+      context 'for signed commit' do
+        before do
+          repository = project.repository
+          repository.write_ref("refs/heads/#{project.default_branch}", '33f3729a45c02fc67d00adb1b8bca394b0e761d9')
+          repository.expire_branches_cache
+        end
+
+        it 'displays a GPG badge' do
+          visit project_path(project)
+          wait_for_requests
+
+          expect(page).not_to have_selector '.gl-badge.js-loading-signature-badge'
+          expect(page).to have_selector '.gl-badge.badge-neutral'
+        end
+      end
+    end
+  end
+
+  describe 'activity view' do
+    let(:user) { create(:user, project_view: 'activity') }
+    let_it_be(:project) { create(:project, :repository) }
+
+    before do
+      project.add_maintainer(user) # rubocop:disable RSpec/BeforeAllRoleAssignment -- user is a per-example let
+      sign_in user
+      visit project_path(project)
+    end
+
+    it 'loads activity', :js do
+      expect(page).to have_selector('.event-item')
+    end
+  end
+
+  context 'content is not cached after signing out', :js do
+    let(:user) { create(:user, project_view: 'activity') }
+    let_it_be(:project) { create(:project, :repository) }
+
+    it 'does not load activity', :js do
+      project.add_maintainer(user)
+      sign_in(user)
+      visit project_path(project)
+      sign_out(user)
+
+      page.evaluate_script('window.history.back()')
+
+      expect(page).not_to have_selector('.event-item')
+    end
+  end
+
+  describe 'edit' do
+    let(:user) { create(:user) }
+    let(:project) { create(:project, :public) }
+    let(:path) { edit_project_path(project) }
+
+    before do
+      project.add_maintainer(user)
+      sign_in(user)
+      visit path
+    end
+
+    it_behaves_like 'dirty submit form', [{ form: '.js-general-settings-form', input: 'input[name="project[name]"]', submit: 'button[type="submit"]' }]
+  end
+
+  describe 'view for a user without an access to a repo' do
+    let(:project) { create(:project, :repository) }
+    let(:user) { create(:user) }
+
+    it 'does not contain default branch information in its content', :js do
+      default_branch = 'merge-commit-analyze-side-branch'
+
+      project.add_guest(user)
+      project.change_head(default_branch)
+
+      sign_in(user)
+      visit project_path(project)
+
+      page.within('#content-body') do
+        lines_with_default_branch = page.html.lines.select { |line| line.include?(default_branch) }
+        expect(lines_with_default_branch).to eq([])
+      end
+    end
+  end
+
+  context 'badges' do
+    shared_examples 'show badges' do
+      it 'renders the all badges' do
+        expect(page).to have_selector('.project-badges a')
+
+        badges.each do |badge|
+          expect(page).to have_link(href: badge.rendered_link_url)
+        end
+      end
+    end
+
+    let(:user) { create(:user) }
+    let(:badges) { project.badges }
+
+    context 'has no badges' do
+      let_it_be(:project) { create(:project, :repository) }
+
+      before do
+        sign_in(user)
+        project.add_maintainer(user) # rubocop:disable RSpec/BeforeAllRoleAssignment -- user is a per-example let
+        visit project_path(project)
+      end
+
+      it 'does not render any badge' do
+        expect(page).not_to have_selector('.project-badges')
+      end
+    end
+
+    context 'only has group badges' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:project) { create(:project, :repository, namespace: group) }
+
+      before do
+        create(:group_badge, group: project.group)
+
+        sign_in(user)
+        project.add_maintainer(user) # rubocop:disable RSpec/BeforeAllRoleAssignment -- user is a per-example let
+        visit project_path(project)
+      end
+
+      it_behaves_like 'show badges'
+    end
+
+    context 'only has project badges' do
+      let_it_be(:project) { create(:project, :repository) }
+
+      before do
+        create(:project_badge, project: project)
+
+        sign_in(user)
+        project.add_maintainer(user) # rubocop:disable RSpec/BeforeAllRoleAssignment -- user is a per-example let
+        visit project_path(project)
+      end
+
+      it_behaves_like 'show badges'
+    end
+
+    context 'has both group and project badges' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:project) { create(:project, :repository, namespace: group) }
+
+      before do
+        create(:project_badge, project: project)
+        create(:group_badge, group: project.group)
+
+        sign_in(user)
+        project.add_maintainer(user) # rubocop:disable RSpec/BeforeAllRoleAssignment -- user is a per-example let
+        visit project_path(project)
+      end
+
+      it_behaves_like 'show badges'
+    end
   end
 end

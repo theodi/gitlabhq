@@ -1,0 +1,361 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`AutocompleteHelper filters items based on command "/assign" for reference type "user" and command 1`] = `
+[
+  "florida.schoen",
+  "root",
+  "all",
+  "lakeesha.batz",
+  "laurene_blick",
+  "myrtis",
+  "patty",
+  "Commit451",
+  "flightjs",
+  "gitlab-instance-ade037f9",
+  "gitlab-org",
+  "gnuwget",
+  "h5bp",
+  "jashkenas",
+  "twitter",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/assign_reviewer" for reference type "user" and command 1`] = `
+[
+  "florida.schoen",
+  "root",
+  "all",
+  "errol",
+  "evelynn_olson",
+  "Commit451",
+  "flightjs",
+  "gitlab-instance-ade037f9",
+  "gitlab-org",
+  "gnuwget",
+  "h5bp",
+  "jashkenas",
+  "twitter",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/label" for reference type "label" and command 1`] = `
+[
+  "Bronce",
+  "Contour",
+  "Corolla",
+  "Cygsync",
+  "Frontier",
+  "Grand Am",
+  "Onesync",
+  "Phone",
+  "Pynefunc",
+  "Trinix",
+  "Trounswood",
+  "group::planner intelligence",
+  "scoped label",
+  "type::one",
+  "type::two",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/reassign" for reference type "user" and command 1`] = `
+[
+  "florida.schoen",
+  "root",
+  "all",
+  "errol",
+  "evelynn_olson",
+  "lakeesha.batz",
+  "laurene_blick",
+  "myrtis",
+  "patty",
+  "Commit451",
+  "flightjs",
+  "gitlab-instance-ade037f9",
+  "gitlab-org",
+  "gnuwget",
+  "h5bp",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/reassign_reviewer" for reference type "user" and command 1`] = `
+[
+  "florida.schoen",
+  "root",
+  "all",
+  "errol",
+  "evelynn_olson",
+  "lakeesha.batz",
+  "laurene_blick",
+  "myrtis",
+  "patty",
+  "Commit451",
+  "flightjs",
+  "gitlab-instance-ade037f9",
+  "gitlab-org",
+  "gnuwget",
+  "h5bp",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/relabel" for reference type "label" and command 1`] = `
+[
+  "Amsche",
+  "Brioffe",
+  "Bronce",
+  "Bryncefunc",
+  "Contour",
+  "Corolla",
+  "Cygsync",
+  "Frontier",
+  "Ghost",
+  "Grand Am",
+  "Onesync",
+  "Phone",
+  "Pynefunc",
+  "Trinix",
+  "Trounswood",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/unassign" for reference type "user" and command 1`] = `
+[
+  "errol",
+  "evelynn_olson",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/unassign_reviewer" for reference type "user" and command 1`] = `
+[
+  "lakeesha.batz",
+  "laurene_blick",
+  "myrtis",
+  "patty",
+]
+`;
+
+exports[`AutocompleteHelper filters items based on command "/unlabel" for reference type "label" and command 1`] = `
+[
+  "Amsche",
+  "Brioffe",
+  "Bryncefunc",
+  "Ghost",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "command", searches for "re" correctly 1`] = `
+[
+  "relabel",
+  "remove_milestone",
+  "remove_estimate",
+  "remove_time_spent",
+  "relate",
+  "remove_epic",
+  "reassign",
+  "unlabel",
+  "create_merge_request",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "epic", searches for "n" correctly 1`] = `
+[
+  "Nobis quidem aspernatur reprehenderit sunt ut ipsum tempora sapiente sed iste.",
+  "Minus eius ut omnis quos sunt dicta ex ipsum.",
+  "Quae nostrum possimus rerum aliquam pariatur a eos aut id.",
+  "Dicta incidunt vel dignissimos sint sit esse est quibusdam quidem consequatur.",
+  "Doloremque a quisquam qui culpa numquam doloribus similique iure enim.",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "issue", searches for "q" correctly 1`] = `
+[
+  "Quasi id et et nihil sint autem.",
+  "Eaque omnis eius quas necessitatibus hic ut et corrupti.",
+  "Aut quisquam magnam eos distinctio incidunt perferendis fugit.",
+  "Dolorem quisquam cupiditate consequatur perspiciatis sequi eligendi ullam.",
+  "Nesciunt quia molestiae in aliquam amet et dolorem.",
+  "Porro tempore qui qui culpa saepe et nam quos.",
+  "Sed sint a est consequatur quae quasi autem debitis alias.",
+  "Molestiae minima maxime optio nihil quam eveniet dolor.",
+  "Et laboriosam aut ratione voluptatem quasi recusandae.",
+  "Et molestiae delectus voluptates velit vero illo aut rerum quo et.",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "iteration", searches for "27" correctly 1`] = `
+[
+  "Optio quod at quia ad pariatur dolores. Nov 26, 2024 - Dec 9, 2024",
+  "Itaque repellat possimus dolor quia nesciunt hic aut iure animi vel. Nov 13, 2024 - Dec 10, 2024",
+  "Magni eos minus vero facilis in consequuntur deserunt omnis consectetur natus. Nov 27, 2024 - Dec 10, 2024",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "label", searches for "bc" correctly 1`] = `
+[
+  "Bronce",
+  "Bryncefunc",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "merge_request", searches for "n" correctly 1`] = `
+[
+  "Blanditiis maxime voluptatem ut pariatur vel autem vero non quod libero.",
+  "Optio nemo qui dolorem sit ipsum qui saepe.",
+  "Draft: Alunny/publish lib",
+  "Draft: Fix event current target",
+  "Draft: Resolve "hgvbbvnnb"",
+  "Autem eaque et sed provident enim corrupti molestiae.",
+  "Always call registry's trigger method from withRegistration",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "milestone", searches for "16" correctly 1`] = `
+[
+  "16.7",
+  "16.8",
+  "16.9",
+  "16.10",
+  "16.11",
+  "16.0",
+  "16.1",
+  "16.2",
+  "16.3",
+  "16.4",
+  "16.5",
+  "16.6",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "snippet", searches for "s" correctly 1`] = `
+[
+  "ss",
+  "test snippet",
+  "another test snippet",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "user", searches for "r" correctly 1`] = `
+[
+  "root",
+  "errol",
+  "lakeesha.batz",
+  "myrtis",
+  "florida.schoen",
+  "laurene_blick",
+  "all",
+  "twitter",
+  "gitlab-org",
+  "evelynn_olson",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "vulnerability", searches for "cross" correctly 1`] = `
+[
+  "Cross Site Scripting (Persistent)",
+  "Cross Site Scripting (Persistent)",
+  "Cross Site Scripting (Persistent)",
+]
+`;
+
+exports[`AutocompleteHelper for reference type "wiki", searches for "ho" correctly 1`] = `
+[
+  "Home",
+  "How to use GitLab",
+]
+`;
+
+exports[`AutocompleteHelper for work items filters labels using apollo cache for command "/unlabel" 1`] = `
+[
+  "bug",
+  "feature",
+]
+`;
+
+exports[`AutocompleteHelper for work items filters statuses using apollo cache for command "/status "" 1`] = `
+[
+  "To do",
+  "In progress",
+  "Done",
+  "Won't do",
+]
+`;
+
+exports[`AutocompleteHelper for work items filters statuses using apollo cache for command "/status "pro" 1`] = `
+[
+  "In progress",
+]
+`;
+
+exports[`AutocompleteHelper for work items filters types using apollo cache for command "/type "" 1`] = `
+[
+  "Task",
+  "Incident",
+  "Issue",
+]
+`;
+
+exports[`AutocompleteHelper for work items filters types using apollo cache for command "/type "ta" 1`] = `
+[
+  "Task",
+]
+`;
+
+exports[`AutocompleteHelper for work items filters work items using apollo cache for command "/unlink" 1`] = `
+[
+  31,
+  30,
+]
+`;
+
+exports[`AutocompleteHelper for work items for /assign, filters out assigned users using apollo cache 1`] = `
+[
+  "florida.schoen",
+  "root",
+  "all",
+  "lakeesha.batz",
+  "laurene_blick",
+  "myrtis",
+  "patty",
+  "Commit451",
+  "flightjs",
+  "gitlab-instance-ade037f9",
+  "gitlab-org",
+  "gnuwget",
+  "h5bp",
+  "jashkenas",
+  "twitter",
+]
+`;
+
+exports[`AutocompleteHelper for work items for /unassign, returns only assigned users from apollo cache 1`] = `
+[
+  "errol",
+  "evelynn_olson",
+]
+`;
+
+exports[`AutocompleteHelper returns expected results before and after updating data sources 1`] = `
+[
+  "florida.schoen",
+  "root",
+  "all",
+  "errol",
+  "evelynn_olson",
+  "lakeesha.batz",
+  "laurene_blick",
+  "myrtis",
+  "patty",
+  "Commit451",
+  "flightjs",
+  "gitlab-instance-ade037f9",
+  "gitlab-org",
+  "gnuwget",
+  "h5bp",
+]
+`;
+
+exports[`AutocompleteHelper returns expected results before and after updating data sources 2`] = `
+[
+  "walker.finn",
+]
+`;

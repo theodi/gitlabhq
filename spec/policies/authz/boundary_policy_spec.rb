@@ -1,0 +1,165 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Authz::BoundaryPolicy, feature_category: :permissions do
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:root_group) { create(:group) }
+  let_it_be(:group) { create(:group, parent: root_group) }
+  let_it_be(:user) { create(:user, :with_namespace, developer_of: root_group) }
+  let_it_be(:project) { create(:project, namespace: group) }
+  let_it_be(:permissions) { :update_wiki }
+
+  let(:boundary_object) { project }
+  let(:boundary) { Authz::Boundary.for(boundary_object) }
+  let(:token) { create(:granular_pat, user:, boundary:, permissions:) }
+
+  subject(:policy) { described_class.new(token, boundary) }
+
+  context 'when the token is an OAuth access token' do
+    let_it_be(:application) { create(:oauth_application) }
+    let_it_be_with_reload(:consent_grant) do
+      create(:oauth_consent_grant, user: user, application: application, boundary: Authz::Boundary.for(project),
+        permissions: permissions)
+    end
+
+    let(:token) { create(:oauth_access_token, :granular, resource_owner: user, application: application) }
+
+    it { expect_allowed(*permissions) }
+
+    context 'when the token does not carry the granular scope' do
+      let(:token) { create(:oauth_access_token, resource_owner: user, application: application) }
+
+      it { expect_disallowed(*permissions) }
+    end
+
+    context 'when the consent grant is revoked' do
+      before do
+        consent_grant.revoked!
+      end
+
+      it { expect_disallowed(*permissions) }
+    end
+  end
+
+  context 'when the token is a non-PAT class that includes Authz::GranularTokenInterface' do
+    let(:token_class) do
+      Struct.new(:user, :granular_scopes) do
+        include ::Authz::GranularTokenInterface
+
+        def granular?
+          true
+        end
+      end
+    end
+
+    let(:granular_scope) { create(:granular_scope, boundary: boundary, permissions: Array(permissions)) }
+    let(:token) { token_class.new(user, [granular_scope]) }
+
+    it 'evaluates permissions from the token scope' do
+      expect_allowed(*permissions)
+    end
+
+    context 'when the token is not granular' do
+      let(:token_class) do
+        Struct.new(:user, :granular_scopes) do
+          include ::Authz::GranularTokenInterface
+
+          def granular?
+            false
+          end
+        end
+      end
+
+      it { expect_disallowed(*permissions) }
+    end
+
+    context 'when the token does not have the permission' do
+      let(:granular_scope) { create(:granular_scope, boundary: boundary, permissions: [:read_work_item]) }
+
+      it { expect_disallowed(*permissions) }
+    end
+
+    context 'when an anonymous caller would be granted a permission outside the token scope' do
+      let_it_be(:user) { create(:user) }
+      let_it_be(:boundary_object) { create(:project, :public) }
+
+      let(:permission) { :read_work_item }
+      let(:granular_scope) { create(:granular_scope, boundary: boundary, permissions: [:update_wiki]) }
+
+      it 'does not apply the PAT-only anonymous rule' do
+        expect(::Users::Anonymous.can?(permission, boundary_object)).to be(true)
+
+        expect_disallowed(permission)
+      end
+    end
+  end
+
+  context 'when the token responds to granular? without including Authz::GranularTokenInterface' do
+    let(:token_class) do
+      Struct.new(:user) do
+        def granular?
+          true
+        end
+
+        def permitted_for_boundary?(*)
+          true
+        end
+      end
+    end
+
+    let(:token) { token_class.new(user) }
+
+    it { expect_disallowed(*permissions) }
+  end
+
+  context 'when the PAT is not granular' do
+    before do
+      token.granular = false
+    end
+
+    it { expect_disallowed(*permissions) }
+  end
+
+  context 'when a permission is not allowed' do
+    it { expect_disallowed(:delete_wiki) }
+  end
+
+  context 'when the user is not a member of the boundary' do
+    let_it_be(:user) { create(:user) }
+
+    it 'grants the permission on a private boundary' do
+      expect_allowed(*permissions)
+    end
+
+    context 'and the boundary is a public project' do
+      let_it_be(:boundary_object) { create(:project, :public) }
+
+      # create_work_item is an assignable permission group, and it expands to
+      # include the create_issue permission asserted below.
+      let_it_be(:permissions) { :create_work_item }
+
+      it 'grants a permission the anonymous rule does not cover' do
+        expect(::Users::Anonymous.can?(:create_issue, boundary_object)).to be(false)
+
+        expect_allowed(:create_issue)
+      end
+    end
+  end
+
+  context 'with different boundary types' do
+    where(:boundary_object) do
+      [
+        ref(:group),
+        ref(:project),
+        :instance,
+        :user
+      ]
+    end
+
+    with_them do
+      it { expect_allowed(*permissions) }
+    end
+  end
+end

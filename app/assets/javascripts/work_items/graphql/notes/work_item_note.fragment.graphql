@@ -1,0 +1,37 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+#import "~/work_items/graphql/award_emoji.fragment.graphql"
+
+fragment WorkItemNote on Note {
+  id
+  body
+  bodyHtml
+  system
+  internal
+  imported
+  systemNoteIconName
+  createdAt
+  lastEditedAt
+  url
+  authorIsContributor
+  maxAccessLevelOfAuthor
+  externalAuthor
+  lastEditedBy {
+    ...User
+    webPath
+  }
+  author {
+    ...User
+  }
+  awardEmoji {
+    nodes {
+      ...AwardEmojiFragment
+    }
+  }
+  userPermissions {
+    adminNote
+    awardEmoji
+  }
+  systemNoteMetadata {
+    id
+  }
+}

@@ -1,44 +1,56 @@
-# External issue tracker
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: External issue trackers
+description: Configure an external issue tracker for a GitLab project to reference and link issues from tools like Bugzilla or YouTrack.
+---
 
-GitLab has a great issue tracker but you can also use an external issue tracker such as Jira, Bugzilla or Redmine. You can configure issue trackers per GitLab project. For instance, if you configure Jira it allows you to do the following:
+{{< details >}}
 
-- the 'Issues' link on the GitLab project pages takes you to the appropriate Jira issue index;
-- clicking 'New issue' on the project dashboard creates a new Jira issue;
-- To reference Jira issue PROJECT-1234 in comments, use syntax PROJECT-1234. Commit messages get turned into HTML links to the corresponding Jira issue.
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
 
-![Jira screenshot](jira-integration-points.png)
+{{< /details >}}
 
-GitLab Enterprise Edition contains [advanced JIRA support](http://doc.gitlab.com/ee/integration/jira.html).
+GitLab has its own [issue tracker](../user/project/issues/_index.md),
+but you can also configure an external issue tracker per GitLab project.
+You can then use:
 
-## Configuration
+- The external issue tracker with the GitLab issue tracker
+- The external issue tracker only
 
-### Project Service
+With an external tracker, you can use the format `CODE-123` to mention
+external issues in GitLab merge requests, commits, and comments where:
 
-You can enable an external issue tracker per project. As an example, we will configure `Redmine` for project named gitlab-ci.
+- `CODE` is a unique code for the tracker.
+- `123` is the issue number in the tracker.
 
-Fill in the required details on the page:
+References are displayed as issue links.
 
-![redmine configuration](redmine_configuration.png)
+## Disable the GitLab issue tracker
 
-* `description` A name for the issue tracker (to differentiate between instances, for example).
-* `project_url` The URL to the project in Redmine which is being linked to this GitLab project.
-* `issues_url` The URL to the issue in Redmine project that is linked to this GitLab project. Note that the `issues_url` requires `:id` in the url. This id is used by GitLab as a placeholder to replace the issue number.
-* `new_issue_url` This is the URL to create a new issue in Redmine for the project linked to this GitLab project.
+To turn off work items for a project, including the GitLab issue tracker:
 
-### Service Template
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **Visibility, project features, permissions**.
+1. Under **Work items**, turn off the toggle.
+1. Select **Save changes**.
 
-It is necessary to configure the external issue tracker per project, because project specific details are needed for the integration with GitLab.
-The admin can add a service template that sets a default for each project. This makes it much easier to configure individual projects.
+After you turn off the work items setting, **Work items** is not visible in the left sidebar.
+If you've configured an [external issue tracker](#configure-an-external-issue-tracker), it remains in the left sidebar.
 
-In GitLab Admin section, navigate to `Service Templates` and choose the service template you want to create:
+## Configure an external issue tracker
 
-![redmine service template](redmine_service_template.png)
+You can configure any of the following external issue trackers:
 
-After the template is created, the template details will be pre-filled on the project service page.
-
-NOTE: For each project, you will still need to configure the issue tracking URLs by replacing `:issues_tracker_id` in the above screenshot
-with the ID used by your external issue tracker. Prior to GitLab v7.8, this ID was configured in the project settings, and GitLab would automatically
-update the URL configured in `gitlab.yml`. This behavior is now depecated, and all issue tracker URLs must be configured directly
-within the project's Services settings.
-
-Support to add your commits to the Jira ticket automatically is [available in GitLab EE](http://doc.gitlab.com/ee/integration/jira.html).
+- [Bugzilla](../user/project/integrations/bugzilla.md)
+- [ClickUp](../user/project/integrations/clickup.md)
+- [Custom issue tracker](../user/project/integrations/custom_issue_tracker.md)
+- [Engineering Workflow Management (EWM)](../user/project/integrations/ewm.md)
+- [Jira](jira/_index.md)
+- [Linear](../user/project/integrations/linear.md)
+- [Phorge](../user/project/integrations/phorge.md)
+- [Redmine](../user/project/integrations/redmine.md)
+- [YouTrack](../user/project/integrations/youtrack.md)

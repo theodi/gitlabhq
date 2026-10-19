@@ -1,0 +1,5 @@
+include:
+  - local: gems/gem.gitlab-ci.yml
+    inputs:
+      gem_name: "devise-pbkdf2-encryptable"
+      gem_path_prefix: "vendor/gems/"

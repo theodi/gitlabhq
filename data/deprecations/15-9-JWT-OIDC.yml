@@ -1,0 +1,51 @@
+---
+- title: "Old versions of JSON web tokens are deprecated"
+  announcement_milestone: "15.9"  # (required) The milestone when this feature was first announced as deprecated.
+  removal_milestone: "17.0"  # (required) The milestone when this feature is planned to be removed
+  breaking_change: true  # (required) Change to false if this is not a breaking change.
+  reporter: dhershkovitch  # (required) GitLab username of the person reporting the change
+  stage: Verify  # (required) String value of the stage that the feature was created in. e.g., Growth
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/366798  # (required) Link to the deprecation issue in GitLab
+  body: |  # (required) Do not modify this line, instead modify the lines below.
+    [ID tokens](https://docs.gitlab.com/ci/secrets/id_token_authentication/) with OIDC support
+    were introduced in GitLab 15.7. These tokens are more configurable than the old JSON web tokens (JWTs), are OIDC compliant,
+    and only available in CI/CD jobs that explicitly have ID tokens configured.
+    ID tokens are more secure than the old `CI_JOB_JWT*` JSON web tokens which are exposed in every job,
+    and as a result these old JSON web tokens are deprecated:
+
+    - `CI_JOB_JWT`
+    - `CI_JOB_JWT_V1`
+    - `CI_JOB_JWT_V2`
+
+    To prepare for this change, configure your pipelines to use [ID tokens](https://docs.gitlab.com/ci/yaml/#id_tokens)
+    instead of the deprecated tokens. For OIDC compliance, the `iss` claim now uses
+    the fully qualified domain name, for example `https://example.com`, previously
+    introduced with the `CI_JOB_JWT_V2` token.
+
+    In GitLab 15.9 to 15.11, you can [enable the **Limit JSON Web Token (JWT) access**](https://docs.gitlab.com/ci/secrets/id_token_authentication/#enable-automatic-id-token-authentication)
+    setting, which prevents the old tokens from being exposed to any jobs and enables
+    [ID token authentication for the `secrets:vault` keyword](https://docs.gitlab.com/ci/secrets/id_token_authentication/#configure-automatic-id-token-authentication).
+
+    In GitLab 16.0 and later:
+
+    - This setting will be removed.
+    - CI/CD jobs that use the `id_tokens` keyword can use ID tokens with `secrets:vault`,
+      and will not have any `CI_JOB_JWT*` tokens available.
+    - Jobs that do not use the `id_tokens` keyword will continue to have the `CI_JOB_JWT*`
+      tokens available until GitLab 17.0.
+
+    In GitLab 17.0, the deprecated tokens will be completely removed and will no longer
+    be available in CI/CD jobs.
+
+#
+# If an End of Support period applies, the announcement should be shared with GitLab Support
+# in the `#spt_managers` channel in Slack, and mention `@gitlab-com/support` in this MR.
+#
+  end_of_support_milestone:  # (optional) Use "XX.YY" format. The milestone when support for this feature will end.
+  #
+  # OTHER OPTIONAL FIELDS
+  #
+  tiers:  # (optional - may be required in the future) An array of tiers that the feature is available in currently.  e.g., [Free, Silver, Gold, Core, Premium, Ultimate]
+  documentation_url:  # (optional) This is a link to the current documentation page
+  image_url:  # (optional) This is a link to a thumbnail image depicting the feature
+  video_url:  # (optional) Use the youtube thumbnail URL with the structure of https://img.youtube.com/vi/UNIQUEID/hqdefault.jpg

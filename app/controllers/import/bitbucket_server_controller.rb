@@ -1,0 +1,184 @@
+# frozen_string_literal: true
+
+class Import::BitbucketServerController < Import::BaseController
+  extend ::Gitlab::Utils::Override
+
+  include ActionView::Helpers::SanitizeHelper
+  include SafeFormatHelper
+
+  before_action :verify_bitbucket_server_import_enabled
+  before_action :bitbucket_auth, except: [:new, :configure]
+  before_action :normalize_import_params, only: [:create]
+  before_action -> { check_rate_limit!(:bitbucket_server_import, scope: { user: current_user }) },
+    only: :status, if: -> { request.format.json? }
+
+  rescue_from BitbucketServer::Connection::ConnectionError, with: :bitbucket_connection_error
+
+  def new; end
+
+  def create
+    repo = client.repo(@project_key, @repo_slug)
+
+    unless repo
+      return render json: {
+        errors: safe_format(
+          _("Project %{project_repo} could not be found"),
+          project_repo: "#{@project_key}/#{@repo_slug}"
+        )
+      }, status: :unprocessable_entity
+    end
+
+    import_service = Import::BitbucketServerService.new(client, current_user, bitbucket_server_import_params)
+    import_service.request_channel = ::Gitlab::Import::RequestChannel::UI
+    result = import_service.execute(credentials)
+
+    if result[:status] == :success
+      render json: ProjectSerializer.new.represent(result[:project], serializer: :import)
+    else
+      render json: { errors: result[:message] }, status: result[:http_status]
+    end
+  end
+
+  def configure
+    session[personal_access_token_key] = configure_params[:personal_access_token]
+    session[bitbucket_server_username_key] = configure_params[:bitbucket_server_username]
+    session[bitbucket_server_url_key] = configure_params[:bitbucket_server_url]
+
+    redirect_to status_import_bitbucket_server_path(namespace_id: namespace_id_param)
+  end
+
+  # We need to re-expose controller's internal method 'status' as action.
+  # rubocop:disable Lint/UselessMethodDefinition
+  def status
+    super
+  end
+  # rubocop:enable Lint/UselessMethodDefinition
+
+  protected
+
+  override :importable_repos
+  def importable_repos
+    bitbucket_repos.filter(&:valid?)
+  end
+
+  override :incompatible_repos
+  def incompatible_repos
+    bitbucket_repos.reject(&:valid?)
+  end
+
+  override :provider_name
+  def provider_name
+    :bitbucket_server
+  end
+
+  override :provider_url
+  def provider_url
+    session[bitbucket_server_url_key]
+  end
+
+  private
+
+  def client
+    @client ||= BitbucketServer::Client.new(
+      credentials.merge(
+        logger: Gitlab::BitbucketServerImport::Logger
+      ),
+      http_client: Import::Clients::HTTP
+    )
+  end
+
+  def bitbucket_repos
+    @bitbucket_repos ||= client.repos(
+      page_offset: page_offset,
+      limit: limit_per_page,
+      filter: sanitized_filter_param
+    ).to_a
+  end
+
+  def normalize_import_params
+    @project_key, @repo_slug = repo_id_param.split('/')
+  end
+
+  def configure_params
+    params.permit(:personal_access_token, :bitbucket_server_username, :bitbucket_server_url)
+  end
+
+  def repo_id_param
+    params.permit(:repo_id)[:repo_id]
+  end
+
+  def bitbucket_server_import_params
+    params.permit(:repo_id, :new_name, :new_namespace, :bitbucket_server_url, :timeout_strategy, :target_namespace)
+      .merge(
+        bitbucket_server_project: @project_key,
+        bitbucket_server_repo: @repo_slug,
+        organization_id: Current.organization.id
+      )
+  end
+
+  def bitbucket_auth
+    unless session[bitbucket_server_url_key].present? &&
+        session[bitbucket_server_username_key].present? &&
+        session[personal_access_token_key].present?
+      redirect_to new_import_bitbucket_server_path(namespace_id: namespace_id_param)
+    end
+  end
+
+  def verify_bitbucket_server_import_enabled
+    render_404 unless bitbucket_server_import_enabled?
+  end
+
+  def bitbucket_server_url_key
+    :bitbucket_server_url
+  end
+
+  def bitbucket_server_username_key
+    :bitbucket_server_username
+  end
+
+  def personal_access_token_key
+    :bitbucket_server_personal_access_token
+  end
+
+  def clear_session_data
+    session[bitbucket_server_url_key] = nil
+    session[bitbucket_server_username_key] = nil
+    session[personal_access_token_key] = nil
+  end
+
+  def credentials
+    {
+      base_uri: session[bitbucket_server_url_key],
+      user: session[bitbucket_server_username_key],
+      password: session[personal_access_token_key]
+    }
+  end
+
+  def page_param
+    params.permit(:page)[:page]
+  end
+
+  def page_offset
+    [0, page_param.to_i].max
+  end
+
+  def limit_per_page
+    BitbucketServer::Paginator::PAGE_LENGTH
+  end
+
+  def bitbucket_connection_error(error)
+    flash[:alert] = safe_format(_("Unable to connect to server: %{error}"), error: error)
+    clear_session_data
+
+    respond_to do |format|
+      format.json do
+        render json: {
+          error: {
+            message: safe_format(_("Unable to connect to server: %{error}"), error: error),
+            redirect: new_import_bitbucket_server_path
+          }
+        }, status: :unprocessable_entity
+      end
+    end
+  end
+end

@@ -1,0 +1,13 @@
+---
+table_name: dependency_proxy_manifests
+classes:
+- DependencyProxy::Manifest
+feature_categories:
+- virtual_registry
+description: Dependency proxy manifest files
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/48535
+milestone: '13.7'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  group_id: namespaces
+table_size: small

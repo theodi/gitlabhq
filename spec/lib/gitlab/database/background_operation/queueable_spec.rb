@@ -1,0 +1,262 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Database::BackgroundOperation::Queueable, feature_category: :database do
+  let(:worker_klass) { Gitlab::Database::BackgroundOperation::Worker }
+  let_it_be(:user) { create(:user) }
+  let(:organization) { Current.organization }
+
+  shared_examples 'enqueues worker' do
+    it 'creates a new worker' do
+      expect { enqueue_background_operation }.to change { worker_klass.count }.by(1)
+    end
+  end
+
+  shared_examples 'rejects cell-local enqueue' do
+    it 'raises EnqueueNotAllowedError and does not create a worker' do
+      expect { enqueue_background_operation }
+        .to raise_error(Gitlab::Database::BackgroundOperation::Queueable::EnqueueNotAllowedError)
+        .and not_change { worker_klass.count }
+    end
+  end
+
+  before do
+    stub_current_organization(user.organization)
+  end
+
+  describe '.enqueue' do
+    let(:job_class_name) { 'DummyTest' }
+    let(:table_name) { 'users' }
+    let(:column_name) { 'id' }
+    let(:job_arguments) { %w[arg1 arg2] }
+
+    subject(:enqueue_background_operation) do
+      worker_klass.enqueue(
+        job_class_name,
+        table_name,
+        column_name,
+        job_arguments: job_arguments,
+        user: user,
+        organization: organization
+      )
+    end
+
+    context 'when there are no duplicate records' do
+      it 'enqueues the worker' do
+        expect { enqueue_background_operation }.to change { worker_klass.count }.by(1)
+
+        record = worker_klass.unfinished_with_config(job_class_name, table_name, column_name, job_arguments).first
+
+        expect(record).to have_attributes(
+          job_class_name: job_class_name,
+          table_name: table_name,
+          column_name: column_name,
+          user_id: user.id,
+          organization_id: organization.id,
+          job_arguments: job_arguments,
+          batch_size: described_class::DEFAULT_BATCH_VALUES[:batch_size],
+          sub_batch_size: described_class::DEFAULT_BATCH_VALUES[:sub_batch_size],
+          interval: described_class::DEFAULT_BATCH_VALUES[:interval].to_i,
+          batch_class_name: described_class::DEFAULT_BATCH_VALUES[:batch_class_name],
+          pause_ms: described_class::DEFAULT_BATCH_VALUES[:pause_ms],
+          status: 0,
+          total_tuple_count: nil
+        )
+      end
+
+      context 'with cardinality estimation' do
+        before do
+          pg_class_double = instance_double(Gitlab::Database::PgClass, cardinality_estimate: 1000)
+          allow(Gitlab::Database::PgClass).to receive(:for_table).with(table_name).and_return(pg_class_double)
+        end
+
+        it 'sets total_tuple_count' do
+          expect { enqueue_background_operation }.to change { worker_klass.count }.by(1)
+          record = worker_klass.unfinished_with_config(job_class_name, table_name, column_name, job_arguments).first
+
+          expect(record).to have_attributes(total_tuple_count: 1000)
+        end
+      end
+
+      context 'for background_worker_cell_local' do
+        subject(:enqueue_background_operation) do
+          worker_klass.enqueue(
+            job_class_name,
+            table_name,
+            column_name,
+            job_arguments: job_arguments,
+            enqueued_by: 'Database::BackgroundOperation::CronEnqueueWorker'
+          )
+        end
+
+        let(:worker_klass) { Gitlab::Database::BackgroundOperation::WorkerCellLocal }
+
+        it 'can store without organization_id' do
+          expect { enqueue_background_operation }.to change { worker_klass.count }.by(1)
+        end
+
+        context 'when enqueued_by is not provided' do
+          subject(:enqueue_background_operation) do
+            worker_klass.enqueue(job_class_name, table_name, column_name, job_arguments: job_arguments)
+          end
+
+          it_behaves_like 'rejects cell-local enqueue'
+        end
+
+        context 'when enqueued_by is a different class' do
+          subject(:enqueue_background_operation) do
+            worker_klass.enqueue(
+              job_class_name,
+              table_name,
+              column_name,
+              job_arguments: job_arguments,
+              enqueued_by: 'Foo'
+            )
+          end
+
+          it_behaves_like 'rejects cell-local enqueue'
+        end
+      end
+
+      context "for 'giltab_main_cell' table" do
+        it 'uses gitlab_main connection' do
+          allow(worker_klass).to receive(:table_connection_info).with(table_name).and_call_original
+
+          enqueue_background_operation
+
+          expect(worker_klass).to have_received(:table_connection_info).with(table_name)
+
+          schema, connection = worker_klass.table_connection_info(table_name)
+          expect(schema).to eq(:gitlab_main_user)
+          expect(connection).to eq(ApplicationRecord.connection)
+        end
+      end
+
+      context "for 'gitlab_ci' table" do
+        let(:table_name) { 'p_ci_builds' }
+
+        it 'uses gitlab_ci connection' do
+          allow(worker_klass).to receive(:table_connection_info).with(table_name).and_call_original
+
+          enqueue_background_operation
+
+          expect(worker_klass).to have_received(:table_connection_info).with(table_name)
+
+          schema, connection = worker_klass.table_connection_info(table_name)
+          expect(schema).to eq(:gitlab_ci)
+          expect(connection).to eq(Ci::ApplicationRecord.connection)
+        end
+      end
+    end
+
+    context 'with duplicates' do
+      context 'with undone workers' do
+        before do
+          # worker will be in the default 'queued' status
+          worker_klass.enqueue(
+            job_class_name,
+            table_name,
+            column_name,
+            job_arguments: job_arguments,
+            user: user,
+            organization: organization
+          )
+        end
+
+        it 'skips enqueue and logs a warning' do
+          expect(Gitlab::AppLogger).to receive(:warn).with(
+            format(
+              described_class::EXISTING_OPERATION_MSG,
+              job_class_name,
+              table_name,
+              column_name,
+              job_arguments.join(', ')
+            )
+          )
+
+          expect { enqueue_background_operation }.not_to change { worker_klass.count }
+        end
+      end
+
+      context 'with finished workers' do
+        before do
+          worker = worker_klass.enqueue(
+            job_class_name,
+            table_name,
+            column_name,
+            job_arguments: job_arguments,
+            user: user,
+            organization: organization
+          )
+
+          worker.update!(status: 3) # finished
+        end
+
+        it_behaves_like 'enqueues worker'
+      end
+
+      context 'with failed workers' do
+        before do
+          worker = worker_klass.enqueue(
+            job_class_name,
+            table_name,
+            column_name,
+            job_arguments: job_arguments,
+            user: user,
+            organization: organization
+          )
+
+          worker.update!(status: 4) # failed
+        end
+
+        it_behaves_like 'enqueues worker'
+      end
+
+      context 'when resuming from a previous worker' do
+        let(:previous_max) { [5000] }
+
+        before do
+          previous_worker = worker_klass.enqueue(
+            job_class_name,
+            table_name,
+            column_name,
+            job_arguments: job_arguments,
+            user: user,
+            organization: organization
+          )
+
+          previous_worker.create_job!([1], previous_max)
+          previous_worker.update!(status: 3) # finished
+        end
+
+        it 'sets min_cursor to the previous worker last job max_cursor' do
+          enqueue_background_operation
+
+          new_worker = worker_klass.unfinished_with_config(
+            job_class_name, table_name, column_name, job_arguments, org_id: organization.id
+          ).first
+
+          expect(new_worker.min_cursor).to eq(previous_max)
+        end
+
+        context 'when job class uses reset_cursor!' do
+          let(:job_class_name) { 'UsersDeleteUnconfirmedSecondaryEmails' }
+          let(:table_name) { 'emails' }
+          let(:column_name) { 'id' }
+          let(:job_arguments) { [] }
+
+          it 'starts from MIN(column) instead of previous max_cursor' do
+            enqueue_background_operation
+
+            new_worker = worker_klass.unfinished_with_config(
+              job_class_name, table_name, column_name, job_arguments, org_id: organization.id
+            ).first
+
+            expect(new_worker.min_cursor).not_to eq(previous_max)
+          end
+        end
+      end
+    end
+  end
+end

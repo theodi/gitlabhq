@@ -1,0 +1,10 @@
+---
+name: read_merge_request_dependency
+deprecated: true
+description: Grants the ability to read merge request dependencies
+boundaries:
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - read_merge_request_dependency

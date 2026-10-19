@@ -1,0 +1,188 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlButton, GlLink } from '@gitlab/ui';
+import { n__, s__, sprintf } from '~/locale';
+import {
+  TIMESTAMP_TYPE_CREATED_AT,
+  TIMESTAMP_TYPES,
+} from '~/vue_shared/components/resource_lists/constants';
+import ProjectsListItem from '../projects_list/projects_list_item.vue';
+import GroupsListItem from '../groups_list/groups_list_item.vue';
+import { LIST_ITEM_TYPE_PROJECT } from './constants';
+
+export default {
+  name: 'NestedGroupsProjectsListItem',
+  components: {
+    GlButton,
+    GlLink,
+    NestedGroupsProjectsList: defineAsyncComponent(
+      () => import('./nested_groups_projects_list.vue'),
+    ),
+  },
+  props: {
+    item: {
+      type: Object,
+      required: true,
+      validator: (value) => {
+        if (value.type === LIST_ITEM_TYPE_PROJECT) {
+          return true;
+        }
+
+        return Array.isArray(value.children);
+      },
+    },
+    timestampType: {
+      type: String,
+      required: false,
+      default: TIMESTAMP_TYPE_CREATED_AT,
+      validator(value) {
+        return TIMESTAMP_TYPES.includes(value);
+      },
+    },
+    includeMicrodata: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    /**
+     * Allows the parent component to override `isExpanded`.
+     * This is needed when searching as we want the tree to be open after searching.
+     */
+    expandedOverride: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['click-avatar', 'hover-stat', 'hover-visibility', 'load-children', 'refetch'],
+  data() {
+    return {
+      isExpanded: this.expandedOverride && this.item.children?.length,
+    };
+  },
+  computed: {
+    itemComponent() {
+      return this.item.type === LIST_ITEM_TYPE_PROJECT ? ProjectsListItem : GroupsListItem;
+    },
+    nestedItemsContainerId() {
+      return `nested-items-container-${this.item.id}`;
+    },
+    nestedItemsContainerClasses() {
+      const baseClasses = ['gl-pl-6'];
+
+      if (!this.isExpanded) {
+        return [...baseClasses, 'gl-hidden'];
+      }
+
+      return baseClasses;
+    },
+    itemProps() {
+      const sharedProps = {
+        listItemClass: this.item.hasChildren ? null : 'gl-pl-7',
+        timestampType: this.timestampType,
+        includeMicrodata: this.includeMicrodata,
+      };
+
+      return this.item.type === LIST_ITEM_TYPE_PROJECT
+        ? {
+            ...sharedProps,
+            project: this.item,
+            showProjectIcon: true,
+          }
+        : {
+            ...sharedProps,
+            group: this.item,
+            showGroupIcon: true,
+          };
+    },
+    hasMoreChildren() {
+      return this.item.childrenCount > this.item.children.length;
+    },
+    showMoreChildrenLink() {
+      return this.hasMoreChildren && !this.item.childrenLoading;
+    },
+    moreChildrenLinkText() {
+      return n__(
+        'View all (%d more item)',
+        'View all (%d more items)',
+        this.item.childrenCount - this.item.children.length,
+      );
+    },
+    expandButtonProps() {
+      return {
+        'aria-label': sprintf(s__('Groups|Show children of %{avatarLabel}'), {
+          avatarLabel: this.item.avatarLabel,
+        }),
+        category: 'tertiary',
+        icon: this.isExpanded ? 'chevron-down' : 'chevron-right',
+        loading: this.item.childrenLoading,
+        'aria-expanded': this.isExpanded ? 'true' : 'false',
+        'aria-controls': this.nestedItemsContainerId,
+      };
+    },
+    nestedGroupsProjectsListItems() {
+      return this.item.children;
+    },
+  },
+  watch: {
+    expandedOverride(newValue) {
+      this.isExpanded = newValue;
+    },
+  },
+  methods: {
+    onNestedItemsToggleClick() {
+      this.isExpanded = !this.isExpanded;
+
+      if (!this.item.children?.length) {
+        this.$emit('load-children', this.item.id);
+      }
+    },
+    onRefetch() {
+      this.$emit('refetch');
+    },
+  },
+};
+</script>
+
+<template>
+  <component
+    :is="itemComponent"
+    v-bind="itemProps"
+    @refetch="onRefetch"
+    @hover-visibility="$emit('hover-visibility', $event)"
+    @hover-stat="$emit('hover-stat', $event)"
+    @click-avatar="$emit('click-avatar')"
+  >
+    <template v-if="item.hasChildren" #children-toggle>
+      <gl-button
+        v-bind="expandButtonProps"
+        data-testid="nested-groups-project-list-item-toggle-button"
+        @click="onNestedItemsToggleClick"
+      />
+    </template>
+    <template v-if="item.hasChildren" #children>
+      <!-- eslint-disable-next-line vue/no-undef-components -->
+      <nested-groups-projects-list
+        :id="nestedItemsContainerId"
+        :items="nestedGroupsProjectsListItems"
+        :timestamp-type="timestampType"
+        :include-microdata="includeMicrodata"
+        :expanded-override="expandedOverride"
+        :class="nestedItemsContainerClasses"
+        @load-children="$emit('load-children', $event)"
+        @refetch="onRefetch"
+        @hover-visibility="$emit('hover-visibility', $event)"
+        @hover-stat="$emit('hover-stat', $event)"
+        @click-avatar="$emit('click-avatar')"
+      >
+        <li v-if="showMoreChildrenLink" class="gl-border-b gl-py-4 gl-pl-7">
+          <div class="gl-flex gl-h-7 gl-items-center">
+            <gl-link :href="item.webUrl" data-testid="more-children-link">
+              {{ moreChildrenLinkText }}
+            </gl-link>
+          </div>
+        </li>
+      </nested-groups-projects-list>
+    </template>
+  </component>
+</template>

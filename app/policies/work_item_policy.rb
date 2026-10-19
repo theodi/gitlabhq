@@ -1,0 +1,48 @@
+# frozen_string_literal: true
+
+class WorkItemPolicy < IssuePolicy
+  condition(:can_report_spam) do
+    @subject.submittable_as_spam_by?(@user)
+  end
+
+  rule { can?(:admin_issue) }.enable :admin_work_item
+  rule { can?(:destroy_issue) }.enable :delete_work_item
+
+  rule { can?(:update_issue) }.enable :update_work_item
+
+  rule { can?(:set_issue_metadata) }.enable :set_work_item_metadata
+
+  rule { can?(:read_issue) }.enable :read_work_item
+  # because IssuePolicy delegates to ProjectPolicy and
+  # :read_work_item is enabled in ProjectPolicy too, we
+  # need to make sure we also prevent this rule if read_issue
+  # is prevented
+  rule { ~can?(:read_issue) }.prevent :read_work_item
+
+  rule { (is_container_member & can?(:read_work_item)) | admin }.policy do
+    enable :admin_work_item_link
+    enable :admin_parent_link
+  end
+
+  rule { can?(:admin_work_item) & supports_move_and_clone }.policy do
+    enable :move_work_item
+    enable :clone_work_item
+  end
+
+  rule { is_incident & ~can?(:_update_incident_work_item) }.policy do
+    prevent :update_work_item
+    prevent :admin_work_item
+    prevent :admin_work_item_link
+    prevent :admin_parent_link
+  end
+
+  rule { is_incident & ~can?(:_delete_incident_work_item) }.policy do
+    prevent :delete_work_item
+  end
+
+  rule { can_report_spam }.enable :report_spam
+
+  rule { ~work_item_type_available }.prevent_all
+end
+
+WorkItemPolicy.prepend_mod

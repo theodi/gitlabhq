@@ -1,0 +1,137 @@
+# frozen_string_literal: true
+
+require 'resolv'
+
+class VerifyPagesDomainService
+  # The maximum number of seconds to be spent on each DNS lookup
+  RESOLVER_TIMEOUT_SECONDS = 15
+
+  # How long verification lasts for
+  VERIFICATION_PERIOD = 7.days
+  REMOVAL_DELAY = 1.week.freeze
+
+  attr_reader :domain, :current_user
+
+  def initialize(domain, current_user = nil)
+    @domain = domain
+    @current_user = current_user
+  end
+
+  def execute
+    unless domain.verification_code.present?
+      return ServiceResponse.error(message: "No verification code set for #{domain.domain}")
+    end
+
+    if !verification_enabled? || dns_record_present?
+      verify_domain!
+    elsif expired?
+      disable_domain!
+    else
+      unverify_domain!
+    end
+  end
+
+  private
+
+  def verify_domain!
+    was_disabled = !domain.enabled?
+    was_unverified = domain.unverified?
+
+    # Prevent any pre-existing grace period from being truncated
+    reverify = [domain.enabled_until, VERIFICATION_PERIOD.from_now].compact.max
+
+    domain.assign_attributes(verified_at: Time.current, enabled_until: reverify, remove_at: nil)
+    domain.save!(validate: false)
+
+    if was_disabled
+      notify(:enabled)
+      log_audit_event(:enabled)
+    elsif was_unverified
+      notify(:verification_succeeded)
+      log_audit_event(:verification_succeeded)
+    end
+
+    after_successful_verification
+
+    ServiceResponse.success
+  end
+
+  def after_successful_verification
+    # method overridden in EE
+  end
+
+  def unverify_domain!
+    was_verified = domain.verified?
+
+    domain.assign_attributes(verified_at: nil)
+    domain.remove_at ||= REMOVAL_DELAY.from_now unless domain.enabled?
+    domain.save!(validate: false)
+
+    if was_verified
+      notify(:verification_failed)
+      log_audit_event(:verification_failed)
+    end
+
+    ServiceResponse.error(message: "Couldn't verify #{domain.domain}")
+  end
+
+  def disable_domain!
+    domain.assign_attributes(verified_at: nil, enabled_until: nil)
+    domain.remove_at ||= REMOVAL_DELAY.from_now
+    domain.save!(validate: false)
+
+    notify(:disabled)
+    log_audit_event(:disabled)
+
+    ServiceResponse.error(message: "Couldn't verify #{domain.domain}. It is now disabled.")
+  end
+
+  # A domain is only expired until `disable!` has been called
+  def expired?
+    domain.enabled_until&.past?
+  end
+
+  def dns_record_present?
+    Resolv::DNS.open do |resolver|
+      resolver.timeouts = RESOLVER_TIMEOUT_SECONDS
+
+      check(domain.domain, resolver) || check(domain.verification_domain, resolver)
+    end
+  end
+
+  def check(domain_name, resolver)
+    # Append '.' to domain_name, indicating absolute FQDN
+    records = parse(txt_records(domain_name + '.', resolver))
+
+    records.any? do |record|
+      record == domain.keyed_verification_code || record == domain.verification_code
+    end
+  rescue StandardError => err
+    log_error("Failed to check TXT records on #{domain_name} for #{domain.domain}: #{err}")
+    false
+  end
+
+  def txt_records(domain_name, resolver)
+    resolver.getresources(domain_name, Resolv::DNS::Resource::IN::TXT)
+  end
+
+  def parse(records)
+    records.flat_map(&:strings).flat_map(&:split)
+  end
+
+  def verification_enabled?
+    Gitlab::CurrentSettings.pages_domain_verification_enabled?
+  end
+
+  def notify(type)
+    return unless verification_enabled?
+
+    Gitlab::AppLogger.info("Pages domain '#{domain.domain}' changed state to '#{type}'")
+    NotificationService.new.public_send("pages_domain_#{type}", domain) # rubocop:disable GitlabSecurity/PublicSend -- Technical debt
+  end
+
+  # Overridden in EE
+  def log_audit_event(type); end
+end
+
+VerifyPagesDomainService.prepend_mod

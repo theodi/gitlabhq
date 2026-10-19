@@ -1,0 +1,93 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Resolvers::Ci::JobsResolver, feature_category: :continuous_integration do
+  include GraphqlHelpers
+
+  let_it_be(:project) { create(:project, :public) }
+  let_it_be(:pipeline) { create(:ci_pipeline, project: project) }
+
+  before_all do
+    create(:ci_build, name: 'Normal job', pipeline: pipeline)
+    create(:ci_build, :sast, name: 'DAST job', pipeline: pipeline)
+    create(:ci_build, :dast, name: 'SAST job', pipeline: pipeline)
+    create(:ci_build, :container_scanning, name: 'Container scanning job', pipeline: pipeline)
+    create(:ci_build, name: 'Job with tags', pipeline: pipeline, tag_list: ['review'])
+    create(:ci_bridge, name: 'Bridge job', pipeline: pipeline)
+  end
+
+  describe '#resolve' do
+    context 'when none of the optional params are given' do
+      it "returns all of the pipeline's jobs" do
+        jobs = resolve(described_class, obj: pipeline, arg_style: :internal)
+
+        expect(jobs).to contain_exactly(
+          have_attributes(name: 'Normal job'),
+          have_attributes(name: 'DAST job'),
+          have_attributes(name: 'SAST job'),
+          have_attributes(name: 'Container scanning job'),
+          have_attributes(name: 'Job with tags'),
+          have_attributes(name: 'Bridge job')
+        )
+      end
+    end
+
+    context 'when security_report_types is present' do
+      it "returns the pipeline's jobs with the given security report types" do
+        report_types = [
+          ::Types::Security::ReportTypeEnum.values['SAST'].value,
+          ::Types::Security::ReportTypeEnum.values['DAST'].value
+        ]
+        jobs = resolve(
+          described_class,
+          obj: pipeline,
+          args: { security_report_types: report_types },
+          arg_style: :internal
+        )
+
+        expect(jobs).to contain_exactly(
+          have_attributes(name: 'DAST job'),
+          have_attributes(name: 'SAST job')
+        )
+      end
+    end
+
+    context 'when a job has tags' do
+      it "returns jobs with tags when applicable" do
+        jobs = resolve(described_class, obj: pipeline, arg_style: :internal)
+
+        expect(jobs).to contain_exactly(
+          have_attributes(tag_list: []),
+          have_attributes(tag_list: []),
+          have_attributes(tag_list: []),
+          have_attributes(tag_list: []),
+          have_attributes(tag_list: ['review']),
+          have_attributes(name: 'Bridge job') # A bridge job has no tag list
+        )
+      end
+    end
+
+    context 'when a job is manual' do
+      before_all do
+        create(:ci_build, name: 'Manual job', pipeline: pipeline, when: 'manual')
+      end
+
+      it "returns jobs with when set to 'manual'" do
+        jobs = resolve(described_class, obj: pipeline, arg_style: :internal, args: { when_executed: ['manual'] })
+        expect(jobs).to contain_exactly(
+          have_attributes(name: 'Manual job')
+        )
+      end
+    end
+
+    context 'when filtering by job kind' do
+      it "returns jobs with that type" do
+        jobs = resolve(described_class, obj: pipeline, arg_style: :internal, args: { job_kind: ::Ci::Bridge })
+        expect(jobs).to contain_exactly(
+          have_attributes(name: 'Bridge job')
+        )
+      end
+    end
+  end
+end

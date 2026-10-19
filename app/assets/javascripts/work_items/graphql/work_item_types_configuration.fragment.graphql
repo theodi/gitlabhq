@@ -1,0 +1,15 @@
+#import "~/work_items/graphql/work_item_types_configuration_base.fragment.graphql"
+
+fragment WorkItemTypesConfiguration on WorkItemType {
+  ...WorkItemTypesConfigurationBase
+  widgetDefinitions {
+    type
+    ... on WorkItemWidgetDefinitionHierarchy {
+      propagatesMilestone
+      autoExpandTreeOnMove
+    }
+    ... on WorkItemWidgetDefinitionStartAndDueDate {
+      canRollUp
+    }
+  }
+}

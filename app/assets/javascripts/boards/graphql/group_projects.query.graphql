@@ -1,0 +1,26 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+
+# @feature_category: portfolio_management
+query boardsGetGroupProjects($fullPath: ID!, $search: String, $after: String) {
+  group(fullPath: $fullPath) {
+    id
+    projects(
+      search: $search
+      after: $after
+      first: 100
+      includeSubgroups: true
+      withIssuesEnabled: true
+    ) {
+      nodes {
+        id
+        name
+        fullPath
+        nameWithNamespace
+        archived
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

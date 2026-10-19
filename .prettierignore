@@ -1,0 +1,16 @@
+/app/assets/javascripts/locale/**/app.js
+/app/assets/javascripts/lib/utils/path_helpers/*.js
+/ee/app/assets/javascripts/lib/utils/path_helpers/*.js
+/fixtures/lib/gitlab/graphql/
+/node_modules/
+/public/
+/vendor/
+/tmp/
+/sitespeed-result/
+coverage/
+dist/
+
+# ignore stylesheets for now as this clashes with our linter
+*.css
+*.scss
+*.md

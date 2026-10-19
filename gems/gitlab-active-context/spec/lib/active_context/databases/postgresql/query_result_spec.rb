@@ -1,0 +1,91 @@
+# frozen_string_literal: true
+
+RSpec.describe ActiveContext::Databases::Postgresql::QueryResult do
+  let(:collection) { double(:collection) }
+  let(:user) { double(:user) }
+  let(:pg_result) { instance_double(PG::Result) }
+
+  subject(:query_result) { described_class.new(result: pg_result, collection: collection, user: user) }
+
+  before do
+    allow(collection).to receive_messages(redact_unauthorized_results!: [[], []])
+  end
+
+  describe '#each' do
+    it 'yields each row' do
+      rows = [
+        { 'id' => 1, 'name' => 'test1' },
+        { 'id' => 2, 'name' => 'test2' }
+      ]
+
+      allow(pg_result).to receive(:each).and_yield(rows[0]).and_yield(rows[1])
+
+      expect { |b| query_result.each(&b) }.to yield_successive_args(*rows)
+    end
+
+    it 'returns enumerator when no block given' do
+      expect(query_result.each).to be_a(Enumerator)
+    end
+
+    context 'when rows contain score from KNN query' do
+      it 'converts score string to float' do
+        rows = [
+          { 'id' => '1', 'name' => 'test1', 'score' => '0.9523' },
+          { 'id' => '2', 'name' => 'test2', 'score' => '0.7891' }
+        ]
+
+        allow(pg_result).to receive(:each).and_yield(rows[0]).and_yield(rows[1])
+
+        results = query_result.to_a
+
+        expect(results[0]).to eq({ 'id' => '1', 'name' => 'test1', 'score' => 0.9523 })
+        expect(results[1]).to eq({ 'id' => '2', 'name' => 'test2', 'score' => 0.7891 })
+        expect(results[0]['score']).to be_a(Float)
+      end
+    end
+
+    context 'when rows do not contain score (non-KNN query)' do
+      it 'yields rows unchanged' do
+        rows = [
+          { 'id' => '1', 'name' => 'test1' },
+          { 'id' => '2', 'name' => 'test2' }
+        ]
+
+        allow(pg_result).to receive(:each).and_yield(rows[0]).and_yield(rows[1])
+
+        expect { |b| query_result.each(&b) }.to yield_successive_args(*rows)
+      end
+    end
+  end
+
+  describe '#count' do
+    it 'returns number of tuples' do
+      allow(pg_result).to receive(:ntuples).and_return(5)
+      expect(query_result.count).to eq(5)
+    end
+  end
+
+  describe '#clear' do
+    context 'when pg_result responds to clear' do
+      before do
+        allow(pg_result).to receive(:respond_to?).with(:clear).and_return(true)
+      end
+
+      it 'clears the result' do
+        expect(pg_result).to receive(:clear)
+        query_result.clear
+      end
+    end
+
+    context 'when pg_result does not respond to clear' do
+      before do
+        allow(pg_result).to receive(:respond_to?).with(:clear).and_return(false)
+      end
+
+      it 'does nothing' do
+        expect(pg_result).not_to receive(:clear)
+        query_result.clear
+      end
+    end
+  end
+end

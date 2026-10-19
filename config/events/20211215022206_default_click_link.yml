@@ -1,0 +1,14 @@
+description: "Go to evironments documentation"
+category: default
+action: click_link
+extra_properties:
+identifiers:
+product_group: environments
+product_categories:
+- environment_management
+milestone: "13.12"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/57160
+tiers:
+- free
+- premium
+- ultimate

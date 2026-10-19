@@ -1,0 +1,47 @@
+# frozen_string_literal: true
+
+module RuboCop
+  module Cop
+    module Gitlab
+      class HTTParty < RuboCop::Cop::Base
+        extend RuboCop::Cop::AutoCorrector
+
+        MSG_SEND = <<~TEXT
+          Avoid calling `HTTParty` directly. Instead, use the Gitlab::HTTP
+          wrapper. To allow request to localhost or the private network set
+          the option :allow_local_requests in the request call.
+        TEXT
+
+        MSG_INCLUDE = <<~TEXT
+          Avoid including `HTTParty` directly. Instead, use the Gitlab::HTTP
+          wrapper. To allow request to localhost or the private network set
+          the option :allow_local_requests in the request call.
+        TEXT
+
+        # @!method includes_httparty?(node)
+        def_node_matcher :includes_httparty?, <<~PATTERN
+          (send nil? :include (const nil? :HTTParty))
+        PATTERN
+
+        # @!method httparty_node?(node)
+        def_node_matcher :httparty_node?, <<~PATTERN
+          (send (const nil? :HTTParty)...)
+        PATTERN
+
+        def on_send(node)
+          if httparty_node?(node)
+            add_offense(node, message: MSG_SEND) do |corrector|
+              replacement = "Gitlab::HTTP.#{node.method_name}(#{node.arguments.map(&:source).join(', ')})"
+
+              corrector.replace(node, replacement)
+            end
+          elsif includes_httparty?(node)
+            add_offense(node, message: MSG_INCLUDE) do |corrector|
+              corrector.remove(node)
+            end
+          end
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,489 @@
+# frozen_string_literal: true
+
+module API
+  module Ci
+    class Jobs < ::API::Base
+      include PaginationParams
+      include APIGuard
+      include ::API::Concerns::McpAccess
+
+      helpers ::API::Helpers::ProjectStatsRefreshConflictsHelpers
+
+      allow_access_with_scope :ai_workflows, if: ->(request) { request.get? || request.head? }
+      allow_mcp_access_read
+
+      resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        before { authenticate! }
+
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+        end
+
+        helpers do
+          params :optional_scope do
+            optional :scope, type: Array[String], desc: 'Filter jobs by status. Accepts a single value or an array of values. If omitted, returns all jobs.',
+              values: ::CommitStatus::AVAILABLE_STATUSES,
+              coerce_with: ->(scope) {
+                case scope
+                when String
+                  [scope]
+                when ::Hash
+                  scope.values
+                when ::Array
+                  scope
+                else
+                  ['unknown']
+                end
+              },
+              documentation: { example: %w[pending running] }
+          end
+        end
+
+        desc 'List all jobs for a project' do
+          detail 'Lists all jobs for a specified project. By default, this request returns 20 results at a time ' \
+            'because the API results are paginated.'
+          success code: 200, model: Entities::Ci::Job
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+          is_array true
+          tags ['ci_jobs']
+        end
+        params do
+          use :optional_scope
+          optional :ref, type: String, desc: 'Branch name (ref) to filter jobs by.', documentation: { example: 'feature-branch' }
+          use :pagination
+        end
+        # rubocop: disable CodeReuse/ActiveRecord
+        route_setting :authentication, job_token_allowed: true
+        route_setting :authorization, job_token_policies: :read_jobs, permissions: :read_job, boundary_type: :project
+        get ':id/jobs', urgency: :low, feature_category: :continuous_integration do
+          check_rate_limit!(:jobs_index, scope: { user: current_user })
+
+          authorize_read_builds!
+
+          builds = user_project.builds.order(id: :desc)
+          builds = filter_builds_by_scope(builds, params[:scope])
+          builds = filter_builds_by_ref(builds, params[:ref])
+          builds = builds.eager_load_for_api
+
+          present paginate_with_strategies(builds, user_project, paginator_params: { without_count: true }), with: Entities::Ci::Job
+        end
+        # rubocop: enable CodeReuse/ActiveRecord
+
+        desc 'Retrieve a job' do
+          detail 'Retrieves a job with the specified job ID.'
+          success code: 200, model: Entities::Ci::Job
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags ['ci_jobs']
+        end
+        params do
+          requires :job_id, type: Integer, desc: 'ID of the job.', documentation: { example: 88 }
+        end
+        route_setting :authorization, permissions: :read_job, boundary_type: :project
+        get ':id/jobs/:job_id', urgency: :low, feature_category: :continuous_integration do
+          authorize_read_builds!
+
+          build = find_build!(params[:job_id])
+
+          present build, with: Entities::Ci::Job
+        end
+
+        desc 'Get a trace of a specific job of a project' do
+          detail 'Retrieves a log file for a job.'
+          success code: 200, model: Entities::Ci::Job
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags ['ci_jobs']
+        end
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+          requires :job_id, type: Integer, desc: 'ID of the job.', documentation: { example: 88 }
+          optional :byte_offset, type: Integer, desc: 'Byte offset to start reading the trace from.',
+            values: 0.., documentation: { example: 0 }
+          optional :byte_limit, type: Integer, desc: 'Maximum number of bytes to return.',
+            values: 1..Gitlab::Ci::Trace::Stream::LIMIT_SIZE, documentation: { example: 51200 }
+        end
+
+        route_setting :authorization, permissions: :read_job, boundary_type: :project
+        get ':id/jobs/:job_id/trace', urgency: :low, feature_category: :continuous_integration do
+          authorize_read_builds!
+
+          build = find_build!(params[:job_id])
+
+          authorize_read_build_trace!(build) if build
+
+          range_requested = params[:byte_offset] || params[:byte_limit]
+          byte_offset = params[:byte_offset] || 0
+          byte_limit = params[:byte_limit]
+
+          if !range_requested && send_archived_trace_via_workhorse?(build)
+            send_archived_trace_via_workhorse!(build)
+          elsif range_requested && send_archived_trace_range_via_workhorse?(build)
+            send_archived_trace_range_via_workhorse!(build, byte_offset: byte_offset, byte_limit: byte_limit)
+          else
+            set_trace_response_headers!(build)
+
+            trace = if range_requested
+                      build.trace.raw_range(byte_offset: byte_offset, byte_limit: byte_limit)
+                    else
+                      build.trace.raw
+                    end
+
+            # The trace can be nil but body method expects a string as an argument.
+            body trace || ''
+          end
+        end
+
+        desc 'Cancel a job' do
+          detail 'Cancels a specified job in a project.'
+          success code: 201, model: Entities::Ci::Job
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags ['ci_jobs']
+        end
+        params do
+          requires :job_id, type: Integer, desc: 'ID of the job.', documentation: { example: 88 }
+          optional :force, type: Boolean, desc: 'If `true`, [forces cancellation](https://docs.gitlab.com/ci/jobs/#force-cancel-a-job) of a job in `canceling` state.', documentation: { example: true }
+        end
+
+        route_setting :authorization, permissions: :cancel_job, boundary_type: :project
+        post ':id/jobs/:job_id/cancel', urgency: :low, feature_category: :continuous_integration do
+          authorize_cancel_builds!
+
+          build = find_build!(params[:job_id])
+          authorize!(:cancel_build, build)
+
+          if params[:force]
+            authorize!(:force_cancel_build, build)
+            build.force_cancel
+          else
+            build.cancel
+          end
+
+          present build, with: Entities::Ci::Job
+        end
+
+        desc 'Retry a job' do
+          detail 'Retries a specified job in a project.'
+          success code: 201, model: Entities::Ci::Job
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' },
+            { code: 429, message: 'Too Many Requests' }
+          ]
+          tags ['ci_jobs']
+        end
+        params do
+          requires :job_id, type: Integer, desc: 'ID of the job.', documentation: { example: 88 }
+          optional :inputs, type: Hash, desc: 'Input values for the job.', documentation: { example: { 'environment' => 'production' } }
+        end
+        # This endpoint can be used for retrying both builds and bridges.
+        route_setting :authorization, permissions: :retry_job, boundary_type: :project
+        route_setting :log_safety, { unsafe: %w[inputs] }
+        post ':id/jobs/:job_id/retry', urgency: :low, feature_category: :continuous_integration do
+          Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/473419')
+
+          job = find_job!(params[:job_id])
+          authorize!(:retry_job, job)
+
+          inputs = params[:inputs] || {}
+
+          response = ::Ci::RetryJobService.new(@project, current_user).execute(job, inputs: inputs)
+
+          if response.success?
+            present response[:job], with: Entities::Ci::Job
+          elsif response.reason == :rate_limited
+            too_many_requests!(response.message, retry_after: ::Gitlab::ApplicationRateLimiter.period_for(:job_retry))
+          elsif response.payload[:reason] == :not_retryable
+            forbidden!('Job is not retryable')
+          else
+            bad_request!(response.message)
+          end
+        end
+
+        desc 'Erase a job' do
+          detail 'Erases a specified job in a project. This removes job artifacts and the job log.'
+          success code: 201, model: Entities::Ci::Job
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' },
+            { code: 409, message: 'Conflict' },
+            { code: 429, message: 'Too Many Requests' }
+          ]
+          tags ['ci_jobs']
+        end
+        params do
+          requires :job_id, type: Integer, desc: 'ID of the job.', documentation: { example: 88 }
+        end
+        route_setting :authorization, permissions: :erase_job, boundary_type: :project
+        post ':id/jobs/:job_id/erase', urgency: :low, feature_category: :continuous_integration do
+          build = find_build!(params[:job_id])
+          authorize!(:erase_build, build)
+          break forbidden!('Job is not erasable!') unless build.erasable?
+
+          reject_if_build_artifacts_size_refreshing!(build.project)
+
+          response = ::Ci::BuildEraseService.new(build, current_user).execute
+
+          if response.error? && response.reason == :rate_limited
+            too_many_requests!(response.message, retry_after: ::Gitlab::ApplicationRateLimiter.period_for(:job_erase))
+          end
+
+          present build, with: Entities::Ci::Job
+        end
+
+        desc 'Run a job' do
+          detail 'Runs a specified job. For a job in manual status, triggers an action to start the job.'
+          success code: 200, model: Entities::Ci::JobBasic
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not found' },
+            { code: 429, message: 'Too Many Requests' }
+          ]
+          tags ['ci_jobs']
+        end
+        params do
+          requires :job_id, type: Integer, desc: 'ID of the job.', documentation: { example: 88 }
+          optional :job_variables_attributes,
+            type: Array, desc: 'User-defined variables to include when running the job.' do
+            requires :key, type: String, desc: 'Name of the variable.', documentation: { example: 'foo' }
+            requires :value, type: String, desc: 'Value of the variable.', documentation: { example: 'bar' }
+          end
+          optional :job_inputs,
+            type: Hash, desc: 'Hash of [job input](https://docs.gitlab.com/ci/jobs/job_inputs/) values to use when playing the job. [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/17833) in GitLab 18.10.', documentation: { example: { environment: 'production' } }
+        end
+
+        route_setting :authorization, permissions: :play_job, boundary_type: :project
+        route_setting :log_safety, { unsafe: %w[job_inputs] }
+        post ':id/jobs/:job_id/play', urgency: :low, feature_category: :continuous_integration do
+          authorize_read_builds!
+
+          job = find_job!(params[:job_id])
+
+          authorize!(:play_job, job)
+
+          bad_request!("Unplayable Job") unless job.playable?
+
+          result = job.play(current_user, params[:job_variables_attributes], params[:job_inputs] || {})
+
+          if result.error? && result.reason == :rate_limited
+            too_many_requests!(result.message, retry_after: ::Gitlab::ApplicationRateLimiter.period_for(:job_play))
+          end
+
+          bad_request!(result.message) if result.error?
+
+          job = result.payload[:job]
+
+          status 200
+
+          if job.is_a?(::Ci::Build)
+            present job, with: Entities::Ci::Job
+          else
+            present job, with: Entities::Ci::Bridge
+          end
+        end
+      end
+
+      resource :job do
+        helpers ::API::Helpers::KasHelpers
+
+        before do
+          # Use primary for both main and non-main databases as authenticating in the scope of runners will load
+          # Ci::Build model and other standard authn related models like License, Project and User.
+          ::Gitlab::Database::LoadBalancing::SessionMap
+            .with_sessions.use_primary { authenticate! }
+        end
+
+        desc 'Retrieve a job by job token' do
+          detail 'Retrieves a job that was generated by a specified job token.'
+          success code: 200, model: Entities::Ci::Job
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags ['ci_jobs']
+        end
+        route_setting :authentication, job_token_allowed: true
+        route_setting :authorization, skip_job_token_policies: true, skip_granular_token_authorization: :job_token_auth
+        get '', feature_category: :continuous_integration, urgency: :low do
+          validate_current_authenticated_job
+
+          present current_authenticated_job, with: Entities::Ci::Job
+        end
+
+        desc 'List all GitLab agents for Kubernetes by job token' do
+          detail 'Lists all GitLab agents for Kubernetes with a specified `CI_JOB_TOKEN`.'
+          success code: 200, model: Entities::Ci::Job
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags ['agents']
+        end
+        route_setting :authentication, job_token_allowed: true
+        route_setting :authorization, skip_job_token_policies: true, skip_granular_token_authorization: :job_token_auth
+        get '/allowed_agents', urgency: :default, feature_category: :deployment_management do
+          validate_current_authenticated_job
+
+          status 200
+
+          pipeline = current_authenticated_job.pipeline
+          project = current_authenticated_job.project
+          project_groups = project.group&.self_and_ancestor_ids&.map { |id| { id: id } } || []
+          user_access_level = project.team.max_member_access(current_user.id)
+          roles_in_project = Gitlab::Access.sym_options_with_owner
+            .select { |_role, role_access_level| role_access_level <= user_access_level }
+            .map(&:first)
+
+          persisted_environment = current_authenticated_job.actual_persisted_environment
+          environment = { tier: persisted_environment.tier, slug: persisted_environment.slug } if persisted_environment
+
+          agent_authorizations = ::Clusters::Agents::Authorizations::CiAccess::FilterService.new(
+            ::Clusters::Agents::Authorizations::CiAccess::Finder.new(project).execute,
+            { environment: persisted_environment&.name,
+              protected_ref: pipeline.protected_ref? },
+            pipeline.project
+          ).execute
+
+          set_feature_flag_header(user: current_user, project: project)
+
+          # See https://gitlab.com/gitlab-org/cluster-integration/gitlab-agent/-/blob/master/doc/kubernetes_ci_access.md#apiv4joballowed_agents-api
+          {
+            allowed_agents: Entities::Clusters::Agents::Authorizations::CiAccess.represent(agent_authorizations),
+            job: { id: current_authenticated_job.id },
+            pipeline: { id: pipeline.id },
+            project: { id: project.id, groups: project_groups },
+            user: { id: current_user.id, username: current_user.username, roles_in_project: roles_in_project },
+            environment: environment
+          }.compact
+        end
+      end
+
+      helpers do
+        def set_trace_response_headers!(build)
+          header 'Content-Disposition', trace_content_disposition(build)
+          content_type 'text/plain'
+          env['api.format'] = :binary
+        end
+
+        def trace_content_disposition(build)
+          "infile; filename=\"#{build.id}.log\""
+        end
+
+        # Only archived logs qualify: live logs are assembled from chunks in Rails.
+        def send_archived_trace_via_workhorse?(build)
+          build.trace.archived?
+        end
+
+        # Not present_disk_file!/present_carrierwave_file!: both replace the
+        # Content-Disposition this endpoint has always sent. Object storage sets
+        # its own Content-Type, so the send-url branch pins both headers.
+        def send_archived_trace_via_workhorse!(build)
+          trace_artifact = build.job_artifacts_trace
+          file = trace_artifact.file
+
+          # Before any response header, so a rejected request gets a plain 403.
+          verify_workhorse_api! unless file.file_storage?
+
+          set_trace_response_headers!(build)
+          apply_etag_or_suppress_rack_etag!(nil)
+
+          # Grape routes HEAD to this block; without this, Workhorse would fetch
+          # the whole object only to discard the body.
+          if request.head?
+            header 'Content-Length', trace_artifact.size.to_s
+            body ''
+          elsif file.file_storage?
+            sendfile file.path
+          else
+            header(*Gitlab::Workhorse.send_url(file.url, response_headers: trace_send_url_response_headers(build)))
+            status :ok
+            body ''
+          end
+        end
+
+        # Local disk keeps Stream#raw_range: a seek and read from disk is cheap.
+        def send_archived_trace_range_via_workhorse?(build)
+          Feature.enabled?(:ci_job_trace_api_range_via_workhorse, build.project, type: :beta) &&
+            build.trace.archived? && !build.job_artifacts_trace.file.file_storage?
+        end
+
+        # Workhorse fetches exactly this span and answers 200, so the client sees
+        # the same response as the Rails read. Rails clamps to the artifact size
+        # itself, as Stream#raw_range does, instead of letting storage answer 416.
+        def send_archived_trace_range_via_workhorse!(build, byte_offset:, byte_limit:)
+          trace_artifact = build.job_artifacts_trace
+
+          verify_workhorse_api!
+
+          set_trace_response_headers!(build)
+          apply_etag_or_suppress_rack_etag!(nil)
+
+          size = trace_artifact.size
+          first_byte = [byte_offset, size].min
+          last_byte = [byte_limit ? first_byte + byte_limit : size, size].min - 1
+
+          if request.head? || last_byte < first_byte
+            header 'Content-Length', (last_byte - first_byte + 1).to_s
+          else
+            header(*Gitlab::Workhorse.send_url(trace_artifact.file.url,
+              response_headers: trace_send_url_response_headers(build), upstream_range: "bytes=#{first_byte}-#{last_byte}"))
+            status :ok
+          end
+
+          body ''
+        end
+
+        def trace_send_url_response_headers(build)
+          { 'Content-Type' => 'text/plain', 'Content-Disposition' => trace_content_disposition(build) }
+        end
+
+        # rubocop: disable CodeReuse/ActiveRecord
+        def filter_builds_by_scope(builds, scope)
+          return builds if scope.nil? || scope.empty?
+
+          available_statuses = ::CommitStatus::AVAILABLE_STATUSES
+
+          unknown = scope - available_statuses
+          render_api_error!('Scope contains invalid value(s)', 400) unless unknown.empty?
+
+          builds.where(status: available_statuses && scope)
+        end
+        # rubocop: enable CodeReuse/ActiveRecord
+
+        def filter_builds_by_ref(builds, ref)
+          return builds if ref.blank?
+
+          builds.with_ref(ref)
+        end
+
+        def validate_current_authenticated_job
+          # current_authenticated_job will be nil if user is using
+          # a valid authentication (like PRIVATE-TOKEN) that is not CI_JOB_TOKEN
+          not_found!('Job') unless current_authenticated_job
+
+          ::Gitlab::ApplicationContext.push(job: current_authenticated_job)
+        end
+      end
+    end
+  end
+end

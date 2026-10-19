@@ -1,0 +1,113 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Mattermost slash commands
+description: "Configure Mattermost slash commands to run common GitLab operations from a Mattermost chat environment."
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can use [slash commands](gitlab_slack_application.md#slash-commands) to run common GitLab operations,
+like creating an issue, from a [Mattermost](https://mattermost.com/) chat environment.
+
+GitLab can also send events (such as `issue created`) to Mattermost as part of the
+separately configured [Mattermost notifications](mattermost.md).
+
+For a list of available slash commands, see [Slash commands](gitlab_slack_application.md#slash-commands).
+
+## Configure slash commands
+
+To configure slash commands in Mattermost, you must perform the following steps.
+
+### Enable custom slash commands in Mattermost
+
+To turn on custom slash commands from the Mattermost administrator console:
+
+1. Sign in to Mattermost as a user with administrator privileges.
+1. In the upper left corner, select the Mattermost logo, and then
+   select **System Console**.
+1. Select **Integration Management**, and set these values to `True`:
+   - **Enable Custom Slash Commands**
+   - **Enable integrations to override usernames**
+   - **Enable integrations to override profile picture icons**
+1. Select **Save**, but do not close this browser tab. You need it in
+   a later step.
+
+### Get configuration values from GitLab
+
+To get configuration values from GitLab:
+
+1. In a different browser tab, sign in to
+   GitLab as a user with administrator access.
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Integrations**.
+1. Select **Mattermost slash commands**. GitLab displays potential values for Mattermost settings.
+1. Copy the **Request URL** value. All other values are suggestions.
+1. Do not close this browser tab. You need it in a later step.
+
+### Create a slash command in Mattermost
+
+To create a slash command in Mattermost:
+
+1. [In the Mattermost browser tab](#enable-custom-slash-commands-in-mattermost),
+   go to your team page.
+1. In the upper left corner, select the Mattermost logo, and then **Integrations**.
+1. In the left sidebar, select **Slash commands**.
+1. Select **Add Slash Command**.
+1. Provide a **Display Name** and **Description** for your new command.
+1. Provide a **Command Trigger Word** based on your application's configuration:
+
+   - If you intend to only connect one project to your Mattermost team, use
+     `/gitlab` for your trigger word.
+   - If you intend to connect multiple projects, use a trigger word that relates
+     to your project, such as `/project-name` or `/gitlab-project-name`.
+1. For **Request URL**, [paste the value you copied from GitLab](#get-configuration-values-from-gitlab).
+1. For all other values, you may use the suggestions from GitLab or your
+   preferred values.
+1. Copy the **Token** value, and select **Done**.
+
+### Provide the Mattermost token to GitLab
+
+Creating a slash command in Mattermost generates a token you must
+provide to GitLab:
+
+1. [In the GitLab browser tab](#get-configuration-values-from-gitlab),
+   select the **Active** checkbox.
+1. In the **Token** text box, [paste the token you copied from Mattermost](#create-a-slash-command-in-mattermost).
+1. Select **Save changes**.
+
+Your slash command can now communicate with your GitLab project.
+
+## Connect your GitLab account to Mattermost
+
+Prerequisites:
+
+- To run [slash commands](gitlab_slack_application.md#slash-commands), you must have
+  [permission](../../permissions.md#project-permissions) to
+  perform the action in the GitLab project.
+
+To interact with GitLab using Mattermost slash commands:
+
+1. In a Mattermost chat environment, run your new slash command.
+1. Select **connect your GitLab account** to authorize access.
+
+You can see all authorized chat accounts in your Mattermost profile page under **Chat**.
+
+## Related topics
+
+- [Slash commands at Mattermost](https://developers.mattermost.com/integrate/slash-commands/)
+
+## Troubleshooting
+
+When a Mattermost slash command does not trigger an event in GitLab:
+
+- Ensure you're using a public channel.
+  Mattermost webhooks do not have access to private channels.
+- If you require a private channel, edit the webhook channel,
+  and select a private one. All events are sent to the specified channel.

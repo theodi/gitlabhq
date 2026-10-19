@@ -1,0 +1,46 @@
+# TODO list for `spec/support/shared_examples/models/jsonb_column_validation_shared_example.rb`
+# Ideally, this list should only shrink and never grow.
+- Ai::ActiveContext::Migration#metadata
+- Ai::Catalog::ItemVersion#definition # Tested in `validate_json_schema` method using the JsonSchemaValidator
+- Ai::Conversation::Message#error_details
+- Ai::DuoWorkflows::Checkpoint#checkpoint
+- Ai::DuoWorkflows::Checkpoint#metadata
+- Ai::DuoWorkflows::Checkpoint#ui_chat_log
+- Ai::DuoWorkflows::CheckpointHeader#checkpoint
+- Ai::DuoWorkflows::CheckpointHeader#metadata
+- AlertManagement::Alert#payload
+- AlertManagement::HttpIntegration#payload_example
+- ApplicationSetting#ci_cd_settings
+- ApplicationSetting#oauth_provider
+- ApplicationSetting#rate_limits_unauthenticated_git_http
+- ApplicationSetting#repository_storages_weighted
+- ApplicationSetting#token_prefixes
+- Integration#event_filters
+- GeoNodeStatus#status
+- Geo::Event#payload
+- Geo::SecondaryUsageData#payload
+- GitlabSubscriptions::UserAddOnAssignmentVersion#object
+- Govern::Policy#actions
+- Govern::Policy#policy_scope
+- Govern::Policy#scope_dimensions
+- Operations::FeatureFlags::Strategy#parameters
+- Packages::Composer::Metadatum#composer_json
+- Packages::Composer::Package#composer_json
+- RawUsageData#payload
+- Releases::Evidence#summary
+- RemoteDevelopment::WorkspaceAgentkState#desired_config
+- RemoteDevelopment::WorkspacesAgentConfig#annotations
+- RemoteDevelopment::WorkspacesAgentConfig#labels
+- RemoteDevelopment::WorkspacesAgentConfigVersion#object
+- RemoteDevelopment::WorkspacesAgentConfigVersion#object_changes
+- Sbom::Occurrence#ancestors
+- Security::ApprovalPolicyRule#content
+- Security::DependencyFirewallPolicyRule#content
+- Security::Policy#metadata
+- Security::ScanExecutionPolicyRule#content
+- Security::VulnerabilityManagementPolicyRule#content
+- ServicePing::NonSqlServicePing#metadata
+- ServicePing::NonSqlServicePing#payload
+- ServicePing::QueriesServicePing#payload
+- Vulnerabilities::Finding::Evidence#data
+- Vulnerabilities::Finding#location

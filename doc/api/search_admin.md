@@ -1,0 +1,134 @@
+---
+stage: Analytics
+group: Global Search
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Search admin API
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+Use this API to retrieve information about [advanced search migrations](../integration/advanced_search/elasticsearch.md#advanced-search-migrations).
+
+Prerequisites:
+
+- You must be an administrator.
+
+## List all advanced search migrations
+
+Lists all advanced search migrations for the GitLab instance.
+
+```plaintext
+GET /admin/search/migrations
+```
+
+Example request:
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://primary.example.com/api/v4/admin/search/migrations"
+```
+
+Example response:
+
+```json
+[
+  {
+    "version": 20230427555555,
+    "name": "BackfillHiddenOnMergeRequests",
+    "started_at": "2023-05-12T01:35:05.469+00:00",
+    "completed_at": "2023-05-12T01:36:06.432+00:00",
+    "completed": true,
+    "obsolete": false,
+    "migration_state": {}
+  },
+  {
+    "version": 20230428500000,
+    "name": "AddSuffixProjectInWikiRid",
+    "started_at": "2023-05-04T18:59:43.542+00:00",
+    "completed_at": "2023-05-04T18:59:43.542+00:00",
+    "completed": false,
+    "obsolete": false,
+    "migration_state": {
+      "pause_indexing": true,
+      "slice": 1,
+      "task_id": null,
+      "max_slices": 5,
+      "retry_attempt": 0
+    }
+  },
+  {
+    "version": 20230503064300,
+    "name": "BackfillProjectPermissionsInBlobsUsingPermutations",
+    "started_at": "2023-05-03T16:04:44.074+00:00",
+    "completed_at": "2023-05-03T16:04:44.074+00:00",
+    "completed": true,
+    "obsolete": false,
+    "migration_state": {
+      "permutation_idx": 8,
+      "documents_remaining": 5,
+      "task_id": "I2_LXc-xQlOeu-KmjYpM8g:172820",
+      "documents_remaining_for_permutation": 0
+    }
+  }
+]
+```
+
+## Retrieve an advanced search migration
+
+Retrieves a specified advanced search migration by migration version or name.
+
+```plaintext
+GET /admin/search/migrations/:version_or_name
+```
+
+Parameters:
+
+| Attribute         | Type           | Required | Description                          |
+|-------------------|----------------|----------|--------------------------------------|
+| `version_or_name` | integer or string | Yes      | The version or name of the migration. |
+
+Example request:
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://primary.example.com/api/v4/admin/search/migrations/20230503064300"
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://primary.example.com/api/v4/admin/search/migrations/BackfillProjectPermissionsInBlobsUsingPermutations"
+```
+
+If successful, returns [`200`](rest/troubleshooting.md#status-codes) and the following
+response attributes:
+
+| Attribute         | Type     | Description                                           |
+|:------------------|:---------|:------------------------------------------------------|
+| `version`         | integer  | Version of the migration.                             |
+| `name`            | string   | Name of the migration.                                |
+| `started_at`      | datetime | Start date for the migration.                         |
+| `completed_at`    | datetime | Completion date for the migration.                    |
+| `completed`       | boolean  | If `true`, the migration is completed.                |
+| `obsolete`        | boolean  | If `true`, the migration has been marked as obsolete. |
+| `migration_state` | object   | Stored migration state.                               |
+
+Example response:
+
+```json
+{
+  "version": 20230503064300,
+  "name": "BackfillProjectPermissionsInBlobsUsingPermutations",
+  "started_at": "2023-05-03T16:04:44.074+00:00",
+  "completed_at": "2023-05-03T16:04:44.074+00:00",
+  "completed": true,
+  "obsolete": false,
+  "migration_state": {
+    "permutation_idx": 8,
+    "documents_remaining": 5,
+    "task_id": "I2_LXc-xQlOeu-KmjYpM8g:172820",
+    "documents_remaining_for_permutation": 0
+  }
+}
+```

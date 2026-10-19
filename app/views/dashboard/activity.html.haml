@@ -1,0 +1,21 @@
+= content_for :meta_tags do
+  = auto_discovery_link_tag(:atom, dashboard_projects_url(rss_url_options), title: "All activity")
+
+= render_dashboard_ultimate_trial(current_user)
+
+- page_title _("Activity")
+
+= render "projects/last_push"
+
+= render ::Layouts::IndexLayout.new(heading: _('Activity')) do |c|
+  - if Feature.enabled?(:global_time_tracking_report, :instance)
+    - c.with_actions do
+      = link_to _("Time tracking report"), timelogs_path(username: current_user.username)
+  .top-area
+    = gl_tabs_nav({ class: 'gl-border-b-0', data: { testid: 'dashboard-activity-tabs' } }) do
+      = gl_tab_link_to _("Your activity"), activity_dashboard_path, { item_active: params[:filter].nil? }
+      = gl_tab_link_to _("Your projects"), activity_dashboard_path(filter: 'projects')
+      = gl_tab_link_to _("Starred projects"), activity_dashboard_path(filter: 'starred')
+      = gl_tab_link_to _("Followed users"), activity_dashboard_path(filter: 'followed')
+  %section.activities
+    = render 'activities'

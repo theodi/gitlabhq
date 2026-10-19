@@ -1,0 +1,44 @@
+# frozen_string_literal: true
+
+module Ci
+  module Catalog
+    module Resources
+      module Components
+        class LastUsage < ::ApplicationRecord
+          include EachBatch
+
+          self.table_name = 'catalog_resource_component_last_usages'
+          self.primary_key = :id
+
+          scope :older_than_30_days, -> { where(last_used_date: ...30.days.ago.to_date) }
+          scope :within_last_30_days, -> { where(last_used_date: 30.days.ago.to_date..) }
+          scope :for_catalog_resource_with_component_versions, ->(catalog_resource_id) {
+            where(catalog_resource_id: catalog_resource_id).includes(component: :version)
+          }
+          scope :by_version_id, ->(id) {
+            joins(:component).where(catalog_resource_components: { version_id: id })
+          }
+          scope :by_version_ids, ->(ids) {
+            joins(:component).where(catalog_resource_components: { version_id: ids })
+          }
+          scope :by_component_name, ->(name) {
+            joins(:component).where(catalog_resource_components: { name: name })
+          }
+
+          belongs_to :component, class_name: 'Ci::Catalog::Resources::Component', inverse_of: :last_usages
+          belongs_to :catalog_resource, class_name: 'Ci::Catalog::Resource', inverse_of: :component_last_usages
+          belongs_to :component_project, class_name: 'Project', inverse_of: :ci_component_last_usages
+
+          validates :component, :catalog_resource, :component_project, :used_by_project_id, presence: true
+
+          validates :last_used_date, uniqueness: { scope: [:component_id, :used_by_project_id] }, presence: true
+
+          def self.by_project_ids(project_ids)
+            where(used_by_project_id: project_ids)
+              .group_by(&:used_by_project_id)
+          end
+        end
+      end
+    end
+  end
+end

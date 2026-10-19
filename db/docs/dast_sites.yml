@@ -1,0 +1,13 @@
+---
+table_name: dast_sites
+classes:
+- DastSite
+feature_categories:
+- dynamic_application_security_testing
+description: Site to run dast scan on
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/36659
+milestone: '13.2'
+gitlab_schema: gitlab_sec
+sharding_key:
+  project_id: projects
+table_size: small

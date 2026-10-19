@@ -1,0 +1,11 @@
+---
+table_name: verification_codes
+classes: []
+feature_categories:
+- jihu
+description: Used by the JiHu edition for user verification
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/71139
+milestone: '14.4'
+gitlab_schema: gitlab_main_jh
+notes: Exempted because this is a JiHu specific table
+table_size: small

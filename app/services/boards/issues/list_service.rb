@@ -1,0 +1,84 @@
+# frozen_string_literal: true
+
+module Boards
+  module Issues
+    class ListService < Boards::BaseItemsListService
+      include Gitlab::Utils::StrongMemoize
+
+      def self.valid_params
+        IssuesFinder.valid_params
+      end
+
+      # It is a class method because we cannot apply it
+      # prior to knowing how many items should be fetched for a list.
+      def self.initialize_relative_positions(board, current_user, issues)
+        if Gitlab::Database.read_write? && !board.disabled_for?(current_user)
+          Issue.move_nulls_to_end(issues)
+        end
+      end
+
+      private
+
+      # Aggregates the filtered issues directly instead of re-selecting them by id, which doubles the
+      # page reads. Safe because board filters only add EXISTS conditions or joins with at most one row per issue.
+      def metadata_collection
+        init_collection
+      end
+
+      def order(items)
+        return items.order_closed_at_desc if list&.closed?
+
+        items.order_by_relative_position(positioning_root, walk_positions_index: !list&.label?)
+      end
+
+      # Items on a board share one positioning root: the group's root for group boards, the
+      # project namespace's root for project boards which is the project namespace itself
+      # for personal projects, not root_ancestor.
+      def positioning_root
+        namespace = board.group_board? ? board.group : board.project.project_namespace
+        namespace.work_item_positioning_root
+      end
+
+      def finder
+        IssuesFinder.new(current_user, filter_params)
+      end
+
+      def board
+        @board ||= parent.boards.find(params[:board_id])
+      end
+
+      def filter_params
+        set_scope
+        set_non_archived
+        set_work_item_type_ids
+
+        super
+      end
+
+      def set_scope
+        params[:include_subgroups] = board.group_board?
+      end
+
+      def set_non_archived
+        params[:non_archived] = parent.is_a?(Group)
+      end
+
+      def set_work_item_type_ids
+        work_item_type_ids = work_item_type_provider.filtered_types.filter_map do |type|
+          type.persistable_id if type.filterable_board_view?
+        end
+        params[:work_item_type_ids] ||= work_item_type_ids
+      end
+
+      def item_model
+        Issue
+      end
+
+      def work_item_type_provider
+        ::WorkItems::TypesFramework::Provider.new(parent)
+      end
+    end
+  end
+end
+
+Boards::Issues::ListService.prepend_mod_with('Boards::Issues::ListService')

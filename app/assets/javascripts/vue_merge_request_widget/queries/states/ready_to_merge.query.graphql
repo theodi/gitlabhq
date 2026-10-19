@@ -1,0 +1,12 @@
+# @feature_category: code_review_workflow
+query getReadyToMergeStatus($projectPath: ID!, $iid: String!) {
+  project(fullPath: $projectPath) {
+    id
+    mergeRequest(iid: $iid) {
+      id
+      userPermissions {
+        canMerge
+      }
+    }
+  }
+}

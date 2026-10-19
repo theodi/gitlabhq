@@ -1,0 +1,229 @@
+<script>
+import { GlIcon } from '@gitlab/ui';
+import StatusBadge from '~/issuable/components/status_badge.vue';
+import { STATUS_OPEN, TYPE_ALERT, TYPE_ISSUE, TYPE_MERGE_REQUEST } from '~/issues/constants';
+import WorkItemTypeIcon from '~/work_items/components/work_item_type_icon.vue';
+import { s__ } from '~/locale';
+import {
+  TODO_ACTION_TYPE_MEMBER_ACCESS_REQUESTED,
+  TODO_TARGET_TYPE_ALERT,
+  TODO_TARGET_TYPE_DESIGN,
+  TODO_TARGET_TYPE_ISSUE,
+  TODO_TARGET_TYPE_MERGE_REQUEST,
+  TODO_TARGET_TYPE_NAMESPACE,
+  TODO_TARGET_TYPE_PIPELINE,
+  TODO_TARGET_TYPE_PROJECT,
+  TODO_TARGET_TYPE_SSH_KEY,
+  TODO_ACTION_TYPE_TRANSFER_FAILED,
+  DUO_ACCESS_GRANTED_ACTIONS,
+} from '../constants';
+import { getTransferFailedTarget } from '../utils/transfer_failed_todo';
+
+export default {
+  name: 'TodoItemTitle',
+  components: {
+    StatusBadge,
+    GlIcon,
+    WorkItemTypeIcon,
+  },
+  props: {
+    todo: {
+      type: Object,
+      required: true,
+    },
+    // Grouped view: the card header shows the target name, so items show only the reference
+    hideTargetName: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    targetNameOnly: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  computed: {
+    isIssue() {
+      return this.todo.targetType === TODO_TARGET_TYPE_ISSUE;
+    },
+    isMergeRequest() {
+      return this.todo.targetType === TODO_TARGET_TYPE_MERGE_REQUEST;
+    },
+    isAlert() {
+      return this.todo.targetType === TODO_TARGET_TYPE_ALERT;
+    },
+    isDesign() {
+      return this.todo.targetType === TODO_TARGET_TYPE_DESIGN;
+    },
+    isWorkItem() {
+      return this.todo.targetEntity?.workItemType;
+    },
+    workItemTypeName() {
+      return this.todo.targetEntity?.workItemType?.name;
+    },
+    workItemTypeIconName() {
+      return this.todo.targetEntity?.workItemType?.iconName;
+    },
+    isMemberAccessRequestAction() {
+      return this.todo.action === TODO_ACTION_TYPE_MEMBER_ACCESS_REQUESTED;
+    },
+    isDuoActionType() {
+      return DUO_ACCESS_GRANTED_ACTIONS.includes(this.todo.action);
+    },
+    isTransferFailedAction() {
+      return this.todo.action === TODO_ACTION_TYPE_TRANSFER_FAILED;
+    },
+    issuableType() {
+      if (this.isMergeRequest) {
+        return TYPE_MERGE_REQUEST;
+      }
+
+      if (this.isIssue) {
+        return TYPE_ISSUE;
+      }
+
+      if (this.isAlert) {
+        return TYPE_ALERT;
+      }
+
+      throw new Error(`Unknown target type: ${this.todo.targetType}`);
+    },
+    issuableState() {
+      if (this.isMergeRequest) {
+        return this.todo.targetEntity?.mergeRequestState;
+      }
+
+      if (this.isIssue) {
+        return this.todo.targetEntity?.issueState;
+      }
+
+      if (this.isAlert) {
+        return this.todo.targetEntity?.alertState;
+      }
+
+      throw new Error(`Unknown target type: ${this.todo.targetType}`);
+    },
+    showStatusBadge() {
+      if ((this.hideTargetName || this.targetNameOnly) && this.targetName) return false;
+
+      return (
+        (this.isMergeRequest || this.isIssue || this.isAlert) && this.issuableState !== STATUS_OPEN
+      );
+    },
+    /**
+     * Full title line of the todo title + full reference, joined by a middot
+     */
+    todoTitle() {
+      if (this.isDuoActionType) return s__('Todos|Getting started with GitLab Duo');
+      if (this.targetNameOnly && this.targetName) return this.targetName;
+      if (this.hideTargetName && this.targetName) {
+        return this.isTransferFailedAction ? this.transferFailedTarget : this.targetFullReference;
+      }
+      if (this.isTransferFailedAction) {
+        return [this.targetName, this.transferFailedTarget].filter(Boolean).join(' · ');
+      }
+
+      return [this.targetName, this.targetFullReference].filter(Boolean).join(' · ');
+    },
+    transferFailedTarget() {
+      return getTransferFailedTarget(this.todo);
+    },
+    /**
+     * Right half of a todo title: Full reference to the todo (parentPath + Target Reference)
+     */
+    targetFullReference() {
+      return [this.parentPath, this.targetReference].filter(Boolean).join(' ');
+    },
+    /**
+     * Left half of a To-Do title, often the entity name
+     */
+    targetName() {
+      if (this.isMemberAccessRequestAction) {
+        return '';
+      }
+
+      const name = this.todo.targetEntity?.name ?? '';
+
+      if (this.isDesign && this.todo.targetEntity?.issue?.name) {
+        if (name) {
+          return `${this.todo.targetEntity.issue.name} › ${name}`;
+        }
+        return this.todo.targetEntity.issue.name;
+      }
+
+      return name;
+    },
+    /**
+     * Reference of the target entity
+     */
+    targetReference() {
+      if (this.isDesign && this.todo.targetEntity?.issue?.reference) {
+        return this.todo.targetEntity.issue.reference;
+      }
+      return this.todo.targetEntity?.reference ?? '';
+    },
+    /**
+     * Parent path of the target entity Reference of the target entity
+     */
+    parentPath() {
+      if (this.todo.group) {
+        return this.todo.group.fullName;
+      }
+
+      if (this.todo.project) {
+        return this.todo.project.nameWithNamespace;
+      }
+
+      return '';
+    },
+    icon() {
+      if (this.isDuoActionType) return 'book';
+      if (this.isTransferFailedAction) {
+        if (this.todo.targetType === TODO_TARGET_TYPE_NAMESPACE) {
+          return 'group';
+        }
+
+        if (this.todo.targetType === TODO_TARGET_TYPE_PROJECT) {
+          return 'project';
+        }
+      }
+
+      switch (this.todo.targetType) {
+        case TODO_TARGET_TYPE_MERGE_REQUEST:
+          return 'merge-request';
+        case TODO_TARGET_TYPE_PIPELINE:
+          return 'pipeline';
+        case TODO_TARGET_TYPE_ALERT:
+          return 'status-alert';
+        case TODO_TARGET_TYPE_DESIGN:
+          return 'media';
+        case TODO_TARGET_TYPE_SSH_KEY:
+          return 'token';
+        default:
+          return null;
+      }
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <status-badge v-if="showStatusBadge" :issuable-type="issuableType" :state="issuableState" />
+    <work-item-type-icon
+      v-if="isWorkItem"
+      :work-item-type="workItemTypeName"
+      :type-icon-name="workItemTypeIconName"
+      icon-class="!gl-w-4 !gl-h-4 gl-flex"
+      show-tooltip-on-hover
+      icon-variant="subtle"
+    />
+    <gl-icon v-else-if="icon" :name="icon" class="gl-shrink-0" :size="12" /><span
+      class="gl-overflow-hidden gl-text-ellipsis"
+      data-testid="todo-title"
+    >
+      {{ todoTitle }}
+    </span>
+  </div>
+</template>

@@ -1,0 +1,104 @@
+# frozen_string_literal: true
+
+module Banzai
+  module Filter
+    module References
+      # HTML filter that replaces merge request references with links. References
+      # to merge requests that do not exist are ignored.
+      #
+      # This filter supports cross-project references.
+      class MergeRequestReferenceFilter < IssuableReferenceFilter
+        self.reference_type = :merge_request
+        self.object_class   = MergeRequest
+
+        def url_for_object(mr, project)
+          h = Gitlab::Routing.url_helpers
+          h.project_merge_request_url(project, mr, only_path: context[:only_path])
+        end
+
+        def object_link_content_html_extras(object, matches)
+          extras = super
+
+          if commit_ref = object_link_commit_ref(object, matches)
+            klass = reference_class(:commit, tooltip: false)
+
+            commit_ref_tag = doc.document.create_element("span")
+            commit_ref_tag['class'] = klass
+            commit_ref_tag.content = commit_ref
+
+            return extras.unshift(commit_ref_tag.to_html)
+          end
+
+          path = matches[:path] if matches.names.include?("path")
+
+          case path
+          when '/diffs'
+            extras.unshift CGI.escapeHTML("diffs")
+          when '/commits'
+            extras.unshift CGI.escapeHTML("commits")
+          when '/builds'
+            extras.unshift CGI.escapeHTML("builds")
+          end
+
+          extras
+        end
+
+        def parent_records(parent, ids)
+          return MergeRequest.none unless parent.is_a?(Project)
+
+          parent.merge_requests
+            .iid_in(ids.to_a)
+            .includes(target_project: :namespace)
+        end
+
+        def reference_class(object_sym, tooltip: false)
+          super
+        end
+
+        def data_attributes_for(original, parent, object, **_attrs)
+          super.merge(project_path: parent.full_path, iid: object.iid)
+        end
+
+        private
+
+        def object_link_commit_ref(object, matches)
+          object_link_commit(object, matches)&.short_id
+        end
+
+        def object_link_commit(object, matches)
+          return unless matches.names.include?('query') && query = matches[:query]
+
+          # Removes leading "?". CGI.parse expects "arg1&arg2&arg3"
+          params = CGI.parse(query.sub(/^\?/, ''))
+
+          return unless commit_sha = params['commit_id']&.first
+
+          if commit = find_commit_by_sha(object, commit_sha)
+            Commit.from_hash(commit.to_hash, object.project)
+          end
+        end
+
+        def find_commit_by_sha(object, commit_sha)
+          @all_commits ||= {}
+
+          @all_commits[object.id] = preloaded_all_commits(object) unless @all_commits.key?(object.id)
+
+          @all_commits[object.id].find { |commit| commit.sha == commit_sha }
+        end
+
+        def preloaded_all_commits(object)
+          commits = object.all_commits
+          preloads = if MergeRequestDiffCommit.read_new_commits_table?(object.target_project_id)
+                       [{ merge_request_commits_metadata: [:commit_author, :committer] }]
+                     else
+                       [:commit_author, :committer, :merge_request_commits_metadata]
+                     end
+
+          ActiveRecord::Associations::Preloader.new(records: commits, associations: preloads).call
+
+          commits
+        end
+      end
+    end
+  end
+end

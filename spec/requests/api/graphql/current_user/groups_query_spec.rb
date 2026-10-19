@@ -1,0 +1,181 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Query current user groups', feature_category: :groups_and_projects do
+  include GraphqlHelpers
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:root_group) { create(:group, name: 'Root group', path: 'root-group') }
+  let_it_be(:guest_group) { create(:group, name: 'public guest', path: 'public-guest', guests: user) }
+  let_it_be(:private_maintainer_group) { create(:group, :private, name: 'b private maintainer', path: 'b-private-maintainer', parent: root_group, maintainers: user) }
+  let_it_be(:public_developer_group) { create(:group, project_creation_level: nil, name: 'c public developer', path: 'c-public-developer', developers: user) }
+  let_it_be(:public_maintainer_group) { create(:group, name: 'a public maintainer', path: 'a-public-maintainer', parent: root_group, maintainers: user) }
+  let_it_be(:public_owner_group) { create(:group, name: 'a public owner', path: 'a-public-owner', owners: user) }
+
+  let(:group_arguments) { {} }
+  let(:current_user) { user }
+
+  let(:fields) do
+    <<~GRAPHQL
+      nodes { id path fullPath name }
+    GRAPHQL
+  end
+
+  let(:query) do
+    graphql_query_for('currentUser', {}, query_graphql_field('groups', group_arguments, fields))
+  end
+
+  subject { graphql_data.dig('currentUser', 'groups', 'nodes') }
+
+  before do
+    post_graphql(query, current_user: current_user)
+  end
+
+  it_behaves_like 'a working graphql query'
+
+  it 'avoids N+1 queries', :request_store do
+    control = ActiveRecord::QueryRecorder.new { post_graphql(query, current_user: current_user) }
+
+    new_group = create(:group, :private)
+    new_group.add_maintainer(current_user)
+
+    expect { post_graphql(query, current_user: current_user) }.not_to exceed_query_limit(control)
+  end
+
+  it 'returns all groups where the user is a direct member' do
+    is_expected.to match(
+      expected_group_hash(
+        public_maintainer_group,
+        public_owner_group,
+        private_maintainer_group,
+        public_developer_group,
+        guest_group
+      )
+    )
+  end
+
+  context 'when permission_scope is CREATE_PROJECTS' do
+    let(:group_arguments) { { permission_scope: :CREATE_PROJECTS } }
+
+    it 'returns groups where the user can create projects' do
+      is_expected.to match(
+        expected_group_hash(
+          public_maintainer_group,
+          public_owner_group,
+          private_maintainer_group,
+          public_developer_group
+        )
+      )
+    end
+
+    context 'when search is provided' do
+      let(:group_arguments) { { permission_scope: :CREATE_PROJECTS, search: 'root-group maintainer' } }
+
+      it 'returns matching groups' do
+        is_expected.to match(
+          expected_group_hash(
+            public_maintainer_group,
+            private_maintainer_group
+          )
+        )
+      end
+    end
+  end
+
+  context 'when permission_scope is TRANSFER_PROJECTS' do
+    let(:group_arguments) { { permission_scope: :TRANSFER_PROJECTS } }
+
+    it 'returns groups where the user can transfer projects' do
+      is_expected.to match(
+        expected_group_hash(
+          public_maintainer_group,
+          public_owner_group,
+          private_maintainer_group
+        )
+      )
+    end
+
+    context 'when search is provided' do
+      let(:group_arguments) { { permission_scope: :TRANSFER_PROJECTS, search: 'owner' } }
+
+      it 'returns matching groups' do
+        is_expected.to match(
+          expected_group_hash(
+            public_owner_group
+          )
+        )
+      end
+    end
+  end
+
+  context 'when both permission_scope and solo_owned are provided' do
+    let(:group_arguments) { { permission_scope: :CREATE_PROJECTS, solo_owned: true } }
+
+    it 'returns a mutually exclusive arguments error' do
+      expect(graphql_errors).to include(
+        a_hash_including(
+          'message' => 'Only one of [permissionScope, soloOwned] arguments is allowed at the same time.'
+        )
+      )
+    end
+  end
+
+  context 'when search is provided' do
+    let(:group_arguments) { { search: 'maintainer' } }
+
+    it 'returns matching groups' do
+      is_expected.to match(
+        expected_group_hash(
+          public_maintainer_group,
+          private_maintainer_group
+        )
+      )
+    end
+
+    context 'when searching for a full path (including parent)' do
+      let(:group_arguments) { { search: 'root-group/b-private-maintainer' } }
+
+      it 'returns the group matching the full path' do
+        is_expected.to match(
+          expected_group_hash(
+            private_maintainer_group
+          )
+        )
+      end
+    end
+  end
+
+  context 'when sorting' do
+    using RSpec::Parameterized::TableSyntax
+
+    where(:sort, :expected_groups) do
+      :CREATED_AT_ASC | [ref(:guest_group), ref(:private_maintainer_group), ref(:public_developer_group), ref(:public_maintainer_group), ref(:public_owner_group)]
+      :CREATED_AT_DESC | [ref(:public_owner_group), ref(:public_maintainer_group), ref(:public_developer_group), ref(:private_maintainer_group), ref(:guest_group)]
+      :UPDATED_AT_ASC | [ref(:guest_group), ref(:private_maintainer_group), ref(:public_developer_group), ref(:public_maintainer_group), ref(:public_owner_group)]
+      :UPDATED_AT_DESC | [ref(:public_owner_group), ref(:public_maintainer_group), ref(:public_developer_group), ref(:private_maintainer_group), ref(:guest_group)]
+    end
+
+    with_them do
+      it "orders correctly" do
+        query_with_sort = graphql_query_for('currentUser', {}, query_graphql_field('groups', { sort: sort }, fields))
+        post_graphql(query_with_sort, current_user: current_user)
+
+        expect(
+          graphql_data.dig('currentUser', 'groups', 'nodes').pluck('id')
+        ).to eq(expected_groups.map { |group| group.to_global_id.to_s })
+      end
+    end
+  end
+
+  def expected_group_hash(*groups)
+    groups.map do |group|
+      {
+        'id' => group.to_global_id.to_s,
+        'name' => group.name,
+        'path' => group.path,
+        'fullPath' => group.full_path
+      }
+    end
+  end
+end

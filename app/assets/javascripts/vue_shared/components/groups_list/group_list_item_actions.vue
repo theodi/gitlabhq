@@ -1,0 +1,317 @@
+<script>
+import { GlLoadingIcon, GlToastMixin } from '@gitlab/ui';
+import { uniqueId } from 'lodash-es';
+import { s__, __, sprintf } from '~/locale';
+import { copyToClipboard } from '~/lib/utils/copy_to_clipboard';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { createAlert } from '~/alert';
+import ListActions from '~/vue_shared/components/list_actions/list_actions.vue';
+import GroupListItemLeaveModal from '~/vue_shared/components/groups_list/group_list_item_leave_modal.vue';
+import GroupDeleteModal from '~/groups/components/delete_modal.vue';
+import GroupListItemPreventDeleteModal from '~/vue_shared/components/groups_list/group_list_item_prevent_delete_modal.vue';
+import TransferModal from '~/groups/components/transfer_modal.vue';
+import {
+  ACTION_COPY_ID,
+  ACTION_ARCHIVE,
+  ACTION_DELETE,
+  ACTION_DELETE_IMMEDIATELY,
+  ACTION_EDIT,
+  ACTION_LEAVE,
+  ACTION_RESTORE,
+  ACTION_TRANSFER,
+  ACTION_UNARCHIVE,
+  ACTION_REQUEST_ACCESS,
+  ACTION_WITHDRAW_ACCESS_REQUEST,
+} from '~/vue_shared/components/list_actions/constants';
+import { archiveGroup, restoreGroup, unarchiveGroup } from '~/api/groups_api';
+import { InternalEvents } from '~/tracking';
+import { RESOURCE_TYPES } from '~/groups_projects/constants';
+import axios from '~/lib/utils/axios_utils';
+import {
+  renderArchiveSuccessToast,
+  renderRestoreSuccessToast,
+  renderUnarchiveSuccessToast,
+  renderDeleteSuccessToast,
+  renderTransferSuccessToast,
+  deleteParams,
+} from './utils';
+
+export default {
+  name: 'GroupListItemActions',
+  components: {
+    GlLoadingIcon,
+    ListActions,
+    GroupListItemLeaveModal,
+    GroupListItemPreventDeleteModal,
+    GroupDeleteModal,
+    TransferModal,
+  },
+  mixins: [InternalEvents.mixin(), GlToastMixin],
+  inject: ['triggerRestoreLocation'],
+  props: {
+    group: {
+      type: Object,
+      required: true,
+    },
+  },
+  emits: ['action'],
+  data() {
+    return {
+      actionsLoading: false,
+      isDeleteModalVisible: false,
+      isDeleteModalLoading: false,
+      isLeaveModalVisible: false,
+      isTransferModalVisible: false,
+      leaveModalId: uniqueId('groups-list-item-leave-modal-id-'),
+      deleteModalId: uniqueId('groups-list-item-delete-modal-id-'),
+    };
+  },
+  computed: {
+    availableActions() {
+      return this.group.availableActions ?? [];
+    },
+    actions() {
+      const baseActions = {
+        [ACTION_COPY_ID]: {
+          text: sprintf(s__('Groups|Copy group ID: %{id}'), { id: this.group.id }),
+          action: this.onCopyId,
+        },
+        [ACTION_EDIT]: {
+          href: this.group.editPath,
+        },
+        [ACTION_ARCHIVE]: {
+          action: () =>
+            this.onActionWithLoading({
+              action: this.archive,
+              errorMessage: __(
+                'An error occurred archiving this group. Please refresh the page to try again.',
+              ),
+            }),
+        },
+        [ACTION_UNARCHIVE]: {
+          action: () =>
+            this.onActionWithLoading({
+              action: this.unarchive,
+              errorMessage: __(
+                'An error occurred unarchiving this group. Please refresh the page to try again.',
+              ),
+            }),
+        },
+        [ACTION_RESTORE]: {
+          action: () =>
+            this.onActionWithLoading({
+              action: this.restore,
+              errorMessage: __(
+                'An error occurred restoring this group. Please refresh the page to try again.',
+              ),
+            }),
+        },
+        [ACTION_DELETE]: {
+          action: this.onActionDelete,
+        },
+        [ACTION_DELETE_IMMEDIATELY]: {
+          action: this.onActionDelete,
+        },
+        [ACTION_LEAVE]: {
+          text: __('Leave group'),
+          action: this.onActionLeave,
+          extraAttrs: {
+            'data-testid': 'leave-group-link',
+            class: 'js-leave-link',
+          },
+        },
+        [ACTION_TRANSFER]: {
+          action: this.onActionTransfer,
+        },
+      };
+
+      if (this.group.requestAccessPath) {
+        baseActions[ACTION_REQUEST_ACCESS] = {
+          href: this.group.requestAccessPath,
+          extraAttrs: {
+            'data-method': 'post',
+            'data-testid': 'request-access-link',
+            rel: 'nofollow',
+          },
+        };
+      }
+
+      if (this.group.withdrawAccessRequestPath) {
+        baseActions[ACTION_WITHDRAW_ACCESS_REQUEST] = {
+          href: this.group.withdrawAccessRequestPath,
+          extraAttrs: {
+            'data-method': 'delete',
+            'data-testid': 'withdraw-access-link',
+            'data-confirm': sprintf(
+              s__(
+                'Groups|Are you sure you want to withdraw your access request for the %{fullName} group?',
+              ),
+              { fullName: this.group.fullName },
+            ),
+            rel: 'nofollow',
+          },
+        };
+      }
+
+      return baseActions;
+    },
+    hasActionDelete() {
+      return (
+        this.group.availableActions?.includes(ACTION_DELETE) ||
+        this.group.availableActions?.includes(ACTION_DELETE_IMMEDIATELY)
+      );
+    },
+    hasActionLeave() {
+      return this.group.availableActions?.includes(ACTION_LEAVE);
+    },
+    hasActionTransfer() {
+      return this.group.availableActions?.includes(ACTION_TRANSFER);
+    },
+  },
+  methods: {
+    async archive() {
+      await archiveGroup(this.group.id);
+      this.$emit('action', ACTION_ARCHIVE);
+      renderArchiveSuccessToast(this.group);
+
+      this.trackEvent('archive_namespace_in_quick_action', {
+        label: RESOURCE_TYPES.GROUP,
+        property: 'archive',
+      });
+    },
+    async unarchive() {
+      await unarchiveGroup(this.group.id);
+      this.$emit('action', ACTION_UNARCHIVE);
+      renderUnarchiveSuccessToast(this.group);
+
+      this.trackEvent('archive_namespace_in_quick_action', {
+        label: RESOURCE_TYPES.GROUP,
+        property: 'unarchive',
+      });
+    },
+    async restore() {
+      await restoreGroup(this.group.id);
+      this.$emit('action', ACTION_RESTORE);
+      renderRestoreSuccessToast(this.group);
+
+      this.trackEvent('trigger_restore_on_group', {
+        label: this.triggerRestoreLocation,
+      });
+    },
+    async onActionWithLoading({ action, errorMessage }) {
+      this.actionsLoading = true;
+
+      try {
+        await action();
+      } catch (error) {
+        createAlert({ message: errorMessage, error, captureError: true });
+      } finally {
+        this.actionsLoading = false;
+      }
+    },
+    async onCopyId() {
+      this.trackEvent('click_copy_id_in_group_quick_actions');
+
+      try {
+        await copyToClipboard(this.group.id);
+        this.$toast.show(s__('Groups|Group ID copied to clipboard.'));
+      } catch (error) {
+        Sentry.captureException(error);
+      }
+    },
+    onActionDelete() {
+      this.isDeleteModalVisible = true;
+    },
+    onDeleteModalChange(isVisible) {
+      this.isDeleteModalVisible = isVisible;
+    },
+    onLeaveSuccess() {
+      this.$emit('action', ACTION_LEAVE);
+    },
+    async onDeleteModalPrimary() {
+      this.isDeleteModalLoading = true;
+
+      try {
+        await axios.delete(this.group.relativeWebUrl, {
+          params: deleteParams(this.group),
+        });
+
+        this.$emit(
+          'action',
+          this.group.markedForDeletion ? ACTION_DELETE_IMMEDIATELY : ACTION_DELETE,
+        );
+        renderDeleteSuccessToast(this.group);
+      } catch (error) {
+        createAlert({
+          message: __(
+            'An error occurred deleting the group. Please refresh the page to try again.',
+          ),
+          error,
+          captureError: true,
+        });
+      } finally {
+        this.isDeleteModalLoading = false;
+      }
+    },
+    onActionLeave() {
+      this.isLeaveModalVisible = true;
+    },
+    onActionTransfer() {
+      this.isTransferModalVisible = true;
+    },
+    onTransferSuccess() {
+      this.$emit('action', ACTION_TRANSFER);
+      renderTransferSuccessToast(this.group);
+    },
+  },
+};
+</script>
+
+<template>
+  <div v-bind="$attrs">
+    <gl-loading-icon v-if="actionsLoading" size="sm" class="gl-p-3" />
+    <list-actions
+      v-else
+      data-testid="groups-list-item-actions"
+      :actions="actions"
+      :available-actions="availableActions"
+    />
+    <template v-if="hasActionDelete">
+      <group-list-item-prevent-delete-modal
+        v-if="group.isLinkedToSubscription"
+        :visible="isDeleteModalVisible"
+        :modal-id="deleteModalId"
+        @change="onDeleteModalChange"
+      />
+      <group-delete-modal
+        v-else
+        v-model="isDeleteModalVisible"
+        :confirm-phrase="group.fullPath"
+        :full-name="group.fullName"
+        :confirm-loading="isDeleteModalLoading"
+        :subgroups-count="group.descendantGroupsCount"
+        :projects-count="group.projectsCount"
+        :marked-for-deletion="group.markedForDeletion"
+        :permanent-deletion-date="group.permanentDeletionDate"
+        @primary="onDeleteModalPrimary"
+      />
+    </template>
+
+    <template v-if="hasActionLeave">
+      <group-list-item-leave-modal
+        v-model="isLeaveModalVisible"
+        :modal-id="leaveModalId"
+        :group="group"
+        @success="onLeaveSuccess"
+      />
+    </template>
+
+    <template v-if="hasActionTransfer">
+      <transfer-modal
+        v-model="isTransferModalVisible"
+        :group="group"
+        @success="onTransferSuccess"
+      />
+    </template>
+  </div>
+</template>

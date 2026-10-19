@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+module Tasks
+  module Gitlab
+    module Permissions
+      module Routes
+        module SkipReasons
+          REASON_LABELS = {
+            ai_workflows_oauth_auth: 'AI workflows OAuth token',
+            catch_all: 'Catch-all fallback',
+            cd_rollout_workflow_event: 'CD rollout deploy driver callback token',
+            compliance_external_auth: 'Compliance external control token',
+            container_registry_event_auth: 'Container registry event token',
+            deprecated_endpoint: 'Deprecated endpoint',
+            error_tracking_token_auth: 'Error tracking token',
+            geo_jwt_auth: 'Geo node JWT',
+            geo_proxy_auth: 'Geo proxy',
+            github_oauth_webhook_signature_auth: 'GitHub OAuth webhook signature',
+            gitlab_shared_secret_auth: 'GitLab shared secret',
+            gitlab_shell_token_auth: 'GitLab Shell token',
+            iam_oauth_token_auth: 'IAM OAuth token',
+            integration_token_auth: 'Project integration token',
+            internal_testing: 'Internal testing',
+            jira_forge_app_auth: 'GitLab for Jira (Forge) app token',
+            job_token_auth: 'CI job token',
+            kas_jwt_auth: 'Kubernetes agent JWT',
+            mailroom_token_auth: 'Mailroom token',
+            modular_service_token_exchange: 'Modular service token exchange',
+            openbao_token_auth: 'OpenBao token',
+            external_registry_redirect: 'External registry redirect',
+            ai_workflows_token_auth: 'AI Workflows OAuth token',
+            orbit_internal_auth: 'GitLab Orbit internal token',
+            org_mover_jwt_auth: 'Org Mover JWT',
+            pages_token_auth: 'GitLab Pages token',
+            public_endpoint: 'Public endpoint',
+            runner_token_auth: 'Runner token',
+            scim_token_auth: 'SCIM token',
+            slack_signature_auth: 'Slack request signature',
+            subscription_portal_jwt_auth: 'Subscription portal JWT',
+            trigger_token_auth: 'CI trigger token',
+            unleash_token_auth: 'Unleash token',
+            usage_data_auth: 'Usage data token',
+            workhorse_pre_authorization: 'Workhorse pre-authorization',
+            workhorse_verification_auth: 'Workhorse verification'
+          }.freeze
+
+          VALID_SKIP_REASONS = REASON_LABELS.keys.freeze
+        end
+      end
+    end
+  end
+end

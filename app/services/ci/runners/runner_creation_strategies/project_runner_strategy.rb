@@ -1,0 +1,41 @@
+# frozen_string_literal: true
+
+module Ci
+  module Runners
+    module RunnerCreationStrategies
+      class ProjectRunnerStrategy
+        include Gitlab::Utils::StrongMemoize
+
+        def initialize(user:, params:)
+          @user = user
+          @params = params
+        end
+
+        def normalize_params
+          params.merge!({
+            runner_type: 'project_type',
+            organization_id: scope&.organization_id,
+            projects: [scope]
+          })
+        end
+
+        def validate_params
+          _('Missing/invalid project') unless scope.present?
+        end
+
+        def authorized_user?
+          user.present? && user.can?(:create_runners, scope)
+        end
+
+        private
+
+        attr_reader :user, :params
+
+        def scope
+          params.delete(:scope)
+        end
+        strong_memoize_attr :scope
+      end
+    end
+  end
+end

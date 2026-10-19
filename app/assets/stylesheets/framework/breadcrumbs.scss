@@ -1,0 +1,31 @@
+// stylelint-disable-next-line gitlab/no-js-class
+#js-vue-page-breadcrumbs-wrapper {
+  flex-grow: 1;
+  min-width: 1px;
+
+  /*
+   * Our auto-resizing GlBreadcrumb component works best when it is set to grow with the available space.
+   * Only this way can its ResizeObserver detect that more space than currently taken is available,
+   * so it can uncollapse items when more space becomes available.
+   * But we do *not* want this effect on pages that use the injectVueAppBreadcrumbs() mechanism.
+   * There, we want the lefthand breadcrumbs only take as much space as they needed on their first size calc,
+   * so that the second, injected GlBreadcrumb component sits right next to it, with no "grow effect" taking
+   * empty space between them.
+   * The only downside to this approach is that on such injected pages, the lefthand breadcrumbs won't
+   * uncollapse themselves when more space becomes available, as they won't "grow" into it, not triggering
+   * their ResizeObserver.
+   */
+  nav.gl-breadcrumbs:only-of-type {
+    flex-grow: 1;
+  }
+
+  /* If a Vue app portals its breadcrumbs here (like `NewNamespacePage` does), hide the others! */
+  /* stylelint-disable-next-line gitlab/no-has -- scoped to direct children of breadcrumb container */
+  > :has(~ .vue-portal-target) {
+    display: none;
+  }
+  /* ... and give portaled element room to grow */
+  > .vue-portal-target {
+    flex-grow: 1;
+  }
+}

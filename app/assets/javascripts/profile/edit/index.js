@@ -1,0 +1,95 @@
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import ProfileEditApp from './components/profile_edit_app.vue';
+
+export const initProfileEdit = () => {
+  const mountEl = document.querySelector('.js-user-profile-edit');
+
+  if (!mountEl) return false;
+
+  const {
+    profilePath,
+    userPath,
+    currentEmoji,
+    currentMessage,
+    currentAvailability,
+    defaultEmoji,
+    currentClearStatusAfter,
+    timezones,
+    userTimezone,
+    userId,
+    name,
+    email,
+    publicEmail,
+    commitEmail,
+    pronouns,
+    pronunciation,
+    websiteUrl,
+    location,
+    jobTitle,
+    organization,
+    bio,
+    privateProfile,
+    includePrivateContributions,
+    achievementsEnabled,
+    publicEmailOptions,
+    commitEmailOptions,
+    emailHelpText,
+    emailResendConfirmationLink,
+    isEmailReadonly,
+    emailChangeDisabled,
+    managingGroupName,
+    needsPasswordConfirmation,
+    providerLabel,
+    ...provides
+  } = mountEl.dataset;
+
+  return initVueApp({
+    el: mountEl,
+    name: 'ProfileEditRoot',
+    provide: {
+      ...provides,
+      currentEmoji,
+      currentMessage,
+      currentAvailability,
+      defaultEmoji,
+      currentClearStatusAfter,
+      hasAvatar: parseBoolean(provides.hasAvatar),
+      gravatarEnabled: parseBoolean(provides.gravatarEnabled),
+      gravatarLink: JSON.parse(provides.gravatarLink),
+      timezones: JSON.parse(timezones),
+      userTimezone,
+      publicEmailOptions: publicEmailOptions ? JSON.parse(publicEmailOptions) : [],
+      commitEmailOptions: commitEmailOptions ? JSON.parse(commitEmailOptions) : [],
+      emailResendConfirmationLink: emailResendConfirmationLink || '',
+      emailHelpText: emailHelpText || '',
+      isEmailReadonly: parseBoolean(isEmailReadonly),
+      emailChangeDisabled: parseBoolean(emailChangeDisabled),
+      managingGroupName: managingGroupName || '',
+      needsPasswordConfirmation: parseBoolean(needsPasswordConfirmation),
+      providerLabel: providerLabel || '',
+      userSettings: {
+        id: provides.id,
+        name,
+        email,
+        publicEmail: publicEmail || '',
+        commitEmail: commitEmail || '',
+        pronouns,
+        pronunciation,
+        websiteUrl,
+        location,
+        jobTitle,
+        organization,
+        bio,
+        privateProfile,
+        includePrivateContributions,
+        achievementsEnabled,
+      },
+    },
+    component: ProfileEditApp,
+    props: {
+      profilePath,
+      userPath,
+    },
+  });
+};

@@ -1,0 +1,289 @@
+# frozen_string_literal: true
+
+require('spec_helper')
+
+RSpec.describe UserSettings::ProfilesController, :request_store, feature_category: :user_profile do
+  let(:password) { User.random_password }
+  let(:user) { create(:user, password: password) }
+
+  describe 'POST update' do
+    it 'does not update password' do
+      sign_in(user)
+      new_password = User.random_password
+      expect do
+        post :update, params: { user: { password: new_password, password_confirmation: new_password } }
+      end.not_to change { user.reload.encrypted_password }
+
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it 'allows an email update from a user without an external email address' do
+      sign_in(user)
+
+      put :update, params: { user: { email: "john@gmail.com", name: "John", validation_password: password } }
+
+      user.reload
+
+      expect(response).to have_gitlab_http_status(:found)
+      expect(user.unconfirmed_email).to eq('john@gmail.com')
+    end
+
+    it 'includes confirmation help text with new email address in response' do
+      sign_in(user)
+
+      put :update, params: { user: { email: 'john@gmail.com', validation_password: password } }, format: :json
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response).to include(
+        'message' => s_('Profiles|Profile was successfully updated'),
+        'email_help_text' => include('john@gmail.com')
+      )
+    end
+
+    it "allows an email update without confirmation if existing verified email" do
+      user = create(:user)
+      create(:email, :confirmed, user: user, email: 'john@gmail.com')
+      sign_in(user)
+
+      put :update, params: { user: { email: "john@gmail.com", name: "John" } }
+
+      user.reload
+
+      expect(response).to have_gitlab_http_status(:found)
+      expect(user.unconfirmed_email).to be_nil
+    end
+
+    it 'ignores an email update from a user with an external email address' do
+      stub_omniauth_setting(sync_profile_from_provider: ['ldap'])
+      stub_omniauth_setting(sync_profile_attributes: true)
+
+      ldap_user = create(:omniauth_user)
+      ldap_user.create_user_synced_attributes_metadata(provider: 'ldap', name_synced: true, email_synced: true)
+      sign_in(ldap_user)
+
+      put :update, params: { user: { email: "john@gmail.com", name: "John" } }
+
+      ldap_user.reload
+
+      expect(response).to have_gitlab_http_status(:found)
+      expect(ldap_user.unconfirmed_email).not_to eq('john@gmail.com')
+    end
+
+    it 'ignores an email and name update but allows a location update from a user with external email and name,' \
+       'but not external location' do
+      stub_omniauth_setting(sync_profile_from_provider: ['ldap'])
+      stub_omniauth_setting(sync_profile_attributes: true)
+
+      ldap_user = create(:omniauth_user, name: 'Alex')
+      ldap_user.create_user_synced_attributes_metadata(
+        provider: 'ldap', name_synced: true, email_synced: true, location_synced: false
+      )
+      sign_in(ldap_user)
+
+      put :update, params: { user: { email: "john@gmail.com", name: "John", location: "City, Country" } }
+
+      ldap_user.reload
+
+      expect(response).to have_gitlab_http_status(:found)
+      expect(ldap_user.unconfirmed_email).not_to eq('john@gmail.com')
+      expect(ldap_user.name).not_to eq('John')
+      expect(ldap_user.location).to eq('City, Country')
+    end
+
+    it 'allows setting a user status', :freeze_time do
+      sign_in(user)
+
+      put :update, params: { user: { status: {
+        message: 'Working hard!', availability: 'busy', clear_status_after: '8_hours'
+      } } }
+
+      expect(user.reload.status.message).to eq('Working hard!')
+      expect(user.reload.status.availability).to eq('busy')
+      expect(user.reload.status.clear_status_after).to eq(8.hours.from_now)
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it 'allows updating user specified job title' do
+      title = 'Marketing Executive'
+      sign_in(user)
+
+      put :update, params: { user: { job_title: title } }
+
+      expect(user.reload.job_title).to eq(title)
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it 'allows updating user specified pronouns', :aggregate_failures do
+      pronouns = 'they/them'
+      sign_in(user)
+
+      put :update, params: { user: { pronouns: pronouns } }
+
+      expect(user.reload.pronouns).to eq(pronouns)
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it 'allows updating user specified pronunciation', :aggregate_failures do
+      user = create(:user, name: 'Example')
+      pronunciation = 'uhg-zaam-pl'
+      sign_in(user)
+
+      put :update, params: { user: { pronunciation: pronunciation } }
+
+      expect(user.reload.pronunciation).to eq(pronunciation)
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it 'allows updating user specified Discord User ID', :aggregate_failures do
+      discord_user_id = '1234567890123456789'
+      sign_in(user)
+
+      put :update, params: { user: { discord: discord_user_id } }
+
+      expect(user.reload.discord).to eq(discord_user_id)
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it 'allows updating user specified bluesky did identifier', :aggregate_failures do
+      bluesky_did_id = 'did:plc:ewvi7nxzyoun6zhxrhs64oiz'
+      sign_in(user)
+
+      put :update, params: { user: { bluesky: bluesky_did_id } }
+
+      expect(user.reload.bluesky).to eq(bluesky_did_id)
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    it 'allows updating user specified mastodon usernames with varying top level domains', :aggregate_failures do
+      possible_mastodon_usernames = [
+        '@robin@example.com',
+        '@robin@mastadon.com',
+        '@john@mastadon.social',
+        '@drew@social.vivaldi.net',
+        '@adil@c.im'
+      ]
+      sign_in(user)
+
+      possible_mastodon_usernames.each do |mastodon_username|
+        put :update, params: { user: { mastodon: mastodon_username } }
+
+        expect(user.reload.mastodon).to eq(mastodon_username)
+        expect(response).to have_gitlab_http_status(:found)
+      end
+    end
+
+    it 'allows updating user specified ORCID ID', :aggregate_failures do
+      orcid_id = '1234-1234-1234-1234'
+      sign_in(user)
+
+      put :update, params: { user: { orcid: orcid_id } }
+
+      expect(user.reload.orcid).to eq(orcid_id)
+      expect(response).to have_gitlab_http_status(:found)
+    end
+
+    context 'for email OTP enrollment' do
+      before do
+        stub_application_setting(email_otp_enabled: true)
+      end
+
+      context 'when web password authentication is disabled' do
+        it 'does not enroll the user in email OTP', :aggregate_failures, :freeze_time do
+          stub_application_setting(password_authentication_enabled_for_web?: false)
+
+          sign_in(user)
+
+          put :update, params: { user: { email_otp_required_as_boolean: true }, current_password: password }
+
+          expect(user.reload.email_otp_required_after).to be_nil
+          expect(response).to have_gitlab_http_status(:found)
+        end
+      end
+
+      context 'when the correct user password is provided' do
+        it 'allows enabling email OTP', :aggregate_failures, :freeze_time do
+          sign_in(user)
+
+          put :update, params: { user: { email_otp_required_as_boolean: true }, current_password: password }
+
+          expect(user.reload.email_otp_required_after).to eq(Time.current)
+          expect(response).to have_gitlab_http_status(:found)
+        end
+
+        it 'allows disabling email OTP', :aggregate_failures do
+          user.update!(email_otp_required_after: Time.current)
+          sign_in(user)
+
+          put :update, params: { user: { email_otp_required_as_boolean: false }, current_password: password }
+
+          expect(user.reload.email_otp_required_after).to be_nil
+          expect(response).to have_gitlab_http_status(:found)
+        end
+      end
+
+      context 'when incorrect passwords are provided' do
+        where(:provided_password) do
+          [
+            nil,
+            "",
+            "invalid"
+          ]
+        end
+
+        with_them do
+          it 'does not allows modifying email OTP', :aggregate_failures do
+            sign_in(user)
+
+            put :update, params: { user: { email_otp_required_as_boolean: true }, current_password: provided_password }
+
+            expect(response).to have_gitlab_http_status(:found)
+            expect(flash[:alert]).to eq('You must provide a valid current password.')
+          end
+        end
+      end
+
+      context 'when email_otp_required_as_boolean is not in params' do
+        it 'does not call can_modify_email_otp_enrollment?', :aggregate_failures do
+          sign_in(user)
+
+          expect(user).not_to receive(:can_modify_email_otp_enrollment?)
+
+          put :update, params: { user: { name: 'New Name' } }
+
+          expect(response).to have_gitlab_http_status(:found)
+        end
+      end
+
+      context 'when email_otp_required_as_boolean value is not changing' do
+        it 'does not call can_modify_email_otp_enrollment?', :aggregate_failures do
+          sign_in(user)
+
+          expect(user).not_to receive(:can_modify_email_otp_enrollment?)
+
+          put :update, params: { user: { email_otp_required_as_boolean: false } }
+
+          expect(response).to have_gitlab_http_status(:found)
+        end
+      end
+
+      context 'when the user is not permitted to change their email OTP enrollment', :freeze_time do
+        # Other can_modify_email_otp_enrollment? scenarios are tested in
+        # email_otp_enrollment_spec.rb
+        before do
+          stub_application_setting(require_minimum_email_based_otp_for_users_with_passwords: true)
+          user.update!(email_otp_required_after: Time.current)
+        end
+
+        it 'does not allows modifying email OTP', :aggregate_failures do
+          sign_in(user)
+
+          put :update, params: { user: { email_otp_required_as_boolean: false } }
+
+          expect(user.reload.email_otp_required_after).to eq(Time.current)
+          expect(response).to have_gitlab_http_status(:found)
+          expect(flash[:alert]).to eq('You are not permitted to change email OTP enrollment')
+        end
+      end
+    end
+  end
+end

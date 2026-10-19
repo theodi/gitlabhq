@@ -1,0 +1,128 @@
+---
+stage: Application Security Testing
+group: Composition Analysis
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Continuous dependency scanning
+description: How GitLab detects new vulnerabilities for application dependencies outside of CI/CD pipelines.
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Continuous vulnerability scanning (CVS) for dependency scanning looks for security vulnerabilities in your project's dependencies without requiring a new pipeline to run. CVS compares their component names and versions against two sources:
+
+- The latest [security advisories](#security-advisories) identify package versions with known vulnerabilities.
+- [GitLab malware advisories](../../gitlab_advisory_database/_index.md#gitlab-malware-advisories) identify package versions known to be malicious.
+
+A pipeline must run at least once on the default branch to register your project's components through a CycloneDX SBOM. After that, CVS runs as advisories are published, without further pipeline executions, until your dependencies change.
+
+CVS re-evaluates your dependencies when GitLab updates its malware advisory database, in the same way it does for security advisories. If CVS identifies a package already in your dependencies as malicious, it creates a finding.
+
+GitLab does not notify you when it creates a finding, and [new vulnerabilities may arise](#checking-new-vulnerabilities) whenever continuous vulnerability scanning scans projects that contain components with [supported package types](#supported-package-types). You see them by checking the [vulnerability report](../../vulnerability_report/_index.md) or the [dependency list](../../dependency_list/_index.md).
+
+Vulnerabilities created by continuous vulnerability scanning for dependency scanning use `GitLab SBoM Vulnerability Scanner` as the scanner name and `Dependency Scanning` as the vulnerability type.
+
+In contrast to CI/CD-based security scans, continuous vulnerability scanning is executed through background jobs (Sidekiq) rather than CI/CD pipelines, and no Security report artifacts are generated.
+
+## Prerequisites
+
+- [A CycloneDX SBOM report](#how-to-generate-a-cyclonedx-sbom-report).
+- [Security advisories](#security-advisories) synchronized to the GitLab instance.
+
+## Supported package types
+
+Continuous vulnerability scanning supports components with the following [PURL types](https://github.com/package-url/purl-spec/blob/346589846130317464b677bc4eab30bf5040183a/PURL-TYPES.rst) for dependency scanning:
+
+- `cargo`
+- `conan`
+- `go`
+- `maven`
+- `npm`
+- `nuget`
+- `packagist`
+- `pub`
+- `pypi`
+- `rubygem`
+- `swift`
+
+Go pseudo versions are not supported. A project dependency that references a Go pseudo version is
+never considered as affected because this might result in false negatives.
+
+## How to generate a CycloneDX SBOM report
+
+Use a [CycloneDX SBOM report](../../../../ci/yaml/artifacts_reports.md#artifactsreportscyclonedx) to register your project components with GitLab.
+
+The CycloneDX reports must comply with:
+
+- [the CycloneDX specification](https://github.com/CycloneDX/specification) version `1.4`, `1.5`, or `1.6`.
+- [the GitLab CycloneDX property taxonomy for dependency scanning](../../../../development/sec/cyclonedx_property_taxonomy.md#gitlabdependency_scanning-namespace-taxonomy).
+
+GitLab offers security analyzers that can generate a report compatible with GitLab:
+
+- [Dependency scanning analyzer](../dependency_scanning_sbom/_index.md#turn-on-dependency-scanning)
+- [Gemnasium analyzer (deprecated)](../legacy_dependency_scanning/_index.md)
+
+## Turn on or off continuous vulnerability scanning
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/500716) in GitLab 19.0 [with a flag](../../../../administration/feature_flags/_index.md) named `cvs_per_scanner_type_settings`. Disabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/243130) in GitLab 19.2. Feature flag `cvs_per_scanner_type_settings` removed.
+
+{{< /history >}}
+
+Continuous vulnerability scanning runs by default on all ingested CycloneDX SBOM files.
+You can turn it off for each project. While it's off, vulnerability records aren't created
+for your dependencies when new security advisories are ingested.
+
+Prerequisites:
+
+- You must have the Maintainer, Owner, or Security Manager role for the project.
+
+To turn on or off continuous vulnerability scanning:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Secure** > **Security configuration**.
+1. Under **Continuous Vulnerability Scanning for Dependency Scanning**, turn on or turn off the toggle.
+
+## Checking new vulnerabilities
+
+New vulnerabilities detected by continuous vulnerability scanning are visible on the [vulnerability report](../../vulnerability_report/_index.md).
+However, they are not listed in the pipeline where the affected SBOM component was detected.
+
+Vulnerabilities are created after a [security advisory](#security-advisories) is added or updated. It might take a few hours for
+the corresponding vulnerabilities to be added to your projects, provided the codebase remains unchanged. Only advisories published within the last 14 days
+are considered for continuous vulnerability scanning.
+
+## When vulnerabilities are no longer detected
+
+Continuous vulnerability scanning automatically creates vulnerabilities when a new advisory is published,
+but it is not able to tell when a vulnerability is no longer present in the project. To do so, GitLab
+still requires a [dependency scanning](../_index.md) scan to be executed in a pipeline for the default branch,
+and a corresponding security report artifact generated with the up-to-date information. When these reports
+are processed, and when they no longer contain some vulnerabilities, these are flagged as such even if
+they were created by continuous vulnerability scanning.
+
+## Security advisories
+
+Continuous vulnerability scanning uses the Package Metadata Database, a service managed by GitLab which aggregates license and security advisory data, and regularly publishes updates that are used by GitLab.com and GitLab Self-Managed instances.
+
+On GitLab.com, the synchronization is managed by GitLab and is available to all projects.
+
+On GitLab Self-Managed, you can [choose package registry metadata to synchronize](../../../../administration/settings/security_and_compliance.md#choose-package-registry-metadata-to-sync) in the **Admin** area for the GitLab instance.
+
+### Data sources
+
+Current data sources for security advisories include:
+
+- [GitLab advisory database](../../gitlab_advisory_database/_index.md) (hosted in the [`gemnasium-db`](https://gitlab.com/gitlab-org/security-products/gemnasium-db) repository, a legacy name)
+- [GitLab malware advisories](../../gitlab_advisory_database/_index.md#gitlab-malware-advisories), a private database of packages known to be malicious
+
+### Contributing to the vulnerability database
+
+To find a vulnerability, you can search the [`GitLab advisory database`](https://advisories.gitlab.com/).
+You can also [submit new vulnerabilities](https://gitlab.com/gitlab-org/security-products/gemnasium-db/blob/master/CONTRIBUTING.md).

@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+
+## Usage: scripts/rspec_check_order_dependence <files...>
+#
+# List of RSpec files to be checked for their order dependency.
+#
+# If the files pass the following checks it's likely they are not
+# order-dependent and are removed from `spec/support/rspec_order_todo.yml`
+# to make them run in random order.
+#
+# The following checks are available:
+# * Run specs in _defined_ order
+# * Run specs in _reverse_ order
+# * Run specs in _random_ order, 5 times by default.
+#   - Adjustable via RANDOM_ORDER_RUNS=10 scripts/rspec_check_order_dependence
+
+if [ $# -eq 0 ]; then
+  echo "Usage: $0 <files...>"
+  echo "  RANDOM_ORDER_RUNS=5 $0 <files...>"
+  exit
+fi
+
+TODO_YAML='./spec/support/rspec_order_todo.yml'
+RSPEC_ARGS=(--fail-fast --format progress)
+RANDOM_ORDER_RUNS=${RANDOM_ORDER_RUNS:-5}
+LOGFILE=$(mktemp /tmp/rspec-check-order_dependence-XXXXXX)
+
+trap cleanup EXIT INT TERM
+
+# Required by `rspec --bisect' on MacOS.
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+
+cleanup() {
+  rm -f "$LOGFILE"
+}
+
+abort() {
+  echo "$@"
+  echo "Aborting..."
+  exit 1
+}
+
+require_spec_helper_if_needed() {
+  local spec_helpers
+
+  spec_helpers=$(grep -rhE "^require ['\"].*spec_helper" "$@" 2>/dev/null | \
+                 sed 's/require //; s/["'\'']//g' | \
+                 sort -u)
+
+  # If specs require "spec_helper" and also "fast_spec_helper" (or other variant)
+  # we must apply `-rspec_helper` to avoid early failure.
+  if echo "$spec_helpers" | grep -qx 'spec_helper' && echo "$spec_helpers" | grep -qxE '.+_spec_helper'
+  then
+    echo "NOTE: Specs are mixing fast spec helpers with other spec helpers. Adding -rspec_helper."
+    RSPEC_ARGS+=(-rspec_helper)
+  fi
+}
+
+rspec_bisect() {
+  seed=$(grep "Randomized with seed " "$LOGFILE" | grep -oE '[0-9]+' | head -1 || true)
+
+  local args
+  args=("${RSPEC_ARGS[@]}")
+
+  if [[ -n "$seed" ]]
+  then
+    echo "NOTE: Found seed $seed. Adding --seed $seed."
+    args+=(--seed "$seed")
+  fi
+
+  bin/rspec --bisect "${args[@]}" "$@"
+
+  exit 1
+}
+
+rspec_run() {
+  if ! bin/rspec "${RSPEC_ARGS[@]}" "$@" 2>&1 | tee "$LOGFILE"
+  then
+    echo "WARNING: Specs failed. Running RSpec bisect:"
+    rspec_bisect "$@"
+  fi
+}
+
+for file in "$@"
+do
+  # Drop potential file prefix `./`
+  file=${file#./}
+
+  # Match only the prefix so we can specify a directory to match all the files
+  # under it. For example, `spec/rubocop` will match, test and remove all TODO
+  # entries starting with `./spec/rubocop`.
+  grep -E -- "- './$file" "$TODO_YAML" > /dev/null || abort "Could not find '$file' in '$TODO_YAML'"
+done
+
+require_spec_helper_if_needed "$@"
+
+set -xeo pipefail
+
+export RSPEC_WARN_MISSING_FEATURE_CATEGORY=0
+
+echo "Running in defined order:"
+rspec_run --order defined "$@"
+
+echo "Running in reverse order:"
+RSPEC_ORDER=reverse rspec_run "$@"
+
+for try in $(seq "$RANDOM_ORDER_RUNS")
+do
+  echo "Running in random order ($try/$RANDOM_ORDER_RUNS):"
+  rspec_run --order random "$@"
+done
+
+set +xe
+
+green='\033[0;32m'
+clear='\033[0m' # No Color
+
+echo -e "$green"
+echo "
+The files passed all checks!
+
+They are likely not order-dependent and can be run in random order and thus
+are being removed from 'spec/support/rspec_order_todo.yml':
+"
+
+for file in "$@"
+do
+  # Drop potential file prefix `./`
+  file=${file#./}
+
+  echo "  * Removing '$file'"
+
+  # Escape forward slashes to make it compatible with sed below
+  escaped_file=${file//\//\\/}
+
+  # We must use -i.bak to make sed work on Linux and MacOS.
+  # See https://riptutorial.com/sed/topic/9436/bsd-macos-sed-vs--gnu-sed-vs--the-posix-sed-specification
+  sed -i.bak "/- '.\/$escaped_file/d" "$TODO_YAML"
+  rm "$TODO_YAML.bak"
+done
+
+echo -e "$clear"

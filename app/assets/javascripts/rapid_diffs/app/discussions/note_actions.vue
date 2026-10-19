@@ -1,0 +1,349 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import {
+  GlTooltipDirective,
+  GlButton,
+  GlDisclosureDropdown,
+  GlDisclosureDropdownItem,
+  GlDisclosureDropdownGroup,
+  GlToastMixin,
+} from '@gitlab/ui';
+import { __, sprintf } from '~/locale';
+import UserAccessRoleBadge from '~/vue_shared/components/user_access_role_badge.vue';
+import AbuseCategorySelector from '~/abuse_reports/components/abuse_category_selector.vue';
+import ReplyButton from '~/notes/components/note_actions/reply_button.vue';
+import EmojiPicker from '~/emoji/components/picker.vue';
+import { isLoggedIn } from '~/lib/utils/common_utils';
+import { copyToClipboard } from '~/lib/utils/copy_to_clipboard';
+import Tracking from '~/tracking';
+import * as constants from '~/notes/constants';
+
+export default {
+  name: 'NoteActions',
+  i18n: {
+    editCommentLabel: __('Edit comment'),
+    deleteCommentLabel: __('Delete comment'),
+    moreActionsLabel: __('More actions'),
+    reportAbuse: __('Report abuse'),
+  },
+  components: {
+    AbuseCategorySelector,
+    EmojiPicker,
+    GlButton,
+    GlDisclosureDropdown,
+    GlDisclosureDropdownItem,
+    GlDisclosureDropdownGroup,
+    ReplyButton,
+    UserAccessRoleBadge,
+    DuoChatFeedbackModal: defineAsyncComponent(
+      () => import('ee_component/ai/components/duo_chat_feedback_modal.vue'),
+    ),
+    ViewSessionButton: defineAsyncComponent(
+      () => import('ee_component/ai/shared/widgets/view_session_button.vue'),
+    ),
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [Tracking.mixin(), GlToastMixin],
+  props: {
+    authorId: {
+      type: Number,
+      required: true,
+    },
+    noteId: {
+      type: [String, Number],
+      required: false,
+      default: '',
+    },
+    isAmazonQCodeReview: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    noteUrl: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    accessLevel: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    isAuthor: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isContributor: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    noteableType: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    projectName: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    showReply: {
+      type: Boolean,
+      required: true,
+    },
+    canEdit: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canAwardEmoji: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canDelete: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canReportAsAbuse: {
+      type: Boolean,
+      required: true,
+    },
+    canResolve: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isResolved: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isResolving: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    duoSessionId: {
+      type: Number,
+      required: false,
+      default: null,
+    },
+  },
+  emits: ['award', 'delete', 'resolve', 'start-editing', 'start-replying'],
+  data() {
+    return {
+      abuseDrawerOpen: false,
+      feedbackReceived: false,
+    };
+  },
+  computed: {
+    shouldShowActionsDropdown() {
+      return isLoggedIn();
+    },
+    showDeleteAction() {
+      return this.canDelete && !this.canReportAsAbuse && !this.noteUrl;
+    },
+    authorBadgeTitle() {
+      switch (this.noteableType) {
+        case constants.COMMIT_NOTEABLE_TYPE:
+          return __('Commit author');
+        case constants.MERGE_REQUEST_NOTEABLE_TYPE:
+          return __('Merge request author');
+        default:
+          return undefined;
+      }
+    },
+    displayMemberBadgeText() {
+      return sprintf(__('This user has the %{access} role in the %{name} project.'), {
+        access: this.accessLevel.toLowerCase(),
+        name: this.projectName,
+      });
+    },
+    displayContributorBadgeText() {
+      return sprintf(__('This user has previously committed to the %{name} project.'), {
+        name: this.projectName,
+      });
+    },
+    resolveIcon() {
+      if (this.isResolving) return null;
+      return this.isResolved ? 'check-circle-filled' : 'check-circle';
+    },
+    resolveButtonTitle() {
+      return this.isResolved ? __('Reopen thread') : __('Resolve thread');
+    },
+  },
+  methods: {
+    async onCopyUrl() {
+      await copyToClipboard(this.noteUrl).catch(() => {});
+      this.$toast.show(__('Link copied to clipboard.'));
+    },
+    showFeedbackModal() {
+      this.$refs.feedbackModal.show();
+    },
+    /**
+     * Tracks feedback submitted for Amazon Q code reviews
+     * @param {Object} options - The feedback options
+     * @param {Array<string>} [options.feedbackOptions] - Array of selected feedback options (e.g. ['helpful', 'incorrect'])
+     * @param {string} [options.extendedFeedback] - Additional text feedback provided by the user
+     */
+    trackFeedback({ feedbackOptions, extendedFeedback } = {}) {
+      this.track('amazon_q_code_review_feedback', {
+        action: 'amazon_q',
+        label: 'code_review_feedback',
+        property: feedbackOptions,
+        extra: {
+          extendedFeedback,
+          note_id: this.noteId,
+        },
+      });
+
+      this.feedbackReceived = true;
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="gl-flex gl-min-h-7 gl-flex-1 gl-items-center gl-justify-end">
+    <user-access-role-badge
+      v-if="isAuthor"
+      v-gl-tooltip
+      class="gl-mr-3 @max-sm/discussion:gl-hidden"
+      :title="authorBadgeTitle"
+    >
+      {{ __('Author') }}
+    </user-access-role-badge>
+    <user-access-role-badge
+      v-if="accessLevel"
+      v-gl-tooltip
+      class="gl-mr-3 @max-sm/discussion:gl-hidden"
+      :title="displayMemberBadgeText"
+    >
+      {{ accessLevel }}
+    </user-access-role-badge>
+    <user-access-role-badge
+      v-else-if="isContributor"
+      v-gl-tooltip
+      class="gl-mr-3 @max-sm/discussion:gl-hidden"
+      :title="displayContributorBadgeText"
+    >
+      {{ __('Contributor') }}
+    </user-access-role-badge>
+    <span class="@max-sm/discussion:gl-flex-1"></span>
+    <view-session-button
+      v-if="duoSessionId"
+      :session-id="duoSessionId"
+      class="@max-sm/discussion:gl-hidden"
+    />
+    <gl-button
+      v-if="canResolve"
+      v-gl-tooltip
+      data-testid="resolve-discussion-button"
+      category="tertiary"
+      :class="{ '!gl-text-success': isResolved }"
+      :title="resolveButtonTitle"
+      :aria-label="resolveButtonTitle"
+      :icon="resolveIcon"
+      :loading="isResolving"
+      @click="$emit('resolve')"
+    />
+    <emoji-picker
+      v-if="canAwardEmoji"
+      toggle-category="tertiary"
+      data-testid="note-emoji-button"
+      @click="$emit('award', $event)"
+    />
+    <reply-button v-if="showReply" ref="replyButton" @start-replying="$emit('start-replying')" />
+    <gl-button
+      v-if="canEdit"
+      v-gl-tooltip
+      :title="$options.i18n.editCommentLabel"
+      :aria-label="$options.i18n.editCommentLabel"
+      icon="pencil"
+      category="tertiary"
+      class="@max-sm/discussion:gl-hidden"
+      @click="$emit('start-editing')"
+    />
+    <gl-button
+      v-if="showDeleteAction"
+      v-gl-tooltip
+      :title="$options.i18n.deleteCommentLabel"
+      :aria-label="$options.i18n.deleteCommentLabel"
+      icon="remove"
+      category="tertiary"
+      @click="$emit('delete')"
+    />
+    <div v-else-if="shouldShowActionsDropdown">
+      <gl-disclosure-dropdown
+        v-gl-tooltip
+        :title="$options.i18n.moreActionsLabel"
+        :toggle-text="$options.i18n.moreActionsLabel"
+        text-sr-only
+        icon="ellipsis_v"
+        category="tertiary"
+        placement="bottom-end"
+        no-caret
+      >
+        <gl-disclosure-dropdown-group
+          v-if="duoSessionId || canEdit"
+          class="@sm/discussion:gl-hidden"
+          data-testid="compact-actions-group"
+        >
+          <view-session-button
+            v-if="duoSessionId"
+            :session-id="duoSessionId"
+            as-dropdown-item
+            data-testid="view-session-action"
+          />
+          <gl-disclosure-dropdown-item
+            v-if="canEdit"
+            data-testid="edit-note-action"
+            @action="$emit('start-editing')"
+          >
+            <template #list-item>{{ $options.i18n.editCommentLabel }}</template>
+          </gl-disclosure-dropdown-item>
+        </gl-disclosure-dropdown-group>
+        <gl-disclosure-dropdown-item v-if="noteUrl" @action="onCopyUrl">
+          <template #list-item>{{ __('Copy link') }}</template>
+        </gl-disclosure-dropdown-item>
+        <gl-disclosure-dropdown-group v-if="canReportAsAbuse || canEdit" bordered>
+          <gl-disclosure-dropdown-item
+            v-if="canReportAsAbuse"
+            data-testid="report-abuse-button"
+            @action="abuseDrawerOpen = true"
+          >
+            <template #list-item>{{ $options.i18n.reportAbuse }}</template>
+          </gl-disclosure-dropdown-item>
+          <gl-disclosure-dropdown-item
+            v-if="isAmazonQCodeReview && !feedbackReceived"
+            data-testid="amazon-q-feedback-button"
+            @action="showFeedbackModal"
+          >
+            <template #list-item>{{ s__('AmazonQ|Provide feedback on code review') }}</template>
+          </gl-disclosure-dropdown-item>
+          <gl-disclosure-dropdown-item v-if="canEdit" variant="danger" @action="$emit('delete')">
+            <template #list-item>{{ __('Delete comment') }}</template>
+          </gl-disclosure-dropdown-item>
+        </gl-disclosure-dropdown-group>
+      </gl-disclosure-dropdown>
+    </div>
+    <duo-chat-feedback-modal
+      v-if="isAmazonQCodeReview && !feedbackReceived"
+      ref="feedbackModal"
+      @feedback-submitted="trackFeedback"
+    />
+    <abuse-category-selector
+      v-if="canReportAsAbuse && abuseDrawerOpen"
+      :reported-user-id="authorId"
+      :reported-from-url="noteUrl"
+      :show-drawer="abuseDrawerOpen"
+      @close-drawer="abuseDrawerOpen = false"
+    />
+  </div>
+</template>

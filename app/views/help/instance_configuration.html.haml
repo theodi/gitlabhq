@@ -1,0 +1,21 @@
+- page_title _('Instance Configuration')
+.md.gl-text-lg.gl-mt-3
+  %h1= _('Instance Configuration')
+
+  %p
+    = _("In this page you will find information about the settings that are used in your current instance.")
+
+  = render 'help/instance_configuration/ssh_info'
+  = render 'help/instance_configuration/gitlab_pages'
+  = render 'help/instance_configuration/size_limits'
+  = render 'help/instance_configuration/package_registry'
+  = render 'help/instance_configuration/rate_limits'
+  = render 'help/instance_configuration/ci_cd_limits'
+  = render_if_exists 'help/instance_configuration/ai_gateway'
+  %p
+    %strong= _("Table of contents")
+
+    %ul
+      = content_for :table_content
+
+  = content_for :settings_content

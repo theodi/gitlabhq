@@ -1,0 +1,35 @@
+- breadcrumb_title _("Gitaly servers")
+- page_title _("Gitaly servers")
+
+= render ::Layouts::PageHeadingComponent.new(_('Gitaly servers'), options: { data: { event_tracking_load: 'true', event_tracking: 'view_admin_gitaly_servers_pageload' } })
+
+= render ::Layouts::CrudComponent.new(_('Gitaly servers'),
+  icon: 'earth',
+  count: @gitaly_servers.size) do |c|
+  - c.with_body do
+    - if @gitaly_servers.any?
+      %table.table.b-table.gl-table.b-table-stacked-md
+        %thead.gl-hidden{ class: "@md/panel:gl-table-header-group" }
+          %tr
+            %th{ data: { label: _('Storage') } }= _("Storage")
+            %th{ data: { label: s_('Gitaly|Address') } }= s_("Gitaly|Address")
+            %th{ data: { label: _('Server version') } }= _("Server version")
+            %th{ data: { label: _('Git version') } }= _("Git version")
+            %th{ data: { label: _('Up to date') } }= _("Up to date")
+        %tbody
+          - @gitaly_servers.each do |server|
+            %tr
+              %td{ data: { label: _('Storage') } }
+                = server.storage
+              %td{ data: { label: s_('Gitaly|Address') } }
+                = server.address
+              %td{ data: { label: _('Server version') } }
+                = server.server_version
+              %td{ data: { label: _('Git version') } }
+                = server.git_binary_version
+              %td{ data: { label: _('Up to date') } }
+                = boolean_to_icon(server.up_to_date?)
+    - else
+      .empty-state
+        %div{ class: "!gl-text-center" }
+          %h4= _("No connection could be made to a Gitaly server, please check your logs!")

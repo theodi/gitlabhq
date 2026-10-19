@@ -1,0 +1,136 @@
+<script>
+import { GlButton, GlAlert, GlLoadingIcon } from '@gitlab/ui';
+// eslint-disable-next-line no-restricted-imports
+import { mapState, mapActions, mapGetters } from 'vuex';
+import { s__, sprintf } from '~/locale';
+import { convertFiltersData } from '../../utils';
+import {
+  LANGUAGE_DEFAULT_ITEM_LENGTH,
+  LANGUAGE_MAX_ITEM_LENGTH,
+  LANGUAGE_FILTER_PARAM,
+} from '../../constants';
+import CheckboxFilter from './checkbox_filter.vue';
+import { trackShowMore, trackShowHasOverMax, TRACKING_ACTION_SELECT } from './tracking';
+
+export default {
+  name: 'LanguageFilter',
+  components: {
+    CheckboxFilter,
+    GlButton,
+    GlAlert,
+    GlLoadingIcon,
+  },
+  data() {
+    return {
+      showAll: false,
+    };
+  },
+  i18n: {
+    showMore: s__('GlobalSearch|Show more'),
+    showingMax: sprintf(s__('GlobalSearch|Showing top %{maxItems}'), {
+      maxItems: LANGUAGE_MAX_ITEM_LENGTH,
+    }),
+    loadError: s__('GlobalSearch|Aggregations load error.'),
+    headerLabel: s__('GlobalSearch|Language'),
+    refreshing: s__('GlobalSearch|Refreshing language filters'),
+  },
+  computed: {
+    ...mapState(['aggregations']),
+    ...mapGetters(['languageAggregationBuckets']),
+    hasBuckets() {
+      return this.languageAggregationBuckets.length > 0;
+    },
+    // The error mutation clears buckets, so gating only on hasBuckets would hide
+    // the very alert that is meant to report the failure.
+    isVisible() {
+      return this.hasBuckets || this.aggregations.error;
+    },
+    filtersData() {
+      return convertFiltersData(this.shortenedLanguageFilters);
+    },
+    shortenedLanguageFilters() {
+      if (!this.hasShowMore) {
+        return this.languageAggregationBuckets;
+      }
+      if (this.showAll) {
+        return this.trimBuckets(LANGUAGE_MAX_ITEM_LENGTH);
+      }
+      return this.trimBuckets(LANGUAGE_DEFAULT_ITEM_LENGTH);
+    },
+    hasShowMore() {
+      return this.languageAggregationBuckets.length > LANGUAGE_DEFAULT_ITEM_LENGTH;
+    },
+    hasOverMax() {
+      return this.languageAggregationBuckets.length > LANGUAGE_MAX_ITEM_LENGTH;
+    },
+  },
+  async created() {
+    await this.fetchAllAggregation();
+  },
+  methods: {
+    ...mapActions(['fetchAllAggregation']),
+    onShowMore() {
+      this.showAll = true;
+      trackShowMore();
+
+      if (this.hasOverMax) {
+        trackShowHasOverMax();
+      }
+    },
+    trimBuckets(length) {
+      return this.languageAggregationBuckets.slice(0, length);
+    },
+  },
+  LANGUAGE_FILTER_PARAM,
+  TRACKING_ACTION_SELECT,
+};
+</script>
+
+<template>
+  <div v-if="isVisible" class="language-filter-checkbox">
+    <div class="gl-mb-2 gl-flex gl-items-center gl-gap-2 gl-text-sm gl-font-bold">
+      <span>{{ $options.i18n.headerLabel }}</span>
+      <gl-loading-icon
+        v-if="aggregations.fetching"
+        size="sm"
+        inline
+        :aria-label="$options.i18n.refreshing"
+        data-testid="language-filter-refreshing-icon"
+      />
+    </div>
+    <div
+      v-if="!aggregations.error"
+      data-testid="language-filter-list-container"
+      class="gl-overflow-y-auto gl-overflow-x-hidden gl-transition-opacity"
+      :class="[
+        { 'language-filter-max-height': showAll },
+        { 'gl-pointer-events-none gl-opacity-6': aggregations.fetching },
+      ]"
+      :aria-busy="aggregations.fetching || null"
+    >
+      <checkbox-filter
+        :filters-data="filtersData"
+        :tracking-namespace="$options.TRACKING_ACTION_SELECT"
+        :query-param="$options.LANGUAGE_FILTER_PARAM"
+      />
+      <span v-if="showAll && hasOverMax" data-testid="has-over-max-text">{{
+        $options.i18n.showingMax
+      }}</span>
+    </div>
+    <gl-alert v-else class="gl-mx-5" variant="danger" :dismissible="false">{{
+      $options.i18n.loadError
+    }}</gl-alert>
+    <div v-if="hasShowMore && !showAll" class="language-filter-show-all">
+      <gl-button
+        data-testid="show-more-button"
+        category="tertiary"
+        variant="link"
+        size="small"
+        button-text-classes="gl-text-sm"
+        @click="onShowMore"
+      >
+        {{ $options.i18n.showMore }}
+      </gl-button>
+    </div>
+  </div>
+</template>

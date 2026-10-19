@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "allOf": [
+    { "$ref": "merge_request_poll_cached_widget.json" },
+    { "$ref": "merge_request_poll_widget.json" },
+    {
+      "properties" : {
+        "source_project_full_path": { "type": ["string", "null"]},
+        "target_project_full_path": { "type": ["string", "null"]},
+        "email_patches_path": { "type": "string" },
+        "plain_diff_path": { "type": "string" },
+        "merge_request_basic_path": { "type": "string" },
+        "merge_request_widget_path": { "type": "string" },
+        "merge_request_cached_widget_path": { "type": "string" },
+        "commit_change_content_path": { "type": "string" },
+        "conflicts_docs_path": { "type": ["string", "null"] },
+        "reviewing_and_managing_merge_requests_docs_path": { "type": ["string", "null"] },
+        "merge_request_pipelines_docs_path": { "type": ["string", "null"] },
+        "ci_environments_status_path": { "type": "string" },
+        "issues_links": {
+          "type": "object",
+          "required": ["closing", "mentioned_but_not_closing", "assign_to_closing"],
+          "properties" : {
+            "closing": { "type": "string" },
+            "mentioned_but_not_closing": { "type": "string" },
+            "assign_to_closing": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

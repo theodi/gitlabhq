@@ -1,0 +1,83 @@
+# frozen_string_literal: true
+
+# rubocop:disable Style/ClassVars -- state is shared by every middleware instance and the spec helpers
+
+# This is inspired by http://www.salsify.com/blog/engineering/tearing-capybara-ajax-tests
+# Rack middleware that keeps track of the number of active requests and can block new requests.
+module Gitlab
+  module Testing
+    class RequestBlockerMiddleware
+      @@num_active_requests = Concurrent::AtomicFixnum.new(0)
+      @@block_requests = Concurrent::AtomicBoolean.new(false)
+      @@slow_requests = Concurrent::AtomicBoolean.new(false)
+
+      # Returns the number of requests the server is currently processing.
+      def self.num_active_requests
+        @@num_active_requests.value
+      end
+
+      # Prevents the server from accepting new requests. Any new requests will return an HTTP
+      # 503 status.
+      def self.block_requests!
+        @@block_requests.value = true
+      end
+
+      # Slows down incoming requests (useful for race conditions).
+      def self.slow_requests!
+        @@slow_requests.value = true
+      end
+
+      # Allows the server to accept requests again.
+      def self.allow_requests!
+        @@block_requests.value = false
+        @@slow_requests.value = false
+      end
+
+      def initialize(app)
+        @app = app
+      end
+
+      def call(env)
+        increment_active_requests
+
+        status, headers, body =
+          if block_requests?
+            block_request
+          else
+            sleep 1 if slow_requests?
+            @app.call(env)
+          end
+
+        # The request still holds its database connection until the body is
+        # closed, so it must count as active until then.
+        [status, headers, ::Rack::BodyProxy.new(body) { decrement_active_requests }]
+      rescue Exception # rubocop:disable Lint/RescueException -- non-StandardErrors such as Puma's ForceShutdown must not leak the counter
+        decrement_active_requests
+        raise
+      end
+
+      private
+
+      def block_requests?
+        @@block_requests.true?
+      end
+
+      def slow_requests?
+        @@slow_requests.true?
+      end
+
+      def block_request
+        [503, {}, []]
+      end
+
+      def increment_active_requests
+        @@num_active_requests.increment
+      end
+
+      def decrement_active_requests
+        @@num_active_requests.decrement
+      end
+    end
+  end
+end
+# rubocop:enable Style/ClassVars

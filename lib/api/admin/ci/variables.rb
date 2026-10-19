@@ -1,0 +1,192 @@
+# frozen_string_literal: true
+
+module API
+  module Admin
+    module Ci
+      class Variables < ::API::Base
+        include PaginationParams
+
+        before { authenticated_as_admin! }
+
+        feature_category :pipeline_composition
+
+        namespace 'admin' do
+          namespace 'ci' do
+            namespace 'variables' do
+              desc 'List all instance variables' do
+                detail 'Lists all instance-level variables. Use the `page` and `per_page` pagination parameters to ' \
+                  'control the pagination of results.'
+                success Entities::Ci::Variable
+                tags %w[ci_variables]
+              end
+              params do
+                use :pagination
+              end
+              route_setting :authorization, permissions: :read_variable, boundary_type: :instance,
+                assignable_when: [:admin]
+              get '/' do
+                variables = ::Ci::InstanceVariable.all
+
+                present paginate(variables), with: Entities::Ci::Variable
+              end
+
+              desc 'Retrieve instance variable details' do
+                detail 'Retrieves details of a specified instance-level variable.'
+                success Entities::Ci::Variable
+                failure [{ code: 404, message: 'Instance Variable Not Found' }]
+                tags %w[ci_variables]
+              end
+              params do
+                requires :key, type: String, desc: 'Key of the instance variable. Must be 255 characters or fewer ' \
+                                               'and contain only `A-Z`, `a-z`, `0-9`, and `_`.'
+              end
+              route_setting :authorization, permissions: :read_variable, boundary_type: :instance,
+                assignable_when: [:admin]
+              get ':key' do
+                key = params[:key]
+                variable = ::Ci::InstanceVariable.find_by_key(key)
+
+                break not_found!('InstanceVariable') unless variable
+
+                present variable, with: Entities::Ci::Variable
+              end
+
+              desc 'Create instance variable' do
+                detail 'Creates a instance-level variable. The maximum number of instance-level variables can be ' \
+                  'changed.'
+                success Entities::Ci::Variable
+                failure [{ code: 400, message: '400 Bad Request' }]
+                tags %w[ci_variables]
+              end
+              route_setting :log_safety, { safe: %w[key], unsafe: %w[value] }
+              params do
+                requires :key,
+                  type: String,
+                  desc: 'Key of the instance variable. Must be 255 characters or fewer and contain only `A-Z`, ' \
+                    '`a-z`, `0-9`, and `_`.'
+
+                optional :description,
+                  type: String,
+                  desc: 'Description of the variable. Limited to 255 characters.'
+
+                requires :value,
+                  type: String,
+                  desc: 'Value of the variable. Limited to 10,000 characters, or 50,000 characters for `file` ' \
+                    'variables.'
+
+                optional :protected,
+                  type: Boolean,
+                  desc: 'If `true`, the variable is protected.'
+
+                optional :masked,
+                  type: Boolean,
+                  desc: 'If `true`, the variable is masked.'
+
+                optional :raw,
+                  type: Boolean,
+                  desc: 'If `true`, the variable is treated as a raw string. If `false`, the value is ' \
+                    '[expanded](https://docs.gitlab.com/ci/variables/#allow-cicd-variable-expansion).'
+
+                optional :variable_type,
+                  type: String,
+                  values: ::Ci::InstanceVariable.variable_types.keys,
+                  default: 'env_var',
+                  desc: 'The type of a variable.'
+              end
+              route_setting :authorization, permissions: :create_variable, boundary_type: :instance,
+                assignable_when: [:admin]
+              post '/' do
+                variable_params = declared_params(include_missing: false)
+
+                variable = ::Ci::InstanceVariable.new(variable_params)
+
+                if variable.save
+                  present variable, with: Entities::Ci::Variable
+                else
+                  render_validation_error!(variable)
+                end
+              end
+
+              desc 'Update an instance variable' do
+                detail 'Updates a specified instance variable.'
+                success Entities::Ci::Variable
+                failure [{ code: 404, message: 'Instance Variable Not Found' }]
+                tags %w[ci_variables]
+              end
+              route_setting :log_safety, { safe: %w[key], unsafe: %w[value] }
+              params do
+                optional :key,
+                  type: String,
+                  desc: 'Key of the instance variable. Must be 255 characters or fewer and contain only `A-Z`, ' \
+                    '`a-z`, `0-9`, and `_`.'
+
+                optional :description,
+                  type: String,
+                  desc: 'Description of the variable. Limited to 255 characters.'
+
+                optional :value,
+                  type: String,
+                  desc: 'Value of the variable. Limited to 10,000 characters, or 50,000 characters for `file` ' \
+                    'variables.'
+
+                optional :protected,
+                  type: Boolean,
+                  desc: 'If `true`, the variable is protected.'
+
+                optional :masked,
+                  type: Boolean,
+                  desc: 'If `true`, the variable is masked.'
+
+                optional :raw,
+                  type: Boolean,
+                  desc: 'If `true`, the variable is treated as a raw string. If `false`, the value is ' \
+                    '[expanded](https://docs.gitlab.com/ci/variables/#allow-cicd-variable-expansion).'
+
+                optional :variable_type,
+                  type: String,
+                  values: ::Ci::InstanceVariable.variable_types.keys,
+                  desc: 'The type of a variable. Available types are: env_var (default) and file'
+              end
+              route_setting :authorization, permissions: :update_variable, boundary_type: :instance,
+                assignable_when: [:admin]
+              put ':key' do
+                variable = ::Ci::InstanceVariable.find_by_key(params[:key])
+
+                break not_found!('InstanceVariable') unless variable
+
+                variable_params = declared_params(include_missing: false).except(:key)
+
+                if variable.update(variable_params)
+                  present variable, with: Entities::Ci::Variable
+                else
+                  render_validation_error!(variable)
+                end
+              end
+
+              desc 'Delete instance variable' do
+                detail 'Deletes a specified instance variable.'
+                success Entities::Ci::Variable
+                failure [{ code: 404, message: 'Instance Variable Not Found' }]
+                tags %w[ci_variables]
+              end
+              params do
+                requires :key, type: String, desc: 'Key of the instance variable. Must be 255 characters or fewer ' \
+                                               'and contain only `A-Z`, `a-z`, `0-9`, and `_`.'
+              end
+              route_setting :authorization, permissions: :delete_variable, boundary_type: :instance,
+                assignable_when: [:admin]
+              delete ':key' do
+                variable = ::Ci::InstanceVariable.find_by_key(params[:key])
+                not_found!('InstanceVariable') unless variable
+
+                variable.destroy
+
+                no_content!
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end

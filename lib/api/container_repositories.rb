@@ -1,0 +1,64 @@
+# frozen_string_literal: true
+
+module API
+  class ContainerRepositories < ::API::Base
+    include Gitlab::Utils::StrongMemoize
+    include ::API::Helpers::ContainerRegistryHelpers
+
+    helpers ::API::Helpers::PackagesHelpers
+
+    before do
+      authenticate!
+    end
+
+    feature_category :container_registry
+    urgency :low
+
+    namespace 'registry' do
+      params do
+        requires :id, types: [String, Integer], desc: 'ID of the repository.'
+      end
+      resource :repositories, requirements: { id: /[0-9]*/ } do
+        desc 'Retrieve details of a container registry repository' do
+          detail 'Retrieves details of a specified container registry repository.'
+          success Entities::ContainerRegistry::Repository
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 404, message: 'Repository Not Found' }
+          ]
+          tags %w[container_registry]
+        end
+        params do
+          optional :tags, type: Boolean, default: false, desc: 'If `true`, includes an array of `tags` in the response.'
+          optional :tags_count, type: Boolean, default: false, desc: 'If `true`, includes `tags_count` in the response.'
+          optional :size, type: Boolean, default: false, desc: 'If `true`, response includes the deduplicated ' \
+                                                           'size of all images in the repository. Only ' \
+                                                           'available on GitLab.com for repositories created ' \
+                                                           'after `2021-11-04`.'
+        end
+        route_setting :authorization,
+          permissions: :read_container_repository,
+          boundary: -> { repository.project },
+          boundary_type: :project
+        get ':id' do
+          authorize!(:read_container_image, repository)
+
+          present repository,
+            with: Entities::ContainerRegistry::Repository,
+            tags: params[:tags],
+            tags_count: params[:tags_count],
+            size: params[:size],
+            user: current_user
+        end
+      end
+    end
+
+    helpers do
+      def repository
+        strong_memoize(:repository) do
+          ContainerRepository.find(params[:id])
+        end
+      end
+    end
+  end
+end

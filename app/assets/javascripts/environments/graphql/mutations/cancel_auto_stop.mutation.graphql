@@ -1,0 +1,5 @@
+mutation cancelAutoStop($autoStopUrl: String!) {
+  cancelAutoStop(autoStopUrl: $autoStopUrl) @client {
+    errors
+  }
+}

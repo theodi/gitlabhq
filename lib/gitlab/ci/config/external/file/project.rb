@@ -1,0 +1,223 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    class Config
+      module External
+        module File
+          class Project < Base
+            extend ::Gitlab::Utils::Override
+            include Gitlab::Utils::StrongMemoize
+
+            attr_reader :project_name, :ref_name
+
+            def initialize(params, context)
+              # `Repository#blobs_at` does not support files with the `/` prefix.
+              @location = Gitlab::Utils.remove_leading_slashes(params[:file])
+
+              # We are using the same downcase in the `project` method.
+              @project_name = get_project_name(params[:project]).to_s.downcase
+              @ref_name = params[:ref] || 'HEAD'
+
+              super
+            end
+
+            def matching?
+              super && project_name.present?
+            end
+
+            def content
+              strong_memoize(:content) { fetch_local_content }
+            end
+
+            def include_type
+              :project
+            end
+
+            def metadata
+              super.merge(
+                location: masked_location,
+                blob: masked_blob,
+                raw: masked_raw,
+                extra: { project: masked_project_name, ref: masked_ref_name }
+              )
+            end
+
+            def preload_context
+              #
+              # calling these methods lazily loads them via BatchLoader
+              #
+              project
+            end
+
+            def validate_context!
+              if !can_access_local_content?
+                errors.push("Project `#{masked_project_name}` not found or access denied! Make sure any includes in the pipeline configuration are correctly defined.")
+              elsif sha.nil?
+                errors.push("Project `#{masked_project_name}` reference `#{masked_ref_name}` does not exist!")
+              end
+            end
+
+            def validate_content_presence!
+              if content.nil?
+                errors.push("Project `#{masked_project_name}` file `#{masked_location}` does not exist!")
+              elsif content.blank?
+                errors.push("Project `#{masked_project_name}` file `#{masked_location}` is empty!")
+              end
+            end
+
+            private
+
+            def project
+              # Although we use `where_full_path_in`, this BatchLoader does not reduce the number of queries to 1.
+              # That's because we use it in the `can_access_local_content?` and `sha` BatchLoaders
+              # as the `for` parameter. And this loads the project immediately.
+              BatchLoader.for(project_name)
+                         .batch do |project_names, loader|
+                ::Project.where_full_path_in(project_names.uniq).each do |project|
+                  # We are using the same downcase in the `initialize` method.
+                  loader.call(project.full_path.downcase, project)
+                end
+              end
+            end
+
+            def can_access_local_content?
+              return if project.nil?
+
+              context.logger.instrument(:config_file_project_validate_access) do
+                project_access_allowed?(context.user, project)
+              end
+            end
+
+            def project_access_allowed?(user, project)
+              Gitlab::SafeRequestStore.fetch(
+                ['Ci::Config::External::File::Project', 'project_access_allowed_download_code', project.id, user&.id]
+              ) do
+                context.logger.instrument(:config_file_project_validate_access_download_code) do
+                  Ability.allowed?(user, :download_code, project)
+                end
+              end
+            end
+
+            def sha
+              return if project.nil?
+
+              Gitlab::SafeRequestStore.fetch(
+                ['Ci::Config::External::File::Project', 'sha', project.id, ref_name]
+              ) do
+                context.logger.instrument(:config_file_project_sha) do
+                  project.commit(ref_name).try(:sha)
+                end
+              end
+            end
+
+            def fetch_local_content
+              BatchLoader.for([sha.to_s, location])
+                         .batch(key: project) do |locations, loader, args|
+                context.logger.instrument(:config_file_fetch_project_content) do
+                  fetch_batch_content(locations, loader, args[:key])
+                end
+              rescue GRPC::NotFound, GRPC::Internal
+                # no-op
+              rescue GRPC::DeadlineExceeded
+                log_and_raise_timeout_error
+              end
+            end
+
+            def fetch_batch_content(items, loader, project)
+              items_with_cache_keys = build_items_with_cache_keys(items, project)
+              results = fetch_cached_content(items_with_cache_keys, project)
+
+              load_results(items, results, loader)
+            end
+
+            def build_items_with_cache_keys(items, project)
+              items.map do |sha_and_path|
+                [sha_and_path, cache_key(project, sha_and_path)]
+              end
+            end
+
+            def fetch_cached_content(items_with_cache_keys, project)
+              fetcher = CachedContentFetcher.new(
+                project: project,
+                cache_enabled: cache_enabled?
+              )
+
+              fetcher.fetch_batch(items_with_cache_keys)
+            end
+
+            def load_results(items, results, loader)
+              items.each do |sha_and_path|
+                content = results[sha_and_path]
+                loader.call(sha_and_path, content) if content
+              end
+            end
+
+            def cache_key(project, sha_and_path)
+              "ci_project_include_content:v1:#{project.id}:#{sha_and_path.join(':')}"
+            end
+
+            def cache_enabled?
+              Feature.enabled?(:ci_cache_project_includes, context.project)
+            end
+
+            override :expand_context_attrs
+            def expand_context_attrs
+              super.merge(
+                project: project,
+                sha: sha.to_s, # we need to use `.to_s` to load the value from the BatchLoader
+                user: context.user,
+                parent_pipeline: context.parent_pipeline,
+                variables: context.variables
+              )
+            end
+
+            def masked_project_name
+              strong_memoize(:masked_project_name) do
+                context.mask_variables_from(project_name)
+              end
+            end
+
+            def masked_ref_name
+              strong_memoize(:masked_ref_name) do
+                context.mask_variables_from(ref_name)
+              end
+            end
+
+            def masked_blob
+              return unless valid?
+
+              strong_memoize(:masked_blob) do
+                context.mask_variables_from(
+                  Gitlab::Routing.url_helpers.project_blob_url(project, ::File.join(sha, location))
+                )
+              end
+            end
+
+            def masked_raw
+              return unless valid?
+
+              strong_memoize(:masked_raw) do
+                context.mask_variables_from(
+                  Gitlab::Routing.url_helpers.project_raw_url(project, ::File.join(sha, location))
+                )
+              end
+            end
+
+            # TODO: To be removed after we deprecate usage of array in `project` keyword.
+            # https://gitlab.com/gitlab-org/gitlab/-/issues/365975
+            def get_project_name(project_name)
+              if project_name.is_a?(Array)
+                project_name.first
+              else
+                project_name
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+Gitlab::Ci::Config::External::File::Project.prepend_mod

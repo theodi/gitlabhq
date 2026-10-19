@@ -1,0 +1,21 @@
+- toggle_classes = local_assigns.fetch(:toggle_classes, '')
+
+= f.hidden_field(:name)
+
+= dropdown_tag(_('Select branch or create wildcard'),
+               options: { toggle_class: "js-protected-branch-select js-filter-submit wide monospace #{toggle_classes}",
+                          filter: true,
+                          dropdown_class: "dropdown-menu-selectable git-revision-dropdown",
+                          dropdown_testid: "protected-branch-dropdown-content",
+                          placeholder: _("Search protected branches"),
+                          footer_content: true,
+                          data: { show_no: true, show_any: true, show_upcoming: true,
+                                  selected: params[:protected_branch_name],
+                                  project_id: @project.try(:id),
+                                  testid: "protected-branch-dropdown" } }) do
+
+  %ul.dropdown-footer-list
+    %li
+      %button{ class: "dropdown-create-new-item-button js-dropdown-create-new-item", title: _("New Protected Branch") }
+        = _('Create wildcard')
+        %code

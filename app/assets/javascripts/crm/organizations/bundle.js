@@ -1,0 +1,57 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import VueRouter from 'vue-router';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+import CrmOrganizationsApp from './organizations_app.vue';
+import routes from './routes';
+
+Vue.use(VueApollo);
+Vue.use(VueRouter);
+
+export default () => {
+  const el = document.getElementById('js-crm-organizations-app');
+
+  const apolloProvider = new VueApollo({
+    defaultClient: createDefaultClient(),
+  });
+
+  if (!el) {
+    return false;
+  }
+
+  const {
+    basePath,
+    canAdminCrmOrganization,
+    canReadCrmContact,
+    groupContactsPath,
+    groupFullPath,
+    groupId,
+    groupWorkItemsPath,
+    textQuery,
+  } = el.dataset;
+
+  const router = new VueRouter({
+    base: basePath,
+    mode: 'history',
+    routes,
+  });
+
+  return initVueApp({
+    el,
+    name: 'CrmOrganizationsAppRoot',
+    router,
+    apolloProvider,
+    provide: {
+      canAdminCrmOrganization: parseBoolean(canAdminCrmOrganization),
+      canReadCrmContact: parseBoolean(canReadCrmContact),
+      groupContactsPath,
+      groupFullPath,
+      groupId,
+      groupWorkItemsPath,
+      textQuery,
+    },
+    component: CrmOrganizationsApp,
+  });
+};

@@ -1,0 +1,379 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Organizations::OrganizationUser, feature_category: :organization do
+  using RSpec::Parameterized::TableSyntax
+
+  describe 'associations' do
+    it { is_expected.to belong_to(:organization).inverse_of(:organization_users).required }
+    it { is_expected.to belong_to(:user).inverse_of(:organization_users).required }
+  end
+
+  describe 'validations' do
+    subject { build(:organization_user) }
+
+    it { is_expected.to define_enum_for(:access_level).with_values(described_class.access_levels) }
+    it { is_expected.to validate_presence_of(:access_level) }
+    it { is_expected.to validate_uniqueness_of(:user).scoped_to(:organization_id) }
+
+    it 'does not allow invalid enum value' do
+      expect { build(:organization_user, access_level: '_invalid_') }.to raise_error(ArgumentError)
+    end
+
+    context 'when changing access level of owner' do
+      let_it_be_with_reload(:owner) { create(:organization_owner, organization: create(:organization)) }
+
+      context 'when user is the last owner' do
+        context 'when assigning lower access level' do
+          it 'raises validation error' do
+            error_message = _(
+              'Validation failed: You cannot change the access of the last owner from the organization'
+            )
+
+            expect { owner.update!(access_level: 'default') }
+              .to raise_error(ActiveRecord::RecordInvalid, error_message)
+          end
+        end
+
+        context 'when assigning access to same level' do
+          it 'does not raise validation error' do
+            expect { owner.update!(access_level: 'owner') }.not_to raise_error
+          end
+        end
+      end
+
+      context 'when organization has multiple owners' do
+        let_it_be(:other_owner) { create(:organization_owner, organization: owner.organization) }
+
+        it 'does not raise validation error' do
+          expect { owner.update!(access_level: 'default') }.not_to raise_error
+        end
+      end
+    end
+
+    context 'on destroy' do
+      let(:user) { create(:user, organizations: []) }
+
+      subject(:organization_user) { create(:organization_user, user: user) }
+
+      it 'prevents user leaving all organizations' do
+        expect { organization_user.destroy! }.to raise_error(ActiveRecord::RecordNotDestroyed)
+
+        expect(described_class.exists?(organization_user.id)).to be(true)
+        expect(organization_user.errors[:base]).to include(_('A user must associate with at least one organization'))
+      end
+
+      context 'when user is in multiple organizations' do
+        let!(:other_organization_user) { create(:organization_user, organization: create(:organization), user: user) }
+
+        it 'does not prevent user from leaving organization' do
+          organization_user.destroy!
+
+          expect(organization_user.errors[:base]).to be_empty
+        end
+      end
+
+      context 'when user is destroyed' do
+        it 'destroys the organization_user record' do
+          organization_user_id = organization_user.id
+
+          user.destroy!
+
+          expect(described_class.exists?(organization_user_id)).to be_falsy
+        end
+      end
+    end
+  end
+
+  context 'with foreign key on organization_users.organization_id' do
+    let!(:organization) { create(:organization) }
+    let!(:organization_user) { create(:organization_user, organization: organization) }
+
+    context 'and organization is attempted to be destroyed' do
+      it 'prevents destroying the organization' do
+        expect { organization.destroy! }.to raise_error(ActiveRecord::StatementInvalid)
+      end
+    end
+  end
+
+  describe 'scopes' do
+    describe '.owners' do
+      it 'returns the owners of the organization' do
+        organization_user = create(:organization_user, :owner)
+        create(:organization_user)
+
+        expect(described_class.owners).to match([organization_user])
+      end
+    end
+
+    describe '.in_organization' do
+      let_it_be(:organization) { create(:organization) }
+      let_it_be(:organization_users) { create_pair(:organization_user, organization: organization) }
+
+      before do
+        create(:organization_user)
+      end
+
+      subject { described_class.in_organization(organization) }
+
+      it { is_expected.to match_array(organization_users) }
+    end
+
+    describe '#with_active_users' do
+      let_it_be(:active_organization_user) { create(:organization_user) }
+      let_it_be(:inactive_organization_user) do
+        create(:organization_user) do |org_user|
+          org_user.user.block!
+        end
+      end
+
+      subject(:active_user) { described_class.with_active_users }
+
+      it { is_expected.to include(active_organization_user).and exclude(inactive_organization_user) }
+    end
+
+    describe '.by_user' do
+      let_it_be_with_refind(:user) { create(:user, organizations: []) }
+      let_it_be_with_reload(:another_user) { create(:user, organizations: []) }
+      let_it_be_with_reload(:organization_1) { create(:organization, users: [user]) }
+      let_it_be_with_reload(:organization_2) { create(:organization, users: [user, another_user]) }
+      let_it_be(:organization_3) { create(:organization, users: [another_user]) }
+
+      subject(:scope_by_user) { described_class.by_user(user) }
+
+      it 'returns the records for the user' do
+        expect(scope_by_user.map(&:organization)).to contain_exactly(
+          organization_1, organization_2
+        )
+      end
+    end
+  end
+
+  it_behaves_like 'having unique enum values'
+
+  describe '.update_home_organization_record_for' do
+    let_it_be(:organization) { create(:organization) }
+    let_it_be_with_refind(:user) { create(:user, organization: organization, organizations: []) }
+    let_it_be(:user_id) { user.id }
+    let(:user_is_admin) { false }
+
+    subject(:update_home_organization_record) do
+      described_class.update_home_organization_record_for(user, user_is_admin: user_is_admin)
+    end
+
+    context 'when record does not exist yet' do
+      it 'creates record with correct attributes' do
+        expect { update_home_organization_record }.to change { described_class.count }.by(1)
+        expect(organization.user?(user)).to be(true)
+      end
+    end
+
+    context 'when entry already exists' do
+      let_it_be(:organization_user) do
+        create(:organization_user, user: user, organization: organization)
+      end
+
+      it 'does not create or update existing record' do
+        expect { update_home_organization_record }.not_to change { described_class.count }
+      end
+
+      context 'when access_level changes' do
+        let(:user_is_admin) { true }
+
+        it 'changes access_level on the existing record' do
+          expect(organization.owner?(user)).to be(false)
+
+          expect { update_home_organization_record }.not_to change { described_class.count }
+
+          expect(organization.owner?(user)).to be(true)
+        end
+      end
+    end
+
+    describe 'Organization Administrator role sync' do
+      before do
+        allow(Authz::Organizations::OwnerRoleSync).to receive(:enabled?).and_return(true)
+      end
+
+      context 'when the record changes from owner to default' do
+        let_it_be(:other_owner) { create(:organization_owner, organization: organization) }
+        let_it_be(:organization_user) { create(:organization_owner, user: user, organization: organization) }
+
+        it 'enqueues RevokeOwnerRoleWorker with the user as the acting user' do
+          expect(Authz::Organizations::RevokeOwnerRoleWorker).to receive(:perform_async)
+            .with(organization.id, user.id, user.id)
+
+          update_home_organization_record
+        end
+
+        context 'when the owner role sync is unavailable' do
+          before do
+            allow(Authz::Organizations::OwnerRoleSync).to receive(:enabled?).and_return(false)
+          end
+
+          it 'does not enqueue RevokeOwnerRoleWorker' do
+            expect(Authz::Organizations::RevokeOwnerRoleWorker).not_to receive(:perform_async)
+
+            update_home_organization_record
+          end
+        end
+      end
+
+      # The grant worker never turns an admin's home organization row into a
+      # tuple, so there is nothing to enqueue when the record becomes owner.
+      context 'when the record changes from default to owner' do
+        let_it_be(:organization_user) { create(:organization_user, user: user, organization: organization) }
+
+        let(:user_is_admin) { true }
+
+        it 'does not enqueue a worker', :aggregate_failures do
+          expect(Authz::Organizations::GrantOwnerRoleWorker).not_to receive(:perform_async)
+          expect(Authz::Organizations::RevokeOwnerRoleWorker).not_to receive(:perform_async)
+
+          update_home_organization_record
+        end
+      end
+
+      context 'when the record is already default' do
+        let_it_be(:organization_user) { create(:organization_user, user: user, organization: organization) }
+
+        it 'does not enqueue RevokeOwnerRoleWorker' do
+          expect(Authz::Organizations::RevokeOwnerRoleWorker).not_to receive(:perform_async)
+
+          update_home_organization_record
+        end
+      end
+
+      context 'when the record is created' do
+        it 'does not enqueue RevokeOwnerRoleWorker' do
+          expect(Authz::Organizations::RevokeOwnerRoleWorker).not_to receive(:perform_async)
+
+          update_home_organization_record
+        end
+      end
+    end
+  end
+
+  describe '.home_organization_access_level' do
+    subject { described_class.home_organization_access_level(user_is_admin: user_is_admin) }
+
+    context 'when user is admin' do
+      let(:user_is_admin) { true }
+
+      it { is_expected.to eq(:owner) }
+    end
+
+    context 'when user is not admin' do
+      let(:user_is_admin) { false }
+
+      it { is_expected.to eq(:default) }
+    end
+  end
+
+  describe '.create_organization_record_for' do
+    let_it_be(:organization) { create(:organization) }
+    let_it_be_with_refind(:user) { create(:user, organizations: []) }
+    let_it_be(:user_id) { user.id }
+    let_it_be(:organization_id) { organization.id }
+
+    subject(:create_organization_record) do
+      described_class.create_organization_record_for(user_id, organization_id)
+    end
+
+    context 'when record already exists' do
+      let_it_be(:existing_record) do
+        create(:organization_user, :owner, organization_id: organization_id, user_id: user_id)
+      end
+
+      it 'does not change the existing record access_level' do
+        expect { create_organization_record }.not_to change { described_class.count }
+        expect(organization.owner?(user)).to be(true)
+      end
+    end
+
+    context 'when no existing record exists' do
+      it 'creates a new record with default access_level' do
+        expect { create_organization_record }.to change { described_class.count }.by(1)
+        expect(organization.user?(user)).to be(true)
+        expect(organization.owner?(user)).to be(false)
+      end
+    end
+  end
+
+  describe '#last_owner?' do
+    subject(:last_owner?) { organization_user.last_owner? }
+
+    context 'when user is not the owner' do
+      let(:organization_user) { build(:organization_user) }
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'when user is the owner' do
+      let_it_be_with_reload(:organization_user) { create(:organization_owner) }
+      let_it_be(:organization) { organization_user.organization }
+
+      context 'when another owner does not exist' do
+        it { is_expected.to be(true) }
+      end
+
+      context 'when another owner exists' do
+        let_it_be_with_reload(:another_owner) { create(:organization_owner, organization: organization) }
+
+        where(:current_owner_active?, :another_owner_active?, :last_owner?) do
+          true  | true  | false
+          true  | false | true
+          false | true  | false
+          false | false | false
+        end
+
+        with_them do
+          before do
+            organization_user.user.block! unless current_owner_active?
+            another_owner.user.block! unless another_owner_active?
+          end
+
+          it { is_expected.to eq(last_owner?) }
+        end
+      end
+    end
+  end
+
+  describe '.member_ids_among' do
+    let_it_be(:organization) { create(:organization) }
+    let_it_be(:other_organization) { create(:organization) }
+    let_it_be(:member) { create(:user) }
+    let_it_be(:other_member) { create(:user) }
+    let_it_be(:non_member) { create(:user) }
+
+    before_all do
+      create(:organization_user, organization: organization, user: member)
+      create(:organization_user, organization: organization, user: other_member)
+      create(:organization_user, organization: other_organization, user: non_member)
+    end
+
+    it 'returns only the given ids that are members of the organization' do
+      ids = [member.id, other_member.id, non_member.id]
+
+      expect(described_class.member_ids_among(organization, ids)).to match_array([member.id, other_member.id])
+    end
+
+    it 'ignores members of the organization that were not asked about' do
+      expect(described_class.member_ids_among(organization, [member.id])).to eq([member.id])
+    end
+
+    it 'returns an empty array without querying when no ids are given' do
+      expect(described_class).not_to receive(:in_organization)
+
+      expect(described_class.member_ids_among(organization, [])).to eq([])
+    end
+
+    it 'answers a batch in a single query' do
+      ids = [member.id, other_member.id, non_member.id]
+
+      expect { described_class.member_ids_among(organization, ids) }
+        .not_to exceed_query_limit(1)
+    end
+  end
+end

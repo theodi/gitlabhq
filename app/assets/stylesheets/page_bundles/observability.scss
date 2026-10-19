@@ -1,0 +1,63 @@
+@import 'mixins_and_variables_and_functions';
+
+.observability-container {
+  height: $calc-application-viewport-height;
+  min-height: 600px;
+  padding: $gl-spacing-scale-4;
+}
+
+// EXPERIMENTAL: Observability fullscreen overrides
+// These rules let the o11y iframe fill the viewport while the feature is
+// experimental. They override .panel-content positioning which is fragile
+// and considered tech debt. Before moving to beta this approach must be
+// revisited so fullscreen is either unnecessary or handled by the design
+// system. See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/232269#note_3299933653
+html.o11y-fullscreen {
+  .static-panel .panel-content {
+    position: fixed !important;
+    contain: none !important;
+    inset: 0;
+    z-index: $zindex-modal-backdrop;
+    max-width: none;
+    padding-bottom: 0;
+
+    .panel-content-inner {
+      padding: 0;
+      overflow: hidden;
+      scrollbar-gutter: auto;
+    }
+  }
+
+  .observability-container {
+    padding: 0;
+  }
+}
+
+@mixin icon-styles($color) {
+  fill: $color;
+}
+
+.observability-performance-icon {
+  @include icon-styles($gl-color-blue-500);
+}
+
+.observability-health-icon {
+  @include icon-styles($gl-color-green-500);
+}
+
+.observability-log-icon {
+  @include icon-styles($gl-color-purple-500);
+}
+
+.observability-alert-icon,
+.observability-important-information-icon {
+  @include icon-styles($gl-color-orange-500);
+}
+
+.observability-exception-icon {
+  @include icon-styles($gl-color-red-500);
+}
+
+.observability-kubernetes-icon {
+  @include icon-styles($gl-color-neutral-500);
+}

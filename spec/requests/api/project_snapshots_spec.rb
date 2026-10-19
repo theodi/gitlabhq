@@ -1,0 +1,90 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::ProjectSnapshots, :aggregate_failures, feature_category: :source_code_management do
+  include WorkhorseHelpers
+  include_context 'workhorse headers'
+
+  let(:project) { create(:project) }
+  let(:admin) { create(:admin) }
+  let(:path) { "/projects/#{project.id}/snapshot" }
+  let(:retry_policy) do
+    {
+      maxAttempts: 3,
+      initialBackoff: '0.5s',
+      maxBackoff: '2s',
+      backoffMultiplier: 2,
+      retryableStatusCodes: %w[UNAVAILABLE]
+    }
+  end
+
+  before do
+    allow(Feature::Gitaly).to receive(:server_feature_flags).and_return({
+      'gitaly-feature-foobar' => 'true'
+    })
+    allow(Gitlab::GitalyClient).to receive(:retry_policy).and_return(retry_policy)
+  end
+
+  describe 'GET /projects/:id/snapshot' do
+    def expect_snapshot_response_for(repository)
+      type, params = workhorse_send_data
+
+      expect(type).to eq('git-snapshot')
+      expect(params).to include(
+        'GitalyServer' => include(
+          'call_metadata' => include(
+            'gitaly-feature-foobar' => 'true',
+            'retry_config' => Gitlab::Json.dump(retry_policy)
+          ),
+          'address' => Gitlab::GitalyClient.address(repository.project.repository_storage),
+          'token' => Gitlab::GitalyClient.token(repository.project.repository_storage)
+        ),
+        'GetSnapshotRequest' => Gitaly::GetSnapshotRequest.new(
+          repository: repository.gitaly_repository
+        ).to_json
+      )
+      expect(response.parsed_body).to be_empty
+    end
+
+    it_behaves_like 'GET request permissions for admin mode' do
+      subject { get api(path, current_user, admin_mode: admin_mode), headers: workhorse_headers }
+    end
+
+    it 'returns authentication error as project owner' do
+      get api(path, project.first_owner)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+
+    it 'returns authentication error as unauthenticated user' do
+      get api(path, nil)
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'requests project repository raw archive as administrator' do
+      get api(path, admin, admin_mode: true), params: { wiki: '0' }, headers: workhorse_headers
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect_snapshot_response_for(project.repository)
+    end
+
+    it 'requests wiki repository raw archive as administrator' do
+      get api(path, admin, admin_mode: true), params: { wiki: '1' }, headers: workhorse_headers
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect_snapshot_response_for(project.wiki.repository)
+    end
+
+    context 'with granular token permissions', :enable_admin_mode do
+      it_behaves_like 'authorizing granular token permissions', :read_snapshot do
+        let(:boundary_object) { project }
+        let(:user) { admin }
+        let(:request) do
+          get api(path, personal_access_token: pat), params: { wiki: '0' }, headers: workhorse_headers
+        end
+      end
+    end
+  end
+end

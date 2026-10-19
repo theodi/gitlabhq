@@ -1,0 +1,4 @@
+-# Group-level setup page -- delegates to the shared partial.
+- scope_label = s_('Observability|this group')
+
+= render 'shared/observability/setup/setup_page', namespace: @group, access_requests_path: group_observability_access_requests_path(@group), enable_scope_label: scope_label, endpoint_configuration_partial: 'groups/observability/setup/endpoint_configuration', endpoint_configuration_locals: { configuration_settings: @group.observability_group_o11y_setting, has_pipelines_since_setup: @has_pipelines_since_setup }

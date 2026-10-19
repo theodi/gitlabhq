@@ -1,0 +1,17 @@
+---
+description: Tracks when the remove blobs feature is used.
+internal_events: true
+action: click_remove_blob_button_repository_settings
+identifiers:
+- project
+- namespace
+- user
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: '17.2'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/158031
+tiers:
+- free
+- premium
+- ultimate

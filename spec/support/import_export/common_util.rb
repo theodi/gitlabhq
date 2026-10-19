@@ -1,0 +1,93 @@
+# frozen_string_literal: true
+
+module ImportExport
+  module CommonUtil
+    def setup_symlink(tmpdir, symlink_name)
+      allow_next_instance_of(Gitlab::ImportExport) do |instance|
+        allow(instance).to receive(:storage_path).and_return(tmpdir)
+      end
+
+      File.open("#{tmpdir}/test", 'w') { |file| file.write("test") }
+      FileUtils.ln_s("#{tmpdir}/test", "#{tmpdir}/#{symlink_name}")
+    end
+
+    def setup_import_export_config(name, prefix = nil)
+      export_path = [prefix, 'spec', 'fixtures', 'lib', 'gitlab', 'import_export', name].compact
+      export_path = File.join(*export_path)
+
+      allow(Gitlab::ImportExport).to receive(:export_path) { export_path }
+    end
+
+    def setup_reader
+      allow_any_instance_of(Gitlab::ImportExport::Json::NdjsonReader).to receive(:exist?).and_return(true)
+    end
+
+    def fixtures_path
+      "spec/fixtures/lib/gitlab/import_export"
+    end
+
+    def test_tmp_path
+      "tmp/tests/gitlab-test/import_export"
+    end
+
+    def get_json(path, exportable_path, key)
+      if key == :projects
+        consume_attributes(path, exportable_path)
+      else
+        consume_relations(path, exportable_path, key)
+      end
+    end
+
+    def restore_then_save_project(project, user, import_path:, export_path:)
+      project_restorer = get_project_restorer(project, user, import_path)
+      project_saver = get_project_saver(project, user, export_path)
+
+      project_restorer.restore && project_saver.save
+    end
+
+    def get_project_restorer(project, user, import_path)
+      Gitlab::ImportExport::Project::TreeRestorer.new(
+        user: user, shared: get_shared_env(path: import_path), project: project
+      )
+    end
+
+    def get_project_saver(project, user, export_path)
+      Gitlab::ImportExport::Project::TreeSaver.new(
+        project: project, current_user: user, shared: get_shared_env(path: export_path)
+      )
+    end
+
+    def get_shared_env(path:, logger: nil)
+      logger ||= double(info: true, warn: true, error: true)
+
+      instance_double(Gitlab::ImportExport::Shared).tap do |shared|
+        allow(shared).to receive_messages(export_path: path, logger: logger)
+      end
+    end
+
+    def consume_attributes(dir_path, exportable_path)
+      path = File.join(dir_path, "#{exportable_path}.json")
+      return unless File.exist?(path)
+
+      Gitlab::Json.parse(File.read(path))
+    end
+
+    def consume_relations(dir_path, exportable_path, key)
+      path = File.join(dir_path, exportable_path, "#{key}.ndjson")
+      return unless File.exist?(path)
+
+      relations = []
+
+      File.foreach(path) do |line|
+        json = Gitlab::Json.parse(line)
+        relations << json
+      end
+
+      key == :project_feature ? relations.first : relations.flatten
+    end
+
+    def project_json(filename)
+      Gitlab::Json.parse(File.read(filename))
+    end
+  end
+end

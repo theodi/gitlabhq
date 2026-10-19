@@ -1,0 +1,21 @@
+---
+key_path: counts.projects_inheriting_apple_app_store_active
+description: Count of active projects inheriting integrations for Apple App Store
+product_group: import
+product_categories:
+- integrations
+value_type: number
+status: active
+milestone: "15.8"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/104888
+time_frame: all
+data_source: database
+instrumentation_class: ActiveProjectsInheritingIntegrationsMetric
+options:
+  type: apple_app_store
+data_category: optional
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

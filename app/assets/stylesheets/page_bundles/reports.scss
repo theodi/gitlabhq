@@ -1,0 +1,63 @@
+@import 'mixins_and_variables_and_functions';
+
+.report-block-container {
+  border-top: 1px solid var(--gl-border-color-default);
+  padding: $gl-padding - 2;
+  background-color: var(--gl-background-color-subtle);
+
+  // Clean MR widget CSS
+  line-height: 20px;
+}
+
+.report-block-list {
+  list-style: none;
+  padding: 0 1px;
+  margin: 0;
+}
+
+.report-block-list-icon {
+  display: flex;
+
+  &.failed svg {
+    @apply gl-fill-icon-danger;
+  }
+
+  &.success svg {
+    @apply gl-fill-icon-success;
+  }
+
+  &.neutral svg {
+    @apply gl-fill-icon-subtle;
+  }
+
+  .ci-status-icon {
+    svg {
+      width: 24px;
+      height: 24px;
+    }
+  }
+}
+
+.report-block-list-issue {
+  display: flex;
+}
+
+.report-block-list-issue-description-text::after {
+  content: '\00a0';
+}
+
+.report-block-list-issue-description {
+  align-content: space-around;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  display: flex;
+  align-self: center;
+}
+
+.report-block {
+  .break-link {
+    word-wrap: break-word;
+    word-break: break-all;
+  }
+}
+

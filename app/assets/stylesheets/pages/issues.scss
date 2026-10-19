@@ -1,147 +1,255 @@
-.issues-list {
-  .issue {
-    padding: 10px 15px;
-    position: relative;
+.issue-token-link {
+  &[href] {
+    color: $blue-600;
+  }
 
-    .issue-title {
-      margin-bottom: 5px;
-      font-size: $list-font-size;
-      font-weight: bold;
-    }
-
-    .issue-info {
-      color: #999;
-      font-size: 13px;
-    }
-
-    .issue-check {
-      float: left;
-      padding-right: 8px;
-      margin-bottom: 10px;
-      min-width: 15px;
-    }
-
-    .issue-labels {
-      display: inline-block;
-    }
-
-    .issue-no-comments {
-      opacity: 0.5;
-    }
+  &:hover,
+  &:focus-visible {
+    outline: none;
+    text-decoration: none;
   }
 }
 
-.check-all-holder {
-  line-height: 36px;
-  float: left;
-  margin-right: 15px;
-}
+.issue-token-reference {
+  margin-right: 1px;
+  @apply gl-bg-subtle;
+  transition: background $general-hover-transition-duration $general-hover-transition-curve, color $general-hover-transition-duration $general-hover-transition-curve;
 
-.issues_content {
-  .title {
-    height: 40px;
-  }
-
-  form {
-    margin: 0;
+  .issue-token:hover &,
+  .issue-token-link:focus-visible > & {
+    @apply gl-bg-strong;
+    color: $blue-800;
+    text-decoration: none;
   }
 }
 
-.participants {
-  margin-bottom: 20px;
-}
+.issue-token-title {
+  @apply gl-bg-strong;
+  transition: background $general-hover-transition-duration $general-hover-transition-curve;
 
-.issue-search-form {
-  margin: 0;
-  height: 24px;
-
-  .issue_search {
-    border: 1px solid #DDD !important;
-    background-color: #f4f4f4;
+  .issue-token:hover &,
+  .issue-token-link:focus-visible > & {
+    background-color: $gray-100;
   }
 }
 
-.issue-show-labels {
-  a {
-    margin-right: 5px;
-    margin-bottom: 5px;
-    display: inline-block;
-    .color-label {
-      padding: 6px 10px;
-    }
+.issue-token-remove-button {
+  @apply gl-bg-strong;
+  transition: background $general-hover-transition-duration $general-hover-transition-curve;
+
+  &:hover,
+  &:focus-visible,
+  .issue-token:hover &,
+  .issue-token-link:focus-visible + & {
+    background-color: $gray-100;
+    outline: none;
   }
 }
 
-form.edit-issue {
-  margin: 0;
+.issue-realtime-pre-pulse {
+  opacity: 0;
+}
+
+.issue-realtime-trigger-pulse {
+  transition: opacity $fade-in-duration linear;
+  opacity: 1;
+}
+
+ul.related-merge-requests > li gl-emoji {
+  font-size: 1em;
+}
+
+.merge-request-status {
+  &.merged {
+    color: $blue-500;
+  }
+
+  &.closed {
+    @apply gl-text-danger;
+  }
+
+  &.open {
+    @apply gl-text-success;
+  }
 }
 
 .merge-request,
 .issue {
-  &.today {
-    background: #EFE;
-    border-color: #CEC;
-  }
-
-  &.closed {
-    background: #F9F9F9;
-    border-color: #E5E5E5;
-  }
-
+  &.closed,
   &.merged {
-    background: #F9F9F9;
-    border-color: #E5E5E5;
+    @apply gl-bg-subtle;
   }
 }
 
-@media (max-width: $screen-xs-max) {
-  .issue-btn-group {
+@include gl-container-width-down(sm, panel) {
+  .detail-page-header {
+    .issuable-meta {
+      line-height: 18px;
+    }
+  }
+}
+
+.recaptcha {
+  margin-bottom: 30px;
+}
+
+.new-branch-col {
+  .discussion-filter-container {
+    &:not(:last-child) {
+      margin-right: $gl-spacing-scale-3;
+    }
+  }
+
+  @include gl-container-width-down(sm, panel) {
     width: 100%;
-    margin-top: 5px;
 
-    .btn-group {
-      width: 100%;
-
-      ul {
-        width: 100%;
-        text-align: center;
-      }
-    }
-
-    .btn {
-      width: 100%;
-      margin-top: -1px;
-
-      &:first-child:not(:last-child) {
-        border-radius: 4px 4px 0 0;
-      }
-
-      &:not(:first-child):not(:last-child) {
-        border-radius: 0;
-      }
-
-      &:last-child:not(:first-child) {
-        border-radius: 0 0 4px 4px;
-      }
-    }
-  }
-
-  .issue {
-    &:hover  .issue-actions {
-      display: none !important;
-    }
-
-    .issue-updated-at {
-      display: none;
+    > div:not(:last-child) {
+      margin-bottom: $gl-spacing-scale-3;
     }
   }
 }
 
-h2.issue-title {
-  margin-top: 0;
-  font-weight: bold;
+.create-mr-dropdown-wrap {
+  .ref::selection {
+    color: $gl-text-color-tertiary;
+  }
+
+  .dropdown {
+    .dropdown-menu-toggle {
+      min-width: 285px;
+    }
+
+    .dropdown-select {
+      width: 285px;
+    }
+  }
+
+  .btn-group:not(.hidden) {
+    display: flex;
+
+    @include gl-container-width-down(sm, panel) {
+      .btn.btn-confirm {
+        justify-content: flex-start;
+
+        &.dropdown-toggle {
+          flex-grow: 0;
+        }
+      }
+    }
+  }
+
+  // stylelint-disable-next-line gitlab/no-js-class
+  .js-create-merge-request {
+    flex-grow: 1;
+    flex-shrink: 0;
+  }
+
+  .create-merge-request-dropdown-menu {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+    display: none;
+    margin-top: 4px;
+  }
 }
 
-.issue-form .select2-container {
-  width: 250px !important;
+.discussion-reply-holder,
+.note-edit-form {
+  display: block;
+}
+
+@include gl-container-width-up(sm, panel) {
+  .emoji-block .row {
+    display: flex;
+
+    .new-branch-col {
+      padding-bottom: 0;
+      align-self: flex-end;
+    }
+  }
+
+  .create-mr-dropdown-wrap {
+    .btn-group:not(.hidden) {
+      display: inline-flex;
+    }
+  }
+}
+
+@include gl-container-width-up(lg, panel) {
+  .new-branch-col {
+    text-align: right;
+  }
+}
+
+.issue-sticky-header {
+  left: 0;
+  right: var(--application-bar-right);
+  width: auto;
+  top: 0;
+
+  .right-sidebar-collapsed & {
+    padding-right: $right-sidebar-collapsed-width;
+  }
+
+  .right-sidebar-expanded & {
+    padding-right: $right-sidebar-width;
+  }
+}
+
+.limit-container-width {
+  .issue-sticky-header-text {
+    max-width: $limited-layout-width;
+  }
+}
+
+.issue-sticky-header-text {
+  padding: 0 var(--container-padding-x);
+}
+
+// These are composite classes for use with Vue Transition
+// https://vuejs.org/guide/built-ins/transition
+.issuable-header-slide-enter-active,
+.issuable-header-slide-leave-active {
+  @apply gl-transition-all;
+}
+
+.issuable-header-slide-enter,
+.issuable-header-slide-leave-to {
+  transform: translateY(-100%);
+}
+
+.issuable-sticky-header-visible {
+  --issuable-sticky-header-height: 40px;
+}
+
+.md-header-preview {
+  z-index: 1;
+  position: sticky;
+  // note: only either --layout-sticky-header-height or
+  // --issuable-sticky-header-height will be defined.
+  // --issuable-sticky-header-height is maintained for incidents, all other
+  // work items use --layout-sticky-header-height.
+  top: calc(#{$calc-application-header-height} + var(--layout-sticky-header-height, 0px) + var(--issuable-sticky-header-height, 0px) - 2px);
+  margin-left: 1px;
+  @apply gl-bg-default;
+}
+
+.detail-page-description .md-header {
+  top: $calc-application-header-height;
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-drawer .md-header {
+  top: 0;
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-modal .md-header {
+  top: -$gl-padding-8;
+}
+
+// Issue markdown header if no sticky header is present
+// stylelint-disable-next-line gitlab/no-has -- scoped to work-item-detail element
+.work-item-detail:not(:has(.issue-sticky-header)) .md-header {
+  top: 0;
 }

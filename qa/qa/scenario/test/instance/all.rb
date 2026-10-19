@@ -1,0 +1,21 @@
+# frozen_string_literal: true
+
+module QA
+  module Scenario
+    module Test
+      ##
+      # Base class for running the suite against any GitLab instance,
+      # including staging and on-premises installation.
+      #
+      module Instance
+        class All < Template
+          include Bootable
+          include SharedAttributes
+
+          pipeline_mappings test_on_cng: %w[cng-instance cng-instance-ff-inverse cng-instance-caproni],
+            test_on_omnibus: %w[git-sha256-repositories]
+        end
+      end
+    end
+  end
+end

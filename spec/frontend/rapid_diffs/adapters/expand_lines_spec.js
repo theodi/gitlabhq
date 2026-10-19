@@ -1,0 +1,164 @@
+import { expandLinesAdapter } from '~/rapid_diffs/adapters/expand_lines';
+import { setHTMLFixture } from 'helpers/fixtures';
+import { getLines } from '~/rapid_diffs/adapters/expand_lines/get_lines';
+import { DiffLineRow } from '~/rapid_diffs/adapters/expand_lines/diff_line_row';
+import { createAlert } from '~/alert';
+import { EXPANDED_LINES } from '~/rapid_diffs/adapter_events';
+
+jest.mock('~/alert');
+jest.mock('~/rapid_diffs/adapters/expand_lines/get_lines');
+
+describe('expandLinesAdapter', () => {
+  let trigger;
+
+  const getExpandButton = (direction = 'up') =>
+    document.querySelector(`[data-expand-direction="${direction}"]`);
+  const getFirstInsertedRow = () => document.querySelector('[data-hunk-lines="3"]');
+  const getLastInsertedRow = () => document.querySelector('[data-hunk-lines="4"]');
+  const getDiffElement = () => document.querySelector('#diffElement');
+  const getSurroundingLines = (direction) => {
+    const headerRow = getExpandButton(direction).closest('tr');
+    const allRows = Array.from(document.querySelectorAll('[data-hunk-lines], [data-hunk-header]'));
+    const headerIndex = allRows.indexOf(headerRow);
+    const prev = allRows.slice(0, headerIndex).findLast((el) => 'hunkLines' in el.dataset);
+    const next = allRows.slice(headerIndex + 1).find((el) => 'hunkLines' in el.dataset);
+    return [prev ? new DiffLineRow(prev) : null, next ? new DiffLineRow(next) : null];
+  };
+  const getDiffFileContext = () => {
+    return {
+      data: { diffLinesPath: '/lines', viewer: 'text_parallel' },
+      diffElement: getDiffElement(),
+      trigger,
+    };
+  };
+  const click = (direction, context = getDiffFileContext()) => {
+    return expandLinesAdapter.clicks.expandLines.call(
+      context,
+      new MouseEvent('click'),
+      getExpandButton(direction),
+    );
+  };
+  // tabindex="0" makes document.activeElement actually work in JSDOM
+  const createLinesResponse = () =>
+    `
+      <tr data-hunk-lines="3"><td><a data-line-number="5" tabindex="0"></a></td></tr>
+      <tr data-hunk-lines="4"><td><a data-line-number="6" tabindex="0"></a></td></tr>
+    `.trim();
+
+  beforeEach(() => {
+    trigger = jest.fn();
+    setHTMLFixture(`
+      <div id="diffElement">
+        <div data-file-body>
+          <table>
+            <tbody>
+              <tr data-hunk-header>
+                <td>
+                  <button data-click="expandLines" data-expand-direction="up"></button>
+                </td>
+              </tr>
+              <tr data-hunk-lines="1">
+                <td>
+                </td>
+              </tr>
+            </tbody>
+            <tbody>
+              <tr data-hunk-header>
+                <td>
+                  <button data-click="expandLines" data-expand-direction="both"></button>
+                </td>
+              </tr>
+              <tr data-hunk-lines="2">
+                <td>
+                </td>
+              </tr>
+            </tbody>
+            <tbody>
+              <tr data-hunk-header>
+                <td>
+                  <button data-click="expandLines" data-expand-direction="down"></button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `);
+  });
+
+  describe.each`
+    viewer             | view
+    ${'text_inline'}   | ${'inline'}
+    ${'text_parallel'} | ${'parallel'}
+  `('when viewer is $viewer', ({ viewer, view }) => {
+    it.each(['up', 'both', 'down'])('expands lines in %s direction(s)', async (direction) => {
+      getLines.mockResolvedValueOnce(createLinesResponse());
+      const surroundingLines = getSurroundingLines(direction);
+      const context = getDiffFileContext();
+      context.data.viewer = viewer;
+      await click(direction, context);
+      expect(getLines).toHaveBeenCalledWith({
+        expandDirection: direction,
+        surroundingLines,
+        diffLinesPath: '/lines',
+        view,
+      });
+      expect(getFirstInsertedRow()).not.toBe(null);
+      expect(getLastInsertedRow()).not.toBe(null);
+      expect(getExpandButton(direction)).toBe(null);
+      expect(trigger).toHaveBeenCalledWith(EXPANDED_LINES);
+    });
+  });
+
+  it('focuses first inserted line number', async () => {
+    getLines.mockResolvedValueOnce(createLinesResponse());
+    await click('down');
+    expect(document.activeElement).toEqual(
+      getFirstInsertedRow().querySelector('[data-line-number]'),
+    );
+  });
+
+  it('focuses last inserted line number', async () => {
+    getLines.mockResolvedValueOnce(createLinesResponse());
+    await click();
+    expect(document.activeElement).toEqual(
+      getLastInsertedRow().querySelector('[data-line-number]'),
+    );
+  });
+
+  it('stops propagation of focusin event when focusing inserted line', async () => {
+    getLines.mockResolvedValueOnce(createLinesResponse());
+    const focusinHandler = jest.fn();
+    getDiffElement().addEventListener('focusin', focusinHandler);
+    await click('down');
+    expect(focusinHandler).not.toHaveBeenCalled();
+  });
+
+  it('prevents expansion while processing another expansion', () => {
+    let res;
+    getLines.mockImplementation(
+      jest.fn(
+        () =>
+          new Promise((resolve) => {
+            res = resolve;
+          }),
+      ),
+    );
+    click();
+    click();
+    expect(getLines).toHaveBeenCalledTimes(1);
+    res(createLinesResponse());
+  });
+
+  it('handles lines fetching error', async () => {
+    const error = new Error();
+    getLines.mockRejectedValue(error);
+    await click();
+    expect(createAlert).toHaveBeenCalledWith({
+      message: 'Failed to expand lines, please try again.',
+      error,
+    });
+    expect(getExpandButton().closest('tr').dataset.loading).toBe(undefined);
+    expect(getExpandButton().disabled).toBe(false);
+  });
+});

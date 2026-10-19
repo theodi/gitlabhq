@@ -1,0 +1,268 @@
+---
+stage: Runtime
+group: Cells Infrastructure
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: GitLab Cells Development Guidelines
+---
+
+## Overview
+
+Cells is a new architecture that allows different organizations to be served by
+distinct physical instances of GitLab. Each instance is called a cell.
+For the goals and motivation behind this architecture, see the
+[Cells goals page](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/cells/goals/).
+For a broader architectural overview, see the
+[design document](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/cells/).
+
+Cells is planned for GitLab.com only. GitLab Self-Managed and GitLab Dedicated
+run as a single cell.
+
+## Cells development principles
+
+All developers must follow these principles when building or modifying features.
+
+All of the principles below should already be automated - though edge cases, and legacy
+cases remain.
+
+### Scope compute to a single organization
+
+Web/API requests and Sidekiq workers should be run under a single organization.
+Convert cross-organization compute to be organization-scoped where possible.
+Cross-organization Sidekiq jobs are acceptable only when the job is a recurring
+cron job and is idempotent. For more information, see
+[Cells compatibility for Sidekiq](../sidekiq/_index.md#cells-compatibility).
+
+### Requests must be routable to the correct cell
+
+Any cell-local service that accepts requests from outside the cell must be
+routable to the correct cell based on the organization the request is for.
+The cell-local service in the target cell then handles the request.
+
+This applies to all request types and protocols, including Web, API, Git, and
+service-specific protocols (for example, KAS or the container registry).
+
+### Keep organization data ownership clear
+
+Organization data must be migratable to another cell.
+This applies to all cell-local services that are stateful.
+
+For the GitLab Rails monolith databases,
+data ownership must be clear from the schema. Every customer-data table must have
+a traceable path to an organization through its
+[sharding key](../organization/sharding/_index.md#choosing-the-right-sharding-key).
+
+Every new model that stores customer data must define a sharding key so each row
+is attributable to a single organization. Non-customer data (data that does not
+belong to a customer organization) must be marked as cell-local in the
+[schema classification](#available-cells--organization-schemas).
+Cell-local means the row never leaves the cell.
+
+When designing a new table or extending an existing one, confirm that the
+ownership of each row is unambiguous. Ambiguous ownership blocks future cell migrations.
+
+### No new customer-owned resources outside an organization
+
+Do not introduce new customer-owned resources that exist outside of an organization.
+All customer data must belong inside an organization. Resources that exist outside
+an organization cannot be migrated when an organization moves to a different cell.
+
+### An organization is isolated to a cell
+
+An organization is by nature isolated to a cell. All data and compute for an
+organization lives on a single cell. Cross-cell access to organization data is
+not supported.
+
+### Cross-organization isolation is the organization's choice
+
+Isolation between organizations on the same cell is the organization's choice.
+This is especially important for existing organizations on the legacy cell
+(the existing GitLab.com instance), where cross-organization interactions may
+already exist.
+
+Controls that provide cross-organization isolation must account for whether an
+organization has opted into isolation. Do not assume all organizations on the
+same cell are isolated from each other.
+
+## Available Cells / Organization schemas
+
+Below are available schemas related to Cells and Organizations:
+
+| Schema | Description |
+| ------ | ----------- |
+| `gitlab_main` (deprecated) | This is being replaced with `gitlab_main_org`, for the purpose of building the [Cells](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/cells/) architecture. |
+| `gitlab_main_org`| Use for all tables in the `main:` database that are for an Organization. For example, `projects` and `groups` |
+| `gitlab_main_cell_setting` | All tables in the `main:` database related to cell settings. For example, `application_settings`. These cell-local tables may have hard foreign key references to `gitlab_main_org` or `gitlab_main_user` tables, but must not be referenced by foreign keys from organization tables. |
+| `gitlab_main_cell_local` | For tables in the `main:` database that are related to features that are distinct for each cell. For example, `zoekt_nodes`, or `shards`. These cell-local tables may have hard foreign key references to `gitlab_main_org` or `gitlab_main_user` tables, but must not be referenced by foreign keys from organization tables. |
+| `gitlab_ci` | Use for all tables in the `ci:` database that are for an Organization. For example, `ci_pipelines` and `ci_builds` |
+| `gitlab_ci_cell_local` | For tables in the `ci:` database that are related to features that are distinct for each cell. For example, `instance_type_ci_runners`, or `ci_cost_settings`. These cell-local tables may have hard foreign key references to `gitlab_main_org` or `gitlab_main_user` tables, but must not be referenced by foreign keys from organization tables. |
+| `gitlab_main_user` | Schema for all User-related tables, ex. `users`, `emails`, etc. Most user functionality is organizational level, so it should use `gitlab_main_org` instead (e.g. commenting on an issue). For user functionality that is not organizational level, use this schema. Tables on this schema must strictly belong to a user. |
+| `gitlab_shared_org` | Schema for tables with data across multiple databases and has `organization_id` for sharding. These tables inherit from `Gitlab::Database::SharedModel`. Tables in this schema are not allowed to use auto-incrementing integer schemas so that rows across the decomposed databases have unique primary keys. Use Composite, or UUID primary keys instead. |
+| `gitlab_shared_cell_local` | Schema for cell local shared tables that do not require sharding and exist across multiple databases. For example, `loose_foreign_keys_deleted_records`. These tables also inherit from `Gitlab::Database::SharedModel`. |
+| `gitlab_sec_cell_local` | For tables in the `sec:` database that hold cell-local, non-customer reference data with no sharding key, for example malware and package-metadata advisories. These rows do not belong to an organization, are the same for every organization in a cell, and are replicated per cell. Tables on this schema use `SecApplicationRecord`. |
+
+Most tables will require a [sharding key](../organization/sharding/_index.md#choosing-the-right-sharding-key) to be
+defined.
+
+To understand how existing tables are classified, you can use [this dashboard](https://cells-progress-tracker-gitlab-org-tenant-scale-g-f4ad96bf01d25f.gitlab.io/schema_migration).
+
+After a schema has been assigned, the merge request pipeline might fail due to one or more of the following reasons, which can be rectified by following the linked guidelines:
+
+- [Cross-database joins](../database/multiple_databases.md#suggestions-for-removing-cross-database-joins)
+- [Cross-database transactions](../database/multiple_databases.md#fixing-cross-database-transactions)
+- [Cross-database foreign keys](../database/multiple_databases.md#foreign-keys-that-cross-databases)
+
+## Creating a new schema
+
+Schemas should default to require a sharding key, as features should be scoped to an Organization by default.
+
+```yaml
+# db/gitlab_schemas/gitlab_ci.yaml
+require_sharding_key: true
+sharding_root_tables:
+  - projects
+  - namespaces
+  - organizations
+```
+
+Setting `require_sharding_key` to `true` means that tables assigned to that
+schema will require a `sharding_key` to be set.
+You will also need to configure the list of allowed `sharding_root_tables` that can be used as sharding keys for tables in this schema.
+
+## Database sequences
+
+We ensure uniqueness of database sequences, across all cells.
+This means the `id` columns of most tables will be unique.
+
+For technical implementation and architecture decisions, refer to:
+
+- [Cells: Cluster wide unique database sequences](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/cells/decisions/008_database_sequences)
+- [Topology Service: Sequence Service](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/cells/topology_service/#sequence-service)
+
+## Unique constraints
+
+If you require data to be unique, it should be scoped to be unique per
+Organization, Group, Project, or User.
+With the existence of multiple cells which each has its own independent
+database, you can no longer rely on `UNIQUE` constraints.
+
+You have two options:
+
+1. Ensure the index is scoped to include their `sharding_key` as one of
+   the columns present in the index.
+1. For the rare case where an attribute must be unique globally, across all
+   organizations, use the
+   [Claim service](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/cells/topology_service/#claim-service).
+
+### Claim service
+
+To use the claim service from Rails:
+[Claiming an attribute for a cell](claims.md)
+
+## Static data
+
+Problem: A database table is used to store static data.
+However, the primary key is not static because it uses an auto-incrementing sequence.
+This means the primary key is not globally consistent.
+
+References to this inconsistent primary key will create problems because the
+reference clashes across cells / organizations.
+
+Example: The `plans` table on a given Cell has the following data:
+
+```shell
+ id |             name             |              title
+----+------------------------------+----------------------------------
+  1 | default                      | Default
+  2 | bronze                       | Bronze
+  3 | silver                       | Silver
+  5 | gold                         | Gold
+  7 | ultimate_trial               | Ultimate Trial
+  8 | premium_trial                | Premium Trial
+  9 | opensource                   | Opensource
+  4 | premium                      | Premium
+  6 | ultimate                     | Ultimate
+ 10 | ultimate_trial_paid_customer | Ultimate Trial for Paid Customer
+(10 rows)
+```
+
+On another cell, the `plans` table has differing ids for the same `name`:
+
+```shell
+ id |             name             |            title
+----+------------------------------+------------------------------
+  1 | default                      | Default
+  2 | bronze                       | Bronze
+  3 | silver                       | Silver
+  4 | premium                      | Premium
+  5 | gold                         | Gold
+  6 | ultimate                     | Ultimate
+  7 | ultimate_trial               | Ultimate Trial
+  8 | ultimate_trial_paid_customer | Ultimate Trial Paid Customer
+  9 | premium_trial                | Premium Trial
+ 10 | opensource                   | Opensource
+ ```
+
+This `plans.id` column is then used as a reference in the `hosted_plan_id`
+column of `gitlab_subscriptions` table.
+
+Solution: Use globally unique references, not a database sequence.
+If possible, hard-code static data in application code, instead of using the
+database.
+
+In this case, the `plans` table can be dropped, and replaced with a fixed model
+(details can be found in the [configurable status design doc](https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/work_items_custom_status/#fixed-items-models-and-associations)):
+
+```ruby
+class Plan
+  include ActiveRecord::FixedItemsModel::Model
+
+  ITEMS = [
+    {:id=>1, :name=>"default", :title=>"Default"},
+    {:id=>2, :name=>"bronze", :title=>"Bronze"},
+    {:id=>3, :name=>"silver", :title=>"Silver"},
+    {:id=>4, :name=>"premium", :title=>"Premium"},
+    {:id=>5, :name=>"gold", :title=>"Gold"},
+    {:id=>6, :name=>"ultimate", :title=>"Ultimate"},
+    {:id=>7, :name=>"ultimate_trial", :title=>"Ultimate Trial"},
+    {:id=>8, :name=>"ultimate_trial_paid_customer", :title=>"Ultimate Trial Paid Customer"},
+    {:id=>9, :name=>"premium_trial", :title=>"Premium Trial"},
+    {:id=>10, :name=>"opensource", :title=>"Opensource"}
+  ]
+
+  attribute :name, :string
+  attribute :title, :string
+end
+```
+
+You can use model validations and use ActiveRecord-like methods like `all`, `where`, `find_by`, and `find`:
+
+```ruby
+Plan.find(4)
+Plan.find_by(name: 'premium')
+Plan.where(name: 'gold').first
+```
+
+The `hosted_plan_id` column will also be updated to refer to the fixed model's
+`id` value.
+
+You can also store associations with other models. For example:
+
+```ruby
+class CurrentStatus < ApplicationRecord
+  belongs_to_fixed_items :system_defined_status, fixed_items_class: WorkItems::Statuses::SystemDefined::Status
+end
+```
+
+For a complete guide to implementing fixed items models, see
+[Fixed items model](../fixed_items_model.md).
+
+Examples of hard-coding static data include:
+
+- [VisibilityLevel](https://gitlab.com/gitlab-org/gitlab/-/blob/5ae43dface737373c50798ccd909174bcdd9b664/lib/gitlab/visibility_level.rb#L25-27)
+- [Static defaults for work item statuses](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/178180)
+- [`Ai::Catalog::BuiltInTool`](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/197300)
+
+## Other topics
+
+See [HTTP Router](http_router.md) for routing.
+See [Topology Service](topology_service.md) for cluster-wide service.

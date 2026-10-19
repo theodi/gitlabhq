@@ -1,0 +1,158 @@
+# frozen_string_literal: true
+
+module API
+  class Todos < ::API::Base
+    include PaginationParams
+    include APIGuard
+
+    allow_access_with_scope :ai_workflows, if: ->(request) { request.get? || request.head? }
+
+    before { authenticate! }
+
+    feature_category :notifications
+    urgency :low
+
+    ISSUABLE_TYPES = {
+      'merge_requests' => ->(iid) { find_merge_request_with_access(iid) },
+      'issues' => ->(iid) { find_project_issue(iid) }
+    }.freeze
+
+    params do
+      requires :id, type: String, desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      ISSUABLE_TYPES.each do |type, finder|
+        type_id_str = :"#{type.singularize}_iid"
+
+        desc 'Create a to-do item for an issuable' do
+          detail 'Creates a to-do item for the current user on a specified issuable. If a to-do item already ' \
+            'exists for the user on that issuable, returns a `304` status code.'
+          success Entities::Todo
+          tags %w[to-dos]
+        end
+        params do
+          requires type_id_str, type: Integer, desc: 'The internal ID of an issuable'
+        end
+        route_setting :authorization, permissions: :create_todo, boundary_type: :project
+        post ":id/#{type}/:#{type_id_str}/todo" do
+          issuable = instance_exec(params[type_id_str], &finder)
+
+          todo = TodoService.new.mark_todo(issuable, current_user).first
+
+          if todo
+            present todo, with: Entities::Todo, current_user: current_user
+          else
+            not_modified!
+          end
+        end
+      end
+    end
+
+    resource :todos do
+      helpers do
+        params :todo_filters do
+          optional :action, type: String, values: Todo.action_names.values.map(&:to_s), desc: 'Filter to-do items by action.'
+          optional :author_id, type: Integer, desc: 'Filter to-do items by author ID.'
+          optional :project_id, type: Integer, desc: 'Filter to-do items by project ID.'
+          optional :group_id, type: Integer, desc: 'Filter to-do items by group ID.'
+          optional :state, type: String, values: Todo.state_machine.states.map(&:name).map(&:to_s), desc: 'Filter to-do items by state.'
+          optional :type, type: String, values: TodosFinder.todo_types.map(&:to_s), desc: 'Filter to-do items by type.'
+        end
+
+        def find_todos
+          TodosFinder.new(users: current_user, **declared_params(include_missing: false)).execute
+        end
+
+        def issuable_and_awardable?(type)
+          obj_type = Object.const_get(type, false)
+
+          (obj_type < Issuable) && (obj_type < Awardable)
+        rescue NameError
+          false
+        end
+
+        def batch_load_issuable_metadata(todos, options)
+          # This should be paginated and will cause Rails to SELECT for all the Todos
+          todos_by_type = todos.group_by(&:target_type)
+
+          todos_by_type.keys.each do |type|
+            next unless issuable_and_awardable?(type)
+
+            collection = todos_by_type[type]
+
+            next unless collection
+
+            targets = collection.map(&:target)
+            options[type] = { issuable_metadata: Gitlab::IssuableMetadata.new(current_user, targets).data, include_subscribed: false }
+          end
+        end
+
+        def track_bot_user
+          track_event(
+            "request_todos_by_bot_user",
+            user: current_user,
+            additional_properties: {
+              label: 'user_type',
+              property: current_user.user_type
+            }
+          )
+        end
+      end
+
+      desc 'List all to-do items' do
+        detail 'Lists all to-do items. When no filter is applied, it returns all pending to-do items for the current ' \
+          'user. Different filters allow the user to refine the request.'
+        success Entities::Todo
+        tags %w[to-dos]
+      end
+      params do
+        use :pagination, :todo_filters
+      end
+      route_setting :authorization, permissions: :read_todo, boundary_type: :user
+      get do
+        Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/408576')
+
+        track_bot_user if current_user.bot?
+        todos = paginate(find_todos.with_entity_associations)
+        todos = ::Todos::AllowedTargetFilterService.new(todos, current_user).execute
+        options = { with: Entities::Todo, current_user: current_user }
+        batch_load_issuable_metadata(todos, options)
+
+        present todos, **options
+      end
+
+      desc 'Mark a to-do item as done' do
+        detail 'Marks a to-do item for the current user as done.'
+        success Entities::Todo
+        tags %w[to-dos]
+      end
+      params do
+        requires :id, type: Integer, desc: 'ID of the to-do item.'
+      end
+      route_setting :authorization, permissions: :update_todo, boundary_type: :user
+      post ':id/mark_as_done' do
+        todo = current_user.todos.find(params[:id])
+
+        TodoService.new.resolve_todo(todo, current_user, resolved_by_action: :api_done)
+
+        present todo, with: Entities::Todo, current_user: current_user
+      end
+
+      desc 'Mark all to-do items as done' do
+        detail 'Marks all pending to-do items for the current user as done. It returns the HTTP status code `204` ' \
+          'with an empty response.'
+        tags %w[to-dos]
+      end
+      route_setting :authorization, permissions: :update_todo, boundary_type: :user
+      post '/mark_as_done' do
+        todos = find_todos
+
+        TodoService.new.resolve_todos(todos, current_user, resolved_by_action: :api_all_done)
+
+        no_content!
+      end
+    end
+  end
+end
+
+API::Todos.prepend_mod_with('API::Todos')

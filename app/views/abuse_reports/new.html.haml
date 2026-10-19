@@ -1,0 +1,47 @@
+- page_title _("Report abuse to administrator")
+.row
+  .gl-col-lg-8
+    = render ::Layouts::PageHeadingComponent.new(_("Report abuse to administrator"), description: _("Please use this form to report to the administrator users who create spam issues, comments or behave inappropriately. A member of the abuse team will review your report as soon as possible."))
+
+= gitlab_ui_form_for @abuse_report, html: { class: 'js-quick-submit'} do |f|
+  .row
+    .gl-col-lg-8
+      = form_errors(@abuse_report, custom_message: [:user_id])
+
+  = f.hidden_field :user_id
+
+  .form-group.row
+    .gl-col-lg-8
+      = f.label :category
+      = text_field_tag nil, @abuse_report.category&.humanize, id: 'abuse_report_category', class: "form-control gl-form-input", readonly: true
+      = f.hidden_field :category, id: nil
+  .form-group.row
+    .gl-col-lg-8
+      = f.label :user_name, for: 'user_name'
+      - name = "#{@abuse_report.user.name} (@#{@abuse_report.user.username})"
+      = text_field_tag :user_name, name, class: "form-control gl-form-input", readonly: true
+  .form-group.row
+    .gl-col-lg-8
+      = f.label :reported_from_url
+      = f.text_field :reported_from_url, class: "form-control gl-form-input", readonly: true
+  #js-links-to-spam{ data: { links: Array(@abuse_report.links_to_spam) } }
+
+  .form-group.row
+    .gl-col-lg-8
+      = f.label :screenshot do
+        = s_('ReportAbuse|Screenshot')
+      %div
+        = render 'shared/file_picker_button', f: f, field: :screenshot, help_text: _("Screenshot must be less than 1 MB."), mime_types: valid_image_mimetypes
+
+  .form-group.row
+    .gl-col-lg-8
+      = f.label :message
+      = f.text_area :message, class: "form-control gl-form-input", rows: 4, required: true, maxlength: AbuseReport::MAX_MESSAGE_SIZE
+      .form-text.gl-text-subtle
+        = _("Explain why you're reporting the user.")
+
+  .gl-flex.gl-gap-3
+    = render Pajamas::ButtonComponent.new(type: :submit, variant: :confirm) do
+      = _('Send report')
+    = render Pajamas::ButtonComponent.new(href: @abuse_report.reported_from_url) do
+      = _('Cancel')

@@ -1,0 +1,12 @@
+- add_to_breadcrumbs _('Kubernetes Clusters'), clusterable.index_path
+- breadcrumb_title _('Connect a cluster')
+- page_title _('Connect a Kubernetes Cluster')
+
+= render 'deprecation_alert'
+
+.gl-mt-3{ class: "@md/panel:gl-flex" }
+  .gl-w-full.gl-shrink-0{ class: '@sm/panel:gl-w-1/4 @md/panel:gl-mr-5' }
+    = render 'sidebar', is_connect_page: true
+  .gl-w-full
+    #js-cluster-new
+    = render 'clusters/clusters/user/form'

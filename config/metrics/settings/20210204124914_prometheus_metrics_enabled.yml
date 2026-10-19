@@ -1,0 +1,20 @@
+---
+data_category: operational
+key_path: prometheus_metrics_enabled
+description: Whether Prometheus Metrics endpoint is enabled
+product_group: platform_insights
+product_categories:
+- observability
+value_type: boolean
+status: active
+time_frame: none
+data_source: system
+instrumentation_class: PrometheusMetricsEnabledMetric
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type:
+- customer_health_score
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/51974

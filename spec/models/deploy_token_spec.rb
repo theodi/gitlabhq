@@ -1,0 +1,721 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe DeployToken, feature_category: :continuous_delivery do
+  subject(:deploy_token) { create(:deploy_token) }
+
+  describe 'associations' do
+    subject(:deploy_token) { build_stubbed(:deploy_token) }
+
+    it { is_expected.to have_many :project_deploy_tokens }
+    it { is_expected.to have_many(:projects).through(:project_deploy_tokens) }
+    it { is_expected.to have_many :group_deploy_tokens }
+    it { is_expected.to have_many(:groups).through(:group_deploy_tokens) }
+    it { is_expected.to belong_to(:user).with_foreign_key('creator_id') }
+    it { is_expected.to belong_to(:owner_project).class_name('Project').optional }
+    it { is_expected.to belong_to(:owner_group).class_name('Group').optional }
+  end
+
+  it_behaves_like 'having unique enum values'
+
+  describe 'validations' do
+    let(:username_format_message) { "can contain only letters, digits, '_', '-', '+', and '.'" }
+
+    it { is_expected.to validate_length_of(:username).is_at_most(255) }
+    it { is_expected.to validate_length_of(:name).is_at_most(255) }
+    it { is_expected.to allow_value('GitLab+deploy_token-3.14').for(:username) }
+    it { is_expected.not_to allow_value('<script>').for(:username).with_message(username_format_message) }
+    it { is_expected.not_to allow_value('').for(:username).with_message(username_format_message) }
+    it { is_expected.to validate_presence_of(:deploy_token_type) }
+  end
+
+  shared_examples 'invalid group deploy token' do
+    context 'revoked' do
+      before do
+        deploy_token.update_column(:revoked, true)
+      end
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'expired' do
+      before do
+        deploy_token.update!(expires_at: Date.today - 1.month)
+      end
+
+      it { is_expected.to be(false) }
+    end
+
+    context 'project type' do
+      before do
+        deploy_token.update_column(:deploy_token_type, 2)
+      end
+
+      it { is_expected.to be(false) }
+    end
+  end
+
+  describe 'deploy_token_type validations' do
+    context 'when a deploy token is associated to a group' do
+      it 'does not allow setting a project to it' do
+        group_token = create(:deploy_token, :group)
+        group_token.projects << build(:project)
+
+        expect(group_token).not_to be_valid
+        expect(group_token.errors.full_messages).to include('Deploy token cannot have projects assigned')
+      end
+    end
+
+    context 'when a deploy token is associated to a project' do
+      it 'does not allow setting a group to it' do
+        project_token = create(:deploy_token)
+        project_token.groups << build(:group)
+
+        expect(project_token).not_to be_valid
+        expect(project_token.errors.full_messages).to include('Deploy token cannot have groups assigned')
+      end
+    end
+  end
+
+  describe '#ensure_token' do
+    it 'ensures a token' do
+      deploy_token.token_encrypted = nil
+      deploy_token.save!
+
+      expect(deploy_token.token_encrypted).not_to be_empty
+    end
+  end
+
+  describe '#bot?' do
+    let(:deploy_token) { build(:deploy_token) }
+
+    it { expect(deploy_token.bot?).to be_truthy }
+  end
+
+  describe '#ensure_at_least_one_scope' do
+    context 'with at least one scope' do
+      let(:deploy_token) { build(:deploy_token) }
+
+      it { is_expected.to be_valid }
+    end
+
+    context 'with no scopes' do
+      it 'is invalid' do
+        deploy_token = build(:deploy_token, read_repository: false, read_registry: false, write_registry: false)
+
+        expect(deploy_token).not_to be_valid
+        expect(deploy_token.errors[:base].first).to eq("Scopes can't be blank")
+      end
+    end
+  end
+
+  describe '#valid_for_dependency_proxy?' do
+    subject { deploy_token.valid_for_dependency_proxy? }
+
+    it_behaves_like 'invalid group deploy token'
+
+    context 'has legacy registry scopes' do
+      let_it_be_with_reload(:deploy_token) { create(:deploy_token, :group, :dependency_proxy_scopes) }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'has virtual registry scopes' do
+      let_it_be_with_reload(:deploy_token) { create(:deploy_token, :group, :virtual_registry_scopes) }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'insufficient scopes' do
+      before do
+        deploy_token.update_column(:write_registry, false)
+      end
+
+      it { is_expected.to be(false) }
+    end
+  end
+
+  describe '#has_access_to_group?' do
+    let_it_be(:group) { create(:group) }
+    let_it_be_with_reload(:deploy_token) { create(:deploy_token, :group, groups: [group]) }
+
+    let(:test_group) { group }
+
+    subject { deploy_token.has_access_to_group?(test_group) }
+
+    it { is_expected.to be(true) }
+
+    it_behaves_like 'invalid group deploy token'
+
+    context 'for a sub group' do
+      let(:test_group) { create(:group, parent: group) }
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'for a different group' do
+      let(:test_group) { create(:group) }
+
+      it { is_expected.to be(false) }
+    end
+  end
+
+  describe '#scopes' do
+    context 'with all the scopes' do
+      let_it_be(:deploy_token) { create(:deploy_token, :all_scopes) }
+
+      it 'returns scopes assigned to DeployToken' do
+        expect(deploy_token.scopes).to eq(DeployToken::AVAILABLE_SCOPES)
+      end
+    end
+
+    context 'with only one scope' do
+      it 'returns scopes assigned to DeployToken' do
+        deploy_token = build_stubbed(:deploy_token, read_registry: false, write_registry: false)
+        expect(deploy_token.scopes).to eq([:read_repository])
+      end
+    end
+  end
+
+  describe '#revoke!' do
+    it 'updates revoke attribute' do
+      deploy_token.revoke!
+      expect(deploy_token.revoked?).to be_truthy
+    end
+  end
+
+  describe "#active?" do
+    context "when it has been revoked" do
+      it 'returns false' do
+        deploy_token.revoke!
+        expect(deploy_token.active?).to be_falsy
+      end
+    end
+
+    context "when it hasn't been revoked and is not expired" do
+      let(:deploy_token) { build_stubbed(:deploy_token) }
+
+      it 'returns true' do
+        expect(deploy_token.active?).to be_truthy
+      end
+    end
+
+    context "when it hasn't been revoked and is expired" do
+      it 'returns true' do
+        deploy_token.update_attribute(:expires_at, Date.today - 5.days)
+        expect(deploy_token.active?).to be_falsy
+      end
+    end
+
+    context "when it hasn't been revoked and has no expiry" do
+      let(:deploy_token) { build_stubbed(:deploy_token, expires_at: nil) }
+
+      it 'returns true' do
+        expect(deploy_token.active?).to be_truthy
+      end
+    end
+  end
+
+  # override the default PolicyActor implementation that always returns false
+  describe "#deactivated?" do
+    context "when it has been revoked" do
+      it 'returns true' do
+        deploy_token.revoke!
+
+        expect(deploy_token.deactivated?).to be_truthy
+      end
+    end
+
+    context "when it hasn't been revoked and is not expired" do
+      let(:deploy_token) { build_stubbed(:deploy_token) }
+
+      it 'returns false' do
+        expect(deploy_token.deactivated?).to be_falsy
+      end
+    end
+
+    context "when it hasn't been revoked and is expired" do
+      it 'returns false' do
+        deploy_token.update_attribute(:expires_at, Date.today - 5.days)
+
+        expect(deploy_token.deactivated?).to be_truthy
+      end
+    end
+
+    context "when it hasn't been revoked and has no expiry" do
+      let(:deploy_token) { build_stubbed(:deploy_token, expires_at: nil) }
+
+      it 'returns false' do
+        expect(deploy_token.deactivated?).to be_falsy
+      end
+    end
+  end
+
+  describe '#username' do
+    context 'persisted records' do
+      let(:deploy_token) { build_stubbed(:deploy_token) }
+
+      it 'returns a default username if none is set' do
+        expect(deploy_token.username).to eq("gitlab+deploy-token-#{deploy_token.id}")
+      end
+
+      it 'returns the username provided if one is set' do
+        deploy_token = build_stubbed(:deploy_token, username: 'deployer')
+
+        expect(deploy_token.username).to eq('deployer')
+      end
+    end
+
+    context 'new records' do
+      it 'returns nil if no username is set' do
+        deploy_token = build(:deploy_token)
+
+        expect(deploy_token.username).to be_nil
+      end
+
+      it 'returns the username provided if one is set' do
+        deploy_token = build(:deploy_token, username: 'deployer')
+
+        expect(deploy_token.username).to eq('deployer')
+      end
+    end
+  end
+
+  describe '#holder' do
+    subject { deploy_token.holder }
+
+    context 'when the token is of project type' do
+      it 'returns the relevant holder token' do
+        expect(subject).to eq(deploy_token.project_deploy_tokens.first)
+      end
+    end
+
+    context 'when the token is of group type' do
+      let(:deploy_token) { create(:deploy_token, :group) }
+
+      it 'returns the relevant holder token' do
+        expect(subject).to eq(deploy_token.group_deploy_tokens.first)
+      end
+    end
+  end
+
+  describe '#organization_id' do
+    subject { deploy_token.organization_id }
+
+    let_it_be(:organization) { create(:organization) }
+
+    context 'when the token is of project type' do
+      let_it_be(:project) { create(:project, organization: organization) }
+      let(:deploy_token) { create(:deploy_token, projects: [project]) }
+
+      it { is_expected.to eq(organization.id) }
+    end
+
+    context 'when the token is of group type' do
+      let(:group) { create(:group, organization: organization) }
+      let(:deploy_token) { create(:deploy_token, :group, groups: [group]) }
+
+      it { is_expected.to eq(organization.id) }
+    end
+
+    context 'when the token has no owner project or group' do
+      let(:deploy_token) { build(:deploy_token, projects: []) }
+
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe '#has_access_to?' do
+    let(:project) { create(:project) }
+
+    subject { deploy_token.has_access_to?(project) }
+
+    context 'when a project is not passed in' do
+      let(:project) { nil }
+
+      it { is_expected.to be_falsy }
+    end
+
+    context 'when a project is passed in' do
+      context 'when deploy token is active and related to project' do
+        let(:deploy_token) { create(:deploy_token, projects: [project]) }
+
+        it { is_expected.to be_truthy }
+      end
+
+      context 'when deploy token is active but not related to project' do
+        let(:deploy_token) { create(:deploy_token) }
+
+        it { is_expected.to be_falsy }
+      end
+
+      context 'when deploy token is revoked and related to project' do
+        let(:deploy_token) { create(:deploy_token, :revoked, projects: [project]) }
+
+        it { is_expected.to be_falsy }
+      end
+
+      context 'when deploy token is revoked and not related to the project' do
+        let(:deploy_token) { build_stubbed(:deploy_token, :revoked) }
+
+        it { is_expected.to be_falsy }
+      end
+
+      context 'and when the token is of group type' do
+        let_it_be(:group) { create(:group) }
+
+        let(:deploy_token) { create(:deploy_token, :group, groups: [group]) }
+
+        context 'and the passed-in project does not belong to any group' do
+          it { is_expected.to be_falsy }
+        end
+
+        context 'and the passed-in project belongs to the token group' do
+          it 'is true' do
+            group.projects << project
+
+            is_expected.to be_truthy
+          end
+        end
+
+        context 'and the passed-in project belongs to a subgroup' do
+          let(:child_group) { create(:group, parent_id: group.id) }
+          let(:grandchild_group) { create(:group, parent_id: child_group.id) }
+
+          before do
+            grandchild_group.projects << project
+          end
+
+          context 'and the token group is an ancestor (grand-parent) of this group' do
+            it { is_expected.to be_truthy }
+          end
+
+          context 'and the token group is not ancestor of this group' do
+            let(:child2_group) { create(:group, parent_id: group.id) }
+
+            it 'is false' do
+              deploy_token.groups = [child2_group]
+
+              is_expected.to be_falsey
+            end
+          end
+        end
+
+        context 'and the passed-in project does not belong to the token group' do
+          let(:other_group) { create(:group) }
+
+          it 'is false' do
+            other_group.projects << project
+
+            is_expected.to be_falsy
+          end
+        end
+
+        context 'and the project belongs to a group that is parent of the token group' do
+          let(:super_group) { create(:group) }
+          let(:deploy_token) { create(:deploy_token, :group) }
+          let(:group) { create(:group, parent_id: super_group.id) }
+
+          it 'is false' do
+            super_group.projects << project
+
+            is_expected.to be_falsey
+          end
+        end
+      end
+
+      context 'and the token is of project type' do
+        let(:deploy_token) { create(:deploy_token, projects: [project]) }
+
+        context 'and the passed-in project is the same as the token project' do
+          it { is_expected.to be_truthy }
+        end
+
+        context 'and the passed-in project is not the same as the token project' do
+          subject { deploy_token.has_access_to?(create(:project)) }
+
+          it { is_expected.to be_falsey }
+        end
+      end
+    end
+  end
+
+  describe '#expires_at' do
+    context 'when using Forever.date' do
+      let(:deploy_token) { build_stubbed(:deploy_token, expires_at: nil) }
+
+      it 'returns nil' do
+        expect(deploy_token.expires_at).to be_nil
+      end
+    end
+
+    context 'when using a personalized date' do
+      let(:expires_at) { Date.today + 5.months }
+      let(:deploy_token) { build_stubbed(:deploy_token, expires_at: expires_at) }
+
+      it 'returns the personalized date' do
+        expect(deploy_token.expires_at).to eq(expires_at)
+      end
+    end
+  end
+
+  describe '#expires_at=' do
+    context 'when passing nil' do
+      let(:deploy_token) { build_stubbed(:deploy_token, expires_at: nil) }
+
+      it 'assigns Forever.date' do
+        expect(deploy_token.read_attribute(:expires_at)).to eq(Forever.date)
+      end
+    end
+
+    context 'when passing a value' do
+      let(:expires_at) { Date.today + 5.months }
+      let(:deploy_token) { build_stubbed(:deploy_token, expires_at: expires_at) }
+
+      it 'respects the value' do
+        expect(deploy_token.read_attribute(:expires_at)).to eq(expires_at)
+      end
+    end
+  end
+
+  describe '.gitlab_deploy_token' do
+    let_it_be(:project) { create(:project) }
+
+    subject { project.deploy_tokens.gitlab_deploy_token }
+
+    context 'with a gitlab deploy token associated' do
+      it 'returns the gitlab deploy token' do
+        deploy_token = create(:deploy_token, :gitlab_deploy_token, projects: [project])
+        is_expected.to eq(deploy_token)
+      end
+    end
+
+    context 'with no gitlab deploy token associated' do
+      it 'returns nil' do
+        is_expected.to be_nil
+      end
+    end
+  end
+
+  describe '#accessible_projects' do
+    subject { deploy_token.accessible_projects }
+
+    context 'when a deploy token is associated to a project' do
+      let_it_be(:deploy_token) { create(:deploy_token, :project) }
+
+      it 'returns only projects directly associated with the token' do
+        expect(deploy_token).to receive(:projects)
+
+        subject
+      end
+    end
+
+    context 'when a deploy token is associated to a group' do
+      let_it_be(:group) { create(:group) }
+      let_it_be(:deploy_token) { create(:deploy_token, :group, groups: [group]) }
+
+      it 'returns all projects from the group' do
+        expect(group).to receive(:all_projects)
+
+        subject
+      end
+    end
+  end
+
+  describe '.impersonated?' do
+    subject(:deploy_token) { build_stubbed(:deploy_token) }
+
+    it 'returns false' do
+      expect(subject.impersonated?).to be(false)
+    end
+  end
+
+  describe '.token' do
+    # Specify a blank token_encrypted so that the model's method is used
+    # instead of the factory value
+    subject(:plaintext) { create(:deploy_token, token_encrypted: nil).token }
+
+    it { is_expected.to match(/gldt-[A-Za-z0-9_-]{20}/) }
+  end
+
+  describe '.with_encrypted_tokens' do
+    let(:deploy_token_1) { create(:deploy_token) }
+    let(:deploy_token_2) { create(:deploy_token) }
+    let(:deploy_token_3) { create(:deploy_token) }
+
+    it 'returns deploy tokens matching the given token values' do
+      encrypted_token_values = [deploy_token_1.token_encrypted, deploy_token_3.token_encrypted]
+
+      result = described_class.with_encrypted_tokens(encrypted_token_values)
+
+      expect(result).to contain_exactly(deploy_token_1, deploy_token_3)
+      expect(result).not_to include(deploy_token_2)
+    end
+
+    it 'returns an empty relation when no tokens match' do
+      result = described_class.with_encrypted_tokens(['non-existent-token'])
+
+      expect(result).to be_empty
+    end
+
+    it 'returns an empty relation when given an empty array' do
+      result = described_class.with_encrypted_tokens([])
+
+      expect(result).to be_empty
+    end
+  end
+
+  describe '.encode' do
+    let(:token_string) { 'test_token_123' }
+
+    it 'encodes the provided token' do
+      expect(Authn::TokenField::EncryptionHelper).to receive(:encrypt_token)
+        .with(token_string)
+        .and_return('fake_encrypted_token')
+
+      encoded_token = described_class.encode(token_string)
+
+      expect(encoded_token).to eq('fake_encrypted_token')
+    end
+  end
+
+  describe '.notification_interval' do
+    it 'returns the maximum days for seven_days interval' do
+      expect(described_class.notification_interval(:seven_days)).to eq(7)
+    end
+
+    it 'returns the maximum days for thirty_days interval' do
+      expect(described_class.notification_interval(:thirty_days)).to eq(30)
+    end
+
+    it 'returns the maximum days for sixty_days interval' do
+      expect(described_class.notification_interval(:sixty_days)).to eq(60)
+    end
+
+    it 'raises KeyError for invalid interval' do
+      expect { described_class.notification_interval(:invalid) }.to raise_error(KeyError)
+    end
+  end
+
+  describe '.scope_for_notification_interval' do
+    let_it_be(:project) { create(:project) }
+
+    context 'for seven_days interval' do
+      let_it_be(:token_in_range) do
+        create(:deploy_token, :project, projects: [project], expires_at: 5.days.from_now.iso8601)
+      end
+
+      let_it_be(:token_out_of_range) do
+        create(:deploy_token, :project, projects: [project], expires_at: 10.days.from_now.iso8601)
+      end
+
+      let_it_be(:already_notified_token) do
+        create(:deploy_token, :project, projects: [project],
+          expires_at: 3.days.from_now.iso8601,
+          seven_days_notification_sent_at: 1.day.ago)
+      end
+
+      let_it_be(:revoked_token) do
+        create(:deploy_token, :project, :revoked, projects: [project], expires_at: 4.days.from_now.iso8601)
+      end
+
+      it 'returns tokens expiring within the interval that have not been notified' do
+        result = described_class.scope_for_notification_interval(:seven_days)
+
+        expect(result).to include(token_in_range)
+        expect(result).not_to include(token_out_of_range)
+        expect(result).not_to include(already_notified_token)
+        expect(result).not_to include(revoked_token)
+      end
+    end
+
+    context 'with custom date range' do
+      let_it_be(:token) do
+        create(:deploy_token, :project, projects: [project], expires_at: 15.days.from_now.iso8601)
+      end
+
+      it 'respects min_expires_at parameter' do
+        result = described_class.scope_for_notification_interval(:thirty_days, min_expires_at: 20.days.from_now)
+        expect(result).not_to include(token)
+      end
+
+      it 'respects max_expires_at parameter' do
+        result = described_class.scope_for_notification_interval(:thirty_days, max_expires_at: 10.days.from_now)
+        expect(result).not_to include(token)
+      end
+    end
+  end
+
+  describe 'scopes' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:group_deploy_token) { create(:deploy_token, :group) }
+    let_it_be(:project_deploy_token) { create(:deploy_token, :project, projects: [project]) }
+
+    describe '.project_token' do
+      it 'returns only project type tokens' do
+        expect(described_class.project_token).to include(project_deploy_token)
+        expect(described_class.project_token).not_to include(group_deploy_token)
+      end
+    end
+
+    describe '.group_token' do
+      it 'returns only group type tokens' do
+        expect(described_class.group_token).to include(group_deploy_token)
+        expect(described_class.group_token).not_to include(project_deploy_token)
+      end
+    end
+
+    describe '.order_expires_at_asc' do
+      let_it_be(:token_expires_later) { create(:deploy_token, expires_at: 10.days.from_now.iso8601) }
+      let_it_be(:token_expires_sooner) { create(:deploy_token, expires_at: 5.days.from_now.iso8601) }
+
+      it 'orders tokens by expires_at in ascending order' do
+        result = described_class.order_expires_at_asc.to_a
+        expect(result.index(token_expires_sooner)).to be < result.index(token_expires_later)
+      end
+    end
+
+    describe '.with_project_owners_and_maintainers' do
+      it 'includes projects association with owners and maintainers' do
+        query = described_class.with_project_owners_and_maintainers
+        expect(query.includes_values).to include(projects: :owners_and_maintainers)
+      end
+    end
+
+    describe '.active' do
+      let_it_be(:revoked_token) { create(:deploy_token, :revoked) }
+      let_it_be(:never_expiring_token) { create(:deploy_token, expires_at: nil) }
+
+      # travel_to moves the application's clock and leaves the database's
+      # where it is, so a scope comparing expires_at with the database's
+      # NOW() fails these examples in one direction or the other.
+      shared_examples 'a scope that compares expires_at with Time.current' do
+        let!(:expired_a_second_ago) { create(:deploy_token, expires_at: 1.second.ago.iso8601) }
+        let!(:expiring_now) { create(:deploy_token, expires_at: Time.current.iso8601) }
+        let!(:expiring_in_a_second) { create(:deploy_token, expires_at: 1.second.from_now.iso8601) }
+
+        it 'returns the tokens that are not revoked and expire after Time.current' do
+          expect(described_class.active).to include(expiring_in_a_second, never_expiring_token)
+          expect(described_class.active).not_to include(expired_a_second_ago, expiring_now, revoked_token)
+        end
+      end
+
+      context "when the application's clock is a day ahead of the database's" do
+        around do |example|
+          travel_to(1.day.from_now) { example.run }
+        end
+
+        it_behaves_like 'a scope that compares expires_at with Time.current'
+      end
+
+      context "when the application's clock is a day behind the database's" do
+        around do |example|
+          travel_to(1.day.ago) { example.run }
+        end
+
+        it_behaves_like 'a scope that compares expires_at with Time.current'
+      end
+    end
+  end
+end

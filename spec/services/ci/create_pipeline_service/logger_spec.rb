@@ -1,0 +1,337 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::CreatePipelineService, feature_category: :continuous_integration do
+  describe 'pipeline logger' do
+    let_it_be(:project) { create(:project, :small_repo) }
+    let_it_be(:user)    { project.first_owner }
+
+    let(:ref) { 'refs/heads/master' }
+    let(:service)  { described_class.new(project, user, { ref: ref }) }
+    let(:pipeline) { service.execute(:push).payload }
+
+    let(:counters) do
+      {
+        'count' => a_kind_of(Numeric),
+        'max' => a_kind_of(Numeric),
+        'sum' => a_kind_of(Numeric)
+      }
+    end
+
+    let(:loggable_data) do
+      {
+        'pipeline_creation_caller' => 'Ci::CreatePipelineService',
+        'pipeline_source' => 'push',
+        'pipeline_id' => a_kind_of(Numeric),
+        'pipeline_persisted' => true,
+        'project_id' => project.id,
+        'pipeline_creation_service_duration_s' => a_kind_of(Numeric),
+        'pipeline_creation_duration_s' => a_kind_of(Numeric),
+        'pipeline_size_count' => a_kind_of(Numeric),
+        'pipeline_step_gitlab_ci_pipeline_chain_seed_duration_s' => a_kind_of(Numeric),
+        'pipeline_seed_build_inclusion_duration_s' => counters,
+        'pipeline_seed_build_errors_duration_s' => counters,
+        'pipeline_seed_build_to_resource_duration_s' => counters,
+        'pipeline_seed_stage_seeds_duration_s' => counters,
+        'pipeline_seed_context_build_variables_duration_s' => counters,
+        'pipeline_seed_context_build_variables_sort_and_expand_all_duration_s' => counters,
+        'pipeline_builds_tags_count' => a_kind_of(Numeric),
+        'pipeline_builds_distinct_tags_count' => a_kind_of(Numeric),
+        'pipeline_variables_count' => a_kind_of(Numeric),
+        'pipeline_variables_max_value_bytesize' => a_kind_of(Numeric),
+        'pipeline_variables_total_bytesize' => a_kind_of(Numeric)
+      }
+    end
+
+    before do
+      stub_ci_pipeline_yaml_file(gitlab_ci_yaml)
+    end
+
+    context 'when the duration is under the threshold' do
+      it 'does not create a log entry but it collects the data' do
+        # We do not exect logs for Gitlab::Ci::Pipeline::Logger
+        # but we expect some logs from Gitlab::Ci::Pipeline::CommandLogger,
+        expect(Gitlab::AppJsonLogger)
+          .to receive(:info)
+          .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+          .and_call_original
+
+        expect(pipeline).to be_created_successfully
+
+        expect(service.logger.observations_hash)
+          .to match(
+            a_hash_including(
+              'pipeline_creation_duration_s' => a_kind_of(Numeric),
+              'pipeline_size_count' => a_kind_of(Numeric),
+              'pipeline_step_gitlab_ci_pipeline_chain_seed_duration_s' => a_kind_of(Numeric)
+            )
+          )
+      end
+    end
+
+    context 'when the durations exceeds the threshold' do
+      let(:timer) do
+        proc do
+          @timer = @timer.to_i + 30 # rubocop: disable RSpec/InstanceVariable
+        end
+      end
+
+      before do
+        allow(Gitlab::Ci::Pipeline::Logger)
+          .to receive(:current_monotonic_time) { timer.call }
+      end
+
+      it 'creates a log entry' do
+        expect(Gitlab::AppJsonLogger)
+          .to receive(:info)
+          .with(a_hash_including(loggable_data))
+          .and_call_original
+
+        # We also expect some logs from Gitlab::Ci::Pipeline::CommandLogger,
+        expect(Gitlab::AppJsonLogger)
+          .to receive(:info)
+          .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+          .and_call_original
+
+        expect(pipeline).to be_created_successfully
+      end
+
+      context 'when the pipeline is not persisted' do
+        let(:loggable_data) do
+          {
+            'pipeline_creation_caller' => 'Ci::CreatePipelineService',
+            'pipeline_source' => 'push',
+            'pipeline_persisted' => false,
+            'project_id' => project.id,
+            'pipeline_creation_service_duration_s' => a_kind_of(Numeric),
+            'pipeline_step_gitlab_ci_pipeline_chain_seed_duration_s' => a_kind_of(Numeric)
+          }
+        end
+
+        it 'creates a log entry' do
+          allow_next_instance_of(Ci::Pipeline) do |pipeline|
+            expect(pipeline).to receive(:save!).and_raise(RuntimeError)
+          end
+
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(a_hash_including(loggable_data))
+            .and_call_original
+
+          # We also expect some logs from Gitlab::Ci::Pipeline::CommandLogger,
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+            .and_call_original
+
+          expect { pipeline }.to raise_error(RuntimeError)
+        end
+      end
+
+      context 'when the feature flag is disabled' do
+        before do
+          stub_feature_flags(ci_pipeline_creation_logger: false)
+        end
+
+        it 'does not create a log entry for pipeline logger' do
+          # We do not exect logs for Gitlab::Ci::Pipeline::Logger
+          # but we expect some logs from Gitlab::Ci::Pipeline::CommandLogger,
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+            .and_call_original
+
+          expect(pipeline).to be_created_successfully
+          expect(service.logger.observations_hash).to eq({})
+        end
+      end
+
+      context 'with external validation service configured' do
+        let(:validation_service_url) { 'https://validation-service.external/' }
+        let(:validation_service_response) { instance_double(HTTParty::Response, code: 200) }
+
+        let(:loggable_data) do
+          {
+            'pipeline_validate_external_payload_duration_s' => a_kind_of(Numeric),
+            'pipeline_validate_external_request_duration_s' => a_kind_of(Numeric)
+          }
+        end
+
+        before do
+          stub_env('EXTERNAL_VALIDATION_SERVICE_URL', validation_service_url)
+          allow(::Gitlab::HTTP).to receive(:post).and_return(validation_service_response)
+        end
+
+        it 'logs external validation payload and request durations separately' do
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(a_hash_including(loggable_data))
+            .and_call_original
+
+          # We also expect some logs from Gitlab::Ci::Pipeline::CommandLogger,
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+            .and_call_original
+
+          expect(pipeline).to be_created_successfully
+        end
+
+        it 'collects external validation metrics in observations' do
+          expect(pipeline).to be_created_successfully
+
+          observations = service.logger.observations_hash
+
+          expect(observations).to include(
+            'pipeline_validate_external_payload_duration_s' => a_kind_of(Numeric),
+            'pipeline_validate_external_request_duration_s' => a_kind_of(Numeric)
+          )
+        end
+      end
+
+      context 'with spec:include reading inputs from project file' do
+        let_it_be(:other_project) { create(:project, :small_repo) }
+
+        let(:gitlab_ci_yaml) do
+          <<~YAML
+            spec:
+              include:
+                - project: '#{other_project.full_path}'
+                  ref: 'master'
+                  file: '/inputs/common.yml'
+            ---
+
+            test:
+              script: echo "Testing with $[[ inputs.environment ]]"
+          YAML
+        end
+
+        before_all do
+          other_project.repository.create_file(
+            other_project.first_owner,
+            'inputs/common.yml',
+            "inputs:\n  environment:\n    default: production\n",
+            message: 'Add inputs file',
+            branch_name: 'master'
+          )
+
+          other_project.add_developer(user)
+        end
+
+        it 'logs project file access and fetch metrics' do
+          expect(pipeline).to be_created_successfully
+
+          observations = service.logger.observations_hash
+
+          expect(observations).to include(
+            'config_file_project_validate_access_download_code_duration_s' => a_hash_including('count' => 1,
+              'sum' => a_kind_of(Numeric)),
+            'config_file_project_validate_access_duration_s' => a_hash_including('count' => 1,
+              'sum' => a_kind_of(Numeric)),
+            'config_file_fetch_project_content_duration_s' => a_hash_including('count' => 1,
+              'sum' => a_kind_of(Numeric))
+          )
+        end
+      end
+    end
+
+    context 'when the size exceeds the threshold' do
+      before do
+        allow_next_instance_of(Ci::Pipeline) do |pipeline|
+          allow(pipeline).to receive(:total_size).and_return(5000)
+        end
+      end
+
+      it 'creates a log entry' do
+        expect(Gitlab::AppJsonLogger)
+          .to receive(:info)
+          .with(a_hash_including(loggable_data))
+          .and_call_original
+
+        # We also expect some logs from Gitlab::Ci::Pipeline::CommandLogger,
+        expect(Gitlab::AppJsonLogger)
+          .to receive(:info)
+          .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+          .and_call_original
+
+        expect(pipeline).to be_created_successfully
+      end
+    end
+
+    context 'with pipeline variables' do
+      let(:service) do
+        described_class.new(project, user, { ref: ref, variables_attributes: variables_attributes })
+      end
+
+      let(:variables_attributes) do
+        [
+          { key: 'SMALL', value: 'a' },
+          { key: 'BIG', value: 'a' * 10 }
+        ]
+      end
+
+      shared_examples 'creating a log entry' do
+        it 'creates a log entry' do
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(a_hash_including(
+              'pipeline_variables_count' => 2,
+              'pipeline_variables_max_value_bytesize' => 10,
+              'pipeline_variables_total_bytesize' => 19
+            ))
+            .and_call_original
+
+          # We also expect some logs from Gitlab::Ci::Pipeline::CommandLogger,
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+            .and_call_original
+
+          expect(pipeline).to be_created_successfully
+        end
+      end
+
+      context 'when under all thresholds' do
+        it 'does not create a log entry but it collects the data' do
+          expect(Gitlab::AppJsonLogger)
+            .to receive(:info)
+            .with(hash_including("class" => "Gitlab::Ci::Pipeline::CommandLogger"))
+            .and_call_original
+
+          expect(pipeline).to be_created_successfully
+
+          expect(service.logger.observations_hash).to include(
+            'pipeline_variables_count' => 2,
+            'pipeline_variables_max_value_bytesize' => 10,
+            'pipeline_variables_total_bytesize' => 19
+          )
+        end
+      end
+
+      context 'when the count exceeds the threshold' do
+        before do
+          stub_const("#{described_class}::LOG_MAX_PIPELINE_VARIABLES", 2)
+        end
+
+        it_behaves_like 'creating a log entry'
+      end
+
+      context 'when the largest value bytesize exceeds the threshold' do
+        before do
+          stub_const("#{described_class}::LOG_MAX_PIPELINE_VARIABLE_VALUE_BYTESIZE", 10)
+        end
+
+        it_behaves_like 'creating a log entry'
+      end
+
+      context 'when the total bytesize exceeds the threshold' do
+        before do
+          stub_const("#{described_class}::LOG_MAX_PIPELINE_VARIABLES_TOTAL_BYTESIZE", 19)
+        end
+
+        it_behaves_like 'creating a log entry'
+      end
+    end
+  end
+end

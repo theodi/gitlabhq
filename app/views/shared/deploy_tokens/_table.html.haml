@@ -1,0 +1,49 @@
+= render ::Layouts::CrudComponent.new(s_("DeployTokens|Active deploy tokens"),
+  icon: 'token',
+  count: active_tokens.length,
+  toggle_text: _('Add token')) do |c|
+  - c.with_body do
+    - if active_tokens.present?
+      %table.table.b-table.gl-table.b-table-stacked-md
+        %thead
+          %tr
+            %th= s_('DeployTokens|Name')
+            %th= s_('DeployTokens|Username')
+            %th= s_('DeployTokens|Created')
+            %th= s_('DeployTokens|Expires')
+            %th= s_('DeployTokens|Scopes')
+            %th
+        %tbody
+          - active_tokens.each do |token|
+            %tr
+              %td{ data: { label: _('Name') }, class: '!gl-align-middle' }
+                = token.name
+              %td{ data: { label: _('Username') }, class: '!gl-align-middle' }
+                = token.username
+              %td{ data: { label: _('Created') }, class: '!gl-align-middle' }
+                = token.created_at.to_date.to_fs(:medium)
+              %td{ data: { label: _('Expires') }, class: '!gl-align-middle' }
+                - if token.expires?
+                  %span{ class: ('!gl-text-warning' if token.expires_soon?) }
+                    = time_ago_with_tooltip(token.expires_at)
+                - else
+                  %span.token-never-expires-label= _('Never')
+              %td{ data: { label: _('Scopes') }, class: '!gl-align-middle' }
+                = token.scopes.present? ? token.scopes.join(', ') : _('no scopes selected')
+              %td{ data: { label: _('Actions') }, class: '!gl-align-middle' }
+                .js-deploy-token-revoke-button{ data: deploy_token_revoke_button_data(token: token, group_or_project: group_or_project) }
+
+    - else
+      .gl-text-subtle
+        = s_('DeployTokens|This %{entity_type} has no active deploy tokens.') % { entity_type: group_or_project.class.name.downcase }
+  - c.with_form do
+    #js-new-deploy-token{ data: {
+        container_registry_enabled: container_registry_enabled?(group_or_project),
+        dependency_proxy_enabled: dependency_proxy_enabled?(group_or_project) && group_or_project.is_a?(Group),
+        packages_registry_enabled: packages_registry_enabled?(group_or_project),
+        create_new_token_path: create_deploy_token_path(group_or_project),
+        token_type: group_or_project.is_a?(Group) ? 'group' : 'project',
+        top_level_group: group_or_project.is_a?(Group) && group_or_project.root?,
+        deploy_tokens_help_url: help_page_path('user/project/deploy_tokens/_index.md')
+      }
+    }

@@ -1,0 +1,17 @@
+---
+description: Count usage of /add_email quickaction with a single argument
+internal_events: true
+action: i_quickactions_add_email_single
+identifiers:
+- project
+- user
+- namespace
+product_group: work_items
+product_categories:
+- service_desk
+milestone: "17.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/151776
+tiers:
+- free
+- premium
+- ultimate

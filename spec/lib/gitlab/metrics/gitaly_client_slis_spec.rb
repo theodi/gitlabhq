@@ -1,0 +1,136 @@
+# frozen_string_literal: true
+
+require 'fast_spec_helper'
+require 'grpc'
+require 'gitlab/safe_request_store'
+
+RSpec.describe Gitlab::Metrics::GitalyClientSlis, feature_category: :gitaly do
+  describe '.initialize_slis!' do
+    it 'initializes the gitaly_client_calls error rate SLI' do
+      expect(Gitlab::Metrics::Sli::ErrorRate).to receive(:initialize_sli).with(:gitaly_client_calls, [])
+
+      described_class.initialize_slis!
+    end
+  end
+
+  describe '.record_error_rate' do
+    before do
+      allow(described_class).to receive(:node_label).with('default').and_return('gitaly-01-stor.example')
+    end
+
+    it 'increments the error rate SLI with the gitaly_node label derived from the storage' do
+      expect(Gitlab::Metrics::Sli::ErrorRate[:gitaly_client_calls]).to receive(:increment).with(
+        labels: { gitaly_node: 'gitaly-01-stor.example' },
+        error: true
+      )
+
+      described_class.record_error_rate(storage: 'default', error: GRPC::Unavailable.new)
+    end
+
+    it 'records a success when there is no error' do
+      expect(Gitlab::Metrics::Sli::ErrorRate[:gitaly_client_calls]).to receive(:increment).with(
+        labels: { gitaly_node: 'gitaly-01-stor.example' },
+        error: false
+      )
+
+      described_class.record_error_rate(storage: 'default')
+    end
+  end
+
+  describe '.node_label' do
+    using RSpec::Parameterized::TableSyntax
+
+    def stub_repos_storages(address)
+      allow(Gitlab.config.repositories).to receive(:storages).and_return({
+        'default' => { 'gitaly_address' => address }
+      })
+    end
+
+    where(:address, :expected_node_label) do
+      'tcp://gitaly-01-stor.example.internal:9999' | 'gitaly-01-stor.example.internal'
+      'tls://gitaly-02-stor.example.internal:8075' | 'gitaly-02-stor.example.internal'
+      'tcp://localhost:9876'                       | 'localhost'
+      # Schemes without a parseable host fall back to the storage name.
+      'unix:tmp/gitaly.sock'                       | 'default'
+      'dns:///localhost:9876'                      | 'default'
+      'dns:localhost:9876'                         | 'default'
+    end
+
+    with_them do
+      it 'returns a node label that lines up with the server-side fqdn' do
+        stub_repos_storages(address)
+
+        expect(described_class.node_label('default')).to eq(expected_node_label)
+      end
+    end
+
+    it 'falls back to the storage name when the address is invalid' do
+      allow(::Gitlab::GitalyClient).to receive(:gitaly_address).with('default').and_return('::not a uri::')
+
+      expect(described_class.node_label('default')).to eq('default')
+    end
+
+    context 'when the storage is routed through gitway' do
+      before do
+        stub_storage_settings(
+          'default' => { 'gitaly_address' => 'tcp://gitaly-01-stor.example.internal:9999',
+                         'gitway_address' => 'tcp://gitway.example.internal:8075' }
+        )
+        stub_feature_flags(route_gitaly_through_gitway: true)
+      end
+
+      it 'labels the Gitaly node, not gitway' do
+        expect(described_class.node_label('default')).to eq('gitaly-01-stor.example.internal')
+      end
+
+      it 'does not evaluate the feature flag' do
+        expect(Feature).not_to receive(:enabled?).with(:route_gitaly_through_gitway, any_args)
+
+        described_class.node_label('default')
+      end
+    end
+  end
+
+  describe '.error?' do
+    it 'is not an error when there is no exception' do
+      expect(described_class.error?(nil)).to be(false)
+    end
+
+    it 'is an error for a non-gRPC exception' do
+      expect(described_class.error?(StandardError.new)).to be(true)
+    end
+
+    it 'is an error for the circuit-breaker fast-fail' do
+      expect(described_class.error?(Gitlab::Git::ResourceExhaustedError.new)).to be(true)
+    end
+
+    context 'with a GRPC::BadStatus exception' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:error_class, :is_error) do
+        GRPC::Cancelled          | false
+        GRPC::InvalidArgument    | false
+        GRPC::DeadlineExceeded   | true
+        GRPC::NotFound           | false
+        GRPC::AlreadyExists      | false
+        GRPC::PermissionDenied   | false
+        GRPC::FailedPrecondition | false
+        GRPC::Unauthenticated    | false
+        GRPC::Unknown            | true
+        GRPC::Aborted            | true
+        GRPC::OutOfRange         | true
+        GRPC::Unimplemented      | true
+        GRPC::Internal           | true
+        GRPC::Unavailable        | true
+        GRPC::DataLoss           | true
+        GRPC::ResourceExhausted  | false
+      end
+
+      with_them do
+        it "returns #{params[:is_error]} for #{params[:error_class]}" do
+          expect(described_class.error?(error_class.new)).to eq(is_error)
+        end
+      end
+    end
+  end
+end

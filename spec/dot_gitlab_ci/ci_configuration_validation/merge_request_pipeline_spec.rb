@@ -1,0 +1,197 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require_relative './shared_context_and_examples'
+
+RSpec.describe 'CI configuration validation - branch pipelines', feature_category: :tooling do
+  include ProjectForksHelper
+  include CiConfigurationValidationHelper
+
+  include_context 'with simulated pipeline attributes and shared project and user'
+  include_context 'with simulated MR pipeline attributes'
+
+  let(:pipeline_project) { gitlab_org_gitlab_project }
+  let(:create_pipeline_service) { Ci::CreatePipelineService.new(target_project, user, ref: target_branch) }
+
+  subject(:pipeline) do
+    create_pipeline_service
+      .execute(
+        :push,
+        dry_run: true,
+        merge_request: merge_request,
+        variables_attributes: mr_pipeline_variables_attributes
+      ).payload
+  end
+
+  context "when unlabeled MR is changing GITALY_SERVER_VERSION" do
+    let(:changed_files) { ['GITALY_SERVER_VERSION'] }
+    let(:expected_job_name) { 'clone-gitlab-repo' }
+
+    it_behaves_like 'merge request pipeline'
+
+    it_behaves_like 'merge train pipeline'
+  end
+
+  context "when MR from release-tools/update-gitlab-pages is changing GITLAB_PAGES_VERSION" do
+    let(:source_branch) { 'release-tools/update-gitlab-pages' }
+    let(:changed_files) { ['GITLAB_PAGES_VERSION'] }
+    let(:expected_job_name) { 'clone-gitlab-repo' }
+
+    it_behaves_like 'merge request pipeline'
+
+    it_behaves_like 'merge train pipeline'
+  end
+
+  context "with frontend file changes in MR" do
+    let(:changed_files) { ['package.json'] }
+
+    # asset hash calculation has non-optional needs relationship so we ensure we run it on any app code related change
+    # to ensure it is always present
+    it "runs node modules cache update jobs and asset-hash job" do
+      expect(jobs).to include('cache:node-modules', 'cache:node-modules-production', 'cache:assets-hash')
+    end
+
+    context "when MR is unlabeled and changes package.json" do
+      let(:expected_job_name) { 'eslint-changed-files' }
+
+      it_behaves_like 'merge request pipeline'
+    end
+
+    context "when MR is in tier-1 and changes package.json" do
+      let(:mr_labels) { ['pipeline::tier-1'] }
+      let(:expected_job_name) { 'eslint-changed-files' }
+
+      it_behaves_like 'merge request pipeline'
+    end
+
+    context "when MR is in tier-2 and changes package.json" do
+      let(:mr_labels) { ['pipeline::tier-2'] }
+      let(:expected_job_name) { 'eslint' }
+
+      it_behaves_like 'merge request pipeline'
+    end
+  end
+
+  context "with backend file changes in MR" do
+    let(:changed_files) { ['app/models/user.rb'] }
+
+    # asset hash calculation has non-optional needs relationship so we ensure we run it on any app code related change
+    # to ensure it is always present
+    it "runs ruby gem cache update jobs and asset-hash job" do
+      expect(jobs).to include('cache:ruby-gems', 'cache:ruby-gems-ubi', 'cache:assets-hash')
+    end
+  end
+
+  context "when MR is in tier-3 and changes only a spec file" do
+    let(:mr_labels) { ['pipeline::tier-3'] }
+    let(:changed_files) { ['spec/models/user_spec.rb'] }
+    let(:expected_job_name) { 'permissions-verify' }
+
+    it_behaves_like 'merge request pipeline'
+  end
+
+  context "when unlabeled MR is changing docs only" do
+    let(:changed_files) { ['doc/tutorials/index.md'] }
+    let(:expected_job_name) { 'eslint-docs' }
+
+    it_behaves_like 'merge request pipeline'
+
+    it_behaves_like 'merge train pipeline'
+
+    it 'does not include a tier' do
+      expect(jobs).not_to include('pipeline-tier-1')
+    end
+
+    it "does not run cache update jobs" do
+      expect(jobs).not_to include('cache:ruby-gems', 'cache:node-modules')
+    end
+  end
+
+  context 'when MR targeting a stable branch is changing app/models/user.rb' do
+    let(:target_branch)     { '16-10-stable-ee' }
+    let(:changed_files)     { ['app/models/user.rb'] }
+    let(:expected_job_name) { 'rspec-all frontend_fixture 1/8' }
+
+    before do
+      sync_local_files_to_project(
+        target_project,
+        user,
+        target_branch,
+        files: ci_glob
+      )
+    end
+
+    after do
+      target_project.repository.delete_branch(target_branch)
+    end
+
+    it_behaves_like 'merge request pipeline'
+
+    it_behaves_like 'merge train pipeline'
+  end
+
+  context 'with fork project MRs' do
+    let_it_be(:fork_project_mr_source) do
+      fork_project(gitlab_org_gitlab_project, user, repository: true)
+    end
+
+    let(:source_project)    { fork_project_mr_source }
+    let(:target_project)    { gitlab_org_gitlab_project }
+
+    context 'when MR is created from a fork project master branch' do
+      let(:source_branch)     { master_branch }
+      let(:target_branch)     { master_branch }
+      let(:changed_files)     { ['package.json'] }
+      let(:expected_job_name) { 'rspec-all frontend_fixture 1/8' }
+
+      context 'when running MR pipeline in the context of the fork project' do
+        let(:ci_project_namespace) { fork_project_mr_source.namespace.full_path }
+        let(:ci_project_path)      { fork_project_mr_source.full_path }
+        let(:ci_project_name)      { fork_project_mr_source.name }
+
+        it_behaves_like 'merge request pipeline'
+      end
+
+      context 'when running MR pipeline in the context of canonical project' do
+        it_behaves_like 'merge request pipeline'
+      end
+
+      it_behaves_like 'merge train pipeline'
+    end
+
+    context 'when MR is created from a fork project feature branch' do
+      let(:source_branch)     { "feature_branch_ci_#{SecureRandom.uuid}" }
+      let(:target_branch)     { master_branch }
+      let(:changed_files)     { ['package.json'] }
+      let(:expected_job_name) { 'rspec-all frontend_fixture 1/8' }
+
+      it "runs cache update jobs" do
+        expect(jobs).to include('cache:ruby-gems', 'cache:node-modules', 'cache:node-modules-production')
+      end
+
+      context 'when running MR pipeline in the context of the fork project' do
+        let(:ci_project_namespace) { fork_project_mr_source.namespace.full_path }
+        let(:ci_project_path)      { fork_project_mr_source.full_path }
+        let(:ci_project_name)      { fork_project_mr_source.name }
+
+        it_behaves_like 'merge request pipeline'
+      end
+
+      context 'when running MR pipeline in the context of canonical project' do
+        it_behaves_like 'merge request pipeline'
+      end
+
+      it_behaves_like 'merge train pipeline'
+    end
+  end
+
+  context 'when MR changes vite.config.js and pipeline is tier 3' do
+    let(:mr_labels) { ['pipeline::tier-3'] }
+    let(:source_branch) { 'vite-change' }
+    let(:changed_files) { ['vite.config.js'] }
+
+    where(expected_job_name: ['compile-production-assets', 'compile-production-assets vue3'])
+
+    with_them { it_behaves_like 'merge request pipeline' }
+  end
+end

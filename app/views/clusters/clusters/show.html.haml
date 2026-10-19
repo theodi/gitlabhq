@@ -1,0 +1,40 @@
+- add_to_breadcrumbs _('Kubernetes Clusters'), clusterable.index_path
+- breadcrumb_title @cluster.name
+- page_title _('Kubernetes Cluster')
+- cluster_environments_path = clusterable.environments_cluster_path(@cluster)
+
+- status_path = clusterable.cluster_status_cluster_path(@cluster.id, format: :json) if can?(current_user, :admin_cluster, @cluster)
+.edit-cluster-form.js-edit-cluster-form{ data: { status_path: status_path,
+  cluster_environments_path: cluster_environments_path,
+  toggle_status: @cluster.enabled? ? 'true': 'false',
+  has_rbac: has_rbac_enabled?(@cluster) ? 'true': 'false',
+  cluster_type: @cluster.cluster_type,
+  cluster_status: @cluster.status_name,
+  cluster_status_reason: @cluster.status_reason,
+  provider_type: @cluster.provider_type,
+  help_path: help_page_path('user/infrastructure/clusters/_index.md'),
+  environments_help_path: help_page_path('ci/environments/_index.md', anchor: 'create-a-static-environment'),
+  clusters_help_path: help_page_path('user/project/clusters/deploy_to_cluster.md'),
+  deploy_boards_help_path: help_page_path('user/project/deploy_boards.md', anchor: 'enabling-deploy-boards'),
+  cluster_id: @cluster.id } }
+
+  .js-cluster-application-notice
+    .flash-container
+
+  %h4.gl-my-5.gl-flex.gl-items-center
+    = @cluster.name
+    = gl_badge_tag cluster_type_label(@cluster.cluster_type), { variant: :info }, { class: 'gl-ml-3' }
+
+  = render 'banner'
+
+  - if cluster_created?(@cluster)
+    .js-toggle-container
+      = gl_tabs_nav do
+        = render 'clusters/clusters/migrate_tab'
+        = render 'clusters/clusters/details_tab'
+        = render_if_exists 'clusters/clusters/environments_tab'
+        = render 'clusters/clusters/advanced_settings_tab'
+
+      %div{ class: "tab-content !gl-py-5" }
+        .tab-pane.active{ role: 'tabpanel' }
+          = render_cluster_info_tab_content(params[:tab], expanded_by_default?)

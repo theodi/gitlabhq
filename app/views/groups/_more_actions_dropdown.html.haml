@@ -1,0 +1,5 @@
+%span.gl-sr-only{ itemprop: 'identifier', data: { testid: 'group-id-content' } }
+  = s_('GroupPage|Group ID: %{id}') % { id: @group.id }
+
+- if current_user
+  #js-group-more-actions-dropdown{ data: group_more_action_data(@group) }

@@ -1,0 +1,34 @@
+- add_to_breadcrumbs _('Wiki'), wiki_path(@wiki)
+- breadcrumb_title s_("Wiki|Templates")
+- page_title s_("Wiki|Templates"), _("Wiki")
+- add_page_specific_style 'page_bundles/wiki'
+
+= render ::Layouts::PageHeadingComponent.new(s_("Wiki|Wiki templates")) do |c|
+  - c.with_actions do
+    .dropdown.gl-inline-block.wiki-sort-dropdown
+      .btn-group{ role: 'group' }
+        = wiki_sort_controls(@wiki, params[:direction], action: :templates)
+
+    #js-vue-wiki-more-actions{ data: {
+      clone_ssh_url: ssh_clone_url_to_repo(@wiki),
+      clone_http_url: http_clone_url_to_repo(@wiki),
+      wiki_url: wiki_path(@wiki),
+      new_url: wiki_page_path(@wiki, "#{Wiki::TEMPLATES_DIR}/#{SecureRandom.uuid}", random_title: true),
+      templates_url: wiki_page_path(@wiki, Wiki::TEMPLATES_DIR),
+    } }
+
+= render ::Layouts::CrudComponent.new(s_("Wiki|Templates"), count: @wiki_entries_count, icon: 'template', body_options: { class: '' }) do |c|
+  - c.with_actions do
+    - if can?(current_user, :create_wiki, @wiki)
+      = render Pajamas::ButtonComponent.new(href: wiki_page_path(@wiki, "#{Wiki::TEMPLATES_DIR}/#{SecureRandom.uuid}", view: 'create', random_title: true), size: :small) do
+        = s_("Wiki|New template")
+  - c.with_body do
+    %ul.wiki-pages-list.content-list.wiki-templates-list.content-list-items-padding
+      - if @templates_list.empty?
+        %li.no-wiki-pages.gl-px-3
+          = s_("Wiki|No templates found")
+      - @wiki_entries.each do |entry|
+        = render partial: entry.to_partial_path, object: entry, locals: { context: 'pages' }
+
+.gl-pt-3
+  = paginate @templates_list, theme: 'gitlab'

@@ -1,0 +1,424 @@
+import { nextTick } from 'vue';
+import { GlCollapsibleListbox, GlFormInput, GlFormTextarea } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import DynamicValueRenderer from '~/ci/common/pipeline_inputs/pipeline_inputs_table/value_column/dynamic_value_renderer.vue';
+import BooleanCell from '~/ci/common/pipeline_inputs/pipeline_inputs_table/value_column/boolean_cell.vue';
+
+describe('DynamicValueRenderer', () => {
+  let wrapper;
+
+  const defaultProps = {
+    item: { name: 'input1', description: '', type: 'STRING', value: 'value1' },
+  };
+
+  const createComponent = ({ props = {} } = {}) => {
+    wrapper = shallowMountExtended(DynamicValueRenderer, {
+      propsData: {
+        ...defaultProps,
+        ...props,
+      },
+      stubs: {
+        GlFormInput,
+        GlFormTextarea,
+      },
+    });
+  };
+
+  const findBooleanCellComponent = () => wrapper.findComponent(BooleanCell);
+  const findDropdown = () => wrapper.findComponent(GlCollapsibleListbox);
+  const findInput = () => wrapper.findComponent(GlFormInput);
+  const findTextarea = () => wrapper.findComponent(GlFormTextarea);
+  const findValidationFeedback = () => wrapper.findByTestId('validation-feedback');
+
+  const getInputType = (type, hasOptions) => {
+    if (hasOptions) return 'dropdown';
+    if (type === 'ARRAY') return 'textarea';
+    return 'input';
+  };
+
+  const setInputValue = async (value) => {
+    await findInput().setValue(value);
+
+    await nextTick();
+  };
+
+  describe('rendering', () => {
+    describe('basic input types', () => {
+      it('renders text input for string type', () => {
+        createComponent();
+        expect(findInput().exists()).toBe(true);
+        expect(findInput().attributes('type')).toBe('text');
+      });
+
+      it('renders number input for number type', () => {
+        createComponent({ props: { item: { ...defaultProps.item, type: 'NUMBER' } } });
+        expect(findInput().exists()).toBe(true);
+        expect(findInput().attributes('type')).toBe('number');
+        expect(findInput().attributes('min')).toBe(String(Number.MIN_SAFE_INTEGER));
+        expect(findInput().attributes('max')).toBe(String(Number.MAX_SAFE_INTEGER));
+      });
+
+      it('renders boolean cell component for boolean type', () => {
+        createComponent({ props: { item: { ...defaultProps.item, type: 'BOOLEAN' } } });
+        expect(findBooleanCellComponent().exists()).toBe(true);
+        expect(findInput().exists()).toBe(false);
+      });
+
+      it('renders dropdown when options are provided', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              options: ['option1', 'option2'],
+            },
+          },
+        });
+        expect(findDropdown().exists()).toBe(true);
+        expect(findDropdown().props('multiple')).toBe(false);
+        expect(findInput().exists()).toBe(false);
+      });
+
+      it('converts numeric options to string text', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              options: [1, 50, 100],
+            },
+          },
+        });
+
+        const dropdownItems = findDropdown().props('items');
+        expect(dropdownItems).toHaveLength(3);
+        expect(dropdownItems[0]).toEqual({ value: 1, text: '1' });
+        expect(dropdownItems[1]).toEqual({ value: 50, text: '50' });
+        expect(dropdownItems[2]).toEqual({ value: 100, text: '100' });
+      });
+    });
+
+    describe('array type handling', () => {
+      it('renders a textarea for array inputs', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              type: 'ARRAY',
+            },
+          },
+        });
+
+        expect(findTextarea().exists()).toBe(true);
+        expect(findInput().exists()).toBe(false);
+      });
+
+      it('renders multi select dropdown for array type when options are provided', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              type: 'ARRAY',
+              value: ['option1'],
+              options: ['option1', 'option2', 'option3'],
+            },
+          },
+        });
+
+        expect(findDropdown().exists()).toBe(true);
+        expect(findDropdown().props('multiple')).toBe(true);
+        expect(findInput().exists()).toBe(false);
+
+        const dropdownItems = findDropdown().props('items');
+        expect(dropdownItems).toHaveLength(3);
+        expect(dropdownItems[0].value).toBe('option1');
+        expect(dropdownItems[1].value).toBe('option2');
+        expect(dropdownItems[2].value).toBe('option3');
+      });
+
+      it('displays selected value in dropdown toggle text', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              type: 'ARRAY',
+              value: ['option2'],
+              options: ['option1', 'option2', 'option3'],
+            },
+          },
+        });
+
+        expect(findDropdown().props('toggleText')).toBe('option2');
+      });
+
+      it('displays multiple selected values in dropdown toggle text', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              type: 'ARRAY',
+              value: ['option1', 'option2'],
+              options: ['option1', 'option2', 'option3'],
+            },
+          },
+        });
+
+        expect(findDropdown().props('toggleText')).toBe('2 options selected');
+      });
+
+      it('displays placeholder in dropdown toggle text when array value is empty', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              type: 'ARRAY',
+              value: '',
+              options: ['option1', 'option2', 'option3'],
+            },
+          },
+        });
+
+        expect(findDropdown().props('toggleText')).toBe('Select option');
+      });
+    });
+  });
+
+  describe('event handling', () => {
+    describe('basic input events', () => {
+      it('emits update event when input value changes', async () => {
+        createComponent();
+        await findInput().vm.$emit('input', 'new value');
+
+        expect(wrapper.emitted().update).toHaveLength(1);
+        expect(wrapper.emitted('update')[0][0]).toEqual({
+          item: defaultProps.item,
+          value: 'new value',
+        });
+      });
+
+      it('emits update event when dropdown value changes', async () => {
+        const item = {
+          ...defaultProps.item,
+          options: ['option1', 'option2', 'hi'],
+        };
+
+        createComponent({
+          props: { item },
+        });
+        await findDropdown().vm.$emit('select', 'option2');
+
+        expect(wrapper.emitted().update).toHaveLength(1);
+        expect(wrapper.emitted('update')[0][0]).toEqual({
+          item,
+          value: 'option2',
+        });
+      });
+
+      it('emits update event when boolean value changes', async () => {
+        const item = {
+          ...defaultProps.item,
+          type: 'BOOLEAN',
+        };
+
+        createComponent({
+          props: { item },
+        });
+
+        await findBooleanCellComponent().vm.$emit('update', {
+          input: item,
+          value: true,
+        });
+
+        expect(wrapper.emitted().update).toHaveLength(1);
+        expect(wrapper.emitted('update')[0][0]).toEqual({
+          item,
+          value: true,
+        });
+      });
+    });
+  });
+
+  describe('type conversion', () => {
+    describe('convertToDisplayValue', () => {
+      it.each`
+        type        | value              | expectedDisplayValue | usesDropdown
+        ${'STRING'} | ${'test'}          | ${'test'}            | ${false}
+        ${'NUMBER'} | ${0}               | ${0}                 | ${false}
+        ${'ARRAY'}  | ${['a', 'b', 'c']} | ${'["a","b","c"]'}   | ${false}
+      `(
+        'converts $type value "$value" to display value "$expectedDisplayValue"',
+        ({ type, value, expectedDisplayValue, usesDropdown }) => {
+          createComponent({
+            props: { item: { ...defaultProps.item, type, value } },
+          });
+
+          const inputType = getInputType(type, usesDropdown);
+
+          switch (inputType) {
+            case 'dropdown':
+              expect(findDropdown().props('selected')).toBe(expectedDisplayValue);
+              break;
+            case 'textarea':
+              expect(findTextarea().props('value')).toBe(expectedDisplayValue);
+              break;
+            default:
+              expect(findInput().props('value')).toBe(expectedDisplayValue);
+          }
+        },
+      );
+    });
+
+    describe('convertToType', () => {
+      it.each`
+        type        | inputValue | expectedTypedValue | usesDropdown
+        ${'STRING'} | ${'test'}  | ${'test'}          | ${false}
+        ${'NUMBER'} | ${'42'}    | ${42}              | ${false}
+        ${'ARRAY'}  | ${'a,b,c'} | ${'a,b,c'}         | ${false}
+      `(
+        'handles input value "$inputValue" for $type type appropriately',
+        async ({ type, inputValue, expectedTypedValue, usesDropdown }) => {
+          createComponent({
+            props: { item: { ...defaultProps.item, type } },
+          });
+
+          const inputType = getInputType(type, usesDropdown);
+
+          switch (inputType) {
+            case 'dropdown':
+              await findDropdown().vm.$emit('select', inputValue);
+              break;
+            case 'textarea':
+              await findTextarea().vm.$emit('input', inputValue);
+              break;
+            default:
+              await findInput().vm.$emit('input', inputValue);
+          }
+
+          expect(wrapper.emitted('update')[0][0].value).toEqual(expectedTypedValue);
+        },
+      );
+    });
+  });
+
+  describe('validation', () => {
+    describe('attributes', () => {
+      it.each`
+        description                     | itemProps              | attribute            | expectedValue
+        ${'regex pattern attribute'}    | ${{ regex: '[a-z]+' }} | ${'pattern'}         | ${'[a-z]+'}
+        ${'number type data attribute'} | ${{ type: 'NUMBER' }}  | ${'data-field-type'} | ${'NUMBER'}
+        ${'json array data attribute'}  | ${{ type: 'ARRAY' }}   | ${'data-json-array'} | ${'true'}
+      `('applies $description to input', ({ itemProps, attribute, expectedValue }) => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              ...itemProps,
+            },
+          },
+        });
+
+        const inputComponent = itemProps.type === 'ARRAY' ? findTextarea() : findInput();
+        expect(inputComponent.attributes(attribute)).toBe(expectedValue);
+      });
+
+      // Separate test for required attribute because vue 2 and vue 3 handle required differently
+      it('applies required attribute to input', () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              required: true,
+            },
+          },
+        });
+        expect(findInput().element.hasAttribute('required')).toBe(true);
+      });
+    });
+
+    describe('invalid text feedback', () => {
+      it('displays validation feedback when required field is empty', async () => {
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              required: true,
+            },
+          },
+        });
+
+        await setInputValue('');
+
+        expect(findValidationFeedback().exists()).toBe(true);
+        expect(findValidationFeedback().text()).toContain('This is required and must be defined.');
+      });
+
+      it('includes pattern information in validation feedback for regex errors', async () => {
+        const regex = '[a-z]+';
+        createComponent({
+          props: {
+            item: {
+              ...defaultProps.item,
+              regex,
+            },
+          },
+        });
+
+        await setInputValue('123');
+
+        expect(findValidationFeedback().exists()).toBe(true);
+        expect(findValidationFeedback().text()).toContain(
+          'The value must match the defined regular expression.',
+        );
+        expect(findValidationFeedback().text()).toContain(`Pattern: ${regex}`);
+      });
+    });
+  });
+
+  describe('dropdown search filtering', () => {
+    beforeEach(() => {
+      createComponent({
+        props: {
+          item: {
+            ...defaultProps.item,
+            options: ['production', 'staging', 'development', 'preview'],
+          },
+        },
+      });
+    });
+
+    it('filters options based on search term', async () => {
+      findDropdown().vm.$emit('search', 'prod');
+      await nextTick();
+
+      const items = findDropdown().props('items');
+      expect(items).toHaveLength(1);
+      expect(items[0].text).toBe('production');
+    });
+
+    it('filters options case-insensitively', async () => {
+      findDropdown().vm.$emit('search', 'PROD');
+      await nextTick();
+
+      const items = findDropdown().props('items');
+      expect(items).toHaveLength(1);
+      expect(items[0].text).toBe('production');
+    });
+
+    it('handles no matches', async () => {
+      findDropdown().vm.$emit('search', 'xyz');
+      await nextTick();
+
+      expect(findDropdown().props('items')).toHaveLength(0);
+    });
+
+    it('restores all options when search is cleared', async () => {
+      findDropdown().vm.$emit('search', 'prod');
+      await nextTick();
+
+      expect(findDropdown().props('items')).toHaveLength(1);
+
+      findDropdown().vm.$emit('search', '');
+      await nextTick();
+
+      expect(findDropdown().props('items')).toHaveLength(4);
+    });
+  });
+});

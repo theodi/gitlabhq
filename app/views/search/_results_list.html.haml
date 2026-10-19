@@ -1,0 +1,40 @@
+- if should_show_zoekt_results?(@scope, @search_type)
+  %ul#js-search-zoekt-blob-results
+- elsif @timeout
+  = render partial: "search/results/timeout"
+- elsif @search_results.respond_to?(:failed?) && @search_results.failed?(@scope)
+  = render partial: "search/results/error"
+- elsif @search_objects.blank?
+  = render partial: "search/results/empty"
+- else
+  .section
+    - if @scope == 'commits'
+      %ul.content-list.commit-list
+        - @search_objects.each_with_index do |commit, index|
+          = render partial: "search/results/commit", locals: { commit: commit, index: index }
+    - else
+      .search-results.js-search-results
+        - if @scope == 'projects'
+          .term
+            = render 'shared/projects/list', projects: @search_objects, pipeline_status: false
+        - elsif @scope == 'groups'
+          .term
+            = render 'shared/groups/list', groups: @search_objects
+        - elsif @scope === 'epics'
+          - @search_objects.each_with_index do |result, index|
+            = render partial: "search/results/work_item", locals: { result: result, index: index }
+        - elsif @scope === 'users'
+          %table.table.b-table.gl-table.b-table-stacked-md{ role: 'table' }
+            %thead
+              %tr
+                %th= _('User')
+                %th{ class: "!gl-text-right" }= _('Activity')
+            %tbody
+              - @search_objects.each_with_index do |user, index|
+                = render_if_exists partial: "search/results/user", locals: { user: user, index: index }
+        - else
+          - @search_objects.each_with_index do |result, index|
+            = render_if_exists partial: "search/results/#{@scope.singularize}", locals: { result: result, index: index }
+
+    - if %w[projects groups].exclude?(@scope) && !should_show_zoekt_results?(@scope, @search_type)
+      = paginate_collection(@search_objects)

@@ -1,0 +1,17 @@
+---
+description: GCP regions configuration form rendered
+category: Projects::GoogleCloud::GcpRegionsController
+action: render_form
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: 5-min-app
+milestone: "15.4"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/96683"
+tiers:
+- free
+- premium
+- ultimate
+

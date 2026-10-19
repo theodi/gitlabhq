@@ -1,0 +1,187 @@
+---
+stage: Analytics
+group: Analytics Instrumentation
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: AI Event Instrumentation Guide
+---
+
+This guide describes all fields required for instrumenting AI and GitLab Duo Agentic Platform (DAP) events.
+AI events use two context schemas:
+
+- [Standard Context](https://gitlab.com/gitlab-org/iglu/-/tree/master/public/schemas/com.gitlab/gitlab_standard/jsonschema) - Contains general fields used across all GitLab events.
+  See documentation for [Standard context](standard_context_fields.md) fields.
+- [AI Context](https://gitlab.com/gitlab-org/iglu/-/tree/master/public/schemas/com.gitlab/ai_context/jsonschema) - Contains DAP-specific fields for workflow and session management, model information, and token tracking
+
+## Overview
+
+When instrumenting AI events, in addition to Standard context fields, you need to include fields specific to DAP.
+These fields are part of the AI Context schema and are specific to DAP (Duo Agentic Platform) and AI Gateway events.
+
+## When to Use This Guide
+
+Use this guide when:
+
+- Instrumenting GitLab Duo features (Duo Chat, Duo Workflow, AI-powered suggestions)
+- Tracking DAP (Duo Agentic Platform) events
+- Recording AI model interactions and token usage
+- Monitoring AI session and workflow execution
+- Events have `classification: duo` in their event definition
+
+## AI Context Fields
+
+### Session and Workflow Identifiers
+
+| Field             | Type          | Description                                                                                       | Example             |
+|-------------------|---------------|---------------------------------------------------------------------------------------------------|---------------------|
+| `session_id`      | string, null  | Session identifier from instance (not globally unique). | `"session_abc123"` |
+| `workflow_id`  | string, null | Globally unique session identifier. | `"workflow_xyz789"` |
+
+### Workflow and Agent Information
+
+| Field             | Type          | Description                                                                                       | Example             |
+|-------------------|---------------|---------------------------------------------------------------------------------------------------|---------------------|
+| `item_type`             | string, null  | Type of item being executed/tracked (maximum length: 32 characters). | One of: `"foundational_flow"`, `"foundational_agent"`, `"foundational_external_agent"`, `"custom_flow"`, `"custom_agent"`, `"custom_external_agent"` |
+| `item_version`          | string, null  | Semantic version of the foundational or custom item (maximum length: 32 characters). | `"1.0.0"`, `"1.1.0"` |
+| `item_schema_version`   | string, null  | Flow Registry framework version used to build the item (maximum length: 32 characters). | `"experimental"`, `"v1"` |
+| `flow_name`             | string, null  | Name of the flow (maximum length: 64 characters). | `"chat"`, `"software_development"`, `"convert_to_gitlab_ci"` |
+| `component_name`        | string, null  | Name of the individual component within the flow (maximum length: 64 characters). | The agent component's name. |
+| `agent_name`            | string, null  | Which agent within the flow is executing. | `"duo_chat"`, `"code_agent"`, `"planning_agent"` |
+| `custom_item_id`        | integer, null | Custom item ID (only populated for custom items) | `123` |
+| `flow_registry_version` | string, null  | Flow Registry framework version used to build the flow (maximum length: 64 characters). Deprecated in favor of `item_schema_version`. | `"experimental"`, `"v1"` |
+| `flow_type`             | string, null  | Type of DAP flow (more custom flows to be included in the future). Deprecated in favor of `flow_name`.| `"chat"`, `"software_development"`, `"convert_to_gitlab_ci"` |
+| `flow_version`          | string, null  | Version of the AI feature implementation for the flow (maximum length: 64 characters). Deprecated in favor of `item_version`. | `"2.1.0"`, `"3.0.1"` |
+| `agent_type`            | string, null  | Which agent type within the flow is executing. Deprecated in favor of `item_type`. | `"foundational"`, `"custom"` |
+
+### Model Information
+
+| Field             | Type          | Description                                                                                       | Example             |
+|-------------------|---------------|---------------------------------------------------------------------------------------------------|---------------------|
+| `model_provider`  | string, null  | Model provider used for the AI request (maximum length: 64 characters). | `"anthropic"`, `"vertex-ai"` |
+| `model_engine`    | string, null  | Model engine used for the AI request (maximum length: 64 characters). | `"claude-3-5"`, `"gemini-2.0"` |
+| `model_name`      | string, null  | Model name used for the AI request (maximum length: 64 characters). | `"claude-3-5-sonnet-20241022"`, `"gemini-2.0-flash-exp"` |
+
+### Token Tracking
+
+Token tracking fields capture the usage of AI model tokens for cost and performance monitoring.
+
+| Field                        | Type          | Description                                                                                       | Example             |
+|------------------------------|---------------|---------------------------------------------------------------------------------------------------|---------------------|
+| `input_tokens`               | integer, null | Tokens from user inputs. | `1500`, `3200` |
+| `output_tokens`              | integer, null | Tokens generated by system. | `500`, `1200` |
+| `total_tokens`               | integer, null | Sum of input + output tokens. | `2000`, `4400` |
+| `ephemeral_5m_input_tokens`  | integer, null | 5-minute cached input tokens. | `100`, `250` |
+| `ephemeral_1h_input_tokens`  | integer, null | 1-hour cached input tokens. | `500`, `1000` |
+| `cache_read`                 | integer, null | Cache read operations. | `2`, `5` |
+
+## Complete Instrumentation Example
+
+Here's a complete example showing how to instrument a DAP event with both Standard Context and AI Context fields:
+
+```ruby
+track_internal_event(
+  "request_duo_workflow_success",
+  user: user,
+  project: project,
+  namespace: namespace,
+
+  additional_properties: {
+    # AI Context fields
+    # Session and workflow identifiers
+    session_id: session.id,
+    workflow_id: session.id + instance.id,
+
+    # Flow and agent information
+    agent_name: "code_generator",
+    flow_name: "chat",
+    component_name: "AgentComponent",
+    custom_item_id: nil,
+    item_type: "foundational_agent",
+    item_version: "2.1.0",
+    item_schema_version: "v1",
+
+    # Deprecated flow and agent information
+    agent_type: "foundational",
+    flow_type: "chat",
+    flow_registry_version: "v1",
+    flow_version: "2.1.0",
+
+    # Model information (AI Context)
+    model_provider: "anthropic",
+    model_engine: "claude-3-5",
+    model_name: "claude-3-5-sonnet-20241022",
+    # Token tracking (AI Context)
+    input_tokens: 1500,
+    output_tokens: 800,
+    total_tokens: 2300,
+    ephemeral_5m_input_tokens: 500,
+    ephemeral_1h_input_tokens: 1000,
+    cache_read: 200
+  }
+)
+```
+
+For additional information about AI Gateway trigger events and instrumentation patterns, see the [AI Gateway instrumentation documentation](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/-/blob/main/docs/internal_events.md?plain=0#trigger-events).
+
+## Session-Level Events
+
+The following events illustrate the lifecycle of a DAP session and should be tracked for most flows:
+
+| Event Action | Purpose | When to Fire | Context Required |
+|--------------|---------|--------------|------------------|
+| `request_duo_workflow` AND `receive_start_duo_workflow` | Session initiation | User starts new flow session | Standard + AI Context |
+| `request_duo_workflow_success` | Successful completion | Flow completes successfully | Standard + AI Context |
+| `request_duo_workflow_failure` | Fatal error | System failure | Standard + AI Context |
+| `request_duo_workflow_aborted` | Connection failure | Connection issues | Standard + AI Context |
+| `cleanup_stuck_agent_platform_session` | Stuck session cleanup | Session requires cleanup | Standard + AI Context |
+| `pause_duo_workflow` | Flow paused | Paused for input | Standard + AI Context |
+| `resume_duo_workflow` | Flow resumed | Paused flow resumes after approval/input | Standard + AI Context |
+| `duo_workflow_tool_success` | Tool execution success | Individual tool completes | Standard + AI Context |
+| `duo_workflow_tool_failure` | Tool execution failure | Individual tool fails | Standard + AI Context |
+| `token_usage_*` | Token consumption | LLM interaction | AI Context (token fields) |
+| `request_'unit_primitive'` | User access management | User gains access to AI service | Standard Context |
+
+## Field Details and Best Practices
+
+### Session and Workflow Identifiers
+
+**`session_id`**
+
+- Local identifier for a user's session within a specific GitLab instance
+- Generated by the instance
+- Not globally unique across different instances
+- Used for local session tracking and correlation
+
+### Token Tracking Best Practices
+
+When tracking token usage in AI Context:
+
+- Always include `total_tokens` when tracking AI model interactions
+- Track both input and output tokens separately for accurate billing
+- Record cache usage (`cache_read`, `ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`) to monitor cache effectiveness
+- Include model information (`model_provider`, `model_engine`, `model_name`) in AI Context to enable model-specific analysis
+
+### Billing and Attribution
+
+For proper billing and customer attribution:
+
+- Include `correlation_id` (Standard Context) - Critical for joining DAP events to billable events
+- Include `ultimate_parent_namespace_id` (Standard Context) - Ensures customer attribution aligns with usage billing
+- Include `feature_enabled_by_namespace_ids` (Standard Context) - Current method for customer attribution in AI data models
+
+## Adding a Field to AI Context
+
+You can add new fields to the AI Context if you want to track new properties that most AI events have in common.
+
+To add a new field to the AI Context:
+
+1. Create a merge request in the [iglu](https://gitlab.com/gitlab-org/iglu/-/tree/master/public/schemas/com.gitlab/ai_context/jsonschema?ref_type=heads) repository to update the schema.
+1. If the new field should be pseudonymized, add it to the appropriate pseudonymization configuration in the `snowplow-pseudonymization` project.
+1. Update the AI Context implementation in the GitLab codebase to support the new field.
+1. Start sending events that include the new field in AI Context.
+1. Update this documentation to describe the new field.
+
+## Related Documentation
+
+- [Standard Context Fields](standard_context_fields.md) - Complete reference for all Standard Context fields
+- [Internal Event Instrumentation](_index.md) - General guide for instrumenting internal events
+- [Cloud Connector Unit Primitives](https://gitlab.com/gitlab-org/cloud-connector/gitlab-cloud-connector/-/tree/main/config/unit_primitives) - Descriptions of Unit Primitives

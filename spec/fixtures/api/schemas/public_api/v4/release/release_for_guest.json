@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "required": ["name", "released_at"],
+  "properties": {
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "description_html": { "type": "string" },
+    "tag_name": { "type":  "string"},
+    "created_at":  { "type": "string", "format": "date-time" },
+    "released_at": { "type": "string", "format": "date-time" },
+    "upcoming_release": { "type": "boolean" },
+    "milestones": {
+      "type": "array",
+      "items": { "$ref": "../milestone_with_stats.json" }
+    },
+    "commit_path": { "type": "string" },
+    "tag_path": { "type": "string" },
+    "author": {
+      "oneOf": [{ "type": "null" }, { "$ref": "../user/basic.json" }]
+    },
+    "assets": {
+      "required": ["count", "links"],
+      "properties": {
+        "count": { "type": "integer" },
+        "links": { "$ref": "../../../release/links.json" }
+      },
+      "additionalProperties": false
+    },
+    "_links": {
+      "properties": {}
+    }
+  },
+  "additionalProperties": false
+}

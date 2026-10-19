@@ -1,0 +1,65 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Groups::GroupLinks::UpdateService, '#execute', feature_category: :groups_and_projects do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:group_member_user) { create(:user) }
+
+  let_it_be(:group) { create(:group, :private) }
+  let_it_be(:shared_group) { create(:group, :private) }
+  let_it_be(:project) { create(:project, group: shared_group) }
+
+  let_it_be_with_reload(:link) { create(:group_group_link, shared_group: shared_group, shared_with_group: group) }
+
+  let(:expiry_date) { 1.month.from_now.to_date }
+  let(:group_link_params) do
+    { group_access: Gitlab::Access::GUEST,
+      expires_at: expiry_date }
+  end
+
+  before_all do
+    group.add_developer(group_member_user)
+  end
+
+  subject { described_class.new(link, user).execute(group_link_params) }
+
+  it 'updates existing link' do
+    expect(link.group_access).to eq(Gitlab::Access::DEVELOPER)
+    expect(link.expires_at).to be_nil
+
+    subject
+
+    link.reload
+
+    expect(link.group_access).to eq(Gitlab::Access::GUEST)
+    expect(link.expires_at).to eq(expiry_date)
+  end
+
+  it 'updates project permissions', :sidekiq_inline do
+    expect { subject }.to change { group_member_user.can?(:create_release, project) }.from(true).to(false)
+  end
+
+  it 'schedules worker with medium priority' do
+    expect(AuthorizedProjectUpdate::EnqueueGroupMembersRefreshAuthorizedProjectsWorker).to receive(:perform_async)
+      .with(
+        group.id,
+        {
+          'priority' => UserProjectAccessChangedService::MEDIUM_PRIORITY.to_s,
+          'direct_members_only' => true
+        }
+      ).and_call_original
+
+    subject
+  end
+
+  context 'with only param not requiring authorization refresh' do
+    let(:group_link_params) { { expires_at: Date.tomorrow } }
+
+    it 'does not execute UserProjectAccessChangedService', :sidekiq_inline do
+      expect(UserProjectAccessChangedService).not_to receive(:new)
+
+      subject
+    end
+  end
+end

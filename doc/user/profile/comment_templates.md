@@ -1,0 +1,165 @@
+---
+stage: AI Coding
+group: Code Review
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Build templates for text frequently used in comments, and share those templates with your project or group.
+title: Comment templates
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- Saved replies for groups:
+  - [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/12669) in GitLab 16.11 [with a feature flag](../../administration/feature_flags/_index.md) named `group_saved_replies_flag`. Disabled by default.
+  - [Generally available](https://gitlab.com/gitlab-org/gitlab/-/issues/504028) in GitLab 17.8. Feature flag `group_saved_replies_flag` removed.
+- Saved replies for projects:
+  - [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/12669) in GitLab 17.0 [with a feature flag](../../administration/feature_flags/_index.md) named `project_saved_replies_flag`. Enabled by default.
+  - [Generally available](https://gitlab.com/gitlab-org/gitlab/-/issues/504028) in GitLab 17.8. Feature flag `project_saved_replies_flag` removed.
+
+{{< /history >}}
+
+With comment templates, create and reuse text for any text area in:
+
+- Merge requests, including diffs.
+- Issues, including design management comments.
+- Epics.
+- Work items.
+
+Comment templates can be small, like approving a merge request and unassigning yourself from it,
+or large, like chunks of boilerplate text you use frequently:
+
+![Comment templates dropdown list](img/group_comment_templates_v16_11.png)
+
+## Use comment templates in a text area
+
+To include the text of a comment template in your comment:
+
+1. In the editor toolbar for your comment, select **Comment templates** ({{< icon name="comment-lines" >}}).
+1. Select your desired comment template.
+
+## Create comment templates
+
+You can create comment templates for your own use, or to share with all members of a group.
+
+To create a comment template for your own use:
+
+1. In the upper-right corner, select your avatar.
+1. From the dropdown list, select **Preferences**.
+1. In the left sidebar, select **Comment templates** ({{< icon name="comment-lines" >}}).
+1. Select **Add new**.
+1. Provide a **Name** for your comment template.
+1. Enter the **Content** of your reply. You can use any formatting you use in
+   other GitLab text areas.
+1. Select **Save**, and the page reloads with your comment template shown.
+
+### For a group
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+
+{{< /details >}}
+
+To create a comment template shared with all members of a group:
+
+1. In the editor toolbar for a comment, select **Comment templates**
+   ({{< icon name="comment-lines" >}}), then select **Manage group comment templates**.
+1. Select **Add new**.
+1. Provide a **Name** for your comment template.
+1. Enter the **Content** of your reply. You can use any formatting you use in
+   other GitLab text areas.
+1. Select **Save**, and the page reloads with your comment template shown.
+
+### For a project
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+
+{{< /details >}}
+
+To create a comment template shared with all members of a project:
+
+1. In the editor toolbar for a comment, select **Comment templates**
+   ({{< icon name="comment-lines" >}}), then select **Manage project comment templates**.
+1. Select **Add new**.
+1. Provide a **Name** for your comment template.
+1. Enter the **Content** of your reply. You can use any formatting you use in
+   other GitLab text areas.
+1. Select **Save**, and the page reloads with your comment template shown.
+
+## View comment templates
+
+To see existing comment templates:
+
+1. In the upper-right corner, select your avatar.
+1. From the dropdown list, select **Preferences**.
+1. In the left sidebar, select **Comment templates** ({{< icon name="comment-lines" >}}).
+1. Scroll to **Comment templates**.
+
+### For a group
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+
+{{< /details >}}
+
+1. In the editor toolbar for a comment, select **Comment templates**
+   ({{< icon name="comment-lines" >}}).
+1. Select **Manage group comment templates**.
+
+### For a project
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+
+{{< /details >}}
+
+1. In the editor toolbar for a comment, select **Comment templates**
+   ({{< icon name="comment-lines" >}}).
+1. Select **Manage project comment templates**.
+
+## Edit or delete comment templates
+
+To edit or delete an existing comment template:
+
+1. In the upper-right corner, select your avatar.
+1. From the dropdown list, select **Preferences**.
+1. In the left sidebar, select **Comment templates** ({{< icon name="comment-lines" >}}).
+1. Scroll to **Comment templates**, and identify the comment template you want to edit.
+1. To edit, select **Edit** ({{< icon name="pencil" >}}).
+1. To delete, select **Delete** ({{< icon name="remove" >}}), then select **Delete** again on the dialog.
+
+### For a group
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+
+{{< /details >}}
+
+1. In the editor toolbar for a comment, select **Comment templates**
+   ({{< icon name="comment-lines" >}}), then select **Manage group comment templates**.
+1. To edit, select **Edit** ({{< icon name="pencil" >}}).
+1. To delete, select **Delete** ({{< icon name="remove" >}}), then select **Delete** again on the dialog.
+
+### For a project
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+
+{{< /details >}}
+
+1. In the editor toolbar for a comment, select **Comment templates**
+   ({{< icon name="comment-lines" >}}), then select **Manage project comment templates**.
+1. To edit, select **Edit** ({{< icon name="pencil" >}}).
+1. To delete, select **Delete** ({{< icon name="remove" >}}), then select **Delete** again on the dialog.

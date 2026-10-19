@@ -1,0 +1,5 @@
+= render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-search-md.svg',
+  title: _('Your search has timed out')) do |c|
+
+  - c.with_description do
+    = html_escape(_('To resolve the problem, refine your search criteria. Select a group or project or use double quotes for multiple keywords (for example, %{code_open}"your search"%{code_close}).')) % { code_open: '<code>'.html_safe, code_close: '</code>'.html_safe }

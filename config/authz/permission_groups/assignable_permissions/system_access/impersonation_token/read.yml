@@ -1,0 +1,11 @@
+---
+name: read_impersonation_token
+description: Grants the ability to read impersonation tokens
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_impersonation_token
+assignable_when:
+  - condition: admin

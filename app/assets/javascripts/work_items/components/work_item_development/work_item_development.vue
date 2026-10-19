@@ -1,0 +1,330 @@
+<script>
+import { GlIcon, GlAlert, GlTooltipDirective } from '@gitlab/ui';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { ERROR_POLICY_ALL } from '~/lib/graphql';
+import { s__, __, sprintf } from '~/locale';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import workItemByIidQuery from '~/work_items/graphql/work_item_by_iid.query.graphql';
+import namespaceMergeRequestsEnabledQuery from '~/work_items/graphql/namespace_merge_requests_enabled.query.graphql';
+import workItemDevelopmentQuery from '~/work_items/graphql/work_item_development.query.graphql';
+import workItemDevelopmentUpdatedSubscription from '~/work_items/graphql/work_item_development.subscription.graphql';
+import { DEVELOPMENT_ITEMS_ANCHOR, STATE_OPEN } from '~/work_items/constants';
+import { findDevelopmentWidget, lowercaseWorkItemType } from '~/work_items/utils';
+import CrudComponent from '~/vue_shared/components/crud_component.vue';
+import WorkItemActionsSplitButton from '~/work_items/components/work_item_links/work_item_actions_split_button.vue';
+import WorkItemDevelopmentRelationshipList from './work_item_development_relationship_list.vue';
+import WorkItemCreateBranchMergeRequestModal from './work_item_create_branch_merge_request_modal.vue';
+
+export default {
+  name: 'WorkItemDevelopment',
+  components: {
+    GlIcon,
+    GlAlert,
+    WorkItemDevelopmentRelationshipList,
+    CrudComponent,
+    WorkItemActionsSplitButton,
+    WorkItemCreateBranchMergeRequestModal,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [glFeatureFlagsMixin()],
+  props: {
+    workItemFullPath: {
+      type: String,
+      required: true,
+    },
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    workItemIid: {
+      type: String,
+      required: false,
+      default: null,
+    },
+  },
+  data() {
+    return {
+      error: undefined,
+      mergeRequestsEnabled: false,
+      workItem: {},
+      workItemDevelopment: {},
+      showModal: false,
+      showBranchFlow: true,
+      canCreateBranch: true,
+    };
+  },
+  computed: {
+    itemCount() {
+      return (
+        this.relatedMergeRequests.length + this.relatedBranches.length + this.featureFlags.length
+      );
+    },
+    canUpdate() {
+      return this.workItem?.userPermissions?.updateWorkItem;
+    },
+    workItemState() {
+      return this.workItem?.state;
+    },
+    workItemType() {
+      return this.workItem?.workItemType?.name;
+    },
+    isLoading() {
+      return (
+        this.$apollo.queries.workItem.loading || this.$apollo.queries.workItemDevelopment.loading
+      );
+    },
+    willAutoCloseByMergeRequest() {
+      return this.workItemDevelopment?.willAutoCloseByMergeRequest;
+    },
+    relatedMergeRequests() {
+      return this.workItemDevelopment?.relatedMergeRequests?.nodes || [];
+    },
+    closingMergeRequests() {
+      return this.workItemDevelopment?.closingMergeRequests?.nodes || [];
+    },
+    featureFlags() {
+      return this.workItemDevelopment?.featureFlags?.nodes || [];
+    },
+    relatedBranches() {
+      return this.workItemDevelopment?.relatedBranches?.nodes || [];
+    },
+    shouldShowDevWidget() {
+      return this.error || !this.isRelatedDevelopmentListEmpty;
+    },
+    isRelatedDevelopmentListEmpty() {
+      return (
+        this.relatedMergeRequests.length === 0 &&
+        this.closingMergeRequests.length === 0 &&
+        this.featureFlags.length === 0 &&
+        this.relatedBranches.length === 0
+      );
+    },
+    showAutoCloseInformation() {
+      return (
+        this.closingMergeRequests.length > 0 && this.willAutoCloseByMergeRequest && !this.isLoading
+      );
+    },
+    openStateText() {
+      return this.closingMergeRequests.length > 1
+        ? sprintf(
+            s__(
+              'WorkItem|This %{workItemType} will be closed when any of the following is merged.',
+            ),
+            { workItemType: lowercaseWorkItemType(this.workItemType) },
+          )
+        : sprintf(
+            s__('WorkItem|This %{workItemType} will be closed when the following is merged.'),
+            { workItemType: lowercaseWorkItemType(this.workItemType) },
+          );
+    },
+    closedStateText() {
+      return sprintf(
+        s__('WorkItem|The %{workItemType} was closed automatically when a branch was merged.'),
+        { workItemType: lowercaseWorkItemType(this.workItemType) },
+      );
+    },
+    tooltipText() {
+      return this.workItemState === STATE_OPEN ? this.openStateText : this.closedStateText;
+    },
+    showAddButton() {
+      return this.canUpdate && this.canCreateBranch;
+    },
+    isConfidentialWorkItem() {
+      return this.workItem?.confidential;
+    },
+    projectId() {
+      return this.workItem?.project?.id;
+    },
+    addItemsActions() {
+      const actions = [];
+
+      if (this.mergeRequestsEnabled) {
+        actions.push({
+          name: __('Merge request'),
+          items: [
+            {
+              text: __('Create merge request'),
+              action: this.openModal.bind(this, false, true),
+              extraAttrs: {
+                'data-testid': 'create-mr-dropdown-button',
+              },
+            },
+          ],
+        });
+      }
+
+      return actions.concat({
+        name: __('Branch'),
+        items: [
+          {
+            text: __('Create branch'),
+            action: this.openModal.bind(this, true, false),
+            extraAttrs: {
+              'data-testid': 'create-branch-dropdown-button',
+            },
+          },
+        ],
+      });
+    },
+  },
+  apollo: {
+    workItem: {
+      query: workItemByIidQuery,
+      variables() {
+        return {
+          fullPath: this.workItemFullPath,
+          iid: this.workItemIid,
+          useWorkItemFeatures: Boolean(this.glFeatures.workItemFeaturesField),
+        };
+      },
+      update(data) {
+        return data.namespace?.workItem || {};
+      },
+      skip() {
+        return !this.workItemIid;
+      },
+      error(error) {
+        this.error = s__(
+          'WorkItem|Something went wrong when fetching items. Please refresh this page.',
+        );
+        Sentry.captureException(error);
+      },
+    },
+    workItemDevelopment: {
+      query: workItemDevelopmentQuery,
+      variables() {
+        return {
+          id: this.workItemId,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      update(data) {
+        return findDevelopmentWidget(data?.workItem) || {};
+      },
+      skip() {
+        return !this.workItemIid;
+      },
+      errorPolicy: ERROR_POLICY_ALL,
+      error(error) {
+        this.error = s__(
+          "WorkItem|One or more items cannot be shown. If you're using SAML authentication, this could mean your session has expired.",
+        );
+        Sentry.captureException(error);
+      },
+      subscribeToMore: {
+        document: workItemDevelopmentUpdatedSubscription,
+        variables() {
+          return {
+            id: this.workItem.id,
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          };
+        },
+        skip() {
+          return !this.workItem?.id;
+        },
+      },
+    },
+    mergeRequestsEnabled: {
+      query: namespaceMergeRequestsEnabledQuery,
+      variables() {
+        return {
+          fullPath: this.workItemFullPath,
+        };
+      },
+      update(data) {
+        return data.namespace?.mergeRequestsEnabled ?? false;
+      },
+      skip() {
+        return !this.workItemFullPath;
+      },
+      error(error) {
+        Sentry.captureException(error);
+      },
+    },
+  },
+  methods: {
+    openModal(createBranch = true) {
+      this.toggleCreateModal(true);
+      this.showBranchFlow = createBranch;
+    },
+    toggleCreateModal(showModal) {
+      this.showModal = showModal;
+    },
+    updatePermissions(canCreateBranch) {
+      this.canCreateBranch = canCreateBranch;
+    },
+  },
+  DEVELOPMENT_ITEMS_ANCHOR,
+};
+</script>
+
+<template>
+  <div>
+    <crud-component
+      v-if="shouldShowDevWidget"
+      ref="workItemDevelopment"
+      :title="s__('WorkItem|Development')"
+      :count="itemCount"
+      :anchor-id="$options.DEVELOPMENT_ITEMS_ANCHOR"
+      :is-loading="isLoading"
+      title-container-class="!gl-py-0"
+      is-collapsible
+      persist-collapsed-state
+      data-testid="work-item-development"
+    >
+      <template #count>
+        <span
+          v-if="showAutoCloseInformation"
+          v-gl-tooltip
+          tabindex="0"
+          class="!gl-p-0 hover:!gl-bg-transparent"
+          :title="tooltipText"
+          :aria-label="tooltipText"
+          data-testid="more-information"
+        >
+          <gl-icon name="information-o" variant="info" />
+        </span>
+      </template>
+
+      <template #actions>
+        <work-item-actions-split-button
+          v-if="showAddButton"
+          data-testid="create-options-dropdown"
+          :actions="addItemsActions"
+          :tooltip-text="__('Add development item')"
+        />
+      </template>
+
+      <template v-if="isRelatedDevelopmentListEmpty && !error" #empty>
+        {{ __('None') }}
+      </template>
+
+      <template #default>
+        <gl-alert v-if="error" :dismissible="false" variant="danger">
+          {{ error }}
+        </gl-alert>
+        <work-item-development-relationship-list
+          v-if="!isRelatedDevelopmentListEmpty"
+          :work-item-dev-widget="workItemDevelopment"
+          :work-item-full-path="workItemFullPath"
+          :work-item-iid="workItemIid"
+          :can-create-merge-request="showAddButton"
+        />
+      </template>
+    </crud-component>
+    <work-item-create-branch-merge-request-modal
+      v-if="!isLoading"
+      :show-modal="showModal"
+      :show-branch-flow="showBranchFlow"
+      :work-item-iid="workItemIid"
+      :work-item-type="workItemType"
+      :work-item-full-path="workItemFullPath"
+      :is-confidential-work-item="isConfidentialWorkItem"
+      :project-id="projectId"
+      @hide-modal="toggleCreateModal(false)"
+      @fetched-permissions="updatePermissions"
+    />
+  </div>
+</template>

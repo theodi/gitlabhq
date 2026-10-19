@@ -1,38 +1,237 @@
-class GroupsFinder
-  def execute(current_user, options = {})
-    all_groups(current_user)
+# frozen_string_literal: true
+
+# GroupsFinder
+#
+# Used to filter Groups by a set of params
+#
+# Arguments:
+#   current_user - which user is requesting groups
+#   params:
+#     owned: boolean
+#     parent: Group
+#     all_available: boolean (defaults to true)
+#     min_access_level: integer
+#     search: string
+#     exclude_group_ids: array of integers
+#     filter_group_ids: array of integers - only include groups from the specified list of ids
+#     include_parent_descendants: boolean (defaults to false) - includes descendant groups when
+#                                 filtering by parent. The parent param must be present.
+#     include_parent_shared_groups: boolean (defaults to false) - includes shared groups of a parent group
+#                                 when filtering by parent.
+#                                 Both parent and include_parent_descendants params must be present.
+#     include_ancestors: boolean (defaults to true)
+#     organization: Scope the groups to the Organizations::Organization
+#     active: boolean - filters for active groups.
+#     archived: boolean - default is nil which returns all groups, true returns only archived groups, and false returns
+#                         non archived groups
+#     with_statistics - load project statistics.
+#     visibility: visibility level or array of visibility levels - filters groups by visibility level.
+#
+# Users with full private access can see all groups. The `owned` and `parent`
+# params can be used to restrict the groups that are returned.
+#
+# Anonymous users will never return any `owned` groups. They will return all
+# public groups instead, even if `all_available` is set to false.
+class GroupsFinder < UnionFinder
+  include CustomAttributesFilter
+  include Namespaces::GroupsFilter
+
+  attr_reader :current_user, :params
+
+  def initialize(current_user = nil, params = {})
+    @current_user = current_user
+    @params = params
+  end
+
+  def execute
+    # filtered_groups can contain an array of scopes, so these
+    # are combined into a single query using UNION.
+    groups = find_union(filtered_groups, Group)
+    groups = groups.with_statistics if params[:with_statistics] == true
+    groups = groups.with_namespace_details
+    sort(groups).with_route
   end
 
   private
 
-  def all_groups(current_user)
-    if current_user
-      if current_user.authorized_groups.any?
-        # User has access to groups
-        #
-        # Return only:
-        #   groups with public projects
-        #   groups with internal projects
-        #   groups with joined projects
-        #
-        group_ids = Project.public_and_internal_only.pluck(:namespace_id) +
-          current_user.authorized_groups.pluck(:id)
-        Group.where(id: group_ids)
-      else
-        # User has no group membership
-        #
-        # Return only:
-        #   groups with public projects
-        #   groups with internal projects
-        #
-        Group.where(id: Project.public_and_internal_only.pluck(:namespace_id))
-      end
+  def filtered_groups
+    all_groups.map do |groups|
+      filter_groups(groups)
+    end
+  end
+
+  def all_groups
+    return [owned_groups] if params[:owned]
+    return [groups_with_min_access_level] if min_access_level?
+    # Avoids the performance overhead from `authorized_groups` query. Additional filters applied by `by_visibility`.
+    return [Group.public_and_internal_only] if public_or_internal_only?
+    return [Group.all] if can_read_all_groups? && all_available?
+
+    groups = [
+      authorized_groups,
+      public_groups
+    ].compact
+
+    groups << Group.none if groups.empty?
+
+    groups
+  end
+
+  def owned_groups
+    current_user&.owned_groups || Group.none
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def groups_with_min_access_level
+    inner_query = current_user
+      .groups
+      .where('members.access_level >= ?', params[:min_access_level])
+      .self_and_descendants
+    cte = Gitlab::SQL::CTE.new(:groups_with_min_access_level_cte, inner_query)
+    cte.apply_to(Group.where({}))
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def authorized_groups
+    return unless current_user
+
+    if params.fetch(:include_ancestors, true)
+      current_user.authorized_groups.self_and_ancestors
     else
-      # Not authenticated
-      #
-      # Return only:
-      #   groups with public projects
-      Group.where(id: Project.public_only.pluck(:namespace_id))
+      current_user.authorized_groups
+    end
+  end
+
+  def public_groups
+    # By default, all groups public to the user are included. This is controlled by
+    # the :all_available argument, which defaults to true
+    return unless include_public_groups?
+
+    Group.unscoped.public_to_user(current_user)
+  end
+
+  def filter_groups(groups)
+    groups = by_organization(groups)
+    groups = by_active(groups)
+    groups = by_parent(groups)
+    groups = by_custom_attributes(groups)
+    groups = filter_group_ids(groups)
+    groups = exclude_group_ids(groups)
+    groups = by_visibility(groups)
+    groups = by_ids(groups)
+    groups = top_level_only(groups)
+    groups = marked_for_deletion_on(groups)
+    groups = by_archived(groups)
+    groups = by_aimed_for_deletion(groups)
+    by_search(groups)
+  end
+
+  def by_organization(groups)
+    organization = params[:organization]
+    return groups unless organization
+
+    groups.in_organization(organization)
+  end
+
+  def by_parent(groups)
+    return groups unless params[:parent]
+
+    if include_parent_descendants?
+      by_parent_descendants(groups, params[:parent])
+    else
+      by_parent_children(groups, params[:parent])
+    end
+  end
+
+  def by_parent_descendants(groups, parent)
+    if include_parent_shared_groups?
+      groups.descendants_with_shared_with_groups(parent)
+    else
+      groups.id_in(parent.descendants)
+    end
+  end
+
+  def by_parent_children(groups, parent)
+    groups.by_parent(parent)
+  end
+
+  def marked_for_deletion_on(groups)
+    return groups unless params[:marked_for_deletion_on].present?
+
+    groups.marked_for_deletion_on(params[:marked_for_deletion_on])
+  end
+
+  def by_archived(groups)
+    return groups if params[:archived].nil?
+
+    params[:archived] ? groups.self_or_ancestors_archived : groups.self_and_ancestors_non_archived
+  end
+
+  def filter_group_ids(groups)
+    return groups unless params[:filter_group_ids]
+
+    groups.id_in(params[:filter_group_ids])
+  end
+
+  def exclude_group_ids(groups)
+    return groups unless params[:exclude_group_ids]
+
+    groups.id_not_in(params[:exclude_group_ids])
+  end
+
+  def by_active(groups)
+    return groups if params[:active].nil?
+
+    params[:active] ? groups.self_and_ancestors_active : groups.self_or_ancestors_inactive
+  end
+
+  def include_parent_shared_groups?
+    params.fetch(:include_parent_shared_groups, false)
+  end
+
+  def include_parent_descendants?
+    params.fetch(:include_parent_descendants, false)
+  end
+
+  def include_public_groups?
+    current_user.nil? || all_available?
+  end
+
+  def can_read_all_groups?
+    return false unless current_user
+
+    # Auditors can :read_all_resources while admins can :read_all_resources and
+    # read_admin_groups. In EE, a regular user can read_admin_groups through
+    # custom admin roles.
+    current_user.can_read_all_resources? || current_user.can?(:read_admin_groups)
+  end
+
+  def all_available?
+    params.fetch(:all_available, true)
+  end
+
+  def can_sort_by_similarity?
+    super && membership_bounded_scope?
+  end
+
+  # Mirrors the branch order in `all_groups`. `SIMILARITY()` cannot be
+  # index-assisted, so scoring an unbounded scope would touch every namespace.
+  def membership_bounded_scope?
+    return true if params[:owned] || min_access_level?
+    return false if public_or_internal_only?
+
+    !all_available?
+  end
+
+  def by_aimed_for_deletion(groups)
+    return groups if params[:aimed_for_deletion].nil?
+
+    if params[:aimed_for_deletion]
+      groups.self_or_ancestors_aimed_for_deletion
+    else
+      groups.self_and_ancestors_not_aimed_for_deletion
     end
   end
 end
+
+GroupsFinder.prepend_mod_with('GroupsFinder')

@@ -1,0 +1,410 @@
+# frozen_string_literal: true
+
+require "securerandom"
+
+module Gitlab
+  module Orchestrator
+    module Deployment
+      module Configurations
+        # Configuration for performing deployment setup on local kind cluster
+        #
+        class Kind < Base
+          VALKEY_RELEASE_SUFFIX = "valkey"
+          CNPG_CLUSTER_SUFFIX = "cnpg"
+          GARAGE_RELEASE_SUFFIX = "garage"
+
+          # @return [String] secret name for initial admin password
+          ADMIN_PASSWORD_SECRET = "gitlab-initial-root-password"
+          # @return [String] configmap name for pre-receive hook
+          PRE_RECEIVE_HOOK_CONFIGMAP_NAME = "pre-receive-hook"
+          # @return [String] pre-receive hook script used by e2e tests
+          PRE_RECEIVE_HOOK = <<~'SH'
+            #!/usr/bin/env bash
+
+            if [[ $GL_PROJECT_PATH =~ 'reject-prereceive' ]]; then
+              echo 'GL-HOOK-ERR: Custom error message rejecting prereceive hook for projects with GL_PROJECT_PATH matching pattern reject-prereceive'
+              exit 1
+            fi
+          SH
+          # @return [String] secret name for OAuth provider
+          OAUTH_SECRET_NAME = "gitlab-oauth-github"
+          # @return [String] secret name for OpenBao database password
+          OPENBAO_DB_SECRET_NAME = "gitlab-openbao-postgresql"
+          # @return [String] OpenBao database name
+          OPENBAO_DB_NAME = "openbao"
+          # @return [String] OpenBao database user
+          OPENBAO_DB_USER = "openbao"
+          # @return [String] in-cluster active OpenBao service (release-name-prefixed, see OPENBAO_DB_SECRET_NAME)
+          OPENBAO_ACTIVE_SERVICE = "gitlab-openbao-active"
+          # @return [Integer] OpenBao API port (chart config.apiPort)
+          OPENBAO_API_PORT = 8200
+
+          # Instance of kind deployment configuration
+          #
+          # @param **args [Hash]
+          #   @option args [String] :namespace Namespace used for deployment
+          #   @option args [Boolean] :ci Run for CI environment
+          #   @option args [String] :gitlab_domain Custom gitlab domain
+          #   @option args [String] :admin_password Initial password for admin user
+          #   @option args [String] :admin_token Initial PAT token for admin user
+          #   @option args [Integer] :host_http_port HTTP port for gitlab pages
+          #   @option args [Integer] :host_ssh_port SSH port for gitlab
+          #   @option args [Integer] :host_registry_port Registry port for gitlab
+          #   @option args [String] :resource_preset resource preset name
+          def initialize(**args)
+            super(**args.slice(:namespace, :ci, :gitlab_domain))
+
+            @admin_password = args[:admin_password]
+            @admin_token = args[:admin_token]
+            @host_http_port = args[:host_http_port]
+            @host_ssh_port = args[:host_ssh_port]
+            @host_registry_port = args[:host_registry_port]
+            @resource_preset = args[:resource_preset]
+          end
+
+          # Run pre-deployment setup
+          #
+          # @return [void]
+          def run_pre_deployment_setup
+            install_external_services
+            create_initial_root_password
+            create_pre_receive_hook
+            create_oauth_secret if oauth_enabled?
+            create_openbao_db_secret if secrets_manager_enabled?
+          end
+
+          # Run post-deployment setup
+          #
+          # @return [void]
+          def run_post_deployment_setup
+            patch_registry_svc_port
+            create_root_token
+          end
+
+          # Helm chart values specific to kind deployment
+          #
+          # @return [Hash]
+          def values
+            {
+              global: {
+                shell: {
+                  port: host_ssh_port
+                },
+                pages: {
+                  port: host_http_port
+                },
+                registry: {
+                  port: host_registry_port
+                },
+                initialRootPassword: {
+                  secret: ADMIN_PASSWORD_SECRET
+                },
+                gitaly: {
+                  hooks: {
+                    preReceive: {
+                      configmap: PRE_RECEIVE_HOOK_CONFIGMAP_NAME
+                    }
+                  }
+                },
+                ingress: {
+                  enabled: true,
+                  configureCertmanager: false,
+                  tls: { enabled: false }
+                },
+                minio: { enabled: false },
+                gatewayApi: { enabled: false, configureCertmanager: false, installEnvoy: false },
+                psql: {
+                  host: @cnpg.host,
+                  password: {
+                    secret: @cnpg.password_secret_name,
+                    key: @cnpg.password_secret_key
+                  }
+                },
+                redis: {
+                  host: @valkey.host,
+                  auth: {
+                    secret: @valkey.auth_secret_name,
+                    key: @valkey.auth_secret_key
+                  }
+                },
+                appConfig: {
+                  object_store: {
+                    enabled: true,
+                    proxy_download: true,
+                    connection: {
+                      secret: @garage.object_storage_secret_name,
+                      key: "config"
+                    }
+                  },
+                  artifacts: { bucket: "gitlab-artifacts" },
+                  lfs: { bucket: "git-lfs" },
+                  uploads: { bucket: "gitlab-uploads" },
+                  packages: { bucket: "gitlab-packages" },
+                  externalDiffs: { enabled: true, bucket: "gitlab-mr-diffs" },
+                  terraformState: { enabled: true, bucket: "gitlab-terraform-state" },
+                  ciSecureFiles: { enabled: true, bucket: "gitlab-ci-secure-files" },
+                  dependencyProxy: { enabled: true, bucket: "gitlab-dependency-proxy" }
+                }
+              },
+              gitlab: {
+                toolbox: {
+                  backups: {
+                    objectStorage: {
+                      config: {
+                        secret: @garage.s3cmd_secret_name,
+                        key: "config"
+                      }
+                    }
+                  }
+                }
+              },
+              registry: {
+                storage: {
+                  secret: @garage.registry_storage_secret_name,
+                  key: "config",
+                  redirect: { disable: true }
+                }
+              },
+              certmanager: { install: false },
+              "nginx-ingress": {
+                enabled: true,
+                controller: {
+                  replicaCount: 1,
+                  minAavailable: 1,
+                  service: {
+                    type: "NodePort",
+                    nodePorts: {
+                      "gitlab-shell": Orchestrator::Kind::Cluster.host_port_mapping(host_ssh_port),
+                      http: Orchestrator::Kind::Cluster.host_port_mapping(host_http_port),
+                      registry: Orchestrator::Kind::Cluster.host_port_mapping(host_registry_port)
+                    }
+                  }
+                }
+              }
+            }.deep_merge(openbao_values).deep_merge(ResourcePresets.resource_values(resource_preset))
+          end
+
+          # Gitlab url
+          #
+          # @return [String]
+          def gitlab_url
+            @gitlab_url ||= URI("http://gitlab.#{gitlab_domain}:#{host_http_port}").to_s
+          end
+
+          private
+
+          attr_reader :admin_password,
+            :admin_token,
+            :host_http_port,
+            :host_ssh_port,
+            :host_registry_port,
+            :resource_preset
+
+          def helm
+            @helm ||= Helm::Client.new
+          end
+
+          def install_external_services
+            log("Installing external services", :info, bright: true)
+
+            @valkey = Services::Valkey.new(
+              kubeclient: kubeclient, helm: helm, namespace: namespace,
+              release_name: VALKEY_RELEASE_SUFFIX
+            )
+            @valkey.install
+
+            @cnpg = Services::CloudNativePG.new(
+              kubeclient: kubeclient, helm: helm, namespace: namespace,
+              cluster_name: CNPG_CLUSTER_SUFFIX,
+              additional_databases: openbao_databases
+            )
+            @cnpg.install
+
+            @garage = Services::Garage.new(
+              kubeclient: kubeclient, helm: helm, namespace: namespace,
+              release_name: GARAGE_RELEASE_SUFFIX
+            )
+            @garage.install
+          rescue StandardError => e
+            log("External service installation failed: #{e.message}", :error)
+            log("To clean up partial resources, run: bundle exec orchestrator destroy deployment kind", :info)
+            raise
+          end
+
+          # Token seed script for root user
+          #
+          # @return [String]
+          def admin_pat_seed
+            <<~RUBY
+              Gitlab::Seeder.quiet do
+                User.find_by(username: 'root').tap do |user|
+                  params = {
+                    scopes: Gitlab::Auth.all_available_scopes.map(&:to_s),
+                    name: 'seeded-api-token'
+                  }
+
+                  user.personal_access_tokens.build(params).tap do |pat|
+                    pat.expires_at = 365.days.from_now
+                    pat.set_token("#{admin_token}")
+                    pat.organization = Organizations::Organization.default_organization
+                    pat.save!
+                  end
+                end
+              end
+            RUBY
+          end
+
+          # Create initial root password
+          #
+          # @return [void]
+          def create_initial_root_password
+            log("Creating admin user initial password secret", :info)
+            secret = Kubectl::Resources::Secret.new(ADMIN_PASSWORD_SECRET, "password", admin_password)
+            puts mask_secrets(kubeclient.create_resource(secret), [admin_password, Base64.encode64(admin_password)])
+          end
+
+          # Create pre-receive hook
+          #
+          # @return [void]
+          def create_pre_receive_hook
+            log("Creating pre-receive hook", :info)
+            configmap = Kubectl::Resources::Configmap.new(PRE_RECEIVE_HOOK_CONFIGMAP_NAME, "hook.sh", PRE_RECEIVE_HOOK)
+            puts kubeclient.create_resource(configmap)
+          end
+
+          # Create admin user personal access token
+          #
+          # @return [void]
+          def create_root_token
+            log("Creating admin user personal access token", :info)
+            puts mask_secrets(
+              kubeclient.execute("toolbox", ["gitlab-rails", "runner", admin_pat_seed], container: "toolbox"),
+              [admin_token]
+            ).strip
+          rescue Kubectl::Client::Error => e
+            token_exists_error = "duplicate key value violates unique constraint " \
+              "\"index_personal_access_tokens_on_token_digest\""
+            return log("Token already exists, skipping!", :warn) if e.message.include?(token_exists_error)
+
+            raise e
+          end
+
+          def patch_registry_svc_port
+            log("Patching registry service port", :info)
+            patch_data = {
+              spec: {
+                type: 'NodePort',
+                ports: [
+                  {
+                    name: 'registry',
+                    port: 5000,
+                    targetPort: 5000,
+                    protocol: 'TCP',
+                    nodePort: 32495
+                  }
+                ]
+              }
+            }.to_json
+            puts kubeclient.patch('svc', 'gitlab-registry', patch_data)
+          end
+
+          # Create OAuth provider secret
+          #
+          # @return [void]
+          def create_oauth_secret
+            app_id = ENV['QA_GITHUB_OAUTH_APP_ID']
+            app_secret = ENV['QA_GITHUB_OAUTH_APP_SECRET']
+
+            if app_id.nil? || app_id.empty? || app_secret.nil? || app_secret.empty?
+              raise "OAuth environment variables QA_GITHUB_OAUTH_APP_ID and QA_GITHUB_OAUTH_APP_SECRET must be set"
+            end
+
+            log("Creating OAuth provider secret", :info)
+
+            provider_config = <<~YAML
+              name: 'github'
+              app_id: '#{ENV['QA_GITHUB_OAUTH_APP_ID']}'
+              app_secret: '#{ENV['QA_GITHUB_OAUTH_APP_SECRET']}'
+            YAML
+
+            secret = Kubectl::Resources::Secret.new(OAUTH_SECRET_NAME, "provider", provider_config)
+            secrets_to_mask = [ENV['QA_GITHUB_OAUTH_APP_ID'], ENV['QA_GITHUB_OAUTH_APP_SECRET']]
+            puts mask_secrets(kubeclient.create_resource(secret), secrets_to_mask)
+          end
+
+          # Check if OAuth is enabled
+          #
+          # @return [Boolean]
+          def oauth_enabled?
+            ENV['QA_RSPEC_TAGS']&.include?('oauth')
+          end
+
+          # Create OpenBao database password secret
+          #
+          # @return [void]
+          def create_openbao_db_secret
+            log("Creating OpenBao database password secret", :info)
+            secret = Kubectl::Resources::Secret.new(OPENBAO_DB_SECRET_NAME, "password", openbao_db_password)
+            puts mask_secrets(
+              kubeclient.create_resource(secret),
+              [openbao_db_password, Base64.encode64(openbao_db_password)]
+            )
+          end
+
+          # OpenBao logical database to bootstrap in the GitLab CNPG cluster
+          #
+          # @return [Array<Hash>]
+          def openbao_databases
+            return [] unless secrets_manager_enabled?
+
+            [{ name: OPENBAO_DB_NAME, owner: OPENBAO_DB_USER, password: openbao_db_password }]
+          end
+
+          # @return [String]
+          def openbao_db_password
+            @openbao_db_password ||= SecureRandom.hex(16)
+          end
+
+          # Chart values enabling OpenBao backed by its own logical database
+          #
+          # @return [Hash]
+          def openbao_values
+            return {} unless secrets_manager_enabled?
+
+            {
+              global: {
+                openbao: {
+                  enabled: true,
+                  # url is what Rails hands to the runner for CI secret resolution; the runner is a
+                  # host-side container that reaches the cluster only through the ingress NodePort, so
+                  # it needs the external host + mapped port (same shape as gitlab_url). internal_url
+                  # is Rails' own server-to-server path, kept on the in-cluster service.
+                  url: "http://openbao.#{gitlab_domain}:#{host_http_port}",
+                  internal_url: "http://#{OPENBAO_ACTIVE_SERVICE}.#{namespace}.svc.cluster.local:#{OPENBAO_API_PORT}",
+                  psql: {
+                    host: @cnpg.host,
+                    database: OPENBAO_DB_NAME,
+                    username: OPENBAO_DB_USER,
+                    password: { secret: OPENBAO_DB_SECRET_NAME, key: "password" }
+                  }
+                }
+              },
+              # The subchart's ingress.tls.enabled defaults to true regardless of global TLS, which
+              # renders a TLS host and makes nginx force a 308 http->https redirect. The deploy is
+              # http-only (no cert), so the runner's http call followed the redirect to nothing and
+              # parsed the redirect HTML as JSON. Disable it so the external http path stays plain http.
+              openbao: { install: true, ingress: { tls: { enabled: false } } }
+            }
+          end
+
+          # Check if Secrets Manager (OpenBao) is enabled
+          #
+          # @return [Boolean]
+          def secrets_manager_enabled?
+            ENV['QA_RSPEC_TAGS']&.include?('secrets_manager')
+          end
+        end
+      end
+    end
+  end
+end

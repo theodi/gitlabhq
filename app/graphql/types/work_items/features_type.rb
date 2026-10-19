@@ -1,0 +1,41 @@
+# frozen_string_literal: true
+
+module Types
+  module WorkItems
+    # rubocop:disable Graphql/AuthorizeTypes -- only a wrapper type
+    class FeaturesType < BaseObject
+      graphql_name 'WorkItemFeatures'
+
+      include Types::WorkItems::WidgetVisibility
+
+      def self.authorization_scopes
+        super + [:ai_workflows]
+      end
+
+      ::WorkItems::TypesFramework::SystemDefined::WidgetDefinition.widget_classes.each do |widget_class|
+        widget_type = widget_class.type
+
+        field widget_type,
+          ::Types::WorkItems::WidgetInterface.type_mappings[widget_class],
+          null: true,
+          # Pure accessor over the work item's already-loaded widgets. Charging for each one
+          # double-counts against the `widgets` union it replaces, where analysis only charges
+          # the most expensive branch.
+          complexity: 0,
+          scopes: [:api, :read_api, :ai_workflows],
+          description: "#{widget_type.to_s.humanize} widget of the work item. " \
+            "Returns `null` if the widget is not available for the work item."
+
+        define_method widget_type do
+          widget = object.get_widget(widget_type)
+
+          return unless widget
+          return unless widget_visible?(widget, object)
+
+          widget
+        end
+      end
+    end
+    # rubocop:enable Graphql/AuthorizeTypes
+  end
+end

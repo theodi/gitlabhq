@@ -1,0 +1,187 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::GiteaController, feature_category: :importers do
+  include ImportSpecHelper
+
+  let(:provider) { :gitea }
+  let(:host_url) { 'https://try.gitea.io' }
+
+  include_context 'a GitHub-ish import controller'
+
+  before do
+    stub_application_setting(import_sources: ['gitea'])
+  end
+
+  def assign_host_url
+    session[:gitea_host_url] = host_url
+  end
+
+  describe "GET new" do
+    it_behaves_like 'a GitHub-ish import controller: GET new' do
+      before do
+        assign_host_url
+      end
+    end
+  end
+
+  describe "POST personal_access_token" do
+    it_behaves_like 'a GitHub-ish import controller: POST personal_access_token'
+  end
+
+  describe "GET status", :clean_gitlab_redis_rate_limiting do
+    it_behaves_like 'a GitHub-ish import controller: GET status' do
+      let(:extra_assign_expectations) { { gitea_host_url: host_url } }
+
+      before do
+        assign_host_url
+      end
+
+      it "requests provider repos list" do
+        get :status
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  describe 'GET status.json', :clean_gitlab_redis_rate_limiting do
+    it_behaves_like 'a GitHub-ish import controller: GET status' do
+      let(:extra_assign_expectations) { { gitea_host_url: host_url } }
+
+      before do
+        assign_host_url
+      end
+
+      shared_examples "unacceptable url" do |url, expected_error|
+        let(:host_url) { url }
+
+        it 'denies network request' do
+          get :status, format: :json
+
+          expect(controller).to redirect_to(new_import_url)
+          expect(flash[:alert]).to eq("Specified URL cannot be used: &quot;#{expected_error}&quot;")
+        end
+      end
+
+      context 'when host url is local or not http' do
+        include_examples 'unacceptable url', 'https://localhost:3000', 'Only allowed schemes are http, https'
+        include_examples 'unacceptable url', 'http://192.168.0.1', 'Only allowed schemes are http, https'
+        include_examples 'unacceptable url', 'ftp://testing', 'Only allowed schemes are http, https'
+      end
+
+      context 'when DNS Rebinding protection is enabled' do
+        let(:token) { 'gitea token' }
+
+        let(:ip_uri) { 'http://167.99.148.217' }
+        let(:uri) { 'try.gitea.io' }
+        let(:https_uri) { "https://#{uri}" }
+        let(:http_uri) { "http://#{uri}" }
+
+        before do
+          session[:gitea_access_token] = token
+
+          allow(Gitlab::HTTP_V2::UrlBlocker).to receive(:validate!).with(https_uri, anything).and_return([Addressable::URI.parse(https_uri), uri])
+          allow(Gitlab::HTTP_V2::UrlBlocker).to receive(:validate!).with(http_uri, anything).and_return([Addressable::URI.parse(ip_uri), uri])
+
+          allow(Gitlab::LegacyGithubImport::Client).to receive(:new).and_return(double('Gitlab::LegacyGithubImport::Client', repos: [], orgs: []))
+        end
+
+        context 'when provided host url is using https' do
+          let(:host_url) { https_uri }
+
+          it 'uses unchanged host url to send request to Gitea' do
+            expect(Gitlab::LegacyGithubImport::Client).to receive(:new).with(token, host: https_uri, api_version: 'v1', hostname: 'try.gitea.io')
+
+            get :status, format: :json
+
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+        end
+
+        context 'when provided host url is using http' do
+          let(:host_url) { http_uri }
+
+          it 'uses changed host url to send request to Gitea' do
+            expect(Gitlab::LegacyGithubImport::Client).to receive(:new).with(token, host: 'http://167.99.148.217', api_version: 'v1', hostname: 'try.gitea.io')
+
+            get :status, format: :json
+
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+        end
+      end
+    end
+
+    it_behaves_like 'rate limited endpoint', rate_limit_key: :gitea_import do
+      let_it_be(:second_user) { create(:user) }
+
+      let(:token) { 'gitea token' }
+      let(:current_user) { user }
+
+      before do
+        session[:gitea_access_token] = token
+        assign_host_url
+        allow(Gitlab::LegacyGithubImport::Client).to receive(:new).and_return(double('Gitlab::LegacyGithubImport::Client', repos: [], orgs: []))
+      end
+
+      def request
+        get :status, format: :json
+      end
+
+      def request_with_second_scope
+        sign_in(second_user)
+        session[:gitea_access_token] = token
+        assign_host_url
+        get :status, format: :json
+      end
+    end
+  end
+
+  describe 'POST create' do
+    it_behaves_like 'a GitHub-ish import controller: POST create' do
+      before do
+        assign_host_url
+      end
+    end
+
+    it 'imports the project into a namespace scoped to the current organization', :aggregate_failures do
+      group = create(:group)
+      group.add_owner(user)
+      provider_user = double('user', login: user.username)
+      provider_repo = {
+        name: 'vim',
+        full_name: "#{user.username}/vim",
+        owner: double('owner', login: user.username),
+        clone_url: 'https://try.gitea.io/user/vim.git',
+        description: 'provider',
+        private: false,
+        has_wiki: false
+      }
+
+      stub_client(user: provider_user, repo: provider_repo, repository: provider_repo)
+      assign_host_url
+      assign_session_token(provider)
+
+      expect { post :create, params: { target_namespace: group.full_path }, format: :json }
+        .to change { Project.count }.by(1)
+
+      expect(response).to have_gitlab_http_status(:ok)
+
+      project = group.projects.last
+      expect(project.namespace).to eq(group)
+      expect(project.organization_id).to eq(current_organization.id)
+    end
+
+    it_behaves_like 'project import rate limiter'
+  end
+
+  describe "GET realtime_changes" do
+    it_behaves_like 'a GitHub-ish import controller: GET realtime_changes' do
+      before do
+        assign_host_url
+      end
+    end
+  end
+end

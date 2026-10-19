@@ -1,0 +1,9 @@
+= sprite_icon('book')
+= _("After you've reviewed these contribution guidelines, you'll be all set to")
+
+- options = contribution_options(viewer.project)
+- if options.any?
+  = succeed '.' do
+    = Gitlab::Sentence.to_exclusive_sentence(options).html_safe
+- else
+  = _("contribute to this project.")

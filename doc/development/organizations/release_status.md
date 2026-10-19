@@ -1,0 +1,35 @@
+---
+title: Organizations platform release status
+---
+
+<!-- This file is generated from config/organizations_release.yml. Do not edit it manually. -->
+<!-- Regenerate it with: `bin/rake gitlab:organizations:release:docs` -->
+
+Every organization flag and its current stage are listed below.
+The stage determines who can use a flag and whether it can be disabled.
+
+## Release stages
+
+| Stage | Audience | Description |
+|-------|----------|-------------|
+| Experimental | Organizations team and selected peers | In flux. Being designed and built. No stability contract. |
+| Internal | GitLab team members | Used internally by GitLab team members. May change. |
+| Beta | Opted-in customers | Ready for real world use. No SLA. May change. |
+| LA (25%) | Customers, 25% rollout | Trusted as working. Rolled out to 25% of GitLab.com. |
+| LA (50%) | Customers, 50% rollout | Trusted as working. Rolled out to 50% of GitLab.com. |
+| LA (75%) | Customers, 75% rollout | Trusted as working. Rolled out to 75% of GitLab.com. |
+| LA (100%) | All GitLab.com customers | Trusted as working. Rolled out to 100% of GitLab.com. |
+| GA | Everyone | Generally available on all platforms. Flag retained as a handbrake (inert on GitLab Dedicated). |
+
+## Organization flags
+
+| Flag | Stage | Description |
+|------|-------|-------------|
+| `can_create_org_instance_admin_setting` | Experimental | The instance admin setting that allows disabling the ability to create an organization. |
+| `org_creation` | Experimental | Create an organization from global pages or public APIs. |
+| `org_reference_in_member_access_granted_emails` | Experimental | Reference to the owning organization in the email sent when a member is granted access to a group or project. |
+| `org_switcher` | Experimental | The organization switcher dropdown component. |
+| `create_org_from_group_settings` | Beta | Create an organization for a top-level group from the group settings. |
+| `org_admin_area` | LA (100%) | Organization admin area for organization owners. |
+| `org_pages` | LA (100%) | Organization pages that extend `Organizations::ApplicationController`. |
+| `your_work_sidebar_org_menu_item` | LA (100%) | Shows `Organizations` menu item in the `Your work` sidebar. |

@@ -1,0 +1,14 @@
+---
+table_name: list_user_preferences
+classes:
+- ListUserPreference
+feature_categories:
+- team_planning
+description: Issue board list preferences on a per-user basis, specifically whether
+  the user has collapsed the list or not
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/15657
+milestone: '12.3'
+gitlab_schema: gitlab_main_user
+sharding_key:
+  user_id: users
+table_size: small

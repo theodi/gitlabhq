@@ -1,0 +1,381 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe WorkItems::SavedViews::SavedViewPolicy, feature_category: :planning_views do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:other_user) { create(:user) }
+  let_it_be(:group) { create(:group) }
+
+  subject(:policy) { described_class.new(user, saved_view) }
+
+  describe 'is_author condition' do
+    context 'when user is the author' do
+      let_it_be(:saved_view) { create(:saved_view, created_by_id: user.id) }
+
+      it { expect_allowed(:read_saved_view) }
+    end
+
+    context 'when user is not the author and saved view is private' do
+      let_it_be(:saved_view) { create(:saved_view, created_by_id: other_user.id, namespace: group, private: true) }
+
+      before_all do
+        group.add_developer(user)
+      end
+
+      it { expect_disallowed(:read_saved_view) }
+      it { expect_disallowed(:update_saved_view) }
+      it { expect_disallowed(:delete_saved_view) }
+    end
+
+    context 'when user is nil' do
+      subject(:policy) { described_class.new(nil, saved_view) }
+
+      let_it_be(:saved_view) { create(:saved_view) }
+
+      it { expect_disallowed(:read_saved_view) }
+      it { expect_disallowed(:update_saved_view) }
+      it { expect_disallowed(:delete_saved_view) }
+    end
+  end
+
+  describe 'update and delete shared saved views' do
+    context 'when namespace is a group' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: false) }
+
+      context 'when user has the planner role that grants update and delete shared saved view permissions' do
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_allowed(:read_saved_view) }
+        it { expect_allowed(:update_saved_view) }
+        it { expect_allowed(:delete_saved_view) }
+      end
+
+      context 'when user has the reporter role that grants update and delete shared saved view permissions' do
+        before_all do
+          group.add_reporter(user)
+        end
+
+        it { expect_allowed(:read_saved_view) }
+        it { expect_allowed(:update_saved_view) }
+        it { expect_allowed(:delete_saved_view) }
+      end
+
+      context 'when user can read namespace but lacks shared saved view permissions' do
+        before_all do
+          group.add_guest(user)
+        end
+
+        it 'allows reading public saved views' do
+          expect(policy).to be_allowed(:read_saved_view)
+        end
+
+        it 'disallows updating and deleting' do
+          expect(policy).to be_disallowed(:update_saved_view)
+          expect(policy).to be_disallowed(:delete_saved_view)
+        end
+      end
+    end
+
+    context 'when namespace is a project namespace' do
+      let_it_be(:project) { create(:project) }
+      let_it_be(:saved_view) { create(:saved_view, namespace: project.project_namespace, private: false) }
+
+      context 'when user has the planner role that grants update and delete shared saved view permissions' do
+        before_all do
+          project.add_planner(user)
+        end
+
+        it { expect_allowed(:read_saved_view) }
+        it { expect_allowed(:update_saved_view) }
+        it { expect_allowed(:delete_saved_view) }
+      end
+
+      context 'when user has the reporter role that grants update and delete shared saved view permissions' do
+        before_all do
+          project.add_reporter(user)
+        end
+
+        it { expect_allowed(:read_saved_view) }
+        it { expect_allowed(:update_saved_view) }
+        it { expect_allowed(:delete_saved_view) }
+      end
+
+      context 'when user can read namespace but lacks shared saved view permissions' do
+        before_all do
+          project.add_guest(user)
+        end
+
+        it 'allows reading public saved views' do
+          expect(policy).to be_allowed(:read_saved_view)
+        end
+
+        it 'disallows updating and deleting' do
+          expect(policy).to be_disallowed(:update_saved_view)
+          expect(policy).to be_disallowed(:delete_saved_view)
+        end
+      end
+    end
+  end
+
+  describe 'read_saved_view' do
+    context 'with public saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: false) }
+
+      context 'when user can read namespace' do
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_allowed(:read_saved_view) }
+      end
+
+      context 'when user cannot read namespace' do
+        let_it_be(:private_group) { create(:group, :private) }
+        let_it_be(:saved_view) { create(:saved_view, namespace: private_group, private: false) }
+
+        it { expect_disallowed(:read_saved_view) }
+      end
+    end
+
+    context 'with private saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: other_user.id) }
+
+      context 'when user is the author' do
+        let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: user.id) }
+
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_allowed(:read_saved_view) }
+      end
+
+      context 'when user is not the author' do
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_disallowed(:read_saved_view) }
+      end
+    end
+  end
+
+  describe 'subscribe, unsubscribe and reorder' do
+    context 'with public saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: false, created_by_id: other_user.id) }
+
+      context 'when user can read the saved view' do
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_allowed(:subscribe_saved_view) }
+        it { expect_allowed(:subscribe_work_item_saved_view) }
+        it { expect_allowed(:unsubscribe_saved_view) }
+        it { expect_allowed(:unsubscribe_work_item_saved_view) }
+        it { expect_allowed(:reorder_saved_view) }
+        it { expect_allowed(:reorder_work_item_saved_view) }
+      end
+
+      context 'when user cannot read the namespace' do
+        let_it_be(:private_group) { create(:group, :private) }
+        let_it_be(:saved_view) { create(:saved_view, namespace: private_group, private: false) }
+
+        it { expect_disallowed(:subscribe_saved_view) }
+        it { expect_disallowed(:subscribe_work_item_saved_view) }
+        it { expect_disallowed(:unsubscribe_saved_view) }
+        it { expect_disallowed(:unsubscribe_work_item_saved_view) }
+        it { expect_disallowed(:reorder_saved_view) }
+        it { expect_disallowed(:reorder_work_item_saved_view) }
+      end
+    end
+
+    context 'with private saved view when user is not the author' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: other_user.id) }
+
+      before_all do
+        group.add_planner(user)
+      end
+
+      it { expect_disallowed(:subscribe_saved_view) }
+      it { expect_disallowed(:subscribe_work_item_saved_view) }
+      it { expect_disallowed(:unsubscribe_saved_view) }
+      it { expect_disallowed(:unsubscribe_work_item_saved_view) }
+      it { expect_disallowed(:reorder_saved_view) }
+      it { expect_disallowed(:reorder_work_item_saved_view) }
+    end
+
+    context 'when user is nil' do
+      subject(:policy) { described_class.new(nil, saved_view) }
+
+      let_it_be(:saved_view) { create(:saved_view, private: false) }
+
+      it { expect_disallowed(:subscribe_saved_view) }
+      it { expect_disallowed(:subscribe_work_item_saved_view) }
+      it { expect_disallowed(:unsubscribe_saved_view) }
+      it { expect_disallowed(:unsubscribe_work_item_saved_view) }
+      it { expect_disallowed(:reorder_saved_view) }
+      it { expect_disallowed(:reorder_work_item_saved_view) }
+    end
+  end
+
+  describe 'update_saved_view' do
+    context 'with shared saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: false, created_by_id: other_user.id) }
+
+      context 'when user has a role that grants update and delete shared saved view permissions' do
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_allowed(:update_saved_view) }
+        it { expect_allowed(:update_work_item_saved_view) }
+      end
+
+      context 'when user lacks shared saved view permissions' do
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_disallowed(:update_saved_view) }
+        it { expect_disallowed(:update_work_item_saved_view) }
+      end
+    end
+
+    context 'with private saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: other_user.id) }
+
+      context 'when user is the author' do
+        let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: user.id) }
+
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_allowed(:update_saved_view) }
+        it { expect_allowed(:update_work_item_saved_view) }
+      end
+
+      context 'when user is not the author but has shared saved view permissions' do
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_disallowed(:update_saved_view) }
+        it { expect_disallowed(:update_work_item_saved_view) }
+      end
+    end
+  end
+
+  describe 'delete_saved_view' do
+    context 'with shared saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: false, created_by_id: other_user.id) }
+
+      context 'when user has a role that grants update and delete shared saved view permissions' do
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_allowed(:delete_saved_view) }
+        it { expect_allowed(:delete_work_item_saved_view) }
+      end
+
+      context 'when user lacks shared saved view permissions' do
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_disallowed(:delete_saved_view) }
+        it { expect_disallowed(:delete_work_item_saved_view) }
+      end
+    end
+
+    context 'with private saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: other_user.id) }
+
+      context 'when user is the author' do
+        let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: user.id) }
+
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_allowed(:delete_saved_view) }
+        it { expect_allowed(:delete_work_item_saved_view) }
+      end
+
+      context 'when user is not the author but has shared saved view permissions' do
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_disallowed(:delete_saved_view) }
+        it { expect_disallowed(:delete_work_item_saved_view) }
+      end
+    end
+  end
+
+  describe 'update_saved_view_visibility' do
+    context 'with shared saved view' do
+      let_it_be(:saved_view) { create(:saved_view, namespace: group, private: false, created_by_id: other_user.id) }
+
+      context 'when user has shared saved view permissions but is not the author' do
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_disallowed(:update_saved_view_visibility) }
+      end
+
+      context 'when user lacks shared saved view permissions' do
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_disallowed(:update_saved_view_visibility) }
+      end
+    end
+
+    context 'with private saved view' do
+      context 'when user is the author' do
+        let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: user.id) }
+
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_allowed(:update_saved_view_visibility) }
+      end
+
+      context 'when user is not the author but has shared saved view permissions' do
+        let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: other_user.id) }
+
+        before_all do
+          group.add_planner(user)
+        end
+
+        it { expect_disallowed(:update_saved_view_visibility) }
+      end
+
+      context 'when user is not the author and lacks shared saved view permissions' do
+        let_it_be(:saved_view) { create(:saved_view, namespace: group, private: true, created_by_id: other_user.id) }
+
+        before_all do
+          group.add_guest(user)
+        end
+
+        it { expect_disallowed(:update_saved_view_visibility) }
+      end
+    end
+
+    context 'when user cannot read namespace' do
+      let_it_be(:private_group) { create(:group, :private) }
+      let_it_be(:saved_view) { create(:saved_view, namespace: private_group, private: false, created_by_id: user.id) }
+
+      it { expect_disallowed(:update_saved_view_visibility) }
+    end
+  end
+end

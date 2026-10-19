@@ -1,0 +1,431 @@
+<script>
+import { GlTooltipDirective, GlIcon } from '@gitlab/ui';
+import { mapActions, mapState } from 'pinia';
+import DraftNote from '~/batch_comments/components/draft_note.vue';
+import { createAlert } from '~/alert';
+import { clearDraft, getDraft, getAutoSaveKeyFromDiscussion } from '~/lib/utils/autosave';
+import { isLoggedIn } from '~/lib/utils/common_utils';
+import { confirmAction } from '~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal';
+import { ignoreWhilePending } from '~/lib/utils/ignore_while_pending';
+import { suppressShortcutsUntilInputFocus } from '~/lib/mousetrap';
+import { s__, __, sprintf } from '~/locale';
+import diffLineNoteFormMixin from '~/notes/mixins/diff_line_note_form';
+import TimelineEntryItem from '~/vue_shared/components/notes/timeline_entry_item.vue';
+import UserAvatarLink from '~/vue_shared/components/user_avatar/user_avatar_link.vue';
+import { detectAndConfirmSensitiveTokens } from '~/lib/utils/secret_detection';
+import { FILE_DIFF_POSITION_TYPE, IMAGE_DIFF_POSITION_TYPE } from '~/diffs/constants';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { CopyAsGFM } from '~/behaviors/markdown/copy_as_gfm';
+import { glSlotsMixin } from '~/lib/utils/vue3compat/gl_slots_mixin';
+import eventHub from '../event_hub';
+import noteable from '../mixins/noteable';
+import resolvable from '../mixins/resolvable';
+import { getNoteFormErrorMessages } from '../utils';
+import DiffDiscussionHeader from './diff_discussion_header.vue';
+import DiffWithNote from './diff_with_note.vue';
+import DiscussionActions from './discussion_actions.vue';
+import DiscussionNotes from './discussion_notes.vue';
+import NoteForm from './note_form.vue';
+import NoteSignedOutWidget from './note_signed_out_widget.vue';
+
+export default {
+  name: 'NoteableDiscussion',
+  components: {
+    GlIcon,
+    UserAvatarLink,
+    DiffDiscussionHeader,
+    NoteSignedOutWidget,
+    NoteForm,
+    DraftNote,
+    TimelineEntryItem,
+    DiscussionNotes,
+    DiscussionActions,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [noteable, resolvable, diffLineNoteFormMixin, glSlotsMixin],
+  props: {
+    discussion: {
+      type: Object,
+      required: true,
+    },
+    line: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    renderDiffFile: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+    alwaysExpanded: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    discussionsByDiffOrder: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    helpPagePath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    isOverviewTab: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  data() {
+    return {
+      isReplying: false,
+      isResolving: false,
+      // eslint-disable-next-line vue/no-unused-properties -- `resolveAsThread` is used by the `resolvable` mixin
+      resolveAsThread: true,
+    };
+  },
+  computed: {
+    ...mapState(useNotes, [
+      'convertedDisscussionIds',
+      'getNoteableData',
+      'userCanReply',
+      'showJumpToNextDiscussion',
+    ]),
+    diffFile() {
+      const diffFile = this.discussion.diff_file;
+      if (!diffFile) return null;
+
+      return {
+        ...diffFile,
+        view_path: window.location.href.replace(
+          /\/-\/merge_requests.*/,
+          `/-/blob/${diffFile.content_sha}/${diffFile.new_path}`,
+        ),
+      };
+    },
+    isLoggedIn() {
+      return isLoggedIn();
+    },
+    commentType() {
+      return this.discussion.internal ? __('internal note') : __('comment');
+    },
+    autosaveKey() {
+      return getAutoSaveKeyFromDiscussion(this.discussion);
+    },
+    newNotePath() {
+      return this.getNoteableData.create_note_path;
+    },
+    saveButtonTitle() {
+      return this.discussion.internal ? __('Reply internally') : __('Reply');
+    },
+    shouldShowJumpToNextDiscussion() {
+      return this.showJumpToNextDiscussion(this.discussionsByDiffOrder ? 'diff' : 'discussion');
+    },
+    shouldRenderDiffs() {
+      return this.discussion.diff_discussion && this.renderDiffFile;
+    },
+    shouldGroupReplies() {
+      return !this.shouldRenderDiffs;
+    },
+    wrapperComponent() {
+      return this.shouldRenderDiffs ? DiffWithNote : 'div';
+    },
+    wrapperComponentProps() {
+      if (this.shouldRenderDiffs) {
+        return { discussion: this.discussion };
+      }
+
+      return {};
+    },
+    isExpanded() {
+      return this.discussion.expanded || this.alwaysExpanded;
+    },
+    shouldHideDiscussionBody() {
+      return this.shouldRenderDiffs && !this.isExpanded;
+    },
+    diffLine() {
+      if (this.line) {
+        return this.line;
+      }
+
+      if (this.discussion.diff_discussion && this.discussion.truncated_diff_lines) {
+        return this.discussion.truncated_diff_lines.slice(-1)[0];
+      }
+
+      return null;
+    },
+    resolveWithIssuePath() {
+      return !this.discussionResolved ? this.discussion.resolve_with_issue_path : '';
+    },
+    canShowReplyActions() {
+      if (this.isLoggedIn && !this.userCanReply) return false;
+      if (this.shouldRenderDiffs) {
+        if (this.discussion.diff_file?.diff_refs) {
+          return true;
+        }
+
+        /*
+         * https://gitlab.com/gitlab-com/gl-infra/production/-/issues/19118
+         *
+         * For most diff discussions we should have a `diff_file`.
+         * However in some cases we might not have this object.
+         * In these we need to check if the `original_position.position_type`
+         * is either a file or an image, doing this allows us to still
+         * render the reply actions.
+         */
+        return (
+          this.discussion.original_position?.position_type === FILE_DIFF_POSITION_TYPE ||
+          this.discussion.original_position?.position_type === IMAGE_DIFF_POSITION_TYPE
+        );
+      }
+
+      return true;
+    },
+    isDiscussionInternal() {
+      return this.discussion.notes[0]?.internal;
+    },
+    commentLines() {
+      return this.getLinesForDiscussion({ discussion: this.discussion });
+    },
+    discussionHolderClass() {
+      return {
+        'is-replying': this.isReplying,
+        'internal-note': this.isDiscussionInternal,
+        '!gl-pt-0': !this.discussion.diff_discussion && this.isReplying,
+      };
+    },
+    hasDraft() {
+      return Boolean(getDraft(this.autosaveKey));
+    },
+  },
+  created() {
+    eventHub.$on('start-replying', this.onStartReplying);
+    if (this.hasDraft) {
+      this.showReplyForm();
+    }
+  },
+  beforeDestroy() {
+    eventHub.$off('start-replying', this.onStartReplying);
+  },
+  methods: {
+    ...mapActions(useNotes, [
+      'saveNote',
+      'removePlaceholderNotes',
+      // eslint-disable-next-line vue/no-unused-properties -- toggleResolveNote() used by the `Resolvable` mixin
+      'toggleResolveNote',
+      'removeConvertedDiscussion',
+      'expandDiscussion',
+    ]),
+    ...mapActions(useLegacyDiffs, ['getLinesForDiscussion']),
+    showReplyForm(text) {
+      suppressShortcutsUntilInputFocus();
+      this.isReplying = true;
+
+      if (!this.discussion.expanded) {
+        this.expandDiscussion({ discussionId: this.discussion.id });
+      }
+
+      if (typeof text !== 'undefined') {
+        this.$nextTick(() => {
+          this.$refs.noteForm.append(text);
+        });
+      }
+    },
+    cancelReplyForm: ignoreWhilePending(async function cancelReplyForm(shouldConfirm, isDirty) {
+      if (shouldConfirm && isDirty) {
+        const msg = sprintf(
+          s__('Notes|Are you sure you want to cancel creating this %{commentType}?'),
+          { commentType: this.commentType },
+        );
+
+        const confirmed = await confirmAction(msg, {
+          primaryBtnText: __('Discard changes'),
+          cancelBtnText: __('Continue editing'),
+        });
+
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      if (this.convertedDisscussionIds.includes(this.discussion.id)) {
+        this.removeConvertedDiscussion(this.discussion.id);
+      }
+
+      this.isReplying = false;
+      clearDraft(this.autosaveKey);
+    }),
+    // eslint-disable-next-line max-params
+    async saveReply(noteText, form, callback, resolveDiscussion) {
+      if (!noteText) {
+        this.cancelReplyForm();
+        callback();
+        return;
+      }
+
+      const confirmSubmit = await detectAndConfirmSensitiveTokens({ content: noteText });
+
+      if (!confirmSubmit) {
+        callback();
+        return;
+      }
+
+      const postData = {
+        in_reply_to_discussion_id: this.discussion.reply_id,
+        target_type: this.getNoteableData.targetType,
+        note: { note: noteText },
+      };
+
+      if (this.getNoteableData.diff_head_sha) {
+        postData.merge_request_diff_head_sha = this.getNoteableData.diff_head_sha;
+      }
+
+      if (this.convertedDisscussionIds.includes(this.discussion.id)) {
+        postData.return_discussion = true;
+      }
+
+      if (resolveDiscussion !== this.discussionResolved) {
+        postData.resolve_discussion = resolveDiscussion;
+        postData.return_discussion = true;
+      }
+
+      if (this.discussion.for_commit) {
+        postData.note_project_id = this.discussion.project_id;
+      }
+
+      const replyData = {
+        endpoint: this.newNotePath,
+        flashContainer: this.$el,
+        data: postData,
+      };
+
+      this.saveNote(replyData)
+        .then((data) => {
+          this.isReplying = false;
+          clearDraft(this.autosaveKey);
+
+          callback(undefined, {
+            resolvedStateSaved: data?.discussion?.resolved === resolveDiscussion,
+          });
+        })
+        .catch((err) => {
+          this.handleSaveError(err); // The 'err' parameter is being used in JH, don't remove it
+          this.removePlaceholderNotes();
+
+          callback(err);
+        });
+    },
+    handleSaveError({ response }) {
+      const errorMessage = getNoteFormErrorMessages(response)[0];
+
+      createAlert({
+        message: errorMessage,
+        parent: this.$el,
+      });
+    },
+    onStartReplying(discussionId) {
+      if (this.discussion.id === discussionId) {
+        this.showReplyForm();
+      }
+    },
+    async onQuoteReply() {
+      const text = await CopyAsGFM.selectionToGfm();
+      // prevent hotkey input from going into the form
+      requestAnimationFrame(() => {
+        this.showReplyForm(text);
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <timeline-entry-item class="note note-discussion">
+    <div class="timeline-content">
+      <div
+        :data-discussion-id="discussion.id"
+        :data-discussion-resolvable="discussion.resolvable"
+        :data-discussion-resolved="discussion.resolved"
+        class="discussion js-discussion-container"
+        data-testid="discussion-content"
+        @quoteReply="onQuoteReply"
+      >
+        <diff-discussion-header v-if="shouldRenderDiffs" :discussion="discussion" />
+        <div v-if="!shouldHideDiscussionBody" class="discussion-body">
+          <component
+            :is="wrapperComponent"
+            v-bind="wrapperComponentProps"
+            class="card discussion-wrapper"
+          >
+            <discussion-notes
+              :discussion="discussion"
+              :diff-line="diffLine"
+              :help-page-path="helpPagePath"
+              :is-expanded="isExpanded"
+              :line="line"
+              :should-group-replies="shouldGroupReplies"
+              :is-overview-tab="isOverviewTab"
+              @start-replying="showReplyForm"
+            >
+              <template v-if="glSlots()['avatar-badge']" #avatar-badge>
+                <slot name="avatar-badge"></slot>
+              </template>
+              <template #footer="{ showReplies }">
+                <draft-note
+                  v-if="showDraft(discussion.reply_id)"
+                  :key="`draft_${discussion.id}`"
+                  :draft="draftForDiscussion(discussion.reply_id)"
+                  :line="line"
+                />
+                <li
+                  v-else-if="canShowReplyActions && showReplies"
+                  data-testid="reply-wrapper"
+                  class="discussion-reply-holder gl-bg-subtle gl-clearfix"
+                  :class="discussionHolderClass"
+                >
+                  <div class="flash-container !gl-mt-0 gl-mb-2"></div>
+                  <discussion-actions
+                    v-if="!isReplying && userCanReply"
+                    :discussion="discussion"
+                    :is-resolving="isResolving"
+                    :resolve-button-title="resolveButtonTitle"
+                    :resolve-with-issue-path="resolveWithIssuePath"
+                    :should-show-jump-to-next-discussion="shouldShowJumpToNextDiscussion"
+                    :source-branch="getNoteableData.source_branch"
+                    :iid="getNoteableData.iid"
+                    :can-resolve-discussions-with-ai="
+                      getNoteableData.can_resolve_discussions_with_ai
+                    "
+                    @show-reply-form="showReplyForm"
+                    @resolve="resolveHandler"
+                  />
+                  <note-form
+                    v-if="isReplying"
+                    ref="noteForm"
+                    :discussion="discussion"
+                    :diff-file="diffFile"
+                    :line="diffLine"
+                    :lines="commentLines"
+                    :save-button-title="saveButtonTitle"
+                    :autofocus="!hasDraft"
+                    :autosave-key="autosaveKey"
+                    @handle-form-update-add-to-review="addReplyToReview"
+                    @handle-form-update="saveReply"
+                    @cancel-form="cancelReplyForm"
+                  />
+                  <note-signed-out-widget v-if="!isLoggedIn" />
+                </li>
+              </template>
+            </discussion-notes>
+          </component>
+        </div>
+      </div>
+    </div>
+  </timeline-entry-item>
+</template>

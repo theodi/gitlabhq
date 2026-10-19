@@ -1,0 +1,23 @@
+- add_to_breadcrumbs _('Webhook settings'), project_hooks_path(@project)
+- page_title _('Webhook')
+
+= render 'shared/web_hooks/hook_errors', hook: @hook
+
+= render ::Layouts::SettingsSectionComponent.new(page_title) do |c|
+  - c.with_description do
+    = render 'shared/web_hooks/description', hook: @hook
+  - c.with_body do
+    = gitlab_ui_form_for [@project, @hook], as: :hook, url: project_hook_path(@project, @hook), html: { class: 'js-webhook-form' } do |f|
+      = render partial: 'shared/web_hooks/form', locals: { form: f, hook: @hook }
+
+      .settings-sticky-footer.gl-flex.gl-justify-between
+        .gl-flex.gl-gap-3
+          = f.submit _('Save changes'), pajamas_button: true
+          = render 'shared/web_hooks/test_button', hook: @hook
+        .gl-flex.gl-gap-3
+          = link_button_to _('Delete'), project_hook_path(@project, @hook), method: :delete, aria: { label: s_('Webhooks|Delete webhook') }, data: { confirm: s_('Webhooks|Are you sure you want to delete this project hook?'), confirm_btn_variant: 'danger' }, variant: :danger
+          = link_button_to _('Close'), project_hooks_path(@project)
+
+    %hr
+
+    = render partial: 'shared/hook_logs/index', locals: { hook: @hook, hook_logs: @hook_logs, project: @project }

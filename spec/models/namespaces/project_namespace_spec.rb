@@ -1,0 +1,213 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Namespaces::ProjectNamespace, feature_category: :groups_and_projects do
+  let_it_be(:organization) { create(:organization) }
+
+  describe 'relationships' do
+    it { is_expected.to have_one(:project).inverse_of(:project_namespace) }
+
+    specify do
+      project = create(:project)
+      namespace = project.project_namespace
+      namespace.reload_project
+
+      expect(namespace.project).to eq project
+    end
+  end
+
+  describe 'validations' do
+    it { is_expected.not_to validate_presence_of :owner }
+  end
+
+  context 'when deleting project namespace' do
+    # using delete rather than destroy due to `delete` skipping AR hooks/callbacks
+    # so it's ensured to work at the DB level. Uses ON DELETE CASCADE on foreign key
+    let_it_be(:project) { create(:project) }
+    let_it_be(:project_namespace) { project.project_namespace }
+
+    it 'also deletes associated project' do
+      project_namespace.delete
+
+      expect { project_namespace.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      expect { project.reload }.to raise_error(ActiveRecord::RecordNotFound)
+    end
+  end
+
+  describe '.create_from_project!' do
+    context 'when namespace does not exist' do
+      it 'new project_namespace is not saved' do
+        expect_any_instance_of(described_class) do |instance|
+          expect(instance).not_to receive(:save!)
+        end
+
+        project = Project.new(namespace: nil)
+        described_class.create_from_project!(project)
+      end
+    end
+
+    context 'for new record when namespace exists' do
+      let(:project) { build(:project, organization: organization) }
+      let(:project_namespace) { project.project_namespace }
+
+      it 'syncs the project attributes to project namespace' do
+        project_name = 'project 1 name'
+        project.name = project_name
+
+        described_class.create_from_project!(project)
+        expect(project.project_namespace.name).to eq(project_name)
+        expect(project.project_namespace.organization_id).to eq(project.organization_id)
+      end
+
+      context 'when project has an unsaved project namespace' do
+        it 'saves the same project namespace' do
+          described_class.create_from_project!(project)
+
+          expect(project_namespace).to be_persisted
+        end
+      end
+    end
+  end
+
+  describe '#sync_attributes_from_project' do
+    context 'with existing project' do
+      let(:project) { build(:project, organization: organization) }
+      let(:project_namespace) { project.project_namespace }
+      let(:project_new_namespace) { create(:namespace) }
+      let(:project_new_path) { 'project-new-path' }
+      let(:project_new_name) { project_new_path.titleize }
+      let(:project_new_visibility_level) { Gitlab::VisibilityLevel::INTERNAL }
+      let(:project_shared_runners_enabled) { !project.shared_runners_enabled }
+
+      before do
+        project.name = project_new_name
+        project.path = project_new_path
+        project.visibility_level = project_new_visibility_level
+        project.namespace = project_new_namespace
+        project.shared_runners_enabled = project_shared_runners_enabled
+      end
+
+      it 'syncs the relevant keys from the project' do
+        project_namespace.sync_attributes_from_project(project)
+
+        expect(project_namespace.name).to eq(project_new_name)
+        expect(project_namespace.path).to eq(project_new_path)
+        expect(project_namespace.visibility_level).to eq(project_new_visibility_level)
+        expect(project_namespace.namespace).to eq(project_new_namespace)
+        expect(project_namespace.namespace_id).to eq(project_new_namespace.id)
+        expect(project_namespace.shared_runners_enabled).to eq(project_shared_runners_enabled)
+        expect(project_namespace.organization_id).to eq(project.organization_id)
+      end
+
+      context 'when the project namespace is frozen' do
+        before do
+          project_namespace.freeze
+        end
+
+        it 'does not sync and does not raise' do
+          expect { project_namespace.sync_attributes_from_project(project) }.not_to raise_error
+          expect(project_namespace.name).not_to eq(project_new_name)
+        end
+      end
+    end
+
+    it 'syncs visibility_level if project is new' do
+      project = build(:project)
+      project_namespace = project.project_namespace
+      project_namespace.visibility_level = Gitlab::VisibilityLevel::PUBLIC
+
+      project_namespace.sync_attributes_from_project(project)
+
+      expect(project_namespace.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+    end
+  end
+
+  describe '#all_projects' do
+    let(:project) { create(:project) }
+    let(:project_namespace) { project.project_namespace }
+
+    it 'returns single project relation' do
+      expect(project_namespace.all_projects).to be_a(ActiveRecord::Relation)
+      expect(project_namespace.all_projects).to match_array([project])
+    end
+  end
+
+  describe 'combine create and update within a single transaction' do
+    let(:issue) { build(:issue, spam: true) }
+
+    subject(:combined_calls) do
+      issue.project.update_attribute(:visibility_level, Gitlab::VisibilityLevel::PUBLIC)
+    end
+
+    it { expect { combined_calls }.not_to raise_error }
+  end
+
+  describe '#markdown_placeholders_feature_flag_enabled? is delegated' do
+    let(:project) { create(:project) }
+    let(:project_namespace) { project.project_namespace }
+
+    it 'delegates to project' do
+      expect(project_namespace.markdown_placeholders_feature_flag_enabled?).to be_truthy
+      expect(project_namespace.project.markdown_placeholders_feature_flag_enabled?).to be_truthy
+    end
+  end
+
+  describe '#max_member_access_for_user' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:project) { create(:project) }
+    let_it_be(:project_namespace) { project.project_namespace }
+
+    it 'delegates to the project' do
+      expect(project).to receive(:max_member_access_for_user).with(user).and_return(Gitlab::Access::DEVELOPER)
+
+      expect(project_namespace.max_member_access_for_user(user)).to eq(Gitlab::Access::DEVELOPER)
+    end
+  end
+
+  describe '#member?' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:project_namespace) { project.project_namespace }
+    let_it_be(:user) { create(:user) }
+
+    context 'when user is a project member' do
+      before_all do
+        project.add_developer(user)
+      end
+
+      it 'returns true' do
+        expect(project_namespace.member?(user)).to be_truthy
+      end
+
+      it 'returns false when min_access_level is above the user access level' do
+        expect(project_namespace.member?(user, Gitlab::Access::MAINTAINER)).to be_falsey
+      end
+    end
+
+    context 'when user is not a project member' do
+      it 'returns false' do
+        expect(project_namespace.member?(user)).to be_falsey
+      end
+    end
+
+    context 'when user is nil' do
+      it 'returns false' do
+        expect(project_namespace.member?(nil)).to be_falsey
+      end
+    end
+  end
+
+  describe 'state transitions' do
+    it { is_expected.to reject_events :unarchive, when: :ancestor_inherited }
+    it { is_expected.to reject_events :cancel_deletion, when: :ancestor_inherited }
+
+    context 'when feature flag is disabled' do
+      before do
+        stub_feature_flags(remove_project_ancestor_inherited_transitions: false)
+      end
+
+      it { is_expected.to handle_events :unarchive, when: :ancestor_inherited }
+      it { is_expected.to handle_events :cancel_deletion, when: :ancestor_inherited }
+    end
+  end
+end

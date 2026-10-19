@@ -1,0 +1,67 @@
+export const MINIMUM_SEARCH_LENGTH = 3;
+
+// The untranslated message the API returns for a resource the user may not see, from
+// Gitlab::Graphql::Authorize::AuthorizeResource::RESOURCE_ACCESS_ERROR.
+export const RESOURCE_ACCESS_ERROR =
+  "The resource that you are attempting to access does not exist or you don't have permission to perform this action";
+
+export const TYPENAME_ACHIEVEMENT = 'Achievements::Achievement';
+export const TYPENAME_ADMIN_MEMBER_ROLE = 'AdminMemberRole';
+export const TYPENAME_AI_DUO_WORKFLOW = 'Ai::DuoWorkflows::Workflow';
+export const TYPENAME_ANALYTICS_CUSTOM_DASHBOARD = 'Analytics::CustomDashboards::Dashboard';
+export const TYPENAME_BOARD = 'Board';
+export const TYPENAME_CI_BUILD = 'Ci::Build';
+export const TYPENAME_CI_JOB_TOKEN_ACCESSIBLE_GROUP = 'CiJobTokenAccessibleGroup';
+export const TYPENAME_CI_RUNNER = 'Ci::Runner';
+export const TYPENAME_CI_PIPELINE = 'Ci::Pipeline';
+export const TYPENAME_CI_STAGE = 'Ci::Stage';
+export const TYPENAME_CI_TRIGGER = 'Ci::Trigger';
+export const TYPENAME_CI_VARIABLE = 'Ci::Variable';
+export const TYPENAME_COMMIT_STATUS = 'CommitStatus';
+export const TYPENAME_CONTAINER_REPOSITORY = 'ContainerRepository';
+export const TYPENAME_CRM_CONTACT = 'CustomerRelations::Contact';
+export const TYPENAME_CRM_ORGANIZATION = 'CustomerRelations::Organization';
+export const TYPENAME_DESIGN_VERSION = 'DesignManagement::Version';
+export const TYPENAME_DISCUSSION = 'Discussion';
+export const TYPENAME_DISCUSSION_NOTE = 'DiscussionNote';
+export const TYPENAME_EPIC = 'Epic';
+export const TYPENAME_EPIC_BOARD = 'Boards::EpicBoard';
+export const TYPENAME_FEATURE_FLAG = 'FeatureFlag';
+export const TYPENAME_GROUP = 'Group';
+export const TYPENAME_ISSUE = 'Issue';
+export const TYPENAME_TASK = 'Task';
+export const TYPENAME_ITERATION = 'Iteration';
+export const TYPENAME_ITERATIONS_CADENCE = 'Iterations::Cadence';
+export const TYPENAME_LABEL = 'Label';
+export const TYPENAME_MEMBER_ROLE = 'MemberRole';
+export const TYPENAME_MERGE_REQUEST = 'MergeRequest';
+export const TYPENAME_MILESTONE = 'Milestone';
+export const TYPENAME_NAMESPACE = 'Namespace';
+export const TYPENAME_PROJECT_NAMESPACE = 'Namespaces::ProjectNamespace';
+export const TYPENAME_NOTE = 'Note';
+export const TYPENAME_PACKAGES_PACKAGE = 'Packages::Package';
+export const TYPENAME_PERSONAL_ACCESS_TOKEN = 'PersonalAccessToken';
+export const TYPENAME_PROJECT = 'Project';
+export const TYPENAME_SCANNER_PROFILE = 'DastScannerProfile';
+export const TYPENAME_SITE_PROFILE = 'DastSiteProfile';
+export const TYPENAME_TODO = 'Todo';
+export const TYPENAME_USER = 'User';
+export const TYPENAME_VALUE_STREAM = 'Analytics::CycleAnalytics::ValueStream';
+export const TYPENAME_VALUE_STREAM_STAGE = 'Analytics::CycleAnalytics::Stage';
+export const TYPENAME_VULNERABILITY = 'Vulnerability';
+export const TYPENAME_WORK_ITEM = 'WorkItem';
+export const TYPENAME_WORK_ITEM_RELATED_BRANCH = 'WorkItemRelatedBranch';
+export const TYPENAME_WORK_ITEMS_TYPE = 'WorkItems::Type';
+export const TYPE_ORGANIZATION = 'Organizations::Organization';
+export const TYPE_USERS_SAVED_REPLY = 'Users::SavedReply';
+export const TYPE_WORKSPACE = 'RemoteDevelopment::Workspace';
+export const TYPE_COMPLIANCE_FRAMEWORK = 'ComplianceManagement::Framework';
+export const TYPENAME_CUSTOM_FIELD = 'Issuables::CustomField';
+export const TYPENAME_CUSTOM_FIELD_SELECT_OPTION = 'Issuables::CustomFieldSelectOption';
+
+export const QUERY_PARAM_START_CURSOR = 'start_cursor';
+export const QUERY_PARAM_END_CURSOR = 'end_cursor';
+
+export const GRAPHQL_GET_QUERY_PARAM_KEYS = ['variables'];
+
+export const ENUM_USAGE_BILLING_FORBIDDEN = 'USAGE_BILLING_FORBIDDEN';

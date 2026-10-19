@@ -1,0 +1,135 @@
+import { GlIcon } from '@gitlab/ui';
+import { shallowMount } from '@vue/test-utils';
+import { extendedWrapper } from 'helpers/vue_test_utils_helper';
+import component from '~/ci/reports/codequality_report/components/codequality_issue_body.vue';
+import { STATUS_FAILED, STATUS_NEUTRAL, STATUS_SUCCESS } from '~/ci/reports/constants';
+
+describe('code quality issue body issue body', () => {
+  let wrapper;
+
+  const findSeverityIcon = () => wrapper.findByTestId('codequality-severity-icon');
+  const findGlIcon = () => wrapper.findComponent(GlIcon);
+  const findName = () => wrapper.findByTestId('codequality-name');
+
+  const issueName =
+    'rubygem-rest-client: session fixation vulnerability via Set-Cookie headers in 30x redirection responses.';
+  const codequalityIssue = {
+    name: `${issueName} See [here](https://example.org) for details.`,
+    path: 'Gemfile.lock',
+    severity: 'normal',
+    type: 'Issue',
+    urlPath: '/Gemfile.lock#L22',
+  };
+
+  const createComponent = (initialStatus, issue = codequalityIssue) => {
+    wrapper = extendedWrapper(
+      shallowMount(component, {
+        propsData: {
+          issue,
+          status: initialStatus,
+        },
+      }),
+    );
+  };
+
+  describe('severity rating', () => {
+    it.each`
+      severity      | iconClass               | iconName
+      ${'INFO'}     | ${'gl-text-blue-400'}   | ${'severity-info'}
+      ${'MINOR'}    | ${'gl-text-orange-300'} | ${'severity-low'}
+      ${'CRITICAL'} | ${'gl-text-red-600'}    | ${'severity-high'}
+      ${'BLOCKER'}  | ${'gl-text-red-800'}    | ${'severity-critical'}
+      ${'UNKNOWN'}  | ${'gl-text-gray-400'}   | ${'severity-unknown'}
+      ${'INVALID'}  | ${'gl-text-gray-400'}   | ${'severity-unknown'}
+      ${'info'}     | ${'gl-text-blue-400'}   | ${'severity-info'}
+      ${'minor'}    | ${'gl-text-orange-300'} | ${'severity-low'}
+      ${'major'}    | ${'gl-text-orange-400'} | ${'severity-medium'}
+      ${'critical'} | ${'gl-text-red-600'}    | ${'severity-high'}
+      ${'blocker'}  | ${'gl-text-red-800'}    | ${'severity-critical'}
+      ${'unknown'}  | ${'gl-text-gray-400'}   | ${'severity-unknown'}
+      ${'invalid'}  | ${'gl-text-gray-400'}   | ${'severity-unknown'}
+      ${undefined}  | ${'gl-text-gray-400'}   | ${'severity-unknown'}
+    `(
+      'renders correct icon for "$severity" severity rating',
+      ({ severity, iconClass, iconName }) => {
+        createComponent(STATUS_FAILED, {
+          ...codequalityIssue,
+          severity,
+        });
+        const icon = findGlIcon();
+
+        expect(findSeverityIcon().classes()).toContain(iconClass);
+        expect(icon.exists()).toBe(true);
+        expect(icon.props('name')).toBe(iconName);
+      },
+    );
+  });
+
+  describe('with success', () => {
+    it('renders fixed label', () => {
+      createComponent(STATUS_SUCCESS);
+
+      expect(wrapper.text()).toContain('Fixed');
+    });
+  });
+
+  describe('without success', () => {
+    it('does not render fixed label', () => {
+      createComponent(STATUS_FAILED);
+
+      expect(wrapper.text()).not.toContain('Fixed');
+    });
+  });
+
+  describe('name', () => {
+    it('renders name', () => {
+      createComponent(STATUS_NEUTRAL);
+
+      const link = findName().find('a');
+      expect(link.attributes('href')).toBe('https://example.org');
+
+      expect(wrapper.text()).toContain(issueName);
+    });
+
+    it('strips injected img tags from the issue name', () => {
+      createComponent(STATUS_NEUTRAL, {
+        ...codequalityIssue,
+        name: 'Before <img src="https://evil.example.com/steal.png"> after',
+      });
+
+      expect(findName().html()).not.toContain('<img');
+      expect(findName().text()).toContain('Before');
+      expect(findName().text()).toContain('after');
+    });
+
+    /* eslint-disable no-script-url */
+    it.each`
+      label            | name
+      ${'javascript:'} | ${'[click me](javascript:alert(1))'}
+      ${'data: URI'}   | ${'[click me](data:text/html,<script>alert(1)</script>)'}
+    `('strips $label hrefs from links in the issue name', ({ name }) => {
+      createComponent(STATUS_NEUTRAL, { ...codequalityIssue, name });
+
+      const link = findName().find('a');
+      expect(link.exists()).toBe(true);
+      expect(link.text()).toBe('click me');
+      expect(link.attributes('href')).toBeUndefined();
+    });
+    /* eslint-enable no-script-url */
+
+    it('still renders safe markdown like links', () => {
+      createComponent(STATUS_NEUTRAL);
+
+      const link = findName().find('a');
+      expect(link.attributes('href')).toBe('https://example.org');
+    });
+  });
+
+  describe('path', () => {
+    it('renders the report-link path using the correct code quality issue', () => {
+      createComponent(STATUS_NEUTRAL);
+
+      expect(wrapper.findComponent('report-link-stub').props('issue')).toBe(codequalityIssue);
+    });
+  });
+});

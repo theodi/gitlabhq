@@ -1,0 +1,53 @@
+import { __ } from '~/locale';
+
+export const RESOURCE_TYPES = {
+  GROUP: 'group',
+  PROJECT: 'project',
+};
+
+export const SORT_LABEL_NAME = __('Name');
+export const SORT_LABEL_CREATED = __('Created date');
+export const SORT_LABEL_UPDATED = __('Updated date');
+export const SORT_LABEL_STARS = __('Stars');
+export const SORT_LABEL_STORAGE_SIZE = __('Storage size');
+
+export const SORT_OPTION_NAME = {
+  value: 'name',
+  text: SORT_LABEL_NAME,
+};
+
+export const SORT_OPTION_CREATED = {
+  value: 'created',
+  text: SORT_LABEL_CREATED,
+};
+
+export const SORT_OPTION_UPDATED = {
+  value: 'latest_activity',
+  text: SORT_LABEL_UPDATED,
+};
+
+export const SORT_OPTION_STARS = {
+  value: 'stars',
+  text: SORT_LABEL_STARS,
+};
+
+export const SORT_OPTIONS = [
+  SORT_OPTION_NAME,
+  SORT_OPTION_CREATED,
+  SORT_OPTION_UPDATED,
+  SORT_OPTION_STARS,
+];
+
+export const FILTERED_SEARCH_TOKEN_LANGUAGE = 'language';
+export const FILTERED_SEARCH_TOKEN_MIN_ACCESS_LEVEL = 'min_access_level';
+export const FILTERED_SEARCH_TOKEN_VISIBILITY_LEVEL = 'visibility_level';
+export const FILTERED_SEARCH_TOKEN_NAMESPACE = 'namespace_path';
+export const FILTERED_SEARCH_TOKEN_REPOSITORY_CHECK_FAILED = 'last_repository_check_failed';
+
+export const SORT_DIRECTION_ASC = 'asc';
+export const SORT_DIRECTION_DESC = 'desc';
+
+export const PAGINATION_TYPE_KEYSET = 'keyset';
+export const PAGINATION_TYPE_OFFSET = 'offset';
+
+export const QUERY_PARAM_PAGE = 'page';

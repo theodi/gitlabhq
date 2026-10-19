@@ -1,0 +1,54 @@
+# frozen_string_literal: true
+
+module OauthApplications
+  extend ActiveSupport::Concern
+
+  CREATED_SESSION_KEY = :oauth_applications_created
+
+  included do
+    before_action :prepare_scopes, only: [:create, :update]
+  end
+
+  def prepare_scopes
+    scopes = params.permit(authn_oauth_application: { scopes: [] }).dig(:authn_oauth_application, :scopes)
+
+    # Written back in place because Doorkeeper expects a single space-separated
+    # string, while the form submits one checkbox value per scope.
+    params.require(:authn_oauth_application)[:scopes] = scopes.join(' ') if scopes
+  end
+
+  def set_created_session
+    session[CREATED_SESSION_KEY] = true
+  end
+
+  def get_created_session
+    session.delete(CREATED_SESSION_KEY) || false
+  end
+
+  def load_scopes
+    @scopes ||= Doorkeeper::OAuth::Scopes.from_array(
+      Doorkeeper.configuration.scopes.to_a - excluded_scopes
+    )
+  end
+
+  def permitted_params
+    %i[name redirect_uri scopes confidential device_code_enabled]
+  end
+
+  protected
+
+  def excluded_scopes
+    [
+      ::Gitlab::Auth::AI_WORKFLOW.to_s,
+      ::Gitlab::Auth::DYNAMIC_USER.to_s,
+      ::Gitlab::Auth::SELF_ROTATE_SCOPE.to_s,
+      ::Gitlab::Auth::GRANULAR_SCOPE.to_s
+    ]
+  end
+
+  def application_params
+    params
+      .require(:authn_oauth_application)
+      .permit(*permitted_params)
+  end
+end

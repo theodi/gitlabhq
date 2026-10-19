@@ -1,0 +1,266 @@
+# frozen_string_literal: true
+
+module API
+  class NpmProjectPackages < ::API::Base
+    ERROR_REASON_TO_HTTP_STATUS_MAPPTING = {
+      ::Packages::Npm::CreatePackageService::ERROR_REASON_INVALID_PARAMETER => 400,
+      ::Packages::Npm::CreatePackageService::ERROR_REASON_PACKAGE_EXISTS => 403,
+      ::Packages::Npm::CreatePackageService::ERROR_REASON_PACKAGE_LEASE_TAKEN => 400
+    }.freeze
+
+    helpers ::API::Helpers::Packages::Npm
+    helpers ::API::Helpers::Packages::DependencyProxyHelpers
+
+    feature_category :package_registry
+    urgency :low
+
+    rescue_from ActiveRecord::RecordInvalid do |e|
+      render_structured_api_error!({ message: e.message, error: e.message }, 400)
+    end
+
+    rescue_from Oj::ParseError do |e|
+      Gitlab::ErrorTracking.track_exception(e)
+
+      message = 'Invalid json'
+      render_structured_api_error!({ message: message, error: message }, 400)
+    end
+
+    helpers do
+      include Gitlab::Utils::StrongMemoize
+      include Gitlab::InternalEventsTracking
+
+      def error_reason_to_http_status(reason)
+        ERROR_REASON_TO_HTTP_STATUS_MAPPTING.fetch(reason, 400)
+      end
+
+      def metadata_cache
+        ::Packages::Npm::MetadataCache
+          .find_by_package_name_and_project_id(params[:package_name], project.id)
+      end
+      strong_memoize_attr :metadata_cache
+
+      def package_or_nil
+        ::Packages::Npm::Package
+          .for_projects(project)
+          .by_name_and_file_name(params[:package_name], params[:file_name])
+      rescue ActiveRecord::RecordNotFound
+        nil
+      end
+
+      def project
+        user_project(action: :read_package)
+      end
+
+      def project_id_or_nil
+        params[:id]
+      end
+
+      def npm_command_deprecate?
+        headers['Npm-Command'] == 'deprecate'
+      end
+      strong_memoize_attr :npm_command_deprecate?
+
+      # Overridden in EE to enforce the Dependency Firewall before a locally
+      # hosted package tarball is served. CE intentionally does nothing.
+      def enforce_dependency_firewall_on_download!(_package); end
+
+      # Forwards a not-locally-hosted tarball to the upstream registry (302) when npm
+      # request forwarding is enabled, mirroring the metadata forward; otherwise 404s
+      # via the block. Overridden in EE to firewall-gate the redirect; the plain forward
+      # stays in CE so GitLab tarball URLs baked into committed lockfiles keep resolving
+      # even if the Dependency Firewall license or flag lapses.
+      def forward_npm_tarball_download_or_404!(project, package_name, file_name)
+        redirect_registry_request(
+          forward_to_registry: true,
+          package_type: :npm,
+          target: project,
+          path: "#{package_name}/-",
+          package_name: file_name
+        ) do
+          not_found!('Package')
+        end
+      end
+
+      # Serves local npm metadata or, when the package isn't hosted locally,
+      # 302-redirects to the upstream registry. Overridden in EE to hand the
+      # upstream packument off to Workhorse (with a tarball-rewriting transform)
+      # and firewall-gate the follow-up download when forwarding enforcement is on.
+      def present_or_forward_npm_metadata!(package_name, packages)
+        redirect_request = project_or_nil.blank? || packages.empty?
+
+        redirect_registry_request(
+          forward_to_registry: redirect_request,
+          package_type: :npm,
+          target: project_or_nil,
+          package_name: package_name
+        ) do
+          authorize_read_package!(project)
+
+          not_found!('Packages') if packages.empty?
+
+          if metadata_cache&.file&.exists?
+            metadata_cache.touch_last_downloaded_at unless request.head?
+            present_carrierwave_file!(metadata_cache.file)
+
+            break
+          end
+
+          enqueue_sync_npm_metadata_cache_worker(project, package_name)
+
+          metadata = generate_metadata_service(packages).execute.payload
+          present metadata, with: ::API::Entities::NpmPackage
+        end
+      end
+    end
+
+    def self.authorization_boundary_options
+      { boundary_type: :project, boundary: -> { project } }
+    end
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    namespace 'projects/:id/packages/npm' do
+      include ::API::Concerns::Packages::NpmEndpoints
+
+      desc 'Download the NPM tarball' do
+        detail 'This feature was introduced in GitLab 11.8'
+        success code: 200
+        failure [
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[packages_npm]
+      end
+      params do
+        requires :package_name, type: String, desc: 'Name of the package.'
+        requires :file_name, type: String, desc: 'Package file name'
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true
+      route_setting :authorization, permissions: :download_npm_package, boundary_type: :project,
+        job_token_policies: :read_packages,
+        allow_public_access_for_enabled_project_features: :package_registry
+      get '*package_name/-/*file_name', requirements: ::API::NO_FORMAT_SUFFIX_REQUIREMENT do
+        authorize_read_package!(project)
+
+        package = package_or_nil
+
+        if package
+          package_file = ::Packages::PackageFileFinder
+            .new(package, params[:file_name]).execute!
+
+          enforce_dependency_firewall_on_download!(package)
+
+          track_package_event('pull_package', :npm, category: 'API::NpmPackages', project: project, namespace: project.namespace)
+
+          present_package_file!(package_file)
+        else
+          forward_npm_tarball_download_or_404!(project, params[:package_name], params[:file_name])
+        end
+      end
+
+      desc 'Authorize NPM package upload' do
+        detail 'This feature was introduced in GitLab 18.6'
+        success code: 200
+        failure [
+          { code: 400, message: 'Bad Request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[packages_npm]
+        hidden true
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true
+      route_setting :authorization, skip_granular_token_authorization: :workhorse_pre_authorization,
+        job_token_policies: :admin_packages
+      put ':package_name/authorize', requirements: ::API::Helpers::Packages::Npm::NPM_ENDPOINT_REQUIREMENTS do
+        authorize_upload!(project)
+
+        content_type Gitlab::Workhorse::INTERNAL_API_CONTENT_TYPE
+
+        ::Packages::PackageFileUploader.workhorse_authorize(has_length: true, maximum_size: project.actual_limits.npm_max_file_size)
+      end
+
+      desc 'Create or deprecate an NPM package' do
+        detail 'Creates or deprecates an NPM package for a specified project. Deprecate support was added in ' \
+          'GitLab 16.0.'
+        success code: 200
+        failure [
+          { code: 400, message: 'Bad Request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[packages_npm]
+      end
+      params do
+        requires :package_name, type: String, desc: 'Name of the package.'
+        requires :file, type: ::API::Validations::Types::WorkhorseFile, desc: 'The package file to be published (generated by Multipart middleware)', documentation: { type: 'file' }
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true
+      route_setting :authorization, permissions: :upload_npm_package, boundary_type: :project,
+        job_token_policies: :admin_packages
+      put ':package_name', requirements: ::API::Helpers::Packages::Npm::NPM_ENDPOINT_REQUIREMENTS do
+        if npm_command_deprecate?
+          authorize_destroy_package!(project)
+        else
+          authorize_create_package!(project)
+        end
+
+        response = ::Packages::Npm::CreateTemporaryPackageService.new(
+          project,
+          current_user,
+          declared_params.merge(build: current_authenticated_job, deprecate: npm_command_deprecate?)
+        ).execute
+
+        if response.error?
+          render_structured_api_error!({ message: response.message, error: response.message }, error_reason_to_http_status(response.reason))
+        end
+
+        if npm_command_deprecate?
+          track_internal_event('deprecate_npm_package', project: project, user: current_user)
+        else
+          track_package_event('push_package', :npm, category: 'API::NpmPackages', project: project, namespace: project.namespace)
+        end
+
+        response[:package]
+      end
+
+      # Caution: This is a globbing wildcard for GET requests
+      # Do not put other GET routes below this one
+      desc 'NPM registry metadata endpoint' do
+        detail 'This feature was introduced in GitLab 11.8'
+        success [
+          { code: 200, model: ::API::Entities::NpmPackage, message: 'Ok' },
+          { code: 302, message: 'Found (redirect)' }
+        ]
+        failure [
+          { code: 400, message: 'Bad Request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[packages_npm]
+      end
+      params do
+        use :package_name
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true,
+        authenticate_non_public: true
+      route_setting :authorization, permissions: :read_npm_package, boundary_type: :project,
+        job_token_policies: :read_packages,
+        allow_public_access_for_enabled_project_features: :package_registry
+      get '*package_name',
+        requirements: ::API::Helpers::Packages::Npm::NPM_ENDPOINT_REQUIREMENTS
+          .merge(::API::NO_FORMAT_SUFFIX_REQUIREMENT) do
+        package_name = declared_params[:package_name]
+        packages = ::Packages::Npm::PackageFinder.new(project: project_or_nil, params: { package_name: package_name }).execute
+
+        present_or_forward_npm_metadata!(package_name, packages)
+      end
+    end
+  end
+end
+
+API::NpmProjectPackages.prepend_mod

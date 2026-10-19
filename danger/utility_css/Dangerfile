@@ -1,0 +1,34 @@
+# frozen_string_literal: true
+
+common = 'app/assets/stylesheets/framework/common.scss'
+
+def get_css_files(files, common_filepath)
+  files.select do |file|
+    file.include?(common_filepath)
+  end
+end
+
+changed_util_files = get_css_files(helper.all_changed_files.to_a, common)
+
+unless changed_util_files.empty?
+
+  markdown(<<~MARKDOWN)
+  ## Changes to utility SCSS files
+  MARKDOWN
+
+  if changed_util_files.include?(common)
+
+    markdown(<<~MARKDOWN)
+    ### Addition to `#{common}`
+
+    You have added a new rule to `#{common}`. Are you sure you need this rule?
+
+    If it is a component class shared across items, could it be added to the component as a utility class or to the component's stylesheet? If not, you can ignore this warning.
+
+    MARKDOWN
+
+  end
+
+  warn "This merge request adds a new rule to #{common}."
+
+end

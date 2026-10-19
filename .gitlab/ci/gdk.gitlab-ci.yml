@@ -1,0 +1,17 @@
+# The gdk-update job boots into an existing GDK (GitLab Development Kit)
+# installation. We then run `gdk update` to update the installation as if
+# the current branch was already merged to master.
+#
+# The point of this job is to ensure that changes in this repository
+# don't break the development flow of contributors.
+gdk-update:
+  extends:
+    - .default-retry
+  rules:
+    - when: never
+  needs: []
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "CI job disabled. See https://gitlab.com/gitlab-org/gitlab/-/work_items/596050"
+    - exit 1

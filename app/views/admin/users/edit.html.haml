@@ -1,8 +1,8 @@
-- page_title "Edit", @user.name, "Users"
-%h3.page-title
-  Edit user: #{@user.name}
-.back-link
-  = link_to admin_user_path(@user) do
-    &larr; Back to user page
-%hr
+- add_to_breadcrumbs _("Users"), admin_users_path
+- add_to_breadcrumbs @user.name, admin_user_path(@user)
+- breadcrumb_title _("Edit")
+- page_title _("Edit"), @user.name, _("Users")
+
+= render ::Layouts::PageHeadingComponent.new(_("Edit user: %{user_name}") % { user_name: @user.name })
+
 = render 'form'

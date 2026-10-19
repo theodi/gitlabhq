@@ -1,0 +1,46 @@
+{
+  "private": true,
+  "scripts": {
+    "test": "test-storybook --url http://${STORYBOOK_HOST:-localhost}:${STORYBOOK_PORT:-6006} -c config --verbose --json --outputFile storybook-results.json",
+    "start": "storybook dev -p 6006 -c config",
+    "build": "storybook build -c config -o public",
+    "serve": "http-server public -p 6006 --silent",
+    "doctor": "storybook doctor  -c config --debug"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.26.0",
+    "@storybook/addon-a11y": "^7.6.24",
+    "@storybook/addon-actions": "^7.6.24",
+    "@storybook/addon-controls": "^7.6.24",
+    "@storybook/addon-docs": "^7.6.24",
+    "@storybook/addon-essentials": "^7.6.24",
+    "@storybook/addon-viewport": "^7.6.24",
+    "@storybook/addons": "^7.6.24",
+    "@storybook/api": "^7.6.24",
+    "@storybook/builder-webpack5": "^7.6.24",
+    "@storybook/components": "^7.6.24",
+    "@storybook/core-events": "^7.6.24",
+    "@storybook/test-runner": "^0.16.0",
+    "@storybook/vue": "^7.6.24",
+    "@storybook/vue-webpack5": "^7.6.24",
+    "axe-playwright": "^2.1.0",
+    "graphql-tag": "^2.12.5",
+    "http-server": "^14.1.1",
+    "postcss-loader": "^8.1.1",
+    "sass": "^1.75.0",
+    "sass-loader": "^10",
+    "storybook": "^7.6.24",
+    "storybook-dark-mode": "4.0.2",
+    "vue-loader": "^15.8.3"
+  },
+  "resolutions": {
+    "browserslist": "^4.28.2",
+    "chokidar": "^3.5.2",
+    "playwright": "^1.55.0",
+    "playwright-core": "^1.55.0",
+    "string-width": "^4.2.0"
+  },
+  "dependencies": {
+    "chokidar": "^3.5.2"
+  }
+}

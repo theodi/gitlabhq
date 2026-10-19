@@ -1,0 +1,17 @@
+description: "Copy Gradle add to source command"
+category: default
+action: copy_gradle_add_to_source_command
+extra_properties:
+identifiers:
+product_group: package_registry
+product_categories:
+- package_registry
+milestone: "13.10"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/55738
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`code_instruction`"

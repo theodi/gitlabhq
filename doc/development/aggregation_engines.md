@@ -1,0 +1,1429 @@
+---
+stage: Analytics
+group: Optimize
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Aggregation engines
+---
+
+The Aggregation Framework provides a unified interface for building analytical queries across different database backends. It supports both PostgreSQL (via ActiveRecord) and ClickHouse, allowing developers to define reusable aggregation engines with metrics, dimensions, and filters.
+
+## Defining ActiveRecord Engine
+
+The ActiveRecord engine (`Gitlab::Database::Aggregation::ActiveRecord::Engine`) generates PostgreSQL queries using ActiveRecord's query interface.
+
+### Example ActiveRecord Engine
+
+```ruby
+class IssueAggregationEngine < Gitlab::Database::Aggregation::ActiveRecord::Engine
+  filters do
+    exact_match :project_id, :integer, description: 'Filter by project ID'
+    exact_match :state, :string, description: 'Filter by issue state'
+  end
+
+  dimensions do
+    column :author_id, :integer, description: 'Group by author'
+    date_bucket :created_at, :date,
+      parameters: { granularity: { in: %i[daily weekly monthly yearly], type: :string } },
+      description: 'Group by creation date'
+  end
+
+  metrics do
+    count description: 'Total number of issues'
+    mean :weight, :float, description: 'Average issue weight'
+  end
+end
+```
+
+The ActiveRecord engine generates a single-level SQL query:
+
+```sql
+SELECT
+  "issues"."author_id" AS aeq_author_id,
+  date_trunc('month', "issues"."created_at") AS aeq_created_at,
+  COUNT(*) AS aeq_total_count,
+  AVG("issues"."weight") AS aeq_mean_weight
+FROM "issues"
+WHERE "issues"."project_id" IN (1, 2, 3)
+  AND "issues"."state" IN ('opened')
+GROUP BY aeq_author_id, aeq_created_at
+ORDER BY aeq_author_id, aeq_created_at
+```
+
+Key characteristics:
+
+- All columns are prefixed with `aeq_` (Aggregation Engine Query). This prefix is removed by `AggregationResult` object.
+- Filters are applied as `WHERE` or `HAVING` clauses
+- Dimensions become `GROUP BY` columns
+- Metrics use aggregate functions (`COUNT`, `AVG`)
+
+### Available Components
+
+#### `count` metric
+
+Counts rows using `COUNT(*)`.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | No | Name for the count metric. Default: `'total'`. Identifier becomes `:{name}_count` |
+| `type` | Symbol | No | Data type. Default: `:integer` |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `mean` metric
+
+Calculates the average value using `AVG()`.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name to average. Identifier becomes `:mean_{name}` |
+| `type` | Symbol | No | Data type. Default: `:float` |
+| `expression` | Proc | No | Custom Arel expression instead of column |
+| `scope_proc` | Proc | No | Modifies the ActiveRecord scope (for example for JOINs) |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `column` dimension
+
+Groups results by a column value.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name or identifier |
+| `type` | Symbol | Yes | Data type (`:string`, `:integer`, `:datetime`, etc.) |
+| `expression` | Proc | No | Custom Arel expression instead of column |
+| `scope_proc` | Proc | No | Modifies the ActiveRecord scope (for example for JOINs) |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `date_bucket` dimension
+
+Groups results by time intervals using PostgreSQL's `date_trunc()` function. **Supports parameters.**
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Date/datetime column name |
+| `type` | Symbol | Yes | Data type. Use `:date`: buckets always start on a day boundary, so values serialize as dates for every granularity. |
+| `expression` | Proc | No | Custom Arel expression instead of column |
+| `scope_proc` | Proc | No | Modifies the ActiveRecord scope |
+| `parameters` | Hash | No | Parameter configuration (see below) |
+| `description` | String | No | Human-readable description |
+
+**Supported Parameters:**
+
+| Parameter | Type | Values | Default | Description |
+|-----------|------|--------|---------|-------------|
+| `granularity` | String | `daily`, `weekly`, `monthly`, `yearly` | `monthly` | Time interval for grouping |
+
+#### `exact_match` filter
+
+Filters rows by exact value match using `WHERE column IN (...)`.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name to filter |
+| `type` | Symbol | Yes | Data type of filter values |
+| `expression` | Proc | No | Custom Arel expression instead of column |
+| `max_size` | Integer | No | Maximum number of values allowed in filter |
+| `description` | String | No | Human-readable description |
+
+## Defining ClickHouse Engine
+
+The ClickHouse engine (`Gitlab::Database::Aggregation::ClickHouse::Engine`) generates optimized queries for ClickHouse's columnar database.
+
+### Example ClickHouse Engine
+
+```ruby
+class SessionAnalyticsEngine < Gitlab::Database::Aggregation::ClickHouse::Engine
+  self.table_name = 'sessions'
+
+  filters do
+    exact_match :flow_type, :string, description: 'Filter by flow type'
+    range :created_at, :datetime, description: 'Filter by creation date'
+  end
+
+  dimensions do
+    column :flow_type, :string, description: 'Group by flow type'
+    date_bucket :created_at, :date,
+      parameters: { granularity: { in: %i[daily weekly monthly], type: :string } },
+      description: 'Group by date'
+  end
+
+  metrics do
+    count description: 'Total sessions'
+    count :completed, :integer,
+      expression: -> { Arel.sql('1') },
+      if: -> { Arel.sql('finished_at IS NOT NULL') },
+      description: 'Completed sessions'
+    mean :duration, :float,
+      expression: -> { Arel.sql('finished_at - created_at') },
+      if: -> { Arel.sql('finished_at IS NOT NULL') },
+      description: 'Average session duration'
+    rate :completion,
+      numerator_if: -> { Arel.sql('finished_at IS NOT NULL') },
+      description: 'Session completion rate'
+    quantile :duration, :float,
+      expression: -> { Arel.sql('finished_at - created_at') },
+      parameters: { quantile: { type: :float, description: 'Quantile value (0.0-1.0)' } },
+      description: 'Duration percentile'
+  end
+end
+```
+
+The ClickHouse engine generates a two-level nested query for optimal performance. Overall structure can be expressed like this:
+
+```sql
+-- metacode query to emphasize on query structure
+SELECT dimensions, metrics
+FROM (
+  SELECT
+    primary_key_columns,
+    dimensions_expressions,
+    metrics_expressions,
+  FROM source_table
+  WHERE filters
+  GROUP BY ALL
+) ch_aggregation_inner_query
+GROUP BY ALL
+ORDER BY orders
+```
+
+Inner query precalculates data for each primary key in source table. Outer query calculates metrics and dimensions based on inner query.
+
+Example full query:
+
+```sql
+SELECT
+  `ch_aggregation_inner_query`.`aeq_flow_type` AS aeq_flow_type,
+  toStartOfInterval(
+    `ch_aggregation_inner_query`.`aeq_created_at`,
+    INTERVAL 1 month
+  ) AS aeq_created_at,
+  COUNT(*) AS aeq_total_count,
+  countIf(`ch_aggregation_inner_query`.`aeq_completed_secondary` = 1) AS aeq_completed_count,
+  avgIf(
+    `ch_aggregation_inner_query`.`aeq_mean_duration`,
+    `ch_aggregation_inner_query`.`aeq_mean_duration_secondary` = 1
+  ) AS aeq_mean_duration,
+  countIf(`ch_aggregation_inner_query`.`aeq_completion_rate` = 1) / COUNT(*) AS aeq_completion_rate,
+  quantileExactInclusive(0.5)(`ch_aggregation_inner_query`.`aeq_duration_quantile`) AS aeq_duration_quantile
+FROM (
+  SELECT
+    `sessions`.`flow_type` AS aeq_flow_type,
+    `sessions`.`created_at` AS aeq_created_at,
+    finished_at IS NOT NULL AS aeq_completed_secondary,
+    finished_at - created_at AS aeq_mean_duration,
+    finished_at IS NOT NULL AS aeq_mean_duration_secondary,
+    finished_at IS NOT NULL AS aeq_completion_rate,
+    finished_at - created_at AS aeq_duration_quantile,
+    `sessions`.`user_id`,
+    `sessions`.`session_id`
+  FROM `sessions`
+  WHERE `sessions`.`created_at` BETWEEN '2024-01-01' AND '2024-12-31'
+  GROUP BY ALL
+) ch_aggregation_inner_query
+GROUP BY ALL
+ORDER BY aeq_flow_type, aeq_created_at
+```
+
+Key characteristics:
+
+- Two-level query structure (inner query + outer aggregation)
+- Inner query handles row-level calculations and primary key grouping. Outer query performs final aggregations. This approach allows to use `*Merge` columns easily as well as `*If` aggregations.
+- Conditional metrics use `*If` functions
+- All columns are prefixed with `aeq_` (Aggregation Engine Query). This prefix is removed by `AggregationResult` object.
+- Column filters are applied as `WHERE` or `HAVING` clauses on the **inner query**
+- Metric filters are applied as `HAVING` clauses on the **outer query**
+- Dimensions become `GROUP BY` columns on **outer query**
+- Metrics use aggregate functions on **outer query**
+
+### Measurements
+
+A measurement is a row-level value with a base type. Declare it once with the
+class-level `measurement` macro, and the framework expands it into a group of
+related metrics.
+
+Prefer a measurement when you expose a row-level value. Define individual
+metrics for the same value only when a measurement does not fit, for example
+when you need `if:` conditions, formatters, or an aggregate the macro does not
+generate.
+
+```ruby
+measurement(name, type, expression, description: nil)
+```
+
+The macro expands into a group of metrics with dotted identifiers:
+
+- `<name>.min` and `<name>.max`, which inherit the measurement's base type
+- `<name>.mean`, which is always `:float`
+- `<name>.quantile`, which is always `:float` and has an auto-declared `quantile`
+  parameter of type float, with an allowed range of `0.0` to `1.0` and a default of `0.5`
+- `<name>.sum`, which is always `:float`, even for an `:integer` measurement,
+  because summed values overflow GraphQL `Int` quickly. The sum is only
+  generated for summable base types (`:integer` and `:float`).
+
+The `expression` argument can be a [transient column](#transient-columns)
+reference or a lambda. Zero-arity lambdas are wrapped automatically.
+
+The macro also registers the expression as a transient under the measurement
+name, so definitions that come later can reuse it with `transient(:name)`.
+If a transient with the same name already exists, the macro keeps the existing
+transient.
+
+```ruby
+transient(:duration) do
+  sql("dateDiff('seconds', anyIfMerge(created_event_at), anyIfMerge(finished_event_at))")
+end
+
+measurement :duration, :integer, transient(:duration), description: 'Session duration in seconds'
+```
+
+In GraphQL, the aggregates surface as one nested group field named after the
+measurement, with `min`, `max`, `mean`, `quantile`, and `sum` sub-fields.
+
+```graphql
+duration {
+  min
+  max
+  mean
+  quantile(quantile: 0.95)
+  sum
+}
+```
+
+`orderBy` accepts the full dotted identifier, for example
+`{ identifier: "duration.max", direction: DESC }`.
+
+#### Requirements and limitations
+
+- The engine adapter must support the `min`, `max`, `mean`, and `quantile` metrics,
+  and also the `sum` metric for summable measurement types.
+  Calling `measurement` on an adapter that does not support them (the ActiveRecord
+  engine today) raises `ArgumentError`. In practice, this makes the macro
+  ClickHouse-only.
+- The macro does not accept `if:` or `formatter:` options.
+- The raw measurement value does not get a dimension.
+- `metric_range` and `metric_exact_match` filters cannot target dotted metric identifiers.
+
+### Available Components
+
+#### `count` metric
+
+Counts rows with support for distinct counting and conditional counting using `countIf()`. **Supports parameters.**
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | No | Name for the count metric. Default: `'total'`. Identifier becomes `:{name}_count` |
+| `type` | Symbol | No | Data type. Default: `:integer` |
+| `expression` | Proc | No | Custom expression for counting specific values |
+| `if` | Proc | No | Condition expression for conditional counting (`countIf`) |
+| `distinct` | Boolean | No | Enable distinct counting. Default: `false` |
+| `parameters` | Hash | No | Parameter configuration. A parameter declared with an `in:` allowlist adds a `countIf` condition on the column named by the parameter key |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `mean` metric
+
+Calculates the average value with support for conditional averaging using `avgIf()`.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name or identifier. Identifier becomes `:mean_{name}` |
+| `type` | Symbol | No | Data type. Default: `:float` |
+| `expression` | Proc | No | Custom expression for the value to average |
+| `if` | Proc | No | Condition expression for conditional averaging (`avgIf`) |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `min` metric
+
+Calculates the minimum value with support for conditional aggregation using `minIf()`.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name or identifier. Identifier becomes `:min_{name}` |
+| `type` | Symbol | No | Data type. Default: `:float` |
+| `expression` | Proc | No | Custom expression for the value |
+| `if` | Proc | No | Condition expression for conditional aggregation (`minIf`) |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `max` metric
+
+Calculates the maximum value with support for conditional aggregation using `maxIf()`.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name or identifier. Identifier becomes `:max_{name}` |
+| `type` | Symbol | No | Data type. Default: `:float` |
+| `expression` | Proc | No | Custom expression for the value |
+| `if` | Proc | No | Condition expression for conditional aggregation (`maxIf`) |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `rate` metric
+
+Calculates the ratio between rows matching a numerator condition and rows matching a denominator condition (or total rows).
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier name. Identifier becomes `:{name}_rate` |
+| `type` | Symbol | No | Data type. Default: `:float` |
+| `numerator_if` | Proc | Yes | Condition for the numerator (rows to count) |
+| `denominator_if` | Proc | No | Condition for the denominator. If not provided, uses total count |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+#### `ratio` metric
+
+Computes one aggregate divided by another aggregate: `numerator_agg(numerator) / denominator_agg(denominator)`. `ratio` divides the sum of the numerator by the sum of the denominator, which is the correct semantics for "average X per Y" figures. Using `mean` over a row-level division expression instead yields a mean of ratios, which is a different number. For example, for rows `(credits: 10, mrs: 1)` and `(credits: 10, mrs: 9)`, a mean of ratios gives `avg(10, 1.11) = 5.56`, while `ratio` gives `20 / 10 = 2.0`.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier name. Identifier becomes `:{name}_ratio` |
+| `type` | Symbol | No | Must be `:float`. Default: `:float`. Any other value raises `ArgumentError` |
+| `numerator` | Proc | Yes | Row-level expression for the numerator |
+| `denominator` | Proc | Yes | Row-level expression for the denominator |
+| `numerator_agg` | Symbol | No | Aggregate function applied to the numerator. Default: `:sum` |
+| `denominator_agg` | Symbol | No | Aggregate function applied to the denominator. Default: `:sum` |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+| `parameters` | Hash | No | Parameter configuration |
+| `authorize` | Symbol | No | Additional authorization check for the metric |
+
+`numerator_agg` and `denominator_agg` accept `sum`, `count`, `uniqExact`, or `avg`; any other value raises `ArgumentError`. `count` maps to `count(col)`, which counts non-`NULL` values rather than rows. To count rows, use an always-non-null expression, for example `-> (_params) { sql('1') }`.
+
+Both `numerator` and `denominator` must return an expression for every parameter combination, because a ratio has no meaningful value with one side missing. A `nil` expression fails the request with a validation error; building a query without validating the plan first raises `ArgumentError`.
+
+`ratio` does not support the `if` option and raises `ArgumentError` if you pass one, because the denominator occupies the secondary expression slot that `if` uses on other metric types. Encode conditions inside `numerator` or `denominator` instead, for example with ClickHouse's `if(cond, value, NULL)`. Use `NULL` rather than `0` for the else branch. `sum` treats the two the same, but `count` counts a `0`, so the denominator becomes the full row count.
+
+When the aggregated denominator is `0`, the generated SQL wraps it in `nullIf(..., 0)`, so the metric returns `NULL` instead of `inf` or `nan`.
+
+Integer and `Float64` expressions divide to `Float64` at full precision. A `Decimal` numerator keeps the quotient at the numerator's scale, so the result is rounded: `toDecimal64(10, 2) / 3` gives `3.33`. The `:float` option on the metric only describes the type of the returned value; it does not change how ClickHouse performs the division. To avoid the rounding, cast a `Decimal` numerator with `toFloat64` inside the `numerator` expression.
+
+```ruby
+ratio :credits_per_created_mr,
+  numerator: ->(_params) { sql('credits_used') },
+  denominator: ->(_params) { sql('length(created_merge_request_ids)') },
+  description: 'Average credits spent per merge request created by a flow'
+```
+
+This generates:
+
+```sql
+sum(credits_used) / nullIf(sum(length(created_merge_request_ids)), 0)
+```
+
+#### `quantile` metric
+
+Calculates percentiles using ClickHouse's `quantileExactInclusive()` function, which is exact and interpolates linearly between neighboring values. It keeps every value of the group in memory, unlike the sampled `quantile()`, so results are stable between runs. **Supports parameters.**
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name or identifier. Identifier becomes `:{name}_quantile` |
+| `type` | Symbol | No | Data type. Default: `:float` |
+| `expression` | Proc | No | Custom expression for the value |
+| `parameters` | Hash | No | Parameter configuration (see below) |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+
+**Supported Parameters:**
+
+| Parameter | Type | Values | Default | Description |
+|-----------|------|--------|---------|-------------|
+| `quantile` | Float | `0.0` - `1.0` | `0.5` | Quantile value (0.5 = median, 0.9 = p90, 0.99 = p99) |
+
+#### `retained_count` metric
+
+Counts values that appear in both the current and previous period, using `groupBitmapState`
+and `arrayIntersect`. Use `retained_count` for feature retention or returning-user counts.
+The dimension referenced by `over:` must be requested in the query.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier name. Identifier becomes `:{name}_count` |
+| `type` | Symbol | No | Data type. Default: `:integer` |
+| `expression` | Proc | No | Expression for the value to deduplicate, for example `user_id` |
+| `over` | Symbol | Yes | Dimension that defines the period. Must be a dimension on the engine |
+| `lag_offset` | Integer | No | Number of periods to compare against. Default: `1` |
+| `description` | String | No | Human-readable description |
+
+Example:
+
+```ruby
+metrics do
+  retained_count :returning_users, :integer, -> { sql('user_id') }, over: :timestamp,
+    description: 'Users present in both the current and previous period'
+end
+```
+
+#### `lagged_count` metric
+
+Returns the distinct count of values from the previous period, using `uniqExact` with
+`lagInFrame`. Pair `lagged_count` with `retained_count` to compute retention rates
+(returning ÷ previous). The dimension referenced by `over:` must be requested in the query.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier name. Identifier becomes `:{name}_count` |
+| `type` | Symbol | No | Data type. Default: `:integer` |
+| `expression` | Proc | No | Expression for the value to deduplicate |
+| `over` | Symbol | Yes | Dimension that defines the period |
+| `lag_offset` | Integer | No | Number of periods to look back. Default: `1` |
+| `description` | String | No | Human-readable description |
+
+Example:
+
+```ruby
+metrics do
+  lagged_count :previous_period_users, :integer, -> { sql('user_id') }, over: :timestamp,
+    description: 'Distinct users in the previous period'
+end
+```
+
+When a request includes more dimensions than just `over:`, the framework partitions the
+lag window by the extra dimensions. Each combination gets an independent sequence, so
+values do not leak across categories. For example, with `dimensions: [feature, timestamp]`
+where `timestamp` is a `date_bucket` with `granularity: 'daily'` and the metric uses
+`over: :timestamp`, the generated SQL contains
+`OVER (PARTITION BY aeq_feature ORDER BY aeq_timestamp_daily ASC)`. Retention for
+`code_suggestions` does not mix with `chat`.
+
+#### `acquired_count` metric
+
+Counts distinct values present in the current period but absent from the previous one.
+Subtracts the `arrayIntersect` length from the current period's distinct count,
+using `groupArray` and `arrayDistinct`.
+`lagInFrame` supplies the previous period.
+Use `acquired_count` for new-user counts.
+The dimension referenced by `over:` must be requested in the query.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier name. Identifier becomes `:{name}_count` |
+| `type` | Symbol | No | Data type. Default: `:integer` |
+| `expression` | Proc | No | Expression for the value to deduplicate, for example `user_id` |
+| `over` | Symbol | Yes | Dimension that defines the period. Must be a dimension on the engine |
+| `lag_offset` | Integer | No | Number of periods to compare against. Default: `1` |
+| `description` | String | No | Human-readable description |
+
+Example:
+
+```ruby
+metrics do
+  acquired_count :new_users, :integer, -> { sql('user_id') }, over: :timestamp,
+    description: 'Users active in the current period but not in the previous one'
+end
+```
+
+#### `churned_count` metric
+
+Counts distinct values present in the previous period but absent from the current one.
+Subtracts the `arrayIntersect` length from the previous period's distinct count,
+using `groupArray` and `arrayDistinct`.
+`lagInFrame` supplies the previous period.
+The dimension referenced by `over:` must be requested in the query.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier name. Identifier becomes `:{name}_count` |
+| `type` | Symbol | No | Data type. Default: `:integer` |
+| `expression` | Proc | No | Expression for the value to deduplicate, for example `user_id` |
+| `over` | Symbol | Yes | Dimension that defines the period. Must be a dimension on the engine |
+| `lag_offset` | Integer | No | Number of periods to compare against. Default: `1` |
+| `description` | String | No | Human-readable description |
+
+Example:
+
+```ruby
+metrics do
+  churned_count :churned_users, :integer, -> { sql('user_id') }, over: :timestamp,
+    description: 'Users active in the previous period but not in the current one'
+end
+```
+
+`retained_count`, `acquired_count`, and `churned_count` measure change relative to the
+previous period only, not to a value's first or last appearance overall. A user returning
+after a gap counts as acquired again, and a user skipping one period counts as churned in
+that period.
+
+The first period in a requested range has no previous period, so all of its values count as
+acquired and its churned count is `0`, mirroring how `retained_count` returns `0` there.
+Periods with no rows are absent from the result set, so the lag compares against the last
+non-empty period. Churn is visible only in periods that have at least one row, because a
+period with zero rows produces no output row at all.
+
+In any period, `retained_count` plus `acquired_count` equals the distinct value count for
+the current period, and `retained_count` plus `churned_count` equals `lagged_count`. You can
+therefore derive a churn rate from a single response without extra queries.
+
+#### `column` dimension
+
+Groups results by a column value.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name or identifier |
+| `type` | Symbol | Yes | Data type (`:string`, `:integer`, `:datetime`, etc.) |
+| `expression` | Proc | No | Custom expression instead of column |
+| `formatter` | Proc | No | Formatting function applied to results |
+| `description` | String | No | Human-readable description |
+| `association` | Boolean or Hash | No | When `true`, the dimension is also accessible without the `_id` suffix as an object. Accepts a Hash to configure `model`, `graphql_type`, `finder`, or `preloader`. Defaults to `false`. |
+
+#### `date_bucket` dimension
+
+Groups results by time intervals using ClickHouse's `toStartOfInterval()` function. **Supports parameters.**
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Date/datetime column name |
+| `type` | Symbol | Yes | Data type. Use `:date`: buckets always start on a day boundary, so values serialize as dates for every granularity. |
+| `expression` | Proc | No | Custom expression instead of column |
+| `parameters` | Hash | No | Parameter configuration (see below) |
+| `description` | String | No | Human-readable description |
+
+**Supported Parameters:**
+
+| Parameter | Type | Values | Default | Description |
+|-----------|------|--------|---------|-------------|
+| `granularity` | String | `daily`, `weekly`, `monthly`, `yearly` | `monthly` | Time interval for grouping |
+
+#### `tier` dimension
+
+Buckets a numeric expression into ordinal tiers (`tier_0` to `tier_N`) using ClickHouse's `multiIf()`
+function, based on client-provided ascending integer thresholds. **Supports parameters.**
+
+A value below the first threshold lands in `tier_0`. A value at or above the last threshold lands in
+the highest tier, so N thresholds produce N+1 tiers (`tier_0` through `tier_N`).
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name or identifier |
+| `type` | Symbol | Yes | Data type of the output labels (use `:string`) |
+| `expression` | Proc | No | Numeric expression to bucket, instead of a column |
+| `description` | String | No | Human-readable description |
+
+**Supported Parameters:**
+
+| Parameter | Type | Values | Default | Description |
+|-----------|------|--------|---------|-------------|
+| `thresholds` | Array of Integers | Strictly ascending positive integers, at most 9 | None (required) | Tier boundaries |
+
+The `thresholds` parameter is declared automatically and is required in every request that uses the
+dimension. Any normalization of thresholds (for example, per-week scaling) is a client concern.
+
+```ruby
+dimensions do
+  tier :user_tier, :string, -> { sql('user_activity.sessions') }, ctes: [:user_activity]
+end
+```
+
+#### `traversal_path` dimension
+
+Groups results by the namespace ID found at a given depth of an organization-scoped traversal path
+column, for example `7/12/34/` where `7` is the organization ID. Use it to bucket results by one level
+of the group hierarchy. The leading organization segment is skipped, so depth `1` is the top-level
+group. **Supports parameters.**
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Dimension identifier, for example `:group_id` |
+| `type` | Symbol | Yes | Data type of the extracted ID (`:integer`) |
+| `expression` | Proc | Yes | Expression returning the traversal path column, for example `-> { sql('traversal_path') }` |
+| `parameters` | Hash | No | Extra options for the `depth` parameter, such as an `in:` range |
+| `association` | Boolean or Hash | No | When `true`, the dimension is also accessible without the `_id` suffix as an object. Accepts a Hash to configure `model`, `graphql_type`, `finder`, or `preloader`. Defaults to `false`. |
+| `description` | String | No | Human-readable description |
+
+**Supported Parameters:**
+
+| Parameter | Type | Values | Default | Description |
+|-----------|------|--------|---------|-------------|
+| `depth` | Integer | `1` to `99` by default. Narrow with `parameters: { depth: { in: 1..2 } }` | `1` | Depth in the hierarchy, counted from the top-level group |
+
+Paths shorter than the requested depth and the `0/` placeholder path produce a `NULL` bucket.
+The path identifies namespaces only, so for rows tracked in a project the segment at that depth is
+the project namespace ID rather than a group. That ID is still a distinct bucket; with
+`association: true` only the object lookup resolves to `null`, so one response can hold several
+rows whose dimension renders as `null`.
+
+```ruby
+dimensions do
+  traversal_path :group_id, :integer, -> { sql('traversal_path') }, association: true
+end
+```
+
+#### `exact_match` filter
+
+Filters rows by exact value match. Supports filtering on regular columns or merge columns (pre-aggregated data).
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name to filter |
+| `type` | Symbol | Yes | Data type of filter values |
+| `expression` | Proc | No | Custom expression instead of column |
+| `merge_column` | Boolean | No | If `true`, applies filter using `HAVING` instead of `WHERE` |
+| `max_size` | Integer | No | Maximum number of values allowed in filter |
+| `description` | String | No | Human-readable description |
+
+#### `exact_not_match` filter (ClickHouse only)
+
+Filters out rows whose value matches any of the given values. It works like `exact_match`, but generates a `NOT IN` condition instead of `IN`. This filter is only available for ClickHouse engines.
+
+```ruby
+filters do
+  exact_match :status, :string
+  exact_not_match :status, :string
+end
+```
+
+In a request, use `{ identifier: :status_not, values: ['skipped'] }`. In GraphQL, the identifier becomes a list argument named in camelCase, for example `statusNot`.
+
+Positive and negative filters combine with `AND`, so `ref: ['main']` together with
+`status_not: ['success']` means "on `main` and not successful".
+
+> [!note]
+> In ClickHouse, `NULL NOT IN (...)` evaluates to NULL, and `WHERE` and `HAVING` treat NULL as false. Rows where the filtered column is NULL are excluded from the results.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name to filter |
+| `type` | Symbol | Yes | Data type of filter values |
+| `expression` | Proc | No | Custom expression instead of column |
+| `merge_column` | Boolean | No | If `true`, applies filter using `HAVING` instead of `WHERE` |
+| `formatter` | Proc | No | Transforms values before they reach the query |
+| `max_size` | Integer | No | Maximum number of values allowed in filter |
+| `description` | String | No | Human-readable description |
+
+> [!warning]
+> A `formatter` that discards values it does not recognize, for example one using `filter_map` over
+> an enum, inverts the meaning of this filter. An empty `NOT IN` matches every row, so an
+> unrecognized exclusion value makes the filter a no-op that returns everything, whereas the same
+> value passed to `exact_match` returns nothing. Validate values before passing them.
+
+##### Pair every exact_match filter with an exclusion
+
+So that no value list ships without a way to exclude values, every `exact_match` filter should
+get an `exact_not_match` on the same column, declared explicitly on its own line:
+
+```ruby
+filters do
+  exact_match :status, :string, description: 'Filter by one or many statuses'
+  exact_not_match :status, :string, description: 'Exclude one or many statuses.'
+end
+```
+
+The spec `ee/spec/models/analytics/aggregation_engines/exclusion_filter_coverage_spec.rb` enforces
+the pairing and fails when a new `exact_match` filter ships without a counterpart. Columns that
+deliberately have no exclusion belong in that spec's `inclusion_only` list with a reason. A
+non-nullable boolean is one such case, because `createdByDuo: false` already expresses the
+exclusion.
+
+The guard covers `exact_match` only. `descendants` and `metric_exact_match` have no `NOT` form, so
+they are neither checked nor recordable in `inclusion_only`.
+
+The two declarations are independent, so each one carries its own description, `max_size`, and
+`experiment` option.
+
+##### Writing the exclusion description
+
+Because the exclusion filter accepts a list, write its description to read as a list exclusion, for
+example `Exclude one or many statuses.`, rather than as a restatement of the positive filter's
+description. Because deprecation markers are appended to the raw string, end every description
+with a period.
+
+Where the column is nullable, say so in the description, because API users cannot infer the NULL
+behavior from the argument name. Where an enum `formatter` discards unrecognized values, say that
+too, for the reason in the warning above.
+
+##### Capping exclusion list size
+
+Because an exclusion cannot use the sort key to skip granules, the whole scoped range is read
+however short the value list is. A cap therefore bounds the request and the set-membership work
+rather than the read, which is still worth having: set
+`max_size: Gitlab::Database::Aggregation::ClickHouse::Engine::MAX_EXCLUSION_VALUES` on every
+`exact_not_match`, and state the limit in the description. Do not cap the `exact_match` twin, which
+would newly reject queries that work today.
+
+> [!note]
+> A tighter `max_size` does not restore granule pruning, so do not reach for it as a performance
+> control. `NOT IN` reads the scoped range in full because the complement of a value set is not a
+> contiguous range; bound the query with a time range instead, where the sort key allows one.
+
+##### Do not mark generated arguments as experiment
+
+`Gitlab::Graphql::Deprecations` turns an `experiment:` marker into a `deprecation_reason`, and on
+these resolver-generated arguments that makes query execution recurse until the stack overflows.
+Every exclusion argument reproduced it; the positive filters, which carry no marker, are
+unaffected. See [issue 629296](https://gitlab.com/gitlab-org/gitlab/-/issues/629296).
+
+#### `range` filter
+
+Filters rows by value range using `BETWEEN`. Supports filtering on regular columns or merge columns.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Column name to filter |
+| `type` | Symbol | Yes | Data type of filter values (`:datetime`, `:integer`, etc.) |
+| `expression` | Proc | No | Custom expression instead of column |
+| `merge_column` | Boolean | No | If `true`, applies filter using `HAVING` instead of `WHERE` |
+| `description` | String | No | Human-readable description |
+
+#### `descendants` filter
+
+Filters rows whose traversal path column starts with any of the given paths, so a namespace
+matches together with all of its descendants. Values are Group Global IDs. Request validation
+resolves the Global IDs to traversal paths before the filter runs.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Filter identifier, for example `:group_id` |
+| `type` | Symbol | Yes | Data type of filter values (`:string` for Global IDs) |
+| `expression` | Proc | No | Expression returning the traversal path column. Defaults to the column named `name`. |
+| `merge_column` | Boolean | No | If `true`, applies filter using `HAVING` instead of `WHERE` |
+| `max_size` | Integer | No | Maximum number of values allowed in filter |
+| `with_organization` | Boolean | No | If `false`, resolves Global IDs to traversal paths without the organization prefix. Defaults to `true`. |
+| `description` | String | No | Human-readable description |
+
+```ruby
+filters do
+  descendants :group_id, :string, -> { sql('traversal_path') }, max_size: 100
+end
+```
+
+One PostgreSQL primary key lookup, `Group.id_in`, finds the groups, and
+`traversal_path(with_organization:)` builds each path.
+
+Validation rejects the whole request with the error "Values must be Global IDs of existing groups
+for filter `<key>`" when the value list is empty, a value is blank, a value is not a Global ID,
+the Global ID belongs to another model such as a Project, or the group does not exist. This check
+applies even when a Project's numeric ID collides with a group ID. No value is dropped silently.
+
+`max_size` is validated first. An oversized request is rejected before the PostgreSQL lookup runs,
+so set `max_size` to bound the lookup.
+
+Every resolved path must end with `/`, or the request is rejected with the error "Values must be
+traversal paths ending with `/` for filter `<key>`". A path `1/2` would also match `1/20/`,
+exposing rows of an unrelated group. This check guards against a broken ID-to-path transformation.
+
+Once validation passes, the filter renders one `startsWith(<path column>, '<traversal path>')`
+condition per resolved path, joined with `OR`, as a `WHERE` clause, or as a `HAVING` clause when
+`merge_column` is `true`.
+
+Tables whose path column has no organization prefix, `namespace_path` for example, pass
+`with_organization: false`, until
+[every traversal path carries the organization prefix](https://gitlab.com/gitlab-org/gitlab/-/work_items/603734):
+
+```ruby
+descendants :group_id, :string, -> { sql('namespace_path') }, max_size: 100, with_organization: false
+```
+
+#### `metric_exact_match` filter
+
+Filters groups by exact match on an aggregated metric value. Applied as a `HAVING` clause in post-aggregation.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier of the metric to filter by. Must match a metric defined in the same engine. |
+| `type` | Symbol | Yes | Data type of filter values |
+| `max_size` | Integer | No | Maximum number of values allowed in filter |
+| `description` | String | No | Human-readable description |
+
+The referenced metric must also be requested in the same `Request`. For parameterized metrics,
+the filter `parameters` must match the parameters of the requested metric instance.
+
+Example:
+
+```ruby
+filters do
+  metric_exact_match :total_count, :integer
+end
+```
+
+```ruby
+Gitlab::Database::Aggregation::Request.new(
+  filters: [{ identifier: :total_count, values: [1, 2] }],
+  dimensions: [{ identifier: :user_id }],
+  metrics: [{ identifier: :total_count }]
+)
+```
+
+#### `metric_range` filter
+
+Filters groups by value range on an aggregated metric using `BETWEEN`. Applied as a `HAVING`
+clause in post-aggregation.
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `name` | Symbol | Yes | Identifier of the metric to filter by. Must match a metric defined in the same engine. |
+| `type` | Symbol | Yes | Data type of filter values (`:integer`, `:float`, etc.) |
+| `description` | String | No | Human-readable description |
+
+The referenced metric must also be requested in the same `Request`. For parameterized metrics,
+the filter `parameters` must match the parameters of the requested metric instance, so the filter
+targets the correct metric instance.
+
+Example:
+
+```ruby
+filters do
+  metric_range :total_count, :integer
+  metric_range :duration_quantile, :float
+end
+```
+
+```ruby
+Gitlab::Database::Aggregation::Request.new(
+  filters: [
+    { identifier: :duration_quantile, parameters: { quantile: 0.1 }, values: 200..nil }
+  ],
+  dimensions: [{ identifier: :user_id }],
+  metrics: [{ identifier: :duration_quantile, parameters: { quantile: 0.1 } }]
+)
+```
+
+## Transient columns
+
+Transient columns are named SQL expression aliases you define once and
+reference across `dimensions`, `metrics`, and `filters` blocks. They are
+not projected in the final query result. Use transient columns to
+eliminate duplication of complex SQL expressions.
+
+### Define a transient column
+
+Call `transient` at the class level with a name and a block that returns
+an Arel expression. Define transient columns before you reference them.
+
+```ruby
+transient(:duration) do
+  sql("dateDiff('seconds', anyIfMerge(created_event_at), anyIfMerge(finished_event_at))")
+end
+
+transient(:is_finished) { sql('anyIfMerge(finished_event_at) IS NOT NULL') }
+```
+
+### Reference a transient column
+
+Inside `dimensions`, `metrics`, or `filters` blocks, call
+`transient(:name)` to insert the stored expression. Pass the return
+value anywhere a lambda expression is accepted: as a positional
+argument or as a keyword argument value.
+
+```ruby
+metrics do
+  mean :duration, :float, transient(:duration),
+    description: 'Average session duration in seconds'
+
+  count :finished, if: transient(:is_finished),
+    description: 'Number of finished sessions'
+end
+```
+
+## Supporting CTEs (Beta, Limited functionality, ClickHouse only)
+
+A supporting CTE is a per-key summary (for example, per user) of another table.
+The framework joins it into the main query.
+This lets `dimensions`, `filters`, and `metrics` reference CTE aggregates.
+Version 1 supports summaries over the engine's own table only, following a same-table contract.
+Supported table engines are only `MergeTree` and `ReplacingMergeTree`.
+This feature is only available for ClickHouse engines.
+
+### Define a supporting CTE
+
+Declare a supporting CTE at the class level, after `table_name` is set.
+Use `supporting_cte :name, join_key: :user_id, join_type: :inner do |qb| ... end`.
+The block receives a query builder over the prepared base scope.
+It must only add aggregate projections through `qb.select(...)`.
+The framework adds the join key column and a `GROUP BY join_key` automatically.
+
+The CTE is built at query time from a copy of the already-prepared base query.
+It inherits the engine's base scope, the deduplication subquery of `ReplacingMergeTree`
+tables, and all row filters of the request.
+Filters that are themselves CTE-backed do not propagate into the CTE body.
+They apply only to the main query.
+
+The `join_type:` parameter accepts `:inner` (the default) or `:outer`, which renders a
+`LEFT OUTER JOIN`.
+With the default inner join, base rows with a `NULL` join key are dropped because they
+never match a CTE row.
+Use `:outer` for engines with nullable join keys.
+
+```ruby
+class DuoWorkflowsEngine < Gitlab::Database::Aggregation::ClickHouse::Engine
+  self.table_name = 'duo_workflows_workflows_enriched'
+
+  supporting_cte :user_activity_cte, join_key: :user_id do |qb|
+    qb.select(
+      qb.count.as('workflows'),
+      qb.named_func('uniqExact', [qb[:workflow_definition]]).as('flow_types')
+    )
+  end
+
+  dimensions do
+    column :user_tier, :string, -> {
+      sql("multiIf(user_activity.workflows >= 5, 'heavy', user_activity_cte.workflows >= 2, 'medium', 'light')")
+    }, ctes: [:user_activity_cte]
+  end
+
+  filters do
+    range :flow_types_used, :integer, -> { sql('user_activity_cte.flow_types') }, ctes: [:user_activity_cte]
+  end
+
+  metrics do
+    count
+    count :users, :integer, -> { sql('user_id') }, distinct: true
+  end
+end
+```
+
+### Reference a supporting CTE
+
+Parts opt in to a CTE by adding `ctes: :name` or `ctes: [:a, :b]` to a dimension, filter,
+or metric.
+Referencing an undeclared CTE name raises `ArgumentError` at class-definition time.
+Each referenced CTE is built and joined exactly once per query, even when several parts
+reference it.
+
+Expressions must qualify CTE columns by CTE name, for example `user_activity.workflows`,
+even when only one CTE is in scope.
+A filter backed by a CTE becomes a plain `WHERE` clause on the joined summary column,
+not a `HAVING` clause.
+This makes "count of users matching a per-user condition" a single-number query.
+
+The following request returns a single number: the count of users who used at least two
+flow types.
+
+```ruby
+Gitlab::Database::Aggregation::Request.new(
+  filters: [{ identifier: :flow_types_used, values: 2..nil }],
+  metrics: [{ identifier: :users_count }]
+)
+```
+
+### Query cost
+
+Each referenced CTE adds one extra scan of the base scope, plus an in-memory hash join.
+Prefer one CTE with several aggregate columns over several single-column CTEs.
+
+## Using the Framework
+
+### Creating an aggregation request
+
+```ruby
+request = Gitlab::Database::Aggregation::Request.new(
+  filters: [
+    { identifier: :project_id, values: [1, 2, 3] },
+    { identifier: :state, values: ['opened'] }
+  ],
+  dimensions: [
+    { identifier: :author_id },
+    { identifier: :created_at, parameters: { granularity: 'monthly' } },
+    { identifier: :created_at, parameters: { granularity: 'weekly' } },
+  ],
+  metrics: [
+    { identifier: :total_count },
+    { identifier: :mean_weight }
+  ],
+  order: [
+    { identifier: :total_count, direction: :desc } # order identifier must reference dimension or metric.
+  ]
+)
+```
+
+### Executing the request with the engine
+
+```ruby
+engine = IssueAggregationEngine.new(context: { scope: Issue.all })
+response = engine.execute(request)
+
+if response.success?
+  puts "Success: #{response.payload[:data].to_a.inspect}"
+else
+  puts "Errors: #{response.errors}"
+end
+```
+
+- Engine must be provided with base scope. Depending on your use case you might want to provide already prefiltered scope to current project, namespace, user etc.
+- All request filters will be applied on provided base scope.
+
+## Architecture overview
+
+The framework consists of several key components:
+
+- **Engine**: The core class that defines available metrics, dimensions, and filters for a specific data source
+- **Request**: Represents a query request with selected metrics, dimensions, filters, and ordering
+- **QueryPlan**: Validates and transforms a request into executable query parts
+- **AggregationResult**: Handles query execution and result formatting
+
+```chart
+┌────────────────────────────────────────────────────┐
+│                        Request                     │
+│  (metrics, dimensions, filters, order)             │
+└────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌────────────────────────────────────────────────────┐
+│                        QueryPlan                   │
+│  (validates request, builds plan parts)            │
+└────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌────────────────────────────────────────────────────┐
+│                         Engine                     │
+│  (executes query plan, returns AggregationResult)  │
+└────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌────────────────────────────────────────────────────┐
+│                   AggregationResult                │
+│ implements Enumerable to access formatted results  │
+└────────────────────────────────────────────────────┘
+```
+
+## Validation
+
+The framework validates requests before execution:
+
+- At least one metric is required
+- All referenced identifiers must exist in the engine definition
+- Parameters must fit their declared validations. E.g. `granularity: { in: %i[daily weekly monthly], type: :string }` will require granularity value to be one of 3 provided strings.
+
+## GraphQL integration
+
+Use the `Gitlab::Database::Aggregation::Graphql::Mounter` module to expose aggregation engines
+in the GraphQL API.
+
+The GraphQL integration automatically generates:
+
+- **Query field** for mounted engine
+- **Filter arguments** based on engine filter definitions
+- **Order argument** based on engine dimensions and metrics definitions. Snake-cased dimension and metric identifiers can be used as an order identifier
+- **Response types** with dimensions and metrics as fields; metrics with [dotted identifiers](#dotted-metric-identifiers) are nested under a shared group field
+- **Parameterized fields** for dimensions and metrics with parameters
+- **Pagination**: aggregation results are automatically paginated using `OFFSET` pagination
+
+### Mounting an engine
+
+Use the `mount_aggregation_engine` method in your GraphQL type to expose an aggregation engine:
+
+```ruby
+module Types
+  class ProjectType < BaseObject
+    extend Gitlab::Database::Aggregation::Graphql::Mounter
+
+    mount_aggregation_engine(
+      IssueAggregationEngine,
+      field_name: 'issue_analytics',
+      description: 'Issue analytics aggregation'
+    ) do
+      # Define base aggregation scope. Build your own scope or inherit one from parent object.
+      def aggregation_scope
+        object.issues
+      end
+    end
+  end
+end
+```
+
+> [!note]
+> All filters, metrics, and dimensions are exposed automatically.
+
+### Mounter options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `field_name` | String/Symbol | The GraphQL field name. Defaults to `:aggregation` |
+| `types_prefix` | String/Symbol | Prefix for all child types like `*AggregationResponse`. Defaults to `field_name` |
+| `description` | String | Description for the GraphQL field |
+| `authorize` | Symbol | Permission required to access the field (e.g. `:read_project`). Passed directly to the GraphQL field definition |
+
+### Authorization
+
+Use the `authorize` option to restrict access to the field:
+
+```ruby
+mount_aggregation_engine(
+  IssueAggregationEngine,
+  field_name: 'issue_analytics',
+  description: 'Issue analytics aggregation',
+  authorize: :read_project
+) do
+  # authorize :read_project - this also supported.
+  def aggregation_scope
+    object.issues
+  end
+end
+```
+
+If `authorize` is not specified, you must take care of authorization manually.
+
+### Part-level authorization
+
+Individual metrics, dimensions, and filters can declare their own `authorize:` option to require
+an additional visibility check beyond the field-level `authorize` described above:
+
+```ruby
+metrics do
+  count :total_count, :integer
+  count :owner_count, :integer, authorize: :owner_access
+end
+
+dimensions do
+  column :status, :string
+  column :internal_flag, :string, authorize: ->(user, resources) { resources.all? { |r| r.member?(user) } }
+end
+```
+
+`authorize:` accepts either an ability symbol, checked with `Ability.allowed?(user, ability, resource)`
+for every resource in the engine context's `authorization_resources`, or a callable invoked once with
+`(user, resources)` that returns a boolean and is responsible for authorizing all resources itself. The `measurement` macro also accepts
+`authorize:` and propagates it to all its expanded dotted metrics (`.min`, `.max`, `.mean`,
+`.quantile`, `.sum`).
+
+When a user is not authorized for a part:
+
+- A protected metric is dropped from the request silently, and its field returns `null`. The
+  response shape does not change. When pruning leaves the request without any metrics, the
+  request fails validation with `access to metric '<identifier>' is not authorized` for each
+  pruned metric, so the caller can tell an authorization failure from an empty request.
+- A protected dimension, filter, order fails request validation with a clear error.
+
+The query plan resolves part-level authorization while planning, and adds its authorization
+validation errors with the `:unauthorized` type.
+When a request fails authorization, the engine returns an error `ServiceResponse` with the
+`:unauthorized` reason, so callers can distinguish authorization failures from other validation errors.
+
+### Example GraphQL query
+
+The generated GraphQL subtree uses a two-level structure:
+
+- The outer field (`issueAnalytics`) accepts **dimension and non-metric filter** arguments.
+- The inner `aggregated` field accepts **metric filter**, **ordering**, and **pagination** arguments,
+  and returns the paginated connection.
+
+```graphql
+query IssueAnalytics($projectId: ID!) {
+  project(fullPath: $projectId) {
+    issueAnalytics(
+      state: ["opened", "closed"]
+      createdAtFrom: "2024-01-01"
+      createdAtTo: "2024-12-31"
+    ) {
+      aggregated(
+        totalCountFrom: 5
+        orderBy: [{ identifier: "totalCount", direction: DESC }]
+        first: 10
+      ) {
+        nodes {
+          dimensions {
+            createdAt(granularity: "monthly")
+          }
+          totalCount
+          meanWeight
+          highQuantile: durationQuantile(0.9)
+          medianQuantile: durationQuantile(0.5)
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+```
+
+### Filter placement
+
+Filter arguments are split across the two levels based on when the filter is applied:
+
+- **Non-metric filters** (those defined with `exact_match`, `exact_not_match`, `range`, or `descendants`) appear on the outer field (e.g. `issueAnalytics`).
+- **Metric filters** (those defined with `metric_exact_match` or `metric_range`) appear on the
+  inner `aggregated` field.
+
+### Dotted metric identifiers
+
+To group several aggregates of the same underlying value under one GraphQL field, declare metrics with a dotted name. The name is used verbatim as the identifier (the usual `:{name}_count`-style derivation is skipped):
+
+```ruby
+metrics do
+  mean :"duration.mean", :float, ->(_params) { Arel.sql("dateDiff('seconds', created_at, finished_at)") }
+  quantile :"duration.quantile", :float, ->(_params) { Arel.sql("dateDiff('seconds', created_at, finished_at)") },
+    parameters: { quantile: { type: :float } }
+end
+```
+
+All metrics sharing a prefix become one object field with a sub-field per second segment, similar to the nested `dimensions` sub-object. Parameterized metrics keep their arguments on the sub-field:
+
+```graphql
+nodes {
+  duration {
+    mean
+    quantile(quantile: 0.9)
+  }
+}
+```
+
+A dotted metric without an explicit expression falls back to reading the database column named by the first segment (for example, `duration.max` reads the `duration` column). `count` metrics never reference the name as a column.
+
+Rules, enforced at definition time:
+
+- Exactly two dot-separated segments, each matching `[a-z][a-z0-9_]*`. Metrics only; dimensions and filters reject dotted names.
+- The prefix must not collide with a flat metric identifier, and `dimensions` is reserved.
+- Identifiers must stay unique after dot sanitization: instance keys (SQL aliases and result-row keys) replace `.` with `__`, so `duration.max` collides with a `duration__max` metric.
+
+`orderBy` accepts the full dotted identifier (`{ identifier: "duration.max", direction: DESC }`). Metric filters can't target dotted metrics.
+
+### Custom request validations
+
+Add custom validation logic to discard specific aggregation requests while maintaining the GraphQL
+schema. This is useful when you need to enforce custom runtime constraints on specific requests.
+
+Raise a `GraphQL::ExecutionError` to reject the request with a custom error message.
+
+To add custom validations, override the `validate_request!` method in the mounting block:
+
+```ruby
+module Types
+  class ProjectType < BaseObject
+    extend Gitlab::Database::Aggregation::Graphql::Mounter
+
+    mount_aggregation_engine(IssueAggregationEngine) do
+      # Other configuration options...
+      # Custom validation logic
+      def validate_request!(engine_request)
+        if engine_request.dimensions.empty?
+          raise GraphQL::ExecutionError, 'At least one dimension must be specified'
+        end
+      end
+    end
+  end
+end
+```
+
+The `validate_request!` method receives a `Gitlab::Database::Aggregation::Request` object containing `dimensions`, `metrics`, `filters`, and `order` specifications.
+
+### Dimensions for ActiveRecord association
+
+Dimensions can be marked as associations using the `association: true` option. This changes how the dimension is exposed in GraphQL, automatically resolving the associated model instead of exposing just the ID.
+
+#### Defining association dimensions
+
+In your aggregation engine, declare a dimension with `association: true`:
+
+```ruby
+class AgentPlatformSessions < Gitlab::Database::Aggregation::ClickHouse::Engine
+  dimensions do
+    column :flow_type, :string, description: 'Type of session'
+    column :user_id, :integer, description: 'Session owner', association: true
+  end
+end
+```
+
+#### GraphQL schema impact
+
+When a dimension is marked as an association, an object is exposed instead of the raw `*_id` field. The dimension above transforms to `field :user, Types::UserType, ...` in GraphQL with batch loading by ID.
+You can order the dimensions by the association ID using the association name without `_id` suffix (for example, `orderBy: [{ identifier: "user", direction: DESC }]`).
+Parameterized association dimensions expose their parameters as field arguments (for example, `group(depth: 2) { id }`).
+
+When you order by a parameterized dimension, pass the same `parameters` in `orderBy` that you used
+in the field selection, because the row key includes the parameter values. `group(depth: 2) { id }`
+produces the row key `group_id_2`, so pair it with
+`orderBy: [{ identifier: "group", direction: DESC, parameters: { depth: 2 } }]`. `group { id }` with
+no arguments produces the row key `group_id`, so pair it with
+`orderBy: [{ identifier: "group", direction: DESC }]`. If the parameters differ, no dimension matches
+and the query fails with `the specified identifier is not available: 'group'`.
+
+> [!note]
+> You must ensure all proper authorization checks on association GraphQL type (e.g. `authorize :read_user`).
+
+#### Custom association configuration
+
+By default, the association model and GraphQL type are inferred from the dimension name:
+
+- Model: `user_id` → `User`
+- GraphQL type: `User` → `Types::UserType`
+
+You can customize this behavior by passing a hash to the `association` option:
+
+```ruby
+dimensions do
+  column :author_id, :integer,
+    description: 'Issue author',
+    association: { model: User }
+    # or model and GraphQL type
+    # association: { model: User, graphql_type: Types::CurrentUserType }
+end
+```
+
+The `association` option also accepts a `finder` and a `preloader` key to customize how a batch of
+IDs becomes records:
+
+- `finder`: a lambda that receives the array of IDs for one batch and returns a hash of ID to
+  record. Use it when the default lookup, `model.id_in(ids).index_by(&:id)`, is not suitable, for
+  example `finder: ->(ids) { Project.where(id: ids).index_by(&:id) }`.
+- `preloader`: a class such as `Preloaders::GroupPolicyPreloader` or
+  `Preloaders::ProjectPolicyPreloader`. The framework instantiates it with `(records, current_user)`
+  and calls `execute` once per batch, after the records load and before the GraphQL type's
+  `authorize` check runs on each record. Use it when the type's policy would otherwise run one or
+  more database queries per record. It works with both the default lookup and a custom `finder`.
+
+```ruby
+dimensions do
+  traversal_path :group_id, :integer, -> { sql('traversal_path') },
+    association: { preloader: Preloaders::GroupPolicyPreloader }
+end
+```
+
+#### GraphQL query examples
+
+The following example is a query without association:
+
+```graphql
+query {
+  project(fullPath: "gitlab-org/gitlab") {
+    aiUsage {
+      agentPlatformSessions {
+        aggregated {
+          nodes {
+            dimensions {
+              userId  # Returns: 123 (integer)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The following example is a query with association:
+
+```graphql
+query {
+  project(fullPath: "gitlab-org/gitlab") {
+    aiUsage {
+      agentPlatformSessions(
+        userId: [1, 2]  # Filter still uses original dimension identifier
+      ) {
+        aggregated(
+          orderBy: [{ identifier: "user", direction: DESC }]  # Order uses association name
+        ) {
+          nodes {
+            dimensions {
+              user {  # Returns: full User object
+                id
+                username
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Related documentation
+
+- [ClickHouse development](database/clickhouse/_index.md)
+- [GraphQL API style guide](api_graphql_styleguide.md)

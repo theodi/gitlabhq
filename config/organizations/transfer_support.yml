@@ -1,0 +1,186 @@
+# Organization transfer support registry
+#
+# This file tracks which organization-sharded tables have been updated
+# to support organization transfers.
+#
+# Valid values:
+#   supported                                           - Transfer logic is implemented and tested
+#   no_work_needed                                      - Table requires no changes for organization transfers
+#   https://gitlab.com/gitlab-org/gitlab/-/issues/<id>  - Transfer support is not yet implemented;
+#                                                          track the work in this issue
+#
+# New organization-sharded tables MUST use 'supported'. The plain 'todo' value is no
+# longer allowed: existing tables without transfer support must link a tracking issue
+# instead, so the work stays visible.
+#
+# Tables are sorted alphabetically. Add new entries in sort order to avoid
+# merge conflicts.
+#
+# Owned by @gitlab-com/gl-infra/tenant-scale/organizations/backend-engineers
+# Changes to this file do NOT require a database review.
+---
+abuse_events: supported
+abuse_report_events: supported
+abuse_report_upload_states: supported
+abuse_report_uploads: supported
+abuse_reports: supported
+admin_roles: no_work_needed
+agent_organization_authorizations: supported
+ai_catalog_item_stars: supported
+ai_catalog_item_version_dependencies: supported
+ai_catalog_item_versions: supported
+ai_catalog_items: supported
+ai_catalog_mcp_servers: supported
+ai_catalog_mcp_servers_users: supported
+ai_conversation_messages: supported
+ai_conversation_threads: supported
+ai_events_counts: no_work_needed
+ai_settings: no_work_needed
+ai_usage_events: supported
+analytics_cycle_analytics_stage_event_hashes: supported
+artifact_registry_namespace_mappings: no_work_needed
+authentication_events: supported
+award_emoji: supported
+background_operation_jobs: no_work_needed
+background_operation_workers: no_work_needed
+bulk_import_batch_trackers: no_work_needed
+bulk_import_configurations: no_work_needed
+bulk_import_entities: no_work_needed
+bulk_import_failures: no_work_needed
+bulk_import_trackers: no_work_needed
+bulk_imports: supported
+burned_project_routes: supported
+cd_application_flow_definitions: no_work_needed
+cd_application_links: no_work_needed
+cd_applications: no_work_needed
+cd_artifact_sources: no_work_needed
+cd_deployment_transitions: no_work_needed
+cd_deployments: no_work_needed
+cd_environment_driver_bindings: no_work_needed
+cd_environments: no_work_needed
+cd_rollout_channel_tokens: no_work_needed
+cd_rollout_environments: no_work_needed
+cd_rollout_incoming_events: no_work_needed
+cd_rollout_steps: no_work_needed
+cd_rollout_transitions: no_work_needed
+cd_rollout_workflow_tokens: no_work_needed
+cd_rollouts: no_work_needed
+cd_service_environment_healths: no_work_needed
+cd_services: no_work_needed
+cd_version_set_entries: no_work_needed
+cd_version_sets: no_work_needed
+cd_versions: no_work_needed
+ci_runner_taggings_group_type: supported
+ci_runner_taggings_project_type: supported
+cluster_platforms_kubernetes: supported
+cluster_providers_aws: supported
+cluster_providers_gcp: supported
+clusters: supported
+clusters_kubernetes_namespaces: supported
+custom_dashboard_search_data: supported
+custom_dashboard_versions: supported
+custom_dashboards: supported
+dependency_list_export_part_upload_states: supported
+dependency_list_export_part_uploads: supported
+dependency_list_export_parts: supported
+dependency_list_export_upload_states: no_work_needed
+dependency_list_export_uploads: no_work_needed
+dependency_list_exports: no_work_needed
+fork_networks: supported
+govern_policies: https://gitlab.com/gitlab-org/gitlab/-/work_items/616253
+govern_policy_enforcements: https://gitlab.com/gitlab-org/gitlab/-/work_items/616254
+govern_policy_evaluations: https://gitlab.com/gitlab-org/gitlab/-/work_items/619206
+govern_policy_violations: https://gitlab.com/gitlab-org/gitlab/-/work_items/619207
+granular_scopes: supported
+group_type_ci_runner_machines: supported
+group_type_ci_runners: supported
+iam_outbox: no_work_needed
+import_failures: supported
+import_offline_configurations: no_work_needed
+import_offline_exports: supported
+import_placeholder_user_details: supported
+integrations: no_work_needed
+issue_tracker_data: no_work_needed
+jira_connect_installations: https://gitlab.com/gitlab-org/gitlab/-/issues/611960
+jira_tracker_data: no_work_needed
+keys: supported
+labels: no_work_needed
+ldap_admin_role_links: no_work_needed
+loose_foreign_keys_organization_deleted_records: no_work_needed
+member_roles: no_work_needed
+merge_request_diff_commit_users: https://gitlab.com/gitlab-org/gitlab/-/issues/611965
+namespaces: supported
+non_sql_service_pings: no_work_needed
+notes: supported
+oauth_access_grants: supported
+oauth_access_tokens: supported
+oauth_application_granular_scopes: supported
+oauth_applications: supported
+oauth_consent_grant_granular_scopes: supported
+oauth_consent_grants: supported
+oauth_device_grants: https://gitlab.com/gitlab-org/gitlab/-/issues/611962
+oauth_openid_requests: https://gitlab.com/gitlab-org/gitlab/-/issues/611962
+organization_cluster_agent_mappings: supported
+organization_detail_upload_states: no_work_needed
+organization_detail_uploads: no_work_needed
+organization_details: no_work_needed
+organization_foundational_agent_statuses: no_work_needed
+organization_gitlab_subscriptions: no_work_needed
+organization_isolations: no_work_needed
+organization_push_rules: no_work_needed
+organization_settings: no_work_needed
+organization_teams: https://gitlab.com/gitlab-org/gitlab/-/issues/630871
+organization_user_details: https://gitlab.com/gitlab-org/gitlab/-/issues/611963
+organization_users: supported
+personal_access_token_granular_scopes: supported
+personal_access_token_last_used_ips: https://gitlab.com/gitlab-org/gitlab/-/issues/611962
+personal_access_tokens: supported
+personal_snippet_upload_states: supported
+pool_repositories: no_work_needed
+project_topic_upload_states: no_work_needed
+project_topic_uploads: no_work_needed
+project_type_ci_runner_machines: supported
+project_type_ci_runners: supported
+projects: supported
+queries_service_pings: no_work_needed
+raw_usage_data: no_work_needed
+sbom_component_versions: supported
+sbom_components: supported
+sbom_source_packages: supported
+sbom_sources: supported
+scim_oauth_access_tokens: no_work_needed
+security_policy_settings: https://gitlab.com/gitlab-org/gitlab/-/issues/621726
+slack_api_scopes: supported
+slack_integrations: no_work_needed
+slack_integrations_scopes: no_work_needed
+snippet_repositories: supported
+snippet_repository_states: supported
+snippet_repository_storage_moves: supported
+snippet_statistics: supported
+snippet_uploads: supported
+snippet_user_mentions: supported
+snippets: supported
+spam_logs: supported
+subscription_add_on_purchases: supported
+subscription_seat_assignments: supported
+subscription_user_add_on_assignment_versions: supported
+subscription_user_add_on_assignments: supported
+todos: supported
+topics: supported
+upcoming_reconciliations: supported
+user_agent_details: supported
+user_upload_states: supported
+user_uploads: supported
+users: supported
+vulnerability_export_part_upload_states: supported
+vulnerability_export_part_uploads: supported
+vulnerability_export_parts: supported
+vulnerability_export_upload_states: supported
+vulnerability_export_uploads: supported
+vulnerability_exports: supported
+web_hook_logs_daily: no_work_needed
+web_hooks: no_work_needed
+work_item_custom_types: no_work_needed
+work_item_settings: no_work_needed
+work_item_type_visibility_defaults: no_work_needed
+zentao_tracker_data: no_work_needed

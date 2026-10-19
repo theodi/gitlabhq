@@ -1,0 +1,55 @@
+@import 'mixins_and_variables_and_functions';
+
+.branch-info {
+  flex: auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.divergence-graph {
+  $graph-side-width: 80px;
+  $graph-separator-width: 1px;
+
+  .graph-side {
+    width: $graph-side-width;
+
+    &.full {
+      width: $graph-side-width * 2 + $graph-separator-width;
+    }
+
+    .bar {
+      height: 4px;
+      @apply gl-bg-neutral-400;
+      @apply dark:gl-bg-neutral-500;
+    }
+
+    .count {
+      font-size: 12px;
+    }
+  }
+
+  .graph-separator {
+    width: $graph-separator-width;
+    height: 18px;
+    @apply gl-bg-neutral-400;
+    @apply dark:gl-bg-neutral-500;
+  }
+}
+
+.divergence-graph,
+.branch-item .controls {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.branch-item {
+  .issuable-reference {
+    max-width: 92px;
+  }
+
+  .right-block {
+    @include gl-container-width-up(md, panel) {
+      min-width: 200px;
+    }
+  }
+}

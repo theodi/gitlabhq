@@ -1,23 +1,8 @@
-%h4.prepend-top-20
-  %span.light Contributions for
-  %strong #{@calendar_date.to_s(:short)}
+%h4.gl-mt-5
+  = html_escape(_("Contributions for %{calendar_date}")) % { calendar_date: tag.strong(@calendar_date.to_fs(:medium)) }
 
-%ul.bordered-list
-  - @events.sort_by(&:created_at).each do |event|
-    %li
-      %span.light
-        %i.fa.fa-clock-o
-        = event.created_at.to_s(:time)
-      - if event.push?
-        #{event.action_name} #{event.ref_type} #{event.ref_name}
-      - else
-        = event_action_name(event)
-        - if event.target
-          %strong= link_to "##{event.target_iid}", [event.project.namespace.becomes(Namespace), event.project, event.target]
-
-      at
-      %strong
-        - if event.project
-          = link_to_project event.project
-        - else
-          = event.project_name
+- if @events.any?
+  = render partial: 'events/event', collection: @events.sort_by(&:created_at), locals: { timezone: local_timezone_instance(@user.timezone) }
+- else
+  %p
+    = _('No contributions were found')

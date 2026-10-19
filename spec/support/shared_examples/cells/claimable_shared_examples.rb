@@ -1,0 +1,36 @@
+# frozen_string_literal: true
+
+RSpec.shared_examples 'cells claimable model' do |subject_type:, subject_key:, source_type:, claiming_attributes:|
+  it 'has the expected subject_type' do
+    expect(described_class.cells_claims_subject_type).to eq(subject_type)
+  end
+
+  it 'has the expected subject_key' do
+    be_expected =
+      case subject_key
+      when Class
+        be_a(subject_key)
+      else
+        eq(subject_key)
+      end
+
+    expect(described_class.cells_claims_subject_key).to be_expected
+  end
+
+  it 'has the expected source_type' do
+    expect(described_class.cells_claims_source_type).to eq(source_type)
+  end
+
+  it 'has the expected unique attributes' do
+    claiming_attributes.each do |attr_name|
+      expect(described_class.cells_claims_attributes).to have_key(attr_name)
+    end
+  end
+
+  it 'has updated_at column' do
+    # updated_at column is checked in Cells::Claims::VerificationService to filter out
+    # recently updated records from being reconciled
+    expect(described_class.column_names).to include('updated_at'),
+      "#{described_class.table_name} must have an updated_at column for Cells verification"
+  end
+end

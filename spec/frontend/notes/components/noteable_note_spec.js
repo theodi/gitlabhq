@@ -1,0 +1,833 @@
+import Vue, { nextTick } from 'vue';
+import { GlAvatarLink, GlAvatar } from '@gitlab/ui';
+import { clone } from 'lodash-es';
+import { createTestingPinia } from '@pinia/testing';
+import { PiniaVuePlugin } from 'pinia';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { getDiffFileMock } from 'jest/diffs/mock_data/diff_file';
+import NoteActions from '~/notes/components/note_actions.vue';
+import NoteBody from '~/notes/components/note_body.vue';
+import NoteHeader from '~/notes/components/note_header.vue';
+import issueNote from '~/notes/components/noteable_note.vue';
+import eventHub from '~/notes/event_hub';
+import { createAlert } from '~/alert';
+import { UPDATE_COMMENT_FORM } from '~/notes/i18n';
+import { sprintf } from '~/locale';
+import { confirmAction } from '~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal';
+import { SHOW_CLIENT_SIDE_SECRET_DETECTION_WARNING } from '~/lib/utils/secret_detection';
+import { HTTP_STATUS_UNPROCESSABLE_ENTITY } from '~/lib/utils/http_status';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import { globalAccessorPlugin } from '~/pinia/plugins';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { noteableDataMock, notesDataMock, discussionMock, note } from '../mock_data';
+
+Vue.use(PiniaVuePlugin);
+
+jest.mock('~/alert');
+jest.mock('~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal');
+confirmAction.mockResolvedValueOnce(false);
+const { bindInternalEventDocument } = useMockInternalEventsTracking();
+
+const singleLineNotePosition = {
+  line_range: {
+    start: {
+      line_code: 'abc_1_1',
+      type: null,
+      old_line: '1',
+      new_line: '1',
+    },
+    end: {
+      line_code: 'abc_1_1',
+      type: null,
+      old_line: '1',
+      new_line: '1',
+    },
+  },
+};
+
+describe('issue_note', () => {
+  let pinia;
+  let diffsStore;
+  let wrapper;
+
+  const REPORT_ABUSE_PATH = '/abuse_reports/add_category';
+
+  const findNoteBody = () => wrapper.findComponent(NoteBody);
+  const findNoteSessionBar = () => wrapper.findComponent({ name: 'NoteSessionBar' });
+  const findAgentActorLine = () => wrapper.findComponent({ name: 'NoteAgentActorLine' });
+
+  const findMultilineComment = () => wrapper.findByTestId('multiline-comment');
+
+  const createWrapper = (props = {}, provide = {}) => {
+    // the component overwrites the `note` prop with every action, hence create a copy
+    const noteCopy = clone(props.note || note);
+
+    wrapper = mountExtended(issueNote, {
+      pinia,
+      propsData: {
+        note: noteCopy,
+        ...props,
+      },
+      stubs: {
+        NoteHeader: true,
+        UserAvatarLink: true,
+        NoteActions: true,
+        NoteBody: true,
+        MultilineCommentForm: true,
+        NoteSessionBar: {
+          name: 'NoteSessionBar',
+          props: ['agentName', 'sessionId', 'status', 'isReply'],
+          template: '<div></div>',
+        },
+        NoteAgentActorLine: {
+          name: 'NoteAgentActorLine',
+          props: {
+            presence: { type: Object, required: true },
+          },
+          template: '<div></div>',
+        },
+      },
+      provide: {
+        reportAbusePath: REPORT_ABUSE_PATH,
+        ...provide,
+      },
+    });
+  };
+
+  const createPinia = ({ stubActions = true } = {}) => {
+    pinia = createTestingPinia({ stubActions, plugins: [globalAccessorPlugin] });
+    diffsStore = useLegacyDiffs();
+    useNotes().noteableData = noteableDataMock;
+    useNotes().notesData = notesDataMock;
+    useNotes().updateNote.mockResolvedValue();
+  };
+
+  beforeEach(() => {
+    createPinia();
+  });
+
+  describe('mutiline comments', () => {
+    beforeEach(() => {
+      createWrapper();
+    });
+
+    it('should render if has multiline comment', async () => {
+      const position = {
+        line_range: {
+          start: {
+            line_code: 'abc_1_1',
+            type: null,
+            old_line: '1',
+            new_line: '1',
+          },
+          end: {
+            line_code: 'abc_2_2',
+            type: null,
+            old_line: '2',
+            new_line: '2',
+          },
+        },
+      };
+      const line = {
+        line_code: 'abc_1_1',
+        type: null,
+        old_line: '1',
+        new_line: '1',
+      };
+      wrapper.setProps({
+        note: { ...note, position },
+        discussionRoot: true,
+        line,
+      });
+
+      await nextTick();
+      expect(findMultilineComment().text()).toBe('Comment on lines 1 to 2');
+    });
+
+    it('should only render if it has everything it needs', async () => {
+      const position = {
+        line_range: {
+          start: {
+            line_code: 'abc_1_1',
+            type: null,
+            old_line: '',
+            new_line: '',
+          },
+          end: {
+            line_code: 'abc_2_2',
+            type: null,
+            old_line: '2',
+            new_line: '2',
+          },
+        },
+      };
+      const line = {
+        line_code: 'abc_1_1',
+        type: null,
+        old_line: '1',
+        new_line: '1',
+      };
+      wrapper.setProps({
+        note: { ...note, position },
+        discussionRoot: true,
+        line,
+      });
+
+      await nextTick();
+      expect(findMultilineComment().exists()).toBe(false);
+    });
+
+    it('should not render if has single line comment', async () => {
+      const position = {
+        line_range: {
+          start: {
+            line_code: 'abc_1_1',
+            type: null,
+            old_line: '1',
+            new_line: '1',
+          },
+          end: {
+            line_code: 'abc_1_1',
+            type: null,
+            old_line: '1',
+            new_line: '1',
+          },
+        },
+      };
+      const line = {
+        line_code: 'abc_1_1',
+        type: null,
+        old_line: '1',
+        new_line: '1',
+      };
+      wrapper.setProps({
+        note: { ...note, position },
+        discussionRoot: true,
+        line,
+      });
+
+      await nextTick();
+      expect(findMultilineComment().exists()).toBe(false);
+    });
+
+    it('should not render if `line_range` is unavailable', () => {
+      expect(findMultilineComment().exists()).toBe(false);
+    });
+
+    describe('multi-line line range', () => {
+      let discussion;
+      let startCode;
+      let endCode;
+
+      beforeEach(() => {
+        createPinia({ stubActions: false });
+
+        const file = getDiffFileMock();
+        diffsStore.diffFiles = [file];
+
+        startCode = file.highlighted_diff_lines[6].line_code;
+        endCode = file.highlighted_diff_lines[7].line_code;
+
+        discussion = {
+          ...discussionMock,
+          diff_file: file,
+          position: {
+            line_range: {
+              start: {
+                line_code: startCode,
+              },
+              end: {
+                line_code: endCode,
+              },
+            },
+          },
+        };
+
+        createWrapper({ discussion });
+      });
+
+      it('passes the correct lines to the note body', () => {
+        const body = findNoteBody();
+
+        expect(body.props('lines')).toEqual([
+          expect.objectContaining({ line_code: startCode }),
+          expect.objectContaining({ line_code: endCode }),
+        ]);
+      });
+    });
+  });
+
+  describe('rendering', () => {
+    beforeEach(() => {
+      createWrapper();
+    });
+
+    describe('avatar sizes in diffs', () => {
+      const line = {
+        line_code: 'abc_1_1',
+        type: null,
+        old_line: '1',
+        new_line: '1',
+      };
+
+      it('should render 24px avatars', async () => {
+        wrapper.setProps({
+          note: { ...note },
+          discussionRoot: true,
+          line,
+        });
+
+        await nextTick();
+
+        const avatar = wrapper.findComponent(GlAvatar);
+        const avatarProps = avatar.props();
+        expect(avatarProps.size).toBe(24);
+      });
+    });
+
+    it('should render user avatar link with popover support', () => {
+      const { author } = note;
+      const avatarLink = wrapper.findComponent(GlAvatarLink);
+
+      expect(avatarLink.classes()).toContain('js-user-link');
+      expect(avatarLink.attributes()).toMatchObject({
+        href: author.path,
+        'data-user-id': `${author.id}`,
+        'data-username': `${author.username}`,
+      });
+    });
+
+    it('should render user avatar', () => {
+      const { author } = note;
+      const avatar = wrapper.findComponent(GlAvatar);
+      const avatarProps = avatar.props();
+
+      expect(avatarProps.src).toBe(author.avatar_url);
+      expect(avatarProps.entityName).toBe(author.username);
+      expect(avatarProps.alt).toBe(author.name);
+      expect(avatarProps.size).toEqual(32);
+    });
+
+    it('should render note header content', () => {
+      const noteHeader = wrapper.findComponent(NoteHeader);
+      const noteHeaderProps = noteHeader.props();
+
+      expect(noteHeaderProps.author).toBe(note.author);
+      expect(noteHeaderProps.createdAt).toBe(note.created_at);
+      expect(noteHeaderProps.noteId).toBe(note.id);
+      expect(noteHeaderProps.isImported).toBe(note.imported);
+    });
+
+    it('should render note actions', () => {
+      const { author } = note;
+      const noteActions = wrapper.findComponent(NoteActions);
+      const noteActionsProps = noteActions.props();
+
+      expect(noteActionsProps.authorId).toBe(author.id);
+      expect(noteActionsProps.noteId).toBe(note.id);
+      expect(noteActionsProps.noteUrl).toBe(note.noteable_note_url);
+      expect(noteActionsProps.accessLevel).toBe(note.human_access);
+      expect(noteActionsProps.canEdit).toBe(note.current_user.can_edit);
+      expect(noteActionsProps.canAwardEmoji).toBe(note.current_user.can_award_emoji);
+      expect(noteActionsProps.canDelete).toBe(note.current_user.can_edit);
+      expect(noteActionsProps.canReportAsAbuse).toBe(true);
+      expect(noteActionsProps.canResolve).toBe(false);
+      expect(noteActionsProps.resolvable).toBe(false);
+      expect(noteActionsProps.isResolved).toBe(false);
+      expect(noteActionsProps.isResolving).toBe(false);
+      expect(noteActionsProps.resolvedBy).toEqual({});
+    });
+
+    describe('when the note is linked to a Duo Agent Platform session', () => {
+      beforeEach(() => {
+        createWrapper({ note: { ...note, duo_session_id: 42 } });
+      });
+
+      it('passes the session id to the note actions', () => {
+        expect(wrapper.findComponent(NoteActions).props('duoSessionId')).toBe(42);
+      });
+    });
+
+    it('should render issue body', () => {
+      expect(findNoteBody().props().note).toMatchObject(note);
+      expect(findNoteBody().props().line).toBe(null);
+      expect(findNoteBody().props().canEdit).toBe(note.current_user.can_edit);
+      expect(findNoteBody().props().isEditing).toBe(false);
+      expect(findNoteBody().props().helpPagePath).toBe('');
+    });
+
+    it('prevents note preview xss', async () => {
+      const noteBody =
+        '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" onload="alert(1)" />';
+      const alertSpy = jest.spyOn(window, 'alert').mockImplementation(() => {});
+
+      findNoteBody().vm.$emit('handle-form-update', {
+        noteText: noteBody,
+        parentElement: null,
+        callback: () => {},
+      });
+
+      await waitForPromises();
+      expect(alertSpy).not.toHaveBeenCalled();
+      expect(findNoteBody().props().note.note_html).toBe(
+        '<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">',
+      );
+    });
+  });
+
+  describe('internal note', () => {
+    it('has internal note class for internal notes', () => {
+      createWrapper({ note: { ...note, internal: true } });
+
+      expect(wrapper.classes()).toContain('internal-note');
+    });
+
+    it('does not have internal note class for external notes', () => {
+      createWrapper();
+
+      expect(wrapper.classes()).not.toContain('internal-note');
+    });
+  });
+
+  describe('formUpdateHandler', () => {
+    const params = {
+      noteText: 'updated note text',
+      parentElement: null,
+      callback: jest.fn(),
+      resolveDiscussion: false,
+    };
+
+    beforeEach(() => {
+      createWrapper();
+    });
+
+    it('emits handle-update-note', async () => {
+      const updatedNote = { ...note, note_html: `<p dir="auto">${params.noteText}</p>\n` };
+
+      findNoteBody().vm.$emit('handle-form-update', params);
+      await nextTick();
+      await waitForPromises();
+
+      expect(wrapper.emitted('handle-update-note')).toHaveLength(1);
+
+      expect(wrapper.emitted('handle-update-note')[0]).toEqual([
+        {
+          note: updatedNote,
+          noteText: params.noteText,
+          resolveDiscussion: params.resolveDiscussion,
+          flashContainer: wrapper.vm.$el,
+          callback: expect.any(Function),
+          errorCallback: expect.any(Function),
+        },
+      ]);
+    });
+
+    it('updates note content', async () => {
+      findNoteBody().vm.$emit('handle-form-update', params);
+
+      await nextTick();
+      await waitForPromises();
+
+      expect(findNoteBody().props().note.note_html).toBe(`<p dir="auto">${params.noteText}</p>\n`);
+      expect(findNoteBody().props('isEditing')).toBe(false);
+    });
+
+    it('should not update note with sensitive token', async () => {
+      const { trackEventSpy } = bindInternalEventDocument();
+
+      const sensitiveMessage = 'token: glpat-1234567890abcdefghij';
+
+      // Ensure initial note content is as expected
+      expect(findNoteBody().props().note.note_html).toBe(note.note_html);
+
+      // Attempt to update note with sensitive content
+      const updatedNote = { ...params, noteText: sensitiveMessage };
+      findNoteBody().vm.$emit('handle-form-update', updatedNote);
+
+      await nextTick();
+      await waitForPromises();
+
+      // Expect note content to remain unchanged
+      expect(findNoteBody().props().note.note_html).toBe(note.note_html);
+      expect(confirmAction).toHaveBeenCalledWith(
+        '',
+        expect.objectContaining({ title: 'Warning: Potential secret detected' }),
+      );
+      expect(trackEventSpy).toHaveBeenCalledWith(SHOW_CLIENT_SIDE_SECRET_DETECTION_WARNING, {
+        label: 'comment',
+        property: 'GitLab personal access token',
+        value: 0,
+      });
+    });
+
+    describe('when updateNote returns errors', () => {
+      beforeEach(() => {
+        useNotes().updateNote.mockRejectedValue({
+          response: {
+            status: HTTP_STATUS_UNPROCESSABLE_ENTITY,
+            data: { errors: 'error 1 and error 2' },
+          },
+        });
+      });
+
+      beforeEach(() => {
+        findNoteBody().vm.$emit('handle-form-update', { ...params, noteText: 'invalid note' });
+      });
+
+      it('renders error message and restores content of updated note', async () => {
+        await waitForPromises();
+        expect(createAlert).toHaveBeenCalledWith({
+          message: sprintf(UPDATE_COMMENT_FORM.error, { reason: 'error 1 and error 2' }, false),
+          parent: wrapper.vm.$el,
+        });
+
+        expect(findNoteBody().props('isEditing')).toBe(true);
+        expect(findNoteBody().props().note.note_html).toBe(note.note_html);
+      });
+    });
+  });
+
+  describe('diffFile', () => {
+    it.each`
+      scenario                         | noteDef
+      ${'the note has no position'}    | ${note}
+      ${'the Diffs store has no data'} | ${{ ...note, position: singleLineNotePosition }}
+    `('returns `null` when $scenario and no diff file is provided as a prop', ({ noteDef }) => {
+      useLegacyDiffs().diffFiles = [];
+      createWrapper({ note: noteDef, discussionFile: null });
+      expect(findNoteBody().props().file).toBe(null);
+    });
+
+    it("returns the correct diff file from the Diffs store if it's available", () => {
+      useLegacyDiffs().diffFiles = [{ file_hash: 'abc', testId: 'diffFileTest' }];
+      createWrapper({
+        note: { ...note, position: singleLineNotePosition },
+      });
+
+      expect(findNoteBody().props().file.testId).toBe('diffFileTest');
+    });
+
+    it('returns the provided diff file if the more robust getters fail', () => {
+      createWrapper({
+        note: { ...note, position: singleLineNotePosition },
+        discussionFile: { testId: 'diffFileTest' },
+      });
+
+      expect(findNoteBody().props().file.testId).toBe('diffFileTest');
+    });
+  });
+
+  describe('editing', () => {
+    it('respects isEditing prop on the note', () => {
+      createWrapper({
+        note: { ...note, isEditing: true },
+      });
+      expect(findNoteBody().props('isEditing')).toBe(true);
+    });
+
+    describe('when the notes event hub asks for edit mode', () => {
+      it('enters edit mode on `enter-edit-mode` for this note', async () => {
+        createWrapper();
+
+        eventHub.$emit('enter-edit-mode', { noteId: note.id });
+        await nextTick();
+
+        expect(findNoteBody().props('isEditing')).toBe(true);
+      });
+
+      it('ignores `enter-edit-mode` for another note', async () => {
+        createWrapper();
+
+        eventHub.$emit('enter-edit-mode', { noteId: `${note.id}-other` });
+        await nextTick();
+
+        expect(findNoteBody().props('isEditing')).toBe(false);
+      });
+    });
+
+    it('passes down restoreFromAutosave', () => {
+      createWrapper({
+        note: { ...note },
+        restoreFromAutosave: true,
+      });
+      expect(findNoteBody().props('restoreFromAutosave')).toBe(true);
+    });
+
+    it('passes down autosaveKey', () => {
+      const autosaveKey = 'autosave';
+      createWrapper({
+        note: { ...note },
+        autosaveKey,
+      });
+      expect(findNoteBody().props('autosaveKey')).toBe(autosaveKey);
+    });
+  });
+
+  describe('events emitted for note actions', () => {
+    const findNoteActions = () => wrapper.findComponent(NoteActions);
+
+    it('emits `handle-edit` when note actions request editing', async () => {
+      createWrapper();
+
+      findNoteActions().vm.$emit('handle-edit');
+      await nextTick();
+
+      expect(wrapper.emitted('handle-edit')).toEqual([[]]);
+    });
+
+    it('emits `handle-delete-note` when the deletion is confirmed', async () => {
+      confirmAction.mockReset();
+      confirmAction.mockResolvedValue(true);
+      useNotes().deleteNote.mockResolvedValue();
+      createWrapper();
+
+      findNoteActions().vm.$emit('handle-delete');
+      await waitForPromises();
+
+      expect(wrapper.emitted('handle-delete-note')).toEqual([[wrapper.props('note')]]);
+    });
+
+    it('emits `update-success` once the note update succeeds', async () => {
+      createWrapper();
+
+      findNoteBody().vm.$emit('handle-form-update', {
+        noteText: 'updated note text',
+        parentElement: null,
+        callback: jest.fn(),
+        resolveDiscussion: false,
+      });
+      await waitForPromises();
+
+      expect(wrapper.emitted('update-success')).toHaveLength(1);
+    });
+  });
+
+  describe('NoteSessionBar', () => {
+    const SESSION_ID = 42;
+    const AGENT_NAME = 'Duo Developer';
+
+    const sessionNote = {
+      ...note,
+      duo_session_id_triggered: SESSION_ID,
+      duo_session_agent_name: AGENT_NAME,
+      duo_session_status: 'running',
+    };
+
+    describe('when noteAgentSessionBar feature flag is disabled', () => {
+      beforeEach(() => {
+        createWrapper({ note: sessionNote }, { glFeatures: { noteAgentSessionBar: false } });
+      });
+
+      it('does not render', () => {
+        expect(findNoteSessionBar().exists()).toBe(false);
+      });
+    });
+
+    describe('when noteAgentSessionBar feature flag is enabled', () => {
+      const createSessionWrapper = (props = {}) =>
+        createWrapper(
+          { note: sessionNote, ...props },
+          { glFeatures: { noteAgentSessionBar: true } },
+        );
+
+      describe('when duo_session_id_triggered is absent', () => {
+        beforeEach(() => {
+          createSessionWrapper({ note: { ...sessionNote, duo_session_id_triggered: null } });
+        });
+
+        it('does not render', () => {
+          expect(findNoteSessionBar().exists()).toBe(false);
+        });
+      });
+
+      describe('when duo_session_agent_name is absent', () => {
+        beforeEach(() => {
+          createSessionWrapper({ note: { ...sessionNote, duo_session_agent_name: null } });
+        });
+
+        it('does not render', () => {
+          expect(findNoteSessionBar().exists()).toBe(false);
+        });
+      });
+
+      describe('when session fields are present', () => {
+        beforeEach(() => {
+          createSessionWrapper();
+        });
+
+        it('renders', () => {
+          expect(findNoteSessionBar().exists()).toBe(true);
+        });
+
+        it('passes correct props', () => {
+          expect(findNoteSessionBar().props()).toMatchObject({
+            agentName: AGENT_NAME,
+            sessionId: SESSION_ID,
+            status: 'running',
+          });
+        });
+      });
+
+      describe('when status is finished', () => {
+        beforeEach(() => {
+          createSessionWrapper({ note: { ...sessionNote, duo_session_status: 'finished' } });
+        });
+
+        it('renders (NoteSessionBar handles its own visibility)', () => {
+          expect(findNoteSessionBar().exists()).toBe(true);
+        });
+      });
+
+      describe('when discussionRoot is true', () => {
+        beforeEach(() => {
+          createSessionWrapper({ discussionRoot: true });
+        });
+
+        it('passes isReply as false', () => {
+          expect(findNoteSessionBar().props('isReply')).toBe(false);
+        });
+      });
+
+      describe('when discussionRoot is false', () => {
+        beforeEach(() => {
+          createSessionWrapper({ discussionRoot: false });
+        });
+
+        it('passes isReply as true', () => {
+          expect(findNoteSessionBar().props('isReply')).toBe(true);
+        });
+      });
+    });
+  });
+
+  describe('AgentActorLine', () => {
+    const agentPresence = {
+      session_id: 'gid://gitlab/Ai::DuoWorkflows::Workflow/42',
+      agent_name: 'Developer Agent',
+      agent_catalog_web_path: '/-/ai/catalog/agents/3',
+      initiator_type: 'USER',
+      initiator: { label: '@nokafor', web_path: '/nokafor' },
+      user_permissions: { read_duo_workflow: true },
+    };
+
+    const presenceNote = { ...note, agent_presence: agentPresence, duo_session_id: 42 };
+
+    const createWithFlag = (props = {}) =>
+      createWrapper(
+        { note: presenceNote, ...props },
+        { glFeatures: { agentPresenceConsolidation: true } },
+      );
+
+    const findNoteHeader = () => wrapper.findComponent(NoteHeader);
+    const findNoteActions = () => wrapper.findComponent(NoteActions);
+
+    describe('when the agentPresenceConsolidation feature flag is disabled', () => {
+      beforeEach(() => {
+        createWrapper(
+          { note: presenceNote },
+          { glFeatures: { agentPresenceConsolidation: false } },
+        );
+      });
+
+      it('does not render the actor line', () => {
+        expect(findAgentActorLine().exists()).toBe(false);
+      });
+
+      it('still offers the standalone session button', () => {
+        expect(findNoteActions().props('duoSessionId')).toBe(42);
+      });
+    });
+
+    describe.each`
+      description                       | agentPresenceField
+      ${'has no agent presence'}        | ${undefined}
+      ${'has a null agent presence'}    | ${null}
+      ${'has no resolvable agent name'} | ${{ ...agentPresence, agent_name: null }}
+      ${'has no session to open'}       | ${{ ...agentPresence, session_id: null }}
+    `('when the note $description', ({ agentPresenceField }) => {
+      beforeEach(() =>
+        createWithFlag({ note: { ...presenceNote, agent_presence: agentPresenceField } }),
+      );
+
+      it('does not render the actor line', () => {
+        expect(findAgentActorLine().exists()).toBe(false);
+      });
+
+      it('keeps the standalone session button', () => {
+        expect(findNoteActions().props('duoSessionId')).toBe(42);
+      });
+    });
+
+    describe('when the note has agent presence', () => {
+      beforeEach(() => createWithFlag());
+
+      it('renders the actor line for the agent and its session', () => {
+        expect(findAgentActorLine().props('presence')).toEqual({
+          sessionId: 'gid://gitlab/Ai::DuoWorkflows::Workflow/42',
+          agentName: 'Developer Agent',
+          agentCatalogWebPath: '/-/ai/catalog/agents/3',
+          initiatorType: 'USER',
+          initiator: { label: '@nokafor', webPath: '/nokafor' },
+          userPermissions: { readDuoWorkflow: true },
+        });
+      });
+
+      it('hides the raw service account username, which the actor line replaces', () => {
+        expect(findNoteHeader().props('hideUsername')).toBe(true);
+      });
+
+      it('keeps the header on one row', () => {
+        expect(findNoteHeader().props('singleLine')).toBe(true);
+      });
+
+      it('drops the standalone session button, which would duplicate the session link', () => {
+        expect(findNoteActions().props('duoSessionId')).toBe(null);
+      });
+
+      describe('when the actor line reports it no longer fits', () => {
+        beforeEach(async () => {
+          findAgentActorLine().vm.$emit('overflow', true);
+          await nextTick();
+        });
+
+        it('lets the header wrap', () => {
+          expect(findNoteHeader().props('singleLine')).toBe(false);
+        });
+      });
+    });
+
+    describe('when the current user cannot read the session', () => {
+      beforeEach(() =>
+        createWithFlag({
+          note: {
+            ...presenceNote,
+            agent_presence: { ...agentPresence, user_permissions: { read_duo_workflow: false } },
+          },
+        }),
+      );
+
+      it('tells the actor line the session cannot be opened', () => {
+        expect(findAgentActorLine().props('presence').userPermissions).toEqual({
+          readDuoWorkflow: false,
+        });
+      });
+    });
+
+    describe('when the agent has no catalog profile', () => {
+      beforeEach(() =>
+        createWithFlag({
+          note: {
+            ...presenceNote,
+            agent_presence: { ...agentPresence, agent_catalog_web_path: null },
+          },
+        }),
+      );
+
+      it('passes no catalog path', () => {
+        expect(findAgentActorLine().props('presence').agentCatalogWebPath).toBe(null);
+      });
+    });
+  });
+});

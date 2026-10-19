@@ -1,0 +1,350 @@
+// For tabbed navigation links, scrolling tabs, etc. For all top/main navigation,
+// please check nav.scss
+.nav-links {
+  display: flex;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  height: auto;
+  @apply gl-border-b;
+
+  li:not(.md-header-toolbar) {
+    display: flex;
+
+    a,
+    button {
+      @apply gl-py-5;
+      @apply gl-px-4;
+      @apply gl-text-default;
+      @apply gl-text-base;
+      @apply gl-leading-normal;
+      @apply gl-border-0;
+      @apply gl-whitespace-nowrap;
+
+      &:hover,
+       &:active {
+        text-decoration: none;
+        color: var(--gl-text-default);
+        box-shadow: inset 0 -2px 0 0 var(--gl-tab-selected-indicator-color-default);
+      }
+
+      &:focus-visible {
+        text-decoration: none;
+        color: var(--gl-text-default);
+        outline: 2px solid var(--gl-focus-ring-color, var(--gl-tab-selected-indicator-color-default));
+        outline-offset: 2px;
+        box-shadow: none;
+      }
+    }
+
+    button {
+      padding-top: 0;
+      background-color: transparent;
+    }
+
+    &.active a,
+    &.active button,
+    a.active {
+      @apply gl-text-default;
+      @apply gl-font-bold;
+      box-shadow: inset 0 -2px 0 0 var(--gl-tab-selected-indicator-color-default);
+
+      .badge.badge-pill {
+        @apply gl-font-bold;
+        color: var(--gl-badge-neutral-text-color-default);
+        background-color: var(--gl-badge-neutral-background-color-default);
+      }
+    }
+  }
+}
+
+.top-area {
+  @apply gl-flex;
+  @apply gl-border-b;
+
+  @include gl-container-width-down(lg, panel) {
+    flex-flow: column-reverse wrap;
+  }
+
+  .nav-text {
+    flex: 1;
+    padding-top: 16px;
+    padding-bottom: 11px;
+    display: inline-block;
+    line-height: 28px;
+    white-space: normal;
+
+    @include gl-container-width-down(sm, panel) {
+      width: 100%;
+    }
+  }
+
+  .nav-links {
+    border-bottom: 0;
+    flex: 1;
+
+    &.wide {
+      width: 100%;
+      display: block;
+    }
+
+    &.scrolling-tabs {
+      float: left;
+    }
+
+    @include gl-container-width-down(md, panel) {
+      width: 100%;
+    }
+  }
+
+  .nav-controls {
+    display: inline-block;
+    text-align: right;
+
+    > .btn,
+    > .btn-group,
+    > .btn-container,
+    > .dropdown,
+    > .gl-new-dropdown,
+    > input,
+    > form {
+      margin-right: $gl-padding-8;
+
+      &:last-child {
+        margin-right: 0;
+        float: right;
+      }
+    }
+
+    > .btn-grouped {
+      float: none;
+    }
+
+    .icon-label {
+      display: none;
+    }
+
+    input {
+      display: inline-block;
+      position: relative;
+    }
+
+    @include gl-container-width-up(md, panel) {
+      display: flex;
+      align-items: center;
+    }
+
+    @include gl-container-width-down(lg, panel) {
+      flex: 0 0 100%;
+      margin-top: $gl-padding-8;
+    }
+
+    @include gl-container-width-down(md, panel) {
+      padding-bottom: 0;
+      width: 100%;
+
+      .btn.dropdown-toggle-split {
+        margin-left: 1px;
+      }
+
+      /* This resets the width of the control so that the search button doesn't wrap */
+      .gl-search-box-by-click .form-control {
+        width: 1%;
+      }
+
+      .dropdown-menu-toggle {
+        margin-bottom: 0;
+      }
+
+      form {
+        display: block;
+        height: auto;
+        margin-bottom: $gl-padding-8;
+
+        input {
+          width: 100%;
+          margin: 0 0 10px;
+        }
+      }
+
+      .icon-label {
+        display: inline-block;
+      }
+
+      &.inline {
+        display: flex;
+        flex-flow: row wrap;
+        justify-content: space-between;
+
+        > .btn,
+        > .btn-container,
+        > .dropdown,
+        > input,
+        > form {
+          flex: 1 1 auto;
+          margin: 0 0 10px;
+          margin-left: $gl-padding-top;
+          width: auto;
+
+          &:first-child {
+            margin-left: 0;
+            float: none;
+          }
+        }
+      }
+    }
+  }
+
+  &.adjust {
+    .nav-text,
+    .nav-controls {
+      width: auto;
+
+      @include gl-container-width-down(sm, panel) {
+        width: 100%;
+      }
+    }
+  }
+
+  &.multi-line {
+    .nav-text {
+      line-height: 20px;
+    }
+
+    .nav-controls {
+      padding: 17px 0;
+    }
+  }
+
+  pre {
+    width: 100%;
+  }
+}
+
+.scrolling-tabs-container {
+  position: relative;
+
+  .merge-request-tabs-container & {
+    overflow: hidden;
+  }
+
+  .nav-links {
+    @include scrolling-links();
+  }
+
+  .fade-left::after,
+  .fade-right::after {
+    content: '';
+    pointer-events: none;
+    z-index: -1;
+    display: block;
+    width: 16px;
+    height: 100%;
+    position: absolute;
+    top: 0;
+  }
+
+  .fade-right {
+    @include fade(left, $gray-10);
+    right: -5px;
+
+    svg {
+      right: -7px;
+    }
+
+    &::after {
+      right: 0;
+      background: linear-gradient(270deg, $white, transparent);
+    }
+  }
+
+  .fade-left {
+    @include fade(right, $gray-10);
+    left: -5px;
+    text-align: center;
+
+    svg {
+      left: -7px;
+    }
+
+    &::after {
+      left: 0;
+      background: linear-gradient(90deg, $white, transparent);
+    }
+  }
+}
+
+.inner-page-scroll-tabs {
+  .fade-right {
+    @include fade(left, $white);
+    right: 0;
+    text-align: right;
+
+    svg {
+      right: 5px;
+    }
+  }
+
+  .fade-left {
+    @include fade(right, $white);
+    left: 0;
+    text-align: left;
+
+    svg {
+      left: 5px;
+    }
+  }
+
+  .fade-right,
+  .fade-left {
+    top: auto;
+  }
+
+  &.is-smaller {
+    .fade-right,
+    .fade-left {
+      top: 11px;
+    }
+  }
+}
+
+.nav-block {
+  position: relative;
+
+  .nav-links {
+    @include scrolling-links();
+
+    .fade-right {
+      @include fade(left, $white);
+      right: -5px;
+
+      svg {
+        right: -7px;
+      }
+    }
+
+    .fade-left {
+      @include fade(right, $white);
+      left: -5px;
+
+      svg {
+        left: -7px;
+      }
+    }
+  }
+
+  &.activities {
+    @apply gl-border-b;
+    display: flex;
+    align-items: center;
+
+    @include gl-container-width-down(sm, panel) {
+      display: block;
+      overflow: visible;
+    }
+
+    .nav-links {
+      border-bottom: 0;
+    }
+  }
+}

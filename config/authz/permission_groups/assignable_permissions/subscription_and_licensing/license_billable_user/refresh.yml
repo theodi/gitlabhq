@@ -1,0 +1,11 @@
+---
+name: refresh_license_billable_user
+description: Grants the ability to refresh billable users for licenses
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - refresh_license_billable_user
+assignable_when:
+  - condition: admin

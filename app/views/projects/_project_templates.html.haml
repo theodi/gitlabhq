@@ -1,0 +1,15 @@
+- f ||= local_assigns[:f]
+
+.project-templates-buttons
+  = gl_tabs_nav({ class: 'nav-links scrolling-tabs gl-flex gl-grow gl-flex-nowrap gl-border-0' }) do
+    = gl_tab_link_to '#built-in', tab_class: 'built-in-tab', class: 'active', data: { toggle: 'tab' } do
+      = _('Built-in')
+      = gl_tab_counter_badge Gitlab::ProjectTemplate.all.count + Gitlab::SampleDataTemplate.all.count
+
+.tab-content
+  .project-templates-buttons.import-buttons.tab-pane.active#built-in
+    = render partial: 'projects/project_templates/template', collection: Gitlab::ProjectTemplate.all + Gitlab::SampleDataTemplate.all
+
+.project-fields-form
+  = render 'projects/project_templates/project_fields_form'
+  = render 'projects/new_project_fields', f: f, project_name_id: "template-project-name", hide_init_with_readme: true, track_label: "create_from_template"

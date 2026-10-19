@@ -1,0 +1,13 @@
+---
+table_name: approval_merge_request_rule_sources
+classes:
+- ApprovalMergeRequestRuleSource
+feature_categories:
+- code_review_workflow
+description: Keeps connection between merge request and project approval rule
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/8497
+milestone: '11.7'
+gitlab_schema: gitlab_main_org
+table_size: medium
+sharding_key:
+  project_id: projects

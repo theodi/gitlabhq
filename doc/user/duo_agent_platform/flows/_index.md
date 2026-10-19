@@ -1,0 +1,104 @@
+---
+stage: Agent Foundations
+group: Agent Execution
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Use foundational and custom flows to automate complex development tasks with multiple agents.
+title: Flows
+---
+
+{{< details >}}
+
+- Tier: [Free](../../../subscriptions/gitlab_credits.md#for-the-free-tier), Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< collapsible title="Model information" >}}
+
+- LLM: Anthropic [Claude Sonnet 4](https://www.anthropic.com/claude/sonnet)
+
+{{< /collapsible >}}
+
+{{< history >}}
+
+- Introduced as an [experiment](../../../policy/development_stages_support.md) in GitLab 18.4 [with a feature flag](../../../administration/feature_flags/_index.md) named `ai_catalog_flows`. Disabled by default.
+- Changed to [beta](../../../policy/development_stages_support.md) in GitLab 18.7.
+- [Enabled on GitLab.com](https://gitlab.com/gitlab-org/gitlab/-/issues/569060) in GitLab 18.7.
+- [Enabled on GitLab Self-Managed and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/issues/569060) in GitLab 18.8.
+- Feature flag `ai_catalog_flows` [enabled by default](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/216969) in GitLab 18.8.
+- Additional flags are required for foundational flows.
+- Foundational flows changed to [generally available](https://gitlab.com/gitlab-org/gitlab/-/work_items/585273) in GitLab 18.8.
+- Custom flows changed to [beta](https://gitlab.com/gitlab-org/gitlab/-/work_items/585273) in GitLab 18.8.
+- Feature flag `ai_catalog_flows` [removed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/239459) in GitLab 19.2.
+- Custom flows changed to [generally available](https://gitlab.com/gitlab-org/gitlab/-/work_items/602415) in GitLab 19.2.
+
+{{< /history >}}
+
+A flow is a combination of one or more agents working together to solve a complex problem.
+
+GitLab provides two types of flows:
+
+- [Foundational flows](foundational_flows/_index.md) are pre-built,
+  production-ready workflows created by GitLab for common development
+  tasks.
+- [Custom flows](custom.md) are workflows you create to automate your
+  team's specific processes. You define the workflow steps and agents, and define triggers to control when the
+  flow runs.
+
+Flows are available in the GitLab UI, the GitLab Duo CLI, and IDEs:
+
+- In the UI, flows run directly in GitLab CI/CD, so you can automate common development tasks in your browser.
+- In the GitLab Duo CLI, the Developer Flow runs where you run the CLI.
+- In IDEs, the Software Development Flow runs in VS Code, Visual Studio, and JetBrains.
+
+To decide which flow to use for a coding task, see [choose a flow for coding tasks](foundational_flows/_index.md#choose-a-flow-for-coding-tasks).
+
+For more information about how flows execute in CI/CD, see [the flow execution documentation](execution/_index.md).
+For information about the security of flows, see [the composite identity documentation](../composite_identity.md).
+
+## Prerequisites
+
+<!-- Note: These prerequisites are duplicated on each flow sub-page. Update all pages when editing. -->
+
+- Meet the [prerequisites for the GitLab Duo Agent Platform](../_index.md#prerequisites).
+- Turn on **Allow foundational flows** [for the top-level group](foundational_flows/_index.md#turn-foundational-flows-on-or-off).
+- [Configure push rules to allow a service account](../troubleshooting.md#configure-push-rules-to-allow-a-service-account).
+- [Configure your own runners](execution/_index.md#configure-runners-to-execute-flows) or turn on [GitLab hosted runners](../../../ci/runners/hosted_runners/_index.md) for your project.
+- Recommended. Create an [agent configuration file](execution/_index.md#create-the-agent-configuration-file) so that flows in CI/CD have access to your project's toolchain and dependencies.
+
+## Monitor running flows in the GitLab UI
+
+To view flows that are running for your project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **AI** > **Sessions**.
+
+## View flow history in the IDEs
+
+Prerequisites:
+
+- In VS Code and JetBrains IDEs, use the
+  [classic layout](../../gitlab_duo_chat/agentic_chat.md#change-the-layout-in-your-ide).
+
+To view a history of flows you've run in your project:
+
+- On the **Flows** tab, scroll down and view **Recent agent sessions**.
+
+## Customize flows with `AGENTS.md`
+
+Use `AGENTS.md` files to provide context and instructions for GitLab Duo to follow while executing
+foundational and custom flows.
+
+For more information, see [`AGENTS.md` customization files](../customize/agents_md.md).
+
+## Give feedback
+
+Flows are part of GitLab AI-powered development platform. Your feedback helps us improve these workflows.
+To report issues or suggest improvements for flows,
+[complete this survey](https://gitlab.fra1.qualtrics.com/jfe/form/SV_9GmCPTV7oH9KNuu).
+
+## Related topics
+
+- [Configure where flows run](execution/_index.md)
+- [Foundational flows](foundational_flows/_index.md)
+- [Webhook callbacks](webhook_callbacks.md)

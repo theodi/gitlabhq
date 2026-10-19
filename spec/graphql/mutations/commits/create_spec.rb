@@ -1,0 +1,406 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Mutations::Commits::Create, feature_category: :source_code_management do
+  include GraphqlHelpers
+
+  subject(:mutation) { described_class.new(object: nil, context: query_context, field: nil) }
+
+  let_it_be(:current_user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project, :public, :repository) }
+  let_it_be(:group) { create(:group, :public) }
+
+  specify { expect(described_class).to require_graphql_authorizations(:push_code) }
+
+  describe '#resolve' do
+    subject { mutation.resolve(project_path: project.full_path, branch: branch, start_branch: start_branch, message: message, actions: actions, allow_empty: allow_empty) }
+
+    let(:branch) { 'master' }
+    let(:start_branch) { nil }
+    let(:message) { 'Commit message' }
+    let(:file_path) { "#{SecureRandom.uuid}.md" }
+    let(:actions) do
+      [
+        {
+          action: 'create',
+          file_path: file_path,
+          content: 'Hello'
+        }
+      ]
+    end
+
+    let(:mutated_commit) { subject[:commit] }
+    let(:allow_empty) { false }
+
+    context 'when user is not a project member' do
+      it 'raises an error' do
+        expect { subject }.to raise_error(Gitlab::Graphql::Errors::ResourceNotAvailable)
+      end
+    end
+
+    context 'when user is a direct project member' do
+      context 'and user is a guest' do
+        before do
+          project.add_guest(current_user)
+        end
+
+        it 'raises an error' do
+          expect { subject }.to raise_error(Gitlab::Graphql::Errors::ResourceNotAvailable)
+        end
+      end
+
+      context 'and user is a developer' do
+        let(:deltas) { mutated_commit.raw_deltas }
+
+        before_all do
+          project.add_developer(current_user)
+        end
+
+        context 'when service successfully creates a new commit' do
+          it "returns the ETag path for the commit's pipeline" do
+            commit_pipeline_path = subject[:commit_pipeline_path]
+            expect(commit_pipeline_path).to match(%r{pipelines/sha/\w+})
+          end
+
+          it 'returns the content of the commit' do
+            expect(subject[:content]).to eq(actions.pluck(:content))
+          end
+
+          it 'returns a new commit' do
+            expect(mutated_commit).to have_attributes(message: message, project: project)
+            expect(subject[:errors]).to be_empty
+
+            expect_to_contain_deltas([
+              a_hash_including(a_mode: '0', b_mode: '100644', new_file: true, new_path: file_path)
+            ])
+          end
+        end
+
+        context 'when request has multiple actions' do
+          let(:actions) do
+            [
+              {
+                action: 'create',
+                file_path: 'foo/foobar',
+                content: 'some content'
+              },
+              {
+                action: 'delete',
+                file_path: 'README.md'
+              },
+              {
+                action: 'move',
+                file_path: "LICENSE.md",
+                previous_path: "LICENSE",
+                content: "some content"
+              },
+              {
+                action: 'update',
+                file_path: 'VERSION',
+                content: 'new content'
+              },
+              {
+                action: 'chmod',
+                file_path: 'CHANGELOG',
+                execute_filemode: true
+              }
+            ]
+          end
+
+          it 'returns a new commit' do
+            expect(mutated_commit).to have_attributes(message: message, project: project)
+            expect(subject[:errors]).to be_empty
+
+            expect_to_contain_deltas([
+              a_hash_including(a_mode: '0', b_mode: '100644', new_path: 'foo/foobar'),
+              a_hash_including(deleted_file: true, new_path: 'README.md'),
+              a_hash_including(deleted_file: true, new_path: 'LICENSE'),
+              a_hash_including(new_file: true, new_path: 'LICENSE.md'),
+              a_hash_including(new_file: false, new_path: 'VERSION'),
+              a_hash_including(a_mode: '100644', b_mode: '100755', new_path: 'CHANGELOG')
+            ])
+          end
+        end
+
+        describe 'actions' do
+          context 'when actions are not defined' do
+            let(:actions) { [] }
+
+            context 'when allow_empty is true' do
+              let(:allow_empty) { true }
+
+              it 'creates an empty commit successfully' do
+                expect(mutated_commit).to have_attributes(message: message, project: project)
+                expect(subject[:errors]).to be_empty
+                expect_to_contain_deltas([])
+              end
+            end
+
+            context 'when allow_empty is false' do
+              it 'raises an ArgumentError' do
+                expect { subject }.to raise_error(Gitlab::Graphql::Errors::ArgumentError)
+                  .with_message('Provide at least one action, or set allowEmpty to true.')
+              end
+            end
+          end
+        end
+
+        describe 'allow_empty' do
+          shared_examples 'successful commit' do
+            it 'returns a new commit' do
+              expect(mutated_commit).to have_attributes(message: message, project: project)
+              expect(subject[:errors]).to be_empty
+
+              expect_to_contain_deltas([
+                a_hash_including(a_mode: '0', b_mode: '100644', new_file: true, new_path: file_path)
+              ])
+            end
+          end
+
+          context "when allow_empty is true" do
+            let(:allow_empty) { true }
+
+            include_examples 'successful commit'
+          end
+
+          context "when allow_empty is false" do
+            include_examples 'successful commit'
+          end
+        end
+
+        context 'when branch does not exist' do
+          let(:branch) { 'unknown' }
+
+          it 'returns errors' do
+            expect(mutated_commit).to be_nil
+            expect(subject[:errors]).to match_array(['You can only create or edit files when you are on a branch'])
+          end
+        end
+
+        context 'when branch does not exist and a start branch is provided' do
+          let(:branch) { 'my-branch' }
+          let(:start_branch) { 'master' }
+          let(:actions) do
+            [
+              {
+                action: 'create',
+                file_path: 'ANOTHER_FILE.md',
+                content: 'Bye'
+              }
+            ]
+          end
+
+          it 'returns a new commit' do
+            expect(mutated_commit).to have_attributes(message: message, project: project)
+            expect(subject[:errors]).to be_empty
+            expect(subject[:content]).to eq(actions.pluck(:content))
+
+            expect_to_contain_deltas([
+              a_hash_including(a_mode: '0', b_mode: '100644', new_file: true, new_path: 'ANOTHER_FILE.md')
+            ])
+          end
+        end
+
+        context 'when message is not set' do
+          let(:message) { nil }
+
+          it 'returns errors' do
+            expect(mutated_commit).to be_nil
+            expect(subject[:errors]).to include('You must provide a commit message')
+          end
+        end
+
+        context 'when actions are incorrect' do
+          let(:actions) { [{ action: 'unknown', file_path: 'test.md', content: '' }] }
+
+          it 'returns errors' do
+            expect(mutated_commit).to be_nil
+            expect(subject[:errors]).to match_array(['Unknown action \'unknown\''])
+          end
+        end
+
+        context 'when branch is protected' do
+          before do
+            create(:protected_branch, project: project, name: branch)
+          end
+
+          it 'returns errors' do
+            expect(mutated_commit).to be_nil
+            expect(subject[:errors]).to match_array(['You are not allowed to push into this branch'])
+          end
+        end
+
+        describe 'tracking CI config file creation', :clean_gitlab_redis_shared_state do
+          let(:ci_config_path) { project.ci_config_path_or_default }
+
+          context 'when creating CI config file on default branch' do
+            let(:branch) { project.default_branch }
+            let(:actions) do
+              [{ action: 'create', file_path: ci_config_path, content: 'image: ruby:3.0' }]
+            end
+
+            it 'tracks create_ci_config_file_from_pipeline_editor event' do
+              expect { subject }
+                .to trigger_internal_events('create_ci_config_file_from_pipeline_editor')
+                .with(user: current_user, project: project, namespace: project.namespace, category: 'Mutations::Commits::Create')
+            end
+          end
+
+          context 'when creating CI config file on feature branch' do
+            let_it_be(:feature_branch_project) { create(:project, :public, :repository) }
+
+            let(:branch) { 'feature-branch' }
+            let(:actions) do
+              [{ action: 'create', file_path: feature_branch_project.ci_config_path_or_default, content: 'image: ruby:3.0' }]
+            end
+
+            subject do
+              feature_branch_project.add_developer(current_user)
+              mutation.resolve(
+                project_path: feature_branch_project.full_path,
+                branch: branch,
+                start_branch: feature_branch_project.default_branch,
+                message: 'Commit message',
+                actions: actions,
+                allow_empty: false
+              )
+            end
+
+            it 'tracks create_ci_config_file_from_pipeline_editor event' do
+              expect { subject }
+                .to trigger_internal_events('create_ci_config_file_from_pipeline_editor')
+                .with(user: current_user, project: feature_branch_project, namespace: feature_branch_project.namespace, category: 'Mutations::Commits::Create')
+            end
+          end
+
+          context 'when updating existing CI config file' do
+            let(:branch) { project.default_branch }
+            let(:actions) do
+              [{ action: 'update', file_path: ci_config_path, content: 'image: ruby:3.1' }]
+            end
+
+            before do
+              Files::CreateService.new(
+                project,
+                current_user,
+                start_branch: branch,
+                branch_name: branch,
+                commit_message: 'Add CI config',
+                file_path: ci_config_path,
+                file_content: 'image: ruby:3.0'
+              ).execute
+            end
+
+            it 'does not track create_ci_config_file_from_pipeline_editor event' do
+              expect { subject }
+                .not_to trigger_internal_events('create_ci_config_file_from_pipeline_editor')
+            end
+          end
+
+          context 'when creating a non-CI config file' do
+            let(:branch) { project.default_branch }
+            let(:actions) do
+              [{ action: 'create', file_path: 'README.md', content: '# Hello' }]
+            end
+
+            it 'does not track create_ci_config_file_from_pipeline_editor event' do
+              expect { subject }
+                .not_to trigger_internal_events('create_ci_config_file_from_pipeline_editor')
+            end
+          end
+
+          context 'when project has custom CI config path' do
+            let_it_be(:custom_project) { create(:project, :public, :repository, ci_config_path: 'custom/ci.yml') }
+
+            let(:branch) { custom_project.default_branch }
+            let(:actions) do
+              [{ action: 'create', file_path: 'custom/ci.yml', content: 'image: ruby:3.0' }]
+            end
+
+            subject do
+              custom_project.add_developer(current_user)
+              mutation.resolve(
+                project_path: custom_project.full_path,
+                branch: branch,
+                start_branch: nil,
+                message: 'Commit message',
+                actions: actions,
+                allow_empty: false
+              )
+            end
+
+            it 'tracks create_ci_config_file_from_pipeline_editor event' do
+              expect { subject }
+                .to trigger_internal_events('create_ci_config_file_from_pipeline_editor')
+                .with(user: current_user, project: custom_project, namespace: custom_project.namespace, category: 'Mutations::Commits::Create')
+            end
+          end
+
+          context 'when commit fails' do
+            let(:branch) { project.default_branch }
+            let(:actions) do
+              [{ action: 'create', file_path: ci_config_path, content: 'image: ruby:3.0' }]
+            end
+
+            before do
+              allow_next_instance_of(Files::MultiService) do |service|
+                allow(service).to receive(:execute).and_return({ status: :error, message: 'Commit failed' })
+              end
+            end
+
+            it 'does not track create_ci_config_file_from_pipeline_editor event' do
+              expect { subject }
+                .not_to trigger_internal_events('create_ci_config_file_from_pipeline_editor')
+            end
+          end
+        end
+      end
+    end
+
+    context 'when user is an inherited member from the group' do
+      context 'when project is public with private repository' do
+        let(:project) { create(:project, :public, :repository, :repository_private, group: group) }
+
+        context 'and user is a guest' do
+          before do
+            group.add_guest(current_user)
+          end
+
+          it 'raises an error' do
+            expect { subject }.to raise_error(Gitlab::Graphql::Errors::ResourceNotAvailable)
+          end
+        end
+      end
+
+      context 'when project is private' do
+        let(:project) { create(:project, :private, :repository, group: group) }
+
+        context 'and user is a guest' do
+          before do
+            group.add_guest(current_user)
+          end
+
+          it 'raises an error' do
+            expect { subject }.to raise_error(Gitlab::Graphql::Errors::ResourceNotAvailable)
+          end
+        end
+      end
+    end
+
+    context 'when user is a maintainer of a different project' do
+      before do
+        create(:project_empty_repo).add_maintainer(current_user)
+      end
+
+      it 'raises an error' do
+        expect { subject }.to raise_error(Gitlab::Graphql::Errors::ResourceNotAvailable)
+      end
+    end
+  end
+
+  def expect_to_contain_deltas(expected_deltas)
+    expect(deltas.count).to eq(expected_deltas.count)
+    expect(deltas).to include(*expected_deltas) unless expected_deltas.empty?
+  end
+end

@@ -1,0 +1,71 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    class Group < BasicGroupDetails
+      expose :path, :description, :visibility
+      expose :share_with_group_lock, documentation: { type: 'Boolean' }
+      expose :require_two_factor_authentication, documentation: { type: 'Boolean' }
+      expose :two_factor_grace_period, documentation: { type: 'Integer' }
+      expose :project_creation_level_str, as: :project_creation_level
+      expose :auto_devops_enabled
+      expose :subgroup_creation_level_str, as: :subgroup_creation_level
+      expose(:emails_disabled, documentation: { type: 'Boolean' }) { |group, options| group.emails_disabled? }
+      expose :emails_enabled, documentation: { type: 'Boolean' }
+      expose(:show_diff_preview_in_email, documentation: { type: 'Boolean' }) do |group, options|
+        group.show_diff_preview_in_email?
+      end
+      expose :mentions_disabled
+      expose :lfs_enabled?, as: :lfs_enabled, documentation: { type: 'Boolean' }
+      expose(:archived, documentation: { type: 'Boolean' }) { |group, _options| group.self_or_ancestors_archived? }
+      expose :math_rendering_limits_enabled, documentation: { type: 'Boolean' }
+      expose :lock_math_rendering_limits_enabled, documentation: { type: 'Boolean' }
+      expose(:crm_enabled, documentation: { type: 'Boolean' }) { |group, _options| group.crm_enabled? }
+      expose :resource_access_token_notify_inherited, documentation: { type: 'Boolean' }
+      expose :lock_resource_access_token_notify_inherited, documentation: { type: 'Boolean' }
+      expose :default_branch_name, as: :default_branch
+      expose :default_branch_protection, documentation: { type: 'Integer' }
+      expose :default_branch_protection_settings, as: :default_branch_protection_defaults
+      expose :avatar_url do |group, options|
+        group.avatar_url(only_path: false)
+      end
+      expose :request_access_enabled, documentation: { type: 'Boolean' }
+      expose :full_name, :full_path
+      expose :created_at
+      expose :parent_id
+      expose :organization_id, documentation: { type: 'Integer', format: 'int64' }
+      expose :shared_runners_setting
+      expose :max_artifacts_size, documentation: { type: 'Integer' }
+
+      expose :custom_attributes, using: ::API::Entities::CustomAttribute, if: :with_custom_attributes
+
+      expose :statistics, if: :statistics do
+        with_options format_with: ->(value) { value.to_i } do
+          expose :storage_size
+          expose :repository_size
+          expose :wiki_size
+          expose :lfs_objects_size
+          expose :build_artifacts_size, as: :job_artifacts_size
+          expose :pipeline_artifacts_size
+          expose :packages_size
+          expose :snippets_size
+          expose :uploads_size
+        end
+      end
+
+      # It is always enabled since 18.0
+      expose(:marked_for_deletion_on) { |group, _options| group.self_deletion_scheduled_deletion_created_on&.to_date }
+
+      expose :root_storage_statistics, using: Entities::Namespace::RootStorageStatistics,
+        if: ->(group, opts) {
+              expose_root_storage_statistics?(group, opts)
+            }
+
+      def expose_root_storage_statistics?(group, opts)
+        opts[:statistics] && group.root?
+      end
+    end
+  end
+end
+
+API::Entities::Group.prepend_mod_with('API::Entities::Group', with_descendants: true)

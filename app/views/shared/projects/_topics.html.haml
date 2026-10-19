@@ -1,0 +1,33 @@
+- max_project_topic_length = 15
+
+- if project.topics.present?
+  .gl-w-full.gl-inline-flex.gl-flex-wrap.gl-text-base.gl-font-normal.gl-items-center.gl-gap-2{ 'data-testid': 'project_topic_list' }
+    - project.topics_to_show.each do |topic|
+      - explore_project_topic_path = topic_explore_projects_cleaned_path(topic_name: topic[:name])
+      - if topic[:title].length > max_project_topic_length
+        = gl_badge_tag truncate(topic[:title], length: max_project_topic_length), { href: explore_project_topic_path }, { class: 'has-tooltip', data: { container: "body" }, title: topic[:title], itemprop: 'keywords' }
+      - else
+        = gl_badge_tag topic[:title], { href: explore_project_topic_path }, { itemprop: 'keywords' }
+
+    - if project.has_extra_topics?
+      - hidden_topics = project.topics_not_shown
+      - hidden_topics_count = project.count_of_extra_topics_not_shown
+
+      %span.gl-inline-flex.gl-flex-wrap.gl-items-center.gl-gap-2.js-toggle-container
+        = render Pajamas::ButtonComponent.new(category: :tertiary, size: :small, button_options: { class: '!gl-whitespace-nowrap !gl-text-subtle js-toggle-button js-toggle-content', title: nil, 'aria-label': _("Show %{count} more") % { count: hidden_topics_count } }) do
+          %span.js-toggle-text.gl-text-sm
+            = _("+ %{count} more") % { count: hidden_topics_count }
+
+        - hidden_topics.each do |topic|
+          - explore_project_topic_path = topic_explore_projects_cleaned_path(topic_name: topic[:name])
+          - if topic[:title].length > max_project_topic_length
+            = gl_badge_tag truncate(topic[:title], length: max_project_topic_length),
+                { href: explore_project_topic_path },
+                { class: "has-tooltip js-toggle-content gl-hidden",
+                  data: { container: "body" },
+                  title: topic[:title],
+                  itemprop: 'keywords' }
+          - else
+            = gl_badge_tag topic[:title],
+                { href: explore_project_topic_path, itemprop: 'keywords' },
+                { class: "js-toggle-content gl-hidden" }

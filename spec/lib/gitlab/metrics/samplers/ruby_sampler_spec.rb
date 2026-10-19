@@ -1,0 +1,222 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Metrics::Samplers::RubySampler do
+  let(:sampler) { described_class.new }
+  let(:null_metric) { double('null_metric', set: nil, observe: nil) }
+
+  before do
+    allow(Gitlab::Metrics::NullMetric).to receive(:instance).and_return(null_metric)
+  end
+
+  it_behaves_like 'metrics sampler', 'RUBY_SAMPLER'
+
+  describe '#initialize' do
+    it 'sets process_start_time_seconds' do
+      freeze_time do
+        expect(sampler.metrics[:process_start_time_seconds].get).to eq(Time.now.to_i)
+      end
+    end
+
+    context 'when not setting a prefix' do
+      it 'does not prepend metrics with that prefix' do
+        expect(sampler.metrics[:process_start_time_seconds].name).to eq(:ruby_process_start_time_seconds)
+      end
+    end
+
+    context 'when using custom prefix' do
+      let(:sampler) { described_class.new(prefix: 'custom') }
+
+      it 'prepends metrics with that prefix' do
+        expect(sampler.metrics[:process_start_time_seconds].name).to eq(:custom_ruby_process_start_time_seconds)
+      end
+    end
+  end
+
+  describe '#sample' do
+    it 'adds a metric containing the process total resident memory bytes' do
+      expect(Gitlab::Metrics::System).to receive(:memory_usage_rss).and_return({ total: 9000 })
+
+      expect(sampler.metrics[:process_resident_memory_bytes]).to receive(:set).with({}, 9000)
+
+      sampler.sample
+    end
+
+    it 'adds a metric containing the process anonymous resident memory bytes' do
+      expect(Gitlab::Metrics::System).to receive(:memory_usage_rss).and_return({ anon: 9000 })
+
+      expect(sampler.metrics[:process_resident_anon_memory_bytes]).to receive(:set).with({}, 9000)
+
+      sampler.sample
+    end
+
+    it 'adds a metric containing the process file backed resident memory bytes' do
+      expect(Gitlab::Metrics::System).to receive(:memory_usage_rss).and_return({ file: 9000 })
+
+      expect(sampler.metrics[:process_resident_file_memory_bytes]).to receive(:set).with({}, 9000)
+
+      sampler.sample
+    end
+
+    it 'adds a metric containing the process unique and proportional memory bytes' do
+      expect(Gitlab::Metrics::System).to receive(:memory_usage_uss_pss).and_return(uss: 9000, pss: 10_000)
+
+      expect(sampler.metrics[:process_unique_memory_bytes]).to receive(:set).with({}, 9000)
+      expect(sampler.metrics[:process_proportional_memory_bytes]).to receive(:set).with({}, 10_000)
+
+      sampler.sample
+    end
+
+    context 'when USS+PSS sampling is disabled via environment' do
+      before do
+        stub_env('enable_memory_uss_pss', "0")
+      end
+
+      it 'does not sample USS or PSS' do
+        expect(Gitlab::Metrics::System).not_to receive(:memory_usage_uss_pss)
+
+        expect(sampler.metrics[:process_unique_memory_bytes]).not_to receive(:set)
+        expect(sampler.metrics[:process_proportional_memory_bytes]).not_to receive(:set)
+
+        sampler.sample
+      end
+    end
+
+    it 'adds a metric containing the amount of open file descriptors' do
+      expect(Gitlab::Metrics::System).to receive(:file_descriptor_count)
+                                           .and_return(4)
+
+      expect(sampler.metrics[:file_descriptors]).to receive(:set).with({}, 4)
+
+      sampler.sample
+    end
+
+    it 'adds a metric containing the process total cpu time' do
+      expect(Gitlab::Metrics::System).to receive(:cpu_time).and_return(0.51)
+      expect(sampler.metrics[:process_cpu_seconds_total]).to receive(:set).with({}, 0.51)
+
+      sampler.sample
+    end
+
+    it 'adds a metric containing the process max file descriptors' do
+      expect(Gitlab::Metrics::System).to receive(:max_open_file_descriptors).and_return(1024)
+      expect(sampler.metrics[:process_max_fds]).to receive(:set).with({}, 1024)
+
+      sampler.sample
+    end
+
+    it 'clears any GC profiles' do
+      expect(GC::Profiler).to receive(:clear).at_least(:once)
+
+      sampler.sample
+    end
+
+    context 'when GVL instrumentation is enabled' do
+      before do
+        allow(GVLTools::GlobalTimer).to receive(:enabled?).and_return(true)
+      end
+
+      it 'adds a metric containing the process-wide GVL wait time in seconds' do
+        expect(GVLTools::GlobalTimer).to receive(:monotonic_time).and_return(1_500_000_000)
+        expect(sampler.metrics[:gvl_wait_seconds]).to receive(:set).with({}, 1.5)
+
+        sampler.sample
+      end
+    end
+
+    context 'when GVL instrumentation is disabled' do
+      before do
+        allow(GVLTools::GlobalTimer).to receive(:enabled?).and_return(false)
+      end
+
+      it 'does not report a GVL wait time' do
+        expect(sampler.metrics[:gvl_wait_seconds]).not_to receive(:set)
+
+        sampler.sample
+      end
+    end
+
+    context 'when GVLTools is not loaded, as in the metrics server' do
+      before do
+        hide_const('GVLTools')
+      end
+
+      it 'does not report a GVL wait time' do
+        expect(sampler.metrics[:gvl_wait_seconds]).not_to receive(:set)
+
+        expect { sampler.sample }.not_to raise_error
+      end
+    end
+  end
+
+  describe '#sample_gc' do
+    let!(:sampler) { described_class.new }
+
+    let(:gc_reports) { [{ GC_TIME: 0.1 }, { GC_TIME: 0.2 }, { GC_TIME: 0.3 }] }
+
+    it 're-enables GC::Profiler if needed' do
+      expect(GC::Profiler).to receive(:enable)
+
+      sampler.sample
+    end
+
+    it 'observes GC cycles time' do
+      expect(sampler).to receive(:sample_gc_reports).and_return(gc_reports)
+
+      expect(sampler.metrics[:gc_duration_seconds]).to receive(:observe).with({}, 0.1).ordered
+      expect(sampler.metrics[:gc_duration_seconds]).to receive(:observe).with({}, 0.2).ordered
+      expect(sampler.metrics[:gc_duration_seconds]).to receive(:observe).with({}, 0.3).ordered
+
+      sampler.sample
+    end
+
+    it 'adds a metric containing garbage collection statistics' do
+      GC.stat.keys.each do |key|
+        expect(sampler.metrics[key]).to receive(:set).with({}, anything)
+      end
+
+      sampler.sample
+    end
+
+    it 'adds a heap fragmentation metric' do
+      expect(sampler.metrics[:heap_fragmentation]).to receive(:set).with({}, anything)
+
+      sampler.sample
+    end
+
+    context 'when YJIT is enabled', skip: !defined?(RubyVM::YJIT) || !RubyVM::YJIT.enabled? do
+      it 'samples YJIT metrics' do
+        expect(sampler.metrics[:yjit_enabled]).to receive(:set).with({}, 1)
+        expect(sampler.metrics[:yjit_inline_code_size_bytes]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_outlined_code_size_bytes]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_freed_page_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_freed_code_size_bytes]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_live_page_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_code_region_size_bytes]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_alloc_size_bytes]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_vm_insns_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_live_iseq_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_code_gc_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_compiled_iseq_entry]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_cold_iseq_entry]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_compiled_iseq_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_compiled_blockid_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_compiled_block_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_compiled_branch_count]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_compile_time_seconds]).to receive(:set).with({}, anything)
+        expect(sampler.metrics[:yjit_object_shape_count]).to receive(:set).with({}, anything)
+
+        sampler.sample
+      end
+    end
+
+    context 'when YJIT is not enabled', skip: defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled? do
+      it 'sets yjit_enabled to 0' do
+        expect(sampler.metrics[:yjit_enabled]).to receive(:set).with({}, 0)
+
+        sampler.sample
+      end
+    end
+  end
+end

@@ -1,0 +1,105 @@
+@import 'mixins_and_variables_and_functions';
+
+.issuable-discussion.incident-timeline-events {
+  .main-notes-list::before {
+    content: none;
+  }
+}
+
+.timeline-event {
+  grid-template-columns: auto minmax(0, 1fr) #{$gl-spacing-scale-7};
+}
+
+.create-timeline-event,
+.edit-timeline-event,
+.timeline-event {
+  gap: $gl-spacing-scale-5;
+}
+
+.create-timeline-event,
+.edit-timeline-event {
+  .md-area {
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-form-textarea {
+      @apply gl-shadow-none;
+    }
+  }
+}
+
+/**
+ * We have a very specific design proposal where we cannot
+ * use `vertical-line` mixin as it is and have to use
+ * custom styles, see https://gitlab.com/gitlab-org/gitlab/-/merge_requests/81284#note_904867444
+ */
+.timeline-entry-vertical-line {
+  &::before,
+  &::after {
+    content: '';
+    @apply gl-border-l-subtle;
+    @apply gl-border-l-2;
+    @apply gl-border-l-solid;
+    position: absolute;
+    left: 20px;
+    height: calc(100% + #{$gl-spacing-scale-5});
+    top: -#{$gl-spacing-scale-5};
+  }
+
+  &:first-child::before {
+    content: none;
+  }
+
+  &:first-child {
+    &::after {
+      top: $gl-spacing-scale-5;
+      height: calc(100% + #{$gl-spacing-scale-5});
+    }
+  }
+
+  &:last-child {
+    &::before {
+      top: - #{$gl-spacing-scale-5} !important; // Override default positioning
+      height: $gl-spacing-scale-8;
+    }
+
+    &::after {
+      content: none;
+    }
+  }
+}
+
+.timeline-entry:not(:last-child) {
+  .timeline-event-border {
+    padding-bottom: $gl-spacing-scale-3;
+
+    &::after {
+      content: '';
+      position: absolute;
+      @apply gl-border-subtle;
+      @apply gl-border-1;
+      @apply gl-border-b-solid;
+      // Border spans the whole container minus icon width and grid gap
+      width: calc(100% - $gl-spacing-scale-8 - $gl-spacing-scale-5);
+      bottom: $gl-spacing-scale-3;
+    }
+  }
+}
+
+.timeline-group:last-child {
+  .timeline-entry:last-child,
+  .create-timeline-event {
+    .timeline-event-bottom-border {
+      @apply gl-border-b;
+      padding-top: $gl-spacing-scale-5;
+    }
+  }
+}
+
+.timeline-event-note .md p {
+  @apply gl-text-subtle;
+}
+
+.timeline-event-note-date {
+  @include gl-container-width-down(md, panel) {
+    width: 100%;
+  }
+}

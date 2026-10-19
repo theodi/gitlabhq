@@ -1,0 +1,62 @@
+# @feature_category: source_code_management
+fragment TreeEntry on Entry {
+  __typename
+  id
+  sha
+  name
+  flatPath
+  type
+  path
+}
+
+query getPaginatedTree(
+  $projectPath: ID!
+  $path: String
+  $ref: String!
+  $nextPageCursor: String
+  $refType: RefType
+) {
+  project(fullPath: $projectPath) {
+    id
+    __typename
+    repository {
+      __typename
+      paginatedTree(path: $path, ref: $ref, refType: $refType, after: $nextPageCursor) {
+        __typename
+        pageInfo {
+          __typename
+          endCursor
+          startCursor
+          hasNextPage
+        }
+        nodes {
+          __typename
+          trees {
+            __typename
+            nodes {
+              ...TreeEntry
+              webPath
+            }
+          }
+          submodules {
+            __typename
+            nodes {
+              ...TreeEntry
+              webUrl
+              treeUrl
+            }
+          }
+          blobs {
+            __typename
+            nodes {
+              ...TreeEntry
+              mode
+              webPath
+              lfsOid
+            }
+          }
+        }
+      }
+    }
+  }
+}

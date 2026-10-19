@@ -1,0 +1,37 @@
+# Yamllint of yaml files.
+
+# This uses rules from project root `.yamllint`.
+lint-yaml:
+  extends:
+    - .yaml-lint:rules
+    - .lint-base
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}pipelinecomponents/yamllint:latest
+  stage: lint
+  script:
+    - yamllint --strict -f colored .
+
+# The jobs below will not use the configuration present in `.yamllint` (it's because of the -d option)
+#
+# Docs: https://yamllint.readthedocs.io/en/stable/configuration.html#custom-configuration-without-a-config-file
+
+lint-pipeline-yaml:
+  extends:
+    - .lint-pipeline-yaml:rules
+    - .lint-base
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}pipelinecomponents/yamllint:latest
+  stage: lint
+  variables:
+    LINT_PATHS: .gitlab-ci.yml .gitlab/ci .gitlab/duo lib/gitlab/ci/templates data/deprecations data/whats_new
+  script:
+    - 'yamllint -d "{extends: default, rules: {line-length: disable, document-start: disable, comments: {min-spaces-from-content: 1}}}" $LINT_PATHS'
+
+lint-metrics-yaml:
+  extends:
+    - .lint-metrics-yaml:rules
+    - .lint-base
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}pipelinecomponents/yamllint:latest
+  stage: lint
+  variables:
+    LINT_PATHS: config/metrics
+  script:
+    - 'yamllint --strict -f colored -d "{extends: default, rules: {line-length: disable, document-start: disable, indentation: {spaces: 2, indent-sequences: whatever}}}" $LINT_PATHS'

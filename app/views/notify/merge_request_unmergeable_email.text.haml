@@ -1,0 +1,7 @@
+= sprintf(s_('Notify|Merge request %{merge_request} can no longer be merged due to conflict.'), { merge_request: @merge_request.to_reference })
+
+= sprintf(s_('Notify|Merge request URL: %{merge_request_url}'), { merge_request_url: project_merge_request_url(@merge_request.target_project, @merge_request) })
+
+= merge_path_description(@merge_request)
+
+= render 'merge_request_participants', merge_request: @merge_request

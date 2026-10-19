@@ -1,0 +1,118 @@
+query getJobs(
+  $fullPath: ID!
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+  $statuses: [CiJobStatus!]
+  $sources: [CiJobSource!]
+  $name: String
+  $kind: CiJobKind! = BUILD
+) {
+  project(fullPath: $fullPath) {
+    id
+    jobs(
+      first: $first
+      last: $last
+      after: $after
+      before: $before
+      statuses: $statuses
+      sources: $sources
+      name: $name
+      kind: $kind
+    ) {
+      pageInfo {
+        endCursor
+        hasNextPage
+        hasPreviousPage
+        startCursor
+      }
+      nodes {
+        artifacts {
+          # eslint-disable-next-line @graphql-eslint/require-selections
+          nodes {
+            downloadPath
+            fileType
+          }
+        }
+        browseArtifactsPath
+        allowFailure
+        status
+        scheduledAt
+        manualJob
+        triggered
+        createdByTag
+        detailedStatus {
+          id
+          detailsPath
+          group
+          icon
+          label
+          text
+          tooltip
+          action {
+            id
+            buttonTitle
+            icon
+            method
+            path
+            title
+            confirmationMessage
+          }
+        }
+        id
+        refName
+        refPath
+        tags
+        shortSha
+        commitPath
+        pipeline {
+          id
+          path
+          user {
+            id
+            name
+            webPath
+            avatarUrl
+          }
+          ... on Pipeline {
+            commit {
+              id
+              shortId
+              sha
+              title
+              webPath
+              authoredDate
+              authorName
+              authorGravatar
+              author {
+                id
+                name
+                avatarUrl
+              }
+            }
+          }
+        }
+        stage {
+          id
+          name
+        }
+        name
+        duration
+        finishedAt
+        coverage
+        retryable
+        playable
+        cancelable
+        active
+        stuck
+        userPermissions {
+          readBuild
+          readJobArtifacts
+          updateBuild
+          cancelBuild
+        }
+      }
+    }
+  }
+}

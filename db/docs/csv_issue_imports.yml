@@ -1,0 +1,13 @@
+---
+table_name: csv_issue_imports
+classes:
+- Issues::CsvImport
+feature_categories:
+- importers
+description: Used to report the unique user usage of the CSV Issue Import feature
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/44742
+milestone: '13.6'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

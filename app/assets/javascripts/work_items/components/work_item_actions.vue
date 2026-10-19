@@ -1,0 +1,889 @@
+<script>
+import {
+  GlDisclosureDropdown,
+  GlDisclosureDropdownGroup,
+  GlDisclosureDropdownItem,
+  GlDropdownDivider,
+  GlIcon,
+  GlLoadingIcon,
+  GlModal,
+  GlTooltipDirective,
+  GlToggle,
+  GlToastMixin,
+} from '@gitlab/ui';
+
+import { nextTick } from 'vue';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+
+import { __, s__, sprintf } from '~/locale';
+import { getModifierKey } from '~/constants';
+import Tracking from '~/tracking';
+import { keyboardShortcutsDisabled } from '~/behaviors/shortcuts/shortcuts_disabled';
+import glFeatureFlagMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import toast from '~/vue_shared/plugins/global_toast';
+import { isLoggedIn } from '~/lib/utils/common_utils';
+import { markAsSpamProjectIssuePath } from '~/lib/utils/path_helpers/issues';
+
+import WorkItemChangeTypeModal from 'ee_else_ce/work_items/components/work_item_change_type_modal.vue';
+import {
+  CREATION_CONTEXT_RELATED_ITEM,
+  STATE_CLOSED,
+  WORK_ITEM_TYPE_NAME_OBJECTIVE,
+  VIEW_CONTEXT,
+  WIDGET_TYPE_NOTIFICATIONS,
+} from '../constants';
+import updateWorkItemMutation from '../graphql/update_work_item.mutation.graphql';
+import updateWorkItemNotificationsMutation from '../graphql/update_work_item_notifications.mutation.graphql';
+import convertWorkItemMutation from '../graphql/work_item_convert.mutation.graphql';
+import namespaceWorkItemTypesQuery from '../graphql/namespace_work_item_types.query.graphql';
+import getWorkItemNotificationsByIdQuery from '../graphql/get_work_item_notifications_by_id.query.graphql';
+import { findNotificationsWidget, lowercaseWorkItemType } from '../utils';
+import WorkItemStateToggle from './work_item_state_toggle.vue';
+import CreateWorkItemModal from './create_work_item_modal.vue';
+import MoveWorkItemModal from './move_work_item_modal.vue';
+
+export default {
+  name: 'WorkItemActions',
+  CREATION_CONTEXT_RELATED_ITEM,
+  newRelatedItem: { text: s__('WorkItem|New related item') },
+  promoteItem: { text: __('Promote to objective') },
+  changeTypeItem: { text: s__('WorkItem|Change type') },
+  moveItem: { text: __('Move') },
+  copyReferenceItem: { text: __('Copy reference') },
+  reportAbuseItem: { text: __('Report abuse') },
+  i18n: {
+    enableConfidentiality: s__('WorkItem|Turn on confidentiality'),
+    disableConfidentiality: s__('WorkItem|Turn off confidentiality'),
+    confidentialParentTooltip: s__(
+      'WorkItem|Child items of a confidential parent must be confidential. Turn off confidentiality on the parent item first.',
+    ),
+    notifications: s__('WorkItem|Notifications'),
+    notificationOn: s__('WorkItem|Notifications turned on.'),
+    notificationOff: s__('WorkItem|Notifications turned off.'),
+    referenceCopied: __('Reference copied'),
+    emailAddressCopied: __('Email address copied'),
+    moreActions: __('More actions'),
+  },
+  components: {
+    GlDisclosureDropdown,
+    GlDisclosureDropdownItem,
+    GlDropdownDivider,
+    GlDisclosureDropdownGroup,
+    GlIcon,
+    GlLoadingIcon,
+    GlModal,
+    GlToggle,
+    WorkItemStateToggle,
+    CreateWorkItemModal,
+    WorkItemChangeTypeModal,
+    MoveWorkItemModal,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [glFeatureFlagMixin(), Tracking.mixin({ label: 'actions_menu' }), GlToastMixin],
+  inject: {
+    getWorkItemTypeConfiguration: {
+      default: () => {},
+    },
+    viewContext: { default: VIEW_CONTEXT.fullScreen },
+  },
+  props: {
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    workItemState: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    workItemId: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    workItemIid: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    workItemType: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    projectId: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    canUpdate: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canUpdateMetadata: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canDelete: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canMove: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canReportSpam: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isConfidential: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isDiscussionLocked: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isParentConfidential: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    workItemReference: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    workItemWebUrl: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    workItemCreateNoteEmail: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    isDetailPanel: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hideSubscribe: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasChildren: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasParent: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    parentId: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    workItemAuthorId: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    canCreateRelatedItem: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isGroup: {
+      type: Boolean,
+      required: true,
+    },
+    widgets: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    features: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    allowedChildTypes: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    namespaceFullName: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    showSidebar: {
+      type: Boolean,
+      required: true,
+    },
+    truncationEnabled: {
+      type: Boolean,
+      required: true,
+    },
+    updateInProgress: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: [
+    'delete-work-item',
+    'dropdown-show',
+    'error',
+    'toggle-report-abuse-modal',
+    'toggle-sidebar',
+    'toggle-truncation-enabled',
+    'toggle-work-item-confidentiality',
+    'work-item-created',
+    'work-item-state-updated',
+    'work-item-type-changed',
+  ],
+  data() {
+    return {
+      isLockDiscussionUpdating: false,
+      isDropdownVisible: false,
+      isCreateWorkItemModalVisible: false,
+      isMoveWorkItemModalVisible: false,
+      workItemTypes: [],
+      updateInProgressPromise: null,
+      workItemNotificationsSubscribed: false,
+    };
+  },
+  apollo: {
+    workItemTypes: {
+      query: namespaceWorkItemTypesQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+        };
+      },
+      update(data) {
+        return data.namespace?.workItemTypes?.nodes;
+      },
+      skip() {
+        return !this.canUpdateMetadata;
+      },
+    },
+    workItemNotificationsSubscribed: {
+      query: () => {
+        return getWorkItemNotificationsByIdQuery;
+      },
+      variables() {
+        return {
+          id: this.workItemId,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      skip() {
+        return !this.workItemId;
+      },
+      update(data) {
+        return Boolean(findNotificationsWidget(data?.workItem)?.subscribed);
+      },
+      error(error) {
+        Sentry.captureException(error);
+      },
+    },
+  },
+  computed: {
+    isLoggedIn() {
+      return isLoggedIn();
+    },
+    // eslint-disable-next-line vue/no-unused-properties
+    tracking() {
+      return {
+        extra: { viewContext: this.viewContext },
+      };
+    },
+    i18n() {
+      return {
+        deleteWorkItem: sprintf(s__('WorkItem|Delete %{workItemType}'), {
+          workItemType: lowercaseWorkItemType(this.workItemType),
+        }),
+        convertError: sprintf(
+          s__(
+            'WorkItem|Something went wrong while promoting the %{workItemType}. Please try again.',
+          ),
+          { workItemType: lowercaseWorkItemType(this.workItemType) },
+        ),
+        copyCreateNoteEmail: sprintf(s__('WorkItem|Copy %{workItemType} email address'), {
+          workItemType: lowercaseWorkItemType(this.workItemType),
+        }),
+        copyReferenceError: sprintf(
+          s__(
+            'WorkItem|Something went wrong while copying the %{workItemType} reference. Please try again.',
+          ),
+          { workItemType: lowercaseWorkItemType(this.workItemType) },
+        ),
+        copyCreateNoteEmailError: sprintf(
+          s__(
+            'WorkItem|Something went wrong while copying the %{workItemType} email address. Please try again.',
+          ),
+          { workItemType: lowercaseWorkItemType(this.workItemType) },
+        ),
+      };
+    },
+    areYouSureDeleteMessage() {
+      const message = this.hasChildren
+        ? s__(
+            'WorkItem|Delete this %{workItemType} and release all child items? This action cannot be reversed.',
+          )
+        : s__(
+            'WorkItem|Are you sure you want to delete the %{workItemType}? This action cannot be reversed.',
+          );
+      return sprintf(message, {
+        workItemType: lowercaseWorkItemType(this.workItemType),
+      });
+    },
+    workItemTypeConfiguration() {
+      return this.getWorkItemTypeConfiguration(this.workItemType);
+    },
+    canPromoteToObjective() {
+      if (!this.canUpdateMetadata) return false;
+
+      return this.workItemTypeConfiguration?.canPromoteToObjective;
+    },
+    confidentialItem() {
+      return {
+        text: this.confidentialItemText,
+        extraAttrs: { disabled: this.isParentConfidential },
+      };
+    },
+    confidentialItemText() {
+      return this.isConfidential
+        ? this.$options.i18n.disableConfidentiality
+        : this.$options.i18n.enableConfidentiality;
+    },
+    confidentialItemIcon() {
+      return this.isConfidential ? 'eye' : 'eye-slash';
+    },
+    confidentialTooltip() {
+      return this.isParentConfidential ? this.$options.i18n.confidentialParentTooltip : '';
+    },
+    lockDiscussionText() {
+      return this.isDiscussionLocked ? __('Unlock discussion') : __('Lock discussion');
+    },
+    lockDiscussionIcon() {
+      return this.isDiscussionLocked ? 'lock-open' : 'lock';
+    },
+    objectiveWorkItemTypeId() {
+      return this.workItemTypes.find((type) => type.name === WORK_ITEM_TYPE_NAME_OBJECTIVE).id;
+    },
+    currentWorkItemTypeId() {
+      return this.workItemTypes.find((type) => type.name === this.workItemType)?.id ?? '';
+    },
+    showDropdownTooltip() {
+      return !this.isDropdownVisible ? this.$options.i18n.moreActions : '';
+    },
+    submitAsSpamItem() {
+      const href = markAsSpamProjectIssuePath(this.fullPath, { id: this.workItemIid });
+      return { text: __('Submit as spam'), href };
+    },
+    copyCreateNoteEmailItem() {
+      return { text: this.i18n.copyCreateNoteEmail };
+    },
+    deleteItem() {
+      return { text: this.i18n.deleteWorkItem };
+    },
+    isAuthor() {
+      return this.workItemAuthorId === window.gon.current_user_id;
+    },
+    relatedItemData() {
+      return {
+        id: this.workItemId,
+        reference: this.workItemReference,
+        type: this.workItemType,
+        webUrl: this.workItemWebUrl,
+      };
+    },
+    showChangeType() {
+      if (!this.canUpdateMetadata) {
+        return false;
+      }
+
+      const currentType = this.workItemTypes.find((type) => type.name === this.workItemType);
+      return currentType?.supportedConversionTypes?.length > 0;
+    },
+    showStateItem() {
+      return this.canUpdate && !(this.workItemState === STATE_CLOSED && this.isDiscussionLocked);
+    },
+    showMoveButton() {
+      return this.workItemTypeConfiguration?.supportsMoveAction && this.canMove;
+    },
+    toggleSidebarLabel() {
+      return this.showSidebar ? s__('WorkItem|Hide sidebar') : s__('WorkItem|Show sidebar');
+    },
+    toggleSidebarKeys() {
+      const modifierKey = getModifierKey();
+      return keyboardShortcutsDisabled() ? null : `${modifierKey}/`;
+    },
+  },
+  watch: {
+    updateInProgress(newValue, oldValue) {
+      if (oldValue && !newValue && this.updateInProgressPromise) {
+        this.updateInProgressPromise.resolve();
+        this.updateInProgressPromise = null;
+      }
+    },
+  },
+  methods: {
+    copyToClipboard(text, message) {
+      if (this.isDetailPanel) {
+        // eslint-disable-next-line no-restricted-properties
+        navigator.clipboard.writeText(text);
+      }
+      toast(message);
+      this.closeDropdown();
+    },
+    async handleToggleWorkItemConfidentiality() {
+      this.track('click_toggle_work_item_confidentiality');
+      this.$emit('toggle-work-item-confidentiality', !this.isConfidential);
+
+      await nextTick();
+
+      if (this.updateInProgress) {
+        await new Promise((resolve) => {
+          this.updateInProgressPromise = { resolve };
+        });
+      }
+
+      this.closeDropdown();
+    },
+    handleDelete() {
+      this.$refs.modal.show();
+      this.closeDropdown();
+    },
+    handleDeleteWorkItem() {
+      this.track('click_delete_work_item');
+      this.$emit('delete-work-item');
+    },
+    handleCancelDeleteWorkItem({ trigger }) {
+      if (trigger !== 'ok') {
+        this.track('cancel_delete_work_item');
+      }
+    },
+    toggleNotifications(subscribed) {
+      const notificationWidget = {
+        type: WIDGET_TYPE_NOTIFICATIONS,
+        subscribed,
+        __typename: 'WorkItemWidgetNotifications',
+      };
+
+      this.$apollo
+        .mutate({
+          mutation: updateWorkItemNotificationsMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              subscribed,
+            },
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          },
+          optimisticResponse: {
+            workItemSubscribe: {
+              errors: [],
+              workItem: {
+                __typename: 'WorkItem',
+                id: this.workItemId,
+                ...(this.glFeatures?.workItemFeaturesField
+                  ? {
+                      features: {
+                        __typename: 'WorkItemFeatures',
+                        notifications: notificationWidget,
+                      },
+                    }
+                  : { widgets: [notificationWidget] }),
+              },
+            },
+          },
+        })
+        .then(({ data }) => {
+          const { errors } = data.workItemSubscribe;
+          if (errors?.length) {
+            throw new Error(errors[0]);
+          }
+
+          toast(
+            subscribed ? this.$options.i18n.notificationOn : this.$options.i18n.notificationOff,
+          );
+        })
+        .catch((error) => {
+          this.$emit('error', error.message);
+          Sentry.captureException(error);
+        });
+    },
+    throwConvertError() {
+      this.$emit('error', this.i18n.convertError);
+    },
+    closeDropdown() {
+      this.$refs.workItemsMoreActions.close();
+    },
+    toggleDiscussionLock() {
+      this.isLockDiscussionUpdating = true;
+
+      this.$apollo
+        .mutate({
+          mutation: updateWorkItemMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              notesWidget: {
+                discussionLocked: !this.isDiscussionLocked,
+              },
+            },
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          },
+        })
+        .then(({ data }) => {
+          const { errors } = data.workItemUpdate;
+          if (errors?.length) {
+            throw new Error(errors);
+          }
+
+          toast(this.isDiscussionLocked ? __('Discussion locked.') : __('Discussion unlocked.'));
+        })
+        .catch((error) => {
+          this.$emit('error', error.message);
+          Sentry.captureException(error);
+        })
+        .finally(() => {
+          this.isLockDiscussionUpdating = false;
+          this.closeDropdown();
+        });
+    },
+    async promoteToObjective() {
+      try {
+        const {
+          data: {
+            workItemConvert: { errors },
+          },
+        } = await this.$apollo.mutate({
+          mutation: convertWorkItemMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              workItemTypeId: this.objectiveWorkItemTypeId,
+            },
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          },
+        });
+        if (errors.length > 0) {
+          this.throwConvertError();
+          return;
+        }
+        this.$toast.show(s__('WorkItem|Promoted to objective.'));
+        this.track('promote_kr_to_objective');
+      } catch (error) {
+        this.throwConvertError();
+        Sentry.captureException(error);
+      } finally {
+        this.closeDropdown();
+      }
+    },
+    showDropdown() {
+      this.isDropdownVisible = true;
+      this.$emit('dropdown-show');
+    },
+    hideDropdown() {
+      this.isDropdownVisible = false;
+    },
+    emitStateToggleError(error) {
+      this.$emit('error', error);
+    },
+    handleToggleReportAbuseModal() {
+      this.$emit('toggle-report-abuse-modal', true);
+      this.closeDropdown();
+    },
+    showChangeTypeModal() {
+      this.$refs.workItemsChangeTypeModal.show();
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <gl-disclosure-dropdown
+      ref="workItemsMoreActions"
+      v-gl-tooltip.bottom="showDropdownTooltip"
+      icon="ellipsis_h"
+      data-testid="work-item-actions-dropdown"
+      text-sr-only
+      :toggle-text="$options.i18n.moreActions"
+      category="tertiary"
+      size="small"
+      :auto-close="false"
+      no-caret
+      placement="bottom-end"
+      @shown="showDropdown"
+      @hidden="hideDropdown"
+    >
+      <template v-if="isLoggedIn && !hideSubscribe">
+        <gl-disclosure-dropdown-item
+          class="gl-flex gl-w-full gl-justify-end"
+          data-testid="notifications-toggle-form"
+          @action="toggleNotifications(!workItemNotificationsSubscribed)"
+        >
+          <template #list-item>
+            <gl-toggle
+              :value="workItemNotificationsSubscribed"
+              label-position="left"
+              data-testid="notifications-toggle"
+              class="work-item-dropdown-toggle gl-justify-between"
+            >
+              <template #label>
+                <span :title="$options.i18n.notifications" class="gl-flex gl-gap-3 gl-pt-1">
+                  <gl-icon name="notifications" />
+                  <span class="gl-max-w-[154px] gl-truncate">{{
+                    $options.i18n.notifications
+                  }}</span>
+                </span>
+              </template>
+            </gl-toggle>
+          </template>
+        </gl-disclosure-dropdown-item>
+        <gl-dropdown-divider />
+      </template>
+
+      <work-item-state-toggle
+        v-if="showStateItem"
+        data-testid="state-toggle-action"
+        :work-item-id="workItemId"
+        :work-item-iid="workItemIid"
+        :work-item-state="workItemState"
+        :work-item-type="workItemType"
+        :full-path="fullPath"
+        :parent-id="parentId"
+        show-as-dropdown-item
+        @error="emitStateToggleError"
+        @work-item-state-updated="$emit('work-item-state-updated')"
+      />
+
+      <gl-disclosure-dropdown-item
+        v-if="canCreateRelatedItem && canUpdate"
+        :item="$options.newRelatedItem"
+        icon="plus"
+        data-testid="new-related-work-item"
+        @action="isCreateWorkItemModalVisible = true"
+      />
+
+      <gl-disclosure-dropdown-item
+        v-if="canPromoteToObjective"
+        :item="$options.promoteItem"
+        icon="level-up"
+        data-testid="promote-action"
+        @action="promoteToObjective"
+      />
+
+      <gl-disclosure-dropdown-item
+        v-if="showChangeType"
+        :item="$options.changeTypeItem"
+        icon="work-item-issue"
+        data-testid="change-type-action"
+        @action="showChangeTypeModal"
+      />
+
+      <gl-disclosure-dropdown-item
+        v-if="showMoveButton"
+        :item="$options.moveItem"
+        icon="long-arrow"
+        data-testid="move-action"
+        @action="isMoveWorkItemModalVisible = true"
+      />
+
+      <gl-disclosure-dropdown-item
+        v-if="canUpdateMetadata"
+        data-testid="lock-action"
+        @action="toggleDiscussionLock"
+      >
+        <template #list-item>
+          <gl-loading-icon v-if="isLockDiscussionUpdating" class="gl-mr-2" inline />
+          <gl-icon v-else :name="lockDiscussionIcon" class="gl-mr-2" />
+          {{ lockDiscussionText }}
+        </template>
+      </gl-disclosure-dropdown-item>
+
+      <gl-disclosure-dropdown-item
+        v-if="canUpdateMetadata"
+        v-gl-tooltip.left.viewport.d0="confidentialTooltip"
+        :item="confidentialItem"
+        data-testid="confidentiality-toggle-action"
+        @action="handleToggleWorkItemConfidentiality"
+      >
+        <template #list-item>
+          <gl-loading-icon v-if="updateInProgress" class="gl-mr-2" inline />
+          <gl-icon v-else :name="confidentialItemIcon" class="gl-mr-2" />
+          {{ confidentialItemText }}
+        </template>
+      </gl-disclosure-dropdown-item>
+
+      <gl-disclosure-dropdown-item
+        :item="$options.copyReferenceItem"
+        icon="copy-to-clipboard"
+        data-testid="copy-reference-action"
+        :data-clipboard-text="workItemReference"
+        class="shortcut-copy-reference"
+        @action="copyToClipboard(workItemReference, $options.i18n.referenceCopied)"
+      />
+
+      <gl-disclosure-dropdown-item
+        v-if="isLoggedIn && workItemCreateNoteEmail"
+        :item="copyCreateNoteEmailItem"
+        icon="copy-to-clipboard"
+        data-testid="copy-create-note-email-action"
+        :data-clipboard-text="workItemCreateNoteEmail"
+        @action="copyToClipboard(workItemCreateNoteEmail, $options.i18n.emailAddressCopied)"
+      />
+
+      <gl-disclosure-dropdown-group bordered>
+        <gl-disclosure-dropdown-item
+          v-if="!isAuthor"
+          :item="$options.reportAbuseItem"
+          icon="abuse"
+          data-testid="report-abuse-action"
+          @action="handleToggleReportAbuseModal"
+        />
+
+        <gl-disclosure-dropdown-item
+          v-if="canReportSpam"
+          :item="submitAsSpamItem"
+          data-testid="submit-as-spam-item"
+        />
+
+        <template v-if="canDelete">
+          <gl-disclosure-dropdown-item
+            :item="deleteItem"
+            icon="remove"
+            data-testid="delete-action"
+            variant="danger"
+            @action="handleDelete"
+          />
+        </template>
+      </gl-disclosure-dropdown-group>
+
+      <gl-disclosure-dropdown-group bordered>
+        <template #group-label>
+          {{ __('View options') }}
+          <gl-icon
+            v-gl-tooltip
+            name="information-o"
+            class="gl-ml-2"
+            variant="link"
+            :title="s__('WorkItem|Change appearance for all issues, epics, and tasks')"
+          />
+        </template>
+        <gl-disclosure-dropdown-item
+          class="gl-flex gl-w-full gl-justify-end"
+          data-testid="truncation-toggle-action"
+          @action="$emit('toggle-truncation-enabled')"
+        >
+          <template #list-item>
+            <gl-toggle
+              :value="truncationEnabled"
+              label-position="left"
+              class="work-item-dropdown-toggle gl-justify-between"
+            >
+              <template #label>
+                <span
+                  :title="s__('WorkItem|Truncate descriptions')"
+                  class="gl-flex gl-gap-3 gl-pt-1"
+                >
+                  <gl-icon name="text-description" />
+                  <span class="gl-max-w-[154px] gl-truncate">{{
+                    s__('WorkItem|Truncate descriptions')
+                  }}</span>
+                </span>
+              </template>
+            </gl-toggle>
+          </template>
+        </gl-disclosure-dropdown-item>
+        <gl-disclosure-dropdown-item
+          data-testid="sidebar-toggle-action"
+          class="work-item-container-xs-hidden js-sidebar-toggle-action gl-hidden @md/panel:gl-block"
+          @action="$emit('toggle-sidebar')"
+        >
+          <template #list-item>
+            <div class="gl-flex gl-items-center gl-justify-between">
+              <span>
+                <gl-icon name="sidebar-right" class="gl-mr-2" />
+                {{ toggleSidebarLabel }}
+              </span>
+              <kbd v-if="toggleSidebarKeys" class="flat">{{ toggleSidebarKeys }}</kbd>
+            </div>
+          </template>
+        </gl-disclosure-dropdown-item>
+      </gl-disclosure-dropdown-group>
+    </gl-disclosure-dropdown>
+
+    <gl-modal
+      ref="modal"
+      modal-id="work-item-confirm-delete"
+      data-testid="work-item-confirm-delete"
+      :title="i18n.deleteWorkItem"
+      :ok-title="i18n.deleteWorkItem"
+      ok-variant="danger"
+      @ok="handleDeleteWorkItem"
+      @hide="handleCancelDeleteWorkItem"
+    >
+      {{ areYouSureDeleteMessage }}
+    </gl-modal>
+
+    <create-work-item-modal
+      :creation-context="$options.CREATION_CONTEXT_RELATED_ITEM"
+      :full-path="fullPath"
+      :visible="isCreateWorkItemModalVisible"
+      :related-item="relatedItemData"
+      :preselected-work-item-type="workItemType"
+      :is-group="isGroup"
+      hide-button
+      @work-item-created="$emit('work-item-created')"
+      @hide-modal="isCreateWorkItemModalVisible = false"
+    />
+    <work-item-change-type-modal
+      v-if="showChangeType"
+      ref="workItemsChangeTypeModal"
+      :work-item-id="workItemId"
+      :work-item-iid="workItemIid"
+      :work-item-type="workItemType"
+      :full-path="fullPath"
+      :has-children="hasChildren"
+      :has-parent="hasParent"
+      :widgets="widgets"
+      :features="features"
+      :allowed-child-types="allowedChildTypes"
+      :namespace-full-name="namespaceFullName"
+      @work-item-type-changed="$emit('work-item-type-changed')"
+      @error="$emit('error', $event)"
+    />
+    <move-work-item-modal
+      v-if="projectId"
+      :visible="isMoveWorkItemModalVisible"
+      :work-item-id="workItemId"
+      :work-item-iid="workItemIid"
+      :work-item-type-id="currentWorkItemTypeId"
+      :full-path="fullPath"
+      :project-id="projectId"
+      @hide-modal="isMoveWorkItemModalVisible = false"
+    />
+  </div>
+</template>

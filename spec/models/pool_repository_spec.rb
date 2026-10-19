@@ -1,0 +1,391 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe PoolRepository, feature_category: :source_code_management do
+  describe 'associations' do
+    it { is_expected.to belong_to(:shard) }
+    it { is_expected.to belong_to(:organization) }
+    it { is_expected.to belong_to(:source_project) }
+    it { is_expected.to have_many(:member_projects) }
+  end
+
+  describe 'setting organization id' do
+    let_it_be_with_reload(:project) { create(:project) }
+    let_it_be(:other_organization) { create(:organization) }
+    let_it_be(:default_organization) { create(:organization, id: 1) }
+    let_it_be(:shard) { create(:shard, name: "pool_repository_testing") }
+
+    context 'when organization is not set' do
+      it 'assigns organization from the source project' do
+        pool_repo = build(
+          :pool_repository,
+          source_project: project,
+          organization: nil
+        )
+
+        expect(pool_repo.organization).to be_nil
+        pool_repo.valid?
+        expect(pool_repo.organization).to eq(pool_repo.source_project.organization)
+      end
+    end
+
+    # This is an edge case because the key would initially be based on the
+    # project's key, but the test exists to prove that we early return if
+    # the organization exists.
+    context 'when organization is set' do
+      it 'retains the same organization' do
+        pool_repo = build(
+          :pool_repository,
+          source_project: project,
+          organization: other_organization
+        )
+
+        expect(pool_repo.organization).not_to be_nil
+        pool_repo.valid?
+        expect(pool_repo.organization).not_to eq(project.organization)
+        expect(pool_repo.organization).to eq(other_organization)
+      end
+    end
+
+    context 'when model hooks are bypassed' do
+      context 'when source project is available but organization_id it missing' do
+        it 'raises an exception' do
+          # Use insert_all to bypass ActiveRecord callbacks and model hooks
+          #
+          expect do
+            described_class.insert_all([{
+              source_project_id: project.id,
+              organization_id: nil,
+              disk_path: 'pool/trigger_default_test',
+              state: 'ready',
+              shard_id: shard.id
+            }], returning: [:id, :organization_id])
+          end.to raise_error(ActiveRecord::StatementInvalid)
+        end
+      end
+
+      context 'when source project is not available' do
+        it 'raises an exception' do
+          expect do
+            described_class.insert_all([{
+              source_project_id: nil,
+              organization_id: nil,
+              disk_path: 'pool/trigger_default_test',
+              state: 'ready',
+              shard_id: shard.id
+            }], returning: [:id, :organization_id])
+          end.to raise_error(ActiveRecord::StatementInvalid)
+        end
+      end
+
+      context 'when organization_id is already set' do
+        it 'preserves existing organization_id' do
+          # Use insert_all to bypass ActiveRecord callbacks and model hooks
+          result = described_class.insert_all([{
+            source_project_id: project.id,
+            organization_id: other_organization.id,
+            disk_path: 'pool/trigger_preserve_test',
+            state: 'ready',
+            shard_id: shard.id
+          }], returning: [:id, :organization_id])
+
+          pool_repo = described_class.find(result.rows.first[0])
+          expect(pool_repo.organization_id).to eq(other_organization.id)
+        end
+      end
+
+      it 'raises and exception when organization_id is cleared' do
+        pool_repo = create(:pool_repository, source_project: project)
+
+        # Use update_all to bypass ActiveRecord callbacks
+        #
+        expect do
+          described_class.where(id: pool_repo.id).update_all(organization_id: nil)
+        end.to raise_error(ActiveRecord::StatementInvalid)
+      end
+    end
+  end
+
+  describe 'validations' do
+    let!(:pool_repository) { create(:pool_repository) }
+
+    it { is_expected.to validate_presence_of(:shard) }
+  end
+
+  describe 'scopes' do
+    let_it_be_with_reload(:project1) { create(:project) }
+    let_it_be(:new_shard) { create(:shard, name: 'new') }
+
+    let_it_be_with_reload(:pool_repository1) do
+      create(:pool_repository, source_project: project1, disk_path: 'disk_path')
+    end
+
+    let_it_be(:pool_repository2) do
+      create(:pool_repository, source_project: project1, disk_path: 'disk_path', shard: new_shard)
+    end
+
+    describe '.by_disk_path_and_shard_name' do
+      subject { described_class.by_disk_path_and_shard_name('disk_path', new_shard.name) }
+
+      it 'filters by shard, excluding same-disk_path records on other shards' do
+        is_expected.to contain_exactly(pool_repository2)
+        is_expected.not_to include(pool_repository1)
+      end
+    end
+  end
+
+  describe '#disk_path' do
+    it 'sets the hashed disk_path' do
+      pool = create(:pool_repository)
+
+      expect(pool.disk_path).to match(%r{\A@pools/\h{2}/\h{2}/\h{64}})
+    end
+
+    it 'keeps disk_path if already provided' do
+      pool = create(:pool_repository, disk_path: '@pools/aa/bbbb')
+
+      expect(pool.disk_path).to eq('@pools/aa/bbbb')
+    end
+  end
+
+  describe '#unlink_repository', :skip_gitaly_mvcc do
+    let(:pool) { create(:pool_repository, :ready) }
+
+    before do
+      pool.link_repository(pool.source_project.repository)
+    end
+
+    context 'when the last member leaves' do
+      it 'schedules pool removal', :aggregate_failures do
+        expect(::ObjectPool::DestroyWorker).to receive(:perform_async).with(pool.id).and_call_original
+        expect(pool.source_project.repository).to receive(:disconnect_alternates).and_call_original
+
+        pool.unlink_repository(pool.source_project.repository)
+      end
+    end
+
+    context 'when skipping disconnect' do
+      it 'does not change the alternates file' do
+        expect(pool.source_project.repository).not_to receive(:disconnect_alternates)
+
+        pool.unlink_repository(pool.source_project.repository, disconnect: false)
+      end
+    end
+
+    context 'when the second member leaves' do
+      it 'does not schedule pool removal' do
+        other_project = create(:project,
+          :fork_repository, forked_from_project: pool.source_project, pool_repository: pool)
+        pool.link_repository(other_project.repository)
+
+        expect(::ObjectPool::DestroyWorker).not_to receive(:perform_async).with(pool.id)
+        expect(pool.source_project.repository).to receive(:disconnect_alternates).and_call_original
+
+        pool.unlink_repository(pool.source_project.repository)
+      end
+    end
+  end
+
+  describe '#mark_obsolete_if_empty' do
+    subject(:mark_obsolete_if_empty) { pool.mark_obsolete_if_empty }
+
+    let(:organization) { create(:organization) }
+    let(:pool) { create(:pool_repository, :without_project, state: :ready, organization: organization) }
+
+    before do
+      allow(ObjectPool::DestroyWorker).to receive(:perform_async)
+    end
+
+    it 'marks an empty pool obsolete and schedules destruction', :aggregate_failures do
+      mark_obsolete_if_empty
+
+      expect(pool.reload).to be_obsolete
+      expect(ObjectPool::DestroyWorker).to have_received(:perform_async).with(pool.id).once
+    end
+
+    context 'when a member remains' do
+      let!(:member) { create(:project, pool_repository: pool) }
+
+      it 'keeps the pool ready without scheduling destruction', :aggregate_failures do
+        mark_obsolete_if_empty
+
+        expect(pool.reload).to be_ready
+        expect(pool.member_projects).to contain_exactly(member)
+        expect(ObjectPool::DestroyWorker).not_to have_received(:perform_async)
+      end
+    end
+
+    context 'when the pool is already obsolete' do
+      before do
+        pool.update!(state: :obsolete)
+      end
+
+      it 'does not schedule destruction again', :aggregate_failures do
+        mark_obsolete_if_empty
+
+        expect(pool.reload).to be_obsolete
+        expect(ObjectPool::DestroyWorker).not_to have_received(:perform_async)
+      end
+    end
+
+    it 'checks the pool without an explicit row lock' do
+      expect(pool).not_to receive(:with_lock)
+
+      mark_obsolete_if_empty
+    end
+  end
+
+  describe '#remove_member' do
+    let(:pool) { create(:pool_repository) }
+    let(:member) { create(:project, pool_repository: pool) }
+
+    it 'clears the project membership' do
+      expect { pool.remove_member(member) }
+        .to change { member.pool_repository }.from(pool).to(nil)
+    end
+
+    it 'does not disconnect alternates' do
+      expect(member.repository).not_to receive(:disconnect_alternates)
+
+      pool.remove_member(member)
+    end
+
+    context 'when other members remain' do
+      it 'does not mark the pool obsolete' do
+        pool.remove_member(member)
+
+        expect(pool.reload).not_to be_obsolete
+      end
+    end
+
+    context 'when the last member leaves' do
+      before do
+        pool.source_project.update_column(:pool_repository_id, nil)
+      end
+
+      it 'clears membership, marks the pool obsolete, and schedules its destruction', :aggregate_failures do
+        expect(ObjectPool::DestroyWorker).to receive(:perform_async).with(pool.id).once
+
+        pool.remove_member(member)
+
+        expect(member.reload.pool_repository).to be_nil
+        expect(pool.reload).to be_obsolete
+      end
+
+      context 'when the pool is already obsolete' do
+        let(:pool) { create(:pool_repository, :obsolete) }
+
+        it 'schedules its destruction again', :aggregate_failures do
+          expect(ObjectPool::DestroyWorker).to receive(:perform_async).with(pool.id)
+
+          pool.remove_member(member)
+
+          expect(pool.reload).to be_obsolete
+        end
+      end
+    end
+
+    context 'when the project has joined a different pool' do
+      let(:new_pool) { create(:pool_repository) }
+
+      before do
+        pool.source_project.update_column(:pool_repository_id, nil)
+        member.update_column(:pool_repository_id, new_pool.id)
+      end
+
+      it 'preserves the new membership and obsoletes the empty old pool', :aggregate_failures do
+        expect(ObjectPool::DestroyWorker).to receive(:perform_async).with(pool.id).once
+
+        pool.remove_member(member)
+
+        expect(member.pool_repository).to eq(new_pool)
+        expect(member.reload.pool_repository).to eq(new_pool)
+        expect(pool.reload).to be_obsolete
+      end
+    end
+  end
+
+  describe '#object_pool' do
+    subject { pool.object_pool }
+
+    let(:pool) { build(:pool_repository, :ready, source_project: project, disk_path: disk_path) }
+    let(:project) { build(:project) }
+    let(:disk_path) { 'disk_path' }
+
+    it 'returns an object pool instance' do
+      is_expected.to be_a_kind_of(Gitlab::Git::ObjectPool)
+
+      is_expected.to have_attributes(
+        storage: pool.shard.name,
+        relative_path: "#{pool.disk_path}.git",
+        source_repository: pool.source_project.repository.raw,
+        gl_project_path: pool.source_project.full_path
+      )
+    end
+
+    context 'when source project is missing' do
+      let(:project) { nil }
+
+      it 'returns an object pool instance' do
+        is_expected.to be_a_kind_of(Gitlab::Git::ObjectPool)
+
+        is_expected.to have_attributes(
+          storage: pool.shard.name,
+          relative_path: "#{pool.disk_path}.git",
+          source_repository: nil,
+          gl_project_path: nil
+        )
+      end
+    end
+  end
+
+  context 'with loose foreign key on pool_repositories.source_project_id' do
+    it_behaves_like 'cleanup by a loose foreign key' do
+      let_it_be_with_reload(:parent) { create(:project) }
+      let_it_be_with_reload(:model) { create(:pool_repository, source_project: parent) }
+    end
+  end
+
+  context 'with state machine' do
+    subject!(:pool_repository) { create(:pool_repository) }
+
+    it { is_expected.to have_states :none, :scheduled, :ready, :failed, :obsolete }
+    it { is_expected.to handle_events :schedule, when: :none }
+    it { is_expected.to handle_events :mark_ready, when: :scheduled }
+    it { is_expected.to handle_events :mark_ready, when: :failed }
+    it { is_expected.to handle_events :mark_failed, :mark_obsolete, :reinitialize }
+
+    it 'starts as none' do
+      expect(pool_repository).to be_none
+    end
+  end
+
+  describe '#reinitialize' do
+    context 'when object_pool exists', :skip_gitaly_mvcc do
+      subject(:pool_repository) { create(:pool_repository, :ready) }
+
+      it 'does not reinitialize' do
+        expect { pool_repository.reinitialize }.to not_change { pool_repository.state }
+      end
+    end
+
+    context 'when object_pool does not exist', :skip_gitaly_mvcc do
+      subject(:pool_repository) { create(:pool_repository, :ready) }
+
+      it 'allows reinitializing the state machine' do
+        pool_repository.delete_object_pool
+
+        expect { pool_repository.reinitialize }.to change { pool_repository.state }.from('ready').to('none')
+      end
+    end
+
+    context 'when object_pool is already scheduled' do
+      subject(:pool_repository) { create(:pool_repository, :scheduled) }
+
+      it 'does not reinitialize' do
+        expect { pool_repository.reinitialize }.to not_change { pool_repository.state }
+      end
+    end
+  end
+end

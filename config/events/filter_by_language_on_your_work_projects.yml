@@ -1,0 +1,20 @@
+---
+description: Use language filter on Your work > Projects
+internal_events: true
+action: filter_by_language_on_your_work_projects
+identifiers:
+- user
+additional_properties:
+  label:
+    description: Tab name (e.g. "contributed")
+  property:
+    description: Language name
+product_group: organizations
+product_categories:
+- groups_and_projects
+milestone: '19.3'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/186021
+tiers:
+- free
+- premium
+- ultimate

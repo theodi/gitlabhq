@@ -1,0 +1,55 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "ee_else_ce/packages_and_registries/container_registry/explorer/graphql/fragments/container_repository_tag_protection.fragment.graphql"
+
+query getContainerRepositoryTags(
+  $id: ContainerRepositoryID!
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+  $name: String
+  $sort: ContainerRepositoryTagSort
+) {
+  containerRepository(id: $id) {
+    id
+    tagsCount
+    userPermissions {
+      destroyContainerRepository
+    }
+    tags(
+      after: $after
+      before: $before
+      first: $first
+      last: $last
+      name: $name
+      sort: $sort
+      referrers: true
+    ) {
+      nodes {
+        digest
+        location
+        path
+        name
+        revision
+        shortRevision
+        createdAt
+        publishedAt
+        totalSize
+        mediaType
+        userPermissions {
+          destroyContainerRepositoryTag
+        }
+        protection {
+          ...ContainerRepositoryTagProtection
+        }
+        referrers {
+          artifactType
+          digest
+        }
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

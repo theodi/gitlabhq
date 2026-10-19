@@ -1,0 +1,160 @@
+@import 'mixins_and_variables_and_functions';
+
+@keyframes expandMaxHeight {
+  0% {
+    max-height: 0;
+  }
+
+  99% {
+    max-height: 100vh;
+  }
+
+  100% {
+    max-height: none;
+  }
+}
+
+@keyframes collapseMaxHeight {
+  0% {
+    max-height: 100vh;
+  }
+
+  100% {
+    max-height: 0;
+  }
+}
+
+.settings {
+  // border-top for each item except the top one
+  border-top: 1px solid var(--gl-border-color-default);
+
+  &:first-of-type {
+    margin-top: 10px;
+    padding-top: 0;
+    border: 0;
+  }
+
+  + div .settings:first-of-type {
+    margin-top: 0;
+    border-top: 1px solid var(--gl-border-color-default);
+  }
+
+  &.animating {
+    overflow: hidden;
+  }
+}
+
+.vue-settings-block {
+  // top border and padding for all settings blocks except the first one
+  &:not(:first-of-type) {
+    border-top: 1px solid var(--gl-border-color-default);
+    padding-top: $gl-spacing-scale-5;
+  }
+
+  // bottom padding for all settings blocks except the last one
+  &:not(:last-of-type) {
+    padding-bottom: $gl-spacing-scale-5;
+  }
+}
+
+.settings-header {
+  position: relative;
+  padding: $gl-spacing-scale-5 $gl-spacing-scale-7 0 0;
+
+  h4 {
+    margin-top: 0;
+  }
+
+  .settings-title {
+    cursor: pointer;
+  }
+
+  button {
+    position: absolute;
+    top: $gl-spacing-scale-5;
+    right: $gl-spacing-scale-3;
+    min-width: $gl-spacing-scale-12;
+  }
+
+  > p:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.settings-content {
+  @include gl-prefers-reduced-motion-animation;
+  // #416312: Fix white space at bottom of page
+  position: relative;
+  max-height: 1px;
+  overflow-y: hidden;
+  @apply gl-pr-7;
+  animation: collapseMaxHeight 300ms ease-out;
+  // Keep the section from expanding when we scroll over it
+  pointer-events: none;
+  margin-bottom: $gl-spacing-scale-5;
+
+  .settings.expanded & {
+    @include gl-prefers-reduced-motion-animation;
+    max-height: none;
+    overflow-y: visible;
+    animation: expandMaxHeight 300ms ease-in;
+    // Reset and allow clicks again when expanded
+    pointer-events: auto;
+  }
+
+  .settings.no-animate & {
+    animation: none;
+  }
+
+  @include gl-container-width-down(md, panel) {
+    padding-right: 20px;
+  }
+
+  &::before {
+    content: ' ';
+    display: block;
+    height: 1px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+
+  &::after {
+    content: ' ';
+    display: block;
+    height: 1px;
+    overflow: hidden;
+  }
+
+  .sub-section {
+    margin-bottom: 32px;
+    padding: 16px;
+    border: 1px solid var(--gl-border-color-default);
+    background-color: var(--gl-background-color-subtle);
+  }
+
+  .form-check:first-child,
+  .form-check .form-text,
+  .form-check + .form-text {
+    margin-top: 0;
+  }
+
+  .instance-runners-info {
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-alert-body {
+      // selector-max-compound-selectors
+      p:last-child {
+        margin-bottom: 0;
+      }
+    }
+  }
+
+  .form-check .form-text {
+    margin-bottom: $grid-size;
+  }
+}
+
+.settings-list-icon {
+  @apply gl-text-subtle;
+  font-size: $default-icon-size;
+  line-height: 42px;
+}

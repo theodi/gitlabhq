@@ -1,0 +1,17 @@
+---
+description: Triggered from backend on interaction with web ide
+category: Gitlab::UsageDataCounters::EditorUniqueCounter
+action: ide_edit
+identifiers:
+  - project
+  - user
+  - namespace
+product_group: remote_development
+product_categories:
+- web_ide
+milestone: "15.7"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/104809
+tiers:
+  - free
+  - premium
+  - ultimate

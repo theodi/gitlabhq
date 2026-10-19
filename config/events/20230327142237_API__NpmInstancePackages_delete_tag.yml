@@ -1,0 +1,18 @@
+---
+description: Delete NPM instance packages tag
+category: API::NpmInstancePackages
+action: delete_tag
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: package_registry
+product_categories:
+- package_registry
+milestone: "15.11"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/115545
+tiers:
+- free
+- premium
+- ultimate

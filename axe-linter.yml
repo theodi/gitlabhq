@@ -1,0 +1,51 @@
+global-components:
+  gl-button:
+    element: button
+    attributes:
+    - aria-*
+  gl-avatar:
+    element: img
+  gl-avatar-link:
+    element: a
+  gl-avatar-labeled:
+    element: img
+    attributes:
+    - label: alt
+  gl-toggle:
+    element: button
+    attributes:
+    - label: aria-labelledby
+    - description: aria-describedby
+  gl-link:
+    element: a
+  gl-collapsible-listbox:
+    element: button
+    attributes:
+    - aria-*
+    # gives false results for listobx without toggle text but with v-model providing an initial value
+    - toggle-text: aria-label
+    - toggle-aria-labelled-by: aria-labelledby
+    - list-aria-labelled-by: aria-labelledby
+  gl-disclosure-dropdown:
+    element: button
+    attributes:
+    - aria-*
+    - toggle-text: aria-label
+  gl-form-group:
+    element: label
+    attributes:
+    - aria-*
+    - label-for: for
+    - label: <text>
+  gl-form-input:
+    element: input
+    attributes:
+    - aria-*
+  gl-form-textarea:
+    element: textarea
+    attributes:
+    - aria-*
+  gl-form-select:
+    element: select
+    attributes:
+    - aria-*

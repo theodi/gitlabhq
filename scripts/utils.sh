@@ -1,0 +1,727 @@
+#!/usr/bin/env bash
+export STABLE_BRANCH_PATTERN="^[0-9-]+-stable(-ee)?$"
+export VERSION_TAG_PATTERN="^v([0-9]+)\.([0-9]+)\.([0-9]+).+(ee)$"
+# Assumes the scripts/ directory is under CI_PROJECT_DIR, which is an absolute path in CI.
+GLCI_OTEL_SPAN_EXPORTER="${GLCI_OTEL_SPAN_EXPORTER:-${CI_PROJECT_DIR:-.}/scripts/ci/otel_span_exporter.rb}"
+
+function retry() {
+  retry_times_sleep 2 3 "$@"
+}
+
+function retry_times_sleep() {
+  number_of_retries="$1"
+  shift
+  sleep_seconds="$1"
+  shift
+
+  if eval "$@"; then
+    return 0
+  fi
+
+  for i in $(seq "${number_of_retries}" -1 1); do
+    sleep "$sleep_seconds"s
+    echo "[$(date '+%H:%M:%S')] Retry attempts left: $i..."
+    if eval "$@"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Retry after 2s, 4s, 8s, 16s, 32, 64s, 128s
+function retry_exponential() {
+  if eval "$@"; then
+    return 0
+  fi
+
+  local sleep_time=0
+  # The last try will be after 2**7 = 128 seconds (2min8s)
+  for i in 1 2 3 4 5 6 7; do
+    sleep_time=$((2 ** i))
+
+    echo "Sleep for $sleep_time seconds..."
+    sleep $sleep_time
+    echo "[$(date '+%H:%M:%S')] Attempt #$i..."
+    if eval "$@"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+function test_url() {
+  local url="${1}"
+  local curl_args="${2}"
+  local status
+  local cmd="curl ${curl_args} --output /dev/null -L -s -w ''%{http_code}'' \"${url}\""
+
+  status=$(eval "${cmd}")
+
+  if [[ $status == "200" ]]; then
+    echo -e "\n[$(date '+%H:%M:%S')] Curl to $url successful with 200 response"
+    return 0
+  else
+    # We display the error in the job to allow for better debugging
+    curl -L --fail --output /dev/null "${url}"
+    echo -e "\nExpected HTTP status 200: received ${status}\n"
+    return 1
+  fi
+}
+
+function section_start () {
+  local section_title="${1}"
+  local section_description="${2:-$section_title}"
+  local collapsed="${3:-true}"
+
+  echo -e "section_start:`date +%s`:${section_title}[collapsed=${collapsed}]\r\e[0K${section_description}"
+}
+
+function section_end () {
+  local section_title="${1}"
+
+  echo -e "section_end:`date +%s`:${section_title}\r\e[0K"
+}
+
+function rspec_section() {
+  section_start "rspec" "RSpec" "false"
+  "$@"
+  section_end "rspec"
+}
+
+# Wrap the command in the current shell and export CI_TRACEPARENT for child executables to use the wrapper span
+# as their parent, then restore the caller's context. Without GLCI_OTEL_ENDPOINT, Ruby, or valid trace context,
+# run the command unchanged. Shell functions retain their current-shell behavior, including `set -e`.
+#
+# Known limitations:
+# - If the job already has an EXIT trap, a command that exits the shell produces no span.
+# - A failing nested call exports only the innermost span.
+# - A cancelled job exports an error span with exit status 1, like any other failure.
+#
+# Usage: otel_span [NAME] -- COMMAND [ARGS...]
+# See https://gitlab.com/gitlab-org/gitlab/-/work_items/632111
+function otel_span() {
+  local _otel_span_new_name
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+    _otel_span_new_name="${1:-}"
+    _otel_span_new_name="${_otel_span_new_name##*/}"
+  elif [[ "$#" -ge 3 ]] && [[ -n "${1:-}" ]] && [[ "${2:-}" == "--" ]]; then
+    _otel_span_new_name="${1}"
+    shift 2
+  else
+    echo "Usage: otel_span [NAME] -- COMMAND [ARGS...]" >&2
+    return 2
+  fi
+
+  if [[ -z "${1:-}" ]] || [[ -z "${_otel_span_new_name}" ]]; then
+    echo "Usage: otel_span [NAME] -- COMMAND [ARGS...]" >&2
+    return 2
+  fi
+
+  if [[ -z "${GLCI_OTEL_ENDPOINT:-}" ]]; then
+    "$@"
+    return
+  fi
+
+  if ! command -v ruby > /dev/null 2>&1 || [[ ! -f "${GLCI_OTEL_SPAN_EXPORTER}" ]]; then
+    echo "WARNING: otel_span: Ruby or the span exporter is unavailable, running ${_otel_span_new_name} without a span" >&2
+    "$@"
+    return
+  fi
+
+  # A nested call overwrites the state of the enclosing call, so restore it afterwards.
+  local _otel_span_outer_name="${_otel_span_name:-}"
+  local _otel_span_outer_command="${_otel_span_command:-}"
+  local _otel_span_outer_start_time_ns="${_otel_span_start_time_ns:-}"
+  local _otel_span_outer_id="${_otel_span_id:-}"
+  local _otel_span_outer_parent="${_otel_span_parent_traceparent:-}"
+  local _otel_span_outer_tracestate="${_otel_span_tracestate:-}"
+  local _otel_span_owns_exit_trap="false"
+  local _otel_span_context
+  _otel_span_context="$(CI_TRACEPARENT="${CI_TRACEPARENT:-}" ruby "${GLCI_OTEL_SPAN_EXPORTER}" --prepare-context)" || _otel_span_context=""
+  if [[ -z "${_otel_span_context}" ]]; then
+    "$@"
+    return
+  fi
+
+  _otel_span_parent_traceparent="${CI_TRACEPARENT}"
+  _otel_span_tracestate="${CI_TRACESTATE:-}"
+  _otel_span_id="${_otel_span_context:36:16}"
+  local CI_TRACEPARENT="${_otel_span_context}"
+  local CI_TRACESTATE="${_otel_span_tracestate}"
+  export CI_TRACEPARENT CI_TRACESTATE
+
+  _otel_span_name="${_otel_span_new_name}"
+  _otel_span_command="${1}"
+  _otel_span_start_time_ns="$(_otel_span_time_ns)" || _otel_span_start_time_ns=""
+
+  # Under `set -e` a failing command exits the shell, so the EXIT trap exports the failed span.
+  if ! _otel_span_exit_trap_matches "."; then
+    trap '_otel_span_export "$?"' EXIT
+    _otel_span_owns_exit_trap="true"
+  fi
+
+  "$@"
+  local _otel_span_exit_code=$?
+
+  # Keep any EXIT trap that the command set for the job.
+  if [[ "${_otel_span_owns_exit_trap}" == "true" ]] && _otel_span_exit_trap_matches "_otel_span_export"; then
+    trap - EXIT
+  fi
+
+  _otel_span_export "${_otel_span_exit_code}"
+
+  _otel_span_name="${_otel_span_outer_name}"
+  _otel_span_command="${_otel_span_outer_command}"
+  _otel_span_start_time_ns="${_otel_span_outer_start_time_ns}"
+  _otel_span_id="${_otel_span_outer_id}"
+  _otel_span_parent_traceparent="${_otel_span_outer_parent}"
+  _otel_span_tracestate="${_otel_span_outer_tracestate}"
+
+  return "${_otel_span_exit_code}"
+}
+
+# Without Bash's EPOCHREALTIME, the exporter records the end time itself, which saves starting Ruby once more.
+function _otel_span_export() {
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    ruby "${GLCI_OTEL_SPAN_EXPORTER}" \
+      --name "${_otel_span_name}" \
+      --span-id "${_otel_span_id}" \
+      --parent-traceparent "${_otel_span_parent_traceparent}" \
+      --tracestate "${_otel_span_tracestate}" \
+      --command "${_otel_span_command}" \
+      --start-time-ns "${_otel_span_start_time_ns}" \
+      --end-time-ns "$(_otel_span_time_ns)" \
+      --exit-code "${1}" || true
+  else
+    ruby "${GLCI_OTEL_SPAN_EXPORTER}" \
+      --name "${_otel_span_name}" \
+      --span-id "${_otel_span_id}" \
+      --parent-traceparent "${_otel_span_parent_traceparent}" \
+      --tracestate "${_otel_span_tracestate}" \
+      --command "${_otel_span_command}" \
+      --start-time-ns "${_otel_span_start_time_ns}" \
+      --exit-code "${1}" || true
+  fi
+}
+
+# BusyBox `date` ignores `%N`, so use Bash's EPOCHREALTIME (microseconds) when available, and Ruby otherwise.
+function _otel_span_time_ns() {
+  if [[ -n "${EPOCHREALTIME:-}" ]]; then
+    echo "${EPOCHREALTIME//[!0-9]/}000"
+  else
+    ruby -e 'print Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond)'
+  fi
+}
+
+# `trap` must be the only command in the substitution: BusyBox lists no traps for `$(trap | ...)` or `( trap )`.
+function _otel_span_exit_trap_matches() {
+  local _otel_span_traps
+  _otel_span_traps="$(trap)"
+  printf '%s\n' "${_otel_span_traps}" | grep " EXIT\$" | grep -q -- "${1}"
+}
+
+function bundle_install_script() {
+  section_start "bundle-info" "Ruby env info and bundle config"
+  gem --version
+  bundle --version
+  test -d jh && bundle config set --local gemfile 'jh/Gemfile'
+  bundle config set path "$(pwd)/vendor"
+  bundle config set clean 'true'
+
+  echo "${BUNDLE_WITHOUT}"
+  bundle config
+  section_end "bundle-info"
+
+  section_start "bundle-install" "Installing gems"
+
+  echo "Checking if all dependencies are satisfied"
+  if ! bundle check; then
+    # Call `eval` explicitly to run the shell functions stored inside BUNDLE_INSTALL_FLAGS
+    eval "bundle install ${BUNDLE_INSTALL_FLAGS}"
+  fi
+
+  section_end "bundle-install"
+}
+
+function yarn_install_script() {
+  section_start "yarn-install" "Installing Yarn packages"
+
+  # babel-plugin-istanbul is a devDependency, and production installs skip it
+  if [[ "$BABEL_ENV" == "istanbul" ]]; then
+    retry yarn install --frozen-lockfile --production=false
+  else
+    retry yarn install --frozen-lockfile
+  fi
+
+  section_end "yarn-install"
+}
+
+function yarn_install_script_storybook() {
+  section_start "yarn-install-storybook" "Installing Yarn packages for Storybook"
+
+  retry yarn storybook:install --frozen-lockfile
+
+  section_end "yarn-install-storybook"
+}
+
+# Danger runs `git merge-base` between the MR diff base and head, but the GIT_DEPTH clone cuts the
+# source branch history after GIT_DEPTH - 1 commits, so with more commits the base is unreachable
+# and Danger falls back to unshallowing the whole repository (slow, often fails).
+function fetch_merge_request_history_to_diff_base() {
+  local mr_head_ref="refs/merge-requests/${CI_MERGE_REQUEST_IID}/head"
+  local head base step depth
+
+  [[ -n "${CI_MERGE_REQUEST_IID}" ]] || return 0
+  # Merged results pipelines check out a merge commit and export the MR head Danger diffs separately.
+  head="${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-${CI_COMMIT_SHA}}"
+
+  base="${CI_MERGE_REQUEST_DIFF_BASE_SHA}"
+  if [[ -z "${base}" ]]; then
+    # GitLab exports no diff variables when the MR diff has no file changes, so ask the API like Danger does.
+    base="$(curl --silent --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+      "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" |
+      ruby -rjson -e 'puts JSON.parse(STDIN.read).dig("diff_refs", "base_sha")' 2> /dev/null)" || base=""
+  fi
+  if [[ -z "${base}" ]]; then
+    echoerr "Cannot determine the diff base of MR !${CI_MERGE_REQUEST_IID}; Danger will try to fetch history itself."
+    return 0
+  fi
+
+  # A plain merge-base is not enough: a shallow clone can answer it with an old master commit reached
+  # through a branch the MR merged, and Danger then diffs against that commit instead of the base.
+  if git merge-base --is-ancestor "${base}" "${head}" 2> /dev/null; then
+    echoinfo "Diff base ${base} is reachable from MR head ${head}; nothing to fetch."
+    return 0
+  fi
+
+  # An absolute --depth is counted from the fetched ref alone, whereas --deepen extends every shallow
+  # boundary of the clone, which hangs on this repository.
+  for step in 2 3 4 5; do
+    depth="$(( step * ${GIT_DEPTH:-20} ))"
+    echoinfo "Diff base ${base} is not reachable from MR head ${head} in the shallow clone; fetching ${mr_head_ref} with --depth=${depth}."
+    retry git fetch --depth="${depth}" origin "${mr_head_ref}" || break
+    git merge-base --is-ancestor "${base}" "${head}" 2> /dev/null && return 0
+  done
+  echoerr "Diff base ${base} is still not reachable from ${head}; Danger will try to fetch it itself."
+}
+
+function setup_database_yml() {
+  if [ "$DECOMPOSED_DB" == "true" ]; then
+    if [ "$SEC_DECOMPOSED_DB" == "true" ]; then
+      echo "Using SEC decomposed database config (config/database.yml.decomposed-sec-postgresql)"
+      cp config/database.yml.decomposed-sec-postgresql config/database.yml
+    else
+      echo "Using decomposed database config (config/database.yml.decomposed-postgresql)"
+      cp config/database.yml.decomposed-postgresql config/database.yml
+    fi
+  else
+    echo "Using two connections, single database config (config/database.yml.postgresql)"
+    cp config/database.yml.postgresql config/database.yml
+
+    if [ "$CI_CONNECTION_DB" != "true" ]; then
+      echo "Disabling ci connection in config/database.yml"
+      sed -i "/ci:$/, /geo:$/ {s|^|#|;s|#  geo:|  geo:|;}" config/database.yml
+    fi
+  fi
+
+  # Set up Geo database if the job name matches `rspec-ee` or `geo`.
+  # Since Geo is an EE feature, we shouldn't set it up for non-EE tests.
+  if [[ "${CI_JOB_NAME}" =~ "rspec-ee" ]] || [[ "${CI_JOB_NAME}" =~ "geo" ]] || [[ "${CI_JOB_NAME}" =~ "db:setup-ee" ]]; then
+    echoinfo "Geo DB will be set up."
+  else
+    echoinfo "Geo DB won't be set up."
+    sed -i '/geo:/,/^$/d' config/database.yml
+  fi
+
+  # Set up Embedding database if the job name matches `rspec-ee`
+  # Since Embedding is an EE feature, we shouldn't set it up for non-EE tests.
+  if [[ "${CI_JOB_NAME}" =~ "rspec-ee" ]] || [[ "${CI_JOB_NAME}" =~ "db:setup-ee" ]]; then
+    echoinfo "Embedding DB will be set up."
+  else
+    echoinfo "Embedding DB won't be set up."
+    sed -i '/embedding:/,/^$/d' config/database.yml
+  fi
+
+  # Set user to a non-superuser to ensure we test permissions
+  sed -i 's/username: root/username: gitlab/g' config/database.yml
+
+  sed -i 's/localhost/postgres/g' config/database.yml
+  sed -i 's/username: git/username: postgres/g' config/database.yml
+}
+
+function setup_db_user_only() {
+  source scripts/create_postgres_user.sh
+}
+
+function setup_db_praefect() {
+  createdb -h postgres -U postgres --encoding=UTF8 --echo praefect_test
+}
+
+function setup_db() {
+  section_start "setup-db" "Setting up DBs"
+
+  if [[ -f pg_dumpall.sql ]] && ! [[ "$DECOMPOSED_DB" =~ "false" ]]; then
+    echo "Found pg_dumpall.sql, applying!"
+
+    psql -h postgres -U postgres -q < pg_dumpall.sql > /dev/null
+    rm pg_dumpall.sql
+
+    section_end "setup-db"
+    return 0
+  fi
+
+  if [[ -f pg_dumpall.sql ]]; then
+    echo "Found pg_dumpall.sql but we're not using a standard multi-db (decomposed) setup. Performing a regular db setup instead."
+    rm pg_dumpall.sql
+  fi
+
+  setup_db_user_only
+  run_timed_command_with_metric "bundle exec rake db:prepare gitlab:db:lock_writes db:schema:cache:dump" "setup_db"
+  setup_db_praefect
+
+  section_end "setup-db"
+}
+
+function install_locked_gem() {
+  local version
+  version=$(grep -E "^    ${1} \(" Gemfile.lock | sed 's/.*(\(.*\))/\1/')
+  gem install "$1" --no-document --version "${version:?$1 not found in Gemfile.lock}"
+}
+
+function install_gitlab_gem() {
+  install_locked_gem httparty
+  install_locked_gem gitlab
+}
+
+function install_tff_gem() {
+  install_locked_gem test_file_finder
+}
+
+function install_activesupport_gem() {
+  install_locked_gem activesupport
+}
+
+function install_junit_merge_gem() {
+  install_locked_gem junit_merge
+}
+
+function select_existing_files() {
+  ruby -e 'print $stdin.read.split(" ").select { |f| File.exist?(f) }.join(" ")'
+}
+
+function fail_on_warnings() {
+  local cmd="$*"
+  local warning_file
+  warning_file="$(mktemp)"
+
+  local allowed_warning_file
+  allowed_warning_file="$(mktemp)"
+
+  eval "$cmd 2>$warning_file"
+  local ret=$?
+
+  # Filter out comments and empty lines from allowed warnings file.
+  grep --invert-match --extended-regexp "^#|^$" scripts/allowed_warnings.txt > "$allowed_warning_file"
+
+  local warnings
+  # Filter out allowed warnings from stderr.
+  # Turn grep errors into warnings so we fail later.
+  warnings=$(grep --invert-match --extended-regexp --file "$allowed_warning_file" "$warning_file" 2>&1 || true)
+
+  rm -f "$allowed_warning_file"
+
+  if [ "$warnings" != "" ]
+  then
+    echoerr "There were warnings:"
+    echoerr "======================== Filtered warnings ====================================="
+    echo "$warnings" >&2
+    echoerr "======================= Unfiltered warnings ===================================="
+    cat "$warning_file" >&2
+    echoerr "================================================================================"
+    rm -f "$warning_file"
+    return 1
+  fi
+
+  rm -f "$warning_file"
+
+  return $ret
+}
+
+function run_timed_command() {
+  local cmd="${1}"
+  local metric_name="${2:-no}"
+  local timed_metric_file
+  local start=$(date +%s)
+
+  echosuccess "\$ ${cmd}"
+  eval "${cmd}"
+
+  local ret=$?
+  local end=$(date +%s)
+  local runtime=$((end-start))
+
+  if [[ $ret -eq 0 ]]; then
+    echosuccess "==> '${cmd}' succeeded in ${runtime} seconds."
+
+    if [[ "${metric_name}" != "no" ]]; then
+      timed_metric_file=$(timed_metric_file $metric_name)
+      echo "# TYPE ${metric_name} gauge" > "${timed_metric_file}"
+      echo "# UNIT ${metric_name} seconds" >> "${timed_metric_file}"
+      echo "${metric_name} ${runtime}" >> "${timed_metric_file}"
+    fi
+
+    return 0
+  else
+    echoerr "==> '${cmd}' failed (${ret}) in ${runtime} seconds."
+    return $ret
+  fi
+}
+
+function run_timed_command_with_metric() {
+  local cmd="${1}"
+  local metric_name="${2}"
+  local metrics_file=${METRICS_FILE:-metrics.txt}
+
+  run_timed_command "${cmd}" "${metric_name}"
+
+  local ret=$?
+
+  cat $(timed_metric_file $metric_name) >> "${metrics_file}"
+
+  return $ret
+}
+
+function timed_metric_file() {
+  local metric_name="${1}"
+
+  echo "$(pwd)/tmp/duration_${metric_name}.txt"
+}
+
+function echoerr() {
+  local header="${2:-no}"
+
+  if [ "${header}" != "no" ]; then
+    printf "\n\033[0;31m** %s **\n\033[0m" "${1}" >&2;
+  else
+    printf "\033[0;31m%s\n\033[0m" "${1}" >&2;
+  fi
+}
+
+function echoinfo() {
+  local header="${2:-no}"
+
+  if [ "${header}" != "no" ]; then
+    printf "\n\033[0;33m** %s **\n\033[0m" "${1}" >&2;
+  else
+    printf "\033[0;33m%s\n\033[0m" "${1}" >&2;
+  fi
+}
+
+function echosuccess() {
+  local header="${2:-no}"
+
+  if [ "${header}" != "no" ]; then
+    printf "\n\033[0;32m** %s **\n\033[0m" "${1}" >&2;
+  else
+    printf "\033[0;32m%s\n\033[0m" "${1}" >&2;
+  fi
+}
+
+function fail_pipeline_early() {
+  local dont_interrupt_me_job_id
+  dont_interrupt_me_job_id=$(scripts/api/get_job_id.rb --job-query "scope=success" --job-name "dont-interrupt-me")
+
+  if [[ -n "${dont_interrupt_me_job_id}" ]]; then
+    echoinfo "This pipeline cannot be interrupted due to \`dont-interrupt-me\` job ${dont_interrupt_me_job_id}"
+  else
+    echoinfo "Failing pipeline early for fast feedback due to test failures in rspec fail-fast."
+    scripts/api/cancel_pipeline.rb
+  fi
+}
+
+function assets_image_tag() {
+  if [[ -n "${CI_COMMIT_TAG}" ]]; then
+    echo -n "${CI_COMMIT_REF_NAME}"
+  elif [[ -f "${GLCI_GITLAB_ASSETS_HASH_FILE}" ]]; then
+    echo -n "assets-hash-$(cat ${GLCI_GITLAB_ASSETS_HASH_FILE} | cut -c1-10)"
+  else
+    echo -n "${CI_COMMIT_SHA}"
+  fi
+
+  if [[ "$VUE_VERSION" = "3" ]]; then
+    echo -n '-vue3'
+  fi
+
+  # Instrumented assets must never be reused by pipelines expecting plain ones
+  if [[ "$BABEL_ENV" = "istanbul" ]]; then
+    echo -n '-istanbul'
+  fi
+}
+
+function setup_gcloud() {
+  gcloud auth activate-service-account --key-file="${REVIEW_APPS_GCP_CREDENTIALS}"
+  gcloud config set project "${REVIEW_APPS_GCP_PROJECT}"
+}
+
+function download_files() {
+  base_url_prefix="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/files"
+  base_url_suffix="raw?ref=${CI_COMMIT_SHA}"
+
+  # Construct the list of files to download with curl
+  for file in "$@"; do
+    local url_encoded_filename
+    url_encoded_filename=$(url_encode "${file}")
+    local file_url="${base_url_prefix}/${url_encoded_filename}/${base_url_suffix}"
+    echo "url = ${file_url}" >> urls_outputs.txt
+    echo "output = ${file}" >> urls_outputs.txt
+  done
+
+  echo "List of files to download:"
+  cat urls_outputs.txt
+
+  curl -f --retry 2 --header "Private-Token: ${PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE}" --create-dirs --parallel --config urls_outputs.txt
+}
+
+# Taken from https://gist.github.com/jaytaylor/5a90c49e0976aadfe0726a847ce58736
+#
+# It is surprisingly hard to url-encode an URL in shell. shorter alternatives used jq,
+# but we would then need to install it wherever we would use this no-clone functionality.
+#
+# For the purposes of url-encoding filenames, this function should be enough.
+function url_encode() {
+  echo "$@" | sed \
+    -e 's/%/%25/g' \
+    -e 's/ /%20/g' \
+    -e 's/!/%21/g' \
+    -e 's/"/%22/g' \
+    -e "s/'/%27/g" \
+    -e 's/#/%23/g' \
+    -e 's/(/%28/g' \
+    -e 's/)/%29/g' \
+    -e 's/+/%2b/g' \
+    -e 's/,/%2c/g' \
+    -e 's/-/%2d/g' \
+    -e 's/:/%3a/g' \
+    -e 's/;/%3b/g' \
+    -e 's/?/%3f/g' \
+    -e 's/@/%40/g' \
+    -e 's/\$/%24/g' \
+    -e 's/\&/%26/g' \
+    -e 's/\*/%2a/g' \
+    -e 's/\./%2e/g' \
+    -e 's/\//%2f/g' \
+    -e 's/\[/%5b/g' \
+    -e 's/\\/%5c/g' \
+    -e 's/\]/%5d/g' \
+    -e 's/\^/%5e/g' \
+    -e 's/_/%5f/g' \
+    -e 's/`/%60/g' \
+    -e 's/{/%7b/g' \
+    -e 's/|/%7c/g' \
+    -e 's/}/%7d/g' \
+    -e 's/~/%7e/g'
+}
+
+# Download the local gems in `gems` and `vendor/gems` folders from the API.
+#
+# This is useful if you need to run bundle install while not doing a git clone of the gitlab-org/gitlab repo.
+function download_local_gems() {
+  for folder_path in vendor/gems gems; do
+    local output="${folder_path}.tar.gz"
+
+    # From https://docs.gitlab.com/ee/api/repositories.html#get-file-archive:
+    #
+    #   This endpoint can be accessed without authentication if the repository is publicly accessible.
+    #   For GitLab.com users, this endpoint has a rate limit threshold of 5 requests per minute.
+    #
+    # We don't want to set a token for public repo (e.g. gitlab-org/gitlab), as 5 requests/minute can
+    # potentially be reached with many pipelines running in parallel.
+    local private_token_header=""
+    if [[ "${CI_PROJECT_VISIBILITY}" != "public" ]]; then
+      private_token_header="Private-Token: ${PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE}"
+    fi
+
+    echo "Downloading ${folder_path}"
+
+    url="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/archive"
+    curl -f \
+      --create-dirs \
+      --get \
+      --header "${private_token_header}" \
+      --output "${output}" \
+      --data-urlencode "sha=${CI_COMMIT_SHA}" \
+      --data-urlencode "path=${folder_path}" \
+      "${url}"
+
+    tar -zxf "${output}" --strip-component 1
+    rm "${output}"
+  done
+}
+
+function define_trigger_branch_in_build_env() {
+  target_branch_name="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-${CI_COMMIT_BRANCH}}"
+
+  # If target_branch_name is empty and CI_COMMIT_TAG has version format, derive from tag
+  if [[ -z "$target_branch_name" && -n "$CI_COMMIT_TAG" ]]; then
+    # Match pattern like v42.2.0-rc42-ee and extract version parts
+    if [[ $CI_COMMIT_TAG =~ $VERSION_TAG_PATTERN ]]; then
+      major="${BASH_REMATCH[1]}"
+      minor="${BASH_REMATCH[2]}"
+      ee_suffix="${BASH_REMATCH[4]}"
+      target_branch_name="${major}-${minor}-stable-${ee_suffix}"
+    fi
+  fi
+
+  echo "target_branch_name: ${target_branch_name}"
+
+  if [[ $target_branch_name =~ $STABLE_BRANCH_PATTERN  ]]
+  then
+    export TRIGGER_BRANCH="${target_branch_name%-ee}"
+  else
+    export TRIGGER_BRANCH=master
+  fi
+
+  if [ -f "$BUILD_ENV" ]; then
+    echo "TRIGGER_BRANCH=${TRIGGER_BRANCH}" >> $BUILD_ENV
+  fi
+}
+
+function log_disk_usage() {
+  local exit_on_low_space="${1:-false}"
+  local space_threshold_gb=2 # 2GB
+
+  available_space=$(df -h | awk 'NR==2 {print $4}') # value at the 2nd row 4th column of the df -h output
+
+  section_start "log_disk_usage" "Disk usage detail"
+
+  echo "*******************************************************"
+  echo "This runner currently has ${available_space} free disk space."
+  echo "*******************************************************"
+
+  echo -e "df -h"
+  df -h
+  section_end "log_disk_usage"
+
+  if [[ "$exit_on_low_space" = "true" ]]; then
+
+    if [[ $OSTYPE == 'darwin'* ]]; then
+      available_space_gb=$(df -g | awk 'NR==2 {print $4}')
+    else
+      available_space_gb=$(df -BG | awk 'NR==2 {print $4}' | sed 's/G//')
+    fi
+
+    if (( $(echo "$available_space_gb < $space_threshold_gb") )); then
+      echo "********************************************************************"
+      echo "This job requires ${space_threshold_gb}G free disk space, but the runner only has ${available_space}."
+      echo "Exiting now in anticipation of a 'no space left on device' error."
+      echo "If this problem persists, please contact #g_hosted_runners team."
+      echo "NOTE: This job will be retried automatically."
+      echo "********************************************************************"
+
+      exit 201
+    fi
+  fi
+}

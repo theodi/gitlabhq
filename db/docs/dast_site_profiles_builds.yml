@@ -1,0 +1,13 @@
+---
+table_name: dast_site_profiles_builds
+classes:
+- Dast::SiteProfilesBuild
+feature_categories:
+- dynamic_application_security_testing
+description: Join table between DAST Site Profiles and CI Builds
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/63362
+milestone: '14.1'
+gitlab_schema: gitlab_sec
+sharding_key:
+  project_id: projects
+table_size: small

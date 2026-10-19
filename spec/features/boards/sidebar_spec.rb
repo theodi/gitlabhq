@@ -1,0 +1,67 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Project issue boards sidebar', :js, feature_category: :planning_views do
+  include BoardHelpers
+  include Spec::Support::Helpers::ModalHelpers
+
+  let_it_be(:user) { create(:user) }
+  let_it_be(:group) { create(:group, :public) }
+  let_it_be(:project) { create(:project, :public, namespace: group) }
+  let_it_be(:board) { create(:board, project: project) }
+  let_it_be(:label) { create(:label, project: project, name: 'Label') }
+  let_it_be(:list) { create(:list, board: board, label: label, position: 0) }
+
+  let_it_be_with_reload(:issue) { create(:issue, project: project, relative_position: 1) }
+
+  before do
+    project.add_maintainer(user)
+    sign_in(user)
+
+    visit project_board_path(project, board)
+    click_button 'Collapse sidebar' # otherwise panel opens as drawer and intercepts clicks
+
+    wait_for_requests
+  end
+
+  it_behaves_like 'work item drawer on the boards'
+
+  it 'creates new related item in the drawer' do
+    first_card.click
+
+    # Wait for drawer to load, otherwise the "Create work item" modal takes too long to load
+    expect(page).to have_field('Add a reply')
+
+    within_testid('work-item-detail-panel') do
+      click_button 'More actions', match: :first
+      click_button 'New related item'
+    end
+
+    # Wait for the "Create work item" modal to load, otherwise we get a Capybara timeout
+    expect(page).to have_field('Title')
+
+    within_modal do
+      fill_in 'Title', with: 'New related work item from drawer'
+      click_button 'Create issue'
+    end
+
+    expect(page).to have_css('.gl-toast', text: 'Issue created.')
+  end
+
+  def first_card
+    find('[data-testid="board-list"]:nth-child(1)').first("[data-testid='board-card']")
+  end
+
+  def click_first_issue_card
+    click_card(first_card)
+  end
+
+  def refresh_and_click_first_card
+    page.refresh
+
+    wait_for_requests
+
+    first_card.click
+  end
+end

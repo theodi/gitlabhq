@@ -1,0 +1,12 @@
+---
+api_type: string
+attr: help_page_documentation_base_url
+clusterwide: true
+column: help_page_documentation_base_url
+db_type: text
+default:
+description: Alternate documentation pages URL.
+encrypted: false
+gitlab_com_different_than_default: true
+jihu: false
+not_null: false

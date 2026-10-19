@@ -1,0 +1,116 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::FileExportService, feature_category: :importers do
+  let_it_be(:project) { create(:project) }
+  let(:export) { build(:bulk_import_export, project: project) }
+  let(:relations) do
+    {
+      'uploads' => BulkImports::UploadsExportService,
+      'lfs_objects' => BulkImports::LfsObjectsExportService,
+      'repository' => BulkImports::RepositoryBundleExportService,
+      'design' => BulkImports::RepositoryBundleExportService
+    }
+  end
+
+  describe '#execute' do
+    it 'executes export service and archives exported data for each file relation' do
+      relations.each do |relation, klass|
+        Dir.mktmpdir do |export_path|
+          export.relation = relation
+          service = described_class.new(export, export_path, nil)
+
+          expect_next_instance_of(klass) do |service|
+            expect(service).to receive(:execute)
+          end
+
+          expect(service).to receive(:tar_cf).with(archive: File.join(export_path, "#{relation}.tar"), dir: export_path)
+
+          service.execute
+        end
+      end
+    end
+
+    context 'when in offline transfer' do
+      it 'passes offline_export_id to the uploads export service' do
+        Dir.mktmpdir do |export_path|
+          offline_export_id = build_stubbed(:offline_export).id
+          export.offline_export_id = offline_export_id
+          export.relation = 'uploads'
+
+          service = described_class.new(export, export_path, offline_export_id)
+
+          expect_next_instance_of(BulkImports::UploadsExportService) do |uploads_service|
+            expect(uploads_service).to receive(:execute)
+          end
+
+          expect(service).to receive(:tar_cf).with(archive: File.join(export_path, 'uploads.tar'), dir: export_path)
+
+          service.execute
+        end
+      end
+    end
+
+    context 'when unsupported relation is passed' do
+      it 'raises an error' do
+        export.relation = 'issues'
+        service = described_class.new(export, nil, nil)
+
+        expect { service.execute }.to raise_error(BulkImports::Error, 'Unsupported file relation export type')
+      end
+    end
+  end
+
+  describe '#execute_batch' do
+    it 'calls execute with provided array of record ids' do
+      relations.each do |relation, klass|
+        Dir.mktmpdir do |export_path|
+          export.relation = relation
+          service = described_class.new(export, export_path, nil)
+
+          expect_next_instance_of(klass) do |service|
+            expect(service).to receive(:execute).with({ batch_ids: [1, 2, 3] })
+          end
+
+          service.export_batch([1, 2, 3])
+        end
+      end
+    end
+  end
+
+  describe '#exported_filename' do
+    it 'returns filename of the exported file' do
+      export.relation = 'uploads'
+      service = described_class.new(export, nil, nil)
+
+      expect(service.exported_filename).to eq('uploads.tar')
+    end
+  end
+
+  describe '#exported_objects_count' do
+    context 'when relation is a collection' do
+      it 'returns a number of exported relations' do
+        %w[uploads lfs_objects].each do |relation|
+          export.relation = relation
+          service = described_class.new(export, nil, nil)
+
+          allow(service).to receive_message_chain(:export_service, :exported_objects_count).and_return(10)
+
+          expect(service.exported_objects_count).to eq(10)
+        end
+      end
+    end
+
+    context 'when relation is a repository' do
+      it 'returns 1' do
+        %w[repository design].each do |relation|
+          export.relation = relation
+          service = described_class.new(export, nil, nil)
+
+          expect(service.exported_objects_count).to eq(1)
+        end
+      end
+    end
+  end
+end

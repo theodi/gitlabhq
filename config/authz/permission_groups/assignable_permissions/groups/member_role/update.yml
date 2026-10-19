@@ -1,0 +1,17 @@
+---
+name: update_member_role
+description: Grants the ability to update member roles
+boundaries:
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - update_member_role
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance
+  - condition: saas
+    boundaries:
+      - group

@@ -1,0 +1,204 @@
+import DOMPurify from 'dompurify';
+import { getNormalizedURL, getBaseURL, relativePathToAbsolute } from '~/lib/utils/url_utility';
+import { GFM_POPOVER_SELECTOR } from '~/behaviors/markdown/constants';
+
+const { sanitize: dompurifySanitize, addHook, isValidAttribute } = DOMPurify;
+
+const isValidCssColor = (color) => {
+  const s = new Option().style;
+  s.color = color;
+  // If the browser accepts it, it will return a non-empty string.
+  return s.color !== '';
+};
+
+export const defaultConfig = {
+  // Safely allow SVG <use> tags
+  ADD_TAGS: ['use', 'gl-emoji', 'copy-code'],
+  // Prevent possible XSS attacks with data-* attributes used by @rails/ujs
+  // See https://gitlab.com/gitlab-org/gitlab-ui/-/issues/1421 [CLOSED]
+  FORBID_ATTR: [
+    'data-remote',
+    'data-url',
+    'data-type',
+    'data-method',
+    'data-disable-with',
+    'data-disabled',
+    'data-disable',
+    'data-turbo',
+  ],
+  FORBID_TAGS: ['style', 'mstyle', 'form'],
+  ALLOW_UNKNOWN_PROTOCOLS: true,
+};
+
+// Config for rendering already-sanitised HTML (e.g. `titleHtml`) in a context
+// that is itself a link, such as a work item listing, issue board card, system
+// note, or sticky header. Forbids `<a>` on top of the defaults to strip any
+// rendered links from within, avoiding unintuitive nested links.
+export const titleInLinkSafeHtmlConfig = {
+  ...defaultConfig,
+  FORBID_TAGS: [...defaultConfig.FORBID_TAGS, 'a'],
+};
+
+// Only icons urls from `gon` are allowed
+const getAllowedIconUrls = (gon = window.gon) =>
+  [gon.sprite_file_icons, gon.sprite_icons]
+    .filter(Boolean)
+    .map((path) => relativePathToAbsolute(path, getBaseURL()));
+
+const isUrlAllowed = (url) => {
+  try {
+    const normalizedUrl = new URL(getNormalizedURL(url));
+    return getAllowedIconUrls().some((allowedUrlString) => {
+      const allowedUrl = new URL(allowedUrlString);
+      return (
+        allowedUrl.origin === normalizedUrl.origin && normalizedUrl.pathname === allowedUrl.pathname
+      );
+    });
+  } catch {
+    return false;
+  }
+};
+
+const isHrefSafe = (url) => url.match(/^#/) || isUrlAllowed(url);
+
+const removeUnsafeHref = (node, attr) => {
+  if (!node.hasAttribute(attr)) {
+    return;
+  }
+
+  if (!isHrefSafe(node.getAttribute(attr))) {
+    node.removeAttribute(attr);
+  }
+};
+
+/**
+ * Appends 'noopener' & 'noreferrer' to rel
+ * attr values to prevent reverse tabnabbing.
+ *
+ * @param {String} rel
+ * @returns {String}
+ */
+const appendSecureRelValue = (rel) => {
+  const attributes = new Set(rel ? rel.toLowerCase().split(' ') : []);
+
+  attributes.add('noopener');
+  attributes.add('noreferrer');
+
+  return Array.from(attributes).join(' ');
+};
+
+/**
+ * Sanitize icons' <use> tag attributes, to safely include
+ * svgs such as in:
+ *
+ * <svg viewBox="0 0 100 100">
+ *   <use href="/assets/icons-xxx.svg#icon_name"></use>
+ * </svg>
+ *
+ * It validates both href & xlink:href attributes.
+ * Note that `xlink:href` is deprecated, but still in use
+ * https://developer.mozilla.org/en-US/docs/Web/SVG/Attribute/xlink:href
+ *
+ * @param {Object} node - Node to sanitize
+ */
+const sanitizeSvgIcon = (node) => {
+  removeUnsafeHref(node, 'href');
+  removeUnsafeHref(node, 'xlink:href');
+};
+
+const TEMPORARY_ATTRIBUTE = 'data-temp-href-target';
+
+// DOMPurify's SAFE_FOR_XML check strips any attribute whose value contains
+// '-->' (the HTML comment close sequence). This is safe in title attributes
+// since they are tooltip text and never parsed as HTML. We preserve them by
+// temporarily removing the attribute before sanitization and restoring it after.
+const preservedTitles = new WeakMap();
+
+const preserveTitles = (node) => {
+  if (node.tagName && node.matches?.(GFM_POPOVER_SELECTOR)) {
+    const title = node.getAttribute('title');
+    if (title?.includes('-->')) {
+      preservedTitles.set(node, title);
+      node.removeAttribute('title');
+    }
+  }
+};
+
+const restoreTitles = (node) => {
+  if (preservedTitles.has(node)) {
+    const title = preservedTitles.get(node);
+    preservedTitles.delete(node);
+    if (title?.includes('-->')) {
+      node.setAttribute('title', title);
+    }
+  }
+};
+
+addHook('beforeSanitizeAttributes', (node, _, config) => {
+  preserveTitles(node);
+
+  if (node.tagName === 'A' && node.hasAttribute('target')) {
+    node.setAttribute(TEMPORARY_ATTRIBUTE, node.getAttribute('target'));
+  }
+
+  // Preserve background-color on GlLabel when style tags are forbidden..
+  if (
+    config.FORBID_TAGS.includes('style') &&
+    node.classList?.contains('gl-label-text') &&
+    node.style?.backgroundColor
+  ) {
+    const bgColor = node.style.backgroundColor;
+    // Only preserve the background color if it's valid.
+    if (isValidCssColor(bgColor)) {
+      // eslint-disable-next-line no-param-reassign
+      node.dataset.tempBg = bgColor;
+    }
+    node.removeAttribute('style');
+  }
+});
+
+// Permit "title", "data-name" and "data-unicode-version" attributes on
+// <gl-emoji /> (when allowed), even when ALLOW_DATA_ATTR is false.
+addHook('uponSanitizeAttribute', (node, hookEvent) => {
+  if (
+    node.tagName === 'GL-EMOJI' &&
+    ['title', 'data-name', 'data-unicode-version'].includes(hookEvent.attrName)
+  ) {
+    // eslint-disable-next-line no-param-reassign
+    hookEvent.forceKeepAttr = true;
+  }
+});
+
+addHook('afterSanitizeAttributes', (node, _, config) => {
+  restoreTitles(node);
+
+  if (node.tagName.toLowerCase() === 'use') {
+    sanitizeSvgIcon(node);
+  }
+
+  if (node.tagName === 'A' && node.hasAttribute(TEMPORARY_ATTRIBUTE)) {
+    node.setAttribute('target', node.getAttribute(TEMPORARY_ATTRIBUTE));
+    node.removeAttribute(TEMPORARY_ATTRIBUTE);
+    if (node.getAttribute('target') === '_blank') {
+      const rel = node.getAttribute('rel');
+      node.setAttribute('rel', appendSecureRelValue(rel));
+    }
+  }
+
+  // Restore background-color on GlLabel when style tags are forbidden.
+  if (
+    config.FORBID_TAGS.includes('style') &&
+    node.classList?.contains('gl-label-text') &&
+    node.dataset.tempBg &&
+    isValidCssColor(node.dataset.tempBg)
+  ) {
+    // eslint-disable-next-line no-param-reassign
+    node.style.backgroundColor = node.dataset.tempBg;
+    // eslint-disable-next-line no-param-reassign
+    delete node.dataset.tempBg;
+  }
+});
+
+export const sanitize = (val, config) => dompurifySanitize(val, { ...defaultConfig, ...config });
+
+export { isValidAttribute };

@@ -1,0 +1,54 @@
+# frozen_string_literal: true
+
+require 'rubocop_spec_helper'
+require_relative '../../../../rubocop/cop/migration/remove_column'
+
+RSpec.describe RuboCop::Cop::Migration::RemoveColumn, feature_category: :database do
+  def source(meth = 'change')
+    "def #{meth}; remove_column :table, :column; end"
+  end
+
+  context 'when in a regular migration' do
+    before do
+      allow(cop).to receive_messages(in_migration?: true, in_post_deployment_migration?: false)
+    end
+
+    it 'registers an offense when remove_column is used in the change method' do
+      expect_offense(<<~RUBY)
+        def change
+          remove_column :table, :column
+          ^^^^^^^^^^^^^ `remove_column` must only be used in post-deployment migrations
+        end
+      RUBY
+    end
+
+    it 'registers an offense when remove_column is used in the up method' do
+      expect_offense(<<~RUBY)
+        def up
+          remove_column :table, :column
+          ^^^^^^^^^^^^^ `remove_column` must only be used in post-deployment migrations
+        end
+      RUBY
+    end
+
+    it 'registers no offense when remove_column is used in the down method' do
+      expect_no_offenses(source('down'))
+    end
+  end
+
+  context 'when in a post-deployment migration' do
+    before do
+      allow(cop).to receive_messages(in_migration?: true, in_post_deployment_migration?: true)
+    end
+
+    it 'registers no offense' do
+      expect_no_offenses(source)
+    end
+  end
+
+  context 'when outside of a migration' do
+    it 'registers no offense' do
+      expect_no_offenses(source)
+    end
+  end
+end

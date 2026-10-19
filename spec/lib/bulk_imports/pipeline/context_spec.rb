@@ -1,0 +1,208 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::Pipeline::Context, feature_category: :importers do
+  let_it_be(:user, freeze: false) { create(:user, :admin) }
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be(:bulk_import, freeze: false) { create(:bulk_import, :with_configuration, user: user) }
+  let_it_be(:offline_bulk_import, freeze: false) do
+    create(:bulk_import, :with_offline_configuration, user: user)
+  end
+
+  let_it_be(:project, freeze: false) { create(:project) }
+  let_it_be(:project_entity, freeze: false) { create(:bulk_import_entity, :project_entity, project: project) }
+  let_it_be(:project_tracker, freeze: false) { create(:bulk_import_tracker, entity: project_entity) }
+
+  let_it_be_with_reload(:entity) do
+    create(
+      :bulk_import_entity,
+      source_full_path: 'source/full/path',
+      destination_slug: 'My-Destination-Group',
+      destination_namespace: group.full_path,
+      group: group,
+      bulk_import: bulk_import
+    )
+  end
+
+  let_it_be_with_reload(:tracker) do
+    create(
+      :bulk_import_tracker,
+      entity: entity,
+      pipeline_name: described_class.name
+    )
+  end
+
+  subject { described_class.new(tracker, extra: :data) }
+
+  describe '#entity' do
+    it { expect(subject.entity).to eq(entity) }
+  end
+
+  describe '#group' do
+    it { expect(subject.group).to eq(group) }
+  end
+
+  describe '#bulk_import' do
+    it { expect(subject.bulk_import).to eq(bulk_import) }
+  end
+
+  describe '#current_user' do
+    it { expect(subject.current_user).to eq(user) }
+  end
+
+  describe '#configuration' do
+    it { expect(subject.configuration).to eq(bulk_import.configuration) }
+  end
+
+  describe '#offline_configuration' do
+    before do
+      entity.update!(bulk_import: offline_bulk_import)
+    end
+
+    it { expect(subject.offline_configuration).to eq(offline_bulk_import.offline_configuration) }
+  end
+
+  describe '#offline?' do
+    context 'when offline' do
+      before do
+        entity.update!(bulk_import: offline_bulk_import)
+      end
+
+      it { expect(subject.offline?).to be(true) }
+    end
+
+    context 'when not offline' do
+      it { expect(subject.offline?).to be(false) }
+    end
+  end
+
+  describe '#extra' do
+    it { expect(subject.extra).to eq(extra: :data) }
+  end
+
+  describe '#portable' do
+    it { expect(subject.portable).to eq(group) }
+
+    context 'when portable is project' do
+      subject { described_class.new(project_tracker) }
+
+      it { expect(subject.portable).to eq(project) }
+    end
+  end
+
+  describe '#import_export_config' do
+    it { expect(subject.import_export_config).to be_instance_of(BulkImports::FileTransfer::GroupConfig) }
+
+    context 'when portable is project' do
+      subject { described_class.new(project_tracker) }
+
+      it { expect(subject.import_export_config).to be_instance_of(BulkImports::FileTransfer::ProjectConfig) }
+    end
+  end
+
+  describe '#source_user_mapper' do
+    it { expect(subject.source_user_mapper).to be_instance_of(Gitlab::Import::SourceUserMapper) }
+
+    it 'builds with the correct arguments' do
+      expect(Gitlab::Import::SourceUserMapper).to receive(:new).with(
+        namespace: group.root_ancestor,
+        import_type: Import::SOURCE_DIRECT_TRANSFER,
+        source_hostname: bulk_import.configuration.url
+      )
+
+      subject.source_user_mapper
+    end
+
+    context 'when offline' do
+      before do
+        entity.update!(bulk_import: offline_bulk_import)
+      end
+
+      it 'uses the offline configuration attributes' do
+        expect(Gitlab::Import::SourceUserMapper).to receive(:new).with(
+          namespace: group.root_ancestor,
+          import_type: Import::SOURCE_OFFLINE_TRANSFER,
+          source_hostname: 'https://offline.example.com'
+        )
+
+        subject.source_user_mapper
+      end
+    end
+  end
+
+  describe '#source_ghost_user_id' do
+    it 'returns the ghost user ID' do
+      expect(BulkImports::SourceInternalUserFinder).to receive(:cached_ghost_user_id)
+        .with(bulk_import.id)
+        .and_return('10')
+
+      expect(subject.source_ghost_user_id).to eq('10')
+    end
+
+    it 'memoizes the result' do
+      expect(BulkImports::SourceInternalUserFinder).to receive(:cached_ghost_user_id)
+        .with(bulk_import.id)
+        .once
+        .and_return('10')
+
+      2.times { subject.source_ghost_user_id }
+    end
+
+    context 'when offline' do
+      before do
+        entity.update!(bulk_import: offline_bulk_import)
+      end
+
+      it 'returns the cached ghost user ID without source configuration' do
+        expect(BulkImports::SourceInternalUserFinder).to receive(:cached_ghost_user_id)
+          .with(offline_bulk_import.id)
+          .and_return('10')
+
+        expect(subject.source_ghost_user_id).to eq('10')
+      end
+    end
+  end
+
+  describe '#override_file_size_limit?' do
+    subject(:override_file_size_limit?) { described_class.new(tracker).override_file_size_limit? }
+
+    context 'when the importing user is in admin mode', :enable_admin_mode do
+      context 'when import_admin_override_max_file_size is enabled for the user and top-level group' do
+        before do
+          stub_feature_flags(import_admin_override_max_file_size: [user, group.root_ancestor])
+        end
+
+        it { is_expected.to be(true) }
+      end
+
+      context 'when import_admin_override_max_file_size is enabled only for the user' do
+        before do
+          stub_feature_flags(import_admin_override_max_file_size: [user])
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when import_admin_override_max_file_size is enabled only for the top-level group' do
+        before do
+          stub_feature_flags(import_admin_override_max_file_size: [group.root_ancestor])
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when import_admin_override_max_file_size is disabled' do
+        before do
+          stub_feature_flags(import_admin_override_max_file_size: false)
+        end
+
+        it { is_expected.to be(false) }
+      end
+    end
+
+    context 'and the importing user is not in admin mode' do
+      it { is_expected.to be(false) }
+    end
+  end
+end

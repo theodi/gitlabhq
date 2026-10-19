@@ -1,0 +1,338 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+# rubocop:disable RSpec/MultipleMemoizedHelpers -- Parameterized table necessitates many memoized helpers
+RSpec.describe Gitlab::Current::Organization, feature_category: :organization do
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:other_organization) { create(:organization) }
+  let_it_be(:organization) { create(:organization) }
+  let_it_be(:user_organization) { create(:organization) }
+  let_it_be(:session_organization) { create(:organization) }
+  let_it_be(:header_organization) { create(:organization) }
+  let_it_be(:default_organization) { create(:organization, :default) } # rubocop:disable Gitlab/RSpec/AvoidCreateDefaultOrganization -- required for testing fallback behavior
+
+  let_it_be(:group) { create(:group, organization: organization) }
+  let_it_be(:user) { create(:user, organization: user_organization, organizations: [default_organization]) }
+
+  let_it_be(:params_with_namespace_id) { { namespace_id: group.full_path } }
+  let_it_be(:params_with_group_id) { { group_id: group.full_path } }
+  let_it_be(:params_with_groups_id) { { controller: 'groups', id: group.full_path } }
+  let_it_be(:params_with_org_path) { { organization_path: other_organization.path } }
+  let_it_be(:params_with_empty_namespace) { { namespace_id: '' } }
+  let_it_be(:params_with_invalid_namespace) { { namespace_id: 'not_found' } }
+  let_it_be(:params_with_empty_org_path) { { organization_path: '' } }
+  let_it_be(:params_with_invalid_org_path) { { organization_path: 'not_found' } }
+  let_it_be(:params_with_invalid_groups_id) { { controller: 'groups', id: 'not_found' } }
+  let_it_be(:params_with_invalid_group_id) { { group_id: 'not_found' } }
+  let_it_be(:params_with_matching_org_path) { { namespace_id: group.full_path, organization_path: organization.path } }
+  let_it_be(:params_with_mismatched_org_path) do
+    { namespace_id: group.full_path, organization_path: other_organization.path }
+  end
+
+  let_it_be(:params_with_upcased_org_path) do
+    { namespace_id: group.full_path, organization_path: organization.path.upcase }
+  end
+
+  let_it_be(:params_with_unknown_org_path) { { namespace_id: group.full_path, organization_path: 'not_found' } }
+  let_it_be(:params_with_invalid_namespace_and_org_path) do
+    { namespace_id: 'not_found', organization_path: other_organization.path }
+  end
+
+  let_it_be(:snippet_organization) { create(:organization) }
+  let_it_be(:personal_snippet) { create(:personal_snippet, organization: snippet_organization) }
+  let_it_be(:group_redirect_route) { create(:redirect_route, source: group, path: 'previous-group-path') }
+
+  let_it_be(:params_with_repository_path) { { repository_path: "#{group.full_path}/sub/project.git" } }
+  let_it_be(:params_with_upcased_repository_path) { { repository_path: "#{group.full_path.upcase}/sub/project.git" } }
+  let_it_be(:params_with_redirected_repository_path) { { repository_path: 'previous-group-path/sub/project.git' } }
+  let_it_be(:params_with_wiki_repository_path) { { repository_path: "#{group.full_path}.wiki.git" } }
+  let_it_be(:params_with_invalid_repository_path) { { repository_path: 'not_found/project.git' } }
+  let_it_be(:params_with_single_segment_repository_path) { { repository_path: 'project.git' } }
+  let_it_be(:params_with_snippet_repository_path) { { repository_path: "snippets/#{personal_snippet.id}.git" } }
+  let_it_be(:params_with_missing_snippet_repository_path) do
+    { repository_path: "snippets/#{non_existing_record_id}.git" }
+  end
+
+  let_it_be(:params_with_org_path_and_repository_path) do
+    { organization_path: other_organization.path, repository_path: "#{group.full_path}/sub/project.git" }
+  end
+
+  let_it_be(:empty_params) { {} }
+  let_it_be(:rack_env_with_valid_org) { { 'HTTP_X_GITLAB_ORGANIZATION_ID' => header_organization.id.to_s } }
+  let_it_be(:rack_env_with_invalid_org) { { 'HTTP_X_GITLAB_ORGANIZATION_ID' => non_existing_record_id.to_s } }
+  let_it_be(:rack_env_with_zero) { { 'HTTP_X_GITLAB_ORGANIZATION_ID' => '0' } }
+  let_it_be(:rack_env_with_negative) { { 'HTTP_X_GITLAB_ORGANIZATION_ID' => '-1' } }
+  let_it_be(:rack_env_with_non_numeric) { { 'HTTP_X_GITLAB_ORGANIZATION_ID' => 'abc' } }
+  let_it_be(:empty_rack_env) { {} }
+  let_it_be(:nil_rack_env) { nil }
+
+  describe '#organization' do
+    subject(:current_organization) do
+      described_class.new(params: params, user: user_param, rack_env: rack_env)
+    end
+
+    # rubocop:disable Layout/LineLength -- Parameterized table format requires long lines
+    where(:params, :rack_env, :user_param, :expected, :enables_fallback) do
+      # Valid params take precedence over everything
+      ref(:params_with_namespace_id)      | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:organization)         | false
+      ref(:params_with_group_id)          | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:organization)         | false
+      ref(:params_with_groups_id)         | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:organization)         | false
+      ref(:params_with_org_path)          | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:other_organization)   | false
+
+      # Invalid params fall back to headers, then session, then user, then default
+      ref(:params_with_invalid_namespace) | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:header_organization)  | false
+      ref(:params_with_invalid_namespace) | ref(:empty_rack_env)            | ref(:user) | ref(:user_organization)    | false
+      ref(:params_with_invalid_namespace) | ref(:rack_env_with_invalid_org) | ref(:user) | ref(:user_organization)    | false
+      ref(:params_with_invalid_namespace) | ref(:empty_rack_env)            | nil        | ref(:default_organization) | true
+      ref(:params_with_invalid_namespace) | ref(:rack_env_with_invalid_org) | nil        | ref(:default_organization) | true
+
+      # Empty params follow same fallback chain
+      ref(:empty_params)                  | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:header_organization)  | false
+      ref(:empty_params)                  | ref(:empty_rack_env)            | ref(:user) | ref(:user_organization)    | false
+      ref(:empty_params)                  | ref(:rack_env_with_invalid_org) | ref(:user) | ref(:user_organization)    | false
+      ref(:empty_params)                  | ref(:empty_rack_env)            | nil        | ref(:default_organization) | true
+      ref(:empty_params)                  | ref(:nil_rack_env)              | nil        | ref(:default_organization) | true
+
+      # Test header regex validation - invalid formats should fall back to user/default
+      ref(:empty_params)                  | ref(:rack_env_with_zero)        | ref(:user) | ref(:user_organization)    | false
+      ref(:empty_params)                  | ref(:rack_env_with_negative)    | ref(:user) | ref(:user_organization)    | false
+      ref(:empty_params)                  | ref(:rack_env_with_non_numeric) | ref(:user) | ref(:user_organization)    | false
+      ref(:empty_params)                  | ref(:rack_env_with_zero)        | nil        | ref(:default_organization) | true
+
+      # Git-over-HTTP repository_path resolves via its top-level namespace; /o/:organization_path wins over it
+      ref(:params_with_repository_path)                 | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:organization)         | false
+      ref(:params_with_org_path_and_repository_path)    | ref(:empty_rack_env)            | nil        | ref(:other_organization)   | false
+      ref(:params_with_upcased_repository_path)         | ref(:empty_rack_env)            | nil        | ref(:organization)         | false
+      ref(:params_with_redirected_repository_path)      | ref(:empty_rack_env)            | nil        | ref(:organization)         | false
+      ref(:params_with_wiki_repository_path)            | ref(:empty_rack_env)            | nil        | ref(:organization)         | false
+      ref(:params_with_invalid_repository_path)         | ref(:empty_rack_env)            | ref(:user) | ref(:user_organization)    | false
+      ref(:params_with_invalid_repository_path)         | ref(:empty_rack_env)            | nil        | ref(:default_organization) | true
+      ref(:params_with_single_segment_repository_path)  | ref(:empty_rack_env)            | nil        | ref(:default_organization) | true
+      ref(:params_with_snippet_repository_path)         | ref(:empty_rack_env)            | nil        | ref(:snippet_organization) | false
+      ref(:params_with_missing_snippet_repository_path) | ref(:empty_rack_env)            | nil        | ref(:default_organization) | true
+
+      # Test other invalid parameter types to ensure consistent fallback behavior
+      ref(:params_with_empty_namespace)   | ref(:empty_rack_env)            | nil        | ref(:default_organization) | true
+      ref(:params_with_invalid_groups_id) | ref(:rack_env_with_valid_org)   | ref(:user) | ref(:header_organization)  | false
+      ref(:params_with_invalid_org_path)  | ref(:rack_env_with_invalid_org) | ref(:user) | ref(:user_organization)    | false
+      ref(:params_with_invalid_group_id)  | ref(:rack_env_with_invalid_org) | nil        | ref(:default_organization) | true
+    end
+    # rubocop:enable Layout/LineLength
+
+    with_them do
+      it 'correctly sets the current organization' do
+        expect(current_organization.organization).to eq(expected)
+      end
+
+      it 'sets fallback tracking correctly', :request_store do
+        current_organization.organization
+
+        expect(Gitlab::Organizations::FallbackOrganizationTracker.enabled?).to eq(enables_fallback)
+      end
+    end
+
+    context 'for query optimization' do
+      context 'when resolving from group params' do
+        let(:params) { params_with_namespace_id }
+        let(:rack_env) { nil }
+        let(:user_param) { nil }
+
+        it 'uses only 1 query' do
+          expect { current_organization.organization }.to match_query_count(1)
+        end
+      end
+
+      context 'when resolving from organization params' do
+        let(:params) { params_with_org_path }
+        let(:rack_env) { nil }
+        let(:user_param) { nil }
+
+        it 'uses only 1 query' do
+          expect { current_organization.organization }.to match_query_count(1)
+        end
+      end
+
+      context 'when resolving from repository params' do
+        let(:params) { params_with_repository_path }
+        let(:rack_env) { nil }
+        let(:user_param) { nil }
+
+        it 'uses only 1 query' do
+          expect { current_organization.organization }.to match_query_count(1)
+        end
+      end
+
+      context 'when resolving from headers' do
+        let(:params) { empty_params }
+        let(:rack_env) { rack_env_with_valid_org }
+        let(:user_param) { nil }
+
+        it 'uses only 1 query' do
+          expect { current_organization.organization }.to match_query_count(1)
+        end
+      end
+
+      context 'when resolving from user' do
+        let(:params) { empty_params }
+        let(:rack_env) { empty_rack_env }
+        let!(:user_param) { User.find(user.id) }
+
+        it 'uses only 1 query' do
+          expect { current_organization.organization }.to match_query_count(1)
+        end
+      end
+
+      it 'only executes fallback query when namespace_id is empty' do
+        expect { described_class.new(params: params_with_empty_namespace).organization }
+          .to match_query_count(1) # Only the fallback query
+      end
+
+      it 'only executes fallback query when organization_path is empty' do
+        expect { described_class.new(params: params_with_empty_org_path).organization }
+          .to match_query_count(1)
+      end
+    end
+
+    context 'when user is given as a callable (proc)' do
+      let(:params) { empty_params }
+      let(:rack_env) { empty_rack_env }
+
+      it 'resolves the user lazily and uses the proc result' do
+        user_param = -> { user }
+
+        expect(described_class.new(params: params, user: user_param, rack_env: rack_env).organization)
+          .to eq(user_organization)
+      end
+
+      it 'falls back to default when the proc returns nil' do
+        user_param = -> { nil }
+
+        expect(described_class.new(params: params, user: user_param, rack_env: rack_env).organization)
+          .to eq(default_organization)
+      end
+
+      it 'does not invoke the proc when params resolve the organization' do
+        proc_was_called = false
+        user_param = -> {
+          proc_was_called = true
+          nil
+        }
+
+        described_class.new(params: params_with_namespace_id, user: user_param, rack_env: rack_env).organization
+
+        expect(proc_was_called).to be(false)
+      end
+
+      it 'does not invoke the proc when headers resolve the organization' do
+        proc_was_called = false
+        user_param = -> {
+          proc_was_called = true
+          nil
+        }
+
+        described_class.new(params: empty_params, user: user_param, rack_env: rack_env_with_valid_org).organization
+
+        expect(proc_was_called).to be(false)
+      end
+
+      it 'memoizes the proc result across multiple calls to organization' do
+        call_count = 0
+        user_param = -> {
+          call_count += 1
+          user
+        }
+
+        resolver = described_class.new(params: empty_params, user: user_param, rack_env: empty_rack_env)
+        resolver.organization
+        resolver.organization
+
+        expect(call_count).to eq(1)
+      end
+    end
+
+    context 'when set_current_organization_from_session is disabled' do
+      let(:params) { empty_params }
+      let(:rack_env) { empty_rack_env }
+      let(:user_param) { user }
+
+      before do
+        stub_feature_flags(set_current_organization_from_session: false)
+      end
+
+      it 'does not load the current organization from session' do
+        expect(current_organization.organization).to eq(user_organization)
+      end
+    end
+  end
+
+  describe '#from_request' do
+    subject(:current_organization) { described_class.new(params: params, rack_env: rack_env) }
+
+    where(:params, :rack_env, :expected) do
+      ref(:params_with_namespace_id)      | ref(:rack_env_with_valid_org) | ref(:organization)
+      ref(:params_with_org_path)          | ref(:rack_env_with_valid_org) | ref(:other_organization)
+      ref(:params_with_invalid_namespace) | ref(:rack_env_with_valid_org) | ref(:header_organization)
+      ref(:params_with_repository_path)   | ref(:empty_rack_env)          | ref(:organization)
+      ref(:empty_params)                  | ref(:rack_env_with_valid_org) | ref(:header_organization)
+      ref(:empty_params)                  | ref(:empty_rack_env)          | nil
+      ref(:empty_params)                  | ref(:nil_rack_env)            | nil
+      ref(:params_with_invalid_namespace) | ref(:empty_rack_env)          | nil
+    end
+
+    with_them do
+      it 'resolves what the path/header names, with no fallback' do
+        expect(current_organization.from_request).to eq(expected)
+      end
+    end
+
+    context 'for query optimization' do
+      it 'uses only 1 query when resolving from params' do
+        current_organization = described_class.new(params: params_with_namespace_id, rack_env: nil)
+
+        expect { current_organization.from_request }.to match_query_count(1)
+      end
+
+      it 'uses only 1 query when resolving from headers' do
+        current_organization = described_class.new(params: empty_params, rack_env: rack_env_with_valid_org)
+
+        expect { current_organization.from_request }.to match_query_count(1)
+      end
+    end
+  end
+
+  describe '#organization_path_mismatch?' do
+    subject(:current_organization) { described_class.new(params: params) }
+
+    where(:params, :expected) do
+      ref(:params_with_matching_org_path)               | false
+      ref(:params_with_mismatched_org_path)             | true
+      ref(:params_with_upcased_org_path)                | false
+      ref(:params_with_unknown_org_path)                | true
+      ref(:params_with_namespace_id)                    | false
+      ref(:params_with_org_path)                        | false
+      ref(:params_with_empty_org_path)                  | false
+      ref(:params_with_invalid_namespace_and_org_path)  | false
+      ref(:empty_params)                                | false
+    end
+
+    with_them do
+      it 'detects whether the URL names a different organization' do
+        expect(current_organization.organization_path_mismatch?).to eq(expected)
+      end
+    end
+
+    context 'for query optimization' do
+      it 'adds no queries after resolving the organization' do
+        current_organization = described_class.new(params: params_with_mismatched_org_path)
+
+        expect do
+          current_organization.organization
+          current_organization.organization_path_mismatch?
+        end.to match_query_count(1)
+      end
+    end
+  end
+end
+# rubocop:enable RSpec/MultipleMemoizedHelpers

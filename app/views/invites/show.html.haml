@@ -1,30 +1,32 @@
-- page_title "Invitation"
-%h3.page-title Invitation
+- page_title _("Invitation")
+%h1.page-title.gl-text-size-h-display= _("Invitation")
 
-%p
-  You have been invited
-  - if inviter = @member.created_by
-    by
-    = link_to inviter.name, user_url(inviter)
-  to join 
-  - case @member.source
-  - when Project
-    - project = @member.source
-    project
-    %strong
-      = link_to project.name_with_namespace, namespace_project_url(project.namespace, project)
-  - when Group
-    - group = @member.source
-    group
-    %strong
-      = link_to group.name, group_url(group)
-  as #{@member.human_access}.
+- if current_user_matches_invite?
+  - if member?
+    %p
+      = _("You are already a member of this %{member_source}.") % { member_source: @invite_details[:title] }
+    .actions
+      = link_button_to _("Go to %{source_name}") % { source_name: @invite_details[:title] }, @invite_details[:url], variant: :confirm
 
-- if @member.source.users.include?(current_user)
-  %p
-    However, you are already a member of this #{@member.source.is_a?(Group) ? "group" : "project"}.
-    Sign in using a different account to accept the invitation.
+  - else
+    %p
+      - inviter = @member.created_by
+      - link_to_inviter = link_to(inviter.name, user_url(inviter))
+      - link_to_source = link_to(@invite_details[:name], @invite_details[:url])
+
+      = html_escape(_("You have been invited by %{link_to_inviter} to join %{source_name} %{strong_open}%{link_to_source}%{strong_close} as %{role}")) % { link_to_inviter: link_to_inviter, source_name: @invite_details[:title], strong_open: '<strong>'.html_safe, link_to_source: link_to_source, strong_close: '</strong>'.html_safe, role: @member.human_access }
+
+    .actions
+      = render Pajamas::ButtonComponent.new(variant: :confirm, method: :post, href: accept_invite_url_for(@member, @token)) do
+        = _("Accept invitation")
+      = render Pajamas::ButtonComponent.new(variant: :danger, method: :post, href: decline_invite_url_for(@member, @token), button_options: { class: 'gl-ml-3' }) do
+        = _("Decline")
+
 - else
-  .actions
-    = link_to "Accept invitation", accept_invite_url(@token), method: :post, class: "btn btn-success"
-    = link_to "Decline", decline_invite_url(@token), method: :post, class: "btn btn-danger prepend-left-10"
+  %p
+    - mail_to_invite_email = mail_to(@member.invite_email)
+    - mail_to_current_user = mail_to(current_user.email)
+    - link_to_current_user = link_to(current_user.to_reference, user_url(current_user))
+    = _("This invitation was sent to %{mail_to_invite_email}, but you are signed in as %{link_to_current_user} with email %{mail_to_current_user}.").html_safe % { mail_to_invite_email: mail_to_invite_email, mail_to_current_user: mail_to_current_user, link_to_current_user: link_to_current_user }
+  %p
+    = _("Sign in as a user with the matching email address, add the email to this account, or create an account that uses the matching email.")

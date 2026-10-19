@@ -1,0 +1,9 @@
+---
+name: bitbucket_server_user_mapping
+feature_issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/466356
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/165855
+rollout_issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/509897
+milestone: '17.7'
+group: group::import
+type: beta
+default_enabled: true

@@ -1,0 +1,22 @@
+---
+data_category: optional
+key_path: redis_hll_counters.search.i_search_total_weekly
+description: Calculated unique users to perform Basic or Advanced searches by week
+product_group: global_search
+product_categories:
+- global_search
+value_type: number
+status: active
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - i_search_total
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

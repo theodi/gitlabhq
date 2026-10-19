@@ -1,0 +1,7 @@
+#import "./workload_item.fragment.graphql"
+
+query getK8sDashboardServices($configuration: K8sDashboardConfig) {
+  k8sDashboardServices(configuration: $configuration) @client {
+    ...WorkloadItem
+  }
+}

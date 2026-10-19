@@ -1,0 +1,104 @@
+import axios, { addSameOriginHeaders } from '~/lib/utils/axios_utils';
+import { buildApiUrl } from '~/api/api_utils';
+import {
+  jiraConnectInstallationsPath,
+  jiraConnectOauthApplicationIdPath,
+} from '~/lib/utils/path_helpers/jira_connect';
+
+import { GITLAB_COM_BASE_PATH } from '~/jira_connect/subscriptions/constants';
+import { getJwt } from './utils';
+
+const CURRENT_USER_PATH = '/api/:version/user';
+const JIRA_CONNECT_SUBSCRIPTIONS_PATH = '/api/:version/integrations/jira_connect/subscriptions';
+const JIRA_CONNECT_INSTALLATIONS_PATH = jiraConnectInstallationsPath();
+const JIRA_CONNECT_OAUTH_APPLICATION_ID_PATH = jiraConnectOauthApplicationIdPath();
+
+// This export is only used for testing purposes
+export const axiosInstance = axios.create();
+axiosInstance.interceptors.request.use(addSameOriginHeaders);
+
+export const setApiBaseURL = (baseURL = null) => {
+  axiosInstance.defaults.baseURL = baseURL;
+};
+
+export const removeSubscription = async (removePath) => {
+  const jwt = await getJwt();
+
+  return axiosInstance.delete(removePath, {
+    params: {
+      jwt,
+    },
+  });
+};
+
+export const fetchGroups = async (
+  groupsPath,
+  { minAccessLevel, page, perPage, search, top_level_only },
+  accessToken = null,
+) => {
+  return axiosInstance.get(groupsPath, {
+    params: {
+      min_access_level: minAccessLevel,
+      page,
+      per_page: perPage,
+      search,
+      top_level_only,
+    },
+    headers: {
+      // eslint-disable-next-line @gitlab/require-i18n-strings -- False positive
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+  });
+};
+
+export const fetchSubscriptions = async (subscriptionsPath) => {
+  const jwt = await getJwt();
+
+  return axiosInstance.get(subscriptionsPath, {
+    params: {
+      jwt,
+    },
+  });
+};
+
+export const getCurrentUser = (options) => {
+  const url = buildApiUrl(CURRENT_USER_PATH);
+  return axiosInstance.get(url, { ...options });
+};
+
+export const addJiraConnectSubscription = (namespacePath, { jwt, accessToken }) => {
+  const url = buildApiUrl(JIRA_CONNECT_SUBSCRIPTIONS_PATH);
+
+  return axiosInstance.post(
+    url,
+    {
+      jwt,
+      namespace_path: namespacePath,
+    },
+    {
+      headers: {
+        // eslint-disable-next-line @gitlab/require-i18n-strings -- False positive
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+  );
+};
+
+export const updateInstallation = async (instanceUrl) => {
+  const jwt = await getJwt();
+
+  return axiosInstance.put(JIRA_CONNECT_INSTALLATIONS_PATH, {
+    jwt,
+    installation: {
+      instance_url: instanceUrl === GITLAB_COM_BASE_PATH ? null : instanceUrl,
+    },
+  });
+};
+
+export const fetchOAuthApplicationId = () => {
+  return axiosInstance.get(JIRA_CONNECT_OAUTH_APPLICATION_ID_PATH);
+};
+
+export const fetchOAuthToken = (oauthTokenPath, data = {}) => {
+  return axiosInstance.post(oauthTokenPath, data);
+};

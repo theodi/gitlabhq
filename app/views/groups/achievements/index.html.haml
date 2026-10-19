@@ -1,0 +1,17 @@
+- breadcrumb_title _('Achievements')
+- page_title _('Achievements')
+- @content_wrapper_class = "gl-relative"
+
+= content_for :after_content do
+  #js-achievements-form-portal
+
+#js-achievements-app{ data: { base_path: group_achievements_path(@group), view_model: Gitlab::Json.generate({
+  can_create_achievement: can?(current_user, :create_achievement, @group),
+  can_update_achievement: can?(current_user, :update_achievement, @group),
+  can_delete_achievement: can?(current_user, :delete_achievement, @group),
+  can_award_achievement: can?(current_user, :award_achievement, @group),
+  group_full_path: @group.full_path,
+  group_id: @group.id,
+  gitlab_logo_path: ActionController::Base.helpers.asset_path('gitlab_logo.png'),
+  text_query: params[:search]
+  }) } }

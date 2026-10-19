@@ -1,0 +1,189 @@
+# frozen_string_literal: true
+
+module ShardingKeySpecHelpers
+  def not_nullable?(table_name, column_name)
+    sql = <<~SQL
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND
+    table_name = '#{table_name}' AND
+    column_name = '#{column_name}' AND
+    is_nullable = 'NO'
+    SQL
+
+    result = ApplicationRecord.connection.execute(sql)
+
+    result.count > 0
+  end
+
+  def has_null_check_constraint?(table_name, column_name)
+    # This is a heuristic query to look for all check constraints on the table and see if any of them contain a
+    # **validated** clause column IS NOT NULL. This is to match tables that will have multiple sharding keys where
+    # either of them can be not null. Such cases may look like:
+    #    (project_id IS NOT NULL) OR (group_id IS NOT NULL)
+    # It's possible that this will sometimes incorrectly find a check constraint that isn't exactly as strict as we want
+    # but it should be pretty unlikely.
+    sql = <<~SQL
+    SELECT 1
+    FROM pg_constraint
+    INNER JOIN pg_class ON pg_constraint.conrelid = pg_class.oid
+    WHERE pg_class.relname = '#{table_name}'
+    AND contype = 'c'
+    AND convalidated = true
+    AND (
+      pg_get_constraintdef(pg_constraint.oid) ILIKE '%#{column_name} IS NOT NULL%'
+      OR
+      pg_get_constraintdef(pg_constraint.oid)  ~ '.*num_nonnulls.*#{column_name}.*(= 1|> 0).*'
+    )
+    SQL
+
+    result = ApplicationRecord.connection.execute(sql)
+
+    result.count > 0
+  end
+
+  def has_exactly_one_not_null_check_constraint?(table_name, column_names)
+    # This regex searches for **validated** constraints that ensure **exactly one** of a set of columns is NOT NULL.
+    # The accepted forms are:
+    #   - num_nonnulls(col1, col2, ...) = 1
+    #   - (col1 IS NULL) <> (col2 IS NULL)   # equivalent to "exactly one NOT NULL" for two columns
+    sorted_columns = column_names.sort
+    num_nonnulls_regex = "\\ACHECK \\(\\(num_nonnulls\\(#{sorted_columns.join(', ')}\\) = 1\\)\\)\\Z"
+
+    regexes = [num_nonnulls_regex]
+
+    if sorted_columns.length == 2
+      a, b = sorted_columns
+      # Both column orderings are valid since `<>` is commutative.
+      regexes << "\\ACHECK \\(\\(\\(#{a} IS NULL\\) <> \\(#{b} IS NULL\\)\\)\\)\\Z"
+      regexes << "\\ACHECK \\(\\(\\(#{b} IS NULL\\) <> \\(#{a} IS NULL\\)\\)\\)\\Z"
+    end
+
+    or_clause = regexes.map { |r| "pg_get_constraintdef(pg_constraint.oid) ~ '#{r}'" }.join(' OR ')
+
+    sql = <<~SQL
+    SELECT 1
+    FROM pg_constraint
+    INNER JOIN pg_class ON pg_constraint.conrelid = pg_class.oid
+    WHERE pg_class.relname = '#{table_name}'
+    AND contype = 'c'
+    AND convalidated = true
+    AND (#{or_clause})
+    SQL
+
+    result = ApplicationRecord.connection.execute(sql)
+
+    result.count > 0
+  end
+
+  def has_multi_column_null_check_constraint?(table_name, column_names)
+    # This regex searches for **validated** constraints that ensure at least one of a set of columns is NOT NULL.
+    # It assumes the constraint was created using the #add_multi_column_not_null_constraint helper, which also
+    # sorts the list of columns.
+    #
+    # The constraint for some tables does not follow this convention hence the custom search below.
+    convalidated = true
+    regex = case ([table_name] + column_names.sort)
+            when %w[events group_id personal_namespace_id project_id]
+              '\\ACHECK \\(\\(\\(group_id IS NOT NULL\\) OR \\(project_id IS NOT NULL\\) ' \
+                'OR \\(personal_namespace_id IS NOT NULL\\)\\)\\)\\Z'
+            when %w[protected_branches namespace_id project_id]
+              '\\ACHECK \\(\\(\\(project_id IS NULL\\) <> \\(namespace_id IS NULL\\)\\)\\)\\Z'
+            when %w[protected_environments group_id project_id]
+              '\\ACHECK \\(\\(\\(project_id IS NULL\\) <> \\(group_id IS NULL\\)\\)\\)\\Z'
+            when %w[security_orchestration_policy_configurations namespace_id project_id]
+              '\\ACHECK \\(\\(\\(project_id IS NULL\\) <> \\(namespace_id IS NULL\\)\\)\\)\\Z'
+            end
+
+    # Match "> N", ">= N" (where N >= 1), or "= N" (where N >= 1)
+    regex ||= "\\ACHECK \\(\\(num_nonnulls\\(#{column_names.sort.join(', ')}\\) (> [0-9]{1,}|>?= [1-9]{1,})\\)\\)\\Z"
+
+    sql = <<~SQL
+    SELECT 1
+    FROM pg_constraint
+    INNER JOIN pg_class ON pg_constraint.conrelid = pg_class.oid
+    WHERE pg_class.relname = '#{table_name}'
+    AND contype = 'c'
+    AND convalidated = #{convalidated}
+    AND pg_get_constraintdef(pg_constraint.oid) ~ '#{regex}'
+    SQL
+
+    result = ApplicationRecord.connection.execute(sql)
+
+    result.count > 0
+  end
+
+  def referenced_foreign_keys(to_table_name)
+    ::Gitlab::Database::PostgresForeignKey.by_referenced_table_name(to_table_name)
+  end
+
+  def referenced_loose_foreign_keys(to_table_name)
+    ::Gitlab::Database::LooseForeignKeys.definitions.select do |d|
+      d.to_table == to_table_name
+    end
+  end
+
+  def has_foreign_key?(from_table_name, column_name, to_table_name: nil, foreign_key_name: nil)
+    where_clause = {
+      constrained_table_name: from_table_name,
+      constrained_columns: [column_name]
+    }
+
+    where_clause[:referenced_table_name] = to_table_name if to_table_name
+    if foreign_key_name
+      where_clause[:name] = foreign_key_name
+      where_clause.delete(:constrained_columns)
+    end
+
+    fk = ::Gitlab::Database::PostgresForeignKey.where(where_clause).first
+
+    lfk = ::Gitlab::Database::LooseForeignKeys.definitions.find do |d|
+      d.from_table == from_table_name &&
+        (to_table_name.nil? || d.to_table == to_table_name) &&
+        d.options[:column] == column_name
+    end
+
+    fk.present? || lfk.present?
+  end
+
+  def sharding_key_covered_by_parent_lfk?(table_name, column_name, root_table)
+    parent_tables = parent_tables_of(table_name, root_table)
+    return false if parent_tables.empty?
+
+    parent_tables.any? do |parent|
+      ::Gitlab::Database::LooseForeignKeys.definitions.any? do |d|
+        d.from_table == parent &&
+          d.to_table == root_table &&
+          d.options[:column].to_s == column_name.to_s &&
+          d.options[:on_delete].to_s == 'async_delete'
+      end
+    end
+  end
+
+  def parent_tables_of(table_name, root_table)
+    cascading_hard_fk_parents = ::Gitlab::Database::PostgresForeignKey
+      .by_constrained_table_name(table_name)
+      .by_on_delete_action(:cascade)
+      .map(&:referenced_table_name)
+
+    deleting_lfk_parents = ::Gitlab::Database::LooseForeignKeys.definitions
+      .select { |d| d.from_table == table_name && d.options[:on_delete].to_s == 'async_delete' }
+      .map(&:to_table)
+
+    (cascading_hard_fk_parents + deleting_lfk_parents).uniq.reject { |t| t == root_table }
+  end
+
+  def column_exists?(table_name, column_name)
+    sql = <<~SQL
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND
+    table_name = '#{table_name}' AND
+    column_name = '#{column_name}';
+    SQL
+
+    result = ApplicationRecord.connection.execute(sql)
+
+    result.count > 0
+  end
+end

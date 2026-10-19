@@ -1,0 +1,31 @@
+- parent = @group.parent
+- submit_label = parent ? s_('GroupsNew|Create subgroup') : s_('GroupsNew|Create group')
+= form_errors(@group)
+= render 'shared/groups/group_name_and_path_fields', f: f, autofocus: true, new_subgroup: !!parent
+
+.row
+  .form-group.gl-form-group.gl-col-sm-12
+    %label.label-bold
+      = _('Visibility level')
+    %p.gl-text-subtle
+      = _('Who will be able to see this group?')
+      = link_to _('View the documentation'), help_page_path("user/public_access.md"), target: '_blank', rel: 'noopener noreferrer'
+    = render 'shared/visibility_level', f: f, visibility_level: default_group_visibility, can_change_visibility_level: true, form_model: @group, with_label: false
+
+- unless parent
+  - if Gitlab.config.mattermost.enabled
+    .row
+      = render 'create_chat_team', f: f
+
+  - unless Gitlab::CurrentSettings.current_application_settings.hide_third_party_offers?
+    = render 'personalize', f: f
+
+  .row.js-invite-members-section
+    .gl-col-sm-4
+      = render_if_exists 'shared/groups/invite_members'
+
+.row
+  .gl-col-sm-12.gl-flex.gl-gap-3
+    = f.submit submit_label, pajamas_button: true, data: { testid: 'create-group-button' }
+    = render Pajamas::ButtonComponent.new(href: @parent_group || dashboard_groups_path) do
+      = _('Cancel')

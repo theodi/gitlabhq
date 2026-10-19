@@ -1,0 +1,114 @@
+# Keela exclusion file for false positives
+#
+# These items have been identified as "unused" by Keela, however subsequent
+# research shows them to be false positives (called dynamically, via
+# metaprogramming, from rake tasks, etc.) and should be excluded from detection.
+#
+# Format: Strategy-aware (recommended)
+# See: https://github.com/kerrizor/keela#exclusion-file
+#
+---
+attributes:
+  app/models/commit.rb:
+    - redacted_description_html: Setter is called dynamically via Banzai::ObjectRenderer#render which does object.__send__("redacted_#{attribute}_html=", ...) with CommitRenderer::ATTRIBUTES
+  ee/app/models/iteration.rb:
+    - skip_future_date_validation: "Read by the future_date validation (validate :future_date, unless: :skip_future_date_validation) and set via a factory trait across the iteration specs"
+delegations:
+  app/models/project.rb:
+    - push_pipelines_for_job_token_allowed: Required by the ci_cd_settings delegation shared example; used by the feature implementation in !243735
+  ee/app/models/work_items/widgets/agent_plan.rb:
+    - readiness_score_feedback_html: Read by the GraphQL markdown field added in !252884
+methods:
+  app/helpers/routing/groups/members_helper.rb:
+    - request_access_group_members_path: Dynamically accessed via GroupChildEntity#request_access_path
+  app/helpers/routing/snippets_helper.rb:
+    - toggle_award_emoji_personal_snippet_path: Rails' dynamic route creation in app/helpers/award_emoji_helper.rb
+    - toggle_award_emoji_project_project_snippet_path: Rails' dynamic route creation in app/helpers/award_emoji_helper.rb
+    - toggle_award_emoji_project_project_snippet_url: Rails' dynamic route creation in app/helpers/award_emoji_helper.rb
+  app/helpers/sorting_titles_values_helper.rb:
+    - sort_value_stars_desc: Used to build sorting dropdowns in app/helpers/sorting_helper.rb
+  app/models/concerns/forced_email_confirmation.rb:
+    - confirmation_period_expired?: Override of Devise::Models::Confirmable method; called internally by Devise during confirmation
+  app/models/concerns/gitlab/encrypted_attribute.rb:
+    - attr_encrypted_encrypted_with: Will be used by the db_key_base re-encryption rake task (https://gitlab.com/gitlab-org/gitlab/-/issues/631458)
+  app/models/concerns/integrations/base/integration.rb:
+    - "#{arg}?": A metaprogramming method
+  app/models/concerns/organizations/isolatable.rb:
+    - not_isolated?: Will be used in follow up MR
+    - mark_as_isolated!: Will be used when setting Isolation Status
+  app/models/concerns/transactions.rb:
+    - reset_open_transactions_baseline: Used in spec_helper.rb to configure transaction behavior
+  app/models/event.rb:
+    - find_sti_class: Override of an ActiveRecord internal method
+  app/models/jira_import_state.rb:
+    - owner_class_attribute_default: Used internally by state_machine
+  app/models/merge_request_diff.rb:
+    - migrate_files_to_database!: Invoked manually (e.g. from a Rails console) to roll back external diffs to the database
+  app/models/note.rb:
+    - attribute_names_for_serialization: Acts as an override of an existing private ActiveRecord method
+  app/models/observability/group_o11y_setting.rb:
+    - read_attribute_for_validation: Override of an ActiveModel internal method called by validators
+  app/models/organizations/isolation_record.rb:
+    - not_isolated?: Will be used in follow up MR
+  app/models/project_statistics.rb:
+    - update_wiki_size: Called dynamically, and cannot be removed unless column is removed
+    - update_snippets_size: Called dynamically, and cannot be removed unless column is removed
+    - update_lfs_objects_size: Called dynamically, and cannot be removed unless column is removed
+    - update_uploads_size: Called dynamically, and cannot be removed unless column is removed
+    - update_container_registry_size: Called dynamically, and cannot be removed unless column is removed
+  app/models/project_team.rb:
+    - developer?: Used to surface access rights; referenced by specs and treated as a false positive
+    - planner?: Used to surface access rights; referenced by specs and treated as a false positive
+  app/models/service_desk/custom_email_verification.rb:
+    - owner_class_attribute_default: Used internally by state_machine
+  app/models/user.rb:
+    - inactive_message: Override of Devise method
+    - owner_class_attribute_default: Used internally by state_machine
+    - reset_password_by_token: Override of Devise method
+    - unlock_access_by_token: Override of Devise method
+    - will_save_change_to_login?: Override of Devise method
+  app/models/work_item.rb:
+    - descendant_ids_for: will be used in follow-up MR
+  ee/app/helpers/ee/gitlab_routing_helper.rb:
+    - user_group_saml_omniauth_metadata_path: Used to dynamically generate a method via `#url_helper`
+  ee/app/helpers/secrets_management/enrollment_helper.rb:
+    - allow_secrets_manager_namespace_enrollment?: Called from HAML views and controllers via EE::ApplicationHelper
+    - allow_secrets_manager_instance_enrollment?: Called from HAML views and controllers via EE::ApplicationHelper
+  ee/app/models/cd/application_flow_definition.rb:
+    - revert_to_previous_version: Will be called from the CD application flow definition revert API/mutation in a follow-up MR
+  ee/app/models/ci/secrets/integration.rb:
+    - gcp_secret_manager?: Dynamically accessed via Ci::Secrets::Integration#secrets_provider?
+    - azure_key_vault?: Dynamically accessed via Ci::Secrets::Integration#secrets_provider?
+    - hashicorp_vault?: Dynamically accessed via Ci::Secrets::Integration#secrets_provider?
+    - aws?: Dynamically accessed via Ci::Secrets::Integration#secrets_provider?
+    - gitlab_secrets_manager?: Dynamically accessed via Ci::Secrets::Integration#secrets_provider?
+  ee/app/models/concerns/ai/duo_workflows/workflow_linkable.rb:
+    - declarative_policy_class: Called by the declarative_policy gem via respond_to? when resolving the policy class for a subject
+  ee/app/models/concerns/ee/issuable_link.rb:
+    - blocked_issuables_for_collection: Dynamically accessed by Gitlab::Graphql::Aggregations::Issuables::LazyLinksAggregate#load_queued_records
+  ee/app/models/concerns/geo/blob_replicator_strategy.rb:
+    - consume_event_deleted: Called by Gitlab::Geo::Replicator#consume
+  ee/app/models/concerns/geo/repository_replicator_strategy.rb:
+    - consume_event_deleted: Called by Gitlab::Geo::Replicator#consume
+  ee/app/models/concerns/geo/verifiable_replicator.rb:
+    - consume_event_checksum_succeeded: Called by Gitlab::Geo::Replicator#consume
+  ee/app/models/ee/user.rb:
+    - security_policy_bot_project: Returns the bot's associated project; preserved for backward compatibility with bot-specific access flows
+  ee/app/models/import/sync/external_object.rb:
+    - self.for_local_record: Will be called by the initial-import adoption service in a follow-up MR
+  ee/app/models/import/sync/repository.rb:
+    - application_generation_current?: Will be called by the reconciliation worker in a follow-up MR
+  ee/app/models/import/sync/repository_state.rb:
+    - lagging?: Will be called by the reconciliation worker in a follow-up MR
+  ee/app/models/package_metadata/sync_configuration.rb:
+    - self.advisories_pds_endpoint: Will be called from Location.for_advisories once advisories move to PDS in a follow-up MR (#631389)
+  ee/app/models/security/dependency_firewall_namespace_prevented_stat.rb:
+    - to_counts: "Read by Security::DependencyFirewall::PreventedStats::DataCollector in the group read path MR (part 5 of 7 for gitlab-org/gitlab#631890); remove this entry there"
+constants:
+  app/services/mcp/tools/toolsets.rb:
+    - ALWAYS_ON: Used by Manager#tools_in_toolsets to always include meta tools
+    - UNASSIGNED: Fallback for tools missing a toolset declaration
+  ee/app/models/ai/catalog/item_version.rb:
+    - SKILL_SCHEMA_VERSION: Referenced in specs and consumed by the skill publish service in a follow-up MR of https://gitlab.com/groups/gitlab-org/-/work_items/22961
+  ee/lib/gitlab/llm/chain/concerns/anthropic_prompt.rb:
+    - ROLE_NAMES: Used by ee/spec/lib/gitlab/llm/chain/utils/prompt_spec.rb; only flagged after an unrelated same-named constant was removed elsewhere in the codebase

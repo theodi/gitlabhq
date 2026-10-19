@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: object_store.packages.object_store.background_upload
+description: Whether Background Upload for Object Storage is enabled for Packages
+product_group: cloud_connector
+product_categories:
+- build
+value_type: boolean
+status: broken
+repair_issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/382900
+time_frame: none
+data_source: system
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

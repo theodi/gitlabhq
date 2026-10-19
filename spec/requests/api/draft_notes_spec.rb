@@ -1,0 +1,633 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::DraftNotes, feature_category: :code_review_workflow do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, :public, developers: user) }
+  let_it_be(:merge_request) { create(:merge_request, source_project: project, target_project: project, author: user) }
+
+  let_it_be(:private_project) { create(:project, :private) }
+  let_it_be(:private_merge_request) do
+    create(:merge_request, source_project: private_project, target_project: private_project)
+  end
+
+  let_it_be(:merge_request_note) { create(:note, noteable: merge_request, project: project, author: user) }
+  let_it_be(:draft_note_by_current_user) { create(:draft_note, merge_request: merge_request, author: user) }
+  let_it_be(:draft_note_by_random_user) { create(:draft_note, merge_request: merge_request) }
+
+  let_it_be(:base_url) { "/projects/#{project.id}/merge_requests/#{merge_request.iid}/draft_notes" }
+
+  describe "Get a list of merge request draft notes" do
+    it "returns 200 OK status" do
+      get api(base_url, user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it "returns only draft notes authored by the current user" do
+      get api(base_url, user)
+
+      # draft_notes and notes have independent id sequences, so the previous
+      # assertion against merge_request_note.id only held while those sequences
+      # happened not to collide. Compare draft note ids with each other instead.
+      expect(json_response.pluck("id")).to contain_exactly(draft_note_by_current_user.id)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_merge_request_draft_note do
+      let(:boundary_object) { project }
+      let(:request) { get api(base_url, personal_access_token: pat) }
+    end
+  end
+
+  describe "Get a single draft note" do
+    context "when requesting an existing draft note by the user" do
+      before do
+        get api(
+          "#{base_url}/#{draft_note_by_current_user.id}",
+          user
+        )
+      end
+
+      it "returns 200 OK status" do
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it "returns the requested draft note" do
+        expect(json_response["id"]).to eq(draft_note_by_current_user.id)
+      end
+
+      context "when requesting a non-existent draft note" do
+        it "returns a 404 Not Found response" do
+          get api(
+            "#{base_url}/#{DraftNote.last.id + 1}",
+            user
+          )
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context "when requesting an existing draft note by another user" do
+        it "returns a 404 Not Found response" do
+          get api(
+            "#{base_url}/#{draft_note_by_random_user.id}",
+            user
+          )
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_merge_request_draft_note do
+        let(:boundary_object) { project }
+        let(:request) { get api("#{base_url}/#{draft_note_by_current_user.id}", personal_access_token: pat) }
+      end
+    end
+  end
+
+  describe "delete a draft note" do
+    context "when deleting an existing draft note by the user" do
+      let!(:deleted_draft_note_id) { draft_note_by_current_user.id }
+
+      before do
+        allow_next_instance_of(DraftNotes::DestroyService) do |service|
+          allow(service).to receive(:unfolded_drafts?).and_return(true)
+        end
+
+        delete api(
+          "#{base_url}/#{draft_note_by_current_user.id}",
+          user
+        )
+      end
+
+      it "returns 204 No Content status" do
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+
+      it "deletes the specified draft note" do
+        expect(DraftNote.exists?(deleted_draft_note_id)).to be(false)
+      end
+    end
+
+    context "when deleting a non-existent draft note" do
+      it "returns a 404 Not Found" do
+        delete api(
+          "#{base_url}/#{non_existing_record_id}",
+          user
+        )
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context "when deleting a draft note by a different user" do
+      it "returns a 404 Not Found" do
+        delete api(
+          "#{base_url}/#{draft_note_by_random_user.id}",
+          user
+        )
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_merge_request_draft_note do
+      let(:boundary_object) { project }
+      let(:request) { delete api("#{base_url}/#{draft_note_by_current_user.id}", personal_access_token: pat) }
+    end
+  end
+
+  def create_draft_note(params = {}, url = base_url)
+    post api(url, user), params: params
+  end
+
+  describe "Create a new draft note" do
+    let(:basic_create_params) do
+      {
+        note: "Example body string"
+      }
+    end
+
+    context "when creating a new draft note" do
+      context "with required params" do
+        it "returns 201 Created status" do
+          create_draft_note(basic_create_params)
+
+          expect(response).to have_gitlab_http_status(:created)
+        end
+
+        it "creates a new draft note with the submitted params" do
+          expect { create_draft_note(basic_create_params) }.to change { DraftNote.count }.by(1)
+
+          expect(json_response["note"]).to eq(basic_create_params[:note])
+          expect(json_response["merge_request_id"]).to eq(merge_request.id)
+          expect(json_response["author_id"]).to eq(user.id)
+        end
+      end
+
+      context "without required params" do
+        it "returns 400 Bad Request status" do
+          create_draft_note({})
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context "when providing a non-existing commit_id" do
+        it "returns a 400 Bad Request" do
+          create_draft_note(
+            basic_create_params.merge(
+              commit_id: 'bad SHA'
+            )
+          )
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context "when targeting a merge request the user doesn't have access to" do
+        it "returns a 404 Not Found" do
+          create_draft_note(
+            basic_create_params,
+            "/projects/#{private_project.id}/merge_requests/#{private_merge_request.iid}"
+          )
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context "when using a diff with position" do
+        let_it_be(:draft_note) { create(:draft_note_on_text_diff, merge_request: merge_request, author: user) }
+
+        it_behaves_like 'diff draft notes API', 'iid'
+
+        context "when position is for a previous commit on the merge request" do
+          it "returns a 400 bad request error because the line_code is old" do
+            # SHA taken from an earlier commit listed in spec/factories/merge_requests.rb
+            position = draft_note.position.to_h.merge(new_line: 'c1acaa58bbcbc3eafe538cb8274ba387047b69f8')
+
+            post api("/projects/#{project.id}/merge_requests/#{merge_request['iid']}/draft_notes", user),
+              params: { body: 'hi!', position: position }
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+          end
+        end
+      end
+
+      context "when using a diff file position" do
+        let!(:draft_note) { create(:draft_note_on_text_diff, merge_request: merge_request, author: user) }
+
+        it "creates a new diff file draft note" do
+          position = draft_note.position.to_h.merge(position_type: 'file').except(:ignore_whitespace_change)
+
+          post api("/projects/#{project.id}/merge_requests/#{merge_request['iid']}/draft_notes", user),
+            params: { note: 'hi!', position: position }
+
+          expect(response).to have_gitlab_http_status(:created)
+        end
+      end
+
+      context "when using line_range position parameters" do
+        let_it_be(:draft_note) { create(:draft_note_on_text_diff, merge_request: merge_request, author: user) }
+
+        context "when old_line/new_line is an integer" do
+          it "has a successful response" do
+            position = draft_note.position.to_h.merge(
+              line_range: {
+                start: {
+                  line_code: 'abc',
+                  type: 'new',
+                  old_line: 10,
+                  new_line: 11
+                },
+                end: {
+                  line_code: 'def',
+                  type: 'new',
+                  old_line: 10,
+                  new_line: 11
+                }
+              }
+            )
+
+            post api("/projects/#{project.id}/merge_requests/#{merge_request['iid']}/draft_notes", user),
+              params: { note: 'Test note', position: position }
+
+            expect(response).to have_gitlab_http_status(:created)
+          end
+        end
+
+        context "when old_line/new_line is a string" do
+          it "has a successful response" do
+            # the "grape" gem will convert a string into an integer in this case for us
+            # see: https://www.rubydoc.info/gems/grape/1.8.0/Grape/Validations/Types#multiple%3F-class_method
+            position = draft_note.position.to_h.merge(
+              line_range: {
+                start: {
+                  line_code: 'abc',
+                  type: 'new',
+                  old_line: "10",
+                  new_line: "11"
+                },
+                end: {
+                  line_code: 'def',
+                  type: 'new',
+                  old_line: "12",
+                  new_line: "13"
+                }
+              }
+            )
+
+            post api("/projects/#{project.id}/merge_requests/#{merge_request['iid']}/draft_notes", user),
+              params: { note: 'Test note', position: position }
+
+            expect(response).to have_gitlab_http_status(:created)
+          end
+        end
+      end
+
+      context "when attempting to resolve a discussion" do
+        context "when providing a non-existent ID" do
+          it "returns a 400 Bad Request" do
+            create_draft_note(
+              basic_create_params.merge(
+                resolve_discussion: true,
+                in_reply_to_discussion_id: non_existing_record_id
+              )
+            )
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+          end
+        end
+
+        context "when not providing an ID" do
+          it "returns a 400 Bad Request" do
+            create_draft_note(basic_create_params.merge(resolve_discussion: true))
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+          end
+
+          it "returns a validation error message" do
+            create_draft_note(basic_create_params.merge(resolve_discussion: true))
+
+            expect(response.body)
+              .to eq("{\"message\":{\"base\":[\"User is not allowed to resolve thread\"]}}")
+          end
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :create_merge_request_draft_note do
+        let(:boundary_object) { project }
+        let(:request) { post api(base_url, personal_access_token: pat), params: basic_create_params }
+      end
+    end
+  end
+
+  def update_draft_note(params = {}, url = base_url)
+    put api("#{url}/#{draft_note_by_current_user.id}", user), params: params
+  end
+
+  describe "Update a draft note" do
+    let(:basic_update_params) do
+      {
+        note: "Example updated body string"
+      }
+    end
+
+    context "when updating an existing draft note" do
+      context "with required params" do
+        it "returns 200 Success status" do
+          update_draft_note(basic_update_params)
+
+          expect(response).to have_gitlab_http_status(:success)
+        end
+
+        it "updates draft note with the new content" do
+          update_draft_note(basic_update_params)
+
+          expect(json_response["note"]).to eq(basic_update_params[:note])
+        end
+      end
+
+      context "without including an update to the note body" do
+        it "returns the draft note with no changes" do
+          expect { update_draft_note({}) }
+            .not_to change { draft_note_by_current_user.note }
+        end
+      end
+
+      context "when the draft note is on a diff" do
+        let_it_be(:diff_draft_note) { create(:draft_note_on_text_diff, merge_request: merge_request, author: user) }
+
+        def update_diff_draft_note(params)
+          put api("#{base_url}/#{diff_draft_note.id}", user), params: params
+        end
+
+        it "keeps the existing position when only the note is updated" do
+          expect { update_diff_draft_note(basic_update_params) }
+            .not_to change { diff_draft_note.reload.position.to_h }
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response["note"]).to eq(basic_update_params[:note])
+          expect(json_response.dig("position", "new_path")).to eq(diff_draft_note.position.new_path)
+        end
+
+        it "updates the position when one is provided" do
+          position = diff_draft_note.position.to_h.merge(position_type: 'file').except(:ignore_whitespace_change)
+
+          update_diff_draft_note(basic_update_params.merge(position: position))
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(diff_draft_note.reload.position.position_type).to eq('file')
+        end
+      end
+
+      context "when updating a non-existent draft note" do
+        it "returns a 404 Not Found" do
+          put api("#{base_url}/#{non_existing_record_id}", user), params: basic_update_params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context "when updating a draft note by a different user" do
+        it "returns a 404 Not Found" do
+          put api("#{base_url}/#{draft_note_by_random_user.id}", user), params: basic_update_params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :update_merge_request_draft_note do
+        let(:boundary_object) { project }
+        let(:request) do
+          put api("#{base_url}/#{draft_note_by_current_user.id}", personal_access_token: pat),
+            params: basic_update_params
+        end
+      end
+    end
+  end
+
+  describe "Publishing a draft note" do
+    let(:publish_draft_note) do
+      put api(
+        "#{base_url}/#{draft_note_by_current_user.id}/publish",
+        user
+      )
+    end
+
+    context "when publishing an existing draft note by the user" do
+      it "returns 204 No Content status" do
+        publish_draft_note
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+
+      it "publishes the specified draft note" do
+        expect { publish_draft_note }.to change { Note.count }.by(1)
+        expect(DraftNote.exists?(draft_note_by_current_user.id)).to be(false)
+      end
+
+      it "creates a resolvable discussion when draft note has no position" do
+        # Create a draft note without position (not attached to code)
+        draft_without_position = create(:draft_note, merge_request: merge_request, author: user, position: nil)
+
+        put api("#{base_url}/#{draft_without_position.id}/publish", user)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+
+        # The published note should be a DiscussionNote, making it resolvable
+        published_note = merge_request.notes.order(:id).last
+        expect(published_note.type).to eq('DiscussionNote')
+        expect(published_note.discussion.resolvable?).to be(true)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :publish_merge_request_draft_note do
+        let(:boundary_object) { project }
+        let(:request) do
+          put api("#{base_url}/#{draft_note_by_current_user.id}/publish", personal_access_token: pat)
+        end
+      end
+    end
+
+    context "when publishing a non-existent draft note" do
+      it "returns a 404 Not Found" do
+        put api(
+          "#{base_url}/#{non_existing_record_id}/publish",
+          user
+        )
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context "when publishing a draft note by a different user" do
+      it "returns a 404 Not Found" do
+        put api(
+          "#{base_url}/#{draft_note_by_random_user.id}/publish",
+          user
+        )
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context "when DraftNotes::PublishService returns a non-success" do
+      it "returns an :internal_server_error and a message" do
+        expect_next_instance_of(DraftNotes::PublishService) do |instance|
+          expect(instance).to receive(:execute).and_return({ status: :failure, message: "Error message" })
+        end
+
+        publish_draft_note
+
+        expect(response).to have_gitlab_http_status(:internal_server_error)
+      end
+    end
+  end
+
+  describe "Bulk publishing draft notes" do
+    let(:bulk_publish_draft_notes) do
+      post api(
+        "#{base_url}/bulk_publish",
+        user
+      )
+    end
+
+    let_it_be(:draft_note_by_current_user_2) { create(:draft_note, merge_request: merge_request, author: user) }
+
+    context "when publishing an existing draft note by the user" do
+      it "returns 204 No Content status" do
+        bulk_publish_draft_notes
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+
+      it "publishes the specified draft notes" do
+        expect { bulk_publish_draft_notes }.to change { Note.count }.by(2)
+        expect(DraftNote.exists?(draft_note_by_current_user.id)).to be(false)
+        expect(DraftNote.exists?(draft_note_by_current_user_2.id)).to be(false)
+      end
+
+      it "only publishes the user's draft notes" do
+        bulk_publish_draft_notes
+
+        expect(DraftNote.exists?(draft_note_by_random_user.id)).to be(true)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :publish_merge_request_draft_note do
+        let(:boundary_object) { project }
+        let(:request) do
+          post api("#{base_url}/bulk_publish", personal_access_token: pat)
+        end
+      end
+    end
+
+    context "when DraftNotes::PublishService returns a non-success" do
+      it "returns an :internal_server_error and a message" do
+        expect_next_instance_of(DraftNotes::PublishService) do |instance|
+          expect(instance).to receive(:execute).and_return({ status: :failure, message: "Error message" })
+        end
+
+        bulk_publish_draft_notes
+
+        expect(response).to have_gitlab_http_status(:internal_server_error)
+      end
+    end
+
+    context "when reviewer_state is provided" do
+      before_all do
+        merge_request.reviewers << user
+      end
+
+      it "sets the reviewer state to requested_changes", :aggregate_failures do
+        post api("#{base_url}/bulk_publish", user), params: { reviewer_state: 'requested_changes' }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        reviewer = merge_request.merge_request_reviewers.find_by(user_id: user.id)
+        expect(reviewer.state).to eq('requested_changes')
+      end
+
+      it "sets the reviewer state to reviewed", :aggregate_failures do
+        post api("#{base_url}/bulk_publish", user), params: { reviewer_state: 'reviewed' }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        reviewer = merge_request.merge_request_reviewers.find_by(user_id: user.id)
+        expect(reviewer.state).to eq('reviewed')
+      end
+
+      it "rejects invalid reviewer_state values" do
+        post api("#{base_url}/bulk_publish", user), params: { reviewer_state: 'invalid' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it "rejects the 'approved' reviewer_state and records no approval", :aggregate_failures do
+        expect do
+          post api("#{base_url}/bulk_publish", user), params: { reviewer_state: 'approved' }
+        end.not_to change { merge_request.approvals.count }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    context "when note is provided" do
+      it "creates a merge request note", :aggregate_failures do
+        expect do
+          post api("#{base_url}/bulk_publish", user), params: { note: '**Summary**' }
+        end.to change { merge_request.notes.count }.by_at_least(1)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        expect(merge_request.notes.order(:id).last.note).to eq('**Summary**')
+      end
+
+      it "creates an internal note when internal is true", :aggregate_failures do
+        post api("#{base_url}/bulk_publish", user), params: { note: 'Internal summary', internal: true }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        note = merge_request.notes.order(:id).last
+        expect(note.note).to eq('Internal summary')
+        expect(note.internal).to be(true)
+      end
+
+      it "creates a public note when internal is false", :aggregate_failures do
+        post api("#{base_url}/bulk_publish", user), params: { note: 'Public summary', internal: false }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        note = merge_request.notes.order(:id).last
+        expect(note.note).to eq('Public summary')
+        expect(note.internal).to be(false)
+      end
+    end
+
+    context "when all params are provided together" do
+      before do
+        merge_request.reviewers << user
+      end
+
+      it "publishes drafts, creates a note, and sets reviewer state", :aggregate_failures do
+        expect do
+          post api("#{base_url}/bulk_publish", user),
+            params: { reviewer_state: 'requested_changes', note: 'Review summary', internal: true }
+        end.to change { Note.count }.by_at_least(2)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+
+        reviewer = merge_request.merge_request_reviewers.find_by(user_id: user.id)
+        expect(reviewer.state).to eq('requested_changes')
+
+        summary_note = merge_request.notes.where(note: 'Review summary').order(:id).last
+        expect(summary_note).to be_present
+        expect(summary_note.internal).to be(true)
+      end
+    end
+
+    context "when no new params are provided" do
+      it "returns 204 without creating internal notes" do
+        bulk_publish_draft_notes
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        expect(merge_request.notes.where(internal: true).count).to eq(0)
+      end
+    end
+  end
+end

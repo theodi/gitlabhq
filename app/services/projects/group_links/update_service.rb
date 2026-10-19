@@ -1,0 +1,57 @@
+# frozen_string_literal: true
+
+module Projects
+  module GroupLinks
+    class UpdateService < BaseService
+      def initialize(group_link, user = nil)
+        super(group_link.project, user)
+
+        @group_link = group_link
+      end
+
+      def execute(group_link_params)
+        allowed_params = filter_params(group_link_params)
+
+        if group_link.blank? || !allowed_to_update?
+          return ServiceResponse.error(message: 'Not found', reason: :not_found)
+        end
+
+        group_link.update!(allowed_params)
+
+        refresh_authorizations if requires_authorization_refresh?(allowed_params)
+
+        ServiceResponse.success
+      end
+
+      private
+
+      attr_reader :group_link
+
+      def permitted_attributes
+        %i[group_access expires_at].freeze
+      end
+
+      def filter_params(params)
+        params.select { |k| permitted_attributes.include?(k.to_sym) }
+      end
+
+      def allowed_to_update?
+        current_user.can?(:update_group_link, group_link.project)
+      end
+
+      def refresh_authorizations
+        AuthorizedProjectUpdate::ProjectRecalculateWorker.perform_async(project.id)
+
+        # Low-priority safety net for the specialized refresh above, to catch
+        # authorizations it may have missed.
+        AuthorizedProjectUpdate::EnqueueGroupMembersRefreshAuthorizedProjectsWorker.perform_async(group_link.group.id)
+      end
+
+      def requires_authorization_refresh?(params)
+        params.include?(:group_access)
+      end
+    end
+  end
+end
+
+Projects::GroupLinks::UpdateService.prepend_mod

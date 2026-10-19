@@ -1,0 +1,545 @@
+import { nextTick } from 'vue';
+import Sortable from 'sortablejs';
+import waitForPromises from 'helpers/wait_for_promises';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import { renderGFM } from '~/behaviors/markdown/render_gfm';
+import { handleLocationHash } from '~/lib/utils/common_utils';
+import eventHub from '~/issues/show/event_hub';
+import { taskListSortableOptions } from '~/issues/show/utils';
+import CreateWorkItemModal from '~/work_items/components/create_work_item_modal.vue';
+import WorkItemDescriptionRendered from '~/work_items/components/work_item_description_rendered.vue';
+import {
+  CREATION_CONTEXT_DESCRIPTION_CHECKLIST,
+  WORK_ITEM_TYPE_NAME_ISSUE,
+  WORK_ITEM_TYPE_NAME_TASK,
+} from '~/work_items/constants';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { descriptionHtmlWithCheckboxes, descriptionTextWithCheckboxes } from '../mock_data';
+
+jest.mock('~/behaviors/markdown/render_gfm');
+jest.mock('~/lib/utils/common_utils');
+
+describe('WorkItemDescriptionRendered', () => {
+  /** @type {import('helpers/vue_test_utils_helper').ExtendedWrapper} */
+  let wrapper;
+
+  const findCheckboxAtIndex = (index) => wrapper.findAll('input[type="checkbox"]').at(index);
+  const findCreateWorkItemModal = () => wrapper.findComponent(CreateWorkItemModal);
+  const findReadMore = () => wrapper.findComponent({ ref: 'show-all-btn' });
+  const findDescription = () => wrapper.findByTestId('work-item-description');
+
+  const defaultWorkItemDescription = {
+    description: descriptionTextWithCheckboxes,
+    descriptionHtml: descriptionHtmlWithCheckboxes,
+  };
+
+  const createComponent = ({
+    workItemDescription = defaultWorkItemDescription,
+    canEdit = false,
+    isGroup = false,
+    workItemType = 'ISSUE',
+    withoutHeadingAnchors = false,
+    enableTruncation = true,
+  } = {}) => {
+    wrapper = shallowMountExtended(WorkItemDescriptionRendered, {
+      propsData: {
+        fullPath: 'full/path',
+        workItemId: 'gid://gitlab/WorkItem/818',
+        workItemDescription,
+        canEdit,
+        isGroup,
+        workItemType,
+        withoutHeadingAnchors,
+        enableTruncation,
+      },
+      stubs: {
+        CreateWorkItemModal,
+      },
+    });
+  };
+
+  it('renders gfm', async () => {
+    createComponent();
+
+    await nextTick();
+
+    expect(renderGFM).toHaveBeenCalled();
+  });
+
+  describe('with truncation', () => {
+    const { bindInternalEventDocument } = useMockInternalEventsTracking();
+    beforeEach(() => {
+      createComponent({
+        workItemDescription: {
+          description: 'This is a long description',
+          descriptionHtml: '<p>This is a long description</p>',
+        },
+      });
+      const { element } = findDescription();
+      jest.spyOn(element, 'clientHeight', 'get').mockImplementation(() => 800);
+    });
+
+    it('shows the untruncate action', () => {
+      expect(findReadMore().exists()).toBe(true);
+    });
+
+    it('applies truncated class to description content', () => {
+      expect(findDescription().classes()).toContain('truncated');
+    });
+
+    it('tracks untruncate action', async () => {
+      const { trackEventSpy } = bindInternalEventDocument(wrapper.element);
+
+      await findReadMore().vm.$emit('click');
+
+      expect(trackEventSpy).toHaveBeenCalledWith(
+        'expand_description_on_workitem',
+        { label: 'ISSUE' },
+        undefined,
+      );
+    });
+  });
+
+  describe('without truncation', () => {
+    beforeEach(() => {
+      createComponent({
+        workItemDescription: {
+          description: 'This is a long description',
+          descriptionHtml: '<p>This is a long description</p>',
+        },
+      });
+    });
+
+    it('does not show the untruncate action', () => {
+      expect(findReadMore().exists()).toBe(false);
+    });
+
+    it('does not apply truncated class to description content', () => {
+      expect(findDescription().classes()).not.toContain('truncated');
+    });
+  });
+
+  describe('with anchor to description item', () => {
+    const anchorHash = '#description-anchor';
+
+    const setupComponent = async () => {
+      createComponent({
+        workItemDescription: {
+          description: 'This is a long description',
+          descriptionHtml: `<p>This is a long description</p><a href="${anchorHash}">Some anchor</a>`,
+        },
+        mockComputed: {
+          isTruncated() {
+            return true;
+          },
+        },
+      });
+      jest.spyOn(wrapper.vm, 'truncateLongDescription');
+
+      await nextTick();
+    };
+
+    afterAll(() => {
+      window.location.hash = '';
+    });
+
+    it('scrolls matching link into view when opened with hash present', async () => {
+      window.location.hash = anchorHash;
+      await setupComponent();
+
+      // Check if page loaded with hash present scrolls hash into view.
+      // In order to scroll, description must not have been truncated.
+      expect(handleLocationHash).toHaveBeenCalled();
+      expect(wrapper.vm.truncateLongDescription).not.toHaveBeenCalled();
+    });
+
+    it('expands description and then scrolls to matching link into view on user navigation', async () => {
+      window.location.hash = '';
+      await setupComponent();
+
+      // Check if page loaded with no hash present shows truncated description.
+      expect(handleLocationHash).not.toHaveBeenCalled();
+
+      // Simulate user clicking on an anchor hash within the description.
+      window.location.hash = anchorHash;
+      window.dispatchEvent(new Event('hashchange'));
+
+      await nextTick();
+
+      // Check if description is expanded and hash is scrolled into view.
+      expect(handleLocationHash).toHaveBeenCalled();
+      expect(findReadMore().exists()).toBe(false);
+    });
+  });
+
+  describe('`withoutHeadingAnchors` prop', () => {
+    const hiddenAnchorsClass = '[&_a.anchor]:gl-hidden';
+    // Matches the heading markup our Markdown pipeline emits today.
+    const headingAnchorHtml =
+      '<a href="#this-is-an-anchor" aria-label="Link to heading \'This is an anchor\'" data-heading-content="This is an anchor" class="anchor"></a>';
+    const headingHtml = `<h1 id="user-content-this-is-an-anchor" data-sourcepos="1:1-1:19" dir="auto">This is an anchor${headingAnchorHtml}</h1>`;
+
+    const createAnchorComponent = (withoutHeadingAnchors) =>
+      createComponent({
+        withoutHeadingAnchors,
+        workItemDescription: {
+          description: 'This is an anchor',
+          descriptionHtml: headingHtml,
+        },
+      });
+
+    describe('when `false`', () => {
+      beforeEach(() => createAnchorComponent(false));
+
+      it('does not hide the heading anchors', () => {
+        expect(findDescription().classes()).not.toContain(hiddenAnchorsClass);
+      });
+    });
+
+    describe('when `true`', () => {
+      beforeEach(() => createAnchorComponent(true));
+
+      it('hides the heading anchors', () => {
+        expect(findDescription().classes()).toContain(hiddenAnchorsClass);
+      });
+
+      it('renders the description HTML unchanged', () => {
+        expect(findDescription().html()).toContain(headingAnchorHtml);
+      });
+    });
+  });
+
+  describe('with checkboxes', () => {
+    beforeEach(() => {
+      createComponent({
+        canEdit: true,
+        workItemDescription: {
+          description: `- [x] todo 1\n- [ ] todo 2`,
+          descriptionHtml: `<ul dir="auto" class="task-list" data-sourcepos="1:1-4:0">
+<li class="task-list-item" data-sourcepos="1:1-2:15">
+<input checked="" class="task-list-item-checkbox" type="checkbox"> todo 1</li>
+<li class="task-list-item" data-sourcepos="2:1-2:15">
+<input class="task-list-item-checkbox" type="checkbox"> todo 2</li>
+</ul>`,
+        },
+      });
+
+      jest.spyOn(wrapper.vm, 'createTaskListItemActions').mockReturnValue({});
+    });
+
+    it('disables checkbox while updating', async () => {
+      findCheckboxAtIndex(1).setChecked();
+
+      await nextTick();
+
+      expect(findCheckboxAtIndex(1).attributes().disabled).toBeDefined();
+    });
+
+    it('re-enables checkboxes once updating is done', async () => {
+      await wrapper.setProps({ isUpdating: true });
+
+      expect(findCheckboxAtIndex(1).attributes().disabled).toBeDefined();
+
+      await wrapper.setProps({ isUpdating: false });
+
+      expect(findCheckboxAtIndex(1).attributes().disabled).toBeUndefined();
+    });
+
+    describe('when checking an unchecked checkbox', () => {
+      it('emits task-item-toggled with a line locator instead of the full description', async () => {
+        findCheckboxAtIndex(1).setChecked();
+
+        await nextTick();
+
+        expect(wrapper.emitted('task-item-toggled')).toEqual([
+          [
+            {
+              checked: true,
+              lineSource: '- [ ] todo 2',
+              lineSourcepos: '2:1-2:15',
+              revert: expect.any(Function),
+            },
+          ],
+        ]);
+        expect(wrapper.emitted('description-updated')).toBeUndefined();
+      });
+    });
+
+    describe('when unchecking a checked checkbox', () => {
+      it('emits task-item-toggled with a line locator instead of the full description', async () => {
+        findCheckboxAtIndex(0).setChecked(false);
+
+        await nextTick();
+
+        expect(wrapper.emitted('task-item-toggled')).toEqual([
+          [
+            {
+              checked: false,
+              lineSource: '- [x] todo 1',
+              lineSourcepos: '1:1-2:15',
+              revert: expect.any(Function),
+            },
+          ],
+        ]);
+        expect(wrapper.emitted('description-updated')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('sortable lists', () => {
+    describe.each`
+      listTag | description                          | descriptionHtml
+      ${'UL'} | ${'- item 1\n- item 2\n- item 3'}    | ${'<ul><li>item 1</li><li>item 2</li><li>item 3</li></ul>'}
+      ${'OL'} | ${'1. item a\n2. item b\n3. item c'} | ${'<ol><li>item a</li><li>item b</li><li>item c</li></ol>'}
+    `('for $listTag', ({ description, descriptionHtml }) => {
+      beforeEach(async () => {
+        createComponent({
+          canEdit: true,
+          workItemDescription: { description, descriptionHtml },
+        });
+        await nextTick();
+      });
+
+      it('creates Sortable with forceFallback enabled', () => {
+        expect(Sortable.create).toHaveBeenCalled();
+        const options = Sortable.create.mock.calls[0][1];
+        expect(options).toMatchObject({
+          forceFallback: true,
+          handle: '.drag-icon',
+        });
+      });
+
+      it('passes the shared task list drag callbacks to Sortable', () => {
+        const options = Sortable.create.mock.calls[0][1];
+
+        expect(options).toMatchObject(taskListSortableOptions);
+      });
+
+      it('creates Sortable with revertOnEscape enabled', () => {
+        const options = Sortable.create.mock.calls[0][1];
+
+        expect(options).toMatchObject({ revertOnEscape: true });
+      });
+
+      it('destroys the sortable instance when the component is destroyed', () => {
+        const sortableInstance = Sortable.create.mock.results[0].value;
+        const destroySpy = jest.spyOn(sortableInstance, 'destroy');
+
+        wrapper.destroy();
+
+        expect(destroySpy).toHaveBeenCalled();
+      });
+
+      it('destroys the previous sortable instance before re-rendering the list', async () => {
+        const firstSortableInstance = Sortable.create.mock.results[0].value;
+        const destroySpy = jest.spyOn(firstSortableInstance, 'destroy');
+
+        wrapper.setProps({
+          workItemDescription: { description, descriptionHtml: `${descriptionHtml}\n` },
+        });
+        await waitForPromises();
+
+        expect(destroySpy).toHaveBeenCalled();
+      });
+    });
+
+    it('excludes footnotes from sortable lists', async () => {
+      createComponent({
+        canEdit: true,
+        workItemDescription: {
+          description: 'test',
+          descriptionHtml: `
+            <section class="footnotes" data-footnotes>
+              <ol>
+                <li>footnote 1</li>
+                <li>footnote 2</li>
+              </ol>
+            </section>
+          `,
+        },
+      });
+      await nextTick();
+
+      expect(Sortable.create).not.toHaveBeenCalled();
+    });
+
+    describe('when the description contains a table of contents', () => {
+      beforeEach(async () => {
+        createComponent({
+          canEdit: true,
+          workItemDescription: {
+            description: 'test',
+            descriptionHtml: `
+              <ul class="section-nav">
+                <li>Heading
+                  <ul><li>Section A</li><li>Section B</li></ul>
+                </li>
+              </ul>
+              <ul><li>task 1</li><li>task 2</li></ul>
+              <ol><li>step 1</li><li>step 2</li></ol>
+            `,
+          },
+        });
+        await nextTick();
+      });
+
+      it('excludes its nested lists while keeping ordinary lists sortable', () => {
+        const sortableLists = Sortable.create.mock.calls.map(([list]) => list);
+
+        expect(sortableLists).toHaveLength(2);
+        expect(sortableLists.map((list) => list.tagName)).toEqual(['UL', 'OL']);
+      });
+    });
+  });
+
+  describe('task list item actions', () => {
+    describe('converting the task list item', () => {
+      it('opens modal to create work item and emits event to update description', async () => {
+        const description = `Tasks
+
+1. [ ] item 1
+   1. [ ] item 2 with a really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really long title
+
+      and more text
+
+      and even more
+      1. [ ] item 3
+   1. [ ] item 4;`;
+        const newDescription = `Tasks
+
+1. [ ] item 1
+   1. [ ] item 3
+   1. [ ] item 4;`;
+        createComponent({ workItemDescription: { description } });
+        await waitForPromises();
+
+        eventHub.$emit('convert-task-list-item', {
+          id: 'gid://gitlab/WorkItem/818',
+          sourcepos: '4:4-9:19',
+        });
+        await nextTick();
+
+        expect(findCreateWorkItemModal().props()).toEqual({
+          asDropdownItem: false,
+          confidential: false,
+          createSource: null,
+          creationContext: CREATION_CONTEXT_DESCRIPTION_CHECKLIST,
+          description: `lly really long title
+
+
+and more text
+
+and even more`,
+          fullPath: 'full/path',
+          hideButton: true,
+          hideNamespaceSelector: true,
+          hideTypeSelector: true,
+          isGroup: false,
+          parentId: 'gid://gitlab/WorkItem/818',
+          relatedItem: null,
+          suppressCreatedToast: false,
+          title:
+            'item 2 with a really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really really rea',
+          visible: true,
+          preselectedWorkItemType: WORK_ITEM_TYPE_NAME_TASK,
+          allowProjectsOnly: false,
+          mergeRequestId: null,
+          mergeRequestLinkType: null,
+          mergeRequestReference: '',
+          mergeRequestTitle: '',
+        });
+
+        findCreateWorkItemModal().vm.$emit('work-item-created');
+
+        expect(wrapper.emitted('description-updated')).toEqual([[newDescription]]);
+
+        findCreateWorkItemModal().vm.$emit('hide-modal');
+        await nextTick();
+
+        expect(findCreateWorkItemModal().props('visible')).toBe(false);
+      });
+
+      describe('when work item epic', () => {
+        it('converts task list item to child issue', async () => {
+          const description = '1. [ ] item 1\n1. [ ] item 2';
+          createComponent({
+            isGroup: true,
+            workItemType: 'Epic',
+            workItemDescription: { description },
+          });
+          await waitForPromises();
+
+          eventHub.$emit('convert-task-list-item', {
+            id: 'gid://gitlab/WorkItem/818',
+            sourcepos: '1:1-1:13',
+          });
+          await nextTick();
+
+          expect(findCreateWorkItemModal().props()).toMatchObject({
+            asDropdownItem: false,
+            description: ``,
+            hideButton: true,
+            hideNamespaceSelector: false,
+            hideTypeSelector: false,
+            isGroup: true,
+            parentId: 'gid://gitlab/WorkItem/818',
+            title: 'item 1',
+            visible: true,
+            preselectedWorkItemType: WORK_ITEM_TYPE_NAME_ISSUE,
+          });
+        });
+      });
+
+      describe('when work item issue', () => {
+        it('converts task list item to child task', async () => {
+          const description = '1. [ ] item 1\n1. [ ] item 2';
+          createComponent({ workItemType: 'ISSUE', workItemDescription: { description } });
+          await waitForPromises();
+
+          eventHub.$emit('convert-task-list-item', {
+            id: 'gid://gitlab/WorkItem/818',
+            sourcepos: '1:1-1:13',
+          });
+          await nextTick();
+
+          expect(findCreateWorkItemModal().props()).toMatchObject({
+            asDropdownItem: false,
+            description: ``,
+            hideButton: true,
+            hideNamespaceSelector: true,
+            hideTypeSelector: true,
+            isGroup: false,
+            parentId: 'gid://gitlab/WorkItem/818',
+            title: 'item 1',
+            visible: true,
+            preselectedWorkItemType: WORK_ITEM_TYPE_NAME_TASK,
+          });
+        });
+      });
+    });
+
+    describe('deleting the task list item', () => {
+      it('emits an event to update the description with the deleted task list item', () => {
+        const description = `Tasks
+
+1. [ ] item 1
+   1. [ ] item 2
+      1. [ ] item 3
+   1. [ ] item 4;`;
+        const newDescription = `Tasks
+
+1. [ ] item 1
+   1. [ ] item 3
+   1. [ ] item 4;`;
+        createComponent({ workItemDescription: { description } });
+
+        eventHub.$emit('delete-task-list-item', {
+          id: 'gid://gitlab/WorkItem/818',
+          sourcepos: '4:4-5:19',
+        });
+
+        expect(wrapper.emitted('description-updated')).toEqual([[newDescription]]);
+      });
+    });
+  });
+});

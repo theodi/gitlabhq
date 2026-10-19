@@ -1,70 +1,383 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe LabelsHelper do
+RSpec.describe LabelsHelper, feature_category: :team_planning do
+  using RSpec::Parameterized::TableSyntax
+
+  describe '#show_label_issuables_link?' do
+    shared_examples 'a valid response to show_label_issuables_link?' do |issuables_type, when_enabled = true, when_disabled = false|
+      context "when asking for a #{issuables_type} link" do
+        subject { show_label_issuables_link?(label.present(issuable_subject: nil), issuables_type) }
+
+        context "when #{issuables_type} are enabled for the project" do
+          let(:project) { build(:project, "#{issuables_type}_access_level": ProjectFeature::ENABLED) }
+
+          it { is_expected.to be(when_enabled) }
+        end
+
+        context "when #{issuables_type} are disabled for the project" do
+          let(:project) { build(:project, :public, "#{issuables_type}_access_level": ProjectFeature::DISABLED) }
+
+          it { is_expected.to be(when_disabled) }
+        end
+      end
+    end
+
+    context 'with a project label' do
+      let(:label) { build_stubbed(:label, project: project, title: 'bug') }
+
+      context 'when asking for an issue link' do
+        it_behaves_like 'a valid response to show_label_issuables_link?', :issues
+      end
+
+      context 'when asking for a merge requests link' do
+        it_behaves_like 'a valid response to show_label_issuables_link?', :merge_requests
+      end
+    end
+
+    context 'with a group label' do
+      let(:group) { build_stubbed(:group) }
+      let(:label) { build_stubbed(:group_label, group: group, title: 'bug') }
+
+      context 'when asking for an issue link' do
+        it_behaves_like 'a valid response to show_label_issuables_link?', :issues, true, true
+      end
+
+      context 'when asking for a merge requests link' do
+        it_behaves_like 'a valid response to show_label_issuables_link?', :merge_requests, true, true
+      end
+    end
+  end
+
   describe 'link_to_label' do
-    let(:project) { create(:empty_project) }
-    let(:label)   { create(:label, project: project) }
+    let(:project) { build_stubbed(:project) }
+    let(:label) { build_stubbed(:label, project: project) }
+    let(:subject) { nil }
+    let(:label_presenter) { label.present(issuable_subject: subject) }
 
-    context 'with @project set' do
-      before do
-        @project = project
-      end
-
-      it 'uses the instance variable' do
-        expect(label).not_to receive(:project)
-        link_to_label(label)
-      end
-    end
-
-    context 'without @project set' do
+    context 'without subject' do
       it "uses the label's project" do
-        expect(label).to receive(:project).and_return(project)
-        link_to_label(label)
+        expect(link_to_label(label_presenter)).to match %r{<a.*href="/#{label.project.full_path}/-/issues\?label_name%5B%5D=#{label.name}".*>.*</a>}m
       end
     end
 
-    context 'with a named project argument' do
-      it 'uses the provided project' do
-        arg = double('project')
-        expect(arg).to receive(:namespace).and_return('foo')
-        expect(arg).to receive(:to_param).and_return('foo')
+    context 'with a project as subject' do
+      let(:namespace) { build(:namespace) }
+      let(:subject) { build(:project, namespace: namespace) }
 
-        link_to_label(label, project: arg)
+      it 'links to project issues page' do
+        expect(link_to_label(label_presenter)).to match %r{<a.*href="/#{subject.full_path}/-/issues\?label_name%5B%5D=#{label.name}".*>.*</a>}m
       end
+    end
 
-      it 'takes precedence over other types' do
-        @project = project
-        expect(@project).not_to receive(:namespace)
-        expect(label).not_to receive(:project)
+    context 'with a group as subject' do
+      let(:subject) { build(:group) }
 
-        arg = double('project', namespace: 'foo', to_param: 'foo')
-        link_to_label(label, project: arg)
+      it 'links to group issues page' do
+        expect(link_to_label(label_presenter)).to match %r{<a.*href="/groups/#{subject.path}/-/issues\?label_name%5B%5D=#{label.name}".*>.*</a>}m
+      end
+    end
+
+    context 'with a type argument' do
+      ['issue', :issue, 'merge_request', :merge_request].each do |type|
+        context "set to #{type}" do
+          it 'links to correct page' do
+            expect(link_to_label(label_presenter, type: type)).to match %r{<a.*href="/#{label.project.full_path}/-/#{type.to_s.pluralize}\?label_name%5B%5D=#{label.name}".*>.*</a>}m
+          end
+        end
+      end
+    end
+
+    context 'with a tooltip argument' do
+      context 'set to false' do
+        it 'does not include the has-tooltip class' do
+          expect(link_to_label(label_presenter, tooltip: false)).not_to match(/has-tooltip/)
+        end
       end
     end
 
     context 'with block' do
       it 'passes the block to link_to' do
-        link = link_to_label(label) { 'Foo' }
+        link = link_to_label(label_presenter) { 'Foo' }
         expect(link).to match('Foo')
       end
     end
 
     context 'without block' do
       it 'uses render_colored_label as the link content' do
-        expect(self).to receive(:render_colored_label).
-          with(label).and_return('Foo')
-        expect(link_to_label(label)).to match('Foo')
+        expect(self).to receive(:render_colored_label)
+          .with(label_presenter).and_return('Foo')
+        expect(link_to_label(label_presenter)).to match('Foo')
       end
     end
   end
 
-  describe 'text_color_for_bg' do
-    it 'uses light text on dark backgrounds' do
-      expect(text_color_for_bg('#222E2E')).to eq('#FFFFFF')
+  describe 'render_label_link' do
+    it 'does not describe the data-title as HTML' do
+      label_link_html = render_label_link('<b>safe content</b>'.html_safe, link: 'https://target', title: 'Evil <script>XSS</script> title', dataset: {})
+      # No data-html is included.
+      expect(label_link_html).to eq_html('<a class="gl-link gl-label-link has-tooltip" data-title="Evil &lt;script&gt;XSS&lt;/script&gt; title" href="https://target"><b>safe content</b></a>')
     end
 
-    it 'uses dark text on light backgrounds' do
-      expect(text_color_for_bg('#EEEEEE')).to eq('#333333')
+    it 'includes aria-label when aria_label is provided' do
+      label_link_html = render_label_link('<b>content</b>'.html_safe, link: 'https://target', title: 'tooltip', dataset: {}, aria_label: 'bug')
+      expect(label_link_html).to eq_html('<a class="gl-link gl-label-link has-tooltip" data-title="tooltip" aria-label="bug" href="https://target"><b>content</b></a>')
+    end
+
+    it 'does not include aria-label when aria_label is not provided' do
+      label_link_html = render_label_link('<b>content</b>'.html_safe, link: 'https://target', title: 'tooltip', dataset: {})
+      expect(label_link_html).to eq_html('<a class="gl-link gl-label-link has-tooltip" data-title="tooltip" href="https://target"><b>content</b></a>')
+    end
+
+    it 'describes the data-title as HTML when html is true' do
+      label_link_html = render_label_link('<b>content</b>'.html_safe, link: 'https://target', title: 'tooltip', dataset: {}, html: true)
+      expect(label_link_html).to eq_html('<a class="gl-link gl-label-link has-tooltip" data-title="tooltip" data-html="true" href="https://target"><b>content</b></a>')
+    end
+  end
+
+  describe 'render_label_text' do
+    it 'html escapes the bg_color correctly' do
+      xss_payload = '"><img src=x onerror=prompt(1)>'
+      label_text = render_label_text('xss', bg_color: xss_payload)
+      expect(label_text).to include(html_escape(xss_payload))
+    end
+  end
+
+  describe 'create_label_title' do
+    let(:group) { build_stubbed(:group) }
+
+    context 'with a group as subject' do
+      it 'returns "Create group label"' do
+        expect(create_label_title(group)).to eq _('Create group label')
+      end
+    end
+
+    context 'with a project as subject' do
+      let(:project) { build_stubbed(:project, namespace: group) }
+
+      it 'returns "Create project label"' do
+        expect(create_label_title(project)).to eq _('Create project label')
+      end
+    end
+
+    context 'with no subject' do
+      it 'returns "Create new label"' do
+        expect(create_label_title(nil)).to eq _('Create new label')
+      end
+    end
+  end
+
+  describe 'view_labels_title' do
+    let(:group) { build_stubbed(:group) }
+
+    context 'with a group as subject' do
+      it 'returns "View group labels"' do
+        expect(view_labels_title(group)).to eq _('View group labels')
+      end
+    end
+
+    context 'with a project as subject' do
+      let(:project) { build_stubbed(:project, namespace: group) }
+
+      it 'returns "View project labels"' do
+        expect(view_labels_title(project)).to eq _('View project labels')
+      end
+    end
+
+    context 'with no subject' do
+      it 'returns "View labels"' do
+        expect(view_labels_title(nil)).to eq _('View labels')
+      end
+    end
+  end
+
+  describe 'labels_filter_path' do
+    let(:group) { build_stubbed(:group) }
+    let(:project) { build_stubbed(:project) }
+
+    it 'links to the dashboard labels page' do
+      expect(labels_filter_path).to eq(dashboard_labels_path)
+    end
+
+    it 'links to the group labels page' do
+      assign(:group, group)
+
+      expect(helper.labels_filter_path).to eq(group_labels_path(group))
+    end
+
+    it 'links to the project labels page' do
+      assign(:project, project)
+
+      expect(helper.labels_filter_path).to eq(project_labels_path(project))
+    end
+
+    it 'supports json format' do
+      expect(labels_filter_path(format: :json)).to eq(dashboard_labels_path(format: :json))
+    end
+  end
+
+  describe 'presented_labels_sorted_by_title' do
+    let(:labels) do
+      [build(:label, title: 'a'),
+        build(:label, title: 'B'),
+        build(:label, title: 'c'),
+        build(:label, title: 'D')]
+    end
+
+    it 'sorts labels alphabetically' do
+      sorted_ids = presented_labels_sorted_by_title(labels, nil).map(&:id)
+
+      expect(sorted_ids)
+        .to match_array([labels[1].id, labels[3].id, labels[0].id, labels[2].id])
+    end
+
+    it 'returns an array of label presenters' do
+      expect(presented_labels_sorted_by_title(labels, nil))
+        .to all(be_a(LabelPresenter))
+    end
+  end
+
+  describe '#label_status_tooltip' do
+    let(:status) { 'unsubscribed'.inquiry }
+
+    subject { label_status_tooltip(label.present(issuable_subject: nil), status) }
+
+    context 'with a project label' do
+      let(:label) { build_stubbed(:label, title: 'bug') }
+
+      it { is_expected.to eq('Subscribe at project level') }
+    end
+
+    context 'with a group label' do
+      let(:label) { build_stubbed(:group_label, title: 'bug') }
+
+      it { is_expected.to eq('Subscribe at group level') }
+    end
+  end
+
+  describe '#label_tooltip_title' do
+    let(:html) { '<img src="example.png">This is an image</img>' }
+    let(:label_with_html_content) { build_stubbed(:label, title: 'test', description: html) }
+
+    context 'tooltip shows description' do
+      it 'leaves HTML untouched' do
+        tooltip = label_tooltip_title(label_with_html_content)
+        expect(tooltip).to eq(html)
+      end
+    end
+
+    context 'tooltip shows title' do
+      it 'returns title' do
+        tooltip = label_tooltip_title(label_with_html_content, tooltip_shows_title: true)
+        expect(tooltip).to eq('test')
+      end
+    end
+  end
+
+  describe '#label_tooltip_title_html' do
+    let(:label) { build_stubbed(:label, title: 'A title', description: description, archived: archived) }
+
+    subject { label_tooltip_title_html(label, tooltip_shows_title: tooltip_shows_title) }
+
+    where(:case_name, :tooltip_shows_title, :description, :archived, :expected) do
+      'escapes HTML'          | false | '<i>x</i>' | false | '&lt;i&gt;x&lt;/i&gt;'
+      'appends archived line' | false | 'Desc'     | true  | 'Desc<br><span class="gl-label-tooltip-footer">Archived</span>'
+      'archived, no desc'     | false | nil        | true  | '<span class="gl-label-tooltip-footer">Archived</span>'
+      'active label'          | false | 'Desc'     | false | 'Desc'
+      'title mode'            | true  | 'Desc'     | true  | 'A title<br><span class="gl-label-tooltip-footer">Archived</span>'
+    end
+
+    with_them do
+      it { is_expected.to eq(expected) }
+    end
+  end
+
+  describe '#render_label' do
+    let(:project) { build_stubbed(:project) }
+
+    subject(:link) { Nokogiri::HTML.fragment(render_label(label, link: '#')).at_css('a.gl-label-link') }
+
+    context 'when the label is archived' do
+      let(:label) { build_stubbed(:label, project: project, description: 'A description', archived: true).present(issuable_subject: nil) }
+
+      it 'renders an HTML tooltip with the archived line' do
+        expect(link['data-html']).to eq('true')
+        expect(link['data-title']).to eq('A description<br><span class="gl-label-tooltip-footer">Archived</span>')
+      end
+    end
+
+    context 'when the label is not archived' do
+      let(:label) { build_stubbed(:label, project: project, description: 'A description').present(issuable_subject: nil) }
+
+      it 'renders the description tooltip without the archived line' do
+        expect(link['data-html']).to eq('true')
+        expect(link['data-title']).to eq('A description')
+      end
+    end
+  end
+
+  describe '#show_labels_full_path?' do
+    let(:group) { build_stubbed(:group) }
+    let(:subgroup) { build_stubbed(:group, parent: group) }
+    let(:project) { build_stubbed(:project, group: group) }
+
+    context 'within a project' do
+      it 'returns truthy' do
+        expect(show_labels_full_path?(project, nil)).to be_truthy
+      end
+    end
+
+    context 'within a subgroup' do
+      it 'returns truthy' do
+        expect(show_labels_full_path?(nil, subgroup)).to be_truthy
+      end
+    end
+
+    context 'within a group' do
+      it 'returns falsey' do
+        expect(show_labels_full_path?(nil, group)).to be_falsey
+      end
+    end
+
+    context 'within the admin area' do
+      it 'returns falsey' do
+        expect(show_labels_full_path?(nil, nil)).to be_falsey
+      end
+    end
+  end
+
+  describe '#wrap_label_html' do
+    let(:project) { build_stubbed(:project) }
+    let(:xss_label) do
+      build_stubbed(:label, name: 'xsslabel', project: project, color: '"><img src=x onerror=prompt(1)>')
+    end
+
+    it 'does not include the color' do
+      expect(wrap_label_html('xss', label: xss_label)).not_to include('color:')
+    end
+  end
+
+  describe '#label_subscription_toggle_button_text' do
+    let(:label) { instance_double(Label) }
+    let(:current_user) { instance_double(User) }
+
+    subject { label_subscription_toggle_button_text(label) }
+
+    context 'when the label is subscribed' do
+      before do
+        allow(label).to receive(:subscribed?).and_return(true)
+      end
+
+      it { is_expected.to eq(_('Unsubscribe')) }
+    end
+
+    context 'when the label is not subscribed' do
+      before do
+        allow(label).to receive(:subscribed?).and_return(false)
+      end
+
+      it { is_expected.to eq(_('Subscribe')) }
     end
   end
 end

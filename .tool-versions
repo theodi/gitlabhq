@@ -1,0 +1,10 @@
+gitleaks 8.24.3
+nodejs 22.23.1
+ruby 3.4.10 3.3.11
+rust 1.89.0
+yarn 1.22.19
+
+# For linting documentation
+markdownlint-cli2 0.23.2
+lychee 0.24.2
+vale 3.21.0

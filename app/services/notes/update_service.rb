@@ -1,24 +1,172 @@
+# frozen_string_literal: true
+
 module Notes
   class UpdateService < BaseService
-    def execute
-      note = project.notes.find(params[:note_id])
-      note.note = params[:note]
-      if note.save
-        notification_service.new_note(note)
+    def execute(note)
+      return note unless note.editable? && params.present?
 
-        # Skip system notes, like status changes and cross-references.
-        unless note.system
-          event_service.leave_note(note, note.author)
+      old_mentioned_users = note.mentioned_users(current_user).to_a
+      self.old_note_body = note.note
 
-          # Create a cross-reference note if this Note contains GFM that
-          # names an issue, merge request, or commit.
-          note.references.each do |mentioned|
-            Note.create_cross_reference_note(mentioned, note.noteable, note.author)
-          end
+      note.assign_attributes(params)
+
+      return note unless note.valid?
+
+      track_note_edit_usage(note)
+
+      only_commands = false
+
+      quick_actions_service = QuickActionsService.new(project, current_user)
+      if quick_actions_service.supported?(note)
+        content, update_params, message, command_names = quick_actions_service.execute(note, {})
+
+        return note if wants_to_convert_to_internal_note?(note, update_params)
+
+        only_commands = content.empty?
+
+        note.note = content
+        status = ::Notes::QuickActionsStatus.new(
+          command_names: command_names, commands_only: only_commands)
+        status.add_message(message)
+        note.quick_actions_status = status
+      end
+
+      update_note(note, only_commands)
+      note.save
+
+      unless only_commands || note.for_personal_snippet?
+        note.create_new_cross_references!(current_user)
+
+        update_todos(note, old_mentioned_users)
+
+        notify_added_mentions(note, old_mentioned_users)
+
+        update_suggestions(note)
+
+        execute_note_webhook(note)
+      end
+
+      if quick_actions_service.commands_executed_count.to_i > 0
+        if update_params.present?
+          quick_actions_service.apply_updates(update_params, note)
+          note.commands_changes = update_params
         end
+
+        if only_commands
+          delete_note(note, message)
+        else
+          note.save
+        end
+      end
+
+      if note.for_wiki_page?
+        track_internal_event(
+          'update_wiki_page_note',
+          project: project,
+          namespace: note.noteable.namespace,
+          user: updated_by_user
+        )
       end
 
       note
     end
+
+    private
+
+    attr_accessor :old_note_body
+
+    def wants_to_convert_to_internal_note?(note, update_params)
+      return false unless update_params.delete(:internal_note)
+      return false if note.confidential?
+
+      note.errors.add(:base, _('Cannot convert existing comment to an internal note'))
+      true
+    end
+
+    def track_note_edit_usage(note)
+      if note.for_issue?
+        track_note_edit_usage_for_issues(note)
+        track_work_item_note_update(note.noteable)
+      end
+
+      track_note_edit_usage_for_merge_requests(note) if note.for_merge_request?
+    end
+
+    def updated_by_user
+      @_updated_by_user ||= Gitlab::Auth::Identity.resolve_composite_identity_actor(current_user)
+    end
+
+    def update_note(note, only_commands)
+      return unless note.note_changed?
+
+      note.assign_attributes(last_edited_at: Time.current, updated_by: updated_by_user)
+      note.check_for_spam(action: :update, user: current_user) unless only_commands
+    end
+
+    def delete_note(note, message)
+      note.quick_actions_status.add_error(_('Commands did not apply')) if message.blank?
+
+      Notes::DestroyService.new(project, current_user).execute(note, old_note_body: old_note_body)
+    end
+
+    def update_suggestions(note)
+      return unless note.supports_suggestion?
+
+      Suggestion.transaction do
+        note.suggestions.delete_all
+        Suggestions::CreateService.new(note).execute
+      end
+
+      # We need to refresh the previous suggestions call cache
+      # in order to get the new records.
+      note.suggestions.reset
+    end
+
+    def update_todos(note, old_mentioned_users)
+      return unless note.previous_changes.include?('note')
+
+      TodoService.new.update_note(note, current_user, old_mentioned_users)
+    end
+
+    def notify_added_mentions(note, old_mentioned_users)
+      return unless note.previous_changes.include?('note')
+      return unless current_user.can_trigger_notifications?
+
+      added_mentions = note.mentioned_users(current_user) - old_mentioned_users
+      return if added_mentions.empty?
+
+      notification_service.async.new_mentions_in_note(note, added_mentions, current_user)
+    end
+
+    def track_note_edit_usage_for_issues(note)
+      Gitlab::UsageDataCounters::IssueActivityUniqueCounter.track_issue_comment_edited_action(
+        author: note.author,
+        project: project
+      )
+    end
+
+    def execute_note_webhook(note)
+      return unless note.project && note.previous_changes.include?('note')
+
+      note_data = Gitlab::DataBuilder::Note.build(note, note.author, :update)
+      is_confidential = note.confidential?(include_noteable: true)
+      hooks_scope = is_confidential ? :confidential_note_hooks : :note_hooks
+
+      note.project.execute_hooks(note_data, hooks_scope)
+    end
+
+    def track_note_edit_usage_for_merge_requests(note)
+      Gitlab::UsageDataCounters::MergeRequestActivityUniqueCounter.track_edit_comment_action(note: note)
+    end
+
+    def track_work_item_note_update(work_item)
+      ::Gitlab::WorkItems::Instrumentation::TrackingService.new(
+        work_item: work_item,
+        current_user: current_user,
+        event: Gitlab::WorkItems::Instrumentation::EventActions::NOTE_UPDATE
+      ).execute
+    end
   end
 end
+
+Notes::UpdateService.prepend_mod_with('Notes::UpdateService')

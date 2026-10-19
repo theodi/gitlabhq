@@ -1,0 +1,13 @@
+---
+table_name: dast_site_validations
+classes:
+- DastSiteValidation
+feature_categories:
+- dynamic_application_security_testing
+description: The site to be validated with a dast_site_token
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/41639
+milestone: '13.4'
+gitlab_schema: gitlab_sec
+table_size: small
+sharding_key:
+  project_id: projects

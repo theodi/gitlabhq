@@ -1,0 +1,546 @@
+# SSOT-driven Agent Principles
+
+This directory holds the GitLab development principles distilled from
+docs.gitlab.com. They are loaded automatically by code-authoring agents
+(Claude Code, OpenCode, Duo Agent Platform) when working on relevant
+areas of the codebase.
+
+## Structure
+
+```
+principles/
+  manifest.yml            # Manifest: SSOT doc paths, file filters, baselines per principle
+  distillation_prompt.md # Source of truth for the catalog agent's system prompt
+  distilled/             # Auto-generated principle files (one per domain) — DO NOT EDIT
+  baselines/             # Hand-curated supplements that survive distillation verbatim
+```
+
+## How the sync works
+
+The distillation pipeline has two cooperating parts:
+
+1. **`gitlab-ai-principles-distiller-provision-flow`** (in `gems/gitlab-ai-principles-distiller/bin/`) mirrors
+   `distillation_prompt.md` and a fixed read-only tool allowlist into the
+   AI Catalog Flow named **"Agent Principles Distiller"**. It is
+   idempotent: it creates the flow on first run, releases a new version
+   only when the YAML definition has drifted, and ensures an
+   `ItemConsumer` exists that binds the flow to the configured project.
+
+   A _Flow_ is required (rather than a bare _Agent_) because the Workflow
+   API's `ai_catalog_item_consumer_id` parameter only accepts items of
+   type `flow` — see
+   [`ee/app/services/ai/catalog/flows/execute_service.rb`][execute_service].
+   The flow's YAML definition has a single `AgentComponent` whose system
+   prompt carries our distillation rules.
+
+2. **`gitlab-ai-principles-distiller-sync`** (in `gems/gitlab-ai-principles-distiller/bin/`) triggers a Duo Workflow per
+   affected principle through the [Workflow API][workflow-api]. Each
+   workflow runs the catalog flow in a child CI pipeline that reads the
+   current distilled file, the SSOT sources, and the optional baseline
+   file directly from the source branch via gitaly — no file content is
+   inlined into the API request. Once the workflow finishes, the script
+   extracts the assistant's response from the workflow's GraphQL
+   representation and writes it to disk. When run with `--push`, the
+   script then opens an MR with the diff.
+
+[execute_service]: https://gitlab.com/gitlab-org/gitlab/-/blob/master/ee/app/services/ai/catalog/flows/execute_service.rb
+[workflow-api]: https://docs.gitlab.com/api/duo_workflows/
+
+The script runs in two contexts:
+
+1. **Locally**, ad-hoc, by maintainers when source docs change.
+2. **Automatically in CI** — a periodic scheduled pipeline runs the script
+   and opens an MR if any principle has drifted (see
+   [`.gitlab/ci/sync-principles.gitlab-ci.yml`](../../.gitlab/ci/sync-principles.gitlab-ci.yml)).
+
+### Pipeline schedule
+
+The CI job runs from a dedicated pipeline schedule so that triggering it
+does not fire the large set of unrelated jobs gated on the shared
+`weekly` schedule type. The job is gated on:
+
+- `$CI_PROJECT_PATH == "gitlab-org/gitlab"`
+- `$CI_PIPELINE_SOURCE == "schedule"`
+- `$SCHEDULE_TYPE == "ai-principles-distillation"` (set on the dedicated
+  schedule; the gating rule uses the
+  `&if-default-branch-schedule-ai-principles` anchor)
+- `$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH`
+
+Configured at <https://gitlab.com/gitlab-org/gitlab/-/pipeline_schedules>
+as the "[Weekly] AI principles distillation" schedule, with cron
+`0 2 * * 2` (Tuesday 02:00 UTC) and the
+`SCHEDULE_TYPE=ai-principles-distillation` variable.
+
+Fence reconciliation runs in `master` push pipelines. The
+`ai-principles-reconcile-fences` job starts automatically when a push changes
+a fence input (distilled files, the manifest, the Duo instructions file, or the
+distiller's `lib/`), and is available as a manual job in every other `master`
+push pipeline.
+
+### Run the distillation manually
+
+Because the job has its own schedule, you can trigger a distillation run
+on demand without starting an unrelated pipeline:
+
+1. Go to <https://gitlab.com/gitlab-org/gitlab/-/pipeline_schedules>.
+1. Find the "[Weekly] AI principles distillation" schedule.
+1. Select **Run** (the play icon).
+
+The run fires the `ai-principles-pipeline-generate` job, which scans for drift and
+triggers a child pipeline with one `distill:<principle>` job per affected
+principle. Those fan back in to `ai-principles-collect`, which opens one
+merge request per affected team rather than committing to your branch. The
+merge request URLs are printed at the end of the collect job's log. This is
+the supported path for filling in a newly seeded principle or fence without
+a personal Duo Agent Platform seat.
+
+### Required CI variables
+
+| Variable                                    | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN`    | Classic PAT with `api` scope (and `ai_features` per the [External Agents recipe](https://docs.gitlab.com/user/duo_agent_platform/agents/external/#create-a-service-account)) used as both `GITLAB_TOKEN` (Workflow API + GraphQL) and `GITLAB_API_TOKEN` (auto-MR REST). Currently a maintainer's personal token; see [Service account auth](#service-account-auth-why-a-pat-today). Fine-grained PATs cannot drive this job: they do not cover GraphQL, AI Catalog mutations, or the Duo Workflow create/start endpoint. |
+| `AGENT_PRINCIPLES_CATALOG_ITEM_CONSUMER_ID` | Numeric catalog binding ID for `gitlab-org/gitlab`. Get the current value from `gitlab-ai-principles-distiller-provision-flow --print-consumer-id`.                                                                                                                                                                                                                                                                                                                                                                           |
+
+### Service account auth: why a PAT today
+
+The Duo Agent Platform Workflow API requires the calling identity to
+have a Duo Agent Platform seat. Project access tokens (such as
+`PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE`) are bound to bot users that
+do not hold seats, so they cannot drive this job.
+
+The supported sustainable pattern is a service account auto-provisioned
+when an AI Catalog flow's `ItemConsumer` is created at the **group**
+level. That service account is added to all the group's projects as a
+Developer, has `composite_identity_enforced` set, and authenticates the
+Workflow API in tandem with the human user who triggered the workflow
+(e.g. via a `mention` or `pipeline_hooks` flow trigger).
+
+Provisioning a group-level consumer for `gitlab-org` requires Owner
+access on that group, which the maintainer of this MR does not have.
+For now, `AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN` holds a maintainer's
+personal access token. The maintainer who owns this CI variable is
+responsible for token rotation and is the user attributed to the
+auto-generated MRs. Migration to a dedicated service account is tracked
+in access request
+[!43931](https://gitlab.com/gitlab-com/team-member-epics/access-requests/-/issues/43931).
+
+### Service account auth: composite identity with a service account as the invoker
+
+The canonical pattern for invoking the Workflow API is
+[composite identity](https://docs.gitlab.com/user/duo_agent_platform/composite_identity/):
+an OAuth token where a service account owns the token but the invoking
+human's `user_id` is embedded in a dynamic scope, with authorization
+enforced as the intersection of the SA's and the human's permissions
+(see [epic gitlab-org&19478](https://gitlab.com/groups/gitlab-org/-/epics/19478)).
+
+Because we always pass `ai_catalog_item_consumer_id`, the Workflow API
+**does** mint a composite-identity OAuth token server-side. The flow's
+own service account (provisioned when the AI Catalog item is created)
+has `composite_identity_enforced: true`, and the endpoint binds the
+caller's `user_id` to that SA before issuing a token scoped to
+`ai_workflows` + `mcp` (see [`workflows.rb`](https://gitlab.com/gitlab-org/gitlab/-/blob/master/ee/lib/api/ai/duo_workflows/workflows.rb#L599)
+and
+[`WorkflowContextGenerationService`](https://gitlab.com/gitlab-org/gitlab/-/blob/master/ee/app/services/ai/duo_workflows/workflow_context_generation_service.rb)).
+
+The deviation from the canonical pattern is on the _caller_ side, not
+on the SA side: the "user" in composite identity is itself a service
+account (the AR-provisioned `AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN`
+holder), not a human. The weekly scheduled CI job has no human invoker
+at trigger time; the schedule runs autonomously against `master`. GitLab
+acknowledges autonomous workloads as a known extension area and is
+considering support for linking composite identities with non-human
+principals (see
+[the AI security blog post](https://about.gitlab.com/blog/improve-ai-security-in-gitlab-with-composite-identities/)).
+
+In summary: the canonical composite-identity machinery is engaged; the
+only unusual part is that the OAuth token's `user_id` scope binds to a
+service account rather than a human. `composite_identity_enforced`
+on the AR-provisioned SA is therefore not required — only the flow's
+SA needs that flag set.
+
+Compensating controls for the SA-as-invoker shape:
+
+- PAT scope `api`, expiry ≤1 year, rotation reminder at month 11 (see
+  the runbook below).
+- CI variable `AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN` is **Masked**
+  during pre-merge testing (so the temporary `merge_request_event`
+  rule can use it), and becomes **Protected** as the final pre-merge
+  step in
+  [MR !235014](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/235014).
+  Post-merge, the only consumer is the scheduled pipeline on the
+  protected `master` ref.
+- The SA holds Developer role on `gitlab-org/gitlab` — it cannot push
+  to `master` directly.
+- Auto-MRs target `master`. The weekly sync fans out into one MR per
+  SSOT-owning team (plus a separate tooling MR for the global routing
+  tables); per-file CODEOWNERS rules route each MR's approval to the
+  team that owns the corresponding SSOT doc. See [Reviewing
+  auto-generated MRs](#reviewing-auto-generated-mrs).
+
+Revisit this design when DAP supports non-human-bound principals.
+
+### Schedule ownership & recovery
+
+The pipeline schedule that drives this job is **owned by the service
+account**, not by any individual. The bus-factor risk is mitigated by:
+
+- Three named **admin users** on access request !43931 (Pedro Pombeiro,
+  Cheryl Li, Fabio Pitino) who can sign in as the SA to rotate
+  credentials or take ownership of the schedule.
+- A documented **PAT rotation procedure** (calendar reminder at month
+  11; new PAT scoped to `api`, ≤1 year expiry; update CI variable
+  `AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN` on `gitlab-org/gitlab`;
+  revoke old). The PAT credential is stored in a 1Password vault named
+  on the access request.
+- GitLab's
+  [`pipelineScheduleTakeOwnership`](https://docs.gitlab.com/api/graphql/reference/#mutationpipelinescheduletakeownership)
+  mutation lets any project Maintainer or Owner reassign schedule
+  ownership if the SA becomes unavailable.
+
+Precedent for non-individual-owned schedules on `gitlab-org/gitlab`
+exists (e.g. nightly maintenance, ruby-next, rails-next, weekly
+Elasticsearch), historically owned by
+[`gitlab-bot`](https://gitlab.com/gitlab-bot). Current guidance has
+moved away from a single shared bot account toward **dedicated SAs per
+need**, which is exactly the model this access request provisions — the
+SA created here is the recommended end state.
+
+## Reviewing auto-generated MRs
+
+Sync MRs are labeled `ai-agent` and `documentation`. They are not
+auto-merged — a human must verify that the distilled changes faithfully
+reflect the source-doc updates before merging.
+
+Each per-team MR opens as Draft, so human reviewers wait for GitLab Duo's
+review to be addressed. Automatic Duo review skips drafts, so the sync adds
+`@GitLabDuo` as a reviewer, or re-requests its review when it is already an
+adopted MR's reviewer. Human reviewers are still assigned at creation. A later
+sync run that publishes new content to an adopted MR re-drafts it. See
+[Reviewing auto-generated sync merge
+requests](https://docs.gitlab.com/development/ai_instruction_files_review/#reviewing-auto-generated-sync-merge-requests)
+for the review process, including when the MR is marked ready.
+
+Each per-team MR's approval is routed to the SSOT-owning team via the
+generated per-file rules in
+[`.gitlab/CODEOWNERS`](../../.gitlab/CODEOWNERS) (see [Manifest
+schema](#manifest-schema)). The separate tooling MR, which carries only
+the global routing tables (AGENTS.md, CLAUDE.md, SKILL.md), falls back
+to the broad `/.ai/` and `/.claude/` AI-harness owners. The metadata MR
+updates only the frontmatter of principles whose re-distillation produced no
+meaningful changes. It still routes approval to each file's owning team, and
+requests one available member of each team as reviewer.
+
+When individual SSOT authors resolve, the distiller mentions and assigns up to
+three of them as reviewers. If no author resolves, it selects one available
+member of the principle's `owner_team`; CODEOWNERS remains the approval route.
+
+For the review checklist and for how to triage the automated review feedback
+these MRs attract, see [Reviewing auto-generated sync merge
+requests](https://docs.gitlab.com/development/ai_instruction_files_review/#reviewing-auto-generated-sync-merge-requests),
+which is the SSOT for reviewing them. This file stays the SSOT for how the
+sync itself works.
+
+If a weekly sync MR has automated review findings, use the
+[`ai-principles-review-feedback` skill](../../.claude/skills/ai-principles-review-feedback/SKILL.md)
+to work through every finding before the MR is merged.
+
+## Running the sync locally
+
+Both binaries operate on the consuming repository's working tree, which they
+discover from `--workspace PATH`, then `CI_PROJECT_DIR`, then abort. Run them
+from the gem directory so Bundler resolves dependencies:
+
+```shell
+cd gems/gitlab-ai-principles-distiller
+bundle install
+
+# These env vars are normally set by the CI pipeline. For local runs,
+# export them explicitly (they are repeated in every example below):
+#   - AGENT_PRINCIPLES_CATALOG_PROJECT: project that owns the AI Catalog
+#     flow; required by both binaries.
+#   - CI_DEFAULT_BRANCH: the repo default branch; required by the sync
+#     binary to resolve the workflow source branch.
+#   - CI_PROJECT_ID: numeric project ID; required by the sync binary only
+#     when --push is given (used to create the MR). 278964 = gitlab-org/gitlab.
+#   - AGENT_PRINCIPLES_CATALOG_ITEM_CONSUMER_ID: catalog binding for
+#     gitlab-org/gitlab; query it once for the examples below.
+
+export AGENT_PRINCIPLES_CATALOG_ITEM_CONSUMER_ID="$(
+  GITLAB_TOKEN=<token> \
+  AGENT_PRINCIPLES_CATALOG_PROJECT=gitlab-org/gitlab \
+    bundle exec bin/gitlab-ai-principles-distiller-provision-flow \
+      --print-consumer-id
+)"
+
+# Step 1 (only when distillation_prompt.md changes):
+GITLAB_TOKEN=<personal-access-token> \
+AGENT_PRINCIPLES_CATALOG_PROJECT=gitlab-org/gitlab \
+  bundle exec bin/gitlab-ai-principles-distiller-provision-flow \
+    --workspace "$(git rev-parse --show-toplevel)"
+
+# Step 2: dry run (show what would change without writing or pushing)
+AGENT_PRINCIPLES_CATALOG_PROJECT=gitlab-org/gitlab \
+  bundle exec bin/gitlab-ai-principles-distiller-sync \
+    --workspace "$(git rev-parse --show-toplevel)" distill --dry-run
+
+# Step 3: distill only specific principles
+GITLAB_TOKEN=<token> \
+CI_DEFAULT_BRANCH=master \
+AGENT_PRINCIPLES_CATALOG_PROJECT=gitlab-org/gitlab \
+  bundle exec bin/gitlab-ai-principles-distiller-sync \
+    --workspace "$(git rev-parse --show-toplevel)" distill \
+    --only feature-flags,workers
+
+# Force re-distillation (ignore checksum cache)
+GITLAB_TOKEN=<token> \
+CI_DEFAULT_BRANCH=master \
+AGENT_PRINCIPLES_CATALOG_PROJECT=gitlab-org/gitlab \
+  bundle exec bin/gitlab-ai-principles-distiller-sync \
+    --workspace "$(git rev-parse --show-toplevel)" distill --force
+
+# End-to-end: distill, branch, commit, push, open MR
+GITLAB_TOKEN=<token> \
+GITLAB_API_TOKEN=<token> \
+CI_DEFAULT_BRANCH=master \
+CI_PROJECT_ID=278964 \
+AGENT_PRINCIPLES_CATALOG_PROJECT=gitlab-org/gitlab \
+  bundle exec bin/gitlab-ai-principles-distiller-sync \
+    --workspace "$(git rev-parse --show-toplevel)" distill --push
+```
+
+Before each workflow, the sync compares the selected principle's local source
+and baseline files with their versions on `origin/<source_branch>`. If any files
+differ, it warns with the changed paths and continues. The Workflow API runs the
+agent from the pushed `source_branch`, so push local changes before distillation
+if the agent must use them.
+
+## Manifest schema
+
+Each entry under `principles:` in
+[`manifest.yml`](manifest.yml) supports these fields:
+
+- `description` (required) — one-line summary used in the AGENTS.md /
+  SKILL.md routing tables.
+- `sources` (required) — list of SSOT doc paths (`path`, `url`) the
+  principle is distilled from.
+- `owner_team` (required) — the CODEOWNERS handle of the team that owns
+  the SSOT doc(s). This is the axis the weekly sync fans out by: each
+  per-team MR touches only that team's distilled files, and a generated
+  per-file CODEOWNERS rule routes the approval to this team. May be a
+  group handle (`@gitlab-org/maintainers/database`) or one or more
+  individuals (`@abdwdd @alexpooley`) when no group handle exists.
+- `secondary_teams` (optional) — additional CODEOWNERS handles listed in
+  a "Request a review from" section of the MR description, for SSOT docs
+  whose changes also concern another team. The primary `owner_team` still
+  owns the approval. Secondary handles are rendered as inline code, so
+  they are surfaced without `@`-mentioning (pinging) the secondary group;
+  only the primary team is pinged.
+- `team_slug` (optional) — branch name and title prefix for the per-team
+  MR. It cannot resolve to `tooling` or `metadata`, which name the sync's
+  own MRs. Defaults to the last path segment of `owner_team` (e.g.
+  `@gitlab-org/maintainers/database` → `database`). Set it explicitly
+  when that segment is generic and would **collide** across teams — for
+  example `.../authentication/approvers` and `.../authorization/approvers`
+  both end in `approvers`, so they declare `authentication` and
+  `authorization` respectively. Also set it for individual-handle owners
+  (e.g. `qa`). The MR **title** always uses the slug (never the
+  `owner_team` handle), so the title never `@`-mentions anyone.
+- `ping_team` (optional, default `true`) — whether to `@`-mention the
+  `owner_team` in the MR commit subject and description summary. Set it
+  to `false` for large groups (e.g. all of `frontend` / `rails-backend`)
+  so the weekly MR does not notify every member; the summary then shows
+  the `team_slug` instead. CODEOWNERS routing always uses the real
+  handle regardless of `ping_team`. A team is pinged unless **every**
+  principle it owns sets `ping_team: false`.
+- `group` (optional) — display grouping in the routing tables only; it
+  does **not** affect approval routing (that is `owner_team`).
+- `prerequisite`, `file_filters`, `baseline` — see existing entries.
+
+The per-file CODEOWNERS rules are **generated** from `owner_team` /
+`secondary_teams` into a managed block in
+[`.gitlab/CODEOWNERS`](../../.gitlab/CODEOWNERS) (delimited by
+`# BEGIN/END GENERATED: gitlab-ai-principles-distiller`), inserted right
+after the broad `/.ai/` rule so CODEOWNERS last-match-wins routes each
+file to its owning team. Do not edit that block by hand; re-run the sync
+(or the static-artifact regeneration) to refresh it.
+
+## Adding a new principle
+
+Adding a new principle requires a manifest entry and a validation pass.
+The weekly pipeline then generates the distilled content automatically
+(`.ai/principles/distilled/<name>.md` + routing table update for agents).
+
+If you also want **Duo Code Review** to use the principle, you need to
+seed an empty fence in `mr-review-instructions.yaml` (step 2 below).
+Without the fence, agents (Claude Code, OpenCode) still get the principle
+but Duo Code Review does not.
+
+### 1. Add the manifest entry
+
+Append an entry to `principles:` in [`manifest.yml`](manifest.yml).
+Required fields: `description`, `sources`, `owner_team`. See
+[Manifest schema](#manifest-schema) for the full field reference.
+
+```yaml
+  my-new-principle:
+    description: One-line summary of what this principle covers
+    group: Backend                       # display grouping only
+    owner_team: '@gitlab-org/team-handle'
+    file_filters:
+      - 'app/services/my_area/**/*.rb'
+      - 'ee/app/services/my_area/**/*.rb'
+      - 'spec/services/my_area/**/*_spec.rb'
+      - 'ee/spec/services/my_area/**/*_spec.rb'
+    sources:
+      - path: doc/development/my_area/_index.md
+        url: https://docs.gitlab.com/development/my_area/
+```
+
+### 2. Seed the empty fence (for Duo Code Review)
+
+Skip this step if you only need agent coverage (Claude Code, OpenCode).
+
+The reconciliation job **refreshes** existing fences but **cannot
+create** new ones. To get Duo Code Review coverage, manually seed an
+empty fence in
+[`.gitlab/duo/mr-review-instructions.yaml`](../../.gitlab/duo/mr-review-instructions.yaml)
+so the reconcile job has a target to fill.
+
+Add the following two comment lines in the `instructions` section,
+adjacent to a topically related fence:
+
+```yaml
+  # >>> generated: my-new-principle — gitlab-ai-principles-distiller (from .ai/principles/manifest.yml; do not edit)
+  # <<< end generated: my-new-principle
+```
+
+The name after `generated:` must match the manifest key exactly.
+
+### 3. Validate
+
+Run the manifest validator from the gem directory to confirm the entry is
+well-formed and all source paths exist:
+
+```shell
+cd gems/gitlab-ai-principles-distiller
+bundle install
+bundle exec bin/gitlab-ai-principles-distiller-validate --workspace "$(git rev-parse --show-toplevel)"
+```
+
+### 4. Merge to `master`
+
+Commit the manifest entry (plus the fence seed, if you added one), open
+an MR, and get it merged. Both the weekly schedule and a manual trigger
+of it run against `master`, so a pushed branch is not enough — nothing
+happens until your changes land on the default branch.
+
+### 5. Wait for the generated MRs
+
+Nothing is generated in a single step. Two jobs are involved, and
+each opens a merge request that has to be merged in turn:
+
+1. The weekly distillation run (Tuesday 02:00 UTC) distills the SSOT
+   sources and opens a per-team MR carrying
+   `.ai/principles/distilled/<name>.md`, with approval routed to
+   `owner_team` via CODEOWNERS. A separate tooling MR carries the global
+   routing tables (AGENTS.md, CLAUDE.md, SKILL.md).
+1. Once the distilled-content and tooling MRs merge, agents (Claude Code,
+   OpenCode) can discover and load the principle.
+1. The distilled-content merge then triggers the fence-reconcile job, which
+   regenerates the fences by projection from merged `master` and opens a third MR of its own (for
+   example
+   [!254678](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/254678)).
+   Duo Code Review only picks up the principle after that MR merges.
+
+Fence regeneration is deliberately decoupled from distillation, which is
+why it takes a separate run and a separate MR rather than arriving with
+the distilled content.
+
+To trigger the distillation immediately instead of waiting for the weekly
+schedule, see [Run the distillation
+manually](#run-the-distillation-manually).
+
+## Modifying principles
+
+To change a distilled principle's content:
+
+- Update its source doc on docs.gitlab.com.
+- Or update the matching `baselines/<name>.md` file for procedural
+  knowledge that has no SSOT home.
+
+Then run `distill --only <name>` to regenerate `distilled/<name>.md` when the
+source or baseline change updates its checksum.
+Use `--force` only when you intentionally need to re-distill despite a matching
+checksum.
+
+To change the **distillation rules themselves**, edit
+`distillation_prompt.md` and re-run
+`gitlab-ai-principles-distiller-provision-flow` to roll the new prompt out to
+the catalog flow.
+
+## Known limitations
+
+### Prompt size budget
+
+`distillation_prompt.md` competes for a hard 64 KiB budget, and the prompt is
+counted **twice** against it.
+
+The AI Catalog validates the stored `definition` JSONB column against 64 KiB
+(`Ai::Catalog::ItemVersion`), but it does not store the YAML the provisioner
+submits. It stores the parsed structure merged with the raw YAML string under
+`yaml_definition`, so the prompt appears once in
+`prompt_template.system` and again in `yaml_definition` — and only the second
+copy carries the YAML block-scalar indentation. With JSON escaping on top, one
+byte of prompt Markdown costs roughly **2.2 stored bytes**.
+
+The practical effect is that ~30 KiB of Markdown exhausts a 64 KiB budget. The
+YAML size the provisioner prints is therefore not the number that matters; a
+definition can look like it has 30 KiB to spare and still be rejected with
+`Latest version definition is too large`.
+
+Two guards enforce this:
+
+- `gitlab-ai-principles-distiller-validate` fails at commit/MR time (lefthook
+  pre-commit and pre-push, plus the `ai-principles-manifest` CI job).
+- The provisioner aborts before mutating the catalog, reporting stored bytes,
+  the overage, and how much Markdown to remove.
+
+When trimming to fit, prefer removing duplicated instructions and shortening
+worked examples over dropping normative rules. Do **not** renumber the rules:
+the prompt cross-references its own rule numbers (`rule 16a`, `rules 8/10`) in
+about 30 places, so a renumber silently invalidates all of them.
+
+The duplicate storage is deliberate upstream (it preserves the original YAML
+for audit and display fidelity). Moving `yaml_definition` to object storage is
+tracked in [issue 591638](https://gitlab.com/gitlab-org/gitlab/-/issues/591638);
+once it ships, this budget roughly doubles. See
+[issue 608440](https://gitlab.com/gitlab-org/gitlab/-/issues/608440)
+for the byte census.
+
+### Transient Gitaly load failures
+
+The Duo Workflow runtime fetches files from the repository via Git's
+promisor protocol (partial clone). On large repositories like
+`gitlab-org/gitlab`, Gitaly nodes occasionally return transient load
+errors during these fetches:
+
+```
+fatal: remote error: GitLab is currently unable to handle this request due to load
+fatal: could not fetch <sha> from promisor remote
+```
+
+When this happens, the Duo Workflow ends in `FAILED` state with no
+checkpoints, and the affected principles are not updated. The script
+retries each principle up to 3 times with exponential backoff (5min,
+15min, 30min between attempts) to ride out short-lived load spikes. If
+all retries are exhausted, the run exits non-zero with a clear error
+listing the affected principles.
+
+Since the weekly schedule fires again the following week, no manual
+intervention is required — the system is self-healing over time. Failed
+runs leave the repository in a consistent state: no partial commits, no
+orphan branches, and the existing distilled files untouched.
+
+To inspect a failed or timed-out principle's agent session directly, check
+the job log: each triggered workflow logs a `session:` link
+(`.../-/automate/agent-sessions/<id>`) once, right after it's created.

@@ -1,51 +1,51 @@
+# frozen_string_literal: true
+
 class Projects::UploadsController < Projects::ApplicationController
-  skip_before_action :authenticate_user!, :reject_blocked!, :project,
-    :repository, if: -> { action_name == 'show' && image? }
+  include UploadsActions
+  include WorkhorseRequest
 
-  def create
-    link_to_file = ::Projects::UploadService.new(project, params[:file]).
-      execute
+  # These will kick you out if you don't have access.
+  skip_before_action :project, :repository,
+    if: -> { bypass_auth_checks_on_uploads? }
 
-    respond_to do |format|
-      if link_to_file
-        format.json do
-          render json: { link: link_to_file }
-        end
-      else
-        format.json do
-          render json: 'Invalid file.', status: :unprocessable_entity
-        end
-      end
-    end
+  # TODO: Remove this skip and implement step-up auth enforcement for uploads
+  # See: https://gitlab.com/gitlab-org/gitlab/-/issues/578693
+  # This skip_before_action is temporary to avoid breaking uploads while we add
+  # comprehensive test coverage and proper enforcement in a follow-up MR.
+  skip_before_action :enforce_step_up_auth_for_namespace
+
+  before_action :authorize_upload_file!, only: [:create, :authorize]
+  before_action :verify_workhorse_api!, only: [:authorize]
+  before_action :disallow_new_uploads!, only: :show
+
+  feature_category :team_planning
+
+  private
+
+  # Starting with this version, #show is handled by Banzai::UploadsController#show
+  def disallow_new_uploads!
+    render_404 if upload_version_at_least?(ID_BASED_UPLOAD_PATH_VERSION)
   end
 
-  def show
-    return not_found! if uploader.nil? || !uploader.file.exists?
-
-    disposition = uploader.image? ? 'inline' : 'attachment'
-    send_file uploader.file.path, disposition: disposition
+  def upload_model_class
+    Project
   end
 
-  def uploader
-    return @uploader if defined?(@uploader)
-
-    namespace = params[:namespace_id]
-    id = params[:project_id]
-
-    file_project = Project.find_with_namespace("#{namespace}/#{id}")
-
-    if file_project.nil?
-      @uploader = nil
-      return
-    end
-
-    @uploader = FileUploader.new(file_project, params[:secret])
-    @uploader.retrieve_from_store!(params[:filename])
-
-    @uploader
+  def uploader_class
+    FileUploader
   end
 
-  def image?
-    uploader && uploader.file.exists? && uploader.image?
+  def target_project
+    model
+  end
+
+  def find_model
+    return @project if @project
+
+    Project.find_by_full_path("#{project_path_params[:namespace_id]}/#{project_path_params[:project_id]}")
+  end
+
+  def project_path_params
+    params.permit(:namespace_id, :project_id)
   end
 end

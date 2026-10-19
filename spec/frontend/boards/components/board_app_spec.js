@@ -1,0 +1,105 @@
+import { shallowMount } from '@vue/test-utils';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+
+import { createControlledMockApollo } from 'helpers/mock_apollo_helper';
+import BoardApp from '~/boards/components/board_app.vue';
+import BoardTopBar from '~/boards/components/board_top_bar.vue';
+import BoardContent from '~/boards/components/board_content.vue';
+import activeBoardItemQuery from 'ee_else_ce/boards/graphql/client/active_board_item.query.graphql';
+import boardListsQuery from 'ee_else_ce/boards/graphql/board_lists.query.graphql';
+import * as cacheUpdates from '~/boards/graphql/cache_updates';
+import { rawIssue, boardListsQueryResponse } from '../mock_data';
+
+describe('BoardApp', () => {
+  let wrapper;
+  let mockApollo;
+  let resolveQuery;
+  let rejectQuery;
+
+  const findBoardTopBar = () => wrapper.findComponent(BoardTopBar);
+  const findBoardContent = () => wrapper.findComponent(BoardContent);
+
+  const errorMessage = 'Failed to fetch lists';
+  const boardListQueryHandler = jest.fn().mockResolvedValue(boardListsQueryResponse);
+
+  Vue.use(VueApollo);
+
+  const createComponent = ({
+    issue = rawIssue,
+    handler = boardListQueryHandler,
+    isIssueBoard = true,
+  } = {}) => {
+    ({
+      apolloProvider: mockApollo,
+      resolveQuery,
+      rejectQuery,
+    } = createControlledMockApollo([[boardListsQuery, handler]]));
+    mockApollo.clients.defaultClient.cache.writeQuery({
+      query: activeBoardItemQuery,
+      data: {
+        activeBoardItem: { ...issue, listId: 'gid://gitlab/List/1' },
+      },
+    });
+
+    wrapper = shallowMount(BoardApp, {
+      apolloProvider: mockApollo,
+      provide: {
+        fullPath: 'gitlab-org',
+        initialBoardId: 'gid://gitlab/Board/1',
+        initialFilterParams: {},
+        issuableType: isIssueBoard ? 'issue' : 'epic',
+        boardType: isIssueBoard ? 'project' : 'group',
+        isIssueBoard,
+        isGroupBoard: false,
+        hasCustomFieldsFeature: false,
+      },
+    });
+  };
+
+  beforeEach(async () => {
+    cacheUpdates.setError = jest.fn();
+
+    createComponent();
+    await nextTick();
+  });
+
+  it('fetches lists', () => {
+    expect(boardListQueryHandler).toHaveBeenCalled();
+  });
+
+  it('should have dynamic width classes when a card is selected', async () => {
+    findBoardContent().vm.$emit('drawer-opened');
+    await nextTick();
+    const classes = findBoardContent().classes();
+    expect(classes).toContain('@lg/panel:gl-w-[calc(100%-480px)]');
+    expect(classes).toContain('@xl/panel:gl-w-[calc(100%-768px)]');
+    expect(classes).toContain('min-[1440px]:gl-w-[calc(100%-912px)]');
+  });
+
+  it('should not have dynamic width classes class when no card is selected', async () => {
+    createComponent({ issue: {} });
+    await nextTick();
+
+    const classes = findBoardContent().classes();
+    expect(classes).not.toContain('@lg/panel:gl-w-[calc(100%-480px)]');
+    expect(classes).not.toContain('@xl/panel:gl-w-[calc(100%-768px)]');
+    expect(classes).not.toContain('min-[1440px]:gl-w-[calc(100%-912px)]');
+  });
+
+  it('refetches lists when top bar emits update-board event', async () => {
+    createComponent();
+    await resolveQuery(boardListsQuery);
+    findBoardTopBar().vm.$emit('update-board');
+
+    expect(boardListQueryHandler).toHaveBeenCalled();
+  });
+
+  it('sets error on fetch lists failure', async () => {
+    createComponent();
+
+    await rejectQuery(boardListsQuery, new Error(errorMessage));
+
+    expect(cacheUpdates.setError).toHaveBeenCalled();
+  });
+});

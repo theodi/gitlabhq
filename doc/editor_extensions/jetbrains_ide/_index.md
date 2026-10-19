@@ -1,0 +1,130 @@
+---
+stage: AI Clients
+group: Developer Clients
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Connect and use GitLab Duo in JetBrains IDEs.
+title: GitLab Duo plugin for JetBrains IDEs
+---
+
+The [GitLab Duo plugin](https://plugins.jetbrains.com/plugin/22325-gitlab-duo) integrates GitLab Duo
+with JetBrains IDEs like IntelliJ, PyCharm, GoLand, Webstorm, and Rubymine.
+
+The plugin includes the following features:
+
+- On the right tool window bar, **GitLab Duo Agent Platform** ({{< icon name="duo-agentic-chat" >}}):
+  Interact with GitLab Duo Agentic Chat, and select a foundational or custom agent to work with.
+  To use the Software Development Flow, [switch to the classic layout](../../user/gitlab_duo_chat/agentic_chat.md#change-the-layout-in-your-ide),
+  which has separate chat and flows tabs. Learn more about the
+  [difference between Chat and the flow](../software_development.md#flow-and-chat-comparison).
+- In the status bar, **Duo** ({{< icon name="tanuki-ai" >}}): Check the feature status of
+  GitLab Duo Code Suggestions and review suggestions in
+  your file as you author code.
+- On the right tool window bar, **GitLab Duo Non-Agentic Chat** ({{< icon name="duo-chat" >}}): Interact with
+  GitLab Duo Non-Agentic Chat. Or select some code and then, in the floating toolbar, select
+  **GitLab Duo Quick Chat** ({{< icon name="tanuki-ai" >}}) for in-line conversations.
+
+To get started, [install and configure](setup.md) the plugin.
+
+## Use with remote development
+
+The GitLab Duo plugin works with JetBrains Remote Development when installed on the host machine (remote server).
+
+> [!warning]
+> If you use remote development, install the plugin on the host machine only.
+> If you install the plugin on the client (local) machine as well, GitLab Duo features will not work in your IDE.
+For information about installing plugins in remote development environments, see the JetBrains documentation:
+
+- [Install plugins in remote projects](https://www.jetbrains.com/help/idea/work-inside-remote-project.html#plugins).
+- [Add plugins to Dev Containers](https://www.jetbrains.com/help/idea/customizing-devcontainer-json-file.html#add_plugins).
+
+## Enable experimental or beta features
+
+Some features in the plugin are in experiment or beta status. The plugin turns them on when
+[experiment and beta features are turned on](../../user/gitlab_duo/turn_on_off.md#turn-on-beta-and-experimental-features)
+for the top-level group of your
+[default GitLab Duo namespace](../../user/profile/preferences.md#set-a-default-gitlab-duo-namespace).
+
+## Update the extension
+
+To update your extension to the latest version:
+
+1. In your JetBrains IDE, go to **Settings** > **Plugins**.
+1. From **Marketplace**, select **GitLab Duo** published by **GitLab, Inc.**.
+1. Select **Update** to update to the latest plugin version.
+
+## Enable telemetry
+
+The GitLab Duo plugin uses the telemetry settings in your JetBrains IDE to send usage and error
+information to GitLab. To enable telemetry in your JetBrains IDE:
+
+1. Go to your IDE's top menu bar and select **Settings**. For example, in PyCharm, select **PyCharm** > **Settings**.
+1. In the left sidebar, expand **Tools**, then select **GitLab Duo**.
+1. Under **Advanced**, select the **Enable telemetry** checkbox.
+1. Select **OK** or **Apply** to save your changes.
+
+## Integrate with 1Password CLI
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can configure the plugin to use 1Password secret references for authentication instead of
+hard-coding personal access tokens.
+
+Prerequisites:
+
+- You have the [1Password](https://1password.com) desktop app installed.
+- You have the [1Password CLI](https://www.1password.dev/cli/get-started) tool installed.
+
+To integrate the GitLab Duo plugin for JetBrains IDEs with the 1Password CLI:
+
+1. Authenticate with GitLab. Either:
+   - [Install the `glab`](https://docs.gitlab.com/cli/#install-the-cli) CLI and
+     configure the [1Password shell plugin](https://www.1password.dev/cli/shell-plugins/gitlab).
+   - Follow the GitLab Duo plugin for JetBrains IDEs [set up steps](setup.md).
+1. Open the 1Password item.
+1. [Copy the secret reference](https://www.1password.dev/cli/secret-references#step-1-get-secret-references).
+
+   If you use the `gitlab` 1Password shell plugin, the token is stored as a password under `"op://Private/GitLab Personal Access Token/token"`.
+
+From the IDE:
+
+1. Go to your IDE's top menu bar and select **Settings**.
+1. In the left sidebar, expand **Tools**, then select **GitLab Duo**.
+1. Under **Authentication**, select the **1Password CLI** tab.
+1. Select **Integrate with 1Password CLI**.
+1. Optional. For **Secret reference**, paste the secret reference you copied from 1Password.
+1. Optional. To verify your credentials, select **Verify setup**.
+1. Select **OK** or **Save**.
+
+## Report issues with the plugin
+
+You can report any issues, bugs, or feature requests in the
+[`gitlab-jetbrains-plugin` issue tracker](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin/-/issues).
+Use the `Bug` or `Feature Proposal` template.
+
+If you encounter an error while using GitLab Duo, you can also report it with your IDE's
+built-in error reporting tool:
+
+1. To access the tool, either:
+   - When an error occurs, in the error message, select **See details and submit report**.
+   - In the status bar, on the bottom right, select the exclamation mark.
+1. In the **IDE Internal Errors** dialog, describe the error.
+1. Select **Report and clear all**.
+1. Your browser opens a GitLab issue form, pre-populated with debug information.
+1. Follow the prompts in the issue template to fill out the description, providing
+   as much context as you can.
+1. Select **Create issue** to file the bug report.
+
+## Related topics
+
+- [GitLab Duo plugin for JetBrains IDEs releases](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin/-/releases)
+- [Security considerations for editor extensions](../security_considerations.md)
+- [JetBrains troubleshooting](jetbrains_troubleshooting.md)
+- [GitLab Language Server documentation](../language_server/_index.md)
+- [Open issues for this plugin](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin/-/issues/)
+- [Plugin documentation](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin/-/blob/main/README.md)
+- [View source code](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin)

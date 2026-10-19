@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: counts.issues_using_zoom_quick_actions
+description: Count of issues where a user have added AND removed a zoom meeting using
+  slash commands
+product_group: platform_insights
+product_categories:
+- incident_management
+value_type: number
+status: active
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

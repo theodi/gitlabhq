@@ -1,0 +1,19 @@
+# @feature_category: portfolio_management
+query boardProjectMilestones(
+  $fullPath: ID!
+  $state: MilestoneStateEnum
+  $includeAncestors: Boolean
+  $searchTitle: String
+) {
+  project(fullPath: $fullPath) {
+    id
+    milestones(state: $state, includeAncestors: $includeAncestors, searchTitle: $searchTitle) {
+      edges {
+        node {
+          id
+          title
+        }
+      }
+    }
+  }
+}

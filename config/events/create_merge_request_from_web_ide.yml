@@ -1,0 +1,17 @@
+---
+description: Tracks when merge request is created with Web IDE
+internal_events: true
+action: create_merge_request_from_web_ide
+identifiers:
+  - project
+  - user
+  - namespace
+product_group: remote_development
+product_categories:
+- web_ide
+milestone: '17.1'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/149507
+tiers:
+  - free
+  - premium
+  - ultimate

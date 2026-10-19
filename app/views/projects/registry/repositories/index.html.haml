@@ -1,0 +1,5 @@
+- page_title _("Container registry")
+- add_page_startup_graphql_call('container_registry/get_container_repositories', { fullPath: @project.full_path, first: 10, name: nil, isGroupPage: false, sort: nil})
+
+%section
+  #js-container-registry{ data: project_container_registry_template_data(@project, @connection_error, @invalid_path_error) }

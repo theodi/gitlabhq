@@ -1,0 +1,22 @@
+{
+  "all": {
+    "sourceCodeDir": "app/assets",
+    "watchAdditionalPaths": [
+      "app/graphql/queries",
+      "app/assets",
+      "ee/app/assets",
+      "jh/app/assets",
+      "vendor/assets"
+    ],
+    "entrypointsDir": "javascripts/entrypoints",
+    "additionalEntrypoints": [
+      "~/images/*",
+      "ee/images/*",
+      "jh/images/*"
+    ],
+    "skipProxy": true,
+    "publicOutputDir": "assets/vite",
+    "devServerConnectionCheck": true,
+    "devServerConnectTimeout": 3
+  }
+}

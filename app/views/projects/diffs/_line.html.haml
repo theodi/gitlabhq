@@ -1,0 +1,42 @@
+-# This file is deprecated in favour of inline rendering:
+-# https://gitlab.com/gitlab-org/gitlab/-/merge_requests/57237
+- plain = local_assigns.fetch(:plain, false)
+- discussions = local_assigns.fetch(:discussions, nil)
+- line_code = diff_file.line_code(line)
+- if discussions
+  - line_discussions = discussions[line_code]
+
+%tr.line_holder{ class: line.type, id: (line_code unless plain) }
+  - case line.type
+  - when 'match'
+    = diff_match_line line.old_pos, line.new_pos, text: line.text
+  - when 'old-nomappinginraw', 'new-nomappinginraw', 'unchanged-nomappinginraw'
+    = diff_nomappinginraw_line line, %w[old_line diff-line-num], %w[new_line diff-line-num], %w[line_content]
+  - when 'old-nonewline', 'new-nonewline'
+    %td.old_line.diff-line-num
+    %td.new_line.diff-line-num
+    %td.line_content.match= line.text
+  - else
+    %td.old_line.diff-line-num{ class: [line.type, ("js-avatar-container" unless plain)], data: { linenumber: line.old_pos } }
+      - if plain
+        = diff_link_number(line.type, "new", line.old_pos)
+      - else
+        - if line.discussable?
+          = add_diff_note_button(line_code, diff_file.position(line), line.type)
+        %a{ href: "##{line_code}", data: { linenumber: diff_link_number(line.type, "new", line.old_pos) } }
+
+    %td.new_line.diff-line-num{ class: line.type, data: { linenumber: line.new_pos } }
+      - if plain
+        = diff_link_number(line.type, "old", line.new_pos)
+      - else
+        %a{ href: "##{line_code}", data: { linenumber: diff_link_number(line.type, "old", line.new_pos) } }
+
+    %td.line_content{ class: line.type }<
+      - if local_assigns.fetch(:email, false)
+        %pre= line.rich_text
+      - else
+        = diff_line_content(line.rich_text)
+
+- if line_discussions&.any?
+  - discussion_expanded = local_assigns.fetch(:discussion_expanded, line_discussions.any?(&:expanded?))
+  = render "discussions/diff_discussion", discussions: line_discussions, expanded: discussion_expanded

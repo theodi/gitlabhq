@@ -1,0 +1,45 @@
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :bulk_import, class: 'BulkImport' do
+    user
+    organization { user.organization || association(:common_organization) }
+
+    source_type { :gitlab }
+    source_version { BulkImport.min_gl_version_for_project_migration.to_s }
+    source_enterprise { false }
+
+    trait :created do
+      status { 0 }
+    end
+
+    trait :started do
+      status { 1 }
+    end
+
+    trait :finished do
+      status { 2 }
+    end
+
+    trait :failed do
+      status { -1 }
+    end
+
+    trait :timeout do
+      status { 3 }
+    end
+
+    trait :with_configuration do
+      configuration { association(:bulk_import_configuration, bulk_import: instance) }
+    end
+
+    trait :offline do
+      source_type { :offline_export }
+    end
+
+    trait :with_offline_configuration do
+      offline
+      offline_configuration { association(:import_offline_configuration, bulk_import: instance) }
+    end
+  end
+end

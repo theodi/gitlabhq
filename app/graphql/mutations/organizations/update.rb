@@ -1,0 +1,43 @@
+# frozen_string_literal: true
+
+module Mutations
+  module Organizations
+    class Update < Base
+      graphql_name 'OrganizationUpdate'
+
+      authorize :update_organization
+      authorize_granular_token permissions: :update_organization, boundary: :instance, boundary_type: :instance
+
+      argument :id,
+        Types::GlobalIDType[::Organizations::Organization],
+        required: true,
+        description: 'ID of the organization to mutate.'
+
+      argument :name, GraphQL::Types::String,
+        required: false,
+        description: 'Name for the organization.'
+
+      argument :path, GraphQL::Types::String,
+        required: false,
+        description: 'Path for the organization.'
+
+      argument :visibility, Types::Organizations::VisibilityEnum,
+        required: false,
+        description: 'Visibility for the organization.'
+
+      def resolve(id:, **args)
+        organization = authorized_find!(id: id)
+
+        result = ::Organizations::UpdateService.new(
+          organization,
+          current_user: current_user,
+          params: args
+        ).execute
+
+        { organization: result.payload[:organization], errors: result.errors }
+      end
+    end
+  end
+end
+
+Mutations::Organizations::Update.prepend_mod_with('Mutations::Organizations::Update')

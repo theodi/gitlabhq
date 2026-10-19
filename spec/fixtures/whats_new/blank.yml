@@ -1,0 +1,9 @@
+- name:
+  description:
+  stage:
+  self-managed:
+  gitlab-com:
+  url:
+  image_url:
+  published_at:
+  release:

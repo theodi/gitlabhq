@@ -1,0 +1,92 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Blob Simple Viewer component rendering matches the snapshot 1`] = `
+<div>
+  <div
+    class="flash-container gl-mb-3"
+  />
+  <div
+    class="code code-syntax-highlight-theme file-content gl-flex js-syntax-highlight"
+  >
+    <div
+      class="!gl-px-0 line-numbers"
+    >
+      <div
+        class="diff-line-num gl-flex line-links"
+      >
+        <a
+          class="!gl-shadow-none -gl-mx-2 file-line-blame gl-select-none"
+          href="/blame/foo-bar#L1"
+        />
+        <a
+          class="!gl-shadow-none file-line-num gl-select-none"
+          data-line-number="1"
+          href="#L1"
+          id="reference-0"
+        >
+          1
+        </a>
+      </div>
+      <div
+        class="diff-line-num gl-flex line-links"
+      >
+        <a
+          class="!gl-shadow-none -gl-mx-2 file-line-blame gl-select-none"
+          href="/blame/foo-bar#L2"
+        />
+        <a
+          class="!gl-shadow-none file-line-num gl-select-none"
+          data-line-number="2"
+          href="#L2"
+          id="reference-1"
+        >
+          2
+        </a>
+      </div>
+      <div
+        class="diff-line-num gl-flex line-links"
+      >
+        <a
+          class="!gl-shadow-none -gl-mx-2 file-line-blame gl-select-none"
+          href="/blame/foo-bar#L3"
+        />
+        <a
+          class="!gl-shadow-none file-line-num gl-select-none"
+          data-line-number="3"
+          href="#L3"
+          id="reference-2"
+        >
+          3
+        </a>
+      </div>
+    </div>
+    <div
+      class="blob-content gl-flex gl-flex-col gl-overflow-y-auto gl-w-full"
+    >
+      <pre
+        class="!gl-p-0 code highlight"
+      >
+        <code
+          data-blob-hash="foo-bar"
+        >
+          <span
+            id="reference-3"
+          >
+            First
+          </span>
+          <span
+            id="reference-4"
+          >
+            Second
+          </span>
+          <span
+            id="reference-5"
+          >
+            Third
+          </span>
+        </code>
+      </pre>
+    </div>
+  </div>
+</div>
+`;

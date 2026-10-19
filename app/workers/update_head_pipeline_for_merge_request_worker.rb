@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+class UpdateHeadPipelineForMergeRequestWorker
+  include ApplicationWorker
+
+  data_consistency :always
+
+  sidekiq_options retry: 3
+  include PipelineQueue
+
+  # NOTE: this worker belongs to :code_review since there is no CI logic.
+  queue_namespace :pipeline_processing
+  feature_category :continuous_integration
+
+  urgency :high
+  worker_resource_boundary :cpu
+
+  idempotent!
+
+  def perform(merge_request_id)
+    MergeRequest.find_by_id(merge_request_id).try(&:update_head_pipeline)
+  end
+end

@@ -1,0 +1,42 @@
+#
+# REQUIRED FIELDS
+#
+- title: "CI/CD job token - **Limit access from your project** setting removal"  # (required) Clearly explain the change, or planned change. For example, "The `confidential` field for a `Note` is deprecated" or "CI/CD job names will be limited to 250 characters."
+  announcement_milestone: "15.9"  # (required) The milestone when this feature was first announced as deprecated.
+  removal_milestone: "18.0"  # (required) The milestone when this feature is planned to be removed
+  breaking_change: true  # (required) If this deprecation is a breaking change, set this value to true
+  window: 3
+  impact: high  # Can be one of: [critical, high, medium, low]
+  scope: project  # Can be one or a combination of: [instance, group, project]
+  reporter: jocelynjane  # (required) GitLab username of the person reporting the deprecation
+  stage: Software Supply Chain Security  # (required) String value of the stage that the feature was created in. e.g., Growth
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/395708  # (required) Link to the deprecation issue in GitLab
+  check_impact: Refer to the [Understanding this change](https://gitlab.com/gitlab-org/gitlab/-/issues/395708#understanding-this-change) section for details.
+  body: |  # (required) Do not modify this line, instead modify the lines below.
+    In GitLab 14.4, we introduced a setting to [limit access _from_ your project's CI/CD job tokens (`CI_JOB_TOKEN`)](https://docs.gitlab.com/ci/jobs/ci_job_token/#limit-your-projects-job-token-access) to make it more secure.
+    This setting was called **Limit CI_JOB_TOKEN access**. In GitLab 16.3, we renamed this setting to **Limit access _from_ this project** for clarity.
+
+    In GitLab 15.9, we introduced an alternative setting called
+    [**Authorized groups and projects**](https://docs.gitlab.com/ci/jobs/ci_job_token/#add-a-group-or-project-to-the-job-token-allowlist).
+    This setting controls job token access _to_ your project by using an allowlist.
+    This new setting is a large improvement over the original. The first iteration was deprecated
+    in GitLab 16.0 and scheduled for removal in GitLab 18.0.
+
+    The **Limit access _from_ this project** setting is disabled by default for all new projects.
+    In GitLab 16.0 and later, you cannot re-enable this setting after it is disabled in any project.
+    Instead, use the **Authorized groups and projects** setting to control job token access to your projects.
+  #
+  # OPTIONAL END OF SUPPORT FIELDS
+  #
+  # If an End of Support period applies, the announcement should be shared with GitLab Support
+  # in the `#spt_managers` channel in Slack, and mention `@gitlab-com/support` in this MR.
+  #
+  end_of_support_milestone:  # (optional) Use "XX.YY" format. The milestone when support for this feature will end.
+  end_of_support_date:  # (optional) The date of the milestone release when support for this feature will end.
+  #
+  # OTHER OPTIONAL FIELDS
+  #
+  tiers:  # (optional - may be required in the future) An array of tiers that the feature is available in currently.  e.g., [Free, Silver, Gold, Core, Premium, Ultimate]
+  documentation_url: "https://docs.gitlab.com/ci/jobs/ci_job_token/#configure-the-job-token-scope-limit"  # (optional) This is a link to the current documentation page
+  image_url:  # (optional) This is a link to a thumbnail image depicting the feature
+  video_url:  # (optional) Use the youtube thumbnail URL with the structure of https://img.youtube.com/vi/UNIQUEID/hqdefault.jpg

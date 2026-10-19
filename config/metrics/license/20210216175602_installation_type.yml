@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: installation_type
+description: The installation method used to install GitLab (Omnibus, Helm, etc)
+product_group: operate
+product_categories:
+- build
+value_type: string
+status: active
+milestone: "11.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/5952/
+time_frame: none
+data_source: system
+instrumentation_class: InstallationTypeMetric
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []

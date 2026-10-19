@@ -1,43 +1,16 @@
-- page_title "#{@issue.title} (##{@issue.iid})", "Issues"
-.issue
-  .issue-details
-    %h4.page-title
-      .issue-box{ class: issue_box_class(@issue) }
-        - if @issue.closed?
-          Closed
-        - else
-          Open
-      Issue ##{@issue.iid}
-      %small.creator
-        &middot; created by #{link_to_member(@project, @issue.author)} #{issue_timestamp(@issue)}
+- add_to_breadcrumbs _("Work items"), project_work_items_path(@project)
+- breadcrumb_title @issue.to_reference
 
-      .pull-right
-        - if can?(current_user, :write_issue, @project)
-          = link_to new_namespace_project_issue_path(@project.namespace, @project), class: 'btn btn-grouped new-issue-link', title: 'New Issue', id: 'new_issue_link' do
-            = icon('plus')
-            New Issue
-        - if can?(current_user, :modify_issue, @issue)
-          - if @issue.closed?
-            = link_to 'Reopen', issue_path(@issue, issue: {state_event: :reopen}, status_only: true), method: :put, class: 'btn btn-grouped btn-reopen'
-          - else
-            = link_to 'Close', issue_path(@issue, issue: {state_event: :close}, status_only: true), method: :put, class: 'btn btn-grouped btn-close', title: 'Close Issue'
+- page_title "#{@issue.title} (#{@issue.to_reference})", _("Issues")
+- page_description @issue.description_html
+- page_card_attributes @issue.card_attributes
+- if @issue.relocation_target
+  - page_canonical_link @issue.relocation_target.present(current_user: current_user).web_url
 
-          = link_to edit_namespace_project_issue_path(@project.namespace, @project, @issue), class: 'btn btn-grouped issuable-edit' do
-            = icon('pencil-square-o')
-            Edit
+- add_page_specific_style('page_bundles/incidents')
+- add_page_specific_style('page_bundles/issuable')
+- add_work_items_stylesheet
 
-    %hr
-    %h2.issue-title
-      = gfm escape_once(@issue.title)
-    %div
-      - if @issue.description.present?
-        .description{class: can?(current_user, :modify_issue, @issue) ? 'js-task-list-container' : ''}
-          .wiki
-            = preserve do
-              = markdown(@issue.description)
-          %textarea.hidden.js-task-list-field
-            = @issue.description
+- @content_class = "limit-container-width" unless fluid_layout
 
-    %hr
-  .issue-discussion
-    = render 'projects/issues/discussion'
+= render 'projects/issues/details_content', issuable: @issue, api_awards_path: award_emoji_issue_api_path(@issue)

@@ -1,0 +1,75 @@
+# @feature_category: source_code_management
+query pathLastCommit($projectPath: ID!, $path: String, $ref: String!, $refType: RefType) {
+  project(fullPath: $projectPath) {
+    __typename
+    id
+    repository {
+      __typename
+      lastCommit(path: $path, ref: $ref, refType: $refType) {
+        __typename
+        id
+        sha
+        title
+        titleHtml
+        descriptionHtml
+        message
+        webPath
+        committerName
+        committerEmail
+        committedDate
+        authoredDate
+        authorName
+        authorEmail
+        authorGravatar
+        author {
+          __typename
+          id
+          name
+          avatarUrl
+          webPath
+        }
+        signature {
+          __typename
+          ... on GpgSignature {
+            gpgKeyPrimaryKeyid
+            verificationStatus
+          }
+          ... on X509Signature {
+            verificationStatus
+            x509Certificate {
+              id
+              subject
+              subjectKeyIdentifier
+              x509Issuer {
+                id
+                subject
+                subjectKeyIdentifier
+              }
+            }
+          }
+          ... on SshSignature {
+            verificationStatus
+            keyFingerprintSha256
+          }
+        }
+        pipelines(ref: $ref, first: 1) {
+          __typename
+          edges {
+            __typename
+            node {
+              __typename
+              id
+              detailedStatus {
+                __typename
+                id
+                detailsPath
+                icon
+                text
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

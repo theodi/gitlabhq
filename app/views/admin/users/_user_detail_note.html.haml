@@ -1,0 +1,7 @@
+- if @user.note.present?
+  - text = @user.note
+  = render Pajamas::CardComponent.new(card_options: { class: 'gl-mb-5' }, body_options: { class: 'gl-pb-0'}) do |c|
+    - c.with_header do
+      = _('Admin Note')
+    - c.with_body do
+      %p= text

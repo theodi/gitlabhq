@@ -1,0 +1,88 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Code navigation popover component renders popover 1`] = `
+<div
+  class="bs-popover-bottom code-navigation-popover gl-popover popover popover-font-size-normal show"
+  style="left: 0px; top: 0px;"
+>
+  <div
+    class="arrow"
+    style="left: 0px;"
+  />
+  <gl-tabs-stub
+    contentclass="gl-py-0"
+    queryparamname="tab"
+    value="0"
+  >
+    <gl-tab-stub
+      title="Definition"
+      titlelinkclass=""
+    >
+      <div
+        class="!gl-overflow-auto code-navigation-popover-container"
+      >
+        <div>
+          <pre
+            class="!gl-bg-transparent !gl-border-0 !gl-m-0 !gl-whitespace-normal code code-syntax-highlight-theme highlight"
+          >
+            <span
+              class="line"
+              data-lang="javascript"
+            >
+              <span
+                class="k"
+              >
+                function
+              </span>
+              <span>
+                main() {
+              </span>
+              <br />
+            </span>
+            <span
+              class="line"
+              data-lang="javascript"
+            >
+              <span>
+                }
+              </span>
+              <br />
+            </span>
+          </pre>
+        </div>
+      </div>
+      <div
+        class="!gl-border-t !gl-border-t-gray-300 popover-body"
+      >
+        <gl-button-stub
+          accessibledisabled="true"
+          buttontextclasses=""
+          category="primary"
+          class="gl-w-full"
+          data-testid="go-to-definition-btn"
+          href="http://gitlab.com/test.js"
+          icon=""
+          size="medium"
+          tag="button"
+          target="_blank"
+          type="button"
+          variant="default"
+        >
+          Go to definition
+        </gl-button-stub>
+      </div>
+    </gl-tab-stub>
+    <gl-tab-stub
+      class="!gl-py-3"
+      data-testid="references-tab"
+      titlelinkclass=""
+    >
+      <p
+        class="gl-my-4 gl-px-4"
+      >
+        No references found
+      </p>
+    </gl-tab-stub>
+  </gl-tabs-stub>
+</div>
+`;

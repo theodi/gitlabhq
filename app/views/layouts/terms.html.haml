@@ -1,0 +1,23 @@
+- add_page_specific_style 'page_bundles/terms'
+
+!!! 5
+%html{ lang: I18n.locale, class: [user_application_color_mode, user_application_theme, page_class] }
+  = render "layouts/head"
+
+  %body{ data: body_data }
+    .terms{ class: page_class }
+      = render 'layouts/header/read_only_banner'
+      = render "layouts/flash"
+
+      .limit-container-width.gl-py-7{ class: container_class }
+        = render Pajamas::CardComponent.new( body_options: { class: 'gl-p-0' }, header_options: { class: 'gl-flex gl-items-center gl-justify-between' }) do |c|
+          - c.with_header do
+            = brand_header_logo({add_gitlab_logo_text: true})
+            - if current_user
+              .gl-flex.gl-gap-2.gl-items-center
+                .gl-text-right.gl-leading-normal
+                  .gl-font-bold= current_user.name
+                  .gl-text-subtle @#{current_user.username}
+                = render Pajamas::AvatarComponent.new(current_user, size: 32, avatar_options: { data: { testid: 'user-avatar-content' } })
+          - c.with_body do
+            = yield

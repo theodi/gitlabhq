@@ -1,0 +1,40 @@
+- merge_request = local_assigns.fetch(:issuable)
+
+- popover_title = _("What is squashing?")
+- popover_content = capture do
+  %p.gl-mb-0
+    = _("Squashing combines multiple commits into a single commit on merge. This keeps your repository history clean and makes it easier to revert changes.")
+
+  = link_to _("Learn more"), help_page_path('user/project/merge_requests/squash_and_merge.md'), target: '_blank', rel: 'noopener noreferrer'
+
+- popover_data = { container: 'body', toggle: 'popover', placement: "top", html: 'true', triggers: 'hover focus', title: popover_title, content: popover_content }
+
+- return if !merge_request.is_a?(MergeRequest) || merge_request.closed_or_merged_without_fork?
+
+.form-group.row.gl-mb-7
+  .gl-col-12
+    %label
+      = _('Merge options')
+    - if merge_request.can_remove_source_branch?(current_user)
+      .form-check.gl-pl-0
+        = hidden_field_tag 'merge_request[force_remove_source_branch]', '0', id: nil
+        = render Pajamas::CheckboxTagComponent.new(name: 'merge_request[force_remove_source_branch]', checked: merge_request.force_remove_source_branch?, value: '1', checkbox_options: { class: 'js-form-update' }) do |c|
+          - c.with_label do
+            = _("Delete source branch when merge request is accepted.")
+
+    - unless merge_request.squash_never?
+      .form-check.gl-pl-0
+        - if merge_request.squash_always?
+          = hidden_field_tag 'merge_request[squash]', '1', id: nil
+          = render Pajamas::CheckboxTagComponent.new(name: 'merge_request[squash]', checked: true, value: '1', checkbox_options: { class: 'js-form-update', disabled: true }) do |c|
+            - c.with_label do
+              = _("Squash commits when merge request is accepted.")
+              = link_to sprite_icon('question-o'), help_page_path('user/project/merge_requests/squash_and_merge.md'), target: '_blank', rel: 'noopener noreferrer'
+            - c.with_help_text do
+              = _('Required in this branch.')
+        - else
+          = hidden_field_tag 'merge_request[squash]', '0', id: nil
+          = render Pajamas::CheckboxTagComponent.new(name: 'merge_request[squash]', checked: merge_request_squash_option?(merge_request), value: '1', checkbox_options: { class: 'js-form-update' }) do |c|
+            - c.with_label do
+              = _("Squash commits when merge request is accepted.")
+              = render Pajamas::ButtonComponent.new(variant: :link, icon: 'question-o', button_options: { class: '-gl-mt-1', data: popover_data })

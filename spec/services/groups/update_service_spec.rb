@@ -1,0 +1,934 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Groups::UpdateService, feature_category: :groups_and_projects do
+  let!(:user) { create(:user) }
+  let!(:private_group) { create(:group, :private) }
+  let!(:internal_group) { create(:group, :internal) }
+  let!(:public_group) { create(:group, :public) }
+
+  describe "#execute" do
+    context 'with project' do
+      let_it_be(:group) { create(:group, :public) }
+
+      context 'located in a subgroup' do
+        let(:subgroup) { create(:group, parent: group) }
+        let!(:project) { create(:project, namespace: subgroup) }
+
+        before do
+          subgroup.add_owner(user)
+        end
+
+        it 'does allow a path update if there is not a root namespace change' do
+          expect(update_group(subgroup, user, path: 'updated')).to be true
+          expect(subgroup.errors[:path]).to be_empty
+        end
+      end
+
+      context 'when a rename would collide with a descendant service desk address', :aggregate_failures do
+        # group/test-one and group/renamed-sub/one both slugify to
+        # "<group>-test-one" once renamed-sub is renamed to "test".
+        let_it_be(:owner) { create(:user) }
+        let_it_be(:group) { create(:group, owners: owner) }
+        let_it_be_with_reload(:subgroup) { create(:group, parent: group, path: 'renamed-sub') }
+        let_it_be(:existing_project) { create(:project, path: 'test-one', group: group) }
+        let_it_be(:descendant_project) { create(:project, path: 'one', group: subgroup) }
+
+        before do
+          create(:service_desk_setting, project: existing_project, project_key: 'key')
+          create(:service_desk_setting, project: descendant_project, project_key: 'key')
+        end
+
+        it 'blocks the rename with a clear error and does not change the path' do
+          expect(update_group(subgroup, owner, path: 'test')).to be false
+          expect(subgroup.errors[:base].join).to include('Service Desk address for project')
+          expect(subgroup.reload.path).to eq('renamed-sub')
+        end
+
+        context 'when refreshing a descendant slug fails for an unrelated reason' do
+          before do
+            allow_next_found_instance_of(ServiceDeskSetting) do |setting|
+              allow(setting).to receive(:refresh_project_key_address_slug!)
+                .and_raise(ActiveRecord::RecordInvalid.new(setting))
+            end
+          end
+
+          it 'surfaces the error without raising and does not change the path' do
+            expect(update_group(subgroup, owner, path: 'renamed-again')).to be false
+            expect(subgroup.errors[:base]).to be_present
+            expect(subgroup.reload.path).to eq('renamed-sub')
+          end
+        end
+      end
+    end
+
+    context "project visibility_level validation" do
+      context "public group with public projects" do
+        let!(:service) { described_class.new(public_group, user, visibility_level: Gitlab::VisibilityLevel::INTERNAL) }
+
+        before do
+          public_group.add_member(user, Gitlab::Access::OWNER)
+          create(:project, :public, group: public_group)
+
+          expect(TodosDestroyer::GroupPrivateWorker).not_to receive(:perform_in)
+        end
+
+        it "does not change permission level" do
+          service.execute
+          expect(public_group.errors.count).to eq(1)
+
+          expect(TodosDestroyer::GroupPrivateWorker).not_to receive(:perform_in)
+        end
+
+        it "returns false if save failed" do
+          allow(public_group).to receive(:save).and_return(false)
+
+          expect(service.execute).to be_falsey
+        end
+
+        context 'when a project has container images' do
+          let(:params) { { path: SecureRandom.hex } }
+          let!(:container_repository) { create(:container_repository, project: project) }
+
+          subject { described_class.new(public_group, user, params).execute }
+
+          context 'within group' do
+            let(:project) { create(:project, group: public_group) }
+
+            context 'with path updates' do
+              it 'does not allow the update' do
+                expect(subject).to be false
+                expect(public_group.errors[:base].first).to match(/Docker images in their container registry/)
+              end
+            end
+
+            context 'with name updates' do
+              let(:params) { { name: 'new-name' } }
+
+              it 'allows the update' do
+                expect(subject).to be true
+                expect(public_group.reload.name).to eq('new-name')
+              end
+            end
+
+            context 'when the path does not change' do
+              let(:params) { { name: 'new-name', path: public_group.path } }
+
+              it 'allows the update' do
+                expect(subject).to be true
+                expect(public_group.reload.name).to eq('new-name')
+              end
+            end
+          end
+
+          context 'within subgroup' do
+            let(:subgroup) { create(:group, parent: public_group) }
+            let(:project) { create(:project, group: subgroup) }
+
+            it 'does not allow path updates' do
+              expect(subject).to be false
+              expect(public_group.errors[:base].first).to match(/Docker images in their container registry/)
+            end
+          end
+        end
+      end
+
+      context "internal group with internal project" do
+        let!(:service) { described_class.new(internal_group, user, visibility_level: Gitlab::VisibilityLevel::PRIVATE) }
+
+        before do
+          internal_group.add_member(user, Gitlab::Access::OWNER)
+          create(:project, :internal, group: internal_group)
+
+          expect(TodosDestroyer::GroupPrivateWorker).not_to receive(:perform_in)
+        end
+
+        it "does not change permission level" do
+          service.execute
+          expect(internal_group.errors.count).to eq(1)
+        end
+      end
+
+      context "internal group with private project" do
+        let!(:service) { described_class.new(internal_group, user, visibility_level: Gitlab::VisibilityLevel::PRIVATE) }
+
+        before do
+          internal_group.add_member(user, Gitlab::Access::OWNER)
+          create(:project, :private, group: internal_group)
+
+          expect(TodosDestroyer::GroupPrivateWorker).to receive(:perform_in)
+            .with(Todo::WAIT_FOR_DELETE, internal_group.id)
+        end
+
+        it "changes permission level to private" do
+          service.execute
+          expect(internal_group.visibility_level)
+            .to eq(Gitlab::VisibilityLevel::PRIVATE)
+        end
+      end
+    end
+
+    context "with parent_id user doesn't have permissions for" do
+      let(:service) { described_class.new(public_group, user, parent_id: private_group.id) }
+
+      before do
+        service.execute
+      end
+
+      it 'does not update parent_id' do
+        updated_group = public_group.reload
+
+        expect(updated_group.parent_id).to be_nil
+      end
+    end
+
+    context 'crm params' do
+      let(:params) { {} }
+
+      context 'when no existing crm_settings' do
+        it 'when params not present, leave crm enabled' do
+          described_class.new(public_group, user, params).execute
+          updated_group = public_group.reload
+
+          expect(updated_group.crm_enabled?).to be_truthy
+        end
+
+        it 'when crm_enabled param set false, disables crm' do
+          params = { crm_enabled: false }
+
+          described_class.new(public_group, user, params).execute
+          updated_group = public_group.reload
+
+          expect(updated_group.crm_enabled?).to be_falsy
+        end
+
+        it 'when crm_source_group_id present, updates crm_group' do
+          params = { crm_source_group_id: internal_group.id }
+
+          described_class.new(public_group, user, params).execute
+          updated_group = public_group.reload
+
+          expect(updated_group.crm_enabled?).to be_truthy
+          expect(updated_group.crm_group).to eq(internal_group)
+        end
+
+        context 'when crm_source_group_id blank and issues have contacts' do
+          let(:params) { { crm_source_group_id: '' } }
+
+          before do
+            allow(public_group).to receive(:has_issues_with_contacts?).and_return(true)
+          end
+
+          it 'does not return an error' do
+            described_class.new(public_group, user, params).execute
+
+            expect(public_group.errors).to be_empty
+          end
+        end
+      end
+
+      context 'with existing crm_settings' do
+        let(:init_enabled) { true }
+
+        before do
+          create(:crm_settings, group: public_group, enabled: init_enabled)
+        end
+
+        context 'when crm initially disabled' do
+          let(:init_enabled) { false }
+
+          context 'when crm_enabled param set true' do
+            let(:params) { { crm_enabled: true } }
+
+            it 'enables crm' do
+              described_class.new(public_group, user, params).execute
+
+              updated_group = public_group.reload
+              expect(updated_group.crm_enabled?).to be_truthy
+            end
+          end
+
+          it 'when crm_enabled param not present, crm remains disabled' do
+            described_class.new(public_group, user, params).execute
+
+            updated_group = public_group.reload
+            expect(updated_group.crm_enabled?).to be_falsy
+          end
+        end
+
+        context 'when crm_enabled param set false' do
+          let(:init_enabled) { true }
+          let(:params) { { crm_enabled: false } }
+
+          it 'disables crm' do
+            described_class.new(public_group, user, params).execute
+
+            updated_group = public_group.reload
+            expect(updated_group.crm_enabled?).to be_falsy
+          end
+        end
+
+        it 'when crm_enabled param not present, crm remains enabled' do
+          described_class.new(public_group, user, params).execute
+
+          updated_group = public_group.reload
+          expect(updated_group.crm_enabled?).to be_truthy
+        end
+
+        context 'when crm_source_group_id unchanged' do
+          let(:params) { { crm_source_group_id: public_group.id.to_s } }
+
+          let!(:issue) { create(:issue, project: create(:project, group: public_group)) }
+          let!(:contact) { create(:contact, group: public_group) }
+          let!(:issue_contact) { create(:issue_customer_relations_contact, issue: issue, contact: contact) }
+
+          it 'does not trigger contact source validation' do
+            public_group.crm_settings.update!(source_group_id: public_group.id)
+
+            described_class.new(public_group, user, params).execute
+
+            expect(public_group.errors).to be_empty
+          end
+        end
+
+        context 'when crm_source_group_id changed' do
+          let(:params) { { crm_source_group_id: internal_group.id } }
+
+          it 'updates crm_group' do
+            described_class.new(public_group, user, params).execute
+            updated_group = public_group.reload
+
+            expect(updated_group.crm_enabled?).to be_truthy
+            expect(updated_group.crm_settings.source_group).to eq(internal_group)
+            expect(updated_group.crm_group).to eq(internal_group)
+          end
+        end
+
+        context 'when crm_source_group_id blank' do
+          let(:params) { { crm_source_group_id: '' } }
+
+          it 'clears source_group and resets crm_group' do
+            described_class.new(public_group, user, params).execute
+            updated_group = public_group.reload
+
+            expect(updated_group.crm_enabled?).to be_truthy
+            expect(updated_group.crm_settings.source_group).to be_nil
+            expect(updated_group.crm_group).to eq(public_group)
+          end
+        end
+      end
+
+      context 'when changing source' do
+        let(:params) { { crm_source_group_id: internal_group.id } }
+
+        context 'when issues do not have contacts' do
+          it 'updates crm_group' do
+            described_class.new(public_group, user, params).execute
+            updated_group = public_group.reload
+
+            expect(updated_group.crm_group).to eq(internal_group)
+          end
+        end
+
+        context 'when issues do have contacts' do
+          let!(:issue) { create(:issue, project: create(:project, group: public_group)) }
+          let!(:contact) { create(:contact, group: public_group) }
+          let!(:issue_contact) { create(:issue_customer_relations_contact, issue: issue, contact: contact) }
+
+          it 'returns an error and does not update crm_group' do
+            described_class.new(public_group, user, params).execute
+            updated_group = public_group.reload
+
+            expect(public_group.errors).to contain_exactly('Contact source cannot be changed when issues already have contacts assigned from a different source.')
+            expect(updated_group.crm_group).to eq(public_group)
+          end
+        end
+      end
+    end
+  end
+
+  context "unauthorized visibility_level validation" do
+    let!(:service) { described_class.new(internal_group, user, visibility_level: 99) }
+
+    before do
+      internal_group.add_member(user, Gitlab::Access::MAINTAINER)
+    end
+
+    it "does not change permission level" do
+      service.execute
+      expect(internal_group.errors.count).to eq(1)
+    end
+  end
+
+  context "path change validation" do
+    let_it_be(:group) { create(:group) }
+    let_it_be(:subgroup) { create(:group, parent: group) }
+    let_it_be(:project) { create(:project, namespace: subgroup) }
+
+    subject(:execute_update) { update_group(target_group, user, update_params) }
+
+    shared_examples 'not allowing a path update' do
+      let(:update_params) { { path: 'updated' } }
+
+      it 'does not allow a path update' do
+        target_group.add_maintainer(user)
+
+        expect(execute_update).to be false
+        expect(target_group.errors[:path]).to include('cannot change when group contains projects with NPM packages')
+      end
+    end
+
+    shared_examples 'allowing an update' do |on:|
+      let(:update_params) { { on => 'updated' } }
+
+      it "allows an update on #{on}" do
+        target_group.reload.add_maintainer(user)
+
+        expect(execute_update).to be true
+        expect(target_group.errors).to be_empty
+        expect(target_group[on]).to eq('updated')
+      end
+    end
+
+    context 'with namespaced npm packages' do
+      let_it_be(:package) { create(:npm_package, project: project, name: "@#{group.path}/test") }
+
+      context 'updating the root group' do
+        let_it_be_with_refind(:target_group) { group }
+
+        it_behaves_like 'not allowing a path update'
+        it_behaves_like 'allowing an update', on: :name
+      end
+
+      context 'updating the subgroup' do
+        let_it_be_with_refind(:target_group) { subgroup }
+
+        it_behaves_like 'allowing an update', on: :path
+        it_behaves_like 'allowing an update', on: :name
+      end
+    end
+
+    context 'with scoped npm packages' do
+      let_it_be(:package) { create(:npm_package, project: project, name: '@any_scope/test') }
+
+      context 'updating the root group' do
+        let_it_be_with_refind(:target_group) { group }
+
+        it_behaves_like 'allowing an update', on: :path
+        it_behaves_like 'allowing an update', on: :name
+      end
+
+      context 'updating the subgroup' do
+        let_it_be_with_refind(:target_group) { subgroup }
+
+        it_behaves_like 'allowing an update', on: :path
+        it_behaves_like 'allowing an update', on: :name
+      end
+    end
+
+    context 'with unscoped npm packages' do
+      let_it_be(:package) { create(:npm_package, project: project, name: 'test') }
+
+      context 'updating the root group' do
+        let_it_be_with_refind(:target_group) { group }
+
+        it_behaves_like 'allowing an update', on: :path
+        it_behaves_like 'allowing an update', on: :name
+      end
+
+      context 'updating the subgroup' do
+        let_it_be_with_refind(:target_group) { subgroup }
+
+        it_behaves_like 'allowing an update', on: :path
+        it_behaves_like 'allowing an update', on: :name
+      end
+    end
+  end
+
+  context 'when user is not group owner' do
+    context 'when group is private' do
+      before do
+        private_group.add_maintainer(user)
+      end
+
+      it 'does not update the group to public' do
+        result = described_class.new(private_group, user, visibility_level: Gitlab::VisibilityLevel::PUBLIC).execute
+
+        expect(result).to be(false)
+        expect(private_group.errors.count).to eq(1)
+        expect(private_group).to be_private
+      end
+
+      it 'does not update the group to public with tricky value' do
+        result = described_class.new(private_group, user, visibility_level: Gitlab::VisibilityLevel::PUBLIC.to_s + 'r').execute
+
+        expect(result).to be(false)
+        expect(private_group.errors.count).to eq(1)
+        expect(private_group).to be_private
+      end
+    end
+
+    context 'when group is public' do
+      before do
+        public_group.add_maintainer(user)
+      end
+
+      it 'does not update the group to private' do
+        result = described_class.new(public_group, user, visibility_level: Gitlab::VisibilityLevel::PRIVATE).execute
+
+        expect(result).to be(false)
+        expect(public_group.errors.count).to eq(1)
+        expect(public_group).to be_public
+      end
+
+      it 'does not update the group to private with invalid string value' do
+        result = described_class.new(public_group, user, visibility_level: 'invalid').execute
+
+        expect(result).to be(false)
+        expect(public_group.errors.count).to eq(1)
+        expect(public_group).to be_public
+      end
+
+      it 'does not update the group to private with valid string value' do
+        result = described_class.new(public_group, user, visibility_level: 'private').execute
+
+        expect(result).to be(false)
+        expect(public_group.errors.count).to eq(1)
+        expect(public_group).to be_public
+      end
+
+      # See https://gitlab.com/gitlab-org/gitlab/-/issues/359910
+      it 'does not update the group to private because of Active Record typecasting' do
+        result = described_class.new(public_group, user, visibility_level: 'public').execute
+
+        expect(result).to be(true)
+        expect(public_group.errors.count).to eq(0)
+        expect(public_group).to be_public
+      end
+    end
+  end
+
+  context 'when updating #emails_enabled' do
+    let(:service) { described_class.new(internal_group, user, emails_enabled: false) }
+
+    it 'updates the attribute' do
+      internal_group.add_member(user, Gitlab::Access::OWNER)
+
+      expect { service.execute }.to change { internal_group.emails_enabled }.to(false)
+    end
+
+    it 'does not update when not group owner' do
+      internal_group.add_member(user, Gitlab::Access::MAINTAINER)
+
+      expect { service.execute }.not_to change { internal_group.emails_enabled }
+    end
+  end
+
+  context 'when updating #max_artifacts_size' do
+    let(:params) { { max_artifacts_size: 10 } }
+
+    let(:service) do
+      described_class.new(internal_group, user, **params)
+    end
+
+    before do
+      internal_group.add_owner(user)
+    end
+
+    context 'for users who have the ability to update max_artifacts_size', :enable_admin_mode do
+      let(:user) { create(:admin) }
+
+      it 'updates max_artifacts_size' do
+        expect { service.execute }.to change { internal_group.max_artifacts_size }.from(nil).to(10)
+      end
+    end
+
+    context 'for users who do not have the ability to update max_artifacts_size' do
+      it 'does not update max_artifacts_size' do
+        expect { service.execute }.not_to change { internal_group.max_artifacts_size }
+      end
+    end
+  end
+
+  context 'when updating #allow_runner_registration_token' do
+    let(:params) { { allow_runner_registration_token: false } }
+    let!(:internal_group) { create(:group, :internal, :allow_runner_registration_token) }
+
+    let(:service) do
+      described_class.new(internal_group, user, **params)
+    end
+
+    context 'for users who have the ability to update allow_runner_registration_token' do
+      before do
+        internal_group.add_owner(user)
+      end
+
+      it 'updates allow_runner_registration_token' do
+        expect { service.execute }.to change { internal_group.allow_runner_registration_token }.from(true).to(false)
+      end
+    end
+
+    context 'for users who do not have the ability to update allow_runner_registration_token' do
+      it 'does not update allow_runner_registration_token' do
+        expect { service.execute }.not_to change { internal_group.allow_runner_registration_token }
+      end
+    end
+  end
+
+  context 'when updating #math_rendering_limits_enabled' do
+    let(:service) { described_class.new(internal_group, user, math_rendering_limits_enabled: false) }
+
+    it 'updates attribute' do
+      internal_group.add_member(user, Gitlab::Access::OWNER)
+
+      expect { service.execute }.to change { internal_group.math_rendering_limits_enabled }.to(false)
+    end
+
+    it 'does not update when not group owner' do
+      internal_group.add_member(user, Gitlab::Access::MAINTAINER)
+
+      expect { service.execute }.not_to change { internal_group.math_rendering_limits_enabled }
+    end
+  end
+
+  context 'when updating #lock_math_rendering_limits_enabled' do
+    let(:service) { described_class.new(internal_group, user, lock_math_rendering_limits_enabled: true) }
+
+    it 'updates attribute' do
+      internal_group.add_member(user, Gitlab::Access::OWNER)
+
+      expect { service.execute }.to change { internal_group.lock_math_rendering_limits_enabled? }.to(true)
+    end
+
+    it 'does not update when not group owner' do
+      internal_group.add_member(user, Gitlab::Access::MAINTAINER)
+
+      expect { service.execute }.not_to change { internal_group.lock_math_rendering_limits_enabled? }
+    end
+  end
+
+  context 'when updating #require_sha_for_merge' do
+    let(:service) { described_class.new(internal_group, user, require_sha_for_merge: true) }
+
+    it 'updates attribute' do
+      internal_group.add_member(user, Gitlab::Access::OWNER)
+
+      expect { service.execute }.to change { internal_group.require_sha_for_merge }.to(true)
+    end
+
+    it 'does not update when not group owner' do
+      internal_group.add_member(user, Gitlab::Access::MAINTAINER)
+
+      expect { service.execute }.not_to change { internal_group.require_sha_for_merge }
+    end
+  end
+
+  context 'when updating #lock_require_sha_for_merge' do
+    let(:service) { described_class.new(internal_group, user, lock_require_sha_for_merge: true) }
+
+    it 'updates attribute' do
+      internal_group.add_member(user, Gitlab::Access::OWNER)
+
+      expect { service.execute }.to change { internal_group.lock_require_sha_for_merge }.to(true)
+    end
+
+    it 'does not update when not group owner' do
+      internal_group.add_member(user, Gitlab::Access::MAINTAINER)
+
+      expect { service.execute }.not_to change { internal_group.lock_require_sha_for_merge }
+    end
+  end
+
+  describe 'when updating namespace setting #step_up_auth_required_oauth_provider' do
+    let_it_be_with_reload(:group) { create(:group, :private) }
+    let_it_be(:user) { create(:user, owner_of: group) }
+
+    let(:ommiauth_provider_config_oidc) do
+      Gitlab::Configs.build_options(
+        name: 'openid_connect',
+        step_up_auth: {
+          namespace: {
+            id_token: {
+              required: {
+                acr: 'gold'
+              }
+            }
+          }
+        }
+      )
+    end
+
+    let(:ommiauth_provider_config_oidc_aad) do
+      Gitlab::Configs.build_options(
+        name: 'openid_connect_aad',
+        step_up_auth: {
+          namespace: {
+            id_token: {
+              required: {
+                acr: 'gold'
+              }
+            }
+          }
+        }
+      )
+    end
+
+    let(:params) { {} }
+
+    subject(:execute_update) { update_group(group, user, params) }
+
+    before do
+      stub_omniauth_setting(enabled: true, providers: [ommiauth_provider_config_oidc, ommiauth_provider_config_oidc_aad])
+      allow(Devise).to receive(:omniauth_providers).and_return([ommiauth_provider_config_oidc.name, ommiauth_provider_config_oidc_aad.name])
+    end
+
+    context 'when updating with valid provider' do
+      let(:params) { { step_up_auth_required_oauth_provider: 'openid_connect' } }
+
+      it 'successfully updates the setting' do
+        expect(execute_update).to be_truthy
+        expect(group.reload.namespace_settings.step_up_auth_required_oauth_provider).to eq('openid_connect')
+      end
+
+      context 'when feature flag is disabled' do
+        before do
+          stub_feature_flags(omniauth_step_up_auth_for_namespace: false)
+        end
+
+        it 'does not update the setting when feature flag is disabled' do
+          expect(execute_update).to be_truthy
+          expect(group.reload.namespace_settings.step_up_auth_required_oauth_provider).to be_nil
+        end
+      end
+    end
+
+    context 'when updating to disabled (nil)' do
+      let(:params) { { step_up_auth_required_oauth_provider: nil } }
+
+      before do
+        group.namespace_settings.update!(step_up_auth_required_oauth_provider: 'openid_connect')
+      end
+
+      it 'successfully disables step-up auth' do
+        expect(execute_update).to be_truthy
+        expect(group.reload.namespace_settings.step_up_auth_required_oauth_provider).to be_nil
+      end
+    end
+
+    context 'when updating to disabled (empty string)' do
+      let(:params) { { step_up_auth_required_oauth_provider: '' } }
+
+      before do
+        group.namespace_settings.update!(step_up_auth_required_oauth_provider: 'openid_connect')
+      end
+
+      it 'successfully disables step-up auth' do
+        expect(execute_update).to be_truthy
+        expect(group.reload.namespace_settings.step_up_auth_required_oauth_provider).to be_nil
+      end
+    end
+
+    context 'when updating with invalid provider' do
+      let(:params) { { step_up_auth_required_oauth_provider: 'invalid_provider' } }
+
+      it 'fails to update with validation error' do
+        expect(execute_update).to be_falsey
+      end
+    end
+
+    context 'with inheritance from parent group' do
+      let_it_be_with_reload(:grandparent_group) { group }
+      let_it_be_with_reload(:parent_group) { create(:group, :private, parent: grandparent_group) }
+      let_it_be_with_reload(:group) { create(:group, :private, parent: parent_group) }
+      let_it_be(:user) { create(:user, owner_of: group) }
+
+      before do
+        grandparent_group.namespace_settings.update!(step_up_auth_required_oauth_provider: 'openid_connect')
+      end
+
+      context 'when updating to disabled (nil)' do
+        let(:params) { { step_up_auth_required_oauth_provider: nil } }
+
+        it { is_expected.to be_truthy }
+      end
+
+      context 'when updating with valid provider' do
+        let(:params) { { step_up_auth_required_oauth_provider: 'openid_connect_aad' } }
+
+        it { is_expected.to be_falsey }
+
+        it 'does not change step_up_auth_required_oauth_provider value' do
+          expect { execute_update }
+            .to not_change { group.reload.namespace_settings.step_up_auth_required_oauth_provider }
+            .and not_change { group.reload.namespace_settings.step_up_auth_required_oauth_provider_from_self_or_inherited }
+        end
+      end
+    end
+  end
+
+  context 'updating default_branch_protection' do
+    let(:service) do
+      described_class.new(internal_group, user, default_branch_protection: Gitlab::Access::PROTECTION_DEV_CAN_PUSH)
+    end
+
+    let(:settings) { internal_group.namespace_settings }
+    let(:expected_settings) { Gitlab::Access::BranchProtection.protection_partial.stringify_keys }
+
+    context 'for users who have the ability to update default_branch_protection' do
+      it 'updates default_branch_protection attribute' do
+        internal_group.add_owner(user)
+
+        expect { service.execute }.to change { internal_group.default_branch_protection }.from(Gitlab::Access::PROTECTION_FULL).to(Gitlab::Access::PROTECTION_DEV_CAN_PUSH)
+      end
+
+      it 'updates default_branch_protection_defaults to match default_branch_protection' do
+        internal_group.add_owner(user)
+
+        expect { service.execute }.to change { settings.default_branch_protection_defaults  }.from(Gitlab::Access::BranchProtection.protection_none.stringify_keys).to(expected_settings)
+      end
+    end
+
+    context 'for users who do not have the ability to update default_branch_protection' do
+      it 'does not update the attribute' do
+        expect { service.execute }.not_to change { internal_group.default_branch_protection }
+        expect { service.execute }.not_to change { internal_group.namespace_settings.default_branch_protection_defaults }
+      end
+    end
+  end
+
+  context 'updating default_branch_protection_defaults' do
+    let(:branch_protection) { ::Gitlab::Access::BranchProtection.protected_against_developer_pushes.stringify_keys }
+
+    let(:service) do
+      described_class.new(internal_group, user, default_branch_protection_defaults: branch_protection)
+    end
+
+    let(:settings) { internal_group.namespace_settings }
+    let(:expected_settings) { branch_protection }
+
+    context 'for users who have the ability to update default_branch_protection_defaults' do
+      it 'updates default_branch_protection attribute' do
+        internal_group.add_owner(user)
+
+        expect { service.execute }.to change { internal_group.default_branch_protection_defaults }.from(Gitlab::Access::BranchProtection.protection_none.deep_stringify_keys).to(expected_settings)
+      end
+    end
+
+    context 'for users who do not have the ability to update default_branch_protection_defaults' do
+      it 'does not update the attribute' do
+        expect { service.execute }.not_to change { internal_group.default_branch_protection_defaults }
+        expect { service.execute }.not_to change { internal_group.namespace_settings.default_branch_protection_defaults }
+      end
+    end
+  end
+
+  context 'rename group' do
+    let(:new_path) { SecureRandom.hex }
+    let!(:service) { described_class.new(internal_group, user, path: new_path) }
+
+    before do
+      internal_group.add_member(user, Gitlab::Access::MAINTAINER)
+      create(:project, :internal, group: internal_group)
+    end
+
+    it 'returns true' do
+      expect(service.execute).to be(true)
+    end
+
+    context 'for GroupPathChangedEvent' do
+      it 'publishes a GroupPathChangedEvent' do
+        expect { service.execute }
+          .to publish_event(Namespaces::Groups::GroupPathChangedEvent).with(group_id: internal_group.id)
+      end
+
+      context 'when path is not changed' do
+        it 'does not publishes a GroupPathChangedEvent' do
+          expect { described_class.new(internal_group, user, name: 'foo').execute }
+            .not_to publish_event(Namespaces::Groups::GroupPathChangedEvent)
+        end
+      end
+    end
+  end
+
+  context 'for a subgroup' do
+    let(:subgroup) { create(:group, :private, parent: private_group) }
+
+    context 'when the parent group share_with_group_lock is enabled' do
+      before do
+        private_group.update_column(:share_with_group_lock, true)
+      end
+
+      context 'for the parent group owner' do
+        it 'allows disabling share_with_group_lock' do
+          private_group.add_owner(user)
+
+          result = described_class.new(subgroup, user, share_with_group_lock: false).execute
+
+          expect(result).to be_truthy
+          expect(subgroup.reload.share_with_group_lock).to be_falsey
+        end
+      end
+
+      context 'for a subgroup owner (who does not own the parent)' do
+        it 'does not allow disabling share_with_group_lock' do
+          subgroup_owner = create(:user)
+          subgroup.add_owner(subgroup_owner)
+
+          result = described_class.new(subgroup, subgroup_owner, share_with_group_lock: false).execute
+
+          expect(result).to be_falsey
+          expect(subgroup.errors.full_messages.first).to match(/cannot be disabled when the parent group "Share with group lock" is enabled, except by the owner of the parent group/)
+          expect(subgroup.reload.share_with_group_lock).to be_truthy
+        end
+      end
+    end
+  end
+
+  context 'change shared Runners config' do
+    let(:group) { create(:group) }
+
+    subject { described_class.new(group, user, shared_runners_setting: Namespace::SR_DISABLED_AND_UNOVERRIDABLE).execute }
+
+    before do
+      group.add_owner(user)
+    end
+
+    it 'calls the shared runners update service' do
+      expect_any_instance_of(::Groups::UpdateSharedRunnersService).to receive(:execute).and_return({ status: :success })
+
+      expect(subject).to be_truthy
+    end
+
+    it 'handles errors in the shared runners update service' do
+      expect_any_instance_of(::Groups::UpdateSharedRunnersService).to receive(:execute).and_return({ status: :error, message: 'something happened' })
+
+      expect(subject).to be_falsy
+
+      expect(group.errors[:update_shared_runners].first).to eq('something happened')
+    end
+  end
+
+  context 'changes allowing subgroups to establish own 2FA' do
+    let(:group) { create(:group) }
+    let(:params) { { allow_mfa_for_subgroups: false } }
+
+    subject { described_class.new(group, user, params).execute }
+
+    it 'changes settings' do
+      subject
+
+      expect(group.namespace_settings.reload.allow_mfa_for_subgroups).to be(false)
+    end
+
+    it 'enqueues update subgroups and its members' do
+      expect(DisallowTwoFactorForSubgroupsWorker).to receive(:perform_async).with(group.id)
+
+      subject
+    end
+  end
+
+  def update_group(group, user, opts)
+    Groups::UpdateService.new(group, user, opts).execute
+  end
+end

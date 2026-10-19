@@ -1,0 +1,25 @@
+#import "../fragments/release.fragment.graphql"
+
+query allReleases(
+  $fullPath: ID!
+  $first: Int
+  $last: Int
+  $before: String
+  $after: String
+  $sort: ReleaseSort
+) {
+  project(fullPath: $fullPath) {
+    id
+    releases(first: $first, last: $last, before: $before, after: $after, sort: $sort) {
+      nodes {
+        ...Release
+      }
+      pageInfo {
+        startCursor
+        hasPreviousPage
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}

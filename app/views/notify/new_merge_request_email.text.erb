@@ -1,8 +1,8 @@
-New Merge Request #<%= @merge_request.iid %>
+<%= _('%{user} created a merge request: %{mr_link}') % { user: sanitize_name(@merge_request.author_name),
+                                                         mr_link: url_for(project_merge_request_url(@merge_request.target_project, @merge_request)) }
+%>
 
-<%= url_for(namespace_project_merge_request_url(@merge_request.target_project.namespace, @merge_request.target_project, @merge_request)) %>
+<%= merge_path_description(@merge_request) %>
+<%= render 'merge_request_participants', merge_request: @merge_request -%>
 
-<%= merge_path_description(@merge_request, 'to') %>
-Author:    <%= @merge_request.author_name %>
-Assignee:  <%= @merge_request.assignee_name %>
-
+<%= @merge_request.description %>

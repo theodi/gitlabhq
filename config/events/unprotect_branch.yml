@@ -1,0 +1,24 @@
+---
+description: User unprotects the branch.
+internal_events: true
+action: unprotect_branch
+identifiers:
+- project
+- namespace
+- user
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: '17.3'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/160591
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: location where the event happened - repository_settings or branch_rule_details
+  property:
+    description: branch rules
+  value:
+    description: branch value

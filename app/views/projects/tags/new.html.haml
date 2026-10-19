@@ -1,35 +1,37 @@
-- page_title "New Tag"
+- add_to_breadcrumbs s_('TagsPage|Tags'), project_tags_path(@project)
+- page_title s_('TagsPage|New tag')
+- default_ref = params[:ref] || @project.default_branch
+- link = link_to('', new_namespace_project_release_path)
+- page_description = safe_format(s_('TagsPage|Do you want to create a release with the new tag? You can do that in the %{link_start}new release page%{link_end}.'), tag_pair(link, :link_start, :link_end))
+
 - if @error
-  .alert.alert-danger
-    %button{ type: "button", class: "close", "data-dismiss" => "alert"} &times;
-    = @error
-%h3.page-title
-  %i.fa.fa-code-fork
-  New tag
-= form_tag namespace_project_tags_path, method: :post, id: "new-tag-form", class: "form-horizontal" do
-  .form-group
-    = label_tag :tag_name, 'Name for new tag', class: 'control-label'
-    .col-sm-10
-      = text_field_tag :tag_name, params[:tag_name], placeholder: 'v3.0.1', required: true, tabindex: 1, class: 'form-control'
-  .form-group
-    = label_tag :ref, 'Create from', class: 'control-label'
-    .col-sm-10
-      = text_field_tag :ref, params[:ref], placeholder: 'master', required: true, tabindex: 2, class: 'form-control'
-      .light Branch name or commit SHA
-  .form-group
-    = label_tag :message, 'Message', class: 'control-label'
-    .col-sm-10
-      = text_field_tag :message, nil, placeholder: 'Enter message.', required: false, tabindex: 3, class: 'form-control'
-      .light (Optional) Entering a message will create an annotated tag.
-  .form-actions
-    = button_tag 'Create tag', class: 'btn btn-create', tabindex: 3
-    = link_to 'Cancel', namespace_project_tags_path(@project.namespace, @project), class: 'btn btn-cancel'
+  = render Pajamas::AlertComponent.new(variant: :danger, dismissible: true) do |c|
+    - c.with_body do
+      = @error
 
-:javascript
-  disableButtonIfAnyEmptyField($("#new-tag-form"), ".form-control", ".btn-create");
-  var availableTags = #{@project.repository.ref_names.to_json};
+= render ::Layouts::PageHeadingComponent.new(s_('TagsPage|New tag'),
+  description: page_description)
 
-  $("#ref").autocomplete({
-    source: availableTags,
-    minLength: 1
-  });
+= form_tag namespace_project_tags_path, method: :post, id: "new-tag-form", class: "common-note-form tag-form js-quick-submit" do
+  .form-group.row
+    .gl-col-sm-12
+      = label_tag :tag_name, _('Tag name')
+      = text_field_tag :tag_name, params[:tag_name], required: true, autofocus: true, class: 'form-control', data: { testid: 'tag-name-field' }
+  .form-group.row
+    .gl-col-sm-auto.create-from
+      = label_tag :ref, _('Create from')
+      .js-new-tag-ref-selector{ data: { project_id: @project.id, default_branch_name: default_ref, hidden_input_name: 'ref' } }
+      .form-text.gl-text-subtle
+        = s_('TagsPage|Existing branch name, tag, or commit SHA')
+  .form-group.row
+    .gl-col-sm-12
+      = label_tag :message, _('Message')
+      = text_area_tag :message, @message, required: false, class: 'form-control', rows: 5, data: { testid: 'tag-message-field' }
+      .form-text.gl-text-subtle
+        = tag_description_help_text
+
+  .gl-flex
+    = render Pajamas::ButtonComponent.new(variant: :confirm, button_options: { class: 'gl-mr-3', data: { testid: 'create-tag-button' }, type: 'submit' }) do
+      = s_('TagsPage|Create tag')
+    = render Pajamas::ButtonComponent.new(href: project_tags_path(@project)) do
+      = s_('TagsPage|Cancel')

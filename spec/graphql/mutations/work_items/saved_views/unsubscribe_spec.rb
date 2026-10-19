@@ -1,0 +1,105 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Mutations::WorkItems::SavedViews::Unsubscribe, feature_category: :planning_views do
+  include GraphqlHelpers
+
+  let_it_be(:project) { create(:project) }
+  let_it_be(:current_user) { create(:user, planner_of: [project]) }
+  let_it_be(:saved_view) { create(:saved_view, namespace: project.project_namespace) }
+
+  let(:current_ctx) { { current_user: current_user } }
+
+  def resolve_mutation(**args)
+    resolve(described_class, args: args, ctx: current_ctx)
+  end
+
+  specify { expect(described_class).to require_graphql_authorizations(:unsubscribe_work_item_saved_view) }
+
+  describe '#resolve' do
+    context 'when the user is not logged in' do
+      let(:current_ctx) { { current_user: nil } }
+
+      it 'raises an appropriate error' do
+        expect_graphql_error_to_be_created(Gitlab::Graphql::Errors::ResourceNotAvailable) do
+          resolve_mutation(id: saved_view.to_global_id)
+        end
+      end
+    end
+
+    context 'when the user is a guest' do
+      let_it_be(:guest_user) { create(:user, guest_of: [project]) }
+      let(:current_ctx) { { current_user: guest_user } }
+
+      it 'allows unsubscription from the saved view', :aggregate_failures do
+        create(:user_saved_view, user: guest_user, saved_view: saved_view, namespace: project.project_namespace)
+
+        result = nil
+        expect { result = resolve_mutation(id: saved_view.to_global_id) }
+          .to change { WorkItems::SavedViews::UserSavedView.count }.by(-1)
+        expect(result[:saved_view]).to eq(saved_view)
+      end
+    end
+
+    context 'when the user has permission' do
+      context 'when subscribed to the saved view' do
+        let_it_be(:user_saved_view) do
+          create(:user_saved_view, user: current_user, saved_view: saved_view, namespace: project.project_namespace)
+        end
+
+        it 'successfully unsubscribes from the saved view' do
+          result = resolve_mutation(id: saved_view.to_global_id)
+
+          expect(result[:saved_view]).to eq(saved_view)
+          expect(result[:errors]).to eq([])
+        end
+
+        it 'tracks the saved_view_unsubscribe internal event', :clean_gitlab_redis_shared_state do
+          expect { resolve_mutation(id: saved_view.to_global_id) }
+            .to trigger_internal_events('saved_view_unsubscribe')
+            .with(
+              category: 'Gitlab::WorkItems::Instrumentation::TrackingService',
+              user: current_user,
+              namespace: saved_view.namespace,
+              project: project,
+              additional_properties: { property: 'Planner' }
+            )
+            .and increment_usage_metrics(
+              'redis_hll_counters.count_distinct_user_id_from_saved_view_unsubscribe_weekly',
+              'redis_hll_counters.count_distinct_user_id_from_saved_view_unsubscribe_monthly'
+            )
+        end
+
+        it 'deletes the user saved view record' do
+          expect { resolve_mutation(id: saved_view.to_global_id) }
+            .to change { WorkItems::SavedViews::UserSavedView.count }.by(-1)
+        end
+
+        it 'removes the specific subscription' do
+          resolve_mutation(id: saved_view.to_global_id)
+
+          expect(WorkItems::SavedViews::UserSavedView.find_by(id: user_saved_view.id)).to be_nil
+        end
+      end
+
+      context 'when not subscribed to the saved view' do
+        it 'returns the saved view successfully' do
+          result = resolve_mutation(id: saved_view.to_global_id)
+
+          expect(result[:saved_view]).to eq(saved_view)
+        end
+
+        it 'does not change the user saved view count' do
+          expect { resolve_mutation(id: saved_view.to_global_id) }
+            .not_to change { WorkItems::SavedViews::UserSavedView.count }
+        end
+
+        it 'does not track the saved_view_unsubscribe event' do
+          expect { resolve_mutation(id: saved_view.to_global_id) }
+            .not_to trigger_internal_events('saved_view_unsubscribe')
+        end
+      end
+    end
+  end
+end

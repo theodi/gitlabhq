@@ -1,0 +1,6 @@
+---
+Cop1:
+  Exclude:
+    - 'app/controllers/application_controller.rb'
+    - 'app/controllers/acme_challenges_controller.rb'
+    - 'ee/app/models/epic.rb'

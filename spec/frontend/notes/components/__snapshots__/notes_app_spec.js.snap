@@ -1,0 +1,35 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`note_app when sort direction is asc shows skeleton notes after the loaded discussions 1`] = `
+<ul
+  class="main-notes-list notes timeline"
+  id="reference-0"
+>
+  <noteable-discussion-stub
+    discussion="[object Object]"
+    helppagepath=""
+    isoverviewtab="true"
+    renderdifffile="true"
+  />
+  <skeleton-loading-container-stub
+    class="note-skeleton"
+  />
+</ul>
+`;
+
+exports[`note_app when sort direction is desc shows skeleton notes before the loaded discussions 1`] = `
+<ul
+  class="main-notes-list notes timeline"
+  id="reference-0"
+>
+  <skeleton-loading-container-stub
+    class="note-skeleton"
+  />
+  <noteable-discussion-stub
+    discussion="[object Object]"
+    helppagepath=""
+    isoverviewtab="true"
+    renderdifffile="true"
+  />
+</ul>
+`;

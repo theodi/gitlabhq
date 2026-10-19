@@ -1,0 +1,22 @@
+---
+Style/UnlessLogicalOperators:
+  Exclude:
+    - 'app/controllers/oauth/authorizations_controller.rb'
+    - 'app/models/clusters/platforms/kubernetes.rb'
+    - 'app/models/concerns/integrations/base/bamboo.rb'
+    - 'app/models/design_management/design.rb'
+    - 'app/services/auth/dpop_authentication_service.rb'
+    - 'app/services/ci/build_cancel_service.rb'
+    - 'app/services/groups/group_links/destroy_service.rb'
+    - 'ee/app/controllers/projects/audit_events_controller.rb'
+    - 'ee/app/controllers/projects/integrations/jira/issues_controller.rb'
+    - 'ee/app/graphql/mutations/virtual_registries/upstream/test.rb'
+    - 'ee/app/models/ee/group.rb'
+    - 'ee/app/models/ee/namespace.rb'
+    - 'ee/app/services/ai/catalog/item_consumers/create_service.rb'
+    - 'ee/app/views/groups/settings/_personal_access_tokens.html.haml'
+    - 'ee/lib/remote_development/devfile_operations/restrictions_enforcer.rb'
+    - 'ee/lib/search/zoekt/cache.rb'
+    - 'lib/file_size_validator.rb'
+    - 'lib/gitlab/auth.rb'
+    - 'spec/lib/gitlab/import_export/import_test_coverage_spec.rb'

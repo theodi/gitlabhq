@@ -1,0 +1,283 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.shared_examples_for 'services security ci configuration create service' do |skip_w_params|
+  include RepoHelpers
+
+  let_it_be(:project, freeze: false) { create(:project, :repository) }
+  let_it_be(:user, freeze: false) { create(:user) }
+
+  describe '#execute' do
+    let(:params) { {} }
+
+    shared_examples_for 'it does track the snowplow event' do
+      specify do
+        subject
+
+        expect_snowplow_event(**snowplow_event)
+      end
+    end
+
+    shared_examples_for 'returns the path to create a new merge request' do
+      around do |example|
+        create_and_delete_files(project, { '.gitlab-ci.yml' => yaml }) do
+          example.run
+        end
+      end
+
+      specify do
+        expect(result.status).to eq(:success)
+        expect(result.payload[:success_path]).to match(/#{Gitlab::Routing.url_helpers.project_new_merge_request_url(project, {})}(.*)description(.*)source_branch/)
+      end
+    end
+
+    context 'user does not belong to project' do
+      it 'returns an error status' do
+        expect(result.status).to eq(:error)
+        expect(result.payload[:success_path]).to be_nil
+      end
+
+      it 'does not track a snowplow event' do
+        subject
+
+        expect_no_snowplow_event
+      end
+    end
+
+    context 'user belongs to project' do
+      before do
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'it does track the snowplow event'
+
+      context 'when existing ci config contains anchors/aliases' do
+        let(:params) { {} }
+        let(:yaml) do
+          <<-YAML
+          image: python:latest
+
+          cache: &global_cache
+            key: 'common-cache'
+            paths:
+              - .cache/pip
+              - venv/
+
+          test:
+            cache:
+              <<: *global_cache
+              key: 'custom-cache'
+            script:
+              - python setup.py test
+              - pip install tox flake8  # you can also use tox
+              - tox -e py36,flake8
+          YAML
+        end
+
+        it_behaves_like 'returns the path to create a new merge request'
+      end
+
+      context 'when existing ci config contains the `!reference` tag' do
+        let(:params) { {} }
+        let(:yaml) do
+          <<-YAML
+          test:
+            script:
+              - !reference [.setup, script]
+          YAML
+        end
+
+        it_behaves_like 'returns the path to create a new merge request'
+      end
+
+      it 'raises exception if the user does not have permission to create a new branch' do
+        allow(project).to receive(:repository).and_raise(Gitlab::Git::PreReceiveError, "You are not allowed to create protected branches on this project.")
+
+        expect { subject }.to raise_error(Gitlab::Git::PreReceiveError)
+      end
+
+      context 'when branch name is rejected by push rules' do
+        let(:push_rule_error) do
+          "running pre-receive hooks: GitLab: Branch name '#{branch_name}' does not follow the pattern '(feature|hotfix)\\/.*'."
+        end
+
+        before do
+          allow(project.repository).to receive(:add_branch).and_raise(
+            Gitlab::Git::CommandError, push_rule_error
+          )
+        end
+
+        it 'returns a ServiceResponse error with a user-facing message' do
+          expect(result).to be_kind_of(ServiceResponse)
+          expect(result.status).to eq(:error)
+          expect(result.message).to start_with(Gitlab::Utils::ErrorMessage::UF_ERROR_PREFIX)
+          expect(result.message).to include('does not follow the pattern')
+          expect(result.message).not_to include('running pre-receive hooks')
+        end
+
+        context 'when error message contains GL-HOOK-ERR prefix' do
+          let(:push_rule_error) do
+            "running pre-receive hooks: GL-HOOK-ERR: Access denied."
+          end
+
+          it 'extracts the safe message after the prefix' do
+            expect(result).to be_kind_of(ServiceResponse)
+            expect(result.status).to eq(:error)
+            expect(result.message).to start_with(Gitlab::Utils::ErrorMessage::UF_ERROR_PREFIX)
+            expect(result.message).to include('Access denied')
+            expect(result.message).not_to include('running pre-receive hooks')
+          end
+        end
+
+        context 'when error message does not contain known prefixes' do
+          let(:push_rule_error) do
+            "Some generic error message"
+          end
+
+          it 'returns the original message' do
+            expect(result).to be_kind_of(ServiceResponse)
+            expect(result.status).to eq(:error)
+            expect(result.message).to start_with(Gitlab::Utils::ErrorMessage::UF_ERROR_PREFIX)
+            expect(result.message).to include('Some generic error message')
+          end
+        end
+
+        context 'when error message contains prefix with extra whitespace' do
+          let(:push_rule_error) do
+            "running pre-receive hooks: GitLab:   Extra spaces in message"
+          end
+
+          it 'extracts the safe message and trims whitespace' do
+            expect(result).to be_kind_of(ServiceResponse)
+            expect(result.status).to eq(:error)
+            expect(result.message).to start_with(Gitlab::Utils::ErrorMessage::UF_ERROR_PREFIX)
+            expect(result.message).to include('Extra spaces in message')
+            expect(result.message).not_to include('running pre-receive hooks')
+          end
+        end
+      end
+
+      context 'when exception is raised' do
+        let_it_be(:project, freeze: false) { create(:project, :repository) }
+        let(:mock_sha) { '123456' }
+        let(:commit_instance) { instance_double(Gitlab::Git::Commit, sha: mock_sha) }
+
+        before do
+          allow(project.repository).to receive(:add_branch).and_raise(StandardError, "The unexpected happened!")
+        end
+
+        context 'when branch was created' do
+          before do
+            allow(project.repository).to receive(:branch_exists?).and_return(true)
+            allow(project.repository).to receive(:commit).with(branch_name).and_return(commit_instance)
+          end
+
+          it 'tries to rm branch' do
+            expect(project.repository).to receive(:rm_branch).with(user, branch_name, target_sha: mock_sha)
+            expect { subject }.to raise_error(StandardError)
+          end
+        end
+
+        context 'when branch was not created' do
+          before do
+            allow(project.repository).to receive(:branch_exists?).and_return(false)
+          end
+
+          it 'does not try to rm branch' do
+            expect(project.repository).not_to receive(:rm_branch)
+            expect { subject }.to raise_error(StandardError)
+          end
+        end
+      end
+
+      context 'with no parameters' do
+        it 'returns the path to create a new merge request' do
+          expect(result.status).to eq(:success)
+          expect(result.payload[:success_path]).to match(/#{Gitlab::Routing.url_helpers.project_new_merge_request_url(project, {})}(.*)description(.*)source_branch/)
+        end
+      end
+
+      context 'when the project has a non-default ci config file' do
+        before do
+          project.ci_config_path = 'non-default/.gitlab-ci.yml'
+        end
+
+        it_behaves_like 'it does track the snowplow event'
+      end
+
+      context 'when parsing existing ci config gives a Gitlab::Config::Loader::FormatError' do
+        let(:params) { {} }
+        let(:invalid_yaml) do
+          <<-YAML
+          image: python:latest
+
+          test: @@@invalid
+            script:
+              - python setup.py test
+              - pip install tox flake8  # you can also use tox
+              - tox -e py36,flake8
+          YAML
+        end
+
+        it 'returns a ServiceResponse error' do
+          expect(project).to receive(:ci_config_for).and_return(invalid_yaml)
+
+          expect(result).to be_kind_of(ServiceResponse)
+          expect(result.status).to eq(:error)
+          expect(result.message).to match(/merge request creation failed/)
+        end
+      end
+
+      context 'when loading existing ci config gives a ::Gitlab::Ci::Config::Yaml::LoadError' do
+        let(:params) { {} }
+        let(:yaml) do
+          <<-YAML
+          image: python:latest
+
+          test:
+            script:
+              - python setup.py test
+          YAML
+        end
+
+        before do
+          allow(Gitlab::Ci::Config::Yaml).to receive(:load!).and_raise(::Gitlab::Ci::Config::Yaml::LoadError)
+        end
+
+        it 'returns a ServiceResponse error' do
+          expect(project).to receive(:ci_config_for).and_return(yaml)
+
+          expect(result).to be_kind_of(ServiceResponse)
+          expect(result.status).to eq(:error)
+          expect(result.message).to match(/merge request creation failed/)
+        end
+      end
+
+      unless skip_w_params
+        context 'with parameters' do
+          let(:params) { non_empty_params }
+
+          it 'returns the path to create a new merge request' do
+            expect(result.status).to eq(:success)
+            expect(result.payload[:success_path]).to match(/#{Gitlab::Routing.url_helpers.project_new_merge_request_url(project, {})}(.*)description(.*)source_branch/)
+          end
+        end
+      end
+
+      context 'when the project is empty' do
+        let(:params) { {} }
+        let_it_be(:project, freeze: false) { create(:project_empty_repo) }
+
+        it 'returns a ServiceResponse error' do
+          expect(result).to be_kind_of(ServiceResponse)
+          expect(result.status).to eq(:error)
+          expect(result.message).to eq('You must <a target="_blank" rel="noopener noreferrer" ' \
+                                       'href="http://localhost/help/user/project/repository/_index.md' \
+                                       '#add-files-to-a-repository">add at least one file to the repository' \
+                                       '</a> before using Security features.')
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+module Organizations
+  module Transfer
+    module Concerns
+      module OrganizationUpdater
+        extend ActiveSupport::Concern
+
+        ORGANIZATION_ID_UPDATE_BATCH_SIZE = 1000
+
+        # Update organization_id for records matching the scope specified in the block
+        # @param model_class [Class] The ActiveRecord model class
+        # @param organization_key [Symbol] The column name for organization_id (default: :organization_id)
+        # @param block Scope to filter records
+        #
+        # @example Update with hash where clause
+        #   update_organization_id_for(PersonalAccessToken) { |relation| relation.where(user_id: [1, 2, 3]) }
+        #
+        # @example Update with model scopes
+        #   update_organization_id_for(PersonalAccessToken) { |relation| relation.where(user_id: user_ids).active }
+        #
+        # @example Update without a block
+        #   update_organization_id_for(PersonalAccessToken)
+        #
+        # @example Update with a custom organization key
+        #   update_organization_id_for(SnippetRepository, organization_key: :snippet_organization_id)
+        #
+        # rubocop:disable CodeReuse/ActiveRecord -- Not every model supports `in_organization` scope yet.
+        def update_organization_id_for(model_class, organization_key: :organization_id, &block)
+          relation = model_class.where(organization_key => old_organization.id)
+          relation = yield(relation) if block
+
+          capture_upserts = iam_replicable?(model_class)
+
+          # Process in batches
+          relation.each_batch(of: ORGANIZATION_ID_UPDATE_BATCH_SIZE) do |batch|
+            moved_ids = batch.pluck(:id) if capture_upserts # rubocop:disable Database/AvoidUsingPluckWithoutLimit -- bounded by each_batch
+
+            batch.update_all(organization_key => new_organization.id)
+
+            model_class.record_iam_outbox_upserts(model_class.where(id: moved_ids)) if moved_ids.present?
+          end
+        end
+        # rubocop:enable CodeReuse/ActiveRecord
+
+        def iam_replicable?(model_class)
+          model_class.respond_to?(:iam_outbox_entity_type) && model_class.iam_outbox_entity_type.present?
+        end
+      end
+    end
+  end
+end

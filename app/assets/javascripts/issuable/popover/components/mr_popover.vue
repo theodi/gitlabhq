@@ -1,0 +1,131 @@
+<script>
+import { GlIcon, GlBadge, GlPopover, GlSkeletonLoader } from '@gitlab/ui';
+import SafeHtml from '~/vue_shared/directives/safe_html';
+import { STATUS_CLOSED, STATUS_MERGED } from '~/issues/constants';
+import { __ } from '~/locale';
+import CiIcon from '~/vue_shared/components/ci_icon/ci_icon.vue';
+import timeagoMixin from '~/vue_shared/mixins/timeago';
+import query from '../queries/merge_request.query.graphql';
+
+export default {
+  name: 'MrPopover',
+  components: {
+    GlIcon,
+    GlBadge,
+    GlPopover,
+    GlSkeletonLoader,
+    CiIcon,
+  },
+  directives: {
+    SafeHtml,
+  },
+  mixins: [timeagoMixin],
+  props: {
+    target: {
+      type: HTMLAnchorElement,
+      required: true,
+    },
+    namespacePath: {
+      type: String,
+      required: true,
+    },
+    iid: {
+      type: String,
+      required: true,
+    },
+    cachedTitle: {
+      type: String,
+      required: true,
+    },
+    cachedTitleHtml: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  data() {
+    return {
+      mergeRequest: {},
+    };
+  },
+  computed: {
+    detailedStatus() {
+      return this.mergeRequest.headPipeline && this.mergeRequest.headPipeline.detailedStatus;
+    },
+    formattedTime() {
+      return this.timeFormatted(this.mergeRequest.createdAt);
+    },
+    badgeVariant() {
+      switch (this.mergeRequest.state) {
+        case STATUS_MERGED:
+          return 'info';
+        case STATUS_CLOSED:
+          return 'danger';
+        default:
+          return 'success';
+      }
+    },
+    stateHumanName() {
+      switch (this.mergeRequest.state) {
+        case STATUS_MERGED:
+          return __('Merged');
+        case STATUS_CLOSED:
+          return __('Closed');
+        default:
+          return __('Open');
+      }
+    },
+    titleHtml() {
+      return this.mergeRequest?.titleHtml || this.cachedTitleHtml;
+    },
+    showDetails() {
+      return Object.keys(this.mergeRequest).length > 0;
+    },
+  },
+  apollo: {
+    mergeRequest: {
+      query,
+      update: (data) => data.project?.mergeRequest || {},
+      variables() {
+        const { namespacePath, iid } = this;
+
+        return {
+          projectPath: namespacePath,
+          iid,
+        };
+      },
+    },
+  },
+};
+</script>
+
+<template>
+  <gl-popover :target="target" boundary="viewport" placement="top" show>
+    <div class="mr-popover">
+      <gl-skeleton-loader v-if="$apollo.queries.mergeRequest.loading" :height="15">
+        <rect width="250" height="15" rx="4" />
+      </gl-skeleton-loader>
+      <div v-else-if="showDetails" class="gl-flex gl-items-center gl-justify-between">
+        <div class="gl-inline-flex gl-items-center">
+          <gl-badge class="gl-mr-2" :variant="badgeVariant">
+            {{ stateHumanName }}
+          </gl-badge>
+          <span class="gl-text-subtle">
+            {{ __('Opened') }} <time :datetime="mergeRequest.createdAt">{{ formattedTime }}</time>
+          </span>
+        </div>
+        <ci-icon v-if="detailedStatus" :status="detailedStatus" class="gl-ml-2" />
+      </div>
+      <h5 v-if="!$apollo.queries.mergeRequest.loading" class="!gl-my-3">
+        <span v-if="titleHtml" v-safe-html="titleHtml"></span>
+        <template v-else>{{ cachedTitle }}</template>
+      </h5>
+      <!-- eslint-disable @gitlab/vue-require-i18n-strings -->
+      <div class="gl-text-subtle">
+        <gl-icon name="merge-request" />
+        <span class="gl-text-subtle">{{ `${namespacePath}!${iid}` }}</span>
+      </div>
+      <!-- eslint-enable @gitlab/vue-require-i18n-strings -->
+    </div>
+  </gl-popover>
+</template>

@@ -1,0 +1,27 @@
+#import "~/graphql_shared/fragments/group_interface.fragment.graphql"
+
+fragment Group on Group {
+  ...GroupInterface
+  path
+  editPath
+  parent {
+    id
+  }
+  descriptionHtml
+  descendantGroupsCount
+  projectsCount
+  groupMembersCount
+  visibility
+  createdAt
+  updatedAt
+  maxAccessLevel {
+    integerValue
+  }
+  isLinkedToSubscription
+  archived
+  isSelfArchived
+  markedForDeletion
+  isSelfDeletionInProgress
+  isSelfDeletionScheduled
+  permanentDeletionDate
+}

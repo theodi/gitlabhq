@@ -1,22 +1,22 @@
-%h2
-  %i.fa.fa-warning
-  No repository
+- page_title _('No repository')
+- @skip_current_level_breadcrumb = true
+- can_admin = can?(current_user, :admin_project, @project) # rubocop:disable Gitlab/Authz/PermissionCheck -- Mirrors authorize_admin_project! in the repository-create and import controllers
 
-%p.slead
-  The repository for this project does not exist.
-  %br
-  This means you can not push code until you create an empty repository or import existing one.
-%hr
-
-.no-repo-actions
-  = link_to namespace_project_repository_path(@project.namespace, @project), method: :post, class: 'btn btn-primary' do
-    Create empty bare repository
-
-  %strong.prepend-left-10.append-right-10 or
-
-  = link_to new_namespace_project_import_path(@project.namespace, @project), class: 'btn' do
-    Import repository
+= render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-commit-md.svg',
+  title: _('No repository'),
+  primary_button_text: (_('Create empty repository') if can_admin),
+  primary_button_link: project_repository_path(@project),
+  primary_button_options: { data: { method: :post } },
+  secondary_button_text: (_('Import repository') if can_admin),
+  secondary_button_link: new_project_import_path(@project)) do |c|
+  - c.with_description do
+    = _('The repository for this project does not exist.')
+    %br
+    - if can_admin
+      = _('This means you can not push code until you create an empty repository or import existing one.')
+    - else
+      = _('You do not have permission to create or import a repository.')
 
 - if can? current_user, :remove_project, @project
-  .prepend-top-20
-    = link_to 'Remove project', project_path(@project), data: { confirm: remove_project_message(@project)}, method: :delete, class: "btn btn-remove pull-right"
+  .gl-mt-6.gl-text-center
+    = link_button_to _('Delete project'), project_path(@project), data: { confirm: remove_project_message, confirm_btn_variant: 'danger' }, method: :delete, variant: :danger

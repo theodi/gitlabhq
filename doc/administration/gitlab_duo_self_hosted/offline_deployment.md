@@ -1,0 +1,544 @@
+---
+stage: AI Platform
+group: AI Model Services
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Deploy GitLab Duo Agent Platform Self-Hosted in an offline environment
+description: Transfer container images and LLM model weights to your internal infrastructure to run GitLab Duo Self-Hosted without internet access
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- Self-hosted model support [generally available](https://gitlab.com/groups/gitlab-org/-/work_items/12972) in GitLab 17.9.
+- Offline flow execution support [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/219672) in GitLab 18.9.
+
+{{< /history >}}
+
+> [!note]
+> To set up an offline environment, you must receive an
+> [opt-out exemption of cloud licensing](https://about.gitlab.com/pricing/licensing-faq/cloud-licensing/#offline-cloud-licensing)
+> prior to purchase.
+> For more details, contact your GitLab sales representative.
+
+You can deploy GitLab Duo Agent Platform Self-Hosted in an offline environment
+where your GitLab instance and runners have no access to the public
+internet.
+These instructions also apply to environments with limited
+connectivity or restrictive firewall policies.
+
+In an offline environment, you must manually transfer the AI Gateway
+container image, LLM model weights, vLLM inference server image,
+and Agent Platform Flows executor image to your internal
+infrastructure.
+
+To deploy the Agent Platform in an offline environment, complete the following steps:
+
+1. Transfer container images to the internal registry
+1. Transfer LLM model weights to the offline filesystem
+1. Start the AI Gateway
+1. Start vLLM
+1. Configure the AI Gateway in GitLab Admin
+1. Add the self-hosted model
+1. Configure offline flow execution
+1. Verify the deployment
+
+## Prerequisites
+
+- GitLab 18.9 or later with an [offline cloud license](https://about.gitlab.com/pricing/licensing-faq/cloud-licensing/#offline-cloud-licensing).
+- A machine with internet connection to download artifacts.
+- [skopeo](https://github.com/containers/skopeo) and
+  [jq](https://jqlang.org/) installed on
+  the connected machine and the offline host
+  (`dnf install --assumeyes skopeo jq` on Red Hat systems).
+- A method to transfer files to the offline environment
+  (physical media, cross-domain solution, or bastion host).
+- A container registry in the offline environment. For example,
+  the [GitLab container registry](../../user/packages/container_registry/_index.md),
+  Harbor, or Nexus.
+- For vLLM: NVIDIA GPU drivers, CUDA libraries, and the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  installed on the inference host.
+  For offline installation options, see the
+  [NVIDIA CUDA installation guide](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/).
+
+> [!note]
+> All commands on this page work with both Docker and Podman.
+> Replace `docker` with `podman` where applicable.
+
+## Required artifacts
+
+All artifacts except LLM model weights are OCI container images.
+
+The container images your GitLab instance itself runs are a separate transfer.
+For more information, see [offline GitLab](../../topics/offline/_index.md).
+
+### Container images
+
+| Artifact | Source registry | Tag format | Approximate compressed size |
+|----------|----------------|------------|-----------------|
+| AI Gateway | `registry.gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/model-gateway` | `self-hosted-vX.Y.Z-ee` | 0.6 GiB |
+| Agent Platform Flows executor | `registry.gitlab.com/gitlab-org/duo-workflow/default-docker-image/workflow-generic-image` | `vX.Y.Z` | 0.5 GiB |
+| vLLM inference server | `docker.io/vllm/vllm-openai` | `vX.Y.Z` (v0.18.1 or later) | 9 GiB |
+
+Sizes are the compressed sizes you transfer.
+Each image is larger after it is loaded into a registry or pulled to a host.
+To check a size before you transfer, run
+`skopeo inspect --raw docker://<image>:<tag>` and add up the `config` and
+`layers` sizes it reports.
+
+The AI Gateway tag uses your GitLab version number:
+`self-hosted-v<your-gitlab-version>-ee`.
+
+The executor tag must match the tag your GitLab version requests when it
+starts a flow.
+That tag is pinned per release. To find the tag,
+in `ee/app/services/ai/duo_workflows/start_workflow_service.rb`,
+check the `IMAGE_PATH` constant for your version.
+The tag also appears as the image on the CI/CD job that a flow creates.
+The newest tag in the registry is often ahead of the tag your version
+requests, so do not select the tag by listing the registry.
+
+In an offline environment, pin the instance to the image you transferred
+instead of tracking the version default.
+Use either of the following:
+
+- The `image` key in a project's `.gitlab/duo/agent-config.yml` file, which
+  applies to flows in that project.
+- The `duo_workflows_default_image_registry` application setting, which
+  accepts a full image reference, including a tag, and applies to every
+  project.
+
+ClickHouse is not required for GitLab Duo Agentic Chat, Code
+Suggestions, GitLab Duo Code Review, and Agent Platform flows.
+If you need analytics about GitLab Duo usage, you must also transfer and configure
+[ClickHouse](../../integration/clickhouse.md)
+(`docker.io/clickhouse/clickhouse-server`).
+
+For FIPS-validated environments, use the AI Gateway FIPS image
+instead of the standard image.
+The FIPS image uses the same `self-hosted-vX.Y.Z-ee` tag format.
+FIPS versioned tags are available in GitLab 18.10 and later.
+For more information, see
+[FIPS-validated images](../../install/install_ai_gateway.md#fips-validated-images).
+
+Neither `skopeo copy` nor `docker save` transfers image signatures.
+To check the authenticity of the FIPS image, run
+[`cosign verify`](../../install/install_ai_gateway.md#verify-image-signatures)
+on the connected machine before you transfer the image.
+
+### LLM model weights
+
+LLM model weights are large files that vLLM reads directly from the
+filesystem.
+These files are not distributed as container images.
+
+Mistral Small 24B (~48 GB) is used in the examples on this page.
+It supports both Code Suggestions and GitLab Duo Chat.
+For other model options and GPU requirements, see
+[Supported models and hardware requirements](supported_models_and_hardware_requirements.md).
+
+## Transfer container images
+
+On a connected machine, save the required images as archives,
+then load them into your internal registry on the offline side.
+
+### Save images on the connected machine
+
+To save images, run `skopeo` on the machine connected to the internet with the following command:
+
+```shell
+GITLAB_VERSION="18.10.0"
+EXECUTOR_VERSION="v0.0.6"
+VLLM_VERSION="v0.18.1"
+
+skopeo copy \
+  docker://registry.gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/model-gateway:self-hosted-v${GITLAB_VERSION}-ee \
+  docker-archive:aigw.tar
+
+skopeo copy \
+  docker://registry.gitlab.com/gitlab-org/duo-workflow/default-docker-image/workflow-generic-image:${EXECUTOR_VERSION} \
+  docker-archive:executor.tar
+
+skopeo copy \
+  docker://docker.io/vllm/vllm-openai:${VLLM_VERSION} \
+  docker-archive:vllm.tar
+```
+
+If your connected machine uses a proxy, set `HTTPS_PROXY` before
+running `skopeo`:
+
+```shell
+export HTTPS_PROXY="http://proxy.example.com:8080"
+```
+
+Alternatively, use `docker save` if skopeo is not available:
+
+```shell
+GITLAB_VERSION="18.10.0"
+
+docker pull registry.gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/model-gateway:self-hosted-v${GITLAB_VERSION}-ee
+docker save \
+  registry.gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/model-gateway:self-hosted-v${GITLAB_VERSION}-ee \
+  --output aigw.tar
+```
+
+### Load images into the internal registry
+
+Transfer the archives to the offline environment, then load them
+into your internal registry.
+
+> [!note]
+> Shell variables do not persist across machines.
+> Set `INTERNAL_REGISTRY`, `GITLAB_VERSION`, `EXECUTOR_VERSION`,
+> and `VLLM_VERSION` again on the offline host.
+
+If your internal registry uses a self-signed certificate, configure
+skopeo to trust it:
+
+```shell
+mkdir --parents /etc/containers/certs.d/<registry-host>
+cp ca.crt /etc/containers/certs.d/<registry-host>/ca.crt
+```
+
+Then load the images:
+
+```shell
+INTERNAL_REGISTRY="registry.internal.example.com/duo"
+GITLAB_VERSION="18.10.0"
+EXECUTOR_VERSION="v0.0.6"
+VLLM_VERSION="v0.18.1"
+
+skopeo copy \
+  docker-archive:aigw.tar \
+  docker://${INTERNAL_REGISTRY}/ai-gateway:self-hosted-v${GITLAB_VERSION}-ee
+
+skopeo copy \
+  docker-archive:executor.tar \
+  docker://${INTERNAL_REGISTRY}/workflow-generic-image:${EXECUTOR_VERSION}
+
+skopeo copy \
+  docker-archive:vllm.tar \
+  docker://${INTERNAL_REGISTRY}/vllm-openai:${VLLM_VERSION}
+```
+
+## Transfer LLM model weights
+
+On a connected machine, to download the model weights, use either
+the Hugging Face CLI or `git lfs`.
+
+With the Hugging Face CLI:
+
+```shell
+pip install huggingface_hub
+huggingface-cli download mistralai/Mistral-Small-3.2-24B-Instruct-2506 \
+  --local-dir ./mistral-small-3.2-24b
+```
+
+If `huggingface-cli` is not available in your version of `huggingface_hub`,
+use `hf download` with the same arguments.
+
+With `git lfs` (no Python required):
+
+```shell
+dnf install --assumeyes git-lfs  # On Debian/Ubuntu: apt-get install git-lfs
+git lfs install
+git clone https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506
+```
+
+Transfer the downloaded directory to the offline environment and
+place it on a filesystem path accessible to the vLLM container
+(for example, `/data/models/mistral-small-3.2-24b`).
+
+## Start the AI Gateway
+
+To run the AI Gateway container with your internal registry image:
+
+1. Generate the required JWT signing keys:
+
+   ```shell
+   openssl genrsa -out aigw_signing.key 2048
+   openssl genrsa -out aigw_validation.key 2048
+   openssl genrsa -out duo_workflow_jwt.key 2048
+   openssl genrsa -out duo_workflow_validation.key 2048
+   ```
+
+1. Run the AI Gateway container using your internal registry image:
+
+   ```shell
+   INTERNAL_REGISTRY="registry.internal.example.com/duo"
+   GITLAB_VERSION="18.10.0"
+   GITLAB_DOMAIN="gitlab.internal.example.com"
+
+   docker run --detach \
+     --publish 5052:5052 \
+     --publish 50052:50052 \
+     --env AIGW_GITLAB_URL=https://${GITLAB_DOMAIN} \
+     --env AIGW_GITLAB_API_URL=https://${GITLAB_DOMAIN}/api/v4/ \
+     --env AIGW_SELF_SIGNED_JWT__SIGNING_KEY="$(cat aigw_signing.key)" \
+     --env AIGW_SELF_SIGNED_JWT__VALIDATION_KEY="$(cat aigw_validation.key)" \
+     --env DUO_WORKFLOW_AUTH__ENABLED="true" \
+     --env DUO_WORKFLOW_SELF_SIGNED_JWT__SIGNING_KEY="$(cat duo_workflow_jwt.key)" \
+     --env DUO_WORKFLOW_SELF_SIGNED_JWT__VALIDATION_KEY="$(cat duo_workflow_validation.key)" \
+     --env DUO_WORKFLOW_AUTH__OIDC_CUSTOMER_PORTAL_URL=https://${GITLAB_DOMAIN} \
+     --env AIGW_CUSTOMER_PORTAL_URL=https://${GITLAB_DOMAIN} \
+     ${INTERNAL_REGISTRY}/ai-gateway:self-hosted-v${GITLAB_VERSION}-ee
+   ```
+
+Set `DUO_WORKFLOW_AUTH__OIDC_CUSTOMER_PORTAL_URL` and `AIGW_CUSTOMER_PORTAL_URL`
+to your GitLab instance URL to ensure the following:
+
+- The AI Gateway does not try to reach the Customers Portal,
+  which is not available to offline environments.
+- A 20-second delay does not occur on each request.
+
+For TLS termination and additional configuration options, see
+[Install the GitLab AI Gateway](../../install/install_ai_gateway.md).
+
+## Start vLLM
+
+Run vLLM to serve your transferred model weights:
+
+```shell
+INTERNAL_REGISTRY="registry.internal.example.com/duo"
+VLLM_VERSION="v0.18.1"
+
+docker run --detach \
+  --gpus all \
+  --volume /data/models/mistral-small-3.2-24b:/model \
+  --publish 8000:8000 \
+  ${INTERNAL_REGISTRY}/vllm-openai:${VLLM_VERSION} \
+  --model /model \
+  --served_model_name custom_openai/mistral-small-3.2-24b \
+  --tensor-parallel-size <number-of-gpus>
+```
+
+Replace `<number-of-gpus>` with the number of GPUs available.
+For a single GPU, use `--tensor-parallel-size 1`.
+For Podman, replace `--gpus all` with
+`--device nvidia.com/gpu=all --security-opt label=disable`.
+The `--security-opt label=disable` flag is required on
+SELinux-enforcing systems for GPU device access.
+
+After startup, verify the model is loaded:
+
+```shell
+curl --silent "http://localhost:8000/v1/models"
+```
+
+- For more information about vLLM configurations, see
+  [Supported LLM serving platforms](supported_llm_serving_platforms.md).
+- For information about how to deploy vLLM, see
+  [Example model deployment with vLLM](vllm_gpt_oss_120b.md).
+
+## Configure the AI Gateway in GitLab
+
+After the AI Gateway and vLLM are running, configure GitLab to use them:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **GitLab Duo**.
+1. Select **Change configuration**.
+1. Under **Local AI Gateway URL**, enter `http://<ai-gateway-host>:5052`.
+1. Under **Local URL for the GitLab Duo Agent Platform service**,
+   enter `<ai-gateway-host>:50052`.
+1. Turn on **GitLab Duo Agent Platform**.
+   After you turn it on, the **Flow execution** section expands.
+1. Under **Image registry**, enter the full reference of the executor image
+   you loaded along with its tag
+   (for example, `registry.internal.example.com/duo/workflow-generic-image:<executor_version>`).
+   GitLab uses a full image reference as is.
+   If you enter only a registry hostname, a flow that does not set its own image pulls
+   `<hostname>/gitlab-org/duo-workflow/default-docker-image/workflow-generic-image`
+   with the tag your GitLab version requests.
+1. Select **Save changes**.
+
+## Add the self-hosted model
+
+Add the self-hosted model deployment to your GitLab instance:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **GitLab Duo**.
+1. Select **Configure models for GitLab Duo**.
+1. Select **Add self-hosted model**.
+1. Complete the fields:
+   - For **Endpoint**, enter the URL of your vLLM server.
+   - For **Model identifier**, enter
+     `custom_openai/mistral-small-3.2-24b`.
+1. Optional. Select **Test connection** to verify the AI Gateway
+   can reach the vLLM endpoint.
+1. Select **Add self-hosted model**.
+
+## Configure offline flow execution
+
+Executor images `v0.0.11` and later include `duo-cli` in `/usr/local/bin/duo`.
+When `duo` is already in the image, the flow's CI/CD job skips the download
+and does not contact `gitlab.com` for `duo-cli`.
+
+Executor images earlier than `v0.0.11` do not include `duo-cli`.
+If your GitLab version requests one of those tags, or if you need a different
+`duo-cli` version, build a custom executor image:
+
+1. On a connected machine, download the `duo-cli` binary:
+
+   ```shell
+   curl --location "https://gitlab.com/api/v4/projects/46519181/packages/generic/duo-cli/9.29.0/duo-linux-x64" \
+     --output duo-linux-x64
+   ```
+
+   To find the current `duo-cli` version, check the `DUO_CLI_VERSION`
+   constant in the GitLab Rails source or the
+   [`duo-cli` packages in the GitLab package registry](https://gitlab.com/gitlab-org/editor-extensions/gitlab-lsp/-/packages).
+
+1. Build the custom image with the binary included:
+
+   ```dockerfile
+   FROM registry.gitlab.com/gitlab-org/duo-workflow/default-docker-image/workflow-generic-image:v0.0.22
+   COPY duo-linux-x64 /usr/local/bin/duo
+   RUN chmod +x /usr/local/bin/duo
+   ```
+
+   Replace `v0.0.22` with the tag your GitLab version requests.
+
+1. Transfer the image to your internal registry using the same
+   `skopeo copy` procedure described above, then reference it
+   in your project's `agent-config.yml`:
+
+   ```yaml
+   image: registry.internal.example.com/duo/duo-executor:v0.0.22
+   ```
+
+If the image is in a project's container registry on this GitLab instance,
+the flow's CI/CD job pulls it across projects. The job runs as an external
+account, and an internal project looks private to an external account, so
+the registry refuses the pull.
+For the access the host project must grant, see
+[Configure flows to pull the image from the GitLab container registry](../../user/duo_agent_platform/flows/execution/images.md#configure-flows-to-pull-the-image-from-the-gitlab-container-registry).
+If the registry requires credentials, configure them on the runner.
+By default, a flow's job does not receive CI/CD variables configured at the
+project, group, or instance level, so a `DOCKER_AUTH_CONFIG` variable defined
+there does not apply.
+For more information, see
+[Provide credentials for the image pull](../../user/duo_agent_platform/flows/execution/images.md#provide-credentials-for-the-image-pull).
+
+## Verify the deployment
+
+1. Confirm that the AI Gateway is running:
+
+   ```shell
+   curl --silent "http://<ai-gateway-host>:5052/monitoring/healthz"
+   ```
+
+1. [Select a self-hosted model for each GitLab Duo feature you want to use](configure_duo_features.md#select-a-self-hosted-model-for-a-feature),
+   including the GitLab Duo Agent Platform features.
+
+   The health check does not pass until you
+   assign a self-hosted model to GitLab Duo Agent Platform features.
+
+1. Run the GitLab Duo health check:
+   1. In the upper-right corner, select **Admin**.
+   1. In the left sidebar, select **GitLab Duo**.
+   1. Select **Run health check**.
+
+   The health check validates AI Gateway connectivity and license
+   status.
+   It does not test model inference for GitLab Duo Chat or Code Suggestions.
+
+1. To verify model inference, send a test request through GitLab Duo Chat
+   or Code Suggestions in the GitLab UI or an IDE.
+
+1. To verify Agent Platform Flows, trigger a flow and confirm that
+   the executor image is pulled from your internal registry and
+   `duo-cli` is not downloaded from `gitlab.com`.
+
+For common issues, see
+[Troubleshooting](troubleshooting.md).
+
+## Update artifacts
+
+When you upgrade your GitLab instance, transfer updated container
+images using the same procedure.
+Use the AI Gateway image tag that matches the new GitLab version.
+
+An upgrade can also change the executor tag the new version requests.
+Check that tag before you upgrade, and transfer the matching executor image
+with the AI Gateway image.
+
+Model weights do not need to be updated when you upgrade GitLab.
+Updates are only required when you change to a different model.
+
+## Rotate the Cloud Connector key
+
+Your GitLab instance signs the tokens it sends to the AI Gateway with its Cloud Connector key.
+The AI Gateway caches the public keys of your instance and rejects a token signed with a key
+it has not loaded.
+
+Prerequisites:
+
+- A single Cloud Connector key. To check, run `sudo gitlab-rake cloud_connector:keys:list`.
+
+To rotate the Cloud Connector key:
+
+1. On the GitLab instance, create a new key:
+
+   ```shell
+   sudo gitlab-rake cloud_connector:keys:create
+   ```
+
+   GitLab publishes the new key and continues to sign tokens with the current key.
+
+1. Restart every AI Gateway container so that the AI Gateway loads the new key:
+
+   ```shell
+   docker restart <container_name>
+   ```
+
+1. Make the new key the signing key:
+
+   ```shell
+   sudo gitlab-rake cloud_connector:keys:rotate
+   ```
+
+1. On every node that runs Puma or Sidekiq, restart them so that they sign with the new key:
+
+   ```shell
+   sudo gitlab-ctl restart puma
+   sudo gitlab-ctl restart sidekiq
+   ```
+
+1. Wait at least one hour after you restart Puma and Sidekiq.
+   Tokens signed with the old key stay valid for up to one hour after they are signed.
+
+1. Remove the old key:
+
+   ```shell
+   sudo gitlab-rake cloud_connector:keys:trim
+   ```
+
+1. Restart every AI Gateway container again.
+   Until every container restarts, the AI Gateway still accepts tokens signed with the old key.
+
+## Related topics
+
+- [Offline GitLab](../../topics/offline/_index.md)
+- [Self-hosted models](_index.md)
+
+## Troubleshooting
+
+When you work with Agent Platform Self-Hosted in an offline environment,
+you might encounter the following issues.
+
+### Error: `Forbidden by auth provider` when using a new Cloud Connector key
+
+If you run `cloud_connector:keys:rotate` before you restart the AI Gateway, the AI Gateway
+rejects tokens signed with the new key with `Forbidden by auth provider`.
+Puma and Sidekiq processes sign with the new key after they restart,
+and their GitLab Duo requests then fail.
+For example, flows fail to start with `Could not obtain Duo Workflow token`.
+
+To resolve this issue, restart the AI Gateway
+after you create the new key and before GitLab signs tokens with it.

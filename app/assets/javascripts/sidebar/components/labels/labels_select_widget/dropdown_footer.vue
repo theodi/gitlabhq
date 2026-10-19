@@ -1,0 +1,50 @@
+<script>
+import { GlDropdownItem } from '@gitlab/ui';
+
+export default {
+  name: 'DropdownFooter',
+  components: {
+    GlDropdownItem,
+  },
+  inject: ['allowLabelCreate', 'labelsManagePath'],
+  props: {
+    footerCreateLabelTitle: {
+      type: String,
+      required: true,
+    },
+    footerManageLabelTitle: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  emits: ['toggle-dropdown-contents-create-view'],
+  computed: {
+    showManageLabelsItem() {
+      return this.footerManageLabelTitle && this.labelsManagePath;
+    },
+  },
+};
+</script>
+
+<template>
+  <div data-testid="dropdown-footer">
+    <gl-dropdown-item
+      v-if="allowLabelCreate"
+      role="button"
+      data-testid="create-label-button"
+      @click.capture.native.stop="$emit('toggle-dropdown-contents-create-view')"
+    >
+      {{ footerCreateLabelTitle }}
+    </gl-dropdown-item>
+    <gl-dropdown-item
+      v-if="showManageLabelsItem"
+      role="button"
+      data-testid="manage-labels-button"
+      :href="labelsManagePath"
+      @click.capture.native.stop
+    >
+      {{ footerManageLabelTitle }}
+    </gl-dropdown-item>
+  </div>
+</template>

@@ -1,0 +1,62 @@
+---
+description: The event tracks SAST metrics
+internal_events: true
+action: collect_sast_scan_metrics_from_pipeline
+identifiers:
+- project
+- namespace
+- user
+product_group: code_scanning
+product_categories:
+- vulnerability_management
+milestone: '17.11'
+introduced_by_url: 'https://gitlab.com/gitlab-org/gitlab/-/merge_requests/186116'
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "name of the analyzers"
+  property:
+    description: "a UUID that identifies a scan"
+  value:
+    description: "exit status of the analyzer where 0 indicates success and 1 indicates error"
+  version:
+    description: "version of the analyzer"
+  exit_code:
+    description: "exit code of the analyzer"
+  override_count:
+    description: "number of configured overrides"
+  passthrough_count:
+    description: "number of configured passthroughs"
+  custom_exclude_path_count:
+    description: "captures whether or not users configured custom exclude paths"
+  time_s:
+    description: "scan time duration in seconds"
+  file_count:
+    description: "project size in terms of number of files"
+  language_feature_usage:
+    description: "counts of programming language features used in the project"
+  scan_mode:
+    description: "scan mode used: full or differential"
+  incremental_scan_enabled:
+    description: "whether incremental scanning (taint signature caching) was enabled (1=yes, 0=no)"
+  total_size_bytes:
+    description: "total size of scanned files in bytes"
+  parse_time_s:
+    description: "time spent parsing files in seconds"
+  rule_count:
+    description: "total number of rules loaded"
+  peak_memory_bytes:
+    description: "peak main memory usage of the scan container in bytes"
+  cpu_count:
+    description: "number of CPUs available to the scan job"
+  memory_limit_bytes:
+    description: "memory limit of the scan job in bytes"
+  pipeline_source:
+    description: "pipeline context: merge_request_event, push, schedule, etc."
+  perf_breakdown:
+    description: "engine-specific performance breakdown as a JSON-encoded string (must not be a nested object — the event validator rejects Hash/Array values); keys carry unit suffixes (_s, _bytes, _count)"
+  dedup_dropped:
+    description: "number of findings the analyzer dropped as duplicates"

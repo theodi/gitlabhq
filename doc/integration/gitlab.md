@@ -1,84 +1,136 @@
-# Integrate your server with GitLab.com
+---
+stage: Software Supply Chain Security
+group: Authentication
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Integrate your server with GitLab.com
+---
 
-Import projects from GitLab.com and login to your GitLab instance with your GitLab.com account.
+{{< details >}}
 
-To enable the GitLab.com OmniAuth provider you must register your application with GitLab.com. 
-GitLab.com will generate an application ID and secret key for you to use.
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed
 
-1.  Sign in to GitLab.com
+{{< /details >}}
 
-1.  Navigate to your profile settings.
+Import projects from GitLab.com and sign in to your GitLab instance with your GitLab.com account.
 
-1.  Select "Applications" in the left menu.
+To enable the GitLab.com OmniAuth provider you must register your application with GitLab.com.
+GitLab.com generates an application ID and secret key for you to use.
 
-1.  Select "New application".
+1. Sign in to GitLab.com.
+1. In the upper-right corner, select your avatar.
+1. Select **Edit profile**.
+1. In the left sidebar, select **Access** > **Applications**.
+1. Provide the required details for **Add new application**.
+   - Name: This can be anything. Consider something like `<Organization>'s GitLab` or `<Your Name>'s GitLab` or something else descriptive.
+   - Redirect URI:
 
-1.  Provide the required details.
-    - Name: This can be anything. Consider something like "\<Organization\>'s GitLab" or "\<Your Name\>'s GitLab" or something else descriptive.
-    - Redirect URI:
+     ```plaintext
+     # You can also use a non-SSL URL, but you should use SSL URLs.
+     https://your-gitlab.example.com/import/gitlab/callback
+     https://your-gitlab.example.com/users/auth/gitlab/callback
+     ```
 
-    ```
-    http://your-gitlab.example.com/import/gitlab/callback
-    http://your-gitlab.example.com/users/auth/gitlab/callback
-    ```
+   The first link is required for the importer and the second for authentication.
 
-    The first link is required for the importer and second for the authorization.
+   If you:
 
-1.  Select "Submit".
+   - Plan to use the importer, you can leave scopes as they are.
+   - Only want to use this application for authentication, you should use a more minimal set of scopes. `read_user` is sufficient.
 
-1.  You should now see a Client ID and Client Secret near the top right of the page (see screenshot). 
-    Keep this page open as you continue configuration. 
-    ![GitLab app](gitlab_app.png)
+1. Select **Save application**.
+1. You should now see an **Application ID** and **Secret**. Keep this page open as you continue
+   configuration.
+1. On your GitLab server, open the configuration file.
 
-1.  On your GitLab server, open the configuration file.
+   For Linux package installations:
 
-    For omnibus package:
+   ```shell
+   sudo editor /etc/gitlab/gitlab.rb
+   ```
 
-    ```sh
-      sudo editor /etc/gitlab/gitlab.rb
-    ```
+   For self-compiled installations:
 
-    For instalations from source:
+   ```shell
+   cd /home/git/gitlab
 
-    ```sh
-      cd /home/git/gitlab
+   sudo -u git -H editor config/gitlab.yml
+   ```
 
-      sudo -u git -H editor config/gitlab.yml
-    ```
+1. Configure the [common settings](omniauth.md#configure-common-settings)
+   to add `gitlab` as a single sign-on provider. This enables Just-In-Time
+   account provisioning for users who do not have an existing GitLab account.
+1. Add the provider configuration:
 
-1.  See [Initial OmniAuth Configuration](omniauth.md#initial-omniauth-configuration) for initial settings.
+   For Linux package installations authenticating against **GitLab.com**:
 
-1.  Add the provider configuration:
+   ```ruby
+   gitlab_rails['omniauth_providers'] = [
+     {
+       name: "gitlab",
+       # label: "Provider name", # optional label for login button, defaults to "GitLab.com"
+       app_id: "YOUR_APP_ID",
+       app_secret: "YOUR_APP_SECRET",
+       args: { scope: "read_user" } # optional: defaults to the scopes of the application
+     }
+   ]
+   ```
 
-    For omnibus package:
+   Or, for Linux package installations authenticating against a different GitLab instance:
 
-    ```ruby
-      gitlab_rails['omniauth_providers'] = [
-        {
-          "name" => "gitlab",
-          "app_id" => "YOUR_APP_ID",
-          "app_secret" => "YOUR_APP_SECRET",
-          "args" => { "scope" => "api" }
-        }
-      ]
-    ```
+   ```ruby
+   gitlab_rails['omniauth_providers'] = [
+     {
+       name: "gitlab",
+       label: "Provider name", # optional label for login button, defaults to "GitLab.com"
+       app_id: "YOUR_APP_ID",
+       app_secret: "YOUR_APP_SECRET",
+       args: { scope: "read_user", # optional: defaults to the scopes of the application
+               client_options: { site: "https://gitlab.example.com" } }
+     }
+   ]
+   ```
 
-    For installations from source:
+   For self-compiled installations authenticating against **GitLab.com**:
 
-    ```
-      - { name: 'gitlab', app_id: 'YOUR_APP_ID',
-        app_secret: 'YOUR_APP_SECRET',
-        args: { scope: 'api' } }
-    ```
+   ```yaml
+   - { name: 'gitlab',
+       # label: 'Provider name', # optional label for login button, defaults to "GitLab.com"
+       app_id: 'YOUR_APP_ID',
+       app_secret: 'YOUR_APP_SECRET',
+   ```
 
-1.  Change 'YOUR_APP_ID' to the Application ID from the GitLab.com application page.
+   Or, for self-compiled installations to authenticate against a different GitLab instance:
 
-1.  Change 'YOUR_APP_SECRET' to the secret from the GitLab.com application page.
+   ```yaml
+   - { name: 'gitlab',
+       label: 'Provider name', # optional label for login button, defaults to "GitLab.com"
+       app_id: 'YOUR_APP_ID',
+       app_secret: 'YOUR_APP_SECRET',
+       args: { "client_options": { "site": 'https://gitlab.example.com' } }
+   ```
 
-1.  Save the configuration file.
+1. Change `'YOUR_APP_ID'` to the Application ID from the GitLab.com application page.
+1. Change `'YOUR_APP_SECRET'` to the secret from the GitLab.com application page.
+1. Save the configuration file.
+1. Implement these changes by using the appropriate method:
+   - For Linux package installations, [reconfigure GitLab](../administration/restart_gitlab.md#reconfigure-a-linux-package-installation).
+   - For self-compiled installations, [restart GitLab](../administration/restart_gitlab.md#self-compiled-installations).
 
-1.  Restart GitLab for the changes to take effect.
+On the sign-in page, there should now be a GitLab.com icon following the
+regular sign-in form. Select the icon to begin the authentication process.
+GitLab.com asks the user to sign in and authorize the GitLab application. If
+everything goes well, the user is returned to your GitLab instance and is
+signed in.
 
-On the sign in page there should now be a GitLab.com icon below the regular sign in form. 
-Click the icon to begin the authentication process. GitLab.com will ask the user to sign in and authorize the GitLab application. 
-If everything goes well the user will be returned to your GitLab instance and will be signed in.
+## Reduce access privileges on sign in
+
+If you use a GitLab instance for authentication, you can reduce access rights when an OAuth application is used for sign in.
+
+Any OAuth application can advertise the purpose of the application with the
+authorization parameter: `gl_auth_type=login`. If the application is
+configured with `api` or `read_api`, the access token is issued with
+`read_user` for login, because no higher permissions are needed.
+
+The GitLab OAuth client is configured to pass this parameter, but other
+applications can also pass it.

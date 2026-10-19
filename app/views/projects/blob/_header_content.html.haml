@@ -1,0 +1,17 @@
+.file-header-content
+  - if Gitlab::MarkupHelper.markup?(blob.path)
+    .js-table-contents
+  = blob_icon blob.mode, blob.name
+
+  %strong.file-title-name.gl-text-strong.gl-break-all{ data: { testid: 'file-name-content' } }
+    = blob.name
+
+  = copy_file_path_button(blob.path)
+
+  %small.gl-mr-1.gl-text-subtle
+    - if blob.symlink?
+      = _('Symbolic link') << ' ·'
+    = number_to_human_size(blob.raw_size)
+
+  - if blob.stored_externally? && blob.external_storage == :lfs
+    = gl_badge_tag(_('LFS'), variant: :neutral)

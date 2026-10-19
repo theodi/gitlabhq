@@ -1,0 +1,15 @@
+---
+table_name: namespace_uploads
+classes:
+- Geo::GroupUpload
+- Group
+- Upload
+feature_categories:
+- groups_and_projects
+description: Stores uploads for Group model
+introduced_by_url:
+milestone: '17.11'
+table_size: small
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces

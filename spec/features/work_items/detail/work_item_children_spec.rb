@@ -1,0 +1,148 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Work item children', :js, feature_category: :team_planning do
+  include DragTo
+
+  let_it_be(:group) { create(:group) }
+  let_it_be_with_reload(:project) { create(:project, :public, namespace: group) }
+  let_it_be_with_reload(:user) { create(:user) }
+  let_it_be(:issue) { create(:issue, project: project) }
+
+  before_all do
+    project.add_developer(user)
+  end
+
+  context 'for signed in user' do
+    let(:child_item) { create(:work_item, :task, project: project) }
+
+    before do
+      sign_in(user)
+
+      visit project_issue_path(project, issue)
+
+      wait_for_requests
+    end
+
+    context 'with quarantine', quarantine: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/issues/2197' do
+      it_behaves_like 'work items hierarchy', 'work-item-tree', :task
+    end
+
+    it 'toggles form', :aggregate_failures do
+      within_testid('work-item-tree') do
+        expect(page).not_to have_selector('[data-testid="add-tree-form"]')
+
+        find_by_testid('add-tree-child-button').click
+        click_button 'New task'
+
+        expect(page).to have_selector('[data-testid="add-tree-form"]')
+
+        click_button 'Cancel'
+
+        expect(page).not_to have_selector('[data-testid="add-tree-form"]')
+      end
+    end
+
+    context 'with existing task' do
+      context 'with confidential issue' do
+        let_it_be_with_reload(:issue) { create(:issue, :confidential, project: project) }
+        let_it_be_with_reload(:task) { create(:work_item, :confidential, :task, project: project) }
+
+        it 'adds an existing child task', :aggregate_failures do
+          within_testid('work-item-tree') do
+            find_by_testid('add-tree-child-button').click
+            click_button 'Existing task'
+
+            expect(page).to have_button('Add task', disabled: true)
+            find_by_testid('work-item-token-select-input').set(task.title)
+            wait_for_all_requests
+            click_button task.title
+
+            expect(page).to have_button('Add task', disabled: false)
+
+            send_keys :escape
+
+            click_button('Add task')
+
+            wait_for_all_requests
+
+            expect(find_by_testid('links-child')).to have_content(task.title)
+          end
+        end
+      end
+    end
+
+    context 'in work item metadata' do
+      let_it_be_with_reload(:label) { create(:label, title: 'Label 1', project: project) }
+      let_it_be_with_reload(:milestone) { create(:milestone, project: project, title: 'v1') }
+      let_it_be_with_reload(:task) do
+        create(
+          :work_item,
+          :task,
+          project: project,
+          labels: [label],
+          assignees: [user],
+          milestone: milestone
+        )
+      end
+
+      before do
+        visit project_issue_path(project, issue)
+
+        wait_for_requests
+      end
+
+      it 'displays labels, milestone and assignee for work item children', :aggregate_failures do
+        within_testid('work-item-tree') do
+          find_by_testid('add-tree-child-button').click
+          click_button 'Existing task'
+
+          find_by_testid('work-item-token-select-input').set(task.title)
+          wait_for_all_requests
+          click_button task.title
+
+          send_keys :escape
+
+          click_button('Add task')
+
+          wait_for_all_requests
+        end
+
+        within_testid('links-child') do
+          expect(page).to have_content(task.title)
+          expect(page).to have_content(label.title)
+          expect(page).to have_link(user.name)
+          expect(page).to have_content(milestone.title)
+        end
+      end
+    end
+  end
+
+  context 'when creating more than one child in a row' do
+    before do
+      sign_in(user)
+
+      visit project_issue_path(project, issue)
+
+      wait_for_requests
+    end
+
+    it 'keeps the create button usable after the first child is created', :aggregate_failures do
+      within_testid('work-item-tree') do
+        find_by_testid('add-tree-child-button').click
+        click_button 'New task'
+
+        fill_in 'Add a title', with: 'First task'
+        click_button 'Create task'
+
+        expect(page).to have_link 'First task'
+
+        fill_in 'Add a title', with: 'Second task'
+        click_button 'Create task'
+
+        expect(page).to have_link 'Second task'
+      end
+    end
+  end
+end

@@ -1,0 +1,65 @@
+/**
+ * !! NOTE: Do not add more code in this file:
+ *
+ * https://gitlab.com/gitlab-org/gitlab/-/issues/267602
+ *
+ * For new pipeline CSS please consider:
+ *
+ * For pipelines tables and lists:
+ * - `app/assets/stylesheets/page_bundles/pipelines.scss`
+ *
+ * For individual pipelines and mini-pipelines:
+ * - `app/assets/stylesheets/page_bundles/pipeline.scss`
+ *
+**/
+
+.ci-table {
+  .avatar {
+    margin-left: 0;
+    float: none;
+  }
+
+  .branch-commit {
+    .ref-name {
+      font-weight: $gl-font-weight-bold;
+      max-width: 100px;
+      overflow: hidden;
+      display: inline-block;
+      white-space: nowrap;
+      vertical-align: middle;
+      text-overflow: ellipsis;
+    }
+
+    svg {
+      height: 14px;
+      width: 14px;
+      vertical-align: middle;
+      @apply gl-fill-icon-subtle;
+    }
+
+    .sprite {
+      width: 12px;
+      height: 12px;
+      @apply gl-fill-icon-default;
+    }
+
+    .commit-sha {
+      color: $blue-600;
+    }
+
+    .badge {
+      margin-right: 4px;
+    }
+  }
+
+  .duration,
+  .finished-at {
+    @apply gl-text-subtle;
+    margin: 0;
+    white-space: nowrap;
+  }
+
+  .build-link a {
+    @apply gl-text-default;
+  }
+}

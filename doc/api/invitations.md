@@ -1,0 +1,197 @@
+---
+stage: Tenant Scale
+group: Organizations
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Invitations API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to manage invitations and add users to a [group](../user/group/_index.md#add-users-to-a-group) or [project](../user/project/members/_index.md).
+
+## Add a member to a group or project
+
+Adds a new member. You can specify a user ID or invite a user by email.
+
+Prerequisites:
+
+- For groups, you must have the Owner role for the group.
+- For projects:
+  - You must have the Maintainer or Owner role for the project.
+  - [Group membership lock](../user/group/access_and_permissions.md#prevent-members-from-being-added-to-projects-in-a-group) must be disabled.
+- For GitLab Self-Managed instances:
+  - If [new user accounts are not allowed](../administration/settings/sign_up_restrictions.md#disable-new-user-account-creation), an administrator must add the user.
+  - If [user invitations are not allowed](../administration/settings/visibility_and_access_controls.md#prevent-invitations-to-groups-and-projects), an administrator must add the user.
+  - If [administrator approval for role promotions is enabled](../administration/settings/sign_up_restrictions.md#turn-on-administrator-approval-for-role-promotions), an administrator must approve the invitation.
+
+```plaintext
+POST /groups/:id/invitations
+POST /projects/:id/invitations
+```
+
+| Attribute        | Type              | Required                          | Description |
+| ---------------- | ----------------- | --------------------------------- | ----------- |
+| `id`             | integer or string | yes                               | The ID or [URL-encoded path of the project or group](rest/_index.md#namespaced-paths) |
+| `email`          | string            | yes (if `user_id` isn't provided) | The email of the new member or multiple emails separated by commas. |
+| `user_id`        | integer or string | yes (if `email` isn't provided)   | The ID of the new member or multiple IDs separated by commas. |
+| `access_level`   | integer           | yes                               | A valid [access level](../user/permissions.md#default-roles). Possible values: `10` (Guest), `15` (Planner), `20` (Reporter), `25` (Security Manager), `30` (Developer), `40` (Maintainer), or `50` (Owner). On Premium and Ultimate, `5` (Minimal access) is also valid when `id` is a top-level group. |
+| `expires_at`     | string            | no                                | A date string in the format `YEAR-MONTH-DAY` |
+| `invite_source`  | string            | no                                | The source of the invitation that starts the member creation process. |
+| `member_role_id` | integer           | no                                | Assigns the new member to the provided custom role. Ultimate only. |
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/invitations" \
+  --data "email=test@example.com&user_id=1&access_level=30"
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/:id/invitations" \
+  --data "email=test@example.com&user_id=1&access_level=30"
+```
+
+Example responses:
+
+When all emails were successfully sent:
+
+```json
+{  "status":  "success"  }
+```
+
+When there were any errors sending the email:
+
+```json
+{
+  "status": "error",
+  "message": {
+               "test@example.com": "Invite email has already been taken",
+               "test2@example.com": "User already exists in source",
+               "test_username": "Access level is not included in the list"
+             }
+}
+```
+
+To enable **Manage non-billable promotions**,
+you must first enable the `enable_member_promotion_management` application setting.
+
+Example response:
+
+```json
+{
+  "queued_users": {
+    "username_1": "Request queued for administrator approval."
+  },
+  "status": "success"
+}
+```
+
+## List all pending invitations for a group or project
+
+Lists all pending invitations viewable by the authenticated user.
+Returns invitations to direct members only, and not through inherited ancestors' groups.
+
+This function takes pagination parameters `page` and `per_page` to restrict the list of members.
+
+```plaintext
+GET /groups/:id/invitations
+GET /projects/:id/invitations
+```
+
+| Attribute  | Type           | Required | Description |
+|------------|----------------|----------|-------------|
+| `id`       | integer or string | yes      | The ID or [URL-encoded path of the project or group](rest/_index.md#namespaced-paths) |
+| `page`     | integer        | no       | Page to retrieve |
+| `per_page` | integer        | no       | Number of member invitations to return per page |
+| `query`    | string         | no       | A query string to search for invited members by invite email. Query text must match email address exactly. When empty, returns all invitations. |
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/invitations?query=member@example.org"
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/:id/invitations?query=member@example.org"
+```
+
+Example response:
+
+```json
+ [
+   {
+     "id": 1,
+     "invite_email": "member@example.org",
+     "created_at": "2020-10-22T14:13:35Z",
+     "access_level": 30,
+     "expires_at": "2020-11-22T14:13:35Z",
+     "user_name": "Raymond Smith",
+     "created_by_name": "Administrator"
+   },
+]
+```
+
+## Update an invitation to a group or project
+
+Updates a pending invitation to a group or project.
+
+```plaintext
+PUT /groups/:id/invitations/:email
+PUT /projects/:id/invitations/:email
+```
+
+| Attribute      | Type              | Required | Description |
+| -------------- | ----------------- | -------- | ----------- |
+| `id`           | integer or string | yes      | The ID or [URL-encoded path of the project or group](rest/_index.md#namespaced-paths). |
+| `email`        | string            | yes      | The email address the invitation was previously sent to. |
+| `access_level` | integer           | no       | A valid [access level](../user/permissions.md#default-roles). Possible values: `10` (Guest), `15` (Planner), `20` (Reporter), `25` (Security Manager), `30` (Developer), `40` (Maintainer), or `50` (Owner). If omitted, the invitation keeps its current access level. |
+| `expires_at`   | string            | no       | A date string in ISO 8601 format (`YYYY-MM-DDTHH:MM:SSZ`). |
+
+```shell
+curl --request PUT \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/55/invitations/email@example.org?access_level=40"
+curl --request PUT \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/55/invitations/email@example.org?access_level=40"
+```
+
+Example response:
+
+```json
+{
+  "expires_at": "2012-10-22T14:13:35Z",
+  "access_level": 40,
+}
+```
+
+## Delete an invitation to a group or project
+
+Deletes a pending invitation to the specified email address.
+
+```plaintext
+DELETE /groups/:id/invitations/:email
+DELETE /projects/:id/invitations/:email
+```
+
+| Attribute | Type           | Required | Description |
+|-----------|----------------|----------|-------------|
+| `id`      | integer or string | yes      | The ID or [URL-encoded path of the project or group](rest/_index.md#namespaced-paths) |
+| `email`   | string         | yes      | The email address to which the invitation was previously sent |
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/55/invitations/email@example.org"
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/55/invitations/email@example.org"
+```
+
+- Returns `204` and no content on success.
+- Returns `403` forbidden if unauthorized to delete the invitation.
+- Returns `404` not found if authorized and no invitation is found for that email address.
+- Returns `409` if the request was valid but the invitation could not be deleted.

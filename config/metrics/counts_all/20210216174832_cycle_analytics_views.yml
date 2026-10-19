@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: counts.cycle_analytics_views
+description: Total visits to VSA (both group- and project-level) all time
+product_group: optimize
+product_categories:
+- value_stream_management
+value_type: number
+status: active
+time_frame: all
+data_source: internal_events
+events:
+- name: view_cycle_analytics
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

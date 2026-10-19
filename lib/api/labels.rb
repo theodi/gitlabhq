@@ -1,97 +1,171 @@
+# frozen_string_literal: true
+
 module API
-  # Labels API
-  class Labels < Grape::API
+  class Labels < ::API::Base
+    include PaginationParams
+    include APIGuard
+
+    helpers ::API::Helpers::LabelHelpers
+
+    allow_access_with_scope :ai_workflows, if: ->(request) { request.get? || request.head? }
+
     before { authenticate! }
 
-    resource :projects do
-      # Get all labels of the project
-      #
-      # Parameters:
-      #   id (required) - The ID of a project
-      # Example Request:
-      #   GET /projects/:id/labels
+    feature_category :team_planning
+    urgency :low
+
+    LABEL_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS.merge(
+      name: ::API::NO_SLASH_URL_PART_REGEX,
+      label_id: ::API::NO_SLASH_URL_PART_REGEX).freeze
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: LABEL_ENDPOINT_REQUIREMENTS do
+      desc 'List all project labels' do
+        detail 'Lists all labels for a specified project. By default, this request returns 20 results at a time ' \
+          'because the API results are paginated.'
+        success Entities::ProjectLabel
+        tags ['labels']
+      end
+      params do
+        optional :with_counts, type: Boolean, default: false,
+          desc: 'If `true`, includes issue and merge request counts.'
+        optional :include_ancestor_groups, type: Boolean, default: true,
+          desc: 'If `true`, includes ancestor groups.'
+        optional :search, type: String,
+          desc: 'Keyword to filter labels by.'
+        optional :archived, type: Boolean,
+          desc: 'If `true`, returns only archived labels. If `false`, returns only non-archived labels. ' \
+            'If omitted, returns all labels. Introduced in GitLab 18.10.'
+
+        use :pagination
+      end
+      route_setting :authorization, permissions: :read_label, boundary_type: :project
       get ':id/labels' do
-        present user_project.labels, with: Entities::Label
+        get_labels(user_project, Entities::ProjectLabel, declared_params)
       end
 
-      # Creates a new label
-      #
-      # Parameters:
-      #   id    (required) - The ID of a project
-      #   name  (required) - The name of the label to be deleted
-      #   color (required) - Color of the label given in 6-digit hex
-      #                      notation with leading '#' sign (e.g. #FFAABB)
-      # Example Request:
-      #   POST /projects/:id/labels
+      desc 'Retrieve a project label' do
+        detail 'Retrieves a specified label for a project.'
+        success Entities::ProjectLabel
+        tags ['labels']
+      end
+      params do
+        requires :name, types: [String, Integer], desc: 'ID or name of the label.'
+        optional :include_ancestor_groups, type: Boolean, default: true,
+          desc: 'If `true`, includes ancestor groups.'
+      end
+      route_setting :authorization, permissions: :read_label, boundary_type: :project
+      get ':id/labels/:name' do
+        get_label(user_project, Entities::ProjectLabel, declared_params)
+      end
+
+      desc 'Create a project label' do
+        detail 'Creates a label for a specified project.'
+        success Entities::ProjectLabel
+        tags ['labels']
+      end
+      params do
+        use :label_create_params
+        optional :priority, type: Integer, desc: 'The priority of the label', allow_blank: true
+      end
+      route_setting :authorization, permissions: :create_label, boundary_type: :project
       post ':id/labels' do
-        authorize! :admin_label, user_project
-        required_attributes! [:name, :color]
-
-        attrs = attributes_for_keys [:name, :color]
-        label = user_project.find_label(attrs[:name])
-
-        conflict!('Label already exists') if label
-
-        label = user_project.labels.create(attrs)
-
-        if label.valid?
-          present label, with: Entities::Label
-        else
-          render_validation_error!(label)
-        end
+        create_label(user_project, Entities::ProjectLabel)
       end
 
-      # Deletes an existing label
-      #
-      # Parameters:
-      #   id    (required) - The ID of a project
-      #   name  (required) - The name of the label to be deleted
-      #
-      # Example Request:
-      #   DELETE /projects/:id/labels
-      delete ':id/labels' do
-        authorize! :admin_label, user_project
-        required_attributes! [:name]
-
-        label = user_project.find_label(params[:name])
-        not_found!('Label') unless label
-
-        label.destroy
+      desc 'Update an existing label. At least one optional parameter is required.' do
+        detail 'Deprecated in GitLab 12.4. Use PUT /projects/:id/labels/:name instead.'
+        deprecated true
+        success Entities::ProjectLabel
+        tags ['labels']
       end
-
-      # Updates an existing label. At least one optional parameter is required.
-      #
-      # Parameters:
-      #   id        (required) - The ID of a project
-      #   name      (required) - The name of the label to be deleted
-      #   new_name  (optional) - The new name of the label
-      #   color     (optional) - Color of the label given in 6-digit hex
-      #                          notation with leading '#' sign (e.g. #FFAABB)
-      # Example Request:
-      #   PUT /projects/:id/labels
+      params do
+        optional :label_id, type: Integer, desc: 'ID of the label to update.'
+        optional :name, type: String, desc: 'Name of the label to update.'
+        use :project_label_update_params
+        exactly_one_of :label_id, :name
+      end
+      route_setting :authorization, permissions: :update_label, boundary: -> { label_update_boundary },
+        boundaries: [{ boundary_type: :project }, { boundary_type: :group }]
       put ':id/labels' do
-        authorize! :admin_label, user_project
-        required_attributes! [:name]
+        update_label(user_project, Entities::ProjectLabel)
+      end
 
-        label = user_project.find_label(params[:name])
-        not_found!('Label not found') unless label
+      desc 'Delete an existing label' do
+        detail 'Deprecated in GitLab 12.4. Use DELETE /projects/:id/labels/:name instead.'
+        deprecated true
+        success Entities::ProjectLabel
+        tags ['labels']
+      end
+      params do
+        optional :label_id, type: Integer, desc: 'ID of the label to delete.'
+        optional :name, type: String, desc: 'Name of the label to delete.'
+        exactly_one_of :label_id, :name
+      end
+      route_setting :authorization, permissions: :delete_label, boundary: -> { label_owner_boundary },
+        boundaries: [{ boundary_type: :project }, { boundary_type: :group }]
+      delete ':id/labels' do
+        delete_label(user_project)
+      end
 
-        attrs = attributes_for_keys [:new_name, :color]
+      desc 'Promote a label to a group label' do
+        detail 'Added in GitLab 12.3 and deprecated in GitLab 12.4. ' \
+          'Use PUT /projects/:id/labels/:name/promote instead.'
+        deprecated true
+        success Entities::GroupLabel
+        tags ['labels']
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the label to promote.'
+      end
+      route_setting :authorization, permissions: :promote_label, boundary_type: :project
+      put ':id/labels/promote' do
+        promote_label(user_project)
+      end
 
-        if attrs.empty?
-          render_api_error!('Required parameters "new_name" or "color" ' \
-                            'missing',
-                            400)
-        end
+      desc 'Update a project label' do
+        detail 'Updates a specified label for a project with a different name or color. At least one parameter is ' \
+          'required to update the label.'
+        success Entities::ProjectLabel
+        tags ['labels']
+      end
+      params do
+        requires :name, type: String, desc: 'Name or ID of the label to update.'
+        use :project_label_update_params
+      end
+      route_setting :authorization, permissions: :update_label, boundary: -> { label_update_boundary },
+        boundaries: [{ boundary_type: :project }, { boundary_type: :group }]
+      put ':id/labels/:name' do
+        update_label(user_project, Entities::ProjectLabel)
+      end
 
-        # Rename new name to the actual label attribute name
-        attrs[:name] = attrs.delete(:new_name) if attrs.key?(:new_name)
+      desc 'Delete a project label' do
+        detail 'Deletes a specified label from a project.'
+        success Entities::ProjectLabel
+        tags ['labels']
+      end
+      params do
+        requires :name, type: String, desc: 'Name or ID of the label to delete.'
+      end
+      route_setting :authorization, permissions: :delete_label, boundary: -> { label_owner_boundary },
+        boundaries: [{ boundary_type: :project }, { boundary_type: :group }]
+      delete ':id/labels/:name' do
+        delete_label(user_project)
+      end
 
-        if label.update(attrs)
-          present label, with: Entities::Label
-        else
-          render_validation_error!(label)
-        end
+      desc 'Promote a project label to a group label' do
+        detail 'Promotes a specified project label to a group label. The label keeps its ID.'
+        success Entities::GroupLabel
+        tags ['labels']
+      end
+      params do
+        requires :name, type: String, desc: 'Name or ID of the label to promote.'
+      end
+      route_setting :authorization, permissions: :promote_label, boundary_type: :project
+      put ':id/labels/:name/promote' do
+        promote_label(user_project)
       end
     end
   end

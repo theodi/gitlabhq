@@ -1,0 +1,297 @@
+import { GlFormInputGroup, GlMultiStepFormTemplate } from '@gitlab/ui';
+import { nextTick } from 'vue';
+import MockAdapter from 'axios-mock-adapter';
+import axios from '~/lib/utils/axios_utils';
+import { HTTP_STATUS_OK } from '~/lib/utils/http_status';
+import { visitUrl } from '~/lib/utils/url_utility';
+import waitForPromises from 'helpers/wait_for_promises';
+import { shallowMountExtended, mountExtended } from 'helpers/vue_test_utils_helper';
+import ImportByUrlForm from '~/projects/new_v2/components/import_by_url_form.vue';
+import SharedProjectCreationFields from '~/projects/new_v2/components/shared_project_creation_fields.vue';
+
+jest.mock('~/lib/utils/url_utility', () => ({
+  ...jest.requireActual('~/lib/utils/url_utility'),
+  visitUrl: jest.fn(),
+}));
+
+const $toast = {
+  show: jest.fn(),
+};
+
+describe('Import Project by URL Form', () => {
+  let wrapper;
+  let mockAxios;
+
+  const mockImportByUrlValidatePath = '/import/url/validate';
+  const mockNewProjectPath = '/projects/new';
+  const mockNewProjectFormPath = '/projects';
+  const mockNamespace = {
+    fullPath: 'john.doe',
+    id: 2,
+    visibility: 'internal',
+  };
+  const defaultProps = {
+    namespace: mockNamespace,
+  };
+
+  const createComponent = (options = {}, mockProps = defaultProps) => {
+    const { provide = {}, mountFn = shallowMountExtended } = options;
+
+    wrapper = mountFn(ImportByUrlForm, {
+      provide: {
+        importByUrlValidatePath: mockImportByUrlValidatePath,
+        newProjectPath: mockNewProjectPath,
+        newProjectFormPath: mockNewProjectFormPath,
+        hasRepositoryMirrorsFeature: false,
+        ...provide,
+      },
+      propsData: mockProps,
+      mocks: {
+        $toast,
+      },
+      stubs: {
+        GlFormInputGroup,
+        SharedProjectCreationFields: true,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    mockAxios = new MockAdapter(axios);
+  });
+
+  afterEach(() => {
+    mockAxios.restore();
+  });
+
+  const findImportButton = () => wrapper.findComponentByTestId('import-project-by-url-button');
+  const findBackButton = () => wrapper.findComponentByTestId('import-project-by-url-back-button');
+  const findUrlInput = () => wrapper.findComponentByTestId('repository-url');
+  const findUrlInputWrapper = () => wrapper.findByTestId('repository-url-form-group');
+  const findUsernameInput = () => wrapper.findComponentByTestId('repository-username');
+  const findPasswordInput = () => wrapper.findComponentByTestId('repository-password');
+  const findCheckConnectionButton = () => wrapper.findComponentByTestId('check-connection');
+  const findMirrorCheckbox = () => wrapper.findByTestId('import-project-by-url-repo-mirror');
+  const findSharedFields = () => wrapper.findComponent(SharedProjectCreationFields);
+  const findMultiStepTemplate = () => wrapper.findComponent(GlMultiStepFormTemplate);
+
+  describe('default state', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('includes URL, username and password', () => {
+      expect(findUrlInput().attributes('placeholder')).toBe(
+        'https://gitlab.company.com/group/project.git',
+      );
+      expect(findUrlInput().attributes('name')).toBe('project[import_url]');
+      expect(findPasswordInput().attributes('name')).toBe('project[import_url_password]');
+      expect(findUsernameInput().attributes('id')).toBe('repository-username');
+      expect(findMirrorCheckbox().attributes('name')).toBe('project[mirror]');
+    });
+
+    it('includes a hidden CSRF token', () => {
+      const csrfInput = wrapper.find('input[name="authenticity_token"]');
+      expect(csrfInput.exists()).toBe(true);
+      expect(csrfInput.attributes('type')).toBe('hidden');
+    });
+
+    it('includes multi-step form template with correct props', () => {
+      const template = findMultiStepTemplate();
+      expect(template.props('title')).toBe('Import repository by URL');
+      expect(template.props('currentStep')).toBe(null);
+    });
+
+    it('passes the namespace prop through to shared fields', () => {
+      expect(findSharedFields().props('namespace')).toMatchObject(mockNamespace);
+    });
+
+    it('renders "Create project" button as disabled', () => {
+      expect(findImportButton().text()).toBe('Create project');
+      expect(findImportButton().attributes('type')).toBe('submit');
+      expect(findImportButton().props('disabled')).toBe(true);
+    });
+
+    it('navigates to `new project` page when back button is clicked', () => {
+      findBackButton().vm.$emit('click');
+      expect(visitUrl).toHaveBeenCalledWith(mockNewProjectPath);
+    });
+
+    describe('mirror repository functionality', () => {
+      it('is disabled when hasRepositoryMirrorsFeature is false', () => {
+        expect(findMirrorCheckbox().attributes('disabled')).not.toBeUndefined();
+      });
+
+      it('is not disabled when hasRepositoryMirrorsFeature is true', () => {
+        createComponent({ provide: { hasRepositoryMirrorsFeature: true } });
+        expect(findMirrorCheckbox().attributes('disabled')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('when parent namespace was pre-selected', () => {
+    beforeEach(() => {
+      createComponent(
+        {},
+        { namespace: { id: 'group-1', fullPath: 'my-group', visibility: 'public' } },
+      );
+    });
+
+    it('passes the pre-selected namespace to shared fields', () => {
+      expect(findSharedFields().props('namespace')).toMatchObject({
+        id: 'group-1',
+        fullPath: 'my-group',
+        visibility: 'public',
+      });
+    });
+  });
+
+  describe('validation', () => {
+    const badUrl = 'nothing to see';
+    const fineUrl = 'https://foo.com/bar.git';
+
+    beforeEach(() => {
+      createComponent({ mountFn: mountExtended });
+    });
+
+    it('validates the URL input on blur when url is invalid', async () => {
+      expect(findUrlInputWrapper().classes()).not.toContain('is-invalid');
+      findUrlInput().vm.$emit('input', badUrl);
+      await nextTick();
+      await findUrlInput().trigger('blur');
+      await nextTick();
+      expect(findUrlInputWrapper().classes()).toContain('is-invalid');
+    });
+
+    it('skips validating URL input on blur when nothing is typed', async () => {
+      findUrlInput().vm.$emit('input', '');
+      await nextTick();
+      await findUrlInput().trigger('blur');
+      await nextTick();
+      expect(findUrlInputWrapper().classes()).not.toContain('is-invalid');
+    });
+
+    it('resets the invalid URL feedback when user refocuses and types', async () => {
+      findUrlInput().vm.$emit('input', badUrl);
+      await nextTick();
+      await findUrlInput().trigger('blur');
+      await nextTick();
+      expect(findUrlInputWrapper().classes()).toContain('is-invalid');
+
+      await findUrlInput().vm.$emit('input', '');
+      await nextTick();
+      expect(findUrlInputWrapper().classes()).not.toContain('is-invalid');
+    });
+
+    it('enables the `create project` button when a reasonable git URL is entered', async () => {
+      findSharedFields().vm.$emit('on-validate-project-fields', true);
+      findUrlInput().vm.$emit('input', badUrl);
+      await nextTick();
+      await findUrlInput().trigger('blur');
+      await nextTick();
+      expect(findImportButton().props('disabled')).toBe(true);
+
+      await findUrlInput().vm.$emit('input', fineUrl);
+      await findUrlInput().trigger('blur');
+      await nextTick();
+      expect(findImportButton().props('disabled')).toBe(false);
+    });
+
+    it('enables the `create project` button when a valid namespace path is registered', async () => {
+      findSharedFields().vm.$emit('on-validate-project-fields', true);
+      findUrlInput().vm.$emit('input', fineUrl);
+      await nextTick();
+      await findUrlInput().trigger('blur');
+      await nextTick();
+      expect(findImportButton().props('disabled')).toBe(false);
+    });
+
+    it('disables the `create project` button when invalid namespace path is registered', async () => {
+      findSharedFields().vm.$emit('on-validate-project-fields', false);
+      findUrlInput().vm.$emit('input', fineUrl);
+      await nextTick();
+      await findUrlInput().trigger('blur');
+      await nextTick();
+      expect(findImportButton().props('disabled')).toBe(true);
+    });
+  });
+
+  describe('"Check connection" functionality', () => {
+    const badUrl = 'https://example.com/repo.git';
+    const mockUsername = 'mockuser';
+    const mockPassword = 'mockpass';
+
+    beforeEach(() => {
+      createComponent();
+      findUrlInput().vm.$emit('input', badUrl);
+      findUsernameInput().vm.$emit('input', mockUsername);
+      findPasswordInput().vm.$emit('input', mockPassword);
+    });
+
+    it('shows loading state during connection check', async () => {
+      mockAxios.onPost(mockImportByUrlValidatePath).reply(HTTP_STATUS_OK, { success: true });
+
+      expect(findCheckConnectionButton().props('loading')).toBe(false);
+
+      findCheckConnectionButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findCheckConnectionButton().props('loading')).toBe(true);
+
+      await waitForPromises();
+
+      expect(findCheckConnectionButton().props('loading')).toBe(false);
+    });
+
+    it('prevents connection if url field is empty', async () => {
+      createComponent({ mountFn: mountExtended });
+      mockAxios.onPost(mockImportByUrlValidatePath).reply(HTTP_STATUS_OK, { success: true });
+      expect(findUrlInputWrapper().classes()).not.toContain('is-invalid');
+
+      findUrlInput().vm.$emit('input', '');
+      findCheckConnectionButton().vm.$emit('click');
+      await nextTick();
+      await waitForPromises();
+
+      expect(mockAxios.history.post).toHaveLength(0);
+      expect(findUrlInputWrapper().classes()).toContain('is-invalid');
+    });
+
+    describe('when connection is successful', () => {
+      beforeEach(async () => {
+        mockAxios.onPost(mockImportByUrlValidatePath).reply(HTTP_STATUS_OK, { success: true });
+
+        findCheckConnectionButton().vm.$emit('click');
+        await waitForPromises();
+      });
+
+      it('sends correct request', () => {
+        expect(mockAxios.history.post[0].data).toBe(
+          JSON.stringify({
+            url: badUrl,
+            user: mockUsername,
+            password: mockPassword,
+          }),
+        );
+      });
+
+      it('shows success message when connection is successful', () => {
+        expect($toast.show).toHaveBeenCalledWith('Connection successful.');
+      });
+    });
+
+    describe('when connection fails', () => {
+      it('shows error message', async () => {
+        const errorMessage = 'Invalid credentials';
+        mockAxios
+          .onPost(mockImportByUrlValidatePath)
+          .reply(HTTP_STATUS_OK, { success: false, message: errorMessage });
+        findCheckConnectionButton().vm.$emit('click');
+
+        await waitForPromises();
+
+        expect($toast.show).toHaveBeenCalledWith(`Connection failed: ${errorMessage}`);
+      });
+    });
+  });
+});

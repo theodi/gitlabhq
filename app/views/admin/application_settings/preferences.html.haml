@@ -1,0 +1,88 @@
+- breadcrumb_title _("Preferences")
+- page_title _("Preferences")
+- add_page_specific_style 'page_bundles/settings'
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_application_settings_preferences_pageload' } }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Email'),
+  id: 'js-email-settings',
+  testid: 'email-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Various email settings.')
+  - c.with_body do
+    = render 'email'
+
+= render ::Layouts::SettingsBlockComponent.new(_("What's new"),
+  id: 'js-whats-new-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _("Configure %{italic_start}What's new%{italic_end} drawer and content.").html_safe % { italic_start: '<i>'.html_safe, italic_end: '</i>'.html_safe }
+  - c.with_body do
+    = render 'whats_new'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Help page'),
+  id: 'js-help-settings',
+  testid: 'help-page-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Additional text for the Help page.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/help_page.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'help_page'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Pages'),
+  id: 'js-pages-settings',
+  testid: 'pages-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('AdminSettings|Size and domain settings for Pages static sites.')
+  - c.with_body do
+    = render 'pages'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Polling interval multiplier'),
+  id: 'js-realtime-settings',
+  testid: 'realtime-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Adjust how frequently the GitLab UI polls for updates.')
+    = link_to _('Learn more.'), help_page_path('administration/polling.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'realtime'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Gitaly timeouts'),
+  id: 'js-gitaly-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure Gitaly timeouts.')
+    %span
+      = link_to _('Learn more.'), help_page_path('administration/settings/gitaly_timeouts.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'gitaly'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Localization'),
+  id: 'js-localization-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure the default first day of the week, time tracking units, and default language.')
+  - c.with_body do
+    = render 'localization'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Sidekiq Background Jobs'),
+  id: 'js-sidekiq-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure Sidekiq and Sidekiq cron related preferences.')
+    %span
+      = link_to _('Learn more.'), help_page_path('administration/settings/sidekiq.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'sidekiq'
+
+= render ::Layouts::SettingsBlockComponent.new(s_('TerraformSettings|Terraform state'),
+  id: 'js-terraform-limits-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('TerraformSettings|Configure Terraform state settings and limits.')
+    = link_to _('Learn more.'), help_page_path('administration/settings/terraform_state_settings.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'terraform_limits'

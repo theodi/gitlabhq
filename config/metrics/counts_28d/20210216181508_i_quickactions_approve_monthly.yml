@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: redis_hll_counters.quickactions.i_quickactions_approve_monthly
+description: Count of MAU using the `/approve` quick action
+product_group: code_review
+product_categories:
+- code_review_workflow
+value_type: number
+status: active
+time_frame: 28d
+data_source: internal_events
+events:
+  - name: i_quickactions_approve
+    unique: user.id
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

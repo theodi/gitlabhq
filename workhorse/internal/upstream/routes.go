@@ -1,0 +1,847 @@
+package upstream
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"regexp"
+
+	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"gitlab.com/gitlab-org/labkit/log"
+	"gitlab.com/gitlab-org/labkit/tracing"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/loadshedding"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/ai_assist/duoworkflow"
+	apipkg "gitlab.com/gitlab-org/gitlab/workhorse/internal/api"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/artifacts"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/bodylimit"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/builds"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/channel"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/config"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/dependencyproxy"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/git"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/gitaly"
+	gobpkg "gitlab.com/gitlab-org/gitlab/workhorse/internal/gob"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/healthcheck"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/helper"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/imageresizer"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/metrics"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/oauthproxy"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/orbit"
+	proxypkg "gitlab.com/gitlab-org/gitlab/workhorse/internal/proxy"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/queueing"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/ratelimitcache"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/secret"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/senddata"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/sendfile"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/sendurl"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/staticpages"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/upload"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/upstream/roundtripper"
+)
+
+type matcherFunc func(*http.Request) bool
+
+type routeEntry struct {
+	method   string
+	regex    *regexp.Regexp
+	handler  http.Handler
+	matchers []matcherFunc
+}
+
+type routeBackend string
+
+type routeMetadata struct {
+	regexpStr string
+	routeID   string
+	backendID routeBackend
+}
+
+type routeOptions struct {
+	tracing         bool
+	isGeoProxyRoute bool
+	matchers        []matcherFunc
+	bodyLimit       int64
+	bodyLimitMode   bodylimit.Mode
+}
+
+const (
+	apiPattern           = `^/api/`
+	gitProjectPattern    = `^/.+\.git/`
+	geoGitProjectPattern = `^/[^-].+\.git/` // Prevent matching routes like /-/from_secondary
+	projectPattern       = `^/([^/]+/){1,}[^/]+/`
+	groupPattern         = `^/groups/([^/]+/){0,}[^/]+/`
+	apiProjectPattern    = apiPattern + `v4/projects/[^/]+` // API: Projects can be encoded via group%2Fsubgroup%2Fproject
+	apiGroupPattern      = apiPattern + `v4/groups/[^/]+`
+	apiTopicPattern      = apiPattern + `v4/topics`
+	snippetUploadPattern = `^/uploads/personal_snippet`
+	userUploadPattern    = `^/uploads/user`
+	importPattern        = `^/import/`
+
+	selfBackend       routeBackend = "self"
+	railsBackend      routeBackend = "rails"
+	gitalyBackend     routeBackend = "gitaly"
+	geoPrimaryBackend routeBackend = "geo_primary_site"
+)
+
+var (
+	// For legacy reasons, user uploads are stored in public/uploads.  To
+	// prevent anybody who knows/guesses the URL of a user-uploaded file
+	// from downloading it we configure static.ServeExisting to treat files
+	// under public/uploads/ as if they do not exist.
+	staticExclude = []string{"/uploads/"}
+)
+
+func newRoute(regexpStr, routeID string, backendID routeBackend) routeMetadata {
+	return routeMetadata{regexpStr, routeID, backendID}
+}
+
+func compileRegexp(regexpStr string) *regexp.Regexp {
+	if len(regexpStr) == 0 {
+		return nil
+	}
+
+	return regexp.MustCompile(regexpStr)
+}
+
+func withMatcher(f matcherFunc) func(*routeOptions) {
+	return func(options *routeOptions) {
+		options.matchers = append(options.matchers, f)
+	}
+}
+
+func withoutTracing() func(*routeOptions) {
+	return func(options *routeOptions) {
+		options.tracing = false
+	}
+}
+
+func withGeoProxy() func(*routeOptions) {
+	return func(options *routeOptions) {
+		options.isGeoProxyRoute = true
+	}
+}
+
+func withBodyLimit(bodyLimit int64) func(*routeOptions) {
+	return func(options *routeOptions) {
+		options.bodyLimit = bodyLimit
+	}
+}
+
+func withBodyLimitMode(bodyLimitMode bodylimit.Mode) func(*routeOptions) {
+	return func(options *routeOptions) {
+		if bodyLimitMode < bodylimit.ModeDisabled || bodyLimitMode > bodylimit.ModeEnforced {
+			panic(fmt.Sprintf("invalid body limit mode: %d", bodyLimitMode))
+		}
+		options.bodyLimitMode = bodyLimitMode
+	}
+}
+
+func (u *upstream) observabilityMiddlewares(handler http.Handler, method string, metadata routeMetadata, opts *routeOptions) http.Handler {
+	if u.loadShedder != nil {
+		// Pass the readiness provider so that load shedding also activates
+		// when the Puma readiness probe signals not-ready (e.g. after a timeout).
+		// Use a typed nil to avoid a non-nil interface holding a nil pointer.
+		var readiness loadshedding.ReadinessProvider
+		if u.healthCheckServer != nil {
+			readiness = u.healthCheckServer
+		}
+		handler = loadshedding.Middleware(u.loadShedder, readiness, u.accessLogger)(handler)
+	}
+
+	handler = log.AccessLogger(
+		handler,
+		log.WithAccessLogger(u.accessLogger),
+		log.WithTrustedProxies(u.TrustedCIDRsForXForwardedFor),
+		log.WithExtraFields(func(r *http.Request) log.Fields {
+			fields := log.Fields{
+				"route":      metadata.regexpStr, // This field matches the `route` label in Prometheus metrics
+				"route_id":   metadata.routeID,
+				"backend_id": metadata.backendID,
+			}
+
+			if opts != nil {
+				fields["body_limit"] = opts.bodyLimit
+			}
+
+			if correlationID := r.Header.Get(git.XGitalyCorrelationID); correlationID != "" {
+				fields[string(gitaly.GitalyCorrelationIDKey)] = correlationID
+			}
+
+			return fields
+		}),
+	)
+
+	handler = instrumentRoute(handler, method, metadata) // Add prometheus metrics
+
+	if opts != nil && opts.isGeoProxyRoute {
+		handler = instrumentGeoProxyRoute(handler, method, metadata) // Add Geo prometheus metrics
+	}
+
+	originalHandler := handler
+
+	// Wrap with metrics tracking (add the tracker to the context)
+	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tracker := metrics.NewRequestTracker()
+		ctx := metrics.NewContext(r.Context(), tracker)
+		r = r.WithContext(ctx)
+		originalHandler.ServeHTTP(w, r)
+	})
+
+	return handler
+}
+
+func (u *upstream) route(method string, metadata routeMetadata, handler http.Handler, opts ...func(*routeOptions)) routeEntry {
+	// Instantiate a route with the defaults
+	options := routeOptions{
+		tracing:       true,
+		bodyLimit:     100 * 1024 * 1024,       // 100MB
+		bodyLimitMode: bodylimit.ModeUseGlobal, // use global mode without redefining
+	}
+
+	for _, f := range opts {
+		f(&options)
+	}
+
+	handler = u.observabilityMiddlewares(handler, method, metadata, &options)
+	handler = denyWebsocket(handler) // Disallow websockets
+	if options.tracing {
+		// Add distributed tracing
+		handler = tracing.Handler(handler, tracing.WithRouteIdentifier(metadata.regexpStr))
+	}
+
+	if options.bodyLimit > 0 {
+		handler = withBodyLimitContext(options.bodyLimit, options.bodyLimitMode, handler)
+	}
+
+	return routeEntry{
+		method:   method,
+		regex:    compileRegexp(metadata.regexpStr),
+		handler:  handler,
+		matchers: options.matchers,
+	}
+}
+
+//nolint:unparam // matchers kept for API consistency with other route methods
+func (u *upstream) wsRoute(metadata routeMetadata, handler http.Handler, matchers ...matcherFunc) routeEntry {
+	method := "GET"
+	handler = u.observabilityMiddlewares(handler, method, metadata, nil)
+	handler = requireWebsocket(handler)
+
+	return routeEntry{
+		method:   method,
+		regex:    compileRegexp(metadata.regexpStr),
+		handler:  handler,
+		matchers: matchers,
+	}
+}
+
+// Creates matcherFuncs for a particular content type.
+func isContentType(contentType string) func(*http.Request) bool {
+	return func(r *http.Request) bool {
+		return helper.IsContentType(contentType, r.Header.Get("Content-Type"))
+	}
+}
+
+func (ro *routeEntry) isMatch(cleanedPath string, req *http.Request) bool {
+	if ro.method != "" && req.Method != ro.method {
+		return false
+	}
+
+	if ro.regex != nil && !ro.regex.MatchString(cleanedPath) {
+		return false
+	}
+
+	ok := true
+	for _, matcher := range ro.matchers {
+		ok = matcher(req)
+		if !ok {
+			break
+		}
+	}
+
+	return ok
+}
+
+// ProxyOption defines a function type for configuring proxy middleware
+type ProxyOption func(http.Handler) http.Handler
+
+// WithSuccessTracking adds success tracking middleware to the proxy
+func WithSuccessTracking(tracker *healthcheck.SuccessTracker) ProxyOption {
+	return func(handler http.Handler) http.Handler {
+		if tracker == nil {
+			return handler
+		}
+		return healthcheck.BackendSuccessTrackingMiddleware(tracker)(handler)
+	}
+}
+
+func buildProxy(backend *url.URL, version string, rt http.RoundTripper, cfg config.Config, dependencyProxyInjector *dependencyproxy.Injector, api *apipkg.API, opts ...ProxyOption) http.Handler {
+	proxier := proxypkg.NewProxy(backend, version, rt)
+
+	// Apply optional middleware
+	var handler http.Handler = proxier
+	for _, opt := range opts {
+		handler = opt(handler)
+	}
+
+	injecters := []senddata.Injecter{
+		git.SendArchive,
+		git.SendBlob,
+		git.SendChangedPaths,
+		git.SendDiff,
+		git.SendListBlobs,
+		git.SendPatch,
+		git.SendSnapshot,
+		artifacts.SendEntry,
+		sendurl.SendURL,
+		imageresizer.NewResizer(cfg),
+		dependencyProxyInjector,
+	}
+	if api != nil {
+		injecters = append(injecters, orbit.NewSendQuery(api, version))
+	}
+
+	return senddata.SendData(
+		sendfile.SendFile(apipkg.Block(handler)),
+		injecters...,
+	)
+}
+
+// Routing table
+// We match against URI not containing the relativeUrlRoot:
+// see upstream.ServeHTTP
+//
+//nolint:funlen // Route configuration is inherently verbose; splitting would reduce readability
+func configureRoutes(u *upstream) {
+	api := u.APIClient
+	static := &staticpages.Static{DocumentRoot: u.DocumentRoot, Exclude: staticExclude, API: u.APIClient}
+	dependencyProxyInjector := dependencyproxy.NewInjector()
+
+	// All requests forwarded to Rails carry a short-lived HMAC-SHA256 JWT
+	// (Gitlab-Workhorse-Api-Request header) so that Rails can verify they came
+	// through Workhorse via verify_workhorse_api!. This is required before
+	// emitting any Gitlab-Workhorse-Send-Data header that embeds Gitaly
+	// credentials or pre-signed object storage URLs.
+	signingTripper := secret.NewRoundTripper(u.RoundTripper, u.Version)
+
+	var proxyOpts []ProxyOption
+	if u.healthCheckServer != nil {
+		proxyOpts = append(proxyOpts, WithSuccessTracking(u.healthCheckServer.GetSuccessTracker()))
+	}
+
+	proxy := buildProxy(u.Backend, u.Version, signingTripper, u.Config, dependencyProxyInjector, api, proxyOpts...)
+	cableProxy := proxypkg.NewProxy(u.CableBackend, u.Version, u.CableRoundTripper)
+
+	dwHandler := duoworkflow.NewHandler(api, u.rdb, u, string(u.URLPrefix), u.TrustedForwardedHosts...)
+	if u.upgradedConnsManager != nil {
+		u.upgradedConnsManager.Register(dwHandler)
+	}
+
+	assetsNotFoundHandler := NotFoundUnless(u.DevelopmentMode, proxy)
+	if u.AltDocumentRoot != "" {
+		altStatic := &staticpages.Static{DocumentRoot: u.AltDocumentRoot, Exclude: staticExclude}
+		assetsNotFoundHandler = altStatic.ServeExisting(
+			u.URLPrefix,
+			staticpages.CacheExpireMax,
+			NotFoundUnless(u.DevelopmentMode, proxy),
+		)
+	}
+
+	// signingProxy is now identical to proxy (both use signingTripper); kept as a
+	// distinct variable so upload handler call sites remain explicit about their intent.
+	signingProxy := proxy
+
+	preparer := upload.NewObjectStoragePreparer(u.Config)
+	requestBodyUploader := upload.RequestBody(api, signingProxy, preparer)
+	mimeMultipartUploader := upload.Multipart(api, signingProxy, preparer, &u.Config)
+
+	tempfileMultipartProxy := upload.FixedPreAuthMultipart(api, proxy, preparer, &u.Config)
+	ciAPIProxyQueue := queueing.QueueRequests("ci_api_job_requests", tempfileMultipartProxy, u.APILimit, u.APIQueueLimit, u.APIQueueTimeout, prometheus.DefaultRegisterer)
+	ciAPILongPolling := builds.RegisterHandler(ciAPIProxyQueue, u.watchKeyHandler, u.APICILongPollingDuration, u.shutdownChan)
+
+	dependencyProxyInjector.SetUploadHandler(requestBodyUploader)
+
+	// Serve static files or forward the requests
+	defaultUpstream := static.ServeExisting(
+		u.URLPrefix,
+		staticpages.CacheDisabled,
+		static.DeployPage(static.ErrorPagesUnless(u.DevelopmentMode, staticpages.ErrorFormatHTML, tempfileMultipartProxy)),
+	)
+	probeUpstream := static.ErrorPagesUnless(u.DevelopmentMode, staticpages.ErrorFormatJSON, proxy)
+	healthUpstream := static.ErrorPagesUnless(u.DevelopmentMode, staticpages.ErrorFormatText, proxy)
+
+	gob := gobpkg.NewProxy(api, u.Version, u.ProxyHeadersTimeout, u.Config)
+
+	// AUTH-011: gradual rollout of OAuth handling to the IAM Auth service.
+	// When IAMServiceURL is nil, BuildAuthorizeRoute / BuildTokenRoute return
+	// proxy unchanged and the OAuth routes below behave exactly as today
+	// (Rails-only).
+	var iamProxy http.Handler
+	if u.IAMServiceURL == nil {
+		slog.Info(
+			"oauthproxy: IAMServiceURL not set; OAuth requests will be handled by Rails",
+			slog.Bool("iam_routing_enabled", false),
+		)
+	} else {
+		iamRoundTripper := roundtripper.NewBackendRoundTripper(u.IAMServiceURL, "", u.ProxyHeadersTimeout, u.DevelopmentMode)
+		// When IAMServiceURL points at the GATE sandbox Envoy gateway, that
+		// gateway routes by `x-gitlab-svc` header — without it, IAM-bound OAuth
+		// requests fall through to the GitLab default backend. (Hitting the IAM
+		// service directly, bypassing the gateway, doesn't need the header.)
+		// Harmless when sent to non-Envoy endpoints: unknown headers are ignored.
+		// TODO: remove when direct path-based routing replaces the Envoy
+		// header-based routing (see gitlab-org/gitlab!240684 for the matching
+		// gRPC-side workaround).
+		iamProxy = proxypkg.NewProxy(
+			u.IAMServiceURL,
+			u.Version,
+			iamRoundTripper,
+			proxypkg.WithForcedTargetHostHeader(),
+			proxypkg.WithCorrelationID(),
+			proxypkg.WithCustomHeaders(map[string]string{"x-gitlab-svc": "iam-auth-http"}),
+		)
+		slog.Info(
+			"oauthproxy: OAuth routing to IAM service enabled",
+			slog.Bool("iam_routing_enabled", true),
+			slog.String("iam_backend_url", u.IAMServiceURL.String()),
+		)
+	}
+	oauthHandler := &oauthproxy.Handler{
+		API:           api,
+		Version:       u.Version,
+		RailsProxy:    proxy,
+		IAMProxy:      iamProxy,
+		IAMServiceURL: u.IAMServiceURL,
+	}
+	authorizeRoute := oauthHandler.BuildAuthorizeRoute()
+	tokenRoute := oauthHandler.BuildTokenRoute()
+
+	u.Routes = []routeEntry{
+		// Git Clone
+		u.route("GET",
+			newRoute(gitProjectPattern+`info/refs\z`, "git_info_refs", gitalyBackend),
+			git.GetInfoRefsHandler(api)),
+		u.route("POST",
+			newRoute(gitProjectPattern+`git-upload-pack\z`, "git_upload_pack", gitalyBackend),
+			contentEncodingHandler(git.UploadPack(api)), withMatcher(isContentType("application/x-git-upload-pack-request"))),
+		u.route("POST",
+			newRoute(gitProjectPattern+`git-receive-pack\z`, "git_receive_pack", gitalyBackend),
+			contentEncodingHandler(git.ReceivePack(api)), withMatcher(isContentType("application/x-git-receive-pack-request"))),
+		u.route("PUT",
+			newRoute(gitProjectPattern+`gitlab-lfs/objects/([0-9a-f]{64})/([0-9]+)\z`, "git_lfs_objects", railsBackend),
+			requestBodyUploader, withMatcher(isContentType("application/octet-stream"))),
+		u.route("POST",
+			newRoute(gitProjectPattern+`ssh-upload-pack\z`, "ssh_upload_pack", gitalyBackend),
+			git.SSHUploadPack(api)),
+		u.route("POST",
+			newRoute(gitProjectPattern+`ssh-receive-pack\z`, "ssh_receive_pack", gitalyBackend),
+			git.SSHReceivePack(api)),
+
+		// CI Artifacts
+		u.route("POST",
+			newRoute(apiPattern+`v4/jobs/[0-9]+/artifacts\z`, "api_jobs_request", railsBackend),
+			contentEncodingHandler(upload.Artifacts(api, signingProxy, preparer, &u.Config))),
+
+		// ActionCable websocket
+		u.wsRoute(newRoute(`^/-/cable\z`, "action_cable", railsBackend),
+			cableProxy),
+
+		// Terminal websocket
+		u.wsRoute(
+			newRoute(projectPattern+`-/environments/[0-9]+/terminal.ws\z`, "project_environments_terminal_ws", railsBackend),
+			channel.Handler(api, u.TrustedForwardedHosts...)),
+		u.wsRoute(newRoute(projectPattern+`-/jobs/[0-9]+/terminal.ws\z`, "project_jobs_terminal_ws", railsBackend),
+			channel.Handler(api, u.TrustedForwardedHosts...)),
+
+		// Proxy Job Services
+		u.wsRoute(
+			newRoute(projectPattern+`-/jobs/[0-9]+/proxy.ws\z`, "project_jobs_proxy_ws", railsBackend),
+			channel.Handler(api, u.TrustedForwardedHosts...)),
+
+		// Duo Workflow websocket
+		u.wsRoute(
+			newRoute(apiPattern+`v4/ai/duo_workflows/ws\z`, "duo_workflow_ws", railsBackend),
+			dwHandler.Build()),
+
+		// Duo Workflow server-side execution: workhorse runs the flow itself and
+		// streams the actions back, for callers that cannot execute them.
+		u.route("POST",
+			newRoute(apiPattern+`v4/ai/duo_workflows/workflows/\d+/execute\z`, "duo_workflow_execute", railsBackend),
+			dwHandler.BuildHTTP()),
+
+		// Long poll and limit capacity given to jobs/request and builds/register.json
+		u.route("",
+			newRoute(apiPattern+`v4/jobs/request\z`, "api_jobs_request", railsBackend), ciAPILongPolling),
+
+		// Job Router internal endpoint. KAS (GitLab Relay) proxies a runner's job
+		// request to this path on the runner's behalf. It carries the same JSON body
+		// (`token` + `last_update`), so it benefits from the same long-poll coalescing
+		// as the direct jobs/request route above.
+		u.route("",
+			newRoute(apiPattern+`v4/internal/ci/job_router/jobs/request\z`, "api_job_router_jobs_request", railsBackend), ciAPILongPolling),
+
+		// Not all API endpoints support encoded project IDs
+		// (e.g. `group%2Fproject`), but for the sake of consistency we
+		// use the apiProjectPattern regex throughout. API endpoints
+		// that do not support this will return 400 regardless of
+		// whether they are accelerated by Workhorse or not.  See
+		// https://gitlab.com/gitlab-org/gitlab/-/merge_requests/56731.
+
+		// Terraform State
+		u.route("POST",
+			newRoute(apiProjectPattern+`/terraform/state/[^/]+/lock`, "projects_api_terraform_state_lock", railsBackend), proxy, withBodyLimit(4*1024), withBodyLimitMode(bodylimit.ModeEnforced)), // 4 KB
+		u.route("DELETE",
+			newRoute(apiProjectPattern+`/terraform/state/[^/]+/lock`, "projects_api_terraform_state_unlock", railsBackend), proxy, withBodyLimit(4*1024), withBodyLimitMode(bodylimit.ModeEnforced)), // 4 KB
+
+		u.route("POST",
+			newRoute(apiProjectPattern+`/terraform/state/.*`, "projects_api_terraform_state", railsBackend), requestBodyUploader),
+
+		// Maven Artifact Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/maven/`, "projects_api_packages_maven", railsBackend), requestBodyUploader),
+
+		// NPM
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/npm/-/package/[^/]+/dist-tags/[^/]+`, "projects_api_packages_npm_dist_tags", railsBackend), proxy),
+
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/npm/.*`, "projects_api_packages_npm", railsBackend), requestBodyUploader),
+
+		// Conan Artifact Repository
+		u.route("PUT",
+			newRoute(apiPattern+`v4/packages/conan/`, "api_packages_conan", railsBackend), requestBodyUploader),
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/conan/`, "project_api_packages_conan", railsBackend), requestBodyUploader),
+
+		// Cargo Artifact Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/cargo/api/v1/crates/new\z`, "api_projects_packages_cargo", railsBackend), requestBodyUploader),
+
+		// Generic Packages Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/generic/`, "api_projects_packages_generic", railsBackend), requestBodyUploader),
+
+		// Ml Model Packages Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/ml_models/`, "api_projects_packages_ml_models", railsBackend), requestBodyUploader),
+
+		// NuGet Artifact Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/nuget/`, "api_projects_packages_nuget", railsBackend), mimeMultipartUploader),
+
+		// NuGet v2 Artifact Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/nuget/v2`, "api_projects_packages_nuget_v2", railsBackend), mimeMultipartUploader),
+
+		// PyPI Artifact Repository
+		u.route("POST",
+			newRoute(apiProjectPattern+`/packages/pypi`, "api_projects_packages_pypi", railsBackend), mimeMultipartUploader),
+
+		// Debian Artifact Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/debian/`, "api_projects_packages_debian", railsBackend), requestBodyUploader),
+
+		// RPM Artifact Repository
+		u.route("POST",
+			newRoute(apiProjectPattern+`/packages/rpm/`, "api_projects_packages_rpm", railsBackend), requestBodyUploader),
+
+		// Gem Artifact Repository
+		u.route("POST",
+			newRoute(apiProjectPattern+`/packages/rubygems/`, "api_projects_packages_rubygems", railsBackend), requestBodyUploader),
+
+		// Terraform Module Package Repository
+		u.route("PUT",
+			newRoute(apiProjectPattern+`/packages/terraform/modules/`, "api_projects_packages_terraform", railsBackend), requestBodyUploader),
+
+		// Helm Artifact Repository
+		u.route("POST",
+			newRoute(apiProjectPattern+`/packages/helm/api/[^/]+/charts\z`, "api_projects_packages_helm", railsBackend), mimeMultipartUploader),
+
+		// We are porting API to disk acceleration
+		// we need to declare each routes until we have fixed all the routes on the rails codebase.
+		// Overall status can be seen at https://gitlab.com/groups/gitlab-org/-/epics/1802#current-status
+		u.route("POST",
+			newRoute(apiProjectPattern+`/wikis/attachments\z`, "api_projects_wikis_attachments", railsBackend), tempfileMultipartProxy),
+		u.route("POST",
+			newRoute(apiGroupPattern+`/wikis/attachments\z`, "api_groups_wikis_attachments", railsBackend), tempfileMultipartProxy),
+		u.route("POST",
+			newRoute(apiPattern+`graphql\z`, "api_graphql", railsBackend), tempfileMultipartProxy, withBodyLimit(20*1024*1024)), // 20 Mb
+		// See https://gitlab.com/gitlab-org/gitlab/-/issues/535366
+		u.route("POST",
+			newRoute(apiProjectPattern+`/remote_mirrors\z`, "api_projects_remote_mirrors", railsBackend), proxy, withBodyLimit(100*1024), withBodyLimitMode(bodylimit.ModeEnforced)), // 100 Kb
+		u.route("POST",
+			newRoute(apiTopicPattern, "api_topics", railsBackend), tempfileMultipartProxy),
+		u.route("PUT",
+			newRoute(apiTopicPattern, "api_topics", railsBackend), tempfileMultipartProxy),
+		u.route("POST",
+			newRoute(apiPattern+`v4/groups/import`, "api_groups_import", railsBackend), mimeMultipartUploader),
+		u.route("POST",
+			newRoute(apiPattern+`v4/projects/import`, "api_projects_import", railsBackend), mimeMultipartUploader),
+		u.route("POST",
+			newRoute(apiPattern+`v4/projects/import-relation`, "api_projects_import_relation", railsBackend), mimeMultipartUploader),
+		u.route("POST",
+			newRoute(apiGroupPattern+`/placeholder_reassignments`, "api_group_placeholder_assignment", railsBackend), mimeMultipartUploader),
+		u.route("POST",
+			newRoute(groupPattern+`-/group_members/bulk_reassignment_file`, "group_placeholder_assignment", railsBackend), mimeMultipartUploader),
+		// Project Import via UI upload acceleration
+		u.route("POST",
+			newRoute(importPattern+`gitlab_project`, "import_gitlab_project", railsBackend), mimeMultipartUploader),
+		// Group Import via UI upload acceleration
+		u.route("POST",
+			newRoute(importPattern+`gitlab_group`, "import_gitlab_group", railsBackend), mimeMultipartUploader),
+
+		// Issuable Metric image upload
+		u.route("POST",
+			newRoute(apiProjectPattern+`/issues/[0-9]+/metric_images\z`, "api_projects_issues_metric_images", railsBackend), mimeMultipartUploader),
+
+		// Alert Metric image upload
+		u.route("POST",
+			newRoute(apiProjectPattern+`/alert_management_alerts/[0-9]+/metric_images\z`, "api_projects_alert_management_alerts_metric_images", railsBackend), mimeMultipartUploader),
+
+		// Requirements Import via UI upload acceleration
+		u.route("POST",
+			newRoute(projectPattern+`requirements_management/requirements/import_csv`, "project_requirements_import_csv", railsBackend), mimeMultipartUploader),
+
+		// Work items Import via UI upload acceleration
+		u.route("POST",
+			newRoute(projectPattern+`work_items/import_csv`, "project_work_items_import_csv", railsBackend), mimeMultipartUploader),
+
+		// Uploads via API
+		u.route("POST",
+			newRoute(apiProjectPattern+`/uploads\z`, "api_projects_uploads", railsBackend), mimeMultipartUploader),
+
+		// Project Avatar
+		u.route("POST",
+			newRoute(apiPattern+`v4/projects\z`, "api_projects", railsBackend), tempfileMultipartProxy),
+		u.route("PUT",
+			newRoute(apiProjectPattern+`\z`, "api_projects", railsBackend), tempfileMultipartProxy),
+
+		// Group Avatar
+		u.route("POST",
+			newRoute(apiPattern+`v4/groups\z`, "api_groups", railsBackend), tempfileMultipartProxy),
+		u.route("PUT",
+			newRoute(apiPattern+`v4/groups/[^/]+\z`, "api_groups", railsBackend), tempfileMultipartProxy),
+
+		// Organization Avatar
+		u.route("POST",
+			newRoute(apiPattern+`v4/organizations\z`, "api_organizations", railsBackend), tempfileMultipartProxy),
+		u.route("PUT",
+			newRoute(apiPattern+`v4/organizations/[0-9]+\z`, "api_organizations", railsBackend), tempfileMultipartProxy),
+
+		// User Avatar
+		u.route("PUT",
+			newRoute(apiPattern+`v4/user/avatar\z`, "api_user_avatar", railsBackend), tempfileMultipartProxy),
+		u.route("POST",
+			newRoute(apiPattern+`v4/users\z`, "api_users", railsBackend), tempfileMultipartProxy),
+		u.route("PUT",
+			newRoute(apiPattern+`v4/users/[0-9]+\z`, "api_users", railsBackend), tempfileMultipartProxy),
+
+		// SBOM Vulnerability Scans
+		u.route("POST",
+			newRoute(apiPattern+`v4/jobs/[0-9]+/sbom_scans\z`, "api_jobs_sbom_scans", railsBackend), mimeMultipartUploader),
+
+		// Commits
+		u.route("POST", newRoute(apiProjectPattern+`/repository/commits\z`, "api_projects_repository_commits", railsBackend), requestBodyUploader),
+
+		// Files
+		u.route("POST", newRoute(apiProjectPattern+`/repository/files/[^/]+\z`, "api_projects_repository_files", railsBackend), requestBodyUploader),
+		u.route("PUT", newRoute(apiProjectPattern+`/repository/files/[^/]+\z`, "api_projects_repository_files", railsBackend), requestBodyUploader),
+
+		// GitLab Observability Backend (GOB). Write paths are versioned with v1 to align with
+		// OpenTelemetry compatibility, where SDKs POST to /v1/traces, /v1/logs and /v1/metrics.
+		u.route("POST", newRoute(apiProjectPattern+`/observability/v1/traces`, "api_observability_traces", railsBackend), gob.WithProjectAuth("/write/traces")),
+		u.route("POST", newRoute(apiProjectPattern+`/observability/v1/logs`, "api_observability_logs", railsBackend), gob.WithProjectAuth("/write/logs")),
+		u.route("POST", newRoute(apiProjectPattern+`/observability/v1/metrics`, "api_observability_metrics", railsBackend), gob.WithProjectAuth("/write/metrics")),
+
+		u.route("GET", newRoute(apiProjectPattern+`/observability/v1/analytics`, "api_observability_analytics", railsBackend), gob.WithProjectAuth("/read/analytics")),
+		u.route("GET", newRoute(apiProjectPattern+`/observability/v1/traces`, "api_observability_traces", railsBackend), gob.WithProjectAuth("/read/traces")),
+		u.route("GET", newRoute(apiProjectPattern+`/observability/v1/logs`, "api_observability_logs", railsBackend), gob.WithProjectAuth("/read/logs")),
+		u.route("GET", newRoute(apiProjectPattern+`/observability/v1/metrics`, "api_observability_metrics", railsBackend), gob.WithProjectAuth("/read/metrics")),
+		u.route("GET", newRoute(apiProjectPattern+`/observability/v1/services`, "api_observability_services", railsBackend), gob.WithProjectAuth("/read/services")),
+
+		// Explicitly proxy API requests
+		u.route("POST", newRoute(apiPattern+`v4/internal/allowed`, "api_internal_allowed", railsBackend), allowedProxy(proxy, dependencyProxyInjector, u)),
+
+		u.route("",
+			newRoute(apiPattern, "api", railsBackend), proxy),
+
+		// Serve assets
+		u.route(
+			"",
+			newRoute(`^/assets/`, "assets", railsBackend),
+			static.ServeExisting(
+				u.URLPrefix,
+				staticpages.CacheExpireMax,
+				assetsNotFoundHandler,
+			),
+			withoutTracing(), // Tracing on assets is very noisy
+		),
+
+		// Uploads
+		u.route("POST",
+			newRoute(projectPattern+`uploads\z`, "project_uploads", railsBackend), mimeMultipartUploader),
+		u.route("POST",
+			newRoute(snippetUploadPattern, "personal_snippet_uploads", railsBackend), mimeMultipartUploader),
+		u.route("POST",
+			newRoute(userUploadPattern, "user_uploads", railsBackend), mimeMultipartUploader),
+
+		// AUTH-011: OAuth endpoints routed through the oauthproxy handler. When
+		// IAMServiceURL is unset, authorizeRoute and tokenRoute are the Rails
+		// proxy unchanged, so these entries have no effect on existing
+		// behavior. Static OIDC discovery endpoints
+		// (/.well-known/openid-configuration, /oauth/discovery/keys) are
+		// intentionally NOT wired here because AUTH-011 Phase 1 handles them
+		// via a Cloudflare Origin Rule independent of Workhorse.
+		// /oauth/userinfo and /oauth/device are also not wired because
+		// AUTH-011 keeps them on Rails permanently.
+		u.route("",
+			newRoute(`^/oauth/authorize\z`, "oauth_authorize", railsBackend), authorizeRoute),
+		u.route("",
+			newRoute(`^/oauth/authorize_device\z`, "oauth_authorize_device", railsBackend), authorizeRoute),
+		u.route("",
+			newRoute(`^/oauth/token\z`, "oauth_token", railsBackend), tokenRoute),
+		u.route("",
+			newRoute(`^/oauth/revoke\z`, "oauth_revoke", railsBackend), tokenRoute),
+		u.route("",
+			newRoute(`^/oauth/introspect\z`, "oauth_introspect", railsBackend), tokenRoute),
+
+		// health checks don't intercept errors and go straight to rails
+		// TODO: We should probably not return a HTML deploy page?
+		//       https://gitlab.com/gitlab-org/gitlab/-/issues/336326
+		u.route("",
+			newRoute("^/-/(readiness|liveness)$", "liveness", selfBackend), static.DeployPage(probeUpstream)),
+		u.route("",
+			newRoute("^/-/health$", "health", selfBackend), static.DeployPage(healthUpstream)),
+
+		// This route lets us filter out health checks from our metrics.
+		u.route("",
+			newRoute("^/-/", "dash", railsBackend), defaultUpstream),
+
+		u.route("",
+			newRoute("", "default", railsBackend), defaultUpstream),
+	}
+
+	// Routes which should actually be served locally by a Geo Proxy. If none
+	// matches, then then proxy the request.
+	u.geoLocalRoutes = []routeEntry{
+		// Git and LFS requests
+		//
+		// Geo already redirects pushes, with special terminal output.
+		// Excessive secondary lag can cause unexpected behavior since
+		// pulls are performed against a different source of truth. Ideally, we'd
+		// proxy/redirect pulls as well, when the secondary is not up-to-date.
+		//
+		u.route("GET",
+			newRoute(geoGitProjectPattern+`info/refs\z`, "geo_git_info_refs", "gitaly"), git.GetInfoRefsHandler(api)),
+		u.route("POST",
+			newRoute(geoGitProjectPattern+`git-upload-pack\z`, "geo_git_upload_pack", "gitaly"), contentEncodingHandler(git.UploadPack(api)), withMatcher(isContentType("application/x-git-upload-pack-request"))),
+		u.route("GET",
+			newRoute(geoGitProjectPattern+`gitlab-lfs/objects/([0-9a-f]{64})\z`, "geo_git_lfs_objects", railsBackend), defaultUpstream),
+		u.route("POST",
+			newRoute(geoGitProjectPattern+`info/lfs/objects/batch\z`, "geo_git_lfs_info_objects_batch", railsBackend), defaultUpstream),
+
+		// Serve health checks from this Geo secondary
+		u.route("",
+			newRoute("^/-/(readiness|liveness)$", "geo_liveness", selfBackend), static.DeployPage(probeUpstream)),
+		u.route("",
+			newRoute("^/-/health$", "geo_health", selfBackend), static.DeployPage(healthUpstream)),
+		u.route("",
+			newRoute("^/-/metrics$", "geo_metrics", railsBackend), defaultUpstream),
+
+		// Authentication routes
+		u.route("",
+			newRoute("^/users/auth/geo/(sign_in|sign_out)$", "users_auth_geo", railsBackend), defaultUpstream),
+		u.route("",
+			newRoute("^/oauth/geo/(auth|callback|logout)$", "oauth_geo", railsBackend), defaultUpstream),
+
+		// Admin Area > Geo routes
+		u.route("",
+			newRoute("^/admin/geo/replication/projects", "admin_geo_replication_projects", railsBackend), defaultUpstream),
+		u.route("",
+			newRoute("^/admin/geo/replication/designs", "admin_geo_replication_designs", railsBackend), defaultUpstream),
+
+		// Geo API routes
+		u.route("",
+			newRoute("^/api/v4/geo_replication", "api_geo_replication", railsBackend), defaultUpstream),
+		u.route("",
+			newRoute("^/api/v4/geo/proxy_git_ssh", "api_geo_proxy_git_ssh", railsBackend), defaultUpstream),
+		u.route("",
+			newRoute("^/api/v4/geo/graphql", "api_geo_graphql", railsBackend), defaultUpstream),
+		u.route("",
+			newRoute("^/api/v4/geo_nodes/current/failures", "api_geo_nodes_current_failures", railsBackend), defaultUpstream),
+		u.route("",
+			newRoute("^/api/v4/geo_sites/current/failures", "api_geo_sites_current_failures", railsBackend), defaultUpstream),
+
+		// Internal API routes
+		u.route("",
+			newRoute("^/api/v4/internal", "api_internal", railsBackend), defaultUpstream),
+
+		u.route(
+			"",
+			newRoute(`^/assets/`, "assets", railsBackend),
+			static.ServeExisting(
+				u.URLPrefix,
+				staticpages.CacheExpireMax,
+				assetsNotFoundHandler,
+			),
+			withoutTracing(), // Tracing on assets is very noisy
+		),
+
+		// Don't define a catch-all route. If a route does not match, then we know
+		// the request should be proxied.
+	}
+}
+
+func denyWebsocket(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			httpError(w, r, "websocket upgrade not allowed", http.StatusBadRequest)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requireWebsocket(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			httpError(w, r, "websocket upgrade required", http.StatusBadRequest)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func allowedProxy(proxy http.Handler, dependencyProxyInjector *dependencyproxy.Injector, u *upstream) http.Handler {
+	if u.CircuitBreakerConfig.Enabled {
+		roundTripperRateLimitCache := ratelimitcache.NewRoundTripper(u.RoundTripper, u.rdb)
+
+		return buildProxy(u.Backend, u.Version, roundTripperRateLimitCache, u.Config, dependencyProxyInjector, nil)
+	}
+
+	return proxy
+}
+
+// Define a context key with a body limit value for route
+func withBodyLimitContext(bodyLimit int64, bodyLimitMode bodylimit.Mode, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, bodylimit.BodyLimitKey, bodyLimit)
+
+		// if mode is redefined for the route
+		if bodyLimitMode != bodylimit.ModeUseGlobal {
+			ctx = context.WithValue(ctx, bodylimit.BodyLimitMode, bodyLimitMode)
+		}
+
+		r = r.WithContext(ctx)
+		next.ServeHTTP(w, r)
+	})
+}

@@ -1,0 +1,41 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+fragment BaseWorkItemPopover on WorkItem {
+  id
+  iid
+  confidential
+  createdAt
+  fullReference: reference(full: true)
+  state
+  title
+  titleHtml
+  workItemType {
+    id
+    name
+    iconName
+  }
+  widgets @skip(if: $useWorkItemFeatures) {
+    ... on WorkItemWidgetAssignees {
+      type
+      assignees {
+        nodes {
+          ...User
+        }
+      }
+    }
+    ... on WorkItemWidgetMilestone {
+      type
+      milestone {
+        id
+        dueDate
+        startDate
+        title
+      }
+    }
+    ... on WorkItemWidgetStartAndDueDate {
+      type
+      dueDate
+      startDate
+    }
+  }
+}

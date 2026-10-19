@@ -1,0 +1,59 @@
+# frozen_string_literal: true
+
+module SupplyChain
+  class Attestation < ::ApplicationRecord
+    include AtomicInternalId
+    include FileStoreMounter
+    include ObjectStorable
+
+    STORE_COLUMN = :file_store
+
+    self.table_name = 'slsa_attestations'
+
+    belongs_to :project
+    belongs_to :build, class_name: 'Ci::Build', optional: true
+    belongs_to :signing_certificate, class_name: 'SupplyChain::SigningCertificate', optional: true
+
+    has_internal_id :iid, scope: :project
+
+    validates :project, presence: true
+    validates :file, presence: true, unless: :error?
+    validates :predicate_kind, presence: true
+    validates :predicate_type, presence: true
+    validates :subject_digest, presence: true, length: { minimum: 64, maximum: 255 }
+
+    validates :subject_digest, uniqueness: { scope: [:project_id, :predicate_kind] }
+
+    scope :for_project, ->(project_id) { where(project_id: project_id) }
+    scope :with_digest, ->(subject_digest) { where(subject_digest: subject_digest) }
+    scope :with_predicate_kind, ->(predicate_kind) { where(predicate_kind: predicate_kind) }
+    scope :with_iid, ->(iid) { where(iid: iid) }
+
+    attribute :file_store, default: -> { AttestationUploader.default_store }
+    attribute :predicate_file_store, default: -> { AttestationUploader.default_store }
+
+    mount_file_store_uploader AttestationUploader
+    mount_file_store_uploader AttestationUploader, file_field: :predicate_file
+
+    enum :status, {
+      success: 0,
+      error: 1
+    }
+
+    enum :predicate_kind, {
+      provenance: 0,
+      sbom: 1
+    }
+
+    enum :signing_method, {
+      sigstore: 0,
+      local_ca: 1
+    }, prefix: true
+
+    def self.find_provenance(project:, subject_digest:)
+      for_project(project).with_predicate_kind("provenance").with_digest(subject_digest).take
+    end
+  end
+end
+
+SupplyChain::Attestation.prepend_mod

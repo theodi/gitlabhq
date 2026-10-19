@@ -1,0 +1,89 @@
+# Per-test coverage jest child pipeline, generated dynamically by
+# scripts/generate_jest_pipeline.rb. Triggered by per-test-coverage:trigger
+# in the parent maintenance schedule pipeline (see
+# .gitlab/ci/per_test_coverage.gitlab-ci.yml).
+#
+# Activates the jest per-test reporter via GLCI_PER_TEST_COVERAGE=true plus
+# Jest's --coverage flag (the reporter needs testResult.coverage populated).
+# jest_ci.js runs jest with --shard so each parallel instance runs its slice
+# of the queue. Each shard writes tmp/per-test-coverage-jest-{slug}-{hex}.json
+# as a regular job artifact, downloaded by the parent pipeline's export job
+# by job-name pattern (scripts/coverage/download_per_test_coverage_artifacts.rb).
+
+include:
+  - local: .gitlab/ci/per_test_coverage/jest_test_base.gitlab-ci.yml
+
+default:
+  image: $DEFAULT_CI_IMAGE
+  # Default job timeout set to 90m https://gitlab.com/gitlab-com/gl-infra/infrastructure/-/issues/10520
+  timeout: 90m
+  interruptible: true
+
+# per-test-coverage:trigger merges this jest child config and the rspec
+# child config into one pipeline. A later include's `stages:` replaces
+# earlier ones wholesale rather than unioning, so both templates must list
+# the same stages or the other suite's jobs reference a stage that does not
+# exist and the whole child fails to create with zero jobs.
+stages:
+  - test
+  - test-frontend
+
+workflow:
+  name: '$PIPELINE_NAME'
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      auto_cancel:
+        on_new_commit: none
+    - when: always
+
+.jest-per-test-coverage-base:
+  extends:
+    - .frontend-test-base
+  rules:
+    - when: always
+  variables:
+    GLCI_PER_TEST_COVERAGE: "true"
+  artifacts:
+    expire_in: 7d
+    paths:
+      - tmp/per-test-coverage-jest-*.json
+    when: always
+
+jest per-test-coverage:
+  extends:
+    - .jest-per-test-coverage-base
+  needs:
+  <% if repo_from_artifacts %>
+    - pipeline: $PARENT_PIPELINE_ID
+      job: clone-gitlab-repo
+  <% end %>
+    # Required (not optional): the maintenance schedule pipeline always runs
+    # per-test-coverage:pipeline-generate, and GitLab rejects `optional` on
+    # cross-pipeline needs. The jest run needs the queue file it publishes.
+    - pipeline: $PARENT_PIPELINE_ID
+      job: per-test-coverage:pipeline-generate
+  parallel: <%= parallelism %>
+  script:
+    - scripts/frontend/jest_ci.js --coverage --filter-file "${GLCI_PER_TEST_COVERAGE_QUEUE_JEST_PATH}"
+
+# fixture_ci_sequencer.js partitions the suite on JEST_FIXTURE_JOBS_ONLY.
+# Without this job, every fixture-using spec in the queue would be
+# filtered out of the capture and its coverage data would go stale.
+jest-with-fixtures per-test-coverage:
+  extends:
+    - .jest-per-test-coverage-base
+  needs:
+  <% if repo_from_artifacts %>
+    - pipeline: $PARENT_PIPELINE_ID
+      job: clone-gitlab-repo
+  <% end %>
+    - pipeline: $PARENT_PIPELINE_ID
+      job: per-test-coverage:pipeline-generate
+  parallel: <%= fixture_parallelism %>
+  script:
+    # Cross-pipeline needs cap at 5; node 1/1 forces the full fixture set.
+    - |
+      CI_NODE_INDEX=1 CI_NODE_TOTAL=1 ruby scripts/coverage/download_per_test_coverage_artifacts.rb \
+        --pattern '^rspec-all frontend_fixture (?:[0-9]+/[0-9]+|clickhouse)$' \
+        --pipeline-id "$PARENT_PIPELINE_ID"
+    - scripts/frontend/jest_ci.js --coverage --fixtures --filter-file "${GLCI_PER_TEST_COVERAGE_QUEUE_JEST_PATH}"

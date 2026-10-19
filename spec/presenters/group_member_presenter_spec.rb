@@ -1,0 +1,168 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe GroupMemberPresenter do
+  let(:user) { double(:user) }
+  let(:group) { double(:group) }
+  let(:group_member) { double(:group_member, source: group) }
+  let(:presenter) { described_class.new(group_member, current_user: user) }
+
+  describe '#can_resend_invite?' do
+    context 'when group_member is invited' do
+      before do
+        expect(group_member).to receive(:invite?).and_return(true)
+      end
+
+      context 'and user can admin_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :admin_group_member, group).and_return(true)
+        end
+
+        it { expect(presenter.can_resend_invite?).to be(true) }
+      end
+
+      context 'and user cannot admin_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :admin_group_member, group).and_return(false)
+        end
+
+        it { expect(presenter.can_resend_invite?).to be(false) }
+      end
+    end
+
+    context 'when group_member is not invited' do
+      before do
+        expect(group_member).to receive(:invite?).and_return(false)
+      end
+
+      context 'and user can admin_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :admin_group_member, group).and_return(true)
+        end
+
+        it { expect(presenter.can_resend_invite?).to be(false) }
+      end
+
+      context 'and user cannot admin_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :admin_group_member, group).and_return(false)
+        end
+
+        it { expect(presenter.can_resend_invite?).to be(false) }
+      end
+    end
+  end
+
+  describe '#last_owner?' do
+    context 'when member is the last owner of the group' do
+      before do
+        allow(group_member).to receive(:last_owner_of_the_group?).and_return(true)
+      end
+
+      it { expect(presenter.last_owner?).to be(true) }
+    end
+
+    context 'when member is not the last owner of the group' do
+      before do
+        allow(group_member).to receive(:last_owner_of_the_group?).and_return(false)
+      end
+
+      it { expect(presenter.last_owner?).to be(false) }
+    end
+  end
+
+  describe '#can_update?' do
+    context 'when user can update_group_member' do
+      before do
+        allow(presenter).to receive(:can?).with(user, :update_group_member, presenter).and_return(true)
+      end
+
+      it { expect(presenter.can_update?).to be(true) }
+    end
+
+    context 'when user cannot update_group_member' do
+      before do
+        allow(presenter).to receive(:can?).with(user, :update_group_member, presenter).and_return(false)
+        allow(presenter).to receive(:can?).with(user, :override_group_member, presenter).and_return(false)
+      end
+
+      it { expect(presenter.can_update?).to be(false) }
+    end
+  end
+
+  describe '#can_remove?' do
+    context 'when user can destroy_group_member' do
+      before do
+        allow(presenter).to receive(:can?).with(user, :destroy_group_member, presenter).and_return(true)
+      end
+
+      it { expect(presenter.can_remove?).to be(true) }
+    end
+
+    context 'when user cannot destroy_group_member' do
+      before do
+        allow(presenter).to receive(:can?).with(user, :destroy_group_member, presenter).and_return(false)
+      end
+
+      it { expect(presenter.can_remove?).to be(false) }
+    end
+  end
+
+  describe '#can_approve?' do
+    context 'when group_member has request an invite' do
+      before do
+        expect(group_member).to receive(:request?).and_return(true)
+      end
+
+      context 'when user can update_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :update_group_member, presenter).and_return(true)
+        end
+
+        it { expect(presenter.can_approve?).to be(true) }
+      end
+
+      context 'when user cannot update_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :update_group_member, presenter).and_return(false)
+          allow(presenter).to receive(:can?).with(user, :override_group_member, presenter).and_return(false)
+        end
+
+        it { expect(presenter.can_approve?).to be(false) }
+      end
+    end
+
+    context 'when group_member did not request an invite' do
+      before do
+        expect(group_member).to receive(:request?).and_return(false)
+      end
+
+      context 'when user can update_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :update_group_member, presenter).and_return(true)
+        end
+
+        it { expect(presenter.can_approve?).to be(false) }
+      end
+
+      context 'when user cannot update_group_member' do
+        before do
+          allow(presenter).to receive(:can?).with(user, :update_group_member, presenter).and_return(false)
+        end
+
+        it { expect(presenter.can_approve?).to be(false) }
+      end
+    end
+  end
+
+  it_behaves_like '#valid_level_roles', :group do
+    let(:expected_roles) do
+      { 'Developer' => 30, 'Maintainer' => 40, 'Owner' => 50, 'Reporter' => 20, 'Security Manager' => 25 }
+    end
+
+    before do
+      entity.update!(parent: group)
+    end
+  end
+end

@@ -1,53 +1,494 @@
-Dir["#{Rails.root}/lib/api/*.rb"].each {|file| require file}
+# frozen_string_literal: true
 
 module API
-  class API < Grape::API
+  class API < ::API::Base
     include APIGuard
-    version 'v3', using: :path
+    include Helpers::OpenApi
+
+    LOG_FILENAME = Rails.root.join("log", "api_json.log")
+
+    # Origin of the catch-all `route :any, '*path'` that handles requests mapping to no real
+    # endpoint (unknown paths and unmatched API versions).
+    UNMATCHED_ROUTE_ORIGIN = '/api/:version/*path'
+    LOG_FILTERS = ::Rails.application.config.filter_parameters + [/^output$/]
+    LOG_FILTER_EXCEPTIONS = %w[controller action format Content-Type].freeze
+    LOG_FORMATTER = Gitlab::GrapeLogging::Formatters::LogrageWithTimestamp.new
+    # grape_logging 3.0.0's Reporters::LoggerReporter clones the logger it is given, so the request
+    # logger emits through a clone of LOGGER rather than LOGGER itself. The clone exists only to hold a
+    # per-reporter formatter, which we already supply explicitly via `formatter:` below, so it changes
+    # nothing in production. Returning self from #clone keeps LOGGER the single emitting object, so specs
+    # can stub LOGGER directly.
+    LOGGER = Logger.new(LOG_FILENAME, level: ::Gitlab::Utils.to_rails_log_level(ENV["GITLAB_LOG_LEVEL"], :info))
+      .tap { |logger| def logger.clone = self }
+
+    class MovedPermanentlyError < StandardError
+      MSG_PREFIX = 'This resource has been moved permanently to'
+
+      attr_reader :location_url
+
+      def initialize(location_url)
+        @location_url = location_url
+
+        super("#{MSG_PREFIX} #{location_url}")
+      end
+    end
+
+    insert_before Grape::Middleware::Error,
+      GrapeLogging::Middleware::RequestLogger,
+      logger: LOGGER,
+      formatter: LOG_FORMATTER,
+      include: [
+        Gitlab::GrapeLogging::Loggers::TruncateParameters.new,
+        Gitlab::GrapeLogging::Loggers::FilterParameters.new(LOG_FILTERS, nil, LOG_FILTER_EXCEPTIONS),
+        Gitlab::GrapeLogging::Loggers::ClientEnvLogger.new,
+        Gitlab::GrapeLogging::Loggers::JsonMetadataLogger.new,
+        Gitlab::GrapeLogging::Loggers::RouteLogger.new,
+        Gitlab::GrapeLogging::Loggers::UserLogger.new,
+        Gitlab::GrapeLogging::Loggers::TokenLogger.new,
+        Gitlab::GrapeLogging::Loggers::ExceptionLogger.new,
+        Gitlab::GrapeLogging::Loggers::QueueDurationLogger.new,
+        Gitlab::GrapeLogging::Loggers::PerfLogger.new,
+        Gitlab::GrapeLogging::Loggers::CorrelationIdLogger.new,
+        Gitlab::GrapeLogging::Loggers::ContextLogger.new,
+        Gitlab::GrapeLogging::Loggers::ContentLogger.new,
+        Gitlab::GrapeLogging::Loggers::UrgencyLogger.new,
+        Gitlab::GrapeLogging::Loggers::FeatureFlagStatesLogger.new
+      ]
+
+    allow_access_with_scope :api
+    allow_access_with_scope :read_api, if: ->(request) { request.get? || request.head? }
+    prefix :api
+
+    version 'v3', using: :path do
+      route_setting :authorization, skip_granular_token_authorization: :catch_all
+      route :any, '*path' do
+        error!('API V3 is no longer supported. Use API V4 instead.', 410)
+      end
+    end
+
+    version 'v4', using: :path
+
+    before do
+      header['X-Frame-Options'] = 'SAMEORIGIN'
+      header['X-Content-Type-Options'] = 'nosniff'
+
+      if Rails.application.config.content_security_policy && !Rails.application.config.content_security_policy_report_only
+        policy = ActionDispatch::ContentSecurityPolicy.new { |p| p.default_src :none }
+      end
+
+      request.env[ActionDispatch::ContentSecurityPolicy::Request::POLICY] = policy
+    end
+
+    before do
+      api_endpoint = request.env[Grape::Env::API_ENDPOINT]
+
+      # Skip when the request is for the catch-all route (`route :any, '*path'`),
+      # since that route is only supposed to return 404 Not Found
+      next if api_endpoint&.route&.pattern&.origin == UNMATCHED_ROUTE_ORIGIN
+
+      coerce_nil_params_to_array!
+
+      feature_category = api_endpoint.options[:for].try(:feature_category_for_app, api_endpoint).to_s
+
+      # remote_ip is added here and the ContextLogger so that the
+      # client_id field is set correctly, as the user object does not
+      # survive between multiple context pushes.
+      Gitlab::ApplicationContext.push(
+        user: -> { @current_user },
+        project: -> { @project },
+        namespace: -> { @group },
+        runner: -> { @current_runner || @runner },
+        remote_ip: request.ip,
+        caller_id: api_endpoint.endpoint_id,
+        feature_category: feature_category,
+        **http_router_rule_context
+      )
+
+      increment_http_router_metrics
+    end
+
+    before_validation do
+      endpoint_class = request.env[Grape::Env::API_ENDPOINT]&.options&.dig(:for)
+      next if endpoint_class.respond_to?(:skip_global_organization_setup?) &&
+        endpoint_class.skip_global_organization_setup?
+
+      # safe_find_organization_actor_from_sources is passed instead of the helper's
+      # current_user default because current_user raises on invalid tokens and
+      # has side effects (load-balancer sticking, auditing) that must not run
+      # for every request this early.
+      set_current_organization(user: -> { safe_find_organization_actor_from_sources })
+    end
+
+    before do
+      set_peek_enabled_for_current_request
+    end
+
+    after do
+      Gitlab::UsageDataCounters::VSCodeExtensionActivityUniqueCounter.track_api_request_when_trackable(user_agent: request&.user_agent, user: @current_user)
+    end
+
+    after do
+      Gitlab::UsageDataCounters::JetBrainsPluginActivityUniqueCounter.track_api_request_when_trackable(user_agent: request&.user_agent, user: @current_user)
+    end
+
+    after do
+      Gitlab::UsageDataCounters::JetBrainsBundledPluginActivityUniqueCounter.track_api_request_when_trackable(user_agent: request&.user_agent, user: @current_user)
+    end
+
+    after do
+      Gitlab::UsageDataCounters::VisualStudioExtensionActivityUniqueCounter.track_api_request_when_trackable(user_agent: request&.user_agent, user: @current_user)
+    end
+
+    after do
+      Gitlab::UsageDataCounters::NeovimPluginActivityUniqueCounter.track_api_request_when_trackable(user_agent: request&.user_agent, user: @current_user)
+    end
+
+    after do
+      Gitlab::UsageDataCounters::GitLabCliActivityUniqueCounter.track_api_request_when_trackable(user_agent: request&.user_agent, user: @current_user)
+    end
+
+    # The locale is set to the current user's locale when `current_user` is loaded
+    after { Gitlab::I18n.use_default_locale }
+
+    rescue_from Gitlab::Access::AccessDeniedError do
+      error!({ 'message' => '403 Forbidden' }, 403)
+    end
 
     rescue_from ActiveRecord::RecordNotFound do
-      rack_response({ 'message' => '404 Not found' }.to_json, 404)
+      error!({ 'message' => '404 Not found' }, 404)
+    end
+
+    rescue_from(
+      ::ActiveRecord::StaleObjectError,
+      ::Gitlab::ExclusiveLeaseHelpers::FailedToObtainLockError
+    ) do
+      error!({ 'message' => '409 Conflict: Resource lock' }, 409)
+    end
+
+    rescue_from UploadedFile::InvalidPathError do |e|
+      error!({ 'message' => e.message }, 400)
+    end
+
+    rescue_from ObjectStorage::RemoteStoreError do |e|
+      error!({ 'message' => e.message }, 500)
+    end
+
+    # Retain 405 error rather than a 500 error for Grape 0.15.0+.
+    # https://github.com/ruby-grape/grape/blob/a3a28f5b5dfbb2797442e006dbffd750b27f2a76/UPGRADING.md#changes-to-method-not-allowed-routes
+    rescue_from Grape::Exceptions::MethodNotAllowed do |e|
+      error! e.message, e.status, e.headers
+    end
+
+    rescue_from Grape::Exceptions::Base do |e|
+      error!(e.message, e.status, e.headers || {})
+    end
+
+    # Grape's error middleware accepts only a Rack::Response or an error hash here, and it reformats
+    # the hash: `error!` would wrap the body in JSON and add a JSON content type, while `redirect`
+    # returns a String it rejects. This keeps the bare-string body the original `rack_response` built.
+    rescue_from MovedPermanentlyError do |e|
+      Rack::Response.new([e.message], 301, { 'Location' => e.location_url })
+    end
+
+    rescue_from Gitlab::Auth::TooManyIps do
+      error!({ 'message' => '403 Forbidden' }, 403)
+    end
+
+    rescue_from Gitlab::Git::ResourceExhaustedError do |exception|
+      error!({ 'message' => exception.message }, 503, exception.headers)
     end
 
     rescue_from :all do |exception|
-      # lifted from https://github.com/rails/rails/blob/master/actionpack/lib/action_dispatch/middleware/debug_exceptions.rb#L60
-      # why is this not wrapped in something reusable?
-      trace = exception.backtrace
+      handle_api_exception(exception)
+    end
 
-      message = "\n#{exception.class} (#{exception.message}):\n"
-      message << exception.annoted_source_code.to_s if exception.respond_to?(:annoted_source_code)
-      message << "  " << trace.join("\n  ")
+    # This is a specific exception raised by `rack-timeout` gem when Puma
+    # requests surpass its timeout. Given it inherits from Exception, we
+    # should rescue it separately. For more info, see:
+    # - https://github.com/zombocom/rack-timeout/blob/master/doc/exceptions.md
+    # - https://github.com/ruby-grape/grape#exception-handling
+    rescue_from Rack::Timeout::RequestTimeoutException do |exception|
+      handle_api_exception(exception)
+    end
 
-      API.logger.add Logger::FATAL, message
-      rack_response({ 'message' => '500 Internal Server Error' }.to_json, 500)
+    rescue_from RateLimitedService::RateLimitedError do |exception|
+      exception.log_request(context.request, context.current_user)
+      error!({ 'message' => { 'error' => exception.message } }, 429, exception.headers)
     end
 
     format :json
-    content_type :txt, "text/plain"
+    formatter :json, Gitlab::Json::GrapeFormatter
+    content_type :json, 'application/json'
 
-    helpers APIHelpers
+    # Ensure the namespace is right, otherwise we might load Grape::API::Helpers
+    helpers ::API::Helpers
+    helpers ::API::Helpers::CommonHelpers
+    helpers ::API::Helpers::CurrentOrganizationHelpers
+    helpers ::API::Helpers::PerformanceBarHelpers
+    helpers ::API::Helpers::RateLimiter
+    helpers Gitlab::HttpRouter::RuleContext
+    helpers Gitlab::HttpRouter::RuleMetrics
 
-    mount Groups
-    mount GroupMembers
-    mount Users
-    mount Projects
-    mount Repositories
-    mount Issues
-    mount Milestones
-    mount Session
-    mount MergeRequests
-    mount Notes
-    mount Internal
-    mount SystemHooks
-    mount ProjectSnippets
-    mount ProjectMembers
-    mount DeployKeys
-    mount ProjectHooks
-    mount Services
-    mount Files
-    mount Commits
-    mount Namespaces
-    mount Branches
-    mount Labels
+    namespace do
+      after do
+        ::Users::ActivityService.new(author: @current_user, project: @project, namespace: @group).execute
+      end
+
+      # Mount endpoints to include in the OpenAPI V2 documentation here
+      namespace do
+        # Keep in alphabetical order
+        mount ::API::AccessRequests
+        mount ::API::Admin::BatchedBackgroundMigrations
+        mount ::API::Admin::BatchedBackgroundOperations
+        mount ::API::Admin::BroadcastMessages
+        mount ::API::Admin::Ci::Variables
+        mount ::API::Admin::Dictionary
+        mount ::API::Admin::InstanceClusters
+        mount ::API::Admin::Migrations
+        mount ::API::Admin::PlanLimits
+        mount ::API::Admin::SshCertificates
+        mount ::API::Admin::Token
+        mount ::API::AlertManagementAlerts
+        mount ::API::Appearance
+        mount ::API::Applications
+        mount ::API::Authn::Userinfo
+        mount ::API::Avatar
+        mount ::API::AwardEmoji
+        mount ::API::Badges
+        mount ::API::Branches
+        mount ::API::BulkImports
+        mount ::API::Ci::Catalog
+        mount ::API::Ci::JobArtifacts
+        mount ::API::Groups
+        mount ::API::Ci::Jobs
+        mount ::API::Ci::ResourceGroups
+        mount ::API::Ci::Runner
+        mount ::API::Ci::Runners
+        mount ::API::Ci::SecureFiles
+        mount ::API::Ci::Pipelines
+        mount ::API::Ci::PipelineSchedules
+        mount ::API::Ci::UserPipelines
+        mount ::API::Ci::Triggers
+        mount ::API::Ci::Variables
+        mount ::API::ClusterDiscovery
+        mount ::API::Clusters::AgentTokens
+        mount ::API::Clusters::Agents
+        mount ::API::CargoProjectPackages
+        mount ::API::Commits
+        mount ::API::CommitStatuses
+        mount ::API::ComposerPackages
+        mount ::API::Conan::V1::InstancePackages
+        mount ::API::Conan::V1::ProjectPackages
+        mount ::API::Conan::V2::ProjectPackages
+        mount ::API::ContainerRegistryEvent
+        mount ::API::ContainerRepositories
+        mount ::API::Databases
+        mount ::API::DebianGroupPackages
+        mount ::API::DebianProjectPackages
+        mount ::API::DependencyProxy
+        mount ::API::DeployKeys
+        mount ::API::DeployTokens
+        mount ::API::Deployments
+        mount ::API::DraftNotes
+        mount ::API::Environments
+        mount ::API::ErrorTracking::ClientKeys
+        mount ::API::ErrorTracking::ProjectSettings
+        mount ::API::Events
+        mount ::API::FeatureFlags
+        mount ::API::FeatureFlagsUserLists
+        mount ::API::Features
+        mount ::API::Files
+        mount ::API::FreezePeriods
+        mount ::API::GenericPackages
+        mount ::API::Geo
+        mount ::API::GoProxy
+        mount ::API::GroupAvatar
+        mount ::API::GroupClusters
+        mount ::API::GroupContainerRepositories
+        mount ::API::GroupDebianDistributions
+        mount ::API::GroupExport
+        mount ::API::GroupImport
+        mount ::API::GroupPackages
+        mount ::API::GroupPlaceholderReassignments
+        mount ::API::GroupVariables
+        mount ::API::Glql
+        mount ::API::HelmPackages
+        mount ::API::ImportBitbucket
+        mount ::API::ImportBitbucketServer
+        mount ::API::ImportGithub
+        mount ::API::ImportGithubOauthWebhooks
+        mount ::API::Integrations
+        mount ::API::Integrations::Slack::Events
+        mount ::API::Integrations::Slack::Interactions
+        mount ::API::Integrations::Slack::Options
+        mount ::API::Integrations::JiraConnect::Subscriptions
+        mount ::API::Integrations::JiraForge::Installations
+        mount ::API::Integrations::JiraForge::Subscriptions
+        mount ::API::Invitations
+        mount ::API::IssueLinks
+        mount ::API::Issues
+        mount ::API::Keys
+        mount ::API::Lint
+        mount ::API::Markdown
+        mount ::API::MarkdownUploads
+        mount ::API::MavenPackages
+        mount ::API::Members
+        mount ::API::MergeRequests
+        mount ::API::MergeRequestApprovals
+        mount ::API::MergeRequestDiffs
+        mount ::API::Metadata
+        mount ::API::MlModelPackages
+        mount ::API::MobilePushSubscriptions
+        mount ::API::Namespaces
+        mount ::API::NpmGroupPackages
+        mount ::API::NpmInstancePackages
+        mount ::API::NpmProjectPackages
+        mount ::API::NugetGroupPackages
+        mount ::API::NugetProjectPackages
+        mount ::API::OfflineTransfers
+        mount ::API::Organizations
+        mount ::API::PackageFiles
+        mount ::API::Pages
+        mount ::API::PagesDomains
+        mount ::API::PersonalAccessTokens::SelfInformation
+        mount ::API::PersonalAccessTokens::SelfRotation
+        mount ::API::PersonalAccessTokens
+        mount ::API::ProjectAvatar
+        mount ::API::ProjectClusters
+        mount ::API::ProjectContainerRepositories
+        mount ::API::ProjectContainerRegistryProtectionRules
+        mount ::API::ProjectContainerRegistryProtectionTagRules
+        mount ::API::ProjectDebianDistributions
+        mount ::API::ProjectEvents
+        mount ::API::ProjectExport
+        mount ::API::ProjectHooks
+        mount ::API::ProjectImport
+        mount ::API::ProjectJobTokenScope
+        mount ::API::ProjectPackages
+        mount ::API::ProjectPackagesProtectionRules
+        mount ::API::ProjectSnapshots
+        mount ::API::ProjectSnippets
+        mount ::API::ProjectStatistics
+        mount ::API::ProjectTemplates
+        mount ::API::Projects
+        mount ::API::ProtectedBranches
+        mount ::API::ProtectedTags
+        mount ::API::PypiPackages
+        mount ::API::Releases
+        mount ::API::Release::Links
+        mount ::API::RemoteMirrors
+        mount ::API::Repositories
+        mount ::API::ResourceAccessTokens::SelfRotation
+        mount ::API::ResourceMilestoneEvents
+        mount ::API::RpmProjectPackages
+        mount ::API::RubygemPackages
+        mount ::API::Search
+        mount ::API::Snippets
+        mount ::API::Statistics
+        mount ::API::Submodules
+        mount ::API::Suggestions
+        mount ::API::SupplyChain::Attestations
+        mount ::API::SystemHooks
+        mount ::API::Tags
+        mount ::API::Terraform::Modules::V1::NamespacePackages
+        mount ::API::Terraform::Modules::V1::ProjectPackages
+        mount ::API::Terraform::State
+        mount ::API::Terraform::StateProtectionRules
+        mount ::API::Terraform::StateVersion
+        mount ::API::Topics
+        mount ::API::Unleash
+        mount ::API::UsageData
+        mount ::API::UsageDataServicePing
+        mount ::API::UsageDataTrack
+        mount ::API::UsageDataNonSqlMetrics
+        mount ::API::UsageDataQueries
+        mount ::API::UserCounts
+        mount ::API::UserRunners
+        mount ::API::WebCommits
+        mount ::API::WorkItems::Delete
+        mount ::API::WorkItems::Create
+        mount ::API::WorkItems::Update
+        mount ::API::WorkItems::List
+        mount ::API::WorkItems::Show
+        mount ::API::WorkItems::Children
+        mount ::API::WorkItems::LinkedItems
+        mount ::API::WorkItems::LinkedResources
+        mount ::API::WorkItems::AwardEmoji
+        mount ::API::WorkItems::ClosingMergeRequests
+        mount ::API::WorkItems::RelatedBranches
+        mount ::API::WorkItems::RelatedMergeRequests
+        mount ::API::WorkItems::CurrentUserTodos
+        mount ::API::WorkItems::Notes
+        mount ::API::WorkItems::Discussions
+        mount ::API::WorkItems::DiscussionNotes
+        mount ::API::WorkItems::EmailParticipants
+        mount ::API::Wikis
+
+        add_open_api_documentation!
+      end
+
+      # Keep in alphabetical order
+      mount ::API::Admin::Sidekiq
+      mount ::API::Boards
+      mount ::API::Ci::Pipelines
+      mount ::API::Ci::PipelineSchedules
+      mount ::API::Ci::SecureFiles
+      mount ::API::Ci::UserPipelines
+      mount ::API::Discussions
+      mount ::API::GroupBoards
+      mount ::API::GroupLabels
+      mount ::API::GroupMilestones
+      mount ::API::GroupServiceAccounts
+      mount ::API::Labels
+      mount ::API::Mcp::Base # MCP uses JSON-RPC for base protocol, omit from OpenAPI V2 documentation for REST API
+      mount ::API::Notes
+      mount ::API::NotificationSettings
+      mount ::API::ProjectEvents
+      mount ::API::ProjectMilestones
+      mount ::API::ProjectRepositoryStorageMoves
+      mount ::API::ProjectServiceAccounts
+      mount ::API::ProtectedTags
+      mount ::API::ResourceAccessTokens
+      mount ::API::ResourceLabelEvents
+      mount ::API::ResourceStateEvents
+      mount ::API::ServiceAccounts
+      mount ::API::Settings
+      mount ::API::SidekiqMetrics
+      mount ::API::SnippetRepositoryStorageMoves
+      mount ::API::Subscriptions
+      mount ::API::Tags
+      mount ::API::Templates
+      mount ::API::Todos
+      mount ::API::UsageData
+      mount ::API::UsageDataServicePing
+      mount ::API::UsageDataTrack
+      mount ::API::UsageDataNonSqlMetrics
+      mount ::API::UserApplications
+      mount ::API::Users
+      mount ::API::VsCode::Settings::VsCodeSettingsSync
+      mount ::API::Ml::Mlflow::Entrypoint
+      mount ::API::Ml::MlflowArtifacts::Entrypoint
+    end
+
+    mount ::API::Internal::Base
+    mount ::API::Internal::Coverage if Gitlab::Utils.to_boolean(ENV['COVERBAND_ENABLED'], default: false)
+    mount ::API::Internal::Ci::JobRouter
+    mount ::API::Internal::Lfs
+    mount ::API::Internal::Pages
+    mount ::API::Internal::Kubernetes
+    mount ::API::Internal::ErrorTracking
+    mount ::API::Internal::MailRoom
+    mount ::API::Internal::Workhorse
+    mount ::API::Internal::Shellhorse
+    mount ::API::Internal::Gitaly
+    mount ::API::Internal::OrgMover
+
+    route_setting :authorization, skip_granular_token_authorization: :catch_all
+    route :any, '*path', feature_category: :not_owned do
+      error!('404 Not Found', 404)
+    end
   end
 end
+
+API::API.use ::API::TrackAPIRequestFromPersonalAccessToken
+API::API.prepend_mod

@@ -1,0 +1,115 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ObjectPool::DestroyWorker, feature_category: :source_code_management do
+  describe '.sidekiq_retries_exhausted' do
+    it 'tracks the exception with the pool repository id' do
+      job = { 'args' => [123] }
+      exception = StandardError.new('gitaly failure')
+
+      expect(Gitlab::ErrorTracking).to receive(:track_exception)
+        .with(exception, pool_repository_id: 123)
+
+      described_class.sidekiq_retries_exhausted_block.call(job, exception)
+    end
+  end
+
+  describe '#perform' do
+    context 'when no pool is in the database' do
+      it "doesn't raise an error" do
+        expect do
+          described_class.new.perform(987654321)
+        end.not_to raise_error
+      end
+    end
+
+    context 'when a pool is present' do
+      let(:pool) { create(:pool_repository, :obsolete) }
+
+      subject { described_class.new }
+
+      before do
+        pool.source_project.update_column(:pool_repository_id, nil)
+      end
+
+      it 'requests Gitaly to remove the object pool' do
+        expect(Gitlab::GitalyClient).to receive(:call).with(
+          pool.shard_name,
+          :object_pool_service,
+          :delete_object_pool,
+          Object,
+          timeout: Gitlab::GitalyClient.long_timeout
+        )
+
+        subject.perform(pool.id)
+      end
+
+      it 'destroys the pool' do
+        subject.perform(pool.id)
+
+        expect(PoolRepository.find_by_id(pool.id)).to be_nil
+      end
+
+      it_behaves_like 'an idempotent worker' do
+        let(:job_args) { [pool.id] }
+
+        it 'destroys the pool' do
+          perform_multiple(job_args)
+
+          expect(PoolRepository.find_by_id(pool.id)).to be_nil
+        end
+      end
+
+      context 'when a project joined the pool after it was marked obsolete' do
+        let!(:member) { create(:project, pool_repository: pool) }
+
+        it 'does not remove the object pool' do
+          expect(Gitlab::GitalyClient).not_to receive(:call)
+            .with(anything, :object_pool_service, :delete_object_pool, anything, anything)
+          expect(subject).to receive(:log_extra_metadata_on_done).with(:destroy_skipped, 'members_exist')
+
+          subject.perform(pool.id)
+
+          expect(PoolRepository.find_by_id(pool.id)).to eq(pool)
+        end
+      end
+
+      context 'when the Gitaly call fails' do
+        before do
+          allow_next_instance_of(Gitlab::GitalyClient::ObjectPoolService) do |service|
+            allow(service).to receive(:delete).and_raise(GRPC::Unavailable)
+          end
+        end
+
+        it 'does not destroy the pool record' do
+          expect { subject.perform(pool.id) }.to raise_error(GRPC::Unavailable)
+
+          expect(PoolRepository.find_by_id(pool.id)).to eq(pool)
+        end
+      end
+
+      context 'when the pool does not have a source project' do
+        before do
+          # Mirrors production: deleting the source project triggers the loose
+          # foreign key that nullifies pool_repositories.source_project_id.
+          pool.update_column(:source_project_id, nil)
+        end
+
+        it 'requests Gitaly to remove the object pool and destroys the pool record' do
+          expect(Gitlab::GitalyClient).to receive(:call).with(
+            pool.shard_name,
+            :object_pool_service,
+            :delete_object_pool,
+            Object,
+            timeout: Gitlab::GitalyClient.long_timeout
+          ).and_call_original
+
+          subject.perform(pool.id)
+
+          expect(PoolRepository.find_by_id(pool.id)).to be_nil
+        end
+      end
+    end
+  end
+end

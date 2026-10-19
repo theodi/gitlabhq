@@ -1,0 +1,10 @@
+---
+name: read_invitation
+description: Grants the ability to read invitations
+boundaries:
+  - group
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - read_invitation

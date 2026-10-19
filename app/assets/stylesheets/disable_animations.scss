@@ -1,0 +1,17 @@
+*:not(
+  /* Keep transition enabled where it would otherwise break specs */
+  .always-animate
+) {
+  /* stylelint-disable property-no-vendor-prefix */
+  -o-transition: none !important;
+  -moz-transition: none !important;
+  -ms-transition: none !important;
+  -webkit-transition: none !important;
+  transition: none !important;
+  -webkit-animation: none !important;
+  -moz-animation: none !important;
+  -o-animation: none !important;
+  -ms-animation: none !important;
+  animation: none !important;
+  /* stylelint-enable property-no-vendor-prefix */
+}

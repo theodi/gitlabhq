@@ -1,0 +1,92 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Merge request dashboard collapsible section renders section 1`] = `
+<local-storage-sync-stub
+  persist="true"
+  storagekey="mr_list_list"
+>
+  <section
+    class="contrast-more:gl-border-strong crud gl-bg-strong gl-border gl-border-transparent gl-flex gl-flex-col gl-mt-3 gl-pb-2 gl-px-2 gl-rounded-xl"
+    id="reference-0"
+  >
+    <header
+      class="@md/panel:gl-flex-nowrap crud-header gl-flex gl-flex-wrap gl-gap-x-5 gl-gap-y-2 gl-justify-between gl-pl-3 gl-pr-2 gl-pr-9 gl-py-0 gl-relative gl-rounded-t-lg"
+      data-testid="crud-header"
+    >
+      <div
+        class="gl-flex gl-flex-col gl-grow gl-py-3 gl-self-center"
+      >
+        <h2
+          class="gl-font-bold gl-gap-3 gl-inline-flex gl-items-center gl-leading-normal gl-mx-0 gl-my-2 gl-text-base gl-text-heading"
+          data-testid="crud-title"
+        >
+          Approved
+          <span
+            class="crud-count gl-font-normal gl-gap-2 gl-inline-flex gl-items-center gl-self-start gl-text-sm gl-text-subtle"
+            data-testid="crud-count"
+          >
+            <span
+              data-testid="merge-request-list-count"
+            >
+              3
+            </span>
+          </span>
+        </h2>
+      </div>
+      <div
+        class="gl-flex gl-gap-3 gl-items-start gl-my-3"
+        data-testid="crud-actions"
+      >
+        <gl-button-stub
+          accessibledisabled="true"
+          aria-label="Approved list help popover"
+          buttontextclasses=""
+          category="primary"
+          class="gl-mr-2 gl-self-center"
+          icon="information-o"
+          size="medium"
+          tag="button"
+          title=""
+          type="button"
+          variant="link"
+        />
+        <div
+          class="-gl-translate-y-1/2 gl-absolute gl-border-l gl-border-strong gl-flex gl-h-5 gl-items-center gl-pl-3 gl-right-3 gl-top-1/2"
+        >
+          <gl-button-stub
+            accessibledisabled="true"
+            aria-controls=""
+            aria-expanded="true"
+            aria-label="Collapse"
+            buttontextclasses=""
+            category="tertiary"
+            class="-gl-mr-2 btn-icon"
+            data-testid="crud-collapse-toggle"
+            icon=""
+            size="small"
+            tag="button"
+            title="Collapse"
+            type="button"
+            variant="default"
+          >
+            <gl-animated-chevron-lg-down-up-icon-stub
+              is-on="true"
+              variant="default"
+            />
+          </gl-button-stub>
+        </div>
+      </div>
+    </header>
+    <div
+      class="!gl-mx-0 contrast-more:gl-border crud-body forced-colors:gl-border gl-bg-default gl-grow gl-mb-0 gl-p-3 gl-rounded-lg"
+      data-testid="crud-body"
+    >
+      content
+      <div
+        class="crud-pagination gl-border-t gl-border-t-section gl-flex gl-justify-center gl-p-5"
+        data-testid="crud-pagination"
+      />
+    </div>
+  </section>
+</local-storage-sync-stub>
+`;

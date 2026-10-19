@@ -1,0 +1,52 @@
+# This file is loaded when omnibus tests are triggered from a different repository
+# It overrides base job definition using pipeline-common definition which does not require gitlab repo code to be fetched
+
+include:
+  - project: gitlab-org/quality/pipeline-common
+    ref: 13.1.1
+    file:
+      - /ci/base.gitlab-ci.yml
+
+variables:
+  RUN_WITH_BUNDLE: "false"
+  EXTERNAL_TRIGGER: "true"
+
+# Populate runner cache with preinstalled version of gitlab-qa gem
+cache-gitlab-qa:
+  extends:
+    - .gitlab-qa-install
+  stage: .pre
+  tags:
+    - e2e
+  variables:
+    GIT_STRATEGY: none
+  script: echo "Successfully installed gitlab-qa gem"
+  cache:
+    policy: pull-push
+  rules:
+    - when: always
+      allow_failure: true
+
+.omnibus-e2e:
+  extends:
+    - .qa-base
+    - .e2e-test-variables
+  stage: test
+  tags:
+    - e2e
+  variables:
+    GIT_STRATEGY: none
+    RUNNER_SCRIPT_TIMEOUT: ""  # This is to override the variable defined in qa-common/main.gitlab-ci.yml
+  allow_failure: true
+
+# only run full "instance" suite when pipeline is added in external project
+instance:
+  extends:
+    - .parallel
+    - .omnibus-e2e
+  variables:
+    QA_SCENARIO: Test::Instance::Image
+    QA_RUN_IN_PARALLEL: true
+  rules:
+    - !reference [.rules:test:smoke-for-omnibus-mr, rules]
+    - if: $QA_SUITES =~ /Test::Instance::All/

@@ -1,0 +1,13 @@
+---
+table_name: ci_job_artifact_states
+classes:
+- Geo::JobArtifactState
+feature_categories:
+- geo_replication
+description: Separate table for job artifacts containing Geo verification metadata.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/75264
+milestone: '14.8'
+gitlab_schema: gitlab_ci
+sharding_key:
+  project_id: projects
+table_size: large

@@ -1,81 +1,156 @@
+# frozen_string_literal: true
+
 class InvitesController < ApplicationController
+  include Gitlab::Utils::StrongMemoize
+  include SafeFormatHelper
+
+  prepend_before_action :authenticate_user!, :track_invite_join_click, only: :show
   before_action :member
+  before_action :ensure_member_exists
+  before_action :invite_details
   skip_before_action :authenticate_user!, only: :decline
+
+  helper_method :member?, :current_user_matches_invite?
 
   respond_to :html
 
-  def show
+  feature_category :system_access
 
+  def show
+    accept if skip_invitation_prompt?
   end
 
+  # Note: This action is rarely reached in the normal flow because:
+  # - New users auto-accept pending invitations during registration
+  # - Existing users auto-accept invitations
+  #
+  # This action primarily handles the edge case where an existing user changes
+  # their email address and then clicks an invitation link like:
+  # http://gitlab.com/-/invites/L4KRHEoQxsc_1nrH5sCg?invite_type=initial_email
   def accept
-    if member.accept_invite!(current_user)
-      label, path = source_info(member.source)
+    response = Members::AcceptInviteService.new(current_user, member: @member).execute
 
-      redirect_to path, notice: "You have been granted #{member.human_access} access to #{label}."
+    if response.success?
+      redirect_to invite_details[:path], notice: helpers.invite_accepted_notice(member)
     else
-      redirect_to :back, alert: "The invitation could not be accepted."
+      redirect_back_or_default(options: { alert: response.message })
     end
   end
 
   def decline
     if member.decline_invite!
-      label, _ = source_info(member.source)
+      return render layout: 'minimal' if !current_user && member.invite_to_unknown_user? && member.created_by
 
       path =
         if current_user
-          dashboard_path
+          dashboard_projects_path
         else
           new_user_session_path
         end
 
-      redirect_to path, notice: "You have declined the invitation to join #{label}."
+      redirect_to path,
+        notice: safe_format(_("You have declined the invitation to join %{title} %{name}."),
+          title: invite_details[:title],
+          name: invite_details[:name])
     else
-      redirect_to :back, alert: "The invitation could not be declined."
+      redirect_back_or_default(options: { alert: _("The invitation could not be declined.") })
     end
   end
 
   private
 
+  def invite_params
+    params.permit(:id, :invite_type)
+  end
+
+  def skip_invitation_prompt?
+    !member? && current_user_matches_invite?
+  end
+
+  def current_user_matches_invite?
+    current_user.verified_email?(@member.invite_email)
+  end
+
+  def member?
+    @member.source.has_user?(current_user)
+  end
+  strong_memoize_attr :member?
+
   def member
-    return @member if defined?(@member)
+    @token = invite_params[:id].to_s
+    Member.find_by_invite_token(@token)
+  end
+  strong_memoize_attr :member
 
-    @token = params[:id]
-    @member = Member.find_by_invite_token(@token)
+  def ensure_member_exists
+    return if member
 
-    unless @member
-      render_404 and return
-    end
+    alert = _("This invitation link is no longer valid. " \
+      "If you already have access, you'll find the group or project under Your work.")
+    redirect_back_or_default(options: { alert: alert })
+  end
 
-    @member
+  def track_invite_join_click
+    return unless member && initial_invite_email?
+
+    Gitlab::Tracking.event(self.class.name, 'join_clicked', label: 'invite_email')
   end
 
   def authenticate_user!
     return if current_user
 
-    notice = "To accept this invitation, sign in"
-    notice << " or create an account" if current_application_settings.signup_enabled?
-    notice << "."
+    if user_sign_up?
+      set_session_invite_params
 
-    store_location_for :user, request.fullpath
-    redirect_to new_user_session_path, notice: notice
+      redirect_to new_user_registration_path(invite_email: member.invite_email),
+        notice: _("To accept this invitation, create an account or sign in.")
+    else
+      redirect_to new_user_session_path(sign_in_redirect_params), notice: sign_in_notice
+    end
   end
 
-  def source_info(source)
-    case source
-    when Project
-      project = member.source
-      label = "project #{project.name_with_namespace}"
-      path = namespace_project_path(project.namespace, project)
-    when Group
-      group = member.source
-      label = "group #{group.name}"
-      path = group_path(group)
-    else
-      label = "who knows what"
-      path = dashboard_path
-    end
+  def set_session_invite_params
+    session[:invite_email] = member.invite_email
 
-    [label, path]
+    session[:originating_member_id] = member.id if initial_invite_email?
+  end
+
+  def initial_invite_email?
+    invite_params[:invite_type] == ::Members::InviteMailer::INITIAL_INVITE
+  end
+
+  def sign_in_redirect_params
+    member ? { invite_email: member.invite_email } : {}
+  end
+
+  def user_sign_up?
+    Gitlab::CurrentSettings.allow_signup? && member && !User.find_by_any_email(member.invite_email)
+  end
+
+  def sign_in_notice
+    if Gitlab::CurrentSettings.allow_signup?
+      _("To accept this invitation, sign in or create an account.")
+    else
+      _("To accept this invitation, sign in.")
+    end
+  end
+
+  def invite_details
+    @invite_details ||= case member.source
+                        when Project
+                          {
+                            name: member.source.full_name,
+                            url: project_url(member.source),
+                            title: _("project"),
+                            path: project_path(member.source)
+                          }
+                        when Group
+                          {
+                            name: member.source.name,
+                            url: group_url(member.source),
+                            title: _("group"),
+                            path: group_path(member.source)
+                          }
+                        end
   end
 end

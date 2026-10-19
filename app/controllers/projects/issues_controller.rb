@@ -1,167 +1,511 @@
-class Projects::IssuesController < Projects::ApplicationController
-  before_action :module_enabled
-  before_action :issue, only: [:edit, :update, :show, :toggle_subscription]
+# frozen_string_literal: true
 
-  # Allow read any issue
-  before_action :authorize_read_issue!
+class Projects::IssuesController < Projects::ApplicationController
+  include ToggleSubscriptionAction
+  include IssuableActions
+  include ToggleAwardEmoji
+  include IssuableCollections
+  include IssuesCalendar
+  include RecordUserLastActivity
+  include IssueBuildParameters
+
+  rescue_from ::Issuable::Callbacks::Base::Error do |e|
+    respond_to do |format|
+      format.html { redirect_back_or_default(default: project_issues_path(project), options: { alert: e.message }) }
+      format.json { render json: { errors: [e.message] }, status: :unprocessable_entity }
+    end
+  end
+
+  ISSUES_EXCEPT_ACTIONS = %i[index calendar new create bulk_update import_csv export_csv service_desk
+    can_create_branch].freeze
+  SET_ISSUABLES_INDEX_ONLY_ACTIONS = %i[index calendar service_desk].freeze
+  WORK_ITEM_REDIRECT_EXCEPT_ACTIONS = (ISSUES_EXCEPT_ACTIONS + [
+    :discussions,                # it's a JSON action, but not always passed on the tests requests
+    :designs,                    # redirected on the show action
+    :description_diff,
+    :delete_description_version
+  ]).freeze
+
+  prepend_before_action(only: [:index]) { authenticate_sessionless_user!(:rss) }
+  prepend_before_action(only: [:calendar]) { authenticate_sessionless_user!(:ics) }
+  prepend_before_action :authenticate_user!, only: [:new, :export_csv]
+  prepend_before_action :store_uri, only: [:new, :show, :designs]
+
+  before_action :disable_query_limiting, only: [:create_merge_request, :move, :bulk_update]
+  before_action :disable_show_query_limit!, only: :show
+  before_action :disable_create_query_limit!, only: :create
+
+  before_action :check_issues_available!
+  before_action :issue, unless: ->(c) { ISSUES_EXCEPT_ACTIONS.include?(c.action_name.to_sym) }
+  before_action :require_incident_for_incident_routes, only: :show
+
+  before_action :set_issuables_index, if: ->(c) {
+    SET_ISSUABLES_INDEX_ONLY_ACTIONS.include?(c.action_name.to_sym) && !index_html_request?
+  }
+  before_action :check_search_rate_limit!, if: ->(c) {
+    SET_ISSUABLES_INDEX_ONLY_ACTIONS.include?(c.action_name.to_sym) && !index_html_request? &&
+      issue_view_params[:search].present?
+  }
+
+  before_action :redirect_if_work_item
+  before_action :redirect_index_to_work_items, only: :index
 
   # Allow write(create) issue
-  before_action :authorize_write_issue!, only: [:new, :create]
+  before_action :authorize_create_issue!, only: [:new, :create]
 
   # Allow modify issue
-  before_action :authorize_modify_issue!, only: [:edit, :update]
+  before_action :authorize_update_issuable!, only: [:update, :move, :reorder]
 
-  # Allow issues bulk update
-  before_action :authorize_admin_issues!, only: [:bulk_update]
+  # Allow create a new branch and empty WIP merge request from current issue
+  before_action :authorize_create_merge_request_from!, only: [:create_merge_request]
+
+  before_action :authorize_import_issues!, only: [:import_csv]
+  before_action :authorize_read_code!, only: [:related_branches]
+
+  before_action do
+    push_force_frontend_feature_flag(:glql_load_on_click, !!project&.glql_load_on_click_feature_flag_enabled?)
+    push_frontend_feature_flag(:hide_incident_management_features, project)
+    push_force_frontend_feature_flag(:work_item_features_field,
+      Feature.enabled?(:work_item_features_field, current_user))
+    push_frontend_feature_flag(:work_item_ticket_migration, project&.root_ancestor)
+  end
+
+  after_action :log_issue_show, only: :show
+
+  prepend_around_action :track_load_comments_sli, only: [:discussions]
+  around_action :allow_gitaly_ref_name_caching, only: [:discussions]
 
   respond_to :html
 
+  feature_category :planning_views, [:index, :calendar]
+  feature_category :team_planning, [
+    :show, :new, :create, :edit, :update,
+    :destroy, :move, :reorder, :designs, :toggle_subscription,
+    :discussions, :bulk_update, :realtime_changes,
+    :toggle_award_emoji, :mark_as_spam, :related_branches,
+    :can_create_branch, :create_merge_request, :export_csv
+  ]
+  urgency :low, [
+    :index, :calendar, :show, :new, :update, :move, :reorder, :designs, :toggle_subscription,
+    :discussions, :bulk_update, :realtime_changes,
+    :toggle_award_emoji, :mark_as_spam, :related_branches,
+    :can_create_branch, :create_merge_request
+  ]
+
+  feature_category :service_desk, [:service_desk]
+  urgency :low, [:service_desk]
+  feature_category :importers, [:import_csv]
+  urgency :low, [:import_csv, :export_csv]
+
   def index
-    terms = params['issue_search']
-    @issues = get_issues_collection
+    return if redirect_if_epic_params
 
-    if terms.present?
-      if terms =~ /\A#(\d+)\z/
-        @issues = @issues.where(iid: $1)
-      else
-        @issues = @issues.full_search(terms)
-      end
+    if index_html_request?
+      set_sort_order
+    else
+      @issues = @issuables
     end
-
-    @issues = @issues.page(params[:page]).per(PER_PAGE)
 
     respond_to do |format|
       format.html
-      format.atom { render layout: false }
-      format.json do
-        render json: {
-          html: view_to_html_string("projects/issues/_issues")
-        }
-      end
+      format.atom { render layout: 'xml' }
     end
+  end
+
+  def calendar
+    render_issues_calendar(@issuables)
   end
 
   def new
-    params[:issue] ||= ActionController::Parameters.new(
-      assignee_id: ""
+    redirect_to new_project_work_item_url(
+      project,
+      safe_params.except(:controller, :action, :namespace_id, :project_id)
     )
-
-    @issue = @project.issues.new(issue_params)
-    respond_with(@issue)
-  end
-
-  def edit
-    respond_with(@issue)
   end
 
   def show
-    @note = @project.notes.new(noteable: @issue)
-    @notes = @issue.notes.inc_author.fresh
-    @noteable = @issue
+    return super if issue.require_legacy_views? || !html_request?
 
-    respond_with(@issue)
+    vueroute = issue_view_params[:vueroute]
+    if vueroute.present? && request.path.include?('/designs/')
+      # Only redirect to designs path if both vueroute param exists and path contains /designs/
+      # Needed since designs are aliased to show in this controller
+      redirect_to designs_project_work_item_path(project, issue.iid, vueroute: vueroute,
+        params: request.query_parameters)
+    else
+      redirect_to project_work_item_path(project, issue.iid, params: request.query_parameters)
+    end
+  end
+
+  alias_method :designs, :show
+
+  def edit
+    # Check if user can edit the issue
+    if can?(current_user, :update_issue, issue)
+      # Redirect to issues detail page with edit mode enabled
+      redirect_to project_issue_path(project, issue, edit: 'true')
+    else
+      # Redirect to issues detail page without edit mode
+      redirect_to project_issue_path(project, issue)
+    end
   end
 
   def create
-    @issue = Issues::CreateService.new(project, current_user, issue_params).execute
+    create_params = issue_params.merge(
+      add_related_issue: add_related_issue,
+      merge_request_to_resolve_discussions_of: resolve_discussions_params[:merge_request_to_resolve_discussions_of],
+      observability_links: resolve_discussions_params[:observability_links],
+      discussion_to_resolve: resolve_discussions_params[:discussion_to_resolve]
+    )
 
-    respond_to do |format|
-      format.html do
-        if @issue.valid?
-          redirect_to issue_path(@issue)
-        else
-          render :new
-        end
+    service = ::Issues::CreateService.new(container: project, current_user: current_user, params: create_params)
+    result = service.execute
+
+    # Only irrecoverable errors such as unauthorized user won't contain an issue in the response
+    render_by_create_result_error(result) && return if result.error? && result[:issue].blank?
+
+    @issue = result[:issue]
+
+    if result.success?
+      create_vulnerability_issue_feedback(@issue)
+
+      if service.discussions_to_resolve.count(&:resolved?) > 0
+        flash[:notice] = if service.discussion_to_resolve_id
+                           _("Resolved 1 discussion.")
+                         else
+                           _("Resolved all discussions.")
+                         end
       end
-      format.js do |format|
-        @link = @issue.attachment.url.to_js
+
+      redirect_to project_issue_path(@project, @issue)
+    else
+      with_captcha_check_json_format(spammable: spammable) do
+        render json: { errors: @issue.errors.full_messages }, status: :unprocessable_entity
       end
     end
   end
 
-  def update
-    @issue = Issues::UpdateService.new(project, current_user, issue_params).execute(issue)
+  def move
+    if move_to_project_id_param.to_i > 0
+      new_project = Project.find(move_to_project_id_param)
+      return render_404 unless issue.can_move?(current_user, new_project)
+
+      @issue = ::WorkItems::DataSync::MoveService.new(
+        work_item: issue, current_user: current_user, target_namespace: new_project.project_namespace
+      ).execute[:work_item]
+    end
 
     respond_to do |format|
-      format.js
-      format.html do
-        if @issue.valid?
-          redirect_to issue_path(@issue)
-        else
-          render :edit
-        end
+      format.json do
+        render_issue_json
       end
+    end
+
+  rescue ActiveRecord::StaleObjectError
+    render_conflict_response
+  end
+
+  def reorder
+    service = ::Issues::ReorderService.new(container: project, current_user: current_user, params: reorder_params)
+
+    if service.execute(issue)
+      head :ok
+    else
+      head :unprocessable_entity
+    end
+  end
+
+  def related_branches
+    @related_branches = ::Issues::RelatedBranchesService
+      .new(container: project, current_user: current_user)
+      .execute(issue)
+
+    respond_to do |format|
       format.json do
         render json: {
-          saved: @issue.valid?,
-          assignee_avatar_url: @issue.assignee.try(:avatar_url)
+          html: view_to_html_string('projects/issues/_related_branches')
         }
       end
     end
   end
 
-  def bulk_update
-    result = Issues::BulkUpdateService.new(project, current_user, bulk_update_params).execute
-    redirect_to :back, notice: "#{result[:count]} issues updated"
+  def can_create_branch
+    can_create = current_user &&
+      can?(current_user, :push_code, @project) &&
+      issue.can_be_worked_on?
+
+    respond_to do |format|
+      format.json do
+        render json: {
+          can_create_branch: can_create,
+          suggested_branch_name: issue.suggested_branch_name(current_user: current_user)
+        }
+      end
+    end
   end
 
-  def toggle_subscription
-    @issue.toggle_subscription(current_user)
+  def create_merge_request
+    Labkit::UserExperienceSli.start(:create_merge_request)
 
-    render nothing: true
+    result = ::MergeRequests::CreateFromIssueService.new(project: project, current_user: current_user,
+      mr_params: create_from_issue_params).execute
+
+    if result[:status] == :success
+      render json: MergeRequestCreateSerializer.new.represent(result[:merge_request])
+    else
+      render json: result[:message], status: :unprocessable_entity
+    end
+  end
+
+  def export_csv
+    IssuableExportCsvWorker.perform_async(:issue, current_user.id, project.id, finder_options.to_h) # rubocop:disable CodeReuse/Worker
+
+    index_path = project_issues_path(project)
+    message = safe_format(_('Your CSV export has started. It will be emailed to %{email} when complete.'),
+      email: current_user.notification_email_or_default)
+    redirect_to(index_path, notice: message)
+  end
+
+  def import_csv
+    result = Issues::PrepareImportCsvService.new(project, current_user, file: params.permit(:file)[:file]).execute
+
+    if result.success?
+      flash[:notice] = result.message
+    else
+      flash[:alert] = result.message
+    end
+
+    redirect_to project_issues_path(project)
+  end
+
+  def service_desk
+    @issues = @issuables
+  end
+
+  def discussions
+    Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/425834')
+
+    super
   end
 
   protected
 
-  def issue
-    @issue ||= begin
-                 @project.issues.find_by!(iid: params[:id])
-               rescue ActiveRecord::RecordNotFound
-                 redirect_old
-               end
-  end
-
-  def authorize_modify_issue!
-    return render_404 unless can?(current_user, :modify_issue, @issue)
-  end
-
-  def authorize_admin_issues!
-    return render_404 unless can?(current_user, :admin_issue, @project)
-  end
-
-  def module_enabled
-    return render_404 unless @project.issues_enabled
-  end
-
-  # Since iids are implemented only in 6.1
-  # user may navigate to issue page using old global ids.
-  #
-  # To prevent 404 errors we provide a redirect to correct iids until 7.0 release
-  #
-  def redirect_old
-    issue = @project.issues.find_by(id: params[:id])
-
-    if issue
-      redirect_to issue_path(issue)
-      return
-    else
-      raise ActiveRecord::RecordNotFound.new
+  def track_load_comments_sli
+    Labkit::UserExperienceSli.start(:load_comments) do
+      yield
     end
   end
 
-  def issue_params
-    params.require(:issue).permit(
-      :title, :assignee_id, :position, :description,
-      :milestone_id, :state_event, :task_num, label_ids: []
+  def index_html_request?
+    action_name.to_sym == :index && html_request?
+  end
+
+  def sorting_field
+    Issue::SORTING_PREFERENCE_FIELD
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def issue
+    return @issue if defined?(@issue)
+
+    # The Sortable default scope causes performance issues when used with find_by
+    @issue ||= @project.issues.inc_relations_for_view
+                 .iid_in(issue_lookup_params[:id]).without_order.take!
+    @issuable = @noteable = @issue
+    @note = @project.notes.new(noteable: @issuable)
+
+    return render_404 unless can?(current_user, :read_issue, @issue)
+
+    @issue
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def log_issue_show
+    return unless current_user && @issue
+
+    ::Gitlab::Search::RecentIssues.new(user: current_user).log_view(@issue)
+  end
+
+  alias_method :subscribable_resource, :issue
+  alias_method :issuable, :issue
+  alias_method :awardable, :issue
+  alias_method :spammable, :issue
+
+  def spammable_path
+    project_issue_path(@project, @issue)
+  end
+
+  def authorize_create_merge_request!
+    render_404 unless can?(current_user, :push_code, @project) && @issue.can_be_worked_on?
+  end
+
+  def render_issue_json
+    if @issue.valid?
+      render json: serializer.represent(@issue)
+    else
+      render json: { errors: @issue.errors.full_messages }, status: :unprocessable_entity
+    end
+  end
+
+  def reorder_params
+    params.permit(:move_before_id, :move_after_id)
+  end
+
+  def store_uri
+    store_location_for :user, request.fullpath if request.get? && request.format.html?
+  end
+
+  def serializer
+    IssueSerializer.new(current_user: current_user, project: issue.project)
+  end
+
+  def update_service
+    ::Issues::UpdateService.new(
+      container: project,
+      current_user: current_user,
+      params: issue_params,
+      perform_spam_check: true)
+  end
+
+  def destroy_service
+    Issues::DestroyService.new(container: project, current_user: current_user)
+  end
+
+  def finder_type
+    IssuesFinder
+  end
+
+  def disable_query_limiting
+    # Also see the following issues:
+    #
+    # 1. https://gitlab.com/gitlab-org/gitlab/-/issues/20815
+    # 2. https://gitlab.com/gitlab-org/gitlab/-/issues/20816
+    # 3. https://gitlab.com/gitlab-org/gitlab/-/issues/21068
+    Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/20814')
+  end
+
+  private
+
+  def issue_view_params
+    params.permit(:search, :vueroute, :incident_tab)
+  end
+
+  def issue_lookup_params
+    params.permit(:id, :add_related_issue)
+  end
+
+  # :observability_links arrives as a hash of stringified JSON, one key per signal type,
+  # so it has to be permitted as a nested hash rather than a scalar.
+  def resolve_discussions_params
+    params.permit(
+      :merge_request_to_resolve_discussions_of, :discussion_to_resolve,
+      observability_links: [:metrics, :logs, :tracing]
     )
   end
 
-  def bulk_update_params
-    params.require(:update).permit(
-      :issues_ids,
-      :assignee_id,
-      :milestone_id,
-      :state_event
-    )
+  def create_branch_params
+    params.permit(:branch_name, :ref, :target_project_id)
   end
+
+  def move_to_project_id_param
+    params.require(:move_to_project_id)
+  end
+
+  def create_from_issue_params
+    create_branch_params
+      .slice(:branch_name, :ref)
+      .merge(issue_iid: issue.iid, target_project_id: create_branch_params[:target_project_id])
+  end
+
+  def disable_show_query_limit!
+    Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/544875', new_threshold: 130)
+  end
+
+  def disable_create_query_limit!
+    # TODO: Investigate threshold after epic-work item sync
+    # issue: https://gitlab.com/gitlab-org/gitlab/-/issues/438295
+    Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/546668', new_threshold: 150)
+  end
+
+  def render_by_create_result_error(result)
+    Gitlab::AppLogger.warn(
+      message: 'Cannot create issue',
+      errors: result.errors,
+      http_status: result.http_status
+    )
+    error_method_name = :"render_#{result.http_status}"
+
+    if respond_to?(error_method_name, true)
+      send(error_method_name) # rubocop:disable GitlabSecurity/PublicSend
+    else
+      render_404
+    end
+  end
+
+  def finder_options
+    options = super
+
+    options[:issue_types] = Issue::TYPES_FOR_LIST
+    options[:include_subepics] = true if action_name == 'export_csv'
+
+    if service_desk?
+      options.reject! { |key| key == 'author_username' || key == 'author_id' }
+      options[:author_id] = Users::Internal.in_organization(project.organization_id).support_bot
+    end
+
+    options
+  end
+
+  def service_desk?
+    action_name == 'service_desk'
+  end
+
+  def add_related_issue
+    add_related_issue = project.issues.find_by_iid(issue_lookup_params[:add_related_issue])
+    add_related_issue if Ability.allowed?(current_user, :read_issue, add_related_issue)
+  end
+
+  # Overridden in EE
+  def create_vulnerability_issue_feedback(issue); end
+
+  # Overridden in EE
+  def work_item_redirect_except_actions
+    WORK_ITEM_REDIRECT_EXCEPT_ACTIONS
+  end
+
+  def redirect_if_work_item
+    return if work_item_redirect_except_actions.include?(action_name.to_sym)
+    return unless html_request?
+    return unless issue.show_as_work_item?
+
+    query_params = request.query_parameters
+    query_params = query_params.merge(edit: 'true') if action_name == 'edit' && can?(current_user, :update_issue, issue)
+
+    redirect_to project_work_item_path(project, issue.iid, query_params)
+  end
+
+  def redirect_index_to_work_items
+    return unless index_html_request?
+
+    redirect_to project_work_items_path(project, params: work_items_redirect_params(request.query_parameters))
+  end
+
+  # Overridden in EE
+  def work_items_redirect_params(params)
+    params.except("type", "type[]")
+  end
+
+  def require_incident_for_incident_routes
+    return unless issue_view_params[:incident_tab].present?
+    return if issue.work_item_type&.incident?
+
+    # Redirect instead of 404 to gracefully handle
+    # issue type changes
+    redirect_to project_issue_path(project, issue)
+  end
+
+  # Overridden in EE
+  def redirect_if_epic_params; end
 end
+
+Projects::IssuesController.prepend_mod_with('Projects::IssuesController')

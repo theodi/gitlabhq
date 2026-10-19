@@ -1,0 +1,43 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Metrics upload item render the metrics image component 1`] = `
+<gl-card-stub
+  bodyclass="[object Object]"
+  class="gl-mb-5"
+  footerclass=""
+  headerclass="gl-flex,gl-items-center,[object Object]"
+>
+  <gl-modal-stub
+    actioncancel="[object Object]"
+    actionprimary="[object Object]"
+    arialabel=""
+    body-class="!gl-pb-0 !gl-min-h-6"
+    dismisslabel="Close"
+    footertag="div"
+    headertag="div"
+    modalclass=""
+    modalid="delete-metric-modal"
+    size="sm"
+    titletag="h4"
+  >
+    <p>
+      Are you sure you wish to delete this image?
+    </p>
+  </gl-modal-stub>
+  <metric-image-details-modal-stub
+    edit="true"
+    filename="test_file_name"
+    imagefiles=""
+    imageid="1"
+  />
+  <div
+    class="gl-flex gl-flex-col"
+    data-testid="metric-image-body"
+  >
+    <img
+      class="gl-max-w-full gl-self-center"
+      src="test_file_path"
+    />
+  </div>
+</gl-card-stub>
+`;

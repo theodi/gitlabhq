@@ -1,0 +1,8 @@
+---
+Migration/BatchedMigrationBaseClass:
+  Exclude:
+    - 'lib/gitlab/background_migration/fix_projects_without_project_feature.rb'
+    - 'lib/gitlab/background_migration/mailers/unconfirm_mailer.rb'
+    - 'lib/gitlab/background_migration/populate_latest_pipeline_ids.rb'
+    - 'lib/gitlab/background_migration/project_namespaces/models/namespace.rb'
+    - 'lib/gitlab/background_migration/project_namespaces/models/project.rb'

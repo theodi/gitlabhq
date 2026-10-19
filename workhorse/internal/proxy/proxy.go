@@ -1,0 +1,159 @@
+// Package proxy provides functionality for configuring and using a proxy server.
+package proxy
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"sync"
+	"time"
+
+	"gitlab.com/gitlab-org/labkit/correlation"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/helper"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/helper/nginx"
+)
+
+const (
+	// matches the default size used in httputil.ReverseProxy
+	bufferPoolSize = 32 * 1024
+)
+
+var (
+	defaultTarget = helper.URLMustParse("http://localhost")
+
+	// pool is a buffer pool that is shared across all Proxy instances to maximize buffer reuse.
+	pool = newBufferPool()
+)
+
+// Proxy represents a proxy configuration with various settings.
+type Proxy struct {
+	Version                string
+	reverseProxy           *httputil.ReverseProxy
+	AllowResponseBuffering bool
+	customHeaders          map[string]string
+	forceTargetHostHeader  bool
+	forwardCorrelationID   bool
+}
+
+// WithCustomHeaders is a function that returns a configuration function to set custom headers for a proxy.
+func WithCustomHeaders(customHeaders map[string]string) func(*Proxy) {
+	return func(proxy *Proxy) {
+		proxy.customHeaders = customHeaders
+	}
+}
+
+// WithForcedTargetHostHeader is a function that returns a configuration function to force the target host header for a proxy.
+func WithForcedTargetHostHeader() func(*Proxy) {
+	return func(proxy *Proxy) {
+		proxy.forceTargetHostHeader = true
+	}
+}
+
+// WithCorrelationID is a function that returns a configuration function to forward the correlation ID to the proxied request.
+func WithCorrelationID() func(*Proxy) {
+	return func(proxy *Proxy) {
+		proxy.forwardCorrelationID = true
+	}
+}
+
+// NewProxy creates a new Proxy instance with the provided options.
+func NewProxy(myURL *url.URL, version string, roundTripper http.RoundTripper, options ...func(*Proxy)) *Proxy {
+	p := Proxy{Version: version, AllowResponseBuffering: true, customHeaders: make(map[string]string)}
+
+	if myURL == nil {
+		myURL = defaultTarget
+	}
+
+	u := *myURL // Make a copy of p.URL
+	u.Path = ""
+	p.reverseProxy = httputil.NewSingleHostReverseProxy(&u)
+	p.reverseProxy.Transport = roundTripper
+	p.reverseProxy.BufferPool = pool
+	chainDirector(p.reverseProxy, func(r *http.Request) {
+		r.Header.Set("Gitlab-Workhorse", p.Version)
+		r.Header.Set("Gitlab-Workhorse-Proxy-Start", fmt.Sprintf("%d", time.Now().UnixNano()))
+
+		if r.Header.Get("X-Forwarded-Proto") == "" {
+			if r.TLS != nil {
+				r.Header.Set("X-Forwarded-Proto", "https")
+			} else {
+				r.Header.Set("X-Forwarded-Proto", "http")
+			}
+		}
+
+		for k, v := range p.customHeaders {
+			r.Header.Set(k, v)
+		}
+	})
+
+	for _, option := range options {
+		option(&p)
+	}
+
+	if p.forceTargetHostHeader {
+		// because of https://github.com/golang/go/issues/28168, the
+		// upstream won't receive the expected Host header unless this
+		// is forced in the Director func here
+		chainDirector(p.reverseProxy, func(request *http.Request) {
+			// send original host along for the upstream
+			// to know it's being proxied under a different Host
+			// (for redirects and other stuff that depends on this)
+			request.Header.Set("X-Forwarded-Host", request.Host)
+			request.Header.Set("Forwarded", fmt.Sprintf("host=%s", request.Host))
+
+			// override the Host with the target
+			request.Host = request.URL.Host
+		})
+	}
+
+	if p.forwardCorrelationID {
+		chainDirector(p.reverseProxy, func(request *http.Request) {
+			if correlationID := correlation.ExtractFromContext(request.Context()); correlationID != "" {
+				request.Header.Set("X-Request-ID", correlationID)
+			}
+		})
+	}
+
+	return &p
+}
+
+func chainDirector(rp *httputil.ReverseProxy, nextDirector func(*http.Request)) {
+	previous := rp.Director
+	rp.Director = func(r *http.Request) {
+		previous(r)
+		nextDirector(r)
+	}
+}
+
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if p.AllowResponseBuffering {
+		nginx.AllowResponseBuffering(w)
+	}
+
+	p.reverseProxy.ServeHTTP(w, r)
+}
+
+type bufferPool struct {
+	pool sync.Pool
+}
+
+func newBufferPool() *bufferPool {
+	return &bufferPool{
+		pool: sync.Pool{
+			New: func() any {
+				buf := make([]byte, bufferPoolSize)
+				return &buf
+			},
+		},
+	}
+}
+
+func (bp *bufferPool) Get() []byte {
+	return *bp.pool.Get().(*[]byte)
+}
+
+func (bp *bufferPool) Put(v []byte) {
+	bp.pool.Put(&v)
+}

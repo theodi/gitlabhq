@@ -1,0 +1,28 @@
+- user = local_assigns.fetch(:user, current_user)
+- access = user&.max_member_access_for_group(group.id)
+
+%li{ class: "!gl-flex group-row !gl-py-5 gl-items-center" }
+  = link_to group do
+    = render Pajamas::AvatarComponent.new(group, alt: group.name, size: 48, class: 'gl-mr-5')
+  .gl-min-w-0.gl-grow
+    .title
+      = link_to group.full_name, group, class: 'group-name'
+
+      - if access&.nonzero?
+        = render Pajamas::BadgeComponent.new(Gitlab::Access.human_access(access), variant: 'neutral')
+
+    - if group.description.present?
+      .description
+        = markdown_field(group.namespace_details, :description)
+
+  .stats.gl-text-subtle.gl-shrink-0
+    %span.gl-ml-5.has-tooltip{ title: _('Projects') }
+      = sprite_icon('project', css_class: 'gl-align-text-bottom')
+      = number_with_delimiter(group.non_archived_projects.size)
+
+    %span.gl-ml-5.has-tooltip{ title: _('Users') }
+      = sprite_icon('users', css_class: 'gl-align-text-bottom')
+      = number_with_delimiter(group.non_invite_group_members.size)
+
+    %span.gl-ml-5.visibility-icon.has-tooltip{ data: { container: 'body', placement: 'left' }, title: visibility_icon_description(group) }
+      = visibility_level_icon(group.visibility_level)

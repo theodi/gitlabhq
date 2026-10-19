@@ -6,7 +6,7 @@ started.
 
 ## Markdown
 
-GitLab uses [Redcarpet](http://git.io/ld_NVQ) to parse all Markdown into
+GitLab uses [Commonmark](https://git.io/fhDag) to parse all Markdown into
 HTML.
 
 It has some special features. Let's try 'em out!
@@ -14,6 +14,12 @@ It has some special features. Let's try 'em out!
 ### No Intra Emphasis
 
 This string should have no emphasis: foo_bar_baz
+
+### Multiline Blockquotes
+
+>>>
+A multiline blockquote
+>>>
 
 ### Tables
 
@@ -43,8 +49,23 @@ This text says this, ~~and this text doesn't~~.
 
 ### Superscript
 
-This is my 1^(st) time using superscript in Markdown. Now this is my
-2^(nd).
+This is my 1<sup>(st)</sup> time using superscript in Markdown. Now this is my
+2<sup>(nd)</sup>.
+
+Redcarpet supports this superscript syntax ( x^2 ).
+
+### Subscript
+
+This (C<sub>6</sub>H<sub>12</sub>O<sub>6</sub>) is an example of subscripts in Markdown.
+
+### Footnotes
+
+This is footnote 1.[^f1]
+
+A footnote with a `w` was failing.[^f2-w]
+
+[^f1]: Footnote 1
+[^f2-w]: Footnote with w
 
 ### Next step
 
@@ -79,6 +100,11 @@ As permissive as it is, we've allowed even more stuff:
 
 <span>span tag</span>
 
+<details>
+<summary>Summary lines are collapsible:</summary>
+Hiding the details until expanded.
+</details>
+
 <a href="#" rel="bookmark">This is a link with a defined rel attribute, which should be removed</a>
 
 <a href="javascript:alert('Hi')">This is a link trying to be sneaky. It gets its link removed entirely.</a>
@@ -100,17 +126,32 @@ Markdown should be usable inside a link. Let's try!
 - [**text**](#link-strong)
 - [`text`](#link-code)
 
+### UploadLinkFilter
+
+Linking to an upload in this project should work:
+[Relative Upload Link](/uploads/e90decf88d8f96fe9e1389afc2e4a91f/test.jpg)
+![Relative Upload Image](/uploads/e90decf88d8f96fe9e1389afc2e4a91f/test.jpg)
+
+### RepositoryLinkFilter
+
+Linking to a file relative to this project's repository should work.
+
+[Relative Link](doc/README.md)
+![Relative Image](app/assets/images/touch-icon-ipad.png)
+
 ### EmojiFilter
 
 Because life would be :zzz: without Emoji, right? :rocket:
 
-Get ready for the Emoji :bomb:: :+1::-1::ok_hand::wave::v::raised_hand::muscle:
+Get ready for the Emoji :bomb: : :+1: :-1: :ok_hand: :wave: :v: :raised_hand: :muscle:
 
-### TableOfContentsFilter
+### TableOfContentsTagFilter
 
-All headers in this document should be linkable. Try it.
+A table of contents should be inserted here
 
-### AutolinkFilter
+[toc]
+
+### Autolinking in MarkdownFilter
 
 These are all plain text that should get turned into links:
 
@@ -123,29 +164,31 @@ These are all plain text that should get turned into links:
 
 But it shouldn't autolink text inside certain tags:
 
-- <code>http://about.gitlab.com/</code>
-- <a>http://about.gitlab.com/</a>
-- <kbd>http://about.gitlab.com/</kbd>
+- <code>http://code.gitlab.com/</code>
+- <a>http://a.gitlab.com/</a>
+- <kbd>http://kbd.gitlab.com/</kbd>
 
 ### ExternalLinkFilter
 
-External links get a `rel="nofollow"` attribute:
+External links get a `rel="nofollow noreferrer"` and `target="_blank"` attributes:
 
 - [Google](https://google.com/)
 - [GitLab Root](<%= Gitlab.config.gitlab.url %>)
 
 ### Reference Filters (e.g., <%= issue.to_reference %>)
 
-References should be parseable even inside _<%= merge_request.to_reference %>_ emphasis.
+References should be parsable even inside _<%= merge_request.to_reference %>_ emphasis.
 
 #### UserReferenceFilter
 
-- All: @all
 - User: <%= user.to_reference %>
 - Group: <%= group.to_reference %>
 - Ignores invalid: <%= User.reference_prefix %>fake_user
 - Ignored in code: `<%= user.to_reference %>`
 - Ignored in links: [Link to <%= user.to_reference %>](#user-link)
+- Ignored when backslash escaped: \<%= user.to_reference %>
+- Ignored when backslash escaped: \<%= group.to_reference %>
+- Link to user by reference: [User](<%= user.to_reference %>)
 
 #### IssueReferenceFilter
 
@@ -153,6 +196,23 @@ References should be parseable even inside _<%= merge_request.to_reference %>_ e
 - Issue in another project: <%= xissue.to_reference(project) %>
 - Ignored in code: `<%= issue.to_reference %>`
 - Ignored in links: [Link to <%= issue.to_reference %>](#issue-link)
+- Ignored when backslash escaped: \<%= issue.to_reference %>
+- Issue by URL: <%= urls.project_issue_url(issue.project, issue) %>
+- Link to issue by reference: [Issue](<%= issue.to_reference %>)
+- Link to issue by URL: [Issue](<%= urls.project_issue_url(issue.project, issue) %>)
+
+#### WorkItemReferenceFilter
+
+Note: work item references use `#`, which get built as an issue link.
+
+- Work item (counted as an issue reference): <%= work_item.to_reference %>
+- Work item in another project (counted as an issue reference): <%= xwork_item.to_reference(project) %>
+- Ignored in code: `<%= work_item.to_reference %>`
+- Ignored in links: [Link to <%= work_item.to_reference %>](#work_item-link)
+- Ignored when backslash escaped: \<%= work_item.to_reference %>
+- Work item by URL: <%= urls.project_work_item_url(work_item.project, work_item.iid) %>
+- Link to work item by reference (counted as an issue reference): [Work item](<%= work_item.to_reference %>)
+- Link to work item by URL: [Work item](<%= urls.project_work_item_url(work_item.project, work_item) %>)
 
 #### MergeRequestReferenceFilter
 
@@ -160,6 +220,10 @@ References should be parseable even inside _<%= merge_request.to_reference %>_ e
 - Merge request in another project: <%= xmerge_request.to_reference(project) %>
 - Ignored in code: `<%= merge_request.to_reference %>`
 - Ignored in links: [Link to <%= merge_request.to_reference %>](#merge-request-link)
+- Ignored when backslash escaped: \<%= merge_request.to_reference %>
+- Merge request by URL: <%= urls.project_merge_request_url(merge_request.project, merge_request) %>
+- Link to merge request by reference: [Merge request](<%= merge_request.to_reference %>)
+- Link to merge request by URL: [Merge request](<%= urls.project_merge_request_url(merge_request.project, merge_request) %>)
 
 #### SnippetReferenceFilter
 
@@ -167,6 +231,10 @@ References should be parseable even inside _<%= merge_request.to_reference %>_ e
 - Snippet in another project: <%= xsnippet.to_reference(project) %>
 - Ignored in code: `<%= snippet.to_reference %>`
 - Ignored in links: [Link to <%= snippet.to_reference %>](#snippet-link)
+- Ignored when backslash escaped: \<%= snippet.to_reference %>
+- Snippet by URL: <%= urls.project_snippet_url(snippet.project, snippet) %>
+- Link to snippet by reference: [Snippet](<%= snippet.to_reference %>)
+- Link to snippet by URL: [Snippet](<%= urls.project_snippet_url(snippet.project, snippet) %>)
 
 #### CommitRangeReferenceFilter
 
@@ -174,6 +242,9 @@ References should be parseable even inside _<%= merge_request.to_reference %>_ e
 - Range in another project: <%= xcommit_range.to_reference(project) %>
 - Ignored in code: `<%= commit_range.to_reference %>`
 - Ignored in links: [Link to <%= commit_range.to_reference %>](#commit-range-link)
+- Range by URL: <%= urls.project_compare_url(commit_range.project, commit_range.to_param) %>
+- Link to range by reference: [Range](<%= commit_range.to_reference %>)
+- Link to range by URL: [Range](<%= urls.project_compare_url(commit_range.project, commit_range.to_param) %>)
 
 #### CommitReferenceFilter
 
@@ -181,21 +252,224 @@ References should be parseable even inside _<%= merge_request.to_reference %>_ e
 - Commit in another project: <%= xcommit.to_reference(project) %>
 - Ignored in code: `<%= commit.to_reference %>`
 - Ignored in links: [Link to <%= commit.to_reference %>](#commit-link)
+- Commit by URL: <%= urls.project_commit_url(commit.project, commit) %>
+- Link to commit by reference: [Commit](<%= commit.to_reference %>)
+- Link to commit by URL: [Commit](<%= urls.project_commit_url(commit.project, commit) %>)
 
 #### LabelReferenceFilter
 
 - Label by ID: <%= simple_label.to_reference %>
 - Label by name: <%= Label.reference_prefix %><%= simple_label.name %>
-- Label by name in quotes: <%= label.to_reference(:name) %>
+- Label by name in quotes: <%= label.to_reference(format: :name) %>
 - Ignored in code: `<%= simple_label.to_reference %>`
 - Ignored in links: [Link to <%= simple_label.to_reference %>](#label-link)
+- Ignored when backslash escaped: \<%= simple_label.to_reference %>
+- Link to label by reference: [Label](<%= label.to_reference %>)
+
+#### MilestoneReferenceFilter
+
+- Milestone by ID: <%= simple_milestone.to_reference %>
+- Milestone by name: <%= Milestone.reference_prefix %><%= simple_milestone.name %>
+- Milestone by name in quotes: <%= milestone.to_reference(format: :name) %>
+- Milestone in another project: <%= xmilestone.to_reference(project) %>
+- Ignored in code: `<%= simple_milestone.to_reference %>`
+- Ignored in links: [Link to <%= simple_milestone.to_reference %>](#milestone-link)
+- Ignored when backslash escaped: \<%= simple_milestone.to_reference %>
+- Milestone by URL: <%= urls.milestone_url(milestone) %>
+- Link to milestone by URL: [Milestone](<%= milestone.to_reference %>)
+- Group milestone by name: <%= Milestone.reference_prefix %><%= group_milestone.name %>
+- Group milestone by name in quotes: <%= group_milestone.to_reference(format: :name) %>
+- Group milestone by URL is ignore: <%= urls.milestone_url(group_milestone) %>
+
+#### WikiPageReferenceFilter
+- Wiki page: <%= wiki_page.to_reference %>
+- Wiki page in another project: <%= xwiki_page.to_reference(project) %>
+- Ignored in code: `<%= wiki_page.to_reference %>`
+- Ignored in links: [Link to <%= wiki_page.to_reference %>](#wiki-page-link)
+- Ignored when backslash escaped: \<%= wiki_page.to_reference %>
+- Wiki page by URL: <%= urls.project_wiki_url(project, wiki_page) %>
+- Link to wiki page by reference: [Wiki page](<%= wiki_page.to_reference %>)
+- Link to wiki page by URL: [Wiki page](<%= urls.project_wiki_url(project, wiki_page) %>)
+
+##### AlertReferenceFilter
+- Alert: <%= alert.to_reference %>
+- Alert in another project: <%= xalert.to_reference(project) %>
+- Ignored in code: `<%= alert.to_reference %>`
+- Ignored in links: [Link to <%= alert.to_reference %>](#alert-link)
+- Ignored when backslash escaped: \<%= alert.to_reference %>
+- Alert by URL: <%= alert.details_url %>
+- Link to alert by reference: [Alert](<%= alert.to_reference %>)
+- Link to alert by URL: [Alert](<%= alert.details_url %>)
 
 ### Task Lists
 
 - [ ] Incomplete task 1
 - [x] Complete task 1
+- [~] Inapplicable task 1
 - [ ] Incomplete task 2
   - [ ] Incomplete sub-task 1
   - [ ] Incomplete sub-task 2
+  - [~] Inapplicable sub-task 1
   - [x] Complete sub-task 1
 - [X] Complete task 2
+
+### Math
+
+- Dollar math: $a^2 + b^2 = c^2$
+- Dollar math and snippet reference: $d^2 + e^2 = f^2$ and <%= snippet.to_reference %>
+- Dollar math and snippet in another project: <%= xsnippet.to_reference(project) %> and $g^2 + h^2 = i^2$
+- Not dollar math: $20,000 and $30,000
+- Dollar-backtick math: $`j^2 + k^2 = l^2`$
+- Dollar display math: $$m^2 + n^2 = o^2$$
+- Dollar display math and snippet reference: $$p^2 + q^2 = r^2$$ and <%= snippet.to_reference %>
+- Dollar math and snippet in another project: <%= xsnippet.to_reference(project) %> and $$s^2 + t^2 = u^2$$
+- Display math using a block
+
+  ```math
+  v^2 + w^2 = x^2
+  ```
+
+Parsed correctly when between code blocks
+
+```ruby
+x = 1
+```
+
+$$
+a^2+b^2=c^2
+$$
+
+```
+plaintext
+```
+
+Parsed correctly with a mixture of HTML comments and HTML blocks
+
+<!-- sdf -->
+
+$$
+a^2+b^2=c^2
+$$
+
+<h1>
+html
+</h1>
+
+### Wikilink / Gollum Tags
+
+- [[linked-resource]]
+- [[link-text|linked-resource]]
+- [[http://example.com]]
+- [[link-text|http://example.com/pdfs/gollum.pdf]]
+- [[images/example.jpg]]
+- [[http://example.com/images/example.jpg]]
+
+### Inline Diffs
+
+With inline diffs tags you can display {+ additions +} or [- deletions -].
+
+The wrapping tags can be either curly braces or square brackets [+ additions +] or {- deletions -}.
+
+Examples:
+
+```
+- {+ additions +}
+- [+ additions +]
+- {- deletions -}
+- [- deletions -]
+```
+
+However the wrapping tags cannot be mixed as such:
+
+```
+- {+ additions +]
+- [+ additions +}
+- {- deletions -]
+- [- deletions -}
+```
+
+### Videos
+
+![My Video](/assets/videos/gitlab-demo.mp4)
+
+### Audio
+
+![My Audio Clip](/assets/audio/gitlab-demo.wav)
+
+### Colors
+
+`#F00`
+`#F00A`
+`#FF0000`
+`#FF0000AA`
+`RGB(0,255,0)`
+`RGB(0%,100%,0%)`
+`RGBA(0,255,0,0.7)`
+`HSL(540,70%,50%)`
+`HSLA(540,70%,50%,0.7)`
+
+### Mermaid
+
+> If this is not rendered correctly, see
+https://gitlab.com/gitlab-org/gitlab-foss/blob/master/doc/user/markdown.md#mermaid
+
+It is possible to generate diagrams and flowcharts from text using [Mermaid][mermaid].
+
+In order to generate a diagram or flowchart, you should write your text inside the `mermaid` block.
+
+Example:
+
+    ```mermaid
+    graph TD;
+      A-->B;
+      A-->C;
+      B-->D;
+      C-->D;
+    ```
+
+Becomes:
+
+```mermaid
+graph TD;
+  A-->B;
+  A-->C;
+  B-->D;
+  C-->D;
+```
+
+For details see the [Mermaid official page][mermaid].
+
+[mermaid]: https://mermaidjs.github.io/ "Mermaid website"
+
+### PLantUML
+
+```plantuml
+Bob -> Sara : Hello
+```
+
+### Kroki
+
+```nomnoml
+[Pirate|eyeCount: Int|raid();pillage()|
+  [beard]--[parrot]
+  [beard]-:>[foul mouth]
+]
+```
+
+### Image/Video Attributes
+
+![Sized Image](app/assets/images/touch-icon-ipad.png){width=75% height=100}
+
+![Sized Video](/assets/videos/gitlab-demo.mp4){width=75% height=100}
+
+### Description Lists
+
+Fruit
+: Orange
+: Apple
+
+Vegetables
+
+: Tomato
+
+: Celery

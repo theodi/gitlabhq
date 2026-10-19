@@ -1,0 +1,73 @@
+# frozen_string_literal: true
+
+module Resolvers
+  module Ci
+    module Catalog
+      class ResourcesResolver < BaseResolver
+        include LooksAhead
+
+        type ::Types::Ci::Catalog::ResourceType.connection_type, null: true
+
+        argument :scope, ::Types::Ci::Catalog::ResourceScopeEnum,
+          required: false,
+          default_value: :all,
+          description: 'Scope of the returned catalog resources.'
+
+        argument :search, GraphQL::Types::String,
+          required: false,
+          description: 'Search term to filter the catalog resources by name or description.'
+
+        argument :sort, ::Types::Ci::Catalog::ResourceSortEnum,
+          required: false,
+          description: 'Sort catalog resources by given criteria.'
+
+        argument :verification_level, ::Types::Namespaces::VerificationLevelEnum,
+          required: false,
+          description: 'Filter catalog resources by verification level.'
+
+        argument :topics, [GraphQL::Types::String],
+          required: false,
+          description: 'Filter catalog resources by project topic names.'
+
+        argument :min_access_level, ::Types::AccessLevelEnum,
+          required: false,
+          description: 'Minimum access level required for the user on the catalog resource project.'
+
+        argument :group_ids, [::Types::GlobalIDType[::Group]],
+          required: false,
+          description: 'Filter catalog resources to those whose project namespace matches one of the given groups.'
+
+        def resolve_with_lookahead(
+          scope:, search: nil, sort: nil, verification_level: nil, topics: nil, min_access_level: nil,
+          group_ids: nil
+        )
+          apply_lookahead(
+            ::Ci::Catalog::Listing
+              .new(context[:current_user])
+              .resources(
+                sort: sort,
+                search: search,
+                scope: scope,
+                verification_level: verification_level,
+                topics: topics,
+                min_access_level: min_access_level,
+                group_ids: group_ids&.map(&:model_id)
+              )
+          )
+        end
+
+        private
+
+        def preloads
+          {
+            full_path: { project: [:route, { namespace: :route }] },
+            web_path: { project: { namespace: :route } },
+            readme_html: { project: :route },
+            archived: { project: { namespace: [:namespace_settings,
+              :namespace_settings_with_ancestors_inherited_settings] } }
+          }
+        end
+      end
+    end
+  end
+end

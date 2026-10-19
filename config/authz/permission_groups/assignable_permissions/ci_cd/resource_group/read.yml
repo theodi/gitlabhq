@@ -1,0 +1,9 @@
+---
+name: read_resource_group
+description: Grants the ability to read CI resource groups
+boundaries:
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - read_resource_group

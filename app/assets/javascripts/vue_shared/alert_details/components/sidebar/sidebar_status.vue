@@ -1,0 +1,104 @@
+<script>
+import { GlButton, GlLoadingIcon } from '@gitlab/ui';
+import { PAGE_CONFIG } from '../../constants';
+import AlertStatus from '../alert_status.vue';
+
+export default {
+  name: 'SidebarStatus',
+  components: {
+    GlButton,
+    GlLoadingIcon,
+    AlertStatus,
+  },
+  inject: {
+    statuses: {
+      default: PAGE_CONFIG.OPERATIONS.STATUSES,
+    },
+  },
+  props: {
+    projectPath: {
+      type: String,
+      required: true,
+    },
+    alert: {
+      type: Object,
+      required: true,
+    },
+    isEditable: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+  },
+  emits: ['alert-update', 'toggle-sidebar', 'alert-error'],
+  data() {
+    return {
+      isDropdownShowing: false,
+      isUpdating: false,
+    };
+  },
+  methods: {
+    hideDropdown() {
+      this.isDropdownShowing = false;
+    },
+    toggleFormDropdown() {
+      this.isDropdownShowing = !this.isDropdownShowing;
+      const { dropdown } = this.$refs.status.$refs;
+
+      if (dropdown && this.isDropdownShowing) {
+        dropdown.open();
+      }
+    },
+    handleUpdating(isMutationInProgress) {
+      if (!isMutationInProgress) {
+        this.$emit('alert-update');
+      }
+      this.isUpdating = isMutationInProgress;
+    },
+  },
+};
+</script>
+
+<template>
+  <div data-testid="sidebar-status">
+    <p class="gl-mb-2 gl-flex gl-justify-between gl-leading-20 gl-text-default">
+      {{ s__('AlertManagement|Status') }}
+      <gl-button
+        v-if="isEditable"
+        class="!gl-text-default"
+        category="tertiary"
+        size="small"
+        @click="toggleFormDropdown"
+        @keydown.esc="hideDropdown"
+      >
+        {{ s__('AlertManagement|Edit') }}
+      </gl-button>
+    </p>
+
+    <alert-status
+      ref="status"
+      :alert="alert"
+      :project-path="projectPath"
+      :is-dropdown-showing="isDropdownShowing"
+      :is-sidebar="true"
+      :statuses="statuses"
+      @alert-error="$emit('alert-error', $event)"
+      @hide-dropdown="hideDropdown"
+      @handle-updating="handleUpdating"
+    />
+
+    <gl-loading-icon v-if="isUpdating" size="sm" :inline="true" />
+    <p
+      v-else-if="!isDropdownShowing"
+      class="value gl-m-0"
+      :class="{ 'no-value': !statuses[alert.status] }"
+    >
+      <span v-if="statuses[alert.status]" class="gl-text-subtle" data-testid="status">
+        {{ statuses[alert.status] }}
+      </span>
+      <span v-else>
+        {{ s__('AlertManagement|None') }}
+      </span>
+    </p>
+  </div>
+</template>

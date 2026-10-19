@@ -1,0 +1,9 @@
+- page_title _('Import in progress')
+
+.save-group-loader
+  .center
+    %h2
+      = gl_loading_icon(size: 'md')
+      = page_title
+    %p
+      = s_('GroupImport|Please wait while we import the group for you. Refresh at will.')

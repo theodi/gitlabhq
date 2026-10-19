@@ -1,28 +1,52 @@
+# frozen_string_literal: true
+
 module Gitlab
   module CurrentSettings
-    def current_application_settings
-      key = :current_application_settings
-
-      RequestStore.store[key] ||= begin
-        if ActiveRecord::Base.connected? && ActiveRecord::Base.connection.table_exists?('application_settings')
-          ApplicationSetting.current || ApplicationSetting.create_from_defaults
-        else
-          fake_application_settings
-        end
+    class << self
+      def signup_disabled?
+        !signup_enabled?
       end
-    end
 
-    def fake_application_settings
-      OpenStruct.new(
-        default_projects_limit: Settings.gitlab['default_projects_limit'],
-        default_branch_protection: Settings.gitlab['default_branch_protection'],
-        signup_enabled: Settings.gitlab['signup_enabled'],
-        signin_enabled: Settings.gitlab['signin_enabled'],
-        gravatar_enabled: Settings.gravatar['enabled'],
-        sign_in_text: Settings.extra['sign_in_text'],
-        restricted_visibility_levels: Settings.gitlab['restricted_visibility_levels'],
-        max_attachment_size: Settings.gitlab['max_attachment_size']
-      )
+      def signup_limited?
+        domain_allowlist.present? || email_restrictions_enabled? || require_admin_approval_after_user_signup? || user_default_external?
+      end
+
+      def current_application_settings
+        Gitlab::SafeRequestStore.fetch(:current_application_settings) { Gitlab::ApplicationSettingFetcher.current_application_settings }
+      end
+
+      def current_application_settings?
+        Gitlab::SafeRequestStore.exist?(:current_application_settings) || Gitlab::ApplicationSettingFetcher.current_application_settings?
+      end
+
+      def expire_current_application_settings
+        Gitlab::ApplicationSettingFetcher.expire_current_application_settings
+        Gitlab::SafeRequestStore.delete(:current_application_settings)
+      end
+
+      # rubocop:disable GitlabSecurity/PublicSend -- Method calls are forwarded to one of the setting classes
+      def method_missing(name, ...)
+        application_settings = current_application_settings
+
+        return application_settings.send(name, ...) if application_settings.respond_to?(name)
+
+        if respond_to_organization_setting?(name, false)
+          return ::Organizations::OrganizationSetting.for(::Current.organization.id).send(name, ...)
+        end
+
+        super
+      end
+      # rubocop:enable GitlabSecurity/PublicSend
+
+      def respond_to_missing?(name, include_private = false)
+        current_application_settings.respond_to?(name, include_private) || respond_to_organization_setting?(name, include_private) || super
+      end
+
+      def respond_to_organization_setting?(name, include_private)
+        return false unless ::Current.organization_assigned
+
+        ::Organizations::OrganizationSetting.for(::Current.organization.id).respond_to?(name, include_private)
+      end
     end
   end
 end

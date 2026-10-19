@@ -1,58 +1,85 @@
-# == Schema Information
-#
-# Table name: web_hooks
-#
-#  id                    :integer          not null, primary key
-#  url                   :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  type                  :string(255)      default("ProjectHook")
-#  service_id            :integer
-#  push_events           :boolean          default(TRUE), not null
-#  issues_events         :boolean          default(FALSE), not null
-#  merge_requests_events :boolean          default(FALSE), not null
-#  tag_push_events       :boolean          default(FALSE)
-#  note_events           :boolean          default(FALSE), not null
-#
+# frozen_string_literal: true
 
-require "spec_helper"
+require 'spec_helper'
 
-describe ServiceHook do
-  describe "Associations" do
-    it { is_expected.to belong_to :service }
+RSpec.describe ServiceHook, feature_category: :webhooks do
+  let_it_be(:project) { create(:project) }
+  let(:integration) { create(:integration, project: project) }
+  let(:hook) { build(:service_hook, integration: integration, project_id: project.id) }
+
+  it_behaves_like 'a hook that does not get automatically disabled on failure' do
+    let(:hook_factory) { :service_hook }
+    let(:default_factory_arguments) { { integration: integration } }
+
+    def find_hooks
+      described_class.all
+    end
   end
 
-  describe "execute" do
-    before(:each) do
-      @service_hook = create(:service_hook)
-      @data = { project_id: 1, data: {}}
+  describe 'associations' do
+    it { is_expected.to belong_to(:integration) }
+    it { is_expected.to have_many(:web_hook_logs) }
+  end
 
-      WebMock.stub_request(:post, @service_hook.url)
+  describe '#destroy' do
+    let(:web_hook) { create(:service_hook, integration: integration, project_id: project.id) }
+
+    it 'does not cascade to web_hook_logs' do
+      create_list(:web_hook_log, 3, web_hook: web_hook)
+
+      expect { web_hook.destroy! }.not_to change { web_hook.web_hook_logs.count }
+    end
+  end
+
+  describe 'validations' do
+    it { is_expected.to validate_presence_of(:integration) }
+  end
+
+  describe 'execute' do
+    let(:data) { { key: 'value' } }
+
+    it '#execute' do
+      expect(WebHookService).to receive(:new).with(hook, data, 'service_hook', idempotency_key: anything,
+        force: false).and_call_original
+      expect_any_instance_of(WebHookService).to receive(:execute)
+
+      hook.execute(data)
+    end
+  end
+
+  describe '#parent' do
+    context 'with a project-level integration' do
+      it 'returns the associated project' do
+        expect(hook.parent).to eq(project)
+      end
     end
 
-    it "POSTs to the web hook URL" do
-      @service_hook.execute(@data)
-      expect(WebMock).to have_requested(:post, @service_hook.url).with(
-        headers: {'Content-Type'=>'application/json', 'X-Gitlab-Event'=>'Service Hook'}
-      ).once
+    context 'with a group-level integration' do
+      let(:group) { build(:group) }
+      let(:integration) { build(:integration, :group, group: group) }
+      let(:hook) { build(:service_hook, integration: integration) }
+
+      it 'returns the associated group' do
+        expect(hook.parent).to eq(group)
+      end
     end
 
-    it "POSTs the data as JSON" do
-      json = @data.to_json
+    context 'with an instance-level integration' do
+      let(:integration) { build(:integration, :instance) }
 
-      @service_hook.execute(@data)
-      expect(WebMock).to have_requested(:post, @service_hook.url).with(
-        headers: {'Content-Type'=>'application/json', 'X-Gitlab-Event'=>'Service Hook'}
-      ).once
+      it 'returns nil' do
+        expect(hook.parent).to be_nil
+      end
     end
+  end
 
-    it "catches exceptions" do
-      expect(WebHook).to receive(:post).and_raise("Some HTTP Post error")
+  describe '#application_context' do
+    let(:hook) { build(:service_hook) }
 
-      expect {
-        @service_hook.execute(@data)
-      }.to raise_error
+    it 'includes the type' do
+      expect(hook.application_context).to eq(
+        related_class: 'ServiceHook'
+      )
     end
   end
 end

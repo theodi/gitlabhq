@@ -1,0 +1,169 @@
+# frozen_string_literal: true
+
+# On .com partitions are not created on application startup,
+# they are created by the PartitionManagementWorker cron worker
+# which is executed several times per day. If a partition must be present
+# on startup, it could be created using a regular migration.
+# https://gitlab.com/gitlab-com/gl-infra/production/-/issues/2446
+
+Gitlab::Application.config.to_prepare do
+  Gitlab::Database::Partitioning.clear_registered_models
+  Gitlab::Database::Partitioning.clear_registered_tables
+
+  Gitlab::Database::Partitioning.register_models(
+    [
+      AuditEvents::UserAuditEvent,
+      AuditEvents::GroupAuditEvent,
+      AuditEvents::ProjectAuditEvent,
+      AuditEvents::InstanceAuditEvent,
+      BatchedGitRefUpdates::Deletion,
+      Ci::BuildName,
+      Ci::BuildNeed,
+      Ci::BuildTraceMetadata,
+      Ci::BuildSource,
+      Ci::Catalog::Resources::SyncEvent,
+      Ci::FinishedPipelineChSyncEvent,
+      Ci::JobAnnotation,
+      Ci::JobArtifact,
+      Ci::JobArtifactReport,
+      Ci::JobDefinition,
+      Ci::JobDefinitionInstance,
+      Ci::JobInput,
+      Ci::JobMessage,
+      Ci::JobRuntimeEnvironment,
+      Ci::Pipeline,
+      Ci::PipelineProcessingData,
+      Ci::PipelineVariable,
+      Ci::RunnerManagerBuild,
+      Ci::RuntimeEnvironment,
+      Ci::Stage,
+      Ci::Workloads::Workload,
+      Ci::Workloads::VariableInclusions,
+      CommitStatus,
+      Gitlab::Database::BackgroundMigration::BatchedJobTransitionLog,
+      LooseForeignKeys::DeletedRecord,
+      LooseForeignKeys::OrganizationDeletedRecord,
+      LooseForeignKeys::NamespaceDeletedRecord,
+      LooseForeignKeys::ProjectDeletedRecord,
+      LooseForeignKeys::UserDeletedRecord,
+      SentNotification,
+      ProjectDailyStatistic,
+      Users::GroupVisit,
+      Users::ProjectVisit,
+      MergeRequestDiffFile,
+      MergeRequest::CommitsMetadata,
+      WebHookLog,
+      MergeRequests::GeneratedRefCommit,
+      MergeRequests::MergeData,
+      Gitlab::Database::BackgroundOperation::Worker,
+      Gitlab::Database::BackgroundOperation::Job,
+      Gitlab::Database::BackgroundOperation::WorkerCellLocal,
+      Gitlab::Database::BackgroundOperation::JobCellLocal
+    ])
+
+  if Gitlab.ee?
+    Gitlab::Database::Partitioning.register_models(
+      [
+        IncidentManagement::PendingEscalations::Alert,
+        IncidentManagement::PendingEscalations::Issue,
+        Security::Finding,
+        Analytics::ValueStreamDashboard::Count,
+        Ci::FinishedBuildChSyncEvent,
+        Ci::TestBalancing::Assignment,
+        Search::Zoekt::Task,
+        Utilization::BillableUsage::DailyNamespaceAggregate,
+        Ai::UsageEvent,
+        Geo::PipelineArtifactState,
+        GitlabSubscriptions::TrialUsage,
+        Vulnerabilities::Archive,
+        Vulnerabilities::ArchivedRecord,
+        Vulnerabilities::ArchiveExport,
+        Vulnerabilities::Backups::Vulnerability,
+        Vulnerabilities::Backups::Finding,
+        Vulnerabilities::Backups::FindingEvidence,
+        Vulnerabilities::Backups::FindingFlag,
+        Vulnerabilities::Backups::FindingIdentifier,
+        Vulnerabilities::Backups::FindingLink,
+        Vulnerabilities::Backups::FindingRemediation,
+        Vulnerabilities::Backups::FindingSignature,
+        Vulnerabilities::Backups::VulnerabilityExternalIssueLink,
+        Vulnerabilities::Backups::VulnerabilityIssueLink,
+        Vulnerabilities::Backups::VulnerabilityMergeRequestLink,
+        Vulnerabilities::Backups::VulnerabilityRead,
+        Vulnerabilities::Backups::VulnerabilitySeverityOverride,
+        Vulnerabilities::Backups::VulnerabilityStateTransition,
+        Vulnerabilities::Backups::VulnerabilityUserMention,
+        Ai::ActiveContext::Code::EnabledNamespace,
+        Ai::ActiveContext::Code::Repository,
+        Ai::DuoWorkflows::Checkpoint,
+        Ai::DuoWorkflows::CheckpointBlob,
+        Ai::DuoWorkflows::CheckpointHeader,
+        Analytics::KnowledgeGraph::CodeIndexingTask,
+        AuditEvents::AiAuditEvent
+      ])
+  else
+    Gitlab::Database::Partitioning.register_tables(
+      [
+        {
+          limit_connection_names: %i[main],
+          table_name: 'incident_management_pending_alert_escalations',
+          # FOSS fallback registration; retention is owned by the EE PendingEscalations model. Keep all partitions here.
+          partitioned_column: :process_at, strategy: :monthly, retain_for: :ever
+        },
+        {
+          limit_connection_names: %i[main],
+          table_name: 'incident_management_pending_issue_escalations',
+          # FOSS fallback registration; retention is owned by the EE PendingEscalations model. Keep all partitions here.
+          partitioned_column: :process_at, strategy: :monthly, retain_for: :ever
+        }
+      ])
+  end
+
+  # The following tables are already defined as models
+  unless Gitlab.jh?
+    Gitlab::Database::Partitioning.register_tables(
+      [
+        # This should be synchronized with the following model:
+        # https://jihulab.com/gitlab-cn/gitlab/-/blob/main-jh/jh/app/models/phone/verification_code.rb
+        {
+          limit_connection_names: %i[main],
+          table_name: 'verification_codes',
+          # Retention is owned by the JH model linked above. Keep all partitions in this fallback registration.
+          partitioned_column: :created_at, strategy: :monthly, retain_for: :ever
+        }
+      ])
+  end
+
+  # rubocop:disable Database/AvoidIntRangePartitioning -- legacy usage
+  Gitlab::Database::Partitioning.register_tables(
+    [
+      # Both names are registered because only one of them is the partitioned table at any time.
+      # On GitLab.com, the SwapMergeRequestDiffCommitsTable post-deployment migration renames
+      # merge_request_diff_commits_b5377a7a34 to merge_request_diff_commits. Registering both covers
+      # the window between this code deploying and that migration running: PartitionManager#sync_partitions
+      # skips the name that is not partitioned.
+      {
+        limit_connection_names: %i[main],
+        table_name: 'merge_request_diff_commits',
+        partitioned_column: :project_id,
+        strategy: :int_range,
+        partition_size: 2_000_000,
+        sequence_name: 'projects_id_seq'
+      },
+      {
+        limit_connection_names: %i[main],
+        table_name: 'merge_request_diff_commits_b5377a7a34',
+        partitioned_column: :project_id,
+        strategy: :int_range,
+        partition_size: 2_000_000,
+        sequence_name: 'projects_id_seq'
+      }
+    ]
+  )
+  # rubocop:enable Database/AvoidIntRangePartitioning
+end
+
+# Sync partitions after models/tables are registered when `to_prepare` is executed
+Gitlab::Application.config.after_initialize do
+  Gitlab::Database::Partitioning.sync_partitions_ignore_db_error
+end

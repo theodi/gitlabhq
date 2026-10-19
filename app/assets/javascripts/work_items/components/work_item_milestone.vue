@@ -1,0 +1,262 @@
+<script>
+import { GlLink } from '@gitlab/ui';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import Tracking from '~/tracking';
+import { newWorkItemId } from '~/work_items/utils';
+import { getIdFromGraphQLId } from '~/graphql_shared/utils';
+import { s__, __, sprintf } from '~/locale';
+import { MILESTONE_STATE } from '~/sidebar/constants';
+import WorkItemSidebarDropdownWidget from '~/work_items/components/shared/work_item_sidebar_dropdown_widget.vue';
+import { ISSUE_MR_CHANGE_MILESTONE } from '~/behaviors/shortcuts/keybindings';
+import projectMilestonesQuery from '~/sidebar/queries/project_milestones.query.graphql';
+import groupMilestonesQuery from '~/sidebar/queries/group_milestones.query.graphql';
+import updateWorkItemMutation from '~/work_items/graphql/update_work_item.mutation.graphql';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import { I18N_WORK_ITEM_ERROR_UPDATING, TRACKING_CATEGORY_SHOW, VIEW_CONTEXT } from '../constants';
+
+export default {
+  name: 'WorkItemMilestone',
+  i18n: {
+    milestone: s__('WorkItem|Milestone'),
+    none: s__('WorkItem|None'),
+    noMilestone: s__('WorkItem|No milestone'),
+    milestoneFetchError: s__(
+      'WorkItem|Something went wrong while fetching milestones. Please try again.',
+    ),
+    expiredText: __('(expired)'),
+  },
+  components: {
+    WorkItemSidebarDropdownWidget,
+    GlLink,
+  },
+  mixins: [glFeatureFlagsMixin(), Tracking.mixin()],
+  inject: {
+    viewContext: { default: VIEW_CONTEXT.fullScreen },
+  },
+  props: {
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    isGroup: {
+      type: Boolean,
+      required: true,
+    },
+    workItemMilestone: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    workItemType: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    canUpdate: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['error', 'milestone-updated', 'parent-milestone', 'update-widget-draft'],
+  data() {
+    return {
+      searchTerm: '',
+      shouldFetch: false,
+      updateInProgress: false,
+      milestones: [],
+      localMilestone: this.workItemMilestone,
+      shortcut: ISSUE_MR_CHANGE_MILESTONE,
+    };
+  },
+  computed: {
+    // eslint-disable-next-line vue/no-unused-properties
+    tracking() {
+      return {
+        category: TRACKING_CATEGORY_SHOW,
+        label: 'item_milestone',
+        property: `type_${this.workItemType}`,
+        extra: { viewContext: this.viewContext },
+      };
+    },
+    emptyPlaceholder() {
+      return this.canUpdate ? this.$options.i18n.noMilestone : this.$options.i18n.none;
+    },
+    expired() {
+      return this.localMilestone?.expired ? ` ${this.$options.i18n.expiredText}` : '';
+    },
+    dropdownText() {
+      return this.localMilestone?.title
+        ? `${this.localMilestone?.title}${this.expired}`
+        : this.emptyPlaceholder;
+    },
+    isLoadingMilestones() {
+      return this.$apollo.queries.milestones.loading;
+    },
+    milestonesList() {
+      return this.milestones.map(({ id, title, expired }) => ({
+        value: id,
+        text: title,
+        expired,
+      }));
+    },
+    localMilestoneId() {
+      return this.localMilestone?.id;
+    },
+    localMilestoneNumericId() {
+      return this.localMilestoneId ? getIdFromGraphQLId(this.localMilestoneId) : '';
+    },
+  },
+  watch: {
+    workItemMilestone(newVal) {
+      this.localMilestone = newVal;
+      this.selectedMilestoneId = newVal?.id;
+    },
+  },
+  apollo: {
+    milestones: {
+      query() {
+        return this.isGroup ? groupMilestonesQuery : projectMilestonesQuery;
+      },
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          title: this.searchTerm,
+          state: MILESTONE_STATE.ACTIVE,
+          first: 20,
+        };
+      },
+      skip() {
+        return !this.shouldFetch;
+      },
+      update(data) {
+        return data?.namespace?.attributes?.nodes || [];
+      },
+      error() {
+        this.$emit('error', this.i18n.milestoneFetchError);
+      },
+    },
+  },
+  methods: {
+    onDropdownShown() {
+      this.searchTerm = '';
+      this.shouldFetch = true;
+    },
+    search(searchTerm) {
+      this.searchTerm = searchTerm;
+      this.shouldFetch = true;
+    },
+    itemExpiredText(item) {
+      return item.expired ? ` ${this.$options.i18n.expiredText}` : '';
+    },
+    updateMilestone(selectedMilestoneId) {
+      if (this.localMilestone?.id === selectedMilestoneId) {
+        return;
+      }
+
+      if (!selectedMilestoneId) {
+        this.localMilestone = null;
+        this.$emit('parent-milestone', null);
+      }
+
+      this.localMilestone = selectedMilestoneId
+        ? this.milestones.find(({ id }) => id === selectedMilestoneId)
+        : null;
+
+      this.track('updated_milestone');
+      this.updateInProgress = true;
+
+      if (this.workItemId === newWorkItemId(this.workItemType)) {
+        this.$emit('update-widget-draft', {
+          milestone: this.localMilestone
+            ? {
+                ...this.localMilestone,
+                webPath: this.localMilestone.webUrl,
+                startDate: '',
+                projectMilestone: false,
+              }
+            : null,
+        });
+        this.updateInProgress = false;
+        this.searchTerm = '';
+        this.shouldFetch = false;
+        return;
+      }
+
+      this.$apollo
+        .mutate({
+          mutation: updateWorkItemMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              milestoneWidget: {
+                milestoneId: selectedMilestoneId,
+              },
+            },
+            useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+          },
+        })
+        .then(({ data }) => {
+          if (data.workItemUpdate.errors.length) {
+            throw new Error(data.workItemUpdate.errors.join('\n'));
+          }
+          this.$emit('milestone-updated', selectedMilestoneId);
+        })
+        .catch((error) => {
+          this.localMilestone = this.workItemMilestone;
+          const msg = sprintf(I18N_WORK_ITEM_ERROR_UPDATING, {
+            workItemType: this.workItemType,
+          });
+          this.$emit('error', msg);
+          Sentry.captureException(error);
+        })
+        .finally(() => {
+          this.updateInProgress = false;
+          this.searchTerm = '';
+          this.shouldFetch = false;
+        });
+    },
+  },
+};
+</script>
+
+<template>
+  <work-item-sidebar-dropdown-widget
+    :dropdown-label="$options.i18n.milestone"
+    :can-update="canUpdate"
+    dropdown-name="milestone"
+    :loading="isLoadingMilestones"
+    :list-items="milestonesList"
+    :item-value="localMilestoneId"
+    :update-in-progress="updateInProgress"
+    :toggle-dropdown-text="dropdownText"
+    :header-text="__('Select milestone')"
+    :reset-button-label="__('Clear')"
+    :shortcut="shortcut"
+    data-testid="work-item-milestone"
+    @dropdown-shown="onDropdownShown"
+    @search-started="search"
+    @update-value="updateMilestone"
+  >
+    <template #list-item="{ item }">
+      <div>{{ item.text }}{{ itemExpiredText(item) }}</div>
+      <div v-if="item.title">{{ item.title }}</div>
+    </template>
+    <template #readonly>
+      <gl-link
+        class="has-popover !gl-text-default"
+        :data-milestone="localMilestoneNumericId"
+        data-reference-type="milestone"
+        data-placement="left"
+        :href="localMilestone.webPath"
+        data-testid="work-item-milestone-link"
+      >
+        {{ localMilestone.title }}{{ expired }}
+      </gl-link>
+    </template>
+  </work-item-sidebar-dropdown-widget>
+</template>

@@ -1,0 +1,170 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'projects/commits/_commit.html.haml', feature_category: :source_code_management do
+  let_it_be_with_reload(:project) { create(:project, :repository) }
+
+  let(:template) { 'projects/commits/commit' }
+  let(:commit) { project.repository.commit(ref) }
+
+  before do
+    allow(view).to receive(:current_application_settings).and_return(Gitlab::CurrentSettings.current_application_settings)
+  end
+
+  context 'with a signed commit' do
+    let(:ref) { GpgHelpers::SIGNED_COMMIT_SHA }
+
+    it 'does not display a loading spinner for GPG status' do
+      render partial: template, formats: :html, locals: {
+        project: project,
+        ref: ref,
+        commit: commit
+      }
+
+      within '.signature-badge' do
+        expect(page).not_to have_css('.gl-spinner')
+      end
+    end
+  end
+
+  context 'with ci status' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:pipeline) do
+      create(
+        :ci_pipeline,
+        ref: 'master',
+        sha: project.repository.commit('master').id,
+        status: 'success',
+        project: project
+      )
+    end
+
+    let(:ref) { 'master' }
+
+    before do
+      allow(view).to receive(:current_user).and_return(user)
+    end
+
+    context 'when pipelines are disabled' do
+      before do
+        allow(project).to receive(:builds_enabled?).and_return(false)
+      end
+
+      it 'does not display a ci status icon' do
+        render partial: template, formats: :html, locals: {
+          project: project,
+          ref: ref,
+          commit: commit
+        }
+
+        expect(rendered).not_to have_css("[data-testid='ci-icon']")
+      end
+    end
+
+    context 'when pipelines are enabled' do
+      context 'when user has access' do
+        before_all do
+          project.add_developer(user)
+        end
+
+        it 'displays a ci status icon' do
+          render partial: template, formats: :html, locals: {
+            project: project,
+            ref: ref,
+            commit: commit
+          }
+
+          expect(rendered).to have_css("[data-testid='ci-icon']")
+        end
+      end
+
+      context 'when user does not have access' do
+        it 'does not display a ci status icon' do
+          render partial: template, formats: :html, locals: {
+            project: project,
+            ref: ref,
+            commit: commit
+          }
+
+          expect(rendered).not_to have_css("[data-testid='ci-icon']")
+        end
+      end
+    end
+  end
+
+  it 'does not render history button' do
+    allow(view).to receive(:project_commits_path).and_return('/commits/123')
+    expect(rendered).not_to have_css('#js-commit-history-link')
+  end
+
+  context 'with agent session badge' do
+    let(:ref) { 'master' }
+    let(:badge_selector) { "[data-testid='commit-agent-session-badge']" }
+
+    before do
+      allow(view).to receive(:project_commits_path).and_return('/commits/123')
+    end
+
+    subject(:render_commit) do
+      render partial: template, formats: :html, locals: {
+        project: project,
+        ref: ref,
+        commit: commit
+      }
+      rendered
+    end
+
+    context 'when commit responds to has_agent_session? and returns true' do
+      before do
+        allow(commit).to receive_messages(has_agent_session?: true)
+      end
+
+      it 'renders the agent session badge' do
+        expect(render_commit).to have_css(badge_selector)
+      end
+    end
+
+    context 'when commit responds to has_agent_session? and returns false' do
+      before do
+        allow(commit).to receive_messages(has_agent_session?: false)
+      end
+
+      it 'does not render the agent session badge' do
+        expect(render_commit).not_to have_css(badge_selector)
+      end
+    end
+
+    context 'when commit does not respond to has_agent_session?' do
+      it 'does not render the agent session badge' do
+        expect(render_commit).not_to have_css(badge_selector)
+      end
+    end
+  end
+
+  context 'when it is blob page' do
+    let(:ref) { 'master' }
+
+    before do
+      allow(view).to receive(:project_commits_path).and_return('/commits/123')
+      render partial: template, formats: :html, locals: {
+        project: project,
+        ref: ref,
+        commit: commit,
+        is_blob_page: true
+      }
+    end
+
+    it 'renders the history button' do
+      expect(rendered).to have_css('#js-commit-history-link')
+    end
+
+    it 'only renders commit details when expanded' do
+      expect(rendered).to have_selector('.js-toggle-content')
+      within('.js-toggle-content') do
+        expect(rendered).to have_selector('.commit-row-description')
+        expect(rendered).to have_content(commit.short_id)
+      end
+    end
+  end
+end

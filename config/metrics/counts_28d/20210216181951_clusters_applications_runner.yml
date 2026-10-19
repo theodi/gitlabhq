@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage_monthly.verify.clusters_applications_runner
+description: Total GitLab Managed clusters with Runner enabled
+product_group: runner_core
+product_categories:
+- runner_core
+value_type: number
+status: removed
+time_frame: 28d
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "12.9"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/26441"
+milestone_removed: "14.4"
+removed_by_url:

@@ -1,0 +1,25 @@
+query getContainerRepositoryDetails($id: ContainerRepositoryID!) {
+  containerRepository(id: $id) {
+    id
+    name
+    path
+    status
+    location
+    createdAt
+    expirationPolicyStartedAt
+    expirationPolicyCleanupStatus
+    protectionRuleExists
+    project {
+      id
+      visibility
+      path
+      containerTagsExpirationPolicy {
+        enabled
+        nextRunAt
+      }
+    }
+    userPermissions {
+      destroyContainerRepository
+    }
+  }
+}

@@ -1,0 +1,2 @@
+- if commit.has_signature?
+  %a.js-loading-signature-badge{ tabindex: 0, role: 'button', data: { toggle: 'tooltip', placement: 'top', title: _('GPG signature (loading…)'), 'commit-sha' => commit.sha } }

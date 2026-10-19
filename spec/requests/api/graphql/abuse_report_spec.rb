@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Querying an Abuse Report', feature_category: :insider_threat do
+  include GraphqlHelpers
+
+  let_it_be(:current_user) { create(:admin) }
+  let_it_be(:abuse_report) { create(:abuse_report) }
+
+  let(:global_id) { abuse_report.to_gid.to_s }
+  let(:abuse_report_fields) { all_graphql_fields_for('AbuseReport', max_depth: 2) }
+  let(:abuse_report_data) { graphql_data['abuseReport'] }
+
+  let(:query) do
+    graphql_query_for('abuseReport', { 'id' => global_id }, abuse_report_fields)
+  end
+
+  before do
+    post_graphql(query, current_user: current_user)
+  end
+
+  context 'when the user is an admin' do
+    it_behaves_like 'a working graphql query that returns data'
+
+    it 'returns all fields' do
+      expect(abuse_report_data).to include(
+        'id' => global_id
+      )
+    end
+  end
+
+  context 'when the user is not an admin' do
+    let(:current_user) { create(:user) }
+
+    it 'returns nil' do
+      expect(abuse_report_data).to be_nil
+    end
+  end
+
+  context 'when the report belongs to another organization' do
+    let_it_be(:other_organization) { create(:organization) }
+    let_it_be(:abuse_report) do
+      create(:abuse_report, reporter: create(:user, organization: other_organization),
+        organization: other_organization)
+    end
+
+    it 'returns nil' do
+      expect(abuse_report_data).to be_nil
+    end
+  end
+end

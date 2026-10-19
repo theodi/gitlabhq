@@ -1,0 +1,53 @@
+[
+  {
+    "id": 1,
+    "iid": "15",
+    "title": "New: Alert",
+    "createdAt": "2020-06-03T15:46:08Z",
+    "assignees": {},
+    "state": "opened",
+    "severity": "CRITICAL",
+    "escalationStatus": "TRIGGERED",
+    "slaDueAt": "2020-06-04T12:46:08Z"
+  },
+  {
+    "id": 2,
+    "iid": "14",
+    "title": "Create issue4",
+    "createdAt": "2020-05-19T09:26:07Z",
+    "assignees": {
+      "nodes": [
+        {
+          "name": "Benjamin Braun",
+          "username": "kami.hegmann",
+          "avatarUrl": "https://invalid'",
+          "webUrl": "https://invalid"
+        }
+      ]
+    },
+    "state": "opened",
+    "severity": "HIGH",
+    "escalationStatus": "ACKNOWLEDGED",
+    "slaDueAt": null
+  },
+  {
+    "id": 3,
+    "iid": "13",
+    "title": "Create issue3",
+    "createdAt": "2020-05-19T08:53:55Z",
+    "assignees": {},
+    "state": "closed",
+    "severity": "LOW",
+    "escalationStatus": "RESOLVED"
+  },
+  {
+    "id": 4,
+    "iid": "12",
+    "title": "Create issue2",
+    "createdAt": "2020-05-18T17:13:35Z",
+    "assignees": {},
+    "state": "closed",
+    "severity": "MEDIUM",
+    "escalationStatus": null
+  }
+]

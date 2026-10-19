@@ -1,0 +1,256 @@
+/* global $ */
+
+import jQuery from 'jquery';
+
+// bootstrap webpack, common libs, polyfills, and behaviors
+import './webpack';
+import './commons';
+import './behaviors';
+
+// lib/utils
+import { setGlTooltipDefaultContainer } from '@gitlab/ui';
+import { PanelBreakpointInstance } from '~/panel_breakpoint_instance';
+import { initRails } from '~/lib/utils/rails_ujs';
+import * as popovers from '~/popovers';
+import * as tooltips from '~/tooltips';
+import { initPrefetchLinks } from '~/lib/utils/navigation_utility';
+import { logHelloDeferred } from 'jh_else_ce/lib/logger/hello_deferred';
+import initAlertHandler from './alert_handler';
+import initLayoutNav from './layout_nav';
+import { handleLocationHash, addSelectOnFocusBehaviour } from './lib/utils/common_utils';
+import AccessorUtilities from './lib/utils/accessor';
+import { getStorageValue } from './lib/utils/local_storage';
+import {
+  localTimeAgo,
+  initLocalDateTimes,
+  initTimeagoPrintHandler,
+} from './lib/utils/datetime/timeago_utility';
+import { getLocationHash, visitUrl, mergeUrlParams } from './lib/utils/url_utility';
+
+// everything else
+import LazyLoader from './lazy_loader';
+import initLogoAnimation, { initPortraitLogoDetection } from './logo';
+import initPersistentUserCallouts from './persistent_user_callouts';
+import { initUserTracking, initDefaultTrackers } from './tracking';
+import GlFieldErrors from './gl_field_errors';
+import initUserPopovers from './user_popovers';
+import initWorkItemAttributePopovers from './work_item_attribute_popovers';
+import initBroadcastNotifications from './broadcast_notification';
+import { initCopyCodeButton } from './behaviors/copy_code';
+import initGitlabVersionCheck from './gitlab_version_check';
+import { initExpireSessionModal } from './authentication/sessions';
+import initPanelHeightCalc from './panel_height_calc';
+import initPanelResizers from './panel_resizers';
+import 'ee_else_ce/main_ee';
+import 'jh_else_ce/main_jh';
+
+// a custom container helps us avoid performance issues from inserting tooltips as the last element on <body>
+setGlTooltipDefaultContainer('#js-tooltips-container');
+
+logHelloDeferred();
+
+// expose jQuery as global (TODO: remove these)
+window.jQuery = jQuery;
+window.$ = jQuery;
+
+// ensure that window.gl is set up
+window.gl = window.gl || {};
+
+// inject test utilities if necessary
+if (process.env.NODE_ENV !== 'production' && gon?.test_env) {
+  import(/* webpackMode: "eager" */ './test_utils');
+}
+
+window.addEventListener('hashchange', handleLocationHash);
+window.addEventListener(
+  'load',
+  function onLoad() {
+    window.removeEventListener('load', onLoad, false);
+    handleLocationHash();
+  },
+  false,
+);
+
+gl.lazyLoader = new LazyLoader({
+  scrollContainer: window,
+  observerNode: 'body',
+});
+
+initRails();
+
+/**
+ * TODO: Apparently we are collapsing the right sidebar on certain screensizes per default
+ * except on issue board pages. Why can't we do it with CSS?
+ *
+ * Proposal: Expose a global sidebar API, which we could import wherever we are manipulating
+ * the visibility of the sidebar.
+ *
+ * Quick fix: Get rid of jQuery for this implementation
+ */
+function initRightSidebar() {
+  const currentBreakpoint = PanelBreakpointInstance.getBreakpointSize();
+  const isBoardsOrMR = /((projects|groups):boards:show|projects:merge_requests:)/.test(
+    document.body.dataset.page,
+  );
+
+  if (!isBoardsOrMR && (currentBreakpoint === 'sm' || currentBreakpoint === 'xs')) {
+    const $rightSidebar = $('.js-right-sidebar[data-auto-collapse]');
+    const $layoutPage = $('.layout-page');
+
+    if ($rightSidebar.length > 0) {
+      $rightSidebar.removeClass('right-sidebar-expanded').addClass('right-sidebar-collapsed');
+      $layoutPage.removeClass('right-sidebar-expanded').addClass('right-sidebar-collapsed');
+    } else {
+      $layoutPage.removeClass('right-sidebar-expanded right-sidebar-collapsed');
+    }
+  }
+
+  // Signal for specs to wait on to know the right sidebar is done setting up.
+  document.body.dataset.rightSidebarInitialized = 'true';
+}
+
+// Put all initialisations here that can also wait after everything is rendered and ready
+function deferredInitialisation() {
+  const $body = $('body');
+
+  initPrefetchLinks('.js-prefetch-document');
+  initLogoAnimation();
+  initPortraitLogoDetection();
+  initUserPopovers();
+  initWorkItemAttributePopovers();
+  initBroadcastNotifications();
+  initPersistentUserCallouts();
+  initDefaultTrackers();
+  initCopyCodeButton();
+  initGitlabVersionCheck();
+  initExpireSessionModal();
+  initPanelHeightCalc();
+  initPanelResizers();
+
+  // The right sidebar's initialisation is delayed slightly to ensure it's in the proper state
+  // depending on the page's content's width. This should probably be done differently, but this is
+  // sufficient to address caveats in the short-term.
+  // We should improve this as part of https://gitlab.com/gitlab-org/gitlab/-/work_items/594755.
+  setTimeout(initRightSidebar, 300);
+
+  addSelectOnFocusBehaviour('.js-select-on-focus');
+
+  // Browsers that deny storage access (e.g. blocked cookies on Chrome Mobile)
+  // throw a SecurityError when `localStorage` is even read.
+  const { exists, value: delay } = AccessorUtilities.canUseLocalStorage()
+    ? getStorageValue('gl-tooltip-delay')
+    : { exists: false };
+  const tooltipDelay = exists ? delay : 0;
+
+  // Initialize tooltips
+  tooltips.initTooltips({
+    selector: '.has-tooltip, [data-toggle="tooltip"]',
+    trigger: 'hover',
+    boundary: 'viewport',
+    delay: tooltipDelay,
+  });
+
+  // Initialize popovers
+  popovers.initPopovers();
+
+  // Adding a helper class to activate animations only after all is rendered
+  setTimeout(() => $body.addClass('page-initialised'), 1000);
+}
+
+const $body = $('body');
+const $document = $(document);
+
+initUserTracking();
+initLayoutNav();
+initAlertHandler();
+
+// `hashchange` is not triggered when link target is already in window.location
+$body.on('click', 'a[href^="#"]', function clickHashLinkCallback() {
+  const href = this.getAttribute('href');
+  if (href.substr(1) === getLocationHash()) {
+    setTimeout(handleLocationHash, 1);
+  }
+});
+
+// prevent default action for disabled buttons
+$('.btn').click(function clickDisabledButtonCallback(e) {
+  if ($(this).hasClass('disabled')) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return false;
+  }
+
+  return true;
+});
+
+localTimeAgo(document.querySelectorAll('abbr.timeago, .js-timeago'), true);
+initLocalDateTimes();
+initTimeagoPrintHandler();
+
+/**
+ * This disables form buttons while a form is submitting
+ * We do not difinitively know all of the places where this is used
+ *
+ * TODO: Defer execution, migrate to behaviors, and add sentry logging
+ */
+$body.on('ajax:complete ajax:beforeSend submit', 'form', function ajaxCompleteCallback(e) {
+  // An `aria-disabled` button (GlButton, Pajamas::ButtonComponent) owns its disabled state,
+  // and the native `disabled` toggled below is invisible to it.
+  const $buttons = $('[type="submit"]', this).not('.js-no-auto-disable, [aria-disabled="true"]');
+  switch (e.type) {
+    case 'ajax:beforeSend':
+    case 'submit':
+      // A form that prevents its own default (Vue `@submit.prevent` + axios) never reaches
+      // `ajax:complete`, so there would be no event left to re-enable on.
+      if (e.isDefaultPrevented()) return $buttons;
+      return $buttons.disable();
+    default:
+      return $buttons.enable();
+  }
+});
+
+/**
+ * Show suppressed commit diff
+ *
+ * TODO: Move to commit diff pages
+ */
+$document.on('click', '.diff-content .js-show-suppressed-diff', function showDiffCallback() {
+  const $container = $(this).parent();
+  $container.next('table').show();
+  $container.remove();
+});
+
+// Show/hide comments on diff
+$body.on('click', '.js-toggle-diff-comments', function toggleDiffCommentsCallback(e) {
+  const $this = $(this);
+  const notesHolders = $this.closest('.diff-file').find('.notes_holder');
+
+  e.preventDefault();
+
+  $this.toggleClass('selected');
+
+  if ($this.hasClass('active')) {
+    notesHolders.show().find('.hide, .content').show();
+  } else {
+    notesHolders.hide().find('.content').hide();
+  }
+});
+
+$('form.filter-form').on('submit', function filterFormSubmitCallback(event) {
+  const action = mergeUrlParams(Object.fromEntries(new FormData(this)), this.action);
+
+  event.preventDefault();
+  visitUrl(action);
+});
+
+// initialize field errors
+$('.gl-show-field-errors').each((i, form) => new GlFieldErrors(form));
+
+requestIdleCallback(deferredInitialisation);
+
+// initialize hiding of tooltip after clicking on dropdown's links and buttons
+document
+  .querySelectorAll('a[data-toggle="dropdown"], button[data-toggle="dropdown"], a.has-tooltip')
+  .forEach((element) => {
+    element.addEventListener('click', () => tooltips.hide(element));
+  });

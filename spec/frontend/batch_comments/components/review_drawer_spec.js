@@ -1,0 +1,656 @@
+import { GlDrawer, GlModal } from '@gitlab/ui';
+import Vue, { nextTick } from 'vue';
+import { createTestingPinia } from '@pinia/testing';
+import { PiniaVuePlugin } from 'pinia';
+import VueApollo from 'vue-apollo';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import { stubComponent } from 'helpers/stub_component';
+import waitForPromises from 'helpers/wait_for_promises';
+import { mockTracking } from 'helpers/tracking_helper';
+import ReviewDrawer from '~/batch_comments/components/review_drawer.vue';
+import PreviewItem from '~/batch_comments/components/preview_item.vue';
+import { globalAccessorPlugin } from '~/pinia/plugins';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import diffsEventHub from '~/diffs/event_hub';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { useDiscussions } from '~/notes/store/discussions';
+import { useBatchComments } from '~/batch_comments/store';
+import markdownEditorEventHub from '~/vue_shared/components/markdown/eventhub';
+import MarkdownField from '~/vue_shared/components/markdown/field.vue';
+import { CLEAR_AUTOSAVE_ENTRY_EVENT } from '~/vue_shared/constants';
+import reviewDrawerQuery from '~/batch_comments/queries/review_drawer.query.graphql';
+import toast from '~/vue_shared/plugins/global_toast';
+import { createAlert } from '~/alert';
+
+jest.mock('~/vue_shared/plugins/global_toast');
+jest.mock('~/alert');
+
+jest.mock('~/autosave');
+jest.mock('~/vue_shared/components/markdown/eventhub');
+
+Vue.use(PiniaVuePlugin);
+Vue.use(VueApollo);
+
+describe('ReviewDrawer', () => {
+  let wrapper;
+  let pinia;
+  let trackingSpy;
+
+  const findDrawer = () => wrapper.findComponent(GlDrawer);
+  const findDrawerHeading = () => wrapper.findByTestId('reviewer-drawer-heading');
+  const findCommentTextarea = () => wrapper.findByTestId('comment-textarea');
+  const findSubmitButton = () => wrapper.findComponentByTestId('submit-review-button');
+  const findForm = () => wrapper.findComponentByTestId('submit-gl-form');
+  const findPlaceholderField = () => wrapper.findComponentByTestId('placeholder-input-field');
+  const findDiscardReviewButton = () => wrapper.findComponentByTestId('discard-review-btn');
+  const findDiscardReviewModal = () =>
+    wrapper
+      .findAllComponents(GlModal)
+      .wrappers.find((modal) => modal.props('modalId') === 'discard-review-modal');
+  const findMarkdownField = () => wrapper.findComponent(MarkdownField);
+  const findAssignReviewerHint = () => wrapper.findByTestId('assign-reviewer-hint');
+
+  const submitForm = async () => {
+    await findPlaceholderField().vm.$emit('focus');
+
+    await findCommentTextarea().setValue('Hello world');
+
+    await findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+  };
+
+  const submitDrawerForm = () => findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+  const createComponent = ({
+    canApprove = true,
+    canUpdate = true,
+    reviewers = [],
+    allowsMultipleReviewers = true,
+    author = { id: 'gid://gitlab/User/99' },
+  } = {}) => {
+    const requestHandlers = [
+      [
+        reviewDrawerQuery,
+        () =>
+          Promise.resolve({
+            data: {
+              project: {
+                id: 1,
+                mergeRequest: {
+                  id: 1,
+                  allowsMultipleReviewers,
+                  author,
+                  userPermissions: {
+                    canApprove,
+                    updateMergeRequest: canUpdate,
+                  },
+                  reviewers: {
+                    nodes: reviewers,
+                  },
+                },
+              },
+            },
+          }),
+      ],
+    ];
+    const apolloProvider = createMockApollo(requestHandlers);
+
+    trackingSpy = mockTracking(undefined, null, jest.spyOn);
+    wrapper = mountExtended(ReviewDrawer, {
+      pinia,
+      apolloProvider,
+      stubs: { PreviewItem: stubComponent(PreviewItem) },
+    });
+  };
+
+  beforeEach(() => {
+    pinia = createTestingPinia({
+      plugins: [globalAccessorPlugin],
+    });
+    useLegacyDiffs().projectPath = 'gitlab-org/gitlab';
+    useNotes().noteableData.id = 1;
+    useNotes().noteableData.preview_note_path = '/preview';
+    useNotes().noteableData.noteableType = 'merge_request';
+    useNotes().noteableData.diff_head_sha = 'abc123def456';
+    useNotes().notesData.markdownDocsPath = '/markdown/docs';
+    useNotes().notesData.quickActionsDocsPath = '/quickactions/docs';
+    useBatchComments();
+  });
+
+  it('shows drawer', () => {
+    useBatchComments().drawerOpened = true;
+    createComponent();
+    expect(findDrawer().props('open')).toBe(true);
+  });
+
+  it('hides drawer', () => {
+    createComponent();
+    findDrawer().vm.$emit('close');
+    expect(useBatchComments().setDrawerOpened).toHaveBeenCalledWith(false);
+  });
+
+  describe.each`
+    draftsCount | heading
+    ${0}        | ${'No pending comments'}
+    ${1}        | ${'1 pending comment'}
+    ${2}        | ${'2 pending comments'}
+  `('with draftsCount as $draftsCount', ({ draftsCount, heading }) => {
+    it(`renders heading as ${heading}`, () => {
+      useBatchComments().drafts = new Array(draftsCount).fill({});
+      useBatchComments().drawerOpened = true;
+      createComponent();
+      expect(findDrawerHeading().text()).toBe(heading);
+    });
+  });
+
+  describe('assign reviewer hint', () => {
+    beforeEach(() => {
+      useNotes().userData = { id: 1 };
+      useBatchComments().drawerOpened = true;
+    });
+
+    it('shows the hint when the current user is not a reviewer', async () => {
+      createComponent({
+        reviewers: [{ id: 'gid://gitlab/User/2' }],
+      });
+      await waitForPromises();
+
+      expect(findAssignReviewerHint().exists()).toBe(true);
+      expect(findAssignReviewerHint().text()).toBe('You will be added as a reviewer.');
+    });
+
+    it('does not show the hint until the reviewers query resolves', async () => {
+      createComponent({
+        reviewers: [{ id: 'gid://gitlab/User/2' }],
+      });
+
+      expect(findAssignReviewerHint().exists()).toBe(false);
+
+      await waitForPromises();
+
+      expect(findAssignReviewerHint().exists()).toBe(true);
+    });
+
+    it('hides the hint when the current user is already a reviewer', async () => {
+      createComponent({
+        reviewers: [{ id: 'gid://gitlab/User/1' }],
+      });
+      await waitForPromises();
+
+      expect(findAssignReviewerHint().exists()).toBe(false);
+    });
+
+    it('hides the hint when multiple reviewers are not allowed and one is already assigned', async () => {
+      createComponent({
+        allowsMultipleReviewers: false,
+        reviewers: [{ id: 'gid://gitlab/User/2' }],
+      });
+      await waitForPromises();
+
+      expect(findAssignReviewerHint().exists()).toBe(false);
+    });
+
+    it('shows the hint when multiple reviewers are not allowed but none is assigned yet', async () => {
+      createComponent({
+        allowsMultipleReviewers: false,
+        reviewers: [],
+      });
+      await waitForPromises();
+
+      expect(findAssignReviewerHint().exists()).toBe(true);
+    });
+
+    it('hides the hint when the current user is the merge request author', async () => {
+      createComponent({
+        author: { id: 'gid://gitlab/User/1' },
+        reviewers: [],
+      });
+      await waitForPromises();
+
+      expect(findAssignReviewerHint().exists()).toBe(false);
+    });
+
+    it('hides the hint when the user cannot update the merge request', async () => {
+      createComponent({
+        canUpdate: false,
+        reviewers: [],
+      });
+      await waitForPromises();
+
+      expect(findAssignReviewerHint().exists()).toBe(false);
+    });
+  });
+
+  it('renders list of preview items', () => {
+    useBatchComments().drafts = [{ id: 1 }, { id: 2 }];
+    useBatchComments().drawerOpened = true;
+    createComponent();
+
+    const previewItems = wrapper.findAllComponents(PreviewItem);
+
+    expect(previewItems).toHaveLength(2);
+    expect(previewItems.at(0).props()).toMatchObject(expect.objectContaining({ draft: { id: 1 } }));
+    expect(previewItems.at(1).props()).toMatchObject(expect.objectContaining({ draft: { id: 2 } }));
+  });
+
+  describe('when clicking a draft', () => {
+    it('emits draft-click with the draft so navigation can be delegated', async () => {
+      const draft = { id: 1 };
+      useBatchComments().drafts = [draft];
+      useBatchComments().drawerOpened = true;
+      createComponent();
+
+      await wrapper.findComponent(PreviewItem).vm.$emit('click', draft);
+
+      expect(wrapper.emitted('draft-click')).toEqual([[draft]]);
+    });
+  });
+
+  it('calls publishReview with note data', async () => {
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await submitForm();
+
+    expect(useBatchComments().publishReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        note: 'Hello world',
+        approve: false,
+        reviewer_state: 'reviewed',
+        merge_request_diff_head_sha: 'abc123def456',
+      }),
+    );
+  });
+
+  it('emits CLEAR_AUTOSAVE_ENTRY_EVENT with autosave key', async () => {
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await findPlaceholderField().vm.$emit('focus');
+
+    findCommentTextarea().setValue('Hello world');
+
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    await waitForPromises();
+
+    expect(markdownEditorEventHub.$emit).toHaveBeenCalledWith(
+      CLEAR_AUTOSAVE_ENTRY_EVENT,
+      'submit_review_dropdown/1',
+    );
+  });
+
+  it('clears textarea value', async () => {
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await findPlaceholderField().vm.$emit('focus');
+
+    findCommentTextarea().setValue('Hello world');
+
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    await waitForPromises();
+
+    expect(findCommentTextarea().element.value).toBe('');
+  });
+
+  it('tracks submit action', async () => {
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await findPlaceholderField().vm.$emit('focus');
+
+    findCommentTextarea().setValue('Hello world');
+
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    expect(trackingSpy).toHaveBeenCalledWith(undefined, 'save_markdown', {
+      label: 'markdown_editor',
+      property: 'MergeRequest_review',
+    });
+  });
+
+  it('switches to the overview tab after submit', async () => {
+    useDiscussions().discussions = [
+      { id: 1, notes: [{ id: 1, userData: {}, author: { id: useNotes().userData.id } }] },
+    ];
+    window.mrTabs = { tabShown: jest.fn() };
+
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await submitForm();
+
+    await waitForPromises();
+
+    useDiscussions().discussions[0].notes[0].id = 2;
+
+    await nextTick();
+
+    expect(window.mrTabs.tabShown).toHaveBeenCalledWith('show');
+  });
+
+  it('sets submit dropdown to loading', async () => {
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await submitForm();
+
+    expect(findSubmitButton().props('loading')).toBe(true);
+  });
+
+  it.each`
+    value
+    ${'approved'}
+    ${'reviewed'}
+    ${'requested_changes'}
+  `('sends $value review state to api when submitting', async ({ value }) => {
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await waitForPromises();
+
+    await findPlaceholderField().vm.$emit('focus');
+
+    await wrapper.find(`.custom-control-input[value="${value}"]`).trigger('change');
+
+    findCommentTextarea().setValue('Hello world');
+
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    expect(useBatchComments().publishReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewer_state: value,
+      }),
+    );
+  });
+
+  it('emits approval event when submitting with approved state', async () => {
+    jest.spyOn(diffsEventHub, '$emit');
+
+    useBatchComments().drawerOpened = true;
+    useBatchComments().drafts = [{ id: 1 }];
+
+    createComponent();
+
+    await waitForPromises();
+    await findPlaceholderField().vm.$emit('focus');
+    await wrapper.find('.custom-control-input[value="approved"]').trigger('change');
+
+    findCommentTextarea().setValue('Looks good');
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    await waitForPromises();
+
+    expect(diffsEventHub.$emit).toHaveBeenCalledWith('mr:reviewDrawer:submit:approval', {
+      summary: 1,
+      comments: 1,
+    });
+  });
+
+  it('emits approval event with summary 0 when submitting without a note', async () => {
+    jest.spyOn(diffsEventHub, '$emit');
+
+    useBatchComments().drawerOpened = true;
+    useBatchComments().drafts = [{ id: 1 }];
+
+    createComponent();
+
+    await waitForPromises();
+    await wrapper.find('.custom-control-input[value="approved"]').trigger('change');
+
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    await waitForPromises();
+
+    expect(diffsEventHub.$emit).toHaveBeenCalledWith('mr:reviewDrawer:submit:approval', {
+      summary: 0,
+      comments: 1,
+    });
+  });
+
+  it.each`
+    canApprove | exists        | existsText
+    ${true}    | ${undefined}  | ${'shows'}
+    ${false}   | ${'disabled'} | ${'hides'}
+  `(
+    '$existsText approve checkbox if can_approve is $canApprove',
+    async ({ canApprove, exists }) => {
+      useBatchComments().drawerOpened = true;
+
+      createComponent({ canApprove });
+
+      await findPlaceholderField().vm.$emit('focus');
+
+      await waitForPromises();
+
+      expect(wrapper.findAll('input').at(1).attributes('disabled')).toBe(exists);
+    },
+  );
+
+  it('disables the approve option when the merge request is merged', async () => {
+    useNotes().noteableData = { ...useNotes().noteableData, state: 'merged' };
+    useBatchComments().drawerOpened = true;
+
+    createComponent({ canApprove: true });
+
+    await findPlaceholderField().vm.$emit('focus');
+
+    await waitForPromises();
+
+    expect(wrapper.find('.custom-control-input[value="approved"]').attributes('disabled')).toBe(
+      'disabled',
+    );
+  });
+
+  describe('when the review was published but the approval was refused', () => {
+    beforeEach(async () => {
+      jest.spyOn(diffsEventHub, '$emit');
+      window.mrTabs = { tabShown: jest.fn() };
+      useBatchComments().drafts = [];
+      useBatchComments().drawerOpened = true;
+      useBatchComments().publishReview.mockResolvedValue({
+        review_id: 1,
+        reviewer_state_error: 'Merge request is already merged',
+      });
+
+      createComponent();
+
+      await waitForPromises();
+      await wrapper.find('.custom-control-input[value="approved"]').trigger('change');
+
+      submitDrawerForm();
+
+      await waitForPromises();
+    });
+
+    it('shows a warning', () => {
+      expect(createAlert).toHaveBeenCalledWith({
+        message:
+          'Your review was submitted, but the merge request was not approved: Merge request is already merged',
+        variant: 'warning',
+      });
+    });
+
+    it('does not emit the approval event', () => {
+      expect(diffsEventHub.$emit).not.toHaveBeenCalledWith(
+        'mr:reviewDrawer:submit:approval',
+        expect.anything(),
+      );
+    });
+
+    it('does not switch to the overview tab', () => {
+      expect(window.mrTabs.tabShown).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when discarding a review', () => {
+    beforeEach(() => {
+      useBatchComments().drawerOpened = true;
+      useBatchComments().drafts = [{ id: 1, file_path: 'foo' }];
+    });
+
+    it('shows modal when clicking discard button', async () => {
+      createComponent();
+
+      expect(findDiscardReviewModal().props('visible')).toBe(false);
+
+      findDiscardReviewButton().vm.$emit('click');
+
+      await nextTick();
+
+      expect(findDiscardReviewModal().props('visible')).toBe(true);
+    });
+
+    it('calls discardReviews when primary action on modal is triggered', async () => {
+      createComponent();
+
+      findDiscardReviewButton().vm.$emit('click');
+
+      await nextTick();
+
+      findDiscardReviewModal().vm.$emit('primary');
+
+      expect(useBatchComments().discardDrafts).toHaveBeenCalled();
+    });
+
+    it('creates a toast message when finished', async () => {
+      createComponent();
+
+      findDiscardReviewButton().vm.$emit('click');
+
+      await nextTick();
+
+      findDiscardReviewModal().vm.$emit('primary');
+
+      await nextTick();
+
+      expect(toast).toHaveBeenCalledWith('Review discarded');
+    });
+
+    it('calls setDrawerOpened when primary action on modal is triggered', async () => {
+      createComponent();
+
+      findDiscardReviewButton().vm.$emit('click');
+
+      await nextTick();
+
+      findDiscardReviewModal().vm.$emit('primary');
+
+      await nextTick();
+
+      expect(useBatchComments().setDrawerOpened).toHaveBeenCalledWith(false);
+    });
+  });
+
+  it('calls publishReview when drafts count is 0', async () => {
+    useBatchComments().drafts = [];
+
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await waitForPromises();
+
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    expect(useBatchComments().publishReview).toHaveBeenCalled();
+  });
+
+  it('calls publishReviewInBatches when drafts count is more than 0', async () => {
+    useBatchComments().drafts = new Array(1).fill({});
+
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await waitForPromises();
+
+    findForm().vm.$emit('submit', { preventDefault: jest.fn() });
+
+    expect(useBatchComments().publishReviewInBatches).toHaveBeenCalled();
+  });
+
+  it('navigates to the summary note when the publish response has a summary note id', async () => {
+    useBatchComments().drafts = [];
+    useBatchComments().drawerOpened = true;
+    useBatchComments().publishReview.mockResolvedValue({ summary_note_id: 10 });
+    useNotes().userData = { id: 1 };
+
+    createComponent();
+
+    await submitForm();
+    await waitForPromises();
+
+    useDiscussions().discussions = [
+      { id: 'a', notes: [{ id: 10, author: { id: 1 } }] },
+      { id: 'b', notes: [{ id: 20, author: { id: 1 } }] },
+    ];
+    await waitForPromises();
+
+    expect(window.location.hash).toBe('#note_10');
+  });
+
+  describe('failed batch publish', () => {
+    beforeEach(() => {
+      useBatchComments().drafts = new Array(1).fill({});
+      useBatchComments().drawerOpened = true;
+    });
+
+    it('shows the server message if the body has one', async () => {
+      createComponent();
+
+      await waitForPromises();
+
+      useBatchComments().publishReviewInBatches.mockRejectedValue({
+        response: { data: { message: 'Unable to save Note: Note is too long' } },
+      });
+
+      submitDrawerForm();
+
+      await waitForPromises();
+
+      expect(createAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Unable to save Note: Note is too long' }),
+      );
+    });
+
+    it.each([
+      ['a body with no message', { response: { data: { status: 500, error: 'Server Error' } } }],
+      ['an HTML body', { response: { data: '<!DOCTYPE html><title>500</title>' } }],
+      ['no response', new Error('Network Error')],
+    ])('shows a generic alert given %s', async (_, rejection) => {
+      createComponent();
+
+      await waitForPromises();
+
+      useBatchComments().publishReviewInBatches.mockRejectedValue(rejection);
+
+      submitDrawerForm();
+
+      await waitForPromises();
+
+      expect(createAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Something went wrong. Please try again.' }),
+      );
+    });
+  });
+
+  it('disables table of contents support in the markdown editor', async () => {
+    useBatchComments().drawerOpened = true;
+
+    createComponent();
+
+    await findPlaceholderField().vm.$emit('focus');
+
+    expect(findMarkdownField().props('supportsTableOfContents')).toBe(false);
+  });
+});

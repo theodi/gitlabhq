@@ -1,0 +1,376 @@
+package duoworkflow
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	pb "gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist/clients/gopb/contract"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/api"
+)
+
+type testServer struct {
+	Addr string
+	pb.UnimplementedDuoWorkflowServer
+	execWorkflowHandler             func(server pb.DuoWorkflow_ExecuteWorkflowServer) error
+	trackSelfHostedExecuteWfHandler func(server grpc.BidiStreamingServer[pb.TrackSelfHostedClientEvent, pb.TrackSelfHostedAction]) error
+}
+
+func (s *testServer) ExecuteWorkflow(stream pb.DuoWorkflow_ExecuteWorkflowServer) error {
+	if s.execWorkflowHandler != nil {
+		return s.execWorkflowHandler(stream)
+	}
+	msg, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	req := msg.GetStartRequest()
+	if req == nil {
+		return fmt.Errorf("request is missing")
+	}
+
+	if req.Goal != "create workflow" {
+		return fmt.Errorf("invalid goal: %v", req.Goal)
+	}
+	testAction := &pb.Action{
+		Action: &pb.Action_RunCommand{
+			RunCommand: &pb.RunCommandAction{Program: "ls"},
+		},
+	}
+	return stream.Send(testAction)
+}
+
+func (s *testServer) TrackSelfHostedExecuteWorkflow(stream grpc.BidiStreamingServer[pb.TrackSelfHostedClientEvent, pb.TrackSelfHostedAction]) error {
+	if s.trackSelfHostedExecuteWfHandler != nil {
+		return s.trackSelfHostedExecuteWfHandler(stream)
+	}
+	msg, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+
+	if msg.WorkflowID == "" {
+		return fmt.Errorf("workflow_id is missing")
+	}
+
+	testAction := &pb.TrackSelfHostedAction{
+		RequestID: msg.RequestID,
+	}
+	return stream.Send(testAction)
+}
+
+func setupTestServer(t *testing.T) *testServer {
+	listener, err := net.Listen("tcp", ":0")
+	require.NoError(t, err)
+	s := grpc.NewServer()
+	server := &testServer{Addr: listener.Addr().String()}
+	pb.RegisterDuoWorkflowServer(s, server)
+	go func() {
+		_ = s.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		s.Stop()
+		listener.Close()
+	})
+	return server
+}
+
+func TestExecuteWorkflow(t *testing.T) {
+	server := setupTestServer(t)
+	ctx := context.Background()
+	t.Run("successful workflow execution", func(t *testing.T) {
+		client := createTestClient(t, server)
+		workflowStream, err := client.ExecuteWorkflow(ctx)
+		require.NoError(t, err)
+
+		startEvent := &pb.ClientEvent{
+			Response: &pb.ClientEvent_StartRequest{
+				StartRequest: &pb.StartWorkflowRequest{
+					Goal: "create workflow",
+				},
+			},
+		}
+
+		err = workflowStream.Send(startEvent)
+		require.NoError(t, err)
+
+		response, err := workflowStream.Recv()
+		require.NoError(t, err)
+
+		require.NotNil(t, response.GetRunCommand())
+
+		err = workflowStream.CloseSend()
+		require.NoError(t, err)
+	})
+
+	t.Run("server returns error", func(t *testing.T) {
+		expectedErr := status.Error(codes.Internal, "internal error")
+		server.execWorkflowHandler = func(_ pb.DuoWorkflow_ExecuteWorkflowServer) error {
+			return expectedErr
+		}
+		client := createTestClient(t, server)
+		workflowStream, err := client.ExecuteWorkflow(ctx)
+		require.NoError(t, err)
+		_, err = workflowStream.Recv()
+		require.Error(t, err)
+		require.Equal(t, codes.Internal, status.Code(err))
+	})
+
+	// t.Run("client sends invalid request", func(t *testing.T) {
+	// 	client := createTestClient(t, server)
+	// 	workflowStream, err := client.ExecuteWorkflow(ctx)
+	// 	require.NoError(t, err)
+
+	// 	invalidEvent := &pb.ClientEvent{}
+
+	// 	err = workflowStream.Send(invalidEvent)
+	// 	require.NoError(t, err)
+
+	// 	_, err = workflowStream.Recv()
+	// 	require.Error(t, err)
+	// })
+
+	t.Run("client name not provided, uses default", func(t *testing.T) {
+		config := &api.DuoWorkflowServiceConfig{
+			URI:     server.Addr,
+			Headers: map[string]string{},
+			Secure:  false,
+		}
+		client, err := NewClient(config, "test-agent/1.0", "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = client.Close() })
+
+		var capturedClientName string
+		server.execWorkflowHandler = func(stream pb.DuoWorkflow_ExecuteWorkflowServer) error {
+			md, ok := metadata.FromIncomingContext(stream.Context())
+			require.True(t, ok)
+			clientNames := md.Get("x-gitlab-client-name")
+			require.Len(t, clientNames, 1)
+			capturedClientName = clientNames[0]
+			return nil
+		}
+
+		workflowStream, err := client.ExecuteWorkflow(ctx)
+		require.NoError(t, err)
+		_, _ = workflowStream.Recv()
+
+		require.Equal(t, "gitlab-duo-workflow", capturedClientName)
+	})
+
+	t.Run("client name provided, uses provided value", func(t *testing.T) {
+		config := &api.DuoWorkflowServiceConfig{
+			URI:     server.Addr,
+			Headers: map[string]string{},
+			Secure:  false,
+		}
+		client, err := NewClient(config, "test-agent/1.0", "my-custom-client")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = client.Close() })
+
+		var capturedClientName string
+		server.execWorkflowHandler = func(stream pb.DuoWorkflow_ExecuteWorkflowServer) error {
+			md, ok := metadata.FromIncomingContext(stream.Context())
+			require.True(t, ok)
+			clientNames := md.Get("x-gitlab-client-name")
+			require.Len(t, clientNames, 1)
+			capturedClientName = clientNames[0]
+			return nil
+		}
+
+		workflowStream, err := client.ExecuteWorkflow(ctx)
+		require.NoError(t, err)
+		_, _ = workflowStream.Recv()
+
+		require.Equal(t, "my-custom-client", capturedClientName)
+	})
+
+	t.Run("client name too long, truncated to 255 characters", func(t *testing.T) {
+		config := &api.DuoWorkflowServiceConfig{
+			URI:     server.Addr,
+			Headers: map[string]string{},
+			Secure:  false,
+		}
+		longClientName := strings.Repeat("a", 300)
+		client, err := NewClient(config, "test-agent/1.0", longClientName)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = client.Close() })
+
+		var capturedClientName string
+		server.execWorkflowHandler = func(stream pb.DuoWorkflow_ExecuteWorkflowServer) error {
+			md, ok := metadata.FromIncomingContext(stream.Context())
+			require.True(t, ok)
+			clientNames := md.Get("x-gitlab-client-name")
+			require.Len(t, clientNames, 1)
+			capturedClientName = clientNames[0]
+			return nil
+		}
+
+		workflowStream, err := client.ExecuteWorkflow(ctx)
+		require.NoError(t, err)
+		_, _ = workflowStream.Recv()
+
+		require.Len(t, capturedClientName, 255)
+		require.Equal(t, strings.Repeat("a", 255), capturedClientName)
+	})
+
+	t.Run("client name in config headers, sends it exactly once", func(t *testing.T) {
+		for _, headerKey := range []string{"x-gitlab-client-name", "X-Gitlab-Client-Name"} {
+			t.Run(headerKey, func(t *testing.T) {
+				headers := map[string]string{
+					headerKey:              "chrome",
+					"x-gitlab-client-type": "browser",
+				}
+				config := &api.DuoWorkflowServiceConfig{
+					URI:     server.Addr,
+					Headers: headers,
+					Secure:  false,
+				}
+				client, err := NewClient(config, "test-agent/1.0", "request-client")
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = client.Close() })
+
+				var capturedClientNames, capturedClientTypes []string
+				server.execWorkflowHandler = func(stream pb.DuoWorkflow_ExecuteWorkflowServer) error {
+					md, ok := metadata.FromIncomingContext(stream.Context())
+					require.True(t, ok)
+					capturedClientNames = md.Get("x-gitlab-client-name")
+					capturedClientTypes = md.Get("x-gitlab-client-type")
+					return nil
+				}
+
+				workflowStream, err := client.ExecuteWorkflow(ctx)
+				require.NoError(t, err)
+				_, _ = workflowStream.Recv()
+
+				require.Equal(t, []string{"chrome"}, capturedClientNames)
+				require.Equal(t, []string{"browser"}, capturedClientTypes)
+				require.Equal(t, "chrome", headers[headerKey], "config headers must not be mutated")
+			})
+		}
+	})
+
+	t.Run("empty client name in config headers, falls back to request client name", func(t *testing.T) {
+		config := &api.DuoWorkflowServiceConfig{
+			URI:     server.Addr,
+			Headers: map[string]string{"x-gitlab-client-name": ""},
+			Secure:  false,
+		}
+		client, err := NewClient(config, "test-agent/1.0", "request-client")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = client.Close() })
+
+		var capturedClientNames []string
+		server.execWorkflowHandler = func(stream pb.DuoWorkflow_ExecuteWorkflowServer) error {
+			md, ok := metadata.FromIncomingContext(stream.Context())
+			require.True(t, ok)
+			capturedClientNames = md.Get("x-gitlab-client-name")
+			return nil
+		}
+
+		workflowStream, err := client.ExecuteWorkflow(ctx)
+		require.NoError(t, err)
+		_, _ = workflowStream.Recv()
+
+		require.Equal(t, []string{"request-client"}, capturedClientNames)
+	})
+}
+
+func TestExecuteWorkflowErrorPreservesGRPCStatus(t *testing.T) {
+	// Point at a port with nothing listening so the connection attempt fails
+	// immediately with codes.Unavailable.
+	config := &api.DuoWorkflowServiceConfig{
+		URI:     "localhost:1", // port 1 is reserved and always refused
+		Headers: map[string]string{},
+		Secure:  false,
+	}
+	client, err := NewClient(config, "test-agent/1.0", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	_, err = client.ExecuteWorkflow(context.Background())
+	require.Error(t, err)
+
+	// The wrapped error must carry the original gRPC status so callers can
+	// inspect it (e.g. status.Code(err) == codes.Unavailable).
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	// The wrapping message must be present.
+	require.ErrorContains(t, err, "failed to open workflow stream")
+}
+
+func TestTrackSelfHostedExecuteWorkflowErrorPreservesGRPCStatus(t *testing.T) {
+	config := &api.DuoWorkflowServiceConfig{
+		URI:     "localhost:1",
+		Headers: map[string]string{},
+		Secure:  false,
+	}
+	client, err := NewClient(config, "test-agent/1.0", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	_, err = client.TrackSelfHostedExecuteWorkflow(context.Background())
+	require.Error(t, err)
+
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.ErrorContains(t, err, "failed to open self-hosted tracking stream")
+}
+
+func createTestClient(t *testing.T, server *testServer) *Client {
+	config := &api.DuoWorkflowServiceConfig{
+		URI:     server.Addr,
+		Headers: map[string]string{"test": "header"},
+		Secure:  false,
+	}
+	client, err := NewClient(config, "visual-studio-code/0.0.1", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	return client
+}
+
+func TestTrackSelfHostedExecuteWorkflow(t *testing.T) {
+	server := setupTestServer(t)
+	ctx := context.Background()
+	t.Run("successful tracking workflow execution", func(t *testing.T) {
+		client := createTestClient(t, server)
+		trackingStream, err := client.TrackSelfHostedExecuteWorkflow(ctx)
+		require.NoError(t, err)
+
+		clientEvent := &pb.TrackSelfHostedClientEvent{
+			RequestID:            "req-123",
+			WorkflowID:           "wf-456",
+			FeatureQualifiedName: "duo_workflow",
+			FeatureAiCatalogItem: true,
+		}
+
+		err = trackingStream.Send(clientEvent)
+		require.NoError(t, err)
+
+		response, err := trackingStream.Recv()
+		require.NoError(t, err)
+		require.NotNil(t, response)
+		require.Equal(t, "req-123", response.RequestID)
+
+		err = trackingStream.CloseSend()
+		require.NoError(t, err)
+	})
+
+	t.Run("server returns error", func(t *testing.T) {
+		expectedErr := status.Error(codes.Internal, "internal error")
+		server.trackSelfHostedExecuteWfHandler = func(_ grpc.BidiStreamingServer[pb.TrackSelfHostedClientEvent, pb.TrackSelfHostedAction]) error {
+			return expectedErr
+		}
+		client := createTestClient(t, server)
+		trackingStream, err := client.TrackSelfHostedExecuteWorkflow(ctx)
+		require.NoError(t, err)
+		_, err = trackingStream.Recv()
+		require.Error(t, err)
+		require.Equal(t, codes.Internal, status.Code(err))
+	})
+}

@@ -1,0 +1,33 @@
+#import "./wiki_page_note.fragment.graphql"
+
+mutation createWikiPageNote(
+  $shouldChangeResolvedState: Boolean!
+  $shouldCreateNote: Boolean!
+  $createNoteInput: CreateNoteInput!
+  $discussionToggleResolveInput: DiscussionToggleResolveInput!
+) {
+  createNote(input: $createNoteInput) @include(if: $shouldCreateNote) {
+    note {
+      id
+      discussion {
+        id
+        resolvable
+        notes {
+          nodes {
+            ...WikiPageNote
+          }
+        }
+      }
+    }
+    errors
+  }
+
+  discussionToggleResolve(input: $discussionToggleResolveInput)
+    @include(if: $shouldChangeResolvedState) {
+    discussion {
+      id
+      resolved
+    }
+    errors
+  }
+}

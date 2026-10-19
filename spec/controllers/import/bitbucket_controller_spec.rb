@@ -1,94 +1,365 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe Import::BitbucketController do
-  let(:user) { create(:user, bitbucket_access_token: 'asd123', bitbucket_access_token_secret: "sekret") }
+RSpec.describe Import::BitbucketController, feature_category: :importers do
+  include ImportSpecHelper
+
+  let(:user) { create(:user) }
+  let(:token) { "asdasd12345" }
+  let(:secret) { "sekrettt" }
+  let(:refresh_token) { SecureRandom.hex(15) }
+  let(:access_params) { { token: token, expires_at: nil, expires_in: nil, refresh_token: nil } }
+  let(:code) { SecureRandom.hex(8) }
+
+  def assign_session_tokens
+    session[:bitbucket_token] = token
+  end
 
   before do
     sign_in(user)
-    controller.stub(:bitbucket_import_enabled?).and_return(true)
+    allow(controller).to receive(:bitbucket_import_enabled?).and_return(true)
   end
 
   describe "GET callback" do
     before do
       session[:oauth_request_token] = {}
     end
-    
-    it "updates access token" do
-      token = "asdasd12345"
-      secret = "sekrettt"
-      access_token = double(token: token, secret: secret)
-      Gitlab::BitbucketImport::Client.any_instance.stub(:get_token).and_return(access_token)
-      Gitlab.config.omniauth.providers << OpenStruct.new(app_id: "asd123", app_secret: "asd123", name: "bitbucket")
 
-      get :callback
+    context "when auth state param is invalid" do
+      let(:random_key) { "pure_random"  }
+      let(:external_bitbucket_auth_url) { "http://fake.bitbucket.host/url" }
 
-      expect(user.reload.bitbucket_access_token).to eq(token)
-      expect(user.reload.bitbucket_access_token_secret).to eq(secret)
-      expect(controller).to redirect_to(status_import_bitbucket_url)
+      it "redirects to external auth url" do
+        expected_client_options = {
+          site: OmniAuth::Strategies::Bitbucket.default_options[:client_options]['site'],
+          authorize_url: OmniAuth::Strategies::Bitbucket.default_options[:client_options]['authorize_url'],
+          token_url: OmniAuth::Strategies::Bitbucket.default_options[:client_options]['token_url']
+        }
+
+        expect(OAuth2::Client)
+          .to receive(:new)
+          .with(anything, anything, expected_client_options)
+
+        allow(SecureRandom).to receive(:base64).and_return(random_key)
+        allow_next_instance_of(OAuth2::Client) do |client|
+          allow(client).to receive_message_chain(:auth_code, :authorize_url)
+            .with(redirect_uri: users_import_bitbucket_callback_url, state: random_key)
+            .and_return(external_bitbucket_auth_url)
+        end
+
+        get :callback, params: { code: code, state: "invalid-token" }
+
+        expect(controller).to redirect_to(external_bitbucket_auth_url)
+      end
+    end
+
+    context "when auth state param is valid" do
+      let(:expires_at) { Time.current + 1.day }
+      let(:expires_in) { 1.day }
+      let(:access_token) do
+        double(
+          token: token,
+          secret: secret,
+          expires_at: expires_at,
+          expires_in: expires_in,
+          refresh_token: refresh_token
+        )
+      end
+
+      before do
+        session[:bitbucket_auth_state] = 'state'
+      end
+
+      it "updates access token" do
+        allow_any_instance_of(OAuth2::Client)
+          .to receive(:get_token)
+          .with(hash_including(
+            'grant_type' => 'authorization_code',
+            'code' => code,
+            'redirect_uri' => users_import_bitbucket_callback_url),
+            {})
+          .and_return(access_token)
+        stub_omniauth_provider('bitbucket')
+
+        get :callback, params: { code: code, state: 'state' }
+
+        expect(session[:bitbucket_token]).to eq(token)
+        expect(session[:bitbucket_refresh_token]).to eq(refresh_token)
+        expect(session[:bitbucket_expires_at]).to eq(expires_at)
+        expect(session[:bitbucket_expires_in]).to eq(expires_in)
+        expect(controller).to redirect_to(status_import_bitbucket_url)
+      end
+
+      it "passes namespace_id query param to status if provided" do
+        namespace_id = 30
+
+        allow_any_instance_of(OAuth2::Client)
+          .to receive(:get_token)
+          .and_return(access_token)
+
+        get :callback, params: { code: code, state: 'state', namespace_id: namespace_id }
+
+        expect(controller).to redirect_to(status_import_bitbucket_url(namespace_id: namespace_id))
+      end
     end
   end
 
   describe "GET status" do
     before do
-      @repo = OpenStruct.new(slug: 'vim', owner: 'asd')
+      @repo = double(name: 'vim', slug: 'vim', owner: 'asd', full_name: 'asd/vim', clone_url: 'http://test.host/demo/url.git', 'valid?' => true)
+      @invalid_repo = double(name: 'mercurialrepo', slug: 'mercurialrepo', owner: 'asd', full_name: 'asd/mercurialrepo', clone_url: 'http://test.host/demo/mercurialrepo.git', 'valid?' => false)
     end
 
-    it "assigns variables" do
-      @project = create(:project, import_type: 'bitbucket', creator_id: user.id)
-      controller.stub_chain(:client, :projects).and_return([@repo])
+    context "when token does not exist" do
+      let(:random_key) { "pure_random"  }
+      let(:external_bitbucket_auth_url) { "http://fake.bitbucket.host/url" }
 
-      get :status
+      it 'redirects to authorize url with state included' do
+        allow(SecureRandom).to receive(:base64).and_return(random_key)
+        allow_next_instance_of(OAuth2::Client) do |client|
+          allow(client).to receive_message_chain(:auth_code, :authorize_url)
+            .with(redirect_uri: users_import_bitbucket_callback_url, state: random_key)
+            .and_return(external_bitbucket_auth_url)
+        end
 
-      expect(assigns(:already_added_projects)).to eq([@project])
-      expect(assigns(:repos)).to eq([@repo])
+        get :status, format: :json
+
+        expect(controller).to redirect_to(external_bitbucket_auth_url)
+      end
     end
 
-    it "does not show already added project" do
-      @project = create(:project, import_type: 'bitbucket', creator_id: user.id, import_source: 'asd/vim')
-      controller.stub_chain(:client, :projects).and_return([@repo])
+    context "when token is valid" do
+      before do
+        assign_session_tokens
 
-      get :status
+        allow(controller).to receive(:page_info).and_return({
+          has_next_page: false,
+          has_previous_page: false,
+          start_cursor: nil,
+          end_cursor: nil
+        })
+      end
 
-      expect(assigns(:already_added_projects)).to eq([@project])
-      expect(assigns(:repos)).to eq([])
+      it_behaves_like 'import controller status' do
+        let(:repo) { @repo }
+        let(:repo_id) { @repo.full_name }
+        let(:import_source) { @repo.full_name }
+        let(:provider_name) { 'bitbucket' }
+        let(:client_repos_field) { :multi_workspace_repos }
+      end
+
+      it 'returns invalid repos' do
+        allow_any_instance_of(Bitbucket::Client).to receive(:multi_workspace_repos).and_return([@repo, @invalid_repo])
+
+        get :status, format: :json
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['incompatible_repos'].length).to eq(1)
+        expect(json_response.dig("incompatible_repos", 0, "id")).to eq(@invalid_repo.full_name)
+        expect(json_response['provider_repos'].length).to eq(1)
+        expect(json_response.dig("provider_repos", 0, "id")).to eq(@repo.full_name)
+      end
+
+      context 'when filtering' do
+        let(:filter) { '<html>test</html>' }
+        let(:expected_filter) { 'test' }
+
+        subject { get :status, params: { filter: filter }, as: :json }
+
+        it 'passes sanitized filter param to bitbucket client' do
+          expect_next_instance_of(Bitbucket::Client) do |client|
+            expect(client).to receive(:multi_workspace_repos).with(
+              filter: expected_filter,
+              limit: Import::BitbucketController::PAGE_LENGTH,
+              workspace_paging_info: []
+            ).and_return([@repo])
+          end
+
+          subject
+        end
+      end
+
+      context 'with workspace paging info' do
+        let(:collection) { instance_double(Bitbucket::MultiWorkspaceCollection, workspace_paging_info: workspace_paging_info) }
+
+        let(:workspace_paging_info) do
+          [
+            { workspace: 'workspace-1', page_info: { next_page: 2, has_next_page: true } },
+            { workspace: 'workspace-2', page_info: { next_page: 1, has_next_page: true } },
+            { workspace: 'workspace-3', page_info: { next_page: nil, has_next_page: false } }
+          ]
+        end
+
+        before do
+          allow(collection).to receive(:partition).and_return([[@repo], []])
+        end
+
+        it 'fetches multi workspace repos and includes workspace_paging_info in response' do
+          expect_next_instance_of(Bitbucket::Client) do |client|
+            expect(client)
+              .to receive(:multi_workspace_repos)
+              .with(filter: nil, limit: described_class::PAGE_LENGTH, workspace_paging_info: [])
+              .and_return(collection)
+          end
+
+          get :status, as: :json
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['workspace_paging_info']).to eq(workspace_paging_info.as_json)
+        end
+
+        context 'with invalid base64 payload' do
+          it 'logs exception and fetches all workspaces' do
+            expect(controller).to receive(:log_exception).with(an_instance_of(JSON::ParserError))
+
+            expect_next_instance_of(Bitbucket::Client) do |client|
+              expect(client)
+                .to receive(:multi_workspace_repos)
+                .with(filter: nil, limit: described_class::PAGE_LENGTH, workspace_paging_info: [])
+                .and_return(collection)
+            end
+
+            get :status, params: { workspace_paging_info: 'invalid-base64' }, as: :json
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response['workspace_paging_info']).to eq(workspace_paging_info.as_json)
+          end
+        end
+
+        context 'with workspace slug validation' do
+          where(:slug, :valid) do
+            [
+              ['valid-workspace',       true],
+              ['valid_underscore_123',  true],
+              ['-__-2-test_bitbucket',  true],
+              ['x' * 63,                false],
+              ['',                      false],
+              ['invalid@slug!',         false],
+              ['invalid.slug',          false],
+              ['../../../etc/passwd',   false],
+              ['slug with spaces',      false],
+              ['InvalidUpperCase',      false]
+            ]
+          end
+
+          with_them do
+            it 'filters workspace slugs correctly' do
+              payload = [{ workspace: slug, page_info: { next_page: 1, has_next_page: true } }]
+              encoded_payload = Base64.strict_encode64(payload.to_json)
+
+              expect_next_instance_of(Bitbucket::Client) do |client|
+                expected_workspace_paging_info = valid ? [{ workspace: slug, page_info: { next_page: 1, has_next_page: true } }] : []
+
+                expect(client)
+                  .to receive(:multi_workspace_repos)
+                  .with(filter: nil, limit: described_class::PAGE_LENGTH, workspace_paging_info: expected_workspace_paging_info)
+                  .and_return(collection)
+              end
+
+              get :status, params: { workspace_paging_info: encoded_payload }, as: :json
+
+              expect(response).to have_gitlab_http_status(:ok)
+            end
+          end
+        end
+      end
+
+      context 'with namespace_id param' do
+        context 'when user is allowed to create projects in this namespace' do
+          let(:namespace) { create(:namespace, owner: user) }
+
+          it 'renders successfully' do
+            get :status, params: { namespace_id: namespace.id }, format: :html
+
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+        end
+
+        context 'when user is not allowed to create projects in this namespace' do
+          let(:namespace) { create(:namespace) }
+
+          it 'renders 404' do
+            get :status, params: { namespace_id: namespace.id }, format: :html
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+
+        context 'when namespace_id is not provided' do
+          it 'renders successfully' do
+            get :status, format: :html
+
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+        end
+      end
     end
   end
 
   describe "POST create" do
+    let_it_be(:project) { create(:project) }
+
     let(:bitbucket_username) { user.username }
-
-    let(:bitbucket_user) {
-      {
-        user: {
-          username: bitbucket_username
-        }
-      }.with_indifferent_access
-    }
-
-    let(:bitbucket_repo) {
-      {
-        slug: "vim",
-        owner: bitbucket_username
-      }.with_indifferent_access
-    }
+    let(:bitbucket_user) { double(username: bitbucket_username) }
+    let(:bitbucket_repo) do
+      double(slug: "vim", owner: bitbucket_username, name: 'vim')
+    end
 
     before do
-      allow(Gitlab::BitbucketImport::KeyAdder).
-        to receive(:new).with(bitbucket_repo, user).
-        and_return(double(execute: true))
-
-      controller.stub_chain(:client, :user).and_return(bitbucket_user)
-      controller.stub_chain(:client, :project).and_return(bitbucket_repo)
+      allow_any_instance_of(Bitbucket::Client).to receive(:repo).and_return(bitbucket_repo)
+      allow_any_instance_of(Bitbucket::Client).to receive(:user).and_return(bitbucket_user)
+      assign_session_tokens
     end
+
+    it 'returns 200 response when the project is imported successfully' do
+      allow(Gitlab::BitbucketImport::ProjectCreator)
+        .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, user.namespace, user, access_params)
+        .and_return(double(execute: project))
+
+      post :create, format: :json
+
+      expect_snowplow_event(
+        category: 'Import::BitbucketController',
+        action: 'create',
+        label: 'import_access_level',
+        user: user,
+        extra: { user_role: 'Owner', import_type: 'bitbucket' }
+      )
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'stashes request_channel: :ui for the created import state', :request_store do
+      allow(Gitlab::BitbucketImport::ProjectCreator)
+        .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, user.namespace, user, access_params)
+        .and_return(double(execute: project))
+
+      post :create, format: :json
+
+      expect(Gitlab::Import::RequestChannel.stashed).to eq(:ui)
+    end
+
+    it 'returns 422 response when the project could not be imported' do
+      allow(Gitlab::BitbucketImport::ProjectCreator)
+        .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, user.namespace, user, access_params)
+        .and_return(double(execute: build(:project)))
+
+      post :create, format: :json
+
+      expect(response).to have_gitlab_http_status(:unprocessable_entity)
+    end
+
+    it_behaves_like 'project import rate limiter'
 
     context "when the repository owner is the Bitbucket user" do
       context "when the Bitbucket user and GitLab user's usernames match" do
         it "takes the current user's namespace" do
-          expect(Gitlab::BitbucketImport::ProjectCreator).
-            to receive(:new).with(bitbucket_repo, user.namespace, user).
-            and_return(double(execute: true))
+          expect(Gitlab::BitbucketImport::ProjectCreator)
+            .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, user.namespace, user, access_params)
+            .and_return(double(execute: project))
 
-          post :create, format: :js
+          post :create, format: :json
         end
       end
 
@@ -96,11 +367,22 @@ describe Import::BitbucketController do
         let(:bitbucket_username) { "someone_else" }
 
         it "takes the current user's namespace" do
-          expect(Gitlab::BitbucketImport::ProjectCreator).
-            to receive(:new).with(bitbucket_repo, user.namespace, user).
-            and_return(double(execute: true))
+          expect(Gitlab::BitbucketImport::ProjectCreator)
+            .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, user.namespace, user, access_params)
+            .and_return(double(execute: project))
 
-          post :create, format: :js
+          post :create, format: :json
+        end
+      end
+
+      context 'when the Bitbucket user is unauthorized' do
+        render_views
+
+        it 'returns unauthorized' do
+          allow(controller).to receive(:current_user).and_return(user)
+          allow(user).to receive(:can?).and_return(false)
+
+          post :create, format: :json
         end
       end
     end
@@ -109,54 +391,211 @@ describe Import::BitbucketController do
       let(:other_username) { "someone_else" }
 
       before do
-        bitbucket_repo["owner"] = other_username
+        allow(bitbucket_repo).to receive(:owner).and_return(other_username)
       end
 
       context "when a namespace with the Bitbucket user's username already exists" do
-        let!(:existing_namespace) { create(:namespace, name: other_username, owner: user) }
+        let!(:existing_namespace) { create(:group, name: other_username) }
 
         context "when the namespace is owned by the GitLab user" do
-          it "takes the existing namespace" do
-            expect(Gitlab::BitbucketImport::ProjectCreator).
-              to receive(:new).with(bitbucket_repo, existing_namespace, user).
-              and_return(double(execute: true))
+          before do
+            existing_namespace.add_owner(user)
+          end
 
-            post :create, format: :js
+          it "takes the existing namespace" do
+            expect(Gitlab::BitbucketImport::ProjectCreator)
+              .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, existing_namespace, user, access_params)
+              .and_return(double(execute: project))
+
+            post :create, format: :json
           end
         end
 
         context "when the namespace is not owned by the GitLab user" do
-          before do
-            existing_namespace.owner = create(:user)
-            existing_namespace.save
-          end
-
           it "doesn't create a project" do
-            expect(Gitlab::BitbucketImport::ProjectCreator).
-              not_to receive(:new)
+            expect(Gitlab::BitbucketImport::ProjectCreator)
+              .not_to receive(:new)
 
-            post :create, format: :js
+            post :create, format: :json
           end
         end
       end
 
       context "when a namespace with the Bitbucket user's username doesn't exist" do
-        it "creates the namespace" do
-          expect(Gitlab::BitbucketImport::ProjectCreator).
-            to receive(:new).and_return(double(execute: true))
+        context "when current user can create namespaces" do
+          it "creates the namespace" do
+            expect(Gitlab::BitbucketImport::ProjectCreator)
+              .to receive(:new).and_return(double(execute: project))
 
-          post :create, format: :js
+            expect { post :create, format: :json }.to change { Namespace.count }.by(1)
+          end
 
-          expect(Namespace.where(name: other_username).first).not_to be_nil
+          it "takes the new namespace" do
+            expect(Gitlab::BitbucketImport::ProjectCreator)
+              .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, an_instance_of(Group), user, access_params)
+              .and_return(double(execute: project))
+
+            post :create, format: :json
+          end
         end
 
-        it "takes the new namespace" do
-          expect(Gitlab::BitbucketImport::ProjectCreator).
-            to receive(:new).with(bitbucket_repo, an_instance_of(Group), user).
-            and_return(double(execute: true))
+        context "when current user can't create namespaces" do
+          before do
+            user.update_attribute(:can_create_group, false)
+          end
 
-          post :create, format: :js
+          it "doesn't create the namespace" do
+            expect(Gitlab::BitbucketImport::ProjectCreator)
+              .to receive(:new).and_return(double(execute: project))
+
+            expect { post :create, format: :json }.not_to change { Namespace.count }
+
+            expect_snowplow_event(
+              category: 'Import::BitbucketController',
+              action: 'create',
+              label: 'import_access_level',
+              user: user,
+              extra: { user_role: 'Owner', import_type: 'bitbucket' }
+            )
+          end
+
+          it "takes the current user's namespace" do
+            expect(Gitlab::BitbucketImport::ProjectCreator)
+              .to receive(:new).with(bitbucket_repo, bitbucket_repo.name, user.namespace, user, access_params)
+              .and_return(double(execute: project))
+
+            post :create, format: :json
+          end
         end
+      end
+
+      context "when exceptions occur" do
+        shared_examples "handles exceptions" do
+          it "logs an exception" do
+            expect(Bitbucket::Client).to receive(:new).and_raise(error)
+            expect(controller).to receive(:log_exception)
+
+            post :create, format: :json
+          end
+        end
+
+        context "for OAuth2 errors" do
+          let(:fake_response) { double('Faraday::Response', headers: {}, body: '', status: 403) }
+          let(:error) { OAuth2::Error.new(OAuth2::Response.new(fake_response)) }
+
+          it_behaves_like "handles exceptions"
+        end
+
+        context "for Bitbucket errors" do
+          let(:error) { Bitbucket::Error::Unauthorized.new("error") }
+
+          it_behaves_like "handles exceptions"
+        end
+      end
+    end
+
+    context 'user has chosen an existing nested namespace and name for the project' do
+      let(:parent_namespace) { create(:group, name: 'foo') }
+      let(:nested_namespace) { create(:group, name: 'bar', parent: parent_namespace) }
+      let(:test_name) { 'test_name' }
+
+      before do
+        parent_namespace.add_owner(user)
+        nested_namespace.add_owner(user)
+      end
+
+      it 'takes the selected namespace and name' do
+        expect(Gitlab::BitbucketImport::ProjectCreator)
+          .to receive(:new).with(bitbucket_repo, test_name, nested_namespace, user, access_params)
+            .and_return(double(execute: project))
+
+        post :create, params: { target_namespace: nested_namespace.full_path, new_name: test_name }, format: :json
+      end
+    end
+
+    context 'user has chosen a non-existent nested namespaces and name for the project' do
+      let(:test_name) { 'test_name' }
+
+      it 'takes the selected namespace and name' do
+        expect(Gitlab::BitbucketImport::ProjectCreator)
+          .to receive(:new).with(bitbucket_repo, test_name, kind_of(Namespace), user, access_params)
+            .and_return(double(execute: project))
+
+        post :create, params: { target_namespace: 'foo/bar', new_name: test_name }, format: :json
+      end
+
+      it 'creates the namespaces' do
+        allow(Gitlab::BitbucketImport::ProjectCreator)
+          .to receive(:new).with(bitbucket_repo, test_name, kind_of(Namespace), user, access_params)
+            .and_return(double(execute: project))
+
+        expect { post :create, params: { target_namespace: 'foo/bar', new_name: test_name }, format: :json }
+          .to change { Namespace.count }.by(2)
+      end
+
+      it 'new namespace has the right parent' do
+        allow(Gitlab::BitbucketImport::ProjectCreator)
+          .to receive(:new).with(bitbucket_repo, test_name, kind_of(Namespace), user, access_params)
+            .and_return(double(execute: project))
+
+        post :create, params: { target_namespace: 'foo/bar', new_name: test_name }, format: :json
+
+        expect(Namespace.find_by_path_or_name('bar').parent.path).to eq('foo')
+      end
+    end
+
+    context 'user has chosen existent and non-existent nested namespaces and name for the project' do
+      let(:test_name) { 'test_name' }
+      let!(:parent_namespace) { create(:group, name: 'foo') }
+
+      before do
+        parent_namespace.add_owner(user)
+      end
+
+      it 'takes the selected namespace and name' do
+        expect(Gitlab::BitbucketImport::ProjectCreator)
+          .to receive(:new).with(bitbucket_repo, test_name, kind_of(Namespace), user, access_params)
+            .and_return(double(execute: project))
+
+        post :create, params: { target_namespace: 'foo/foobar/bar', new_name: test_name }, format: :json
+      end
+
+      it 'creates the namespaces' do
+        allow(Gitlab::BitbucketImport::ProjectCreator)
+          .to receive(:new).with(bitbucket_repo, test_name, kind_of(Namespace), user, access_params)
+            .and_return(double(execute: project))
+
+        expect { post :create, params: { target_namespace: 'foo/foobar/bar', new_name: test_name }, format: :json }
+          .to change { Namespace.count }.by(2)
+      end
+    end
+
+    context 'when user can not create projects in the chosen namespace' do
+      it 'returns 422 response' do
+        other_namespace = create(:group, name: 'other_namespace')
+
+        post :create, params: { target_namespace: other_namespace.name }, format: :json
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+
+        expect_snowplow_event(
+          category: 'Import::BitbucketController',
+          action: 'create',
+          label: 'import_access_level',
+          user: user,
+          extra: { user_role: 'Not a member', import_type: 'bitbucket' }
+        )
+      end
+    end
+
+    context 'when user can not import projects' do
+      let!(:other_namespace) { create(:group, name: 'other_namespace', developers: user) }
+
+      it 'returns 422 response' do
+        post :create, params: { target_namespace: other_namespace.name }, format: :json
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(response.parsed_body['errors']).to eq(s_('BitbucketImport|You are not allowed to import projects in this namespace.'))
       end
     end
   end

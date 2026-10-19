@@ -1,38 +1,25 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe NotificationsHelper do
-  include FontAwesome::Rails::IconHelper
-  include IconsHelper
-
+RSpec.describe NotificationsHelper, feature_category: :notifications do
   describe 'notification_icon' do
-    let(:notification) { double(disabled?: false, participating?: false, watch?: false) }
+    it { expect(notification_icon(:disabled)).to match('data-testid="notifications-off-icon"') }
+    it { expect(notification_icon(:owner_disabled)).to match('data-testid="notifications-off-icon"') }
+    it { expect(notification_icon(:participating)).to match('data-testid="notifications-icon"') }
+    it { expect(notification_icon(:mention)).to match('data-testid="at-icon"') }
+    it { expect(notification_icon(:global)).to match('data-testid="earth-icon') }
+    it { expect(notification_icon(:watch)).to match('data-testid="eye-icon"') }
+    it { expect(notification_icon(:custom)).to equal('') }
+  end
 
-    context "disabled notification" do
-      before { notification.stub(disabled?: true) }
+  describe '#notification_icon_level' do
+    let(:user) { build_stubbed(:user) }
+    let(:global_setting) { user.global_notification_setting }
+    let(:notification_setting) { build_stubbed(:notification_setting, level: :watch) }
 
-      it "has a red icon" do
-        expect(notification_icon(notification)).to match('class="fa fa-volume-off ns-mute"')
-      end
-    end
-
-    context "participating notification" do
-      before { notification.stub(participating?: true) }
-
-      it "has a blue icon" do
-        expect(notification_icon(notification)).to match('class="fa fa-volume-down ns-part"')
-      end
-    end
-
-    context "watched notification" do
-      before { notification.stub(watch?: true) }
-
-      it "has a green icon" do
-        expect(notification_icon(notification)).to match('class="fa fa-volume-up ns-watch"')
-      end
-    end
-
-    it "has a blue icon" do
-      expect(notification_icon(notification)).to match('class="fa fa-circle-o ns-default"')
-    end
+    it { expect(notification_icon_level(notification_setting, true)).to eq 'owner_disabled' }
+    it { expect(notification_icon_level(notification_setting)).to eq 'watch' }
+    it { expect(notification_icon_level(global_setting)).to eq 'participating' }
   end
 end

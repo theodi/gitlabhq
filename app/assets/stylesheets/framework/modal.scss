@@ -1,0 +1,98 @@
+.modal-header {
+  .page-title,
+  .modal-title {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    .modal-title-with-label span {
+      vertical-align: middle;
+      display: inline-block;
+    }
+  }
+
+  .modal-title {
+    line-height: $gl-line-height-24;
+
+    // leave enough space for the close icon
+    &.gl-max-w-full,
+    &.gl-w-full {
+      margin-right: -$modal-header-padding-x;
+      padding-right: $modal-header-padding-x;
+    }
+  }
+
+  .close {
+    font-weight: $gl-font-weight-normal;
+    line-height: $gl-line-height;
+    color: $gray-900;
+    opacity: 1;
+  }
+}
+
+.modal-body {
+  line-height: $line-height-base;
+  position: relative;
+  min-height: $modal-body-height;
+  padding: #{2 * $grid-size};
+  text-align: left;
+  white-space: normal;
+
+  .form-actions {
+    margin: #{2 * $grid-size} #{-2 * $grid-size} #{-2 * $grid-size};
+  }
+}
+
+.modal-footer {
+  display: flex;
+  flex-direction: row;
+
+  .btn {
+    margin: 0;
+  }
+
+  .btn + .btn,
+  .btn + .btn-group,
+  .btn-group + .btn,
+  .btn-group + .btn-group {
+    margin-left: $grid-size;
+  }
+
+  .btn-group .btn + .btn {
+    margin-left: -1px;
+  }
+
+  @include gl-media-breakpoint-down(sm) {
+    flex-direction: column;
+
+    .btn-group .btn + .btn {
+      margin-left: -1px;
+      margin-top: 0;
+    }
+  }
+}
+
+body.modal-open {
+  overflow: hidden;
+  padding-right: 0 !important;
+}
+
+.modal-open .modal-backdrop {
+  display: none;
+}
+
+.modal {
+  @apply gl-bg-overlay;
+
+  .modal-content {
+    @apply gl-rounded-2xl;
+
+    > :first-child {
+      @apply gl-rounded-t-2xl;
+    }
+
+    > :last-child {
+      @apply gl-rounded-b-2xl;
+    }
+  }
+}

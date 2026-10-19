@@ -1,0 +1,13 @@
+---
+table_name: ci_pipeline_messages
+classes:
+- Ci::PipelineMessage
+feature_categories:
+- pipeline_composition
+description: Stores warning and informational messages associated with CI pipelines.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/33762
+milestone: '13.2'
+gitlab_schema: gitlab_ci
+sharding_key:
+  project_id: projects
+table_size: over_limit

@@ -1,0 +1,22 @@
+---
+data_category: optional
+key_path: redis_hll_counters.ide_edit.g_edit_by_sse_weekly
+description: Weekly number of users editing using the Static Site Editor
+product_group: remote_development
+value_type: number
+status: removed
+time_frame: 7d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - g_edit_by_sse
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+milestone_removed: "15.1"
+removed_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/88485"

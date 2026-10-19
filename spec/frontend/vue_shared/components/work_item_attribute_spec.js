@@ -1,0 +1,223 @@
+import { GlIcon, GlTooltip, GlLink, GlTruncate } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import WorkItemAttribute from '~/vue_shared/components/work_item_attribute.vue';
+
+describe('WorkItemAttribute Component', () => {
+  let wrapper;
+
+  const createComponent = (propsData = {}, scopedSlots = {}) => {
+    wrapper = shallowMountExtended(WorkItemAttribute, {
+      propsData,
+      scopedSlots,
+      stubs: { GlTooltip, GlIcon, GlLink, GlTruncate },
+    });
+  };
+
+  const findWrapper = () => wrapper.findComponent({ ref: 'wrapperRef' });
+  const findIcon = () => wrapper.findComponent(GlIcon);
+  const findTooltip = () => wrapper.findComponent(GlTooltip);
+  const findLink = () => wrapper.findComponent(GlLink);
+  const findTruncate = () => wrapper.findComponent(GlTruncate);
+
+  it('renders the wrapper component with correct class and attributes', () => {
+    createComponent({
+      wrapperComponent: 'div',
+      wrapperComponentClass: 'custom-class',
+      anchorId: 'test-id',
+    });
+
+    const wrapperEl = findWrapper();
+    expect(wrapperEl.exists()).toBe(true);
+    expect(wrapperEl.classes()).toContain('custom-class');
+    expect(wrapperEl.attributes('data-testid')).toBe('test-id');
+  });
+
+  it('renders the default wrapper component when none is provided', () => {
+    createComponent();
+
+    const wrapperEl = findWrapper();
+    expect(wrapperEl.exists()).toBe(true);
+    expect(wrapperEl.element.tagName.toLowerCase()).toBe('span');
+  });
+
+  it('renders the icon with correct props when `iconName` is provided', () => {
+    createComponent({
+      iconName: 'rocket',
+      iconClass: 'custom-icon-class',
+      anchorId: 'test-anchor',
+    });
+
+    const icon = findIcon();
+    expect(icon.exists()).toBe(true);
+    expect(icon.props('name')).toBe('rocket');
+    expect(icon.classes()).toContain('custom-icon-class');
+    expect(icon.attributes('data-testid')).toBe('test-anchor-icon');
+  });
+
+  it('does not render the icon if `iconName` is not provided', () => {
+    createComponent();
+
+    expect(findIcon().exists()).toBe(false);
+  });
+
+  it('renders the title text when `title` is provided and no slot is used', () => {
+    createComponent({
+      title: 'Test Title',
+      titleComponentClass: 'title-class',
+      anchorId: 'test-anchor',
+    });
+
+    const titleEl = findTruncate();
+    expect(titleEl.exists()).toBe(true);
+    expect(titleEl.props('text')).toBe('Test Title');
+    expect(titleEl.attributes('data-testid')).toBe('test-anchor-title');
+  });
+
+  it('renders the title slot if provided', () => {
+    createComponent({}, { title: '<span>Slot Title</span>' });
+
+    expect(wrapper.find('span').text()).toBe('Slot Title');
+  });
+
+  it('renders the tooltip with correct text when `tooltipText` is provided', () => {
+    createComponent({ tooltipText: 'Tooltip content', tooltipPlacement: 'top' });
+
+    const tooltip = findTooltip();
+    expect(tooltip.exists()).toBe(true);
+    expect(tooltip.props('placement')).toBe('top');
+    expect(tooltip.text()).toBe('Tooltip content');
+  });
+
+  it('renders the tooltip slot if provided', () => {
+    createComponent({}, { 'tooltip-text': '<span>Slot Tooltip</span>' });
+
+    const tooltip = findTooltip();
+    expect(tooltip.exists()).toBe(true);
+    expect(tooltip.text()).toBe('Slot Tooltip');
+  });
+
+  it('binds the tooltip target correctly', () => {
+    createComponent();
+
+    const tooltip = findTooltip();
+    expect(tooltip.props('target')()).toBe(findWrapper().element);
+  });
+
+  describe('when `isLink` prop is true', () => {
+    it('renders GlLink component instead of span', () => {
+      createComponent({ isLink: true, href: 'https://example.com' });
+
+      const wrapperEl = findWrapper();
+      expect(wrapperEl.exists()).toBe(true);
+      expect(wrapperEl.attributes('href')).toBe('https://example.com');
+    });
+
+    it('does not render GlLink when `isLink` is false', () => {
+      createComponent({ isLink: false });
+
+      const wrapperEl = findWrapper();
+      expect(wrapperEl.exists()).toBe(true);
+      expect(wrapperEl.element.tagName.toLowerCase()).toBe('span');
+    });
+
+    it('renders the wrapper component inside the GlLink', () => {
+      createComponent({ isLink: true, href: 'https://example.com' });
+
+      const wrapperEl = findWrapper();
+      expect(wrapperEl.exists()).toBe(true);
+      expect(wrapperEl.element.tagName.toLowerCase()).toBe('a');
+    });
+  });
+
+  describe('click events', () => {
+    it('emits click event when clicked', () => {
+      const mockEvent = {
+        stopPropagation: jest.fn(),
+      };
+      createComponent({ isLink: true });
+      wrapper.vm.$emit('click', mockEvent);
+
+      expect(wrapper.emitted().click).toHaveLength(1);
+      expect(wrapper.emitted().click[0][0]).toBe(mockEvent);
+    });
+
+    it('stops event propagation when href is provided', () => {
+      const mockEvent = {
+        stopPropagation: jest.fn(),
+      };
+      createComponent({ isLink: true, href: 'https://example.com' });
+      findLink().vm.$emit('click', mockEvent);
+
+      expect(mockEvent.stopPropagation).toHaveBeenCalled();
+    });
+
+    it('does not stop propagation when href is not provided', () => {
+      const mockEvent = {
+        stopPropagation: jest.fn(),
+      };
+      createComponent({ isLink: true });
+
+      wrapper.vm.$emit('click', mockEvent);
+
+      expect(mockEvent.stopPropagation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when slots are provided', () => {
+    it('renders icon slot if provided', () => {
+      createComponent({}, { icon: '<gl-icon name="rocket"></gl-icon>' });
+
+      const slotIcon = wrapper.findComponent(GlIcon);
+      expect(slotIcon.exists()).toBe(true);
+      expect(slotIcon.props('name')).toBe('rocket');
+    });
+
+    it('renders tooltip slot if provided', () => {
+      createComponent({}, { 'tooltip-text': '<span>Custom Tooltip</span>' });
+
+      const tooltip = findTooltip();
+      expect(tooltip.exists()).toBe(true);
+      expect(tooltip.text()).toBe('Custom Tooltip');
+    });
+  });
+
+  describe('when `srOnlyText` is provided', () => {
+    it('renders a visually hidden span with the text', () => {
+      createComponent({ srOnlyText: 'Due date (overdue)', anchorId: 'test-anchor' });
+
+      const srOnlyEl = wrapper.findByTestId('test-anchor-sr-only');
+      expect(srOnlyEl.classes()).toContain('gl-sr-only');
+      expect(srOnlyEl.text()).toBe('Due date (overdue)');
+    });
+  });
+
+  it('does not render a visually hidden span when `srOnlyText` is not provided', () => {
+    createComponent();
+
+    expect(wrapper.find('.gl-sr-only').exists()).toBe(false);
+  });
+
+  describe('when `popoverAttributes` is provided', () => {
+    const popoverAttributes = {
+      'data-reference-type': 'milestone',
+      'data-placement': 'top',
+      'data-milestone': 1,
+    };
+
+    beforeEach(() => {
+      createComponent({ popoverAttributes });
+    });
+
+    it('does not render tooltip', () => {
+      expect(findTooltip().exists()).toBe(false);
+    });
+
+    it('binds popover attributes to the wrapper element', () => {
+      expect(findWrapper().attributes()).toMatchObject({
+        'data-reference-type': 'milestone',
+        'data-placement': 'top',
+        'data-milestone': '1',
+      });
+    });
+  });
+});

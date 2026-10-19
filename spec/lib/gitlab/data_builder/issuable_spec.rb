@@ -1,0 +1,267 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::DataBuilder::Issuable do
+  let_it_be(:user, freeze: false) { create(:user) }
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be(:reusable_project, freeze: false) { create(:project, :repository, group: group) }
+
+  # This shared example requires a `builder` and `user` variable
+  shared_examples 'issuable hook data' do |kind, hook_data_issuable_builder_class|
+    let(:data) { builder.build(user: user, action: 'updated') }
+
+    include_examples 'project hook data' do
+      let(:project) { builder.issuable.project }
+    end
+
+    include_examples 'deprecated repository hook data'
+
+    context "with a #{kind}" do
+      it 'contains issuable data' do
+        expected_object_attributes = hook_data_issuable_builder_class.new(issuable).build.merge(action: 'updated')
+
+        expect(data[:object_kind]).to eq(kind)
+        expect(data[:user]).to eq(user.hook_attrs)
+        expect(data[:project]).to eq(builder.issuable.project.hook_attrs)
+        expect(data[:object_attributes]).to eq(expected_object_attributes)
+        expect(data[:changes]).to eq({})
+        expect(data[:repository]).to eq(builder.issuable.project.hook_attrs.slice(:name, :url, :description, :homepage))
+      end
+
+      it 'does not contain certain keys' do
+        expect(data).not_to have_key(:assignees)
+        expect(data).not_to have_key(:assignee)
+      end
+
+      it 'does not include action attribute when action is not given' do
+        data = described_class.new(issuable).build(user: user)
+
+        expect(data[:object_attributes]).not_to have_key(:action)
+      end
+
+      describe 'changes are given' do
+        let(:changes) do
+          {
+            cached_markdown_version: %w[foo bar],
+            description: ['A description', 'A cool description'],
+            description_html: %w[foo bar],
+            in_progress_merge_commit_sha: %w[foo bar],
+            lock_version: %w[foo bar],
+            merge_jid: %w[foo bar],
+            title: ['A title', 'Hello World'],
+            title_html: %w[foo bar],
+            labels: [
+              [{ id: 1, title: 'foo' }],
+              [{ id: 1, title: 'foo' }, { id: 2, title: 'bar' }]
+            ],
+            total_time_spent: [1, 2],
+            assignees: [
+              [],
+              [{
+                name: "Foo Bar",
+                username: "foobar",
+                avatar_url: "http://www.example.com/my-avatar.jpg"
+              }]
+            ]
+          }
+        end
+
+        let(:data) { builder.build(user: user, changes: changes, action: 'updated') }
+
+        it 'populates the :changes hash' do
+          expect(data[:changes]).to match(hash_including({
+            title: { previous: 'A title', current: 'Hello World' },
+            description: { previous: 'A description', current: 'A cool description' },
+            labels: {
+              previous: [{ id: 1, title: 'foo' }],
+              current: [{ id: 1, title: 'foo' }, { id: 2, title: 'bar' }]
+            },
+            total_time_spent: {
+              previous: 1,
+              current: 2
+            },
+            assignees: {
+              previous: [],
+              current: [{
+                name: "Foo Bar",
+                username: "foobar",
+                avatar_url: "http://www.example.com/my-avatar.jpg"
+              }]
+            }
+          }))
+        end
+
+        it 'does not contain certain keys' do
+          expect(data[:changes]).not_to have_key('cached_markdown_version')
+          expect(data[:changes]).not_to have_key('description_html')
+          expect(data[:changes]).not_to have_key('lock_version')
+          expect(data[:changes]).not_to have_key('title_html')
+          expect(data[:changes]).not_to have_key('in_progress_merge_commit_sha')
+          expect(data[:changes]).not_to have_key('merge_jid')
+        end
+      end
+    end
+  end
+
+  shared_examples 'work item of type issue hook data' do
+    let(:data) { described_class.new(work_item).build(user: user, action: 'updated') }
+
+    it 'returns correct hook data', :aggregate_failures do
+      # To prevent a breaking change, ensure we use `issue` for work items of type issue.
+      # https://gitlab.com/gitlab-org/gitlab/-/issues/517947
+      expect(data[:object_kind]).to eq('issue')
+      expect(data[:event_type]).to eq('issue')
+      expect(data.dig(:object_attributes, :id)).to eq(work_item.id)
+      expect(data.dig(:object_attributes, :iid)).to eq(work_item.iid)
+      expect(data.dig(:object_attributes, :type)).to eq(work_item.work_item_type.name)
+    end
+  end
+
+  shared_examples 'work item hook data' do
+    let(:data) { described_class.new(work_item).build(user: user, action: 'updated') }
+
+    it 'returns correct hook data', :aggregate_failures do
+      expect(data[:object_kind]).to eq('work_item')
+      expect(data[:event_type]).to eq('work_item')
+      expect(data.dig(:object_attributes, :id)).to eq(work_item.id)
+      expect(data.dig(:object_attributes, :iid)).to eq(work_item.iid)
+      expect(data.dig(:object_attributes, :type)).to eq(work_item.work_item_type.name)
+    end
+  end
+
+  describe '#build' do
+    it_behaves_like 'issuable hook data', 'issue', Gitlab::HookData::IssueBuilder do
+      let_it_be(:issuable, freeze: false) { create(:issue, description: 'A description', project: reusable_project) }
+      let(:builder) { described_class.new(issuable) }
+    end
+
+    it_behaves_like 'issuable hook data', 'merge_request', Gitlab::HookData::MergeRequestBuilder do
+      let_it_be(:issuable, freeze: false) do
+        create(:merge_request, description: 'A description', source_project: reusable_project)
+      end
+
+      let(:builder) { described_class.new(issuable) }
+    end
+
+    context 'when issue is assigned' do
+      let(:issue) { create(:issue, assignees: [user], project: reusable_project) }
+      let(:data) { described_class.new(issue).build(user: user, action: 'updated') }
+
+      it 'returns correct hook data' do
+        expect(data[:object_attributes]['assignee_id']).to eq(user.id)
+        expect(data[:assignees].first).to eq(user.hook_attrs)
+        expect(data).not_to have_key(:assignee)
+        expect(data).not_to have_key(:reviewers)
+      end
+    end
+
+    context 'when issuable is a group level work item of type issue' do
+      let(:work_item) { create(:work_item, :issue, namespace: group, description: 'work item description') }
+
+      it_behaves_like 'work item of type issue hook data'
+    end
+
+    context 'when issuable is a work item of type issue' do
+      let(:work_item) { create(:work_item, :issue, project: reusable_project, description: 'work item description') }
+
+      it_behaves_like 'work item of type issue hook data'
+    end
+
+    context 'when issuable is work item of type task' do
+      let(:work_item) { create(:work_item, :task, project: reusable_project, description: 'work item description') }
+
+      it_behaves_like 'work item hook data'
+    end
+
+    context 'when merge_request is assigned' do
+      let(:merge_request) { create(:merge_request, assignees: [user], source_project: reusable_project) }
+      let(:data) { described_class.new(merge_request).build(user: user, action: 'updated') }
+
+      it 'returns correct hook data' do
+        expect(data[:object_attributes]['assignee_id']).to eq(user.id)
+        expect(data[:assignees].first).to eq(user.hook_attrs)
+        expect(data).not_to have_key(:assignee)
+      end
+    end
+
+    context 'when merge_request is assigned reviewers' do
+      let(:merge_request) { create(:merge_request, reviewers: [user], source_project: reusable_project) }
+      let(:data) { described_class.new(merge_request).build(user: user, action: 'updated') }
+
+      it 'returns correct hook data' do
+        expect(data[:object_attributes]['reviewer_ids']).to match_array([user.id])
+        expect(data[:reviewers].first).to eq(user.hook_attrs.merge(state: 'unreviewed', re_requested: false))
+      end
+    end
+
+    context 'when merge_request has reviewers and changes with re-requested reviewer' do
+      let_it_be(:reviewer1, freeze: false) { create(:user) }
+      let_it_be(:reviewer2, freeze: false) { create(:user) }
+      let(:merge_request) do
+        create(:merge_request, reviewers: [reviewer1, reviewer2], source_project: reusable_project)
+      end
+
+      let(:changes) do
+        {
+          reviewers: [
+            # Old state: both reviewers not re-requested
+            [
+              reviewer1.hook_attrs.merge(state: 'reviewed', re_requested: false),
+              reviewer2.hook_attrs.merge(state: 'unreviewed', re_requested: false)
+            ],
+            # Current state: reviewer1 is re-requested
+            [
+              reviewer1.hook_attrs.merge(state: 'unreviewed', re_requested: true),
+              reviewer2.hook_attrs.merge(state: 'unreviewed', re_requested: false)
+            ]
+          ]
+        }
+      end
+
+      let(:data) { described_class.new(merge_request).build(user: user, changes: changes, action: 'updated') }
+
+      it 'marks the matching re-requested reviewer as re_requested: true' do
+        reviewers = data[:reviewers]
+
+        reviewer1_data = reviewers.find { |r| r[:id] == reviewer1.id }
+        reviewer2_data = reviewers.find { |r| r[:id] == reviewer2.id }
+
+        expect(reviewer1_data[:re_requested]).to be(true)
+        expect(reviewer2_data[:re_requested]).to be(false)
+      end
+    end
+
+    context 'when merge_request does not have reviewers and assignees' do
+      let(:merge_request) { create(:merge_request, source_project: reusable_project) }
+      let(:data) { described_class.new(merge_request).build(user: user, action: 'updated') }
+
+      it 'returns correct hook data' do
+        expect(data).not_to have_key(:assignees)
+        expect(data).not_to have_key(:reviewers)
+      end
+    end
+
+    context 'with actioned_at' do
+      let(:issuable) { create(:merge_request, source_project: reusable_project) }
+      let(:builder) { described_class.new(issuable) }
+
+      context 'when provided' do
+        let(:actioned_time) { Time.current }
+        let(:data) { builder.build(user: user, action: 'updated', actioned_at: actioned_time) }
+
+        it 'includes actioned_at in object_attributes' do
+          expect(data[:object_attributes][:actioned_at]).to eq(actioned_time)
+        end
+      end
+
+      context 'when not provided' do
+        let(:data) { builder.build(user: user, action: 'updated', actioned_at: nil) }
+
+        it 'does not include actioned_at in object_attributes' do
+          expect(data[:object_attributes]).not_to have_key(:actioned_at)
+        end
+      end
+    end
+  end
+end

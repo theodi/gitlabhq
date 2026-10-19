@@ -1,0 +1,502 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe MergeRequests::CreatePipelineWorker, feature_category: :pipeline_composition do
+  describe '#perform' do
+    let(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project) }
+    let(:merge_request) { create(:merge_request) }
+    let(:worker) { described_class.new }
+
+    subject do
+      worker.perform(
+        project.id, user.id, merge_request.id,
+        'pipeline_creation_request' => { 'key' => '123', 'id' => '456' },
+        'gitaly_context' => {},
+        'checkout_sha' => merge_request.diff_head_sha
+      )
+    end
+
+    context 'when the objects exist' do
+      it 'calls the merge request create pipeline service and calls update head pipeline' do
+        aggregate_failures do
+          expect_next_instance_of(MergeRequests::CreatePipelineService,
+            project: project,
+            current_user: user,
+            params: {
+              allow_duplicate: nil,
+              push_options: nil,
+              gitaly_context: {},
+              pipeline_creation_request: { 'key' => '123', 'id' => '456' },
+              defer_request_completion: nil,
+              checkout_sha: merge_request.diff_head_sha
+            }) do |service|
+            expect(service).to receive(:execute).with(merge_request)
+              .and_return(ServiceResponse.success(payload: nil))
+          end
+
+          expect(MergeRequest).to receive(:find_by_id).with(merge_request.id).and_return(merge_request)
+          expect(merge_request).to receive(:update_head_pipeline)
+
+          subject
+        end
+      end
+
+      context 'when push options are passed as Hash to the worker' do
+        let(:extra_params) do
+          {
+            'pipeline_creation_request' => { 'key' => '123', 'id' => '456' },
+            'push_options' => { 'ci' => { 'skip' => true } },
+            'gitaly_context' => {},
+            'checkout_sha' => merge_request.diff_head_sha
+          }
+        end
+
+        subject { worker.perform(project.id, user.id, merge_request.id, extra_params) }
+
+        it 'calls the merge request create pipeline service and calls update head pipeline' do
+          aggregate_failures do
+            expect_next_instance_of(MergeRequests::CreatePipelineService,
+              project: project,
+              current_user: user,
+              params: {
+                allow_duplicate: nil,
+                push_options: { ci: { skip: true } },
+                gitaly_context: {},
+                pipeline_creation_request: { 'key' => '123', 'id' => '456' },
+                defer_request_completion: nil,
+                checkout_sha: merge_request.diff_head_sha
+              }) do |service|
+              expect(service).to receive(:execute).with(merge_request)
+                .and_return(ServiceResponse.success(payload: nil))
+            end
+
+            expect(MergeRequest).to receive(:find_by_id).with(merge_request.id).and_return(merge_request)
+            expect(merge_request).to receive(:update_head_pipeline)
+
+            subject
+          end
+        end
+      end
+
+      describe 'PipelineCreationCompletedEvent' do
+        let(:pipeline) { nil }
+
+        before do
+          allow_next_instance_of(MergeRequests::CreatePipelineService) do |service|
+            allow(service).to receive(:execute).and_return(ServiceResponse.success(payload: pipeline))
+          end
+          allow(MergeRequest).to receive(:find_by_id).with(merge_request.id).and_return(merge_request)
+          allow(merge_request).to receive(:update_head_pipeline)
+        end
+
+        context 'when no pipeline was created' do
+          it 'publishes the event with nil pipeline_id' do
+            expect { subject }
+              .to publish_event(::MergeRequests::PipelineCreationCompletedEvent)
+              .with(merge_request_id: merge_request.id, project_id: project.id)
+          end
+        end
+
+        context 'when a pipeline was created' do
+          let(:pipeline) { create(:ci_pipeline, project: project) }
+
+          it 'publishes the event with pipeline_id set' do
+            expect { subject }
+              .to publish_event(::MergeRequests::PipelineCreationCompletedEvent)
+              .with(
+                merge_request_id: merge_request.id,
+                project_id: project.id,
+                pipeline_id: pipeline.id
+              )
+          end
+        end
+      end
+    end
+
+    context 'when checkout_sha is explicitly passed in params' do
+      let(:pinned_sha) { 'abc123def456abc123def456abc123def456abc1' }
+
+      subject do
+        worker.perform(
+          project.id, user.id, merge_request.id,
+          'pipeline_creation_request' => { 'key' => '123', 'id' => '456' },
+          'gitaly_context' => {},
+          'checkout_sha' => pinned_sha
+        )
+      end
+
+      it 'passes the pinned checkout_sha to CreatePipelineService instead of diff_head_sha' do
+        expect_next_instance_of(MergeRequests::CreatePipelineService,
+          project: project,
+          current_user: user,
+          params: hash_including(checkout_sha: pinned_sha)) do |service|
+          expect(service).to receive(:execute).with(merge_request)
+            .and_return(ServiceResponse.success(payload: nil))
+        end
+
+        expect(MergeRequest).to receive(:find_by_id).with(merge_request.id).and_return(merge_request)
+        expect(merge_request).to receive(:update_head_pipeline)
+
+        subject
+      end
+    end
+
+    context 'when checkout_sha is not provided in params' do
+      subject do
+        worker.perform(
+          project.id, user.id, merge_request.id,
+          'pipeline_creation_request' => { 'key' => '123', 'id' => '456' },
+          'gitaly_context' => {}
+        )
+      end
+
+      it 'passes nil as checkout_sha to CreatePipelineService without raising' do
+        expect_next_instance_of(MergeRequests::CreatePipelineService,
+          project: project,
+          current_user: user,
+          params: hash_including(checkout_sha: nil)) do |service|
+          expect(service).to receive(:execute).with(merge_request)
+            .and_return(ServiceResponse.success(payload: nil))
+        end
+
+        expect(MergeRequest).to receive(:find_by_id).with(merge_request.id).and_return(merge_request)
+        expect(merge_request).to receive(:update_head_pipeline)
+
+        subject
+      end
+    end
+
+    shared_examples 'when object does not exist' do
+      it 'does not call the create pipeline service' do
+        expect(MergeRequests::CreatePipelineService).not_to receive(:new)
+
+        expect { subject }.not_to raise_exception
+      end
+    end
+
+    context 'when the project does not exist' do
+      before do
+        project.destroy!
+      end
+
+      it_behaves_like 'when object does not exist'
+    end
+
+    context 'when the user does not exist' do
+      before do
+        user.destroy!
+      end
+
+      it_behaves_like 'when object does not exist'
+    end
+
+    context 'when the merge request does not exist' do
+      before do
+        merge_request.destroy!
+      end
+
+      it_behaves_like 'when object does not exist'
+    end
+  end
+
+  describe 'retry behavior' do
+    let(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project) }
+    let(:merge_request) { create(:merge_request) }
+    let(:worker) { described_class.new }
+    let(:pipeline_creation_request) { Ci::PipelineCreation::Requests.start_for_merge_request(merge_request) }
+    let(:params) do
+      {
+        'pipeline_creation_request' => pipeline_creation_request,
+        'gitaly_context' => {}
+      }
+    end
+
+    subject { worker.perform(project.id, user.id, merge_request.id, params) }
+
+    it 'returns 10 seconds for retry interval' do
+      retry_in = described_class.sidekiq_retry_in_block.call(1)
+      expect(retry_in).to eq(10)
+    end
+
+    context 'when service returns a retriable error' do
+      let(:error_message) { 'Temporary failure' }
+
+      before do
+        allow_next_instance_of(MergeRequests::CreatePipelineService) do |service|
+          allow(service).to receive(:execute)
+            .and_return(ServiceResponse.error(message: error_message, reason: :retriable_error))
+        end
+      end
+
+      it 'raises PipelineCreationRetryError to trigger Sidekiq retry' do
+        expect { subject }.to raise_error(described_class::PipelineCreationRetryError, error_message)
+      end
+
+      it 'raises an error that inherits from Gitlab::SidekiqMiddleware::RetryError' do
+        expect { subject }.to raise_error(Gitlab::SidekiqMiddleware::RetryError)
+      end
+
+      it 'keeps status as IN_PROGRESS during retries', :clean_gitlab_redis_shared_state do
+        expect { subject }.to raise_error(described_class::PipelineCreationRetryError)
+
+        result = Ci::PipelineCreation::Requests.hget(pipeline_creation_request)
+        expect(result['status']).to eq('in_progress')
+      end
+    end
+  end
+
+  describe 'deferred request completion' do
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project) }
+    let_it_be(:merge_request) { create(:merge_request) }
+    let(:worker) { described_class.new }
+    let(:pipeline_creation_request) { Ci::PipelineCreation::Requests.start_for_merge_request(merge_request) }
+    let_it_be(:pipeline) { create(:ci_pipeline, project: project) }
+
+    let(:params) do
+      {
+        'pipeline_creation_request' => pipeline_creation_request,
+        'defer_request_completion' => defer_request_completion,
+        'gitaly_context' => {}
+      }
+    end
+
+    subject { worker.perform(project.id, user.id, merge_request.id, params) }
+
+    shared_examples_for 'triggers GraphQL subscription' do
+      it 'triggers GraphQL subscription' do
+        expect(GraphqlTriggers).to receive(:ci_pipeline_creation_requests_updated).with(merge_request)
+
+        subject
+      end
+    end
+
+    context 'when defer_request_completion is true' do
+      let(:defer_request_completion) { true }
+
+      context 'when pipeline creation succeeds' do
+        before do
+          allow_next_instance_of(MergeRequests::CreatePipelineService) do |service|
+            allow(service).to receive(:execute).and_return(ServiceResponse.success(payload: pipeline))
+          end
+        end
+
+        it 'marks the request as succeeded after update_head_pipeline' do
+          expect(MergeRequest).to receive(:find_by_id).with(merge_request.id).and_return(merge_request)
+          expect(merge_request).to receive(:update_head_pipeline).ordered
+          expect(::Ci::PipelineCreation::Requests).to receive(:succeeded).and_call_original.ordered
+
+          subject
+
+          result = Ci::PipelineCreation::Requests.hget(pipeline_creation_request)
+          expect(result['status']).to eq(Ci::PipelineCreation::Requests::SUCCEEDED)
+        end
+
+        it_behaves_like 'triggers GraphQL subscription'
+      end
+
+      context 'when pipeline creation fails with a non-retriable error' do
+        let(:error_message) { 'Cannot create a pipeline for this merge request: duplicate pipeline.' }
+
+        before do
+          allow_next_instance_of(MergeRequests::CreatePipelineService) do |service|
+            allow(service).to receive(:execute)
+              .and_return(ServiceResponse.error(message: error_message, payload: nil))
+          end
+        end
+
+        it 'marks the request as failed after update_head_pipeline' do
+          subject
+
+          result = Ci::PipelineCreation::Requests.hget(pipeline_creation_request)
+          expect(result['status']).to eq(Ci::PipelineCreation::Requests::FAILED)
+          expect(result['error']).to eq(error_message)
+          expect(result['user_initiated']).to be(false)
+        end
+
+        context 'when the request is user initiated' do
+          let(:pipeline_creation_request) do
+            Ci::PipelineCreation::Requests.start_for_merge_request(merge_request, user_initiated: true)
+          end
+
+          it 'preserves the user_initiated flag on the failed request' do
+            subject
+
+            result = Ci::PipelineCreation::Requests.hget(pipeline_creation_request)
+            expect(result['status']).to eq(Ci::PipelineCreation::Requests::FAILED)
+            expect(result['user_initiated']).to be(true)
+          end
+        end
+
+        it_behaves_like 'triggers GraphQL subscription'
+      end
+    end
+
+    context 'when defer_request_completion is nil' do
+      let(:defer_request_completion) { nil }
+
+      before do
+        allow_next_instance_of(MergeRequests::CreatePipelineService) do |service|
+          allow(service).to receive(:execute)
+            .and_return(ServiceResponse.success(payload: pipeline))
+        end
+      end
+
+      it 'does not call complete_pipeline_creation_request' do
+        expect(GraphqlTriggers).not_to receive(:ci_pipeline_creation_requests_updated)
+
+        subject
+      end
+    end
+  end
+
+  describe 'sidekiq_retries_exhausted' do
+    let(:merge_request) { create(:merge_request) }
+    let(:pipeline_creation_request) do
+      Ci::PipelineCreation::Requests.start_for_merge_request(merge_request)
+    end
+
+    let(:job) do
+      {
+        'args' => [
+          1, 2, 3,
+          { 'pipeline_creation_request' => pipeline_creation_request }
+        ]
+      }
+    end
+
+    context 'when pipeline_creation_request is present' do
+      context 'when defer_request_completion is true' do
+        let(:job) do
+          {
+            'args' => [
+              1, 2, 3,
+              {
+                'pipeline_creation_request' => pipeline_creation_request,
+                'defer_request_completion' => true
+              }
+            ]
+          }
+        end
+
+        it 'marks the request as failed' do
+          described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new)
+
+          result = Ci::PipelineCreation::Requests.hget(pipeline_creation_request)
+          expect(result['status']).to eq('failed')
+          expect(result['error']).to include('after multiple retries')
+        end
+
+        it 'triggers GraphQL subscription' do
+          expect(GraphqlTriggers).to receive(:ci_pipeline_creation_requests_updated)
+            .with(merge_request)
+
+          described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new)
+        end
+      end
+
+      context 'when defer_request_completion is not set' do
+        it 'marks the request as failed' do
+          described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new)
+
+          result = Ci::PipelineCreation::Requests.hget(pipeline_creation_request)
+          expect(result['status']).to eq('failed')
+          expect(result['error']).to include('after multiple retries')
+        end
+
+        it 'triggers GraphQL subscription' do
+          expect(GraphqlTriggers).to receive(:ci_pipeline_creation_requests_updated)
+            .with(merge_request)
+
+          described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new)
+        end
+      end
+    end
+
+    context 'when pipeline_creation_request is nil' do
+      let(:job) { { 'args' => [1, 2, 3, nil] } }
+
+      it 'does not raise an error' do
+        expect { described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new) }
+          .not_to raise_error
+      end
+    end
+
+    context 'when merge request cannot be found from key' do
+      let(:pipeline_creation_request) do
+        { 'key' => 'pipeline_creation:projects:{1}:mrs:{999999999}', 'id' => 'test-id' }
+      end
+
+      it 'does not trigger GraphQL subscription' do
+        expect(GraphqlTriggers).not_to receive(:ci_pipeline_creation_requests_updated)
+
+        described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new)
+      end
+    end
+  end
+
+  describe 'create_pipeline_from_commit user experience' do
+    let_it_be(:project) { create(:project) }
+    let(:user) { create(:user) }
+    let(:merge_request) { create(:merge_request, source_project: project) }
+    let(:worker) { described_class.new }
+    let(:started_at) { 4.seconds.ago.to_f }
+    let(:pipeline) { create(:ci_pipeline, project: project) }
+    let(:params) do
+      { 'pipeline_creation_request' => { 'key' => 'k', 'id' => 'i', 'started_at' => started_at },
+        'gitaly_context' => {} }
+    end
+
+    subject(:perform) { worker.perform(project.id, user.id, merge_request.id, params) }
+
+    before do
+      allow_next_instance_of(MergeRequests::CreatePipelineService) do |service|
+        allow(service).to receive(:execute).and_return(ServiceResponse.success(payload: pipeline))
+      end
+      allow(MergeRequest).to receive(:find_by_id).with(merge_request.id).and_return(merge_request)
+      allow(merge_request).to receive(:update_head_pipeline)
+    end
+
+    it 'reports the finished creation with the request start time' do
+      expect(Ci::PipelineCreation::ExperienceReporter).to receive(:report)
+        .with(pipeline: pipeline, source: :merge_request_event, started_at: started_at)
+
+      perform
+    end
+
+    context 'when the service returns a retriable error' do
+      before do
+        allow_next_instance_of(MergeRequests::CreatePipelineService) do |service|
+          allow(service).to receive(:execute)
+            .and_return(ServiceResponse.error(message: 'temporary', reason: :retriable_error))
+        end
+      end
+
+      it 'does not report, leaving emission to the successful retry or exhaustion' do
+        expect(Ci::PipelineCreation::ExperienceReporter).not_to receive(:report)
+
+        expect { perform }.to raise_error(described_class::PipelineCreationRetryError)
+      end
+    end
+
+    describe 'when retries are exhausted' do
+      let(:job) do
+        { 'args' => [project.id, user.id, merge_request.id,
+          { 'pipeline_creation_request' => { 'key' => 'k', 'id' => 'i', 'started_at' => started_at } }] }
+      end
+
+      it 'reports an errored experience' do
+        allow(Ci::PipelineCreation::Requests).to receive(:failed)
+        allow(Ci::PipelineCreation::Requests).to receive(:merge_request_from_key).and_return(nil)
+
+        expect(Ci::PipelineCreation::ExperienceReporter).to receive(:report_error)
+          .with(source: :merge_request_event, started_at: started_at, project_id: project.id)
+
+        described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new)
+      end
+    end
+  end
+end

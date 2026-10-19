@@ -1,0 +1,18 @@
+---
+description: Tracks when Web IDE is viewed
+internal_events: true
+action: web_ide_viewed
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: remote_development
+product_categories:
+- web_ide
+milestone: "16.10"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/143495
+tiers:
+- free
+- premium
+- ultimate

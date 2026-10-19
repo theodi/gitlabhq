@@ -1,0 +1,1311 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe SessionsController, feature_category: :system_access do
+  include DeviseHelpers
+  include LdapHelpers
+  include Authn::WebauthnSpecHelpers
+
+  before do
+    set_devise_mapping(context: @request)
+  end
+
+  describe '#new' do
+    context 'when auto sign-in is enabled' do
+      before do
+        stub_omniauth_setting(auto_sign_in_with_provider: :saml)
+        allow(controller).to receive(:omniauth_authorize_path).with(:user, :saml)
+          .and_return('/saml')
+      end
+
+      context 'and no auto_sign_in param is passed' do
+        it 'redirects to :omniauth_authorize_path through an intermediate template' do
+          get(:new)
+
+          expect(response).to render_template('devise/sessions/redirect_to_provider', layout: false)
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'and auto_sign_in=false param is passed' do
+        it 'responds with 200' do
+          get(:new, params: { auto_sign_in: 'false' })
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+    end
+
+    context 'with the ChatGPT connector installation flow' do
+      let(:provider_session) { { Authn::ProviderSignInRedirect::SESSION_KEY => 'chatgpt' } }
+
+      context 'when the session carries the ChatGPT provider and the provider is enabled' do
+        before do
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).and_call_original
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).with('chatgpt').and_return(true)
+          allow(controller).to receive(:omniauth_authorize_path).with(:user, 'chatgpt')
+            .and_return('/users/auth/chatgpt')
+        end
+
+        it 'renders the auto-submitting redirect_to_provider template' do
+          get(:new, session: provider_session)
+
+          expect(response).to render_template('devise/sessions/redirect_to_provider', layout: false)
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(assigns(:provider_path)).to eq('/users/auth/chatgpt')
+        end
+
+        it 'clears the provider from the session so it is single-use' do
+          get(:new, session: provider_session)
+
+          expect(session).not_to have_key(Authn::ProviderSignInRedirect::SESSION_KEY)
+        end
+      end
+
+      context 'when the chatgpt_siwc_login_redirect feature flag is disabled' do
+        before do
+          stub_feature_flags(chatgpt_siwc_login_redirect: false)
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).and_call_original
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).with('chatgpt').and_return(true)
+        end
+
+        it 'does not render the redirect_to_provider template' do
+          get(:new, session: provider_session)
+
+          expect(response).not_to render_template('devise/sessions/redirect_to_provider')
+        end
+      end
+
+      context 'when a blocking alert is already registered' do
+        before do
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).and_call_original
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).with('chatgpt').and_return(true)
+          allow(controller).to receive(:omniauth_authorize_path).with(:user, 'chatgpt')
+            .and_return('/users/auth/chatgpt')
+
+          flash_hash = ActionDispatch::Flash::FlashHash.new
+          flash_hash[:alert] = 'Your account is blocked.'
+          allow(controller).to receive(:flash).and_return(flash_hash)
+        end
+
+        it 'does not render the redirect_to_provider template to prevent a redirection loop' do
+          get(:new, session: provider_session)
+
+          expect(response).not_to render_template('devise/sessions/redirect_to_provider')
+        end
+      end
+
+      context 'when the unauthenticated failure alert is already registered' do
+        before do
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).and_call_original
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).with('chatgpt').and_return(true)
+          allow(controller).to receive(:omniauth_authorize_path).with(:user, 'chatgpt')
+            .and_return('/users/auth/chatgpt')
+
+          flash_hash = ActionDispatch::Flash::FlashHash.new
+          flash_hash[:alert] = I18n.t('devise.failure.unauthenticated')
+          allow(controller).to receive(:flash).and_return(flash_hash)
+        end
+
+        it 'renders the redirect_to_provider template' do
+          get(:new, session: provider_session)
+
+          expect(response).to render_template('devise/sessions/redirect_to_provider', layout: false)
+        end
+      end
+
+      context 'when OmniAuth is disabled' do
+        before do
+          allow(Gitlab::Auth).to receive(:omniauth_enabled?).and_return(false)
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).and_call_original
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).with('chatgpt').and_return(true)
+        end
+
+        it 'does not render the redirect_to_provider template' do
+          get(:new, session: provider_session)
+
+          expect(response).not_to render_template('devise/sessions/redirect_to_provider')
+        end
+      end
+
+      context 'when the ChatGPT provider is not enabled' do
+        before do
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).and_call_original
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).with('chatgpt').and_return(false)
+        end
+
+        it 'does not render the redirect_to_provider template' do
+          get(:new, session: provider_session)
+
+          expect(response).not_to render_template('devise/sessions/redirect_to_provider')
+        end
+      end
+
+      context 'when the session carries a different provider value' do
+        it 'does not render the redirect_to_provider template' do
+          get(:new, session: { Authn::ProviderSignInRedirect::SESSION_KEY => 'something_else' })
+
+          expect(response).not_to render_template('devise/sessions/redirect_to_provider')
+        end
+      end
+
+      context 'when the provider is passed as a request parameter instead of the session' do
+        before do
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).and_call_original
+          allow(::Gitlab::Auth::OAuth::Provider).to receive(:enabled?).with('chatgpt').and_return(true)
+        end
+
+        it 'does not render the redirect_to_provider template' do
+          get(:new, params: { redirect_to_provider: 'chatgpt' })
+
+          expect(response).not_to render_template('devise/sessions/redirect_to_provider')
+        end
+      end
+    end
+
+    context 'with LDAP enabled' do
+      before do
+        stub_ldap_setting(enabled: true)
+      end
+
+      it 'ldap_servers available in helper' do
+        get(:new)
+
+        expect(subject.ldap_servers.first.to_h).to include('label' => 'ldap', 'provider_name' => 'ldapmain')
+      end
+
+      context 'with sign_in disabled' do
+        before do
+          stub_ldap_setting(prevent_ldap_sign_in: true)
+        end
+
+        it 'no ldap_servers available in helper' do
+          get(:new)
+
+          expect(subject.ldap_servers).to eq []
+        end
+      end
+    end
+
+    it "redirects correctly for referer on same host with params" do
+      host = "test.host"
+      search_path = "/search?search=seed_project"
+      request.headers[:HTTP_REFERER] = "http://#{host}#{search_path}"
+
+      get(:new, params: { redirect_to_referer: :yes })
+
+      expect(controller.stored_location_for(:redirect)).to eq(search_path)
+    end
+
+    it 'redirects when in_initial_setup_state? is detected' do
+      allow(controller).to receive(:in_initial_setup_state?).and_return(true)
+
+      get(:new)
+
+      expect(response).to redirect_to(new_admin_initial_setup_path)
+    end
+
+    it_behaves_like "switches to user preferred language", 'Sign in'
+  end
+
+  describe '#create' do
+    shared_examples '2FA sign-in with passkeys' do
+      context 'with passkeys' do
+        let!(:passkey) { create_passkey(user) }
+
+        let(:device_response) { device_response_after_authentication(user, passkey) }
+
+        let(:session_params) { { otp_user_id: user.id, challenge: challenge } }
+        let(:user_params) { { device_response: device_response } }
+
+        def authenticate_2fa_with_passkeys
+          post(:create, params: { user: user_params }, session: session_params)
+        end
+
+        it 'allows a passkey to be used for 2FA' do
+          allow_next_instance_of(User) do |instance|
+            expect(instance).to receive(:get_all_webauthn_credential_ids)
+          end
+
+          authenticate_2fa_with_passkeys
+        end
+
+        context 'when authenticated with a passkey' do
+          it 'calls 2 passkey interval events (status: attempt & success)' do
+            expect(controller).to receive(:track_passkey_internal_event).twice
+
+            authenticate_2fa_with_passkeys
+          end
+
+          it 'authenticates successfully' do
+            authenticate_2fa_with_passkeys
+
+            expect(response).to redirect_to(root_path)
+            expect(request.env['warden']).to be_authenticated
+            expect(subject.current_user).to eq user
+          end
+        end
+
+        context 'when failed to authenticate with a passkey' do
+          let(:device_response) { 'invalid_response' }
+
+          it 'calls 2 passkey interval events (status: attempt & failure)' do
+            expect(controller).to receive(:track_passkey_internal_event).twice
+
+            authenticate_2fa_with_passkeys
+          end
+
+          it 'shows a flash alert from the authenticate service' do
+            authenticate_2fa_with_passkeys
+
+            expect(request.env['warden']).not_to be_authenticated
+            expect(subject.current_user).to be_nil
+            expect(flash[:alert]).to be_present
+          end
+        end
+
+        context 'when passkey authentication is disabled for user' do
+          before do
+            allow_next_found_instance_of(User) do |instance|
+              allow(instance).to receive(:allow_passkey_authentication?).and_return(false)
+            end
+          end
+
+          it 'does not allow passkeys to be used for 2FA' do
+            allow_next_instance_of(User) do |instance|
+              expect(instance).not_to receive(:get_all_webauthn_credential_ids)
+            end
+
+            authenticate_2fa_with_passkeys
+          end
+
+          it 'does not call a passkey interval event' do
+            expect(controller).not_to receive(:track_passkey_internal_event)
+
+            authenticate_2fa_with_passkeys
+          end
+
+          it 'does not authenticate the user', :aggregate_failures do
+            authenticate_2fa_with_passkeys
+
+            expect(request.env['warden']).not_to be_authenticated
+            expect(subject.current_user).to be_nil
+          end
+
+          it 'returns generic error message' do
+            authenticate_2fa_with_passkeys
+
+            expect(flash[:alert]).to eq(_('Failed to connect to your device. Try again.'))
+          end
+        end
+      end
+    end
+
+    shared_examples '2FA sign-in after login with special characters' do
+      context 'with special characters after first factor login' do
+        render_views
+
+        it 'does not authenticate' do
+          post(:create, params: { user: { login: "#{user.email} ", password: user.password } })
+
+          expect(response).to render_template('devise/sessions/two_factor')
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(subject.current_user).not_to eq user
+        end
+      end
+    end
+
+    it_behaves_like 'known sign in' do
+      let(:user) { create(:user) }
+      let(:post_action) { post(:create, params: { user: { login: user.username, password: user.password } }) }
+    end
+
+    context 'when 2FA is enforced and the user has not enrolled' do
+      let(:user) { create(:user) }
+      let(:post_action) { post(:create, params: { user: { login: user.username, password: user.password } }) }
+
+      before do
+        stub_application_setting(require_two_factor_authentication: true)
+      end
+
+      it 'creates audit and authentication event records' do
+        expect { post_action }
+          .to change { AuditEventReader.count }.by(1)
+          .and change { AuthenticationEvent.count }.by(1)
+
+        expect(AuditEventReader.last.details[:event_name]).to eq('authenticated_with_password')
+        expect(AuthenticationEvent.last.provider).to eq('standard')
+      end
+
+      it 'accepts pending invitations' do
+        member = create(:group_member, :invited, invite_email: user.email)
+
+        expect { post_action }.to change { member.reload.invite_accepted_at }.from(nil)
+        expect(member.user).to eq(user)
+      end
+
+      it_behaves_like 'known sign in'
+    end
+
+    context 'when using standard authentications' do
+      let(:user) { create(:user) }
+      let(:post_action) { post(:create, params: { user: { login: user.username, password: user.password } }) }
+
+      context 'invalid password' do
+        it 'does not authenticate user' do
+          post(:create, params: { user: { login: 'invalid', password: 'invalid' } })
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(controller).to set_flash.now[:alert].to(/Invalid login or password/)
+        end
+      end
+
+      context 'mass assignment' do
+        it 'does not authenticate with multiple usernames' do
+          expect do
+            post(:create, params: { user: { login: ['invalid', user.username], password: user.password } })
+          end.to raise_error(NoMethodError)
+          expect(@request.env['warden']).not_to be_authenticated
+        end
+
+        it 'does not authenticate with multiple passwords' do
+          expect do
+            post(:create, params: { user: { login: user.username, password: ['aaaaaa', user.password] } })
+          end.to raise_error(NoMethodError)
+          expect(@request.env['warden']).not_to be_authenticated
+        end
+
+        context 'when parameter sanitization is applied' do
+          let(:password) { User.random_password }
+          let(:reset_password_token) { user.send_reset_password_instructions }
+
+          let(:malicious_user_hash) do
+            {
+              user: {
+                login: user.username,
+                password: password,
+                remember_me: '1',
+                reset_password_token: user.send_reset_password_instructions,
+                admin: true,
+                require_two_factor_authentication: false
+              }
+            }
+          end
+
+          let(:sanitized_params) { controller.send(:user_params) }
+
+          it 'returns a hash of only permitted scalar keys', :aggregate_failures do
+            put :create, params: malicious_user_hash
+
+            expect(sanitized_params.to_h).to include({
+              login: user.username,
+              password: password,
+              remember_me: '1'
+            })
+
+            expect(sanitized_params.to_h).not_to include({
+              reset_password_token: user.send_reset_password_instructions,
+              admin: true,
+              require_two_factor_authentication: false
+            })
+          end
+        end
+      end
+
+      context 'when user with LDAP identity' do
+        before do
+          create(:identity, provider: 'ldapmain', user: user)
+        end
+
+        it 'does not authenticate user' do
+          post_action
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(flash[:alert]).to include(I18n.t('devise.failure.invalid'))
+        end
+      end
+
+      context 'a blocked user' do
+        it 'does not authenticate the user' do
+          user.block!
+          post_action
+
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(flash[:alert]).to include('Your account has been blocked')
+        end
+      end
+
+      context 'a `blocked pending approval` user' do
+        it 'does not authenticate the user' do
+          user.block_pending_approval!
+          post_action
+
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(flash[:alert]).to include('Your account is pending approval from your GitLab administrator and hence blocked')
+        end
+      end
+
+      context 'an internal user' do
+        it 'does not authenticate the user' do
+          user.ghost!
+          post_action
+
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(flash[:alert]).to include('Your account does not have the required permission to login')
+        end
+      end
+
+      context 'when using valid password', :clean_gitlab_redis_shared_state do
+        let(:user) { create(:user) }
+        let(:user_params) { { login: user.username, password: user.password } }
+
+        it 'authenticates user correctly' do
+          post(:create, params: { user: user_params })
+
+          expect(subject.current_user).to eq user
+        end
+
+        context 'a deactivated user' do
+          before do
+            user.deactivate!
+            post(:create, params: { user: user_params })
+          end
+
+          it 'is allowed to login' do
+            expect(subject.current_user).to eq user
+          end
+
+          it 'activates the user' do
+            expect(subject.current_user.active?).to be_truthy
+          end
+
+          it 'shows reactivation flash message after logging in' do
+            expect(flash[:notice]).to eq('Welcome back! Your account had been deactivated due to inactivity but is now reactivated.')
+          end
+        end
+
+        context 'a deactivated user who has not set up 2FA' do
+          shared_examples 'reactivating the account on sign-in' do
+            before do
+              user.deactivate!
+              post(:create, params: { user: user_params })
+            end
+
+            it 'activates the user' do
+              expect(user.reload).to be_active
+            end
+
+            it 'signs the user in and lets 2FA enforcement run on the next request' do
+              expect(subject.current_user).to eq user
+              expect(response).to redirect_to(root_path)
+            end
+          end
+
+          context 'when 2FA is enforced instance-wide' do
+            before do
+              stub_application_setting(require_two_factor_authentication: true)
+            end
+
+            it_behaves_like 'reactivating the account on sign-in'
+          end
+
+          context 'when 2FA is enforced by a group' do
+            before do
+              create(:group, require_two_factor_authentication: true, developers: user)
+              user.update!(require_two_factor_authentication_from_group: true)
+            end
+
+            it_behaves_like 'reactivating the account on sign-in'
+          end
+        end
+
+        context 'with password authentication disabled' do
+          before do
+            stub_application_setting(password_authentication_enabled_for_web: false)
+          end
+
+          it 'does not sign in the user' do
+            post(:create, params: { user: user_params })
+
+            expect(@request.env['warden']).not_to be_authenticated
+            expect(subject.current_user).to be_nil
+          end
+
+          it 'returns status 403' do
+            post(:create, params: { user: user_params })
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+        end
+
+        context 'when password authentication is disabled for SSO users' do
+          let_it_be(:user) { create(:omniauth_user, password_automatically_set: false) }
+
+          before do
+            stub_application_setting(disable_password_authentication_for_users_with_sso_identities: true)
+          end
+
+          it 'does not authenticate the user' do
+            post(:create, params: { user: user_params })
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(@request.env['warden']).not_to be_authenticated
+            expect(flash[:alert]).to include(I18n.t('devise.failure.invalid'))
+          end
+        end
+
+        it 'creates audit event records' do
+          expect { post(:create, params: { user: user_params }) }.to change { AuditEventReader.count }.by(1)
+          .and change { AuditEvents::UserAuditEvent.count }.by(1)
+
+          audit_event = AuditEventReader.last
+          expect(audit_event.details[:with]).to eq('standard')
+          expect(audit_event.details[:event_name]).to eq('authenticated_with_password')
+
+          user_audit_event = AuditEvents::UserAuditEvent.last
+          expect(user_audit_event.event_name).to eq('authenticated_with_password')
+          expect(user_audit_event.details[:with]).to eq('standard')
+        end
+
+        it 'creates an authentication event record' do
+          expect { post(:create, params: { user: user_params }) }.to change { AuthenticationEvent.count }.by(1)
+          expect(AuthenticationEvent.last.provider).to eq('standard')
+        end
+
+        include_examples 'user login request with unique ip limit', 302 do
+          def gitlab_request
+            post(:create, params: { user: user_params })
+            expect(subject.current_user).to eq user
+            subject.sign_out user
+          end
+        end
+
+        it 'updates the user activity' do
+          expect do
+            post(:create, params: { user: user_params })
+          end.to change { user.reload.last_activity_on }.to(Date.today)
+        end
+      end
+
+      context 'when user has dismissed broadcast_messages' do
+        let_it_be(:user) { create(:user) }
+        let_it_be(:message_banner) { create(:broadcast_message, broadcast_type: :banner, message: 'banner') }
+        let_it_be(:message_notification) { create(:broadcast_message, broadcast_type: :notification, message: 'notification') }
+        let_it_be(:other_message) { create(:broadcast_message, broadcast_type: :banner, message: 'other') }
+
+        before_all do
+          create(:broadcast_message_dismissal, broadcast_message: message_banner, user: user)
+          create(:broadcast_message_dismissal, broadcast_message: message_notification, user: user)
+          create(:broadcast_message_dismissal, broadcast_message: other_message, user: build(:user))
+        end
+
+        it 'creates dismissed cookies based on db records' do
+          expect(cookies["hide_broadcast_message_#{message_banner.id}"]).to be_nil
+          expect(cookies["hide_broadcast_message_#{message_notification.id}"]).to be_nil
+          expect(cookies["hide_broadcast_message_#{other_message.id}"]).to be_nil
+
+          post_action
+
+          expect(cookies["hide_broadcast_message_#{message_banner.id}"].to_s).to eq('true')
+          expect(cookies["hide_broadcast_message_#{message_notification.id}"].to_s).to eq('true')
+          expect(cookies["hide_broadcast_message_#{other_message.id}"]).to be_nil
+        end
+
+        context 'when dismissal is expired' do
+          let_it_be(:message) { create(:broadcast_message, broadcast_type: :banner, message: 'banner') }
+
+          before do
+            create(:broadcast_message_dismissal, :expired, broadcast_message: message, user: user)
+          end
+
+          it 'does not create cookie' do
+            expect(cookies["hide_broadcast_message_#{message.id}"]).to be_nil
+
+            post_action
+
+            expect(cookies["hide_broadcast_message_#{message.id}"]).to be_nil
+          end
+        end
+      end
+
+      context 'with reCAPTCHA' do
+        def unsuccessful_login(user_params, sesion_params: {})
+          # Without this, `verify_recaptcha` arbitrarily returns true in test env
+          allow(Recaptcha.configuration).to receive(:skip_verify_env).and_return([])
+          counter = double(:counter)
+
+          expect(counter).to receive(:increment)
+          expect(Gitlab::Metrics).to receive(:counter)
+                                      .with(:failed_login_captcha_total, anything)
+                                      .and_return(counter)
+
+          post(:create, params: { user: user_params }, session: sesion_params)
+        end
+
+        def successful_login(user_params, sesion_params: {})
+          # Avoid test ordering issue and ensure `verify_recaptcha` returns true
+          allow(Recaptcha.configuration).to receive(:skip_verify_env).and_return(['test'])
+          counter = double(:counter)
+
+          expect(counter).to receive(:increment)
+          expect(Gitlab::Metrics).to receive(:counter)
+                                      .with(:successful_login_captcha_total, anything)
+                                      .and_return(counter)
+          expect(Gitlab::Metrics).to receive(:counter).at_least(1).time.and_call_original
+
+          post(:create, params: { user: user_params }, session: sesion_params)
+        end
+
+        context 'when reCAPTCHA is enabled' do
+          let(:user) { create(:user) }
+          let(:user_params) { { login: user.username, password: user.password } }
+
+          before do
+            stub_application_setting(recaptcha_enabled: true)
+            request.headers[described_class::CAPTCHA_HEADER] = '1'
+          end
+
+          context 'when the reCAPTCHA is not solved' do
+            it 'displays an error' do
+              unsuccessful_login(user_params)
+
+              expect(response).to render_template(:new)
+              expect(flash[:alert]).to include _('There was an error with the reCAPTCHA. Please solve the reCAPTCHA again.')
+              expect(subject.current_user).to be_nil
+            end
+
+            it 'sets gon variables' do
+              Gon.clear
+
+              unsuccessful_login(user_params)
+
+              expect(response).to render_template(:new)
+              expect(Gon.all_variables).not_to be_empty
+            end
+          end
+
+          it 'successfully logs in a user when reCAPTCHA is solved' do
+            successful_login(user_params)
+
+            expect(subject.current_user).to eq user
+          end
+        end
+
+        context 'when reCAPTCHA login protection is enabled' do
+          let(:user) { create(:user) }
+          let(:user_params) { { login: user.username, password: user.password } }
+
+          before do
+            stub_application_setting(login_recaptcha_protection_enabled: true)
+          end
+
+          context 'when user tried to login 5 times' do
+            it 'displays an error when the reCAPTCHA is not solved' do
+              unsuccessful_login(user_params, sesion_params: { failed_login_attempts: 6 })
+
+              expect(response).to render_template(:new)
+              expect(flash[:alert]).to include _('There was an error with the reCAPTCHA. Please solve the reCAPTCHA again.')
+              expect(subject.current_user).to be_nil
+            end
+
+            it 'successfully logs in a user when reCAPTCHA is solved' do
+              successful_login(user_params, sesion_params: { failed_login_attempts: 6 })
+
+              expect(subject.current_user).to eq user
+            end
+          end
+
+          context 'when there are more than 5 anonymous session with the same IP' do
+            before do
+              allow(Gitlab::AnonymousSession).to receive_message_chain(:new, :session_count).and_return(6)
+            end
+
+            it 'displays an error when the reCAPTCHA is not solved' do
+              unsuccessful_login(user_params)
+
+              expect(response).to render_template(:new)
+              expect(flash[:alert]).to include _('There was an error with the reCAPTCHA. Please solve the reCAPTCHA again.')
+              expect(subject.current_user).to be_nil
+            end
+
+            it 'successfully logs in a user when reCAPTCHA is solved' do
+              expect(Gitlab::AnonymousSession).to receive_message_chain(:new, :cleanup_session_per_ip_count)
+
+              successful_login(user_params)
+
+              expect(subject.current_user).to eq user
+            end
+          end
+        end
+      end
+    end
+
+    context 'when using two-factor authentication via OTP' do
+      let(:user) { create(:user, :two_factor) }
+
+      def authenticate_2fa(otp_user_id: user.id, **user_params)
+        post(:create, params: { user: user_params }, session: { otp_user_id: otp_user_id })
+      end
+
+      context 'remember_me field' do
+        it 'sets a remember_user_token cookie when enabled' do
+          allow(controller).to receive(:find_user).and_return(user)
+          expect(controller)
+            .to receive(:remember_me).with(user).and_call_original
+
+          authenticate_2fa(remember_me: '1', otp_attempt: user.current_otp)
+
+          expect(response.cookies['remember_user_token']).to be_present
+        end
+
+        it 'does nothing when disabled' do
+          allow(controller).to receive(:find_user).and_return(user)
+          expect(controller).not_to receive(:remember_me)
+
+          authenticate_2fa(remember_me: '0', otp_attempt: user.current_otp)
+
+          expect(response.cookies['remember_user_token']).to be_nil
+        end
+      end
+
+      context 'with password authentication disabled' do
+        before do
+          stub_application_setting(password_authentication_enabled_for_web: false)
+        end
+
+        it 'allows 2FA stage of non-password login' do
+          authenticate_2fa(otp_attempt: user.current_otp)
+
+          expect(@request.env['warden']).to be_authenticated
+          expect(subject.current_user).to eq user
+        end
+      end
+
+      context 'when login and stale session[:otp_user_id] are provided' do
+        render_views
+
+        let(:stale_user) { create(:user, :two_factor) }
+
+        # See issue https://gitlab.com/gitlab-org/gitlab/-/issues/20302
+        it "favors login over session[:otp_user_id] when password is present and does not authenticate the user", :aggregate_failures do
+          authenticate_2fa(
+            login: 'non_existing_login',
+            password: user.password,
+            otp_user_id: user.id
+          )
+
+          expect(controller).to set_flash.now[:alert].to(/Invalid login or password/)
+          expect(@request.env['warden']).not_to be_authenticated
+        end
+
+        # See issue https://gitlab.com/gitlab-org/gitlab/-/issues/20302
+        it "favors login over session[:otp_user_id] and removes the user's id from the session if invalid password is provided", :aggregate_failures do
+          authenticate_2fa(
+            login: user.username,
+            password: 'invalid_password',
+            otp_user_id: stale_user.id
+          )
+
+          expect(controller).to set_flash.now[:alert].to(/Invalid login or password/)
+          expect(session[:otp_user_id]).to be_nil
+          expect(@request.env['warden']).not_to be_authenticated
+        end
+
+        # See issue https://gitlab.com/gitlab-org/gitlab/-/issues/577847
+        it "favors login over session[:otp_user_id] and updates the user's id in the session, but does not authenticates the user if valid password is provided", :aggregate_failures do
+          authenticate_2fa(
+            login: user.username,
+            password: user.password,
+            otp_user_id: stale_user.id
+          )
+
+          expect(session[:otp_user_id]).to eq(user.id)
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(subject.current_user).to be_nil
+        end
+
+        # See issue https://gitlab.com/gitlab-org/gitlab/-/issues/577847
+        it "favors login over session[:otp_user_id] and updates the user's id in the session, but does not authenticates the user if valid password of the user and otp of stale user are provided", :aggregate_failures do
+          authenticate_2fa(
+            login: user.username,
+            password: user.password,
+            otp_attempt: stale_user.current_otp,
+            otp_user_id: stale_user.id
+          )
+
+          expect(session[:otp_user_id]).to eq(user.id)
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(subject.current_user).to be_nil
+        end
+      end
+
+      context 'when authenticating with OTP' do
+        it_behaves_like '2FA sign-in after login with special characters'
+
+        context 'when OTP is valid' do
+          it 'authenticates correctly', :aggregate_failures do
+            authenticate_2fa(otp_attempt: user.current_otp)
+
+            expect(@request.env['warden']).to be_authenticated
+            expect(subject.current_user).to eq user
+          end
+        end
+
+        context 'when OTP is invalid' do
+          let(:code) { 'invalid' }
+
+          it 'does not authenticate', :aggregate_failures do
+            authenticate_2fa(otp_attempt: code)
+
+            expect(@request.env['warden']).not_to be_authenticated
+            expect(subject.current_user).not_to eq user
+          end
+
+          it 'warns about invalid OTP code', :aggregate_failures do
+            authenticate_2fa(otp_attempt: code)
+
+            expect(controller).to set_flash.now[:alert]
+              .to(/Invalid two-factor code/)
+
+            expect(@request.env['warden']).not_to be_authenticated
+          end
+
+          it 'sends an email to the user informing about the attempt to sign in with a wrong OTP code' do
+            controller.request.remote_addr = '1.2.3.4'
+
+            expect_next_instance_of(NotificationService) do |instance|
+              expect(instance).to receive(:two_factor_otp_attempt_failed).with(user, '1.2.3.4')
+            end
+
+            authenticate_2fa(otp_attempt: code)
+          end
+        end
+
+        context 'when OTP is an array' do
+          let(:code) { %w[000000 000001] }
+
+          it 'does not authenticate', :aggregate_failures do
+            authenticate_2fa(otp_attempt: code)
+
+            expect(@request.env['warden']).not_to be_authenticated
+            expect(subject.current_user).not_to eq user
+          end
+        end
+
+        context 'when the user is on their last attempt' do
+          before do
+            user.update!(failed_attempts: User.maximum_attempts.pred)
+          end
+
+          context 'when OTP is valid' do
+            it 'authenticates correctly', :aggregate_failures do
+              authenticate_2fa(otp_attempt: user.current_otp)
+
+              expect(@request.env['warden']).to be_authenticated
+              expect(subject.current_user).to eq user
+            end
+          end
+
+          context 'when OTP is invalid' do
+            before do
+              authenticate_2fa(otp_attempt: 'invalid')
+            end
+
+            it 'does not authenticate', :aggregate_failures do
+              expect(@request.env['warden']).not_to be_authenticated
+              expect(subject.current_user).not_to eq user
+            end
+
+            it 'warns about invalid login' do
+              expect(flash[:alert]).to eq('Your account is locked.')
+            end
+
+            it 'locks the user' do
+              expect(user.reload).to be_access_locked
+            end
+
+            it 'keeps the user locked on future login attempts' do
+              post(:create, params: { user: { login: user.username, password: user.password } })
+
+              expect(flash[:alert]).to eq('Your account is locked.')
+            end
+          end
+        end
+      end
+
+      # See issue https://gitlab.com/gitlab-org/gitlab-foss/-/issues/14900
+      context 'when authenticating with login and OTP of another user' do
+        context 'when another user has 2FA enabled' do
+          let(:another_user) { create(:user, :two_factor) }
+
+          context 'when OTP is valid for another user' do
+            it "does not authenticate and removes the user's id from the session", :aggregate_failures do
+              authenticate_2fa(login: another_user.username, otp_attempt: another_user.current_otp)
+
+              expect(controller).to set_flash.now[:alert].to(/Invalid login or password/)
+              expect(@request.env['warden']).not_to be_authenticated
+              expect(subject.current_user).not_to eq another_user
+              expect(session[:otp_user_id]).to be_nil
+            end
+          end
+
+          context 'when OTP is invalid for another user' do
+            it "does not authenticate and removes the user's id from the session", :aggregate_failures do
+              authenticate_2fa(login: another_user.username, otp_attempt: 'invalid')
+
+              expect(controller).to set_flash.now[:alert].to(/Invalid login or password/)
+              expect(@request.env['warden']).not_to be_authenticated
+              expect(subject.current_user).not_to eq another_user
+              expect(session[:otp_user_id]).to be_nil
+            end
+          end
+
+          context 'when another user does not have 2FA enabled' do
+            let(:another_user) { create(:user) }
+
+            it "does not authenticate", :aggregate_failures do
+              authenticate_2fa(login: another_user.username, otp_attempt: 'invalid')
+
+              expect(controller).to set_flash.now[:alert].to(/Invalid login or password/)
+              expect(@request.env['warden']).not_to be_authenticated
+              expect(subject.current_user).not_to eq another_user
+            end
+
+            context 'with username/password authentication is disabled' do
+              before do
+                stub_application_setting(password_authentication_enabled_for_web: false)
+              end
+
+              it "does not authenticate", :aggregate_failures do
+                authenticate_2fa(login: another_user.username, otp_attempt: 'invalid')
+
+                expect(response).to have_gitlab_http_status(:forbidden)
+                expect(@request.env['warden']).not_to be_authenticated
+                expect(subject.current_user).not_to eq another_user
+              end
+            end
+          end
+        end
+      end
+
+      it 'creates audit event records' do
+        expect { authenticate_2fa(login: user.username, otp_attempt: user.current_otp) }.to change { AuditEventReader.count }.by(1)
+        .and change { AuditEvents::UserAuditEvent.count }.by(1)
+
+        audit_event = AuditEventReader.last
+        expect(audit_event.details[:with]).to eq('two-factor')
+        expect(audit_event.details[:event_name]).to eq('authenticated_with_two_factor')
+
+        user_audit_event = AuditEvents::UserAuditEvent.last
+        expect(user_audit_event.event_name).to eq('authenticated_with_two_factor')
+        expect(user_audit_event.details[:with]).to eq('two-factor')
+      end
+
+      it "creates an authentication event record" do
+        expect { authenticate_2fa(login: user.username, otp_attempt: user.current_otp) }.to change { AuthenticationEvent.count }.by(1)
+        expect(AuthenticationEvent.last.provider).to eq("two-factor")
+      end
+
+      context 'when rendering devise two factor' do
+        render_views
+
+        before do
+          Gon.clear
+        end
+
+        it "adds gon variables" do
+          authenticate_2fa(login: user.username, password: user.password)
+
+          expect(response).to render_template('devise/sessions/two_factor')
+          expect(Gon.all_variables).not_to be_empty
+          expect(response.body).to match('gon.api_version')
+        end
+      end
+
+      context 'when rendering the two-factor layout' do
+        it 'renders the devise_empty layout' do
+          authenticate_2fa(login: user.username, password: user.password)
+
+          expect(response).to render_template(layout: 'layouts/devise_empty')
+        end
+      end
+
+      it_behaves_like '2FA sign-in with passkeys'
+    end
+
+    context 'when using two-factor authentication via WebAuthn device' do
+      let(:user) { create(:user, :two_factor_via_webauthn) }
+
+      def authenticate_2fa(user_params)
+        post(:create, params: { user: user_params }, session: { otp_user_id: user.id })
+      end
+
+      context 'remember_me field' do
+        it 'sets a remember_user_token cookie when enabled' do
+          allow_next_instance_of(Webauthn::AuthenticateService) do |instance|
+            allow(instance).to receive(:execute).and_return(
+              ServiceResponse.success
+            )
+          end
+
+          allow(controller).to receive(:find_user).and_return(user)
+          expect(controller).to receive(:remember_me).with(user).and_call_original
+
+          authenticate_2fa(remember_me: '1', login: user.username, device_response: "{}")
+
+          expect(response.cookies['remember_user_token']).to be_present
+        end
+
+        it 'does nothing when disabled' do
+          allow_next_instance_of(Webauthn::AuthenticateService) do |instance|
+            allow(instance).to receive(:execute).and_return(
+              ServiceResponse.success
+            )
+          end
+
+          allow(controller).to receive(:find_user).and_return(user)
+          expect(controller).not_to receive(:remember_me)
+
+          authenticate_2fa(remember_me: '0', login: user.username, device_response: "{}")
+
+          expect(response.cookies['remember_user_token']).to be_nil
+        end
+      end
+
+      it 'creates audit event records' do
+        allow_next_instance_of(Webauthn::AuthenticateService) do |instance|
+          allow(instance).to receive(:execute).and_return(
+            ServiceResponse.success
+          )
+        end
+
+        expect { authenticate_2fa(login: user.username, device_response: "{}") }.to change { AuditEventReader.count }.by(1)
+        .and change { AuditEvents::UserAuditEvent.count }.by(1)
+
+        audit_event = AuditEventReader.last
+        expect(audit_event.details[:with]).to eq('two-factor-via-webauthn-device')
+        expect(audit_event.details[:event_name]).to eq('authenticated_with_webauthn')
+
+        user_audit_event = AuditEvents::UserAuditEvent.last
+        expect(user_audit_event.event_name).to eq('authenticated_with_webauthn')
+        expect(user_audit_event.details[:with]).to eq('two-factor-via-webauthn-device')
+      end
+
+      it "creates an authentication event record" do
+        allow_next_instance_of(Webauthn::AuthenticateService) do |instance|
+          allow(instance).to receive(:execute).and_return(
+            ServiceResponse.success
+          )
+        end
+
+        expect { authenticate_2fa(login: user.username, device_response: "{}") }.to(
+          change { AuthenticationEvent.count }.by(1))
+        expect(AuthenticationEvent.last.provider).to eq("two-factor-via-webauthn-device")
+      end
+
+      context 'with a #find_by_login and #find_for_database_authentication mismatch' do
+        before do
+          allow(User).to receive(:find_by_login).and_return(nil)
+        end
+
+        it 'still finds a user correctly using #find_for_database_authentication' do
+          post(:create, params: { user: { login: user.email, password: user.password } })
+
+          expect(response).to render_template('devise/sessions/two_factor')
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(subject.current_user).not_to eq user
+        end
+      end
+
+      it_behaves_like '2FA sign-in after login with special characters'
+
+      it_behaves_like '2FA sign-in with passkeys'
+    end
+
+    context 'when the user is locked and submits a valid verification token' do
+      let(:user) { create(:user) }
+      let(:user_params) { { verification_token: 'token' } }
+      let(:session_params) { { verifies_with_email_user_id: user.id } }
+      let(:post_action) { post(:create, params: { user: user_params }, session: session_params) }
+
+      before do
+        encrypted_token = Devise.token_generator.digest(User, user.email, 'token')
+        user.update!(locked_at: Time.current, unlock_token: encrypted_token)
+      end
+
+      it_behaves_like 'known sign in'
+
+      it 'successfully logs in a user' do
+        post_action
+
+        expect(subject.current_user).to eq user
+      end
+
+      context 'when the verification token is invalid' do
+        let(:user_params) { { verification_token: 'not-the-token' } }
+
+        it 'does not log the user in' do
+          post_action
+
+          expect(subject.current_user).to be_nil
+        end
+      end
+
+      context 'when the verification token is an array' do
+        let(:user_params) { { verification_token: %w[not-the-token still-not-the-token] } }
+
+        it 'does not log the user in' do
+          post_action
+
+          expect(subject.current_user).to be_nil
+        end
+      end
+    end
+
+    context 'for sign_in_dashboard UX SLI start marker', :aggregate_failures, :freeze_time do
+      let(:user) { create(:user) }
+      let(:user_params) { { login: user.username, password: user.password } }
+
+      context 'when login succeeds with username and password (no 2FA)' do
+        it 'sets session[:start_time_of_sign_in_dashboard_ux_sli]' do
+          post(:create, params: { user: user_params })
+
+          expect(@request.env['warden']).to be_authenticated
+          expect(session[:start_time_of_sign_in_dashboard_ux_sli]).to eq(Time.current)
+        end
+
+        context 'when redirects to any another page than root/dashboard after authentication' do
+          before do
+            allow(controller).to receive(:after_sign_in_path_for).and_return(user_settings_profile_path)
+          end
+
+          it 'does not set session[:start_time_of_sign_in_dashboard_ux_sli]' do
+            post(:create, params: { user: user_params })
+
+            expect(@request.env['warden']).to be_authenticated
+            expect(session[:start_time_of_sign_in_dashboard_ux_sli]).to be_nil
+          end
+        end
+      end
+
+      context 'when login fails (wrong password)' do
+        it 'does not set session[:start_time_of_sign_in_dashboard_ux_sli]' do
+          post(:create, params: { user: { login: user.username, password: 'wrong_password' } })
+
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(session[:start_time_of_sign_in_dashboard_ux_sli]).to be_nil
+        end
+      end
+
+      context 'when the user has 2FA enabled' do
+        let(:user) { create(:user, :two_factor) }
+
+        it 'does not set session[:start_time_of_sign_in_dashboard_ux_sli] (2FA challenge is issued instead)' do
+          post(:create, params: { user: user_params })
+
+          expect(response).to render_template('devise/sessions/two_factor')
+          expect(@request.env['warden']).not_to be_authenticated
+          expect(session[:start_time_of_sign_in_dashboard_ux_sli]).to be_nil
+        end
+      end
+    end
+  end
+
+  describe '#new_passkey' do
+    render_views
+
+    it 'renders the passkey prompt on the devise_empty layout' do
+      post :new_passkey
+
+      expect(response).to render_template('devise/sessions/passkeys')
+      expect(response).to render_template(layout: 'layouts/devise_empty')
+    end
+  end
+
+  describe '#audit_event_name_for_authentication_method' do
+    let(:controller) { described_class.new }
+
+    it 'returns correct event name for standard authentication' do
+      expect(controller.send(:audit_event_name_for_authentication_method, AuthenticationEvent::STANDARD))
+        .to eq('authenticated_with_password')
+    end
+
+    it 'returns correct event name for two-factor authentication' do
+      expect(controller.send(:audit_event_name_for_authentication_method, AuthenticationEvent::TWO_FACTOR))
+        .to eq('authenticated_with_two_factor')
+    end
+
+    it 'returns correct event name for WebAuthn authentication' do
+      expect(controller.send(:audit_event_name_for_authentication_method, AuthenticationEvent::TWO_FACTOR_WEBAUTHN))
+        .to eq('authenticated_with_webauthn')
+    end
+
+    it 'returns correct event name for unknown authentication method' do
+      expect(controller.send(:audit_event_name_for_authentication_method, 'unknown'))
+        .to eq('authenticated_with_password')
+    end
+  end
+
+  context 'when login fails' do
+    before do
+      @request.env["warden.options"] = { action:  'unauthenticated' }
+    end
+
+    it 'does increment failed login counts for session' do
+      get(:new, params: { user: { login: 'failed' } })
+
+      expect(session[:failed_login_attempts]).to eq(1)
+    end
+  end
+
+  describe '#destroy' do
+    before do
+      sign_in(user)
+    end
+
+    context 'for a user whose password has expired' do
+      let(:user) { create(:user, password_expires_at: 2.days.ago) }
+
+      it 'allows to sign out successfully' do
+        delete :destroy
+
+        expect(response).to redirect_to(new_user_session_path)
+        expect(controller.current_user).to be_nil
+      end
+    end
+
+    context 'clearing browser data' do
+      let(:user) { create(:user) }
+
+      before do
+        cookies[:test_cookie] = 'test-value'
+        cookies.encrypted[:test_encrypted_cookie] = 'test-value'
+        cookies.signed[:test_signed_cookie] = 'test-value'
+        cookies[:current_signin_tab] = 'preserved'
+        cookies[:preferred_language] = 'preserved'
+      end
+
+      it 'preserve some cookies and clear the rest of cookies known by Rails' do
+        delete :destroy
+
+        %w[test_cookie test_encrypted_cookie test_signed_cookie].each do |key|
+          expect(response.cookies).to have_key(key)
+          expect(response.cookies[key]).to be_nil
+        end
+
+        %w[current_signin_tab preferred_language].each do |key|
+          expect(response.cookies).not_to have_key(key)
+        end
+      end
+
+      it 'sends Clear-Site-Data header for all non-cookie data' do
+        delete :destroy
+
+        expect(response.headers['Clear-Site-Data']).to eq('"cache", "storage", "executionContexts", "clientHints"')
+      end
+    end
+  end
+end

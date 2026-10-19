@@ -1,0 +1,13 @@
+---
+table_name: project_repositories
+classes:
+- ProjectRepository
+feature_categories:
+- source_code_management
+description: Keeps disk path to repositories and link to the shard
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/8614
+milestone: '11.6'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: medium

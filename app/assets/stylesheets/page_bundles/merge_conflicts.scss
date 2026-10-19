@@ -1,0 +1,65 @@
+@import 'mixins_and_variables_and_functions';
+
+#conflicts {
+  .diff-wrap-lines .line_content {
+    white-space: normal;
+    min-height: 19px;
+  }
+
+  .line_content.header {
+    position: relative;
+
+    button {
+      font-size: 10px;
+      position: absolute;
+      right: $gl-spacing-scale-5;
+      top: 1px;
+      height: 18px;
+      opacity: 85%;
+      min-height: 18px;
+    }
+  }
+
+  // stylelint-disable-next-line gitlab/no-has -- scoped to a specific line_content element
+  .line_content:has(button) {
+    padding-right: $gl-spacing-scale-13;
+  }
+
+  .editor-wrap {
+    &.is-loading {
+      .editor {
+        display: none;
+      }
+
+      .loading {
+        display: block;
+      }
+    }
+
+    &.saved {
+      .editor {
+        border-top: solid 2px var(--green-300, $green-300);
+      }
+    }
+
+    .editor {
+      pre {
+        height: 350px;
+        border: 0;
+        border-radius: 0;
+        margin-bottom: 0;
+      }
+    }
+
+    .loading {
+      display: none;
+    }
+  }
+
+  .discard-changes-alert {
+    @apply gl-bg-subtle;
+    text-align: right;
+    padding: $gl-padding-top $gl-padding;
+    color: var(--gl-text-color-default);
+  }
+}

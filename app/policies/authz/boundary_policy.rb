@@ -1,0 +1,35 @@
+# frozen_string_literal: true
+
+module Authz
+  class BoundaryPolicy < ::BasePolicy
+    alias_method :token, :user
+    alias_method :boundary, :subject
+
+    condition(:granular_token, score: 0) do
+      token.class.include?(::Authz::GranularTokenInterface) && token.granular?
+    end
+
+    condition(:granular_pat, score: 0) do
+      token.is_a?(::PersonalAccessToken) && token.granular?
+    end
+
+    ::Authz::PermissionGroups::Assignable.all_permissions.each do |permission|
+      desc "Token permission that enables #{permission} for boundary"
+      condition(permission) do
+        token.permitted_for_boundary?(boundary, permission)
+      end
+
+      desc "Anonymous caller would be granted #{permission} on the boundary's resource"
+      condition(:"anonymous_can_#{permission}", score: 40) do
+        resource = boundary.boundary
+        next false unless resource.is_a?(::Project) || resource.is_a?(::Group)
+
+        ::Users::Anonymous.can?(permission, resource) # rubocop:disable Gitlab/Authz/DisallowAbilityAllowed -- querying anonymous access, not the token
+      end
+
+      rule { granular_pat & cond(:"anonymous_can_#{permission}") }.enable permission
+
+      rule { granular_token & cond(permission) }.enable permission
+    end
+  end
+end

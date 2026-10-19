@@ -1,0 +1,13 @@
+---
+table_name: namespace_limits
+classes:
+- NamespaceLimit
+feature_categories:
+- consumables_cost_management
+description: Contains limits for namespace features like storage and ci
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/34746
+milestone: '13.2'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces
+table_size: small

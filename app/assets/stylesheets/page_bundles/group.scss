@@ -1,0 +1,23 @@
+@import 'page_bundles/mixins_and_variables_and_functions';
+
+.group-home-panel {
+  .home-panel-avatar {
+    flex-basis: $home-panel-title-row-height;
+  }
+
+  .home-panel-title {
+    .icon {
+      vertical-align: 1px;
+    }
+  }
+
+  .home-panel-description {
+    @include gl-container-width-up(md, panel) {
+      font-size: $gl-font-size-large;
+    }
+  }
+
+  mark {
+    @include str-highlighted;
+  }
+}

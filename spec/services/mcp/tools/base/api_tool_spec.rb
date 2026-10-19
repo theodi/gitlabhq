@@ -1,0 +1,940 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Mcp::Tools::Base::ApiTool, feature_category: :ai_agents do
+  let(:app) { instance_double(Grape::Endpoint) }
+  let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool' } }
+  let(:route_params) do
+    {
+      'param1' => { required: true, type: 'String', desc: 'First parameter' },
+      'param2' => { required: false, type: 'Integer', desc: 'Second parameter' },
+      'param3' => { required: true, type: 'Boolean', desc: 'Third parameter' }
+    }
+  end
+
+  let(:route) do
+    instance_double(Grape::Router::Route,
+      app: app,
+      description: 'Test API endpoint',
+      params: route_params,
+      request_method: 'POST')
+  end
+
+  before do
+    allow(app).to receive(:route_setting).with(:mcp).and_return(mcp_settings)
+    allow(app).to receive(:route_setting).with(:authorization).and_return(nil)
+  end
+
+  subject(:api_tool) { described_class.new(name: 'test_tool', route: route) }
+
+  describe '#initialize' do
+    it 'sets the name, route and settings' do
+      expect(api_tool.name).to eq('test_tool')
+      expect(api_tool.route).to eq(route)
+      expect(api_tool.settings).to eq(mcp_settings)
+      expect(api_tool.version).to eq('0.1.0')
+    end
+
+    context 'when version is specified in settings' do
+      let(:mcp_settings) { { params: [:param1, :param2], version: '2.0.0' } }
+
+      it 'uses the specified version' do
+        expect(api_tool.version).to eq('2.0.0')
+      end
+    end
+  end
+
+  describe '#description' do
+    it 'returns the route description' do
+      expect(api_tool.description).to eq('Test API endpoint')
+    end
+  end
+
+  describe '#tool_aliases' do
+    it 'returns an empty array when the route declares none' do
+      expect(api_tool.tool_aliases).to eq([])
+    end
+
+    context 'when the route declares aliases' do
+      let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool', tool_aliases: [:old_tool] } }
+
+      it 'returns the aliases from the route settings as strings' do
+        expect(api_tool.tool_aliases).to eq(['old_tool'])
+      end
+    end
+  end
+
+  describe '#icons' do
+    it 'returns icons array' do
+      icons = api_tool.icons
+
+      expect(icons).to be_an(Array)
+      expect(icons.first).to include(:mimeType, :src, :theme)
+    end
+  end
+
+  describe '#available?' do
+    it 'returns true' do
+      expect(api_tool.available?(build(:user))).to be(true)
+    end
+  end
+
+  describe '#unlisted?' do
+    it 'returns false when the route does not opt in' do
+      expect(api_tool.unlisted?).to be(false)
+    end
+
+    context 'when the route marks the tool unlisted' do
+      let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool', unlisted: true } }
+
+      it 'returns true' do
+        expect(api_tool.unlisted?).to be(true)
+      end
+    end
+  end
+
+  describe '#input_schema' do
+    context 'with standard types' do
+      it 'returns a valid JSON schema with required fields' do
+        schema = api_tool.input_schema
+
+        expect(schema).to eq({
+          type: 'object',
+          properties: {
+            'param1' => { type: 'string', description: 'First parameter' },
+            'param2' => { type: 'integer', description: 'Second parameter' }
+          },
+          required: ['param1'],
+          additionalProperties: false
+        })
+      end
+    end
+
+    context 'with boolean type' do
+      let(:mcp_settings) { { params: [:param3] } }
+
+      let(:route_params) do
+        {
+          'param3' => { required: true, type: 'Grape::API::Boolean', desc: 'Third parameter' }
+        }
+      end
+
+      it 'converts Grape::API::Boolean to boolean' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['param3'][:type]).to eq('boolean')
+      end
+    end
+
+    context 'with DateTime type' do
+      let(:mcp_settings) { { params: [:param4] } }
+
+      let(:route_params) do
+        {
+          'param4' => { required: false, type: 'DateTime', desc: 'Fourth parameter' }
+        }
+      end
+
+      it 'converts DateTime to a string' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['param4'][:type]).to eq('string')
+      end
+    end
+
+    context 'when no required fields' do
+      let(:route_params) do
+        {
+          'param1' => { required: false, type: 'String', desc: 'Optional parameter' }
+        }
+      end
+
+      it 'returns empty required array' do
+        schema = api_tool.input_schema
+
+        expect(schema[:required]).to eq([])
+      end
+    end
+
+    context 'when settings params filter out some route params' do
+      let(:mcp_settings) { { params: [:param1] } }
+
+      it 'only includes params specified in settings' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties].keys).to eq(['param1'])
+      end
+    end
+
+    context 'with values: as an array' do
+      let(:mcp_settings) { { params: [:param1] } }
+      let(:route_params) do
+        {
+          'param1' => { required: false, type: 'String', desc: 'Status', values: %w[open closed] }
+        }
+      end
+
+      it 'derives enum from the array' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['param1'][:enum]).to eq(%w[open closed])
+      end
+    end
+
+    context 'with values: as a zero-arity proc' do
+      let(:mcp_settings) { { params: [:param1] } }
+      let(:route_params) do
+        {
+          'param1' => { required: false, type: 'String', desc: 'Shard', values: -> { %w[default other] } }
+        }
+      end
+
+      it 'calls the proc and derives enum from the result' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['param1'][:enum]).to eq(%w[default other])
+      end
+    end
+
+    context 'with values: as a proc that takes an argument' do
+      let(:mcp_settings) { { params: [:param1] } }
+      let(:route_params) do
+        {
+          'param1' => { required: false, type: 'String', desc: 'Custom', values: ->(v) { v.present? } }
+        }
+      end
+
+      it 'does not add an enum' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['param1']).not_to have_key(:enum)
+      end
+    end
+
+    context 'with values: a proc that raises' do
+      let(:mcp_settings) { { params: [:param1] } }
+      let(:route_params) do
+        {
+          'param1' => { required: false, type: 'String', desc: 'Broken', values: -> { raise 'boom' } }
+        }
+      end
+
+      it 'does not add an enum and does not raise' do
+        schema = nil
+
+        expect { schema = api_tool.input_schema }.not_to raise_error
+        expect(schema[:properties]['param1']).not_to have_key(:enum)
+      end
+    end
+
+    context 'without values:' do
+      it 'does not add an enum' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['param1']).not_to have_key(:enum)
+      end
+    end
+  end
+
+  describe '#execute' do
+    let(:request) { instance_double(Rack::Request, env: request_env) }
+    let(:request_env) { { 'grape.routing_args' => {} } }
+    let(:params) { { arguments: { param1: 'value1', param2: 42 } } }
+
+    context 'with successful response' do
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([200, {}, ['{"result": "success"}']])
+      end
+
+      it 'merges arguments into routing args, sets request method, and executes route' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(request_env['grape.routing_args']).to include(param1: 'value1', param2: 42)
+        expect(request_env[Rack::REQUEST_METHOD]).to eq('POST')
+        expect(result).to eq({
+          content: [
+            {
+              text: "{\"result\": \"success\"}",
+              type: "text"
+            }
+          ],
+          isError: false,
+          structuredContent: {
+            "result" => "success"
+          }
+        })
+      end
+    end
+
+    context 'when the namespace argument is URL-encoded' do
+      let(:mcp_settings) { { params: [:id, :search], tool_name: 'test_tool' } }
+      let(:params) { { arguments: { id: 'gitlab-org%2Fgitlab', search: '100%25 match' } } }
+
+      before do
+        allow(app).to receive(:route_setting).with(:authorization).and_return({ boundary_type: :project })
+        allow(app).to receive(:call).with(request_env).and_return([200, {}, ['{"result": "success"}']])
+      end
+
+      it 'decodes only the project argument before routing', :aggregate_failures do
+        api_tool.execute(request: request, params: params)
+
+        expect(request_env['grape.routing_args']).to include(id: 'gitlab-org/gitlab', search: '100%25 match')
+      end
+    end
+
+    context 'with different HTTP methods' do
+      let(:route) do
+        instance_double(Grape::Router::Route,
+          app: app,
+          description: 'Test API endpoint',
+          params: route_params,
+          request_method: 'GET')
+      end
+
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([200, {}, ['{"result": "success"}']])
+      end
+
+      it 'sets the correct request method in environment' do
+        api_tool.execute(request: request, params: params)
+
+        expect(request_env[Rack::REQUEST_METHOD]).to eq('GET')
+      end
+    end
+
+    context 'with error response' do
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([400, {}, ['{"error": "Bad request"}']])
+      end
+
+      it 'returns error response with parsed message' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(request_env[Rack::REQUEST_METHOD]).to eq('POST')
+        expect(result).to eq(Mcp::Tools::Base::Response.error('Bad request', { 'error' => 'Bad request' },
+          reason: :bad_request))
+      end
+    end
+
+    context 'with a throttled response' do
+      let(:throttle_body) { ['{"error": "This endpoint has been requested too many times. Try again later."}'] }
+
+      before do
+        allow(app).to receive(:call).with(request_env).and_return(
+          [429, { 'Retry-After' => '60', 'RateLimit-Name' => 'search_rate_limit' }, throttle_body]
+        )
+      end
+
+      it 'reports the delay and the throttle name instead of flattening to prose' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result).to eq(
+          Mcp::Tools::Base::Response.rate_limited_error(
+            'This endpoint has been requested too many times. Try again later.',
+            retry_after: '60',
+            limit: 'search_rate_limit'
+          )
+        )
+        expect(result[:structuredContent][:error]).to include(
+          type: 'rate_limited', retry_after_seconds: 60, limit: 'search_rate_limit'
+        )
+      end
+
+      context 'when the headers use a different casing' do
+        before do
+          allow(app).to receive(:call).with(request_env).and_return(
+            [429, { 'retry-after' => '60', 'ratelimit-name' => 'search_rate_limit' }, throttle_body]
+          )
+        end
+
+        it 'still reads them' do
+          result = api_tool.execute(request: request, params: params)
+
+          expect(result[:structuredContent][:error]).to include(
+            retry_after_seconds: 60, limit: 'search_rate_limit'
+          )
+        end
+      end
+
+      context 'when the endpoint sets no rate limit headers' do
+        before do
+          allow(app).to receive(:call).with(request_env).and_return([429, {}, throttle_body])
+        end
+
+        it 'still marks the result as a throttle' do
+          result = api_tool.execute(request: request, params: params)
+
+          expect(result[:structuredContent][:error]).to eq(
+            type: 'rate_limited',
+            message: 'This endpoint has been requested too many times. Try again later.'
+          )
+        end
+      end
+
+      context 'when the body is shaped as check_rate_limit! renders it' do
+        let(:throttle_body) do
+          [{ message: { error: 'This endpoint has been requested too many times. Try again later.' } }.to_json]
+        end
+
+        it 'reports the sentence rather than the nested hash' do
+          result = api_tool.execute(request: request, params: params)
+
+          expect(result[:structuredContent][:error]).to include(
+            message: 'This endpoint has been requested too many times. Try again later.'
+          )
+        end
+      end
+
+      context 'when the response carries no body' do
+        before do
+          allow(app).to receive(:call).with(request_env).and_return(
+            [429, { 'Retry-After' => '60' }, []]
+          )
+        end
+
+        it 'falls back to the status, since there is no message to read' do
+          result = api_tool.execute(request: request, params: params)
+
+          expect(result[:structuredContent][:error]).to include(type: 'rate_limited', message: 'HTTP 429')
+        end
+      end
+
+      context 'when the body is not JSON' do
+        before do
+          allow(app).to receive(:call).with(request_env).and_return(
+            [429, { 'Retry-After' => '60' }, ['<html>Too Many Requests</html>']]
+          )
+        end
+
+        it 'falls back to the status rather than raising' do
+          result = api_tool.execute(request: request, params: params)
+
+          expect(result[:structuredContent][:error]).to include(type: 'rate_limited', message: 'HTTP 429')
+        end
+      end
+    end
+
+    context 'with error response containing message field' do
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([422, {}, ['{"message": "Validation failed"}']])
+      end
+
+      it 'uses message field for error' do
+        result = api_tool.execute(request: request, params: params)
+
+        expected = Mcp::Tools::Base::Response.error('Validation failed', { 'message' => 'Validation failed' },
+          reason: :bad_request)
+        expect(result).to eq(expected)
+      end
+    end
+
+    context 'with error response without error or message fields' do
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([500, {}, ['{"details": "Internal error"}']])
+      end
+
+      it 'falls back to HTTP status message' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result).to eq(Mcp::Tools::Base::Response.error('HTTP 500', { 'details' => 'Internal error' },
+          reason: :error))
+      end
+    end
+
+    shared_examples 'a 404 response with stubbed Not Found body' do
+      before do
+        allow(app).to receive(:call).with(request_env).and_return(
+          [404, {}, ['{"message": "404 Not Found"}']]
+        )
+      end
+
+      it 'returns the expected error message with the parsed body preserved' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result).to eq(
+          Mcp::Tools::Base::Response.error(expected_error_message, { 'message' => '404 Not Found' }, reason: :not_found)
+        )
+      end
+    end
+
+    context 'with 404 response and resource_name in settings' do
+      let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool', resource_name: "issue" } }
+      let(:expected_error_message) { '404 Issue Not Found' }
+
+      it_behaves_like 'a 404 response with stubbed Not Found body'
+    end
+
+    context 'with 404 response and multi-word resource_name' do
+      let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool', resource_name: "merge request" } }
+      let(:expected_error_message) { '404 Merge request Not Found' }
+
+      it_behaves_like 'a 404 response with stubbed Not Found body'
+    end
+
+    context 'with 404 response without resource_name in settings' do
+      let(:expected_error_message) { '404 Not Found' }
+
+      it_behaves_like 'a 404 response with stubbed Not Found body'
+    end
+
+    context 'with 404 response carrying neither message nor error and resource_name set' do
+      let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool', resource_name: "issue" } }
+
+      before do
+        allow(app).to receive(:call).with(request_env).and_return(
+          [404, {}, ['{"details": "extra info"}']]
+        )
+      end
+
+      it 'falls back to the HTTP status message' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result).to eq(
+          Mcp::Tools::Base::Response.error('HTTP 404', { 'details' => 'extra info' }, reason: :not_found)
+        )
+      end
+    end
+
+    context 'with 404 response carrying a specific upstream message and resource_name set' do
+      let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool', resource_name: "issue" } }
+
+      before do
+        allow(app).to receive(:call).with(request_env).and_return(
+          [404, {}, ['{"message": "404 Project Not Found"}']]
+        )
+      end
+
+      it 'passes the upstream message through instead of overriding' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result).to eq(
+          Mcp::Tools::Base::Response.error('404 Project Not Found', { 'message' => '404 Project Not Found' },
+            reason: :not_found)
+        )
+      end
+    end
+
+    context 'with non-404 error response when resource_name is set' do
+      let(:mcp_settings) { { params: [:param1, :param2], tool_name: 'test_tool', resource_name: "issue" } }
+
+      before do
+        allow(app).to receive(:call).with(request_env).and_return(
+          [422, {}, ['{"message": "Validation failed"}']]
+        )
+      end
+
+      it 'uses the parsed error message and ignores resource_name' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result).to eq(
+          Mcp::Tools::Base::Response.error('Validation failed', { 'message' => 'Validation failed' },
+            reason: :bad_request)
+        )
+      end
+    end
+
+    context 'with plain text success response' do
+      before do
+        allow(app).to receive(:call).with(request_env)
+          .and_return([200, {}, ["Running job...\nStep 1 complete\nDone."]])
+      end
+
+      it 'returns the plain text body as text content' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(false)
+        expect(result[:content]).to match_array([{ type: 'text', text: "Running job...\nStep 1 complete\nDone." }])
+        expect(result[:structuredContent]).to eq({})
+      end
+    end
+
+    context 'with plain text error response' do
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([500, {}, ['Internal Server Error']])
+      end
+
+      it 'returns an error with the plain text body' do
+        result = api_tool.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(true)
+        expect(result[:content][0][:text]).to eq('HTTP 500')
+        expect(result[:structuredContent]).to eq({ error: { body: 'Internal Server Error' } })
+      end
+    end
+
+    context 'with nil params' do
+      let(:params) { {} }
+
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([200, {}, [{ 'result' => 'success' }.to_json]])
+      end
+
+      it 'handles nil arguments gracefully' do
+        result = api_tool.execute(request: request, params: params)
+        expect(request_env['grape.routing_args']).to eq({})
+        expect(request_env[Rack::REQUEST_METHOD]).to eq('POST')
+        expect(result).to eq({
+          content: [
+            {
+              text: "{\"result\":\"success\"}",
+              type: "text"
+            }
+          ],
+          isError: false,
+          structuredContent: { "result" => "success" }
+        })
+      end
+    end
+
+    context 'with filtered arguments based on settings' do
+      let(:params) { { arguments: { param1: 'value1', param2: 42, unauthorized_param: 'hack' } } }
+
+      before do
+        allow(app).to receive(:call).with(request_env).and_return([200, {}, [{ 'result' => 'success' }.to_json]])
+      end
+
+      it 'only includes params specified in settings' do
+        api_tool.execute(request: request, params: params)
+
+        expect(request_env['grape.routing_args']).to eq(param1: 'value1', param2: 42)
+        expect(request_env['grape.routing_args']).not_to have_key(:unauthorized_param)
+      end
+    end
+  end
+
+  describe '#parse_type (private method)' do
+    describe 'type parsing through input_schema' do
+      let(:route_params) do
+        {
+          'string_param' => { required: false, type: 'String', desc: 'String param' },
+          'integer_param' => { required: false, type: 'Integer', desc: 'Integer param' },
+          'boolean_param' => { required: false, type: 'Grape::API::Boolean', desc: 'Boolean param' },
+          'array_int_param' => { required: false, type: '[Integer]', desc: 'Array of integers param' },
+          'array_string_param' => { required: false, type: '[String]', desc: 'Array of strings param' },
+          'complex_array_param' => { required: false, type: '[String, Integer]', desc: 'Complex array param' }
+        }
+      end
+
+      let(:mcp_settings) do
+        {
+          params: [
+            :string_param, :integer_param, :boolean_param, :array_string_param, :array_int_param, :complex_array_param
+          ]
+        }
+      end
+
+      it 'correctly parses different types' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['string_param'][:type]).to eq('string')
+        expect(schema[:properties]['integer_param'][:type]).to eq('integer')
+        expect(schema[:properties]['boolean_param'][:type]).to eq('boolean')
+        expect(schema[:properties]['array_int_param'][:type]).to eq('array')
+        expect(schema[:properties]['array_int_param'][:items]).to eq({ type: 'integer' })
+        expect(schema[:properties]['array_string_param'][:type]).to eq('string')
+        expect(schema[:properties]['complex_array_param'][:type]).to eq('string')
+      end
+    end
+
+    describe 'Array[Type] format parsing' do
+      let(:route_params) do
+        {
+          'assignee_ids' => { required: false, type: 'Array[Integer]', desc: 'Array of user IDs' },
+          'labels' => { required: false, type: 'Array[String]', desc: 'Array of label names' }
+        }
+      end
+
+      let(:mcp_settings) { { params: [:assignee_ids, :labels] } }
+
+      it 'converts Array[Integer] to proper JSON Schema array with integer items' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['assignee_ids']).to eq({
+          type: 'array',
+          items: { type: 'integer' },
+          description: 'Array of user IDs'
+        })
+      end
+
+      it 'converts Array[String] to proper JSON Schema array with string items' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]['labels']).to eq({
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of label names'
+        })
+      end
+    end
+  end
+
+  describe '#annotations' do
+    context 'with GET request method' do
+      let(:route) do
+        instance_double(Grape::Router::Route,
+          app: app,
+          description: 'Test GET endpoint',
+          params: route_params,
+          request_method: 'GET')
+      end
+
+      it 'returns readOnlyHint annotation' do
+        expect(api_tool.annotations).to eq({ readOnlyHint: true })
+      end
+    end
+
+    context 'with POST request method' do
+      let(:route) do
+        instance_double(Grape::Router::Route,
+          app: app,
+          description: 'Test POST endpoint',
+          params: route_params,
+          request_method: 'POST')
+      end
+
+      it 'returns empty annotations' do
+        expect(api_tool.annotations).to eq({})
+      end
+    end
+
+    context 'with PUT request method' do
+      let(:route) do
+        instance_double(Grape::Router::Route,
+          app: app,
+          description: 'Test PUT endpoint',
+          params: route_params,
+          request_method: 'PUT')
+      end
+
+      it 'returns empty annotations' do
+        expect(api_tool.annotations).to eq({})
+      end
+    end
+
+    context 'with DELETE request method' do
+      let(:route) do
+        instance_double(Grape::Router::Route,
+          app: app,
+          description: 'Test DELETE endpoint',
+          params: route_params,
+          request_method: 'DELETE')
+      end
+
+      it 'returns empty annotations' do
+        expect(api_tool.annotations).to eq({})
+      end
+    end
+
+    context 'with explicit annotations in settings' do
+      let(:mcp_settings) do
+        {
+          params: [:param1, :param2],
+          annotations: { readOnlyHint: true, destructiveHint: false }
+        }
+      end
+
+      let(:route) do
+        instance_double(Grape::Router::Route,
+          app: app,
+          description: 'Test endpoint with explicit annotations',
+          params: route_params,
+          request_method: 'POST')
+      end
+
+      it 'returns explicit annotations overriding auto-detection' do
+        expect(api_tool.annotations).to eq({ readOnlyHint: true, destructiveHint: false })
+      end
+    end
+
+    context 'with explicit empty annotations in settings' do
+      let(:mcp_settings) do
+        {
+          params: [:param1, :param2],
+          annotations: {}
+        }
+      end
+
+      let(:route) do
+        instance_double(Grape::Router::Route,
+          app: app,
+          description: 'Test GET endpoint with empty explicit annotations',
+          params: route_params,
+          request_method: 'GET')
+      end
+
+      it 'uses auto-detection when explicit annotations are empty' do
+        expect(api_tool.annotations).to eq({ readOnlyHint: true })
+      end
+    end
+  end
+
+  describe 'edge cases and error handling' do
+    let(:request) { instance_double(Rack::Request, env: { 'grape.routing_args' => {} }) }
+    let(:params) { { arguments: { param1: 'test' } } }
+
+    context 'when the route app raises an exception' do
+      before do
+        allow(app).to receive(:call).and_raise(StandardError.new('Route execution failed'))
+      end
+
+      it 'does not rescue the exception' do
+        expect { api_tool.execute(request: request, params: params) }
+          .to raise_error(StandardError, 'Route execution failed')
+      end
+    end
+
+    context 'when route has no params' do
+      let(:route_params) { {} }
+
+      it 'returns empty schema properties' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]).to eq({})
+        expect(schema[:required]).to eq([])
+      end
+    end
+
+    context 'when settings has empty params array' do
+      let(:mcp_settings) { { params: [] } }
+
+      it 'returns empty schema properties' do
+        schema = api_tool.input_schema
+
+        expect(schema[:properties]).to eq({})
+      end
+    end
+  end
+
+  describe '#container_arguments' do
+    subject(:declared) { described_class.new(name: 'test_tool', route: route).container_arguments }
+
+    let(:default) { Mcp::Tools::Concerns::GovernanceContainerResolver::DEFAULT_CONTAINER_ARGUMENTS }
+
+    before do
+      allow(app).to receive(:route_setting).with(:authorization).and_return(authorization)
+    end
+
+    context 'when the route declares a project boundary' do
+      let(:authorization) { { permissions: :read_project, boundary_type: :project } }
+
+      it { is_expected.to eq({ project: :id }) }
+    end
+
+    context 'when the route declares a group boundary' do
+      let(:authorization) { { permissions: :read_group, boundary_type: :group } }
+
+      it { is_expected.to eq({ group: :id }) }
+    end
+
+    context 'when the route declares a boundary that names no container' do
+      let(:authorization) { { permissions: :read_user, boundary_type: :user } }
+
+      it { is_expected.to eq(default) }
+    end
+
+    context 'when the route declares authorization without a boundary' do
+      let(:authorization) { { permissions: :read_project } }
+
+      it { is_expected.to eq(default) }
+    end
+
+    context 'when the route declares no authorization at all' do
+      let(:authorization) { nil }
+
+      it { is_expected.to eq(default) }
+    end
+
+    context 'when the route declares container arguments of its own' do
+      let(:authorization) { { permissions: :create_fork, boundary_type: :project } }
+      let(:resolver) { ->(id) { id } }
+      let(:mcp_settings) do
+        {
+          params: [:id, :namespace_id],
+          tool_name: 'test_tool',
+          container_arguments: { record: { namespace_id: resolver } }
+        }
+      end
+
+      it { is_expected.to eq({ project: :id, record: { namespace_id: resolver } }) }
+    end
+  end
+
+  describe '#execute with a declared record argument' do
+    let(:request) { instance_double(Rack::Request, env: request_env) }
+    let(:request_env) { { 'grape.routing_args' => {} } }
+    let(:mcp_settings) do
+      {
+        params: [:id, :namespace_path],
+        tool_name: 'test_tool',
+        container_arguments: { record: { namespace_path: ->(path) { path } } }
+      }
+    end
+
+    before do
+      allow(app).to receive(:route_setting).with(:authorization).and_return({ boundary_type: :project })
+      allow(app).to receive(:call).with(request_env).and_return([200, {}, ['{"result": "success"}']])
+    end
+
+    it 'decodes a URL-encoded record argument before routing' do
+      api_tool.execute(request: request, params: { arguments: { id: '1', namespace_path: 'new_path%2Fgitlab' } })
+
+      expect(request_env['grape.routing_args']).to include(namespace_path: 'new_path/gitlab')
+    end
+  end
+
+  describe '#governed_containers' do
+    let_it_be(:source_group) { create(:group) }
+    let_it_be(:project) { create(:project, group: source_group) }
+    let_it_be(:target_group) { create(:group) }
+    let_it_be(:user) { create(:user, :with_namespace) }
+
+    let(:fork_tool) { Mcp::Tools::Manager.new.list_tools['fork_repository'] }
+
+    subject(:resolved) { fork_tool.governed_containers(arguments.with_indifferent_access) }
+
+    context 'when a fork names its target group by id' do
+      let(:arguments) { { id: project.id.to_s, namespace_id: target_group.id } }
+
+      it 'governs the call by the source project and the target group', :aggregate_failures do
+        expect(resolved.containers).to contain_exactly(project, target_group)
+        expect(resolved.named).to eq(2)
+      end
+    end
+
+    context 'when a fork names its target group by a URL-encoded path' do
+      let(:arguments) { { id: project.id.to_s, namespace_path: ERB::Util.url_encode(target_group.full_path) } }
+
+      it 'governs the call by the target group' do
+        expect(resolved.containers).to contain_exactly(project, target_group)
+      end
+    end
+
+    context 'when a fork names a target that does not exist' do
+      let(:arguments) { { id: project.id.to_s, namespace_id: non_existing_record_id } }
+
+      it 'counts the target so the call is refused rather than ungoverned', :aggregate_failures do
+        expect(resolved.containers).to eq([project])
+        expect(resolved.named).to eq(2)
+      end
+    end
+
+    context 'when a fork names a personal namespace' do
+      let(:arguments) { { id: project.id.to_s, namespace_path: user.namespace.full_path } }
+
+      it 'governs the call by the source project alone', :aggregate_failures do
+        expect(resolved.containers).to eq([project])
+        expect(resolved.named).to eq(1)
+      end
+    end
+
+    context 'when a fork names no target' do
+      let(:arguments) { { id: project.id.to_s } }
+
+      it 'governs the call by the source project alone', :aggregate_failures do
+        expect(resolved.containers).to eq([project])
+        expect(resolved.named).to eq(1)
+      end
+    end
+  end
+end

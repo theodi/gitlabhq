@@ -1,0 +1,5 @@
+@use 'xterm/src/xterm.css';
+
+#terminal > div {
+  min-height: 450px;
+}

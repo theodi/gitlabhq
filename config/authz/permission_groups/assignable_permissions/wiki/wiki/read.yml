@@ -1,0 +1,11 @@
+---
+name: read_wiki
+description: Grants the ability to read wikis
+boundaries:
+  - group
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - read_wiki
+  - download_wiki_code

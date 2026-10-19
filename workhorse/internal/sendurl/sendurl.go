@@ -1,0 +1,401 @@
+// Package sendurl provides functionality for sending URLs.
+package sendurl
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/metrics"
+
+	"gitlab.com/gitlab-org/labkit/mask"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/config"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/forwardheaders"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/helper/fail"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/htmlstream"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/jsonstream"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/log"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/senddata"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/transport"
+)
+
+type entry struct{ senddata.Prefix }
+
+type entryParams struct {
+	URL                              string
+	AllowRedirects                   bool
+	AllowLocalhost                   bool
+	AllowedEndpoints                 []string
+	SSRFFilter                       bool
+	DialTimeout                      config.TomlDuration
+	ResponseHeaderTimeout            config.TomlDuration
+	ErrorResponseStatus              int
+	TimeoutResponseStatus            int
+	Body                             string
+	Header                           http.Header
+	ResponseHeaders                  http.Header
+	Method                           string
+	RestrictForwardedResponseHeaders forwardheaders.Params
+	TransformConfig                  *transformConfig
+
+	// UpstreamRange, when set, is the Range header sent upstream in place of the
+	// client's own Range and If-Range. It serves a byte span of the stored object
+	// as an ordinary full response: the upstream 206 becomes 200 and Content-Range
+	// is dropped, since the client itself never sent a Range request.
+	UpstreamRange string
+}
+
+// transformConfig, when set, rewrites string values found at the given object
+// Key in a streamed 2xx response, replacing the From prefix with the To prefix.
+// It is used to rewrite npm packument tarball URLs (JSON format) and PyPI
+// simple-index file URLs (HTML format) so downloads route back through GitLab.
+type transformConfig struct {
+	Format string
+	Key    string
+	From   string
+	To     string
+}
+
+// prefixes returns the prefixes to match. An https From also matches its http
+// spelling, so the scheme cannot be used to slip an entry past the rewrite: an
+// upstream index entry served over http would otherwise reach the client
+// untouched and be fetched directly, with no GitLab-side policy applied.
+//
+// The insecure variant is derived from From rather than hardcoded, so it stays
+// scoped to whatever the caller matches on -- "https://" for PyPI, but
+// "https://registry.npmjs.org/" for npm, where a bare "http://" would wrongly
+// capture unrelated hosts. Callers cannot currently ask for anything else;
+// parameterising this is tracked in
+// https://gitlab.com/gitlab-org/gitlab/-/work_items/609164.
+func (c *transformConfig) prefixes() []string {
+	if rest, found := strings.CutPrefix(c.From, "https://"); found {
+		return []string{c.From, "http://" + rest}
+	}
+
+	return []string{c.From}
+}
+
+type cacheKey struct {
+	requestTimeout   time.Duration
+	responseTimeout  time.Duration
+	allowRedirects   bool
+	allowLocalhost   bool
+	ssrfFilter       bool
+	allowedEndpoints string
+}
+
+var httpClients sync.Map
+
+// SendURL represents the entry for sending a URL.
+var SendURL = &entry{"send-url:"}
+
+var rangeHeaderKeys = []string{
+	"If-Match",
+	"If-Unmodified-Since",
+	"If-None-Match",
+	"If-Modified-Since",
+	"If-Range",
+	"Range",
+}
+
+// Keep cache headers from the original response, not the proxied response. The
+// original response comes from the Rails application, which should be the
+// source of truth for caching.
+var preserveHeaderKeys = []string{
+	"Cache-Control",
+	"Expires",
+	"Date",   // Support for HTTP 1.0 proxies
+	"Pragma", // Support for HTTP 1.0 proxies
+}
+
+var httpClientNoRedirect = func(_ *http.Request, _ []*http.Request) error {
+	return http.ErrUseLastResponse
+}
+
+var (
+	sendURLRequests = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gitlab_workhorse_send_url_requests",
+			Help: "How many send URL requests have been processed",
+		},
+		[]string{"status"},
+	)
+	sendURLOpenRequests = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "gitlab_workhorse_send_url_open_requests",
+			Help: "Describes how many send URL requests are open now",
+		},
+	)
+	sendURLBytes = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "gitlab_workhorse_send_url_bytes",
+			Help: "How many bytes were passed with send URL",
+		},
+	)
+
+	sendURLRequestsInvalidData   = sendURLRequests.WithLabelValues("invalid-data")
+	sendURLRequestsRequestFailed = sendURLRequests.WithLabelValues("request-failed")
+	sendURLRequestsSucceeded     = sendURLRequests.WithLabelValues("succeeded")
+)
+
+func (e *entry) Inject(w http.ResponseWriter, r *http.Request, sendData string) {
+	var params entryParams
+
+	sendURLOpenRequests.Inc()
+	defer sendURLOpenRequests.Dec()
+
+	if err := e.Unpack(&params, sendData); err != nil {
+		fail.Request(w, r, fmt.Errorf("SendURL: unpack sendData: %v", err))
+		return
+	}
+
+	// Get the tracker from context and set flags
+	if tracker, ok := metrics.FromContext(r.Context()); ok {
+		tracker.SetFlag(metrics.KeyFetchedExternalURL, strconv.FormatBool(true))
+	}
+
+	setDefaultMethod(&params)
+
+	log.WithContextFields(r.Context(), log.Fields{
+		"url":  mask.URL(params.URL),
+		"path": r.URL.Path,
+	}).Info("SendURL: sending")
+
+	if params.URL == "" {
+		sendURLRequestsInvalidData.Inc()
+		fail.Request(w, r, fmt.Errorf("SendURL: URL is empty"))
+		return
+	}
+
+	newReq, err := e.createNewRequest(w, r, &params)
+	if err != nil {
+		return // Error handling is done in createNewRequest
+	}
+
+	// #nosec G704 -- params.URL is unpacked from the Gitlab-Workhorse-Send-Data
+	// response header set by the trusted GitLab Rails backend. Clients cannot
+	// set response headers, so this is not end-user-controlled input.
+	resp, err := cachedClient(params).Do(newReq) //nolint:errcheck
+	if err != nil {
+		e.handleRequestError(w, r, err, &params)
+		return
+	}
+	params.RestrictForwardedResponseHeaders.ForwardResponseHeaders(w, resp, preserveHeaderKeys, params.ResponseHeaders)
+
+	// Only transform successful responses; error and redirect bodies are
+	// streamed verbatim. A transform changes the body length, so the upstream
+	// Content-Length is dropped and the response is streamed chunked.
+	var transformCfg *transformConfig
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		transformCfg = params.TransformConfig
+	}
+	if transformCfg != nil {
+		w.Header().Del("Content-Length")
+	}
+
+	w.WriteHeader(responseStatus(w, resp, &params))
+
+	defer func() {
+		if err = resp.Body.Close(); err != nil {
+			fmt.Printf("Error closing response body: %v\n", err)
+		}
+	}()
+
+	if err := e.streamResponse(w, resp.Body, transformCfg); err != nil {
+		sendURLRequestsRequestFailed.Inc()
+		log.WithRequest(r).WithError(fmt.Errorf("SendURL: Copy response: %v", err)).Error()
+		return
+	}
+
+	sendURLRequestsSucceeded.Inc()
+}
+
+// A 206 answers our UpstreamRange, not a Range request from the client, so the
+// client must see a plain full response.
+func responseStatus(w http.ResponseWriter, resp *http.Response, params *entryParams) int {
+	if params.UpstreamRange == "" || resp.StatusCode != http.StatusPartialContent {
+		return resp.StatusCode
+	}
+
+	w.Header().Del("Content-Range")
+	return http.StatusOK
+}
+
+func setDefaultMethod(params *entryParams) {
+	if params.Method == "" {
+		params.Method = http.MethodGet
+	}
+}
+
+func (e *entry) createNewRequest(w http.ResponseWriter, r *http.Request, params *entryParams) (*http.Request, error) {
+	// A transform parses the whole document, so it cannot run on a byte span.
+	if params.UpstreamRange != "" && params.TransformConfig != nil {
+		err := fmt.Errorf("SendURL: UpstreamRange cannot be combined with TransformConfig")
+		sendURLRequestsInvalidData.Inc()
+		fail.Request(w, r, err)
+		return nil, err
+	}
+
+	newReq, err := http.NewRequest(params.Method, params.URL, strings.NewReader(params.Body))
+	if err != nil {
+		sendURLRequestsInvalidData.Inc()
+		fail.Request(w, r, fmt.Errorf("SendURL: NewRequest: %v", err))
+		return nil, err
+	}
+	newReq = newReq.WithContext(r.Context())
+
+	// A transform rewrites the document as a whole, so a partial upstream
+	// response would reach the parser as if it were complete: htmlstream would
+	// re-serialize a truncated fragment and jsonstream would error out with a
+	// 2xx and part of a body already on the wire. Request the full document
+	// instead -- answering a Range request with 200 is allowed, whereas skipping
+	// the transform on a 206 would hand back an unrewritten index.
+	if params.TransformConfig == nil {
+		for _, header := range rangeHeaderKeys {
+			newReq.Header[header] = r.Header[header]
+		}
+	}
+
+	for key, values := range params.Header {
+		for _, value := range values {
+			newReq.Header.Add(key, value)
+		}
+	}
+
+	// Applied last so no other Range is sent alongside ours, and no If-Range
+	// whose validator fails can make upstream ignore our Range.
+	if params.UpstreamRange != "" {
+		newReq.Header.Set("Range", params.UpstreamRange)
+		newReq.Header.Del("If-Range")
+	}
+
+	return newReq, nil
+}
+
+func (e *entry) handleRequestError(w http.ResponseWriter, r *http.Request, err error, params *entryParams) {
+	status := http.StatusInternalServerError
+	var allowedIPError *transport.AllowedIPError
+
+	switch {
+	case params.TimeoutResponseStatus != 0 && os.IsTimeout(err):
+		status = params.TimeoutResponseStatus
+	case errors.As(err, &allowedIPError):
+		status = http.StatusForbidden
+	case params.ErrorResponseStatus != 0:
+		status = params.ErrorResponseStatus
+	}
+
+	sendURLRequestsRequestFailed.Inc()
+	fail.Request(w, r, fmt.Errorf("SendURL: Do request: %v", err), fail.WithStatus(status))
+}
+
+func (e *entry) streamResponse(w http.ResponseWriter, body io.Reader, cfg *transformConfig) error {
+	fw := newFlushingResponseWriter(w)
+
+	if cfg != nil {
+		// jsontext/html write one token at a time; buffer so the flushing
+		// writer flushes in chunks rather than once per token on large indexes.
+		bw := bufio.NewWriter(fw)
+		cw := &countingWriter{writer: bw}
+
+		var err error
+		switch cfg.Format {
+		case "html":
+			err = htmlstream.Transform(body, cw, cfg.Key, cfg.prefixes(), cfg.To)
+		default:
+			err = jsonstream.Transform(body, cw, cfg.Key, cfg.prefixes(), cfg.To)
+		}
+
+		flushErr := bw.Flush()
+		sendURLBytes.Add(float64(cw.written))
+		return errors.Join(err, flushErr)
+	}
+
+	n, err := io.Copy(fw, body)
+	sendURLBytes.Add(float64(n))
+	return err
+}
+
+// countingWriter wraps an io.Writer and records how many bytes were written, so
+// the send-url byte metric stays accurate on the transform path.
+type countingWriter struct {
+	writer  io.Writer
+	written int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.writer.Write(p)
+	c.written += int64(n)
+	return n, err
+}
+
+func cachedClient(params entryParams) *http.Client {
+	key := cacheKey{
+		requestTimeout:   params.DialTimeout.Duration,
+		responseTimeout:  params.ResponseHeaderTimeout.Duration,
+		allowRedirects:   params.AllowRedirects,
+		allowLocalhost:   params.AllowLocalhost,
+		ssrfFilter:       params.SSRFFilter,
+		allowedEndpoints: strings.Join(params.AllowedEndpoints, ","),
+	}
+	cachedClient, found := httpClients.Load(key)
+	if found {
+		return cachedClient.(*http.Client)
+	}
+
+	var options []transport.Option
+
+	if params.DialTimeout.Duration != 0 {
+		options = append(options, transport.WithDialTimeout(params.DialTimeout.Duration))
+	}
+	if params.ResponseHeaderTimeout.Duration != 0 {
+		options = append(options, transport.WithResponseHeaderTimeout(params.ResponseHeaderTimeout.Duration))
+	}
+	if params.SSRFFilter {
+		options = append(options, transport.WithSSRFFilter(params.AllowLocalhost, params.AllowedEndpoints))
+	}
+
+	client := &http.Client{
+		Transport: transport.NewRestrictedTransport(options...),
+	}
+	if !params.AllowRedirects {
+		client.CheckRedirect = httpClientNoRedirect
+	}
+
+	httpClients.Store(key, client)
+
+	return client
+}
+
+func newFlushingResponseWriter(w http.ResponseWriter) *httpFlushingResponseWriter {
+	return &httpFlushingResponseWriter{
+		ResponseWriter: w,
+		controller:     http.NewResponseController(w), //nolint:bodyclose
+	}
+}
+
+type httpFlushingResponseWriter struct {
+	http.ResponseWriter
+	controller *http.ResponseController
+}
+
+// Write flushes the response once its written
+func (h *httpFlushingResponseWriter) Write(data []byte) (int, error) {
+	n, err := h.ResponseWriter.Write(data)
+	if err != nil {
+		return n, err
+	}
+
+	return n, h.controller.Flush()
+}

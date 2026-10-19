@@ -1,0 +1,542 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::LabelsController, feature_category: :team_planning do
+  let_it_be(:group) { create(:group) }
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project, namespace: group, maintainers: user) }
+  let_it_be(:project_2) { create(:project, namespace: group, maintainers: user) }
+
+  before do
+    sign_in(user)
+  end
+
+  describe 'GET #index' do
+    let_it_be_with_reload(:label_1) { create(:label, project: project, priority: 1, title: 'Label 1') }
+    let_it_be(:label_2) { create(:label, project: project, priority: 3, title: 'Label 2') }
+    let_it_be(:label_3) { create(:label, project: project, priority: 1, title: 'Label 3') }
+    let_it_be(:label_4) { create(:label, project: project, title: 'Label 4') }
+    let_it_be(:label_5) { create(:label, project: project, title: 'Label 5') }
+
+    let_it_be(:group_label_1) { create(:group_label, group: group, title: 'Group Label 1') }
+    let_it_be(:group_label_2) { create(:group_label, group: group, title: 'Group Label 2') }
+    let_it_be(:group_label_3) { create(:group_label, group: group, title: 'Group Label 3') }
+    let_it_be(:group_label_4) { create(:group_label, group: group, title: 'Group Label 4') }
+
+    let_it_be(:group_labels) { [group_label_3, group_label_4] }
+    let_it_be(:project_labels) { [label_4, label_5] }
+    let_it_be(:group_priority_labels) { [group_label_1, group_label_2] }
+    let_it_be(:project_priority_labels) { [label_1, label_2, label_3] }
+
+    before_all do
+      create(:label_priority, project: project, label: group_label_1, priority: 3)
+      create(:label_priority, project: project, label: group_label_2, priority: 1)
+    end
+
+    context '@prioritized_labels' do
+      before do
+        list_labels
+      end
+
+      it 'does not include labels without priority' do
+        list_labels
+
+        expect(assigns(:prioritized_labels)).not_to include(group_label_3, group_label_4, label_4, label_5)
+      end
+
+      it 'is sorted by priority, then label title' do
+        expect(assigns(:prioritized_labels)).to eq [group_label_2, label_1, label_3, group_label_1, label_2]
+      end
+    end
+
+    context '@labels' do
+      it 'is sorted by label title' do
+        list_labels
+
+        expect(assigns(:labels)).to eq [group_label_3, group_label_4, label_4, label_5]
+      end
+
+      context 'with archived labels' do
+        let_it_be(:archived_label) { create(:label, :archived, project: project_2, title: 'Archived Label') }
+        let_it_be(:unarchived_label) { create(:label, project: project_2, title: 'Unarchived Label') }
+        let_it_be(:params) { { namespace_id: project_2.namespace.to_param, project_id: project_2 } }
+
+        let_it_be(:unarchived_labels) { [unarchived_label, group_label_1, group_label_2, group_label_3, group_label_4] }
+        let_it_be(:all_labels) { [archived_label, unarchived_label, group_label_1, group_label_2, group_label_3, group_label_4] }
+
+        it_behaves_like 'handles archived labels'
+
+        context 'when viewing archived tab' do
+          it 'does not show prioritized labels' do
+            get :index, params: { namespace_id: project.namespace.to_param, project_id: project, archived: 'true' }
+            expect(assigns(:prioritized_labels)).to be_empty
+          end
+        end
+      end
+
+      it 'does not include labels with priority' do
+        list_labels
+
+        expect(assigns(:labels)).not_to include(group_label_2, label_1, label_3, group_label_1, label_2)
+      end
+
+      it 'does not include group labels when project does not belong to a group' do
+        project.update!(namespace: create(:namespace))
+
+        list_labels
+
+        expect(assigns(:labels)).not_to include(group_label_3, group_label_4)
+      end
+    end
+
+    context 'with subgroups' do
+      let_it_be(:subgroup) { create(:group, parent: group) }
+      let_it_be(:subgroup_label_1) { create(:group_label, group: subgroup, title: 'subgroup_label_1') }
+      let_it_be(:subgroup_label_2) { create(:group_label, group: subgroup, title: 'subgroup_label_2') }
+
+      before do
+        project.update!(namespace: subgroup)
+        subgroup.add_owner(user)
+        create(:label_priority, project: project, label: subgroup_label_2, priority: 1)
+      end
+
+      it 'returns ancestor group labels', :aggregate_failures do
+        params = { namespace_id: project.namespace.to_param, project_id: project }
+        get :index, params: params
+
+        expect(assigns(:labels)).to match_array([subgroup_label_1] + group_labels + project_labels)
+        expect(assigns(:prioritized_labels)).to match_array([subgroup_label_2] + group_priority_labels + project_priority_labels)
+      end
+    end
+
+    context 'with views rendered' do
+      render_views
+
+      before do
+        list_labels
+      end
+
+      it 'avoids N+1 queries', :use_clean_rails_redis_caching do
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) { list_labels }
+
+        create_list(:label, 3, project: project)
+        create_list(:group_label, 3, group: group)
+
+        # some n+1 queries still exist
+        # calls to get max project authorization access level
+        expect { list_labels }.not_to exceed_all_query_limit(control).with_threshold(25)
+        expect(assigns(:labels).count).to eq(10)
+      end
+    end
+
+    context 'with a sort param' do
+      it 'sorts by the requested order instead of the default', :aggregate_failures do
+        get :index, params: { namespace_id: project.namespace.to_param, project_id: project, sort: 'name_desc' }
+
+        expect(assigns(:sort)).to eq('name_desc')
+        expect(assigns(:labels)).to eq [label_5, label_4, group_label_4, group_label_3]
+      end
+    end
+
+    def list_labels
+      get :index, params: { namespace_id: project.namespace.to_param, project_id: project }
+    end
+  end
+
+  describe 'POST #generate' do
+    context 'personal project' do
+      let_it_be(:personal_project) { create(:project, namespace: user.namespace) }
+
+      it 'creates labels' do
+        post :generate, params: { namespace_id: personal_project.namespace.to_param, project_id: personal_project }
+
+        expect(response).to have_gitlab_http_status(:found)
+      end
+    end
+
+    context 'project belonging to a group' do
+      it 'creates labels' do
+        post :generate, params: { namespace_id: project.namespace.to_param, project_id: project }
+
+        expect(response).to have_gitlab_http_status(:found)
+      end
+    end
+  end
+
+  describe 'POST #set_priorities' do
+    let_it_be(:unprioritized_label) { create(:label, project: project, title: 'To prioritize') }
+
+    it 'prioritizes the labels passed in label_ids', :aggregate_failures do
+      post :set_priorities, params: {
+        namespace_id: project.namespace.to_param,
+        project_id: project,
+        label_ids: [unprioritized_label.id]
+      }, format: :json
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(unprioritized_label.reload.priority(project)).to eq(0)
+    end
+
+    it 'ignores label ids the project cannot access', :aggregate_failures do
+      other_label = create(:label, project: create(:project))
+
+      post :set_priorities, params: {
+        namespace_id: project.namespace.to_param,
+        project_id: project,
+        label_ids: [other_label.id]
+      }, format: :json
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(other_label.reload.priority(project)).to be_nil
+    end
+  end
+
+  describe 'POST #toggle_subscription' do
+    it 'allows user to toggle subscription on project labels' do
+      label = create(:label, project: project)
+
+      toggle_subscription(label)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'allows user to toggle subscription on group labels' do
+      group_label = create(:group_label, group: group)
+
+      toggle_subscription(group_label)
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    def toggle_subscription(label)
+      post :toggle_subscription, params: { namespace_id: project.namespace.to_param, project_id: project, id: label.to_param }
+    end
+  end
+
+  describe 'POST #promote' do
+    let_it_be(:promoted_label_name) { "Promoted Label" }
+    let_it_be_with_reload(:label_1) { create(:label, title: promoted_label_name, project: project) }
+
+    context 'not group reporters' do
+      it 'denies access' do
+        post :promote, params: { namespace_id: project.namespace.to_param, project_id: project, id: label_1.to_param }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'group reporter' do
+      before_all do
+        group.add_reporter(user)
+      end
+
+      it 'gives access' do
+        post :promote, params: { namespace_id: project.namespace.to_param, project_id: project, id: label_1.to_param }
+
+        expect(response).to redirect_to(namespace_project_labels_path)
+      end
+
+      it 'promotes the label' do
+        post :promote, params: { namespace_id: project.namespace.to_param, project_id: project, id: label_1.to_param }
+
+        expect(Label.where(id: label_1.id)).to be_empty
+        expect(GroupLabel.find_by(title: promoted_label_name)).not_to be_nil
+      end
+
+      it 'redirects to the same page after promoting when format is html' do
+        post :promote, params: { namespace_id: project.namespace.to_param, project_id: project, id: label_1.to_param, page: 2 }, format: :html
+
+        expect(response).to redirect_to(project_labels_path(project, page: 2))
+      end
+
+      it 'returns the url with right page param when format is json' do
+        post :promote, params: { namespace_id: project.namespace.to_param, project_id: project, id: label_1.to_param, page: 2 }, format: :json
+
+        expect(json_response).to eq({ 'url' => project_labels_path(project, page: 2) })
+      end
+
+      it 'renders label name without parsing it as HTML' do
+        name = 'CCC<img src=x onerror=alert(document.domain)>'
+        label_1.update!(name: name)
+
+        post :promote, params: { namespace_id: project.namespace.to_param, project_id: project, id: label_1.to_param }
+
+        expect(flash[:notice]).to eq("#{CGI.escapeHTML(name)} promoted to <a href=\"#{group_labels_path(project.group)}\"><u>group label</u></a>.")
+      end
+
+      context 'service raising InvalidRecord' do
+        before do
+          expect_any_instance_of(Labels::PromoteService).to receive(:execute) do |label|
+            raise ActiveRecord::RecordInvalid, label_1
+          end
+        end
+
+        it 'returns to label list' do
+          post :promote, params: { namespace_id: project.namespace.to_param, project_id: project, id: label_1.to_param }
+          expect(response).to redirect_to(namespace_project_labels_path)
+        end
+      end
+    end
+  end
+
+  describe '#ensure_canonical_path' do
+    before do
+      sign_in(user)
+    end
+
+    context 'for a GET request' do
+      context 'when requesting the canonical path' do
+        context 'non-show path' do
+          context 'with exactly matching casing' do
+            it 'does not redirect' do
+              get :index, params: { namespace_id: project.namespace, project_id: project.to_param }
+
+              expect(response).not_to have_gitlab_http_status(:moved_permanently)
+            end
+          end
+
+          context 'with different casing' do
+            it 'redirects to the correct casing' do
+              get :index, params: { namespace_id: project.namespace, project_id: project.to_param.upcase }
+
+              expect(response).to redirect_to(project_labels_path(project))
+              expect(controller).not_to set_flash[:notice]
+            end
+          end
+        end
+      end
+
+      context 'when requesting a redirected path' do
+        let_it_be(:redirect_route) { project.redirect_routes.create!(path: project.full_path + 'old') }
+
+        it 'redirects to the canonical path' do
+          get :index, params: { namespace_id: project.namespace, project_id: project.to_param + 'old' }
+
+          expect(response).to redirect_to(project_labels_path(project))
+          expect(controller).to set_flash[:notice].to(project_moved_message(redirect_route, project))
+        end
+
+        context 'with an AJAX request' do
+          it 'redirects to the canonical path but does not set flash message' do
+            get :index, params: { namespace_id: project.namespace, project_id: project.to_param + 'old' }, xhr: true
+
+            expect(response).to redirect_to(project_labels_path(project))
+            expect(controller).not_to set_flash[:notice]
+          end
+        end
+
+        context 'with JSON format' do
+          it 'redirects to the canonical path but does not set flash message' do
+            get :index, params: { namespace_id: project.namespace, project_id: project.to_param + 'old' }, format: :json
+
+            expect(response).to redirect_to(project_labels_path(project, format: :json))
+            expect(controller).not_to set_flash[:notice]
+          end
+        end
+      end
+    end
+  end
+
+  context 'for a non-GET request' do
+    context 'when requesting the canonical path with different casing' do
+      it 'does not 404' do
+        post :generate, params: { namespace_id: project.namespace, project_id: project }
+
+        expect(response).not_to have_gitlab_http_status(:not_found)
+      end
+
+      it 'does not redirect to the correct casing' do
+        post :generate, params: { namespace_id: project.namespace, project_id: project }
+
+        expect(response).not_to have_gitlab_http_status(:moved_permanently)
+      end
+    end
+
+    context 'when requesting a redirected path' do
+      let_it_be(:redirect_route) { project.redirect_routes.create!(path: project.full_path + 'old') }
+
+      it 'returns not found' do
+        post :generate, params: { namespace_id: project.namespace, project_id: project.to_param + 'old' }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'PUT #update' do
+    context 'when updating lock_on_merge' do
+      let_it_be(:params) { { lock_on_merge: true } }
+      let_it_be_with_reload(:label) { create(:label, project: project) }
+
+      subject(:update_request) { put :update, params: { namespace_id: project.namespace, project_id: project, id: label.to_param, label: params } }
+
+      context 'when feature flag is disabled' do
+        before do
+          stub_feature_flags(enforce_locked_labels_on_merge: false)
+        end
+
+        it 'does not allow setting lock_on_merge' do
+          update_request
+
+          expect(response).to redirect_to(namespace_project_labels_path)
+          expect(label.reload.lock_on_merge).to be_falsey
+        end
+      end
+
+      shared_examples 'allows setting lock_on_merge' do
+        it do
+          update_request
+
+          expect(response).to redirect_to(namespace_project_labels_path)
+          expect(label.reload.lock_on_merge).to be_truthy
+        end
+      end
+
+      context 'when feature flag is enabled' do
+        before do
+          stub_feature_flags(enforce_locked_labels_on_merge: project)
+        end
+
+        it_behaves_like 'allows setting lock_on_merge'
+      end
+
+      context 'when feature flag for ancestor group is enabled' do
+        before do
+          stub_feature_flags(enforce_locked_labels_on_merge: group)
+        end
+
+        it_behaves_like 'allows setting lock_on_merge'
+      end
+    end
+
+    it_behaves_like 'updating archived status' do
+      let_it_be_with_reload(:label) { create(:label, project: project) }
+      let(:update_params) { { namespace_id: project.namespace, project_id: project, id: label.to_param } }
+      let(:expected_redirect_path) { project_labels_path(project) }
+    end
+  end
+
+  describe 'DELETE #destroy' do
+    context 'when current user has ability to destroy the label' do
+      before do
+        sign_in(user)
+      end
+
+      it 'removes the label' do
+        label = create(:label, project: project)
+        delete :destroy, params: { namespace_id: group.to_param, project_id: project.to_param, id: label.to_param }
+
+        expect { label.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+
+      it 'does not remove the label if it is locked' do
+        label = create(:label, project: project, lock_on_merge: true)
+        delete :destroy, params: { namespace_id: group.to_param, project_id: project.to_param, id: label.to_param }
+
+        expect(label.reload).to eq label
+      end
+
+      context 'when label is successfully destroyed' do
+        it 'redirects to the project labels page' do
+          label = create(:label, project: project)
+          delete :destroy, params: { namespace_id: group.to_param, project_id: project.to_param, id: label.to_param }
+
+          expect(response).to redirect_to(project_labels_path(project))
+        end
+      end
+    end
+
+    context 'when current_user does not have ability to destroy the label' do
+      let(:another_user) { create(:user) }
+
+      before do
+        sign_in(another_user)
+      end
+
+      it 'responds with status 404' do
+        label = create(:label, project: project)
+        delete :destroy, params: { namespace_id: group.to_param, project_id: project.to_param, id: label.to_param }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'label management authorization' do
+    using RSpec::Parameterized::TableSyntax
+
+    let_it_be(:label) { create(:label, project: project) }
+    let_it_be(:guest) { create(:user, guest_of: project) }
+    let_it_be(:planner) { create(:user, planner_of: project) }
+    let_it_be(:reporter) { create(:user, reporter_of: project) }
+
+    let(:project_params) { { namespace_id: group.to_param, project_id: project.to_param } }
+
+    def action_params(action)
+      case action
+      when :create then { label: { title: 'New label', color: '#FFFFFF' } }
+      when :update then { id: label.id, label: { title: 'Renamed' } }
+      when :set_priorities then { label_ids: [label.id], format: :json }
+      when :remove_priority then { id: label.id, format: :json }
+      when :edit, :destroy then { id: label.id }
+      else {}
+      end
+    end
+
+    where(:http_method, :action) do
+      :get    | :new
+      :post   | :create
+      :post   | :generate
+      :get    | :edit
+      :put    | :update
+      :post   | :set_priorities
+      :delete | :remove_priority
+      :delete | :destroy
+    end
+
+    with_them do
+      let(:params) { project_params.merge(action_params(action)) }
+
+      it 'returns 404 for a guest' do
+        sign_in(guest)
+
+        send(http_method, action, params: params)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+
+      it 'is allowed for a planner' do
+        sign_in(planner)
+
+        send(http_method, action, params: params)
+
+        expect(response).not_to have_gitlab_http_status(:not_found)
+      end
+
+      it 'is allowed for a reporter' do
+        sign_in(reporter)
+
+        send(http_method, action, params: params)
+
+        expect(response).not_to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    describe 'POST #promote' do
+      let(:params) { project_params.merge(id: label.to_param) }
+
+      it 'returns 404 for a project reporter who is not a group member' do
+        sign_in(reporter)
+
+        post :promote, params: params
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  def project_moved_message(redirect_route, project)
+    "Project '#{redirect_route.path}' was moved to '#{project.full_path}'. Please update any links and bookmarks that may still have the old path."
+  end
+end

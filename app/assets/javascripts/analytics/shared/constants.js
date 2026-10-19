@@ -1,0 +1,568 @@
+import { defaultAreaOpacity } from '@gitlab/ui/src/utils/charts/config';
+import dateFormat, { masks } from '~/lib/dateformat';
+import {
+  nDaysBefore,
+  getStartOfDay,
+  getCurrentUtcDate,
+  nWeeksBefore,
+  nYearsBefore,
+} from '~/lib/utils/datetime_utility';
+import { s__, __, sprintf, n__ } from '~/locale';
+import { helpPagePath } from '~/helpers/help_page_helper';
+
+export const DATE_RANGE_LIMIT = 180;
+export const PROJECTS_PER_PAGE = 50;
+
+const { isoDate } = masks;
+export const dateFormats = {
+  isoDate,
+  defaultDate: 'mmm dd, yyyy',
+  defaultDateTime: 'mmm dd, yyyy h:MMtt',
+  month: 'mmmm',
+};
+
+const TODAY = getCurrentUtcDate();
+const SAME_DAY_OFFSET = 1;
+
+export const LAST_30_DAYS = nDaysBefore(TODAY, 30 - SAME_DAY_OFFSET, { utc: true });
+
+const lastXDays = __('Last %{days} days');
+const lastWeek = nWeeksBefore(TODAY, 1, { utc: true });
+const last90Days = nDaysBefore(TODAY, 90 - SAME_DAY_OFFSET, { utc: true });
+const last180Days = nDaysBefore(TODAY, 180 - SAME_DAY_OFFSET, { utc: true });
+
+const startOfToday = getStartOfDay(new Date(), { utc: true });
+const formatDateParam = (d) => dateFormat(d, dateFormats.isoDate, true);
+const mrStartDate = formatDateParam(nDaysBefore(startOfToday, DATE_RANGE_LIMIT, { utc: true }));
+const mrEndDate = formatDateParam(startOfToday);
+const mrProjectLink = `-/analytics/dashboards/merge_request_analytics?date_range_option=custom&start_date=${mrStartDate}&end_date=${mrEndDate}`;
+
+export const DATE_RANGE_CUSTOM_VALUE = 'custom';
+export const DATE_RANGE_LAST_30_DAYS_VALUE = 'last_30_days';
+
+export const DEFAULT_DROPDOWN_DATE_RANGES = [
+  {
+    text: __('Last week'),
+    value: 'last_week',
+    startDate: lastWeek,
+    endDate: TODAY,
+  },
+  {
+    text: sprintf(lastXDays, { days: 30 }),
+    value: DATE_RANGE_LAST_30_DAYS_VALUE,
+    startDate: LAST_30_DAYS,
+    endDate: TODAY,
+  },
+  {
+    text: sprintf(lastXDays, { days: 90 }),
+    value: 'last_90_days',
+    startDate: last90Days,
+    endDate: TODAY,
+  },
+  {
+    text: sprintf(lastXDays, { days: 180 }),
+    value: 'last_180_days',
+    startDate: last180Days,
+    endDate: TODAY,
+  },
+];
+
+export const MAX_DATE_RANGE_TEXT = (maxDateRange) => {
+  return sprintf(
+    __(
+      'Showing data for workflow items completed in this date range. Date range limited to %{maxDateRange} days.',
+    ),
+    {
+      maxDateRange,
+    },
+  );
+};
+
+// Limits the number of decimals we round values to
+export const MAX_METRIC_PRECISION = 4;
+
+export const UNITS = {
+  COUNT: 'COUNT',
+  BIGINT_COUNT: 'BIGINT_COUNT',
+  DAYS: 'DAYS',
+  PER_DAY: 'PER_DAY',
+  PERCENT: 'PERCENT',
+  TIME_INTERVAL: 'TIME_INTERVAL',
+  MINUTES: 'MINUTES',
+};
+
+export const NUMBER_OF_DAYS_SELECTED = (numDays) => {
+  return n__('1 day selected', '%d days selected', numDays);
+};
+
+export const ISSUES_COMPLETED_TYPE = 'issues_completed';
+
+export const ALL_METRICS_QUERY_TYPE = 'ALL_METRICS_QUERY_TYPE';
+export const DORA_METRICS_QUERY_TYPE = 'DORA_METRICS_QUERY_TYPE';
+export const FLOW_METRICS_QUERY_TYPE = 'FLOW_METRICS_QUERY_TYPE';
+
+export const FLOW_METRICS = {
+  LEAD_TIME: 'lead_time',
+  CYCLE_TIME: 'cycle_time',
+  ISSUES: 'issues',
+  ISSUES_COMPLETED: ISSUES_COMPLETED_TYPE,
+  COMMITS: 'commits',
+  DEPLOYS: 'deploys',
+  MEDIAN_TIME_TO_MERGE: 'median_time_to_merge',
+};
+
+export const DORA_METRICS = {
+  DEPLOYMENT_FREQUENCY: 'deployment_frequency',
+  LEAD_TIME_FOR_CHANGES: 'lead_time_for_changes',
+  TIME_TO_RESTORE_SERVICE: 'time_to_restore_service',
+  CHANGE_FAILURE_RATE: 'change_failure_rate',
+};
+
+export const LEAD_TIME_NO_DATA_MESSAGE = s__(
+  'DORA4Metrics|No merge requests were deployed during this period',
+);
+
+export const DORA_METRICS_NULL_SERIES_TITLE = {
+  [DORA_METRICS.CHANGE_FAILURE_RATE]: s__('DORA4Metrics|No incidents during this period'),
+  [DORA_METRICS.TIME_TO_RESTORE_SERVICE]: s__('DORA4Metrics|No incidents during this period'),
+  [DORA_METRICS.LEAD_TIME_FOR_CHANGES]: LEAD_TIME_NO_DATA_MESSAGE,
+  [DORA_METRICS.DEPLOYMENT_FREQUENCY]: s__('DORA4Metrics|No deployments during this period'),
+};
+
+export const LEAD_TIME_FOR_CHANGES_SECONDARY_SERIES_NAME = s__(
+  'DORA4Metrics|Median (last %{days}d)',
+);
+export const DEPLOYMENT_FREQUENCY_SECONDARY_SERIES_NAME = s__(
+  'DORA4Metrics|Average (last %{days}d)',
+);
+export const CHANGE_FAILURE_RATE_SECONDARY_SERIES_NAME = s__(
+  'DORA4Metrics|Median time (last %{days}d)',
+);
+export const TIME_TO_RESTORE_SERVICE_SECONDARY_SERIES_NAME = s__(
+  'DORA4Metrics|Median time (last %{days}d)',
+);
+
+export const DORA_METRICS_SECONDARY_SERIES_NAME = {
+  [DORA_METRICS.CHANGE_FAILURE_RATE]: CHANGE_FAILURE_RATE_SECONDARY_SERIES_NAME,
+  [DORA_METRICS.DEPLOYMENT_FREQUENCY]: DEPLOYMENT_FREQUENCY_SECONDARY_SERIES_NAME,
+  [DORA_METRICS.TIME_TO_RESTORE_SERVICE]: TIME_TO_RESTORE_SERVICE_SECONDARY_SERIES_NAME,
+  [DORA_METRICS.LEAD_TIME_FOR_CHANGES]: LEAD_TIME_FOR_CHANGES_SECONDARY_SERIES_NAME,
+};
+
+export const VSA_METRICS_GROUPS = [
+  {
+    key: 'lifecycle_metrics',
+    title: s__('ValueStreamAnalytics|Lifecycle metrics'),
+    keys: [
+      FLOW_METRICS.LEAD_TIME,
+      FLOW_METRICS.CYCLE_TIME,
+      FLOW_METRICS.ISSUES,
+      FLOW_METRICS.COMMITS,
+      FLOW_METRICS.DEPLOYS,
+    ],
+  },
+];
+
+export const VULNERABILITY_CRITICAL_TYPE = 'vulnerability_critical';
+export const VULNERABILITY_HIGH_TYPE = 'vulnerability_high';
+
+export const VULNERABILITY_METRICS = {
+  CRITICAL: VULNERABILITY_CRITICAL_TYPE,
+  HIGH: VULNERABILITY_HIGH_TYPE,
+};
+
+export const PIPELINE_ANALYTICS_TYPE_COUNT = 'pipeline_count';
+export const PIPELINE_ANALYTICS_TYPE_SUCCESS_RATE = 'pipeline_success_rate';
+export const PIPELINE_ANALYTICS_TYPE_FAILURE_RATE = 'pipeline_failed_rate';
+export const PIPELINE_ANALYTICS_TYPE_OTHER_RATE = 'pipeline_other_rate';
+export const PIPELINE_ANALYTICS_TYPE_MEDIAN = 'pipeline_duration_median';
+
+export const PIPELINE_ANALYTICS_METRICS = {
+  COUNT: PIPELINE_ANALYTICS_TYPE_COUNT,
+  SUCCESS_RATE: PIPELINE_ANALYTICS_TYPE_SUCCESS_RATE,
+  FAILURE_RATE: PIPELINE_ANALYTICS_TYPE_FAILURE_RATE,
+  OTHER_RATE: PIPELINE_ANALYTICS_TYPE_OTHER_RATE,
+  MEDIAN: PIPELINE_ANALYTICS_TYPE_MEDIAN,
+};
+
+export const MERGE_REQUEST_THROUGHPUT_TYPE = 'merge_request_throughput';
+
+export const MERGE_REQUEST_METRICS = {
+  THROUGHPUT: MERGE_REQUEST_THROUGHPUT_TYPE,
+};
+
+export const CONTRIBUTOR_COUNT_TYPE = 'contributor_count';
+
+export const CONTRIBUTOR_METRICS = {
+  COUNT: CONTRIBUTOR_COUNT_TYPE,
+};
+
+export const AI_METRICS = {
+  CODE_SUGGESTIONS_USERS_COUNT: 'code_suggestions_users_count',
+  CODE_SUGGESTIONS_ACCEPTANCE_RATE: 'code_suggestions_acceptance_rate',
+  DUO_CHAT_USERS_COUNT: 'duo_chat_users_count',
+  DUO_RCA_USERS_COUNT: 'duo_rca_users_count',
+  DUO_USED_COUNT: 'duo_used_count',
+  DUO_REVIEW_REQUESTS_COUNT: 'duo_review_requests_count',
+  DUO_REVIEW_COMMENT_COUNT: 'duo_review_comment_count',
+  DUO_AGENT_PLATFORM_FLOWS: 'duo_agent_platform_flows',
+  DUO_AGENT_PLATFORM_CHATS: 'duo_agent_platform_chats',
+  DUO_AGENT_PLATFORM_AGENTS_FLOWS_USERS_COUNT: 'duo_agent_platform_agent_flows_users_count',
+  DUO_POWER_USERS_COUNT: 'duo_power_users_count',
+  DUO_PIPELINES_RATE: 'duo_pipelines_rate',
+};
+
+export const VALUE_STREAM_METRIC_DISPLAY_UNITS = {
+  [UNITS.COUNT]: '',
+  [UNITS.DAYS]: __('days'),
+  // eslint-disable-next-line @gitlab/no-hardcoded-urls -- False positive, not a URL
+  [UNITS.PER_DAY]: __('/day'),
+  [UNITS.PERCENT]: '%',
+};
+
+// NOTE: ideally we would return these fields in the metrics queries
+//       the flow metrics query returns some but not all fields we need
+//        while the DORA query do not return any.
+export const VALUE_STREAM_METRIC_TILE_METADATA = {
+  [DORA_METRICS.DEPLOYMENT_FREQUENCY]: {
+    label: s__('DORA4Metrics|Deployment frequency'),
+    unit: UNITS.PER_DAY,
+    description: s__(
+      'ValueStreamAnalytics|Average number of deployments to production per day. This metric measures how often value is delivered to end users.',
+    ),
+    groupLink: '-/analytics/dashboards/dora_metrics',
+    projectLink: '-/analytics/dashboards/dora_metrics',
+    docsLink: helpPagePath('user/analytics/dora_metrics', { anchor: 'deployment-frequency' }),
+  },
+  [DORA_METRICS.LEAD_TIME_FOR_CHANGES]: {
+    label: s__('DORA4Metrics|Lead time for changes'),
+    unit: UNITS.DAYS,
+    description: s__(
+      'ValueStreamAnalytics|The time to successfully deliver a commit into production. This metric reflects the efficiency of CI/CD pipelines.',
+    ),
+    groupLink: '-/analytics/dashboards/dora_metrics',
+    projectLink: '-/analytics/dashboards/dora_metrics',
+    docsLink: helpPagePath('user/analytics/dora_metrics', { anchor: 'lead-time-for-changes' }),
+  },
+  [DORA_METRICS.TIME_TO_RESTORE_SERVICE]: {
+    label: s__('DORA4Metrics|Time to restore service'),
+    unit: UNITS.DAYS,
+    description: s__(
+      'ValueStreamAnalytics|The time it takes an organization to recover from a failure in production.',
+    ),
+    groupLink: '-/analytics/dashboards/dora_metrics',
+    projectLink: '-/analytics/dashboards/dora_metrics',
+    docsLink: helpPagePath('user/analytics/dora_metrics', { anchor: 'time-to-restore-service' }),
+  },
+  [DORA_METRICS.CHANGE_FAILURE_RATE]: {
+    label: s__('DORA4Metrics|Change failure rate'),
+    description: s__(
+      'ValueStreamAnalytics|Percentage of deployments that cause an incident in production.',
+    ),
+    groupLink: '-/analytics/dashboards/dora_metrics',
+    projectLink: '-/analytics/dashboards/dora_metrics',
+    docsLink: helpPagePath('user/analytics/dora_metrics', { anchor: 'change-failure-rate' }),
+    unit: UNITS.PERCENT,
+  },
+  [FLOW_METRICS.LEAD_TIME]: {
+    label: s__('DORA4Metrics|Lead time'),
+    description: s__('ValueStreamAnalytics|Median time from issue created to issue closed.'),
+    groupLink: '-/analytics/value_stream_analytics',
+    projectLink: '-/value_stream_analytics',
+    docsLink: helpPagePath('user/group/value_stream_analytics/_index', {
+      anchor: 'lifecycle-metrics',
+    }),
+    unit: UNITS.DAYS,
+  },
+  [FLOW_METRICS.CYCLE_TIME]: {
+    label: s__('DORA4Metrics|Cycle time'),
+    description: s__(
+      'ValueStreamAnalytics|Median time between when an issue is first referenced in the commit message of a merge request and when that referenced issue is closed.',
+    ),
+    groupLink: '-/analytics/value_stream_analytics',
+    projectLink: '-/value_stream_analytics',
+    docsLink: helpPagePath('user/group/value_stream_analytics/_index', {
+      anchor: 'lifecycle-metrics',
+    }),
+    unit: UNITS.DAYS,
+  },
+  [FLOW_METRICS.ISSUES]: {
+    label: s__('DORA4Metrics|New issues'),
+    unit: UNITS.COUNT,
+    description: s__('ValueStreamAnalytics|Number of new issues created.'),
+    groupLink: '-/issues_analytics',
+    projectLink: '-/analytics/issues_analytics',
+    docsLink: helpPagePath('user/group/issues_analytics/_index'),
+  },
+  [FLOW_METRICS.COMMITS]: {
+    label: s__('DORA4Metrics|Commits'),
+    unit: UNITS.COUNT,
+    description: s__('ValueStreamAnalytics|Number of commits pushed to the default branch'),
+  },
+  [FLOW_METRICS.DEPLOYS]: {
+    label: s__('DORA4Metrics|Deploys'),
+    unit: UNITS.COUNT,
+    description: s__('ValueStreamAnalytics|Total number of deploys to production.'),
+    groupLink: '-/analytics/productivity_analytics',
+    projectLink: mrProjectLink,
+    docsLink: helpPagePath('user/analytics/merge_request_analytics'),
+  },
+};
+
+export const PIPELINE_ANALYTICS_METRIC_METADATA = {
+  [PIPELINE_ANALYTICS_METRICS.COUNT]: {
+    description: s__(
+      'CICDAnalytics|The total number of pipelines that have run in the selected time period.',
+    ),
+    groupLink: '',
+    projectLink: '-/pipelines/charts',
+    docsLink: helpPagePath('user/analytics/ci_cd_analytics#pipeline-metrics'),
+  },
+  [PIPELINE_ANALYTICS_METRICS.SUCCESS_RATE]: {
+    description: s__('CICDAnalytics|The percentage of pipelines that completed successfully.'),
+    groupLink: '',
+    projectLink: '-/pipelines/charts',
+    docsLink: helpPagePath('user/analytics/ci_cd_analytics#pipeline-metrics'),
+  },
+  [PIPELINE_ANALYTICS_METRICS.FAILURE_RATE]: {
+    description: s__('CICDAnalytics|The percentage of pipelines that failed.'),
+    groupLink: '',
+    projectLink: '-/pipelines/charts',
+    docsLink: helpPagePath('user/analytics/ci_cd_analytics#pipeline-metrics'),
+  },
+  [PIPELINE_ANALYTICS_METRICS.OTHER_RATE]: {
+    description: s__('CICDAnalytics|The percentage of pipelines that were skipped or canceled.'),
+    groupLink: '',
+    projectLink: '-/pipelines/charts',
+    docsLink: helpPagePath('user/analytics/ci_cd_analytics#pipeline-metrics'),
+  },
+  [PIPELINE_ANALYTICS_METRICS.MEDIAN]: {
+    description: s__('CICDAnalytics|The median time it takes for pipelines to complete.'),
+    groupLink: '',
+    projectLink: '-/pipelines/charts',
+    docsLink: helpPagePath('user/analytics/ci_cd_analytics#pipeline-metrics'),
+  },
+};
+
+export const VALUE_STREAM_METRIC_METADATA = {
+  ...VALUE_STREAM_METRIC_TILE_METADATA,
+  [FLOW_METRICS.ISSUES_COMPLETED]: {
+    description: s__('ValueStreamAnalytics|Number of issues closed by month.'),
+    groupLink: '-/issues_analytics',
+    projectLink: '-/analytics/issues_analytics',
+    docsLink: helpPagePath('user/group/issues_analytics/_index'),
+  },
+  [CONTRIBUTOR_METRICS.COUNT]: {
+    description: s__('ValueStreamAnalytics|Number of monthly unique users with contributions.'),
+    groupLink: '-/contribution_analytics',
+    // HEAD resolves to the project's default branch, which is not always named master
+    projectLink: '-/graphs/HEAD',
+    docsLink: helpPagePath('user/profile/contributions_calendar.html', {
+      anchor: 'user-contribution-events',
+    }),
+  },
+  [VULNERABILITY_METRICS.CRITICAL]: {
+    description: s__(
+      'ValueStreamAnalytics|Number of critical vulnerabilities identified per month.',
+    ),
+    groupLink: '-/security/vulnerabilities?severity=CRITICAL',
+    projectLink: '-/security/vulnerability_report?severity=CRITICAL',
+    docsLink: helpPagePath('user/application_security/vulnerabilities/severities.html'),
+  },
+  [VULNERABILITY_METRICS.HIGH]: {
+    description: s__('ValueStreamAnalytics|High vulnerabilities over time.'),
+    groupLink: '-/security/vulnerabilities?severity=HIGH',
+    projectLink: '-/security/vulnerability_report?severity=HIGH',
+    docsLink: helpPagePath('user/application_security/vulnerabilities/severities.html'),
+  },
+  [MERGE_REQUEST_METRICS.THROUGHPUT]: {
+    description: s__('ValueStreamAnalytics|Number of merge requests merged by month.'),
+    groupLink: '-/analytics/productivity_analytics',
+    projectLink: mrProjectLink,
+    docsLink: helpPagePath('user/analytics/merge_request_analytics', {
+      anchor: 'view-the-number-of-merge-requests-in-a-date-range',
+    }),
+  },
+  [FLOW_METRICS.MEDIAN_TIME_TO_MERGE]: {
+    description: s__(
+      'ValueStreamAnalytics|Median time between merge request created and merge request merged.',
+    ),
+    groupLink: '-/analytics/productivity_analytics',
+    projectLink: mrProjectLink,
+    docsLink: helpPagePath('user/analytics/merge_request_analytics'),
+  },
+  [AI_METRICS.CODE_SUGGESTIONS_USERS_COUNT]: {
+    description: s__('AiImpactAnalytics|Number of users who used Code Suggestions.'),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/project/repository/code_suggestions/_index', {
+      anchor: 'use-code-suggestions',
+    }),
+  },
+  [AI_METRICS.CODE_SUGGESTIONS_ACCEPTANCE_RATE]: {
+    description: s__(
+      'AiImpactAnalytics|Code Suggestions accepted out of total Code Suggestions generated.',
+    ),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/project/repository/code_suggestions/_index', {
+      anchor: 'use-code-suggestions',
+    }),
+  },
+  [AI_METRICS.DUO_CHAT_USERS_COUNT]: {
+    description: s__('AiImpactAnalytics|Number of users who used Duo Chat (non-agentic).'),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/gitlab_duo_chat/_index'),
+  },
+  [AI_METRICS.DUO_RCA_USERS_COUNT]: {
+    description: s__('AiImpactAnalytics|Number of users who used Root Cause Analysis.'),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/gitlab_duo/use_cases', {
+      anchor: 'root-cause-analysis-use-cases',
+    }),
+  },
+  [AI_METRICS.DUO_USED_COUNT]: {
+    description: s__(
+      'AiImpactAnalytics|Number of users who used at least one GitLab Duo or GitLab Duo Agent Platform feature.',
+    ),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/gitlab_duo/feature_summary'),
+  },
+  [AI_METRICS.DUO_REVIEW_REQUESTS_COUNT]: {
+    description: s__('AiImpactAnalytics|Number of Duo Code Review requests.'),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/gitlab_duo/feature_summary'),
+  },
+  [AI_METRICS.DUO_REVIEW_COMMENT_COUNT]: {
+    description: s__('AiImpactAnalytics|Number of Duo Code Review comments.'),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/gitlab_duo/feature_summary'),
+  },
+  [AI_METRICS.DUO_AGENT_PLATFORM_CHATS]: {
+    description: s__(
+      'AiImpactAnalytics|Number of chat sessions initiated through GitLab Duo Agent Platform.',
+    ),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/gitlab_duo/feature_summary'),
+  },
+  [AI_METRICS.DUO_AGENT_PLATFORM_FLOWS]: {
+    description: s__(
+      'AiImpactAnalytics|Number of agent flows (excluding chats) executed through GitLab Duo Agent Platform.',
+    ),
+    groupLink: '',
+    projectLink: '',
+    docsLink: helpPagePath('user/gitlab_duo/feature_summary'),
+  },
+  ...PIPELINE_ANALYTICS_METRIC_METADATA,
+};
+
+export const USAGE_OVERVIEW_NO_DATA_ERROR = s__(
+  'ValueStreamAnalytics|Failed to load usage overview data',
+);
+
+export const USAGE_OVERVIEW_DEFAULT_DATE_RANGE = {
+  endDate: TODAY,
+  startDate: nYearsBefore(TODAY, 1),
+};
+
+export const USAGE_OVERVIEW_IDENTIFIER_GROUPS = 'groups';
+export const USAGE_OVERVIEW_IDENTIFIER_PROJECTS = 'projects';
+export const USAGE_OVERVIEW_IDENTIFIER_USERS = 'users';
+export const USAGE_OVERVIEW_IDENTIFIER_ISSUES = 'issues';
+export const USAGE_OVERVIEW_IDENTIFIER_MERGE_REQUESTS = 'merge_requests';
+export const USAGE_OVERVIEW_IDENTIFIER_PIPELINES = 'pipelines';
+
+// Defines the constants used for querying the API as well as the order they appear
+export const USAGE_OVERVIEW_METADATA = {
+  [USAGE_OVERVIEW_IDENTIFIER_GROUPS]: { options: { title: __('Groups'), metricIcon: 'group' } },
+  [USAGE_OVERVIEW_IDENTIFIER_PROJECTS]: {
+    options: { title: __('Projects'), metricIcon: 'project' },
+  },
+  [USAGE_OVERVIEW_IDENTIFIER_USERS]: {
+    options: { title: __('Users'), metricIcon: 'user' },
+  },
+  [USAGE_OVERVIEW_IDENTIFIER_ISSUES]: {
+    options: { title: __('Issues'), metricIcon: 'work-item-issue' },
+  },
+  [USAGE_OVERVIEW_IDENTIFIER_MERGE_REQUESTS]: {
+    options: { title: __('Merge requests'), metricIcon: 'merge-request' },
+  },
+  [USAGE_OVERVIEW_IDENTIFIER_PIPELINES]: {
+    options: { title: __('Pipelines'), metricIcon: 'pipeline' },
+  },
+};
+
+export const USAGE_OVERVIEW_QUERY_INCLUDE_KEYS = {
+  [USAGE_OVERVIEW_IDENTIFIER_GROUPS]: 'includeGroups',
+  [USAGE_OVERVIEW_IDENTIFIER_PROJECTS]: 'includeProjects',
+  [USAGE_OVERVIEW_IDENTIFIER_USERS]: 'includeUsers',
+  [USAGE_OVERVIEW_IDENTIFIER_ISSUES]: 'includeIssues',
+  [USAGE_OVERVIEW_IDENTIFIER_MERGE_REQUESTS]: 'includeMergeRequests',
+  [USAGE_OVERVIEW_IDENTIFIER_PIPELINES]: 'includePipelines',
+};
+
+export const USAGE_OVERVIEW_GROUP_ONLY_IDENTIFIERS = [
+  USAGE_OVERVIEW_IDENTIFIER_GROUPS,
+  USAGE_OVERVIEW_IDENTIFIER_USERS,
+  USAGE_OVERVIEW_IDENTIFIER_PROJECTS,
+];
+
+export const CHART_TOOLTIP_TITLE_FORMATTERS = {
+  DATE: 'DATE',
+  TITLE_CASE: 'TITLE_CASE',
+  VALUE_ONLY: 'VALUE_ONLY',
+};
+
+export const IDE_DIMENSION_KEY = 'ideNames';
+export const LANGUAGE_DIMENSION_KEY = 'languages';
+export const SUPPORTED_CODE_SUGGESTIONS_DIMENSION_KEYS = [
+  IDE_DIMENSION_KEY,
+  LANGUAGE_DIMENSION_KEY,
+];
+
+export const MIN_SEARCH_CHARS = 3;
+
+export const PANEL_TROUBLESHOOTING_URL = helpPagePath('/user/analytics/analytics_dashboards.md');
+
+export const VISUALIZATION_SLUG_DORA_PERFORMERS_SCORE = 'dora_performers_score';
+export const VISUALIZATION_SLUG_DORA_PROJECTS_COMPARISON = 'dora_projects_comparison';
+export const VISUALIZATION_SLUG_VSD_DORA_METRICS_TABLE = 'vsd_dora_metrics_table';
+export const VISUALIZATION_SLUG_VSD_SECURITY_METRICS_TABLE = 'vsd_security_metrics_table';
+
+export const VISUALIZATION_DOCUMENTATION_LINKS = {
+  [VISUALIZATION_SLUG_DORA_PERFORMERS_SCORE]: helpPagePath(
+    'user/analytics/value_streams_dashboard.md#dora-performers-score',
+  ),
+  [VISUALIZATION_SLUG_DORA_PROJECTS_COMPARISON]: helpPagePath(
+    'user/analytics/value_streams_dashboard.md#projects-by-dora-metric',
+  ),
+  [VISUALIZATION_SLUG_VSD_DORA_METRICS_TABLE]: helpPagePath(
+    'user/analytics/value_streams_dashboard.md#devsecops-metrics-comparison',
+  ),
+  [VISUALIZATION_SLUG_VSD_SECURITY_METRICS_TABLE]: helpPagePath(
+    'user/analytics/value_streams_dashboard.md#devsecops-metrics-comparison',
+  ),
+};
+
+export const NULL_SERIES_ID = 'nullSeries';
+
+export const EVENT_LABEL_CLICK_METRIC_IN_DASHBOARD_TABLE = 'click_metric_in_dashboard_table';
+
+export const AREA_CHART_SERIES_OPTIONS = {
+  areaStyle: { opacity: defaultAreaOpacity },
+  type: 'line',
+};
+
+// Panel state variants rendered by panel_state.vue in place of a panel body.
+export const PANEL_STATE_NO_DATA = 'no-data';
+export const PANEL_STATE_NO_ACCESS = 'no-access';
+export const PANEL_STATE_NOT_CONFIGURED = 'not-configured';
+export const PANEL_STATE_UNAVAILABLE = 'unavailable';
+export const PANEL_STATE_ERROR = 'error';
+export const PANEL_STATE_ERROR_NO_RETRY = 'error-no-retry';

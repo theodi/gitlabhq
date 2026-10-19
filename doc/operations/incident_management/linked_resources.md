@@ -1,0 +1,96 @@
+---
+stage: Analytics
+group: Platform Insights
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: View and update linked resources in GitLab incidents, including how to use quick actions for URLs and Zoom meetings.
+title: Linked resources in incidents
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+To help your team members find the important links without having to search through many comments,
+you can add linked resources to an incident issue.
+
+Resources you might want to link to:
+
+- The incident Slack channel
+- Zoom meeting
+- Resources for resolving the incidents
+
+## View linked resources of an incident
+
+Linked resources for an incident are listed under the **Summary** tab.
+
+![Linked resources list](img/linked_resources_list_v15_3.png)
+
+To view the linked resources of an incident:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Monitor** > **Incidents**.
+1. Select an incident.
+
+## Add a linked resource
+
+Add a linked resource manually from an incident.
+
+Prerequisites:
+
+- You must have the Reporter, Developer, Maintainer, or Owner role for the project.
+
+To add a linked resource:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Monitor** > **Incidents**.
+1. Select an incident.
+1. In the **Linked resources** section, select the plus icon ({{< icon name="plus-square" >}}).
+1. Complete the required fields.
+1. Select **Add**.
+
+### Using a quick action
+
+To add multiple links to an incident, use the [`/link` quick action](../../user/project/quick_actions.md#link):
+
+```plaintext
+/link https://example.link.us/j/123456789
+```
+
+You can also submit a short description with the link.
+The description shows instead of the URL in the **Linked resources** section of the incident:
+
+```plaintext
+/link https://example.link.us/j/123456789 multiple alerts firing
+```
+
+### Link Zoom meetings from an incident
+
+Use the [`/zoom` quick action](../../user/project/quick_actions.md#zoom) to add multiple Zoom links to an incident:
+
+```plaintext
+/zoom https://example.zoom.us/j/123456789
+```
+
+You can also submit a short optional description with the link. The description shows instead of the URL in the **Linked resources** section of the incident issue:
+
+```plaintext
+/zoom https://example.zoom.us/j/123456789 Low on memory incident
+```
+
+## Remove a linked resource
+
+You can also remove a linked resource.
+
+Prerequisites:
+
+- You must have the Reporter, Developer, Maintainer, or Owner role for the project.
+
+To remove a linked resource:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Monitor** > **Incidents**.
+1. Select an incident.
+1. In the **Linked resources** section, select **Remove** ({{< icon name="close" >}}).

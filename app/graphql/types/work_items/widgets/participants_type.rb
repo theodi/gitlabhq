@@ -1,0 +1,27 @@
+# frozen_string_literal: true
+
+module Types
+  module WorkItems
+    module Widgets
+      # Disabling widget level authorization as we scope by `.participants` with user filtering
+      # rubocop:disable Graphql/AuthorizeTypes -- see above
+      class ParticipantsType < BaseObject
+        graphql_name 'WorkItemWidgetParticipants'
+        description 'Represents a participants widget'
+
+        authorize_granular_token skip_reason: :parent_authorizes
+
+        implements ::Types::WorkItems::WidgetInterface
+
+        field :participants, ::Types::UserType.connection_type,
+          null: true,
+          description: 'Participants in the work item.'
+
+        def participants
+          object.participants(current_user)
+        end
+      end
+      # rubocop:enable Graphql/AuthorizeTypes
+    end
+  end
+end

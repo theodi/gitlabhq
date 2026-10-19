@@ -1,0 +1,16 @@
+---
+description: Perform Git operation (read/write/push)
+category: EventCreateService
+action: project_action
+extra_properties:
+identifiers:
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: "15.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/83795
+tiers:
+- free
+- premium
+- ultimate
+

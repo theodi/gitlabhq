@@ -1,0 +1,21 @@
+= content_for :meta_tags do
+  = auto_discovery_link_tag(:atom, safe_params.merge(rss_url_options).to_h, title: "#{@project.name} work items")
+
+- if @work_item.present?
+  = render 'shared/work_item_metadata', work_item: @work_item
+- else
+  - page_title s_('WorkItem|Work items')
+
+- add_work_items_stylesheet
+- @force_show_panel_header = true
+- @gfm_form = true
+- @noteable_type = 'WorkItem'
+
+= ai_context_block(@project)
+
+.js-jira-issues-import-status-root{ data: { can_edit: can?(current_user, :admin_project, @project).to_s,
+  is_jira_configured: @project.jira_integration.present?.to_s,
+  issues_path: project_issues_path(@project),
+  project_path: @project.full_path } }
+
+#js-work-items{ data: work_item_views_only_data(@project) }

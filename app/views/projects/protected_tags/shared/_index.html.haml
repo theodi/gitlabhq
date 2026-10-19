@@ -1,0 +1,25 @@
+- expanded = expanded_by_default?
+
+= render ::Layouts::SettingsBlockComponent.new(s_("ProtectedTag|Protected tags"),
+  id: 'js-protected-tags-settings',
+  testid: 'protected-tag-settings-content',
+  expanded: expanded) do |c|
+  - c.with_description do
+    = s_("ProtectedTag|Limit access to creating and updating tags.")
+    = link_to s_("ProtectedTag|What are protected tags?"), help_page_path("user/project/protected_tags.md")
+  - c.with_body do
+    %p.gl-text-subtle
+      = s_("ProtectedTag|By default, protected tags restrict who can modify the tag.")
+      = link_to s_("ProtectedTag|Learn more."), help_page_path("user/project/protected_tags.md")
+
+    = render ::Layouts::CrudComponent.new(_('Protected tags'),
+      icon: 'tag',
+      count: @protected_tags_count,
+      toggle_text: _('Add tag')) do |c|
+      - c.with_body do
+        = yield :tag_list
+      - c.with_form do
+        - if can? current_user, :admin_project, @project
+          %h4.gl-mt-0
+            = _('Protect a tag')
+          = yield :create_protected_tag

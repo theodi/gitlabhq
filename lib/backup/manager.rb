@@ -1,170 +1,417 @@
+# frozen_string_literal: true
+
 module Backup
   class Manager
-    def pack
-      # saving additional informations
-      s = {}
-      s[:db_version]         = "#{ActiveRecord::Migrator.current_version}"
-      s[:backup_created_at]  = Time.now
-      s[:gitlab_version]     = Gitlab::VERSION
-      s[:tar_version]        = tar_version
-      s[:skipped]            = ENV["SKIP"]
-      tar_file = "#{s[:backup_created_at].to_i}_gitlab_backup.tar"
+    include ::Gitlab::TaskHelpers
 
-      Dir.chdir(Gitlab.config.backup.path) do
-        File.open("#{Gitlab.config.backup.path}/backup_information.yml",
-                  "w+") do |file|
-          file << s.to_yaml.gsub(/^---\n/,'')
-        end
+    FILE_NAME_SUFFIX = '_gitlab_backup.tar'
+    MANIFEST_NAME = 'backup_information.yml'
 
-        FileUtils.chmod(0700, folders_to_backup)
+    # Use the content from stdin instead of an actual filepath (used by tar as input or output)
+    USE_STDIN = '-'
 
-        # create archive
-        $progress.print "Creating backup archive: #{tar_file} ... "
-        orig_umask = File.umask(0077)
-        if Kernel.system('tar', '-cf', tar_file, *backup_contents)
-          $progress.puts "done".green
-        else
-          puts "creating archive #{tar_file} failed".red
-          abort 'Backup failed'
-        end
-        File.umask(orig_umask)
+    attr_reader :remote_storage, :options, :logger, :progress
 
-        upload(tar_file)
-      end
+    def initialize(progress, backup_tasks: nil)
+      @progress = progress
+      @backup_tasks = backup_tasks
+      @options = Backup::Options.new
+      @metadata = Backup::Metadata.new(manifest_filepath)
+      @options.extract_from_env! # preserve existing behavior
+      @logger = Gitlab::BackupLogger.new(progress)
+      @remote_storage = Backup::RemoteStorage.new(logger: logger, options: options)
     end
 
-    def upload(tar_file)
-      remote_directory = Gitlab.config.backup.upload.remote_directory
-      $progress.print "Uploading backup archive to remote storage #{remote_directory} ... "
+    # @return [Boolean] whether all tasks succeeded
+    def create
+      # Deprecation: Using backup_id (ENV['BACKUP']) to specify previous backup was deprecated in 15.0
+      previous_backup = options.previous_backup || options.backup_id
 
-      connection_settings = Gitlab.config.backup.upload.connection
-      if connection_settings.blank?
-        $progress.puts "skipped".yellow
-        return
-      end
+      run_unpack(previous_backup) if options.incremental?
 
-      connection = ::Fog::Storage.new(connection_settings)
-      directory = connection.directories.get(remote_directory)
+      create_all_tasks_result = run_all_create_tasks
 
-      if directory.files.create(key: tar_file, body: File.open(tar_file), public: false)
-        $progress.puts "done".green
-      else
-        puts "uploading backup to #{remote_directory} failed".red
-        abort 'Backup failed'
-      end
+      logger.warn "Warning: Your gitlab.rb and gitlab-secrets.json files contain sensitive data \n" \
+           "and are not included in this backup. You will need these files to restore a backup.\n" \
+           "Please back them up manually."
+      logger.info "Backup #{backup_id} is done."
+      create_all_tasks_result
     end
 
-    def cleanup
-      $progress.print "Deleting tmp directories ... "
-      
-      backup_contents.each do |dir|
-        next unless File.exist?(File.join(Gitlab.config.backup.path, dir))
+    # @param [Gitlab::Backup::Tasks::Task] task
+    # @return [Boolean] whether the task succeeded
+    def run_create_task(task)
+      build_backup_information
 
-        if FileUtils.rm_rf(File.join(Gitlab.config.backup.path, dir))
-          $progress.puts "done".green
-        else
-          puts "deleting tmp directory '#{dir}' failed".red
-          abort 'Backup failed'
-        end
+      unless task.enabled?
+        logger.info "Dumping #{task.human_name} ... " + "[DISABLED]"
+        return true
       end
+
+      if options.skip_task?(task.id)
+        logger.info "Dumping #{task.human_name} ... " + "[SKIPPED]"
+        return true
+      end
+
+      logger.info "Dumping #{task.human_name} ... "
+      task.backup!(backup_path, backup_id)
+      logger.info "Dumping #{task.human_name} ... " + "done"
+      true
+
+    rescue Backup::DatabaseBackupError, Backup::FileBackupError => e
+      logger.error "Dumping #{task.human_name} failed: #{e.message}"
+      false
     end
 
-    def remove_old
-      # delete backups
-      $progress.print "Deleting old backups ... "
-      keep_time = Gitlab.config.backup.keep_time.to_i
+    def restore
+      run_unpack(options.backup_id, check_disk_space: true)
+      run_all_restore_tasks
 
-      if keep_time > 0
-        removed = 0
-        
-        Dir.chdir(Gitlab.config.backup.path) do
-          file_list = Dir.glob('*_gitlab_backup.tar')
-          file_list.map! { |f| $1.to_i if f =~ /(\d+)_gitlab_backup.tar/ }
-          file_list.sort.each do |timestamp|
-            if Time.at(timestamp) < (Time.now - keep_time)
-              if Kernel.system(*%W(rm #{timestamp}_gitlab_backup.tar))
-                removed += 1
-              end
-            end
-          end
-        end
-
-        $progress.puts "done. (#{removed} removed)".green
-      else
-        $progress.puts "skipping".yellow
-      end
+      logger.warn "Warning: Your gitlab.rb and gitlab-secrets.json files contain sensitive data \n" \
+        "and are not included in this backup. You will need to restore these files manually."
+      logger.info "Restore task is done."
     end
 
-    def unpack
-      Dir.chdir(Gitlab.config.backup.path)
+    # Verify whether a backup is compatible with current GitLab's version
+    def verify!
+      run_unpack(options.backup_id)
+      read_backup_information
 
-      # check for existing backups in the backup dir
-      file_list = Dir.glob("*_gitlab_backup.tar").each.map { |f| f.split(/_/).first.to_i }
-      puts "no backups found" if file_list.count == 0
+      preconditions = Backup::Restore::Preconditions.new(
+        backup_information: backup_information,
+        logger: logger
+      )
 
-      if file_list.count > 1 && ENV["BACKUP"].nil?
-        puts "Found more than one backup, please specify which one you want to restore:"
-        puts "rake gitlab:backup:restore BACKUP=timestamp_of_backup"
-        exit 1
-      end
-
-      tar_file = ENV["BACKUP"].nil? ? File.join("#{file_list.first}_gitlab_backup.tar") : File.join(ENV["BACKUP"] + "_gitlab_backup.tar")
-
-      unless File.exists?(tar_file)
-        puts "The specified backup doesn't exist!"
-        exit 1
-      end
-
-      $progress.print "Unpacking backup ... "
-
-      unless Kernel.system(*%W(tar -xf #{tar_file}))
-        puts "unpacking backup failed".red
-        exit 1
-      else
-        $progress.puts "done".green
-      end
-
-      ENV["VERSION"] = "#{settings[:db_version]}" if settings[:db_version].to_i > 0
-
-      # restoring mismatching backups can lead to unexpected problems
-      if settings[:gitlab_version] != Gitlab::VERSION
-        puts "GitLab version mismatch:".red
-        puts "  Your current GitLab version (#{Gitlab::VERSION}) differs from the GitLab version in the backup!".red
-        puts "  Please switch to the following version and try again:".red
-        puts "  version: #{settings[:gitlab_version]}".red
-        puts
-        puts "Hint: git checkout v#{settings[:gitlab_version]}"
-        exit 1
-      end
+      preconditions.validate_backup_version!
+    ensure
+      cleanup
     end
 
-    def tar_version
-      tar_version, _ = Gitlab::Popen.popen(%W(tar --version))
-      tar_version.force_encoding('locale').split("\n").first
+    # @param [Gitlab::Backup::Tasks::Task] task
+    def run_restore_task(task)
+      read_backup_information
+
+      restore_process = Backup::Restore::Process.new(
+        backup_id: backup_id,
+        backup_task: task,
+        backup_path: backup_path,
+        logger: logger
+      )
+
+      restore_process.execute!
     end
 
-    def skipped?(item)
-      settings[:skipped] && settings[:skipped].include?(item)
+    # Finds a task by id
+    #
+    # @param [String] task_id
+    # @return [Backup::Tasks::Task]
+    def find_task(task_id)
+      backup_tasks[task_id].tap do |task|
+        raise ArgumentError, "Cannot find task with name: #{task_id}" unless task
+      end
     end
 
     private
 
-    def backup_contents
-      folders_to_backup + ["backup_information.yml"]
+    # @return [Hash<String, Backup::Tasks::Task>]
+    # rubocop:disable Metrics/AbcSize -- TODO: Complexity will be solved in the Unified Backup implementation (https://gitlab.com/groups/gitlab-org/-/epics/11635)
+    def backup_tasks
+      @backup_tasks ||= {
+        Backup::Tasks::Database.id => Backup::Tasks::Database.new(progress: progress, options: options),
+        Backup::Tasks::Repositories.id => Backup::Tasks::Repositories.new(progress: progress, options: options,
+          server_side_callable: -> { backup_information[:repositories_server_side] }),
+        Backup::Tasks::Uploads.id => Backup::Tasks::Uploads.new(progress: progress, options: options),
+        Backup::Tasks::Builds.id => Backup::Tasks::Builds.new(progress: progress, options: options),
+        Backup::Tasks::Artifacts.id => Backup::Tasks::Artifacts.new(progress: progress, options: options),
+        Backup::Tasks::Pages.id => Backup::Tasks::Pages.new(progress: progress, options: options),
+        Backup::Tasks::Lfs.id => Backup::Tasks::Lfs.new(progress: progress, options: options),
+        Backup::Tasks::TerraformState.id => Backup::Tasks::TerraformState.new(progress: progress, options: options),
+        Backup::Tasks::Registry.id => Backup::Tasks::Registry.new(progress: progress, options: options),
+        Backup::Tasks::Packages.id => Backup::Tasks::Packages.new(progress: progress, options: options),
+        Backup::Tasks::CiSecureFiles.id => Backup::Tasks::CiSecureFiles.new(progress: progress, options: options),
+        Backup::Tasks::AgentPlanContent.id =>
+          Backup::Tasks::AgentPlanContent.new(progress: progress, options: options),
+        Backup::Tasks::CiCatalogBundles.id =>
+          Backup::Tasks::CiCatalogBundles.new(progress: progress, options: options),
+        Backup::Tasks::ExternalDiffs.id => Backup::Tasks::ExternalDiffs.new(progress: progress, options: options)
+      }.freeze
     end
+    # rubocop:enable Metrics/AbcSize
 
-    def folders_to_backup
-      folders = %w{repositories db uploads}
-
-      if ENV["SKIP"]
-        return folders.reject{ |folder| ENV["SKIP"].include?(folder) }
+    def run_all_create_tasks
+      if options.incremental?
+        read_backup_information
+        check_preconditions
+        update_backup_information
       end
 
-      folders
+      build_backup_information
+
+      create_task_result = []
+      backup_tasks.each_value { |task| create_task_result << run_create_task(task) }
+
+      write_backup_information
+
+      unless options.skippable_operations.archive
+        pack
+        upload
+        remove_old
+      end
+
+      create_task_result.all?
+    ensure
+      cleanup unless options.skippable_operations.archive
+      remove_tmp
     end
 
-    def settings
-      @settings ||= YAML.load_file("backup_information.yml")
+    def run_all_restore_tasks
+      read_backup_information
+      check_preconditions
+
+      backup_tasks.each_value do |task|
+        next unless !options.skip_task?(task.id) && task.enabled?
+
+        run_restore_task(task)
+      end
+
+      Rake::Task['gitlab:shell:setup'].invoke
+      Rake::Task['cache:clear'].invoke
+    ensure
+      cleanup unless options.skippable_operations.archive
+      remove_tmp
+    end
+
+    def run_unpack(backup_id, check_disk_space: false)
+      Backup::Restore::Unpack.new(
+        backup_id: backup_id,
+        backup_path: backup_path,
+        manifest_filepath: manifest_filepath,
+        options: options,
+        logger: logger
+      ).run!(check_disk_space: check_disk_space)
+    end
+
+    def read_backup_information
+      @metadata.load!
+
+      options.update_from_backup_information!(backup_information)
+    end
+
+    def write_backup_information
+      @metadata.save!
+    end
+
+    def build_backup_information
+      return if @metadata.backup_information
+
+      backup_created_at = Time.current
+      backup_id = if options.backup_id.present?
+                    File.basename(options.backup_id)
+                  else
+                    "#{backup_created_at.strftime('%s_%Y_%m_%d_')}#{Gitlab::VERSION}"
+                  end
+
+      @metadata.update(
+        backup_id: backup_id,
+        db_version: ActiveRecord::Migrator.current_version.to_s,
+        backup_created_at: backup_created_at,
+        gitlab_version: Gitlab::VERSION,
+        tar_version: tar_version,
+        installation_type: Gitlab::INSTALLATION_TYPE,
+        skipped: options.serialize_skippables,
+        repositories_storages: options.repositories_storages.join(','),
+        repositories_paths: options.repositories_paths.join(','),
+        skip_repositories_paths: options.skip_repositories_paths.join(','),
+        repositories_server_side: options.repositories_server_side_backup
+      )
+    end
+
+    def update_backup_information
+      backup_created_at = Time.current
+      backup_id = if options.backup_id.present?
+                    File.basename(options.backup_id)
+                  else
+                    "#{backup_created_at.strftime('%s_%Y_%m_%d_')}#{Gitlab::VERSION}"
+                  end
+
+      @metadata.update(
+        backup_id: backup_id,
+        full_backup_id: full_backup_id,
+        db_version: ActiveRecord::Migrator.current_version.to_s,
+        backup_created_at: backup_created_at,
+        gitlab_version: Gitlab::VERSION,
+        tar_version: tar_version,
+        installation_type: Gitlab::INSTALLATION_TYPE,
+        skipped: options.serialize_skippables,
+        repositories_storages: options.repositories_storages.join(','),
+        repositories_paths: options.repositories_paths.join(','),
+        skip_repositories_paths: options.skip_repositories_paths.join(',')
+      )
+    end
+
+    def backup_information
+      raise Backup::Error, "#{MANIFEST_NAME} not yet loaded" unless @metadata.backup_information
+
+      @metadata.backup_information
+    end
+
+    def pack
+      Dir.chdir(backup_path) do
+        # create archive
+        logger.info "Creating backup archive: #{tar_file} ... "
+
+        tar_utils = ::Gitlab::Backup::Cli::Utils::Tar.new
+        tar_command = tar_utils.pack_cmd(
+          archive_file: USE_STDIN,
+          target_directory: backup_path,
+          target: backup_contents)
+
+        # Set file permissions on open to prevent chmod races.
+        archive_permissions = Gitlab.config.backup.archive_permissions
+        archive_file = [tar_file, 'w', archive_permissions]
+
+        result = tar_command.run_single_pipeline!(output: archive_file)
+
+        if result.status.success?
+          logger.info "Creating backup archive: #{tar_file} ... done"
+        else
+          logger.error "Creating archive #{tar_file} failed"
+          raise Backup::Error, 'Backup failed'
+        end
+      end
+    end
+
+    def upload
+      remote_storage.upload(backup_information: backup_information)
+    end
+
+    def cleanup
+      logger.info "Deleting tar staging files ... "
+
+      remove_backup_path(MANIFEST_NAME)
+      backup_tasks.each_value do |task|
+        remove_backup_path(task.cleanup_path || task.destination_path)
+      end
+
+      logger.info "Deleting tar staging files ... done"
+    end
+
+    def remove_backup_path(path)
+      absolute_path = backup_path.join(path)
+      return unless File.exist?(absolute_path)
+
+      logger.info "Cleaning up #{absolute_path}"
+      FileUtils.rm_rf(absolute_path)
+    end
+
+    def remove_tmp
+      # delete tmp inside backups
+      logger.info "Deleting backups/tmp ... "
+
+      FileUtils.rm_rf(backup_path.join('tmp'))
+      logger.info "Deleting backups/tmp ... " + "done"
+    end
+
+    def remove_old
+      # delete backups
+      keep_time = Gitlab.config.backup.keep_time.to_i
+
+      if keep_time <= 0
+        logger.info "Deleting old backups ... [SKIPPED]"
+        return
+      end
+
+      logger.info "Deleting old backups ... "
+      removed = 0
+
+      Dir.chdir(backup_path) do
+        backup_file_list.each do |file|
+          # Never remove the backup we just created.
+          next if file == tar_file
+
+          # For backward compatibility, there are 3 names the backups can have:
+          # - 1495527122_gitlab_backup.tar
+          # - 1495527068_2017_05_23_gitlab_backup.tar
+          # - 1495527097_2017_05_23_9.3.0-pre_gitlab_backup.tar
+          matched = backup_file?(file)
+          next unless matched
+
+          timestamp = matched[1].to_i
+
+          next unless Time.zone.at(timestamp) < (Time.current - keep_time)
+
+          begin
+            FileUtils.rm(file)
+            removed += 1
+          rescue StandardError => e
+            logger.error "Deleting #{file} failed: #{e.message}"
+          end
+        end
+      end
+
+      logger.info "Deleting old backups ... done. (#{removed} removed)"
+    end
+
+    def tar_version
+      Gitlab::Backup::Cli::Utils::Tar.new.version
+    end
+
+    def backup_file?(file)
+      file.match(/^(\d{10})(?:_\d{4}_\d{2}_\d{2}(_\d+\.\d+\.\d+((-|\.)(pre|rc\d))?(-ee)?)?)?_gitlab_backup\.tar$/)
+    end
+
+    def manifest_filepath
+      backup_path.join(MANIFEST_NAME)
+    end
+
+    def backup_path
+      Pathname(Gitlab.config.backup.path)
+    end
+
+    def backup_file_list
+      @backup_file_list ||= Dir.glob("*#{FILE_NAME_SUFFIX}")
+    end
+
+    def backup_contents
+      [MANIFEST_NAME] + backup_tasks.values.reject do |task|
+        options.skip_task?(task.id) || # task skipped via CLI option
+          !task.enabled? || # task disabled via code/configuration
+          (task.destination_optional && !File.exist?(backup_path.join(task.destination_path)))
+      end.map(&:destination_path)
+    end
+
+    def tar_file
+      @tar_file ||= "#{backup_id}#{FILE_NAME_SUFFIX}"
+    end
+
+    def full_backup_id
+      full_backup_id = backup_information[:full_backup_id]
+      full_backup_id ||= File.basename(options.previous_backup) if options.previous_backup.present?
+      full_backup_id || backup_id
+    end
+
+    def backup_id
+      # Eventually the backup ID should only be fetched from
+      # backup_information, but we must have a fallback so that older backups
+      # can still be used.
+      if backup_information[:backup_id].present?
+        backup_information[:backup_id]
+      elsif options.backup_id.present?
+        File.basename(options.backup_id)
+      else
+        "#{backup_information[:backup_created_at].strftime('%s_%Y_%m_%d_')}#{backup_information[:gitlab_version]}"
+      end
+    end
+
+    def check_preconditions
+      preconditions = Backup::Restore::Preconditions.new(
+        backup_information: backup_information,
+        logger: logger
+      )
+
+      preconditions.ensure_supported_backup_version!
     end
   end
 end
+
+Backup::Manager.prepend_mod

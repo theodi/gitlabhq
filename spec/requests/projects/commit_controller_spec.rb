@@ -1,0 +1,983 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::CommitController, feature_category: :source_code_management do
+  include ProjectForksHelper
+
+  let_it_be(:project, freeze: false) { create(:project, :repository) }
+  let_it_be(:user, freeze: false) { project.owner }
+
+  describe 'GET #discussions' do
+    let_it_be(:sha, freeze: false) { "913c66a37b4a45b9769037c55c2d238bd0942d2e" }
+    let_it_be(:commit, freeze: false) { project.commit_by(oid: sha) }
+
+    let(:params) do
+      {
+        namespace_id: project.namespace,
+        project_id: project,
+        id: sha
+      }
+    end
+
+    let(:send_request) { get discussions_namespace_project_commit_path(params) }
+
+    before do
+      sign_in(user)
+    end
+
+    context 'with a valid commit' do
+      it 'returns all discussions in trimmed format' do
+        create(:note_on_commit, project: project, commit_id: sha)
+
+        send_request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.content_type).to eq('application/json; charset=utf-8')
+
+        json_response = Gitlab::Json.parse(response.body)
+        expect(json_response).to have_key('discussions')
+        expect(json_response['discussions']).to be_an(Array)
+
+        # Check that the response doesn't contain the extra fields
+        if json_response['discussions'].any?
+          discussion = json_response['discussions'].first
+          expect(discussion).to have_key('id')
+          expect(discussion).to have_key('reply_id')
+          expect(discussion).to have_key('confidential')
+          expect(discussion).to have_key('diff_discussion')
+          expect(discussion).to have_key('individual_note')
+          expect(discussion).to have_key('notes')
+
+          # These fields should NOT be present in the trimmed response format
+          expect(discussion).not_to have_key('project_id')
+          expect(discussion).not_to have_key('commit_id')
+          expect(discussion).not_to have_key('expanded')
+          expect(discussion).not_to have_key('for_commit')
+          expect(discussion).not_to have_key('resolvable')
+          expect(discussion).not_to have_key('truncated_diff_lines')
+          expect(discussion).not_to have_key('active')
+          expect(discussion).not_to have_key('line_code')
+          expect(discussion).not_to have_key('diff_file')
+          expect(discussion).not_to have_key('original_position')
+          expect(discussion).not_to have_key('discussion_path')
+          expect(discussion).not_to have_key('positions')
+          expect(discussion).not_to have_key('line_codes')
+        end
+      end
+
+      it 'returns empty discussions array when no discussions exist' do
+        send_request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        json_response = Gitlab::Json.parse(response.body)
+        expect(json_response).to have_key('discussions')
+        expect(json_response['discussions']).to eq([])
+      end
+
+      it 'includes both diff discussions and regular discussions' do
+        # Create a regular note
+        create(:note_on_commit, project: project, commit_id: sha)
+
+        # Create a diff note
+        create(:diff_note_on_commit, project: project, commit_id: sha)
+
+        send_request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        json_response = Gitlab::Json.parse(response.body)
+
+        expect(json_response).to have_key('discussions')
+        expect(json_response['discussions'].length).to eq(2)
+
+        # Check we have both types
+        discussions = json_response['discussions']
+        diff_discussions = discussions.select { |d| d['diff_discussion'] }
+        regular_discussions = discussions.reject { |d| d['diff_discussion'] }
+
+        expect(diff_discussions).not_to be_empty
+        expect(regular_discussions).not_to be_empty
+      end
+
+      context 'with cross-reference system note from a private project' do
+        let_it_be(:private_project) { create(:project, :private) }
+        let_it_be(:private_issue) { create(:issue, project: private_project) }
+        let(:cross_reference) { "mentioned in #{private_issue.to_reference(project)}" }
+
+        before do
+          create(:note_on_commit, :system,
+            project: project,
+            commit_id: sha,
+            note: cross_reference)
+        end
+
+        it 'excludes the system note for users without access to the private project' do
+          send_request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          json_response = Gitlab::Json.parse(response.body)
+          expect(json_response['discussions']).to be_empty
+        end
+
+        context 'when the user has access to the private project' do
+          before_all do
+            private_project.add_guest(user)
+          end
+
+          it 'includes the system note' do
+            send_request
+
+            expect(response).to have_gitlab_http_status(:ok)
+            json_response = Gitlab::Json.parse(response.body)
+            expect(json_response['discussions'].size).to eq(1)
+          end
+        end
+      end
+
+      context 'when feature flag is disabled' do
+        before do
+          stub_feature_flags(rapid_diffs_on_commit_show: false)
+        end
+
+        it 'returns 404' do
+          send_request
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'when a system note references a confidential issue' do
+      let_it_be(:public_project) { create(:project, :public, :repository) }
+      let_it_be(:confidential_issue) { create(:issue, :confidential, project: public_project) }
+      let_it_be(:public_sha) { RepoHelpers.sample_commit.id }
+
+      let(:params) do
+        {
+          namespace_id: public_project.namespace,
+          project_id: public_project,
+          id: public_sha
+        }
+      end
+
+      it 'filters out the system note for users who cannot see the confidential issue', :aggregate_failures do
+        create(:note_on_commit, :system, project: public_project, commit_id: public_sha,
+          note: "mentioned in issue #{confidential_issue.to_reference(public_project)}")
+
+        non_member = create(:user)
+        sign_in(non_member)
+
+        send_request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        json_response = Gitlab::Json.parse(response.body)
+        expect(json_response['discussions']).to be_empty
+      end
+
+      it 'keeps readable notes and filters unreadable ones from the response', :aggregate_failures do
+        readable_note = create(:note_on_commit, project: public_project, commit_id: public_sha, note: "regular comment")
+        create(:note_on_commit, :system, project: public_project, commit_id: public_sha,
+          note: "mentioned in issue #{confidential_issue.to_reference(public_project)}")
+
+        non_member = create(:user)
+        sign_in(non_member)
+
+        send_request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        json_response = Gitlab::Json.parse(response.body)
+        expect(json_response['discussions'].length).to eq(1)
+        note_ids = json_response['discussions'].flat_map { |d| d['notes'].map { |n| n['id'] } }
+        expect(note_ids).to include(readable_note.id.to_s)
+      end
+
+      it 'filters out the system note for anonymous users', :aggregate_failures do
+        create(:note_on_commit, :system, project: public_project, commit_id: public_sha,
+          note: "mentioned in issue #{confidential_issue.to_reference(public_project)}")
+
+        sign_out(user)
+
+        send_request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        json_response = Gitlab::Json.parse(response.body)
+        expect(json_response['discussions']).to be_empty
+      end
+
+      context 'when user can see the confidential issue' do
+        before_all do
+          public_project.add_developer(user)
+        end
+
+        before do
+          sign_in(user)
+        end
+
+        it 'includes the system note', :aggregate_failures do
+          note = create(:note_on_commit, :system, project: public_project, commit_id: public_sha,
+            note: "mentioned in issue #{confidential_issue.to_reference(public_project)}")
+
+          send_request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          json_response = Gitlab::Json.parse(response.body)
+          note_ids = json_response['discussions'].flat_map { |d| d['notes'].map { |n| n['id'] } }
+          expect(note_ids).to include(note.id.to_s)
+        end
+      end
+    end
+
+    context 'with a non-existent commit' do
+      let(:params) do
+        {
+          namespace_id: project.namespace,
+          project_id: project,
+          id: '0000000000000000000000000000000000000000'
+        }
+      end
+
+      it 'returns 404' do
+        send_request
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'POST #create_discussions' do
+    let_it_be(:sha, freeze: false) { "913c66a37b4a45b9769037c55c2d238bd0942d2e" }
+    let_it_be(:commit, freeze: false) { project.commit_by(oid: sha) }
+
+    let(:params) do
+      {
+        namespace_id: project.namespace,
+        project_id: project,
+        id: sha
+      }
+    end
+
+    let(:send_request) { post discussions_namespace_project_commit_path(params), params: request_params }
+
+    before do
+      sign_in(user)
+    end
+
+    context 'when feature flag is disabled' do
+      before do
+        stub_feature_flags(rapid_diffs_on_commit_show: false)
+      end
+
+      let(:request_params) { { note: { note: 'Test note' } } }
+
+      it 'returns 404' do
+        send_request
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when user cannot create notes' do
+      let(:request_params) { { note: { note: 'Test note' } } }
+
+      before do
+        allow(Ability).to receive(:allowed?).and_call_original
+        allow(Ability).to receive(:allowed?).with(user, :create_note, anything).and_return(false)
+      end
+
+      it 'does not allow note creation' do
+        expect { send_request }.not_to change { Note.count }
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'with a non-existent commit' do
+      let(:params) do
+        {
+          namespace_id: project.namespace,
+          project_id: project,
+          id: '0000000000000000000000000000000000000000'
+        }
+      end
+
+      let(:request_params) { { note: { note: 'Test note' } } }
+
+      it 'returns 404' do
+        send_request
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when creating a timeline discussion' do
+      let(:request_params) do
+        {
+          note: {
+            note: 'This is a timeline discussion'
+          }
+        }
+      end
+
+      it 'creates a new discussion successfully' do
+        expect { send_request }.to change { Note.count }.by(1)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response.content_type).to eq('application/json; charset=utf-8')
+
+        json_response = Gitlab::Json.parse(response.body)
+        expect(json_response).to have_key('discussion')
+
+        discussion = json_response['discussion']
+        expect(discussion).to have_key('id')
+        expect(discussion).to have_key('notes')
+        expect(discussion[:individual_note]).to be_falsy
+        expect(discussion['notes'].first['note']).to eq('This is a timeline discussion')
+      end
+    end
+
+    context 'when creating a positioned discussion' do
+      let(:diff_file) { commit.diffs.diff_files.find { |f| f.new_path == 'files/ruby/popen.rb' } }
+      let(:position_data) do
+        {
+          old_line: nil,
+          new_line: 14,
+          new_path: diff_file.new_path,
+          old_path: diff_file.old_path
+        }
+      end
+
+      let(:request_params) do
+        {
+          note: {
+            note: 'This is a positioned discussion',
+            position: position_data
+          }
+        }
+      end
+
+      it 'creates a positioned discussion successfully' do
+        expect { send_request }.to change { Note.count }.by(1)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        json_response = Gitlab::Json.parse(response.body)
+
+        discussion = json_response['discussion']
+        expect(discussion['diff_discussion']).to be true
+        expect(discussion['notes'].first['note']).to eq('This is a positioned discussion')
+      end
+
+      context 'with image comment' do
+        let(:position_data) do
+          {
+            new_path: diff_file.new_path,
+            old_path: diff_file.old_path,
+            position_type: 'image',
+            width: 10,
+            height: 10,
+            x: 5,
+            y: 2
+          }
+        end
+
+        it 'creates a positioned discussion successfully' do
+          expect { send_request }.to change { Note.count }.by(1)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          json_response = Gitlab::Json.parse(response.body)
+
+          discussion = json_response['discussion']
+          expect(discussion['diff_discussion']).to be true
+          expect(discussion['notes'].first['note']).to eq('This is a positioned discussion')
+          expect(discussion['notes'].first['position']['position_type']).to eq('image')
+        end
+      end
+
+      context 'on a deleted line' do
+        let_it_be(:sha, freeze: false) { "d59c60028b053793cecfb4022de34602e1a9218e" }
+        let(:diff_file) { commit.diffs.diff_files.find { |f| f.old_path == 'files/js/commit.js.coffee' } }
+
+        let(:position_data) do
+          {
+            old_line: 1,
+            new_line: nil,
+            new_path: diff_file.new_path,
+            old_path: diff_file.old_path
+          }
+        end
+
+        let(:request_params) do
+          {
+            note: {
+              note: 'Comment on deleted line',
+              position: position_data
+            }
+          }
+        end
+
+        it 'creates a positioned discussion on old line' do
+          expect { send_request }.to change { Note.count }.by(1)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          json_response = Gitlab::Json.parse(response.body)
+
+          discussion = json_response['discussion']
+          expect(discussion['diff_discussion']).to be true
+          expect(discussion['notes'].first['note']).to eq('Comment on deleted line')
+        end
+      end
+
+      context 'with incomplete position data' do
+        let(:position_data) do
+          {
+            old_path: 'files/ruby/popen.rb'
+          }
+        end
+
+        it 'returns validation error from Notes::CreateService' do
+          send_request
+
+          expect(response).to have_gitlab_http_status(:unprocessable_entity)
+          json_response = Gitlab::Json.parse(response.body)
+          expect(json_response).to have_key('errors')
+        end
+      end
+
+      context 'with explicit DiffNote type' do
+        let(:request_params) do
+          {
+            note: {
+              note: 'This is a positioned discussion',
+              type: 'DiffNote',
+              position: position_data
+            }
+          }
+        end
+
+        it 'creates a positioned discussion with provided DiffNote type' do
+          expect { send_request }.to change { Note.count }.by(1)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          json_response = Gitlab::Json.parse(response.body)
+          expect(json_response['discussion']['diff_discussion']).to be true
+        end
+      end
+    end
+
+    context 'when replying to existing DiffNote discussion' do
+      let!(:existing_note) { create(:diff_note_on_commit, project: project, commit_id: sha) }
+
+      let(:request_params) do
+        {
+          note: {
+            note: 'This is a reply'
+          },
+          in_reply_to_discussion_id: existing_note.discussion_id
+        }
+      end
+
+      it 'creates a reply to existing discussion' do
+        expect { send_request }.to change { Note.count }.by(1)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        json_response = Gitlab::Json.parse(response.body)
+
+        discussion = json_response['discussion']
+        expect(discussion['id']).to eq(existing_note.discussion_id)
+        expect(discussion['diff_discussion']).to be true
+        expect(discussion['notes'].length).to eq(2)
+
+        original_note = discussion['notes'].first
+        expect(original_note['id']).to eq(existing_note.id.to_s)
+
+        reply_note = discussion['notes'].second
+        expect(reply_note['note']).to eq('This is a reply')
+        expect(reply_note['discussion_id']).to eq(existing_note.discussion_id)
+      end
+
+      context 'with non-existent discussion ID' do
+        let(:request_params) do
+          {
+            note: {
+              note: 'This is a reply',
+              type: 'DiscussionNote'
+            },
+            in_reply_to_discussion_id: 'non-existent-id'
+          }
+        end
+
+        it 'returns discussion not found error' do
+          send_request
+
+          expect(response).to have_gitlab_http_status(:unprocessable_entity)
+          json_response = Gitlab::Json.parse(response.body)
+          expect(json_response['errors']).to eq('Discussion not found')
+        end
+      end
+    end
+  end
+
+  describe '#show' do
+    let_it_be(:sha, freeze: false) { "913c66a37b4a45b9769037c55c2d238bd0942d2e" }
+    let_it_be(:commit, freeze: false) { project.commit_by(oid: sha) }
+    let_it_be(:diff_view, freeze: false) { :inline }
+
+    let(:params) do
+      { view: diff_view }
+    end
+
+    subject(:send_request) { get project_commit_path(project, commit, params: params) }
+
+    before do
+      sign_in(user)
+    end
+
+    it 'returns 200' do
+      send_request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.body).to include('data-rapid-diffs')
+    end
+
+    it 'shows only first 5 files' do
+      send_request
+
+      expect(response.body.scan('<diff-file ').size).to eq(5)
+    end
+
+    it 'renders rapid_diffs template' do
+      send_request
+
+      expect(response).to render_template(:rapid_diffs)
+    end
+
+    it 'renders legacy template' do
+      stub_feature_flags(rapid_diffs_on_commit_show: false)
+      send_request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to render_template(:show)
+    end
+  end
+
+  describe 'GET #diff_files_metadata' do
+    let(:params) do
+      {
+        namespace_id: project.namespace,
+        project_id: project,
+        id: sha
+      }
+    end
+
+    let(:send_request) { get diff_files_metadata_namespace_project_commit_path(params) }
+
+    before do
+      sign_in(user)
+    end
+
+    context 'with valid params' do
+      let(:sha) { '7d3b0f7cff5f37573aea97cebfd5692ea1689924' }
+
+      include_examples 'diff files metadata'
+    end
+
+    context 'with invalid params' do
+      let(:sha) { '0123456789' }
+
+      include_examples 'missing diff files metadata'
+    end
+  end
+
+  describe 'GET #diffs_stats' do
+    let(:params) do
+      {
+        namespace_id: project.namespace,
+        project_id: project,
+        id: sha
+      }
+    end
+
+    let(:send_request) { get diffs_stats_namespace_project_commit_path(params) }
+
+    before do
+      sign_in(user)
+    end
+
+    context 'with valid params' do
+      let(:sha) { '7d3b0f7cff5f37573aea97cebfd5692ea1689924' }
+
+      include_examples 'diffs stats' do
+        let(:expected_stats) do
+          {
+            added_lines: 645,
+            removed_lines: 0,
+            diffs_count: 6
+          }
+        end
+      end
+
+      context 'when diffs overflow' do
+        include_examples 'overflow' do
+          let(:expected_stats) do
+            {
+              visible_count: 6,
+              email_path: "/#{project.full_path}/-/commit/#{sha}.patch",
+              diff_path: "/#{project.full_path}/-/commit/#{sha}.diff"
+            }
+          end
+        end
+      end
+    end
+
+    context 'with invalid params' do
+      let(:sha) { '0123456789' }
+
+      include_examples 'missing diffs stats'
+    end
+  end
+
+  describe 'GET #diff_files' do
+    let(:master_pickable_sha) { '7d3b0f7cff5f37573aea97cebfd5692ea1689924' }
+    let(:format) { :html }
+    let(:params) do
+      {
+        namespace_id: project.namespace,
+        project_id: project,
+        id: master_pickable_sha,
+        format: format
+      }
+    end
+
+    before_all do
+      project.add_maintainer(user)
+    end
+
+    context 'without expanded parameter' do
+      before do
+        sign_in(user)
+      end
+
+      it 'does not rate limit the endpoint' do
+        get diff_files_namespace_project_commit_url(params)
+
+        expect(::Gitlab::ApplicationRateLimiter)
+          .not_to receive(:throttled?).with(:expanded_diff_files, scope: { user: user })
+      end
+    end
+
+    context 'with expanded parameter' do
+      before do
+        params[:expanded] = 1
+      end
+
+      context 'with signed in user' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :expanded_diff_files, use_second_scope: false do
+          let(:current_user) { user }
+
+          before do
+            sign_in current_user
+          end
+
+          def request
+            get diff_files_namespace_project_commit_url(params)
+          end
+        end
+      end
+
+      context 'without a signed in user' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :expanded_diff_files do
+          let_it_be(:project, freeze: false) { create(:project, :public, :repository) }
+          let(:request_ip) { '1.2.3.4' }
+
+          def request
+            get diff_files_namespace_project_commit_url(params),
+              params: { scope: request_ip }, env: { REMOTE_ADDR: request_ip }
+          end
+
+          def request_with_second_scope
+            get diff_files_namespace_project_commit_url(params), env: { REMOTE_ADDR: '1.2.3.5' }
+          end
+        end
+      end
+    end
+  end
+
+  describe 'GET #merge_requests' do
+    let_it_be(:sha, freeze: false) { "913c66a37b4a45b9769037c55c2d238bd0942d2e" }
+
+    let_it_be(:older_mr, freeze: false) do
+      create(
+        :merge_request,
+        source_project: project,
+        source_branch: 'feature',
+        target_branch: 'master',
+        merge_commit_sha: sha
+      )
+    end
+
+    let_it_be(:newer_mr, freeze: false) do
+      create(
+        :merge_request, :merged,
+        source_project: project,
+        source_branch: 'fix',
+        target_branch: 'master',
+        merge_commit_sha: sha
+      )
+    end
+
+    let(:params) do
+      {
+        namespace_id: project.namespace,
+        project_id: project,
+        id: sha,
+        format: :json
+      }
+    end
+
+    it 'returns merge requests ordered oldest first', :aggregate_failures do
+      sign_in(user)
+
+      get merge_requests_namespace_project_commit_path(params)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.content_type).to eq('application/json; charset=utf-8')
+
+      iids = Gitlab::Json.parse(response.body).pluck('iid')
+
+      expect(iids.count).to eq(2)
+      expect(iids.first).to eq(older_mr.iid)
+      expect(iids.last).to eq(newer_mr.iid)
+    end
+  end
+
+  describe 'GET #diff_file' do
+    let(:sha) { "913c66a37b4a45b9769037c55c2d238bd0942d2e" }
+    let(:commit) { project.commit_by(oid: sha) }
+    let(:diff_file_path) do
+      diff_file_namespace_project_commit_path(namespace_id: project.namespace, project_id: project, id: sha)
+    end
+
+    let(:diff_file) { commit.diffs.diff_files.first }
+    let(:old_path) { diff_file.old_path }
+    let(:new_path) { diff_file.new_path }
+    let(:ignore_whitespace_changes) { false }
+    let(:view) { 'inline' }
+
+    let(:params) do
+      {
+        old_path: old_path,
+        new_path: new_path,
+        ignore_whitespace_changes: ignore_whitespace_changes,
+        view: view
+      }.compact
+    end
+
+    let(:send_request) { get diff_file_path, params: params }
+
+    before do
+      sign_in(user)
+    end
+
+    include_examples 'diff file endpoint'
+
+    context 'with whitespace-only diffs' do
+      let(:ignore_whitespace_changes) { true }
+
+      before do
+        allow(diff_file).to receive(:whitespace_only?).and_return(true)
+      end
+
+      it 'makes a call to presenter diff_files with ignore_whitespace_change: false' do
+        expect_next_instance_of(RapidDiffs::CommitPresenter) do |presenter|
+          allow(presenter).to receive(:diff_files).and_return([diff_file])
+
+          expect(presenter).to receive(:diff_files).with(
+            hash_including(ignore_whitespace_change: false)
+          ).and_return([diff_file])
+        end
+
+        send_request
+
+        expect(response).to have_gitlab_http_status(:success)
+      end
+    end
+  end
+
+  describe 'POST #cherry_pick' do
+    # A merge commit has to be created in the repository, so this uses a project
+    # of its own rather than the one shared with the examples above.
+    let_it_be(:pick_project, freeze: false) { create(:project, :repository) }
+    let_it_be(:pick_user, freeze: false) { pick_project.owner }
+
+    let_it_be_with_reload(:picked_merge_request) do
+      create(:merge_request, :merged, source_project: pick_project,
+        description: 'Description of the picked merge request')
+    end
+
+    # A commit that no merge request recorded.
+    let_it_be(:plain_sha) { '7d3b0f7cff5f37573aea97cebfd5692ea1689924' }
+
+    before_all do
+      merge_commit_sha = pick_project.repository.merge(
+        pick_user, picked_merge_request.diff_head_sha, picked_merge_request, 'Merge for the spec'
+      )
+
+      picked_merge_request.update!(merge_commit_sha: merge_commit_sha)
+    end
+
+    before do
+      sign_in(pick_user)
+    end
+
+    def redirect_query
+      Rack::Utils.parse_nested_query(URI.parse(response.location).query)
+    end
+
+    def cherry_pick(sha, start_branch:, copy_description: 'true')
+      post cherry_pick_project_commit_path(pick_project, sha),
+        params: {
+          start_branch: start_branch,
+          create_merge_request: '1',
+          copy_merge_request_description: copy_description
+        }.compact
+    end
+
+    it 'points the new merge request at the merge request being picked' do
+      cherry_pick(picked_merge_request.merge_commit_sha, start_branch: 'merge-test')
+
+      expect(response).to have_gitlab_http_status(:found)
+      expect(redirect_query).to include(
+        'cherry_picked_merge_request_id' => picked_merge_request.id.to_s
+      )
+    end
+
+    context 'when the description was not asked for' do
+      it 'leaves the redirect as it was built' do
+        cherry_pick(picked_merge_request.merge_commit_sha, start_branch: 'merge-test',
+          copy_description: nil)
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(redirect_query).not_to have_key('cherry_picked_merge_request_id')
+      end
+    end
+
+    context 'when the picked commit belongs to no merge request' do
+      it 'leaves the redirect as it was built' do
+        cherry_pick(plain_sha, start_branch: 'master')
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(redirect_query).not_to have_key('cherry_picked_merge_request_id')
+      end
+    end
+
+    context 'when the picked merge request was merged fast-forward' do
+      let_it_be(:fast_forwarded_merge_request) do
+        create(:merge_request, :merged, source_project: pick_project, merged_commit_sha: plain_sha,
+          description: 'Description of a fast-forwarded merge request')
+      end
+
+      it 'points at it, there is neither a merge nor a squash commit to go by' do
+        expect(fast_forwarded_merge_request.merge_commit_sha).to be_nil
+        expect(fast_forwarded_merge_request.squash_commit_sha).to be_nil
+
+        cherry_pick(plain_sha, start_branch: 'merge-test')
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(redirect_query).to include(
+          'cherry_picked_merge_request_id' => fast_forwarded_merge_request.id.to_s
+        )
+      end
+    end
+
+    context 'when the picked merge request was squashed' do
+      let_it_be(:squashed_merge_request) do
+        create(:merge_request, :merged, source_project: pick_project, squash_commit_sha: plain_sha,
+          description: 'Description of a squashed merge request')
+      end
+
+      it 'points at it, the squash commit is what recorded the change' do
+        expect(squashed_merge_request.merge_commit_sha).to be_nil
+        expect(squashed_merge_request.read_attribute(:merged_commit_sha)).to be_nil
+
+        cherry_pick(plain_sha, start_branch: 'merge-test')
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(redirect_query).to include(
+          'cherry_picked_merge_request_id' => squashed_merge_request.id.to_s
+        )
+      end
+    end
+
+    context 'when a fast-forward merge recorded the same commit in several merge requests' do
+      let_it_be(:original_merge_request) do
+        create(:merge_request, :merged, source_project: pick_project, source_branch: 'feature',
+          target_branch: 'master', merged_commit_sha: plain_sha,
+          description: 'Description of the original merge request')
+      end
+
+      let_it_be(:backport_merge_request) do
+        create(:merge_request, :merged, source_project: pick_project, source_branch: 'feature',
+          target_branch: 'merge-test', merged_commit_sha: plain_sha,
+          description: 'Description of the backport')
+      end
+
+      it 'points at the oldest of them, the merge request the change came from' do
+        expect(backport_merge_request.id).to be > original_merge_request.id
+
+        cherry_pick(plain_sha, start_branch: 'merge-test')
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(redirect_query).to include(
+          'cherry_picked_merge_request_id' => original_merge_request.id.to_s
+        )
+      end
+    end
+
+    context 'when the merge request the commit came from is hidden' do
+      let_it_be(:hidden_merge_request) do
+        create(:merge_request, :merged, source_project: pick_project, author: create(:user, :banned),
+          merged_commit_sha: plain_sha, description: 'Description of a hidden merge request')
+      end
+
+      it 'leaves the redirect as it was built' do
+        cherry_pick(plain_sha, start_branch: 'merge-test')
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(redirect_query).not_to have_key('cherry_picked_merge_request_id')
+      end
+    end
+
+    context 'when the pick lands in another project' do
+      let_it_be(:target_fork) { fork_project(pick_project, pick_user, repository: true) }
+
+      it 'still points the new merge request at the merge request being picked' do
+        post cherry_pick_project_commit_path(pick_project, picked_merge_request.merge_commit_sha),
+          params: {
+            start_branch: 'merge-test',
+            create_merge_request: '1',
+            copy_merge_request_description: 'true',
+            target_project_id: target_fork.id
+          }
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(response.location).to include(target_fork.full_path)
+        expect(redirect_query).to include(
+          'cherry_picked_merge_request_id' => picked_merge_request.id.to_s
+        )
+      end
+    end
+
+    context 'when the commit is reverted instead of picked' do
+      it 'leaves the new merge request without a pointer' do
+        post revert_project_commit_path(pick_project, picked_merge_request.merge_commit_sha),
+          params: {
+            start_branch: 'merge-test',
+            create_merge_request: '1',
+            copy_merge_request_description: 'true'
+          }
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(redirect_query).not_to have_key('cherry_picked_merge_request_id')
+      end
+    end
+  end
+end

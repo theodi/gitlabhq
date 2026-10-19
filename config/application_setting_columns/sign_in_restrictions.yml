@@ -1,0 +1,12 @@
+---
+api_type: hash
+attr: sign_in_restrictions
+clusterwide: false
+column: sign_in_restrictions
+db_type: jsonb
+default: "'{}'::jsonb"
+description: Application sign in restrictions.
+encrypted: false
+gitlab_com_different_than_default: false
+jihu: false
+not_null: true

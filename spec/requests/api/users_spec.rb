@@ -1,529 +1,7500 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe API::API, api: true  do
-  include ApiHelpers
+RSpec.describe API::Users, :with_current_organization, :aggregate_failures, feature_category: :user_management do
+  include WorkhorseHelpers
+  include PaginationHelpers
+  include CryptoHelpers
 
-  let(:user)  { create(:user) }
-  let(:admin) { create(:admin) }
-  let(:key)   { create(:key, user: user) }
+  let_it_be(:admin) { create(:admin) }
+  let_it_be_with_reload(:user) { create(:user, username: 'user.withdot') }
+  let_it_be(:key, freeze: false) { create(:key, user: user) }
+  let_it_be(:gpg_key, freeze: false) { create(:gpg_key, user: user) }
+  let_it_be(:email, freeze: false) { create(:email, user: user) }
+  let_it_be(:organization) { create(:organization) }
 
-  describe "GET /users" do
+  let(:blocked_user) { create(:user, :blocked) }
+  let(:omniauth_user) { create(:omniauth_user) }
+  let(:ldap_user) { create(:omniauth_user, provider: 'ldapmain') }
+  let(:ldap_blocked_user) { create(:omniauth_user, provider: 'ldapmain', state: 'ldap_blocked') }
+  let(:private_user) { create(:user, private_profile: true) }
+  let(:deactivated_user) { create(:user, state: 'deactivated') }
+  let(:banned_user) { create(:user, :banned) }
+  let(:internal_user) { create(:user, :bot) }
+  let(:user_with_2fa) { create(:user, :two_factor_via_otp) }
+  let(:admin_with_2fa) { create(:admin, :two_factor_via_otp) }
+  let(:user_without_pin) { create(:user) }
+
+  context 'admin notes' do
+    let_it_be(:admin) { create(:admin, note: '2019-10-06 | 2FA added | user requested | www.gitlab.com') }
+    let_it_be_with_reload(:user) { create(:user, note: '2018-11-05 | 2FA removed | user requested | www.gitlab.com') }
+
+    describe 'POST /users' do
+      let(:path) { '/users' }
+
+      it_behaves_like 'POST request permissions for admin mode' do
+        let(:params) { attributes_for(:user).merge({ note: 'Awesome Note' }) }
+      end
+
+      context 'when unauthenticated' do
+        it 'return authentication error' do
+          post api(path)
+
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+
+      context 'when authenticated' do
+        context 'as an admin' do
+          it 'contains the note of the user' do
+            optional_attributes = { note: 'Awesome Note' }
+            attributes = attributes_for(:user).merge(optional_attributes)
+
+            post api(path, admin, admin_mode: true), params: attributes
+
+            expect(response).to have_gitlab_http_status(:created)
+            expect(json_response['note']).to eq(optional_attributes[:note])
+          end
+        end
+
+        context 'as a regular user' do
+          it 'does not allow creating new user' do
+            post api(path, user), params: attributes_for(:user)
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+        end
+      end
+    end
+
+    describe "PUT /users/:id" do
+      let(:path) { "/users/#{user.id}" }
+
+      it_behaves_like 'PUT request permissions for admin mode' do
+        let(:params) { { note: 'new note' } }
+      end
+
+      context 'when user is an admin' do
+        it "updates note of the user" do
+          new_note = '2019-07-07 | Email changed | user requested | www.gitlab.com'
+
+          expect do
+            put api(path, admin, admin_mode: true), params: { note: new_note }
+          end.to change { user.reload.note }
+                   .from('2018-11-05 | 2FA removed | user requested | www.gitlab.com')
+                   .to(new_note)
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response['note']).to eq(new_note)
+        end
+      end
+
+      context 'when user is not an admin' do
+        it "cannot update their own note" do
+          expect do
+            put api(path, user), params: { note: 'new note' }
+          end.not_to change { user.reload.note }
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+
+    describe "PATCH /users/:id/disable_two_factor" do
+      it_behaves_like 'authorizing granular token permissions', :disable_two_factor_user do
+        let_it_be(:gt_target) { create(:user, :two_factor) }
+        let(:boundary_object) { :instance }
+        let(:user) { admin }
+        let(:request) { patch api("/users/#{gt_target.id}/disable_two_factor", personal_access_token: pat) }
+      end
+
+      context "when current user is an admin" do
+        it "returns a 204 when 2FA is disabled for the target user" do
+          expect do
+            patch api("/users/#{user_with_2fa.id}/disable_two_factor", admin, admin_mode: true)
+          end.to change { user_with_2fa.reload.two_factor_enabled? }
+                  .from(true)
+                  .to(false)
+          expect(response).to have_gitlab_http_status(:no_content)
+        end
+
+        it "uses TwoFactor Destroy Service" do
+          destroy_service = instance_double(TwoFactor::DestroyService, execute: nil)
+          expect(TwoFactor::DestroyService).to receive(:new)
+            .with(admin, user: user_with_2fa)
+            .and_return(destroy_service)
+          expect(destroy_service).to receive(:execute)
+
+          patch api("/users/#{user_with_2fa.id}/disable_two_factor", admin, admin_mode: true)
+        end
+
+        it "returns a 400 if 2FA is not enabled for the target user" do
+          expect(TwoFactor::DestroyService).to receive(:new).and_call_original
+
+          expect do
+            patch api("/users/#{user.id}/disable_two_factor", admin, admin_mode: true)
+          end.not_to change { user.reload.two_factor_enabled? }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq("400 Bad request - Two-factor authentication is not enabled for this user")
+        end
+
+        it "returns a 403 if the target user is an admin" do
+          expect(TwoFactor::DestroyService).not_to receive(:new)
+
+          expect do
+            patch api("/users/#{admin_with_2fa.id}/disable_two_factor", admin, admin_mode: true)
+          end.not_to change { admin_with_2fa.reload.two_factor_enabled? }
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq("403 Forbidden - Two-factor authentication for admins cannot be disabled via the API. Use the Rails console")
+        end
+
+        it "returns a 404 if the target user cannot be found" do
+          expect(TwoFactor::DestroyService).not_to receive(:new)
+
+          patch api("/users/#{non_existing_record_id}/disable_two_factor", admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq("404 User Not Found")
+        end
+      end
+
+      context "when current user is not an admin" do
+        it "returns a 403" do
+          expect do
+            patch api("/users/#{user_with_2fa.id}/disable_two_factor", user)
+          end.not_to change { user_with_2fa.reload.two_factor_enabled? }
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq("403 Forbidden")
+        end
+      end
+
+      context "when unauthenticated" do
+        it "returns a 401" do
+          patch api("/users/#{user_with_2fa.id}/disable_two_factor")
+
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+    end
+
+    describe 'GET /users/' do
+      let(:path) { '/users' }
+
+      context 'when unauthenticated' do
+        it "does not contain certain fields" do
+          get api(path), params: { username: user.username }
+
+          expect(json_response.first).not_to have_key('note')
+          expect(json_response.first).not_to have_key('namespace_id')
+          expect(json_response.first).not_to have_key('created_by')
+        end
+      end
+
+      context 'when authenticated' do
+        context 'as a regular user' do
+          it 'does not contain certain fields' do
+            get api(path, user), params: { username: user.username }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.first).not_to have_key('note')
+            expect(json_response.first).not_to have_key('namespace_id')
+            expect(json_response.first).not_to have_key('created_by')
+          end
+        end
+
+        context 'as an admin' do
+          it 'contains the note of users' do
+            get api(path, admin, admin_mode: true), params: { username: user.username }
+
+            expect(response).to have_gitlab_http_status(:success)
+            expect(json_response.first).to have_key('note')
+            expect(json_response.first['note']).to eq '2018-11-05 | 2FA removed | user requested | www.gitlab.com'
+          end
+
+          context 'with `created_by` details' do
+            it 'has created_by as nil with a self-registered account' do
+              get api(path, admin, admin_mode: true), params: { username: user.username }
+
+              expect(response).to have_gitlab_http_status(:success)
+              expect(json_response.first).to have_key('created_by')
+              expect(json_response.first['created_by']).to be_nil
+            end
+
+            it 'is created_by a user and has those details' do
+              created = create(:user, created_by_id: user.id)
+
+              get api(path, admin, admin_mode: true), params: { username: created.username }
+
+              expect(response).to have_gitlab_http_status(:success)
+              expect(json_response.first['created_by'].symbolize_keys)
+                .to eq(API::Entities::UserBasic.new(user).as_json)
+            end
+          end
+        end
+
+        context 'with search parameter' do
+          let_it_be(:first_user) { create(:user, username: 'a-user') }
+          let_it_be(:second_user) { create(:user, username: 'a-user2') }
+
+          it 'prioritizes username match' do
+            get api(path, user, admin_mode: true), params: { search: first_user.username }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.first['username']).to eq('a-user')
+            expect(json_response.second['username']).to eq('a-user2')
+          end
+
+          it 'preserves requested ordering with order_by and sort', quarantine: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/issues/17023' do
+            get api(path, user, admin_mode: true), params: { search: first_user.username, order_by: 'name', sort: 'desc' }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.first['username']).to eq('a-user2')
+            expect(json_response.second['username']).to eq('a-user')
+          end
+
+          it 'preserves requested ordering with sort' do
+            get api(path, user, admin_mode: true), params: { search: first_user.username, sort: 'desc' }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.first['username']).to eq('a-user2')
+            expect(json_response.second['username']).to eq('a-user')
+          end
+        end
+
+        context 'N+1 queries' do
+          before do
+            create_list(:user, 2)
+          end
+
+          it 'avoids N+1 queries when requested by admin' do
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+              get api(path, admin)
+            end
+
+            create_list(:user, 3)
+
+            # There is a still a pending N+1 query related to fetching
+            # project count for each user.
+            # Refer issue https://gitlab.com/gitlab-org/gitlab/-/issues/367080
+
+            expect do
+              get api(path, admin)
+            end.not_to exceed_all_query_limit(control).with_threshold(3)
+          end
+
+          it 'avoids N+1 queries when requested by a regular user' do
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+              get api(path, user)
+            end
+
+            create_list(:user, 3)
+
+            expect do
+              get api(path, user)
+            end.not_to exceed_all_query_limit(control)
+          end
+        end
+
+        it_behaves_like 'an endpoint with keyset pagination', invalid_order: nil do
+          let(:first_record) { user }
+          let(:second_record) { admin }
+          let(:api_call) { api(path, user) }
+        end
+
+        it 'still supports offset pagination when keyset pagination params are not provided' do
+          get api(path, user)
+
+          expect(response).to include_pagination_headers
+        end
+      end
+    end
+
+    describe 'GET /user' do
+      let(:path) { '/user' }
+
+      context 'when authenticated' do
+        context 'as an admin' do
+          context 'accesses their own profile' do
+            it 'contains the note of the user' do
+              get api(path, admin, admin_mode: true)
+
+              expect(json_response).to have_key('note')
+              expect(json_response).to have_key('preferred_language')
+              expect(json_response['note']).to eq(admin.note)
+            end
+          end
+
+          context 'sudo' do
+            let(:admin_personal_access_token) { create(:personal_access_token, :admin_mode, user: admin, scopes: %w[api sudo]).token }
+
+            context 'accesses the profile of another regular user' do
+              it 'does not contain the note of the user' do
+                get api("/user?private_token=#{admin_personal_access_token}&sudo=#{user.id}")
+
+                expect(json_response['id']).to eq(user.id)
+                expect(json_response).not_to have_key('note')
+              end
+            end
+
+            context 'accesses the profile of another admin' do
+              let(:admin_2) { create(:admin, note: '2010-10-10 | 2FA added | admin requested | www.gitlab.com') }
+
+              it 'contains the note of the user' do
+                get api("/user?private_token=#{admin_personal_access_token}&sudo=#{admin_2.id}")
+
+                expect(json_response['id']).to eq(admin_2.id)
+                expect(json_response).to have_key('note')
+                expect(json_response['note']).to eq(admin_2.note)
+              end
+            end
+          end
+        end
+
+        context 'as a regular user' do
+          it 'does not contain the note of the user' do
+            get api(path, user)
+
+            expect(json_response).not_to have_key('note')
+            expect(json_response).not_to have_key('namespace_id')
+          end
+        end
+      end
+    end
+  end
+
+  shared_examples 'rendering user status' do
+    it 'returns the status if there was one' do
+      create(:user_status, user: user)
+
+      get api(path, user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      expect(json_response['message']).to be_present
+      expect(json_response['message_html']).to be_present
+      expect(json_response['emoji']).to be_present
+    end
+
+    it 'returns an empty response if there was no status' do
+      get api(path, user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      expect(json_response['message']).to be_nil
+      expect(json_response['emoji']).to be_nil
+    end
+  end
+
+  describe 'GET /users' do
+    it_behaves_like 'authorizing granular token permissions', :read_user do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { get api(path, personal_access_token: pat) }
+    end
+
+    let(:path) { '/users' }
+
     context "when unauthenticated" do
-      it "should return authentication error" do
-        get api("/users")
-        expect(response.status).to eq(401)
+      it "returns authorization error when the `username` parameter is not passed" do
+        get api(path)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+
+      it "returns the user when a valid `username` parameter is passed" do
+        get api(path), params: { username: user.username }
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(json_response.size).to eq(1)
+        expect(json_response[0]['id']).to eq(user.id)
+        expect(json_response[0]['username']).to eq(user.username)
+      end
+
+      it "returns the user when a valid `username` parameter is passed (case insensitive)" do
+        get api(path), params: { username: user.username.upcase }
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(json_response.size).to eq(1)
+        expect(json_response[0]['id']).to eq(user.id)
+        expect(json_response[0]['username']).to eq(user.username)
+      end
+
+      it "returns an empty response when an invalid `username` parameter is passed" do
+        get api(path), params: { username: 'invalid' }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_an Array
+        expect(json_response.size).to eq(0)
+      end
+
+      it "does not return the highest role" do
+        get api(path), params: { username: user.username }
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(json_response.first.keys).not_to include 'highest_role'
+      end
+
+      it "does not return the current or last sign-in ip addresses" do
+        get api(path), params: { username: user.username }
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(json_response.first.keys).not_to include 'current_sign_in_ip'
+        expect(json_response.first.keys).not_to include 'last_sign_in_ip'
+      end
+
+      context "when public level is restricted" do
+        before do
+          stub_application_setting(restricted_visibility_levels: [Gitlab::VisibilityLevel::PUBLIC])
+        end
+
+        it "returns authorization error when the `username` parameter refers to an inaccessible user" do
+          get api(path), params: { username: user.username }
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+
+        it "returns authorization error when the `username` parameter is not passed" do
+          get api(path)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
       end
     end
 
     context "when authenticated" do
-      it "should return an array of users" do
-        get api("/users", user)
-        expect(response.status).to eq(200)
-        expect(json_response).to be_an Array
+      # These specs are written just in case API authentication is not required anymore
+      context "when public level is restricted" do
+        before do
+          stub_application_setting(restricted_visibility_levels: [Gitlab::VisibilityLevel::PUBLIC])
+        end
+
+        context 'when authenticate as a regular user' do
+          it "renders 200" do
+            get api(path, user)
+
+            expect(response).to match_response_schema('public_api/v4/user/basics')
+          end
+        end
+
+        context 'when authenticate as an admin' do
+          it "renders 200" do
+            get api(path, admin)
+
+            expect(response).to match_response_schema('public_api/v4/user/basics')
+          end
+        end
+      end
+
+      it "returns an array of users" do
+        get api(path, user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
         username = user.username
-        expect(json_response.detect {
-          |user| user['username'] == username
-          }['username']).to eq(username)
+        expect(json_response.detect do |user|
+          user['username'] == username
+        end['username']).to eq(username)
+      end
+
+      it "returns an array of blocked users" do
+        ldap_blocked_user
+        create(:user, state: 'blocked')
+
+        get api("/users?blocked=true", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response).to all(include('state' => /(blocked|ldap_blocked)/))
+      end
+
+      it "returns an array of external users" do
+        create(:user)
+        external_user = create(:user, external: true)
+
+        get api("/users?external=true", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response.size).to eq(1)
+        expect(json_response[0]['id']).to eq(external_user.id)
+      end
+
+      it "returns an array of human users" do
+        internal_user
+
+        get api("/users?humans=true", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response.size).to eq(2)
+        expect(json_response).to contain_exactly(
+          hash_including('id' => user.id),
+          hash_including('id' => admin.id)
+        )
+      end
+
+      it "returns an array of non human users" do
+        internal_user
+
+        get api("/users?exclude_humans=true", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response.size).to eq(1)
+        expect(json_response).to contain_exactly(
+          hash_including('id' => internal_user.id)
+        )
+      end
+
+      it "returns active users" do
+        blocked_user
+        banned_user
+
+        get api("/users?active=true", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response.size).to eq(2)
+        expect(json_response).to contain_exactly(
+          hash_including('id' => user.id),
+          hash_including('id' => admin.id)
+        )
+      end
+
+      it "returns an array of non-active users" do
+        deactivated_user
+
+        get api("/users?exclude_active=true", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response.size).to eq(1)
+        expect(json_response).to contain_exactly(
+          hash_including('id' => deactivated_user.id)
+        )
+      end
+
+      it "returns one user" do
+        get api("/users?username=#{omniauth_user.username}", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response.first['username']).to eq(omniauth_user.username)
+      end
+
+      it "returns one user (case insensitive)" do
+        get api("/users?username=#{omniauth_user.username.upcase}", user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(response).to include_pagination_headers
+        expect(json_response.first['username']).to eq(omniauth_user.username)
+      end
+
+      it "returns a 403 when non-admin user searches by external UID" do
+        get api("/users?extern_uid=#{omniauth_user.identities.first.extern_uid}&provider=#{omniauth_user.identities.first.provider}", user)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+
+      it 'does not reveal the `is_admin` flag of the user' do
+        get api(path, user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(json_response.first.keys).not_to include 'is_admin'
       end
     end
 
     context "when admin" do
-      it "should return an array of users" do
-        get api("/users", admin)
-        expect(response.status).to eq(200)
-        expect(json_response).to be_an Array
-        expect(json_response.first.keys).to include 'email'
-        expect(json_response.first.keys).to include 'identities'
-        expect(json_response.first.keys).to include 'can_create_project'
+      context 'exclude_internal param' do
+        let_it_be(:internal_user) { Users::Internal.in_organization(organization).alert_bot }
+
+        it 'returns all users when it is not set' do
+          get api("/users?exclude_internal=false", admin)
+
+          expect(response).to match_response_schema('public_api/v4/user/basics')
+          expect(response).to include_pagination_headers
+          expect(json_response.map { |u| u['id'] }).to include(internal_user.id)
+        end
+
+        it 'returns all non internal users when it is set' do
+          get api("/users?exclude_internal=true", user)
+
+          expect(response).to match_response_schema('public_api/v4/user/basics')
+          expect(response).to include_pagination_headers
+          expect(json_response.map { |u| u['id'] }).not_to include(internal_user.id)
+        end
+      end
+
+      context 'without_project_bots param' do
+        let_it_be(:project_bot) { create(:user, :project_bot) }
+
+        it 'returns all users when it is not set' do
+          get api("/users?without_project_bots=false", user)
+
+          expect(response).to match_response_schema('public_api/v4/user/basics')
+          expect(response).to include_pagination_headers
+          expect(json_response.map { |u| u['id'] }).to include(project_bot.id)
+        end
+
+        it 'returns all non project_bot users when it is set' do
+          get api("/users?without_project_bots=true", user)
+
+          expect(response).to match_response_schema('public_api/v4/user/basics')
+          expect(response).to include_pagination_headers
+          expect(json_response.map { |u| u['id'] }).not_to include(project_bot.id)
+        end
+      end
+
+      context 'admins param' do
+        it 'returns all users' do
+          get api("/users?admins=true", user)
+
+          expect(response).to match_response_schema('public_api/v4/user/basics')
+          expect(json_response.size).to eq(2)
+          expect(json_response.map { |u| u['id'] }).to include(user.id, admin.id)
+        end
+      end
+    end
+
+    context "when admin" do
+      context 'when sudo is defined' do
+        it 'does not return 500' do
+          admin_personal_access_token = create(:personal_access_token, :admin_mode, user: admin, scopes: [:sudo])
+          get api("/users?sudo=#{user.id}", admin, personal_access_token: admin_personal_access_token)
+
+          expect(response).to have_gitlab_http_status(:success)
+        end
+      end
+
+      it "returns an array of users" do
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(response).to include_pagination_headers
+      end
+
+      it "users contain the `namespace_id` field" do
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(2)
+        expect(json_response.map { |u| u['namespace_id'] }).to include(user.namespace_id, admin.namespace_id)
+      end
+
+      it "returns an array of external users" do
+        create(:user, external: true)
+
+        get api("/users?external=true", admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(response).to include_pagination_headers
+        expect(json_response).to all(include('external' => true))
+      end
+
+      it "returns one user by external UID" do
+        get api("/users?extern_uid=#{omniauth_user.identities.first.extern_uid}&provider=#{omniauth_user.identities.first.provider}", admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['username']).to eq(omniauth_user.username)
+      end
+
+      it "returns 400 error if provider with no extern_uid" do
+        get api("/users?extern_uid=#{omniauth_user.identities.first.extern_uid}", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it "returns 400 error if provider with no extern_uid" do
+        get api("/users?provider=#{omniauth_user.identities.first.provider}", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it "returns a user created before a specific date" do
+        user = create(:user, created_at: Date.new(2000, 1, 1))
+
+        get api("/users?created_before=2000-01-02T00:00:00.060Z", admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['username']).to eq(user.username)
+      end
+
+      it "returns no users created before a specific date" do
+        create(:user, created_at: Date.new(2001, 1, 1))
+
+        get api("/users?created_before=2000-01-02T00:00:00.060Z", admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(0)
+      end
+
+      it "returns users created before and after a specific date" do
+        user = create(:user, created_at: Date.new(2001, 1, 1))
+
+        get api("/users?created_before=2001-01-02T00:00:00.060Z&created_after=1999-01-02T00:00:00.060", admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['username']).to eq(user.username)
+      end
+
+      it 'returns the correct order when sorted by id' do
+        # order of let_it_be definitions:
+        # - admin
+        # - user
+
+        get api(path, admin, admin_mode: true), params: { order_by: 'id', sort: 'asc' }
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(2)
+        expect(json_response.first['id']).to eq(admin.id)
+        expect(json_response.last['id']).to eq(user.id)
+      end
+
+      it 'returns users with 2fa enabled' do
+        user_with_2fa = create(:user, :two_factor_via_otp)
+
+        get api(path, admin, admin_mode: true), params: { two_factor: 'enabled' }
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['id']).to eq(user_with_2fa.id)
+      end
+
+      it "returns users without projects" do
+        user_without_projects = create(:user)
+        create(:project, namespace: user.namespace)
+        create(:project, namespace: admin.namespace)
+
+        get api(path, admin, admin_mode: true), params: { without_projects: true }
+
+        expect(response).to match_response_schema('public_api/v4/user/admins')
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['id']).to eq(user_without_projects.id)
+      end
+
+      it 'returns 400 when provided incorrect sort params' do
+        get api(path, admin, admin_mode: true), params: { order_by: 'magic', sort: 'asc' }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+    end
+
+    context 'admins param' do
+      it 'returns only admins' do
+        get api("/users?admins=true", admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/basics')
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['id']).to eq(admin.id)
+      end
+    end
+
+    context 'public email' do
+      it 'returns one user by public_email' do
+        user_with_public_email = create(:user)
+        unique_email = "public#{SecureRandom.hex(4)}@example.com"
+        create(:email, :confirmed, user: user_with_public_email, email: unique_email)
+        user_with_public_email.update!(public_email: unique_email)
+
+        second_user_with_public_email = create(:user)
+        second_unique_email = "public#{SecureRandom.hex(4)}@example.com"
+        create(:email, :confirmed, user: second_user_with_public_email, email: second_unique_email)
+        second_user_with_public_email.update!(public_email: second_unique_email)
+
+        get api(path, user), params: { public_email: unique_email }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.size).to eq(1)
+        expect(json_response.first['id']).to eq(user_with_public_email.id)
+      end
+
+      it 'returns no users if public_email does not match' do
+        user_with_public_email = create(:user)
+        unique_email = "public#{SecureRandom.hex(4)}@example.com"
+        create(:email, :confirmed, user: user_with_public_email, email: unique_email)
+        user_with_public_email.update!(public_email: unique_email)
+
+        get api(path, user), params: { public_email: 'nonexistent@example.com' }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.size).to eq(0)
+      end
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'allows searching users by username' do
+        get api(path, oauth_access_token: oauth_token), params: { username: user.username }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to be_an(Array)
+        expect(json_response.first['username']).to eq(user.username)
+      end
+
+      it 'blocks unfiltered user listing without a username parameter' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
       end
     end
   end
 
   describe "GET /users/:id" do
-    it "should return a user by id" do
-      get api("/users/#{user.id}", user)
-      expect(response.status).to eq(200)
+    let_it_be_with_reload(:user2) { create(:user, username: 'another_user') }
+
+    let(:path) { "/users/#{user.id}" }
+
+    before do
+      allow(Gitlab::ApplicationRateLimiter).to receive(:throttled?)
+        .with(:users_get_by_id, scope: { user: user }, users_allowlist: []).and_return(false)
+    end
+
+    it "returns a user by id" do
+      get api(path, user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
       expect(json_response['username']).to eq(user.username)
     end
 
-    it "should return a 401 if unauthenticated" do
-      get api("/users/9998")
-      expect(response.status).to eq(401)
+    it "returns the user's bio rendered as HTML", :aggregate_failures do
+      user2.update!(bio: '**bold** [link](https://example.com)')
+
+      get api("/users/#{user2.id}", user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['bio']).to eq('**bold** [link](https://example.com)')
+      # Links are removed in user bios.
+      expect(json_response['bio_html']).to eq('<strong>bold</strong> link')
     end
 
-    it "should return a 404 error if user id not found" do
-      get api("/users/9999", user)
-      expect(response.status).to eq(404)
-      expect(json_response['message']).to eq('404 Not found')
-    end
-  end
-
-  describe "POST /users" do
-    before{ admin }
-
-    it "should create user" do
-      expect {
-        post api("/users", admin), attributes_for(:user, projects_limit: 3)
-      }.to change { User.count }.by(1)
+    it_behaves_like 'authorizing granular token permissions', :read_user do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
     end
 
-    it "should create user with correct attributes" do
-      post api('/users', admin), attributes_for(:user, admin: true, can_create_group: true)
-      expect(response.status).to eq(201)
-      user_id = json_response['id']
-      new_user = User.find(user_id)
-      expect(new_user).not_to eq(nil)
-      expect(new_user.admin).to eq(true)
-      expect(new_user.can_create_group).to eq(true)
+    it "does not return the user's `is_admin` flag" do
+      get api(path, user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).not_to include 'is_admin'
     end
 
-    it "should create non-admin user" do
-      post api('/users', admin), attributes_for(:user, admin: false, can_create_group: false)
-      expect(response.status).to eq(201)
-      user_id = json_response['id']
-      new_user = User.find(user_id)
-      expect(new_user).not_to eq(nil)
-      expect(new_user.admin).to eq(false)
-      expect(new_user.can_create_group).to eq(false)
+    it "does not return the user's `highest_role`" do
+      get api(path, user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).not_to include 'highest_role'
     end
 
-    it "should create non-admin users by default" do
-      post api('/users', admin), attributes_for(:user)
-      expect(response.status).to eq(201)
-      user_id = json_response['id']
-      new_user = User.find(user_id)
-      expect(new_user).not_to eq(nil)
-      expect(new_user.admin).to eq(false)
+    it "does not return the user's sign in IPs" do
+      get api(path, user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).not_to include 'current_sign_in_ip'
+      expect(json_response.keys).not_to include 'last_sign_in_ip'
     end
 
-    it "should return 201 Created on success" do
-      post api("/users", admin), attributes_for(:user, projects_limit: 3)
-      expect(response.status).to eq(201)
+    it "does not contain plan or trial data" do
+      get api(path, user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).not_to include 'plan'
+      expect(json_response.keys).not_to include 'trial'
     end
 
-    it "should not create user with invalid email" do
-      post api('/users', admin),
-           email: 'invalid email',
-           password: 'password',
-           name: 'test'
-      expect(response.status).to eq(400)
+    it 'returns a 404 if the target user is present but inaccessible' do
+      allow(Ability).to receive(:allowed?).and_call_original
+      allow(Ability).to receive(:allowed?).with(user, :read_user, user2).and_return(false)
+
+      get api("/users/#{user2.id}", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
     end
 
-    it 'should return 400 error if name not given' do
-      post api('/users', admin), attributes_for(:user).except(:name)
-      expect(response.status).to eq(400)
+    it 'returns the `created_at` field for public users' do
+      get api("/users/#{user2.id}", user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).to include('created_at')
     end
 
-    it 'should return 400 error if password not given' do
-      post api('/users', admin), attributes_for(:user).except(:password)
-      expect(response.status).to eq(400)
+    it 'does not return the `created_at` field for private users' do
+      get api("/users/#{private_user.id}", user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).not_to include('created_at')
     end
 
-    it 'should return 400 error if email not given' do
-      post api('/users', admin), attributes_for(:user).except(:email)
-      expect(response.status).to eq(400)
+    it 'returns the `followers` field for public users' do
+      get api("/users/#{user2.id}", user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).to include('followers')
     end
 
-    it 'should return 400 error if username not given' do
-      post api('/users', admin), attributes_for(:user).except(:username)
-      expect(response.status).to eq(400)
+    it 'does not return the `followers` field for private users' do
+      get api("/users/#{private_user.id}", user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).not_to include('followers')
     end
 
-    it 'should return 400 error if user does not validate' do
-      post api('/users', admin),
-           password: 'pass',
-           email: 'test@example.com',
-           username: 'test!',
-           name: 'test',
-           bio: 'g' * 256,
-           projects_limit: -1
-      expect(response.status).to eq(400)
-      expect(json_response['message']['password']).
-          to eq(['is too short (minimum is 8 characters)'])
-      expect(json_response['message']['bio']).
-          to eq(['is too long (maximum is 255 characters)'])
-      expect(json_response['message']['projects_limit']).
-          to eq(['must be greater than or equal to 0'])
-      expect(json_response['message']['username']).
-          to eq([Gitlab::Regex.send(:namespace_regex_message)])
+    it 'returns the `following` field for public users' do
+      get api("/users/#{user2.id}", user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).to include('following')
     end
 
-    it "shouldn't available for non admin users" do
-      post api("/users", user), attributes_for(:user)
-      expect(response.status).to eq(403)
+    it 'does not return the `following` field for private users' do
+      get api("/users/#{private_user.id}", user)
+
+      expect(response).to match_response_schema('public_api/v4/user/basic')
+      expect(json_response.keys).not_to include('following')
     end
 
-    context 'with existing user' do
+    it 'does not contain the note of the user' do
+      get api(path, user)
+
+      expect(json_response).not_to have_key('note')
+      expect(json_response).not_to have_key('sign_in_count')
+    end
+
+    context 'when the rate limit is not exceeded' do
+      it 'returns a success status' do
+        expect(Gitlab::ApplicationRateLimiter)
+          .to receive(:throttled?).with(:users_get_by_id, scope: { user: user }, users_allowlist: [])
+          .and_return(false)
+
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    context 'when the rate limit is exceeded' do
+      context 'when feature flag is enabled' do
+        it 'returns "too many requests" status' do
+          expect(Gitlab::ApplicationRateLimiter)
+            .to receive(:throttled?).with(:users_get_by_id, scope: { user: user }, users_allowlist: [])
+            .and_return(true)
+
+          get api(path, user)
+
+          expect(response).to have_gitlab_http_status(:too_many_requests)
+          expect(response.headers).to include(
+            'Retry-After' => Gitlab::ApplicationRateLimiter.period_for(:users_get_by_id)
+          )
+        end
+
+        it 'still allows admin users' do
+          expect(Gitlab::ApplicationRateLimiter)
+            .not_to receive(:throttled?)
+
+          get api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+
+        it 'allows users whose username is in the allowlist' do
+          allowlist = [user.username]
+          current_settings = Gitlab::CurrentSettings.current_application_settings
+
+          # Necessary to ensure the same object is returned on each call
+          allow(Gitlab::CurrentSettings).to receive(:current_application_settings).and_return current_settings
+
+          allow(current_settings).to receive(:users_get_by_id_limit_allowlist).and_return(allowlist)
+
+          expect(Gitlab::ApplicationRateLimiter)
+            .to receive(:throttled?).with(:users_get_by_id, scope: { user: user }, users_allowlist: allowlist)
+            .and_call_original
+
+          get api(path, user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+    end
+
+    context 'when job title is present' do
+      let(:job_title) { 'Fullstack Engineer' }
+
       before do
-        post api('/users', admin),
-             email: 'test@example.com',
-             password: 'password',
-             username: 'test',
-             name: 'foo'
+        user.update!(job_title: job_title)
       end
 
-      it 'should return 409 conflict error if user with same email exists' do
-        expect {
-          post api('/users', admin),
-               name: 'foo',
-               email: 'test@example.com',
-               password: 'password',
-               username: 'foo'
-        }.to change { User.count }.by(0)
-        expect(response.status).to eq(409)
-        expect(json_response['message']).to eq('Email has already been taken')
+      it 'returns job title of a user' do
+        get api(path, user)
+
+        expect(response).to match_response_schema('public_api/v4/user/basic')
+        expect(json_response['job_title']).to eq(job_title)
+      end
+    end
+
+    context 'when authenticated as admin' do
+      it 'contains the note of the user' do
+        get api(path, admin, admin_mode: true)
+
+        expect(json_response).to have_key('note')
+        expect(json_response['note']).to eq(user.note)
+        expect(json_response).to have_key('sign_in_count')
       end
 
-      it 'should return 409 conflict error if same username exists' do
-        expect do
-          post api('/users', admin),
-               name: 'foo',
-               email: 'foo@example.com',
-               password: 'password',
-               username: 'test'
-        end.to change { User.count }.by(0)
-        expect(response.status).to eq(409)
-        expect(json_response['message']).to eq('Username has already been taken')
+      it 'includes the `is_admin` field' do
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admin')
+        expect(json_response['is_admin']).to be(false)
+      end
+
+      it "includes the `created_at` field for private users" do
+        get api("/users/#{private_user.id}", admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admin')
+        expect(json_response.keys).to include 'created_at'
+      end
+
+      it 'includes the `highest_role` field' do
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to match_response_schema('public_api/v4/user/admin')
+        expect(json_response['highest_role']).to be(0)
+      end
+
+      it "includes the user's bio rendered as HTML" do
+        user2.update!(bio: '**bold** [link](https://example.com)')
+
+        get api("/users/#{user2.id}", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['bio']).to eq('**bold** [link](https://example.com)')
+        # Links are removed in user bios.
+        expect(json_response['bio_html']).to eq('<strong>bold</strong> link')
+      end
+
+      it 'includes the `namespace_id` field' do
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(response).to match_response_schema('public_api/v4/user/admin')
+        expect(json_response['namespace_id']).to eq(user.namespace_id)
+      end
+
+      if Gitlab.ee?
+        it 'does not include values for plan or trial' do
+          get api(path, admin, admin_mode: true)
+
+          expect(response).to match_response_schema('public_api/v4/user/basic')
+        end
+      else
+        it 'does not include plan or trial data' do
+          get api(path, admin, admin_mode: true)
+
+          expect(response).to match_response_schema('public_api/v4/user/basic')
+          expect(json_response.keys).not_to include 'plan'
+          expect(json_response.keys).not_to include 'trial'
+        end
+      end
+
+      context 'when user has not logged in' do
+        it 'does not include the sign in IPs' do
+          get api(path, admin, admin_mode: true)
+
+          expect(response).to match_response_schema('public_api/v4/user/admin')
+          expect(json_response).to include('current_sign_in_ip' => nil, 'last_sign_in_ip' => nil)
+        end
+      end
+
+      context 'when user has logged in' do
+        let_it_be(:signed_in_user) { create(:user, :with_sign_ins) }
+
+        it 'includes the sign in IPs' do
+          get api("/users/#{signed_in_user.id}", admin, admin_mode: true)
+
+          expect(response).to match_response_schema('public_api/v4/user/admin')
+          expect(json_response['current_sign_in_ip']).to eq('127.0.0.1')
+          expect(json_response['last_sign_in_ip']).to eq('127.0.0.1')
+        end
+      end
+    end
+
+    context 'for an anonymous user' do
+      it 'returns 403' do
+        get api(path)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it "returns a 404 error if user id not found" do
+      get api("/users/#{non_existing_record_id}", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it "returns a 404 for invalid ID" do
+      get api("/users/1ASDF", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'allows fetching a user by ID' do
+        get api(path, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['username']).to eq(user.username)
+      end
+
+      it 'blocks access to user sub-resources' do
+        get api("/users/#{user.id}/keys", oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
       end
     end
   end
 
-  describe "GET /users/sign_up" do
+  describe 'GET /users/:id_or_username/status' do
+    context 'when finding the user by id' do
+      it_behaves_like 'rendering user status' do
+        let(:path) { "/users/#{user.id}/status" }
+      end
 
-    it "should redirect to sign in page" do
-      get "/users/sign_up"
-      expect(response.status).to eq(302)
-      expect(response).to redirect_to(new_user_session_path)
+      it_behaves_like 'authorizing granular token permissions', :read_user_status do
+        let(:boundary_object) { :user }
+        let(:path) { "/users/#{user.id}/status" }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+    end
+
+    context 'when finding the user by username' do
+      it_behaves_like 'rendering user status' do
+        let(:path) { "/users/#{user.username}/status" }
+      end
+    end
+
+    context 'when finding the user by username (case insensitive)' do
+      it_behaves_like 'rendering user status' do
+        let(:path) { "/users/#{user.username.upcase}/status" }
+      end
+    end
+
+    context 'when rate limited' do
+      let_it_be(:current_user) { create(:user) }
+      let(:path) { "/users/#{user.username}/status" }
+      let(:request) { get api(path, current_user) }
+
+      context 'when user is authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_status do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+
+      context 'when user is unauthenticated' do
+        let(:current_user) { nil }
+
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_status do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
     end
   end
 
-  describe "PUT /users/:id" do
-    let!(:admin_user) { create(:admin) }
+  describe 'POST /users/:id/follow' do
+    let_it_be(:followee) { create(:user) }
+    let(:path) { "/users/#{followee.id}/follow" }
 
-    before { admin }
+    context 'on an unfollowed user' do
+      it 'follows the user' do
+        post api(path, user)
 
-    it "should update user with new bio" do
-      put api("/users/#{user.id}", admin), {bio: 'new test bio'}
-      expect(response.status).to eq(200)
-      expect(json_response['bio']).to eq('new test bio')
-      expect(user.reload.bio).to eq('new test bio')
+        expect(user.followees).to contain_exactly(followee)
+        expect(response).to have_gitlab_http_status(:created)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :follow_user do
+        let(:boundary_object) { :user }
+        let(:request) do
+          post api(path, personal_access_token: pat)
+        end
+      end
+
+      it 'alerts and not follow when over followee limit' do
+        stub_const('Users::UserFollowUser::MAX_FOLLOWEE_LIMIT', 2)
+        Users::UserFollowUser::MAX_FOLLOWEE_LIMIT.times { user.follow(create(:user)) }
+
+        post api(path, user)
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expected_message = format(_("You can't follow more than %{limit} users. To follow more users, unfollow some others."), limit: Users::UserFollowUser::MAX_FOLLOWEE_LIMIT)
+        expect(json_response['message']).to eq(expected_message)
+        expect(user.following?(followee)).to be_falsey
+      end
     end
 
-    it 'should update user with his own email' do
-      put api("/users/#{user.id}", admin), email: user.email
-      expect(response.status).to eq(200)
-      expect(json_response['email']).to eq(user.email)
-      expect(user.reload.email).to eq(user.email)
+    context 'on a followed user' do
+      before do
+        user.follow(followee)
+      end
+
+      it 'does not change following' do
+        post api(path, user)
+
+        expect(user.followees).to contain_exactly(followee)
+        expect(response).to have_gitlab_http_status(:not_modified)
+      end
     end
 
-    it 'should update user with his own username' do
-      put api("/users/#{user.id}", admin), username: user.username
-      expect(response.status).to eq(200)
-      expect(json_response['username']).to eq(user.username)
-      expect(user.reload.username).to eq(user.username)
+    context 'on a user with disabled following' do
+      before do
+        user.enabled_following = false
+        user.save!
+      end
+
+      it 'does not change following' do
+        post api("/users/#{followee.id}/follow", user)
+
+        expect(user.followees).to be_empty
+        expect(response).to have_gitlab_http_status(:not_modified)
+      end
+    end
+  end
+
+  describe 'POST /users/:id/unfollow' do
+    let_it_be(:followee) { create(:user) }
+    let(:path) { "/users/#{followee.id}/unfollow" }
+
+    context 'on a followed user' do
+      before do
+        user.follow(followee)
+      end
+
+      it 'unfollow the user' do
+        post api(path, user)
+
+        expect(user.followees).to be_empty
+        expect(response).to have_gitlab_http_status(:created)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :unfollow_user do
+        let(:boundary_object) { :user }
+        let(:request) do
+          post api(path, personal_access_token: pat)
+        end
+      end
     end
 
-    it "should update admin status" do
-      put api("/users/#{user.id}", admin), {admin: true}
-      expect(response.status).to eq(200)
-      expect(json_response['is_admin']).to eq(true)
-      expect(user.reload.admin).to eq(true)
+    context 'on an unfollowed user' do
+      it 'does not change following' do
+        post api(path, user)
+
+        expect(user.followees).to be_empty
+        expect(response).to have_gitlab_http_status(:not_modified)
+      end
+    end
+  end
+
+  describe 'GET /users/:id/followers' do
+    let_it_be(:follower) { create(:user) }
+    let(:path) { "/users/#{user.id}/followers" }
+
+    context 'for an anonymous user' do
+      it 'returns 403' do
+        get api("/users/#{user.id}")
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
     end
 
-    it "should not update admin status" do
-      put api("/users/#{admin_user.id}", admin), {can_create_group: false}
-      expect(response.status).to eq(200)
-      expect(json_response['is_admin']).to eq(true)
-      expect(admin_user.reload.admin).to eq(true)
-      expect(admin_user.can_create_group).to eq(false)
+    context 'user has followers' do
+      it 'lists followers' do
+        follower.follow(user)
+
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_follower do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+
+      it 'do not lists followers if profile is private' do
+        follower.follow(private_user)
+
+        get api("/users/#{private_user.id}/followers", user)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
     end
 
-    it "should not allow invalid update" do
-      put api("/users/#{user.id}", admin), {email: 'invalid email'}
-      expect(response.status).to eq(400)
-      expect(user.reload.email).not_to eq('invalid email')
+    context 'user does not have any follower' do
+      it 'does list nothing' do
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_empty
+      end
     end
 
-    it "shouldn't available for non admin users" do
-      put api("/users/#{user.id}", user), attributes_for(:user)
-      expect(response.status).to eq(403)
+    context 'when rate limited' do
+      let_it_be(:current_user) { create(:user) }
+      let(:request) { get api(path, current_user) }
+
+      context 'when user is authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_followers do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+
+      context 'when user is unauthenticated' do
+        let(:current_user) { nil }
+
+        it 'returns 403' do
+          request
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+  end
+
+  describe 'GET /users/:id/following' do
+    let(:followee) { create(:user) }
+    let(:path) { "/users/#{user.id}/following" }
+
+    context 'for an anonymous user' do
+      it 'returns 403' do
+        get api("/users/#{user.id}")
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
     end
 
-    it "should return 404 for non-existing user" do
-      put api("/users/999999", admin), {bio: 'update should fail'}
-      expect(response.status).to eq(404)
-      expect(json_response['message']).to eq('404 Not found')
+    context 'user has followers' do
+      it 'lists following user' do
+        user.follow(followee)
+
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_following do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+
+      it 'do not lists following user if profile is private' do
+        user.follow(private_user)
+
+        get api("/users/#{private_user.id}/following", user)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
     end
 
-    it 'should return 400 error if user does not validate' do
-      put api("/users/#{user.id}", admin),
+    context 'user does not have any follower' do
+      it 'does list nothing' do
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_empty
+      end
+    end
+
+    context 'when rate limited' do
+      let_it_be(:current_user) { create(:user) }
+      let(:request) { get api(path, current_user) }
+
+      context 'when user is authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_following do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+
+      context 'when user is unauthenticated' do
+        let(:current_user) { nil }
+
+        it 'returns 403' do
+          request
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+  end
+
+  describe "POST /users", :with_current_organization do
+    it_behaves_like 'authorizing granular token permissions', :create_user do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { post api(path, personal_access_token: pat), params: { email: 'gpat-user@example.com', name: 'GPAT User', username: 'gpat_user', force_random_password: true } }
+    end
+
+    let(:path) { '/users' }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { attributes_for(:user, projects_limit: 3) }
+    end
+
+    it "creates user" do
+      expect do
+        post api(path, admin, admin_mode: true), params: attributes_for(:user, projects_limit: 3)
+      end.to change { User.count }.by(1)
+    end
+
+    it "creates user with correct attributes" do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user, admin: true, can_create_group: true)
+      expect(response).to have_gitlab_http_status(:created)
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+      expect(new_user.admin).to be(true)
+      expect(new_user.can_create_group).to be(true)
+      expect(new_user.namespace.organization).to eq(current_organization)
+    end
+
+    it "creates user with optional attributes" do
+      optional_attributes = { confirm: true, theme_id: 2, color_scheme_id: 4 }
+      attributes = attributes_for(:user).merge(optional_attributes)
+
+      post api(path, admin, admin_mode: true), params: attributes
+
+      expect(response).to have_gitlab_http_status(:created)
+    end
+
+    it "creates non-admin user" do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user, admin: false, can_create_group: false)
+      expect(response).to have_gitlab_http_status(:created)
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+      expect(new_user.admin).to be(false)
+      expect(new_user.can_create_group).to be(false)
+    end
+
+    it "creates non-admin users by default" do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user)
+      expect(response).to have_gitlab_http_status(:created)
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+      expect(new_user.admin).to be(false)
+    end
+
+    it "returns 201 Created on success" do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user, projects_limit: 3)
+      expect(response).to match_response_schema('public_api/v4/user/admin')
+      expect(response).to have_gitlab_http_status(:created)
+    end
+
+    it 'creates non-external users by default' do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user)
+      expect(response).to have_gitlab_http_status(:created)
+
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+      expect(new_user.external).to be_falsy
+    end
+
+    it 'allows an external user to be created' do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user, external: true)
+      expect(response).to have_gitlab_http_status(:created)
+
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+      expect(new_user.external).to be_truthy
+    end
+
+    it "creates user with reset password" do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user, reset_password: true).except(:password)
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+
+      expect(new_user.recently_sent_password_reset?).to be(true)
+    end
+
+    it "creates user with random password" do
+      params = attributes_for(:user, force_random_password: true)
+      params.delete(:password)
+      post api(path, admin, admin_mode: true), params: params
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+
+      expect(new_user.encrypted_password).to be_present
+    end
+
+    it "creates user with private profile" do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user, private_profile: true)
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+
+      expect(new_user).not_to be_nil
+      expect(new_user.private_profile?).to be(true)
+    end
+
+    it "creates user with view_diffs_file_by_file" do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user, view_diffs_file_by_file: true)
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      user_id = json_response['id']
+      new_user = User.find(user_id)
+
+      expect(new_user).not_to be_nil
+      expect(new_user.user_preference.view_diffs_file_by_file?).to be(true)
+    end
+
+    it "creates user with avatar" do
+      workhorse_form_with_file(
+        api(path, admin, admin_mode: true),
+        method: :post,
+        file_key: :avatar,
+        params: attributes_for(:user, avatar: fixture_file_upload('spec/fixtures/banana_sample.gif', 'image/gif'))
+      )
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      new_user = User.find_by(id: json_response['id'])
+
+      expect(new_user).not_to be_nil
+      expect(json_response['avatar_url']).to include(new_user.avatar_path)
+    end
+
+    it "does not create user with invalid email" do
+      post api(path, admin, admin_mode: true),
+        params: {
+          email: 'invalid email',
+          password: User.random_password,
+          name: 'test'
+        }
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it 'returns 400 error if name not given' do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user).except(:name)
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it 'returns 400 error if password not given' do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user).except(:password)
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it 'returns 400 error if email not given' do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user).except(:email)
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it 'returns 400 error if username not given' do
+      post api(path, admin, admin_mode: true), params: attributes_for(:user).except(:username)
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it "doesn't create user with invalid optional attributes" do
+      optional_attributes = { theme_id: 50, color_scheme_id: 50 }
+      attributes = attributes_for(:user).merge(optional_attributes)
+
+      post api(path, admin, admin_mode: true), params: attributes
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it 'returns 400 error if user does not validate' do
+      post api(path, admin, admin_mode: true),
+        params: {
           password: 'pass',
           email: 'test@example.com',
           username: 'test!',
           name: 'test',
           bio: 'g' * 256,
           projects_limit: -1
-      expect(response.status).to eq(400)
-      expect(json_response['message']['password']).
-          to eq(['is too short (minimum is 8 characters)'])
-      expect(json_response['message']['bio']).
-          to eq(['is too long (maximum is 255 characters)'])
-      expect(json_response['message']['projects_limit']).
-          to eq(['must be greater than or equal to 0'])
-      expect(json_response['message']['username']).
-          to eq([Gitlab::Regex.send(:namespace_regex_message)])
+        }
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']['password'])
+        .to eq(['is too short (minimum is 8 characters)'])
+      expect(json_response['message']['bio'])
+        .to eq(['is too long (maximum is 255 characters)'])
+      expect(json_response['message']['projects_limit'])
+        .to eq(['must be greater than or equal to 0'])
+      expect(json_response['message']['username'])
+        .to match_array([Gitlab::PathRegex.namespace_format_message, Gitlab::Regex.oci_repository_path_regex_message])
+    end
+
+    it 'tracks weak password errors' do
+      attributes = attributes_for(:user).merge({ password: "password" })
+      post api(path, admin, admin_mode: true), params: attributes
+
+      expect(json_response['message']['password'])
+        .to eq(['must not contain commonly used combinations of words and letters'])
+      expect_snowplow_event(
+        category: 'Gitlab::Tracking::Helpers::WeakPasswordErrorEvent',
+        action: 'track_weak_password_error',
+        controller: 'API::Users',
+        method: 'create'
+      )
+    end
+
+    it "is not available for non admin users" do
+      post api(path, user), params: attributes_for(:user)
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+
+    context 'with existing user' do
+      before do
+        post api(path, admin, admin_mode: true),
+          params: {
+            email: 'test@example.com',
+            password: User.random_password,
+            username: 'test',
+            name: 'foo'
+          }
+      end
+
+      it 'returns 409 conflict error if user with same email exists' do
+        expect do
+          post api(path, admin, admin_mode: true),
+            params: {
+              name: 'foo',
+              email: 'test@example.com',
+              password: User.random_password,
+              username: 'foo'
+            }
+        end.not_to change { User.count }
+        expect(response).to have_gitlab_http_status(:conflict)
+        expect(json_response['message']).to eq('Email has already been taken')
+      end
+
+      it 'returns 409 conflict error if same username exists' do
+        expect do
+          post api(path, admin, admin_mode: true),
+            params: {
+              name: 'foo',
+              email: 'foo@example.com',
+              password: User.random_password,
+              username: 'test'
+            }
+        end.not_to change { User.count }
+        expect(response).to have_gitlab_http_status(:conflict)
+        expect(json_response['message']).to eq('Username has already been taken')
+      end
+
+      it 'returns 409 conflict error if same username exists (case insensitive)' do
+        expect do
+          post api(path, admin, admin_mode: true),
+            params: {
+              name: 'foo',
+              email: 'foo@example.com',
+              password: User.random_password,
+              username: 'TEST'
+            }
+        end.not_to change { User.count }
+        expect(response).to have_gitlab_http_status(:conflict)
+        expect(json_response['message']).to eq('Username has already been taken')
+      end
+
+      it 'creates user with new identity' do
+        post api(path, admin, admin_mode: true), params: attributes_for(:user, provider: 'github', extern_uid: '67890')
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['identities'].first['extern_uid']).to eq('67890')
+        expect(json_response['identities'].first['provider']).to eq('github')
+      end
+    end
+
+    context 'with existing pages unique domain' do
+      let_it_be(:project) { create(:project) }
+
+      before do
+        stub_pages_setting(enabled: true)
+
+        create(
+          :project_setting,
+          project: project,
+          pages_unique_domain_enabled: true,
+          pages_unique_domain: 'unique-domain')
+      end
+
+      it 'returns 400 bad request error if same username is already used by pages unique domain' do
+        expect do
+          post api(path, admin, admin_mode: true),
+            params: {
+              name: 'foo',
+              email: 'foo@example.com',
+              password: User.random_password,
+              username: 'unique-domain'
+            }
+        end.not_to change { User.count }
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq({ "username" => ["has already been taken"] })
+      end
+    end
+
+    context 'when user with a primary email exists' do
+      context 'when the primary email is confirmed' do
+        let!(:confirmed_user) { create(:user, email: 'foo@example.com') }
+
+        it 'returns 409 conflict error' do
+          expect do
+            post api(path, admin, admin_mode: true),
+              params: {
+                name: 'foo',
+                email: confirmed_user.email,
+                password: 'password',
+                username: 'TEST'
+              }
+          end.not_to change { User.count }
+          expect(response).to have_gitlab_http_status(:conflict)
+          expect(json_response['message']).to eq('Email has already been taken')
+        end
+      end
+
+      context 'when the primary email is unconfirmed' do
+        let!(:unconfirmed_user) { create(:user, :unconfirmed, email: 'foo@example.com') }
+
+        it 'returns 409 conflict error' do
+          expect do
+            post api(path, admin, admin_mode: true),
+              params: {
+                name: 'foo',
+                email: unconfirmed_user.email,
+                password: 'password',
+                username: 'TEST'
+              }
+          end.not_to change { User.count }
+          expect(response).to have_gitlab_http_status(:conflict)
+          expect(json_response['message']).to eq('Email has already been taken')
+        end
+      end
+    end
+
+    context 'when user with a secondary email exists' do
+      context 'when the secondary email is confirmed' do
+        let!(:email) { create(:email, :confirmed, email: 'foo@example.com') }
+
+        it 'returns 409 conflict error' do
+          expect do
+            post api(path, admin, admin_mode: true),
+              params: {
+                name: 'foo',
+                email: email.email,
+                password: 'password',
+                username: 'TEST'
+              }
+          end.not_to change { User.count }
+          expect(response).to have_gitlab_http_status(:conflict)
+          expect(json_response['message']).to eq('Email has already been taken')
+        end
+      end
+
+      context 'when the secondary email is unconfirmed' do
+        let!(:email) { create(:email, email: 'foo@example.com') }
+
+        it 'does not create user' do
+          expect do
+            post api(path, admin, admin_mode: true),
+              params: {
+                name: 'foo',
+                email: email.email,
+                password: 'password',
+                username: 'TEST'
+              }
+          end.not_to change { User.count }
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    context "scopes" do
+      let(:user) { admin }
+      let(:path) { '/users' }
+      let(:api_call) { method(:api) }
+
+      include_examples 'does not allow the "read_user" scope'
+    end
+
+    context "`private_profile` attribute" do
+      context "based on the application setting" do
+        before do
+          stub_application_setting(user_defaults_to_private_profile: true)
+        end
+
+        let(:params) { attributes_for(:user) }
+
+        shared_examples_for 'creates the user with the value of `private_profile` based on the application setting' do
+          specify do
+            post api(path, admin, admin_mode: true), params: params
+
+            expect(response).to have_gitlab_http_status(:created)
+            user = User.find_by(id: json_response['id'], private_profile: true)
+            expect(user).to be_present
+          end
+        end
+
+        context 'when the attribute is not overridden in params' do
+          it_behaves_like 'creates the user with the value of `private_profile` based on the application setting'
+        end
+
+        context 'when the attribute is overridden in params' do
+          it 'creates the user with the value of `private_profile` same as the value of the overridden param' do
+            post api(path, admin, admin_mode: true), params: params.merge(private_profile: false)
+
+            expect(response).to have_gitlab_http_status(:created)
+            user = User.find_by(id: json_response['id'], private_profile: false)
+            expect(user).to be_present
+          end
+
+          context 'overridden as `nil`' do
+            let(:params) { attributes_for(:user, private_profile: nil) }
+
+            it_behaves_like 'creates the user with the value of `private_profile` based on the application setting'
+          end
+        end
+      end
+    end
+  end
+
+  describe "PUT /users/:id" do
+    it_behaves_like 'authorizing granular token permissions', :update_user do
+      let_it_be(:gt_target) { create(:user) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { put api("/users/#{gt_target.id}", personal_access_token: pat), params: { name: "Updated" } }
+    end
+
+    let(:path) { "/users/#{user.id}" }
+
+    it_behaves_like 'PUT request permissions for admin mode' do
+      let(:params) { { bio: 'new test bio' } }
+    end
+
+    it "returns 200 OK on success" do
+      put api(path, admin, admin_mode: true), params: { bio: 'new test bio' }
+
+      expect(response).to match_response_schema('public_api/v4/user/admin')
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    context 'updating password' do
+      def update_password(user, admin, password = User.random_password)
+        put api("/users/#{user.id}", admin, admin_mode: true), params: { password: password }
+      end
+
+      context 'admin updates their own password' do
+        # `Users::ActivityService` should not be allowed to execute
+        # as the same fails on update user_details
+        # This prevents a failure we saw in
+        # https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/6616
+        before do
+          allow_next_instance_of(Users::ActivityService) do |service|
+            allow(service).to receive(:execute).and_return(true)
+          end
+        end
+
+        it 'does not force reset on next login' do
+          update_password(admin, admin)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(admin.reload.password_expired?).to be(false)
+        end
+
+        it 'does not enqueue the `admin changed your password` email' do
+          expect { update_password(admin, admin) }
+            .not_to have_enqueued_mail(DeviseMailer, :password_change_by_admin)
+        end
+
+        it 'enqueues the `password changed` email' do
+          expect { update_password(admin, admin) }
+            .to have_enqueued_mail(DeviseMailer, :password_change)
+        end
+      end
+
+      context 'admin updates the password of another user' do
+        it 'forces reset on next login' do
+          update_password(user, admin)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(user.reload.password_expired?).to be(true)
+        end
+
+        it 'enqueues the `admin changed your password` email' do
+          expect { update_password(user, admin) }
+            .to have_enqueued_mail(DeviseMailer, :password_change_by_admin)
+        end
+
+        it 'does not enqueue the `password changed` email' do
+          expect { update_password(user, admin) }
+            .not_to have_enqueued_mail(DeviseMailer, :password_change)
+        end
+      end
+
+      context 'with a weak password' do
+        it 'tracks weak password errors' do
+          update_password(user, admin, "password")
+
+          expect(json_response['message']['password'])
+            .to eq(['must not contain commonly used combinations of words and letters'])
+          expect_snowplow_event(
+            category: 'Gitlab::Tracking::Helpers::WeakPasswordErrorEvent',
+            action: 'track_weak_password_error',
+            controller: 'API::Users',
+            method: 'update'
+          )
+        end
+      end
+    end
+
+    it "updates user with new bio" do
+      put api(path, admin, admin_mode: true), params: { bio: 'new test bio' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['bio']).to eq('new test bio')
+      expect(user.reload.bio).to eq('new test bio')
+    end
+
+    it "updates user with empty bio" do
+      user.update!(bio: 'previous bio')
+
+      put api(path, admin, admin_mode: true), params: { bio: '' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['bio']).to eq('')
+      expect(user.reload.bio).to eq('')
+    end
+
+    it 'updates user with nil bio' do
+      put api(path, admin, admin_mode: true), params: { bio: nil }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['bio']).to eq('')
+      expect(user.reload.bio).to eq('')
+    end
+
+    context 'when updating organization' do
+      using RSpec::Parameterized::TableSyntax
+
+      shared_examples '200 response' do
+        it 'responds :ok and sets organization correctly' do
+          put api(path, admin, admin_mode: true), params: { organization: param_organization }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response['organization']).to eq(expected_organization)
+          expect(user.reload.company).to eq(expected_organization)
+        end
+      end
+
+      shared_examples '400 response because organization too long' do
+        it 'responds :bad_request and sets organization correctly' do
+          put api(path, admin, admin_mode: true), params: { organization: param_organization }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq({ 'user_detail.base' => ['Organization is too long (maximum is 500 characters)'] })
+          expect(user.reload.company).to eq(expected_organization)
+        end
+      end
+
+      before_all do
+        user.update!(company: 'Previous org')
+      end
+
+      where(:param_organization, :expected_organization, :example) do
+        'GitLab'                                    | 'GitLab'          | '200 response'
+        ''                                          | ''                | '200 response'
+        nil                                         | ''                | '200 response'
+        ('a' * 501)                                 | 'Previous org'    | '400 response because organization too long'
+        '<script>alert("xss")</script>Company Name' | 'Company Name'    | '200 response'
+        'Marks & Spencer'                           | 'Marks & Spencer' | '200 response'
+      end
+
+      with_them do
+        it_behaves_like params[:example]
+      end
+    end
+
+    context 'when updating user_details with sanitizable fields' do
+      using RSpec::Parameterized::TableSyntax
+
+      let_it_be(:user_for_details) { create(:user) }
+      let(:details_path) { "/users/#{user_for_details.id}" }
+
+      subject(:put_request_response) { put api(details_path, admin, admin_mode: true), params: params }
+
+      shared_examples 'successful user_details update' do
+        with_them do
+          it 'responds :ok and sets the field correctly' do
+            put_request_response
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response).to include(expected_attributes)
+          end
+        end
+      end
+
+      shared_examples 'rejected user_details update' do
+        with_them do
+          it 'responds :bad_request with validation error' do
+            put_request_response
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message'].values.flatten).to include(match(expected_error))
+          end
+        end
+      end
+
+      context 'with valid input' do
+        where(:params, :expected_attributes) do
+          { linkedin: 'https://linkedin.com/in/username' }  | { 'linkedin' => 'https://linkedin.com/in/username' }
+          { website_url: 'https://example.com?a=1&b=2' }    | { 'website_url' => 'https://example.com?a=1&b=2' }
+          { twitter: '<script>alert("xss")</script>@user' } | { 'twitter' => '@user' }
+        end
+
+        it_behaves_like 'successful user_details update'
+      end
+
+      context 'with invalid input' do
+        where(:params, :expected_error) do
+          { linkedin: '&lt;script&gt;alert(1)&lt;/script&gt;' } | /cannot contain escaped HTML entities/
+          { website_url: '%2526lt%253Bscript%2526gt%253B' }     | /cannot contain escaped components/
+          { github: 'main../../../../../../etc/passwd' }        | /cannot contain a path traversal component/
+        end
+
+        it_behaves_like 'rejected user_details update'
+      end
+
+      context 'when feature flag :validate_sanitizable_user_details is disabled' do
+        before do
+          stub_feature_flags(validate_sanitizable_user_details: false)
+        end
+
+        context 'with valid input' do
+          where(:params, :expected_attributes) do
+            { linkedin: 'https://linkedin.com/in/username' }  | { 'linkedin' => 'https://linkedin.com/in/username' }
+            { website_url: 'https://example.com?a=1&b=2' }    | { 'website_url' => 'https://example.com?a=1&b=2' }
+            { twitter: '<script>alert("xss")</script>@user' } | { 'twitter' => '@user' }
+
+            # Valid inputs when the feature flag :validate_sanitizable_user_details is enabled
+            { linkedin: '&lt;script&gt;alert(1)&lt;/script&gt;' } | { 'linkedin' => '&lt;script&gt;alert(1)&lt;/script&gt;' }
+            { website_url: '%2526lt%253Bscript%2526gt%253B' }     | { 'website_url' => '%2526lt%253Bscript%2526gt%253B' }
+            { github: 'main../../../../../../etc/passwd' }        | { 'github' => 'main../../../../../../etc/passwd' }
+          end
+
+          it_behaves_like 'successful user_details update'
+        end
+
+        context 'with input that was already invalid before this MR' do
+          where(:params, :expected_error) do
+            { linkedin: 'a' * 501 }            | /is too long/
+            { website_url: 'not-a-valid-url' } | /is not a valid URL/
+          end
+
+          it_behaves_like 'rejected user_details update'
+        end
+      end
+    end
+
+    it 'updates user with avatar' do
+      workhorse_form_with_file(
+        api(path, admin, admin_mode: true),
+        method: :put,
+        file_key: :avatar,
+        params: { avatar: fixture_file_upload('spec/fixtures/banana_sample.gif', 'image/gif') }
+      )
+
+      user.reload
+
+      expect(user.avatar).to be_present
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['avatar_url']).to include(user.avatar_path)
+    end
+
+    it 'updates user with a new email' do
+      old_email = user.email
+      old_notification_email = user.notification_email_or_default
+      put api(path, admin, admin_mode: true), params: { email: 'new@email.com' }
+
+      user.reload
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user).to be_confirmed
+      expect(user.email).to eq(old_email)
+      expect(user.notification_email_or_default).to eq(old_notification_email)
+      expect(user.unconfirmed_email).to eq('new@email.com')
+    end
+
+    it 'skips reconfirmation when requested' do
+      put api(path, admin, admin_mode: true), params: { email: 'new@email.com', skip_reconfirmation: true }
+
+      user.reload
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user).to be_confirmed
+      expect(user.email).to eq('new@email.com')
+    end
+
+    it 'updates user with their own username' do
+      put api(path, admin, admin_mode: true), params: { username: user.username }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['username']).to eq(user.username)
+      expect(user.reload.username).to eq(user.username)
+    end
+
+    context 'with existing pages unique domain' do
+      let_it_be(:project) { create(:project) }
+
+      before do
+        stub_pages_setting(enabled: true)
+
+        create(
+          :project_setting,
+          project: project,
+          pages_unique_domain_enabled: true,
+          pages_unique_domain: 'unique-domain')
+      end
+
+      it 'returns 400 bad request error if same username is already used by pages unique domain' do
+        put api(path, admin, admin_mode: true), params: { username: 'unique-domain' }
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['message']).to eq({ "username" => ["has already been taken"] })
+      end
+    end
+
+    it "updates user's existing identity" do
+      put api("/users/#{ldap_user.id}", admin, admin_mode: true), params: { provider: 'ldapmain', extern_uid: '654321' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(ldap_user.reload.identities.first.extern_uid).to eq('654321')
+    end
+
+    it 'updates user with new identity' do
+      put api(path, admin, admin_mode: true), params: { provider: 'github', extern_uid: 'john' }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user.reload.identities.first.extern_uid).to eq('john')
+      expect(user.reload.identities.first.provider).to eq('github')
+    end
+
+    it "updates admin status" do
+      put api(path, admin, admin_mode: true), params: { admin: true }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user.reload.admin).to be(true)
+    end
+
+    it "updates external status" do
+      put api(path, admin, admin_mode: true), params: { external: true }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['external']).to be(true)
+      expect(user.reload.external?).to be_truthy
+    end
+
+    it "does have default values for theme and color-scheme ID" do
+      put api(path, admin, admin_mode: true), params: {}
+
+      expect(user.reload.theme_id).to eq(Gitlab::Themes.default.id)
+      expect(user.reload.color_scheme_id).to eq(Gitlab::ColorSchemes.default.id)
+    end
+
+    it "updates viewing diffs file by file" do
+      put api(path, admin, admin_mode: true), params: { view_diffs_file_by_file: true }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user.reload.user_preference.view_diffs_file_by_file?).to be(true)
+    end
+
+    context 'updating `private_profile`' do
+      it "updates private profile" do
+        current_value = user.private_profile
+        new_value = !current_value
+
+        put api(path, admin, admin_mode: true), params: { private_profile: new_value }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(user.reload.private_profile).to eq(new_value)
+      end
+
+      context 'when `private_profile` is set to `nil`' do
+        before do
+          stub_application_setting(user_defaults_to_private_profile: true)
+        end
+
+        it "updates private_profile to value of the application setting" do
+          user.update!(private_profile: false)
+
+          put api(path, admin, admin_mode: true), params: { private_profile: nil }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(user.reload.private_profile).to be(true)
+        end
+      end
+
+      it "does not modify private profile when field is not provided" do
+        user.update!(private_profile: true)
+
+        put api(path, admin, admin_mode: true), params: {}
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(user.reload.private_profile).to be(true)
+      end
+    end
+
+    it "does not modify theme or color-scheme ID when field is not provided" do
+      theme = Gitlab::Themes.each.find { |t| t.id != Gitlab::Themes.default.id }
+      scheme = Gitlab::ColorSchemes.each.find { |t| t.id != Gitlab::ColorSchemes.default.id }
+
+      user.update!(theme_id: theme.id, color_scheme_id: scheme.id)
+
+      put api(path, admin, admin_mode: true), params: {}
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user.reload.theme_id).to eq(theme.id)
+      expect(user.reload.color_scheme_id).to eq(scheme.id)
+    end
+
+    it "does not update admin status" do
+      admin_user = create(:admin)
+
+      put api("/users/#{admin_user.id}", admin, admin_mode: true), params: { can_create_group: false }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(admin_user.reload.admin).to be(true)
+      expect(admin_user.can_create_group).to be(false)
+    end
+
+    it "does not allow invalid update" do
+      put api(path, admin, admin_mode: true), params: { email: 'invalid email' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(user.reload.email).not_to eq('invalid email')
+    end
+
+    it "updates theme id" do
+      put api(path, admin, admin_mode: true), params: { theme_id: 5 }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user.reload.theme_id).to eq(5)
+    end
+
+    it "does not update invalid theme id" do
+      put api(path, admin, admin_mode: true), params: { theme_id: 50 }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(user.reload.theme_id).not_to eq(50)
+    end
+
+    it "updates color scheme id" do
+      put api(path, admin, admin_mode: true), params: { color_scheme_id: 5 }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(user.reload.color_scheme_id).to eq(5)
+    end
+
+    it "does not update invalid color scheme id" do
+      put api(path, admin, admin_mode: true), params: { color_scheme_id: 50 }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(user.reload.color_scheme_id).not_to eq(50)
+    end
+
+    context 'when the current user is not an admin' do
+      it "is not available" do
+        expect do
+          put api(path, user), params: attributes_for(:user)
+        end.not_to change { user.reload.attributes }
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    it "returns 404 for non-existing user" do
+      put api("/users/#{non_existing_record_id}", admin, admin_mode: true), params: { bio: 'update should fail' }
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it "returns a 404 if invalid ID" do
+      put api("/users/ASDF", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'returns 400 error if user does not validate' do
+      put api(path, admin, admin_mode: true),
+        params: {
+          password: 'pass',
+          email: 'test@example.com',
+          username: 'test!',
+          name: 'test',
+          bio: 'g' * 256,
+          projects_limit: -1
+        }
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']['password'])
+        .to eq(['is too short (minimum is 8 characters)'])
+      expect(json_response['message']['bio'])
+        .to eq(['is too long (maximum is 255 characters)'])
+      expect(json_response['message']['projects_limit'])
+        .to eq(['must be greater than or equal to 0'])
+      expect(json_response['message']['username'])
+        .to match_array([Gitlab::PathRegex.namespace_format_message, Gitlab::Regex.oci_repository_path_regex_message])
+    end
+
+    it 'returns 400 if provider is missing for identity update' do
+      put api("/users/#{omniauth_user.id}", admin, admin_mode: true), params: { extern_uid: '654321' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it 'returns 400 if external UID is missing for identity update' do
+      put api("/users/#{omniauth_user.id}", admin, admin_mode: true), params: { provider: 'ldap' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
     end
 
     context "with existing user" do
-      before {
-        post api("/users", admin), { email: 'test@example.com', password: 'password', username: 'test', name: 'test' }
-        post api("/users", admin), { email: 'foo@bar.com', password: 'password', username: 'john', name: 'john' }
+      before do
+        post api("/users", admin, admin_mode: true), params: { email: 'test@example.com', password: User.random_password, username: 'test', name: 'test' }
+        post api("/users", admin, admin_mode: true), params: { email: 'foo@bar.com', password: User.random_password, username: 'john', name: 'john' }
         @user = User.all.last
-      }
+      end
 
-      it 'should return 409 conflict error if email address exists' do
-        put api("/users/#{@user.id}", admin), email: 'test@example.com'
-        expect(response.status).to eq(409)
+      it 'returns 409 conflict error if email address exists' do
+        put api("/users/#{@user.id}", admin, admin_mode: true), params: { email: 'test@example.com' }
+
+        expect(response).to have_gitlab_http_status(:conflict)
         expect(@user.reload.email).to eq(@user.email)
       end
 
-      it 'should return 409 conflict error if username taken' do
+      it 'returns 409 conflict error if username taken' do
         @user_id = User.all.last.id
-        put api("/users/#{@user.id}", admin), username: 'test'
-        expect(response.status).to eq(409)
+        put api("/users/#{@user.id}", admin, admin_mode: true), params: { username: 'test' }
+
+        expect(response).to have_gitlab_http_status(:conflict)
         expect(@user.reload.username).to eq(@user.username)
+      end
+
+      it 'returns 409 conflict error if username taken (case insensitive)' do
+        @user_id = User.all.last.id
+        put api("/users/#{@user.id}", admin, admin_mode: true), params: { username: 'TEST' }
+
+        expect(response).to have_gitlab_http_status(:conflict)
+        expect(@user.reload.username).to eq(@user.username)
+      end
+    end
+
+    context 'when user with a primary email exists' do
+      context 'when the primary email is confirmed' do
+        let!(:confirmed_user) { create(:user, email: 'foo@example.com') }
+
+        it 'returns 409 conflict error' do
+          put api(path, admin, admin_mode: true), params: { email: confirmed_user.email }
+
+          expect(response).to have_gitlab_http_status(:conflict)
+          expect(user.reload.email).not_to eq(confirmed_user.email)
+        end
+      end
+
+      context 'when the primary email is unconfirmed' do
+        let!(:unconfirmed_user) { create(:user, :unconfirmed, email: 'foo@example.com') }
+
+        it 'returns 409 conflict error' do
+          put api(path, admin, admin_mode: true), params: { email: unconfirmed_user.email }
+
+          expect(response).to have_gitlab_http_status(:conflict)
+          expect(user.reload.email).not_to eq(unconfirmed_user.email)
+        end
+      end
+    end
+
+    context 'when user with a secondary email exists' do
+      context 'when the secondary email is confirmed' do
+        let!(:email) { create(:email, :confirmed, email: 'foo@example.com') }
+
+        it 'returns 409 conflict error' do
+          put api(path, admin, admin_mode: true), params: { email: email.email }
+
+          expect(response).to have_gitlab_http_status(:conflict)
+          expect(user.reload.email).not_to eq(email.email)
+        end
+      end
+
+      context 'when the secondary email is unconfirmed' do
+        let!(:email) { create(:email, email: 'foo@example.com') }
+
+        it 'does not update email' do
+          put api(path, admin, admin_mode: true), params: { email: email.email }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(user.reload.email).not_to eq(email.email)
+        end
+      end
+    end
+  end
+
+  describe "PUT /user/:id/credit_card_validation" do
+    let(:network) { 'American Express' }
+    let(:holder_name) {  'John Smith' }
+    let(:last_digits) {  '1111' }
+    let(:expiration_year) { Date.today.year + 10 }
+    let(:expiration_month) { 1 }
+    let(:expiration_date) { Date.new(expiration_year, expiration_month, -1) }
+    let(:credit_card_validated_at) { Time.utc(2020, 1, 1) }
+    let(:zuora_payment_method_xid) { 'abc123' }
+    let(:stripe_setup_intent_xid) { 'seti_abc123' }
+    let(:stripe_payment_method_xid) { 'pm_abc123' }
+    let(:stripe_card_fingerprint) { 'card123' }
+
+    let(:path) { "/user/#{user.id}/credit_card_validation" }
+    let(:params) do
+      {
+        credit_card_validated_at: credit_card_validated_at,
+        credit_card_expiration_year: expiration_year,
+        credit_card_expiration_month: expiration_month,
+        credit_card_holder_name: holder_name,
+        credit_card_type: network,
+        credit_card_mask_number: last_digits,
+        zuora_payment_method_xid: zuora_payment_method_xid,
+        stripe_setup_intent_xid: stripe_setup_intent_xid,
+        stripe_payment_method_xid: stripe_payment_method_xid,
+        stripe_card_fingerprint: stripe_card_fingerprint
+      }
+    end
+
+    it_behaves_like 'PUT request permissions for admin mode'
+
+    it_behaves_like 'authorizing granular token permissions', :update_credit_card_validation do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { put api(path, personal_access_token: pat), params: params }
+    end
+
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        put api(path), params: {}
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated as non-admin' do
+      it "does not allow updating user's credit card validation" do
+        put api(path, user), params: params
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'when authenticated as admin' do
+      it "updates user's credit card validation" do
+        put api(path, admin, admin_mode: true), params: params
+
+        user.reload
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(user.credit_card_validation).to have_attributes(
+          credit_card_validated_at: credit_card_validated_at,
+          network_hash: sha256(network.downcase),
+          holder_name_hash: sha256(holder_name.downcase),
+          last_digits_hash: sha256(last_digits),
+          expiration_date_hash: sha256(expiration_date.to_s),
+          zuora_payment_method_xid: zuora_payment_method_xid,
+          stripe_setup_intent_xid: stripe_setup_intent_xid,
+          stripe_payment_method_xid: stripe_payment_method_xid,
+          stripe_card_fingerprint: stripe_card_fingerprint
+        )
+      end
+
+      it "returns 400 error if credit_card_validated_at is missing" do
+        put api(path, admin, admin_mode: true), params: {}
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+      end
+
+      it 'returns 404 error if user not found' do
+        put api("/user/#{non_existing_record_id}/credit_card_validation", admin, admin_mode: true), params: params
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+
+      context 'when the credit card daily verification limit has been exceeded' do
+        before do
+          stub_const("Users::CreditCardValidation::DAILY_VERIFICATION_LIMIT", 1)
+          create(:credit_card_validation, stripe_card_fingerprint: stripe_card_fingerprint)
+        end
+
+        it "returns a 400 error with the reason" do
+          put api(path, admin, admin_mode: true), params: params
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq('Credit card verification limit exceeded')
+        end
+      end
+
+      context 'when UpsertCreditCardValidationService returns an unexpected error' do
+        before do
+          allow_next_instance_of(::Users::UpsertCreditCardValidationService) do |instance|
+            allow(instance).to receive(:execute).and_return(ServiceResponse.error(message: 'upsert failed'))
+          end
+        end
+
+        it "returns a generic 400 error" do
+          put api(path, admin, admin_mode: true), params: params
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq('400 Bad request')
+        end
+      end
+    end
+  end
+
+  describe "DELETE /users/:id/identities/:provider" do
+    it_behaves_like 'authorizing granular token permissions', :delete_identity do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        delete api(path, personal_access_token: pat)
+      end
+    end
+
+    let(:test_user) { create(:omniauth_user, provider: 'ldapmain') }
+    let(:path) { "/users/#{test_user.id}/identities/ldapmain" }
+
+    it_behaves_like 'DELETE request permissions for admin mode'
+
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        delete api(path)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated' do
+      it 'deletes identity of given provider' do
+        expect do
+          delete api(path, admin, admin_mode: true)
+        end.to change { test_user.identities.count }.by(-1)
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+
+      it_behaves_like '412 response' do
+        let(:request) { api(path, admin, admin_mode: true) }
+      end
+
+      it 'returns 404 error if user not found' do
+        delete api("/users/#{non_existing_record_id}/identities/ldapmain", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+
+      it 'returns 404 error if identity not found' do
+        delete api("/users/#{test_user.id}/identities/saml", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 Identity Not Found')
       end
     end
   end
 
   describe "POST /users/:id/keys" do
-    before { admin }
-
-    it "should not create invalid ssh key" do
-      post api("/users/#{user.id}/keys", admin), { title: "invalid key" }
-      expect(response.status).to eq(400)
-      expect(json_response['message']).to eq('400 (Bad request) "key" not given')
+    it_behaves_like 'authorizing granular token permissions', :create_user_ssh_key do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        post api("/users/#{admin.id}/keys", personal_access_token: pat),
+          params: attributes_for(:key, usage_type: :signing)
+      end
     end
 
-    it 'should not create key without title' do
-      post api("/users/#{user.id}/keys", admin), key: 'some key'
-      expect(response.status).to eq(400)
-      expect(json_response['message']).to eq('400 (Bad request) "title" not given')
+    let(:path) { "/users/#{user.id}/keys" }
+    let(:key_params) { attributes_for(:key, usage_type: :signing) }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { key_params }
     end
 
-    it "should create ssh key" do
-      key_attrs = attributes_for :key
-      expect {
-        post api("/users/#{user.id}/keys", admin), key_attrs
-      }.to change{ user.keys.count }.by(1)
+    it "does not create invalid ssh key" do
+      post api(path, admin, admin_mode: true), params: { title: "invalid key" }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('key is missing')
+    end
+
+    it 'does not create key without title' do
+      post api(path, admin, admin_mode: true), params: { key: 'some key' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('title is missing')
+    end
+
+    it "creates ssh key" do
+      key_attrs = attributes_for(:key, usage_type: :signing)
+
+      expect do
+        post api(path, admin, admin_mode: true), params: key_attrs
+      end.to change { user.keys.count }.by(1)
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      key = user.keys.last
+      expect(key.title).to eq(key_attrs[:title])
+      expect(key.key).to eq(key_attrs[:key])
+      expect(key.usage_type).to eq(key_attrs[:usage_type].to_s)
+    end
+
+    it 'creates SSH key with `expires_at` attribute' do
+      optional_attributes = { expires_at: 3.weeks.from_now }
+      attributes = attributes_for(:key).merge(optional_attributes)
+
+      post api(path, admin, admin_mode: true), params: attributes
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(json_response['expires_at'].to_date).to eq(optional_attributes[:expires_at].to_date)
+    end
+
+    it "returns 400 for invalid ID" do
+      post api("/users/#{non_existing_record_id}/keys", admin, admin_mode: true)
+      expect(response).to have_gitlab_http_status(:bad_request)
     end
   end
 
-  describe 'GET /user/:uid/keys' do
-    before { admin }
+  describe 'GET /users/:id/project_deploy_keys', feature_category: :continuous_delivery do
+    let_it_be(:project) { create(:project) }
+    let(:path) { "/users/#{user.id}/project_deploy_keys" }
+
+    before_all do
+      project.add_maintainer(user)
+
+      deploy_key = create(:deploy_key, user: user)
+      create(:deploy_keys_project, project: project, deploy_key_id: deploy_key.id)
+    end
+
+    it 'returns 404 for non-existing user' do
+      get api("/users/#{non_existing_record_id}/project_deploy_keys")
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns array of project deploy keys with pagination' do
+      get api(path, user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expect(json_response.first['title']).to eq(user.deploy_keys.first.title)
+    end
+
+    it 'forbids when a developer fetches maintainer keys' do
+      dev_user = create(:user)
+      project.add_developer(dev_user)
+
+      get api(path, dev_user)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+      expect(json_response['message']).to eq('403 Forbidden - No common authorized project found')
+    end
+
+    context 'with multiple projects' do
+      let_it_be(:second_project) { create(:project) }
+      let_it_be(:second_user) { create(:user) }
+
+      before_all do
+        second_project.add_maintainer(second_user)
+
+        deploy_key = create(:deploy_key, user: second_user)
+        create(:deploy_keys_project, project: second_project, deploy_key_id: deploy_key.id)
+      end
+
+      context 'when no common projects for user and current_user' do
+        it 'forbids' do
+          get api(path, second_user)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('403 Forbidden - No common authorized project found')
+        end
+      end
+
+      context 'when there are common projects for user and current_user' do
+        before_all do
+          project.add_maintainer(second_user)
+        end
+
+        let(:path) { "/users/#{second_user.id}/project_deploy_keys" }
+
+        it 'lists only common project keys' do
+          expect(second_user.project_deploy_keys).to contain_exactly(
+            project.deploy_keys.first, second_project.deploy_keys.first)
+
+          get api(path, user)
+
+          expect(json_response.count).to eq(1)
+          expect(json_response.first['key']).to eq(project.deploy_keys.first.key)
+        end
+
+        it 'lists only project_deploy_keys and not user deploy_keys' do
+          third_user = create(:user)
+
+          project.add_maintainer(third_user)
+          second_project.add_maintainer(third_user)
+
+          create(:deploy_key, user: second_user)
+          create(:deploy_key, user: third_user)
+
+          get api(path, third_user)
+
+          expect(json_response.count).to eq(2)
+          expect([json_response.first['key'], json_response.second['key']]).to contain_exactly(
+            project.deploy_keys.first.key, second_project.deploy_keys.first.key)
+        end
+
+        it 'avoids N+1 queries' do
+          second_project.add_maintainer(user)
+
+          control = ActiveRecord::QueryRecorder.new do
+            get api(path, user)
+          end
+
+          deploy_key = create(:deploy_key, user: second_user)
+          create(:deploy_keys_project, project: second_project, deploy_key_id: deploy_key.id)
+
+          expect do
+            get api(path, user)
+          end.not_to exceed_query_limit(control)
+        end
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_user_project_deploy_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+  end
+
+  describe 'GET /users/:id/keys' do
+    subject(:request) { get api(path) }
+
+    let(:path) { "/users/#{user.id}/keys" }
+
+    it 'returns 404 for non-existing user' do
+      get api("/users/#{non_existing_record_id}/keys")
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns array of ssh keys' do
+      user.keys << key
+
+      request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expect(json_response.first['title']).to eq(key.title)
+    end
+
+    it 'returns array of ssh keys with comments replaced with' \
+      'a simple identifier of username + hostname' do
+      request
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+
+      keys = json_response.map { |key_detail| key_detail['key'] }
+      expect(keys).to all(include("#{user.name} (#{Gitlab.config.gitlab.host}"))
+    end
+
+    context 'N+1 queries' do
+      before do
+        request
+      end
+
+      it 'avoids N+1 queries', :request_store do
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+          request
+        end
+
+        create_list(:key, 2, user: user)
+
+        expect do
+          request
+        end.not_to exceed_all_query_limit(control)
+      end
+    end
+
+    context 'when rate limited' do
+      let_it_be(:current_user) { create(:user) }
+      let(:request) { get api(path, current_user) }
+
+      context 'when user is authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_ssh_keys do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+
+      context 'when user is unauthenticated' do
+        let(:current_user) { nil }
+
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_ssh_keys do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+    end
+  end
+
+  describe 'GET /users/:username/keys' do
+    let(:path) { "/users/#{user.username}/keys" }
+
+    before do
+      allow(::Gitlab::ApplicationRateLimiter).to receive(:throttled?).and_return(false)
+    end
+
+    it 'returns 404 for non-existing user' do
+      get api("/users/#{non_existing_record_id}/keys")
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_user_ssh_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+
+    it 'returns array of ssh keys' do
+      user.keys << key
+
+      get api(path)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expect(json_response.first['title']).to eq(key.title)
+    end
+
+    context 'when the rate limit has been reached' do
+      it 'returns status 429 Too Many Requests', :aggregate_failures do
+        ip = '1.2.3.4'
+        expect(::Gitlab::ApplicationRateLimiter).to receive(:throttled?).with(:user_ssh_keys, scope: { ip: ip }).and_return(true)
+
+        get api(path), env: { REMOTE_ADDR: ip }
+
+        expect(response).to have_gitlab_http_status(:too_many_requests)
+        expect(response.headers).to include(
+          'Retry-After' => Gitlab::ApplicationRateLimiter.period_for(:user_ssh_keys)
+        )
+      end
+    end
+  end
+
+  describe 'GET /users/:id/keys/:key_id' do
+    let(:path) { "/users/#{user.id}/keys/#{key.id}" }
+
+    it 'gets existing key' do
+      user.keys << key
+
+      get api(path)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['title']).to eq(key.title)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_user_ssh_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+
+    it 'returns 404 error if user not found' do
+      user.keys << key
+
+      get api("/users/#{non_existing_record_id}/keys/#{key.id}")
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns 404 error if key not found' do
+      get api("/users/#{user.id}/keys/#{non_existing_record_id}")
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Key Not Found')
+    end
+
+    context 'when rate limited' do
+      let_it_be(:current_user) { create(:user) }
+      let(:request) { get api(path, current_user) }
+
+      context 'when user is authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_ssh_key do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+
+      context 'when user is unauthenticated' do
+        let(:current_user) { nil }
+
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_ssh_key do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+    end
+  end
+
+  describe 'DELETE /users/:id/keys/:key_id' do
+    it_behaves_like 'authorizing granular token permissions', :delete_user_ssh_key do
+      let_it_be(:admin_ssh_key) { create(:key, user: admin) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        delete api("/users/#{admin.id}/keys/#{admin_ssh_key.id}", personal_access_token: pat)
+      end
+    end
+
+    let(:path) { "/users/#{user.id}/keys/#{key.id}" }
+
+    it_behaves_like 'DELETE request permissions for admin mode'
 
     context 'when unauthenticated' do
-      it 'should return authentication error' do
-        get api("/users/#{user.id}/keys")
-        expect(response.status).to eq(401)
+      it 'returns authentication error' do
+        delete api("/users/#{user.id}/keys/#{non_existing_record_id}")
+        expect(response).to have_gitlab_http_status(:unauthorized)
       end
     end
 
     context 'when authenticated' do
-      it 'should return 404 for non-existing user' do
-        get api('/users/999999/keys', admin)
-        expect(response.status).to eq(404)
+      it 'deletes existing key' do
+        user.keys << key
+
+        expect do
+          delete api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:no_content)
+        end.to change { user.keys.count }.by(-1)
+      end
+
+      it_behaves_like '412 response' do
+        let(:request) { api(path, admin, admin_mode: true) }
+      end
+
+      it 'returns 404 error if user not found' do
+        user.keys << key
+
+        delete api("/users/#{non_existing_record_id}/keys/#{key.id}", admin, admin_mode: true)
+        expect(response).to have_gitlab_http_status(:not_found)
         expect(json_response['message']).to eq('404 User Not Found')
       end
 
-      it 'should return array of ssh keys' do
-        user.keys << key
-        user.save
-        get api("/users/#{user.id}/keys", admin)
-        expect(response.status).to eq(200)
-        expect(json_response).to be_an Array
-        expect(json_response.first['title']).to eq(key.title)
-      end
-    end
-  end
-
-  describe 'DELETE /user/:uid/keys/:id' do
-    before { admin }
-
-    context 'when unauthenticated' do
-      it 'should return authentication error' do
-        delete api("/users/#{user.id}/keys/42")
-        expect(response.status).to eq(401)
-      end
-    end
-
-    context 'when authenticated' do
-      it 'should delete existing key' do
-        user.keys << key
-        user.save
-        expect {
-          delete api("/users/#{user.id}/keys/#{key.id}", admin)
-        }.to change { user.keys.count }.by(-1)
-        expect(response.status).to eq(200)
-      end
-
-      it 'should return 404 error if user not found' do
-        user.keys << key
-        user.save
-        delete api("/users/999999/keys/#{key.id}", admin)
-        expect(response.status).to eq(404)
-        expect(json_response['message']).to eq('404 User Not Found')
-      end
-
-      it 'should return 404 error if key not foud' do
-        delete api("/users/#{user.id}/keys/42", admin)
-        expect(response.status).to eq(404)
+      it 'returns 404 error if key not foud' do
+        delete api("/users/#{user.id}/keys/#{non_existing_record_id}", admin, admin_mode: true)
+        expect(response).to have_gitlab_http_status(:not_found)
         expect(json_response['message']).to eq('404 Key Not Found')
       end
     end
   end
 
-  describe "DELETE /users/:id" do
-    before { admin }
-
-    it "should delete user" do
-      delete api("/users/#{user.id}", admin)
-      expect(response.status).to eq(200)
-      expect { User.find(user.id) }.to raise_error ActiveRecord::RecordNotFound
-      expect(json_response['email']).to eq(user.email)
+  describe 'POST /users/:id/gpg_keys' do
+    it_behaves_like 'authorizing granular token permissions', :create_user_gpg_key do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        post api("/users/#{admin.id}/gpg_keys", personal_access_token: pat),
+          params: attributes_for(:gpg_key, key: GpgHelpers::User2.public_key)
+      end
     end
 
-    it "should not delete for unauthenticated user" do
-      delete api("/users/#{user.id}")
-      expect(response.status).to eq(401)
+    let(:path) { "/users/#{user.id}/gpg_keys" }
+    let(:key_params) { attributes_for :gpg_key, key: GpgHelpers::User2.public_key }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { key_params }
     end
 
-    it "shouldn't available for non admin users" do
-      delete api("/users/#{user.id}", user)
-      expect(response.status).to eq(403)
+    it 'does not create invalid GPG key' do
+      post api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('key is missing')
     end
 
-    it "should return 404 for non-existing user" do
-      delete api("/users/999999", admin)
-      expect(response.status).to eq(404)
+    it 'creates GPG key' do
+      key_attrs = attributes_for :gpg_key, key: GpgHelpers::User2.public_key
+
+      expect do
+        post api(path, admin, admin_mode: true), params: key_attrs
+
+        expect(response).to have_gitlab_http_status(:created)
+      end.to change { user.gpg_keys.count }.by(1)
+    end
+
+    it 'returns 400 for invalid ID' do
+      post api("/users/#{non_existing_record_id}/gpg_keys", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+  end
+
+  describe 'GET /user/:id/gpg_keys' do
+    let(:path) { "/users/#{user.id}/gpg_keys" }
+
+    it 'returns 404 for non-existing user' do
+      get api("/users/#{non_existing_record_id}/gpg_keys")
+
+      expect(response).to have_gitlab_http_status(:not_found)
       expect(json_response['message']).to eq('404 User Not Found')
     end
-  end
 
-  describe "GET /user" do
-    it "should return current user" do
-      get api("/user", user)
-      expect(response.status).to eq(200)
-      expect(json_response['email']).to eq(user.email)
-      expect(json_response['is_admin']).to eq(user.is_admin?)
-      expect(json_response['can_create_project']).to eq(user.can_create_project?)
-      expect(json_response['can_create_group']).to eq(user.can_create_group?)
-      expect(json_response['projects_limit']).to eq(user.projects_limit)
+    it 'returns array of GPG keys' do
+      user.gpg_keys << gpg_key
+
+      get api(path)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expect(json_response.first['key']).to eq(gpg_key.key)
     end
 
-    it "should return 401 error if user is unauthenticated" do
-      get api("/user")
-      expect(response.status).to eq(401)
+    it_behaves_like 'authorizing granular token permissions', :read_user_gpg_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+
+    context 'when rate limited' do
+      let_it_be(:current_user) { create(:user) }
+      let(:request) { get api(path, current_user) }
+
+      context 'when user is authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_gpg_keys do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+
+      context 'when user is unauthenticated' do
+        let(:current_user) { nil }
+
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_gpg_keys do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
     end
   end
 
-  describe "GET /user/keys" do
+  describe 'GET /user/:id/gpg_keys/:key_id' do
+    let(:path) { "/users/#{user.id}/gpg_keys/#{gpg_key.id}" }
+
+    it 'returns 404 for non-existing user' do
+      get api("/users/#{non_existing_record_id}/gpg_keys/1")
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns 404 for non-existing key' do
+      get api("/users/#{user.id}/gpg_keys/#{non_existing_record_id}")
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 GPG Key Not Found')
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_user_gpg_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+
+    it 'returns a single GPG key' do
+      user.gpg_keys << gpg_key
+
+      get api(path)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['key']).to eq(gpg_key.key)
+    end
+
+    context 'when rate limited' do
+      let_it_be(:current_user) { create(:user) }
+      let(:request) { get api(path, current_user) }
+
+      context 'when user is authenticated' do
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_gpg_key do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+
+      context 'when user is unauthenticated' do
+        let(:current_user) { nil }
+
+        it_behaves_like 'rate limited endpoint', rate_limit_key: :user_gpg_key do
+          def request
+            get api(path, current_user)
+          end
+
+          def request_with_second_scope
+            get api(path, user_with_2fa)
+          end
+        end
+      end
+    end
+  end
+
+  describe 'DELETE /user/:id/gpg_keys/:key_id' do
+    it_behaves_like 'authorizing granular token permissions', :delete_user_gpg_key do
+      let_it_be(:admin_gpg_key) { create(:gpg_key, user: admin, key: GpgHelpers::User3.public_key) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        delete api("/users/#{admin.id}/gpg_keys/#{admin_gpg_key.id}", personal_access_token: pat)
+      end
+    end
+
+    let(:path) { "/users/#{user.id}/gpg_keys/#{gpg_key.id}" }
+
+    it_behaves_like 'DELETE request permissions for admin mode'
+
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        delete api("/users/#{user.id}/keys/#{non_existing_record_id}")
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated' do
+      it 'deletes existing key' do
+        user.gpg_keys << gpg_key
+
+        expect do
+          delete api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:no_content)
+        end.to change { user.gpg_keys.count }.by(-1)
+      end
+
+      it 'returns 404 error if user not found' do
+        user.keys << key
+
+        delete api("/users/#{non_existing_record_id}/gpg_keys/#{gpg_key.id}", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+
+      it 'returns 404 error if key not foud' do
+        delete api("/users/#{user.id}/gpg_keys/#{non_existing_record_id}", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 GPG Key Not Found')
+      end
+    end
+  end
+
+  describe 'POST /user/:id/gpg_keys/:key_id/revoke' do
+    it_behaves_like 'authorizing granular token permissions', :revoke_user_gpg_key do
+      let_it_be(:admin_gpg_key_revoke) { create(:gpg_key, user: admin, key: GpgHelpers::User1.public_key2) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        post api("/users/#{admin.id}/gpg_keys/#{admin_gpg_key_revoke.id}/revoke", personal_access_token: pat)
+      end
+    end
+
+    let(:path) { "/users/#{user.id}/gpg_keys/#{gpg_key.id}/revoke" }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { {} }
+      let(:success_status_code) { :accepted }
+    end
+
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        post api("/users/#{user.id}/gpg_keys/#{non_existing_record_id}/revoke")
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated' do
+      it 'revokes existing key' do
+        user.gpg_keys << gpg_key
+
+        expect do
+          post api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:accepted)
+        end.to change { user.gpg_keys.count }.by(-1)
+      end
+
+      it 'returns 404 error if user not found' do
+        user.gpg_keys << gpg_key
+
+        post api("/users/#{non_existing_record_id}/gpg_keys/#{gpg_key.id}/revoke", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+
+      it 'returns 404 error if key not foud' do
+        post api("/users/#{user.id}/gpg_keys/#{non_existing_record_id}/revoke", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 GPG Key Not Found')
+      end
+    end
+  end
+
+  describe "POST /users/:id/emails", :mailer do
+    let(:path) { "/users/#{user.id}/emails" }
+    let(:email_attrs) { attributes_for :email }
+
+    it_behaves_like 'authorizing granular token permissions', :create_user_email do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { post api(path, personal_access_token: pat), params: attributes_for(:email) }
+    end
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      before do
+        email_attrs[:skip_confirmation] = true
+      end
+
+      let(:email_attrs) { attributes_for :email }
+      let(:params) { email_attrs }
+    end
+
+    it "does not create invalid email" do
+      post api(path, admin, admin_mode: true), params: {}
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('email is missing')
+    end
+
+    it "creates unverified email" do
+      perform_enqueued_jobs do
+        expect do
+          post api(path, admin, admin_mode: true), params: email_attrs
+        end.to change { user.emails.count }.by(1)
+      end
+
+      expect(json_response['confirmed_at']).to be_nil
+      should_email(user)
+    end
+
+    it "returns a 400 for invalid ID" do
+      post api("/users/#{non_existing_record_id}/emails", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it "creates verified email" do
+      email_attrs = attributes_for :email
+      email_attrs[:skip_confirmation] = true
+
+      post api(path, admin, admin_mode: true), params: email_attrs
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      expect(json_response['confirmed_at']).not_to be_nil
+    end
+
+    context 'when user with a primary email exists' do
+      context 'when the primary email is confirmed' do
+        let!(:confirmed_user) { create(:user, email: 'foo@example.com') }
+
+        it 'returns 400 error' do
+          post api(path, admin, admin_mode: true), params: { email: confirmed_user.email }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when the primary email is unconfirmed' do
+        let!(:unconfirmed_user) { create(:user, :unconfirmed, email: 'foo@example.com') }
+
+        it 'returns 400 error' do
+          post api(path, admin, admin_mode: true), params: { email: unconfirmed_user.email }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    context 'when user with a secondary email exists' do
+      context 'when the secondary email is confirmed' do
+        let!(:email) { create(:email, :confirmed, email: 'foo@example.com') }
+
+        it 'returns 400 error' do
+          post api(path, admin, admin_mode: true), params: { email: email.email }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'when the secondary email is unconfirmed' do
+        let!(:email) { create(:email, email: 'foo@example.com') }
+
+        it 'returns 400 error' do
+          post api(path, admin, admin_mode: true), params: { email: email.email }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+  end
+
+  describe 'GET /user/:id/emails' do
+    let(:path) { "/users/#{user.id}/emails" }
+
+    it_behaves_like 'authorizing granular token permissions', :read_user_email do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { get api("/users/#{admin.id}/emails", personal_access_token: pat) }
+    end
+
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        get api(path)
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated' do
+      it 'returns 404 for non-existing user' do
+        get api("/users/#{non_existing_record_id}/emails", admin, admin_mode: true)
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+
+      it 'returns array of emails' do
+        user.emails << email
+
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+        expect(json_response.first['email']).to eq(user.email)
+        expect(json_response.second['email']).to eq(email.email)
+      end
+
+      it "returns a 404 for invalid ID" do
+        get api("/users/ASDF/emails", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'DELETE /user/:id/emails/:email_id' do
+    let(:path) { "/users/#{user.id}/emails/#{email.id}" }
+
+    it_behaves_like 'DELETE request permissions for admin mode'
+
+    it_behaves_like 'authorizing granular token permissions', :delete_user_email do
+      let_it_be(:admin_email) { create(:email, user: admin) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { delete api("/users/#{admin.id}/emails/#{admin_email.id}", personal_access_token: pat) }
+    end
+
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        delete api("/users/#{user.id}/emails/#{non_existing_record_id}")
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated' do
+      it 'deletes existing email' do
+        user.emails << email
+
+        expect do
+          delete api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:no_content)
+        end.to change { user.emails.count }.by(-1)
+      end
+
+      it_behaves_like '412 response' do
+        subject(:request) { api(path, admin, admin_mode: true) }
+      end
+
+      it 'returns 404 error if user not found' do
+        user.emails << email
+
+        delete api("/users/#{non_existing_record_id}/emails/#{email.id}", admin, admin_mode: true)
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+
+      it 'returns 404 error if email not foud' do
+        delete api("/users/#{user.id}/emails/#{non_existing_record_id}", admin, admin_mode: true)
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 Email Not Found')
+      end
+
+      it "returns a 404 for invalid ID" do
+        delete api("/users/ASDF/emails/bar", admin)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe "DELETE /users/:id" do
+    it_behaves_like 'authorizing granular token permissions', :delete_user do
+      let_it_be(:gt_target) { create(:user) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { delete api("/users/#{gt_target.id}", personal_access_token: pat) }
+    end
+
+    let_it_be(:issue) { create(:issue, author: user) }
+    let(:path) { "/users/#{user.id}" }
+
+    it_behaves_like 'DELETE request permissions for admin mode'
+
+    it "deletes user", :sidekiq_inline do
+      perform_enqueued_jobs { delete api(path, admin, admin_mode: true) }
+
+      expect(response).to have_gitlab_http_status(:no_content)
+      expect(Users::GhostUserMigration.where(user: user, initiator_user: admin)).to be_exists
+    end
+
+    context "sole owner of a group" do
+      let_it_be(:group) { create(:group, owners: user) }
+
+      context "hard delete disabled" do
+        it "does not delete user" do
+          perform_enqueued_jobs { delete api(path, admin, admin_mode: true) }
+          expect(response).to have_gitlab_http_status(:conflict)
+        end
+      end
+
+      context "hard delete enabled" do
+        it "delete user and group", :sidekiq_inline do
+          perform_enqueued_jobs { delete api("/users/#{user.id}?hard_delete=true", admin, admin_mode: true) }
+          expect(response).to have_gitlab_http_status(:no_content)
+          expect(Group.exists?(group.id)).to be_falsy
+        end
+
+        context "with subgroup owning" do
+          let(:parent_group) { create(:group) }
+          let(:subgroup) { create(:group, parent: parent_group) }
+
+          before do
+            parent_group.add_owner(create(:user))
+            subgroup.add_owner(user)
+          end
+
+          it "delete only user", :sidekiq_inline do
+            perform_enqueued_jobs { delete api("/users/#{user.id}?hard_delete=true", admin, admin_mode: true) }
+            expect(response).to have_gitlab_http_status(:no_content)
+            expect(Group.exists?(subgroup.id)).to be_truthy
+          end
+        end
+      end
+    end
+
+    it_behaves_like '412 response' do
+      let(:request) { api(path, admin, admin_mode: true) }
+    end
+
+    it "does not delete for unauthenticated user" do
+      perform_enqueued_jobs { delete api(path) }
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it "is not available for non admin users" do
+      perform_enqueued_jobs { delete api(path, user) }
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+
+    it "returns 404 for non-existing user" do
+      perform_enqueued_jobs { delete api("/users/#{non_existing_record_id}", admin, admin_mode: true) }
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it "returns a 404 for invalid ID" do
+      perform_enqueued_jobs { delete api("/users/ASDF", admin, admin_mode: true) }
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context "hard delete disabled" do
+      it "moves contributions to the ghost user", :sidekiq_might_not_need_inline do
+        perform_enqueued_jobs { delete api(path, admin, admin_mode: true) }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        expect(issue.reload).to be_persisted
+        expect(Users::GhostUserMigration.where(user: user, initiator_user: admin, hard_delete: false)).to be_exists
+      end
+    end
+
+    context "hard delete enabled" do
+      it "removes contributions", :sidekiq_might_not_need_inline do
+        perform_enqueued_jobs { delete api("/users/#{user.id}?hard_delete=true", admin, admin_mode: true) }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+        expect(Users::GhostUserMigration.where(user: user, initiator_user: admin, hard_delete: true)).to be_exists
+      end
+    end
+  end
+
+  describe 'GET /user' do
+    let(:path) { '/user' }
+
+    shared_examples 'get user info' do |version|
+      context 'with regular user' do
+        context 'with personal access token' do
+          let(:personal_access_token) { create(:personal_access_token, user: user).token }
+
+          it 'returns 403 without private token when sudo is defined' do
+            get api("/user?private_token=#{personal_access_token}&sudo=123", version: version)
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+        end
+
+        it 'returns current user without private token when sudo not defined' do
+          get api(path, user, version: version)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/user/public')
+          expect(json_response['id']).to eq(user.id)
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_user do
+          let(:boundary_object) { :user }
+          let(:request) do
+            get api(path, personal_access_token: pat, version: version)
+          end
+        end
+
+        context "scopes" do
+          let(:api_call) { method(:api) }
+
+          include_examples 'allows the "read_user" scope', version
+        end
+      end
+
+      context 'with admin' do
+        let_it_be(:admin_personal_access_token) { create(:personal_access_token, :admin_mode, user: admin).token }
+
+        context 'with personal access token' do
+          it 'returns 403 without private token when sudo defined' do
+            get api("/user?private_token=#{admin_personal_access_token}&sudo=#{user.id}", version: version)
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+          end
+
+          it 'returns initial current user without private token but with is_admin when sudo not defined' do
+            get api("/user?private_token=#{admin_personal_access_token}", version: version)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response).to match_response_schema('public_api/v4/user/admin')
+            expect(json_response['id']).to eq(admin.id)
+          end
+        end
+      end
+
+      context 'with unauthenticated user' do
+        it "returns 401 error if user is unauthenticated" do
+          get api(path, version: version)
+
+          expect(response).to have_gitlab_http_status(:unauthorized)
+        end
+      end
+    end
+
+    it_behaves_like 'get user info', 'v3'
+    it_behaves_like 'get user info', 'v4'
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      subject(:get_user) { get api("/user", oauth_access_token: oauth_token) }
+
+      it 'is successful' do
+        get_user
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  describe "GET /user/preferences" do
+    let(:path) { '/user/preferences' }
+
     context "when unauthenticated" do
-      it "should return authentication error" do
-        get api("/user/keys")
-        expect(response.status).to eq(401)
+      it "returns authentication error" do
+        get api(path)
+        expect(response).to have_gitlab_http_status(:unauthorized)
       end
     end
 
     context "when authenticated" do
-      it "should return array of ssh keys" do
-        user.keys << key
-        user.save
-        get api("/user/keys", user)
-        expect(response.status).to eq(200)
-        expect(json_response).to be_an Array
-        expect(json_response.first["title"]).to eq(key.title)
+      it "returns user preferences" do
+        user.user_preference.view_diffs_file_by_file = false
+        user.user_preference.show_whitespace_in_diffs = true
+        user.save!
+
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response["view_diffs_file_by_file"]).to eq(user.user_preference.view_diffs_file_by_file)
+        expect(json_response["show_whitespace_in_diffs"]).to eq(user.user_preference.show_whitespace_in_diffs)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_preference do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
       end
     end
   end
 
-  describe "GET /user/keys/:id" do
-    it "should return single key" do
+  describe "PUT /user/preferences" do
+    let(:path) { '/user/preferences' }
+
+    context "when unauthenticated" do
+      it "returns authentication error" do
+        put api(path)
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context "when authenticated" do
+      it "updates user preferences" do
+        user.user_preference.view_diffs_file_by_file = false
+        user.user_preference.show_whitespace_in_diffs = true
+        user.save!
+
+        put api(path, user), params: {
+          view_diffs_file_by_file: true,
+          show_whitespace_in_diffs: false
+        }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response["view_diffs_file_by_file"]).to be(true)
+        expect(json_response["show_whitespace_in_diffs"]).to be(false)
+
+        user.reload
+
+        expect(json_response["view_diffs_file_by_file"]).to eq(user.view_diffs_file_by_file)
+        expect(json_response["show_whitespace_in_diffs"]).to eq(user.show_whitespace_in_diffs)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :update_user_preference do
+        let(:boundary_object) { :user }
+        let(:request) do
+          put api(path, personal_access_token: pat), params: { view_diffs_file_by_file: true }
+        end
+      end
+    end
+  end
+
+  describe 'GET /user/keys' do
+    subject(:request) { get api(path, user) }
+
+    let(:path) { "/user/keys" }
+
+    context "when unauthenticated" do
+      it "returns authentication error" do
+        get api("/user/keys")
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context "when authenticated" do
+      it "returns array of ssh keys" do
+        user.keys << key
+
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+        expect(json_response.first["title"]).to eq(key.title)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_ssh_key do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+
+      it 'returns array of ssh keys with comments replaced with' \
+        'a simple identifier of username + hostname' do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+
+        keys = json_response.map { |key_detail| key_detail['key'] }
+        expect(keys).to all(include("#{user.name} (#{Gitlab.config.gitlab.host}"))
+      end
+
+      context 'N+1 queries' do
+        before do
+          request
+        end
+
+        it 'avoids N+1 queries', :request_store do
+          control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+            request
+          end
+
+          create_list(:key, 2, user: user)
+
+          expect do
+            request
+          end.not_to exceed_all_query_limit(control)
+        end
+      end
+
+      context "scopes" do
+        let(:api_call) { method(:api) }
+
+        include_examples 'allows the "read_user" scope'
+      end
+    end
+  end
+
+  describe 'GET /user/keys/:key_id' do
+    let(:path) { "/user/keys/#{key.id}" }
+
+    it "returns single key" do
       user.keys << key
-      user.save
-      get api("/user/keys/#{key.id}", user)
-      expect(response.status).to eq(200)
+
+      get api(path, user)
+      expect(response).to have_gitlab_http_status(:ok)
       expect(json_response["title"]).to eq(key.title)
     end
 
-    it "should return 404 Not Found within invalid ID" do
-      get api("/user/keys/42", user)
-      expect(response.status).to eq(404)
-      expect(json_response['message']).to eq('404 Not found')
+    it_behaves_like 'authorizing granular token permissions', :read_user_ssh_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
     end
 
-    it "should return 404 error if admin accesses user's ssh key" do
+    it 'exposes SSH key comment as a simple identifier of username + hostname' do
+      get api(path, user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['key']).to include("#{key.user_name} (#{Gitlab.config.gitlab.host})")
+    end
+
+    it "returns 404 Not Found within invalid ID" do
+      get api("/user/keys/#{non_existing_record_id}", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Key Not Found')
+    end
+
+    it "returns 404 error if admin accesses user's ssh key" do
       user.keys << key
-      user.save
       admin
-      get api("/user/keys/#{key.id}", admin)
-      expect(response.status).to eq(404)
-      expect(json_response['message']).to eq('404 Not found')
+
+      get api(path, admin, admin_mode: true)
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Key Not Found')
+    end
+
+    it "returns 404 for invalid ID" do
+      get api("/users/keys/ASDF", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context "scopes" do
+      let(:api_call) { method(:api) }
+
+      include_examples 'allows the "read_user" scope'
     end
   end
 
   describe "POST /user/keys" do
-    it "should create ssh key" do
-      key_attrs = attributes_for :key
-      expect {
-        post api("/user/keys", user), key_attrs
-      }.to change{ user.keys.count }.by(1)
-      expect(response.status).to eq(201)
+    let(:path) { "/user/keys" }
+
+    it "creates ssh key" do
+      key_attrs = attributes_for(:key, usage_type: :signing)
+
+      expect do
+        post api(path, user), params: key_attrs
+      end.to change { user.keys.count }.by(1)
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      key = user.keys.last
+      expect(key.title).to eq(key_attrs[:title])
+      expect(key.key).to eq(key_attrs[:key])
+      expect(key.usage_type).to eq(key_attrs[:usage_type].to_s)
     end
 
-    it "should return a 401 error if unauthorized" do
-      post api("/user/keys"), title: 'some title', key: 'some key'
-      expect(response.status).to eq(401)
+    it 'creates SSH key with `expires_at` attribute' do
+      optional_attributes = { expires_at: 3.weeks.from_now }
+      attributes = attributes_for(:key).merge(optional_attributes)
+
+      post api(path, user), params: attributes
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(json_response['expires_at'].to_date).to eq(optional_attributes[:expires_at].to_date)
     end
 
-    it "should not create ssh key without key" do
-      post api("/user/keys", user), title: 'title'
-      expect(response.status).to eq(400)
-      expect(json_response['message']).to eq('400 (Bad request) "key" not given')
+    it "returns a 401 error if unauthorized" do
+      post api(path), params: { title: 'some title', key: 'some key' }
+      expect(response).to have_gitlab_http_status(:unauthorized)
     end
 
-    it 'should not create ssh key without title' do
-      post api('/user/keys', user), key: 'some key'
-      expect(response.status).to eq(400)
-      expect(json_response['message']).to eq('400 (Bad request) "title" not given')
+    it "does not create ssh key without key" do
+      post api(path, user), params: { title: 'title' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('key is missing')
     end
 
-    it "should not create ssh key without title" do
-      post api("/user/keys", user), key: "somekey"
-      expect(response.status).to eq(400)
+    it 'does not create ssh key without title' do
+      post api('/user/keys', user), params: { key: 'some key' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('title is missing')
+    end
+
+    it "does not create ssh key without title" do
+      post api(path, user), params: { key: "somekey" }
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_user_ssh_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        post api('/user/keys', personal_access_token: pat), params: attributes_for(:key)
+      end
     end
   end
 
-  describe "DELETE /user/keys/:id" do
-    it "should delete existed key" do
+  describe "DELETE /user/keys/:key_id" do
+    let(:path) { "/user/keys/#{key.id}" }
+
+    it "deletes existed key" do
       user.keys << key
-      user.save
-      expect {
-        delete api("/user/keys/#{key.id}", user)
-      }.to change{user.keys.count}.by(-1)
-      expect(response.status).to eq(200)
+
+      expect do
+        delete api(path, user)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end.to change { user.keys.count }.by(-1)
     end
 
-    it "should return success if key ID not found" do
-      delete api("/user/keys/42", user)
-      expect(response.status).to eq(200)
+    it_behaves_like 'authorizing granular token permissions', :delete_user_ssh_key do
+      let(:boundary_object) { :user }
+      let(:key) { create(:key, user: user) }
+      let(:request) do
+        delete api("/user/keys/#{key.id}", personal_access_token: pat)
+      end
     end
 
-    it "should return 401 error if unauthorized" do
+    it_behaves_like '412 response' do
+      let(:request) { api(path, user) }
+    end
+
+    it "returns 404 if key ID not found" do
+      delete api("/user/keys/#{non_existing_record_id}", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Key Not Found')
+    end
+
+    it "returns 401 error if unauthorized" do
       user.keys << key
-      user.save
-      delete api("/user/keys/#{key.id}")
-      expect(response.status).to eq(401)
+
+      delete api(path)
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it "returns a 404 for invalid ID" do
+      delete api("/users/keys/ASDF", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+  end
+
+  describe 'GET /user/gpg_keys' do
+    let(:path) { '/user/gpg_keys' }
+
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        get api(path)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated' do
+      it 'returns array of GPG keys' do
+        user.gpg_keys << gpg_key
+
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+        expect(json_response.first['key']).to eq(gpg_key.key)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_gpg_key do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+
+      context 'scopes' do
+        let(:api_call) { method(:api) }
+
+        include_examples 'allows the "read_user" scope'
+      end
+    end
+  end
+
+  describe 'GET /user/gpg_keys/:key_id' do
+    let(:path) { "/user/gpg_keys/#{gpg_key.id}" }
+
+    it 'returns a single key' do
+      user.gpg_keys << gpg_key
+
+      get api(path, user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['key']).to eq(gpg_key.key)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_user_gpg_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+
+    it 'returns 404 Not Found within invalid ID' do
+      get api("/user/gpg_keys/#{non_existing_record_id}", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 GPG Key Not Found')
+    end
+
+    it "returns 404 error if admin accesses user's GPG key" do
+      user.gpg_keys << gpg_key
+
+      get api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 GPG Key Not Found')
+    end
+
+    it 'returns 404 for invalid ID' do
+      get api('/users/gpg_keys/ASDF', admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context 'scopes' do
+      let(:api_call) { method(:api) }
+
+      include_examples 'allows the "read_user" scope'
+    end
+  end
+
+  describe 'POST /user/gpg_keys' do
+    let(:path) { '/user/gpg_keys' }
+
+    it 'creates a GPG key' do
+      key_attrs = attributes_for :gpg_key, key: GpgHelpers::User2.public_key
+
+      expect do
+        post api(path, user), params: key_attrs
+
+        expect(response).to have_gitlab_http_status(:created)
+      end.to change { user.gpg_keys.count }.by(1)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_user_gpg_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        post api(path, personal_access_token: pat), params: attributes_for(:gpg_key, key: GpgHelpers::User2.public_key)
+      end
+    end
+
+    it 'returns a 401 error if unauthorized' do
+      post api(path), params: { key: 'some key' }
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'does not create GPG key without key' do
+      post api(path, user)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('key is missing')
+    end
+  end
+
+  describe 'POST /user/gpg_keys/:key_id/revoke' do
+    it 'revokes existing GPG key' do
+      user.gpg_keys << gpg_key
+
+      expect do
+        post api("/user/gpg_keys/#{gpg_key.id}/revoke", user)
+
+        expect(response).to have_gitlab_http_status(:accepted)
+      end.to change { user.gpg_keys.count }.by(-1)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :revoke_user_gpg_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        post api("/user/gpg_keys/#{gpg_key.id}/revoke", personal_access_token: pat)
+      end
+    end
+
+    it 'returns 404 if key ID not found' do
+      post api("/user/gpg_keys/#{non_existing_record_id}/revoke", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 GPG Key Not Found')
+    end
+
+    it 'returns 401 error if unauthorized' do
+      user.gpg_keys << gpg_key
+
+      post api("/user/gpg_keys/#{gpg_key.id}/revoke")
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'returns a 404 for invalid ID' do
+      post api('/users/gpg_keys/ASDF/revoke', admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+  end
+
+  describe 'DELETE /user/gpg_keys/:key_id' do
+    let(:path) { "/user/gpg_keys/#{gpg_key.id}" }
+
+    it 'deletes existing GPG key' do
+      user.gpg_keys << gpg_key
+
+      expect do
+        delete api(path, user)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end.to change { user.gpg_keys.count }.by(-1)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_user_gpg_key do
+      let(:boundary_object) { :user }
+      let(:request) do
+        delete api(path, personal_access_token: pat)
+      end
+    end
+
+    it 'returns 404 if key ID not found' do
+      delete api("/user/gpg_keys/#{non_existing_record_id}", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 GPG Key Not Found')
+    end
+
+    it 'returns 401 error if unauthorized' do
+      user.gpg_keys << gpg_key
+
+      delete api(path)
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it 'returns a 404 for invalid ID' do
+      delete api('/users/gpg_keys/ASDF', admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+  end
+
+  describe "GET /user/emails" do
+    let(:path) { '/user/emails' }
+
+    context "when unauthenticated" do
+      it "returns authentication error" do
+        get api(path)
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context "when authenticated" do
+      it "returns array of emails" do
+        user.emails << email
+
+        get api(path, user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+        expect(json_response.first['email']).to eq(user.email)
+        expect(json_response.second['email']).to eq(email.email)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_email do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+
+      context "scopes" do
+        let(:api_call) { method(:api) }
+
+        include_examples 'allows the "read_user" scope'
+      end
+    end
+  end
+
+  describe "GET /user/emails/:email_id" do
+    let(:path) { "/user/emails/#{email.id}" }
+
+    it "returns single email" do
+      user.emails << email
+
+      get api(path, user)
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response["email"]).to eq(email.email)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_user_email do
+      let(:boundary_object) { :user }
+      let(:request) do
+        get api(path, personal_access_token: pat)
+      end
+    end
+
+    it "returns 404 Not Found within invalid ID" do
+      get api("/user/emails/#{non_existing_record_id}", user)
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Email Not Found')
+    end
+
+    it "returns 404 error if admin accesses user's email" do
+      user.emails << email
+      admin
+
+      get api(path, admin, admin_mode: true)
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Email Not Found')
+    end
+
+    it "returns 404 for invalid ID" do
+      get api("/users/emails/ASDF", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context "scopes" do
+      let(:api_call) { method(:api) }
+
+      include_examples 'allows the "read_user" scope'
+    end
+  end
+
+  describe "POST /user/emails" do
+    let(:path) { '/user/emails' }
+
+    it "creates email" do
+      email_attrs = attributes_for :email
+      expect do
+        post api(path, user), params: email_attrs
+      end.to change { user.emails.count }.by(1)
+      expect(response).to have_gitlab_http_status(:created)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_user_email do
+      let(:boundary_object) { :user }
+      let(:request) do
+        post api(path, personal_access_token: pat), params: attributes_for(:email)
+      end
+    end
+
+    it "returns a 401 error if unauthorized" do
+      post api(path), params: { email: 'some email' }
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it "does not create email with invalid email" do
+      post api(path, user), params: {}
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('email is missing')
+    end
+  end
+
+  describe "DELETE /user/emails/:email_id" do
+    let(:path) { "/user/emails/#{email.id}" }
+
+    it "deletes existed email" do
+      user.emails << email
+
+      expect do
+        delete api(path, user)
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end.to change { user.emails.count }.by(-1)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_user_email do
+      let(:boundary_object) { :user }
+      let(:request) do
+        delete api(path, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like '412 response' do
+      let(:request) { api(path, user) }
+    end
+
+    it "returns 404 if email ID not found" do
+      delete api("/user/emails/#{non_existing_record_id}", user)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Email Not Found')
+    end
+
+    it "returns 401 error if unauthorized" do
+      user.emails << email
+
+      delete api(path)
+      expect(response).to have_gitlab_http_status(:unauthorized)
+    end
+
+    it "returns 400 for invalid ID" do
+      delete api("/user/emails/ASDF", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+    end
+  end
+
+  context 'activate and deactivate' do
+    shared_examples '404' do
+      it 'returns 404' do
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+    end
+
+    describe 'POST /users/:id/activate' do
+      it_behaves_like 'authorizing granular token permissions', :activate_user do
+        let_it_be(:gt_target) { create(:user, :deactivated) }
+        let(:boundary_object) { :instance }
+        let(:user) { admin }
+        let(:request) { post api("/users/#{gt_target.id}/activate", personal_access_token: pat) }
+      end
+
+      subject(:activate) { post api(path, api_user, **params) }
+
+      let(:user_id) { user.id }
+      let(:path) { "/users/#{user_id}/activate" }
+
+      it_behaves_like 'POST request permissions for admin mode' do
+        let(:params) { {} }
+      end
+
+      context 'performed by a non-admin user' do
+        let(:api_user) { user }
+        let(:params) { { admin_mode: false } }
+
+        it 'is not authorized to perform the action' do
+          activate
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'performed by an admin user' do
+        let(:api_user) { admin }
+        let(:params) { { admin_mode: true } }
+
+        context 'for a deactivated user' do
+          let(:user_id) { deactivated_user.id }
+
+          it 'activates a deactivated user' do
+            activate
+
+            expect(response).to have_gitlab_http_status(:created)
+            expect(deactivated_user.reload.state).to eq('active')
+          end
+        end
+
+        context 'for an active user' do
+          before do
+            user.activate
+          end
+
+          it 'returns 201' do
+            activate
+
+            expect(response).to have_gitlab_http_status(:created)
+            expect(user.reload.state).to eq('active')
+          end
+        end
+
+        context 'for a blocked user' do
+          let(:user_id) { blocked_user.id }
+
+          it 'returns 403' do
+            activate
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response['message']).to eq('Error occurred. A blocked user must be unblocked to be activated')
+            expect(blocked_user.reload.state).to eq('blocked')
+          end
+        end
+
+        context 'for a ldap blocked user' do
+          before do
+            user.ldap_block
+          end
+
+          it 'returns 403' do
+            activate
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response['message']).to eq('Error occurred. A blocked user must be unblocked to be activated')
+            expect(user.reload.state).to eq('ldap_blocked')
+          end
+        end
+
+        context 'for a user that does not exist' do
+          let(:user_id) { non_existing_record_id }
+
+          before do
+            activate
+          end
+
+          it_behaves_like '404'
+        end
+      end
+    end
+
+    describe 'POST /users/:id/deactivate' do
+      it_behaves_like 'authorizing granular token permissions', :deactivate_user do
+        let_it_be(:gt_target) { create(:user) }
+        let(:boundary_object) { :instance }
+        let(:user) { admin }
+        let(:request) { post api("/users/#{gt_target.id}/deactivate", personal_access_token: pat) }
+      end
+
+      subject(:deactivate) { post api(path, api_user, **params) }
+
+      let(:user_id) { user.id }
+      let(:path) { "/users/#{user_id}/deactivate" }
+
+      it_behaves_like 'POST request permissions for admin mode' do
+        let(:params) { {} }
+      end
+
+      context 'performed by a non-admin user' do
+        let(:api_user) { user }
+        let(:params) { { admin_mode: false } }
+
+        it 'is not authorized to perform the action' do
+          deactivate
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'performed by an admin user' do
+        let(:api_user) { admin }
+        let(:params) { { admin_mode: true } }
+
+        context 'for an active user' do
+          let(:activity) { {} }
+          let(:user) { create(:user, **activity) }
+
+          context 'with no recent activity' do
+            let(:activity) { { last_activity_on: Gitlab::CurrentSettings.deactivate_dormant_users_period.next.days.ago } }
+
+            it 'deactivates an active user' do
+              deactivate
+
+              expect(response).to have_gitlab_http_status(:created)
+              expect(user.reload.state).to eq('deactivated')
+            end
+          end
+
+          context 'with recent activity' do
+            let(:activity) { { last_activity_on: Gitlab::CurrentSettings.deactivate_dormant_users_period.pred.days.ago } }
+
+            it 'does not deactivate an active user' do
+              deactivate
+
+              expect(response).to have_gitlab_http_status(:forbidden)
+              expect(json_response['message']).to eq("The user you are trying to deactivate has been active in the past #{Gitlab::CurrentSettings.deactivate_dormant_users_period} days and cannot be deactivated")
+              expect(user.reload.state).to eq('active')
+            end
+          end
+        end
+
+        context 'for a deactivated user' do
+          let(:user_id) { deactivated_user.id }
+
+          it 'returns 201' do
+            deactivate
+
+            expect(response).to have_gitlab_http_status(:created)
+            expect(deactivated_user.reload.state).to eq('deactivated')
+          end
+        end
+
+        context 'for a blocked user' do
+          let(:user_id) { blocked_user.id }
+
+          it 'returns 403' do
+            deactivate
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response['message']).to eq('Error occurred. A blocked user cannot be deactivated')
+            expect(blocked_user.reload.state).to eq('blocked')
+          end
+        end
+
+        context 'for a ldap blocked user' do
+          before do
+            user.ldap_block
+          end
+
+          it 'returns 403' do
+            deactivate
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response['message']).to eq('Error occurred. A blocked user cannot be deactivated')
+            expect(user.reload.state).to eq('ldap_blocked')
+          end
+        end
+
+        context 'for an internal user' do
+          let(:user) { Users::Internal.in_organization(organization).alert_bot }
+
+          it 'returns 403' do
+            deactivate
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response['message']).to eq('Internal users cannot be deactivated')
+          end
+        end
+
+        context 'for a user that does not exist' do
+          let(:user_id) { non_existing_record_id }
+
+          before do
+            deactivate
+          end
+
+          it_behaves_like '404'
+        end
+      end
+    end
+  end
+
+  context 'approve and reject pending user' do
+    let(:pending_user) { create(:user, :blocked_pending_approval) }
+
+    shared_examples '404' do
+      it 'returns 404' do
+        expect(response).to have_gitlab_http_status(:not_found)
+        expect(json_response['message']).to eq('404 User Not Found')
+      end
+    end
+
+    describe 'POST /users/:id/approve' do
+      it_behaves_like 'authorizing granular token permissions', :approve_user do
+        let_it_be(:gt_target) { create(:user, :blocked_pending_approval) }
+        let(:boundary_object) { :instance }
+        let(:user) { admin }
+        let(:request) { post api("/users/#{gt_target.id}/approve", personal_access_token: pat) }
+      end
+
+      subject(:approve) { post api(path, api_user, **params) }
+
+      let(:path) { "/users/#{user_id}/approve" }
+
+      it_behaves_like 'POST request permissions for admin mode' do
+        let(:user_id) { pending_user.id }
+        let(:params) { {} }
+      end
+
+      context 'performed by a non-admin user' do
+        let(:api_user) { user }
+        let(:user_id) { pending_user.id }
+        let(:params) { { admin_mode: false } }
+
+        it 'is not authorized to perform the action' do
+          expect { approve }.not_to change { pending_user.reload.state }
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You are not allowed to approve a user')
+        end
+      end
+
+      context 'performed by an admin user' do
+        let(:api_user) { admin }
+        let(:params) { { admin_mode: true } }
+
+        context 'for a deactivated user' do
+          let(:user_id) { deactivated_user.id }
+
+          it 'does not approve a deactivated user' do
+            expect { approve }.not_to change { deactivated_user.reload.state }
+            expect(response).to have_gitlab_http_status(:conflict)
+            expect(json_response['message']).to eq('The user you are trying to approve is not pending approval')
+          end
+        end
+
+        context 'for an pending approval user' do
+          let(:user_id) { pending_user.id }
+
+          it 'returns 201' do
+            expect { approve }.to change { pending_user.reload.state }.to('active')
+            expect(response).to have_gitlab_http_status(:created)
+            expect(json_response['message']).to eq('Success')
+          end
+        end
+
+        context 'for an active user' do
+          let(:user_id) { user.id }
+
+          it 'returns 201' do
+            expect { approve }.not_to change { user.reload.state }
+            expect(response).to have_gitlab_http_status(:conflict)
+            expect(json_response['message']).to eq('The user you are trying to approve is not pending approval')
+          end
+        end
+
+        context 'for a blocked user' do
+          let(:user_id) { blocked_user.id }
+
+          it 'returns 403' do
+            expect { approve }.not_to change { blocked_user.reload.state }
+            expect(response).to have_gitlab_http_status(:conflict)
+            expect(json_response['message']).to eq('The user you are trying to approve is not pending approval')
+          end
+        end
+
+        context 'for a ldap blocked user' do
+          let(:user_id) { ldap_blocked_user.id }
+
+          it 'returns 403' do
+            expect { approve }.not_to change { ldap_blocked_user.reload.state }
+            expect(response).to have_gitlab_http_status(:conflict)
+            expect(json_response['message']).to eq('The user you are trying to approve is not pending approval')
+          end
+        end
+
+        context 'for a user that does not exist' do
+          let(:user_id) { non_existing_record_id }
+
+          before do
+            approve
+          end
+
+          it_behaves_like '404'
+        end
+      end
+    end
+
+    describe 'POST /users/:id/reject' do
+      it_behaves_like 'authorizing granular token permissions', :reject_user do
+        let_it_be(:gt_target) { create(:user, :blocked_pending_approval) }
+        let(:boundary_object) { :instance }
+        let(:user) { admin }
+        let(:request) { post api("/users/#{gt_target.id}/reject", personal_access_token: pat) }
+      end
+
+      subject(:reject) { post api(path, api_user, **params) }
+
+      let(:path) { "/users/#{user_id}/reject" }
+
+      it_behaves_like 'POST request permissions for admin mode' do
+        let(:user_id) { pending_user.id }
+        let(:params) { {} }
+        let(:success_status_code) { :success }
+      end
+
+      shared_examples 'returns 409' do
+        it 'returns 409' do
+          reject
+
+          expect(response).to have_gitlab_http_status(:conflict)
+          expect(json_response['message']).to eq('User does not have a pending request')
+        end
+      end
+
+      context 'performed by a non-admin user' do
+        let(:api_user) { user }
+        let(:user_id) { pending_user.id }
+        let(:params) { { admin_mode: false } }
+
+        it 'returns 403' do
+          expect { reject }.not_to change { pending_user.reload.state }
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You are not allowed to reject a user')
+        end
+      end
+
+      context 'performed by an admin user' do
+        let(:api_user) { admin }
+        let(:params) { { admin_mode: true } }
+
+        context 'for an pending approval user' do
+          let(:user_id) { pending_user.id }
+
+          it 'returns 200' do
+            reject
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response['message']).to eq('Success')
+          end
+        end
+
+        context 'for a deactivated user' do
+          let(:user_id) { deactivated_user.id }
+
+          it 'does not reject a deactivated user' do
+            expect { reject }.not_to change { deactivated_user.reload.state }
+          end
+
+          it_behaves_like 'returns 409'
+        end
+
+        context 'for an active user' do
+          let(:user_id) { user.id }
+
+          it 'does not reject an active user' do
+            expect { reject }.not_to change { user.reload.state }
+          end
+
+          it_behaves_like 'returns 409'
+        end
+
+        context 'for a blocked user' do
+          let(:user_id) { blocked_user.id }
+
+          it 'does not reject a blocked user' do
+            expect { reject }.not_to change { blocked_user.reload.state }
+          end
+
+          it_behaves_like 'returns 409'
+        end
+
+        context 'for a ldap blocked user' do
+          let(:user_id) { ldap_blocked_user.id }
+
+          it 'does not reject a ldap blocked user' do
+            expect { reject }.not_to change { ldap_blocked_user.reload.state }
+          end
+
+          it_behaves_like 'returns 409'
+        end
+
+        context 'for a user that does not exist' do
+          let(:user_id) { non_existing_record_id }
+
+          before do
+            reject
+          end
+
+          it_behaves_like '404'
+        end
+      end
+    end
+  end
+
+  describe 'POST /users/:id/block' do
+    it_behaves_like 'authorizing granular token permissions', :block_user do
+      let_it_be(:gt_target) { create(:user) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { post api("/users/#{gt_target.id}/block", personal_access_token: pat) }
+    end
+
+    subject(:block_user) { post api(path, api_user, **params) }
+
+    let(:user_id) { user.id }
+    let(:path) { "/users/#{user_id}/block" }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { {} }
+    end
+
+    context 'when admin' do
+      let(:api_user) { admin }
+      let(:params) { { admin_mode: true } }
+
+      context 'with an existing user' do
+        it 'blocks existing user' do
+          block_user
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(response.body).to eq('true')
+          expect(user.reload.state).to eq('blocked')
+        end
+
+        it 'saves a custom attribute', :freeze_time, feature_category: :insider_threat do
+          block_user
+
+          custom_attribute = user.custom_attributes.last
+
+          expect(custom_attribute.key).to eq(UserCustomAttribute::BLOCKED_BY)
+          expect(custom_attribute.value).to eq("#{admin.username}/#{admin.id}+#{Time.current}")
+        end
+      end
+
+      context 'with an ldap blocked user' do
+        let(:user_id) { ldap_blocked_user.id }
+
+        it 'does not re-block ldap blocked users' do
+          block_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(ldap_blocked_user.reload.state).to eq('ldap_blocked')
+        end
+      end
+
+      context 'with a non existent user' do
+        let(:user_id) { non_existing_record_id }
+
+        it 'does not block non existent user, returns 404' do
+          block_user
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('404 User Not Found')
+        end
+      end
+
+      context 'with an internal user' do
+        let(:user_id) { internal_user.id }
+
+        it 'does not block internal user, returns 403' do
+          block_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('An internal user cannot be blocked')
+        end
+      end
+
+      context 'with a blocked user' do
+        let(:user_id) { blocked_user.id }
+
+        it 'returns a 201 if user is already blocked' do
+          block_user
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(response.body).to eq('null')
+        end
+      end
+
+      context 'with the API initiating user' do
+        let(:user_id) { admin.id }
+
+        it 'does not block the API initiating user, returns 403' do
+          block_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('403 Forbidden - The API initiating user cannot be blocked by the API')
+          expect(admin.reload.state).to eq('active')
+        end
+      end
+    end
+
+    context 'performed by a non-admin user' do
+      let(:api_user) { user }
+      let(:params) { { admin_mode: false } }
+
+      it 'returns 403' do
+        block_user
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(user.reload.state).to eq('active')
+      end
+    end
+  end
+
+  describe 'POST /users/:id/unblock' do
+    it_behaves_like 'authorizing granular token permissions', :unblock_user do
+      let_it_be(:gt_target) { create(:user, :blocked) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { post api("/users/#{gt_target.id}/unblock", personal_access_token: pat) }
+    end
+
+    subject(:unblock_user) { post api(path, api_user, **params) }
+
+    let(:path) { "/users/#{user_id}/unblock" }
+    let(:user_id) { user.id }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { {} }
+    end
+
+    context 'when admin' do
+      let(:api_user) { admin }
+      let(:params) { { admin_mode: true } }
+
+      context 'with an existing user' do
+        it 'unblocks existing user' do
+          unblock_user
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(user.reload.state).to eq('active')
+        end
+      end
+
+      context 'with a blocked user' do
+        let(:user_id) { blocked_user.id }
+
+        it 'unblocks a blocked user' do
+          unblock_user
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(blocked_user.reload.state).to eq('active')
+        end
+
+        it 'saves a custom attribute', :freeze_time, feature_category: :insider_threat do
+          unblock_user
+
+          custom_attribute = blocked_user.custom_attributes.last
+
+          expect(custom_attribute.key).to eq(UserCustomAttribute::UNBLOCKED_BY)
+          expect(custom_attribute.value).to eq("#{admin.username}/#{admin.id}+#{Time.current}")
+        end
+      end
+
+      context 'with a ldap blocked user' do
+        let(:user_id) { ldap_blocked_user.id }
+
+        it 'does not unblock ldap blocked users' do
+          unblock_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(ldap_blocked_user.reload.state).to eq('ldap_blocked')
+        end
+      end
+
+      context 'with a deactivated user' do
+        let(:user_id) { deactivated_user.id }
+
+        it 'does not unblock deactivated users' do
+          unblock_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(deactivated_user.reload.state).to eq('deactivated')
+        end
+      end
+
+      context 'with a non existent user' do
+        let(:user_id) { non_existing_record_id }
+
+        it 'returns a 404 error if user id not found' do
+          unblock_user
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('404 User Not Found')
+        end
+      end
+
+      context 'with an invalid user id' do
+        let(:user_id) { 'ASDF' }
+
+        it 'returns a 404' do
+          unblock_user
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'performed by a non-admin user' do
+      let(:api_user) { user }
+      let(:params) { { admin_mode: false } }
+
+      it 'returns 403' do
+        unblock_user
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(user.reload.state).to eq('active')
+      end
+    end
+  end
+
+  describe 'POST /users/:id/ban' do
+    it_behaves_like 'authorizing granular token permissions', :ban_user do
+      let_it_be(:gt_target) { create(:user) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { post api("/users/#{gt_target.id}/ban", personal_access_token: pat) }
+    end
+
+    subject(:ban_user) { post api(path, api_user, **params) }
+
+    let(:path) { "/users/#{user_id}/ban" }
+    let(:user_id) { user.id }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:params) { {} }
+    end
+
+    context 'when admin' do
+      let(:api_user) { admin }
+      let(:params) { { admin_mode: true } }
+
+      context 'with an active user' do
+        it 'bans an active user' do
+          ban_user
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(response.body).to eq('true')
+          expect(user.reload.state).to eq('banned')
+        end
+      end
+
+      context 'with an ldap blocked user' do
+        let(:user_id) { ldap_blocked_user.id }
+
+        it 'does not ban ldap blocked users' do
+          ban_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You cannot ban ldap_blocked users.')
+          expect(ldap_blocked_user.reload.state).to eq('ldap_blocked')
+        end
+      end
+
+      context 'with a deactivated user' do
+        let(:user_id) { deactivated_user.id }
+
+        it 'does not ban deactivated users' do
+          ban_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You cannot ban deactivated users.')
+          expect(deactivated_user.reload.state).to eq('deactivated')
+        end
+      end
+
+      context 'with a banned user' do
+        let(:user_id) { banned_user.id }
+
+        it 'does not ban banned users' do
+          ban_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You cannot ban banned users.')
+          expect(banned_user.reload.state).to eq('banned')
+        end
+      end
+
+      context 'with a non existent user' do
+        let(:user_id) { non_existing_record_id }
+
+        it 'does not ban non existent users' do
+          ban_user
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('404 User Not Found')
+        end
+      end
+
+      context 'with an invalid id' do
+        let(:user_id) { 'ASDF' }
+
+        it 'does not ban invalid id users' do
+          ban_user
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'performed by a non-admin user' do
+      let(:api_user) { user }
+      let(:params) { { admin_mode: false } }
+
+      it 'returns 403' do
+        ban_user
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(user.reload.state).to eq('active')
+      end
+    end
+  end
+
+  describe 'POST /users/:id/unban' do
+    it_behaves_like 'authorizing granular token permissions', :unban_user do
+      let_it_be(:gt_target) { create(:user, :banned) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { post api("/users/#{gt_target.id}/unban", personal_access_token: pat) }
+    end
+
+    subject(:unban_user) { post api(path, api_user, **params) }
+
+    let(:path) { "/users/#{user_id}/unban" }
+
+    it_behaves_like 'POST request permissions for admin mode' do
+      let(:user_id) { banned_user.id }
+      let(:params) { {} }
+    end
+
+    context 'when admin' do
+      let(:api_user) { admin }
+      let(:params) { { admin_mode: true } }
+
+      context 'with a banned user' do
+        let(:user_id) { banned_user.id }
+
+        it 'activates a banned user' do
+          unban_user
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(banned_user.reload.state).to eq('active')
+        end
+      end
+
+      context 'with an ldap_blocked user' do
+        let(:user_id) { ldap_blocked_user.id }
+
+        it 'does not unban ldap_blocked users' do
+          unban_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You cannot unban ldap_blocked users.')
+          expect(ldap_blocked_user.reload.state).to eq('ldap_blocked')
+        end
+      end
+
+      context 'with a deactivated user' do
+        let(:user_id) { deactivated_user.id }
+
+        it 'does not unban deactivated users' do
+          unban_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You cannot unban deactivated users.')
+          expect(deactivated_user.reload.state).to eq('deactivated')
+        end
+      end
+
+      context 'with an active user' do
+        let(:user_id) { user.id }
+
+        it 'does not unban active users' do
+          unban_user
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq('You cannot unban active users.')
+          expect(user.reload.state).to eq('active')
+        end
+      end
+
+      context 'with a non existent user' do
+        let(:user_id) { non_existing_record_id }
+
+        it 'does not unban non existent users' do
+          unban_user
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('404 User Not Found')
+        end
+      end
+
+      context 'with an invalid id user' do
+        let(:user_id) { 'ASDF' }
+
+        it 'does not unban invalid id users' do
+          unban_user
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    context 'performed by a non-admin user' do
+      let(:api_user) { user }
+      let(:params) { { admin_mode: false } }
+      let(:user_id) { banned_user.id }
+
+      it 'returns 403' do
+        unban_user
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+        expect(user.reload.state).to eq('active')
+      end
+    end
+  end
+
+  describe "GET /users/:id/memberships" do
+    it_behaves_like 'authorizing granular token permissions', :read_user do
+      let_it_be(:gt_target) { create(:user) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { get api("/users/#{gt_target.id}/memberships", personal_access_token: pat) }
+    end
+
+    subject(:request) { get api(path, requesting_user, admin_mode: true) }
+
+    let_it_be(:user) { create(:user) }
+    let_it_be(:project) { create(:project) }
+    let_it_be(:group) { create(:group) }
+
+    let(:requesting_user) { create(:user) }
+    let(:path) { "/users/#{user.id}/memberships" }
+
+    before_all do
+      project.add_guest(user)
+      group.add_guest(user)
+    end
+
+    it_behaves_like 'GET request permissions for admin mode'
+
+    context 'requested by admin user' do
+      let(:requesting_user) { create(:user, :admin) }
+
+      it "responses successfully" do
+        request
+
+        aggregate_failures 'expect successful response including groups and projects' do
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/memberships')
+          expect(response).to include_pagination_headers
+          expect(json_response).to contain_exactly(
+            a_hash_including('source_type' => 'Project'),
+            a_hash_including('source_type' => 'Namespace')
+          )
+        end
+      end
+
+      it 'does not submit N+1 DB queries' do
+        # Avoid setup queries
+        request
+        expect(response).to have_gitlab_http_status(:ok)
+
+        control = ActiveRecord::QueryRecorder.new do
+          request
+        end
+
+        create_list(:project, 5).map { |project| project.add_guest(user) }
+
+        expect do
+          request
+        end.not_to exceed_query_limit(control)
+      end
+
+      context 'with type filter' do
+        it "only returns project memberships" do
+          get api("/users/#{user.id}/memberships?type=Project", requesting_user, admin_mode: true)
+
+          aggregate_failures do
+            expect(json_response).to contain_exactly(a_hash_including('source_type' => 'Project'))
+            expect(json_response).not_to include(a_hash_including('source_type' => 'Namespace'))
+          end
+        end
+
+        it "only returns group memberships" do
+          get api("/users/#{user.id}/memberships?type=Namespace", requesting_user, admin_mode: true)
+
+          aggregate_failures do
+            expect(json_response).to contain_exactly(a_hash_including('source_type' => 'Namespace'))
+            expect(json_response).not_to include(a_hash_including('source_type' => 'Project'))
+          end
+        end
+
+        it "recognizes unsupported types" do
+          get api("/users/#{user.id}/memberships?type=foo", requesting_user, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+  end
+
+  context "user activities", :clean_gitlab_redis_shared_state do
+    let_it_be(:old_active_user) { create(:user, last_activity_on: Time.utc(2000, 1, 1)) }
+    let_it_be(:newly_active_user) { create(:user, last_activity_on: 2.days.ago.midday) }
+    let_it_be(:newly_active_private_user) { create(:user, last_activity_on: 1.day.ago.midday, private_profile: true) }
+    let(:path) { '/user/activities' }
+
+    context 'for an anonymous user' do
+      it 'returns 401' do
+        get api(path)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'as a logged in user' do
+      it 'returns the activities from the last 6 months' do
+        get api(path, user)
+
+        expect(response).to include_pagination_headers
+        expect(json_response.size).to eq(1)
+
+        activity = json_response.last
+
+        expect(activity['username']).to eq(newly_active_user.username)
+        expect(activity['last_activity_on']).to eq(2.days.ago.to_date.to_s)
+        expect(activity['last_activity_at']).to eq(2.days.ago.to_date.to_s)
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_activity do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+
+      context 'passing a :from parameter' do
+        it 'returns the activities from the given date' do
+          get api("#{path}?from=2000-1-1", user)
+
+          expect(response).to include_pagination_headers
+          expect(json_response.size).to eq(2)
+
+          activity = json_response.first
+
+          expect(activity['username']).to eq(old_active_user.username)
+          expect(activity['last_activity_on']).to eq(Time.utc(2000, 1, 1).to_date.to_s)
+          expect(activity['last_activity_at']).to eq(Time.utc(2000, 1, 1).to_date.to_s)
+        end
+      end
+
+      it 'does not include users with private profiles' do
+        get api(path, user)
+
+        expect(json_response.map { |user| user['username'] })
+          .not_to include(newly_active_private_user.username)
+      end
+    end
+
+    context 'as admin' do
+      it 'includes users with private profiles' do
+        get api(path, admin, admin_mode: true)
+
+        expect(json_response.map { |user| user['username'] })
+          .to include(newly_active_private_user.username)
+      end
+    end
+  end
+
+  describe '/user/status' do
+    let(:user_status) { create(:user_status, clear_status_at: 8.hours.from_now) }
+    let(:user_with_status) { user_status.user }
+    let(:params) { {} }
+    let(:request_user) { user }
+    let(:path) { '/user/status' }
+
+    shared_examples '/user/status successful response' do
+      context 'when request is successful' do
+        let(:params) { { emoji: 'smirk', message: 'hello world' } }
+
+        it 'saves the status' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(json_response['emoji']).to eq('smirk')
+          expect(json_response['message']).to eq('hello world')
+        end
+      end
+    end
+
+    shared_examples '/user/status unsuccessful response' do
+      context 'when request is unsuccessful' do
+        let(:params) { { emoji: 'does not exist', message: 'hello world' } }
+
+        it 'renders errors' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']['emoji']).to be_present
+        end
+      end
+    end
+
+    shared_examples '/user/status passing nil for params' do
+      context 'when passing nil for params' do
+        let(:params) { { emoji: nil, message: nil, clear_status_after: nil } }
+        let(:request_user) { user_with_status }
+
+        it 'deletes the status' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(user_with_status.reset.status).to be_nil
+        end
+      end
+    end
+
+    shared_examples '/user/status clear_status_after field' do
+      context 'when clear_status_after is valid', :freeze_time do
+        let(:params) { { emoji: 'smirk', message: 'hello world', clear_status_after: '3_hours' } }
+
+        it 'sets the clear_status_at column' do
+          expected_clear_status_at = 3.hours.from_now
+
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(user.status.clear_status_at).to be_like_time(expected_clear_status_at)
+          expect(Time.parse(json_response["clear_status_at"])).to be_like_time(expected_clear_status_at)
+        end
+      end
+
+      context 'when clear_status_after is nil' do
+        let(:params) { { emoji: 'smirk', message: 'hello world', clear_status_after: nil } }
+        let(:request_user) { user_with_status }
+
+        it 'unsets the clear_status_at column' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(user_with_status.reset.status.clear_status_at).to be_nil
+        end
+      end
+
+      context 'when clear_status_after is invalid' do
+        let(:params) { { emoji: 'smirk', message: 'hello world', clear_status_after: 'invalid' } }
+
+        it 'raises error when unknown status value is given' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+    end
+
+    describe 'GET' do
+      it_behaves_like 'rendering user status'
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_status do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api(path, personal_access_token: pat)
+        end
+      end
+    end
+
+    describe 'PUT' do
+      subject(:set_user_status) { put api(path, request_user), params: params }
+
+      include_examples '/user/status successful response'
+
+      include_examples '/user/status unsuccessful response'
+
+      include_examples '/user/status passing nil for params'
+
+      include_examples '/user/status clear_status_after field'
+
+      it_behaves_like 'authorizing granular token permissions', :update_user_status do
+        let(:boundary_object) { :user }
+        let(:request) do
+          put api(path, personal_access_token: pat), params: { emoji: 'smirk', message: 'hello' }
+        end
+      end
+
+      context 'when passing empty params' do
+        let(:request_user) { user_with_status }
+
+        it 'deletes the status' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(user_with_status.reset.status).to be_nil
+        end
+      end
+
+      context 'when clear_status_after is not given' do
+        let(:params) { { emoji: 'smirk', message: 'hello world' } }
+        let(:request_user) { user_with_status }
+
+        it 'unsets clear_status_at column' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(user_with_status.reset.status.clear_status_at).to be_nil
+        end
+      end
+    end
+
+    describe 'PATCH' do
+      subject(:set_user_status) { patch api(path, request_user), params: params }
+
+      include_examples '/user/status successful response'
+
+      include_examples '/user/status unsuccessful response'
+
+      include_examples '/user/status passing nil for params'
+
+      include_examples '/user/status clear_status_after field'
+
+      it_behaves_like 'authorizing granular token permissions', :update_user_status do
+        let(:boundary_object) { :user }
+        let(:request) do
+          patch api(path, personal_access_token: pat), params: { emoji: 'smirk', message: 'hello' }
+        end
+      end
+
+      context 'when passing empty params' do
+        let(:request_user) { user_with_status }
+
+        it 'does not update the status' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(user_with_status.status).to eq(user_status)
+        end
+      end
+
+      context 'when clear_status_after is not given' do
+        let(:params) { { emoji: 'smirk', message: 'hello world' } }
+        let(:request_user) { user_with_status }
+
+        it 'does not unset clear_status_at column' do
+          set_user_status
+
+          expect(response).to have_gitlab_http_status(:success)
+          expect(user_with_status.status.clear_status_at).not_to be_nil
+        end
+      end
+    end
+  end
+
+  describe 'PUT /user/avatar' do
+    let(:path) { "/user/avatar" }
+
+    it "returns 200 OK on success" do
+      workhorse_form_with_file(
+        api(path, user),
+        method: :put,
+        file_key: :avatar,
+        params: { avatar: fixture_file_upload('spec/fixtures/banana_sample.gif', 'image/gif') }
+      )
+
+      user.reload
+      expect(user.avatar).to be_present
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['avatar_url']).to include(user.avatar_path)
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :update_user_avatar do
+      let(:boundary_object) { :user }
+      let(:request) do
+        workhorse_form_with_file(
+          api(path, personal_access_token: pat),
+          method: :put,
+          file_key: :avatar,
+          params: { avatar: fixture_file_upload('spec/fixtures/banana_sample.gif', 'image/gif') }
+        )
+      end
+    end
+
+    it "returns 400 when avatar file size over 200 KiB" do
+      workhorse_form_with_file(
+        api(path, user),
+        method: :put,
+        file_key: :avatar,
+        params: { avatar: fixture_file_upload('spec/fixtures/big-image.png', 'image/png') }
+      )
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']).to include("Avatar is too big (should be at most 200 KiB)")
+    end
+  end
+
+  describe 'POST /users/:user_id/personal_access_tokens', :with_current_organization do
+    it_behaves_like 'authorizing granular token permissions', :create_personal_access_token do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) do
+        post api("/users/#{admin.id}/personal_access_tokens", personal_access_token: pat),
+          params: { name: 'gpat-pat', scopes: %w[api], expires_at: 3.days.from_now.to_date.to_s }
+      end
+    end
+
+    let(:name) { 'new pat' }
+    let(:description) { 'new pat description' }
+    let(:expires_at) { 3.days.from_now }
+    let(:scopes) { %w[api read_user] }
+    let(:path) { "/users/#{user.id}/personal_access_tokens" }
+    let(:params) { { name: name, scopes: scopes, expires_at: expires_at, description: description } }
+
+    it_behaves_like 'POST request permissions for admin mode'
+
+    it 'returns error if required attributes are missing' do
+      post api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq(
+        'name is missing, scopes, granular_scopes are missing, exactly one parameter must be provided'
+      )
+    end
+
+    it 'returns a 404 error if user not found' do
+      post api("/users/#{non_existing_record_id}/personal_access_tokens", admin, admin_mode: true), params: params
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns a 401 error when not authenticated' do
+      post api(path), params: params
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+      expect(json_response['message']).to eq('401 Unauthorized')
+    end
+
+    it 'returns a 403 error when authenticated as normal user' do
+      post api(path, user), params: params
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+      expect(json_response['message']).to eq('403 Forbidden')
+    end
+
+    it 'passes creation_source api to the service' do
+      expect(::PersonalAccessTokens::CreateService).to receive(:new)
+        .with(hash_including(params: hash_including(creation_source: PersonalAccessToken::CREATION_SOURCE_API)))
+        .and_call_original
+
+      post api(path, admin, admin_mode: true), params: params
+    end
+
+    it 'creates a personal access token when authenticated as admin' do
+      post api(path, admin, admin_mode: true), params: params
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(json_response['name']).to eq(name)
+      expect(json_response['description']).to eq(description)
+      expect(json_response['scopes']).to eq(scopes)
+      expect(json_response['expires_at']).to eq(expires_at.to_date.iso8601)
+      expect(json_response['id']).to be_present
+      expect(json_response['created_at']).to be_present
+      expect(json_response['active']).to be_truthy
+      expect(json_response['revoked']).to be_falsey
+      expect(json_response['token']).to be_present
+      expect(json_response).not_to have_key('granular_scopes')
+    end
+
+    it 'does not load granular scopes to present a token created with scopes', :aggregate_failures do
+      recorder = ActiveRecord::QueryRecorder.new do
+        post api(path, admin, admin_mode: true), params: params
+      end
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(recorder.log).not_to include(a_string_matching(/"(personal_access_token_)?granular_scopes"/))
+    end
+
+    context 'when an error is thrown by the model' do
+      let!(:admin_personal_access_token) { create(:personal_access_token, :admin_mode, user: admin) }
+      let(:error_message) { 'error message' }
+
+      before do
+        allow_next_instance_of(PersonalAccessToken) do |personal_access_token|
+          allow(personal_access_token).to receive_message_chain(:errors, :full_messages)
+                                            .and_return([error_message])
+
+          allow(personal_access_token).to receive(:save).and_return(false)
+        end
+      end
+
+      it 'returns the error' do
+        post api(path, personal_access_token: admin_personal_access_token), params: params
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response['message']).to eq(error_message)
+      end
+    end
+
+    context 'when creating a personal access token with granular scopes' do
+      using RSpec::Parameterized::TableSyntax
+
+      let(:access) { 'user' }
+      let(:granular_scopes) { [{ access: access, permissions: ['read_job'] }] }
+      let(:granular_params) do
+        { name: name, expires_at: expires_at, description: description, granular_scopes: granular_scopes }
+      end
+
+      where(:access) do
+        %w[user instance all_memberships personal_projects]
+      end
+
+      with_them do
+        it 'creates a granular personal access token for the user', :aggregate_failures do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['name']).to eq(name)
+          expect(json_response['description']).to eq(description)
+          expect(json_response['expires_at']).to eq(expires_at.to_date.iso8601)
+          expect(json_response['user_id']).to eq(user.id)
+          expect(json_response['granular']).to be(true)
+          expect(json_response['token']).to be_present
+          expect(json_response['granular_scopes']).to contain_exactly(
+            a_hash_including('access' => access, 'permissions' => ['read_job'])
+          )
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.impersonation).to be(false)
+          expect(created_token.granular_scopes.count).to eq(1)
+          expect(created_token.granular_scopes.first.access).to eq(access)
+          expect(created_token.granular_scopes.first.permissions).to eq(['read_job'])
+        end
+      end
+
+      it 'passes the user and creation_source api to the service' do
+        expect(::Authn::PersonalAccessTokens::CreateGranularService).to receive(:new)
+          .with(hash_including(
+            current_user: admin,
+            target_user: user,
+            params: hash_including(creation_source: PersonalAccessToken::CREATION_SOURCE_API)
+          ))
+          .and_call_original
+
+        post api(path, admin, admin_mode: true), params: granular_params
+      end
+
+      it "is listed with the user's own personal access tokens", :aggregate_failures do
+        post api(path, admin, admin_mode: true), params: granular_params
+
+        expect(response).to have_gitlab_http_status(:created)
+        token_id = json_response['id']
+
+        get api('/personal_access_tokens', user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to include(a_hash_including('id' => token_id, 'granular' => true))
+      end
+
+      it 'looks the user up once', :aggregate_failures do
+        allow(User).to receive(:find_by).and_call_original
+
+        post api(path, admin, admin_mode: true), params: granular_params
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(User).to have_received(:find_by).with(id: user.id).once
+      end
+
+      context 'when access is personal_projects' do
+        let(:access) { 'personal_projects' }
+
+        it "binds the scope to the user's namespace", :aggregate_failures do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.granular_scopes.first.namespace_id).to eq(user.namespace_id)
+        end
+      end
+
+      context 'when access is selected_memberships' do
+        let(:access) { 'selected_memberships' }
+        let_it_be(:project) { create(:project, developers: [user]) }
+        let_it_be(:second_project) { create(:project, developers: [user]) }
+        let_it_be(:group) { create(:group, developers: [user]) }
+
+        let(:granular_scopes) do
+          [{ access: access, permissions: ['read_job'], project_ids: [project.id], group_ids: [group.id] }]
+        end
+
+        it 'scopes the token to the given projects and groups and returns their IDs', :aggregate_failures do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['granular_scopes']).to contain_exactly(
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => project.id, 'group_id' => nil),
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => nil, 'group_id' => group.id)
+          )
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.granular_scopes.map(&:namespace_id)).to contain_exactly(
+            group.id, project.project_namespace.id
+          )
+        end
+
+        context 'when the user cannot read the given group' do
+          let_it_be(:other_group) { create(:group, :private) }
+
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], group_ids: [other_group.id] }]
+          end
+
+          it 'returns a 404 and creates no token', :aggregate_failures do
+            expect do
+              post api(path, admin, admin_mode: true), params: granular_params
+            end.not_to change { user.personal_access_tokens.count }
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+
+        context 'when presenting the granular scopes of the new token' do
+          # CreateGranularService writes a row for every scope, so each token is created through it before
+          # its request, and the request presents that token as the service returned it. The requests then
+          # differ only in the number of scopes they present.
+          def create_through_service(projects)
+            scopes = projects.map do |project|
+              ::Authz::GranularScope.new(access: access, permissions: ['read_job'],
+                namespace: ::Authz::Boundary.for(project).namespace)
+            end
+
+            ::Authn::PersonalAccessTokens::CreateGranularService.new(
+              current_user: user, organization: current_organization, granular_scopes: scopes,
+              params: { name: name }
+            ).execute
+          end
+
+          def post_presenting(service_response)
+            allow_next_instance_of(::Authn::PersonalAccessTokens::CreateGranularService) do |service|
+              allow(service).to receive(:execute).and_return(service_response)
+            end
+
+            post api(path, admin, admin_mode: true), params: granular_params
+          end
+
+          it 'avoids N+1 queries', :aggregate_failures do
+            # Users::ActivityService's lease-gated write to last_activity_on would otherwise land on a random request.
+            User.find(admin.id).update_column(:last_activity_on, Date.current)
+
+            # Every token is created before the first request stubs the service.
+            warm_up = create_through_service([project])
+            one_scope = create_through_service([project])
+            two_scopes = create_through_service([project, second_project])
+
+            post_presenting(warm_up)
+
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) { post_presenting(one_scope) }
+
+            expect { post_presenting(two_scopes) }.not_to exceed_all_query_limit(control)
+            expect(json_response['granular_scopes'].pluck('project_id')).to contain_exactly(
+              project.id, second_project.id
+            )
+          end
+        end
+      end
+
+      context 'when both scopes and granular_scopes are given' do
+        it 'returns a validation error', :aggregate_failures do
+          post api(path, admin, admin_mode: true), params: granular_params.merge(scopes: %w[api])
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to eq('scopes, granular_scopes are mutually exclusive')
+        end
+      end
+
+      context 'when granular_scopes is an empty array' do
+        let(:granular_scopes) { [] }
+
+        it 'does not create a personal access token', :aggregate_failures do
+          post api(path, admin, admin_mode: true), params: granular_params, as: :json
+
+          expect(response).to have_gitlab_http_status(:unprocessable_entity)
+          expect(json_response['message']).to eq('At least one granular scope must be provided')
+        end
+      end
+
+      context 'when the granular_personal_access_tokens feature flag is enabled for the administrator only' do
+        before do
+          stub_feature_flags(granular_personal_access_tokens: admin)
+        end
+
+        it 'returns a 404' do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when the user does not exist' do
+        it 'returns a 404 error', :aggregate_failures do
+          post api("/users/#{non_existing_record_id}/personal_access_tokens", admin, admin_mode: true),
+            params: granular_params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('404 User Not Found')
+        end
+      end
+
+      context 'when authenticated with a granular token' do
+        let(:instance_boundary) { ::Authz::Boundary.for(:instance) }
+        let(:calling_token) do
+          create(:granular_pat, user: admin, boundary: instance_boundary, permissions: [:create_personal_access_token])
+        end
+
+        context 'when the new token requests permissions the calling token does not have' do
+          it 'returns a 403 error', :aggregate_failures do
+            post api(path, personal_access_token: calling_token), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response['message']).to eq(
+              'A granular token can only create tokens with equal or lesser permissions.'
+            )
+          end
+        end
+
+        context 'when the new token requests permissions the calling token already has' do
+          let(:access) { 'instance' }
+          let(:granular_scopes) { [{ access: access, permissions: ['create_personal_access_token'] }] }
+
+          it 'creates the token for the user', :aggregate_failures do
+            post api(path, personal_access_token: calling_token), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:created)
+            expect(user.personal_access_tokens.find(json_response['id']).granular_scopes.first.permissions)
+              .to eq(['create_personal_access_token'])
+          end
+        end
+      end
+    end
+
+    context 'when the instance enforces fine-grained personal access tokens' do
+      let(:granular_params) do
+        {
+          name: name, expires_at: expires_at, description: description,
+          granular_scopes: [{ access: 'user', permissions: ['read_job'] }]
+        }
+      end
+
+      before do
+        allow(Gitlab::CurrentSettings).to receive(:granular_tokens_enforced?).and_return(true)
+      end
+
+      it 'refuses a legacy token for the user', :aggregate_failures do
+        post api(path, admin, admin_mode: true), params: params
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response['message']).to eq(
+          'Creation of legacy personal access tokens is disabled. Use a fine-grained token instead.'
+        )
+      end
+
+      it 'creates a fine-grained token for the user', :aggregate_failures do
+        post api(path, admin, admin_mode: true), params: granular_params
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['granular']).to be(true)
+        expect(user.personal_access_tokens.find(json_response['id'])).to be_granular
+      end
+    end
+  end
+
+  describe 'POST /user/personal_access_tokens', :with_current_organization do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:name) { 'new pat' }
+    let(:description) { 'new pat description' }
+    let(:expires_at) { 3.days.from_now.to_date.to_s }
+    let(:allowed_scopes) { %w[k8s_proxy self_rotate] }
+    let(:path) { "/user/personal_access_tokens" }
+    let(:params) { { name: name, expires_at: expires_at, description: description, scopes: [] } }
+
+    let(:all_scopes) do
+      ::Gitlab::Auth::API_SCOPES + ::Gitlab::Auth::AI_FEATURES_SCOPES + ::Gitlab::Auth::OPENID_SCOPES +
+        ::Gitlab::Auth::PROFILE_SCOPES + ::Gitlab::Auth::REPOSITORY_SCOPES + ::Gitlab::Auth::REGISTRY_SCOPES +
+        ::Gitlab::Auth::OBSERVABILITY_SCOPES + ::Gitlab::Auth::ADMIN_SCOPES
+    end
+
+    it 'returns error if required attributes are missing' do
+      post api(path, user)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq(
+        'name is missing, scopes, granular_scopes are missing, exactly one parameter must be provided'
+      )
+    end
+
+    it 'passes creation_source api to the service' do
+      expect(::PersonalAccessTokens::CreateService).to receive(:new)
+        .with(hash_including(params: hash_including(creation_source: PersonalAccessToken::CREATION_SOURCE_API)))
+        .and_call_original
+
+      post api(path, user), params: params.merge(scopes: ['k8s_proxy'])
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :create_personal_access_token do
+      let(:boundary_object) { :user }
+      let(:request) do
+        post api(path, personal_access_token: pat), params: { name: 'test', scopes: ['k8s_proxy'] }
+      end
+    end
+
+    context 'when creating a personal access token with granular scopes' do
+      using RSpec::Parameterized::TableSyntax
+
+      let(:granular_scopes) { [{ access: access, permissions: ['read_job'] }] }
+      let(:granular_params) { { name: name, expires_at: expires_at, description: description, granular_scopes: granular_scopes } }
+
+      where(:access) do
+        %w[user instance all_memberships personal_projects]
+      end
+
+      with_them do
+        it 'creates a granular personal access token' do
+          post api(path, user), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['name']).to eq(name)
+          expect(json_response['granular']).to be(true)
+          expect(json_response['token']).to be_present
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.granular_scopes.count).to eq(1)
+          expect(created_token.granular_scopes.first.access).to eq(access)
+          expect(created_token.granular_scopes.first.permissions).to eq(['read_job'])
+
+          expect(json_response['granular_scopes']).to contain_exactly(
+            a_hash_including('access' => access, 'permissions' => ['read_job'], 'project_id' => nil, 'group_id' => nil)
+          )
+        end
+      end
+
+      context 'when granular_scopes is an empty array' do
+        let(:granular_scopes) { [] }
+
+        it 'does not create a personal access token' do
+          post api(path, user), params: granular_params, as: :json
+
+          expect(response).to have_gitlab_http_status(:unprocessable_entity)
+          expect(json_response['message']).to eq('At least one granular scope must be provided')
+        end
+      end
+
+      context 'when access is selected_memberships' do
+        let(:access) { 'selected_memberships' }
+        let_it_be(:project) { create(:project, developers: [user]) }
+        let_it_be(:second_project) { create(:project, developers: [user]) }
+        let_it_be(:group) { create(:group, developers: [user]) }
+        let_it_be(:second_group) { create(:group, developers: [user]) }
+
+        let(:granular_scopes) do
+          [{ access: access, permissions: ['read_job'], project_ids: [project.id, second_project.id],
+             group_ids: [group.id, second_group.id] }]
+        end
+
+        it 'creates a granular personal access token scoped to the given projects and groups' do
+          post api(path, user), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.granular_scopes.count).to eq(4)
+          expect(created_token.granular_scopes.map(&:namespace_id)).to contain_exactly(
+            group.id, second_group.id, project.project_namespace.id, second_project.project_namespace.id
+          )
+        end
+
+        it 'returns the granular scopes of the new token with the ID of each project and group' do
+          post api(path, user), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['granular_scopes']).to contain_exactly(
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => project.id, 'group_id' => nil),
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => second_project.id, 'group_id' => nil),
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => nil, 'group_id' => group.id),
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => nil, 'group_id' => second_group.id)
+          )
+        end
+
+        context 'when presenting the granular scopes of the new token' do
+          # CreateGranularService writes a row for every scope, so each token is created through it before
+          # its request, and the request presents that token as the service returned it. The requests then
+          # differ only in the number of scopes they present.
+          def create_through_service(projects)
+            scopes = projects.map do |project|
+              ::Authz::GranularScope.new(access: access, permissions: ['read_job'],
+                namespace: ::Authz::Boundary.for(project).namespace)
+            end
+
+            ::Authn::PersonalAccessTokens::CreateGranularService.new(
+              current_user: user, organization: current_organization, granular_scopes: scopes,
+              params: { name: name }
+            ).execute
+          end
+
+          def post_presenting(service_response)
+            allow_next_instance_of(::Authn::PersonalAccessTokens::CreateGranularService) do |service|
+              allow(service).to receive(:execute).and_return(service_response)
+            end
+
+            post api(path, user), params: granular_params
+          end
+
+          it 'avoids N+1 queries' do
+            # Users::ActivityService's lease-gated write to last_activity_on would otherwise land on a random request.
+            User.find(user.id).update_column(:last_activity_on, Date.current)
+
+            # Every token is created before the first request stubs the service.
+            warm_up = create_through_service([project])
+            one_scope = create_through_service([project])
+            two_scopes = create_through_service([project, second_project])
+
+            post_presenting(warm_up)
+
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) { post_presenting(one_scope) }
+
+            expect { post_presenting(two_scopes) }.not_to exceed_all_query_limit(control)
+            expect(json_response['granular_scopes'].pluck('project_id')).to contain_exactly(
+              project.id, second_project.id
+            )
+          end
+        end
+
+        context 'when a project or group ID does not exist' do
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], project_ids: [non_existing_record_id] }]
+          end
+
+          it 'does not create a personal access token' do
+            post api(path, user), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:unprocessable_entity)
+            expect(json_response['message']).to eq('At least one granular scope must be provided')
+          end
+        end
+
+        context 'when the user is not a member of the given project' do
+          let_it_be(:other_project) { create(:project) }
+
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], project_ids: [other_project.id] }]
+          end
+
+          it 'returns a 404' do
+            post api(path, user), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+
+        # Membership is not what grants access: a user can act on public and internal
+        # resources without being a member, so they must be able to scope a token to
+        # them rather than fall back to the broader all_memberships access.
+        context 'when the project is public and the user is not a member' do
+          let_it_be(:public_project) { create(:project, :public) }
+
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], project_ids: [public_project.id] }]
+          end
+
+          it 'creates a token scoped to the project' do
+            post api(path, user), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:created)
+
+            created_token = user.personal_access_tokens.find(json_response['id'])
+            expect(created_token.granular_scopes.map(&:namespace_id))
+              .to contain_exactly(public_project.project_namespace.id)
+          end
+        end
+
+        context 'when the group is internal and the user is not a member' do
+          let_it_be(:internal_group) { create(:group, :internal) }
+
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], group_ids: [internal_group.id] }]
+          end
+
+          it 'creates a token scoped to the group' do
+            post api(path, user), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:created)
+
+            created_token = user.personal_access_tokens.find(json_response['id'])
+            expect(created_token.granular_scopes.map(&:namespace_id)).to contain_exactly(internal_group.id)
+          end
+        end
+
+        context 'when the user cannot read the given group' do
+          let_it_be(:other_group) { create(:group, :private) }
+
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], group_ids: [other_group.id] }]
+          end
+
+          it 'returns a 404' do
+            post api(path, user), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+
+        context 'when the user is a member of one given group but cannot read another' do
+          let_it_be(:other_group) { create(:group, :private) }
+
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], group_ids: [group.id, other_group.id] }]
+          end
+
+          it 'returns a 404' do
+            post api(path, user), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+
+      context 'when both scopes and granular_scopes are given' do
+        let(:access) { 'user' }
+
+        it 'returns a validation error' do
+          post api(path, user), params: granular_params.merge(scopes: ['k8s_proxy'])
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to eq('scopes, granular_scopes are mutually exclusive')
+        end
+      end
+
+      context 'when the granular_personal_access_tokens feature flag is disabled' do
+        let(:access) { 'user' }
+
+        before do
+          stub_feature_flags(granular_personal_access_tokens: false)
+        end
+
+        it 'returns a 404' do
+          post api(path, user), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when authenticated with a granular token' do
+        let(:access) { 'user' }
+        let(:user_boundary) { ::Authz::Boundary.for(:user) }
+
+        context 'when the new token requests permissions the calling token does not have' do
+          let(:calling_token) do
+            create(:granular_pat, user: user, boundary: user_boundary, permissions: [:create_personal_access_token])
+          end
+
+          it 'returns an error' do
+            post api(path, personal_access_token: calling_token), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:forbidden)
+            expect(json_response['message']).to eq(
+              'A granular token can only create tokens with equal or lesser permissions.'
+            )
+          end
+        end
+
+        context 'when the new token requests permissions the calling token already has' do
+          let(:granular_scopes) { [{ access: access, permissions: ['create_personal_access_token'] }] }
+          let(:calling_token) do
+            create(:granular_pat, user: user, boundary: user_boundary, permissions: [:create_personal_access_token])
+          end
+
+          it 'creates the token successfully' do
+            post api(path, personal_access_token: calling_token), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:created)
+          end
+        end
+      end
+    end
+
+    context 'when scope is not allowed' do
+      where(:disallowed_scopes) do
+        all_scopes - [::Gitlab::Auth::K8S_PROXY_SCOPE, ::Gitlab::Auth::SELF_ROTATE_SCOPE]
+      end
+
+      with_them do
+        it 'returns error' do
+          post api(path, user), params: params.merge({ scopes: [disallowed_scopes] })
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to eq('scopes does not have a valid value')
+        end
+      end
+    end
+
+    it 'returns error if one of the scopes is not allowed' do
+      post api(path, user), params: params.merge({ scopes: [::Gitlab::Auth::K8S_PROXY_SCOPE, ::Gitlab::Auth::API_SCOPE] })
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('scopes does not have a valid value')
+    end
+
+    it 'returns a 401 error when not authenticated' do
+      post api(path), params: params.merge({ scopes: %w[k8s_proxy] })
+
+      expect(response).to have_gitlab_http_status(:unauthorized)
+      expect(json_response['message']).to eq('401 Unauthorized')
+    end
+
+    it 'returns a 403 error when called with a read_api-scoped PAT' do
+      read_only_pat = create(:personal_access_token, scopes: ['read_api'], user: user)
+      post api(path, personal_access_token: read_only_pat), params: params.merge({ scopes: %w[k8s_proxy] })
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+
+    context 'when scopes are empty' do
+      let(:scopes) { [] }
+
+      it 'returns an error when no scopes are given' do
+        post api(path, user), params: params
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response['message']).to eq("Scopes can't be blank")
+      end
+    end
+
+    context 'with all allowed scope combinations' do
+      where(:scopes) do
+        (1..allowed_scopes.size).flat_map { |n| allowed_scopes.combination(n).to_a }.map { |s| [s] }
+      end
+
+      with_them do
+        it 'creates a personal access token' do
+          post api(path, user), params: params.merge({ scopes: scopes })
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['name']).to eq(name)
+          expect(json_response['description']).to eq(description)
+          expect(json_response['scopes']).to eq(scopes)
+          expect(json_response['expires_at']).to eq(expires_at)
+          expect(json_response['id']).to be_present
+          expect(json_response['created_at']).to be_present
+          expect(json_response['active']).to be_truthy
+          expect(json_response['revoked']).to be_falsey
+          expect(json_response['token']).to be_present
+          expect(json_response).not_to have_key('granular_scopes')
+        end
+      end
+    end
+
+    it 'does not load granular scopes to present a token created with scopes' do
+      recorder = ActiveRecord::QueryRecorder.new do
+        post api(path, user), params: params.merge({ scopes: %w[k8s_proxy] })
+      end
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(recorder.log).not_to include(a_string_matching(/"(personal_access_token_)?granular_scopes"/))
+    end
+
+    context 'when expires_at at is given' do
+      let(:params) { { name: name, scopes: %w[k8s_proxy], expires_at: expires_at, description: description } }
+
+      context 'when expires_at is in the past' do
+        let(:expires_at) { 1.day.ago }
+
+        it 'creates an inactive personal access token' do
+          post api(path, user), params: params
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['active']).to be_falsey
+        end
+      end
+    end
+
+    context 'when an error is thrown by the model' do
+      let!(:admin_personal_access_token) { create(:personal_access_token, :admin_mode, user: admin) }
+      let(:error_message) { 'error message' }
+
+      before do
+        allow_next_instance_of(PersonalAccessToken) do |personal_access_token|
+          allow(personal_access_token).to receive_message_chain(:errors, :full_messages)
+                                            .and_return([error_message])
+
+          allow(personal_access_token).to receive(:save).and_return(false)
+        end
+      end
+
+      it 'returns the error' do
+        post api(path, personal_access_token: admin_personal_access_token), params: params.merge({ scopes: %w[k8s_proxy] })
+
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response['message']).to eq(error_message)
+      end
+    end
+  end
+
+  describe 'GET /users/:user_id/impersonation_tokens' do
+    it_behaves_like 'authorizing granular token permissions', :read_impersonation_token do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { get api("/users/#{admin.id}/impersonation_tokens", personal_access_token: pat) }
+    end
+
+    let_it_be(:active_personal_access_token) { create(:personal_access_token, user: user) }
+    let_it_be(:revoked_personal_access_token) { create(:personal_access_token, :revoked, user: user) }
+    let_it_be(:expired_personal_access_token) { create(:personal_access_token, :expired, user: user) }
+    let_it_be(:impersonation_token) { create(:personal_access_token, :impersonation, user: user) }
+    let_it_be(:revoked_impersonation_token) { create(:personal_access_token, :impersonation, :revoked, user: user) }
+    let(:path) { "/users/#{user.id}/impersonation_tokens" }
+
+    it_behaves_like 'GET request permissions for admin mode'
+
+    it 'returns a 404 error if user not found' do
+      get api("/users/#{non_existing_record_id}/impersonation_tokens", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns a 403 error when authenticated as normal user' do
+      get api("/users/#{non_existing_record_id}/impersonation_tokens", user)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+      expect(json_response['message']).to eq('403 Forbidden')
+    end
+
+    it 'returns an array of all impersonated tokens' do
+      get api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expect(json_response.size).to eq(2)
+    end
+
+    it 'avoids N+1 queries when listing impersonation tokens' do
+      impersonation_token.last_used_ips.create!(organization: organization, ip_address: '192.0.2.30')
+
+      get api(path, admin, admin_mode: true) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) { get api(path, admin, admin_mode: true) }
+
+      extra_token = create(:personal_access_token, :impersonation, user: user)
+      extra_token.last_used_ips.create!(organization: organization, ip_address: '192.0.2.31')
+
+      expect { get api(path, admin, admin_mode: true) }.not_to exceed_all_query_limit(control)
+    end
+
+    context 'when no impersonation token is granular' do
+      it 'does not return granular_scopes or load them' do
+        recorder = ActiveRecord::QueryRecorder.new { get api(path, admin, admin_mode: true) }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to all(exclude('granular_scopes'))
+        expect(recorder.log).not_to include(a_string_matching(/FROM "(personal_access_token_)?granular_scopes"/))
+      end
+    end
+
+    context 'when an impersonation token is granular' do
+      let_it_be(:project) { create(:project) }
+      let_it_be(:granular_impersonation_token) do
+        create(:granular_pat, :impersonation, user: user, permissions: ['read_personal_access_token'],
+          boundary: ::Authz::Boundary.for(::Authz::GranularScope::Access::USER),
+          additional_scopes: [{ boundary: ::Authz::Boundary.for(project), permissions: ['read_job'] }])
+      end
+
+      it 'returns granular_scopes for the granular token only' do
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:ok)
+
+        granular_response = json_response.find { |token| token['id'] == granular_impersonation_token.id }
+        legacy_response = json_response.find { |token| token['id'] == impersonation_token.id }
+
+        expect(granular_response['granular_scopes']).to contain_exactly(
+          a_hash_including('access' => 'user', 'permissions' => ['read_personal_access_token'],
+            'project_id' => nil, 'group_id' => nil),
+          a_hash_including('permissions' => ['read_job'], 'project_id' => project.id, 'group_id' => nil)
+        )
+        expect(legacy_response).not_to have_key('granular_scopes')
+      end
+
+      it 'avoids N+1 queries when listing granular impersonation tokens' do
+        # Users::ActivityService's lease-gated write to last_activity_on would otherwise land on a random request.
+        User.find(admin.id).update_column(:last_activity_on, Date.current)
+
+        get api(path, admin, admin_mode: true) # warm-up
+
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) { get api(path, admin, admin_mode: true) }
+
+        create(:granular_pat, :impersonation, user: user, permissions: ['read_job'],
+          boundary: ::Authz::Boundary.for(create(:project)))
+
+        expect { get api(path, admin, admin_mode: true) }.not_to exceed_all_query_limit(control)
+      end
+    end
+
+    it 'includes last_used_ips in response' do
+      get api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.first).to have_key('last_used_ips')
+    end
+
+    context 'when a token has recorded last_used_ips' do
+      let(:ip_address) { '192.0.2.10' }
+
+      before do
+        impersonation_token.last_used_ips.create!(organization: organization, ip_address: ip_address)
+      end
+
+      it 'exposes last_used_ips in the response' do
+        get api(path, admin, admin_mode: true)
+
+        token_response = json_response.find { |t| t['id'] == impersonation_token.id }
+        expect(token_response['last_used_ips']).to include(ip_address)
+      end
+    end
+
+    it 'returns an array of active impersonation tokens if state active' do
+      get api("#{path}?state=active", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expect(json_response.size).to eq(1)
+      expect(json_response).to all(include('active' => true))
+    end
+
+    it 'returns an array of inactive personal access tokens if active is set to false' do
+      get api("#{path}?state=inactive", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response).to be_an Array
+      expect(json_response.size).to eq(1)
+      expect(json_response).to all(include('active' => false))
+    end
+
+    it 'returns all impersonation tokens if state all' do
+      get api("#{path}?state=all", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.pluck('id')).to contain_exactly(impersonation_token.id, revoked_impersonation_token.id)
+    end
+
+    context 'with filter and sort params' do
+      using RSpec::Parameterized::TableSyntax
+
+      let_it_be(:filter_user) { create(:user) }
+      let_it_be(:old_token) do
+        create(:personal_access_token, :impersonation, user: filter_user, name: 'Old token',
+          created_at: 1.month.ago, expires_at: 1.week.from_now, last_used_at: 1.month.ago)
+      end
+
+      let_it_be(:new_token) do
+        create(:personal_access_token, :impersonation, user: filter_user, name: 'New token',
+          created_at: 1.day.ago, expires_at: 1.month.from_now, last_used_at: 1.day.ago)
+      end
+
+      let_it_be(:revoked_token) do
+        create(:personal_access_token, :impersonation, :revoked, user: filter_user, name: 'Revoked',
+          created_at: 2.months.ago, expires_at: 2.months.from_now, last_used_at: 2.months.ago)
+      end
+
+      let(:path) { "/users/#{filter_user.id}/impersonation_tokens" }
+
+      context 'when filtering' do
+        where(:filter, :value, :expected_tokens) do
+          :revoked          | true                     | [ref(:revoked_token)]
+          :revoked          | false                    | [ref(:old_token), ref(:new_token)]
+          :search           | 'old'                    | [ref(:old_token)]
+          :created_before   | 1.week.ago.iso8601       | [ref(:old_token), ref(:revoked_token)]
+          :created_after    | 1.week.ago.iso8601       | [ref(:new_token)]
+          :expires_before   | 2.weeks.from_now.to_date | [ref(:old_token)]
+          :expires_after    | 2.weeks.from_now.to_date | [ref(:new_token), ref(:revoked_token)]
+          :last_used_before | 1.week.ago.iso8601       | [ref(:old_token), ref(:revoked_token)]
+          :last_used_after  | 1.week.ago.iso8601       | [ref(:new_token)]
+        end
+
+        with_them do
+          it 'returns the filtered tokens' do
+            get api(path, admin, admin_mode: true), params: { filter => value }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.pluck('id')).to match_array(expected_tokens.map(&:id))
+          end
+        end
+      end
+
+      context 'when sorting' do
+        where(:sort, :expected_tokens) do
+          'created_asc'    | [ref(:revoked_token), ref(:old_token), ref(:new_token)]
+          'created_desc'   | [ref(:new_token), ref(:old_token), ref(:revoked_token)]
+          'expires_asc'    | [ref(:old_token), ref(:new_token), ref(:revoked_token)]
+          'expires_desc'   | [ref(:revoked_token), ref(:new_token), ref(:old_token)]
+          'last_used_asc'  | [ref(:revoked_token), ref(:old_token), ref(:new_token)]
+          'last_used_desc' | [ref(:new_token), ref(:old_token), ref(:revoked_token)]
+          'name_asc'       | [ref(:new_token), ref(:old_token), ref(:revoked_token)]
+          'name_desc'      | [ref(:revoked_token), ref(:old_token), ref(:new_token)]
+        end
+
+        with_them do
+          it 'returns the sorted tokens' do
+            get api(path, admin, admin_mode: true), params: { sort: sort }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.pluck('id')).to eq(expected_tokens.map(&:id))
+          end
+        end
+      end
+    end
+  end
+
+  describe 'POST /users/:user_id/impersonation_tokens', :with_current_organization do
+    it_behaves_like 'authorizing granular token permissions', :create_impersonation_token do
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { post api("/users/#{admin.id}/impersonation_tokens", personal_access_token: pat), params: { name: "gpat-imp", expires_at: 1.month.from_now.to_date.to_s, scopes: %w[api], impersonation: true } }
+    end
+
+    let(:name) { 'my new pat' }
+    let(:description) { 'my new pat description' }
+    let(:expires_at) { '2016-12-28' }
+    let(:scopes) { %w[api read_user] }
+    let(:impersonation) { true }
+    let(:path) { "/users/#{user.id}/impersonation_tokens" }
+    let(:params) { { name: name, expires_at: expires_at, scopes: scopes, impersonation: impersonation, description: description } }
+
+    it_behaves_like 'POST request permissions for admin mode'
+
+    it 'returns validation error if impersonation token misses some attributes' do
+      post api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['error']).to eq('name is missing')
+    end
+
+    it 'returns a 404 error if user not found' do
+      post api("/users/#{non_existing_record_id}/impersonation_tokens", admin, admin_mode: true),
+        params: {
+          name: name,
+          expires_at: expires_at
+        }
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns a 403 error when authenticated as normal user' do
+      post api(path, user),
+        params: {
+          name: name,
+          expires_at: expires_at
+        }
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+      expect(json_response['message']).to eq('403 Forbidden')
+    end
+
+    it 'creates a impersonation token' do
+      post api(path, admin, admin_mode: true), params: params
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(json_response['name']).to eq(name)
+      expect(json_response['description']).to eq(description)
+      expect(json_response['scopes']).to eq(scopes)
+      expect(json_response['expires_at']).to eq(expires_at)
+      expect(json_response['id']).to be_present
+      expect(json_response['created_at']).to be_present
+      expect(json_response['active']).to be_falsey
+      expect(json_response['revoked']).to be_falsey
+      expect(json_response['token']).to be_present
+      expect(json_response['impersonation']).to eq(impersonation)
+    end
+
+    it 'does not return granular_scopes or load them for a token created with scopes' do
+      recorder = ActiveRecord::QueryRecorder.new { post api(path, admin, admin_mode: true), params: params }
+
+      expect(response).to have_gitlab_http_status(:created)
+      expect(json_response).not_to have_key('granular_scopes')
+      expect(recorder.log).not_to include(a_string_matching(/FROM "(personal_access_token_)?granular_scopes"/))
+    end
+
+    context 'when creating an impersonation token with granular scopes' do
+      using RSpec::Parameterized::TableSyntax
+
+      let(:granular_scopes) { [{ access: access, permissions: ['read_job'] }] }
+      let(:granular_params) { { name: name, expires_at: expires_at, description: description, granular_scopes: granular_scopes } }
+
+      where(:access) do
+        %w[user instance all_memberships personal_projects]
+      end
+
+      with_them do
+        it 'creates a granular impersonation token for the impersonated user', :aggregate_failures do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['name']).to eq(name)
+          expect(json_response['granular']).to be(true)
+          expect(json_response['impersonation']).to be(true)
+          expect(json_response['token']).to be_present
+          expect(json_response['granular_scopes']).to contain_exactly(
+            a_hash_including('access' => access, 'permissions' => ['read_job'], 'project_id' => nil, 'group_id' => nil)
+          )
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.impersonation).to be(true)
+          expect(created_token.granular_scopes.count).to eq(1)
+          expect(created_token.granular_scopes.first.access).to eq(access)
+          expect(created_token.granular_scopes.first.permissions).to eq(['read_job'])
+        end
+      end
+
+      context 'granular impersonation token requirements' do
+        let(:access) { 'user' }
+
+        def create_granular_impersonation_token
+          post api(path, admin, admin_mode: true), params: granular_params
+          expect(response).to have_gitlab_http_status(:created)
+          json_response['id']
+        end
+
+        it 'is a granular token owned by the impersonated user, not the admin' do
+          token = PersonalAccessToken.find(create_granular_impersonation_token)
+
+          expect(token.user).to eq(user)
+          expect(token.user).not_to eq(admin)
+          expect(token.impersonation).to be(true)
+          expect(token.granular?).to be(true)
+        end
+
+        it 'is not listed in the impersonated user regular token table' do
+          token_id = create_granular_impersonation_token
+
+          get api("/personal_access_tokens", user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.map { |token| token['id'] }).not_to include(token_id)
+        end
+
+        it 'is not listed in the administrator regular token table' do
+          token_id = create_granular_impersonation_token
+
+          get api("/personal_access_tokens", admin, admin_mode: true), params: { user_id: admin.id }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response.map { |token| token['id'] }).not_to include(token_id)
+        end
+
+        it 'is listed only through the dedicated impersonation token endpoint as granular' do
+          token_id = create_granular_impersonation_token
+
+          get api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          entry = json_response.find { |token| token['id'] == token_id }
+          expect(entry).to be_present
+          expect(entry['impersonation']).to be(true)
+          expect(entry['granular']).to be(true)
+        end
+      end
+
+      context 'when access is personal_projects' do
+        let(:access) { 'personal_projects' }
+
+        it 'binds the scope to the impersonated user namespace' do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.granular_scopes.first.namespace_id).to eq(user.namespace_id)
+        end
+      end
+
+      context 'when access is selected_memberships' do
+        let(:access) { 'selected_memberships' }
+        let_it_be(:project) { create(:project, developers: [user]) }
+        let_it_be(:group) { create(:group, developers: [user]) }
+
+        let(:granular_scopes) do
+          [{ access: access, permissions: ['read_job'], project_ids: [project.id], group_ids: [group.id] }]
+        end
+
+        it 'scopes to the impersonated user memberships' do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+
+          created_token = user.personal_access_tokens.find(json_response['id'])
+          expect(created_token.granular_scopes.map(&:namespace_id)).to contain_exactly(
+            group.id, project.project_namespace.id
+          )
+        end
+
+        it 'returns the granular scopes with their project and group IDs' do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:created)
+          expect(json_response['granular_scopes']).to contain_exactly(
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => project.id, 'group_id' => nil),
+            a_hash_including('access' => access, 'permissions' => ['read_job'],
+              'project_id' => nil, 'group_id' => group.id)
+          )
+        end
+
+        context 'when presenting the granular scopes of the new token', :enable_admin_mode do
+          let_it_be(:second_project) { create(:project, developers: [user]) }
+
+          # CreateGranularService writes a row for every scope, so each token is created through it before
+          # its request, and the request presents that token as the service returned it. The requests then
+          # differ only in the number of scopes they present.
+          def create_through_service(projects)
+            scopes = projects.map do |project|
+              ::Authz::GranularScope.new(access: access, permissions: ['read_job'],
+                namespace: ::Authz::Boundary.for(project).namespace)
+            end
+
+            ::Authn::PersonalAccessTokens::CreateGranularService.new(
+              current_user: admin, target_user: user, organization: current_organization, granular_scopes: scopes,
+              params: { name: name, impersonation: true }
+            ).execute
+          end
+
+          def post_presenting(service_response)
+            allow_next_instance_of(::Authn::PersonalAccessTokens::CreateGranularService) do |service|
+              allow(service).to receive(:execute).and_return(service_response)
+            end
+
+            post api(path, admin, admin_mode: true), params: granular_params
+          end
+
+          it 'avoids N+1 queries' do
+            # Users::ActivityService's lease-gated write to last_activity_on would otherwise land on a random request.
+            User.find(admin.id).update_column(:last_activity_on, Date.current)
+
+            # Every token is created before the first request stubs the service.
+            warm_up = create_through_service([project])
+            one_scope = create_through_service([project])
+            two_scopes = create_through_service([project, second_project])
+
+            post_presenting(warm_up)
+
+            control = ActiveRecord::QueryRecorder.new(skip_cached: false) { post_presenting(one_scope) }
+
+            expect { post_presenting(two_scopes) }.not_to exceed_all_query_limit(control)
+            expect(json_response['granular_scopes'].pluck('project_id')).to contain_exactly(
+              project.id, second_project.id
+            )
+          end
+        end
+
+        context 'when the impersonated user cannot read the given group' do
+          let_it_be(:other_group) { create(:group, :private) }
+
+          let(:granular_scopes) do
+            [{ access: access, permissions: ['read_job'], group_ids: [other_group.id] }]
+          end
+
+          it 'returns a 404' do
+            post api(path, admin, admin_mode: true), params: granular_params
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+
+      context 'when both scopes and granular_scopes are given' do
+        let(:access) { 'user' }
+
+        it 'returns a validation error' do
+          post api(path, admin, admin_mode: true), params: granular_params.merge(scopes: %w[api])
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to eq('scopes, granular_scopes are mutually exclusive')
+        end
+      end
+
+      context 'when the granular_personal_access_tokens feature flag is disabled' do
+        let(:access) { 'user' }
+
+        before do
+          stub_feature_flags(granular_personal_access_tokens: false)
+        end
+
+        it 'returns a 404' do
+          post api(path, admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when authenticated as a normal user' do
+        let(:access) { 'user' }
+
+        it 'returns a 403 error' do
+          post api(path, user), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'when the user does not exist' do
+        let(:access) { 'user' }
+
+        it 'returns a 404 error' do
+          post api("/users/#{non_existing_record_id}/impersonation_tokens", admin, admin_mode: true), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('404 User Not Found')
+        end
+      end
+
+      context 'when granular_scopes is an empty array' do
+        let(:access) { 'user' }
+        let(:granular_scopes) { [] }
+
+        it 'does not create an impersonation token' do
+          post api(path, admin, admin_mode: true), params: granular_params, as: :json
+
+          expect(response).to have_gitlab_http_status(:unprocessable_entity)
+          expect(json_response['message']).to eq('At least one granular scope must be provided')
+        end
+      end
+
+      context 'when the calling token is granular and cannot grant the requested scopes' do
+        let(:access) { 'user' }
+        let(:calling_token) do
+          create(:granular_pat, user: admin, boundary: ::Authz::Boundary.for(:instance),
+            permissions: [:create_impersonation_token])
+        end
+
+        it 'returns a 403 forbidden error' do
+          post api(path, personal_access_token: calling_token), params: granular_params
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+          expect(json_response['message']).to eq(
+            'A granular token can only create tokens with equal or lesser permissions.'
+          )
+        end
+      end
+    end
+  end
+
+  describe 'GET /users/:user_id/impersonation_tokens/:impersonation_token_id' do
+    it_behaves_like 'authorizing granular token permissions', :read_impersonation_token do
+      let_it_be(:imp_token) { create(:personal_access_token, :impersonation, user: admin) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { get api("/users/#{admin.id}/impersonation_tokens/#{imp_token.id}", personal_access_token: pat) }
+    end
+
+    let_it_be(:personal_access_token) { create(:personal_access_token, user: user) }
+    let_it_be(:impersonation_token) { create(:personal_access_token, :impersonation, user: user) }
+    let(:path) { "/users/#{user.id}/impersonation_tokens/#{impersonation_token.id}" }
+
+    it_behaves_like 'GET request permissions for admin mode'
+
+    it 'returns 404 error if user not found' do
+      get api("/users/#{non_existing_record_id}/impersonation_tokens/1", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns a 404 error if impersonation token not found' do
+      get api("/users/#{user.id}/impersonation_tokens/#{non_existing_record_id}", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Impersonation Token Not Found')
+    end
+
+    it 'returns a 404 error if token is not impersonation token' do
+      get api("/users/#{user.id}/impersonation_tokens/#{personal_access_token.id}", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Impersonation Token Not Found')
+    end
+
+    it 'returns a 403 error when authenticated as normal user' do
+      get api(path, user)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+      expect(json_response['message']).to eq('403 Forbidden')
+    end
+
+    it 'returns an impersonation token' do
+      get api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['token']).not_to be_present
+      expect(json_response['impersonation']).to be_truthy
+    end
+
+    context 'when the impersonation token is not granular' do
+      it 'does not return granular_scopes or load them' do
+        recorder = ActiveRecord::QueryRecorder.new { get api(path, admin, admin_mode: true) }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).not_to have_key('granular_scopes')
+        expect(recorder.log).not_to include(a_string_matching(/FROM "(personal_access_token_)?granular_scopes"/))
+      end
+    end
+
+    context 'when the impersonation token is granular' do
+      let_it_be(:project) { create(:project) }
+      let_it_be(:granular_impersonation_token) do
+        create(:granular_pat, :impersonation, user: user, permissions: ['read_personal_access_token'],
+          boundary: ::Authz::Boundary.for(::Authz::GranularScope::Access::USER),
+          additional_scopes: [{ boundary: ::Authz::Boundary.for(project), permissions: ['read_job'] }])
+      end
+
+      let(:path) { "/users/#{user.id}/impersonation_tokens/#{granular_impersonation_token.id}" }
+
+      it 'returns granular_scopes with the project_id of a project scope' do
+        get api(path, admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['granular_scopes']).to contain_exactly(
+          a_hash_including('access' => 'user', 'permissions' => ['read_personal_access_token'],
+            'project_id' => nil, 'group_id' => nil),
+          a_hash_including('permissions' => ['read_job'], 'project_id' => project.id, 'group_id' => nil)
+        )
+      end
+
+      it 'avoids N+1 queries when the token has multiple project-scoped granular scopes' do
+        # Users::ActivityService's lease-gated write to last_activity_on would otherwise land on a random request.
+        User.find(admin.id).update_column(:last_activity_on, Date.current)
+
+        get api(path, admin, admin_mode: true) # warm-up
+
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) { get api(path, admin, admin_mode: true) }
+
+        other_scope = create(:granular_scope, boundary: ::Authz::Boundary.for(create(:project)),
+          permissions: ['read_job'], organization: granular_impersonation_token.organization)
+        create(:personal_access_token_granular_scope, personal_access_token: granular_impersonation_token,
+          granular_scope: other_scope, organization: granular_impersonation_token.organization)
+
+        expect { get api(path, admin, admin_mode: true) }.not_to exceed_all_query_limit(control)
+      end
+    end
+  end
+
+  describe 'DELETE /users/:user_id/impersonation_tokens/:impersonation_token_id' do
+    it_behaves_like 'authorizing granular token permissions', :revoke_impersonation_token do
+      let_it_be(:imp_token) { create(:personal_access_token, :impersonation, user: admin) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+      let(:request) { delete api("/users/#{admin.id}/impersonation_tokens/#{imp_token.id}", personal_access_token: pat) }
+    end
+
+    let_it_be(:personal_access_token) { create(:personal_access_token, user: user) }
+    let_it_be(:impersonation_token) { create(:personal_access_token, :impersonation, user: user) }
+    let(:path) { "/users/#{user.id}/impersonation_tokens/#{impersonation_token.id}" }
+
+    it_behaves_like 'DELETE request permissions for admin mode'
+
+    it 'returns a 404 error if user not found' do
+      delete api("/users/#{non_existing_record_id}/impersonation_tokens/1", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 User Not Found')
+    end
+
+    it 'returns a 404 error if impersonation token not found' do
+      delete api("/users/#{user.id}/impersonation_tokens/#{non_existing_record_id}", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Impersonation Token Not Found')
+    end
+
+    it 'returns a 404 error if token is not impersonation token' do
+      delete api("/users/#{user.id}/impersonation_tokens/#{personal_access_token.id}", admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:not_found)
+      expect(json_response['message']).to eq('404 Impersonation Token Not Found')
+    end
+
+    it 'returns a 403 error when authenticated as normal user' do
+      delete api(path, user)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+      expect(json_response['message']).to eq('403 Forbidden')
+    end
+
+    it_behaves_like '412 response' do
+      let(:request) { api(path, admin, admin_mode: true) }
+    end
+
+    it 'revokes a impersonation token' do
+      delete api(path, admin, admin_mode: true)
+
+      expect(response).to have_gitlab_http_status(:no_content)
+      expect(impersonation_token.revoked).to be_falsey
+      expect(impersonation_token.reload.revoked).to be_truthy
+    end
+  end
+
+  describe 'GET /users/:id/associations_count' do
+    let_it_be(:group) { create(:group) }
+    let_it_be(:project) { create(:project, :public, group: group) }
+    let(:path) { "/users/#{user.id}/associations_count" }
+    let(:associations) do
+      {
+        groups_count: 1,
+        projects_count: 1,
+        issues_count: 2,
+        merge_requests_count: 1
+      }.as_json
+    end
+
+    before_all do
+      group.add_member(user, Gitlab::Access::OWNER)
+      project.add_member(user, Gitlab::Access::OWNER)
+      create(:merge_request, source_project: project, source_branch: "my-personal-branch-1", author: user)
+      create_list(:issue, 2, project: project, author: user)
+    end
+
+    it_behaves_like 'GET request permissions for admin mode'
+
+    context 'as an unauthorized user' do
+      it 'returns 401 unauthorized' do
+        get api(path, nil)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'as a non-admin user' do
+      context 'with a different user id' do
+        it 'returns 403 Forbidden' do
+          get api("/users/#{omniauth_user.id}/associations_count", user)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+
+      context 'with the current user id' do
+        it 'returns valid JSON response' do
+          get api(path, user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_a Hash
+          expect(json_response).to match(associations)
+        end
+      end
+    end
+
+    context 'as an admin user' do
+      context 'with invalid user id' do
+        it 'returns 404 User Not Found' do
+          get api("/users/#{non_existing_record_id}/associations_count", admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'with valid user id' do
+        it 'returns valid JSON response' do
+          get api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(json_response).to be_a Hash
+          expect(json_response).to match(associations)
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_user_association do
+          let(:boundary_object) { :user }
+          let(:request) do
+            get api(path, personal_access_token: pat)
+          end
+        end
+      end
+    end
+  end
+
+  it_behaves_like 'custom attributes endpoints', 'users' do
+    let(:attributable) { user }
+    let(:other_attributable) { admin }
+    let(:boundary_type) { :instance }
+  end
+
+  describe 'POST /user/support_pin' do
+    context 'when authenticated' do
+      it 'creates a new support PIN' do
+        post api('/user/support_pin', user)
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response).to include('pin', 'expires_at')
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :create_user_support_pin do
+        let(:boundary_object) { :user }
+        let(:request) do
+          post api('/user/support_pin', personal_access_token: pat)
+        end
+      end
+
+      it "handles errors when creating a support PIN" do
+        allow_next_instance_of(Users::SupportPin::UpdateService) do |instance|
+          allow(instance).to receive(:execute).and_return({ status: :error, message: "Failed to create support PIN" })
+        end
+        post api("/user/support_pin", user)
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response["error"]).to eq("Failed to create support PIN")
+      end
+    end
+
+    context 'when not authenticated' do
+      it 'returns 401 Unauthorized' do
+        post api('/user/support_pin')
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+  end
+
+  describe 'GET /api/v4/user/support_pin' do
+    context 'when authenticated' do
+      it 'retrieves the current support PIN' do
+        get api('/user/support_pin', user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to include('pin', 'expires_at')
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_user_support_pin do
+        let(:boundary_object) { :user }
+        let(:request) do
+          get api('/user/support_pin', personal_access_token: pat)
+        end
+      end
+
+      it 'returns 404 Not Found when no PIN exists' do
+        get api('/user/support_pin', user_without_pin)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  describe 'GET /api/v4/users/:id/support_pin' do
+    it_behaves_like 'authorizing granular token permissions', :read_user_support_pin do
+      let_it_be(:pin_user) { create(:user) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+
+      before do
+        ::Users::SupportPin::UpdateService.new(pin_user).execute
+      end
+
+      let(:request) { get api("/users/#{pin_user.id}/support_pin", personal_access_token: pat) }
+    end
+
+    context 'when authenticated as admin' do
+      it 'retrieves the support PIN for a user' do
+        get api("/users/#{user.id}/support_pin", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to include('pin', 'expires_at')
+      end
+
+      it 'returns 404 Not Found when no PIN exists' do
+        get api("/users/#{user_without_pin.id}/support_pin", admin, admin_mode: true)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+
+      it "handles errors when retrieving the support PIN" do
+        allow_next_instance_of(Users::SupportPin::RetrieveService) do |instance|
+          allow(instance).to receive(:execute).and_raise(StandardError)
+        end
+        get api("/users/#{user.id}/support_pin", admin, admin_mode: true)
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+        expect(json_response["error"]).to eq("Error retrieving Support PIN for user.")
+      end
+    end
+
+    context 'when authenticated as non-admin' do
+      it 'returns 403 Forbidden' do
+        get api("/users/#{user.id}/support_pin", user)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+  end
+
+  describe 'POST /users/:id/support_pin/revoke' do
+    let(:path) { "/users/#{user.id}/support_pin/revoke" }
+
+    it_behaves_like 'authorizing granular token permissions', :revoke_user_support_pin do
+      let_it_be(:pin_user) { create(:user) }
+      let(:boundary_object) { :instance }
+      let(:user) { admin }
+
+      before do
+        ::Users::SupportPin::UpdateService.new(pin_user).execute
+      end
+
+      let(:request) { post api("/users/#{pin_user.id}/support_pin/revoke", personal_access_token: pat) }
+    end
+
+    context 'when current user is an admin' do
+      context 'when a PIN exists' do
+        it 'returns accepted status' do
+          post api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:accepted)
+        end
+
+        it 'revokes the pin' do
+          post api(path, admin, admin_mode: true)
+
+          # Verify PIN is no longer accessible after revocation
+          get api("/users/#{user.id}/support_pin", admin, admin_mode: true)
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when no PIN exists' do
+        it 'returns not found' do
+          post api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to include('Support PIN not found or already expired')
+        end
+      end
+
+      context 'when an error occurs during revocation' do
+        before do
+          allow_next_instance_of(Users::SupportPin::RevokeService) do |instance|
+            allow(instance).to receive(:execute).and_raise(StandardError, 'Something went wrong')
+          end
+        end
+
+        it 'returns unprocessable_entity' do
+          post api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:unprocessable_entity)
+          expect(json_response['error']).to eq('Error revoking Support PIN for user.')
+        end
+      end
+
+      context 'when the service returns an error status' do
+        before do
+          allow_next_instance_of(Users::SupportPin::RevokeService) do |instance|
+            allow(instance).to receive(:execute).and_return({ status: :error, message: 'Service error' })
+          end
+        end
+
+        it 'returns bad_request' do
+          post api(path, admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to eq('Service error')
+        end
+      end
+    end
+
+    context 'when current user is not an admin' do
+      before do
+        # First authenticate as the user to create their own PIN
+        post api("/user/support_pin", user)
+      end
+
+      it 'returns forbidden' do
+        # Attempt to revoke as non-admin
+        post api(path, user)
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+
+      it 'does not revoke the PIN' do
+        # Attempt to revoke as non-admin
+        post api(path, user)
+
+        # Verify PIN still exists via API
+        get api('/user/support_pin', user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    context 'when user is not authenticated' do
+      it 'returns unauthorized' do
+        post api(path)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+  end
+end
+
+RSpec.describe API::Users, '(API behavior when Current.organization is nil)', feature_category: :user_management do
+  # This block intentionally does NOT use :with_current_organization
+
+  let_it_be(:admin_no_org_context) { create(:admin) }
+  let_it_be(:user_no_org_context) { create(:user, username: 'user_no_org_test') }
+  let_it_be(:pat_target_user_no_org_context) { create(:user, username: 'pattarget_no_org_test') }
+
+  before do
+    allow(Current).to receive(:organization).and_return(nil)
+  end
+
+  describe 'POST /users (when Current.organization is nil)' do
+    let(:user_creation_params) { attributes_for(:user, username: 'newly_created_user_no_org', email: 'newly_created_user_no_org@example.com', name: 'Newly Created User No Org') }
+
+    it 'returns 500 Internal Server Error and does not call Users::CreateService.new' do
+      expect(::Users::CreateService).not_to receive(:new)
+
+      post api("/users", admin_no_org_context, admin_mode: true), params: user_creation_params
+
+      expect(response).to have_gitlab_http_status(:internal_server_error)
+      expect(json_response['message']).to match(/NoMethodError \(undefined method [`']id' for nil/)
+    end
+  end
+
+  describe 'POST /users/:id/personal_access_tokens (when Current.organization is nil)' do
+    it 'returns 500 Internal Server Error and does not create PersonalAccessTokens::CreateService' do
+      expect(::PersonalAccessTokens::CreateService).not_to receive(:new)
+
+      post api("/users/#{pat_target_user_no_org_context.id}/personal_access_tokens", admin_no_org_context, admin_mode: true),
+        params: { name: 'Test Token For Target No Org', scopes: ['api'] }
+
+      expect(response).to have_gitlab_http_status(:internal_server_error)
+      expect(json_response['message']).to match(/NoMethodError \(undefined method [`']id' for nil/)
+    end
+  end
+
+  describe 'POST /user/personal_access_tokens (when Current.organization is nil)' do
+    it 'returns 500 Internal Server Error and does not create PersonalAccessTokens::CreateService' do
+      expect(::PersonalAccessTokens::CreateService).not_to receive(:new)
+
+      post api("/user/personal_access_tokens", user_no_org_context),
+        params: {
+          name: 'My Test Token No Org',
+          scopes: [::Gitlab::Auth::K8S_PROXY_SCOPE.to_s]
+        }
+
+      expect(response).to have_gitlab_http_status(:internal_server_error)
+      expect(json_response['message']).to match(/NoMethodError \(undefined method [`']id' for nil/)
     end
   end
 end

@@ -1,0 +1,53 @@
+# frozen_string_literal: true
+
+module AutoDevops
+  class DisableWorker # rubocop:disable Scalability/IdempotentWorker
+    include ApplicationWorker
+
+    data_consistency :sticky
+
+    sidekiq_options retry: 3
+    include AutoDevopsQueue
+
+    def perform(pipeline_id)
+      pipeline = Ci::Pipeline.find_by_id(pipeline_id)
+
+      unless pipeline
+        Sidekiq.logger.warn(
+          class: self.class.name,
+          pipeline_id: pipeline_id,
+          message: 'Pipeline not found'
+        )
+        return
+      end
+
+      project = pipeline.project
+
+      send_notification_email(pipeline, project) if disable_service(project).execute
+    end
+
+    private
+
+    def disable_service(project)
+      Projects::AutoDevops::DisableService.new(project)
+    end
+
+    def send_notification_email(pipeline, project)
+      recipients = email_receivers_for(pipeline, project)
+
+      return unless recipients.any?
+
+      NotificationService.new.autodevops_disabled(pipeline, recipients)
+    end
+
+    def email_receivers_for(pipeline, project)
+      recipients = [pipeline.user&.email]
+
+      if project.personal?
+        recipients << project.owners.map(&:email)
+      end
+
+      recipients.flatten.uniq.compact
+    end
+  end
+end

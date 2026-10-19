@@ -1,0 +1,56 @@
+# frozen_string_literal: true
+
+module API
+  class GroupContainerRepositories < ::API::Base
+    include PaginationParams
+    include ::API::Helpers::ContainerRegistryHelpers
+
+    helpers ::API::Helpers::PackagesHelpers
+
+    before do
+      authorize_read_group_container_images!
+    end
+
+    feature_category :container_registry
+    urgency :low
+
+    REPOSITORY_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS.merge(
+      tag_name: ::API::NO_SLASH_URL_PART_REGEX)
+
+    params do
+      requires :id, types: [String, Integer],
+        desc: 'ID or URL-encoded path of the group.'
+    end
+    resource :groups, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'List all registry repositories for a group' do
+        detail 'Lists all registry repositories for a specified group.'
+        success Entities::ContainerRegistry::Repository
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Group Not Found' }
+        ]
+        is_array true
+        tags %w[container_registry]
+      end
+      params do
+        use :pagination
+      end
+      route_setting :authorization, permissions: :read_container_repository, boundary_type: :group
+      get ':id/registry/repositories' do
+        repositories = ContainerRepositoriesFinder.new(
+          user: current_user, subject: user_group
+        ).execute
+
+        track_package_event('list_repositories', :container, namespace: user_group)
+
+        present paginate(repositories), with: Entities::ContainerRegistry::Repository, tags: false, tags_count: false
+      end
+    end
+
+    helpers do
+      def authorize_read_group_container_images!
+        authorize! :read_container_image, user_group
+      end
+    end
+  end
+end

@@ -1,0 +1,42 @@
+# frozen_string_literal: true
+
+require 'rubocop_spec_helper'
+
+require_relative '../../../../rubocop/cop/graphql/graphql_name_position'
+
+RSpec.describe RuboCop::Cop::Graphql::GraphqlNamePosition, feature_category: :api do
+  it 'adds an offense when graphql_name is not on the first line' do
+    expect_offense(<<~RUBY)
+      module Types
+        class AType < BaseObject
+        ^^^^^^^^^^^^^^^^^^^^^^^^ `graphql_name` should be the first line of the class: https://docs.gitlab.com/development/api_graphql_styleguide/#naming-conventions
+          field :a_thing
+          field :another_thing
+          graphql_name 'ATypeName'
+        end
+      end
+    RUBY
+  end
+
+  it 'does not add an offense for classes that have no call to graphql_name' do
+    expect_no_offenses(<<~TYPE.strip)
+      module Types
+        class AType < BaseObject
+          authorize :an_ability, :second_ability
+
+          field :a_thing
+        end
+      end
+    TYPE
+  end
+
+  it 'does not add an offense for classes that only call graphql_name' do
+    expect_no_offenses(<<~TYPE.strip)
+      module Types
+        class AType < BaseObject
+          graphql_name 'ATypeName'
+        end
+      end
+    TYPE
+  end
+end

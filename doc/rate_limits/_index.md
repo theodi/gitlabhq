@@ -1,0 +1,102 @@
+---
+stage: none
+group: unassigned
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Protect the stability and security of your instance with rate limits on requests to GitLab.
+title: Rate limits
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+> [!note]
+> For GitLab.com, see
+> [GitLab.com-specific rate limits](../user/gitlab_com/rate_limits.md#current-rate-limits).
+>
+> For GitLab Dedicated, see
+> [Authenticated user rate limits](../administration/dedicated/user_rate_limits.md).
+
+Rate limiting is a common technique used to improve the security and durability
+of a web application.
+
+For example, a simple script can make thousands of web requests per second. The requests could be:
+
+- Malicious.
+- Apathetic.
+- Just a bug.
+
+Your application and infrastructure may not be able to cope with the load. For more details, see
+[Denial-of-service attack](https://en.wikipedia.org/wiki/Denial-of-service_attack).
+Most cases can be mitigated by limiting the rate of requests from a single IP address.
+
+Most [brute-force attacks](https://en.wikipedia.org/wiki/Brute-force_attack) are
+similarly mitigated by a rate limit.
+
+> [!note]
+> The rate limits for API requests do not affect requests made by the frontend, because these requests are always counted as web traffic.
+
+## Configuration options
+
+You can set most rate limits in the **Admin** area. Some are available only through the API
+or the Rails console, and you set the GitLab Pages rate limits in a configuration file.
+
+### Admin area
+
+You can set these rate limits in the **Admin** area of your instance:
+
+- [API rate limits](api/_index.md)
+- [Content creation rate limits](content_creation.md)
+- [Git operations rate limits](git.md)
+- [Import and export rate limits](../administration/settings/import_export_rate_limits.md)
+- [Incident management rate limits](../administration/settings/incident_management_rate_limits.md)
+- [Pipeline creation rate limits](../administration/cicd/limits.md#pipeline-creation-rate-limits)
+- [Protected paths](../administration/settings/protected_paths.md)
+- [Raw endpoints rate limits](../administration/settings/rate_limits_on_raw_endpoints.md)
+- [User and IP rate limits](../administration/settings/user_and_ip_rate_limits.md)
+- [Webhook operations rate limits](../administration/settings/rate-limit-on-webhook-operations.md)
+
+### API and Rails console
+
+You can set these rate limits with the [application settings API](../api/settings.md):
+
+- [Autocomplete users rate limit](../administration/instance_limits.md#autocomplete-users-rate-limit)
+- [AI action](../api/settings.md#available-settings) (`ai_action_api_rate_limit`): 160 calls per
+  8 hours per authenticated user. Applies to the GraphQL `aiAction` mutation.
+- [Create tag rate limit](../api/settings.md#available-settings) (`tags_create_limit`): 100 requests
+  per 30 minutes per project. Applies to the REST API endpoint for creating a tag, the
+  GraphQL `tagCreate` mutation, tag creation in the UI, and the `/tag` quick action.
+- [Retrieve file blame rate limit](api/repository-files.md#configure-file-blame-rate-limits)
+  (`project_repositories_blame_limit`, `project_repositories_blame_unauthenticated_limit`):
+  400 requests every minute for each user and project. Unauthenticated requests are limited
+  to 400 requests every minute for each IP address. Applies to the REST API endpoint for file blame.
+
+You can set this rate limit with the [plan limits API](../api/plan_limits.md) or the
+[Rails console](../administration/operations/rails_console.md#starting-a-rails-console-session):
+
+- [Webhook rate limit](../administration/instance_limits.md#webhook-rate-limit)
+
+### Configuration file
+
+You can set these rate limits only in the configuration file for your installation, for example
+`/etc/gitlab/gitlab.rb` in a Linux package installation:
+
+- [GitLab Pages rate limits](../administration/pages/rate-limits.md)
+
+## Non-configurable limits
+
+Some rate limits cannot be configured.
+For a list of these limits, see [non-configurable rate limits](non_configurable.md).
+
+## Bans and blocks
+
+Some protections block a client for a period of time instead of slowing requests down.
+For more information, see [abuse and failed authentication bans](abuse_bans.md).
+
+## Related topics
+
+- [GitLab application limits](../administration/instance_limits.md)
+- [CI/CD limits](../administration/cicd/limits.md)

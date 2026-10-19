@@ -1,0 +1,360 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require 'gitlab/housekeeper/runner'
+require 'rspec/parameterized'
+
+# rubocop:disable RSpec/MultipleMemoizedHelpers -- there are lots of parameters at play
+RSpec.describe ::Gitlab::Housekeeper::Runner do
+  let(:fake_keep) { instance_double(Class) }
+
+  let(:change1) do
+    create_change(
+      identifiers: %w[the identifier for the first change],
+      title: "The title of MR1"
+    )
+  end
+
+  let(:change2) do
+    create_change(
+      identifiers: %w[the identifier for the second change],
+      title: "The title of MR2"
+    )
+  end
+
+  let(:change3) do
+    create_change(
+      identifiers: %w[the identifier for the third change],
+      title: "The title of MR3"
+    )
+  end
+
+  let(:fake_keep_instance) { instance_double(::Gitlab::Housekeeper::Keep) }
+
+  before do
+    allow(fake_keep).to receive(:new).and_return(fake_keep_instance)
+
+    allow(fake_keep_instance).to receive(:each_identified_change)
+      .and_yield(change1)
+      .and_yield(change2)
+      .and_yield(change3)
+
+    allow(fake_keep_instance).to receive(:make_change!)
+    allow(fake_keep_instance).to receive(:should_push_code?).and_return(true)
+    allow(fake_keep_instance).to receive(:recreate_when_closed?).and_return(false)
+  end
+
+  describe '#run' do
+    let(:git) { instance_double(::Gitlab::Housekeeper::Git) }
+    let(:gitlab_client) { instance_double(::Gitlab::Housekeeper::GitlabClient) }
+    let(:substitutor) { instance_double(::Gitlab::Housekeeper::Substitutor) }
+
+    before do
+      stub_env('HOUSEKEEPER_FORK_PROJECT_ID', '123')
+      stub_env('HOUSEKEEPER_TARGET_PROJECT_ID', '456')
+
+      allow(::Gitlab::Housekeeper::Git).to receive(:new)
+        .and_return(git)
+      allow(git).to receive(:with_clean_state)
+        .and_yield
+      allow(git).to receive(:diff)
+
+      allow(git).to receive(:create_branch).with(change1)
+        .and_return('the-identifier-for-the-first-change')
+      allow(git).to receive(:in_branch).with('the-identifier-for-the-first-change')
+        .and_yield
+      allow(git).to receive(:create_commit).with(change1)
+
+      allow(git).to receive(:create_branch).with(change2)
+        .and_return('the-identifier-for-the-second-change')
+      allow(git).to receive(:in_branch).with('the-identifier-for-the-second-change')
+        .and_yield
+      allow(git).to receive(:create_commit).with(change2)
+      allow(git).to receive(:push)
+
+      allow(::Gitlab::Housekeeper::GitlabClient).to receive(:new)
+        .and_return(gitlab_client)
+
+      allow(gitlab_client).to receive(:get_existing_merge_request)
+        .and_return(nil)
+
+      allow(gitlab_client).to receive(:non_housekeeper_changes)
+        .and_return([])
+
+      allow(gitlab_client).to receive(:closed_merge_request_exists?)
+        .and_return(false)
+
+      allow(gitlab_client).to receive(:create_or_update_merge_request)
+        .and_return({ 'web_url' => 'https://example.com' })
+
+      allow(::Gitlab::Housekeeper::Shell).to receive(:execute)
+    end
+
+    it 'loops over the keeps and creates MRs limited by max_mrs' do
+      # Branches get created
+      expect(git).to receive(:create_branch).with(change1)
+        .and_return('the-identifier-for-the-first-change')
+      expect(git).to receive(:create_commit).with(change1)
+
+      expect(git).to receive(:create_branch).with(change2)
+        .and_return('the-identifier-for-the-second-change')
+      expect(git).to receive(:create_commit).with(change2)
+
+      expect(::Gitlab::Housekeeper::Substitutor).to receive(:perform).with(change1)
+      expect(::Gitlab::Housekeeper::Substitutor).to receive(:perform).with(change2)
+
+      # Branches get shown and pushed
+      expect(git).to receive(:diff)
+        .with('the-identifier-for-the-first-change', ['change1.txt', 'change2.txt'])
+      expect(git).to receive(:push)
+        .with('the-identifier-for-the-first-change', change1.push_options)
+      expect(git).to receive(:diff)
+        .with('the-identifier-for-the-second-change', ['change1.txt', 'change2.txt'])
+      expect(git).to receive(:push)
+        .with('the-identifier-for-the-second-change', change2.push_options)
+
+      # Merge requests get created
+      expect(gitlab_client).to receive(:create_or_update_merge_request)
+        .with(
+          change: change1,
+          source_project_id: '123',
+          source_branch: 'the-identifier-for-the-first-change',
+          target_branch: 'master',
+          target_project_id: '456'
+        ).twice.and_return({ 'web_url' => 'https://example.com' })
+      expect(gitlab_client).to receive(:create_or_update_merge_request)
+        .with(
+          change: change2,
+          source_project_id: '123',
+          source_branch: 'the-identifier-for-the-second-change',
+          target_branch: 'master',
+          target_project_id: '456'
+        ).twice.and_return({ 'web_url' => 'https://example.com' })
+
+      described_class.new(max_mrs: 2, keeps: [fake_keep]).run
+
+      # It sets the keep_class for the change
+      expect(change1.keep_class).to eq(fake_keep)
+      expect(change2.keep_class).to eq(fake_keep)
+    end
+
+    context 'when given target_branch' do
+      it 'branches from that target branch' do
+        # Branches get created
+        expect(::Gitlab::Housekeeper::Git).to receive(:new)
+          .with(logger: anything, branch_from: 'the-target-branch')
+          .and_return(git)
+
+        # Branches get shown and pushed
+        expect(git).to receive(:diff)
+          .with('the-identifier-for-the-first-change', ['change1.txt', 'change2.txt'])
+
+        # Merge requests get created
+        expect(gitlab_client).to receive(:create_or_update_merge_request)
+          .with(
+            change: change1,
+            source_project_id: '123',
+            source_branch: 'the-identifier-for-the-first-change',
+            target_branch: 'the-target-branch',
+            target_project_id: '456'
+          ).twice.and_return({ 'web_url' => 'https://example.com' })
+
+        described_class.new(max_mrs: 1, keeps: [fake_keep], target_branch: 'the-target-branch').run
+      end
+    end
+
+    context 'when given filter_identifiers' do
+      it 'skips a change that does not match the filter_identifiers' do
+        # Only change2 should pass the filter and get branches/commits created
+        expect(git).to receive(:create_branch).with(change2)
+          .and_return('the-identifier-for-the-second-change')
+        allow(git).to receive(:in_branch).with('the-identifier-for-the-second-change')
+          .and_yield
+        expect(git).to receive(:create_commit).with(change2)
+
+        # change1 and change3 are filtered out, so they won't get branches/commits
+        expect(git).to receive(:create_branch).with(change1)
+          .and_return('the-identifier-for-the-first-change')
+        expect(git).to receive(:create_branch).with(change3)
+          .and_return('the-identifier-for-the-third-change')
+
+        # No commits expected for filtered changes
+        expect(git).not_to receive(:create_commit).with(change1)
+        expect(git).not_to receive(:create_commit).with(change3)
+
+        expect(::Gitlab::Housekeeper::Substitutor).to receive(:perform).with(change2)
+
+        # Branches get shown and pushed
+        expect(git).to receive(:diff)
+          .with('the-identifier-for-the-second-change', ['change1.txt', 'change2.txt'])
+        expect(git).to receive(:push)
+          .with('the-identifier-for-the-second-change', change2.push_options)
+
+        # Merge requests get created
+        expect(gitlab_client).to receive(:create_or_update_merge_request)
+          .with(
+            change: change2,
+            source_project_id: '123',
+            source_branch: 'the-identifier-for-the-second-change',
+            target_branch: 'master',
+            target_project_id: '456'
+          ).twice.and_return({ 'web_url' => 'https://example.com' })
+
+        described_class.new(max_mrs: 2, keeps: [fake_keep], filter_identifiers: [/second/]).run
+      end
+    end
+
+    context 'when an existing merge request has conflicts' do
+      before do
+        allow(gitlab_client).to receive(:get_existing_merge_request)
+          .and_return({ 'iid' => 1234, 'web_url' => 'https://example.com', 'has_conflicts' => true })
+      end
+
+      it 'sets has_conflicts on the change' do
+        described_class.new(max_mrs: 1, keeps: [fake_keep]).run
+
+        expect(change1.has_conflicts).to eq(true)
+      end
+    end
+
+    context 'when an existing merge request has no conflicts' do
+      before do
+        allow(gitlab_client).to receive(:get_existing_merge_request)
+          .and_return({ 'iid' => 1234, 'web_url' => 'https://example.com', 'has_conflicts' => false })
+      end
+
+      it 'sets has_conflicts to false on the change' do
+        described_class.new(max_mrs: 1, keeps: [fake_keep]).run
+
+        expect(change1.has_conflicts).to eq(false)
+      end
+    end
+
+    context 'on dry run' do
+      context 'for completion message' do
+        it 'prints the expected message' do
+          expect do
+            described_class.new(max_mrs: 1, keeps: [fake_keep], dry_run: true).run
+          end.to output(/Dry run complete. Housekeeper would have created 1 MR on an actual run./).to_stdout
+        end
+      end
+    end
+
+    context 'when change has context from each_identified_change' do
+      let(:change_with_context) do
+        change1.tap do |change|
+          change.context = { custom_data: 'test_value', file_count: 3 }
+        end
+      end
+
+      before do
+        allow(fake_keep_instance).to receive(:each_identified_change).and_yield(change_with_context)
+      end
+
+      it 'passes context to make_change! method' do
+        expect(fake_keep_instance).to receive(:make_change!) do |change|
+          expect(change.context[:custom_data]).to eq('test_value')
+          expect(change.context[:file_count]).to eq(3)
+        end
+
+        described_class.new(max_mrs: 1, keeps: [fake_keep]).run
+      end
+    end
+
+    context 'when make_change! updates change files after processing' do
+      it 'uses updated file list for commits and diffs' do
+        allow(fake_keep_instance).to receive(:make_change!) do |change|
+          change.changed_files = ['updated_file1.rb', 'updated_file2.rb']
+        end
+
+        expect(git).to receive(:diff)
+          .with('the-identifier-for-the-first-change', ['updated_file1.rb', 'updated_file2.rb'])
+
+        described_class.new(max_mrs: 1, keeps: [fake_keep]).run
+      end
+    end
+  end
+
+  describe 'when a closed merge request exists' do
+    let(:closed_mr_change) { create_change(identifiers: ['closed-mr-branch']) }
+    let(:fake_keep_with_closed_mr) { instance_double(Class) }
+    let(:fake_keep_with_closed_mr_instance) { instance_double(::Gitlab::Housekeeper::Keep) }
+    let(:closed_mr_git) { instance_double(::Gitlab::Housekeeper::Git) }
+    let(:closed_mr_gitlab_client) { instance_double(::Gitlab::Housekeeper::GitlabClient) }
+
+    before do
+      stub_env('HOUSEKEEPER_FORK_PROJECT_ID', '123')
+      stub_env('HOUSEKEEPER_TARGET_PROJECT_ID', '456')
+
+      allow(fake_keep_with_closed_mr).to receive(:new).and_return(fake_keep_with_closed_mr_instance)
+      allow(fake_keep_with_closed_mr_instance).to receive(:each_identified_change).and_yield(closed_mr_change)
+      allow(fake_keep_with_closed_mr_instance).to receive(:recreate_when_closed?).and_return(false)
+
+      allow(::Gitlab::Housekeeper::Git).to receive(:new).and_return(closed_mr_git)
+      allow(closed_mr_git).to receive(:diff)
+      allow(::Gitlab::Housekeeper::GitlabClient).to receive(:new).and_return(closed_mr_gitlab_client)
+      allow(closed_mr_git).to receive(:with_clean_state).and_yield
+      allow(closed_mr_git).to receive(:create_branch).with(closed_mr_change).and_return('closed-mr-branch')
+      allow(closed_mr_git).to receive(:in_branch).and_yield
+      allow(closed_mr_git).to receive(:create_commit)
+      allow(closed_mr_gitlab_client).to receive(:closed_merge_request_exists?)
+          .with(
+            source_project_id: '123',
+            source_branch: 'closed-mr-branch',
+            target_branch: 'master',
+            target_project_id: '456'
+          ).and_return(true)
+    end
+
+    it 'skips the change when a closed MR exists' do
+      expect(closed_mr_gitlab_client).not_to receive(:get_existing_merge_request)
+      expect(closed_mr_gitlab_client).not_to receive(:create_or_update_merge_request)
+      expect(closed_mr_git).not_to receive(:push)
+
+      described_class.new(max_mrs: 1, keeps: [fake_keep_with_closed_mr]).run
+    end
+
+    it 'logs the skip message' do
+      logger = instance_double(::Gitlab::Housekeeper::Logger)
+      allow(::Gitlab::Housekeeper::Logger).to receive(:new).and_return(logger)
+      allow(logger).to receive(:puts)
+
+      expect(logger).to receive(:puts)
+          .with('Skipping change: ["closed-mr-branch"] as we have closed an MR for this branch closed-mr-branch')
+
+      described_class.new(max_mrs: 1, keeps: [fake_keep_with_closed_mr]).run
+    end
+
+    context 'when the keep recreates MRs even if closed' do
+      before do
+        allow(fake_keep_with_closed_mr_instance).to receive(:recreate_when_closed?).and_return(true)
+        allow(fake_keep_with_closed_mr_instance).to receive(:make_change!)
+        allow(fake_keep_with_closed_mr_instance).to receive(:should_push_code?).and_return(true)
+        allow(::Gitlab::Housekeeper::Substitutor).to receive(:perform)
+        allow(::Gitlab::Housekeeper::Shell).to receive(:execute)
+        allow(closed_mr_gitlab_client).to receive(:non_housekeeper_changes).and_return([])
+        allow(closed_mr_gitlab_client).to receive(:get_existing_merge_request).and_return(nil)
+        allow(closed_mr_git).to receive(:push)
+      end
+
+      it 'creates the MR instead of skipping' do
+        expect(closed_mr_gitlab_client).not_to receive(:closed_merge_request_exists?)
+        expect(closed_mr_gitlab_client).to receive(:create_or_update_merge_request)
+          .at_least(:once)
+          .and_return({ 'web_url' => 'https://example.com' })
+
+        described_class.new(max_mrs: 1, keeps: [fake_keep_with_closed_mr]).run
+      end
+
+      it 'force-pushes over the closed branch' do
+        allow(closed_mr_gitlab_client).to receive(:create_or_update_merge_request)
+          .and_return({ 'web_url' => 'https://example.com' })
+
+        expect(closed_mr_git).to receive(:push).with('closed-mr-branch', anything).at_least(:once)
+
+        described_class.new(max_mrs: 1, keeps: [fake_keep_with_closed_mr]).run
+      end
+    end
+  end
+end
+# rubocop:enable RSpec/MultipleMemoizedHelpers

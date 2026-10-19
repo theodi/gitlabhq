@@ -1,0 +1,416 @@
+---
+stage: none
+group: unassigned
+info: For assistance with this Style Guide page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments-to-other-projects-and-subjects>.
+description: Writing styles, markup, formatting, and other standards for GitLab Documentation.
+title: Product availability details
+---
+
+Product availability details provide information about a feature.
+
+- If the details apply to the whole page, place them at the top
+  of the page, but after the front matter.
+- If they apply to a specific section, place the details under the applicable
+  section titles.
+
+Availability details include the tier, add-on (if applicable), offering, status, and history.
+
+The Markdown for availability details should look like the following:
+
+```markdown
+title: 'Topic title'
+---
+
+{{</* details */>}}
+
+- Tier: Free, Premium, Ultimate
+- Add-on: GitLab Duo Enterprise
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+- Status: Experiment
+
+{{</* /details */>}}
+
+{{</* history */>}}
+
+- [Introduced](https://work-item-link) in GitLab 16.3.
+- Updated in GitLab 16.4.
+
+{{</* /history */>}}
+```
+
+## Available options
+
+Use the following text for the tier, add-on, offering, status, and version history.
+
+### Tier
+
+For tier, choose one:
+
+- `Free, Premium, Ultimate`
+- `Premium, Ultimate`
+- `Ultimate`
+
+> [!note]
+> GitLab Dedicated and GitLab Dedicated for Government always include an Ultimate subscription.
+
+For GitLab Agent Platform features available on the Free tier, link to the [GitLab Credits](../../../subscriptions/gitlab_credits.md#for-the-free-tier) page:
+
+- `[Free](../subscriptions/gitlab_credits.md#for-the-free-tier), Premium, Ultimate`
+
+### Add-ons
+
+Use add-on information only for features in GitLab Duo and GitLab Duo Self-Hosted.
+
+Do not use add-on information for features in the GitLab Duo Agent Platform.
+
+For add-ons, the possibilities are:
+
+```markdown
+- Add-on: GitLab Duo Core, Pro, or Enterprise
+- Add-on: GitLab Duo Pro or Enterprise
+- Add-on: GitLab Duo Enterprise
+- Add-on: GitLab Duo with Amazon Q
+```
+
+### Offering
+
+For offering, use any combination of these entries, in this order, separated by commas:
+
+- `GitLab.com`
+- `GitLab Self-Managed`
+- `GitLab Dedicated`
+- `GitLab Dedicated for Government`
+
+For example:
+
+- `GitLab.com`
+- `GitLab.com, GitLab Self-Managed`
+- `GitLab Self-Managed`
+- `GitLab Self-Managed, GitLab Dedicated`
+- `GitLab Dedicated, GitLab Dedicated for Government`
+
+> [!note]
+> If you have reviewed a page and it specifically doesn't apply to GitLab Dedicated,
+> [assign metadata](../metadata.md#indicate-gitlab-dedicated-support).
+
+### Status
+
+For status, choose one:
+
+- `Beta`
+- `Experiment`
+- `Limited availability`
+
+Generally available features should not have a status.
+
+### GitLab Duo with self-hosted models
+
+For GitLab Duo features available with self-hosted models, use:
+
+```markdown
+{{</* collapsible title="Model information" */>}}
+
+- Available on [GitLab Duo with self-hosted models](<relative_link_to_gitlab_duo_self_hosted_documentation>)
+
+{{</* /collapsible */>}}
+```
+
+Avoid stating that the feature is not available on GitLab Duo with self-hosted models.
+If you must state that a feature is not available, use `Not available on GitLab Duo with self-hosted models`. Do not include
+a link to the documentation.
+
+### LLMs
+
+If you need to document the LLMs that the GitLab Duo feature uses:
+
+- Include a link to the LLM.
+- Use a separate entry if the feature uses different LLMs for:
+  - Code generation and code completion.
+  - GitLab Duo with Amazon Q.
+
+For example:
+
+```markdown
+{{</* collapsible title="Model information" */>}}
+
+- LLMs for code completion: Anthropic [Claude 4.0 Sonnet](https://console.cloud.google.com/vertex-ai/publishers/anthropic/model-garden/claude-sonnet-4)
+- LLMs for code generation: Anthropic [Claude 3.7 Sonnet](https://console.cloud.google.com/vertex-ai/publishers/anthropic/model-garden/claude-3-7-sonnet)
+- LLM for Amazon Q: Amazon Q Developer
+
+{{</* /collapsible */>}}
+```
+
+### History
+
+The documentation site uses Hugo shortcodes to render the version history,
+for example:
+
+```markdown
+{{</* history */>}}
+
+- [Introduced](https://work-item-link) in GitLab 16.3.
+- [Changed](https://work-item-link) in GitLab 16.4.
+
+{{</* /history */>}}
+```
+
+In addition:
+
+- Ensure that history notes are listed after the details (if any), and immediately
+  after the heading.
+- Ensure that the output generates properly.
+- Ensure the version history begins with `-`.
+- If possible, include a link to the related issue. If there is no related issue, link to a merge request, or epic.
+- Do not link to [confidential issues](_index.md#confidential-or-restricted-access-links).
+- Do not link to the pricing page.
+- Do not include the subscription tier, unless it's changing from one tier to another.
+- Do not duplicate entries on multiple pages. Add the entry to the page that documents the feature that changed.
+
+#### Updated features
+
+For features that have changed or been updated, add a new list item.
+Start the sentence with the feature name or a gerund.
+
+For example:
+
+```markdown
+- [Introduced](https://work-item-link) in GitLab 13.1.
+- Creating an issue from an issue board [introduced](https://work-item-link) in GitLab 14.1.
+```
+
+Or:
+
+```markdown
+- [Introduced](https://work-item-link) in GitLab 13.1.
+- Notifications for expiring tokens [introduced](https://work-item-link) in GitLab 14.3.
+```
+
+#### Moved subscription tiers
+
+For features that move to another subscription tier, use `moved`:
+
+```markdown
+- [Moved](https://work-item-link) from GitLab Ultimate to GitLab Premium in GitLab 18.8.
+- [Moved](https://work-item-link) from GitLab Premium to GitLab Free in GitLab 19.0.
+```
+
+#### Changed billing method
+
+For features that change from seat-based billing to usage-based billing with
+[GitLab Credits](../../../subscriptions/gitlab_credits.md), use `changed to usage-based billing`:
+
+```markdown
+- [Changed](https://work-item-link) to usage-based billing in GitLab 19.0.
+```
+
+Add this entry only to the history for the feature.
+Do not add an entry to the GitLab Credits history, because the functionality of credits does not change when a feature starts to use them.
+
+#### Changed feature status
+
+For a feature introduced as an experiment or beta, add the status to the `Introduced` item:
+
+```markdown
+- [Introduced](https://work-item-link) as an [experiment](../../policy/development_stages_support.md#experiment) in GitLab 15.7.
+```
+
+```markdown
+- [Introduced](https://work-item-link) as a [beta](../../policy/development_stages_support.md#beta) in GitLab 15.7.
+```
+
+For a feature status change from experiment to beta, use `changed`:
+
+```markdown
+- [Introduced](https://work-item-link) as an [experiment](../../policy/development_stages_support.md#experiment) in GitLab 15.7.
+- [Changed](https://work-item-link) from experiment to beta in GitLab 16.0.
+```
+
+For a feature status change from beta to limited availability, use `changed`:
+
+```markdown
+- [Changed](https://work-item-link) from experiment to beta in GitLab 16.0.
+- [Changed](https://work-item-link) from beta to limited availability in GitLab 16.3.
+```
+
+For a change to generally available, use:
+
+```markdown
+- [Generally available](https://work-item-link) in GitLab 16.10.
+```
+
+#### Features made available as part of a program
+
+For features made available to users as part of a program, add a new list item and link to the program.
+
+```markdown
+- [Introduced](https://work-item-link) in GitLab 15.1.
+- Merged results pipelines [added](https://work-item-link) to the [Registration Features Program](https://page-link) in GitLab 16.7.
+```
+
+#### Features behind feature flags
+
+For features introduced behind feature flags, add details about the feature flag. For more information, see [Document features deployed behind feature flags](../feature_flags.md).
+
+#### Features for tools released separately
+
+Some GitLab tools are released on their own schedule and use a different versioning system,
+independent of the GitLab instance. For example, editor extensions and CLI tools.
+
+Include tool updates in the history section. Each entry must include both the GitLab version and
+tool version, with a link to the tool's release page for that version.
+
+When a feature requires both a GitLab instance change and a tool update, nest the tool version
+entries under the related instance history item:
+
+```markdown
+- Access to user default namespaces for IDEs [introduced](https://work-item-link) in GitLab 18.10.
+  - [Introduced](https://release-page-link) in GitLab for VS Code 6.71.7.
+  - [Introduced](https://release-page-link) in GitLab Duo CLI 8.76.0.
+```
+
+When a feature is not dependent on a GitLab instance change, add a single entry with the
+tool version and use `during the GitLab X.Y release` instead of `in GitLab X.Y` to avoid implying an
+instance requirement:
+
+```markdown
+- [Introduced](https://release-page-link) in GitLab for VS Code 6.14.0 during the GitLab 18.1 release.
+```
+
+#### Changed or updated models
+
+The models available for GitLab Duo features, including default models, are defined in the
+[AI Gateway](https://gitlab.com/gitlab-org/modelops/applied-ml/code-suggestions/ai-assist). In most
+cases, model changes reach all GitLab versions immediately and are not gated by GitLab releases.
+
+In the history item, use a date instead of a milestone. Link to the AI Gateway merge
+request that made the change.
+
+```markdown
+- Claude Sonnet 5 [added](https://ai-gateway-mr-link) as a supported model for Code Review Flow on August 3, 2026.
+```
+
+#### Removing versions
+
+Remove history items and inline text that refer to unsupported versions. When you remove a history
+item, remove any tool version entries nested under it as well.
+
+GitLab supports the current major version and two previous major versions.
+For example, if 18.0 is the current major version, all major and minor releases of
+GitLab 18.0, 17.0, and 16.0 are supported.
+
+For the list of current supported versions, see [Version support](https://about.gitlab.com/support/statement-of-support/#version-support).
+
+Remove information about [features behind feature flags](../feature_flags.md)
+only if all events related to the feature flag happened in unsupported versions.
+If the flag hasn't been removed, readers should know when it was introduced.
+
+#### Timing version removals
+
+When a new major version is about to be released, create merge
+requests to remove mentions of the last unsupported version. Only merge
+them during the milestone of the new major release.
+
+For example, if GitLab 19.0 is the next major upcoming release:
+
+- The supported versions are 18, 17, and 16.
+- When GitLab 19.0 is released, GitLab 16 is no longer supported.
+
+Create merge requests to remove mentions of GitLab 16, but only
+merge them during the 19.0 milestone, after 18.11 is released.
+
+## When to add availability details
+
+Assign availability details under:
+
+- Most H1 topic titles, except the pages under `doc/development/*` and `doc/solutions/*`.
+- Topic titles for features that have different availability details than the H1 title.
+
+The H1 availability details should be the details that apply to the widest availability
+for the features on the page. For example:
+
+- If some sections apply to Premium and Ultimate, and others apply to just Ultimate,
+  the H1 `Tier:` should be `Premium, Ultimate`.
+- If some sections apply to all instances, and others apply to only `GitLab Self-Managed`,
+  the `Offering:` should be `GitLab.com, GitLab Self-Managed, GitLab Dedicated, GitLab Dedicated for Government`.
+- If some sections are beta, and others are experiment, the H1 `Status:` should be `Beta`.
+  If some sections are beta, and others are generally available, then there should
+  be no `Status:` for the H1.
+
+## When not to add availability details
+
+Do not assign availability details to the following pages:
+
+- Tutorials.
+- Pages that compare features from different tiers.
+- Pages in the `/development` folder. These pages are automatically assigned a `Contribute` badge.
+- Pages in the `/solutions` folder. These pages are automatically assigned a `Solutions` badge.
+
+Also, do not assign them when a feature does not have one obvious subscription tier or offering.
+For example, if a feature applies to one tier for GitLab.com and a different availability for GitLab Self-Managed.
+
+In this case, do any or all of the following:
+
+- Use [metadata](../metadata.md#indicate-lack-of-product-availability-details)
+  to indicate that the page has been reviewed and does not need availability details.
+- Use a [`type="note"`](_index.md#note) alert box to describe the availability details.
+- Add availability details under other topic titles where this information makes more sense.
+- Do not add availability details under the H1.
+
+### Duplicating tier, offering, or status on subheadings
+
+If a subheading has the same tier, offering, or status as its parent
+topic, you don't need to repeat the information in the subheading's
+badge.
+
+For example, subheadings that have `Tier: Premium, Ultimate` and `Offering: GitLab.com`
+don't need to duplicate the details if the page details match:
+
+```markdown
+title: My title
+---
+
+{{</* details */>}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com
+
+{{</* /details */>}}
+```
+
+Any lower-level heading that applies to a different tier but same offering would be:
+
+```markdown
+## My title
+
+{{</* details */>}}
+
+- Tier: Ultimate
+
+{{</* /details */>}}
+```
+
+## Inline availability details
+
+Generally, you should not add availability details inline with other text.
+The single source of truth for a feature should be the topic where the
+functionality is described.
+
+If you do need to mention an availability details inline, write it in plain text.
+For example, for an API topic:
+
+```markdown
+IDs of the users to assign the issue to. Ultimate only.
+```
+
+For more examples, see the [REST API style guide](../restful_api_styleguide.md).
+
+## Inline history text
+
+If you're adding content to an existing topic, add historical information
+inline with the existing text. If possible, include a link to the related issue,
+merge request, or epic. For example:
+
+```markdown
+The voting strategy [in GitLab 13.4 and later](https://work-item-link) requires the primary and secondary
+voters to agree.
+```

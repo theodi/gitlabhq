@@ -1,0 +1,7 @@
+fragment Job on CiJob {
+  id
+  detailedStatus {
+    id
+    detailsPath
+  }
+}

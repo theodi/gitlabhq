@@ -1,0 +1,14 @@
+---
+table_name: design_management_versions
+classes:
+- DesignManagement::Version
+feature_categories:
+- design_management
+description: The SHA referencing changes to individual designs made using the Design
+  Management tool
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/9801
+milestone: '11.10'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces
+table_size: small

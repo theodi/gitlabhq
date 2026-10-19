@@ -1,0 +1,13 @@
+---
+table_name: projects_branch_rules_squash_options
+classes:
+- Projects::BranchRules::SquashOption
+feature_categories:
+- source_code_management
+description: Contains squash option overrides for a protected branch
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/174196
+milestone: '17.7'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

@@ -1,0 +1,7 @@
+- add_to_breadcrumbs _("Topics"), admin_topics_path
+- add_to_breadcrumbs @topic.name, edit_admin_topic_path(@topic) # There is no show view, so we reuse edit here
+- breadcrumb_title _("Edit")
+- page_title _("Edit"), @topic.name, _("Topics")
+
+= render ::Layouts::PageHeadingComponent.new(_('Edit topic: %{topic_name}') % { topic_name: @topic.name })
+= render 'form', url: admin_topic_path(@topic)

@@ -1,0 +1,20 @@
+---
+description: Tracks updates to the unresolved status of items.
+internal_events: true
+action: update_unresolved_status
+product_group: platform_insights
+product_categories:
+- observability
+milestone: '16.1'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/121259
+tiers:
+  - free
+  - premium
+  - ultimate
+additional_properties:
+  label:
+    description: not actually used - to be fixed in https://gitlab.com/gitlab-org/gitlab/-/issues/501387
+  property:
+    description: not actually used - to be fixed in https://gitlab.com/gitlab-org/gitlab/-/issues/501387
+  variant:
+    description: external or internal

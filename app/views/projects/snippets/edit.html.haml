@@ -1,5 +1,7 @@
-- page_title "Edit", @snippet.title, "Snippets"
-%h3.page-title
-  Edit snippet
-%hr
-= render "shared/snippets/form", url: namespace_project_snippet_path(@project.namespace, @project, @snippet), visibility_level: @snippet.visibility_level
+- add_to_breadcrumbs _("Snippets"), project_snippets_path(@project)
+- add_to_breadcrumbs @snippet.to_reference, project_snippet_path(@project, @snippet)
+- breadcrumb_title _("Edit")
+- page_title _("Edit"), "#{@snippet.title} (#{@snippet.to_reference})", _("Snippets")
+
+= render ::Layouts::PageHeadingComponent.new(_('Edit snippet'))
+= render "shared/snippets/form", url: project_snippet_path(@project, @snippet)

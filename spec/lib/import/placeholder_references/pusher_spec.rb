@@ -1,0 +1,353 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Import::PlaceholderReferences::Pusher, :clean_gitlab_redis_shared_state, feature_category: :importers do
+  include Import::UserMappingHelper
+
+  let_it_be(:group) { create(:group) }
+  let_it_be_with_reload(:group_project) { create(:project, namespace: group, import_type: 'github') }
+
+  let_it_be(:user) { create(:user, :with_namespace) }
+  let_it_be(:personal_project, freeze: false) { create(:project, namespace: user.namespace, import_type: 'github') }
+
+  let(:project) { group_project }
+
+  let_it_be(:reassign_user) { create(:user) }
+  let(:attribute) { :author_id }
+  let(:user_mapping_enabled) { true }
+  let(:cached_references) { placeholder_user_references('github', import_state.id) }
+
+  let_it_be(:import_state) { create(:import_state, project: group_project) }
+
+  let_it_be(:import_source_user) do
+    create(:import_source_user, :awaiting_approval,
+      namespace: group_project.namespace,
+      placeholder_user: create(:user, :import_user))
+  end
+
+  let_it_be(:placeholder_source_user) do
+    create(:import_source_user, :awaiting_approval,
+      namespace: group_project.namespace,
+      placeholder_user: create(:user, :placeholder))
+  end
+
+  let_it_be(:mapped_source_user) do
+    create(:import_source_user, :completed,
+      namespace: group_project.namespace,
+      reassign_to_user: reassign_user)
+  end
+
+  let(:import_source_user_identifier) { import_source_user.source_user_identifier }
+  let(:placeholder_source_user_identifier) { placeholder_source_user.source_user_identifier }
+  let(:mapped_source_user_identifier) { mapped_source_user.source_user_identifier }
+
+  let(:store) { Import::PlaceholderReferences::Store.new(import_source: :github, import_uid: import_state.id) }
+
+  let(:test_class) do
+    Class.new do
+      include Import::PlaceholderReferences::Pusher
+
+      attr_reader :project
+
+      def initialize(project)
+        @project = project
+      end
+    end
+  end
+
+  subject(:pusher) { test_class.new(project) }
+
+  before do
+    project.build_or_assign_import_data(data: { user_contribution_mapping_enabled: user_mapping_enabled })
+    project.import_data.save!
+
+    allow(project).to receive(:safe_import_url).and_return('https://github.com/example/repo')
+  end
+
+  describe '#push_reference' do
+    let_it_be(:record) { create(:note, project: group_project) }
+
+    it 'creates a placeholder reference in the store' do
+      expect { pusher.push_reference(project, record, attribute, import_source_user_identifier) }
+        .to change { store.count }.by(1)
+    end
+
+    it 'stores the correct reference data' do
+      pusher.push_reference(project, record, attribute, import_source_user_identifier)
+
+      expect(cached_references).to contain_exactly(
+        ['Note', record.id, 'author_id', import_source_user.id]
+      )
+    end
+
+    context 'when source_user_identifier is blank' do
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_reference(project, record, attribute, nil) }.not_to change { store.count }
+      end
+    end
+
+    # gitlab-org/gitlab#628379: user mapping is now always on except for
+    # Bitbucket Server with the bitbucket_server_user_mapping FF disabled.
+    context 'when user mapping is disabled (Bitbucket Server with FF off)' do
+      before do
+        group_project.update!(import_type: 'bitbucket_server')
+        stub_feature_flags(bitbucket_server_user_mapping: false)
+      end
+
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_reference(project, record, attribute, import_source_user_identifier) }
+          .not_to change { store.count }
+      end
+    end
+
+    context 'when project is in a personal namespace' do
+      let(:project) { personal_project }
+
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_reference(project, record, attribute, import_source_user_identifier) }
+          .not_to change { store.count }
+      end
+    end
+
+    context 'when source_user is nil' do
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_reference(project, record, attribute, 99999) }.not_to change { store.count }
+      end
+    end
+
+    context 'when source_user is accepted' do
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_reference(project, record, attribute, mapped_source_user_identifier) }
+          .not_to change { store.count }
+      end
+    end
+
+    context 'when source_user is associated to a placeholder user type' do
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_reference(project, record, attribute, placeholder_source_user_identifier) }
+          .not_to change { store.count }
+      end
+
+      context 'when record attribute does not support direct reassignment' do
+        it 'creates a placeholder reference in the store' do
+          expect { pusher.push_reference(project, record, :updated_by_id, placeholder_source_user_identifier) }
+            .to change { store.count }.by(1)
+        end
+
+        it 'stores the correct reference data' do
+          pusher.push_reference(project, record, :updated_by_id, placeholder_source_user_identifier)
+
+          expect(cached_references).to contain_exactly(
+            ['Note', record.id, 'updated_by_id', placeholder_source_user.id]
+          )
+        end
+      end
+    end
+  end
+
+  describe '#push_references_by_ids' do
+    let_it_be(:note1) { create(:note, project: group_project) }
+    let_it_be(:note2) { create(:note, project: group_project) }
+    let_it_be(:note3) { create(:note, project: group_project) }
+    let(:ids) { [note1.id, note2.id, note3.id] }
+    let(:model) { Note }
+
+    it 'creates placeholder references for each id' do
+      expect { pusher.push_references_by_ids(project, ids, model, attribute, import_source_user_identifier) }
+        .to change { store.count }.by(3)
+    end
+
+    it 'stores the correct reference data for each id' do
+      pusher.push_references_by_ids(project, ids, model, attribute, import_source_user_identifier)
+
+      expect(cached_references).to contain_exactly(
+        ["Note", note1.id, "author_id", import_source_user.id],
+        ["Note", note2.id, "author_id", import_source_user.id],
+        ["Note", note3.id, "author_id", import_source_user.id]
+      )
+    end
+
+    context 'when source_user is nil' do
+      it 'does not create placeholder references' do
+        expect { pusher.push_references_by_ids(project, ids, model, attribute, 99999) }.not_to change { store.count }
+      end
+    end
+
+    context 'when source_user has accepted status' do
+      it 'does not create placeholder references' do
+        expect { pusher.push_references_by_ids(project, ids, model, attribute, mapped_source_user_identifier) }
+          .not_to change { store.count }
+      end
+    end
+
+    context 'when source_user is associated to a placeholder user type' do
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_references_by_ids(project, ids, model, attribute, placeholder_source_user_identifier) }
+          .not_to change { store.count }
+      end
+
+      context 'when record attribute does not support direct reassignment' do
+        it 'creates a placeholder reference in the store' do
+          expect do
+            pusher.push_references_by_ids(project, ids, model, :updated_by_id, placeholder_source_user_identifier)
+          end.to change { store.count }.by(3)
+        end
+
+        it 'stores the correct reference data' do
+          pusher.push_references_by_ids(project, ids, model, :updated_by_id,
+            placeholder_source_user_identifier)
+
+          expect(cached_references).to contain_exactly(
+            ["Note", note1.id, "updated_by_id", placeholder_source_user.id],
+            ["Note", note2.id, "updated_by_id", placeholder_source_user.id],
+            ["Note", note3.id, "updated_by_id", placeholder_source_user.id]
+          )
+        end
+      end
+    end
+  end
+
+  describe '#push_reference_with_composite_key' do
+    let_it_be(:issue) { create(:issue, project: group_project) }
+    let_it_be(:issue_assignee) { create(:issue_assignee, issue: issue) }
+    let(:composite_key) { { 'user_id' => issue_assignee.user_id, 'issue_id' => issue_assignee.issue_id } }
+
+    it 'creates a placeholder reference with composite key' do
+      expect do
+        pusher.push_reference_with_composite_key(project, issue_assignee, :user_id, composite_key,
+          import_source_user_identifier)
+      end.to change { store.count }.by(1)
+    end
+
+    it 'stores the correct reference data with composite key' do
+      pusher.push_reference_with_composite_key(project, issue_assignee, :user_id, composite_key,
+        import_source_user_identifier)
+
+      expect(cached_references).to contain_exactly(
+        [
+          'IssueAssignee',
+          { 'user_id' => issue_assignee.user_id, 'issue_id' => issue.id },
+          'user_id', import_source_user.id
+        ]
+      )
+    end
+
+    context 'when source_user is nil' do
+      it 'does not create a placeholder reference' do
+        expect { pusher.push_reference_with_composite_key(project, issue_assignee, :user_id, composite_key, 99999) }
+          .not_to change { store.count }
+      end
+    end
+
+    context 'when project is in a personal namespace' do
+      let(:project) { personal_project }
+
+      it 'does not create a placeholder reference' do
+        expect do
+          pusher.push_reference_with_composite_key(project, issue_assignee, :user_id, composite_key,
+            import_source_user_identifier)
+        end.not_to change { store.count }
+      end
+    end
+
+    context 'when source_user is accepted and mapped to the record' do
+      it 'does not create a placeholder reference' do
+        expect do
+          pusher.push_reference_with_composite_key(project, issue_assignee, :user_id, composite_key,
+            mapped_source_user_identifier)
+        end.not_to change { store.count }
+      end
+    end
+  end
+
+  describe '#user_mapping_enabled?' do
+    # gitlab-org/gitlab#628379: ProjectImportData#user_mapping_enabled? no longer
+    # reads the stored flag (which ProjectImportState wipes on cancel/fail);
+    # it fails closed to true for every importer except Bitbucket Server with
+    # the bitbucket_server_user_mapping feature flag explicitly disabled.
+    context 'when user mapping is enabled' do
+      let(:user_mapping_enabled) { true }
+
+      it 'returns true' do
+        expect(pusher.user_mapping_enabled?(project)).to be true
+      end
+    end
+
+    context 'when the stored flag is disabled for a non-Bitbucket-Server import' do
+      let(:user_mapping_enabled) { false }
+
+      it 'ignores the stored flag and returns true' do
+        expect(pusher.user_mapping_enabled?(project)).to be true
+      end
+    end
+
+    context 'when the import is Bitbucket Server and the FF is disabled' do
+      let(:project) { create(:project, namespace: group, import_type: 'bitbucket_server') }
+
+      before do
+        stub_feature_flags(bitbucket_server_user_mapping: false)
+      end
+
+      it 'returns false' do
+        expect(pusher.user_mapping_enabled?(project)).to be false
+      end
+    end
+
+    context 'when the import is GitHub' do
+      it 'returns true without reading import_data' do
+        expect(project).not_to receive(:import_data)
+
+        expect(pusher.user_mapping_enabled?(project)).to be true
+      end
+
+      it 'pushes a reference when import_data is nil' do
+        record = create(:note, project: project)
+        allow(project).to receive(:import_data).and_return(nil)
+
+        expect { pusher.push_reference(project, record, attribute, import_source_user_identifier) }
+          .to change { store.count }.by(1)
+      end
+    end
+
+    context 'when the import is not GitHub' do
+      before do
+        group_project.update!(import_type: 'bitbucket_server')
+      end
+
+      it 'follows import_data.user_mapping_enabled?' do
+        allow(project.import_data).to receive(:user_mapping_enabled?).and_return(false)
+
+        expect(pusher.user_mapping_enabled?(project)).to be false
+
+        allow(project.import_data).to receive(:user_mapping_enabled?).and_return(true)
+
+        expect(pusher.user_mapping_enabled?(project)).to be true
+      end
+
+      it 'returns true when import_data is nil' do
+        allow(project).to receive(:import_data).and_return(nil)
+
+        expect(pusher.user_mapping_enabled?(project)).to be true
+      end
+    end
+  end
+
+  describe '#map_to_personal_namespace_owner?' do
+    context 'when project is in a group namespace' do
+      let(:project) { group_project }
+
+      it 'returns false' do
+        expect(pusher.map_to_personal_namespace_owner?(project)).to be false
+      end
+    end
+
+    context 'when project is in a personal namespace' do
+      let(:project) { personal_project }
+
+      it 'returns true' do
+        expect(pusher.map_to_personal_namespace_owner?(project)).to be true
+      end
+    end
+  end
+end

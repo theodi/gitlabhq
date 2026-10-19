@@ -1,0 +1,124 @@
+<script>
+import { GlBadge, GlButton } from '@gitlab/ui';
+import { isEmpty } from 'lodash-es';
+import { mapState, mapActions } from 'pinia';
+import EmptyState from '~/feature_flags/components/empty_state.vue';
+import { buildUrlWithCurrentLocation, historyPushState } from '~/lib/utils/common_utils';
+import { objectToQuery, getParameterByName } from '~/lib/utils/url_utility';
+import TablePagination from '~/vue_shared/components/pagination/table_pagination.vue';
+import { useUserLists } from '../store/index';
+import UserListsTable from './user_lists_table.vue';
+
+export default {
+  name: 'UserLists',
+  components: {
+    EmptyState,
+    UserListsTable,
+    GlBadge,
+    GlButton,
+    TablePagination,
+  },
+  inject: {
+    newUserListPath: { default: '' },
+  },
+  data() {
+    return {
+      page: getParameterByName('page') || '1',
+    };
+  },
+  computed: {
+    ...mapState(useUserLists, [
+      'userLists',
+      'alerts',
+      'count',
+      'pageInfo',
+      'isLoading',
+      'hasError',
+    ]),
+    shouldRenderPagination() {
+      return (
+        !this.isLoading &&
+        !this.hasError &&
+        this.userLists.length > 0 &&
+        this.pageInfo.total > this.pageInfo.perPage
+      );
+    },
+    shouldShowEmptyState() {
+      return !this.isLoading && !this.hasError && this.userLists.length === 0;
+    },
+    shouldRenderErrorState() {
+      return this.hasError && !this.isLoading;
+    },
+    hasNewPath() {
+      return !isEmpty(this.newUserListPath);
+    },
+  },
+  created() {
+    this.setUserListsOptions({ page: this.page });
+    this.fetchUserLists();
+  },
+  methods: {
+    ...mapActions(useUserLists, [
+      'setUserListsOptions',
+      'fetchUserLists',
+      'clearAlert',
+      'deleteUserList',
+    ]),
+    onChangePage(page) {
+      this.updateUserListsOptions({
+        /* URLS parameters are strings, we need to parse to match types */
+        page: Number(page).toString(),
+      });
+    },
+    updateUserListsOptions(parameters) {
+      const queryString = objectToQuery(parameters);
+
+      historyPushState(buildUrlWithCurrentLocation(`?${queryString}`));
+      this.setUserListsOptions(parameters);
+      this.fetchUserLists();
+    },
+  },
+};
+</script>
+<template>
+  <div>
+    <div class="gl-flex gl-flex-col">
+      <div class="gl-flex gl-flex-col @md/panel:!gl-hidden">
+        <gl-button v-if="hasNewPath" :href="newUserListPath" variant="confirm">
+          {{ s__('UserLists|New user list') }}
+        </gl-button>
+      </div>
+      <div
+        class="gl-mt-6 gl-flex gl-flex-col gl-items-baseline gl-justify-between @md/panel:gl-flex-row"
+      >
+        <div class="gl-flex gl-items-center">
+          <h2 class="gl-my-0 gl-text-size-h2">
+            {{ s__('UserLists|User Lists') }}
+          </h2>
+          <gl-badge v-if="count" class="gl-ml-4">{{ count }}</gl-badge>
+        </div>
+        <div class="gl-flex gl-items-center gl-justify-end">
+          <gl-button v-if="hasNewPath" :href="newUserListPath" variant="confirm">
+            {{ s__('UserLists|New user list') }}
+          </gl-button>
+        </div>
+      </div>
+      <empty-state
+        :alerts="alerts"
+        :is-loading="isLoading"
+        :loading-label="s__('UserLists|Loading user lists')"
+        :error-state="shouldRenderErrorState"
+        :error-title="s__('UserLists|There was an error fetching the user lists.')"
+        :empty-state="shouldShowEmptyState"
+        :empty-title="s__('UserLists|Get started with user lists')"
+        :empty-description="
+          s__('UserLists|User lists allow you to define a set of users to use with Feature Flags.')
+        "
+        @dismiss-alert="clearAlert"
+      >
+        <user-lists-table :user-lists="userLists" @delete="deleteUserList" />
+      </empty-state>
+    </div>
+    <table-pagination v-if="shouldRenderPagination" :change="onChangePage" :page-info="pageInfo" />
+  </div>
+</template>

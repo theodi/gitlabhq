@@ -1,0 +1,449 @@
+###
+# This file defines the list of bounded contexts in the domain layer and platform layer.
+# Bounded contexts are represented in the form of Ruby namespaces.
+# Only the defined bounded contexts are allowed.
+#
+# Application layer (controllers, REST endpoints) and view layer are exempt from having
+# to use this list.
+#
+# New bounded contexts can be registered in this file if:
+#   - a new product domain is emerging.
+#   - an existing domain is split into smaller ones.
+#   - a platform library (under `lib`) cannot be directly extracted as gem.
+#     We can opt for allowlisting the domain.
+#
+# Similarly, we can remove entries from this list if:
+#   - a domain is merged into another one.
+#   - a platform library is extracted as a gem.
+#   - a domain is discontinued and code removed.
+
+######################
+# Domain layer
+#
+# List of domain bounded contexts composing GitLab product functionality.
+# A domain generally includes one or more highly cohesive feature categories.
+domains:
+  Activation:
+    description: User and namespace activation features and metrics tracking
+    feature_categories:
+      - onboarding
+
+  Ai:
+    description: Abstraction layers for AI capabilities, custom models and Duo Chat
+    feature_categories:
+      - mlops
+      - duo_chat
+      - ai_abstraction_layer
+      - code_suggestions # Also in CodeSuggestions
+      - duo_agent_platform
+      - workflow_catalog
+
+  Analytics:
+    description:
+    feature_categories:
+      - value_stream_management
+      - devops_reports
+      - dora_metrics
+      - product_analytics
+      - custom_dashboards_foundation
+      - knowledge_graph
+
+  AntiAbuse:
+    description:
+    feature_categories:
+      - insider_threat
+      - instance_resiliency
+
+  AppConfig:
+    description: Top-level configuration at the GitLab instance level
+    feature_categories:
+      - settings
+
+  ArtifactRegistry:
+    description: Organization-level multi-format artifact management
+    feature_categories:
+      - artifact_registry
+
+  AuditEvents:
+    description:
+    feature_categories:
+      - audit_events
+
+  Authn:
+    description: Authentication layer
+    feature_categories:
+      - system_access
+
+  Authz:
+    description: Authorization layer
+    feature_categories:
+      - permissions
+
+  Backup:
+    description: Backup and restore
+    feature_categories:
+      - backup_restore
+
+  Boards:
+    description:
+    feature_categories:
+      - team_planning
+      - portfolio_management
+
+  Cd:
+    description: Continuous Deployment
+    feature_categories:
+      - continuous_delivery
+
+  Cells:
+    description: Manages cell-to-cluster operations such as claims, leases, and others.
+    feature_categories:
+      - cell
+
+  Ci:
+    description: Create and run CI/CD pipelines
+    feature_categories:
+      - continuous_integration
+      - pipeline_composition
+      - fleet_visibility
+      - job_artifacts
+      - pipeline_reports
+      - code_testing
+
+  CloudConnector:
+    description:
+    feature_categories:
+      - plan_provisioning
+      - add-on_provisioning
+      - system_access
+
+  Clusters:
+    description:
+    feature_categories:
+      - deployment_management
+
+  CodeSuggestions:
+    description:
+    feature_categories:
+      - code_suggestions
+
+  ComplianceManagement:
+    description:
+    feature_categories:
+      - compliance_management
+      - security_policy_management
+
+  ContainerRegistry:
+    description:
+    feature_categories:
+      - container_registry
+
+  CustomerRelations:
+    description:
+    feature_categories:
+      - team_planning
+
+  DependencyManagement:
+    description: Automated management of project dependencies including version updates and security patches.
+    feature_categories:
+      - dependency_management
+
+  DependencyProxy:
+    description: Dependency Proxy for container images.
+    feature_categories:
+      - virtual_registry
+      - package_registry
+
+  DeployTokens:
+    description: Managing deploy tokens
+    feature_categories:
+      - continuous_delivery
+
+  DesignManagement:
+    description:
+    feature_categories:
+      - design_management
+
+  Environments:
+    description:
+    feature_categories:
+      - continuous_delivery
+      - environment_management
+      - deployment_management
+      - feature_flags
+
+  Experiments:
+    description: Experiment framework and forced assignment capabilities for A/B testing
+    feature_categories:
+      - acquisition
+
+  Geo:
+    description:
+    feature_categories:
+      - geo_replication
+
+  GitlabSubscriptions:
+    description: Managing subscription related code for GitLab.com and Self-Managed
+    feature_categories:
+      - seat_cost_management
+      - plan_provisioning
+      - subscription_management
+      - add-on_provisioning
+
+  Govern:
+    description: SDLC governance policies and the Policy Store (Policies v2)
+    feature_categories:
+      - security_policy_management # Also in Security
+
+  Import:
+    description:
+    feature_categories:
+      - importers
+
+  Integrations:
+    description: Integrate GitLab with external tools and platforms
+    feature_categories:
+      - integrations
+
+  Issuables:
+    description:
+      Common concerns between work items and merge requests such as setting milestone,
+      support discussions, adding labels, etc.
+    feature_categories:
+      - team_planning
+      - portfolio_management
+      - code_review_workflow
+
+  Mcp:
+    description: MCP server, tools and associated classes and tooling.
+    feature_categories:
+      - mcp_server
+
+  Members:
+    description: Layer related to mapping users to groups and projects via membership
+    feature_categories:
+      - user_management
+      - groups_and_projects
+      - permissions
+
+  MergeRequests:
+    description: Code collaboration and review including diffs, MR widgets and mergeability checks
+    feature_categories:
+      - code_review_workflow
+
+  MergeTrains:
+    description: MergeTrains feature intersects between MergeRequests and CI
+    feature_categories:
+      - merge_trains
+
+  Ml:
+    description:
+    feature_categories:
+      - mlops
+
+  Namespaces:
+    description: Managing groups, subgroups and user namespaces
+    feature_categories:
+      - groups_and_projects
+
+  Nav:
+    description: Cross-domain UI navigation.
+      This is not strictly a domain but given the size of the code it makes sense to enforce a namespace
+      for it until a better placement is found
+    feature_categories:
+      - navigation
+
+  Notes:
+    description: Notes, discussions on issuables and abuse reports
+    feature_categories:
+      - team_planning
+      - portfolio_management
+      - code_review_workflow
+      - insider_threat
+
+  Notifications:
+    description: Messaging and notifications in the app.
+    feature_categories:
+      - notifications
+      - acquisition
+
+  Observability:
+    description:
+    feature_categories:
+      - observability
+      - incident_management
+
+  Onboarding:
+    description:
+    feature_categories:
+      - onboarding
+
+  Organizations:
+    description:
+    feature_categories:
+      - organization
+
+  Packages:
+    description: Package registry implementation for each supported format (such as Maven, NPM, NuGet, ...).
+    feature_categories:
+      - package_registry
+      - mlops
+
+  Pages:
+    description:
+    feature_categories:
+      - pages
+
+  Projects:
+    description: Managing projects as workspaces and their lifecycle. Feature specific behavior must not go here.
+    feature_categories:
+      - groups_and_projects
+
+  PushRules:
+    description:
+      Push rules are pre-receive Git hooks.
+      Push rules are inheritable and can be defined at organization, group or project level.
+      A group push rule can override an organization push rule.
+      A project push rule can override a group push rule.
+    feature_categories:
+      - source_code_management
+
+  Releases:
+    description:
+    feature_categories:
+      - release_orchestration
+      - release_evidence
+
+  RemoteDevelopment:
+    description:
+    feature_categories:
+      - workspaces
+
+  Repositories:
+    description: Git repositories and workflow including Gitaly client
+    feature_categories:
+      - source_code_management
+      - gitaly
+
+  ResourceAccessTokens:
+    description: Managing groups and projects access tokens
+    feature_categories:
+      - system_access
+
+  Sbom:
+    description: SBOM related ingestion
+    feature_categories:
+      - software_composition_analysis
+      - dependency_management
+
+  Search:
+    description: Code and content global search feature, including RAG, Elasticsearch and Zoekt integrations.
+    feature_categories:
+      - global_search
+
+  SecretsManagement:
+    description: Management of native and external secrets
+    feature_categories:
+      - secrets_management
+
+  Security:
+    description: Manage and execute security scanners and policies
+    feature_categories:
+      - container_scanning
+      - dynamic_application_security_testing
+      - security_policy_management
+      - software_composition_analysis
+      - static_application_security_testing
+      - secret_detection
+
+  ServiceDesk:
+    description:
+    feature_categories:
+      - service_desk
+
+  ServicePing:
+    description:
+    feature_categories:
+      - service_ping
+
+  Snippets:
+    description: Snippets to store and share bits of code and text with other users.
+    feature_categories:
+      - source_code_management
+
+  StatusPage:
+    description:
+    feature_categories:
+      - incident_management
+
+  SupplyChain:
+    description: Capabilities related to securing the software supply chain
+    feature_categories:
+      - artifact_security
+
+  Terraform:
+    description:
+    feature_categories:
+      - infrastructure_as_code
+
+  Todos:
+    description: User todos management
+    feature_categories:
+      - notifications
+
+  Users:
+    description: Behavior related to user lifecycle and profile settings. Feature specific behavior must not go here.
+    feature_categories:
+      - user_profile
+      - user_management
+
+  Utilization:
+    description:
+    feature_categories:
+      - consumables_cost_management
+
+  VirtualRegistries:
+    description: Virtual registries implementation that manage artifacts (packages or container images) from external upstreams.
+    feature_categories:
+      - virtual_registry
+
+  Vulnerabilities:
+    description: Vulnerability management
+    feature_categories:
+      - vulnerability_management
+
+  WebHooks:
+    description: Outbound integration of GitLab with external tools and workflows
+    feature_categories:
+      - webhooks
+
+  WebIde:
+    description:
+    feature_categories:
+      - web_ide
+
+  Wikis:
+    description:
+    feature_categories:
+      - wiki
+
+  WorkItems:
+    description: Issues, Epics, Tasks and WorkItems
+    feature_categories:
+      - team_planning
+      - portfolio_management
+
+######################
+# Platform layer
+#
+# Shared codebase contains cross-domain generic concepts for the monolith.
+# This is where all shared concepts live, from Base classes to utilities.
+# Modules from the platform layer could potentially be extracted as gems.
+platform:
+  Gitlab:
+    description:
+      Platform layer containing infrastructure and technical concerns.
+      For example observability tools, generic base classes, utilities, database helpers, etc.
+      Each functionality in this layer should be isolated and extracted into gems.
+  Banzai:
+    description: Parsing and rendering for GitLab Flavored Markdown

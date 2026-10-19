@@ -1,0 +1,586 @@
+---
+stage: Growth
+group: Acquisition
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Implementing an A/B/n experiment
+---
+
+## Implementing an experiment
+
+[Examples](https://gitlab.com/groups/gitlab-org/growth/-/wikis/GLEX-How-Tos)
+
+Start by generating a feature flag using the `bin/feature-flag` command as you
+usually would for a development feature flag, making sure to use `experiment` for
+the type. For the sake of documentation let's name our feature flag (and experiment)
+`pill_color`.
+
+```shell
+bin/feature-flag pill_color -t experiment
+```
+
+After you generate the desired feature flag, define an experiment class. Every
+experiment must be declaratively defined as a class in `app/experiments` (or
+`ee/app/experiments` for EE experiments). GitLab sets `config.strict_registration = true`
+in [`config/initializers/gitlab_experiment.rb`](https://gitlab.com/gitlab-org/gitlab/-/blob/master/config/initializers/gitlab_experiment.rb),
+so inline experiments that run without a registered class raise
+`Gitlab::Experiment::UnregisteredExperiment`. Use the Rails generator to create
+the class:
+
+```shell
+rails generate gitlab:experiment pill_color control red blue
+```
+
+This generates `app/experiments/pill_color_experiment.rb` with the variants you
+provide to the generator:
+
+```ruby
+class PillColorExperiment < ApplicationExperiment
+  control { 'control' }
+  variant(:red) { 'red' }
+  variant(:blue) { 'blue' }
+end
+```
+
+After you define the class, run the experiment in code:
+
+```ruby
+experiment(:pill_color, actor: current_user).run
+```
+
+You can also pass a block to override the registered variants at the call site.
+The block form runs the experiment without an explicit `run`:
+
+```ruby
+experiment(:pill_color, actor: current_user) do |e|
+  e.control { 'control' }
+  e.variant(:red) { 'red' }
+  e.variant(:blue) { 'blue' }
+end
+```
+
+When this code executes, the experiment is run, a variant is assigned, and (if in a
+controller or view) a `window.gl.experiments.pill_color` object is available in the
+client layer, with details like:
+
+- The assigned variant.
+- The context key for client tracking events.
+
+In addition, when an experiment runs, an event is tracked for
+the experiment `:assignment`. We cover more about events, tracking, and
+the client layer later.
+
+## Testing experiments locally
+
+### Prerequisites
+
+- [Enable GitLab.com mode](../ee_features.md#simulate-a-saas-instance) in your local development environment
+
+### Running the experiment
+
+You can make the experiment active by using the feature flag
+interface. You can also target specific cases by providing the relevant experiment
+to the call to enable the feature flag:
+
+```ruby
+# Enable for everyone
+Feature.enable(:pill_color)
+
+# Get the `experiment` method -- already available in controllers, views, and mailers.
+include Gitlab::Experiment::Dsl
+# Enable for only the first user
+Feature.enable(:pill_color, experiment(:pill_color, actor: User.first))
+```
+
+GitLab implements a [custom rollout mechanism](https://gitlab.com/gitlab-org/gitlab/-/blob/13be37aa2cf7123950ac5d9f51e442e19856eaf3/config/initializers/gitlab_experiment.rb#L16-16)
+by extending the `gitlab-experiment` gem's [percent rollout strategy](https://gitlab.com/gitlab-org/ruby/gems/gitlab-experiment/-/blob/master/lib/gitlab/experiment/rollout/percent.rb).
+
+If the feature flag is disabled, the experiment isn't running at all. Users follow
+the default code path without any variant assignment or tracking.
+
+If the feature flag is enabled, the configured percentage is distributed among non-control
+variants, with control receiving the remaining percentage. Users are actively
+assigned to variants and tracked as experiment participants.
+
+To roll out your experiment feature flag on an environment, run
+the following command using ChatOps (which is covered in more depth in the
+[Feature flags in development of GitLab](../feature_flags/_index.md) documentation).
+This command creates a scenario where half of everyone who encounters
+the experiment would be assigned the _control_, 25% would be assigned the _red_
+variant, and 25% would be assigned the _blue_ variant:
+
+```plaintext
+/chatops gitlab run feature set pill_color 50 --actors
+```
+
+For an even distribution in this example, change the command to set it to 66% instead
+of 50.
+
+To immediately stop running an experiment, use the
+`/chatops gitlab run feature set pill_color false` command.
+
+> [!warning]
+> We strongly recommend using the `--actors` flag when using the ChatOps commands,
+> as anything else may give odd behaviors due to how the caching of variant assignment is
+> handled.
+
+### Force variant assignment
+
+There are two ways to force a specific variant for testing and debugging,
+depending on whether a request/response cycle is available.
+
+#### Client-side: `glex_force` query parameter
+
+For experiments that run in a controller, view, or any context with an HTTP
+request, append the `glex_force` query parameter to the URL:
+
+```plaintext
+https://gitlab.example.com/my/page?glex_force=pill_color:red
+```
+
+This sets a cookie that persists the forced variant across subsequent requests.
+Use this approach for frontend experiments and any experiment where the user
+interacts through a browser, including experiments with anonymous or
+unauthenticated users.
+
+For detailed behavior including anonymous-to-authenticated migration, re-assignment,
+and interaction with disabled experiments, see the
+[`gitlab-experiment` gem documentation](https://gitlab.com/gitlab-org/ruby/gems/gitlab-experiment#forced-variant-assignment-qauat).
+
+#### Server-side: assignments API
+
+For backend-only experiments that run outside of a request/response cycle
+(for example, in background jobs, service objects, or Rake tasks), the `glex_force`
+query parameter is not available. Use the
+[experiment assignments API](../../api/experiments.md#force-a-variant-assignment) instead.
+
+The API writes the variant assignment directly to the GLEX Redis cache using the
+experiment context signature. The experiment must declare its context keys by
+overriding `self.context_keys` in its experiment class. For more information, see
+[Declaring context keys for the experiments API](#declaring-context-keys-for-the-experiments-api).
+
+Force a variant for a specific user:
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/experiments/my_experiment/assignments" \
+  --data "variant=candidate" \
+  --data "context[user]=sidney-jones"
+```
+
+Read the current assignment:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/experiments/my_experiment/assignments?context[user]=sidney-jones"
+```
+
+If you omit the `context` parameter, the API defaults to the authenticated user.
+
+> [!note]
+> The assignments API requires authentication and is restricted to
+> [GitLab team members](https://gitlab.com/groups/gitlab-com/-/group_members).
+> It cannot be used with anonymous or unauthenticated users. For experiments
+> involving anonymous users, use the `glex_force` query parameter instead.
+
+We can also implement this experiment in a HAML file with HTML wrappings:
+
+```ruby
+#cta-interface
+  - experiment(:pill_color, actor: current_user) do |e|
+    - e.control do
+      .pill-button control
+    - e.variant(:red) do
+      .pill-button.red red
+    - e.variant(:blue) do
+      .pill-button.blue blue
+```
+
+### The importance of context
+
+In our previous example experiment, our context (this is an important term) is a hash
+that's set to `{ actor: current_user }`. Context must be unique based on how you
+want to run your experiment, and should be understood at a lower level.
+
+It's expected, and recommended, that you use some of these
+contexts to simplify reporting:
+
+- `{ actor: current_user }`: Assigns a variant and is "sticky" to each user
+  (or "client" if `current_user` is nil) who enters the experiment.
+- `{ project: project }`: Assigns a variant and is "sticky" to the project
+  being viewed. If running your experiment is more useful when viewing a project,
+  rather than when a specific user is viewing any project, consider this approach.
+- `{ group: group }`: Similar to the project example, but applies to a wider
+  scope of projects and users.
+- `{ actor: current_user, project: project }`: Assigns a variant and is "sticky"
+  to the user who is viewing the given project. This creates a different variant
+  assignment possibility for every project that `current_user` views. Understand this
+  can create a large cache size if an experiment like this runs in a highly trafficked part
+  of the application.
+- `{ wday: Time.current.wday }`: Assigns a variant based on the current day of the
+  week. In this example, it would consistently assign one variant on Friday, and a
+  potentially different variant on Saturday.
+
+Context is critical to how you define and report on your experiment. It's usually
+the most important aspect of how you choose to implement your experiment, so consider
+it carefully, and discuss it with the wider team if needed. Also, take into account
+that the context you choose affects our cache size.
+
+After the above examples, we can state the general case: *given a specific
+and consistent context, we can provide a consistent experience and track events for
+that experience.* To dive a bit deeper into the implementation details: a context key
+is generated from the context that's provided. Use this context key to:
+
+- Determine the assigned variant.
+- Identify events tracked against that context key.
+
+We can think about this as the experience that we've rendered, which is both dictated
+and tracked by the context key. The context key is used to track the interaction and
+results of the experience we've rendered to that context key. These concepts are
+somewhat abstract and hard to understand initially, but this approach enables us to
+communicate about experiments as something that's wider than just user behavior.
+
+Using `actor:` uses cookies if the `current_user` is nil. If you don't need
+cookies though - meaning that the exposed functionality would only be visible to
+authenticated users - `{ user: current_user }` would be just as effective.
+
+> [!warning]
+> The caching of variant assignment is done by using this context, and so consider
+> your impact on the cache size when defining your experiment. If you use
+> `{ time: Time.current }` you would be inflating the cache size every time the
+> experiment is run. Not only that, your experiment would not be "sticky" and events
+> wouldn't be resolvable.
+
+### Declaring context keys for the experiments API
+
+To read cached variant assignments through the
+[experiments API](../../api/experiments.md), the experiment class must declare
+its context keys by overriding `self.context_keys`. The declared keys must match
+the context used at the experiment's call sites:
+
+```ruby
+class MyExperiment < ApplicationExperiment
+  def self.context_keys = %i[user]
+end
+```
+
+Multiple keys are supported. Declare them in the same order as the keyword
+arguments in the `experiment()` call, because GLEX derives cache keys from
+the ordered context. For example, if the experiment is called with
+`experiment(:my_experiment, user: user, namespace: namespace)`:
+
+```ruby
+class MyExperiment < ApplicationExperiment
+  def self.context_keys = %i[user namespace]
+end
+```
+
+The supported keys are `user`, `actor`, `namespace`, and `project`.
+When you query the API, pass every declared key as a `context` parameter,
+except `actor`, which is resolved from the `user` parameter.
+For example, an experiment that declares `actor` reads its value from
+`context[user]`, not `context[actor]`.
+The `user` and `actor` keys fall back to the authenticated user.
+
+### Advanced experimentation
+
+The block form shown previously can override a single variant while leaving the
+rest to the class defaults:
+
+```ruby
+experiment(:pill_color, actor: current_user) do |e|
+  e.control { '<strong>control</strong>' }
+end
+```
+
+> [!note]
+> When passing a block to the `experiment` method, it is implicitly invoked as
+> if `run` has been called.
+
+#### Segmentation rules
+
+You can use runtime segmentation rules to, for instance, segment contexts into a specific
+variant. The `segment` method is a callback (like `before_action`) and so allows providing
+a block or method name.
+
+In this example, any user named `'Richard'` would always be assigned the _red_
+variant, and any account older than 2 weeks old would be assigned the _blue_ variant:
+
+```ruby
+class PillColorExperiment < ApplicationExperiment
+  # ...registered behaviors
+
+  segment(variant: :red) { context.actor.first_name == 'Richard' }
+  segment :old_account?, variant: :blue
+
+  private
+
+  def old_account?
+    context.actor.created_at < 2.weeks.ago
+  end
+end
+```
+
+When an experiment runs, the segmentation rules are executed in the order they're
+defined. The first segmentation rule to produce a truthy result assigns the variant.
+
+In our example, any user named `'Richard'`, regardless of account age, is always
+assigned the _red_ variant. If you want the opposite logic, flip the order.
+
+> [!note]
+> Keep in mind when defining segmentation rules: after a truthy result, the remaining
+> segmentation rules are skipped to achieve optimal performance.
+
+#### Exclusion rules
+
+Exclusion rules are similar to segmentation rules, but are intended to determine
+if a context should even be considered as something we should include in the experiment
+and track events toward. Exclusion means we don't care about the events in relation
+to the given context.
+
+These examples exclude all users named `'Richard'`, and any account
+older than 2 weeks old. Not only are they given the control behavior - which could
+be nothing - but no events are tracked in these cases as well.
+
+```ruby
+class PillColorExperiment < ApplicationExperiment
+  # ...registered behaviors
+
+  exclude :old_account?, ->{ context.actor.first_name == 'Richard' }
+
+  private
+
+  def old_account?
+    context.actor.created_at < 2.weeks.ago
+  end
+end
+```
+
+You may also need to check exclusion in custom tracking logic by calling `should_track?`:
+
+```ruby
+class PillColorExperiment < ApplicationExperiment
+  # ...registered behaviors
+
+  def expensive_tracking_logic
+    return unless should_track?
+
+    track(:my_event, value: expensive_method_call)
+  end
+end
+```
+
+### Tracking events
+
+One of the most important aspects of experiments is gathering data and reporting on
+it. You can use the `track` method to track events across an experimental implementation.
+You can track events consistently to an experiment if you provide the same context between
+calls to your experiment. If you do not understand context, you should read
+about contexts now.
+
+We can assume we run the experiment in one or a few places, but
+track events potentially in many places. The tracking call remains the same, with
+the arguments you would usually use when
+tracking events using Snowplow. The easiest example
+of tracking an event in Ruby would be:
+
+```ruby
+experiment(:pill_color, actor: current_user).track(:clicked)
+```
+
+When you run an experiment with any of the examples so far, an `:assignment` event
+is tracked automatically by default. All events that are tracked from an
+experiment have a special
+[experiment context](https://gitlab.com/gitlab-org/iglu/-/blob/master/public/schemas/com.gitlab/gitlab_experiment/jsonschema/1-0-3)
+added to the event. This can be used - typically by the data team - to create a connection
+between the events on a given experiment.
+
+If our user hasn't encountered the experiment (meaning where the experiment
+is run), and we track an event for them, they are assigned a variant and see
+that variant if they ever encountered the experiment later, when an `:assignment`
+event would be tracked at that time for them.
+
+> [!note]
+> GitLab tries to be sensitive and respectful of our customers regarding tracking,
+> so our experimentation library allows us to implement an experiment without ever tracking identifying
+> IDs. It's not always possible, though, based on experiment reporting requirements.
+> You may be asked from time to time to track a specific record ID in experiments.
+> The approach is largely up to the PM and engineer creating the implementation.
+> No recommendations are provided here at this time.
+
+## Experiments in the client layer
+
+Any experiment that's been run in the request lifecycle surfaces in `window.gl.experiments`,
+and matches [this schema](https://gitlab.com/gitlab-org/iglu/-/blob/master/public/schemas/com.gitlab/gitlab_experiment/jsonschema/1-0-3)
+so it can be used when resolving experimentation in the client layer.
+
+Given that we've defined a class for our experiment, and have defined the variants for it, we can publish that experiment in a couple of ways.
+
+The first way is by running the experiment. Assuming the experiment has been run, it surfaces in the client layer without having to do anything special.
+
+The second way doesn't run the experiment and is intended to be used if the experiment must only surface in the client layer. To accomplish this we can `.publish` the experiment. This does not run any logic, but does surface the experiment details in the client layer so they can be used there.
+
+An example might be to publish an experiment in a `before_action` in a controller. Assuming we've defined the `PillColorExperiment` class, like we have above, we can surface it to the client by publishing it instead of running it:
+
+```ruby
+before_action -> { experiment(:pill_color).publish }, only: [:show]
+```
+
+You can then see this surface in the JavaScript console:
+
+```javascript
+window.gl.experiments // => { pill_color: { excluded: false, experiment: "pill_color", key: "ca63ac02", variant: "candidate" } }
+```
+
+### Using experiments in Vue
+
+With the `gitlab-experiment` component, you can define slots that match the name of the
+variants pushed to `window.gl.experiments`.
+
+We can make use of the named slots in the Vue component, that match the behaviors defined in our experiment class:
+
+```vue
+<script>
+import GitlabExperiment from '~/experimentation/components/gitlab_experiment.vue';
+
+export default {
+  components: { GitlabExperiment }
+}
+</script>
+
+<template>
+  <gitlab-experiment name="pill_color">
+    <template #control>
+      <button class="bg-default">Click default button</button>
+    </template>
+
+    <template #red>
+      <button class="bg-red">Click red button</button>
+    </template>
+
+    <template #blue>
+      <button class="bg-blue">Click blue button</button>
+    </template>
+  </gitlab-experiment>
+</template>
+```
+
+> [!note]
+> When there is no experiment data in the `window.gl.experiments` object for the given experiment name, the `control` slot is used, if it exists.
+
+### Tracking with the tracking mixin
+
+Use `Tracking.mixin` to add a `track` method to Vue components that automatically includes the experiment context.
+Call `this.track()` in your component to fire events with the correct experiment context.
+
+```vue
+<script>
+import Tracking from '~/tracking';
+
+export default {
+  mixins: [Tracking.mixin({ experiment: 'pill_color' })],
+  mounted() {
+    this.track('show_form', {
+      label: 'pill_color_form',
+    });
+  },
+};
+</script>
+
+<template>
+  <form>
+    <!-- form content -->
+  </form>
+</template>
+```
+
+When the component mounts, the `track` call fires a `show_form` event that includes the `pill_color` experiment context, which the data team can use to join experiment assignment with interaction events.
+
+## Experiment development best practices
+
+### Validate event structure locally before staging
+
+Event structure validation must happen during local development, not in staging or production.
+In staging and production, only verify that events are received in Snowplow as expected.
+
+Use [Snowplow Micro](../internal_analytics/internal_event_instrumentation/local_setup_and_debugging.md#snowplow-micro)
+to validate event structure locally:
+
+1. Set up Snowplow Micro in your local GDK environment.
+1. Trigger all tracking events through the experiment flow for each variant (control and candidate).
+1. Paste the raw Snowplow Micro output into the experiment rollout issue as proof of correct event structure.
+
+By the time an experiment reaches staging, the event structure should already be verified.
+Staging and production validation then focuses only on confirming that events flow through
+the pipeline and appear in Tableau dashboards.
+
+### Multi-page experiment
+
+If the experiment runs on many pages, you should verify it sticks to the same variant by visiting all pages with partial rollout:
+
+`Feature.enable_percentage_of_actors(:my_experiment, 50)`
+
+### Use `only_assigned` for secondary experiment blocks
+
+Experiment blocks that are not the entry point into an experiment should use the
+[`only_assigned`](https://gitlab.com/gitlab-org/ruby/gems/gitlab-experiment/-/blob/master/README.md#progressive-rollout-with-only_assigned)
+option. This prevents users from entering an experiment flow mid-way through.
+
+For example, if an experiment starts on the registration page and continues through
+the welcome page, the welcome page experiment block should use `only_assigned: true`:
+
+```ruby
+experiment(:my_experiment, actor: current_user, only_assigned: true).track(:render_welcome)
+```
+
+Without `only_assigned`, a user who bypasses the registration page could still be
+assigned a variant on the welcome page, resulting in an inconsistent experience.
+
+### Manual testing on staging
+
+When you test experiments manually on staging, a 100% rollout removes the need to
+find candidate or control sessions. However, a full rollout also masks issues
+where a user enters or exits an experiment unexpectedly due to an exclusion bug or
+inconsistent context.
+
+To catch these issues, test at lower rollout percentages and verify that users
+remain in their assigned variant across the full experiment lifecycle.
+
+### Write feature specs for multi-page experiments
+
+Unit tests may not catch issues in experiments that span multiple experiment blocks
+because the experiment context (notably the user during registration) can change
+between blocks, which causes re-segmentation. Write feature specs that cover the
+full experiment lifespan for any experiment that spans multiple pages.
+
+Use the `:experiment_tracking` RSpec metadata to verify that tracking events fire
+and to confirm the expected number of segmentations. Pass `experiment_tracking: 1`
+for most experiments.
+
+> [!note]
+> The `experiment_tracking` metadata watches tracking events. During user creation,
+> you see an assignment both before (with the cookie value) and after creation
+> (with the user model). Pass `experiment_tracking: 2` in those cases.
+
+```ruby
+context 'when candidate experience', experiment_tracking: 1 do
+  before do
+    stub_feature_flags(my_experiment: true)
+    stub_application_setting_enum('email_confirmation_setting', 'hard')
+  end
+
+  it 'completes the experiment flow' do
+    # test contents
+
+    is_expected.to have_tracked_experiment(:my_experiment, [
+      :assignment,
+      :completed_trial_form,
+      :completed_identity_verification,
+      :render_welcome,
+      { action: :completed_group_project_creation, namespace: namespace },
+      :render_get_started
+    ])
+  end
+end
+```

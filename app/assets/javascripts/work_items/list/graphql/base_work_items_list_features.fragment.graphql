@@ -1,0 +1,61 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+fragment BaseWorkItemsListFeatures on WorkItemFeatures {
+  assignees {
+    allowsMultipleAssignees
+    canInviteMembers
+    assignees {
+      nodes {
+        ...User
+      }
+    }
+  }
+  labels {
+    allowsScopedLabels
+    labels {
+      nodes {
+        id
+        color
+        description
+        title
+      }
+    }
+  }
+  awardEmoji {
+    upvotes
+    downvotes
+  }
+  milestone {
+    milestone {
+      id
+      title
+      webPath
+    }
+  }
+  startAndDueDate {
+    startDate
+    dueDate
+    rollUp
+  }
+  timeTracking {
+    humanReadableAttributes {
+      timeEstimate
+    }
+  }
+  development {
+    closingMergeRequestsCount @gl_introduced(version: "19.4.0")
+  }
+  hierarchy {
+    parent {
+      id
+      iid
+      title
+      titleHtml
+      webUrl
+      namespace {
+        id
+        fullPath
+      }
+    }
+  }
+}

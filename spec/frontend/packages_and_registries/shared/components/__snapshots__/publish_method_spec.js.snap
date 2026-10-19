@@ -1,0 +1,42 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`publish_method renders 1`] = `
+<div
+  class="gl-flex gl-items-center"
+>
+  <gl-icon-stub
+    class="gl-mr-2"
+    name="merge-request"
+    size="16"
+    variant="current"
+  />
+  <span
+    class="gl-mr-2"
+    data-testid="pipeline-ref"
+  >
+    branch-name
+  </span>
+  <gl-icon-stub
+    class="gl-mr-2"
+    name="commit"
+    size="16"
+    variant="current"
+  />
+  <gl-link-stub
+    class="gl-mr-2"
+    data-testid="pipeline-sha"
+    href="../commit/sha-baz"
+  >
+    sha-baz
+  </gl-link-stub>
+  <clipboard-button-stub
+    category="tertiary"
+    icon="copy-to-clipboard"
+    size="small"
+    text="sha-baz"
+    title="Copy commit SHA"
+    tooltipplacement="top"
+    variant="default"
+  />
+</div>
+`;

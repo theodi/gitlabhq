@@ -1,0 +1,40 @@
+inherit_from:
+  - ../config/rubocop.yml
+
+Gemfile/MissingFeatureCategory:
+  Enabled: false
+
+Search/NamespacedClass:
+  Enabled: false
+
+RSpec/AnyInstanceOf:
+  Enabled: false
+
+Naming/MethodParameterName:
+  Enabled: false
+
+RSpec/MultipleMemoizedHelpers:
+  Max: 25
+
+RSpec/VerifiedDoubles:
+  Enabled: false
+
+Naming/ClassAndModuleCamelCase:
+  AllowedNames:
+    - V1_0
+
+RSpec/VerifiedDoubleReference:
+  Exclude:
+  - 'spec/lib/active_context/bulk_process_queue_spec.rb'
+  - 'spec/lib/active_context/reference_spec.rb'
+  - 'spec/lib/active_context/tracker_spec.rb'
+
+Gitlab/ModuleWithInstanceVariables:
+  Exclude:
+  - 'lib/active_context/databases/concerns/elastic_indexer.rb'
+
+Database/EstablishConnection:
+  Enabled: false
+
+Database/MultipleDatabases:
+  Enabled: false

@@ -1,0 +1,27 @@
+#import "ee_else_ce/work_items/graphql/notes/work_item_note.fragment.graphql"
+
+# @feature_category: team_planning
+query workItemNote($id: NoteID!) {
+  note(id: $id) {
+    id
+    noteableType
+    noteableId
+    discussion {
+      id
+      resolved
+      resolvable
+      resolvedBy {
+        id
+        name
+      }
+      userPermissions {
+        resolveNote
+      }
+      notes {
+        nodes {
+          ...WorkItemNote
+        }
+      }
+    }
+  }
+}

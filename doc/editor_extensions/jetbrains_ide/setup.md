@@ -1,0 +1,155 @@
+---
+stage: AI Clients
+group: Developer Clients
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Connect and use GitLab Duo in JetBrains IDEs.
+title: Install and set up the GitLab Duo plugin for JetBrains IDEs
+---
+
+Download the plugin from the [JetBrains Plugin Marketplace](https://plugins.jetbrains.com/plugin/22325-gitlab-duo)
+and install it.
+
+Prerequisites:
+
+- JetBrains IDEs: 2025.1 and later.
+- GitLab version 16.8 or later.
+
+If you use an older version of a JetBrains IDE, download a version of the plugin compatible with your IDE:
+
+1. On the GitLab Duo [plugin page](https://plugins.jetbrains.com/plugin/22325-gitlab-duo), select **Versions**.
+1. Select **Compatibility**, then select your JetBrains IDE.
+1. Select a **Channel** to filter for stable releases or alpha releases.
+1. In the compatibility table, find your IDE version and select **Download**.
+
+## Enable the plugin
+
+To enable the plugin:
+
+1. In your IDE, in the top bar, select your IDE's name, then select **Settings**.
+1. In the left sidebar, select **Plugins**.
+1. Select the **GitLab Duo** plugin, and select **Install**.
+1. Select **OK** or **Save**.
+
+## Connect to GitLab
+
+After you install the extension, connect it to your GitLab account.
+
+### Authenticate with GitLab
+
+Prerequisites:
+
+- For GitLab Self-Managed and GitLab Dedicated authentication using OAuth:
+  - GitLab Duo plugin for JetBrains 3.30.30 and later.
+  - The application ID for an instance-wide [OAuth application for JetBrains IDEs](../../administration/settings/editor_extensions.md#jetbrains-ides).
+- For authentication using PAT, a [personal access token](../../user/profile/personal_access_tokens.md#create-a-personal-access-token)
+  with the `api` scope.
+- For authentication with 1Password, completion of the [steps to integrate with 1Password](_index.md#integrate-with-1password-cli)
+  and the secret reference.
+
+After you configure the plugin in your IDE, connect it to your GitLab account:
+
+1. In your IDE, in the top bar, select your IDE's name, then select **Settings**.
+1. In the left sidebar, expand **Tools**, then select **GitLab Duo**.
+   If you don't see the plugin listed, restart your IDE.
+1. Provide the **URL to GitLab instance**. For GitLab.com, use `https://gitlab.com`.
+1. Select an authentication method, **OAuth**, **PAT**, or **1Password CLI**.
+   - For OAuth, follow the prompts to sign in and authenticate.
+   - For PAT, enter your personal access token.
+     The token value is not displayed or accessible to others.
+   - For 1Password, select **Integrate with 1Password CLI**, select your account, and, optionally,
+     enter the secret reference.
+1. Select **Verify setup**.
+1. Select **OK** or **Save**.
+
+## Configure GitLab Duo
+
+Prerequisites:
+
+- For agentic features, you meet the prerequisites for [GitLab Duo Agent Platform](../../user/duo_agent_platform/_index.md#prerequisites).
+- You have GitLab Duo [turned on](../../user/gitlab_duo/turn_on_off.md).
+- For flows, you have [foundational flows turned on](../../user/duo_agent_platform/flows/foundational_flows/_index.md#turn-foundational-flows-on-or-off).
+- For agents, you have [foundational agents turned on](../../user/duo_agent_platform/agents/foundational_agents/_index.md#turn-foundational-agents-on-or-off)
+  and [custom agents enabled](../../user/duo_agent_platform/agents/custom.md#enable-an-agent), as
+  needed.
+- For Code Suggestions, you meet the [additional prerequisites](../../user/project/repository/code_suggestions/set_up.md#prerequisites).
+- Your project is in a [group namespace](../../user/namespace/_index.md).
+- You have a [default GitLab Duo namespace](../../user/profile/preferences.md#namespace-resolution-in-your-local-environment)
+  set or have a project open that has GitLab Duo access.
+
+To turn GitLab Duo features on or off:
+
+1. In your JetBrains IDE, go to **Settings** > **Tools** > **GitLab Duo**.
+1. Find the feature you want to modify and select or clear the checkbox.
+1. Select **OK** or **Save**.
+1. Restart your IDE, if prompted.
+
+When Code Suggestions is on, you can also
+[turn it off for specific languages](../../user/project/repository/code_suggestions/supported_extensions.md#jetbrains-ides).
+
+To approve Agentic Chat tools once per session instead of individually,
+see [tool approvals](../../user/gitlab_duo_chat/agentic_chat.md#tool-approvals).
+
+### Add a custom certificate for Code Suggestions
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/editor-extensions/gitlab-jetbrains-plugin/-/releases/v2.10.0) in GitLab Duo plugin for JetBrains IDEs 2.10.0 during the GitLab 17.2 release.
+
+{{< /history >}}
+
+GitLab Duo attempts to detect [trusted root certificates](https://www.jetbrains.com/help/idea/ssl-certificates.html)
+without configuration on your part. If needed, configure your JetBrains IDE to allow the GitLab Duo plugin
+to use a custom SSL certificate when connecting to your GitLab instance.
+
+To use a custom SSL certificate with GitLab Duo:
+
+1. In your JetBrains IDE, go to **Settings** > **Tools** > **GitLab Duo**.
+1. Under **Connection**, enter the **URL to GitLab instance**.
+1. To verify your connection, select **Verify setup**.
+1. Select **OK** or **Save**.
+
+The GitLab Duo plugin displays a message if your IDE detects a non-trusted SSL certificate.
+Review the SSL certificate details and confirm the certificate details match the certificate
+that displays when you connect to GitLab in your browser.
+
+To review certificates you've already accepted:
+
+1. In your JetBrains IDE, go to **Settings** > **Appearance & Behavior** > **System Settings** > **Server Certificates**.
+1. Select a certificate to view it.
+
+### Connect GitLab Duo directly
+
+By default, traffic for GitLab Duo and other GitLab features handled by the GitLab Language Server
+uses the proxy settings from your JetBrains IDE or system environment.
+If your proxy blocks this traffic, you can configure your editor extension to bypass the proxy
+for those requests.
+
+To connect GitLab Duo directly:
+
+1. In your JetBrains IDE, go to **Settings** > **Tools** > **GitLab Duo**.
+1. Under **Advanced** > **GitLab Language Server**, select **Connect GitLab Duo directly from the Language Server**.
+1. Select **OK** or **Apply**.
+
+This setting only affects traffic handled by the GitLab Language Server.
+Other editor extension network requests continue to use the proxy configuration for the editor.
+
+## Install alpha versions of the plugin
+
+GitLab publishes pre-release (alpha) builds of the plugin to the
+[`Alpha` release channel](https://plugins.jetbrains.com/plugin/22325-gitlab-duo/edit/versions/alpha)
+in the JetBrains Marketplace.
+
+To install a pre-release build, either:
+
+- Download the build from JetBrains Marketplace and
+  [install it from disk](https://www.jetbrains.com/help/idea/managing-plugins.html#install_plugin_from_disk).
+- [Add the `alpha` plugin repository](https://www.jetbrains.com/help/idea/managing-plugins.html#add_plugin_repos)
+  to your IDE. For the repository URL, use `https://plugins.jetbrains.com/plugins/alpha/list`.
+
+  > [!note]
+  > To see the alpha release after adding the `alpha` plugin repository, you might need to uninstall and reinstall the GitLab Duo plugin.
+
+<i class="fa-youtube-play" aria-hidden="true"></i>
+For a video tutorial of this process, see
+[Install alpha releases of the GitLab Duo plugin for JetBrains](https://www.youtube.com/watch?v=Z9AuKybmeRU).
+<!-- Video published on 2024-04-04 -->

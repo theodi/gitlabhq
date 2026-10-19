@@ -1,0 +1,15 @@
+---
+Gitlab/AvoidGitlabDedicatedInstanceChecks:
+  Exclude:
+    - 'app/controllers/admin/registrations/groups_controller.rb'
+    - 'app/controllers/admin/registrations/profiles_controller.rb'
+    - 'app/controllers/event_forward/event_forward_controller.rb'
+    - 'app/controllers/sessions_controller.rb'
+    - 'ee/app/models/ee/ci/runner.rb'
+    - 'ee/app/policies/ee/global_policy.rb'
+    - 'ee/app/services/ci/minutes/update_gitlab_hosted_runner_monthly_usage_service.rb'
+    - 'ee/lib/ee/sidebars/admin/menus/admin_settings_menu.rb'
+    - 'ee/lib/elastic/migration.rb'
+    - 'ee/lib/search/elastic/vulnerability_index_helper.rb'
+    - 'lib/gitlab/auth/editor_extensions/language_server_client_verifier.rb'
+    - 'lib/gitlab/tracking/destinations/snowplow.rb'

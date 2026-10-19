@@ -1,0 +1,19 @@
+query savedReplies($first: Int, $last: Int, $before: String, $after: String) {
+  object: currentUser {
+    id
+    savedReplies(first: $first, last: $last, after: $after, before: $before) {
+      nodes {
+        id
+        name
+        content
+      }
+      count
+      pageInfo {
+        hasNextPage
+        hasPreviousPage
+        endCursor
+        startCursor
+      }
+    }
+  }
+}

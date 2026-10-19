@@ -1,0 +1,31 @@
+include:
+  - component: ${CI_SERVER_FQDN}/gitlab-org/components/danger-review/danger-review@2.1.0
+    inputs:
+      job_image: "${DEFAULT_CI_IMAGE}"
+      job_stage: "preflight"
+      # By default DANGER_DANGERFILE_PREFIX is not defined but allows JiHu to
+      # use a different prefix.
+      # See https://jihulab.com/gitlab-cn/gitlab/-/blob/main-jh/jh/.gitlab-ci.yml
+      dangerfile: "${DANGER_DANGERFILE_PREFIX}Dangerfile"
+      dry_run: true
+
+danger-review:
+  extends:
+    - .default-retry
+    - .ruby-node-cache
+  needs:
+    - job: cache:ruby-gems
+      optional: true
+    - job: cache:node-modules
+      optional: true
+  before_script:
+    - (command -v git &> /dev/null && git config --global http.https://gitlab.com/gitlab-org/gitlab.proactiveAuth basic) || true
+    - source scripts/utils.sh
+    - bundle_install_script
+    - yarn_install_script
+    - fetch_merge_request_history_to_diff_base
+  # extending from .review:rules:danger doesn't work
+  rules: !reference [.review:rules:danger, rules]
+
+danger-review dry-run:
+  rules: !reference [.review:rules:danger-local, rules]

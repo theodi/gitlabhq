@@ -1,0 +1,11 @@
+---
+name: create_geo_node
+description: Grants the ability to create Geo nodes
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - create_geo_node
+assignable_when:
+  - condition: admin

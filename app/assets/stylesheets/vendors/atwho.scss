@@ -1,0 +1,111 @@
+.atwho-view {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: $gl-new-dropdown-min-width;
+  max-width: $gl-new-dropdown-max-width;
+
+  @apply gl-border-dropdown;
+  @apply gl-bg-dropdown;
+  @apply gl-text-default;
+
+  border-radius: $gl-border-radius-large;
+  @apply gl-shadow-md;
+
+
+  small {
+    font-size: $gl-font-size-sm;
+    @apply gl-text-subtle;
+  }
+
+  small.description {
+    display: block;
+    width: auto;
+    margin-top: $gl-spacing-scale-2;
+  }
+
+  .avatar-inline {
+    margin-bottom: 0;
+  }
+
+  .has-warning {
+    .description {
+      color: $gray-900;
+      background-color: $orange-50;
+    }
+  }
+
+  .cur {
+    .avatar {
+      transition-property: none !important;
+      transform: none !important;
+      animation: none !important;
+      border: 1px solid $white;
+    }
+  }
+
+  // TODO: fallback to global style
+  .atwho-view-ul {
+    padding-top: $gl-spacing-scale-2;
+    padding-bottom: $gl-spacing-scale-2;
+    max-height: $gl-max-dropdown-max-height;
+
+    li {
+      border: 0;
+      padding: $gl-padding-6;
+
+      margin-top: $gl-spacing-scale-2;
+      margin-bottom: $gl-spacing-scale-2;
+      margin-left: $gl-spacing-scale-3;
+      margin-right: $gl-spacing-scale-3;
+      border-radius: $gl-border-radius-small;
+      line-height: $gl-line-height-16;
+
+      &.cur {
+        @apply gl-focus;
+        color: var(--gl-dropdown-option-text-color-hover);
+        background-color: var(--gl-dropdown-option-background-color-unselected-hover);
+
+        small {
+          color: inherit;
+        }
+
+        &.has-warning {
+          @apply gl-text-warning;
+        }
+      }
+
+      div.avatar {
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      strong {
+        @apply gl-text-strong;
+      }
+
+      gl-emoji {
+        margin-right: $gl-spacing-scale-2;
+        vertical-align: text-top;
+
+        img {
+          margin-block: -0.1em;
+          top: 0.05em;
+        }
+      }
+
+      .dropdown-label-box {
+        position: relative;
+        top: -1px;
+        margin-right: $gl-spacing-scale-2;
+      }
+    }
+  }
+}
+
+@include gl-container-width-down(sm, panel) {
+  .atwho-view ul li {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}

@@ -1,0 +1,1048 @@
+@import 'mixins_and_variables_and_functions';
+
+.diff-comment-avatar-holders {
+  position: absolute;
+  margin-left: -$gl-padding;
+  z-index: 100;
+  @include code-icon-size();
+
+  &:hover {
+    .diff-comment-avatar,
+    .diff-comments-more-count {
+      @for $i from 1 through 4 {
+        $x-pos: 14px;
+
+        &:nth-child(#{$i}) {
+          @if $i == 4 {
+            $x-pos: 14.5px;
+          }
+
+          transform: translateX((($i * $x-pos) - $x-pos));
+
+          &:hover {
+            transform: translateX((($i * $x-pos) - $x-pos));
+          }
+        }
+      }
+    }
+
+    .diff-comments-more-count {
+      padding-left: 2px;
+      padding-right: 2px;
+    }
+  }
+}
+
+.diff-comment-avatar,
+.diff-comments-more-count {
+  position: absolute;
+  // center 24px avatar on a 20px line
+  left: -2px;
+  top: -2px;
+  margin-right: 0;
+  border-color: var(--white, $white);
+  cursor: pointer;
+  transition: all 0.1s ease-out;
+
+  @for $i from 1 through 4 {
+    &:nth-child(#{$i}) {
+      z-index: (4 - $i);
+    }
+  }
+
+  .avatar {
+    @include code-icon-size();
+  }
+}
+
+.diff-comments-more-count {
+  padding-left: 0;
+  padding-right: 0;
+  overflow: hidden;
+}
+
+.diff-file-changes {
+  max-width: 560px;
+  width: 100%;
+  z-index: 150;
+  min-height: $dropdown-min-height;
+  max-height: $dropdown-max-height;
+  overflow-y: auto;
+  margin-bottom: 0;
+
+  @include gl-container-width-up(sm, panel) {
+    left: $gl-padding;
+  }
+
+  .dropdown-input .dropdown-input-search {
+    pointer-events: all;
+  }
+
+  .diff-changed-file {
+    display: flex;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    min-width: 0;
+  }
+
+  .diff-file-changed-icon {
+    margin-top: 2px;
+  }
+
+  .diff-changed-file-content {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .diff-changed-file-name,
+  .diff-changed-blank-file-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .diff-changed-blank-file-name {
+    color: var(--gray-400, $gray-400);
+    font-style: italic;
+  }
+
+  .diff-changed-file-path {
+    color: var(--gray-400, $gray-400);
+  }
+
+  .diff-changed-stats {
+    margin-left: auto;
+    white-space: nowrap;
+  }
+}
+
+.diff-files-holder {
+  flex: 1;
+  min-width: 0;
+
+  .vue-recycle-scroller__item-wrapper {
+    overflow: visible;
+  }
+
+  .diff-file-is-active {
+    outline: 1px solid var(--gl-focus-ring-outer-color);
+    outline-offset: 2px;
+  }
+}
+
+.diff-grid {
+  .diff-td {
+    // By default min-width is auto with 1fr which causes some overflow problems
+    // https://gitlab.com/gitlab-org/gitlab/-/issues/296222
+    min-width: 0;
+  }
+
+  .diff-grid-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .diff-grid-left,
+  .diff-grid-right {
+    display: grid;
+    // Zero width column is a placeholder for the EE inline code quality diff
+    // see ee/.../diffs.scss for more details
+    grid-template-columns: 50px 8px 0 1fr;
+  }
+
+  .diff-grid-2-col {
+    grid-template-columns: 100px 1fr !important;
+
+    &.parallel {
+      grid-template-columns: 50px 1fr !important;
+    }
+  }
+
+  .diff-grid-comments {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .diff-grid-comments.diff-grid-comments-full-width {
+    grid-template-columns: 1fr;
+
+    .diff-td {
+      border-right: 0;
+      border-bottom: 0;
+    }
+  }
+
+  .diff-grid-drafts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+
+    .content + .content {
+      @apply gl-border-t;
+    }
+
+    .notes-content {
+      border: 0;
+    }
+  }
+
+  &.inline-diff-view {
+    .diff-grid-comments {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .diff-grid-drafts {
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+
+    .diff-grid-row {
+      grid-template-columns: 1fr;
+    }
+
+    .diff-grid-left,
+    .diff-grid-right {
+      // Zero width column is a placeholder for the EE inline code quality diff
+      // see ee/../diffs.scss for more details
+      grid-template-columns: 50px 50px 8px 0 1fr;
+    }
+  }
+}
+
+.diff-line-expand-button {
+  &:hover,
+  &:focus-visible {
+    background-color: var(--gray-200, $gray-200);
+  }
+}
+
+.diff-table.code .diff-tr.line_holder .diff-td.line_content.parallel {
+  width: unset;
+}
+
+.diff-tr {
+  .timeline-discussion-body {
+    padding: 0 0 $gl-padding-4 $gl-padding-32;
+  }
+
+  .timeline-entry img.avatar {
+    margin-top: -2px;
+    margin-right: $gl-padding-8;
+  }
+}
+
+// tiny adjustment to vertical align with the note header text
+.discussion-collapsible {
+  border: 0 !important;
+  margin: 0;
+
+  .timeline-icon {
+    padding-top: 2px;
+  }
+}
+
+// This 11px value should match the additional value found in
+//      /assets/stylesheets/framework/diffs.scss
+// for the $mr-file-header-top SCSS variable within the
+//      .file-title,
+//      .file-title-flex-parent {
+// rule.
+// If they don't match, the file tree and the diff files stick
+// to the top at different heights, which is a bad-looking defect
+$diff-file-header-top: 11px;
+
+.diffs.tab-pane .files {
+  @include gl-container-width-up(md, panel) {
+    // ensure consistent page height when selected file is loading
+    // https://gitlab.com/gitlab-org/gitlab/-/issues/426250
+    // also required for file browser to consume all available height
+    min-height: calc(100vh - (#{$calc-application-header-height} + #{$mr-sticky-header-height} + #{$diff-file-header-top} + #{$content-wrapper-padding}));
+  }
+}
+
+.diff-tree-list {
+  --file-row-height: 32px;
+  --file-tree-min-height: 300px;
+  // can't use rems here because they won't compute to pixels when using `getComputedStyle(el).getPropertyValue()`
+  --file-tree-bottom-padding: 16px;
+  position: sticky;
+  top: calc(#{$calc-application-header-height} + #{$mr-sticky-header-height} + #{$diff-file-header-top});
+  // height calc is fully delegated to the file_browser_height.vue component
+  height: 100%;
+  min-height: var(--file-tree-min-height);
+  z-index: 1;
+
+  .drag-handle {
+    bottom: 16px;
+  }
+}
+
+.diff-tree-list-floating {
+  z-index: 9;
+}
+
+.diff-tree-list-floating-wrapper {
+  position: relative;
+  height: 100%;
+}
+
+.diff-tree-list-floating .diff-tree-list-floating-wrapper {
+  position: fixed;
+  background-color: var(--gl-background-color-default);
+  box-shadow: $gl-spacing-scale-4 0 var(--gl-background-color-default);
+}
+
+.diff-tree-list-resizer {
+  $drag-handle-width: 4px;
+  right: calc(($gl-spacing-scale-4 + $drag-handle-width / 2) * -1) !important;
+}
+
+.diff-tree-list-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+
+.tree-list-holder {
+  height: 100%;
+}
+
+.tree-list-holder .file-row {
+  width: calc(100% - #{$gl-spacing-scale-1} * 2);
+  margin: 0 0 0 $gl-spacing-scale-1;
+  border: 0;
+  min-width: 0;
+  background: transparent;
+}
+
+.tree-list-gutter {
+  height: $grid-size;
+}
+
+.file-row-header {
+  display: flex;
+  align-items: center;
+  height: var(--file-row-height);
+}
+
+@include gl-container-width-down(lg, panel) {
+  .diffs .files {
+    .diff-tree-list {
+      --tree-list-max-height: calc(var(--file-row-height) * 8);
+      position: relative;
+      // height is fully handled on the javascript side in narrow view
+      min-height: 0;
+      height: auto;
+      top: 0 !important;
+      // !important is required to override inline styles of resizable sidebar
+      width: 100% !important;
+      // avoid sticky elements overlap header and other elements
+      z-index: 1;
+      margin-bottom: $gl-spacing-scale-3;
+    }
+
+    .tree-list-holder {
+      padding-right: 0;
+    }
+  }
+}
+
+.ci-widget-container {
+  align-items: center;
+  justify-content: space-between;
+  flex: 1;
+  flex-direction: row;
+
+  @include gl-container-width-down(md, panel) {
+    align-items: initial;
+    flex-direction: column;
+  }
+
+  .coverage {
+    font-size: 12px;
+    @apply gl-text-subtle;
+    line-height: initial;
+  }
+}
+
+.deploy-body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+
+  > *:not(:last-child) {
+    margin-right: 0.3em;
+  }
+
+  svg {
+    vertical-align: text-top;
+  }
+
+  .deployment-info {
+    white-space: nowrap;display: grid;
+    grid-template-columns: max-content minmax(0, max-content) max-content;
+    grid-gap: $gl-spacing-scale-2;
+  }
+
+  .dropdown-menu {
+    width: 400px;
+  }
+}
+
+.deploy-heading,
+.merge-train-position-indicator {
+  padding: $gl-padding-8 $gl-padding;
+
+  .media-body {
+    min-width: 0;
+    font-size: $gl-font-size-sm;
+    margin-left: 32px;
+  }
+
+  &:not(:last-child) {
+    @apply gl-border-b;
+    @apply gl-border-b-section;
+  }
+}
+
+.diff-file-row {
+  transition: color 0.2s ease-in-out;
+}
+
+.diff-file-row.is-active {
+  @apply gl-bg-strong;
+}
+
+.diff-file-row.is-loading {
+  @apply gl-text-disabled;
+}
+
+.mr-info-list {
+  clear: left;
+  position: relative;
+  padding-top: 4px;
+
+  p {
+    margin: 0;
+    position: relative;
+    padding: 4px 0;
+
+    &:last-child {
+      padding-bottom: 0;
+    }
+  }
+
+  &.mr-memory-usage {
+    p {
+      float: left;
+    }
+
+    .memory-graph-container {
+      float: left;
+      margin-left: 5px;
+    }
+  }
+}
+
+.mr-memory-usage {
+  width: 100%;
+
+  p.usage-info-loading .usage-info-load-spinner {
+    margin-right: 10px;
+    font-size: 16px;
+  }
+}
+
+.mr-ready-to-merge-loader {
+  max-width: 418px;
+
+  > svg {
+    vertical-align: middle;
+  }
+}
+
+.mr-section-container {
+  @apply gl-bg-section;
+  @apply gl-border;
+  @apply gl-border-section;
+  @apply gl-rounded-xl;
+
+  &:not(:first-child) {
+    @apply gl-mt-5;
+  }
+
+  // stylelint-disable-next-line gitlab/no-has -- scoped to a specific reports widgets container
+  &:empty,
+  &:has(.reports-widgets-container:empty) {
+    display: none;
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-skeleton-loader {
+    display: block;
+  }
+
+  > .mr-widget-section:first-child,
+  > .mr-widget-section:first-child .widget-merge-status {
+    border-top-left-radius: calc(var(--gl-border-radius-xl) - 1px);
+    border-top-right-radius: calc(var(--gl-border-radius-xl) - 1px);
+  }
+
+  > .mr-widget-section {
+    > :last-child,
+    .deploy-heading:last-child {
+      border-bottom-left-radius: calc(var(--gl-border-radius-xl) - 1px);
+      border-bottom-right-radius: calc(var(--gl-border-radius-xl) - 1px);
+    }
+  }
+
+  > .mr-widget-border-top:first-of-type {
+    border-top: 0;
+  }
+}
+
+.reports-widgets-container > .mr-widget-section:last-child {
+  > :last-child {
+    border-bottom-left-radius: calc(var(--gl-border-radius-xl) - 1px);
+    border-bottom-right-radius: calc(var(--gl-border-radius-xl) - 1px);
+  }
+}
+
+.mr-state-widget {
+  color: var(--gl-text-color-default);
+
+  .commit-message-edit {
+    @apply gl-rounded-base;
+  }
+
+  .commits-list {
+    > li {
+      padding: $gl-padding;
+
+      @include gl-container-width-up(md, panel) {
+        margin-left: $gl-spacing-scale-7;
+      }
+    }
+  }
+
+  .mr-commit-dropdown {
+    .dropdown-menu {
+      @include gl-container-width-up(md, panel) {
+        width: 150%;
+      }
+    }
+  }
+
+  .mr-report {
+    padding: 0;
+  }
+
+  form {
+    margin-bottom: 0;
+
+    .clearfix {
+      margin-bottom: 0;
+    }
+  }
+
+  .btn {
+    font-size: $gl-font-size;
+  }
+
+  .ci-widget {
+    color: var(--gl-text-color-default);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    @include gl-container-width-down(sm, panel) {
+      flex-wrap: wrap;
+    }
+
+    .ci-widget-content {
+      display: flex;
+      align-items: center;
+      flex: 1;
+    }
+  }
+
+  .mr-widget-icon {
+    font-size: 22px;
+  }
+
+  .normal {
+    flex: 1;
+    flex-basis: auto;
+  }
+
+  .capitalize {
+    text-transform: capitalize;
+  }
+
+  .mr-pipeline-title {
+    // NOTE: CSS Hack to make the force the pipeline
+    // to the end of the line or to force it to a
+    // new line if there is not enough space.
+    flex-grow: 999;
+    // Avoid layout shift of title when Mini Graph
+    // moves below title
+    padding-top: 5px;
+  }
+
+  .label-branch {
+    @apply gl-font-monospace;
+    overflow: hidden;
+    word-break: break-all;
+  }
+
+  .label-branch {
+    &.label-truncate {
+      // NOTE: This selector targets its children because some of the HTML comes from
+      // 'source_branch_link'. Once this external HTML is no longer used, we could
+      // simplify this.
+      > a,
+      > span {
+        display: inline-block;
+        max-width: 12.5em;
+        margin-bottom: px-to-rem(-5px);
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+      }
+    }
+  }
+
+  .mr-widget-body {
+    @include clearfix;
+
+    .approve-btn {
+      margin-right: 5px;
+    }
+
+    h4 {
+      float: left;
+      font-weight: $gl-font-weight-bold;
+      font-size: 14px;
+      line-height: inherit;
+      margin-top: 0;
+      margin-bottom: 0;
+
+      time {
+        font-weight: $gl-font-weight-normal;
+      }
+    }
+
+    .btn-grouped {
+      margin-left: 0;
+      margin-right: 7px;
+    }
+
+    .spacing {
+      margin: 0 0 0 10px;
+    }
+
+    .danger {
+      @apply gl-text-danger;
+    }
+
+    .dropdown-menu {
+      li a {
+        padding: 5px;
+      }
+    }
+
+    @include gl-container-width-down(sm, panel) {
+      .btn-grouped {
+        float: none;
+        margin-right: 0;
+      }
+
+      .accept-action {
+        width: 100%;
+        text-align: center;
+      }
+    }
+
+    .commit-message-editor {
+      label {
+        padding: 0;
+      }
+    }
+
+    &.mr-pipeline-suggest {
+      @apply gl-rounded-base;
+      line-height: 20px;
+      border: 1px solid var(--gl-border-color-default);
+
+      .circle-icon-container {
+        color: var(--gl-border-color-default);
+      }
+    }
+  }
+}
+
+.mr-widget-body,
+.mr-widget-content {
+  padding: $gl-padding-12 $gl-padding;
+}
+
+.mr-widget-body-ready-merge {
+  @include gl-container-width-down(md, panel) {
+    padding-top: $gl-spacing-scale-3;
+    padding-bottom: $gl-spacing-scale-3;
+    padding-right: $gl-spacing-scale-3;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .mr-merge-button-shimmer {
+    --shimmer-thickness: #{$gl-border-size-1};
+    --shimmer-offset: #{$gl-border-size-1};
+    --shimmer-highlight-color: var(--gl-color-neutral-10);
+    --shimmer-color-1: light-dark(
+      var(--gl-color-brand-purple-02p),
+      var(--gl-color-brand-purple-01p)
+    );
+    --shimmer-color-2: var(--gl-color-brand-pink-01g);
+    --shimmer-color-3: light-dark(
+      var(--gl-color-brand-orange-02p),
+      var(--gl-color-brand-orange-01p)
+    );
+    --shimmer-gradient: linear-gradient(
+      160deg,
+      var(--gl-color-alpha-0) 0%,
+      var(--shimmer-highlight-color) 15%,
+      var(--shimmer-color-1) 20%,
+      var(--shimmer-color-2) 25%,
+      var(--shimmer-color-3) 30%,
+      var(--gl-color-alpha-0) 36%,
+      var(--gl-color-alpha-0) 40%,
+      var(--shimmer-highlight-color) 55%,
+      var(--shimmer-color-1) 60%,
+      var(--shimmer-color-2) 65%,
+      var(--shimmer-color-3) 70%,
+      var(--gl-color-alpha-0) 76%,
+      var(--gl-color-alpha-0) 80%,
+      var(--shimmer-highlight-color) 95%,
+      var(--shimmer-color-1) 100%
+    );
+    --shimmer-opacity: 0;
+    z-index: 1;
+    transform-style: preserve-3d;
+
+    &::before,
+    &::after {
+      content: '';
+      @apply gl-pointer-events-none;
+      @apply gl-absolute;
+      background: var(--shimmer-gradient) 15% 15% / 300% 300%;
+      opacity: var(--shimmer-opacity);
+      transition: opacity $gl-transition-duration-medium $gl-easing-out-cubic;
+      animation: mr-merge-button-shimmer 3s linear infinite;
+    }
+
+    // Bloom: a blurred copy pushed behind the buttons' own background.
+    &::before {
+      @apply gl-inset-0;
+      border-radius: var(--gl-action-border-radius);
+      filter: blur(12px);
+      transform: translateZ(-1px);
+      opacity: calc(var(--shimmer-opacity) * 0.9);
+    }
+
+    // Ring: masking out the content box paints only the outline.
+    &::after {
+      inset: calc(-1 * (var(--shimmer-offset) + var(--shimmer-thickness)) + #{$gl-border-size-1});
+      padding: var(--shimmer-thickness);
+      border-radius: calc(
+        var(--gl-action-border-radius) + var(--shimmer-offset) + var(--shimmer-thickness)
+      );
+      mask:
+        linear-gradient(currentColor 0 0) content-box,
+        linear-gradient(currentColor 0 0);
+      mask-composite: exclude;
+    }
+
+    // The ring sits where the focus ring draws, so it steps aside for it.
+    &:hover:not(:focus-within) {
+      --shimmer-opacity: 1;
+    }
+  }
+}
+
+// One loop moves the gradient one band cycle, so the restart is seamless.
+@keyframes mr-merge-button-shimmer {
+  to {
+    background-position: 75% 75%;
+  }
+}
+
+.mr-widget-border-top {
+  border-top: 1px solid var(--gl-border-color-default);
+
+  &:last-child {
+    .report-block-container {
+      border-bottom-left-radius: $gl-border-radius-base-inner;
+      border-bottom-right-radius: $gl-border-radius-base-inner;
+    }
+  }
+}
+
+.mr-widget-extension {
+  @apply gl-bg-subtle;
+  @apply gl-border-t;
+  @apply gl-border-t-section;
+  container-name: mr-widget-extension;
+  container-type: inline-size;
+  // Adds a fix for the view app dropdown not showing up
+  // correctly.
+  position: relative;
+  z-index: 1;
+
+  &.clickable:hover {
+    @apply gl-bg-strong;
+    cursor: pointer;
+  }
+}
+
+.mr-widget-extension-icon::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  opacity: 0.3;
+  border-style: solid;
+  border-width: $gl-border-size-4;
+  border-radius: $gl-border-radius-full;
+
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+}
+
+.mr-widget-extension-icon::after {
+  content: '';
+  position: absolute;
+  border-radius: $gl-border-radius-full;
+  left: 50%;
+  top: 50%;
+
+  width: 16px;
+  height: 16px;
+  border: 4px solid;
+  transform: translate(-50%, -50%);
+}
+
+.mr-widget-section {
+  .code-text {
+    flex: 1;
+  }
+}
+
+.mr-version-controls {
+  color: var(--gl-text-color-default);
+
+  .mr-version-menus-container {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    z-index: 199;
+    white-space: nowrap;
+  }
+
+  .content-block {
+    padding: $gl-padding-8 $gl-padding;
+    border-bottom: 0;
+  }
+
+  .mr-version-dropdown,
+  .mr-version-compare-dropdown {
+    top: 1px;
+    margin: 0 $gl-spacing-scale-1;
+
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .dropdown-toggle.gl-button {
+      padding: $gl-spacing-scale-2 2px $gl-spacing-scale-2 $gl-spacing-scale-2;
+      font-weight: $gl-font-weight-bold;
+
+      // stylelint-disable-next-line gitlab/no-gl-class
+      .gl-button-icon {
+        margin-left: $gl-spacing-scale-1;
+      }
+    }
+  }
+
+  .dropdown-title {
+    color: var(--gl-text-color-strong);
+  }
+}
+
+.mr-section-container .resize-observer > object {
+  height: 0;
+}
+
+.merge-request-overview {
+  @include gl-container-width-up(lg, panel) {
+    $mr-overview-gap-width: 2rem;
+    display: grid;
+    grid-template-columns: calc(100% - #{$right-sidebar-width} - #{$mr-overview-gap-width}) auto;
+    column-gap: $mr-overview-gap-width;
+  }
+}
+
+.container-fluid:not(.container-limited),
+.container-fluid.rd-page-container {
+  .detail-page-header,
+  .detail-page-description,
+  .merge-request-tabs-container {
+    &.is-merge-request {
+      margin-left: auto;
+      margin-right: auto;
+      max-width: calc(#{$fixed-layout-width} - (var(--container-padding-x) * 2));
+    }
+  }
+}
+
+.container-fluid.diffs-container-limited {
+  .flash-container {
+    margin-left: auto;
+    margin-right: auto;
+    max-width: calc(#{$fixed-layout-width} - (var(--container-padding-x) * 2));
+  }
+}
+
+@include keyframes(review-btn-animate) {
+  0%, 100% {
+    transform: scale(1);
+  }
+
+  75% {
+    transform: scale(1.2);
+  }
+}
+
+
+.mr-widget-merge-details {
+  *,
+  & {
+    font-size: $gl-font-size-sm;
+  }
+
+  p {
+    font-size: $gl-font-size;
+  }
+
+  li:not(:last-child) {
+    margin-bottom: $gl-spacing-scale-2;
+  }
+}
+
+.mr-ready-merge-related-links a,
+.mr-widget-merge-details a {
+  text-decoration: underline;
+
+  &:hover,
+  &:focus-visible {
+    text-decoration: none;
+  }
+}
+
+.merge-request-notification-toggle {
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-toggle {
+    margin-left: auto;
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-toggle-label {
+    font-weight: $gl-font-weight-normal;
+  }
+}
+
+.memory-graph-container {
+  @apply gl-bg-default;
+  @apply gl-border;
+}
+
+.pending-review-item:not(:last-child)::before {
+  @include vertical-line(20px, 11px);
+  height: 100%;
+  @apply gl-bg-strong;
+}
+
+.commits ol:not(:last-of-type) {
+  margin-bottom: 0;
+}
+
+.mr-section-container {
+  .media-body {
+    column-gap: 0;
+  }
+
+  .state-container-action-buttons {
+    @include gl-container-width-up(md, panel) {
+      flex-direction: row-reverse;
+    }
+  }
+}
+
+.mr-state-loader {
+  svg {
+    vertical-align: middle;
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-skeleton-loader {
+    max-width: 334px;
+  }
+}
+
+.diff-file-discussions-wrapper {
+  width: 100%;
+
+  .timeline-entry.note-discussion {
+    > .timeline-entry-inner {
+      border-bottom: 0 !important;
+    }
+  }
+
+  .diff-discussions:not(:first-child) >.notes {
+    padding-top: 0;
+  }
+
+  .note-discussion {
+    @apply gl-border-b #{!important};
+  }
+
+  .discussion-collapsible {
+    margin: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+    border-bottom-width: 0;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+
+    .notes {
+      @apply gl-bg-subtle;
+    }
+  }
+}
+
+.merge-request-overview .md-header {
+  top: calc(#{$calc-application-header-height} + #{$mr-sticky-header-height});
+}
+
+.merge-request-review-drawer .rte-text-box,
+.pending-review-item .note-text,
+.pending-review-item .note-textarea {
+  line-height: 1.5;
+}
+
+.reviewers-dropdown.sidebar-reviewer-disabled {
+  cursor: not-allowed;
+}

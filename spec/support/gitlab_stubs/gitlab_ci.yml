@@ -1,0 +1,74 @@
+image: image:1.0
+services:
+  - postgres
+
+before_script:
+  - bundle install
+  - bundle exec rake db:create
+
+variables:
+  KEY_VALUE_VAR:
+    value: 'value x'
+    description: 'value of KEY_VALUE_VAR'
+  DB_NAME: postgres
+  ENVIRONMENT_VAR:
+    value: 'env var value'
+    options: ['env var value', 'env var value2']
+    description: 'env var description'
+
+stages:
+  - test
+  - deploy
+  - notify
+
+rspec:
+  script: "rake spec"
+  tags:
+    - ruby
+    - postgres
+  only:
+    - branches
+
+spinach:
+  script: "rake spinach"
+  allow_failure: true
+  tags:
+    - ruby
+    - mysql
+  except:
+    - tags
+
+staging:
+  variables:
+    KEY1: value1
+    KEY2: value2
+  script: "cap deploy stating"
+  stage: deploy
+  tags:
+    - ruby
+    - mysql
+  except:
+    - stable
+
+production:
+  variables:
+    DB_NAME: mysql
+  stage: deploy
+  script:
+    - cap deploy production
+    - cap notify
+  tags:
+    - ruby
+    - mysql
+  only:
+    - master
+    - /^deploy-.*$/
+
+dockerhub:
+  stage: notify
+  script: "curl http://dockerhub/URL"
+  tags:
+    - ruby
+    - postgres
+  only:
+    - branches

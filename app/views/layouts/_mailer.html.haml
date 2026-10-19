@@ -1,0 +1,55 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+%html{ lang: I18n.locale }
+  %head
+    %meta{ content: "text/html; charset=UTF-8", "http-equiv" => "Content-Type" }/
+    %meta{ content: "width=device-width, initial-scale=1", name: "viewport" }/
+    %meta{ content: "IE=edge", "http-equiv" => "X-UA-Compatible" }/
+    %title= message.subject
+
+    -# Vite in dev mode isn't too great about reading assets a string,
+    -# so we do not inline it with vite. Similar solution to:
+    -# app/views/layouts/errors.html.haml
+    - if vite_enabled?
+      = universal_stylesheet_link_tag 'mailers/mailer_client_specific', data: { premailer: 'ignore' }
+    - else
+      -# Avoid premailer processing of client-specific styles (@media tag not supported)
+      -# We need to inline the contents here because mail clients (e.g. iOS Mail, Outlook)
+      -# do not support linked stylesheets.
+      %style{ type: 'text/css', 'data-premailer': 'ignore' }
+        = asset_to_string('mailers/mailer_client_specific.css').html_safe
+
+    = universal_stylesheet_link_tag 'mailers/mailer'
+  %body
+    = yield :preview_text
+    -# Test stub for RSpec testing of Notify and associated modules
+    -# Sometimes we override the chosen layout via `determine_layout` in our Notify mailer
+    -# but ActionMailer doesn't support testing layout in pure Ruby so this HTML comment is
+    -# used for testing the determined layout
+    - if Rails.env.test?
+      / determine_layout returned template mailer
+    %table#body{ border: "0", cellpadding: "0", cellspacing: "0" }
+      %tbody
+        %tr.line
+          %td
+        %tr.header
+          %td
+            = html_header_message
+            = header_logo
+        %tr
+          %td
+            %table.wrapper{ border: "0", cellpadding: "0", cellspacing: "0" }
+              %tbody
+                %tr
+                  %td.wrapper-cell
+                    %table.content{ border: "0", cellpadding: "0", cellspacing: "0" }
+                      %tbody
+                        = yield
+
+        = render_if_exists 'layouts/mailer/additional_text'
+
+        = yield :footer
+
+        = yield :additional_footer
+        %tr
+          %td.footer-message
+            = html_footer_message

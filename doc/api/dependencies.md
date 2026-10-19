@@ -1,0 +1,93 @@
+---
+stage: Application Security Testing
+group: Composition Analysis
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Access the Dependencies API to retrieve project dependency information, including package details, versions, vulnerabilities, and licenses for supported package managers.
+title: Dependencies API
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Every call to this endpoint requires authentication. To perform this call, the user must be authorized to read the repository.
+To see vulnerabilities in response, the user must be authorized to read
+[Project Security Dashboard](../user/application_security/security_dashboard/_index.md).
+
+## List project dependencies
+
+Lists all dependencies for a specified project. This operation partially mirrors the [dependency list](../user/application_security/dependency_list/_index.md) feature, which is available only for [languages and package managers](../user/application_security/dependency_scanning/dependency_scanning_sbom/_index.md#supported-languages-and-files) supported by Gemnasium.
+
+Responses are [paginated](rest/_index.md#pagination) and return 20 results by default.
+
+```plaintext
+GET /projects/:id/dependencies
+GET /projects/:id/dependencies?package_manager=maven
+GET /projects/:id/dependencies?package_manager=yarn,bundler
+```
+
+| Attribute     | Type           | Required | Description                                                                                                                                                                 |
+| ------------- | -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `id`          | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths).                                                            |
+| `package_manager` | string array   | no       | Returns dependencies belonging to specified package manager. Valid values: `bundler`, `composer`, `conan`, `go`, `gradle`, `maven`, `npm`, `nuget`, `pip`, `pipenv`, `pnpm`, `yarn`, `sbt`, or `setuptools`. |
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/4/dependencies"
+```
+
+Example response:
+
+```json
+[
+  {
+    "name": "rails",
+    "version": "5.0.1",
+    "package_manager": "bundler",
+    "dependency_file_path": "Gemfile.lock",
+    "vulnerabilities": [
+      {
+        "name": "DDoS",
+        "severity": "unknown",
+        "id": 144827,
+        "url": "https://gitlab.example.com/group/project/-/security/vulnerabilities/144827"
+      }
+    ],
+    "licenses": [
+      {
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT"
+      }
+    ]
+  },
+  {
+    "name": "hanami",
+    "version": "1.3.1",
+    "package_manager": "bundler",
+    "dependency_file_path": "Gemfile.lock",
+    "vulnerabilities": [],
+    "licenses": [
+      {
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT"
+      }
+    ]
+  },
+  {
+    "name": "pako",
+    "version": "2.2.0",
+    "package_manager": "yarn",
+    "dependency_file_path": "yarn.lock",
+    "vulnerabilities": [],
+    "licenses": [
+      {
+        "name": "MIT AND Zlib",
+      }
+    ]
+  },
+]
+```

@@ -1,0 +1,35 @@
+---
+stage: Facilitated functionality
+group: Facilitated functionality
+info: For more information, see <https://handbook.gitlab.com/handbook/product/categories/#facilitated-functionality>
+gitlab_dedicated: yes
+title: Localization
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+As an instance administrator, you can manage the behavior of your
+deployment.
+
+## Change the default first day of the week
+
+You can change the [Default first day of the week](../../user/profile/preferences.md)
+for the entire GitLab instance:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Preferences**.
+1. Scroll to the **Localization** section, and select your desired first day of the week.
+
+## Change the default language
+
+You can change the [Default language](../../user/profile/preferences.md)
+for the entire GitLab instance:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Preferences**.
+1. Scroll to the **Localization** section, and select your desired default language.

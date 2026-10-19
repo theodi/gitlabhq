@@ -1,0 +1,117 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: REST API to retrieve weight change events for issues.
+title: Resource weight events API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to access weight change events for issues.
+
+## Issues
+
+### List all project issue weight events
+
+Lists all weight events for a single issue.
+
+```plaintext
+GET /projects/:id/issues/:issue_iid/resource_weight_events
+```
+
+| Attribute   | Type           | Required | Description                                                                     |
+| ----------- | -------------- | -------- | ------------------------------------------------------------------------------- |
+| `id`        | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths) |
+| `issue_iid` | integer        | yes      | The IID of an issue                                                             |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/issues/11/resource_weight_events"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 142,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-20T13:38:20.077Z",
+    "issue_id": 253,
+    "weight": 3
+  },
+  {
+    "id": 143,
+    "user": {
+      "id": 1,
+      "name": "Administrator",
+      "username": "root",
+      "state": "active",
+      "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+      "web_url": "http://gitlab.example.com/root"
+    },
+    "created_at": "2018-08-21T14:38:20.077Z",
+    "issue_id": 253,
+    "weight": 2
+  }
+]
+```
+
+### Retrieve single issue weight event
+
+Retrieves a single weight event for a specific project issue.
+
+```plaintext
+GET /projects/:id/issues/:issue_iid/resource_weight_events/:resource_weight_event_id
+```
+
+Parameters:
+
+| Attribute                     | Type           | Required | Description                                                                     |
+| ----------------------------- | -------------- | -------- | ------------------------------------------------------------------------------- |
+| `id`                          | integer or string | yes      | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the project |
+| `issue_iid`                   | integer        | yes      | The IID of an issue                                                             |
+| `resource_weight_event_id`    | integer        | yes      | The ID of a weight event                                                     |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/issues/11/resource_weight_events/143"
+```
+
+Example response:
+
+```json
+{
+"id": 143,
+"user": {
+  "id": 1,
+  "name": "Administrator",
+  "username": "root",
+  "state": "active",
+  "avatar_url": "https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon",
+  "web_url": "http://gitlab.example.com/root"
+},
+"created_at": "2018-08-21T14:38:20.077Z",
+"issue_id": 253,
+"weight": 2
+}
+```

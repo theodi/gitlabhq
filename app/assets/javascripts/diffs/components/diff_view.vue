@@ -1,0 +1,323 @@
+<script>
+import { mapState, mapActions } from 'pinia';
+import { throttle } from 'lodash-es';
+import { IdState } from 'vendor/vue-virtual-scroller';
+import DraftNote from '~/batch_comments/components/draft_note.vue';
+import draftCommentsMixin from '~/diffs/mixins/draft_comments';
+import { getCommentedLines } from '~/notes/components/multiline_comment_utils';
+import { hide } from '~/tooltips';
+import { countLinesInBetween } from '~/diffs/utils/diff_file';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { pickDirection } from '../utils/diff_line';
+import DiffCommentCell from './diff_comment_cell.vue';
+import DiffExpansionCell from './diff_expansion_cell.vue';
+import DiffRow from './diff_row.vue';
+import { isHighlighted } from './diff_row_utils';
+
+export default {
+  name: 'DiffView',
+  components: {
+    DiffExpansionCell,
+    DiffRow,
+    DiffCommentCell,
+    DraftNote,
+  },
+  mixins: [draftCommentsMixin, IdState({ idProp: (vm) => vm.diffFile.file_hash })],
+  props: {
+    diffFile: {
+      type: Object,
+      required: true,
+    },
+    diffLines: {
+      type: Array,
+      required: true,
+    },
+    helpPagePath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    inline: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    codequalityData: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    sastData: {
+      type: Object,
+      required: false,
+      default: null,
+    },
+    autosaveKey: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  idState() {
+    return {
+      dragStart: null,
+      updatedLineRange: null,
+    };
+  },
+  computed: {
+    ...mapState(useLegacyDiffs, [
+      'commitId',
+      'fileLineCoverage',
+      'highlightedRow',
+      'selectedCommentPosition',
+    ]),
+    ...mapState(useNotes, [
+      'selectedCommentPosition',
+      'selectedCommentPositionHover',
+      'userCanReply',
+    ]),
+    diffLinesLength() {
+      return this.diffLines.length;
+    },
+    commentedLines() {
+      return getCommentedLines(
+        this.selectedCommentPosition || this.selectedCommentPositionHover,
+        this.diffLines,
+      );
+    },
+    hasInlineFindingsChanges() {
+      return (
+        this.codequalityData?.files?.[this.diffFile.file_path]?.length > 0 ||
+        this.sastData?.added?.length > 0
+      );
+    },
+  },
+  created() {
+    this.onDragOverThrottled = throttle((line) => this.onDragOver(line), 100, { leading: true });
+  },
+  methods: {
+    ...mapActions(useNotes, ['setSelectedCommentPosition']),
+    ...mapActions(useLegacyDiffs, [
+      'showCommentForm',
+      'setHighlightedRow',
+      'toggleLineDiscussions',
+    ]),
+    onStartDragging({ event = {}, line }) {
+      if (event.target?.parentNode) {
+        hide(event.target.parentNode);
+      }
+      this.idState.dragStart = line;
+    },
+    onDragOver(line) {
+      if (line.chunk !== this.idState.dragStart.chunk) return;
+
+      let start = this.idState.dragStart;
+      let end = line;
+
+      if (this.idState.dragStart.index >= line.index) {
+        start = line;
+        end = this.idState.dragStart;
+      }
+
+      this.idState.updatedLineRange = { start, end };
+
+      this.setSelectedCommentPosition(this.idState.updatedLineRange);
+    },
+    onStopDragging() {
+      this.showCommentForm({
+        lineCode: this.idState.updatedLineRange?.end?.line_code,
+        fileHash: this.diffFile.file_hash,
+      });
+      this.idState.dragStart = null;
+    },
+    singleLineComment(code, line) {
+      const lineDir = pickDirection({ line, code });
+
+      this.idState.updatedLineRange = {
+        start: lineDir,
+        end: lineDir,
+      };
+
+      this.showCommentForm({ lineCode: lineDir.line_code, fileHash: this.diffFile.file_hash });
+    },
+    isHighlighted(line) {
+      return isHighlighted(
+        this.highlightedRow,
+        line.left?.line_code ? line.left : line.right,
+        false,
+      );
+    },
+    isFirstHighlightedLine(line) {
+      const lineCode = line.left?.line_code || line.right?.line_code;
+      return lineCode && lineCode === this.selectedCommentPosition?.start.line_code;
+    },
+    isLastHighlightedLine(line) {
+      const lineCode = line.left?.line_code || line.right?.line_code;
+      return lineCode && lineCode === this.selectedCommentPosition?.end.line_code;
+    },
+    handleParallelLineMouseDown(e) {
+      const line = e.target.closest('.diff-td');
+      if (line) {
+        const table = line.closest('.diff-table');
+        table.classList.remove('left-side-selected', 'right-side-selected');
+        const [lineClass] = ['left-side', 'right-side'].filter((name) =>
+          line.classList.contains(name),
+        );
+
+        if (lineClass) {
+          table.classList.add(`${lineClass}-selected`);
+        }
+      }
+    },
+    getCountBetweenIndex(index) {
+      return countLinesInBetween(this.diffLines, index);
+    },
+    lineDrafts(line, side) {
+      return (line[side]?.lineDrafts || []).filter((entry) => entry.isDraft);
+    },
+    lineHasDrafts(line, side) {
+      return this.lineDrafts(line, side).length > 0;
+    },
+    isFullWidthGridComment(line) {
+      return line.left?.type === null && line.right?.type === null;
+    },
+  },
+};
+</script>
+
+<template>
+  <div
+    :class="[{ 'inline-diff-view': inline, 'with-inline-findings': hasInlineFindingsChanges }]"
+    :data-commit-id="commitId"
+    class="diff-grid diff-table code code-syntax-highlight-theme diff-wrap-lines js-syntax-highlight text-file"
+    @mousedown="handleParallelLineMouseDown"
+  >
+    <template v-for="(line, index) in diffLines">
+      <div
+        v-if="line.isMatchLineLeft || line.isMatchLineRight"
+        :key="`expand-${index}`"
+        class="diff-grid-row diff-tr line_holder match expansion"
+      >
+        <diff-expansion-cell
+          :file="diffFile"
+          :line="line.left"
+          :is-top="index === 0"
+          :is-bottom="index + 1 === diffLinesLength"
+          :inline="inline"
+          :line-count-between="getCountBetweenIndex(index)"
+          :class="{ parallel: !inline }"
+          class="diff-grid-left diff-grid-2-col left-side"
+        />
+        <diff-expansion-cell
+          v-if="!inline"
+          :file="diffFile"
+          :line="line.left"
+          :is-top="index === 0"
+          :is-bottom="index + 1 === diffLinesLength"
+          :inline="inline"
+          :line-count-between="getCountBetweenIndex(index)"
+          :class="{ parallel: !inline }"
+          class="diff-grid-right diff-grid-2-col right-side"
+        />
+      </div>
+      <diff-row
+        v-if="!line.isMatchLineLeft && !line.isMatchLineRight"
+        :key="line.lineCode"
+        :file-path="diffFile.file_path"
+        :line="line"
+        :is-bottom="index + 1 === diffLinesLength"
+        :is-commented="index >= commentedLines.startLine && index <= commentedLines.endLine"
+        :is-highlighted="isHighlighted(line)"
+        :is-first-highlighted-line="
+          isFirstHighlightedLine(line) || index === commentedLines.startLine
+        "
+        :is-last-highlighted-line="isLastHighlightedLine(line) || index === commentedLines.endLine"
+        :inline="inline"
+        :index="index"
+        :file-line-coverage="fileLineCoverage"
+        :user-can-reply="userCanReply"
+        @show-comment-form="(code) => singleLineComment(code, line)"
+        @set-highlighted-row="setHighlightedRow"
+        @toggle-line-discussions="
+          ({ lineCode, expanded }) =>
+            toggleLineDiscussions({ lineCode, fileHash: diffFile.file_hash, expanded })
+        "
+        @enterdragging="onDragOverThrottled"
+        @startdragging="onStartDragging"
+        @stopdragging="onStopDragging"
+      />
+      <div
+        v-if="line.renderCommentRow"
+        :key="`dcr-${line.lineCode}`"
+        data-testid="notes-holder"
+        :class="[
+          line.commentRowClasses,
+          isFullWidthGridComment(line) ? 'diff-grid-comments-full-width' : '',
+        ]"
+        class="diff-tr notes_holder diff-grid-comments"
+      >
+        <div
+          v-if="line.left || !inline"
+          :class="{ parallel: !inline }"
+          class="diff-td notes-content old"
+        >
+          <diff-comment-cell
+            v-if="line.left && (line.left.renderDiscussion || line.left.hasCommentForm)"
+            :line="line.left"
+            :line-range="idState.updatedLineRange"
+            :diff-file-hash="diffFile.file_hash"
+            :help-page-path="helpPagePath"
+            line-position="left"
+          />
+        </div>
+        <div
+          v-if="line.right || !inline"
+          :class="{ parallel: !inline }"
+          class="diff-td notes-content new"
+        >
+          <diff-comment-cell
+            v-if="line.right && (line.right.renderDiscussion || line.right.hasCommentForm)"
+            :line="line.right"
+            :line-range="idState.updatedLineRange"
+            :diff-file-hash="diffFile.file_hash"
+            :line-index="index"
+            :help-page-path="helpPagePath"
+            line-position="right"
+          />
+        </div>
+      </div>
+      <div
+        v-if="shouldRenderParallelDraftRow(diffFile.file_hash, line)"
+        :key="`drafts-${line.lineCode}`"
+        :class="line.draftRowClasses"
+        class="diff-grid-drafts diff-tr notes_holder"
+      >
+        <div
+          v-if="!inline || lineHasDrafts(line, 'left')"
+          class="diff-td notes-content parallel old"
+        >
+          <div v-for="draft in lineDrafts(line, 'left')" :key="draft.id" class="content">
+            <article class="note-wrapper">
+              <ul class="notes draft-notes">
+                <draft-note :draft="draft" :line="line.left" :autosave-key="autosaveKey" />
+              </ul>
+            </article>
+          </div>
+        </div>
+        <div
+          v-if="!inline || lineHasDrafts(line, 'right')"
+          class="diff-td notes-content parallel new"
+        >
+          <div v-for="draft in lineDrafts(line, 'right')" :key="draft.id" class="content">
+            <article class="note-wrapper">
+              <ul class="notes draft-notes">
+                <draft-note :draft="draft" :line="line.right" :autosave-key="autosaveKey" />
+              </ul>
+            </article>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+</template>

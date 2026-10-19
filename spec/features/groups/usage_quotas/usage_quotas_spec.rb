@@ -1,0 +1,44 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Groups > Usage quotas', :js, feature_category: :consumables_cost_management do
+  include UsageQuotasHelpers
+
+  let_it_be_with_reload(:group) { create(:group) }
+  let_it_be_with_reload(:user) { create(:user) }
+  let_it_be_with_reload(:sub_group) { create(:group, parent: group) }
+
+  before_all do
+    group.add_owner(user)
+  end
+
+  before do
+    setup_usage_quotas_env(group.id)
+    sign_in(user)
+  end
+
+  it_behaves_like 'Usage quotas is accessible' do
+    let(:usage_quotas_path) { group_usage_quotas_path(group) }
+
+    before do
+      visit edit_group_path(group)
+    end
+  end
+
+  context 'when in a subgroup' do
+    it 'is not linked from the sidebar in a subgroup' do
+      visit edit_group_path(sub_group)
+
+      within_testid('super-sidebar') do
+        expect(page).not_to have_link('Usage quotas')
+      end
+    end
+
+    it 'does not show the subgroup' do
+      visit group_usage_quotas_path(sub_group)
+
+      expect(page).to have_title('Not Found')
+    end
+  end
+end

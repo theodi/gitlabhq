@@ -1,170 +1,1377 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
-require 'mime/types'
 
-describe API::API, api: true  do
-  include ApiHelpers
+RSpec.describe API::Branches, feature_category: :source_code_management do
+  let_it_be(:user) { create(:user) }
 
-  let(:user) { create(:user) }
-  let(:user2) { create(:user) }
-  let!(:project) { create(:project, creator_id: user.id) }
-  let!(:master) { create(:project_member, user: user, project: project, access_level: ProjectMember::MASTER) }
-  let!(:guest) { create(:project_member, user: user2, project: project, access_level: ProjectMember::GUEST) }
-  let!(:branch_name) { 'feature' }
-  let!(:branch_sha) { '0b4bc9a49b562e85de7cc9e834518ea6828729b9' }
+  let(:project) { create(:project, :in_group, :repository, creator: user, path: 'my.project', create_branch: 'ends-with.txt', maintainers: user) }
+  let(:guest) { create(:user, guest_of: project) }
+  let(:branch_name) { 'feature' }
+  let(:branch_sha) { '0b4bc9a49b562e85de7cc9e834518ea6828729b9' }
+  let(:branch_with_dot) { 'ends-with.json' }
+  let(:branch_with_slash) { 'improve/awesome' }
 
-  describe "GET /projects/:id/repository/branches" do
-    it "should return an array of project branches" do
-      get api("/projects/#{project.id}/repository/branches", user)
-      expect(response.status).to eq(200)
-      expect(json_response).to be_an Array
-      expect(json_response.first['name']).to eq(project.repository.branch_names.first)
+  let(:project_id) { project.id }
+  let(:current_user) { nil }
+
+  before do
+    stub_feature_flags(branch_list_keyset_pagination: false)
+  end
+
+  describe "GET /projects/:id/repository/branches", :use_clean_rails_redis_caching, :clean_gitlab_redis_shared_state do
+    let(:route) { "/projects/#{project_id}/repository/branches" }
+
+    it_behaves_like 'authorizing granular token permissions', :read_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
+      end
+    end
+
+    it_behaves_like 'enforcing job token policies', :read_repositories,
+      allow_public_access_for_enabled_project_features: :repository do
+      let(:request) do
+        get api(route), params: { job_token: target_job.token }
+      end
+    end
+
+    shared_examples_for 'repository branches' do
+      RSpec::Matchers.define :has_up_to_merged_branch_names_count do |expected|
+        match do |actual|
+          expected >= actual[:merged_branch_names].count
+        end
+      end
+
+      def check_merge_status(json_response)
+        merged, unmerged = json_response.partition { |branch| branch['merged'] }
+        merged_branches = merged.map { |branch| branch['name'] }
+        unmerged_branches = unmerged.map { |branch| branch['name'] }
+        expect(Set.new(merged_branches)).to eq(project.repository.merged_branch_names(merged_branches + unmerged_branches))
+        expect(project.repository.merged_branch_names(unmerged_branches)).to be_empty
+      end
+
+      before do
+        stub_feature_flags(use_new_branches_finder_api: false)
+      end
+
+      context 'with branch_list_keyset_pagination feature off' do
+        let(:base_params) { {} }
+
+        context 'with offset pagination params' do
+          it 'returns the repository branches' do
+            get api(route, current_user), params: base_params.merge(per_page: 100)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response).to match_response_schema('public_api/v4/branches')
+            expect(response).to include_pagination_headers
+            branch_names = json_response.map { |x| x['name'] }
+            expect(branch_names).to match_array(project.repository.branch_names)
+          end
+
+          it 'determines only a limited number of merged branch names' do
+            expect(API::Entities::Branch).to receive(:represent).with(anything, has_up_to_merged_branch_names_count(2)).at_least(:once).and_call_original
+
+            get api(route, current_user), params: base_params.merge(per_page: 2)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.count).to eq 2
+
+            check_merge_status(json_response)
+          end
+
+          it 'merge status matches reality on paginated input' do
+            expected_first_branch_name = project.repository.branches_sorted_by('name')[20].name
+
+            get api(route, current_user), params: base_params.merge(per_page: 20, page: 2)
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.count).to eq 20
+            expect(json_response.first['name']).to eq(expected_first_branch_name)
+
+            check_merge_status(json_response)
+          end
+
+          it 'recovers pagination headers from cache between consecutive requests' do
+            2.times do
+              get api(route, current_user), params: base_params
+
+              expect(response.headers).to include('X-Page')
+            end
+          end
+        end
+
+        context 'with gitaly pagination params' do
+          it 'merge status matches reality on paginated input' do
+            expected_first_branch_name = project.repository.branches_sorted_by('name').first.name
+
+            get api(route, current_user), params: base_params.merge(per_page: 20, page_token: 'feature')
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(json_response.count).to eq 20
+            expect(json_response.first['name']).to eq(expected_first_branch_name)
+
+            check_merge_status(json_response)
+          end
+        end
+      end
+
+      context 'with branch_list_keyset_pagination feature on' do
+        before do
+          stub_feature_flags(branch_list_keyset_pagination: project)
+        end
+
+        context 'with keyset pagination option' do
+          let(:base_params) { { pagination: 'keyset' } }
+
+          context 'with gitaly pagination params' do
+            it 'returns the repository branches' do
+              get api(route, current_user), params: base_params.merge(per_page: 100)
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(response).to match_response_schema('public_api/v4/branches')
+              expect(response.headers).not_to include('Link')
+              branch_names = json_response.map { |x| x['name'] }
+              expect(branch_names).to match_array(project.repository.branch_names)
+            end
+
+            it 'determines only a limited number of merged branch names' do
+              expect(API::Entities::Branch).to receive(:represent).with(anything, has_up_to_merged_branch_names_count(2)).at_least(:once).and_call_original
+
+              get api(route, current_user), params: base_params.merge(per_page: 2)
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(response.headers).to include('Link')
+              expect(json_response.count).to eq 2
+
+              check_merge_status(json_response)
+            end
+
+            it 'merge status matches reality on paginated input' do
+              expected_first_branch_name = project.repository.branches_sorted_by('name').drop_while { |b| b.name <= 'feature' }.first.name
+
+              get api(route, current_user), params: base_params.merge(per_page: 20, page_token: 'feature')
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(json_response.count).to eq 20
+              expect(json_response.first['name']).to eq(expected_first_branch_name)
+
+              check_merge_status(json_response)
+            end
+          end
+
+          context 'with offset pagination params' do
+            it 'ignores legacy pagination params' do
+              expected_first_branch_name = project.repository.branches_sorted_by('name').first.name
+              get api(route, current_user), params: base_params.merge(per_page: 20, page: 2)
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(json_response.first['name']).to eq(expected_first_branch_name)
+
+              check_merge_status(json_response)
+            end
+          end
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+    end
+
+    context 'when regex parameter is passed' do
+      context 'with branch exists' do
+        it 'returns correct branches' do
+          get api(route, user), params: { per_page: 100, regex: branch_name }
+
+          searched_branch_names = json_response.map { |branch| branch['name'] }
+          project_branch_names = project.repository.branch_names.grep(/#{branch_name}/)
+
+          expect(searched_branch_names).to match_array(project_branch_names)
+        end
+      end
+
+      context 'when branch does not exist' do
+        it 'returns an empty array' do
+          get api(route, user), params: { per_page: 100, regex: 'unknown_branch' }
+
+          expect(json_response).to eq []
+        end
+      end
+
+      context 'when regex is invalid' do
+        it 'returns 400 error' do
+          get api(route, user), params: { per_page: 100, regex: "(invalid" }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['message']).to eq('Regex is invalid')
+        end
+      end
+    end
+
+    context 'when search parameter is passed' do
+      context 'and branch exists' do
+        it 'returns correct branches' do
+          get api(route, user), params: { per_page: 100, search: branch_name }
+
+          searched_branch_names = json_response.map { |branch| branch['name'] }
+          project_branch_names = project.repository.branch_names.grep(/#{branch_name}/)
+
+          expect(searched_branch_names).to match_array(project_branch_names)
+        end
+      end
+
+      context 'and branch does not exist' do
+        it 'returns an empty array' do
+          get api(route, user), params: { per_page: 100, search: 'no_such_branch_name_entropy_of_jabadabadu' }
+
+          expect(json_response).to eq []
+        end
+      end
+    end
+
+    context 'when sort parameter is passed' do
+      it 'sorts branches' do
+        get api(route, user), params: { sort: 'name_asc', per_page: 10 }
+
+        sorted_branch_names = json_response.map { |branch| branch['name'] }
+
+        project_branch_names = project.repository.branch_names.sort.take(10)
+
+        expect(sorted_branch_names).to eq(project_branch_names)
+      end
+
+      context 'when sort value is not supported' do
+        it_behaves_like '400 response' do
+          let(:request) { get api(route, user), params: { sort: 'unknown' } }
+        end
+      end
+    end
+
+    context 'when pagination params are invalid' do
+      using RSpec::Parameterized::TableSyntax
+
+      let(:request) do
+        get api(route, user), params: { page: page, per_page: per_page }.compact
+      end
+
+      where(:page, :per_page, :error_message) do
+        0   | nil | 'page does not have a valid value'
+        -1  | nil | 'page does not have a valid value'
+        'a' | nil | 'page is invalid'
+        nil | 0   | 'per_page does not have a valid value'
+        nil | -1  | 'per_page does not have a valid value'
+        nil | 'a' | 'per_page is invalid'
+      end
+
+      with_them do
+        it 'returns 400 response' do
+          request
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to eq(error_message)
+        end
+      end
+
+      context 'when FF is off' do
+        before do
+          stub_feature_flags(only_positive_pagination_values: false)
+        end
+
+        where(:page, :per_page, :error_message, :status) do
+          0   | nil | nil                               | :success
+          -10 | nil | nil                               | :success
+          'a' | nil | 'page is invalid'                 | :bad_request
+          nil | 0   | 'per_page has a value not allowed' | :bad_request
+          nil | -1  | nil                               | :success
+          nil | 'a' | 'per_page is invalid'             | :bad_request
+        end
+
+        with_them do
+          it 'returns a response' do
+            request
+
+            expect(response).to have_gitlab_http_status(status)
+
+            expect(json_response['error']).to eq(error_message) if error_message
+          end
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      before do
+        project.update!(visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it_behaves_like 'repository branches'
+
+      describe 'caching' do
+        let_it_be_with_reload(:project) { create(:project, :in_group, :repository, creator: user, path: 'my.project', create_branch: 'ends-with.txt', maintainers: user) }
+
+        it 'caches the query' do
+          get api(route), params: { per_page: 1 }
+
+          expect(API::Entities::Branch).not_to receive(:represent)
+
+          get api(route), params: { per_page: 1 }
+        end
+
+        it 'uses the cache up to 60 minutes' do
+          time_of_request = Time.current
+
+          get api(route), params: { per_page: 1 }
+
+          travel_to time_of_request + 59.minutes do
+            expect(API::Entities::Branch).not_to receive(:represent)
+
+            get api(route), params: { per_page: 1 }
+          end
+        end
+
+        it 'requests for new value after 60 minutes' do
+          get api(route), params: { per_page: 1 }
+
+          travel_to 61.minutes.from_now do
+            expect(API::Entities::Branch).to receive(:represent)
+
+            get api(route), params: { per_page: 1 }
+          end
+        end
+
+        context 'when the default_branch changes' do
+          let(:project) { create(:project, :in_group, :repository, creator: user, path: 'my.project', create_branch: 'ends-with.txt', maintainers: user) }
+
+          it 'requests for new value after 30 seconds' do
+            get api(route), params: { per_page: 1 }
+
+            default_branch = project.default_branch
+            another_branch = project.repository.branch_names.reject { |name| name == default_branch }.first
+
+            project.repository.change_head(another_branch)
+
+            travel_to 31.seconds.from_now do
+              expect(API::Entities::Branch).to receive(:represent)
+
+              get api(route), params: { per_page: 1 }
+            end
+          end
+        end
+
+        context "when the project's protected branches change" do
+          it 'request for new value instantly' do
+            get api(route), params: { per_page: 1 }
+
+            ProtectedBranches::CreateService.new(project, user, { name: '*' }).execute(skip_authorization: true)
+
+            expect(API::Entities::Branch).to receive(:represent)
+
+            get api(route), params: { per_page: 1 }
+          end
+        end
+      end
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'returns the repository branches successfully' do
+        get api("/projects/#{project_id}/repository/branches", oauth_access_token: oauth_token), params: { per_page: 100 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/branches')
+
+        branch_names = json_response.map { |branch| branch['name'] }
+        expect(branch_names).to match_array(project.repository.branch_names)
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      it_behaves_like 'repository branches'
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'repository branches'
+      end
+
+      it 'does not submit N+1 DB queries', :request_store do
+        create(:protected_branch, name: 'master', project: project)
+
+        # Make sure no setup step query is recorded.
+        get api(route, current_user), params: { per_page: 100 }
+
+        control = ActiveRecord::QueryRecorder.new do
+          get api(route, current_user), params: { per_page: 100 }
+        end
+
+        new_branch_name = 'protected-branch'
+        ::Branches::CreateService.new(project, current_user).execute(new_branch_name, 'master')
+        create(:protected_branch, name: new_branch_name, project: project)
+        create(:protected_branch, name: new_branch_name, project: nil, group: project.group)
+
+        expect do
+          get api(route, current_user), params: { per_page: 100 }
+        end.not_to exceed_query_limit(control)
+      end
+    end
+
+    context 'with group protected branches' do
+      subject(:request) { get api(route, user) }
+
+      let!(:group_protected_branch) do
+        create(:protected_branch,
+          *access_levels,
+          project: nil,
+          group: project.group,
+          name: '*'
+        )
+      end
+
+      context 'maintainers allowed to push and merge' do
+        let(:access_levels) { [] }
+
+        it 'responds with correct attributes related to push and merge' do
+          request
+
+          expect(json_response.dig(0, 'developers_can_merge')).to be_falsey
+          expect(json_response.dig(0, 'developers_can_push')).to be_falsey
+          expect(json_response.dig(0, 'can_push')).to be_truthy
+        end
+
+        context 'and there is a more permissive project level protected branch' do
+          let!(:project_level_protected_branch) do
+            create(:protected_branch,
+              :developers_can_merge,
+              :developers_can_push,
+              project: project,
+              name: '*'
+            )
+          end
+
+          it 'responds with correct attributes related to push and merge' do
+            request
+
+            expect(json_response.dig(0, 'developers_can_merge')).to be_truthy
+            expect(json_response.dig(0, 'developers_can_push')).to be_truthy
+            expect(json_response.dig(0, 'can_push')).to be_truthy
+          end
+        end
+      end
+
+      context 'when developers can push and merge' do
+        let(:access_levels) { %i[developers_can_merge developers_can_push] }
+
+        it 'responds with correct attributes related to push and merge' do
+          request
+
+          expect(json_response.dig(0, 'developers_can_merge')).to be_truthy
+          expect(json_response.dig(0, 'developers_can_push')).to be_truthy
+          expect(json_response.dig(0, 'can_push')).to be_truthy
+        end
+      end
+
+      context 'when no one can push and merge' do
+        let(:access_levels) { %i[no_one_can_merge no_one_can_push] }
+
+        it 'responds with correct attributes related to push and merge' do
+          request
+
+          expect(json_response.dig(0, 'developers_can_merge')).to be_falsey
+          expect(json_response.dig(0, 'developers_can_push')).to be_falsey
+          expect(json_response.dig(0, 'can_push')).to be_falsey
+        end
+      end
+    end
+
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { get api(route, guest) }
+      end
+    end
+
+    it 'returns the repository branches' do
+      get api(route, user), params: { per_page: 100 }
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to match_response_schema('public_api/v4/branches')
+      branch_names = json_response.map { |x| x['name'] }
+      expect(branch_names).to match_array(project.repository.branch_names)
+    end
+
+    it 'uses Gitlab::Git::Finders::BranchesFinder' do
+      expect(Gitlab::Git::Finders::BranchesFinder).to receive(:new).and_call_original
+
+      get api(route, user), params: { per_page: 2 }
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    context 'when requesting page 2 with the new branches finder' do
+      it 'returns correct branches and pagination headers for the second page', :aggregate_failures do
+        total_branches = project.repository.branch_count
+        per_page = 5
+        expected_total_pages = (total_branches / per_page.to_f).ceil
+
+        get api(route, user), params: { per_page: per_page, page: 1 }
+        first_page_names = json_response.map { |b| b['name'] }
+
+        get api(route, user), params: { per_page: per_page, page: 2 }
+        second_page_names = json_response.map { |b| b['name'] }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(second_page_names).not_to be_empty
+        expect(second_page_names).not_to include(*first_page_names)
+        expect(response.headers['X-Page']).to eq('2')
+        expect(response.headers['X-Prev-Page']).to eq('1')
+        expect(response.headers['X-Total']).to eq(total_branches.to_s)
+        expect(response.headers['X-Total-Pages']).to eq(expected_total_pages.to_s)
+      end
+    end
+
+    context 'when offset pagination over-fetches above the configured per-page maximum' do
+      let(:max_per_page) { 10 }
+
+      before do
+        stub_const('Gitlab::PaginationDelegate::MAX_PER_PAGE', max_per_page)
+      end
+
+      it 'returns the second page of branches with pagination headers', :aggregate_failures do
+        expected_names = project.repository.branch_names.sort.slice(max_per_page, max_per_page)
+        requested_per_page = 20
+        expected_total_pages = (project.repository.branch_count / requested_per_page.to_f).ceil
+
+        get api(route, user), params: { per_page: requested_per_page, page: 2 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.map { |branch| branch['name'] }).to eq(expected_names)
+        expect(response.headers['X-Page']).to eq('2')
+        expect(response.headers['X-Total']).to eq(project.repository.branch_count.to_s)
+        expect(response.headers['X-Total-Pages']).to eq(expected_total_pages.to_s)
+      end
+
+      it 'returns an empty array for pages beyond the last page', :aggregate_failures do
+        last_page = (project.repository.branch_count / max_per_page.to_f).ceil
+
+        get api(route, user), params: { per_page: max_per_page, page: last_page + 1 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to eq([])
+      end
+
+      it 'does not over-fetch when page_token is supplied', :aggregate_failures do
+        first_page_finder = Gitlab::Git::Finders::BranchesFinder.new(
+          project.repository.raw_repository,
+          { per_page: 1 }
+        )
+        first_page_names = first_page_finder.execute.map(&:name)
+        page_token = first_page_finder.next_cursor
+
+        get api(route, user), params: { per_page: max_per_page, page: 2, page_token: page_token }
+
+        branch_names = json_response.map { |branch| branch['name'] }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(branch_names).not_to be_empty
+        expect(branch_names).not_to include(*first_page_names)
+        expect(branch_names).to eq(project.repository.branch_names.sort.drop(1).first(max_per_page))
+      end
+    end
+
+    context 'when search parameter is passed with new branches finder' do
+      it 'uses BranchesFinder', :aggregate_failures do
+        expect(BranchesFinder).to receive(:new).and_call_original
+        expect(Gitlab::Git::Finders::BranchesFinder).not_to receive(:new)
+
+        get api(route, user), params: { per_page: 100, search: branch_name }
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'returns correct branches' do
+        get api(route, user), params: { per_page: 100, search: branch_name }
+
+        searched_branch_names = json_response.map { |branch| branch['name'] }
+        project_branch_names = project.repository.branch_names.grep(/#{branch_name}/)
+
+        expect(searched_branch_names).to match_array(project_branch_names)
+      end
+
+      it 'returns an empty array when branch does not exist' do
+        get api(route, user), params: { per_page: 100, search: 'no_such_branch_name_entropy_of_jabadabadu' }
+
+        expect(json_response).to eq []
+      end
+
+      it 'returns offset pagination headers', :aggregate_failures do
+        get api(route, user), params: { per_page: 5, search: branch_name }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        # Searched requests route to the legacy BranchesFinder, which uses offset pagination.
+        expect(response.headers['X-Total']).to eq(json_response.size.to_s)
+        expect(response.headers['X-Total-Pages']).to eq('1')
+        expect(response.headers['X-Page']).to eq('1')
+        expect(response.headers['X-Per-Page']).to eq('5')
+      end
+    end
+
+    context 'when search and regex parameters are not passed' do
+      it 'uses Gitlab::Git::Finders::BranchesFinder' do
+        expect(Gitlab::Git::Finders::BranchesFinder).to receive(:new).and_call_original
+
+        get api(route, user), params: { per_page: 2 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    context 'when sort parameter is passed with new branches finder' do
+      it 'sorts branches' do
+        get api(route, user), params: { sort: 'name_asc', per_page: 10 }
+
+        sorted_branch_names = json_response.map { |branch| branch['name'] }
+        project_branch_names = project.repository.branch_names.sort.take(10)
+
+        expect(sorted_branch_names).to eq(project_branch_names)
+      end
+    end
+
+    context 'when regex parameter is provided' do
+      it 'falls back to BranchesFinder' do
+        expect(BranchesFinder).to receive(:new).and_call_original
+
+        get api(route, user), params: { per_page: 100, regex: branch_name }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        searched_branch_names = json_response.map { |branch| branch['name'] }
+        project_branch_names = project.repository.branch_names.grep(/#{branch_name}/)
+        expect(searched_branch_names).to match_array(project_branch_names)
+      end
+    end
+
+    context 'when use_new_branches_finder_api feature flag is disabled' do
+      before do
+        stub_feature_flags(use_new_branches_finder_api: false)
+      end
+
+      it 'uses BranchesFinder' do
+        expect(BranchesFinder).to receive(:new).and_call_original
+
+        get api(route, user), params: { per_page: 2 }
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
     end
   end
 
   describe "GET /projects/:id/repository/branches/:branch" do
-    it "should return the branch information for a single branch" do
-      get api("/projects/#{project.id}/repository/branches/#{branch_name}", user)
-      expect(response.status).to eq(200)
+    let(:route) { "/projects/#{project_id}/repository/branches/#{branch_name}" }
 
-      expect(json_response['name']).to eq(branch_name)
-      expect(json_response['commit']['id']).to eq(branch_sha)
-      expect(json_response['protected']).to eq(false)
+    it_behaves_like 'authorizing granular token permissions', :read_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api(route, personal_access_token: pat)
+      end
     end
 
-    it "should return a 403 error if guest" do
-      get api("/projects/#{project.id}/repository/branches", user2)
-      expect(response.status).to eq(403)
+    it_behaves_like 'authorizing granular token permissions', :read_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        head api(route, personal_access_token: pat)
+      end
     end
 
-    it "should return a 404 error if branch is not available" do
-      get api("/projects/#{project.id}/repository/branches/unknown", user)
-      expect(response.status).to eq(404)
+    shared_examples_for 'repository branch' do
+      context 'HEAD request' do
+        it 'returns 204 No Content' do
+          head api(route, user)
+
+          expect(response).to have_gitlab_http_status(:no_content)
+          expect(response.body).to be_empty
+        end
+
+        it 'returns 404 Not Found' do
+          head api("/projects/#{project_id}/repository/branches/unknown", user)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(response.body).to be_empty
+        end
+      end
+
+      it 'returns the repository branch' do
+        get api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/branch')
+        expect(json_response['name']).to eq(CGI.unescape(branch_name))
+      end
+
+      context 'when branch does not exist' do
+        let(:branch_name) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+          let(:message) { '404 Branch Not Found' }
+        end
+      end
+
+      context 'when the branch refname is invalid' do
+        let(:branch_name) { 'branch*' }
+        let(:message) { 'The branch refname is invalid' }
+
+        it_behaves_like '400 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when branch is ambiguous' do
+        let(:branch_name) { 'prefix' }
+
+        before do
+          project.repository.create_branch('prefix/branch')
+        end
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when repository does not exist' do
+        it_behaves_like '404 response' do
+          let(:project) { create(:project, creator: user) }
+          let(:request) { get api(route, current_user) }
+        end
+      end
+    end
+
+    context 'when unauthenticated', 'and project is public' do
+      before do
+        project.update!(visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it_behaves_like 'repository branch'
+
+      it 'returns that the current user cannot push' do
+        get api(route, current_user)
+
+        expect(json_response['can_push']).to be(false)
+      end
+    end
+
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { get api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      it_behaves_like 'repository branch'
+
+      it 'returns that the current user can push' do
+        get api(route, current_user)
+
+        expect(json_response['can_push']).to be(true)
+      end
+
+      context 'when branch contains a dot' do
+        let(:branch_name) { branch_with_dot }
+
+        it_behaves_like 'repository branch'
+      end
+
+      context 'when branch contains dot txt' do
+        let(:branch_name) { 'ends-with.txt' }
+
+        it_behaves_like 'repository branch'
+      end
+
+      context 'when branch contains a slash' do
+        let(:branch_name) { branch_with_slash }
+
+        it_behaves_like '404 response' do
+          let(:request) { get api(route, current_user) }
+        end
+      end
+
+      context 'when branch contains an escaped slash' do
+        let(:branch_name) { CGI.escape(branch_with_slash) }
+
+        it_behaves_like 'repository branch'
+      end
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'repository branch'
+
+        context 'when branch contains a dot' do
+          let(:branch_name) { branch_with_dot }
+
+          it_behaves_like 'repository branch'
+        end
+      end
+    end
+
+    context 'when authenticated', 'as a developer and branch is protected' do
+      let(:current_user) { create(:user, developer_of: project) }
+      let!(:protected_branch) { create(:protected_branch, project: project, name: branch_name) }
+
+      it_behaves_like 'repository branch'
+
+      it 'returns that the current user cannot push' do
+        get api(route, current_user)
+
+        expect(json_response['can_push']).to be(false)
+      end
+    end
+
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { get api(route, guest) }
+      end
     end
   end
 
-  describe "PUT /projects/:id/repository/branches/:branch/protect" do
-    it "should protect a single branch" do
-      put api("/projects/#{project.id}/repository/branches/#{branch_name}/protect", user)
-      expect(response.status).to eq(200)
+  describe 'PUT /projects/:id/repository/branches/:branch/protect' do
+    let(:route) { "/projects/#{project_id}/repository/branches/#{branch_name}/protect" }
 
-      expect(json_response['name']).to eq(branch_name)
-      expect(json_response['commit']['id']).to eq(branch_sha)
-      expect(json_response['protected']).to eq(true)
+    it_behaves_like 'authorizing granular token permissions', :create_protected_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        put api(route, personal_access_token: pat)
+      end
     end
 
-    it "should return a 404 error if branch not found" do
-      put api("/projects/#{project.id}/repository/branches/unknown/protect", user)
-      expect(response.status).to eq(404)
+    shared_examples_for 'repository new protected branch' do
+      it 'protects a single branch' do
+        put api(route, current_user)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/branch')
+        expect(json_response['name']).to eq(CGI.unescape(branch_name))
+        expect(json_response['protected']).to be(true)
+      end
+
+      it 'protects a single branch and developers can push' do
+        put api(route, current_user), params: { developers_can_push: true }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/branch')
+        expect(json_response['name']).to eq(CGI.unescape(branch_name))
+        expect(json_response['protected']).to be(true)
+        expect(json_response['developers_can_push']).to be(true)
+        expect(json_response['developers_can_merge']).to be(false)
+      end
+
+      it 'protects a single branch and developers can merge' do
+        put api(route, current_user), params: { developers_can_merge: true }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/branch')
+        expect(json_response['name']).to eq(CGI.unescape(branch_name))
+        expect(json_response['protected']).to be(true)
+        expect(json_response['developers_can_push']).to be(false)
+        expect(json_response['developers_can_merge']).to be(true)
+      end
+
+      it 'protects a single branch and developers can push and merge' do
+        put api(route, current_user), params: { developers_can_push: true, developers_can_merge: true }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/branch')
+        expect(json_response['name']).to eq(CGI.unescape(branch_name))
+        expect(json_response['protected']).to be(true)
+        expect(json_response['developers_can_push']).to be(true)
+        expect(json_response['developers_can_merge']).to be(true)
+      end
+
+      context 'when branch does not exist' do
+        let(:branch_name) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { put api(route, current_user) }
+          let(:message) { '404 Branch Not Found' }
+        end
+      end
+
+      context 'when the branch refname is invalid' do
+        let(:branch_name) { 'branch*' }
+        let(:message) { 'The branch refname is invalid' }
+
+        it_behaves_like '400 response' do
+          let(:request) { put api(route, current_user) }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { put api(route, current_user) }
+        end
+      end
     end
 
-    it "should return a 403 error if guest" do
-      put api("/projects/#{project.id}/repository/branches/#{branch_name}/protect", user2)
-      expect(response.status).to eq(403)
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { put api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
     end
 
-    it "should return success when protect branch again" do
-      put api("/projects/#{project.id}/repository/branches/#{branch_name}/protect", user)
-      put api("/projects/#{project.id}/repository/branches/#{branch_name}/protect", user)
-      expect(response.status).to eq(200)
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { put api(route, guest) }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      context "when a protected branch doesn't already exist" do
+        let_it_be_with_reload(:project) { create(:project, :in_group, :repository, creator: user, path: 'my.project', create_branch: 'ends-with.txt', maintainers: user) }
+
+        it_behaves_like 'repository new protected branch'
+
+        context 'when branch contains a dot' do
+          let(:branch_name) { branch_with_dot }
+
+          it_behaves_like 'repository new protected branch'
+        end
+
+        context 'when branch contains a slash' do
+          let(:branch_name) { branch_with_slash }
+
+          it_behaves_like '404 response' do
+            let(:request) { put api(route, current_user) }
+          end
+        end
+
+        context 'when branch contains an escaped slash' do
+          let(:branch_name) { CGI.escape(branch_with_slash) }
+
+          it_behaves_like 'repository new protected branch'
+        end
+
+        context 'requesting with the escaped project full path' do
+          let(:project_id) { CGI.escape(project.full_path) }
+
+          it_behaves_like 'repository new protected branch'
+
+          context 'when branch contains a dot' do
+            let(:branch_name) { branch_with_dot }
+
+            it_behaves_like 'repository new protected branch'
+          end
+        end
+      end
+
+      context 'when protected branch already exists' do
+        before do
+          project.repository.add_branch(user, protected_branch.name, 'master')
+        end
+
+        context 'when developers can push and merge' do
+          let(:protected_branch) { create(:protected_branch, :developers_can_push, :developers_can_merge, project: project, name: 'protected_branch') }
+
+          it 'updates that a developer cannot push or merge' do
+            put api("/projects/#{project.id}/repository/branches/#{protected_branch.name}/protect", user),
+              params: { developers_can_push: false, developers_can_merge: false }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response).to match_response_schema('public_api/v4/branch')
+            expect(json_response['name']).to eq(protected_branch.name)
+            expect(json_response['protected']).to be(true)
+            expect(json_response['developers_can_push']).to be(false)
+            expect(json_response['developers_can_merge']).to be(false)
+            expect(protected_branch.reload.push_access_levels.first.access_level).to eq(Gitlab::Access::MAINTAINER)
+            expect(protected_branch.reload.merge_access_levels.first.access_level).to eq(Gitlab::Access::MAINTAINER)
+          end
+        end
+
+        context 'when developers cannot push or merge' do
+          let(:protected_branch) { create(:protected_branch, project: project, name: 'protected_branch') }
+
+          it 'updates that a developer can push and merge' do
+            put api("/projects/#{project.id}/repository/branches/#{protected_branch.name}/protect", user),
+              params: { developers_can_push: true, developers_can_merge: true }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response).to match_response_schema('public_api/v4/branch')
+            expect(json_response['name']).to eq(protected_branch.name)
+            expect(json_response['protected']).to be(true)
+            expect(json_response['developers_can_push']).to be(true)
+            expect(json_response['developers_can_merge']).to be(true)
+          end
+        end
+      end
     end
   end
 
-  describe "PUT /projects/:id/repository/branches/:branch/unprotect" do
-    it "should unprotect a single branch" do
-      put api("/projects/#{project.id}/repository/branches/#{branch_name}/unprotect", user)
-      expect(response.status).to eq(200)
+  describe 'PUT /projects/:id/repository/branches/:branch/unprotect' do
+    let_it_be_with_reload(:project) { create(:project, :in_group, :repository, creator: user, path: 'my.project', create_branch: 'ends-with.txt', maintainers: user) }
+    let_it_be(:guest) { create(:user, guest_of: project) }
 
-      expect(json_response['name']).to eq(branch_name)
-      expect(json_response['commit']['id']).to eq(branch_sha)
-      expect(json_response['protected']).to eq(false)
+    let(:route) { "/projects/#{project_id}/repository/branches/#{branch_name}/unprotect" }
+
+    it_behaves_like 'authorizing granular token permissions', :delete_protected_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        put api(route, personal_access_token: pat)
+      end
     end
 
-    it "should return success when unprotect branch" do
-      put api("/projects/#{project.id}/repository/branches/unknown/unprotect", user)
-      expect(response.status).to eq(404)
+    shared_examples_for 'repository unprotected branch' do
+      context 'when branch is protected' do
+        let!(:protected_branch) { create(:protected_branch, project: project, name: protected_branch_name) }
+
+        it 'unprotects a single branch' do
+          expect_next_instance_of(::ProtectedBranches::DestroyService, project, current_user) do |instance|
+            expect(instance).to receive(:execute).with(protected_branch).and_call_original
+          end
+
+          put api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/branch')
+          expect(json_response['name']).to eq(CGI.unescape(branch_name))
+          expect(json_response['protected']).to be(false)
+
+          expect { protected_branch.reload }.to raise_error(ActiveRecord::RecordNotFound)
+        end
+      end
+
+      context 'when branch is not protected' do
+        it 'returns a single branch response' do
+          expect(::ProtectedBranches::DestroyService).not_to receive(:new)
+
+          put api(route, current_user)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to match_response_schema('public_api/v4/branch')
+          expect(json_response['name']).to eq(CGI.unescape(branch_name))
+          expect(json_response['protected']).to be(false)
+        end
+      end
+
+      context 'when branch does not exist' do
+        let(:branch_name) { 'unknown' }
+
+        it_behaves_like '404 response' do
+          let(:request) { put api(route, current_user) }
+          let(:message) { '404 Branch Not Found' }
+        end
+      end
+
+      context 'when the branch refname is invalid' do
+        let(:branch_name) { 'branch*' }
+        let(:message) { 'The branch refname is invalid' }
+
+        it_behaves_like '400 response' do
+          let(:request) { put api(route, current_user) }
+        end
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { put api(route, current_user) }
+        end
+      end
     end
 
-    it "should return success when unprotect branch again" do
-      put api("/projects/#{project.id}/repository/branches/#{branch_name}/unprotect", user)
-      put api("/projects/#{project.id}/repository/branches/#{branch_name}/unprotect", user)
-      expect(response.status).to eq(200)
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { put api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
+    end
+
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { put api(route, guest) }
+      end
+    end
+
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+      let(:protected_branch_name) { branch_name }
+
+      it_behaves_like 'repository unprotected branch'
+
+      context 'when branch contains a dot' do
+        let(:branch_name) { branch_with_dot }
+
+        it_behaves_like 'repository unprotected branch'
+      end
+
+      context 'when branch contains a slash' do
+        let(:branch_name) { branch_with_slash }
+
+        it_behaves_like '404 response' do
+          let(:request) { put api(route, current_user) }
+        end
+      end
+
+      context 'when branch contains an escaped slash' do
+        let(:branch_name) { CGI.escape(branch_with_slash) }
+        let(:protected_branch_name) { branch_with_slash }
+
+        it_behaves_like 'repository unprotected branch'
+      end
+
+      context 'requesting with the escaped project full path' do
+        let(:project_id) { CGI.escape(project.full_path) }
+
+        it_behaves_like 'repository unprotected branch'
+
+        context 'when branch contains a dot' do
+          let(:branch_name) { branch_with_dot }
+
+          it_behaves_like 'repository unprotected branch'
+        end
+      end
     end
   end
 
-  describe "POST /projects/:id/repository/branches" do
-    it "should create a new branch" do
-      post api("/projects/#{project.id}/repository/branches", user),
-           branch_name: 'feature1',
-           ref: branch_sha
+  describe 'POST /projects/:id/repository/branches' do
+    let(:route) { "/projects/#{project_id}/repository/branches" }
 
-      expect(response.status).to eq(201)
-
-      expect(json_response['name']).to eq('feature1')
-      expect(json_response['commit']['id']).to eq(branch_sha)
+    it_behaves_like 'authorizing granular token permissions', :create_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        post api(route, personal_access_token: pat), params: { branch: 'feature1', ref: branch_sha }
+      end
     end
 
-    it "should deny for user without push access" do
-      post api("/projects/#{project.id}/repository/branches", user2),
-           branch_name: branch_name,
-           ref: branch_sha
-      expect(response.status).to eq(403)
+    shared_examples_for 'repository new branch' do
+      it 'creates a new branch' do
+        post api(route, current_user), params: { branch: 'feature1', ref: branch_sha }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(response).to match_response_schema('public_api/v4/branch')
+        expect(json_response['name']).to eq('feature1')
+        expect(json_response['commit']['id']).to eq(branch_sha)
+      end
+
+      context 'when repository is disabled' do
+        include_context 'disabled repository'
+
+        it_behaves_like '404 response' do
+          let(:request) { post api(route, current_user) }
+        end
+      end
     end
 
-    it 'should return 400 if branch name is invalid' do
-      post api("/projects/#{project.id}/repository/branches", user),
-           branch_name: 'new design',
-           ref: branch_sha
-      expect(response.status).to eq(400)
-      expect(json_response['message']).to eq('Branch name invalid')
+    context 'when unauthenticated', 'and project is private' do
+      it_behaves_like '404 response' do
+        let(:request) { post api(route) }
+        let(:message) { '404 Project Not Found' }
+      end
     end
 
-    it 'should return 400 if branch already exists' do
-      post api("/projects/#{project.id}/repository/branches", user),
-           branch_name: 'new_design1',
-           ref: branch_sha
-      expect(response.status).to eq(201)
+    context 'when authenticated', 'as a guest' do
+      it_behaves_like '403 response' do
+        let(:request) { post api(route, guest) }
+      end
+    end
 
-      post api("/projects/#{project.id}/repository/branches", user),
-           branch_name: 'new_design1',
-           ref: branch_sha
-      expect(response.status).to eq(400)
+    context 'when authenticated', 'as a maintainer' do
+      let(:current_user) { user }
+
+      context "when a protected branch doesn't already exist" do
+        it_behaves_like 'repository new branch'
+
+        context 'requesting with the escaped project full path' do
+          let(:project_id) { CGI.escape(project.full_path) }
+
+          it_behaves_like 'repository new branch'
+        end
+      end
+    end
+
+    it 'returns 400 if branch name is invalid' do
+      post api(route, user), params: { branch: 'new design', ref: branch_sha }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']).to eq('Branch name is invalid')
+    end
+
+    it 'returns 400 if branch already exists', :clean_gitlab_redis_cache do
+      post api(route, user), params: { branch: 'new_design1', ref: branch_sha }
+
+      expect(response).to have_gitlab_http_status(:created)
+
+      post api(route, user), params: { branch: 'new_design1', ref: branch_sha }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
       expect(json_response['message']).to eq('Branch already exists')
     end
 
-    it 'should return 400 if ref name is invalid' do
-      post api("/projects/#{project.id}/repository/branches", user),
-           branch_name: 'new_design3',
-           ref: 'foo'
-      expect(response.status).to eq(400)
-      expect(json_response['message']).to eq('Invalid reference name')
+    it 'returns 400 if ref name is invalid' do
+      error_message = 'Failed to create branch \'new_design3\': invalid reference name \'foo\''
+      post api(route, user), params: { branch: 'new_design3', ref: 'foo' }
+
+      expect(response).to have_gitlab_http_status(:bad_request)
+      expect(json_response['message']).to eq(error_message)
+    end
+
+    context 'when authenticated with a token that has the ai_workflows scope' do
+      let(:oauth_token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'returns the repository branches successfully' do
+        post api(route, oauth_access_token: oauth_token), params: { branch: 'feature1', ref: branch_sha }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(response).to match_response_schema('public_api/v4/branch')
+        expect(json_response['name']).to eq('feature1')
+        expect(json_response['commit']['id']).to eq(branch_sha)
+      end
     end
   end
 
-  describe "DELETE /projects/:id/repository/branches/:branch" do
-    before { Repository.any_instance.stub(rm_branch: true) }
+  describe 'DELETE /projects/:id/repository/branches/:branch' do
+    let_it_be(:project) { create(:project, :in_group, :repository, creator: user, path: 'my.project', create_branch: 'ends-with.txt', maintainers: user) }
 
-    it "should remove branch" do
-      delete api("/projects/#{project.id}/repository/branches/#{branch_name}", user)
-      expect(response.status).to eq(200)
-      expect(json_response['branch_name']).to eq(branch_name)
+    before do
+      allow_next_instance_of(Repository) do |instance|
+        allow(instance).to receive(:rm_branch).and_return(true)
+      end
     end
 
-    it 'should return 404 if branch not exists' do
+    it_behaves_like 'authorizing granular token permissions', :delete_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        delete api("/projects/#{project.id}/repository/branches/#{branch_name}", personal_access_token: pat)
+      end
+    end
+
+    it 'removes branch' do
+      delete api("/projects/#{project.id}/repository/branches/#{branch_name}", user)
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+
+    it 'removes a branch with dots in the branch name' do
+      delete api("/projects/#{project.id}/repository/branches/#{branch_with_dot}", user)
+
+      expect(response).to have_gitlab_http_status(:no_content)
+    end
+
+    it 'returns 404 if branch not exists' do
       delete api("/projects/#{project.id}/repository/branches/foobar", user)
-      expect(response.status).to eq(404)
+
+      expect(response).to have_gitlab_http_status(:not_found)
     end
 
-    it "should remove protected branch" do
-      project.protected_branches.create(name: branch_name)
-      delete api("/projects/#{project.id}/repository/branches/#{branch_name}", user)
-      expect(response.status).to eq(405)
-      expect(json_response['message']).to eq('Protected branch cant be removed')
+    context 'when the branch refname is invalid' do
+      let(:branch_name) { 'branch*' }
+      let(:message) { 'The branch refname is invalid' }
+
+      it_behaves_like '400 response' do
+        let(:request) { delete api("/projects/#{project.id}/repository/branches/#{branch_name}", user) }
+      end
     end
 
-    it "should not remove HEAD branch" do
-      delete api("/projects/#{project.id}/repository/branches/master", user)
-      expect(response.status).to eq(405)
-      expect(json_response['message']).to eq('Cannot remove HEAD branch')
+    it_behaves_like '412 response' do
+      let(:request) { api("/projects/#{project.id}/repository/branches/#{branch_name}", user) }
+    end
+  end
+
+  describe 'DELETE /projects/:id/repository/merged_branches' do
+    let_it_be_with_reload(:project) { create(:project, :in_group, :repository, creator: user, path: 'my.project', create_branch: 'ends-with.txt', maintainers: user) }
+    let_it_be(:guest) { create(:user, guest_of: project) }
+
+    before do
+      allow_next_instance_of(Repository) do |instance|
+        allow(instance).to receive(:rm_branch).and_return(true)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :delete_merged_branch do
+      let(:boundary_object) { project }
+      let(:request) do
+        delete api("/projects/#{project.id}/repository/merged_branches", personal_access_token: pat)
+      end
+    end
+
+    it 'returns 202 with json body' do
+      delete api("/projects/#{project.id}/repository/merged_branches", user)
+
+      expect(response).to have_gitlab_http_status(:accepted)
+      expect(json_response['message']).to eql('202 Accepted')
+    end
+
+    it 'returns a 403 error if guest' do
+      delete api("/projects/#{project.id}/repository/merged_branches", guest)
+
+      expect(response).to have_gitlab_http_status(:forbidden)
+    end
+
+    context 'when user is not authorized and project is public' do
+      before do
+        project.update!(visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns a 403 error' do
+        delete api("/projects/#{project.id}/repository/merged_branches")
+
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+  end
+
+  describe 'MCP tool input schemas', feature_category: :mcp_server do
+    it 'locks the full input schema of list_branches' do
+      expect(Mcp::Tools::Manager.new.get_tool(name: 'list_branches').input_schema).to eq({
+        type: 'object',
+        properties: {
+          'id' => {
+            type: 'string',
+            description: 'ID or URL-encoded path of the project.'
+          },
+          'search' => {
+            type: 'string',
+            description: 'Return branches containing the search string. Use `^term` to find branches ' \
+              'that begin with `term`, and `term$` to find branches that end with `term`.'
+          },
+          'page' => {
+            type: 'integer',
+            description: 'Page number of results to retrieve.'
+          },
+          'per_page' => {
+            type: 'integer',
+            description: 'Number of items to list per page.'
+          }
+        },
+        required: %w[id],
+        additionalProperties: false
+      })
     end
   end
 end

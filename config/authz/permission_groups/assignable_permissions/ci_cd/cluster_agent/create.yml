@@ -1,0 +1,9 @@
+---
+name: create_cluster_agent
+description: Grants the ability to create cluster agents
+boundaries:
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - create_cluster_agent

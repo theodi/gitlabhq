@@ -1,0 +1,193 @@
+<script>
+import { GlButton, GlCard, GlIcon, GlLink, GlTooltipDirective } from '@gitlab/ui';
+import { visitUrl } from '~/lib/utils/url_utility';
+import { __, s__, sprintf } from '~/locale';
+import ManageViaMr from '~/vue_shared/security_configuration/components/manage_via_mr.vue';
+import { FEATURE_DISABLED_TOOLTIP } from '~/security_configuration/constants';
+import FeatureCardBadge from './feature_card_badge.vue';
+
+export default {
+  name: 'FeatureCard',
+  components: {
+    GlButton,
+    GlCard,
+    GlIcon,
+    GlLink,
+    FeatureCardBadge,
+    ManageViaMr,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  props: {
+    feature: {
+      type: Object,
+      required: true,
+    },
+  },
+  emits: ['error'],
+  computed: {
+    available() {
+      return this.feature.available;
+    },
+    enabled() {
+      return this.available && this.feature.configured;
+    },
+    shortName() {
+      return this.feature.shortName ?? this.feature.name;
+    },
+    configurationButton() {
+      const button = this.enabled
+        ? {
+            text: this.$options.i18n.configureFeature,
+          }
+        : {
+            text: this.$options.i18n.enableFeature,
+          };
+
+      button.text = sprintf(button.text, { feature: this.shortName });
+
+      return button;
+    },
+    showManageViaMr() {
+      return ManageViaMr.canRender(this.feature);
+    },
+    cardClasses() {
+      return { 'gl-bg-strong': !this.available };
+    },
+    textClasses() {
+      return { 'gl-text-subtle': !this.available };
+    },
+    statusClasses() {
+      const { enabled, hasBadge } = this;
+
+      return {
+        'gl-ml-auto': true,
+        'gl-shrink-0': true,
+        'gl-text-disabled': !enabled,
+        'gl-text-success': enabled,
+        'gl-w-full': hasBadge,
+        'gl-justify-between': hasBadge,
+        'gl-flex': hasBadge,
+        'gl-mb-4': hasBadge,
+      };
+    },
+    hasSecondary() {
+      return Boolean(this.feature.secondary);
+    },
+    hasBadge() {
+      const shouldDisplay = this.available || this.feature.badge?.alwaysDisplay;
+      return Boolean(shouldDisplay && this.feature.badge?.text);
+    },
+    hyphenatedFeature() {
+      return this.feature.type.replace(/_/g, '-');
+    },
+    disabledTooltip() {
+      return this.feature.canUserConfigure ? null : FEATURE_DISABLED_TOOLTIP;
+    },
+  },
+  methods: {
+    onError(message) {
+      this.$emit('error', message);
+    },
+    configureViaUrl() {
+      visitUrl(this.feature.configurationPath);
+    },
+  },
+  i18n: {
+    enabled: s__('SecurityConfiguration|Enabled'),
+    notEnabled: s__('SecurityConfiguration|Not enabled'),
+    availableWith: s__('SecurityConfiguration|Available with Ultimate'),
+    configurationGuide: s__('SecurityConfiguration|Configuration guide'),
+    configureFeature: s__('SecurityConfiguration|Configure %{feature}'),
+    enableFeature: s__('SecurityConfiguration|Enable %{feature}'),
+    learnMore: __('Learn more'),
+  },
+};
+</script>
+
+<template>
+  <gl-card :class="cardClasses" body-class="gl-flex gl-flex-col gl-grow">
+    <template #header>
+      <div class="gl-flex gl-items-baseline" :class="{ 'gl-flex-col-reverse': hasBadge }">
+        <h3 class="gl-m-0 gl-mr-3 gl-text-base" :class="textClasses">
+          {{ feature.name }}
+        </h3>
+        <div
+          :class="statusClasses"
+          data-testid="feature-status"
+          :data-qa-feature="`${feature.type}_${enabled}_status`"
+        >
+          <feature-card-badge
+            v-if="hasBadge"
+            :badge="feature.badge"
+            :badge-href="feature.badge.badgeHref"
+          />
+
+          <template v-if="enabled">
+            <span>
+              <gl-icon name="check-circle-filled" />
+              <span class="gl-text-success">{{ $options.i18n.enabled }}</span>
+            </span>
+          </template>
+
+          <template v-else-if="available">
+            <span>{{ $options.i18n.notEnabled }}</span>
+          </template>
+
+          <template v-else>
+            {{ $options.i18n.availableWith }}
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <p class="gl-mb-0 gl-grow" :class="textClasses">
+      {{ feature.description }}
+      <gl-link :href="feature.helpPath">{{ $options.i18n.learnMore }}.</gl-link>
+    </p>
+
+    <div class="gl-mt-5 gl-flex gl-justify-between">
+      <template v-if="available">
+        <span
+          v-if="feature.configurationPath"
+          v-gl-tooltip
+          :title="disabledTooltip"
+          :data-testid="`${hyphenatedFeature}-enable-button-tooltip`"
+        >
+          <gl-button
+            :disabled="!feature.canUserConfigure"
+            :data-testid="`${hyphenatedFeature}-enable-button`"
+            @click="configureViaUrl"
+          >
+            {{ configurationButton.text }}
+          </gl-button>
+        </span>
+
+        <manage-via-mr
+          v-else-if="showManageViaMr"
+          :feature="feature"
+          :data-testid="`${hyphenatedFeature}-mr-button`"
+          @error="onError"
+        />
+
+        <gl-button
+          v-else-if="feature.configurationHelpPath"
+          icon="external-link"
+          :href="feature.configurationHelpPath"
+        >
+          {{ $options.i18n.configurationGuide }}
+        </gl-button>
+      </template>
+      <div v-if="hasSecondary" data-testid="secondary-feature">
+        <gl-button
+          v-if="available && feature.secondary.configurationPath"
+          v-gl-tooltip.left.viewport="feature.secondary.configurationText"
+          icon="settings"
+          :href="feature.secondary.configurationPath"
+          :aria-label="feature.secondary.configurationText"
+        />
+      </div>
+    </div>
+  </gl-card>
+</template>

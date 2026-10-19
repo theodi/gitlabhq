@@ -1,28 +1,150 @@
+# frozen_string_literal: true
+
 class Projects::ApplicationController < ApplicationController
+  include ChecksCollaboration
+  include CookiesHelper
+  include RoutableActions
+  include SafeFormatHelper
+  include EnforcesStepUpAuthenticationForNamespace
+
+  skip_before_action :authenticate_user!
   before_action :project
   before_action :repository
+
+  # This before_action must execute AFTER the :project before_action.
+  # The enforce_step_up_auth_for_namespace method depends on @project being loaded first.
+  # By placing it after `before_action :project`, we guarantee the correct execution order.
+  before_action :enforce_step_up_auth_for_namespace
+
+  before_action :set_project_markdown_flags
+
   layout 'project'
 
-  def authenticate_user!
-    # Restrict access to Projects area only
-    # for non-signed users
-    if !current_user
-      id = params[:project_id] || params[:id]
-      project_with_namespace = "#{params[:namespace_id]}/#{id}"
-      @project = Project.find_with_namespace(project_with_namespace)
+  helper_method :repository, :can_collaborate_with_project?, :user_access
 
-      return if @project && @project.public?
+  rescue_from Gitlab::Template::Finders::RepoTemplateFinder::FileNotFoundError do |exception|
+    log_exception(exception)
+    render_404
+  end
+
+  private
+
+  def project_route_params
+    params.permit(:project_id, :id, :namespace_id)
+  end
+  strong_memoize_attr :project_route_params
+
+  def project
+    return @project if @project
+
+    route_params = project_route_params
+    project_id = route_params[:project_id] || route_params[:id]
+    return unless project_id
+
+    path = File.join(route_params[:namespace_id], project_id)
+
+    @project = find_routable!(Project, path, request.fullpath, extra_authorization_proc: auth_proc)
+  end
+
+  def auth_proc
+    ->(project) { !project.deletion_in_progress? }
+  end
+
+  def build_canonical_path(project)
+    url_for(safe_params.merge(namespace_id: project.namespace.to_param, project_id: project.to_param))
+  end
+
+  def repository
+    @repository ||= project.repository
+  end
+
+  def authorize_action!(action)
+    access_denied! unless can?(current_user, action, project)
+  end
+
+  def check_project_feature_available!(feature)
+    render_404 unless project.feature_available?(feature, current_user)
+  end
+
+  def check_issuables_available!
+    render_404 unless project.feature_available?(:issues, current_user) ||
+      project.feature_available?(:merge_requests, current_user)
+  end
+
+  def method_missing(method_sym, *arguments, &block)
+    case method_sym.to_s
+    when /\Aauthorize_(.*)!\z/
+      authorize_action!(Regexp.last_match(1).to_sym)
+    when /\Acheck_(.*)_available!\z/
+      check_project_feature_available!(Regexp.last_match(1).to_sym)
+    else
+      super
     end
+  end
 
-    super
+  def require_non_empty_project
+    # Be sure to return status code 303 to avoid a double DELETE:
+    # http://api.rubyonrails.org/classes/ActionController/Redirecting.html
+    redirect_to project_path(@project), status: :see_other if @project.empty_repo?
   end
 
   def require_branch_head
-    unless @repository.branch_names.include?(@ref)
+    unless @repository.branch_exists?(@ref)
       redirect_to(
-        namespace_project_tree_path(@project.namespace, @project, @ref),
-        notice: "This action is not allowed unless you are on top of a branch"
+        project_tree_path(@project, @ref),
+        notice: "This action is not allowed unless you are on a branch"
       )
     end
   end
+
+  def require_pages_enabled!
+    not_found unless ::Gitlab::Pages.enabled?
+  end
+
+  def check_issues_available!
+    render_404 unless @project.feature_available?(:issues, current_user)
+  end
+
+  def set_is_ambiguous_ref
+    return @is_ambiguous_ref if defined? @is_ambiguous_ref
+    return @is_ambiguous_ref = false if @ref_type.present?
+
+    @is_ambiguous_ref = ExtractsRef::VerifiedRefExtractor
+      .ambiguous_ref?(@project.repository, ref_type: ref_type, ref: @ref)
+  end
+
+  def handle_update_result(result)
+    if result[:status] == :success
+      flash[:notice] = format(_("Project '%{project_name}' was successfully updated."), project_name: @project.name)
+      redirect_to(edit_project_path(@project, anchor: 'js-general-project-settings'))
+    else
+      flash[:alert] = result[:message]
+      @project.reset
+      render 'edit'
+    end
+  end
+
+  def enforce_step_up_auth_for_namespace
+    # Use @project instance variable instead of calling project method
+    # to avoid triggering find_routable! when the :project before_action was skipped
+    namespace_id = project_route_params[:namespace_id]
+
+    if @project&.namespace.present?
+      enforce_step_up_auth_for(@project.namespace)
+    elsif namespace_id.present?
+      enforce_step_up_auth_for_namespace_id(namespace_id)
+    end
+  end
+
+  def set_project_markdown_flags
+    push_namespace_setting(:math_rendering_limits_enabled, @project&.parent)
+    push_force_frontend_feature_flag(:allow_iframes_in_markdown,
+      @project&.allow_iframes_in_markdown_feature_flag_enabled? == true)
+    push_force_frontend_feature_flag(:use_mermaid_v12,
+      @project&.use_mermaid_v12_feature_flag_enabled? == true)
+    push_force_frontend_feature_flag(:markdown_placeholders,
+      @project&.markdown_placeholders_feature_flag_enabled? == true)
+  end
 end
+
+Projects::ApplicationController.prepend_mod_with('Projects::ApplicationController')

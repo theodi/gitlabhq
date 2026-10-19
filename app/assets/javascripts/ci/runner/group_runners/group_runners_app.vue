@@ -1,0 +1,299 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlButton, GlLink, GlToastMixin } from '@gitlab/ui';
+import { createAlert } from '~/alert';
+import { updateHistory } from '~/lib/utils/url_utility';
+import { fetchPolicies } from '~/lib/graphql';
+import { upgradeStatusTokenConfig } from 'ee_else_ce/ci/runner/components/search_tokens/upgrade_status_token_config';
+import {
+  fromUrlQueryToSearch,
+  fromSearchToUrl,
+  fromSearchToVariables,
+  isSearchFiltered,
+} from 'ee_else_ce/ci/runner/runner_search_utils';
+import groupRunnersCountQuery from 'ee_else_ce/ci/runner/graphql/list/group_runners_count.query.graphql';
+import groupRunnersQuery from 'ee_else_ce/ci/runner/graphql/list/group_runners.query.graphql';
+
+import { captureException } from '~/sentry/sentry_browser_wrapper';
+import RunnerListHeader from '../components/runner_list_header.vue';
+import RegistrationDropdown from '../components/registration/registration_dropdown.vue';
+import RunnerFilteredSearchBar from '../components/runner_filtered_search_bar.vue';
+import RunnerList from '../components/runner_list.vue';
+import RunnerListEmptyState from '../components/runner_list_empty_state.vue';
+import RunnerName from '../components/runner_name.vue';
+import RunnerStats from '../components/stat/runner_stats.vue';
+import RunnerPagination from '../components/runner_pagination.vue';
+import RunnerTypeTabs from '../components/runner_type_tabs.vue';
+import RunnerActionsCell from '../components/cells/runner_actions_cell.vue';
+import RunnerMembershipToggle from '../components/runner_membership_toggle.vue';
+
+import { pausedTokenConfig } from '../components/search_tokens/paused_token_config';
+import { statusTokenConfig } from '../components/search_tokens/status_token_config';
+import { tagTokenConfig } from '../components/search_tokens/tag_token_config';
+import {
+  GROUP_FILTERED_SEARCH_NAMESPACE,
+  GROUP_TYPE,
+  PROJECT_TYPE,
+  I18N_FETCH_ERROR,
+  FILTER_CSS_CLASSES,
+} from '../constants';
+
+export default {
+  name: 'GroupRunnersApp',
+  components: {
+    GlButton,
+    GlLink,
+    RunnerListHeader,
+    RegistrationDropdown,
+    RunnerFilteredSearchBar,
+    RunnerList,
+    RunnerListEmptyState,
+    RunnerName,
+    RunnerMembershipToggle,
+    RunnerStats,
+    RunnerPagination,
+    RunnerTypeTabs,
+    RunnerActionsCell,
+    RunnerDashboardLink: defineAsyncComponent(
+      () => import('ee_component/ci/runner/components/runner_dashboard_link.vue'),
+    ),
+  },
+  mixins: [GlToastMixin],
+  props: {
+    newRunnerPath: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    allowRegistrationToken: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    registrationToken: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    groupFullPath: {
+      type: String,
+      required: true,
+    },
+  },
+  data() {
+    return {
+      search: fromUrlQueryToSearch(),
+      runners: {
+        items: [],
+        urlsById: {},
+        pageInfo: {},
+      },
+    };
+  },
+  apollo: {
+    runners: {
+      query: groupRunnersQuery,
+      // Runners can be updated by users directly in this list.
+      // A "cache and network" policy prevents outdated filtered
+      // results.
+      fetchPolicy: fetchPolicies.CACHE_AND_NETWORK,
+      // Skip deduplication so each refetch is a real request: otherwise a
+      // stale in-flight response could overwrite newer mutation results,
+      // e.g. a "Paused" badge that never clears.
+      context: { queryDeduplication: false },
+      variables() {
+        return this.variables;
+      },
+      update(data) {
+        const { edges = [], pageInfo = {} } = data?.group?.runners || {};
+
+        const items = [];
+        const urlsById = {};
+
+        edges.forEach(({ node, webUrl, editUrl }) => {
+          items.push(node);
+          urlsById[node.id] = {
+            web: webUrl,
+            edit: editUrl,
+          };
+        });
+
+        return {
+          items,
+          urlsById,
+          pageInfo,
+        };
+      },
+      error(error) {
+        createAlert({ message: I18N_FETCH_ERROR });
+
+        this.reportToSentry(error);
+      },
+    },
+  },
+  computed: {
+    variables() {
+      return {
+        ...fromSearchToVariables(this.search),
+        groupFullPath: this.groupFullPath,
+      };
+    },
+    countVariables() {
+      // Exclude pagination variables, leave only filters variables
+      const { sort, before, last, after, first, ...countVariables } = this.variables;
+      return countVariables;
+    },
+    runnersLoading() {
+      return this.$apollo.queries.runners.loading;
+    },
+    noRunnersFound() {
+      return !this.runnersLoading && !this.runners.items.length;
+    },
+    filteredSearchNamespace() {
+      return `${GROUP_FILTERED_SEARCH_NAMESPACE}/${this.groupFullPath}`;
+    },
+    searchTokens() {
+      return [
+        pausedTokenConfig,
+        statusTokenConfig,
+        {
+          ...tagTokenConfig,
+          suggestionsDisabled: true,
+        },
+        upgradeStatusTokenConfig,
+      ];
+    },
+    isSearchFiltered() {
+      return isSearchFiltered(this.search);
+    },
+  },
+  watch: {
+    search: {
+      deep: true,
+      handler() {
+        // TODO Implement back button response using onpopstate
+        // See https://gitlab.com/gitlab-org/gitlab/-/issues/333804
+        updateHistory({
+          url: fromSearchToUrl(this.search),
+          title: document.title,
+        });
+      },
+    },
+  },
+  methods: {
+    webUrl(runner) {
+      return this.runners.urlsById[runner.id]?.web;
+    },
+    editUrl(runner) {
+      return this.runners.urlsById[runner.id]?.edit;
+    },
+    refetchCounts() {
+      this.$apollo.getClient().refetchQueries({ include: [groupRunnersCountQuery] });
+    },
+    onToggledPaused() {
+      // When a runner becomes Paused, the tab count can
+      // become stale, refetch outdated counts.
+      this.refetchCounts();
+    },
+    onDeleted({ message }) {
+      this.$toast.show(message);
+      this.refetchCounts();
+    },
+    reportToSentry(error) {
+      captureException(error);
+    },
+    onPaginationInput(value) {
+      this.search.pagination = value;
+    },
+  },
+  TABS_RUNNER_TYPES: [GROUP_TYPE, PROJECT_TYPE],
+  GROUP_TYPE,
+  FILTER_CSS_CLASSES,
+};
+</script>
+
+<template>
+  <div>
+    <runner-list-header>
+      <template #title>{{ s__('Runners|Runners') }}</template>
+      <template #actions>
+        <runner-dashboard-link />
+        <gl-button
+          v-if="newRunnerPath"
+          :href="newRunnerPath"
+          variant="confirm"
+          data-testid="new-group-runner-button"
+        >
+          {{ s__('Runners|Create group runner') }}
+        </gl-button>
+        <registration-dropdown
+          :allow-registration-token="allowRegistrationToken"
+          :registration-token="registrationToken"
+          :type="$options.GROUP_TYPE"
+        />
+      </template>
+    </runner-list-header>
+
+    <runner-type-tabs
+      v-model="search"
+      :count-scope="$options.GROUP_TYPE"
+      :count-variables="countVariables"
+      :runner-types="$options.TABS_RUNNER_TYPES"
+    />
+
+    <div
+      class="gl-flex gl-flex-col gl-gap-3 @md/panel:gl-flex-row"
+      :class="$options.FILTER_CSS_CLASSES"
+    >
+      <runner-filtered-search-bar
+        v-model="search"
+        :tokens="searchTokens"
+        :namespace="filteredSearchNamespace"
+        class="gl-flex-grow gl-self-stretch"
+      />
+      <runner-membership-toggle
+        v-model="search.membership"
+        class="gl-self-end @md/panel:gl-self-center"
+      />
+    </div>
+
+    <runner-stats :scope="$options.GROUP_TYPE" :variables="countVariables" />
+
+    <runner-list-empty-state
+      v-if="noRunnersFound"
+      :registration-token="registrationToken"
+      :is-search-filtered="isSearchFiltered"
+      :new-runner-path="newRunnerPath"
+    />
+    <template v-else>
+      <runner-list
+        :runners="runners.items"
+        :checkable="true"
+        :loading="runnersLoading"
+        @deleted="onDeleted"
+        @toggled-paused="onToggledPaused"
+      >
+        <template #runner-name="{ runner }">
+          <gl-link :href="webUrl(runner)">
+            <runner-name :runner="runner" />
+          </gl-link>
+        </template>
+        <template #runner-actions-cell="{ runner }">
+          <runner-actions-cell
+            :runner="runner"
+            :edit-url="editUrl(runner)"
+            @toggled-paused="onToggledPaused"
+            @deleted="onDeleted"
+          />
+        </template>
+      </runner-list>
+    </template>
+
+    <runner-pagination
+      class="gl-mt-3"
+      :disabled="runnersLoading"
+      :page-info="runners.pageInfo"
+      @input="onPaginationInput"
+    />
+  </div>
+</template>

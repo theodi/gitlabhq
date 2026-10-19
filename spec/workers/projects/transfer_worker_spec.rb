@@ -1,0 +1,331 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::TransferWorker, feature_category: :groups_and_projects do
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project) }
+  let_it_be(:new_namespace) { create(:group) }
+
+  let(:worker) { described_class.new }
+  let(:project_namespace) { project.project_namespace }
+
+  it 'defers only on database-wide health signals, not per-table autovacuum' do
+    expect(described_class.database_health_check_attrs)
+      .to include(indicators: Gitlab::Database::HealthStatus::GLOBAL_INDICATORS)
+  end
+
+  describe '#perform', :clean_gitlab_redis_shared_state do
+    subject(:perform) { worker.perform(project.id, new_namespace.id, user.id) }
+
+    context 'when all records exist' do
+      before_all do
+        project.add_owner(user)
+        new_namespace.add_owner(user)
+      end
+
+      it 'transfers the project to the new namespace' do
+        perform
+
+        expect(project.reload.namespace).to eq(new_namespace)
+        expect(project_namespace.reload).to be_ancestor_inherited
+      end
+
+      it 'records a success transfer metric and duration' do
+        expect(::Gitlab::Metrics::Transfers).to receive(:count_transfer)
+          .with(namespace_type: 'project', result: 'success')
+        expect(::Gitlab::Metrics::Transfers).to receive(:observe_transfer_duration)
+          .with(duration_s: kind_of(Numeric), namespace_type: 'project')
+        expect(::Gitlab::Metrics::Transfers).to receive(:observe_end_to_end_transfer_duration)
+          .with(scheduled_at: kind_of(String), namespace_type: 'project')
+
+        perform
+      end
+
+      context 'when state_metadata is nil' do
+        it 'observes the end-to-end duration with a nil scheduled_at' do
+          allow(Project).to receive(:find_by_id).with(project.id).and_return(project)
+          allow_next_instance_of(::Projects::TransferService) do |service|
+            allow(service).to receive(:execute) do
+              allow(project_namespace).to receive_messages(state_metadata: nil, complete_transfer!: true)
+              true
+            end
+          end
+
+          expect(::Gitlab::Metrics::Transfers).to receive(:observe_end_to_end_transfer_duration)
+            .with(scheduled_at: nil, namespace_type: 'project').and_call_original
+
+          perform
+        end
+      end
+
+      context 'when a pending transfer-failed todo exists for the user' do
+        it 'marks the transfer-failed todo as done on successful transfer' do
+          transfer_failed_todo = TodoService.new.transfer_failed(project, user).first
+
+          perform
+
+          expect(transfer_failed_todo.reload).to be_done
+        end
+      end
+
+      context 'when the project namespace is stuck in transfer_in_progress state' do
+        before do
+          project_namespace.schedule_transfer!(transition_user: user)
+          project_namespace.start_transfer!(transition_user: user)
+        end
+
+        it 'cancels the stale state, logs a warning, and proceeds with the transfer' do
+          allow(Gitlab::AppLogger).to receive(:warn)
+
+          perform
+
+          expect(project.reload.namespace).to eq(new_namespace)
+          expect(project_namespace.reload).to be_ancestor_inherited
+          expect(Gitlab::AppLogger).to have_received(:warn).with(hash_including(
+            'message' => 'Cancelling stale transfer state',
+            'gl_project_id' => project.id,
+            'gl_namespace_id' => project_namespace.id,
+            'namespace_type' => 'project',
+            'correlation_id' => kind_of(String)
+          ))
+        end
+      end
+
+      context 'when the project namespace is already in transfer_scheduled state' do
+        it 'skips schedule_transfer! and proceeds with the transfer' do
+          project_namespace.schedule_transfer!(transition_user: user)
+
+          expect(project_namespace).not_to receive(:schedule_transfer!)
+
+          perform
+
+          expect(project.reload.namespace).to eq(new_namespace)
+          expect(project_namespace.reload).to be_ancestor_inherited
+        end
+      end
+
+      context 'when TransferService returns false' do
+        it 'cancels the transfer and creates a transfer failure todo' do
+          expect_next_instance_of(::Projects::TransferService) do |service|
+            expect(service).to receive(:execute).with(new_namespace).and_return(false)
+          end
+
+          expect { perform }.to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: project
+            ).count
+          }.by(1)
+
+          expect(project_namespace.reload).not_to be_transfer_in_progress
+        end
+
+        it 'records the service error so the to-do item can show it' do
+          expect_next_instance_of(::Projects::TransferService) do |service|
+            expect(service).to receive(:execute).with(new_namespace).and_return(false)
+            allow(service).to receive(:error).and_return('Namespace already taken')
+          end
+
+          perform
+
+          expect(project_namespace.reload.transfer_last_error).to eq('Namespace already taken')
+        end
+      end
+
+      context 'when TransferService raises an error' do
+        it 'cancels the transfer, logs the error, and re-raises' do
+          expect_next_instance_of(::Projects::TransferService) do |service|
+            expect(service).to receive(:execute).and_raise(StandardError, 'something went wrong')
+          end
+          expect(::Gitlab::Metrics::Transfers).to receive(:count_transfer)
+            .with(namespace_type: 'project', result: 'failure')
+
+          allow(Gitlab::AppLogger).to receive(:error)
+
+          expect do
+            expect { perform }.to raise_error(StandardError, 'something went wrong')
+          end.to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: project
+            ).count
+          }.by(1)
+          expect(project_namespace.reload).not_to be_transfer_in_progress
+          expect(project_namespace.transfer_last_error)
+            .to eq('The transfer failed unexpectedly. Contact your administrator if it continues to fail.')
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Projects::TransferWorker failed',
+            'gl_project_id' => project.id,
+            'new_namespace_id' => new_namespace.id,
+            'error_type' => 'StandardError',
+            'error_message' => 'something went wrong',
+            'gl_namespace_id' => project_namespace.id,
+            'namespace_type' => 'project',
+            'correlation_id' => kind_of(String),
+            'duration_s' => kind_of(Numeric)
+          ))
+        end
+      end
+
+      context 'when TransferService succeeds but a subsequent step raises an error' do
+        it 'does not create a transfer failure todo and re-raises the error', :aggregate_failures do
+          expect_next_instance_of(::Projects::TransferService) do |service|
+            expect(service).to receive(:execute).and_return(true)
+          end
+
+          allow_next_found_instance_of(Namespaces::ProjectNamespace) do |ns|
+            allow(ns).to receive(:complete_transfer!).and_raise(StandardError, 'post-success failure')
+          end
+
+          allow(Gitlab::AppLogger).to receive(:error)
+
+          expect do
+            expect { perform }.to raise_error(StandardError, 'post-success failure')
+          end.not_to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: project
+            ).count
+          }
+        end
+      end
+
+      context 'when TransferService raises and cancel_transfer! also raises' do
+        it 'logs the cancel error separately and re-raises the original error' do
+          expect_next_instance_of(::Projects::TransferService) do |service|
+            expect(service).to receive(:execute).and_raise(StandardError, 'transfer failed')
+          end
+
+          allow_next_found_instance_of(Namespaces::ProjectNamespace) do |ns|
+            allow(ns).to receive(:cancel_transfer!).and_raise(StandardError, 'cancel failed')
+          end
+
+          allow(Gitlab::AppLogger).to receive(:error)
+
+          expect { perform }.to raise_error(StandardError, 'transfer failed')
+
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Projects::TransferWorker failed to cancel transfer state',
+            'gl_project_id' => project.id,
+            'error_type' => 'StandardError',
+            'error_message' => 'cancel failed'
+          ))
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Projects::TransferWorker failed',
+            'gl_project_id' => project.id,
+            'new_namespace_id' => new_namespace.id,
+            'error_type' => 'StandardError',
+            'error_message' => 'transfer failed'
+          ))
+        end
+      end
+
+      context 'when an error occurs before the transfer is started' do
+        before do
+          project_namespace.update_column(:state, Namespace.states[:maintenance])
+        end
+
+        it 'does not call cancel_transfer! and re-raises' do
+          allow(Gitlab::AppLogger).to receive(:error)
+          expect do
+            expect { perform }.to raise_error(StateMachines::InvalidTransition)
+          end.not_to change {
+            Todo.where(
+              user: user,
+              author: user,
+              action: Todo::TRANSFER_FAILED,
+              target: project
+            ).count
+          }
+          expect(project_namespace.reload).not_to be_transfer_in_progress
+          expect(Gitlab::AppLogger).to have_received(:error).with(hash_including(
+            'message' => 'Projects::TransferWorker failed',
+            'gl_project_id' => project.id,
+            'new_namespace_id' => new_namespace.id
+          ))
+        end
+      end
+
+      context 'when exclusive lease is already set' do
+        let(:lease_key) { "projects_transfer_worker:#{project.id}" }
+        let(:exclusive_lease) { Gitlab::ExclusiveLease.new(lease_key, uuid: uuid, timeout: 1.minute) }
+        let(:uuid) { 'other_worker_jid' }
+
+        it 'does not call the transfer service and does not cancel the transfer state' do
+          project_namespace.schedule_transfer!(transition_user: user)
+          project_namespace.start_transfer!(transition_user: user)
+
+          expect(exclusive_lease.try_obtain).to eq(uuid)
+          expect(::Projects::TransferService).not_to receive(:new)
+
+          perform
+
+          expect(project_namespace.reload).to be_transfer_in_progress
+        end
+
+        it 'does nothing if transfer is not in progress' do
+          expect(exclusive_lease.try_obtain).to eq(uuid)
+          expect(::Projects::TransferService).not_to receive(:new)
+
+          expect { perform }.not_to raise_error
+        end
+
+        context 'when exclusive lease was taken by the current worker (Sidekiq interrupt)' do
+          let(:uuid) { 'existing_worker_jid' }
+
+          before do
+            allow(worker).to receive(:jid).and_return(uuid)
+          end
+
+          it 'cancels the stale lock so a subsequent retry can proceed' do
+            expect(exclusive_lease.try_obtain).to eq(worker.jid)
+            expect(::Projects::TransferService).not_to receive(:new)
+
+            perform
+
+            # verify the lease was released by checking it can be re-obtained
+            new_lease = Gitlab::ExclusiveLease.new(lease_key, uuid: 'new_uuid', timeout: 1.minute)
+            expect(new_lease.try_obtain).to eq('new_uuid')
+          end
+        end
+      end
+    end
+
+    context 'when project does not exist' do
+      subject(:perform) { worker.perform(non_existing_record_id, new_namespace.id, user.id) }
+
+      it 'returns early without calling the transfer service' do
+        expect(::Projects::TransferService).not_to receive(:new)
+
+        expect { perform }.not_to raise_error
+      end
+    end
+
+    context 'when user does not exist' do
+      subject(:perform) { worker.perform(project.id, new_namespace.id, non_existing_record_id) }
+
+      it 'returns early without calling the transfer service' do
+        expect(::Projects::TransferService).not_to receive(:new)
+
+        expect { perform }.not_to raise_error
+      end
+    end
+
+    context 'when new namespace does not exist' do
+      subject(:perform) { worker.perform(project.id, non_existing_record_id, user.id) }
+
+      it 'returns early without calling the transfer service' do
+        expect(::Projects::TransferService).not_to receive(:new)
+
+        expect { perform }.not_to raise_error
+      end
+    end
+  end
+end

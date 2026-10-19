@@ -1,0 +1,17 @@
+---
+inherit_from:
+  - '../.rubocop.yml'
+
+InternalAffairs:
+  Enabled: true
+
+# This cop only checks for directives defined in `config/default.yml`
+# whic does not apply here.
+InternalAffairs/UndefinedConfig:
+  Enabled: false
+
+# Override the default Include path since GitLab's cops live under rubocop/cop/
+# rather than the standard lib/rubocop/cop/ path.
+InternalAffairs/OnSendWithoutOnCSend:
+  Include:
+    - 'rubocop/cop/**/*.rb'

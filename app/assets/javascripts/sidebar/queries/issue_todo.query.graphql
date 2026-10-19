@@ -1,0 +1,13 @@
+query issueTodos($fullPath: ID!, $iid: String!) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: issue(iid: $iid) {
+      id
+      currentUserTodos(state: pending) {
+        nodes {
+          id
+        }
+      }
+    }
+  }
+}

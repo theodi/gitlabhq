@@ -1,0 +1,23 @@
+query analyticsGetGroupProjects(
+  $groupFullPath: ID!
+  $search: String!
+  $first: Int!
+  $includeSubgroups: Boolean = false
+) {
+  group(fullPath: $groupFullPath) {
+    id
+    projects(
+      search: $search
+      first: $first
+      includeSubgroups: $includeSubgroups
+      sort: SIMILARITY
+    ) {
+      nodes {
+        id
+        name
+        avatarUrl
+        fullPath
+      }
+    }
+  }
+}

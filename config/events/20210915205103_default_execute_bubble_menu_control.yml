@@ -1,0 +1,18 @@
+description: "Execute bubble menu control"
+category: default
+action: execute_bubble_menu_control
+extra_properties:
+identifiers:
+product_group: remote_development
+product_categories:
+- text_editors
+- wiki
+milestone: "14.2"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/67363
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`content_editor`"

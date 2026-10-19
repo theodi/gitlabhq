@@ -1,0 +1,18 @@
+---
+description: Project level CI CD Analytics pipelines tab has been visited
+internal_events: true
+action: p_analytics_ci_cd_pipelines
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: runner_core
+product_categories:
+- fleet_visibility
+milestone: "16.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/130854
+tiers:
+- free
+- premium
+- ultimate

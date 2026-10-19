@@ -1,0 +1,9 @@
+---
+name: create_ml_flow_run
+description: Grants the ability to create MLflow runs
+boundaries:
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - create_ml_flow_run

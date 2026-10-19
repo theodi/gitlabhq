@@ -1,0 +1,229 @@
+@import 'mixins_and_variables_and_functions';
+
+.issuable-list {
+  li {
+    .issuable-info-container {
+      flex: 1;
+      display: flex;
+    }
+
+    .issuable-main-info {
+      flex: 1 auto;
+      margin-right: 10px;
+      min-width: 0;
+
+      .issue-weight-icon,
+      .issue-estimate-icon {
+        vertical-align: sub;
+      }
+    }
+
+    .issuable-info,
+    .issuable-meta {
+      @apply gl-text-sm;
+    }
+
+    .issuable-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      flex: 1 0 auto;
+
+      .controls {
+        margin-bottom: 2px;
+        line-height: 20px;
+        padding: 0;
+      }
+    }
+
+    @include gl-container-width-down(sm, panel) {
+      .issuable-meta {
+        .controls li {
+          margin-right: 0;
+        }
+      }
+    }
+
+    .issue-check {
+      min-width: 15px;
+    }
+
+    .issuable-milestone,
+    .issuable-info,
+    .task-status,
+    .issuable-timestamp {
+      font-weight: $gl-font-weight-normal;
+      @apply gl-text-subtle;
+
+      a {
+        @apply gl-text-default;
+      }
+
+      // stylelint-disable-next-line gitlab/no-gl-class
+      .gl-label-link {
+        color: inherit;
+
+        &:hover {
+          text-decoration: none;
+
+          // stylelint-disable-next-line gitlab/no-gl-class
+          .gl-label-text:last-of-type {
+            text-decoration: underline;
+          }
+        }
+      }
+
+      .milestone {
+        @apply gl-text-subtle;
+      }
+    }
+
+    @include gl-container-width-down(lg, panel) {
+      .task-status,
+      .project-ref-path {
+        display: none;
+      }
+    }
+  }
+}
+
+.issuable-list li,
+.issuable-info-container .controls {
+  .avatar-counter {
+    padding-left: $gl-spacing-scale-1;
+    padding-right: $gl-spacing-scale-2;
+    height: $gl-spacing-scale-5;
+    min-width: $gl-spacing-scale-5;
+    line-height: 14px;
+  }
+}
+
+.merge-request {
+  .issuable-info-container .controls {
+    .avatar-counter {
+      line-height: $gl-line-height-16;
+      border: 0;
+    }
+  }
+}
+
+.issuable-list-container,
+.planning-view {
+  .sticky-filter {
+    position: fixed;
+    top: $calc-application-header-height;
+    width: 100%;
+    padding-right: 2rem;
+
+    // Fixed layout width constraint
+    .container-limited & {
+      max-width: $fixed-layout-width;
+
+      :where(.page-with-panels) & {
+        padding-right: 1rem !important;
+      }
+    }
+
+    // XL breakpoint adjustments
+    @media (min-width: $breakpoint-xl) {
+
+      // Super sidebar adjustments at XL
+      .page-with-super-sidebar & {
+        width: calc(100% - #{$super-sidebar-width});
+      }
+
+      .page-with-super-sidebar-collapsed & {
+        width: 100%;
+      }
+    }
+
+    // Panel-specific overrides
+    :where(.page-with-panels) & {
+      width: 100% !important;
+    }
+  }
+}
+
+// Saved Views selectors
+.saved-views-selectors .tab-content {
+  padding-bottom: 0;
+  padding-top: 0;
+}
+
+.saved-view-item {
+  background-color: transparent;
+
+  &:hover, &:focus-visible {
+    .added-saved-view {
+      display: none;
+    }
+
+    .added-saved-view-arrow, .add-saved-view {
+      display: flex;
+      align-self: center;
+    }
+  }
+}
+
+/* stylelint-disable gitlab/no-gl-class */
+.default-selector, .saved-view-selector .gl-button, .saved-view-selector.gl-button {
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0;
+
+  &:hover, &:active {
+    border-bottom: 2px solid var(--gl-border-color-strong) !important;
+    background-color: var(--gl-action-neutral-background-color-hover) !important;
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--gl-focus-ring-outer-color), inset 0 0 0 3px var(--gl-focus-ring-inner-color) !important;
+    border-radius: 0.5rem !important;
+    border-bottom: 2px solid transparent !important;
+  }
+}
+
+.saved-view-selector .gl-new-dropdown-panel {
+  max-width: 11rem;
+  min-width: auto;
+}
+
+.default-selector-active, .saved-view-selector-active .gl-button {
+  border-bottom: 2px solid var(--gl-tab-selected-indicator-color-default) !important;
+  font-weight: $gl-font-weight-bold;
+
+  &:hover, &:focus-visible, &:active {
+    border-bottom-color: var(--gl-tab-selected-indicator-color-default) !important;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific modal element
+.gl-modal:has(.saved-view-confirm-modal) {
+  .modal-body {
+    min-height: auto;
+  }
+}
+
+.saved-view-selector .gl-new-dropdown-toggle,
+.saved-view-selector.gl-button {
+  @include gl-container-width-down(md, panel) {
+    @apply gl-max-w-20;
+  }
+}
+/* stylelint-enable gitlab/no-gl-class */
+
+.saved-view-item {
+  background-color: transparent;
+
+  &:hover, &:focus-visible {
+    .added-saved-view {
+      display: none;
+    }
+
+    .added-saved-view-arrow, .add-saved-view {
+      display: flex;
+      align-self: center;
+      font-weight: $gl-font-weight-bold;
+    }
+  }
+}

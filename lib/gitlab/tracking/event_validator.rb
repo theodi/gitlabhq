@@ -1,0 +1,103 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Tracking
+    class EventValidator
+      UnknownEventError = Class.new(StandardError)
+      InvalidPropertyError = Class.new(StandardError)
+      InvalidPropertyTypeError = Class.new(StandardError)
+      BASE_ADDITIONAL_PROPERTIES = {
+        label: [String],
+        property: [String],
+        value: [Integer, Float]
+      }.freeze
+      CUSTOM_PROPERTIES_CLASSES = [String, Integer, Float].freeze
+
+      def initialize(event_name, additional_properties, kwargs)
+        @event_name = event_name
+        @additional_properties = additional_properties
+        @kwargs = kwargs
+      end
+
+      def validate!
+        validate_event_name!
+        validate_properties!
+        validate_additional_properties!
+      end
+
+      private
+
+      attr_reader :event_name, :additional_properties, :kwargs
+
+      def validate_event_name!
+        return if Gitlab::Tracking::EventDefinition.internal_event_exists?(event_name)
+        return if Gitlab::UsageDataCounters::HLLRedisCounter.legacy_event?(event_name) && !Gitlab.dev_or_test_env?
+
+        raise UnknownEventError, "Unknown event: #{event_name}"
+      end
+
+      def validate_properties!
+        validate_property!(kwargs, :user, User)
+        validate_property!(kwargs, :namespace, Namespaces::UserNamespace, Group, Namespaces::ProjectNamespace)
+        validate_property!(kwargs, :project, Project)
+      end
+
+      def validate_property!(hash, key, *class_names)
+        return unless hash.has_key?(key)
+
+        value = hash[key]
+
+        return if value.nil?
+        return if class_names.any? { |klass| value.is_a?(klass) }
+
+        error = InvalidPropertyTypeError.new(
+          "#{key} should be an instance of #{class_names.join(', ')}, got #{value.class}"
+        )
+
+        log_invalid_property(error)
+      end
+
+      def validate_additional_properties!
+        event_definition = Gitlab::Tracking::EventDefinition.find(event_name)
+        extra_tracking_properties = event_definition.extra_trackers.flat_map do |_, properties|
+          properties[:protected_properties]
+        end.compact
+        declared_properties = event_definition.additional_properties.keys.concat(extra_tracking_properties)
+
+        additional_properties.each_key do |property|
+          unless declared_properties.include?(property)
+            Gitlab::AppJsonLogger.warn("Tracking event: #{event_name}, undocumented property: #{property}")
+          end
+
+          next unless BASE_ADDITIONAL_PROPERTIES.has_key?(property)
+
+          allowed_classes = BASE_ADDITIONAL_PROPERTIES[property]
+          validate_property!(additional_properties, property, *allowed_classes)
+        end
+
+        # skip base properties validation. To be done in a separate MR as we have some non-compliant definitions
+        custom_properties = additional_properties.except(*BASE_ADDITIONAL_PROPERTIES.keys)
+        allowed_types = CUSTOM_PROPERTIES_CLASSES
+
+        custom_properties.each_key do |key|
+          unless declared_properties.include?(key)
+            error = InvalidPropertyError.new("Unknown additional property: #{key} for event_name: #{event_name}")
+            log_invalid_property(error)
+          end
+
+          next if extra_tracking_properties.include?(key)
+
+          validate_property!(custom_properties, key, *allowed_types)
+        end
+      end
+
+      def log_invalid_property(error)
+        Gitlab::ErrorTracking.track_and_raise_for_dev_exception(
+          error,
+          event_name: event_name,
+          additional_properties: additional_properties
+        )
+      end
+    end
+  end
+end

@@ -1,0 +1,38 @@
+# frozen_string_literal: true
+
+module API
+  class GroupAvatar < ::API::Base
+    helpers Helpers::GroupsHelpers
+
+    feature_category :groups_and_projects
+
+    params do
+      requires :id, type: String, desc: 'ID or URL-encoded path of the group.'
+    end
+    resource :groups, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'Download a group avatar' do
+        detail 'Downloads a group avatar image.'
+        tags %w[avatars]
+        produces %w[application/octet-stream]
+        success code: 200
+      end
+
+      route_setting :authorization, permissions: :read_avatar, boundary_type: :group
+      get ':id/avatar' do
+        avatar = user_group.avatar
+
+        not_found!('Avatar') if avatar.blank?
+
+        header(
+          'Content-Disposition',
+          ActionDispatch::Http::ContentDisposition.format(
+            disposition: 'attachment',
+            filename: avatar.filename
+          )
+        )
+
+        present_carrierwave_file!(avatar)
+      end
+    end
+  end
+end

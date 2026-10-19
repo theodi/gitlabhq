@@ -1,0 +1,14 @@
+- editing ||= false
+- edit_sidebar_url = @sidebar_page ? wiki_page_path(@wiki, Wiki::SIDEBAR, edit: true) : wiki_page_path(@wiki, Wiki::SIDEBAR, view: 'create')
+
+#js-wiki-sidebar{
+  data: {
+    has_custom_sidebar: @sidebar_page ? 'true' : 'false',
+    can_create: can?(current_user, :create_wiki, @wiki).to_s,
+    view_all_pages_path: wiki_path(@wiki, action: :pages),
+    editing: editing,
+    custom_sidebar_content: @sidebar_page ? render_wiki_content(@sidebar_page) : nil,
+    edit_sidebar_url: edit_sidebar_url,
+    is_editing_sidebar: editing && @page&.slug == Wiki::SIDEBAR
+  }
+}

@@ -1,0 +1,37 @@
+# frozen_string_literal: true
+
+require 'rubocop_spec_helper'
+require 'parser/current'
+require_relative '../../rubocop/qa_helpers'
+
+RSpec.describe RuboCop::QAHelpers, feature_category: :test_platform do
+  def build_and_parse_source(source, path = 'foo.rb')
+    buffer = Parser::Source::Buffer.new(path)
+    buffer.source = source
+
+    builder = RuboCop::AST::Builder.new
+    parser = Parser::CurrentRuby.new(builder)
+
+    parser.parse(buffer)
+  end
+
+  let(:cop) do
+    Class.new do
+      include RuboCop::QAHelpers
+    end.new
+  end
+
+  describe '#in_qa_file?' do
+    it 'returns true for a node in the qa/ directory' do
+      node = build_and_parse_source('10', rails_root_join('qa', 'qa', 'page', 'dashboard', 'groups.rb'))
+
+      expect(cop.in_qa_file?(node)).to be(true)
+    end
+
+    it 'returns false for a node outside the qa/ directory' do
+      node = build_and_parse_source('10', rails_root_join('app', 'foo', 'foo.rb'))
+
+      expect(cop.in_qa_file?(node)).to be(false)
+    end
+  end
+end

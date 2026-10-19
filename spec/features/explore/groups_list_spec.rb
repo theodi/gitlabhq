@@ -1,0 +1,71 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Explore Groups page', :js, feature_category: :groups_and_projects do
+  include GlFilteredSearchHelpers
+  let_it_be(:user) { create(:user) }
+
+  it 'renders all expected tabs', :aggregate_failures do
+    visit(explore_groups_path)
+
+    expect(page).to have_selector('.gl-tab-nav-item', text: _('Active'))
+    expect(page).to have_selector('.gl-tab-nav-item', text: _('Inactive'))
+  end
+
+  context 'when there are groups to show' do
+    let_it_be(:group) { create(:group, created_at: 5.days.ago) }
+    let_it_be(:public_group) { create(:group, :public, created_at: 4.days.ago) }
+    let_it_be(:private_group) { create(:group, :private, created_at: 3.days.ago) }
+    let_it_be(:empty_project) { create(:project, group: public_group) }
+
+    before do
+      group.add_owner(user)
+
+      sign_in(user)
+
+      visit explore_groups_path
+      wait_for_requests
+    end
+
+    it 'shows groups user is member of' do
+      expect(page).to have_content(group.full_name)
+      expect(page).to have_content(public_group.full_name)
+      expect(page).not_to have_content(private_group.full_name)
+    end
+
+    it 'filters groups' do
+      search(group.name)
+      click_button 'Search'
+      wait_for_requests
+
+      expect(page).to have_content(group.full_name)
+      expect(page).not_to have_content(public_group.full_name)
+      expect(page).not_to have_content(private_group.full_name)
+    end
+
+    it 'renders page description' do
+      expect(page).to have_content(
+        'Below you will find all the groups that are public or internal. Contribute by requesting to join a group.'
+      )
+    end
+  end
+
+  context 'when there are no groups to show' do
+    before do
+      sign_in(user)
+    end
+
+    it 'shows empty state', :aggregate_failures do
+      visit explore_groups_path
+      wait_for_requests
+
+      expect(page).to have_content(s_('Projects|Explore active groups'))
+      expect(page).to have_content(s_('Projects|Browse groups to learn from and contribute to.'))
+    end
+  end
+
+  def search(term)
+    gl_filtered_search_set_input(term, submit: true)
+  end
+end

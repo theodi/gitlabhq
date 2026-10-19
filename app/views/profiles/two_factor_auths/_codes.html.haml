@@ -1,11 +1,4 @@
-%p.slead
-  Should you ever lose your phone, each of these recovery codes can be used one
-  time each to regain access to your account. Please save them in a safe place.
+- show_success_alert = local_assigns.fetch(:show_success_alert, nil)
+- redirect_path = profile_two_factor_auth_path(two_factor_auth_enabled_successfully: show_success_alert)
 
-.codes.well
-  %ul
-    - @codes.each do |code|
-      %li
-        %span.monospace= code
-
-= link_to 'Proceed', profile_account_path, class: 'btn btn-success'
+.js-2fa-recovery-codes{ data: { codes: @codes.to_json, redirect_path: redirect_path } }

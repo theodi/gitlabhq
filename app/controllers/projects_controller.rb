@@ -1,94 +1,200 @@
-class ProjectsController < ApplicationController
-  prepend_before_filter :render_go_import, only: [:show]
-  skip_before_action :authenticate_user!, only: [:show]
-  before_action :project, except: [:new, :create]
-  before_action :repository, except: [:new, :create]
+# frozen_string_literal: true
+
+class ProjectsController < Projects::ApplicationController
+  include API::Helpers::RelatedResourcesHelpers
+  include IssuableCollections
+  include PreviewMarkdown
+  include SendFileUpload
+  include RecordUserLastActivity
+  include ImportUrlParams
+  include FiltersEvents
+  include SourcegraphDecorator
+
+  REFS_LIMIT = 100
+
+  prepend_before_action(only: [:show]) { authenticate_sessionless_user!(:rss, permission: :read_event) }
+
+  around_action :allow_gitaly_ref_name_caching, only: [:index, :show]
+
+  before_action :disable_query_limiting, only: [:show, :create]
+  before_action :authenticate_user!, except: [:index, :show, :activity, :refs, :unfoldered_environment_names]
+  before_action :redirect_git_extension, only: [:show]
+  before_action :project, except: [:index, :new, :create]
+  before_action :repository, except: [:index, :new, :create]
+  before_action :verify_git_import_enabled, only: [:create]
+  before_action :project_export_enabled, only: [:export, :download_export, :remove_export, :generate_new_export]
+  before_action :present_project, only: [:edit]
+  before_action :authorize_read_code!, only: [:refs]
 
   # Authorize
-  before_action :authorize_admin_project!, only: [:edit, :update, :destroy, :transfer, :archive, :unarchive]
-  before_action :event_filter, only: :show
+  before_action :authorize_view_edit_page!, only: :edit
+  before_action :authorize_admin_project!,
+    only: [:update, :housekeeping, :download_export, :export, :remove_export, :generate_new_export]
+  before_action :authorize_archive_project!, only: [:archive, :unarchive]
+  before_action :event_filter, only: [:show, :activity]
+
+  # Step-up authentication enforcement
+  # IMPORTANT: These before_actions are placed AFTER authorization checks to ensure that
+  # unauthorized users receive a 404/403 response immediately without being prompted for
+  # step-up authentication. This follows the same pattern as GroupsController.
+  # The enforce_step_up_auth_for_namespace method depends on @project being loaded first.
+  # For :new action, the parent's enforcement is sufficient as it checks params[:namespace_id].
+  before_action :enforce_step_up_auth_for_namespace, except: [:index, :create]
+  skip_before_action :enforce_step_up_auth_for_namespace, only: [:create]
+  before_action :enforce_step_up_auth_for_namespace_on_create, only: [:create]
+
+  before_action :set_project_markdown_flags
+
+  # Project Export Rate Limit
+  before_action :check_export_rate_limit!, only: [:export, :download_export, :generate_new_export]
+  before_action :check_create_rate_limit!, only: [:create]
+
+  before_action do
+    push_frontend_feature_flag(:remove_monitor_metrics, @project)
+    # TODO: We need to remove the FF eventually when we rollout page_specific_styles
+    push_frontend_feature_flag(:page_specific_styles, current_user)
+    push_licensed_feature(:file_locks) if @project.present? && @project.licensed_feature_available?(:file_locks)
+
+    if @project.present? && ::Security::PolicyAvailability.any_available?(@project)
+      push_licensed_feature(:security_orchestration_policies)
+    end
+  end
 
   layout :determine_layout
 
-  def new
-    @project = Project.new
+  feature_category :groups_and_projects, [
+    :index, :show, :new, :create, :edit, :update, :transfer,
+    :destroy, :archive, :unarchive, :toggle_star, :activity, :restore
+  ]
+
+  feature_category :source_code_management, [:remove_fork, :housekeeping, :refs]
+  feature_category :team_planning, [:preview_markdown, :new_issuable_address]
+  feature_category :importers, [:export, :remove_export, :generate_new_export, :download_export]
+  feature_category :continuous_delivery, [:unfoldered_environment_names]
+
+  urgency :low, [:export, :remove_export, :generate_new_export, :download_export]
+  urgency :low, [:preview_markdown, :new_issuable_address]
+  # TODO: Set high urgency for #show https://gitlab.com/gitlab-org/gitlab/-/issues/334444
+
+  urgency :low, [:refs, :show, :toggle_star, :transfer, :archive, :destroy, :update, :create,
+    :activity, :edit, :new, :export, :remove_export, :generate_new_export, :download_export]
+
+  urgency :high, [:unfoldered_environment_names]
+
+  def index
+    redirect_to(current_user ? root_path : explore_root_path)
   end
 
+  # rubocop: disable CodeReuse/ActiveRecord
+  def new
+    namespace_id = namespace_params[:namespace_id]
+    @namespace = Namespace.find_by(id: namespace_id) if namespace_id
+    return access_denied! if @namespace && !can?(current_user, :create_projects, @namespace)
+
+    @parent_group = @namespace if @namespace&.group_namespace?
+
+    manageable_groups = ::Groups::AcceptingProjectCreationsFinder.new(current_user).execute.limit(2)
+
+    if manageable_groups.empty? && !can?(current_user, :create_projects, current_user.namespace)
+      return access_denied!(s_('ProjectsNew|You do not have permission to create projects.'))
+    end
+
+    @current_user_group = manageable_groups.first if manageable_groups.one?
+
+    @project = Project.new(namespace_id: @namespace&.id)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
   def edit
-    render 'edit'
+    @badge_api_endpoint = expose_path(api_v4_projects_badges_path(id: @project.id))
+    render_edit
   end
 
   def create
-    @project = ::Projects::CreateService.new(current_user, project_params).execute
+    ::Gitlab::Import::RequestChannel.stash(::Gitlab::Import::RequestChannel::UI) if import_url_params.present?
+
+    @project = ::Projects::CreateService.new(current_user,
+      project_params(attributes: project_params_create_attributes)).execute
 
     if @project.saved?
-      redirect_to(
-        project_path(@project),
-        notice: 'Project was successfully created.'
-      )
+      redirect_to project_path(@project, custom_import_params.merge({ organization_path: nil }))
     else
       render 'new'
     end
   end
 
   def update
-    status = ::Projects::UpdateService.new(@project, current_user, project_params).execute
+    result = ::Projects::UpdateService.new(@project, current_user, project_params).execute
 
-    respond_to do |format|
-      if status
-        flash[:notice] = 'Project was successfully updated.'
-        format.html do
-          redirect_to(
-            edit_project_path(@project),
-            notice: 'Project was successfully updated.'
-          )
-        end
-        format.js
-      else
-        format.html { render 'edit' }
-        format.js
-      end
-    end
+    # Refresh the repo in case anything changed
+    @repository = @project.repository
+
+    handle_update_result(result)
   end
 
+  # rubocop: disable CodeReuse/ActiveRecord
   def transfer
-    transfer_params = params.permit(:new_namespace_id)
-    ::Projects::TransferService.new(project, current_user, transfer_params).execute
-    if @project.errors[:namespace_id].present?
-      flash[:alert] = @project.errors[:namespace_id].first
+    return access_denied! unless can?(current_user, :change_namespace, @project)
+
+    namespace = Namespace.find_by(id: namespace_params[:new_namespace_id])
+
+    unless namespace
+      flash[:alert] = s_('TransferProject|Please select a new namespace for your project.')
+      return redirect_to edit_project_path(@project)
+    end
+
+    enqueue_async_transfer(namespace)
+
+    redirect_to edit_project_path(@project)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def remove_fork
+    return access_denied! unless can?(current_user, :remove_fork_project, @project)
+
+    if ::Projects::UnlinkForkService.new(@project, current_user).execute
+      flash[:notice] = _('The fork relationship has been removed.')
+    end
+
+    redirect_to edit_project_path(@project)
+  end
+
+  def activity
+    respond_to do |format|
+      format.html
+      format.json do
+        load_events
+        pager_json('events/_events', @events.count { |event| event.visible_to_user?(current_user) })
+      end
     end
   end
 
   def show
+    @id = @ref = repository_root
+    @path = ''
+
     if @project.import_in_progress?
-      redirect_to namespace_project_import_path(@project.namespace, @project)
+      redirect_to project_import_path(@project, custom_import_params)
       return
     end
 
-    @show_star = !(current_user && current_user.starred?(@project))
+    if @project.deletion_in_progress?
+      flash.now[:alert] = safe_format(_("Project '%{project_name}' queued for deletion."), project_name: @project.name)
+    end
+
+    @ref_type = 'heads'
 
     respond_to do |format|
       format.html do
-        if @project.repository_exists?
-          if @project.empty_repo?
-            render 'projects/empty'
-          else
-            @last_push = current_user.recent_push(@project.id) if current_user
-            render :show
-          end
-        else
-          render 'projects/no_repo'
-        end
-      end
-
-      format.json do
-        load_events
-        pager_json('events/_events', @events.count)
+        @project = @project.present(current_user: current_user)
+        render_landing_page
       end
 
       format.atom do
         load_events
-        render layout: false
+        @events = @events.select { |event| event.visible_to_user?(current_user) }
+        Events::RenderService.new(current_user).execute(@events, atom_request: true)
+        render layout: 'xml'
       end
     end
   end
@@ -96,42 +202,51 @@ class ProjectsController < ApplicationController
   def destroy
     return access_denied! unless can?(current_user, :remove_project, @project)
 
-    ::Projects::DestroyService.new(@project, current_user, {}).execute
+    if @project.self_deletion_scheduled? &&
+        ::Gitlab::Utils.to_boolean(params.permit(:permanently_delete)[:permanently_delete])
 
-    respond_to do |format|
-      format.html do
-        flash[:alert] = 'Project deleted.'
+      return destroy_immediately
+    end
 
-        if request.referer.include?('/admin')
-          redirect_to admin_namespaces_projects_path
-        else
-          redirect_to dashboard_path
-        end
-      end
+    result = ::Projects::MarkForDeletionService.new(@project, current_user).execute
+
+    if result.success?
+      redirect_to dashboard_projects_path, status: :found
+    else
+      flash.now[:alert] = result.message
+
+      render_edit
     end
   end
 
-  def autocomplete_sources
-    note_type = params['type']
-    note_id = params['type_id']
-    autocomplete = ::Projects::AutocompleteService.new(@project)
-    participants = ::Projects::ParticipantsService.new(@project, current_user).execute(note_type, note_id)
+  def restore
+    return access_denied! unless can?(current_user, :remove_project, @project)
 
-    @suggestions = {
-      emojis: autocomplete_emojis,
-      issues: autocomplete.issues,
-      mergerequests: autocomplete.merge_requests,
-      members: participants
-    }
+    result = ::Projects::RestoreService.new(@project, current_user, {}).execute
 
-    respond_to do |format|
-      format.json { render json: @suggestions }
+    if result.success?
+      flash[:notice] = format(
+        _("Project '%{project_name}' has been successfully restored."), project_name: @project.full_name
+      )
+
+      redirect_to(edit_project_path(@project))
+    else
+      flash.now[:alert] = result.message
+
+      render_edit
     end
+  end
+
+  def new_issuable_address
+    return render_404 unless Gitlab::Email::IncomingEmail.supports_issue_creation?
+
+    current_user.reset_incoming_email_token!
+    issuable_type = params.permit(:issuable_type)[:issuable_type]
+    render json: { new_address: @project.new_issuable_address(current_user, issuable_type) }
   end
 
   def archive
-    return access_denied! unless can?(current_user, :archive_project, @project)
-    @project.archive!
+    ::Projects::ArchiveService.new(project: @project, current_user: current_user).execute
 
     respond_to do |format|
       format.html { redirect_to project_path(@project) }
@@ -139,29 +254,229 @@ class ProjectsController < ApplicationController
   end
 
   def unarchive
-    return access_denied! unless can?(current_user, :archive_project, @project)
-    @project.unarchive!
+    ::Projects::UnarchiveService.new(project: @project, current_user: current_user).execute
 
     respond_to do |format|
       format.html { redirect_to project_path(@project) }
     end
   end
 
-  def toggle_star
-    current_user.toggle_star(@project)
-    @project.reload
-    render json: { star_count: @project.star_count }
+  def housekeeping
+    task = if params.permit(:prune)[:prune].present?
+             :prune
+           else
+             :eager
+           end
+
+    ::Repositories::HousekeepingService.new(@project, task).execute do
+      ::Gitlab::Audit::Auditor.audit(
+        name: 'manually_trigger_housekeeping',
+        author: current_user,
+        scope: @project,
+        target: @project,
+        message: "Housekeeping task: #{task}",
+        created_at: DateTime.current
+      )
+    end
+
+    redirect_to(
+      project_path(@project),
+      notice: _("Housekeeping successfully started")
+    )
+  rescue ::Repositories::HousekeepingService::LeaseTaken => e
+    redirect_to(
+      edit_project_path(@project, anchor: 'js-project-advanced-settings'),
+      alert: e.to_s
+    )
   end
 
-  def markdown_preview
-    render text: view_context.markdown(params[:md_text])
+  def export
+    @project.add_export_job(current_user: current_user)
+
+    redirect_to(
+      edit_project_path(@project, anchor: 'js-project-advanced-settings'),
+      notice: _("Project export started. A download link will be sent by email and made available on this page.")
+    )
+  rescue Project::ExportLimitExceeded, Project::ExportAlreadyInProgress => e
+    redirect_to(
+      edit_project_path(@project, anchor: 'js-project-advanced-settings'),
+      alert: e.to_s
+    )
+  end
+
+  def download_export
+    if @project.export_file_exists?(current_user)
+      if @project.export_archive_exists?(current_user)
+        export_file = @project.export_file(current_user)
+        send_upload(
+          export_file,
+          attachment: export_file.filename,
+          send_params: { content_type: Gitlab::ImportExport.export_download_content_type }
+        )
+      else
+        redirect_to(
+          edit_project_path(@project, anchor: 'js-project-advanced-settings'),
+          alert: _("The file containing the export is not available yet; it may still be transferring. Please try again later.")
+        )
+      end
+    else
+      redirect_to(
+        edit_project_path(@project, anchor: 'js-project-advanced-settings'),
+        alert: _("Project export link has expired. Please generate a new export from your project settings.")
+      )
+    end
+  end
+
+  def remove_export
+    if @project.remove_export_for_user(current_user)
+      flash[:notice] = _("Project export has been deleted.")
+    else
+      flash[:alert] = _("Project export could not be deleted.")
+    end
+
+    redirect_to(edit_project_path(@project, anchor: 'js-project-advanced-settings'))
+  end
+
+  def generate_new_export
+    if @project.remove_export_for_user(current_user)
+      export
+    else
+      redirect_to(
+        edit_project_path(@project, anchor: 'js-project-advanced-settings'),
+        alert: _("Project export could not be deleted.")
+      )
+    end
+  end
+
+  def toggle_star
+    current_user.toggle_star(@project)
+    @project.reset
+
+    render json: {
+      star_count: @project.star_count
+    }
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def refs
+    find_refs = refs_params['find']
+
+    find_branches = true
+    find_tags = true
+    find_commits = true
+
+    unless find_refs.nil?
+      find_branches = find_refs.include?('branches')
+      find_tags = find_refs.include?('tags')
+      find_commits = find_refs.include?('commits')
+    end
+
+    options = {}
+
+    if find_branches
+      # Set default sort to 'updated_desc' for branches if no sort specified
+      branch_params = refs_params.merge(per_page: REFS_LIMIT)
+      branch_params[:sort] = 'updated_desc' if branch_params[:sort].blank?
+
+      branches = BranchesFinder.new(@repository, branch_params)
+                   .execute(gitaly_pagination: true)
+                   .take(REFS_LIMIT)
+                   .map(&:name)
+
+      options['Branches'] = branches
+    end
+
+    if find_tags && @repository.tag_count.nonzero?
+      tags = TagsFinder.new(@repository, refs_params.merge(per_page: REFS_LIMIT))
+               .execute(gitaly_pagination: true)
+               .take(REFS_LIMIT)
+               .map(&:name)
+
+      options['Tags'] = tags
+    end
+
+    # If reference is commit id - we should add it to branch/tag selectbox
+    ref = Addressable::URI.unescape(refs_params[:ref])
+    if find_commits && ref && options.flatten(2).exclude?(ref) && ref =~ /\A[0-9a-zA-Z]{6,52}\z/
+      options['Commits'] = [ref]
+    end
+
+    render json: Gitlab::Json.dump(options)
+  rescue Gitlab::Git::CommandError
+    render json: { error: _('Unable to load refs') }, status: :service_unavailable
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def unfoldered_environment_names
+    respond_to do |format|
+      format.json do
+        render json: Environments::EnvironmentNamesFinder.new(@project, current_user).execute
+      end
+    end
   end
 
   private
 
+  def namespace_params
+    params.permit(:namespace_id, :new_namespace_id)
+  end
+
+  def nested_project_param(key)
+    params.permit(project: key).dig(:project, key)
+  end
+
+  def enqueue_async_transfer(namespace)
+    service = ::Projects::TransferService.new(@project, current_user)
+    result = service.schedule_async_transfer(namespace)
+
+    return if result.success?
+
+    flash[:alert] = result.message
+  end
+
+  def destroy_immediately
+    ::Projects::DestroyService.new(@project, current_user, {}).async_execute
+    flash[:toast] = safe_format(_("%{project_name} is being deleted."), project_name: @project.name)
+
+    redirect_to dashboard_projects_path, status: :found
+  end
+
+  def refs_params
+    params.permit(:search, :sort, :ref, find: [])
+  end
+
+  # Render project landing depending of which features are available
+  # So if page is not available in the list it renders the next page
+  #
+  # pages list order: repository readme, wiki home, issues list, customize workflow
+  def render_landing_page
+    Gitlab::Tracking.event('project_overview', 'render', user: current_user, project: @project.project)
+
+    if can?(current_user, :read_code, @project)
+      return render 'projects/no_repo' unless @project.repository_exists?
+      return render 'projects/missing_default_branch', status: :service_unavailable if @ref == ''
+
+      render 'projects/empty' if @project.empty_repo?
+    else
+      if can?(current_user, :read_wiki, @project)
+        @wiki = @project.wiki
+        @wiki_home = @wiki.find_page('home', params.permit(:version_id)[:version_id])
+      elsif @project.feature_available?(:issues, current_user)
+        @issues = issuables_collection.page(params.permit(:page)[:page])
+        @issuable_meta_data = Gitlab::IssuableMetadata.new(current_user, @issues).data
+      end
+
+      render :show
+    end
+  end
+
+  def finder_type
+    IssuesFinder
+  end
+
   def determine_layout
     if [:new, :create].include?(action_name.to_sym)
-      'application'
+      'dashboard'
     elsif [:edit, :update].include?(action_name.to_sym)
       'project_settings'
     else
@@ -169,39 +484,212 @@ class ProjectsController < ApplicationController
     end
   end
 
+  # rubocop: disable CodeReuse/ActiveRecord
   def load_events
-    @events = @project.events.recent
-    @events = event_filter.apply_filter(@events).with_associations
-    limit = (params[:limit] || 20).to_i
-    @events = @events.limit(limit).offset(params[:offset] || 0)
+    projects = Project.where(id: @project.id)
+    transfer_options = {}
+    transfer_options[:ancestor_group_ids] = @project.group.self_and_ancestors.select(:id) if @project.group
+
+    @events = EventCollection
+      .new(
+        projects,
+        offset: params.permit(:offset)[:offset].to_i,
+        filter: event_filter,
+        transfer_options: transfer_options
+      )
+      .to_a
+      .map(&:present)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def project_params(attributes: [])
+    params.require(:project)
+      .permit(project_params_attributes + attributes)
+      .merge(import_url_params)
+      .merge(object_format_params)
   end
 
-  def project_params
-    params.require(:project).permit(
-      :name, :path, :description, :issues_tracker, :tag_list,
-      :issues_enabled, :merge_requests_enabled, :snippets_enabled, :issues_tracker_id, :default_branch,
-      :wiki_enabled, :visibility_level, :import_url, :last_activity_at, :namespace_id, :avatar
-    )
+  def project_feature_attributes
+    %i[
+      builds_access_level
+      issues_access_level
+      forking_access_level
+      merge_requests_access_level
+      repository_access_level
+      snippets_access_level
+      wiki_access_level
+      package_registry_access_level
+      pages_access_level
+      metrics_dashboard_access_level
+      analytics_access_level
+      security_and_compliance_access_level
+      container_registry_access_level
+      releases_access_level
+      environments_access_level
+      feature_flags_access_level
+      monitor_access_level
+      infrastructure_access_level
+      model_experiments_access_level
+      model_registry_access_level
+    ]
   end
 
-  def autocomplete_emojis
-    Rails.cache.fetch("autocomplete-emoji-#{Gemojione::VERSION}") do
-      Emoji.emojis.map do |name, emoji|
-        {
-          name: name,
-          path: view_context.image_url("emoji/#{emoji["unicode"]}.png")
-        }
-      end
-    end
+  def project_setting_attributes
+    attributes = %i[
+      show_default_award_emojis
+      show_diff_preview_in_email
+      squash_option
+      mr_default_target_self
+      warn_about_potentially_unwanted_characters
+      enforce_auth_checks_on_uploads
+      emails_enabled
+    ]
+
+    attributes << :extended_prat_expiry_webhooks_execute if can?(current_user, :admin_project, project)
+
+    attributes
   end
 
-  def render_go_import
-    return unless params["go-get"] == "1"
+  def project_params_attributes
+    [
+      :allow_merge_on_skipped_pipeline,
+      :avatar,
+      :build_allow_git_fetch,
+      :build_timeout_human_readable,
+      :resolve_outdated_diff_discussions,
+      :container_registry_enabled,
+      :description,
+      :external_authorization_classification_label,
+      :import_url,
+      :issues_tracker,
+      :issues_tracker_id,
+      :last_activity_at,
+      :lfs_enabled,
+      :name,
+      :only_allow_merge_if_all_discussions_are_resolved,
+      :only_allow_merge_if_pipeline_succeeds,
+      :allow_merge_without_pipeline,
+      :path,
+      :printing_merge_request_link_enabled,
+      :public_builds,
+      :remove_source_branch_after_merge,
+      :request_access_enabled,
+      :runners_token,
+      :tag_list,
+      :topics,
+      :visibility_level,
+      :template_name,
+      :template_project_id,
+      :merge_method,
+      :initialize_with_sast,
+      :initialize_with_secret_detection,
+      :initialize_with_readme,
+      :ci_separated_caches,
+      :suggestion_commit_message,
+      :packages_enabled,
+      :service_desk_enabled,
+      :merge_commit_template_or_default,
+      :squash_commit_template_or_default,
+      { project_setting_attributes: project_setting_attributes,
+        project_feature_attributes: project_feature_attributes }
+    ]
+  end
 
-    @namespace = params[:namespace_id]
-    @id = params[:project_id] || params[:id]
-    @id = @id.gsub(/\.git\Z/, "")
+  def project_params_create_attributes
+    [:namespace_id]
+  end
 
-    render "go_import", layout: false
+  def custom_import_params
+    {}
+  end
+
+  def object_format_params
+    use_sha256 = nested_project_param(:use_sha256_repository)
+    return {} unless Gitlab::Utils.to_boolean(use_sha256)
+
+    { repository_object_format: Repository::FORMAT_SHA256 }
+  end
+
+  def active_new_project_tab
+    project_params[:import_url].present? ? 'import' : 'blank'
+  end
+
+  def repo_exists?
+    project.repository_exists? && !project.empty_repo?
+
+  rescue Gitlab::Git::Repository::NoRepository
+    project.repository.expire_exists_cache
+
+    false
+  end
+
+  def repository_root
+    project.repository.root_ref
+  rescue Gitlab::Git::CommandError
+    # Empty string is intentional and prevent the @ref reload
+    ''
+  end
+
+  def build_canonical_path(project)
+    url_for(safe_params.merge(namespace_id: project.namespace.to_param, id: project.to_param))
+  end
+
+  def verify_git_import_enabled
+    render_404 if project_params[:import_url] && !git_import_enabled?
+  end
+
+  def project_export_enabled
+    render_404 unless Gitlab::CurrentSettings.project_export_enabled?
+  end
+
+  # Redirect from localhost/group/project.git to localhost/group/project
+  def redirect_git_extension
+    return unless params.permit(:format)[:format] == 'git'
+
+    git_extension_regex = %r{\.git/?\Z}
+    return unless request.path.match?(git_extension_regex)
+
+    # `project` calls `find_routable!`, so this will trigger the usual not-found
+    # behaviour when the user isn't authorized to see the project
+    return if project.nil? || performed?
+
+    uri = URI(request.original_url)
+    # Strip the '.git' part from the path
+    uri.path = uri.path.sub(git_extension_regex, '')
+
+    redirect_to(uri.to_s)
+  end
+
+  def disable_query_limiting
+    Gitlab::QueryLimiting.disable!('https://gitlab.com/gitlab-org/gitlab/-/issues/20826')
+  end
+
+  def present_project
+    @project = @project.present(current_user: current_user)
+  end
+
+  def check_export_rate_limit!
+    prefixed_action = :"project_#{action_name}"
+
+    project_scope = action_name == 'download_export' ? @project : nil
+
+    check_rate_limit!(prefixed_action, scope: { user: current_user, project: project_scope }.compact)
+  end
+
+  def check_create_rate_limit!
+    return unless Feature.enabled?(:namespace_create_rate_limit, current_user)
+
+    check_rate_limit!(:projects_create, scope: { user: current_user })
+  end
+
+  def render_edit
+    render 'edit'
+  end
+
+  def enforce_step_up_auth_for_namespace_on_create
+    namespace_id = nested_project_param(:namespace_id)
+    enforce_step_up_auth_for_namespace_id(namespace_id)
   end
 end
+
+ProjectsController.prepend_mod

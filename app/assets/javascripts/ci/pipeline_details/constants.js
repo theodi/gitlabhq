@@ -1,0 +1,74 @@
+import { __, s__ } from '~/locale';
+
+export const SUPPORTED_FILTER_PARAMETERS = ['username', 'ref', 'status', 'source'];
+
+// The `needs` field of a job, should match the GraphQL field. This is needed to build the dependency arrows in the pipeline graph.
+export const NEEDS_PROPERTY = 'needs';
+
+// `schedulingType` of a job that uses `needs`, even `needs: []`
+export const DAG_SCHEDULING_TYPE = 'dag';
+
+// Frontend-only property that stores all the jobs from the previous stages. This is needed to build the layer view in the pipeline graph.
+export const ALL_JOBS_FROM_PREVIOUS_STAGE_PROPERTY = 'previousStageJobsUnionNeeds';
+
+export const testStatus = {
+  FAILED: 'failed',
+  SKIPPED: 'skipped',
+  SUCCESS: 'success',
+  ERROR: 'error',
+  UNKNOWN: 'unknown',
+};
+
+/* Error constants shared across graphs */
+export const DEFAULT = 'default';
+export const DELETE_FAILURE = 'delete_pipeline_failure';
+export const DRAW_FAILURE = 'draw_failure';
+export const LOAD_FAILURE = 'load_failure';
+export const POST_FAILURE = 'post_failure';
+
+// Pipeline tabs
+
+export const pipelineTabName = 'graph';
+export const jobsTabName = 'builds';
+export const failedJobsTabName = 'failures';
+export const testReportTabName = 'test_report';
+export const manualVariablesTabName = 'manual_variables';
+export const securityTabName = 'security';
+export const licensesTabName = 'licenses';
+export const codeQualityTabName = 'codequality_report';
+
+export const validPipelineTabNames = [
+  jobsTabName,
+  failedJobsTabName,
+  testReportTabName,
+  securityTabName,
+  licensesTabName,
+  codeQualityTabName,
+  manualVariablesTabName,
+];
+
+export const CREATING_PIPELINE_TOAST_MESSAGE = s__('Pipeline|Creating pipeline.');
+
+export const DEFAULT_FIELDS = [
+  {
+    key: 'name',
+    label: __('Name'),
+    columnClass: 'gl-w-1/5',
+  },
+  {
+    key: 'stage',
+    label: __('Stage'),
+    columnClass: 'gl-w-1/5',
+  },
+  {
+    key: 'failureMessage',
+    label: __('Failure'),
+    columnClass: 'gl-w-2/5',
+  },
+  {
+    key: 'actions',
+    label: '',
+    tdClass: 'gl-text-right',
+    columnClass: 'gl-w-1/5',
+  },
+];

@@ -1,0 +1,22 @@
+.rd-no-preview{ class: ('rd-no-preview-important' if important?) }
+  .rd-no-preview-body
+    - if has_description?
+      %p.rd-no-preview-paragraph><
+        = change_description
+        = mode_changed_description
+    - if no_preview_reason
+      %p.rd-no-preview-paragraph><
+        = no_preview_reason
+  - unless @diff_file.empty?
+    .rd-no-preview-actions
+      - if expandable_inline?
+        = action_button(button_options: { data: { click: 'showChanges' } }) do
+          = _('Show changes')
+      - elsif file_changed?
+        = action_button(href: old_blob_path, target: '_blank') do
+          = _('View original file')
+        = action_button(href: new_blob_path, target: '_blank') do
+          = _('View changed file')
+      - else
+        = action_button(href: blob_path, target: '_blank') do
+          = _('View file')

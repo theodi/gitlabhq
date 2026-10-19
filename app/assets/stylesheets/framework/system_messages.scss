@@ -1,0 +1,28 @@
+.header-message,
+.footer-message {
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  width: 100%;
+  text-align: center;
+  margin: 0;
+  z-index: 1000;
+  overflow: hidden;
+
+  p {
+    @include str-truncated(100%);
+    margin-top: -1px;
+    margin-bottom: 0;
+    font-size: $gl-font-size-small;
+  }
+}
+
+.header-message {
+  height: $system-header-height;
+  line-height: $system-header-height;
+}
+
+.footer-message {
+  height: $system-footer-height;
+  line-height: $system-footer-height;
+}

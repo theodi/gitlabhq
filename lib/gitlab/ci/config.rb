@@ -1,0 +1,314 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    #
+    # Base GitLab CI Configuration facade
+    #
+    class Config
+      include Gitlab::Utils::StrongMemoize
+
+      ConfigError = Class.new(StandardError)
+      TimeoutError = Class.new(ConfigError)
+      TIMEOUT_SECONDS = ENV.fetch('GITLAB_CI_CONFIG_FETCH_TIMEOUT_SECONDS', 30).to_i.clamp(0, 60).seconds
+      OVERRIDE_TIMEOUT_SECONDS = 90.seconds
+      TIMEOUT_MESSAGE = 'Request timed out when fetching configuration files.'
+      GITALY_TIMEOUT_MESSAGE = 'CI configuration fetch from Gitaly timed out. ' \
+        'This may indicate Gitaly service slowness or an outage.'
+      GITALY_TIMEOUT_SECONDS = ENV.fetch('GITLAB_CI_CONFIG_GITALY_TIMEOUT_SECONDS', 10).to_i.clamp(1, 60)
+      HTTP_OPEN_TIMEOUT_SECONDS = ENV.fetch('GITLAB_CI_CONFIG_HTTP_OPEN_TIMEOUT_SECONDS', 10).to_i.clamp(1, 60)
+      HTTP_READ_TIMEOUT_SECONDS = ENV.fetch('GITLAB_CI_CONFIG_HTTP_READ_TIMEOUT_SECONDS', 30).to_i.clamp(1, 60)
+
+      RESCUE_ERRORS = [
+        Gitlab::Config::Loader::FormatError,
+        Extendable::ExtensionError,
+        External::Processor::IncludeError,
+        Config::Yaml::Tags::TagError
+      ].freeze
+
+      attr_reader :root, :context, :source_ref_path, :source, :logger, :inject_edge_stages, :pipeline_policy_context, :spec
+
+      # rubocop: disable Metrics/ParameterLists
+      def initialize(
+        config,
+        project: nil, pipeline: nil, sha: nil, ref: nil, user: nil, parent_pipeline: nil, source: nil,
+        pipeline_config: nil, logger: nil, inject_edge_stages: true, pipeline_policy_context: nil, inputs: {}
+      )
+        @logger = logger || ::Gitlab::Ci::Pipeline::Logger.new(project: project)
+        @source_ref_path = pipeline&.source_ref_path
+        @project = project
+        @inject_edge_stages = inject_edge_stages
+        @pipeline_policy_context = pipeline_policy_context
+
+        @context = self.logger.instrument(:config_build_context, once: true) do
+          pipeline ||= ::Ci::Pipeline.new(project: project, sha: sha, ref: ref, user: user, source: source)
+
+          build_context(
+            project: project,
+            pipeline: pipeline,
+            sha: sha,
+            user: user,
+            parent_pipeline: parent_pipeline,
+            pipeline_config: pipeline_config,
+            pipeline_policy_context: pipeline_policy_context
+          )
+        end
+
+        @context.set_deadline(fetch_timeout(project))
+
+        @source = source
+
+        Gitlab::Ci::Config::FeatureFlags.with_actor(project) do
+          @config = self.logger.instrument(:config_expand, once: true) do
+            expand_config(config, inputs)
+          end
+
+          @root = self.logger.instrument(:config_root, once: true) do
+            Entry::Root.new(@config, project: project, user: user, logger: self.logger)
+          end
+
+          self.logger.instrument(:config_root_compose, once: true) do
+            @root.compose!
+          end
+        end
+      rescue External::Context::TimeoutError => e
+        Gitlab::ErrorTracking.track_exception(e)
+        raise TimeoutError, e.message
+      rescue *rescue_errors => e
+        raise ConfigError, e.message
+      end
+      # rubocop: enable Metrics/ParameterLists
+
+      def valid?
+        @root.valid?
+      end
+
+      def errors
+        @root.errors
+      end
+
+      def warnings
+        @root.warnings
+      end
+
+      def to_hash
+        @config
+      end
+
+      ##
+      # Temporary method that should be removed after refactoring
+      #
+      # rubocop:disable Gitlab/NoCodeCoverageComment -- This is an existing method and probably never called
+      # :nocov:
+      def variables
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.variables_value
+        end
+      end
+      # :nocov:
+      # rubocop:enable Gitlab/NoCodeCoverageComment
+
+      def variables_with_data
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.variables_entry.value_with_data
+        end
+      end
+
+      def variables_with_prefill_data
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.variables_entry.value_with_prefill_data
+        end
+      end
+
+      def stages
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.stages_value
+        end
+      end
+
+      def jobs
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.jobs_value
+        end
+      end
+
+      def workflow_rules
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.workflow_entry.rules_value
+        end
+      end
+
+      def workflow_name
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.workflow_entry.name
+        end
+      end
+
+      def workflow_auto_cancel
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          root.workflow_entry.auto_cancel_value
+        end
+      end
+
+      def normalized_jobs
+        @normalized_jobs ||= Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          normalizer.normalize_jobs
+        end
+      end
+
+      def normalizer_errors
+        normalizer.errors
+      end
+
+      # Returns a mapping of original job names to their normalized (expanded) names
+      # for jobs that use parallel:matrix or parallel:N
+      def job_name_mappings
+        Gitlab::Ci::Config::FeatureFlags.with_actor(@project) do
+          normalizer.job_name_mappings
+        end
+      end
+
+      def included_templates
+        @context.includes.filter_map { |i| i[:location] if i[:type] == :template }
+      end
+
+      def included_components
+        @context.includes.filter_map { |i| i[:component] if i[:type] == :component }.uniq
+      end
+
+      def any_includes_fully_filtered_by_rules?
+        @context.any_includes_fully_filtered_by_rules?
+      end
+
+      def metadata
+        {
+          includes: @context.includes,
+          merged_yaml: -> { @config&.deep_stringify_keys&.to_yaml }
+        }
+      end
+      strong_memoize_attr :metadata
+
+      private
+
+      def expand_config(config, inputs)
+        build_config(config, inputs)
+
+      rescue Gitlab::Ci::Config::External::Context::TimeoutError, Gitlab::Ci::Config::External::Context::HTTPTimeoutError => e
+        Gitlab::ErrorTracking.track_exception(e)
+        # HTTPTimeoutError keeps its location out of `message` for Sentry grouping.
+        raise TimeoutError, e.try(:user_message) || e.message
+
+      rescue Gitlab::Config::Loader::Yaml::DataTooLargeError => e
+        Gitlab::ErrorTracking.track_exception(e)
+        raise ConfigError, e.message
+
+      rescue Gitlab::Ci::Config::Yaml::LoadError => e
+        raise ConfigError, e.message
+      end
+
+      def build_config(config, inputs)
+        initial_config = logger.instrument(:config_yaml_load, once: true) do
+          yaml_context = Config::Yaml::Context.new(
+            variables: @context.variables
+          )
+          loader = Config::Yaml::Loader.new(config, inputs: inputs, context: yaml_context, external_context: @context)
+          yaml_result = loader.load_uninterpolated_yaml
+
+          # Store spec for later instrumentation before it gets stripped during interpolation
+          @spec = yaml_result.spec
+
+          loader.load.then do |result|
+            raise result.error_class, result.error if !result.valid? && result.error_class.present?
+            raise Config::Yaml::LoadError, result.error unless result.valid?
+
+            result.content
+          end
+        end
+
+        initial_config = logger.instrument(:config_external_process, once: true) do
+          Config::GitalyTimeout.with_timeout(GITALY_TIMEOUT_SECONDS) do
+            Config::External::Processor.new(initial_config, @context).perform
+          end
+        end
+
+        initial_config = logger.instrument(:config_yaml_extend, once: true) do
+          Config::Extendable.new(initial_config).to_hash
+        end
+
+        initial_config = logger.instrument(:config_tags_resolve, once: true) do
+          Config::Yaml::Tags::Resolver.new(initial_config).to_hash
+        end
+
+        return initial_config unless inject_edge_stages
+
+        logger.instrument(:config_stages_inject, once: true) do
+          Config::Stages.new(initial_config).inject_edge_stages!
+        end
+      end
+
+      def find_sha(project)
+        branches = project&.repository&.branches || []
+
+        unless branches.empty?
+          project.repository.root_ref_sha
+        end
+      end
+
+      def build_context(
+        project:, pipeline:, sha:, user:, parent_pipeline:, pipeline_config:, pipeline_policy_context:)
+        Config::External::Context.new(
+          project: project,
+          pipeline: pipeline,
+          sha: sha || find_sha(project),
+          user: user,
+          parent_pipeline: parent_pipeline,
+          variables: build_variables(pipeline: pipeline),
+          pipeline_config: pipeline_config,
+          pipeline_policy_context: pipeline_policy_context,
+          logger: logger)
+      end
+
+      def build_variables(pipeline:)
+        logger.instrument(:config_build_variables, once: true) do
+          pipeline
+            .variables_builder
+            .config_variables
+        end
+      rescue Gitlab::Git::CommandTimedOut, Gitlab::Git::ResourceExhaustedError
+        # Predefined variables can call Gitaly (e.g. `default_branch`). Treat it like an include fetch timeout.
+        raise External::Context::TimeoutError, GITALY_TIMEOUT_MESSAGE
+      rescue Gitlab::Git::CommandError => e
+        # CommandError wraps most gRPC codes. Only Unavailable means Gitaly is down; the others
+        # (Internal, FailedPrecondition, ...) may be real bugs, so keep them out of the timeout Sentry group.
+        raise unless e.cause.is_a?(GRPC::Unavailable)
+
+        raise External::Context::TimeoutError, GITALY_TIMEOUT_MESSAGE
+      end
+
+      def normalizer
+        @normalizer ||= Ci::Config::Normalizer.new(jobs)
+      end
+
+      def fetch_timeout(project)
+        return TIMEOUT_SECONDS unless project
+
+        if Feature.enabled?(:ci_config_fetch_timeout_override, project.root_namespace, type: :ops)
+          OVERRIDE_TIMEOUT_SECONDS
+        else
+          TIMEOUT_SECONDS
+        end
+      end
+
+      def track_and_raise_for_dev_exception(error)
+        Gitlab::ErrorTracking.track_and_raise_for_dev_exception(error, @context.sentry_payload)
+      end
+
+      # Overridden in EE
+      def rescue_errors
+        RESCUE_ERRORS
+      end
+    end
+  end
+end
+
+Gitlab::Ci::Config.prepend_mod_with('Gitlab::Ci::ConfigEE')

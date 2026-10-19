@@ -1,0 +1,338 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Ci::Pipeline::Chain::Skip, feature_category: :pipeline_composition do
+  let_it_be_with_reload(:project) { create(:project) }
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+
+  let(:command) do
+    Gitlab::Ci::Pipeline::Chain::Command.new(
+      project: project,
+      current_user: user,
+      ignore_skip_ci: false,
+      save_incompleted: true,
+      origin_ref: project.default_branch_or_main
+    )
+  end
+
+  let(:step) { described_class.new(pipeline, command) }
+
+  context 'when pipeline has been skipped by a user' do
+    before do
+      allow(pipeline).to receive(:git_commit_message)
+        .and_return('commit message [ci skip]')
+    end
+
+    it 'breaks the chain' do
+      step.perform!
+
+      expect(step.break?).to be true
+    end
+
+    it 'skips the pipeline' do
+      step.perform!
+
+      expect(pipeline.reload).to be_skipped
+    end
+
+    it 'calls ensure_project_iid explicitly' do
+      expect(pipeline).to receive(:ensure_project_iid!)
+
+      step.perform!
+    end
+
+    context 'when pipeline is readonly' do
+      before do
+        allow(pipeline).to receive(:readonly?).and_return(true)
+      end
+
+      it 'breaks the chain' do
+        expect(pipeline).not_to receive(:skip)
+        expect(pipeline).not_to receive(:ensure_project_iid!)
+
+        step.perform!
+
+        expect(step.break?).to be true
+      end
+
+      it 'does not raise error' do
+        expect { step.perform! }.not_to raise_error
+      end
+    end
+  end
+
+  context 'when a merge request is provided' do
+    let(:merge_request) { build_stubbed(:merge_request, source_project: project, title: title) }
+    let(:ignore_skip_ci) { false }
+    let(:command) do
+      Gitlab::Ci::Pipeline::Chain::Command.new(
+        project: project,
+        current_user: user,
+        ignore_skip_ci: ignore_skip_ci,
+        save_incompleted: true,
+        merge_request: merge_request,
+        origin_ref: project.default_branch_or_main
+      )
+    end
+
+    shared_examples 'skips the pipeline for the merge request title' do |skip_directive|
+      let(:title) { "Merge request title #{skip_directive}" }
+
+      it 'breaks the chain' do
+        step.perform!
+
+        expect(step.break?).to be true
+      end
+
+      it 'skips the pipeline' do
+        step.perform!
+
+        expect(pipeline.reload).to be_skipped
+      end
+    end
+
+    context 'when the title contains [ci skip]' do
+      it_behaves_like 'skips the pipeline for the merge request title', '[ci skip]'
+    end
+
+    context 'when the title contains [skip ci]' do
+      it_behaves_like 'skips the pipeline for the merge request title', '[skip ci]'
+    end
+
+    context 'when the title does not contain a skip directive' do
+      let(:title) { 'Merge request title' }
+
+      it 'does not break the chain' do
+        step.perform!
+
+        expect(step.break?).to be false
+      end
+    end
+
+    context 'when [ci skip] should be ignored' do
+      let(:title) { 'Merge request title [ci skip]' }
+      let(:ignore_skip_ci) { true }
+
+      it 'does not break the chain' do
+        step.perform!
+
+        expect(step.break?).to be false
+      end
+    end
+
+    context 'when the feature flag is disabled' do
+      let(:title) { 'Merge request title [ci skip]' }
+
+      before do
+        stub_feature_flags(ci_skip_pipeline_from_mr_title: false)
+      end
+
+      it 'does not break the chain' do
+        step.perform!
+
+        expect(step.break?).to be false
+      end
+    end
+
+    context 'when the commit message has a skip directive the title no longer has' do
+      let(:title) { 'Merge request title' }
+      let(:ref) { merge_request.merge_ref_path }
+
+      before do
+        allow(pipeline).to receive_messages(
+          ref: ref,
+          git_commit_message: "Merge branch 'feature' into 'master'\n\nMerge request title [skip ci]"
+        )
+      end
+
+      context 'when the pipeline runs on the merge ref' do
+        it 'does not break the chain' do
+          step.perform!
+
+          expect(step.break?).to be false
+        end
+
+        context 'when the ci_skip_pipeline_from_mr_title feature flag is disabled' do
+          before do
+            stub_feature_flags(ci_skip_pipeline_from_mr_title: false)
+          end
+
+          it 'breaks the chain' do
+            step.perform!
+
+            expect(step.break?).to be true
+          end
+        end
+      end
+
+      context 'when the pipeline does not run on the merge ref' do
+        let(:ref) { merge_request.ref_path }
+
+        it 'breaks the chain' do
+          step.perform!
+
+          expect(step.break?).to be true
+        end
+      end
+
+      context 'when the pipeline runs on the merge train ref' do
+        let(:ref) { merge_request.train_ref_path }
+
+        it 'breaks the chain' do
+          step.perform!
+
+          expect(step.break?).to be true
+        end
+      end
+    end
+  end
+
+  context 'when there is no merge request' do
+    before do
+      step.perform!
+    end
+
+    it 'does not break the chain' do
+      expect(step.break?).to be false
+    end
+
+    it 'does not skip a pipeline chain' do
+      expect(pipeline.reload).not_to be_skipped
+    end
+  end
+
+  context 'when the ci.skip push option is provided' do
+    let(:command) do
+      Gitlab::Ci::Pipeline::Chain::Command.new(
+        project: project,
+        current_user: user,
+        ignore_skip_ci: false,
+        save_incompleted: true,
+        push_options: Ci::PipelineCreation::PushOptions.new({ 'ci' => { 'skip' => true } }),
+        origin_ref: project.default_branch_or_main
+      )
+    end
+
+    before do
+      step.perform!
+    end
+
+    it 'breaks the chain' do
+      expect(step.break?).to be true
+    end
+
+    it 'skips the pipeline' do
+      expect(pipeline.reload).to be_skipped
+    end
+  end
+
+  context 'when [ci skip] should be ignored' do
+    let(:command) do
+      Gitlab::Ci::Pipeline::Chain::Command.new(
+        project: project,
+        current_user: user,
+        ignore_skip_ci: true,
+        save_incompleted: true,
+        origin_ref: project.default_branch_or_main
+      )
+    end
+
+    it 'does not break the chain' do
+      step.perform!
+
+      expect(step.break?).to be false
+    end
+  end
+
+  context 'when pipeline should be skipped but not persisted' do
+    let(:command) do
+      Gitlab::Ci::Pipeline::Chain::Command.new(
+        project: project,
+        current_user: user,
+        ignore_skip_ci: false,
+        save_incompleted: false,
+        origin_ref: project.default_branch_or_main
+      )
+    end
+
+    before do
+      allow(pipeline).to receive(:git_commit_message)
+        .and_return('commit message [ci skip]')
+
+      step.perform!
+    end
+
+    it 'breaks the chain' do
+      expect(step.break?).to be true
+    end
+
+    it 'does not skip pipeline' do
+      expect(pipeline.reload).not_to be_skipped
+    end
+  end
+
+  context 'when skipping a project without CI config' do
+    before do
+      allow(pipeline).to receive(:git_commit_message)
+        .and_return('commit message [ci skip]')
+    end
+
+    context 'when config does not exist' do
+      before do
+        allow_next_instance_of(Gitlab::Ci::ProjectConfig) do |instance|
+          allow(instance).to receive(:exists?).and_return(false)
+        end
+      end
+
+      it 'breaks the chain without skipping pipeline' do
+        step.perform!
+
+        expect(step.break?).to be true
+        expect(pipeline).not_to be_skipped
+      end
+
+      context 'when pipelines must succeed and skipped pipelines are considered successful' do
+        before do
+          project.update!(only_allow_merge_if_pipeline_succeeds: true, allow_merge_on_skipped_pipeline: true)
+        end
+
+        it 'breaks the chain and skips the pipeline' do
+          step.perform!
+
+          expect(step.break?).to be true
+          expect(pipeline.reload).to be_skipped
+        end
+      end
+
+      context 'when skipped pipelines are considered successful but pipelines do not need to succeed' do
+        before do
+          project.update!(allow_merge_on_skipped_pipeline: true)
+        end
+
+        it 'breaks the chain without skipping pipeline' do
+          step.perform!
+
+          expect(step.break?).to be true
+          expect(pipeline.reload).not_to be_skipped
+        end
+      end
+    end
+
+    context 'when config exists' do
+      before do
+        allow_next_instance_of(Gitlab::Ci::ProjectConfig) do |instance|
+          allow(instance).to receive(:exists?).and_return(true)
+        end
+      end
+
+      it 'proceeds with normal skip behavior' do
+        step.perform!
+
+        expect(step.break?).to be true
+        expect(pipeline.errors).to be_empty
+      end
+    end
+  end
+end

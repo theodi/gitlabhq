@@ -1,0 +1,21 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ImpersonationAccessTokenSerializer, feature_category: :user_management do
+  subject(:serializer) { described_class.new }
+
+  describe '#represent' do
+    it 'can render a single token' do
+      token = build_stubbed(:personal_access_token)
+
+      expect(serializer.represent(token)).to be_kind_of(Hash)
+    end
+
+    it 'can render a collection of tokens' do
+      tokens = build_stubbed_list(:personal_access_token, 2)
+
+      expect(serializer.represent(tokens)).to be_kind_of(Array)
+    end
+  end
+end

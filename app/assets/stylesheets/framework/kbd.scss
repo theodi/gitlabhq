@@ -1,0 +1,30 @@
+kbd {
+  @apply gl-text-default;
+  @apply gl-bg-subtle;
+  @apply gl-border;
+  @apply gl-border-b-strong;
+  display: inline-block;
+  padding: 3px 5px;
+  font-size: $gl-font-size-sm;
+  line-height: 10px;
+  vertical-align: unset;
+  border-image: none;
+  border-radius: 3px;
+  box-shadow: 0 -1px 0 var(--gl-border-color-strong) inset;
+
+  &.flat {
+    @apply gl-text-strong;
+    @apply gl-bg-strong;
+    @apply gl-border-strong;
+    @apply gl-rounded-base;
+    box-shadow: none;
+    font-family: $monospace-font;
+    font-size: $gl-font-size-small;
+    line-height: 1;
+    white-space: pre-wrap;
+    // Safari
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: keep-all;
+  }
+}

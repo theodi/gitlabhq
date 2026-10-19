@@ -1,0 +1,1102 @@
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { GlCollapsibleListbox } from '@gitlab/ui';
+import { shallowMount, mount } from '@vue/test-utils';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { mockTracking, triggerEvent } from 'helpers/tracking_helper';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import { DEFAULT_DEBOUNCE_AND_THROTTLE_MS } from '~/lib/utils/constants';
+import ReviewerDropdown from '~/merge_requests/components/reviewers/reviewer_dropdown.vue';
+import userPermissionsQuery from '~/merge_requests/components/reviewers/queries/user_permissions.query.graphql';
+import userAutocompleteWithMRPermissionsQuery from 'ee_else_ce/graphql_shared/queries/project_autocomplete_users_with_mr_permissions.query.graphql';
+import setReviewersMutation from '~/merge_requests/components/reviewers/queries/set_reviewers.mutation.graphql';
+
+const { bindInternalEventDocument } = useMockInternalEventsTracking();
+
+let wrapper;
+let autocompleteUsersMock;
+let setReviewersMutationMock;
+
+Vue.use(VueApollo);
+
+const createMockUser = ({
+  id = 1,
+  name = 'Administrator',
+  username = 'root',
+  compositeIdentityEnforced = false,
+  status = {},
+  duoStatus = {},
+} = {}) => ({
+  __typename: 'UserCore',
+  id: `gid://gitlab/User/${id}`,
+  avatarUrl:
+    'https://www.gravatar.com/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80\u0026d=identicon',
+  webUrl: `/${username}`,
+  webPath: `/${username}`,
+  status: {
+    availability: 'NOT_SET',
+    ...status,
+  },
+  duoStatus: {
+    disabled: false,
+    disabledReason: null,
+    flowTriggerEvents: [],
+    ...duoStatus,
+  },
+  compositeIdentityEnforced,
+  mergeRequestInteraction: {
+    canMerge: true,
+    applicableApprovalRules: [],
+  },
+  username,
+  name,
+});
+
+function createComponent({
+  adminMergeRequest = true,
+  propsData = { selectedReviewers: [createMockUser()] },
+  customUsers = null,
+  mountFn = shallowMount,
+} = {}) {
+  const defaultUsers = [
+    createMockUser(),
+    createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+  ];
+  autocompleteUsersMock = jest.fn().mockResolvedValue({
+    data: {
+      namespace: {
+        id: 1,
+        users: customUsers || defaultUsers,
+      },
+    },
+  });
+  setReviewersMutationMock = jest.fn().mockResolvedValue({
+    data: {
+      mergeRequestSetReviewers: {
+        errors: [],
+      },
+    },
+  });
+
+  const apolloProvider = createMockApollo(
+    [
+      [setReviewersMutation, setReviewersMutationMock],
+      [userAutocompleteWithMRPermissionsQuery, autocompleteUsersMock],
+      [
+        userPermissionsQuery,
+        jest.fn().mockResolvedValue({
+          data: {
+            project: {
+              id: 1,
+              mergeRequest: { id: 1, userPermissions: { adminMergeRequest, canMerge: true } },
+            },
+          },
+        }),
+      ],
+    ],
+    {},
+    {
+      typePolicies: { Query: { fields: { project: { merge: true } } } },
+    },
+  );
+
+  wrapper = mountFn(ReviewerDropdown, {
+    apolloProvider,
+    propsData,
+    provide: {
+      projectPath: 'gitlab-org/gitlab',
+      issuableId: '1',
+      issuableIid: '1',
+      directlyInviteMembers: true,
+    },
+  });
+}
+
+const findDropdown = () => wrapper.findComponent(GlCollapsibleListbox);
+
+describe('Reviewer dropdown component', () => {
+  describe('when user does not have permission', () => {
+    beforeEach(async () => {
+      createComponent({ adminMergeRequest: false });
+
+      await waitForPromises();
+    });
+
+    it('does not render dropdown', () => {
+      expect(findDropdown().exists()).toBe(false);
+    });
+  });
+
+  describe('when user has permission', () => {
+    beforeEach(async () => {
+      createComponent({ adminMergeRequest: true });
+
+      await waitForPromises();
+    });
+
+    it('renders dropdown', () => {
+      expect(findDropdown().exists()).toBe(true);
+    });
+
+    it('tracks the event when edit is clicked', () => {
+      const spy = mockTracking('_category_', wrapper.element, jest.spyOn);
+      triggerEvent('.js-sidebar-dropdown-toggle');
+
+      expect(spy).toHaveBeenCalledWith('_category_', 'click_edit_button', {
+        label: 'right_sidebar',
+        property: 'reviewer',
+      });
+    });
+
+    it('fetches autocomplete users when dropdown opens', () => {
+      findDropdown().vm.$emit('shown');
+
+      expect(autocompleteUsersMock).toHaveBeenCalledWith({
+        fullPath: 'gitlab-org/gitlab',
+        mergeRequestId: 'gid://gitlab/MergeRequest/1',
+        search: '',
+      });
+    });
+
+    it('fetches autocomplete users when dropdown searches', () => {
+      findDropdown().vm.$emit('search', 'search string');
+
+      expect(autocompleteUsersMock).toHaveBeenCalledWith({
+        fullPath: 'gitlab-org/gitlab',
+        mergeRequestId: 'gid://gitlab/MergeRequest/1',
+        search: 'search string',
+      });
+    });
+
+    describe('request cancellation', () => {
+      it('aborts the in-flight request when a new search is triggered before it completes', () => {
+        const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
+
+        findDropdown().vm.$emit('shown');
+        findDropdown().vm.$emit('search', 'bob');
+        jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+
+        expect(abortSpy).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not abort when no prior request is in flight', () => {
+        const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
+
+        findDropdown().vm.$emit('shown');
+
+        expect(abortSpy).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('with the user already selected', () => {
+      it('renders users from autocomplete endpoint and skips "ineligible" pre-selected reviewers', async () => {
+        findDropdown().vm.$emit('shown');
+
+        await waitForPromises();
+
+        expect(findDropdown().props('items')).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              options: expect.arrayContaining([
+                expect.objectContaining({
+                  secondaryText: '@bob',
+                  text: 'Nonadmin',
+                  value: 'bob',
+                  mergeRequestInteraction: expect.objectContaining({ canMerge: true }),
+                }),
+              ]),
+            }),
+          ]),
+        );
+      });
+    });
+
+    describe('with the user not already selected', () => {
+      beforeEach(async () => {
+        createComponent({ adminMergeRequest: true, propsData: {} });
+
+        await waitForPromises();
+      });
+
+      it('renders users from autocomplete endpoint', async () => {
+        findDropdown().vm.$emit('shown');
+
+        await waitForPromises();
+
+        expect(findDropdown().props('items')).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              options: expect.arrayContaining([
+                expect.objectContaining({
+                  secondaryText: '@root',
+                  text: 'Administrator',
+                  value: 'root',
+                  mergeRequestInteraction: expect.objectContaining({ canMerge: true }),
+                }),
+                expect.objectContaining({
+                  secondaryText: '@bob',
+                  text: 'Nonadmin',
+                  value: 'bob',
+                  mergeRequestInteraction: expect.objectContaining({ canMerge: true }),
+                }),
+              ]),
+            }),
+          ]),
+        );
+      });
+    });
+
+    describe('shows current user at top when relevant', () => {
+      beforeEach(() => {
+        window.gon = {
+          current_username: 'currentuser',
+          current_user_fullname: 'Current User',
+          current_user_avatar_url: 'https://example.com/avatar.jpg',
+        };
+      });
+
+      afterEach(() => {
+        delete window.gon;
+      });
+
+      describe('when current user is not selected', () => {
+        describe('when current user is in the first page of query results', () => {
+          beforeEach(async () => {
+            createComponent({
+              adminMergeRequest: true,
+              propsData: { selectedReviewers: [] },
+              customUsers: [
+                createMockUser(),
+                createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+                createMockUser({ id: 3, name: 'Current User', username: 'currentuser' }),
+              ],
+            });
+            await waitForPromises();
+
+            findDropdown().vm.$emit('shown');
+            await waitForPromises();
+          });
+
+          it('moves current user to the top of the unselected users list', () => {
+            const items = findDropdown().props('items');
+            const usersGroup = items.find((group) => group.text === 'Users');
+
+            expect(usersGroup.options[0]).toMatchObject({
+              value: 'currentuser',
+              text: 'Current User',
+              secondaryText: '@currentuser',
+            });
+          });
+        });
+
+        describe('when current user is not in the first page of query results', () => {
+          beforeEach(async () => {
+            createComponent({
+              adminMergeRequest: true,
+              propsData: { selectedReviewers: [] },
+              customUsers: [
+                createMockUser(),
+                createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+              ],
+            });
+            await waitForPromises();
+
+            findDropdown().vm.$emit('shown');
+            await waitForPromises();
+          });
+
+          it('adds current user to the top of the unselected users list', () => {
+            const items = findDropdown().props('items');
+            const usersGroup = items.find((group) => group.text === 'Users');
+
+            expect(usersGroup.options[0]).toMatchObject({
+              value: 'currentuser',
+              text: 'Current User',
+              secondaryText: '@currentuser',
+            });
+          });
+        });
+      });
+
+      describe('when current user is already selected', () => {
+        beforeEach(async () => {
+          const currentUser = createMockUser({
+            id: 3,
+            name: 'Current User',
+            username: 'currentuser',
+          });
+
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              selectedReviewers: [currentUser],
+              eligibleReviewers: [currentUser],
+            },
+            customUsers: [
+              createMockUser(),
+              createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+              currentUser,
+            ],
+          });
+          await waitForPromises();
+
+          findDropdown().vm.$emit('shown');
+          await waitForPromises();
+        });
+
+        it('does not include current user in the unselected users list', () => {
+          const items = findDropdown().props('items');
+          const usersGroup = items.find((group) => group.text === 'Users');
+
+          expect(usersGroup.options.find((u) => u.value === 'currentuser')).toBeUndefined();
+        });
+
+        it('includes current user in the reviewers group', () => {
+          const items = findDropdown().props('items');
+          const reviewersGroup = items.find((group) => group.text === 'Reviewers');
+
+          expect(reviewersGroup.options.find((u) => u.value === 'currentuser')).toBeDefined();
+        });
+      });
+
+      describe('when searching', () => {
+        beforeEach(async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: { selectedReviewers: [] },
+            customUsers: [
+              createMockUser(),
+              createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+            ],
+          });
+          await waitForPromises();
+
+          autocompleteUsersMock.mockResolvedValueOnce({
+            data: {
+              namespace: {
+                id: 1,
+                users: [
+                  createMockUser({ id: 3, name: 'Current User', username: 'currentuser' }),
+                  createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+                ],
+              },
+            },
+          });
+
+          findDropdown().vm.$emit('search', 'user');
+          jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+          await waitForPromises();
+        });
+
+        it('does not move current user to the top during search', () => {
+          const items = findDropdown().props('items');
+          const usersGroup = items.find((group) => group.text === 'Users');
+          expect(usersGroup.options[0].value).toBe('currentuser');
+          expect(usersGroup.options[1].value).toBe('bob');
+        });
+      });
+
+      describe('when current user is already first', () => {
+        beforeEach(async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: { selectedReviewers: [] },
+            customUsers: [
+              createMockUser({ id: 3, name: 'Current User', username: 'currentuser' }),
+              createMockUser(),
+              createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+            ],
+          });
+          await waitForPromises();
+
+          findDropdown().vm.$emit('shown');
+          await waitForPromises();
+        });
+
+        it('maintains current user at the top without reordering', () => {
+          const items = findDropdown().props('items');
+          const usersGroup = items.find((group) => group.text === 'Users');
+
+          expect(usersGroup.options[0]).toMatchObject({
+            value: 'currentuser',
+            text: 'Current User',
+          });
+        });
+      });
+    });
+
+    it('updates reviewers when dropdown is closed', async () => {
+      findDropdown().vm.$emit('hidden');
+
+      await waitForPromises();
+
+      expect(setReviewersMutationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewerUsernames: ['root'],
+          projectPath: 'gitlab-org/gitlab',
+          iid: '1',
+        }),
+      );
+    });
+
+    describe('tracking when the dropdown is closed', () => {
+      let trackEventSpy;
+
+      beforeEach(async () => {
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {
+            users: [createMockUser(), createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' })],
+          },
+        });
+
+        await waitForPromises();
+
+        ({ trackEventSpy } = bindInternalEventDocument(wrapper.element));
+      });
+
+      it('tracks which position any selected users were in as a telemetry event', async () => {
+        findDropdown().vm.$emit('select', 'root');
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(trackEventSpy).toHaveBeenCalledWith(
+          'user_selects_reviewer_from_mr_sidebar',
+          {
+            value: 1,
+            suggested_position: 0,
+            selectable_reviewers_count: 2,
+          },
+          undefined,
+        );
+      });
+
+      it('tracks which position any selected users were in - discounting already selected reviewers - as a telemetry event', async () => {
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {
+            users: [createMockUser(), createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' })],
+            selectedReviewers: [createMockUser()],
+          },
+        });
+
+        await waitForPromises();
+
+        findDropdown().vm.$emit('select', 'bob');
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(trackEventSpy).toHaveBeenCalledWith(
+          'user_selects_reviewer_from_mr_sidebar',
+          {
+            value: 1,
+            suggested_position: 0,
+            selectable_reviewers_count: 1,
+          },
+          undefined,
+        );
+      });
+
+      it('tracks which position any selected users were in after a search as a telemetry event', async () => {
+        findDropdown().vm.$emit('search', 'bob');
+        jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+        findDropdown().vm.$emit('select', 'bob');
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        // Client-side filtering on 'bob' returns only 1 result, so bob is at position 1
+        expect(trackEventSpy).toHaveBeenCalledWith(
+          'user_selects_reviewer_from_mr_sidebar_after_search',
+          {
+            value: 1,
+            suggested_position: 0,
+            selectable_reviewers_count: 1,
+          },
+          undefined,
+        );
+      });
+
+      it('does not send the "simple sidebar" tracking event when used "normally" (in complex mode)', async () => {
+        findDropdown().vm.$emit('select', 'bob');
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(trackEventSpy).not.toHaveBeenCalledWith(
+          'user_requests_review_from_mr_simple_sidebar',
+          {},
+          undefined,
+        );
+      });
+
+      describe('simple sidebar usage (without using the reviewers panel)', () => {
+        it('sends the "simple sidebar" tracking event when reviewers are added', async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              users: [
+                createMockUser(),
+                createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+              ],
+              usage: 'simple',
+            },
+          });
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('select', 'bob');
+          findDropdown().vm.$emit('hidden');
+
+          await waitForPromises();
+
+          expect(trackEventSpy).toHaveBeenCalledWith(
+            'user_requests_review_from_mr_simple_sidebar',
+            {},
+            undefined,
+          );
+        });
+
+        it('does not send the "simple sidebar" tracking event when reviewers are removed', async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              users: [
+                createMockUser(),
+                createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+              ],
+              selectedReviewers: [createMockUser()],
+              usage: 'simple',
+            },
+          });
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('select', []);
+          findDropdown().vm.$emit('hidden');
+
+          await waitForPromises();
+
+          expect(trackEventSpy).not.toHaveBeenCalledWith(
+            'user_requests_review_from_mr_simple_sidebar',
+            {},
+            undefined,
+          );
+        });
+
+        it('tracks reviewer removal', async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              users: [
+                createMockUser(),
+                createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+              ],
+              selectedReviewers: [
+                createMockUser(),
+                createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+              ],
+              usage: 'simple',
+            },
+          });
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('select', ['root']);
+          findDropdown().vm.$emit('hidden');
+
+          await waitForPromises();
+
+          expect(trackEventSpy).toHaveBeenCalledWith(
+            'reviewer_removed_from_mr',
+            {
+              via: 'ui_simple',
+            },
+            undefined,
+          );
+        });
+      });
+
+      it('tracks reviewer removal events', async () => {
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {
+            users: [createMockUser(), createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' })],
+            selectedReviewers: [
+              createMockUser(),
+              createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+            ],
+          },
+        });
+
+        await waitForPromises();
+
+        findDropdown().vm.$emit('select', ['root']);
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(trackEventSpy).toHaveBeenCalledWith(
+          'reviewer_removed_from_mr',
+          {
+            via: 'ui_complex',
+          },
+          undefined,
+        );
+      });
+
+      it('tracks multiple reviewer removals', async () => {
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {
+            users: [createMockUser(), createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' })],
+            selectedReviewers: [
+              createMockUser(),
+              createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+            ],
+          },
+        });
+
+        await waitForPromises();
+
+        findDropdown().vm.$emit('select', []);
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(trackEventSpy).toHaveBeenCalledTimes(2);
+        expect(trackEventSpy).toHaveBeenCalledWith(
+          'reviewer_removed_from_mr',
+          {
+            via: 'ui_complex',
+          },
+          undefined,
+        );
+      });
+
+      it('does not track removal events when no reviewers are removed', async () => {
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {
+            users: [createMockUser(), createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' })],
+            selectedReviewers: [createMockUser()],
+          },
+        });
+
+        await waitForPromises();
+
+        findDropdown().vm.$emit('select', ['root']);
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(trackEventSpy).not.toHaveBeenCalledWith(
+          'reviewer_removed_from_mr',
+          expect.anything(),
+          undefined,
+        );
+      });
+
+      describe('"suggested" historical position', () => {
+        it('reports the correct prior suggested position', async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              selectedReviewers: [],
+            },
+          });
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('shown');
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('select', ['root']);
+          findDropdown().vm.$emit('hidden');
+
+          await waitForPromises();
+
+          expect(trackEventSpy).toHaveBeenCalledWith(
+            'user_selects_reviewer_from_mr_sidebar',
+            {
+              value: 1,
+              suggested_position: 1,
+              selectable_reviewers_count: 2,
+            },
+            undefined,
+          );
+        });
+
+        it('reports the correct prior suggested position - discounting already selected reviewers', async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              selectedReviewers: [createMockUser()],
+            },
+          });
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('shown');
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('select', ['bob']);
+          findDropdown().vm.$emit('hidden');
+
+          await waitForPromises();
+
+          expect(trackEventSpy).toHaveBeenCalledWith(
+            'user_selects_reviewer_from_mr_sidebar',
+            {
+              value: 1,
+              suggested_position: 1,
+              selectable_reviewers_count: 1,
+            },
+            undefined,
+          );
+        });
+
+        it("reports 0 as the prior suggested position of the reviewer if they weren't in the initial suggested list", async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              selectedReviewers: [],
+            },
+          });
+
+          await waitForPromises();
+
+          findDropdown().vm.$emit('shown');
+          await waitForPromises();
+
+          autocompleteUsersMock.mockReset();
+          autocompleteUsersMock.mockResolvedValue({
+            data: {
+              namespace: {
+                id: 1,
+                users: [createMockUser({ id: 3, name: 'Friend', username: 'coolguy' })],
+              },
+            },
+          });
+          findDropdown().vm.$emit('search', 'coolguy');
+          jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+          await waitForPromises();
+
+          findDropdown().vm.$emit('select', ['coolguy']);
+          findDropdown().vm.$emit('hidden');
+
+          await waitForPromises();
+
+          expect(trackEventSpy).toHaveBeenCalledWith(
+            'user_selects_reviewer_from_mr_sidebar_after_search',
+            {
+              value: 1,
+              suggested_position: 0,
+              selectable_reviewers_count: 1,
+            },
+            undefined,
+          );
+        });
+      });
+    });
+
+    describe('multipleSelectionEnabled prop', () => {
+      describe('when multipleSelectionEnabled is false (default)', () => {
+        beforeEach(async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: { selectedReviewers: [createMockUser()] },
+          });
+          await waitForPromises();
+        });
+
+        it('sets multiple prop to false on listbox', () => {
+          expect(findDropdown().props('multiple')).toBe(false);
+        });
+
+        it('normalizes selected reviewers to a single string value', () => {
+          expect(findDropdown().props('selected')).toBe('root');
+        });
+
+        it('shows "Unassign" as reset button label', () => {
+          expect(findDropdown().props('resetButtonLabel')).toBe('Unassign');
+        });
+      });
+
+      describe('when multipleSelectionEnabled is true', () => {
+        beforeEach(async () => {
+          createComponent({
+            adminMergeRequest: true,
+            propsData: {
+              selectedReviewers: [createMockUser()],
+              multipleSelectionEnabled: true,
+            },
+          });
+          await waitForPromises();
+        });
+
+        it('sets multiple prop to true on listbox', () => {
+          expect(findDropdown().props('multiple')).toBe(true);
+        });
+
+        it('normalizes selected reviewers to an array', () => {
+          expect(findDropdown().props('selected')).toEqual(['root']);
+        });
+
+        it('shows "Unassign all" as reset button label', () => {
+          expect(findDropdown().props('resetButtonLabel')).toBe('Unassign all');
+        });
+      });
+    });
+
+    describe('compositeIdentityEnforced badge', () => {
+      it('renders AI badge for users with compositeIdentityEnforced', async () => {
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {},
+          customUsers: [
+            createMockUser({ id: 1, compositeIdentityEnforced: true }),
+            createMockUser({
+              id: 2,
+              name: 'Test User',
+              username: 'testuser',
+              compositeIdentityEnforced: false,
+            }),
+          ],
+          mountFn: (component, options) =>
+            mount(component, {
+              ...options,
+              stubs: {
+                'gl-emoji': true,
+              },
+            }),
+        });
+
+        await waitForPromises();
+
+        findDropdown().vm.$emit('shown');
+        await waitForPromises();
+        await nextTick();
+
+        // Find the badge in the rendered list of reviewers
+        const badges = wrapper.findAll('[data-testid="reviewer-agent-badge"]');
+        expect(badges).toHaveLength(1);
+        expect(badges.at(0).text()).toBe('AI');
+      });
+    });
+  });
+
+  describe('when users are passed as a prop', () => {
+    beforeEach(async () => {
+      createComponent({
+        adminMergeRequest: true,
+        propsData: { users: [createMockUser()] },
+      });
+
+      await waitForPromises();
+    });
+
+    it('renders users from autocomplete endpoint', () => {
+      expect(findDropdown().props('items')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            options: expect.arrayContaining([
+              expect.objectContaining({
+                secondaryText: '@root',
+                text: 'Administrator',
+                value: 'root',
+                mergeRequestInteraction: expect.objectContaining({ canMerge: true }),
+              }),
+            ]),
+          }),
+        ]),
+      );
+    });
+
+    it('updates reviewers from selected user', async () => {
+      findDropdown().vm.$emit('select', 'root');
+
+      findDropdown().vm.$emit('hidden');
+
+      await waitForPromises();
+
+      expect(setReviewersMutationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewerUsernames: ['root'],
+          projectPath: 'gitlab-org/gitlab',
+          iid: '1',
+        }),
+      );
+    });
+
+    describe('client-side filtering', () => {
+      const twoUsers = [
+        createMockUser(),
+        createMockUser({ id: 2, name: 'Nonadmin', username: 'bob' }),
+      ];
+
+      beforeEach(async () => {
+        createComponent({
+          adminMergeRequest: true,
+          propsData: { users: twoUsers },
+        });
+        await waitForPromises();
+      });
+
+      it('does not call the autocomplete GraphQL query', async () => {
+        findDropdown().vm.$emit('shown');
+        await waitForPromises();
+
+        findDropdown().vm.$emit('search', 'bob');
+        jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+        await waitForPromises();
+
+        expect(autocompleteUsersMock).not.toHaveBeenCalled();
+      });
+
+      it('filters users by name', async () => {
+        findDropdown().vm.$emit('search', 'Nonadmin');
+        jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+        await waitForPromises();
+
+        const items = findDropdown().props('items');
+        const usersGroup = items.find((group) => group.text === 'Users');
+
+        expect(usersGroup.options).toEqual(
+          expect.arrayContaining([expect.objectContaining({ value: 'bob' })]),
+        );
+        expect(usersGroup.options).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ value: 'root' })]),
+        );
+      });
+
+      it('filters users by username', async () => {
+        findDropdown().vm.$emit('search', 'root');
+        jest.advanceTimersByTime(DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+        await waitForPromises();
+
+        const items = findDropdown().props('items');
+        const usersGroup = items.find((group) => group.text === 'Users');
+
+        expect(usersGroup.options).toEqual(
+          expect.arrayContaining([expect.objectContaining({ value: 'root' })]),
+        );
+        expect(usersGroup.options).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ value: 'bob' })]),
+        );
+      });
+
+      it('returns all users when search is empty', async () => {
+        findDropdown().vm.$emit('shown');
+        await waitForPromises();
+
+        const items = findDropdown().props('items');
+        const usersGroup = items.find((group) => group.text === 'Users');
+
+        expect(usersGroup.options).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ value: 'root' }),
+            expect.objectContaining({ value: 'bob' }),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('when reviewer is disabled', () => {
+    describe('and reviewer is not selected', () => {
+      beforeEach(async () => {
+        const disabledUser = createMockUser({
+          id: 2,
+          name: 'Disabled User',
+          username: 'disabled',
+          compositeIdentityEnforced: true,
+          duoStatus: {
+            disabled: true,
+            disabledReason: 'Out of credits',
+          },
+        });
+
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {
+            selectedReviewers: [],
+            multipleSelectionEnabled: true,
+            users: [createMockUser(), disabledUser],
+          },
+        });
+        await waitForPromises();
+      });
+
+      it('renders disabled reviewer with disabledReason instead of username', () => {
+        const items = findDropdown().props('items');
+        const usersGroup = items.find((group) => group.text === 'Users');
+        const disabledReviewer = usersGroup.options.find((u) => u.username === 'disabled');
+
+        expect(disabledReviewer).toMatchObject({
+          isDisabled: true,
+          disabledReason: 'Out of credits',
+        });
+      });
+
+      it('prevents disabled reviewer from being selected', async () => {
+        findDropdown().vm.$emit('select', ['disabled']);
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(setReviewersMutationMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reviewerUsernames: [],
+            projectPath: 'gitlab-org/gitlab',
+            iid: '1',
+          }),
+        );
+      });
+    });
+
+    describe('and reviewer is already selected', () => {
+      beforeEach(async () => {
+        const disabledUser = createMockUser({
+          id: 2,
+          name: 'Disabled User',
+          username: 'disabled',
+          duoStatus: {
+            disabled: true,
+            disabledReason: 'Out of credits',
+          },
+        });
+
+        createComponent({
+          adminMergeRequest: true,
+          propsData: {
+            selectedReviewers: [disabledUser],
+            eligibleReviewers: [disabledUser],
+          },
+          customUsers: [createMockUser(), disabledUser],
+        });
+        await waitForPromises();
+      });
+
+      it('allows disabled reviewer to be removed', async () => {
+        findDropdown().vm.$emit('select', []);
+        findDropdown().vm.$emit('hidden');
+
+        await waitForPromises();
+
+        expect(setReviewersMutationMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reviewerUsernames: [],
+            projectPath: 'gitlab-org/gitlab',
+            iid: '1',
+          }),
+        );
+      });
+    });
+  });
+});

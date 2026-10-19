@@ -1,0 +1,17 @@
+# @feature_category: continuous_integration
+#import "~/ci/common/graphql/fragments/pipeline_downstream_list_item.fragment.graphql"
+
+query getPipelinesDownstream($fullPath: ID!, $mergeRequestIid: String!, $ids: [ID!]) {
+  project(fullPath: $fullPath) {
+    id
+    mergeRequest(iid: $mergeRequestIid) {
+      id
+      pipelines(ids: $ids) {
+        nodes {
+          id
+          ...PipelineDownstreamListItem
+        }
+      }
+    }
+  }
+}

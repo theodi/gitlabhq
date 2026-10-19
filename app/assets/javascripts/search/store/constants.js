@@ -1,0 +1,88 @@
+import { s__ } from '~/locale';
+import { WIKI_ICON } from '~/wikis/constants';
+import {
+  CONFIDENTAL_FILTER_PARAM,
+  INCLUDE_ARCHIVED_FILTER_PARAM,
+  LABEL_FILTER_PARAM,
+  EXCLUDE_FORKS_FILTER_PARAM,
+  LANGUAGE_FILTER_PARAM,
+  SOURCE_BRANCH_PARAM,
+  NOT_SOURCE_BRANCH_PARAM,
+  TARGET_BRANCH_PARAM,
+  NOT_TARGET_BRANCH_PARAM,
+  STATE_FILTER_PARAM,
+  AUTHOR_PARAM,
+  NOT_AUTHOR_PARAM,
+  WORK_ITEM_TYPE_FILTER_PARAM,
+} from '~/search/sidebar/constants';
+
+export const MAX_FREQUENT_ITEMS = 5;
+
+export const MAX_FREQUENCY = 5;
+
+export const GROUPS_LOCAL_STORAGE_KEY = 'global-search-frequent-groups';
+
+export const PROJECTS_LOCAL_STORAGE_KEY = 'global-search-frequent-projects';
+
+export const SIDEBAR_PARAMS = [
+  WORK_ITEM_TYPE_FILTER_PARAM,
+  STATE_FILTER_PARAM,
+  CONFIDENTAL_FILTER_PARAM,
+  LANGUAGE_FILTER_PARAM,
+  LABEL_FILTER_PARAM,
+  INCLUDE_ARCHIVED_FILTER_PARAM,
+  EXCLUDE_FORKS_FILTER_PARAM,
+  SOURCE_BRANCH_PARAM,
+  NOT_SOURCE_BRANCH_PARAM,
+  TARGET_BRANCH_PARAM,
+  NOT_TARGET_BRANCH_PARAM,
+  AUTHOR_PARAM,
+  NOT_AUTHOR_PARAM,
+];
+
+export const REGEX_PARAM = 'regex';
+
+export const NUMBER_FORMATING_OPTIONS = { notation: 'compact', compactDisplay: 'short' };
+
+export const ICON_MAP = {
+  blobs: 'code',
+  issues: 'issues',
+  work_items: 'work-items',
+  epics: 'epic',
+  merge_requests: 'merge-request',
+  commits: 'commit',
+  notes: 'comments',
+  milestones: 'milestone',
+  users: 'users',
+  projects: 'project',
+  groups: 'group',
+  wiki_blobs: WIKI_ICON,
+  snippet_titles: 'snippet',
+};
+
+export const SCOPE_NAVIGATION_MAP = {
+  blobs: s__('GlobalSearch|Code'),
+  issues: s__('GlobalSearch|Issues'),
+  work_items: s__('GlobalSearch|Work items'),
+  epics: s__('GlobalSearch|Epics'),
+  merge_requests: s__('GlobalSearch|Merge request'),
+  commits: s__('GlobalSearch|Commits'),
+  notes: s__('GlobalSearch|Comments'),
+  milestones: s__('GlobalSearch|Milestones'),
+  users: s__('GlobalSearch|Users'),
+  projects: s__('GlobalSearch|Projects'),
+  groups: s__('GlobalSearch|Groups'),
+  wiki_blobs: s__('GlobalSearch|Wiki'),
+  snippet_titles: s__('GlobalSearch|Snippets'),
+};
+
+export const ZOEKT_SEARCH_TYPE = 'zoekt';
+export const ADVANCED_SEARCH_TYPE = 'advanced';
+export const BASIC_SEARCH_TYPE = 'basic';
+
+export const SEARCH_LEVEL_GLOBAL = 'global';
+export const SEARCH_LEVEL_PROJECT = 'project';
+export const SEARCH_LEVEL_GROUP = 'group';
+
+export const LS_REGEX_HANDLE = `${REGEX_PARAM}_advanced_search`;
+export const SEARCH_WINDOW_TITLE = `${s__('GlobalSearch|Search')} · GitLab`;

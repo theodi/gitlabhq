@@ -1,0 +1,57 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Timelogs (GraphQL fixtures)', feature_category: :team_planning do
+  describe GraphQL::Query, type: :request do
+    include ApiHelpers
+    include GraphqlHelpers
+    include JavaScriptFixturesHelpers
+
+    let_it_be(:developer, freeze: false) { create(:user) }
+
+    context 'for time tracking timelogs' do
+      let_it_be(:project, freeze: false) { create(:project_empty_repo, :public) }
+      let_it_be(:issue, freeze: false) { create(:issue, project: project) }
+
+      let(:query_path) { 'time_tracking/components/queries/get_timelogs.query.graphql' }
+      let(:query) { get_graphql_query_as_string(query_path) }
+
+      before_all do
+        project.add_developer(developer)
+      end
+
+      it "graphql/get_timelogs_empty_response.json" do
+        post_graphql(query, current_user: developer, variables: { username: developer.username })
+
+        expect_graphql_errors_to_be_empty
+      end
+
+      context 'with 20 or less timelogs' do
+        let_it_be(:timelogs, freeze: false) do
+          create_list(:timelog, 6, user: developer, issue: issue, time_spent: 4 * 60 * 60)
+        end
+
+        it "graphql/get_non_paginated_timelogs_response.json" do
+          post_graphql(query, current_user: developer, variables: { username: developer.username })
+
+          expect_graphql_errors_to_be_empty
+        end
+      end
+
+      context 'with more timelogs than the requested page size' do
+        let_it_be(:timelogs, freeze: false) do
+          # 4 is the minimal count that exceeds the `first: 3` page size requested below,
+          # so the response has `hasNextPage: true` and the fixture reflects a paginated result.
+          create_list(:timelog, 4, user: developer, issue: issue, time_spent: 4 * 60 * 60)
+        end
+
+        it "graphql/get_paginated_timelogs_response.json" do
+          post_graphql(query, current_user: developer, variables: { username: developer.username, first: 3 })
+
+          expect_graphql_errors_to_be_empty
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,133 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Mcp::Tools::WorkItems::GetWorkItemTypesTool, feature_category: :mcp_server do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:group) { create(:group, :public) }
+  let_it_be(:project) { create(:project, :public, group: group) }
+
+  let(:params) { { project_id: project.id.to_s } }
+  let(:tool) { described_class.new(current_user: user, params: params) }
+
+  before_all do
+    project.add_developer(user)
+    group.add_developer(user)
+  end
+
+  describe 'versioning' do
+    it 'registers version using VERSIONS constant' do
+      expect(tool.version).to eq(Mcp::Tools::Concerns::Constants::VERSIONS[:v0_1_0])
+    end
+
+    it 'has correct operation name for version 0.1.0' do
+      expect(tool.operation_name).to eq('namespace')
+    end
+
+    it 'has correct GraphQL operation for version 0.1.0' do
+      operation = tool.graphql_operation
+
+      expect(operation).to include('query getNamespaceWorkItemTypes')
+      expect(operation).to include('workItemTypes')
+    end
+  end
+
+  describe '#build_variables' do
+    context 'when identified by project_id' do
+      it 'resolves the project full_path' do
+        expect(tool.build_variables).to eq(fullPath: project.full_path)
+      end
+    end
+
+    context 'when identified by group_id' do
+      let(:params) { { group_id: group.id.to_s } }
+
+      it 'resolves the group full_path' do
+        expect(tool.build_variables).to eq(fullPath: group.full_path)
+      end
+    end
+
+    context 'when identified by URL pointing at a project' do
+      let(:params) { { url: "https://gitlab.com/#{project.full_path}" } }
+
+      it 'resolves the project full_path' do
+        expect(tool.build_variables).to eq(fullPath: project.full_path)
+      end
+    end
+
+    context 'when neither project_id nor group_id provided' do
+      let(:params) { {} }
+
+      it 'raises ArgumentError' do
+        expect { tool.build_variables }
+          .to raise_error(ArgumentError, /Must provide either project_id or group_id/)
+      end
+    end
+
+    context 'when user lacks access' do
+      let_it_be(:private_project) { create(:project, :private) }
+      let(:params) { { project_id: private_project.id.to_s } }
+
+      it 'raises a uniform not-found error indistinguishable from a missing project' do
+        expect { tool.build_variables }.to raise_error(StandardError, /not found or inaccessible/)
+      end
+    end
+  end
+
+  describe 'integration' do
+    it 'executes the query and returns work item types' do
+      result = tool.execute
+
+      expect(result[:isError]).to be(false)
+      expect(result[:structuredContent].keys).to match_array(%w[workItemTypes])
+      types = result[:structuredContent]['workItemTypes']
+      expect(types).to be_an(Array)
+      expect(types).not_to be_empty
+
+      first_type = types.first
+      expect(first_type.keys).to match_array(%w[id name iconName widgetDefinitions])
+      expect(first_type['widgetDefinitions']).to be_an(Array)
+      expect(first_type['widgetDefinitions'].first.keys).to match_array(%w[type])
+    end
+
+    it 'includes the system-defined Issue type' do
+      result = tool.execute
+
+      type_names = result[:structuredContent]['workItemTypes'].pluck('name')
+      expect(type_names).to include('Issue')
+    end
+  end
+
+  describe '#process_result' do
+    context 'when the GraphQL response contains errors' do
+      it 'returns the error response from the parent process_result without further processing' do
+        graphql_error_result = {
+          'errors' => [{ 'message' => 'Something went wrong' }]
+        }
+
+        allow(GitlabSchema).to receive(:execute).and_return(graphql_error_result)
+
+        result = tool.execute
+
+        expect(result[:isError]).to be(true)
+        expect(result[:content].first[:text]).to include('Something went wrong')
+      end
+    end
+
+    context 'when the resolved payload carries no workItemTypes key' do
+      it 'reports the failure without a category' do
+        namespace_without_types = {
+          'data' => { 'namespace' => { 'id' => 'gid://gitlab/Group/1' } }
+        }
+
+        allow(GitlabSchema).to receive(:execute).and_return(namespace_without_types)
+
+        result = tool.execute
+
+        expect(result[:isError]).to be(true)
+        expect(Mcp::Tools::Base::Response.error_reason(result)).to eq(:error)
+        expect(result[:content].first[:text]).to eq('Work item types not found or inaccessible')
+      end
+    end
+  end
+end

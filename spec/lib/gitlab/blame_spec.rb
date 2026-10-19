@@ -1,0 +1,163 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Blame, feature_category: :source_code_management do
+  let_it_be(:project) { create(:project, :repository) }
+
+  let(:path) { 'files/ruby/popen.rb' }
+  let(:commit) { project.commit('master') }
+  let(:blob) { project.repository.blob_at(commit.id, path) }
+  let(:range) { nil }
+  let(:ignore_revs) { nil }
+
+  subject(:blame) { described_class.new(blob, commit, range: range, ignore_revs: ignore_revs) }
+
+  describe '#first_line' do
+    subject { blame.first_line }
+
+    it { is_expected.to eq(1) }
+
+    context 'with a range' do
+      let(:range) { 2..3 }
+
+      it { is_expected.to eq(range.first) }
+    end
+  end
+
+  describe "#groups" do
+    let(:highlighted) { false }
+
+    subject(:groups) { blame.groups(highlight: highlighted) }
+
+    it 'groups lines properly' do
+      expect(groups.count).to eq(18)
+      expect(groups[0][:commit].sha).to eq('913c66a37b4a45b9769037c55c2d238bd0942d2e')
+      expect(groups[0][:lines]).to eq(["require 'fileutils'", "require 'open3'", ""])
+      expect(groups[0][:span]).to eq(3)
+      expect(groups[0][:lineno]).to eq(1)
+
+      expect(groups[1][:commit].sha).to eq('874797c3a73b60d2187ed6e2fcabd289ff75171e')
+      expect(groups[1][:lines]).to eq(["module Popen", "  extend self"])
+      expect(groups[1][:span]).to eq(2)
+      expect(groups[1][:lineno]).to eq(4)
+
+      expect(groups[-1][:commit].sha).to eq('913c66a37b4a45b9769037c55c2d238bd0942d2e')
+      expect(groups[-1][:lines]).to eq(["  end", "end"])
+      expect(groups[-1][:span]).to eq(2)
+      expect(groups[-1][:lineno]).to eq(36)
+    end
+
+    context 'with a range 1..5' do
+      let(:range) { 1..5 }
+
+      it 'returns the correct lines' do
+        expect(groups.count).to eq(2)
+        expect(groups[0][:lines]).to eq(["require 'fileutils'", "require 'open3'", ""])
+        expect(groups[1][:lines]).to eq(['module Popen', '  extend self'])
+      end
+
+      context 'with highlighted lines' do
+        let(:highlighted) { true }
+
+        it 'returns the correct lines' do
+          expect(groups.count).to eq(2)
+          expect(groups[0][:lines][0]).to match(/LC1.*fileutils/)
+          expect(groups[0][:lines][1]).to match(/LC2.*open3/)
+          expect(groups[0][:lines][2]).to eq("<span id=\"LC3\" class=\"line\" data-lang=\"ruby\"></span>\n")
+          expect(groups[1][:lines][0]).to match(/LC4.*Popen/)
+          expect(groups[1][:lines][1]).to match(/LC5.*extend/)
+        end
+
+        context 'when highlighed lines are misaligned' do
+          let(:raw_blob) { Gitlab::Git::Blob.new(data: "Test\r\nopen3", path: path, size: 6) }
+          let(:blob) { Blob.new(raw_blob) }
+
+          it 'returns the correct lines' do
+            expect(groups.count).to eq(2)
+            expect(groups[0][:lines][0]).to match(/LC1.*Test/)
+            expect(groups[0][:lines][1]).to match(/LC2.*open3/)
+          end
+        end
+      end
+    end
+
+    context 'with a range 2..4' do
+      let(:range) { 2..4 }
+
+      it 'returns the correct lines' do
+        expect(groups.count).to eq(2)
+        expect(groups[0][:lines]).to eq(["require 'open3'", ""])
+        expect(groups[1][:lines]).to eq(['module Popen'])
+      end
+
+      context 'with highlighted lines' do
+        let(:highlighted) { true }
+
+        it 'returns the correct lines' do
+          expect(groups.count).to eq(2)
+          expect(groups[0][:lines][0]).to match(/LC2.*open3/)
+          expect(groups[0][:lines][1]).to eq("<span id=\"LC3\" class=\"line\" data-lang=\"ruby\"></span>\n")
+          expect(groups[1][:lines][0]).to match(/LC4.*Popen/)
+        end
+      end
+    end
+
+    context 'renamed file' do
+      let(:path) { 'files/plain_text/renamed' }
+      let(:commit) { project.commit('blame-on-renamed') }
+
+      it 'adds previous path' do
+        expect(groups[0][:previous_path]).to be_nil
+        expect(groups[0][:lines]).to match_array(['Initial commit', 'Initial commit'])
+
+        expect(groups[1][:previous_path]).to eq('files/plain_text/initial-commit')
+        expect(groups[1][:lines]).to match_array(['Renamed as "filename"'])
+      end
+    end
+
+    context 'with ignore_revs' do
+      let(:ignore_revs) { true }
+      let(:git_blame_double) { instance_double(Gitlab::Git::Blame, each: [].enum_for(:each)) }
+
+      it 'requests for a blame with the default ignore revs file' do
+        expect(Gitlab::Git::Blame).to receive(:new).with(
+          project.repository,
+          commit.id,
+          blob.path,
+          range: range,
+          ignore_revisions_blob: 'refs/heads/master:.git-blame-ignore-revs'
+        ).and_return(git_blame_double)
+
+        groups
+      end
+    end
+
+    context 'when git blame emits consecutive hunks for the same commit' do
+      # git blame --porcelain can emit back-to-back hunks for the
+      # same commit. The merged group's :span must reflect the total line count,
+      # not just the first hunk's span.
+      it 'accumulates :span across all merged hunks' do
+        same_commit = project.commit('master')
+        # Tuples: (commit, line, previous_path, span). Only hunk leaders carry span.
+        tuples = [
+          [same_commit, 'a', nil, 1],   # hunk 1 leader: 1 line
+          [same_commit, 'b', nil, 3],   # hunk 2 leader: 3 lines
+          [same_commit, 'c', nil, 0],
+          [same_commit, 'd', nil, 0]
+        ]
+        allow(Gitlab::Git::Blame).to receive(:new)
+          .and_return(instance_double(Gitlab::Git::Blame, each: tuples.each))
+
+        expect(groups.first[:span]).to eq(4)
+      end
+    end
+
+    describe 'wrapped_commit caching' do
+      it 'clears the cache after building the groups' do
+        expect(blame).to receive(:clear_memoization).with(:wrapped_commit)
+        groups
+      end
+    end
+  end
+end

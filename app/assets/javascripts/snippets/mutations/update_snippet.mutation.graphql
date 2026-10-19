@@ -1,0 +1,9 @@
+mutation UpdateSnippet($input: UpdateSnippetInput!) {
+  updateSnippet(input: $input) {
+    errors
+    snippet {
+      id
+      webUrl
+    }
+  }
+}

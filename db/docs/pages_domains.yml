@@ -1,0 +1,13 @@
+---
+table_name: pages_domains
+classes:
+- PagesDomain
+feature_categories:
+- pages
+description: Store Pages domain, certificate and encryption meta data.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/173
+milestone: '8.5'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

@@ -1,0 +1,56 @@
+$whats-new-drawer-size: 500px;
+
+.whats-new-drawer {
+  box-shadow: none;
+
+  // setting custom width above mobile breakpoint
+  @include gl-media-breakpoint-up(md) {
+    width: $whats-new-drawer-size;
+  }
+
+  /* stylelint-disable gitlab/no-gl-class */
+  .gl-infinite-scroll-legend {
+    display: none;
+  }
+
+  .gl-tabs {
+    overflow-y: auto;
+  }
+
+  .gl-tabs-nav {
+    flex-wrap: nowrap;
+    overflow-x: scroll;
+    align-items: stretch;
+
+    .nav-item {
+      flex-shrink: 0;
+
+      a {
+        height: 100%;
+        line-height: 1.5;
+      }
+    }
+  }
+
+  .gl-spinner-container {
+    width: 100%;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  /* stylelint-enable gitlab/no-gl-class */
+}
+
+h4.whats-new-release-heading:not(:first-of-type) {
+  @apply gl-mt-6;
+}
+
+.whats-new-modal-backdrop {
+  z-index: 699;
+}
+
+.whats-new-article-drawer {
+  @include gl-media-breakpoint-up(md) {
+    width: $whats-new-drawer-size;
+  }
+}

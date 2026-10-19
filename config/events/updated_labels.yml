@@ -1,0 +1,12 @@
+---
+description: Tracks updates to the labels of work items.
+action: updated_labels
+product_group: work_items
+product_categories:
+- team_planning
+milestone: '16.10'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/141371
+tiers:
+  - free
+  - premium
+  - ultimate

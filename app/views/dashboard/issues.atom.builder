@@ -1,13 +1,11 @@
-xml.instruct!
-xml.feed "xmlns" => "http://www.w3.org/2005/Atom", "xmlns:media" => "http://search.yahoo.com/mrss/" do
-  xml.title   "#{current_user.name} issues"
-  xml.link    href: issues_dashboard_url(format: :atom, private_token: current_user.try(:private_token)), rel: "self", type: "application/atom+xml"
-  xml.link    href: issues_dashboard_url, rel: "alternate", type: "text/html"
-  xml.id      issues_dashboard_url
-  xml.updated @issues.first.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if @issues.any?
+# frozen_string_literal: true
 
-  @issues.each do |issue|
-    issue_to_atom(xml, issue)
-  end
-end
+# rubocop: disable CodeReuse/ActiveRecord
+xml.title   "#{current_user.name} issues"
+xml.link    href: url_for(safe_params.merge(only_path: false)), rel: "self", type: "application/atom+xml"
+xml.link    href: issues_dashboard_url, rel: "alternate", type: "text/html"
+xml.id      issues_dashboard_url
+xml.updated @issues.first.updated_at.xmlschema if @issues.reorder(nil).any?
 
+xml << render(partial: 'issues/issue', collection: @issues) if @issues.reorder(nil).any?
+# rubocop: enable CodeReuse/ActiveRecord

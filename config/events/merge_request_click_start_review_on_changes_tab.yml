@@ -1,0 +1,17 @@
+---
+description: User clicks the "Start a review" button on the Merge Request Changes tab
+internal_events: true
+action: merge_request_click_start_review_on_changes_tab
+identifiers:
+- project
+- namespace
+- user
+product_group: code_review
+product_categories:
+- code_review_workflow
+milestone: '16.9'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/141911
+tiers:
+- free
+- premium
+- ultimate

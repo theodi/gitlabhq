@@ -1,56 +1,125 @@
+# frozen_string_literal: true
+
 module Gitlab
   class ContributionsCalendar
-    attr_reader :timestamps, :projects, :user
+    include TimeZoneHelper
+    include ::Gitlab::Utils::StrongMemoize
 
-    def initialize(projects, user)
-      @projects = projects
-      @user = user
+    attr_reader :contributor
+    attr_reader :current_user
+    attr_reader :groups
+    attr_reader :projects
+
+    def initialize(contributor, current_user = nil)
+      @contributor = contributor
+      @contributor_time_instance = local_timezone_instance(contributor.timezone).now
+      @current_user = current_user
+      @groups = [] # Overridden in EE
+      @projects = ContributedProjectsFinder.new(
+        user: @contributor,
+        current_user: current_user,
+        params: {
+          ignore_visibility: @contributor.include_private_contributions?
+        }
+      ).execute
     end
 
-    def timestamps
-      return @timestamps if @timestamps.present?
+    def activity_dates
+      return {} if groups.blank? && projects.blank?
 
-      @timestamps = {}
-      date_from = 1.year.ago
-      date_to = Date.today
+      start_time = @contributor_time_instance.years_ago(1).beginning_of_day
+      end_time = @contributor_time_instance.end_of_day
+      timezone_name = @contributor_time_instance.time_zone.tzinfo.identifier
 
-      events = Event.reorder(nil).contributions.where(author_id: user.id).
-        where("created_at > ?", date_from).where(project_id: projects).
-        group('date(created_at)').
-        select('date(created_at) as date, count(id) as total_amount').
-        map(&:attributes)
-
-      dates = (1.year.ago.to_date..(Date.today + 1.day)).to_a
-
-      dates.each do |date|
-        date_id = date.to_time.to_i.to_s
-        @timestamps[date_id] = 0
-        day_events = events.find { |day_events| day_events["date"] == date }
-
-        if day_events
-          @timestamps[date_id] = day_events["total_amount"]
-        end
-      end
-
-      @timestamps
+      contributions_between(start_time, end_time).count_by_dates_in_timezone(timezone_name)
     end
 
     def events_by_date(date)
-      events = Event.contributions.where(author_id: user.id).
-        where("created_at > ? AND created_at < ?", date.beginning_of_day, date.end_of_day).
-        where(project_id: projects)
+      return Event.none unless can_read_cross_project?
 
-      events.select do |event|
-        event.push? || event.issue? || event.merge_request?
+      date_in_time_zone = date.in_time_zone(@contributor_time_instance.time_zone)
+
+      contributions_between(date_in_time_zone.beginning_of_day, date_in_time_zone.end_of_day).with_associations
+    end
+
+    private
+
+    def contributions_between(start_time, end_time)
+      Event.from_union(
+        collect_events_between(start_time, end_time),
+        remove_duplicates: false
+      )
+    end
+
+    def collect_events_between(start_time, end_time)
+      # Can't use Event.contributions here because we need to check 3 different
+      # project_features for the (currently) 4 different contribution types
+      repo_events =
+        project_events_created_between(start_time, end_time, features: :repository)
+          .for_action(:pushed)
+
+      issue_events =
+        project_events_created_between(start_time, end_time, features: :issues)
+          .for_issue
+          .for_action(%i[created closed])
+
+      design_events =
+        project_events_created_between(start_time, end_time, features: :issues)
+          .for_design
+          .for_action(%i[created updated destroyed])
+
+      mr_events =
+        project_events_created_between(start_time, end_time, features: :merge_requests)
+          .for_merge_request
+          .for_action(%i[merged created closed approved])
+
+      project_note_events =
+        project_events_created_between(start_time, end_time, features: %i[issues merge_requests])
+          .for_action(:commented)
+
+      [repo_events, issue_events, design_events, mr_events, project_note_events]
+    end
+
+    def can_read_cross_project?
+      Ability.allowed?(current_user, :read_cross_project)
+    end
+
+    # rubocop: disable CodeReuse/ActiveRecord -- no need to move this to ActiveRecord model
+    def project_events_created_between(start_time, end_time, features:)
+      Array(features).reduce(Event.none) do |events, feature|
+        events.or(contribution_events(start_time, end_time).where(project_id: authed_projects(feature)))
+      end
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
+
+    def authed_projects(feature)
+      strong_memoize("#{feature}_projects") do
+        # no need to check features access of current user, if the contributor opted-in
+        # to show all private events anyway - otherwise they would get filtered out again
+        next contributed_project_ids if contributor.include_private_contributions?
+
+        # rubocop: disable CodeReuse/ActiveRecord -- no need to move this to ActiveRecord model
+        ProjectFeature
+          .with_feature_available_for_user(feature, current_user)
+          .where(project_id: contributed_project_ids)
+          .pluck(:project_id)
+        # rubocop: enable CodeReuse/ActiveRecord
       end
     end
 
-    def starting_year
-      (Time.now - 1.year).strftime("%Y")
+    # rubocop: disable CodeReuse/ActiveRecord -- no need to move this to ActiveRecord model
+    def contributed_project_ids
+      # re-running the contributed projects query in each union is expensive, so
+      # use IN(project_ids...) instead. It's the intersection of two users so
+      # the list will be (relatively) short
+      @contributed_project_ids ||= projects.distinct.pluck(:id)
     end
+    # rubocop: enable CodeReuse/ActiveRecord
 
-    def starting_month
-      Date.today.strftime("%m").to_i
+    def contribution_events(start_time, end_time)
+      contributor.events.created_between(start_time, end_time)
     end
   end
 end
+
+Gitlab::ContributionsCalendar.prepend_mod

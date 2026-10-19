@@ -1,0 +1,9 @@
+mutation markAsDone($todoId: TodoID!) {
+  toggleStatus: todoMarkDone(input: { id: $todoId }) {
+    todo {
+      id
+      state
+    }
+    errors
+  }
+}

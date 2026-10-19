@@ -1,0 +1,164 @@
+# frozen_string_literal: true
+
+module API
+  module Ci
+    class Variables < ::API::Base
+      include PaginationParams
+
+      before { authenticate! }
+      before { authorize! :admin_cicd_variables, user_project }
+
+      feature_category :pipeline_composition
+
+      helpers ::API::Helpers::VariablesHelpers
+
+      params do
+        requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+      end
+
+      resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc 'List all project variables' do
+          detail 'Lists all variables for a project. Use the `page` and `per_page` pagination parameters to control ' \
+            'the pagination of results.'
+          success Entities::Ci::Variable
+          tags %w[ci_variables]
+        end
+        params do
+          use :pagination
+        end
+        route_setting :authorization, permissions: :read_variable, boundary_type: :project
+        get ':id/variables', urgency: :low do
+          variables = user_project.variables
+
+          audit_all_variables_access(user_project)
+
+          present paginate(variables), with: Entities::Ci::Variable
+        end
+
+        desc 'Retrieve a single variable' do
+          detail 'Retrieves details of a specified variable. If there are multiple variables with the same key, use ' \
+            '`filter` to select the correct `environment_scope`.'
+          success Entities::Ci::Variable
+          failure [{ code: 404, message: 'Variable Not Found' }]
+          tags %w[ci_variables]
+        end
+        params do
+          requires :key, type: String, desc: 'Key of the project variable. Must be 255 characters or fewer and contain only `A-Z`, `a-z`, `0-9`, and `_`.'
+          optional :filter, type: Hash, desc: 'Filter results when multiple variables share the same key.' do
+            optional :environment_scope, type: String, desc: 'Environment scope of the variable.'
+          end
+        end
+        route_setting :authorization, permissions: :read_variable, boundary_type: :project
+        get ':id/variables/:key', urgency: :low do
+          variable = find_variable(user_project, params)
+          not_found!('Variable') unless variable
+
+          audit_single_variable_access(variable, user_project)
+
+          present variable, with: Entities::Ci::Variable
+        end
+
+        desc 'Create a variable' do
+          detail 'Creates a variable. If a variable with the same `key` already exists, the variable must have a ' \
+            'different `environment_scope`. Otherwise, GitLab returns a message similar to: `VARIABLE_NAME has ' \
+            'already been taken`.'
+          success Entities::Ci::Variable
+          failure [{ code: 400, message: '400 Bad Request' }]
+          tags %w[ci_variables]
+        end
+        route_setting :log_safety, { safe: %w[key], unsafe: %w[value] }
+        params do
+          requires :key, type: String, desc: 'Key of the project variable. Must be 255 characters or fewer and contain only `A-Z`, `a-z`, `0-9`, and `_`.'
+          requires :value, type: String, desc: 'Value of the variable.'
+          optional :protected, type: Boolean, desc: 'If `true`, the variable is protected.'
+          optional :masked, type: Boolean, desc: 'If `true`, the variable is masked.'
+          optional :masked_and_hidden, type: Boolean, desc: 'If `true`, the variable is masked and hidden. [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/29674) in GitLab 17.4.'
+          optional :raw, type: Boolean, desc: 'If `true`, the variable is treated as a raw string. If `false`, the value is [expanded](https://docs.gitlab.com/ci/variables/#allow-cicd-variable-expansion).'
+          optional :variable_type, type: String, default: 'env_var', values: ::Ci::Variable.variable_types.keys, desc: 'The type of the variable.'
+          optional :environment_scope, type: String, desc: 'Environment scope of the variable. Defaults to `*`.'
+          optional :description, type: String, desc: 'Description of the variable. Limited to 255 characters.'
+        end
+        route_setting :authorization, permissions: :create_variable, boundary_type: :project
+        post ':id/variables' do
+          variable = ::Ci::ChangeVariableService.new(
+            container: user_project,
+            current_user: current_user,
+            params: { action: :create, variable_params: declared_params(include_missing: false) }
+          ).execute
+
+          if variable.valid?
+            present variable, with: Entities::Ci::Variable
+          else
+            render_validation_error!(variable)
+          end
+        end
+
+        desc 'Update a variable' do
+          detail 'Updates a project variable. If there are multiple variables with the same key, use `filter` to ' \
+            'select the correct `environment_scope`.'
+          success Entities::Ci::Variable
+          failure [{ code: 404, message: 'Variable Not Found' }]
+          tags %w[ci_variables]
+        end
+        route_setting :log_safety, { safe: %w[key], unsafe: %w[value] }
+        params do
+          optional :key, type: String, desc: 'Key of the project variable. Must be 255 characters or fewer and contain only `A-Z`, `a-z`, `0-9`, and `_`.'
+          optional :value, type: String, desc: 'Value of the variable.'
+          optional :protected, type: Boolean, desc: 'If `true`, the variable is protected.'
+          optional :masked, type: Boolean, desc: 'If `true`, the variable is masked.'
+          optional :environment_scope, type: String, desc: 'Environment scope of the variable.'
+          optional :raw, type: Boolean, desc: 'If `true`, the variable is treated as a raw string. If `false`, the value is [expanded](https://docs.gitlab.com/ci/variables/#allow-cicd-variable-expansion).'
+          optional :variable_type, type: String, values: ::Ci::Variable.variable_types.keys, desc: 'The type of the variable. Default: env_var'
+          optional :filter, type: Hash, desc: 'Filter results when multiple variables share the same key.' do
+            optional :environment_scope, type: String, desc: 'Environment scope of the variable.'
+          end
+          optional :description, type: String, desc: 'Description of the variable. Limited to 255 characters.'
+        end
+        route_setting :authorization, permissions: :update_variable, boundary_type: :project
+        put ':id/variables/:key' do
+          variable = find_variable(user_project, params)
+          not_found!('Variable') unless variable
+
+          variable = ::Ci::ChangeVariableService.new(
+            container: user_project,
+            current_user: current_user,
+            params: { action: :update, variable: variable, variable_params: declared_params(include_missing: false).except(:key, :filter) }
+          ).execute
+
+          if variable.valid?
+            present variable, with: Entities::Ci::Variable
+          else
+            render_validation_error!(variable)
+          end
+        end
+
+        desc 'Delete a variable' do
+          detail 'Deletes a project variable. If there are multiple variables with the same key, use `filter` to ' \
+            'select the correct `environment_scope`.'
+          success Entities::Ci::Variable
+          failure [{ code: 404, message: 'Variable Not Found' }]
+          tags %w[ci_variables]
+        end
+        params do
+          requires :key, type: String, desc: 'Key of the project variable. Must be 255 characters or fewer and contain only `A-Z`, `a-z`, `0-9`, and `_`.'
+          optional :filter, type: Hash, desc: 'Filter results when multiple variables share the same key.' do
+            optional :environment_scope, type: String, desc: 'Environment scope of the variable.'
+          end
+        end
+        route_setting :authorization, permissions: :delete_variable, boundary_type: :project
+        delete ':id/variables/:key' do
+          variable = find_variable(user_project, params)
+          not_found!('Variable') unless variable
+
+          ::Ci::ChangeVariableService.new(
+            container: user_project,
+            current_user: current_user,
+            params: { action: :destroy, variable: variable }
+          ).execute
+
+          no_content!
+        end
+      end
+    end
+  end
+end

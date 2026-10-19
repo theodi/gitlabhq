@@ -1,0 +1,184 @@
+<script>
+import { GlBadge, GlButton, GlTab, GlTabs } from '@gitlab/ui';
+// eslint-disable-next-line no-restricted-imports
+import { mapState } from 'vuex';
+import { queryToObject, setUrlParams } from '~/lib/utils/url_utility';
+import { ACTIVE_TAB_QUERY_PARAM_NAME, MEMBERS_TAB_TYPES } from 'ee_else_ce/members/constants';
+import { TABS } from 'ee_else_ce/members/tabs_metadata';
+import MembersApp from './app.vue';
+
+const FETCH_MEMBERS_ACTION = 'fetchMembers';
+
+const countComputed = (state, namespace) => state[namespace]?.pagination?.totalItems || 0;
+
+export default {
+  name: 'MembersTabs',
+  ACTIVE_TAB_QUERY_PARAM_NAME,
+  TABS,
+  components: { MembersApp, GlTabs, GlTab, GlBadge, GlButton },
+  inject: ['canManageMembers', 'canManageAccessRequests', 'canExportMembers', 'exportCsvPath'],
+  data() {
+    return {
+      selectedTabIndex: 0,
+    };
+  },
+  computed: {
+    ...mapState(
+      Object.values(MEMBERS_TAB_TYPES).reduce((getters, memberType) => {
+        return {
+          ...getters,
+          // eslint-disable-next-line @gitlab/require-i18n-strings
+          [`${memberType}Count`](state) {
+            return countComputed(state, memberType);
+          },
+        };
+      }, {}),
+    ),
+    urlParams() {
+      return Object.keys(queryToObject(window.location.search, { gatherArrays: true }));
+    },
+    activeTabIndexCalculatedFromUrlParams() {
+      return this.$options.TABS.findIndex(({ namespace }) => {
+        return this.getTabUrlParams(namespace).some((urlParam) =>
+          this.urlParams.includes(urlParam),
+        );
+      });
+    },
+    shouldShowExportButton() {
+      return this.canExportMembers && !this.tabs[this.selectedTabIndex].hideExportButton;
+    },
+    tabs() {
+      return this.$options.TABS.filter(this.showTab);
+    },
+    selectedTab() {
+      return this.tabs[this.selectedTabIndex];
+    },
+  },
+  watch: {
+    selectedTab: {
+      immediate: true,
+      handler(tab) {
+        this.maybeFetchLazyMembers(tab);
+      },
+    },
+  },
+  methods: {
+    getTabUrlParams(namespace) {
+      const state = this.$store.state[namespace];
+      const urlParams = [];
+
+      if (state?.filteredSearchBar?.searchParam) {
+        urlParams.push(state.filteredSearchBar.searchParam);
+      }
+
+      if (state?.filteredSearchBar?.tokens) {
+        urlParams.push(...state.filteredSearchBar.tokens);
+      }
+
+      return urlParams;
+    },
+    getTabCount({ namespace }) {
+      return this[`${namespace}Count`];
+    },
+    showTab(tab, index) {
+      if (tab.namespace === MEMBERS_TAB_TYPES.user) {
+        return true;
+      }
+
+      const { requiredPermissions = [] } = tab;
+      // `alwaysShow` only applies when the tab has a store module for this mount.
+      // The Direct members tab is only wired up on the project members page, so
+      // this keeps it from surfacing as an empty, data-less tab on the group page
+      // (which shares the same `TABS` array but does not build a `directMembers`
+      // store module).
+      const hasStoreModule = Boolean(this.$store.state[tab.namespace]);
+      const tabCanBeShown =
+        (tab.alwaysShow && hasStoreModule) ||
+        this.getTabCount(tab) > 0 ||
+        this.activeTabIndexCalculatedFromUrlParams === index;
+
+      return (
+        tabCanBeShown && requiredPermissions.every((requiredPermission) => this[requiredPermission])
+      );
+    },
+    tabPath(value) {
+      return setUrlParams({ tab: value }, { clearParams: true });
+    },
+    titleLinkAttrs({ attrs, queryParamValue: value }) {
+      return { ...attrs, href: this.tabPath(value) };
+    },
+    lazyMembersParams(namespace) {
+      // Pass the tab's own search/sort/page params from the URL to the fetch so
+      // reloads with those params (search, pagination) fetch the matching page.
+      const { searchParam } = this.$store.state[namespace]?.filteredSearchBar || {};
+      const { paramName } = this.$store.state[namespace]?.pagination || {};
+      const query = queryToObject(window.location.search);
+
+      return {
+        ...(searchParam && query[searchParam] ? { [searchParam]: query[searchParam] } : {}),
+        ...(query.sort ? { sort: query.sort } : {}),
+        ...(paramName && query[paramName] ? { [paramName]: query[paramName] } : {}),
+        ...(query.max_role ? { max_role: query.max_role } : {}),
+      };
+    },
+    maybeFetchLazyMembers(tab) {
+      if (!tab) {
+        return;
+      }
+
+      const { namespace } = tab;
+      const state = this.$store.state[namespace];
+
+      // Only tabs seeded with a `membersPath` fetch their data lazily. Fetch once
+      // per page load; search/pagination reload the page and re-seed the flag.
+      if (state?.membersPath && !state.loadRequested) {
+        this.$store.dispatch(
+          `${namespace}/${FETCH_MEMBERS_ACTION}`,
+          this.lazyMembersParams(namespace),
+        );
+      }
+    },
+  },
+};
+</script>
+
+<template>
+  <gl-tabs
+    v-model="selectedTabIndex"
+    content-class="gl-py-0 gl-isolation-auto"
+    sync-active-tab-with-query-params
+    :query-param-name="$options.ACTIVE_TAB_QUERY_PARAM_NAME"
+  >
+    <gl-tab
+      v-for="tab in tabs"
+      :key="tab.namespace"
+      :title-link-attributes="titleLinkAttrs(tab)"
+      title-link-class="gl-p-0"
+      :query-param-value="tab.queryParamValue"
+      :lazy="tab.lazy"
+    >
+      <template #title>
+        <span :data-testid="`${tab.namespace}-tab-title`" class="gl-px-4 gl-py-5" @click.stop>
+          {{ tab.title }} <gl-badge class="gl-tab-counter-badge">{{ getTabCount(tab) }}</gl-badge>
+        </span>
+      </template>
+      <component
+        :is="tab.component"
+        v-if="tab.component"
+        :namespace="tab.namespace"
+        :tab-query-param-value="tab.queryParamValue"
+      />
+      <members-app v-else :namespace="tab.namespace" :tab-query-param-value="tab.queryParamValue" />
+    </gl-tab>
+    <template #toolbar-end>
+      <gl-button
+        v-if="shouldShowExportButton"
+        data-event-tracking="click_export_group_members_as_csv"
+        class="gl-ml-auto gl-self-center"
+        :href="exportCsvPath"
+      >
+        {{ __('Export as CSV') }}
+      </gl-button>
+    </template>
+  </gl-tabs>
+</template>

@@ -1,0 +1,1180 @@
+---
+stage: Package
+group: Package Registry
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Maven virtual registry API
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+- Status: Beta
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/161615) in GitLab 17.4 [with a feature flag](../administration/feature_flags/_index.md) named `virtual_registry_maven`. Disabled by default.
+- Feature flag [changed](https://gitlab.com/gitlab-org/gitlab/-/issues/540276) to `maven_virtual_registry` in GitLab 18.1. Disabled by default. Feature flag `virtual_registry_maven` removed.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/issues/540276) from experiment to beta in GitLab 18.1.
+- [Enabled on GitLab.com, GitLab Self-Managed, and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/197432) in GitLab 18.2.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of these endpoints is controlled by a feature flag.
+> For more information, see the history.
+
+Use this API to:
+
+- Create and manage Maven virtual registries.
+- Configure upstream registries.
+- Manage cache entries.
+- Handle package downloads and uploads.
+
+## Manage Maven virtual registries
+
+Use the following endpoints to create and manage Maven virtual registries.
+
+### List all virtual registries
+
+{{< history >}}
+
+- `downloads_count` and `downloaded_at` [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/201790) in GitLab 18.4.
+
+{{< /history >}}
+
+Lists all Maven virtual registries for a specified group.
+
+```plaintext
+GET /groups/:id/-/virtual_registries/packages/maven/registries
+```
+
+Supported attributes:
+
+| Attribute | Type | Required | Description |
+|:----------|:-----|:---------|:------------|
+| `id` | string/integer | yes | The group ID or full group path. Must be a top-level group. |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/groups/5/-/virtual_registries/packages/maven/registries"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 1,
+    "group_id": 5,
+    "name": "my-virtual-registry",
+    "description": "My virtual registry",
+    "created_at": "2024-05-30T12:28:27.855Z",
+    "updated_at": "2024-05-30T12:28:27.855Z"
+  }
+]
+```
+
+### Create a virtual registry
+
+Creates a Maven virtual registry for a specified group.
+
+```plaintext
+POST /groups/:id/-/virtual_registries/packages/maven/registries
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | string/integer | yes | The group ID or full group path. Must be a top-level group. |
+| `name` | string | yes | The name of the virtual registry. |
+| `description` | string | no | The description of the virtual registry. |
+
+Example request:
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --header "Accept: application/json" \
+     --data '{"name": "my-virtual-registry", "description": "My virtual registry"}' \
+     --url "https://gitlab.example.com/api/v4/groups/5/-/virtual_registries/packages/maven/registries"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "group_id": 5,
+  "name": "my-virtual-registry",
+  "description": "My virtual registry",
+  "created_at": "2024-05-30T12:28:27.855Z",
+  "updated_at": "2024-05-30T12:28:27.855Z"
+}
+```
+
+### Retrieve a virtual registry
+
+Retrieves a specified Maven virtual registry.
+
+```plaintext
+GET /virtual_registries/packages/maven/registries/:id
+```
+
+Parameters:
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the Maven virtual registry. |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registries/1"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "group_id": 5,
+  "name": "my-virtual-registry",
+  "description": "My virtual registry",
+  "created_at": "2024-05-30T12:28:27.855Z",
+  "updated_at": "2024-05-30T12:28:27.855Z"
+}
+```
+
+### Update a virtual registry
+
+Updates a specified Maven virtual registry.
+
+```plaintext
+PATCH /virtual_registries/packages/maven/registries/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the Maven virtual registry. |
+| `name` | string | yes | The name of the virtual registry. |
+| `description` | string | no | The description of the virtual registry. |
+
+Example request:
+
+```shell
+curl --request PATCH \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"name": "my-virtual-registry", "description": "My virtual registry"}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registries/1"
+```
+
+If successful, returns a [`200 OK`](rest/troubleshooting.md#status-codes) status code.
+
+### Delete a virtual registry
+
+> [!warning]
+> Deleting a virtual registry also deletes all associated upstream registries that are not shared with other virtual registries, along with their cache entries.
+
+Deletes a specified Maven virtual registry.
+
+```plaintext
+DELETE /virtual_registries/packages/maven/registries/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the Maven virtual registry. |
+
+Example request:
+
+```shell
+curl --request DELETE \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registries/1"
+```
+
+If successful, returns a [`204 No Content`](rest/troubleshooting.md#status-codes) status code.
+
+### Delete cache entries for a virtual registry
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/538327) in GitLab 18.2 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Enabled by default.
+
+{{< /history >}}
+
+Schedules all cache entries for deletion in all exclusive upstream registries for a Maven virtual registry. Cache entries are not scheduled for deletion for upstream registries that are associated with other virtual registries.
+
+```plaintext
+DELETE /virtual_registries/packages/maven/registries/:id/cache
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the Maven virtual registry. |
+
+Example request:
+
+```shell
+curl --request DELETE \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registries/1/cache"
+```
+
+If successful, returns a [`204 No Content`](rest/troubleshooting.md#status-codes) status code.
+
+## Manage upstream registries
+
+Use the following endpoints to configure and manage upstream Maven registries.
+
+### List all upstream registries
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/550728) in GitLab 18.3 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Enabled by default.
+- `upstream_name` [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/561675) in GitLab 18.4.
+
+{{< /history >}}
+
+Lists all upstream Maven registries for a specified top-level group.
+
+```plaintext
+GET /groups/:id/-/virtual_registries/packages/maven/upstreams
+```
+
+Supported attributes:
+
+| Attribute | Type | Required | Description |
+|:----------|:-----|:---------|:------------|
+| `id` | string/integer | yes | The group ID or full group path. Must be a top-level group. |
+| `page` | integer | no | The page number. Defaults to 1. |
+| `per_page` | integer | no | The number of items per page. Defaults to 20. |
+| `upstream_name` | string | no | The name of the upstream registry for fuzzy search filtering by name. |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/groups/5/-/virtual_registries/packages/maven/upstreams"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 1,
+    "group_id": 5,
+    "upstream_type": "remote",
+    "url": "https://repo.maven.apache.org/maven2",
+    "name": "Maven Central",
+    "description": "Maven Central repository",
+    "cache_validity_hours": 24,
+    "metadata_cache_validity_hours": 24,
+    "username": "user",
+    "created_at": "2024-05-30T12:28:27.855Z",
+    "updated_at": "2024-05-30T12:28:27.855Z"
+  },
+  {
+    "id": 3,
+    "group_id": 5,
+    "upstream_type": "local",
+    "name": "my-internal-group",
+    "description": null,
+    "local_group_id": 42,
+    "local_project_id": null,
+    "cache_validity_hours": 24,
+    "metadata_cache_validity_hours": 24,
+    "created_at": "2025-02-01T09:00:00.000Z",
+    "updated_at": "2025-02-01T09:00:00.000Z"
+  }
+]
+```
+
+### Test upstream registry connection before creation
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/535637) in GitLab 18.3 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Enabled by default.
+
+{{< /history >}}
+
+Tests the connection to a Maven upstream registry that has not yet been added to the virtual registry. This endpoint validates connectivity and credentials before creating the upstream registry.
+
+```plaintext
+POST /groups/:id/-/virtual_registries/packages/maven/upstreams/test
+```
+
+Supported attributes:
+
+| Attribute | Type | Required | Description |
+|:----------|:-----|:---------|:------------|
+| `id` | string/integer | Yes | The group ID or full group path. Must be a top-level group. |
+| `url` | string | Yes | The URL of the upstream registry. |
+| `password` | string | No | The password of the upstream registry. |
+| `username` | string | No | The username of the upstream registry. |
+
+> [!note]
+> You must include both the `username` and `password` in the request, or neither. If not set, a public (anonymous) request is used to test the connection.
+
+#### Test workflow
+
+The `test` endpoint sends a HEAD request to the provided upstream URL using a test path to validate connectivity and authentication. The response received from the HEAD request is interpreted as follows:
+
+| Upstream Response | Description | Result |
+|:------------------|:--------|:-------|
+| 2XX | Success - upstream accessible | `{ "success": true }` |
+| 404 | Success - upstream accessible, but test artifact not found | `{ "success": true }` |
+| 401 | Authentication failed | `{ "success": false, "result": "Error: 401 - Unauthorized" }` |
+| 403 | Access forbidden | `{ "success": false, "result": "Error: 403 - Forbidden" }` |
+| 5XX | Upstream server error | `{ "success": false, "result": "Error: 5XX - Server Error" }` |
+| Network errors | Connection or timeout issues | `{ "success": false, "result": "Error: Connection timeout" }` |
+
+Example request:
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --url "https://gitlab.example.com/api/v4/groups/5/-/virtual_registries/packages/maven/upstreams/test" \
+     --data '{"url": "https://repo.maven.apache.org/maven2"}'
+```
+
+Example response:
+
+```json
+{
+  "success": true
+}
+```
+
+### List all upstream registries for a virtual registry
+
+Lists all upstream Maven registries for a specified virtual registry.
+
+```plaintext
+GET /virtual_registries/packages/maven/registries/:id/upstreams
+```
+
+Supported attributes:
+
+| Attribute | Type | Required | Description |
+|:----------|:-----|:---------|:------------|
+| `id` | integer | yes | The ID of the Maven virtual registry. |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registries/1/upstreams"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 1,
+    "group_id": 5,
+    "upstream_type": "remote",
+    "url": "https://repo.maven.apache.org/maven2",
+    "name": "Maven Central",
+    "description": "Maven Central repository",
+    "cache_validity_hours": 24,
+    "metadata_cache_validity_hours": 24,
+    "username": "user",
+    "created_at": "2024-05-30T12:28:27.855Z",
+    "updated_at": "2024-05-30T12:28:27.855Z",
+    "registry_upstream": {
+      "id": 1,
+      "registry_id": 1,
+      "position": 1,
+      "local_upstream_id": null
+    }
+  },
+  {
+    "id": 3,
+    "group_id": 5,
+    "upstream_type": "local",
+    "name": "my-internal-group",
+    "description": null,
+    "local_group_id": 42,
+    "local_project_id": null,
+    "cache_validity_hours": 24,
+    "metadata_cache_validity_hours": 24,
+    "created_at": "2025-02-01T09:00:00.000Z",
+    "updated_at": "2025-02-01T09:00:00.000Z",
+    "registry_upstream": {
+      "id": 2,
+      "registry_id": 1,
+      "position": 2,
+      "local_upstream_id": 3
+    }
+  }
+]
+```
+
+### Create an upstream registry
+
+{{< history >}}
+
+- `metadata_cache_validity_hours` [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/556138) in GitLab 18.3.
+
+{{< /history >}}
+
+Creates an upstream registry for a specified Maven virtual registry.
+
+```plaintext
+POST /virtual_registries/packages/maven/registries/:id/upstreams
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the Maven virtual registry. |
+| `url` | string | Yes | The URL of the upstream registry. |
+| `cache_validity_hours` | integer | No | The cache validity period. Defaults to 24 hours. |
+| `description` | string | No | The description of the upstream registry. |
+| `metadata_cache_validity_hours` | integer | No | The metadata cache validity period. Defaults to 24 hours. |
+| `name` | string | No | The name of the upstream registry. |
+| `password` | string | No | The password of the upstream registry. |
+| `username` | string | No | The username of the upstream registry. |
+
+> [!note]
+> You must include both the `username` and `password` in the request, or not at all. If not set, a public (anonymous) request is used to access the upstream.
+>
+> You cannot add two upstreams with the same URL and credentials (`username` and `password`) to the same top-level group. Instead, you can either:
+>
+> - Set different credentials for each upstream with the same URL.
+> - [Associate an upstream](#associate-an-upstream-registry-with-a-virtual-registry) with multiple virtual registries.
+
+Example request:
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"url": "https://repo.maven.apache.org/maven2", "name": "Maven Central", "description": "Maven Central repository", "username": <your_username>, "password": <your_password>, "cache_validity_hours": 48, "metadata_cache_validity_hours": 1}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registries/1/upstreams"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "group_id": 5,
+  "upstream_type": "remote",
+  "url": "https://repo.maven.apache.org/maven2",
+  "name": "Maven Central",
+  "description": "Maven Central repository",
+  "cache_validity_hours": 48,
+  "metadata_cache_validity_hours": 1,
+  "username": "user",
+  "created_at": "2024-05-30T12:28:27.855Z",
+  "updated_at": "2024-05-30T12:28:27.855Z",
+  "registry_upstream": {
+    "id": 1,
+    "registry_id": 1,
+    "position": 1,
+    "local_upstream_id": null
+  }
+}
+```
+
+### Create a local upstream registry
+
+Creates a local upstream registry for a specified Maven virtual registry. A local upstream targets a
+group or project on the same GitLab instance. Files are served directly from the package registry
+instead of being fetched and cached over HTTP.
+
+```plaintext
+POST /virtual_registries/packages/maven/registries/:id/local/upstreams
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the Maven virtual registry. |
+| `name` | string | Yes | The name of the local upstream registry. |
+| `local_group_id` | integer | Conditional | The ID of the target group. Required if `local_project_id` is not set. |
+| `local_project_id` | integer | Conditional | The ID of the target project. Required if `local_group_id` is not set. |
+| `cache_validity_hours` | integer | No | The cache validity period. Defaults to 24 hours. |
+| `description` | string | No | The description of the local upstream registry. |
+| `metadata_cache_validity_hours` | integer | No | The metadata cache validity period. Defaults to 24 hours. |
+
+You must set exactly one of `local_group_id` or `local_project_id`. You must have permission to read
+packages in the target group or project.
+
+Example request:
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"name": "Internal group", "local_group_id": 42, "cache_validity_hours": 24}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registries/1/local/upstreams"
+```
+
+Example response:
+
+```json
+{
+  "id": 3,
+  "group_id": 5,
+  "upstream_type": "local",
+  "name": "Internal group",
+  "description": null,
+  "local_group_id": 42,
+  "local_project_id": null,
+  "cache_validity_hours": 24,
+  "metadata_cache_validity_hours": 24,
+  "created_at": "2025-02-01T09:00:00.000Z",
+  "updated_at": "2025-02-01T09:00:00.000Z",
+  "registry_upstream": {
+    "id": 2,
+    "registry_id": 1,
+    "position": 1,
+    "local_upstream_id": 3
+  }
+}
+```
+
+### Retrieve a local upstream registry
+
+Retrieves a local upstream registry. Local upstreams use an ID space separate from remote upstreams.
+
+```plaintext
+GET /virtual_registries/packages/maven/local/upstreams/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the Maven local upstream registry. |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/local/upstreams/3"
+```
+
+If successful, returns [`200 OK`](rest/troubleshooting.md#status-codes) and the following response attributes:
+
+| Attribute | Type | Description |
+| --------- | ---- | ----------- |
+| `cache_validity_hours` | integer | Number of hours the cached packages are considered valid. |
+| `created_at` | date/time | Date and time the upstream was created. |
+| `description` | string | Description of the upstream. |
+| `group_id` | integer | ID of the group the upstream belongs to. |
+| `id` | integer | ID of the upstream. |
+| `local_group_id` | integer | ID of the local group used as the upstream source. |
+| `local_project_id` | integer | ID of the local project used as the upstream source. |
+| `metadata_cache_validity_hours` | integer | Number of hours the cached metadata is considered valid. |
+| `name` | string | Name of the upstream. |
+| `registry_upstreams` | array of objects | List of virtual registry upstreams associated with this upstream. |
+| `registry_upstreams[].id` | integer | ID of the registry upstream. |
+| `registry_upstreams[].local_upstream_id` | integer | ID of the local upstream. |
+| `registry_upstreams[].position` | integer | Position of the upstream in the registry resolution order. |
+| `registry_upstreams[].registry_id` | integer | ID of the virtual registry. |
+| `updated_at` | date/time | Date and time the upstream was last updated. |
+| `upstream_type` | string | Type of the upstream. |
+
+### Update a local upstream registry
+
+Updates a local upstream registry.
+
+```plaintext
+PATCH /virtual_registries/packages/maven/local/upstreams/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the Maven local upstream registry. |
+| `cache_validity_hours` | integer | No | The cache validity period. |
+| `description` | string | No | The description of the local upstream registry. |
+| `metadata_cache_validity_hours` | integer | No | The metadata cache validity period. |
+| `name` | string | No | The name of the local upstream registry. |
+
+You must set at least one optional attribute.
+
+Example request:
+
+```shell
+curl --request PATCH \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"name": "Renamed group", "cache_validity_hours": 48}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/local/upstreams/3"
+```
+
+If successful, returns a [`200 OK`](rest/troubleshooting.md#status-codes) status code.
+
+### Delete a local upstream registry
+
+Deletes a local upstream registry and removes its association with any virtual registries.
+
+```plaintext
+DELETE /virtual_registries/packages/maven/local/upstreams/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the Maven local upstream registry. |
+
+Example request:
+
+```shell
+curl --request DELETE \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/local/upstreams/3"
+```
+
+If successful, returns a [`204 No Content`](rest/troubleshooting.md#status-codes) status code.
+
+### Retrieve an upstream registry
+
+Retrieves a specified upstream registry.
+
+```plaintext
+GET /virtual_registries/packages/maven/upstreams/:id
+```
+
+Parameters:
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the upstream registry. |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "group_id": 5,
+  "upstream_type": "remote",
+  "url": "https://repo.maven.apache.org/maven2",
+  "name": "Maven Central",
+  "description": "Maven Central repository",
+  "cache_validity_hours": 24,
+  "metadata_cache_validity_hours": 24,
+  "username": "user",
+  "created_at": "2024-05-30T12:28:27.855Z",
+  "updated_at": "2024-05-30T12:28:27.855Z",
+  "registry_upstreams": [
+    {
+      "id": 1,
+      "registry_id": 1,
+      "position": 1,
+      "local_upstream_id": null
+    }
+  ]
+}
+```
+
+### Update an upstream registry
+
+{{< history >}}
+
+- `metadata_cache_validity_hours` [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/556138) in GitLab 18.3.
+
+{{< /history >}}
+
+Updates a specified upstream registry.
+
+```plaintext
+PATCH /virtual_registries/packages/maven/upstreams/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the upstream registry. |
+| `cache_validity_hours` | integer | No | The cache validity period. Defaults to 24 hours. |
+| `description` | string | No | The description of the upstream registry. |
+| `metadata_cache_validity_hours` | integer | No | The metadata cache validity period. Defaults to 24 hours. |
+| `name` | string | No | The name of the upstream registry. |
+| `password` | string | No | The password of the upstream registry. |
+| `url` | string | No | The URL of the upstream registry. |
+| `username` | string | No | The username of the upstream registry. |
+
+> [!note]
+> You must provide at least one of the optional parameters in your request.
+>
+> The `username` and `password` must be provided together, or not at all. If not set, a public (anonymous) request is used to access the upstream.
+
+Example request:
+
+```shell
+curl --request PATCH \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"cache_validity_hours": 72}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1"
+```
+
+If successful, returns a [`200 OK`](rest/troubleshooting.md#status-codes) status code.
+
+### Update an upstream registry position
+
+Updates the position of an upstream registry in an ordered list for a Maven virtual registry.
+
+```plaintext
+PATCH /virtual_registries/packages/maven/registry_upstreams/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the upstream registry. |
+| `position` | integer | yes | The position of the upstream registry. Between 1 and 20. |
+
+Example request:
+
+```shell
+curl --request PATCH \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"position": 5}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registry_upstreams/1"
+```
+
+If successful, returns a [`200 OK`](rest/troubleshooting.md#status-codes) status code.
+
+### Delete an upstream registry
+
+Deletes a specified upstream registry.
+
+```plaintext
+DELETE /virtual_registries/packages/maven/upstreams/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the upstream registry. |
+
+Example request:
+
+```shell
+curl --request DELETE \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1"
+```
+
+If successful, returns a [`204 No Content`](rest/troubleshooting.md#status-codes) status code.
+
+### Associate an upstream registry with a virtual registry
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/540276) in GitLab 18.1 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Disabled by default.
+- [Enabled on GitLab.com, GitLab Self-Managed, and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/197432) in GitLab 18.2.
+
+{{< /history >}}
+
+Associates an existing upstream registry with a specified Maven virtual registry.
+
+```plaintext
+POST /virtual_registries/packages/maven/registry_upstreams
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `registry_id` | integer | yes | The ID of the Maven virtual registry. |
+| `upstream_id` | integer | yes | The ID of the Maven upstream registry. Required if `local_upstream_id` is not set. |
+| `local_upstream_id` | integer | yes | The ID of the Maven local upstream registry. Required if `upstream_id` is not set. |
+
+You must set exactly one of `upstream_id` or `local_upstream_id`.
+
+Example request:
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --header "Accept: application/json" \
+     --data '{"registry_id": 1, "upstream_id": 2}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registry_upstreams"
+```
+
+Example response:
+
+```json
+{
+  "id": 5,
+  "registry_id": 1,
+  "upstream_id": 2,
+  "position": 2
+}
+```
+
+### Disassociate an upstream registry from a virtual registry
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/540276) in GitLab 18.1 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Disabled by default.
+- [Enabled on GitLab.com, GitLab Self-Managed, and GitLab Dedicated](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/197432) in GitLab 18.2.
+
+{{< /history >}}
+
+Disassociates an upstream registry from a specified Maven virtual registry.
+
+```plaintext
+DELETE /virtual_registries/packages/maven/registry_upstreams/:id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the registry upstream association. |
+
+Example request:
+
+```shell
+curl --request DELETE \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/registry_upstreams/1"
+```
+
+If successful, returns a [`204 No Content`](rest/troubleshooting.md#status-codes) status code.
+
+### Delete cache entries for an upstream registry
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/538327) in GitLab 18.2 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Enabled by default.
+
+{{< /history >}}
+
+Schedules all cache entries for deletion for a specified upstream registry.
+
+```plaintext
+DELETE /virtual_registries/packages/maven/upstreams/:id/cache
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | yes | The ID of the upstream registry. |
+
+Example request:
+
+```shell
+curl --request DELETE \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1/cache"
+```
+
+If successful, returns a [`204 No Content`](rest/troubleshooting.md#status-codes) status code.
+
+### Test upstream registry connection
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/535637) in GitLab 18.3 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Enabled by default.
+
+{{< /history >}}
+
+Tests the connection to a specified Maven upstream registry.
+
+```plaintext
+GET /virtual_registries/packages/maven/upstreams/:id/test
+```
+
+#### How the test works
+
+The endpoint performs a HEAD request to the upstream URL using the test path to validate connectivity and authentication. If the upstream has a cached artifact, its relative path is used for testing. Otherwise, a dummy path is used. The response received from the HEAD request is interpreted as follows:
+
+| Upstream Response | Meaning | Result |
+|:------------------|:--------|:-------|
+| 2XX | Success - upstream accessible | `{ "success": true }` |
+| 404 | Success - upstream accessible but test artifact not found | `{ "success": true }` |
+| 401 | Authentication failed | `{ "success": false, "result": "Error: 401 - Unauthorized" }` |
+| 403 | Access forbidden | `{ "success": false, "result": "Error: 403 - Forbidden" }` |
+| 5XX | Upstream server error | `{ "success": false, "result": "Error: 5XX - Server Error" }` |
+| Network errors | Connection/timeout issues | `{ "success": false, "result": "Error: Connection timeout" }` |
+
+> [!note]
+> Both `2XX` (found) and `404` (not found) responses indicate successful connectivity and authentication to the upstream registry. The test validates that GitLab can reach and authenticate with the upstream, not whether a specific artifact exists.
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1/test"
+```
+
+Example response:
+
+```json
+{
+  "success": true
+}
+```
+
+### Test upstream registry connection with override parameters
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/565897) in GitLab 18.7 [with a feature flag](../administration/feature_flags/_index.md) named `maven_virtual_registry`. Enabled by default.
+
+{{< /history >}}
+
+Tests the connection to a specified Maven upstream registry with optional parameter overrides.
+
+This way, you can test changes to the URL, username, or password before updating the upstream registry configuration.
+
+```plaintext
+POST /virtual_registries/packages/maven/upstreams/:id/test
+```
+
+Supported attributes:
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the upstream registry. |
+| `password` | string | No | The override password for testing. |
+| `url` | string | No | The override URL for testing. If provided, tests connection to this URL instead of the upstream's configured URL. |
+| `username` | string | No | The override username for testing. |
+
+#### How the test works
+
+The endpoint performs a HEAD request to the upstream URL
+using the test path to validate connectivity and authentication.
+If the upstream has a cached artifact, the relative path of the
+upstream is used for testing. Otherwise, a placeholder path is used.
+
+The test behavior depends on the parameters provided:
+
+- No parameters: Tests the upstream with its current configuration (existing URL, username, and password)
+- URL override: Tests connectivity to the new URL, username and password must be provided together or not at all
+- Credential override: Tests the existing URL with new credentials
+
+The response received from the HEAD request is interpreted as follows:
+
+| Upstream Response | Meaning | Result |
+|:------------------|:--------|:-------|
+| 2XX | Success. Upstream accessible | `{ "success": true }` |
+| 404 | Success. Upstream accessible, but test artifact not found | `{ "success": true }` |
+| 401 | Authentication failed | `{ "success": false, "result": "Error: 401 - Unauthorized" }` |
+| 403 | Access forbidden | `{ "success": false, "result": "Error: 403 - Forbidden" }` |
+| 5XX | Upstream server error | `{ "success": false, "result": "Error: 5XX - Server Error" }` |
+| Network errors | Connection or timeout issues | `{ "success": false, "result": "Error: Connection timeout" }` |
+
+> [!note]
+> Both `2XX` (found) and `404` (not found) responses indicate successful connectivity and authentication to the upstream registry. The test does not validate whether a specific artifact exists.
+
+Example request (test existing configuration):
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1/test"
+```
+
+Example request (test with URL override and no credentials):
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"url": "<https://new-repo.example.com/maven2>"}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1/test"
+```
+
+Example request (test with URL and credential override):
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"url": "<https://new-repo.example.com/maven2>", "username": "<newuser>", "password": "<newpass>"}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1/test"
+```
+
+Example request (test with credential override):
+
+```shell
+curl --request POST \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Content-Type: application/json" \
+     --data '{"username": "<newuser>", "password": "<newpass>"}' \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1/test"
+```
+
+Example response:
+
+```json
+{
+  "success": true
+}
+```
+
+## Manage cache entries
+
+Use the following endpoints to manage cache entries for a Maven virtual registry.
+
+### List all upstream registry cache entries
+
+Lists all cache entries for a specified Maven upstream registry.
+
+```plaintext
+GET /virtual_registries/packages/maven/upstreams/:id/cache_entries
+```
+
+Supported attributes:
+
+| Attribute | Type | Required | Description |
+|:----------|:-----|:---------|:------------|
+| `id` | integer | Yes | The ID of the upstream registry. |
+| `page` | integer | No | The page number. Defaults to 1. |
+| `per_page` | integer | No | The number of items per page. Defaults to 20. |
+| `search` | string | No | The search query for the relative path of the package (for example, `foo/bar/mypkg`). |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/upstreams/1/cache_entries?search=foo/bar"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": "MTUgZm9vL2Jhci9teXBrZy8xLjAtU05BUFNIT1QvbXlwa2ctMS4wLVNOQVBTSE9ULmphcg==",
+    "group_id": 5,
+    "upstream_id": 1,
+    "upstream_checked_at": "2024-05-30T12:28:27.855Z",
+    "file_md5": "44f21d5190b5a6df8089f54799628d7e",
+    "file_sha1": "74d101856d26f2db17b39bd22d3204021eb0bf7d",
+    "size": 2048,
+    "relative_path": "foo/bar/package-1.0.0.pom",
+    "content_type": "application/xml",
+    "upstream_etag": "\"686897696a7c876b7e\"",
+    "created_at": "2024-05-30T12:28:27.855Z",
+    "updated_at": "2024-05-30T12:28:27.855Z",
+    "downloads_count": 6,
+    "downloaded_at": "2024-06-05T14:58:32.855Z"
+  }
+]
+```
+
+### Delete an upstream registry cache entry
+
+Deletes a specified cache entry for a Maven upstream registry.
+
+```plaintext
+DELETE /virtual_registries/packages/maven/cache_entries/*id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | string | Yes | The base64-encoded upstream ID and relative path of the cache entry (for example, 'Zm9vL2Jhci9teXBrZy5wb20='). |
+
+Example request:
+
+```shell
+curl --request DELETE \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --header "Accept: application/json" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/cache_entries/Zm9vL2Jhci9teXBrZy5wb20="
+```
+
+If successful, returns a [`204 No Content`](rest/troubleshooting.md#status-codes) status code.
+
+## Manage package operations
+
+Use the following endpoints to manage package operations for a Maven virtual registry.
+
+> [!warning]
+> These endpoints are intended for internal use by GitLab, and generally not meant for manual consumption.
+
+These endpoints do not adhere to the [REST API authentication methods](rest/authentication.md).
+For more information on which headers and token types are supported,
+see [Maven virtual registry](../user/packages/virtual_registry/maven/_index.md). Undocumented authentication methods might be removed in the future.
+
+### Download a package
+
+Downloads a package from a specified Maven virtual registry. To access this resource, you must [authenticate with the registry](../user/packages/package_registry/supported_functionality.md#authenticate-with-the-registry).
+
+```plaintext
+GET /virtual_registries/packages/maven/:id/*path
+```
+
+Supported attributes:
+
+| Attribute | Type | Required | Description |
+|:----------|:-----|:---------|:------------|
+| `id` | integer | Yes | The ID of the Maven virtual registry. |
+| `path` | string | Yes | The full package path (for example, `foo/bar/mypkg/1.0-SNAPSHOT/mypkg-1.0-SNAPSHOT.jar`). |
+
+Example request:
+
+```shell
+curl --request GET \
+     --header "PRIVATE-TOKEN: <your_access_token>" \
+     --url "https://gitlab.example.com/api/v4/virtual_registries/packages/maven/1/foo/bar/mypkg/1.0-SNAPSHOT/mypkg-1.0-SNAPSHOT.jar" \
+     --output mypkg-1.0-SNAPSHOT.jar
+```
+
+If successful, returns [`200 OK`](rest/troubleshooting.md#status-codes) and
+the following response headers:
+
+- `x-checksum-sha1`: SHA1 checksum of the file
+- `x-checksum-md5`: MD5 checksum of the file
+- `Content-Type`: The MIME type of the file
+- `Content-Length`: The file size in bytes
+
+### Upload a package
+
+Uploads a package to a specified Maven virtual registry. This endpoint is accessible only by [GitLab Workhorse](../development/workhorse/_index.md).
+
+```plaintext
+POST /virtual_registries/packages/maven/:id/*path/upload
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id` | integer | Yes | The ID of the Maven virtual registry. |
+| `file` | file | Yes | The file being uploaded. |
+| `path` | string | Yes | The full package path (for example, `foo/bar/mypkg/1.0-SNAPSHOT/mypkg-1.0-SNAPSHOT.jar`). |
+
+Request headers:
+
+- `Etag`: Entity tag for the file
+- `GitLab-Workhorse-Send-Dependency-Content-Type`: Content type of the file
+- `Upstream-GID`: Global ID of the target upstream
+
+If successful, returns a [`200 OK`](rest/troubleshooting.md#status-codes) status code.

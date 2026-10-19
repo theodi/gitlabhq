@@ -1,0 +1,143 @@
+# frozen_string_literal: true
+
+class BasePolicy < DeclarativePolicy::Base
+  desc "User is an instance admin"
+  with_options scope: :user, score: 0
+  condition(:admin) do
+    next false unless user_is_user?
+    next false if @user.from_ci_job_token?
+    next true if @user.admin_bot?
+
+    if Gitlab::CurrentSettings.admin_mode
+      @user.admin? && Gitlab::Auth::CurrentUserMode.new(@user).admin_mode?
+    else
+      @user.admin?
+    end
+  end
+
+  # This condition is overridden in EE
+  condition(:auditor, score: 0) { false }
+
+  desc "User is blocked"
+  with_options scope: :user, score: 0
+  condition(:blocked) { @user&.blocked? }
+
+  desc "User is deactivated"
+  with_options scope: :user, score: 0
+  condition(:deactivated) { @user&.deactivated? }
+
+  desc "User is bot"
+  with_options scope: :user, score: 0
+  condition(:bot) { @user&.bot? }
+
+  desc "User is alert bot"
+  with_options scope: :user, score: 0
+  condition(:alert_bot) { @user&.alert_bot? }
+
+  desc "User is support bot"
+  with_options scope: :user, score: 0
+  condition(:support_bot) { @user&.support_bot? }
+
+  desc "User is security bot"
+  with_options scope: :user, score: 0
+  condition(:security_bot) { @user&.security_bot? }
+
+  desc "User is security policy bot"
+  with_options scope: :user, score: 0
+  condition(:security_policy_bot) { false }
+
+  desc "User is automation bot"
+  with_options scope: :user, score: 0
+  condition(:automation_bot) { @user&.automation_bot? }
+
+  desc "User is placeholder"
+  with_options scope: :user, score: 0
+  condition(:placeholder_user) { @user.try(:placeholder?) || false }
+
+  desc "Import user"
+  with_options scope: :user, score: 0
+  condition(:import_user) { @user.try(:import_user?) || false }
+
+  desc "User email is unconfirmed or user account is locked"
+  with_options scope: :user, score: 0
+  condition(:inactive) { @user&.confirmation_required_on_sign_in? || @user&.access_locked? }
+
+  with_options scope: :user, score: 0
+  condition(:external_user) { @user.nil? || @user.external? }
+
+  with_options scope: :user, score: 0
+  condition(:can_create_group) { @user&.can_create_group }
+
+  desc 'User can create an organization'
+  with_options scope: :global, score: 0
+  condition(:can_create_organization) { Gitlab::CurrentSettings.can_create_organization }
+
+  desc "Only admins can destroy projects"
+  condition(:owner_cannot_destroy_project, scope: :global) do
+    ::Gitlab::CurrentSettings.current_application_settings
+      .default_project_deletion_protection
+  end
+
+  desc "The application is restricted from public visibility"
+  condition(:restricted_public_level, scope: :global) do
+    Gitlab::CurrentSettings.current_application_settings.restricted_visibility_levels.include?(Gitlab::VisibilityLevel::PUBLIC)
+  end
+
+  condition(:external_authorization_enabled, scope: :global, score: 0) do
+    ::Gitlab::ExternalAuthorization.perform_check?
+  end
+
+  rule { external_authorization_enabled & ~can?(:read_all_resources) }.policy do
+    prevent :read_cross_project
+  end
+
+  rule { admin }.policy do
+    # Only for actual administrator accounts, behavior affected by admin mode application setting
+    # rubocop:disable Gitlab/Authz/EnableInBasePolicy -- As of Feb 2026, we do not allow enable in base policy
+    enable :admin_all_resources
+    # rubocop:enable Gitlab/Authz/EnableInBasePolicy
+
+    # Policy extended in EE to also enable auditors
+    # rubocop:disable Gitlab/Authz/EnableInBasePolicy -- As of Feb 2026, we do not allow enable in base policy
+    enable :read_all_resources
+    # rubocop:enable Gitlab/Authz/EnableInBasePolicy
+    # rubocop:disable Gitlab/Authz/EnableInBasePolicy -- As of Feb 2026, we do not allow enable in base policy
+    enable :change_repository_storage
+    # rubocop:enable Gitlab/Authz/EnableInBasePolicy
+  end
+
+  # rubocop:disable Gitlab/Authz/EnableInBasePolicy -- As of Feb 2026, we do not allow enable in base policy
+  rule { default }.enable :read_cross_project
+  # rubocop:enable Gitlab/Authz/EnableInBasePolicy
+  condition(:is_gitlab_com, score: 0, scope: :global) { ::Gitlab.com? }
+
+  rule { placeholder_user }.prevent_all
+  rule { import_user }.prevent_all
+
+  private
+
+  def user_is_user?
+    user.is_a?(User)
+  end
+
+  def user_is_organization_admin?(org)
+    return false unless org.present?
+    return false unless user_is_user?
+
+    # An instance admin is automatically an organization admin of their home organization,
+    # so we only want to return true here if an instance admin is running in admin mode
+    return false if admin_mode_required?
+
+    # Load the owners with a single query.
+    org.owner_user_ids.include?(@user.id)
+  end
+
+  def admin_mode_required?
+    return false unless @user&.admin?
+    return false unless Gitlab::CurrentSettings.admin_mode
+
+    !Gitlab::Auth::CurrentUserMode.new(@user).admin_mode?
+  end
+end
+
+BasePolicy.prepend_mod_with('BasePolicy')

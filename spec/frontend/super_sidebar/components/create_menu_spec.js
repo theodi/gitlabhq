@@ -1,0 +1,198 @@
+import { nextTick } from 'vue';
+import {
+  GlDisclosureDropdown,
+  GlDisclosureDropdownGroup,
+  GlDisclosureDropdownItem,
+  GlLink,
+} from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import InviteMembersTrigger from '~/invite_members/components/invite_members_trigger.vue';
+import CreateWorkItemModal from '~/work_items/components/create_work_item_modal.vue';
+import CreateMenu from '~/super_sidebar/components/create_menu.vue';
+import { CREATION_CONTEXT_SUPER_SIDEBAR } from '~/work_items/constants';
+import { createMockDirective, getBinding } from 'helpers/vue_mock_directive';
+import { createNewMenuGroups, createNewMenuProjects } from '../mock_data';
+
+describe('CreateMenu component', () => {
+  let wrapper;
+
+  const findGlDisclosureDropdown = () => wrapper.findComponent(GlDisclosureDropdown);
+  const findGlDisclosureDropdownGroups = () => wrapper.findAllComponents(GlDisclosureDropdownGroup);
+  const findGlDisclosureDropdownItems = () => wrapper.findAllComponents(GlDisclosureDropdownItem);
+  const findInviteMembersTrigger = () => wrapper.findComponent(InviteMembersTrigger);
+  const findCreateWorkItemModalTrigger = () =>
+    wrapper.findComponentByTestId('new-work-item-trigger');
+  const findCreateWorkItemModal = () => wrapper.findComponentByTestId('new-work-item-modal');
+
+  const createWrapper = ({ props = {}, provide = {}, stubs = {} } = {}) => {
+    wrapper = shallowMountExtended(CreateMenu, {
+      provide: {
+        isImpersonating: false,
+        fullPath: 'full-path',
+        isGroup: false,
+        ...provide,
+      },
+      propsData: {
+        groups: createNewMenuGroups,
+        ...props,
+      },
+      stubs: {
+        InviteMembersTrigger,
+        CreateWorkItemModal,
+        GlDisclosureDropdown,
+        GlEmoji: { template: '<div/>' },
+        ...stubs,
+      },
+      directives: {
+        GlTooltip: createMockDirective('gl-tooltip'),
+      },
+    });
+  };
+
+  describe('default', () => {
+    beforeEach(() => {
+      createWrapper();
+    });
+
+    it("sets the toggle's label", () => {
+      expect(findGlDisclosureDropdown().props('toggleText')).toBe('Create new…');
+    });
+    it('has correct amount of dropdown groups', () => {
+      const items = findGlDisclosureDropdownGroups();
+
+      expect(items.exists()).toBe(true);
+      expect(items).toHaveLength(createNewMenuGroups.length);
+    });
+
+    it('has correct amount of dropdown items', () => {
+      const items = findGlDisclosureDropdownItems();
+      const numberOfMenuItems = createNewMenuGroups
+        .map((group) => group.items.length)
+        .reduce((a, b) => a + b);
+
+      expect(items.exists()).toBe(true);
+      expect(items).toHaveLength(numberOfMenuItems);
+    });
+
+    it('renders the invite member trigger', () => {
+      expect(findInviteMembersTrigger().exists()).toBe(true);
+    });
+
+    describe('create new work item modal', () => {
+      it('renders work item menu item correctly', () => {
+        createWrapper({ props: { groups: createNewMenuProjects } });
+
+        expect(findCreateWorkItemModalTrigger().exists()).toBe(true);
+      });
+
+      it('does not render the modal by default', () => {
+        createWrapper({ props: { groups: createNewMenuProjects } });
+
+        expect(findCreateWorkItemModal().exists()).toBe(false);
+      });
+
+      it('shows modal when clicking work item dropdown item', async () => {
+        createWrapper({ props: { groups: createNewMenuProjects } });
+
+        findCreateWorkItemModalTrigger().vm.$emit('action');
+        await nextTick();
+
+        expect(findCreateWorkItemModal().props()).toMatchObject({
+          creationContext: CREATION_CONTEXT_SUPER_SIDEBAR,
+          hideButton: true,
+          isGroup: false,
+          visible: true,
+        });
+      });
+
+      it('hides modal when hide-modal event is emitted', async () => {
+        createWrapper({ props: { groups: createNewMenuProjects } });
+
+        findCreateWorkItemModalTrigger().vm.$emit('action');
+        await nextTick();
+
+        expect(findCreateWorkItemModal().props('visible')).toBe(true);
+
+        findCreateWorkItemModal().vm.$emit('hide-modal');
+        await nextTick();
+
+        expect(findCreateWorkItemModal().props('visible')).toBe(false);
+      });
+
+      it('lazy loads CreateWorkItemModal but does not unmount it when hidden', async () => {
+        createWrapper({ props: { groups: createNewMenuProjects } });
+
+        expect(findCreateWorkItemModal().exists()).toBe(false);
+
+        findCreateWorkItemModalTrigger().vm.$emit('action');
+        await nextTick();
+
+        expect(findCreateWorkItemModal().exists()).toBe(true);
+
+        findCreateWorkItemModal().vm.$emit('hide-modal');
+        await nextTick();
+
+        expect(findCreateWorkItemModal().exists()).toBe(true);
+      });
+
+      it('does not include href on dropdown item, to prevent it being rendered as an `<a>`', () => {
+        createWrapper({
+          props: { groups: createNewMenuProjects },
+          stubs: { GlDisclosureDropdownItem },
+        });
+
+        expect(findCreateWorkItemModalTrigger().props('item')).toMatchObject({
+          href: undefined,
+        });
+      });
+
+      describe('link', () => {
+        it('does not render', () => {
+          createWrapper({
+            props: { groups: createNewMenuProjects },
+            stubs: { GlDisclosureDropdownItem },
+          });
+
+          expect(findCreateWorkItemModalTrigger().findComponent(GlLink).exists()).toBe(false);
+        });
+      });
+
+      describe('preselected work item type', () => {
+        it('does not preselect a work item type when in a group', async () => {
+          createWrapper({ provide: { isGroup: true } });
+
+          findCreateWorkItemModalTrigger().vm.$emit('action');
+          await nextTick();
+
+          expect(findCreateWorkItemModal().props('preselectedWorkItemType')).toBe(null);
+        });
+
+        it('does not preselect a work item type when not in a group', async () => {
+          createWrapper({ provide: { isGroup: false } });
+
+          findCreateWorkItemModalTrigger().vm.$emit('action');
+          await nextTick();
+
+          expect(findCreateWorkItemModal().props('preselectedWorkItemType')).toBe(null);
+        });
+      });
+    });
+
+    it('hides the tooltip when the dropdown is opened', async () => {
+      findGlDisclosureDropdown().vm.$emit('shown');
+      await nextTick();
+
+      const tooltip = getBinding(findGlDisclosureDropdown().element, 'gl-tooltip');
+      expect(tooltip.value).toBe('');
+    });
+
+    it('shows the tooltip when the dropdown is closed', async () => {
+      findGlDisclosureDropdown().vm.$emit('shown');
+      findGlDisclosureDropdown().vm.$emit('hidden');
+      await nextTick();
+
+      const tooltip = getBinding(findGlDisclosureDropdown().element, 'gl-tooltip');
+      expect(tooltip.value).toBe('Create new…');
+    });
+  });
+});

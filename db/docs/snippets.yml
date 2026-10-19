@@ -1,0 +1,17 @@
+---
+table_name: snippets
+classes:
+- PersonalSnippet
+- ProjectSnippet
+- Snippet
+feature_categories:
+- source_code_management
+description: GitLab snippets allow you to store and share bits of code and text with
+  other users.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/9265de3d25715aeafd38a4ef41596dca058dc18c
+milestone: 1.0.1
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+  organization_id: organizations
+table_size: medium

@@ -1,0 +1,132 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    module MergeRequests
+      class GetMergeRequestConflictsService < Base::CustomService
+        include Gitlab::Utils::StrongMemoize
+
+        # Unlisted pending removal: superseded by the get_merge_request conflicts facet
+        # (https://gitlab.com/gitlab-org/gitlab/-/work_items/622712).
+        override :unlisted?
+        def unlisted?
+          true
+        end
+
+        # Register version with schema definition
+        register_version '0.1.0', {
+          toolset: :merge_requests,
+          description: 'Get merge conflict content for a merge request that cannot be merged. ' \
+            'Returns raw git conflict markers (<<<<<<, =======, >>>>>>>) exactly as they appear in conflicted files.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              project_id: {
+                type: 'string',
+                description: 'Project ID (numeric) or full path (e.g., "gitlab-org/gitlab")'
+              },
+              merge_request_iid: {
+                type: 'integer',
+                description: 'Merge request internal ID'
+              }
+            },
+            required: %w[project_id merge_request_iid]
+          },
+          annotations: {
+            readOnlyHint: true
+          }
+        }
+
+        def auth_ability
+          :read_merge_request
+        end
+
+        def granular_permissions
+          [:read_merge_request]
+        end
+
+        def auth_target(params)
+          strong_memoize_with(:auth_target, params[:arguments]) do
+            mr = merge_request(params[:arguments])
+            raise ResourceNotFoundError, "#{name}: merge request not found" if mr.nil?
+
+            mr
+          end
+        end
+
+        def authorize!(params)
+          super
+
+          mr = auth_target(params)
+          raise ResourceNotFoundError, "#{name}: source project not found" unless mr.source_project
+
+          access = ::Gitlab::UserAccess.new(current_user, container: mr.source_project)
+          return if access.can_push_to_branch?(mr.source_branch)
+
+          raise ResourceForbiddenError, authorization_error_message
+        end
+
+        protected
+
+        # Main implementation - returns raw git conflict content
+        def perform_v0_1_0(arguments)
+          mr = merge_request(arguments)
+          return ::Mcp::Tools::Base::Response.error('Merge request not found') if mr.nil?
+
+          # Check merge status and return appropriate error
+          case mr.merge_status
+          when 'unchecked', 'checking', 'preparing', 'cannot_be_merged_recheck', 'cannot_be_merged_rechecking'
+            return ::Mcp::Tools::Base::Response.error(
+              "Merge request merge status is '#{mr.merge_status}' — " \
+                "conflicts cannot be determined until mergeability has been checked"
+            )
+          when 'can_be_merged'
+            return ::Mcp::Tools::Base::Response.error('Merge request does not have conflicts')
+          end
+
+          # Check if branches/refs are valid
+          unless mr.has_complete_diff_refs? && !mr.branch_missing?
+            return ::Mcp::Tools::Base::Response.error('Cannot retrieve conflicts: missing branches or diff refs')
+          end
+
+          # Get raw conflict content
+          conflict_list_service = ::MergeRequests::Conflicts::ListService.new(mr)
+
+          # Build conflict text with file markers
+          conflict_text = conflict_list_service.conflicts.files.map do |file|
+            # Defensive check: content should never be nil, but guard against unexpected states
+            content = file.content || ""
+
+            # File marker with both paths (for renames) followed by raw git conflict content
+            if file.their_path == file.our_path
+              "# File: #{file.our_path}\n#{content}"
+            else
+              "# File: #{file.their_path} -> #{file.our_path}\n#{content}"
+            end
+          end.join("\n\n")
+
+          # Return as plain text (no JSON structure in structuredContent)
+          formatted_content = [{ type: 'text', text: conflict_text }]
+          ::Mcp::Tools::Base::Response.success(formatted_content)
+        end
+
+        private
+
+        def project(arguments)
+          @project ||= find_project!(arguments['project_id'])
+        end
+
+        def merge_request(arguments)
+          @merge_request ||= {}
+          cache_key = "#{arguments['project_id']}_#{arguments['merge_request_iid']}"
+          @merge_request[cache_key] ||= find_merge_request(arguments)
+        end
+
+        def find_merge_request(arguments)
+          proj = project(arguments)
+          proj.merge_requests.find_by_iid(arguments['merge_request_iid'])
+        end
+      end
+    end
+  end
+end

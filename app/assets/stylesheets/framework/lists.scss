@@ -1,0 +1,150 @@
+/** light list with border-bottom between li **/
+ul.bordered-list,
+ul.unstyled-list {
+  @include basic-list;
+}
+
+ul.unstyled-list > li {
+  border-bottom: 0;
+}
+
+ul.list-items-py-2 {
+  > li {
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+}
+
+// Generic content list
+ul.content-list {
+  @include basic-list;
+  margin: 0;
+  padding: 0;
+
+  li {
+    @apply gl-border-default;
+    font-size: $gl-font-size;
+    @apply gl-text-default;
+    word-break: break-word;
+
+    .title {
+      font-weight: $gl-font-weight-bold;
+    }
+
+    a {
+      @apply gl-text-default;
+
+      &.inline-link {
+        @apply gl-text-link;
+      }
+    }
+
+    .description {
+      @include str-truncated;
+    }
+
+    .controls {
+      float: right;
+
+      > .btn,
+      > .btn-group,
+      > .dropdown.inline {
+        margin-right: $grid-size;
+
+        &.has-tooltip,
+        &:last-child {
+          margin-right: 0;
+
+          @include gl-container-width-down(sm, panel) {
+            margin: 0 auto;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Content list using flexbox
+.flex-list {
+  .flex-row {
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+  }
+
+  .dropdown {
+    .btn-block {
+      margin-bottom: 0;
+      line-height: inherit;
+    }
+  }
+
+  .badge-secondary {
+    @apply gl-text-subtle;
+  }
+}
+
+ul.content-list.content-list-items-padding > li,
+ul.content-list.issuable-list > li,
+.card > .content-list > li {
+  padding: $gl-padding-top $gl-padding;
+}
+
+ul.controls {
+  float: right;
+  list-style: none;
+  display: flex;
+  align-items: center;
+
+  .btn {
+    padding: 10px 14px;
+  }
+
+  > li {
+    float: left;
+    margin-right: 10px;
+
+    &:last-child {
+      margin-right: 0;
+    }
+
+    .author-link {
+      .avatar-inline {
+        margin-left: 0;
+        margin-right: 0;
+        margin-bottom: 0;
+      }
+    }
+  }
+
+  .issuable-pipeline-broken a,
+  .author-link {
+    display: flex;
+  }
+}
+
+ul.indent-list {
+  padding: 10px 0 0 30px;
+}
+
+// Specific styles for tree list
+@keyframes spin-avatar {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.horizontal-list {
+  padding-left: 0;
+  list-style: none;
+
+  > li {
+    float: left;
+  }
+
+  &.list-items-separated {
+    > li:not(:last-child)::after {
+      content: '\00b7';
+      margin: 0 $gl-padding-4;
+    }
+  }
+}

@@ -1,0 +1,487 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe SendFileUpload, feature_category: :user_profile do
+  let(:uploader_class) do
+    Class.new(GitlabUploader) do
+      include ObjectStorage::Concern
+
+      storage_location :uploads
+
+      private
+
+      # user/:id
+      def dynamic_segment
+        File.join(model.class.underscore, model.id.to_s)
+      end
+    end
+  end
+
+  let(:cdn_uploader_class) do
+    Class.new(uploader_class) do
+      include ObjectStorage::CDN::Concern
+    end
+  end
+
+  let(:controller_class) do
+    Class.new do
+      include SendFileUpload
+
+      def params
+        ActionController::Parameters.new
+      end
+
+      def current_user; end
+
+      # Stands in for WorkhorseAuthenticatable#verify_workhorse_api!, which
+      # ApplicationController provides to every real controller that includes
+      # this concern. Overridden per-example to assert the senddata branches
+      # invoke it and the local/redirect branches do not.
+      def verify_workhorse_api!; end
+
+      def request
+        ActionDispatch::Request.new({})
+      end
+    end
+  end
+
+  let(:object) { build_stubbed(:user) }
+  let(:uploader) { uploader_class.new(object, :file) }
+
+  describe '#send_upload' do
+    let(:controller) { controller_class.new }
+    let(:temp_file) { Tempfile.new('test') }
+    let(:params) { {} }
+
+    subject { controller.send_upload(uploader, **params) }
+
+    before do
+      FileUtils.touch(temp_file)
+    end
+
+    after do
+      FileUtils.rm_f(temp_file)
+    end
+
+    shared_examples 'handles image resize requests' do |mount|
+      let(:headers) { double }
+      let(:image_requester) { build(:user) }
+      let(:image_owner) { build(:user) }
+      let(:width) { mount == :pwa_icon ? 192 : 64 }
+      let(:params) do
+        { attachment: 'avatar.png' }
+      end
+
+      before do
+        # both of these are valid cases, depending on whether we are dealing with
+        # local or remote files
+        allow(controller).to receive(:send_file)
+        allow(controller).to receive(:redirect_to)
+
+        allow(controller).to receive_messages(headers: headers, current_user: image_requester)
+        allow(uploader).to receive_messages(image_safe_for_scaling?: true, mounted_as: mount, model: image_owner)
+      end
+
+      context 'with valid width parameter' do
+        it 'renders OK with workhorse command header' do
+          expect(controller).not_to receive(:send_file)
+          expect(controller).to receive(:params).at_least(:once)
+            .and_return(ActionController::Parameters.new(width: width.to_s))
+          expect(controller).to receive(:head).with(:ok)
+
+          expect(Gitlab::Workhorse).to receive(:send_scaled_image)
+           .with(a_string_matching('^(/.+|https://.+)'), width, 'image/png')
+           .and_return([Gitlab::Workhorse::SEND_DATA_HEADER, "send-scaled-img:faux"])
+
+          expect(headers).to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, "send-scaled-img:faux")
+
+          subject
+        end
+      end
+
+      context 'with missing width parameter' do
+        it 'does not write workhorse command header' do
+          expect(headers).not_to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-scaled-img:/)
+
+          subject
+        end
+      end
+
+      context 'with invalid width parameter' do
+        it 'does not write workhorse command header' do
+          expect(controller).to receive(:params).at_least(:once)
+            .and_return(ActionController::Parameters.new(width: 'not a number'))
+          expect(headers).not_to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-scaled-img:/)
+
+          subject
+        end
+
+        context 'when width has an invalid format' do
+          it 'does not write workhorse command header' do
+            expect(controller).to receive(:params).at_least(:once)
+              .and_return(ActionController::Parameters.new(width: ['wrong']))
+            expect(headers).not_to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-scaled-img:/)
+
+            subject
+          end
+        end
+      end
+
+      context 'with width that is not allowed' do
+        it 'does not write workhorse command header' do
+          expect(controller).to receive(:params).at_least(:once)
+            .and_return(ActionController::Parameters.new(width: '63'))
+          expect(headers).not_to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-scaled-img:/)
+
+          subject
+        end
+      end
+
+      context 'when image file is not an avatar' do
+        it 'does not write workhorse command header' do
+          expect(uploader).to receive(:mounted_as).and_return(nil) # FileUploader is not mounted
+          expect(headers).not_to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-scaled-img:/)
+
+          subject
+        end
+      end
+
+      context 'when image file type is not considered safe for scaling' do
+        it 'does not write workhorse command header' do
+          expect(uploader).to receive(:image_safe_for_scaling?).and_return(false)
+          expect(headers).not_to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-scaled-img:/)
+
+          subject
+        end
+      end
+    end
+
+    shared_examples 'sets SSRF parameters for the Workhorse send-url instruction' do
+      specify do
+        expect(Gitlab::Workhorse).to receive(:send_url).with(an_instance_of(String), **ssrf_params)
+          .and_call_original
+
+        subject
+      end
+    end
+
+    context 'when local file is used' do
+      before do
+        uploader.store!(temp_file)
+      end
+
+      it 'sends a file' do
+        expect(controller).to receive(:send_file).with(uploader.path, anything)
+
+        subject
+      end
+
+      it_behaves_like 'handles image resize requests', :avatar
+      it_behaves_like 'handles image resize requests', :pwa_icon
+    end
+
+    context 'with an explicit content_type override' do
+      let(:filename) { 'export.tar.gz' }
+      let(:params) { { attachment: filename, send_params: { content_type: 'application/octet-stream' } } }
+
+      context 'when local file is used' do
+        before do
+          uploader.store!(temp_file)
+        end
+
+        it 'sends a file with the forced content type instead of the detected mime type' do
+          expected_params = {
+            type: 'application/octet-stream',
+            filename: filename,
+            disposition: 'attachment'
+          }
+          expect(controller).to receive(:send_file).with(uploader.path, expected_params)
+
+          subject
+        end
+      end
+
+      context 'with a proxied file in object storage' do
+        before do
+          stub_uploads_object_storage(uploader: uploader_class)
+          uploader.object_store = ObjectStorage::Store::REMOTE
+          uploader.store!(temp_file)
+          allow(Gitlab.config.uploads.object_store).to receive(:proxy_download).and_return(true)
+        end
+
+        it 'forces the response-content-type header regardless of the detected mime type' do
+          headers = double
+          expected_headers = /response-content-type=application%2Foctet-stream/
+          expect(Gitlab::Workhorse).to receive(:send_url).with(expected_headers).and_call_original
+          expect(headers).to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-url:/)
+
+          expect(controller).not_to receive(:send_file)
+          expect(controller).to receive(:headers) { headers }
+          expect(controller).to receive(:head).with(:ok)
+
+          subject
+        end
+      end
+    end
+
+    context 'with inline image' do
+      let(:filename) { 'test.png' }
+      let(:params) { { disposition: 'inline', attachment: filename } }
+
+      it 'sends a file with inline disposition' do
+        expected_params = {
+          filename: 'test.png',
+          disposition: 'inline'
+        }
+        expect(controller).to receive(:send_file).with(uploader.path, expected_params)
+
+        subject
+      end
+    end
+
+    context 'with attachment' do
+      let(:filename) { 'test.js' }
+      let(:params) { { attachment: filename } }
+
+      it 'sends a file with content-type of text/plain' do
+        expected_params = {
+          content_type: 'text/plain',
+          filename: 'test.js',
+          disposition: 'attachment'
+        }
+        expect(controller).to receive(:send_file).with(uploader.path, expected_params)
+
+        subject
+      end
+
+      context 'with a proxied file in object storage' do
+        before do
+          stub_uploads_object_storage(uploader: uploader_class)
+          uploader.object_store = ObjectStorage::Store::REMOTE
+          uploader.store!(temp_file)
+          allow(Gitlab.config.uploads.object_store).to receive(:proxy_download).and_return(true)
+        end
+
+        it 'sends a file with a custom type' do
+          headers = double
+          expected_headers = /response-content-disposition=attachment%3B%20filename%3D%22test.js%22%3B%20filename%2A%3DUTF-8%27%27test.js&response-content-type=text%2Fjavascript/
+          expect(Gitlab::Workhorse).to receive(:send_url).with(expected_headers).and_call_original
+          expect(headers).to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-url:/)
+
+          expect(controller).not_to receive(:send_file)
+          expect(controller).to receive(:headers) { headers }
+          expect(controller).to receive(:head).with(:ok)
+
+          subject
+        end
+
+        context 'with ssrf_params' do
+          let(:ssrf_params) { { ssrf_filter: true } }
+          let(:params) { super().merge(ssrf_params: ssrf_params) }
+
+          before do
+            allow(controller).to receive(:headers).and_return({})
+            allow(controller).to receive(:head).with(:ok)
+          end
+
+          it_behaves_like 'sets SSRF parameters for the Workhorse send-url instruction'
+        end
+
+        context 'when sanitize_content_type option is true' do
+          let(:params) { { attachment: filename, sanitize_content_type: true } }
+          let(:filename) { 'test.html' }
+          let(:content_type) { 'text/html' }
+          let(:headers) { double }
+
+          before do
+            allow(Gitlab::ContentTypes).to receive(:sanitize_content_type).and_return(content_type)
+            allow(controller).to receive(:headers).and_return(headers)
+            allow(headers).to receive(:store)
+            allow(controller).to receive(:head).with(:ok)
+          end
+
+          it 'sends a file with a sanitized content-type' do
+            expected_headers = /response-content-disposition=attachment%3B%20filename%3D%22test.html%22%3B%20filename%2A%3DUTF-8%27%27test.html&response-content-type=text%2Fhtml/
+            expect(Gitlab::Workhorse).to receive(:send_url).with(expected_headers).and_call_original
+
+            subject
+          end
+        end
+      end
+    end
+
+    context 'when remote file is used' do
+      before do
+        stub_uploads_object_storage(uploader: uploader_class)
+        uploader.object_store = ObjectStorage::Store::REMOTE
+        uploader.store!(temp_file)
+      end
+
+      shared_examples 'proxied file' do
+        it 'sends a file' do
+          headers = double
+          expect(Gitlab::Workhorse).not_to receive(:send_url).with(/response-content-disposition/)
+          expect(Gitlab::Workhorse).not_to receive(:send_url).with(/response-content-type/)
+          expect(Gitlab::Workhorse).to receive(:send_url).and_call_original
+
+          expect(headers).to receive(:store).with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-url:/)
+          expect(controller).not_to receive(:send_file)
+          expect(controller).to receive(:headers) { headers }
+          expect(controller).to receive(:head).with(:ok)
+
+          subject
+        end
+      end
+
+      context 'and proxying is enabled' do
+        before do
+          allow(Gitlab.config.uploads.object_store).to receive(:proxy_download).and_return(true)
+        end
+
+        it_behaves_like 'proxied file'
+
+        context 'with ssrf_params' do
+          let(:ssrf_params) { { ssrf_filter: true } }
+          let(:params) { { ssrf_params: ssrf_params } }
+          let(:headers) { {} }
+
+          before do
+            allow(controller).to receive(:headers).and_return(headers)
+            allow(controller).to receive(:head).with(:ok)
+          end
+
+          it_behaves_like 'sets SSRF parameters for the Workhorse send-url instruction'
+        end
+      end
+
+      context 'and proxying is disabled' do
+        before do
+          allow(Gitlab.config.uploads.object_store).to receive(:proxy_download).and_return(false)
+        end
+
+        it 'sends a file' do
+          expect(controller).to receive(:redirect_to).with(/#{uploader.path}/)
+
+          subject
+        end
+
+        context 'with proxy requested' do
+          let(:params) { { proxy: true } }
+
+          it_behaves_like 'proxied file'
+        end
+      end
+
+      it_behaves_like 'handles image resize requests', :avatar
+      it_behaves_like 'handles image resize requests', :pwa_icon
+    end
+
+    context 'when CDN-enabled remote file is used' do
+      let(:uploader) { cdn_uploader_class.new(object, :file) }
+      let(:request) { instance_double('ActionDispatch::Request', remote_ip: '18.245.0.42') }
+      let(:signed_url) { 'https://cdn.example.org.test' }
+      let(:cdn_provider) { instance_double('ObjectStorage::CDN::GoogleCDN', signed_url: signed_url) }
+
+      before do
+        stub_uploads_object_storage(uploader: cdn_uploader_class)
+        uploader.object_store = ObjectStorage::Store::REMOTE
+        uploader.store!(temp_file)
+        allow(Gitlab.config.uploads.object_store).to receive(:proxy_download).and_return(false)
+      end
+
+      it 'sends a file when CDN URL' do
+        expect(uploader).to receive(:use_cdn?).and_return(true)
+        expect(uploader).to receive(:cdn_provider).and_return(cdn_provider)
+        expect(controller).to receive(:request).and_return(request)
+        expect(controller).to receive(:redirect_to).with(signed_url)
+
+        subject
+      end
+    end
+
+    describe 'Workhorse JWT verification' do
+      before do
+        allow(controller).to receive_messages(headers: {}, head: nil, send_file: nil, redirect_to: nil)
+      end
+
+      context 'with the image-scaling (send-scaled-img) branch' do
+        let(:params) { { attachment: 'avatar.png' } }
+
+        before do
+          uploader.store!(temp_file)
+          allow(uploader).to receive_messages(image_safe_for_scaling?: true, mounted_as: :avatar)
+          allow(controller).to receive(:params).and_return(ActionController::Parameters.new(width: '64'))
+        end
+
+        it 'verifies the Workhorse JWT before emitting senddata' do
+          expect(controller).to receive(:verify_workhorse_api!)
+          expect(controller.headers).to receive(:store)
+            .with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-scaled-img:/)
+
+          subject
+        end
+
+        it 'does not emit senddata when verification fails' do
+          allow(controller).to receive(:verify_workhorse_api!).and_raise(JWT::DecodeError)
+
+          expect(controller.headers).not_to receive(:store)
+          expect { subject }.to raise_error(JWT::DecodeError)
+        end
+      end
+
+      context 'with the proxied object-storage (send-url) branch' do
+        before do
+          stub_uploads_object_storage(uploader: uploader_class)
+          uploader.object_store = ObjectStorage::Store::REMOTE
+          uploader.store!(temp_file)
+          allow(Gitlab.config.uploads.object_store).to receive(:proxy_download).and_return(true)
+        end
+
+        it 'verifies the Workhorse JWT before emitting senddata' do
+          expect(controller).to receive(:verify_workhorse_api!)
+          expect(controller.headers).to receive(:store)
+            .with(Gitlab::Workhorse::SEND_DATA_HEADER, /^send-url:/)
+
+          subject
+        end
+
+        it 'does not emit senddata when verification fails' do
+          allow(controller).to receive(:verify_workhorse_api!).and_raise(JWT::DecodeError)
+
+          expect(controller.headers).not_to receive(:store)
+          expect { subject }.to raise_error(JWT::DecodeError)
+        end
+      end
+
+      context 'with the local-file (send_file) branch' do
+        before do
+          uploader.store!(temp_file)
+        end
+
+        it 'does not verify the Workhorse JWT (no senddata emitted)' do
+          expect(controller).not_to receive(:verify_workhorse_api!)
+          expect(controller).to receive(:send_file)
+
+          subject
+        end
+      end
+
+      context 'with the object-storage redirect branch' do
+        before do
+          stub_uploads_object_storage(uploader: uploader_class)
+          uploader.object_store = ObjectStorage::Store::REMOTE
+          uploader.store!(temp_file)
+          allow(Gitlab.config.uploads.object_store).to receive(:proxy_download).and_return(false)
+        end
+
+        it 'does not verify the Workhorse JWT (no senddata emitted)' do
+          expect(controller).not_to receive(:verify_workhorse_api!)
+          expect(controller).to receive(:redirect_to)
+
+          subject
+        end
+      end
+    end
+  end
+end

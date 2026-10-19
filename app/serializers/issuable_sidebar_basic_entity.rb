@@ -1,0 +1,110 @@
+# frozen_string_literal: true
+
+class IssuableSidebarBasicEntity < Grape::Entity
+  include RequestAwareEntity
+
+  expose :id
+  expose :iid
+  expose :type, &:to_ability_name
+  expose :author_id
+  expose :project_id do |issuable|
+    issuable.project.id
+  end
+  expose :discussion_locked
+  expose :reference do |issuable|
+    issuable.to_reference(issuable.project, full: true)
+  end
+
+  expose :milestone, using: ::API::Entities::Milestone
+  expose :labels, using: LabelEntity
+
+  expose :current_user, if: ->(_issuable) { current_user } do
+    expose :current_user, merge: true, using: ::API::Entities::UserBasic
+
+    expose :can_edit do |issuable|
+      subject = issuable.try(:incident_type_issue?) ? issuable : issuable.project
+
+      can?(current_user, :"admin_#{issuable.to_ability_name}", subject)
+    end
+
+    expose :can_move do |issuable|
+      issuable.can_move?(current_user)
+    end
+
+    expose :can_create_label do |issuable|
+      can?(current_user, :create_label, issuable.project)
+    end
+
+    expose :can_create_timelogs do |issuable|
+      can?(current_user, :create_timelog, issuable)
+    end
+  end
+
+  expose :issuable_json_path do |issuable|
+    if issuable.is_a?(MergeRequest)
+      project_merge_request_path(issuable.project, issuable.iid, :json)
+    else
+      project_issue_path(issuable.project, issuable.iid, :json)
+    end
+  end
+
+  expose :project_full_path do |issuable|
+    issuable.project.full_path
+  end
+
+  expose :project_issuables_path do |issuable|
+    project = issuable.project
+    namespace = project.namespace
+
+    if issuable.is_a?(MergeRequest)
+      namespace_project_merge_requests_path(namespace, project)
+    else
+      namespace_project_issues_path(namespace, project)
+    end
+  end
+
+  expose :project_labels_path do |issuable|
+    project_labels_path(issuable.project, :json, include_ancestor_groups: true)
+  end
+
+  expose :toggle_subscription_path do |issuable|
+    toggle_subscription_path(issuable)
+  end
+
+  expose :move_issue_path do |issuable|
+    move_namespace_project_issue_path(
+      namespace_id: issuable.project.namespace.to_param,
+      project_id: issuable.project,
+      id: issuable
+    )
+  end
+
+  expose :projects_autocomplete_path do |issuable|
+    autocomplete_projects_path(project_id: issuable.project.id)
+  end
+
+  expose :create_note_email do |issuable|
+    scope_validator = options[:scope_validator]
+    next if scope_validator && !scope_validator.valid_for?([:api])
+    # blocking all granular PATs here since:
+    # - This is non API facing serializer. This is supposed to be only rendered in the UI, and we're not using granular
+    # pats accessing sidebar data
+    # - To enable granular access we would need to expose access key to this presenter
+    next if options[:granular_token]
+
+    issuable.creatable_note_email_address(current_user)
+  end
+
+  expose :supports_time_tracking?, as: :supports_time_tracking
+  expose :supports_milestone?, as: :supports_milestone
+  expose :supports_severity?, as: :supports_severity
+  expose :supports_escalation?, as: :supports_escalation
+
+  private
+
+  def current_user
+    request.current_user
+  end
+end
+
+IssuableSidebarBasicEntity.prepend_mod_with('IssuableSidebarBasicEntity')

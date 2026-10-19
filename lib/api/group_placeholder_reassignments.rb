@@ -1,0 +1,109 @@
+# frozen_string_literal: true
+
+module API
+  class GroupPlaceholderReassignments < ::API::Base
+    helpers do
+      def csv_upload_params
+        declared_params(include_missing: false)
+      end
+    end
+
+    before do
+      authenticate!
+    end
+
+    feature_category :importers
+
+    params do
+      requires :id, type: String, desc: 'ID or URL-encoded path of the group.'
+    end
+    resource :groups, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'Retrieve pending reassignments' do
+        detail 'Retrieves a CSV file with a list of pending reassignments. ' \
+          'This feature was introduced in GitLab 17.10.'
+        produces %w[text/csv]
+        success code: 200
+        tags ['groups']
+      end
+      route_setting :authorization, permissions: :read_placeholder_reassignment, boundary_type: :group
+      get ':id/placeholder_reassignments' do
+        authorize! :read_placeholder_reassignment, user_group
+
+        csv_response = Import::SourceUsers::GenerateCsvService.new(user_group, current_user: current_user).execute
+
+        if csv_response.success?
+          content_type 'text/csv; charset=utf-8'
+          header(
+            "Content-Disposition",
+            "attachment; filename=\"placeholder_reassignments_for_group_#{user_group.id}_#{Time.current.to_i}.csv\""
+          )
+          env['api.format'] = :csv
+          csv_response.payload
+        else
+          unprocessable_entity!(csv_response.message)
+        end
+      end
+
+      desc 'Workhorse authorization for the reassignment CSV file' do
+        detail 'Authorizes Workhorse to handle CSV file uploads for placeholder reassignments.
+          This feature was introduced in GitLab 17.10'
+        tags ['groups']
+      end
+      route_setting :authorization, skip_granular_token_authorization: :workhorse_pre_authorization
+      post ':id/placeholder_reassignments/authorize' do
+        authorize! :create_placeholder_reassignment, user_group
+
+        require_gitlab_workhorse!
+
+        status 200
+        content_type Gitlab::Workhorse::INTERNAL_API_CONTENT_TYPE
+
+        ::Import::PlaceholderReassignmentsUploader.workhorse_authorize(
+          has_length: false,
+          maximum_size: ::Import::UserMapping::ReassignmentCsvValidator::MAX_CSV_SIZE
+        )
+      end
+
+      desc 'Reassign placeholders' do
+        detail 'Reassigns placeholder users with an uploaded CSV file.'
+        tags ['groups']
+      end
+      params do
+        requires :file,
+          type: ::API::Validations::Types::WorkhorseFile,
+          desc: 'The CSV file containing the reassignments',
+          documentation: { type: 'file' }
+      end
+      route_setting :authorization, permissions: :create_placeholder_reassignment, boundary_type: :group
+      post ':id/placeholder_reassignments' do
+        authorize! :create_placeholder_reassignment, user_group
+
+        check_rate_limit!(:placeholder_reassignment, scope: { user: current_user })
+
+        require_gitlab_workhorse!
+
+        unless csv_upload_params[:file].original_filename.ends_with?('.csv')
+          unprocessable_entity!(s_('UserMapping|You must upload a CSV file with a .csv file extension.'))
+        end
+
+        uploader = UploadService.new(
+          user_group,
+          csv_upload_params[:file],
+          ::Import::PlaceholderReassignmentsUploader
+        ).execute
+
+        result = Import::SourceUsers::BulkReassignFromCsvService.new(
+          current_user,
+          user_group,
+          uploader.upload
+        ).async_execute
+
+        if result.success?
+          { message: s_('UserMapping|The file is being processed and you will receive an email when completed.') }
+        else
+          unprocessable_entity!(result.message)
+        end
+      end
+    end
+  end
+end

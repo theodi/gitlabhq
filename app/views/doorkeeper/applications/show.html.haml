@@ -1,27 +1,10 @@
-- page_title @application.name, "Applications"
-%h3.page-title
-  Application: #{@application.name}
+- add_to_breadcrumbs _("Applications"), oauth_applications_path
+- breadcrumb_title @application.name
+- page_title @application.name, _("Applications")
 
-
-%table.table
-  %tr
-    %td
-      Application Id
-    %td
-      %code#application_id= @application.uid
-  %tr
-    %td
-      Secret:
-    %td
-      %code#secret= @application.secret
-
-  %tr
-    %td
-      Callback url
-    %td
-      - @application.redirect_uri.split.each do |uri|
-        %div
-          %span.monospace= uri
-.form-actions
-  = link_to 'Edit', edit_oauth_application_path(@application), class: 'btn btn-primary wide pull-left'
-  = render 'delete_form', application: @application, submit_btn_css: 'btn btn-danger prepend-left-10'
+= render ::Layouts::PageHeadingComponent.new(_("Application: %{name}") % { name: @application.name })
+= render 'shared/doorkeeper/applications/show',
+  edit_path: edit_oauth_application_path(@application),
+  delete_path: oauth_application_path(@application),
+  index_path: oauth_applications_path,
+  renew_path: renew_oauth_application_path(@application)

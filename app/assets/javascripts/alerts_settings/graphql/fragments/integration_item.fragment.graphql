@@ -1,0 +1,8 @@
+fragment IntegrationItem on AlertManagementIntegration {
+  id
+  type
+  active
+  name
+  url
+  token
+}

@@ -1,0 +1,446 @@
+import MockAdapter from 'axios-mock-adapter';
+import { createTestingPinia } from '@pinia/testing';
+import { TEST_HOST } from 'helpers/test_constants';
+import { createAlert } from '~/alert';
+import service from '~/batch_comments/services/drafts_service';
+import axios from '~/lib/utils/axios_utils';
+import diffsEventHub from '~/diffs/event_hub';
+import { HTTP_STATUS_INTERNAL_SERVER_ERROR, HTTP_STATUS_OK } from '~/lib/utils/http_status';
+import { createTestPiniaAction, createCustomGetters } from 'helpers/pinia_helpers';
+import { globalAccessorPlugin } from '~/pinia/plugins';
+import { useBatchComments } from '~/batch_comments/store';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import * as types from '~/batch_comments/stores/modules/batch_comments/mutation_types';
+
+jest.mock('~/alert');
+jest.mock('~/diffs/event_hub');
+
+describe('Batch comments store actions', () => {
+  let res = {};
+  let mock;
+  let legacyNotesGetters = {};
+  let batchCommentsGetters = {};
+  let store;
+  let testAction;
+
+  beforeEach(() => {
+    mock = new MockAdapter(axios);
+    createTestingPinia({
+      stubActions: false,
+      plugins: [
+        createCustomGetters(() => ({
+          legacyDiffs: {},
+          fileBrowser: {},
+          discussions: {},
+          legacyNotes: legacyNotesGetters,
+          batchComments: batchCommentsGetters,
+        })),
+        globalAccessorPlugin,
+      ],
+    });
+    useLegacyDiffs();
+    useNotes();
+    store = useBatchComments();
+    testAction = createTestPiniaAction(store);
+  });
+
+  afterEach(() => {
+    res = {};
+    mock.restore();
+  });
+
+  describe('saveDraft', () => {
+    it('dispatches saveNote on root', () => {
+      useNotes().saveNote.mockResolvedValueOnce();
+      store.saveDraft({ id: 1 });
+
+      expect(useNotes().saveNote).toHaveBeenCalledWith({ id: 1, isDraft: true });
+    });
+  });
+
+  describe('addDraftToDiscussion', () => {
+    it('commits ADD_NEW_DRAFT if no errors returned', () => {
+      res = { id: 1 };
+      mock.onAny().reply(HTTP_STATUS_OK, res);
+
+      return testAction(
+        store.addDraftToDiscussion,
+        { endpoint: TEST_HOST, data: 'test' },
+        null,
+        [{ type: store[types.ADD_NEW_DRAFT], payload: res }],
+        [],
+      );
+    });
+
+    it('does not commit ADD_NEW_DRAFT if errors returned', () => {
+      mock.onAny().reply(HTTP_STATUS_INTERNAL_SERVER_ERROR);
+
+      return store.addDraftToDiscussion({ endpoint: TEST_HOST, data: 'test' }).catch(() => {
+        expect(store[types.ADD_NEW_DRAFT]).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('createNewDraft', () => {
+    it('commits ADD_NEW_DRAFT if no errors returned', () => {
+      res = { id: 1 };
+      mock.onAny().reply(HTTP_STATUS_OK, res);
+
+      return testAction(
+        store.createNewDraft,
+        { endpoint: TEST_HOST, data: 'test' },
+        null,
+        [{ type: store[types.ADD_NEW_DRAFT], payload: res }],
+        [],
+      );
+    });
+
+    it('dispatchs addDraftToFile if draft is on file', () => {
+      useLegacyDiffs().addDraftToFile.mockResolvedValueOnce();
+      res = { id: 1, position: { position_type: 'file' }, file_path: 'index.js' };
+      mock.onAny().reply(HTTP_STATUS_OK, res);
+
+      return testAction(
+        store.createNewDraft,
+        { endpoint: TEST_HOST, data: 'test' },
+        null,
+        [{ type: store[types.ADD_NEW_DRAFT], payload: res }],
+        [{ type: useLegacyDiffs().addDraftToFile, payload: { draft: res, filePath: 'index.js' } }],
+      );
+    });
+
+    it('does not commit ADD_NEW_DRAFT if errors returned', () => {
+      mock.onAny().reply(HTTP_STATUS_INTERNAL_SERVER_ERROR);
+
+      return store.createNewDraft({ endpoint: TEST_HOST, data: 'test' }).catch(() => {
+        expect(store[types.ADD_NEW_DRAFT]).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('deleteDraft', () => {
+    beforeEach(() => {
+      batchCommentsGetters = {
+        getNotesData: {
+          draftsDiscardPath: TEST_HOST,
+        },
+      };
+    });
+
+    it('commits DELETE_DRAFT if no errors returned', () => {
+      res = { id: 1 };
+      mock.onAny().reply(HTTP_STATUS_OK);
+
+      return store.deleteDraft({ id: 1 }).then(() => {
+        expect(store[types.DELETE_DRAFT]).toHaveBeenCalledWith(1);
+      });
+    });
+
+    it('does not commit DELETE_DRAFT if errors returned', () => {
+      mock.onAny().reply(HTTP_STATUS_INTERNAL_SERVER_ERROR);
+
+      return store.deleteDraft({ id: 1 }).then(() => {
+        expect(store[types.DELETE_DRAFT]).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('fetchDrafts', () => {
+    beforeEach(() => {
+      batchCommentsGetters = {
+        getNotesData: {
+          draftsPath: TEST_HOST,
+        },
+      };
+    });
+
+    it('commits SET_BATCH_COMMENTS_DRAFTS with returned data', () => {
+      useNotes().convertToDiscussion.mockResolvedValueOnce();
+      store.$patch({ drafts: [{ line_code: '123' }, { line_code: null, discussion_id: '1' }] });
+      res = [{ id: 1, discussion_id: '2' }];
+      mock.onAny().reply(HTTP_STATUS_OK, res);
+
+      return store.fetchDrafts().then(() => {
+        expect(store[types.SET_BATCH_COMMENTS_DRAFTS]).toHaveBeenCalledWith(res);
+        expect(useNotes().convertToDiscussion).toHaveBeenCalledWith('2');
+      });
+    });
+
+    it('clears memoized promise on failure so retries are possible', async () => {
+      mock.onAny().reply(HTTP_STATUS_INTERNAL_SERVER_ERROR);
+
+      await expect(store.fetchDrafts()).rejects.toThrow();
+
+      expect(store.fetchDraftsPromise).toBeNull();
+    });
+  });
+
+  describe('publishReview', () => {
+    beforeEach(() => {
+      batchCommentsGetters = {
+        getNotesData: { draftsPublishPath: TEST_HOST, discussionsPath: TEST_HOST },
+      };
+    });
+
+    it('dispatches actions & commits', () => {
+      mock.onAny().reply(HTTP_STATUS_OK);
+
+      return store.publishReview().then(() => {
+        expect(store[types.REQUEST_PUBLISH_REVIEW]).toHaveBeenCalled();
+        expect(store[types.RECEIVE_PUBLISH_REVIEW_SUCCESS]).toHaveBeenCalled();
+      });
+    });
+
+    it('resolves with the response body', async () => {
+      mock.onAny().reply(HTTP_STATUS_OK, { review_id: 5, reviewer_state_error: 'error' });
+
+      await expect(store.publishReview()).resolves.toEqual({
+        review_id: 5,
+        reviewer_state_error: 'error',
+      });
+    });
+
+    it('calls service with notes data', () => {
+      mock.onAny().reply(HTTP_STATUS_OK);
+      jest.spyOn(axios, 'post');
+
+      return store.publishReview({ note: 'test' }).then(() => {
+        expect(axios.post.mock.calls[0]).toEqual(['http://test.host', { note: 'test' }]);
+      });
+    });
+
+    it('dispatches error commits', () => {
+      mock.onAny().reply(HTTP_STATUS_INTERNAL_SERVER_ERROR);
+
+      return store.publishReview().catch(() => {
+        expect(store[types.REQUEST_PUBLISH_REVIEW]).toHaveBeenCalled();
+        expect(store[types.RECEIVE_PUBLISH_REVIEW_ERROR]).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('publishReviewInBatches', () => {
+    it('publishes draft notes in batches', async () => {
+      mock.onAny().reply(HTTP_STATUS_OK);
+      jest.spyOn(axios, 'post');
+
+      store.$patch({ drafts: [{ id: 1 }, { id: 2 }] });
+
+      await store.publishReviewInBatches({}, 1);
+
+      expect(axios.post.mock.calls[0]).toEqual(['http://test.host', { ids: [1] }]);
+      expect(axios.post.mock.calls[1]).toEqual(['http://test.host', { ids: [2] }]);
+      expect(store[types.RECEIVE_PUBLISH_REVIEW_SUCCESS]).toHaveBeenCalled();
+    });
+
+    it('resolves with the last batch response body', async () => {
+      mock
+        .onPost()
+        .replyOnce(HTTP_STATUS_OK, { review_id: 5 })
+        .onPost()
+        .replyOnce(HTTP_STATUS_OK, { review_id: 5, reviewer_state_error: 'error' });
+
+      store.$patch({ drafts: [{ id: 1 }, { id: 2 }] });
+
+      await expect(store.publishReviewInBatches({}, 1)).resolves.toEqual({
+        review_id: 5,
+        reviewer_state_error: 'error',
+      });
+    });
+
+    it('publishes every batch into one review when improvedReviewEmail is enabled', async () => {
+      window.gon.features = { improvedReviewEmail: true };
+      mock.onAny().reply(HTTP_STATUS_OK, { review_id: 5 });
+      jest.spyOn(axios, 'post');
+
+      store.$patch({ drafts: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+
+      await store.publishReviewInBatches({ note: 'Summary' }, 1);
+
+      expect(axios.post.mock.calls.map(([, data]) => data)).toEqual([
+        { ids: [1], defer_notifications: true },
+        { ids: [2], defer_notifications: true, review_id: 5 },
+        { ids: [3], note: 'Summary', review_id: 5 },
+      ]);
+    });
+
+    it('continues the same review when a failed batch is retried', async () => {
+      window.gon.features = { improvedReviewEmail: true };
+      mock
+        .onPost()
+        .replyOnce(HTTP_STATUS_OK, { review_id: 5 })
+        .onPost()
+        .replyOnce(HTTP_STATUS_INTERNAL_SERVER_ERROR)
+        .onPost()
+        .reply(HTTP_STATUS_OK, { review_id: 5 });
+      jest.spyOn(axios, 'post');
+
+      store.$patch({ drafts: [{ id: 1 }, { id: 2 }] });
+
+      await expect(store.publishReviewInBatches({}, 1)).rejects.toThrow();
+      await store.publishReviewInBatches({}, 1);
+
+      expect(axios.post.mock.calls.map(([, data]) => data)).toEqual([
+        { ids: [1], defer_notifications: true },
+        { ids: [2], review_id: 5 },
+        { ids: [2], review_id: 5 },
+      ]);
+      expect(store.publishReviewId).toBeNull();
+    });
+  });
+
+  describe('updateDraft', () => {
+    service.update = jest.fn();
+    service.update.mockResolvedValue({ data: { id: 1 } });
+
+    let params;
+
+    beforeEach(() => {
+      batchCommentsGetters = {
+        getNotesData: {
+          draftsPath: TEST_HOST,
+        },
+      };
+
+      res = { id: 1 };
+      mock.onAny().reply(HTTP_STATUS_OK, res);
+      params = { note: { id: 1 }, noteText: 'test' };
+    });
+
+    it('commits RECEIVE_DRAFT_UPDATE_SUCCESS with returned data', async () => {
+      await store.updateDraft(params);
+      expect(store[types.RECEIVE_DRAFT_UPDATE_SUCCESS]).toHaveBeenCalledWith({ id: 1 });
+    });
+
+    it('does not stringify empty position', async () => {
+      await store.updateDraft({ ...params, position: {} });
+      expect(service.update.mock.calls[0][1].position).toBeUndefined();
+    });
+
+    it('stringifies a non-empty position', async () => {
+      const position = { test: true };
+      const expectation = JSON.stringify(position);
+      await store.updateDraft({ ...params, position });
+      expect(service.update.mock.calls[0][1].position).toBe(expectation);
+    });
+
+    describe('when updating a draft returns an error', () => {
+      const error = 'server error';
+
+      it('rejects the promise', async () => {
+        service.update.mockRejectedValue({ response: { data: { errors: error } } });
+        await expect(store.updateDraft(params)).rejects.toEqual(
+          expect.objectContaining({ response: expect.any(Object) }),
+        );
+      });
+    });
+  });
+
+  describe('expandAllDiscussions', () => {
+    it('dispatches expandDiscussion for all drafts', () => {
+      useNotes().expandDiscussion.mockResolvedValue();
+      const state = {
+        drafts: [
+          {
+            discussion_id: '1',
+          },
+        ],
+      };
+
+      return testAction(
+        store.expandAllDiscussions,
+        null,
+        state,
+        [],
+        [
+          {
+            type: useNotes().expandDiscussion,
+            payload: { discussionId: '1' },
+          },
+        ],
+      );
+    });
+  });
+
+  describe('scrollToDraft', () => {
+    beforeEach(() => {
+      window.mrTabs = {
+        currentAction: 'notes',
+        tabShown: jest.fn(),
+      };
+    });
+
+    it('scrolls to draft item', () => {
+      useLegacyDiffs().setFileCollapsedAutomatically.mockResolvedValueOnce();
+      useNotes().expandDiscussion.mockResolvedValueOnce();
+      legacyNotesGetters = {
+        getDiscussion: () => ({
+          id: '1',
+          diff_discussion: true,
+        }),
+      };
+      const draft = {
+        discussion_id: '1',
+        id: '2',
+        file_path: 'lib/example.js',
+      };
+
+      store.scrollToDraft(draft);
+
+      expect(useLegacyDiffs().setFileCollapsedAutomatically).toHaveBeenCalledWith({
+        filePath: draft.file_path,
+        collapsed: false,
+      });
+      expect(useNotes().expandDiscussion).toHaveBeenCalledWith({ discussionId: '1' });
+      expect(window.mrTabs.tabShown).toHaveBeenCalledWith('diffs');
+    });
+
+    it('emits `scrollToFileHash` with the file hash', () => {
+      store.scrollToDraft({ file_hash: 'filehash' });
+
+      expect(diffsEventHub.$emit).toHaveBeenCalledWith('scrollToFileHash', 'filehash');
+    });
+  });
+
+  describe('clearDrafts', () => {
+    it('commits CLEAR_DRAFTS', () => {
+      return testAction(store.clearDrafts, null, null, [{ type: store[types.CLEAR_DRAFTS] }], []);
+    });
+  });
+
+  describe('discardDrafts', () => {
+    beforeEach(() => {
+      batchCommentsGetters = {
+        getNotesData: { draftsDiscardPath: TEST_HOST },
+      };
+    });
+
+    it('dispatches actions & commits', async () => {
+      mock.onAny().reply(HTTP_STATUS_OK);
+
+      await store.discardDrafts();
+
+      expect(store[types.CLEAR_DRAFTS]).toHaveBeenCalled();
+    });
+
+    it('calls createAlert when server returns an error', async () => {
+      mock.onAny().reply(HTTP_STATUS_INTERNAL_SERVER_ERROR);
+
+      await store.discardDrafts();
+
+      expect(createAlert).toHaveBeenCalledWith({
+        error: expect.anything(),
+        captureError: true,
+        message: 'An error occurred while discarding your review. Please try again.',
+      });
+    });
+  });
+
+  describe('setDrawerOpened', () => {
+    it('sets drawerOpened state', () => {
+      store.setDrawerOpened(true);
+      expect(store.drawerOpened).toBe(true);
+    });
+  });
+});

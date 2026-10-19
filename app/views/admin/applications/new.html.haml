@@ -1,4 +1,7 @@
-- page_title "New Application"
-%h3.page-title New application
+- add_to_breadcrumbs _("Applications"), admin_applications_path
+- breadcrumb_title _("Add new application")
+- page_title _("Add new application")
+
+= render ::Layouts::PageHeadingComponent.new(_("Add new application"))
 - @url = admin_applications_path
 = render 'form', application: @application

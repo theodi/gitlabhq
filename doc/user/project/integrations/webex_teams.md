@@ -1,0 +1,54 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Webex Teams
+description: "Send event notifications from GitLab to Webex Teams spaces with webhooks."
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+You can configure GitLab to send notifications to a Webex Teams space:
+
+1. Create a webhook for the space.
+1. Add the webhook to GitLab.
+
+## Create a webhook for the space
+
+1. Go to the [Incoming Webhooks app page](https://apphub.webex.com/applications/incoming-webhooks-cisco-systems-38054-23307-75252).
+1. Select **Connect**, and sign in to Webex Teams if required.
+1. Enter a name for the webhook and select the space to receive the notifications.
+1. Select **ADD**.
+1. Copy the **Webhook URL**.
+
+## Configure settings in GitLab
+
+Prerequisites:
+
+- Administrator access to turn on the integration for an instance.
+- The Owner role to turn on the integration for a group.
+- The Maintainer or Owner role to turn on the integration for a project.
+
+After you have a webhook URL for your Webex Teams space, you can configure GitLab to send
+notifications:
+
+1. To turn on the integration:
+   - For your group or project:
+     1. In the top bar, select **Search or go to** and find your project or group.
+     1. Select **Settings** > **Integrations**.
+   - For your instance:
+     1. In the upper-right corner, select **Admin**.
+     1. Select **Settings** > **Integrations**.
+1. Select the **Webex Teams** integration.
+1. Under **Enable integration**, select the **Active** checkbox.
+1. Select the checkboxes corresponding to the GitLab events you want to receive in Webex Teams.
+1. Paste the **Webhook** URL for the Webex Teams space.
+1. Optional. Select **Test settings**.
+1. Select **Save changes**.
+
+The Webex Teams space begins to receive all applicable GitLab events.

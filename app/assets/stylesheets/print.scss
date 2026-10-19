@@ -1,17 +1,233 @@
-/* Generic print styles */
-header, nav, nav.main-nav, nav.navbar-collapse, nav.navbar-collapse.collapse {display: none!important;}
-.profiler-results {display: none;}
+@import 'framework/variables';
+@import 'framework/variables_overrides';
 
-/* Styles targeted specifically at printing files */
-.tree-ref-holder, .tree-holder .breadcrumb, .blob-commit-info {display: none;}
-.file-title {display: none;}
-.file-holder {border: none;}
+@import '@gitlab/ui/src/scss/variables';
+@import '@gitlab/ui/src/scss/mixins';
 
-.wiki h1, .wiki h2, .wiki h3, .wiki h4, .wiki h5, .wiki h6 {margin-top: 17px; }
-.wiki h1 {font-size: 30px;}
-.wiki h2 {font-size: 22px;}
-.wiki h3 {font-size: 18px; font-weight: bold; }
+@media print {
+  .md h1,
+  .md h2,
+  .md h3,
+  .md h4,
+  .md h5,
+  .md h6 {
+    margin-top: 17px;
+  }
 
-.sidebar-wrapper { display: none; }
-.nav { display: none; }
-.btn { display: none; }
+  .md h1 {
+    font-size: 30px;
+  }
+
+  .md h2 {
+    font-size: 22px;
+  }
+
+  .md h3 {
+    font-size: 18px;
+    font-weight: 600;
+  }
+
+  .md {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+
+    // Sticky table headers fake their top and
+    // bottom borders with inset box-shadows, which browsers omit in print.
+    // Restore real borders and remove the shadow.
+    // See framework/typography.scss for the non-print declaration.
+    [data-sticky-header] > table:not(.code) {
+      > thead > tr:first-child > th,
+      > tbody > tr:first-child > th {
+        border-top: 1px solid var(--gl-border-color-default);
+        border-bottom: 1px solid var(--gl-border-color-default);
+        box-shadow: none;
+      }
+    }
+
+    // fix blockquote style in print
+    blockquote {
+      &::before {
+        position: absolute;
+        top: 0;
+        left: -4px;
+        content: ' ';
+        height: 100%;
+        width: 4px;
+        background-color: $gl-border-color-default;
+      }
+
+      position: relative;
+      font-size: inherit;
+      @apply gl-text-subtle;
+      padding-top: $gl-spacing-scale-3;
+      padding-bottom: $gl-spacing-scale-3;
+      padding-left: $gl-spacing-scale-6;
+      margin-top: $gl-spacing-scale-3;
+      margin-bottom: $gl-spacing-scale-3;
+      margin-right: 0;
+      @apply gl-shadow-inner-l-4-gray-100;
+      margin-left: 4px;
+      border: 0 !important;
+    }
+  }
+
+  // Panels
+  .panels-container {
+    overflow: visible !important;
+  }
+
+  /* stylelint-disable gitlab/no-js-class */
+  .super-topbar,
+  nav,
+  .super-sidebar,
+  .super-sidebar-overlay,
+  .tree-ref-holder,
+  .tree-holder .breadcrumb,
+  .nav,
+  .btn,
+  ul.notes-form,
+  .issuable-gutter-toggle,
+  .gutter-toggle,
+  .edit-link,
+  .note-action-button,
+  .right-sidebar,
+  .flash-container,
+  .panel-header,
+  copy-code,
+  #js-peek {
+    display: none !important;
+  }
+  /* stylelint-enable gitlab/no-js-class */
+
+  pre {
+    page-break-before: avoid;
+    page-break-inside: auto;
+  }
+
+  .page-gutter {
+    padding-top: 0;
+    padding-left: 0;
+  }
+
+  .right-sidebar {
+    top: 0;
+  }
+
+  a[href]::after {
+    content: none !important;
+  }
+
+  .with-performance-bar .layout-page, .content-wrapper {
+    padding-top: 0;
+  }
+
+  .panels-container .panel-content-inner,
+  .panels-container .vue-portal-target .work-item-detail-panel-content {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .panel-content {
+    height: auto !important;
+    overflow: visible !important;
+    contain: none !important;
+  }
+
+  .paneled-view {
+    overflow: visible !important;
+  }
+
+  .page-with-panels .layout-page {
+    height: auto !important;
+  }
+
+  /* stylelint-disable gitlab/no-js-class */
+  .js-file-title,
+  .js-signature-container,
+  .js-fork-suggestion-label {
+    display: none !important;
+  }
+  /* stylelint-enable gitlab/no-js-class */
+
+  // Hide the file browser sidebar and the last-commit panel so only the
+  // rendered markdown prints. We target these elements directly instead of
+  // structurally isolating #tree-holder, because after a soft navigation
+  // (Vue Router) the blob renders inside the tree page's scaffold, where
+  // #tree-holder is wrapped in an extra container and holds the router app
+  // rather than #blob-content-holder. The old structural rules then hid the
+  // content, producing a blank page on the first print attempt. See
+  // https://gitlab.com/gitlab-org/gitlab/-/issues/602773.
+  .navigation-root {
+    display: block !important;
+  }
+
+  // `.file-tree-browser` is the rendered file browser sidebar. We target it
+  // (and the SSR placeholder #js-file-browser, before Vue replaces it on
+  // mount) rather than relying on #tree-holder structure, so it is hidden on
+  // both the blob and the soft-navigated tree-page scaffolds.
+  /* stylelint-disable gitlab/no-js-class */
+  #js-file-browser,
+  .file-tree-browser,
+  .info-well {
+    display: none !important;
+  }
+  /* stylelint-enable gitlab/no-js-class */
+
+  #tree-holder {
+    width: 100% !important;
+    padding: 0 !important;
+  }
+
+  // The repository header area (breadcrumbs, ref selector, file heading) is
+  // mounted by Vue, which replaces its #js-repository-blob-header-app mount
+  // node, so we hide its rendered children by their stable hooks. This is page
+  // chrome, not document content, and must not appear in the printed PDF.
+  /* stylelint-disable gitlab/no-js-class */
+  .tree-ref-container,
+  .js-repo-breadcrumbs,
+  [data-testid="repository-heading"] {
+    display: none !important;
+  }
+  /* stylelint-enable gitlab/no-js-class */
+
+  .file-actions,
+  .file-blame-legend {
+    display: none !important;
+  }
+
+  // Drop the file holder's card border/shadow so the markdown prints flush.
+  // Unscoped from .blob-content-holder because after a soft navigation the
+  // file holder is rendered outside that container.
+  .file-holder {
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+
+  // For users who explicitly select dark mode, the dark stylesheet is loaded
+  // unconditionally (not behind a prefers-color-scheme media query), so its
+  // dark text tokens leak into the print output and render the markdown text
+  // gray on white paper. Reset the text colors to their light-theme values so
+  // printed markdown is always legible regardless of the active color mode.
+  // The raw neutral palette is identical across themes, so referencing it here
+  // is theme-safe. See https://gitlab.com/gitlab-org/gitlab/-/issues/602773.
+  // stylelint-disable-next-line gitlab/no-gl-class
+  :root.gl-dark {
+    --gl-text-color-default: var(--gl-color-neutral-800);
+    --gl-text-color-subtle: var(--gl-color-neutral-600);
+    --gl-text-color-strong: var(--gl-color-neutral-950);
+    --gl-text-color-heading: var(--gl-color-neutral-950);
+
+    // Reset the background tokens too, so the page itself prints on light paper.
+    --gl-background-color-default: var(--gl-color-neutral-0);
+    --gl-background-color-subtle: var(--gl-color-neutral-10);
+    --gl-background-color-strong: var(--gl-color-neutral-50);
+    --gl-background-color-section: var(--gl-color-neutral-0);
+    --gl-background-color-overlap: var(--gl-color-neutral-0);
+
+    // Inline code uses a dark surface in dark mode; reset it to a light one so
+    // the now-dark code text stays readable when printed.
+    .md :not(pre.code) > code {
+      background-color: var(--gl-color-neutral-100);
+    }
+  }
+}

@@ -1,0 +1,163 @@
+---
+stage: Analytics
+group: Platform Insights
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Alert management alerts API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to interact with metric images for [alerts](../operations/incident_management/alerts.md).
+
+Additional endpoints are available with the [GraphQL API](graphql/reference/_index.md#alertmanagementalert).
+
+## Upload metric image
+
+Uploads a metric image for a specified alert.
+
+```plaintext
+POST /projects/:id/alert_management_alerts/:alert_iid/metric_images
+```
+
+| Attribute   | Type           | Required | Description |
+|-------------|----------------|----------|-------------|
+| `id`        | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `alert_iid` | integer        | yes      | The internal ID of a project's alert. |
+
+Example request:
+
+```shell
+curl --request POST --header "PRIVATE-TOKEN: <your_access_token>" \
+  --form 'file=@/path/to/file.png' \
+  --form 'url=http://example.com' \
+  --form 'url_text=Example website' \
+  --url "https://gitlab.example.com/api/v4/projects/5/alert_management_alerts/93/metric_images"
+```
+
+Example response:
+
+```json
+{
+  "id":17,
+  "created_at":"2020-11-12T20:07:58.156Z",
+  "filename":"sample_2054",
+  "file_path":"/uploads/-/system/alert_metric_image/file/17/sample_2054.png",
+  "url":"https://example.com/metric",
+  "url_text":"An example metric"
+}
+```
+
+## List all metric images
+
+Lists all metric images for a specified alert.
+
+```plaintext
+GET /projects/:id/alert_management_alerts/:alert_iid/metric_images
+```
+
+| Attribute   | Type           | Required | Description |
+|-------------|----------------|----------|-------------|
+| `id`        | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `alert_iid` | integer        | yes      | The internal ID of a project's alert. |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/alert_management_alerts/93/metric_images"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id":17,
+    "created_at":"2020-11-12T20:07:58.156Z",
+    "filename":"sample_2054",
+    "file_path":"/uploads/-/system/alert_metric_image/file/17/sample_2054.png",
+    "url":"https://example.com/metric",
+    "url_text":"An example metric"
+  },
+  {
+    "id":18,
+    "created_at":"2020-11-12T20:14:26.441Z",
+    "filename":"sample_2054",
+    "file_path":"/uploads/-/system/alert_metric_image/file/18/sample_2054.png",
+    "url":"https://example.com/metric",
+    "url_text":"An example metric"
+  }
+]
+```
+
+## Update a metric image
+
+Updates a specified metric image for an alert.
+
+```plaintext
+PUT /projects/:id/alert_management_alerts/:alert_iid/metric_images/:image_id
+```
+
+| Attribute   | Type           | Required | Description |
+|-------------|----------------|----------|-------------|
+| `id`        | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `alert_iid` | integer        | yes      | The internal ID of a project's alert. |
+| `image_id`  | integer        | yes      | The ID of the image. |
+| `url`       | string         | no       | The URL to view more metrics information. |
+| `url_text`  | string         | no       | A description of the image or URL. |
+
+Example request:
+
+```shell
+curl --request PUT \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --form 'url=http://example.com' \
+  --form 'url_text=Example website' \
+  --url "https://gitlab.example.com/api/v4/projects/5/alert_management_alerts/93/metric_images/1"
+```
+
+Example response:
+
+```json
+{
+  "id":23,
+  "created_at":"2020-11-13T00:06:18.084Z",
+  "filename":"file.png",
+  "file_path":"/uploads/-/system/alert_metric_image/file/23/file.png",
+  "url":"https://example.com/metric",
+  "url_text":"An example metric"
+}
+```
+
+## Delete a metric image
+
+Deletes a specified metric image for an alert.
+
+```plaintext
+DELETE /projects/:id/alert_management_alerts/:alert_iid/metric_images/:image_id
+```
+
+| Attribute   | Type           | Required | Description |
+|-------------|----------------|----------|-------------|
+| `id`        | integer or string | yes      | The ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `alert_iid` | integer        | yes      | The internal ID of a project's alert. |
+| `image_id`  | integer        | yes      | The ID of the image. |
+
+Example request:
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url  "https://gitlab.example.com/api/v4/projects/5/alert_management_alerts/93/metric_images/1"
+```
+
+Can return the following status codes:
+
+- `204 No Content`: if the image was deleted successfully.
+- `422 Unprocessable`: if the image could not be deleted.

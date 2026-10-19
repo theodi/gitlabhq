@@ -1,0 +1,197 @@
+# frozen_string_literal: true
+
+###
+# API endpoints for the Helm package registry
+module API
+  class HelmPackages < ::API::Base
+    helpers ::API::Helpers::PackagesHelpers
+    helpers ::API::Helpers::Packages::BasicAuthHelpers
+    include ::API::Helpers::Authentication
+
+    feature_category :package_registry
+    urgency :low
+
+    PACKAGE_FILENAME = 'package.tgz'
+    HELM_REQUIREMENTS = {
+      channel: ::API::NO_SLASH_URL_PART_REGEX,
+      file_name: ::API::NO_SLASH_URL_PART_REGEX
+    }.freeze
+
+    content_type :binary, 'application/octet-stream'
+    content_type :yaml, 'text/yaml'
+
+    formatter :yaml, ->(object, _) do
+      # Handle cases where present_carrierwave_file! returns a string as the response body
+      return object if object.is_a?(String)
+
+      yaml_content = object.serializable_hash.stringify_keys.to_yaml
+
+      yaml_content.gsub(Gitlab::Regex.helm_index_app_version_quote_regex, '\1"\2"')
+    end
+
+    helpers do
+      def find_metadata_cache(project_id)
+        ::Packages::Helm::MetadataCache
+          .find_by_project_id_and_channel(project_id, params[:channel])
+      end
+    end
+
+    authenticate_with do |accept|
+      accept.token_types(:personal_access_token, :deploy_token, :job_token)
+            .sent_through(:http_basic_auth)
+    end
+
+    before do
+      require_packages_enabled!
+    end
+
+    params do
+      requires :id, types: [Integer, String], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      namespace ':id/packages/helm', requirements: HELM_REQUIREMENTS do
+        desc 'Download a chart index' do
+          detail 'Downloads a specified chart index for a project.'
+          success code: 200
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' }
+          ]
+          tags %w[packages_helm]
+        end
+        params do
+          requires :channel, type: String, desc: 'Helm repository channel.', regexp: Gitlab::Regex.helm_channel_regex, documentation: { example: 'stable' }
+        end
+
+        route_setting :authorization, permissions: :download_helm_chart, boundary_type: :project
+        get ":channel/index.yaml" do
+          env['api.format'] = :yaml
+
+          project = authorized_user_project(action: :read_package)
+          authorize_read_package!(project)
+
+          helm_metadata_cache = find_metadata_cache(project.id)
+          if helm_metadata_cache
+            helm_metadata_cache.touch_last_downloaded_at unless request.head?
+            present_carrierwave_file!(helm_metadata_cache.file)
+
+            break
+          end
+
+          packages = ::Packages::Helm::PackagesFinder.new(project, params[:channel]).execute
+          metadata = ::Packages::Helm::GenerateMetadataService.new(params[:id], params[:channel], packages).execute
+
+          ::Packages::Helm::BulkSyncHelmMetadataCacheService.new(
+            current_user,
+            ::Packages::PackageFile.for_package_ids(packages.map(&:id)).for_helm_with_channel(project, params[:channel])
+          ).execute
+
+          present metadata.payload, with: ::API::Entities::Helm::Index
+        end
+
+        desc 'Download a chart' do
+          detail 'Downloads a specified chart for a project.'
+          produces %w[application/octet-stream]
+          success code: 200
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not Found' }
+          ]
+          tags %w[packages_helm]
+        end
+        params do
+          requires :channel, type: String, desc: 'Helm repository channel.', regexp: Gitlab::Regex.helm_channel_regex, documentation: { example: 'stable' }
+          requires :file_name, type: String, desc: 'Name of the chart file.', documentation: { example: 'mychart' }
+        end
+
+        route_setting :authorization, permissions: :download_helm_chart, boundary_type: :project
+        get ":channel/charts/:file_name.tgz" do
+          not_found!("Format #{params[:format]}") unless params[:format].nil?
+
+          project = authorized_user_project(action: :read_package)
+          authorize_read_package!(project)
+
+          package_file = Packages::Helm::PackageFilesFinder.new(project, params[:channel], file_name: "#{params[:file_name]}.tgz").most_recent!
+
+          track_package_event('pull_package', :helm, project: project, namespace: project.namespace, property: 'i_package_helm_user')
+
+          present_package_file!(package_file)
+        end
+
+        desc 'Authorize a chart upload from workhorse' do
+          detail 'This feature was introduced in GitLab 14.0'
+          success code: 200
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not Found' }
+          ]
+          tags %w[packages_helm]
+        end
+        params do
+          requires :channel, type: String, desc: 'Helm repository channel.', regexp: Gitlab::Regex.helm_channel_regex, documentation: { example: 'stable' }
+        end
+
+        route_setting :authorization, skip_granular_token_authorization: :workhorse_pre_authorization
+        post "api/:channel/charts/authorize" do
+          authorize_workhorse!(
+            subject: authorized_user_project,
+            has_length: false,
+            maximum_size: authorized_user_project.actual_limits.helm_max_file_size
+          )
+        end
+
+        desc 'Upload a chart' do
+          detail 'Uploads a specified chart for a project.'
+          success code: 201
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not Found' }
+          ]
+          tags %w[packages_helm]
+        end
+        params do
+          requires :channel, type: String, desc: 'Helm repository channel.', regexp: Gitlab::Regex.helm_channel_regex, documentation: { example: 'stable' }
+          requires :chart, type: ::API::Validations::Types::WorkhorseFile, desc: 'The chart file to be published (generated by Multipart middleware)', documentation: { type: 'file' }
+        end
+
+        route_setting :authorization, permissions: :upload_helm_chart, boundary_type: :project
+        post "api/:channel/charts" do
+          authorize_upload!(authorized_user_project)
+          bad_request!('File is too large') if authorized_user_project.actual_limits.exceeded?(:helm_max_file_size, params[:chart].size)
+
+          package = ::Packages::CreateTemporaryPackageService.new(
+            authorized_user_project, current_user, declared_params.merge(build: current_authenticated_job)
+          ).execute(::Packages::Helm::Package, name: ::Packages::Helm::TEMPORARY_PACKAGE_NAME)
+
+          chart_params = {
+            file: params[:chart],
+            file_name: PACKAGE_FILENAME
+          }
+
+          result = ::Packages::Helm::CreatePackageFileService.new(
+            package, chart_params.merge(build: current_authenticated_job)
+          ).execute
+
+          forbidden!(result.message) if result.reason == :package_protected
+          bad_request!(result.message) if result.reason == :extraction_error
+
+          chart_package_file = result.payload[:package_file]
+
+          track_package_event('push_package', :helm, project: authorized_user_project, namespace: authorized_user_project.namespace,
+            property: 'i_package_helm_user')
+
+          ::Packages::Helm::ExtractionWorker.perform_async(params[:channel], chart_package_file.id) # rubocop:disable CodeReuse/Worker
+
+          created!
+        rescue ObjectStorage::RemoteStoreError => e
+          Gitlab::ErrorTracking.track_exception(e, extra: { channel: params[:channel], project_id: authorized_user_project.id })
+
+          forbidden!
+        end
+      end
+    end
+  end
+end

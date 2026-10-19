@@ -1,0 +1,11 @@
+# @feature_category: team_planning
+query workspacePermissions($fullPath: ID!) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    userPermissions {
+      createDesign
+      updateDesign
+      moveDesign
+    }
+  }
+}

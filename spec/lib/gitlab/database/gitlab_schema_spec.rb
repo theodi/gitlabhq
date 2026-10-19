@@ -1,0 +1,350 @@
+# frozen_string_literal: true
+require 'spec_helper'
+
+RSpec.shared_examples 'validate schema data' do |tables_and_views|
+  it 'all tables and views have assigned a known gitlab_schema' do
+    expect(tables_and_views).to all(
+      match([be_a(String), be_in(Gitlab::Database.schemas_to_base_models.keys.map(&:to_sym))])
+    )
+  end
+end
+
+RSpec.describe Gitlab::Database::GitlabSchema, feature_category: :database do
+  describe 'lock_gitlab_schemas for main and related databases' do
+    it 'all gitlab_schema is locked in other database_connections', :aggregate_failures do
+      database_connections = Gitlab::Database.all_database_connections
+        .select { |_, db| db.name == :main || db.fallback_database == :main }
+        .values
+
+      database_connections.permutation(2) do |db, other_db|
+        gitlab_schemas = db.gitlab_schemas -
+          [:gitlab_shared, :gitlab_internal, :gitlab_shared_org, :gitlab_shared_cell_local]
+
+        expect(other_db.lock_gitlab_schemas).to include(*gitlab_schemas),
+          "Expected `#{other_db.name}` lock_gitlab_schemas to include `#{db.name}` gitlab_schemas:"
+      end
+    end
+  end
+
+  shared_examples 'maps table name to table schema' do
+    using RSpec::Parameterized::TableSyntax
+
+    where(:name, :classification) do
+      'ci_builds'                                    | :gitlab_ci
+      'my_schema.ci_builds'                          | :gitlab_ci
+      'my_schema.ci_runner_machine_builds_100'       | :gitlab_ci
+      'ci_build_tags_100'                            | :gitlab_ci
+      'my_schema._test_gitlab_main_table'            | :gitlab_main
+      'information_schema.columns'                   | :gitlab_internal
+      'audit_events_part_5fc467ac26'                 | :gitlab_main
+      '_test_gitlab_main_table'                      | :gitlab_main
+      '_test_gitlab_ci_table'                        | :gitlab_ci
+      '_test_gitlab_main_org_table'                  | :gitlab_main_org
+      '_test_gitlab_pm_table'                        | :gitlab_pm
+      '_test_gitlab_sec_table'                       | :gitlab_sec
+      '_test_gitlab_shared_org_table'                | :gitlab_shared_org
+      '_test_gitlab_shared_cell_local_table'         | :gitlab_shared_cell_local
+      '_test_my_table'                               | :gitlab_shared
+      'pg_attribute'                                 | :gitlab_internal
+    end
+
+    with_them do
+      it { is_expected.to eq(classification) }
+    end
+  end
+
+  describe '.deleted_views_and_tables_to_schema' do
+    include_examples 'validate schema data', described_class.deleted_views_and_tables_to_schema
+  end
+
+  describe '.views_and_tables_to_schema' do
+    include_examples 'validate schema data', described_class.views_and_tables_to_schema
+
+    # group configurations by db_docs_dir, since then we expect all sharing this
+    # to contain exactly those tables
+    Gitlab::Database.all_database_connections.values.group_by(&:db_docs_dir).each do |db_docs_dir, db_infos|
+      context "for #{db_docs_dir}" do
+        let(:all_gitlab_schemas) { db_infos.flat_map(&:gitlab_schemas).to_set }
+
+        let(:tables_for_gitlab_schemas) do
+          described_class.views_and_tables_to_schema.select do |_, gitlab_schema|
+            all_gitlab_schemas.include?(gitlab_schema)
+          end
+        end
+
+        let(:dynamic_views) do
+          %w[ci_builds_views_100 ci_builds_views_102]
+        end
+
+        # Tables created by a migration that only runs on GitLab.com (guarded by
+        # `Gitlab.com_except_jh?`), so they're absent from structure.sql.
+        let(:gitlab_com_only_tables) do
+          %w[merge_request_diff_commits_archived]
+        end
+
+        db_infos.to_h { |db_info| [db_info.name, db_info.connection_class] }
+          .compact.each do |db_config_name, connection_class|
+          context "validates '#{db_config_name}' using '#{connection_class}'" do
+            let(:data_sources) { connection_class.connection.data_sources }
+
+            it 'new data sources are added' do
+              missing_data_sources = data_sources.to_set - tables_for_gitlab_schemas.keys
+
+              expect(missing_data_sources).to be_empty, \
+                "Missing table/view(s) #{missing_data_sources.to_a} not found in " \
+                "#{described_class}.views_and_tables_to_schema. " \
+                "Any new tables or views must be added to the database dictionary. " \
+                "More info: https://docs.gitlab.com/ee/development/database/database_dictionary.html " \
+                "Use `bin/rake gitlab:db:dictionary:generate` to create a new dictionary file."
+            end
+
+            it 'non-existing data sources are removed' do
+              extra_data_sources = tables_for_gitlab_schemas.keys.to_set - data_sources - dynamic_views -
+                gitlab_com_only_tables
+
+              expect(extra_data_sources).to be_empty, \
+                "Extra table/view(s) #{extra_data_sources.to_a} found in " \
+                "#{described_class}.views_and_tables_to_schema. " \
+                "Any removed or renamed tables or views must be removed from the database dictionary. " \
+                "More info: https://docs.gitlab.com/ee/development/database/database_dictionary.html"
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe '.tables_to_schema' do
+    let(:database_models) { Gitlab::Database.database_base_models.except(:geo) }
+    let(:views) { database_models.flat_map { |_, m| m.connection.views }.sort.uniq }
+
+    subject { described_class.tables_to_schema }
+
+    it 'returns only tables' do
+      tables = subject.keys
+
+      expect(tables).not_to include(views.to_set)
+    end
+  end
+
+  describe '.views_to_schema' do
+    let(:database_models) { Gitlab::Database.database_base_models.except(:geo) }
+    let(:tables) { database_models.flat_map { |_, m| m.connection.tables }.sort.uniq }
+
+    subject { described_class.views_to_schema }
+
+    it 'returns only views' do
+      views = subject.keys
+
+      expect(views).not_to include(tables.to_set)
+    end
+  end
+
+  describe '.table_schemas!' do
+    let(:tables) { %w[projects issues ci_builds] }
+
+    subject { described_class.table_schemas!(tables) }
+
+    it 'returns the matched schemas' do
+      expect(subject).to match_array %i[gitlab_main_org gitlab_ci gitlab_main_org].to_set
+    end
+
+    context 'when one of the tables does not have a matching table schema' do
+      let(:tables) { %w[namespaces projects unknown ci_builds] }
+
+      it 'raises error' do
+        expect { subject }.to raise_error(/Could not find gitlab schema for table unknown/)
+      end
+    end
+  end
+
+  describe '.table_schema' do
+    subject { described_class.table_schema(name) }
+
+    it_behaves_like 'maps table name to table schema'
+
+    context 'when mapping fails' do
+      let(:name) { 'unknown_table' }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when an index name is used as the table name' do
+      before do
+        ApplicationRecord.connection.execute(<<~SQL)
+          CREATE INDEX index_on_projects ON public.projects USING gin (name gin_trgm_ops)
+        SQL
+      end
+
+      let(:name) { 'index_on_projects' }
+
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe '.table_schema!' do
+    subject { described_class.table_schema!(name) }
+
+    it_behaves_like 'maps table name to table schema'
+
+    context 'when mapping fails' do
+      let(:name) { 'non_existing_table' }
+
+      it "raises error" do
+        expect { subject }.to raise_error(
+          Gitlab::Database::GitlabSchema::UnknownSchemaError,
+          "Could not find gitlab schema for table #{name}: " \
+          "Any new or deleted tables must be added to the database dictionary. " \
+          "Use `bin/rake gitlab:db:dictionary:generate` to create a new dictionary file. " \
+          "See https://docs.gitlab.com/ee/development/database/database_dictionary.html"
+        )
+      end
+    end
+  end
+
+  describe 'disallow_sequences' do
+    let(:gitlab_schemas) do
+      Gitlab::Database.all_gitlab_schemas.select { |_, schema| schema.disallow_sequences }.keys
+    end
+
+    it 'does not allow auto-incrementing sequences for schemas marked as disallow_sequences', :aggregate_failures do
+      Gitlab::Database::Dictionary.entries.each do |entry|
+        next unless gitlab_schemas.include?(entry.gitlab_schema)
+
+        sequences = Gitlab::Database::PostgresSequence.where(table_name: entry.table_name).to_a
+        expect(sequences).to be_empty,
+          "Expected table `#{entry.table_name}` to have no auto-incrementing sequences: #{sequences}"
+      end
+    end
+  end
+
+  describe '.sharding_root_tables' do
+    context 'schemas where require_sharding_key is true' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:schema_name, :result) do
+        :gitlab_main_user | %w[organizations users]
+        :gitlab_main_org | %w[organizations projects namespaces]
+        :gitlab_ci | %w[organizations projects namespaces]
+        :gitlab_sec | %w[organizations projects namespaces]
+      end
+
+      with_them do
+        it { expect(described_class.sharding_root_tables(schema_name)).to match_array(result) }
+      end
+
+      it 'always includes organizations', :aggregate_failures do
+        Gitlab::Database.all_gitlab_schemas.each do |schema_name, schema_info|
+          next unless schema_info.require_sharding_key
+
+          expect(described_class.sharding_root_tables(schema_name)).to include('organizations')
+        end
+      end
+    end
+  end
+
+  describe 'Schema YAML files' do
+    it 'loads all schema files without errors' do
+      schema_files = Dir.glob(Rails.root.join('db/gitlab_schemas/*.yaml'))
+
+      schema_files.each do |file|
+        expect { Gitlab::Database::GitlabSchemaInfo.load_file(file) }.not_to raise_error
+      end
+    end
+
+    it 'all loaded schemas have correct structure' do
+      Gitlab::Database.all_gitlab_schemas.each_value do |schema_info|
+        expect(schema_info.name).to be_a(Symbol)
+        expect(schema_info.allow_cross_joins).to be_a(Hash)
+        expect(schema_info.allow_cross_transactions).to be_a(Hash)
+        expect(schema_info.allow_cross_foreign_keys).to be_a(Hash)
+      end
+    end
+  end
+
+  context 'when testing cross schema access' do
+    using RSpec::Parameterized::TableSyntax
+
+    describe '.cross_joins_allowed?' do
+      where(:tables, :result) do
+        %w[] | true
+        %w[evidences] | true
+        %w[users evidences] | true
+        %w[users ci_pipelines] | false
+        %w[users evidences ci_pipelines] | false
+        %w[users schema_migrations] | false
+        %w[evidences schema_migrations] | false
+        %w[users evidences detached_partitions] | true
+        %w[users detached_partitions] | true
+        %w[users namespaces] | true
+        %w[plans namespaces] | true
+        %w[users achievements] | true
+      end
+
+      with_them do
+        it { expect(described_class.cross_joins_allowed?(tables)).to eq(result) }
+      end
+    end
+
+    describe '.cross_transactions_allowed?' do
+      where(:tables, :result) do
+        %w[] | true
+        %w[evidences] | true
+        %w[users evidences] | true
+        %w[users ci_pipelines] | false
+        %w[users evidences ci_pipelines] | false
+        %w[users schema_migrations] | true
+        %w[evidences ci_pipelines] | false
+        %w[users evidences detached_partitions] | true
+        %w[users detached_partitions] | true
+        %w[users namespaces] | true
+        %w[plans namespaces] | true
+        %w[users achievements] | true
+      end
+
+      with_them do
+        it { expect(described_class.cross_transactions_allowed?(tables)).to eq(result) }
+      end
+
+      context 'with additional_schemas parameter' do
+        it 'allows cross transactions when additional schema matches table schemas' do
+          # ci_pipelines and ci_builds are both gitlab_ci
+          # Adding gitlab_ci as additional_schema should pass
+          result = described_class.cross_transactions_allowed?(%w[ci_pipelines ci_builds],
+            additional_schemas: [:gitlab_ci])
+
+          expect(result).to be(true)
+        end
+
+        it 'prevents cross transactions when additional schema is incompatible' do
+          # ci_pipelines and ci_builds are both gitlab_ci
+          # Adding gitlab_sec as additional_schema should fail (ci and sec are not allowed together)
+          result = described_class.cross_transactions_allowed?(%w[ci_pipelines ci_builds],
+            additional_schemas: [:gitlab_sec])
+
+          expect(result).to be(false)
+        end
+      end
+    end
+
+    describe '.cross_foreign_key_allowed?' do
+      where(:tables, :result) do
+        %w[] | false
+        %w[evidences] | true
+        %w[users clusters] | true
+        %w[users ci_pipelines] | false
+        %w[users schema_migrations] | false
+        %w[evidences ci_pipelines] | false
+        %w[users detached_partitions] | false
+        %w[users namespaces] | true
+        %w[plans namespaces] | false
+        %w[users achievements] | true
+        %w[users agent_group_authorizations] | true
+      end
+
+      with_them do
+        it { expect(described_class.cross_foreign_key_allowed?(tables)).to eq(result) }
+      end
+    end
+  end
+end

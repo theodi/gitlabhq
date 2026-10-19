@@ -1,0 +1,18 @@
+---
+data_category: operational
+key_path: counts.ci_external_pipelines
+description: Total pipelines in external repositories
+product_group: pipeline_execution
+product_categories:
+- continuous_integration
+value_type: number
+status: active
+time_frame: all
+data_source: database
+tiers:
+- free
+performance_indicator_type:
+- customer_health_score
+- devops_report
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

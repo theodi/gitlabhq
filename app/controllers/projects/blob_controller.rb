@@ -1,163 +1,427 @@
+# frozen_string_literal: true
+
 # Controller for viewing a file's blame
 class Projects::BlobController < Projects::ApplicationController
   include ExtractsPath
+  include CreatesCommit
+  include RendersBlob
+  include NotesHelper
   include ActionView::Helpers::SanitizeHelper
+  include RedirectsForMissingPathOnTree
+  include SourcegraphDecorator
+  include DiffHelper
+  include ProductAnalyticsTracking
+  include HandlesGitalyErrors
+  extend ::Gitlab::Utils::Override
 
-  # Raised when given an invalid file path
-  class InvalidPathError < StandardError; end
+  MAX_PREVIEW_CONTENT = 512.kilobytes
+  MAX_EDIT_SIZE = 10.megabytes
 
-  before_action :require_non_empty_project, except: [:new, :create]
-  before_action :authorize_download_code!
-  before_action :authorize_push_code!, only: [:destroy]
-  before_action :assign_blob_vars
-  before_action :commit, except: [:new, :create]
-  before_action :blob, except: [:new, :create]
-  before_action :from_merge_request, only: [:edit, :update]
-  before_action :after_edit_path, only: [:edit, :update]
+  prepend_before_action :authenticate_user!, only: [:edit]
+
+  around_action :allow_gitaly_ref_name_caching, only: [:show]
+
+  before_action :require_non_empty_project, except: [:new, :create, :preview]
+  before_action :authorize_download_code!, except: [:show]
+  before_action :authorize_read_code!, only: [:show]
+
+  # We need to assign the blob vars before `authorize_edit_tree!` so we can
+  # validate access to a specific ref.
+  before_action :assign_blob_vars, except: [:show]
+  before_action :assign_ref_vars, only: [:show]
+  before_action :set_is_ambiguous_ref, only: [:show]
+
+  before_action :authorize_edit_tree!, only: [:new, :create, :update, :destroy]
+
+  before_action :require_commit, except: [:new, :create, :preview]
+  before_action :require_commit_or_empty_repository, only: [:preview]
+  before_action :require_blob, except: [:new, :create, :preview]
   before_action :require_branch_head, only: [:edit, :update]
+  before_action :editor_variables, except: [:show, :preview, :diff]
+  before_action :validate_uploaded_file_size!, only: [:create, :update]
+  before_action :validate_diff_params, only: :diff
+
+  before_action :set_last_commit_sha, only: [:edit, :update]
+
+  track_internal_event :create, :update, name: 'g_edit_by_sfe'
+
+  feature_category :source_code_management
+  urgency :low, [:create, :show, :edit, :update, :diff, :diff_lines]
+
+  before_action do
+    push_licensed_feature(:file_locks) if @project.licensed_feature_available?(:file_locks)
+  end
 
   def new
     commit unless @repository.empty?
   end
 
   def create
-    file_path = File.join(@path, File.basename(params[:file_name]))
-    result = Files::CreateService.new(
-      @project,
-      current_user,
-      params.merge(new_branch: sanitized_new_branch_name),
-      @ref,
-      file_path
-    ).execute
-
-    if result[:status] == :success
-      flash[:notice] = "Your changes have been successfully committed"
-      ref = sanitized_new_branch_name.presence || @ref
-      redirect_to namespace_project_blob_path(@project.namespace, @project, File.join(ref, file_path))
-    else
-      flash[:alert] = result[:message]
-      render :new
-    end
+    create_commit(
+      Files::CreateService,
+      success_notice: _("The file has been successfully created."),
+      success_path: -> { project_blob_path(@project, File.join(@branch_name, @file_path)) },
+      failure_view: :new,
+      failure_path: project_new_blob_path(@project, @ref)
+    )
   end
 
   def show
-  end
+    conditionally_expand_blob(blob)
 
-  def edit
-    @last_commit = Gitlab::Git::Commit.last_for_path(@repository, @ref, @path).sha
-  end
-
-  def update
-    result = Files::UpdateService.
-      new(
-        @project,
-        current_user,
-        params.merge(new_branch: sanitized_new_branch_name),
-        @ref,
-        @path
-      ).execute
-
-    if result[:status] == :success
-      flash[:notice] = "Your changes have been successfully committed"
-
-      if from_merge_request
-        from_merge_request.reload_code
+    respond_to do |format|
+      format.html do
+        audit_repository_file_access
+        show_html
       end
 
-      redirect_to after_edit_path
-    else
-      flash[:alert] = result[:message]
-      render :edit
+      format.json do
+        page_title blob.path, @ref, @project.full_name
+        set_last_commit_sha
+        show_json
+      end
     end
   end
 
+  def edit
+    if can_collaborate_with_project?(project, ref: @ref)
+      if blob.raw_size > MAX_EDIT_SIZE
+        redirect_to project_blob_path(@project, @id),
+          alert: _("File exceeds 10MB and can't be edited in the browser. Edit locally and push your changes.")
+      else
+        blob.load_all_data!
+      end
+    else
+      redirect_to action: 'show'
+    end
+  end
+
+  def update
+    @path = permitted_params[:file_path] if permitted_params[:file_path].present?
+
+    create_commit(
+      Files::UpdateService, success_path: -> { after_edit_path },
+      failure_view: :edit,
+      failure_path: project_blob_path(@project, @id)
+    )
+  rescue Files::UpdateService::FileChangedError
+    @conflict = true
+    render "edit", locals: {
+      commit_to_fork: @different_project
+    }
+  end
+
   def preview
-    @content = params[:content]
-    diffy = Diffy::Diff.new(@blob.data, @content, diff: '-U 3', include_diff_info: true)
-    @diff_lines = Gitlab::Diff::Parser.new.parse(diffy.diff.scan(/.*\n/))
+    @content = permitted_params[:content]
+    return head :bad_request unless @content.is_a?(String)
+
+    if @content.bytesize >= MAX_PREVIEW_CONTENT
+      return render json: { errors: ["Preview content too large"] }, status: :payload_too_large
+    end
+
+    @preview_file_name = preview_file_name
+
+    blob&.load_all_data!
+    diffy = Diffy::Diff.new(blob&.data || '', @content, diff: '-U 3', include_diff_info: true)
+    diff_lines = diffy.diff.scan(/.*\n/)[2..]
+    diff_lines = Gitlab::Diff::Parser.new.parse(diff_lines).to_a
+    @diff_lines = Gitlab::Diff::Highlight.new(diff_lines, repository: @repository).highlight
 
     render layout: false
   end
 
   def destroy
-    result = Files::DeleteService.new(@project, current_user, params, @ref, @path).execute
-
-    if result[:status] == :success
-      flash[:notice] = "Your changes have been successfully committed"
-      redirect_to namespace_project_tree_path(@project.namespace, @project,
-                                              @ref)
-    else
-      flash[:alert] = result[:message]
-      render :show
-    end
+    create_commit(
+      Files::DeleteService,
+      success_notice: _("The file has been successfully deleted."),
+      success_path: -> { after_delete_path },
+      failure_path: project_blob_path(@project, @id)
+    )
   end
 
   def diff
-    @form = UnfoldForm.new(params)
-    @lines = @blob.data.lines[@form.since - 1..@form.to - 1]
+    @form = Blobs::UnfoldPresenter.new(blob, diff_params)
 
-    if @form.bottom?
-      @match_line = ''
+    # keep only json rendering when
+    # https://gitlab.com/gitlab-org/gitlab-foss/issues/44988 is done
+    if rendered_for_merge_request?
+      render json: DiffLineSerializer.new.represent(@form.diff_lines)
     else
-      lines_length = @lines.length - 1
-      line = [@form.since, lines_length].join(',')
-      @match_line = "@@ -#{line}+#{line} @@"
+      @lines = @form.lines
+      @match_line = @form.match_line_text
+      render layout: false
     end
+  end
 
-    render layout: false
+  def diff_lines
+    params.require([:since, :to, :offset])
+
+    bottom = diff_lines_params[:bottom] == 'true'
+    closest_line_number = diff_lines_params[:closest_line_number]&.to_i
+
+    presenter = Blobs::UnfoldPresenter.new(blob, diff_params.merge({ unfold: !!closest_line_number }))
+    diff_hunks = Gitlab::Diff::ViewerHunk.init_from_expanded_lines(
+      presenter.diff_lines(with_positions_and_indent: true),
+      bottom,
+      closest_line_number
+    )
+    return render_404 if diff_hunks.empty?
+
+    hunk_presenter = if diff_view == :inline
+                       RapidDiffs::Viewers::Text::InlineHunkComponent
+                     else
+                       RapidDiffs::Viewers::Text::ParallelHunkComponent
+                     end
+
+    render hunk_presenter.with_collection(
+      diff_hunks,
+      # Not blob.short_file_hash: Blob hashes the path with SHA256 while
+      # Gitlab::Diff::File uses SHA1, and the line IDs here must match the ones
+      # in the streamed diff or linked/expanded-line anchors won't resolve.
+      file_hash: ::Gitlab::Diff::File.short_file_hash(@path)
+    ), layout: false
   end
 
   private
 
+  # Kept separate from the pre-existing diff_params/diff_lines_params, which are passed
+  # whole to Blobs::UnfoldPresenter and so must keep their exact key sets.
+  def permitted_params
+    params.permit(
+      :branch_name, :commit_message, :content, :encoding, :file, :file_name, :file_path,
+      :from_merge_request_iid, :full, :id, :last_commit_sha, :offset, :since, :to
+    )
+  end
+
+  attr_reader :branch_name
+
   def blob
-    @blob ||= @repository.blob_at(@commit.id, @path)
+    return unless commit
+    return if @path.end_with?('/')
 
-    if @blob
-      @blob
-    else
-      if tree = @repository.tree(@commit.id, @path)
-        if tree.entries.any?
-          redirect_to namespace_project_tree_path(@project.namespace, @project, File.join(@ref, @path)) and return
-        end
-      end
+    @blob = @repository.blob_at(commit.id, @path)
+  end
+  strong_memoize_attr :blob
 
-      return not_found!
+  def require_blob
+    redirect_to_project_tree_path unless blob
+  end
+
+  # Only the base name is used, which rules out path traversal.
+  def preview_file_name
+    file_path = params.permit(:file_path)[:file_path]
+
+    file_path.present? ? File.basename(file_path.to_s) : blob&.name || ''
+  end
+
+  def redirect_to_project_tree_path
+    if @repository.tree(commit.id, @path).entries.any?
+      return redirect_to(project_tree_path(@project, File.join(@ref, @path)))
     end
+
+    redirect_to_tree_root_for_missing_path(@project, @ref, @path)
   end
 
   def commit
     @commit = @repository.commit(@ref)
+  end
+  strong_memoize_attr :commit
 
-    return not_found! unless @commit
+  def ref
+    @fully_qualified_ref || @ref
+  end
+
+  def require_commit
+    render_404 unless commit
+  end
+
+  def require_commit_or_empty_repository
+    return if @repository.empty?
+
+    require_commit
+  end
+
+  def redirect_renamed_default_branch?
+    action_name == 'show'
   end
 
   def assign_blob_vars
-    @id = params[:id]
-    @ref, @path = extract_ref(@id)
+    ref_extractor = ExtractsRef::RefExtractor.new(@project, {})
+    @id = permitted_params[:id]
 
-
+    @ref, @path = ref_extractor.extract_ref(@id)
   rescue InvalidPathError
-    not_found!
+    render_404
   end
 
+  # rubocop: disable CodeReuse/ActiveRecord
   def after_edit_path
-    @after_edit_path ||=
-      if from_merge_request
-        diffs_namespace_project_merge_request_path(from_merge_request.target_project.namespace, from_merge_request.target_project, from_merge_request) +
-          "#file-path-#{hexdigest(@path)}"
-      elsif sanitized_new_branch_name.present?
-        namespace_project_blob_path(@project.namespace, @project, File.join(sanitized_new_branch_name, @path))
-      else
-        namespace_project_blob_path(@project.namespace, @project, @id)
-      end
+    from_merge_request = MergeRequestsFinder.new(
+      current_user,
+      project_id: @project.id
+    ).find_by(iid: permitted_params[:from_merge_request_iid])
+
+    if from_merge_request && @branch_name == @ref
+      diffs_project_merge_request_path(from_merge_request.target_project, from_merge_request) +
+        "##{hexdigest(@path)}"
+    else
+      project_blob_path(@project, File.join(@branch_name, @path))
+    end
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def after_delete_path
+    branch = BranchesFinder.new(@repository, search: @ref).execute.first
+    if @repository.tree(branch.target, tree_path).entries.empty?
+      project_tree_path(@project, @ref)
+    else
+      project_tree_path(@project, File.join(@ref, tree_path))
+    end
   end
 
-  def from_merge_request
-    # If blob edit was initiated from merge request page
-    @from_merge_request ||= MergeRequest.find_by(id: params[:from_merge_request_id])
+  def editor_variables
+    @branch_name = permitted_params[:branch_name]
+
+    @file_path = fetch_file_path
+
+    # rubocop:disable Rails/StrongParams -- in-place mutation; strong params syntax would write to a copy
+    params[:content] = permitted_params[:file] if permitted_params[:file].present?
+    # rubocop:enable Rails/StrongParams
+
+    @commit_params = {
+      file_path: @file_path,
+      commit_message: permitted_params[:commit_message],
+      previous_path: @path,
+      file_content: permitted_params[:content],
+      file_content_encoding: permitted_params[:encoding],
+      last_commit_sha: permitted_params[:last_commit_sha]
+    }
   end
 
-  def sanitized_new_branch_name
-    @new_branch ||= sanitize(strip_tags(params[:new_branch]))
+  def fetch_file_path
+    if action_name.to_s == 'create'
+      uploaded_file = permitted_params[:file]
+      file_name = uploaded_file.present? ? uploaded_file.original_filename : permitted_params[:file_name]
+
+      return if file_name.nil?
+
+      return File.join(@path, file_name)
+    end
+
+    return permitted_params[:file_path] if permitted_params[:file_path].present?
+
+    @path
+  end
+
+  def validate_diff_params
+    return if permitted_params[:full]
+
+    head :ok if [:since, :to, :offset].any? { |key| permitted_params[key].blank? }
+  end
+
+  def validate_uploaded_file_size!
+    uploaded_file = permitted_params[:file]
+    return if uploaded_file.blank?
+
+    max_size_mib = Gitlab::CurrentSettings.max_attachment_size
+    return if uploaded_file.size <= max_size_mib.megabytes
+
+    message = format(
+      _('File is too big (%{fileSize}MiB). Max filesize: %{maxFileSize}MiB.'),
+      fileSize: format('%.2f', uploaded_file.size.to_f / 1.megabyte),
+      maxFileSize: max_size_mib
+    )
+
+    render json: { error: message }, status: :payload_too_large
+  end
+
+  def set_last_commit_sha
+    @last_commit_sha = Gitlab::Git::Commit
+      .last_for_path(@repository, ref, @path, literal_pathspec: true)&.sha
+  end
+
+  def show_html
+    environment_params = @repository.branch_exists?(@ref) ? { ref: @ref } : { commit: commit }
+    environment_params[:find_latest] = true
+    @environment = ::Environments::EnvironmentsByDeploymentsFinder.new(
+      @project,
+      current_user,
+      environment_params
+    ).execute.last
+    @code_navigation_path = Gitlab::CodeNavigationPath.new(@project, blob.commit_id).full_json_path_for(blob.path)
+
+    render 'show'
+  end
+
+  def show_json
+    json = blob_viewer_json(blob).merge(
+      id: blob.id,
+      last_commit_sha: @last_commit_sha,
+      path: blob.path,
+      name: blob.name,
+      extension: blob.extension,
+      size: blob.raw_size,
+      mime_type: blob.mime_type,
+      binary: blob.binary?,
+      simple_viewer: blob.simple_viewer&.class&.partial_name,
+      rich_viewer: blob.rich_viewer&.class&.partial_name,
+      show_viewer_switcher: !!blob.show_viewer_switcher?,
+      render_error: blob.simple_viewer&.render_error || blob.rich_viewer&.render_error,
+      raw_path: project_raw_path(project, @id, ref_type: @ref_type),
+      blame_path: project_blame_path(project, @id, ref_type: @ref_type),
+      commits_path: project_commits_path(project, @id, ref_type: @ref_type),
+      tree_path: project_tree_path(project, File.join(@ref, tree_path), ref_type: @ref_type),
+      permalink: project_blob_path(project, File.join(commit.id, @path))
+    )
+
+    render json: json
+  end
+
+  def audit_repository_file_access
+    return unless blob
+    return unless current_user
+
+    audit_context = {
+      name: 'repository_file_accessed_web',
+      author: current_user,
+      scope: @project,
+      target: @project,
+      message: "User accessed repository file '#{@path}' at ref '#{@ref}' via Web UI",
+      additional_details: {
+        file_path: @path,
+        ref: @ref,
+        project_path: @project.full_path,
+        project_id: @project.id,
+        ip_address: request.remote_ip,
+        user_agent: Gitlab::Audit::Sanitizer.sanitize_user_agent(request.user_agent)
+      }
+    }
+
+    ::Gitlab::Audit::Auditor.audit(audit_context)
+  end
+
+  def tree_path
+    @path.rpartition('/').first
+  end
+
+  def diff_params
+    params.permit(:full, :since, :to, :bottom, :unfold, :offset, :indent)
+  end
+
+  def diff_lines_params
+    params.permit(:full, :bottom, :since, :to, :offset, :closest_line_number)
+  end
+
+  override :visitor_id
+  def visitor_id
+    current_user&.id
+  end
+
+  alias_method :tracking_project_source, :project
+
+  def tracking_namespace_source
+    project&.namespace
   end
 end
+
+Projects::BlobController.prepend_mod

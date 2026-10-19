@@ -1,0 +1,87 @@
+@use "sass:color";
+
+@mixin tanuki-logo-colors($path-color) {
+  fill: $path-color;
+  transition: all 0.8s;
+
+  &:hover {
+    fill: color.adjust($path-color, $lightness: 25%);
+    transition: all 0.1s;
+  }
+}
+
+.tanuki-logo {
+  @apply gl-align-middle;
+
+  .tanuki {
+    @include tanuki-logo-colors($tanuki-red);
+  }
+
+  .left-cheek,
+  .right-cheek {
+    @include tanuki-logo-colors($tanuki-orange);
+  }
+
+  .chin {
+    @include tanuki-logo-colors($tanuki-yellow);
+  }
+
+  &.animate {
+    .tanuki-shape {
+      @include webkit-prefix(animation-duration, 1.5s);
+      @include webkit-prefix(animation-iteration-count, infinite);
+    }
+
+    .tanuki {
+      @include include-keyframes(animate-tanuki-base) {
+        0%,
+        50% {
+          fill: $tanuki-red;
+        }
+
+        25% {
+          fill: color.adjust($tanuki-red, $lightness: 25%);
+        }
+      }
+    }
+
+    .right-cheek {
+      @include include-keyframes(animate-tanuki-right-cheek) {
+        25%,
+        75% {
+          fill: $tanuki-orange;
+        }
+
+        50% {
+          fill: color.adjust($tanuki-orange, $lightness: 25%);
+        }
+      }
+    }
+
+    .chin {
+      @include include-keyframes(animate-tanuki-chin) {
+        50%,
+        100% {
+          fill: $tanuki-yellow;
+        }
+
+        75% {
+          fill: color.adjust($tanuki-yellow, $lightness: 25%);
+        }
+      }
+    }
+
+    .left-cheek {
+      @include include-keyframes(animate-tanuki-left-cheek) {
+        25%,
+        75% {
+          fill: $tanuki-orange;
+        }
+
+        100% {
+          fill: color.adjust($tanuki-orange, $lightness: 25%);
+        }
+      }
+    }
+  }
+}

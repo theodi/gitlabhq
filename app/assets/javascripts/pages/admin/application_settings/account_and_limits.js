@@ -1,0 +1,140 @@
+import { __ } from '~/locale';
+import initDatePickers from '~/behaviors/date_picker';
+
+export const PLACEHOLDER_USER_EXTERNAL_DEFAULT_TRUE = __('Regex pattern');
+export const PLACEHOLDER_USER_EXTERNAL_DEFAULT_FALSE = __(
+  'Regex pattern. To use, select external by default setting',
+);
+
+function setUserInternalRegexPlaceholder(checkbox) {
+  const userInternalRegex = document.getElementById(
+    'application_setting_user_default_internal_regex',
+  );
+  if (checkbox && userInternalRegex) {
+    if (checkbox.checked) {
+      userInternalRegex.readOnly = false;
+      userInternalRegex.placeholder = PLACEHOLDER_USER_EXTERNAL_DEFAULT_TRUE;
+    } else {
+      userInternalRegex.readOnly = true;
+      userInternalRegex.placeholder = PLACEHOLDER_USER_EXTERNAL_DEFAULT_FALSE;
+    }
+  }
+}
+
+function initUserInternalRegexPlaceholder() {
+  const checkbox = document.getElementById('application_setting_user_default_external');
+  setUserInternalRegexPlaceholder(checkbox);
+  checkbox.addEventListener('change', () => {
+    setUserInternalRegexPlaceholder(checkbox);
+  });
+}
+
+/**
+ * Creates a custom client-side behavior for dormant users: Admin and Group
+ *
+ * @param {*} checkboxId - the checkbox that enables/disables the feature
+ * @param {*} inputId -where the user inputs the number of days
+ * @param {*} inputErrorId - custom invalid state behavior
+ * @returns
+ */
+export function initCheckboxControlledInput(checkboxId, inputId, inputErrorId) {
+  const DISPLAY_NONE_CLASS = 'gl-hidden';
+
+  /** @type {HTMLInputElement} */
+  const checkbox = document.getElementById(checkboxId);
+  /** @type {HTMLInputElement} */
+  const oldInput = document.getElementById(inputId);
+  /** @type {HTMLDivElement} */
+  const errorLabel = document.getElementById(inputErrorId);
+
+  if (!checkbox || !oldInput || !errorLabel) return;
+
+  // Clone input to remove previous event listeners
+  const input = oldInput.cloneNode(true);
+  oldInput.replaceWith(input);
+
+  const hideInputErrorLabel = () => {
+    if (input.checkValidity()) {
+      errorLabel.classList.add(DISPLAY_NONE_CLASS);
+    }
+  };
+
+  const handleInputInvalidState = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    errorLabel.classList.remove(DISPLAY_NONE_CLASS);
+    return false;
+  };
+
+  const updateInputDisabledState = () => {
+    input.disabled = !checkbox.checked;
+    if (input.disabled) {
+      hideInputErrorLabel();
+    }
+  };
+
+  // Show error when input is invalid
+  input.addEventListener('invalid', handleInputInvalidState);
+  // Hide error when input changes
+  input.addEventListener('input', hideInputErrorLabel);
+  input.addEventListener('change', hideInputErrorLabel);
+
+  // Handle checkbox change and set initial state
+  checkbox.addEventListener('change', updateInputDisabledState);
+  updateInputDisabledState();
+}
+
+/**
+ * Sets up logic inside "Dormant users" subsection:
+ * - checkbox enables/disables additional input
+ * - shows/hides an inline error on input validation
+ */
+function initDeactivateDormantUsersPeriodInputSection() {
+  initCheckboxControlledInput(
+    'application_setting_deactivate_dormant_users',
+    'application_setting_deactivate_dormant_users_period',
+    'application_setting_deactivate_dormant_users_period_error',
+  );
+}
+
+/**
+ * Sets up logic inside "Fine-grained personal access tomens" subsection:
+ * - checkbox enables/disables datepicker
+ * - shows/hides an inline error on input validation
+ */
+function initGranularTokenInput() {
+  initCheckboxControlledInput(
+    'application_setting_enforce_granular_tokens',
+    'application_setting_granular_tokens_enforced_after',
+    'application_setting_granular_tokens_enforced_after_error',
+  );
+}
+
+/**
+ * Shows a destructive-action warning when the admin unchecks the
+ * "Allow dynamic client registration" checkbox, because disabling the
+ * setting deletes all dynamically registered OAuth applications and
+ * revokes their access tokens.
+ */
+function initDynamicClientRegistrationWarning() {
+  const checkbox = document.querySelector('.js-dcr-enabled');
+  const warning = document.querySelector('.js-dcr-disabled-warning');
+
+  if (!checkbox || !warning) return;
+
+  checkbox.addEventListener('change', () => {
+    if (checkbox.checked) {
+      warning.classList.add('gl-hidden');
+    } else {
+      warning.classList.remove('gl-hidden');
+    }
+  });
+}
+
+export default function initAccountAndLimitsSection() {
+  initUserInternalRegexPlaceholder();
+  initDeactivateDormantUsersPeriodInputSection();
+  initGranularTokenInput();
+  initDynamicClientRegistrationWarning();
+  initDatePickers();
+}

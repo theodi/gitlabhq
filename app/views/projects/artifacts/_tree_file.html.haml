@@ -1,0 +1,21 @@
+- blob = file.blob
+- external_link = blob.external_link?(@build)
+- if external_link && Gitlab::CurrentSettings.enable_artifact_external_redirect_warning_page
+  - path_to_file = external_file_project_job_artifacts_path(@project, @build, path: file.path)
+- else
+  - path_to_file = file_project_job_artifacts_path(@project, @build, path: file.path)
+
+%tr.tree-item.js-artifact-tree-row{ data: { link: path_to_file, external_link: "#{external_link}" } }
+  %td.tree-item-file-name
+    = tree_icon('file', blob.mode, blob.name)
+    - if external_link
+      = link_to path_to_file, class: 'tree-item-file-external-link js-artifact-tree-tooltip str-truncated' do
+        %span>= blob.name
+      = sprite_icon('external-link', css_class: 'js-artifact-tree-external-icon')
+    - else
+      = link_to path_to_file, class: 'str-truncated' do
+        %span= blob.name
+  %td
+    = number_to_human_size(blob.size)
+  %td
+    = link_button_to nil, raw_project_job_artifacts_path(@project, @build, path: file.path, inline: false), icon: 'download', title: _('Download'), 'aria-label': _('Download'), target: '_blank', download: blob.name

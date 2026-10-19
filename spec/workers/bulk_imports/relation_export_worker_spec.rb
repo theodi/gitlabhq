@@ -1,0 +1,228 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe BulkImports::RelationExportWorker, feature_category: :importers do
+  let_it_be(:jid) { 'jid' }
+  let_it_be(:user) { create(:user) }
+  let_it_be(:group) { create(:group) }
+  let_it_be(:relation) { 'labels' }
+
+  let(:batched) { false }
+  let(:offline_export_id) { nil }
+  let(:job_args) do
+    [
+      user.id,
+      group.id,
+      group.class.name,
+      relation,
+      batched,
+      { 'offline_export_id' => offline_export_id }
+    ]
+  end
+
+  describe '#perform' do
+    include_examples 'an idempotent worker' do
+      context 'when export record does not exist' do
+        let(:another_group) { create(:group) }
+        let(:job_args) { [user.id, another_group.id, another_group.class.name, relation, batched] }
+
+        it 'creates export record' do
+          another_group.add_owner(user)
+
+          expect { perform_multiple(job_args) }
+            .to change { another_group.bulk_import_exports.count }
+            .from(0)
+            .to(1)
+        end
+      end
+
+      shared_examples 'export service' do |export_service|
+        it 'executes export service' do
+          group.add_owner(user)
+
+          service = instance_double(export_service)
+
+          expect(export_service)
+            .to receive(:new)
+            .with(
+              user,
+              group,
+              relation,
+              anything,
+              hash_including(offline_export_id:)
+            )
+            .twice
+            .and_return(service)
+          expect(service).to receive(:execute).twice
+
+          perform_multiple(job_args)
+        end
+      end
+
+      context 'when export is batched' do
+        let(:batched) { true }
+
+        context 'when relation is batchable' do
+          include_examples 'export service', BulkImports::BatchedRelationExportService
+        end
+
+        context 'when relation is not batchable' do
+          let(:relation) { 'namespace_settings' }
+
+          include_examples 'export service', BulkImports::RelationExportService
+        end
+      end
+
+      context 'when export is not batched' do
+        include_examples 'export service', BulkImports::RelationExportService
+      end
+
+      context 'when export is user_contributions' do
+        let(:relation) { 'user_contributions' }
+
+        it 'does not enqueue user contributions export' do
+          expect(BulkImports::UserContributionsExportWorker).not_to receive(:perform_async)
+
+          perform_multiple(job_args)
+        end
+      end
+
+      context 'when offline export is provided' do
+        let_it_be(:export) { create(:offline_export, :with_configuration) }
+        let(:offline_export_id) { export.id }
+
+        before do
+          stub_offline_import_object_storage(export.configuration)
+        end
+
+        include_examples 'export service', BulkImports::RelationExportService
+
+        context 'and export is user_contributions' do
+          let(:relation) { 'user_contributions' }
+
+          it 'enqueues the UserContributionsExportWorker' do
+            expect(BulkImports::UserContributionsExportWorker).to receive(:perform_async).with(
+              group.id, group.class.name, user.id, offline_export_id
+            ).twice
+
+            perform_multiple(job_args)
+          end
+
+          context 'when offline_transfer_exports feature flag is disabled' do
+            before do
+              stub_feature_flags(offline_transfer_exports: false)
+            end
+
+            it 'does not enqueue user contributions export' do
+              expect(BulkImports::UserContributionsExportWorker).not_to receive(:perform_async)
+
+              perform_multiple(job_args)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe '.perform_failure', :aggregate_failures do
+    let(:job) { { 'args' => job_args } }
+    let_it_be_with_reload(:bulk_import_export) do
+      create(:bulk_import_export, group: group, relation: relation, user_id: user.id)
+    end
+
+    let_it_be_with_reload(:offline_relation_export) do
+      create(:bulk_import_export, :offline, group: group, relation: relation, user_id: user.id)
+    end
+
+    shared_examples 'a failed relation export' do
+      context 'when called by .sidekiq_retries_exhausted' do
+        it 'sets export status to failed and tracks the exception' do
+          expect(Gitlab::ErrorTracking)
+            .to receive(:track_exception)
+            .with(
+              kind_of(StandardError),
+              portable_id: group.id,
+              portable_type: group.class.name,
+              relation: relation,
+              batched: batched,
+              offline_export_id: offline_export_id,
+              importer: export.import_source
+            )
+
+          described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new('*' * 300))
+
+          expect(export.reload).to be_failed
+          expect(export.error.size).to eq(255)
+          expect(other_relation_export.reload).not_to be_failed
+        end
+      end
+
+      context 'when called by .sidekiq_interruptions_exhausted' do
+        it 'sets export status to failed and tracks the exception' do
+          expect(Gitlab::ErrorTracking)
+            .to receive(:track_exception)
+            .with(
+              kind_of(Import::Exceptions::SidekiqExhaustedInterruptionsError),
+              portable_id: group.id,
+              portable_type: group.class.name,
+              relation: relation,
+              batched: batched,
+              offline_export_id: offline_export_id,
+              importer: export.import_source
+            )
+
+          described_class.interruptions_exhausted_block.call(job)
+
+          expect(export.reload).to be_failed
+          expect(export.error).to eq('Export process reached the maximum number of interruptions')
+          expect(other_relation_export.reload).not_to be_failed
+        end
+      end
+    end
+
+    context 'when offline export is not provided' do
+      let(:job_args) { [user.id, group.id, group.class.name, relation, batched] }
+
+      it_behaves_like 'a failed relation export' do
+        let(:export) { bulk_import_export }
+        let(:other_relation_export) { offline_relation_export }
+      end
+    end
+
+    context 'when offline export is provided' do
+      let(:offline_export_id) { offline_relation_export.offline_export_id }
+
+      it_behaves_like 'a failed relation export' do
+        let(:export) { offline_relation_export }
+        let(:other_relation_export) { bulk_import_export }
+      end
+    end
+
+    context 'when export no longer exists' do
+      let(:job_args) { [user.id, group.id, group.class.name, relation, batched] }
+
+      before do
+        bulk_import_export.destroy!
+      end
+
+      it 'tracks the exception without an importer and does not raise' do
+        expect(Gitlab::ErrorTracking)
+          .to receive(:track_exception)
+          .with(
+            kind_of(StandardError),
+            portable_id: group.id,
+            portable_type: group.class.name,
+            relation: relation,
+            batched: batched,
+            offline_export_id: nil,
+            importer: nil
+          )
+
+        expect do
+          described_class.sidekiq_retries_exhausted_block.call(job, StandardError.new('error'))
+        end.not_to raise_error
+      end
+    end
+  end
+end

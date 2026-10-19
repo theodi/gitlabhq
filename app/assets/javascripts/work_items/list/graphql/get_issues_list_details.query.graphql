@@ -1,0 +1,25 @@
+# @feature_category: portfolio_management
+query getIssuesListDetails($fullPath: ID!) {
+  project(fullPath: $fullPath) {
+    id
+    issues {
+      nodes {
+        id
+        labels {
+          nodes {
+            id
+            title
+            color
+          }
+        }
+      }
+    }
+    jiraImportStatus
+    jiraImports {
+      nodes {
+        importedIssuesCount
+        jiraProjectKey
+      }
+    }
+  }
+}

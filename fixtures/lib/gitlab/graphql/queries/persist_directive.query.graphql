@@ -1,0 +1,5 @@
+query {
+  blog(title: "A history of GraphQL") @persist {
+    title
+  }
+}

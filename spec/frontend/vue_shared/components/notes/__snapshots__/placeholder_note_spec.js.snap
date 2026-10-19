@@ -1,0 +1,67 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Issue placeholder note component matches snapshot 1`] = `
+<timeline-entry-item-stub
+  class="being-posted fade-in-half note note-comment note-wrapper"
+>
+  <div
+    class="gl-float-left timeline-avatar"
+  >
+    <gl-avatar-link-stub
+      href="/root"
+    >
+      <gl-avatar-stub
+        alt="Root"
+        entityid="0"
+        entityname="root"
+        shape="circle"
+        size="32"
+        src="mock_path"
+      />
+    </gl-avatar-link-stub>
+  </div>
+  <div
+    class="discussion timeline-content"
+  >
+    <div
+      class="note-header"
+    >
+      <div
+        class="note-header-info"
+      >
+        <a
+          href="/root"
+        >
+          <span
+            class="@sm/panel:gl-inline-block gl-font-bold gl-hidden"
+          >
+            Root
+          </span>
+          <span
+            class="note-headline-light"
+          >
+            @root
+          </span>
+        </a>
+      </div>
+    </div>
+    <div
+      class="timeline-discussion-body"
+    >
+      <div
+        class="note-body"
+      >
+        <div
+          class="md note-text"
+        >
+          <p
+            dir="auto"
+          >
+            Foo
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</timeline-entry-item-stub>
+`;

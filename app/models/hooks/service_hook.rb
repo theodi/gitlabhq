@@ -1,25 +1,21 @@
-# == Schema Information
-#
-# Table name: web_hooks
-#
-#  id                    :integer          not null, primary key
-#  url                   :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  type                  :string(255)      default("ProjectHook")
-#  service_id            :integer
-#  push_events           :boolean          default(TRUE), not null
-#  issues_events         :boolean          default(FALSE), not null
-#  merge_requests_events :boolean          default(FALSE), not null
-#  tag_push_events       :boolean          default(FALSE)
-#  note_events           :boolean          default(FALSE), not null
-#
+# frozen_string_literal: true
 
 class ServiceHook < WebHook
-  belongs_to :service
+  include Presentable
 
-  def execute(data)
-    super(data, 'service_hook')
+  extend ::Gitlab::Utils::Override
+
+  self.allow_legacy_sti_class = true
+
+  has_many :web_hook_logs, foreign_key: 'web_hook_id', inverse_of: :web_hook
+
+  belongs_to :integration
+  validates :integration, presence: true
+
+  def execute(data, hook_name = 'service_hook', idempotency_key: nil)
+    super(data, hook_name, idempotency_key: idempotency_key)
   end
+
+  override :parent
+  delegate :parent, to: :integration
 end

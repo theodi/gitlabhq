@@ -1,0 +1,923 @@
+import Vue, { nextTick } from 'vue';
+import VueRouter from 'vue-router';
+import { shallowMount, mount } from '@vue/test-utils';
+import waitForPromises from 'helpers/wait_for_promises';
+import { compatH } from '~/lib/utils/vue3compat/compat_h';
+
+Vue.use(VueRouter);
+
+const isVue3 = Vue.version.startsWith('3');
+
+describe('VueRouterCompat', () => {
+  const ParentComponent = {
+    template: '<div><router-view /></div>',
+  };
+
+  describe('$route.params normalization', () => {
+    it('returns catch-all path params as a string via $route', async () => {
+      const TestComponent = {
+        template: '<div>{{ $route.params.pathMatch }}</div>',
+      };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '*', component: TestComponent }],
+      });
+
+      await router.push('/foo/bar/baz');
+
+      const wrapper = shallowMount(TestComponent, {
+        router,
+      });
+
+      await nextTick();
+
+      expect(wrapper.text()).toMatch(/^\/?foo\/bar\/baz$/);
+    });
+
+    it('returns repeatable params as joined string via $route', async () => {
+      const TestComponent = {
+        template: '<div>{{ $route.params.id }}</div>',
+      };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/users/:id+', component: TestComponent }],
+      });
+
+      await router.push('/users/1/2/3');
+
+      const wrapper = shallowMount(TestComponent, {
+        router,
+      });
+
+      await nextTick();
+
+      expect(wrapper.text()).toBe('1/2/3');
+    });
+  });
+
+  describe('$route reactivity', () => {
+    it('updates template when route changes', async () => {
+      const TestComponent = {
+        template: '<div>{{ $route.path }}</div>',
+      };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/page1', component: TestComponent },
+          { path: '/page2', component: TestComponent },
+        ],
+      });
+
+      await router.push('/page1');
+
+      const wrapper = shallowMount(TestComponent, {
+        router,
+      });
+
+      await nextTick();
+      expect(wrapper.text()).toBe('/page1');
+
+      await router.push('/page2');
+      await nextTick();
+
+      expect(wrapper.text()).toBe('/page2');
+    });
+  });
+
+  describe('router initialization', () => {
+    it('creates a working router when no routes provided', () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+      });
+
+      expect(router).toBeDefined();
+      expect(router.currentRoute).toBeDefined();
+    });
+
+    it('currentRoute is available synchronously after creation', () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/', component: { template: '<div />' } }],
+      });
+
+      expect(router.currentRoute).toBeDefined();
+      expect(router.currentRoute.path).toBe('/');
+    });
+
+    it('defaults to hash mode when mode is not specified', () => {
+      const router = new VueRouter({
+        routes: [{ path: '/', component: { template: '<div />' } }],
+      });
+
+      expect(router).toBeDefined();
+      expect(router.currentRoute).toBeDefined();
+    });
+  });
+
+  describe('catch-all route transformation', () => {
+    it('transforms root-level * to catch-all pattern', async () => {
+      const CatchAllComponent = { template: '<div>404</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/home', component: { template: '<div>home</div>' } },
+          { path: '*', component: CatchAllComponent },
+        ],
+      });
+
+      await router.push('/unknown/path');
+
+      expect(router.currentRoute.matched.length).toBeGreaterThan(0);
+    });
+
+    it('handles nested routes with children', async () => {
+      const ChildComponent = { template: '<div>child</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          {
+            path: '/parent',
+            component: ParentComponent,
+            children: [{ path: 'child', component: ChildComponent }],
+          },
+        ],
+      });
+
+      await router.push('/parent/child');
+
+      expect(router.currentRoute.path).toBe('/parent/child');
+      expect(router.currentRoute.matched).toHaveLength(2);
+    });
+
+    it('handles nested catch-all in children', async () => {
+      const CatchAllComponent = { template: '<div>catch all</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          {
+            path: '/parent',
+            component: ParentComponent,
+            children: [{ path: '*', component: CatchAllComponent }],
+          },
+        ],
+      });
+
+      await router.push('/parent/anything');
+
+      expect(router.currentRoute.matched).toHaveLength(2);
+    });
+  });
+
+  describe('router modes', () => {
+    it('supports abstract mode', async () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/test', component: { template: '<div />' } }],
+      });
+
+      await router.push('/test');
+
+      expect(router.currentRoute.path).toBe('/test');
+    });
+
+    it('supports hash mode', () => {
+      const router = new VueRouter({
+        mode: 'hash',
+        routes: [{ path: '/', component: { template: '<div />' } }],
+      });
+
+      expect(router).toBeDefined();
+      expect(router.currentRoute).toBeDefined();
+    });
+
+    it('updates URL hash on redirect in hash mode', async () => {
+      const router = new VueRouter({
+        mode: 'hash',
+        routes: [
+          { path: '/', component: { template: '<div />' } },
+          { path: '/target', component: { template: '<div />' } },
+          { path: '/source', redirect: '/target' },
+        ],
+      });
+
+      await router.push('/source');
+
+      expect(router.currentRoute.path).toBe('/target');
+      expect(window.location.hash).toBe('#/target');
+    });
+  });
+
+  describe('abstract mode is decoupled from window.location', () => {
+    let originalPathname;
+    let consoleWarnSpy;
+
+    beforeEach(() => {
+      originalPathname = window.location.pathname;
+      consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      window.history.replaceState({}, '', originalPathname);
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('does not warn about an unmatched route when the browser URL does not match any abstract route', () => {
+      // Simulates a globally-mounted abstract-mode router (e.g. a side panel)
+      // living on a page whose real URL isn't one of its own virtual routes.
+      window.history.replaceState({}, '', '/projects/new');
+
+      // eslint-disable-next-line no-new
+      new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/', name: 'root', component: { template: '<div />' } },
+          { path: '/closed', name: 'closed', component: { template: '<div />' } },
+        ],
+      });
+
+      expect(consoleWarnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('No match found for location'),
+      );
+    });
+
+    it('still resolves an explicit push after mount, even when the browser URL matches no route', async () => {
+      window.history.replaceState({}, '', '/some/unrelated/page');
+
+      const TestComponent = { template: '<div>{{ $route.path }}</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/', name: 'root', component: TestComponent }],
+      });
+
+      const wrapper = shallowMount(TestComponent, { router });
+      await router.push('/');
+      await nextTick();
+
+      expect(wrapper.text()).toBe('/');
+      expect(consoleWarnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('No match found for location'),
+      );
+    });
+  });
+
+  describe('navigation methods', () => {
+    it('push navigates to a new route', async () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/', component: { template: '<div />' } },
+          { path: '/new', component: { template: '<div />' } },
+        ],
+      });
+
+      await router.push('/new');
+
+      expect(router.currentRoute.path).toBe('/new');
+    });
+
+    it('replace navigates without adding to history', async () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/', component: { template: '<div />' } },
+          { path: '/replaced', component: { template: '<div />' } },
+        ],
+      });
+
+      await router.replace('/replaced');
+
+      expect(router.currentRoute.path).toBe('/replaced');
+    });
+
+    it('push with object parameter works', async () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/', component: { template: '<div />' } },
+          { path: '/users/:id', name: 'user', component: { template: '<div />' } },
+        ],
+      });
+
+      await router.push({ name: 'user', params: { id: '42' } });
+
+      expect(router.currentRoute.params.id).toBe('42');
+    });
+  });
+
+  describe('query and hash', () => {
+    it('pushes a query onto a route declared without a component', async () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/' }],
+      });
+
+      await router.push({ query: { sort: 'created_date' } });
+
+      expect(router.currentRoute.query.sort).toBe('created_date');
+    });
+
+    it('preserves query parameters', async () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/search', component: { template: '<div />' } }],
+      });
+
+      await router.push('/search?q=test&page=1');
+
+      expect(router.currentRoute.query).toEqual({ q: 'test', page: '1' });
+    });
+
+    it('preserves hash', async () => {
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/page', component: { template: '<div />' } }],
+      });
+
+      await router.push('/page#section');
+
+      expect(router.currentRoute.hash).toBe('#section');
+    });
+  });
+
+  describe('$router availability', () => {
+    it('$router is available in components and can navigate', async () => {
+      let componentRouter = null;
+      const TestComponent = {
+        template: '<div>{{ $route.path }}</div>',
+        mounted() {
+          componentRouter = this.$router;
+        },
+      };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/', component: TestComponent },
+          { path: '/target', component: TestComponent },
+        ],
+      });
+
+      const wrapper = shallowMount(TestComponent, {
+        router,
+      });
+
+      await nextTick();
+      expect(wrapper.text()).toBe('/');
+
+      await componentRouter.push('/target');
+      await nextTick();
+
+      expect(wrapper.text()).toBe('/target');
+    });
+  });
+
+  describe('redirect following', () => {
+    it('follows child catch-all redirect on navigation', async () => {
+      const DashboardComponent = { template: '<div>dashboard</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          {
+            path: '/',
+            component: ParentComponent,
+            children: [
+              { path: 'dashboard', name: 'dashboard', component: DashboardComponent },
+              { path: '*', redirect: { name: 'dashboard' } },
+            ],
+          },
+        ],
+      });
+
+      await router.push('/');
+
+      expect(router.currentRoute.name).toBe('dashboard');
+      expect(router.currentRoute.path).toBe('/dashboard');
+    });
+
+    it('follows string redirect on navigation', async () => {
+      const TargetComponent = { template: '<div>target</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/old', redirect: '/new' },
+          { path: '/new', name: 'new', component: TargetComponent },
+        ],
+      });
+
+      await router.push('/old');
+
+      expect(router.currentRoute.path).toBe('/new');
+    });
+
+    it('follows function redirect on navigation', async () => {
+      const TargetComponent = { template: '<div>target</div>' };
+      const redirect = jest.fn(() => '/resolved');
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/dynamic', redirect },
+          { path: '/resolved', name: 'resolved', component: TargetComponent },
+        ],
+      });
+
+      await router.push('/dynamic');
+
+      expect(redirect).toHaveBeenCalledWith(expect.objectContaining({ path: '/dynamic' }));
+      expect(router.currentRoute.path).toBe('/resolved');
+    });
+  });
+
+  describe('initial route and redirect', () => {
+    let originalPathname;
+    let originalHash;
+
+    beforeEach(() => {
+      originalPathname = window.location.pathname;
+      originalHash = window.location.hash;
+    });
+
+    afterEach(() => {
+      window.history.replaceState({}, '', originalPathname + originalHash);
+    });
+
+    it('resolves initial route from hash fragment in hash mode', async () => {
+      window.history.replaceState({}, '', '/some/page#/my-tab');
+
+      const TabComponent = { template: '<div>tab</div>' };
+
+      const router = new VueRouter({
+        mode: 'hash',
+        routes: [{ path: '/:tabId', name: 'tab', component: TabComponent }],
+      });
+
+      shallowMount(TabComponent, { router });
+      await nextTick();
+
+      expect(router.currentRoute.params.tabId).toBe('my-tab');
+    });
+
+    describe('executes afterEach hook', () => {
+      let mockAfterEach;
+
+      beforeEach(() => {
+        mockAfterEach = jest.fn();
+      });
+
+      it('for initial route', async () => {
+        window.history.replaceState({}, '', '/list');
+
+        const router = new VueRouter({
+          mode: 'history',
+          routes: [
+            { path: '/', name: 'index' },
+            { path: '/list', name: 'list' },
+          ],
+        });
+        router.afterEach(({ name }) => {
+          mockAfterEach(name);
+        });
+
+        shallowMount(ParentComponent, { router });
+        await nextTick();
+
+        expect(mockAfterEach.mock.calls).toEqual([['list']]);
+      });
+
+      it('for initial route after redirection', async () => {
+        window.history.replaceState({}, '', '/not-a-path');
+
+        const router = new VueRouter({
+          mode: 'history',
+          routes: [
+            { path: '/list', name: 'list' },
+            { path: '*', redirect: { name: 'list' } },
+          ],
+        });
+        router.afterEach(({ name }) => {
+          mockAfterEach(name);
+        });
+
+        shallowMount(ParentComponent, { router });
+        await nextTick();
+
+        expect(mockAfterEach.mock.calls).toEqual([['list']]);
+      });
+    });
+
+    describe('executes beforeEach hook', () => {
+      let mockBeforeEach;
+
+      beforeEach(() => {
+        mockBeforeEach = jest.fn();
+      });
+
+      it('for initial route, with `from` reflecting a fresh navigation', async () => {
+        window.history.replaceState({}, '', '/list');
+
+        const router = new VueRouter({
+          mode: 'history',
+          routes: [
+            { path: '/', name: 'index' },
+            { path: '/list', name: 'list' },
+          ],
+        });
+        // Registered after construction, matching how real consumers do it.
+        router.beforeEach((to, from, next) => {
+          mockBeforeEach(to.name, from.matched.length);
+          next();
+        });
+
+        shallowMount(ParentComponent, { router });
+        await waitForPromises();
+
+        expect(mockBeforeEach.mock.calls).toEqual([['list', 0]]);
+      });
+
+      it('for initial route after a declarative redirect', async () => {
+        window.history.replaceState({}, '', '/not-a-path');
+
+        const router = new VueRouter({
+          mode: 'history',
+          routes: [
+            { path: '/list', name: 'list' },
+            { path: '*', redirect: { name: 'list' } },
+          ],
+        });
+        router.beforeEach((to, from, next) => {
+          mockBeforeEach(to.name, from.matched.length);
+          next();
+        });
+
+        shallowMount(ParentComponent, { router });
+        await waitForPromises();
+
+        expect(mockBeforeEach.mock.calls).toEqual([['list', 0]]);
+      });
+
+      it('for initial route after a beforeEnter-guard redirect', async () => {
+        const base = '/group/-/cadences';
+        window.history.replaceState({}, '', `${base}/new`);
+
+        const router = new VueRouter({
+          mode: 'history',
+          base,
+          routes: [
+            { path: '/', name: 'index' },
+            {
+              path: '/new',
+              name: 'new',
+              beforeEnter: (to, from, next) => {
+                next({ name: 'index' });
+              },
+            },
+          ],
+        });
+        router.beforeEach((to, from, next) => {
+          mockBeforeEach(to.name, from.matched.length);
+          next();
+        });
+
+        shallowMount(ParentComponent, { router });
+        await waitForPromises();
+
+        // Vue Router 3 also reports the pre-redirect attempt; the shim only
+        // reports the final destination. Both agree on the committed route.
+        expect(mockBeforeEach).toHaveBeenLastCalledWith('index', 0);
+      });
+
+      if (isVue3) {
+        // Only the compat implementation awaits (and contains) promises
+        // returned by guards on the manual initial-route invocation.
+        it('contains rejections from async guards and keeps invoking later guards', async () => {
+          window.history.replaceState({}, '', '/list');
+
+          const router = new VueRouter({
+            mode: 'history',
+            routes: [{ path: '/list', name: 'list' }],
+          });
+          router.beforeEach(() => Promise.reject(new Error('async guard failure')));
+          router.beforeEach((to, from, next) => {
+            mockBeforeEach(to.name, from.matched.length);
+            next();
+          });
+
+          shallowMount(ParentComponent, { router });
+          await waitForPromises();
+
+          expect(mockBeforeEach.mock.calls).toEqual([['list', 0]]);
+        });
+      }
+
+      it('does not run guards removed before the initial navigation settles', async () => {
+        window.history.replaceState({}, '', '/list');
+
+        const router = new VueRouter({
+          mode: 'history',
+          routes: [{ path: '/list', name: 'list' }],
+        });
+        const removeGuard = router.beforeEach((to, from, next) => {
+          mockBeforeEach(to.name);
+          next();
+        });
+        removeGuard();
+
+        shallowMount(ParentComponent, { router });
+        await waitForPromises();
+
+        expect(mockBeforeEach).not.toHaveBeenCalled();
+      });
+    });
+
+    it('does not rewrite the browser URL on initial mount', async () => {
+      // Regression test: a history-mode router mounted at its own base must
+      // not stamp `base + '/'` (or any router-derived path) over the address
+      // bar during the initial navigation.
+      const base = '/namespace/project';
+      window.history.replaceState({}, '', base);
+
+      const router = new VueRouter({
+        mode: 'history',
+        base,
+        routes: [{ path: '/', name: 'index', component: { template: '<div>index</div>' } }],
+      });
+
+      shallowMount(ParentComponent, { router });
+      await waitForPromises();
+
+      expect(window.location.pathname).toBe(base);
+    });
+
+    it('updates the browser URL when initial route follows a child catch-all redirect', async () => {
+      const base = '/group/-/compliance_dashboard';
+      window.history.replaceState({}, '', base);
+
+      const DashboardComponent = { template: '<div>dashboard</div>' };
+
+      const router = new VueRouter({
+        mode: 'history',
+        base,
+        routes: [
+          {
+            path: '/',
+            component: ParentComponent,
+            children: [
+              { path: 'dashboard', name: 'dashboard', component: DashboardComponent },
+              { path: '*', redirect: { name: 'dashboard' } },
+            ],
+          },
+        ],
+      });
+
+      shallowMount(ParentComponent, { router });
+      await nextTick();
+
+      expect(window.location.pathname).toBe(`${base}/dashboard`);
+    });
+
+    it('does not update the browser URL when no redirect is followed', async () => {
+      const base = '/group/-/compliance_dashboard';
+      const initialPath = `${base}/dashboard`;
+      window.history.replaceState({}, '', initialPath);
+
+      const DashboardComponent = { template: '<div>dashboard</div>' };
+
+      const router = new VueRouter({
+        mode: 'history',
+        base,
+        routes: [
+          {
+            path: '/',
+            component: ParentComponent,
+            children: [
+              { path: 'dashboard', name: 'dashboard', component: DashboardComponent },
+              { path: '*', redirect: { name: 'dashboard' } },
+            ],
+          },
+        ],
+      });
+
+      shallowMount(ParentComponent, { router });
+      await nextTick();
+
+      expect(window.location.pathname).toBe(initialPath);
+    });
+
+    it('updates the browser URL when following a string redirect', async () => {
+      const base = '/app';
+      window.history.replaceState({}, '', `${base}/old`);
+
+      const TargetComponent = { template: '<div>target</div>' };
+
+      const router = new VueRouter({
+        mode: 'history',
+        base,
+        routes: [
+          { path: '/old', redirect: '/new' },
+          { path: '/new', name: 'new', component: TargetComponent },
+        ],
+      });
+
+      shallowMount(TargetComponent, { router });
+      await nextTick();
+
+      expect(window.location.pathname).toBe(`${base}/new`);
+    });
+
+    it('executes beforeEnter guard that redirects on initial route', () => {
+      const base = '/group/-/cadences';
+      window.history.replaceState({}, '', `${base}/new`);
+
+      const IndexComponent = { template: '<div>index</div>' };
+      const NewComponent = { template: '<div>new</div>' };
+
+      const router = new VueRouter({
+        mode: 'history',
+        base,
+        routes: [
+          { path: '/', name: 'index', component: IndexComponent },
+          {
+            path: '/new',
+            name: 'new',
+            component: NewComponent,
+            beforeEnter: (to, from, next) => {
+              next({ name: 'index' });
+            },
+          },
+        ],
+      });
+
+      shallowMount(ParentComponent, { router });
+
+      expect(router.currentRoute.name).toBe('index');
+      expect(router.currentRoute.path).toBe('/');
+    });
+
+    it('updates the browser URL when following a function redirect', async () => {
+      const base = '/app';
+      window.history.replaceState({}, '', `${base}/dynamic`);
+
+      const TargetComponent = { template: '<div>target</div>' };
+      const redirect = jest.fn(() => '/resolved');
+
+      const router = new VueRouter({
+        mode: 'history',
+        base,
+        routes: [
+          { path: '/dynamic', redirect },
+          { path: '/resolved', name: 'resolved', component: TargetComponent },
+        ],
+      });
+
+      shallowMount(TargetComponent, { router });
+      await nextTick();
+
+      expect(redirect).toHaveBeenCalledWith(expect.objectContaining({ path: '/dynamic' }));
+      expect(window.location.pathname).toBe(`${base}/resolved`);
+    });
+  });
+
+  describe('beforeEnter guard', () => {
+    it('executes beforeEnter guard that redirects via next() on push', async () => {
+      const IndexComponent = { template: '<div>index</div>' };
+      const NewComponent = { template: '<div>new</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          { path: '/', name: 'index', component: IndexComponent },
+          {
+            path: '/new',
+            name: 'new',
+            component: NewComponent,
+            beforeEnter: (to, from, next) => {
+              next({ name: 'index' });
+            },
+          },
+        ],
+      });
+
+      try {
+        await router.push('/new');
+      } catch {
+        // Vue Router 3 may throw/reject on redirect
+      }
+      await nextTick();
+
+      expect(router.currentRoute.name).toBe('index');
+      expect(router.currentRoute.path).toBe('/');
+    });
+  });
+
+  describe('route matching', () => {
+    it('matched array contains route records', async () => {
+      const HomeComponent = { template: '<div>home</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [{ path: '/home', component: HomeComponent, name: 'home' }],
+      });
+
+      await router.push('/home');
+
+      expect(router.currentRoute.matched).toHaveLength(1);
+      expect(router.currentRoute.matched[0].components.default).toBe(HomeComponent);
+    });
+
+    it('matched array contains multiple records for nested routes', async () => {
+      const ChildComponent = { template: '<div>child</div>' };
+
+      const router = new VueRouter({
+        mode: 'abstract',
+        routes: [
+          {
+            path: '/parent',
+            component: ParentComponent,
+            children: [{ path: 'child', component: ChildComponent }],
+          },
+        ],
+      });
+
+      await router.push('/parent/child');
+
+      expect(router.currentRoute.matched).toHaveLength(2);
+      expect(router.currentRoute.matched[0].components.default).toBe(ParentComponent);
+      expect(router.currentRoute.matched[1].components.default).toBe(ChildComponent);
+    });
+  });
+
+  describe('lazy route components', () => {
+    // The initial navigation must run the loader and render its result — not
+    // the loader function itself ("[object Promise]").
+    it('renders a lazy component matched by the initial location', async () => {
+      const router = new VueRouter({
+        mode: 'history',
+        routes: [
+          {
+            path: '/',
+            // A render function, not a template: the router resolves this
+            // component outside @vue/test-utils, so the Vue 2 lane's
+            // runtime-only build cannot compile a template here.
+            component: () =>
+              Promise.resolve({ render: () => compatH('div', undefined, 'lazy content') }),
+          },
+        ],
+      });
+
+      const wrapper = mount(ParentComponent, { router });
+      await waitForPromises();
+
+      expect(wrapper.text()).toBe('lazy content');
+    });
+
+    it('renders a lazy component behind an initial-location redirect', async () => {
+      const router = new VueRouter({
+        mode: 'history',
+        routes: [
+          { path: '/', redirect: '/scans' },
+          {
+            path: '/scans',
+            component: () =>
+              Promise.resolve({ render: () => compatH('div', undefined, 'lazy scans') }),
+          },
+        ],
+      });
+
+      const wrapper = mount(ParentComponent, { router });
+      await waitForPromises();
+
+      expect(wrapper.text()).toBe('lazy scans');
+    });
+
+    it('runs a lazy route beforeEnter guard exactly once on the initial navigation', async () => {
+      const beforeEnter = jest.fn((to, from, next) => next());
+
+      const router = new VueRouter({
+        mode: 'history',
+        routes: [
+          {
+            path: '/',
+            beforeEnter,
+            component: () =>
+              Promise.resolve({ render: () => compatH('div', undefined, 'lazy guarded') }),
+          },
+        ],
+      });
+
+      const wrapper = mount(ParentComponent, { router });
+      await waitForPromises();
+
+      expect(wrapper.text()).toBe('lazy guarded');
+      expect(beforeEnter).toHaveBeenCalledTimes(1);
+    });
+  });
+});

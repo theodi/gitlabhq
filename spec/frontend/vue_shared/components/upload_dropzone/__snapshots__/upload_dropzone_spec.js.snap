@@ -1,0 +1,723 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Upload dropzone component correctly overrides description and drop messages 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        <span>
+          Test %{linkStart}description%{linkEnd} message.
+        </span>
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/jpg,image/jpeg"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style="display: none;"
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Incoming!
+        </h3>
+        <span>
+          Test drop-to-start message.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when dragging renders correct template when drag event contains files 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        Drop or
+        <gl-link-stub>
+          upload
+        </gl-link-stub>
+        files to attach
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/*"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style=""
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Incoming!
+        </h3>
+        <span>
+          Drop your files to start your upload.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when dragging renders correct template when drag event contains files and text 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        Drop or
+        <gl-link-stub>
+          upload
+        </gl-link-stub>
+        files to attach
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/*"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style=""
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Incoming!
+        </h3>
+        <span>
+          Drop your files to start your upload.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when dragging renders correct template when drag event contains text 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        Drop or
+        <gl-link-stub>
+          upload
+        </gl-link-stub>
+        files to attach
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/*"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style=""
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Oh no!
+        </h3>
+        <span>
+          You are trying to upload something other than an image. Please upload a .png, .jpg, .jpeg, .gif, .bmp, .tiff or .ico.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when dragging renders correct template when drag event is empty 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        Drop or
+        <gl-link-stub>
+          upload
+        </gl-link-stub>
+        files to attach
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/*"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style=""
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Oh no!
+        </h3>
+        <span>
+          You are trying to upload something other than an image. Please upload a .png, .jpg, .jpeg, .gif, .bmp, .tiff or .ico.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when dragging renders correct template when dragging stops 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        Drop or
+        <gl-link-stub>
+          upload
+        </gl-link-stub>
+        files to attach
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/*"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style="display: none;"
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Oh no!
+        </h3>
+        <span>
+          You are trying to upload something other than an image. Please upload a .png, .jpg, .jpeg, .gif, .bmp, .tiff or .ico.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when dragging with design upload overlay enabled renders component with requires classes when design upload overlay is true 1`] = `
+<div
+  class="gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        Drop or
+        <gl-link-stub>
+          upload
+        </gl-link-stub>
+        files to attach
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/*"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="design-upload-dropzone-overlay gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full gl-z-200"
+      style=""
+    >
+      <div
+        class="gl-absolute gl-bg-feedback-strong gl-bottom-6 gl-flex gl-items-center gl-px-3 gl-py-2 gl-rounded-base gl-shadow-sm gl-text-feedback-strong"
+        data-testid="design-upload-overlay"
+      >
+        <svg
+          class="gl-animated-icon gl-animated-icon-current gl-animated-icon-on"
+          fill="none"
+          height="16"
+          name="upload"
+          viewBox="0 0 16 16"
+          width="16"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            class="gl-animated-upload-base"
+            d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-width="1.5"
+          />
+          <path
+            class="gl-animated-upload-line"
+            d="M8 11.25V2.5"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-width="1.5"
+          />
+          <path
+            class="gl-animated-upload-arrow"
+            d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-width="1.5"
+          />
+        </svg>
+        <span
+          class="gl-ml-2"
+        >
+          Drop your images to start the upload.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when no slot provided renders default dropzone card 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <button
+    class="gl-bg-default gl-border-0 gl-h-full gl-items-center gl-justify-center gl-mb-0 gl-px-5 gl-py-4 gl-rounded-base gl-w-full upload-dropzone-border upload-dropzone-card"
+    type="button"
+  >
+    <div
+      class="gl-flex gl-flex-col gl-items-center gl-justify-center gl-text-center"
+      data-testid="dropzone-area"
+    >
+      <svg
+        class="gl-animated-icon gl-animated-icon-current gl-animated-icon-off gl-mb-3"
+        fill="none"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          class="gl-animated-upload-base"
+          d="M14.25 9.75V13C14.25 13.6904 13.6904 14.25 13 14.25L3 14.25C2.30964 14.25 1.75 13.6904 1.75 13L1.75 9.75"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-line"
+          d="M8 11.25V2.5"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+        <path
+          class="gl-animated-upload-arrow"
+          d="M11.25 5.31066L8 2.06066L4.75 5.31066"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.5"
+        />
+      </svg>
+      <p
+        class="gl-mb-0"
+        data-testid="upload-text"
+      >
+        Drop or
+        <gl-link-stub>
+          upload
+        </gl-link-stub>
+        files to attach
+      </p>
+    </div>
+  </button>
+  <input
+    accept="image/*"
+    class="hide"
+    multiple=""
+    name="upload_file"
+    type="file"
+  />
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style="display: none;"
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Incoming!
+        </h3>
+        <span>
+          Drop your files to start your upload.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;
+
+exports[`Upload dropzone component when slot provided renders dropzone with slot content 1`] = `
+<div
+  class="gl-relative gl-w-full"
+>
+  <div>
+    dropzone slot
+  </div>
+  <transition-stub
+    name="upload-dropzone-fade"
+  >
+    <div
+      class="gl-absolute gl-flex gl-h-full gl-items-center gl-justify-center gl-p-4 gl-w-full upload-dropzone-border upload-dropzone-overlay"
+      style="display: none;"
+    >
+      <div
+        class="gl-max-w-1/2 gl-text-center"
+      >
+        <h3>
+          Incoming!
+        </h3>
+        <span>
+          Drop your files to start your upload.
+        </span>
+      </div>
+    </div>
+  </transition-stub>
+</div>
+`;

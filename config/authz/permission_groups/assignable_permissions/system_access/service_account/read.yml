@@ -1,0 +1,15 @@
+---
+name: read_service_account
+description: Grants the ability to read service accounts
+boundaries:
+  - project
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_service_account
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

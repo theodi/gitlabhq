@@ -1,0 +1,8 @@
+- breadcrumb_title s_('MlExperimentTracking|Model experiments')
+- page_title s_('MlExperimentTracking|Model experiments')
+
+#js-project-ml-experiments-index{ data: {
+  project_path: @project.full_path,
+  empty_state_svg_path: image_path('illustrations/status/status-new-md.svg'),
+  mlflow_tracking_url: mlflow_tracking_url(@project),
+} }

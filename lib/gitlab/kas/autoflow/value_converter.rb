@@ -1,0 +1,132 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Kas
+    module Autoflow
+      # Converts plain Ruby values into AutoFlow protobuf Values, so callers of
+      # Gitlab::Kas::Client#start_workflow pass ordinary Ruby and never construct
+      # the gRPC types directly. A String becomes a string_value, a Hash a
+      # dict_value, an Array a list_value, and so on.
+      module ValueConverter
+        # A plain class, not a Struct: Struct's to_h/to_a/as_json/deconstruct all
+        # bypass #inspect and would still leak the raw value.
+        class SensitiveString
+          attr_reader :value
+
+          def initialize(value)
+            @value = value
+          end
+
+          def inspect
+            "#<#{self.class.name} [REDACTED]>"
+          end
+          alias_method :to_s, :inspect
+          alias_method :as_json, :inspect
+
+          # Needed for from_value(to_value(x)) == x round-trip specs; not used
+          # for anything security-sensitive (the redacted value never appears).
+          def ==(other)
+            other.is_a?(SensitiveString) && value == other.value
+          end
+          alias_method :eql?, :==
+        end
+
+        module_function
+
+        # @param named [Hash{String => Object}] name => Ruby value
+        # @return [Array<Gitlab::Agent::Autoflow::Kwarg>]
+        def kwargs(named)
+          named.map do |name, value|
+            ::Gitlab::Agent::Autoflow::Kwarg.new(name: name.to_s, value: to_value(value))
+          end
+        end
+
+        # @param str [String]
+        # @return [SensitiveString]
+        def sensitive_string(str)
+          SensitiveString.new(str)
+        end
+
+        # @param values [Array<Object>]
+        # @return [Array<Gitlab::Agent::Autoflow::Value>]
+        def values(values)
+          values.map { |value| to_value(value) }
+        end
+
+        # @return [Gitlab::Agent::Autoflow::Value]
+        def to_value(object)
+          case object
+          when ::Gitlab::Agent::Autoflow::Value
+            object
+          when ::String
+            value(string_value: object)
+          when SensitiveString
+            value(sensitive_string: ::Gitlab::Agent::Autoflow::SensitiveString.new(value: object.value))
+          when ::Integer
+            value(integer_value: object)
+          when ::Float
+            value(float_value: object)
+          when true, false
+            value(bool_value: object)
+          when nil
+            value(none_value: ::Gitlab::Agent::Autoflow::NoneValue::NONE_VALUE)
+          when ::Array
+            value(list_value: ::Gitlab::Agent::Autoflow::ListValue.new(values: values(object)))
+          when ::Hash
+            key_values = object.map do |key, val|
+              ::Gitlab::Agent::Autoflow::KeyValue.new(key: to_value(key.to_s), val: to_value(val))
+            end
+            value(dict_value: ::Gitlab::Agent::Autoflow::DictValue.new(key_values: key_values))
+          else
+            raise ArgumentError, "unsupported AutoFlow value type: #{object.class}"
+          end
+        end
+
+        def value(**kwargs)
+          ::Gitlab::Agent::Autoflow::Value.new(**kwargs)
+        end
+
+        # Reverse of #to_value. Handles the oneof variants #to_value produces
+        # (string_value, sensitive_string, integer_value, float_value, bool_value,
+        # none_value, list_value, dict_value) plus channel_value, which only ever
+        # arrives from AutoFlow (e.g. a com.gitlab.cd.approval_requested reply
+        # channel), never emitted by Rails. The rest (bytes_value, timestamp_value,
+        # ...) still aren't emitted by Rails today and have no Ruby counterpart yet.
+        # @param value [Gitlab::Agent::Autoflow::Value]
+        # @return [Object] plain Ruby value
+        def from_value(value)
+          case value.kind
+          when :string_value
+            value.string_value
+          when :sensitive_string
+            sensitive_string(value.sensitive_string.value)
+          when :integer_value
+            value.integer_value
+          when :float_value
+            value.float_value
+          when :bool_value
+            value.bool_value
+          when :none_value
+            nil
+          when :list_value
+            from_values(value.list_value.values)
+          when :dict_value
+            value.dict_value.key_values.to_h { |kv| [from_value(kv.key), from_value(kv.val)] }
+          when :channel_value
+            value.channel_value.name
+          when nil
+            raise ArgumentError, 'AutoFlow value oneof is not set'
+          else
+            raise ArgumentError, "unsupported AutoFlow value oneof: #{value.kind}"
+          end
+        end
+
+        # @param values [Array<Gitlab::Agent::Autoflow::Value>]
+        # @return [Array<Object>]
+        def from_values(values)
+          values.map { |value| from_value(value) }
+        end
+      end
+    end
+  end
+end

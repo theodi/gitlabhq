@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+
+$:.unshift File.expand_path("../lib", __dir__)
+
+require "optparse"
+require 'gitlab/housekeeper'
+
+REQUIRED_CONFIG_KEYS = [
+  'HOUSEKEEPER_GITLAB_API_TOKEN',
+  'HOUSEKEEPER_TARGET_PROJECT_ID'
+].freeze
+
+def validate_configuration!
+  missing_keys = REQUIRED_CONFIG_KEYS.select { |required_key| !ENV.key?(required_key) }
+
+  if missing_keys.any?
+    raise "Missing required environment variables: #{missing_keys.join(', ')}"
+  end
+end
+
+options = {}
+
+OptionParser.new do |opts|
+  opts.banner = 'Creates merge requests that can be inferred from the current state of the codebase'
+
+  opts.on('--push-when-approved', 'Push code even if there is an existing MR with approvals. By default we do not force push code if the MR has any approvals.') do
+    options[:push_when_approved] = true
+  end
+
+  opts.on('--no-push-when-conflict', 'Do not push code when the existing MR has merge conflicts. By default we force push code to resolve conflicts.') do
+    options[:push_when_conflict] = false
+  end
+
+  opts.on('-b=BRANCH', '--target-branch=BRANCH', String, 'Target branch to use. Defaults to master.') do |branch|
+    options[:target_branch] = branch
+  end
+
+  opts.on('-m=M', '--max-mrs=M', Integer, 'Limit of MRs to create. Defaults to 1.') do |m|
+    options[:max_mrs] = m
+  end
+
+  opts.on('-d', '--dry-run', 'Dry-run only. Print the MR titles, descriptions and diffs') do
+    options[:dry_run] = true
+  end
+
+  opts.on('-k OverdueFinalizeBackgroundMigration,AnotherKeep', '--keeps OverdueFinalizeBackgroundMigration,AnotherKeep', Array, 'Require keeps specified') do |k|
+    options[:keeps] = k
+  end
+
+  opts.on('--filter-identifiers some-identifier-regex,another-regex', Array, 'Skip any changes where none of the identifiers match these regexes. The identifiers is an array, so at least one element must match at least one regex.') do |filters|
+    options[:filter_identifiers] = filters.map { |f| Regexp.new(f) }
+  end
+
+  opts.on('-h', '--help', 'Prints this help') do
+    abort opts.to_s
+  end
+end.parse!
+
+# We do not want to validate configuration on dry runs
+validate_configuration! unless options[:dry_run]
+
+Gitlab::Housekeeper::Runner.new(**options).run

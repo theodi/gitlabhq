@@ -1,0 +1,327 @@
+import { createWrapper } from '@vue/test-utils';
+import { setHTMLFixture, resetHTMLFixture } from 'helpers/fixtures';
+import { useMockIntersectionObserver } from 'helpers/mock_dom_observer';
+import renderMermaid, {
+  MAX_CHAR_LIMIT,
+  MAX_MERMAID_BLOCK_LIMIT,
+  LAZY_ALERT_SHOWN_CLASS,
+} from '~/behaviors/markdown/render_sandboxed_mermaid';
+import { PanelBreakpointInstance } from '~/panel_breakpoint_instance';
+import { visitUrl } from '~/lib/utils/url_utility';
+
+jest.mock('~/panel_breakpoint_instance', () => ({
+  PanelBreakpointInstance: {
+    addResizeListener: jest.fn(),
+    removeResizeListener: jest.fn(),
+  },
+}));
+
+jest.mock('~/lib/utils/url_utility', () => ({
+  ...jest.requireActual('~/lib/utils/url_utility'),
+  visitUrl: jest.fn(),
+}));
+
+describe('Mermaid diagrams renderer', () => {
+  // Finders
+  const findAllIframes = () => document.querySelectorAll('iframe[src*="/-/sandbox/mermaid"]');
+  const findIframe = () => findAllIframes()[0];
+  const findDangerousMermaidAlert = () =>
+    createWrapper(document.querySelector('[data-testid="alert-warning"]'));
+
+  // Helpers
+  const renderDiagrams = (selector = '.js-render-mermaid') => {
+    renderMermaid([...document.querySelectorAll(selector)]);
+    jest.runAllTimers();
+  };
+
+  const receiveMessage = (data, { origin = 'null', source } = {}) => {
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data,
+        origin,
+        source: source !== undefined ? source : findIframe().contentWindow,
+      }),
+    );
+  };
+
+  beforeEach(() => {
+    document.body.dataset.page = '';
+    window.gon = { features: {} };
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    resetHTMLFixture();
+  });
+
+  describe('rendering mermaid diagrams', () => {
+    it.each`
+      description                          | fixture                                                                                                                             | selector
+      ${'with js-render-mermaid class'}    | ${'<div class="gl-relative markdown-code-block js-markdown-code"><pre><code class="js-render-mermaid">graph LR</code></pre></div>'} | ${'.js-render-mermaid'}
+      ${'with language class on code tag'} | ${'<div class="js-markdown-code"><pre><code class="language-mermaid">graph LR</code></pre></div>'}                                  | ${'code.language-mermaid'}
+    `('renders a mermaid diagram $description', ({ fixture, selector }) => {
+      setHTMLFixture(fixture);
+
+      expect(findAllIframes()).toHaveLength(0);
+
+      renderDiagrams(selector);
+
+      expect(document.querySelector('pre').classList).toContain('gl-sr-only');
+      expect(findAllIframes()).toHaveLength(1);
+    });
+  });
+
+  describe('within a hidden parent', () => {
+    const { trigger: triggerIntersection } = useMockIntersectionObserver();
+
+    it.each`
+      description                | fixture
+      ${'a details element'}     | ${'<details><pre><code class="js-render-mermaid">graph LR</code></pre></details>'}
+      ${'a display:none parent'} | ${'<div style="display: none"><pre><code class="js-render-mermaid">graph LR</code></pre></div>'}
+    `('does not render the diagram on load within $description', ({ fixture }) => {
+      setHTMLFixture(fixture);
+      renderDiagrams();
+
+      expect(findAllIframes()).toHaveLength(0);
+    });
+
+    it.each`
+      description                | fixture
+      ${'a details element'}     | ${'<details><pre><code class="js-render-mermaid">graph LR</code></pre></details>'}
+      ${'a display:none parent'} | ${'<div style="display: none"><pre><code class="js-render-mermaid">graph LR</code></pre></div>'}
+    `('renders the diagram when the element becomes visible within $description', ({ fixture }) => {
+      setHTMLFixture(fixture);
+      renderDiagrams();
+
+      const el = document.querySelector('.js-render-mermaid');
+      triggerIntersection(el, { entry: { isIntersecting: true } });
+      jest.runAllTimers();
+
+      expect(findAllIframes()).toHaveLength(1);
+    });
+  });
+
+  describe('dangerous diagrams', () => {
+    describe(`when the diagram's source exceeds ${MAX_CHAR_LIMIT} characters`, () => {
+      beforeEach(() => {
+        setHTMLFixture(
+          `<pre>
+            <code class="js-render-mermaid">${Array(MAX_CHAR_LIMIT + 1)
+              .fill('a')
+              .join('')}</code>
+          </pre>`,
+        );
+        renderDiagrams();
+      });
+      it('does not render the diagram on load', () => {
+        expect(findAllIframes()).toHaveLength(0);
+      });
+
+      it('shows a warning about performance impact when rendering the diagram', () => {
+        expect(document.querySelector('pre').classList).toContain(LAZY_ALERT_SHOWN_CLASS);
+        expect(findDangerousMermaidAlert().exists()).toBe(true);
+        expect(findDangerousMermaidAlert().text()).toContain(
+          'Warning: Displaying this diagram might cause performance issues on this page.',
+        );
+      });
+
+      it("renders the diagram when clicking on the alert's button", () => {
+        findDangerousMermaidAlert().find('button').trigger('click');
+        jest.runAllTimers();
+
+        expect(findAllIframes()).toHaveLength(1);
+      });
+    });
+
+    it(`stops rendering diagrams once the total rendered source exceeds ${MAX_CHAR_LIMIT} characters`, () => {
+      setHTMLFixture(
+        `<pre>
+          <code class="js-render-mermaid">${Array(MAX_CHAR_LIMIT - 1)
+            .fill('a')
+            .join('')}</code>
+          <code class="js-render-mermaid">2</code>
+          <code class="js-render-mermaid">3</code>
+          <code class="js-render-mermaid">4</code>
+        </pre>`,
+      );
+      renderDiagrams();
+
+      expect(findAllIframes()).toHaveLength(3);
+    });
+
+    // Note: The test case below is provided for convenience but should remain skipped as the DOM
+    // operations it requires are too expensive and would significantly slow down the test suite.
+    // eslint-disable-next-line jest/no-disabled-tests
+    it.skip(`stops rendering diagrams when the rendered diagrams count exceeds ${MAX_MERMAID_BLOCK_LIMIT}`, () => {
+      setHTMLFixture(
+        `<pre>
+          ${Array(MAX_MERMAID_BLOCK_LIMIT + 1)
+            .fill('<code class="js-render-mermaid"></code>')
+            .join('')}
+        </pre>`,
+      );
+      renderDiagrams();
+
+      expect([...document.querySelectorAll('.js-render-mermaid')]).toHaveLength(
+        MAX_MERMAID_BLOCK_LIMIT + 1,
+      );
+      expect(findAllIframes()).toHaveLength(MAX_MERMAID_BLOCK_LIMIT);
+    });
+  });
+
+  describe('sandbox version', () => {
+    const findIframePath = () => new URL(findIframe().src).pathname;
+
+    beforeEach(() => {
+      setHTMLFixture('<pre><code class="js-render-mermaid">graph LR</code></pre>');
+    });
+
+    describe('when useMermaidV12 is enabled', () => {
+      beforeEach(() => {
+        window.gon.features.useMermaidV12 = true;
+        renderDiagrams();
+      });
+
+      it('uses the Mermaid 12 sandbox', () => {
+        expect(findIframePath()).toBe('/-/sandbox/mermaid_v12');
+      });
+    });
+
+    describe('when useMermaidV12 is disabled', () => {
+      beforeEach(() => {
+        window.gon.features.useMermaidV12 = false;
+        renderDiagrams();
+      });
+
+      it('uses the Mermaid 11 sandbox', () => {
+        expect(findIframePath()).toBe('/-/sandbox/mermaid_v11');
+      });
+    });
+  });
+
+  describe('does not render mermaid diagrams without a parent element', () => {
+    it('does not render when code element has no pre parent', () => {
+      const orphanedCode = document.createElement('code');
+      orphanedCode.classList.add('language-mermaid');
+      orphanedCode.textContent = 'graph LR';
+
+      renderMermaid([orphanedCode]);
+      jest.runAllTimers();
+
+      expect(findAllIframes()).toHaveLength(0);
+    });
+  });
+
+  describe('messages from the sandboxed iframe', () => {
+    beforeEach(() => {
+      setHTMLFixture('<pre><code class="js-render-mermaid">graph LR</code></pre>');
+      renderDiagrams();
+    });
+
+    describe('height messages', () => {
+      it('sets the iframe height from a valid message', () => {
+        expect(findIframe().height).toBe('');
+
+        receiveMessage({ h: 500, w: 800 });
+
+        expect(findIframe().height).toBe('510px');
+      });
+
+      it.each`
+        description                              | data
+        ${'no h (the ack Chrome for iOS posts)'} | ${{ command: 'registerAsChildFrameAck', remoteFrameId: '4547d9da50e1d06103b42b3e2a64ee86' }}
+        ${'a numeric-string h'}                  | ${{ h: '999' }}
+        ${'a null h'}                            | ${{ h: null }}
+        ${'an empty-string h'}                   | ${{ h: '' }}
+        ${'an undefined payload'}                | ${undefined}
+      `('ignores a message with $description', ({ data }) => {
+        expect(findIframe().height).toBe('');
+
+        receiveMessage({ h: 500, w: 800 });
+        receiveMessage(data);
+
+        expect(findIframe().height).toBe('510px');
+      });
+    });
+
+    describe('link click messages', () => {
+      // eslint-disable-next-line no-script-url
+      const javascriptUrl = 'javascript:alert(1)';
+
+      it.each`
+        description              | href
+        ${'an absolute http(s)'} | ${'https://docs.gitlab.com/user/markdown/'}
+        ${'a root-relative'}     | ${'/help/user/markdown'}
+      `('opens $description link in a new tab', ({ href }) => {
+        receiveMessage({ href });
+
+        expect(visitUrl).toHaveBeenCalledWith(href, true);
+      });
+
+      it.each`
+        description                                 | data
+        ${'an empty-string href'}                   | ${{ href: '' }}
+        ${'a null href'}                            | ${{ href: null }}
+        ${'a non-string href'}                      | ${{ href: { toString: () => 'https://example.com' } }}
+        ${'a javascript: URL'}                      | ${{ href: javascriptUrl }}
+        ${'an undefined payload'}                   | ${undefined}
+        ${'no href (the ack Chrome for iOS posts)'} | ${{ command: 'registerAsChildFrameAck', remoteFrameId: '4547d9da50e1d06103b42b3e2a64ee86' }}
+      `('does not open a message with $description', ({ data }) => {
+        receiveMessage(data);
+
+        expect(visitUrl).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('sandbox message protocol', () => {
+      const href = 'https://docs.gitlab.com/user/markdown/';
+
+      it('treats a message with both link and height payloads as a link click', () => {
+        receiveMessage({ href, h: 500 });
+
+        expect(visitUrl).toHaveBeenCalledWith(href, true);
+        expect(findIframe().height).toBe('');
+      });
+
+      it.each`
+        description                      | overrides
+        ${'an unexpected origin'}        | ${{ origin: 'https://evil.example.com' }}
+        ${'an unexpected source window'} | ${{ source: window }}
+      `('ignores messages from $description', ({ overrides }) => {
+        receiveMessage({ href }, overrides);
+        receiveMessage({ h: 500, w: 800 }, overrides);
+
+        expect(visitUrl).not.toHaveBeenCalled();
+        expect(findIframe().height).toBe('');
+      });
+    });
+  });
+
+  describe('resize handling', () => {
+    it('adds a resize listener when rendering a diagram', () => {
+      setHTMLFixture('<pre><code class="js-render-mermaid">graph LR</code></pre>');
+
+      renderDiagrams();
+
+      expect(PanelBreakpointInstance.addResizeListener).toHaveBeenCalled();
+    });
+
+    it('removes resize listener when wrapper is removed from DOM', () => {
+      setHTMLFixture('<pre><code class="js-render-mermaid">graph LR</code></pre>');
+
+      renderDiagrams();
+
+      const resizeHandler = PanelBreakpointInstance.addResizeListener.mock.calls[0][0];
+
+      // Remove wrapper from DOM
+      const wrapper = document.querySelector('iframe').parentNode;
+      wrapper.remove();
+
+      // Trigger resize handler
+      resizeHandler();
+      jest.runAllTimers();
+
+      expect(PanelBreakpointInstance.removeResizeListener).toHaveBeenCalledWith(resizeHandler);
+    });
+  });
+});

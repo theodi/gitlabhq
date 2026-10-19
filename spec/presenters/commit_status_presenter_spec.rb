@@ -1,0 +1,138 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe CommitStatusPresenter, feature_category: :continuous_integration do
+  let(:project) { build_stubbed(:project) }
+  let(:pipeline) { build_stubbed(:ci_pipeline, project: project) }
+  let(:build) { build_stubbed(:ci_build, pipeline: pipeline) }
+
+  subject(:presenter) do
+    described_class.new(build)
+  end
+
+  it 'inherits from Gitlab::View::Presenter::Delegated' do
+    expect(described_class.superclass).to eq(Gitlab::View::Presenter::Delegated)
+  end
+
+  describe '#callout_failure_message' do
+    subject(:callout_failure_message) { presenter.callout_failure_message }
+
+    context 'when troubleshooting doc is available' do
+      let(:failure_reason) { :environment_creation_failure }
+
+      before do
+        build.failure_reason = failure_reason
+      end
+
+      it 'appends the troubleshooting link' do
+        is_expected.to eq(
+          "#{s_('Job|This job could not be executed because it would create an environment with an invalid parameter.')} " \
+            "<a href=\"#{help_page_path('ci/environments/_index.md', anchor: 'error-job-would-create-an-environment-with-an-invalid-parameter')}\">" \
+            "#{s_('Job|How do I fix it?')}</a>"
+        )
+      end
+    end
+
+    context 'when the job could not access GitLab Secrets Manager' do
+      let(:failure_reason) { :secrets_manager_access_denied }
+
+      before do
+        build.failure_reason = failure_reason
+      end
+
+      it 'appends the troubleshooting link' do
+        is_expected.to eq(
+          "#{s_('Job|This job failed to retrieve secrets because it does not have access to GitLab Secrets Manager.')} " \
+            "<a href=\"#{help_page_path('ci/secrets/secrets_manager/_index.md', anchor: 'error-namespace-does-not-have-access-to-gitlab-secrets-manager')}\">" \
+            "#{s_('Job|How do I fix it?')}</a>"
+        )
+      end
+    end
+
+    context 'when a secret source group is not accessible from the project' do
+      let(:failure_reason) { :secrets_manager_source_not_accessible }
+
+      before do
+        build.failure_reason = failure_reason
+      end
+
+      it 'appends the troubleshooting link' do
+        is_expected.to eq(
+          "#{s_('Job|This job failed to retrieve secrets because a secret source group is not the project group or one of its parent groups.')} " \
+            "<a href=\"#{help_page_path('ci/secrets/secrets_manager/_index.md', anchor: 'error-secret-source-group-is-not-accessible-from-this-project')}\">" \
+            "#{s_('Job|How do I fix it?')}</a>"
+        )
+      end
+    end
+
+    context 'when custom error message is available' do
+      let_it_be(:project) { create(:project) }
+      let_it_be(:pipeline) { create(:ci_pipeline, project: project) }
+      let_it_be_with_reload(:build) { create(:ci_build, pipeline: pipeline) }
+
+      let(:failure_reason) { :job_router_failure }
+
+      before do
+        build.failure_reason = failure_reason
+        build.job_messages.create!(
+          content: 'No available executors matching requirements: gpu=true',
+          severity: :error,
+          project_id: build.project_id,
+          partition_id: build.partition_id
+        )
+      end
+
+      it 'includes the custom message' do
+        expect(callout_failure_message).to include(s_('Job|The Job Router failed to run this job.'))
+        expect(callout_failure_message).to include('No available executors matching requirements: gpu=true')
+      end
+
+      it 'formats the message correctly' do
+        expect(callout_failure_message).to eq(
+          "#{s_('Job|The Job Router failed to run this job.')} No available executors matching requirements: gpu=true"
+        )
+      end
+    end
+
+    context 'when custom error message is not available' do
+      let(:failure_reason) { :job_router_failure }
+
+      before do
+        build.failure_reason = failure_reason
+      end
+
+      it 'shows fallback message' do
+        expect(callout_failure_message).to eq(
+          "#{s_('Job|The Job Router failed to run this job.')} #{s_('Job|Please contact your administrator.')}"
+        )
+      end
+    end
+  end
+
+  describe 'covers all failure reasons' do
+    let(:message) { presenter.callout_failure_message }
+
+    CommitStatus.failure_reasons.keys.each do |failure_reason|
+      context failure_reason do
+        before do
+          build.failure_reason = failure_reason
+        end
+
+        it "is a valid status" do
+          expect { message }.not_to raise_error
+        end
+      end
+    end
+
+    context 'invalid failure message' do
+      before do
+        expect(build).to receive(:failure_reason).and_return('invalid failure message')
+      end
+
+      it "is an invalid status" do
+        expect { message }.to raise_error(/key not found:/)
+      end
+    end
+  end
+end

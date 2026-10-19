@@ -1,0 +1,77 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::ImportExport::Project::ImportTask, :request_store, :silence_stdout, feature_category: :importers do
+  let(:username) { 'root' }
+  let(:namespace_path) { username }
+  let!(:user) { create(:user, username: username) }
+  let(:measurement_enabled) { false }
+  let(:project) { Project.find_by_full_path("#{namespace_path}/#{project_name}") }
+  let(:rake_task) { described_class.new(task_params) }
+  let(:task_params) do
+    {
+      username: username,
+      namespace_path: namespace_path,
+      project_path: project_name,
+      file_path: file_path,
+      measurement_enabled: measurement_enabled
+    }
+  end
+
+  before do
+    stub_application_setting(import_sources: ['gitlab_project'])
+  end
+
+  subject { rake_task.import }
+
+  context 'when project import is valid' do
+    let(:project_name) { 'import_rake_test_project' }
+    let(:file_path) { 'spec/fixtures/gitlab/import_export/lightweight_project_export.tar.gz' }
+
+    include_context 'rake task object storage shared context'
+
+    it_behaves_like 'rake task with disabled object_storage', ::Projects::GitlabProjectsImportService, :execute_sidekiq_job
+
+    shared_examples 'successful project import' do
+      it 'performs project import successfully' do
+        expect { subject }.to output(/Done!/).to_stdout
+        expect { subject }.not_to raise_error
+        expect(subject).to be(true)
+
+        expect(project.name).to eq(project_name)
+        expect(project.merge_requests.count).to be > 0
+        expect(project.issues.count).to be > 0
+        expect(project.milestones.count).to be > 0
+        expect(project.import_state.status).to eq('finished')
+      end
+    end
+
+    it_behaves_like 'successful project import'
+
+    context 'when a project with the same name as the exported project already exists' do
+      before do
+        # lightweight_project_export.tar.gz contains the exported project name 'Project name'
+        create(:project, name: 'Project name', namespace: user.namespace)
+      end
+
+      it_behaves_like 'successful project import'
+    end
+  end
+
+  context 'when project import is invalid' do
+    let(:project_name) { 'import_rake_invalid_test_project' }
+    let(:file_path) { 'spec/fixtures/gitlab/import_export/corrupted_project_export.tar.gz' }
+    let(:not_imported_message) { /Total number of not imported relations: 1/ }
+
+    it 'performs project import successfully' do
+      expect { subject }.to output(not_imported_message).to_stdout
+      expect { subject }.not_to raise_error
+      expect(subject).to be(true)
+
+      expect(project.merge_requests).to be_empty
+      expect(project.import_state.last_error).to be_nil
+      expect(project.import_state.status).to eq('finished')
+    end
+  end
+end

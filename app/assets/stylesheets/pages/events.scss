@@ -1,88 +1,96 @@
 /**
- * Events labels
- *
- */
-.event_label {
-  &.pushed {
-    padding: 0 2px;
-  }
-
-  &.opened {
-    padding: 0 2px;
-  }
-
-  &.closed {
-    padding: 0 2px;
-  }
-
-  &.merged {
-    padding: 0 2px;
-  }
-
-  &.left,
-  &.joined {
-    padding: 0 2px;
-    float: none;
-  }
-}
-
-/**
  * Dashboard events feed
  *
  */
 .event-item {
-  &:first-child {
-    padding-top: 0;
-  }
+  font-size: $gl-font-size;
+  padding: $gl-padding 0 $gl-padding $gl-spacing-scale-8;
+  border-bottom: 1px solid $gray-50;
+  @apply gl-text-subtle;
+  position: relative;
+  line-height: $gl-line-height-20;
 
-  &.event-inline {
-    .avatar {
-      position: relative;
-      top: -2px;
+  .system-note-image {
+    position: absolute;
+    left: 0;
+
+    svg {
+      @apply gl-fill-icon-subtle;
     }
   }
 
-  padding: 12px 0px;
-  border-bottom: 1px solid #eee;
+  .system-note-image-inline {
+    svg {
+      @apply gl-fill-icon-subtle;
+    }
+  }
+
+  .system-note-image,
+  .system-note-image-inline {
+    &.opened-icon,
+    &.created-icon,
+    &.transferred-icon {
+      svg {
+        @apply gl-fill-status-success;
+      }
+    }
+
+    &.closed-icon svg {
+      @apply gl-fill-status-danger;
+    }
+
+    &.accepted-icon svg,
+    &.commented-on-icon svg {
+      @apply gl-fill-status-info;
+    }
+  }
+
+  .event-user-info {
+    margin-bottom: $gl-padding-4;
+
+    .author-name {
+      a {
+        @apply gl-text-default;
+        font-weight: $gl-font-weight-bold;
+      }
+    }
+  }
+
   .event-title {
-    max-width: 70%;
-    @include str-truncated(calc(100% - 174px));
-    font-weight: 500;
-    font-size: 14px;
-    .author_name {
-      color: #333;
+    @apply gl-wrap-anywhere;
+
+    .event-title-block::first-letter {
+      text-transform: capitalize;
     }
   }
+
+
   .event-body {
-    font-size: 13px;
-    margin-left: 35px;
-    margin-right: 80px;
-    color: #777;
+    margin-top: $gl-padding-4;
+    @apply gl-text-default;
 
     .event-note {
-      margin-top: 5px;
       word-wrap: break-word;
 
       .md {
-        font-size: 13px;
+        font-size: $gl-font-size;
+      }
 
-        iframe.twitter-share-button {
-          vertical-align: bottom;
-        }
+      code {
+        white-space: pre-wrap;
       }
 
       pre {
-        border: none;
-        background: #f9f9f9;
+        border: 0;
         border-radius: 0;
-        color: #777;
-        margin: 0 20px;
+        @apply gl-text-subtle;
+        @apply gl-bg-subtle;
         overflow: hidden;
       }
 
       .note-image-attach {
-        margin-top: 4px;
-        margin-left: 0px;
+        margin-top: $gl-padding-4;
+        margin-left: 0;
         max-width: 200px;
         float: none;
       }
@@ -91,107 +99,63 @@
         margin-bottom: 0;
       }
     }
-    .event-note-icon {
-      color: #777;
-      float: left;
-      font-size: 16px;
-      line-height: 16px;
-      margin-right: 5px;
-    }
-  }
-  .event_icon {
-    position: relative;
-    float: right;
-    border: 1px solid #EEE;
-    padding: 5px;
-    @include border-radius(5px);
-    background: #F9F9F9;
-    margin-left: 10px;
-    top: -6px;
-    img {
-      width: 20px;
-    }
   }
 
-  &:last-child { border:none }
+  &:last-child {
+    border: 0;
+  }
 
-  .event_commits {
-    margin-top: 5px;
-
+  .event-commits {
     li {
       &.commit {
         background: transparent;
-        padding: 3px;
-        padding-left: 0;
-        border: none;
+        padding: 0;
+        border: 0;
+
         .commit-row-title {
-          font-size: 12px;
+          font-size: $gl-font-size;
         }
       }
+
       &.commits-stat {
         display: block;
-        padding: 3px;
-        padding-left: 0;
+        padding: 0 3px 0 0;
 
         &:hover {
           background: none;
+        }
+
+        a {
+          @apply gl-text-link;
         }
       }
     }
   }
 
   .event-item-timestamp {
-    float: right;
-    color: #999;
-    line-height: 22px;
-  }
-}
-
-
-/*
- * Last push widget
- */
-.event-last-push {
-  overflow: auto;
-  .event-last-push-text {
-    @include str-truncated(100%);
-    padding: 5px 0;
-    font-size: 13px;
-    float:left;
-    margin-right: -150px;
-    padding-right: 150px;
-    line-height: 20px;
-  }
-}
-
-@media (max-width: $screen-xs-max) {
-  .event-item {
-    .event-title {
-      white-space: normal;
-      overflow: visible;
-      max-width: 100%;
-    }
-    .avatar {
-      display: none;
-    }
-
-    .event-body {
-      margin: 0;
-      border-left: 2px solid #DDD;
-      padding-left: 10px;
-    }
-
-    .event-item-timestamp {
-      display: none;
+    @include gl-container-width-up(sm, panel) {
+      float: right;
     }
   }
 }
 
-.event_filter {
-  li a {
-    font-size: 13px;
-    padding: 5px 10px;
-    background: $background-color;
-    margin-left: 4px;
+// hide event scope (namespace + project) where it is not necessary
+.project-activity {
+  .event-scope {
+    display: none;
+  }
+}
+
+.project-activity-item:not(:last-of-type) {
+  position: relative;
+
+  &::before {
+    // Avatar width is 32px, connecting line width is 2px.
+    // To center the line relatively to the avatar it should be positioned 15px from the left:
+    // (32px (avatar size) - 2px (line thickness)) / 2 = 15px
+    // stylelint-disable length-zero-no-unit
+    @include vertical-line(0px, 15px);
+    top: auto; // Override top to auto align
+    @apply gl-bg-strong;
   }
 }

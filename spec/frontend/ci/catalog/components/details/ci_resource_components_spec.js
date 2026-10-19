@@ -1,0 +1,284 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { GlEmptyState, GlIcon, GlLoadingIcon, GlTableLite, GlTruncate } from '@gitlab/ui';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import CiResourceComponents from '~/ci/catalog/components/details/ci_resource_components.vue';
+import getCiCatalogResourceComponents from '~/ci/catalog/graphql/queries/get_ci_catalog_resource_components.query.graphql';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { createAlert } from '~/alert';
+import { mockComponents, mockComponentsEmpty } from '../../mock';
+
+Vue.use(VueApollo);
+jest.mock('~/alert');
+
+describe('CiResourceComponents', () => {
+  let wrapper;
+  let mockComponentsResponse;
+
+  const components = mockComponents.data.ciCatalogResource.versions.nodes[0].components.nodes;
+
+  const resourcePath = 'twitter/project-1';
+  const version = '1.0.0';
+
+  const defaultProps = { resourcePath, version };
+
+  const createComponent = async () => {
+    const handlers = [[getCiCatalogResourceComponents, mockComponentsResponse]];
+    const mockApollo = createMockApollo(handlers);
+
+    wrapper = mountExtended(CiResourceComponents, {
+      propsData: {
+        ...defaultProps,
+      },
+      apolloProvider: mockApollo,
+      stubs: {
+        HelpIcon: true,
+        GlIcon: true,
+        GlTruncate: true,
+      },
+    });
+
+    await waitForPromises();
+  };
+
+  const findEmptyState = () => wrapper.findComponent(GlEmptyState);
+  const findLoadingIcon = () => wrapper.findComponent(GlLoadingIcon);
+  const findInputHelpLink = () => wrapper.findByTestId('input-help-link');
+  const findInputHelpIcon = () => wrapper.findComponent(GlIcon);
+  const findCodeSnippetContainer = (i) => wrapper.findAllByTestId('copy-to-clipboard').at(i);
+  const findComponents = () => wrapper.findAllByTestId('component-section');
+  const findComponentNameLinks = () =>
+    wrapper.findAllByTestId('component-name').wrappers.map((w) => w.find('a'));
+  const findUsageCounts = () => wrapper.findAllByTestId('usage-count');
+  const findInputCodeBlock = () => wrapper.findAllByTestId('input-code-block');
+  const findInputDefault = () => wrapper.findAllByTestId('input-default');
+  const findComponentDescriptions = () => wrapper.findAllByTestId('component-description');
+
+  beforeEach(() => {
+    mockComponentsResponse = jest.fn();
+    mockComponentsResponse.mockResolvedValue(mockComponents);
+  });
+
+  describe('when queries are loading', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('render a loading icon', () => {
+      expect(findLoadingIcon().exists()).toBe(true);
+    });
+
+    it('does not render components', () => {
+      expect(findComponents()).toHaveLength(0);
+    });
+
+    it('does not throw an error', () => {
+      expect(createAlert).not.toHaveBeenCalled();
+    });
+
+    it('calls query with the correct variables', () => {
+      expect(mockComponentsResponse).toHaveBeenCalledWith({
+        fullPath: resourcePath,
+        version,
+      });
+    });
+  });
+
+  describe('when components query throws an error', () => {
+    beforeEach(async () => {
+      mockComponentsResponse.mockRejectedValue();
+      await createComponent();
+    });
+
+    it('calls createAlert with the correct message', () => {
+      expect(createAlert).toHaveBeenCalled();
+      expect(createAlert).toHaveBeenCalledWith({
+        message: "There was an error fetching this resource's components",
+      });
+    });
+
+    it('does not render the loading state', () => {
+      expect(findLoadingIcon().exists()).toBe(false);
+    });
+  });
+
+  describe('when queries have loaded', () => {
+    describe('and there is no metadata', () => {
+      beforeEach(async () => {
+        mockComponentsResponse.mockResolvedValue(mockComponentsEmpty);
+        await createComponent();
+      });
+
+      it('renders the empty state', () => {
+        expect(findEmptyState().exists()).toBe(true);
+        expect(findEmptyState().props().title).toBe('Component details not available');
+      });
+
+      it('does not render components', () => {
+        expect(findComponents()).toHaveLength(0);
+      });
+    });
+
+    describe('and there is metadata', () => {
+      beforeEach(async () => {
+        await createComponent();
+      });
+
+      it('does not render the empty state', () => {
+        expect(findEmptyState().exists()).toBe(false);
+      });
+
+      it('renders every component', () => {
+        expect(findComponents()).toHaveLength(components.length);
+      });
+
+      it('renders the component name', () => {
+        components.forEach((component) => {
+          expect(wrapper.text()).toContain(component.name);
+        });
+      });
+
+      describe('component name link', () => {
+        it('renders a link for each component name', () => {
+          expect(findComponentNameLinks()).toHaveLength(components.length);
+        });
+
+        it('renders the correct href for each component', () => {
+          components.forEach((component, index) => {
+            const link = findComponentNameLinks()[index];
+            expect(link.attributes('href')).toBe(`#${encodeURIComponent(component.name)}`);
+          });
+        });
+      });
+
+      it('renders the component code snippet', () => {
+        components.forEach((component, i) => {
+          const codeSnippetContainer = findCodeSnippetContainer(i);
+          const expectedCodeSnippet = `include:
+  - component: ${component.includePath}`;
+
+          expect(codeSnippetContainer.exists()).toBe(true);
+          expect(codeSnippetContainer.text()).toContain(expectedCodeSnippet);
+        });
+      });
+
+      it('displays array/object defaults as formatted JSON in pre blocks', () => {
+        const arrayBlock = findInputCodeBlock().at(0).text();
+        expect(arrayBlock).toBe(
+          '[\n' +
+            '  {\n' +
+            '    "if": "$CI_PIPELINE_SOURCE == \\"merge_request_event\\""\n' +
+            '  }\n' +
+            ']',
+        );
+      });
+
+      it('displays primitive defaults in code blocks with correct values', () => {
+        const stringInput = findInputDefault().at(0).findComponent(GlTruncate);
+        const booleanInput = findInputDefault().at(1).findComponent(GlTruncate);
+        const numberInput = findInputDefault().at(2).findComponent(GlTruncate);
+
+        expect(stringInput.props('text')).toBe('1.0.0');
+        expect(booleanInput.props('text')).toBe('false');
+        expect(numberInput.props('text')).toBe('10');
+      });
+
+      describe('component description', () => {
+        it('renders the description for each component', () => {
+          const descriptions = findComponentDescriptions();
+          expect(descriptions).toHaveLength(components.length);
+        });
+
+        it('displays the correct description for each component', () => {
+          components.forEach((component, index) => {
+            expect(findComponentDescriptions().at(index).text()).toBe(component.description);
+          });
+        });
+      });
+
+      describe('usage count', () => {
+        it('renders the usage count for each component', () => {
+          expect(findUsageCounts()).toHaveLength(components.length);
+        });
+
+        it('displays the correct usage count for each component', () => {
+          components.forEach((component, index) => {
+            expect(findUsageCounts().at(index).text()).toBe(
+              components[index].last30DayUsageCount.toString(),
+            );
+          });
+        });
+
+        it('shows the correct tooltip text', () => {
+          findUsageCounts().wrappers.forEach((usageCount) => {
+            const tooltip = usageCount.attributes('title');
+            expect(tooltip).toBe(
+              'Number of unique projects that used this version of the component in the last 30 days.',
+            );
+          });
+        });
+      });
+
+      describe('inputs', () => {
+        it('renders the help link', () => {
+          expect(findInputHelpLink().exists()).toBe(true);
+          expect(findInputHelpLink().attributes('href')).toBe(
+            '/help/ci/inputs/_index.md#define-input-parameters-with-specinputs',
+          );
+          expect(findInputHelpLink().attributes('title')).toBe('Learn more');
+        });
+
+        it('renders the help icon', () => {
+          expect(findInputHelpIcon().exists()).toBe(true);
+        });
+
+        it('renders the component parameter attributes', () => {
+          expect(wrapper.findComponent(GlTableLite).exists()).toBe(true);
+        });
+      });
+    });
+
+    describe('when component has no description', () => {
+      const mockComponentsWithoutDescription = {
+        data: {
+          ciCatalogResource: {
+            __typename: 'CiCatalogResource',
+            id: 'gid://gitlab/CiCatalogResource/1',
+            webPath: '/twitter/project-1',
+            versions: {
+              __typename: 'CiCatalogResourceVersionConnection',
+              nodes: [
+                {
+                  id: 'gid://gitlab/Version/1',
+                  components: {
+                    __typename: 'CiComponentConnection',
+                    nodes: [
+                      {
+                        id: 'gid://gitlab/Ci::Component/1',
+                        name: 'Component without description',
+                        description: null,
+                        includePath: 'gitlab.com/org/project@~latest',
+                        last30DayUsageCount: 5,
+                        inputs: [],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      };
+
+      beforeEach(async () => {
+        mockComponentsResponse.mockResolvedValue(mockComponentsWithoutDescription);
+        await createComponent();
+      });
+
+      it('does not render the description element', () => {
+        expect(findComponentDescriptions()).toHaveLength(0);
+      });
+    });
+  });
+});

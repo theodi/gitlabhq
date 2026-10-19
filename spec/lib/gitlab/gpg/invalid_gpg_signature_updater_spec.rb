@@ -1,0 +1,335 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Gpg::InvalidGpgSignatureUpdater, :sidekiq_inline do
+  describe '#run' do
+    let(:signature) do
+      {
+        signature: GpgHelpers::User1.signed_commit_signature,
+        signed_text: GpgHelpers::User1.signed_commit_base_data
+      }
+    end
+
+    let(:committer_email) { GpgHelpers::User1.emails.first }
+    let_it_be(:commit_sha) { '0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33' }
+    let_it_be(:project) { create :project, :small_repo, path: 'sample-project' }
+    let!(:raw_commit) do
+      raw_commit = double(
+        :raw_commit,
+        signature: signature,
+        sha: commit_sha,
+        committer_email: committer_email,
+        author_email: committer_email
+      )
+
+      allow(raw_commit).to receive :save!
+
+      raw_commit
+    end
+
+    let!(:commit) do
+      create :commit, git_commit: raw_commit, project: project
+    end
+
+    before do
+      allow_any_instance_of(Project).to receive(:commit).and_return(commit)
+
+      allow(Gitlab::Git::Commit).to receive(:extract_signature_lazily)
+        .with(Gitlab::Git::Repository, commit_sha)
+        .and_return(signature)
+    end
+
+    context 'gpg signature did have an associated gpg key which was removed later' do
+      let_it_be(:user) { create :user, email: GpgHelpers::User1.emails.first }
+
+      let_it_be_with_reload(:valid_gpg_signature) do
+        create :gpg_signature,
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: nil,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'verified'
+      end
+
+      it 'assigns the gpg key to the signature when the missing gpg key is added' do
+        # InvalidGpgSignatureUpdater is called by the after_create hook
+        gpg_key = create :gpg_key,
+          key: GpgHelpers::User1.public_key,
+          user: user
+
+        expect(valid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: gpg_key,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'verified'
+        )
+      end
+
+      it 'does not assign the gpg key when an unrelated gpg key is added' do
+        # InvalidGpgSignatureUpdater is called by the after_create hook
+        create :gpg_key,
+          key: GpgHelpers::User2.public_key,
+          user: user
+
+        expect(valid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: nil,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'verified'
+        )
+      end
+    end
+
+    context 'gpg signature did not have an associated gpg key' do
+      let_it_be(:user) { create :user, email: GpgHelpers::User1.emails.first }
+
+      let_it_be_with_reload(:invalid_gpg_signature) do
+        create :gpg_signature,
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: nil,
+          gpg_key_primary_keyid: GpgHelpers::User1.fingerprint,
+          verification_status: 'unknown_key'
+      end
+
+      it 'updates the signature to being valid when the missing gpg key is added' do
+        # InvalidGpgSignatureUpdater is called by the after_create hook
+        gpg_key = create :gpg_key,
+          key: GpgHelpers::User1.public_key,
+          user: user
+
+        expect(invalid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: gpg_key,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'verified'
+        )
+      end
+
+      it 'keeps the signature at being invalid when an unrelated gpg key is added' do
+        # InvalidGpgSignatureUpdater is called by the after_create hook
+        create :gpg_key,
+          key: GpgHelpers::User2.public_key,
+          user: user
+
+        expect(invalid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: nil,
+          gpg_key_primary_keyid: GpgHelpers::User1.fingerprint,
+          verification_status: 'unknown_key'
+        )
+      end
+    end
+
+    context 'gpg signature did have an associated unverified gpg key' do
+      let!(:user) do
+        create(:user, email: 'unrelated@example.com').tap do |user|
+          user.skip_reconfirmation!
+        end
+      end
+
+      let_it_be_with_reload(:invalid_gpg_signature) do
+        create :gpg_signature,
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: nil,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'unknown_key'
+      end
+
+      it 'updates the signature to being valid when the user updates the email address' do
+        gpg_key = create :gpg_key,
+          key: GpgHelpers::User1.public_key,
+          user: user
+
+        user.reload # necessary to reload the association with gpg_keys
+
+        expect(invalid_gpg_signature.reload.verification_status).to eq 'unverified_key'
+
+        # InvalidGpgSignatureUpdater is called by the after_update hook
+        user.update!(email: GpgHelpers::User1.emails.first)
+
+        expect(invalid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: gpg_key,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'verified'
+        )
+      end
+
+      it 'keeps the signature at being invalid when the changed email address is still unrelated' do
+        gpg_key = create :gpg_key,
+          key: GpgHelpers::User1.public_key,
+          user: user
+
+        expect(invalid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: gpg_key,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'unverified_key'
+        )
+
+        # InvalidGpgSignatureUpdater is called by the after_update hook
+        user.update!(email: 'still.unrelated@example.com')
+
+        expect(invalid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: gpg_key,
+          gpg_key_primary_keyid: GpgHelpers::User1.primary_keyid,
+          verification_status: 'unverified_key'
+        )
+      end
+    end
+
+    context 'gpg signature did not have an associated gpg subkey' do
+      let(:signature) do
+        {
+          signature: GpgHelpers::User3.signed_commit_signature,
+          signed_text: GpgHelpers::User3.signed_commit_base_data
+        }
+      end
+
+      let(:committer_email) { GpgHelpers::User3.emails.first }
+      let!(:user)           { create :user, email: GpgHelpers::User3.emails.first }
+
+      let!(:invalid_gpg_signature) do
+        create :gpg_signature,
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key: nil,
+          gpg_key_primary_keyid: GpgHelpers::User3.subkey_fingerprints.last[24..],
+          verification_status: 'unknown_key'
+      end
+
+      it 'updates the signature to being valid when the missing gpg key is added' do
+        # InvalidGpgSignatureUpdater is called by the after_create hook
+        gpg_key = create(:gpg_key, key: GpgHelpers::User3.public_key, user: user)
+        subkey = gpg_key.subkeys.last
+
+        expect(invalid_gpg_signature.reload).to have_attributes(
+          project: project,
+          commit_sha: commit_sha,
+          gpg_key_subkey_id: subkey.id,
+          gpg_key_primary_keyid: subkey.keyid,
+          verification_status: 'verified'
+        )
+      end
+    end
+
+    context 'gpg signature was verified under a uid that has since been revoked' do
+      let(:signature) do
+        {
+          signature: GpgHelpers::UserWithRevokedUid.signed_commit_signature,
+          signed_text: GpgHelpers::UserWithRevokedUid.signed_commit_base_data
+        }
+      end
+
+      let(:committer_email) { GpgHelpers::UserWithRevokedUid.revoked_emails.first }
+
+      let!(:user) do
+        create(:user, email: GpgHelpers::UserWithRevokedUid.emails.first).tap do |user|
+          create :email, :confirmed, user: user, email: committer_email
+        end
+      end
+
+      context 'and the key is still in place' do
+        let!(:gpg_key) { create :gpg_key, key: GpgHelpers::UserWithRevokedUid.public_key, user: user }
+
+        let!(:verified_gpg_signature) do
+          create :gpg_signature,
+            project: project,
+            commit_sha: commit_sha,
+            gpg_key: gpg_key,
+            gpg_key_primary_keyid: GpgHelpers::UserWithRevokedUid.primary_keyid,
+            verification_status: 'verified'
+        end
+
+        it 'leaves the verified signature untouched' do
+          described_class.new(gpg_key).run
+
+          expect(verified_gpg_signature.reload).to have_attributes(
+            gpg_key: gpg_key,
+            gpg_key_primary_keyid: GpgHelpers::UserWithRevokedUid.primary_keyid,
+            verification_status: 'verified'
+          )
+        end
+
+        context 'and the commit was signed with a subkey' do
+          let(:signature) do
+            {
+              signature: GpgHelpers::UserWithRevokedUid.subkey_signed_commit_signature,
+              signed_text: GpgHelpers::UserWithRevokedUid.subkey_signed_commit_base_data
+            }
+          end
+
+          let(:subkey) { gpg_key.subkeys.last }
+
+          let!(:verified_gpg_signature) do
+            create :gpg_signature,
+              project: project,
+              commit_sha: commit_sha,
+              gpg_key: subkey,
+              gpg_key_primary_keyid: subkey.keyid,
+              verification_status: 'verified'
+          end
+
+          it 're-derives the signature, since a subkey signature carries no gpg_key_id' do
+            described_class.new(gpg_key).run
+
+            expect(verified_gpg_signature.reload).to have_attributes(
+              gpg_key: subkey,
+              gpg_key_subkey_id: subkey.id,
+              gpg_key_primary_keyid: subkey.keyid,
+              verification_status: 'same_user_different_email'
+            )
+          end
+        end
+      end
+
+      context 'and the key was removed and added again' do
+        let!(:verified_gpg_signature) do
+          create :gpg_signature,
+            project: project,
+            commit_sha: commit_sha,
+            gpg_key: nil,
+            gpg_key_primary_keyid: GpgHelpers::UserWithRevokedUid.primary_keyid,
+            verification_status: 'verified'
+        end
+
+        it 're-derives the signature against the remaining uids of the key' do
+          # InvalidGpgSignatureUpdater is called by the after_create hook
+          gpg_key = create :gpg_key, key: GpgHelpers::UserWithRevokedUid.public_key, user: user
+
+          expect(verified_gpg_signature.reload).to have_attributes(
+            gpg_key: gpg_key,
+            gpg_key_primary_keyid: GpgHelpers::UserWithRevokedUid.primary_keyid,
+            verification_status: 'same_user_different_email'
+          )
+        end
+
+        context 'when the user never confirmed the revoked email' do
+          let!(:user) { create :user, email: GpgHelpers::UserWithRevokedUid.emails.first }
+
+          it 'marks the signature as made by another user' do
+            # InvalidGpgSignatureUpdater is called by the after_create hook
+            gpg_key = create :gpg_key, key: GpgHelpers::UserWithRevokedUid.public_key, user: user
+
+            expect(verified_gpg_signature.reload).to have_attributes(
+              gpg_key: gpg_key,
+              gpg_key_primary_keyid: GpgHelpers::UserWithRevokedUid.primary_keyid,
+              verification_status: 'other_user'
+            )
+          end
+        end
+      end
+    end
+  end
+end

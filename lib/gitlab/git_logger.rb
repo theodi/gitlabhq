@@ -1,11 +1,9 @@
-module Gitlab
-  class GitLogger < Gitlab::Logger
-    def self.file_name_noext
-      'githost'
-    end
+# frozen_string_literal: true
 
-    def format_message(severity, timestamp, progname, msg)
-      "#{timestamp.to_s(:long)} -> #{severity} -> #{msg}\n"
+module Gitlab
+  class GitLogger < JsonLogger
+    def self.file_name_noext
+      'git_json'
     end
   end
 end

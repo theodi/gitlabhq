@@ -1,0 +1,121 @@
+# frozen_string_literal: true
+
+require_relative 'rake'
+require_relative 'rspec_order'
+require_relative 'rspec_run_time'
+require_relative 'rspec_metadata_validator'
+require_relative 'system_exit_detected'
+require_relative 'helpers/stub_configuration'
+require_relative 'helpers/stub_metrics'
+require_relative 'helpers/stub_object_storage'
+require_relative 'helpers/fast_rails_root'
+
+require 'gitlab/rspec/all'
+require 'gitlab/utils/all'
+require 'gitlab_quality/test_tooling'
+require 'gitlab/rspec-metrics-exporter'
+
+RSpec::Expectations.configuration.on_potential_false_positives = :raise
+
+RSpec.configure do |config|
+  config.shared_context_metadata_behavior = :apply_to_host_groups
+
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/379686
+  config.threadsafe = false
+
+  # Re-run failures locally with `--only-failures`
+  config.example_status_persistence_file_path = ENV.fetch('RSPEC_LAST_RUN_RESULTS_FILE', './spec/examples.txt')
+
+  config.define_derived_metadata(file_path: %r{(ee)?/spec/.+_spec\.rb\z}) do |metadata|
+    # Infer metadata tag `type` if not already inferred by
+    # `infer_spec_type_from_file_location!`.
+    unless metadata.key?(:type)
+      match = %r{/spec/([^/]+)/}.match(metadata[:location])
+      metadata[:type] = match[1].singularize.to_sym if match
+    end
+  end
+
+  config.before do |example|
+    RspecMetadataValidator.validate!(example.metadata)
+  end
+
+  # Makes diffs show entire non-truncated values.
+  config.around(:each, :unlimited_max_formatted_output_length) do |example|
+    old_max_formatted_output_length = RSpec::Support::ObjectFormatter.default_instance.max_formatted_output_length
+
+    config.expect_with :rspec do |c|
+      c.max_formatted_output_length = nil
+    end
+
+    example.run
+
+    config.expect_with :rspec do |c|
+      c.max_formatted_output_length = old_max_formatted_output_length
+    end
+  end
+
+  unless ENV['CI']
+    # Allow running `:focus` examples locally,
+    # falling back to all tests when there is no `:focus` example.
+    config.filter_run focus: true
+    config.run_all_when_everything_filtered = true
+  end
+
+  config.mock_with :rspec do |mocks|
+    mocks.verify_doubled_constant_names = true
+  end
+
+  config.raise_errors_for_deprecations!
+
+  config.include StubConfiguration
+  config.include StubMetrics
+  config.include StubObjectStorage
+  config.include StubENV
+  config.include FastRailsRoot
+
+  warn_missing_feature_category = Gitlab::Utils.to_boolean(ENV['RSPEC_WARN_MISSING_FEATURE_CATEGORY'], default: true)
+
+  # Add warning for example missing feature_category
+  config.before do |example|
+    if warn_missing_feature_category && example.metadata[:feature_category].blank? && !ENV['CI']
+      location =
+        example.metadata[:shared_group_inclusion_backtrace].last&.formatted_inclusion_location ||
+        example.location
+      warn "Missing metadata feature_category: #{location} See https://docs.gitlab.com/ee/development/testing_guide/best_practices.html#feature-category-metadata"
+    end
+  end
+
+  # If no formatter is specified at the command line, config.formatters will be empty.
+  # In this case, we need to explicitly add the default, as adding any other formatter
+  # will cause it not to be added by RSpec itself.
+  config.add_formatter config.default_formatter if config.formatters.empty?
+
+  config.add_formatter GitlabQuality::TestTooling::TestQuarantine::QuarantineFormatter
+
+  # Per-test coverage capture. Off unless the caller sets `GLCI_PER_TEST_COVERAGE`
+  # in a CI environment. Standard MR and master rspec runs do not set it.
+  if ENV['CI'] && ENV['GLCI_PER_TEST_COVERAGE'] == 'true'
+    if ENV['CRYSTALBALL_COVERAGE_STRATEGY'] == 'true'
+      raise 'GLCI_PER_TEST_COVERAGE and CRYSTALBALL_COVERAGE_STRATEGY cannot be enabled together. ' \
+        'Both consume the global Coverage table with incompatible semantics ' \
+        '(the per-test formatter destructively clears it per example).'
+    end
+
+    config.before(:suite) do
+      Coverage.start(lines: true) unless Coverage.running?
+    end
+
+    config.add_formatter Support::PerTestCoverageFormatter
+  end
+
+  Gitlab::RSpecMetricsExporter::ConfigHelper.configure!('backend-rspec-tests') do |exporter_config|
+    exporter_config.test_retried_proc = ->(_example) { ENV["RSPEC_RETRY_PROCESS"] == "true" }
+    exporter_config.custom_metrics_proc = ->(_example) do
+      test_level = ENV['CI_JOB_NAME'].to_s[
+        /(?:^|[\s_-])(unit|integration|system|background_migration|migration)(?:[\s_-]|$)/,
+        1
+      ]
+      { test_level: test_level || "unit" }
+    end
+  end
+end

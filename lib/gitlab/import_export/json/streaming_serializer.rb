@@ -1,0 +1,345 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module ImportExport
+    module Json
+      class StreamingSerializer
+        include Gitlab::ImportExport::CommandLineUtil
+        include Gitlab::Utils::StrongMemoize
+
+        BATCH_SIZE = 100
+
+        attr_reader :exported_objects_count
+
+        class Raw < String
+          def to_json(*_args)
+            to_s
+          end
+        end
+
+        # @param exportable [Group, Project] the group or project being exported
+        # @param relations_schema [Hash] tree built from import_export.yml containing keys:
+        #   :only (included attributes), :except (excluded attributes), :methods (virtual
+        #   attributes), :include (nested relation definitions), :preload (AR preload hints),
+        #   :export_reorder (custom ordering per relation), and :include_if_exportable (conditional associations)
+        # @param json_writer [Gitlab::ImportExport::Json::NdjsonWriter] writer used to stream JSON output
+        # @param current_user [User] the user performing the export
+        # @param exportable_path [String] subdirectory path within the export that namespaces output files;
+        #   root attributes are written to "<exportable_path>.json" and each relation to
+        #   "<exportable_path>/<relation>.ndjson" (e.g. "project", "tree/project", "groups/123", or "" for
+        #   bulk imports where each relation is already isolated in its own export path)
+        # @param excluded_relations [Array<String>] relation names to skip during serialization
+        # @param logger [Logger] logger instance
+        # @param offline_export_id [Integer, nil] when present, scopes contributor caching to a single
+        #   offline export to prevent interference between concurrent exports of the same portable
+        def initialize(
+          exportable,
+          relations_schema,
+          json_writer,
+          current_user:,
+          exportable_path:,
+          excluded_relations: [],
+          logger: Gitlab::Export::Logger,
+          offline_export_id: nil)
+          @exportable = exportable
+          @current_user = current_user
+          @exportable_path = exportable_path
+          @relations_schema = relations_schema
+          @json_writer = json_writer
+          @logger = logger
+          @exported_objects_count = 0
+          @excluded_relations = Array.wrap(excluded_relations).map(&:to_s)
+          @offline_export_id = offline_export_id
+        end
+
+        def execute
+          ::Gitlab::Database::LoadBalancing::SessionMap.use_replica_if_available do
+            serialize_root
+
+            includes.each do |relation_definition|
+              serialize_relation(relation_definition)
+            end
+          end
+        end
+
+        def serialize_root(exportable_path = @exportable_path)
+          log_relation_export('root')
+
+          attributes = exportable.as_json(
+            relations_schema.merge(include: nil, preloads: nil, unsafe: true))
+
+          json_writer.write_attributes(exportable_path, attributes)
+
+          increment_exported_objects_counter
+        end
+
+        def serialize_relation(definition, options = {})
+          raise ArgumentError, 'definition needs to be Hash' unless definition.is_a?(Hash)
+          raise ArgumentError, 'definition needs to have exactly one Hash element' unless definition.one?
+
+          key, definition_options = definition.first
+
+          return if @excluded_relations.include?(key.to_s)
+
+          batch_ids = options[:batch_ids]
+
+          return if batch_ids && batch_ids.empty?
+
+          record = exportable.public_send(key) # rubocop: disable GitlabSecurity/PublicSend
+
+          record = record.where(record.model.primary_key => Array.wrap(batch_ids).map(&:to_i)) if batch_ids
+
+          if record.is_a?(ActiveRecord::Relation)
+            batch_order = batch_ordering(record, key, batch_ids)
+            serialize_many_relations(key, record, definition_options, batch_order: batch_order)
+          elsif record.respond_to?(:each) # this is to support `project_members` that return an Array
+            serialize_many_each(key, record, definition_options)
+          else
+            serialize_single_relation(key, record, definition_options)
+          end
+        end
+
+        private
+
+        attr_reader :json_writer, :relations_schema, :exportable, :logger, :current_user
+
+        def serialize_many_relations(key, records, options, batch_order:)
+          log_relation_export(key, record_count(key, records))
+
+          # Temporarily skip preloading associations for epics as that results in not preloading
+          # epic work item associations
+          #
+          # This should be removed once we change epics import to epic work items import.
+          # https://gitlab.com/gitlab-org/gitlab/-/issues/504684
+          key_preloads = preloads&.dig(key) unless [:epic, :epics].include?(key)
+
+          batch(records, batch_order: batch_order) do |batch|
+            next if batch.empty?
+
+            batch_enumerator = Enumerator.new do |items|
+              batch = batch.preload(key_preloads) if key_preloads
+
+              batch.each do |record|
+                before_read_callback(record)
+
+                items << exportable_json_record(record, options, key)
+
+                increment_exported_objects_counter
+
+                after_read_callback(record)
+              end
+            end
+
+            json_writer.write_relation_array(@exportable_path, key, batch_enumerator)
+
+            Gitlab::SafeRequestStore.clear!
+          rescue StandardError => e
+            # if any error occurs during the export of a batch, skip the batch instead of failing the whole export
+            logger.error(
+              message: 'Error exporting relation batch',
+              exception_message: e.message,
+              exception_class: e.class.to_s,
+              relation: key,
+              sql: e.respond_to?(:sql) ? e.sql : nil,
+              **log_base_data
+            )
+          end
+        end
+
+        def exportable_json_record(record, options, key)
+          return Raw.new(record.to_json(options)) unless options[:include].any?
+
+          conditional_associations = relations_schema[:include_if_exportable]&.dig(key)
+
+          filtered_options =
+            if conditional_associations.present?
+              filter_conditional_include(record, options, conditional_associations)
+            else
+              options
+            end
+
+          Raw.new(authorized_record_json(record, filtered_options))
+        end
+
+        def filter_conditional_include(record, options, conditional_associations)
+          filtered_options = options.deep_dup
+
+          conditional_associations.each do |association|
+            filtered_options[:include].delete_if do |option|
+              !exportable_json_association?(option, record, association.to_sym)
+            end
+          end
+
+          filtered_options
+        end
+
+        def exportable_json_association?(option, record, association)
+          return true unless option.has_key?(association)
+          return false unless record.respond_to?(:exportable_association?)
+
+          record.exportable_association?(association, current_user: current_user)
+        end
+
+        def authorized_record_json(record, options)
+          include_keys = options[:include].flat_map(&:keys)
+          keys_to_authorize = record.try(:restricted_associations, include_keys)
+
+          return record.to_json(options) if keys_to_authorize.blank?
+
+          record.to_authorized_json(keys_to_authorize, current_user, options)
+        end
+
+        def batch(relation, batch_order:)
+          opts = { of: BATCH_SIZE }
+
+          if batch_order
+            scope = relation.reorder(batch_order)
+
+            Gitlab::Pagination::Keyset::Iterator.new(scope: scope, use_union_optimization: true).each_batch(**opts) do |batch|
+              yield batch
+            end
+          else
+            relation.in_batches(**opts) do |batch| # rubocop:disable Cop/InBatches
+              # order each batch by its primary key to ensure
+              # consistent and predictable ordering of each exported relation
+              # as additional `WHERE` clauses can impact the order in which data is being
+              # returned by database when no `ORDER` is specified
+              yield batch.reorder(batch.klass.primary_key)
+            end
+          end
+        end
+
+        def serialize_many_each(key, records, options)
+          log_relation_export(key, records.size)
+
+          enumerator = Enumerator.new do |items|
+            records.each do |record|
+              items << exportable_json_record(record, options, key)
+
+              increment_exported_objects_counter
+
+              after_read_callback(record)
+            end
+          end
+
+          json_writer.write_relation_array(@exportable_path, key, enumerator)
+        end
+
+        def serialize_single_relation(key, record, options)
+          log_relation_export(key)
+
+          json = exportable_json_record(record, options, key)
+
+          after_read_callback(record)
+
+          json_writer.write_relation(@exportable_path, key, json)
+
+          increment_exported_objects_counter
+        end
+
+        def includes
+          relations_schema[:include]
+        end
+
+        def preloads
+          relations_schema[:preload]
+        end
+
+        # We can supply a custom `order_by` in `import_export.yml` if we
+        # need to sort by non-primary key or take advantage of advanced pagination techniques.
+        #
+        # When using batched exports in direct transfer. A set of record_ids may already
+        # be provided. In this case, it makes sense to rely on the original `IN`-based
+        # query rather than applying our own custom sort.
+        #
+        # @param records    The set of records currently being serialized.
+        # @param key        The relation key, e.g. :issues, :merge_requests
+        # @param record_ids An optional array of record IDs that may be provided during
+        #                   direct transfer batch export.
+        def batch_ordering(records, key, record_ids)
+          return if key == :merge_requests && record_ids
+
+          export_reorder = relations_schema[:export_reorder]&.dig(key)
+          return unless export_reorder
+
+          custom_reorder(records.klass, export_reorder)
+        end
+
+        def custom_reorder(klass, order_by)
+          arel_table = klass.arel_table
+          column = order_by[:column] || klass.primary_key
+          direction = order_by[:direction] || :asc
+          nulls_position = order_by[:nulls_position] || :nulls_last
+
+          arel_order_classes = ::Gitlab::Pagination::Keyset::ColumnOrderDefinition::AREL_ORDER_CLASSES.invert
+          reverse_direction = ::Gitlab::Pagination::Keyset::ColumnOrderDefinition::REVERSED_ORDER_DIRECTIONS[direction]
+          reverse_nulls_position = ::Gitlab::Pagination::Keyset::ColumnOrderDefinition::REVERSED_NULL_POSITIONS[nulls_position]
+          order_expression = arel_table[column].public_send(direction).public_send(nulls_position) # rubocop:disable GitlabSecurity/PublicSend
+          reverse_order_expression = arel_table[column].public_send(reverse_direction).public_send(reverse_nulls_position) # rubocop:disable GitlabSecurity/PublicSend
+
+          ::Gitlab::Pagination::Keyset::Order.build(
+            [
+              ::Gitlab::Pagination::Keyset::ColumnOrderDefinition.new(
+                attribute_name: column,
+                column_expression: arel_table[column],
+                order_expression: order_expression,
+                reversed_order_expression: reverse_order_expression,
+                order_direction: direction,
+                nullable: nulls_position
+              ),
+              ::Gitlab::Pagination::Keyset::ColumnOrderDefinition.new(
+                attribute_name: klass.primary_key,
+                order_expression: arel_order_classes[direction].new(arel_table[klass.primary_key.to_sym])
+              )
+            ])
+        end
+
+        def before_read_callback(record)
+          remove_cached_external_diff(record)
+        end
+
+        def after_read_callback(record)
+          user_contributions_export_mapper.cache_user_contributions_on_record(record)
+          remove_cached_external_diff(record)
+        end
+
+        def remove_cached_external_diff(record)
+          return unless record.is_a?(MergeRequest)
+
+          record.merge_request_diff&.remove_cached_external_diff
+        end
+
+        def user_contributions_export_mapper
+          BulkImports::UserContributionsExportMapper.new(exportable, offline_export_id: @offline_export_id)
+        end
+        strong_memoize_attr :user_contributions_export_mapper
+
+        def log_base_data
+          importer = @offline_export_id ? ::Import::SOURCE_OFFLINE_TRANSFER : 'Import/Export'
+          log = { importer: importer }
+          log.merge!(Gitlab::ImportExport::LogUtil.exportable_to_log_payload(exportable))
+          log
+        end
+
+        # Skip `records.size` for commit_notes due to a lack of good database index
+        def record_count(key, records)
+          return if key == :commit_notes
+
+          records.size
+        end
+
+        def log_relation_export(relation, size = nil)
+          message = "Exporting relation: #{relation}"
+          payload = log_base_data
+          payload[:relation] = relation.to_s
+          payload[:number_of_records] = size if size
+          logger.info(message: message, **payload)
+        end
+
+        def increment_exported_objects_counter
+          @exported_objects_count += 1
+        end
+      end
+    end
+  end
+end

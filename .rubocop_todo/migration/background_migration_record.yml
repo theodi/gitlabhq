@@ -1,0 +1,7 @@
+---
+Migration/BackgroundMigrationRecord:
+  Exclude:
+    - 'ee/lib/ee/gitlab/background_migration/populate_latest_pipeline_ids.rb'
+    - 'lib/gitlab/background_migration/populate_latest_pipeline_ids.rb'
+    - 'lib/gitlab/background_migration/project_namespaces/models/namespace.rb'
+    - 'lib/gitlab/background_migration/project_namespaces/models/project.rb'

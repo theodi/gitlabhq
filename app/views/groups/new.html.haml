@@ -1,21 +1,18 @@
-- page_title    'New Group'
-- header_title  'New Group'
-= form_for @group, html: { class: 'group-form form-horizontal' } do |f|
-  - if @group.errors.any?
-    .alert.alert-danger
-      %span= @group.errors.full_messages.first
+- page_title    _('New Group')
+- header_title  _("Groups"), dashboard_groups_path
+- add_page_specific_style 'page_bundles/new_namespace'
 
-  = render 'shared/group_form', f: f, autofocus: true
+.group-edit-container
 
-  .form-group.group-description-holder
-    = f.label :avatar, "Group avatar", class: 'control-label'
-    .col-sm-10
-      = render 'shared/choose_group_avatar_button', f: f
+  .js-new-group-creation{ data: { has_errors: @group.errors.any?.to_s,
+    root_path: root_path,
+    groups_url: dashboard_groups_url }.merge(subgroup_creation_data(@group)) }
 
-  .form-group
-    .col-sm-2
-    .col-sm-10
-      = render 'shared/group_tips'
+  .row{ 'v-cloak': true }
+    #create-group-pane.tab-pane
+      = gitlab_ui_form_for @group, html: { class: 'group-form gl-show-field-errors gl-mt-3' } do |f|
+        = render 'new_group_fields', f: f, group_name_id: 'create-group-name'
 
-  .form-actions
-    = f.submit 'Create group', class: "btn btn-create", tabindex: 3
+    #import-group-pane.tab-pane.gl-flex.gl-flex-col.gl-gap-5
+      = render 'import_group_from_another_instance_panel'
+      = render 'import_group_from_file_panel'

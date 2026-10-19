@@ -1,0 +1,291 @@
+# frozen_string_literal: true
+
+# Requires a context containing:
+#   wiki
+#   user
+
+RSpec.shared_examples 'User views a wiki page' do
+  include WikiHelpers
+
+  let(:path) { 'image.png' }
+  let(:wiki_page) do
+    create(
+      :wiki_page,
+      wiki: wiki,
+      title: 'home', content: "Look at this [image](#{path})\n\n ![alt text](#{path})"
+    )
+  end
+
+  let(:more_actions_dropdown) do
+    find('[data-testid="wiki-more-dropdown"] button')
+  end
+
+  before do
+    sign_in(user)
+  end
+
+  context 'when wiki is empty', :js do
+    before do
+      visit wiki_path(wiki)
+
+      click_link "Create your first page"
+
+      fill_in(:wiki_title, with: 'one/two/three-test')
+
+      page.within('.wiki-form') do
+        fill_in(:wiki_content, with: 'wiki content')
+      end
+
+      create_page
+
+      wait_for_requests
+    end
+
+    it 'shows the history of a page that has a path', :js do
+      expect(page).to have_current_path(%r{one/two/three-test})
+
+      more_actions_dropdown.click
+
+      click_on('Page history')
+
+      expect(page).to have_current_path(%r{one/two/three-test})
+
+      page.within(:css, '.wiki-page-header') do
+        expect(page).to have_content('History')
+      end
+    end
+
+    it 'shows an old version of a page', :js do
+      expect(page).to have_current_path(%r{one/two/three-test})
+
+      click_button('Open sidebar') if page.has_button?('Open sidebar', wait: 1)
+
+      expect(find('.wiki-pages')).to have_content('three')
+
+      first(:link, text: 'three').click
+
+      expect(find('[data-testid="page-heading"]')).to have_content('three')
+
+      page.within('.wiki-page-header') do
+        click_on('Edit')
+      end
+
+      expect(page).to have_current_path(%r{one/two/three-test})
+      expect(page).to have_css('#wiki_title')
+
+      fill_in('Content', with: 'Updated Wiki Content')
+
+      save_changes
+
+      expect(page).to have_content('Updated Wiki Content')
+
+      more_actions_dropdown.click
+      click_on('Page history')
+
+      within('.wiki-page-header') do
+        expect(page).to have_content('History')
+      end
+
+      within('.wiki-history') do
+        expect(page).to have_css('a[href*="?version_id"]', count: 4)
+      end
+    end
+  end
+
+  context 'when a page does not have history' do
+    before do
+      visit(wiki_page_path(wiki, wiki_page))
+
+      click_button('Open sidebar') if page.has_button?('Open sidebar', wait: 1)
+    end
+
+    it 'shows all the pages' do
+      expect(page).to have_content(user.name)
+      expect(find('.wiki-pages')).to have_content(wiki_page.title.capitalize)
+    end
+
+    context 'shows a file stored in a page' do
+      let(:path) { upload_file_to_wiki(wiki, user, 'dk.png') }
+
+      it do
+        expect(page).to have_xpath("//img[@src='#{wiki.wiki_base_path}/#{path}']")
+        expect(page).to have_link('image', href: "#{wiki.wiki_base_path}/#{path}")
+
+        click_on('image')
+
+        expect(page).to have_current_path(%r{wikis/#{path}})
+      end
+    end
+
+    it 'shows the page doesn\'t exist if file does not exist' do
+      expect(page).to have_link('image', href: "#{wiki.wiki_base_path}/#{path}")
+      click_on('image')
+
+      expect(page).to have_current_path(%r{wikis/#{path}})
+      expect(page).to have_content("This page doesn't exist")
+
+      click_link("Create this page…")
+
+      expect(page).to have_css('.wiki-form')
+      expect(page).to have_button('Create page')
+    end
+  end
+
+  context 'when a page has history' do
+    before do
+      wiki_page.update(message: 'updated home', content: 'updated [some link](other-page)') # rubocop:disable Rails/SaveBang
+    end
+
+    it 'shows the page history', :js do
+      visit(wiki_page_path(wiki, wiki_page))
+
+      expect(page).to have_selector('[data-testid="wiki-edit-button"]')
+
+      more_actions_dropdown.click
+      click_on('Page history')
+
+      expect(page).to have_content(user.name)
+      expect(page).to have_content("#{user.username} created page: home")
+      expect(page).to have_content('updated home')
+    end
+
+    it 'does not show the "Edit" button' do
+      visit(wiki_page_path(wiki, wiki_page, version_id: wiki_page.versions.last.id))
+
+      expect(page).to have_no_selector('[data-testid="wiki-edit-button"]')
+    end
+
+    context 'show the diff' do
+      def expect_diff_links(commit)
+        diff_path = wiki_page_path(wiki, wiki_page, version_id: commit, action: :diff)
+
+        expect(page).to have_link('Hide whitespace changes', href: "#{diff_path}&w=1")
+        expect(page).to have_link('Inline', href: "#{diff_path}&view=inline")
+        expect(page).to have_link('Side-by-side', href: "#{diff_path}&view=parallel")
+        expect(page).to have_link("View page @ #{commit.short_id}", href: wiki_page_path(wiki, wiki_page, version_id: commit))
+        expect(page).to have_css(".diff-file[data-blob-diff-path=\"#{diff_path}\"]")
+      end
+
+      it 'between the current and the previous version of a page', :js do
+        commit = wiki.commit
+        visit wiki_page_path(wiki, wiki_page, version_id: commit, action: :diff)
+
+        expect(page).to have_content('by Sidney Jones')
+        expect(page).to have_content('updated home')
+        expect(page).to have_content('Showing 1 changed file with 1 addition and 3 deletions')
+        expect(page).to have_content('some link')
+
+        expect_diff_links(commit)
+      end
+
+      it 'between two old versions of a page', :js do
+        wiki_page.update(message: 'latest home change', content: 'updated [another link](other-page)') # rubocop:disable Rails/SaveBang:
+        commit = wiki.commit('HEAD^')
+        visit wiki_page_path(wiki, wiki_page, version_id: commit, action: :diff)
+
+        expect(page).to have_content('by Sidney Jones')
+        expect(page).to have_content('updated home')
+        expect(page).to have_content('Showing 1 changed file with 1 addition and 3 deletions')
+        expect(page).to have_content('some link')
+        expect(page).to have_no_content('latest home change')
+        expect(page).to have_no_content('another link')
+
+        expect_diff_links(commit)
+      end
+
+      it 'for the oldest version of a page', :js do
+        commit = wiki.commit('HEAD^')
+        visit wiki_page_path(wiki, wiki_page, version_id: commit, action: :diff)
+
+        expect(page).to have_content('by Sidney Jones')
+        expect(page).to have_content('created page: home')
+        expect(page).to have_content('Showing 1 changed file with 3 additions and 0 deletions')
+        expect(page).to have_content('Look at this')
+
+        expect_diff_links(commit)
+      end
+    end
+  end
+
+  context 'when a page has special characters in its title' do
+    let(:title) { '<foo> !@#$%^&*()[]{}=_+\'"\\|<>? <bar>' }
+
+    before do
+      wiki_page.update(title: title) # rubocop:disable Rails/SaveBang
+    end
+
+    it 'preserves the special characters' do
+      visit(wiki_page_path(wiki, wiki_page))
+      click_button('Open sidebar') if page.has_button?('Open sidebar', wait: 1)
+
+      expect(page).to have_css('[data-testid="page-heading"]', text: title)
+      expect(page).to have_css('.wiki-pages li', text: title)
+    end
+  end
+
+  context 'when a page has XSS in its title or content' do
+    let(:title) { '<script>alert("title")<script>' }
+
+    before do
+      wiki_page.update(title: title, content: 'foo <script>alert("content")</script> bar') # rubocop:disable Rails/SaveBang
+    end
+
+    it 'safely displays the page' do
+      visit(wiki_page_path(wiki, wiki_page))
+
+      expect(page).to have_selector('[data-testid="page-heading"]', text: title)
+      expect(page).to have_content('foo bar')
+    end
+  end
+
+  context 'when a page has headings', :js do
+    before do
+      wiki_page.update(content: "# Heading 1\n\n## Heading 1.1\n\n### Heading 1.1.1\n\n# Heading 2") # rubocop:disable Rails/SaveBang -- not an ActiveRecord
+    end
+
+    it 'displays the table of contents for the page', quarantine: {
+      issue: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/issues/24078',
+      type: :flaky
+    } do
+      visit(wiki_page_path(wiki, wiki_page))
+      click_button('Open sidebar') if page.has_button?('Open sidebar', wait: 1)
+
+      within '.js-wiki-toc' do
+        expect(page).to have_content('On this page')
+
+        expect(page).to have_content('Heading 1')
+        expect(page).to have_content('Heading 1.1')
+        expect(page).to have_content('Heading 1.1.1')
+        expect(page).to have_content('Heading 2')
+      end
+    end
+  end
+
+  context 'when page has invalid content encoding' do
+    let(:content) { (+'whatever').force_encoding('ISO-8859-1') }
+
+    before do
+      allow(Gitlab::EncodingHelper).to receive(:encode!).and_return(content)
+
+      visit(wiki_page_path(wiki, wiki_page))
+    end
+
+    it 'does not show "Edit" button' do
+      expect(page).to have_no_selector('[data-testid="wiki-edit-button"]')
+    end
+  end
+
+  it 'opens a default wiki page', :js do
+    visit wiki.container.web_url
+
+    within_testid('super-sidebar') do
+      click_button 'Plan'
+      click_link 'Wiki'
+    end
+
+    click_link "Create your first page"
+
+    expect(page).to have_css('.wiki-form')
+    expect(page).to have_button('Create page')
+  end
+end

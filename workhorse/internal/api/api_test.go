@@ -1,0 +1,351 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gitlab.com/gitlab-org/gitaly/v19/proto/go/gitalypb"
+
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/helper"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/secret"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/testhelper"
+	"gitlab.com/gitlab-org/gitlab/workhorse/internal/upstream/roundtripper"
+)
+
+const (
+	customPath = "/my/api/path"
+)
+
+func TestGetGeoProxyDataForResponses(t *testing.T) {
+	testCases := []struct {
+		desc              string
+		json              string
+		expectedError     bool
+		expectedURL       string
+		expectedExtraData string
+	}{
+		{"when Geo secondary", `{"geo_proxy_url":"http://primary","geo_proxy_extra_data":"geo-data"}`, false, "http://primary", "geo-data"},
+		{"when Geo secondary with explicit null data", `{"geo_proxy_url":"http://primary","geo_proxy_extra_data":null}`, false, "http://primary", ""},
+		{"when Geo secondary without extra data", `{"geo_proxy_url":"http://primary"}`, false, "http://primary", ""},
+		{"when Geo primary or no node", `{}`, false, "", ""},
+		{"for malformed request", `non-json`, true, "", ""},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			geoProxyData, err := getGeoProxyDataGivenResponse(t, tc.json)
+
+			if tc.expectedError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.expectedURL, geoProxyData.GeoProxyURL.String())
+				require.Equal(t, tc.expectedExtraData, geoProxyData.GeoProxyExtraData)
+			}
+		})
+	}
+}
+
+func TestPreAuthorizeFixedPath_OK(t *testing.T) {
+	var (
+		upstreamHeaders http.Header
+		upstreamQuery   url.Values
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != customPath {
+			return
+		}
+
+		upstreamHeaders = r.Header
+		upstreamQuery = r.URL.Query()
+
+		w.Header().Set("Content-Type", ResponseContentType)
+		io.WriteString(w, `{"TempPath":"HELLO!!"}`)
+	}))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", "/original/request/path?q1=Q1&q2=Q2", nil)
+	require.NoError(t, err)
+	req.Header.Set("key1", "value1")
+
+	api := NewAPI(helper.URLMustParse(ts.URL), "123", http.DefaultTransport)
+	resp, err := api.PreAuthorizeFixedPath(req, "POST", customPath)
+	require.NoError(t, err)
+
+	require.Equal(t, "value1", upstreamHeaders.Get("key1"), "original headers must propagate")
+	require.Equal(t, url.Values{"q1": []string{"Q1"}, "q2": []string{"Q2"}}, upstreamQuery,
+		"original query must propagate")
+	require.Equal(t, "HELLO!!", resp.TempPath, "sanity check: successful API call")
+}
+
+func TestPreAuthorizeFixedPath_Unauthorized(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != customPath {
+			return
+		}
+
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", "/original/request/path?q1=Q1&q2=Q2", nil)
+	require.NoError(t, err)
+
+	api := NewAPI(helper.URLMustParse(ts.URL), "123", http.DefaultTransport)
+	resp, err := api.PreAuthorizeFixedPath(req, "POST", "/my/api/path")
+	require.Nil(t, resp)
+	preAuthError := &PreAuthorizeFixedPathError{StatusCode: 401, Status: "Unauthorized 401"}
+	require.ErrorAs(t, err, &preAuthError)
+}
+
+func TestNewRequest_StripsHTTPRouterHeaders(t *testing.T) {
+	// A decoy header that merely contains the router prefix string, but not as
+	// a leading prefix, must not be stripped.
+	const decoyHeader = "X-Something-X-Gitlab-Http-Router-Rule-Action"
+
+	routerHeaders := []string{
+		"X-Gitlab-Http-Router-Rule-Action",
+		"X-Gitlab-Http-Router-Rule-Type",
+		"X-Gitlab-Http-Router-Matched-Path",
+		"X-Gitlab-Http-Router-Something-New",
+	}
+
+	req, err := http.NewRequest("GET", "/original/request/path", nil)
+	require.NoError(t, err)
+
+	for _, header := range routerHeaders {
+		req.Header.Set(header, "some-value")
+	}
+	req.Header.Set("Authorization", "Bearer sometoken")
+	req.Header.Set(decoyHeader, "not-a-router-header")
+
+	api := NewAPI(helper.URLMustParse("http://backend"), "123", http.DefaultTransport)
+	authReq := api.newRequest(req, customPath)
+
+	for _, header := range routerHeaders {
+		require.Empty(t, authReq.Header.Get(header), "%s must not propagate to the subrequest", header)
+	}
+	require.Equal(t, "Bearer sometoken", authReq.Header.Get("Authorization"), "unrelated headers must still propagate")
+	require.Equal(t, "not-a-router-header", authReq.Header.Get(decoyHeader), "headers that merely contain the router prefix elsewhere must still propagate")
+}
+
+func TestPreAuthorizeHandler_NotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, strings.Repeat("a", failureResponseLimit+100))
+	}))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", "/original/request/path", nil)
+	require.NoError(t, err)
+
+	api := NewAPI(helper.URLMustParse(ts.URL), "123", http.DefaultTransport)
+
+	handler := api.PreAuthorizeHandler(func(_ http.ResponseWriter, _ *http.Request, _ *Response) {}, "/api/v4/internal/authorized_request")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func getGeoProxyDataGivenResponse(t *testing.T, givenInternalAPIResponse string) (*GeoProxyData, error) {
+	t.Helper()
+	ts := testRailsServer(t, regexp.MustCompile(`/api/v4/geo/proxy`), 200, givenInternalAPIResponse)
+
+	backend := helper.URLMustParse(ts.URL)
+	version := "123"
+	rt := roundtripper.NewTestBackendRoundTripper(backend)
+	testhelper.ConfigureSecret()
+
+	apiClient := NewAPI(backend, version, rt)
+
+	geoProxyData, err := apiClient.GetGeoProxyData()
+
+	return geoProxyData, err
+}
+
+func testRailsServer(t *testing.T, url *regexp.Regexp, code int, body string) *httptest.Server {
+	return testhelper.TestServerWithHandlerWithGeoPolling(t, url, func(w http.ResponseWriter, r *http.Request) {
+		// return a 204 No Content response if we don't receive the JWT header
+		if r.Header.Get(secret.RequestHeader) == "" {
+			w.WriteHeader(204)
+			return
+		}
+
+		w.Header().Set("Content-Type", ResponseContentType)
+
+		w.WriteHeader(code)
+		fmt.Fprint(w, body)
+	})
+}
+
+func TestPreAuthorizeFixedPath(t *testing.T) {
+	var (
+		upstreamHeaders http.Header
+		upstreamQuery   url.Values
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/my/api/path" {
+			return
+		}
+
+		upstreamHeaders = r.Header
+		upstreamQuery = r.URL.Query()
+		w.Header().Set("Content-Type", ResponseContentType)
+		io.WriteString(w, `{"TempPath":"HELLO!!"}`)
+	}))
+	defer ts.Close()
+
+	req, err := http.NewRequest("GET", "/original/request/path?q1=Q1&q2=Q2", nil)
+	require.NoError(t, err)
+	req.Header.Set("key1", "value1")
+
+	api := NewAPI(helper.URLMustParse(ts.URL), "123", http.DefaultTransport)
+	resp, err := api.PreAuthorizeFixedPath(req, "POST", "/my/api/path")
+	require.NoError(t, err)
+
+	require.Equal(t, "value1", upstreamHeaders.Get("key1"), "original headers must propagate")
+	require.Equal(t, url.Values{"q1": []string{"Q1"}, "q2": []string{"Q2"}}, upstreamQuery,
+		"original query must propagate")
+	require.Equal(t, "HELLO!!", resp.TempPath, "sanity check: successful API call")
+}
+
+func TestSendGitAuditEvent(t *testing.T) {
+	testhelper.ConfigureSecret()
+
+	var (
+		requestHeaders http.Header
+		requestBody    GitAuditEventRequest
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/internal/shellhorse/git_audit_event" {
+			return
+		}
+
+		requestHeaders = r.Header
+		defer r.Body.Close()
+		b, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		err = json.Unmarshal(b, &requestBody)
+		assert.NoError(t, err)
+	}))
+	defer ts.Close()
+
+	api := NewAPI(helper.URLMustParse(ts.URL), "123", http.DefaultTransport)
+	auditRequest := GitAuditEventRequest{
+		Action:     "git-receive-request",
+		Protocol:   "http",
+		Repo:       "project-1",
+		Username:   "GitLab-Shell",
+		Identifier: "user-123",
+		Changes:    "_any",
+		PackfileStats: &gitalypb.PackfileNegotiationStatistics{
+			Wants: 3,
+			Haves: 23,
+		},
+		WrittenBytes:  1048576,
+		ReceivedBytes: 2048,
+	}
+	err := api.SendGitAuditEvent(context.Background(), auditRequest)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, requestHeaders)
+	require.NotEmpty(t, requestHeaders["Gitlab-Workhorse-Api-Request"])
+	require.Equal(t, auditRequest, requestBody)
+}
+
+func Test_passResponseBack(t *testing.T) {
+	t.Run("filters out sensitive headers", func(t *testing.T) {
+		sensitiveData := []string{"sensitive-data"}
+		safeData := "safe-data"
+
+		httpResp := &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString("")),
+			Header: http.Header{
+				"gitlab-workhorse-send-data": sensitiveData,
+				"gitlab-sv":                  sensitiveData,
+				"gitlab-lb":                  sensitiveData,
+				"Safe-Header":                []string{safeData},
+			},
+		}
+
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", "/", nil)
+
+		passResponseBack(httpResp, w, r)
+
+		require.Empty(t, w.Header().Get("gitlab-workhorse-send-data"))
+		require.Empty(t, w.Header().Get("gitlab-sv"))
+		require.Empty(t, w.Header().Get("gitlab-lb"))
+		require.Equal(t, safeData, w.Header().Get("Safe-Header"))
+	})
+}
+
+func TestDuoWorkflowWithServerCapabilities(t *testing.T) {
+	duoWorkflow := &DuoWorkflow{
+		Service: &DuoWorkflowServiceConfig{
+			URI:     "grpc://localhost:50051",
+			Headers: map[string]string{"Authorization": "Bearer token"},
+			Secure:  false,
+		},
+		ServerCapabilities: []string{"advanced_search"},
+		LockConcurrentFlow: true,
+	}
+
+	require.Equal(t, []string{"advanced_search"}, duoWorkflow.ServerCapabilities)
+	require.True(t, duoWorkflow.LockConcurrentFlow)
+	require.NotNil(t, duoWorkflow.Service)
+}
+
+func TestResponseLocalTempDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	otherDir := t.TempDir()
+
+	testCases := []struct {
+		desc     string
+		response Response
+		expected string
+	}{
+		{
+			desc:     "TempPath wins over LocalTempPath",
+			response: Response{TempPath: tmpDir, LocalTempPath: otherDir},
+			expected: tmpDir,
+		},
+		{
+			desc:     "LocalTempPath used when TempPath is empty",
+			response: Response{LocalTempPath: tmpDir},
+			expected: tmpDir,
+		},
+		{
+			desc:     "falls back to os.TempDir when both are empty",
+			response: Response{},
+			expected: os.TempDir(),
+		},
+	}
+
+	// Response holds a sync.Mutex via gitalypb.Repository, so range by index to avoid copying it.
+	for i := range testCases {
+		tc := &testCases[i]
+		t.Run(tc.desc, func(t *testing.T) {
+			require.Equal(t, tc.expected, tc.response.LocalTempDir())
+		})
+	}
+}

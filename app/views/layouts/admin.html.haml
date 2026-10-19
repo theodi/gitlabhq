@@ -1,5 +1,13 @@
-- page_title    "Admin area"
-- header_title  "Admin area", admin_root_path
-- sidebar       "admin"
+- page_title    _("Admin area")
+- header_title  _("Admin area"), admin_root_path
+- nav "admin"
+
+-# This active_nav_link check is also used in `app/views/layouts/nav/sidebar/_admin.html.haml`
+- is_application_settings = active_nav_link?(controller: [:application_settings, :integrations])
+
+- enable_search_settings if is_application_settings && !@hide_search_settings
+
+- content_for :flash_message do
+  = dispensable_render_if_exists "admin/users/ee_no_seats_left_in_subscription_alert"
 
 = render template: "layouts/application"

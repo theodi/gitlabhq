@@ -1,0 +1,7 @@
+The following issue is due on <%= @issue.due_date %>:
+
+Issue <%= @issue.iid %>: <%= issue_reference_link(@issue) %>
+Author:    <%= @issue.author_name %>
+<%= assignees_label(@issue) %>
+
+<%= @issue.description %>

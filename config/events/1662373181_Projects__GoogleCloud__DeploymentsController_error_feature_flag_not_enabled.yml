@@ -1,0 +1,17 @@
+---
+description: Feature flag not enabled on the GitLab instance
+category: Projects::GoogleCloud::DeploymentsController
+action: error_feature_flag_not_enabled
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: 5-min-app
+milestone: "15.4"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/96683"
+tiers:
+- free
+- premium
+- ultimate
+

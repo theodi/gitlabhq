@@ -1,76 +1,23 @@
+# frozen_string_literal: true
+
 # Module providing methods for dealing with separating a tree-ish string and a
 # file path string when combined in a request parameter
+# rubocop:disable Gitlab/ModuleWithInstanceVariables -- will be fixed in https://gitlab.com/gitlab-org/gitlab/-/issues/425379
 module ExtractsPath
-  # Raised when given an invalid file path
-  class InvalidPathError < StandardError; end
+  InvalidPathError = ExtractsRef::RefExtractor::InvalidPathError
+  BRANCH_REF_TYPE = ExtractsRef::RefExtractor::BRANCH_REF_TYPE
+  TAG_REF_TYPE = ExtractsRef::RefExtractor::TAG_REF_TYPE
+  REF_TYPES = ExtractsRef::RefExtractor::REF_TYPES
 
-  # Given a string containing both a Git tree-ish, such as a branch or tag, and
-  # a filesystem path joined by forward slashes, attempts to separate the two.
+  # Extends the method to handle if there is no path and the ref doesn't
+  # exist in the repo, try to resolve the ref without an '.atom' suffix.
+  # If _that_ ref is found, set the request's format to Atom manually.
   #
-  # Expects a @project instance variable to contain the active project. This is
-  # used to check the input against a list of valid repository refs.
+  # Automatically renders `not_found!` if a valid tree path could not be
+  # resolved (e.g., when a user inserts an invalid path or ref).
   #
-  # Examples
-  #
-  #   # No @project available
-  #   extract_ref('master')
-  #   # => ['', '']
-  #
-  #   extract_ref('master')
-  #   # => ['master', '']
-  #
-  #   extract_ref("f4b14494ef6abf3d144c28e4af0c20143383e062/CHANGELOG")
-  #   # => ['f4b14494ef6abf3d144c28e4af0c20143383e062', 'CHANGELOG']
-  #
-  #   extract_ref("v2.0.0/README.md")
-  #   # => ['v2.0.0', 'README.md']
-  #
-  #   extract_ref('master/app/models/project.rb')
-  #   # => ['master', 'app/models/project.rb']
-  #
-  #   extract_ref('issues/1234/app/models/project.rb')
-  #   # => ['issues/1234', 'app/models/project.rb']
-  #
-  #   # Given an invalid branch, we fall back to just splitting on the first slash
-  #   extract_ref('non/existent/branch/README.md')
-  #   # => ['non', 'existent/branch/README.md']
-  #
-  # Returns an Array where the first value is the tree-ish and the second is the
-  # path
-  def extract_ref(id)
-    pair = ['', '']
-
-    return pair unless @project
-
-    if id.match(/^([[:alnum:]]{40})(.+)/)
-      # If the ref appears to be a SHA, we're done, just split the string
-      pair = $~.captures
-    else
-      # Otherwise, attempt to detect the ref using a list of the project's
-      # branches and tags
-
-      # Append a trailing slash if we only get a ref and no file path
-      id += '/' unless id.ends_with?('/')
-
-      valid_refs = @project.repository.ref_names
-      valid_refs.select! { |v| id.start_with?("#{v}/") }
-
-      if valid_refs.length != 1
-        # No exact ref match, so just try our best
-        pair = id.match(/([^\/]+)(.*)/).captures
-      else
-        # Partition the string into the ref and the path, ignoring the empty first value
-        pair = id.partition(valid_refs.first)[1..-1]
-      end
-    end
-
-    # Remove ending slashes from path
-    pair[1].gsub!(/^\/|\/$/, '')
-
-    pair
-  end
-
-  # Assigns common instance variables for views working with Git tree-ish objects
+  # Automatically redirects to the current default branch if the ref matches a
+  # previous default branch that has subsequently been deleted.
   #
   # Assignments are:
   #
@@ -78,46 +25,139 @@ module ExtractsPath
   # - @ref    - A string representing the ref (e.g., the branch, tag, or commit SHA)
   # - @path   - A string representing the filesystem path
   # - @commit - A Commit representing the commit from the given ref
+  # - @ref_type - The type of ref this is, will attempt to detect if not supplied in params
   #
   # If the :id parameter appears to be requesting a specific response format,
   # that will be handled as well.
-  #
-  # Automatically renders `not_found!` if a valid tree path could not be
-  # resolved (e.g., when a user inserts an invalid path or ref).
   def assign_ref_vars
-    # assign allowed options
-    allowed_options = ["filter_ref", "extended_sha1"]
-    @options = params.select {|key, value| allowed_options.include?(key) && !value.blank? }
-    @options = HashWithIndifferentAccess.new(@options)
+    @id = ref_extractor.id
+    @ref = ref_extractor.ref
+    @path = ref_extractor.path
+    @repo = ref_extractor.repo
 
-    @id = get_id
-    @ref, @path = extract_ref(@id)
-    @repo = @project.repository
-    if @options[:extended_sha1].blank?
-      @commit = @repo.commit(@ref)
-    else
-      @commit = @repo.commit(@options[:extended_sha1])
+    if @ref.present?
+      @commit = ref_extractor.commit
+      @fully_qualified_ref = ref_extractor.fully_qualified_ref
     end
+
+    rectify_format!
+    ref_type
+
+    rectify_renamed_default_branch! && return
+
+    # Gitlab::Git::Commit.find swallows Gitaly errors and returns nil.
+    # If @commit is nil, verify Gitaly is available before assuming the ref doesn't exist.
+    # Skip the check if @ref is blank since we can't look up a commit without a ref anyway.
+    verify_gitaly_availability! if @ref.present? && !@commit
 
     raise InvalidPathError unless @commit
 
     @hex_path = Digest::SHA1.hexdigest(@path)
-    @logs_path = logs_file_namespace_project_ref_path(@project.namespace,
-                                                      @project, @ref, @path)
-
+    @logs_path = logs_file_project_ref_path(@project, @ref, @path)
   rescue RuntimeError, NoMethodError, InvalidPathError
-    not_found!
+    render_404
   end
 
-  def tree
-    @tree ||= @repo.tree(@commit.id, @path)
+  # Check if Gitaly is available using the health check service.
+  # Raises Gitlab::Git::CommandError if Gitaly is unavailable, which will be
+  # caught by HandlesGitalyErrors and show the graceful degradation message.
+  # Only performs the check if the controller includes HandlesGitalyErrors,
+  # to avoid adding unnecessary Gitaly RPCs to controllers that can't handle the result.
+  def verify_gitaly_availability!
+    return unless self.class.include?(HandlesGitalyErrors)
+    return unless repository_container
+
+    storage = repository_container.repository_storage
+    result = Gitlab::GitalyClient::HealthCheckService.new(storage).check
+
+    return if result[:success]
+
+    raise Gitlab::Git::CommandError, result[:message] || 'Gitaly is not available'
+  end
+
+  def ref_type
+    return @ref_type if defined? @ref_type
+
+    @ref_type = ExtractsRef::VerifiedRefExtractor
+      .ref_type(repository_container.repository, ref: ref_extractor.ref, ref_type: ref_extractor.ref_type)
   end
 
   private
 
-  def get_id
-    id = params[:id] || params[:ref]
-    id += "/" + params[:path] unless params[:path].blank?
-    id
+  # Override in controllers to determine which actions are subject to the redirect
+  def redirect_renamed_default_branch?
+    false
+  end
+
+  def path_present?
+    @path && !@path.empty?
+  end
+
+  def rectify_format!
+    return if @commit || path_present?
+
+    bare_ref, format = extract_ref_and_format(@id)
+    return unless format
+
+    @id = @ref = bare_ref
+    @fully_qualified_ref = ExtractsRef::RefExtractor.qualify_ref(@ref, ref_type)
+    @commit = @repo.commit(@fully_qualified_ref)
+
+    return unless @commit
+
+    request.format = format
+  end
+
+  # If we have an ID of 'foo.atom' or 'foo.json', and the controller provides
+  # Atom, JSON, and HTML formats, then we have to check if the request was for
+  # the Atom version of the ID without the '.atom' suffix, the JSON version of
+  # the ID without the '.json' suffix, or the HTML version of the ID including
+  # the suffix. We only check this if the version including the suffix doesn't
+  # match, so it is possible to create a branch which has an unroutable Atom
+  # feed or JSON view.
+  def extract_ref_and_format(id)
+    return [id, nil] unless id.match?(/\.(?:atom|json)$/)
+
+    id, _dot, format = id.rpartition('.')
+    ref = ref_names.find { |ref_name| id == ref_name }
+
+    raise InvalidPathError if ref.blank?
+
+    [ref, format.to_sym]
+  end
+
+  # For GET/HEAD requests, if the ref doesn't exist in the repository, check
+  # whether we're trying to access a renamed default branch. If we are, we can
+  # redirect to the current default branch instead of rendering a 404.
+  def rectify_renamed_default_branch!
+    return unless redirect_renamed_default_branch?
+    return if @commit
+    return unless @id && @ref && repository_container.respond_to?(:previous_default_branch)
+    return unless repository_container.previous_default_branch == @ref
+    return unless request.get? || request.head?
+
+    flash[:notice] = _('The default branch for this project has been changed. Please update your bookmarks.')
+    redirect_to url_for(id: @id.sub(/\A#{Regexp.escape(@ref)}/, repository_container.default_branch))
+
+    true
+  end
+
+  def ref_names
+    return [] unless repository_container
+
+    @ref_names ||= repository_container.repository.ref_names
+  end
+
+  def repository_container
+    @project
+  end
+
+  def ref_extractor
+    @ref_extractor ||=
+      ExtractsRef::RefExtractor.new(
+        repository_container,
+        params.permit(:id, :ref, :path).merge(ref_type: request.query_parameters[:ref_type])
+      ).tap(&:extract!)
   end
 end
+# rubocop:enable Gitlab/ModuleWithInstanceVariables

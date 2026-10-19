@@ -1,0 +1,23 @@
+#import "~/graphql_shared/fragments/user_with_type.fragment.graphql"
+#import "~/graphql_shared/fragments/user_availability.fragment.graphql"
+
+query issueAssignees($fullPath: ID!, $iid: String!) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: issue(iid: $iid) {
+      id
+      author {
+        ...UserWithType
+        ...UserAvailability
+        compositeIdentityEnforced @gl_introduced(version: "18.8.0")
+      }
+      assignees {
+        nodes {
+          ...UserWithType
+          ...UserAvailability
+          compositeIdentityEnforced @gl_introduced(version: "18.8.0")
+        }
+      }
+    }
+  }
+}

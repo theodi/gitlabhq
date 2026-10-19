@@ -1,0 +1,4197 @@
+##############
+# Conditions #
+##############
+.if-not-canonical-namespace: &if-not-canonical-namespace
+  if: '$CI_PROJECT_NAMESPACE !~ /^gitlab(-org|-cn)?($|\/)/'
+
+.if-not-ee: &if-not-ee
+  # Only consider FOSS not EE
+  if: '$CI_PROJECT_NAME !~ /^gitlab(-ee)?$/ && $CI_PROJECT_NAME !~ /^gitlab-jh/'
+
+.if-not-foss: &if-not-foss
+  if: '$CI_PROJECT_NAME != "gitlab-foss" && $CI_PROJECT_NAME != "gitlab-ce" && $CI_PROJECT_NAME != "gitlabhq"'
+
+.if-jh: &if-jh
+  # Matches these two projects:
+  # https://jihulab.com/gitlab-cn/gitlab
+  # https://gitlab.com/gitlab-org-sandbox/gitlab-jh-validation
+  if: '$CI_PROJECT_PATH == "gitlab-cn/gitlab" || $CI_PROJECT_PATH == "gitlab-org-sandbox/gitlab-jh-validation"'
+
+.if-force-ci: &if-force-ci
+  if: '$FORCE_GITLAB_CI'
+
+# weekly, ai-principles-*, whats-new and housekeeping pipelines are opt-in and should not automatically run every job
+.if-default-refs: &if-default-refs
+  if: '
+      (
+        $CI_PIPELINE_SOURCE != "merge_request_event"
+        && $SCHEDULE_TYPE != "weekly"
+        && $SCHEDULE_TYPE != "ai-principles-distillation"
+        && $SCHEDULE_TYPE != "whats-new"
+        && $SCHEDULE_TYPE != "housekeeping"
+        && $TRIGGERED_BY_AI_GATEWAY_PROJECT != "true"
+        &&
+        (
+          $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
+          || $CI_COMMIT_REF_NAME =~ /^[\d-]+-stable(-ee)?$/
+          || $CI_COMMIT_REF_NAME =~ /^\d+-\d+-auto-deploy-\d+$/
+          || $CI_COMMIT_REF_NAME =~ /^security\//
+          || $CI_COMMIT_REF_NAME =~ /^ruby-next$/
+          || $CI_COMMIT_REF_NAME =~ /^rails-next$/
+        )
+      )
+      ||
+      (
+        $CI_PIPELINE_SOURCE == "merge_request_event"
+        && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train"
+      )
+      || $CI_COMMIT_TAG
+      || $FORCE_GITLAB_CI
+      '
+
+# weekly, ai-principles-*, whats-new and housekeeping pipelines are opt-in and should not automatically run every job
+.if-default-branch-refs: &if-default-branch-refs
+  if: '$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $CI_MERGE_REQUEST_IID == null && $SCHEDULE_TYPE != "weekly" && $SCHEDULE_TYPE != "ai-principles-distillation" && $SCHEDULE_TYPE != "whats-new" && $SCHEDULE_TYPE != "housekeeping"'
+
+.if-default-branch-push: &if-default-branch-push
+  if: '$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
+
+# canonical project creates branches in foss project to run mr pipelines via cross project trigger
+.if-as-if-foss-mr-refs: &if-as-if-foss-mr-refs
+  if: '$CI_PROJECT_NAME == "gitlab-foss" && $CI_COMMIT_REF_NAME =~ /^as-if-foss\//'
+
+# This rule ensures the job runs for push pipeline events on stable branches.
+# This is used for ensuring jobs run in a pipeline triggered by mirror sync.
+.if-sync-changes-on-stable-branches: &if-sync-changes-on-stable-branches
+  if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME =~ /^[\d-]+-stable(-ee)?$/'
+
+.if-stable-branch: &if-stable-branch
+  if: '$CI_COMMIT_REF_NAME =~ /^[\d-]+-stable(-ee)?$/'
+
+.if-auto-deploy-branches: &if-auto-deploy-branches
+  if: '$CI_COMMIT_BRANCH =~ /^\d+-\d+-auto-deploy-\d+$/'
+
+.if-default-branch-or-tag: &if-default-branch-or-tag
+  if: '($CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $CI_MERGE_REQUEST_IID == null) || $CI_COMMIT_TAG'
+
+.if-tag: &if-tag
+  if: '$CI_COMMIT_TAG'
+
+.if-merge-request: &if-merge-request
+  if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train"'
+
+.if-not-merge-request: &if-not-merge-request
+  if: '$CI_MERGE_REQUEST_EVENT_TYPE == null'
+
+.if-merge-request-and-specific-devops-stage: &if-merge-request-and-specific-devops-stage
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /devops::(create|govern|manage|plan|verify|package|monitor|data stores|fulfillment|systems)/'
+
+.if-merge-request-and-devops-fulfillment: &if-merge-request-and-devops-fulfillment
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /devops::fulfillment/'
+
+.if-automated-merge-request: &if-automated-merge-request
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && ($CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == "release-tools/update-gitaly" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == "release-tools/update-gitlab-pages" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /stable-(ee|jh)$/)'
+
+.if-merge-request-targeting-stable-branch: &if-merge-request-targeting-stable-branch
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^[\d-]+-stable(-ee|-jh)?$/'
+
+.if-merge-request-targeting-stable-branch-is-tier-3: &if-merge-request-targeting-stable-branch-is-tier-3
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^[\d-]+-stable(-ee|-jh)?$/ && $CI_MERGE_REQUEST_LABELS =~ /pipeline::tier-3/'
+
+.if-merge-request-labels-as-if-foss: &if-merge-request-labels-as-if-foss
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-as-if-foss/'
+
+.if-merge-request-labels-as-if-foss-run-predictive: &if-merge-request-labels-as-if-foss-run-predictive
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:as-if-foss-run-predictive/'
+
+.if-merge-request-labels-as-if-jh: &if-merge-request-labels-as-if-jh
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-as-if-jh/'
+
+.if-merge-request-labels-force-as-if-jh: &if-merge-request-labels-force-as-if-jh
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:force-run-as-if-jh/'
+
+.if-merge-request-labels-update-caches: &if-merge-request-labels-update-caches
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:update-cache/'
+
+.if-merge-request-labels-run-all-rspec: &if-merge-request-labels-run-all-rspec
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-all-rspec/'
+
+.if-merge-request-labels-run-all-jest: &if-merge-request-labels-run-all-jest
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-all-jest/'
+
+.if-merge-request-labels-run-rspec-vue3: &if-merge-request-labels-run-rspec-vue3
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-rspec-vue3/'
+
+.if-merge-request-labels-run-gitaly-mvcc: &if-merge-request-labels-run-gitaly-mvcc
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-gitaly-mvcc/'
+
+.if-merge-request-labels-run-all-e2e: &if-merge-request-labels-run-all-e2e
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-all-e2e/'
+
+.if-merge-request-labels-run-search-tests: &if-merge-request-labels-run-search-tests
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-search-tests/'
+
+.if-merge-request-labels-run-single-db: &if-merge-request-labels-run-single-db
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-single-db/'
+
+.if-merge-request-labels-pipeline-single-db-sec-connection: &if-merge-request-labels-pipeline-single-db-sec-connection
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:single-db-sec-connection/'
+
+.if-merge-request-labels-skip-rspec-fail-fast: &if-merge-request-labels-skip-rspec-fail-fast
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:skip-rspec-fail-fast/'
+
+.if-merge-request-labels-skip-undercoverage: &if-merge-request-labels-skip-undercoverage
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:skip-undercoverage/'
+
+.if-merge-request-labels-skip-release-note-categories: &if-merge-request-labels-skip-release-note-categories
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:skip-release-note-categories/'
+
+.if-merge-request-labels-skip-check-ci-partition-pruning: &if-merge-request-labels-skip-check-ci-partition-pruning
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:skip-check-ci-partition-pruning/'
+
+.if-merge-request-labels-skip-router-sync: &if-merge-request-labels-skip-router-sync
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:skip-router-sync/'
+
+.if-merge-request-labels-jh-contribution: &if-merge-request-labels-jh-contribution
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /JiHu contribution/'
+
+.if-merge-request-labels-group-global-search: &if-merge-request-labels-group-global-search
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /group::global search/'
+
+.if-merge-request-labels-pipeline-expedite: &if-merge-request-labels-pipeline-expedite
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && ($CI_MERGE_REQUEST_LABELS =~ /pipeline::expedited/ || $CI_MERGE_REQUEST_LABELS =~ /pipeline:expedite/)'
+
+.if-merge-request-labels-pipeline-skip-performance: &if-merge-request-labels-pipeline-skip-performance
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:skip-performance/'
+
+.if-merge-request-labels-frontend-and-feature-flag: &if-merge-request-labels-frontend-and-feature-flag
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /frontend/ && $CI_MERGE_REQUEST_LABELS =~ /feature flag/'
+
+.if-merge-request-labels-run-praefect-with-db: &if-merge-request-labels-run-praefect-with-db
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-praefect-with-db/'
+
+.if-merge-request-labels-skip-ci-validation: &if-merge-request-labels-skip-ci-validation
+  if: '($CI_MERGE_REQUEST_EVENT_TYPE == "merged_result" || $CI_MERGE_REQUEST_EVENT_TYPE == "detached") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:skip-ci-validation/'
+
+.if-security-merge-request: &if-security-merge-request
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_PROJECT_NAMESPACE == "gitlab-org/security"'
+
+.if-fork-merge-request: &if-fork-merge-request
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_PROJECT_NAMESPACE !~ /^gitlab(-org)?($|\/)/ && $CI_MERGE_REQUEST_LABELS !~ /pipeline:run-all-rspec/'
+
+.if-per-test-coverage-delta: &if-per-test-coverage-delta
+  if: '$GLCI_PER_TEST_COVERAGE_DELTA == "true"'
+
+.if-merge-request-no-tier: &if-merge-request-no-tier
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS !~ /pipeline::tier-/'
+
+.if-merge-request-tier-1: &if-merge-request-tier-1
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline::tier-1/'
+
+.if-merge-request-tier-2: &if-merge-request-tier-2
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline::tier-2/'
+
+.if-merge-request-tier-3: &if-merge-request-tier-3
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline::tier-3/'
+
+.if-merge-request-tier-2-or-above: &if-merge-request-tier-2-or-above
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline::tier-[23]/'
+
+.if-merge-request-tier-1-or-no-tier: &if-merge-request-tier-1-or-no-tier
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS !~ /pipeline::tier-[23]/'
+
+.if-merge-train: &if-merge-train
+  if: $CI_MERGE_REQUEST_EVENT_TYPE == "merge_train"
+
+.if-schedule-pipeline: &if-schedule-pipeline
+  if: '$CI_PIPELINE_SOURCE == "schedule"'
+
+.if-schedule-maintenance: &if-schedule-maintenance
+  if: '$CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "maintenance"'
+
+.if-missing-clickhouse-coverage-credentials: &if-missing-clickhouse-coverage-credentials
+  if: '$GLCI_DA_CLICKHOUSE_URL == null || $GLCI_CLICKHOUSE_CODE_COVERAGE_DB == null || $GLCI_CLICKHOUSE_METRICS_USERNAME == null || $GLCI_CLICKHOUSE_METRICS_PASSWORD == null'
+
+.if-missing-clickhouse-diff-stats-credentials: &if-missing-clickhouse-diff-stats-credentials
+  if: '$GLCI_DA_CLICKHOUSE_URL == null || $GLCI_CLICKHOUSE_METRICS_USERNAME == null || $GLCI_CLICKHOUSE_METRICS_PASSWORD == null || $GLCI_CLICKHOUSE_WORK_ITEM_DB == null || $GLCI_DIFF_STATS_CLICKHOUSE_TABLE == null'
+
+.if-coverband-enabled: &if-coverband-enabled
+  if: '$COVERBAND_ENABLED == "true"'
+
+.if-babel-env-istanbul: &if-babel-env-istanbul
+  if: '$BABEL_ENV == "istanbul"'
+
+.if-export-coverage: &if-export-coverage
+  if: '$GLCI_EXPORT_COVERAGE == "true"'
+
+.if-default-branch-schedule-nightly: &if-default-branch-schedule-nightly
+  if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "nightly"'
+
+# Non-default PG versions run nightly in their own schedules, gated per role relative to the current default (PG17).
+# PREVIOUS = previous still-supported version; NEXT = upcoming version. Each schedule
+# sets a stable role flag (NIGHTLY_PG_ROLE=previous|next), NOT a version number, so the schedule never changes across
+# the yearly PG bump. The actual version each role tests lives in the repo: the *-base-pgXX the job families extend
+# (.gitlab/ci/rails.gitlab-ci.yml). To bump versions, repoint those bases in an MR — no schedule edit needed.
+.if-default-branch-schedule-nightly-pg-previous: &if-default-branch-schedule-nightly-pg-previous
+  if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "nightly" && $NIGHTLY_PG_ROLE == "previous"'
+
+.if-default-branch-schedule-nightly-pg-next: &if-default-branch-schedule-nightly-pg-next
+  if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "nightly" && $NIGHTLY_PG_ROLE == "next"'
+
+.if-default-branch-schedule-weekly: &if-default-branch-schedule-weekly
+  if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "weekly"'
+
+.if-default-branch-schedule-ai-principles: &if-default-branch-schedule-ai-principles
+  if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "ai-principles-distillation"'
+
+.if-default-branch-schedule-whats-new: &if-default-branch-schedule-whats-new
+  if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "whats-new"'
+
+.if-default-branch-schedule-housekeeping: &if-default-branch-schedule-housekeeping
+  if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "housekeeping"'
+
+.if-ruby-branch-schedule: &if-ruby-branch-schedule
+  if: '$CI_COMMIT_BRANCH == "ruby-next" && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "maintenance"'
+
+.if-rails-branch-schedule: &if-rails-branch-schedule
+  if: '$CI_COMMIT_BRANCH == "rails-next" && $CI_PIPELINE_SOURCE == "schedule" && $RUN_WITH_NEXT_RAILS_VERSION == "true"'
+
+.if-ruby-branch-schedule-nightly: &if-ruby-branch-schedule-nightly
+  if: '$CI_COMMIT_BRANCH == "ruby-next" && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "nightly"'
+
+.if-security-schedule: &if-security-schedule
+  if: '$CI_PROJECT_NAMESPACE == "gitlab-org/security" && $CI_PIPELINE_SOURCE == "schedule"'
+
+.if-foss-schedule: &if-foss-schedule
+  if: '$CI_PROJECT_PATH == "gitlab-org/gitlab-foss" && $CI_PIPELINE_SOURCE == "schedule"'
+
+.if-foss-default-branch: &if-foss-default-branch
+  if: '$CI_PROJECT_PATH == "gitlab-org/gitlab-foss" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH'
+
+.if-not-dot-com-gitlab-org-and-not-jihulab: &if-not-dot-com-gitlab-org-and-not-jihulab
+  if: '($CI_SERVER_HOST != "gitlab.com" || $CI_PROJECT_NAMESPACE != "gitlab-org") && ($CI_SERVER_HOST != "jihulab.com" || $CI_PROJECT_NAMESPACE != "gitlab-cn")'
+
+.if-dot-com-gitlab-org-schedule: &if-dot-com-gitlab-org-schedule
+  if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_NAMESPACE == "gitlab-org" && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE != "ai-principles-distillation" && $SCHEDULE_TYPE != "whats-new" && $SCHEDULE_TYPE != "housekeeping"'
+
+.if-dot-com-ee-schedule-default-branch-maintenance: &if-dot-com-ee-schedule-default-branch-maintenance
+  if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_PATH == "gitlab-org/gitlab" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "maintenance"'
+
+.if-dot-com-gitlab-org-default-branch: &if-dot-com-gitlab-org-default-branch
+  if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_NAMESPACE == "gitlab-org" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "merge_request_event"'
+
+.if-not-dot-com-gitlab-org-default-branch: &if-not-dot-com-gitlab-org-default-branch
+  if: '$CI_SERVER_HOST != "gitlab.com" || $CI_PROJECT_NAMESPACE != "gitlab-org" || $CI_COMMIT_REF_NAME != $CI_DEFAULT_BRANCH || $CI_PIPELINE_SOURCE == "merge_request_event"'
+
+.if-dot-com-gitlab-org-merge-request: &if-dot-com-gitlab-org-merge-request
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_NAMESPACE == "gitlab-org"'
+
+.if-dot-com-gitlab-org-and-subgroups-merge-train: &if-dot-com-gitlab-org-and-subgroups-merge-train
+  if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE == "merge_train" && $CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_NAMESPACE =~ /^gitlab-org/'
+
+.if-ruby-branch: &if-ruby-branch
+  if: '$CI_COMMIT_BRANCH == "ruby-next" || (($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_LABELS =~ /pipeline:run-in-ruby\d+(_\d)*|pipeline:run-with-ruby-next/)'
+
+.if-rails-next-branch: &if-rails-next-branch
+  if: '$CI_COMMIT_BRANCH == "rails-next"'
+
+.if-canonical-mr: &if-canonical-mr
+  if: '($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_PROJECT_NAMESPACE =~ /^gitlab(-org)?($|\/)/'
+
+.if-dev-internal-release: &if-dev-internal-release
+  if: '$CI_SERVER_HOST == "dev.gitlab.org" && $CI_PROJECT_PATH == "gitlab/gitlab-ee" && $CI_COMMIT_REF_NAME =~
+  /^[\d-]+-stable-ee$/ && $CI_COMMIT_TITLE =~ /^Update VERSION file.*internal/'
+
+.if-triggered-by-aigw-project: &if-triggered-by-aigw-project
+  if: '$CI_PIPELINE_SOURCE == "pipeline" && $TRIGGERED_BY_AI_GATEWAY_PROJECT == "true"'
+
+####################
+# Changes patterns #
+####################
+.ci-patterns: &ci-patterns
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  - "scripts/rspec_helpers.sh"
+
+.ci-build-images-patterns: &ci-build-images-patterns
+  - ".gitlab-ci.yml"
+  - ".gitlab/ci/build-images.gitlab-ci.yml"
+
+.ci-templates-patterns: &ci-templates-patterns
+  - ".gitlab/ci/static-analysis.gitlab-ci.yml"
+  - "lib/gitlab/ci/templates/**/*.gitlab-ci.yml"
+
+.ci-qa-image-patterns: &ci-qa-image-patterns
+  - "qa/Dockerfile"
+  - "scripts/build_qa_image"
+
+.ci-qa-patterns: &ci-qa-patterns
+  - ".gitlab-ci.yml"
+  - ".gitlab/ci/frontend.gitlab-ci.yml"
+  - ".gitlab/ci/build-images.gitlab-ci.yml"
+  - ".gitlab/ci/qa.gitlab-ci.yml"
+  - ".gitlab/ci/test-on-omnibus/*.yml"
+  - ".gitlab/ci/version.yml"
+
+.gitaly-patterns: &gitaly-patterns
+  - "GITALY_SERVER_VERSION"
+  - "lib/gitlab/setup_helper.rb"
+
+.gitlab-pages-patterns: &gitlab-pages-patterns
+  - "GITLAB_PAGES_VERSION"
+
+# versions of all these components can affect cloud native deployment
+.cng-dependency-patterns: &cng-dependency-patterns
+  - GITLAB_WORKHORSE_VERSION
+  - GITLAB_SHELL_VERSION
+  - GITLAB_KAS_VERSION
+  - GITLAB_PAGES_VERSION
+  - GITALY_SERVER_VERSION
+
+# patch-package patches rewrite vendored frontend runtime code (e.g. the Vue runtime)
+# that every rendered page loads, and the predictive rspec mapping cannot see that.
+# Treated like workhorse-patterns: a change runs the full system spec suite.
+.frontend-patch-patterns: &frontend-patch-patterns
+  - "patches/**/*"
+
+.workhorse-patterns: &workhorse-patterns
+  - ".gitlab/ci/version.yml"
+  - ".gitlab/ci/workhorse.gitlab-ci.yml"
+  - "GITLAB_WORKHORSE_VERSION"
+  - "workhorse/**/*"
+  - "scripts/gitaly-test-build"
+  - "scripts/gitaly-test-spawn"
+  - "spec/support/gitlab-git-test.git/**/*"
+  - "spec/support/helpers/gitaly_setup.rb"
+  # Verify that Gitaly does not break Workhorse
+  - "GITALY_SERVER_VERSION"
+  - "lib/gitlab/setup_helper.rb"
+
+.yaml-lint-patterns: &yaml-lint-patterns
+  - "**/*.{yml,yaml}{,.*}"
+
+.lint-pipeline-yaml-patterns: &lint-pipeline-yaml-patterns
+  - ".gitlab-ci.yml"
+  - ".gitlab/ci/**/*.yml"
+  - ".gitlab/duo/**/*.{yml,yaml}"
+  - "lib/gitlab/ci/templates/**/*.yml"
+  - "data/deprecations/**/*.yml"
+  - "data/whats_new/**/*.yml"
+
+.lint-metrics-yaml-patterns: &lint-metrics-yaml-patterns
+  - "config/metrics/**/*.yml"
+
+.docs-patterns: &docs-patterns
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/includes/review-docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - ".gitlab/route-map.yml"
+  - ".markdownlint-cli2.yaml"
+  - "doc/**/*"
+  - "tooling/docs/api/tags/**/*"
+  - "scripts/lint-doc.sh"
+  - "scripts/lint/check_mermaid.mjs"
+  - "rubocop/cop/gitlab/documentation_links/**/*"
+  - "scripts/frontend/lint_docs_links.mjs"
+  - "tooling/eslint-config/eslint-local-rules/**/*"
+
+.ui-text-patterns: &ui-text-patterns
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - "doc/**/*.md"
+  - "locale/gitlab.pot"
+  - "scripts/lint/check_ui_text.rb"
+  - "spec/scripts/lint/check_ui_text_spec.rb"
+
+.ai-principles-manifest-patterns: &ai-principles-manifest-patterns
+  # See the `ai-principles-manifest` job in docs.gitlab-ci.yml for why this
+  # trigger is intentionally broad. gitlab-org/gitlab#604077
+  - ".ai/*.md"
+  - ".ai/principles/**/*"
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - ".gitlab/duo/mr-review-instructions.yaml"
+  - "doc/**/*.md"
+  - "gems/gitlab-ai-principles-distiller/**/*"
+  - "scripts/lint-ai-principles-manifest.sh"
+  - "scripts/lint-duo-review-instructions.sh"
+
+# The narrow set of files the Duo review-instructions fence guard actually
+# owns — a change to any of these can break the fences on its own ref, so the
+# STRICT `ai-duo-review-instructions` job (where staleness blocks) triggers on
+# these. Distilled files are deliberately NOT here: a team's distilled MR
+# cannot fix a fence on its own ref (the fence catches up via the reconcile
+# job after it merges), so those MRs fall through to the warn-stale job.
+# gitlab-org/gitlab#604890
+.ai-duo-review-instructions-owned-patterns: &ai-duo-review-instructions-owned-patterns
+  - ".gitlab/duo/mr-review-instructions.yaml"
+  - "gems/gitlab-ai-principles-distiller/**/*"
+  - "scripts/lint-duo-review-instructions.sh"
+
+# Files the fence projection reads. A default-branch push that changes any of
+# them can leave the fences stale, so it triggers `ai-principles-reconcile-fences`.
+.ai-principles-fence-input-patterns: &ai-principles-fence-input-patterns
+  - ".ai/principles/distilled/*.md"
+  - ".ai/principles/manifest.yml"
+  - ".gitlab/duo/mr-review-instructions.yaml"
+  - "gems/gitlab-ai-principles-distiller/lib/**/*"
+
+.ai-spelling-patterns: &ai-spelling-patterns
+  - ".ai/**/*.md"
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - ".vale.ini"
+  - "**/AGENTS.md"
+  - "doc/.vale/gitlab_base/British.yml"
+
+.docs-i18n-patterns: &docs-i18n-patterns
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - ".gitlab/route-map.yml"
+  - ".markdownlint-cli2.yaml"
+  - "doc/.markdownlint/**/*"
+  - "doc/.vale/**/*"
+  - "doc-locale/**/*"
+  - "doc-locale/.markdownlint/.markdownlint-cli2.yaml"
+  - "scripts/i18n_lint_doc.sh"
+  - "scripts/i18n_verify_paths.sh"
+  - "scripts/i18n_fix_alert_box.sh"
+
+.docs-ja-jp-patterns: &docs-ja-jp-patterns
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - ".gitlab/route-map.yml"
+  - ".markdownlint-cli2.yaml"
+  - "doc/.markdownlint/**/*"
+  - "doc/.vale/**/*"
+  - "scripts/i18n_lint_language_vale.sh"
+  - "doc-locale/ja-jp/**/*"
+  - "doc-locale/ja-jp/.*"
+  - "doc-locale/ja-jp/.vale/**/*"
+
+.docs-ko-kr-patterns: &docs-ko-kr-patterns
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - ".gitlab/route-map.yml"
+  - ".markdownlint-cli2.yaml"
+  - "doc/.markdownlint/**/*"
+  - "doc/.vale/**/*"
+  - "scripts/i18n_lint_language_vale.sh"
+  - "doc-locale/ko-kr/**/*"
+  - "doc-locale/ko-kr/.*"
+  - "doc-locale/ko-kr/.vale/**/*"
+
+.docs-fr-fr-patterns: &docs-fr-fr-patterns
+  - ".gitlab/ci/docs.gitlab-ci.yml"
+  - ".gitlab/ci/rules.gitlab-ci.yml"
+  - ".gitlab/route-map.yml"
+  - ".markdownlint-cli2.yaml"
+  - "doc/.markdownlint/**/*"
+  - "doc/.vale/**/*"
+  - "scripts/i18n_lint_language_vale.sh"
+  - "doc-locale/fr-fr/**/*"
+  - "doc-locale/fr-fr/.*"
+  - "doc-locale/fr-fr/.vale/**/*"
+
+.if-tech-docs-localization: &if-tech-docs-localization
+  if: '($CI_PROJECT_PATH == "gitlab-com/localization" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH) ||
+      ($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train")'
+
+.docs-generated-content-patterns: &docs-generated-content-patterns
+  # deprecations and breaking windows
+  - "doc/update/breaking_windows.md"
+  - "doc/update/deprecations.md"
+  - "data/deprecations/**/*"
+  - "tooling/docs/**/*"
+  - "lib/tasks/gitlab/docs/compile_deprecations.rake"
+  - "lib/tasks/gitlab/docs/compile_windows.rake"
+  # event store index
+  - "doc/development/eventstore/events.md"
+  - "data/events/**/*"
+  - "lib/tasks/gitlab/docs/compile_events.rake"
+  # organizations release status table
+  - "doc/development/organizations/release_status.md"
+  - "config/organizations_release.yml"
+  - "lib/organizations/release/**/*"
+  - "lib/tasks/gitlab/organizations.rake"
+
+.docs-release-note-categories-patterns: &docs-release-note-categories-patterns
+  - "doc/releases/**/*"
+  - "scripts/lint/validate_release_categories.rb"
+  - "spec/scripts/lint/validate_release_categories_spec.rb"
+
+.nodejs-patterns: &nodejs-patterns
+  - '{package.json,*/package.json,*/*/package.json}'
+  - '{yarn.lock,*/yarn.lock,*/*/yarn.lock}'
+
+.python-patterns: &python-patterns
+  - '{Pipfile,*/Pipfile,*/*/Pipfile}'
+
+.ruby-dependency-patterns: &ruby-dependency-patterns
+  - '{Gemfile.lock,*/Gemfile.lock,*/*/Gemfile.lock}'
+  - '{Gemfile.next.lock,*/Gemfile.next.lock,*/*/Gemfile.next.lock}'
+
+.dependency-patterns: &dependency-patterns
+  - '{Gemfile.lock,*/Gemfile.lock,*/*/Gemfile.lock}'
+  - '{Gemfile.next.lock,*/Gemfile.next.lock,*/*/Gemfile.next.lock}'
+  - '{go.sum,*/go.sum,*/*/go.sum}'
+  - '{yarn.lock,*/yarn.lock,*/*/yarn.lock}'
+
+.frontend-dependency-patterns: &frontend-dependency-patterns
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "config/webpack.config.js"
+  - "config/helpers/*.js"
+  - "config/vue3migration/**/*"
+
+.frontend-build-patterns: &frontend-build-patterns
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - ".browserslistrc"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "config/webpack.config.js"
+  - "**/tsconfig*.json"
+  - "**/*.config.{js,ts,cjs}"
+  - "config/**/*.js"
+  - "{,ee/,jh/}app/assets/**/*"
+  - "vendor/assets/**/*"
+
+# This list should match the list in Tasks::Gitlab::Assets.assets_impacting_compilation
+.assets-compilation-patterns: &assets-compilation-patterns
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "{Gemfile,Gemfile.lock}"
+  - "{Gemfile.next,Gemfile.next.lock}"
+  - ".browserslistrc"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "*.js"
+  - "config/**/*.js"
+  - "config/**/*.mjs"
+  - "locale/**/gitlab.po"
+  - "{,ee/,jh/}app/assets/**/*"
+  - "fixtures/emojis/**/*"
+  - "vendor/assets/**/*"
+
+.initializers-patterns: &initializers-patterns
+  - "{,ee/,jh/}config/initializers/**/*"
+
+.controllers-patterns: &controllers-patterns
+  - "{,ee/,jh/}{app/controllers}/**/*"
+
+.models-patterns: &models-patterns
+  - "{,ee/,jh/}{app/models}/**/*"
+
+.decomposed-db-models-patterns: &decomposed-db-models-patterns
+  - "{,ee/,jh/}app/models/{ci,geo}/**/*"
+
+.lib-gitlab-patterns: &lib-gitlab-patterns
+  - "{,ee/,jh/}lib/{,ee/,jh/}gitlab/**/*"
+
+.db-docs-patterns: &db-docs-patterns
+  - "{,ee/,jh/}{app/models}/**/*"
+  - "db/docs/**/*"
+
+# Patterns to match pure Ruby code
+.ruby-patterns: &ruby-patterns
+  - "**/Rakefile"
+  - "**/Dangerfile"
+  - "**/Gemfile"
+  - "**/Gemfile.next"
+  - "**/Guardfile"
+  - "**/*.rake"
+  - "**/*.rb"
+  - "**/*.ru"
+
+# Spec files only (for Rspec predictive pipeline)
+.spec-only-patterns: &spec-only-patterns
+  - "{,ee/,jh/}spec/**/*"
+
+# Frontend GraphQL query documents.
+# A query change should re-run backend integration specs (e.g. the N+1
+# request specs added in https://gitlab.com/gitlab-org/gitlab/-/merge_requests/224202),
+# but it must NOT trigger migration specs. Keep this out of `.backend-patterns`
+# so the `*-background-migration` rules (which key off `.backend-patterns`) are
+# not triggered by query-only changes.
+.frontend-graphql-patterns: &frontend-graphql-patterns
+  - "{,ee/,jh/}app/assets/javascripts/**/*.graphql"
+
+# Backend patterns + .ci-patterns
+.backend-patterns: &backend-patterns
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "Rakefile"
+  - "config.ru"
+  - "keeps/**/*"
+  # List explicitly all the app/ dirs that are backend (i.e. all except app/assets).
+  - "{,ee/,jh/}{app/channels,app/components,app/controllers,app/finders,app/graphql,app/helpers,app/mailers,app/models,app/policies,app/presenters,app/serializers,app/services,app/uploaders,app/validators,app/views,app/workers}/**/*"
+  - "domains/**/*"
+  - "{,ee/,jh/}{bin,config,db,elastic,gems,generator_templates,lib}/**/*"
+  # Spec support files
+  - "{,ee/,jh/}spec/{support,factories,fixtures,tooling/fixtures}/**/*"
+  - "{,ee/,jh/}spec/{*.rb,.rspec}"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  - "*_VERSION"
+  - "scripts/rspec_helpers.sh"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+
+# .backend-patterns + .ci-patterns + .spec-only-patterns
+.backend-spec-patterns: &backend-spec-patterns
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "Rakefile"
+  - "config.ru"
+  - "keeps/**/*"
+  # List explicitly all the app/ dirs that are backend (i.e. all except app/assets).
+  - "{,ee/,jh/}{app/channels,app/components,app/controllers,app/finders,app/graphql,app/helpers,app/mailers,app/models,app/policies,app/presenters,app/serializers,app/services,app/uploaders,app/validators,app/views,app/workers}/**/*"
+  - "domains/**/*"
+  - "{,ee/,jh/}{bin,config,db,elastic,gems,generator_templates,lib}/**/*"
+  - "{,ee/,jh/}spec/**/*"
+  # GraphQL query files
+  - "{,ee/,jh/}app/assets/javascripts/**/*.graphql"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  - "*_VERSION"
+  - "scripts/rspec_helpers.sh"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+
+  # Backend patterns  - .ci-patterns
+.backend-only-patterns: &backend-only-patterns
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "Rakefile"
+  - "config.ru"
+  - "keeps/**/*"
+  - "*_VERSION"
+  # List explicitly all the app/ dirs that are backend (i.e. all except app/assets).
+  - "{,ee/,jh/}{app/channels,app/components,app/controllers,app/finders,app/graphql,app/helpers,app/mailers,app/models,app/policies,app/presenters,app/serializers,app/services,app/uploaders,app/validators,app/views,app/workers}/**/*"
+  - "domains/**/*"
+  - "{,ee/,jh/}{bin,config,db,elastic,gems,generator_templates,lib}/**/*"
+  # GraphQL query files
+  - "{,ee/,jh/}app/assets/javascripts/**/*.graphql"
+
+.search-backend-patterns: &search-backend-patterns
+  - "{,jh/}Gemfile.lock"
+  - "{,jh/}Gemfile.next.lock"
+  - "GITLAB_ELASTICSEARCH_INDEXER_VERSION"
+  - "GITLAB_ZOEKT_VERSION"
+  # List explicitly all the app/ dirs that are backend (i.e. all except app/assets).
+  - "{,ee/,jh/}{app/channels,app/components,app/controllers,app/finders,app/graphql,app/helpers,app/mailers,app/models,app/policies,app/presenters,app/serializers,app/services,app/uploaders,app/validators,app/views,app/workers}/**/*"
+  - "domains/**/*"
+  - "{,ee/,jh/}{bin,config,db,elastic,gems,generator_templates,lib}/**/*"
+  - "{,ee/,jh/}spec/**/*"
+
+.search-migration-patterns: &search-migration-patterns
+  - "{ee/,jh/}{,spec/}elastic/migrate/**/*"
+
+.search-version-patterns: &search-version-patterns
+  - "GITLAB_ELASTICSEARCH_INDEXER_VERSION"
+  - "GITLAB_ZOEKT_VERSION"
+
+# Redis patterns
+.redis-patterns: &redis-patterns
+  - "{,ee/,jh/}{,spec/}app/models/concerns/redis_cacheable{,_spec}.rb"
+  - "{,ee/,jh/}{,spec/}app/models/ci/build_trace_chunks/redis{,_base,_trace_chunks}{,_spec}.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/usage_data_counters/{hll_redis_counter,redis_counter}{,_spec}.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/usage/metrics/instrumentations/redis{_metric,hll_metric}{,_spec}.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/merge_requests/mergeability/redis_interface{,_spec}.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/markdown_cache/redis/*.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/redis/**/*.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/instrumentation/*.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/redis.rb"
+  - "{,ee/,jh/}config/initializers/7_redis.rb"
+
+# AI patterns:
+.ai-patterns: &ai-patterns
+  - "{ee/,jh/}lib/gitlab/llm/**/*"
+  - "{ee/,jh/}{,spec/}lib/gitlab/llm/**/*"
+  - "{ee/,jh/}lib/gitlab/duo/**/*"
+  # For AI Gateway image update
+  - .gitlab/ci/global.gitlab-ci.yml
+
+# DB patterns + .ci-patterns
+.db-patterns: &db-patterns
+  - "{,ee/,jh/}{,spec/}{db,migrations}/**/*"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/database{,_spec}.rb"
+  - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/database/**/*"
+  - "{,ee/,jh/}spec/support/db_cleaner.rb"
+  - "{,ee/,jh/}spec/support/helpers/database/**/*"
+  - "{,ee/,jh/}spec/support/helpers/migrations_helpers/**/*"
+  - "lib/api/admin/batched_background_migrations.rb"
+  - "lib/gitlab/markdown_cache/active_record/**/*"
+  - "spec/requests/api/admin/batched_background_migrations_spec.rb"
+  - "spec/support/database_cleaner.rb"
+  - "{,ee/,jh/}app/models/project_statistics.rb"  # Used to calculate sizes in migration specs
+  - "{,ee/,jh/}app/{,models/,services/,workers/}loose_foreign_keys/**/*"
+  # Gitaly has interactions with background migrations: https://gitlab.com/gitlab-org/gitlab/-/issues/336538
+  - "GITALY_SERVER_VERSION"
+  - "lib/gitlab/setup_helper.rb"
+  # Test-gap from https://gitlab.com/gitlab-org/quality/engineering-productivity/team/-/issues/275
+  - "{,ee/,jh/}lib/tasks/gitlab/seed/*.rake"
+
+# DB backup patterns
+.db-backup-patterns: &db-backup-patterns
+  - "lib/backup/**/*"
+  - "lib/tasks/gitlab/backup.rake"
+
+.backstage-patterns: &backstage-patterns
+  - "Dangerfile"
+  - "danger/**/*"
+  - "{,ee/,jh/}fixtures/**/*"
+  - "{,ee/,jh/}rubocop/**/*"
+  - "{,ee/,jh/}spec/{support,factories,fixtures,tooling/fixtures}/**/*"
+  - "{,ee/,jh/}spec/{*.rb,.rspec}"
+  - "scripts/**/*"
+  - "tooling/**/*"
+
+.qa-patterns: &qa-patterns
+  - ".dockerignore"
+  - "{,jh/}qa/**/*"
+  - ".gitlab/ci/{test-on-omnibus,qa-common,test-on-cng,performance-on-cng}/*"
+
+# See https://gitlab.com/gitlab-org/quality/engineering-productivity/team/-/issues/470
+# for the reasons why we only match those patterns.
+.frontend-predictive-patterns: &frontend-predictive-patterns
+  - "{,ee/,jh/}{app/assets/javascripts,spec/frontend}/**/*"
+
+.frontend-code-patterns: &frontend-code-patterns
+  - "**/{package.json,yarn.lock}"
+  - "**/*.{js,cjs,mjs,ts,tsx,vue,graphql}"
+  - "**/*.{css,scss,sass}"
+  - "**/*.html"
+  - "**/tsconfig*.json"
+  - "**/*.config.{js,ts,cjs}"
+  - ".eslint_todo/*.mjs"
+  # match the .rc config files like .browserslistrc, .stylelintrc etc.,
+  - "{.,}*rc"
+
+# Code patterns + .ci-patterns
+.code-patterns: &code-patterns
+  - ".{gitattributes,nvmrc,prettierrc,stylelintrc,yamllint}"
+  - "eslint.config.mjs"
+  - ".browserslistrc"
+  - ".stylelintrc"
+  - "{,ee/,jh/}{app,bin,config,db,elastic,generator_templates,gems,haml_lint,lib,locale,public,scripts,sidekiq_cluster,storybook,symbol,vendor}/**/*"
+  - "domains/**/*"
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "*_VERSION"
+  - "lib/gitlab/redis/*"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "config.ru"
+  - "Dockerfile.assets"
+  - "jest.config.{base,integration,unit}.js"
+  - "keeps/**/*"
+  - "Rakefile"
+  - "tests.yml"
+  - "vendor/assets/**/*"
+  # Auto-generated files
+  - "doc/api/graphql/reference/*"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+
+# .code-patterns + .backstage-patterns
+.code-backstage-patterns: &code-backstage-patterns
+  - ".{gitattributes,nvmrc,prettierrc,stylelintrc,yamllint}"
+  - "eslint.config.mjs"
+  - ".eslint_todo/*.mjs"
+  - ".browserslistrc"
+  - ".stylelintrc"
+  - "{,ee/,jh/}{app,bin,config,db,elastic,generator_templates,gems,haml_lint,lib,locale,public,scripts,sidekiq_cluster,storybook,symbol,vendor}/**/*"
+  - "domains/**/*"
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "*_VERSION"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "config.ru"
+  - "Dockerfile.assets"
+  - "jest.config.{base,integration,unit}.js"
+  - "keeps/**/*"
+  - "Rakefile"
+  - "tests.yml"
+  - "vendor/assets/**/*"
+  # Auto-generated files
+  - "doc/api/graphql/reference/*"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+  # Backstage changes
+  - "Dangerfile"
+  - "danger/**/*"
+  - "{,ee/,jh/}fixtures/**/*"
+  - "{,ee/,jh/}rubocop/**/*"
+  - "scripts/**/*"
+  - "tooling/**/*"
+  - "{,ee/,jh/}spec/{support,factories,fixtures,tooling/fixtures}/**/*"
+  - "{,ee/,jh/}spec/{*.rb,.rspec}"
+
+# .code-patterns + .backstage-patterns + .spec-only-patterns
+.code-backstage-spec-patterns: &code-backstage-spec-patterns
+  - ".{gitattributes,nvmrc,prettierrc,stylelintrc,yamllint}"
+  - "eslint.config.mjs"
+  - ".eslint_todo/*.mjs"
+  - ".browserslistrc"
+  - ".stylelintrc"
+  - "{,ee/,jh/}{app,bin,config,db,elastic,generator_templates,gems,haml_lint,lib,locale,public,scripts,sidekiq_cluster,storybook,symbol,vendor}/**/*"
+  - "domains/**/*"
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "*_VERSION"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "config.ru"
+  - "Dockerfile.assets"
+  - "jest.config.{base,integration,unit}.js"
+  - "keeps/**/*"
+  - "Rakefile"
+  - "tests.yml"
+  - "vendor/assets/**/*"
+  # Auto-generated files
+  - "doc/api/graphql/reference/*"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+  # Backstage changes
+  - "Dangerfile"
+  - "danger/**/*"
+  - "{,ee/,jh/}fixtures/**/*"
+  - "{,ee/,jh/}rubocop/**/*"
+  - "{,ee/,jh/}spec/**/*"
+  - "scripts/**/*"
+  - "{,spec/}tooling/**/*"
+
+# A subset of .code-backstage-spec-patterns, minus the backend-only RSpec trees Jest never reads. It must stay a subset: the jest jobs wait on fixture and schema-dump jobs, and those only run for files in that list.
+.jest-relevant-patterns: &jest-relevant-patterns
+  - ".{gitattributes,nvmrc,prettierrc,stylelintrc,yamllint}"
+  - "eslint.config.mjs"
+  - ".eslint_todo/*.mjs"
+  - ".browserslistrc"
+  - ".stylelintrc"
+  - "{,ee/,jh/}{app,bin,config,db,elastic,generator_templates,gems,haml_lint,lib,locale,public,scripts,sidekiq_cluster,storybook,symbol,vendor}/**/*"
+  - "domains/**/*"
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "*_VERSION"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "config.ru"
+  - "Dockerfile.assets"
+  - "jest.config.{base,integration,unit}.js"
+  - "keeps/**/*"
+  - "Rakefile"
+  - "tests.yml"
+  - "vendor/assets/**/*"
+  # Auto-generated files
+  - "doc/api/graphql/reference/*"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  # Backstage changes
+  - "{,ee/,jh/}fixtures/**/*"
+  - "scripts/**/*"
+  - "{,spec/}tooling/**/*"
+  - "{,ee/,jh/}spec/{frontend,support,factories,fixtures}/**/*"
+  # spec_helper.rb and the files it requires (simplecov_env.rb, knapsack_env.rb, ...)
+  - "{,ee/,jh/}spec/*.rb"
+
+# .code-patterns + .qa-patterns
+.code-qa-patterns: &code-qa-patterns
+  - ".{gitattributes,nvmrc,prettierrc,stylelintrc,yamllint}"
+  - "eslint.config.mjs"
+  - ".browserslistrc"
+  - ".stylelintrc"
+  - "{,ee/,jh/}{app,bin,config,db,elastic,generator_templates,gems,haml_lint,lib,locale,public,scripts,sidekiq_cluster,storybook,symbol,vendor}/**/*"
+  - "domains/**/*"
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "*_VERSION"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "config.ru"
+  - "Dockerfile.assets"
+  - "jest.config.{base,integration,unit}.js"
+  - "keeps/**/*"
+  - "Rakefile"
+  - "tests.yml"
+  - "vendor/assets/**/*"
+  # Auto-generated files
+  - "doc/api/graphql/reference/*"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+  # QA changes
+  - ".dockerignore"
+  - "{,jh/}qa/**/*"
+
+.code-rest-api-patterns: &code-rest-api-patterns
+  - "{,ee/,jh/}lib/{,ee/,jh/}api/**/*"
+  - "{,ee/,jh/}app/policies/**/*"
+  - "{,ee/,jh/}app/serializers/**/*"
+  # Auto-generated files
+  - "doc/api/openapi/openapi_v3.yaml"
+
+# .code-patterns + .backstage-patterns + .qa-patterns
+.code-backstage-qa-patterns: &code-backstage-qa-patterns
+  - ".{gitattributes,nvmrc,prettierrc,stylelintrc,yamllint}"
+  - "eslint.config.mjs"
+  - ".eslint_todo/*.mjs"
+  - ".dependency_cruiser_todo/*.mjs"
+  - ".browserslistrc"
+  - ".stylelintrc"
+  - "{,ee/,jh/}{app,bin,config,db,elastic,generator_templates,gems,haml_lint,lib,locale,public,scripts,sidekiq_cluster,storybook,symbol,vendor}/**/*"
+  - "domains/**/*"
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{package.json,yarn.lock}"
+  - "patches/**/*"
+  - "*_VERSION"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "config.ru"
+  - "Dockerfile.assets"
+  - "jest.config.{base,integration,unit}.js"
+  - "keeps/**/*"
+  - "Rakefile"
+  - "tests.yml"
+  - "vendor/assets/**/*"
+  # Auto-generated files
+  - "doc/api/graphql/reference/*"
+  - "doc/api/openapi/openapi_v3.yaml"
+  - "doc/user/application_security/dast/browser/configuration/variables.md"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  # Backstage changes
+  - "Dangerfile"
+  - "danger/**/*"
+  - "{,ee/,jh/}fixtures/**/*"
+  - "{,ee/,jh/}rubocop/**/*"
+  - "scripts/**/*"
+  - "tooling/**/*"
+  - "{,ee/,jh/}spec/{support,factories,fixtures,tooling/fixtures}/**/*"
+  - "{,ee/,jh/}spec/{*.rb,.rspec}"
+  # QA changes
+  - ".dockerignore"
+  - "{,jh/}qa/**/*"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+
+# .code-backstage-qa-patterns + .workhorse-patterns
+# NOTE: `setup-test-env-patterns` intentionally does not include docs files, because this would
+#       result in docs-only pipelines having failures of jobs which use `setup-test-env-patterns`
+#       in their rules and thus require `setup-test-env`, which isn't present in docs-only pipelines.
+.setup-test-env-patterns: &setup-test-env-patterns
+  # folded: rules:changes allows at most 50 entries and this anchor is at the limit
+  - "{package.json,yarn.lock,patches/**/*}"
+  - ".browserslistrc"
+  - "babel.config.js"
+  - "vite.config.js"
+  - "jest.config.{base,integration,unit}.js"
+  - ".stylelintrc"
+  - "Dockerfile.assets"
+  - "vendor/assets/**/*"
+  - ".{gitattributes,nvmrc,prettierrc,stylelintrc,yamllint}"
+  - "eslint.config.mjs"
+  - ".eslint_todo/*.mjs"
+  - "*_VERSION"
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{domains,keeps}/**/*"
+  - "Rakefile"
+  - "tests.yml"
+  - "config.ru"
+  - "{,ee/,jh/}{app,bin,config,db,elastic,generator_templates,gems,haml_lint,lib,locale,public,scripts,sidekiq_cluster,storybook,symbol,vendor}/**/*"
+  # Auto-generated files
+  - "doc/api/graphql/reference/*"
+  # CI changes
+  - "{,jh/}.gitlab-ci.yml"
+  - "{,jh/}.gitlab/ci/**/*"
+  # Mapped patterns (see tests.yml)
+  - "data/whats_new/*.yml"
+  - "doc/_index.md"
+  - "doc/api/{glql,settings}.md"
+  # Backstage and spec changes
+  - "Dangerfile"
+  - "danger/**/*"
+  - "{,ee/,jh/}fixtures/**/*"
+  - "{,ee/,jh/}rubocop/**/*"
+  - "{,ee/,jh/}spec/**/*"
+  - "scripts/**/*"
+  - "{,spec/}tooling/**/*"
+  # QA changes
+  - ".dockerignore"
+  - "{,jh/}qa/**/*"
+  # Workhorse changes
+  - ".gitlab/ci/workhorse.gitlab-ci.yml"
+  - "GITLAB_WORKHORSE_VERSION"
+  - "workhorse/**/*"
+  - "scripts/gitaly-test-build"
+  - "scripts/gitaly-test-spawn"
+  - "spec/support/gitlab-git-test.git/**/*"
+  - "spec/support/helpers/gitaly_setup.rb"
+  - "GITALY_SERVER_VERSION"
+  - "lib/gitlab/setup_helper.rb"
+  # CI Templates changes
+  - "scripts/lint_templates_bash.rb"
+  - "lib/gitlab/ci/templates/**/*.gitlab-ci.yml"
+
+.static-analysis-patterns: &static-analysis-patterns
+  - ".{haml-lint,haml-lint_todo}.yml"
+
+.codeowners-patterns: &codeowners-patterns
+  - ".gitlab/CODEOWNERS"
+  - "*"
+  - "*/*"
+
+# this is a combination of ruby-patterns and additional paths that contain ruby scripts without extension
+.rubocop-target-patterns: &rubocop-target-patterns
+  - "**/Rakefile"
+  - "**/Dangerfile"
+  - "**/Gemfile"
+  - "**/Gemfile.next"
+  - "**/Guardfile"
+  - "**/*.rake"
+  - "**/*.rb"
+  - "**/*.ru"
+  - "**/*.haml"
+  - "**/*.builder"
+  - "scripts/**/*"
+  - "bin/*"
+
+.rubocop-patterns: &rubocop-patterns
+  - ".{rubocop,rubocop_todo}.yml"
+  - "{,spec/}rubocop/cop/.rubocop.yml"
+  - ".rubocop/*.yml"
+  - ".rubocop_todo/**/*.yml"
+  - "{,ee/,jh/}rubocop/**/*"  # We might be changing custom cops
+  - "{,ee/,jh/}Gemfile.lock"  # This should include gitlab-styles, rubocop itself, and any plugins we might be using
+  - "{,ee/,jh/}Gemfile.next.lock"  # This should include gitlab-styles, rubocop itself, and any plugins we might be using
+  - "lib/gitlab_edition.rb"  # This is required in RuboCop::CodeReuseHelpers
+  - ".gitlab/ci/static-analysis.gitlab-ci.yml"
+  - "config/bounded_contexts.yml"  # Used by Gitlab/BoundedContexts
+  - "config/feature_categories.yml"  # Used by RSpec/FeatureCategory
+
+.danger-patterns: &danger-patterns
+  - "Dangerfile"
+  - "danger/**/*"
+  - "tooling/danger/**/*"
+
+.core-backend-patterns: &core-backend-patterns
+  - "{,jh/}Gemfile{,.lock}"
+  - "{,jh/}Gemfile.next{,.lock}"
+  - "{,ee/,jh/}config/**/*.rb"
+
+.feature-flag-development-config-patterns: &feature-flag-development-config-patterns
+  - "{,ee/,jh/}config/feature_flags/**/*.yml"
+
+.gdk-component-patterns: &gdk-component-patterns
+  - Gemfile.lock
+  - Gemfile.next.lock
+  - yarn.lock
+  - patches/**/*
+  - scripts/frontend/postinstall.js
+  - workhorse/**/*
+  - vendor/gems/**/*
+  - gems/**/*
+  - VERSION
+  - GITLAB_WORKHORSE_VERSION
+  - GITLAB_SHELL_VERSION
+  - GITALY_SERVER_VERSION
+
+.gdk-update-patterns: &gdk-update-patterns
+  - .gitlab/ci/gdk.gitlab-ci.yml
+
+.ruby-version-patterns: &ruby-version-patterns
+  - ".ruby-version"
+  - ".tool-versions"
+
+.audit-events-patterns: &audit-events-patterns
+  - "{,ee/}config/audit_events/types/*.yml"
+  - "doc/user/compliance/audit_event_types.md"
+  - "tooling/audit_events/docs/templates/audit_event_types.md.erb"
+  - "lib/tasks/gitlab/audit_event_types/audit_event_types.rake"
+  - "lib/tasks/gitlab/audit_event_types/check_docs_task.rb"
+  - "lib/gitlab/audit/type/definition.rb"
+  - "ee/lib/ee/gitlab/audit/type/definition.rb"
+
+.custom-roles-patterns: &custom-roles-patterns
+  - "ee/config/custom_abilities/*.yml"
+  - "doc/user/custom_roles/abilities.md"
+  - "tooling/custom_roles/docs/templates/custom_abilities.md.erb"
+  - "ee/{lib/,spec/}tasks/gitlab/custom_roles/*"
+
+.permissions-patterns: &permissions-patterns
+  - "config/authz/{,**/}*"
+  - "lib/tasks/gitlab/permissions/{,**/}*.rb"
+  - "{,ee/}app/policies/{,**/}*.rb"
+  - "{,ee/}app/graphql/{,**/}*.rb"
+  - "{,ee/}lib/{,**/}api/{,**/}*.rb"
+  - "doc/api/graphql/reference/_index.md"
+  - "doc/auth/tokens/fine_grained_access_tokens_{rest,graphql}.md"
+  - "tooling/authz/permissions/docs/templates/*"
+
+.ci-job-token-policies-patterns: &ci-job-token-policies-patterns
+  # ci:job_tokens:check_policies walks the whole API tree, so this has to match
+  # nested files too, the way .permissions-patterns above already does.
+  - "{,ee/}lib/{,**/}api/{,**/}*.rb"
+  - "app/validators/json_schemas/ci_job_token_policies.json"
+  - "doc/ci/jobs/fine_grained_permissions.md"
+  - "tooling/ci/job_tokens/docs/templates/fine_grained_permissions.md.erb"
+
+.api-high-impact-entity-patterns: &api-high-impact-entity-patterns
+  - "{,ee/}lib/{,**/}api/{,**/}*.rb"
+  - "lib/gitlab/rest_api/entity_usage_radius_analyzer.rb"
+  - "lib/tasks/gitlab/api/entity_baseline_check.rake"
+  - "rubocop/cop/api/config/api_entity_exposure_baseline.yml"
+
+.skills-patterns: &skills-patterns
+  - ".claude/skills/**/*"
+
+.gitlab-orchestrator-patterns: &gitlab-orchestrator-patterns
+  - "qa/gems/gitlab-orchestrator/**/*.rb"
+  - "qa/gems/gitlab-orchestrator/{Gemfile,Gemfile.lock}"
+
+.gem-change-patterns: &gem-change-patterns
+  - Gemfile
+  - Gemfile.lock
+  - Gemfile.next
+  - Gemfile.next.lock
+
+# Keep in sync with doctor runtime dependencies:
+#   - scripts/ai_harness/doctor (entrypoint + helper scripts)
+#   - tooling/ai_harness/doctor/**/* (library code under tooling/)
+#   - tooling/ai_harness/config.yml (harness-wide config consumed by the doctor)
+#   - lib/gitlab/fp/**/* (functional programming utilities used by doctor)
+# When adding new runtime dependencies to doctor, add their paths here
+# in the same MR.
+.ai-harness-doctor-patterns: &ai-harness-doctor-patterns
+  # .ai-reference inputs (check_ai_references.rb)
+  - "**/AGENTS.md"
+  - "**/CLAUDE.md"
+  - ".ai/**/*"
+  - "**/.ai/**/*"
+  # Doctor implementation
+  - "scripts/ai_harness/doctor"
+  - "tooling/ai_harness/doctor/**/*"
+  - "tooling/ai_harness/config.yml"
+  - "lib/gitlab/fp/**/*"
+
+# Paths the doctor reacts to but which (by design) do not match a file
+# currently in the repo. Kept under a non-`-patterns` key name so the
+# `rules_spec.rb` dead-pattern existence check skips this list
+#
+# `.gitignore` is included here despite existing in the repo because the
+# spec's `no_matching_needed_files` exemption removes it from the universe
+# of files before pattern matching, which makes it indistinguishable from
+# an intentionally-absent path for the purposes of that check.
+.ai-harness-doctor-forbidden-paths: &ai-harness-doctor-forbidden-paths
+  # .gitignore coverage (check_gitignore.rb) — see note above
+  - ".gitignore"
+  # Forbidden-files check (check_forbidden_files.rb FORBIDDEN_PATTERNS)
+  - "AGENTS.local.md"
+  - "**/AGENTS.local.md"
+  - "CLAUDE.local.md"
+  - "**/CLAUDE.local.md"
+  - ".claude/**"
+  - ".opencode/**"
+  - ".gitlab/duo/chat-rules.md"
+  - ".gitlab/duo/mcp.json"
+
+##################
+# Conditions set #
+##################
+.strict-ee-only-rules:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-jh
+      when: never
+
+# Single source of truth for excluding a job from the dedicated ai-principles
+# distillation schedule. That schedule should run only its own ai-principles
+# jobs; because rules:changes is always-true on
+# scheduled pipelines, default-branch jobs would otherwise be pulled in.
+# `!reference` this from any job (including those in other CI files) whose rules
+# would otherwise match a schedule, so the guard has one canonical phrasing.
+.ai-principles-schedule:rules:skip:
+  rules:
+    - <<: *if-default-branch-schedule-ai-principles
+      when: never
+    - <<: *if-default-branch-schedule-whats-new
+      when: never
+    - <<: *if-default-branch-schedule-housekeeping
+      when: never
+
+.rails:rules:run-search-tests:
+  rules:
+    - <<: *if-merge-request-labels-run-search-tests
+      changes: *ci-patterns
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request-labels-group-global-search
+      changes: *ci-patterns
+    - <<: *if-merge-request-labels-run-search-tests
+      changes: *search-backend-patterns
+    - <<: *if-merge-request-labels-group-global-search
+      changes: *search-backend-patterns
+    - <<: *if-merge-request
+      changes: *search-version-patterns
+    - <<: *if-merge-request
+      changes: *search-migration-patterns
+
+.rails:rules:ee-and-foss-default-rules:
+  rules:
+    - <<: *if-fork-merge-request
+      changes: *code-backstage-spec-patterns
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+    - <<: *if-automated-merge-request
+      changes: *backend-patterns
+    - <<: *if-security-merge-request
+      changes: *backend-patterns
+    - !reference [".prevent-tier-2-and-below", rules]
+
+.rails:rules:system-default-rules:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+    - <<: *if-merge-request
+      changes: *workhorse-patterns
+    - <<: *if-merge-request
+      changes: *frontend-patch-patterns
+    - <<: *if-automated-merge-request
+      changes: *code-backstage-patterns
+    - <<: *if-security-merge-request
+      changes: *code-backstage-patterns
+    - !reference [".prevent-tier-1", rules]
+
+.rails:rules:triggered-by-aigw-project:
+  rules:
+    - <<: *if-triggered-by-aigw-project
+
+.rails:rules:previous-failed-tests-default-rules:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-security-merge-request
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *code-backstage-patterns
+
+###########################
+# Conditions set for JiHu #
+###########################
+.rails:rules:predictive-default-rules:
+  rules:
+    - <<: *if-merge-request-tier-2-or-above
+      when: never
+    - <<: *if-automated-merge-request
+      when: never
+    - <<: *if-security-merge-request
+      when: never
+
+.rails:rules:as-if-foss-migration-unit-integration:predictive-default-rules:
+  rules:
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *ci-patterns
+      when: never
+
+.rails:rules:unit-integration:predictive-default-rules:
+  rules:
+    - <<: *if-merge-request-labels-run-all-rspec
+      when: never
+    - !reference [".rails:rules:as-if-foss-migration-unit-integration:predictive-default-rules", rules]
+
+.rails:rules:system:predictive-default-rules:
+  rules:
+    - <<: *if-merge-request-labels-run-all-rspec
+      when: never
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *workhorse-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *frontend-patch-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *ci-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *code-backstage-spec-patterns
+
+.rails:rules:ee-and-foss-migration:predictive:
+  rules:
+    - <<: *if-fork-merge-request
+      changes: *db-patterns
+    - !reference [".rails:rules:predictive-default-rules", rules]
+    - !reference [".rails:rules:unit-integration:predictive-default-rules", rules]
+    # When DB schema changes, many migrations spec may be affected. However, the test mapping from Crystalball does not map db change to a specific migration spec well.
+    # See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/68840.
+    - <<: *if-merge-request
+      changes: *db-patterns
+      when: never
+
+.rails:rules:ee-and-foss-background-migration:predictive:
+  rules:
+    - !reference [".rails:rules:ee-and-foss-migration:predictive", rules]
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+
+.rails:rules:ee-and-foss-unit:predictive:
+  rules:
+    - <<: *if-fork-merge-request
+      changes: *backend-spec-patterns
+    - !reference [".rails:rules:predictive-default-rules", rules]
+    - !reference [".rails:rules:unit-integration:predictive-default-rules", rules]
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+    - <<: *if-merge-request
+      changes: *backstage-patterns
+
+.rails:rules:ee-and-foss-integration:predictive:
+  rules:
+    - <<: *if-fork-merge-request
+      changes: *backend-spec-patterns
+    - !reference [".rails:rules:predictive-default-rules", rules]
+    - !reference [".rails:rules:unit-integration:predictive-default-rules", rules]
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+
+.rails:rules:ee-only-migration:predictive:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:predictive-default-rules", rules]
+    - !reference [".rails:rules:unit-integration:predictive-default-rules", rules]
+    # When DB schema changes, many migrations spec may be affected. However, the test mapping from Crystalball does not map db change to a specific migration spec well.
+    # See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/68840.
+    - <<: *if-merge-request
+      changes: *db-patterns
+      when: never
+
+.rails:rules:ee-only-background-migration:predictive:
+  rules:
+    - !reference [".rails:rules:ee-only-migration:predictive", rules]
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+
+.rails:rules:ee-only-unit:predictive:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-fork-merge-request
+      changes: *backend-spec-patterns
+    - !reference [".rails:rules:predictive-default-rules", rules]
+    - !reference [".rails:rules:unit-integration:predictive-default-rules", rules]
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+
+######################
+# DB rules #
+######################
+.db:rules:docs-up-to-date:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *db-docs-patterns
+
+.db:rules:invalidate-old-pipeline-results:
+  rules:
+    - if: '$GITLABCOM_DATABASE_TESTING_TRIGGER_TOKEN == null'
+      when: never
+    - if: '$CI_MERGE_REQUEST_SOURCE_PROJECT_PATH !~ /^gitlab(-org|-cn)?\//'
+      when: never
+    - <<: *if-merge-request
+      changes: *db-patterns
+      when: always
+
+######################
+# Build images rules #
+######################
+.build-images:rules:build-qa-image-merge-requests:
+  rules:
+    - <<: *if-merge-request-targeting-stable-branch
+      changes: *setup-test-env-patterns
+    - <<: *if-merge-request
+      changes: *ci-qa-image-patterns
+      variables:
+        ARCH: amd64,arm64
+    - <<: *if-merge-request
+      changes: *ci-qa-patterns
+    - <<: *if-merge-request
+      changes: *gdk-component-patterns
+
+.build-images:rules:build-qa-image:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-branch-schedule-weekly
+      when: never
+    - <<: *if-ruby-branch
+    - <<: *if-rails-next-branch
+    - <<: *if-force-ci
+    - <<: *if-auto-deploy-branches
+      variables:
+        ARCH: amd64,arm64
+    - <<: *if-default-branch-refs
+      variables:
+        ARCH: amd64,arm64
+    - <<: *if-tag
+      variables:
+        ARCH: amd64,arm64
+    - <<: *if-dot-com-gitlab-org-schedule
+      variables:
+        ARCH: amd64,arm64
+    - <<: *if-dev-internal-release
+    - !reference [".build-images:rules:build-qa-image-merge-requests", rules]
+    - !reference [".releases:rules:canonical-dot-com-gitlab-stable-branch-only-setup-test-env", rules]
+    # Always build on stable branches to serve release-environments pipeline
+    # Do not refer directly to .release-environments:rules:start-release-environments-security-pipeline
+    # to avoid the side effect of "never" rules
+    - !reference [".releases:rules:canonical-dot-com-security-gitlab-stable-branch-only", rules]
+
+#################
+# Caching rules #
+#################
+# rules for updating unprotected caches via maintenance schedule pipelines
+.caching:rules:update-master-based-caches:
+  rules:
+    - <<: *if-schedule-maintenance
+    - <<: *if-security-schedule
+    - <<: *if-foss-schedule
+    - <<: *if-merge-request-labels-update-caches
+
+.caching:rules:rubocop-cache-update:
+  rules:
+    - !reference [.caching:rules:update-master-based-caches, rules]
+    - *if-rails-next-branch
+    - <<: *if-default-branch-push
+      changes:
+        - '**/*.rb'
+        - '**/*.rake'
+        - '.rubocop_todo/**/*.yml'
+        - '.rubocop.yml'
+
+# This rule is used by pull-push cache jobs to ensure pipeline always has cache populated
+# All caches are generally related to app code, so limit cache jobs to code-backstage-patterns
+.caching:rules:update-cache-on-code-changes:
+  rules:
+    - <<: *if-default-refs
+      changes: *code-backstage-patterns
+    - *if-as-if-foss-mr-refs
+
+# e2e runners are only available in .com and in gitlab-org grouped projects
+.caching:rules:e2e-gem-cache-e2e-runners:
+  rules:
+    - <<: *if-not-dot-com-gitlab-org-and-not-jihulab
+      when: never
+    - !reference [.caching:rules:update-cache-on-code-changes, rules]
+
+# this rule is combination of rules for jobs that use cached frontend assets:
+#  * .frontend:rules:compile-test-assets
+#  * .frontend:rules:compile-production-assets
+.caching:rules:frontend-asset-hash:
+  rules:
+    - <<: *if-tag
+    - <<: *if-sync-changes-on-stable-branches
+    - if: '$ENABLE_COMPILE_PRODUCTION_ASSETS == "true"'
+    - if: '$ENABLE_COMPILE_TEST_ASSETS == "true"'
+    - <<: *if-merge-request
+      changes: *ruby-version-patterns
+    - !reference [.frontend:rules:compile-test-assets, rules]
+    - !reference [.frontend:rules:assets-shared, rules]
+    - !reference [.releases:rules:canonical-dot-com-security-gitlab-stable-branch-only, rules]
+
+######################
+# CI Templates Rules #
+######################
+.ci-templates:rules:shellcheck:
+  rules:
+    - <<: *if-default-refs
+      changes: *ci-templates-patterns
+    - <<: *if-default-refs
+      changes:
+        - scripts/lint_templates_bash.rb
+
+######################
+# Dev fixtures rules #
+######################
+.dev-fixtures:rules:foss-only:
+  rules:
+    - <<: *if-not-foss
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-patterns
+
+.dev-fixtures:rules:ee-only:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-patterns
+
+##############
+# Docs rules #
+##############
+.docs:rules:review-docs:
+  rules:
+    - <<: *if-dot-com-gitlab-org-merge-request
+      changes: *docs-patterns
+      when: manual
+      allow_failure: true
+    - <<: *if-dot-com-gitlab-org-merge-request
+      changes: *docs-i18n-patterns
+      when: manual
+      allow_failure: true
+
+.docs:rules:redirect-check:
+  rules:
+    - <<: *if-dot-com-gitlab-org-merge-request
+      changes: *docs-patterns
+
+.docs:rules:docs-lint:
+  rules:
+    - <<: *if-default-refs
+      changes: *docs-patterns
+
+.docs:rules:ui-text-check:
+  rules:
+    - <<: *if-default-refs
+      changes: *ui-text-patterns
+
+.docs:rules:ai-principles-manifest:
+  rules:
+    - <<: *if-default-refs
+      changes: *ai-principles-manifest-patterns
+
+.docs:rules:ai-spelling:
+  rules:
+    - <<: *if-merge-request
+      changes: *ai-spelling-patterns
+
+# Strict Duo-fence guard: fires only on MRs that touch the fence's OWNED files
+# (the reconcile MR, the gem, or the guard script). On those refs a stale fence
+# is real, ref-fixable drift, so the guard runs WITHOUT WARN_STALE and staleness
+# blocks. Master and ordinary MRs are handled by the warn-stale job below.
+# gitlab-org/gitlab#604890
+.docs:rules:ai-duo-review-instructions-strict:
+  rules:
+    - <<: *if-merge-request
+      changes: *ai-duo-review-instructions-owned-patterns
+
+# Warn-stale Duo-fence guard: fires on the default branch and on ordinary MRs
+# caught by the broad manifest trigger (including team distilled MRs), but NOT
+# on the owned-path MRs already covered by the strict job. It runs with
+# WARN_STALE=1, so fence staleness — expected transient state until the
+# reconcile MR catches master up — only warns, while malformed and orphaned
+# fences still fail (hence this job is not allow_failure). The owned-path
+# `when: never` prevents a duplicate run alongside the strict job.
+# gitlab-org/gitlab#604890
+.docs:rules:ai-duo-review-instructions-warn:
+  rules:
+    - <<: *if-default-branch-refs
+    - <<: *if-merge-request
+      changes: *ai-duo-review-instructions-owned-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *ai-principles-manifest-patterns
+
+.docs:rules:docs-i18n-lint:
+  rules:
+    - <<: *if-tech-docs-localization
+      changes: *docs-i18n-patterns
+
+.docs:rules:docs-all-lint:
+  rules:
+    - <<: *if-default-refs
+      changes: *docs-patterns
+    - <<: *if-tech-docs-localization
+      changes: *docs-i18n-patterns
+
+.docs:rules:docs-i18n-lint-japanese:
+  rules:
+    - <<: *if-tech-docs-localization
+      changes: *docs-ja-jp-patterns
+
+.docs:rules:docs-i18n-lint-korean:
+  rules:
+    - <<: *if-tech-docs-localization
+      changes: *docs-ko-kr-patterns
+
+.docs:rules:docs-i18n-lint-french:
+  rules:
+    - <<: *if-tech-docs-localization
+      changes: *docs-fr-fr-patterns
+
+.docs:rules:generated-content:
+  rules:
+    - <<: *if-default-refs
+      changes: *docs-generated-content-patterns
+
+.docs:rules:release-note-categories:
+  rules:
+    - <<: *if-merge-request-labels-skip-release-note-categories
+      when: never
+    - <<: *if-merge-request
+      changes: *docs-release-note-categories-patterns
+
+.docs:rules:rubocop-docs-site:
+  rules:
+    - <<: *if-dot-com-ee-schedule-default-branch-maintenance
+
+##################
+# GraphQL rules  #
+##################
+.graphql:rules:graphql-verify:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+
+################
+# Cells rules #
+################
+.cells:rules:routes-up-to-date:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    # JiHu draws additional routes from jh/, so the committed snapshot can never
+    # match there.
+    - <<: *if-jh
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+
+# Deliberately narrower than routes-up-to-date. The paired HTTP Router merge request merges
+# first, so the router is ahead of master until the GitLab side lands. Outside that scope the
+# job would fail on merge requests that never touched a route.
+.cells:rules:routes-router-in-sync:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-jh
+      when: never
+    - <<: *if-merge-request-targeting-stable-branch
+      when: never
+    - <<: *if-merge-request-labels-skip-router-sync
+      when: never
+    - <<: *if-merge-request
+      changes: ["config/routing/gitlab_routes.json"]
+
+#########################
+# DAST Variables rules  #
+#########################
+.dast_variables:rules:dast-variables-check-docs:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-branch-schedule-weekly
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+    - <<: *if-default-refs
+      changes: *spec-only-patterns
+
+############################
+# Audit event types rules  #
+############################
+.audit-event-types:rules:audit-event-types-verify:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-refs
+      changes: *audit-events-patterns
+
+############################
+# Custom roles rules  #
+############################
+.custom-roles:rules:custom-roles-verify:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-refs
+      changes: *custom-roles-patterns
+
+############################
+# Permissions rules        #
+############################
+.permissions:rules:permissions-verify:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".allow-on-tier-3", rules]
+    - <<: *if-default-refs
+      changes: *permissions-patterns
+
+#############################
+# CI job token policy rules #
+#############################
+.ci-job-token-policies:rules:ci-job-token-policies-verify:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-refs
+      changes: *ci-job-token-policies-patterns
+
+################
+# Skills rules #
+################
+.skills:rules:skills-version-bump:
+  rules:
+    - <<: *if-merge-request
+      changes: *skills-patterns
+
+##################
+# Frontend rules #
+##################
+.frontend:rules:predictive-default-rules:
+  rules:
+    - <<: *if-merge-request-tier-2-or-above
+      when: never
+    - <<: *if-automated-merge-request
+      when: never
+    - <<: *if-security-merge-request
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-jest
+      when: never
+
+.frontend:rules:assets-shared:
+  rules:
+    - <<: *if-auto-deploy-branches
+    - <<: *if-ruby-branch
+    - <<: *if-rails-next-branch
+    - <<: *if-force-ci
+    - <<: *if-merge-request-labels-run-all-e2e
+    - <<: *if-merge-request
+      changes: *qa-patterns
+    - <<: *if-merge-request
+      changes: *cng-dependency-patterns
+    - <<: *if-merge-request-targeting-stable-branch
+      changes: *setup-test-env-patterns
+    - <<: *if-default-refs
+      changes: *ci-build-images-patterns
+    - <<: *if-default-refs
+      changes: *workhorse-patterns
+    - !reference [".prevent-tier-1", rules]
+    # Rules to support e2e test execution
+    - <<: *if-merge-request
+      changes: *dependency-patterns
+    - <<: *if-default-refs
+      changes: *code-qa-patterns
+
+.frontend:rules:compile-production-assets:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_COMPILE_PRODUCTION_ASSETS == "true"'
+    - <<: *if-tag
+    - <<: *if-sync-changes-on-stable-branches
+    # Automatically run on canonical MRs with backend changes (before assets-shared to avoid prevent-tier-1 exclusion)
+    - <<: *if-canonical-mr
+      changes: *backend-only-patterns
+    - !reference [".frontend:rules:assets-shared", rules]
+    # Always build on stable branches to serve release-environments pipeline
+    # Do not refer directly to .release-environments:rules:start-release-environments-security-pipeline
+    # to avoid the side effect of "never" rules
+    - !reference [".releases:rules:canonical-dot-com-security-gitlab-stable-branch-only", rules]
+
+.frontend:rules:compile-production-assets-istanbul:
+  rules:
+    - <<: *if-dot-com-ee-schedule-default-branch-maintenance
+
+.frontend:rules:compile-production-assets-partial-cache:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-default-branch-push
+      changes: *assets-compilation-patterns
+
+.frontend:rules:compile-test-assets:
+  rules:
+    - if: '$ENABLE_COMPILE_TEST_ASSETS == "true"'
+    - if: '$ENABLE_RSPEC == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-default-branch-schedule-weekly
+    - <<: *if-triggered-by-aigw-project
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+    - <<: *if-default-refs
+      changes: *spec-only-patterns
+    - <<: *if-default-refs
+      changes: *workhorse-patterns
+    - <<: *if-dot-com-gitlab-org-schedule
+      variables:
+        BABEL_ENV: "istanbul"
+
+.frontend:rules:eslint-changed-files:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-branch-refs
+      when: never
+    - !reference [".prevent-tier-2-and-above", "rules"]
+    - <<: *if-merge-request-tier-1-or-no-tier
+      changes: *frontend-code-patterns
+
+.frontend:rules:eslint-default:
+  rules:
+    - !reference [".prevent-tier-1", "rules"]
+    - !reference [.frontend:rules:default-frontend-jobs, rules]
+
+.frontend:rules:default-frontend-jobs:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    # jest-integration has a hard `needs` on graphql-schema-dump, which extends these
+    # rules, so forcing the suite must schedule its dependency too.
+    - if: '$ENABLE_JEST_INTEGRATION == "true"'
+    - if: '$ENABLE_RSPEC_FRONTEND_FIXTURE == "true"'
+    - if: '$ENABLE_ESLINT == "true"'
+    - if: '$ENABLE_COMPILE_STORYBOOK == "true"'
+    - if: '$ENABLE_GRAPHQL_SCHEMA_DUMP == "true"'
+    - if: '$ENABLE_GENERATE_APOLLO_GRAPHQL_SCHEMA == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.frontend:rules:default-frontend-jobs-with-docs-changes:
+  rules:
+    - !reference [.frontend:rules:default-frontend-jobs, rules]
+    - <<: *if-default-refs
+      changes: *docs-patterns
+
+
+.frontend:rules:upload-graphql-schema-dump:
+  rules:
+    - <<: *if-not-dot-com-gitlab-org-default-branch
+      when: never
+    - !reference [.frontend:rules:default-frontend-jobs, rules]
+
+# .frontend:rules:default-frontend-jobs, with additional rules for tier-1 pipelines
+.frontend:rules:frontend_fixture:
+  rules:
+    # From .frontend:rules:default-frontend-jobs
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-fork-merge-request
+      changes: *code-backstage-spec-patterns
+    - if: '$ENABLE_RSPEC_FRONTEND_FIXTURE == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    # From .frontend:rules:jest
+    - <<: *if-automated-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-security-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-merge-request-labels-run-all-jest
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    - <<: *if-merge-request
+      changes: *frontend-dependency-patterns
+    - <<: *if-merge-request
+      changes: [".gitlab/ci/frontend.gitlab-ci.yml"]
+    # From .frontend:rules:jest-snapshot-vue3
+    - <<: *if-merge-request
+      changes: [".gitlab/ci/rules.gitlab-ci.yml", ".gitlab/ci/frontend.gitlab-ci.yml"]
+    # Rules for `jest predictive` jobs
+    - <<: *if-merge-request-tier-1-or-no-tier
+      changes: *frontend-predictive-patterns
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    # From .frontend:rules:default-frontend-jobs
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+# .frontend:rules:default-frontend-jobs, with additional rules for tier-1 pipelines
+.frontend:rules:compile-storybook:
+  rules:
+    # From .frontend:rules:default-frontend-jobs
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_COMPILE_STORYBOOK == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    # For tier-1 pipelines, only run when jest predictive jobs would
+    - <<: *if-merge-request-tier-1-or-no-tier
+      changes: *frontend-predictive-patterns
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    # From .frontend:rules:default-frontend-jobs
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.frontend:rules:test-storybook:
+  rules:
+    # From .frontend:rules:default-frontend-jobs
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    - <<: *if-default-refs
+      changes:
+        - '{,ee/}app/**/*.vue'
+        - '{,ee/}app/**/*.stories.js'
+        - 'storybook/**/*'
+
+.frontend:rules:jest:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-fork-merge-request
+      when: never
+    - if: '$ENABLE_JEST == "true"'
+    - <<: *if-automated-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-security-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-merge-request-labels-run-all-jest
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    - <<: *if-merge-request
+      changes: *frontend-dependency-patterns
+    - <<: *if-merge-request
+      changes: [".gitlab/ci/frontend.gitlab-ci.yml"]
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    - <<: *if-merge-request-tier-2-or-above
+      changes: *jest-relevant-patterns
+    - <<: *if-merge-request-tier-2-or-above
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.frontend:rules:jest:predictive:
+  rules:
+    - <<: *if-fork-merge-request
+      changes: *code-backstage-spec-patterns
+    - !reference [".frontend:rules:predictive-default-rules", rules]
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      when: never
+    - <<: *if-merge-request
+      changes: *frontend-dependency-patterns
+      when: never
+    - if: '$ENABLE_JEST_PREDICTIVE == "true"'
+    - <<: *if-merge-request
+      changes: [".gitlab/ci/frontend.gitlab-ci.yml"]  # When this file is modified, we run full Jest jobs
+      when: never
+    - <<: *if-merge-request
+      changes: *frontend-predictive-patterns
+
+.frontend:rules:jest-integration:
+  rules:
+    # Frontend integration tests are EE-only; the harness and fixtures do not exist in
+    # FOSS, so never run this job in a FOSS (including as-if-foss) pipeline.
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_JEST_INTEGRATION == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    # Tier-1: only run when the frontend integration tests themselves change
+    - <<: *if-merge-request-tier-1-or-no-tier
+      changes:
+        - "{ee,jh}/spec/frontend/integration/**/*"
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    # Tier-2+: same scope as the full Jest jobs, since this suite also runs on the frontend fixtures
+    - <<: *if-merge-request-tier-2-or-above
+      changes: *jest-relevant-patterns
+    - <<: *if-merge-request-tier-2-or-above
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.frontend:rules:coverage-frontend:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request
+      when: never
+    - <<: *if-export-coverage
+    - <<: *if-default-branch-refs
+      changes: *code-backstage-spec-patterns
+
+.frontend:rules:bundle-size-review:
+  rules:
+    # The job requests the medium runner tag, which is stuck when unset.
+    - if: '$GLCI_MEDIUM_RUNNER_REQUIRED == ""'
+      when: never
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-branch-refs
+      changes: *frontend-build-patterns
+      allow_failure: true
+    - if: '$DANGER_GITLAB_API_TOKEN && ($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      changes: *frontend-dependency-patterns
+      allow_failure: true
+    - !reference [".prevent-tier-1", rules]
+    - if: '$DANGER_GITLAB_API_TOKEN && ($CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train") && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $CI_DEFAULT_BRANCH'
+      changes: *frontend-build-patterns
+      allow_failure: true
+
+.frontend:rules:jest-snapshot-vue3:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-merge-request-labels-run-all-jest
+      when: manual
+      allow_failure: true
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+      when: manual
+      allow_failure: true
+    - <<: *if-merge-request
+      changes: *frontend-dependency-patterns
+      when: manual
+      allow_failure: true
+    - <<: *if-merge-request
+      changes: [".gitlab/ci/rules.gitlab-ci.yml", ".gitlab/ci/frontend.gitlab-ci.yml"]
+      allow_failure: true
+
+.frontend:rules:test-linters:
+  rules:
+    - <<: *if-merge-request-labels-run-all-jest
+    - <<: *if-default-refs
+      changes: ["tooling/eslint-config/**/*", "spec/tooling/frontend/eslint-config/**/*"]
+
+.frontend:rules:test-vue3migration-tooling:
+  rules:
+    - !reference ['.ai-principles-schedule:rules:skip', rules]
+    - <<: *if-merge-request-labels-run-all-jest
+    - <<: *if-not-foss
+      changes:
+        - "config/vue3migration/**/*"
+        - "scripts/frontend/infection_scanner/**/*"
+        - "spec/frontend/config/vue3migration/**/*"
+        - "spec/frontend/scripts/infection_scanner/**/*"
+
+.frontend:rules:fixtures-packages-cleanup:
+  rules:
+    - *if-dot-com-ee-schedule-default-branch-maintenance
+
+.frontend:rules:update-frontend-fixtures:
+  rules:
+    - if: $CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_PATH == "gitlab-org/gitlab" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+      changes: *code-backstage-spec-patterns
+
+.frontend:rules:update-frontend-fixtures-on-demand:
+  rules:
+    - <<: *if-dot-com-gitlab-org-merge-request
+      when: manual
+      allow_failure: true
+
+################
+# Memory rules #
+################
+.memory:rules:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *code-patterns
+
+##########
+# Notify #
+##########
+.notify:rules:notify-test-on-omnibus-failure:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-security-merge-request
+      when: never
+    - <<: *if-merge-request-targeting-stable-branch
+      changes: *setup-test-env-patterns
+      when: always
+
+###############
+# Pages rules #
+###############
+.pages:rules:
+  rules:
+    - <<: *if-dot-com-ee-schedule-default-branch-maintenance
+
+############
+# QA rules #
+############
+.qa:rules:metadata-lint:
+  rules:
+    - <<: *if-default-refs
+      changes: *qa-patterns
+    - <<: *if-default-refs
+      changes: *ci-qa-patterns
+
+.qa:rules:gitlab-orchestrator:
+  rules:
+    - <<: *if-merge-request
+      changes: *gitlab-orchestrator-patterns
+    - <<: *if-merge-request
+      changes: *rubocop-patterns
+    - <<: *if-default-refs
+      changes: *gitlab-orchestrator-patterns
+
+.qa:rules:code-merge-request:
+  rules:
+    - <<: *if-merge-request
+      changes: *code-patterns
+
+.qa:rules:code-merge-request-targeting-stable-branch:
+  rules:
+    - <<: *if-merge-request-targeting-stable-branch
+      changes: *code-patterns
+
+.qa:rules:code-merge-request-allowed-to-fail:
+  rules:
+    - <<: *if-merge-request
+      changes: *code-patterns
+      allow_failure: true
+
+.qa:rules:code-merge-request-manual:
+  rules:
+    - <<: *if-merge-request
+      changes: *code-patterns
+      when: manual
+      allow_failure: true
+
+.qa:rules:internal:
+  rules:
+    - if: '$ENABLE_QA_INTERNAL == "true"'
+    - <<: *if-default-refs
+      changes: *qa-patterns
+
+.qa:rules:selectors:
+  rules:
+    - if: '$ENABLE_QA_SELECTORS == "true"'
+    - <<: *if-default-refs
+      changes: *code-qa-patterns
+
+.qa:rules:determine-e2e-tests:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-branch-schedule-weekly
+      when: never
+    - *if-ruby-branch
+    - *if-rails-next-branch
+    - *if-merge-request-labels-run-all-e2e
+    - <<: *if-merge-request-targeting-stable-branch
+      changes: *setup-test-env-patterns
+    # Run tests automatically for MRs that touch Ruby version files
+    - <<: *if-merge-request
+      changes: *ruby-version-patterns
+    # Run tests automatically for MRs that touch GITALY_SERVER_VERSION
+    - <<: *if-merge-request
+      changes: *gitaly-patterns
+    # Run tests automatically for MRs that touch GITLAB_PAGES_VERSION
+    - <<: *if-merge-request
+      changes: *gitlab-pages-patterns
+    - <<: *if-merge-request
+      changes: *gdk-component-patterns
+    - <<: *if-merge-request
+      changes: *code-backstage-qa-patterns
+    - <<: *if-dot-com-gitlab-org-schedule
+      variables:
+        E2E_RUNTIME_COEFFICIENT_GDK: "1.2"
+        # Serial cng runs need more jobs to hold wall clock
+        E2E_RUNTIME_COEFFICIENT_CNG: "1.2"
+        # calculate_parallel_jobs_count method in qa/qa/tools/ci/pipeline_creator.rb
+        # uses this coefficient to determine the number of parallel job instances
+    - *if-default-branch-schedule-nightly
+    # Rules to support e2e test execution
+    - <<: *if-merge-request
+      changes: *dependency-patterns
+    - <<: *if-merge-request
+      changes: *feature-flag-development-config-patterns
+    - <<: *if-merge-request
+      changes: *nodejs-patterns
+    - <<: *if-merge-request
+      changes: *ci-qa-patterns
+    - *if-force-ci
+
+.qa:rules:e2e-test-never-run:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-branch-schedule-weekly
+      when: never
+
+# primary triggers for e2e tests
+.qa:rules:e2e-blocking-base-before:
+  rules:
+    - !reference [".qa:rules:e2e-test-never-run", rules]
+    - <<: *if-merge-request-labels-run-all-e2e
+    # Run tests automatically for MRs that touch QA files
+    - <<: *if-merge-request
+      changes: *qa-patterns
+    # Run tests automatically for MRs that touch GITALY_SERVER_VERSION
+    - <<: *if-merge-request
+      changes: *gitaly-patterns
+    # Run tests automatically for MRs that touch GITLAB_PAGES_VERSION
+    - <<: *if-merge-request
+      changes: *gitlab-pages-patterns
+
+.qa:rules:e2e-blocking-base-after:
+  rules:
+    - <<: *if-merge-request-targeting-stable-branch
+      changes: *setup-test-env-patterns
+    - <<: *if-ruby-branch
+    - <<: *if-rails-next-branch
+    - <<: *if-force-ci
+      when: manual
+    - <<: *if-merge-request
+      changes: *code-patterns
+      variables:
+        MR_CODE_PATTERNS: "true"
+
+.qa:e2e-test-schedule-variables: &qa-e2e-test-schedule-variables
+  CREATE_TEST_FAILURE_ISSUES: "true"
+  PROCESS_TEST_RESULTS: "true"
+
+.qa:e2e-cng-schedule-variables: &qa-e2e-cng-schedule-variables
+  <<: *qa-e2e-test-schedule-variables
+  # Only the scheduled run needs the code paths mapping
+  COVERBAND_ENABLED: "true"
+  # Parallel processes share one coverage counter and corrupt it
+  QA_RUN_IN_PARALLEL: "false"
+
+.qa:rules:e2e-schedule-nightly:
+  rules:
+    - <<: *if-default-branch-schedule-nightly
+      variables:
+        <<: *qa-e2e-test-schedule-variables
+        QA_RUN_IN_PARALLEL: "false"
+        COVERBAND_ENABLED: "false"
+
+.qa:rules:e2e-schedule-blocking:
+  rules:
+    - !reference [".qa:rules:e2e-schedule-nightly", rules]
+    - <<: *if-dot-com-gitlab-org-schedule
+      variables: *qa-e2e-test-schedule-variables
+
+# test-on-omnibus-ee rules, these tests are executed in following cases:
+# * for dependency changes to validate omnibus build
+# * stable branch merge request to validate release fixes
+# * manually on-demand for app and e2e code changes
+.qa:rules:test-on-omnibus-ee:
+  rules:
+    - !reference [".qa:rules:e2e-test-never-run", rules]
+    - <<: *if-merge-request-labels-run-all-e2e
+    # this rule needs to be synced with .notify:rules:notify-test-on-omnibus-failure to produce failure notification in stable branch merge requests
+    - <<: *if-merge-request-targeting-stable-branch-is-tier-3
+      changes: *setup-test-env-patterns
+      variables:
+        MR_STABLE_BRANCH_CODE_PATTERNS: "true"
+    # add option to trigger test-on-omnibus manually on qa changes ahead of tier-2
+    - <<: *if-merge-request
+      changes: *qa-patterns
+      when: manual
+      allow_failure: true
+    - !reference [".prevent-tier-2-and-below", rules]
+    # validate omnibus is built correctly when rails dependencies change
+    - <<: *if-merge-request
+      changes: *dependency-patterns
+      variables:
+        OMNIBUS_GITLAB_BUILD_ON_ALL_OS: "true"
+        DEPENDENCY_UPDATE: "true"
+    - <<: *if-merge-request
+      changes: *code-qa-patterns
+      when: manual
+      allow_failure: true
+      variables:
+        MR_CODE_PATTERNS: "true"
+    - !reference [".qa:rules:e2e-schedule-blocking", rules]
+
+# Note: If any changes are made to this rule, the following should also be updated - .qa:rules:test-on-omnibus-ce:follow-up
+.qa:rules:test-on-omnibus-ce:start:
+  rules:
+    - !reference [".qa:rules:e2e-test-never-run", rules]
+    - <<: *if-security-merge-request
+      changes: *qa-patterns
+      when: manual
+      allow_failure: true
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-security-merge-request
+      changes: *code-patterns
+      when: manual
+      allow_failure: true
+    - <<: *if-default-branch-schedule-nightly
+      allow_failure: true
+      variables:
+        ARCH: amd64,arm64
+        CREATE_TEST_FAILURE_ISSUES: "true"
+        PROCESS_TEST_RESULTS: "true"
+
+.qa:rules:test-on-omnibus-ce:follow-up:
+  rules:
+    - !reference [".qa:rules:e2e-test-never-run", rules]
+    - <<: *if-security-merge-request
+      changes: *qa-patterns
+      allow_failure: true
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-security-merge-request
+      changes: *code-patterns
+      allow_failure: true
+    - <<: *if-default-branch-schedule-nightly
+      allow_failure: true
+      variables:
+        ARCH: amd64,arm64
+        CREATE_TEST_FAILURE_ISSUES: "true"
+        PROCESS_TEST_RESULTS: "true"
+
+.qa:rules:e2e:test-on-cng:
+  rules:
+    # TODO: Check security fork is able to build cng images before enabling
+    - <<: *if-security-merge-request
+      when: never
+    - <<: *if-security-schedule
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request
+      changes: *cng-dependency-patterns
+    - <<: *if-merge-request
+      changes: *workhorse-patterns
+    - !reference [".qa:rules:e2e-blocking-base-before", rules]
+    - !reference [".prevent-tier-1", rules]
+    - !reference [".qa:rules:e2e-blocking-base-after", rules]
+    # Only the 2-hourly master run collects the frontend code paths mapping
+    - <<: *if-dot-com-ee-schedule-default-branch-maintenance
+      variables:
+        <<: *qa-e2e-cng-schedule-variables
+        BABEL_ENV: "istanbul"
+    - <<: *if-dot-com-gitlab-org-schedule
+      variables: *qa-e2e-cng-schedule-variables
+
+.qa:rules:e2e:perf-on-cng:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-targeting-stable-branch
+      when: never
+    - !reference [".qa:rules:e2e-test-never-run", rules]
+    - <<: *if-merge-request-labels-pipeline-skip-performance
+      when: never
+    - if: '$CI_PROJECT_NAMESPACE == "gitlab-org/security"'
+      when: never
+    # Do not run for scheduled pipeline for ruby-next branch
+    - <<: *if-ruby-branch-schedule
+      when: never
+    # Do not run for scheduled pipeline for rails-next branch
+    - <<: *if-rails-branch-schedule
+      when: never
+    - !reference [".prevent-tier-2-and-below", rules]
+    # Run only on the canonical gitlab-org/gitlab 2-hourly maintenance schedule so CPT stores baselines
+    - <<: *if-dot-com-ee-schedule-default-branch-maintenance
+    # Allow manual triggering for CNG dependency changes
+    - <<: *if-merge-request
+      changes: *cng-dependency-patterns
+      when: manual
+      allow_failure: true
+    # Allow manual triggering on all other canonical MRs (with backend and frontend change but not docs-only changes)
+    - <<: *if-canonical-mr
+      changes: *backend-only-patterns
+      when: manual
+      allow_failure: true
+
+.qa:rules:fulfillment-e2e-quarantine-report:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-and-devops-fulfillment
+      changes: *code-patterns
+      allow_failure: true
+
+###############
+# Rails rules #
+###############
+.rails:rules:setup-test-env:
+  rules:
+    - <<: *if-export-coverage
+    - if: '$ENABLE_RSPEC == "true"'
+    - <<: *if-default-refs
+      changes: *setup-test-env-patterns
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-default-branch-schedule-weekly
+    - <<: *if-triggered-by-aigw-project
+
+.rails:rules:setup-test-env-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:setup-test-env", rules]
+
+.rails:rules:setup-test-env-fips:
+  rules:
+    - <<: *if-default-branch-schedule-weekly
+      when: never
+    - !reference [".rails:rules:setup-test-env", rules]
+
+.rails:rules:single-redis:
+  rules:
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_SINGLE_REDIS == "true"'
+    - <<: *if-merge-request
+      changes: *redis-patterns
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    - <<: *if-merge-request
+      changes: *feature-flag-development-config-patterns
+    - <<: *if-default-branch-schedule-nightly
+
+.rails:rules:single-redis-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:single-redis", "rules"]
+
+.rails:rules:single-db:
+  rules:
+    - <<: *if-default-branch-schedule-nightly
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_SINGLE_DB == "true"'
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+
+.rails:rules:single-db-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:single-db", "rules"]
+
+.rails:rules:db:check-migrations-single-db:
+  rules:
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+
+.rails:rules:single-db-ci-connection:
+  rules:
+    - <<: *if-default-branch-schedule-nightly
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_SINGLE_DB_CI_CONNECTION == "true"'
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+
+.rails:rules:single-db-ci-connection-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:single-db-ci-connection", "rules"]
+
+.rails:rules:db:check-migrations-single-db-ci-connection:
+  rules:
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+
+.rails:rules:single-db-sec-connection:
+  rules:
+    - <<: *if-default-branch-schedule-nightly
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-pipeline-single-db-sec-connection
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_SINGLE_DB_SEC_CONNECTION == "true"'
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+
+.rails:rules:single-db-sec-connection-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:single-db-sec-connection", "rules"]
+
+.rails:rules:db:check-migrations-single-db-sec-connection:
+  rules:
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-pipeline-single-db-sec-connection
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+
+.rails:rules:db:migrate:multi-version-upgrade:
+  rules:
+    - if: '$DISABLE_DB_MULTI_VERSION_UPGRADE =~ /true|yes|1/i'
+      when: never
+    - <<: *if-merge-request-targeting-stable-branch
+      when: never
+    - <<: *if-not-merge-request
+      when: never
+    - !reference [".rails:rules:ee-and-foss-migration", rules]
+
+.rails:rules:db-backup:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-default-refs
+      changes: *db-backup-patterns
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    - <<: *if-default-refs
+      changes: *db-patterns
+
+.rails:rules:db-rollback:
+  rules:
+    - !reference [".rails:rules:ee-and-foss-migration", rules]
+    - <<: *if-default-refs
+      changes: *initializers-patterns
+    - <<: *if-default-refs
+      changes:
+        - "{,ee/,jh/}{,spec/}lib/{,ee/,jh/}gitlab/content_security_policy/config_loader{,_spec}.rb"
+
+.rails:rules:praefect-with-db:
+  rules:
+    - if: '$ENABLE_RSPEC_PRAEFECT == "true"'
+      allow_failure: true
+    - <<: *if-merge-request-labels-run-praefect-with-db
+      allow_failure: true
+
+.rails:rules:ee-and-foss-migration:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_MIGRATION == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+    # When DB schema changes, many migrations spec may be affected. However, the test mapping from Crystalball does not map db change to a specific migration spec well.
+    # See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/68840.
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-default-refs
+      changes: *db-patterns
+
+# Union rules of:
+#   .rails:rules:rspec-predictive
+#   .rails:rules:rspec-predictive:single-db
+#   .rails:rules:rspec-predictive:single-db-ci-connection
+.rails:rules:rspec-predictive:pipeline-generate:
+  rules:
+    - <<: *if-fork-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_PREDICTIVE_PIPELINE_GENERATE == "true"'
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+    - <<: *if-merge-request-labels-run-all-rspec
+      when: never
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+      when: never
+    - <<: *if-automated-merge-request
+      changes: *backend-patterns
+      when: never
+    - <<: *if-security-merge-request
+      changes: *backend-patterns
+      when: never
+    - <<: *if-merge-request-tier-3
+      changes: *code-backstage-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *code-backstage-spec-patterns
+
+# Inverse rules compared to .rails:rules:ee-and-foss-default-rules
+#
+# See CI specs in spec/dot_gitlab_ci/rules_spec.rb for details.
+.rails:rules:rspec-predictive:
+  rules:
+    - <<: *if-fork-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_PREDICTIVE_TRIGGER == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+      when: never
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+      when: never
+    - <<: *if-automated-merge-request
+      changes: *backend-patterns
+      when: never
+    - <<: *if-security-merge-request
+      changes: *backend-patterns
+      when: never
+    - <<: *if-merge-request-tier-3
+      changes: *code-backstage-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *code-backstage-spec-patterns
+
+.rails:rules:rspec-predictive:system-full:trigger:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - !reference [".prevent-tier-1", rules]
+    - !reference [".prevent-tier-3-and-above", rules]
+    - !reference [".rails:rules:rspec-predictive", rules]
+
+# Inverse rules compared to .rails:rules:single-db
+#
+# See CI specs in spec/dot_gitlab_ci/rules_spec.rb for details.
+.rails:rules:rspec-predictive:single-db:
+  rules:
+    - <<: *if-default-branch-schedule-nightly
+      when: never
+    - <<: *if-merge-request-labels-run-single-db
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_PREDICTIVE_TRIGGER_SINGLE_DB == "true"'
+    - <<: *if-merge-request-tier-3
+      when: never
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+
+# Inverse rules compared to .rails:rules:single-db-ci-connection
+#
+# See CI specs in spec/dot_gitlab_ci/rules_spec.rb for details.
+.rails:rules:rspec-predictive:single-db-ci-connection:
+  rules:
+    - <<: *if-default-branch-schedule-nightly
+      when: never
+    - <<: *if-merge-request-labels-run-single-db
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_PREDICTIVE_TRIGGER_SINGLE_DB_CI_CONNECTION == "true"'
+    - <<: *if-merge-request-tier-3
+      when: never
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+
+.rails:rules:ee-and-foss-background-migration:
+  rules:
+    - if: '$ENABLE_RSPEC_BACKGROUND_MIGRATION == "true"'
+    - !reference [".rails:rules:ee-and-foss-migration", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+
+.rails:rules:ee-and-foss-mr-with-migration:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request-labels-run-all-rspec
+
+.rails:rules:db:gitlabcom-database-testing:
+  rules:
+    - if: '$GITLABCOM_DATABASE_TESTING_TRIGGER_TOKEN == null'
+      when: never
+    - <<: *if-merge-request
+      changes: *db-patterns
+      when: manual
+
+.rails:rules:ee-and-foss-unit:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - if: '$ENABLE_RSPEC_UNIT == "true"'
+    - !reference [".rails:rules:ee-and-foss-default-rules", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+    - <<: *if-default-refs
+      changes: *backstage-patterns
+
+.rails:rules:clickhouse-changes:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - if: '$ENABLE_RSPEC_UNIT == "true"'
+    - !reference [".rails:rules:ee-and-foss-default-rules", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+
+.rails:rules:partition-tz-changes:
+  rules:
+    # Deliberately fork-runnable: unlike the ClickHouse rule this is copied from,
+    # we do NOT start with `if-fork-merge-request: when: never`. The community
+    # fork (gitlab-community/gitlab-org) is classified as a fork, and this MR is
+    # the one introducing the test, so the fork's MR pipeline must be able to run
+    # it. `if-merge-request` matches ANY MR event (no namespace restriction).
+    - <<: *if-merge-request
+      changes:
+        - "lib/gitlab/database/partitioning/**/*"
+        - "spec/lib/gitlab/database/partitioning/**/*"
+        - "spec/support/database/partition_tz.rb"
+        - "spec/support/helpers/database/multiple_databases_helpers.rb"
+
+.rails:rules:clickhouse-migration-changes:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - if: '$ENABLE_RSPEC_UNIT == "true"'
+    - <<: *if-default-refs
+      changes:
+        - "db/click_house/**/*"
+        - "db/siphon/**/*"
+        - "lib/click_house/**/*"
+
+.rails:rules:ee-only-clickhouse-changes:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:clickhouse-changes", rules]
+
+.rails:rules:clickhouse-system-changes:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - !reference [".rails:rules:only-run-system-if-medium-runners-available", rules]
+    - if: '$ENABLE_RSPEC_SYSTEM == "true"'
+    - !reference [".rails:rules:ee-and-foss-default-rules", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+
+.rails:rules:ee-only-clickhouse-system-changes:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:clickhouse-system-changes", rules]
+
+.rails:rules:ee-and-foss-integration:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - if: '$ENABLE_RSPEC_INTEGRATION == "true"'
+    - !reference [".rails:rules:ee-and-foss-default-rules", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+
+.rails:rules:only-run-system-if-medium-runners-available:
+  rules:
+    - if: '$GLCI_MEDIUM_RUNNER_REQUIRED == ""'
+      when: never
+
+.rails:rules:ee-and-foss-system-vue3:
+  rules:
+    - !reference [".rails:rules:only-run-system-if-medium-runners-available", rules]
+    - <<: *if-merge-request-labels-run-rspec-vue3
+
+# Gitaly MVCC backend jobs only run when the pipeline:run-gitaly-mvcc label is
+# set, or when ENABLE_RSPEC_GITALY_MVCC=true (used by the gitaly project's
+# rails-specs cross-project trigger). The -ee variants add the if-not-ee guard.
+.rails:rules:gitaly-mvcc:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - if: '$ENABLE_RSPEC_GITALY_MVCC == "true"'
+    - <<: *if-merge-request-labels-run-gitaly-mvcc
+
+.rails:rules:gitaly-mvcc-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:gitaly-mvcc", rules]
+
+.rails:rules:gitaly-mvcc-system:
+  rules:
+    - !reference [".rails:rules:only-run-system-if-medium-runners-available", rules]
+    - <<: *if-fork-merge-request
+      when: never
+    - if: '$ENABLE_RSPEC_GITALY_MVCC == "true"'
+    - <<: *if-merge-request-labels-run-gitaly-mvcc
+
+.rails:rules:gitaly-mvcc-ee-system:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:gitaly-mvcc-system", rules]
+
+.rails:rules:ee-and-foss-system:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - !reference [".rails:rules:only-run-system-if-medium-runners-available", rules]
+    - if: '$ENABLE_RSPEC_SYSTEM == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    # tier-2: run full suite for high-risk patterns
+    - <<: *if-merge-request-tier-2
+      changes: *core-backend-patterns
+    - <<: *if-merge-request-tier-2
+      changes: *workhorse-patterns
+    - <<: *if-merge-request-tier-2
+      changes: *frontend-patch-patterns
+    - <<: *if-security-merge-request  # security fork: no full system pipeline available, run normally
+    - <<: *if-merge-request-tier-2
+      when: never
+    - !reference [".rails:rules:system-default-rules", rules]
+    - <<: *if-default-refs
+      changes: *code-backstage-patterns
+
+# Used by tier-2 test jobs that run when changes match backend-spec-patterns
+.rails:rules:tier-2-with-backend-spec:
+  rules:
+    - <<: *if-merge-request-tier-2
+      changes: *backend-spec-patterns
+
+# Used by jobs that should run in tier-3, when changes match setup-test-env-patterns
+.rails:rules:tier-3-with-test-env:
+  rules:
+    - <<: *if-merge-request-tier-3
+      changes: *setup-test-env-patterns
+
+.rails:rules:ee-and-foss-fast_spec_helper:
+  rules:
+    - if: '$ENABLE_RSPEC_FAST_SPEC_HELPER == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+    - <<: *if-default-refs
+      changes: *core-backend-patterns
+
+.rails:rules:code-backstage-qa:
+  rules:
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+    - <<: *if-merge-request-labels-run-all-rspec
+
+.rails:rules:ee-only-migration:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+    # When DB schema changes, many migrations spec may be affected. However, the test mapping from Crystalball does not map db change to a specific migration spec well.
+    # See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/68840.
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-automated-merge-request
+      changes: *db-patterns
+    - <<: *if-security-merge-request
+      changes: *db-patterns
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-default-refs
+      changes: *db-patterns
+
+.rails:rules:ee-only-background-migration:
+  rules:
+    - !reference [".rails:rules:ee-only-migration", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+
+.rails:rules:ee-only-unit:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-fork-merge-request
+      when: never
+    - !reference [".rails:rules:ee-and-foss-default-rules", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+
+# No tier guard: predictive selection ignores non-Ruby files.
+.rails:rules:graphql-query-documents:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *frontend-graphql-patterns
+
+.rails:rules:graphql-query-documents-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:graphql-query-documents", rules]
+
+# Runs only integration specs matching the changed GraphQL query file; see tooling/ci/graphql_query_document_specs.rb.
+# MR only: default branch pipelines already run the full integration suite.
+.rails:rules:graphql-document-integration:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$ENABLE_RSPEC_GRAPHQL_DOCUMENT_INTEGRATION == "true"'
+    - <<: *if-merge-request
+      changes: *frontend-graphql-patterns
+
+.rails:rules:graphql-document-integration-ee:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:graphql-document-integration", rules]
+
+.rails:rules:ee-only-integration:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-fork-merge-request
+      when: never
+    - !reference [".rails:rules:ee-and-foss-default-rules", rules]
+    - <<: *if-default-refs
+      changes: *backend-patterns
+
+.rails:rules:ee-only-system:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:ee-and-foss-system", rules]
+
+.rails:rules:db:check-schema:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    # Remove the rule below once https://gitlab.com/gitlab-org/gitlab/-/issues/503221 is closed.
+    - !reference [".prevent-tier-1", rules]
+    - <<: *if-merge-request
+      changes: *code-backstage-patterns
+    - <<: *if-default-branch-refs
+      changes: *code-backstage-patterns
+
+.rails:rules:artifact-collector-unit:
+  rules:
+    # Always run for as-if-foss to work around not having needs.optional for
+    # cross project pipeline. See .gitlab/ci/artifact-collector/as-if-foss.gitlab-ci.yml
+    - if: '$START_AS_IF_FOSS == "true"'
+    - !reference [".rails:rules:ee-and-foss-unit", rules]
+
+.rails:rules:artifact-collector-part-a:
+  rules:
+    - if: '$START_AS_IF_FOSS == "true"'
+    - !reference [".rails:rules:ee-and-foss-system", rules]
+    - !reference ['.rails:rules:ee-and-foss-background-migration', rules]
+
+.rails:rules:artifact-collector-part-c:
+  rules:
+    - if: '$START_AS_IF_FOSS == "true"'
+    - !reference [".rails:rules:clickhouse-system-changes", rules]
+
+.rails:rules:artifact-collector-part-b:
+  rules:
+    - if: '$START_AS_IF_FOSS == "true"'
+    - !reference ['.rails:rules:ee-and-foss-integration', rules]
+    - !reference ['.rails:rules:ee-and-foss-migration', rules]
+    - !reference ['.rails:rules:graphql-document-integration', rules]
+
+.rails:rules:rspec-ci-config-validation:
+  rules:
+    - <<: *if-merge-request-labels-skip-ci-validation
+      when: never
+    - <<: *if-merge-request
+      changes:
+        - "{,jh/}.gitlab-ci.yml"
+        - "{,jh/}.gitlab/ci/**/*"
+        - "spec/dot_gitlab_ci/**/*"
+
+.rails:rules:detect-tests:
+  rules:
+    - if: '$ENABLE_DETECT_TESTS == "true"'
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *code-backstage-qa-patterns
+    - <<: *if-merge-request
+      changes: *spec-only-patterns
+    - <<: *if-merge-request
+      changes: *workhorse-patterns
+    - <<: *if-merge-request
+      changes: *rubocop-patterns
+
+.rails:rules:detect-previous-failed-tests:
+  rules:
+    - !reference [".rails:rules:previous-failed-tests-default-rules", rules]
+
+.rails:rules:rerun-previous-failed-tests:
+  rules:
+    - !reference [".rails:rules:previous-failed-tests-default-rules", rules]
+
+.rails:rules:rspec fail-fast:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-skip-rspec-fail-fast
+      when: never
+    - <<: *if-security-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-dot-com-gitlab-org-merge-request
+      changes: *code-backstage-spec-patterns
+
+.rails:rules:fail-pipeline-early:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-skip-rspec-fail-fast
+      when: never
+    - <<: *if-security-merge-request
+      changes: *code-backstage-spec-patterns
+      when: on_failure
+    - <<: *if-dot-com-gitlab-org-merge-request
+      changes: *code-backstage-spec-patterns
+      when: on_failure
+
+# Unlike rspec-coverage this must also run on the default branch, because that
+# is what publishes the baseline every MR pipeline diffs against.
+.rails:rules:rspec-test-summary:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.rails:rules:rspec-coverage:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request
+      changes: *code-backstage-patterns
+    - <<: *if-export-coverage
+    - <<: *if-schedule-maintenance
+    - <<: *if-merge-request-labels-run-all-rspec
+
+# Export merged RSpec + E2E coverage to ClickHouse
+.rails:rules:coverage-export-rspec-and-e2e:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-missing-clickhouse-coverage-credentials
+      when: never
+    - <<: *if-export-coverage
+
+# Export merged Jest + E2E coverage to ClickHouse
+.frontend:rules:coverage-export-jest-and-e2e:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-missing-clickhouse-coverage-credentials
+      when: never
+    - <<: *if-export-coverage
+
+# Sync category owners from stages.yml to ClickHouse
+.rails:rules:sync-category-owners:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-missing-clickhouse-coverage-credentials
+      when: never
+    - <<: *if-export-coverage
+    - <<: *if-schedule-pipeline
+      when: manual
+      allow_failure: true
+
+# These rules should match .rails:rules:rspec-coverage to ensure undercoverage runs whenever coverage data is generated
+.rails:rules:rspec-undercoverage:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-skip-undercoverage
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request-tier-3
+      changes: *code-backstage-patterns
+    - <<: *if-merge-request
+      changes: *code-backstage-patterns
+      allow_failure: true
+
+.rails:rules:rspec-merge-auto-explain-logs:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request
+      changes: *code-backstage-patterns
+    - <<: *if-default-branch-refs
+      changes: *code-patterns
+
+.rails:rules:check-ci-partition-pruning:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-skip-check-ci-partition-pruning
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    # Same condition under which the merge_request_query_differ.rb dependency runs
+    # except narrows changes to BE-only instead of *code-backstage-patterns.
+    - <<: *if-dot-com-gitlab-org-merge-request
+      changes: *backend-patterns
+    # FE GraphQL changes can modify the queries that the BE resolves in specs
+    - <<: *if-dot-com-gitlab-org-merge-request
+      changes: *frontend-graphql-patterns
+
+.rails:rules:default-branch-schedule-nightly--code-backstage-default-rules:
+  rules:
+    - <<: *if-default-branch-schedule-nightly
+
+.rails:rules:default-branch-schedule-weekly--code-backstage-default-rules:
+  rules:
+    - <<: *if-default-branch-schedule-weekly
+
+.rails:rules:default-branch-schedule-nightly--code-backstage:
+  rules:
+    - !reference [".rails:rules:default-branch-schedule-nightly--code-backstage-default-rules", rules]
+
+.rails:rules:default-branch-schedule-nightly--code-backstage-ee-only:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:default-branch-schedule-nightly--code-backstage-default-rules", rules]
+
+.rails:rules:default-branch-schedule-nightly-pg-previous--code-backstage:
+  rules:
+    - <<: *if-default-branch-schedule-nightly-pg-previous
+
+.rails:rules:default-branch-schedule-nightly-pg-previous--code-backstage-ee-only:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-branch-schedule-nightly-pg-previous
+
+.rails:rules:default-branch-schedule-nightly-pg-next--code-backstage:
+  rules:
+    - <<: *if-default-branch-schedule-nightly-pg-next
+
+.rails:rules:default-branch-schedule-nightly-pg-next--code-backstage-ee-only:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-branch-schedule-nightly-pg-next
+
+.rails:rules:default-branch-schedule-weekly--code-backstage-ee-only:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - !reference [".rails:rules:default-branch-schedule-weekly--code-backstage-default-rules", rules]
+
+.rails:rules:rspec-feature-flags:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.rails:rules:flaky-tests-report:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request
+      when: never
+    - if: '$FAST_QUARANTINE == "false" && $RETRY_FAILED_TESTS_IN_NEW_PROCESS != "true"'
+      when: never
+    - <<: *if-default-branch-refs
+      changes: *code-backstage-spec-patterns
+      when: always
+
+.rails:rules:rails-next-dependency-check:
+  rules:
+    - <<: *if-merge-request
+      changes: *ruby-dependency-patterns
+
+#########################
+# Static analysis rules #
+#########################
+
+.static-analysis:rules:static-analysis:
+  rules:
+    - if: '$ENABLE_STATIC_ANALYSIS == "true"'
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+    - <<: *if-default-refs
+      changes: *spec-only-patterns
+    - <<: *if-default-refs
+      changes: *static-analysis-patterns
+
+.static-analysis:rules:validate-codeowners-coverage:
+  rules:
+    - <<: *if-merge-request
+      changes: *codeowners-patterns
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+    - <<: *if-default-refs
+      changes: *static-analysis-patterns
+
+.static-analysis:rules:static-verification-with-database:
+  rules:
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+    - <<: *if-default-refs
+      changes: *spec-only-patterns
+
+.static-analysis:rules:rubocop:
+  rules:
+    - if: '$ENABLE_RUBOCOP == "true"'
+    # Do not run full rubocop on tier-1 pipelines
+    - <<: *if-merge-request-tier-1-or-no-tier
+      changes: *rubocop-patterns
+      variables:
+        RUN_ALL_RUBOCOP: "false"
+    - <<: *if-merge-request-tier-3
+      changes: *rubocop-target-patterns
+      variables:
+        RUN_ALL_RUBOCOP: "true"
+    - <<: *if-default-refs
+      changes: *rubocop-patterns
+      variables:
+        RUN_ALL_RUBOCOP: "true"
+    - <<: *if-default-refs
+      changes: *rubocop-target-patterns
+
+.static-analysis:rules:ensure-application-settings-have-definition-file:
+  rules:
+    - <<: *if-default-refs
+      changes:
+        - db/structure.sql
+        - config/application_setting_columns/*.yml
+
+.static-analysis:rules:haml-lint:
+  rules:
+    - <<: *if-default-refs
+      changes: *rubocop-patterns
+    - <<: *if-default-refs
+      changes: *static-analysis-patterns
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+    - <<: *if-default-refs
+      changes: *spec-only-patterns
+    - <<: *if-default-refs
+      changes: *docs-patterns
+
+.semgrep-appsec-custom-rules:rules:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request
+      changes: *setup-test-env-patterns
+
+.ping-appsec-for-sast-findings:rules:
+  rules:
+    # Requiring $CUSTOM_SAST_RULES_BOT_PAT prevents the bot from running on forks or CE
+    # Without it the script would fail too.
+    - if: "$CUSTOM_SAST_RULES_BOT_PAT == null"
+      when: never
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request
+      changes: *setup-test-env-patterns
+
+.ping-appsec-for-dependency-review:rules:
+  rules:
+    # Requiring $DEPENDENCY_REVIEW_PAT prevents the bot from running on forks or CE
+    # Without it the script would fail too.
+    - if: "$ENABLE_DEPSCORE != 'true'"
+      when: never
+    - if: "$DEPENDENCY_REVIEW_PAT == null"
+      when: never
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-not-ee
+      when: never
+    # Run only when the merge request have dependency file modifications
+    - <<: *if-merge-request
+      changes: *dependency-patterns
+
+##################
+# Releases rules #
+##################
+.releases:rules:canonical-dot-com-gitlab-stable-branch-only:
+  rules:
+    - if: '$CI_COMMIT_MESSAGE =~ /\[merge-train skip\]/'
+      when: never
+    - if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_PATH == "gitlab-org/gitlab" && $CI_COMMIT_REF_NAME =~ /^[\d-]+-stable-ee$/'
+
+.releases:rules:canonical-dot-com-gitlab-stable-branch-only-setup-test-env:
+  rules:
+    - if: '$CI_COMMIT_MESSAGE =~ /\[merge-train skip\]/'
+      when: never
+    - if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_PATH == "gitlab-org/gitlab" && $CI_COMMIT_REF_NAME =~ /^[\d-]+-stable-ee$/'
+      changes: *setup-test-env-patterns
+
+.releases:rules:canonical-dot-com-security-gitlab-stable-branch-only:
+  rules:
+    # Run release environment related jobs for RC tag pipelines
+    - if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_PATH == "gitlab-org/security/gitlab" && $CI_COMMIT_REF_NAME =~ /^v?[\d.]+-rc\d+-ee$/'
+    - if: '$CI_COMMIT_MESSAGE =~ /\[merge-train skip\]/'
+      when: never
+    - if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_PATH == "gitlab-org/security/gitlab" && $CI_COMMIT_REF_NAME =~ /^[\d-]+-stable-ee$/'
+
+#################
+# Reports rules #
+#################
+.reports:rules:code_quality:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$CODE_QUALITY_DISABLED'
+      when: never
+    # Run code_quality on master until https://gitlab.com/gitlab-org/gitlab/-/issues/363747 is resolved
+    - <<: *if-default-branch-refs
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+
+.reports:rules:docs_code_quality:
+  # Similar to above, run docs code quality job in every pipeline so there is always
+  # a report artifact to compare against.
+  rules:
+    - !reference [".reports:rules:code_quality", rules]
+    - <<: *if-default-refs
+      changes: *docs-patterns
+
+.reports:rules:gitlab-advanced-sast:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: $SAST_DISABLED
+      when: never
+    - if: $SAST_EXCLUDED_ANALYZERS =~ /(^|[,[:space:]])gitlab-advanced-sast([,[:space:]]|$)/
+      when: never
+    # Only run on tier-3 MR pipelines to save CI minutes. A merge request runs a
+    # tier-3 pipeline before it is merged, so pre-merge coverage is preserved.
+    # Default branch / scheduled pipelines are unaffected (the tier prevent rules
+    # only match merge_request_event pipelines).
+    # See https://gitlab.com/gitlab-org/gitlab/-/issues/602388.
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-default-refs
+      changes:
+        # this list should match https://gitlab.com/gitlab-org/gitlab/blob/aa896069360f/lib/gitlab/ci/templates/Jobs/SAST.gitlab-ci.yml#L53-53
+        - '**/*.py'
+        - '**/*.go'
+        - '**/*.java'
+        - '**/*.jsp'
+        - '**/*.js'
+        - '**/*.jsx'
+        - '**/*.ts'
+        - '**/*.tsx'
+        - '**/*.cjs'
+        - '**/*.mjs'
+        - '**/*.cs'
+        - '**/*.rb'
+        - '**/*.php'
+
+.reports:rules:gitlab-advanced-sast-ext:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: $SAST_DISABLED
+      when: never
+    - if: $SAST_EXCLUDED_ANALYZERS =~ /gitlab-advanced-sast-ext/
+      when: never
+    # Same tier-3 gating as .reports:rules:gitlab-advanced-sast above.
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-default-refs
+      changes:
+        # this list should match the `exists` rule for gitlab-advanced-sast-ext in
+        # lib/gitlab/ci/templates/Jobs/SAST.gitlab-ci.yml
+        - '**/*.swift'
+        - '**/*.m'
+        - '**/*.mm'
+
+.reports:rules:semgrep-sast:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: $SAST_DISABLED
+      when: never
+    - if: $SAST_EXCLUDED_ANALYZERS =~ /semgrep/
+      when: never
+    - <<: *if-default-refs
+      changes:
+        - '**/*.py'
+        - '**/*.js'
+        - '**/*.jsx'
+        - '**/*.ts'
+        - '**/*.tsx'
+        - '**/*.c'
+        - '**/*.go'
+        - '**/*.rb'
+
+.reports:rules:secret_detection:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$SECRET_DETECTION_DISABLED'
+      when: never
+    # Scan each commit on master to feed the Vulnerability Reports with detected secrets
+    - <<: *if-default-branch-refs
+    - <<: *if-default-refs
+      changes: *code-backstage-qa-patterns
+
+.reports:rules:dependency_scanning:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$DEPENDENCY_SCANNING_DISABLED || $GITLAB_FEATURES !~ /\bdependency_scanning\b/ || $DS_EXCLUDED_ANALYZERS =~ /gemnasium([^-]|$)/'
+      when: never
+    # Run Dependency Scanning on master until https://gitlab.com/gitlab-org/gitlab/-/issues/504908#note_2218591981 is resolved
+    - <<: *if-default-branch-refs
+    - <<: *if-default-refs
+      changes: *dependency-patterns
+
+.reports:rules:test-dast:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - if: '$DAST_DISABLED || $GITLAB_FEATURES !~ /\bdast\b/'
+      when: never
+    - <<: *if-merge-request
+
+.reports:rules:pajamas_adoption:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-jh
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request
+      changes:
+        - '{,ee/}app/**/*.{js,vue,rb,haml}'
+    - <<: *if-default-branch-refs
+      allow_failure: true
+
+################
+# Danger rules #
+################
+.review:rules:danger:
+  rules:
+    - <<: *if-merge-request
+
+.review:rules:danger-local:
+  rules:
+    - <<: *if-merge-request
+      changes: *danger-patterns
+
+###############
+# Setup rules #
+###############
+.setup:rules:backup-gems:
+  rules:
+    - <<: *if-not-canonical-namespace
+      when: never
+    - !reference ['.ai-principles-schedule:rules:skip', rules]
+    - <<: *if-default-branch-or-tag
+      changes: *code-backstage-qa-patterns
+
+.setup:rules:dont-interrupt-me:
+  rules:
+    - <<: *if-schedule-pipeline
+      allow_failure: true
+    - <<: *if-auto-deploy-branches
+      allow_failure: true
+    - <<: *if-triggered-by-aigw-project
+      allow_failure: true
+    - <<: *if-merge-request
+      when: manual
+      allow_failure: true
+
+.setup:rules:clone-gitlab-repo:
+  rules:
+    - <<: *if-dot-com-gitlab-org-and-subgroups-merge-train
+      when: never
+    - <<: *if-default-branch-schedule-housekeeping
+      when: never
+    - if: '$CI_FETCH_REPO_GIT_STRATEGY == "none"'
+
+.setup:rules:gitlab_git_test:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-patterns
+
+.setup:rules:set-pipeline-name:
+  rules:
+    - <<: *if-not-merge-request  # This is only designed to run in a merge request
+      when: never
+    - if: '$PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE == null'
+      when: never
+    - <<: *if-merge-request
+
+.setup:rules:verify-tests-yml:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.setup:rules:otel-span-smoke:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-default-refs
+      changes:
+        - scripts/utils.sh
+        - scripts/ci/otel_span*
+        - .gitlab/ci/setup.gitlab-ci.yml
+        - .gitlab/ci/rules.gitlab-ci.yml
+
+.setup:rules:jh-contribution:
+  rules:
+    - <<: *if-jh
+      when: never
+    - <<: *if-merge-request-labels-jh-contribution
+
+.setup:rules:generate-frontend-fixtures-mapping:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-dot-com-ee-schedule-default-branch-maintenance
+    - <<: *if-default-branch-refs
+      changes:
+        - ".gitlab/ci/setup.gitlab-ci.yml"
+        - ".gitlab/ci/test-metadata.gitlab-ci.yml"
+        - "scripts/rspec_helpers.sh"
+
+.setup:rules:verify-start-workflow-service-assets:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-not-dot-com-gitlab-org-and-not-jihulab
+      when: never
+    - <<: *if-default-refs
+      changes:
+        - "ee/app/services/ai/duo_workflows/start_workflow_service.rb"
+
+###################
+# Preflight rules #
+###################
+
+.preflight:rules:rails-production-server-boot:
+  rules:
+    - <<: *if-default-refs
+      changes: *code-patterns
+
+.preflight:rules:ruby_syntax:
+  rules:
+    - <<: *if-default-refs
+      changes: *ruby-patterns
+
+.preflight:rules:no-ee-check:
+  rules:
+    - <<: *if-not-foss
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+.preflight:rules:no-jh-check:
+  rules:
+    - <<: *if-jh
+      when: never
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+
+# Detects unique_by declarations that reference indexes not available at deploy time
+# See: https://gitlab.com/gitlab-com/gl-infra/production/-/issues/9604
+.preflight:rules:unique-by-index-check:
+  rules:
+    - <<: *if-merge-request
+      changes:
+        - "{,ee/,jh/}app/models/**/*.rb"
+        - "{,ee/,jh/}app/services/**/*.rb"
+        - "{,ee/,jh/}app/workers/**/*.rb"
+        - "{,ee/,jh/}lib/gitlab/background_migration/**/*.rb"
+        - "{,ee/,jh/}lib/gitlab/database/**/*.rb"
+        - "{,ee/,jh/}lib/gitlab/ingestion/**/*.rb"
+        - "{,ee/,jh/}ee/lib/gitlab/ingestion/**/*.rb"
+
+.preflight:rules:pipeline-tier-1:
+  rules:
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - !reference [".prevent-tier-2-and-above", rules]
+    - <<: *if-merge-request
+      changes: *code-patterns
+    - <<: *if-merge-request  # no code changes, but has doc changes
+      changes:
+        - "doc/**/*"
+      when: never
+    - <<: *if-merge-request-tier-1
+      allow_failure: true
+    # If we cannot find a tier label, run this job
+    #
+    # This could be the very first pipeline of a merge request if no
+    # pipeline tier label was added when creating the merge request.
+    - <<: *if-dot-com-gitlab-org-merge-request
+      allow_failure: true
+
+.preflight:rules:pipeline-tier-2:
+  rules:
+    - <<: *if-merge-request-tier-2
+      allow_failure: true
+
+.preflight:rules:pipeline-tier-3:
+  rules:
+    - <<: *if-merge-request-tier-3
+      allow_failure: true
+
+#######################
+# Test metadata rules #
+#######################
+.test-metadata:rules:retrieve-tests-metadata:
+  rules:
+    - if: '$ENABLE_RSPEC == "true"'
+    - <<: *if-default-refs
+      changes: *code-backstage-spec-patterns
+    - <<: *if-default-refs
+      changes: *workhorse-patterns
+    - <<: *if-default-branch-refs
+      changes: *setup-test-env-patterns
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    - <<: *if-merge-request
+      changes: *backend-spec-patterns
+    - <<: *if-default-branch-schedule-weekly
+    - <<: *if-triggered-by-aigw-project
+
+.test-metadata:rules:update-tests-metadata:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-dot-com-ee-schedule-default-branch-maintenance
+    - <<: *if-default-branch-refs
+      changes:
+        - ".gitlab/ci/test-metadata.gitlab-ci.yml"
+        - "scripts/rspec_helpers.sh"
+    - <<: *if-merge-request
+      changes:
+        - ".gitlab/ci/test-metadata.gitlab-ci.yml"
+        - "scripts/rspec_helpers.sh"
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    - <<: *if-merge-request
+      changes:
+        - "scripts/flaky_examples/prune-old-flaky-examples"
+
+############################
+# Predictive testing rules #
+############################
+.predictive:rules:default:
+  rules:
+    - <<: *if-merge-request-tier-3
+      when: always
+
+###################
+# workhorse rules #
+###################
+.workhorse:rules:workhorse:
+  rules:
+    - <<: *if-export-coverage
+    - <<: *if-default-refs
+      changes: *workhorse-patterns
+
+.workhorse:rules:workhorse-coverage:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-missing-clickhouse-coverage-credentials
+      when: never
+    - <<: *if-export-coverage
+
+#############
+# GDK rules #
+#############
+.gdk:rules:gdk-update:
+  rules:
+    - <<: *if-stable-branch
+      when: never
+    - <<: *if-not-canonical-namespace
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-targeting-stable-branch
+      when: never
+    - <<: *if-tag
+      when: never
+    - <<: *if-default-refs
+      changes: *gdk-update-patterns
+    - <<: *if-default-refs
+      changes: *ruby-version-patterns
+    - !reference [".prevent-tier-2-and-below", "rules"]
+    - <<: *if-default-refs
+      changes: *setup-test-env-patterns
+
+###################
+# yaml-lint rules #
+###################
+.yaml-lint:rules:
+  rules:
+    - <<: *if-default-refs
+      changes: *yaml-lint-patterns
+
+.lint-pipeline-yaml:rules:
+  rules:
+    - <<: *if-default-refs
+      changes: *lint-pipeline-yaml-patterns
+
+.lint-metrics-yaml:rules:
+  rules:
+    - <<: *if-default-refs
+      changes: *lint-metrics-yaml-patterns
+
+####################
+# as-if-foss rules #
+####################
+
+# This is a very big rules set because it's the union of all as-if-foss jobs.
+# We want to start this for any FOSS jobs we want to run. For example:
+# (This is not an exhaustive list and can be outdated!)
+# .build-images:rules:build-qa-image-merge-requests
+# .frontend:rules:compile-production-assets
+# .rails:rules:single-db
+# .rails:rules:single-db-ci-connection
+# .rails:rules:single-redis
+# .rails:rules:ee-and-foss-default-rules
+# .rails:rules:system-default-rules
+.as-if-foss:rules:start-as-if-foss:
+  rules:
+    - if: '$AS_IF_FOSS_TOKEN == null'
+      when: never
+    - <<: *if-not-merge-request  # This is only designed to run in a merge request
+      when: never
+    - !reference [".strict-ee-only-rules", rules]
+    - *if-merge-request-labels-as-if-foss
+    - *if-merge-request-labels-as-if-foss-run-predictive
+    - if: '$CI_MERGE_REQUEST_LABELS =~ /pipeline:as-if-foss-run-once/'
+      when: never
+    - !reference [".prevent-tier-2-and-below", "rules"]
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - <<: *if-merge-request-labels-run-all-rspec
+    - <<: *if-merge-request-labels-run-all-jest
+    - <<: *if-merge-request-labels-run-single-db
+    - <<: *if-merge-request-labels-run-all-e2e
+    - <<: *if-merge-request-targeting-stable-branch
+      changes: *setup-test-env-patterns
+    - <<: *if-automated-merge-request
+      changes: *db-patterns
+    - <<: *if-automated-merge-request
+      changes: *backend-patterns
+    - <<: *if-automated-merge-request
+      changes: *code-backstage-spec-patterns
+    - <<: *if-security-merge-request
+      changes: *backend-spec-patterns
+    - <<: *if-security-merge-request
+      changes: *code-backstage-qa-patterns
+    - <<: *if-security-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request-labels-frontend-and-feature-flag
+      changes: *setup-test-env-patterns
+    - <<: *if-merge-request
+      changes: *code-backstage-qa-patterns
+    - <<: *if-merge-request
+      changes: *spec-only-patterns
+    - <<: *if-merge-request
+      changes: *nodejs-patterns
+    - <<: *if-merge-request
+      changes: *static-analysis-patterns
+    - <<: *if-merge-request
+      changes: *db-patterns
+    - <<: *if-merge-request
+      changes: *workhorse-patterns
+    - <<: *if-merge-request
+      changes: *decomposed-db-models-patterns
+    - <<: *if-merge-request
+      changes: *redis-patterns
+    - <<: *if-merge-request
+      changes: *feature-flag-development-config-patterns
+
+##################
+# as-if-jh rules #
+##################
+.as-if-jh:rules:prepare-as-if-jh:
+  rules:
+    - !reference [".strict-ee-only-rules", rules]
+    - <<: *if-merge-request-labels-force-as-if-jh
+    - if: '$CI_AS_IF_JH_ENABLED != "true"'
+      when: never
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    - <<: *if-merge-request-labels-as-if-jh
+    - <<: *if-merge-request
+      changes: *feature-flag-development-config-patterns
+
+# This rule should share the same logic with .as-if-jh:rules:prepare-as-if-jh
+# in additionally that there are changes in dependency-patterns
+# Unfortunately, we can't say it has changes in
+#     feature-flag-development-config-patterns
+# And in
+#     dependency-patterns
+# At the same time. Note that this can't be using OR so using a union pattern
+# doesn't work either. Given that we cannot specify this, there's a gap can
+# happen when:
+#     * The merge request does not have ~"pipeline:run-as-if-jh"
+#     * The merge request changes a feature flag
+#     * The merge request also changes dependencies
+# In this case, we expect that we do run `sync-as-if-jh-branch` but it won't,
+# meaning that dependencies in the JH validation pipeline will be outdated.
+# To work around this issue, apply ~"pipeline:run-as-if-jh" to the merge
+# request so we can force it to run `sync-as-if-jh-branch` when there are
+# dependencies changes.
+.as-if-jh:rules:sync-as-if-jh:
+  rules:
+    - !reference [".strict-ee-only-rules", rules]
+    - <<: *if-merge-request-labels-force-as-if-jh
+      changes: *dependency-patterns
+    - if: '$CI_AS_IF_JH_ENABLED != "true"'
+      when: never
+    - <<: *if-merge-request-tier-1-or-no-tier
+      when: never
+    - <<: *if-merge-request-labels-as-if-jh
+      changes: *dependency-patterns
+      # Ideally, we should be able to do this:
+      # - <<: *if-dot-com-gitlab-org-merge-request
+      #   changes: *feature-flag-development-config-patterns && *dependency-patterns
+
+##############################
+# release-environments rules #
+##############################
+.release-environments:rules:start-release-environments-security-pipeline:
+  rules:
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request-labels-pipeline-expedite
+      when: never
+    - !reference [".releases:rules:canonical-dot-com-security-gitlab-stable-branch-only", rules]
+
+##############################
+# ai-gateway rules #
+##############################
+.ai-gateway:rules:tagging:
+  rules:
+    - if: '$AIGW_TAGGING_ACCESS_TOKEN == null'
+      when: never
+    - if: '$CI_COMMIT_TAG && $CI_COMMIT_TAG =~ /^v\d+\.\d+\.0-ee$/'
+    # Only run when a version tag is created (release is cut)
+
+.ai-gateway:rules:update-test-branch:
+  rules:
+    - <<: *if-default-branch-refs
+
+####################################
+# AI principles sync rules #
+####################################
+.ai-principles-sync:rules:scheduled:
+  rules:
+    - if: '$CI_PROJECT_PATH != "gitlab-org/gitlab"'
+      when: never
+    - if: '$AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN == null || $AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN == ""'
+      when: never
+    - <<: *if-default-branch-schedule-ai-principles
+
+# Reconciles automatically when a push to the default branch changes a fence input.
+# Every other default-branch push gets a manual job, for recovery after a failed run or a push that skipped CI.
+# Failures are allowed on push pipelines so a reconcile error never marks master as broken.
+.ai-principles-reconcile:rules:
+  rules:
+    - if: '$CI_PROJECT_PATH != "gitlab-org/gitlab"'
+      when: never
+    - if: '$AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN == null || $AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN == ""'
+      when: never
+    - <<: *if-default-branch-push
+      changes: *ai-principles-fence-input-patterns
+      allow_failure: true
+    - <<: *if-default-branch-push
+      when: manual
+      allow_failure: true
+
+###################
+# What's New rules #
+###################
+.whats-new:rules:scheduled:
+  rules:
+    - if: '$CI_PROJECT_PATH != "gitlab-org/gitlab"'
+      when: never
+    - if: '$PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE == null'
+      when: never
+    - <<: *if-default-branch-schedule-whats-new
+
+####################
+# Housekeeping rules #
+####################
+.housekeeping:rules:scheduled:
+  rules:
+    - if: '$CI_PROJECT_PATH != "gitlab-org/gitlab"'
+      when: never
+    - <<: *if-default-branch-schedule-housekeeping
+
+###################
+# Benchmark rules #
+###################
+.benchmark:rules:benchmark-markdown:
+  rules:
+    - <<: *if-default-refs
+      changes: *setup-test-env-patterns
+      when: manual
+    - <<: *if-merge-request-labels-run-all-rspec
+      when: manual
+
+##########################
+# Pre-merge checks rules #
+##########################
+.pre-merge:rules:pre-merge-checks:
+  rules:
+    - <<: *if-dot-com-gitlab-org-and-subgroups-merge-train
+    # So that we can run the job when making change to it in non-merge train pipelines
+    - <<: *if-merge-request
+      changes:
+        - .gitlab/ci/pre-merge.gitlab-ci.yml
+        - scripts/pipeline/pre_merge_checks.rb
+      when: manual
+      allow_failure: true
+
+########################
+# Pipeline tiers rules #
+########################
+.prevent-tier-1:
+  rules:
+    - <<: *if-merge-request-no-tier  # Assuming tier-1
+      when: never
+    - <<: *if-merge-request-tier-1
+      when: never
+
+.allow-on-tier-3:
+  rules:
+    - <<: *if-merge-request-tier-3
+
+.prevent-on-full-system-changes:
+  rules:
+    - <<: *if-merge-request
+      changes: *core-backend-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *workhorse-patterns
+      when: never
+    - <<: *if-merge-request
+      changes: *frontend-patch-patterns
+      when: never
+
+.prevent-run-all-rspec:
+  rules:
+    - <<: *if-merge-request-labels-run-all-rspec
+      when: never
+
+.prevent-spec-only:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merge_train" && $CI_MERGE_REQUEST_LABELS =~ /pipeline:spec-only/'
+      when: never
+
+.allow-on-tier-2:
+  rules:
+    - <<: *if-merge-request-tier-2
+
+.prevent-tier-2-and-below:
+  rules:
+    - !reference [".prevent-tier-1", rules]
+    - <<: *if-merge-request-tier-2
+      when: never
+
+.prevent-tier-3-and-below:
+  rules:
+    - !reference [".prevent-tier-2-and-below", rules]
+    - <<: *if-merge-request-tier-3
+      when: never
+
+.prevent-tier-2-and-above:
+  rules:
+    - <<: *if-merge-request-tier-2
+      when: never
+    - !reference [".prevent-tier-3-and-above", rules]
+
+.prevent-tier-3-and-above:
+  rules:
+    - <<: *if-merge-request-tier-3
+      when: never
+
+##################
+# API docs rules #
+##################
+.api-docs:rules:trigger-api-docs-pipeline:
+  rules:
+    - if: '$CI_SERVER_HOST == "gitlab.com" && $CI_PROJECT_PATH == "gitlab-org/gitlab" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - "doc/api/openapi/openapi_v3.yaml"
+
+.rails:rules:api-high-impact-entity-baseline-check:
+  rules:
+    - <<: *if-default-branch-schedule-weekly
+    - <<: *if-not-ee
+      when: never
+    - <<: *if-merge-request
+      changes: *api-high-impact-entity-patterns
+
+.rails:rules:api-high-impact-entity-baseline-check:notify:
+  rules:
+    - <<: *if-default-branch-schedule-weekly
+      when: on_failure
+
+.test-metadata:rules:export-predictive-test-metrics:
+  rules:
+    - <<: *if-merge-request-tier-3
+      changes: *code-backstage-patterns
+
+#########################
+# AI Harness rules      #
+#########################
+.ai-harness:rules:doctor:
+  rules:
+    - <<: *if-default-refs
+      changes: *ai-harness-doctor-patterns
+    - <<: *if-default-refs
+      changes: *ai-harness-doctor-forbidden-paths
+
+.test-metadata:rules:export-diff-stats:
+  rules:
+    - <<: *if-missing-clickhouse-diff-stats-credentials
+      when: never
+    - *if-merge-request
+
+.rails:rules:file-based-spec-selection:
+  rules:
+    - <<: *if-fork-merge-request
+      when: never
+    - <<: *if-missing-clickhouse-coverage-credentials
+      when: never
+    - <<: *if-merge-request-tier-3
+      changes: *backend-spec-patterns
+    - <<: *if-merge-request-tier-3
+      changes: *backstage-patterns
+
+###############################
+# Per-test coverage rules     #
+###############################
+.per-test-coverage:rules:delta:
+  rules:
+    - <<: *if-missing-clickhouse-coverage-credentials
+      when: never
+    - <<: *if-per-test-coverage-delta

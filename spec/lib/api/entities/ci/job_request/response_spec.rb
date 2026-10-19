@@ -1,0 +1,57 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Entities::Ci::JobRequest::Response, feature_category: :continuous_integration do
+  let_it_be(:pipeline) { create(:ci_pipeline) }
+
+  let(:runner) { build(:ci_runner) }
+  let(:job) do
+    build(
+      :ci_build, pipeline: pipeline, runner: runner,
+      options: { inputs: { test_input: { type: 'string', default: 'test' } } }
+    )
+  end
+
+  let(:presented_job) { Ci::BuildRunnerPresenter.new(job) }
+
+  subject(:runner_payload) { described_class.new(presented_job).as_json }
+
+  it 'includes the job inputs' do
+    expect(runner_payload[:inputs]).to contain_exactly(
+      { key: :test_input, value: { type: 'string', content: 'test' } }
+    )
+  end
+
+  describe '#steps' do
+    subject(:steps) { runner_payload[:steps][0][:script] }
+
+    let(:script) { 'echo one liner' }
+    let(:job) { build(:ci_build, pipeline: pipeline, runner: runner, options: { script: script }) }
+
+    it 'returns the script' do
+      expect(steps).to eq([script])
+    end
+
+    context 'with array script' do
+      let(:script) { ['echo first', 'echo second'] }
+
+      it 'returns the script' do
+        expect(steps).to eq(script)
+      end
+    end
+  end
+
+  describe '#run' do
+    let(:job) do
+      build(:ci_build, pipeline: pipeline, runner: runner, job_definition: job_definition)
+    end
+
+    let(:job_definition) { build(:ci_job_definition, config: { run_steps: job_definition_run_steps }) }
+    let(:job_definition_run_steps) { [{ name: 'hello_steps' }, { name: 'bye_steps' }] }
+
+    it 'returns run_steps from job definition' do
+      expect(runner_payload[:run]).to eq(job_definition_run_steps.to_json)
+    end
+  end
+end

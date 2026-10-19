@@ -1,0 +1,11 @@
+- if src
+  = image_tag src,
+    srcset: srcset,
+    class: avatar_classes,
+    height: @size,
+    width: @size,
+    loading: "lazy",
+    **avatar_attributes
+- else
+  %div{ avatar_attributes, class: avatar_classes }
+    = initial

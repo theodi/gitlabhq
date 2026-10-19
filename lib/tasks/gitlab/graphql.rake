@@ -1,0 +1,218 @@
+# frozen_string_literal: true
+
+return if Rails.env.production?
+
+namespace :gitlab do
+  require 'graphql/rake_task'
+  require_relative '../../../tooling/graphql/deprecated_docs/renderer'
+  require_relative '../../../tooling/graphql/docs'
+
+  OUTPUT_DIR = Rails.root.join("doc/api/graphql/reference")
+  TEMP_SCHEMA_DIR = Rails.root.join('tmp/tests/graphql')
+  TEMPLATES_DIR = 'tooling/graphql/deprecated_docs/templates/'
+
+  # Some schema items are SaaS-only, and as we want to document them,
+  # simulate SaaS when generating the GraphQL documentation.
+  #
+  # We would normally set ENV['GITLAB_SIMULATE_SAAS'] but `GitLab.com?`
+  # is hard-coded to be `false` unless in development:
+  # https://gitlab.com/gitlab-org/gitlab/-/blob/bc4cbb5d5a4b5e5a7e817f995e8d377978f246d3/lib/gitlab.rb#L58.
+  #
+  # `gitlab:graphql:check_docs` is run in our test pipelines so we need to
+  # override `Gitlab.com?` to simulate SaaS
+  task simulate_saas: :environment do
+    next if Gitlab.com? # rubocop:disable Gitlab/AvoidGitlabInstanceChecks -- Necessary here.
+
+    def Gitlab.com?
+      true
+    end
+
+    at_exit do
+      def Gitlab.com?
+        false
+      end
+    end
+  end
+
+  # Make all feature flags enabled so that all feature flag
+  # controlled fields are considered visible and are output.
+  # Also avoids pipeline failures in case developer
+  # dumps schema with flags disabled locally before pushing
+  task enable_feature_flags: :environment do
+    def Feature.enabled?(*args)
+      true
+    end
+  end
+
+  task generous_gitlab_schema: :environment do
+    GitlabSchema.validate_timeout 1.second
+    puts "Validation timeout set to #{GitlabSchema.validate_timeout} second(s)"
+  end
+
+  # Defines tasks for dumping the GraphQL schema:
+  # - gitlab:graphql:schema:dump
+  # - gitlab:graphql:schema:idl
+  # - gitlab:graphql:schema:json
+  GraphQL::RakeTask.new(
+    schema_name: 'GitlabSchema',
+    dependencies: [:environment, :enable_feature_flags, :generous_gitlab_schema],
+    directory: TEMP_SCHEMA_DIR,
+    idl_outfile: "gitlab_schema.graphql",
+    json_outfile: "gitlab_schema.json"
+  )
+
+  namespace :graphql do
+    desc 'GitLab | GraphQL | Analyze queries'
+    task analyze: [:environment, :enable_feature_flags] do |t, args|
+      queries = if args.to_a.present?
+                  args.to_a.flat_map { |path| Gitlab::Graphql::Queries.find(path) }
+                else
+                  Gitlab::Graphql::Queries.all
+                end
+
+      queries.each do |defn|
+        Gitlab::TaskHelpers.say defn.file
+        summary, errs = defn.validate(GitlabSchema)
+
+        if summary == :client_query
+          Gitlab::TaskHelpers.say " - client query"
+        elsif errs.present?
+          Gitlab::TaskHelpers.say Rainbow(" - invalid query").red
+        else
+          complexity = defn.complexity(GitlabSchema)
+          color = case complexity
+                  when 0..GitlabSchema::DEFAULT_MAX_COMPLEXITY
+                    :green
+                  when GitlabSchema::DEFAULT_MAX_COMPLEXITY..GitlabSchema::AUTHENTICATED_MAX_COMPLEXITY
+                    :yellow
+                  when GitlabSchema::AUTHENTICATED_MAX_COMPLEXITY..GitlabSchema::ADMIN_MAX_COMPLEXITY
+                    :orange
+                  else
+                    :red
+                  end
+
+          Gitlab::TaskHelpers.say Rainbow(" - complexity: #{complexity}").color(color)
+        end
+
+        Gitlab::TaskHelpers.say ""
+      end
+    end
+
+    desc 'GitLab | GraphQL | Validate queries'
+    task validate: [:environment, :enable_feature_flags, :generous_gitlab_schema] do |t, args|
+      queries = if args.to_a.present?
+                  args.to_a.flat_map { |path| Gitlab::Graphql::Queries.find(path) }
+                else
+                  Gitlab::Graphql::Queries.all
+                end
+
+      failed = queries.flat_map do |defn|
+        summary, errs = defn.validate(GitlabSchema)
+
+        case summary
+        when :client_query
+          warn("SKIP  #{defn.file}: client query")
+        else
+          warn("#{Rainbow('OK').green}    #{defn.file}") if errs.empty?
+          errs.each do |err|
+            path_info = "(at #{err.path.join('.')})" if err.path
+
+            warn(<<~MSG)
+            #{Rainbow('ERROR').red} #{defn.file}: #{err.message} #{path_info}
+            MSG
+          end
+        end
+
+        errs.empty? ? [] : [defn.file]
+      end
+
+      if failed.present?
+        format_output(
+          "#{failed.count} GraphQL #{'query'.pluralize(failed.count)} out of #{queries.count} failed validation:",
+          *failed.map do |name|
+            known_failure = Gitlab::Graphql::Queries.known_failure?(name)
+            "- #{name}" + (known_failure ? ' (known failure)' : '')
+          end
+        )
+        abort unless failed.all? { |name| Gitlab::Graphql::Queries.known_failure?(name) }
+      end
+    end
+
+    desc 'GitLab | GraphQL | Generate GraphQL docs'
+    task compile_docs: [:simulate_saas, :environment, :enable_feature_flags] do
+      renderer = Tooling::Graphql::DeprecatedDocs::Renderer.new(GitlabSchema, **render_options)
+
+      renderer.write
+
+      puts "Documentation compiled."
+    end
+
+    desc 'GitLab | GraphQL | Check if GraphQL docs are up to date'
+    task check_docs: [:simulate_saas, :environment, :enable_feature_flags] do
+      renderer = Tooling::Graphql::DeprecatedDocs::Renderer.new(GitlabSchema, **render_options)
+
+      doc = File.read(Rails.root.join(OUTPUT_DIR, '_index.md'))
+
+      if doc == renderer.contents
+        puts "GraphQL documentation is up to date"
+      else
+        format_output(
+          'GraphQL documentation is outdated! Please update it by running `bundle exec rake gitlab:graphql:compile_docs`.',
+          '',
+          'If this merge request does not change the GraphQL schema, the drift probably came',
+          'from master: this check runs against your branch alone, so a schema change that',
+          'landed after you branched fails here until you pick it up. Check with:',
+          '',
+          '  git fetch origin master',
+          '  git log --oneline HEAD..origin/master -- doc/api/graphql/reference/_index.md',
+          '',
+          'and rebase if that lists anything:',
+          '',
+          '  git rebase origin/master'
+        )
+        abort
+      end
+    end
+
+    namespace :docs do
+      desc 'GitLab | GraphQL | Generate GraphQL docs (experimental)'
+      task compile: [:simulate_saas, :environment, :enable_feature_flags] do
+        Tooling::Graphql::Docs.compile!
+
+        puts 'Experimental documentation compiled.'
+      end
+
+      desc 'GitLab | GraphQL | Check if GraphQL docs are up to date (experimental)'
+      task check: [:simulate_saas, :environment, :enable_feature_flags] do
+        if Tooling::Graphql::Docs.stale?
+          format_output(
+            'Experimental GraphQL documentation is outdated!',
+            'Please update the documentation by running `bundle exec rake gitlab:graphql:docs:compile`.'
+          )
+          abort
+        else
+          puts 'Experimental GraphQL documentation is up to date.'
+        end
+      end
+    end
+
+    desc 'GitLab | GraphQL | Update GraphQL docs, schema, and introspection docs'
+    task update_all: [:compile_docs, 'schema:dump', :generate_all_introspection_schemas]
+  end
+end
+
+def render_options
+  {
+    output_dir: OUTPUT_DIR,
+    template: Rails.root.join(TEMPLATES_DIR, 'default.md.haml')
+  }
+end
+
+def format_output(*strs)
+  heading = '#' * 10
+  puts heading
+  puts '#'
+  strs.each { |str| puts "# #{str}" }
+  puts '#'
+  puts heading
+end

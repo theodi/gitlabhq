@@ -1,0 +1,101 @@
+@use "sass:map";
+
+.timeline {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  &::before {
+    @include notes-media('sm') {
+      background: none;
+    }
+  }
+
+  .system-note {
+    .note-text {
+      @apply gl-text-default;
+    }
+  }
+
+  .diff-file {
+    @apply gl-border;
+    margin: 0;
+  }
+
+  &.text-file .diff-file {
+    border-bottom: 0;
+  }
+}
+
+.internal-note-bg {
+  background-color: var(--timeline-entry-internal-note-background-color) !important;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific note-footer element
+.note-footer:has(.internal-note) .reply-placeholder-input-field {
+  @apply gl-mt-4;
+}
+
+.timeline-entry {
+  @apply gl-text-default;
+
+  &:not(.note-form).internal-note .timeline-content {
+    background-color: var(--timeline-entry-internal-note-background-color) !important;
+  }
+
+  .timeline-entry-inner {
+    position: relative;
+  }
+
+  &:target,
+  &.target {
+    .timeline-content {
+      background-color: var(--timeline-entry-target-background-color) !important;
+    }
+
+    + .discussion-reply-holder {
+      padding-top: $gl-padding-12 !important;
+    }
+
+    &.system-note .note-body .note-text.system-note-commit-list::after {
+      background: linear-gradient(rgba(var(--timeline-entry-target-background-color), 0.1) -100px, var(--timeline-entry-target-background-color) 100%);
+    }
+  }
+
+  .controls {
+    padding-top: 10px;
+    float: right;
+  }
+}
+
+.discussion .timeline-entry {
+  margin: 0;
+  border-right: 0;
+  @apply gl-rounded-t-lg;
+  @apply gl-rounded-r-lg;
+  @apply gl-rounded-l-none;
+  @apply gl-rounded-b-none;
+}
+
+.issuable-discussion:not(.incident-timeline-events),
+.limited-width-notes {
+  .main-notes-list::before,
+  .timeline-entry:last-child::before {
+    @include vertical-line(15px, 15px);
+  }
+
+  .main-notes-list::before {
+    @apply gl-bg-strong;
+  }
+
+  .timeline-entry:not(.timeline-entry .timeline-entry):last-child::before {
+    @apply gl-bg-default;
+  }
+}
+
+// Timeline avatars
+// stylelint-disable-next-line gitlab/no-gl-class
+.timeline-avatar .gl-avatar-link {
+  @apply gl-bg-default;
+  border-radius: 50%;
+}

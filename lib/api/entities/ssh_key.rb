@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    class SSHKey < Grape::Entity
+      expose :id, documentation: { type: 'Integer', format: 'int64', example: 1 }
+      expose :title, documentation: { type: 'String', example: 'Sample key 25' }
+      expose :created_at, documentation: { type: 'DateTime', example: '2015-09-03T07:24:44.627Z' }
+      expose :expires_at, documentation: { type: 'DateTime', example: '2020-09-03T07:24:44.627Z' }
+      expose :last_used_at, documentation: { type: 'DateTime', example: '2020-09-03T07:24:44.627Z' }
+      expose :publishable_key, as: :key, documentation:
+        { type: 'String',
+          example: 'ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAIEAiPWx6WM4lhHNedGfBpPJNPpZ7yKu+dnn1SJejgt1256k6Yjz\
+      GGphH2TUxwKzxcKDKKezwkpfnxPkSMkuEspGRt/aZZ9wa++Oi7Qkr8prgHc4soW6NUlfDzpvZK2H5E7eQaSeP3SAwGmQKUFHCdd\
+      NaP0L+hM7zhFNzjFvpaMgJw0=' }
+      expose :usage_type, documentation: { type: 'String', example: 'auth' }
+    end
+  end
+end

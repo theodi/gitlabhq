@@ -1,0 +1,13 @@
+---
+table_name: packages_nuget_metadata
+classes:
+- Packages::Nuget::Metadatum
+feature_categories:
+- package_registry
+description: Nuget package metadata
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/30994
+milestone: '13.1'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

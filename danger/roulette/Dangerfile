@@ -1,0 +1,138 @@
+# frozen_string_literal: true
+
+require_relative '../../tooling/danger/roulette_experiment'
+
+REVIEWER_COLUMN_HIDDEN_LABEL = 'roulette-experiment::reviewer-column-hidden'
+REVIEWER_COLUMN_SHOWN_LABEL = 'roulette-experiment::reviewer-column-shown'
+
+REVIEW_ROULETTE_SECTION = <<MARKDOWN
+## Reviewer roulette suggestions
+MARKDOWN
+
+CATEGORY_TABLE = <<MARKDOWN
+
+| Category | Reviewer | Maintainer |
+| -------- | -------- | ---------- |
+MARKDOWN
+
+CATEGORY_TABLE_WITHOUT_REVIEWER = <<MARKDOWN
+
+| Category | Maintainer |
+| -------- | ---------- |
+MARKDOWN
+
+POST_TABLE_MESSAGE = <<MARKDOWN
+
+Please refer to [documentation page](https://docs.gitlab.com/development/code_review/#reviewer-roulette)
+for guidance on how you can benefit from the Reviewer Roulette, or use the
+[GitLab Review Workload Dashboard](https://gitlab-org.gitlab.io/gitlab-roulette/)
+to find other available reviewers.
+
+MARKDOWN
+
+NO_SUGGESTIONS = <<MARKDOWN
+
+There are no reviewer and maintainer suggestions for the changes in this MR.
+MARKDOWN
+
+UNKNOWN_FILES_MESSAGE = <<MARKDOWN
+### Uncategorized files
+
+These files couldn't be categorized, so Danger was unable to suggest a reviewer.
+Please consider creating a merge request to
+[add support](https://gitlab.com/gitlab-org/gitlab/blob/master/tooling/danger/project_helper.rb)
+for them.
+MARKDOWN
+
+def group_not_available_template(slack_channel, gitlab_group)
+  <<~TEMPLATE.strip
+    No engineer is available for automated assignment, please reach out to the `#{slack_channel}` Slack channel or mention `#{gitlab_group}` for assistance.
+  TEMPLATE
+end
+
+OPTIONAL_REVIEW_TEMPLATE = '%{role} review is optional for %{category}'
+NOT_AVAILABLE_TEMPLATES = {
+  default: 'No %{role} available',
+  analytics_instrumentation: group_not_available_template('#g_analyze_analytics_instrumentation', '@gitlab-org/analytics-section/analytics-instrumentation/engineers'),
+  remote_development_be: group_not_available_template('#f_remote_development', '@gitlab-org/maintainers/remote-development/backend'),
+  project_management: group_not_available_template('#g_work_items', '@gitlab-org/plan-stage/project-management-group'),
+  advanced_search_migration: group_not_available_template('#g_global_search', '@gitlab-org/search-team/maintainers/advanced-migrations')
+}.freeze
+
+def note_for_spin_role(spin, role, category)
+  template = NOT_AVAILABLE_TEMPLATES[category] || NOT_AVAILABLE_TEMPLATES[:default]
+
+  note =
+    if spin.optional_role == role
+      OPTIONAL_REVIEW_TEMPLATE % { role: role.capitalize, category: helper.label_for_category(spin.category) }
+    else
+      spin.public_send(role)&.markdown_name(author: roulette.team_mr_author) # rubocop:disable GitlabSecurity/PublicSend
+    end
+
+  note || (template % { role: role })
+end
+
+def markdown_row_for_spin(category, spin, hide_reviewer:)
+  maintainer_note = note_for_spin_role(spin, :maintainer, category)
+
+  return "| #{helper.label_for_category(category)} | #{maintainer_note} |" if hide_reviewer
+
+  reviewer_note = note_for_spin_role(spin, :reviewer, category)
+
+  "| #{helper.label_for_category(category)} | #{reviewer_note} | #{maintainer_note} |"
+end
+
+changes = helper.changes_by_category
+
+# Ignore any files that are known but uncategorized. Prompt for any unknown files
+changes.delete(:none)
+# To reinstate roulette for documentation, remove this line.
+changes.delete(:docs)
+# No special review for changelog needed and changelog was never a label.
+changes.delete(:changelog)
+# No special review for feature flags needed.
+changes.delete(:feature_flag)
+# Database review is mandatory (not a suggestion) and spins its own reviewer,
+# unaffected by the reviewer-column-hiding experiment below. See danger/database/Dangerfile.
+changes.delete(:database)
+
+categories = roulette.prepare_categories(changes.keys - [:unknown])
+# `prepare_categories` re-adds :database based on the `database` label; strip it
+# back out since it's handled entirely by danger/database/Dangerfile.
+categories.delete(:database)
+
+# Skip specialty reviews for stable branch MRs since they have already been merged to the default branch
+categories.subtract([:ux, :analytics_instrumentation]) if stable_branch.valid_stable_branch?
+
+required_approvals = roulette.required_approvals
+
+if changes.any? || required_approvals.any?
+  random_roulette_spins = roulette.spin(nil, categories)
+  spins = random_roulette_spins + required_approvals.map(&:spin)
+  spin_categories = random_roulette_spins.map(&:category) + required_approvals.map(&:category)
+
+  # Deterministic per MR so the table doesn't flicker on re-runs; disabled locally
+  # so `danger dry_run` always shows the full table.
+  hide_reviewer = helper.ci? && ::Tooling::Danger::RouletteExperiment.hide_reviewer_column?(helper.mr_iid)
+
+  if spins.any?
+    helper.labels_to_add << (hide_reviewer ? REVIEWER_COLUMN_HIDDEN_LABEL : REVIEWER_COLUMN_SHOWN_LABEL)
+  end
+
+  rows = spin_categories.zip(spins).map do |category, spin|
+    markdown_row_for_spin(category, spin, hide_reviewer: hide_reviewer)
+  end
+
+  markdown(REVIEW_ROULETTE_SECTION)
+
+  if rows.empty?
+    markdown(NO_SUGGESTIONS)
+  else
+    table = hide_reviewer ? CATEGORY_TABLE_WITHOUT_REVIEWER : CATEGORY_TABLE
+    markdown(table + rows.join("\n"))
+    markdown(POST_TABLE_MESSAGE)
+  end
+
+  unknown = changes.fetch(:unknown, [])
+  markdown(UNKNOWN_FILES_MESSAGE + helper.markdown_list(unknown)) unless unknown.empty?
+end

@@ -1,0 +1,11 @@
+---
+table_name: upload_states
+classes:
+- Geo::UploadState
+feature_categories:
+- geo_replication
+description: Separate table for uploads containing Geo verification metadata.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/65921
+milestone: '14.6'
+gitlab_schema: gitlab_main_cell_local
+table_size: small

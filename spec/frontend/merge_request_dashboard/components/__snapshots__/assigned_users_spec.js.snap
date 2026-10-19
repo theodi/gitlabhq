@@ -1,0 +1,19 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Merge request dashboard assigned users component as reviewer list renders review state icon 1`] = `
+<span
+  class="-gl-bottom-2 -gl-right-1 gl-absolute gl-bg-status-danger gl-flex gl-h-5 gl-items-center gl-justify-center gl-p-1 gl-rounded-full gl-w-5"
+  data-testid="review-state-icon"
+>
+  <svg
+    aria-hidden="true"
+    class="gl-block gl-fill-current gl-fill-status-danger gl-icon s12"
+    data-testid="error-icon"
+    role="img"
+  >
+    <use
+      href="file-mock-icons.svg#error"
+    />
+  </svg>
+</span>
+`;

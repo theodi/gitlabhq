@@ -1,0 +1,21 @@
+- link_style = 'color:#3777b0;text-decoration:none;'
+- project_link = tag_pair(link_to('', project_url(@project), target: '_blank', rel: 'noopener noreferrer', style: link_style), :project_link_start, :project_link_end)
+- releases_link = tag_pair(link_to('', @target_url, target: '_blank', rel: 'noopener noreferrer', style: link_style), :releases_link_start, :releases_link_end)
+
+%div{ style: "font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;text-align:center;" }
+  %h2{ style: 'font-size:20px;line-height:1.4;color:#333333;margin:0 0 8px;' }
+    = safe_format(_('A new release for %{project_link_start}%{project_name}%{project_link_end} was published.'), project_link, project_name: @project.name)
+  %p{ style: 'font-size:15px;line-height:1.4;margin:0 0 16px;' }
+    = safe_format(_('Visit the %{releases_link_start}Releases page%{releases_link_end} to read more about it.'), releases_link)
+
+  %h3{ style: 'font-size:15px;color:#333333;margin:16px 0 8px;' }= _('Assets')
+  %ul{ style: 'list-style:none;margin:0;padding:0;' }
+    - @release.links.each do |link|
+      %li{ style: 'margin:0 0 4px;' }= link_to(link.name, link.url, style: link_style)
+    - @release.sources.each do |source|
+      %li{ style: 'margin:0 0 4px;' }= link_to(_('Download %{format}') % { format: source.format }, source.url, style: link_style)
+
+%h3{ style: "font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:15px;color:#333333;margin:16px 0 8px;" }= _('Release notes')
+
+.md.release-notes{ style: "font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;" }
+  = markdown(@release.description, pipeline: :email, author: @release.author, current_user: @recipient)

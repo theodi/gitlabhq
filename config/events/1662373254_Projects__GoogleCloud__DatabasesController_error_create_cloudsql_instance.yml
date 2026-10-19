@@ -1,0 +1,17 @@
+---
+description: Error creating Cloud SQL instance
+category: Projects::GoogleCloud::DatabasesController
+action: error_create_cloudsql_instance
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: 5-min-app
+milestone: "15.4"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/96683"
+tiers:
+- free
+- premium
+- ultimate
+

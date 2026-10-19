@@ -1,0 +1,466 @@
+# frozen_string_literal: true
+
+module AuthHelper
+  PROVIDERS_WITH_ICONS = %w[
+    alicloud
+    atlassian_oauth2
+    auth0
+    azure_activedirectory_v2
+    azure_oauth2
+    bitbucket
+    chatgpt
+    github
+    gitlab
+    google_oauth2
+    jwt
+    openid_connect
+    shibboleth
+    twitter
+  ].freeze
+  LDAP_PROVIDER = /\Aldap/
+  POPULAR_PROVIDERS = %w[google_oauth2 github].freeze
+  SHA1_CHAR_PAIR_COUNT = 20
+  SHA256_CHAR_PAIR_COUNT = 32
+
+  delegate :slack_app_id, to: :'Gitlab::CurrentSettings.current_application_settings'
+
+  def ldap_enabled?
+    Gitlab::Auth::Ldap::Config.enabled?
+  end
+
+  def ldap_sign_in_enabled?
+    Gitlab::Auth::Ldap::Config.sign_in_enabled?
+  end
+
+  def omniauth_enabled?
+    Gitlab::Auth.omniauth_enabled?
+  end
+
+  def enabled_button_based_providers_for_signup
+    if Gitlab.config.omniauth.allow_single_sign_on.is_a?(Array)
+      enabled_button_based_providers & Gitlab.config.omniauth.allow_single_sign_on
+    elsif Gitlab.config.omniauth.allow_single_sign_on
+      enabled_button_based_providers
+    else
+      []
+    end
+  end
+
+  def signup_button_based_providers_enabled?
+    omniauth_enabled? && enabled_button_based_providers_for_signup.any?
+  end
+
+  def provider_has_custom_icon?(name)
+    icon_for_provider(name.to_s)
+  end
+
+  def provider_has_builtin_icon?(name)
+    PROVIDERS_WITH_ICONS.include?(name.to_s)
+  end
+
+  def provider_has_icon?(name)
+    provider_has_builtin_icon?(name) || provider_has_custom_icon?(name)
+  end
+
+  def test_id_for_provider(provider)
+    {
+      saml: 'saml-login-button',
+      openid_connect: 'oidc-login-button',
+      github: 'github-login-button',
+      gitlab: 'gitlab-oauth-login-button'
+    }[provider.to_sym]
+  end
+
+  def auth_providers
+    Gitlab::Auth::OAuth::Provider.providers
+  end
+
+  def label_for_provider(name)
+    Gitlab::Auth::OAuth::Provider.label_for(name)
+  end
+
+  def icon_for_provider(name)
+    Gitlab::Auth::OAuth::Provider.icon_for(name)
+  end
+
+  def form_based_provider_priority
+    ['crowd', /^ldap/]
+  end
+
+  def form_based_provider_with_highest_priority
+    @form_based_provider_with_highest_priority ||= form_based_provider_priority.each do |provider_regexp|
+      highest_priority = form_based_providers.find { |provider| provider.match?(provider_regexp) }
+      break highest_priority unless highest_priority.nil?
+    end
+  end
+
+  def form_based_auth_provider_has_active_class?(provider)
+    form_based_provider_with_highest_priority == provider
+  end
+
+  def form_based_provider?(name)
+    [LDAP_PROVIDER, 'crowd'].any? { |pattern| pattern === name.to_s }
+  end
+
+  def form_based_providers
+    auth_providers.select { |provider| form_based_provider?(provider) }
+  end
+
+  def saml_providers
+    providers = Gitlab.config.omniauth.providers.select do |provider|
+      provider.name == 'saml' || provider.dig('args', 'strategy_class') == 'OmniAuth::Strategies::SAML'
+    end
+
+    providers.map(&:name).map(&:to_sym)
+  end
+
+  def oidc_providers
+    providers = Gitlab.config.omniauth.providers.select do |provider|
+      provider.name == 'openid_connect' || provider.dig('args',
+        'strategy_class') == 'OmniAuth::Strategies::OpenIDConnect'
+    end
+
+    providers.map(&:name).map(&:to_sym)
+  end
+
+  def any_form_based_providers_enabled?
+    form_based_providers.any? { |provider| form_enabled_for_sign_in?(provider) }
+  end
+
+  def form_enabled_for_sign_in?(provider)
+    return true unless provider.to_s.match?(LDAP_PROVIDER)
+
+    ldap_sign_in_enabled?
+  end
+
+  def crowd_enabled?
+    auth_providers.include? :crowd
+  end
+
+  def button_based_providers
+    auth_providers.reject { |provider| form_based_provider?(provider) }
+  end
+
+  def display_providers_on_profile?
+    button_based_providers.any?
+  end
+
+  def providers_for_base_controller
+    auth_providers.reject { |provider| LDAP_PROVIDER === provider }
+  end
+
+  def enabled_button_based_providers
+    disabled_providers = Gitlab::CurrentSettings.disabled_oauth_sign_in_sources || []
+
+    providers = button_based_providers.map(&:to_s) - disabled_providers
+    providers.sort_by do |provider|
+      POPULAR_PROVIDERS.index(provider) || POPULAR_PROVIDERS.length
+    end
+  end
+
+  def popular_enabled_button_based_providers
+    enabled_button_based_providers & POPULAR_PROVIDERS
+  end
+
+  def button_based_providers_enabled?
+    enabled_button_based_providers.any?
+  end
+
+  def step_up_auth_params(provider_name, step_up_auth_scope)
+    return {} if step_up_auth_scope.blank?
+
+    return {} if Feature.disabled?(:omniauth_step_up_auth_for_admin_mode, current_user) &&
+      step_up_auth_scope.to_s == ::Gitlab::Auth::Oidc::StepUpAuthentication::SCOPE_ADMIN_MODE.to_s
+
+    return {} if Feature.disabled?(:omniauth_step_up_auth_for_namespace, current_user) &&
+      step_up_auth_scope.to_s == ::Gitlab::Auth::Oidc::StepUpAuthentication::SCOPE_NAMESPACE.to_s
+
+    # Get provider configuration for step up auth scope
+    provider_config = Gitlab::Auth::OAuth::Provider
+      .config_for(provider_name)
+      &.dig('step_up_auth', step_up_auth_scope.to_s)
+      &.to_h
+
+    return {} if provider_config.blank?
+
+    base_params = { step_up_auth_scope: step_up_auth_scope }
+    config_params = provider_config['params'].to_h
+
+    base_params
+      .merge!(config_params)
+      .transform_values do |v|
+        v.is_a?(Hash) ? v.to_json : v
+      end
+  end
+
+  def step_up_auth_documentation_link(flow)
+    link_url = flow.documentation_link
+
+    return unless link_url
+
+    provider_label = ::Gitlab::Auth::OAuth::Provider.label_for(flow.provider)
+    link_to(provider_label, link_url, target: '_blank', rel: 'noopener noreferrer', class: 'gl-link')
+  end
+
+  def provider_image_tag(provider, size = 64)
+    label = label_for_provider(provider)
+
+    if provider_has_custom_icon?(provider)
+      image_tag(icon_for_provider(provider), alt: label, title: "Sign in with #{label}", class: "gl-button-icon")
+    elsif provider_has_builtin_icon?(provider)
+      file_name = "#{provider.to_s.split('_').first}_#{size}.png"
+
+      image_tag("auth_buttons/#{file_name}", alt: label, title: "Sign in with #{label}", class: "gl-button-icon")
+    else
+      label
+    end
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def auth_active?(provider)
+    provider = provider.to_s
+    return current_user.atlassian_identity.present? if provider == 'atlassian_oauth2'
+
+    provider = normalize_provider(provider)
+    current_user.identities.exists?(provider: provider)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def normalize_provider(provider)
+    return provider unless ::Feature.enabled?(:iam_svc_login, :instance)
+    return provider if provider.blank?
+
+    provider.delete_prefix('iam_')
+  end
+
+  def unlink_provider_allowed?(provider)
+    IdentityProviderPolicy.new(current_user, provider).can?(:unlink)
+  end
+
+  def link_provider_allowed?(provider)
+    IdentityProviderPolicy.new(current_user, provider).can?(:link)
+  end
+
+  def allow_admin_mode_password_authentication_for_web?
+    current_user.allow_password_authentication_for_web? && !current_user.password_automatically_set?
+  end
+
+  def auth_app_owner_text(application)
+    return _('An anonymous service added this dynamically created OAuth application ') if application.dynamic?
+    return _('An administrator added this OAuth application ') unless application.owner
+
+    if application.owner.is_a?(Group)
+      group_link = link_to(application.owner.name, group_path(application.owner))
+      safe_format(_("%{group_link} added this OAuth application "), group_link: group_link)
+    else
+      user_link = link_to(application.owner.name, user_path(application.owner))
+      safe_format(_("%{user_link} added this OAuth application "), user_link: user_link)
+    end
+  end
+
+  def delete_otp_authenticator_data(password_required)
+    messages = if password_required
+                 [_('Are you sure you want to delete this one-time password authenticator?'),
+                   _('Enter your password to continue.')]
+               else
+                 [_('Are you sure you want to delete this one-time password authenticator?')]
+               end
+
+    { button_text: _('Delete one-time password authenticator'),
+      icon: 'remove',
+      messages: messages,
+      path: destroy_otp_profile_two_factor_auth_path,
+      password_required: password_required.to_s }
+  end
+
+  def delete_passkey_data(password_required, path, passkey_count)
+    messages = if password_required
+                 [s_('ProfilesAuthentication|Are you sure you want to delete this passkey?'),
+                   _('Enter your password to continue.')]
+               else
+                 [s_('ProfilesAuthentication|Are you sure you want to delete this passkey?')]
+               end
+
+    if passkey_count > 1
+      modal_title = s_('ProfilesAuthentication|Delete passkey')
+      button_text = s_('ProfilesAuthentication|Delete passkey')
+    else
+      modal_title = s_('ProfilesAuthentication|Delete passkey and disable passkey sign-in?')
+      button_text = s_('ProfilesAuthentication|Disable passkey sign-in')
+    end
+
+    { modal_title: modal_title,
+      button_text: button_text,
+      icon: 'remove',
+      messages: messages,
+      path: path,
+      password_required: password_required.to_s }
+  end
+
+  def delete_webauthn_device_data(password_required, path)
+    messages = if password_required
+                 [_('Are you sure you want to delete this WebAuthn device?'),
+                   _('Enter your password to continue.')]
+               else
+                 [_('Are you sure you want to delete this WebAuthn device?')]
+               end
+
+    { button_text: _('Delete WebAuthn device'),
+      icon: 'remove',
+      messages: messages,
+      path: path,
+      password_required: password_required.to_s }
+  end
+
+  def disable_two_factor_authentication_data(password_required, passkeys)
+    messages = if passkeys
+                 [_('This will delete all 2FA methods from your account. We recommend keeping 2FA enabled to protect ' \
+                   'your account.'),
+                   _('Your passkey will only be eligible for passwordless sign-in.')]
+               else
+                 [_('This will delete all 2FA methods from your account. We recommend keeping 2FA enabled to protect ' \
+                   'your account.')]
+               end
+
+    { button_text: _('Disable 2FA'),
+      messages: messages,
+      modal_title: _('Disabled two-factor authentication (2FA)?'),
+      path: profile_two_factor_auth_path,
+      password_required: password_required.to_s }
+  end
+
+  def codes_two_factor_authentication_data(password_required)
+    messages = if password_required
+                 [_('Are you sure you want to regenerate recovery codes?'),
+                   _('Enter your password to continue.')]
+               else
+                 [_('Are you sure you want to regenerate recovery codes?')]
+               end
+
+    { button_text: _('Regenerate recovery codes'),
+      messages: messages,
+      method: 'post',
+      path: codes_profile_two_factor_auth_path,
+      password_required: password_required.to_s,
+      size: 'small',
+      variant: 'default' }
+  end
+
+  def certificate_fingerprint_algorithm(fingerprint)
+    case fingerprint.scan(/[0-9a-f]{2}/i).length
+    when SHA1_CHAR_PAIR_COUNT
+      # v2.x will change to RubySaml::XML::SHA1
+      XMLSecurity::Document::SHA1
+    when SHA256_CHAR_PAIR_COUNT
+      # v2.x will change to RubySaml::XML::SHA256
+      XMLSecurity::Document::SHA256
+    end
+  end
+
+  def current_password_required?
+    !current_user.password_automatically_set? && current_user.allow_password_authentication_for_web?
+  end
+
+  def expires_at_for_service_access_tokens(enforce_expiration)
+    return expires_at_field_data if enforce_expiration
+
+    {
+      min_date: 1.day.from_now.iso8601
+    }
+  end
+
+  def admin_service_accounts_data(user = current_user)
+    sources = scope_description(:personal_access_token)
+    scopes = ::Gitlab::Auth.available_scopes_for(user)
+    {
+      base_path: admin_application_settings_service_accounts_path,
+      service_accounts: {
+        enabled: true.to_s,
+        path: expose_path(api_v4_service_accounts_path),
+        edit_path: expose_path(api_v4_service_accounts_path),
+        docs_path: help_page_path('user/profile/service_accounts.md'),
+        delete_path: expose_path(api_v4_users_path)
+      },
+      access_token: {
+        **expires_at_for_service_access_tokens(admin_sa_token_expiry_enforced?),
+        available_scopes: filter_sort_scopes(scopes, sources).to_json,
+        create: expose_path(api_v4_users_personal_access_tokens_path(user_id: ':id')),
+        revoke: expose_path(api_v4_personal_access_tokens_path),
+        rotate: expose_path(api_v4_personal_access_tokens_path),
+        show: "#{expose_path(api_v4_personal_access_tokens_path)}?user_id=:id"
+      }
+    }
+  end
+
+  def groups_service_accounts_data(group, user = current_user)
+    sources = scope_description(:personal_access_token)
+
+    scopes = ::Gitlab::Auth.available_scopes_for(user)
+    {
+      base_path: group_settings_service_accounts_path(group),
+      service_accounts: {
+        enabled: can?(user, :create_service_account, group).to_s,
+        path: expose_path(api_v4_groups_service_accounts_path(id: group.id)),
+        edit_path: expose_path(api_v4_groups_service_accounts_path(id: group.id)),
+        docs_path: help_page_path('user/profile/service_accounts.md'),
+        delete_path: expose_path(api_v4_groups_service_accounts_path(id: group.id))
+      },
+      access_token: {
+        **expires_at_for_service_access_tokens(group_sa_token_expiry_enforced?(group)),
+        available_scopes: filter_sort_scopes(scopes, sources).to_json,
+        create: expose_path(api_v4_groups_service_accounts_personal_access_tokens_path(id: group.id, user_id: ':id')),
+        revoke: expose_path(api_v4_groups_service_accounts_personal_access_tokens_path(id: group.id, user_id: ':id')),
+        rotate: expose_path(api_v4_groups_service_accounts_personal_access_tokens_path(id: group.id, user_id: ':id')),
+        show: expose_path(api_v4_groups_service_accounts_personal_access_tokens_path(id: group.id, user_id: ':id'))
+      }
+    }
+  end
+
+  def projects_service_accounts_data(project, user = current_user)
+    sources = scope_description(:personal_access_token)
+    scopes = ::Gitlab::Auth.available_scopes_for(user)
+
+    {
+      base_path: project_settings_service_accounts_path(project),
+      service_accounts: {
+        enabled: can?(user, :create_service_account, project).to_s,
+        path: expose_path(api_v4_projects_service_accounts_path(id: project.id)),
+        edit_path: expose_path(api_v4_projects_service_accounts_path(id: project.id)),
+        docs_path: help_page_path('user/profile/service_accounts.md'),
+        delete_path: expose_path(api_v4_projects_service_accounts_path(id: project.id))
+      },
+      access_token: {
+        **expires_at_for_service_access_tokens(project_sa_token_expiry_enforced?(project)),
+        available_scopes: filter_sort_scopes(scopes, sources).to_json,
+        create: expose_path(api_v4_projects_service_accounts_personal_access_tokens_path(id: project.id,
+          user_id: ':id')),
+        revoke: expose_path(api_v4_projects_service_accounts_personal_access_tokens_path(id: project.id,
+          user_id: ':id')),
+        rotate: expose_path(api_v4_projects_service_accounts_personal_access_tokens_path(id: project.id,
+          user_id: ':id')),
+        show: expose_path(
+          api_v4_projects_service_accounts_personal_access_tokens_path(id: project.id, user_id: ':id'))
+      }
+    }
+  end
+
+  def admin_sa_token_expiry_enforced?
+    ::Gitlab::CurrentSettings.require_personal_access_token_expiry?
+  end
+
+  def group_sa_token_expiry_enforced?(_group)
+    ::Gitlab::CurrentSettings.require_personal_access_token_expiry?
+  end
+
+  def project_sa_token_expiry_enforced?(_project)
+    ::Gitlab::CurrentSettings.require_personal_access_token_expiry?
+  end
+
+  extend self
+end
+
+AuthHelper.prepend_mod_with('AuthHelper')
+
+# The methods added in EE should be available as both class and instance
+# methods, just like the methods provided by `AuthHelper` itself.
+AuthHelper.extend_mod_with('AuthHelper')

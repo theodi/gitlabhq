@@ -1,0 +1,105 @@
+spec:
+  inputs:
+    cng_path:
+      type: string
+      default: 'build/CNG-mirror'
+---
+default:
+  interruptible: true
+
+stages:
+  - prepare
+  - deploy
+
+include:
+  - local: .gitlab/ci/global.gitlab-ci.yml
+  - local: .gitlab/ci/ci-images.gitlab-ci.yml
+  - local: .gitlab/ci/version.yml
+
+.build-cng-env:
+  extends:
+    - .with-ruby-slim-image
+  stage: prepare
+  variables:
+    BUILD_ENV: build.env
+    CNG_PROJECT_PATH: "${CI_PROJECT_NAMESPACE}/$[[ inputs.cng_path ]]"
+    CNG_SKIP_REDUNDANT_JOBS: "false"
+    CNG_VAR_SETUP_LOG_FILE: "tmp/build-cng-env.log"
+  before_script:
+    - source ./scripts/utils.sh
+    - install_gitlab_gem
+  script:
+    - 'ruby -r./scripts/trigger-build.rb -e "puts Trigger.variables_for_env_file(Trigger::CNG.new.variables)" > $BUILD_ENV'
+    - echo -e "section_start:`date +%s`:cng_var_setup_log[collapsed=true]\r\e[0KCNG Variables Script Log Output"
+    - cat $CNG_VAR_SETUP_LOG_FILE
+    - echo -e "section_end:`date +%s`:cng_var_setup_log\r\e[0K"
+    - echo -e "section_start:`date +%s`:build_env[collapsed=true]\r\e[0KBuild Environment Variables"
+    - cat $BUILD_ENV
+    - echo -e "section_end:`date +%s`:build_env\r\e[0K"
+  artifacts:
+    reports:
+      dotenv: $BUILD_ENV
+    paths:
+      - $BUILD_ENV
+      - $CNG_VAR_SETUP_LOG_FILE
+    expire_in: 7 days
+    when: always
+
+.build-cng:
+  stage: prepare
+  inherit:
+    variables: false
+  variables:
+    GITLAB_REF_SLUG: "${GITLAB_REF_SLUG}"
+    # CNG pipeline specific variables
+    GITLAB_VERSION: "${GITLAB_VERSION}"
+    GITLAB_TAG: "${GITLAB_TAG}"
+    GITLAB_ASSETS_TAG: "${GITLAB_ASSETS_TAG}"
+    COMPILE_ASSETS: "${COMPILE_ASSETS}"
+    CE_PIPELINE: "${CE_PIPELINE}"  # Based on https://docs.gitlab.com/ci/jobs/job_rules/#cicd-variable-expressions, `if: '$CE_PIPELINE'` will evaluate to `false` when this variable is empty
+    EE_PIPELINE: "${EE_PIPELINE}"  # Based on https://docs.gitlab.com/ci/jobs/job_rules/#cicd-variable-expressions, `if: '$EE_PIPELINE'` will evaluate to `false` when this variable is empty
+    GITLAB_ELASTICSEARCH_INDEXER_VERSION: "${GITLAB_ELASTICSEARCH_INDEXER_VERSION}"
+    GITLAB_KAS_VERSION: "${GITLAB_KAS_VERSION}"
+    GITLAB_PAGES_VERSION: "${GITLAB_PAGES_VERSION}"
+    GITLAB_SHELL_VERSION: "${GITLAB_SHELL_VERSION}"
+    GITLAB_WORKHORSE_VERSION: "${GITLAB_WORKHORSE_VERSION}"
+    GITALY_SERVER_VERSION: "${GITALY_SERVER_VERSION}"
+    RUBY_VERSION: "${FULL_RUBY_VERSION}"
+    # Source variables, see scripts/trigger-build.rb
+    TOP_UPSTREAM_SOURCE_PROJECT: "${TOP_UPSTREAM_SOURCE_PROJECT}"
+    TOP_UPSTREAM_SOURCE_JOB: "${TOP_UPSTREAM_SOURCE_JOB}"
+    TOP_UPSTREAM_MERGE_REQUEST_PROJECT_ID: "${TOP_UPSTREAM_MERGE_REQUEST_PROJECT_ID}"
+    TOP_UPSTREAM_MERGE_REQUEST_IID: "${TOP_UPSTREAM_MERGE_REQUEST_IID}"
+    TOP_UPSTREAM_SOURCE_SHA: "${TOP_UPSTREAM_SOURCE_SHA}"
+    TOP_UPSTREAM_SOURCE_REF_SLUG: "${TOP_UPSTREAM_SOURCE_REF_SLUG}"
+    # prevent cache invalidation between pipeline runs
+    CACHE_BUSTER: "${CACHE_BUSTER}"
+    # link component version shas to current project instead of default CI_PIPELINE_CREATED_AT which forces rebuilds on each pipeline run
+    CONTAINER_VERSION_SUFFIX: "${CONTAINER_VERSION_SUFFIX}"
+    # disable buildx cluster while it's not supported on mirrors
+    DISABLE_BUILDX_CLUSTER: "true"
+    # disable external gem caching and rely on docker layer caching
+    RAILS_DISABLE_VENDOR_CACHE: "true"
+    # skip short lived dev image signing and verification to save time
+    SKIP_IMAGE_SIGNING: "true"
+    SKIP_IMAGE_VERIFICATION: "true"
+    SKIP_IMAGE_TAGGING: "${SKIP_IMAGE_TAGGING}"
+    # set specific arch list
+    ARCH_LIST: "${ARCH_LIST}"
+    # use larger runner for complex rails build jobs
+    HIGH_CAPACITY_RUNNER_TAG: high-cpu
+    # skip no-op final-images-listing job or additionally jobs that don't produce new artifacts if skip jobs is enabled
+    SKIP_JOB_REGEX: "${SKIP_JOB_REGEX}"
+    # base images and additional args, these are required because jobs that set them might be skipped
+    DEBIAN_IMAGE: "${DEBIAN_IMAGE}"
+    DEBIAN_DIGEST: "${DEBIAN_DIGEST}"
+    DEBIAN_BUILD_ARGS: "${DEBIAN_BUILD_ARGS}"
+    ALPINE_IMAGE: "${ALPINE_IMAGE}"
+    ALPINE_DIGEST: "${ALPINE_DIGEST}"
+    ALPINE_BUILD_ARGS: "${ALPINE_BUILD_ARGS}"
+    # used by rules setup in CNG project
+    PIPELINE_TYPE: "GITLAB_RAILS_UPSTREAM_TRIGGER"
+  trigger:
+    project: '${CI_PROJECT_NAMESPACE}/$[[ inputs.cng_path ]]'
+    branch: $TRIGGER_BRANCH
+    strategy: depend

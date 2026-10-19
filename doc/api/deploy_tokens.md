@@ -1,0 +1,373 @@
+---
+stage: Verify
+group: Runner Core
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Deploy tokens API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to interact with [deploy tokens](../user/project/deploy_tokens/_index.md).
+
+## List all deploy tokens
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+List all deploy tokens across the GitLab instance. This endpoint requires administrator access.
+
+```plaintext
+GET /deploy_tokens
+```
+
+Parameters:
+
+| Attribute | Type     | Required               | Description |
+|-----------|----------|------------------------|-------------|
+| `active`  | boolean  | No | Limit by active status. |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/deploy_tokens"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 1,
+    "name": "MyToken",
+    "username": "gitlab+deploy-token-1",
+    "expires_at": "2020-02-14T00:00:00.000Z",
+    "revoked": false,
+    "expired": false,
+    "scopes": [
+      "read_repository",
+      "read_registry"
+    ]
+  }
+]
+```
+
+## Project deploy tokens
+
+Project deploy token API endpoints require the Maintainer or Owner role
+for the project.
+
+### List project deploy tokens
+
+List a project's deploy tokens.
+
+```plaintext
+GET /projects/:id/deploy_tokens
+```
+
+Parameters:
+
+| Attribute      | Type           | Required               | Description |
+|:---------------|:---------------|:-----------------------|:------------|
+| `id`           | integer or string | Yes | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `active`       | boolean        | No | Limit by active status. |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/deploy_tokens"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 1,
+    "name": "MyToken",
+    "username": "gitlab+deploy-token-1",
+    "expires_at": "2020-02-14T00:00:00.000Z",
+    "revoked": false,
+    "expired": false,
+    "scopes": [
+      "read_repository",
+      "read_registry"
+    ]
+  }
+]
+```
+
+### Retrieve a project deploy token
+
+Retrieve a single project's deploy token by ID.
+
+```plaintext
+GET /projects/:id/deploy_tokens/:token_id
+```
+
+Parameters:
+
+| Attribute  | Type           | Required               | Description |
+| ---------- | -------------- | ---------------------- | ----------- |
+| `id`       | integer or string | Yes | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths) |
+| `token_id` | integer        | Yes | ID of the deploy token |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/deploy_tokens/1"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "name": "MyToken",
+  "username": "gitlab+deploy-token-1",
+  "expires_at": "2020-02-14T00:00:00.000Z",
+  "revoked": false,
+  "expired": false,
+  "scopes": [
+    "read_repository",
+    "read_registry"
+  ]
+}
+```
+
+### Create a project deploy token
+
+Create a project deploy token.
+
+```plaintext
+POST /projects/:id/deploy_tokens
+```
+
+Parameters:
+
+| Attribute    | Type             | Required               | Description |
+| ------------ | ---------------- | ---------------------- | ----------- |
+| `id`         | integer or string   | Yes | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths) |
+| `name`       | string           | Yes | New deploy token's name |
+| `scopes`     | array of strings | Yes | Indicates the deploy token scopes. Must be at least one of `read_repository`, `read_registry`, `write_registry`, `read_package_registry`, `write_package_registry`, `read_virtual_registry`, or `write_virtual_registry`. |
+| `expires_at` | datetime         | No | Expiration date for the deploy token. Does not expire if no value is provided. Expected in ISO 8601 format (`2019-03-15T08:00:00Z`) |
+| `username`   | string           | No | Username for deploy token. Default is `gitlab+deploy-token-{n}` |
+
+Example request:
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --header "Content-Type: application/json" \
+  --data '{"name": "My deploy token", "expires_at": "2021-01-01", "username": "custom-user", "scopes": ["read_repository"]}' \
+  --url "https://gitlab.example.com/api/v4/projects/5/deploy_tokens/"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "name": "My deploy token",
+  "username": "custom-user",
+  "expires_at": "2021-01-01T00:00:00.000Z",
+  "token": "jMRvtPNxrn3crTAGukpZ",
+  "revoked": false,
+  "expired": false,
+  "scopes": [
+    "read_repository"
+  ]
+}
+```
+
+### Delete a project deploy token
+
+Delete a deploy token from the project.
+
+```plaintext
+DELETE /projects/:id/deploy_tokens/:token_id
+```
+
+Parameters:
+
+| Attribute  | Type           | Required               | Description |
+| ---------- | -------------- | ---------------------- | ----------- |
+| `id`       | integer or string | Yes | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths) |
+| `token_id` | integer        | Yes | ID of the deploy token |
+
+Example request:
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/5/deploy_tokens/13"
+```
+
+## Group deploy tokens
+
+Users with the Maintainer or Owner role for the group can list group deploy
+tokens. Only group Owners can create and delete group deploy tokens.
+
+### List group deploy tokens
+
+List a group's deploy tokens
+
+```plaintext
+GET /groups/:id/deploy_tokens
+```
+
+Parameters:
+
+| Attribute      | Type           | Required               | Description |
+|:---------------|:---------------|:-----------------------|:------------|
+| `id`           | integer or string | Yes | ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group. |
+| `active`       | boolean        | No | Limit by active status. |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/1/deploy_tokens"
+```
+
+Example response:
+
+```json
+[
+  {
+    "id": 1,
+    "name": "MyToken",
+    "username": "gitlab+deploy-token-1",
+    "expires_at": "2020-02-14T00:00:00.000Z",
+    "revoked": false,
+    "expired": false,
+    "scopes": [
+      "read_repository",
+      "read_registry"
+    ]
+  }
+]
+```
+
+### Retrieve a group deploy token
+
+Retrieve a single group's deploy token by ID.
+
+```plaintext
+GET /groups/:id/deploy_tokens/:token_id
+```
+
+Parameters:
+
+| Attribute   | Type           | Required               | Description |
+| ----------- | -------------- | ---------------------- | ----------- |
+| `id`        | integer or string | Yes | ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `token_id`  | integer        | Yes | ID of the deploy token |
+
+Example request:
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/1/deploy_tokens/1"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "name": "MyToken",
+  "username": "gitlab+deploy-token-1",
+  "expires_at": "2020-02-14T00:00:00.000Z",
+  "revoked": false,
+  "expired": false,
+  "scopes": [
+    "read_repository",
+    "read_registry"
+  ]
+}
+```
+
+### Create a group deploy token
+
+Create a group deploy token.
+
+```plaintext
+POST /groups/:id/deploy_tokens
+```
+
+Parameters:
+
+| Attribute    | Type | Required  | Description |
+| ------------ | ---- | --------- | ----------- |
+| `id`         | integer or string   | Yes | ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `name`       | string           | Yes | New deploy token's name |
+| `scopes`     | array of strings | Yes | Indicates the deploy token scopes. Must be at least one of `read_repository`, `read_registry`, `write_registry`, `read_package_registry`, or `write_package_registry`. |
+| `expires_at` | datetime         | No | Expiration date for the deploy token. Does not expire if no value is provided. Expected in ISO 8601 format (`2019-03-15T08:00:00Z`) |
+| `username`   | string           | No | Username for deploy token. Default is `gitlab+deploy-token-{n}` |
+
+Example request:
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --header "Content-Type: application/json" \
+  --data '{"name": "My deploy token", "expires_at": "2021-01-01", "username": "custom-user", "scopes": ["read_repository"]}' \
+  --url "https://gitlab.example.com/api/v4/groups/5/deploy_tokens/"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "name": "My deploy token",
+  "username": "custom-user",
+  "expires_at": "2021-01-01T00:00:00.000Z",
+  "token": "jMRvtPNxrn3crTAGukpZ",
+  "revoked": false,
+  "expired": false,
+  "scopes": [
+    "read_registry"
+  ]
+}
+```
+
+### Delete a group deploy token
+
+Delete a deploy token from the group.
+
+```plaintext
+DELETE /groups/:id/deploy_tokens/:token_id
+```
+
+Parameters:
+
+| Attribute   | Type           | Required               | Description |
+| ----------- | -------------- | ---------------------- | ----------- |
+| `id`        | integer or string | Yes | ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `token_id`  | integer        | Yes | ID of the deploy token |
+
+Example request:
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/5/deploy_tokens/13"
+```

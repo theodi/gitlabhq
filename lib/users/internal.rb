@@ -1,0 +1,257 @@
+# frozen_string_literal: true
+
+module Users
+  class Internal
+    class << self
+      include Gitlab::Utils::StrongMemoize
+
+      extend Forwardable
+
+      def_delegators :new, :bot_avatar, :ghost, :support_bot, :alert_bot,
+        :security_bot, :automation_bot,
+        :duo_code_review_bot, :admin_bot
+
+      def in_organization(organization)
+        new(organization: organization)
+      end
+
+      # Checks against this bot are now included in every issue and work item
+      # detail and list page rendering and in GraphQL queries (especially for determining
+      # the web_url of an issue/work item).
+      # Because the bot never changes once created, we can memoize it for
+      # the lifetime of the application process. It also doesn't matter that
+      # different nodes may have different object instances of the bot.
+      # We only memoize the id because this is the information we check against.
+      def support_bot_id
+        new.support_bot.id
+      end
+      strong_memoize_attr :support_bot_id
+    end
+
+    include Gitlab::Utils::StrongMemoize
+
+    def initialize(organization: nil)
+      case organization
+      when ::Organizations::Organization
+        @organization = organization
+        @organization_id = organization.id
+      else
+        @organization_id = organization
+      end
+    end
+
+    # Return (create if necessary) the ghost user. The ghost user
+    # owns records previously belonging to deleted users.
+    def ghost
+      email = 'ghost%s@example.com'
+      unique_internal(User.with_user_types(:ghost), 'ghost', email) do |u|
+        u.bio = _('This is a "Ghost User", created to hold all issues authored by users that have ' \
+                  'since been deleted. This user cannot be removed.')
+        u.name = 'Ghost'
+      end
+    end
+
+    def alert_bot
+      email_pattern = "alert%s@#{Settings.gitlab.host}"
+
+      unique_internal(User.with_user_types(:alert_bot), 'alert-bot', email_pattern) do |u|
+        u.bio = 'The GitLab alert bot'
+        u.name = 'GitLab Alert Bot'
+        u.avatar = bot_avatar(image: 'alert-bot.png')
+        u.confirmed_at = Time.zone.now
+        u.private_profile = true
+      end
+    end
+
+    def security_bot
+      email_pattern = "security-bot%s@#{Settings.gitlab.host}"
+
+      unique_internal(User.with_user_types(:security_bot), 'GitLab-Security-Bot', email_pattern) do |u|
+        u.bio = 'System bot that monitors detected vulnerabilities for solutions ' \
+                'and creates merge requests with the fixes.'
+        u.name = 'GitLab Security Bot'
+        u.avatar = bot_avatar(image: 'security-bot.png')
+        u.confirmed_at = Time.zone.now
+        u.private_profile = true
+      end
+    end
+
+    def support_bot
+      email_pattern = "support%s@#{Settings.gitlab.host}"
+
+      unique_internal(User.with_user_types(:support_bot), 'support-bot', email_pattern) do |u|
+        u.bio = 'The GitLab support bot used for Service Desk'
+        u.name = 'GitLab Support Bot'
+        u.avatar = bot_avatar(image: 'support-bot.png')
+        u.confirmed_at = Time.zone.now
+        u.private_profile = true
+      end
+    end
+
+    def support_bot_id
+      support_bot.id
+    end
+
+    def automation_bot
+      email_pattern = "automation%s@#{Settings.gitlab.host}"
+
+      unique_internal(User.with_user_types(:automation_bot), 'automation-bot', email_pattern) do |u|
+        u.bio = 'The GitLab automation bot used for automated workflows and tasks'
+        u.name = 'GitLab Automation Bot'
+        u.avatar = bot_avatar(image: 'support-bot.png') # todo: add an avatar for automation-bot
+        u.confirmed_at = Time.zone.now
+        u.private_profile = true
+      end
+    end
+
+    def duo_code_review_bot
+      email_pattern = "gitlab-duo%s@#{Settings.gitlab.host}"
+
+      unique_internal(User.with_user_types(:duo_code_review_bot), 'GitLabDuo', email_pattern) do |u|
+        u.bio = 'GitLab Duo bot for handling AI tasks'
+        u.name = 'GitLab Duo'
+        u.avatar = bot_avatar(image: 'duo-bot.png')
+        u.confirmed_at = Time.zone.now
+        u.private_profile = true
+      end
+    end
+
+    def admin_bot
+      email_pattern = "admin-bot%s@#{Settings.gitlab.host}"
+
+      unique_internal(User.with_user_types(:admin_bot), 'GitLab-Admin-Bot', email_pattern) do |u|
+        u.bio = 'Admin bot used for tasks that require admin privileges'
+        u.name = 'GitLab Admin Bot'
+        u.avatar = bot_avatar(image: 'admin-bot.png')
+        u.admin = true
+        u.confirmed_at = Time.zone.now
+        u.private_profile = true
+      end
+    end
+
+    def bot_avatar(image:)
+      Rails.root.join('lib', 'assets', 'images', 'bot_avatars', image).open
+    end
+
+    private
+
+    def organization
+      return @organization if @organization
+
+      Organizations::Organization.find_by_id(@organization_id)
+    end
+    strong_memoize_attr :organization
+
+    # NOTE: This method is patched in spec/spec_helper.rb to allow use of exclusive lease in RSpec's
+    # :before_all scope to keep the specs DRY.
+    def unique_internal(scope, username, email_pattern, &block)
+      scope = scope.in_organization(@organization_id) if @organization_id
+
+      existing = scope.first
+      return existing if existing
+
+      Gitlab::Database::QueryAnalyzers::PreventWritesOnGet.allow_write_on_get(
+        url: 'https://gitlab.com/gitlab-org/gitlab/-/issues/608670') do
+        create_unique_internal(scope, username, email_pattern, &block)
+      end
+    end
+
+    def username_with_organization_suffix(username)
+      return username unless organization_suffix_required?
+
+      [username, user_organization.path].join('_')
+    end
+
+    def email_organization_suffix
+      return '' unless organization_suffix_required?
+
+      "-#{user_organization.path}"
+    end
+
+    def display_name_with_organization_suffix(display_name)
+      return display_name if organization.nil? || organization == first_organization
+
+      "#{display_name} (#{organization.name})"
+    end
+
+    def first_organization
+      Organizations::Organization.first
+    end
+    strong_memoize_attr :first_organization
+
+    def user_organization
+      organization || first_organization
+    end
+
+    # Usernames and emails are cluster-wide claims. In a multi-cell cluster only the
+    # default organization may use the plain values, because the first organization
+    # on a non-legacy cell is a per-cell admin organization that collides otherwise.
+    def organization_suffix_required?
+      return !user_organization.default? if ::Gitlab.config.cell.enabled
+
+      user_organization != first_organization
+    end
+
+    def create_unique_internal(scope, username, email_pattern, &creation_block)
+      # Since we only want a single one of these in an instance, we use an
+      # exclusive lease to ensure than this block is never run concurrently.
+      lease_key = if organization
+                    "user:unique_internal:#{@organization_id}:#{username}"
+                  else
+                    "user:unique_internal:#{username}"
+                  end
+
+      lease = Gitlab::ExclusiveLease.new(lease_key, timeout: 1.minute.to_i)
+
+      uuid = lease.try_obtain
+      until uuid.present?
+        # Keep trying until we obtain the lease. To prevent hammering Redis too
+        # much we'll wait for a bit between retries.
+        sleep(1)
+        uuid = lease.try_obtain
+      end
+
+      # Recheck if the user is already present. One might have been
+      # added between the time we last checked (first line of this method)
+      # and the time we acquired the lock.
+      existing_user = scope.model.uncached { scope.first }
+      return existing_user if existing_user.present?
+
+      uniquify = Gitlab::Utils::Uniquify.new
+
+      global_username = username_with_organization_suffix(username)
+      global_username = uniquify.string(global_username) { |s| Namespace.by_path(s) }
+
+      email = uniquify.string(->(n) { Kernel.sprintf(email_pattern, "#{email_organization_suffix}#{n}") }) do |s|
+        User.find_by_email(s)
+      end
+
+      user = scope.build(
+        username: global_username,
+        email: email,
+        &creation_block
+      )
+
+      user.assign_personal_namespace(user_organization)
+      user.organizations << user_organization
+      user.organization ||= user_organization # rubocop:disable Gitlab/AvoidUserOrganization -- Setting for new user
+
+      uniquify = Gitlab::Utils::Uniquify.new
+      organization_username = uniquify.string(username) { |s| Namespace.in_organization(user_organization).by_path(s) }
+
+      org_user_details = user_organization.organization_user_details.build(
+        user: user,
+        username: organization_username,
+        display_name: display_name_with_organization_suffix(user.name)
+      )
+      user.organization_user_details << org_user_details
+
+      Users::UpdateService.new(user, user: user).execute(validate: false)
+      user
+    ensure
+      Gitlab::ExclusiveLease.cancel(lease_key, uuid)
+    end
+  end
+end
+
+Users::Internal.prepend_mod

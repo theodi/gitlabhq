@@ -1,0 +1,95 @@
+= gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-import-export-settings'), html: { class: 'fieldset-form', id: 'import-export-settings' } do |f|
+  = form_errors(@application_setting)
+
+  %fieldset
+    .form-group
+      = f.label :import_sources, s_('AdminSettings|Import sources'), class: 'label-bold gl-mb-0'
+      %span.form-text.gl-mt-0.gl-mb-3#import-sources-help
+        - tag_pair_github_docs = tag_pair(link_to('', help_page_path('integration/github.md'), target: '_blank', rel: 'noopener noreferrer'), :github_docs_link_start, :github_docs_link_end)
+        - tag_pair_bitbucket_docs = tag_pair(link_to('', help_page_path('integration/bitbucket.md'), target: '_blank', rel: 'noopener noreferrer'), :bitbucket_docs_link_start, :bitbucket_docs_link_end)
+        = safe_format(s_('AdminSettings|Code can be imported from enabled sources during project creation. OmniAuth must be configured for GitHub %{github_docs_link_start}%{icon}%{github_docs_link_end} and Bitbucket %{bitbucket_docs_link_start}%{icon}%{bitbucket_docs_link_end}.'), tag_pair_github_docs, tag_pair_bitbucket_docs, icon: sprite_icon('question-o'))
+      = hidden_field_tag 'application_setting[import_sources][]'
+      - import_sources_checkboxes(f).each do |source|
+        = source
+    .form-group{ data: { testid: 'project-export' } }
+      = f.label :project_export, s_('AdminSettings|Project export'), class: 'label-bold'
+      = f.gitlab_ui_checkbox_component :project_export_enabled, s_('AdminSettings|Enabled')
+    .form-group{ data: { testid: 'bulk-import' } }
+      = f.label :bulk_import, s_('AdminSettings|Allow migrating GitLab groups and projects by direct transfer'), class: 'gl-font-bold'
+      = f.gitlab_ui_checkbox_component :bulk_import_enabled, s_('AdminSettings|Enabled')
+    .form-group{ data: { testid: 'silent-admin-exports' } }
+      - tag_pair_silent_admin_exports = tag_pair(link_to('', help_page_path('administration/settings/import_and_export_settings.md', anchor: 'enable-silent-admin-exports'), target: '_blank', rel: 'noopener noreferrer'), :silent_admin_exports_link_start, :silent_admin_exports_link_end)
+      - silent_admin_exports_label_text = safe_format(s_('AdminSettings|Silent exports by admins %{silent_admin_exports_link_start}%{icon}%{silent_admin_exports_link_end}'), tag_pair_silent_admin_exports, icon: sprite_icon('question-o'))
+      = f.label :silent_admin_exports_enabled, silent_admin_exports_label_text, class: 'gl-font-bold'
+      = f.gitlab_ui_checkbox_component :silent_admin_exports_enabled, s_('AdminSettings|Enabled')
+    .form-group
+      - tag_pair_allow_contribution_mapping_to_admins = tag_pair(link_to('', help_page_path('administration/settings/import_and_export_settings.md', anchor: 'allow-contribution-mapping-to-administrators'), target: '_blank', rel: 'noopener noreferrer'), :allow_contribution_mapping_to_admins_link_start, :allow_contribution_mapping_to_admins_link_end)
+      - allow_contribution_mapping_to_admins_label_text = safe_format(s_('AdminSettings|Allow contribution mapping to administrators %{allow_contribution_mapping_to_admins_link_start}%{icon}%{allow_contribution_mapping_to_admins_link_end}'), tag_pair_allow_contribution_mapping_to_admins, icon: sprite_icon('question-o'))
+      = f.label :allow_contribution_mapping_to_admins, allow_contribution_mapping_to_admins_label_text, class: 'gl-font-bold'
+      = f.gitlab_ui_checkbox_component :allow_contribution_mapping_to_admins, s_('AdminSettings|Enabled')
+    .form-group
+      - bypass_placeholder_confirmation_help_path = help_page_path('administration/settings/import_and_export_settings.md',
+        anchor: 'skip-confirmation-when-administrators-reassign-placeholder-users')
+      - bypass_placeholder_confirmation_help_link = link_to('', bypass_placeholder_confirmation_help_path, target: '_blank', rel: 'noopener noreferrer')
+      - tag_pair_bypass_placeholder_confirmation = tag_pair(bypass_placeholder_confirmation_help_link, :link_start, :link_end)
+      - bypass_placeholder_confirmation_label_text = safe_format(s_('AdminSettings|Skip confirmation when administrators reassign placeholder users %{link_start}%{icon}%{link_end}'), tag_pair_bypass_placeholder_confirmation, icon: sprite_icon('question-o'))
+      = f.label :allow_bypass_placeholder_confirmation, bypass_placeholder_confirmation_label_text, class: 'gl-font-bold'
+      - if Gitlab.config.gitlab.impersonation_enabled
+        = f.gitlab_ui_checkbox_component :allow_bypass_placeholder_confirmation, s_('AdminSettings|Enabled')
+      - else
+        = f.gitlab_ui_checkbox_component :allow_bypass_placeholder_confirmation, s_('AdminSettings|Enabled'), checkbox_options: { disabled: true }, label_options: { title: s_('AdminSettings|User impersonation is not enabled on the GitLab instance.'), data: { toggle: 'tooltip', container: 'body' } }
+    - offline_transfer_exports_enabled = Feature.enabled?(:offline_transfer_exports, current_user)
+    - offline_transfer_imports_enabled = Feature.enabled?(:offline_transfer_imports, current_user)
+    - if offline_transfer_exports_enabled
+      .form-group
+        = f.label :offline_transfer_exports_enabled, s_('AdminSettings|Allow exporting GitLab groups and projects by offline transfer'), class: 'gl-font-bold'
+        = f.gitlab_ui_checkbox_component :offline_transfer_exports_enabled, s_('AdminSettings|Enabled')
+    - if offline_transfer_imports_enabled
+      .form-group
+        = f.label :offline_transfer_imports_enabled, s_('AdminSettings|Allow importing GitLab groups and projects by offline transfer'), class: 'gl-font-bold'
+        = f.gitlab_ui_checkbox_component :offline_transfer_imports_enabled, s_('AdminSettings|Enabled')
+    - if offline_transfer_exports_enabled || offline_transfer_imports_enabled
+      .form-group
+        = f.label :allow_s3_compatible_storage_for_offline_transfer, s_('AdminSettings|Allow S3 compatible object storage for offline transfer'), class: 'gl-font-bold'
+        = f.gitlab_ui_checkbox_component :allow_s3_compatible_storage_for_offline_transfer, s_('AdminSettings|Enabled')
+      .form-group
+        - adc_help_path = help_page_path('administration/settings/import_and_export_settings.md',
+          anchor: 'allow-application-default-credentials-for-offline-transfer')
+        - tag_pair_adc = tag_pair(link_to('', adc_help_path, target: '_blank', rel: 'noopener noreferrer'), :link_start, :link_end)
+        - adc_label_text = safe_format(s_('AdminSettings|Allow Google Cloud Application Default Credentials for offline transfer %{link_start}%{icon}%{link_end}'), tag_pair_adc, icon: sprite_icon('question-o'))
+        = f.label :allow_application_default_credentials_for_offline_transfer, adc_label_text, class: 'gl-font-bold'
+        = f.gitlab_ui_checkbox_component :allow_application_default_credentials_for_offline_transfer, s_('AdminSettings|Enabled')
+    .form-group
+      = f.label :max_export_size, _('Maximum export size (MiB)'), class: 'label-light'
+      = f.number_field :max_export_size, class: 'form-control gl-form-input', title: _('Maximum size of export files.'), data: { toggle: 'tooltip', container: 'body' }
+      %span.form-text.gl-text-subtle= _('Set to 0 for no size limit.')
+    .form-group
+      = f.label :max_import_size, _('Maximum import size (MiB)'), class: 'label-light'
+      = f.number_field :max_import_size, class: 'form-control gl-form-input', title: _('Maximum size of import files.'), data: { toggle: 'tooltip', container: 'body' }
+      - tag_pair_max_import_size_docs = tag_pair(link_to('', help_page_path('administration/settings/import_and_export_settings.md', anchor: 'max-import-size'), target: '_blank', rel: 'noopener noreferrer'), :link_start, :link_end)
+      %span.form-text.gl-text-subtle= safe_format(s_('AdminSettings|Only effective when remote storage is enabled. Set to 0 for no size limit. Your HTTP proxy or load balancer may enforce a separate limit. %{link_start}Learn more%{link_end}.'), tag_pair_max_import_size_docs)
+    .form-group
+      = f.label :max_import_remote_file_size, s_('Import|Maximum import remote file size (MiB)'), class: 'label-light'
+      = f.number_field :max_import_remote_file_size, class: 'form-control gl-form-input', title: s_('Import|Maximum remote file size for imports from external object storages. For example, AWS S3.'), data: { toggle: 'tooltip', container: 'body' }
+      %span.form-text.gl-text-subtle= _('Set to 0 for no size limit.')
+    .form-group
+      = f.label :bulk_import_max_download_file_size, s_('BulkImport|Maximum download file size (MiB)'), class: 'label-light'
+      = f.number_field :bulk_import_max_download_file_size, class: 'form-control gl-form-input', title: s_('BulkImport|Maximum download file size when importing from source GitLab instances by direct transfer.'), data: { toggle: 'tooltip', container: 'body' }
+    .form-group
+      = f.label :max_decompressed_archive_size, s_('Import|Maximum decompressed file size for archives from imports (MiB)'), class: 'label-light'
+      = f.number_field :max_decompressed_archive_size, class: 'form-control gl-form-input', title: s_('Import|Maximum size of decompressed archive.'), data: { toggle: 'tooltip', container: 'body' }
+      %span.form-text.gl-text-subtle= _('Set to 0 for no size limit.')
+    .form-group
+      = f.label :decompress_archive_file_timeout, s_('Import|Timeout for decompressing archived files (seconds)'), class: 'label-light'
+      = f.number_field :decompress_archive_file_timeout, class: 'form-control gl-form-input', title: s_('Import|Timeout for decompressing archived files.'), data: { toggle: 'tooltip', container: 'body' }
+      %span.form-text.gl-text-subtle= _('Set to 0 to disable timeout.')
+    .form-group
+      = f.label :concurrent_github_import_jobs_limit, s_('Import|Maximum number of simultaneous import jobs for GitHub importer'), class: 'label-light'
+      = f.number_field :concurrent_github_import_jobs_limit, class: 'form-control gl-form-input', title: s_('Import|Maximum number of simultaneous import jobs for GitHub importer'), data: { toggle: 'tooltip', container: 'body' }
+    .form-group
+      = f.label :concurrent_bitbucket_import_jobs_limit, s_('Import|Maximum number of simultaneous import jobs for Bitbucket Cloud importer'), class: 'label-light'
+      = f.number_field :concurrent_bitbucket_import_jobs_limit, class: 'form-control gl-form-input', title: s_('Import|Maximum number of simultaneous import jobs for Bitbucket Cloud importer'), data: { toggle: 'tooltip', container: 'body' }
+    .form-group
+      = f.label :concurrent_bitbucket_server_import_jobs_limit, s_('Import|Maximum number of simultaneous import jobs for Bitbucket Server importer'), class: 'label-light'
+      = f.number_field :concurrent_bitbucket_server_import_jobs_limit, class: 'form-control gl-form-input', title: s_('Import|Maximum number of simultaneous import jobs for Bitbucket Server importer'), data: { toggle: 'tooltip', container: 'body' }
+  = f.submit _('Save changes'), pajamas_button: true

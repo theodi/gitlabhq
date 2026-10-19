@@ -1,0 +1,7 @@
+# frozen_string_literal: true
+
+module GitpodHelper
+  def gitpod_enable_description
+    _('Users can launch a development environment from a GitLab browser tab when the %{linkStart}Ona%{linkEnd} integration is enabled.')
+  end
+end

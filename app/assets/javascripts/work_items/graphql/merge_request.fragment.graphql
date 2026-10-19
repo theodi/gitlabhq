@@ -1,0 +1,41 @@
+#import "~/work_items/graphql/milestone.fragment.graphql"
+
+fragment MergeRequestFragment on MergeRequest {
+  id
+  iid
+  title
+  webUrl
+  state
+  mergedAt
+  closedAt
+  sourceBranch
+  reference
+  headPipeline {
+    id
+    detailedStatus {
+      id
+      icon
+      text
+      detailsPath
+    }
+  }
+  milestone {
+    ...MilestoneFragment
+  }
+  project {
+    id
+    name
+    path
+    fullPath
+  }
+  assignees {
+    nodes {
+      webUrl
+      id
+      name
+      username
+      webPath
+      avatarUrl
+    }
+  }
+}

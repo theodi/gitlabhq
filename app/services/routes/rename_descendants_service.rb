@@ -1,0 +1,225 @@
+# frozen_string_literal: true
+
+module Routes
+  class RenameDescendantsService
+    BATCH_SIZE = 100
+    class RouteChanges
+      attr_reader :saved_change_to_parent_path, :saved_change_to_parent_name, :old_path_of_parent, :old_name_of_parent
+
+      def initialize(changes)
+        path_details = changes.fetch(:path)
+        name_details = changes.fetch(:name)
+
+        @saved_change_to_parent_path = path_details.fetch(:saved)
+        @old_path_of_parent = path_details.fetch(:old_value)
+        @saved_change_to_parent_name = name_details.fetch(:saved)
+        @old_name_of_parent = name_details.fetch(:old_value)
+      end
+    end
+
+    def initialize(parent_route)
+      @parent_route = parent_route
+      @routes_to_update = []
+      @redirect_routes_to_insert = []
+      @project_burns_to_insert = []
+      @route_claims_destroy_metadata = []
+      @route_claims_create_ids = []
+    end
+
+    def execute(changes)
+      process_changes(changes)
+      update_routes_for_descendants
+      refresh_service_desk_address_slugs
+      burn_descendant_project_paths
+      create_redirect_routes_for_descendants
+    end
+
+    private
+
+    def process_changes(changes)
+      changes = RouteChanges.new(changes)
+
+      saved_change_to_parent_path = changes.saved_change_to_parent_path
+      saved_change_to_parent_name = changes.saved_change_to_parent_name
+      @parent_path_changed = saved_change_to_parent_path
+
+      return unless saved_change_to_parent_path || saved_change_to_parent_name
+
+      old_path_of_parent = changes.old_path_of_parent
+      old_name_of_parent = changes.old_name_of_parent
+
+      # Batch by :path instead of the default :id so PostgreSQL can use the
+      # index_routes_on_path_text_pattern_ops index for both the LIKE filter
+      # and the ORDER BY, avoiding a slow sequential scan on the id index.
+      descendant_routes_inside(old_path_of_parent).each_batch(of: BATCH_SIZE, column: :path) do |relation|
+        relation.each do |descendant_route|
+          attributes_to_update = {}
+
+          if saved_change_to_parent_path && descendant_route.path.present?
+            attributes_to_update[:path] = descendant_route.path.sub(
+              old_path_of_parent, current_path_of_parent
+            )
+          end
+
+          if saved_change_to_parent_name && old_name_of_parent.present? && descendant_route.name.present?
+            attributes_to_update[:name] = descendant_route.name.sub(
+              old_name_of_parent, current_name_of_parent
+            )
+          end
+
+          collect_route_claims_metadata(descendant_route, attributes_to_update)
+          push_to_routes_data(descendant_route, attributes_to_update)
+          push_to_redirect_routes_data(descendant_route) if attributes_to_update[:path]
+          push_to_burn_data(descendant_route, attributes_to_update)
+        end
+      end
+    end
+
+    # Runs after update_routes_for_descendants so full_path_slug reflects the new path.
+    def refresh_service_desk_address_slugs
+      return unless @parent_path_changed
+      return if @routes_to_update.blank?
+
+      ServiceDesk::RefreshProjectKeyAddressSlugsService
+        .new(current_path_of_parent)
+        .execute
+    end
+
+    def push_to_burn_data(descendant_route, attributes_to_update)
+      return unless attributes_to_update[:path]
+      return unless descendant_route.source_type == 'Project'
+
+      @project_burns_to_insert << {
+        path: descendant_route.path,
+        project_id: descendant_route.source_id
+      }
+    end
+
+    def burn_descendant_project_paths
+      return if @project_burns_to_insert.blank?
+
+      @project_burns_to_insert.each_slice(BATCH_SIZE) do |slice|
+        ::Authn::BurnedProjectRoute.bulk_burn!(slice)
+      end
+    end
+
+    def push_to_routes_data(descendant_route, attributes_to_update)
+      return if attributes_to_update.empty?
+
+      # We merge updated attributes with all existing attributes of the `Route` record.
+      # This comprehensive attribute set is required for the initial attempt of `upsert_all` to function effectively.
+      # During the first phase (insertion attempt), `upsert_all` tries to insert new records into the database,
+      # necessitating the presence of all attributes, including NOT NULL attributes, to create new entries.
+      # Attributes like `source_id` and `source_type` are crucial, as they are NOT NULL attributes essential
+      # for record creation.
+      # In the event of conflicts (e.g., existing Route records with conflicting `id`s),
+      # `upsert_all` switches to an update operation for those specific conflicted records.
+      # And this is the way we get to update `path` and/or `name` of multiple, existing route records in one go.
+      @routes_to_update << descendant_route
+        .attributes.symbolize_keys
+        .merge(attributes_to_update)
+    end
+
+    def push_to_redirect_routes_data(descendant_route)
+      @redirect_routes_to_insert << {
+        source_id: descendant_route.source_id,
+        source_type: descendant_route.source_type,
+        path: descendant_route.path
+      }
+    end
+
+    def update_routes_for_descendants
+      return if @routes_to_update.blank?
+
+      @routes_to_update.each_slice(BATCH_SIZE) do |data|
+        # Utilizing `upsert_all` with `unique_by: :id` ensures that only updates occur,
+        # as the provided data contains attributes exclusively for existing `Route` records,
+        # identified by their unique `id`.
+        # This upsert operation is hence guaranteed to solely execute updates, never inserts.
+        Route.upsert_all(
+          data,
+          unique_by: :id,
+          update_only: [:path, :name], # on conflicts, we need to update only path/name.
+          record_timestamps: true # this makes sure that `updated_at` is updated.
+        )
+      end
+
+      schedule_route_claims
+    end
+
+    def create_redirect_routes_for_descendants
+      return if @redirect_routes_to_insert.blank?
+
+      inserted_ids = []
+
+      @redirect_routes_to_insert.each_slice(BATCH_SIZE) do |data|
+        # We need to make sure no duplicates are inserted.
+        # We use the value of `lower(path)` to make this check,
+        # which is already a UNIQUE index on this table.
+        result = RedirectRoute.insert_all(
+          data,
+          unique_by: :index_redirect_routes_on_path_unique_text_pattern_ops,
+          returning: :id
+        )
+        inserted_ids.concat(result.rows.flatten)
+      end
+
+      schedule_redirect_route_claims(inserted_ids)
+    end
+
+    # Early filter to top-level routes (path has no '/') to avoid collecting
+    # thousands of non-claimable descendant IDs into Sidekiq payloads.
+    def collect_route_claims_metadata(descendant_route, attributes_to_update)
+      return unless Route.cells_claims_enabled_for_attribute?(:path)
+      return unless attributes_to_update[:path]
+      return unless Route.cells_claims_attributes[:path][:if].call(descendant_route)
+
+      @route_claims_destroy_metadata << descendant_route.build_destroy_metadata_for_worker(:path)
+
+      @route_claims_create_ids << descendant_route.id
+    end
+
+    def schedule_route_claims
+      return if @route_claims_destroy_metadata.empty? && @route_claims_create_ids.empty?
+
+      destroy_metadata = @route_claims_destroy_metadata
+      create_ids = @route_claims_create_ids
+      batch_size = Cells::Claimable::BULK_CLAIMS_BATCH_SIZE
+
+      @parent_route.run_after_commit do
+        destroy_metadata.each_slice(batch_size) do |slice|
+          Cells::BulkClaimsWorker.perform_async(Route.name, 'path', { 'destroy_metadata' => slice })
+        end
+
+        create_ids.each_slice(batch_size) do |slice|
+          Cells::BulkClaimsWorker.perform_async(Route.name, 'path', { 'create_record_ids' => slice })
+        end
+      end
+    end
+
+    def schedule_redirect_route_claims(inserted_ids)
+      return if inserted_ids.empty?
+      return unless RedirectRoute.cells_claims_enabled_for_attribute?(:path)
+
+      batch_size = Cells::Claimable::BULK_CLAIMS_BATCH_SIZE
+
+      @parent_route.run_after_commit do
+        inserted_ids.each_slice(batch_size) do |slice|
+          Cells::BulkClaimsWorker.perform_async(RedirectRoute.name, 'path', { 'create_record_ids' => slice })
+        end
+      end
+    end
+
+    def current_name_of_parent
+      @parent_route.name
+    end
+
+    def current_path_of_parent
+      @parent_route.path
+    end
+
+    def descendant_routes_inside(path)
+      Route.inside_path(path)
+    end
+  end
+end

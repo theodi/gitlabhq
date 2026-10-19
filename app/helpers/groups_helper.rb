@@ -1,41 +1,327 @@
+# frozen_string_literal: true
+
 module GroupsHelper
-  def remove_user_from_group_message(group, member)
-    if member.user
-      "Are you sure you want to remove \"#{member.user.name}\" from \"#{group.name}\"?"
+  def can_change_group_visibility_level?(group)
+    can?(current_user, :change_visibility_level, group)
+  end
+
+  def can_update_default_branch_protection?(group)
+    can?(current_user, :update_default_branch_protection, group)
+  end
+
+  def can_change_share_with_group_lock?(group)
+    can?(current_user, :change_share_with_group_lock, group)
+  end
+
+  def can_change_prevent_sharing_groups_outside_hierarchy?(group)
+    can?(current_user, :change_prevent_sharing_groups_outside_hierarchy, group)
+  end
+
+  def can_disable_group_emails?(group)
+    can?(current_user, :set_emails_disabled, group) && !group.parent&.emails_disabled?
+  end
+
+  def can_set_group_diff_preview_in_email?(group)
+    return false if group.parent&.show_diff_preview_in_email?.equal?(false)
+
+    can?(current_user, :set_show_diff_preview_in_email, group)
+  end
+
+  def can_admin_group_member?(group)
+    Ability.allowed?(current_user, :admin_group_member, group)
+  end
+
+  def can_invite_group_member?(group)
+    Ability.allowed?(current_user, :invite_group_members, group)
+  end
+
+  def can_create_organization_from_group_settings?(group)
+    return false unless Organizations::Release.enabled?(:create_org_from_group_settings, group)
+    return false unless group.root?
+    return false unless can?(current_user, :admin_group, group)
+
+    # Follow-up to consider moving this check to SaaS feature - https://gitlab.com/gitlab-org/gitlab/-/work_items/608261
+    return Gitlab.com? if Organizations::Organization.default?(group.organization_id) # rubocop:disable Gitlab/AvoidGitlabInstanceChecks -- self-managed can only have a single organization, see https://handbook.gitlab.com/handbook/engineering/architecture/design-documents/organization/decisions/007_self_managed_dedicated_single_organization/
+
+    group.organization.unconfirmed?
+  end
+
+  def show_prevent_inviting_groups_outside_hierarchy_setting?(group)
+    group.root?
+  end
+
+  def group_icon_url(group, options = {})
+    group = Group.find_by_full_path(group) if group.is_a?(String)
+
+    group.try(:avatar_url) || ActionController::Base.helpers.image_path('no_group_avatar.png')
+  end
+
+  def push_group_breadcrumbs(group)
+    sorted_ancestors(group).with_route.reverse_each do |parent|
+      push_to_schema_breadcrumb(parent.name, group_path(parent), parent.try(:avatar_url))
+    end
+
+    push_to_schema_breadcrumb(group.name, group_path(group), group.try(:avatar_url))
+  end
+
+  def projects_lfs_status(group)
+    lfs_status =
+      if group.lfs_enabled?
+        group.projects.count(&:lfs_enabled?)
+      else
+        group.projects.count { |project| !project.lfs_enabled? }
+      end
+
+    size = group.projects.size
+
+    if lfs_status == size
+      'for all projects'
     else
-      "Are you sure you want to revoke the invitation for \"#{member.invite_email}\" to join \"#{group.name}\"?"
+      "for #{lfs_status} out of #{pluralize(size, 'project')}"
     end
   end
 
-  def leave_group_message(group)
-    "Are you sure you want to leave \"#{group}\" group?"
-  end
+  def group_lfs_status(group)
+    status = group.lfs_enabled? ? 'enabled' : 'disabled'
 
-  def should_user_see_group_roles?(user, group)
-    if user
-      user.is_admin? || group.members.exists?(user_id: user.id)
-    else
-      false
+    content_tag(:span, class: "lfs-#{status}") do
+      "#{status.humanize} #{projects_lfs_status(group)}"
     end
   end
 
-  def group_settings_page?
-    if current_controller?('groups')
-      current_action?('edit') || current_action?('projects')
+  def share_with_group_lock_help_text(group)
+    return default_help unless group.parent&.share_with_group_lock?
+
+    if group.share_with_group_lock?
+      if can?(current_user, :change_share_with_group_lock, group.parent)
+        ancestor_locked_but_you_can_override(group)
+      else
+        ancestor_locked_so_ask_the_owner(group)
+      end
     else
-      false
+      ancestor_locked_and_has_been_overridden(group)
     end
   end
 
-  def group_icon(group)
-    if group.is_a?(String)
-      group = Group.find_by(path: group)
-    end
+  def link_to_group(group)
+    link_to(group.name, group_path(group))
+  end
 
-    if group && group.avatar.present?
-      group.avatar.url
-    else
-      image_path('no_group_avatar.png')
+  def prevent_sharing_groups_outside_hierarchy_help_text(group)
+    safe_format(s_("GroupSettings|Available only on the top-level group. Applies to all subgroups. Groups already shared with a group outside %{group} are still shared unless removed manually."), group: link_to_group(group))
+  end
+
+  def render_setting_to_allow_project_access_token_creation?(group)
+    group.root? && current_user.can?(:admin_setting_to_allow_resource_access_token_creation, group)
+  end
+
+  def show_thanks_for_purchase_alert?(quantity)
+    quantity.to_i > 0
+  end
+
+  def group_project_list_sort_by
+    @group_projects_sort || @sort || params[:sort] || sort_value_recently_created
+  end
+
+  def subgroup_creation_data(group)
+    {
+      parent_group_url: group.parent && group_url(group.parent),
+      parent_group_name: group.parent&.name,
+      import_existing_group_path: new_group_path(parent_id: group.parent_id, anchor: 'import-group-pane')
+    }
+  end
+
+  def group_name_and_path_app_data
+    {
+      base_path: root_url,
+      mattermost_enabled: Gitlab.config.mattermost.enabled.to_s
+    }
+  end
+
+  def groups_show_app_data(group)
+    {
+      subgroups_and_projects_endpoint: group_children_path(group, format: :json),
+      initial_sort: group_project_list_sort_by,
+      full_path: group.full_path,
+      new_subgroup_path: new_group_path(parent_id: group.id, anchor: 'create-group-pane', organization_path: group.organization.scoped_path),
+      new_project_path: new_project_path(namespace_id: group.id, organization_path: group.organization.scoped_path),
+      can_create_subgroups: can?(current_user, :create_subgroup, group),
+      can_create_projects: can?(current_user, :create_projects, group),
+      empty_projects_illustration: image_path('illustrations/empty-state/empty-projects-md.svg')
+    }.to_json
+  end
+
+  def group_readme_app_data(group_readme)
+    {
+      web_path: group_readme.present.web_path,
+      name: group_readme.present.name
+    }
+  end
+
+  def show_group_readme?(group)
+    return false unless group.group_readme
+
+    can?(current_user, :read_code, group.readme_project)
+  end
+
+  def group_settings_readme_app_data(group)
+    {
+      group_readme_path: group.group_readme&.present&.web_path,
+      readme_project_path: group.readme_project&.present&.path_with_namespace,
+      group_path: group.full_path,
+      group_id: group.id
+    }
+  end
+
+  def group_archive_settings_app_data(group)
+    {
+      resource_type: 'group',
+      resource_id: group.id,
+      resource_path: group_path(group),
+      marked_for_deletion: group.scheduled_for_deletion_in_hierarchy_chain?.to_s
+    }
+  end
+
+  def group_unarchive_settings_app_data(group)
+    {
+      resource_type: 'group',
+      resource_id: group.id,
+      resource_path: group_path(group),
+      ancestors_archived: group.ancestors_archived?.to_s
+    }
+  end
+
+  def enabled_git_access_protocol_options_for_group
+    case ::Gitlab::CurrentSettings.enabled_git_access_protocol
+    when nil, ""
+      [[_("Both SSH and HTTP(S)"), "all"], [_("Only SSH"), "ssh"], [_("Only HTTP(S)"), "http"]]
+    when "ssh"
+      [[_("Only SSH"), "ssh"]]
+    when "http"
+      [[_("Only HTTP(S)"), "http"]]
     end
+  end
+
+  def new_custom_emoji_path(group)
+    return unless group
+    return unless can?(current_user, :create_custom_emoji, group)
+
+    new_group_custom_emoji_path(group)
+  end
+
+  def groups_list_with_filtered_search_app_data(endpoint)
+    {
+      endpoint: endpoint,
+      initial_sort: group_project_list_sort_by,
+      base_path: dashboard_groups_path,
+      can_create_group: current_user.can_create_group?
+    }.to_json
+  end
+
+  def group_more_action_data(group)
+    request = group.requesters.with_user(current_user).first
+
+    {
+      group: GroupChildSerializer.new(current_user:).represent(group).to_json,
+      can_request_access: can_request_access(current_user, group, request).to_s,
+      can_withdraw_access_request: can_withdraw_access_request(current_user, request).to_s,
+      dashboard_path: dashboard_groups_path
+    }
+  end
+
+  def group_merge_requests(group)
+    MergeRequestsFinder.new(current_user, group_id: group.id, include_subgroups: true, non_archived: true).execute
+  end
+
+  def step_up_auth_provider_options_for_select
+    available_step_up_auth_providers_for_namespace.map do |provider|
+      provider_config = Gitlab::Auth::OAuth::Provider.config_for(provider.to_s)
+      provider_label = provider_config[:label].presence || provider.to_s.humanize
+      [provider_label, provider.to_s]
+    end
+  end
+
+  private
+
+  def can_request_access(user, group, request)
+    request.nil? && can?(user, :request_access, group)
+  end
+
+  def can_withdraw_access_request(user, request)
+    can?(user, :withdraw_member_access_request, request)
+  end
+
+  def ancestor_group(group)
+    ancestor = oldest_consecutively_locked_ancestor(group)
+    if can?(current_user, :read_group, ancestor)
+      link_to ancestor.name, group_path(ancestor)
+    else
+      ancestor.name
+    end
+  end
+
+  def remove_the_share_with_group_lock_from_ancestor(group)
+    ancestor = oldest_consecutively_locked_ancestor(group)
+    text = format(s_("GroupSettings|remove the share with group lock from %{ancestor_group_name}"), ancestor_group_name: ancestor.name)
+    if can?(current_user, :admin_group, ancestor)
+      link_to text, edit_group_path(ancestor)
+    else
+      text
+    end
+  end
+
+  def oldest_consecutively_locked_ancestor(group)
+    sorted_ancestors(group).find do |group|
+      !group.has_parent? || !group.parent.share_with_group_lock?
+    end
+  end
+
+  # Ancestors sorted by hierarchy depth in bottom-top order.
+  def sorted_ancestors(group)
+    if group.root_ancestor.use_traversal_ids?
+      group.ancestors(hierarchy_order: :asc)
+    else
+      group.ancestors
+    end
+  end
+
+  def default_help
+    s_("GroupSettings|Applied to all subgroups unless overridden by a group owner. Groups already added to the project lose access.")
+  end
+
+  def ancestor_locked_but_you_can_override(group)
+    safe_format(s_("GroupSettings|This setting is applied on %{ancestor_group}. You can override the setting or %{remove_ancestor_share_with_group_lock}."), ancestor_group: ancestor_group(group), remove_ancestor_share_with_group_lock: remove_the_share_with_group_lock_from_ancestor(group))
+  end
+
+  def ancestor_locked_so_ask_the_owner(group)
+    safe_format(s_("GroupSettings|This setting is applied on %{ancestor_group}. To share projects in this group with another group, ask the owner to override the setting or %{remove_ancestor_share_with_group_lock}."), ancestor_group: ancestor_group(group), remove_ancestor_share_with_group_lock: remove_the_share_with_group_lock_from_ancestor(group))
+  end
+
+  def ancestor_locked_and_has_been_overridden(group)
+    safe_format(s_("GroupSettings|This setting is applied on %{ancestor_group} and has been overridden on this subgroup."), ancestor_group: ancestor_group(group))
+  end
+
+  def group_url_error_message
+    s_('GroupSettings|Choose a group path that does not start with a dash or end with a period. It can also contain alphanumeric characters and underscores.')
+  end
+
+  # Maps `jobs_to_be_done` values to option texts
+  def localized_jobs_to_be_done_choices
+    {
+      basics: _('I want to learn the basics of Git'),
+      move_repository: _('I want to move my repository to GitLab from somewhere else'),
+      code_storage: _('I want to store my code'),
+      exploring: _('I want to explore GitLab to see if it’s worth switching to'),
+      ci: _('I want to use GitLab CI with my existing repository'),
+      other: _('A different reason')
+    }.with_indifferent_access.freeze
+  end
+
+  def available_step_up_auth_providers_for_namespace
+    Gitlab::Auth::Oidc::StepUpAuthentication.enabled_providers(
+      scope: Gitlab::Auth::Oidc::StepUpAuthentication::SCOPE_NAMESPACE
+    )
   end
 end
+
+GroupsHelper.prepend_mod_with('GroupsHelper')

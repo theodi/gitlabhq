@@ -1,0 +1,677 @@
+<script>
+import { GlBreakpointInstance, breakpoints } from '@gitlab/ui/src/utils'; // eslint-disable-line no-restricted-syntax -- GlBreakpointInstance is used intentionally here. In this case we must obtain viewport breakpoints
+import { GlNavItem, GlModalDirective, GlTooltipDirective, GlToastMixin } from '@gitlab/ui';
+import { Portal } from 'portal-vue';
+import superSidebarDataQuery from '~/super_sidebar/graphql/queries/super_sidebar.query.graphql';
+import { __, s__, sprintf } from '~/locale';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import axios from '~/lib/utils/axios_utils';
+import { BV_SHOW_MODAL } from '~/lib/utils/constants';
+import { pinsPath } from '~/lib/utils/path_helpers/user';
+import { Mousetrap } from '~/lib/mousetrap';
+import { keysFor, OPEN_FEATURE_LIBRARY } from '~/behaviors/shortcuts/keybindings';
+import { userCounts } from '~/super_sidebar/user_counts_manager';
+import {
+  formatAsyncCount,
+  pinnedGroupCollapseKey,
+  setPinnedGroupExpanded,
+} from '~/super_sidebar/utils';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import dismissUserCalloutMutation from '~/graphql_shared/mutations/dismiss_user_callout.mutation.graphql';
+import {
+  HIDDEN_NAV_ITEM_CLASS,
+  PANEL_TYPES,
+  PANELS_WITH_PINS,
+  PANELS_WITH_HIDEABLE_UNPINNED_ITEMS,
+  PINNED_CATEGORY_AUTO_GROUP_THRESHOLD,
+  PINNED_NAV_STORAGE_KEY,
+  MAX_OPEN_WORK_ITEMS_COUNT,
+  SETTINGS_DISCLOSURE_PORTAL_NAME,
+  SETTINGS_MENU_ITEM_ID,
+} from '../constants';
+import NavItem from './nav_item.vue';
+import PinnedSection from './pinned_section.vue';
+import MenuSection from './menu_section.vue';
+import FeatureLibraryModal from './feature_library/feature_library_modal.vue';
+import { MODAL_ID, SHIMMER_CALLOUT_FEATURE_NAME } from './feature_library/constants';
+
+export default {
+  name: 'SidebarMenu',
+  components: {
+    MenuSection,
+    NavItem,
+    PinnedSection,
+    GlNavItem,
+    FeatureLibraryModal,
+    Portal,
+  },
+  settingsDisclosurePortalName: SETTINGS_DISCLOSURE_PORTAL_NAME,
+  directives: {
+    GlModal: GlModalDirective,
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [glFeatureFlagsMixin(), GlToastMixin],
+  modalId: MODAL_ID,
+  i18n: {
+    browseMoreFeatures: __('Feature catalog'),
+    pinAdded: s__('Navigation|%{title} added to pinned items'),
+    pinRemoved: s__('Navigation|%{title} removed from pinned items'),
+    emptyPinsHint: s__('Navigation|Pin frequently used features for quick access.'),
+  },
+  inject: {
+    currentPath: {},
+    isIconOnly: { default: false },
+  },
+  provide() {
+    return {
+      pinnedItemIds: this.changedPinnedItemIds,
+      panelSupportsPins: this.supportsPins,
+      panelType: this.panelType,
+    };
+  },
+  props: {
+    items: {
+      type: Array,
+      required: true,
+    },
+    isLoggedIn: {
+      type: Boolean,
+      required: true,
+    },
+    pinnedItemIds: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    panelType: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    showFeatureLibraryShimmer: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    // User opt-in (persisted by SuperSidebar) to fall back to the full nav
+    // categories while hide_unpinned_sidebar_items is enabled.
+    showOldCategories: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    // Whether SuperSidebar portals the settings disclosure into the context header.
+    settingsInHeader: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  data() {
+    return {
+      showFlyoutMenus: false,
+      asyncCountQuery: {},
+
+      // Tracks whether the "More features" shimmer should still play. Set to
+      // false once the user opens the modal so the animation stops immediately
+      // without waiting for a page reload; the dismissed callout keeps it off
+      // on subsequent visits.
+      shimmerActive: this.showFeatureLibraryShimmer,
+
+      // This is used to detect if user came to this page by clicking a
+      // nav item in the pinned section.
+      wasPinnedNav: this.readAndResetPinnedNav(),
+
+      // This is used as a provide and injected into the nav items.
+      // Note: It has to be an object to be reactive.
+      changedPinnedItemIds: { ids: this.pinnedItemIds },
+    };
+  },
+  apollo: {
+    asyncCountQuery: {
+      query: superSidebarDataQuery,
+      variables() {
+        return { fullPath: this.currentPath };
+      },
+      context: {
+        featureCategory: 'navigation',
+      },
+      skip() {
+        return !this.currentPath;
+      },
+      update(data) {
+        const values = data?.namespace?.sidebar ?? {};
+        const result = {};
+
+        for (const [key, value] of Object.entries(values)) {
+          if (key === 'openWorkItemsCount' && value >= MAX_OPEN_WORK_ITEMS_COUNT) {
+            result[key] = `${formatAsyncCount(MAX_OPEN_WORK_ITEMS_COUNT)}+`;
+          } else {
+            const formatted = formatAsyncCount(value);
+            if (formatted) {
+              result[key] = formatted;
+            }
+          }
+        }
+
+        return result;
+      },
+      error(error) {
+        // Override gon.feature_category as this code loads on all pages
+        Sentry.captureException(error, { tags: { feature_category: 'navigation' } });
+      },
+    },
+  },
+  computed: {
+    /**
+     * The behaviour below might be a little unintuitive. For some sidebar items we have set `pill_count_field`
+     * instead of `pill_count`. This is used for work item counts on groups and projects, so that they happen
+     * async with the asyncCountQuery above.
+     *
+     * For the `Your work` sidebar we are using the userCounts from user_counts_manager.js, to make sure that
+     * the counts always match what is in the UserBar.
+     *
+     * It is thinkable that we move all of this out into a "Count Manager" and use it in all sidebars, so that
+     * the sidebar can become a little more agnostic regarding the logic of counts. The sidebar would just ask:
+     * Yo, Count Manager, what is the count for this item and retrieve it. Whether that data available sync,
+     * via a Service Worker or some GraphQL API calls, shouldn't matter too much.
+     */
+    asyncCount() {
+      if (this.panelType === PANEL_TYPES.YOUR_WORK) {
+        const result = {};
+        for (const [key, value] of Object.entries(userCounts)) {
+          result[key] = value > 0 ? value : null;
+        }
+        return result;
+      }
+      return this.asyncCountQuery;
+    },
+    // Returns the list of items that we want to have static at the top.
+    // Only sidebars that support pins also support a static section.
+    staticItems() {
+      if (!this.isPinnablePanel) return [];
+
+      return this.items.filter((item) => !item.items || item.items.length === 0);
+    },
+
+    // Returns only the items that aren't static at the top and makes sure no
+    // section shows as active (and expanded) when a pinned nav item was used.
+
+    nonStaticItems() {
+      if (!this.isPinnablePanel) return this.items;
+
+      return this.items
+        .filter((item) => item.items && item.items.length > 0)
+        .map((item) => {
+          const showAsActive = item.is_active && !this.wasPinnedNav;
+
+          return { ...item, is_active: showAsActive };
+        });
+    },
+
+    // Returns a flat list of all items that are in sections, but not the sections.
+    // Only items from sections (item.items) can be pinned.
+    flatPinnableItems() {
+      return this.nonStaticItems.flatMap((item) => item.items).filter(Boolean);
+    },
+
+    pinnedItems() {
+      return this.changedPinnedItemIds.ids
+        .map((id) => this.flatPinnableItems.find((item) => item.id === id))
+        .filter(Boolean);
+    },
+    // Pinned items grouped under their parent category, in nonStaticItems order.
+    // Each group keeps only the categories that contain at least one pinned
+    // item, and pins within a group keep the user's pin order.
+    pinnedGroups() {
+      return this.nonStaticItems
+        .map((section) => ({
+          ...section,
+          items: this.pinnedItems.filter((pin) => section.items.some((item) => item.id === pin.id)),
+        }))
+        .filter((section) => section.items.length > 0);
+    },
+    autoGroupedPins() {
+      return this.pinnedGroups.filter(
+        (group) => group.items.length >= PINNED_CATEGORY_AUTO_GROUP_THRESHOLD,
+      );
+    },
+    // Pins not in an auto group, in the user's pin order so reordering still works.
+    loosePinnedItems() {
+      const groupedIds = new Set(
+        this.autoGroupedPins.flatMap((group) => group.items.map(({ id }) => id)),
+      );
+
+      return this.pinnedItems.filter(({ id }) => !groupedIds.has(id));
+    },
+    isPinnablePanel() {
+      return PANELS_WITH_PINS.includes(this.panelType);
+    },
+    supportsPins() {
+      return this.isLoggedIn && this.isPinnablePanel;
+    },
+    hasStaticItems() {
+      return this.staticItems.length > 0;
+    },
+    showUnpinnedItems() {
+      return (
+        !this.glFeatures.hideUnpinnedSidebarItems ||
+        !PANELS_WITH_HIDEABLE_UNPINNED_ITEMS.includes(this.panelType)
+      );
+    },
+    showFeatureLibrary() {
+      return this.isPinnablePanel && this.panelType !== 'organization';
+    },
+    // True when the flag hides unpinned items but the user opted back into the
+    // full category list. Drives section rendering only; the pinned area keeps
+    // the new design (keyed off showUnpinnedItems).
+    showFullNav() {
+      return !this.showUnpinnedItems && this.showOldCategories;
+    },
+    // Compact mode only (Full keeps one flat pinned list). Without any auto
+    // group, the plain flat pinned section renders the same thing.
+    showGroupedPins() {
+      return !this.showUnpinnedItems && !this.showOldCategories && this.autoGroupedPins.length > 0;
+    },
+    showEmptyPinsHint() {
+      return !this.showUnpinnedItems && this.pinnedItems.length === 0 && !this.isIconOnly;
+    },
+    sectionsToRender() {
+      if (!this.showUnpinnedItems && !this.showOldCategories) {
+        return this.nonStaticItems.filter((item) => item.id === SETTINGS_MENU_ITEM_ID);
+      }
+      return this.nonStaticItems;
+    },
+
+    // The current page's nav item, when it isn't pinned and isn't already
+    // rendered elsewhere in the sidebar. Gives users a sense of place, and a
+    // way to pin the page they are on.
+    activeUnpinnedItem() {
+      if (this.showUnpinnedItems) return null;
+
+      const renderedSectionIds = new Set(this.sectionsToRender.map(({ id }) => id));
+
+      // More than one item can be active at once (on group work items, both the
+      // visible issue list and the hidden epic list match), so skip the ones
+      // that are hidden in the sidebar and take the first item left.
+      return this.nonStaticItems
+        .filter((section) => !renderedSectionIds.has(section.id))
+        .flatMap((section) => section.items)
+        .find(
+          (item) =>
+            item.is_active &&
+            !this.changedPinnedItemIds.ids.includes(item.id) &&
+            // A pinned item can be the hidden twin of this one (a stale
+            // group_epic_list pin points at the same page as group_issue_list),
+            // in which case the page is already represented in the sidebar.
+            !this.pinnedItems.some((pinned) => pinned.link === item.link) &&
+            !item.link_classes?.includes(HIDDEN_NAV_ITEM_CLASS),
+        );
+    },
+    // Pin context passed to the portalled settings disclosure.
+    settingsPinContext() {
+      return {
+        pinnedItemIds: this.changedPinnedItemIds,
+        panelSupportsPins: this.supportsPins,
+        panelType: this.panelType,
+      };
+    },
+  },
+  mounted() {
+    this.decideFlyoutState();
+    window.addEventListener('resize', this.decideFlyoutState);
+
+    if (this.showFeatureLibrary) {
+      Mousetrap.bind(keysFor(OPEN_FEATURE_LIBRARY), this.openFeatureLibrary);
+    }
+  },
+  beforeDestroy() {
+    window.removeEventListener('resize', this.decideFlyoutState);
+
+    if (this.showFeatureLibrary) {
+      Mousetrap.unbind(keysFor(OPEN_FEATURE_LIBRARY));
+    }
+  },
+  methods: {
+    async dismissShimmerCallout() {
+      // Guard so we only send the mutation the first time the modal is opened.
+      if (!this.shimmerActive) return;
+
+      this.shimmerActive = false;
+
+      try {
+        await this.$apollo.mutate({
+          mutation: dismissUserCalloutMutation,
+          variables: {
+            input: { featureName: SHIMMER_CALLOUT_FEATURE_NAME },
+          },
+        });
+      } catch (error) {
+        Sentry.captureException(error);
+      }
+    },
+    openFeatureLibrary() {
+      this.dismissShimmerCallout();
+      this.$root.$emit(BV_SHOW_MODAL, MODAL_ID);
+
+      return false;
+    },
+    createPin(itemId, itemTitle) {
+      this.changedPinnedItemIds.ids.push(itemId);
+      this.expandGroupFormedBy(itemId);
+      this.$toast.show(
+        sprintf(this.$options.i18n.pinAdded, {
+          title: itemTitle,
+        }),
+      );
+      this.updatePins();
+    },
+    // A group that forms from a pin mounts fresh and reads a possibly stale
+    // collapsed state, which would hide pins that were visible a moment ago.
+    expandGroupFormedBy(itemId) {
+      if (!this.showGroupedPins) return;
+
+      const formedGroup = this.autoGroupedPins.find(
+        (group) =>
+          group.items.length === PINNED_CATEGORY_AUTO_GROUP_THRESHOLD &&
+          group.items.some(({ id }) => id === itemId),
+      );
+
+      if (formedGroup) {
+        setPinnedGroupExpanded(pinnedGroupCollapseKey(this.panelType, formedGroup.id), true);
+      }
+    },
+    destroyPin(itemId, itemTitle, source = {}) {
+      this.changedPinnedItemIds.ids = this.changedPinnedItemIds.ids.filter((id) => id !== itemId);
+      this.$toast.show(
+        sprintf(this.$options.i18n.pinRemoved, {
+          title: itemTitle,
+        }),
+      );
+
+      this.updatePins();
+
+      if (source?.fromPinnedSection) {
+        this.$nextTick(() => {
+          this.focusAfterPinnedUnpin(itemId);
+        });
+      }
+    },
+    focusAfterPinnedUnpin(itemId) {
+      if (!this.showFeatureLibrary) {
+        this.$refs.pinnedSectionButton?.$el.querySelector('button')?.focus();
+        return;
+      }
+
+      if (this.activeUnpinnedItem?.id === itemId) {
+        this.$refs.currentPageItem?.focus();
+      } else {
+        this.$refs.featureLibraryTrigger?.$el?.focus();
+      }
+    },
+    movePin(fromId, toId, isDownwards) {
+      const fromIndex = this.changedPinnedItemIds.ids.indexOf(fromId);
+      this.changedPinnedItemIds.ids.splice(fromIndex, 1);
+
+      let toIndex = this.changedPinnedItemIds.ids.indexOf(toId);
+
+      // If the item was moved downwards, we insert it *after* the item it was dragged on to.
+      // This matches how vuedraggable previews the change while still dragging.
+      if (isDownwards) toIndex += 1;
+
+      this.changedPinnedItemIds.ids.splice(toIndex, 0, fromId);
+
+      this.updatePins();
+    },
+    onModalPinToggle(itemId, nextState, title) {
+      const itemTitle = title || itemId;
+      if (nextState) {
+        this.createPin(itemId, itemTitle);
+      } else {
+        this.destroyPin(itemId, itemTitle);
+      }
+    },
+    updatePins() {
+      axios
+        .put(pinsPath(), {
+          panel: this.panelType,
+          menu_item_ids: this.changedPinnedItemIds.ids,
+        })
+        .then((response) => {
+          this.changedPinnedItemIds.ids = response.data;
+        })
+        .catch((e) => {
+          // Override gon.feature_category as this code loads on all pages
+          Sentry.captureException(e, { tags: { feature_category: 'navigation' } });
+        });
+    },
+    isSection(navItem) {
+      return navItem.items?.length;
+    },
+    isSettingsSection(navItem) {
+      return navItem.id === SETTINGS_MENU_ITEM_ID;
+    },
+    // Derive from showUnpinnedItems (not the raw flag) so the organization
+    // panel, which is exempt from unpinned-hiding, keeps its in-place section.
+    // Settings moves to the top disclosure in every mode the flag applies to,
+    // including the Full mode fallback.
+    settingsAsDisclosure(navItem) {
+      return !this.showUnpinnedItems && this.isSettingsSection(navItem);
+    },
+    decideFlyoutState() {
+      this.showFlyoutMenus = GlBreakpointInstance.windowWidth() >= breakpoints.md;
+    },
+    readAndResetPinnedNav() {
+      const wasPinnedNav = sessionStorage.getItem(PINNED_NAV_STORAGE_KEY);
+      sessionStorage.removeItem(PINNED_NAV_STORAGE_KEY);
+      return wasPinnedNav === 'true';
+    },
+    // Only force-expand the group that holds the pin the user just navigated to,
+    // so a pinned-nav click doesn't clobber other groups' collapse state.
+    groupWasPinnedNav(group) {
+      return this.wasPinnedNav && group.items.some((item) => item.is_active);
+    },
+  },
+};
+</script>
+
+<template>
+  <div
+    class="gl-relative gl-px-3 gl-py-2"
+    :class="{
+      'gl-flex gl-h-full gl-flex-col': !showUnpinnedItems && !showFullNav,
+    }"
+  >
+    <ul
+      v-if="hasStaticItems"
+      class="gl-m-0 gl-list-none gl-p-0"
+      :class="{ 'gl-mb-3': showUnpinnedItems }"
+      data-testid="static-items-section"
+    >
+      <nav-item
+        v-for="item in staticItems"
+        :key="item.id"
+        :item="item"
+        is-static
+        :async-count="asyncCount"
+        class="gl-font-bold"
+      />
+    </ul>
+    <!-- Wrapper carries the pinned-section id so SPA active-nav highlighting
+         (see updateActiveNavigation) still finds items split across groups;
+         an id can't be repeated on each group. -->
+    <div
+      v-if="isPinnablePanel && showGroupedPins"
+      id="super-sidebar-pinned-section"
+      class="gl-contents"
+    >
+      <pinned-section
+        v-if="loosePinnedItems.length > 0"
+        :supports-pins="supportsPins"
+        :items="loosePinnedItems"
+        :has-flyout="showFlyoutMenus"
+        :was-pinned-nav="wasPinnedNav"
+        headerless
+        :async-count="asyncCount"
+        @pin-remove="destroyPin"
+        @pin-reorder="movePin"
+      />
+      <hr
+        v-if="isIconOnly && loosePinnedItems.length > 0"
+        aria-hidden="true"
+        class="gl-border-t gl-mx-3 gl-my-2 gl-border-strong"
+        data-testid="loose-pins-separator"
+      />
+      <template v-for="(group, index) in autoGroupedPins">
+        <!-- Collapsed sidebar has no category icon to show, so drop the headers
+             and separate each category's flattened icons with a divider. -->
+        <hr
+          v-if="isIconOnly && index > 0"
+          :key="`${group.id}-separator`"
+          aria-hidden="true"
+          class="gl-border-t gl-mx-3 gl-my-2 gl-border-strong"
+        />
+        <pinned-section
+          :key="group.id"
+          :supports-pins="supportsPins"
+          :items="group.items"
+          :group-item="group"
+          :headerless="isIconOnly"
+          :has-flyout="showFlyoutMenus"
+          :was-pinned-nav="groupWasPinnedNav(group)"
+          :async-count="asyncCount"
+          :class="{
+            'gl-mt-3': !isIconOnly && index > 0,
+            'gl-mt-2': !isIconOnly && index === 0,
+            'gl-mb-2': !isIconOnly && index === autoGroupedPins.length - 1,
+          }"
+          @pin-remove="destroyPin"
+          @pin-reorder="movePin"
+        />
+      </template>
+    </div>
+    <pinned-section
+      v-else-if="isPinnablePanel"
+      id="super-sidebar-pinned-section"
+      ref="pinnedSectionButton"
+      :supports-pins="supportsPins"
+      :items="pinnedItems"
+      :has-flyout="showFlyoutMenus"
+      :was-pinned-nav="wasPinnedNav"
+      :headerless="!showUnpinnedItems"
+      :async-count="asyncCount"
+      @pin-remove="destroyPin"
+      @pin-reorder="movePin"
+    />
+    <div
+      v-if="showEmptyPinsHint"
+      class="gl-rounded-lg gl-border-1 gl-border-dashed gl-border-strong gl-p-2"
+      data-testid="empty-pins-hint"
+    >
+      <p class="gl-mb-2 gl-px-3 gl-pt-1 gl-text-sm gl-text-subtle">
+        {{ $options.i18n.emptyPinsHint }}
+      </p>
+      <gl-nav-item
+        v-if="showFeatureLibrary"
+        ref="featureLibraryTrigger"
+        v-gl-modal="$options.modalId"
+        :aria-label="$options.i18n.browseMoreFeatures"
+        :class="{ 'feature-library-shimmer': shimmerActive }"
+        data-testid="feature-library-trigger"
+        icon="feature-addition"
+        @click="dismissShimmerCallout"
+      >
+        {{ $options.i18n.browseMoreFeatures }}
+      </gl-nav-item>
+    </div>
+    <gl-nav-item
+      v-else-if="showFeatureLibrary"
+      ref="featureLibraryTrigger"
+      v-gl-modal="$options.modalId"
+      v-gl-tooltip.right.viewport="isIconOnly ? $options.i18n.browseMoreFeatures : ''"
+      :aria-label="$options.i18n.browseMoreFeatures"
+      :class="{ 'feature-library-shimmer': shimmerActive }"
+      data-testid="feature-library-trigger"
+      icon="feature-addition"
+      :is-icon-only="isIconOnly"
+      @click="dismissShimmerCallout"
+    >
+      {{ $options.i18n.browseMoreFeatures }}
+    </gl-nav-item>
+    <template v-if="activeUnpinnedItem">
+      <hr aria-hidden="true" class="gl-border-t gl-m-3 gl-border-strong" />
+      <ul
+        :aria-label="s__('Navigation|Current page')"
+        class="gl-m-0 gl-list-none gl-p-0"
+        data-testid="current-page-section"
+      >
+        <nav-item
+          ref="currentPageItem"
+          :item="activeUnpinnedItem"
+          :async-count="asyncCount"
+          @pin-add="createPin"
+        />
+      </ul>
+    </template>
+    <feature-library-modal
+      v-if="showFeatureLibrary"
+      :supports-pins="supportsPins"
+      :sections="nonStaticItems"
+      :current-pinned-ids="changedPinnedItemIds.ids"
+      @pin-toggle="onModalPinToggle"
+    />
+    <hr
+      v-if="isPinnablePanel && (showUnpinnedItems || showFullNav)"
+      aria-hidden="true"
+      class="gl-mx-3 gl-my-4"
+      data-testid="main-menu-separator"
+    />
+    <ul
+      id="super-sidebar-non-static-section"
+      aria-labelledby="super-sidebar-context-header-title"
+      class="gl-mb-0 gl-list-none gl-p-0"
+      :class="{
+        'gl-mt-auto': !showUnpinnedItems && !showFullNav,
+      }"
+      data-testid="non-static-items-section"
+    >
+      <template v-for="item in sectionsToRender">
+        <portal
+          v-if="isSection(item) && settingsAsDisclosure(item)"
+          :key="item.id"
+          :to="$options.settingsDisclosurePortalName"
+        >
+          <menu-section
+            :item="item"
+            :separated="item.separated"
+            :async-count="asyncCount"
+            :pin-context="settingsPinContext"
+            :icon-only-toggle="settingsInHeader"
+            disclosure
+            @pin-add="createPin"
+            @pin-remove="destroyPin"
+          />
+        </portal>
+        <menu-section
+          v-else-if="isSection(item)"
+          :key="item.id"
+          :item="item"
+          :separated="item.separated"
+          :has-flyout="showFlyoutMenus"
+          :async-count="asyncCount"
+          tag="li"
+          @pin-add="createPin"
+          @pin-remove="destroyPin"
+        />
+        <nav-item
+          v-else
+          :key="item.id"
+          :item="item"
+          :async-count="asyncCount"
+          @pin-add="createPin"
+          @pin-remove="destroyPin"
+        />
+      </template>
+    </ul>
+  </div>
+</template>

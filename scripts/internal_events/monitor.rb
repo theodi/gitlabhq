@@ -1,0 +1,335 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Internal Events Tracking Monitor
+#
+# This script provides real-time monitoring of Internal Events Tracking-related metrics and Snowplow events.
+#
+# Usage:
+#   Run this script in your terminal with specific event names as command-line arguments. It will continuously
+#   display relevant metrics and Snowplow events associated with the provided event names.
+#
+# Example:
+#   To monitor events 'g_edit_by_web_ide' and 'g_edit_by_sfe', execute:
+#   ```
+#   bin/rails runner scripts/internal_events/monitor.rb g_edit_by_web_ide g_edit_by_sfe
+#   ```
+#
+# Exiting:
+#   - To exit the script, press Ctrl+C.
+#
+
+unless defined?(Rails)
+  puts <<~TEXT
+
+    Error! The Internal Events Tracking Monitor could not access the Rails context!
+
+      Ensure GDK is running, then run:
+
+      bin/rails runner scripts/internal_events/monitor.rb #{ARGV.any? ? ARGV.join(' ') : '<events or key_path>'}
+
+  TEXT
+
+  exit! 1
+end
+
+unless ARGV.any?
+  puts <<~TEXT
+
+    Error! The Internal Events Tracking Monitor requires events or key path to be specified.
+
+      For example, to monitor events g_edit_by_web_ide and g_edit_by_sfe, run:
+
+      bin/rails runner scripts/internal_events/monitor.rb g_edit_by_web_ide g_edit_by_sfe
+
+      to monitor metrics where the key_path starts with counts.count_total_invocations_of_internal_events, run:
+
+      bin/rails runner scripts/internal_events/monitor.rb counts.count_total_invocations_of_internal_events
+
+  TEXT
+
+  exit! 1
+end
+
+require 'terminal-table'
+require 'net/http'
+
+require_relative './server'
+require_relative '../../spec/support/helpers/service_ping_helpers'
+
+Gitlab::Usage::TimeFrame.prepend(ServicePingHelpers::CurrentTimeFrame)
+
+def metric_definitions_from_args
+  args = ARGV
+  Gitlab::Usage::MetricDefinition.all.select do |metric|
+    metric.available? && args.any? { |arg| metric.events.key?(arg) || metric.key_path.start_with?(arg) }
+  end
+end
+
+def red(text)
+  @pastel ||= Pastel.new
+
+  @pastel.red(text)
+end
+
+def current_timestamp
+  (Time.now.to_f * 1000).to_i
+end
+
+def snowplow_data
+  query_snowplow('/micro/good')
+end
+
+def snowplow_all_data(server)
+  server.blank? ? (query_snowplow('/micro/bad') + snowplow_data) : snowplow_data
+end
+
+def query_snowplow(url)
+  full_url = Gitlab::Tracking::Destinations::SnowplowMicro.new.uri.merge(url)
+  response = Net::HTTP.get_response(full_url)
+
+  return JSON.parse(response.body) if response.is_a?(Net::HTTPSuccess)
+
+  raise "Request failed: #{response.code}"
+end
+
+def extract_standard_context(event)
+  event['event']['contexts']['data'].each do |context|
+    next unless context['schema'].start_with?('iglu:com.gitlab/gitlab_standard/jsonschema')
+
+    return {
+      user_id: context["data"]["user_id"],
+      namespace_id: context["data"]["namespace_id"],
+      project_id: context["data"]["project_id"],
+      plan: context["data"]["plan"],
+      extra: context["data"]["extra"]
+    }
+  end
+  {}
+end
+
+def generate_snowplow_table(server)
+  return event_tracking_disabled_table unless Gitlab::CurrentSettings.gitlab_product_usage_data_enabled?
+
+  event_errors = []
+
+  events = snowplow_all_data(server).select { |data| relevant_event(data) && valid_event?(data, server, event_errors) }
+
+  @initial_max_timestamp ||= events.map { |e| event_parameters(e)['dtm'].to_i }.max || 0
+
+  rows = []
+  rows << [
+    'Event Name',
+    'Collector Timestamp',
+    'Category',
+    'user_id',
+    'namespace_id',
+    'project_id',
+    'plan',
+    'Label',
+    'Property',
+    'Value',
+    'Extra'
+  ]
+
+  rows << :separator
+
+  events.each do |event|
+    standard_context = extract_standard_context(event)
+
+    row = [
+      event['event']['se_action'],
+      event['event']['collector_tstamp'],
+      event['event']['se_category'],
+      standard_context[:user_id],
+      standard_context[:namespace_id],
+      standard_context[:project_id],
+      standard_context[:plan],
+      event['event']['se_label'],
+      event['event']['se_property'],
+      event['event']['se_value'],
+      standard_context[:extra]
+    ]
+
+    row.map! { |value| red(value) } if event_parameters(event)['dtm'].to_i > @initial_max_timestamp
+
+    rows << row
+  end
+
+  [
+    Terminal::Table.new(
+      title: 'SNOWPLOW EVENTS',
+      rows: rows
+    ),
+    display_event_error(event_errors)
+  ].join("\n\n")
+end
+
+def relevant_event(event)
+  event_param = event_parameters(event)
+
+  ARGV.include?(event_param['se_ac']) && event_param['dtm'].to_i > @min_timestamp
+end
+
+def event_parameters(event)
+  event&.dig('rawEvent', 'parameters') || []
+end
+
+def validate_event!(event_context)
+  return unless event_context
+
+  decoded_context = Gitlab::Json.safe_parse(Base64.decode64(event_context))
+  Gitlab::Tracking::Destinations::SnowplowContextValidator.new.validate!(decoded_context['data'])
+end
+
+def valid_event?(event, server, errors)
+  return false if event.blank?
+
+  context = event_parameters(event)['cx']
+  se_action = event_parameters(event)['se_ac']
+
+  # Validate events loaded from the mock server or
+  # snowplow bad event to ensure uniform error format.
+  validate_event!(context) if event["errors"] || server.present?
+
+  true
+rescue StandardError => e
+  errors.push(event: se_action, message: e.message)
+
+  false
+end
+
+def display_event_error(errors)
+  errors.map { |error| red("!! ERROR: #{error[:message]} for Event: #{error[:event]}") }.join("\n")
+end
+
+def relevant_events_from_args(metric_definition)
+  metric_definition.events.keys.intersection(ARGV).sort
+end
+
+def generate_metrics_table
+  metric_definitions = metric_definitions_from_args
+  rows = []
+  rows << ['Key Path', 'Monitored Events', 'Instrumentation Class', 'Initial Value', 'Current Value']
+  rows << :separator
+
+  @initial_values ||= {}
+
+  metric_definitions.sort_by(&:key).each do |definition|
+    metric = Gitlab::Usage::Metric.new(definition)
+    value = metric.send(:instrumentation_object).value # rubocop:disable GitlabSecurity/PublicSend
+    @initial_values[definition.key] ||= value
+
+    initial_value = @initial_values[definition.key]
+
+    value = red(value) if initial_value != value
+
+    rows << [
+      definition.key,
+      relevant_events_from_args(definition).join(', '),
+      definition.instrumentation_class,
+      initial_value,
+      value
+    ]
+  end
+
+  Terminal::Table.new(
+    title: 'RELEVANT METRICS',
+    rows: rows
+  )
+end
+
+def render_screen(paused, server)
+  metrics_table = generate_metrics_table
+  events_table = generate_snowplow_table(server)
+
+  print TTY::Cursor.clear_screen
+  print TTY::Cursor.move_to(0, 0)
+
+  puts "Updated at #{Time.current} #{'[PAUSED]' if paused}"
+  puts "Monitored events or key path prefix: #{ARGV.join(', ')}"
+  puts
+
+  puts metrics_table
+  puts events_table
+
+  puts
+  puts "Press \"p\" to toggle refresh. (It makes it easier to select and copy the tables)"
+  puts "Press \"r\" to reset without exiting the monitor"
+  puts "Press \"q\" to quit"
+end
+
+def event_tracking_disabled_table
+  Terminal::Table.new(
+    title: red('SNOWPLOW EVENTS (DISABLED)'),
+    rows: [[
+      <<~TEXT
+        Whoops! GitLab is not configured to send events! To resolve this issue, you can do one of:
+          1) Enable event tracking
+             - Nav to Admin area > Settings > Metrics and profiling > Event tracking
+             - Toggle "Enable event tracking" on
+             - Save changes
+
+          2) Set up Snowplow Micro in your GDK
+            https://gitlab-org.gitlab.io/gitlab-development-kit/howto/snowplow_micro/
+      TEXT
+    ]]
+  )
+end
+
+server = nil
+@min_timestamp = current_timestamp
+
+begin
+  snowplow_data
+rescue Errno::ECONNREFUSED
+  # Start the mock server if Snowplow Micro is not running
+  server = Thread.start { Server.new.start }
+  retry
+rescue Errno::ECONNRESET, EOFError
+  puts <<~TEXT
+
+    Error: No events server available!
+
+    This is often caused by mismatched hostnames. To resolve this issue, you can do one of:
+
+      1) When GDK has a hostname alias, update `config/gitlab.yml` to
+         use localhost for the snowplow_micro settings. For example:
+          |                             -->                              |
+          |  snowplow_micro:             |  snowplow_micro:              |
+          |    address: 'gdk.test:9090'  |    address: 'localhost:9090'  |
+
+      2) Set up Snowplow Micro in your GDK
+         https://gitlab-org.gitlab.io/gitlab-development-kit/howto/snowplow_micro/
+
+  TEXT
+
+  exit 1
+end
+
+reader = TTY::Reader.new
+paused = false
+
+begin
+  loop do
+    case reader.read_keypress(nonblock: true)
+    when 'p'
+      paused = !paused
+      render_screen(paused, server)
+    when 'r'
+      @min_timestamp = current_timestamp
+      @initial_values = {}
+    when 'q'
+      server&.exit
+      break
+    end
+
+    render_screen(paused, server) unless paused
+
+    sleep 1
+  end
+rescue Errno::ECONNREFUSED
+  # Ignore this error, caused by the server being killed before the loop due to working on a child thread
+ensure
+  server&.exit
+end

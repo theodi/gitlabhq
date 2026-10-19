@@ -1,0 +1,14 @@
+---
+table_name: issuable_metric_images
+classes:
+- IssuableMetricImage
+feature_categories:
+- observability
+description: Stores metric chart images uploaded to incidents to visualize the monitoring
+  conditions that triggered the incident.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/46845
+milestone: '13.7'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces
+table_size: small

@@ -1,0 +1,15 @@
+---
+table_name: bulk_import_failures
+classes:
+- BulkImports::Failure
+feature_categories:
+- importers
+description: Used to store failures that occur during the migration of groups or projects
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/47526
+milestone: '13.7'
+table_size: small
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+  namespace_id: namespaces
+  organization_id: organizations

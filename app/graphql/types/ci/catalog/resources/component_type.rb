@@ -1,0 +1,58 @@
+# frozen_string_literal: true
+
+module Types
+  module Ci
+    module Catalog
+      module Resources
+        # rubocop: disable Graphql/AuthorizeTypes -- Authorization is handled by VersionType
+        class ComponentType < BaseObject
+          graphql_name 'CiCatalogResourceComponent'
+
+          field :id, ::Types::GlobalIDType[::Ci::Catalog::Resources::Component], null: false,
+            description: 'ID of the component.'
+
+          field :name, GraphQL::Types::String, null: true,
+            description: 'Name of the component.'
+
+          field :include_path, GraphQL::Types::String, null: true,
+            description: 'Path used to include the component.'
+
+          field :description, GraphQL::Types::String, null: true,
+            description: 'Description of the component.'
+
+          field :inputs, [Types::Ci::Inputs::SpecType], null: true,
+            description: 'Inputs for the component.'
+
+          field :last_30_day_usage_count, GraphQL::Types::Int, null: true,
+            description: 'Number of unique projects that used this version of the component ' \
+              'in a pipeline by using `include` in the last 30 days.'
+
+          def description
+            object.spec['description']
+          end
+
+          def inputs
+            object.ordered_inputs.map do |key, value|
+              input_hash(key, value)
+            end
+          end
+
+          private
+
+          def input_hash(key, value)
+            {
+              name: key,
+              required?: !value&.key?('default'),
+              default: value&.dig('default'),
+              description: value&.dig('description'),
+              regex: value&.dig('regex'),
+              type: value&.dig('type') || 'string',
+              rules: value&.dig('rules')
+            }
+          end
+        end
+      end
+      # rubocop: enable Graphql/AuthorizeTypes
+    end
+  end
+end

@@ -1,0 +1,190 @@
+import $ from 'jquery';
+import { __, n__, s__ } from '~/locale';
+import { createAlert } from '~/alert';
+import createDefaultClient from '~/lib/graphql';
+import { sanitize } from '~/lib/dompurify';
+import { loadingIconForLegacyJS } from '~/loading_icon_for_legacy_js';
+import commitDetailsQuery from '~/projects/commits/graphql/queries/commit_details.query.graphql';
+import { getParameterByName, removeParams } from '~/lib/utils/url_utility';
+import { InfiniteScroller } from '~/infinite_scroller';
+import axios from './lib/utils/axios_utils';
+import { localTimeAgo } from './lib/utils/datetime_utility';
+
+const NEWLINE_CHAR = '&#x000A;';
+
+const defaultClient = createDefaultClient();
+
+const handleError = () =>
+  createAlert({ message: s__('Commits|Something went wrong while fetching commit details') });
+
+const fetchCommitDetails = async (commitId) => {
+  const { projectFullPath: projectPath } = document.body.dataset;
+  let commit;
+
+  try {
+    const { data } = await defaultClient.query({
+      query: commitDetailsQuery,
+      variables: { projectPath, ref: commitId },
+    });
+    commit = data?.project?.repository?.commit || {};
+  } catch (error) {
+    handleError();
+  }
+
+  return commit;
+};
+
+export default class CommitsList {
+  constructor(limit = 0) {
+    this.limit = limit;
+    this.timer = null;
+
+    this.$contentList = $('.content_list');
+    this.searchField = $('#commits-search');
+    this.lastSearch = this.searchField.val();
+    this.startInfiniteScroller();
+    this.initSearch();
+    this.initCommitDetails();
+  }
+
+  initSearch() {
+    this.timer = null;
+    this.searchField.on('keyup', () => {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(this.filterResults.bind(this), 500);
+    });
+  }
+
+  initCommitDetails() {
+    this.$contentList.on('click', '.js-toggle-button', ({ currentTarget }) =>
+      this.handleToggleCommitDetails(currentTarget.dataset),
+    );
+  }
+
+  async handleToggleCommitDetails({ commitId }) {
+    const contentElement = this.$contentList.find(
+      `.js-toggle-content[data-commit-id="${commitId}"]`,
+    );
+    if (!contentElement || contentElement.data('content-loaded')) return;
+    contentElement.html(loadingIconForLegacyJS({ inline: true, size: 'sm' }));
+
+    const commit = await fetchCommitDetails(commitId);
+    let descriptionHtml = commit?.descriptionHtml;
+    if (!descriptionHtml) {
+      handleError();
+      return;
+    }
+
+    if (descriptionHtml.startsWith(NEWLINE_CHAR))
+      descriptionHtml = descriptionHtml.substring(NEWLINE_CHAR.length); // remove newline to avoid extra empty line before the description
+
+    contentElement.html(sanitize(descriptionHtml));
+    contentElement.attr('data-content-loaded', 'true');
+  }
+
+  filterResults() {
+    const form = $('.commits-search-form');
+    const search = this.searchField.val();
+    if (search === this.lastSearch) return Promise.resolve();
+    const baseUrl = form.attr('action');
+    const requestUrl = new URL(baseUrl, window.location.origin);
+    const params = new URLSearchParams(form.serialize());
+    for (const [key, value] of params) {
+      if (value) requestUrl.searchParams.append(key, value);
+    }
+    const serializedRequestUrl = requestUrl.toString();
+
+    this.$contentList.addClass('gl-opacity-5');
+
+    return axios
+      .get(serializedRequestUrl)
+      .then(({ data }) => {
+        this.lastSearch = search;
+        this.$contentList.html(data.html);
+        this.$contentList.removeClass('gl-opacity-5');
+        this.startInfiniteScroller();
+        window.history.replaceState(
+          {
+            page: serializedRequestUrl,
+          },
+          document.title,
+          serializedRequestUrl,
+        );
+      })
+      .catch((error) => {
+        createAlert({
+          message: __('Failed to load more commits. Please try to reload the page'),
+          error,
+        });
+        this.$contentList.removeClass('gl-opacity-5');
+        this.lastSearch = null;
+      });
+  }
+
+  startInfiniteScroller() {
+    if (this.scroller) this.scroller.destroy();
+    const root = document.querySelector('.js-infinite-scrolling-root');
+    this.scroller = new InfiniteScroller({
+      root,
+      fetchNextPage: async (offset, signal) => {
+        return axios
+          .get(removeParams(['limit', 'offset']), {
+            params: { limit: this.limit, offset },
+            signal,
+          })
+          .then(({ data }) => {
+            const html = this.processCommits(data);
+            return { count: data.count, html };
+          })
+          .catch((error) => {
+            if (axios.isCancel(error)) return null;
+            throw error;
+          });
+      },
+      limit: this.limit,
+      startingOffset: parseInt(getParameterByName('offset'), 10) || this.limit,
+    });
+    if (this.$contentList.find('[data-empty-list]').length) {
+      this.scroller.setLoadingVisibility(false);
+    } else {
+      this.scroller.initialize();
+    }
+  }
+
+  // Prepare loaded data.
+  processCommits(data) {
+    let { html } = data;
+    const $processedData = $(data);
+    const $commitsHeadersLast = this.$contentList.find('li.js-commit-header').last();
+    const lastShownDay = $commitsHeadersLast.data('day');
+    const $loadedCommitsHeadersFirst = $processedData.filter('li.js-commit-header').first();
+    const loadedShownDayFirst = $loadedCommitsHeadersFirst.data('day');
+    let commitsCount;
+
+    // If commits headers show the same date,
+    // remove the last header and change the previous one.
+    if (lastShownDay === loadedShownDayFirst) {
+      // Last shown commits count under the last commits header.
+      commitsCount = $commitsHeadersLast.nextUntil('li.js-commit-header').find('li.commit').length;
+
+      const processedData = $processedData.not(
+        `li.js-commit-header[data-day='${loadedShownDayFirst}']`,
+      );
+      // Remove duplicate of commits header.
+      html = processedData.html();
+
+      // Update commits count in the previous commits header.
+      commitsCount += Number(
+        $(processedData).nextUntil('li.js-commit-header').first().find('li.commit').length,
+      );
+
+      $commitsHeadersLast
+        .find('span.commits-count')
+        .text(n__('%d commit', '%d commits', commitsCount));
+    }
+
+    localTimeAgo($processedData.find('.js-timeago').get());
+
+    return html;
+  }
+}

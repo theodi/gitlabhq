@@ -1,0 +1,64 @@
+- is_admin = defined?(admin) ? true : false
+
+- if @ssh_public_key_warning
+  = render Pajamas::AlertComponent.new(variant: :warning,
+    dismissible: false,
+    alert_options: { class: 'gl-mb-3' }) do |c|
+    - c.with_body do
+      = safe_format(s_('Profiles|Warning! Insecure key. %{message}'), message: @ssh_public_key_warning.message )
+
+= render ::Layouts::PageHeadingComponent.new(s_('Profiles|SSH Key: %{title}').html_safe % { title: @key.title }) do |c|
+  - c.with_actions do
+    - if @key.can_delete?
+      = render 'shared/ssh_keys/key_delete', button_data: ssh_key_delete_modal_data(@key, path_to_key(@key, is_admin))
+
+= render ::Layouts::CrudComponent.new(_('Key details')) do |c|
+  - c.with_body do
+    .table-holder
+      %table.table.b-table.gl-table.b-table-stacked-md.ssh-keys-list
+        %thead
+          %th= s_('Profiles|Usage type')
+          %th= s_('Profiles|Created')
+          %th= s_('Profiles|Last used')
+          %th= s_('Profiles|Expires')
+        %tbody
+          %tr
+            %td{ data: { label: s_('Profiles|Usage type'), testid: 'usage' } }
+              = ssh_key_usage_types.invert[@key.usage_type]
+            %td{ data: { label: s_('Profiles|Created'), testid: 'created' } }
+              = @key.created_at.to_fs(:medium)
+            %td{ data: { label: s_('Profiles|Last used'), testid: 'last-used' } }
+              = @key.last_used_at&.to_fs(:medium) || _('Never')
+            %td{ data: { label: s_('Profiles|Expires'), testid: 'expires' } }
+              - if @key.expired?
+                %span.gl-text-danger
+                  = s_('Profiles|Expired')
+                  = @key.expires_at&.to_fs(:medium)
+              - elsif @key.expires_at
+                = @key.expires_at&.to_fs(:medium)
+              - else
+                = _('Never')
+
+.gl-mt-5
+  = form_errors(@key, type: 'key') unless @key.valid?
+
+  = render ::Layouts::CrudComponent.new(_('SSH Key')) do |c|
+    - c.with_body do
+      .gl-flex.gl-gap-3.gl-items-center
+        %pre.gl-p-0.gl-mb-0.gl-border-0
+          = @key.key
+        = clipboard_button(title: s_('Profiles|Copy SSH key'), text: @key.key, category: :tertiary, size: :medium)
+
+  = render ::Layouts::CrudComponent.new(_('Fingerprints'),
+    options: { class: 'gl-mt-5' }) do |c|
+    - c.with_body do
+      .table-holder
+        %table.table.b-table.gl-table.b-table-stacked-md
+          %tbody
+            %tr
+              %th= _('MD5')
+              %td.gl-font-monospace= @key.fingerprint
+            - if @key.fingerprint_sha256.present?
+              %tr
+                %th= _('SHA256')
+                %td.gl-font-monospace= @key.fingerprint_sha256

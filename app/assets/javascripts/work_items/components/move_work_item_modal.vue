@@ -1,0 +1,374 @@
+<script>
+import {
+  GlModal,
+  GlCollapsibleListbox,
+  GlFormGroup,
+  GlFormSelect,
+  GlTooltipDirective as GlTooltip,
+  GlAlert,
+} from '@gitlab/ui';
+import { __, s__ } from '~/locale';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { visitUrl } from '~/lib/utils/url_utility';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import { findHierarchyWidget } from '~/work_items/utils';
+import moveIssueMutation from '~/sidebar/queries/move_issue.mutation.graphql';
+import searchUserProjectsToMove from '~/work_items/graphql/search_user_projects_to_move.query.graphql';
+import workItemMoveTargetsQuery from '~/work_items/graphql/work_item_move_targets.query.graphql';
+import getWorkItemTreeQuery from '~/work_items/graphql/work_item_tree.query.graphql';
+import { DEFAULT_PAGE_SIZE_CHILD_ITEMS } from '~/work_items/constants';
+
+export default {
+  name: 'MoveWorkItemModal',
+  components: { GlModal, GlCollapsibleListbox, GlFormGroup, GlFormSelect, GlAlert },
+  directives: {
+    GlTooltip,
+  },
+  mixins: [glFeatureFlagsMixin()],
+  props: {
+    visible: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    workItemIid: {
+      type: String,
+      required: true,
+    },
+    projectId: {
+      type: String,
+      required: true,
+    },
+    workItemTypeId: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  emits: ['hide-modal'],
+  actionCancel: {
+    text: __('Cancel'),
+  },
+  data() {
+    return {
+      isModalVisible: false,
+      shouldFetch: false,
+      projects: [],
+      moveTarget: null,
+      selectedProjectId: null,
+      selectedTargetTypeId: null,
+      noResultsText: '',
+      searchTerm: '',
+      moveInProgress: false,
+      hasChildren: false,
+      errorFetchingChildren: false,
+      showErrorMessage: false,
+      errorMessage: '',
+    };
+  },
+  apollo: {
+    projects: {
+      query() {
+        return searchUserProjectsToMove;
+      },
+      variables() {
+        return {
+          search: this.searchTerm,
+          sort: this.searchTerm ? 'similarity' : 'stars_desc',
+        };
+      },
+      skip() {
+        return !this.shouldFetch;
+      },
+      update(data) {
+        return data?.projects?.nodes ?? [];
+      },
+      result() {
+        if (!this.projects?.length) {
+          this.noResultsText = __('No project found');
+        }
+      },
+      error() {
+        this.noResultsText = __('Failed to load projects');
+      },
+    },
+    moveTarget: {
+      query: workItemMoveTargetsQuery,
+      variables() {
+        return {
+          targetFullPath: this.selectedProjectFullPath,
+          sourceFullPath: this.fullPath,
+          sourceTypeIds: [this.workItemTypeId],
+        };
+      },
+      skip() {
+        return !this.selectedProjectFullPath || !this.fullPath || !this.workItemTypeId;
+      },
+      update(data) {
+        return data?.namespace?.workItemMoveTargets?.[0] ?? null;
+      },
+      result() {
+        this.selectedTargetTypeId = this.moveTarget?.suggestedTargetType?.id ?? null;
+      },
+    },
+    hasChildren: {
+      query: getWorkItemTreeQuery,
+      variables() {
+        return {
+          id: this.workItemId,
+          pageSize: DEFAULT_PAGE_SIZE_CHILD_ITEMS,
+          endCursor: '',
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      skip() {
+        return !this.workItemId;
+      },
+      update(data) {
+        return findHierarchyWidget(data?.workItem)?.hasChildren;
+      },
+      error() {
+        // If was not able to fetch children, show warning message anyway just in case
+        this.errorFetchingChildren = true;
+      },
+    },
+  },
+  computed: {
+    isLoadingProjects() {
+      return this.$apollo.queries.projects.loading;
+    },
+    isLoadingMoveTargets() {
+      return this.$apollo.queries.moveTarget.loading;
+    },
+    listboxItems() {
+      // Remove current project from the list as issue already belongs to it
+      return this.projects
+        .filter((project) => project?.id !== this.projectId)
+        .map((item) => ({
+          value: item.id,
+          text: item.nameWithNamespace,
+          fullPath: item.fullPath,
+        }));
+    },
+    selectedProjectNamespace() {
+      return this.projects?.find((project) => project?.id === this.selectedProjectId);
+    },
+    selectedProjectFullPath() {
+      return this.selectedProjectNamespace?.fullPath;
+    },
+    namespaceNameText() {
+      return this.selectedProjectNamespace?.nameWithNamespace || s__('WorkItem|Select project');
+    },
+    namespaceFullPathText() {
+      return this.selectedProjectFullPath;
+    },
+    validTargetTypes() {
+      return this.moveTarget?.validTargetTypes ?? [];
+    },
+    targetTypeSelectOptions() {
+      return this.validTargetTypes.map((type) => ({ value: type.id, text: type.name }));
+    },
+    showTypeSelector() {
+      return Boolean(this.selectedProjectId && this.workItemTypeId);
+    },
+    noValidTargetTypes() {
+      return (
+        this.showTypeSelector && !this.isLoadingMoveTargets && this.validTargetTypes.length === 0
+      );
+    },
+    actionPrimary() {
+      return {
+        text: __('Move'),
+        attributes: {
+          variant: 'confirm',
+          loading: this.moveInProgress,
+          disabled: !this.selectedProjectId || this.moveInProgress,
+        },
+      };
+    },
+    showChildrenWarning() {
+      return Boolean(this.selectedProjectId) && (this.hasChildren || this.errorFetchingChildren);
+    },
+  },
+  watch: {
+    visible: {
+      immediate: true,
+      handler(visible) {
+        this.isModalVisible = visible;
+      },
+    },
+    selectedProjectId() {
+      // Clear stale data so the dropdown doesn't briefly show the previous
+      // project's options while the new query is in flight. Both will be
+      // reapplied once the moveTargets query resolves.
+      this.moveTarget = null;
+      this.selectedTargetTypeId = null;
+      this.showErrorMessage = false;
+    },
+    selectedTargetTypeId(value) {
+      // Clear the "select a type" validation error once the user picks one.
+      if (value) {
+        this.showErrorMessage = false;
+      }
+    },
+  },
+  methods: {
+    hideModal() {
+      this.selectedProjectId = null;
+      this.selectedTargetTypeId = null;
+      this.$emit('hide-modal');
+      this.isModalVisible = false;
+      this.showErrorMessage = false;
+    },
+    onDropdownShown() {
+      this.searchTerm = '';
+      this.showErrorMessage = false;
+      this.shouldFetch = true;
+    },
+    search(searchTerm) {
+      this.searchTerm = searchTerm;
+    },
+    async moveIssue(event) {
+      event.preventDefault();
+
+      if (this.showTypeSelector && !this.selectedTargetTypeId) {
+        this.errorMessage = s__('WorkItem|Select a type before moving this item.');
+        this.showErrorMessage = true;
+        return;
+      }
+
+      this.moveInProgress = true;
+
+      const targetProjectPath = this.listboxItems?.find(
+        (project) => project?.value === this.selectedProjectId,
+      )?.fullPath;
+
+      try {
+        const { data } = await this.$apollo.mutate({
+          mutation: moveIssueMutation,
+          variables: {
+            moveIssueInput: {
+              projectPath: this.fullPath,
+              iid: this.workItemIid,
+              targetProjectPath,
+              ...(this.selectedTargetTypeId
+                ? { targetWorkItemTypeId: this.selectedTargetTypeId }
+                : {}),
+            },
+          },
+        });
+
+        const { errors } = data.issueMove;
+
+        if (!data.issueMove || errors?.length) {
+          this.errorMessage = __('Could not be moved. Select another project or try again.');
+          this.showErrorMessage = true;
+          if (errors) {
+            Sentry.captureException(errors[0].message);
+          }
+        } else {
+          this.hideModal();
+          visitUrl(data.issueMove?.issue?.webUrl);
+        }
+      } catch (error) {
+        this.errorMessage = __('Could not be moved. Select another project or try again.');
+        this.showErrorMessage = true;
+        Sentry.captureException(error);
+      } finally {
+        this.moveInProgress = false;
+      }
+    },
+  },
+};
+</script>
+<template>
+  <gl-modal
+    modal-id="move-work-item-modal"
+    :visible="isModalVisible"
+    size="sm"
+    :title="s__('WorkItem|Move')"
+    :aria-label="s__('WorkItem|Move')"
+    :action-primary="actionPrimary"
+    :action-cancel="$options.actionCancel"
+    @primary="moveIssue"
+    @canceled="hideModal"
+    @hidden="hideModal"
+  >
+    <gl-alert
+      v-if="showErrorMessage"
+      class="gl-mb-4"
+      variant="danger"
+      @dismiss="showErrorMessage = false"
+    >
+      {{ errorMessage }}
+    </gl-alert>
+
+    <p class="gl-mb-2 gl-font-bold">{{ __('Project') }}</p>
+
+    <gl-collapsible-listbox
+      v-model="selectedProjectId"
+      :items="listboxItems"
+      block
+      fluid-width
+      searchable
+      :searching="isLoadingProjects"
+      :toggle-text="namespaceNameText"
+      :no-results-text="noResultsText"
+      :disabled="moveInProgress"
+      @shown="onDropdownShown"
+      @search="search"
+    >
+      <template #list-item="{ item }">
+        <span class="gl-break-words">{{ item.text }}</span>
+      </template>
+    </gl-collapsible-listbox>
+    <p
+      v-if="selectedProjectId"
+      class="gl-mt-2 gl-text-subtle"
+      data-testid="selected-project-namespace"
+    >
+      {{ namespaceFullPathText }}
+    </p>
+
+    <gl-form-group
+      v-if="showTypeSelector"
+      class="gl-mb-0 gl-mt-4"
+      :label="s__('WorkItem|Type')"
+      label-for="move-work-item-type-select"
+    >
+      <gl-form-select
+        id="move-work-item-type-select"
+        v-model="selectedTargetTypeId"
+        data-testid="move-work-item-type-select"
+        :options="targetTypeSelectOptions"
+        :disabled="isLoadingMoveTargets || noValidTargetTypes || moveInProgress"
+      />
+    </gl-form-group>
+
+    <gl-alert
+      v-if="noValidTargetTypes"
+      class="gl-mt-3"
+      variant="warning"
+      :dismissible="false"
+      data-testid="no-valid-target-types-alert"
+    >
+      {{
+        s__(
+          'WorkItem|The selected project does not support this work item type. Choose another project.',
+        )
+      }}
+    </gl-alert>
+
+    <p v-if="showChildrenWarning" data-testid="child-items-warning">
+      {{ __('All child items will also be moved to the selected location.') }}
+    </p>
+  </gl-modal>
+</template>

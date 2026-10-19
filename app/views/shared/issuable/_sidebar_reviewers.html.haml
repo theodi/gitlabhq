@@ -1,0 +1,45 @@
+- issuable_type = issuable_sidebar[:type]
+
+.js-sidebar-reviewers-root{ data: { field: issuable_type, signed_in: signed_in } }
+  .title.hide-collapsed.gl-flex.gl-justify-between.gl-items-center{ class: '!gl-mb-0' }
+    %span.gl-font-bold= _('Reviewers')
+    = gl_loading_icon(inline: true)
+
+.selectbox.hide-collapsed
+  .js-reviewers-inputs
+
+  - options = { toggle_class: 'js-reviewer-search js-author-search',
+    title: _('Request review from'),
+    filter: true,
+    dropdown_class: 'dropdown-menu-user dropdown-menu-selectable dropdown-menu-author',
+    placeholder: _('Search users'),
+    data: { first_user: issuable_sidebar.dig(:current_user, :username),
+      current_user: true,
+      iid: issuable_sidebar[:iid],
+      issuable_type: issuable_type,
+      project_id: issuable_sidebar[:project_id],
+      author_id: issuable_sidebar[:author_id],
+      field_name: "#{issuable_type}[reviewer_ids][]",
+      issue_update: issuable_sidebar[:issuable_json_path],
+      ability_name: issuable_type,
+      null_user: true,
+      display: 'static' } }
+
+  - dropdown_options = reviewers_dropdown_options(issuable_type)
+  - title = dropdown_options[:title]
+  - options[:toggle_class] += ' js-multiselect js-save-user-data'
+  - data = { multi_select: true }
+  - data['dropdown-title'] = title
+  - data['dropdown-header'] = dropdown_options[:data][:'dropdown-header']
+  - data[:suggested_reviewers_help_path] = dropdown_options[:data][:suggested_reviewers_help_path]
+  - data[:suggested_reviewers_header] = dropdown_options[:data][:suggested_reviewers_header]
+  - data[:all_members_header] = dropdown_options[:data][:all_members_header]
+  - data[:show_suggested] = dropdown_options[:data][:show_suggested]
+  - data['max-select'] = dropdown_max_select(dropdown_options[:data])
+  - options[:data].merge!(data)
+
+  = render 'shared/issuable/sidebar_user_dropdown',
+    options: options,
+    wrapper_class: 'js-sidebar-reviewer-dropdown',
+    track_label: 'edit_reviewer',
+    trigger_source: "#{issuable_type}_reviewer_dropdown"

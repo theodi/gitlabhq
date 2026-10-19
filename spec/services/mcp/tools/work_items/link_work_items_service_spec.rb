@@ -1,0 +1,343 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Mcp::Tools::WorkItems::LinkWorkItemsService, feature_category: :mcp_server do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, :public) }
+  let_it_be(:group) { create(:group) }
+  let_it_be(:source_work_item) { create(:work_item, :issue, project: project, iid: 1) }
+  let_it_be(:target_work_item) { create(:work_item, :issue, project: project, iid: 2) }
+  let_it_be(:group_work_item) { create(:work_item, :epic, namespace: group, iid: 10) }
+
+  let(:service) { described_class.new(name: 'link_work_items') }
+  let(:request) { instance_double(ActionDispatch::Request) }
+  let(:target_gid) { target_work_item.to_global_id.to_s }
+
+  before_all do
+    project.add_developer(user)
+    group.add_developer(user)
+  end
+
+  before do
+    service.set_cred(current_user: user)
+  end
+
+  describe '#governed_containers' do
+    let_it_be(:other_project) { create(:project, :private) }
+    let_it_be(:other_work_item) { create(:work_item, :issue, project: other_project) }
+
+    subject(:resolved) { service.governed_containers(arguments) }
+
+    context 'when a target is named by iid' do
+      let(:arguments) { { project_id: project.id.to_s, work_item_iid: 1, work_items_ids: [2] } }
+
+      it 'governs the source container only' do
+        expect(resolved.containers).to contain_exactly(project)
+        expect(resolved.named).to eq(resolved.containers.size)
+      end
+
+      it 'does not reach the project holding that primary key' do
+        arguments[:work_items_ids] = [other_work_item.id]
+
+        expect(resolved.containers).not_to include(other_project)
+      end
+    end
+
+    context 'when a target is named by global ID' do
+      let(:arguments) do
+        { project_id: project.id.to_s, work_item_iid: 1,
+          work_items_ids: [other_work_item.to_global_id.to_s] }
+      end
+
+      it 'governs the container the global ID names as well as the source' do
+        expect(resolved.containers).to contain_exactly(project, other_project)
+        expect(resolved.named).to eq(resolved.containers.size)
+      end
+    end
+
+    context 'when the same target is named twice' do
+      let(:arguments) do
+        { project_id: project.id.to_s, work_item_iid: 1,
+          work_items_ids: [other_work_item.to_global_id.to_s, other_work_item.to_global_id.to_s] }
+      end
+
+      it 'counts the repeat once, so the call is not refused as unresolved', :aggregate_failures do
+        expect(resolved.containers).to contain_exactly(project, other_project)
+        expect(resolved.named).to eq(resolved.containers.size)
+      end
+    end
+
+    context 'when the argument names more identifiers than are allowed' do
+      let(:arguments) do
+        { project_id: project.id.to_s, work_items_ids: Array.new(101) { |i| i + 1 } }
+      end
+
+      it 'rejects the call rather than resolving them' do
+        expect { resolved }.to raise_error(ArgumentError, /cannot name more than 100/)
+      end
+    end
+  end
+
+  describe 'class configuration' do
+    it 'inherits from GraphqlService' do
+      expect(described_class.superclass).to eq(Mcp::Tools::Base::GraphqlService)
+    end
+
+    it 'registers version 0.1.0' do
+      expect(described_class.available_versions).to include('0.1.0')
+    end
+
+    it 'has correct description' do
+      expect(service.description).to include('Link a work item')
+    end
+
+    it 'has readOnlyHint: false annotation' do
+      expect(service.annotations[:readOnlyHint]).to be(false)
+    end
+
+    it 'has destructiveHint: false annotation' do
+      expect(service.annotations[:destructiveHint]).to be(false)
+    end
+  end
+
+  describe 'input schema' do
+    it 'matches the expected contract (CE enum values only)' do
+      expect(described_class.version_metadata('0.1.0')[:input_schema]).to eq(
+        {
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              description: 'GitLab URL for the source work item.'
+            },
+            group_id: {
+              type: 'string',
+              description: 'ID or path of the group. Required if URL and project_id are not provided.'
+            },
+            project_id: {
+              type: 'string',
+              description: 'ID or path of the project. Required if URL and group_id are not provided.'
+            },
+            work_item_iid: {
+              type: 'integer',
+              description: 'Internal ID of the source work item. Required if URL is not provided.'
+            },
+            work_items_ids: {
+              type: 'array',
+              description: 'Work items to link to: plain iids (resolved in the same project or group as the ' \
+                'source) or global IDs (gid://gitlab/WorkItem/<id>) for work items in other ' \
+                'projects or groups. Maximum 10 items.',
+              items: { anyOf: [{ type: 'integer' }, { type: 'string' }] },
+              minItems: 1,
+              maxItems: 10
+            },
+            link_type: {
+              type: 'string',
+              description: 'Type of relationship between the work items. Defaults to "relates_to".',
+              enum: ['relates_to'],
+              default: 'relates_to'
+            }
+          },
+          required: ['work_items_ids']
+        }
+      )
+    end
+  end
+
+  describe '#graphql_tool_class' do
+    it 'returns LinkWorkItemsTool class' do
+      expect(service.send(:graphql_tool_class)).to eq(Mcp::Tools::WorkItems::LinkWorkItemsTool)
+    end
+  end
+
+  describe '#perform_v0_1_0' do
+    let(:arguments) do
+      {
+        project_id: project.id.to_s,
+        work_item_iid: source_work_item.iid,
+        work_items_ids: [target_gid]
+      }
+    end
+
+    it 'executes graphql tool with arguments' do
+      expect(service).to receive(:execute_graphql_tool).with(arguments)
+
+      service.send(:perform_v0_1_0, arguments)
+    end
+  end
+
+  describe '#perform_default' do
+    let(:arguments) do
+      {
+        project_id: project.id.to_s,
+        work_item_iid: source_work_item.iid,
+        work_items_ids: [target_gid]
+      }
+    end
+
+    it 'delegates to perform_v0_1_0' do
+      expect(service).to receive(:perform_v0_1_0).with(arguments)
+
+      service.send(:perform_default, arguments)
+    end
+  end
+
+  describe '#execute' do
+    context 'when identifying source work item by project_id and iid' do
+      let(:params) do
+        {
+          arguments: {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: [target_gid],
+            link_type: 'relates_to'
+          }
+        }
+      end
+
+      it 'links work items successfully' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(false)
+        expect(result[:structuredContent]['workItem']['iid'].to_i).to eq(source_work_item.iid)
+      end
+    end
+
+    context 'when identifying source work item by URL' do
+      let(:params) do
+        {
+          arguments: {
+            url: "http://localhost/#{project.full_path}/-/work_items/#{source_work_item.iid}",
+            work_items_ids: [target_gid]
+          }
+        }
+      end
+
+      it 'links work items successfully' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(false)
+        expect(result[:structuredContent]['workItem']['iid'].to_i).to eq(source_work_item.iid)
+      end
+    end
+
+    context 'when link_type is omitted' do
+      let(:params) do
+        {
+          arguments: {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: [target_gid]
+          }
+        }
+      end
+
+      it 'defaults to related link type' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(false)
+      end
+    end
+
+    context 'when work_items_ids is missing' do
+      let(:params) do
+        {
+          arguments: {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid
+          }
+        }
+      end
+
+      it 'returns an error' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(true)
+        expect(result[:content].first[:text]).to include('work_items_ids')
+      end
+    end
+
+    context 'when work_items_ids contains an invalid ID format' do
+      let(:params) do
+        {
+          arguments: {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: ['not-a-valid-gid']
+          }
+        }
+      end
+
+      it 'returns an error' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(true)
+        expect(result[:content].first[:text]).to include('Invalid target work item ID format')
+      end
+    end
+
+    context 'when work_items_ids exceeds 10 items' do
+      let(:params) do
+        {
+          arguments: {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: Array.new(11) { |i| "gid://gitlab/WorkItem/#{i + 100}" }
+          }
+        }
+      end
+
+      it 'returns an error' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(true)
+        expect(result[:content].first[:text]).to include('cannot contain more than 10 items')
+      end
+    end
+
+    context 'when link_type is invalid' do
+      let(:params) do
+        {
+          arguments: {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: [target_gid],
+            link_type: 'invalid_type'
+          }
+        }
+      end
+
+      it 'returns an error' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(true)
+        expect(result[:content]
+          .first[:text]).to include("Invalid link_type: 'invalid_type'. Must be one of: relates_to")
+      end
+    end
+
+    context 'when current_user is not set' do
+      before do
+        service.set_cred(current_user: nil)
+      end
+
+      let(:params) do
+        {
+          arguments: {
+            project_id: project.id.to_s,
+            work_item_iid: source_work_item.iid,
+            work_items_ids: [target_gid]
+          }
+        }
+      end
+
+      it 'returns error response' do
+        result = service.execute(request: request, params: params)
+
+        expect(result[:isError]).to be(true)
+        expect(result[:content].first[:text]).to include('current_user is not set')
+      end
+    end
+  end
+end

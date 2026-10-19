@@ -1,227 +1,612 @@
+# frozen_string_literal: true
+
 # IssuableFinder
 #
 # Used to filter Issues and MergeRequests collections by set of params
+#
+# Note: This class is NOT meant to be instantiated. Instead you should
+#       look at IssuesFinder or EpicsFinder, which inherit from this.
 #
 # Arguments:
 #   klass - actual class like Issue or MergeRequest
 #   current_user - which user use
 #   params:
-#     scope: 'created-by-me' or 'assigned-to-me' or 'all'
-#     state: 'open' or 'closed' or 'all'
+#     scope: 'created_by_me' or 'assigned_to_me' or 'all'
+#     state: 'opened' or 'closed' or 'locked' or 'all'
 #     group_id: integer
 #     project_id: integer
-#     milestone_id: integer
-#     assignee_id: integer
+#     milestone_title: string (cannot be simultaneously used with milestone_wildcard_id)
+#     milestone_wildcard_id: 'none', 'any', 'upcoming', 'started' (cannot be simultaneously used with milestone_title)
+#     release_tag: string
+#     author_id: integer
+#     author_username: username string or a group handle (e.g., '@group/subgroup')
+#     assignee_id: integer or 'None' or 'Any'
+#     closed_by_id: integer
+#     assignee_username: string
 #     search: string
+#     in: 'title', 'description', or a string joining them with comma
 #     label_name: string
 #     sort: string
+#     non_archived: boolean
+#     iids: integer[]
+#     my_reaction_emoji: string
+#     created_after: datetime
+#     created_before: datetime
+#     updated_after: datetime
+#     updated_before: datetime
+#     attempt_group_search_optimizations: boolean
+#     attempt_project_search_optimizations: boolean
+#     crm_contact_id: integer
+#     crm_organization_id: integer
 #
-require_relative 'projects_finder'
-
 class IssuableFinder
-  NONE = '0'
+  prepend FinderWithCrossProjectAccess
+  include FinderMethods
+  include CreatedAtFilter
+  include Gitlab::Utils::StrongMemoize
+  include UpdatedAtFilter
+
+  requires_cross_project_access unless: -> { params.project? }
+
+  FULL_TEXT_SEARCH_TERM_PATTERN = '[\u0000-\u02FF\u1E00-\u1EFF\u2070-\u218F]*'
+  FULL_TEXT_SEARCH_TERM_REGEX = /\A#{FULL_TEXT_SEARCH_TERM_PATTERN}\z/
+  NEGATABLE_PARAMS_HELPER_KEYS = %i[project_id scope status include_subgroups].freeze
+  GROUPED_SORTS = %w[priority popularity upvotes downvotes].freeze
 
   attr_accessor :current_user, :params
+  attr_reader :original_params
+  attr_writer :parent
 
-  def initialize(current_user, params)
+  delegate(*%i[milestones], to: :params)
+
+  class << self
+    def scalar_params
+      @scalar_params ||= %i[
+        assignee_id
+        closed_by_id
+        assignee_username
+        author_id
+        author_username
+        crm_contact_id
+        crm_organization_id
+        in
+        label_name
+        milestone_title
+        release_tag
+        my_reaction_emoji
+        search
+        subscribed
+      ]
+    end
+
+    def array_params
+      @array_params ||= { label_name: [], assignee_username: [] }
+    end
+
+    # This should not be used in controller strong params!
+    def negatable_scalar_params
+      @negatable_scalar_params ||= scalar_params - %i[search in]
+    end
+
+    # This should not be used in controller strong params!
+    def negatable_array_params
+      @negatable_array_params ||= array_params.keys.append(:iids)
+    end
+
+    # This should not be used in controller strong params!
+    def negatable_params
+      @negatable_params ||= negatable_scalar_params + negatable_array_params
+    end
+
+    def valid_params
+      @valid_params ||= scalar_params + [array_params.merge(or: {}, not: {})]
+    end
+  end
+
+  def initialize(current_user, params = {})
     @current_user = current_user
-    @params = params
+    @original_params = params
+    @params = params_class.new(params, current_user, klass)
+  end
+
+  def params_class
+    IssuableFinder::Params
+  end
+
+  def klass
+    raise NotImplementedError
   end
 
   def execute
     items = init_collection
-    items = by_scope(items)
-    items = by_state(items)
-    items = by_group(items)
-    items = by_project(items)
-    items = by_search(items)
-    items = by_milestone(items)
-    items = by_assignee(items)
-    items = by_author(items)
+    items = filter_items(items)
+
+    # Let's see if we have to negate anything
+    items = filter_negated_items(items) if should_filter_negated_args?
+
     items = by_label(items)
-    items = sort(items)
+
+    # This has to be last as we use a CTE as an optimization fence
+    # https://www.postgresql.org/docs/current/static/queries-with.html
+    items = by_search(items)
+
+    sort(items)
   end
 
-  def group
-    return @group if defined?(@group)
-
-    @group = 
-      if params[:group_id].present?
-        Group.find(params[:group_id])
-      else 
-        nil
-      end
+  def filter_items(items)
+    items = by_parent(items)
+    items = by_scope(items)
+    items = by_created_at(items)
+    items = by_updated_at(items)
+    items = by_closed_at(items)
+    items = by_state(items)
+    items = by_assignee(items)
+    items = by_closed_by(items)
+    items = by_author(items)
+    items = by_non_archived(items)
+    items = by_iids(items)
+    items = by_milestone(items)
+    items = by_release(items)
+    items = by_my_reaction_emoji(items)
+    items = by_crm_contact(items)
+    items = by_subscribed(items)
+    by_crm_organization(items)
   end
 
-  def project
-    return @project if defined?(@project)
-
-    @project = 
-      if params[:project_id].present?
-        Project.find(params[:project_id])
-      else 
-        nil
-      end
+  def should_filter_negated_args?
+    # API endpoints send in `nil` values so we test if there are any non-nil
+    not_params.present? && not_params.values.any?
   end
+
+  # Negates all params found in `negatable_params`
+  def filter_negated_items(items)
+    items = by_negated_milestone(items)
+    items = by_negated_release(items)
+    items = by_negated_my_reaction_emoji(items)
+    by_negated_iids(items)
+  end
+
+  def row_count
+    Gitlab::IssuablesCountForState
+      .new(self, nil, fast_fail: true)
+      .for_state_or_opened(params[:state])
+  end
+
+  # We often get counts for each state by running a query per state, and
+  # counting those results. This is typically slower than running one query
+  # (even if that query is slower than any of the individual state queries) and
+  # grouping and counting within that query.
+  #
+  # rubocop: disable CodeReuse/ActiveRecord
+  def count_by_state
+    count_params = params.merge(state: nil, sort: nil)
+    finder = self.class.new(current_user, count_params)
+
+    state_counts = finder
+      .execute
+      .without_order
+      .group(:state_id)
+      .count
+
+    counts = Hash.new(0)
+
+    state_counts.each do |key, value|
+      counts[count_key(key)] += value
+    end
+
+    counts[:all] = counts.values.sum
+    counts.with_indifferent_access
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
 
   def search
     params[:search].presence
   end
 
-  def milestones?
-    params[:milestone_title].present?
+  def use_cte_for_search?
+    strong_memoize(:use_cte_for_search) do
+      next false unless search
+      next false unless default_or_simple_sort?
+
+      attempt_group_search_optimizations? || attempt_project_search_optimizations?
+    end
   end
 
-  def milestones
-    return @milestones if defined?(@milestones)
-
-    @milestones =
-      if milestones? && params[:milestone_title] != NONE 
-        Milestone.where(title: params[:milestone_title])
-      else
-        nil
-      end
+  def parent_param=(obj)
+    @parent = obj
+    params[parent_param] = parent if parent
   end
 
-  def assignee?
-    params[:assignee_id].present?
-  end
-
-  def assignee
-    return @assignee if defined?(@assignee)
-
-    @assignee = 
-      if assignee? && params[:assignee_id] != NONE
-        User.find(params[:assignee_id])
-      else
-        nil
-      end
-  end
-
-  def author?
-    params[:author_id].present?
-  end
-
-  def author
-    return @author if defined?(@author)
-
-    @author = 
-      if author? && params[:author_id] != NONE
-        User.find(params[:author_id])
-      else
-        nil
-      end
+  def parent_param
+    case parent
+    when Project
+      :project_id
+    when Group
+      :group_id
+    else
+      raise "Unexpected parent: #{parent.class}"
+    end
   end
 
   private
 
-  def init_collection
-    table_name = klass.table_name
+  attr_reader :parent
 
-    if project
-      if Ability.abilities.allowed?(current_user, :read_project, project)
-        project.send(table_name)
-      else
-        []
+  def use_minimum_char_limit?
+    !use_cte_for_search?
+  end
+
+  def not_params
+    strong_memoize(:not_params) do
+      params_class.new(params[:not].dup, current_user, klass).tap do |not_params|
+        next unless not_params.present?
+
+        # These are "helper" params that modify the results, like :in and :search. They usually come in at the top-level
+        # params, but if they do come in inside the `:not` params, the inner ones should take precedence.
+        not_helpers = params.slice(*NEGATABLE_PARAMS_HELPER_KEYS)
+                            .merge(params[:not].to_h.slice(*NEGATABLE_PARAMS_HELPER_KEYS))
+        not_helpers.each do |key, value|
+          not_params[key] = value unless not_params[key].present?
+        end
       end
-    elsif current_user && params[:authorized_only].presence && !current_user_related?
-      klass.of_projects(current_user.authorized_projects).references(:project)
-    else
-      klass.of_projects(ProjectsFinder.new.execute(current_user)).references(:project)
     end
   end
 
+  def init_collection
+    return klass.all if params.user_can_see_all_issuables?
+
+    # Only admins and auditors can see hidden issuables, for other users we filter out hidden issuables
+    klass.without_hidden
+  end
+
+  def default_or_simple_sort?
+    params[:sort].blank? || params[:sort].to_s.in?(klass.simple_sorts.keys)
+  end
+
+  def attempt_group_search_optimizations?
+    params[:attempt_group_search_optimizations]
+  end
+
+  def attempt_project_search_optimizations?
+    params[:attempt_project_search_optimizations]
+  end
+
+  def count_key(value)
+    # value may be an array if the finder used in `count_by_state` added an
+    # additional `group by`. Anyway we are sure that state will be always the
+    # last item because it's added as the last one to the query.
+    value = Array(value).last
+    klass.available_states.key(value)
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
   def by_scope(items)
+    return items.none if params.current_user_related? && !current_user
+
     case params[:scope]
-    when 'created-by-me', 'authored' then
+    when 'created_by_me', 'authored'
       items.where(author_id: current_user.id)
-    when 'all' then
-      items
-    when 'assigned-to-me' then
-      items.where(assignee_id: current_user.id)
+    when 'assigned_to_me'
+      items.assigned_to(current_user)
+    when 'reviews_for_me'
+      items.review_requested_to(current_user)
     else
-      raise 'You must specify default scope'
+      items
     end
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def by_closed_at(items)
+    items = items.closed_after(params[:closed_after]) if params[:closed_after].present?
+    items = items.closed_before(params[:closed_before]) if params[:closed_before].present?
+
+    items
   end
 
   def by_state(items)
-    case params[:state]
+    case params[:state].to_s
     when 'closed'
       items.closed
-    when 'rejected'
-      items.respond_to?(:rejected) ? items.rejected : items.closed
     when 'merged'
       items.respond_to?(:merged) ? items.merged : items.closed
-    when 'all'
-      items
     when 'opened'
       items.opened
+    when 'locked'
+      items.with_state(:locked)
     else
-      raise 'You must specify default state'
+      items
     end
   end
 
-  def by_group(items)
-    items = items.of_group(group) if group
+  def by_parent(items)
+    return items.none unless accessible_projects
 
-    items
+    if use_namespace_filtering?
+      filter_by_namespace(items)
+    else
+      filter_by_project(items)
+    end
   end
 
-  def by_project(items)
-    items = items.of_projects(project.id) if project
-
-    items
+  # rubocop: disable CodeReuse/ActiveRecord
+  def filter_by_namespace(items)
+    if use_join_strategy_for_project?
+      # When finding issues for multiple projects it's more efficient
+      # to use a JOIN instead of running a sub-query
+      # See https://gitlab.com/gitlab-org/gitlab/-/commit/8591cc02be6b12ed60f763a5e0147f2cbbca99e1
+      items.join_project_through_namespace.merge(accessible_projects.reorder(nil))
+    else
+      items.in_namespaces(accessible_projects.map(&:project_namespace_id)).references_project
+    end
   end
 
+  def filter_by_project(items)
+    if use_join_strategy_for_project?
+      # When finding issues for multiple projects it's more efficient
+      # to use a JOIN instead of running a sub-query
+      # See https://gitlab.com/gitlab-org/gitlab/-/commit/8591cc02be6b12ed60f763a5e0147f2cbbca99e1
+      items.merge(accessible_projects.reorder(nil)).join_project
+    else
+      items.of_projects(accessible_projects).references_project
+    end
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def accessible_projects
+    params.projects
+  end
+
+  def use_namespace_filtering?
+    ::Feature.enabled?(:use_namespace_id_for_issue_and_work_item_finders, current_user, type: :wip) &&
+      [::Issue, ::WorkItem].include?(klass)
+  end
+
+  def use_join_strategy_for_project?
+    strong_memoize(:use_join_strategy_for_project) do
+      accessible_projects.is_a?(ActiveRecord::Relation)
+    end
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
   def by_search(items)
-    items = items.search(search) if search
+    return items unless search
+    return items if items.null_relation?
 
-    items
-  end
+    return filter_by_full_text_search(items) if use_full_text_search?
 
-  def sort(items)
-    items.sort(params[:sort])
-  end
+    if use_cte_for_search?
+      cte = Gitlab::SQL::CTE.new(klass.table_name, items)
 
-  def by_milestone(items)
-    if milestones?
-      items = items.where(milestone_id: milestones.try(:pluck, :id))
+      items = klass.with(cte.to_arel).from(klass.table_name)
     end
 
-    items
+    items.full_search(search, matched_columns: params[:in], use_minimum_char_limit: use_minimum_char_limit?)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def use_full_text_search?
+    klass.try(:pg_full_text_searchable_columns).present? &&
+      params[:search] =~ FULL_TEXT_SEARCH_TERM_REGEX
+  end
+
+  def filter_by_full_text_search(items)
+    items.pg_full_text_search(search, matched_columns: params[:in].to_s.split(','))
+  end
+
+  def by_iids(items)
+    params[:iids].present? ? items.iid_in(params[:iids]) : items
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def by_negated_iids(items)
+    not_params[:iids].present? ? items.where.not(iid: not_params[:iids]) : items
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def sort(items)
+    # Ensure we always have an explicit sort order (instead of inheriting
+    # multiple orders when combining ActiveRecord::Relation objects).
+    if params[:sort]
+      items.sort_by_attribute(
+        params[:sort],
+        excluded_labels: label_filter.label_names_excluded_from_priority_sort
+      )
+    else
+      items.reorder(id: :desc)
+    end
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def by_author(items)
+    Issuables::AuthorFilter.new(
+      current_user: current_user,
+      params: original_params
+    ).filter(items)
   end
 
   def by_assignee(items)
-    if assignee?
-      items = items.where(assignee_id: assignee.try(:id))
-    end
-
-    items
+    assignee_filter.filter(items)
   end
 
-  def by_author(items)
-    if author?
-      items = items.where(author_id: author.try(:id))
+  def assignee_filter
+    strong_memoize(:assignee_filter) do
+      Issuables::AssigneeFilter.new(
+        current_user: current_user,
+        params: original_params
+      )
     end
-
-    items
   end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def by_closed_by(items)
+    return items if params[:closed_by_id].blank?
+
+    items.where(closed_by_id: params[:closed_by_id])
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
 
   def by_label(items)
-    if params[:label_name].present?
-      label_names = params[:label_name].split(",")
+    if use_cte_for_label_filter? && !items.null_relation?
+      cte = Gitlab::SQL::CTE.new(:filtered_issuables, items)
 
-      item_ids = LabelLink.joins(:label).
-        where('labels.title in (?)', label_names).
-        where(target_type: klass.name).pluck(:target_id)
-
-      items = items.where(id: item_ids)
+      items = klass.with(cte.to_arel).from(cte.alias_to(klass.arel_table)) # rubocop: disable CodeReuse/ActiveRecord -- the CTE fence has to be built here, a scope cannot replace the relation's FROM clause
     end
 
-    items
+    label_filter.filter(items)
   end
 
-  def current_user_related?
-    params[:scope] == 'created-by-me' || params[:scope] == 'authored' || params[:scope] == 'assigned-to-me'
+  def use_cte_for_label_filter?
+    return false unless params[:label_name].present?
+    return false if params.parent.present?
+    return false unless bounded_by_user_filter?
+
+    cte_safe_query?
+  end
+  strong_memoize_attr :use_cte_for_label_filter?
+
+  def cte_safe_query?
+    GROUPED_SORTS.none? { |sort| params[:sort].to_s.include?(sort) }
+  end
+
+  def bounded_by_user_filter?
+    bounding_user_params.any? { |name| specific_user_filter?(name) }
+  end
+
+  def bounding_user_params
+    %i[assignee_id assignee_username author_id author_username]
+  end
+
+  def specific_user_filter?(name)
+    value = params[name]
+
+    return false if value.blank?
+
+    Array.wrap(value).none? { |entry| entry.to_s.downcase.in?([Params::FILTER_NONE, Params::FILTER_ANY]) }
+  end
+
+  def label_filter
+    strong_memoize(:label_filter) do
+      Issuables::LabelFilter.new(
+        params: original_params,
+        parent: params.parent
+      )
+    end
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def by_milestone(items)
+    return items unless params.milestones?
+
+    if params.filter_by_no_milestone?
+      items.left_joins_milestones.where(milestone_id: [-1, nil])
+    elsif params.filter_by_any_milestone?
+      items.any_milestone
+    elsif params.filter_by_upcoming_milestone?
+      upcoming_ids = Milestone.upcoming_ids(accessible_projects, params.related_groups,
+        legacy_filtering_logic: use_legacy_milestone_filtering?)
+      items.left_joins_milestones.where(milestone_id: upcoming_ids)
+    elsif params.filter_by_started_milestone?
+      items.left_joins_milestones
+           .merge(Milestone.started(legacy_filtering_logic: use_legacy_milestone_filtering?))
+    else
+      items.with_milestone(params[:milestone_title])
+    end
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def by_negated_milestone(items)
+    return items unless not_params.milestones?
+
+    if not_params.filter_by_upcoming_milestone?
+      items.joins(:milestone)
+           .merge(Milestone.not_upcoming(legacy_filtering_logic: use_legacy_milestone_filtering?))
+    elsif not_params.filter_by_started_milestone?
+      items.joins(:milestone).merge(Milestone.not_started)
+    else
+      items.without_particular_milestones(not_params[:milestone_title])
+    end
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def by_release(items)
+    return items unless params.releases?
+    return items if params.group? # don't allow release filtering at group level
+
+    if params.filter_by_no_release?
+      items.without_release
+    elsif params.filter_by_any_release?
+      items.any_release
+    else
+      items.with_release(params[:release_tag], params[:project_id])
+    end
+  end
+
+  def by_negated_release(items)
+    return items unless not_params.releases?
+
+    items.without_particular_release(not_params[:release_tag], not_params[:project_id])
+  end
+
+  def by_my_reaction_emoji(items)
+    return items unless params[:my_reaction_emoji] && current_user
+
+    if params.filter_by_no_reaction?
+      items.not_awarded(current_user)
+    elsif params.filter_by_any_reaction?
+      items.awarded(current_user)
+    else
+      items.awarded(current_user, name: params[:my_reaction_emoji])
+    end
+  end
+
+  def by_negated_my_reaction_emoji(items)
+    return items unless not_params[:my_reaction_emoji] && current_user
+
+    items.not_awarded(current_user, name: not_params[:my_reaction_emoji])
+  end
+
+  def by_non_archived(items)
+    if params[:non_archived].present?
+      items.non_archived
+    else
+      items
+    end
+  end
+
+  def by_crm_contact(items)
+    Issuables::CrmContactFilter.new(
+      params: original_params,
+      parent: params.parent,
+      current_user: current_user
+    ).filter(items)
+  end
+
+  def by_crm_organization(items)
+    Issuables::CrmOrganizationFilter.new(
+      params: original_params,
+      parent: params.parent,
+      current_user: current_user
+    ).filter(items)
+  end
+
+  def by_subscribed(items)
+    return items unless current_user
+
+    case params[:subscribed]&.to_sym
+    when :explicitly_subscribed
+      items.explicitly_subscribed(current_user)
+    when :explicitly_unsubscribed
+      items.explicitly_unsubscribed(current_user)
+    else
+      items
+    end
+  end
+
+  def use_legacy_milestone_filtering?
+    strong_memoize(:use_legacy_milestone_filtering) do
+      params[:use_legacy_milestone_filtering].present?
+    end
   end
 end

@@ -1,0 +1,15 @@
+---
+table_name: prometheus_alert_events
+classes:
+- PrometheusAlertEvent
+feature_categories:
+- observability
+description: TODO
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/7493
+milestone: '11.4'
+gitlab_schema: gitlab_main_org
+allow_cross_foreign_keys: []
+sharding_key:
+  project_id: projects
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/164288
+removed_in_milestone: '17.4'

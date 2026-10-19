@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: settings.operating_system
+description: Information about the operating system running GitLab
+product_group: build
+product_categories:
+- build
+value_type: string
+status: active
+milestone: "13.10"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54778
+time_frame: none
+data_source: system
+instrumentation_class: OperatingSystemMetric
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []

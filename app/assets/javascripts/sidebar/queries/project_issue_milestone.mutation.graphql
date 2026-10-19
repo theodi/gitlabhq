@@ -1,0 +1,16 @@
+mutation projectIssueMilestoneMutation($fullPath: ID!, $iid: String!, $attributeId: ID) {
+  issuableSetAttribute: updateIssue(
+    input: { projectPath: $fullPath, iid: $iid, milestoneId: $attributeId }
+  ) {
+    errors
+    issuable: issue {
+      id
+      attribute: milestone {
+        title
+        id
+        state
+        expired
+      }
+    }
+  }
+}

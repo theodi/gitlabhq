@@ -1,0 +1,86 @@
+# frozen_string_literal: true
+
+# This service return notes grouped by discussion ID and paginated per discussion.
+# System notes also have a discussion ID assigned including Synthetic system notes.
+module Issuable
+  class DiscussionsListService
+    include Gitlab::Utils::StrongMemoize
+
+    attr_reader :current_user, :issuable, :params
+
+    MAX_PER_PAGE = 100
+
+    def initialize(current_user, issuable, params = {})
+      @current_user = current_user
+      @issuable = issuable
+      @params = params.dup
+    end
+
+    def execute
+      return Note.none unless can_read_issuable_notes?
+
+      notes = NotesFinder.new(current_user, params.merge({ target: issuable, project: issuable.project }))
+                .execute.with_web_entity_associations.inc_relations_for_view(issuable).order_created_at_id_asc
+
+      if paginator
+        paginated_discussions_by_type = paginator.records.group_by(&:table_name)
+
+        notes = if paginated_discussions_by_type['notes'].present?
+                  notes.id_in(paginated_discussions_by_type['notes'].flat_map(&:ids))
+                else
+                  notes.none
+                end
+      end
+
+      if include_synthetic_notes? && params[:notes_filter] != UserPreference::NOTES_FILTERS[:only_comments]
+        notes = ResourceEvents::MergeIntoNotesService.new(
+          issuable, current_user, paginated_notes: paginated_discussions_by_type
+        ).execute(notes)
+      end
+
+      # Here we assume all notes belong to the same project as the work item
+      project = notes.first&.project
+      notes = ::Preloaders::Projects::NotesPreloader.new(project, current_user).call(notes)
+
+      # Permission check required for system notes only:
+      # - System notes may reference resources the user cannot access
+      # - see Note#all_referenced_mentionables_allowed?
+      #
+      # Regular user notes don't need this check because:
+      # - If user can access the work item, they have `read_note` ability
+      # - Internal notes are separately filtered in NotesFinder.redact_internal
+      notes = notes.select { |n| !n.system? || n.system_note_visible_for?(current_user) }
+
+      discussions = Discussion.build_collection(notes, issuable)
+      discussions.reverse! if params[:sort] && params[:sort] == :created_desc
+
+      discussions
+    end
+
+    def paginator
+      strong_memoize(:paginator) do
+        per_page = [params[:per_page].to_i, MAX_PER_PAGE].min
+        per_page = Kaminari.config.default_per_page if per_page <= 0
+
+        issuable
+          .discussion_root_note_ids(
+            notes_filter: params[:notes_filter],
+            sort: params[:sort],
+            include_synthetic_notes: include_synthetic_notes?
+          )
+          .keyset_paginate(cursor: params[:cursor], per_page: per_page)
+      end
+    end
+
+    def include_synthetic_notes?
+      params.fetch(:include_synthetic_notes, true)
+    end
+
+    def can_read_issuable_notes?
+      return Ability.allowed?(current_user, :read_security_resource, issuable) if issuable.is_a?(Vulnerability)
+
+      Ability.allowed?(current_user, :"read_#{issuable.to_ability_name}", issuable) &&
+        Ability.allowed?(current_user, :read_note, issuable)
+    end
+  end
+end

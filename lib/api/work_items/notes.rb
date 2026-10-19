@@ -1,0 +1,466 @@
+# frozen_string_literal: true
+
+module API
+  module WorkItems
+    class Notes < ::API::Base
+      include ::API::Concerns::AiWorkflowsAccess
+      include APIGuard
+
+      allow_ai_workflows_access
+
+      before { authenticate! }
+      before { check_work_item_rest_api_feature_flag! }
+
+      feature_category :portfolio_management
+      urgency :low
+
+      DELETE_FAILURE_RESPONSES = (FAILURE_RESPONSES + [{ code: 412, message: 'Precondition failed' }]).freeze
+
+      helpers ::API::Helpers::WorkItems::Authorization
+      helpers ::API::Helpers::WorkItems::Preloads
+      helpers ::API::Helpers::WorkItems::Rendering
+      helpers ::API::Helpers::WorkItems::CursorPaginationParams
+      helpers ::API::Helpers::NotesHelpers
+      helpers ::API::Helpers::WorkItems::NoteCreation
+      helpers ::API::Helpers::WorkItems::NoteUpdate
+      helpers ::API::Helpers::WorkItems::NoteDeletion
+
+      helpers do
+        params :notes_filter_params do
+          requires :work_item_iid, type: Integer, desc: 'The internal ID of the work item'
+          optional :order_by, type: String, values: %w[created_at updated_at], default: 'created_at',
+            desc: 'Return notes ordered by `created_at` or `updated_at` fields.'
+          optional :sort, type: String, values: %w[asc desc], default: 'asc',
+            desc: 'Return notes sorted in `asc` or `desc` order.'
+          optional :activity_filter, type: String,
+            values: UserPreference::NOTES_FILTERS.stringify_keys.keys,
+            default: 'all_notes',
+            desc: 'Filter notes by type. Supported values: all_notes, only_comments, only_activity.'
+          use :work_items_cursor_pagination_params
+        end
+
+        params :work_item_note_params do
+          requires :work_item_iid, type: Integer, desc: 'The internal ID of the work item'
+          requires :note_id, type: Integer, desc: 'The ID of a note'
+        end
+
+        params :note_update_params do
+          use :work_item_note_params
+          requires :body, type: String, allow_blank: false, desc: 'The content of a note'
+        end
+
+        # Scoped to the work item's own notes, so a note id belonging to another noteable 404s.
+        # Deliberately not NotesHelpers#get_note: its EE override presents epics with the legacy
+        # LegacyEpicNote entity, whereas this API renders every scope with Entities::Note.
+        def find_work_item_note!(parent_work_item, preload: true)
+          notes = parent_work_item.notes
+          # The entity preloads are wasted when the note is not presented, as on delete.
+          if preload
+            notes = notes.preload(::API::Helpers::WorkItems::Preloads::NOTE_REFERENCE_PRELOADS) # rubocop:disable CodeReuse/ActiveRecord -- Preloading associations for API response
+          end
+
+          note = notes.find_by_id(params[:note_id])
+          not_found!('Note') unless note&.readable_by?(current_user)
+
+          note
+        end
+
+        def render_note_for(parent_work_item)
+          authorize_work_item_feature!(parent_work_item)
+          authorize! :read_note, parent_work_item
+
+          present find_work_item_note!(parent_work_item), with: ::API::Entities::Note, current_user: current_user
+        end
+
+        def update_note_for(parent_work_item)
+          authorize_work_item_feature!(parent_work_item)
+
+          update_work_item_note(parent_work_item, find_work_item_note!(parent_work_item))
+        end
+
+        def delete_note_for(parent_work_item)
+          authorize_work_item_feature!(parent_work_item)
+          authorize! :read_note, parent_work_item
+
+          delete_work_item_note(parent_work_item, find_work_item_note!(parent_work_item, preload: false))
+        end
+
+        def create_note_for(parent_work_item)
+          create_work_item_note(parent_work_item) do |note|
+            present note, with: ::API::Entities::Note, current_user: current_user
+          end
+        end
+
+        def render_notes_endpoint_for(resource_parent)
+          render_notes_for(work_item_for!(resource_parent, params[:work_item_iid]))
+        end
+
+        def render_notes_for(parent_work_item)
+          authorize_work_item_feature!(parent_work_item)
+          check_pagination_param!(params)
+          authorize! :read_note, parent_work_item
+
+          notes_filter = UserPreference::NOTES_FILTERS[params[:activity_filter].to_sym]
+          relation = build_notes_relation(parent_work_item, notes_filter: notes_filter)
+
+          params[:pagination] = 'keyset'
+          paginated = paginate_with_strategies(relation)
+
+          visible = paginated.select { |note| note.readable_by?(current_user) }
+
+          present visible, with: ::API::Entities::Note, current_user: current_user
+        end
+      end
+
+      resource :namespaces do
+        params do
+          requires :id, types: [String, Integer], desc: 'The ID or URL-encoded full path of the namespace'
+        end
+
+        namespace ':id/-/work_items', requirements: { id: FULL_PATH_ID_REQUIREMENT } do
+          desc 'List notes on a work item.' do
+            detail 'Get a paginated list of notes for a work item in a namespace. ' \
+              'Project and group namespaces are supported.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            is_array true
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :notes_filter_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :read_work_item,
+            boundary: -> { namespace_path_boundary },
+            boundaries: [{ boundary_type: :group }, { boundary_type: :project }]
+
+          get ':work_item_iid/notes' do
+            resource_parent = resolve_namespace_resource_parent!(params[:id])
+
+            render_notes_endpoint_for(resource_parent)
+          end
+
+          desc 'Get a note on a work item.' do
+            detail 'Get a single note for a work item in a namespace. Project and group namespaces are supported.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :work_item_note_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :read_work_item,
+            boundary: -> { namespace_path_boundary },
+            boundaries: [{ boundary_type: :group }, { boundary_type: :project }]
+
+          get ':work_item_iid/notes/:note_id' do
+            render_note_for(work_item_for_namespace!(params[:id], params[:work_item_iid]))
+          end
+
+          desc 'Update a note on a work item.' do
+            detail 'Update an existing note on a work item in a namespace. Project and group namespaces are supported.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :note_update_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :update_note,
+            boundary: -> { namespace_path_boundary },
+            boundaries: [{ boundary_type: :group }, { boundary_type: :project }]
+
+          put ':work_item_iid/notes/:note_id' do
+            update_note_for(work_item_for_namespace!(params[:id], params[:work_item_iid]))
+          end
+
+          desc 'Delete a note on a work item.' do
+            detail 'Delete a note from a work item in a namespace. Project and group namespaces are supported.'
+            hidden true
+            success code: 204
+            failure DELETE_FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :work_item_note_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :delete_note,
+            boundary: -> { namespace_path_boundary },
+            boundaries: [{ boundary_type: :group }, { boundary_type: :project }]
+
+          delete ':work_item_iid/notes/:note_id' do
+            delete_note_for(work_item_for_namespace!(params[:id], params[:work_item_iid]))
+          end
+
+          desc 'Create a note on a work item.' do
+            detail 'Create a new note on a work item in a namespace. Project and group namespaces are supported.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :note_create_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :create_note,
+            boundary: -> { namespace_path_boundary },
+            boundaries: [{ boundary_type: :group }, { boundary_type: :project }]
+
+          post ':work_item_iid/notes' do
+            create_note_for(work_item_for_namespace!(params[:id], params[:work_item_iid]))
+          end
+        end
+      end
+
+      resource :projects do
+        params do
+          requires :id, types: [String, Integer], desc: 'The ID or URL-encoded path of the project'
+        end
+
+        namespace ':id/-/work_items', requirements: { id: FULL_PATH_ID_REQUIREMENT } do
+          desc 'List notes on a work item in a project.' do
+            detail 'Get a paginated list of notes for a work item in a project.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            is_array true
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :notes_filter_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :read_work_item,
+            boundary_type: :project
+
+          get ':work_item_iid/notes' do
+            render_notes_endpoint_for(find_project!(params[:id]))
+          end
+
+          desc 'Get a note on a work item.' do
+            detail 'Get a single note for a work item in a project.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :work_item_note_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :read_work_item,
+            boundary_type: :project
+
+          get ':work_item_iid/notes/:note_id' do
+            render_note_for(work_item_for!(find_project!(params[:id]), params[:work_item_iid]))
+          end
+
+          desc 'Update a note on a work item.' do
+            detail 'Update an existing note on a work item in a project.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :note_update_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :update_note,
+            boundary_type: :project
+
+          put ':work_item_iid/notes/:note_id' do
+            update_note_for(work_item_for!(find_project!(params[:id]), params[:work_item_iid]))
+          end
+
+          desc 'Delete a note on a work item.' do
+            detail 'Delete a note from a work item in a project.'
+            hidden true
+            success code: 204
+            failure DELETE_FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :work_item_note_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :delete_note,
+            boundary_type: :project
+
+          delete ':work_item_iid/notes/:note_id' do
+            delete_note_for(work_item_for!(find_project!(params[:id]), params[:work_item_iid]))
+          end
+
+          desc 'Create a note on a work item in a project.' do
+            detail 'Create a new note on a work item in a project.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :note_create_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :create_note,
+            boundary_type: :project
+
+          post ':work_item_iid/notes' do
+            create_note_for(work_item_for!(find_project!(params[:id]), params[:work_item_iid]))
+          end
+        end
+      end
+
+      resource :groups do
+        params do
+          requires :id, types: [String, Integer], desc: 'The ID or URL-encoded path of the group'
+        end
+
+        namespace ':id/-/work_items', requirements: { id: FULL_PATH_ID_REQUIREMENT } do
+          desc 'List notes on a work item in a group.' do
+            detail 'Get a paginated list of notes for a work item in a group.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            is_array true
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :notes_filter_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :read_work_item,
+            boundary_type: :group
+
+          get ':work_item_iid/notes' do
+            render_notes_endpoint_for(find_group!(params[:id]))
+          end
+
+          desc 'Get a note on a work item.' do
+            detail 'Get a single note for a work item in a group.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :work_item_note_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :read_work_item,
+            boundary_type: :group
+
+          get ':work_item_iid/notes/:note_id' do
+            render_note_for(work_item_for!(find_group!(params[:id]), params[:work_item_iid]))
+          end
+
+          desc 'Update a note on a work item.' do
+            detail 'Update an existing note on a work item in a group.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :note_update_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :update_note,
+            boundary_type: :group
+
+          put ':work_item_iid/notes/:note_id' do
+            update_note_for(work_item_for!(find_group!(params[:id]), params[:work_item_iid]))
+          end
+
+          desc 'Delete a note on a work item.' do
+            detail 'Delete a note from a work item in a group.'
+            hidden true
+            success code: 204
+            failure DELETE_FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :work_item_note_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :delete_note,
+            boundary_type: :group
+
+          delete ':work_item_iid/notes/:note_id' do
+            delete_note_for(work_item_for!(find_group!(params[:id]), params[:work_item_iid]))
+          end
+
+          desc 'Create a note on a work item in a group.' do
+            detail 'Create a new note on a work item in a group.'
+            hidden true
+            success ::API::Entities::Note
+            failure FAILURE_RESPONSES
+            tags WORK_ITEMS_TAGS
+          end
+
+          params do
+            use :note_create_params
+          end
+
+          route_setting :lifecycle, :experiment
+          route_setting :authorization,
+            permissions: :create_note,
+            boundary_type: :group
+
+          post ':work_item_iid/notes' do
+            create_note_for(work_item_for!(find_group!(params[:id]), params[:work_item_iid]))
+          end
+        end
+      end
+    end
+  end
+end

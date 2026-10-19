@@ -1,0 +1,100 @@
+# frozen_string_literal: true
+
+module Authz
+  module PermissionGroups
+    class Assignable < Base
+      BASE_PATH = 'config/authz/permission_groups/assignable_permissions'
+
+      class << self
+        def all_permissions
+          definitions.flat_map(&:permissions).uniq
+        end
+
+        def available_permissions
+          available_definitions.flat_map(&:permissions).uniq
+        end
+
+        def for_permission(permission)
+          definitions.filter { |a| a.permissions.include?(permission.to_sym) }
+        end
+
+        def available_for_permission(permission)
+          available_definitions.filter { |a| a.permissions.include?(permission.to_sym) }
+        end
+
+        # The definition the token form offers for a permission, or a deprecated one when
+        # no live definition holds it. A renamed definition stays defined, deprecated, until
+        # its cleanup, and can sort before the live one.
+        def preferred_for_permission(permission)
+          available_for_permission(permission).first || for_permission(permission).first
+        end
+
+        def config_path
+          Rails.root.join(BASE_PATH, '**/[a-z]?*.yml')
+        end
+
+        def definitions
+          all.values
+        end
+
+        def available_definitions
+          definitions.reject(&:deprecated?)
+        end
+      end
+
+      def deprecated?
+        definition[:deprecated] == true
+      end
+
+      def available_for
+        Array(definition[:available_for]).map(&:to_sym)
+      end
+
+      def available_for?(consumer)
+        available_for.include?(consumer.to_sym)
+      end
+
+      def assignable_when
+        Array(definition[:assignable_when])
+      end
+
+      def assignable_boundaries_for(user)
+        boundaries.select do |boundary|
+          AssignableCondition.satisfied?(conditions_for(boundary), user)
+        end
+      end
+
+      def conditions_for(boundary)
+        assignable_when.filter_map do |entry|
+          entry_boundaries = entry[:boundaries]
+          next unless entry_boundaries.nil? || entry_boundaries.map(&:to_sym).include?(boundary.to_sym)
+
+          entry[:condition].to_sym
+        end
+      end
+
+      def category
+        source_file                     # path/to/<base_path>/**/resource/action.yml'
+          .split(self.class::BASE_PATH) # [..., '**/resource/action.yml']
+          .last                         # '**/resource/action.yml'
+          .split('/').reverse[2]        # ['action.yml', 'resource', ...]
+      end
+
+      def category_name
+        category_definition&.name || category.titlecase
+      end
+
+      private
+
+      def category_definition
+        ::Authz::PermissionGroups::Category.get(category)
+      end
+      strong_memoize_attr :category_definition
+
+      def resource_definition
+        ::Authz::PermissionGroups::Resource.get("#{category}/#{resource}")
+      end
+      strong_memoize_attr :resource_definition
+    end
+  end
+end

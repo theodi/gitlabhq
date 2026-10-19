@@ -1,0 +1,130 @@
+.nothing-here-block {
+  text-align: center;
+  padding: 16px;
+  @apply gl-text-subtle;
+  font-weight: $gl-font-weight-normal;
+  font-size: 14px;
+
+  &.diff-collapsed {
+    padding: 5px;
+    line-height: 34px;
+
+    .click-to-expand {
+      cursor: pointer;
+      vertical-align: initial;
+    }
+  }
+}
+
+.row-content-block {
+  margin-top: 0;
+  @apply gl-bg-subtle;
+  padding: $gl-padding;
+  margin-bottom: 0;
+  @apply gl-border-t;
+  @apply gl-border-b;
+  @apply gl-text-default;
+
+  &.top-block {
+    border-top: 0;
+
+    .container-fluid {
+      background-color: inherit;
+    }
+  }
+
+  &.middle-block {
+    margin-top: $gl-padding-24;
+    margin-bottom: 0;
+  }
+
+  &.second-block {
+    margin-top: -1px;
+    margin-bottom: 0;
+  }
+
+  &.footer-block {
+    margin-top: $gl-padding-24;
+    border-bottom: 0;
+  }
+
+  &.content-component-block {
+    @apply gl-bg-default;
+  }
+
+  .title {
+    @apply gl-text-heading;
+  }
+
+  > p:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.content-block {
+  padding: $gl-padding 0;
+  @apply gl-border-b;
+
+  > .controls {
+    float: right;
+  }
+}
+
+.landing {
+  margin: $gl-padding auto;
+  overflow: hidden;
+  display: flex;
+  position: relative;
+  border: 1px solid var(--gl-banner-intro-border-color);
+  border-radius: $gl-border-radius-base;
+  background-color: var(--gl-feedback-info-background-color);
+  justify-content: center;
+
+  .svg-container {
+    align-self: center;
+  }
+
+  @include gl-container-width-down(md, panel) {
+    flex-direction: column;
+  }
+}
+
+.empty-state {
+  margin: 5% auto 0;
+
+  .text-content {
+    max-width: 460px;
+    margin: 0 auto;
+    padding: $gl-padding;
+  }
+
+  .emoji-icon {
+    display: inline-block;
+  }
+
+  .btn:not(.split-content-button):not(.dropdown-toggle-split) {
+    margin: $gl-padding-8 $gl-padding-4;
+
+    @include gl-container-width-down(sm, panel) {
+      width: 100%;
+      margin: $gl-padding-8 0;
+    }
+  }
+}
+
+.code-block {
+  white-space: pre;
+  overflow-x: auto;
+  font-size: 12px;
+  border: 0;
+  padding: $grid-size;
+
+  code {
+    background-color: inherit;
+    padding: inherit;
+  }
+}
+
+.gl-empty-state {
+  margin-top: $gl-spacing-scale-7;
+}

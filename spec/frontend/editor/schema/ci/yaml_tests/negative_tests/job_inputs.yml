@@ -1,0 +1,62 @@
+missing_default:
+  test-job:
+    inputs:
+      environment:
+        type: string
+    script:
+      - echo "test"
+
+type_mismatches:
+  test-job:
+    inputs:
+      string_with_number:
+        type: string
+        default: 123
+      number_with_string:
+        type: number
+        default: "not a number"
+      boolean_with_string:
+        type: boolean
+        default: "true"
+      array_with_object:
+        type: array
+        default:
+          key: "value"
+    script:
+      - echo "test"
+
+invalid_type:
+  test-job:
+    inputs:
+      data:
+        type: "object"
+        default: {}
+    script:
+      - echo "test"
+
+omitted_type_with_number_default:
+  test-job:
+    inputs:
+      count:
+        default: 42
+        description: "Should fail - when type omitted, default must be string"
+    script:
+      - echo "test"
+
+omitted_type_with_boolean_default:
+  test-job:
+    inputs:
+      enabled:
+        default: true
+        description: "Should fail - when type omitted, default must be string"
+    script:
+      - echo "test"
+
+omitted_type_with_array_default:
+  test-job:
+    inputs:
+      items:
+        default: ["one", "two"]
+        description: "Should fail - when type omitted, default must be string"
+    script:
+      - echo "test"

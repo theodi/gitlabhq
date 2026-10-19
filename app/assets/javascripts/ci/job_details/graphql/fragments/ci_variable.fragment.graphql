@@ -1,0 +1,5 @@
+fragment ManualCiVariable on CiVariable {
+  id
+  key
+  value
+}

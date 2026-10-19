@@ -1,0 +1,112 @@
+import Vue from 'vue';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { updateHistory, removeParams } from '~/lib/utils/url_utility';
+import RecoveryCodes from './components/recovery_codes.vue';
+import TwoFactorActionConfirm from './components/two_factor_action_confirm.vue';
+import EmailOtpActionConfirm from './components/email_otp_action_confirm.vue';
+import { SUCCESS_QUERY_PARAM } from './constants';
+
+export const initRecoveryCodes = () => {
+  const el = document.querySelector('.js-2fa-recovery-codes');
+
+  if (!el) {
+    return false;
+  }
+
+  const { codes, redirectPath } = el.dataset;
+
+  return new Vue({
+    el,
+    name: 'RecoveryCodesRoot',
+    render(createElement) {
+      return createElement(RecoveryCodes, {
+        props: {
+          codes: JSON.parse(codes),
+          redirectPath,
+        },
+      });
+    },
+  });
+};
+
+export const initClose2faSuccessMessage = () => {
+  const closeButton = document.querySelector('.js-close-2fa-enabled-success-alert');
+
+  if (!closeButton) {
+    return;
+  }
+
+  closeButton.addEventListener(
+    'click',
+    () => {
+      updateHistory({
+        url: removeParams([SUCCESS_QUERY_PARAM]),
+        title: document.title,
+        replace: true,
+      });
+    },
+    { once: true },
+  );
+};
+
+export const initTwoFactorConfirm = () => {
+  document.querySelectorAll('.js-two-factor-action-confirm').forEach((el) => {
+    const {
+      modalTitle,
+      buttonText,
+      icon,
+      messages,
+      method,
+      passwordRequired,
+      path,
+      size,
+      variant,
+    } = el.dataset;
+
+    // eslint-disable-next-line no-new
+    new Vue({
+      el,
+      name: 'TwoFactorActionConfirmRoot',
+      render(createElement) {
+        return createElement(TwoFactorActionConfirm, {
+          props: {
+            modalTitle,
+            buttonText,
+            icon,
+            messages: JSON.parse(messages),
+            method,
+            passwordRequired: parseBoolean(passwordRequired),
+            path,
+            size,
+            variant,
+          },
+        });
+      },
+    });
+  });
+};
+
+export const initEmailOtpConfirm = () => {
+  const el = document.getElementById('js-email-otp-action-confirm');
+
+  if (!el) {
+    return false;
+  }
+
+  const { helpText, disabled, emailOtpRequired, path } = el.dataset;
+
+  return new Vue({
+    el,
+    name: 'EmailOtpActionConfirmRoot',
+    render(createElement) {
+      return createElement(EmailOtpActionConfirm, {
+        props: {
+          helpText,
+          disabled: parseBoolean(disabled),
+          emailOtpRequired: parseBoolean(emailOtpRequired),
+          path,
+        },
+      });
+    },
+  });
+};

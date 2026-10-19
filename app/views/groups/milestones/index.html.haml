@@ -1,23 +1,35 @@
-- page_title "Milestones"
-%h3.page-title
-  Milestones
-  %span.pull-right #{@group_milestones.count} milestones
+- page_title _("Milestones")
+- add_page_specific_style 'page_bundles/milestone'
 
-%p.light
-  Only milestones from
-  %strong #{@group.name}
-  group are listed here.
+%h1.gl-sr-only= page_title
 
-%hr
+- if @milestone_states.any? { |name, count| count > 0 }
+  .top-area
+    = render 'shared/milestones_filter', counts: @milestone_states
 
-= render 'shared/milestones_filter'
-.milestones
-  .panel.panel-default
-    %ul.well-list
-      - if @group_milestones.blank?
-        %li
-          .nothing-here-block No milestones to show
-      - else
-        - @group_milestones.each do |milestone|
-          = render 'milestone', milestone: milestone
-  = paginate @group_milestones, theme: "gitlab"
+    .nav-controls
+      = render 'shared/milestones/search_form'
+      = render 'shared/milestones_sort_dropdown'
+      - if can?(current_user, :admin_milestone, @group)
+        = render Pajamas::ButtonComponent.new(href: new_group_milestone_path(@group), variant: :confirm, button_options: { data: { testid: "new-group-milestone-link" }, class: "gl-ml-3" }) do
+          = _('New milestone')
+  - if @milestones.blank?
+    = render 'shared/empty_states/milestones_tab', learn_more_path: help_page_path('user/project/milestones/_index.md') do
+      - if can?(current_user, :admin_milestone, @group)
+        = render Pajamas::ButtonComponent.new(href: new_group_milestone_path(@group), variant: :confirm, button_options: { data: { testid: "new-group-milestone-link" }}) do
+          = _('New milestone')
+  - else
+    .milestones
+      #js-delete-milestone-modal
+      %ul.content-list
+        - @milestones.each do |milestone|
+          - if milestone.project_milestone?
+            = render 'projects/milestones/milestone', milestone: milestone
+          - else
+            = render 'milestone', milestone: milestone
+      = paginate @milestones, theme: "gitlab"
+- else
+  = render 'shared/empty_states/milestones', learn_more_path: help_page_path('user/project/milestones/_index.md') do
+    - if can?(current_user, :admin_milestone, @group)
+      = render Pajamas::ButtonComponent.new(href: new_group_milestone_path(@group), variant: :confirm, button_options: { data: { testid: "new-group-milestone-link" }}) do
+        = _('New milestone')

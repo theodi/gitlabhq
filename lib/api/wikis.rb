@@ -1,0 +1,245 @@
+# frozen_string_literal: true
+
+module API
+  class Wikis < ::API::Base
+    include APIGuard
+
+    helpers ::API::Helpers::WikisHelpers
+
+    feature_category :wiki
+
+    allow_access_with_scope :ai_workflows, if: ->(request) do
+      request.get? || request.head? || request.post? || request.put?
+    end
+
+    helpers do
+      attr_reader :container
+
+      params :common_wiki_page_params do
+        optional :format,
+          type: String,
+          values: Wiki::VALID_USER_MARKUPS.keys.map(&:to_s),
+          default: 'markdown',
+          desc: 'Format of the wiki page.'
+      end
+    end
+
+    WIKI_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS.merge(slug: ::API::NO_SLASH_URL_PART_REGEX)
+
+    ::API::Helpers::WikisHelpers.wiki_resource_kinds.each do |container_resource|
+      boundary_type = case container_resource
+                      when :groups then :group
+                      when :projects then :project
+                      end
+      tier = ::API::Helpers::WikisHelpers.wiki_resource_tier(container_resource)
+      resource container_resource, requirements: WIKI_ENDPOINT_REQUIREMENTS do
+        after_validation do
+          @container = Gitlab::Lazy.new { find_container(container_resource) }
+        end
+
+        desc "List all wiki pages for a #{boundary_type}" do
+          detail "Lists all wiki pages for a specified #{boundary_type}."
+          success Entities::WikiPageBasic
+          failure [
+            { code: 404, message: 'Not found' }
+          ]
+          tags %w[wikis]
+          is_array true
+        end
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the group or project.'
+          optional :with_content, type: Boolean, default: false, desc: 'If `true`, includes the content of each wiki page.'
+        end
+        route_setting :tier, tier if tier
+        route_setting :authorization, permissions: :read_wiki, boundary_type: boundary_type
+        get ':id/wikis', urgency: :low do
+          authorize! :read_wiki, container
+
+          entity = params[:with_content] ? Entities::WikiPage : Entities::WikiPageBasic
+
+          options = {
+            with: entity,
+            current_user: current_user
+          }
+
+          pages = container.wiki.list_pages(load_content: params[:with_content])
+
+          # Bulk-fetch last commits so serialization does not make one Gitaly call per page
+          # (which times out on large wikis). See Wiki#last_commits_for_pages.
+          last_commits = container.wiki.last_commits_for_pages(pages)
+          pages.each do |page|
+            last_commit = last_commits[page.path]
+            page.last_version = last_commit if last_commit
+          end
+
+          present pages, **options
+        end
+
+        desc "Retrieve a wiki page for a #{boundary_type}" do
+          detail "Retrieves a specified wiki page for a #{boundary_type}."
+          success Entities::WikiPage
+          failure [
+            { code: 404, message: 'Not found' }
+          ]
+          tags %w[wikis]
+        end
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the group or project.'
+          requires :slug, type: String, desc: 'URL-encoded slug of the wiki page, a unique string such as `dir%2Fpage_name`.'
+          optional :version, type: String, desc: 'Version SHA of the wiki page.'
+          optional :render_html, type: Boolean, default: false, desc: 'If `true`, returns the rendered HTML of the wiki page.'
+        end
+
+        route_setting :tier, tier if tier
+        route_setting :authorization, permissions: :read_wiki, boundary_type: boundary_type
+        get ':id/wikis/:slug', requirements: { slug: /.+/ }, urgency: :low do
+          authorize! :read_wiki, container
+
+          options = {
+            with: Entities::WikiPage,
+            render_html: params[:render_html],
+            current_user: current_user
+          }
+
+          present wiki_page(params[:version]), **options
+        end
+
+        desc "Create a wiki page for a #{boundary_type}" do
+          detail "Creates a wiki page for a specified #{boundary_type}. Requests can define the title, slug, and content."
+          success Entities::WikiPage
+          failure [
+            { code: 400, message: 'Validation error' },
+            { code: 404, message: 'Not found' },
+            { code: 422, message: 'Unprocessable entity' }
+          ]
+          tags %w[wikis]
+        end
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the group or project.'
+          requires :title, type: String, desc: 'Title of the wiki page.'
+          optional :front_matter, type: Hash,  desc: 'YAML front matter of the wiki page.' do
+            optional :title, type: String, desc: 'Title in the front matter of the wiki page.'
+          end
+          requires :content, type: String, desc: 'Content of the wiki page.'
+          use :common_wiki_page_params
+        end
+
+        route_setting :tier, tier if tier
+        route_setting :authorization, permissions: :create_wiki, boundary_type: boundary_type
+        post ':id/wikis' do
+          authorize! :create_wiki, container
+
+          response = WikiPages::CreateService.new(container: container, current_user: current_user, params: params).execute
+          page = response.payload[:page]
+
+          if response.success?
+            present page, with: Entities::WikiPage
+          else
+            render_validation_error!(page)
+          end
+        end
+
+        desc "Update a wiki page for a #{boundary_type}" do
+          detail "Updates a specified wiki page for a #{boundary_type}."
+          success Entities::WikiPage
+          failure [
+            { code: 400, message: 'Validation error' },
+            { code: 404, message: 'Not found' },
+            { code: 422, message: 'Unprocessable entity' }
+          ]
+          tags %w[wikis]
+        end
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the group or project.'
+          optional :title, type: String, desc: 'Title of the wiki page.'
+          optional :front_matter, type: Hash,  desc: 'YAML front matter of the wiki page.' do
+            optional :title, type: String, desc: 'Title in the front matter of the wiki page.'
+          end
+          optional :content, type: String, desc: 'Content of the wiki page.'
+          use :common_wiki_page_params
+          at_least_one_of :content, :title, :format
+        end
+
+        route_setting :tier, tier if tier
+        route_setting :authorization, permissions: :update_wiki, boundary_type: boundary_type
+        put ':id/wikis/:slug', requirements: { slug: /.+/ } do
+          authorize! :create_wiki, container
+
+          response = WikiPages::UpdateService
+            .new(container: container, current_user: current_user, params: params)
+            .execute(wiki_page)
+          page = response.payload[:page]
+
+          if response.success?
+            present page, with: Entities::WikiPage
+          else
+            render_validation_error!(page)
+          end
+        end
+
+        desc "Delete a wiki page for a #{boundary_type}" do
+          detail "Deletes a specified wiki page from a #{boundary_type}."
+          success code: 204
+          failure [
+            { code: 400, message: 'Validation error' },
+            { code: 404, message: 'Not found' }
+          ]
+          tags %w[wikis]
+        end
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the group or project.'
+          requires :slug, type: String, desc: 'URL-encoded slug of the wiki page, a unique string such as `dir%2Fpage_name`.'
+        end
+
+        route_setting :tier, tier if tier
+        route_setting :authorization, permissions: :delete_wiki, boundary_type: boundary_type
+        delete ':id/wikis/:slug', requirements: { slug: /.+/ } do
+          authorize! :admin_wiki, container
+
+          response = WikiPages::DestroyService
+            .new(container: container, current_user: current_user)
+            .execute(wiki_page)
+
+          if response.success?
+            no_content!
+          else
+            unprocessable_entity!(response.message)
+          end
+        end
+
+        desc "Upload an attachment to a #{boundary_type} wiki" do
+          detail "Uploads a file to the `uploads` directory in a specified #{boundary_type} wiki."
+          success Entities::WikiAttachment
+          failure [
+            { code: 404, message: 'Not found' }
+          ]
+          tags %w[wikis]
+        end
+        params do
+          requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the group or project.'
+          requires :file, types: [Rack::Multipart::UploadedFile, ::API::Validations::Types::WorkhorseFile], desc: 'The attachment file to be uploaded', documentation: { type: 'file' }
+          optional :branch, type: String, desc: 'The name of the branch'
+        end
+
+        route_setting :tier, tier if tier
+        route_setting :authorization, permissions: :upload_wiki_attachment, boundary_type: boundary_type
+        post ":id/wikis/attachments" do
+          authorize! :create_wiki, container
+
+          result = ::Wikis::CreateAttachmentService.new(
+            container: container,
+            current_user: current_user,
+            params: commit_params(declared_params(include_missing: false))
+          ).execute
+
+          if result[:status] == :success
+            status(201)
+            present result[:result], with: Entities::WikiAttachment
+          else
+            render_api_error!(result[:message], 400)
+          end
+        end
+      end
+    end
+  end
+end

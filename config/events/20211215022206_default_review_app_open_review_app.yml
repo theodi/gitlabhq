@@ -1,0 +1,18 @@
+description: "Go to review app"
+category: default
+action: open_review_app
+extra_properties:
+identifiers:
+product_group: pipeline_execution
+product_categories:
+- review_apps
+- continuous_integration
+milestone: "12.6"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/18141
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`review_app`"

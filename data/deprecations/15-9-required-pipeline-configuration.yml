@@ -1,0 +1,37 @@
+#
+# REQUIRED FIELDS
+#
+- title: "Required Pipeline Configuration is deprecated"  # (required) Clearly explain the change, or planned change. For example, "The `confidential` field for a `Note` is deprecated" or "CI/CD job names will be limited to 250 characters."
+  announcement_milestone: "15.9"  # (required) The milestone when this feature was first announced as deprecated.
+  removal_milestone: "17.0"  # (required) The milestone when this feature is planned to be removed
+  breaking_change: true  # (required) Change to false if this is not a breaking change.
+  reporter: derekferguson  # (required) GitLab username of the person reporting the change
+  stage: Compliance Management  # (required) String value of the stage that the feature was created in. e.g., Growth
+  issue_url: https://gitlab.com/gitlab-org/gitlab/-/issues/389467  # (required) Link to the deprecation issue in GitLab
+  body: |  # (required) Do not modify this line, instead modify the lines below.
+    Required pipeline configuration will be removed in GitLab 17.0. This impacts users on GitLab Self-Managed on the Ultimate tier.
+
+    You should replace required pipeline configuration with either:
+
+    - [Security policies scoped to compliance frameworks](https://docs.gitlab.com/user/application_security/policies/scan_execution_policies/#security-policy-scopes), which are experimental.
+    - [Compliance pipelines](https://docs.gitlab.com/user/group/compliance_pipelines/), which are available now.
+
+    We recommend these alternative solutions because they provides greater flexibility, allowing required pipelines to be assigned to specific
+    compliance framework labels.
+
+    Compliance pipelines will be deprecated in the future and migrated to security policies. For more information, see the
+    [migration and deprecation epic](https://gitlab.com/groups/gitlab-org/-/epics/11275).
+#
+# OPTIONAL END OF SUPPORT FIELDS
+#
+# If an End of Support period applies, the announcement should be shared with GitLab Support
+# in the `#spt_managers` channel in Slack, and mention `@gitlab-com/support` in this MR.
+#
+  end_of_support_milestone:  # (optional) Use "XX.YY" format. The milestone when support for this feature will end.
+  #
+  # OTHER OPTIONAL FIELDS
+  #
+  tiers:  # (optional - may be required in the future) An array of tiers that the feature is available in currently.  e.g., [Free, Silver, Gold, Core, Premium, Ultimate]
+  documentation_url: https://docs.gitlab.com/administration/settings/continuous_integration/#required-pipeline-configuration-deprecated  # (optional) This is a link to the current documentation page
+  image_url:  # (optional) This is a link to a thumbnail image depicting the feature
+  video_url:  # (optional) Use the youtube thumbnail URL with the structure of https://img.youtube.com/vi/UNIQUEID/hqdefault.jpg

@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: counts.clusters_integrations_elastic_stack
+description: Total clusters with Clusters::Integrations::ElasticStack enabled
+product_group: environments
+product_categories:
+- deployment_management
+value_type: number
+status: removed
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "14.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+milestone_removed: "15.2"
+removed_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/90699"

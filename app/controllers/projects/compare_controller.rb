@@ -1,34 +1,267 @@
+# frozen_string_literal: true
+
 require 'addressable/uri'
 
 class Projects::CompareController < Projects::ApplicationController
+  include DiffForPath
+  include DiffHelper
+  include RendersCommits
+  include CompareHelper
+  include Projects::TargetProjects
+  include RapidDiffs::Resource
+  include HandlesGitalyErrors
+
   # Authorize
   before_action :require_non_empty_project
-  before_action :authorize_download_code!
+  before_action :authorize_read_code!
+  # Defining ivars
+  before_action :define_environment, only: [:show]
+  before_action :define_diffs, only: [:diff_for_path]
+  before_action :define_diff_notes_disabled, only: [:show, :diff_for_path]
+  before_action :define_commits, only: [:show, :diff_for_path, :signatures]
+  before_action :merge_request, only: [:index, :show]
+  # Validation
+  before_action :validate_refs!
+
+  feature_category :source_code_management
+  urgency :low, [:show, :create, :signatures]
+
+  helper_method :rapid_diffs_presenter
 
   def index
-    @ref = Addressable::URI.unescape(params[:to])
+    compare_params
   end
 
   def show
-    base_ref = Addressable::URI.unescape(params[:from])
-    @ref = head_ref = Addressable::URI.unescape(params[:to])
+    respond_to do |format|
+      format.html do
+        apply_diff_view_cookie!
+      end
 
-    compare_result = CompareService.new.execute(
-      current_user,
-      @project,
-      head_ref,
-      @project,
-      base_ref
-    )
+      format.patch do
+        define_diffs
+        compare ? send_git_patch(source_project.repository, compare.diff_refs) : render_404
+      end
 
-    @commits = compare_result.commits
-    @diffs = compare_result.diffs
-    @commit = @commits.last
-    @line_notes = []
+      format.diff do
+        define_diffs
+        compare ? send_git_diff(source_project.repository, compare.diff_refs) : render_404
+      end
+    end
+  end
+
+  def diff_for_path
+    return render_404 unless compare
+
+    render_diff_for_path(compare.diffs(diff_options))
   end
 
   def create
-    redirect_to namespace_project_compare_path(@project.namespace, @project,
-                                               params[:from], params[:to])
+    from_to_vars = build_from_to_vars
+
+    if from_to_vars[:from].blank? || from_to_vars[:to].blank?
+      flash[:alert] = "You must select a Source and a Target revision"
+
+      redirect_to project_compare_index_path(source_project, from_to_vars)
+    elsif compare_params[:straight] == "true"
+      redirect_to project_compare_with_two_dots_path(source_project, from_to_vars)
+    else
+      redirect_to project_compare_path(source_project, from_to_vars)
+    end
+  end
+
+  def signatures
+    respond_to do |format|
+      format.json do
+        render json: {
+          signatures: @commits.select(&:has_signature?).map do |commit|
+            {
+              commit_sha: commit.sha,
+              html: view_to_html_string('projects/commit/_signature', signature: commit.signature)
+            }
+          end
+        }
+      end
+    end
+  end
+
+  def target_projects_json
+    render json: ProjectSerializer.new.represent(get_target_projects)
+  end
+
+  private
+
+  def rapid_diffs_presenter
+    return if @gitaly_unavailable
+    return if compare.nil?
+
+    @rapid_diffs_presenter ||= ::RapidDiffs::ComparePresenter.new(
+      compare,
+      diff_view: diff_view,
+      diff_options: diff_options,
+      current_user: current_user,
+      request_params: compare_params
+    )
+  end
+
+  def build_from_to_vars
+    {
+      from: compare_params[:from].presence,
+      to: compare_params[:to].presence,
+      from_project_id: compare_params[:from_project_id].presence
+    }
+  end
+
+  def validate_refs!
+    invalid = [head_ref, start_ref].filter { |ref| !valid_ref?(ref) }
+
+    return if invalid.empty?
+
+    flash[:alert] = "Invalid branch name(s): #{invalid.join(', ')}"
+    redirect_to project_compare_index_path(source_project)
+  end
+
+  # target == start_ref == from
+  def target_project
+    strong_memoize(:target_project) do
+      target_project =
+        if !compare_params.key?(:from_project_id)
+          source_project.default_merge_request_target
+        elsif compare_params[:from_project_id].to_i == source_project.id
+          source_project
+        else
+          target_projects(source_project).find_by_id(compare_params[:from_project_id])
+        end
+
+      # Just ignore the field if it points at a non-existent or hidden project
+      next source_project unless target_project && can?(current_user, :read_code, target_project)
+
+      target_project
+    end
+  end
+
+  # source == head_ref == to
+  def source_project
+    strong_memoize(:source_project) do
+      # Eager load project's avatar url to prevent batch loading
+      # for all forked projects
+      project&.tap(&:avatar_url)
+    end
+  end
+
+  def compare
+    return @compare if defined?(@compare)
+
+    @compare = CompareService.new(source_project, head_ref).execute(
+      target_project, start_ref,
+      straight: straight
+    )
+
+    # CompareService returns nil both when there's nothing to compare AND when Gitaly is unavailable
+    # (because Gitlab::Git::Commit.find swallows errors). If we got nil, verify Gitaly is actually
+    # available by making an explicit call that will raise if it's not.
+    verify_gitaly_availability! if @compare.nil?
+
+    @compare
+  end
+
+  # Check if Gitaly is available using the health check service.
+  # Raises Gitlab::Git::CommandError if Gitaly is unavailable, which will be
+  # caught by HandlesGitalyErrors and show the graceful degradation message.
+  def verify_gitaly_availability!
+    storage = source_project.repository_storage
+    result = Gitlab::GitalyClient::HealthCheckService.new(storage).check
+
+    return if result[:success]
+
+    raise Gitlab::Git::CommandError, result[:message] || 'Gitaly is not available'
+  end
+
+  def straight
+    compare_params[:straight] == "true"
+  end
+
+  def start_ref
+    @start_ref ||= Addressable::URI.unescape(compare_params[:from]).presence
+  end
+
+  def head_ref
+    return @ref if defined?(@ref)
+
+    @ref = @head_ref = Addressable::URI.unescape(compare_params[:to]).presence
+  end
+
+  def define_commits
+    strong_memoize(:commits) do
+      if compare.present?
+        commits_limit = gitaly_commits_limit
+        commits = compare.commits(limit: commits_limit)
+        commits_count = commits.size
+        @commits_overflow = commits_limit.present? && commits_count >= commits_limit
+
+        # Only fetch pipeline information when we have fewer than the display limit
+        commits = commits.with_latest_pipeline(head_ref) if commits_count < MergeRequestDiff::COMMITS_SAFE_SIZE
+
+        limited, _ = limited_commits(commits, commits_count)
+        @commits_count_label = "#{MergeRequestDiff::COMMITS_SAFE_SIZE}+" if @commits_overflow
+
+        set_commits_for_rendering(Commit.preload_markdown_cache!(limited), commits_count: commits_count)
+      else
+        []
+      end
+    end
+  end
+
+  def define_diffs
+    @diffs = compare.present? ? compare.diffs(diff_options) : []
+  end
+
+  # Caps anonymous ListCommits RPCs; nil keeps authenticated requests unlimited.
+  def gitaly_commits_limit
+    MergeRequestDiff::COMMITS_SAFE_SIZE + 1 unless current_user
+  end
+
+  def define_environment
+    if compare
+      environment_params = if source_project.repository.branch_exists?(head_ref)
+                             { ref: head_ref }
+                           else
+                             { commit: compare.commit }
+                           end
+
+      environment_params[:find_latest] = true
+      @environment = ::Environments::EnvironmentsByDeploymentsFinder.new(
+        source_project,
+        current_user,
+        environment_params
+      ).execute.last
+    end
+  end
+
+  def define_diff_notes_disabled
+    @diff_notes_disabled = compare.present?
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def merge_request
+    @merge_request ||= MergeRequestsFinder.new(current_user, project_id: target_project.id).execute.opened
+      .find_by(source_project: source_project, source_branch: head_ref, target_branch: start_ref)
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def compare_params
+    @compare_params ||= params.permit(
+      :from,
+      :to,
+      :from_project_id,
+      :straight,
+      :to_project_id,
+      :old_path,
+      :new_path,
+      :file_path,
+      :line
+    )
   end
 end
+
+Projects::CompareController.prepend_mod

@@ -1,0 +1,94 @@
+# frozen_string_literal: true
+
+module Types
+  # rubocop:disable Graphql/AuthorizeTypes -- This is not necessary because the superclass declares the authorization
+  class CurrentUserType < ::Types::UserType
+    graphql_name 'CurrentUser'
+    description 'The currently authenticated GitLab user.'
+
+    field :assignee_or_reviewer_merge_requests,
+      resolver: Resolvers::MergeRequests::AssigneeOrReviewerMergeRequestsResolver,
+      description: 'Merge requests the current user is an assignee or a reviewer of.'
+
+    field :merge_request_saved_views,
+      resolver: Resolvers::MergeRequests::SavedViewsResolver,
+      description: 'Saved views on the merge request dashboard for the current user. ' \
+        'Returns an empty result if the `mr_dashboard_saved_views` feature flag is disabled.',
+      experiment: { milestone: '19.4' }
+
+    field :recently_viewed_issues,
+      resolver: Resolvers::Users::RecentlyViewedIssuesResolver,
+      description: 'Most-recently viewed issues for the current user.',
+      experiment: { milestone: '17.9' }
+
+    field :recently_viewed_merge_requests,
+      resolver: Resolvers::Users::RecentlyViewedMergeRequestsResolver,
+      description: 'Most-recently viewed merge requests for the current user.',
+      experiment: { milestone: '17.10' }
+
+    field :recently_viewed_items, # rubocop:disable GraphQL/ExtractType -- This is the extract type
+      [Types::Users::RecentlyViewedItemType],
+      null: true,
+      description: 'Most-recently viewed items for the current user.',
+      resolver: Resolvers::Users::RecentlyViewedItemsResolver
+
+    field :work_items,
+      null: true,
+      resolver: Resolvers::WorkItems::UserWorkItemsResolver,
+      description: 'Find work items visible to the current user.',
+      experiment: { milestone: '17.10' }
+
+    field :work_item_preferences, # rubocop:disable GraphQL/ExtractType -- fields with different contexts
+      resolver: ::Resolvers::WorkItems::UserPreferenceResolver,
+      null: true,
+      experiment: { milestone: '17.10' },
+      description: 'User preferences for the given work item type and namespace.'
+
+    field :import_source_users,
+      Types::Import::SourceUserType.connection_type,
+      null: true,
+      resolver: Resolvers::Import::ReassignedSourceUsersResolver,
+      experiment: { milestone: '19.5' },
+      description: 'Completed mappings of source users whose contributions were reassigned to the current user. ' \
+        'Returns an empty result if the `revoke_import_source_user_reassignment` feature flag is disabled.'
+
+    field :runners,
+      Types::Ci::RunnerType.connection_type,
+      null: true,
+      resolver: Resolvers::Ci::UserRunnersResolver,
+      experiment: { milestone: '18.3' },
+      description: 'List all runners the current user manages.'
+
+    # We've declared this field here instead of `UserType` to prevent
+    # Unauthorized user to check if a user is an instance admin or not
+    # See https://gitlab.com/gitlab-org/gitlab/-/merge_requests/227397#note_3172922239
+    field :admin,
+      type: GraphQL::Types::Boolean,
+      null: false,
+      description: 'Indicates if the user is an instance administrator.'
+
+    # Override id field to add ai_workflows scope
+    field :id,
+      type: Types::GlobalIDType[::User],
+      null: false,
+      scopes: [:api, :read_api, :ai_workflows],
+      description: 'Global ID of the user.'
+
+    # Override web_url field to add ai_workflows scope
+    field :web_url,
+      type: GraphQL::Types::String,
+      null: false,
+      scopes: [:api, :read_api, :ai_workflows],
+      description: 'Web URL of the user.'
+
+    # Override web_path field to add ai_workflows scope
+    field :web_path, # rubocop:disable GraphQL/ExtractType -- This field is overridden from the superclass
+      type: GraphQL::Types::String,
+      null: false,
+      scopes: [:api, :read_api, :ai_workflows],
+      description: 'Web path of the user.'
+  end
+  # rubocop:enable Graphql/AuthorizeTypes
+end
+
+::Types::CurrentUserType.prepend_mod

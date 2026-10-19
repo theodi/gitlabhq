@@ -1,0 +1,266 @@
+# frozen_string_literal: true
+
+module Ci
+  module ClickHouse
+    module DataIngestion
+      class FinishedPipelinesSyncService
+        include Gitlab::ExclusiveLeaseHelpers
+        include Gitlab::Utils::StrongMemoize
+
+        # the job is scheduled every 3 minutes and we will allow maximum 6 minutes runtime
+        # we must allow a minimum of 2 minutes + 15 seconds PG timeout + 1 minute for the various
+        # CH Gitlab::HTTP timeouts
+        MAX_TTL = 6.minutes.to_i
+        MAX_RUNTIME = 120.seconds
+        PIPELINES_BATCH_SIZE = 500
+        PIPELINES_BATCH_COUNT = 10 # How many batches to process before submitting the CSV to ClickHouse
+        PIPELINE_ID_PARTITIONS = 100
+
+        PIPELINE_FIELD_NAMES = %i[id duration status source ref].freeze
+        PIPELINE_EPOCH_FIELD_NAMES = %i[committed_at created_at started_at finished_at].freeze
+        PIPELINE_COMPUTED_FIELD_NAMES = %i[path is_default_branch].freeze
+        PIPELINE_META_FIELD_NAMES = %i[name].freeze
+
+        CSV_MAPPING = {
+          **PIPELINE_FIELD_NAMES.index_with { |n| n },
+          **PIPELINE_EPOCH_FIELD_NAMES.index_with { |n| :"casted_#{n}" },
+          **PIPELINE_COMPUTED_FIELD_NAMES.index_with { |n| n },
+          **PIPELINE_META_FIELD_NAMES.index_with { |n| n }
+        }.freeze
+
+        INSERT_FINISHED_PIPELINES_QUERY = <<~SQL.squish
+          INSERT INTO ci_finished_pipelines (#{CSV_MAPPING.keys.join(',')})
+          FORMAT CSV
+        SQL
+
+        def self.enabled?
+          ::Gitlab::ClickHouse.configured?
+        end
+
+        def initialize(worker_index: 0, total_workers: 1, logger: Gitlab::AppJsonLogger)
+          @runtime_limiter = Gitlab::Metrics::RuntimeLimiter.new(MAX_RUNTIME)
+          @worker_index = worker_index
+          @total_workers = total_workers
+          @logger = logger
+        end
+
+        def execute
+          unless self.class.enabled?
+            return ServiceResponse.error(
+              message: 'Disabled: ClickHouse database is not configured.',
+              reason: :db_not_configured,
+              payload: service_payload
+            )
+          end
+
+          # Prevent parallel jobs
+          in_lock("#{self.class.name.underscore}/worker/#{@worker_index}", ttl: MAX_TTL, retries: 0) do
+            ::Gitlab::Database::LoadBalancing::SessionMap.without_sticky_writes do
+              report = insert_new_finished_pipelines
+
+              ServiceResponse.success(payload: report.merge(service_payload))
+            end
+          end
+        rescue Gitlab::ExclusiveLeaseHelpers::FailedToObtainLockError => e
+          # Skip retrying, just let the next worker to start after a few minutes
+          ServiceResponse.error(message: e.message, reason: :skipped, payload: service_payload)
+        end
+
+        private
+
+        attr_reader :logger
+
+        def continue?
+          !@reached_end_of_table && !@runtime_limiter.over_time?
+        end
+
+        def service_payload
+          {
+            worker_index: @worker_index,
+            total_workers: @total_workers
+          }
+        end
+
+        def insert_new_finished_pipelines
+          # Read PIPELINES_BATCH_COUNT batches of PIPELINES_BATCH_SIZE until the timeout in MAX_RUNTIME is reached
+          # We can expect a single worker to process around 2M pipelines/hour with a single worker,
+          # and a bit over 5M pipelines/hour with three workers (measured in prod).
+          @reached_end_of_table = false
+          @processed_record_ids = []
+
+          csv_batches.each do |csv_batch|
+            break unless continue?
+
+            csv_builder = CsvBuilder::Gzip.new(csv_batch, CSV_MAPPING)
+            csv_builder.render do |tempfile|
+              next if csv_builder.rows_written == 0
+
+              File.open(tempfile.path) do |f|
+                ::ClickHouse::Client.insert_csv(INSERT_FINISHED_PIPELINES_QUERY, f, :main)
+              end
+            end
+          end
+
+          {
+            records_inserted:
+              Ci::FinishedPipelineChSyncEvent.primary_key_in(@processed_record_ids).update_all(processed: true),
+            reached_end_of_table: @reached_end_of_table
+          }
+        end
+
+        def use_simplified_query_for_ch_pipeline_ingestion?
+          @total_workers == 1
+        end
+
+        def csv_batches
+          events_batches_enumerator = Enumerator.new do |small_batches_yielder|
+            # Main loop to page through the events
+            if use_simplified_query_for_ch_pipeline_ingestion?
+              scope.each_batch(of: PIPELINES_BATCH_SIZE) { |batch| small_batches_yielder << batch }
+            else
+              keyset_iterator_scope.each_batch(of: PIPELINES_BATCH_SIZE) { |batch| small_batches_yielder << batch }
+            end
+
+            @reached_end_of_table = true
+          end
+
+          Enumerator.new do |batches_yielder|
+            # Each batches_yielder value represents a CSV file upload
+            while continue?
+              batches_yielder << Enumerator.new do |records_yielder|
+                # records_yielder sends rows to the CSV builder
+                PIPELINES_BATCH_COUNT.times do
+                  break unless continue?
+
+                  yield_pipelines(events_batches_enumerator.next, records_yielder)
+
+                rescue StopIteration
+                  break
+                end
+              end
+            end
+          end
+        end
+
+        def yield_pipelines(events_batch, records_yielder)
+          # NOTE: The `.to_a` call is necessary here to materialize the ActiveRecord relationship, so that the call
+          # to `.last` in `.each_batch` (see https://gitlab.com/gitlab-org/gitlab/-/blob/a38c93c792cc0d2536018ed464862076acb8d3d7/lib/gitlab/pagination/keyset/iterator.rb#L27)
+          # doesn't mess it up and cause duplicates (see https://gitlab.com/gitlab-org/gitlab/-/merge_requests/138066)
+          # rubocop: disable CodeReuse/ActiveRecord -- this is an expression that is specific to this service
+          # rubocop: disable Database/AvoidUsingPluckWithoutLimit -- the batch is already limited by definition
+          events_batch = events_batch.to_a
+          pipeline_ids_to_proj_namespace_ids = events_batch.pluck(:pipeline_id, :project_namespace_id).to_h
+          project_namespace_ids_to_paths =
+            Ci::NamespaceMirror.by_namespace_id(pipeline_ids_to_proj_namespace_ids.values)
+              .pluck(:namespace_id, :traversal_ids).to_h
+          # rubocop: enable Database/AvoidUsingPluckWithoutLimit
+
+          # Uses repository.root_ref directly instead of Project#default_branch to avoid
+          # N+1 SQL queries through Group -> root_ancestor -> NamespaceSetting.
+          # preload(:route) is needed because repository initialization requires project.full_path.
+          projects = Project.preload(:route)
+            .by_project_namespace(pipeline_ids_to_proj_namespace_ids.values.uniq)
+
+          # Bulk-fetch root_ref values from Redis in a single read_multi call,
+          # avoiding N sequential Redis round-trips per project.
+          Gitlab::RepositoryCache::Preloader.new(projects.map(&:repository)).preload(%i[root_ref])
+
+          default_branches_by_namespace_id =
+            projects.to_h { |project| [project.project_namespace_id, project.repository.root_ref] }
+          # rubocop: enable CodeReuse/ActiveRecord
+
+          Ci::Pipeline.id_in(pipeline_ids_to_proj_namespace_ids.keys)
+            .left_outer_joins(pipeline_metadata: [])
+            .select(:finished_at, *finished_pipeline_projections)
+            .map { |pipeline| pipeline.attributes.symbolize_keys }
+            .each do |pipeline_attrs|
+              fixup_pipeline_attrs(
+                pipeline_attrs, pipeline_ids_to_proj_namespace_ids,
+                project_namespace_ids_to_paths, default_branches_by_namespace_id
+              )
+
+              if check_pipeline_errors(pipeline_attrs)
+                next pipeline_ids_to_proj_namespace_ids.delete(pipeline_attrs[:id])
+              end
+
+              records_yielder << pipeline_attrs
+            end
+
+          @processed_record_ids += pipeline_ids_to_proj_namespace_ids.keys
+        end
+
+        def fixup_pipeline_attrs(
+          pipeline_attrs, pipeline_ids_to_project_namespace_ids,
+          project_namespace_ids_to_paths, default_branches_by_namespace_id
+        )
+          project_namespace_id = pipeline_ids_to_project_namespace_ids[pipeline_attrs[:id]]
+          traversal_ids = project_namespace_ids_to_paths[project_namespace_id]
+
+          # populate the path as the full project namespace path
+          pipeline_attrs[:path] = to_traversal_path(traversal_ids)
+          pipeline_attrs[:duration] = 0 if pipeline_attrs[:duration].nil? || pipeline_attrs[:duration] < 0
+          pipeline_attrs[:is_default_branch] =
+            pipeline_attrs[:ref] == default_branches_by_namespace_id[project_namespace_id]
+        end
+
+        def check_pipeline_errors(pipeline_attrs)
+          pipeline_attrs_error(pipeline_attrs).tap do |err_reason|
+            log_pipeline_problem(pipeline_attrs[:id], err_reason) if err_reason.present?
+          end.present?
+        end
+
+        def pipeline_attrs_error(pipeline_attrs)
+          'Missing namespace traversal path' unless pipeline_attrs[:path].present? && pipeline_attrs[:path] != '/'
+        end
+
+        def log_pipeline_problem(pipeline_id, reason)
+          logger.warn(
+            message: 'A problematic pipeline sync event has been encountered',
+            reason: reason,
+            pipeline_id: pipeline_id
+          )
+        end
+
+        def to_traversal_path(traversal_ids)
+          traversal_ids.present? ? "#{traversal_ids.join('/')}/" : '/'
+        end
+
+        def finished_pipeline_projections
+          [
+            *PIPELINE_FIELD_NAMES.map { |n| "#{::Ci::Pipeline.table_name}.#{n}" },
+            *PIPELINE_EPOCH_FIELD_NAMES
+               .map { |n| "COALESCE(EXTRACT(epoch FROM #{::Ci::Pipeline.table_name}.#{n}), 0) AS casted_#{n}" },
+            *PIPELINE_META_FIELD_NAMES.map { |n| "#{::Ci::PipelineMetadata.table_name}.#{n} AS #{n}" }
+          ]
+        end
+        strong_memoize_attr :finished_pipeline_projections
+
+        def scope
+          Ci::FinishedPipelineChSyncEvent.pending.order_by_pipeline_id
+        end
+
+        def keyset_iterator_scope
+          lower_bound = (@worker_index * PIPELINE_ID_PARTITIONS / @total_workers).to_i
+          upper_bound = ((@worker_index + 1) * PIPELINE_ID_PARTITIONS / @total_workers).to_i - 1
+
+          table_name = Ci::FinishedPipelineChSyncEvent.quoted_table_name
+          array_scope = Ci::FinishedPipelineChSyncEvent.select(:pipeline_id_partition)
+            .from("generate_series(#{lower_bound}, #{upper_bound}) as #{table_name}(pipeline_id_partition)") # rubocop: disable CodeReuse/ActiveRecord -- this is an expression that is specific to this service
+
+          opts = {
+            in_operator_optimization_options: {
+              array_scope: array_scope,
+              array_mapping_scope: ->(id_expression) do
+                Ci::FinishedPipelineChSyncEvent
+                  .where(Arel.sql("(pipeline_id % #{PIPELINE_ID_PARTITIONS})") # rubocop: disable CodeReuse/ActiveRecord -- this is an expression that is specific to this service
+                    .eq(id_expression))
+              end
+            }
+          }
+
+          Gitlab::Pagination::Keyset::Iterator.new(scope: scope, **opts)
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,7 @@
+- page_title _('Authentication log')
+
+= render ::Layouts::SettingsSectionComponent.new(page_title) do |c|
+  - c.with_description do
+    = _('This is a security log of authentication events involving your account.')
+  - c.with_body do
+    = render 'event_table', events: @events

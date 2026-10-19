@@ -1,0 +1,486 @@
+# frozen_string_literal: true
+
+require 'json'
+require 'net/http'
+require 'uri'
+require_relative '../gems/gitlab-utils/lib/gitlab/utils/strong_memoize'
+require_relative 'sast_triage_classifier'
+
+# rubocop:disable Layout/LineLength -- we need to construct the URLs
+
+class SemgrepResultProcessor
+  include Gitlab::Utils::StrongMemoize
+
+  ALLOWED_PROJECT_DIRS = %w[/builds/gitlab-org/gitlab].freeze
+  ALLOWED_API_URLS = SastTriageClassifier::ALLOWED_API_URLS
+  UNIQUE_COMMENT_RULES_IDS = %w[builds.sast-custom-rules.appsec-pings.glappsec_ci-job-token builds.sast-custom-rules.secure-coding-guidelines.ruby.glappsec_insecure-regex].freeze
+  APPSEC_HANDLE = "@gitlab-com/gl-security/appsec"
+  TRIAGE_VERDICTS_ARTIFACT = 'gl-sast-triage-verdicts.json'
+  VERDICT_RECOMMENDATION_THRESHOLD = 60
+  VERDICT_ACTION_THRESHOLD = 80
+
+  PING_LABELS = 'appsec-sast-ping::unresolved,AppSecWorkType::TriageRotation,Application Security Team'
+  ESCALATION_LABEL = 'appsec-sast::escalated'
+  ESCALATION_LABELS = "#{PING_LABELS},#{ESCALATION_LABEL}".freeze
+  # apply_label only accepts these fixed sets so no caller can ever feed
+  # model-derived or finding-derived text into the add_labels API field.
+  ALLOWED_LABEL_SETS = [PING_LABELS, ESCALATION_LABELS].freeze
+
+  # Only definitive verdicts are surfaced to the engineer; 'uncertain' and errored
+  # verdicts fall back to the standard comment.
+  VERDICT_LABELS = { 'tp' => 'Likely true positive', 'fp' => 'Likely false positive' }.freeze
+  TRIAGE_RECOMMENDATION_HEADING = '**Duo triage recommendation:**'
+  TRIAGE_RECOMMENDATION_DISCLAIMER =
+    '<small>Automated recommendation from Duo. Advisory only — AppSec makes the final determination.</small>'
+
+  LABEL_INSTRUCTION = 'Apply the ~"appsec-sast-ping::resolved" label after reviewing.'
+
+  MESSAGE_SCG_PING_APPSEC =
+    "#{APPSEC_HANDLE} please review this finding, which is a potential " \
+      'violation of [GitLab\'s secure coding guidelines]' \
+      '(https://docs.gitlab.com/development/secure_coding_guidelines/). ' \
+      "#{LABEL_INSTRUCTION}".freeze
+
+  MESSAGE_S1_PING_APPSEC =
+    "#{APPSEC_HANDLE} please review this finding. This MR potentially " \
+      'reintroduces code from a past S1 issue. ' \
+      "#{LABEL_INSTRUCTION}".freeze
+
+  MESSAGE_PING_APPSEC =
+    "#{APPSEC_HANDLE} please review this finding. " \
+      "#{LABEL_INSTRUCTION}".freeze
+
+  MESSAGE_AUTO_DISMISSED =
+    'Duo triage assessed this finding as a likely false positive with high confidence, ' \
+      'so this thread was resolved automatically and AppSec was not pinged — see the ' \
+      'Duo triage recommendation below for the rationale. AppSec still makes the final ' \
+      'determination: if you believe this finding is a real issue, unresolve this thread ' \
+      'and apply the ~"appsec-sast-ping::unresolved" label to request an AppSec review.'
+
+  MESSAGE_ESCALATION_NOTE =
+    'Duo triage assessed this finding as a likely true positive with high confidence, ' \
+      "so it has been escalated for priority review with the ~\"#{ESCALATION_LABEL}\" label.".freeze
+
+  MESSAGE_FOOTER = <<~FOOTER
+
+
+    <small>
+    This automation belongs to AppSec.
+    Use ~"appsec-sast::helpful" or ~"appsec-sast::unhelpful" for quick feedback.
+    To stop the bot from further commenting, you can use the ~"appsec-sast::stop" label.
+    For any detailed feedback, [add a comment here](https://gitlab.com/gitlab-com/gl-security/product-security/appsec/sast-custom-rules/-/issues/38).
+    </small>
+
+  FOOTER
+
+  def initialize(report_path = "#{ENV['CI_PROJECT_DIR']}/gl-sast-report.json")
+    @artifact_relative_path = report_path
+  end
+
+  def execute
+    perform_allowlist_check
+    semgrep_results = get_sast_results
+    unique_results = filter_duplicate_findings(semgrep_results)
+    if sast_stop_label_present? || pipeline_tier_three_label_present?
+      puts "Not adding comments for this MR as it has the appsec-sast::stop / pipeline::tier-3 label. Here are the new unique findings that would have otherwise been posted: #{unique_results}"
+      return
+    end
+
+    puts "Found the following unique results: #{unique_results}"
+    triage_findings(unique_results)
+    create_inline_comments(unique_results)
+
+  rescue StandardError => e
+    puts "An error occurred: #{e.message}"
+
+    exit 0
+  end
+
+  # Shadow-mode Duo triage. Classifies each finding and writes verdicts to a CI
+  # artifact for AppSec to backtest against. Does not affect inline comment
+  # posting: every classifier failure logs and returns, the existing pipeline
+  # continues unchanged.
+  # Gated by SAST_TRIAGE_ENABLED so we can land code before flipping behavior.
+  def triage_findings(findings)
+    return if findings.empty?
+    return unless ENV['SAST_TRIAGE_ENABLED'] == '1'
+
+    puts "Running shadow-mode SAST triage on #{findings.size} finding(s)"
+    @triage_verdicts = SastTriageClassifier.new.classify(findings)
+    write_triage_verdicts(records_from(findings, @triage_verdicts))
+  rescue StandardError => e
+    puts "Triage step failed (continuing without verdicts): #{e.class}: #{e.message}"
+  end
+
+  def records_from(findings, verdicts)
+    findings.map do |fingerprint, finding|
+      verdict = verdicts[fingerprint] || {}
+      {
+        fingerprint: fingerprint,
+        check_id: finding[:check_id],
+        path: finding[:path],
+        line: finding[:line],
+        verdict: verdict[:verdict],
+        confidence: verdict[:confidence],
+        rationale: verdict[:rationale],
+        latency_ms: verdict[:latency_ms],
+        error: verdict[:error],
+        raw_response: verdict[:raw_response]
+      }
+    end
+  end
+
+  def write_triage_verdicts(records)
+    artifact_path = File.join(ENV['CI_PROJECT_DIR'].to_s, TRIAGE_VERDICTS_ARTIFACT)
+    File.write(artifact_path, JSON.pretty_generate(records))
+    puts "Wrote #{records.size} triage verdict(s) to #{TRIAGE_VERDICTS_ARTIFACT}"
+  rescue StandardError => e
+    puts "Failed to write triage verdicts artifact: #{e.class}: #{e.message}"
+  end
+
+  def perform_allowlist_check
+    # Validate CI_PROJECT_DIR and CI_API_V4_URL against the
+    # allowlist to protect against pipeline attacks
+
+    unless ALLOWED_PROJECT_DIRS.include?(ENV['CI_PROJECT_DIR'])
+      puts "Error: CI_PROJECT_DIR '#{ENV['CI_PROJECT_DIR']}' is not allowed."
+      exit 1
+    end
+
+    return if ALLOWED_API_URLS.include?(ENV['CI_API_V4_URL'])
+
+    puts "Error: CI_API_V4_URL '#{ENV['CI_API_V4_URL']}' is not allowed."
+    exit 1
+  end
+
+  def get_sast_results
+    # Load SAST report
+    raw_data = File.read(@artifact_relative_path)
+    data = JSON.parse(raw_data)
+
+    fingerprint_message_dict = {}
+
+    if data["results"].empty?
+      puts "No findings."
+      exit 0
+    end
+
+    results = data["results"]
+
+    results.each do |result|
+      # Remove version suffix from fingerprint
+      fingerprint = result["extra"]["fingerprint"].sub(/_\d+$/, '')
+      path = result["path"]
+      check_id = result["check_id"]
+      line = result["start"]["line"]
+      message = result["extra"]["message"].tr('"\'', '')
+
+      fingerprint_message_dict[fingerprint] = { path: path, line: line, message: message, check_id: check_id }
+    end
+
+    # Print the results to console
+    fingerprint_message_dict.each do |fingerprint, info|
+      path = info[:path]
+      line = info[:line]
+      message = info[:message]
+
+      puts "Finding (Fingerprint: #{fingerprint}) in #{path} at line #{line}: #{message}"
+    end
+
+    fingerprint_message_dict
+  end
+
+  def filter_duplicate_findings(fingerprint_messages)
+    existing_comments = get_existing_comments || []
+
+    existing_headers = existing_comments.filter_map do |comment|
+      comment["body"].match(/<!-- (.*?) -->/)&.captures&.first
+    end
+    existing_fingerprints = existing_headers.map do |message|
+      JSON.parse(message)["fingerprint"]
+    end
+    unique_rule_findings = {}
+    fingerprint_messages.each do |fingerprint, finding|
+      next unless UNIQUE_COMMENT_RULES_IDS.include?(finding[:check_id])
+
+      fingerprint_messages.delete(fingerprint) if unique_rule_findings[finding[:check_id]]
+
+      unique_rule_findings[finding[:check_id]] = true
+    end
+    fingerprint_messages.reject do |fingerprint, _|
+      existing_fingerprints.include?(fingerprint)
+    end
+  end
+
+  def create_inline_comments(path_line_message_dict)
+    base_sha, head_sha, start_sha = populate_commits_from_versions
+
+    # Create new comments for remaining findings
+    path_line_message_dict.each do |fingerprint, finding|
+      header_information = JSON.dump({ 'fingerprint' => fingerprint, 'check_id' => finding[:check_id] })
+      message_header = "<!-- #{header_information} -->"
+      new_line = finding[:line]
+      message = sanitize_rationale(finding[:message])
+      check_id = finding[:check_id]
+      uri = URI.parse("#{ENV['CI_API_V4_URL']}/projects/#{ENV['CI_MERGE_REQUEST_PROJECT_ID']}/merge_requests/#{ENV['CI_MERGE_REQUEST_IID']}/discussions")
+      action = triage_action_for(fingerprint)
+      suffix = case action
+               when :dismiss
+                 "\n#{MESSAGE_AUTO_DISMISSED}"
+               when :escalate
+                 "#{ping_suffix_for(check_id)}\n\n#{MESSAGE_ESCALATION_NOTE}"
+               else
+                 ping_suffix_for(check_id)
+               end
+
+      message_from_bot = "#{message_header}\n#{message}#{suffix}#{triage_recommendation_for(fingerprint)}\n#{MESSAGE_FOOTER}"
+
+      request = Net::HTTP::Post.new(uri)
+      request["PRIVATE-TOKEN"] = ENV['CUSTOM_SAST_RULES_BOT_PAT']
+      request.set_form_data(
+        "position[position_type]" => "text",
+        "position[base_sha]" => base_sha,
+        "position[head_sha]" => head_sha,
+        "position[start_sha]" => start_sha,
+        "position[new_path]" => finding[:path],
+        "position[old_path]" => finding[:path],
+        "position[new_line]" => new_line,
+        "body" => message_from_bot
+      )
+
+      response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
+        http.request(request)
+      end
+
+      if response.instance_of?(Net::HTTPCreated)
+        if action == :dismiss
+          resolve_discussion(discussion_id_from(response))
+        else
+          apply_label(action == :escalate ? ESCALATION_LABELS : PING_LABELS)
+        end
+
+        next
+      end
+
+      puts "Failed to post inline comment with status code #{response.code}: #{response.body}. Posting normal comment instead."
+      fallback_response = post_comment message_from_bot
+      if action == :dismiss
+        resolve_discussion(discussion_id_from(fallback_response))
+      else
+        apply_label(action == :escalate ? ESCALATION_LABELS : PING_LABELS)
+      end
+    end
+  end
+
+  private
+
+  def ping_suffix_for(check_id)
+    if check_id&.start_with?("builds.sast-custom-rules.secure-coding-guidelines")
+      "\n#{MESSAGE_SCG_PING_APPSEC}"
+    elsif check_id&.start_with?("builds.sast-custom-rules.s1")
+      "\n#{MESSAGE_S1_PING_APPSEC}"
+    else
+      "\n#{MESSAGE_PING_APPSEC}"
+    end
+  end
+
+  # SAST_TRIAGE_COMMENT_ENABLED is required: the audit trail only renders when the comment flag is on.
+  def triage_actions_enabled?
+    ENV['SAST_TRIAGE_ACTIONS_ENABLED'] == '1' &&
+      ENV['SAST_TRIAGE_ENABLED'] == '1' &&
+      ENV['SAST_TRIAGE_COMMENT_ENABLED'] == '1'
+  end
+
+  def triage_action_for(fingerprint)
+    return :none unless triage_actions_enabled?
+
+    verdict = (@triage_verdicts || {})[fingerprint]
+    return :none unless verdict && verdict[:error].nil?
+    return :none unless (verdict[:confidence].to_f * 100).round >= VERDICT_ACTION_THRESHOLD
+
+    case verdict[:verdict]
+    when 'fp' then :dismiss
+    when 'tp' then :escalate
+    else :none
+    end
+  end
+
+  # GitLab discussion ids are hex shas; anything else is an unexpected response
+  # body that must not be interpolated into the resolve URL path.
+  def discussion_id_from(response)
+    id = JSON.parse(response.body)['id']
+    id if id.is_a?(String) && id.match?(/\A[a-f0-9]+\z/)
+  rescue StandardError
+    nil
+  end
+
+  # Fails open: any failure to resolve leaves the thread unresolved for human
+  # review and never aborts the loop, so remaining findings still get comments.
+  def resolve_discussion(discussion_id)
+    unless discussion_id
+      puts 'Could not extract discussion id; leaving thread unresolved for human review.'
+      return
+    end
+
+    uri = URI.parse("#{ENV['CI_API_V4_URL']}/projects/#{ENV['CI_MERGE_REQUEST_PROJECT_ID']}/merge_requests/#{ENV['CI_MERGE_REQUEST_IID']}/discussions/#{discussion_id}")
+    request = Net::HTTP::Put.new(uri)
+    request['PRIVATE-TOKEN'] = ENV['CUSTOM_SAST_RULES_BOT_PAT']
+    request.set_form_data('resolved' => 'true')
+
+    response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
+      http.request(request)
+    end
+
+    return if response.instance_of?(Net::HTTPOK)
+
+    puts "Failed to resolve discussion #{discussion_id} with status code #{response.code}: #{response.body}. Leaving thread unresolved for human review."
+  rescue StandardError => e
+    puts "Failed to resolve discussion #{discussion_id}: #{e.class}: #{e.message}. Leaving thread unresolved for human review."
+  end
+
+  # Renders the shadow-mode Duo verdict for a finding as an advisory block appended
+  # to the inline comment, so the engineer sees the true/false-positive recommendation
+  # inline. Gated by SAST_TRIAGE_COMMENT_ENABLED, which requires SAST_TRIAGE_ENABLED=1
+  # since verdicts only exist once triage has run. Returns an empty string when disabled,
+  # when there is no verdict for the finding, or when the verdict is uncertain or errored.
+  def triage_recommendation_for(fingerprint)
+    return '' unless ENV['SAST_TRIAGE_COMMENT_ENABLED'] == '1'
+
+    verdict = (@triage_verdicts || {})[fingerprint]
+    return '' unless verdict && verdict[:error].nil?
+
+    label = VERDICT_LABELS[verdict[:verdict]]
+    return '' unless label
+
+    confidence = (verdict[:confidence].to_f * 100).round
+    rationale = sanitize_rationale(verdict[:rationale])
+    return '' unless confidence >= VERDICT_RECOMMENDATION_THRESHOLD
+
+    recommendation = "\n\n#{TRIAGE_RECOMMENDATION_HEADING} #{label} · confidence #{confidence}%"
+    recommendation << "\n> #{rationale}" unless rationale.empty?
+    recommendation << "\n\n#{TRIAGE_RECOMMENDATION_DISCLAIMER}"
+    recommendation
+  end
+
+  # Duo derives the rationale from a prompt that includes the attacker-influenced code
+  # excerpt under review, so it is untrusted output that the bot would otherwise post
+  # with its PAT. Collapsing whitespace defuses line-leading GitLab quick actions
+  # (e.g. "/label", "/assign"), and wrapping the result in an inline code span
+  # neutralizes @mentions and Markdown/HTML so the rationale renders as literal text.
+  def sanitize_rationale(text)
+    collapsed = text.to_s.gsub(/\s+/, ' ').delete('`').strip
+    return '' if collapsed.empty?
+
+    "`#{collapsed}`"
+  end
+
+  def sast_stop_label_present?
+    stripped_labels.include?('appsec-sast::stop')
+  end
+
+  def pipeline_tier_three_label_present?
+    stripped_labels.include?('pipeline::tier-3')
+  end
+
+  def stripped_labels
+    labels = ENV['CI_MERGE_REQUEST_LABELS'] || ""
+    labels.split(',').map(&:strip)
+  end
+  strong_memoize_attr :stripped_labels
+
+  def apply_label(labels = PING_LABELS)
+    unless ALLOWED_LABEL_SETS.include?(labels)
+      puts "Refusing to apply non-allowlisted label set '#{labels}'."
+      return
+    end
+
+    uri = URI.parse("#{ENV['CI_API_V4_URL']}/projects/#{ENV['CI_MERGE_REQUEST_PROJECT_ID']}/merge_requests/#{ENV['CI_MERGE_REQUEST_IID']}")
+    request = Net::HTTP::Put.new(uri)
+    request["PRIVATE-TOKEN"] = ENV['CUSTOM_SAST_RULES_BOT_PAT']
+    request.set_form_data(
+      "add_labels" => labels
+    )
+
+    response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
+      http.request(request)
+    end
+
+    return if response.instance_of?(Net::HTTPOK)
+
+    puts "Failed to apply labels with status code #{response.code}: #{response.body}"
+  end
+
+  def get_existing_comments
+    # Retrieve existing comments on the merge request
+    notes_url = URI.parse("#{ENV['CI_API_V4_URL']}/projects/#{ENV['CI_MERGE_REQUEST_PROJECT_ID']}/merge_requests/#{ENV['CI_MERGE_REQUEST_IID']}/notes")
+    request = Net::HTTP::Get.new(notes_url)
+    request["PRIVATE-TOKEN"] = ENV['CUSTOM_SAST_RULES_BOT_PAT']
+
+    response = Net::HTTP.start(notes_url.hostname, notes_url.port, use_ssl: notes_url.scheme == 'https') do |http|
+      http.request(request)
+    end
+
+    # if response is not 200, exit with error
+    return JSON.parse(response.body) if response.instance_of?(Net::HTTPOK)
+
+    puts "Failed to fetch comments with status code #{response.code}: #{response.body}"
+    post_comment "Failed to fetch comments: #{response.body}. /cc @gitlab-com/gl-security/product-security/appsec for visibility."
+
+    exit 0
+  end
+
+  def populate_commits_from_versions
+    # Fetch base_commit_sha, head_commit_sha and
+    # start_commit_sha required for creating inline comment
+    versions_url = URI.parse("#{ENV['CI_API_V4_URL']}/projects/#{ENV['CI_MERGE_REQUEST_PROJECT_ID']}/merge_requests/#{ENV['CI_MERGE_REQUEST_IID']}/versions")
+
+    request = Net::HTTP::Get.new(versions_url)
+    request["PRIVATE-TOKEN"] = ENV['CUSTOM_SAST_RULES_BOT_PAT']
+
+    response = Net::HTTP.start(versions_url.hostname, versions_url.port, use_ssl: versions_url.scheme == 'https') do |http|
+      http.request(request)
+    end
+
+    if response.instance_of?(Net::HTTPOK)
+      commits = JSON.parse(response.body)[0]
+    else
+      puts "Failed to fetch versions with status code #{response.code}: #{response.body}"
+      post_comment "Failed to fetch versions: #{response.body}. /cc @gitlab-com/gl-security/product-security/appsec for visibility."
+
+      exit 0
+    end
+
+    base_sha = commits['base_commit_sha']
+    head_sha = commits['head_commit_sha']
+    start_sha = commits['start_commit_sha']
+
+    [base_sha, head_sha, start_sha]
+  end
+
+  def post_comment(message)
+    # Send the comment body as form data rather than interpolating it into the URL
+    # query string. The body can carry attacker-influenced content (the Semgrep
+    # message and the Duo-derived triage rationale), so query-string interpolation
+    # would let structural characters (&, =, #) inject extra API parameters.
+    uri = URI.parse("#{ENV['CI_API_V4_URL']}/projects/#{ENV['CI_MERGE_REQUEST_PROJECT_ID']}/merge_requests/#{ENV['CI_MERGE_REQUEST_IID']}/discussions")
+
+    request = Net::HTTP::Post.new(uri)
+    request['PRIVATE-TOKEN'] = ENV['CUSTOM_SAST_RULES_BOT_PAT']
+    request.set_form_data("body" => message)
+
+    response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
+      http.request(request)
+    end
+
+    return response if response.instance_of?(Net::HTTPCreated)
+
+    puts "Failed to post comment #{response.code}: #{response.body}"
+    # if we cannot even post a comment, fail the pipeline
+    # change this to `exit 1` when specs are ready
+    exit 0
+  end
+end
+
+SemgrepResultProcessor.new.execute if $PROGRAM_NAME == __FILE__
+
+# rubocop:enable Layout/LineLength

@@ -1,0 +1,282 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Auth::Ldap::User do
+  include LdapHelpers
+
+  let_it_be(:organization) { create(:organization) }
+  let(:ldap_user) { described_class.new(auth_hash, organization_id: organization.id) }
+  let(:gl_user) { ldap_user.gl_user }
+  let(:info) do
+    {
+      name: 'John',
+      email: 'john@example.com',
+      nickname: 'john'
+    }
+  end
+
+  let(:auth_hash) do
+    OmniAuth::AuthHash.new(uid: 'uid=John Smith,ou=People,dc=example,dc=com', provider: 'ldapmain', info: info)
+  end
+
+  let(:ldap_user_upper_case) { described_class.new(auth_hash_upper_case) }
+  let(:info_upper_case) do
+    {
+      name: 'John',
+      email: 'John@Example.com', # Email address has upper case chars
+      nickname: 'john'
+    }
+  end
+
+  let(:auth_hash_upper_case) do
+    OmniAuth::AuthHash.new(uid: 'uid=John Smith,ou=People,dc=example,dc=com', provider: 'ldapmain', info: info_upper_case)
+  end
+
+  describe '#should_save?' do
+    it "marks existing ldap user as changed" do
+      create(:omniauth_user, extern_uid: 'uid=John Smith,ou=People,dc=example,dc=com', provider: 'ldapmain')
+      expect(ldap_user.should_save?).to be_truthy
+    end
+
+    it "marks existing non-ldap user if the email matches as changed" do
+      create(:user, email: 'john@example.com')
+      expect(ldap_user.should_save?).to be_truthy
+    end
+
+    it "does not mark existing ldap user as changed" do
+      create(:omniauth_user, email: 'john@example.com', extern_uid: 'uid=john smith,ou=people,dc=example,dc=com', provider: 'ldapmain')
+      expect(ldap_user.should_save?).to be_falsey
+    end
+  end
+
+  describe '#valid_sign_in?' do
+    before do
+      gl_user.save!
+    end
+
+    it 'returns true' do
+      expect(Gitlab::Auth::Ldap::Access).to receive(:allowed?).and_return(true)
+      expect(ldap_user.valid_sign_in?).to be true
+    end
+
+    it 'returns false if the GitLab user is not valid' do
+      gl_user.update_column(:username, nil)
+
+      expect(Gitlab::Auth::Ldap::Access).not_to receive(:allowed?)
+      expect(ldap_user.valid_sign_in?).to be false
+    end
+  end
+
+  describe 'find or create' do
+    it "finds the user if already existing" do
+      create(:omniauth_user, extern_uid: 'uid=john smith,ou=people,dc=example,dc=com', provider: 'ldapmain')
+
+      expect { ldap_user.save }.not_to change { User.count } # rubocop:disable Rails/SaveBang
+    end
+
+    it "connects to existing non-ldap user if the email matches" do
+      existing_user = create(:omniauth_user, email: 'john@example.com', provider: "twitter")
+      expect { ldap_user.save }.not_to change { User.count } # rubocop:disable Rails/SaveBang
+
+      existing_user.reload
+      expect(existing_user.ldap_identity.extern_uid).to eql 'uid=john smith,ou=people,dc=example,dc=com'
+      expect(existing_user.ldap_identity.provider).to eql 'ldapmain'
+    end
+
+    it 'connects to existing ldap user if the extern_uid changes' do
+      existing_user = create(:omniauth_user, email: 'john@example.com', extern_uid: 'old-uid', provider: 'ldapmain')
+      expect { ldap_user.save }.not_to change { User.count } # rubocop:disable Rails/SaveBang
+
+      existing_user.reload
+      expect(existing_user.ldap_identity.extern_uid).to eql 'uid=john smith,ou=people,dc=example,dc=com'
+      expect(existing_user.ldap_identity.provider).to eql 'ldapmain'
+      expect(existing_user.id).to eql ldap_user.gl_user.id
+    end
+
+    it 'connects to existing ldap user if the extern_uid changes and email address has upper case characters' do
+      existing_user = create(:omniauth_user, email: 'john@example.com', extern_uid: 'old-uid', provider: 'ldapmain')
+      expect { ldap_user_upper_case.save }.not_to change { User.count } # rubocop:disable Rails/SaveBang
+
+      existing_user.reload
+      expect(existing_user.ldap_identity.extern_uid).to eql 'uid=john smith,ou=people,dc=example,dc=com'
+      expect(existing_user.ldap_identity.provider).to eql 'ldapmain'
+      expect(existing_user.id).to eql ldap_user.gl_user.id
+    end
+
+    it 'maintains an identity per provider' do
+      existing_user = create(:omniauth_user, email: 'john@example.com', provider: 'twitter')
+      expect(existing_user.identities.count).to be(1)
+
+      ldap_user.save # rubocop:disable Rails/SaveBang
+      expect(ldap_user.gl_user.identities.count).to be(2)
+
+      # Expect that find_by provider only returns a single instance of an identity and not an Enumerable
+      expect(ldap_user.gl_user.identities.find_by(provider: 'twitter')).to be_instance_of Identity
+      expect(ldap_user.gl_user.identities.find_by(provider: auth_hash.provider)).to be_instance_of Identity
+    end
+
+    it "creates a new user if not found" do
+      expect { ldap_user.save }.to change { User.count }.by(1) # rubocop:disable Rails/SaveBang
+    end
+
+    context 'when signup is disabled' do
+      before do
+        stub_application_setting signup_enabled: false
+      end
+
+      it 'creates the user' do
+        ldap_user.save # rubocop:disable Rails/SaveBang
+
+        expect(gl_user).to be_persisted
+      end
+    end
+
+    context 'when user confirmation email is enabled' do
+      before do
+        stub_application_setting_enum('email_confirmation_setting', 'hard')
+      end
+
+      it 'creates and confirms the user anyway' do
+        ldap_user.save # rubocop:disable Rails/SaveBang
+
+        expect(gl_user).to be_persisted
+        expect(gl_user).to be_confirmed
+      end
+    end
+
+    context 'when the current minimum password length is different from the default minimum password length' do
+      before do
+        stub_application_setting minimum_password_length: 21
+      end
+
+      it 'creates the user' do
+        ldap_user.save # rubocop:disable Rails/SaveBang
+
+        expect(gl_user).to be_persisted
+      end
+    end
+  end
+
+  describe 'updating email' do
+    context "when LDAP sets an email" do
+      it "has a real email" do
+        expect(ldap_user.gl_user.email).to eq(info[:email])
+      end
+
+      it "has email set as synced" do
+        expect(ldap_user.gl_user.user_synced_attributes_metadata.email_synced).to be_truthy
+      end
+
+      it "has email set as read-only" do
+        expect(ldap_user.gl_user.read_only_attribute?(:email)).to be_truthy
+      end
+
+      it "has synced attributes provider set to ldapmain" do
+        expect(ldap_user.gl_user.user_synced_attributes_metadata.provider).to eql 'ldapmain'
+      end
+    end
+
+    context "when LDAP doesn't set an email" do
+      before do
+        info.delete(:email)
+      end
+
+      it "has a temp email" do
+        expect(ldap_user.gl_user.temp_oauth_email?).to be_truthy
+      end
+
+      it "has email set as not synced" do
+        expect(ldap_user.gl_user.user_synced_attributes_metadata.email_synced).to be_falsey
+      end
+
+      it "does not have email set as read-only" do
+        expect(ldap_user.gl_user.read_only_attribute?(:email)).to be_falsey
+      end
+    end
+  end
+
+  describe 'updating location' do
+    before do
+      stub_omniauth_setting(sync_profile_attributes: true)
+    end
+
+    context 'when the LDAP strategy sets its synthetic location value' do
+      before do
+        # The gitlab_omniauth-ldap strategy always assigns a joined pattern
+        # string to the location field, even when the directory entry has no
+        # address data.
+        info[:location] = ', , ,  '
+      end
+
+      it 'does not sync the location', :aggregate_failures do
+        expect(gl_user.location).to be_blank
+        expect(gl_user.user_synced_attributes_metadata.location_synced).to be_falsey
+        expect(gl_user.read_only_attribute?(:location)).to be_falsey
+      end
+    end
+  end
+
+  describe 'blocking' do
+    def configure_block(value)
+      stub_ldap_config(block_auto_created_users: value)
+    end
+
+    context 'signup' do
+      context 'dont block on create' do
+        before do
+          configure_block(false)
+        end
+
+        it do
+          ldap_user.save # rubocop:disable Rails/SaveBang
+          expect(gl_user).to be_valid
+          expect(gl_user).not_to be_blocked
+        end
+      end
+
+      context 'block on create' do
+        before do
+          configure_block(true)
+        end
+
+        it do
+          ldap_user.save # rubocop:disable Rails/SaveBang
+          expect(gl_user).to be_valid
+          expect(gl_user).to be_blocked
+        end
+      end
+    end
+
+    context 'sign-in' do
+      before do
+        ldap_user.save # rubocop:disable Rails/SaveBang
+        ldap_user.gl_user.activate
+      end
+
+      context 'dont block on create' do
+        before do
+          configure_block(false)
+        end
+
+        it do
+          ldap_user.save # rubocop:disable Rails/SaveBang
+          expect(gl_user).to be_valid
+          expect(gl_user).not_to be_blocked
+        end
+      end
+
+      context 'block on create' do
+        before do
+          configure_block(true)
+        end
+
+        it do
+          ldap_user.save # rubocop:disable Rails/SaveBang
+          expect(gl_user).to be_valid
+          expect(gl_user).not_to be_blocked
+        end
+      end
+    end
+  end
+end

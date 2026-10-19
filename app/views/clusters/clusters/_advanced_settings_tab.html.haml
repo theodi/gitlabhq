@@ -1,0 +1,5 @@
+- active = params[:tab] == 'settings'
+
+- if can_admin_cluster?(current_user, @cluster)
+  = gl_tab_link_to clusterable.cluster_path(@cluster.id, params: { tab: 'settings' }), { item_active: active } do
+    = _('Advanced Settings')

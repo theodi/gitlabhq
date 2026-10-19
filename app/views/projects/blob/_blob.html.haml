@@ -1,37 +1,33 @@
-%ul.breadcrumb.repo-breadcrumb
-  %li
-    %i.fa.fa-angle-right
-    = link_to namespace_project_tree_path(@project.namespace, @project, @ref) do
-      = @project.path
-  - tree_breadcrumbs(@tree, 6) do |title, path|
-    %li
-      - if path
-        - if path.end_with?(@path)
-          = link_to namespace_project_blob_path(@project.namespace, @project, path) do
-            %strong
-              = truncate(title, length: 40)
-        - else
-          = link_to truncate(title, length: 40), namespace_project_tree_path(@project.namespace, @project, path)
-      - else
-        = link_to title, '#'
+- project = @project.present(current_user: current_user)
+- ref = local_assigns[:ref] || @ref
+- expanded = params[:expanded].present?
+- add_page_specific_style 'page_bundles/projects'
+-# If the blob has a RichViewer we preload the content except for GeoJSON since it is handled by Vue
+- if blob.rich_viewer && blob.extension != 'geojson'
+  - add_page_startup_api_call local_assigns.fetch(:viewer_url) { url_for(safe_params.merge(viewer: blob.rich_viewer.type, format: :json)) }
 
-%ul.blob-commit-info.well.hidden-xs
-  - blob_commit = @repository.last_commit_for_path(@commit.id, blob.path)
-  = render blob_commit, project: @project
+#js-repository-blob-header-app{ data: vue_blob_header_app_data(project, blob, ref) }
 
-%div#tree-content-holder.tree-content-holder
-  %article.file-holder
-    .file-title
-      = blob_icon blob.mode, blob.name
-      %strong
-        = blob.name
-      %small
-        = number_to_human_size(blob.size)
-      .file-actions.hidden-xs
-        = render "actions"
-    - if blob.text?
-      = render "text", blob: blob
-    - elsif blob.image?
-      = render "image", blob: blob
-    - else
-      = render "download", blob: blob
+- if project.forked?
+  #js-fork-info{ data: vue_fork_divergence_data(project, ref) }
+
+.info-well
+  #js-last-commit{ data: { history_link: project_commits_path(project, ref)} }
+
+  .gl-hidden{ class: '@sm/panel:gl-block' }
+    - if project.licensed_feature_available?(:code_owners)
+      #js-code-owners{ data: { blob_path: blob.path, project_path: @project.full_path, branch: @ref, can_view_branch_rules: can_view_branch_rules?, branch_rules_path: branch_rules_path } }
+    = render "projects/blob/auxiliary_viewer", blob: blob, ref: @ref
+
+#blob-content-holder.blob-content-holder
+  - if @code_navigation_path
+    #js-code-navigation{ data: { code_navigation_path: @code_navigation_path, blob_path: blob.path, definition_path_prefix: project_blob_path(@project, @ref, ref_type: @ref_type) } }
+  - if !expanded
+    -# Data info will be removed once we migrate this to use GraphQL
+    -# Follow-up issue: https://gitlab.com/gitlab-org/gitlab/-/issues/330406
+    #js-view-blob-app{ data: vue_blob_app_data(project, blob, ref).merge(ref_type: @ref_type.to_s) }
+      = gl_loading_icon(size: 'md')
+  - else
+    %article.file-holder
+      = render 'projects/blob/header', blob: blob
+      = render 'projects/blob/content', blob: blob

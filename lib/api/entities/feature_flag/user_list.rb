@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+module API
+  module Entities
+    class FeatureFlag < Grape::Entity
+      class UserList < BasicUserList
+        include RequestAwareEntity
+
+        expose :project_id, documentation: { type: 'Integer', format: 'int64', example: 2 }
+        expose :created_at, documentation: { type: 'DateTime', example: '2020-02-04T08:13:10.507Z' }
+        expose :updated_at, documentation: { type: 'DateTime', example: '2020-02-04T08:13:10.507Z' }
+
+        expose :path, documentation: { type: 'String' } do |list|
+          project_feature_flags_user_list_path(list.project, list)
+        end
+
+        expose :edit_path, documentation: { type: 'String' } do |list|
+          edit_project_feature_flags_user_list_path(list.project, list)
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,134 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    module Base
+      class GraphqlTool
+        include Mcp::Tools::Concerns::Versionable
+        include Mcp::Tools::Concerns::Constants
+
+        QUERIES_ROOT = Rails.root.join('app/graphql/queries/mcp').freeze
+        IMPORT_PATTERN = %r{^#\s*import "\./(?<path>[^"]+)"$}
+
+        def self.load_graphql(relative_path)
+          query = read_graphql_file(relative_path)
+          directory = File.dirname(relative_path)
+          fragments = query.scan(IMPORT_PATTERN).flatten.map do |path|
+            read_graphql_file(File.join(directory, path))
+          end
+
+          [query, *fragments].join("\n").freeze
+        end
+
+        def self.read_graphql_file(relative_path)
+          File.read(QUERIES_ROOT.join(relative_path))
+        end
+
+        attr_reader :current_user, :params
+
+        def initialize(current_user:, params:, version: nil)
+          @current_user = current_user
+          @params = params
+          initialize_version(version)
+        end
+
+        # Override in subclasses or use version metadata
+        def graphql_operation
+          raise NotImplementedError unless self.class.version_metadata(version)[:graphql_operation]
+
+          self.class.version_metadata(version)[:graphql_operation]
+        end
+
+        def operation_name
+          self.class.version_metadata(version)[:operation_name] ||
+            raise(NotImplementedError, "operation_name must be defined")
+        end
+
+        # Can be overridden with version-specific methods
+        def build_variables
+          raise NotImplementedError, "build_variables must be implemented"
+        end
+
+        def icons
+          IconConfig.gitlab_icons
+        end
+
+        def execute
+          result = GitlabSchema.execute(
+            graphql_operation_for_version,
+            variables: build_variables_for_version,
+            context: execution_context
+          )
+
+          process_result(result)
+        end
+
+        private
+
+        def execution_context
+          {
+            current_user: current_user,
+            is_sessionless_user: false,
+            mcp_tool: mcp_tool_identifier
+          }
+        end
+
+        # Override in subclasses. Lets a mutation apply tool-specific behaviour without
+        # exposing the identifier through any public GraphQL input.
+        def mcp_tool_identifier
+          nil
+        end
+
+        def process_result(result)
+          if result['errors']
+            error_messages = extract_error_messages(result['errors'])
+            return ::Mcp::Tools::Base::Response.error(error_messages.join(', '))
+          end
+
+          not_found_error = resource_not_found_error_for_result(result)
+          return not_found_error if not_found_error
+
+          operation_data = result.dig('data', operation_name)
+          return resource_not_found_error if operation_data.nil?
+
+          operation_errors = operation_data['errors']
+          if operation_errors&.any?
+            error_messages = extract_error_messages(operation_errors)
+            return ::Mcp::Tools::Base::Response.error(
+              error_messages.join(', '), reason: ::Mcp::Tools::Base::Response::Reason::BAD_REQUEST
+            )
+          end
+
+          formatted_content = [{ type: 'text', text: Gitlab::Json.dump(operation_data) }]
+          ::Mcp::Tools::Base::Response.success(formatted_content, operation_data)
+        end
+
+        def resource_not_found_error
+          ::Mcp::Tools::Base::Response.error(
+            "Operation returned no data", reason: ::Mcp::Tools::Base::Response::Reason::NOT_FOUND
+          )
+        end
+
+        def resource_not_found_error_for_result(result)
+          return unless result.dig('data', operation_name).nil?
+
+          resource_not_found_error
+        end
+
+        def extract_error_messages(errors)
+          errors.map do |error|
+            if error.is_a?(String)
+              error
+            elsif error.is_a?(Hash)
+              error['message'] || error.to_s
+            else
+              error.to_s
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+Mcp::Tools::Base::GraphqlTool.prepend_mod

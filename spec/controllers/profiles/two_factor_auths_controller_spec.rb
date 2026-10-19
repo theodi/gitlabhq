@@ -1,6 +1,8 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe Profiles::TwoFactorAuthsController do
+RSpec.describe Profiles::TwoFactorAuthsController, feature_category: :system_access do
   before do
     # `user` should be defined within the action-specific describe blocks
     sign_in(user)
@@ -8,67 +10,296 @@ describe Profiles::TwoFactorAuthsController do
     allow(subject).to receive(:current_user).and_return(user)
   end
 
-  describe 'GET new' do
-    let(:user) { create(:user) }
+  shared_examples 'user must first verify their primary email address' do
+    before do
+      allow(user).to receive(:primary_email_verified?).and_return(false)
+    end
 
-    it 'generates otp_secret for user' do
-      expect(User).to receive(:generate_otp_secret).with(32).and_return('secret').once
+    it 'redirects to profile_emails_path' do
+      go
 
-      get :new
-      get :new # Second hit shouldn't re-generate it
+      expect(response).to redirect_to(profile_emails_path)
+    end
+
+    it 'displays a notice' do
+      go
+
+      expect(flash[:notice])
+        .to eq _('You need to verify your primary email first before enabling two-factor authentication (2FA).')
+    end
+  end
+
+  shared_examples 'user must enter a valid current password' do
+    let(:current_password) { '123' }
+    let(:error_message) { { message: _('You must provide a valid current password.') } }
+
+    it 'requires the current password', :aggregate_failures do
+      go
+
+      error = assigns[:error] || assigns[:otp_error]
+      expect(error).to eq(error_message)
+      expect(response).to render_template(:show)
     end
 
     it 'assigns qr_code' do
       code = double('qr code')
       expect(subject).to receive(:build_qr_code).and_return(code)
 
-      get :new
-      expect(assigns[:qr_code]).to eq code
+      go
+      expect(assigns[:qr_code]).to eq(code)
+    end
+
+    it 'assigns account_string' do
+      go
+      expect(assigns[:account_string]).to eq("#{Gitlab.config.gitlab.host}:#{user.email}")
+    end
+
+    context 'when the user is on the last sign in attempt' do
+      it do
+        user.update!(failed_attempts: User.maximum_attempts.pred)
+
+        go
+
+        expect(user.reload).to be_access_locked
+      end
+    end
+
+    context 'when user authenticates with an external service' do
+      before do
+        allow(user).to receive(:password_automatically_set?).and_return(true)
+      end
+
+      it 'does not require the current password', :aggregate_failures do
+        go
+
+        expect(assigns[:error]).not_to eq(error_message)
+      end
+    end
+
+    context 'when password authentication is disabled' do
+      before do
+        stub_application_setting(password_authentication_enabled_for_web: false)
+      end
+
+      it 'does not require the current password', :aggregate_failures do
+        go
+
+        expect(assigns[:error]).not_to eq(error_message)
+      end
+    end
+
+    context 'when the user is an LDAP user' do
+      before do
+        allow(user).to receive(:ldap_user?).and_return(true)
+      end
+
+      it 'does not require the current password', :aggregate_failures do
+        go
+
+        expect(assigns[:error]).not_to eq(error_message)
+      end
+    end
+  end
+
+  describe 'GET show' do
+    let_it_be_with_reload(:user) { create(:user) }
+
+    it 'generates otp_secret for user' do
+      expect(User).to receive(:generate_otp_secret).with(User::OTP_SECRET_LENGTH).and_call_original.once
+
+      get :show
+    end
+
+    it 'assigns qr_code' do
+      code = double('qr code')
+      expect(subject).to receive(:build_qr_code).and_return(code)
+
+      get :show
+      expect(assigns[:qr_code]).to eq(code)
+    end
+
+    it 'includes title element in generated SVG' do
+      get :show
+
+      doc = Nokogiri::XML(assigns(:qr_code))
+      title_element = doc.css('svg title').first
+
+      expect(title_element).to be_present
+      expect(title_element.text).to eq('Generated QR Code')
+    end
+
+    it 'generates a single otp_secret with multiple page loads', :freeze_time do
+      expect(User).to receive(:generate_otp_secret).with(User::OTP_SECRET_LENGTH).and_call_original.once
+
+      user.update!(otp_secret: nil, otp_secret_expires_at: nil)
+
+      2.times do
+        get :show
+      end
+    end
+
+    it 'generates a new otp_secret once the ttl has expired' do
+      expect(User).to receive(:generate_otp_secret).with(User::OTP_SECRET_LENGTH).and_call_original.once
+
+      user.update!(otp_secret: "FT7KAVNU63YZH7PBRVPVL7CPSAENXY25", otp_secret_expires_at: 2.minutes.from_now)
+
+      travel_to(10.minutes.from_now) do
+        get :show
+      end
+    end
+
+    it_behaves_like 'user must first verify their primary email address' do
+      let(:go) { get :show }
+    end
+
+    context 'when two-factor authentication is enforced globally' do
+      before do
+        stub_application_setting(require_two_factor_authentication: true)
+      end
+
+      it 'titles the enforcement banner' do
+        get :show
+
+        expect(flash[:alert][:title]).to eq(_('Secure your account with two-factor authentication (2FA)'))
+      end
+    end
+
+    context 'when a group enforces two-factor authentication' do
+      render_views
+
+      let_it_be_with_reload(:user) { create(:user, :with_namespace) }
+      let_it_be(:group) { create(:group, require_two_factor_authentication: true) }
+
+      before_all do
+        group.add_developer(user)
+      end
+
+      it 'offers the enforcing groups for review' do
+        get :show
+
+        expect(flash[:alert][:title]).to eq(_('Secure your account with two-factor authentication (2FA)'))
+        expect(flash[:alert][:message]).to include(_('Review and leave groups'))
+        expect(flash[:alert][:message]).to include(group.full_name)
+      end
+    end
+
+    context 'when the group requirement outlives the groups behind it' do
+      render_views
+
+      let_it_be_with_reload(:user) { create(:user, :with_namespace) }
+
+      before do
+        user.update!(require_two_factor_authentication_from_group: true)
+      end
+
+      it 'drops the review wording and renders no group list' do
+        get :show
+
+        expect(flash[:alert][:message]).to include(
+          _('One or more groups require you to add 2FA to your account. Choose your preferred method below.')
+        )
+        expect(flash[:alert][:message]).not_to include(_('Review and leave groups'))
+        expect(flash[:alert][:message]).not_to include(_('Review groups'))
+      end
+    end
+
+    context 'when none of the enforcing groups can be left' do
+      render_views
+
+      let_it_be_with_reload(:user) { create(:user, :with_namespace) }
+      let_it_be(:group) { create(:group, require_two_factor_authentication: true) }
+
+      before_all do
+        group.add_owner(user)
+      end
+
+      it 'lists the groups for reference without inviting the user to leave' do
+        get :show
+
+        expect(flash[:alert][:message]).to include(
+          _('One or more groups require you to add 2FA to your account. Choose your preferred method below.')
+        )
+        expect(flash[:alert][:message]).not_to include(_('Review and leave groups'))
+        expect(flash[:alert][:message]).to include(_('Review groups'))
+        expect(flash[:alert][:message]).to include(group.full_name)
+        expect(flash[:alert][:message]).to include(_('You cannot leave this group'))
+      end
     end
   end
 
   describe 'POST create' do
-    let(:user) { create(:user) }
-    let(:pin)  { 'pin-code' }
+    let_it_be_with_reload(:user) { create(:user) }
+
+    let(:pin) { 'pin-code' }
+    let(:current_password) { user.password }
 
     def go
-      post :create, pin_code: pin
+      post :create, params: { pin_code: pin, current_password: current_password }
     end
 
     context 'with valid pin' do
       before do
-        expect(user).to receive(:valid_otp?).with(pin).and_return(true)
+        allow(user).to receive(:validate_and_consume_otp!).with(pin).and_return(true)
       end
 
-      it 'sets otp_required_for_login' do
+      it 'enables 2fa for the user' do
         go
 
         user.reload
-        expect(user.otp_required_for_login).to eq true
+        expect(user).to be_two_factor_enabled
       end
 
       it 'presents plaintext codes for the user to save' do
-        expect(user).to receive(:generate_otp_backup_codes!).and_return(%w(a b c))
+        expect(user).to receive(:generate_otp_backup_codes!).and_return(%w[a b c])
 
         go
 
-        expect(assigns[:codes]).to match_array %w(a b c)
+        expect(assigns[:codes]).to match_array %w[a b c]
+      end
+
+      it 'calls to delete other sessions' do
+        expect(ActiveSession).to receive(:destroy_all_but_current)
+
+        go
       end
 
       it 'renders create' do
         go
         expect(response).to render_template(:create)
+        expect(user.otp_backup_codes?).to be(true)
+      end
+
+      it 'do not create new backup codes if exists' do
+        expect(user).to receive(:otp_backup_codes?).and_return(true)
+        go
+        expect(response).to redirect_to(profile_two_factor_auth_url)
+      end
+
+      it 'calls to delete other sessions when backup codes already exist' do
+        expect(user).to receive(:otp_backup_codes?).and_return(true)
+        expect(ActiveSession).to receive(:destroy_all_but_current)
+        go
+      end
+
+      it 'sends the user a notification email' do
+        expect_next_instance_of(NotificationService) do |notification|
+          expect(notification).to receive(:enabled_two_factor).with(user, :otp, {})
+        end
+
+        go
       end
     end
 
     context 'with invalid pin' do
       before do
-        expect(user).to receive(:valid_otp?).with(pin).and_return(false)
+        expect(user).to receive(:validate_and_consume_otp!).with(pin).and_return(false)
+
+        allow(NotificationService).to receive(:new)
       end
 
       it 'assigns error' do
         go
-        expect(assigns[:error]).to eq 'Invalid pin code'
+        expect(assigns[:otp_error]).to eq({ message: 'Invalid pin code.' })
       end
 
       it 'assigns qr_code' do
@@ -76,54 +307,437 @@ describe Profiles::TwoFactorAuthsController do
         expect(subject).to receive(:build_qr_code).and_return(code)
 
         go
-        expect(assigns[:qr_code]).to eq code
+        expect(assigns[:qr_code]).to eq(code)
       end
 
-      it 'renders new' do
+      it 'assigns account_string' do
         go
-        expect(response).to render_template(:new)
+        expect(assigns[:account_string]).to eq("#{Gitlab.config.gitlab.host}:#{user.email}")
+      end
+
+      it 'renders show' do
+        go
+        expect(response).to render_template(:show)
+      end
+
+      it 'does not send a notification email' do
+        go
+        expect(NotificationService).not_to have_received(:new)
       end
     end
+
+    it_behaves_like 'user must enter a valid current password'
+
+    it_behaves_like 'user must first verify their primary email address'
   end
 
   describe 'POST codes' do
-    let(:user) { create(:user, :two_factor) }
+    let_it_be_with_reload(:user) { create(:user, :two_factor) }
+
+    let(:current_password) { user.password }
 
     it 'presents plaintext codes for the user to save' do
-      expect(user).to receive(:generate_otp_backup_codes!).and_return(%w(a b c))
+      expect(user).to receive(:generate_otp_backup_codes!).and_return(%w[a b c])
 
-      post :codes
-      expect(assigns[:codes]).to match_array %w(a b c)
+      post :codes, params: { current_password: current_password }
+      expect(assigns[:codes]).to match_array %w[a b c]
     end
 
     it 'persists the generated codes' do
-      post :codes
+      post :codes, params: { current_password: current_password }
 
       user.reload
       expect(user.otp_backup_codes).not_to be_empty
     end
+
+    it_behaves_like 'user must enter a valid current password' do
+      let(:go) { post :codes, params: { current_password: current_password } }
+    end
+  end
+
+  describe 'POST create_webauthn' do
+    let_it_be_with_reload(:user) { create(:user) }
+    let(:client) { WebAuthn::FakeClient.new('http://localhost', encoding: :base64) }
+    let(:credential) { create_credential(client: client, rp_id: request.host) }
+
+    let(:params) { { device_registration: { name: 'touch id', device_response: device_response } } }
+
+    let(:params_with_password) do
+      { device_registration: { name: 'touch id', device_response: device_response }, current_password: user.password }
+    end
+
+    before do
+      session[:challenge] = challenge
+    end
+
+    def go
+      post :create_webauthn, params: params
+    end
+
+    def challenge
+      @_challenge ||= begin
+        options_for_create = WebAuthn::Credential.options_for_create(
+          user: {
+            id: user.webauthn_xid,
+            name: user.username,
+            display_name: user.name
+          },
+          exclude: user.get_all_webauthn_credential_ids,
+          authenticator_selection: {
+            user_verification: 'discouraged',
+            resident_key: 'preferred'
+          },
+          rp: { name: 'GitLab' },
+          extensions: { credProps: true }
+        )
+        options_for_create.challenge
+      end
+    end
+
+    def device_response
+      client.create(challenge: challenge).to_json # rubocop:disable Rails/SaveBang
+    end
+
+    it 'update failed_attempts when proper password is not given' do
+      go
+      expect(user.failed_attempts).to be(1)
+    end
+
+    context 'when it sets ups its view form' do
+      it 'renders relevant view variables (2FA & Passkeys)', :freeze_time do
+        stored_second_factor_webauthn_registration = create(:webauthn_registration, user: user)
+        stored_passkey = create(:webauthn_registration, :passkey, user: user)
+
+        go
+
+        rendered_second_factor_webauthn_registration = assigns[:registrations].first
+        rendered_passkey = assigns[:passkeys].first
+
+        expect(assigns[:registrations].count).to eq(user.second_factor_webauthn_registrations.count)
+        expect(rendered_second_factor_webauthn_registration[:name]).to eq(
+          stored_second_factor_webauthn_registration.name
+        )
+        expect(rendered_second_factor_webauthn_registration[:created_at]).to eq(
+          stored_second_factor_webauthn_registration.created_at
+        )
+        expect(rendered_second_factor_webauthn_registration[:delete_path]).to eq(
+          destroy_webauthn_profile_two_factor_auth_path(stored_second_factor_webauthn_registration)
+        )
+
+        expect(assigns[:passkeys].count).to eq(user.passkeys.count)
+        expect(rendered_passkey[:name]).to eq(stored_passkey.name)
+        expect(rendered_passkey[:created_at]).to eq(stored_passkey.created_at)
+        expect(rendered_passkey[:last_used_at]).to eq(stored_passkey.last_used_at)
+        expect(rendered_passkey[:delete_path]).to eq(profile_passkey_path(stored_passkey))
+      end
+    end
+
+    context "when valid password is given" do
+      it "registers and render OTP backup codes" do
+        post :create_webauthn, params: params_with_password
+        expect(user.otp_backup_codes).not_to be_empty
+        expect(flash[:notice]).to match(/Your WebAuthn device was registered!/)
+      end
+
+      it 'registers and redirects back if user is already having backup codes' do
+        expect(user).to receive(:otp_backup_codes?).and_return(true)
+        post :create_webauthn, params: params_with_password
+        expect(response).to redirect_to(profile_two_factor_auth_url)
+        expect(flash[:notice]).to match(/Your WebAuthn device was registered!/)
+      end
+
+      it 'sends the user a notification email' do
+        expect_next_instance_of(NotificationService) do |notification|
+          expect(notification).to receive(:enabled_two_factor).with(user, :webauthn, { device_name: 'touch id' })
+        end
+
+        post :create_webauthn, params: params_with_password
+      end
+
+      context 'when registration fails' do
+        context "with a service error" do
+          let(:device_response) { 'invalid_response' }
+          let(:perform_request) { post :create_webauthn, params: params_with_password }
+
+          it "renders the 2FA profile page with a flash alert from the registration service" do
+            perform_request
+
+            expect(flash[:alert]).to be_present
+          end
+
+          it 'does not change the WebAuthn authenticator count' do
+            perform_request
+
+            expect { response }.not_to change { user.second_factor_webauthn_registrations.count }
+          end
+        end
+      end
+    end
+
+    context 'when an invalid password is given' do
+      before do
+        allow(NotificationService).to receive(:new)
+      end
+
+      it 'does not send a notification email' do
+        post :create_webauthn, params: params
+        expect(NotificationService).not_to have_received(:new)
+      end
+    end
   end
 
   describe 'DELETE destroy' do
-    let(:user)   { create(:user, :two_factor) }
-    let!(:codes) { user.generate_otp_backup_codes! }
-
-    it 'clears all 2FA-related fields' do
-      expect(user.otp_required_for_login).to eq true
-      expect(user.otp_backup_codes).not_to be_nil
-      expect(user.encrypted_otp_secret).not_to be_nil
-
-      delete :destroy
-
-      expect(user.otp_required_for_login).to eq false
-      expect(user.otp_backup_codes).to be_nil
-      expect(user.encrypted_otp_secret).to be_nil
+    def go
+      delete :destroy, params: { current_password: current_password }
     end
 
-    it 'redirects to profile_account_path' do
-      delete :destroy
+    let(:current_password) { user.password }
 
-      expect(response).to redirect_to(profile_account_path)
+    context 'for a user that has 2FA enabled' do
+      let_it_be_with_reload(:user) { create(:user, :two_factor) }
+
+      it 'disables two factor' do
+        go
+
+        expect(user.reload.two_factor_enabled?).to be(false)
+      end
+
+      it 'redirects to profile_two_factor_auth_url' do
+        go
+
+        expect(response).to redirect_to(profile_two_factor_auth_url)
+      end
+
+      it 'displays a notice on success' do
+        go
+
+        expect(flash[:notice])
+          .to eq _('Two-factor authentication has been disabled successfully!')
+      end
+
+      it_behaves_like 'user must enter a valid current password'
+    end
+
+    context 'for a user that does not have 2FA enabled' do
+      let_it_be_with_reload(:user) { create(:user) }
+
+      it 'redirects to profile_two_factor_auth_url' do
+        go
+
+        expect(response).to redirect_to(profile_two_factor_auth_url)
+      end
+
+      it 'displays an alert on failure' do
+        go
+
+        expect(flash[:alert])
+          .to eq _('Two-factor authentication is not enabled for this user')
+      end
+    end
+  end
+
+  describe 'DELETE destroy_otp' do
+    let(:destroy_otp) do
+      delete :destroy_otp, params: { current_password: current_password }
+    end
+
+    let(:current_password) { user.password }
+
+    def go
+      destroy_otp
+    end
+
+    context 'for a user that has OTP and WebAuthn enabled' do
+      let_it_be_with_reload(:user) do
+        create(:user, :two_factor_via_otp, :two_factor_via_webauthn)
+      end
+
+      it 'disables OTP authenticator and leaves WebAuthn devices unaffected' do
+        expect(user.two_factor_otp_enabled?).to be(true)
+        expect(user.two_factor_webauthn_enabled?).to be(true)
+
+        go
+
+        user.reload
+        expect(user.two_factor_otp_enabled?).to be(false)
+        expect(user.two_factor_webauthn_enabled?).to be(true)
+      end
+
+      it 'redirects to profile_two_factor_auth_url' do
+        go
+
+        expect(response).to redirect_to(profile_two_factor_auth_url)
+      end
+
+      it 'displays a notice on success' do
+        go
+
+        expect(flash[:notice])
+        .to eq _('One-time password authenticator has been deleted!')
+      end
+
+      it_behaves_like 'user must enter a valid current password'
+
+      it 'sends the user a notification email' do
+        expect_next_instance_of(NotificationService) do |notification|
+          expect(notification).to receive(:disabled_two_factor).with(user, :otp)
+        end
+
+        go
+      end
+
+      context 'when an invalid password is given' do
+        before do
+          allow(NotificationService).to receive(:new)
+        end
+
+        it 'does not send a notification email' do
+          delete :destroy_otp, params: { current_password: 'invalid' }
+          expect(NotificationService).not_to have_received(:new)
+        end
+      end
+    end
+
+    context 'for a user that has only WebAuthn enabled' do
+      let_it_be_with_reload(:user) do
+        create(:user, :two_factor_via_webauthn)
+      end
+
+      it 'leaves WebAuthn devices unaffected' do
+        expect(user.two_factor_otp_enabled?).to be(false)
+        expect(user.two_factor_webauthn_enabled?).to be(true)
+
+        go
+
+        user.reload
+        expect(user.two_factor_otp_enabled?).to be(false)
+        expect(user.two_factor_webauthn_enabled?).to be(true)
+      end
+
+      it 'redirects to profile_two_factor_auth_url' do
+        go
+
+        expect(response).to redirect_to(profile_two_factor_auth_url)
+      end
+
+      it 'displays a alert on failure' do
+        go
+
+        expect(flash[:alert])
+        .to eq _('This user does not have a one-time password authenticator registered.')
+      end
+
+      it_behaves_like 'user must enter a valid current password'
+    end
+  end
+
+  describe 'DELETE destroy_webauthn' do
+    let_it_be_with_reload(:user) do
+      create(:user, :two_factor_via_webauthn)
+    end
+
+    let(:webauthn_registration) { user.second_factor_webauthn_registrations.first }
+    let(:webauthn_id) { webauthn_registration.id }
+    let(:webauthn_name) { webauthn_registration.name }
+    let(:current_password) { user.password }
+    let(:destroy_webauthn) do
+      delete :destroy_webauthn, params: { id: webauthn_id, current_password: current_password }
+    end
+
+    def go
+      destroy_webauthn
+    end
+
+    it 'destroys the webauthn device' do
+      count = user.second_factor_webauthn_registrations.count
+      go
+
+      user.reload
+      expect(user.second_factor_webauthn_registrations.count).to eq(count - 1)
+    end
+
+    it 'redirects to the profile two factor authentication page' do
+      go
+
+      expect(response).to redirect_to profile_two_factor_auth_url
+    end
+
+    it 'displays a notice on success' do
+      go
+
+      expect(flash[:notice]).to eq _('Successfully deleted WebAuthn device.')
+    end
+
+    it 'calls the Webauthn::DestroyService' do
+      service = double
+
+      expect(Webauthn::DestroyService).to receive(:new).with(user, user, webauthn_id.to_s).and_return(service)
+      expect(service).to receive(:execute).and_return(ServiceResponse.success)
+
+      go
+    end
+
+    it_behaves_like 'user must enter a valid current password'
+
+    it 'sends the user a notification email' do
+      expect_next_instance_of(NotificationService) do |notification|
+        expect(notification).to receive(:disabled_two_factor).with(user, :webauthn, { device_name: webauthn_name })
+      end
+
+      go
+    end
+
+    context 'when an invalid password is given' do
+      let(:current_password) { 'invalid' }
+
+      before do
+        allow(NotificationService).to receive(:new)
+      end
+
+      it 'does not send a notification email' do
+        go
+        expect(NotificationService).not_to have_received(:new)
+      end
+    end
+
+    context 'when it fails to delete' do
+      it 'returns an error message' do
+        expect_next_instance_of(Webauthn::DestroyService) do |service|
+          expect(service).to receive(:execute).and_return({ status: :error, message: 'an error occurred' })
+        end
+
+        go
+
+        expect(response).to redirect_to(profile_two_factor_auth_url)
+        expect(flash[:alert]).to eq('an error occurred')
+      end
+    end
+  end
+
+  describe 'PATCH skip' do
+    let(:user) { create(:user, otp_grace_period_started_at: Time.zone.now) }
+
+    def request
+      patch :skip
+    end
+
+    before do
+      stub_application_setting(require_two_factor_authentication: true)
+      stub_application_setting(two_factor_grace_period: 24)
+    end
+
+    it 'redirects the user to the root url' do
+      request
+
+      expect(response).to redirect_to root_url
+    end
+
+    it 'redirects back to 2fa page if grace period expired' do
+      travel_to(27.hours.from_now) do
+        request
+
+        expect(response).to redirect_to profile_two_factor_auth_url
+      end
     end
   end
 end

@@ -1,0 +1,255 @@
+inherits_from:
+  - .haml-lint_todo.yml
+# Whether to ignore frontmatter at the beginning of HAML documents for
+# frameworks such as Jekyll/Middleman
+skip_frontmatter: false
+exclude:
+  - 'vendor/**/*'
+  - 'spec/**/*'
+  - 'ee/spec/**/*'
+require:
+  - './haml_lint/linter/inline_javascript.rb'
+  - './haml_lint/linter/no_plain_nodes.rb'
+  - './haml_lint/linter/template_format.rb'
+
+linters:
+  AltText:
+    enabled: true
+
+  ClassAttributeWithStaticValue:
+    enabled: true
+
+  ClassesBeforeIds:
+    enabled: false
+
+  ConsecutiveComments:
+    enabled: false
+
+  ConsecutiveSilentScripts:
+    enabled: false
+    max_consecutive: 2
+
+  DocumentationLinks:
+    enabled: true
+    include:
+      - 'app/views/**/*.haml'
+      - 'ee/app/views/**/*.haml'
+
+  EmptyObjectReference:
+    enabled: true
+
+  EmptyScript:
+    enabled: true
+
+  FinalNewline:
+    enabled: true
+    present: true
+
+  HtmlAttributes:
+    enabled: true
+
+  IdNames:
+    enabled: false
+
+  ImplicitDiv:
+    enabled: true
+
+  InlineJavaScript:
+    enabled: true
+
+  InlineStyles:
+    enabled: false
+
+  InstanceVariables:
+    enabled: false
+
+  LeadingCommentSpace:
+    enabled: false
+
+  LineLength:
+    enabled: false
+    max: 80
+
+  MultilinePipe:
+    enabled: true
+
+  MultilineScript:
+    enabled: true
+
+  ObjectReferenceAttributes:
+    enabled: true
+
+  RepeatedId:
+    enabled: false
+
+  RuboCop:
+    enabled: true
+    ignored_cops:
+      # These cops are incredibly noisy when it comes to HAML templates, so we
+      # ignore them.
+      - Layout/BlockAlignment
+      - Layout/HashAlignment
+      - Layout/IndentationConsistency
+      - Layout/IndentationWidth
+      - Layout/LineLength
+      - Layout/TrailingWhitespace
+      - Lint/Void
+      - Naming/FileName
+      - Layout/ElseAlignment
+      - Style/FrozenStringLiteralComment
+      - Style/IfUnlessModifier
+      - Style/Next
+      - Style/SoleNestedConditional
+      - Style/StringLiteralsInInterpolation
+      - Style/WhileUntilModifier
+      - Cop/StaticTranslationDefinition
+
+      # These cops should eventually get enabled
+
+      # haml-lint force enables these: https://github.com/sds/haml-lint/blob/v0.51.0/config/forced_rubocop_config.yml
+      - Layout/ArgumentAlignment
+      - Layout/ArrayAlignment
+      - Layout/ClosingParenthesisIndentation # See https://github.com/sds/haml-lint/issues/491
+      - Layout/EndAlignment
+      - Layout/FirstArgumentIndentation # Reports false positives on Ruby extracted from multiline tag attributes and cannot be autocorrected in HAML
+      - Layout/SpaceInsideParens # See https://github.com/sds/haml-lint/issues/491
+
+      - Cop/LineBreakAfterGuardClauses
+      - Cop/LineBreakAroundConditionalBlock
+      - Cop/ProjectPathHelper
+      - Gitlab/FeatureAvailableUsage
+      - Gitlab/Json
+      - Gitlab/Rails/SafeFormat
+      - GitlabSecurity/PublicSend
+      - Layout/FirstHashElementIndentation
+      - Layout/EmptyLineAfterGuardClause
+      - Layout/EmptyLines
+      - Layout/EmptyLinesAroundBlockBody
+      - Layout/ExtraSpacing
+      - Layout/InitialIndentation
+      - Layout/LeadingCommentSpace
+      - Layout/MultilineHashBraceLayout
+      - Layout/SpaceAroundOperators
+      - Layout/SpaceBeforeComma
+      - Layout/SpaceBeforeFirstArg
+      - Layout/SpaceInsideHashLiteralBraces
+      - Layout/SpaceInsideStringInterpolation
+      - Layout/TrailingEmptyLines
+      - Lint/AmbiguousOperatorPrecedence
+      - Lint/AssignmentInCondition
+      - Lint/LiteralInInterpolation
+      - Lint/ParenthesesAsGroupedExpression
+      - Lint/RedundantStringCoercion
+      - Lint/SafeNavigationConsistency
+      - Lint/SymbolConversion
+      - Lint/UnusedBlockArgument
+      - Metrics/BlockNesting
+      - Naming/VariableName
+      - Performance/RedundantMatch
+      - Performance/StringReplacement
+      - Rails/LinkToBlank
+      - Rails/OutputSafety
+      - Rails/RequestReferer
+      - Style/ColonMethodCall
+      - Style/ConditionalAssignment
+      - Style/FormatString
+      - Style/HashSyntax
+      - Style/IdenticalConditionalBranches
+      - Style/IfInsideElse
+      - Style/InlineDisableAnnotation
+      - Style/MultilineTernaryOperator
+      - Style/NegatedIf
+      - Style/NestedTernaryOperator
+      - Style/RedundantInterpolation
+      - Style/SelfAssignment
+      - Style/StringConcatenation
+      - Style/TernaryParentheses
+      - Style/TrailingCommaInHashLiteral
+      - Style/UnlessElse
+      - Style/WordArray
+      - Style/ZeroLengthPredicate
+
+      # WIP See https://gitlab.com/gitlab-org/gitlab/-/issues/207950
+      - Cop/UserAdmin
+      # See https://gitlab.com/groups/gitlab-org/-/epics/7374.
+      # This should eventually be enabled
+      - Gitlab/AvoidGitlabInstanceChecks
+
+  RubyComments:
+    enabled: true
+
+  SpaceBeforeScript:
+    enabled: true
+
+  SpaceInsideHashAttributes:
+    enabled: true
+    style: space
+
+  Syntax:
+    enabled: true
+
+  Indentation:
+    enabled: true
+    character: space  # or tab
+
+  TagName:
+    enabled: true
+
+  TemplateFormat:
+    enabled: true
+    include:
+      - 'app/views/**/*.haml'
+      - 'ee/app/views/**/*.haml'
+      - 'app/components/**/*.haml'
+      - 'ee/app/components/**/*.haml'
+    exclude:
+      # Legacy offenders being renamed over several MRs.
+      # Do not add new entries here.
+      - 'app/views/admin/application_settings/_cluster_agents.haml'
+      - 'app/views/admin/application_settings/_nuget_skip_metadata_url_validation.haml'
+      - 'app/views/admin/application_settings/_project_and_group_access_tokens.haml'
+      - 'app/views/devise/confirmations/almost_there.haml'
+      - 'app/views/devise/sessions/email_verification.haml'
+      - 'app/views/devise/sessions/skip_verification_confirmation.haml'
+      - 'app/views/devise/sessions/successful_verification.haml'
+      - 'app/views/devise/shared/_omniauth_provider_button.haml'
+      - 'app/views/import/bulk_imports/failures.haml'
+      - 'app/views/layouts/_diffs_colors_css.haml'
+      - 'app/views/projects/_importing_alert.haml'
+      - 'app/views/projects/attestations/_attestation_certificate.haml'
+      - 'app/views/projects/commit/_pipelines_list.haml'
+      - 'app/views/projects/deployments/_actions.haml'
+      - 'app/views/projects/pages/_destroy.haml'
+      - 'app/views/projects/protected_tags/_protected_tag_create_access_levels.haml'
+      - 'app/views/shared/form_elements/_apply_generated_description_warning.haml'
+      - 'app/views/shared/integrations/slack/_help.haml'
+      - 'app/views/shared/milestones/_merge_requests_tab.haml'
+      - 'app/views/user_settings/user_settings/_event_table.haml'
+      - 'app/views/user_settings/user_settings/authentication_log.haml'
+      - 'ee/app/views/admin/users/_role_promotion_requests_tab.haml'
+      - 'ee/app/views/dashboard/projects/_joining_a_project_alert.haml'
+      - 'ee/app/views/groups/analytics/devops_adoption/show.haml'
+      - 'ee/app/views/notify/compliance_project_frameworks_csv_email.haml'
+      - 'ee/app/views/notify/compliance_standards_adherence_csv_email.haml'
+      - 'ee/app/views/notify/compliance_violations_csv_email.haml'
+      - 'ee/app/views/projects/_importing_alert.haml'
+      - 'ee/app/views/projects/protected_environments/_deployment_approval_options.haml'
+      - 'ee/app/views/projects/protected_tags/_protected_tag_extra_create_access_levels.haml'
+      - 'ee/app/views/shared/issuable/_approver_suggestion.haml'
+      - 'ee/app/views/shared/issuable/_sidebar_cve_id_request.haml'
+      - 'ee/app/views/shared/push_rules/_reject_commits_not_dco_signed_setting.haml'
+
+  TrailingEmptyLines:
+    enabled: false
+
+  TrailingWhitespace:
+    enabled: true
+
+  UnnecessaryInterpolation:
+    enabled: true
+
+  UnnecessaryStringOutput:
+    enabled: true
+
+  ViewLength:
+    enabled: false

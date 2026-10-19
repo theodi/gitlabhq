@@ -1,0 +1,396 @@
+---
+stage: Package
+group: Package Registry
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Debian API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Deployed behind a feature flag](../../administration/feature_flags/_index.md), disabled by default.
+
+{{< /history >}}
+
+> [!warning]
+> This API is used by the Debian related package clients such as [dput](https://manpages.debian.org/stable/dput-ng/dput.1.en.html)
+> and [apt-get](https://manpages.debian.org/stable/apt/apt-get.8.en.html),
+> and is generally not meant for manual consumption. This API is under development and is not ready
+> for production use due to limited functionality.
+
+Use this API to interact with the [Debian package manager client](../../user/packages/debian_repository/_index.md).
+
+> [!note]
+> These endpoints do not adhere to the standard API authentication methods.
+> See the [Debian registry documentation](../../user/packages/debian_repository/_index.md)
+> for details on which headers and token types are supported. Undocumented authentication methods might be removed in the future.
+
+## Enable the Debian API
+
+The Debian API is behind a feature flag that is disabled by default.
+[GitLab administrators with access to the GitLab Rails console](../../administration/feature_flags/_index.md)
+can opt to enable it. To enable it, follow the instructions in
+[Enable the Debian API](../../user/packages/debian_repository/_index.md#enable-the-debian-api).
+
+## Enable the Debian group API
+
+The Debian group API is behind a feature flag that is disabled by default.
+[GitLab administrators with access to the GitLab Rails console](../../administration/feature_flags/_index.md)
+can opt to enable it. To enable it, follow the instructions in
+[Enable the Debian group API](../../user/packages/debian_repository/_index.md#enable-the-debian-group-api).
+
+### Authenticate to the Debian Package Repositories
+
+See [Authenticate to the Debian Package Repositories](../../user/packages/debian_repository/_index.md#authenticate-to-the-debian-package-repositories).
+
+## Upload a package file
+
+Uploads a Debian package file for a specified project.
+
+```plaintext
+PUT projects/:id/packages/debian/:file_name
+```
+
+| Attribute      | Type   | Required | Description |
+| -------------- | ------ | -------- | ----------- |
+| `id`           | string | yes      | The ID or full path of the project.  |
+| `file_name`    | string | yes      | The name of the Debian package file. |
+| `distribution` | string | no       | The distribution codename or suite. Used with `component` for upload with explicit distribution and component. |
+| `component`    | string | no       | The package file component. Used with `distribution` for upload with explicit distribution and component. |
+
+```shell
+curl --request PUT \
+     --user "<username>:<personal_access_token>" \
+     --upload-file path/to/mypkg.deb \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/mypkg.deb"
+```
+
+Upload with explicit distribution and component:
+
+```shell
+curl --request PUT \
+  --user "<username>:<personal_access_token>" \
+  --upload-file  /path/to/myother.deb \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/myother.deb?distribution=sid&component=main"
+```
+
+## Download a package
+
+Downloads a specified package file for a project.
+
+```plaintext
+GET projects/:id/packages/debian/pool/:distribution/:letter/:package_name/:package_version/:file_name
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+| `letter`          | string | yes      | The Debian Classification (first-letter or lib-first-letter). |
+| `package_name`    | string | yes      | The source package name. |
+| `package_version` | string | yes      | The source package version. |
+| `file_name`       | string | yes      | The filename. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/pool/my-distro/a/my-pkg/1.0.0/example_1.0.0~alpha2_amd64.deb"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/pool/my-distro/a/my-pkg/1.0.0/example_1.0.0~alpha2_amd64.deb" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Route prefix
+
+The remaining endpoints described are two sets of identical routes that each make requests in
+different scopes:
+
+- Use the project-level prefix to make requests in a single project's scope.
+- Use the group-level prefix to make requests in a single group's scope.
+
+The examples in this document all use the project-level prefix.
+
+### Project-level
+
+```plaintext
+/projects/:id/packages/debian
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | string | yes | The project ID or full project path. |
+
+### Group-level
+
+```plaintext
+/groups/:id/-/packages/debian
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | string | yes | The project ID or full group path. |
+
+## Download a distribution Release file
+
+Downloads a specified Debian distribution Release file.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/Release
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/Release"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/Release" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a signed distribution Release file
+
+Downloads a specified signed Debian distribution Release file.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/InRelease
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/InRelease"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/InRelease" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a release file signature
+
+Downloads a specified Debian release file signature.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/Release.gpg
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/Release.gpg"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/Release.gpg" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a packages index
+
+Downloads a specified packages index.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/:component/binary-:architecture/Packages
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+| `component`       | string | yes      | The distribution component name. |
+| `architecture`    | string | yes      | The distribution architecture type. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/binary-amd64/Packages"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/binary-amd64/Packages" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a packages index by hash
+
+Downloads a specified packages index by hash.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/:component/binary-:architecture/by-hash/SHA256/:file_sha256
+
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+| `component`       | string | yes      | The distribution component name. |
+| `architecture`    | string | yes      | The distribution architecture type. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/binary-amd64/by-hash/SHA256/66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/binary-amd64/by-hash/SHA256/66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a Debian Installer packages index
+
+Downloads a specified Debian Installer packages index.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/:component/debian-installer/binary-:architecture/Packages
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+| `component`       | string | yes      | The distribution component name. |
+| `architecture`    | string | yes      | The distribution architecture type. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/debian-installer/binary-amd64/Packages"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/debian-installer/binary-amd64/Packages" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a Debian Installer packages index by hash
+
+Downloads a specified Debian Installer packages index by hash.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/:component/debian-installer/binary-:architecture/by-hash/SHA256/:file_sha256
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+| `component`       | string | yes      | The distribution component name. |
+| `architecture`    | string | yes      | The distribution architecture type. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/debian-installer/binary-amd64/by-hash/SHA256/66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/debian-installer/binary-amd64/by-hash/SHA256/66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a source packages index
+
+Downloads a specified source packages index.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/:component/source/Sources
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+| `component`       | string | yes      | The distribution component name. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/source/Sources"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/source/Sources" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.
+
+## Download a source packages index by hash
+
+Downloads a specified source packages index by hash.
+
+```plaintext
+GET <route-prefix>/dists/*distribution/:component/source/by-hash/SHA256/:file_sha256
+```
+
+| Attribute         | Type   | Required | Description |
+| ----------------- | ------ | -------- | ----------- |
+| `distribution`    | string | yes      | The codename or suite of the Debian distribution. |
+| `component`       | string | yes      | The distribution component name. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/source/by-hash/SHA256/66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18"
+```
+
+Write the output to a file:
+
+```shell
+curl --header "PRIVATE-TOKEN: <personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/debian/dists/my-distro/main/source/by-hash/SHA256/66a045b452102c59d840ec097d59d9467e13a3f34f6494e539ffd32c1bb35f18" \
+     --remote-name
+```
+
+This writes the downloaded file using the remote filename in the current directory.

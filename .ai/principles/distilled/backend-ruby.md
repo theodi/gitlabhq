@@ -1,0 +1,146 @@
+---
+source_checksum: 776499c268c36544
+distilled_at_sha: f821a52e7e6c48d5eb961fe53f9049f25bb4d274
+---
+<!-- Auto-generated from docs.gitlab.com by gitlab-ai-principles-distiller — do not edit manually -->
+
+# Backend Ruby/Rails Principles
+
+## Checklist
+
+### Ruby Style
+
+- Order methods by level of abstraction (high-level orchestrator methods before helper methods) within each visibility section; Exception: grouping by domain concept or alphabetical ordering for large sets of similar methods may take precedence.
+- DO NOT nest beyond two levels of method calls in the stepdown pattern; refactor into separate classes if needed.
+- Use `attr_reader` for public attributes only when accessed outside the class; maintain consistency for internal access.
+- Separate code with newlines only to group related logic together; add a newline before blocks. Exception: do not add a newline when a code block starts or ends right inside another code block.
+- Use `for_` prefix for scopes filtering by `belongs_to` associations (e.g., `scope :for_project`).
+- Use `with_` prefix for scopes using `joins`, `includes`, or filtering by `has_one`/`has_many`/boolean conditions.
+- Use `including_` prefix for scopes that eager-load associations via `includes` without changing the result set; use `preload_` when loading multiple `has_many` associations or when a separate subquery is explicitly required.
+- Use `order_by_` prefix for scopes that apply `order`.
+- Freeze constants (`CONSTANT = 'value'.freeze`).
+- DO NOT call application logic (database queries, service calls, I18n helpers) when defining class-level constants; use a method instead so the logic runs at call time.
+- Prefer `excluding` (alias `without`) over hand-written `where.not(id: record)` when excluding specific records already loaded in memory; DO NOT use `excluding` as a replacement for `where.not(id: relation)` — pass the relation directly to avoid loading IDs into memory.
+
+### ActiveRecord / Rails
+
+- DO NOT add new lifecycle logic via ActiveRecord callbacks; put it in a service class instead. Exception: callbacks are acceptable when overriding a dependency's callback, incrementing cache counts, or normalizing data that only relates to the current model.
+- DO NOT override `has_many through:` or `has_one through:` associations; overriding changes `destroy()` behavior and can cause data loss.
+- DO NOT open database connections or issue queries from Rails initializers or routes (see Rails Initializers).
+
+### Utilities
+
+- Use `Gitlab::Utils::Executable` (via `include Gitlab::Utils::Executable`) in service classes when the caller does not need the service instance after the call, instead of manually writing a `self.execute` delegator that restates the argument list.
+
+### JSON
+
+- Use `Gitlab::Json` in place of all calls to the default `JSON` class, `.to_json`, and similar methods.
+- Use `Gitlab::Json::SafeParser.parse` when parsing JSON from untrusted sources; DO NOT use the deprecated `Gitlab::Json.safe_parse`.
+- Use `Gitlab::Json::LimitedEncoder` when JSON output size must be bounded.
+
+### Logging
+
+- DO NOT use `Rails.logger`; use a structured JSON logger instead.
+- DO NOT use `$stdout.puts`, `$stderr.puts`, `$stdout.print`, `$stderr.print`, or equivalent `STDOUT`/`STDERR` calls in application code (enforced by the `Gitlab/DirectStdio` RuboCop cop); use a structured JSON logger or existing wrapper methods (e.g., `SystemCheck::Helpers`) for Rake/CLI output.
+- Use a subclass of `Gitlab::JsonLogger` for new log files; call `exclude_context!` if the logger is used outside of a request context.
+- Pass log messages as key-value hashes, not interpolated strings (e.g., `logger.info(message: "...", project_id: id)`).
+- Ensure field value types are consistent across all log calls for the same field key; DO NOT mix types (e.g., integer vs. string for the same field).
+- Ensure list elements in log fields are all the same type.
+- Include a `class` attribute in structured log payloads; use `Gitlab::Loggable` and `build_structured_payload` to add it automatically.
+- Log durations in seconds as a float with microsecond precision; suffix the key with `_s` and include `duration` in the key name (e.g., `view_duration_s`).
+- DO NOT manually log exceptions; use `Gitlab::ErrorTracking.track_exception` or `Gitlab::ErrorTracking.track_and_raise_exception` with additional context parameters.
+- DO NOT increase overall log volume by more than 10% when adding new log messages.
+- Log deprecation notices only in the development environment if the expected volume is large.
+
+### Log Field Standards
+
+- Log fields should be defined within the LabKit Ruby Fields module
+- Common logging fields imported from `labkit-ruby` `lib/labkit/fields.rb`
+- New fields added to log messages must not be dynamically generated
+- Follow Field Standardization Guidelines for observability
+
+### Redis
+
+- Ensure Redis keys are globally unique across all Redis categories/instances.
+- Use immutable identifiers (e.g., project ID, not full path) in Redis key names.
+- Enclose the changeable parts of keys in curly braces `{}` when multiple keys must reside on the same Redis shard (hash-tags for Redis Cluster compatibility).
+- Use `Gitlab::Redis::Cache` only for truly ephemeral, regenerable data; always set a TTL explicitly (no default TTL is set; consider 8 hours to match a workday).
+- Use `Gitlab::Redis::SharedState` for data that must persist until its expiration; always set a TTL.
+- DO NOT use `Rails.cache` for data that must be reliably persisted; use `Gitlab::Redis::SharedState` instead.
+- Use `RedisCommands::Recorder` in tests to detect Redis N+1 call problems and assert expected call counts.
+
+### Polling
+
+- DO NOT add new features that require polling and hit the database; use ETag caching in Redis instead.
+- Register polled endpoints in `Gitlab::EtagCaching::Router`, set the polling interval header via `Gitlab::PollingInterval.set_header`, and invalidate ETags via `Gitlab::EtagCaching::Store` on resource changes.
+- DO NOT use query parameters on endpoints where ETag caching is enabled; include all parameters in the request path.
+
+### Routing
+
+- Place every group route under the `/-/` scope.
+- Place every project route under the `/-/` scope, except where a Git client or other external software requires otherwise.
+- Use organization-scoped routes (`/o/:organization_path/*path`) for organization-level resources.
+- DO NOT change an existing URL without providing a redirect; support both old and new URLs for at least one major release for script-facing URLs, and add a redirect for user-facing URLs until the next major release.
+- Use `Gitlab::Routing.redirect_legacy_paths` when adding `/-/` scope to previously unscoped routes, and create a technical debt issue to remove deprecated routes in a later release.
+- When updating a Rails route, run `bin/rake gitlab:js:routes` and commit the changes to keep JavaScript path helpers in sync (enforced by Lefthook and CI).
+
+### Rails Initializers
+
+- DO NOT open database connections or issue queries from Rails initializers; tasks like `db:drop` and `db:test:prepare` will fail if an active session is held.
+- DO NOT issue database queries in routes.
+- Place initializers that must run before Zeitwerk loads (e.g., those modifying `config.autoload_paths` or Zeitwerk inflections) in `config/initializers_before_autoloader` instead of `config/initializers`.
+
+### Changelog
+
+- Add a `Changelog` Git trailer to commits that introduce database migrations, security fixes, user-facing changes, or client-facing REST/GraphQL API changes.
+- Add `EE: true` trailer to commits whose changes are exclusively for GitLab Enterprise Edition; DO NOT add it for changes that apply to both EE and CE.
+- DO NOT add a changelog entry for developer-facing changes (refactoring, test suite changes), experiment changes, documentation-only MRs, or regressions fixed in the same release.
+- Add the `Changelog` trailer to the first commit when a merge request has multiple commits, to ensure correct entry generation on squash.
+
+### Code Comments
+
+- Focus comments on the "why" (rationale, constraints, edge cases), not the "what" or "how".
+- Add a link to a tracking issue in any comment describing a follow-up action or technical debt.
+- Document every new or updated method with a short description of what it does; use YARD syntax (`@param` for each argument, `@return` for methods with an explicit return value), separate the description from YARD tags with a blank line, and use linkable references (e.g., `{Order#order_ids_by_email}`) when referring to other methods or classes.
+- Annotate methods whose return value should not be used with `@return [void]` and explicitly `return nil` at the end.
+
+### Gotchas
+
+- DO NOT read files from `app/assets` in application code; use `lib/assets` for assets that must be accessed by application code but not served directly.
+- DO NOT assert against the absolute value of a sequence-generated factory attribute in specs; set the attribute explicitly with a value that does not match the sequence pattern.
+- DO NOT use `expect_any_instance_of` or `allow_any_instance_of` in RSpec; use `expect_next_instance_of`, `allow_next_instance_of`, `expect_next_found_instance_of`, or `allow_next_found_instance_of` instead.
+- DO NOT `rescue Exception`; rescue specific exception classes.
+- DO NOT use inline JavaScript in Haml views (`:javascript` filter).
+- DO NOT inherit from `OpenStruct`; prefer `Struct` for new code.
+- DO NOT stub method calls on `Regexp` or `Range` instances in RSpec — they are frozen in Ruby 3 and cannot be stubbed; stub the method that returns the range/regexp instead.
+- Pass hash entries to lambdas as a block rather than via `&method_ref` to avoid Ruby 3 argument-count errors (`Hash#each` consistently yields a 2-element array to lambdas in Ruby 3).
+- When a method takes keyword arguments, use `f(k: v)` or `f(**{k: v})`; DO NOT use `f({k: v})` — it is only valid in Ruby 3 if `f` takes a positional `Hash`.
+- In RSpec `with` matchers, pass an explicit `Hash` literal `{ a: 42 }` (with braces) when the method under test takes a positional options hash, not keyword arguments, to avoid Ruby 3 matcher failures.
+
+### RuboCop
+
+- DO NOT disable RuboCop rules inline without providing a reason as a code comment on the same line.
+- Use `rubocop:todo` (not `rubocop:disable`) for temporary inline disables, and link the follow-up issue or epic.
+- When adding a new cop that could apply to multiple applications, add it to the `gitlab-styles` gem; if it only applies to the main GitLab application, add it to the GitLab repository.
+- Include RDoc-style docs with "good" and "bad" examples when creating new internal RuboCop cops.
+- Generate TODOs for new cops using `bundle exec rake rubocop:todo:generate` rather than adding inline disables throughout the codebase.
+- Enable a new cop by: updating `.rubocop.yml`, generating TODOs, creating an issue to fix TODOs (with `~"quick win"` / `~"Seeking community contributions"` labels), and creating an issue to remove the grace period after 1 week of silence in `#f_rubocop`.
+
+## Authoritative sources
+
+For the full picture, see:
+
+- doc/development/backend/ruby_style_guide.md
+- doc/development/gotchas.md
+- doc/development/ruby3_gotchas.md
+- doc/development/utilities.md
+- doc/development/changelog.md
+- doc/development/logging.md
+- doc/development/json.md
+- doc/development/redis.md
+- doc/development/polling.md
+- doc/development/routing.md
+- doc/development/rails_initializers.md
+- doc/development/code_comments.md
+- doc/development/rubocop_development_guide.md
+

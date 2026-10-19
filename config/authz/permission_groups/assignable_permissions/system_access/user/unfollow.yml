@@ -1,0 +1,9 @@
+---
+name: unfollow_user
+description: Grants the ability to unfollow users
+boundaries:
+  - user
+available_for:
+  - granular_access_token
+permissions:
+  - unfollow_user

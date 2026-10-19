@@ -1,0 +1,550 @@
+# frozen_string_literal: true
+
+require('spec_helper')
+
+RSpec.describe Projects::Settings::CiCdController, feature_category: :continuous_integration do
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project, :allow_runner_registration_token, organization: current_organization) }
+  let_it_be_with_reload(:project_auto_devops) { create(:project_auto_devops, project: project) }
+
+  context 'as a developer' do
+    before_all do
+      project.add_developer(user)
+    end
+
+    describe 'POST reset_cache' do
+      subject(:request) do
+        post :reset_cache, params: { namespace_id: project.namespace, project_id: project }, format: :json
+      end
+
+      before do
+        sign_in(user)
+        allow(ResetProjectCacheService).to receive_message_chain(:new, :execute).and_return(true)
+      end
+
+      it 'returns a success header' do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  context 'as a maintainer' do
+    before do
+      project.add_maintainer(user)
+      sign_in(user)
+    end
+
+    describe 'POST reset_cache' do
+      subject(:request) do
+        post :reset_cache, params: { namespace_id: project.namespace, project_id: project }, format: :json
+      end
+
+      before do
+        sign_in(user)
+      end
+
+      context 'when logged in as a maintainer' do
+        before do
+          project.add_maintainer(user)
+
+          allow(ResetProjectCacheService).to receive_message_chain(:new, :execute).and_return(true)
+        end
+
+        it 'calls reset project cache service' do
+          expect(ResetProjectCacheService).to receive_message_chain(:new, :execute)
+
+          request
+        end
+
+        context 'when service returns successfully' do
+          it 'returns a success header' do
+            request
+
+            expect(response).to have_gitlab_http_status(:ok)
+          end
+        end
+
+        context 'when service does not return successfully' do
+          before do
+            allow(ResetProjectCacheService).to receive_message_chain(:new, :execute).and_return(false)
+          end
+
+          it 'returns an error header' do
+            request
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+          end
+        end
+      end
+
+      context 'when the user is not authorized to access this action' do
+        before do
+          project.add_guest(user)
+        end
+
+        it 'returns not found' do
+          request
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    describe 'PUT reset_registration_token' do
+      subject(:request) do
+        put :reset_registration_token, params: { namespace_id: project.namespace, project_id: project }
+      end
+
+      it 'resets runner registration token' do
+        expect { request }.to change { project.reload.runners_token }
+        expect(flash[:toast]).to eq('New runners registration token has been generated.')
+      end
+
+      it 'redirects the user to admin runners page' do
+        request
+
+        expect(response).to redirect_to(namespace_project_settings_ci_cd_path)
+      end
+    end
+
+    describe 'PATCH update' do
+      let(:params) { { ci_config_path: '' } }
+
+      subject(:request) do
+        patch :update, params: {
+          namespace_id: project.namespace.to_param,
+          project_id: project,
+          project: params
+        }
+      end
+
+      it 'redirects to the settings page' do
+        request
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(flash[:toast]).to eq("Pipelines settings for &#39;#{project.name}&#39; were successfully updated.")
+      end
+
+      context 'when updating the auto_devops settings' do
+        let(:params) { { auto_devops_attributes: { enabled: '' } } }
+
+        context 'following the instance default' do
+          let(:params) { { auto_devops_attributes: { enabled: '' } } }
+
+          it 'allows enabled to be set to nil' do
+            request
+            project_auto_devops.reload
+
+            expect(project_auto_devops.enabled).to be_nil
+          end
+        end
+
+        context 'when run_auto_devops_pipeline is true' do
+          before do
+            expect_next_instance_of(Projects::UpdateService) do |instance|
+              expect(instance).to receive(:run_auto_devops_pipeline?).and_return(true)
+            end
+          end
+
+          context 'when the project repository is empty' do
+            it 'sets a notice flash' do
+              request
+
+              expect(controller).to set_flash[:notice]
+            end
+
+            it 'does not queue a CreatePipelineWorker' do
+              expect(CreatePipelineWorker).not_to receive(:perform_async).with(project.id, user.id, project.default_branch, :web, any_args)
+
+              request
+            end
+          end
+
+          context 'when the project repository is not empty' do
+            let(:project) { create(:project, :repository, organization: current_organization) }
+
+            it 'displays a toast message' do
+              allow(CreatePipelineWorker).to receive(:perform_async).with(project.id, user.id, project.default_branch, :web, any_args)
+
+              request
+
+              expect(controller).to set_flash[:toast]
+            end
+
+            it 'queues a CreatePipelineWorker' do
+              expect(CreatePipelineWorker).to receive(:perform_async).with(project.id, user.id, project.default_branch, :web, any_args)
+
+              request
+            end
+
+            it 'creates a pipeline', :sidekiq_inline do
+              project.repository.create_file(user, 'Gemfile', 'Gemfile contents', message: 'Add Gemfile', branch_name: 'master')
+
+              expect { request }.to change { Ci::Pipeline.count }.by(1)
+            end
+          end
+        end
+
+        context 'when run_auto_devops_pipeline is not true' do
+          before do
+            expect_next_instance_of(Projects::UpdateService) do |instance|
+              expect(instance).to receive(:run_auto_devops_pipeline?).and_return(false)
+            end
+          end
+
+          it 'does not queue a CreatePipelineWorker' do
+            expect(CreatePipelineWorker).not_to receive(:perform_async).with(project.id, user.id, :web, any_args)
+
+            request
+          end
+        end
+      end
+
+      context 'when updating general settings' do
+        context 'when build_timeout_human_readable is not specified' do
+          let(:params) { { build_timeout_human_readable: '' } }
+
+          it 'set default timeout' do
+            request
+
+            project.reload
+            expect(project.build_timeout).to eq(3600)
+          end
+        end
+
+        context 'when build_timeout_human_readable is specified' do
+          let(:params) { { build_timeout_human_readable: '1h 30m' } }
+
+          it 'set specified timeout' do
+            request
+
+            project.reload
+            expect(project.build_timeout).to eq(5400)
+          end
+        end
+
+        context 'when build_timeout_human_readable is invalid' do
+          let(:params) { { build_timeout_human_readable: '5m' } }
+
+          it 'set specified timeout' do
+            request
+
+            expect(controller).to set_flash[:alert]
+            expect(response).to redirect_to(namespace_project_settings_ci_cd_path)
+          end
+        end
+
+        context 'when default_git_depth is not specified' do
+          let(:params) { { ci_cd_settings_attributes: { default_git_depth: 10 } } }
+
+          before do
+            project.ci_cd_settings.update!(default_git_depth: nil)
+          end
+
+          it 'set specified git depth' do
+            request
+
+            project.reload
+            expect(project.ci_default_git_depth).to eq(10)
+          end
+        end
+
+        context 'when forward_deployment_enabled is not specified' do
+          let(:params) { { ci_cd_settings_attributes: { forward_deployment_enabled: false } } }
+
+          before do
+            project.ci_cd_settings.update!(forward_deployment_enabled: nil)
+          end
+
+          it 'sets forward deployment enabled' do
+            request
+
+            project.reload
+            expect(project.ci_forward_deployment_enabled).to be(false)
+          end
+        end
+
+        context 'when changing forward_deployment_rollback_allowed' do
+          let(:params) { { ci_cd_settings_attributes: { forward_deployment_rollback_allowed: false } } }
+
+          it 'changes forward deployment rollback allowed' do
+            expect { request }.to change { project.reload.ci_forward_deployment_rollback_allowed }.from(true).to(false)
+          end
+        end
+
+        context 'when delete_pipelines_in_human_readable is specified' do
+          let(:params) { { ci_cd_settings_attributes: { delete_pipelines_in_human_readable: '1 week' } } }
+
+          context 'and user is a maintainer' do
+            it 'does not set delete_pipelines_in_human_readable' do
+              request
+
+              project.reload
+              expect(project.ci_delete_pipelines_in_seconds).to be_nil
+            end
+          end
+
+          context 'and user is an owner' do
+            it 'sets delete_pipelines_in_human_readable' do
+              project.add_owner(user)
+
+              request
+
+              project.reload
+              expect(project.ci_delete_pipelines_in_seconds).to eq(1.week)
+            end
+          end
+        end
+
+        context 'when max_artifacts_size is specified' do
+          let(:params) { { max_artifacts_size: 10 } }
+
+          context 'and user is not an admin' do
+            it 'does not set max_artifacts_size' do
+              request
+
+              project.reload
+              expect(project.max_artifacts_size).to be_nil
+            end
+          end
+
+          context 'and user is an admin' do
+            let(:user) { create(:admin)  }
+
+            context 'with admin mode disabled' do
+              it 'does not set max_artifacts_size' do
+                request
+
+                project.reload
+                expect(project.max_artifacts_size).to be_nil
+              end
+            end
+
+            context 'with admin mode enabled', :enable_admin_mode do
+              it 'sets max_artifacts_size' do
+                request
+
+                project.reload
+                expect(project.max_artifacts_size).to eq(10)
+              end
+            end
+          end
+        end
+      end
+
+      context 'when user is authorized to access this action' do
+        before do
+          project.add_maintainer(user)
+        end
+
+        it 'returns a success header' do
+          request
+
+          expect(response).to redirect_to(project_settings_ci_cd_path(project))
+        end
+      end
+
+      context 'when the user is not authorized to access this action' do
+        before do
+          project.add_guest(user)
+        end
+
+        it 'returns not found' do
+          request
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    describe 'GET runner_setup_scripts' do
+      it 'renders the setup scripts' do
+        get :runner_setup_scripts, params: { os: 'linux', arch: 'amd64', namespace_id: project.namespace, project_id: project }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to have_key("install")
+        expect(json_response).to have_key("register")
+      end
+
+      it 'renders errors if they occur' do
+        get :runner_setup_scripts, params: { os: 'foo', arch: 'bar', namespace_id: project.namespace, project_id: project }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response).to have_key("errors")
+      end
+    end
+
+    describe 'GET export_job_token_authorizations' do
+      subject(:request) do
+        get :export_job_token_authorizations, params: {
+          namespace_id: project.namespace,
+          project_id: project
+        }, format: :csv
+      end
+
+      let_it_be(:authorizations) do
+        create_list(:ci_job_token_authorization, 3, accessed_project: project)
+      end
+
+      context 'when the export is successful' do
+        it 'renders the CSV' do
+          request
+
+          expect(response).to have_gitlab_http_status(:ok)
+          rows = response.body.lines
+
+          expect(rows[0]).to include('Origin Project Path,Last Authorized At (UTC)')
+          expect(rows[1]).to include(authorizations.first.origin_project.full_path)
+          expect(rows[1]).to include(authorizations.first.last_authorized_at.utc.iso8601)
+        end
+      end
+
+      context 'when the export fails' do
+        let(:export_service) { instance_double(Ci::JobToken::ExportAuthorizationsService) }
+        let(:failed_response) { ServiceResponse.error(message: 'Export failed') }
+
+        before do
+          allow(::Ci::JobToken::ExportAuthorizationsService).to receive(:new).and_return(export_service)
+          allow(export_service).to receive(:execute).and_return(failed_response)
+        end
+
+        it 'sets a flash alert and redirects to the project CI/CD settings' do
+          request
+
+          expect(flash[:alert]).to eq('Failed to generate export')
+          expect(response).to redirect_to(project_settings_ci_cd_path(project))
+        end
+      end
+    end
+  end
+
+  describe 'GET show' do
+    let_it_be(:parent_group) { create(:group, organization: current_organization) }
+    let_it_be(:group) { create(:group, parent: parent_group, organization: current_organization) }
+    let_it_be(:other_project) { create(:project, group: group, organization: current_organization) }
+
+    subject(:request) do
+      get :show, params: { namespace_id: project.namespace, project_id: project }
+    end
+
+    shared_examples 'accessible show page' do
+      it 'renders show with 200 status code' do
+        request
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to render_template(:show)
+      end
+
+      context 'with CI/CD disabled' do
+        before do
+          project.project_feature.update_attribute(:builds_access_level, ProjectFeature::DISABLED)
+        end
+
+        it 'renders show with 404 status code' do
+          request
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+
+      context 'when accessing CI/CD Settings page for a project' do
+        it 'creates a streaming audit event' do
+          expect(::Gitlab::Audit::Auditor).to receive(:audit).with({
+            name: 'project_ci_cd_settings_accessed',
+            author: user,
+            scope: project,
+            target: project,
+            message: 'User accessed CI/CD settings for project',
+            additional_details: hash_including(
+              project_path: project.full_path,
+              project_id: project.id,
+              organization_id: project.organization_id,
+              ip_address: '0.0.0.0',
+              timestamp: kind_of(String),
+              action: 'project_ci_cd_settings_page_viewed'
+            )
+          })
+
+          get :show, params: { namespace_id: project.namespace, project_id: project }
+        end
+      end
+    end
+
+    describe 'as an owner' do
+      before do
+        project.add_owner(user)
+        sign_in(user)
+      end
+
+      it_behaves_like 'accessible show page'
+    end
+
+    describe 'as a maintainer' do
+      before do
+        project.add_maintainer(user)
+        sign_in(user)
+      end
+
+      it_behaves_like 'accessible show page'
+    end
+
+    describe 'as a security manager' do
+      before do
+        project.add_security_manager(user)
+        sign_in(user)
+      end
+
+      it_behaves_like 'accessible show page'
+    end
+
+    context 'as a guest' do
+      before do
+        sign_in(user)
+        project.add_guest(user)
+      end
+
+      it 'returns not found' do
+        request
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'as a developer' do
+      before do
+        sign_in(user)
+        project.add_developer(user)
+      end
+
+      it 'responds with 404' do
+        request
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'as a reporter' do
+      before do
+        sign_in(user)
+        project.add_reporter(user)
+      end
+
+      it 'responds with 404' do
+        request
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'as an unauthenticated user' do
+      it 'redirects to sign in' do
+        request
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(response).to redirect_to('/users/sign_in')
+      end
+    end
+  end
+end

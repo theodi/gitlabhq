@@ -1,0 +1,10 @@
+#import "./jira_import.fragment.graphql"
+
+mutation initiateJiraImport($input: JiraImportStartInput!) {
+  jiraImportStart(input: $input) {
+    jiraImport {
+      ...JiraImport
+    }
+    errors
+  }
+}

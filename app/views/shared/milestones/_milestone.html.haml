@@ -1,0 +1,71 @@
+- custom_dom_id = dom_id(milestone.try(:milestone) ? milestone.milestone : milestone)
+- can_admin_milestone = can?(current_user, :admin_milestone, milestone)
+- can_promote = @project && can_admin_group_milestones? && milestone.project
+
+%li{ class: "!gl-py-3 milestone milestone-#{milestone.closed? ? 'closed' : 'open'}", id: custom_dom_id }
+  .gl-flex.gl-gap-3.gl-px-4
+    .gl-flex.gl-gap-4.gl-grow.gl-flex-wrap{ class: "@sm/panel:gl-flex-nowrap" }
+      -# NAME AND PROJECT/GROUP
+      .gl-flex.gl-flex-wrap.gl-grow.gl-gap-4.gl-gap-y-0.gl-items-center{ class: "@xl/panel:gl-basis-1/2 gl-w-full @sm/panel:gl-w-auto" }
+        .gl-shrink.gl-font-bold{ data: { testid: "milestone-link", qa_milestone_title: milestone.title } }
+          = link_to milestone.title, milestone_path(milestone)
+        .gl-flex.gl-shrink-0.gl-items-center.gl-gap-2.gl-text-subtle.gl-text-sm
+          - if milestone.project_milestone?
+            = sprite_icon('project')
+            %div
+              = milestone.project.full_name
+
+          - if milestone.group_milestone?
+            = sprite_icon('group')
+            %div
+              = milestone.group.full_name
+
+      -# RELEASES, STATUS AND DATES
+      .gl-flex.gl-shrink-0.gl-gap-4.gl-items-center.gl-justify-end.gl-text-sm.gl-whitespace-nowrap{ class: "@xl/panel:gl-basis-[17rem]" }
+        -# RELEASES
+        - recent_releases, total_count, more_count = recent_releases_with_counts(milestone, current_user)
+        - if total_count >= 1 && recent_releases.size >= 1
+          .gl-text-subtle.gl-flex.gl-gap-2.gl-items-center.gl-max-w-48
+            = sprite_icon("rocket-launch", size: 18)
+            - if total_count > 1
+              .has-tooltip{ title: milestone_releases_tooltip_list(recent_releases, more_count) }
+                = format(_('%{count} releases'), count: total_count)
+            - else
+              .gl-truncate.has-tooltip{ title: recent_releases.first.name }
+                = recent_releases.first.name
+        -# SEPARATOR FOR WHEN THERE ARE RELEASES AND DATES
+        - if total_count > 0 && (milestone.due_date || milestone.start_date)
+          %div &middot;
+        -# STATUS AND DATES
+        - if milestone.due_date || milestone.start_date
+          .gl-text-subtle
+            = milestone_date_range(milestone)
+        %div
+          = gl_badge_tag milestone_status_string(milestone), { variant: milestone_badge_variant(milestone) }
+
+      -# PROGRESS
+      .gl-flex.gl-shrink-0.gl-items-center.gl-gap-3.gl-justify-end.gl-text-subtle.gl-text-sm{ class: "@xl/panel:gl-basis-1/5" }
+        .gl-text-right{ class: "gl-w-[6.5rem] gl-hidden @md/panel:gl-block" }
+          = format('%{completed}/%{total} %{complete}', completed: milestone.closed_issues_count, total: milestone.total_issues_count, complete: _('complete'))
+        .gl-w-11
+          = milestone_progress_bar(milestone)
+        .gl-whitespace-nowrap.gl-shrink-0.gl-w-8
+          = format(s_('Milestone|%{percentage}%{percent}'), percentage: milestone.percent_complete, percent: '%')
+
+    -# MENU
+    - show_delete = (@project.present? || @group.present?) && can_admin_milestone
+    .gl-w-6.gl-flex.gl-items-center
+      .js-vue-milestone-actions{ data: { id: milestone.id,
+        title: milestone.title,
+        is_active: milestone.active?.to_s,
+        show_delete: show_delete.to_s,
+        size: "small",
+        milestone_url: Gitlab::UrlBuilder.build(milestone, only_path: true),
+        edit_url: can_admin_milestone ? edit_milestone_path(milestone) : '',
+        close_url: can_admin_milestone ? milestone_path(milestone, milestone: { state_event: :close }) : '',
+        reopen_url: can_admin_milestone ? milestone_path(milestone, milestone: { state_event: :activate }) : '',
+        promote_url: can_promote ? promote_project_milestone_path(milestone.project, milestone) : '',
+        group_name: can_promote ? @project.group.name : '',
+        issue_count: milestone.issues.count,
+        merge_request_count: milestone.merge_requests.count
+      } }

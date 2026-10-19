@@ -1,0 +1,199 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe JwksController, feature_category: :system_access do
+  describe 'Endpoints from the parent Doorkeeper::OpenidConnect::DiscoveryController' do
+    it 'respond successfully' do
+      [
+        "/oauth/discovery/keys",
+        "/.well-known/openid-configuration",
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-authorization-server/api/v4/mcp",
+        "/.well-known/openid-configuration/api/v4/mcp",
+        "/.well-known/oauth-authorization-server/api/v4/orbit/mcp",
+        "/.well-known/openid-configuration/api/v4/orbit/mcp",
+        "/.well-known/webfinger?resource=#{create(:user).email}"
+      ].each do |endpoint|
+        get endpoint
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  describe '/.well-known/openid-configuration' do
+    let(:parsed_response) { Gitlab::Json.parse(response.body) }
+    let(:oauth_endpoints) do
+      %w[authorization_endpoint token_endpoint revocation_endpoint introspection_endpoint userinfo_endpoint]
+    end
+
+    before do
+      allow(Gitlab.config.gitlab).to receive(:protocol).and_return(protocol)
+      get "/.well-known/openid-configuration"
+    end
+
+    context 'when protocol is https' do
+      let(:protocol) { 'https' }
+
+      it 'returns OAuth endpoints with https protocol' do
+        oauth_endpoints.each do |endpoint|
+          expect(parsed_response[endpoint]).to start_with('https://')
+        end
+      end
+    end
+
+    context 'when protocol is http' do
+      let(:protocol) { 'http' }
+
+      it 'returns OAuth endpoints with http protocol' do
+        oauth_endpoints.each do |endpoint|
+          expect(parsed_response[endpoint]).to start_with('http://')
+        end
+      end
+    end
+
+    describe 'additional claims support' do
+      let(:protocol) { 'https' }
+      let(:additional_claims) { %w[project_path ci_config_ref_uri ref_path sha environment jti] }
+
+      before do
+        get "/.well-known/openid-configuration"
+      end
+
+      it 'includes additional claims in claims_supported' do
+        additional_claims.each do |claim|
+          expect(parsed_response['claims_supported']).to include(claim)
+        end
+      end
+    end
+  end
+
+  describe '/oauth/discovery/keys' do
+    include_context 'when doing OIDC key discovery'
+
+    it 'removes missing keys' do
+      expect(Rails.application.credentials).to receive(:openid_connect_signing_key).and_return(rsa_key_1.to_pem)
+      expect(Gitlab::CurrentSettings).to receive(:ci_jwt_signing_key).and_return(nil)
+
+      expect(jwks.size).to eq(1)
+      expect(jwks).to match_array([
+        satisfy { |jwk| key_match?(jwk, rsa_key_1) }
+      ])
+    end
+
+    it 'removes duplicate keys' do
+      expect(Rails.application.credentials).to receive(:openid_connect_signing_key).and_return(rsa_key_1.to_pem)
+      expect(Gitlab::CurrentSettings).to receive(:ci_jwt_signing_key).and_return(rsa_key_1.to_pem)
+
+      expect(jwks.size).to eq(1)
+      expect(jwks).to match_array([
+        satisfy { |jwk| key_match?(jwk, rsa_key_1) }
+      ])
+    end
+  end
+
+  describe 'MCP-specific OAuth discovery endpoint' do
+    let(:parsed_response) { Gitlab::Json.parse(response.body) }
+
+    context 'when accessing MCP-specific discovery endpoint' do
+      before do
+        get '/.well-known/oauth-authorization-server/api/v4/mcp'
+      end
+
+      it 'returns only mcp scope in scopes_supported' do
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(parsed_response['scopes_supported']).to eq(['mcp'])
+      end
+
+      it 'includes registration_endpoint' do
+        expect(parsed_response['registration_endpoint']).to end_with('/oauth/register')
+      end
+    end
+
+    context 'when accessing MCP Orbit discovery endpoint' do
+      before do
+        get '/.well-known/oauth-authorization-server/api/v4/orbit/mcp'
+      end
+
+      it 'returns only mcp_orbit scope in scopes_supported' do
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(parsed_response['scopes_supported']).to eq(['mcp_orbit'])
+      end
+
+      it 'includes registration_endpoint' do
+        expect(parsed_response['registration_endpoint']).to end_with('/oauth/register')
+      end
+    end
+
+    context 'when accessing general OAuth discovery endpoint' do
+      before do
+        get '/.well-known/oauth-authorization-server'
+      end
+
+      it 'returns all available scopes in scopes_supported', :aggregate_failures do
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(parsed_response['scopes_supported']).to include('api', 'read_api', 'mcp')
+        expect(parsed_response['scopes_supported'].size).to be > 1
+      end
+
+      it 'does not advertise the backend-only granular scope' do
+        expect(parsed_response['scopes_supported']).not_to include('granular')
+      end
+
+      it 'includes registration_endpoint' do
+        expect(parsed_response['registration_endpoint']).to end_with('/oauth/register')
+      end
+    end
+
+    context 'when dynamic client registration setting is disabled' do
+      before do
+        stub_application_setting(dynamic_client_registration_enabled: false)
+        get '/.well-known/oauth-authorization-server/api/v4/mcp'
+      end
+
+      it 'does not include registration_endpoint', :aggregate_failures do
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(parsed_response).not_to have_key('registration_endpoint')
+      end
+    end
+
+    context 'when relative_url_root is configured' do
+      let(:relative_url_root) { '/gitlab' }
+      let(:base_url_with_root) { "http://localhost#{relative_url_root}" }
+
+      before do
+        stub_config_setting(relative_url_root: relative_url_root, url: base_url_with_root)
+        allow(Rails.application.routes).to receive(:default_url_options)
+          .and_return(script_name: relative_url_root)
+      end
+
+      context 'when accessing MCP endpoint' do
+        before do
+          # Simulate what the Rack map middleware does: set SCRIPT_NAME to the prefix
+          get '/.well-known/oauth-authorization-server/api/v4/mcp',
+            env: { 'SCRIPT_NAME' => relative_url_root }
+        end
+
+        it 'includes relative_url_root in registration_endpoint' do
+          expect(parsed_response['registration_endpoint']).to eq("#{base_url_with_root}/oauth/register")
+        end
+
+        it 'returns only mcp scope in scopes_supported' do
+          expect(parsed_response['scopes_supported']).to eq(['mcp'])
+        end
+      end
+
+      context 'when accessing orbit/mcp endpoint' do
+        before do
+          # Simulate what the Rack map middleware does: set SCRIPT_NAME to the prefix
+          get '/.well-known/oauth-authorization-server/api/v4/orbit/mcp',
+            env: { 'SCRIPT_NAME' => relative_url_root }
+        end
+
+        it 'returns only mcp_orbit scope in scopes_supported' do
+          expect(parsed_response['scopes_supported']).to eq(['mcp_orbit'])
+        end
+      end
+    end
+  end
+end

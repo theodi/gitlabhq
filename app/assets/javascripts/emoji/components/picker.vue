@@ -1,0 +1,257 @@
+<script>
+import {
+  GlButton,
+  GlDisclosureDropdown,
+  GlSearchBoxByType,
+  GlTooltipDirective,
+  GlAnimatedSmileIcon,
+} from '@gitlab/ui';
+import { findLastIndex } from 'lodash-es';
+import { getEmojiCategoryMap, state } from '~/emoji';
+import { __ } from '~/locale';
+import { CATEGORY_NAMES, CATEGORY_ICON_MAP, FREQUENTLY_USED_KEY } from '../constants';
+import EmojiList from './emoji_list.vue';
+import VirtualList from './virtual_list.vue';
+import { addToFrequentlyUsed, getEmojiCategories, hasFrequentlyUsedEmojis } from './utils';
+
+export default {
+  name: 'EmojiPicker',
+  components: {
+    GlButton,
+    GlDisclosureDropdown,
+    GlSearchBoxByType,
+    GlAnimatedSmileIcon,
+    VirtualList,
+    EmojiList,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  inject: {
+    newCustomEmojiPath: {
+      default: '',
+    },
+  },
+  props: {
+    toggleClass: {
+      type: [Array, String, Object],
+      required: false,
+      default: () => [],
+    },
+    toggleCategory: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    dropdownClass: {
+      type: [Array, String, Object],
+      required: false,
+      default: () => [],
+    },
+    right: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+    customEmojiPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    buttonTitle: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    toggleAriaLabel: {
+      type: String,
+      required: false,
+      default: null,
+    },
+  },
+  emits: ['click', 'shown', 'hidden'],
+  data() {
+    return {
+      isVisible: false,
+      isHovered: false,
+      isFocused: false,
+      currentCategory: 0,
+      searchValue: '',
+      scrollTop: 0,
+    };
+  },
+  computed: {
+    newEmojiPath() {
+      return this.newCustomEmojiPath || this.customEmojiPath;
+    },
+    categoryNames() {
+      return CATEGORY_NAMES.filter((c) => {
+        if (c === FREQUENTLY_USED_KEY) return hasFrequentlyUsedEmojis();
+        if (c === 'custom') return !state.loading && getEmojiCategoryMap().custom.length > 0;
+        return true;
+      }).map((category) => ({
+        name: category,
+        icon: CATEGORY_ICON_MAP[category],
+      }));
+    },
+    placement() {
+      return this.right ? 'bottom-end' : 'bottom-start';
+    },
+    smileIcon() {
+      return this.isHovered || this.isFocused || this.isVisible;
+    },
+  },
+  methods: {
+    async scrollToCategory(categoryName) {
+      const categories = await getEmojiCategories();
+      const { top } = categories[categoryName];
+
+      this.scrollTop = top;
+    },
+    selectEmoji({ category, emoji }) {
+      this.$emit('click', emoji);
+      this.$refs.dropdown.close();
+
+      if (category !== 'custom') {
+        addToFrequentlyUsed(emoji);
+      }
+    },
+    onSearchInput() {
+      if (this.$refs.virtualList) {
+        this.scrollTop = 0;
+      }
+    },
+    async onScroll({ offset }) {
+      this.scrollTop = offset;
+
+      const categories = await getEmojiCategories();
+      const categoryKeys = this.categoryNames.map(({ name }) => name);
+      this.currentCategory = findLastIndex(categoryKeys, (name) => {
+        // category may be undefined if categoryNames includes a tab (e.g. frequently_used)
+        // whose data has not yet been loaded into the categories map
+        const category = categories[name];
+        return category && offset >= category.top;
+      });
+    },
+    onShow() {
+      this.isVisible = true;
+      this.$emit('shown');
+    },
+    onHide() {
+      this.isVisible = false;
+      this.currentCategory = 0;
+      this.searchValue = '';
+      this.$emit('hidden');
+    },
+    onButtonHovered() {
+      this.isHovered = true;
+    },
+    onButtonHoverLeave() {
+      this.isHovered = false;
+    },
+    onButtonFocused() {
+      this.isFocused = true;
+    },
+    onButtonFocusLeave() {
+      this.isFocused = false;
+    },
+  },
+  i18n: {
+    addReaction: __('Add reaction'),
+    createEmoji: __('Create new emoji'),
+  },
+};
+</script>
+
+<template>
+  <div class="emoji-picker">
+    <gl-disclosure-dropdown
+      ref="dropdown"
+      :class="dropdownClass"
+      :placement="placement"
+      :toggle-aria-label="toggleAriaLabel"
+      @shown="onShow"
+      @hidden="onHide"
+    >
+      <template #toggle="{ accessibilityAttributes }">
+        <gl-button
+          v-gl-tooltip
+          v-bind="accessibilityAttributes"
+          :title="buttonTitle || $options.i18n.addReaction"
+          :class="[toggleClass, { 'is-active': isVisible }]"
+          :category="toggleCategory"
+          class="add-reaction-button btn-icon gl-relative gl-h-full"
+          data-testid="add-reaction-button"
+          @mouseover="onButtonHovered"
+          @mouseleave="onButtonHoverLeave"
+          @focusin="onButtonFocused"
+          @focusout="onButtonFocusLeave"
+        >
+          <slot name="button-content">
+            <gl-animated-smile-icon :is-on="smileIcon" class="gl-button-icon" />
+          </slot>
+        </gl-button>
+      </template>
+
+      <template v-if="isVisible" #header>
+        <gl-search-box-by-type
+          ref="searchValue"
+          v-model="searchValue"
+          class="add-reaction-search gl-border-b-1 gl-border-b-dropdown gl-border-b-solid"
+          borderless
+          autofocus
+          debounce="500"
+          :aria-label="__('Search for an emoji')"
+          @input="onSearchInput"
+        />
+      </template>
+
+      <div
+        v-if="isVisible"
+        v-show="!searchValue"
+        class="gl-flex gl-border-b-1 gl-border-default gl-border-b-solid"
+        data-testid="category-buttons"
+      >
+        <gl-button
+          v-for="(category, index) in categoryNames"
+          :key="category.name"
+          category="tertiary"
+          :class="{ 'emoji-picker-category-active': index === currentCategory }"
+          class="emoji-picker-category-tab gl-grow !gl-rounded-none !gl-border-b-2 !gl-px-3 !gl-border-b-solid focus-visible:!gl-shadow-none focus-visible:!gl-outline focus-visible:!gl-outline-2 focus-visible:-gl-outline-offset-2 focus-visible:!gl-outline-focus"
+          :icon="category.icon"
+          :aria-label="category.name"
+          @click="scrollToCategory(category.name)"
+          @keydown.enter="scrollToCategory(category.name)"
+        />
+      </div>
+      <emoji-list v-if="isVisible" :search-value="searchValue">
+        <template #default="{ filteredCategories }">
+          <virtual-list
+            ref="virtualList"
+            :categories="filteredCategories"
+            :search-term="searchValue"
+            :scroll-top="scrollTop"
+            @select-emoji="selectEmoji"
+            @scroll="onScroll"
+          />
+        </template>
+      </emoji-list>
+
+      <template v-if="newEmojiPath" #footer>
+        <div
+          class="gl-flex gl-flex-col gl-border-t-1 gl-border-t-dropdown !gl-p-2 !gl-pt-0 gl-border-t-solid"
+        >
+          <gl-button
+            :href="newEmojiPath"
+            category="tertiary"
+            block
+            data-testid="create-new-emoji"
+            class="!gl-mt-2 !gl-justify-start"
+          >
+            {{ $options.i18n.createEmoji }}
+          </gl-button>
+        </div>
+      </template>
+    </gl-disclosure-dropdown>
+  </div>
+</template>

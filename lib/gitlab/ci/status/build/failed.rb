@@ -1,0 +1,115 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    module Status
+      module Build
+        class Failed < Status::Extended
+          # rubocop: disable Layout/LineLength -- Long error messages
+          REASONS = {
+            unknown_failure: 'unknown failure',
+            script_failure: 'script failure',
+            api_failure: 'API failure',
+            stuck_or_timeout_failure: 'stuck or timeout failure',
+            runner_system_failure: 'runner system failure',
+            missing_dependency_failure: 'missing dependency failure',
+            runner_unsupported: 'unsupported runner',
+            stale_schedule: 'stale schedule',
+            job_execution_timeout: 'job execution timeout',
+            job_execution_server_timeout: 'job execution timeout',
+            stuck_pending_with_matching_runners: 'stuck pending with matching runners',
+            stuck_pending_no_matching_runners: 'stuck pending without matching runners',
+            no_updates_running: 'running job stopped receiving updates',
+            no_updates_canceling: 'canceling job stopped receiving updates',
+            server_timeout_running: 'running server timeout',
+            server_timeout_canceling: 'canceling server timeout',
+            runner_configuration_error: 'runner configuration error',
+            runner_external_dependency_failure: 'runner external dependency failure',
+            runner_interrupted: 'runner interrupted',
+            archived_failure: 'archived failure',
+            unmet_prerequisites: 'unmet prerequisites',
+            scheduler_failure: 'scheduler failure',
+            data_integrity_failure: 'data integrity failure',
+            forward_deployment_failure: 'forward deployment failure',
+            protected_environment_failure: 'protected environment failure',
+            pipeline_loop_detected: 'job would create infinitely looping pipelines',
+            invalid_bridge_trigger: 'downstream pipeline trigger definition is invalid',
+            downstream_project_trigger_resolved_to_empty: 'trigger:project resolved to a blank value',
+            downstream_bridge_project_not_found: 'downstream project could not be found',
+            upstream_bridge_project_not_found: 'upstream project could not be found',
+            insufficient_bridge_permissions: 'no permissions to trigger downstream pipeline',
+            insufficient_upstream_permissions: 'no permissions to read upstream project',
+            bridge_pipeline_is_child_pipeline: 'creation of child pipeline not allowed from another child pipeline',
+            downstream_pipeline_creation_failed: 'downstream pipeline can not be created',
+            secrets_provider_not_found: 'secrets provider can not be found',
+            secrets_manager_access_denied: 'namespace does not have access to GitLab Secrets Manager',
+            secrets_manager_source_not_accessible: 'secret source group is not accessible from this project',
+            reached_max_descendant_pipelines_depth: 'reached maximum depth of child pipelines',
+            reached_max_pipeline_hierarchy_size: 'downstream pipeline tree is too large',
+            project_deleted: 'pipeline project was deleted',
+            user_blocked: 'pipeline user was blocked',
+            ci_quota_exceeded: 'no more compute minutes available',
+            no_matching_runner: 'no matching runner available',
+            trace_size_exceeded: 'log size limit exceeded',
+            builds_disabled: 'project builds are disabled',
+            environment_creation_failure: 'environment creation failure',
+            deployment_rejected: 'deployment rejected',
+            ip_restriction_failure: 'IP address restriction failure',
+            duo_workflow_not_allowed: 'Duo Workflow cannot run on this runner',
+            duo_workflow_connection_failure: 'Duo Workflow connection failure',
+            failed_outdated_deployment_job: 'failed outdated deployment job',
+            reached_downstream_pipeline_trigger_rate_limit: 'Too many downstream pipelines triggered in the last minute. Try again later.',
+            job_router_failure: 'The Job Router failed to run this job.',
+            job_token_expired: 'job token has expired',
+            pipeline_variables_file_missing: 'pipeline variables file is missing',
+            id_token_burned_project_path: 'ID token issuance disabled for this project path'
+          }.freeze
+          # rubocop: enable Layout/LineLength
+
+          private_constant :REASONS
+
+          def status_tooltip
+            base_message
+          end
+
+          def badge_tooltip
+            base_message
+          end
+
+          def self.matches?(build, user)
+            build.failed?
+          end
+
+          def self.reasons
+            REASONS
+          end
+
+          private
+
+          def base_message
+            "#{s_('CiStatusLabel|Failed')} #{description}"
+          end
+
+          def description
+            return "- (#{failure_reason_message})" unless subject.failure_reason.to_sym == :job_router_failure
+
+            custom_message = fetch_custom_message
+            if custom_message.present?
+              "- (#{failure_reason_message} #{custom_message})"
+            else
+              "- (#{failure_reason_message} Please contact your administrator.)"
+            end
+          end
+
+          def fetch_custom_message
+            subject.try(:error_job_messages)&.first&.content
+          end
+
+          def failure_reason_message
+            self.class.reasons.fetch(subject.failure_reason.to_sym)
+          end
+        end
+      end
+    end
+  end
+end

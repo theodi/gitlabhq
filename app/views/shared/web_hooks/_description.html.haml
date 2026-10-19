@@ -1,0 +1,7 @@
+- webhooks_link = tag_pair(link_to('', hook.help_path, target: '_blank', rel: 'noopener noreferrer'), :webhooks_link_start, :webhooks_link_end)
+
+- if @project
+  - integrations_link = tag_pair(link_to('', scoped_integrations_path(project: @project)), :integrations_link_start, :integrations_link_end)
+  = safe_format(_("Use %{webhooks_link_start}webhooks%{webhooks_link_end} to send notifications to external applications in response to events in a GitLab project or group. Consider using an %{integrations_link_start}integration%{integrations_link_end} instead."), webhooks_link, integrations_link)
+- else
+  = safe_format(_("Use %{webhooks_link_start}webhooks%{webhooks_link_end} to send notifications to external applications in response to events in a GitLab project or group."), webhooks_link)

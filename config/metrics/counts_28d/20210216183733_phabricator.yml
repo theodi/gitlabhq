@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage_monthly.manage.issues_imported.phabricator
+description: Count of projects imported from Phabricator
+product_group: import
+product_categories:
+- importers
+value_type: number
+status: removed
+time_frame: 28d
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+removed_by_url:
+milestone_removed: "<16.4"

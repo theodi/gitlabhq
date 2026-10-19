@@ -1,0 +1,361 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Oauth::ApplicationsController, feature_category: :system_access do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:application) { create(:oauth_application, owner: user) }
+
+  context 'project members' do
+    before do
+      sign_in(user)
+    end
+
+    shared_examples 'redirects to login page when the user is not signed in' do
+      before do
+        sign_out(user)
+      end
+
+      it { is_expected.to redirect_to(new_user_session_path) }
+    end
+
+    shared_examples 'redirects to 2fa setup page when the user requires it' do
+      context 'when 2fa is set up on application level' do
+        before do
+          stub_application_setting(require_two_factor_authentication: true)
+        end
+
+        it { is_expected.to redirect_to(profile_two_factor_auth_path) }
+      end
+
+      context 'when 2fa is set up on group level' do
+        let(:user) { create(:user, require_two_factor_authentication_from_group: true) }
+
+        it { is_expected.to redirect_to(profile_two_factor_auth_path) }
+      end
+    end
+
+    describe 'GET #new' do
+      subject { get :new }
+
+      it { is_expected.to have_gitlab_http_status(:ok) }
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+    end
+
+    describe 'DELETE #destroy' do
+      subject { delete :destroy, params: { id: application.id } }
+
+      it { is_expected.to redirect_to(oauth_applications_url) }
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+    end
+
+    describe 'GET #edit' do
+      subject { get :edit, params: { id: application.id } }
+
+      it { is_expected.to have_gitlab_http_status(:ok) }
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+    end
+
+    describe 'PUT #update' do
+      subject { put :update, params: { id: application.id, authn_oauth_application: { name: 'application' } } }
+
+      it { is_expected.to redirect_to(oauth_application_url(application)) }
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+    end
+
+    describe 'PUT #renew' do
+      let(:oauth_params) do
+        {
+          id: application.id
+        }
+      end
+
+      subject { put :renew, params: oauth_params }
+
+      it { is_expected.to have_gitlab_http_status(:ok) }
+      it { expect { subject }.to change { application.reload.secret } }
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+
+      it 'returns the prefixed secret in json format' do
+        subject
+
+        expect(json_response['secret']).to match(/gloas-\h{64}/)
+      end
+
+      context 'when renew fails' do
+        before do
+          allow_next_found_instance_of(Authn::OauthApplication) do |application|
+            allow(application).to receive(:save).and_return(false)
+          end
+        end
+
+        it { expect { subject }.not_to change { application.reload.secret } }
+        it { is_expected.to have_gitlab_http_status(:unprocessable_entity) }
+      end
+    end
+
+    describe 'GET #show' do
+      subject { get :show, params: { id: application.id } }
+
+      it { is_expected.to have_gitlab_http_status(:ok) }
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+    end
+
+    describe 'GET #index' do
+      subject(:get_index) { get :index }
+
+      it { is_expected.to have_gitlab_http_status(:ok) }
+
+      it 'sets the total count' do
+        get_index
+
+        expect(assigns(:applications_total_count)).to eq(1)
+        expect(assigns(:applications).has_next_page?).to be_falsey
+      end
+
+      context '@authorized_records' do
+        let_it_be(:shared_app) { create(:oauth_application) }
+        let_it_be(:shared_app_token) do
+          create(:oauth_access_token, application: shared_app, resource_owner: user)
+        end
+
+        let_it_be(:shared_app_consent) do
+          create(:oauth_consent, user: user, application: shared_app)
+        end
+
+        context 'when iam_svc_oauth is disabled' do
+          before do
+            stub_feature_flags(iam_svc_oauth: false)
+          end
+
+          it 'lists only authorized tokens' do
+            get_index
+
+            expect(assigns(:authorized_records)).to contain_exactly(shared_app_token)
+          end
+        end
+
+        context 'when iam_svc_oauth is enabled' do
+          before do
+            stub_feature_flags(iam_svc_oauth: user)
+          end
+
+          # Cross-cell exclusion via `with_application` is uncovered until
+          # the FK is relaxed in https://gitlab.com/gitlab-org/gitlab/-/issues/598701.
+          it 'dedupes token and consent for the same application, preferring the consent' do
+            get_index
+
+            expect(assigns(:authorized_records)).to contain_exactly(shared_app_consent)
+          end
+
+          it 'excludes revoked consents' do
+            create(:oauth_consent, :revoked, user: user, application: create(:oauth_application))
+
+            get_index
+
+            expect(assigns(:authorized_records)).to contain_exactly(shared_app_consent)
+          end
+
+          context 'when the user has a pre-FF token-only app and a post-FF consent-only app' do
+            let!(:token_only_app) { create(:oauth_application) }
+            let!(:token_only) do
+              create(:oauth_access_token, application: token_only_app, resource_owner: user)
+            end
+
+            let!(:consent_only_app) { create(:oauth_application) }
+            let!(:consent_only) do
+              create(:oauth_consent, user: user, application: consent_only_app)
+            end
+
+            it 'lists both alongside the deduped shared-app consent', :aggregate_failures do
+              get_index
+
+              records = assigns(:authorized_records)
+              expect(records).to contain_exactly(shared_app_consent, consent_only, token_only)
+              expect(records).not_to include(shared_app_token)
+            end
+
+            it 'orders the merged list by created_at descending' do
+              token_only.update_column(:created_at, 3.days.ago)
+              consent_only.update_column(:created_at, 2.days.ago)
+
+              get_index
+
+              records = assigns(:authorized_records)
+              expect(records.first).to eq(shared_app_consent)
+              expect(records.last).to eq(token_only)
+            end
+          end
+        end
+      end
+
+      context 'when more than 20 applications' do
+        before do
+          create_list(:oauth_application, 20, owner: user) # rubocop:disable FactoryBot/ExcessiveCreateList -- paginator shows if > 20 applications
+        end
+
+        it 'has paginator' do
+          get_index
+
+          expect(assigns(:applications_total_count)).to eq(21)
+          expect(assigns(:applications).has_next_page?).to be_truthy
+        end
+      end
+
+      context 'when OAuth applications are disabled' do
+        before do
+          disable_user_oauth
+        end
+
+        it { is_expected.to have_gitlab_http_status(:ok) }
+      end
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+    end
+
+    describe 'POST #create' do
+      let(:oauth_params) do
+        {
+          authn_oauth_application: {
+            name: 'foo',
+            redirect_uri: redirect_uri,
+            scopes: scopes
+          }
+        }
+      end
+
+      let(:redirect_uri) { 'http://example.org' }
+      let(:scopes) { ['api'] }
+
+      subject { post :create, params: oauth_params }
+
+      it 'creates an application' do
+        subject
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to render_template :show
+      end
+
+      it 'sets organization_id from Current.organization' do
+        subject
+
+        application = Authn::OauthApplication.last
+        expect(application.organization_id).to eq(current_organization.id)
+      end
+
+      context 'the secret' do
+        render_views
+
+        it 'is in the response' do
+          subject
+          expect(response.body).to match(/gloas-\h{64}/)
+        end
+      end
+
+      it 'redirects back to profile page if OAuth applications are disabled' do
+        disable_user_oauth
+
+        subject
+
+        expect(response).to have_gitlab_http_status(:found)
+        expect(response).to redirect_to(user_settings_profile_path)
+      end
+
+      context 'when redirect_uri is invalid' do
+        let(:redirect_uri) { 'javascript://alert()' }
+
+        render_views
+
+        it 'shows an error for a forbidden URI' do
+          subject
+
+          expect(response.body).to include 'Redirect URI is forbidden by the server'
+          expect(response).to render_template('doorkeeper/applications/index')
+        end
+      end
+
+      context 'when scopes are not present' do
+        let(:scopes) { [] }
+
+        render_views
+
+        it 'shows an error for blank scopes' do
+          subject
+
+          expect(response.body).to include 'Scopes can&#39;t be blank'
+          expect(response).to render_template('doorkeeper/applications/index')
+        end
+      end
+
+      context 'when the backend-only granular scope is submitted' do
+        let(:scopes) { %w[api granular] }
+
+        it 'drops the granular scope' do
+          subject
+
+          expect(response).to render_template :show
+          expect(Authn::OauthApplication.last.scopes.to_a).to eq(['api'])
+        end
+      end
+
+      context 'when scopes are invalid' do
+        let(:scopes) { %w[api foo] }
+
+        render_views
+
+        it 'shows an error for invalid scopes' do
+          subject
+
+          expect(response.body).to include 'Scopes doesn&#39;t match those configured on the server.'
+          expect(response).to render_template('doorkeeper/applications/index')
+        end
+      end
+
+      it_behaves_like 'redirects to login page when the user is not signed in'
+      it_behaves_like 'redirects to 2fa setup page when the user requires it'
+    end
+  end
+
+  context 'Helpers' do
+    it 'current_user_mode available' do
+      expect(subject.current_user_mode).not_to be_nil
+    end
+
+    it 'includes Two-factor enforcement concern' do
+      expect(described_class.included_modules.include?(EnforcesTwoFactorAuthentication)).to be(true)
+    end
+  end
+
+  describe 'locale' do
+    let(:user) { create(:user, preferred_language: 'uk') }
+
+    before do
+      sign_in(user)
+
+      allow(Gitlab::I18n).to receive(:with_locale).and_call_original
+    end
+
+    it "sets user's locale" do
+      expect(Gitlab::I18n).to receive(:with_locale).with('uk')
+
+      get :new
+    end
+  end
+
+  def disable_user_oauth
+    allow(Gitlab::CurrentSettings.current_application_settings).to receive(:user_oauth_applications?).and_return(false)
+  end
+end

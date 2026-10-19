@@ -1,0 +1,540 @@
+---
+stage: AI Platform
+group: AI Model Services
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Troubleshooting tips for deploying GitLab Duo Self-Hosted
+title: Troubleshooting self-hosted models
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated for Government
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/12972) in GitLab 17.1 [with a feature flag](../feature_flags/_index.md) named `ai_custom_model`. Disabled by default.
+- [Enabled on GitLab Self-Managed](https://gitlab.com/groups/gitlab-org/-/work_items/15176) in GitLab 17.6.
+- Changed to require GitLab Duo add-on in GitLab 17.6 and later.
+- Feature flag `ai_custom_model` removed in GitLab 17.8.
+- Generally available in GitLab 17.9.
+- Changed to include Premium in GitLab 18.0.
+- [Enabled on GitLab Dedicated for Government](https://gitlab.com/gitlab-org/gitlab/-/issues/569874) in GitLab 18.5.
+
+{{< /history >}}
+
+Before you begin troubleshooting, you should:
+
+- Be able to access the [`gitlab-rails` console](../operations/rails_console.md).
+- Open a shell in the AI Gateway Docker image.
+- Know the endpoint where your:
+  - AI Gateway is hosted.
+  - Model is hosted.
+- [Enable logging](logging.md#turn-on-data-collection-for-gitlab-duo) to make sure that requests and responses from GitLab to the AI Gateway are being logged to [`llm.log`](../logs/_index.md#llmlog).
+
+For more information on troubleshooting GitLab Duo, see:
+
+- [Troubleshooting GitLab Duo](../../user/gitlab_duo/troubleshooting.md).
+- [Troubleshooting Code Suggestions](../../user/project/repository/code_suggestions/_index.md#direct-and-indirect-connections).
+- [GitLab Duo Chat troubleshooting](../../user/gitlab_duo_chat/troubleshooting.md).
+
+## Use debugging scripts
+
+We provide two debugging scripts to help administrators verify their self-hosted model configuration.
+
+1. Debug the GitLab to AI Gateway connection. From your GitLab instance, run the
+   [Rake task](../raketasks/_index.md):
+
+   ```shell
+   gitlab-rake "gitlab:duo:verify_self_hosted_setup[<username>]"
+   ```
+
+   Optional: Include a `<username>` that has an assigned seat.
+   If you do not include a username parameter, the Rake task uses the root user.
+
+1. Debug the AI Gateway setup. For your AI Gateway container:
+
+   - Restart the AI Gateway container with authentication disabled by setting:
+
+     ```shell
+     -e AIGW_AUTH__BYPASS_EXTERNAL=true
+     ```
+
+     This setting is required for the troubleshooting command to run the **System Exchange test**. You must remove this setting after troubleshooting is complete.
+
+   - From your AI Gateway container, run:
+
+     ```shell
+     docker exec -it <ai-gateway-container> sh
+     poetry run troubleshoot [options]
+     ```
+
+     The `troubleshoot` command supports the following options:
+
+     | Option                    | Default                 | Example                                                       | Description |
+     |---------------------------|-------------------------|---------------------------------------------------------------|-------------|
+     | `--endpoint`              | `localhost:5052`        | `--endpoint=localhost:5052`                                   | AI Gateway endpoint |
+     | `--duo-workflow-endpoint` | `localhost:50052`       | `--duo-workflow-endpoint=localhost:50052`                     | GitLab Duo Workflow Service (GitLab Duo Agent Platform) gRPC endpoint |
+     | `--model-family`          | -                       | `--model-family=mistral`                                      | Model family to test. Possible values are `mistral`, `mixtral`, `gpt`, or `llama3`. |
+     | `--model-endpoint`        | `http://localhost:4000` | `--model-endpoint=http://localhost:4000/v1`                   | Model endpoint. For models hosted on vLLM, add the `/v1` suffix. |
+     | `--model-identifier`      | -                       | `--model-identifier=custom_openai/Mixtral-8x7B-Instruct-v0.1` | Model identifier. |
+     | `--api-key`               | -                       | `--api-key=your-api-key`                                      | Model API key. |
+
+     Examples:
+
+     For a `gpt` model running on Amazon Bedrock Mantle:
+
+     ```shell
+     poetry run troubleshoot \
+       --model-family=gpt \
+       --model-identifier=bedrock_mantle/openai.gpt-oss-120b \
+       --model-endpoint=https://bedrock-mantle.<region>.api.aws/v1 \
+       --api-key=your-api-key
+     ```
+
+     For a `mixtral` model running on vLLM:
+
+     ```shell
+     poetry run troubleshoot \
+       --model-family=mixtral \
+       --model-identifier=custom_openai/Mixtral-8x7B-Instruct-v0.1 \
+       --api-key=your-api-key \
+       --model-endpoint=http://<your-model-endpoint>/v1
+     ```
+
+     The model access check sends a code generation request to the AI Gateway `/v4/code/suggestions` endpoint with the model details you provide.
+
+After troubleshooting is complete, stop and restart the AI Gateway container without `AIGW_AUTH__BYPASS_EXTERNAL=true`.
+
+> [!warning]
+> You must not bypass authentication in production.
+
+Verify the output of the commands, and fix accordingly.
+
+If both commands are successful, but GitLab Duo Code Suggestions is still not working,
+raise an issue on the issue tracker.
+
+## GitLab Duo health check is not working
+
+When you [run a health check for GitLab Duo](../gitlab_duo/configure/_index.md#run-a-health-check-for-gitlab-duo), you might get an error like a `401 response from the AI Gateway`.
+
+To resolve, first check if GitLab Duo features are functioning correctly. For example, send a message to GitLab Duo Chat.
+
+If this does not work, the error might be because of a known issue with GitLab Duo health check. For more information, see [issue 517097](https://gitlab.com/gitlab-org/gitlab/-/issues/517097).
+
+## Check if GitLab can make a request to the model
+
+From the GitLab Rails console, verify that GitLab can connect to your self-hosted
+model by running:
+
+```ruby
+self_hosted_model = Ai::SelfHostedModel.find_by(name: "<your_model_name>")
+user = User.find_by_id(1)
+Gitlab::Llm::AiGateway::SelfHostedModels::ConnectionTester.new(user, self_hosted_model).execute
+```
+
+If GitLab can reach the model, the command returns `nil`. Otherwise, it returns a
+string that describes the error.
+
+If that is not the case, this might mean one of the following:
+
+- The GitLab environment variables are not configured correctly. To resolve, [check that the GitLab environment variables are set up correctly](#check-that-the-ai-gateway-environment-variables-are-set-up-correctly).
+- The AI Gateway is not reachable. To resolve, [check if GitLab can make an HTTP request to the AI Gateway](#check-if-gitlab-can-make-an-http-request-to-the-ai-gateway).
+- When the LLM server is installed on the same instance as the AI Gateway container, local requests may not work. To resolve, [allow local requests from the Docker container](#llm-server-is-not-available-inside-the-ai-gateway-container).
+
+## Check if a user can request Code Suggestions
+
+In the GitLab Rails console, check if a user can request Code Suggestions by running:
+
+```ruby
+User.find_by_id("<user_id>").can?(:access_code_suggestions)
+```
+
+If this returns `false`, it means some configuration is missing, and the user
+cannot access Code Suggestions.
+
+This missing configuration might be because of either of the following:
+
+- The license is not valid. To resolve, [check or update your license](../license_file.md#see-current-license-information).
+- GitLab Duo was not configured to use a self-hosted model. To resolve, [check if the GitLab instance is configured to use self-hosted models](#check-if-gitlab-instance-is-configured-to-use-self-hosted-models).
+
+## Check if GitLab instance is configured to use self-hosted models
+
+Prerequisites:
+
+- Administrator access.
+
+To check if GitLab Duo was configured correctly:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Self-hosted models**
+1. Expand **AI-native features**.
+1. Under **Features**, check that **Code Suggestions** and **Code generation** are set to **Self-hosted model**.
+
+## Check that the AI Gateway URL is set up correctly
+
+To check that the AI Gateway URL is correct, run the following on the GitLab Rails console:
+
+```ruby
+ApplicationSetting.current.ai_gateway_url == "<your-ai-gateway-instance-url>"
+```
+
+If the AI Gateway is not set up, [configure your GitLab instance to access the AI Gateway](configure_duo_features.md#configure-access-to-the-local-ai-gateway).
+
+## Validate the GitLab Duo Agent Platform service URL
+
+To check that the URL for the Agent Platform service is correct, run the following on the GitLab Rails console:
+
+```ruby
+ApplicationSetting.current.duo_agent_platform_service_url == "<your-duo-agent-platform-instance-url>"
+```
+
+The URL for the Agent Platform service is a TCP URL and cannot have the prefixes `http://` or `https://`.
+
+If the URL for the Agent Platform has not been set up, you must [configure your GitLab instance to access the URL](configure_duo_features.md#configure-access-to-the-gitlab-duo-agent-platform).
+
+## Check if GitLab can make an HTTP request to the AI Gateway
+
+In the GitLab Rails console, verify that GitLab can make an HTTP request to AI
+Gateway by running:
+
+```ruby
+HTTParty.get('<your-aigateway-endpoint>/monitoring/healthz', headers: { 'accept' => 'application/json' }).code
+```
+
+If the response is not `200`, this means either of the following:
+
+- The network is not properly configured to allow GitLab to reach the AI Gateway container. Contact your network administrator to verify the setup.
+- The AI Gateway is not able to process requests. To resolve this issue, [check if the AI Gateway can make a request to the model](#check-if-the-ai-gateway-can-make-a-request-to-the-model).
+
+## Check if the AI Gateway can make a request to the model
+
+From the AI Gateway container, make an HTTP request to the AI Gateway API to check
+the self-hosted model connection. Replace:
+
+- `<your_model_name>` with the model family of the model you are using. For example `mistral` or `codegemma`.
+- `<your_model_identifier>` with the identifier of your model deployment. For example `custom_openai/mistral:instruct`.
+- `<your_model_endpoint>` with the endpoint where the model is hosted.
+
+```shell
+docker exec -it <ai-gateway-container> sh
+curl --request POST "http://localhost:5052/v1/prompts/model_configuration%2Fcheck" \
+     --header 'accept: application/json' \
+     --header 'Content-Type: application/json' \
+     --data '{ "stream": false, "inputs": {}, "model_metadata": { "name": "<your_model_name>", "identifier": "<your_model_identifier>", "endpoint": "<your_model_endpoint>", "provider": "openai" } }'
+```
+
+If the request fails, the:
+
+- AI Gateway might not be configured properly to use self-hosted models. To resolve this,
+  [check that the AI Gateway environment variables are set up correctly](#check-that-the-ai-gateway-environment-variables-are-set-up-correctly).
+- AI Gateway might not be able to access the model. To resolve,
+  [check if the model is reachable from the AI Gateway](#check-if-the-model-is-reachable-from-ai-gateway).
+- Model endpoint might be incorrect. Check the value, and correct it
+  if necessary.
+
+## Check if AI Gateway can process requests
+
+```shell
+docker exec -it <ai-gateway-container> sh
+curl '<your-aigateway-endpoint>/monitoring/healthz'
+```
+
+If the response is not `200`, this means that AI Gateway is not installed correctly. To resolve, follow the [documentation on how to install the AI Gateway](../../install/install_ai_gateway.md).
+
+## Check that the AI Gateway environment variables are set up correctly
+
+To check that the AI Gateway environment variables are set up correctly, run the
+following in a console on the AI Gateway container:
+
+```shell
+docker exec -it <ai-gateway-container> sh
+echo $AIGW_CUSTOM_MODELS__ENABLED # must be true
+```
+
+If the environment variables are not set up correctly,
+[create a container](../../install/install_ai_gateway.md#ai-gateway-images).
+
+## Check if the model is reachable from AI Gateway
+
+Create a shell on the AI Gateway container and make a curl request to the model.
+If you find that the AI Gateway cannot make that request, this might be caused by the:
+
+1. Model server not functioning correctly.
+1. Network settings around the container not being properly configured to allow
+   requests to where the model is hosted.
+
+To resolve this, contact your network administrator.
+
+## Check if AI Gateway can make requests to your GitLab instance
+
+The GitLab instance defined in `AIGW_GITLAB_URL` must be accessible from the AI Gateway container for request authentication.
+If the instance is not reachable (for example, because of proxy configuration errors), requests can fail with errors, such as the following:
+
+- ```shell
+  jose.exceptions.JWTError: Signature verification failed
+  ```
+
+- ```shell
+  gitlab_cloud_connector.providers.CompositeProvider.CriticalAuthError: No keys founds in JWKS; are OIDC providers up?
+  ```
+
+In this scenario, verify if `AIGW_GITLAB_URL` and `$AIGW_GITLAB_API_URL` are properly set to the container and accessible.
+The following commands should be successful when run from the container:
+
+```shell
+poetry run troubleshoot
+curl "$AIGW_GITLAB_API_URL/projects"
+```
+
+If not successful, verify your network configurations.
+
+## The image's platform does not match the host
+
+When you [use an AI Gateway image](../../install/install_ai_gateway.md#ai-gateway-images),
+you might get an error that states `The requested image's platform (linux/amd64) does not match the detected host`.
+
+To work around this error, add `--platform linux/amd64` to the `docker run` command:
+
+```shell
+docker run --platform linux/amd64 -e AIGW_GITLAB_URL=<your-gitlab-endpoint> <image>
+```
+
+## LLM server is not available inside the AI Gateway container
+
+If the LLM server is installed on the same instance as the AI Gateway container, it may not be accessible through the local host.
+
+To resolve this:
+
+1. Include `--network host` in the `docker run` command to enable local requests from the AI Gateway container.
+1. Use the `-e AIGW_FASTAPI__METRICS_PORT=8083` flag to address the port conflicts.
+
+```shell
+docker run --network host -e AIGW_GITLAB_URL=<your-gitlab-endpoint> -e AIGW_FASTAPI__METRICS_PORT=8083 <image>
+```
+
+## vLLM 404 Error
+
+If you encounter a `404` error while using vLLM, follow these steps to resolve the issue:
+
+1. Create a chat template file named `chat_template.jinja` with the following content:
+
+   ```jinja
+   {%- for message in messages %}
+     {%- if message["role"] == "user" %}
+       {{- "[INST] " + message["content"] + "[/INST]" }}
+     {%- elif message["role"] == "assistant" %}
+       {{- message["content"] }}
+     {%- elif message["role"] == "system" %}
+       {{- bos_token }}{{- message["content"] }}
+     {%- endif %}
+   {%- endfor %}
+   ```
+
+1. When running the vLLM command, ensure you specify the `--served-model-name`. For example:
+
+   ```shell
+   vllm serve "mistralai/Mistral-7B-Instruct-v0.3" --port <port> --max-model-len 17776 --served-model-name mistral --chat-template chat_template.jinja
+   ```
+
+1. Check the vLLM server URL in the GitLab UI to make sure that URL includes the `/v1` suffix. The correct format is:
+
+   ```shell
+   http(s)://<your-host>:<your-port>/v1
+   ```
+
+## Code Suggestions access error
+
+If you are experiencing issues accessing Code Suggestions after setup, try the following steps:
+
+1. In the Rails console, check and verify the license parameters:
+
+   ```shell
+   sudo gitlab-rails console
+   user = User.find(id) # Replace id with the user provisioned with GitLab Duo Enterprise seat
+   Ability.allowed?(user, :access_code_suggestions) # Must return true
+   ```
+
+1. Check if the necessary features are enabled and available:
+
+   ```shell
+   ::Ai::FeatureSetting.exists?(feature: [:code_generations, :code_completions], provider: :self_hosted) # Should be true
+   ```
+
+## Error A1000
+
+When using GitLab Duo features with self-hosted models, you might encounter the following error:
+
+`I'm sorry, I couldn't respond in time. Please try again. Error code: A1000`
+
+This issue occurs when the request to your model might be taking longer than the configured timeout period.
+
+Common causes include:
+
+- Large context windows or complex prompts
+- Model performance limitations
+- Network latency between the AI Gateway and the model endpoint
+- Cross-region inference delays (for AWS Bedrock deployments)
+
+To resolve timeout errors:
+
+1. [Configure a higher AI Gateway timeout value](configure_duo_features.md#configure-timeout-for-the-ai-gateway). You can set the timeout between 60 and 600 seconds (10 minutes).
+1. For GitLab Duo Chat, if requests still time out, [increase the chat model request timeout](configure_duo_features.md#configure-the-chat-model-request-timeout) on the AI Gateway.
+1. Monitor your logs after adjusting the timeout to verify the errors are resolved.
+1. If timeout errors persist even with a higher timeout value:
+   - Check your model's performance and resource allocation.
+   - Verify network connectivity between the AI Gateway and model endpoint.
+   - Consider using a more performant model or deployment configuration.
+
+If responses are cut off without an error instead of failing with `A1000`, see
+[responses are truncated without an error](#responses-are-truncated-without-an-error).
+
+## Responses are truncated without an error
+
+A long response, particularly from a large or reasoning model, can stop partway through
+with no error message. The stream ends before the model finishes, and the partial
+response can look complete.
+
+This issue happens when a proxy, load balancer, or firewall between components ends the
+connection before the model finishes responding. When GitLab detects the broken
+stream, GitLab returns [`Error A1000`](#error-a1000) if it timed out waiting, or
+[`Error A1003`](../../user/gitlab_duo_chat/troubleshooting.md#error-a1003) if the stream itself failed.
+
+Check the timeout at each hop and see whether an error appears.
+To resolve this issue:
+
+1. For the AI Gateway, [configure a higher timeout value](configure_duo_features.md#configure-timeout-for-the-ai-gateway)
+   so GitLab waits long enough for the gateway.
+1. For GitLab Duo Chat, [increase the chat model request timeout](configure_duo_features.md#configure-the-chat-model-request-timeout)
+   so the AI Gateway waits long enough for the model.
+1. Check any reverse proxy or load balancer in front of the AI Gateway. If you use the
+   [NGINX reverse proxy](../../install/install_ai_gateway.md#set-up-docker-with-nginx-and-ssl),
+   raise `proxy_read_timeout` to cover the longest pause between response chunks and
+   keep `proxy_buffering off`.
+1. Check any proxy or load balancer between the AI Gateway and your model-serving
+   platform for similar requests or idle timeouts.
+1. For GitLab Duo Agentic Chat, check the reverse proxy in front of GitLab for a
+   WebSocket idle or read timeout that can cut a long streamed answer. For more information, see
+   [response from Agentic Chat does not display in the UI](#response-from-agentic-chat-does-not-display-in-the-ui).
+
+## Verify GitLab setup
+
+To verify your GitLab Self-Managed setup, run the following command:
+
+```shell
+gitlab-rake gitlab:duo:verify_self_hosted_setup
+```
+
+## No logs generated in the AI Gateway server
+
+If no logs are generated in the AI Gateway server, follow these steps to troubleshoot:
+
+1. Ensure that [AI logs are enabled](logging.md#turn-on-data-collection-for-gitlab-duo).
+1. Run the following commands to view the GitLab Rails logs for any errors:
+
+   ```shell
+   sudo gitlab-ctl tail
+   sudo gitlab-ctl tail sidekiq
+   ```
+
+1. Look for keywords like "Error" or "Exception" in the logs to identify any underlying issues.
+
+## SSL certificate errors and key de-serialization issues in the AI Gateway Container
+
+When attempting to initiate a GitLab Duo Chat inside the AI Gateway container, SSL certificate errors and key deserialization issues may occur.
+
+The system might encounter issues loading the PEM file, resulting in errors like:
+
+```plaintext
+JWKError: Could not deserialize key data. The data may be in an incorrect format, the provided password may be incorrect, or it may be encrypted with an unsupported algorithm.
+```
+
+To resolve the SSL certificate error:
+
+- Set the appropriate certificate bundle path in the Docker container using the following environment variables:
+  - `SSL_CERT_FILE=/path/to/ca-bundle.pem`
+  - `REQUESTS_CA_BUNDLE=/path/to/ca-bundle.pem`
+
+## Error: Invocation of model ID meta isn't supported
+
+In the AIGW logs, the following error displays when the format of the model identifier is incorrect:
+
+```plaintext
+Invocation of model ID meta.llama3-3-70b-instruct-v1:0 with on-demand throughput isn\u2019t supported. Retry your request with the ID or ARN of an inference profile that contains this model
+```
+
+Ensure your `model identifier` has the format `bedrock/<region>.<model-id>`, where:
+
+- `<region>` is your AWS region (such as `us`)
+- `<model-id>` is the full model identifier.
+
+For example: `bedrock/us.meta.llama3-3-70b-instruct-v1:0`. Update your model configuration to use the correct format.
+
+## Azure OpenAI deployment rejects requests from the Chat Completions API
+
+Some Azure OpenAI deployments are available only through the [Responses API](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses).
+With a model identifier in the `azure/<deployment name>` format, the AI Gateway sends requests
+to the Chat Completions API. These deployments then reject the requests.
+
+To resolve this issue, change the model identifier to the `azure/responses/<deployment name>` format.
+For more information, see [use the Responses API](supported_llm_serving_platforms.md#use-the-responses-api).
+
+## Feature not accessible or feature button not visible
+
+If a feature is not working or a feature button (for example, **`/troubleshoot`**) is not visible:
+
+1. Check if the feature's `unit_primitive` is listed in the [self-hosted models unit primitives list in the `gitlab-cloud-connector` gem configuration](https://gitlab.com/gitlab-org/cloud-connector/gitlab-cloud-connector/-/blob/main/config/services/self_hosted_models.yml).
+
+   If the feature is missing from this file, that could be the reason it's not accessible.
+
+1. Optional. If the feature is not listed, you can verify this is the cause of the issue by setting the following in your GitLab instance:
+
+   ```shell
+   CLOUD_CONNECTOR_SELF_SIGN_TOKENS=1
+   ```
+
+   Then restart GitLab and check if the feature becomes accessible.
+
+   > [!warning]
+   > Do not use `CLOUD_CONNECTOR_SELF_SIGN_TOKENS=1` in production. After troubleshooting,
+   > restart GitLab without this flag set. Development environments should closely mirror
+   > production, with no hidden flags or internal-only workarounds.
+
+1. To resolve this issue:
+   - If you're a GitLab team member, contact the Custom Models team through the [`#g_custom_models` Slack channel](https://gitlab.enterprise.slack.com/archives/C06DCB3N96F).
+   - If you're a customer, report the issue through [GitLab Support](https://support.gitlab.com/).
+
+## Error: An error occurred while fetching an authentication token for this workflow
+
+This error can occur when you try to use agentic Chat in GitLab or your local environment.
+
+You might also see the following in the logs of your IDE's [GitLab Language Server](../../editor_extensions/language_server/_index.md):
+
+```shell
+2026-01-09T20:17:43:419 [error]: [WorkflowRailsService] Failed to fetch the workflow token
+    Error: Fetching direct_access from https://gitlab.example.com/api/v4/ai/duo_workflows/direct_access failed.
+{"message":"400 Bad request - 14:failed to connect to all addresses; last error: UNKNOWN: ipv4:172.x.x.x:50052: Ssl handshake failed (TSI_PROTOCOL_FAILURE): SSL_ERROR_SSL: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER: Invalid certificate verification context. debug_error_string:{UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:\"failed to connect to all addresses; last error: UNKNOWN: ipv4:172.x.x.x:50052: Ssl handshake failed (TSI_PROTOCOL_FAILURE): SSL_ERROR_SSL: error:100000f7:SSL routines:OPENSSL_internal:WRONG_VERSION_NUMBER: Invalid certificate verification context\"}}"}
+2026-01-09T20:17:43:433 [error]: Max retries exceeded or non-retryable error: An error occurred while fetching an authentication token for this workflow.
+2026-01-09T20:17:43:435 [error]: Workflow failed with status code "50": An error occurred while fetching an authentication token for this workflow.
+```
+
+This means that the language server could not communicate with the `direct_access` endpoint
+to generate a JWT token due to the certificate issue.
+
+If you do not use TLS to connect your self-hosted model with the Agent Platform, to resolve this issue,
+[turn off](configure_duo_features.md#configure-access-to-the-gitlab-duo-agent-platform)
+TLS connection to the GitLab Duo Agent Platform service.
+
+## Response from Agentic Chat does not display in the UI
+
+Chat responses require a persistent WebSocket connection between your browser and GitLab. If your reverse proxy does not support WebSocket upgrades, responses are generated successfully but do not appear in the chat in the GitLab UI.
+
+### Symptoms
+
+- `llm.log` shows `chunk_received`, `streaming_finished`, and `final_answer_received` with no errors.
+- AI Gateway logs show a successful model response.
+- The GitLab Duo Chat UI appears to process the request but never displays a response.
+
+To resolve this issue, ensure your reverse proxy is configured to meet the [inbound connection requirements](../gitlab_duo/configure/_index.md#allow-inbound-connections-from-clients-to-the-gitlab-instance).

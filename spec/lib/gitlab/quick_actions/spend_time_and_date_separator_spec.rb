@@ -1,0 +1,130 @@
+# frozen_string_literal: true
+
+require 'fast_spec_helper'
+require 'gitlab_chronic_duration'
+
+RSpec.describe Gitlab::QuickActions::SpendTimeAndDateSeparator, feature_category: :team_planning do
+  subject { described_class }
+
+  shared_examples 'arg line with invalid parameters' do
+    it 'return nil' do
+      expect(subject.new(invalid_arg, nil).execute).to be_nil
+    end
+  end
+
+  shared_examples 'arg line with valid parameters' do
+    it 'return time and date array' do
+      freeze_time do
+        expect(subject.new(valid_arg, nil).execute).to eq(expected_response)
+      end
+    end
+
+    context 'when timezone set' do
+      let(:timezone) { 'Hawaii' }
+
+      it 'return time and date array' do
+        freeze_time do
+          date = defined?(raw_date) ? Date.parse(raw_date).in_time_zone(timezone).midday : DateTime.current
+          expected_response[1] = date
+
+          expect(subject.new(valid_arg, timezone).execute).to eq(expected_response)
+        end
+      end
+    end
+  end
+
+  describe '#execute' do
+    context 'invalid paramenter in arg line' do
+      context 'empty arg line' do
+        it_behaves_like 'arg line with invalid parameters' do
+          let(:invalid_arg) { '' }
+        end
+      end
+
+      context 'future date in arg line' do
+        it_behaves_like 'arg line with invalid parameters' do
+          let(:invalid_arg) { '10m 6023-02-02' }
+        end
+      end
+
+      context 'unparseable date(invalid mixes of delimiters)' do
+        it_behaves_like 'arg line with invalid parameters' do
+          let(:invalid_arg) { '10m 2017.02-02' }
+        end
+      end
+
+      context 'date submitted during the 12am-1am BST window' do
+        let(:raw_time) { '1h' }
+        let(:raw_date) { '2026-04-15' }
+        let(:timezone) { 'Europe/London' }
+
+        it 'does not reject date when it is today in user timezone', :aggregate_failures do
+          travel_to(Time.utc(2026, 4, 14, 23, 30)) do
+            time_spent, spent_at, category = subject.new("#{raw_time} #{raw_date}", timezone).execute
+
+            expect(time_spent).to eq(3600)
+            expect(spent_at).to eq(Date.parse(raw_date).in_time_zone(timezone).midday)
+            expect(category).to be_nil
+          end
+        end
+      end
+
+      context 'trash in arg line' do
+        let(:invalid_arg) { 'dfjkghdskjfghdjskfgdfg' }
+
+        it 'return nil as time value' do
+          time_date_response = subject.new(invalid_arg, nil).execute
+
+          expect(time_date_response).to be_an_instance_of(Array)
+          expect(time_date_response.first).to be_nil
+        end
+      end
+    end
+
+    context 'time present in arg line' do
+      let(:time_part) { '2m 3m 5m 1h' }
+      let(:valid_arg) { time_part }
+      let(:time) { Gitlab::TimeTrackingFormatter.parse(time_part) }
+      let(:date) { DateTime.current }
+      let(:expected_response) { [time, date, nil] }
+
+      it_behaves_like 'arg line with valid parameters'
+
+      context 'timecategory present in arg line' do
+        let(:valid_arg) { "#{time_part} [timecategory:dev]" }
+        let(:expected_response) { [time, date, 'dev'] }
+
+        it_behaves_like 'arg line with valid parameters'
+      end
+    end
+
+    context 'simple time with date in arg line' do
+      let(:raw_time) { '10m' }
+      let(:raw_date) { '2016-02-02' }
+      let(:valid_arg) { "#{raw_time} #{raw_date}" }
+      let(:date) { Date.parse(raw_date).midday }
+      let(:time) { Gitlab::TimeTrackingFormatter.parse(raw_time) }
+      let(:expected_response) { [time, date, nil] }
+
+      it_behaves_like 'arg line with valid parameters'
+
+      context 'timecategory present in arg line' do
+        let(:valid_arg) { "#{raw_time} #{raw_date} [timecategory:support]" }
+        let(:expected_response) { [time, date, 'support'] }
+
+        it_behaves_like 'arg line with valid parameters'
+      end
+    end
+
+    context 'composite time with date in arg line' do
+      it_behaves_like 'arg line with valid parameters' do
+        let(:raw_time) { '2m 10m 1h 3d' }
+        let(:raw_date) { '2016/02/02' }
+        let(:valid_arg) { "#{raw_time} #{raw_date}" }
+        let(:date) { Date.parse(raw_date).midday }
+        let(:time) { Gitlab::TimeTrackingFormatter.parse(raw_time) }
+        let(:expected_response) { [time, date, nil] }
+      end
+    end
+  end
+end

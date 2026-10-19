@@ -1,0 +1,478 @@
+<script>
+/* eslint-disable vue/require-default-prop */
+import {
+  GlIcon,
+  GlLink,
+  GlLoadingIcon,
+  GlSprintf,
+  GlTooltip,
+  GlTooltipDirective,
+  GlButton,
+} from '@gitlab/ui';
+import MrWidgetPipelineDuoAction from 'ee_component/vue_merge_request_widget/components/mr_duo_fix_pipeline.vue';
+import MrWidgetPipelineDuoResolveDependencyBump from 'ee_component/vue_merge_request_widget/components/mr_duo_resolve_dependency_bump.vue';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { reportToSentry } from '~/ci/utils';
+import SafeHtml from '~/vue_shared/directives/safe_html';
+import { TYPENAME_MERGE_REQUEST } from '~/graphql_shared/constants';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { s__, n__ } from '~/locale';
+import CiIcon from '~/vue_shared/components/ci_icon/ci_icon.vue';
+import { keepLatestDownstreamPipelines } from '~/ci/pipeline_details/utils/parsing_utils';
+import PipelineArtifacts from '~/ci/pipelines_page/components/pipelines_artifacts.vue';
+import PipelineMiniGraph from '~/ci/pipeline_mini_graph/pipeline_mini_graph.vue';
+import { PIPELINE_CREATION_STATUSES } from '~/ci/constants';
+import TimeAgoTooltip from '~/vue_shared/components/time_ago_tooltip.vue';
+import TooltipOnTruncate from '~/vue_shared/components/tooltip_on_truncate/tooltip_on_truncate.vue';
+import HelpPopover from '~/vue_shared/components/help_popover.vue';
+import HelpIcon from '~/vue_shared/components/help_icon/help_icon.vue';
+import mergeRequestEventTypeQuery from '../queries/merge_request_event_type.query.graphql';
+import mrPipelineCreationRequestUpdated from '../subscriptions/mr_pipeline_creation_request_updated.subscription.graphql';
+import runPipelineMixin from '../mixins/run_pipeline';
+import {
+  PIPELINE_EVENT_TYPE_MERGE_REQUEST,
+  PIPELINE_EVENT_TYPE_MERGE_TRAIN,
+  PIPELINE_EVENT_TYPE_MERGED_RESULT,
+  PIPELINE_EVENT_TYPE_MAP,
+} from '../constants';
+
+// Pipeline creation states
+const IDLE = 'IDLE';
+const CREATING = 'CREATING';
+const CREATED = 'CREATED';
+
+export default {
+  name: 'MRWidgetPipeline',
+  apollo: {
+    mergeRequestEventType: {
+      query: mergeRequestEventTypeQuery,
+      variables() {
+        return {
+          projectPath: this.targetProjectFullPath,
+          iid: `${this.iid}`,
+        };
+      },
+      skip() {
+        return !this.retargeted;
+      },
+      update: (d) => d.project?.mergeRequest?.pipelines?.nodes?.[0]?.mergeRequestEventType,
+      error(err) {
+        reportToSentry(this.$options.name, err);
+      },
+    },
+    $subscribe: {
+      // eslint-disable-next-line @gitlab/vue-no-undef-apollo-properties
+      pipelineCreation: {
+        query: mrPipelineCreationRequestUpdated,
+        variables() {
+          return {
+            mergeRequestId: convertToGraphQLId(TYPENAME_MERGE_REQUEST, this.mrId),
+          };
+        },
+        skip() {
+          return !this.mrId;
+        },
+        result({ data }) {
+          const { ciPipelineCreationRequestsUpdated } = data;
+
+          if (!ciPipelineCreationRequestsUpdated) return;
+
+          const requests = ciPipelineCreationRequestsUpdated.pipelineCreationRequests;
+
+          // a new pipeline is being created
+          const hasInProgress = requests.some(
+            (r) => r.status === PIPELINE_CREATION_STATUSES.inProgress,
+          );
+
+          if (hasInProgress) {
+            this.creationState = CREATING;
+          }
+        },
+        error(err) {
+          // Fall forward to CREATED rather than back to IDLE so an error mid-creation
+          // does not resurrect the retargeted prompt.
+          if (this.creationState === CREATING) {
+            this.creationState = CREATED;
+          }
+          Sentry.captureException(err);
+        },
+      },
+    },
+  },
+  components: {
+    CiIcon,
+    GlLink,
+    GlLoadingIcon,
+    GlIcon,
+    GlSprintf,
+    GlTooltip,
+    GlButton,
+    PipelineMiniGraph,
+    PipelineArtifacts,
+    TimeAgoTooltip,
+    TooltipOnTruncate,
+    HelpPopover,
+    HelpIcon,
+    MrWidgetPipelineDuoAction,
+    MrWidgetPipelineDuoResolveDependencyBump,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+    SafeHtml,
+  },
+  mixins: [runPipelineMixin],
+  props: {
+    pipeline: {
+      type: Object,
+      required: true,
+    },
+    pipelineCoverageDelta: {
+      type: String,
+      required: false,
+    },
+    buildsWithCoverage: {
+      type: Array,
+      required: false,
+      default: () => [],
+    },
+    ciStatus: {
+      type: String,
+      required: false,
+    },
+    sourceBranchLink: {
+      type: String,
+      required: false,
+    },
+    sourceBranch: {
+      type: String,
+      required: false,
+    },
+    mergeRequestPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    mrTroubleshootingDocsPath: {
+      type: String,
+      required: true,
+    },
+    ciTroubleshootingDocsPath: {
+      type: String,
+      required: true,
+    },
+    retargeted: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    targetProjectFullPath: {
+      type: String,
+      required: true,
+    },
+    isPostMerge: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    mrId: {
+      type: Number,
+      required: true,
+    },
+    iid: {
+      type: [Number, String],
+      required: false,
+      default: null,
+    },
+  },
+  data() {
+    return {
+      isCreatingPipeline: false,
+      mergeRequestEventType: null,
+      creationState: IDLE,
+    };
+  },
+  computed: {
+    downstreamPipelines() {
+      return keepLatestDownstreamPipelines(this.pipeline.triggered || []);
+    },
+    hasPipeline() {
+      return this.pipeline && Object.keys(this.pipeline).length > 0;
+    },
+    hasCIError() {
+      return this.hasPipeline && !this.ciStatus;
+    },
+    status() {
+      return this.pipeline?.details?.status || {};
+    },
+    artifacts() {
+      return this.pipeline?.details?.artifacts;
+    },
+    hasArtifacts() {
+      return Boolean(this.pipeline?.details?.artifacts?.length);
+    },
+    hasCommitInfo() {
+      return this.pipeline.commit && Object.keys(this.pipeline.commit).length > 0;
+    },
+    showSourceBranch() {
+      return Boolean(this.pipeline.ref.branch);
+    },
+    finishedAt() {
+      return this.pipeline?.details?.finished_at;
+    },
+    coverageDeltaClass() {
+      const delta = this.pipelineCoverageDelta;
+      if (delta && parseFloat(delta) > 0) {
+        return 'gl-text-success';
+      }
+      if (delta && parseFloat(delta) < 0) {
+        return 'gl-text-danger';
+      }
+      return '';
+    },
+    pipelineCoverageJobNumberText() {
+      return n__('from %d job', 'from %d jobs', this.buildsWithCoverage.length);
+    },
+    pipelineCoverageTooltipDeltaDescription() {
+      const delta = parseFloat(this.pipelineCoverageDelta) || 0;
+      if (delta > 0) {
+        return s__('Pipeline|This change will increase the overall test coverage if merged.');
+      }
+      if (delta < 0) {
+        return s__('Pipeline|This change will decrease the overall test coverage if merged.');
+      }
+      return s__('Pipeline|This change will not change the overall test coverage if merged.');
+    },
+    pipelineCoverageTooltipDescription() {
+      return n__(
+        'Test coverage value for this pipeline was calculated by the coverage value of %d job.',
+        'Test coverage value for this pipeline was calculated by averaging the resulting coverage values of %d jobs.',
+        this.buildsWithCoverage.length,
+      );
+    },
+    isMergeTrain() {
+      return Boolean(this.pipeline.flags?.merge_train_pipeline);
+    },
+    showPipelineTypeHelpPopover() {
+      return [
+        PIPELINE_EVENT_TYPE_MERGE_TRAIN,
+        PIPELINE_EVENT_TYPE_MERGED_RESULT,
+        PIPELINE_EVENT_TYPE_MERGE_REQUEST,
+      ].includes(this.pipeline?.details?.event_type_name);
+    },
+    pipelineTypeHelpPopoverOptions() {
+      const eventTypeName = this.pipeline?.details?.event_type_name;
+
+      return PIPELINE_EVENT_TYPE_MAP[eventTypeName] || { title: '', content: '' };
+    },
+    showDuoWorkflowAction() {
+      return this.hasPipeline && this.status.group === 'failed' && !this.retargeted;
+    },
+    pipelineId() {
+      return this.pipeline?.id;
+    },
+    showPipelineCreatingMessage() {
+      return this.creationState === CREATING;
+    },
+    showRetargetedMessage() {
+      // Once creation has started for the retargeted branch, yield to the
+      // creating/live-pipeline states so the widget advances in place without a refresh.
+      return this.retargeted && this.creationState === IDLE;
+    },
+  },
+  watch: {
+    pipelineId(newId) {
+      // A truthy id means a new pipeline has arrived; Vue only fires this watcher on
+      // change, so we advance out of the creating state without tracking the old id.
+      if (newId && this.creationState === CREATING) {
+        this.creationState = CREATED;
+      }
+    },
+  },
+  errorText: s__(
+    'Pipeline|Could not retrieve the pipeline status. For troubleshooting steps, read the %{linkStart}documentation%{linkEnd}.',
+  ),
+  monitoringPipelineText: s__('Pipeline|Checking pipeline status.'),
+};
+</script>
+<template>
+  <div class="ci-widget media">
+    <template v-if="hasCIError">
+      <gl-icon name="status_failed" :size="24" variant="danger" />
+      <p class="gl-mb-0 gl-ml-5 gl-grow" data-testid="ci-error-message">
+        <gl-sprintf :message="$options.errorText">
+          <template #link="{ content }">
+            <gl-link :href="mrTroubleshootingDocsPath">{{ content }}</gl-link>
+          </template>
+        </gl-sprintf>
+      </p>
+    </template>
+    <template v-else-if="showRetargetedMessage">
+      <gl-icon name="status_canceled" class="gl-mr-3 gl-self-center" />
+      <p class="gl-mb-0 gl-ml-3 gl-flex gl-grow gl-text-subtle" data-testid="retargeted-message">
+        {{
+          __(
+            'You should run a new pipeline, because the target branch has changed for this merge request.',
+          )
+        }}
+      </p>
+      <gl-button
+        v-if="mergeRequestEventType"
+        category="tertiary"
+        variant="confirm"
+        size="small"
+        :loading="isCreatingPipeline"
+        data-testid="run-pipeline-button"
+        @click="runPipeline"
+      >
+        {{ __('Run pipeline') }}
+      </gl-button>
+    </template>
+    <template v-else-if="showPipelineCreatingMessage">
+      <div class="gl-flex gl-items-center">
+        <gl-loading-icon size="sm" />
+        <p class="gl-mb-0 gl-ml-3" data-testid="pipeline-creation-message">
+          {{ s__('Pipeline|Creating pipeline...') }}
+        </p>
+      </div>
+    </template>
+    <template v-else-if="!hasPipeline">
+      <gl-loading-icon size="sm" />
+      <p class="gl-mb-0 gl-ml-3 gl-flex gl-grow" data-testid="monitoring-pipeline-message">
+        {{ $options.monitoringPipelineText }}
+        <gl-link
+          v-gl-tooltip
+          :href="ciTroubleshootingDocsPath"
+          target="_blank"
+          :title="__('Get more information about troubleshooting pipelines')"
+          class="gl-ml-2 gl-flex gl-items-center"
+        >
+          <help-icon :aria-label="__('Link to go to GitLab pipeline documentation')" />
+        </gl-link>
+      </p>
+    </template>
+    <template v-else-if="hasPipeline">
+      <ci-icon :status="status" class="gl-mr-3 gl-mt-2 gl-self-start" />
+      <div class="ci-widget-container gl-flex">
+        <div class="ci-widget-content">
+          <div class="media-body">
+            <div
+              data-testid="pipeline-info-container"
+              class="gl-flex gl-flex-wrap gl-items-center gl-justify-between"
+            >
+              <p
+                class="mr-pipeline-title !gl-m-0 !gl-mr-3 gl-self-start gl-font-bold gl-text-default"
+              >
+                {{ pipeline.details.event_type_name }}
+                <gl-link :href="pipeline.path" class="pipeline-id" data-testid="pipeline-id"
+                  >#{{ pipeline.id }}</gl-link
+                >
+                {{ pipeline.details.status.label }}
+              </p>
+              <div class="gl-inline-flex gl-grow gl-items-center gl-justify-between">
+                <div>
+                  <pipeline-mini-graph
+                    v-if="pipeline.details.stages"
+                    :downstream-pipelines="downstreamPipelines"
+                    :is-merge-train="isMergeTrain"
+                    :pipeline-path="pipeline.path"
+                    :pipeline-stages="pipeline.details.stages"
+                    :upstream-pipeline="pipeline.triggered_by"
+                  />
+                </div>
+                <pipeline-artifacts v-if="hasArtifacts" :artifacts="artifacts" class="gl-ml-3" />
+              </div>
+            </div>
+
+            <div class="gl-flex gl-flex-wrap gl-items-center">
+              <p class="gl-m-0 gl-text-sm gl-text-subtle" data-testid="pipeline-details-container">
+                {{ pipeline.details.event_type_name }} {{ pipeline.details.status.label }}
+                <template v-if="hasCommitInfo">
+                  {{ s__('Pipeline|for') }}
+                  <gl-link
+                    :href="pipeline.commit.commit_path"
+                    class="commit-sha-container"
+                    data-testid="commit-link"
+                    >{{ pipeline.commit.short_id }}</gl-link
+                  >
+                </template>
+                <template v-if="showSourceBranch">
+                  {{ s__('Pipeline|on') }}
+                  <tooltip-on-truncate
+                    :title="sourceBranch"
+                    truncate-target="child"
+                    class="label-branch label-truncate ref-container"
+                  >
+                    <template v-if="isPostMerge">{{ sourceBranchLink }}</template>
+                    <span v-else v-safe-html="sourceBranchLink"></span>
+                  </tooltip-on-truncate>
+                </template>
+                <template v-if="finishedAt">
+                  <time-ago-tooltip
+                    :time="finishedAt"
+                    tooltip-placement="bottom"
+                    data-testid="finished-at"
+                  />
+                </template>
+              </p>
+              <help-popover
+                v-if="showPipelineTypeHelpPopover"
+                class="gl-ml-2 gl-inline-flex"
+                :options="pipelineTypeHelpPopoverOptions"
+              />
+            </div>
+
+            <div v-if="pipeline.coverage" class="coverage gl-mt-1" data-testid="pipeline-coverage">
+              {{ s__('Pipeline|Test coverage') }} {{ pipeline.coverage }}%
+              <span
+                v-if="pipelineCoverageDelta"
+                ref="pipelineCoverageDelta"
+                :class="coverageDeltaClass"
+                data-testid="pipeline-coverage-delta"
+              >
+                ({{ pipelineCoverageDelta }}%)
+              </span>
+              {{ pipelineCoverageJobNumberText }}
+              <span ref="pipelineCoverageQuestion">
+                <help-icon />
+              </span>
+              <gl-tooltip
+                :target="() => $refs.pipelineCoverageQuestion"
+                data-testid="pipeline-coverage-tooltip"
+              >
+                {{ pipelineCoverageTooltipDescription }}
+                <div
+                  v-for="(build, index) in buildsWithCoverage"
+                  :key="`${build.name}-${index}`"
+                  class="gl-mt-3 gl-px-4 gl-text-left"
+                >
+                  {{ build.name }} ({{ build.coverage }}%)
+                </div>
+              </gl-tooltip>
+              <gl-tooltip
+                :target="() => $refs.pipelineCoverageDelta"
+                data-testid="pipeline-coverage-delta-tooltip"
+              >
+                {{ pipelineCoverageTooltipDeltaDescription }}
+              </gl-tooltip>
+            </div>
+            <mr-widget-pipeline-duo-action
+              v-if="showDuoWorkflowAction"
+              :pipeline="pipeline"
+              :merge-request-path="mergeRequestPath"
+              :target-project-full-path="targetProjectFullPath"
+              :source-branch="sourceBranch"
+            />
+            <mr-widget-pipeline-duo-resolve-dependency-bump
+              v-if="showDuoWorkflowAction"
+              :pipeline="pipeline"
+              :merge-request-path="mergeRequestPath"
+              :target-project-full-path="targetProjectFullPath"
+              :source-branch="sourceBranch"
+              :iid="iid"
+            />
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+</template>

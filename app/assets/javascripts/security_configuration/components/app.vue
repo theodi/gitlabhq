@@ -1,0 +1,382 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlTab, GlTabs, GlSprintf, GlLink, GlAlert, GlBadge, GlButton } from '@gitlab/ui';
+import { sprintf, __ } from '~/locale';
+import Api from '~/api';
+import LocalStorageSync from '~/vue_shared/components/local_storage_sync.vue';
+import UserCalloutDismisser from '~/vue_shared/components/user_callout_dismisser.vue';
+import SectionLayout from '~/vue_shared/security_configuration/components/section_layout.vue';
+import SafeHtml from '~/vue_shared/directives/safe_html';
+import PageHeading from '~/vue_shared/components/page_heading.vue';
+import { SERVICE_PING_SECURITY_CONFIGURATION_THREAT_MANAGEMENT_VISIT } from '~/tracking/constants';
+import {
+  REPORT_TYPE_CONTAINER_SCANNING_FOR_REGISTRY,
+  REPORT_TYPE_LICENSE_SCANNING_FOR_CYCLONEDX,
+} from '~/vue_shared/security_reports/constants';
+import { helpPagePath } from '~/helpers/help_page_helper';
+import ScanProfileConfiguration from 'ee_else_ce/security_configuration/components/scan_profiles/scan_profile_configuration.vue';
+import {
+  AUTO_DEVOPS_ENABLED_ALERT_DISMISSED_STORAGE_KEY,
+  TAB_VULNERABILITY_MANAGEMENT_INDEX,
+  i18n,
+  SECRET_PUSH_PROTECTION,
+  SECRET_DETECTION,
+  LICENSE_INFORMATION_SOURCE,
+  CVS_CONTAINER_SCANNING,
+  CVS_DEPENDENCY_SCANNING,
+} from '../constants';
+import AutoDevOpsAlert from './auto_dev_ops_alert.vue';
+import AutoDevOpsEnabledAlert from './auto_dev_ops_enabled_alert.vue';
+import FeatureCard from './feature_card.vue';
+import MergeRequestsDisabledAlert from './merge_requests_disabled_alert.vue';
+import PipelineSecretDetectionFeatureCard from './pipeline_secret_detection_feature_card.vue';
+import SecretPushProtectionFeatureCard from './secret_push_protection_feature_card.vue';
+import TrainingSection from './training_section.vue';
+import RefTrackingList from './ref_tracking_list.vue';
+
+export default {
+  name: 'SecurityConfigurationApp',
+  i18n,
+  featureCardComponents: {
+    default: 'feature-card',
+    [SECRET_PUSH_PROTECTION]: 'secret-push-protection-feature-card',
+    [REPORT_TYPE_CONTAINER_SCANNING_FOR_REGISTRY]: 'container-scanning-for-registry-feature-card',
+    [REPORT_TYPE_LICENSE_SCANNING_FOR_CYCLONEDX]: 'license-scanning-for-cyclonedx-feature-card',
+    [SECRET_DETECTION]: 'pipeline-secret-detection-feature-card',
+    [LICENSE_INFORMATION_SOURCE]: 'license-information-source-feature-card',
+    [CVS_CONTAINER_SCANNING]: 'cvs-container-scanning-feature-card',
+    [CVS_DEPENDENCY_SCANNING]: 'cvs-dependency-scanning-feature-card',
+  },
+  components: {
+    ProjectSecurityAttributesList: defineAsyncComponent(
+      () =>
+        import('ee_component/security_configuration/security_attributes/components/project_attributes_list.vue'),
+    ),
+    AutoDevOpsAlert,
+    AutoDevOpsEnabledAlert,
+    FeatureCard,
+    MergeRequestsDisabledAlert,
+    SecretPushProtectionFeatureCard,
+    PipelineSecretDetectionFeatureCard,
+    GlAlert,
+    GlLink,
+    GlSprintf,
+    GlTab,
+    GlTabs,
+    LocalStorageSync,
+    SectionLayout,
+    GlBadge,
+    GlButton,
+    UserCalloutDismisser,
+    TrainingSection,
+    RefTrackingList,
+    ScanProfileConfiguration,
+    ContainerScanningForRegistryFeatureCard: defineAsyncComponent(
+      () =>
+        import('ee_component/security_configuration/components/container_scanning_for_registry_feature_card.vue'),
+    ),
+    CvsContainerScanningFeatureCard: defineAsyncComponent(
+      () =>
+        import('ee_component/security_configuration/components/cvs_container_scanning_feature_card.vue'),
+    ),
+    CvsDependencyScanningFeatureCard: defineAsyncComponent(
+      () =>
+        import('ee_component/security_configuration/components/cvs_dependency_scanning_feature_card.vue'),
+    ),
+    LicenseScanningForCyclonedxFeatureCard: defineAsyncComponent(
+      () =>
+        import('ee_component/security_configuration/components/license_scanning_for_cyclonedx_feature_card.vue'),
+    ),
+    PageHeading,
+    VulnerabilityArchives: defineAsyncComponent(
+      () => import('ee_component/security_configuration/components/vulnerability_archives.vue'),
+    ),
+    LicenseInformationSourceFeatureCard: defineAsyncComponent(
+      () =>
+        import('ee_component/security_configuration/components/license_information_source_feature_card.vue'),
+    ),
+  },
+  directives: { SafeHtml },
+  inject: {
+    vulnerabilityArchivesAvailable: { default: false },
+    refTrackingAvailable: { default: false },
+    projectFullPath: { default: '' },
+    canReadAttributes: { default: false },
+    maxTrackedRefs: { default: 0 },
+  },
+  props: {
+    augmentedSecurityFeatures: {
+      type: Array,
+      required: true,
+    },
+    gitlabCiPresent: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    autoDevopsEnabled: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canEnableAutoDevops: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    gitlabCiHistoryPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    latestPipelinePath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    securityTrainingEnabled: {
+      type: Boolean,
+      required: true,
+    },
+    mergeRequestsEnabled: {
+      type: Boolean,
+      required: false,
+      default: true,
+    },
+  },
+  data() {
+    return {
+      autoDevopsEnabledAlertDismissedProjects: [],
+      errorMessage: '',
+    };
+  },
+  computed: {
+    canViewCiHistory() {
+      return Boolean(this.gitlabCiPresent && this.gitlabCiHistoryPath);
+    },
+    shouldShowDevopsAlert() {
+      return !this.autoDevopsEnabled && !this.gitlabCiPresent && this.canEnableAutoDevops;
+    },
+    shouldShowAutoDevopsEnabledAlert() {
+      return (
+        this.autoDevopsEnabled &&
+        !this.autoDevopsEnabledAlertDismissedProjects.includes(this.projectFullPath)
+      );
+    },
+    shouldShowVulnerabilityArchives() {
+      return this.vulnerabilityArchivesAvailable;
+    },
+    shouldShowRefsTracking() {
+      return this.refTrackingAvailable;
+    },
+    shouldShowSecurityAttributes() {
+      return window.gon?.licensed_features?.securityAttributes && this.canReadAttributes;
+    },
+    shouldShowScanProfileUpgradeHint() {
+      return !window.gon?.licensed_features?.securityScanProfiles;
+    },
+    shouldShowMergeRequestsDisabledAlert() {
+      return !this.mergeRequestsEnabled;
+    },
+    trackedRefsHelpPagePath() {
+      // Once the help page content is available, we can use the anchor to link to the specific section
+      // See issue: https://gitlab.com/gitlab-org/gitlab/-/issues/578081
+      return helpPagePath('user/application_security/vulnerability_report/_index.md');
+    },
+    trackedRefsDescription() {
+      return sprintf(
+        __(
+          'Track vulnerabilities in up to %{limit} refs (branches or tags). The default branch is tracked by default on the Security Dashboard and Vulnerability report and cannot be removed.',
+        ),
+        { limit: this.maxTrackedRefs },
+      );
+    },
+  },
+  methods: {
+    dismissAutoDevopsEnabledAlert() {
+      const dismissedProjects = new Set(this.autoDevopsEnabledAlertDismissedProjects);
+      dismissedProjects.add(this.projectFullPath);
+      this.autoDevopsEnabledAlertDismissedProjects = Array.from(dismissedProjects);
+    },
+    onError(message) {
+      this.errorMessage = message;
+    },
+    dismissAlert() {
+      this.errorMessage = '';
+    },
+    tabChange(value) {
+      if (value === TAB_VULNERABILITY_MANAGEMENT_INDEX) {
+        Api.trackRedisHllUserEvent(SERVICE_PING_SECURITY_CONFIGURATION_THREAT_MANAGEMENT_VISIT);
+      }
+    },
+  },
+  autoDevopsEnabledAlertStorageKey: AUTO_DEVOPS_ENABLED_ALERT_DISMISSED_STORAGE_KEY,
+};
+</script>
+
+<template>
+  <article>
+    <gl-alert
+      v-if="errorMessage"
+      sticky
+      class="gl-top-8 gl-z-1"
+      data-testid="manage-via-mr-error-alert"
+      variant="danger"
+      @dismiss="dismissAlert"
+    >
+      <span v-safe-html="errorMessage"></span>
+    </gl-alert>
+    <local-storage-sync
+      v-model="autoDevopsEnabledAlertDismissedProjects"
+      :storage-key="$options.autoDevopsEnabledAlertStorageKey"
+    />
+
+    <user-callout-dismisser
+      v-if="shouldShowDevopsAlert"
+      feature-name="security_configuration_devops_alert"
+    >
+      <template #default="{ dismiss, shouldShowCallout }">
+        <auto-dev-ops-alert v-if="shouldShowCallout" class="gl-mt-3" @dismiss="dismiss" />
+      </template>
+    </user-callout-dismisser>
+
+    <page-heading :heading="$options.i18n.securityConfiguration" />
+
+    <gl-tabs
+      content-class="gl-pt-0"
+      data-testid="security-configuration-container"
+      sync-active-tab-with-query-params
+      lazy
+      @input="tabChange"
+    >
+      <gl-tab
+        data-testid="security-testing-tab"
+        :title="$options.i18n.securityTesting"
+        query-param-value="security-testing"
+      >
+        <auto-dev-ops-enabled-alert
+          v-if="shouldShowAutoDevopsEnabledAlert"
+          class="gl-mt-3"
+          @dismiss="dismissAutoDevopsEnabledAlert"
+        />
+
+        <section-layout stacked class="gl-border-b-0">
+          <template #heading>
+            <h2 class="gl-mt-0 gl-flex gl-gap-3 gl-text-size-h2">
+              {{ $options.i18n.securityProfiles }}
+              <gl-badge v-if="shouldShowScanProfileUpgradeHint" variant="tier" icon="license">{{
+                __('Ultimate')
+              }}</gl-badge>
+            </h2>
+          </template>
+          <template #description>
+            <p>
+              {{ $options.i18n.securityProfilesDesc }}
+            </p>
+          </template>
+          <template #features>
+            <scan-profile-configuration />
+          </template>
+        </section-layout>
+
+        <section-layout stacked class="gl-border-b-0" :heading="$options.i18n.securityTesting">
+          <template #description>
+            <merge-requests-disabled-alert
+              v-if="shouldShowMergeRequestsDisabledAlert"
+              class="gl-my-4"
+            />
+
+            <p>
+              <span>
+                <gl-sprintf
+                  v-if="latestPipelinePath"
+                  :message="$options.i18n.latestPipelineDescription"
+                >
+                  <template #link="{ content }">
+                    <gl-link :href="latestPipelinePath">{{ content }}</gl-link>
+                  </template>
+                </gl-sprintf>
+              </span>
+
+              {{ $options.i18n.description }}
+            </p>
+            <gl-button
+              v-if="canViewCiHistory"
+              icon="external-link"
+              :href="gitlabCiHistoryPath"
+              data-testid="security-view-history-link"
+              class="gl-mb-6"
+            >
+              {{ $options.i18n.configurationHistory }}
+            </gl-button>
+          </template>
+          <template #features>
+            <div
+              class="gl-grid gl-grid-cols-1 gl-items-stretch gl-gap-5 @lg/panel:gl-grid-cols-2"
+              data-testid="security-testing-features"
+            >
+              <div
+                v-for="feature in augmentedSecurityFeatures"
+                :key="feature.type"
+                class="md:gl-w-half gl-h-full gl-w-full"
+              >
+                <component
+                  :is="
+                    $options.featureCardComponents[feature.type] ||
+                    $options.featureCardComponents.default
+                  "
+                  :id="feature.anchor"
+                  data-testid="security-testing-card"
+                  :feature="feature"
+                  class="gl-flex gl-h-full gl-flex-col"
+                  @error="onError"
+                />
+              </div>
+            </div>
+          </template>
+        </section-layout>
+      </gl-tab>
+      <gl-tab
+        data-testid="vulnerability-management-tab"
+        :title="$options.i18n.vulnerabilityManagement"
+        query-param-value="vulnerability-management"
+      >
+        <section-layout
+          v-if="shouldShowRefsTracking"
+          stacked
+          :heading="__('Refs')"
+          data-testid="refs-tracking-section"
+        >
+          <template #description>
+            <p>
+              {{ trackedRefsDescription }}
+            </p>
+            <p>
+              {{
+                __(
+                  'When you remove tracking of a ref, GitLab deletes any vulnerabilities associated with that ref. You have the option to archive them before their deletion.',
+                )
+              }}
+            </p>
+            <p>
+              <gl-link :href="trackedRefsHelpPagePath">{{
+                __('Learn more about vulnerability management on non-default branches and tags.')
+              }}</gl-link>
+            </p>
+          </template>
+          <template #features>
+            <ref-tracking-list />
+          </template>
+        </section-layout>
+        <training-section :is-feature-available-on-current-tier="securityTrainingEnabled" />
+        <vulnerability-archives v-if="shouldShowVulnerabilityArchives" />
+      </gl-tab>
+      <gl-tab v-if="shouldShowSecurityAttributes" query-param-value="security-attributes">
+        <template #title>
+          {{ s__('SecurityAttributes|Security attributes') }}
+        </template>
+        <project-security-attributes-list />
+      </gl-tab>
+    </gl-tabs>
+  </article>
+</template>

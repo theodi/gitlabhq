@@ -1,0 +1,91 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`MemberActivity with a member that does not have all of the fields renders \`User created\` field 1`] = `
+<div
+  class="gl-flex gl-flex-col gl-gap-2"
+>
+  <div
+    class="gl-flex gl-gap-3"
+  >
+    <svg
+      aria-hidden="true"
+      class="gl-fill-current gl-icon gl-text-subtle s16"
+      data-testid="check-icon"
+      role="img"
+      title="Access granted"
+    >
+      <use
+        href="file-mock-icons.svg#check"
+      />
+    </svg>
+    <span
+      data-testid="access-granted-date"
+    >
+      Aug 06, 2020
+    </span>
+  </div>
+</div>
+`;
+
+exports[`MemberActivity with a member that has all fields renders \`User created\`, \`Access granted\`, and \`Last activity\` fields 1`] = `
+<div
+  class="gl-flex gl-flex-col gl-gap-2"
+>
+  <div
+    class="gl-flex gl-gap-3"
+  >
+    <svg
+      aria-hidden="true"
+      class="-gl-mr-2 gl-fill-current gl-icon gl-ml-2 gl-text-subtle s16"
+      data-testid="assignee-icon"
+      role="img"
+      title="User created"
+    >
+      <use
+        href="file-mock-icons.svg#assignee"
+      />
+    </svg>
+    <span>
+      Mar 10, 2022
+    </span>
+  </div>
+  <div
+    class="gl-flex gl-gap-3"
+  >
+    <svg
+      aria-hidden="true"
+      class="gl-fill-current gl-icon gl-text-subtle s16"
+      data-testid="check-icon"
+      role="img"
+      title="Access granted"
+    >
+      <use
+        href="file-mock-icons.svg#check"
+      />
+    </svg>
+    <span
+      data-testid="access-granted-date"
+    >
+      Jul 27, 2020
+    </span>
+  </div>
+  <div
+    class="gl-flex gl-gap-3"
+  >
+    <svg
+      aria-hidden="true"
+      class="gl-fill-current gl-icon gl-text-subtle s16"
+      data-testid="hourglass-icon"
+      role="img"
+      title="Last activity"
+    >
+      <use
+        href="file-mock-icons.svg#hourglass"
+      />
+    </svg>
+    <span>
+      Mar 15, 2022
+    </span>
+  </div>
+</div>
+`;

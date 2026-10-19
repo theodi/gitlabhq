@@ -1,0 +1,24 @@
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import ArchiveSettings from '~/groups_projects/archive/components/archive_settings.vue';
+
+export default function initArchiveSettings() {
+  const el = document.getElementById('js-archive-settings');
+
+  if (!el) return null;
+
+  const { resourceType, resourceId, resourcePath, markedForDeletion, helpPath } = el.dataset;
+
+  return initVueApp({
+    el,
+    name: 'ArchiveSettingsRoot',
+    component: ArchiveSettings,
+    props: {
+      resourceType,
+      resourceId,
+      resourcePath,
+      markedForDeletion: parseBoolean(markedForDeletion),
+      helpPath,
+    },
+  });
+}

@@ -1,0 +1,12 @@
+---
+description: Tracks creation of a new design
+action: create_design
+product_group: portfolio_planning
+product_categories:
+- design_management
+milestone: '13.5'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/44129
+tiers:
+  - free
+  - premium
+  - ultimate

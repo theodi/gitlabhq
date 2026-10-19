@@ -1,0 +1,10 @@
+query searchProjectTopics($search: String, $organizationId: OrganizationsOrganizationID) {
+  topics(search: $search, organizationId: $organizationId) {
+    nodes {
+      id
+      name
+      title
+      avatarUrl
+    }
+  }
+}

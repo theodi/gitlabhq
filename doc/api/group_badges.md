@@ -1,0 +1,223 @@
+---
+stage: Tenant Scale
+group: Organizations
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Group badges API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to interact with group badges. For more information, see [group badges](../user/project/badges.md#group-badges).
+
+Badges support placeholders that are replaced in real time in both the link and image URL.
+The following placeholders are available:
+
+- `%{project_path}`: replaced by the project path.
+- `%{project_title}`: replaced by the project title.
+- `%{project_name}`: replaced by the project name.
+- `%{project_id}`: replaced by the project ID.
+- `%{project_namespace}`: replaced by the project's namespace full path.
+- `%{group_name}`: replaced by the project's top-level group name.
+- `%{gitlab_server}`: replaced by the project's server name.
+- `%{gitlab_pages_domain}`: replaced by the domain name hosting GitLab Pages.
+- `%{default_branch}`: replaced by the project default branch.
+- `%{commit_sha}`: replaced by the project's last commit SHA.
+- `%{latest_tag}`: replaced by the project's last tag.
+
+Because these endpoints aren't inside a project's context, the information used to replace the placeholders comes
+from the first group's project by creation date. If the group has no project, the original URL with the placeholders is returned.
+
+## List all group badges
+
+Lists badges for a specified group.
+
+```plaintext
+GET /groups/:id/badges
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | integer or string | yes | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `name`    | string         | no  | Name of the badges to return (case-sensitive). |
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/badges?name=Coverage"
+```
+
+Example response:
+
+```json
+[
+  {
+    "name": "Coverage",
+    "id": 1,
+    "link_url": "http://example.com/ci_status.svg?project=%{project_path}&ref=%{default_branch}",
+    "image_url": "https://shields.io/my/badge",
+    "rendered_link_url": "http://example.com/ci_status.svg?project=example-org/example-project&ref=main",
+    "rendered_image_url": "https://shields.io/my/badge",
+    "kind": "group"
+  }
+]
+```
+
+## Retrieve a group badge
+
+Retrieves a specified badge for a group.
+
+```plaintext
+GET /groups/:id/badges/:badge_id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | integer or string | yes | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `badge_id` | integer | yes   | The badge ID |
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/badges/:badge_id"
+```
+
+Example response:
+
+```json
+{
+  "name": "Coverage",
+  "id": 1,
+  "link_url": "http://example.com/ci_status.svg?project=%{project_path}&ref=%{default_branch}",
+  "image_url": "https://shields.io/my/badge",
+  "rendered_link_url": "http://example.com/ci_status.svg?project=example-org/example-project&ref=main",
+  "rendered_image_url": "https://shields.io/my/badge",
+  "kind": "group"
+}
+```
+
+## Create a group badge
+
+Creates a badge for a specified group.
+
+```plaintext
+POST /groups/:id/badges
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | integer or string | yes | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `link_url` | string         | yes | URL of the badge link |
+| `image_url` | string | yes | URL of the badge image |
+| `name` | string | no | Name of the badge |
+
+```shell
+curl --request POST \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/badges" \
+  --data "link_url=https://gitlab.com/gitlab-org/gitlab-foss/commits/master&image_url=https://shields.io/my/badge1&name=mybadge&position=0"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "name": "mybadge",
+  "link_url": "https://gitlab.com/gitlab-org/gitlab-foss/commits/master",
+  "image_url": "https://shields.io/my/badge1",
+  "rendered_link_url": "https://gitlab.com/gitlab-org/gitlab-foss/commits/master",
+  "rendered_image_url": "https://shields.io/my/badge1",
+  "kind": "group"
+}
+```
+
+## Update a group badge
+
+Updates a specified badge for a group.
+
+```plaintext
+PUT /groups/:id/badges/:badge_id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | integer or string | yes | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `badge_id` | integer | yes   | The badge ID |
+| `link_url` | string         | no | URL of the badge link |
+| `image_url` | string | no | URL of the badge image |
+| `name` | string | no | Name of the badge |
+
+```shell
+curl --request PUT \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/badges/:badge_id"
+```
+
+Example response:
+
+```json
+{
+  "id": 1,
+  "name": "mybadge",
+  "link_url": "https://gitlab.com/gitlab-org/gitlab-foss/commits/master",
+  "image_url": "https://shields.io/my/badge",
+  "rendered_link_url": "https://gitlab.com/gitlab-org/gitlab-foss/commits/master",
+  "rendered_image_url": "https://shields.io/my/badge",
+  "kind": "group"
+}
+```
+
+## Delete a group badge
+
+Deletes a specified badge from a group.
+
+```plaintext
+DELETE /groups/:id/badges/:badge_id
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | integer or string | yes | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `badge_id` | integer | yes   | The badge ID |
+
+```shell
+curl --request DELETE \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/badges/:badge_id"
+```
+
+## Retrieve a group badge preview
+
+Retrieves a preview of the final `link_url` and `image_url` URLs for a specified group after resolving the placeholder interpolation.
+
+```plaintext
+GET /groups/:id/badges/render
+```
+
+| Attribute | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `id`      | integer or string | yes | The ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the group |
+| `link_url` | string         | yes | URL of the badge link|
+| `image_url` | string | yes | URL of the badge image |
+
+```shell
+curl --request GET \
+  --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/groups/:id/badges/render?link_url=http%3A%2F%2Fexample.com%2Fci_status.svg%3Fproject%3D%25%7Bproject_path%7D%26ref%3D%25%7Bdefault_branch%7D&image_url=https%3A%2F%2Fshields.io%2Fmy%2Fbadge"
+```
+
+Example response:
+
+```json
+{
+  "link_url": "http://example.com/ci_status.svg?project=%{project_path}&ref=%{default_branch}",
+  "image_url": "https://shields.io/my/badge",
+  "rendered_link_url": "http://example.com/ci_status.svg?project=example-org/example-project&ref=main",
+  "rendered_image_url": "https://shields.io/my/badge"
+}
+```

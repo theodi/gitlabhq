@@ -1,15 +1,92 @@
-# Repository files
+---
+stage: Create
+group: Source Code
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Documentation for the REST API for managing Git repository files in GitLab.
+title: Repository files API
+---
 
-**CRUD for repository files**
+{{< details >}}
 
-**Create, read, update and delete repository files using this API**
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
 
-## Get file from repository
+{{< /details >}}
 
-Allows you to receive information about file in repository like name, size, content. Note that file content is Base64 encoded.
+Use this API to manage [repository files](../user/project/repository/_index.md).
+You can also [configure rate limits](../rate_limits/api/repository-files.md)
+for this API.
 
+## Available scopes for personal access tokens
+
+[Personal access tokens](../user/profile/personal_access_tokens.md) support these scopes:
+
+| Scope             | Description |
+|-------------------|-------------|
+| `api`             | Allows read-write access to the repository files. |
+| `read_api`        | Allows read access to the repository files. |
+| `read_repository` | Allows read-access to the repository files. |
+
+## Retrieve a file from a repository
+
+Retrieves information about a specified file in a repository. This
+includes information like the name, size, and the file contents.
+File content is Base64 encoded. You can access this endpoint
+without authentication, if the repository is publicly accessible.
+
+For blobs larger than 10 MB, this endpoint has a rate limit of 5 requests per minute.
+
+```plaintext
+GET /projects/:id/repository/files/:file_path
 ```
-GET /projects/:id/repository/files
+
+Supported attributes:
+
+| Attribute   | Type              | Required | Description |
+|-------------|-------------------|----------|-------------|
+| `file_path` | string            | Yes      | URL-encoded full path to the file, such as `lib%2Fclass%2Erb`. |
+| `id`        | integer or string | Yes      | ID or [URL-encoded path](rest/_index.md#namespaced-paths) of the project. |
+| `ref`       | string            | Yes      | Name of branch, tag, or commit. Use `HEAD` to automatically use the default branch. |
+
+If successful, returns [`200 OK`](rest/troubleshooting.md#status-codes) and the following
+response attributes:
+
+| Attribute          | Type    | Description |
+|--------------------|---------|-------------|
+| `blob_id`          | string  | Blob SHA.   |
+| `commit_id`        | string  | Commit SHA for the file. |
+| `content`          | string  | Base64 encoded file content. |
+| `content_sha256`   | string  | SHA256 hash of the returned `content`. |
+| `encoding`         | string  | Encoding used for the file content. |
+| `execute_filemode` | boolean | If `true`, the execute flag is set on the file. |
+| `file_name`        | string  | Name of the file. |
+| `file_path`        | string  | Full path to the file. |
+| `last_commit_id`   | string  | SHA of the last commit that modified this file. |
+| `ref`              | string  | Name of the branch, tag, or commit used. |
+| `size`             | integer | Size of the raw Git blob in bytes. |
+
+> [!note]
+> For text files not stored as valid UTF-8 in Git (such as UTF-16 or `ISO-8859-1`),
+> `content` is converted to UTF-8 before Base64 encoding.
+> In these cases:
+>
+> - `size` reflects the raw blob size, which might differ from the length of the decoded content.
+> - `content_sha256` is the hash of the converted content, not the raw blob.
+>   It might not match `sha256sum` of the same file from `git clone` or when you select **Download**.
+>
+> To retrieve the exact bytes stored in Git, use the [raw file endpoint](#retrieve-a-raw-file-from-a-repository).
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/app%2Fmodels%2Fkey%2Erb?ref=main"
+```
+
+If you don't know the branch name or want to use the default branch, you can use `HEAD` as the
+`ref` value. For example:
+
+```shell
+curl --header "PRIVATE-TOKEN: " \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/app%2Fmodels%2Fkey%2Erb?ref=HEAD"
 ```
 
 Example response:
@@ -21,89 +98,372 @@ Example response:
   "size": 1476,
   "encoding": "base64",
   "content": "IyA9PSBTY2hlbWEgSW5mb3...",
-  "ref": "master",
+  "content_sha256": "4c294617b60715c1d218e61164a3abd4808a4284cbc30e6728a01ad9aada4481",
+  "ref": "main",
   "blob_id": "79f7bbd25901e8334750839545a9bd021f0e4c83",
-  "commit_id": "d5a3ff139356ce33e37e73add446f16869741b50"
+  "commit_id": "d5a3ff139356ce33e37e73add446f16869741b50",
+  "last_commit_id": "570e7b2abdd848b95f2f578043fc23bd6f6fd24d",
+  "execute_filemode": false
 }
 ```
 
-Parameters:
+### Get file metadata only
 
-- `file_path` (required) - Full path to new file. Ex. lib/class.rb
-- `ref` (required) - The name of branch, tag or commit
+You can also use `HEAD` to fetch just file metadata.
 
-## Create new file in repository
-
+```plaintext
+HEAD /projects/:id/repository/files/:file_path
 ```
-POST /projects/:id/repository/files
+
+```shell
+curl --head --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/app%2Fmodels%2Fkey%2Erb?ref=main"
+```
+
+Example response:
+
+```plaintext
+HTTP/1.1 200 OK
+...
+X-Gitlab-Blob-Id: 79f7bbd25901e8334750839545a9bd021f0e4c83
+X-Gitlab-Commit-Id: d5a3ff139356ce33e37e73add446f16869741b50
+X-Gitlab-Content-Sha256: 4c294617b60715c1d218e61164a3abd4808a4284cbc30e6728a01ad9aada4481
+X-Gitlab-Encoding: base64
+X-Gitlab-File-Name: key.rb
+X-Gitlab-File-Path: app/models/key.rb
+X-Gitlab-Last-Commit-Id: 570e7b2abdd848b95f2f578043fc23bd6f6fd24d
+X-Gitlab-Ref: main
+X-Gitlab-Size: 1476
+X-Gitlab-Execute-Filemode: false
+...
+```
+
+## Retrieve file blame history from a repository
+
+{{< history >}}
+
+- Rate limit [introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/261912) in GitLab 19.6.
+
+{{< /history >}}
+
+Retrieves blame history for a specified file in a repository. Each blame range contains lines and their corresponding commit information.
+
+This endpoint has the following rate limits:
+
+- Authenticated requests: 400 requests every minute for each user and project. Configure with the
+  `project_repositories_blame_limit` [application setting](settings.md#available-settings).
+- Unauthenticated requests: 400 requests every minute for each IP address. Configure with the
+  `project_repositories_blame_unauthenticated_limit` [application setting](settings.md#available-settings).
+
+Set a limit to `0` to disable it. Requests over a limit return
+`429 Too Many Requests`.
+`HEAD` requests do not count toward these limits.
+
+```plaintext
+GET /projects/:id/repository/files/:file_path/blame
+```
+
+Supported attributes:
+
+| Attribute      | Type              | Required | Description |
+|----------------|-------------------|----------|-------------|
+| `file_path`    | string            | Yes      | URL-encoded full path to the file, such as `lib%2Fclass%2Erb`. |
+| `id`           | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `ref`          | string            | Yes      | Name of branch, tag, or commit. Use `HEAD` to automatically use the default branch. |
+| `range`        | hash              | No       | Blame range. |
+| `range[end]`   | integer           | No       | Last line of the range to blame. |
+| `range[start]` | integer           | No       | First line of the range to blame. |
+
+If successful, returns [`200 OK`](rest/troubleshooting.md#status-codes) and the following
+response attributes:
+
+| Attribute | Type   | Description |
+|-----------|--------|-------------|
+| `commit`  | object | Commit information for the blame range. |
+| `lines`   | array  | Array of lines for this blame range. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/path%2Fto%2Ffile.rb/blame?ref=main"
+```
+
+Example response:
+
+```json
+[
+  {
+    "commit": {
+      "id": "d42409d56517157c48bf3bd97d3f75974dde19fb",
+      "message": "Add feature\n\nalso fix bug\n",
+      "parent_ids": [
+        "cc6e14f9328fa6d7b5a0d3c30dc2002a3f2a3822"
+      ],
+      "authored_date": "2015-12-18T08:12:22.000Z",
+      "author_name": "John Doe",
+      "author_email": "john.doe@example.com",
+      "committed_date": "2015-12-18T08:12:22.000Z",
+      "committer_name": "John Doe",
+      "committer_email": "john.doe@example.com"
+    },
+    "lines": [
+      "require 'fileutils'",
+      "require 'open3'",
+      ""
+    ]
+  }
+]
+```
+
+### Get file blame metadata only
+
+Use the `HEAD` method to return just file blame metadata.
+
+```plaintext
+HEAD /projects/:id/repository/files/:file_path/blame
+```
+
+```shell
+curl --head --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/path%2Fto%2Ffile.rb/blame?ref=main"
+```
+
+Example response:
+
+```plaintext
+HTTP/1.1 200 OK
+...
+X-Gitlab-Blob-Id: 79f7bbd25901e8334750839545a9bd021f0e4c83
+X-Gitlab-Commit-Id: d5a3ff139356ce33e37e73add446f16869741b50
+X-Gitlab-Content-Sha256: 4c294617b60715c1d218e61164a3abd4808a4284cbc30e6728a01ad9aada4481
+X-Gitlab-Encoding: base64
+X-Gitlab-File-Name: file.rb
+X-Gitlab-File-Path: path/to/file.rb
+X-Gitlab-Last-Commit-Id: 570e7b2abdd848b95f2f578043fc23bd6f6fd24d
+X-Gitlab-Ref: main
+X-Gitlab-Size: 1476
+X-Gitlab-Execute-Filemode: false
+...
+```
+
+### Request a blame range
+
+To request a blame range, specify `range[start]` and `range[end]` parameters with
+the starting and ending line numbers of the file.
+
+```shell
+curl --head --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/path%2Fto%2Ffile.rb/blame?ref=main&range[start]=1&range[end]=2"
+```
+
+Example response:
+
+```json
+[
+  {
+    "commit": {
+      "id": "d42409d56517157c48bf3bd97d3f75974dde19fb",
+      "message": "Add feature\n\nalso fix bug\n",
+      "parent_ids": [
+        "cc6e14f9328fa6d7b5a0d3c30dc2002a3f2a3822"
+      ],
+      "authored_date": "2015-12-18T08:12:22.000Z",
+      "author_name": "John Doe",
+      "author_email": "john.doe@example.com",
+      "committed_date": "2015-12-18T08:12:22.000Z",
+      "committer_name": "John Doe",
+      "committer_email": "john.doe@example.com"
+    },
+    "lines": [
+      "require 'fileutils'",
+      "require 'open3'"
+    ]
+  }
+]
+```
+
+## Retrieve a raw file from a repository
+
+Retrieves the raw file contents on a specified file in a repository.
+
+```plaintext
+GET /projects/:id/repository/files/:file_path/raw
+```
+
+Supported attributes:
+
+| Attribute   | Type              | Required | Description |
+|-------------|-------------------|----------|-------------|
+| `file_path` | string            | Yes      | URL-encoded full path to the file, such as `lib%2Fclass%2Erb`. |
+| `id`        | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `lfs`       | boolean           | No       | If `true`, determines if the response should be Git LFS file contents, rather than the pointer. Ignored if the file is not tracked by Git LFS. Defaults to `false`. |
+| `ref`       | string            | No       | Name of branch, tag, or commit. Default is the `HEAD` of the project. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/app%2Fmodels%2Fkey%2Erb/raw?ref=main"
+```
+
+> [!note]
+> Similar to [retrieving a file from a repository](#retrieve-a-file-from-a-repository),
+> you can use `HEAD` to get just file metadata.
+
+## Create a file in a repository
+
+{{< history >}}
+
+- Request size and rate limits introduced in GitLab 18.7.
+
+{{< /history >}}
+
+Creates a file in a specified repository. To create multiple files with a single request,
+see the [commits API](commits.md#create-a-commit).
+
+```plaintext
+POST /projects/:id/repository/files/:file_path
+```
+
+> [!note]
+> This endpoint is subject to [request size and rate limits](../administration/instance_limits.md#commits-and-files-api-limits). Requests larger than a default 300 MB limit are rejected. Requests greater than 20 MB are rate limited to 3 requests every 30 seconds.
+
+Supported attributes:
+
+| Attribute          | Type              | Required | Description |
+|--------------------|-------------------|----------|-------------|
+| `branch`           | string            | Yes      | Name of the branch to create. The commit is added to this branch. |
+| `commit_message`   | string            | Yes      | Commit message. |
+| `content`          | string            | Yes      | The file's content. |
+| `file_path`        | string            | Yes      | URL-encoded full path to the file. For example: `lib%2Fclass%2Erb`. |
+| `id`               | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `author_email`     | string            | No       | Commit author's email address. |
+| `author_name`      | string            | No       | Commit author's name. |
+| `encoding`         | string            | No       | Change encoding to `base64`. Default is `text`. |
+| `execute_filemode` | boolean           | No       | If `true`, enables the `execute` flag on the file. If `false`, disables the `execute` flag on the file. |
+| `start_branch`     | string            | No       | Name of the base branch to create the branch from. |
+
+If successful, returns [`201 Created`](rest/troubleshooting.md#status-codes) and the following
+response attributes:
+
+| Attribute   | Type   | Description |
+|-------------|--------|-------------|
+| `branch`    | string | Name of the branch the file was created in. |
+| `file_path` | string | Path to the created file. |
+
+```shell
+curl --request POST \
+  --header 'PRIVATE-TOKEN: <your_access_token>' \
+  --header "Content-Type: application/json" \
+  --data '{"branch": "main", "author_email": "author@example.com", "author_name": "Firstname Lastname",
+            "content": "some content", "commit_message": "create a new file"}' \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/app%2Fproject%2Erb"
 ```
 
 Example response:
 
 ```json
 {
-  "file_name": "app/project.rb",
-  "branch_name": "master"
+  "file_path": "app/project.rb",
+  "branch": "main"
 }
 ```
 
-Parameters:
+## Update a file in a repository
 
-- `file_path` (required) - Full path to new file. Ex. lib/class.rb
-- `branch_name` (required) - The name of branch
-- `encoding` (optional) - 'text' or 'base64'. Text is default.
-- `content` (required) - File content
-- `commit_message` (required) - Commit message
+{{< history >}}
 
-## Update existing file in repository
+- Request size and rate limits introduced in GitLab 18.7.
 
+{{< /history >}}
+
+Updates a specified file in a repository. To update multiple files with a single request,
+see the [commits API](commits.md#create-a-commit).
+
+```plaintext
+PUT /projects/:id/repository/files/:file_path
 ```
-PUT /projects/:id/repository/files
+
+> [!note]
+> This endpoint is subject to [request size and rate limits](../administration/instance_limits.md#commits-and-files-api-limits). Requests larger than a default 300 MB limit are rejected. Requests greater than 20 MB are rate limited to 3 requests every 30 seconds.
+
+Supported attributes:
+
+| Attribute        | Type              | Required | Description |
+| ---------------- | ----------------- | -------- | ----------- |
+| `branch`         | string            | Yes      | Name of the branch to create. The commit is added to this branch. |
+| `commit_message` | string            | Yes      | Commit message. |
+| `content`        | string            | Yes      | File's content. |
+| `file_path`      | string            | Yes      | URL-encoded full path to the file. For example: `lib%2Fclass%2Erb`. |
+| `id`             | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths)  |
+| `author_email`   | string            | No       | Commit author's email address. |
+| `author_name`    | string            | No       | Commit author's name. |
+| `encoding`       | string            | No       | Change encoding to `base64`. Default is `text`. |
+| `execute_filemode` | boolean         | No       | If `true`, enables the `execute` flag on the file. If `false`, disables the `execute` flag on the file. |
+| `last_commit_id` | string            | No       | Last known file commit ID. |
+| `start_branch`   | string            | No       | Name of the base branch to create the branch from. |
+
+If successful, returns [`200 OK`](rest/troubleshooting.md#status-codes) and the following
+response attributes:
+
+| Attribute   | Type   | Description |
+|-------------|--------|-------------|
+| `branch`    | string | Name of the branch the file was updated in. |
+| `file_path` | string | Path to the updated file. |
+
+```shell
+curl --request PUT \
+  --header 'PRIVATE-TOKEN: <your_access_token>' \
+  --header "Content-Type: application/json" \
+  --data '{"branch": "main", "author_email": "author@example.com", "author_name": "Firstname Lastname",
+       "content": "some content", "commit_message": "update file"}' \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/app%2Fproject%2Erb"
 ```
 
 Example response:
 
 ```json
 {
-  "file_name": "app/project.rb",
-  "branch_name": "master"
+  "file_path": "app/project.rb",
+  "branch": "main"
 }
 ```
 
-Parameters:
-
-- `file_path` (required) - Full path to file. Ex. lib/class.rb
-- `branch_name` (required) - The name of branch
-- `encoding` (optional) - 'text' or 'base64'. Text is default.
-- `content` (required) - New file content
-- `commit_message` (required) - Commit message
-
-If the commit fails for any reason we return a 400 error with a non-specific
+If the commit fails for any reason, the API returns a `400 Bad Request` error with a non-specific
 error message. Possible causes for a failed commit include:
-- the `file_path` contained `/../` (attempted directory traversal);
-- the new file contents were identical to the current file contents, i.e. the
-  user tried to make an empty commit;
-- the branch was updated by a Git push while the file edit was in progress.
 
-Currently gitlab-shell has a boolean return code, preventing GitLab from specifying the error.
+- The `file_path` contained `/../` (attempted directory traversal).
+- The commit was empty: new file contents were identical to the current file contents.
+- Someone updated the branch with `git push` while the file edit was in progress.
 
-## Delete existing file in repository
+[GitLab Shell](https://gitlab.com/gitlab-org/gitlab-shell/) has a Boolean return code, preventing GitLab from specifying the error.
 
-```
-DELETE /projects/:id/repository/files
-```
+## Delete a file in a repository
 
-Example response:
+Deletes a specified file in a repository. To delete multiple files with a single request,
+see the [commits API](commits.md#create-a-commit).
 
-```json
-{
-  "file_name": "app/project.rb",
-  "branch_name": "master"
-}
+```plaintext
+DELETE /projects/:id/repository/files/:file_path
 ```
 
-Parameters:
+Supported attributes:
 
-- `file_path` (required) - Full path to file. Ex. lib/class.rb
-- `branch_name` (required) - The name of branch
-- `commit_message` (required) - Commit message
+| Attribute        | Type              | Required | Description |
+|------------------|-------------------|----------|-------------|
+| `branch`         | string            | Yes      | Name of the branch to create. The commit is added to this branch. |
+| `commit_message` | string            | Yes      | Commit message. |
+| `file_path`      | string            | Yes      | URL-encoded full path to the file. For example: `lib%2Fclass%2Erb`. |
+| `id`             | integer or string | Yes      | ID or [URL-encoded path of the project](rest/_index.md#namespaced-paths). |
+| `author_email`   | string            | No       | Commit author's email address. |
+| `author_name`    | string            | No       | Commit author's name. |
+| `last_commit_id` | string            | No       | Last known file commit ID. |
+| `start_branch`   | string            | No       | Name of the base branch to create the branch from. |
+
+If successful, returns [`200 OK`](rest/troubleshooting.md#status-codes).
+
+```shell
+curl --request DELETE \
+  --header 'PRIVATE-TOKEN: <your_access_token>' \
+  --header "Content-Type: application/json" \
+  --data '{"branch": "main", "author_email": "author@example.com", "author_name": "Firstname Lastname",
+       "commit_message": "delete file"}' \
+  --url "https://gitlab.example.com/api/v4/projects/13083/repository/files/app%2Fproject%2Erb"
+```

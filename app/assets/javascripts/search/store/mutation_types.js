@@ -1,0 +1,22 @@
+export const REQUEST_GROUPS = 'REQUEST_GROUPS';
+export const RECEIVE_GROUPS_SUCCESS = 'RECEIVE_GROUPS_SUCCESS';
+export const RECEIVE_GROUPS_ERROR = 'RECEIVE_GROUPS_ERROR';
+
+export const REQUEST_PROJECTS = 'REQUEST_PROJECTS';
+export const RECEIVE_PROJECTS_SUCCESS = 'RECEIVE_PROJECTS_SUCCESS';
+export const RECEIVE_PROJECTS_ERROR = 'RECEIVE_PROJECTS_ERROR';
+
+export const SET_QUERY = 'SET_QUERY';
+
+export const LOAD_FREQUENT_ITEMS = 'LOAD_FREQUENT_ITEMS';
+export const RECEIVE_NAVIGATION_COUNT = 'RECEIVE_NAVIGATION_COUNT';
+
+export const REQUEST_AGGREGATIONS = 'REQUEST_AGGREGATIONS';
+// Zoekt variant: flips `fetching` on without wiping existing buckets, so the
+// sidebar can display a "refreshing" state over the previous results instead
+// of flashing empty while a new tally is fetched.
+export const REQUEST_AGGREGATIONS_LOADING = 'REQUEST_AGGREGATIONS_LOADING';
+export const RECEIVE_AGGREGATIONS_SUCCESS = 'RECEIVE_AGGREGATIONS_SUCCESS';
+export const RECEIVE_AGGREGATIONS_ERROR = 'RECEIVE_AGGREGATIONS_ERROR';
+
+export const SET_LABEL_SEARCH_STRING = 'SET_LABEL_SEARCH_STRING';

@@ -1,0 +1,94 @@
+<script>
+import { GlButton, GlButtonGroup, GlTooltipDirective as GlTooltip } from '@gitlab/ui';
+import { s__ } from '~/locale';
+
+export const i18n = {
+  playTooltip: s__('PipelineSchedules|Run scheduled pipeline'),
+  editTooltip: s__('PipelineSchedules|Edit scheduled pipeline'),
+  deleteTooltip: s__('PipelineSchedules|Delete scheduled pipeline'),
+  takeOwnershipTooltip: s__('PipelineSchedules|Take ownership of pipeline schedule'),
+};
+
+export default {
+  name: 'PipelineScheduleActions',
+  i18n,
+  components: {
+    GlButton,
+    GlButtonGroup,
+  },
+  directives: {
+    GlTooltip,
+  },
+  props: {
+    schedule: {
+      type: Object,
+      required: true,
+    },
+    currentUser: {
+      type: Object,
+      required: true,
+    },
+  },
+  emits: ['play-pipeline-schedule', 'show-delete-modal', 'show-take-ownership-modal'],
+  computed: {
+    canPlay() {
+      return this.schedule.userPermissions.playPipelineSchedule;
+    },
+    isCurrentUserOwner() {
+      return this.schedule.owner?.username === this.currentUser.username;
+    },
+    canTakeOwnership() {
+      return !this.isCurrentUserOwner && this.schedule.userPermissions.adminPipelineSchedule;
+    },
+    canUpdate() {
+      return this.schedule.userPermissions.updatePipelineSchedule;
+    },
+    canRemove() {
+      return this.schedule.userPermissions.adminPipelineSchedule;
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="gl-flex gl-justify-end">
+    <gl-button-group>
+      <gl-button
+        v-if="canPlay"
+        v-gl-tooltip
+        :title="$options.i18n.playTooltip"
+        :aria-label="$options.i18n.playTooltip"
+        icon="play"
+        data-testid="play-pipeline-schedule-btn"
+        @click="$emit('play-pipeline-schedule', schedule.id)"
+      />
+      <gl-button
+        v-if="canTakeOwnership"
+        v-gl-tooltip
+        :title="$options.i18n.takeOwnershipTooltip"
+        icon="user"
+        data-testid="take-ownership-pipeline-schedule-btn"
+        @click="$emit('show-take-ownership-modal', schedule.id)"
+      />
+      <gl-button
+        v-if="canUpdate"
+        v-gl-tooltip
+        :href="schedule.editPath"
+        :title="$options.i18n.editTooltip"
+        :aria-label="$options.i18n.editTooltip"
+        icon="pencil"
+        data-testid="edit-pipeline-schedule-btn"
+      />
+      <gl-button
+        v-if="canRemove"
+        v-gl-tooltip
+        :title="$options.i18n.deleteTooltip"
+        :aria-label="$options.i18n.deleteTooltip"
+        icon="remove"
+        variant="danger"
+        data-testid="delete-pipeline-schedule-btn"
+        @click="$emit('show-delete-modal', schedule.id)"
+      />
+    </gl-button-group>
+  </div>
+</template>

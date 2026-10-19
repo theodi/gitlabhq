@@ -1,0 +1,50 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+
+import {
+  VISIBILITY_LEVEL_PRIVATE_STRING,
+  VISIBILITY_LEVELS_INTEGER_TO_STRING,
+} from '~/visibility_level/constants';
+import Translate from '~/vue_shared/translate';
+
+Vue.use(VueApollo);
+Vue.use(Translate);
+
+export default function appFactory(el, Component) {
+  if (!el) {
+    return false;
+  }
+
+  const apolloProvider = new VueApollo({
+    defaultClient: createDefaultClient(),
+  });
+
+  const {
+    visibilityLevels = '[]',
+    selectedLevel,
+    multipleLevelsRestricted,
+    canReportSpam,
+    reportAbusePath,
+    ...restDataset
+  } = el.dataset;
+
+  return initVueApp({
+    el,
+    name: 'SnippetsRoot',
+    apolloProvider,
+    provide: {
+      visibilityLevels: JSON.parse(visibilityLevels),
+      selectedLevel:
+        VISIBILITY_LEVELS_INTEGER_TO_STRING[selectedLevel] ?? VISIBILITY_LEVEL_PRIVATE_STRING,
+      multipleLevelsRestricted: 'multipleLevelsRestricted' in el.dataset,
+      reportAbusePath,
+      canReportSpam,
+    },
+    component: Component,
+    props: {
+      ...restDataset,
+    },
+  });
+}

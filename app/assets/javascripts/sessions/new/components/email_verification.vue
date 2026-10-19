@@ -1,0 +1,331 @@
+<script>
+import { GlSprintf, GlForm, GlFormGroup, GlFormInput, GlButton, GlLink } from '@gitlab/ui';
+import { visitUrl } from '~/lib/utils/url_utility';
+import { applyDeepLinkFragment } from '~/authentication/sessions/post_signin_fragment';
+import { createAlert, VARIANT_SUCCESS } from '~/alert';
+import axios from '~/lib/utils/axios_utils';
+import GlCountdown from '~/vue_shared/components/gl_countdown.vue';
+import { PASSWORD_MANAGER_IGNORE_ATTRS } from '~/lib/utils/forms';
+import {
+  I18N_EXPLANATION,
+  I18N_INPUT_LABEL,
+  I18N_EMAIL_EMPTY_CODE,
+  I18N_EMAIL_INVALID_CODE,
+  I18N_SUBMIT_BUTTON,
+  I18N_DIDNT_GET_CODE_RESEND_LINK,
+  I18N_RESEND_CODE,
+  I18N_RESEND_CODE_IN,
+  I18N_SKIP_FOR_NOW_BUTTON,
+  I18N_EMAIL_RESEND_SUCCESS,
+  I18N_GENERIC_ERROR,
+  I18N_HELP_TEXT,
+  I18N_SEND_TO_SECONDARY_EMAIL_BUTTON_TEXT,
+  I18N_SEND_TO_SECONDARY_EMAIL_GUIDE,
+  SUPPORT_URL,
+  VERIFICATION_CODE_REGEX,
+  SUCCESS_RESPONSE,
+} from '../constants';
+import EmailForm from './email_form.vue';
+
+const VERIFY_TOKEN_FORM = 'VERIFY_TOKEN_FORM';
+const SEND_TO_SECONDARY_EMAIL_FORM = 'SEND_TO_SECONDARY_EMAIL_FORM';
+
+export default {
+  name: 'EmailVerification',
+  components: {
+    GlSprintf,
+    GlForm,
+    GlFormGroup,
+    GlFormInput,
+    GlButton,
+    GlLink,
+    GlCountdown,
+    EmailForm,
+  },
+  props: {
+    username: {
+      type: String,
+      required: true,
+    },
+    obfuscatedEmail: {
+      type: String,
+      required: true,
+    },
+    verifyPath: {
+      type: String,
+      required: true,
+    },
+    resendPath: {
+      type: String,
+      required: true,
+    },
+    skipPath: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    initialShowResendAfter: {
+      type: Number,
+      required: false,
+      default: null,
+    },
+  },
+  data() {
+    return {
+      email: this.obfuscatedEmail,
+      verificationCode: '',
+      submitted: false,
+      verifyError: '',
+      activeForm: VERIFY_TOKEN_FORM,
+      showResendAfter: this.initialShowResendAfter,
+    };
+  },
+  computed: {
+    showResend() {
+      return new Date(this.showResendAfter) <= new Date();
+    },
+    resendAfterDateString() {
+      return this.showResendAfter ? new Date(this.showResendAfter).toString() : null;
+    },
+    inputValidation() {
+      return {
+        state: !(this.submitted && this.invalidFeedback),
+        message: this.invalidFeedback,
+      };
+    },
+    invalidFeedback() {
+      if (!this.submitted) {
+        return '';
+      }
+
+      if (!this.verificationCode) {
+        return I18N_EMAIL_EMPTY_CODE;
+      }
+
+      if (!VERIFICATION_CODE_REGEX.test(this.verificationCode)) {
+        return I18N_EMAIL_INVALID_CODE;
+      }
+
+      return this.verifyError;
+    },
+  },
+  watch: {
+    verificationCode() {
+      this.verifyError = '';
+    },
+  },
+  methods: {
+    verify() {
+      this.submitted = true;
+
+      if (!this.inputValidation.state) return;
+
+      axios
+        .post(this.verifyPath, { user: { verification_token: this.verificationCode } })
+        .then(this.handleVerificationResponse)
+        .catch(this.handleVerifyError);
+    },
+    handleVerificationResponse(response) {
+      if (response.data.status === SUCCESS_RESPONSE) {
+        visitUrl(applyDeepLinkFragment(response.data.redirect_path));
+      } else {
+        this.handleError();
+      }
+    },
+    handleVerifyError(error) {
+      const data = error?.response?.data;
+      if (data?.message) {
+        this.verifyError = data.message;
+      } else {
+        this.handleError(error);
+      }
+    },
+    resend(email = '') {
+      axios
+        .post(this.resendPath, { user: { email } })
+        .then(this.handleResendResponse)
+        .catch(this.handleResendError)
+        .finally(this.resetForm);
+    },
+    sendToSecondaryEmail(email) {
+      this.verifyToken(email);
+      this.resend(email);
+    },
+    skip() {
+      if (!this.skipPath) return;
+
+      axios
+        .post(this.skipPath, { user: { login: this.username } })
+        .then(this.handleSkipResponse)
+        .catch(this.handleSkipError);
+    },
+    handleSkipResponse(response) {
+      if (response.data.status === SUCCESS_RESPONSE) {
+        visitUrl(applyDeepLinkFragment(response.data.redirect_path));
+      } else {
+        this.handleError();
+      }
+    },
+    handleSkipError(error) {
+      const data = error?.response?.data;
+      if (data?.message) {
+        createAlert({ message: data.message });
+      } else {
+        this.handleError(error);
+      }
+    },
+    handleResendResponse(response) {
+      if (response.data.status === SUCCESS_RESPONSE) {
+        this.showResendAfter = response.data.show_resend_after ?? null;
+        createAlert({
+          message: I18N_EMAIL_RESEND_SUCCESS,
+          variant: VARIANT_SUCCESS,
+        });
+      } else {
+        this.handleError();
+      }
+    },
+    handleResendError(error) {
+      const data = error?.response?.data;
+      if (data?.message) {
+        createAlert({ message: data.message });
+      } else {
+        this.handleError(error);
+      }
+    },
+    onResendTimerExpired() {
+      this.showResendAfter = null;
+    },
+    handleError(error) {
+      createAlert({
+        message: I18N_GENERIC_ERROR,
+        captureError: true,
+        error,
+      });
+    },
+    resetForm() {
+      this.verificationCode = '';
+      this.submitted = false;
+      this.$refs.input.$el.focus();
+    },
+    verifyToken(email = '') {
+      this.activeForm = this.$options.forms.verifyTokenForm;
+      if (email.length) this.email = email;
+      this.$nextTick(this.resetForm);
+    },
+  },
+  i18n: {
+    explanation: I18N_EXPLANATION,
+    inputLabel: I18N_INPUT_LABEL,
+    submitButton: I18N_SUBMIT_BUTTON,
+    didntGetCoderesendLink: I18N_DIDNT_GET_CODE_RESEND_LINK,
+    resendCodeIn: I18N_RESEND_CODE_IN,
+    resendCode: I18N_RESEND_CODE,
+    helpText: I18N_HELP_TEXT,
+    sendToSecondaryEmailButtonText: I18N_SEND_TO_SECONDARY_EMAIL_BUTTON_TEXT,
+    sendToSecondaryEmailGuide: I18N_SEND_TO_SECONDARY_EMAIL_GUIDE,
+    skipForNowButton: I18N_SKIP_FOR_NOW_BUTTON,
+    supportUrl: SUPPORT_URL,
+  },
+  forms: {
+    verifyTokenForm: VERIFY_TOKEN_FORM,
+    sendToSecondaryEmailForm: SEND_TO_SECONDARY_EMAIL_FORM,
+  },
+  passwordManagerIgnoreAttrs: PASSWORD_MANAGER_IGNORE_ATTRS,
+};
+</script>
+
+<template>
+  <div>
+    <email-form
+      v-if="activeForm === $options.forms.sendToSecondaryEmailForm"
+      :form-info="$options.i18n.sendToSecondaryEmailGuide"
+      :submit-text="$options.i18n.resendCode"
+      @submit-email="sendToSecondaryEmail"
+      @cancel="verifyToken"
+    />
+    <gl-form v-else-if="activeForm === $options.forms.verifyTokenForm" @submit.prevent="verify">
+      <section class="gl-mb-5">
+        <gl-sprintf :message="$options.i18n.explanation">
+          <template #username>{{ username }}</template>
+          <template #email>
+            <strong>{{ email }}</strong>
+          </template>
+        </gl-sprintf>
+      </section>
+      <gl-form-group
+        :label="$options.i18n.inputLabel"
+        label-for="verification-code"
+        :state="inputValidation.state"
+        :invalid-feedback="inputValidation.message"
+      >
+        <gl-form-input
+          id="verification-code"
+          ref="input"
+          v-model="verificationCode"
+          v-bind="$options.passwordManagerIgnoreAttrs"
+          autocomplete="one-time-code"
+          autofocus
+          data-testid="verification-code-field"
+          inputmode="numeric"
+          maxlength="6"
+          :state="inputValidation.state"
+        />
+
+        <!-- Resend button -->
+        <template #description>
+          <gl-sprintf v-if="showResend" :message="$options.i18n.didntGetCoderesendLink">
+            <template #button="{ content }">
+              <gl-button variant="link" category="tertiary" @click="() => resend()">
+                {{ content }}
+              </gl-button>
+            </template>
+          </gl-sprintf>
+          <gl-sprintf v-else :message="$options.i18n.resendCodeIn">
+            <template #timer>
+              <gl-countdown
+                class="gl-inline-block"
+                :end-date-string="resendAfterDateString"
+                @timer-expired="onResendTimerExpired"
+              />
+            </template>
+          </gl-sprintf>
+        </template>
+      </gl-form-group>
+
+      <section class="gl-mt-5">
+        <gl-button
+          block
+          variant="confirm"
+          type="submit"
+          class="js-no-auto-disable"
+          :disabled="!inputValidation.state"
+          >{{ $options.i18n.submitButton }}</gl-button
+        >
+      </section>
+
+      <!-- Skip button -->
+      <section class="gl-mt-3">
+        <gl-button v-if="skipPath" block variant="link" @click="skip">
+          {{ $options.i18n.skipForNowButton }}
+        </gl-button>
+      </section>
+
+      <p class="gl-mt-3 gl-text-subtle">
+        <gl-sprintf :message="$options.i18n.helpText">
+          <template #sendToSecondaryEmailButton>
+            <gl-button
+              class="gl-align-baseline"
+              variant="link"
+              @click="() => (activeForm = $options.forms.sendToSecondaryEmailForm)"
+              >{{ $options.i18n.sendToSecondaryEmailButtonText }}</gl-button
+            >
+          </template>
+          <template #supportLink="{ content }">
+            <gl-link :href="$options.i18n.supportUrl" target="_blank">{{ content }}</gl-link>
+          </template>
+        </gl-sprintf>
+      </p>
+    </gl-form>
+  </div>
+</template>

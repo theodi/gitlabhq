@@ -1,0 +1,155 @@
+import { GlSearchBoxByClick } from '@gitlab/ui';
+import { mount } from '@vue/test-utils';
+import { extendedWrapper } from 'helpers/vue_test_utils_helper';
+import setWindowLocation from 'helpers/set_window_location_helper';
+import SortDropdown from '~/branches/components/sort_dropdown.vue';
+import * as urlUtils from '~/lib/utils/url_utility';
+
+describe('Branches Sort Dropdown', () => {
+  let wrapper;
+
+  const createWrapper = (props = {}, state = 'all') => {
+    return extendedWrapper(
+      mount(SortDropdown, {
+        provide: {
+          mode: 'overview',
+          projectBranchesFilteredPath: `/root/ci-cd-project-demo/-/branches?state=${state}`,
+          sortOptions: {
+            name_asc: 'Name',
+            updated_asc: 'Oldest updated',
+            updated_desc: 'Last updated',
+          },
+          showDropdown: false,
+          sortedBy: 'updated_desc',
+          ...props,
+        },
+      }),
+    );
+  };
+
+  const findSearchBox = () => wrapper.findComponent(GlSearchBoxByClick);
+  const findBranchesDropdown = () => wrapper.findByTestId('branches-dropdown');
+
+  describe('When in overview mode', () => {
+    beforeEach(() => {
+      wrapper = createWrapper();
+    });
+
+    it('should have a search box with a placeholder', () => {
+      const searchBox = findSearchBox();
+
+      expect(searchBox.exists()).toBe(true);
+      expect(searchBox.find('input').attributes('placeholder')).toBe('Filter by branch name');
+    });
+
+    it('should not have a branches dropdown when in overview mode', () => {
+      const branchesDropdown = findBranchesDropdown();
+
+      expect(branchesDropdown.exists()).toBe(false);
+    });
+  });
+
+  describe('when in All branches mode', () => {
+    beforeEach(() => {
+      wrapper = createWrapper({ mode: 'all', showDropdown: true });
+    });
+
+    it('should have a search box with a placeholder', () => {
+      const searchBox = findSearchBox();
+
+      expect(searchBox.exists()).toBe(true);
+      expect(searchBox.find('input').attributes('placeholder')).toBe('Filter by branch name');
+    });
+
+    it('should have a branches dropdown', () => {
+      const branchesDropdown = findBranchesDropdown();
+
+      expect(branchesDropdown.exists()).toBe(true);
+    });
+  });
+
+  describe('when url contains a search param', () => {
+    const branchName = 'branch-1';
+
+    it('should set the default the input value to search param', () => {
+      setWindowLocation(`/root/ci-cd-project-demo/-/branches?search=${branchName}`);
+      wrapper = createWrapper();
+      expect(findSearchBox().props('value')).toBe(branchName);
+    });
+
+    it('preserves plus in branch search (e.g. release/4.5+4)', () => {
+      setWindowLocation('/root/ci-cd-project-demo/-/branches?search=release%2F4.5%2B4');
+      wrapper = createWrapper();
+      expect(findSearchBox().props('value')).toBe('release/4.5+4');
+    });
+  });
+
+  describe('when submitting a search term', () => {
+    beforeEach(() => {
+      urlUtils.visitUrl = jest.fn();
+      wrapper = createWrapper();
+    });
+
+    it('should call visitUrl', () => {
+      const searchTerm = 'branch-1';
+      const searchBox = findSearchBox();
+      searchBox.vm.$emit('input', searchTerm);
+      searchBox.vm.$emit('submit');
+
+      expect(urlUtils.visitUrl).toHaveBeenCalledWith(
+        '/root/ci-cd-project-demo/-/branches?state=all&sort=updated_desc&search=branch-1',
+      );
+    });
+  });
+
+  describe('when state is not "all" and search term is submitted', () => {
+    beforeEach(() => {
+      urlUtils.visitUrl = jest.fn();
+      wrapper = createWrapper({}, 'active');
+    });
+
+    it('should call visitUrl with state=all', () => {
+      const searchTerm = 'branch-1';
+      const searchBox = findSearchBox();
+      searchBox.vm.$emit('input', searchTerm);
+      searchBox.vm.$emit('submit');
+
+      expect(urlUtils.visitUrl).toHaveBeenCalledWith(
+        '/root/ci-cd-project-demo/-/branches?state=all&sort=updated_desc&search=branch-1',
+      );
+    });
+  });
+
+  describe('when clearing the search field', () => {
+    beforeEach(() => {
+      urlUtils.visitUrl = jest.fn();
+    });
+
+    describe('when the page was loaded with a search param in the URL', () => {
+      beforeEach(() => {
+        setWindowLocation('/root/ci-cd-project-demo/-/branches?search=branch-1');
+        wrapper = createWrapper();
+      });
+
+      it('navigates to the all branches path without a search param on clear', () => {
+        findSearchBox().vm.$emit('clear');
+
+        expect(urlUtils.visitUrl).toHaveBeenCalledWith(
+          '/root/ci-cd-project-demo/-/branches?state=all&sort=updated_desc',
+        );
+      });
+    });
+
+    describe('when no search has been performed', () => {
+      beforeEach(() => {
+        wrapper = createWrapper();
+      });
+
+      it('does not navigate when clear is emitted', () => {
+        findSearchBox().vm.$emit('clear');
+
+        expect(urlUtils.visitUrl).not.toHaveBeenCalled();
+      });
+    });
+  });
+});

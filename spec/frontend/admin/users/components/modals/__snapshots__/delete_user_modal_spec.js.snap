@@ -1,0 +1,26 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Delete user modal renders modal with form included 1`] = `
+<form
+  action=""
+  method="post"
+>
+  <input
+    name="_method"
+    type="hidden"
+    value="delete"
+  />
+  <input
+    name="authenticity_token"
+    type="hidden"
+    value="csrf"
+  />
+  <gl-form-input-stub
+    autocomplete="off"
+    autofocus="true"
+    name="username"
+    type="text"
+    value=""
+  />
+</form>
+`;

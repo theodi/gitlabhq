@@ -1,227 +1,1947 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe Gitlab::GitAccess do
-  let(:access) { Gitlab::GitAccess.new(actor, project) }
-  let(:project) { create(:project) }
-  let(:user) { create(:user) }
+RSpec.describe Gitlab::GitAccess, :aggregate_failures, feature_category: :system_access do
+  include TermsHelper
+  include AdminModeHelper
+  include ExternalAuthorizationServiceHelpers
+  include Ci::JobTokenScopeHelpers
+
+  let_it_be_with_reload(:user) { create(:user) }
   let(:actor) { user }
+  let(:project) { create(:project, :repository) }
+  let(:repository_path) { "#{project.full_path}.git" }
+  let(:protocol) { 'ssh' }
+  let(:authentication_abilities) { %i[read_project download_code push_code] }
+  let(:redirected_path) { nil }
+  let(:auth_result_type) { nil }
+  let(:gitaly_context) { { 'key' => 'value' } }
+  let(:personal_access_token) { nil }
+  let(:oauth_access_token) { nil }
+  let(:changes) { Gitlab::GitAccess::ANY }
+  let(:push_access_check) { access.check('git-receive-pack', changes) }
+  let(:pull_access_check) { access.check('git-upload-pack', changes) }
 
-  describe 'can_push_to_branch?' do
-    describe 'push to none protected branch' do
-      it "returns true if user is a master" do
-        project.team << [user, :master]
-        expect(access.can_push_to_branch?("random_branch")).to be_truthy
+  let(:access_class) do
+    Class.new(described_class) do
+      def push_ability
+        :push_code
       end
 
-      it "returns true if user is a developer" do
-        project.team << [user, :developer]
-        expect(access.can_push_to_branch?("random_branch")).to be_truthy
-      end
-
-      it "returns false if user is a reporter" do
-        project.team << [user, :reporter]
-        expect(access.can_push_to_branch?("random_branch")).to be_falsey
-      end
-    end
-
-    describe 'push to protected branch' do
-      before do
-        @branch = create :protected_branch, project: project
-      end
-      
-      it "returns true if user is a master" do
-        project.team << [user, :master]
-        expect(access.can_push_to_branch?(@branch.name)).to be_truthy
-      end
-
-      it "returns false if user is a developer" do
-        project.team << [user, :developer]
-        expect(access.can_push_to_branch?(@branch.name)).to be_falsey
-      end
-
-      it "returns false if user is a reporter" do
-        project.team << [user, :reporter]
-        expect(access.can_push_to_branch?(@branch.name)).to be_falsey
-      end
-    end
-
-    describe 'push to protected branch if allowed for developers' do
-      before do
-        @branch = create :protected_branch, project: project, developers_can_push: true
-      end
-      
-      it "returns true if user is a master" do
-        project.team << [user, :master]
-        expect(access.can_push_to_branch?(@branch.name)).to be_truthy
-      end
-
-      it "returns true if user is a developer" do
-        project.team << [user, :developer]
-        expect(access.can_push_to_branch?(@branch.name)).to be_truthy
-      end
-
-      it "returns false if user is a reporter" do
-        project.team << [user, :reporter]
-        expect(access.can_push_to_branch?(@branch.name)).to be_falsey
-      end
-    end
-
-  end
-
-  describe 'download_access_check' do
-    describe 'master permissions' do
-      before { project.team << [user, :master] }
-
-      context 'pull code' do
-        subject { access.download_access_check }
-
-        it { expect(subject.allowed?).to be_truthy }
-      end
-    end
-
-    describe 'guest permissions' do
-      before { project.team << [user, :guest] }
-
-      context 'pull code' do
-        subject { access.download_access_check }
-
-        it { expect(subject.allowed?).to be_falsey }
-      end
-    end
-
-    describe 'blocked user' do
-      before do
-        project.team << [user, :master]
-        user.block
-      end
-
-      context 'pull code' do
-        subject { access.download_access_check }
-
-        it { expect(subject.allowed?).to be_falsey }
-      end
-    end
-
-    describe 'without acccess to project' do
-      context 'pull code' do
-        subject { access.download_access_check }
-
-        it { expect(subject.allowed?).to be_falsey }
-      end
-    end
-
-    describe 'deploy key permissions' do
-      let(:key) { create(:deploy_key) }
-      let(:actor) { key }
-
-      context 'pull code' do
-        before { key.projects << project }
-        subject { access.download_access_check }
-
-        it { expect(subject.allowed?).to be_truthy }
+      def download_ability
+        :download_code
       end
     end
   end
 
-  describe 'push_access_check' do
-    def protect_feature_branch
-      create(:protected_branch, name: 'feature', project: project)
+  describe '#check with single protocols allowed' do
+    def disable_protocol(protocol)
+      allow(Gitlab::ProtocolAccess).to receive(:allowed?).with(protocol, project: project).and_return(false)
     end
 
-    def changes
-      {
-        push_new_branch: "#{Gitlab::Git::BLANK_SHA} 570e7b2ab refs/heads/wow",
-        push_master: '6f6d7e7ed 570e7b2ab refs/heads/master',
-        push_protected_branch: '6f6d7e7ed 570e7b2ab refs/heads/feature',
-        push_remove_protected_branch: "570e7b2ab #{Gitlab::Git::BLANK_SHA} "\
-                                      'refs/heads/feature',
-        push_tag: '6f6d7e7ed 570e7b2ab refs/tags/v1.0.0',
-        push_new_tag: "#{Gitlab::Git::BLANK_SHA} 570e7b2ab refs/tags/v7.8.9",
-        push_all: ['6f6d7e7ed 570e7b2ab refs/heads/master', '6f6d7e7ed 570e7b2ab refs/heads/feature']
-      }
+    context 'ssh disabled' do
+      before do
+        disable_protocol('ssh')
+      end
+
+      it 'blocks ssh git push and pull' do
+        aggregate_failures do
+          expect { push_access_check }.to raise_forbidden('Git access over SSH is not allowed')
+          expect { pull_access_check }.to raise_forbidden('Git access over SSH is not allowed')
+        end
+      end
     end
 
-    def self.permissions_matrix
-      {
-        master: {
-          push_new_branch: true,
-          push_master: true,
-          push_protected_branch: true,
-          push_remove_protected_branch: false,
-          push_tag: true,
-          push_new_tag: true,
-          push_all: true,
-        },
+    context 'http disabled' do
+      let(:protocol) { 'http' }
 
-        developer: {
-          push_new_branch: true,
-          push_master: true,
-          push_protected_branch: false,
-          push_remove_protected_branch: false,
-          push_tag: false,
-          push_new_tag: true,
-          push_all: false,
-        },
+      before do
+        disable_protocol('http')
+        project.add_maintainer(user)
+      end
 
-        reporter: {
-          push_new_branch: false,
-          push_master: false,
-          push_protected_branch: false,
-          push_remove_protected_branch: false,
-          push_tag: false,
-          push_new_tag: false,
-          push_all: false,
-        },
+      it 'blocks http push and pull' do
+        aggregate_failures do
+          expect { push_access_check }.to raise_forbidden('Git access over HTTP is not allowed')
+          expect { pull_access_check }.to raise_forbidden('Git access over HTTP is not allowed')
+        end
+      end
 
-        guest: {
-          push_new_branch: false,
-          push_master: false,
-          push_protected_branch: false,
-          push_remove_protected_branch: false,
-          push_tag: false,
-          push_new_tag: false,
-          push_all: false,
-        }
-      }
+      context 'when request is made from CI' do
+        let(:auth_result_type) { :build }
+
+        it "doesn't block http pull" do
+          aggregate_failures do
+            expect { pull_access_check }.not_to raise_error
+          end
+        end
+
+        context 'when legacy CI credentials are used' do
+          let(:auth_result_type) { :ci }
+
+          it "doesn't block http pull" do
+            expect { pull_access_check }.not_to raise_error
+          end
+        end
+      end
     end
+  end
 
-    def self.updated_permissions_matrix
-      updated_permissions_matrix = permissions_matrix.dup
-      updated_permissions_matrix[:developer][:push_protected_branch] = true
-      updated_permissions_matrix[:developer][:push_all] = true
-      updated_permissions_matrix
-    end
+  describe '#check_project_accessibility!' do
+    context 'when the project exists' do
+      context 'when actor exists' do
+        context 'when actor is a DeployKey' do
+          let_it_be_with_reload(:deploy_key) { create(:deploy_key, user: user) }
+          let(:actor) { deploy_key }
 
-    permissions_matrix.keys.each do |role|
-      describe "#{role} access" do
-        before { protect_feature_branch }
-        before { project.team << [user, role] }
+          context 'when the DeployKey has access to the project' do
+            before do
+              deploy_key.deploy_keys_projects.create!(project: project, can_push: true)
+            end
 
-        permissions_matrix[role].each do |action, allowed|
-          context action do
-            subject { access.push_access_check(changes[action]) }
+            it 'allows push and pull access' do
+              aggregate_failures do
+                expect { push_access_check }.not_to raise_error
+                expect { pull_access_check }.not_to raise_error
+              end
+            end
+          end
 
-            it { expect(subject.allowed?).to allowed ? be_truthy : be_falsey }
+          context 'when the Deploykey does not have access to the project' do
+            it 'blocks push and pull with "not found"' do
+              aggregate_failures do
+                expect { push_access_check }.to raise_not_found
+                expect { pull_access_check }.to raise_not_found
+              end
+            end
+          end
+
+          context 'when the deploy key is restricted with external_authorization' do
+            before do
+              allow(Gitlab::ExternalAuthorization).to receive(:allow_deploy_tokens_and_deploy_keys?).and_return(false)
+            end
+
+            it 'blocks push and pull with "not found"' do
+              aggregate_failures do
+                expect { push_access_check }.to raise_not_found
+                expect { pull_access_check }.to raise_not_found
+              end
+            end
+          end
+        end
+
+        context 'when actor is a User' do
+          context 'when the User can read the project' do
+            before do
+              project.add_maintainer(user)
+            end
+
+            it 'allows push and pull access' do
+              aggregate_failures do
+                expect { pull_access_check }.not_to raise_error
+                expect { push_access_check }.not_to raise_error
+              end
+            end
+          end
+
+          context 'when the User cannot read the project' do
+            it 'blocks push and pull with "not found"' do
+              aggregate_failures do
+                expect { push_access_check }.to raise_not_found
+                expect { pull_access_check }.to raise_not_found
+              end
+            end
+          end
+        end
+
+        # legacy behavior that is blocked/deprecated
+        context 'when actor is :ci' do
+          let(:actor) { :ci }
+          let(:authentication_abilities) { build_authentication_abilities }
+
+          it 'disallows pull access' do
+            expect { pull_access_check }.to raise_error(Gitlab::GitAccess::NotFoundError)
+          end
+
+          it 'does not block pushes with "not found"' do
+            expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:auth_upload])
+          end
+        end
+
+        context 'when actor is DeployToken' do
+          let(:actor) { create(:deploy_token, projects: [project]) }
+
+          context 'when DeployToken is active and belongs to project' do
+            it 'allows pull access' do
+              expect { pull_access_check }.not_to raise_error
+            end
+
+            it 'blocks the push' do
+              expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:upload])
+            end
+          end
+
+          context 'when DeployToken does not belong to project' do
+            let(:another_project) { create(:project) }
+            let(:actor) { create(:deploy_token, projects: [another_project]) }
+
+            it 'blocks pull access' do
+              expect { pull_access_check }.to raise_not_found
+            end
+
+            it 'blocks the push' do
+              expect { push_access_check }.to raise_not_found
+            end
+          end
+
+          context 'when the the deploy token is restricted with external_authorization' do
+            before do
+              allow(Gitlab::ExternalAuthorization).to receive(:allow_deploy_tokens_and_deploy_keys?).and_return(false)
+            end
+
+            it 'blocks pull access' do
+              expect { pull_access_check }.to raise_not_found
+            end
+
+            it 'blocks the push' do
+              expect { push_access_check }.to raise_not_found
+            end
+          end
+        end
+      end
+
+      context 'when actor is nil' do
+        let(:actor) { nil }
+
+        context 'when guests can read the project' do
+          let(:project) { create(:project, :repository, :public) }
+
+          it 'allows pull access' do
+            expect { pull_access_check }.not_to raise_error
+          end
+
+          it 'does not block pushes with "not found"' do
+            expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:upload])
+          end
+        end
+
+        context 'when guests cannot read the project' do
+          it 'blocks pulls with "not found"' do
+            expect { pull_access_check }.to raise_not_found
+          end
+
+          it 'blocks pushes with "not found"' do
+            expect { push_access_check }.to raise_not_found
           end
         end
       end
     end
 
-    context "with enabled developers push to protected branches " do
-      updated_permissions_matrix.keys.each do |role|
-        describe "#{role} access" do
-          before { create(:protected_branch, name: 'feature', developers_can_push: true, project: project) }
-          before { project.team << [user, role] }
+    context 'when the project does not exist' do
+      let(:project) { nil }
+      let(:repository_path) { "#{user.namespace.path}/new-project.git" }
 
-          updated_permissions_matrix[role].each do |action, allowed|
-            context action do
-              subject { access.push_access_check(changes[action]) }
+      it 'blocks push and pull with "not found"' do
+        aggregate_failures do
+          expect { pull_access_check }.to raise_not_found
+          expect { push_access_check }.to raise_not_found
+        end
+      end
+    end
+  end
 
-              it { expect(subject.allowed?).to allowed ? be_truthy : be_falsey }
+  shared_examples '#check with a key that is not valid' do
+    before do
+      project.add_maintainer(user)
+    end
+
+    context 'key is expired' do
+      before do
+        actor.expires_at = 2.days.ago
+      end
+
+      it 'does not allow expired keys' do
+        expect { pull_access_check }.to raise_forbidden('Your SSH key has expired.')
+        expect { push_access_check }.to raise_forbidden('Your SSH key has expired.')
+      end
+    end
+
+    context 'key is too small' do
+      before do
+        stub_application_setting(rsa_key_restriction: 4096)
+      end
+
+      it 'does not allow keys which are too small' do
+        expect(actor).not_to be_valid
+        expect { pull_access_check }.to raise_forbidden('Your SSH key must be at least 4096 bits.')
+        expect { push_access_check }.to raise_forbidden('Your SSH key must be at least 4096 bits.')
+      end
+    end
+
+    context 'key type is not allowed' do
+      before do
+        stub_application_setting(rsa_key_restriction: ApplicationSetting::FORBIDDEN_KEY_VALUE)
+      end
+
+      it 'does not allow keys which are forbidden' do
+        expect(actor).not_to be_valid
+        expect { pull_access_check }.to raise_forbidden(/Your SSH key type is forbidden/)
+        expect { push_access_check }.to raise_forbidden(/Your SSH key type is forbidden/)
+      end
+    end
+  end
+
+  it_behaves_like '#check with a key that is not valid' do
+    let(:actor) { build(:rsa_key_2048, user: user) }
+  end
+
+  it_behaves_like '#check with a key that is not valid' do
+    let(:actor) { build(:rsa_deploy_key_2048, user: user) }
+  end
+
+  shared_examples 'check_project_moved' do
+    it 'enqueues a redirected message for pushing' do
+      push_access_check
+
+      expect(Gitlab::Checks::ContainerMoved.fetch_message(user, project.repository)).not_to be_nil
+    end
+
+    it 'allows push and pull access' do
+      aggregate_failures do
+        expect { push_access_check }.not_to raise_error
+        expect { pull_access_check }.not_to raise_error
+      end
+    end
+  end
+
+  describe '#add_project_moved_message!', :clean_gitlab_redis_shared_state do
+    before do
+      project.add_maintainer(user)
+    end
+
+    context 'when a redirect was not followed to find the project' do
+      it 'allows push and pull access' do
+        aggregate_failures do
+          expect { push_access_check }.not_to raise_error
+          expect { pull_access_check }.not_to raise_error
+        end
+      end
+    end
+
+    context 'with a redirect and ssh protocol' do
+      let(:redirected_path) { 'some/other-path' }
+
+      it_behaves_like 'check_project_moved'
+    end
+
+    context 'with a redirect and http protocol' do
+      let(:redirected_path) { 'some/other-path' }
+      let(:protocol) { 'http' }
+
+      it_behaves_like 'check_project_moved'
+    end
+  end
+
+  describe '#check_authentication_abilities!' do
+    context 'with a granular personal access token' do
+      let(:personal_access_token) { build(:granular_pat) }
+
+      it 'delegates to check_granular_token_permissions!' do
+        instance = access
+        expect(instance).to receive(:check_granular_token_permissions!)
+
+        instance.send(:check_authentication_abilities!)
+      end
+    end
+
+    context 'without a personal access token' do
+      it 'delegates to check_legacy_authentication_abilities!' do
+        instance = access
+        expect(instance).not_to receive(:check_granular_token_permissions!)
+        expect(instance).to receive(:check_legacy_authentication_abilities!)
+
+        instance.send(:check_authentication_abilities!)
+      end
+    end
+
+    context 'with a non-granular personal access token' do
+      let(:personal_access_token) { build(:personal_access_token) }
+
+      it 'delegates to both check_granular_token_permissions! and check_legacy_authentication_abilities!' do
+        instance = access
+        expect(instance).to receive(:check_granular_token_permissions!)
+        expect(instance).to receive(:check_legacy_authentication_abilities!)
+
+        instance.send(:check_authentication_abilities!)
+      end
+    end
+
+    context 'with a granular OAuth access token' do
+      let(:oauth_access_token) { build(:oauth_access_token, :granular) }
+
+      it 'delegates to check_granular_token_permissions! only' do
+        instance = access
+        expect(instance).to receive(:check_granular_token_permissions!)
+        expect(instance).not_to receive(:check_legacy_authentication_abilities!)
+
+        instance.send(:check_authentication_abilities!)
+      end
+    end
+
+    context 'with a non-granular OAuth access token' do
+      let(:oauth_access_token) { build(:oauth_access_token, scopes: ['api']) }
+
+      it 'delegates to both check_granular_token_permissions! and check_legacy_authentication_abilities!' do
+        instance = access
+        expect(instance).to receive(:check_granular_token_permissions!)
+        expect(instance).to receive(:check_legacy_authentication_abilities!)
+
+        instance.send(:check_authentication_abilities!)
+      end
+    end
+
+    context 'with an IAM OAuth token' do
+      let(:oauth_access_token) { instance_double(Authn::Tokens::IamOauthToken) }
+
+      it 'grants access based on authentication abilities' do
+        project.add_developer(user)
+
+        expect { pull_access_check }.not_to raise_error
+      end
+    end
+  end
+
+  describe '#check_legacy_authentication_abilities!' do
+    before do
+      project.add_maintainer(user)
+    end
+
+    context 'when download' do
+      let(:authentication_abilities) { [] }
+
+      it 'raises unauthorized with download error' do
+        expect { pull_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:auth_download])
+      end
+
+      context 'when authentication abilities include download code' do
+        let(:authentication_abilities) { [:download_code] }
+
+        it 'does not raise any errors' do
+          expect { pull_access_check }.not_to raise_error
+        end
+      end
+
+      context 'when authentication abilities include build download code' do
+        let(:authentication_abilities) { [:build_download_code] }
+
+        it 'does not raise any errors' do
+          expect { pull_access_check }.not_to raise_error
+        end
+      end
+    end
+
+    context 'when upload' do
+      let(:authentication_abilities) { [] }
+
+      it 'raises unauthorized with push error' do
+        expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:auth_upload])
+      end
+
+      context 'when authentication abilities include push code' do
+        let(:authentication_abilities) { [:push_code] }
+
+        it 'does not raise any errors' do
+          expect { push_access_check }.not_to raise_error
+        end
+      end
+    end
+  end
+
+  describe '#check_granular_token_permissions!' do
+    before do
+      project.add_developer(user)
+    end
+
+    context 'without a personal access token' do
+      it 'does not check granular permissions' do
+        expect(::Authz::Tokens::AuthorizeGranularScopesService).not_to receive(:new)
+
+        expect { pull_access_check }.not_to raise_error
+      end
+    end
+
+    context 'with a non-granular personal access token' do
+      let(:personal_access_token) { create(:personal_access_token, user: user) }
+
+      it 'authorizes via the granular scopes service without denying access' do
+        expect(::Authz::Tokens::AuthorizeGranularScopesService).to receive(:new).and_call_original
+
+        expect { pull_access_check }.not_to raise_error
+      end
+
+      context 'when granular tokens are enforced for the namespace' do
+        let(:group) { create(:group) }
+        let(:project) { create(:project, :repository, group: group) }
+
+        before do
+          stub_feature_flags(granular_personal_access_tokens_enforcement_saas: group)
+
+          group.namespace_settings.update!(
+            enforce_granular_tokens: true,
+            granular_tokens_enforced_after: Date.current
+          )
+        end
+
+        it 'denies git pull' do
+          expect { pull_access_check }.to raise_error(described_class::ForbiddenError,
+            'Access denied: This operation requires a fine-grained personal access token ' \
+            "with the following project permissions: [Code: Download].")
+        end
+
+        it 'denies git push' do
+          expect { push_access_check }.to raise_error(described_class::ForbiddenError,
+            'Access denied: This operation requires a fine-grained personal access token ' \
+            "with the following project permissions: [Code: Push].")
+        end
+      end
+    end
+
+    shared_examples 'granular token git access checks' do |token_type|
+      context 'when token has no code permissions' do
+        let(:permissions) { [] }
+
+        it 'denies git pull' do
+          expect { pull_access_check }.to raise_error(described_class::ForbiddenError,
+            "Access denied: This operation requires a fine-grained #{token_type} " \
+            "with the following project permissions: [Code: Download].")
+        end
+
+        it 'denies git push' do
+          expect { push_access_check }.to raise_error(described_class::ForbiddenError,
+            "Access denied: This operation requires a fine-grained #{token_type} " \
+            "with the following project permissions: [Code: Push].")
+        end
+      end
+
+      context 'when token has download_code permission' do
+        let(:permissions) { :download_code }
+
+        it 'allows git pull' do
+          expect { pull_access_check }.not_to raise_error
+        end
+
+        it 'denies git push' do
+          expect { push_access_check }.to raise_error(described_class::ForbiddenError,
+            "Access denied: This operation requires a fine-grained #{token_type} " \
+            "with the following project permissions: [Code: Push].")
+        end
+      end
+
+      context 'when token has push_code permission' do
+        let(:permissions) { :push_code }
+
+        it 'allows git push' do
+          expect { push_access_check }.not_to raise_error
+        end
+
+        it 'denies git pull' do
+          expect { pull_access_check }.to raise_error(described_class::ForbiddenError,
+            "Access denied: This operation requires a fine-grained #{token_type} " \
+            "with the following project permissions: [Code: Download].")
+        end
+      end
+
+      context 'when token has both download_code and push_code permissions' do
+        let(:permissions) { [:push_code, :download_code] }
+
+        it 'allows git pull' do
+          expect { pull_access_check }.not_to raise_error
+        end
+
+        it 'allows git push' do
+          expect { push_access_check }.not_to raise_error
+        end
+      end
+
+      context 'when the project is private and the token user is not a member' do
+        let_it_be(:project) { create(:project, :private, :repository) }
+        let(:permissions) { [] }
+
+        before do
+          project.members.find_by(user_id: user.id)&.destroy!
+        end
+
+        it 'raises NotFoundError on git pull' do
+          expect { pull_access_check }.to raise_error(described_class::NotFoundError,
+            described_class.error_message(:project_not_found))
+        end
+
+        it 'raises NotFoundError on git push' do
+          expect { push_access_check }.to raise_error(described_class::NotFoundError,
+            described_class.error_message(:project_not_found))
+        end
+      end
+
+      context 'when the project is internal and the token user is not a member' do
+        let_it_be(:project) { create(:project, :internal, :repository) }
+        let(:permissions) { [] }
+
+        before do
+          project.members.find_by(user_id: user.id)&.destroy!
+        end
+
+        it 'raises ForbiddenError on git pull' do
+          expect { pull_access_check }.to raise_error(described_class::ForbiddenError)
+        end
+
+        it 'raises ForbiddenError on git push' do
+          expect { push_access_check }.to raise_error(described_class::ForbiddenError)
+        end
+      end
+    end
+
+    context 'with a granular personal access token' do
+      let(:boundary) { Authz::Boundary.for(project) }
+      let(:personal_access_token) { create(:granular_pat, user: user, boundary: boundary, permissions: permissions) }
+
+      it_behaves_like 'granular token git access checks', 'personal access token'
+    end
+
+    context 'with a granular OAuth access token' do
+      let_it_be(:application) { create(:oauth_application) }
+
+      let(:authentication_abilities) { [] }
+      let(:oauth_access_token) do
+        create(:oauth_access_token, :granular, resource_owner: user, application: application)
+      end
+
+      let!(:consent_grant) do
+        create(:oauth_consent_grant, user: user, application: application,
+          boundary: Authz::Boundary.for(project), permissions: permissions)
+      end
+
+      it_behaves_like 'granular token git access checks', 'oauth access token'
+
+      context 'when the consent grant is revoked' do
+        let(:permissions) { :download_code }
+
+        before do
+          consent_grant.revoked!
+        end
+
+        it 'denies git pull' do
+          expect { pull_access_check }.to raise_error(described_class::ForbiddenError,
+            'Access denied: This operation requires a fine-grained oauth access token ' \
+            "with the following project permissions: [Code: Download].")
+        end
+      end
+    end
+
+    context 'with a non-granular OAuth access token' do
+      let(:oauth_access_token) { create(:oauth_access_token, resource_owner: user, scopes: ['api']) }
+
+      it 'grants access based on authentication abilities' do
+        expect { pull_access_check }.not_to raise_error
+      end
+
+      context 'when granular tokens are enforced for the namespace' do
+        let(:group) { create(:group) }
+        let(:project) { create(:project, :repository, group: group) }
+
+        before do
+          stub_feature_flags(granular_personal_access_tokens_enforcement_saas: group)
+
+          group.namespace_settings.update!(
+            enforce_granular_tokens: true,
+            granular_tokens_enforced_after: Date.current
+          )
+        end
+
+        it 'grants access based on authentication abilities' do
+          expect { pull_access_check }.not_to raise_error
+        end
+      end
+    end
+  end
+
+  describe '#permission_for_command' do
+    before do
+      project.add_developer(user)
+    end
+
+    context 'with a download command' do
+      it 'returns :download_code' do
+        git_access = access
+        git_access.check('git-upload-pack', changes)
+        expect(git_access.send(:permission_for_command)).to eq(:download_code)
+      end
+    end
+
+    context 'with a push command' do
+      it 'returns :push_code' do
+        git_access = access
+        git_access.check('git-receive-pack', changes)
+        expect(git_access.send(:permission_for_command)).to eq(:push_code)
+      end
+    end
+
+    context 'with an unknown command' do
+      it 'returns nil' do
+        expect(access.send(:permission_for_command)).to be_nil
+      end
+    end
+  end
+
+  describe '#has_authentication_ability?' do
+    context 'with a granular personal access token' do
+      let(:personal_access_token) { build(:granular_pat) }
+      let(:authentication_abilities) { [] }
+
+      it 'returns true regardless of authentication_abilities' do
+        expect(access.send(:has_authentication_ability?, :download_code)).to be(true)
+      end
+    end
+
+    context 'with a granular OAuth access token' do
+      let(:oauth_access_token) { build(:oauth_access_token, :granular) }
+      let(:authentication_abilities) { [] }
+
+      it 'returns true regardless of authentication_abilities' do
+        expect(access.send(:has_authentication_ability?, :download_code)).to be(true)
+      end
+    end
+
+    context 'without a granular personal access token' do
+      context 'when authentication_abilities includes the ability' do
+        let(:authentication_abilities) { [:download_code] }
+
+        it 'returns true' do
+          expect(access.send(:has_authentication_ability?, :download_code)).to be(true)
+        end
+      end
+
+      context 'when authentication_abilities does not include the ability' do
+        let(:authentication_abilities) { [] }
+
+        it 'returns false' do
+          expect(access.send(:has_authentication_ability?, :download_code)).to be(false)
+        end
+      end
+    end
+  end
+
+  describe '#user_can_download?' do
+    before do
+      project.add_developer(user)
+    end
+
+    context 'without a granular personal access token' do
+      context 'when authentication_abilities includes :download_code' do
+        let(:authentication_abilities) { [:download_code] }
+
+        it 'returns true' do
+          expect(access.send(:user_can_download?)).to be(true)
+        end
+      end
+
+      context 'when authentication_abilities does not include :download_code' do
+        let(:authentication_abilities) { [] }
+
+        it 'returns falsey' do
+          expect(access.send(:user_can_download?)).to be_falsey
+        end
+      end
+    end
+
+    context 'with a granular personal access token and empty authentication_abilities' do
+      let(:personal_access_token) { create(:granular_pat) }
+      let(:authentication_abilities) { [] }
+
+      it 'returns true' do
+        expect(access.send(:user_can_download?)).to be(true)
+      end
+    end
+  end
+
+  describe '#user_can_push?' do
+    before do
+      project.add_developer(user)
+    end
+
+    context 'without a granular personal access token' do
+      context 'when authentication_abilities includes :push_code' do
+        let(:authentication_abilities) { [:push_code] }
+
+        it 'returns true' do
+          expect(access.send(:user_can_push?)).to be(true)
+        end
+      end
+
+      context 'when authentication_abilities does not include :push_code' do
+        let(:authentication_abilities) { [] }
+
+        it 'returns falsey' do
+          expect(access.send(:user_can_push?)).to be_falsey
+        end
+      end
+    end
+
+    context 'with a granular personal access token and empty authentication_abilities' do
+      let(:personal_access_token) { create(:granular_pat) }
+      let(:authentication_abilities) { [] }
+
+      it 'returns true' do
+        expect(access.send(:user_can_push?)).to be(true)
+      end
+    end
+  end
+
+  describe '#check_command_disabled!' do
+    before do
+      project.add_maintainer(user)
+    end
+
+    context 'over http' do
+      let(:protocol) { 'http' }
+
+      context 'when the git-upload-pack command is disabled in config' do
+        before do
+          allow(Gitlab.config.gitlab_shell).to receive(:upload_pack).and_return(false)
+        end
+
+        context 'when calling git-upload-pack' do
+          it { expect { pull_access_check }.to raise_forbidden('Pulling over HTTP is not allowed.') }
+        end
+
+        context 'when calling git-receive-pack' do
+          it { expect { push_access_check }.not_to raise_error }
+        end
+      end
+
+      context 'when the git-receive-pack command is disabled in config' do
+        before do
+          allow(Gitlab.config.gitlab_shell).to receive(:receive_pack).and_return(false)
+        end
+
+        context 'when calling git-receive-pack' do
+          it { expect { push_access_check }.to raise_forbidden('Pushing over HTTP is not allowed.') }
+        end
+
+        context 'when calling git-upload-pack' do
+          it { expect { pull_access_check }.not_to raise_error }
+        end
+      end
+    end
+  end
+
+  describe '#check_db_accessibility!' do
+    context 'when in a read-only GitLab instance' do
+      before do
+        create(:protected_branch, name: 'feature', project: project)
+        allow(Gitlab::Database).to receive(:read_only?).and_return(true)
+      end
+
+      it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:cannot_push_to_read_only]) }
+    end
+  end
+
+  describe '#check_download_access!' do
+    it 'allows maintainers to pull' do
+      project.add_maintainer(user)
+
+      expect { pull_access_check }.not_to raise_error
+    end
+
+    it 'disallows guests to pull' do
+      project.add_guest(user)
+
+      expect { pull_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:download])
+    end
+
+    it 'disallows blocked users to pull' do
+      project.add_maintainer(user)
+      user.block
+
+      expect { pull_access_check }.to raise_forbidden('Your account has been blocked.')
+    end
+
+    it 'disallows users that are blocked pending approval to pull' do
+      project.add_maintainer(user)
+      user.block_pending_approval
+
+      expect { pull_access_check }.to raise_forbidden('Your account is pending approval from your administrator and hence blocked.')
+    end
+
+    it 'disallows deactivated users to pull' do
+      project.add_maintainer(user)
+      user.deactivate!
+
+      expect { pull_access_check }.to raise_forbidden("Your account has been deactivated by your administrator. Please log back in from a web browser to reactivate your account at #{Gitlab.config.gitlab.url}")
+    end
+
+    it 'disallows users with expired password to pull' do
+      project.add_maintainer(user)
+      user.update!(password_expires_at: 2.minutes.ago)
+
+      expect { pull_access_check }.to raise_forbidden("Your password expired. Please access GitLab from a web browser to update your password.")
+    end
+
+    context 'with an ldap user' do
+      let(:user) { create(:omniauth_user, provider: 'ldap', password_expires_at: 2.minutes.ago) }
+
+      it 'allows ldap users with expired password to pull' do
+        project.add_maintainer(user)
+
+        expect { pull_access_check }.not_to raise_error
+      end
+    end
+
+    context 'when the project repository does not exist' do
+      before do
+        project.add_guest(user)
+        allow(project.repository).to receive(:exists?).and_return(false)
+      end
+
+      it 'returns not found' do
+        expect { pull_access_check }.to raise_error(Gitlab::GitAccess::NotFoundError, 'A repository for this project does not exist yet.')
+      end
+    end
+
+    describe 'without access to project' do
+      context 'pull code' do
+        it { expect { pull_access_check }.to raise_not_found }
+      end
+
+      context 'when project is public' do
+        let(:public_project) { create(:project, :public, :repository) }
+        let(:repository_path) { "#{public_project.full_path}.git" }
+        let(:access) { access_class.new(nil, public_project, 'web', authentication_abilities: [:download_code], repository_path: repository_path) }
+
+        context 'when repository is enabled' do
+          it 'give access to download code' do
+            expect { pull_access_check }.not_to raise_error
+          end
+        end
+
+        context 'when repository is disabled' do
+          it 'does not give access to download code' do
+            public_project.project_feature.update_attribute(:repository_access_level, ProjectFeature::DISABLED)
+
+            expect { pull_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:download])
+          end
+        end
+      end
+    end
+
+    describe 'deploy key permissions' do
+      let_it_be_with_reload(:key) { create(:deploy_key, user: user) }
+      let(:actor) { key }
+
+      context 'pull code' do
+        context 'when project is public' do
+          let(:project) { create(:project, :public, :repository, *options) }
+
+          context 'when deploy key exists in the project' do
+            before do
+              key.projects << project
+            end
+
+            context 'when the repository is public' do
+              let(:options) { %i[repository_enabled] }
+
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+
+            context 'when the repository is private' do
+              let(:options) { %i[repository_private] }
+
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+
+            context 'when the repository is disabled' do
+              let(:options) { %i[repository_disabled] }
+
+              it { expect { pull_access_check }.to raise_error('You are not allowed to download code from this project.') }
+            end
+          end
+
+          context 'when deploy key does not exist in the project' do
+            context 'when the repository is public' do
+              let(:options) { %i[repository_enabled] }
+
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+
+            context 'when the repository is private' do
+              let(:options) { %i[repository_private] }
+
+              it { expect { pull_access_check }.to raise_error('You are not allowed to download code from this project.') }
+            end
+
+            context 'when the repository is disabled' do
+              let(:options) { %i[repository_disabled] }
+
+              it { expect { pull_access_check }.to raise_error('You are not allowed to download code from this project.') }
+            end
+          end
+        end
+
+        context 'when project is internal' do
+          let(:project) { create(:project, :internal, :repository, *options) }
+
+          context 'when deploy key exists in the project' do
+            before do
+              key.projects << project
+            end
+
+            context 'when the repository is public' do
+              let(:options) { %i[repository_enabled] }
+
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+
+            context 'when the repository is private' do
+              let(:options) { %i[repository_private] }
+
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+
+            context 'when the repository is disabled' do
+              let(:options) { %i[repository_disabled] }
+
+              it { expect { pull_access_check }.to raise_error('You are not allowed to download code from this project.') }
+            end
+          end
+
+          context 'when deploy key does not exist in the project' do
+            context 'when the repository is public' do
+              let(:options) { %i[repository_enabled] }
+
+              it { expect { pull_access_check }.to raise_error("The project you were looking for could not be found or you don't have permission to view it.") }
+            end
+
+            context 'when the repository is private' do
+              let(:options) { %i[repository_private] }
+
+              it { expect { pull_access_check }.to raise_error("The project you were looking for could not be found or you don't have permission to view it.") }
+            end
+
+            context 'when the repository is disabled' do
+              let(:options) { %i[repository_disabled] }
+
+              it { expect { pull_access_check }.to raise_error("The project you were looking for could not be found or you don't have permission to view it.") }
+            end
+          end
+        end
+
+        context 'when project is private' do
+          let(:project) { create(:project, :private, :repository, *options) }
+
+          context 'when deploy key exists in the project' do
+            before do
+              key.projects << project
+            end
+
+            context 'when the repository is private' do
+              let(:options) { %i[repository_private] }
+
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+
+            context 'when the repository is disabled' do
+              let(:options) { %i[repository_disabled] }
+
+              it { expect { pull_access_check }.to raise_error('You are not allowed to download code from this project.') }
+            end
+          end
+
+          context 'when deploy key does not exist in the project' do
+            context 'when the repository is private' do
+              let(:options) { %i[repository_private] }
+
+              it { expect { pull_access_check }.to raise_error("The project you were looking for could not be found or you don't have permission to view it.") }
+            end
+
+            context 'when the repository is disabled' do
+              let(:options) { %i[repository_disabled] }
+
+              it { expect { pull_access_check }.to raise_error("The project you were looking for could not be found or you don't have permission to view it.") }
             end
           end
         end
       end
     end
+
+    describe 'deploy token permissions' do
+      let(:deploy_token) { create(:deploy_token) }
+      let(:actor) { deploy_token }
+
+      context 'pull code' do
+        context 'when project is authorized' do
+          let(:deploy_token) { create(:deploy_token, projects: [project]) }
+
+          it { expect { pull_access_check }.not_to raise_error }
+        end
+
+        context 'when unauthorized' do
+          context 'from public project' do
+            let(:project) { create(:project, :public, :repository) }
+
+            it { expect { pull_access_check }.not_to raise_error }
+          end
+
+          context 'from internal project' do
+            let(:project) { create(:project, :internal, :repository) }
+
+            it { expect { pull_access_check }.to raise_not_found }
+          end
+
+          context 'from private project' do
+            let(:project) { create(:project, :private, :repository) }
+
+            it { expect { pull_access_check }.to raise_not_found }
+          end
+        end
+      end
+    end
+
+    describe 'build authentication_abilities permissions' do
+      let(:authentication_abilities) { build_authentication_abilities }
+
+      describe 'owner' do
+        let(:project) { create(:project, :repository, namespace: user.namespace) }
+
+        context 'pull code' do
+          it { expect { pull_access_check }.not_to raise_error }
+        end
+      end
+
+      describe 'reporter user' do
+        before do
+          project.add_reporter(user)
+        end
+
+        context 'pull code' do
+          it { expect { pull_access_check }.not_to raise_error }
+        end
+      end
+
+      describe 'admin user' do
+        let(:user) { create(:admin) }
+
+        context 'when admin mode enabled', :enable_admin_mode do
+          context 'when member of the project' do
+            before do
+              project.add_reporter(user)
+            end
+
+            context 'pull code' do
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+          end
+
+          context 'when is not member of the project' do
+            context 'pull code' do
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+          end
+        end
+
+        context 'when admin mode disabled' do
+          context 'when member of the project' do
+            before do
+              project.add_reporter(user)
+            end
+
+            context 'pull code' do
+              it { expect { pull_access_check }.not_to raise_error }
+            end
+          end
+
+          context 'when is not member of the project' do
+            context 'pull code' do
+              it { expect { pull_access_check }.to raise_not_found }
+            end
+          end
+        end
+      end
+
+      describe 'generic CI (build without a user)' do
+        let(:actor) { :ci }
+
+        specify { expect { pull_access_check }.to raise_error Gitlab::GitAccess::NotFoundError }
+      end
+    end
+  end
+
+  describe 'check LFS integrity' do
+    let(:changes) { ['6f6d7e7ed 570e7b2ab refs/heads/master', '6f6d7e7ed 570e7b2ab refs/heads/feature'] }
+
+    before do
+      project.add_developer(user)
+    end
+
+    context 'when LFS is not enabled' do
+      it 'does not run LFSIntegrity check' do
+        allow(project).to receive(:lfs_enabled?).and_return(false)
+
+        expect(Gitlab::Checks::LfsIntegrity).not_to receive(:new)
+
+        push_access_check
+      end
+    end
+
+    context 'when LFS is enabled' do
+      it 'checks LFS integrity only for first change' do
+        allow(project).to receive(:lfs_enabled?).and_return(true)
+
+        expect_next_instance_of(Gitlab::Checks::LfsIntegrity) do |instance|
+          expect(instance).to receive(:objects_missing?).once
+        end
+
+        push_access_check
+      end
+    end
+  end
+
+  describe '#check_push_access!' do
+    let(:unprotected_branch) { 'unprotected_branch' }
+
+    let(:changes) do
+      { any: Gitlab::GitAccess::ANY,
+        push_new_branch: "#{Gitlab::Git::SHA1_BLANK_SHA} 570e7b2ab refs/heads/wow",
+        push_master: '6f6d7e7ed 570e7b2ab refs/heads/master',
+        push_protected_branch: '6f6d7e7ed 570e7b2ab refs/heads/feature',
+        push_remove_protected_branch: "570e7b2ab #{Gitlab::Git::SHA1_BLANK_SHA} "\
+                                      'refs/heads/feature',
+        push_tag: '6f6d7e7ed 570e7b2ab refs/tags/v1.0.0',
+        push_new_tag: "#{Gitlab::Git::SHA1_BLANK_SHA} 570e7b2ab refs/tags/v7.8.9",
+        push_all: ['6f6d7e7ed 570e7b2ab refs/heads/master', '6f6d7e7ed 570e7b2ab refs/heads/feature'],
+        merge_into_protected_branch: "0b4bc9a #{merge_into_protected_branch} refs/heads/feature" }
+    end
+
+    before do
+      merge_into_protected_branch
+    end
+
+    def merge_into_protected_branch
+      @protected_branch_merge_commit ||= begin
+        project.repository.add_branch(user, unprotected_branch, 'feature')
+        target_branch = TestEnv::BRANCH_SHA['feature']
+        source_branch = project.repository.create_file(
+          user,
+          'filename',
+          'This is the file content',
+          message: 'This is a good commit message',
+          branch_name: unprotected_branch)
+        merge_id = project.repository.raw.merge_to_ref(
+          user,
+          branch: target_branch,
+          first_parent_ref: target_branch,
+          source_sha: source_branch,
+          target_ref: 'refs/merge-requests/test',
+          message: 'commit message'
+        )
+
+        # We are trying to simulate what the repository would look like
+        # during the pre-receive hook, before the actual ref is
+        # written/created. Repository#new_commits relies on there being no
+        # ref pointing to the merge commit.
+        project.repository.delete_refs('refs/merge-requests/test')
+
+        merge_id
+      end
+    end
+
+    def self.run_permission_checks(permissions_matrix)
+      permissions_matrix.each_pair do |role, matrix|
+        # Run through the entire matrix for this role in one test to avoid
+        # repeated setup.
+        #
+        # Expectations are given a custom failure message proc so that it's
+        # easier to identify which check(s) failed.
+        it "has the correct permissions for #{role}s" do
+          if role == :admin_without_admin_mode
+            skip("All admins are allowed to perform actions https://gitlab.com/gitlab-org/gitlab/-/issues/296509")
+          end
+
+          if [:admin_with_admin_mode, :admin_without_admin_mode].include?(role)
+            user.update_attribute(:admin, true)
+            enable_admin_mode!(user) if role == :admin_with_admin_mode
+            project.add_guest(user)
+          else
+            project.add_role(user, role)
+          end
+
+          protected_branch.save!
+
+          aggregate_failures do
+            matrix.each do |action, allowed|
+              check = -> { push_changes(changes[action]) }
+
+              if allowed
+                expect(&check).not_to raise_error, -> do
+                  "expected #{action} for #{role} to be allowed while #{who_can_action}"
+                end
+              else
+                expect(&check).to raise_error(Gitlab::GitAccess::ForbiddenError), -> do
+                  "expected #{action} for #{role} to be disallowed while #{who_can_action}"
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    permissions_matrix = {
+      admin_with_admin_mode: {
+        any: true,
+        push_new_branch: true,
+        push_master: true,
+        push_protected_branch: false,
+        push_remove_protected_branch: false,
+        push_tag: true,
+        push_new_tag: true,
+        push_all: false,
+        merge_into_protected_branch: false
+      },
+
+      admin_without_admin_mode: {
+        any: false,
+        push_new_branch: false,
+        push_master: false,
+        push_protected_branch: false,
+        push_remove_protected_branch: false,
+        push_tag: false,
+        push_new_tag: false,
+        push_all: false,
+        merge_into_protected_branch: false
+      },
+
+      maintainer: {
+        any: true,
+        push_new_branch: true,
+        push_master: true,
+        push_protected_branch: true,
+        push_remove_protected_branch: false,
+        push_tag: true,
+        push_new_tag: true,
+        push_all: true,
+        merge_into_protected_branch: true
+      },
+
+      developer: {
+        any: true,
+        push_new_branch: true,
+        push_master: true,
+        push_protected_branch: false,
+        push_remove_protected_branch: false,
+        push_tag: true,
+        push_new_tag: true,
+        push_all: false,
+        merge_into_protected_branch: false
+      },
+
+      reporter: {
+        any: false,
+        push_new_branch: false,
+        push_master: false,
+        push_protected_branch: false,
+        push_remove_protected_branch: false,
+        push_tag: false,
+        push_new_tag: false,
+        push_all: false,
+        merge_into_protected_branch: false
+      },
+
+      guest: {
+        any: false,
+        push_new_branch: false,
+        push_master: false,
+        push_protected_branch: false,
+        push_remove_protected_branch: false,
+        push_tag: false,
+        push_new_tag: false,
+        push_all: false,
+        merge_into_protected_branch: false
+      }
+    }
+
+    [%w[feature exact], ['feat*', 'wildcard']].each do |protected_branch_name, protected_branch_type|
+      context "when only maintainers are allowed to push into the #{protected_branch_type} protected branch" do
+        let(:who_can_action) { :maintainers_can_push }
+        let(:protected_branch) { create(:protected_branch, who_can_action, name: protected_branch_name, project: project) }
+
+        run_permission_checks(permissions_matrix)
+      end
+
+      context "when developers are allowed to push into the #{protected_branch_type} protected branch" do
+        let(:who_can_action) { :developers_can_push }
+        let(:protected_branch) { create(:protected_branch, who_can_action, name: protected_branch_name, project: project) }
+
+        run_permission_checks(permissions_matrix.deep_merge(developer: { push_protected_branch: true, push_all: true, merge_into_protected_branch: true }))
+      end
+
+      context "when developers are allowed to merge into the #{protected_branch_type} protected branch" do
+        let(:who_can_action) { :developers_can_merge }
+        let(:protected_branch) { create(:protected_branch, who_can_action, name: protected_branch_name, project: project) }
+
+        context "when a merge request exists for the given source/target branch" do
+          context "when the merge request is in progress" do
+            before do
+              create(:merge_request, source_project: project, source_branch: unprotected_branch, target_branch: 'feature',
+                state: 'locked', in_progress_merge_commit_sha: merge_into_protected_branch)
+            end
+
+            run_permission_checks(permissions_matrix.deep_merge(developer: { merge_into_protected_branch: true }))
+          end
+
+          context "when the merge request is not in progress" do
+            before do
+              create(:merge_request, source_project: project, source_branch: unprotected_branch, target_branch: 'feature', in_progress_merge_commit_sha: nil)
+            end
+
+            run_permission_checks(permissions_matrix.deep_merge(developer: { merge_into_protected_branch: false }))
+          end
+
+          context "when a merge request does not exist for the given source/target branch" do
+            run_permission_checks(permissions_matrix.deep_merge(developer: { merge_into_protected_branch: false }))
+          end
+        end
+      end
+
+      context "when developers are allowed to push and merge into the #{protected_branch_type} protected branch" do
+        let(:who_can_action) { :developers_can_push_and_merge }
+        let(:protected_branch) { create(:protected_branch, :developers_can_merge, :developers_can_push, name: protected_branch_name, project: project) }
+
+        run_permission_checks(permissions_matrix.deep_merge(developer: { push_protected_branch: true, push_all: true, merge_into_protected_branch: true }))
+      end
+
+      context "when no one is allowed to push to the #{protected_branch_name} protected branch" do
+        let(:protected_branch) { build(:protected_branch, :no_one_can_push, name: protected_branch_name, project: project) }
+
+        run_permission_checks(permissions_matrix.deep_merge(developer: { push_protected_branch: false, push_all: false, merge_into_protected_branch: false },
+          maintainer: { push_protected_branch: false, push_all: false, merge_into_protected_branch: false },
+          admin_with_admin_mode: { push_protected_branch: false, push_all: false, merge_into_protected_branch: false }))
+      end
+    end
+
+    context 'when pushing to a project' do
+      let(:project) { create(:project, :public, :repository) }
+      let(:changes) { "#{Gitlab::Git::SHA1_BLANK_SHA} 570e7b2ab refs/heads/wow" }
+
+      before do
+        project.add_developer(user)
+      end
+
+      it 'disallows users that are blocked pending approval to push' do
+        user.block_pending_approval
+
+        expect { push_access_check }.to raise_forbidden('Your account is pending approval from your administrator and hence blocked.')
+      end
+
+      it 'does not allow deactivated users to push' do
+        user.deactivate!
+
+        expect { push_access_check }.to raise_forbidden("Your account has been deactivated by your administrator. Please log back in from a web browser to reactivate your account at #{Gitlab.config.gitlab.url}")
+      end
+
+      it 'disallows users with expired password to push' do
+        user.update!(password_expires_at: 2.minutes.ago)
+
+        expect { push_access_check }.to raise_forbidden("Your password expired. Please access GitLab from a web browser to update your password.")
+      end
+
+      context 'with an ldap user' do
+        let(:user) { create(:omniauth_user, provider: 'ldap', password_expires_at: 2.minutes.ago) }
+
+        it 'allows ldap users with expired password to push' do
+          expect { push_access_check }.not_to raise_error
+        end
+
+        it 'disallows blocked ldap users with expired password to push' do
+          user.block
+
+          expect { push_access_check }.to raise_forbidden("Your account has been blocked.")
+        end
+      end
+
+      it 'avoids N+1 queries', :request_store do
+        # Run this once to establish a baseline. Cached queries should get
+        # cached, so that when we introduce another change we shouldn't see
+        # additional queries.
+        access.check('git-receive-pack', changes)
+
+        control = ActiveRecord::QueryRecorder.new do
+          access.check('git-receive-pack', changes)
+        end
+
+        changes = ['6f6d7e7ed 570e7b2ab refs/heads/master', '6f6d7e7ed 570e7b2ab refs/heads/feature']
+
+        # There is still an N+1 query with protected branches
+        expect { access.check('git-receive-pack', changes) }.not_to exceed_query_limit(control).with_threshold(2)
+      end
+
+      context 'when #check_access! raises a timeout error' do
+        let(:expected_message) { "Push operation timed out\n\nTiming information for debugging purposes:\nRunning checks for ref: wow" }
+
+        before do
+          allow_next_instance_of(Gitlab::Checks::SingleChangeAccess) do |check|
+            allow(check).to receive(:validate!).and_raise(Gitlab::Checks::TimedLogger::TimeoutError)
+          end
+        end
+
+        it 'logs the timeout details and raises TimeoutError' do
+          expect(Gitlab::ErrorTracking).to receive(:log_exception).with(instance_of(Gitlab::Checks::TimedLogger::TimeoutError), project_id: project.id, 'gl_user_id' => user.id, deploy_key_id: nil)
+          expect { access.check('git-receive-pack', changes) }.to raise_error(described_class::TimeoutError, expected_message)
+        end
+
+        context 'when the actor is a deploy key with access to the project' do
+          let(:deploy_key) { create(:deploy_key, user: user) }
+          let(:actor) { deploy_key }
+
+          before do
+            deploy_key.deploy_keys_projects.create!(project: project, can_push: true)
+          end
+
+          it 'logs the timeout details and raises TimeoutError' do
+            expect(Gitlab::ErrorTracking).to receive(:log_exception).with(instance_of(Gitlab::Checks::TimedLogger::TimeoutError), project_id: project.id, 'gl_user_id' => nil, deploy_key_id: deploy_key.id)
+            expect { access.check('git-receive-pack', changes) }.to raise_error(described_class::TimeoutError, expected_message)
+          end
+        end
+      end
+    end
+  end
+
+  describe 'build authentication abilities' do
+    let(:authentication_abilities) { build_authentication_abilities }
+
+    context 'when project is authorized' do
+      before do
+        project.add_reporter(user)
+      end
+
+      it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:auth_upload]) }
+    end
+
+    context 'when unauthorized' do
+      context 'to public project' do
+        let(:project) { create(:project, :public, :repository) }
+
+        it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:auth_upload]) }
+      end
+
+      context 'to internal project' do
+        let(:project) { create(:project, :internal, :repository) }
+
+        it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:auth_upload]) }
+      end
+
+      context 'to private project' do
+        let(:project) { create(:project, :private, :repository) }
+
+        it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:auth_upload]) }
+      end
+    end
+  end
+
+  context 'when the repository is read-only' do
+    let(:project) { create(:project, :repository, :read_only) }
+
+    it 'denies push access' do
+      project.add_maintainer(user)
+
+      expect { push_access_check }.to raise_forbidden('The repository is temporarily read-only. Please try again later.')
+    end
+  end
+
+  describe '#check_read_only_push!' do
+    # Non-project containers (e.g. group wikis) resolve `project` to nil, so the
+    # read-only check must not blow up when there is no project to query.
+    it 'does not raise when there is no project' do
+      git_access = access
+      allow(git_access).to receive(:project).and_return(nil)
+
+      expect { git_access.send(:check_read_only_push!) }.not_to raise_error
+    end
+  end
+
+  context 'when archived' do
+    let(:group) { create(:group, maintainers: user) }
+    let(:project) { create(:project, :repository, group: group) }
+
+    context 'when project is archived' do
+      before do
+        project.update!(archived: true)
+      end
+
+      it 'denies push access' do
+        expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:archived])
+      end
+    end
+
+    context 'when group is archived' do
+      before do
+        group.update!(archived: true)
+      end
+
+      it 'denies push access' do
+        expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:archived])
+      end
+    end
+  end
+
+  describe 'deploy key permissions' do
+    let_it_be_with_reload(:key) { create(:deploy_key, user: user) }
+    let(:actor) { key }
+
+    context 'when deploy_key can push' do
+      context 'when project is authorized' do
+        before do
+          key.deploy_keys_projects.create!(project: project, can_push: true)
+        end
+
+        it { expect { push_access_check }.not_to raise_error }
+
+        context 'with a wildcard restriction and exact deploy key access' do
+          before do
+            project.add_developer(user)
+            create(:protected_branch, :no_one_can_push, project: project, name: '*')
+            exact = create(:protected_branch, project: project, name: 'feature')
+            create(:protected_branch_push_access_level, protected_branch: exact, deploy_key: key)
+          end
+
+          it 'allows the exact branch and denies wildcard-protected changes', :aggregate_failures do
+            expect { push_changes('6f6d7e7ed 570e7b2ab refs/heads/feature') }.not_to raise_error
+            expect { push_changes('6f6d7e7ed 570e7b2ab refs/heads/master') }
+              .to raise_forbidden(Gitlab::Checks::BranchCheck::ERROR_MESSAGES[:push_protected_branch])
+            expect { push_changes("#{Gitlab::Git::SHA1_BLANK_SHA} 570e7b2ab refs/heads/new_branch") }
+              .to raise_forbidden(Gitlab::Checks::BranchCheck::ERROR_MESSAGES[:create_protected_branch])
+            expect { push_changes("#{TestEnv::BRANCH_SHA['markdown']} #{Gitlab::Git::SHA1_BLANK_SHA} refs/heads/markdown") }
+              .to raise_forbidden(Gitlab::Checks::BranchCheck::ERROR_MESSAGES[:non_master_delete_protected_branch])
+          end
+        end
+
+        context 'when project is archived' do
+          before do
+            project.update!(archived: true)
+          end
+
+          it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:archived]) }
+        end
+      end
+
+      context 'when unauthorized' do
+        context 'to public project' do
+          let(:project) { create(:project, :public, :repository) }
+
+          it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:deploy_key_upload]) }
+        end
+
+        context 'to internal project' do
+          let(:project) { create(:project, :internal, :repository) }
+
+          it { expect { push_access_check }.to raise_not_found }
+        end
+
+        context 'to private project' do
+          let(:project) { create(:project, :private, :repository) }
+
+          it { expect { push_access_check }.to raise_not_found }
+        end
+      end
+    end
+
+    context 'when deploy_key cannot push' do
+      context 'when project is authorized' do
+        before do
+          key.deploy_keys_projects.create!(project: project, can_push: false)
+        end
+
+        it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:deploy_key_upload]) }
+      end
+
+      context 'when unauthorized' do
+        context 'to public project' do
+          let(:project) { create(:project, :public, :repository) }
+
+          it { expect { push_access_check }.to raise_forbidden(described_class::ERROR_MESSAGES[:deploy_key_upload]) }
+        end
+
+        context 'to internal project' do
+          let(:project) { create(:project, :internal, :repository) }
+
+          it { expect { push_access_check }.to raise_not_found }
+        end
+
+        context 'to private project' do
+          let(:project) { create(:project, :private, :repository) }
+
+          it { expect { push_access_check }.to raise_not_found }
+        end
+      end
+    end
+  end
+
+  context 'terms are enforced' do
+    before do
+      enforce_terms
+    end
+
+    shared_examples 'access after accepting terms' do
+      let(:actions) do
+        [-> { pull_access_check },
+          -> { push_access_check }]
+      end
+
+      it 'blocks access when the user did not accept terms' do
+        actions.each do |action|
+          expect { action.call }.to raise_forbidden(/must accept the Terms of Service in order to perform this action/)
+        end
+      end
+
+      it 'allows access when the user accepted the terms' do
+        accept_terms(user)
+
+        actions.each do |action|
+          expect { action.call }.not_to raise_error
+        end
+      end
+    end
+
+    describe 'as an anonymous user to a public project' do
+      let(:actor) { nil }
+      let(:project) { create(:project, :public, :repository) }
+
+      it { expect { pull_access_check }.not_to raise_error }
+    end
+
+    describe 'as a guest to a public project' do
+      let(:project) { create(:project, :public, :repository) }
+
+      it_behaves_like 'access after accepting terms' do
+        let(:actions) { [-> { pull_access_check }] }
+      end
+    end
+
+    describe 'as a reporter to the project' do
+      before do
+        project.add_reporter(user)
+      end
+
+      it_behaves_like 'access after accepting terms' do
+        let(:actions) { [-> { pull_access_check }] }
+      end
+    end
+
+    describe 'as a developer of the project' do
+      before do
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'access after accepting terms'
+    end
+
+    describe 'as a maintainer of the project' do
+      before do
+        project.add_maintainer(user)
+      end
+
+      it_behaves_like 'access after accepting terms'
+    end
+
+    describe 'as an owner of the project' do
+      let(:project) { create(:project, :repository, namespace: user.namespace) }
+
+      it_behaves_like 'access after accepting terms'
+    end
+
+    describe 'when a ci build clones the project' do
+      let(:protocol) { 'http' }
+      let(:authentication_abilities) { [:build_download_code] }
+      let(:auth_result_type) { :build }
+
+      before do
+        project.add_developer(user)
+      end
+
+      it "doesn't block http pull" do
+        aggregate_failures do
+          expect { pull_access_check }.not_to raise_error
+        end
+      end
+    end
+
+    describe 'when request is authorized with job token' do
+      let(:source_project) { create(:project) }
+      let(:auth_result_type) { :build }
+      let(:job) { build_stubbed(:ci_build, project: source_project, user: user) }
+      let(:scope) { user.set_ci_job_token_scope!(job) }
+
+      before do
+        accept_terms(user)
+
+        source_project.add_maintainer(user)
+        source_project.save!
+
+        allow(user).to receive(:ci_job_token_scope).and_return(scope)
+      end
+
+      context 'and target project in the allow list' do
+        let(:access) { access_class.new(user, project, 'web', authentication_abilities: [:download_code], repository_path: repository_path) }
+
+        before do
+          project.add_maintainer(user)
+          project.save!
+
+          allow(scope).to receive(:accessible?).with(project).and_return(true)
+        end
+
+        it 'does not block http pull' do
+          expect { pull_access_check }.not_to raise_error
+        end
+      end
+
+      context 'and target_project in the allow list, but user does not have permissions' do
+        let(:access) { access_class.new(user, project, 'web', authentication_abilities: [:download_code], repository_path: repository_path) }
+
+        before do
+          allow(scope).to receive(:accessible?).with(project).and_return(true)
+        end
+
+        it 'blocks http pull' do
+          expect { pull_access_check }.to raise_forbidden_by_job_token(project)
+        end
+      end
+
+      context 'and target project is not in the allow list' do
+        let(:access) { access_class.new(user, project, 'web', authentication_abilities: [:download_code], repository_path: repository_path) }
+
+        before do
+          project.add_maintainer(user)
+          project.save!
+
+          allow(scope).to receive(:accessible?).with(project).and_return(false)
+        end
+
+        it 'blocks http pull' do
+          expect { pull_access_check }.to raise_forbidden_by_job_token_allowlist(source_project, project)
+        end
+      end
+    end
+
+    describe 'when request is made from CI' do
+      let(:auth_result_type) { :build }
+      let(:job) { build_stubbed(:ci_build, project: project, user: user) }
+
+      before do
+        accept_terms(user)
+        project.add_maintainer(user)
+        project.ci_push_repository_for_job_token_allowed = ci_push_repository_for_job_token_allowed
+        project.save!
+
+        allow(user).to receive(:ci_job_token_scope).and_return(user.set_ci_job_token_scope!(job))
+      end
+
+      context 'when push to repositry is allowed by project settings' do
+        let(:ci_push_repository_for_job_token_allowed) { true }
+
+        it "doesn't block push" do
+          expect { push_access_check_build(project, changes) }.not_to raise_error
+        end
+
+        context 'when push is requested to a different project' do
+          let(:another_project) do
+            create(:project, :repository, :public).tap do |accessible_project|
+              add_inbound_accessible_linkage(project, accessible_project)
+            end
+          end
+
+          before do
+            another_project.add_maintainer(user)
+            another_project.ci_push_repository_for_job_token_allowed = ci_push_repository_for_job_token_allowed
+            another_project.save!
+          end
+
+          it 'raises forbidden exception on push' do
+            expect { push_access_check_build(another_project, changes) }.to raise_error(Gitlab::GitAccess::ForbiddenError)
+          end
+        end
+      end
+
+      context 'when push to repositry is not allowed by project settings' do
+        let(:ci_push_repository_for_job_token_allowed) { false }
+
+        it 'raises forbidden exception on push' do
+          expect { push_access_check_build(project, changes) }.to raise_error(Gitlab::GitAccess::ForbiddenError)
+        end
+      end
+    end
+  end
+
+  private
+
+  def access
+    access_class.new(actor, project, protocol,
+      authentication_abilities: authentication_abilities,
+      repository_path: repository_path,
+      redirected_path: redirected_path, auth_result_type: auth_result_type, gitaly_context: gitaly_context,
+      personal_access_token: personal_access_token,
+      oauth_access_token: oauth_access_token)
+  end
+
+  def push_access_check_build(access_project, changes)
+    access_class.new(actor, access_project, protocol,
+      authentication_abilities: build_authentication_abilities_allowed_push,
+      repository_path: "#{access_project.full_path}.git",
+      redirected_path: redirected_path, auth_result_type: auth_result_type, gitaly_context: gitaly_context)
+    .check('git-receive-pack', changes)
+  end
+
+  def push_changes(changes)
+    access.check('git-receive-pack', changes)
+  end
+
+  def raise_forbidden(message)
+    raise_error(described_class::ForbiddenError, message)
+  end
+
+  def raise_not_found
+    raise_error(described_class::NotFoundError, described_class::ERROR_MESSAGES[:project_not_found])
+  end
+
+  def raise_forbidden_by_job_token(target_project)
+    raise_error(described_class::ForbiddenError, format(described_class::ERROR_MESSAGES[:auth_by_job_token_forbidden],
+      target_project_id: target_project.id))
+  end
+
+  def raise_forbidden_by_job_token_allowlist(source_project, target_project)
+    raise_error(described_class::ForbiddenError, format(described_class::ERROR_MESSAGES[:auth_by_job_token_project_not_in_allowlist],
+      source_project_path: source_project.path, target_project_id: target_project.id))
+  end
+
+  def build_authentication_abilities
+    [
+      :read_project,
+      :build_download_code
+    ]
+  end
+
+  def build_authentication_abilities_allowed_push
+    [
+      :read_project,
+      :build_download_code,
+      :build_push_code
+    ]
+  end
+
+  def full_authentication_abilities
+    [
+      :read_project,
+      :download_code,
+      :push_code
+    ]
   end
 end

@@ -1,0 +1,57 @@
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import BlobEditHeader from '~/repository/pages/blob_edit_header.vue';
+
+export default function initBlobEditHeader(editor) {
+  const el = document.querySelector('.js-blob-edit-header');
+
+  if (!el) {
+    return null;
+  }
+
+  const {
+    action,
+    updatePath,
+    cancelPath,
+    originalBranch,
+    targetBranch,
+    canPushCode,
+    canPushToBranch,
+    emptyRepo,
+    blobName,
+    branchAllowsCollaboration,
+    lastCommitSha,
+    projectId,
+    projectPath,
+    newMergeRequestPath,
+    targetProjectId,
+    targetProjectPath,
+    nextForkBranchName,
+  } = el.dataset;
+
+  return initVueApp({
+    el,
+    name: 'BlobEditHeaderRoot',
+    provide: {
+      action,
+      editor,
+      updatePath,
+      cancelPath,
+      originalBranch,
+      targetBranch,
+      blobName,
+      lastCommitSha,
+      projectId,
+      projectPath,
+      newMergeRequestPath,
+      targetProjectId,
+      targetProjectPath,
+      nextForkBranchName,
+      emptyRepo: parseBoolean(emptyRepo),
+      canPushCode: parseBoolean(canPushCode),
+      canPushToBranch: parseBoolean(canPushToBranch),
+      branchAllowsCollaboration: parseBoolean(branchAllowsCollaboration),
+    },
+    component: BlobEditHeader,
+  });
+}

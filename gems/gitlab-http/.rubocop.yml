@@ -1,0 +1,34 @@
+inherit_from:
+  - ../config/rubocop.yml
+  - .rubocop_todo.yml
+
+Gemfile/MissingFeatureCategory:
+  Enabled: false
+
+Naming/ClassAndModuleCamelCase:
+  AllowedNames:
+    - HTTP_V2
+
+Style/NumericPredicate:
+  EnforcedStyle: comparison
+
+Style/SpecialGlobalVars:
+  Enabled: false
+
+Lint/DuplicateBranch:
+  Enabled: false
+
+RSpec/MultipleMemoizedHelpers:
+  Enabled: false
+
+RSpec/SpecFilePathFormat:
+  CustomTransform:
+    HTTP_V2: http_v2
+
+Lint/BinaryOperatorWithIdenticalOperands:
+  Exclude:
+    - 'spec/**/*.rb'
+
+# The Gitlab::HTTP wrapper sits above this gem and isn't available here.
+Gitlab/HttpV2:
+  Enabled: false

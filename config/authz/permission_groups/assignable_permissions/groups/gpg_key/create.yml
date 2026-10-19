@@ -1,0 +1,14 @@
+---
+name: create_gpg_key
+description: Grants the ability to create GPG keys
+boundaries:
+  - instance
+  - user
+available_for:
+  - granular_access_token
+permissions:
+  - create_user_gpg_key
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

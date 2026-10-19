@@ -1,8 +1,35 @@
-.flash-container
-  - if alert
-    .flash-alert
-      = alert
+- flash_container_no_margin = local_assigns.fetch(:flash_container_no_margin, false)
+- flash_container_class = ('flash-container-no-margin' if flash_container_no_margin)
 
-  - elsif notice
-    .flash-notice
-      = notice
+-# We currently only support `alert`, `notice`, `success`, `warning`, 'toast', and 'raw'
+- type_to_variant = {'alert' => 'danger', 'notice' => 'info', 'success' => 'success', 'warning' => 'warning'}
+- closable = %w[alert notice success]
+.flash-container.flash-container-page.sticky{ data: { testid: 'flash-container' }, class: flash_container_class }
+  - flash.each do |key, value|
+    - next if key == 'timedout' # used by Warden for state tracking, not meant to be rendered
+    - next if value == I18n.t('devise.failure.unauthenticated') && current_user
+
+    - if key == 'toast' && value
+      -# Frontend renders toast messages as text and not as HTML.
+      -# Since toast messages are escaped on the backend via `safe_format` we
+      -# need to unescape to avoid double escaping HTML.
+      -# The spec spec/features/flash_messages_spec.rb ensures toasts always render plain text.
+      -# See https://gitlab.com/gitlab-org/gitlab/-/issues/520690
+      .js-toast-message{ data: { message: CGI.unescapeHTML(value) } }
+    - elsif key == 'raw' && value
+      = value
+    - elsif value == I18n.t('devise.failure.unconfirmed')
+      = render 'shared/confirm_your_email_alert'
+    - elsif value == I18n.t('devise.failure.unauthenticated')
+      = render 'shared/sign_in_or_register_notice'
+    - elsif value
+      -# A flash is usually a bare message; the hash form adds a title and an action button.
+      - alert = value.is_a?(Hash) ? value : { message: value }
+      = render Pajamas::AlertComponent.new(title: alert[:title], variant: type_to_variant[key], dismissible: closable.include?(key), alert_options: {class: "flash-#{key}", data: { testid: "alert-#{type_to_variant[key]}" }}) do |c|
+        = c.with_body do
+          = alert[:message]
+        - if alert[:button_text] && alert[:button_path]
+          = c.with_actions do
+            = render Pajamas::ButtonComponent.new(size: :small, variant: :confirm, href: alert[:button_path]) do
+              = alert[:button_text]
+  #js-global-alerts

@@ -1,0 +1,74 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Repository last commit component renders commit widget 1`] = `
+<div>
+  <commit-info-stub
+    class="@sm/panel:gl-flex gl-hidden"
+    commit="[object Object]"
+  >
+    <div
+      class="commit-actions gl-flex gl-gap-3 gl-items-start gl-my-2"
+    >
+      <div
+        class="gl-flex gl-h-7 gl-items-center"
+      >
+        <ci-icon-stub
+          class="gl-mr-2"
+          showtooltip="true"
+          status="[object Object]"
+          uselink="true"
+        />
+      </div>
+      <gl-button-group-stub
+        class="gl-flex gl-items-center js-commit-sha-group"
+      >
+        <gl-button-stub
+          accessibledisabled="true"
+          buttontextclasses=""
+          category="primary"
+          class="dark:!gl-bg-strong gl-font-monospace"
+          data-testid="last-commit-id-label"
+          icon=""
+          label="true"
+          size="medium"
+          tag="button"
+          type="button"
+          variant="default"
+        >
+          12345678
+        </gl-button-stub>
+        <clipboard-button-stub
+          category="secondary"
+          class="dark:!gl-border-l-section input-group-text"
+          icon="copy-to-clipboard"
+          size="medium"
+          text="123456789"
+          title="Copy commit SHA"
+          tooltipplacement="top"
+          variant="default"
+        />
+      </gl-button-group-stub>
+      <gl-button-stub
+        accessibledisabled="true"
+        buttontextclasses=""
+        category="secondary"
+        class="!gl-ml-0"
+        data-testid="last-commit-history"
+        href="/history"
+        icon=""
+        size="medium"
+        tag="button"
+        type="button"
+        variant="default"
+      >
+        History
+      </gl-button-stub>
+    </div>
+  </commit-info-stub>
+  <collapsible-commit-info-stub
+    class="!gl-border-t-0 @sm/panel:gl-hidden gl-block"
+    commit="[object Object]"
+    historyurl="/history"
+  />
+</div>
+`;

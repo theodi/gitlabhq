@@ -1,0 +1,77 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Merge request dashboard merge request component renders template 1`] = `
+<div
+  role="row"
+>
+  <div
+    class="gl-flex gl-flex-col gl-gap-2 gl-items-start"
+    role="cell"
+  >
+    <status-badge-stub
+      listid="returned_to_you"
+      mergerequest="[object Object]"
+    />
+  </div>
+  <div
+    class="gl-flex gl-flex-col gl-gap-2 gl-items-start"
+    role="cell"
+  >
+    <gl-link-stub
+      class="gl-font-bold gl-text-default hover:gl-text-default"
+    >
+      Merge request title
+    </gl-link-stub>
+    <div
+      class="gl-text-sm gl-text-subtle"
+    >
+      <gl-sprintf-stub
+        message="%{reference} %{author} %{stats} %{milestone}"
+      />
+    </div>
+  </div>
+  <div
+    role="cell"
+  >
+    <assigned-users-stub
+      type="ASSIGNEES"
+      users="[object Object]"
+    />
+  </div>
+  <div
+    role="cell"
+  >
+    <assigned-users-stub
+      type="REVIEWERS"
+      users="[object Object],[object Object]"
+    />
+  </div>
+  <div
+    class="gl-flex gl-flex-col gl-gap-2 gl-items-end"
+    role="cell"
+  >
+    <div
+      class="gl-flex gl-gap-3"
+    >
+      <gl-icon-stub
+        class="gl-mt-1"
+        data-testid="mr-broken-badge"
+        name="warning-solid"
+        size="16"
+        title="Cannot be merged automatically"
+        variant="subtle"
+      />
+      <approval-count-stub
+        mergerequest="[object Object]"
+      />
+    </div>
+    <div
+      class="gl-text-sm gl-text-subtle"
+    >
+      <gl-sprintf-stub
+        message="Updated %{updatedAt}"
+      />
+    </div>
+  </div>
+</div>
+`;

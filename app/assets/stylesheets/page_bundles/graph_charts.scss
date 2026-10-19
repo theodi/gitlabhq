@@ -1,0 +1,16 @@
+@import 'page_bundles/mixins_and_variables_and_functions';
+
+.repo-charts {
+  .commit-stats li {
+    font-size: 16px;
+  }
+
+  .tree-ref-header {
+    margin-bottom: 20px;
+
+    h4 {
+      margin: 0;
+      line-height: 36px;
+    }
+  }
+}

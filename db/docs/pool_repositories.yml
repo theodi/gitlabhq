@@ -1,0 +1,14 @@
+---
+table_name: pool_repositories
+classes:
+- PoolRepository
+feature_categories:
+- source_code_management
+description: Holds information about a repository storing objects which are shared
+  across a pool of forks.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/fff7754186202cfcdeaa0962c28e5d43ddd705b7
+milestone: '11.6'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  organization_id: organizations
+table_size: small

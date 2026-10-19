@@ -1,0 +1,9 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Form Footer Actions renders content properly 1`] = `
+<footer
+  class="footer-block gl-mt-5"
+>
+  Bar Foo Abrakadabra
+</footer>
+`;

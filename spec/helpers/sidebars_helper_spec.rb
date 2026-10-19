@@ -1,0 +1,908 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe SidebarsHelper, feature_category: :navigation do
+  include Devise::Test::ControllerHelpers
+
+  let_it_be(:current_organization) { build_stubbed(:common_organization) }
+
+  before do
+    Current.organization = current_organization
+  end
+
+  describe '#super_sidebar_context' do
+    include_context 'custom session'
+
+    let_it_be(:group) { build(:group) }
+    let_it_be(:group_with_id) { build_stubbed(:group) }
+
+    let(:user) { build(:user) }
+    let(:panel) { {} }
+    let(:panel_type) { 'project' }
+    let(:project) { nil }
+    let(:current_user_mode) { Gitlab::Auth::CurrentUserMode.new(user) }
+    let(:context_with_group_id) do
+      helper.super_sidebar_context(user, group: group_with_id, project: project, panel: panel, panel_type: panel_type)
+    end
+
+    let(:global_shortcut_links) do
+      [
+        {
+          title: _('Milestones'),
+          href: dashboard_milestones_path,
+          css_class: 'dashboard-shortcuts-milestones'
+        },
+        {
+          title: _('Snippets'),
+          href: dashboard_snippets_path,
+          css_class: 'dashboard-shortcuts-snippets'
+        },
+        {
+          title: _('Activity'),
+          href: activity_dashboard_path,
+          css_class: 'dashboard-shortcuts-activity'
+        },
+        {
+          title: _('Groups'),
+          href: dashboard_groups_path,
+          css_class: 'dashboard-shortcuts-groups'
+        },
+        {
+          title: _('Projects'),
+          href: dashboard_projects_path,
+          css_class: 'dashboard-shortcuts-projects'
+        }
+      ]
+    end
+
+    subject do
+      helper.super_sidebar_context(user, group: group, project: project, panel: panel, panel_type: panel_type)
+    end
+
+    before do
+      allow(Time).to receive(:now).and_return(Time.utc(2021, 1, 1))
+      allow(helper).to receive(:current_user) { user }
+      allow(helper).to receive_messages(
+        can?: true,
+        session: session,
+        header_search_context: { some: "search data" },
+        current_user_mode: current_user_mode
+      )
+      allow(panel).to receive_messages(super_sidebar_menu_items: nil, super_sidebar_context_header: nil)
+
+      if user
+        allow(helper).to receive(:show_feature_library_shimmer?).and_return(true)
+        allow(user).to receive_messages(
+          assigned_open_issues_count: 1,
+          assigned_open_merge_requests_count: 4,
+          returned_to_you_merge_requests_count: 0,
+          review_requested_open_merge_requests_count: 0,
+          todos_pending_count: 3,
+          pinned_nav_items: { panel_type => %w[foo bar], 'another_panel' => %w[baz] }
+        )
+      end
+    end
+
+    # Tests for logged-out sidebar context
+    it_behaves_like 'logged-out super-sidebar context'
+
+    # Tests for logged-in sidebar context below
+    it_behaves_like 'shared super sidebar context'
+    it { is_expected.to include({ is_logged_in: true }) }
+
+    it 'returns has_terms as true if terms are defined' do
+      stub_application_setting(terms: "My custom Terms of Use")
+
+      is_expected.to include({ has_terms: true })
+    end
+
+    it 'returns has_terms as false if terms are not set' do
+      is_expected.to include({ has_terms: false })
+    end
+
+    it 'returns sidebar values from user', :use_clean_rails_memory_store_caching do
+      expect(subject).to include({
+        is_logged_in: true,
+        is_admin: false,
+        name: user.name,
+        username: user.username,
+        admin_mode: {
+          admin_mode_feature_enabled: true,
+          admin_mode_active: false,
+          user_is_admin: false
+        },
+        avatar_url: user.avatar_url,
+        status: {
+          can_update: helper.can?(user, :update_user_status, user),
+          busy: user.status&.busy?,
+          customized: user.status&.customized?,
+          availability: user.status&.availability.to_s,
+          emoji: user.status&.emoji,
+          message_html: user.status&.message_html&.html_safe,
+          message: user.status&.message&.html_safe,
+          clear_after: nil
+        },
+        user_counts: {
+          assigned_issues: 1,
+          assigned_merge_requests: 4,
+          review_requested_merge_requests: 0,
+          todos: 3,
+          last_update: 1609459200000
+        },
+        gitlab_com_and_canary: Gitlab.com_and_canary?,
+        pinned_items: %w[foo bar],
+        shortcut_links: global_shortcut_links,
+        work_items: nil,
+        has_multiple_organizations: false,
+        show_feature_library_shimmer: true
+      })
+    end
+
+    it 'returns sidebar values for work item context with group id', :use_clean_rails_memory_store_caching do
+      expect(context_with_group_id).to include({
+        work_items: {
+          full_path: group_with_id.full_path
+        }
+      })
+    end
+
+    context 'when user is admin' do
+      before do
+        allow(user).to receive(:can_admin_all_resources?).and_return(true)
+      end
+
+      it { is_expected.to include({ is_admin: true }) }
+    end
+
+    describe "what's new information" do
+      context 'when display_whats_new? is true' do
+        before do
+          allow(helper).to receive(:display_whats_new?).and_return(true)
+        end
+
+        it 'includes the release items count, version digest, and read articles' do
+          is_expected.to include({
+            whats_new_most_recent_release_items_count: helper.whats_new_most_recent_release_items_count,
+            whats_new_version_digest: helper.whats_new_version_digest,
+            whats_new_read_articles: helper.whats_new_read_articles
+          })
+        end
+      end
+
+      context 'when display_whats_new? is false' do
+        before do
+          allow(helper).to receive(:display_whats_new?).and_return(false)
+        end
+
+        it 'omits the release items count and version digest' do
+          is_expected.not_to have_key(:whats_new_most_recent_release_items_count)
+          is_expected.not_to have_key(:whats_new_version_digest)
+        end
+      end
+    end
+
+    describe 'instance version information' do
+      context 'when show_version_check? is true' do
+        before do
+          allow(helper).to receive(:show_version_check?).and_return(true)
+        end
+
+        it 'includes the GitLab version and version check' do
+          is_expected.to include({
+            gitlab_version: Gitlab.version_info,
+            gitlab_version_check: helper.gitlab_version_check
+          })
+        end
+      end
+
+      context 'when show_version_check? is false' do
+        before do
+          allow(helper).to receive(:show_version_check?).and_return(false)
+        end
+
+        it 'omits the GitLab version and version check' do
+          is_expected.not_to have_key(:gitlab_version)
+          is_expected.not_to have_key(:gitlab_version_check)
+        end
+      end
+    end
+
+    describe 'ai_search_available' do
+      it { is_expected.to include(ai_search_available: false) }
+
+      context 'without a project or group' do
+        let(:group) { nil }
+
+        it { is_expected.to include(ai_search_available: false) }
+      end
+
+      context 'with a project' do
+        let(:project) { build_stubbed(:project) }
+
+        it { is_expected.to include(ai_search_available: false) }
+      end
+    end
+
+    describe "shortcut links" do
+      describe "as the anonymous user" do
+        let(:user) { nil }
+        let(:global_shortcut_links) do
+          [
+            {
+              title: _('Snippets'),
+              href: explore_snippets_path,
+              css_class: 'dashboard-shortcuts-snippets'
+            },
+            {
+              title: _('Groups'),
+              href: explore_groups_path,
+              css_class: 'dashboard-shortcuts-groups'
+            },
+            {
+              title: _('Projects'),
+              href: explore_projects_path,
+              css_class: 'dashboard-shortcuts-projects'
+            }
+          ]
+        end
+
+        it 'returns global shortcut links' do
+          expect(subject[:shortcut_links]).to eq(global_shortcut_links)
+        end
+
+        context 'in a project' do
+          let_it_be(:project) { build_stubbed(:project) }
+
+          it 'returns project-specific shortcut links' do
+            expect(subject[:shortcut_links]).to eq(global_shortcut_links)
+          end
+        end
+      end
+
+      describe "as logged-in user" do
+        it 'returns global shortcut links' do
+          expect(subject[:shortcut_links]).to eq(global_shortcut_links)
+        end
+
+        context 'in a project' do
+          let_it_be(:project) { build_stubbed(:project) }
+
+          it 'returns project-specific shortcut links' do
+            expect(subject[:shortcut_links]).to eq([
+              *global_shortcut_links,
+              {
+                title: _('Create a new issue'),
+                href: new_project_issue_path(project),
+                css_class: 'shortcuts-new-issue'
+              }
+            ])
+          end
+        end
+
+        context 'when the request is organization-scoped' do
+          let(:organization_scoped_shortcut_links) do
+            [
+              {
+                title: _('Milestones'),
+                href: dashboard_milestones_path(organization_path: organization.path),
+                css_class: 'dashboard-shortcuts-milestones'
+              },
+              {
+                title: _('Snippets'),
+                href: dashboard_snippets_path(organization_path: organization.path),
+                css_class: 'dashboard-shortcuts-snippets'
+              },
+              {
+                title: _('Activity'),
+                href: activity_dashboard_path(organization_path: organization.path),
+                css_class: 'dashboard-shortcuts-activity'
+              },
+              {
+                title: _('Groups'),
+                href: dashboard_groups_path(organization_path: organization.path),
+                css_class: 'dashboard-shortcuts-groups'
+              },
+              {
+                title: _('Projects'),
+                href: dashboard_projects_path(organization_path: organization.path),
+                css_class: 'dashboard-shortcuts-projects'
+              }
+            ]
+          end
+
+          before do
+            Current.organization_resolver =
+              instance_double(
+                Gitlab::Current::Organization,
+                from_organization_params: organization,
+                from_request: organization,
+                from_params: organization
+              )
+            Current.data_context = Gitlab::Current::DataContext.new(organization: organization, user: user)
+          end
+
+          context 'and the organization is not isolated' do
+            let_it_be(:organization) { build_stubbed(:organization) }
+
+            it 'returns shortcut links scoped to the organization' do
+              expect(subject[:shortcut_links]).to eq(organization_scoped_shortcut_links)
+            end
+          end
+
+          context 'and the organization is isolated' do
+            let_it_be(:organization) { build_stubbed(:organization, :isolated) }
+
+            it 'still returns shortcut links scoped to the organization' do
+              expect(subject[:shortcut_links]).to eq(organization_scoped_shortcut_links)
+            end
+          end
+        end
+      end
+    end
+
+    describe '"Create new" menu groups', :use_clean_rails_memory_store_caching do
+      def menu_item(href:, text:, id:, component: nil)
+        {
+          href: href,
+          text: text,
+          component: component,
+          extraAttrs: {
+            "data-track-label": id,
+            "data-track-action": "click_link",
+            "data-track-property": "nav_create_menu",
+            "data-testid": 'create_menu_item',
+            "data-qa-create-menu-item": id
+          }
+        }
+      end
+
+      context 'without headers' do
+        shared_examples '"Create new" menu groups without headers' do
+          it 'returns "Create new" menu groups without headers' do
+            expect(subject[:create_new_menu_groups]).to eq([
+              {
+                name: "",
+                items: expected_menu_item_groups
+              }
+            ])
+          end
+        end
+
+        let(:new_project_menu_item) do
+          menu_item(href: new_project_path, text: "New project/repository", id: "general_new_project")
+        end
+
+        let(:new_group_menu_item) do
+          menu_item(href: new_group_path, text: "New group", id: "general_new_group")
+        end
+
+        let(:new_organization_menu_item) do
+          menu_item(
+            href: new_organization_path,
+            text: s_('Organization|New organization'),
+            id: "general_new_organization"
+          )
+        end
+
+        let(:new_snippet_menu_item) do
+          menu_item(href: new_snippet_path, text: "New snippet", id: "general_new_snippet")
+        end
+
+        context 'when on GitLab.com', :saas do
+          let(:expected_menu_item_groups) do
+            [new_project_menu_item, new_group_menu_item, new_organization_menu_item, new_snippet_menu_item]
+          end
+
+          include_examples '"Create new" menu groups without headers'
+        end
+
+        context 'when on self-managed' do
+          let(:expected_menu_item_groups) do
+            [new_project_menu_item, new_group_menu_item, new_snippet_menu_item]
+          end
+
+          include_examples '"Create new" menu groups without headers'
+        end
+      end
+
+      context 'with headers' do
+        let(:in_this_group_menu_items) do
+          [
+            menu_item(
+              href: new_project_path,
+              text: "New project/repository",
+              id: "new_project"
+            ),
+            menu_item(
+              href: new_group_path(anchor: 'create-group-pane'),
+              text: "New subgroup",
+              id: "new_subgroup"
+            ),
+            menu_item(
+              href: nil,
+              text: "Invite members",
+              component: 'invite_members',
+              id: "invite"
+            )
+          ]
+        end
+
+        let(:in_gitlab_menu_items) do
+          [
+            menu_item(
+              href: new_project_path,
+              text: "New project/repository",
+              id: "general_new_project"
+            ),
+            menu_item(
+              href: new_group_path,
+              text: "New group",
+              id: "general_new_group"
+            ),
+            menu_item(
+              href: new_snippet_path,
+              text: "New snippet",
+              id: "general_new_snippet"
+            )
+          ]
+        end
+
+        before do
+          allow(group).to receive(:persisted?).and_return(true)
+          allow(helper).to receive(:can?).and_return(true)
+        end
+
+        it 'returns "Create new" menu groups with headers' do
+          expect(subject[:create_new_menu_groups]).to contain_exactly(
+            a_hash_including(
+              name: "In this group",
+              items: array_including(*in_this_group_menu_items)
+            ),
+            a_hash_including(
+              name: "In GitLab",
+              items: array_including(*in_gitlab_menu_items)
+            )
+          )
+        end
+      end
+
+      context 'with wiki menu item internal events tracking' do
+        context 'in a project context' do
+          let(:project) { build_stubbed(:project) }
+
+          before do
+            allow(project).to receive(:persisted?).and_return(true)
+            allow(helper).to receive(:can?).and_return(true)
+          end
+
+          it 'includes data-event-tracking attributes with project label' do
+            wiki_item = subject[:create_new_menu_groups].flat_map { |g| g[:items] }.find do |item|
+              item[:extraAttrs][:'data-qa-create-menu-item'] == 'new_wiki_page'
+            end
+
+            expect(wiki_item).to be_present
+            expect(wiki_item[:extraAttrs]).to include(
+              'data-event-tracking': 'click_new_wiki_page_in_create_menu',
+              'data-event-label': 'project'
+            )
+          end
+
+          it 'does not include data-event-tracking on non-wiki menu items' do
+            non_wiki_items = subject[:create_new_menu_groups].flat_map { |g| g[:items] }.reject do |item|
+              item[:extraAttrs][:'data-qa-create-menu-item'] == 'new_wiki_page'
+            end
+
+            expect(non_wiki_items).not_to be_empty
+            non_wiki_items.each do |item|
+              expect(item[:extraAttrs]).not_to have_key(:'data-event-tracking')
+              expect(item[:extraAttrs]).not_to have_key(:'data-event-label')
+            end
+          end
+        end
+      end
+    end
+
+    describe 'current context' do
+      context 'when current context is a project' do
+        let_it_be(:project) { build(:project) }
+
+        subject do
+          helper.super_sidebar_context(user, group: nil, project: project, panel: panel, panel_type: panel_type)
+        end
+
+        before do
+          allow(project).to receive(:persisted?).and_return(true)
+        end
+
+        it 'returns project context' do
+          expect(subject[:current_context]).to eq({
+            namespace: 'projects',
+            item: {
+              id: project.id,
+              avatarUrl: project.avatar_url,
+              name: project.name,
+              namespace: project.full_name,
+              fullPath: project.full_path,
+              webUrl: project_path(project)
+            }
+          })
+        end
+      end
+
+      context 'when current context is a group' do
+        subject do
+          helper.super_sidebar_context(user, group: group, project: nil, panel: panel, panel_type: panel_type)
+        end
+
+        before do
+          allow(group).to receive(:persisted?).and_return(true)
+        end
+
+        it 'returns group context' do
+          expect(subject[:current_context]).to eq({
+            namespace: 'groups',
+            item: {
+              id: group.id,
+              avatarUrl: group.avatar_url,
+              name: group.name,
+              namespace: group.full_name,
+              fullPath: group.full_path,
+              webUrl: group_path(group)
+            }
+          })
+        end
+      end
+
+      context 'when current context is not tracked' do
+        subject do
+          helper.super_sidebar_context(user, group: nil, project: nil, panel: panel, panel_type: panel_type)
+        end
+
+        it 'returns no context' do
+          expect(subject[:current_context]).to eq({})
+        end
+      end
+    end
+
+    describe 'impersonation data' do
+      it 'sets is_impersonating to `false` when not impersonating' do
+        expect(subject[:is_impersonating]).to be(false)
+      end
+
+      describe 'when impersonating' do
+        before do
+          session[:impersonator_id] = 5
+        end
+
+        it 'sets is_impersonating to `true`' do
+          expect(subject[:is_impersonating]).to be(true)
+        end
+      end
+    end
+  end
+
+  describe '#super_sidebar_nav_panel' do
+    let(:group) { build(:group) }
+    let(:project) { build(:project) }
+    let(:organization) { build(:organization) }
+
+    before do
+      project_context_data = {
+        current_user: nil,
+        container: project,
+        can_view_pipeline_editor: false,
+        learn_gitlab_enabled: false,
+        show_get_started_menu: false
+      }
+
+      allow(helper).to receive_messages(
+        project_sidebar_context_data: project_context_data,
+        group_sidebar_context_data: { current_user: nil, container: group, show_discover_group_security: false }
+      )
+
+      allow(group).to receive(:to_global_id).and_return(5)
+    end
+
+    shared_examples 'nav panels available to all users' do
+      it 'returns Project Panel for project nav' do
+        expect(helper.super_sidebar_nav_panel(nav: 'project', user: user))
+          .to be_a(Sidebars::Projects::SuperSidebarPanel)
+      end
+
+      it 'returns Group Panel for group nav' do
+        expect(helper.super_sidebar_nav_panel(nav: 'group', user: user))
+          .to be_a(Sidebars::Groups::SuperSidebarPanel)
+      end
+
+      it 'returns User profile Panel for user profile nav' do
+        viewed_user = build(:user)
+        expect(helper.super_sidebar_nav_panel(nav: 'user_profile', user: user, viewed_user: viewed_user))
+          .to be_a(Sidebars::UserProfile::Panel)
+      end
+
+      it 'returns Explore Panel for explore nav' do
+        expect(helper.super_sidebar_nav_panel(nav: 'explore', user: user))
+          .to be_a(Sidebars::Explore::Panel)
+      end
+
+      it 'returns Organization Panel for organization nav' do
+        expect(helper.super_sidebar_nav_panel(nav: 'organization', organization: organization, user: user))
+          .to be_a(Sidebars::Organizations::SuperSidebarPanel)
+      end
+
+      it 'returns Search Panel for search nav' do
+        expect(helper.super_sidebar_nav_panel(nav: 'search', user: user))
+          .to be_a(Sidebars::Search::Panel)
+      end
+    end
+
+    describe 'when logged-in' do
+      let(:user) { build(:user) }
+
+      before do
+        Rails.cache.write(['users', user.id, 'assigned_open_issues_count'], 1)
+        Rails.cache.write(['users', user.id, 'assigned_open_merge_requests_count'], 4)
+        Rails.cache.write(['users', user.id, 'review_requested_open_merge_requests_count'], 0)
+        Rails.cache.write(['users', user.id, 'todos_pending_count'], 3)
+      end
+
+      it 'returns User Settings Panel for profile nav' do
+        expect(helper.super_sidebar_nav_panel(nav: 'profile', user: user))
+          .to be_a(Sidebars::UserSettings::Panel)
+      end
+
+      it 'returns "Your Work" Panel for your_work nav', :use_clean_rails_memory_store_caching do
+        expect(helper.super_sidebar_nav_panel(nav: 'your_work', user: user))
+          .to be_a(Sidebars::YourWork::Panel)
+      end
+
+      describe 'admin user' do
+        let(:user) { build(:admin) }
+
+        it 'returns Admin Panel for admin nav', :enable_admin_mode do
+          expect(helper.super_sidebar_nav_panel(nav: 'admin', user: user))
+            .to be_a(Sidebars::Admin::Panel)
+        end
+
+        it 'returns Your Work Panel for admin nav when not in admin mode' do
+          expect(helper.super_sidebar_nav_panel(nav: 'admin', user: user))
+            .to be_a(Sidebars::YourWork::Panel)
+        end
+      end
+
+      describe 'fallback behavior' do
+        it 'returns "Your Work" Panel as default fallback', :use_clean_rails_memory_store_caching do
+          expect(helper.super_sidebar_nav_panel(user: user))
+            .to be_a(Sidebars::YourWork::Panel)
+        end
+
+        context 'when UserProfile panel fails to render' do
+          let(:private_user) { build(:user, private_profile: true) }
+
+          it 'returns Explore panel for viewing private profiles' do
+            panel = helper.super_sidebar_nav_panel(nav: 'user_profile', user: user, viewed_user: private_user)
+            expect(panel).to be_a(Sidebars::Explore::Panel)
+          end
+        end
+
+        context 'when other panels fail to render' do
+          before do
+            allow_next_instance_of(Sidebars::Projects::SuperSidebarPanel) do |instance|
+              allow(instance).to receive(:render?).and_return(false)
+            end
+          end
+
+          it 'returns YourWork panel as fallback' do
+            panel = helper.super_sidebar_nav_panel(nav: 'project', user: user)
+            expect(panel).to be_a(Sidebars::YourWork::Panel)
+          end
+        end
+      end
+
+      it_behaves_like 'nav panels available to all users'
+    end
+
+    describe 'when logged-out' do
+      let(:user) { nil }
+
+      describe 'fallback behavior' do
+        it 'returns "Explore" Panel as default fallback' do
+          expect(helper.super_sidebar_nav_panel(user: user))
+            .to be_a(Sidebars::Explore::Panel)
+        end
+
+        context 'when UserProfile panel fails to render' do
+          let(:private_user) { build(:user, private_profile: true) }
+
+          it 'returns Explore panel for viewing private profiles' do
+            panel = helper.super_sidebar_nav_panel(nav: 'user_profile', user: user, viewed_user: private_user)
+            expect(panel).to be_a(Sidebars::Explore::Panel)
+          end
+        end
+
+        context 'when other panels fail to render' do
+          before do
+            allow_next_instance_of(Sidebars::Projects::SuperSidebarPanel) do |instance|
+              allow(instance).to receive(:render?).and_return(false)
+            end
+          end
+
+          it 'returns Explore panel as fallback' do
+            panel = helper.super_sidebar_nav_panel(nav: 'project', user: user)
+            expect(panel).to be_a(Sidebars::Explore::Panel)
+          end
+        end
+      end
+
+      it_behaves_like 'nav panels available to all users'
+    end
+  end
+
+  describe '#command_palette_data' do
+    it 'returns data for project files search' do
+      project = create(:project, :small_repo) # rubocop:disable RSpec/FactoryBot/AvoidCreate
+
+      expect(helper.command_palette_data(project: project)).to eq(
+        project_files_url: project_files_path(
+          project, project.default_branch, format: :json),
+        project_blob_url: project_blob_path(
+          project, project.default_branch)
+      )
+
+      current_ref = 'test'
+
+      expect(helper.command_palette_data(project: project, current_ref: current_ref)).to eq(
+        project_files_url: project_files_path(
+          project, current_ref, format: :json),
+        project_blob_url: project_blob_path(
+          project, current_ref)
+      )
+    end
+
+    it 'returns empty object when project is nil' do
+      expect(helper.command_palette_data(project: nil)).to eq({})
+    end
+
+    it 'returns empty object when project does not have repo' do
+      project = build(:project)
+      expect(helper.command_palette_data(project: project)).to eq({})
+    end
+
+    it 'returns empty object when project has repo but it is empty' do
+      project = build(:project, :empty_repo)
+      expect(helper.command_palette_data(project: project)).to eq({})
+    end
+  end
+
+  describe '#compare_plans_url' do
+    it 'always returns the pricing page URL' do
+      expect(helper.compare_plans_url(user: nil, group: nil, project: nil)).to eq(promo_pricing_url)
+    end
+  end
+
+  describe '#project_sidebar_context_data' do
+    # Testing this private method because:
+    # 1. This helper is just so complex that it isn't feasible to test everything through the few public methods.
+    # 2. private really isn't a thing in Rails helpers so the current private segregation is merely communicating use.
+    # 3. EE override of this method is making it public anyway due to how it is overridden in the public space.
+
+    let(:project) { build(:project) }
+
+    before do
+      allow(helper).to receive(:project_jira_issues_integration?).and_return(false)
+      allow(helper).to receive(:can_view_pipeline_editor?).with(project).and_return(true)
+      allow(helper).to receive(:show_gke_cluster_integration_callout?).with(project).and_return(false)
+    end
+
+    it 'returns the correct context data hash' do
+      user = build(:user)
+      current_ref = 'main'
+      ref_type = 'branch'
+
+      expected_hash = {
+        current_user: user,
+        container: project,
+        current_ref: current_ref,
+        ref_type: ref_type,
+        jira_issues_integration: false,
+        can_view_pipeline_editor: true,
+        show_cluster_hint: false
+      }
+
+      expect(helper.send(:project_sidebar_context_data, project, user, current_ref, ref_type: ref_type))
+        .to include(expected_hash)
+    end
+
+    it 'sets ref_type to nil when not provided' do
+      expect(helper.send(:project_sidebar_context_data, project, nil, nil)[:ref_type]).to be_nil
+    end
+  end
+
+  describe '#super_sidebar_default_pins' do
+    it 'returns project defaults' do
+      expect(helper.send(:super_sidebar_default_pins, 'project')).to eq(
+        %w[project_overview members project_issue_list branches project_merge_request_list pipelines]
+      )
+    end
+
+    it 'returns group defaults', unless: Gitlab.ee? do
+      expect(helper.send(:super_sidebar_default_pins, 'group')).to eq(
+        %w[group_overview members group_issue_list issue_boards group_merge_request_list]
+      )
+    end
+
+    it 'returns empty array for other panel types' do
+      expect(helper.send(:super_sidebar_default_pins, 'explore')).to eq([])
+    end
+  end
+
+  describe '#manage_organization_link' do
+    let_it_be(:user) { build_stubbed(:user) }
+
+    before do
+      Current.organization_resolver =
+        instance_double(Gitlab::Current::Organization, from_request: current_organization)
+      stub_organization_release(org_admin_area: true)
+    end
+
+    context 'when there is a user' do
+      subject(:path) { helper.send(:manage_organization_link, user, panel_type) }
+
+      let(:panel_type) { 'organization' }
+
+      context 'when the user can access the organization admin area' do
+        before do
+          allow(user).to receive(:can?)
+            .with(:access_organization_admin_area, current_organization)
+            .and_return(true)
+        end
+
+        it 'returns the organization admin root path' do
+          expect(path).to eq(organization_admin_root_path(current_organization))
+        end
+
+        context 'when already in the organization admin area' do
+          let(:panel_type) { 'organization_admin' }
+
+          it 'returns the organization overview path' do
+            expect(path).to eq(organization_path(current_organization))
+          end
+        end
+
+        context 'when the request is not organization-scoped' do
+          before do
+            Current.organization_resolver =
+              instance_double(Gitlab::Current::Organization, from_request: nil)
+          end
+
+          it { is_expected.to be_nil }
+        end
+
+        context 'when the org admin area is not enabled' do
+          before do
+            stub_organization_release(org_admin_area: false)
+          end
+
+          it { is_expected.to be_nil }
+        end
+      end
+
+      context 'when the user cannot access the organization admin area' do
+        before do
+          allow(user).to receive(:can?)
+            .with(:access_organization_admin_area, current_organization)
+            .and_return(false)
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    context 'when there is no user' do
+      subject(:path) { helper.send(:manage_organization_link, nil, 'organization') }
+
+      it { is_expected.to be_nil }
+    end
+  end
+end

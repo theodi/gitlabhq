@@ -1,0 +1,139 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'admin/sessions/new.html.haml', feature_category: :system_access do
+  include RenderedHtml
+
+  let(:user) { build_stubbed(:admin) }
+
+  before do
+    disable_all_signin_methods
+
+    allow(view).to receive(:current_user).and_return(user)
+  end
+
+  context 'with internal admin user' do
+    before do
+      allow(view).to receive(:allow_admin_mode_password_authentication_for_web?).and_return(true)
+    end
+
+    it 'shows enter password form' do
+      render
+
+      expect(rendered).to have_selector('[data-testid="admin-password-field"]')
+    end
+
+    it 'warns authentication not possible if password not set' do
+      allow(view).to receive(:allow_admin_mode_password_authentication_for_web?).and_return(false)
+
+      render
+
+      expect(rendered).to have_no_selector('[data-testid="admin-password-field"]')
+      expect(rendered).to have_content _('No authentication methods configured.')
+    end
+  end
+
+  context 'when omniauth authentication is enabled' do
+    before do
+      allow(view).to receive_messages(omniauth_enabled?: true, password_authentication_enabled_for_web?: true)
+    end
+
+    let(:openid_connect_button_action_url) do
+      URI(rendered_html.find_button('Openid Connect').ancestor('form')[:action])
+    end
+
+    let(:openid_connect_button_action_url_query) { Rack::Utils.parse_query(openid_connect_button_action_url.query) }
+
+    it 'shows omniauth form' do
+      render
+
+      expect(rendered).not_to have_content _('No authentication methods configured.')
+      within('[data-testid="divider"]') do
+        expect(rendered).to have_content(_('or sign in with'))
+      end
+      expect(rendered).to have_css('.js-oauth-login')
+    end
+
+    context 'when step-up auth config is set' do
+      let(:oidc_step_up_auth_options) { build(:omniauth_provider_config) }
+
+      before do
+        stub_omniauth_setting(enabled: true, providers: [oidc_step_up_auth_options])
+
+        allow(view).to receive_messages(omniauth_enabled?: true, auth_providers: ['openid_connect'])
+      end
+
+      it 'includes additional params related to step-up auth in form action url' do
+        render
+
+        expect(rendered).to have_button('Openid Connect')
+
+        expect(openid_connect_button_action_url).to have_attributes(path: '/users/auth/openid_connect')
+        expect(openid_connect_button_action_url_query).to include('claims' => '{"acr_values":"gold"}')
+      end
+
+      context 'when feature flag :omniauth_step_up_auth_for_admin_mode is disabled' do
+        before do
+          stub_feature_flags(omniauth_step_up_auth_for_admin_mode: false)
+        end
+
+        it 'does not include additional params related to step-up auth in form action url' do
+          render
+
+          expect(rendered).to have_button('Openid Connect')
+          expect(openid_connect_button_action_url).to have_attributes(path: '/users/auth/openid_connect', query: nil)
+        end
+      end
+    end
+  end
+
+  context 'with ldap authentication' do
+    let(:user) { build_stubbed(:omniauth_user, :admin, extern_uid: 'my-uid', provider: 'ldapmain') }
+    let(:server) { { provider_name: 'ldapmain', label: 'LDAP' }.with_indifferent_access }
+
+    before do
+      enable_ldap
+    end
+
+    it 'is shown when enabled' do
+      render
+
+      expect(rendered).to have_selector('[data-testid="ldap-tab"]')
+      expect(rendered).to have_css('#ldapmain')
+      expect(rendered).to have_field(_('Username'))
+      expect(rendered).not_to have_content('No authentication methods configured')
+    end
+
+    it 'is not shown when LDAP sign in is disabled' do
+      disable_ldap_sign_in
+
+      render
+
+      expect(rendered).not_to have_selector('[data-testid="ldap-tab"]')
+      expect(rendered).not_to have_field(_('Username'))
+      expect(rendered).to have_content('No authentication methods configured')
+    end
+
+    def enable_ldap
+      allow(view).to receive(:omniauth_callback_path).with(:user, 'ldapmain').and_return('/ldapmain')
+      allow(view).to receive_messages(
+        ldap_servers: [server],
+        form_based_providers: [:ldapmain],
+        ldap_sign_in_enabled?: true
+      )
+    end
+
+    def disable_ldap_sign_in
+      allow(view).to receive_messages(ldap_sign_in_enabled?: false, ldap_servers: [])
+    end
+  end
+
+  def disable_all_signin_methods
+    allow(view).to receive_messages(
+      password_authentication_enabled_for_web?: false,
+      omniauth_enabled?: false,
+      ldap_sign_in_enabled?: false
+    )
+  end
+end

@@ -1,0 +1,13 @@
+---
+table_name: namespace_import_users
+classes:
+- Import::NamespaceImportUser
+feature_categories:
+- importers
+description: Represents a list of import users for namespaces
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/157979
+milestone: '17.2'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces
+table_size: small

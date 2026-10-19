@@ -1,0 +1,68 @@
+{
+  "type": "object",
+  "required": [
+    "tags"
+  ],
+  "allOf": [
+    {
+      "$ref": "./container_repository.json"
+    }
+  ],
+  "properties": {
+    "tags": {
+      "type": "object",
+      "required": [
+        "nodes"
+      ],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "path",
+              "location",
+              "userPermissions"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "location": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "string"
+              },
+              "shortRevision": {
+                "type": "string"
+              },
+              "totalSize": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "userPermissions": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "destroyContainerRepositoryTag": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

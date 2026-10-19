@@ -1,0 +1,339 @@
+<script>
+import { defineAsyncComponent } from 'vue';
+import { GlButton, GlLink, GlToastMixin, GlTooltipDirective } from '@gitlab/ui';
+import { createAlert } from '~/alert';
+import { updateHistory } from '~/lib/utils/url_utility';
+import { fetchPolicies } from '~/lib/graphql';
+import { upgradeStatusTokenConfig } from 'ee_else_ce/ci/runner/components/search_tokens/upgrade_status_token_config';
+import {
+  fromUrlQueryToSearch,
+  fromSearchToUrl,
+  fromSearchToVariables,
+  isSearchFiltered,
+} from 'ee_else_ce/ci/runner/runner_search_utils';
+import allRunnersQuery from 'ee_else_ce/ci/runner/graphql/list/all_runners.query.graphql';
+import allRunnersCountQuery from 'ee_else_ce/ci/runner/graphql/list/all_runners_count.query.graphql';
+import usersSearchAllQuery from '~/graphql_shared/queries/users_search_all.query.graphql';
+
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import { captureException } from '~/sentry/sentry_browser_wrapper';
+import RunnerListHeader from '../components/runner_list_header.vue';
+import RegistrationDropdown from '../components/registration/registration_dropdown.vue';
+import RunnerFilteredSearchBar from '../components/runner_filtered_search_bar.vue';
+import RunnerList from '../components/runner_list.vue';
+import RunnerListEmptyState from '../components/runner_list_empty_state.vue';
+import RunnerName from '../components/runner_name.vue';
+import RunnerStats from '../components/stat/runner_stats.vue';
+import RunnerPagination from '../components/runner_pagination.vue';
+import RunnerTypeTabs from '../components/runner_type_tabs.vue';
+import RunnerActionsCell from '../components/cells/runner_actions_cell.vue';
+
+import { pausedTokenConfig } from '../components/search_tokens/paused_token_config';
+import { statusTokenConfig } from '../components/search_tokens/status_token_config';
+import { tagTokenConfig } from '../components/search_tokens/tag_token_config';
+import { versionTokenConfig } from '../components/search_tokens/version_token_config';
+import { creatorTokenConfig } from '../components/search_tokens/creator_token_config';
+import { groupTokenConfig } from '../components/search_tokens/group_token_config';
+import { projectTokenConfig } from '../components/search_tokens/project_token_config';
+import {
+  ADMIN_FILTERED_SEARCH_NAMESPACE,
+  INSTANCE_TYPE,
+  I18N_FETCH_ERROR,
+  FILTER_CSS_CLASSES,
+  PARAM_KEY_PROJECT,
+  PARAM_KEY_GROUP,
+  I18N_ALL,
+} from '../constants';
+
+export default {
+  name: 'AdminRunnersApp',
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  components: {
+    GlButton,
+    GlLink,
+    RunnerListHeader,
+    RegistrationDropdown,
+    RunnerFilteredSearchBar,
+    RunnerList,
+    RunnerListEmptyState,
+    RunnerName,
+    RunnerStats,
+    RunnerPagination,
+    RunnerTypeTabs,
+    RunnerActionsCell,
+    RunnerDashboardLink: defineAsyncComponent(
+      () => import('ee_component/ci/runner/components/runner_dashboard_link.vue'),
+    ),
+  },
+  mixins: [glFeatureFlagsMixin(), GlToastMixin],
+  props: {
+    newRunnerPath: {
+      type: String,
+      required: true,
+    },
+    runnerSettingsPath: {
+      type: String,
+      required: true,
+    },
+    allowRegistrationToken: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    registrationToken: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    canAdminRunners: {
+      type: Boolean,
+      required: true,
+    },
+  },
+  data() {
+    const search = fromUrlQueryToSearch();
+    return {
+      search,
+      projectTokenPreselected: search.filters.some((f) => f.type === PARAM_KEY_PROJECT),
+      groupTokenPreselected: search.filters.some((f) => f.type === PARAM_KEY_GROUP),
+      runners: {
+        items: [],
+        pageInfo: {},
+      },
+    };
+  },
+  apollo: {
+    runners: {
+      query: allRunnersQuery,
+      // Runners can be updated by users directly in this list.
+      // A "cache and network" policy prevents outdated filtered
+      // results.
+      fetchPolicy: fetchPolicies.CACHE_AND_NETWORK,
+      // Skip deduplication so each refetch is a real request: otherwise a
+      // stale in-flight response could overwrite newer mutation results,
+      // e.g. a "Paused" badge that never clears.
+      context: { queryDeduplication: false },
+      variables() {
+        return this.variables;
+      },
+      update(data) {
+        const { runners } = data;
+        return {
+          items: runners?.nodes || [],
+          pageInfo: runners?.pageInfo || {},
+        };
+      },
+      error(error) {
+        createAlert({ message: I18N_FETCH_ERROR });
+
+        this.reportToSentry(error);
+      },
+    },
+  },
+  computed: {
+    variables() {
+      return fromSearchToVariables(this.search);
+    },
+    countVariables() {
+      // Exclude pagination variables, leave only filters variables
+      const { sort, before, last, after, first, ...countVariables } = this.variables;
+      return countVariables;
+    },
+    runnersLoading() {
+      return this.$apollo.queries.runners.loading;
+    },
+    noRunnersFound() {
+      return !this.runnersLoading && !this.runners.items.length;
+    },
+    searchTokens() {
+      const preloadedUsers = [];
+      if (gon.current_user_id) {
+        preloadedUsers.push({
+          id: gon.current_user_id,
+          name: gon.current_user_fullname,
+          username: gon.current_username,
+          avatar_url: gon.current_user_avatar_url,
+        });
+      }
+
+      return [
+        {
+          ...creatorTokenConfig,
+          fetchUsers: (search) => {
+            return this.$apollo
+              .query({
+                query: usersSearchAllQuery,
+                variables: { search },
+              })
+              .then(({ data }) => data.users.nodes);
+          },
+          defaultUsers: [],
+          preloadedUsers,
+        },
+        {
+          ...groupTokenConfig,
+          tokenType: I18N_ALL,
+          skipIdPrefix: true,
+          disabled: this.projectTokenPreselected || !this.glFeatures.filterRunnersByProjectAndGroup,
+        },
+        pausedTokenConfig,
+        {
+          ...projectTokenConfig,
+          disabled: this.groupTokenPreselected || !this.glFeatures.filterRunnersByProjectAndGroup,
+        },
+        statusTokenConfig,
+        {
+          ...tagTokenConfig,
+          recentSuggestionsStorageKey: `${this.$options.filteredSearchNamespace}-recent-tags`,
+        },
+        versionTokenConfig,
+        upgradeStatusTokenConfig,
+      ];
+    },
+    isSearchFiltered() {
+      return isSearchFiltered(this.search);
+    },
+  },
+  watch: {
+    search: {
+      deep: true,
+      handler() {
+        // TODO Implement back button response using onpopstate
+        // See: https://gitlab.com/gitlab-org/gitlab/-/issues/333804
+        updateHistory({
+          url: fromSearchToUrl(this.search),
+          title: document.title,
+        });
+      },
+    },
+  },
+  methods: {
+    onUpdated(event) {
+      // When a runner becomes paused or is deleted, the tab count can
+      // become stale, refetch outdated counts.
+      this.refetchCounts();
+
+      if (event?.message) {
+        this.$toast.show(event.message);
+      }
+    },
+    refetchCounts() {
+      this.$apollo.getClient().refetchQueries({ include: [allRunnersCountQuery] });
+    },
+    reportToSentry(error) {
+      captureException(error);
+    },
+    onPaginationInput(value) {
+      this.search.pagination = value;
+    },
+    onInput(value) {
+      this.search = value;
+      this.projectTokenPreselected = this.search.filters.some((f) => f.type === PARAM_KEY_PROJECT);
+      this.groupTokenPreselected = this.search.filters.some((f) => f.type === PARAM_KEY_GROUP);
+    },
+    onTokenComplete(token) {
+      if (token.type === PARAM_KEY_PROJECT) {
+        this.projectTokenPreselected = true;
+      } else if (token.type === PARAM_KEY_GROUP) {
+        this.groupTokenPreselected = true;
+      }
+    },
+    onTokenDestroy(token) {
+      if (token.type === PARAM_KEY_PROJECT) {
+        this.projectTokenPreselected = false;
+      } else if (token.type === PARAM_KEY_GROUP) {
+        this.groupTokenPreselected = false;
+      }
+    },
+  },
+  filteredSearchNamespace: ADMIN_FILTERED_SEARCH_NAMESPACE,
+  INSTANCE_TYPE,
+  FILTER_CSS_CLASSES,
+};
+</script>
+<template>
+  <div>
+    <runner-list-header>
+      <template #title>{{ s__('Runners|Runners') }}</template>
+      <template #actions>
+        <runner-dashboard-link />
+        <gl-button
+          v-if="canAdminRunners"
+          v-gl-tooltip
+          :href="runnerSettingsPath"
+          :title="s__('Runners|Manage access and security settings')"
+          :aria-label="s__('Runners|Manage access and security settings')"
+          icon="settings"
+          data-event-tracking="click_runner_settings_button_in_admin_runners"
+          data-testid="runner-settings-button"
+        />
+        <gl-button v-if="canAdminRunners" :href="newRunnerPath" variant="confirm">
+          {{ s__('Runners|Create instance runner') }}
+        </gl-button>
+        <registration-dropdown
+          v-if="canAdminRunners"
+          :allow-registration-token="allowRegistrationToken"
+          :registration-token="registrationToken"
+          :type="$options.INSTANCE_TYPE"
+        />
+      </template>
+    </runner-list-header>
+
+    <runner-type-tabs
+      v-model="search"
+      :count-scope="$options.INSTANCE_TYPE"
+      :count-variables="countVariables"
+    />
+
+    <runner-filtered-search-bar
+      :value="search"
+      :class="$options.FILTER_CSS_CLASSES"
+      :tokens="searchTokens"
+      :namespace="$options.filteredSearchNamespace"
+      @input="onInput"
+      @token-destroy="onTokenDestroy"
+      @token-complete="onTokenComplete"
+    />
+
+    <runner-stats :scope="$options.INSTANCE_TYPE" :variables="countVariables" />
+
+    <runner-list-empty-state
+      v-if="noRunnersFound"
+      :registration-token="registrationToken"
+      :is-search-filtered="isSearchFiltered"
+      :new-runner-path="newRunnerPath"
+    />
+    <template v-else>
+      <runner-list
+        :runners="runners.items"
+        :loading="runnersLoading"
+        :checkable="canAdminRunners"
+        @toggled-paused="onUpdated"
+        @deleted="onUpdated"
+      >
+        <template #runner-name="{ runner }">
+          <gl-link :href="runner.adminUrl">
+            <runner-name :runner="runner" />
+          </gl-link>
+        </template>
+        <template #runner-actions-cell="{ runner }">
+          <runner-actions-cell
+            :runner="runner"
+            :edit-url="runner.editAdminUrl"
+            @toggled-paused="onUpdated"
+            @deleted="onUpdated"
+          />
+        </template>
+      </runner-list>
+    </template>
+
+    <runner-pagination
+      class="gl-mt-3"
+      :disabled="runnersLoading"
+      :page-info="runners.pageInfo"
+      @input="onPaginationInput"
+    />
+  </div>
+</template>

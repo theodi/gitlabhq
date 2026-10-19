@@ -1,42 +1,688 @@
-if ENV['SIMPLECOV']
-  require 'simplecov'
+# frozen_string_literal: true
+
+if defined?(FastSpecHelper)
+  warn 'Detected that fast_spec_helper was already loaded before spec_helper.'
+  warn 'If running test files using both spec_helper and fast_spec_helper,'
+  warn 'make sure spec_helper is loaded first, or run rspec with `-r spec_helper`.'
+  abort 'Aborting...'
 end
 
-if ENV['COVERALLS']
-  require 'coveralls'
-  Coveralls.wear_merged!
-end
+require './spec/deprecation_warnings'
 
-ENV["RAILS_ENV"] ||= 'test'
-require File.expand_path("../../config/environment", __FILE__)
+require './spec/knapsack_env'
+KnapsackEnv.configure!
+
+require './spec/simplecov_env'
+SimpleCovEnv.start!
+
+require './spec/crystalball_env'
+CrystalballEnv.start!
+
+ENV["RAILS_ENV"] = 'test'
+ENV["IN_MEMORY_APPLICATION_SETTINGS"] = 'true'
+ENV["GITLAB_LOAD_WIP_CUSTOM_ABILITIES"] = 'true'
+
+require_relative '../config/environment'
+
+# Rails 8 draws routes lazily, so API::API may not be loaded when grape-path-helpers
+# memoizes its api_v4_*_path helpers. Draw them at boot as Rails 7.2 does.
+Rails.application.reload_routes_unless_loaded if Gitlab.next_rails?
+
+require 'rspec/mocks'
 require 'rspec/rails'
-require 'webmock/rspec'
-require 'email_spec'
-require 'sidekiq/testing/inline'
+require 'rspec-parameterized'
+require 'shoulda/matchers'
+require 'test_prof/recipes/rspec/let_it_be'
+require 'test_prof/factory_default'
+require 'test_prof/factory_prof/nate_heckler'
+require 'parslet/rig/rspec'
+require 'axe-rspec'
+
+require 'gitlab/rspec_flaky'
+
+branch_can_be_profiled = ENV['CI_COMMIT_REF_NAME'] == 'master' || ENV['CI_COMMIT_REF_NAME']&.include?('rspec-profile')
+
+require 'rspec_profiling/rspec' if ENV['RSPEC_PROFILING'] && (!ENV.key?('CI') || branch_can_be_profiled)
+
+Rainbow.enabled = false
+
+# Enable zero monkey patching mode before loading any other RSpec code.
+RSpec.configure(&:disable_monkey_patching!)
+
+require_relative('../ee/spec/spec_helper') if Gitlab.ee?
+require_relative('../jh/spec/spec_helper') if Gitlab.jh?
 
 # Requires supporting ruby files with custom matchers and macros, etc,
 # in spec/support/ and its subdirectories.
-Dir[Rails.root.join("spec/support/**/*.rb")].each { |f| require f }
+# Requires helpers, and shared contexts/examples first since they're used in other support files
 
-WebMock.disable_net_connect!(allow_localhost: true)
+# Load these first since they may be required by other helpers
+require Rails.root.join("spec/support/helpers/stub_requests.rb")
+
+# Then the rest
+Dir[Rails.root.join("spec/support/helpers/*.rb")].each { |f| require f }
+Dir[Rails.root.join("spec/support/shared_contexts/*.rb")].each { |f| require f }
+Dir[Rails.root.join("spec/support/shared_examples/*.rb")].each { |f| require f }
+Dir[Rails.root.join("spec/support/**/*.rb")].each { |f| require f }
+Dir[Rails.root.join("domains/*/spec/support/helpers/*.rb")].each { |f| require f }
+Dir[Rails.root.join("domains/*/spec/support/shared_contexts/*.rb")].each { |f| require f }
+Dir[Rails.root.join("domains/*/spec/support/shared_examples/*.rb")].each { |f| require f }
+Dir[Rails.root.join("domains/*/spec/support/**/*.rb")].each { |f| require f }
+
+require_relative '../tooling/quality/test_level'
+
+quality_level = Quality::TestLevel.new
 
 RSpec.configure do |config|
-  config.use_transactional_fixtures = false
-  config.use_instantiated_fixtures  = false
-  config.mock_with :rspec
+  config.use_transactional_fixtures = true
+  config.use_instantiated_fixtures = false
+  config.fixture_paths = [Rails.root]
 
-  config.include LoginHelpers, type: :feature
-  config.include LoginHelpers, type: :request
-  config.include FactoryGirl::Syntax::Methods
-  config.include Devise::TestHelpers, type: :controller
-
-  config.include TestEnv
   config.infer_spec_type_from_file_location!
-  config.raise_errors_for_deprecations!
+
+  # Add :full_backtrace tag to an example if full_backtrace output is desired
+  config.before(:each, :full_backtrace) do |example|
+    config.full_backtrace = true
+  end
+
+  # Attempt to troubleshoot  https://gitlab.com/gitlab-org/gitlab/-/issues/351531
+  config.after do |example|
+    if example.exception.is_a?(Gitlab::Database::QueryAnalyzers::PreventCrossDatabaseModification::CrossDatabaseModificationAcrossUnsupportedTablesError)
+      ::CrossDatabaseModification::TransactionStackTrackRecord.log_gitlab_transactions_stack(action: :after_failure, example: example.description)
+    else
+      ::CrossDatabaseModification::TransactionStackTrackRecord.log_gitlab_transactions_stack(action: :after_example, example: example.description)
+    end
+  end
+
+  config.define_derived_metadata(file_path: %r{(ee)?/spec/.+_spec\.rb\z}) do |metadata|
+    location = metadata[:location]
+
+    metadata[:level] = quality_level.level_for(location)
+    metadata[:api] = true if location.include?('/spec/requests/api/')
+
+    # Do not overwrite migration if it's already set
+    unless metadata.key?(:migration)
+      metadata[:migration] = true if metadata[:level] == :migration || metadata[:level] == :background_migration
+    end
+
+    # Admin controller specs get auto admin mode enabled since they are
+    # protected by the 'EnforcesAdminAuthentication' concern
+    metadata[:enable_admin_mode] = true if %r{(ee)?/spec/controllers/admin/}.match?(location)
+
+    # The worker specs get Sidekiq context
+    metadata[:with_sidekiq_context] = true if %r{(ee)?/spec/workers/}.match?(location)
+  end
+
+  config.define_derived_metadata(file_path: %r{(ee)?/spec/.+_docs\.rb\z}) do |metadata|
+    metadata[:type] = :feature
+  end
+
+  config.define_derived_metadata(file_path: %r{spec/dot_gitlab_ci/ci_configuration_validation/}) do |metadata|
+    metadata[:ci_config_validation] = true
+  end
+
+  # Auto-include organization URL helpers for spec types that need organization-scoped paths.
+  # Feature specs are excluded: they drive the app through Capybara rather than the get/post helpers
+  # this context relies on, so the request-capture stub can never resolve an organization there.
+  [:request, :controller].each do |spec_type|
+    config.define_derived_metadata(type: spec_type) do |metadata|
+      metadata[:with_organization_url_helpers] = true
+    end
+  end
+
+  config.include LicenseHelpers
+  config.include ActiveJob::TestHelper
+  config.include ActiveSupport::Testing::TimeHelpers
+  config.include FactoryBot::Syntax::Methods
+  config.include FixtureHelpers
+  config.include NonExistingRecordsHelpers
+  config.include GitlabRoutingHelper
+  config.include StubGitlabCalls
+  config.include StubIframeProviders
+  config.include NextFoundInstanceOf
+  config.include NextInstanceOf
+  config.include FileReadHelpers
+  config.include AtomFeedHelpers
+  config.include Database::MultipleDatabasesHelpers
+  config.include Database::WithoutCheckConstraint
+  config.include Devise::Test::ControllerHelpers, type: :controller
+  config.include Devise::Test::ControllerHelpers, type: :view
+  config.include Devise::Test::IntegrationHelpers, type: :feature
+  config.include Devise::Test::IntegrationHelpers, type: :request
+  config.include LoginHelpers, type: :feature
+  config.include SignUpHelpers, type: :feature
+  config.include SearchHelpers, type: :feature
+  config.include WaitHelpers, type: :feature
+  config.include WaitForRequests, type: :feature
+  config.include Features::DomHelpers, type: :feature
+  config.include TestidHelpers, type: :feature
+  config.include TestidHelpers, type: :component
+  config.include Features::HighlightContentHelper, type: :feature
+  config.include EmailHelpers, :mailer, type: :mailer
+  config.include Warden::Test::Helpers, type: :request
+  config.include Gitlab::Routing, type: :routing
+  config.include ApiHelpers, :api
+  config.include CookieHelper, :js
+  config.include SelectionHelper, :js
+  config.include InspectRequests, :js
+  config.include LiveDebugger, :js
+  config.include Database::BatchedBackgroundMigrationHelpers, :migration
+  config.include MigrationsHelpers, :migration
+  config.include MigrationsHelpers, :background_operation
+  config.include RedisHelpers
+  config.include Rails.application.routes.url_helpers, type: :routing
+  config.include Rails.application.routes.url_helpers, type: :component
+  config.include Rails.application.routes.url_helpers, type: :presenter
+  config.include PolicyHelpers, type: :policy
+  config.include ExpectRequestWithStatus, type: :request
+  config.include IdempotentWorkerHelper, type: :worker
+  config.include RailsHelpers
+  config.include SidekiqMiddleware
+  config.include SidekiqJSONMatcher
+  config.include StubActionCableConnection, type: :channel
+  config.include StubMemberAccessLevel
+  config.include SnowplowHelpers
+  config.include RenderedHelpers
+  config.include RSpec::Benchmark::Matchers, type: :benchmark
+  config.include DetailedErrorHelpers
+  config.include RequestUrgencyMatcher, type: :controller
+  config.include RequestUrgencyMatcher, type: :request
+  config.include Capybara::RSpecMatchers, type: :request
+  config.include PendingDirectUploadHelpers, :direct_uploads
+  config.include LabelsHelper, type: :feature
+  config.include UnlockPipelinesHelpers, :unlock_pipelines
+  config.include UserWithNamespaceShim
+  config.include OrphanFinalArtifactsCleanupHelpers, :orphan_final_artifacts_cleanup
+  config.include ClickHouseHelpers, :click_house
+  config.include WorkItems::DataSync::AssociationsHelpers
+  config.include WorkItems::WidgetHelpers
+  config.include StateMachinesRspec::Matchers
+  config.include Ci::JobHelpers
+
+  config.include_context 'when rendered has no HTML escapes', type: :view
+  config.include_context 'with STI disabled', type: :model
+  # Validate JSONB columns only in EE to avoid false positives in FOSS.
+  config.include_context 'with JSONB validated columns', type: :model if Gitlab.ee?
+
+  include StubCurrentOrganization
+  include StubFeatureFlags
+  include StubSnowplow
+  include StubMember
+  include VersionCheckHelpers
+
+  if Gitlab::RspecFlaky::Config.generate_report?
+    config.reporter.register_listener(
+      Gitlab::RspecFlaky::Listener.new,
+      :example_passed,
+      :dump_summary)
+  end
 
   config.before(:suite) do
     TestEnv.init
+
+    # Reload all feature flags definitions
+    Feature.register_definitions
+
+    # Enable all features by default for testing
+    # Reset any changes in after hook.
+    stub_all_feature_flags
+  end
+
+  config.after(:all) do
+    TestEnv.clean_test_path
+  end
+
+  # We can't use an `around` hook here because the wrapping transaction
+  # is not yet opened at the time that is triggered
+  config.prepend_before do
+    ApplicationRecord.set_open_transactions_baseline
+    ::Ci::ApplicationRecord.set_open_transactions_baseline
+  end
+
+  config.append_after do
+    ApplicationRecord.reset_open_transactions_baseline
+    ::Ci::ApplicationRecord.reset_open_transactions_baseline
+  end
+
+  # Cell is disabled on CI but enabled by default with GDK. This is also
+  # fully dependent on the local `config/gitlab.yml` which is not
+  # version controlled and can be changed by developers manually or
+  # via GDK configuration.
+  #
+  # Tests are mostly written with Cell disabled in mind, so here we're
+  # making sure it's disabled consistently for all tests. For tests that
+  # requiring Cell being enabled, we can do so in each individual tests.
+  config.before(:all) do
+    # We're not using `stub_config_cell` here because in before(:all),
+    # we cannot use stubs. We have to use `before(:all)` because
+    # `let_it_be` family uses `before(:all)` underneath, which runs
+    # before `before`, therefore to ensure `let_it_be` see our values,
+    # we have to do it in `before(:all)`.
+    # This is a partial implementation to freeze `gitlab.yml` for tests:
+    # https://gitlab.com/gitlab-com/gl-infra/tenant-scale/cells-infrastructure/team/-/issues/543#note_2866696304
+    # Tests should not rely on developers' own `gitlab.yml`
+    Gitlab.config.cell.enabled = false
+  end
+
+  config.before do |example|
+    if example.metadata.fetch(:stub_feature_flags, true)
+      # The following can be removed when we remove the staged rollout strategy
+      # and we can just enable it using instance wide settings
+      # (ie. ApplicationSetting#auto_devops_enabled)
+      stub_feature_flags(force_autodevops_on_by_default: false)
+
+      # Using FortiAuthenticator as OTP provider is disabled by default in
+      # tests, until we introduce it in user settings
+      stub_feature_flags(forti_authenticator: false)
+
+      # Using FortiToken Cloud as OTP provider is disabled by default in
+      # tests, until we introduce it in user settings
+      stub_feature_flags(forti_token_cloud: false)
+
+      # These feature flag are by default disabled and used in disaster recovery mode
+      stub_feature_flags(ci_queueing_disaster_recovery_disable_fair_scheduling: false)
+      stub_feature_flags(ci_queueing_disaster_recovery_disable_quota: false)
+      stub_feature_flags(ci_queuing_disaster_recovery_disable_allowed_plans: false)
+
+      # It's disabled in specs because we don't support certain features which
+      # cause spec failures.
+      stub_feature_flags(gitlab_error_tracking: false)
+
+      # Disable issue respositioning to avoid heavy load on database when importing big projects.
+      # This is only turned on when app is handling heavy project imports.
+      # Can be removed when we find a better way to deal with the problem.
+      # For more information check https://gitlab.com/gitlab-com/gl-infra/production/-/issues/4321
+      stub_feature_flags(block_issue_repositioning: false)
+
+      # These are ops feature flags that are disabled by default
+      stub_feature_flags(disable_anonymous_project_search: false)
+      stub_feature_flags(disable_cancel_redundant_pipelines_service: false)
+
+      # Keep-around refs should only be turned off for specific projects/repositories.
+      stub_feature_flags(disable_keep_around_refs: false)
+
+      # Disable suspending ClickHouse data ingestion workers
+      stub_feature_flags(suspend_click_house_data_ingestion: false)
+
+      # we need the `cleanup_data_source_work_item_data` disabled by default to prevent deletion of some data
+      stub_feature_flags(cleanup_data_source_work_item_data: false)
+
+      # New approval rules cause tests to fail
+      # Default false while we make them compatible
+      stub_feature_flags(v2_approval_rules: false)
+
+      # Hiding unpinned sidebar items is WIP; disable globally to avoid
+      # breaking feature specs that interact with sidebar sections.
+      stub_feature_flags(hide_unpinned_sidebar_items: false)
+
+      # Handle dynamic partitions creation
+      stub_feature_flags(disallow_database_ddl_feature_flags: false)
+
+      # Enabled only when debugging
+      stub_feature_flags(track_struct_event_logger: false)
+
+      # FF is temporary until we add a proper UI setting to enable/disable pipeline running for composite identities.
+      stub_feature_flags(forbid_composite_identities_to_run_pipelines: false)
+
+      stub_feature_flags(merge_widget_stop_polling: false)
+
+      # Org migration target cell mode is only enabled in Cells on GitLab.com
+      stub_feature_flags(org_migration_target_cell: false)
+
+      # This feature flag will be removed in %19.0
+      stub_feature_flags(work_item_legacy_url: false)
+
+      # Feature specs for when two_step_sign_in is enabled will be added in
+      # https://gitlab.com/gitlab-org/gitlab/-/work_items/584318
+      stub_feature_flags(two_step_sign_in: false)
+
+      # This feature is wip and should not be enabled in tests by default
+      stub_feature_flags(iam_svc_login: false)
+
+      # This middleware fires use_pat for every PAT-authenticated request
+      # enabling it by default breaks existing specs that use strict receive(:track_event) expectations
+      stub_feature_flags(track_api_request_from_personal_access_token: false)
+
+    else
+      unstub_all_feature_flags
+    end
+
+    # Stub these calls due to being expensive operations
+    # It can be reenabled for specific tests via:
+    #
+    # expect(Gitlab::Git::KeepAround).to receive(:execute).and_call_original
+    #
+    # Returns an empty array to match the real contract: the SHAs whose
+    # keep-around ref could not be written.
+    allow(Gitlab::Git::KeepAround).to receive(:execute).and_return([])
+
+    # Stub these calls due to being expensive operations
+    # It can be reenabled for specific tests via:
+    #
+    # expect(Gitlab::JobWaiter).to receive(:wait).and_call_original
+    allow_any_instance_of(Gitlab::JobWaiter).to receive(:wait)
+
+    Gitlab::ProcessMemoryCache.cache_backend.clear
+
+    Sidekiq::Worker.clear_all
+
+    # Administrators have to re-authenticate in order to access administrative
+    # functionality when application setting admin_mode is active. Any spec
+    # that requires administrative access can use the tag :enable_admin_mode
+    # to avoid the second auth step (provided the user is already an admin):
+    #
+    # context 'some test that requires admin mode', :enable_admin_mode do ... end
+    #
+    # Some specs do get admin mode enabled automatically (e.g. `spec/controllers/admin`).
+    # In this case, specs that need to test both admin mode states can use the
+    # :do_not_mock_admin_mode tag to disable auto admin mode.
+    #
+    # See also spec/support/helpers/admin_mode_helpers.rb
+    if example.metadata[:enable_admin_mode] && !example.metadata[:do_not_mock_admin_mode]
+      allow_any_instance_of(Gitlab::Auth::CurrentUserMode).to receive(:admin_mode?) do |current_user_mode|
+        current_user_mode.send(:user)&.can_access_admin_area?
+      end
+    end
+
+    # Make sure specs test by default admin mode setting on, unless forced to the opposite
+    stub_application_setting(admin_mode: true) unless example.metadata[:do_not_mock_admin_mode_setting]
+
+    allow(Gitlab::CurrentSettings).to receive(:current_application_settings?).and_return(false)
+
+    # Ensure that Snowplow is enabled by default unless forced to the opposite
+    stub_snowplow unless example.metadata[:do_not_stub_snowplow_by_default]
+  end
+
+  # WIP custom abilities are enabled by default via ENV var so that all specs
+  # see the full set of permissions (column accessors, Grape params, and
+  # GraphQL enum values are registered at class load time). Tests tagged with
+  # :disable_wip_custom_abilities exercise the runtime wip-filter behavior
+  # (matching production where the env var is unset). Definition memoizes the
+  # filtered set, so flipping the env var requires reloading.
+  config.around(:example, :disable_wip_custom_abilities) do |example|
+    ENV['GITLAB_LOAD_WIP_CUSTOM_ABILITIES'] = 'false'
+    Gitlab::CustomRoles::Definition.load_abilities!
+    example.run
+  ensure
+    ENV['GITLAB_LOAD_WIP_CUSTOM_ABILITIES'] = 'true'
+    Gitlab::CustomRoles::Definition.load_abilities!
+  end
+
+  config.around(:example, :quarantine) do |example|
+    # Skip tests in quarantine unless we explicitly focus on them or not in CI
+    example.run if config.inclusion_filter[:quarantine] || !ENV['CI']
+  end
+
+  config.around(:example, :ci_config_validation) do |example|
+    # Skip tests for ci config validation unless we explicitly focus on them or not in CI
+    example.run if config.inclusion_filter[:ci_config_validation] || !ENV['CI']
+  end
+
+  config.around(:example, :request_store) do |example|
+    ::Gitlab::SafeRequestStore.ensure_request_store { example.run }
+  end
+
+  config.around do |example|
+    ::Gitlab::Ci::Config::FeatureFlags.ensure_correct_usage do
+      example.run
+    end
+  end
+
+  config.around(:example, :allow_unrouted_sidekiq_calls) do |example|
+    ::Gitlab::SidekiqSharding::Validator.allow_unrouted_sidekiq_calls do
+      example.run
+    end
+  end
+
+  # previous test runs may have left some resources throttled
+  config.before do
+    ::Gitlab::ExclusiveLease.reset_all!("el:throttle:*")
+    # data_isolation is checked on every organizations query, causing it to appear in exception
+    # payloads via feature_flag_states. Suppress it to avoid polluting exception log assertions.
+    # See: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/226037
+    RequestStore.delete(:feature_flag_events)
+    allow(Feature).to receive(:log_feature_flag_states?).and_call_original
+    allow(Feature).to receive(:log_feature_flag_states?).with(:data_isolation).and_return(false)
+  end
+
+  config.before(:example, :assume_throttled) do |example|
+    allow(::Gitlab::ExclusiveLease).to receive(:throttle).and_return(nil)
+  end
+
+  config.before(:example, :request_store) do
+    # Clear request store before actually starting the spec (the
+    # `around` above will have the request store enabled for all
+    # `before` blocks)
+    RequestStore.clear!
+  end
+
+  config.around do |example|
+    # Wrap each example in it's own context to make sure the contexts don't
+    # leak
+    Gitlab::ApplicationContext.with_raw_context { example.run }
+  end
+
+  config.around do |example|
+    with_sidekiq_server_middleware do |chain|
+      Gitlab::SidekiqMiddleware::Server.configurator(
+        metrics: false, # The metrics don't go anywhere in tests
+        arguments_logger: false, # We're not logging the regular messages for inline jobs
+        skip_jobs: false # We're not skipping jobs for inline tests
+      ).call(chain)
+
+      chain.insert_after ::Gitlab::SidekiqMiddleware::RequestStoreMiddleware, IsolatedRequestStore
+      chain.insert_after ::Gitlab::SidekiqMiddleware::RequestStoreMiddleware, IsolatedCurrent
+      chain.insert_after ::Gitlab::SidekiqMiddleware::RequestStoreMiddleware, SuppressWritesOnGetAnalyzer
+
+      example.run
+    end
+  end
+
+  config.around do |example|
+    Gitlab::SidekiqSharding::Validator.enabled do
+      example.run
+    end
+  end
+
+  config.after do
+    Fog.unmock! if Fog.mock?
+    # Reset the process-level Fog connection cache so a connection warmed by one
+    # example (e.g. via the :fog_with_data factory trait) cannot leak into another.
+    Ci::BuildTraceChunks::Fog.connections.clear
+    Gitlab::ApplicationSettingFetcher.clear_in_memory_application_settings!
+
+    # Reset all feature flag stubs to default for testing
+    stub_all_feature_flags
+
+    # Re-enable query limiting in case it was disabled
+    Gitlab::QueryLimiting.enable!
+
+    # Reset ActiveSupport::CurrentAttributes models
+    ActiveSupport::CurrentAttributes.reset_all
+  end
+
+  config.before(:example, :mailer) do
+    reset_delivered_emails!
+  end
+
+  config.before(:example, :prometheus) do
+    matching_files = File.join(::Prometheus::Client.configuration.multiprocess_files_dir, "**/*.db")
+    Dir[matching_files].map { |filename| File.delete(filename) if File.file?(filename) }
+
+    Gitlab::Metrics.reset_registry!
+  end
+
+  config.before(:example, :eager_load) do
+    Rails.application.eager_load!
+  end
+
+  # This makes sure the `ApplicationController#can?` method is stubbed with the
+  # original implementation for all view specs.
+  config.before(:each, type: :view) do
+    allow(view).to receive(:can?) do |*args|
+      Ability.allowed?(*args)
+    end
+  end
+
+  # Ensures that any Javascript script that tries to make the external VersionCheck API call skips it and returns a response
+  config.before(:each, :js) do
+    stub_version_check({ "severity" => "success" })
+  end
+
+  [:migration, :delete].each do |spec_type|
+    message = <<~STRING
+      We detected an open transaction before running the example. This is not allowed with specs that rely on a table
+      deletion strategy like those marked as `:#{spec_type}`.
+
+      A common scenario for this is using `test-prof` methods in your specs. `let_it_be` and `before_all` methods open
+      a transaction before all the specs in a context are run, and this is not compatible with these type of specs.
+      Consider replacing these methods with `let!` and `before(:all)`.
+
+      For more information see
+      https://docs.gitlab.com/ee/development/testing_guide/best_practices.html#testprof-in-migration-specs
+    STRING
+
+    config.around(:each, spec_type) do |example|
+      next example.run if example.metadata[:migration_with_transaction]
+
+      self.class.use_transactional_tests = false
+
+      if DbCleaner.all_connection_classes.any? { |klass| klass.connection.transaction_open? }
+        raise message
+      end
+
+      example.run
+
+      delete_from_all_tables!(except: deletion_except_tables)
+
+      self.class.use_transactional_tests = true
+    end
+  end
+
+  config.before(:context) do
+    # Clear support bot user memoization because it's created
+    # a lot of times in our test suite and ids mighht not match any more.
+    # See https://gitlab.com/gitlab-org/gitlab/-/issues/509629
+    Users::Internal.clear_memoization(:support_bot_id)
+  end
+
+  config.before do
+    # Reconfigures the Cloud Connector data loader to use YamlDataLoader as the default
+    # instead of the DatabaseDataLoader. This is because specs should not rely on
+    # database contents. But this can be overridden to use DatabaseDataLoader by explicitly specifying the
+    # data loader class in the context.
+    Gitlab::CloudConnector::Configuration.data_loader_class = Gitlab::CloudConnector::DataModel::YamlDataLoader
+  end
+
+  # Force markdown editor for all feature tests to avoid issues with rich text editor default
+  # Tests can override this by adding :allow_rich_text_editor_for_new_users tag
+  config.before(:each, type: :feature) do
+    # Skip the override if the test specifically wants rich text editor
+    next if RSpec.current_example.metadata[:allow_rich_text_editor_for_new_users]
+
+    # Set default editor preference for new users in tests to not set (value derived from local storage)
+    allow_any_instance_of(UserPreference).to receive(:text_editor_type).and_return(0) # not_set
+  end
+
+  # Labkit::UserExperienceSli hooks
+  config.around do |example|
+    Labkit::UserExperienceSli.configure do |config|
+      # Ignore logs by default in tests
+      config.logger = Labkit::Logging::JsonLogger.new("/dev/null")
+    end
+
+    example.run
+
+    # The configuration is deliberately kept: resetting it restores a $stdout logger, and a
+    # checkpoint logged after teardown (feature specs keep serving requests) then reaches the
+    # LabKit field validator and fails the job on an offense no example is responsible for.
+    Labkit::UserExperienceSli::Current.reset
+  end
+
+  config.backtrace_exclusion_patterns << %r{lib/gitlab/database}
+end
+
+# Disabled because it's causing N+1 queries.
+# See https://gitlab.com/gitlab-org/gitlab/-/issues/396352.
+# Support::AbilityCheck.inject(Ability.singleton_class)
+Support::PermissionsCheck.inject(Ability.singleton_class)
+
+ActiveRecord::Migration.maintain_test_schema!
+
+# maintain_test_schema! may rebuild the test DB from structure.sql via
+# clear_all_connections! + db:test:prepare. This clears connection-level
+# schema caches but NOT class-level column caches on AR models. If an
+# initializer (e.g. session_store.rb) queried ApplicationSetting before
+# the rebuild, stale column names persist - causing PG::UndefinedColumn
+# errors for models using explicit column selection (those with
+# ignored_columns).
+ApplicationSetting.reset_column_information
+
+Shoulda::Matchers.configure do |config|
+  config.integrate do |with|
+    with.test_framework :rspec
+    with.library :rails
   end
 end
 
-ActiveRecord::Migration.maintain_test_schema!
+# Initialize FactoryDefault to use create_default helper
+TestProf::FactoryDefault.init
+
+# Set the start of ID sequence for records initialized by `build_stubbed` to prevent conflicts
+FactoryBot::Strategy::Stub.next_id = 1_000_000_000
+
+# Exclude the Geo proxy API request from getting on_next_request Warden handlers,
+# necessary to prevent race conditions with feature tests not getting authenticated.
+::Warden.asset_paths << %r{^/api/v4/geo/proxy$}
+
+module TouchRackUploadedFile
+  def initialize_from_file_path(path)
+    super
+
+    # This is a no-op workaround for https://github.com/docker/for-linux/issues/1015
+    File.utime @tempfile.atime, @tempfile.mtime, @tempfile.path # rubocop:disable Gitlab/ModuleWithInstanceVariables
+  end
+end
+
+Rack::Test::UploadedFile.prepend(TouchRackUploadedFile)
+
+# Inject middleware to enable ActiveSupport::Notifications for Redis commands
+module RedisCommands
+  module Instrumentation
+    def call(command, redis_config)
+      ActiveSupport::Notifications.instrument('redis.process_commands', commands: command) do
+        super(command, redis_config)
+      end
+    end
+  end
+end
+
+RedisClient.register(RedisCommands::Instrumentation)
+
+module UsersInternalAllowExclusiveLease
+  extend ActiveSupport::Concern
+
+  def unique_internal(scope, username, email_pattern, &block)
+    # this lets skip transaction checks when Users::Internal bots are created in
+    # let_it_be blocks during test set-up.
+    #
+    # Users::Internal bot creation within examples are still checked since the RSPec.current_scope is :example
+    if ::RSpec.respond_to?(:current_scope) && ::RSpec.current_scope == :before_all
+      Gitlab::ExclusiveLease.skipping_transaction_check { super }
+    else
+      super
+    end
+  end
+
+  # TODO: Until https://gitlab.com/groups/gitlab-org/-/epics/18745 is resolved we're creating internal users in the
+  # first organization as a temporary workaround. Many specs lack an organization in the database, causing foreign key
+  # constraint violations when creating internal users. We're not seeding organizations before all specs for
+  # performance.
+  def create_unique_internal(scope, username, email_pattern, &creation_block)
+    FactoryBot.create(:common_organization)
+
+    super
+  end
+end
+
+Users::Internal.prepend(UsersInternalAllowExclusiveLease)

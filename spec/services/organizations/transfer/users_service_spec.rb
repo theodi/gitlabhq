@@ -1,0 +1,1452 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Organizations::Transfer::UsersService, :aggregate_failures, feature_category: :organization do
+  let_it_be(:old_organization, freeze: false) { create(:organization) }
+  let_it_be(:new_organization) { create(:organization) }
+  let_it_be_with_refind(:group) { create(:group, organization: old_organization) }
+
+  let(:users) { group.users_with_descendants }
+  let(:service) { described_class.new(users: users, new_organization: new_organization) }
+
+  describe '#execute', :eager_load do
+    context 'when users belong to different organizations' do
+      let_it_be(:other_organization) { create(:organization) }
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: other_organization) }
+
+      let(:users) { User.id_in([user1.id, user2.id]) }
+
+      before_all do
+        group.add_maintainer(user1)
+        group.add_developer(user2)
+      end
+
+      it 'returns error ServiceResponse with appropriate message' do
+        result = service.execute
+
+        expect(result).to be_error
+        expect(result.message).to eq(
+          s_("TransferOrganization|Cannot transfer users to a different organization " \
+            "if all users do not belong to the same organization as the top-level group.")
+        )
+      end
+
+      it 'does not update user organization_id' do
+        expect { service.execute }.not_to change { user1.reload.organization_id }
+        expect { service.execute }.not_to change { user2.reload.organization_id }
+      end
+    end
+
+    context 'when old organization does not exist' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_maintainer(user1)
+      end
+
+      before do
+        allow(Organizations::Organization).to receive(:find_by_id).and_return(nil)
+      end
+
+      it 'returns error ServiceResponse with appropriate message' do
+        result = service.execute
+
+        expect(result).to be_error
+        expect(result.message).to eq(
+          s_("TransferOrganization|Cannot transfer users because the existing organization could not be found.")
+        )
+      end
+
+      it 'does not update user organization_id' do
+        expect { service.execute }.not_to change { user1.reload.organization_id }
+      end
+    end
+
+    context 'when users are already in the target organization' do
+      let_it_be_with_refind(:user1) { create(:user, organization: new_organization) }
+
+      let(:users) { User.id_in([user1.id]) }
+
+      it 'returns error ServiceResponse with appropriate message' do
+        result = service.execute
+
+        expect(result).to be_error
+        expect(result.message).to eq(
+          s_("TransferOrganization|Users are already in the target organization.")
+        )
+      end
+    end
+
+    context 'when called within an existing transaction (outer transaction)' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_developer(user1)
+      end
+
+      it 'detects the existing transaction and does not create a nested one' do
+        # RSpec tests run inside a transaction, so transaction_open? returns true
+        expect(User.connection.transaction_open?).to be true
+        expect(User).not_to receive(:transaction)
+
+        service.execute
+      end
+
+      it 'returns success ServiceResponse' do
+        result = service.execute
+
+        expect(result).to be_a(ServiceResponse)
+        expect(result).to be_success
+      end
+
+      context 'when an error occurs' do
+        before do
+          allow(service).to receive(:perform_transfer).and_raise(StandardError, 'Transfer failed')
+        end
+
+        it 're-raises the exception to allow outer transaction to roll back' do
+          expect { service.execute }.to raise_error(StandardError, 'Transfer failed')
+        end
+
+        it 'does not return an error ServiceResponse' do
+          # The exception should be raised, not caught and converted to ServiceResponse
+          expect(service.execute).not_to be_a(ServiceResponse)
+        rescue StandardError
+          # Expected to raise
+        end
+      end
+
+      context 'when ActiveRecord::Rollback is raised' do
+        before do
+          allow(service).to receive(:perform_transfer).and_raise(ActiveRecord::Rollback)
+        end
+
+        it 're-raises the rollback to propagate to outer transaction' do
+          expect { service.execute }.to raise_error(ActiveRecord::Rollback)
+        end
+      end
+    end
+
+    context 'when managing its own transaction' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_developer(user1)
+      end
+
+      before do
+        # Simulate being outside a transaction by stubbing transaction_open?
+        allow(User.connection).to receive(:transaction_open?).and_return(false)
+      end
+
+      it 'creates its own transaction' do
+        expect(User).to receive(:transaction).and_call_original
+
+        service.execute
+      end
+
+      context 'when an error occurs' do
+        before do
+          allow(service).to receive(:perform_transfer).and_raise(StandardError, 'Transfer failed')
+        end
+
+        it 'does not re-raise the exception' do
+          expect { service.execute }.not_to raise_error
+        end
+
+        it 'returns an error ServiceResponse' do
+          result = service.execute
+
+          expect(result).to be_a(ServiceResponse)
+          expect(result).to be_error
+          expect(result.message).to eq('Transfer failed')
+        end
+      end
+    end
+
+    context 'with user transfers' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user3) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user_namespace1) { create(:namespace, owner: user1, organization: old_organization) }
+      let_it_be_with_refind(:user_namespace2) { create(:namespace, owner: user2, organization: old_organization) }
+      let_it_be_with_refind(:user_project1) do
+        create(:project, namespace: user_namespace1, organization: old_organization)
+      end
+
+      let_it_be_with_refind(:user_project2) do
+        create(:project, namespace: user_namespace2, organization: old_organization)
+      end
+
+      before_all do
+        group.add_maintainer(user1)
+        group.add_developer(user2)
+        group.add_guest(user3)
+      end
+
+      it 'updates organization_id for users in the group' do
+        service.execute
+
+        expect(user1.reload.organization_id).to eq(new_organization.id)
+        expect(user2.reload.organization_id).to eq(new_organization.id)
+        expect(user3.reload.organization_id).to eq(new_organization.id)
+
+        expect(user1).to be_valid
+        expect(user2).to be_valid
+        expect(user3).to be_valid
+      end
+
+      context 'when new organization is public' do
+        let_it_be(:new_organization) { create(:organization, visibility_level: Gitlab::VisibilityLevel::PUBLIC) }
+
+        it 'does not set private_profile on users' do
+          service.execute
+
+          expect(user1.reload.private_profile).to be false
+          expect(user2.reload.private_profile).to be false
+          expect(user3.reload.private_profile).to be false
+        end
+      end
+
+      context 'when new organization is private' do
+        let_it_be(:new_organization) { create(:organization, visibility_level: Gitlab::VisibilityLevel::PRIVATE) }
+
+        it 'sets private_profile to true on users' do
+          service.execute
+
+          expect(user1.reload.private_profile).to be true
+          expect(user2.reload.private_profile).to be true
+          expect(user3.reload.private_profile).to be true
+        end
+      end
+
+      it 'updates organization_id for user namespaces' do
+        service.execute
+
+        expect(user_namespace1.reload.organization_id).to eq(new_organization.id)
+        expect(user_namespace2.reload.organization_id).to eq(new_organization.id)
+
+        expect(user_namespace1).to be_valid
+        expect(user_namespace2).to be_valid
+      end
+
+      it 'updates organization_id for projects and project namespaces under user namespaces' do
+        service.execute
+
+        expect(user_project1.reload.organization_id).to eq(new_organization.id)
+        expect(user_project2.reload.organization_id).to eq(new_organization.id)
+        expect(user_project1.project_namespace.reload.organization_id).to eq(new_organization.id)
+        expect(user_project2.project_namespace.reload.organization_id).to eq(new_organization.id)
+
+        expect(user_project1).to be_valid
+        expect(user_project2).to be_valid
+        expect(user_project1.project_namespace).to be_valid
+        expect(user_project2.project_namespace).to be_valid
+      end
+
+      context 'when new organization has lower visibility than some user namespaces/projects' do
+        let_it_be(:new_organization) { create(:organization, visibility_level: Gitlab::VisibilityLevel::PRIVATE) }
+        let_it_be_with_refind(:public_user_namespace) do
+          create(:namespace,
+            visibility_level: Gitlab::VisibilityLevel::PUBLIC, owner: user1, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:internal_user_namespace) do
+          create(:namespace,
+            visibility_level: Gitlab::VisibilityLevel::INTERNAL, owner: user2, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:private_user_namespace) do
+          create(:namespace,
+            visibility_level: Gitlab::VisibilityLevel::PRIVATE, owner: user3, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:public_user_project) do
+          create(:project, :public, namespace: public_user_namespace, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:internal_user_project) do
+          create(:project, :internal, namespace: internal_user_namespace, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:private_user_project) do
+          create(:project, :private, namespace: private_user_namespace, organization: old_organization)
+        end
+
+        it 'updates visibility for user namespaces with higher visibility than organization' do
+          service.execute
+
+          expect(public_user_namespace.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(internal_user_namespace.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+
+          expect(public_user_namespace).to be_valid
+          expect(internal_user_namespace).to be_valid
+        end
+
+        it 'does not update visibility for user namespaces with lower or equal visibility' do
+          service.execute
+
+          expect(private_user_namespace.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(private_user_namespace).to be_valid
+        end
+
+        it 'updates visibility for projects under user namespaces with higher visibility than organization' do
+          service.execute
+
+          expect(public_user_project.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(internal_user_project.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+
+          expect(public_user_project).to be_valid
+          expect(internal_user_project).to be_valid
+        end
+
+        it 'updates visibility for project namespaces under user namespaces with higher visibility' do
+          service.execute
+
+          expect(public_user_project.project_namespace.reload.visibility_level)
+            .to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(internal_user_project.project_namespace.reload.visibility_level)
+            .to eq(Gitlab::VisibilityLevel::PRIVATE)
+
+          expect(public_user_project.project_namespace).to be_valid
+          expect(internal_user_project.project_namespace).to be_valid
+        end
+
+        it 'does not update visibility for projects under user namespaces with lower or equal visibility' do
+          service.execute
+
+          expect(private_user_project.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(private_user_project).to be_valid
+        end
+      end
+
+      context 'when new organization has higher visibility than some user namespaces/projects' do
+        let_it_be(:new_organization) { create(:organization, visibility_level: Gitlab::VisibilityLevel::PUBLIC) }
+        let_it_be_with_refind(:private_user_namespace) do
+          create(:namespace,
+            visibility_level: Gitlab::VisibilityLevel::PRIVATE, owner: user1, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:internal_user_namespace) do
+          create(:namespace,
+            visibility_level: Gitlab::VisibilityLevel::INTERNAL, owner: user2, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:private_user_project) do
+          create(:project,
+            visibility_level: Gitlab::VisibilityLevel::PRIVATE,
+            namespace: private_user_namespace,
+            organization: old_organization)
+        end
+
+        it 'does not update visibility for user namespaces with lower visibility' do
+          service.execute
+
+          expect(private_user_namespace.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(internal_user_namespace.reload.visibility_level).to eq(Gitlab::VisibilityLevel::INTERNAL)
+
+          expect(private_user_namespace).to be_valid
+          expect(internal_user_namespace).to be_valid
+        end
+
+        it 'does not update visibility for projects under user namespaces with lower visibility' do
+          service.execute
+
+          expect(private_user_project.reload.visibility_level).to eq(Gitlab::VisibilityLevel::PRIVATE)
+          expect(private_user_project).to be_valid
+        end
+      end
+    end
+
+    context 'with todos authored by bots' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:support_bot_old) { Users::Internal.in_organization(old_organization).support_bot }
+      let_it_be_with_refind(:human_author) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:project) { create(:project, namespace: group, organization: old_organization) }
+      let_it_be_with_refind(:issue) { create(:issue, project: project) }
+
+      let_it_be_with_refind(:human_authored_todo) do
+        create(:todo, user: user1, author: human_author, target: issue, project: project)
+      end
+
+      before_all do
+        group.add_developer(user1)
+        group.add_developer(user2)
+      end
+
+      it 'updates all bot-authored todos to use new organization bots' do
+        # Create todos for all bot types
+        ghost_old = Users::Internal.in_organization(old_organization).ghost
+        alert_bot_old = Users::Internal.in_organization(old_organization).alert_bot
+        security_bot_old = Users::Internal.in_organization(old_organization).security_bot
+        automation_bot_old = Users::Internal.in_organization(old_organization).automation_bot
+        admin_bot_old = Users::Internal.in_organization(old_organization).admin_bot
+        duo_code_review_bot_old = Users::Internal.in_organization(old_organization).duo_code_review_bot
+
+        ghost_todo = create(:todo, user: user1, author: ghost_old, target: issue, project: project)
+        support_bot_todo = create(:todo, user: user1, author: support_bot_old, target: issue, project: project)
+        alert_bot_todo = create(:todo, user: user1, author: alert_bot_old, target: issue, project: project)
+        security_bot_todo = create(:todo, user: user2, author: security_bot_old, target: issue, project: project)
+        automation_bot_todo = create(:todo, user: user1, author: automation_bot_old, target: issue, project: project)
+        admin_bot_todo = create(:todo, user: user1, author: admin_bot_old, target: issue, project: project)
+        duo_code_review_bot_todo =
+          create(:todo, user: user2, author: duo_code_review_bot_old, target: issue, project: project)
+
+        # Pre-create the new organization bots before the transfer
+        service.prepare_bots
+
+        # Get references to the new bots that were just created
+        ghost_new = Users::Internal.in_organization(new_organization).ghost
+        support_bot_new = Users::Internal.in_organization(new_organization).support_bot
+        alert_bot_new = Users::Internal.in_organization(new_organization).alert_bot
+        security_bot_new = Users::Internal.in_organization(new_organization).security_bot
+        automation_bot_new = Users::Internal.in_organization(new_organization).automation_bot
+        admin_bot_new = Users::Internal.in_organization(new_organization).admin_bot
+        duo_code_review_bot_new = Users::Internal.in_organization(new_organization).duo_code_review_bot
+
+        service.execute
+
+        expect(ghost_todo.reload.author_id).to eq(ghost_new.id)
+        expect(support_bot_todo.reload.author_id).to eq(support_bot_new.id)
+        expect(alert_bot_todo.reload.author_id).to eq(alert_bot_new.id)
+        expect(security_bot_todo.reload.author_id).to eq(security_bot_new.id)
+        expect(automation_bot_todo.reload.author_id).to eq(automation_bot_new.id)
+        expect(admin_bot_todo.reload.author_id).to eq(admin_bot_new.id)
+        expect(duo_code_review_bot_todo.reload.author_id).to eq(duo_code_review_bot_new.id)
+
+        expect(ghost_todo).to be_valid
+        expect(support_bot_todo).to be_valid
+        expect(alert_bot_todo).to be_valid
+        expect(security_bot_todo).to be_valid
+        expect(automation_bot_todo).to be_valid
+        expect(admin_bot_todo).to be_valid
+        expect(duo_code_review_bot_todo).to be_valid
+      end
+
+      it 'does not update human-authored todos' do
+        expect { service.execute }.not_to change { human_authored_todo.reload.author_id }
+      end
+
+      it 'does not update todos for users not in the transferred group' do
+        non_group_user = create(:user, organization: old_organization)
+        non_group_todo = create(:todo, user: non_group_user, author: support_bot_old, target: issue, project: project)
+
+        expect { service.execute }.not_to change { non_group_todo.reload.author_id }
+      end
+    end
+
+    context 'with parentless todo organization_id updates' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:non_group_user) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:project) { create(:project, namespace: group, organization: old_organization) }
+      let_it_be_with_refind(:issue) { create(:issue, project: project) }
+
+      before_all do
+        group.add_developer(user1)
+        group.add_developer(user2)
+      end
+
+      def create_parentless_todo(user:)
+        key = create(:key, user: user)
+        create(:todo,
+          user: user,
+          author: user,
+          target: key,
+          action: Todo::SSH_KEY_EXPIRED,
+          project: nil
+        )
+      end
+
+      it 'updates organization_id for parentless todos of transferred users' do
+        parentless_todo1 = create_parentless_todo(user: user1)
+        parentless_todo2 = create_parentless_todo(user: user2)
+
+        service.execute
+
+        expect(parentless_todo1.reload.organization_id).to eq(new_organization.id)
+        expect(parentless_todo2.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'does not update parentless todos for users not in the group' do
+        non_group_todo = create_parentless_todo(user: non_group_user)
+
+        expect { service.execute }.not_to change { non_group_todo.reload.organization_id }
+      end
+
+      it 'does not update project-scoped todos (organization_id is NULL)' do
+        project_todo = create(:todo, user: user1, target: issue, project: project)
+
+        service.execute
+
+        expect(project_todo.reload.organization_id).to be_nil
+      end
+    end
+
+    context 'with import failure organization_id updates' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:non_group_user) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_developer(user1)
+      end
+
+      it 'updates organization_id for user-scoped import failures of transferred users' do
+        import_failure = create(:import_failure, user: user1, project: nil, organization: old_organization)
+
+        service.execute
+
+        expect(import_failure.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'does not update import failures for users not in the group' do
+        non_group_failure = create(:import_failure, user: non_group_user, project: nil,
+          organization: old_organization)
+
+        expect { service.execute }.not_to change { non_group_failure.reload.organization_id }
+      end
+    end
+
+    context 'with personal snippet associated records' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:non_group_user) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:personal_snippet) do
+        create(:personal_snippet, author: user1, organization: old_organization)
+      end
+
+      let_it_be_with_refind(:non_group_snippet) do
+        create(:personal_snippet, author: non_group_user, organization: old_organization)
+      end
+
+      before_all do
+        group.add_developer(user1)
+        Users::Internal.in_organization(old_organization).ghost
+      end
+
+      before do
+        service.prepare_bots
+      end
+
+      context 'for snippet repositories' do
+        it 'updates snippet_organization_id for personal snippet repositories of transferred users' do
+          snippet_repo = create(:snippet_repository, snippet: personal_snippet)
+
+          service.execute
+
+          expect(snippet_repo.reload.snippet_organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update snippet repositories for users not in the group' do
+          non_group_repo = create(:snippet_repository, snippet: non_group_snippet)
+
+          expect { service.execute }.not_to change { non_group_repo.reload.snippet_organization_id }
+        end
+      end
+
+      context 'for snippet statistics' do
+        it 'updates snippet_organization_id for personal snippet statistics of transferred users' do
+          snippet_stats = create(:snippet_statistics, snippet: personal_snippet)
+
+          service.execute
+
+          expect(snippet_stats.reload.snippet_organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update snippet statistics for users not in the group' do
+          non_group_stats = create(:snippet_statistics, snippet: non_group_snippet)
+
+          expect { service.execute }.not_to change { non_group_stats.reload.snippet_organization_id }
+        end
+      end
+
+      context 'for snippet repository storage moves' do
+        it 'updates snippet_organization_id for personal snippet storage moves of transferred users' do
+          storage_move = create(:snippet_repository_storage_move, container: personal_snippet)
+
+          service.execute
+
+          expect(storage_move.reload.snippet_organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update snippet storage moves for users not in the group' do
+          non_group_move = create(:snippet_repository_storage_move, container: non_group_snippet)
+
+          expect { service.execute }.not_to change { non_group_move.reload.snippet_organization_id }
+        end
+      end
+
+      context 'for snippet user mentions' do
+        it 'updates snippet_organization_id for personal snippet user mentions of transferred users' do
+          note = create(:note_on_personal_snippet, noteable: personal_snippet, organization: old_organization)
+          mention = SnippetUserMention.create!(snippet: personal_snippet, note: note, mentioned_users_ids: [user1.id])
+
+          service.execute
+
+          expect(mention.reload.snippet_organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update snippet user mentions for users not in the group' do
+          note = create(:note_on_personal_snippet, noteable: non_group_snippet, organization: old_organization)
+          non_group_mention = SnippetUserMention.create!(
+            snippet: non_group_snippet, note: note, mentioned_users_ids: [non_group_user.id]
+          )
+
+          expect { service.execute }.not_to change { non_group_mention.reload.snippet_organization_id }
+        end
+      end
+
+      context 'for user agent details' do
+        it 'updates organization_id for details on personal snippets of transferred users' do
+          detail = create(:user_agent_detail, subject: personal_snippet, organization: old_organization)
+
+          expect(detail.subject_type).to eq('Snippet')
+
+          service.execute
+
+          expect(detail.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update details on personal snippets of users not in the group' do
+          detail = create(:user_agent_detail, subject: non_group_snippet, organization: old_organization)
+
+          expect { service.execute }.not_to change { detail.reload.organization_id }
+        end
+
+        it 'does not update details on project snippets' do
+          project = create(:project, namespace: group, organization: old_organization)
+          detail = create(:user_agent_detail,
+            subject: create(:project_snippet, project: project, author: user1),
+            organization: old_organization)
+
+          expect { service.execute }.not_to change { detail.reload.organization_id }
+        end
+      end
+    end
+
+    context 'with cluster transfers' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:non_group_user) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_developer(user1)
+      end
+
+      it 'updates organization_id for clusters created by transferred users' do
+        cluster = create(:cluster, :instance, :provided_by_gcp, user: user1, organization_id: old_organization.id)
+
+        service.execute
+
+        expect(cluster.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'updates organization_id for cluster child tables' do
+        cluster = create(:cluster, :instance, :provided_by_gcp, user: user1, organization_id: old_organization.id)
+        cluster.provider_gcp.update_column(:organization_id, old_organization.id)
+        cluster.platform_kubernetes.update_column(:organization_id, old_organization.id)
+
+        service.execute
+
+        expect(cluster.provider_gcp.reload.organization_id).to eq(new_organization.id)
+        expect(cluster.platform_kubernetes.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'updates organization_id for AWS provider child records' do
+        cluster = create(:cluster, :instance, :provided_by_aws, user: user1, organization_id: old_organization.id)
+        cluster.provider_aws.update_column(:organization_id, old_organization.id)
+
+        service.execute
+
+        expect(cluster.provider_aws.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'updates organization_id for kubernetes namespace child records' do
+        cluster = create(:cluster, :instance, :provided_by_gcp, user: user1, organization_id: old_organization.id)
+        kubernetes_namespace = create(:cluster_kubernetes_namespace,
+          cluster: cluster,
+          namespace: 'test-namespace',
+          cluster_project: nil,
+          project: nil)
+        kubernetes_namespace.update_column(:organization_id, old_organization.id)
+
+        service.execute
+
+        expect(kubernetes_namespace.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'does not update clusters created by users not in the group' do
+        non_group_cluster = create(:cluster, :instance, user: non_group_user, organization_id: old_organization.id)
+
+        expect { service.execute }.not_to change { non_group_cluster.reload.organization_id }
+      end
+    end
+
+    context 'with abuse report transfers' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:non_group_user) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_developer(user1)
+      end
+
+      it 'updates organization_id for abuse reports filed by transferred users' do
+        abuse_report = create(:abuse_report, reporter: user1, organization: old_organization)
+
+        service.execute
+
+        expect(abuse_report.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'updates organization_id for abuse events belonging to transferred reports' do
+        abuse_report = create(:abuse_report, reporter: user1, organization: old_organization)
+        abuse_event = create(:abuse_event, abuse_report: abuse_report, organization: old_organization)
+
+        service.execute
+
+        expect(abuse_event.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'does not update abuse reports filed by users not in the group' do
+        non_group_report = create(:abuse_report, reporter: non_group_user, organization: old_organization)
+        non_group_event = create(:abuse_event, abuse_report: non_group_report, organization: old_organization)
+
+        expect { service.execute }
+          .to not_change { non_group_report.reload.organization_id }
+          .and not_change { non_group_event.reload.organization_id }
+      end
+
+      it 'does not update abuse reports where a transferred user is the reported user' do
+        reported_report = create(:abuse_report,
+          reporter: non_group_user, user: user1, organization: old_organization)
+
+        expect { service.execute }.not_to change { reported_report.reload.organization_id }
+      end
+
+      it 'updates organization_id for screenshots of transferred reports' do
+        abuse_report = create(:abuse_report, reporter: user1, organization: old_organization)
+        upload = create_screenshot_upload(abuse_report)
+
+        service.execute
+
+        expect(upload.reload.organization_id).to eq(new_organization.id)
+      end
+
+      it 'does not update screenshots of abuse reports filed by users not in the group' do
+        non_group_report = create(:abuse_report, reporter: non_group_user, organization: old_organization)
+        non_group_upload = create_screenshot_upload(non_group_report)
+
+        expect { service.execute }.not_to change { non_group_upload.reload.organization_id }
+      end
+
+      context 'when batching screenshot updates' do
+        include_context 'with transfer batch size of 1'
+
+        let(:execute_service) { service.execute }
+        let(:expected_batch_queries) { { 'abuse_report_uploads' => 3 } }
+
+        before do
+          3.times do
+            create_screenshot_upload(create(:abuse_report, reporter: user1, organization: old_organization))
+          end
+        end
+
+        it_behaves_like 'generates batched transfer queries'
+      end
+
+      def create_screenshot_upload(abuse_report)
+        create(:upload, model: abuse_report, uploader: 'AttachmentUploader', mount_point: :screenshot)
+      end
+    end
+
+    context 'with associated organization_id updates', :aggregate_failures do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:non_group_user) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_developer(user1)
+        group.add_developer(user2)
+      end
+
+      context 'for personal access tokens' do
+        it 'updates organization_id for personal access tokens of transferred users' do
+          token1 = create(:personal_access_token, user: user1, organization: old_organization)
+          token2 = create(:personal_access_token, user: user2, organization: old_organization)
+
+          service.execute
+
+          expect(token1.reload.organization_id).to eq(new_organization.id)
+          expect(token2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update personal access tokens for users not in the group' do
+          non_group_token = create(:personal_access_token, user: non_group_user, organization: old_organization)
+
+          expect { service.execute }.not_to change { non_group_token.reload.organization_id }
+        end
+      end
+
+      context 'for oauth applications' do
+        it 'updates organization_id for user-owned oauth applications of transferred users' do
+          app1 = create(:oauth_application, owner: user1, organization: old_organization)
+          app2 = create(:oauth_application, owner: user2, organization: old_organization)
+
+          service.execute
+
+          expect(app1.reload.organization_id).to eq(new_organization.id)
+          expect(app2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update oauth applications for users not in the group' do
+          non_group_app = create(:oauth_application, owner: non_group_user, organization: old_organization)
+
+          expect { service.execute }.not_to change { non_group_app.reload.organization_id }
+        end
+
+        it 'does not update group-owned oauth applications' do
+          group_app = create(:oauth_application, owner_id: group.id, owner_type: 'Namespace',
+            organization: old_organization)
+
+          expect { service.execute }.not_to change { group_app.reload.organization_id }
+        end
+
+        it 'records upsert outbox rows carrying the new organization for the moved applications',
+          :aggregate_failures do
+          app1 = create(:oauth_application, owner: user1, organization: old_organization)
+          app2 = create(:oauth_application, owner: user2, organization: old_organization)
+
+          expect { service.execute }.to change {
+            Authn::IamOutbox.where(entity_id: [app1.id, app2.id], event_type: :upsert).count
+          }.by(2)
+
+          rows = Authn::IamOutbox.where(
+            entity_id: [app1.id, app2.id], event_type: :upsert, organization_id: new_organization.id
+          )
+          expect(rows).to all(have_attributes(entity_type: 'oauth_application', payload: {}))
+        end
+
+        it 'schedules an upsert drain per moved application' do
+          app1 = create(:oauth_application, owner: user1, organization: old_organization)
+          app2 = create(:oauth_application, owner: user2, organization: old_organization)
+
+          expect(Authn::IamReplication::DrainWorker).to receive(:bulk_perform_in)
+            .with(Authn::IamReplication::DrainWorker::SCHEDULE_DELAY,
+              include(['oauth_application', app1.id, 'upsert'], ['oauth_application', app2.id, 'upsert']))
+
+          service.execute
+        end
+
+        it 'records no additional outbox rows when the transfer is replayed after a successful run' do
+          app1 = create(:oauth_application, owner: user1, organization: old_organization)
+          app2 = create(:oauth_application, owner: user2, organization: old_organization)
+
+          service.execute
+
+          replay = described_class.new(users: users, new_organization: new_organization)
+
+          expect { replay.execute }.not_to change {
+            Authn::IamOutbox.where(
+              entity_id: [app1.id, app2.id], event_type: :upsert, organization_id: new_organization.id
+            ).count
+          }
+        end
+
+        it 'schedules no drain when the transfer rolls back' do
+          create(:oauth_application, owner: user1, organization: old_organization)
+
+          expect(Authn::IamReplication::DrainWorker).not_to receive(:bulk_perform_in)
+
+          ApplicationRecord.transaction do
+            service.execute
+            raise ActiveRecord::Rollback
+          end
+        end
+
+        context 'when IAM replication is disabled' do
+          before do
+            stub_feature_flags(iam_data_replication: false)
+          end
+
+          it 'records no outbox row for the moved applications' do
+            create(:oauth_application, owner: user1, organization: old_organization)
+
+            expect { service.execute }.not_to change { Authn::IamOutbox.count }
+          end
+        end
+      end
+
+      context 'for granular scopes' do
+        let_it_be_with_refind(:token1) do
+          create(:personal_access_token, user: user1, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:token2) do
+          create(:personal_access_token, user: user2, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:non_group_token) do
+          create(:personal_access_token, user: non_group_user, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:granular_scope1) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :user)
+        end
+
+        let_it_be_with_refind(:granular_scope2) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :instance)
+        end
+
+        let_it_be_with_refind(:non_group_granular_scope) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :user)
+        end
+
+        let_it_be_with_refind(:join_record1) do
+          create(:personal_access_token_granular_scope,
+            personal_access_token: token1, granular_scope: granular_scope1, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:join_record2) do
+          create(:personal_access_token_granular_scope,
+            personal_access_token: token2, granular_scope: granular_scope2, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:non_group_join_record) do
+          create(:personal_access_token_granular_scope,
+            personal_access_token: non_group_token, granular_scope: non_group_granular_scope,
+            organization: old_organization)
+        end
+
+        it 'updates organization_id for granular scopes of transferred users' do
+          service.execute
+
+          expect(granular_scope1.reload.organization_id).to eq(new_organization.id)
+          expect(granular_scope2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'updates organization_id for join table records of transferred users' do
+          service.execute
+
+          expect(join_record1.reload.organization_id).to eq(new_organization.id)
+          expect(join_record2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update granular scopes for users not in the group' do
+          expect { service.execute }.not_to change { non_group_granular_scope.reload.organization_id }
+        end
+
+        it 'does not update join table records for users not in the group' do
+          expect { service.execute }.not_to change { non_group_join_record.reload.organization_id }
+        end
+      end
+
+      context 'for OAuth consent grant granular scopes' do
+        let_it_be_with_reload(:grant1) do
+          create(:oauth_consent_grant, user: user1, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:grant2) do
+          create(:oauth_consent_grant, user: user2, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:non_group_grant) do
+          create(:oauth_consent_grant, user: non_group_user, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:granular_scope1) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :user)
+        end
+
+        let_it_be_with_reload(:granular_scope2) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :instance)
+        end
+
+        let_it_be_with_reload(:non_group_granular_scope) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :user)
+        end
+
+        let_it_be_with_reload(:join_record1) do
+          create(:oauth_consent_grant_granular_scope,
+            oauth_consent_grant: grant1, granular_scope: granular_scope1, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:join_record2) do
+          create(:oauth_consent_grant_granular_scope,
+            oauth_consent_grant: grant2, granular_scope: granular_scope2, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:non_group_join_record) do
+          create(:oauth_consent_grant_granular_scope,
+            oauth_consent_grant: non_group_grant, granular_scope: non_group_granular_scope,
+            organization: old_organization)
+        end
+
+        it 'updates organization_id for consent grants of transferred users' do
+          service.execute
+
+          expect(grant1.reload.organization_id).to eq(new_organization.id)
+          expect(grant2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'updates organization_id for granular scopes of transferred users' do
+          service.execute
+
+          expect(granular_scope1.reload.organization_id).to eq(new_organization.id)
+          expect(granular_scope2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'updates organization_id for join table records of transferred users' do
+          service.execute
+
+          expect(join_record1.reload.organization_id).to eq(new_organization.id)
+          expect(join_record2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update records for users not in the group' do
+          service.execute
+
+          expect(non_group_grant.reload.organization_id).to eq(old_organization.id)
+          expect(non_group_granular_scope.reload.organization_id).to eq(old_organization.id)
+          expect(non_group_join_record.reload.organization_id).to eq(old_organization.id)
+        end
+      end
+
+      context 'for OAuth application granular scopes' do
+        let_it_be_with_reload(:application1) do
+          create(:oauth_application, owner: user1, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:application2) do
+          create(:oauth_application, owner: user2, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:untransferred_application) do
+          create(:oauth_application, owner: non_group_user, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:granular_scope1) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :user)
+        end
+
+        let_it_be_with_reload(:granular_scope2) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :instance)
+        end
+
+        let_it_be_with_reload(:untransferred_granular_scope) do
+          create(:granular_scope, organization: old_organization, namespace: nil, access: :user)
+        end
+
+        let_it_be_with_reload(:join_record1) do
+          create(:oauth_application_granular_scope,
+            application: application1, granular_scope: granular_scope1, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:join_record2) do
+          create(:oauth_application_granular_scope,
+            application: application2, granular_scope: granular_scope2, organization: old_organization)
+        end
+
+        let_it_be_with_reload(:untransferred_join_record) do
+          create(:oauth_application_granular_scope,
+            application: untransferred_application, granular_scope: untransferred_granular_scope,
+            organization: old_organization)
+        end
+
+        it 'updates organization_id for granular scopes declared by applications of transferred users' do
+          service.execute
+
+          expect(granular_scope1.reload.organization_id).to eq(new_organization.id)
+          expect(granular_scope2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'updates organization_id for join table records of transferred users' do
+          service.execute
+
+          expect(join_record1.reload.organization_id).to eq(new_organization.id)
+          expect(join_record2.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it 'does not update records for users not in the group' do
+          service.execute
+
+          expect(untransferred_application.reload.organization_id).to eq(old_organization.id)
+          expect(untransferred_granular_scope.reload.organization_id).to eq(old_organization.id)
+          expect(untransferred_join_record.reload.organization_id).to eq(old_organization.id)
+        end
+      end
+
+      context 'for notes on personal snippets' do
+        let_it_be(:personal_snippet, freeze: false) do
+          create(:personal_snippet, author: user1, organization: old_organization)
+        end
+
+        let_it_be(:other_user) { create(:user, organization: create(:organization)) }
+
+        let_it_be(:note_by_owner, freeze: false) do
+          create(:note_on_personal_snippet, noteable: personal_snippet, author: user1, organization: old_organization)
+        end
+
+        let_it_be(:note_by_other_transferred_user) do
+          create(:note_on_personal_snippet, noteable: personal_snippet, author: user2, organization: old_organization)
+        end
+
+        let_it_be(:note_by_external_user) do
+          create(:note_on_personal_snippet, noteable: personal_snippet, author: other_user,
+            updated_by: other_user, organization: old_organization)
+        end
+
+        let_it_be(:ghost_user) do
+          Users::Internal.in_organization(new_organization).ghost
+        end
+
+        before do
+          Users::Internal.in_organization(old_organization).ghost
+        end
+
+        it 'updates organization_id for notes on personal snippets' do
+          service.execute
+
+          expect(note_by_owner.reload.organization_id).to eq(new_organization.id)
+          expect(note_by_other_transferred_user.reload.organization_id).to eq(new_organization.id)
+          expect(note_by_external_user.reload.organization_id).to eq(new_organization.id)
+          expect(note_by_external_user.reload.author).to eq(ghost_user)
+        end
+
+        context 'when batching note updates' do
+          include_context 'with transfer batch size of 1'
+
+          let(:execute_service) { service.execute }
+          let(:expected_batch_queries) do
+            { 'notes' => 3 }
+          end
+
+          it_behaves_like 'generates batched transfer queries'
+        end
+
+        it 'does not update notes for personal snippets owned by users not in the group' do
+          non_group_snippet = create(:personal_snippet, author: non_group_user, organization: old_organization)
+          non_group_note = create(:note_on_personal_snippet, noteable: non_group_snippet,
+            organization: old_organization)
+
+          expect { service.execute }.not_to change { non_group_note.reload.organization_id }
+        end
+
+        context 'when reassigning user associations to ghost user' do
+          it 'has the associations we expect' do
+            associations = Note.reflect_on_all_associations.select { |assoc| assoc.class_name == 'User' }
+
+            expect(associations.map(&:foreign_key)).to match_array(%w[author_id updated_by_id resolved_by_id])
+          end
+
+          %i[author_id updated_by_id resolved_by_id].each do |foreign_key|
+            context "for #{foreign_key}" do
+              it 'reassigns to ghost user when user is not being transferred' do
+                note_by_external_user.update_column(foreign_key, other_user.id)
+
+                service.execute
+
+                expect(note_by_external_user.reload.public_send(foreign_key)).to eq(ghost_user.id)
+              end
+
+              it 'does not reassign when user is being transferred' do
+                note_by_owner.update_column(foreign_key, user1.id)
+
+                service.execute
+
+                expect(note_by_owner.reload.public_send(foreign_key)).to eq(user1.id)
+              end
+            end
+          end
+        end
+      end
+
+      context 'with nested groups' do
+        let_it_be_with_refind(:subgroup) { create(:group, parent: group, organization: old_organization) }
+        let_it_be_with_refind(:nested_subgroup) { create(:group, parent: subgroup, organization: old_organization) }
+        let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+        let_it_be_with_refind(:user2) { create(:user, organization: old_organization) }
+        let_it_be_with_refind(:user3) { create(:user, organization: old_organization) }
+
+        before_all do
+          group.add_maintainer(user1)
+          subgroup.add_developer(user2)
+          nested_subgroup.add_guest(user3)
+        end
+
+        it 'updates all users from the group hierarchy' do
+          service.execute
+
+          expect(user1.reload.organization_id).to eq(new_organization.id)
+          expect(user2.reload.organization_id).to eq(new_organization.id)
+          expect(user3.reload.organization_id).to eq(new_organization.id)
+        end
+      end
+
+      context 'when batching updates' do
+        include_context 'with transfer batch size of 1'
+
+        let_it_be_with_refind(:pat_user1) { create(:user, organization: old_organization) }
+        let_it_be_with_refind(:pat_user2) { create(:user, organization: old_organization) }
+        let_it_be_with_refind(:pat_user3) { create(:user, organization: old_organization) }
+        let_it_be_with_refind(:token1) do
+          create(:personal_access_token, user: pat_user1, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:token2) do
+          create(:personal_access_token, user: pat_user2, organization: old_organization)
+        end
+
+        let_it_be_with_refind(:token3) do
+          create(:personal_access_token, user: pat_user3, organization: old_organization)
+        end
+
+        let(:execute_service) { service.execute }
+        let(:expected_batch_queries) do
+          { 'personal_access_tokens' => 3 }
+        end
+
+        before_all do
+          group.add_maintainer(pat_user1)
+          group.add_developer(pat_user2)
+          group.add_guest(pat_user3)
+        end
+
+        it 'processes all records across multiple batches' do
+          service.execute
+
+          expect(token1.reload.organization_id).to eq(new_organization.id)
+          expect(token2.reload.organization_id).to eq(new_organization.id)
+          expect(token3.reload.organization_id).to eq(new_organization.id)
+        end
+
+        it_behaves_like 'generates batched transfer queries'
+      end
+
+      context 'with dynamic migration models' do
+        let(:foss_migratable_models) do
+          [
+            "AuthenticationEvent",
+            "Authz::OauthConsentGrant",
+            "AwardEmoji",
+            "BulkImport",
+            "DeployKey",
+            "Doorkeeper::AccessToken",
+            "Key",
+            "OauthAccessGrant",
+            "OauthAccessToken",
+            "PersonalAccessToken",
+            "PersonalSnippet",
+            "SpamLog",
+            "Import::Offline::Export",
+            "Import::PlaceholderUserDetail",
+            "ResourceEvents::AbuseReportEvent"
+          ]
+        end
+
+        let(:ee_migratable_models) do
+          [
+            "Ai::Catalog::ItemStar",
+            "Ai::Catalog::ItemVersion",
+            "Ai::Catalog::McpServer",
+            "Ai::Catalog::McpServerBlock",
+            "Ai::Catalog::McpServersUser",
+            "Ai::Conversation::Thread",
+            "Ai::UsageEvent",
+            "Analytics::CustomDashboards::DashboardVersion",
+            "LDAPKey",
+            "RemoteDevelopment::OrganizationClusterAgentMapping"
+          ]
+        end
+
+        context 'with self.skipped_transfer_models' do
+          let(:skipped_transfer_models) do
+            [
+              'AbuseReport',
+              'Ai::Catalog::ItemConsumer',
+              'AntiAbuse::Event',
+              'Authz::AdminRole',
+              'Authz::GranularScope',
+              'Authz::OauthApplicationGranularScope',
+              'Authz::OauthConsentGrantGranularScope',
+              'Authz::PersonalAccessTokenGranularScope',
+              'BulkImports::Export',
+              'Clusters::Cluster',
+              'Dependencies::DependencyListExport',
+              'GitlabSubscriptions::AddOnPurchase',
+              'GitlabSubscriptions::SeatAssignment',
+              'GitlabSubscriptions::UserAddOnAssignment',
+              'Govern::PolicyEvaluation',
+              'Group',
+              'ImportFailure',
+              'Import::Sync::Repository',
+              'MemberRole',
+              'Project',
+              'ProjectSnippet',
+              'Snippet',
+              'User',
+              'Vulnerabilities::Export'
+            ]
+          end
+
+          it 'returns skipped models' do
+            expect(described_class.skipped_transfer_models).to match_array(skipped_transfer_models)
+          end
+        end
+
+        context 'with self.migratable_models' do
+          before do
+            described_class.clear_memoization(:migratable_models)
+          end
+
+          context 'when running in FOSS edition', unless: Gitlab.ee? do
+            it 'returns only FOSS models' do
+              expect(described_class.migratable_models.map(&:to_s)).to match_array(foss_migratable_models)
+            end
+
+            it 'does not include EE models' do
+              model_names = described_class.migratable_models.map(&:to_s)
+
+              expect(model_names & ee_migratable_models).to be_empty
+            end
+          end
+
+          context 'when running in EE edition', if: Gitlab.ee? do
+            it 'returns both FOSS and EE models' do
+              expected_models = foss_migratable_models + ee_migratable_models
+
+              expect(described_class.migratable_models.map(&:to_s)).to match_array(expected_models)
+            end
+          end
+
+          it 'does not include skipped models' do
+            model_names = described_class.migratable_models.map(&:to_s)
+            skipped_models = described_class.skipped_transfer_models
+
+            expect(model_names & skipped_models).to be_empty
+          end
+
+          def find_factory(model_class)
+            FactoryBot.factories.detect do |f|
+              f.build_class.to_s == model_class.to_s
+            rescue NameError
+              false
+            end
+          end
+
+          def find_user_assoc(model_class)
+            model_class.reflect_on_all_associations.find do |association|
+              association.class_name == "User"
+            end
+          end
+
+          it 'updates organization_id for all migratable models' do
+            instances = described_class.migratable_models.map do |model_class|
+              factory = find_factory(model_class)
+              user_assoc = find_user_assoc(model_class)
+
+              [
+                model_class,
+                create(factory.name, organization: old_organization, user_assoc.name => user1),
+                create(factory.name, organization: old_organization, user_assoc.name => user2)
+              ]
+            end
+
+            service.execute
+
+            instances.each do |model_class, instance1, instance2|
+              expect(instance1.reload.organization_id).to eq(new_organization.id),
+                "Expected #{model_class} organization_id to be updated"
+              expect(instance2.reload.organization_id).to eq(new_organization.id),
+                "Expected #{model_class} organization_id to be updated"
+            end
+          end
+
+          it 'does not update migratable models for users outside the group' do
+            instances = described_class.migratable_models.map do |model_class|
+              factory = find_factory(model_class)
+              user_assoc = find_user_assoc(model_class)
+
+              [model_class, create(factory.name, organization: old_organization, user_assoc.name => non_group_user)]
+            end
+
+            service.execute
+
+            instances.each do |model_class, instance|
+              expect(instance.reload.organization_id).to eq(old_organization.id),
+                "Expected #{model_class} organization_id to not change for users outside the group"
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe '#can_transfer_users?' do
+    context 'when all users belong to the same organization as the group' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_maintainer(user1)
+        group.add_developer(user2)
+      end
+
+      it 'returns true' do
+        expect(service.can_transfer_users?).to be true
+      end
+    end
+
+    context 'when some users belong to different organizations' do
+      let_it_be(:other_organization) { create(:organization) }
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: other_organization) }
+
+      # Override users to include both users even though they belong to different organizations
+      let(:users) { User.where(id: [user1.id, user2.id]) }
+
+      before_all do
+        group.add_maintainer(user1)
+        group.add_developer(user2)
+      end
+
+      it 'returns false' do
+        expect(service.can_transfer_users?).to be false
+      end
+    end
+
+    context 'when old organization does not exist' do
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+
+      before_all do
+        group.add_maintainer(user1)
+      end
+
+      before do
+        allow(Organizations::Organization).to receive(:find_by_id).and_return(nil)
+      end
+
+      it 'returns false' do
+        expect(service.can_transfer_users?).to be false
+      end
+    end
+
+    context 'with nested groups' do
+      let_it_be_with_refind(:subgroup) { create(:group, parent: group, organization: old_organization) }
+      let_it_be(:other_organization) { create(:organization) }
+      let_it_be_with_refind(:user1) { create(:user, organization: old_organization) }
+      let_it_be_with_refind(:user2) { create(:user, organization: other_organization) }
+
+      let(:users) { User.where(id: [user1.id, user2.id]) }
+
+      before_all do
+        group.add_maintainer(user1)
+        subgroup.add_developer(user2)
+      end
+
+      it 'checks users across the entire group hierarchy' do
+        expect(service.can_transfer_users?).to be false
+      end
+    end
+  end
+end

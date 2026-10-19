@@ -1,0 +1,24 @@
+#import "../fragments/bulk_import_source_group_item.fragment.graphql"
+
+query bulkImportSourceGroups($page: Int = 1, $perPage: Int = 20, $filter: String = "") {
+  bulkImportSourceGroups(page: $page, filter: $filter, perPage: $perPage) @client {
+    nodes {
+      ...BulkImportSourceGroupItem
+    }
+    pageInfo {
+      page
+      perPage
+      total
+      totalPages
+    }
+    versionValidation {
+      features {
+        sourceInstanceVersion
+        projectMigration {
+          available
+          minVersion
+        }
+      }
+    }
+  }
+}

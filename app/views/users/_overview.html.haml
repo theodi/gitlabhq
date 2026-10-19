@@ -1,0 +1,60 @@
+- if can?(current_user, :read_cross_project) && @user.user_readme&.rich_viewer
+  .profile-readme-wrapper.gl-relative.gl-w-full.gl-pt-5
+    .profile-readme.read-more-container.gl-relative.gl-border.gl-rounded-lg.gl-overflow-hidden{ class: '!gl-justify-center', data: { 'read-more-height': 400 } }
+      .read-more-content.gl-py-5.gl-px-6
+        .gl-flex
+          = render Pajamas::BreadcrumbComponent.new(class: 'gl-mb-4') do |c|
+            - c.with_item(text: @user.username, href: project_path(@user.user_project))
+            - c.with_item(text: @user.user_readme.path, href: @user.user_project.readme_url)
+
+          - if current_user == @user
+            .gl-ml-auto
+              = link_to _('Edit file'), edit_blob_path(@user.user_project, @user.user_project.default_branch, @user.user_readme.path)
+        = render 'projects/blob/viewer', viewer: @user.user_readme.rich_viewer, load_async: false
+      .js-read-more-trigger.read-more-trigger.description-more.gl-inset-x-6.gl-z-2
+        .show-all-btn.gl-flex.gl-w-full.gl-items-center.gl-justify-center.gl-pb-2
+          = render Pajamas::ButtonComponent.new(variant: :confirm, category: :tertiary, button_options: { 'aria-label': _("Expand Readme") }) do
+            = _("Read more")
+
+- if can?(current_user, :read_cross_project)
+  - if Feature.enabled?(:vue_profile_activity_calendar, current_user)
+    #js-vue-activity-calendar.new-activities-block{ data: user_activity_calendar_data(@user) }
+  - else
+    .gl-self-start.gl-overflow-hidden
+      .activities-block
+        .gl-flex.gl-items-baseline
+          %h2.gl-heading-3.gl-grow{ class: '!gl-mt-5 !gl-mb-3' }
+            = s_('UserProfile|Activity')
+          = link_to s_('UserProfile|View all'), user_activity_path, class: "hide js-view-all", aria: { label: _('View all activity') }
+
+        .user-calendar.gl-border.light.gl-rounded-lg.gl-px-3.gl-pt-4.gl-text-center{ data: { calendar_path: user_calendar_path(@user, :json), calendar_activities_path: user_calendar_activities_path, utc_offset: local_timezone_instance(@user.timezone).now.utc_offset } }
+          .js-calendar-loading.gl-mx-auto{ aria: { hidden: 'true' } }
+            .gl-animate-skeleton-loader.gl-mb-5.gl-h-18.gl-w-full.gl-rounded-base{ class: '!gl-max-w-none' }
+            .gl-flex.gl-justify-between
+              .gl-animate-skeleton-loader.gl-h-4.gl-w-12.gl-rounded-base
+              .gl-animate-skeleton-loader.gl-h-4.gl-w-34.gl-rounded-base
+          .user-calendar-error{ class: '!gl-invisible' }
+            = _('There was an error loading users activity calendar.')
+            = render Pajamas::ButtonComponent.new(variant: :link, button_options: { class: 'js-retry-load' }) do
+              = s_('UserProfile|Retry')
+
+        .user-calendar-activities.gl-mb-5
+        %ul.gl-list-none.gl-pl-0.overview-content-list.user-activity-content.gl-mb-5{ data: { href: user_activity_path, testid: 'user-activity-content' } }
+          %li.js-overview-loading{ aria: { hidden: 'true' } }
+            - 5.times do
+              .gl-mb-5.gl-flex.gl-items-center.gl-gap-3
+                .gl-animate-skeleton-loader.gl-h-6.gl-w-6.gl-shrink-0.gl-rounded-full
+                .gl-animate-skeleton-loader.gl-h-4.gl-grow.gl-rounded-base{ class: '!gl-max-w-none' }
+                .gl-animate-skeleton-loader.gl-h-4.gl-w-13.gl-shrink-0.gl-rounded-base
+
+- if @user.personal_projects.any?
+  .projects-block.gl-w-full
+    .gl-flex.gl-items-baseline
+      %h2.gl-heading-3.gl-grow{ class: '!gl-mt-5 !gl-mb-3' }
+        = s_('UserProfile|Personal projects')
+      = link_to s_('UserProfile|View all'), user_projects_path, class: "hide js-view-all", aria: { label: _('View all personal projects') }
+    %ul.gl-list-none.gl-pl-0.overview-content-list{ data: { href: user_projects_path } }
+      %li.js-overview-loading{ aria: { hidden: 'true' } }
+        %div{ class: 'gl-flex gl-flex-col gl-gap-4 @lg/panel:gl-flex-row' }
+          - 3.times do
+            %div{ class: 'gl-animate-skeleton-loader gl-h-18 gl-grow gl-rounded-base !gl-max-w-none @lg/panel:gl-w-1/4' }

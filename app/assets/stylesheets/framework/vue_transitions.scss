@@ -1,0 +1,44 @@
+/**
+* Transition classes are built dynamically, please read about vue-transitions
+* here before removing https://vuejs.org/guide/built-ins/transition
+**/
+
+.fade-enter-active,
+.fade-leave-active,
+.fade-in-enter-active,
+.fade-out-leave-active {
+  @apply gl-transition-opacity;
+}
+
+.fade-enter,
+.fade-in-enter,
+.fade-out-leave-to,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-enter-from-element {
+  &.slide-enter,
+  &.slide-leave-to {
+    position: absolute;
+    transform: translateX(-150%);
+  }
+}
+
+.slide-enter-to-element {
+  &.slide-enter,
+  &.slide-leave-to {
+    position: absolute;
+    transform: translateX(150%);
+  }
+}
+
+.slide-enter-active,
+.slide-leave-active {
+  transition: transform 300ms ease-out;
+}
+
+.slide-enter-to,
+.slide-leave {
+  transform: translateX(0);
+}

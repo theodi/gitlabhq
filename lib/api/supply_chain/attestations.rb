@@ -1,0 +1,69 @@
+# frozen_string_literal: true
+
+module API
+  module SupplyChain
+    class Attestations < ::API::Base
+      include PaginationParams
+
+      feature_category :artifact_security
+      urgency :low
+
+      before do
+        not_found! unless Feature.enabled?(:slsa_provenance_statement, user_project)
+        authorize_read_attestations!
+      end
+
+      params do
+        requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+      end
+      resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc 'List all attestations for a project' do
+          detail 'Lists all attestations for a specified project and artifact hash. This feature was introduced in ' \
+            'GitLab 18.7.'
+          success ::API::Entities::SupplyChain::Attestation
+          failure [
+            { code: 404, message: 'Artifact SHA-256 not found' }
+          ]
+          tags ['attestations']
+        end
+        params do
+          requires :subject_digest, type: String,
+            desc: 'Hex-encoded SHA-256 hash of the artifact.'
+        end
+        route_setting :authorization, permissions: :read_attestation, boundary_type: :project
+        get ':id/attestations/:subject_digest', urgency: :low,
+          requirements: { subject_digest: /[A-Fa-f0-9]{64}/ } do
+          subject_digest = params[:subject_digest]
+          attestations = ::SupplyChain::Attestation.for_project(user_project.id).with_digest(subject_digest)
+
+          present paginate(attestations), with: ::API::Entities::SupplyChain::Attestation
+        end
+
+        desc 'Retrieve an attestation bundle' do
+          detail 'Retrieves a specified attestation provenance bundle. This feature was introduced in GitLab 18.7.'
+          success code: 200
+          failure [
+            { code: 404, message: 'Artifact SHA-256 not found' }
+          ]
+          detail 'This feature was introduced in GitLab 18.7' # TODO: update when FF is removed
+          tags ['attestations']
+        end
+        params do
+          requires :attestation_iid, types: [String, Integer], desc: 'Internal ID of the attestation, as returned by ' \
+                                                                 'the list attestations API endpoint.'
+        end
+        route_setting :authorization, permissions: :read_attestation, boundary_type: :project
+        get ':id/attestations/:attestation_iid/download', urgency: :low do
+          attestation = ::SupplyChain::Attestation.for_project(user_project.id).with_iid(params[:attestation_iid]).sole
+
+          content_type 'text/json'
+          env['api.format'] = :txt
+
+          present attestation.file.read
+        end
+      end
+    end
+  end
+end
+
+API::SupplyChain::Attestations.prepend_mod_with('API::SupplyChain::Attestations')

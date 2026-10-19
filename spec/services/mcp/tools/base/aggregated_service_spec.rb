@@ -1,0 +1,526 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Mcp::Tools::Base::AggregatedService, feature_category: :mcp_server do
+  let(:mock_tool) { instance_double(Mcp::Tools::Base::ApiTool, name: :gitlab_search_in_instance, settings: {}) }
+  let(:mock_tool_2) do
+    instance_double(Mcp::Tools::Base::ApiTool, name: :gitlab_search_in_group, settings: { resource_name: 'group' })
+  end
+
+  let(:tools) { [mock_tool, mock_tool_2] }
+
+  describe '#initialize' do
+    let(:test_service_class) do
+      Class.new(described_class) do
+        register_version '0.1.0', {
+          description: 'test klass',
+          input_schema: {
+            type: 'object',
+            properties: {}
+          }
+        }
+
+        def self.tool_name
+          'test_aggregated_tool'
+        end
+      end
+    end
+
+    it 'initializes with tools and sets name from tool_name' do
+      service = test_service_class.new(tools: tools)
+
+      expect(service.instance_variable_get(:@tools)).to eq(tools)
+      expect(service.instance_variable_get(:@name)).to eq('test_aggregated_tool')
+    end
+  end
+
+  describe '#execute' do
+    let(:arguments) { { scope: 'issues', search: 'test' } }
+    let(:params) { { arguments: arguments } }
+
+    context 'when version-specific method exists' do
+      let(:service_with_version_method_class) do
+        Class.new(described_class) do
+          register_version '1.0.0', {
+            description: 'Test aggregated tool',
+            input_schema: {
+              type: 'object',
+              properties: {
+                scope: { type: 'string' },
+                search: { type: 'string' }
+              },
+              required: %w[scope search]
+            }
+          }
+
+          register_version '1.5.0', {
+            description: 'second version of test tool',
+            input_schema: {
+              type: 'object',
+              properties: {
+                scope: { type: 'string' },
+                search: { type: 'string' }
+              },
+              required: %w[scope search]
+            }
+          }
+
+          register_version '2.0.0', {
+            description: 'major version with breaking changes',
+            input_schema: {
+              type: 'object',
+              properties: {
+                scope: { type: 'string' },
+                search: { type: 'string' },
+                search_type: { type: 'string' }
+              },
+              required: %w[scope search search_type]
+            }
+          }
+
+          def self.tool_name
+            'test_aggregated_tool'
+          end
+
+          private
+
+          def perform_v1_0_0(_args)
+            tool = tools.first
+
+            tool.execute(request:, params:)
+          end
+
+          def perform_v2_0_0(_args)
+            tool = tools.second
+            params[:arguments][:another] = 1
+
+            tool.execute(request:, params:)
+          end
+        end
+      end
+
+      it 'calls the correct version method' do
+        service = service_with_version_method_class.new(tools: tools, version: '1.0.0')
+
+        mock_response_1 = { content: [{ type: 'text', text: 'Success' }], isError: false }
+        expect(mock_tool).to receive(:execute).with(request: nil, params: params).and_return(mock_response_1)
+
+        result_1 = service.execute(request: nil, params: params)
+        expect(result_1).to eq(mock_response_1)
+      end
+
+      it 'handles different versions correctly' do
+        service_v1 = service_with_version_method_class.new(tools: tools, version: '1.0.0')
+        service_v2 = service_with_version_method_class.new(tools: tools, version: '2.0.0')
+
+        mock_response_1 = { content: [{ type: 'text', text: 'Success one' }], isError: false }
+        mock_response_2 = { content: [{ type: 'text', text: 'Success two' }], isError: false }
+
+        params_2 = { arguments: arguments.merge(search_type: 'basic') }
+
+        expect(mock_tool).to receive(:execute).with(request: nil, params: params).and_return(mock_response_1)
+        expect(mock_tool_2).to receive(:execute).with(request: nil, params: params_2).and_return(mock_response_2)
+
+        result_1 = service_v1.execute(request: nil, params: params)
+        result_2 = service_v2.execute(request: nil, params: params_2)
+
+        expect(result_1).to eq(mock_response_1)
+        expect(result_2).to eq(mock_response_2)
+      end
+    end
+
+    context 'when version-specific method does not exist' do
+      let(:service_without_method_class) do
+        Class.new(described_class) do
+          register_version '3.0.0', {
+            description: 'Version without implementation',
+            input_schema: {
+              type: 'object',
+              properties: { scope: { type: 'string' }, search: { type: 'string' } },
+              required: []
+            }
+          }
+
+          def self.tool_name
+            'test_aggregated_tool'
+          end
+
+          private
+
+          def select_tool(_args)
+            tools.first
+          end
+
+          def transform_arguments(args)
+            args
+          end
+        end
+      end
+
+      it 'calls perform_default' do
+        mock_response_1 = { content: [{ type: 'text', text: 'Success default' }], isError: false }
+        expect(mock_tool).to receive(:execute).with(request: nil, params: params).and_return(mock_response_1)
+
+        service = service_without_method_class.new(tools: tools, version: '3.0.0')
+        result = service.execute(request: nil, params: params)
+
+        expect(result[:content]).to match_array(mock_response_1[:content])
+      end
+    end
+
+    context 'when aggregated tool performs without error' do
+      let(:service_class) do
+        Class.new(described_class) do
+          register_version '3.0.0', {
+            description: 'Version without implementation',
+            input_schema: {
+              type: 'object',
+              properties: { scope: { type: 'string' }, search: { type: 'string' } },
+              required: []
+            }
+          }
+
+          def self.tool_name
+            'test_aggregated_tool'
+          end
+
+          def select_tool(*)
+            tools.first
+          end
+
+          def transform_arguments(args)
+            args.merge(id: 'transformed')
+          end
+        end
+      end
+
+      let(:transformed_arguments) { arguments.merge(id: 'transformed') }
+      let(:transformed_params) { { arguments: transformed_arguments } }
+      let(:mock_response) { { content: [{ type: 'text', text: 'Success' }], isError: false } }
+
+      it 'delegates to selected tool with transformed arguments and records the dispatched sub-tool' do
+        expect(mock_tool).to receive(:execute).with(request: nil, params: transformed_params).and_return(mock_response)
+
+        service = service_class.new(tools: tools)
+        result = service.execute(request: nil, params: params)
+        expect(result).to eq(
+          mock_response.merge(dispatch: { tool_name: 'gitlab_search_in_instance' })
+        )
+      end
+
+      context 'when the selected sub-tool returns an error' do
+        let(:mock_response) { Mcp::Tools::Base::Response.error('404 Not Found', reason: :not_found) }
+
+        it 'records the dispatched sub-tool on the error response' do
+          allow(mock_tool).to receive(:execute).and_return(mock_response)
+
+          result = service_class.new(tools: tools).execute(request: nil, params: params)
+
+          expect(result).to include(
+            isError: true, dispatch: { tool_name: 'gitlab_search_in_instance' }
+          )
+        end
+      end
+    end
+
+    context 'when aggregated tool cannot find tool' do
+      let(:arguments) { { scope: 'issues', search: 'test' } }
+      let(:params) { { arguments: arguments } }
+
+      let(:test_service_class) do
+        Class.new(described_class) do
+          register_version '1.5.0', {
+            description: 'Test aggregated tool',
+            input_schema: {
+              type: 'object',
+              properties: {
+                scope: { type: 'string' },
+                search: { type: 'string' }
+              },
+              required: %w[scope search]
+            }
+          }
+
+          def self.tool_name
+            'test_aggregated_tool'
+          end
+
+          private
+
+          def select_tool(_args)
+            nil
+          end
+
+          def transform_arguments(args)
+            args
+          end
+        end
+      end
+
+      let(:service) { test_service_class.new(tools: tools) }
+
+      it 'returns error response when tool not found' do
+        result = service.execute(request: nil, params: params)
+
+        expect(result[:isError]).to be true
+        expect(result[:content].first[:text])
+          .to eq("Tool execution failed: test_aggregated_tool is not available on this GitLab " \
+            "instance due to a server configuration problem.")
+      end
+    end
+
+    context 'when aggregated tool is called with invalid arguments' do
+      let(:arguments) { { scope: 'issues' } }
+      let(:params) { { arguments: arguments } }
+
+      let(:test_service_class) do
+        Class.new(described_class) do
+          register_version '1.5.0', {
+            description: 'Test aggregated tool',
+            input_schema: {
+              type: 'object',
+              properties: {
+                scope: { type: 'string' },
+                search: { type: 'string' }
+              },
+              required: %w[scope search]
+            }
+          }
+
+          def self.tool_name
+            'test_aggregated_tool'
+          end
+
+          private
+
+          def select_tool(_args)
+            tools.first
+          end
+
+          def transform_arguments(args)
+            args
+          end
+        end
+      end
+
+      let(:service) { test_service_class.new(tools: tools) }
+
+      it 'returns validation error response' do
+        result = service.execute(request: nil, params: params)
+
+        expect(result[:isError]).to be true
+        expect(result[:content].first[:text]).to include('Validation error:')
+        expect(result[:content].first[:text]).to include('search is missing')
+      end
+    end
+
+    context 'when delegated tool execution fails' do
+      let(:test_service_class) do
+        Class.new(described_class) do
+          register_version '3.0.0', {
+            description: 'Version without implementation',
+            input_schema: {
+              type: 'object',
+              properties: { scope: { type: 'string' }, search: { type: 'string' } },
+              required: []
+            }
+          }
+
+          def self.tool_name
+            'test_aggregated_tool'
+          end
+
+          def select_tool(_args)
+            tools.first
+          end
+
+          def transform_arguments(args)
+            args
+          end
+        end
+      end
+
+      it 'returns error response when delegated tool fails' do
+        expect(mock_tool).to receive(:execute).and_raise(StandardError, 'Tool execution failed')
+
+        service = test_service_class.new(tools: tools)
+        result = service.execute(request: nil, params: params)
+
+        expect(result[:isError]).to be true
+        expect(result[:content].first[:text]).to eq('Tool execution failed: Tool execution failed')
+      end
+    end
+  end
+
+  describe '#record_dispatch' do
+    let(:service_class) do
+      Class.new(described_class) do
+        register_version '1.0.0', {
+          description: 'Test tool',
+          input_schema: { type: 'object', properties: {}, required: [] }
+        }
+
+        def self.tool_name
+          'test_aggregated_tool'
+        end
+      end
+    end
+
+    let(:service) { service_class.new(tools: tools) }
+    let(:response) { { content: [{ type: 'text', text: 'Success' }], isError: false } }
+
+    it 'attaches the sub-tool name without changing the original response' do
+      result = service.send(:record_dispatch, response, mock_tool_2)
+
+      expect(result).to eq(response.merge(dispatch: { tool_name: 'gitlab_search_in_group' }))
+      expect(response).not_to have_key(:dispatch)
+    end
+
+    it 'returns a non-hash response unchanged' do
+      expect(service.send(:record_dispatch, nil, mock_tool)).to be_nil
+    end
+  end
+
+  describe '#enhance_response_with_operation' do
+    let(:test_service_class) do
+      Class.new(described_class) do
+        register_version '1.0.0', {
+          description: 'Test tool',
+          input_schema: { type: 'object', properties: {}, required: [] }
+        }
+
+        def self.tool_name
+          'test_aggregated_tool'
+        end
+
+        def select_tool(_args)
+          tools.first
+        end
+
+        def transform_arguments(args)
+          args
+        end
+      end
+    end
+
+    let(:service) { test_service_class.new(tools: tools) }
+
+    context 'when response has an error' do
+      let(:response) { { isError: true, content: [{ type: 'text', text: 'Error' }] } }
+
+      it 'returns the response unchanged' do
+        result = service.send(:enhance_response_with_operation, response, operation: :create, tool_name: :create_item)
+
+        expect(result).to eq(response)
+      end
+    end
+
+    context 'when the sub-tool was throttled' do
+      let(:response) do
+        Mcp::Tools::Base::Response.rate_limited_error(
+          'This endpoint has been requested too many times. Try again later.',
+          retry_after: 60,
+          limit: 'search_rate_limit'
+        )
+      end
+
+      it 'passes the retry detail through instead of overwriting it with operation metadata' do
+        result = service.send(:enhance_response_with_operation, response, operation: :create, tool_name: :create_item)
+
+        expect(result).to eq(response)
+        expect(result[:structuredContent][:error]).to include(
+          type: 'rate_limited', retry_after_seconds: 60, limit: 'search_rate_limit'
+        )
+        expect(result[:structuredContent]).not_to have_key(:_meta)
+      end
+    end
+
+    context 'when response has structuredContent' do
+      let(:response) do
+        {
+          content: [{ type: 'text', text: '{"id":1}' }],
+          structuredContent: { id: 1 },
+          isError: false
+        }
+      end
+
+      it 'adds the mcp operation details' do
+        result = service.send(:enhance_response_with_operation, response, operation: :create, tool_name: :create_item)
+
+        expect(result[:structuredContent][:_meta]).to eq({
+          operation: 'create',
+          tool: 'create_item',
+          aggregator: 'test_aggregated_tool'
+        })
+      end
+    end
+  end
+
+  describe 'abstract methods' do
+    describe '.tool_name' do
+      it 'raises NoMethodError when not implemented' do
+        expect { described_class.tool_name }
+          .to raise_error(NoMethodError, /tool_name should be implemented in a subclass/)
+      end
+    end
+
+    describe '#select_tool' do
+      let(:test_service_class) do
+        Class.new(described_class) do
+          register_version '1.0.0', {
+            description: 'Test tool',
+            input_schema: { type: 'object', properties: {}, required: [] }
+          }
+
+          def self.tool_name
+            'test_tool'
+          end
+
+          def transform_arguments(args)
+            args
+          end
+        end
+      end
+
+      it 'raises NoMethodError when not implemented in subclass' do
+        service = test_service_class.new(tools: tools)
+        params = { arguments: {} }
+
+        result = service.execute(request: nil, params: params)
+
+        expect(result[:isError]).to be true
+        expect(result[:content].first[:text]).to include('select_tool should be implemented in a subclass')
+      end
+    end
+
+    describe '#transform_arguments' do
+      let(:test_service_class) do
+        Class.new(described_class) do
+          register_version '1.0.0', {
+            description: 'Test tool',
+            input_schema: { type: 'object', properties: {}, required: [] }
+          }
+
+          def self.tool_name
+            'test_tool'
+          end
+
+          def select_tool(_args)
+            tools.first
+          end
+        end
+      end
+
+      it 'raises NoMethodError when not implemented in subclass' do
+        service = test_service_class.new(tools: tools)
+        params = { arguments: {} }
+
+        result = service.execute(request: nil, params: params)
+
+        expect(result[:isError]).to be true
+        expect(result[:content].first[:text]).to include('transform_arguments should be implemented in a subclass')
+      end
+    end
+  end
+end

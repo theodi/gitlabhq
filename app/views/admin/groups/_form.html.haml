@@ -1,27 +1,41 @@
-= form_for [:admin, @group], html: { class: "form-horizontal" } do |f|
-  - if @group.errors.any?
-    .alert.alert-danger
-      %span= @group.errors.full_messages.first
+= gitlab_ui_form_for [:admin, @group] do |f|
+  = form_errors(@group)
 
-  = render 'shared/group_form', f: f
+  = render ::Layouts::SettingsSectionComponent.new(_('Naming, visibility')) do |c|
+    - c.with_description do
+      = _('Update your group name, description, avatar, and visibility.')
+      = link_to _('Learn more about groups.'), help_page_path('user/group/_index.md')
+    - c.with_body do
+      = render 'shared/groups/group_name_and_path_fields', f: f
+      = render 'shared/group_form_description', f: f
+      .form-group.gl-form-group{ role: 'group' }
+        = f.label :avatar, _("Group avatar"), class: 'gl-block col-form-label'
+        = render 'shared/choose_avatar_button', f: f
+      = render 'shared/visibility_level', f: f, visibility_level: visibility_level, can_change_visibility_level: can_change_group_visibility_level?(@group), form_model: @group, with_label: false
 
-  .form-group.group-description-holder
-    = f.label :avatar, "Group avatar", class: 'control-label'
-    .col-sm-10
-      = render 'shared/choose_group_avatar_button', f: f
+  = render ::Layouts::SettingsSectionComponent.new(_('Permissions and group features')) do |c|
+    - c.with_description do
+      = _('Configure advanced permissions, Large File Storage, two-factor authentication, and CI/CD settings.')
+    - c.with_body do
+      = render_if_exists 'shared/repository_size_limit_setting_for_group', form: f, type: :group
+      = render_if_exists 'admin/namespace_plan', f: f
+      .form-group.gl-form-group{ role: 'group' }
+        = render 'shared/allow_request_access', form: f
+      = render 'groups/group_admin_settings', f: f
+      = render_if_exists 'namespaces/shared_runners_minutes_settings', group: @group, form: f
+
+  = render ::Layouts::SettingsSectionComponent.new(_('Admin notes')) do |c|
+    - c.with_body do
+      = render 'shared/admin/admin_note_form', f: f
 
   - if @group.new_record?
-    .form-group
-      .col-sm-2
-      .col-sm-10
-        .alert.alert-info
-          = render 'shared/group_tips'
-    .form-actions
-      = f.submit 'Create group', class: "btn btn-create"
-      = link_to  'Cancel', admin_groups_path, class: "btn btn-cancel"
+    .settings-sticky-footer.gl-flex.gl-gap-3
+      = f.submit _('Create group'), pajamas_button: true
+      = render Pajamas::ButtonComponent.new(href: admin_groups_path) do
+        = _('Cancel')
 
   - else
-    .form-actions
-      = f.submit 'Save changes', class: "btn btn-primary"
-      = link_to  'Cancel', admin_group_path(@group), class: "btn btn-cancel"
-
+    .settings-sticky-footer.gl-flex.gl-gap-3
+      = f.submit _('Save changes'), data: { testid: 'save-changes-button' }, pajamas_button: true
+      = render Pajamas::ButtonComponent.new(href: admin_group_path(@group)) do
+        = _('Cancel')

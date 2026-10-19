@@ -1,0 +1,10 @@
+.detail-page-description.milestone-detail.gl-py-4
+  %h2.gl-m-0{ data: { testid: "milestone-title-content" } }
+    = markdown_field(milestone, :title)
+
+  - if milestone.try(:description).present?
+    %div{ data: { testid: "milestone-description-content" } }
+      .description.md.gl-px-0.gl-pt-4{ class: ('js-task-list-container' if can?(current_user, :admin_milestone, milestone)), data: { lock_version: @milestone.lock_version } }
+        = markdown_field(milestone, :description)
+        -# This textarea is necessary for `task_list.js` to work.
+        %textarea.hidden.js-task-list-field{ data: { value: milestone.description, update_url: milestone_path(milestone, format: :json)} }

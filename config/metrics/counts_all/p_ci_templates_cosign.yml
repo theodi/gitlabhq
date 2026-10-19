@@ -1,0 +1,26 @@
+---
+key_path: redis_hll_counters.ci_templates.p_ci_templates_cosign
+description: Count of pipelines using the Cosign CI template.
+product_group: secrets_manager_application
+product_categories:
+- pipeline_composition
+value_type: number
+status: active
+milestone: "16.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/130339
+time_frame:
+- 28d
+- 7d
+data_source: internal_events
+data_category: optional
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate
+events:
+  - name: ci_template_included
+    unique: project.id
+    filter:
+      label: cosign
+      property: 'false'

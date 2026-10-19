@@ -1,0 +1,83 @@
+- breadcrumb_title _("Metrics and profiling")
+- page_title _("Metrics and profiling")
+- add_page_specific_style 'page_bundles/settings'
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_application_settings_metrics_and_profiling_pageload' } }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Metrics - Prometheus'),
+  id: 'js-prometheus-settings',
+  testid: 'prometheus-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Monitor GitLab with Prometheus.')
+  - c.with_body do
+    = render 'prometheus'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Metrics - Grafana'),
+  id: 'js-grafana-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Link to your Grafana instance.')
+    = link_to _('Learn more.'), help_page_path('administration/monitoring/performance/grafana_configuration.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'grafana'
+
+= render ::Layouts::SettingsBlockComponent.new(s_('AdminSettings|Active session history'),
+  id: 'js-pg-ash-settings',
+  testid: 'pg-ash-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('AdminSettings|Sample database activity so you can review what the database was doing in the past. Install pg_ash before you turn on sampling.')
+    = link_to _('Learn more.'), help_page_path('administration/monitoring/performance/_index.md', anchor: 'active-session-history'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'pg_ash'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Profiling - Performance bar'),
+  id: 'js-performance-bar-settings',
+  testid: 'performance-bar-settings-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Enable access to the performance bar for non-administrators in a given group.')
+    = link_to _('Learn more.'), help_page_path('administration/monitoring/performance/performance_bar.md', anchor: 'enable-the-performance-bar-for-non-administrators'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'performance_bar'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Usage statistics'),
+  id: 'js-usage-settings',
+  testid: 'usage-statistics-settings-content',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Enable or disable version check and Service Ping.')
+  - c.with_body do
+    = render 'usage'
+
+- if Feature.enabled?(:product_usage_data, :instance)
+  = render ::Layouts::SettingsBlockComponent.new(_('Event tracking'),
+    id: 'js-product-usage-data-settings',
+    testid: 'product-usage-data-settings-content',
+    expanded: expanded_by_default?) do |c|
+    - c.with_description do
+      - snowplow_link = link_to(_('Snowplow'), 'https://snowplow.io/', target: '_blank', rel: 'noopener noreferrer')
+      - help_link = link_to(_('Learn more.'), help_page_path('development/internal_analytics/internal_event_instrumentation/_index.md'), target: '_blank', rel: 'noopener noreferrer')
+      = safe_format(_('Control whether events are sent to GitLab or your own %{snowplow_link_start}Snowplow%{snowplow_link_end} collector. Only one can be selected at a time and enabling one will disable the other. %{help_link_start}Learn more.%{help_link_end}'),
+        tag_pair(snowplow_link, :snowplow_link_start, :snowplow_link_end), tag_pair(help_link, :help_link_start, :help_link_end))
+    - c.with_body do
+      = render 'product_usage_data'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Sentry'),
+  id: 'js-sentry-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure Sentry integration for error tracking')
+  - c.with_body do
+    = render 'sentry'
+
+- if Feature.enabled?(:logging_field_variant_versioning, :instance)
+  = render ::Layouts::SettingsBlockComponent.new(s_('AdminSettings|Logging fields'),
+    id: 'js-logging-field-naming-settings',
+    testid: 'logging-field-naming-settings-content',
+    expanded: expanded_by_default?) do |c|
+    - c.with_description do
+      = s_('AdminSettings|Control the version of the logging field naming')
+    - c.with_body do
+      = render 'logging_field_settings'

@@ -1,0 +1,609 @@
+<script>
+import { GlAlert, GlLoadingIcon, GlModal, GlLink, GlSprintf, GlToastMixin } from '@gitlab/ui';
+import PipelinesEmptyState from '~/ci/common/empty_state/pipelines_empty_state.vue';
+import PipelinesErrorState from '~/ci/common/empty_state/pipelines_error_state.vue';
+import { helpPagePath } from '~/helpers/help_page_helper';
+import { getParameterByName } from '~/lib/utils/url_utility';
+import PipelinesTable from '~/ci/common/pipelines_table.vue';
+import RunPipelineButton from '~/ci/common/run_pipeline_button.vue';
+import { PIPELINE_ID_KEY } from '~/ci/constants';
+import { DEFAULT_DEBOUNCE_AND_THROTTLE_MS } from '~/lib/utils/constants';
+import TablePagination from '~/vue_shared/components/pagination/table_pagination.vue';
+import { s__, __ } from '~/locale';
+import getPipelineCreationRequests from '~/ci/merge_requests/graphql/queries/get_pipeline_creation_requests.query.graphql';
+import pipelineCreationRequestsUpdatedSubscription from '~/ci/merge_requests/graphql/subscriptions/pipeline_creation_requests_updated.subscription.graphql';
+import { getIdFromGraphQLId, convertToGraphQLId } from '~/graphql_shared/utils';
+import { TYPENAME_CI_PIPELINE } from '~/graphql_shared/constants';
+import { createAlert } from '~/alert';
+import { HTTP_STATUS_UNAUTHORIZED } from '~/lib/utils/http_status';
+import { CREATING_PIPELINE_TOAST_MESSAGE } from '~/ci/pipeline_details/constants';
+import retryPipelineMutation from '~/ci/pipelines_page/graphql/mutations/retry_pipeline.mutation.graphql';
+import cancelPipelineMutation from '~/ci/pipelines_page/graphql/mutations/cancel_pipeline.mutation.graphql';
+import { MR_PIPELINE_TYPE_DETACHED } from '~/ci/merge_requests/constants';
+import {
+  dismissedCreationAlertsStorageKey,
+  hasAlertableFailureCountIncreased,
+  nextDismissedCreationRequestIds,
+} from '~/ci/merge_requests/utils';
+import LocalStorageSync from '~/vue_shared/components/local_storage_sync.vue';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import PipelineStore from './legacy_pipelines_store';
+import PipelinesService from './legacy_pipelines_service';
+import PipelinesMixin from './legacy_pipelines_mixin';
+
+export default {
+  name: 'LegacyPipelinesTableWrapper',
+  components: {
+    GlAlert,
+    GlLink,
+    GlLoadingIcon,
+    GlModal,
+    GlSprintf,
+    LocalStorageSync,
+    PipelinesEmptyState,
+    PipelinesErrorState,
+    PipelinesTable,
+    TablePagination,
+    RunPipelineButton,
+  },
+  mixins: [PipelinesMixin, GlToastMixin],
+  props: {
+    canCreatePipelineInTargetProject: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    sourceProjectFullPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    targetProjectFullPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    projectId: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    mergeRequestId: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    endpoint: {
+      type: String,
+      required: true,
+    },
+    isMergeRequestTable: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  apollo: {
+    pipelineCreationRequests: {
+      query: getPipelineCreationRequests,
+      variables() {
+        return {
+          fullPath: this.targetProjectFullPath,
+          mergeRequestIid: String(this.mergeRequestId),
+        };
+      },
+      context: {
+        featureCategory: 'continuous_integration',
+      },
+      skip() {
+        return !this.isMergeRequestTable || !this.mergeRequestId || !this.targetProjectFullPath;
+      },
+      update(data) {
+        if (data.project?.mergeRequest) {
+          const { pipelineCreationRequests, ...mergeRequest } = data.project.mergeRequest;
+          this.mergeRequest = mergeRequest;
+
+          return pipelineCreationRequests;
+        }
+        return [];
+      },
+      subscribeToMore: {
+        document: pipelineCreationRequestsUpdatedSubscription,
+        variables() {
+          return {
+            mergeRequestId: this.mergeRequest.id,
+          };
+        },
+        skip() {
+          return !this.isMergeRequestTable || !this.mergeRequest.id;
+        },
+        updateQuery: (previousResult, { subscriptionData }) => {
+          if (!subscriptionData.data?.ciPipelineCreationRequestsUpdated) return previousResult;
+
+          const updated = subscriptionData.data.ciPipelineCreationRequestsUpdated;
+          return {
+            ...previousResult,
+            project: {
+              ...previousResult.project,
+              mergeRequest: {
+                ...previousResult.project.mergeRequest,
+                pipelineCreationRequests: updated.pipelineCreationRequests,
+              },
+            },
+          };
+        },
+      },
+    },
+  },
+  data() {
+    const store = new PipelineStore();
+
+    return {
+      store,
+      state: store.state,
+      page: getParameterByName('page') || '1',
+      requestData: {},
+      modalId: 'create-pipeline-for-fork-merge-request-modal',
+      pipelineCreationRequests: [],
+      showCreationFailedAlert: false,
+      dismissedCreationRequestIds: [],
+      isCreatingPipeline: false,
+      loaderTimeout: null,
+      mergeRequest: {},
+    };
+  },
+
+  computed: {
+    shouldRenderTable() {
+      return !this.isLoading && this.state.pipelines.length > 0 && !this.hasError;
+    },
+    shouldRenderErrorState() {
+      return this.hasError && !this.isLoading;
+    },
+    shouldRenderEmptyState() {
+      return this.state.pipelines.length === 0 && !this.shouldRenderErrorState;
+    },
+    /**
+     * The "Run pipeline" button can only be rendered when:
+     * - In MR view -  we use `canCreatePipelineInTargetProject` for that purpose
+     * - If the latest pipeline has the `detached_merge_request_pipeline` flag
+     *
+     * @returns {Boolean}
+     */
+    canRenderPipelineButton() {
+      return this.latestPipelineDetachedFlag;
+    },
+    isForkMergeRequest() {
+      return this.sourceProjectFullPath !== this.targetProjectFullPath;
+    },
+    isLatestPipelineCreatedInTargetProject() {
+      const latest = this.state.pipelines[0];
+
+      return latest?.project?.full_path === `/${this.targetProjectFullPath}`;
+    },
+    shouldShowSecurityWarning() {
+      return (
+        this.canCreatePipelineInTargetProject &&
+        this.isForkMergeRequest &&
+        !this.isLatestPipelineCreatedInTargetProject
+      );
+    },
+    /**
+     * Checks if either `detached_merge_request_pipeline` or
+     * `merge_request_pipeline` are tru in the first
+     * object in the pipelines array.
+     *
+     * @returns {Boolean}
+     */
+    latestPipelineDetachedFlag() {
+      const latest = this.state.pipelines[0];
+      if (latest) {
+        if (
+          latest.flags &&
+          (latest.flags.detached_merge_request_pipeline || latest.flags.merge_request_pipeline)
+        ) {
+          return true;
+        }
+        if (
+          latest.mergeRequestEventType &&
+          latest.mergeRequestEventType === MR_PIPELINE_TYPE_DETACHED
+        ) {
+          return true;
+        }
+      }
+      return false;
+    },
+    hasInProgressCreationRequests() {
+      return this.requestLengthByStatus(this.pipelineCreationRequests, 'IN_PROGRESS') > 0;
+    },
+    dismissedCreationAlertsStorageKey() {
+      return dismissedCreationAlertsStorageKey(this.targetProjectFullPath, this.mergeRequestId);
+    },
+    showRunPipelineButtonLoader() {
+      return this.isMergeRequestTable
+        ? this.hasInProgressCreationRequests
+        : this.state.isRunningMergeRequestPipeline;
+    },
+    latestPipelineId() {
+      const latest = this.state.pipelines[0];
+      return latest ? latest.id : 0;
+    },
+  },
+  watch: {
+    pipelineCreationRequests: {
+      handler(newRequests, oldRequests) {
+        const hasInProgress = this.requestLengthByStatus(newRequests, 'IN_PROGRESS') > 0;
+
+        if (hasInProgress) {
+          this.startDebouncedPipelineLoader();
+        } else {
+          this.stopDebouncedPipelineLoader();
+        }
+
+        const hasSucceededRequests = this.hasSuccessCountIncreased(oldRequests, newRequests);
+        const hasFailedRequests = hasAlertableFailureCountIncreased(
+          oldRequests,
+          newRequests,
+          this.dismissedCreationRequestIds,
+        );
+
+        if (hasSucceededRequests) {
+          const createdPipelines = newRequests
+            .filter(
+              (req) =>
+                req.status === 'SUCCEEDED' &&
+                req.pipeline &&
+                this.latestPipelineId < getIdFromGraphQLId(req.pipeline.id),
+            )
+            .map((req) => ({ ...req.pipeline, id: getIdFromGraphQLId(req.pipeline.id) }));
+
+          this.store.storePipelines([...createdPipelines, ...this.state.pipelines]);
+        }
+
+        this.showCreationFailedAlert = hasFailedRequests;
+      },
+      deep: true,
+      immediate: true,
+    },
+  },
+  created() {
+    this.service = new PipelinesService(this.endpoint);
+    this.requestData = { page: this.page };
+  },
+  beforeUnmount() {
+    clearTimeout(this.loaderTimeout);
+  },
+  methods: {
+    // eslint-disable-next-line vue/no-unused-properties -- successCallback() is used by the `PipelinesMixin` mixin
+    successCallback(resp) {
+      // depending of the endpoint the response can either bring a `pipelines` key or not.
+      const pipelines = resp.data.pipelines || resp.data;
+
+      this.store.storePagination(resp.headers);
+      this.setCommonData(pipelines);
+      if (!this.hasInProgressCreationRequests) {
+        this.stopDebouncedPipelineLoader();
+      }
+
+      if (resp.headers?.['x-total']) {
+        const updatePipelinesEvent = new CustomEvent('update-pipelines-count', {
+          detail: { pipelineCount: resp.headers['x-total'] },
+        });
+
+        // notifiy to update the count in tabs
+        if (this.$el.parentElement) {
+          this.$el.parentElement.dispatchEvent(updatePipelinesEvent);
+        }
+      }
+    },
+    /**
+     * Runs a pipeline for the merge request when the "Run pipeline" button is
+     * clicked.
+     */
+    async runMergeRequestPipeline(options) {
+      if (this.state.isRunningMergeRequestPipeline) return; // Guards against duplicate submissions
+
+      this.store.toggleIsRunningMergeRequestPipeline(true);
+
+      try {
+        await this.service.runMRPipeline(options);
+
+        if (!options.isAsync) {
+          this.$toast.show(CREATING_PIPELINE_TOAST_MESSAGE);
+          this.updateTable();
+        }
+      } catch (e) {
+        const unauthorized = e.response?.status === HTTP_STATUS_UNAUTHORIZED;
+        let errorMessage = __(
+          'An error occurred while trying to run a new pipeline for this merge request.',
+        );
+
+        if (unauthorized) {
+          errorMessage = __('You do not have permission to run a pipeline on this branch.');
+        }
+
+        createAlert({
+          message: errorMessage,
+          primaryButton: {
+            text: __('Learn more'),
+            link: helpPagePath('ci/pipelines/merge_request_pipelines.md'),
+          },
+        });
+        Sentry.captureException(e);
+      } finally {
+        if (options.isAsync) {
+          // force pipeline creation requests to update before allowing
+          // users to create more pipelines by clicking repeatedly
+          try {
+            await this.$apollo.queries.pipelineCreationRequests.refetch();
+          } catch (e) {
+            Sentry.captureException(e);
+          } finally {
+            this.store.toggleIsRunningMergeRequestPipeline(false);
+          }
+        } else {
+          this.store.toggleIsRunningMergeRequestPipeline(false);
+        }
+      }
+    },
+    /**
+     * Triggers a pipeline run for the merge request and starts the debounced
+     * loader so the table shows a skeleton while the pipeline is created.
+     */
+    onClickRunPipeline() {
+      this.startDebouncedPipelineLoader();
+      this.runMergeRequestPipeline({
+        projectId: this.projectId,
+        mergeRequestId: this.mergeRequestId,
+        isAsync: this.isMergeRequestTable,
+      });
+    },
+    tryRunPipeline() {
+      if (!this.shouldShowSecurityWarning) {
+        this.onClickRunPipeline();
+      } else {
+        this.$refs.modal.show();
+      }
+    },
+    hasSuccessCountIncreased(previousRequests = [], currentRequests = []) {
+      const oldRequestsCount = this.requestLengthByStatus(previousRequests, 'SUCCEEDED');
+      const newRequestsCount = this.requestLengthByStatus(currentRequests, 'SUCCEEDED');
+
+      return newRequestsCount > oldRequestsCount;
+    },
+    dismissCreationFailedAlert() {
+      this.dismissedCreationRequestIds = nextDismissedCreationRequestIds(
+        this.pipelineCreationRequests,
+        this.dismissedCreationRequestIds,
+      );
+      this.showCreationFailedAlert = false;
+    },
+    requestLengthByStatus(requests, status) {
+      return requests.filter((request) => request.status === status).length;
+    },
+    startDebouncedPipelineLoader() {
+      if (this.loaderTimeout) {
+        clearTimeout(this.loaderTimeout);
+      }
+
+      this.loaderTimeout = setTimeout(() => {
+        this.isCreatingPipeline = true;
+      }, DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+    },
+    stopDebouncedPipelineLoader() {
+      if (this.loaderTimeout) {
+        clearTimeout(this.loaderTimeout);
+        this.loaderTimeout = null;
+      }
+
+      this.isCreatingPipeline = false;
+    },
+    async action({ pipeline, mutation, mutationType, defaultErrorMessage }) {
+      try {
+        const { data } = await this.$apollo.mutate({
+          mutation,
+          variables: {
+            id: pipeline.id,
+          },
+        });
+
+        const [errorMessage] = data[mutationType]?.errors ?? [];
+
+        if (errorMessage) {
+          createAlert({
+            message: defaultErrorMessage,
+          });
+          this.captureError(errorMessage);
+        }
+      } catch (error) {
+        this.captureError(error);
+      }
+    },
+    retryPipeline(pipeline) {
+      this.action({
+        pipeline: { ...pipeline, id: convertToGraphQLId(TYPENAME_CI_PIPELINE, pipeline.id) },
+        mutation: retryPipelineMutation,
+        mutationType: 'pipelineRetry',
+        defaultErrorMessage: s__('Pipelines|The pipeline could not be retried.'),
+      });
+    },
+    cancelPipeline(pipeline) {
+      this.action({
+        pipeline: { ...pipeline, id: convertToGraphQLId(TYPENAME_CI_PIPELINE, pipeline.id) },
+        mutation: cancelPipelineMutation,
+        mutationType: 'pipelineCancel',
+        defaultErrorMessage: s__('Pipelines|The pipeline could not be canceled.'),
+      });
+    },
+    captureError(exception) {
+      Sentry.captureException(exception);
+    },
+  },
+  pipelineIdKey: PIPELINE_ID_KEY,
+  modal: {
+    actionPrimary: {
+      text: s__('Pipeline|Run pipeline'),
+      attributes: {
+        variant: 'danger',
+      },
+    },
+    actionCancel: {
+      text: __('Cancel'),
+      attributes: {
+        variant: 'default',
+      },
+    },
+  },
+  i18n: {
+    runPipelinePopoverDescription: s__(
+      `Pipeline|To run a merge request pipeline, the jobs in the CI/CD configuration file %{ciDocsLinkStart}must be configured%{ciDocsLinkEnd} to run in merge request pipelines
+      and you must have %{permissionDocsLinkStart}sufficient permissions%{permissionDocsLinkEnd} in the source project.`,
+    ),
+    emptyStateTitle: s__('Pipelines|There are currently no pipelines.'),
+    pipelineCreationFailed: s__('Pipeline|Pipeline creation failed. Please try again.'),
+  },
+  mrPipelinesDocsPath: helpPagePath('ci/pipelines/merge_request_pipelines.md', {
+    anchor: 'prerequisites',
+  }),
+  userPermissionsDocsPath: helpPagePath('user/permissions.md', {
+    anchor: 'project-cicd',
+  }),
+  runPipelinesInTheParentProjectHelpPath: helpPagePath(
+    '/ci/pipelines/merge_request_pipelines.html',
+    {
+      anchor: 'run-pipelines-in-the-parent-project',
+    },
+  ),
+};
+</script>
+<template>
+  <div class="content-list pipelines">
+    <local-storage-sync
+      v-if="isMergeRequestTable"
+      v-model="dismissedCreationRequestIds"
+      :storage-key="dismissedCreationAlertsStorageKey"
+    />
+    <gl-alert
+      v-if="showCreationFailedAlert"
+      variant="danger"
+      @dismiss="dismissCreationFailedAlert"
+      >{{ $options.i18n.pipelineCreationFailed }}</gl-alert
+    >
+    <gl-loading-icon
+      v-if="isLoading"
+      :label="s__('Pipelines|Loading pipelines')"
+      size="lg"
+      class="gl-mt-5"
+    />
+
+    <pipelines-error-state v-else-if="shouldRenderErrorState" />
+    <pipelines-empty-state
+      v-else-if="shouldRenderEmptyState"
+      :title="$options.i18n.emptyStateTitle"
+    >
+      <template #description>
+        <gl-sprintf :message="$options.i18n.runPipelinePopoverDescription">
+          <template #ciDocsLink="{ content }">
+            <gl-link
+              :href="$options.mrPipelinesDocsPath"
+              target="_blank"
+              data-testid="mr-pipelines-docs-link"
+              >{{ content }}</gl-link
+            >
+          </template>
+          <template #permissionDocsLink="{ content }">
+            <gl-link
+              :href="$options.userPermissionsDocsPath"
+              target="_blank"
+              data-testid="user-permissions-docs-link"
+              >{{ content }}</gl-link
+            >
+          </template>
+        </gl-sprintf>
+      </template>
+
+      <template #actions>
+        <div class="gl-align-middle">
+          <run-pipeline-button
+            variant="confirm"
+            :is-loading="showRunPipelineButtonLoader"
+            :merge-request-id="mergeRequestId"
+            @run-pipeline="tryRunPipeline"
+          />
+        </div>
+      </template>
+    </pipelines-empty-state>
+
+    <div v-else-if="shouldRenderTable">
+      <div
+        v-if="canRenderPipelineButton"
+        class="gl-flex gl-w-full gl-justify-end gl-px-4 gl-pt-3 @md/panel:gl-hidden"
+      >
+        <run-pipeline-button
+          class="gl-mb-3 gl-mt-3 gl-w-full @md/panel:gl-w-auto"
+          :is-loading="showRunPipelineButtonLoader"
+          :merge-request-id="mergeRequestId"
+          @run-pipeline="tryRunPipeline"
+        />
+      </div>
+
+      <pipelines-table
+        :is-creating-pipeline="isCreatingPipeline"
+        :pipeline-id-type="$options.pipelineIdKey"
+        :pipelines="state.pipelines"
+        class="@lg/panel:-gl-mt-px"
+        @cancel-pipeline="cancelPipeline"
+        @job-action-executed="onRefreshPipelinesTable"
+        @retry-pipeline="retryPipeline"
+      >
+        <template v-if="canRenderPipelineButton" #table-header-actions>
+          <run-pipeline-button
+            :is-loading="showRunPipelineButtonLoader"
+            :merge-request-id="mergeRequestId"
+            @run-pipeline="tryRunPipeline"
+          />
+        </template>
+      </pipelines-table>
+    </div>
+
+    <gl-modal
+      v-if="canRenderPipelineButton || shouldRenderEmptyState"
+      :id="modalId"
+      ref="modal"
+      :modal-id="modalId"
+      :title="s__('Pipelines|Are you sure you want to run this pipeline?')"
+      :action-primary="$options.modal.actionPrimary"
+      :action-cancel="$options.modal.actionCancel"
+      @primary="onClickRunPipeline"
+    >
+      <p>
+        {{
+          s__(
+            'Pipelines|This pipeline will run code originating from a forked project merge request. This means that the code can potentially have security considerations like exposing CI variables.',
+          )
+        }}
+      </p>
+      <p>
+        {{
+          s__(
+            "Pipelines|It is recommended the code is reviewed thoroughly before running this pipeline with the parent project's CI resource.",
+          )
+        }}
+      </p>
+      <p>
+        {{
+          s__('Pipelines|If you are unsure, please ask a project maintainer to review it for you.')
+        }}
+      </p>
+      <gl-link :href="$options.runPipelinesInTheParentProjectHelpPath" target="_blank">
+        {{ s__('Pipelines|More Information') }}
+      </gl-link>
+    </gl-modal>
+
+    <table-pagination
+      v-if="shouldRenderPagination"
+      :change="onChangePage"
+      :page-info="state.pageInfo"
+    />
+  </div>
+</template>

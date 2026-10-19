@@ -1,0 +1,386 @@
+# Doctor Script — Scenarios
+
+## Table of Contents
+
+1. [Happy Path Scenarios](#1-happy-path-scenarios)
+2. [.ai/ Reference Scenarios](#2-ai-reference-scenarios)
+3. [.gitignore Scenarios](#3-gitignore-scenarios)
+4. [Forbidden Files Scenarios](#4-forbidden-files-scenarios)
+5. [Combined Scenarios](#5-combined-scenarios)
+6. [Argument Parsing Scenarios](#6-argument-parsing-scenarios)
+
+Each scenario describes a state of the repository and the expected doctor
+behavior. Scenarios are organized by check and by happy-path vs error cases.
+
+Scenario headings use `category: description` format. Cross-references
+within this file use the heading text (e.g., "same Given as
+`references: missing reference target`").
+
+---
+
+## 1. Happy Path Scenarios
+
+### happy: clean repo passes all checks
+
+**Given:** A repo with:
+
+- `AGENTS.md` at root
+- `AGENTS.md` references `.ai/git.md` and `.ai/testing.md`
+- `.ai/git.md` and `.ai/testing.md` exist
+- `.gitignore` contains `CLAUDE.local.md`, `AGENTS.local.md`, and `.ai/*`
+- No forbidden files staged or committed
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** All checks show `OK`, exit code 0
+
+### happy: subdirectory pairs also pass
+
+**Given:** Same as `happy: clean repo passes all checks`, plus:
+
+- `sub/AGENTS.md` exists
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** All checks show `OK`, exit code 0
+
+### happy: --help prints help and exits
+
+**When:** `scripts/ai_harness/doctor --help`
+
+**Then:** Help text printed to stdout (includes "Usage:", "--fix", "--help"),
+exit code 0, no checks run. `ParseArgv` sets `print_help: true` on the
+ok path. `HandleAction` sets `stdout_text` from `HelpText` and skips the
+`PerformDoctorChecks` sub-chain.
+
+### happy: gitignored tool files are fine
+
+**Given:** Same as `happy: clean repo passes all checks`, plus:
+
+- `.claude/rules/my-rule.md` exists on disk but is gitignored
+- `.opencode/config.json` exists on disk but is gitignored
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** All checks show `OK`, exit code 0 (gitignored files are not flagged)
+
+### happy: --fix on an already-valid repo is a no-op
+
+**Given:** Same as `happy: clean repo passes all checks` (everything valid)
+
+**When:** `scripts/ai_harness/doctor --fix`
+
+**Then:** All checks show `OK`, exit code 0, no files changed
+
+---
+
+## 2. .ai/ Reference Scenarios
+
+### references: missing reference target
+
+**Given:** `AGENTS.md` contains `.ai/missing.md`, file does not exist
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Reference check shows `FAIL` with ".ai/missing.md" and "does not exist",
+exit code 1
+
+### references: all references resolve
+
+**Given:** `AGENTS.md` references `.ai/git.md`, file exists
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Reference check shows `OK`
+
+### references: no references is valid
+
+**Given:** `AGENTS.md` contains no `.ai/*` references
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Reference check shows `OK`
+
+### references: subdirectory AGENTS.md resolves .ai/ relative to its own directory
+
+**Given:** `sub/AGENTS.md` references `.ai/git.md`. `sub/.ai/git.md` exists
+but `repo_root/.ai/git.md` does not.
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Reference check shows `OK` — `.ai/git.md` is resolved relative to
+`sub/`, finding `sub/.ai/git.md`. This allows directories containing
+`AGENTS.md` to be moved without breaking their `.ai/` references.
+
+### references: subdirectory AGENTS.md missing file-relative .ai/ reference
+
+**Given:** `sub/AGENTS.md` references `.ai/git.md`. Neither `sub/.ai/git.md`
+nor `repo_root/.ai/git.md` exists.
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Reference check shows `FAIL` with `sub/.ai/git.md` — the reference is
+resolved relative to `sub/` and displayed with the full relative path from the
+repo root.
+
+### references: --fix does not fix missing references
+
+**Given:** Same as `references: missing reference target`
+
+**When:** `scripts/ai_harness/doctor --fix`
+
+**Then:** Reference check still shows `FAIL` (not auto-fixable), exit code 1
+
+---
+
+## 3. .gitignore Scenarios
+
+### gitignore: missing CLAUDE.local.md entry
+
+**Given:** `.gitignore` has `AGENTS.local.md` and `.ai/*` but not
+`CLAUDE.local.md`
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Gitignore check shows `FAIL` with "CLAUDE.local.md", exit code 1
+
+### gitignore: missing AGENTS.local.md entry
+
+**Given:** `.gitignore` has `CLAUDE.local.md` and `.ai/*` but not
+`AGENTS.local.md`
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Gitignore check shows `FAIL` with "AGENTS.local.md", exit code 1
+
+### gitignore: missing .ai/* entry
+
+**Given:** `.gitignore` has `CLAUDE.local.md` and `AGENTS.local.md` but not
+`.ai/*`
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Gitignore check shows `FAIL` with ".ai/*", exit code 1
+
+### gitignore: .gitignore not found
+
+**Given:** No `.gitignore` file exists
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Gitignore check shows `FAIL`, exit code 1
+
+### gitignore: rooted entries do not satisfy the check
+
+**Given:** `.gitignore` contains `/CLAUDE.local.md` (rooted) instead of
+`CLAUDE.local.md` (non-rooted)
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Gitignore check shows `FAIL` with "CLAUDE.local.md", exit code 1.
+Rooted patterns only match at the repository root, but these entries must
+be non-rooted to match at all directory levels.
+
+### gitignore: --fix appends missing entries
+
+**Given:** `.gitignore` exists but is empty
+
+**When:** `scripts/ai_harness/doctor --fix`
+
+**Then:** All required entries appended (`CLAUDE.local.md`,
+`AGENTS.local.md`, `.ai/*`), gitignore check shows `FIXED`
+
+---
+
+## 4. Forbidden Files Scenarios
+
+### forbidden: .claude/rules/ file committed
+
+**Given:** `.claude/rules/my-rule.md` is tracked by git (staged or committed)
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL` with the file path, exit code 1
+
+### forbidden: file in allowlist YAML is allowed
+
+**Given:** A file matching an entry in `config.yml` is
+tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `OK` — the file is intentionally
+committed project content.
+
+### forbidden: files under an allowlisted directory prefix are allowed
+
+**Given:** Multiple files under a directory listed as a prefix entry in
+`config.yml` (e.g. `.claude/skills/glab/`) are tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `OK` — the directory prefix matches
+every file beneath it.
+
+### forbidden: allowed and personal files mixed
+
+**Given:** Both an allowlisted file and a non-allowlisted forbidden file
+are tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL` listing only the
+non-allowlisted file.
+
+### forbidden: file outside allowlist YAML is committed
+
+**Given:** A `.claude/skills/` file not in `config.yml`
+is tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL`, exit code 1
+
+### forbidden: .claude/settings.json committed
+
+**Given:** `.claude/settings.json` is tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL`, exit code 1
+
+### forbidden: .opencode/ file committed
+
+**Given:** `.opencode/config.json` is tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL`, exit code 1
+
+### forbidden: .gitlab/duo/chat-rules.md committed
+
+**Given:** `.gitlab/duo/chat-rules.md` is tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL`, exit code 1
+
+### forbidden: .gitlab/duo/mcp.json committed
+
+**Given:** `.gitlab/duo/mcp.json` is tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL`, exit code 1
+
+### forbidden: AGENTS.local.md force-committed at root
+
+**Given:** `AGENTS.local.md` is tracked by git (force-added with
+`git add --force`) at the repo root
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL` with the file path, exit code 1.
+This prevents personal local overrides from being accidentally shared.
+
+### forbidden: CLAUDE.local.md force-committed at root
+
+**Given:** `CLAUDE.local.md` is tracked by git at the repo root
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL`, exit code 1.
+
+### forbidden: AGENTS.local.md force-committed in subdirectory
+
+**Given:** `sub/AGENTS.local.md` is tracked by git
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL` with the file path, exit code 1.
+The `**/AGENTS.local.md` pattern catches local files at any depth.
+
+### forbidden: gitignored files are not flagged
+
+**Given:** `.claude/rules/my-rule.md` exists on disk but is NOT tracked
+by git (gitignored or in `.git/info/exclude`)
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `OK`
+
+### forbidden: other .claude/ paths are detected
+
+**Given:** The following files are each tracked by git:
+
+- `.claude/agents/my-agent.md`
+- `.claude/commands/my-cmd.md`
+- `.claude/settings.local.json`
+- `.claude/settings.local.jsonc`
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Forbidden files check shows `FAIL` listing all four file paths,
+exit code 1. (This exercises the `.claude/**` glob beyond the specific
+subdirectories covered by the per-file scenarios above.)
+
+### forbidden: --fix does NOT fix forbidden files
+
+**Given:** Same as `forbidden: .claude/rules/ file committed`
+
+**When:** `scripts/ai_harness/doctor --fix`
+
+**Then:** Forbidden files check still shows `FAIL` (hard fail, not auto-fixable),
+exit code 1
+
+---
+
+## 5. Combined Scenarios
+
+### combined: multiple failures reported
+
+**Given:** `AGENTS.md` references `.ai/missing.md` (which does not exist)
+AND .gitignore is missing entirely
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** Both .ai/ reference check and gitignore check show `FAIL`, exit
+code 1. All three checks run — the chain does not short-circuit on
+individual failures.
+
+### combined: unmatched result raises error
+
+**Given:** The ROP chain produces a `Result` variant that does not match
+any arm in `Main.main`'s pattern match (e.g., a new `Result.err` message
+type is added to `ParseArgv` but not handled in Main)
+
+**When:** `Main.main` pattern-matches the final Result
+
+**Then:** `Gitlab::Fp::UnmatchedResultError` is raised
+
+---
+
+## 6. Argument Parsing Scenarios
+
+### args: unknown option
+
+**When:** `scripts/ai_harness/doctor --unknown`
+
+**Then:** Error message printed to stderr (includes "Unknown option: --unknown"
+and the help text), exit code 1, no checks run. `ParseArgv` returns
+`Result.err(Messages::InvalidArguments)` with `stderr_text` containing
+both the error and the help text.
+
+### args: --fix and --help together
+
+**When:** `scripts/ai_harness/doctor --fix --help`
+
+**Then:** Help text printed to stdout, exit code 0, no checks run. `--help`
+takes precedence over `--fix`. `ParseArgv` sets `print_help: true`.
+
+### args: no arguments (default)
+
+**When:** `scripts/ai_harness/doctor`
+
+**Then:** `ParseArgv` adds `fix: false, print_help: false` to context.
+`HandleAction` delegates to `PerformDoctorChecks` sub-chain.

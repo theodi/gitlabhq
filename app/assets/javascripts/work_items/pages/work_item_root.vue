@@ -1,0 +1,83 @@
+<script>
+import { GlAlert, GlToastMixin } from '@gitlab/ui';
+import { visitUrl } from '~/lib/utils/url_utility';
+import { s__, sprintf } from '~/locale';
+import ZenMode from '~/zen_mode';
+import WorkItemDetail from 'ee_else_ce/work_items/components/work_item_detail.vue';
+import { I18N_WORK_ITEM_ERROR_DELETING, WORK_ITEM_TYPE_NAME_EPIC } from '../constants';
+import deleteWorkItemMutation from '../graphql/delete_work_item.mutation.graphql';
+
+export default {
+  name: 'WorkItemRoot',
+  components: {
+    GlAlert,
+    WorkItemDetail,
+  },
+  mixins: [GlToastMixin],
+  inject: { issuesListPath: 'issuesListPath', epicsListPath: { default: '' } },
+  props: {
+    iid: {
+      type: String,
+      required: true,
+    },
+    rootPageFullPath: {
+      type: String,
+      required: true,
+    },
+  },
+  data() {
+    return {
+      error: '',
+    };
+  },
+  mounted() {
+    this.ZenMode = new ZenMode();
+  },
+  methods: {
+    deleteWorkItem({ workItemType, workItemId: id }) {
+      this.$apollo
+        .mutate({
+          mutation: deleteWorkItemMutation,
+          variables: {
+            input: { id },
+          },
+        })
+        .then(({ data: { workItemDelete, errors } }) => {
+          if (errors?.length) {
+            throw new Error(errors[0].message);
+          }
+
+          if (workItemDelete?.errors.length) {
+            throw new Error(workItemDelete.errors[0]);
+          }
+
+          const msg = sprintf(s__('WorkItem|%{workItemType} deleted'), {
+            workItemType,
+          });
+          this.$toast.show(msg);
+          visitUrl(
+            workItemType === WORK_ITEM_TYPE_NAME_EPIC ? this.epicsListPath : this.issuesListPath,
+          );
+        })
+        .catch((e) => {
+          this.error =
+            e.message ||
+            sprintf(I18N_WORK_ITEM_ERROR_DELETING, {
+              workItemType: this.workItemType,
+            });
+        });
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <gl-alert v-if="error" variant="danger" @dismiss="error = ''">{{ error }}</gl-alert>
+    <work-item-detail
+      :work-item-full-path="rootPageFullPath"
+      :work-item-iid="iid"
+      @delete-work-item="deleteWorkItem($event)"
+    />
+  </div>
+</template>

@@ -1,0 +1,39 @@
+-# @project is present when viewing Project's milestone
+- project = @project || issuable.project
+- group = milestone_issuable_group(issuable)
+- container = project || milestone_issuable_group(issuable)
+- labels = issuable.labels
+- assignees = issuable.assignees
+- is_group_epic = issuable.respond_to?(:group_epic_work_item?) && issuable.group_epic_work_item?
+- is_merge_request = issuable.is_a?(MergeRequest)
+- issuable_type = is_merge_request ? :merge_requests : (is_group_epic ? :epics : :issues)
+- url_container = is_group_epic ? group : container
+- issuable_type_args = [url_container, issuable_type]
+- issuable_icon = is_merge_request ? 'merge-request' : issuable.work_item_type.icon_name
+
+%li{ class: '!gl-border-b-section' }
+  %span
+    = sprite_icon(issuable_icon)
+    - if show_project_name && project
+      %strong #{project.name} &middot;
+    - if group
+      %strong #{group.name} &middot;
+    - if issuable.is_a?(Issue)
+      = confidential_icon(issuable)
+    = link_to issuable.title, ::Gitlab::UrlBuilder.build(issuable), title: issuable.title, class: "gl-text-default gl-break-words"
+
+  .issuable-detail
+    = link_to ::Gitlab::UrlBuilder.build(issuable), class: 'issue-link' do
+      %span.issuable-number= issuable.to_reference
+
+    - labels.each do |label|
+      = render_label(label.present(issuable_subject: container), link: polymorphic_path(issuable_type_args, { milestone_title: @milestone.title, label_name: label.title, state: 'all' }))
+
+    %span.assignee-icon
+      - assignees.each do |assignee|
+        = link_to polymorphic_path(issuable_type_args, { milestone_title: @milestone.title, assignee_id: assignee.id, state: 'all' }) do
+          = image_tag(avatar_icon_for_user(assignee, 16), class: "avatar s16", title: _("Assigned to %{assignee_name}") % { assignee_name: assignee.name }, data: { container: 'body', toggle: 'tooltip', placement: 'top' })
+
+    = render_if_exists "shared/milestones/issuable_weight", issuable: issuable
+    = render_if_exists "shared/milestones/issuable_status", issuable: issuable
+

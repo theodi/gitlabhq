@@ -1,0 +1,15 @@
+@import 'mixins_and_variables_and_functions';
+
+$stroke-size: 1px;
+
+.right-arrow {
+  height: $stroke-size;
+  min-width: $gl-spacing-scale-5;
+}
+
+.right-arrow-head {
+  top: -$gl-spacing-scale-2;
+  left: calc(100% - #{$gl-spacing-scale-3} - #{2 * $stroke-size});
+  border-width: 0 $stroke-size $stroke-size 0;
+  transform: rotate(-45deg);
+}

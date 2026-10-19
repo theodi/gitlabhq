@@ -1,0 +1,52 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: YouTrack
+description: Configure the YouTrack integration to link a GitLab project to a YouTrack instance and reference YouTrack issues in GitLab.
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+JetBrains [YouTrack](https://www.jetbrains.com/youtrack/) is a web-based issue tracking and project
+management platform.
+
+You can configure YouTrack as an
+[external issue tracker](../../../integration/external-issue-tracker.md) in GitLab.
+
+To turn on the YouTrack integration in a project:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **Integrations**.
+1. Select **YouTrack**.
+1. Under **Enable integration**, select the **Active** checkbox.
+1. Fill in the required fields:
+   - **Project URL**: The URL to the project in YouTrack.
+   - **Issue URL**: The URL to view an issue in the YouTrack project.
+     The URL must contain `:id`. GitLab replaces `:id` with the issue number.
+1. Optional. Select **Test settings**.
+1. Select **Save changes**.
+
+After you configure and turn on YouTrack, a link appears on the GitLab
+project pages. This link takes you to the appropriate YouTrack project.
+
+You can also turn off [GitLab internal issue tracking](../issues/_index.md) in this project.
+For more information about the steps and consequences of turning off GitLab issues, see:
+
+- [Change project visibility](../../public_access.md#change-project-visibility).
+- [Configure project features and permissions](../settings/_index.md#configure-project-features-and-permissions).
+
+## Reference YouTrack issues in GitLab
+
+You can reference issues in YouTrack using `<PROJECT>-<ID>` (for example `YT-101`, `Api_32-143`, or `gl-030`) where:
+
+- `<PROJECT>` starts with a letter and is followed by letters, numbers, or underscores.
+- `<ID>` is a number.
+
+References to `<PROJECT>-<ID>` in merge requests, commits, or comments are automatically linked
+to the YouTrack issue URL.

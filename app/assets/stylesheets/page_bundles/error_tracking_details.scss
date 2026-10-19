@@ -1,0 +1,20 @@
+@import 'page_bundles/mixins_and_variables_and_functions';
+
+.stacktrace {
+  .file-title {
+    svg {
+      vertical-align: middle;
+      top: -1px;
+    }
+  }
+
+  .file-title-name {
+    &.limited-width {
+      max-width: 80%;
+    }
+  }
+
+  .line_content.old::before {
+    content: none !important;
+  }
+}

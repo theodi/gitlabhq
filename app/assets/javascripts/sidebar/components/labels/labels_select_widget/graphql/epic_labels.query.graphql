@@ -1,0 +1,15 @@
+#import "~/graphql_shared/fragments/label.fragment.graphql"
+
+query epicLabels($fullPath: ID!, $iid: ID) {
+  namespace: group(fullPath: $fullPath) {
+    id
+    issuable: epic(iid: $iid) {
+      id
+      labels {
+        nodes {
+          ...Label
+        }
+      }
+    }
+  }
+}

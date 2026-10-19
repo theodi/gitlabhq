@@ -1,0 +1,18 @@
+description: "Execute input rule"
+category: default
+action: execute_input_rule
+extra_properties:
+identifiers:
+product_group: remote_development
+product_categories:
+- wiki
+- text_editors
+milestone: "14.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/61248
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`content_editor`"

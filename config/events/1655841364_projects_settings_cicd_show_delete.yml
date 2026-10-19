@@ -1,0 +1,18 @@
+---
+description: Delete a Project-level Secure Files via the CI/CD settings page
+category: projects:settings:ci_cd:show
+action: delete
+extra_properties:
+identifiers:
+  - project
+  - user
+  - namespace
+product_group: secrets_manager_application
+product_categories:
+- secrets_management
+milestone: "15.2"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/90449
+tiers:
+  - free
+  - premium
+  - ultimate

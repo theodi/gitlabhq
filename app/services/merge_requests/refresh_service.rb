@@ -1,110 +1,478 @@
+# frozen_string_literal: true
+
 module MergeRequests
   class RefreshService < MergeRequests::BaseService
+    include Gitlab::Utils::StrongMemoize
+
+    attr_reader :push
+
+    # Staggered delays for auto-merge worker enqueue.
+    # Each MR gets a delay of index * INTERVAL seconds, spaced 3 seconds apart
+    # (0s, 3s, 6s, ..., 57s) to avoid workers from the same or overlapping push
+    # events landing at the same time. Capped at 20 MRs per push event; remaining
+    # MRs are picked up in subsequent rounds as merges trigger new pushes.
+    AUTO_MERGE_DELAY_INTERVAL = 3
+    AUTO_MERGE_BATCH_LIMIT = 20
+
     def execute(oldrev, newrev, ref)
-      return true unless Gitlab::Git.branch_ref?(ref)
+      @push = Gitlab::Git::Push.new(@project, oldrev, newrev, ref)
+      return true unless @push.branch_push?
 
-      @oldrev, @newrev = oldrev, newrev
-      @branch_name = Gitlab::Git.ref_name(ref)
-      @fork_merge_requests = @project.fork_merge_requests.opened
-      @commits = @project.repository.commits_between(oldrev, newrev)
+      refresh_merge_requests!
+    end
 
-      close_merge_requests
+    private
+
+    def refresh_merge_requests!
+      # n + 1: https://gitlab.com/gitlab-org/gitlab-foss/issues/60289
+      Gitlab::GitalyClient.allow_n_plus_1_calls { find_new_commits }
+      # Be sure to close outstanding MRs before reloading them to avoid generating an
+      # empty diff during a manual merge
+      close_upon_missing_source_branch_ref
+
+      post_merge_manually_merged
+
+      link_forks_lfs_objects
+
       reload_merge_requests
-      execute_mr_web_hooks
-      comment_mr_with_commits
+
+      merge_requests_for_source_branch.each do |mr|
+        outdate_suggestions(mr)
+        abort_auto_merges(mr)
+        mark_pending_todos_done(mr)
+      end
+
+      abort_ff_merge_requests_with_auto_merges
+
+      cache_merge_requests_closing_issues
+
+      merge_requests_for_source_branch.each do |mr|
+        # Leave a system note if a branch was deleted/added
+        comment_mr_branch_presence_changed(mr) if branch_added_or_removed?
+
+        notify_about_push(mr)
+
+        mark_mr_as_draft_from_commits(mr)
+        merge_request_activity_counter.track_mr_including_ci_config(user: mr.author, merge_request: mr)
+      end
+
+      execute_async_workers
 
       true
     end
 
-    private
+    def branch_added_or_removed?
+      strong_memoize(:branch_added_or_removed) do
+        @push.branch_added? || @push.branch_removed?
+      end
+    end
+
+    def close_upon_missing_source_branch_ref
+      # MergeRequest#reload_diff ignores not opened MRs. This means it won't
+      # create an `empty` diff for `closed` MRs without a source branch, keeping
+      # the latest diff state as the last _valid_ one.
+      merge_requests_for_source_branch.reject(&:source_branch_exists?).each do |mr|
+        Gitlab::AppLogger.info(
+          message: 'Closing merge request due to missing source branch',
+          merge_request_id: mr.id,
+          merge_request_iid: mr.iid,
+          project_id: mr.project_id,
+          source_branch: mr.source_branch
+        )
+
+        MergeRequests::CloseService
+          .new(project: mr.target_project, current_user: @current_user)
+          .execute(mr)
+      end
+    end
 
     # Collect open merge requests that target same branch we push into
     # and close if push to master include last commit from merge request
     # We need this to close(as merged) merge requests that were merged into
     # target branch manually
-    def close_merge_requests
+    # rubocop: disable CodeReuse/ActiveRecord
+    def post_merge_manually_merged
       commit_ids = @commits.map(&:id)
-      merge_requests = @project.merge_requests.opened.where(target_branch: @branch_name).to_a
-      merge_requests = merge_requests.select(&:last_commit)
+      merge_requests = post_merge_candidates
+        .where(target_branch: @push.branch_name).to_a
+        # Filter on the cheap persisted columns (diff_head_sha, diff state) first so the
+        # Gitaly-backed `diff_head_commit` lookup only runs for the handful of MRs whose
+        # head is actually part of this push, instead of every open MR targeting the branch.
+        .select do |merge_request|
+          commit_ids.include?(merge_request.diff_head_sha) &&
+            merge_request.merge_request_diff.state != 'empty'
+        end
+        .select(&:diff_head_commit)
+      merge_requests = filter_merge_requests(merge_requests)
 
-      merge_requests = merge_requests.select do |merge_request|
-        commit_ids.include?(merge_request.last_commit.id)
+      return if merge_requests.empty?
+
+      analyzer = Gitlab::BranchPushMergeCommitAnalyzer.new(
+        @commits.reverse,
+        relevant_commit_ids: merge_requests.map(&:diff_head_sha)
+      )
+
+      merge_commit_sha_by_diff_head_sha = merge_requests
+        .map(&:diff_head_sha)
+        .uniq
+        .index_with { |diff_head_sha| analyzer.get_merge_commit(diff_head_sha) }
+
+      merge_commit_shas = merge_commit_sha_by_diff_head_sha.values.compact.uniq
+      commits_by_sha = @project.repository.commits_by(oids: merge_commit_shas).index_by(&:id)
+
+      first_error = nil
+
+      merge_requests.each do |merge_request|
+        sha = merge_commit_sha_by_diff_head_sha[merge_request.diff_head_sha]
+        merge_request.merge_commit_sha = sha
+        merge_request.merged_commit_sha = sha
+
+        # Look for a merged MR that includes the SHA to associate it with
+        # the MR we're about to mark as merged.
+        # Only the merged MRs without the event source would be considered
+        # to avoid associating it with other MRs that we may have marked as merged here.
+        source_merge_request = MergeRequestsFinder.new(
+          @current_user,
+          project_id: @project.id,
+          merged_without_event_source: true,
+          state: 'merged',
+          sort: 'merged_at',
+          commit_sha: sha
+        ).execute.first
+
+        source = source_merge_request || commits_by_sha[sha]
+
+        MergeRequests::PostMergeService
+          .new(project: merge_request.target_project, current_user: @current_user)
+          .execute(merge_request, source)
+      rescue StandardError => e
+        # One failing merge request must not leave the rest of the batch
+        # unprocessed. Re-raised after the loop so the worker retries the ones
+        # still open; an MR that failed after mark_as_merged is not retried.
+        Gitlab::ErrorTracking.track_exception(
+          e,
+          { merge_request_id: merge_request.id, project_id: @project.id },
+          { merged_manually_detection: 'post_merge_batch' }
+        )
+        first_error ||= e
       end
 
+      raise first_error if first_error
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
 
-      merge_requests.uniq.select(&:source_project).each do |merge_request|
-        MergeRequests::MergeService.
-          new(merge_request.target_project, @current_user).
-          execute(merge_request, nil)
-      end
+    def post_merge_candidates
+      @project.merge_requests.opened
+        .preload_project_and_latest_diff
+        .preload_merge_data(@project)
     end
 
-    def force_push?
-      Gitlab::ForcePushCheck.force_push?(@project, @oldrev, @newrev)
+    # Link LFS objects that exists in forks but does not exists in merge requests
+    # target project
+    def link_forks_lfs_objects
+      return unless @push.branch_updated?
+
+      merge_requests_for_forks.find_each do |mr|
+        LinkLfsObjectsService
+          .new(project: mr.target_project)
+          .execute(mr, oldrev: @push.oldrev, newrev: @push.newrev)
+      end
     end
 
     # Refresh merge request diff if we push to source or target branch of merge request
     # Note: we should update merge requests from forks too
     def reload_merge_requests
-      merge_requests = @project.merge_requests.opened.by_branch(@branch_name).to_a
-      merge_requests += @fork_merge_requests.by_branch(@branch_name).to_a
-      merge_requests = filter_merge_requests(merge_requests)
+      merge_requests = @project.merge_requests.opened
+        .by_source_or_target_branch(@push.branch_name)
+        .preload_project_and_latest_diff
+        .preload_merge_data(@project)
 
-      merge_requests.each do |merge_request|
+      merge_requests_from_forks = merge_requests_for_forks
+        .preload_project_and_latest_diff
+        .preload_merge_data(@project)
 
-        if merge_request.source_branch == @branch_name || force_push?
-          merge_request.reload_code
-          merge_request.mark_as_unchecked
-        else
-          mr_commit_ids = merge_request.commits.map(&:id)
-          push_commit_ids = @commits.map(&:id)
-          matches = mr_commit_ids & push_commit_ids
+      merge_requests_array = merge_requests.to_a + merge_requests_from_forks.to_a
+      filtered_merge_requests = filter_merge_requests(merge_requests_array)
 
-          if matches.any?
-            merge_request.reload_code
-            merge_request.mark_as_unchecked
-          else
-            merge_request.mark_as_unchecked
-          end
+      recheck_merge_requests_batched(filtered_merge_requests)
+
+      # Upcoming method calls need the refreshed version of
+      # @source_merge_requests diffs (for MergeRequest#commit_shas for instance).
+      merge_requests_for_source_branch(reload: true)
+    end
+
+    def recheck_merge_requests_batched(filtered_merge_requests)
+      source_branch_or_force_pushed_mrs = []
+      all_mr_ids = []
+      diff_ids_to_reload = batched_diff_ids_to_reload(filtered_merge_requests)
+
+      filtered_merge_requests.each do |merge_request|
+        all_mr_ids << merge_request.id
+
+        if branch_and_project_match?(merge_request) || @push.force_push?
+          merge_request.reload_diff(current_user)
+          schedule_duo_code_review(merge_request) if branch_and_project_match?(merge_request)
+          source_branch_or_force_pushed_mrs << merge_request
+        elsif diff_ids_to_reload.include?(merge_request.merge_request_diff.id)
+          merge_request.reload_diff(current_user)
         end
       end
+
+      MergeRequest.batch_mark_as_unchecked(all_mr_ids, mrs_to_trigger: source_branch_or_force_pushed_mrs)
+
+      # Clear existing merge error if the push were directed at the
+      # source branch. Clearing the error when the target branch
+      # changes will hide the error from the user.
+      MergeRequest.batch_clear_merge_error(source_branch_or_force_pushed_mrs.map(&:id))
+
+      enqueue_auto_merge_for_unchecked(filtered_merge_requests)
     end
 
-    # Add comment about pushing new commits to merge requests
-    def comment_mr_with_commits
-      merge_requests = @project.origin_merge_requests.opened.where(source_branch: @branch_name).to_a
-      merge_requests += @fork_merge_requests.where(source_branch: @branch_name).to_a
-      merge_requests = filter_merge_requests(merge_requests)
+    def enqueue_auto_merge_for_unchecked(merge_requests)
+      auto_merge_mrs = merge_requests.select(&:auto_merge_enabled?)
+      return if auto_merge_mrs.empty?
 
-      merge_requests.each do |merge_request|
-        mr_commit_ids = Set.new(merge_request.commits.map(&:id))
+      auto_merge_mrs.first(AUTO_MERGE_BATCH_LIMIT).each_with_index do |mr, index|
+        delay = index * AUTO_MERGE_DELAY_INTERVAL
+        AutoMergeProcessWorker.perform_in(delay.seconds, { 'merge_request_id' => mr.id })
+      end
+    end
 
-        new_commits, existing_commits = @commits.partition do |commit|
-          mr_commit_ids.include?(commit.id)
+    # A merge request the push only reaches through its target branch needs its diff
+    # rebuilt when the push carries commits that diff already contains - the stacked
+    # case. Resolving the whole set in one query, rather than asking each merge
+    # request in turn, keeps that cost independent of the merge request count.
+    def batched_diff_ids_to_reload(filtered_merge_requests)
+      # Force pushes reload every diff unconditionally, so nothing needs looking up.
+      return Set.new if @push.force_push?
+
+      diff_ids = filtered_merge_requests
+        .reject { |merge_request| branch_and_project_match?(merge_request) }
+        .filter_map { |merge_request| merge_request.merge_request_diff.id }
+
+      MergeRequestDiff.ids_including_any_commits(diff_ids, push_commit_ids, project: @project)
+    end
+
+    def push_commit_ids
+      @push_commit_ids ||= @commits.map(&:id)
+    end
+
+    def branch_and_project_match?(merge_request)
+      merge_request.source_project == @project &&
+        merge_request.source_branch == @push.branch_name
+    end
+
+    def outdate_suggestions(merge_request)
+      outdate_service.execute(merge_request)
+    end
+
+    def outdate_service
+      @outdate_service ||= Suggestions::OutdateService.new
+    end
+
+    def abort_auto_merges?(merge_request)
+      merge_request.merge_params.with_indifferent_access[:sha] != @push.newrev
+    end
+
+    def abort_auto_merges(merge_request)
+      return unless abort_auto_merges?(merge_request)
+
+      learn_more_url = Rails.application.routes.url_helpers.help_page_url(
+        'ci/pipelines/merge_trains.md',
+        anchor: 'merge-request-dropped-from-the-merge-train'
+      )
+
+      abort_auto_merge(merge_request, "the source branch was updated. [Learn more](#{learn_more_url}).")
+    end
+
+    def abort_ff_merge_requests_with_auto_merges
+      return unless @project.ff_merge_must_be_possible?
+
+      # Aborting exists because a moved target branch normally leaves the author with a
+      # manual rebase that a pending auto-merge cannot perform for them. With automatic
+      # rebase before merge, that rebase happens as part of the merge, so the pending
+      # auto-merge stays valid.
+      if @project.project_setting.automatic_rebase_enabled? &&
+          Feature.enabled?(:retain_auto_merge_with_automatic_rebase, @project)
+        return
+      end
+
+      merge_requests_with_auto_merge_enabled_to(@push.branch_name).each do |merge_request|
+        unless merge_request.auto_merge_strategy == AutoMergeService::STRATEGY_MERGE_WHEN_CHECKS_PASS
+          next
         end
 
-        SystemNoteService.add_commits(merge_request, merge_request.project,
-                                      @current_user, new_commits,
-                                      existing_commits, @oldrev)
+        next unless merge_request.should_be_rebased?
+
+        abort_auto_merge_with_todo(merge_request, 'the target branch was updated.')
       end
     end
 
-    # Call merge request webhook with update branches
-    def execute_mr_web_hooks
-      merge_requests = @project.origin_merge_requests.opened
-        .where(source_branch: @branch_name)
-        .to_a
-      merge_requests += @fork_merge_requests.where(source_branch: @branch_name)
-        .to_a
-      merge_requests = filter_merge_requests(merge_requests)
+    def merge_requests_with_auto_merge_enabled_to(target_branch)
+      @project
+        .merge_requests
+        .by_target_branch(target_branch)
+        .with_auto_merge_enabled
+    end
 
-      merge_requests.each do |merge_request|
-        execute_hooks(merge_request, 'update')
+    def mark_pending_todos_done(merge_request)
+      todo_service.merge_request_push(merge_request, @current_user)
+    end
+
+    def find_new_commits
+      if @push.branch_added?
+        @commits = []
+
+        merge_request = merge_requests_for_source_branch.first
+        return unless merge_request
+
+        begin
+          # Since any number of commits could have been made to the restored branch,
+          # find the common root to see what has been added.
+          common_ref = @project.repository.merge_base(merge_request.diff_head_sha, @push.newrev)
+          # If a commit no longer exists in this repo, the call may raise an error.
+          @commits = @project.repository.commits_between(common_ref, @push.newrev) if common_ref
+        rescue StandardError
+        end
+      elsif @push.branch_removed?
+        # No commits for a deleted branch.
+        @commits = []
+      else
+        @commits = @project.repository.commits_between(@push.oldrev, @push.newrev)
       end
     end
+
+    # Add comment about branches being deleted or added to merge requests
+    def comment_mr_branch_presence_changed(merge_request)
+      presence = @push.branch_added? ? :add : :delete
+
+      SystemNoteService.change_branch_presence(
+        merge_request, merge_request.project, @current_user,
+        :source, @push.branch_name, presence)
+    end
+
+    # Add comment about pushing new commits to merge requests and send notification emails
+    #
+    def notify_about_push(merge_request)
+      return unless @commits.present?
+
+      mr_commit_ids = Set.new(merge_request.commit_shas)
+
+      new_commits, existing_commits = @commits.partition do |commit|
+        mr_commit_ids.include?(commit.id)
+      end
+
+      SystemNoteService.add_commits(
+        merge_request, merge_request.project,
+        @current_user, new_commits,
+        existing_commits, @push.oldrev
+      )
+
+      new_commits_data, total_new = prepare_commits_for_notification(new_commits)
+      existing_commits_data, total_existing = prepare_commits_for_notification(existing_commits, first_and_last_only: true)
+
+      MergeRequests::Refresh::NotifyAboutPushWorker.perform_async(
+        merge_request.id,
+        @current_user.id,
+        new_commits_data,
+        total_new,
+        existing_commits_data,
+        total_existing
+      )
+    end
+
+    def mark_mr_as_draft_from_commits(merge_request)
+      return unless @commits.present?
+
+      commit_shas = merge_request.commit_shas
+
+      draft_commit = @commits.detect do |commit|
+        commit.draft? && commit_shas.include?(commit.sha)
+      end
+
+      if draft_commit && !merge_request.draft?
+        merge_request.update(title: merge_request.draft_title)
+        SystemNoteService.add_merge_request_draft_from_commit(
+          merge_request,
+          merge_request.project,
+          @current_user,
+          draft_commit
+        )
+      end
+    end
+
+    # If the merge requests closes any issues, save this information in the
+    # `MergeRequestIssue` model (as a performance optimization).
+    #
+    # Only open merge requests are considered: `persist_merge_request_issues!`
+    # is a no-op for closed and merged merge requests, so loading them here is
+    # wasted work when a source branch is shared by many such merge requests.
+    # rubocop: disable CodeReuse/ActiveRecord
+    def cache_merge_requests_closing_issues
+      @project.merge_requests.opened.where(source_branch: @push.branch_name).find_each do |merge_request|
+        merge_request.persist_merge_request_issues!(@current_user)
+      end
+    end
+    # rubocop: enable CodeReuse/ActiveRecord
 
     def filter_merge_requests(merge_requests)
       merge_requests.uniq.select(&:source_project)
     end
+
+    def merge_requests_for_source_branch(reload: false)
+      @source_merge_requests = nil if reload
+      @source_merge_requests ||= merge_requests_for(@push.branch_name)
+    end
+
+    def merge_requests_for_forks
+      @merge_requests_for_forks ||=
+        MergeRequest
+        .opened
+        .from_project(project)
+        .from_source_branches(@push.branch_name)
+        .from_fork
+    end
+
+    def schedule_duo_code_review(merge_request)
+      # Overridden in EE
+    end
+
+    def execute_async_workers
+      MergeRequests::Refresh::WebHooksWorker.perform_async(
+        @project.id,
+        @current_user.id,
+        @push.oldrev,
+        @push.newrev,
+        @push.ref
+      )
+
+      MergeRequests::Refresh::PipelineWorker.perform_async(
+        @project.id,
+        @current_user.id,
+        @push.oldrev,
+        @push.newrev,
+        @push.ref,
+        params.slice(:push_options, :gitaly_context).as_json # ensure sidekiq-compatible hash argument
+      )
+    end
+
+    def prepare_commits_for_notification(commits, first_and_last_only: false)
+      total_count = commits.count
+      return [[], 0] if total_count == 0
+
+      commits_to_process = if first_and_last_only && total_count > 2
+                             [commits.first, commits.last]
+                           else
+                             commits.first(NotificationService::NEW_COMMIT_EMAIL_DISPLAY_LIMIT)
+                           end
+
+      commit_data = commits_to_process.map do |commit|
+        { 'short_id' => commit.short_id, 'title' => commit.title }
+      end
+
+      [commit_data, total_count]
+    end
   end
 end
+
+MergeRequests::RefreshService.prepend_mod_with('MergeRequests::RefreshService')

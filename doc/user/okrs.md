@@ -1,0 +1,703 @@
+---
+stage: Plan
+group: Portfolio Planning
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Create, edit, and maintain objectives and key results (OKRs).
+title: Objectives and key results (OKR)
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/103355) in GitLab 15.6 [with a feature flag](../administration/feature_flags/_index.md) named `okrs_mvc`. Disabled by default.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+> This feature is available for testing, but not ready for production use.
+
+[Objectives and key results](https://en.wikipedia.org/wiki/OKR) (OKRs) are a framework for setting
+and tracking goals that are aligned with your organization's overall strategy and vision.
+
+The objective and the key result in GitLab share many features. In the documentation, the term
+**OKRs** refers to both objectives and key results.
+
+OKRs are a type of work item, a step towards [default issue types](https://gitlab.com/gitlab-org/gitlab/-/issues/323404)
+in GitLab.
+For the roadmap of migrating [issues](project/issues/_index.md) and [epics](group/epics/_index.md)
+to work items and adding custom work item types, see
+[epic 6033](https://gitlab.com/groups/gitlab-org/-/work_items/6033) or the
+[Plan direction page](https://about.gitlab.com/direction/plan/).
+
+## Designing effective OKRs
+
+Use objectives and key results to align your workforce towards common goals and track the progress.
+Set a big goal with an objective and use [child objectives and key results](#child-objectives-and-key-results)
+to measure the big goal's completion.
+
+Objectives are aspirational goals to be achieved and define what you're aiming to do.
+They show how an individual's, team's, or department's work impacts overall direction of the
+organization by connecting their work to overall company strategy.
+
+**Key results** are measures of progress against aligned objectives. They express
+how you know if you have reached your goal (objective).
+By achieving a specific outcome (key result), you create progress for the linked objective.
+
+To know if your OKR makes sense, you can use this sentence:
+
+<!-- vale gitlab_base.FutureTense = NO -->
+> I/we will accomplish (objective) by (date) through attaining and achieving the following metrics (key results).
+<!-- vale gitlab_base.FutureTense = YES -->
+
+To learn how to create better OKRs and how we use them at GitLab, see the
+[Objectives and Key Results handbook page](https://handbook.gitlab.com/handbook/company/okrs/).
+
+## Create an objective
+
+To create an objective:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Plan** > **Work items**.
+1. In the upper-right corner, select **New item**.
+1. For **Type**, select **Objective**.
+1. Enter the objective title.
+1. Select **Create objective**.
+
+To create a key result, [add it as a child](#add-a-child-key-result) to an existing objective.
+
+## View an objective
+
+To view an objective:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Plan** > **Work items**.
+1. [Filter the list of work items](project/issues/managing_issues.md#filter-the-list-of-issues)
+   for `Type = Objective`.
+1. Select the title of an objective from the list.
+
+## View a key result
+
+To view a key result:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Plan** > **Work items**.
+1. [Filter the list of work items](project/issues/managing_issues.md#filter-the-list-of-issues)
+   for `Type = Key Result`.
+1. Select the title of a key result from the list.
+
+Alternatively, you can access a key result from the **Child items** section in
+its parent's objective.
+
+## Edit title and description
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To edit an OKR:
+
+1. [Open the objective](#view-an-objective) or [key result](#view-a-key-result) that you want to edit.
+1. Optional. To edit the title, select it, make your changes, and select any area outside the title
+   text box.
+1. Optional. To edit the description, select the edit icon ({{< icon name="pencil" >}}), make your changes, and
+   select **Save**.
+
+## Prevent truncating descriptions with **Read more**
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/181184) in GitLab 17.10.
+
+{{< /history >}}
+
+If an OKR description is long, GitLab displays only part of it.
+To see the whole description, you must select **Read more**.
+This truncation makes it easier to find other elements on the page without scrolling through lengthy text.
+
+To change whether descriptions are truncated:
+
+1. On an objective or key result, in the upper-right corner, select **More actions** ({{< icon name="ellipsis_v" >}}).
+1. Select **View options**.
+1. Toggle **Truncate descriptions** according to your preference.
+
+This setting is remembered and affects all issues, tasks, epics, objectives, and key results.
+
+## Hide the right sidebar
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/181184) in GitLab 17.10.
+
+{{< /history >}}
+
+Attributes are shown in a sidebar to the right of the description when space allows.
+To hide the sidebar and increase space for the description:
+
+1. On an objective or key result, in the upper-right corner, select **More actions** ({{< icon name="ellipsis_v" >}}).
+1. Select **View options**.
+1. Select **Hide sidebar**.
+
+This setting is remembered and affects all issues, tasks, epics, objectives, and key results.
+
+To show the sidebar again:
+
+- Repeat the previous steps and select **Show sidebar**.
+
+## View OKR system notes
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/378949) in GitLab 15.7 [with a feature flag](../administration/feature_flags/_index.md) named `work_items_mvc_2`. Disabled by default.
+- [Moved](https://gitlab.com/gitlab-org/gitlab/-/issues/378949) to feature flag named `work_items_mvc` in GitLab 15.8. Disabled by default.
+- Feature flag [changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/144141) from `work_items_mvc` to `work_items_beta` in GitLab 16.10.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+- Feature flag `work_items_beta` [removed](https://gitlab.com/gitlab-com/gl-infra/production/-/issues/17549) in GitLab 18.6.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+You can view all the [system notes](project/system_notes.md) related to the OKR. By default they are sorted by **Oldest first**.
+You can always change the sorting order to **Newest first**, which is remembered across sessions.
+
+## Comments and threads
+
+You can add [comments](discussions/_index.md) and reply to threads in OKRs.
+
+## Assign users
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+To show who is responsible for an OKR, you can assign users to it.
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To change the assignee on an OKR:
+
+1. [Open the objective](#view-an-objective) or [key result](#view-a-key-result) that you want to edit.
+1. Next to **Assignees**, select **Add assignees**.
+1. From the dropdown list, select the users to add as an assignee.
+1. Select any area outside the dropdown list.
+
+## Assign labels
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+Use [labels](project/labels.md) to organize OKRs among teams.
+
+To add labels to an OKR:
+
+1. [Open the objective](#view-an-objective) or [key result](#view-a-key-result) that you want to edit.
+1. Next to **Labels**, select **Add labels**.
+1. From the dropdown list, select the labels to add.
+1. Select any area outside the dropdown list.
+
+## Add an objective to a milestone
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+You can add an objective to a [milestone](project/milestones/_index.md).
+You can see the milestone title when you view an objective.
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To add an objective to a milestone:
+
+1. [Open the objective](#view-an-objective) that you want to edit.
+1. Next to **Milestone**, select **Add to milestone**.
+   If an objective already belongs to a milestone, the dropdown list shows the current milestone.
+1. From the dropdown list, select the milestone to be associated with the objective.
+
+## Set progress
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+Show how much of the work needed to achieve an objective is finished.
+
+You can set progress manually on objectives and key results.
+
+When you enter progress for a child item, progress of all parent items in the hierarchy is updated
+to the average of the child items' progress.
+You can override progress at any level and enter a value manually, but when a child item's progress
+value is updated, the automation updates all parents again to show the average.
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To set progress of an objective or key result:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Plan** > **Work items**.
+1. [Filter the list of work items](project/issues/managing_issues.md#filter-the-list-of-issues)
+   for `Type = Objective` or `Type = Key Result` and select your item.
+1. Next to **Progress**, select the text box.
+1. Enter a number from 0 to 100.
+
+## Set health status
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+To better track the risk in meeting your goals, you can assign a [health status](project/issues/managing_issues.md#health-status)
+to each objective and key result.
+You can use health status to signal to others in your organization whether OKRs are progressing
+as planned or need attention to stay on schedule.
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To set health status of an OKR:
+
+1. [Open the key result](#view-a-key-result) that you want to edit.
+1. Next to **Health status**, select the dropdown list and select the desired health status.
+
+## Promote a key result to an objective
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To promote a key result:
+
+1. [Open the key result](#view-a-key-result).
+1. In the upper-right corner, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}).
+1. Select **Promote to objective**.
+
+Alternatively, use the [`/promote_to objective` quick action](project/quick_actions.md#promote_to).
+
+## Convert an OKR to another item type
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/385131) in GitLab 17.8 [with a feature flag](../administration/feature_flags/_index.md) named `work_items_beta`. Disabled by default.
+- [Moved](https://gitlab.com/gitlab-org/gitlab/-/issues/385131) [to the flag](../administration/feature_flags/_index.md) named `okrs_mvc`. For current flag state, see the top of this page.
+
+{{< /history >}}
+
+Convert an objective or key result into another item type, such as:
+
+- Issue
+- Task
+- Objective
+- Key result
+
+> [!warning]
+> Changing the type might result in data loss if the target type does not support all fields from the original type.
+
+Prerequisites:
+
+- The OKR you want to convert must not have a parent item assigned.
+- The OKR you want to convert must not have any child items.
+
+To convert an OKR into another item type:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Plan** > **Work items**, then select your issue to view it.
+1. In the list, find your objective or key result and select it.
+1. In the upper-right corner, select **More actions** ({{< icon name="ellipsis_v" >}}), then select **Change type**.
+1. Select the desired item type.
+1. If all conditions are met, select **Change type**.
+
+Alternatively, you can use the [`/type` quick action](project/quick_actions.md#type), followed
+by `issue`, `task`, `objective`, or `key result` in a comment.
+
+## Copy objective or key result reference
+
+To refer to an objective or key result elsewhere in GitLab, you can use its full URL or a short reference, which looks like
+`namespace/project-name#123`, where `namespace` is either a group or a username.
+
+To copy the objective or key result reference to your clipboard:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Plan** > **Work items**, then select your objective or key result to view it.
+1. In the upper-right corner, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}), then select **Copy reference**.
+
+You can now paste the reference into another description or comment.
+
+Read more about objective or key result references in [GitLab-Flavored Markdown](markdown.md#gitlab-specific-references).
+
+## Copy objective or key result email address
+
+You can create a comment in an objective or key result by sending an email.
+Sending an email to this address creates a comment that contains the email body.
+
+For more information about creating comments by sending an email and the necessary configuration, see
+[Reply to a comment by sending email](discussions/_index.md#reply-to-a-comment-by-sending-email).
+
+To copy the objective's or key result's email address:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Plan** > **Work items**, then select your objective to view it.
+1. In the upper-right corner, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}), then select **Copy objective email address** or **Copy key result email address**.
+
+## Close an OKR
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+When an OKR is achieved, you can close it.
+The OKR is marked as closed but is not deleted.
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To close an OKR:
+
+1. [Open the objective](#view-an-objective) that you want to edit.
+1. Next to **Status**, select **Closed**.
+
+You can reopen a closed OKR the same way.
+
+## Child objectives and key results
+
+In GitLab, objectives are similar to key results.
+In your workflow, use key results to measure the goal described in the objective.
+
+You can add child objectives to a total of 9 levels. An objective can have up to 100 child OKRs.
+Key results are children of objectives and cannot have children items themselves.
+
+Child objectives and key results are available in the **Child items** section
+below an objective's description.
+
+### Add a child objective
+
+{{< history >}}
+
+- Ability to select which project to create the objective in [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/436255) in GitLab 17.1.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Guest, Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To add a new objective to an objective:
+
+1. In an objective, in the **Child items** section, select **Add** and then
+   select **New objective**.
+1. Enter a title for the new objective.
+1. Select a [project](project/organize_work_with_projects.md) to create the new objective in.
+1. Select **Create objective**.
+
+To add an existing objective to an objective:
+
+1. In an objective, in the **Child items** section, select **Add** and then
+   select **Existing objective**.
+1. Search for the desired objective by entering part of its title, then selecting the
+   desired match.
+
+   To add multiple objectives, repeat this step.
+1. Select **Add objective**.
+
+### Add a child key result
+
+{{< history >}}
+
+- Ability to select which project to create the key result in [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/436255) in GitLab 17.1.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Guest, Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To add a new key result to an objective:
+
+1. In an objective, in the **Child items** section, select **Add** and then
+   select **New key result**.
+1. Enter a title for the new key result.
+1. Select a [project](project/organize_work_with_projects.md) to create the new key result in.
+1. Select **Create key result**.
+
+To add an existing key result to an objective:
+
+1. In an objective, in the **Child items** section, select **Add** and then
+   select **Existing key result**.
+1. Search for the desired OKR by entering part of its title, then selecting the
+   desired match.
+
+   To add multiple objectives, repeat this step.
+1. Select **Add key result**.
+
+### Reorder objective and key result children
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+By default, child OKRs are ordered by creation date.
+To reorder them, drag them around.
+
+### Schedule OKR check-in reminders
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/422761) in GitLab 16.4 [with a feature flag](../administration/feature_flags/_index.md) named `okr_checkin_reminders`. Disabled by default.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+> This feature is available for testing, but not ready for production use.
+
+Schedule check-in reminders to remind your team to provide status updates on the key results you care
+about.
+Reminders are sent to all assignees of descendant objects and key results as email notifications
+and to-do items.
+Users can't unsubscribe from the email notifications, but check-in reminders can be turned off.
+Reminders are sent on Tuesdays.
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+- There must be at least one objective with at least one key result in the project.
+- You can schedule reminders only for top-level objectives.
+  Scheduling a check-in reminder for child objectives has no effect.
+  The setting from the top-level objective is inherited to all child objectives.
+
+To schedule a recurring reminder for an objective, in a new comment use the
+[`/checkin_reminder` quick action](project/quick_actions.md#checkin_reminder).
+
+## Set an objective as a parent
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+- The parent objective and child OKR must belong to the same project.
+
+To set an objective as a parent of an OKR:
+
+1. [Open the objective](#view-an-objective) or [key result](#view-a-key-result) that you want to edit.
+1. Next to **Parent**, from the dropdown list, select the parent to add.
+1. Select any area outside the dropdown list.
+
+To remove the parent of the objective or key result,
+next to **Parent**, select the dropdown list and then select **Unassign**.
+
+## Confidential OKRs
+
+Confidential OKRs are OKRs visible only to members of a project with
+[sufficient permissions](#who-can-see-confidential-okrs).
+You can use confidential OKRs to keep security vulnerabilities private or prevent surprises from
+leaking out.
+
+### Make an OKR confidential
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+By default, OKRs are public.
+You can make an OKR confidential when you create or edit it.
+
+#### In a new OKR
+
+When you create a new objective, a checkbox right below the text area is available to mark the
+OKR as confidential.
+
+Select that checkbox and then select **Create objective** or **Create key result** to create the OKR.
+
+#### In an existing OKR
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+- A **confidential objective** can have only confidential
+  [child objectives or key results](#child-objectives-and-key-results):
+  - To make an objective confidential: If it has any child objectives or key results, you must first
+    make all of them confidential or remove them.
+  - To make an objective non-confidential: If it has any child objectives or key results, you must
+    first make all of them non-confidential or remove them.
+  - To add child objectives or key results to a confidential objective, you must first make them
+    confidential.
+
+To change the confidentiality of an existing OKR:
+
+1. [Open the objective](#view-an-objective) or [key result](#view-a-key-result).
+1. In the upper-right corner, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}).
+1. Select **Turn on confidentiality** or **Turn off confidentiality**.
+
+### Who can see confidential OKRs
+
+{{< history >}}
+
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+
+{{< /history >}}
+
+When an OKR is made confidential, only users with the Planner, Reporter, Developer, Maintainer, or Owner role for the project have
+access to the OKR.
+Users with Guest or [Minimal](permissions.md#users-with-minimal-access) roles can't access
+the OKR even if they were actively participating before the change.
+
+However, a user with the Guest role can create confidential OKRs, but can only view the ones
+that they created themselves.
+
+Users with the Guest role or non-members can read the confidential OKR if they are assigned to the OKR.
+When a Guest user or non-member is unassigned from a confidential OKR, they can no longer view it.
+
+Confidential OKRs are hidden in search results for users without the necessary permissions.
+
+### Confidential OKR indicators
+
+Confidential OKRs are visually different from regular OKRs in a few ways.
+Wherever OKRs are listed, you can see the confidential ({{< icon name="eye-slash" >}}) icon
+next to the OKRs that are marked as confidential.
+
+If you don't have [enough permissions](#who-can-see-confidential-okrs),
+you cannot see confidential OKRs at all.
+
+Likewise, while inside the OKR, you can see the confidential ({{< icon name="eye-slash" >}}) icon right next to
+the breadcrumbs.
+
+Every change from regular to confidential and vice versa, is indicated by a
+system note in the OKR's comments, for example:
+
+- {{< icon name="eye-slash" >}} Jo Garcia made the issue confidential 5 minutes ago
+- {{< icon name="eye" >}} Jo Garcia made the issue visible to everyone just now
+
+## Lock discussion
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/398649) in GitLab 16.9 [with a feature flag](../administration/feature_flags/_index.md) named `work_items_beta`. Disabled by default.
+- [Changed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/169256) the minimum user role from Reporter to Planner in GitLab 17.7.
+- Feature flag `work_items_beta` [removed](https://gitlab.com/gitlab-com/gl-infra/production/-/issues/17549) in GitLab 18.6.
+
+{{< /history >}}
+
+You can prevent public comments in an OKR.
+When you do, only project members can add and edit comments.
+
+Prerequisites:
+
+- You must have the Planner, Reporter, Developer, Maintainer, or Owner role.
+
+To lock an OKR:
+
+1. In the upper-right corner, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}).
+1. Select **Lock discussion**.
+
+A system note is added to the page details.
+
+If an OKR is closed with a locked discussion, then you cannot reopen it until the discussion is unlocked.
+
+## Linked items in OKRs
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/416558) in GitLab 16.5 [with a feature flag](../administration/feature_flags/_index.md) named `linked_work_items`. Enabled by default.
+- [Enabled on GitLab.com and GitLab Self-Managed](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/139394) in GitLab 16.7.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/150148) in GitLab 17.0. Feature flag `linked_work_items` removed.
+- [Changed](https://gitlab.com/groups/gitlab-org/-/work_items/10267) minimum required role from Reporter (if true) to Guest in GitLab 17.0.
+
+{{< /history >}}
+
+Linked items are a bi-directional relationship and appear in a block below
+the Child objectives and key results. You can link an objective, key result, or a task in the same project with each other.
+
+The relationship only shows up in the UI if the user can see both items.
+
+### Add a linked item
+
+Prerequisites:
+
+- You must have the Guest, Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+To link an item to an objective or key result:
+
+1. In the **Linked items** section of an objective or key result,
+   select **Add**.
+1. Select the relationship between the two items. Either:
+   - **Relates to**
+   - **Blocks**
+   - **Is blocked by**
+1. Enter the search text of the item, URL, or its reference ID.
+1. When you have added all the items to be linked, select **Add** below the search box.
+
+When you have finished adding all linked items, you can see
+them categorized so their relationships can be better understood visually.
+
+![Linked work items categorized as blocking, blocked by, or related to, with status indicators to visualize progress, and dependencies.](img/linked_items_list_v16_5.png)
+
+### Remove a linked item
+
+Prerequisites:
+
+- You must have the Guest, Planner, Reporter, Developer, Maintainer, or Owner role for the project.
+
+In the **Linked items** section of an objective or key result,
+next to each item, select the vertical ellipsis ({{< icon name="ellipsis_v" >}}) and then select **Remove**.
+
+Due to the bi-directional relationship, the relationship no longer appears in either item.

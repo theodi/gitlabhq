@@ -1,0 +1,18 @@
+---
+description: Tracks the creation of Machine learning models (Ml::Model) through Ml::CreateModelService
+internal_events: true
+action: model_registry_ml_model_created
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: mlops
+product_categories:
+- mlops
+milestone: "16.8"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/139798
+tiers:
+- free
+- premium
+- ultimate

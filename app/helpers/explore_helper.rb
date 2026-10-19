@@ -1,17 +1,67 @@
+# frozen_string_literal: true
+
 module ExploreHelper
-  def explore_projects_filter_path(options={})
+  def filter_projects_path(options = {})
     exist_opts = {
-      sort: params[:sort],
+      sort: params[:sort] || @sort,
       scope: params[:scope],
       group: params[:group],
       tag: params[:tag],
       visibility_level: params[:visibility_level],
+      name: params[:name],
+      personal: params[:personal],
+      archived: params[:archived],
+      shared: params[:shared],
+      namespace_id: params[:namespace_id],
+      language_name: params[:language_name]
     }
 
-    options = exist_opts.merge(options)
+    options = exist_opts.merge(options).delete_if { |_key, value| value.blank? }
+    request_path_with_options(options)
+  end
 
-    path = request.path
-    path << "?#{options.to_param}"
-    path
+  def public_visibility_restricted?
+    Gitlab::VisibilityLevel.public_visibility_restricted?
+  end
+
+  def projects_filter_items
+    [
+      { value: _('Any'), text: _('Any'), href: filter_projects_path(visibility_level: nil) },
+      *Gitlab::VisibilityLevel.options.keys.map do |key|
+        {
+          value: key,
+          text: key,
+          href: filter_projects_path(visibility_level: Gitlab::VisibilityLevel.options[key])
+        }
+      end
+    ]
+  end
+
+  def projects_filter_selected(visibility_level)
+    visibility_level.present? ? visibility_level_label(visibility_level.to_i) : _('Any')
+  end
+
+  def explore_projects_app_data
+    {
+      initial_sort: group_project_list_sort_by,
+      programming_languages: programming_languages.to_json,
+      base_path: explore_projects_path
+    }
+  end
+
+  def explore_groups_app_data
+    {
+      endpoint: explore_groups_path(format: :json),
+      # TODO: Replace with `group_project_list_sort_by` after we fix the performance issue with the date columns
+      # https://gitlab.com/gitlab-org/gitlab/-/work_items/588691
+      initial_sort: 'id_desc',
+      base_path: explore_groups_path
+    }
+  end
+
+  private
+
+  def request_path_with_options(options = {})
+    request.path + "?#{options.to_param}"
   end
 end

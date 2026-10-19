@@ -1,0 +1,36 @@
+---
+description: All Basic Search and Advanced Search requests.
+internal_events: true
+action: perform_search
+identifiers:
+- user
+additional_properties:
+  label:
+    description: >-
+      Resolved search scope, for example blobs, work_items or merge_requests.
+      The web UI resolves legacy scope names before emitting, so a search for
+      issues is recorded as work_items. The REST API keeps the legacy name and
+      records issues. Use the event category to tell the two callers apart.
+  search_type:
+    description: >-
+      Search backend that served the request, for example basic, advanced or
+      zoekt. zoekt is effectively only reachable from the REST API. The web UI
+      renders multi-match Zoekt results through GraphQL, which emits no event.
+  search_level:
+    description: Level the search ran at — project, group or global.
+  property:
+    description: >-
+      Search request ID, used to join this search to its result clicks. Uses the
+      built-in property slot so the ID lands in a dedicated Snowflake column (se_pr)
+      and is queryable without Data team work. Multi-match Zoekt code searches in the
+      web UI emit no perform_search, so they mint no ID and their result clicks cannot
+      be joined to a search.
+product_group: global_search
+product_categories:
+- global_search
+milestone: '17.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/151599
+tiers:
+- free
+- premium
+- ultimate

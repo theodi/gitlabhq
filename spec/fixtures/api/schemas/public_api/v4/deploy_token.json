@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "username",
+    "expires_at",
+    "scopes",
+    "revoked",
+    "expired"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "username": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string"
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "read_repository",
+          "read_registry",
+          "write_registry",
+          "read_package_registry",
+          "write_package_registry",
+          "read_virtual_registry",
+          "write_virtual_registry"
+        ]
+      }
+    },
+    "token": {
+      "type": "string"
+    },
+    "revoked": {
+      "type": "boolean"
+    },
+    "expired": {
+      "type": "boolean"
+    }
+  }
+}

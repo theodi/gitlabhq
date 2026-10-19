@@ -1,0 +1,35 @@
+- project = local_assigns.fetch(:project)
+- issuable = local_assigns.fetch(:issuable)
+- presenter = local_assigns.fetch(:presenter)
+- form = local_assigns.fetch(:form)
+- add_page_specific_style 'page_bundles/labels'
+
+- if can?(current_user, :"set_#{issuable.to_ability_name}_metadata", issuable)
+  .row.gl-pt-4
+    .gl-col-12
+      .form-group.row{ data: { testid: 'merge-request-assignee' } }
+        = render "shared/issuable/form/metadata_issuable_assignee", issuable: issuable, form: form
+
+      - if issuable.allows_reviewers?
+        .form-group.row.merge-request-reviewer
+          = render "shared/issuable/form/metadata_issuable_reviewer", issuable: issuable, form: form, presenter: presenter
+
+      - if issuable.supports_milestone?
+        .form-group.row.issue-milestone
+          = form.label :milestone_id, _('Milestone'), class: "gl-col-12"
+          .gl-col-12
+            .issuable-form-select-holder
+              = render "shared/issuable/milestone_dropdown", selected: issuable.milestone, name: "#{issuable.class.model_name.param_key}[milestone_id]"
+
+      .js-issuable-form-label-selector{ data: issuable_label_selector_data(project, issuable) }
+
+      = render_if_exists "shared/issuable/form/merge_request_blocks", issuable: issuable, form: form
+
+      - if issuable.is_a?(MergeRequest)
+        .row
+          = form.label :merge_after, s_('MergeRequests|Merge can start'), class: 'gl-col-12'
+          .js-merge-request-schedule-input{ data: {
+            merge_after: issuable.merge_schedule&.merge_after&.strftime('%Y-%m-%dT%H:%M%z'),
+            param_key: issuable.class.model_name.param_key
+          } }
+          %p.gl-text-subtle.gl-col-12= s_('MergeRequests|Requires that merge checks pass.')

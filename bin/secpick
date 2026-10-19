@@ -1,0 +1,15 @@
+#!/usr/bin/env ruby
+
+# frozen_string_literal: true
+
+require 'rainbow/refinement'
+using Rainbow
+
+NEW_SCRIPT = 'scripts/backport_fix_to_stable_branch'
+
+puts "\n⚠️ This tool has moved! ⚠️\n".red
+puts "bin/secpick has updated and moved to ".white +  NEW_SCRIPT.red.bold
+puts "\nThe new script can be used for #{'security fix backports'.bold}".white + " and #{'bug fix backports'.bold}.\n".white
+puts "Please run again with:".white
+puts "\n#{NEW_SCRIPT} #{ARGV.join(' ')}".blue
+exit 1

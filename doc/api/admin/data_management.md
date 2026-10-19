@@ -1,0 +1,272 @@
+---
+stage: GitLab Dedicated
+group: Geo
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Data management API
+---
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+- Status: Experiment
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/537707) in GitLab 18.3 with a [flag](../../administration/feature_flags/_index.md) named `geo_primary_verification_view`. Disabled by default. This feature is an [experiment](../../policy/development_stages_support.md).
+- The flag is enabled by default in GitLab 18.8.
+
+{{< /history >}}
+
+Use the data management API to manage an instance's data.
+
+Prerequisites:
+
+- You must be an administrator.
+
+## Retrieve model information
+
+Retrieves information about a data model in an instance. This operation is an [experiment](../../policy/development_stages_support.md) and might be changed or removed without notice.
+
+```plaintext
+GET /admin/data_management/:model_name
+```
+
+The `:model_name` parameter must be one of:
+
+- `ci_job_artifacts`
+- `ci_pipeline_artifacts`
+- `ci_secure_files`
+- `container_repositories`
+- `dependency_proxy_blobs`
+- `dependency_proxy_manifests`
+- `design_management_repositories`
+- `geo_abuse_report_uploads`
+- `geo_achievement_uploads`
+- `geo_ai_vectorizable_file_uploads`
+- `geo_alert_management_metric_image_uploads`
+- `geo_appearance_uploads`
+- `geo_bulk_import_export_upload_uploads`
+- `geo_dependency_list_export_part_uploads`
+- `geo_dependency_list_export_uploads`
+- `geo_design_management_action_uploads`
+- `geo_group_uploads`
+- `geo_import_export_upload_uploads`
+- `geo_issuable_metric_image_uploads`
+- `geo_organization_detail_uploads`
+- `geo_personal_snippet_uploads`
+- `geo_project_import_export_relation_export_upload_uploads`
+- `geo_project_topic_uploads`
+- `geo_project_uploads`
+- `geo_user_permission_export_upload_uploads`
+- `geo_user_uploads`
+- `geo_vulnerability_archive_export_uploads`
+- `geo_vulnerability_export_part_uploads`
+- `geo_vulnerability_export_uploads`
+- `geo_vulnerability_remediation_uploads`
+- `group_wiki_repositories`
+- `lfs_objects`
+- `merge_request_diffs`
+- `packages_debian_project_component_files`
+- `packages_helm_metadata_caches`
+- `packages_nuget_symbols`
+- `packages_package_files`
+- `pages_deployments`
+- `projects`
+- `projects_wiki_repositories`
+- `snippet_repositories`
+- `supply_chain_attestations`
+- `terraform_state_versions`
+- `uploads`
+
+Supported attributes:
+
+| Attribute        | Type   | Required | Description                                                                                                                 |
+|------------------|--------|----------|-----------------------------------------------------------------------------------------------------------------------------|
+| `model_name`     | string | Yes      | The pluralized name of the requested model. Must belong to the `:model_name` list above.                                    |
+| `checksum_state` | string | No       | Search by checksum status. Allowed values: pending, started, succeeded, failed, disabled.                                   |
+| `identifiers`    | array  | No       | Filter results with an array of unique identifiers of the requested model, which can be integers or base64 encoded strings. |
+
+This endpoint supports [keyset pagination](../rest/_index.md#keyset-based-pagination) on the model's primary key, with sorting in ascending or descending order. To use keyset pagination, add the `pagination=keyset` parameter to the request. By default, keyset pagination loads 20 records per page sorted in ascending order. You can modify the sorting order with the query parameter `sort`, and values `asc` or `desc`. To select a number of records per page, use the parameter `per_page`.
+
+If successful, returns [`200`](../rest/troubleshooting.md#status-codes) and information about the model. It includes the following
+response attributes:
+
+| Attribute              | Type              | Description                                                                    |
+|------------------------|-------------------|--------------------------------------------------------------------------------|
+| `checksum_information` | JSON              | Geo-specific checksum information, if available.                               |
+| `created_at`           | timestamp         | Creation timestamp, if available.                                              |
+| `file_size`            | integer           | Size of the object, if available.                                              |
+| `model_class`          | string            | Class name of the model.                                                       |
+| `record_identifier`    | string or integer | Unique identifier of the record. Can be an integer or a base64 encoded string. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://primary.example.com/api/v4/admin/data_management/projects?pagination=keyset"
+```
+
+Example response:
+
+```json
+[
+  {
+    "record_identifier": 1,
+    "model_class": "Project",
+    "created_at": "2025-02-05T11:27:10.173Z",
+    "file_size": null,
+    "checksum_information": {
+      "checksum": "<object checksum>",
+      "last_checksum": "2025-07-24T14:22:18.643Z",
+      "checksum_state": "succeeded",
+      "checksum_retry_count": 0,
+      "checksum_retry_at": null,
+      "checksum_failure": null
+    }
+  },
+  {
+    "record_identifier": 2,
+    "model_class": "Project",
+    "created_at": "2025-02-05T11:27:14.402Z",
+    "file_size": null,
+    "checksum_information": {
+      "checksum": "<object checksum>",
+      "last_checksum": "2025-07-24T14:22:18.214Z",
+      "checksum_state": "succeeded",
+      "checksum_retry_count": 0,
+      "checksum_retry_at": null,
+      "checksum_failure": null
+    }
+  }
+]
+```
+
+## Recalculate checksums for model records
+
+Recalculates checksums for selected records of a specified model, filtered by `checksum_state` and `identifiers` parameters if provided. The request enqueues a background job to perform the recalculation.
+
+```plaintext
+PUT /admin/data_management/:model_name/checksum
+```
+
+| Attribute          | Type    | Required | Description                                                                                                                 |
+|--------------------|---------|----------|-----------------------------------------------------------------------------------------------------------------------------|
+| `model_name`       | string  | Yes      | The pluralized name of the requested model. Must belong to the `:model_name` list above.                                    |
+| `checksum_state`   | string  | No       | Filter by checksum status. Allowed values: pending, started, succeeded, failed, disabled.                                   |
+| `identifiers`      | array   | No       | Filter records with an array of unique identifiers of the requested model, which can be integers or base64 encoded strings. |
+
+If successful, it returns [`200`](../rest/troubleshooting.md#status-codes) and a JSON response containing the following information:
+
+| Attribute | Type   | Description                                       |
+|-----------|--------|---------------------------------------------------|
+| `message` | string | An information message about the success or error. |
+| `status`  | string | Can be "success" or "error".                      |
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://primary.example.com/api/v4/admin/data_management/projects/checksum"
+```
+
+Example response:
+
+```json
+{
+  "status": "success",
+  "message": "Batch update job has been successfully enqueued."
+}
+```
+
+If you supply `identifiers` and none of the values match an existing record, no job is enqueued and no records are changed. The request is still valid, so the endpoint returns `200` with a different message. A blank `identifiers[]=` is not treated as a filter that matches nothing. It still enqueues a job for all records of the model.
+
+Example response when no records match:
+
+```json
+{
+  "status": "success",
+  "message": "No records matched the given identifiers."
+}
+```
+
+## Retrieve information about a model record
+
+Retrieves information about a specified model record.
+
+```plaintext
+GET /admin/data_management/:model_name/:id
+```
+
+| Attribute           | Type              | Required | Description                                                                                 |
+|---------------------|-------------------|----------|---------------------------------------------------------------------------------------------|
+| `model_name`        | string            | Yes      | The pluralized name of the requested model. Must belong to the `:model_name` list above.    |
+| `record_identifier` | string or integer | Yes      | The unique identifier of the requested model. Can be an integer or a base64 encoded string. |
+
+If successful, it returns [`200`](../rest/troubleshooting.md#status-codes) and information about the specific model record. It includes the following
+response attributes:
+
+| Attribute              | Type              | Description                                                                    |
+|------------------------|-------------------|--------------------------------------------------------------------------------|
+| `checksum_information` | JSON              | Geo-specific checksum information, if available.                               |
+| `created_at`           | timestamp         | Creation timestamp, if available.                                              |
+| `file_size`            | integer           | Size of the object, if available.                                              |
+| `model_class`          | string            | Class name of the model.                                                       |
+| `record_identifier`    | string or integer | Unique identifier of the record. Can be an integer or a base64 encoded string. |
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://primary.example.com/api/v4/admin/data_management/projects/1"
+```
+
+Example response:
+
+```json
+{
+  "record_identifier": 1,
+  "model_class": "Project",
+  "created_at": "2025-02-05T11:27:10.173Z",
+  "file_size": null,
+  "checksum_information": {
+    "checksum": "<object checksum>",
+    "last_checksum": "2025-07-24T14:22:18.643Z",
+    "checksum_state": "succeeded",
+    "checksum_retry_count": 0,
+    "checksum_retry_at": null,
+    "checksum_failure": null
+  }
+}
+```
+
+## Recalculate the checksum of a model record
+
+Recalculates the checksum of a specified model record. The checksum value is a representation of the queried model hashed with the md5 or sha256 algorithm.
+
+```plaintext
+PUT /admin/data_management/:model_name/:record_identifier/checksum
+```
+
+| Attribute           | Type              | Required | Description                                                                                                               |
+|---------------------|-------------------|----------|---------------------------------------------------------------------------------------------------------------------------|
+| `model_name`        | string            | Yes      | The pluralized name of the requested model. Must belong to the `:model_name` list above.                                  |
+| `record_identifier` | string or integer | Yes      | Unique identifier of the record. Can be an integer or a base64 encoded string (taken from the response of the GET query). |
+
+If successful, it returns [`200`](../rest/troubleshooting.md#status-codes) and information about the specific model record.
+
+```shell
+curl --header "PRIVATE-TOKEN: <your_access_token>" "https://primary.example.com/api/v4/admin/data_management/projects/1/checksum"
+```
+
+Example response:
+
+```json
+{
+  "record_identifier": 1,
+  "model_class": "Project",
+  "created_at": "2025-02-05T11:27:10.173Z",
+  "file_size": null,
+  "checksum_information": {
+    "checksum": "<sha256 or md5 string>",
+    "last_checksum": "2025-07-24T14:22:18.643Z",
+    "checksum_state": "succeeded",
+    "checksum_retry_count": 0,
+    "checksum_retry_at": null,
+    "checksum_failure": null
+  }
+}
+```

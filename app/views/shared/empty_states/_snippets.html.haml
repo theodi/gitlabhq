@@ -1,0 +1,21 @@
+- button_path = local_assigns.fetch(:button_path, false)
+- button_text = s_('SnippetsEmptyState|New snippet') if button_path
+- illustration = 'illustrations/empty-state/empty-snippets-md.svg'
+
+- if current_user
+  = render Pajamas::EmptyStateComponent.new(svg_path: illustration,
+    title: s_('SnippetsEmptyState|Get started with snippets'),
+    primary_button_text: button_text,
+    primary_button_link: button_path,
+    primary_button_options: { data: { testid: 'create-first-snippet-link' } },
+    secondary_button_text: _('Learn More'),
+    secondary_button_link: help_page_path('user/snippets.md'),
+    empty_state_options: { data: { testid: 'snippets-empty-state' } }) do |c|
+
+    - c.with_description do
+      = s_('SnippetsEmptyState|Store, share, and embed bits of code and text.')
+
+- else
+  = render Pajamas::EmptyStateComponent.new(svg_path: illustration,
+    title:  s_('SnippetsEmptyState|There are no snippets to show.'),
+    empty_state_options: { data: { testid: 'snippets-empty-state' } })

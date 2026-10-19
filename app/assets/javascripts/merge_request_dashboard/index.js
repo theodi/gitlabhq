@@ -1,0 +1,146 @@
+import { concatPagination } from '@apollo/client/utilities';
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import VueRouter from 'vue-router';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import { TYPENAME_USER } from '~/graphql_shared/constants';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import createDefaultClient from '~/lib/graphql';
+import isShowingLabelsQuery from '~/graphql_shared/client/is_showing_labels.query.graphql';
+import currentUserPreferencesQuery from './queries/current_user_preferences.query.graphql';
+import App from './components/app.vue';
+
+export function initMergeRequestDashboard(el) {
+  Vue.use(VueApollo);
+  Vue.use(VueRouter);
+
+  const { tabs } = JSON.parse(el.dataset.initialData);
+  const router = new VueRouter({
+    mode: 'history',
+    base: el.dataset.basePath,
+    routes: [{ path: '/:filter' }],
+  });
+
+  const keyArgs = [
+    'state',
+    'reviewState',
+    'reviewStates',
+    'reviewerWildcardId',
+    'mergedAfter',
+    'assignedReviewStates',
+    'reviewerReviewStates',
+  ];
+  const searchClient = createDefaultClient(
+    {},
+    {
+      cacheConfig: {
+        typePolicies: {
+          MergeRequestConnection: {
+            merge: true,
+          },
+        },
+      },
+    },
+  );
+
+  const apolloProvider = new VueApollo({
+    clients: { searchClient },
+    defaultClient: createDefaultClient(
+      {
+        Mutation: {
+          setIsShowingLabels(_, { isShowingLabels }, { cache }) {
+            cache.writeQuery({
+              query: isShowingLabelsQuery,
+              data: { isShowingLabels },
+            });
+            return isShowingLabels;
+          },
+        },
+      },
+      {
+        cacheConfig: {
+          typePolicies: {
+            Query: {
+              fields: {
+                isShowingLabels: {
+                  read(currentState) {
+                    return currentState ?? false;
+                  },
+                },
+              },
+            },
+            CurrentUser: {
+              fields: {
+                assignedMergeRequests: {
+                  keyArgs,
+                  merge: true,
+                },
+                reviewRequestedMergeRequests: {
+                  keyArgs,
+                  merge: true,
+                },
+                assigneeOrReviewerMergeRequests: {
+                  keyArgs,
+                  merge: true,
+                },
+                authoredMergeRequests: {
+                  keyArgs,
+                  merge: true,
+                },
+              },
+            },
+            MergeRequestConnection: {
+              fields: {
+                nodes: concatPagination(),
+              },
+            },
+            MergeRequestReviewer: {
+              keyFields: false,
+            },
+          },
+        },
+      },
+    ),
+  });
+
+  apolloProvider.clients.defaultClient.cache.writeQuery({
+    query: currentUserPreferencesQuery,
+    data: {
+      currentUser: {
+        id: convertToGraphQLId(TYPENAME_USER, gon.current_user_id),
+        userPreferences: {
+          listType: el.dataset.listType,
+          showDrafts: el.dataset.showDrafts === 'true',
+          __typename: 'UserPreferences',
+        },
+        __typename: 'CurrentUser',
+      },
+    },
+  });
+
+  return initVueApp({
+    el,
+    name: 'MergeRequestDashboardRoot',
+    router,
+    apolloProvider,
+    provide: {
+      mergeRequestsSearchDashboardPath: el.dataset.mergeRequestsSearchDashboardPath,
+      autocompleteAwardEmojisPath: el.dataset.autocompleteAwardEmojisPath,
+      autocompleteUsersPath: el.dataset.autocompleteUsersPath,
+      dashboardLabelsPath: el.dataset.dashboardLabelsPath,
+      dashboardMilestonesPath: el.dataset.dashboardMilestonesPath,
+      hasScopedLabelsFeature: parseBoolean(el.dataset.hasScopedLabelsFeature),
+      initialSort: el.dataset.initialSort,
+      isPublicVisibilityRestricted: parseBoolean(el.dataset.isPublicVisibilityRestricted),
+      isSignedIn: parseBoolean(el.dataset.isSignedIn),
+      savedViewLimit: Number(el.dataset.savedViewLimit),
+      savedViewsEnabled: parseBoolean(el.dataset.savedViewsEnabled),
+      vueSearchEnabled: parseBoolean(el.dataset.vueSearchEnabled),
+    },
+    component: App,
+    props: {
+      tabs,
+    },
+  });
+}

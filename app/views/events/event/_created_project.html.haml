@@ -1,27 +1,14 @@
-.event-title
-  %span.author_name= link_to_author event
-  %span.event_label{class: event.action_name}
-    = event_action_name(event)
+= icon_for_profile_event(event)
 
-  - if event.project
-    = link_to_project event.project
-  - else
-    = event.project_name
+= event_user_info(event)
 
-- if current_user == event.author && !event.project.private? && twitter_sharing_enabled?
-  .event-body
-    .event-note
-      .md
-        %p
-          Congratulations! Why not share your accomplishment with the world?
+.event-title.gl-flex
+  = inline_event_icon(event)
+  .event-title-block.gl-inline-block.gl-mr-2
+    %span.event-type{ class: event.action_name + user_profile_activity_classes }
+      = event_action_name(event)
 
-          %a.twitter-share-button{ |
-            href: "https://twitter.com/share", |
-            "data-url" => event.project.web_url, |
-            "data-text" => "I just #{event.action_name} a new project on GitLab! GitLab is version control on your server.", |
-            "data-size" => "medium", |
-            "data-related" => "gitlab", |
-            "data-hashtags" => "gitlab", |
-            "data-count" => "none"}
-            Tweet
-          %script{src: "//platform.twitter.com/widgets.js"}
+    - if event.project
+      = link_to_project(event.project)
+    - else
+      = event.resource_parent_name

@@ -1,0 +1,95 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    module MergeRequests
+      class GetMergeRequestNotesTool < Mcp::Tools::Base::GraphqlTool
+        extend Gitlab::Utils::Override
+        include Mcp::Tools::Concerns::ResourceFinder
+        include Mcp::Tools::Concerns::CursorPagination
+
+        DEFAULT_NOTES_PAGE_SIZE = 100
+
+        def self.build_query
+          load_graphql('merge_requests/get_merge_request_notes.query.graphql')
+        end
+
+        register_version VERSIONS[:v0_1_0], {
+          operation_name: 'project',
+          graphql_operation: build_query
+        }
+
+        def build_variables
+          full_path, iid = resolve_target
+
+          {
+            fullPath: full_path,
+            iid: iid.to_s,
+            **resolve_pagination_direction
+          }.compact
+        end
+
+        protected
+
+        def build_variables_v0_1_0
+          build_variables
+        end
+
+        private
+
+        override :default_page_size
+        def default_page_size
+          DEFAULT_NOTES_PAGE_SIZE
+        end
+
+        def resolve_target
+          if params[:url].present?
+            match = ::MergeRequest.link_reference_pattern.match(params[:url])
+            raise ArgumentError, "Invalid merge request URL: #{params[:url]}" unless match
+
+            [find_project!("#{match[:namespace]}/#{match[:project]}").full_path, match[:merge_request]]
+          else
+            iid = params[:merge_request_iid]
+            project_id = params[:project_id]
+
+            raise ArgumentError, 'Provide either url, or project_id and merge_request_iid' unless iid && project_id
+
+            [find_project!(project_id).full_path, iid]
+          end
+        end
+
+        def process_result(result)
+          processed_result = super
+          return processed_result if processed_result[:isError]
+
+          merge_request = processed_result[:structuredContent]['mergeRequest']
+          formatted_content = [{ type: 'text', text: Gitlab::Json.dump(merge_request) }]
+          ::Mcp::Tools::Base::Response.success(formatted_content, merge_request)
+        end
+
+        override :resource_not_found_error_for_result
+        def resource_not_found_error_for_result(result)
+          missing = missing_resource(result)
+          return missing_resource_error(missing) if missing
+
+          super
+        end
+
+        def missing_resource(result)
+          return if result['errors'].present?
+
+          project = result.dig('data', 'project')
+          return 'Project' if project.nil?
+
+          'Merge request' if project['mergeRequest'].nil?
+        end
+
+        def missing_resource_error(resource)
+          ::Mcp::Tools::Base::Response.error(
+            "#{resource} not found or inaccessible", reason: ::Mcp::Tools::Base::Response::Reason::NOT_FOUND
+          )
+        end
+      end
+    end
+  end
+end

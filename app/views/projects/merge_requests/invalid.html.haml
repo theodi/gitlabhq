@@ -1,24 +1,22 @@
-- page_title "#{@merge_request.title} (##{@merge_request.iid})", "Merge Requests"
+- page_title "#{@merge_request.title} (#{@merge_request.to_reference}", _("Merge requests")
+
+- err_fork_project_removed = s_("MergeRequest|Can't show this merge request because the fork project was deleted.")
+- err_source_branch = s_("MergeRequest|Can't show this merge request because the source branch %{branch_badge} is missing from project %{path_badge}. Close this merge request or update the source branch.")
+- err_target_branch = s_("MergeRequest|Can't show this merge request because the target branch %{branch_badge} is missing from project %{path_badge}. Close this merge request or update the target branch.")
+- err_internal = s_("MergeRequest|Can't show this merge request because of an internal error. Contact your administrator.")
+
 .merge-request
-  = render "projects/merge_requests/show/mr_title"
-  = render "projects/merge_requests/show/mr_box"
+  = render "projects/merge_requests/mr_title"
+  = render "projects/merge_requests/mr_box"
 
-  .alert.alert-danger
-    %p
-      We cannot render this merge request properly because
+  = render Pajamas::AlertComponent.new(variant: :danger,
+    dismissible: false) do |c|
+    - c.with_body do
       - if @merge_request.for_fork? && !@merge_request.source_project
-        fork project was removed
+        = err_fork_project_removed
       - elsif !@merge_request.source_branch_exists?
-        %span.label.label-inverse= @merge_request.source_branch
-        does not exist in
-        %span.label.label-info= @merge_request.source_project_path
+        = err_source_branch.html_safe % { branch_badge: gl_badge_tag(@merge_request.source_branch, variant: :info), path_badge: gl_badge_tag(@merge_request.source_project_path, variant: :info) }
       - elsif !@merge_request.target_branch_exists?
-        %span.label.label-inverse= @merge_request.target_branch
-        does not exist in
-        %span.label.label-info= @merge_request.target_project_path
+        = err_target_branch.html_safe % { branch_badge: gl_badge_tag(@merge_request.target_branch, variant: :info), path_badge: gl_badge_tag(@merge_request.source_project_path, variant: :info) }
       - else
-        of internal error
-
-    %strong
-      Please close Merge Request or change branches with existing one
-
+        = err_internal

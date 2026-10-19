@@ -1,0 +1,88 @@
+@import 'mixins_and_variables_and_functions';
+
+.invalid-dropdown {
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-button.gl-dropdown-toggle {
+    border-color: var(--red-500, $red-500);
+
+    &:hover {
+      border-color: var(--red-500, $red-500);
+    }
+  }
+}
+
+.rotations-modal {
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-card {
+    min-width: 75%;
+  }
+}
+
+//// Copied from roadmaps.scss - adapted for on-call schedules
+$header-item-height: 72px;
+$item-height: 40px;
+$details-cell-width: 180px;
+$timeline-cell-height: 32px;
+$timeline-cell-width: 180px;
+$gradient-dark-gray: rgba(0, 0, 0, 0.15);
+$gradient-gray: rgba(255, 255, 255, 0.001);
+$scroll-top-gradient: linear-gradient(to bottom, $gradient-dark-gray 0%, $gradient-gray 100%);
+$scroll-bottom-gradient: linear-gradient(to bottom, $gradient-gray 0%, $gradient-dark-gray 100%);
+$column-right-gradient: linear-gradient(to right, $gradient-dark-gray 0%, $gradient-gray 100%);
+
+.timeline-section {
+  z-index: 20;
+
+  .timeline-header-label {
+    width: $details-cell-width;
+  }
+
+  .timeline-header-item {
+    .current-day-indicator-header {
+      height: $grid-size;
+      width: $grid-size;
+      transform: translate(-50%, 50%);
+    }
+
+    &:first-of-type {
+      .week-item-sublabel .sublabel-value:nth-of-type(7) {
+        @apply gl-border-r;
+      }
+    }
+  }
+}
+
+.list-section .details-cell {
+  &::after {
+    height: 100%;
+    content: '';
+    position: absolute;
+    top: 0;
+    right: -$grid-size;
+    width: $grid-size;
+    pointer-events: none;
+    background: $column-right-gradient;
+  }
+}
+
+.details-cell,
+.timeline-cell {
+  height: $item-height;
+}
+
+.details-cell {
+  width: $details-cell-width;
+  z-index: 10;
+}
+
+.timeline-cell {
+  .current-day-indicator {
+    top: -1px;
+    width: $gl-spacing-scale-1;
+    height: calc(100% + 1px);
+  }
+}
+
+.rotation-asignee-container {
+  overflow-x: clip;
+}

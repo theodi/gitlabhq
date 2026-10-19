@@ -1,0 +1,1119 @@
+---
+stage: Shared responsibility based on functional area
+group: Shared responsibility based on functional area
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: GitLab Prometheus metrics
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+To enable the GitLab Prometheus metrics:
+
+1. Sign in to GitLab as a user with administrator access.
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Metrics and profiling**.
+1. Find the **Metrics - Prometheus** section, and select **Enable GitLab Prometheus metrics endpoint**.
+1. [Restart GitLab](../../restart_gitlab.md#reconfigure-a-linux-package-installation) for the changes to take effect.
+
+For self-compiled installations, you must configure it yourself.
+
+## Collecting the metrics
+
+GitLab monitors its own internal service metrics, and makes them available at the
+`/-/metrics` endpoint. Unlike other [Prometheus](https://prometheus.io) exporters, to access
+the metrics, the client IP address must be [explicitly allowed](../ip_allowlist.md).
+
+These metrics are enabled and collected for Linux package
+and Helm chart installations. For self-compiled installations, these metrics must be enabled
+manually and collected by a Prometheus server.
+
+For enabling and viewing metrics from Sidekiq nodes, see [Sidekiq metrics](#sidekiq-metrics).
+
+## Metrics available
+
+The following metrics are available:
+
+| Metric                                                                         | Type      | Since | Labels                                                                  | Description |
+|:-------------------------------------------------------------------------------|:----------|------:|:------------------------------------------------------------------------|:------------|
+| `action_cable_active_connections`                                              | Gauge     |  13.4 | `server_mode`                                                           | Number of ActionCable WS clients currently connected |
+| `action_cable_broadcasts_total`                                                | Counter   | 13.10 | `server_mode`                                                           | The number of ActionCable broadcasts emitted |
+| `action_cable_pool_current_size`                                               | Gauge     |  13.4 | `server_mode`                                                           | Current number of worker threads in ActionCable thread pool |
+| `action_cable_pool_largest_size`                                               | Gauge     |  13.4 | `server_mode`                                                           | Largest number of worker threads observed so far in ActionCable thread pool |
+| `action_cable_pool_max_size`                                                   | Gauge     |  13.4 | `server_mode`                                                           | Maximum number of worker threads in ActionCable thread pool |
+| `action_cable_pool_min_size`                                                   | Gauge     |  13.4 | `server_mode`                                                           | Minimum number of worker threads in ActionCable thread pool |
+| `action_cable_pool_pending_tasks`                                              | Gauge     |  13.4 | `server_mode`                                                           | Number of tasks waiting to be executed in ActionCable thread pool |
+| `action_cable_pool_tasks_total`                                                | Gauge     |  13.4 | `server_mode`                                                           | Total number of tasks executed in ActionCable thread pool |
+| `action_cable_single_client_transmissions_total`                               | Counter   | 13.10 | `server_mode`                                                           | The number of ActionCable messages transmitted to any client in any channel |
+| `action_cable_subscription_confirmations_total`                                | Counter   | 13.10 | `server_mode`                                                           | The number of ActionCable subscriptions from clients confirmed |
+| `action_cable_subscription_rejections_total`                                   | Counter   | 13.10 | `server_mode`                                                           | The number of ActionCable subscriptions from clients rejected |
+| `action_cable_transmitted_bytes_total`                                         | Counter   |  16.0 | `operation`, `channel`                                                  | Total number of bytes transmitted over ActionCable |
+| `active_context_queue_size`                                                    | Gauge     |  18.7 | `queue_name`, `shard`                                                   | Number of items in each ActiveContext queue |
+| `artifact_report_<report_type>_builds_completed_total`                         | Counter   |  15.3 |                                                                         | Counter of completed CI Builds with report-type artifacts, grouped by report type and labeled by status |
+| `auto_devops_pipelines_completed_total`                                        | Counter   |  12.7 |                                                                         | Counter of completed Auto DevOps pipelines, labeled by status |
+| `cached_object_operations_total`                                               | Counter   |  15.3 | `controller`, `action`, `endpoint_id`                                   | Total number of objects cached for specific web requests |
+| `ci_report_parser_duration_seconds`                                            | Histogram |  13.9 | `parser`                                                                | Time to parse CI/CD report artifacts |
+| `dependency_linker_usage`                                                      | Counter   |  16.8 | `used_on`                                                               | The number of times dependency linker is used |
+| `email_receiver_error`                                                         | Counter   |  14.1 |                                                                         | Total number of errors when processing incoming emails |
+| `failed_login_captcha_total`                                                   | Gauge     |  11.0 |                                                                         | Counter of failed CAPTCHA attempts during login |
+| `gitlab_aggregation_engine_query_duration_seconds`                             | Histogram |  19.5 | `engine`, `query_type`, `feature_category`                              | Duration of analytics aggregation engine queries, by engine. `query_type` is `data` for a page of rows or `count` for a total count query. Premium and Ultimate only. |
+| `gitlab_application_rate_limiter_throttle_utilization_ratio`                   | Histogram |  17.6 | `throttle_key`, `peek`, `feature_category`                              | Utilization ratio of a throttle in GitLab Application Rate Limiter. |
+| `gitaly_circuit_breaker_requests_total`                                        | Counter   |  18.9 | `circuit_state`, `result`, `reason`                                     | Total Gitaly requests processed by circuit breaker. `result` can be `allowed`, `rejected`, or `error`. `reason` provides error detail (for example, `resource_exhausted`) |
+| `gitaly_circuit_breaker_transitions_total`                                     | Counter   |  18.9 | `from_state`, `to_state`                                                | Total circuit breaker state transitions. States are `closed`, `open`. Detailed endpoint and storage information is available in structured logs |
+| `gitlab_audit_event_streaming_nats_consumer_lag_seconds`                       | Histogram |  19.3 | `feature_category`                                                      | Audit event streaming NATS consumer lag (publish to dispatch) in seconds |
+| `gitlab_audit_event_streaming_nats_consumer_unreachable_total`                 | Counter   |  19.4 | `feature_category`                                                      | Audit event consumer drains aborted because NATS was unreachable |
+| `gitlab_audit_event_streaming_nats_dispatch_destination_error_total`           | Counter   |  19.4 | `feature_category`                                                      | Audit event batch dispatches that failed due to a destination-side error (a degradation ratio, not an error) |
+| `gitlab_audit_event_streaming_nats_publish_duration_seconds`                   | Histogram |  19.4 | `feature_category`                                                      | Audit event streaming NATS synchronous publish duration in seconds |
+| `gitlab_audit_event_streaming_nats_publish_fallback_total`                     | Counter   |  19.3 | `feature_category`                                                      | Audit event publishes that fell back from NATS to Sidekiq (a degradation ratio, not an error) |
+| `gitlab_audit_event_streaming_nats_publish_total`                              | Counter   |  19.3 | `feature_category`                                                      | Audit event publish attempts through NATS |
+| `gitlab_authorized_projects_safety_net_refresh_rows_total`                     | Counter   |  19.3 | `trigger`, `direction`                                                  | Total number of `project_authorizations` rows added or deleted by a safety-net refresh |
+| `gitlab_blob_embeds_total`                                                     | Counter   |  19.4 | `outcome`                                                               | Total number of blob embed render attempts. Outcome can be `rendered`, `unrenderable`, `unauthorized`, `project_not_found`, `embed_limit_exceeded`, `email_preview_disabled`. |
+| `gitlab_bootsnap_compile_cache_events_total`                                   | Counter   |  19.3 | `event`                                                                 | Number of Bootsnap compile cache events observed during boot, by type (`hit`, `revalidated`, `miss`, `stale`). The hit rate is `(hit + revalidated) / total` |
+| `gitlab_cache_misses_total`                                                    | Counter   |  10.2 | `controller`, `action`, `store`, `endpoint_id`                          | Cache read miss |
+| `gitlab_cache_operation_duration_seconds`                                      | Histogram |  10.2 | `operation`, `store`, `endpoint_id`                                     | Cache access time |
+| `gitlab_cache_operations_total`                                                | Counter   |  12.2 | `controller`, `action`, `operation`, `store`, `endpoint_id`             | Cache operations by controller or action |
+| `gitlab_cache_read_multikey_count`                                             | Histogram |  15.7 | `controller`, `action`, `store`, `endpoint_id`                          | Count of keys in multi-key cache read operations |
+| `gitlab_ci_active_jobs`                                                        | Histogram |  14.2 |                                                                         | Count of active jobs when pipeline is created |
+| `gitlab_ci_build_trace_errors_total`                                           | Counter   |  14.4 | `error_reason`                                                          | Total amount of different error types on a build trace |
+| `gitlab_ci_current_queue_size`                                                 | Gauge     |  16.3 |                                                                         | Current size of initialized CI/CD builds queue |
+| `gitlab_ci_job_failure_reasons`                                                | Counter   | 13.11 | `reason`, `runner_type`                                                 | Counter of job failure reasons. The `runner_type` label was [added](https://gitlab.com/gitlab-org/gitlab/-/work_items/603882) in GitLab 19.3. For `reason` label values, see [CI/CD failure reason metrics](#cicd-failure-reason-metrics) |
+| `gitlab_ci_job_token_authorization_failures`                                   | Counter   | 17.11 | `same_root_ancestor`                                                    | Count of failed authorization attempts via CI JOB Token |
+| `gitlab_ci_job_token_inbound_access`                                           | Counter   |  17.2 |                                                                         | Count of inbound accesses via CI job token |
+| `gitlab_ci_pipeline_builder_scoped_variables_duration`                         | Histogram |  14.5 |                                                                         | Time in seconds it takes to create the scoped variables for a CI/CD job |
+| `gitlab_ci_pipeline_creation_duration_seconds`                                 | Histogram |  13.0 | `gitlab`                                                                | Time in seconds it takes to create a CI/CD pipeline |
+| `gitlab_ci_pipeline_failure_reasons`                                           | Counter   | 13.11 | `reason`                                                                | Counter of pipeline failure reasons. For `reason` label values, see [CI/CD failure reason metrics](#cicd-failure-reason-metrics) |
+| `gitlab_ci_pipeline_security_orchestration_policy_processing_duration_seconds` | Histogram | 13.12 |                                                                         | Time in seconds it takes to process Security Policies in CI/CD pipeline |
+| `gitlab_ci_pipeline_size_builds`                                               | Histogram |  13.1 | `source`                                                                | Total number of builds within a pipeline grouped by a pipeline source |
+| `gitlab_ci_pipeline_time_to_finished_seconds`                                  | Histogram |  19.2 | `source`, `status`                                                      | Wall-clock time in seconds from pipeline creation to a finished status (success, failed, or canceled) |
+| `gitlab_ci_queue_depth_total`                                                  | Histogram |  16.3 |                                                                         | Size of a CI/CD builds queue in relation to the operation result |
+| `gitlab_ci_queue_iteration_duration_seconds`                                   | Histogram |  16.3 |                                                                         | Time it takes to find a build in CI/CD queue |
+| `gitlab_ci_queue_operations_total`                                             | Counter   |  16.3 |                                                                         | Counts all the operations that are happening inside a queue |
+| `gitlab_ci_queue_retrieval_duration_seconds`                                   | Histogram |  16.3 |                                                                         | Time it takes to execute a SQL query to retrieve builds queue |
+| `gitlab_ci_queue_size_total`                                                   | Histogram |  16.3 |                                                                         | Size of initialized CI/CD builds queue |
+| `gitlab_ci_runner_authentication_failure_total`                                | Counter   |  15.2 |                                                                         | Total number of times that runner authentication has failed |
+| `gitlab_ci_runner_authentication_success_total`                                | Counter   |  15.2 | `type`                                                                  | Total number of times that runner authentication has succeeded |
+| `gitlab_ci_trace_bytes_total`                                                  | Counter   |  13.4 |                                                                         | Total amount of build trace bytes transferred |
+| `gitlab_ci_trace_finalize_duration_seconds`                                    | Histogram |  13.6 |                                                                         | Duration of build trace chunks migration to object storage |
+| `gitlab_ci_trace_operations_total`                                             | Counter   |  13.4 | `operation`                                                             | Total amount of different operations on a build trace |
+| `gitlab_connection_pool_available_count`                                       | Gauge     |  16.7 |                                                                         | Number of available connections in the pool |
+| `gitlab_connection_pool_size`                                                  | Gauge     |  16.7 |                                                                         | Size of connection pool |
+| `gitlab_database_transaction_seconds`                                          | Histogram |  12.1 |                                                                         | Time spent in database transactions, in seconds |
+| `gitlab_dependency_paths_found_total`                                          | Counter   |  18.3 | `cyclic`                                                                | Counts the number of ancestor dependency paths found for a given dependency. |
+| `gitlab_diffs_collection_real_duration_seconds`                                | Histogram |  15.8 | `controller`, `action`, `endpoint_id`                                   | Duration in seconds spent on querying merge request diff files on diffs batch request |
+| `gitlab_diffs_comparison_real_duration_seconds`                                | Histogram |  15.8 | `controller`, `action`, `endpoint_id`                                   | Duration in seconds spent on getting comparison data on diffs batch request |
+| `gitlab_diffs_highlight_cache_decorate_real_duration_seconds`                  | Histogram |  15.8 | `controller`, `action`, `endpoint_id`                                   | Duration in seconds spent on setting highlighted lines from cache on diffs batch request |
+| `gitlab_diffs_render_real_duration_seconds`                                    | Histogram |  15.8 | `controller`, `action`, `endpoint_id`                                   | Duration in seconds spent on serializing and rendering diffs on diffs batch request |
+| `gitlab_diffs_reorder_real_duration_seconds`                                   | Histogram |  15.8 | `controller`, `action`, `endpoint_id`                                   | Duration in seconds spend on reordering of diff files on diffs batch request |
+| `gitlab_diffs_unfold_real_duration_seconds`                                    | Histogram |  15.8 | `controller`, `action`, `endpoint_id`                                   | Duration in seconds spent on unfolding positions on diffs batch request |
+| `gitlab_diffs_unfoldable_positions_real_duration_seconds`                      | Histogram |  15.8 | `controller`, `action`                                                  | Duration in seconds spent on getting unfoldable note positions on diffs batch request |
+| `gitlab_diffs_write_cache_real_duration_seconds`                               | Histogram |  15.8 | `controller`, `action`, `endpoint_id`                                   | Duration in seconds spent on caching highlighted lines and stats on diffs batch request |
+| `gitlab_external_http_duration_seconds`                                        | Counter   |  13.8 |                                                                         | Duration in seconds spent on each HTTP call to external systems |
+| `gitlab_external_http_exception_total`                                         | Counter   |  13.8 |                                                                         | Total number of exceptions raised when making external HTTP calls |
+| `gitlab_external_http_total`                                                   | Counter   |  13.8 | `controller`, `action`, `endpoint_id`                                   | Total number of HTTP calls to external systems |
+| `gitlab_find_dependency_paths_real_duration_seconds`                           | Histogram |  18.3 |                                                                         | Duration in seconds spent resolving the ancestor dependency paths for a given component. |
+| `gitlab_ghost_user_migration_lag_seconds`                                      | Gauge     |  15.6 |                                                                         | The waiting time in seconds of the oldest scheduled record for ghost user migration |
+| `gitlab_ghost_user_migration_scheduled_records_total`                          | Gauge     |  15.6 |                                                                         | The total number of scheduled ghost user migrations |
+| `gitlab_graphql_return_type_conflicts_total`                                   | Counter   |  19.4 | `field`, `operation`, `types`                                           | Number of GraphQL queries selecting mismatched types for the same response key |
+| `gitlab_highlight_usage`                                                       | Counter   |  16.8 | `used_on`                                                               | The number of times `Gitlab::Highlight` is used |
+| `gitlab_http_router_rule_total`                                                | Counter   |  17.4 | `rule_action`, `rule_type`                                              | Counts occurrences of HTTP Router rule's `rule_action` and `rule_type` |
+| `gitlab_issuable_fast_count_by_state_failures_total`                           | Counter   |  13.5 |                                                                         | Number of soft-failed row count operations on the **Issue** and **Merge request** pages |
+| `gitlab_issuable_fast_count_by_state_total`                                    | Counter   |  13.5 |                                                                         | Total number of row count operations on the **Issue** and **Merge request** pages |
+| `gitlab_keeparound_refs_created_total`                                         | Counter   | 16.10 | `source`                                                                | Counts the number of keep-around refs actually created |
+| `gitlab_keeparound_refs_requested_total`                                       | Counter   | 16.10 | `source`                                                                | Counts the number of keep-around refs requested to be created |
+| `gitlab_memwd_violations_handled_total`                                        | Counter   |  15.9 |                                                                         | Total number of times Ruby process memory violations were handled |
+| `gitlab_memwd_violations_total`                                                | Counter   |  15.9 |                                                                         | Total number of times a Ruby process violated a memory threshold |
+| `gitlab_method_call_duration_seconds`                                          | Histogram |  10.2 | `controller`, `action`, `module`, `method`                              | Method calls real duration |
+| `gitlab_omniauth_login_total`                                                  | Counter   |  16.1 | `omniauth_provider`, `status`                                           | Total number of OmniAuth logins attempts |
+| `gitlab_openbao_request_duration_seconds`                                      | Histogram |  19.4 | `operation`, `outcome`                                                  | Duration in seconds of each HTTP call from Rails to OpenBao. Premium and Ultimate only. |
+| `gitlab_openbao_request_errors_total`                                          | Counter   |  19.4 | `operation`, `error_type`                                               | Failed HTTP calls from Rails to OpenBao, by fault type. Premium and Ultimate only. |
+| `gitlab_openbao_requests_total`                                                | Counter   |  19.4 | `operation`, `method`, `outcome`                                        | Total number of HTTP calls from Rails to OpenBao. Premium and Ultimate only. |
+| `gitlab_page_out_of_bounds`                                                    | Counter   |  12.8 | `controller`, `action`, `bot`                                           | Counter for the PageLimiter pagination limit being hit |
+| `gitlab_plan_tier_lookups_total`                                               | Counter   |  19.5 | `subject`, `result`                                                     | Counts plan tier lookups. `subject` is `user` or `namespace`. `result` is `hit` when the per-request store or Redis answered, and `miss` when the lookup queried the database. A lookup with no ID is not counted. Two lookups in one request reuse the per-request store only when they resolve the same cache key, as a deploy token does when its own namespace is the one the request addresses, so alert on the `miss` rate rather than the hit ratio |
+| `gitlab_presentable_object_cacheless_render_real_duration_seconds`             | Histogram |  15.3 | `controller`, `action`, `endpoint_id`                                   | Duration of real time spent caching and representing specific web request objects |
+| `gitlab_rack_attack_events_total`                                              | Counter   |  17.6 | `event_type`, `event_name`                                              | Counts the total number of events handled by Rack Attack. |
+| `gitlab_rack_attack_throttle_limit`                                            | Gauge     |  17.6 | `event_name`                                                            | Reports the maximum number of requests that a client can make before Rack Attack throttles them. |
+| `gitlab_rack_attack_throttle_period_seconds`                                   | Gauge     |  17.6 | `event_name`                                                            | Reports the duration over which requests for a client are counted before Rack Attack throttles them. |
+| `gitlab_rails_boot_time_seconds`                                               | Gauge     |  14.8 |                                                                         | Time elapsed for Rails primary process to finish startup |
+| `gitlab_rails_queue_duration_seconds`                                          | Histogram |   9.4 |                                                                         | Measures latency between GitLab Workhorse forwarding a request to Rails |
+| `gitlab_rate_limiter_git_basic_auth_ban_events_total`                                 | Counter   |  19.4 | `event`                                                                 | Counts Git and container registry authentication IP ban events. `event` is one of `failure`, `ban`, `blocked`, `already_banned`, or `reset` |
+| `gitlab_ref_cache_operations_total`                                            | Counter   |  19.4 | `operation`, `ref_type`, `status`                                       | Counts ref cache operations by outcome. `operation` is `fetch`, `search`, `include`, `update`, or `rebuild`. `ref_type` is `branch`, `tag`, or `unknown`. For `fetch`, `search`, and `include`, `status` is `hit`, `miss_untrusted`, `miss_absent`, or `error`. `miss_untrusted` means a recoverable miss where the set is present but untrusted, or the cache rebuild produces an empty set, which has no Redis key. `miss_absent` means a cold read that produced members. For `update`, `status` is `success`, `skipped`, or `error`. For `rebuild`, `status` is `success`, `skipped_locked`, `skipped_trusted`, or `error`. `update/skipped` includes dual-writes queued during a rebuild and later applied by reconciliation. |
+| `gitlab_ref_cache_trust_events_total`                                          | Counter   |  19.4 | `ref_type`, `event`                                                     | Total ref cache trust lifecycle events. `ref_type` is `branch`, `tag`, or `unknown`. `event` is `granted`, `revoked`, or `grant_skipped`. |
+| `gitlab_ruby_threads_max_expected_threads`                                     | Gauge     |  13.3 |                                                                         | Maximum number of threads expected to be running and performing application work |
+| `gitlab_ruby_threads_running_threads`                                          | Gauge     |  13.3 |                                                                         | Number of running Ruby threads by name |
+| `gitlab_secrets_manager_entitlement_resolutions_total`                         | Counter   |  19.4 | `source`                                                                | Secrets Manager entitlement resolutions that queried Customers Portal; offline and cached resolutions are not counted. `source` is `live` (Customers Portal answered), `lkg_stale` (Customers Portal was unreachable or answered with an HTTP 5xx error, so GitLab reused its last known good answer), or `fail_closed` (the resolution failed, so GitLab denied access). Premium and Ultimate only. |
+| `gitlab_security_policies_policy_creation_duration_seconds`                    | Histogram |  17.6 |                                                                         | The amount of time to create policy-related configuration |
+| `gitlab_security_policies_policy_deletion_duration_seconds`                    | Histogram |  17.6 |                                                                         | The amount of time to delete policy-related configuration |
+| `gitlab_security_policies_policy_sync_duration_seconds`                        | Histogram |  17.6 |                                                                         | The amount of time to sync policy changes for a policy configuration |
+| `gitlab_security_policies_scan_execution_configuration_rendering_seconds`      | Histogram |  17.3 |                                                                         | The amount of time to render scan execution policy CI configurations |
+| `gitlab_security_policies_scan_result_process_duration_seconds`                | Histogram |  16.7 |                                                                         | The amount of time to process merge request approval policies |
+| `gitlab_security_policies_sync_opened_merge_requests_duration_seconds`         | Histogram |  17.6 |                                                                         | The amount of time to sync opened merge requests after policy changes |
+| `gitlab_security_policies_update_configuration_duration_seconds`               | Histogram |  17.6 |                                                                         | The amount of time to schedule sync for a policy configuration change |
+| `gitlab_sli_aggregation_engine_query_apdex_success_total`                      | Counter   |  19.5 | `engine`, `query_type`, `feature_category`                              | Total number of analytics aggregation engine queries that met the latency target for their engine, 5 seconds by default. Divide by `gitlab_sli_aggregation_engine_query_apdex_total` to get a success ratio. Premium and Ultimate only. |
+| `gitlab_sli_aggregation_engine_query_apdex_total`                              | Counter   |  19.5 | `engine`, `query_type`, `feature_category`                              | Total number of analytics aggregation engine query Apdex measurements. Premium and Ultimate only. |
+| `gitlab_sli_aggregation_engine_query_error_total`                              | Counter   |  19.5 | `engine`, `query_type`, `feature_category`                              | Total number of analytics aggregation engine queries that failed. Premium and Ultimate only. |
+| `gitlab_sli_aggregation_engine_query_total`                                    | Counter   |  19.5 | `engine`, `query_type`, `feature_category`                              | Total number of analytics aggregation engine query error-rate measurements. Divide `gitlab_sli_aggregation_engine_query_error_total` by `gitlab_sli_aggregation_engine_query_total` to get an error ratio. Premium and Ultimate only. |
+| `gitlab_sli_openbao_client_calls_error_total`                                  | Counter   |  19.4 | `operation`                                                             | Failed HTTP calls from Rails to OpenBao, measured as an application SLI. Premium and Ultimate only. |
+| `gitlab_sli_openbao_client_calls_total`                                        | Counter   |  19.4 | `operation`                                                             | Total number of HTTP calls from Rails to OpenBao, measured as an application SLI. Premium and Ultimate only. |
+| `gitlab_sli_rails_request_apdex_success_total`                                 | Counter   |  14.4 | `endpoint_id`, `feature_category`, `request_urgency`                    | Total number of successful requests that met the target duration for their urgency. Divide by `gitlab_sli_rails_requests_apdex_total` to get a success ratio |
+| `gitlab_sli_rails_request_apdex_total`                                         | Counter   |  14.4 | `endpoint_id`, `feature_category`, `request_urgency`                    | Total number of request Apdex measurements. |
+| `gitlab_sli_rails_request_error_total`                                         | Counter   |  15.7 | `endpoint_id`, `feature_category`, `request_urgency`, `error`           | Total number of request error measurements. |
+| `gitlab_snowplow_events_total`                                                 | Counter   |  14.1 |                                                                         | Total number of GitLab Snowplow Analytics Instrumentation events emitted |
+| `gitlab_snowplow_failed_events_total`                                          | Counter   |  14.1 |                                                                         | Total number of GitLab Snowplow Analytics Instrumentation events emission failures |
+| `gitlab_snowplow_successful_events_total`                                      | Counter   |  14.1 |                                                                         | Total number of GitLab Snowplow Analytics Instrumentation events emission successes |
+| `gitlab_spamcheck_request_duration_seconds`                                    | Histogram | 13.12 |                                                                         | The duration for requests between Rails and the anti-spam engine |
+| `gitlab_sql_<role>_duration_seconds`                                           | Histogram | 13.10 |                                                                         | SQL execution time, excluding `SCHEMA` operations and `BEGIN` / `COMMIT`, grouped by database roles (primary/replica) |
+| `gitlab_sql_duration_seconds`                                                  | Histogram |  10.2 |                                                                         | SQL execution time, excluding `SCHEMA` operations and `BEGIN` / `COMMIT` |
+| `gitlab_transaction_cache_<key>_count_total`                                   | Counter   |  10.2 |                                                                         | Counter for total Rails cache calls (per key) |
+| `gitlab_transaction_cache_<key>_duration_total`                                | Counter   |  10.2 |                                                                         | Counter for total time (seconds) spent in Rails cache calls (per key) |
+| `gitlab_transaction_cache_count_total`                                         | Counter   |  10.2 |                                                                         | Counter for total Rails cache calls (aggregate) |
+| `gitlab_transaction_cache_duration_total`                                      | Counter   |  10.2 |                                                                         | Counter for total time (seconds) spent in Rails cache calls (aggregate) |
+| `gitlab_transaction_cache_read_hit_count_total`                                | Counter   |  10.2 | `controller`, `action`, `store`, `endpoint_id`                          | Counter for cache hits for Rails cache calls |
+| `gitlab_transaction_cache_read_miss_count_total`                               | Counter   |  10.2 | `controller`, `action`, `store`, `endpoint_id`                          | Counter for cache misses for Rails cache calls |
+| `gitlab_transaction_db_<role>_cached_count_total`                              | Counter   |  13.1 | `controller`, `action`, `endpoint_id`                                   | Counter for total number of cached SQL calls, grouped by database roles (primary/replica) |
+| `gitlab_transaction_db_<role>_count_total`                                     | Counter   | 13.10 | `controller`, `action`, `endpoint_id`                                   | Counter for total number of SQL calls, grouped by database roles (primary/replica) |
+| `gitlab_transaction_db_<role>_wal_cached_count_total`                          | Counter   |  14.1 | `controller`, `action`, `endpoint_id`                                   | Counter for total number of cached WAL (write ahead log location) queries, grouped by database roles (primary/replica) |
+| `gitlab_transaction_db_<role>_wal_count_total`                                 | Counter   |  14.0 | `controller`, `action`, `endpoint_id`                                   | Counter for total number of WAL (write ahead log location) queries, grouped by database roles (primary/replica) |
+| `gitlab_transaction_db_cached_count_total`                                     | Counter   |  13.1 | `controller`, `action`, `endpoint_id`                                   | Counter for total number of cached SQL calls |
+| `gitlab_transaction_db_count_total`                                            | Counter   |  13.1 | `controller`, `action`, `endpoint_id`                                   | Counter for total number of SQL calls |
+| `gitlab_transaction_db_write_count_total`                                      | Counter   |  13.1 | `controller`, `action`, `endpoint_id`                                   | Counter for total number of write SQL calls |
+| `gitlab_transaction_duration_seconds`                                          | Histogram |  10.2 | `controller`, `action`, `endpoint_id`                                   | Duration for successful requests (`gitlab_transaction_*` metrics) |
+| `gitlab_transaction_event_build_found_total`                                   | Counter   |   9.4 |                                                                         | Counter for build found for API /jobs/request |
+| `gitlab_transaction_event_build_invalid_total`                                 | Counter   |   9.4 |                                                                         | Counter for build invalid due to concurrency conflict for API /jobs/request |
+| `gitlab_transaction_event_build_not_found_cached_total`                        | Counter   |   9.4 |                                                                         | Counter for cached response of build not found for API /jobs/request |
+| `gitlab_transaction_event_build_not_found_total`                               | Counter   |   9.4 |                                                                         | Counter for build not found for API /jobs/request |
+| `gitlab_transaction_event_change_default_branch_total`                         | Counter   |   9.4 |                                                                         | Counter when default branch is changed for any repository |
+| `gitlab_transaction_event_create_repository_total`                             | Counter   |   9.4 |                                                                         | Counter when any repository is created |
+| `gitlab_transaction_event_etag_caching_cache_hit_total`                        | Counter   |   9.4 | `endpoint`                                                              | Counter for ETag cache hit. |
+| `gitlab_transaction_event_etag_caching_header_missing_total`                   | Counter   |   9.4 | `endpoint`                                                              | Counter for ETag cache miss - header missing |
+| `gitlab_transaction_event_etag_caching_key_not_found_total`                    | Counter   |   9.4 | `endpoint`                                                              | Counter for ETag cache miss - key not found |
+| `gitlab_transaction_event_etag_caching_middleware_used_total`                  | Counter   |   9.4 | `endpoint`                                                              | Counter for ETag middleware accessed |
+| `gitlab_transaction_event_etag_caching_resource_changed_total`                 | Counter   |   9.4 | `endpoint`                                                              | Counter for ETag cache miss - resource changed |
+| `gitlab_transaction_event_fork_repository_total`                               | Counter   |   9.4 |                                                                         | Counter for repository forks (RepositoryForkWorker). Only incremented when source repository exists |
+| `gitlab_transaction_event_import_repository_total`                             | Counter   |   9.4 |                                                                         | Counter for repository imports (RepositoryImportWorker) |
+| `gitlab_transaction_event_patch_hard_limit_bytes_hit_total`                    | Counter   |  13.9 |                                                                         | Counter for diff patch size limit hits |
+| `gitlab_transaction_event_push_branch_total`                                   | Counter   |   9.4 |                                                                         | Counter for all branch pushes |
+| `gitlab_transaction_event_rails_exception_total`                               | Counter   |   9.4 |                                                                         | Counter for number of rails exceptions |
+| `gitlab_transaction_event_remove_branch_total`                                 | Counter   |   9.4 |                                                                         | Counter when a branch is removed for any repository |
+| `gitlab_transaction_event_remove_repository_total`                             | Counter   |   9.4 |                                                                         | Counter when a repository is removed |
+| `gitlab_transaction_event_remove_tag_total`                                    | Counter   |   9.4 |                                                                         | Counter when a tag is removed for any repository |
+| `gitlab_transaction_event_sidekiq_exception_total`                             | Counter   |   9.4 |                                                                         | Counter of Sidekiq exceptions |
+| `gitlab_transaction_event_stuck_import_jobs_total`                             | Counter   |   9.4 | `projects_without_jid_count`, `projects_with_jid_count`                 | Count of stuck import jobs |
+| `gitlab_transaction_event_update_build_total`                                  | Counter   |   9.4 |                                                                         | Counter for update build for API `/jobs/request/:id` |
+| `gitlab_transaction_new_redis_connections_total`                               | Counter   |   9.4 |                                                                         | Counter for new Redis connections |
+| `gitlab_transaction_rails_queue_duration_total`                                | Counter   |   9.4 | `controller`, `action`, `endpoint_id`                                   | Measures latency between GitLab Workhorse forwarding a request to Rails |
+| `gitlab_transaction_view_duration_total`                                       | Counter   |   9.4 | `controller`, `action`, `view`, `endpoint_id`                           | Duration for views |
+| `gitlab_view_rendering_duration_seconds`                                       | Histogram |  10.2 | `controller`, `action`, `view`, `endpoint_id`                           | Duration for views (histogram) |
+| `gitlab_vulnerability_report_branch_comparison_cpu_duration_seconds`           | Histogram | 15.11 |                                                                         | CPU execution duration of vulnerability report on default branch SQL query |
+| `gitlab_vulnerability_report_branch_comparison_real_duration_seconds`          | Histogram | 15.11 |                                                                         | Wall clock execution duration of vulnerability report on default branch SQL query |
+| `http_elasticsearch_requests_duration_seconds`                                 | Histogram |  13.1 | `controller`, `action`, `endpoint_id`                                   | Elasticsearch requests duration during web transactions. Premium and Ultimate only. |
+| `http_elasticsearch_requests_total`                                            | Counter   |  13.1 | `controller`, `action`, `endpoint_id`                                   | Elasticsearch requests count during web transactions. Premium and Ultimate only. |
+| `http_zoekt_requests_duration_seconds`                                         | Histogram |  19.2 | `controller`, `action`, `feature_category`, `endpoint_id`               | Query time for Zoekt servers during web transactions. Premium and Ultimate only. |
+| `http_zoekt_requests_total`                                                    | Counter   |  19.2 | `controller`, `action`, `feature_category`, `endpoint_id`               | Amount of calls to Zoekt servers during web transactions. Premium and Ultimate only. |
+| `http_request_duration_seconds`                                                | Histogram |   9.4 | `method`                                                                | HTTP response time from rack middleware for successful requests |
+| `http_requests_total`                                                          | Counter   |   9.4 | `method`, `status`                                                      | Rack request count |
+| `job_queue_duration_seconds`                                                   | Histogram |   9.5 |                                                                         | Request handling execution time |
+| `job_register_attempts_failed_total`                                           | Counter   |   9.5 |                                                                         | Counts the times a runner fails to register a job |
+| `job_register_attempts_total`                                                  | Counter   |   9.5 |                                                                         | Counts the times a runner tries to register a job |
+| `pipeline_graph_link_calculation_duration_seconds`                             | Histogram |  13.9 |                                                                         | Total time spent calculating links, in seconds |
+| `pipeline_graph_links_per_job_ratio`                                           | Histogram |  13.9 |                                                                         | Ratio of links to job per graph |
+| `pipeline_graph_links_total`                                                   | Histogram |  13.9 |                                                                         | Number of links per graph |
+| `pipelines_created_total`                                                      | Counter   |   9.4 | `source`, `partition_id`                                                | Counter of pipelines created |
+| `pipelines_finished_total`                                                     | Counter   |  19.2 | `source`, `partition_id`, `status`                                      | Counter of pipelines finished (success, failed, or canceled) |
+| `rack_uncaught_errors_total`                                                   | Counter   |   9.4 |                                                                         | Rack connections handling uncaught errors count |
+| `redis_cache_generation_duration_seconds`                                      | Histogram |  15.6 | `cache_hit`, `cache_identifier`, `feature_category`, `backing_resource` | Time to generate Redis cache |
+| `redis_hit_miss_operations_total`                                              | Counter   |  15.6 | `cache_hit`, `cache_identifier`, `feature_category`, `backing_resource` | Total number of Redis cache hits and misses |
+| `search_advanced_boolean_settings`                                             | Gauge     |  17.3 | `name`                                                                  | Current state of Advanced search boolean settings |
+| `search_advanced_index_repair_total`                                           | Counter   |  17.3 | `document_type`                                                         | Counts the number of index repair operations |
+| `service_desk_new_note_email`                                                  | Counter   |  14.0 |                                                                         | Total number of email notifications on new Service Desk comment |
+| `service_desk_thank_you_email`                                                 | Counter   |  14.0 |                                                                         | Total number of email responses to new Service Desk emails |
+| `successful_login_captcha_total`                                               | Gauge     |  11.0 |                                                                         | Counter of successful CAPTCHA attempts during login |
+| `upload_file_does_not_exist`                                                   | Counter   |  10.7 |                                                                         | Number of times an upload record could not find its file. |
+| `user_session_logins_total`                                                    | Counter   |   9.4 |                                                                         | Counter of how many users have logged in since GitLab was started or restarted |
+| `validity_check_network_errors_total`                                          | Counter   |  18.6 | `partner`, `error_class`                                                | Total network errors during partner token verification API calls. Ultimate only. |
+| `validity_check_partner_api_duration_seconds`                                  | Histogram |  18.6 | `partner`                                                               | Partner API response time in seconds for token verification requests. Ultimate only. |
+| `validity_check_partner_api_requests_total`                                    | Counter   |  18.6 | `partner`, `status`, `error_type`                                       | Total partner API verification requests with success/failure status. Ultimate only. |
+| `validity_check_rate_limit_hits_total`                                         | Counter   |  18.6 | `limit_type`                                              | Total rate limit hits during partner token verification. Ultimate only. |
+
+### CI/CD failure reason metrics
+
+The `gitlab_ci_job_failure_reasons` and `gitlab_ci_pipeline_failure_reasons` counters record why CI/CD
+jobs and pipelines fail. Whichever process handles the failure increments the counter, so the same
+metric appears on both the Rails (Puma) and Sidekiq metrics endpoints. For example, runner job status
+updates are handled by the Rails API, while downstream pipeline creation runs in Sidekiq. The label
+values have the same meaning on both endpoints. Dashboards should sum the values from all endpoints.
+
+#### Job failure reasons
+
+The `reason` label of `gitlab_ci_job_failure_reasons` records the failure reason of a job.
+Common values:
+
+- `script_failure`: The job script commands returned a non-zero exit code. For the `docker`,
+  `docker+machine`, and `kubernetes` executors, this value also covers Docker image pull failures.
+  In GitLab 19.1 and later, pull failures caused by an invalid image or tag are recorded as
+  `runner_configuration_error`, and pull failures caused by an unreachable registry are recorded as
+  `runner_external_dependency_failure`.
+- `api_failure`: The runner could not communicate with the GitLab API during the job, for example when
+  sending the job trace, uploading artifacts, or reporting the job status.
+- `runner_system_failure`: The runner failed while preparing the build environment or executor,
+  unrelated to the job script.
+- `job_execution_timeout`: The job exceeded the maximum execution time set for the job.
+- `downstream_pipeline_creation_failed`: A trigger job could not create the downstream pipeline.
+- `unknown_failure`: No specific failure reason was recorded.
+
+For the full list of values, see [`retry:when`](../../../ci/yaml/_index.md#retrywhen).
+
+#### Pipeline failure reasons
+
+The `reason` label of `gitlab_ci_pipeline_failure_reasons` records the failure reason of a pipeline:
+
+| Value                           | Description |
+|:--------------------------------|:------------|
+| `unknown_failure`               | The reason for the pipeline failure is unknown. |
+| `config_error`                  | The pipeline failed because of an error in the CI/CD configuration file. |
+| `external_validation_failure`   | External pipeline validation failed. |
+| `user_not_verified`             | The pipeline failed because the user is not verified. |
+| `size_limit_exceeded`           | The pipeline size limit was exceeded. |
+| `job_activity_limit_exceeded`   | The pipeline job activity limit was exceeded. |
+| `deployments_limit_exceeded`    | The pipeline deployments limit was exceeded. |
+| `project_deleted`               | The project associated with the pipeline was deleted. |
+| `filtered_by_rules`             | Every job was excluded by `rules`, so the pipeline was not created. This value is expected behavior. |
+| `filtered_by_workflow_rules`    | Top-level `workflow:rules` prevented the pipeline from running. This value is expected behavior. |
+| `composite_identity_forbidden`  | The pipeline did not run because the code must be reviewed by a non-AI user first. |
+| `pipeline_ref_creation_failure` | GitLab could not create the pipeline ref. |
+| `filtered_by_no_pipeline`       | The commit was pushed with the `ci.no_pipeline` option, so the pipeline did not run. This value is expected behavior. |
+| `gitaly_unavailable`            | Gitaly was temporarily unavailable when the pipeline was created. |
+
+The `filtered_by_rules`, `filtered_by_workflow_rules`, `filtered_by_no_pipeline`, and
+`gitaly_unavailable` reasons are counted by the metric, but GitLab does not persist a failed pipeline
+for them, so they never appear as failed pipelines in the UI.
+
+Both counters are also listed in the [Sidekiq metrics](#sidekiq-metrics) table.
+
+## Zoekt metrics
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/241045) in GitLab 19.2.
+
+{{< /history >}}
+
+Metrics for [exact code search](../../../user/search/exact_code_search.md) powered by Zoekt.
+
+### Per-request and per-job metrics
+
+These metrics are emitted for every HTTP request from GitLab Rails to a Zoekt
+node, both from web/Grape requests and from Sidekiq jobs.
+
+| Metric | Type | Since | Labels | Description |
+|:-------|:-----|------:|:-------|:------------|
+| `http_zoekt_requests_total` | Counter | 19.2 | `controller`, `action`, `feature_category`, `endpoint_id` | Amount of calls to Zoekt servers during web transactions. Premium and Ultimate only. |
+| `http_zoekt_requests_duration_seconds` | Histogram | 19.2 | `controller`, `action`, `feature_category`, `endpoint_id` | Query time for Zoekt servers during web transactions. Premium and Ultimate only. |
+| `sidekiq_zoekt_requests_total` | Counter | 19.2 | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency`, `destination_shard_redis` | Zoekt requests during a Sidekiq job execution. Premium and Ultimate only. |
+| `sidekiq_zoekt_requests_duration_seconds` | Histogram | 19.2 | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency`, `destination_shard_redis` | Duration in seconds that a Sidekiq job spent in requests to a Zoekt server. Premium and Ultimate only. |
+
+The two `sidekiq_zoekt_*` rows are also listed in the Sidekiq metrics table
+alongside the equivalent Elasticsearch and Redis metrics.
+
+### Database-derived Zoekt metrics (from GitLab exporter)
+
+Database-derived Zoekt metrics (node status, task queue depth, index state,
+storage bytes) are emitted by the `gitlab-exporter` process under the
+`search_zoekt_*` prefix.
+The `gitlab-exporter` endpoint emits these metrics, not the Rails `/-/metrics` endpoint.
+
+| Metric | Type | Since | Labels | Description |
+|:-------|:-----|------:|:-------|:------------|
+| `search_zoekt_task_processing_queue_size` | Gauge | **None** | `node_name`, `node_id` | Number of tasks waiting to be processed by Zoekt. |
+| `search_zoekt_repositories_schema_version_count` | Gauge | **None** | `target_schema_version`, `zoekt_node_id`, `zoekt_node_name` | Number of `zoekt_repositories` that do not have the latest schema version. |
+| `search_zoekt_nodes_status` | Gauge | **None** | `zoekt_node_id`, `zoekt_node_name` | Status of each Zoekt node. `0` is offline (last seen more than 2 minutes ago), `1` is online. |
+| `search_zoekt_node_unclaimed_storage_bytes` | Gauge | **None** | `zoekt_node_id`, `zoekt_node_name` | Unclaimed storage bytes for a Zoekt node. |
+| `search_zoekt_node_storage_percent_used` | Gauge | **None** | `zoekt_node_id`, `zoekt_node_name` | Fraction of storage used on a Zoekt node (range: `0` to `1`). |
+| `search_zoekt_repositories_states_total` | Gauge | **None** | `state` | Number of Zoekt repositories in each state. |
+| `search_zoekt_indices_states` | Gauge | **None** | `state` | Number of Zoekt indices in each state. |
+| `search_zoekt_indices_watermark_levels` | Gauge | **None** | `watermark_level` | Number of Zoekt indices in each watermark level. |
+| `search_zoekt_indices_reserved_storage_bytes` | Gauge | **None** | `zoekt_index_id`, `zoekt_node_name` | Reserved storage bytes for each Zoekt index. |
+| `search_zoekt_indices_used_storage_bytes` | Gauge | **None** | `zoekt_index_id`, `zoekt_node_name` | Used storage bytes for each Zoekt index. |
+| `search_zoekt_node_enabled_namespaces` | Gauge | 19.2 | `node_id`, `node_name` | Number of enabled namespaces per Zoekt node. |
+| `search_zoekt_node_tasks` | Gauge | 19.2 | `node_id`, `node_name`, `state` | Number of Zoekt indexing tasks on a node, broken down by state. |
+| `search_zoekt_indices_with_stale_used_storage_bytes` | Gauge | 19.2 | **None** | Number of Zoekt indices whose `used_storage_bytes` value has not been updated since the last index run. |
+
+### SLI metrics
+
+The global search SLI metrics include Zoekt searches under the `search_type="zoekt"` label.
+For more information, see [Application SLIs](../../../development/application_slis/_index.md).
+
+| Metric | Type | Since | Labels | Description |
+|:-------|:-----|------:|:-------|:------------|
+| `gitlab_sli_global_search_apdex_success_total` | Counter | 14.4 | `search_type`, `search_level`, `search_scope`, `endpoint_id` | Total number of Zoekt searches that met the latency target (15.52 seconds for code search). Filter by `search_type="zoekt"` |
+| `gitlab_sli_global_search_apdex_total` | Counter | 14.4 | `search_type`, `search_level`, `search_scope`, `endpoint_id` | Total number of Zoekt search Apdex measurements. Filter by `search_type="zoekt"` |
+| `gitlab_sli_global_search_error_total` | Counter | 14.4 | `search_type`, `search_level`, `search_scope`, `endpoint_id` | Total number of Zoekt search error measurements. Filter by `search_type="zoekt"` |
+| `gitlab_sli_global_search_total` | Counter | 14.4 | `search_type`, `search_level`, `search_scope`, `endpoint_id` | Total number of global search error-rate measurements. Divide `gitlab_sli_global_search_error_total` by `gitlab_sli_global_search_total` to get an error ratio. Filter by `search_type="zoekt"` |
+
+### Zoekt task SLI metrics
+
+The Apdex target for these metrics is `APDEX_THRESHOLD_S` in
+`ee/lib/gitlab/metrics/zoekt_tasks_slis.rb`. Update this section when that constant changes.
+
+| Metric | Type | Since | Labels | Description |
+|:-------|:-----|------:|:-------|:------------|
+| `gitlab_sli_search_zoekt_tasks_apdex_success_total` | Counter | 18.10 | `zoekt_node`, `task_type` | Total number of Zoekt indexing tasks that completed within the 7200-second (two-hour) target |
+| `gitlab_sli_search_zoekt_tasks_apdex_total` | Counter | 18.10 | `zoekt_node`, `task_type` | Total number of Zoekt indexing task Apdex measurements |
+| `gitlab_sli_search_zoekt_tasks_error_total` | Counter | 18.10 | `zoekt_node`, `task_type` | Total number of Zoekt indexing task errors |
+| `gitlab_sli_search_zoekt_tasks_total` | Counter | 18.10 | `zoekt_node`, `task_type` | Total number of Zoekt indexing task error-rate measurements. Divide `gitlab_sli_search_zoekt_tasks_error_total` by `gitlab_sli_search_zoekt_tasks_total` to get an error ratio |
+| `gitlab_sli_search_zoekt_tasks_requests_total` | Counter | 18.10 | `zoekt_node`, `task_type` | Total number of Zoekt tasks added to the queue |
+| `gitlab_search_zoekt_task_duration_seconds` | Histogram | 19.5 | `zoekt_node`, `task_type` | Seconds between a Zoekt indexing task's scheduled time and its completion |
+
+### Audit event streaming SLI metrics
+
+These SLIs track the NATS audit event streaming pipeline.
+For more information, see [Application SLIs](../../../development/application_slis/_index.md).
+
+| Metric | Type | Since | Labels | Description |
+|:-------|:-----|------:|:-------|:------------|
+| `gitlab_sli_audit_event_streaming_nats_dispatch_apdex_success_total` | Counter | 19.3 | `feature_category` | Total number of audit event batch dispatches that met the consumer lag target |
+| `gitlab_sli_audit_event_streaming_nats_dispatch_apdex_total` | Counter | 19.3 | `feature_category` | Total number of audit event batch dispatch Apdex measurements |
+| `gitlab_sli_audit_event_streaming_nats_dispatch_error_total` | Counter | 19.3 | `feature_category` | Total number of audit event batch dispatches that failed |
+| `gitlab_sli_audit_event_streaming_nats_dispatch_total` | Counter | 19.3 | `feature_category` | Total number of audit event batch dispatch attempts |
+
+## Metrics controlled by a feature flag
+
+The following metrics can be controlled by feature flags:
+
+| Metric                                       | Feature flag |
+|:---------------------------------------------|:-------------|
+| `gitlab_view_rendering_duration_seconds`     | `prometheus_metrics_view_instrumentation` |
+| `gitlab_ci_queue_depth_total`                | `gitlab_ci_builds_queuing_metrics` |
+| `gitlab_ci_queue_size`                       | `gitlab_ci_builds_queuing_metrics` |
+| `gitlab_ci_queue_size_total`                 | `gitlab_ci_builds_queuing_metrics` |
+| `gitlab_ci_queue_iteration_duration_seconds` | `gitlab_ci_builds_queuing_metrics` |
+| `gitlab_ci_current_queue_size`               | `gitlab_ci_builds_queuing_metrics` |
+| `gitlab_ci_queue_retrieval_duration_seconds` | `gitlab_ci_builds_queuing_metrics` |
+| `gitlab_ci_queue_active_runners_total`       | `gitlab_ci_builds_queuing_metrics` |
+| `gitaly_circuit_breaker_requests_total`      | `add_circuit_breaker_to_gitaly`    |
+| `gitaly_circuit_breaker_transitions_total`   | `add_circuit_breaker_to_gitaly`    |
+| `ruby_gvl_wait_seconds_total`                | `enable_sidekiq_gvl_metrics`       |
+| `ruby_gvl_wait_seconds_total`                | `enable_puma_gvl_metrics`          |
+
+## Praefect metrics
+
+You can [configure Praefect](../../gitaly/praefect/configure.md#praefect) to report metrics. For information
+on available metrics, see [Monitoring Gitaly Cluster (Praefect)](../../gitaly/praefect/monitoring.md).
+
+## Sidekiq metrics
+
+Sidekiq jobs may also gather metrics, and these metrics can be accessed if the
+Sidekiq exporter is enabled: for example, using the `monitoring.sidekiq_exporter`
+configuration option in `gitlab.yml`. These metrics are served from the
+`/metrics` path on the configured port.
+
+| Metric                                                   | Type      | Since | Labels                                                                                    | Description |
+|:---------------------------------------------------------|:----------|:------|:------------------------------------------------------------------------------------------|:------------|
+| `destroyed_job_artifacts_count_total`                    | Counter   | 13.6  |                                                                                           | Number of destroyed expired job artifacts |
+| `destroyed_pipeline_artifacts_count_total`               | Counter   | 13.8  |                                                                                           | Number of destroyed expired pipeline artifacts |
+| `geo_ci_secure_files_checksum_failed`                    | Gauge     | 15.3  | `url`                                                                                     | Number of secure files failed to calculate the checksum on primary |
+| `geo_ci_secure_files_checksum_total`                     | Gauge     | 15.3  | `url`                                                                                     | Number of secure files to checksum on primary |
+| `geo_ci_secure_files_checksummed`                        | Gauge     | 15.3  | `url`                                                                                     | Number of secure files that successfully calculated the checksum on primary |
+| `geo_ci_secure_files_failed`                             | Gauge     | 15.3  | `url`                                                                                     | Number of syncable secure files failed to sync on secondary |
+| `geo_ci_secure_files_registry`                           | Gauge     | 15.3  | `url`                                                                                     | Number of secure files in the registry |
+| `geo_ci_secure_files_synced`                             | Gauge     | 15.3  | `url`                                                                                     | Number of syncable secure files synced on secondary |
+| `geo_ci_secure_files_verification_failed`                | Gauge     | 15.3  | `url`                                                                                     | Number of secure files that failed verification on secondary |
+| `geo_ci_secure_files_verification_total`                 | Gauge     | 15.3  | `url`                                                                                     | Number of secure files to attempt to verify on secondary |
+| `geo_ci_secure_files_verified`                           | Gauge     | 15.3  | `url`                                                                                     | Number of secure files successfully verified on secondary |
+| `geo_ci_secure_files`                                    | Gauge     | 15.3  | `url`                                                                                     | Number of secure files on primary |
+| `geo_container_repositories_checksum_failed`             | Gauge     | 15.10 | `url`                                                                                     | Number of container repositories failed to calculate the checksum on primary |
+| `geo_container_repositories_checksum_total`              | Gauge     | 15.10 | `url`                                                                                     | Number of container repositories checksummed successfully on primary |
+| `geo_container_repositories_checksummed`                 | Gauge     | 15.10 | `url`                                                                                     | Number of container repositories tried to checksum on primary |
+| `geo_container_repositories_failed`                      | Gauge     | 15.4  | `url`                                                                                     | Number of syncable container repositories failed to sync on secondary |
+| `geo_container_repositories_registry`                    | Gauge     | 15.4  | `url`                                                                                     | Number of container repositories in the registry |
+| `geo_container_repositories_synced`                      | Gauge     | 15.4  | `url`                                                                                     | Number of container repositories synced on secondary |
+| `geo_container_repositories_verification_failed`         | Gauge     | 15.10 | `url`                                                                                     | Number of container repositories' failed verifications on secondary |
+| `geo_container_repositories_verification_total`          | Gauge     | 15.10 | `url`                                                                                     | Number of container repositories' verifications tried on secondary |
+| `geo_container_repositories_verified`                    | Gauge     | 15.10 | `url`                                                                                     | Number of container repositories verified on secondary |
+| `geo_container_repositories`                             | Gauge     | 15.4  | `url`                                                                                     | Number of container repositories on primary |
+| `geo_cursor_last_event_id`                               | Gauge     | 10.2  | `url`                                                                                     | Last database ID of the event log processed by the secondary |
+| `geo_cursor_last_event_timestamp`                        | Gauge     | 10.2  | `url`                                                                                     | Last UNIX timestamp of the event log processed by the secondary |
+| `geo_db_replication_lag_seconds`                         | Gauge     | 10.2  | `url`                                                                                     | Database replication lag (seconds) |
+| `geo_dependency_proxy_blob_checksum_failed`              | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs failed to calculate the checksum on primary |
+| `geo_dependency_proxy_blob_checksum_total`               | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs to checksum on primary |
+| `geo_dependency_proxy_blob_checksummed`                  | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs that successfully calculated the checksum on primary |
+| `geo_dependency_proxy_blob_failed`                       | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs failed to sync on secondary |
+| `geo_dependency_proxy_blob_registry`                     | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs in the registry |
+| `geo_dependency_proxy_blob_synced`                       | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs synced on secondary |
+| `geo_dependency_proxy_blob_verification_failed`          | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs that failed verification on secondary |
+| `geo_dependency_proxy_blob_verification_total`           | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs to attempt to verify on secondary |
+| `geo_dependency_proxy_blob_verified`                     | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs successfully verified on secondary |
+| `geo_dependency_proxy_blob`                              | Gauge     | 15.6  |                                                                                           | Number of dependency proxy blobs on primary |
+| `geo_dependency_proxy_manifests_checksum_failed`         | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests failed to calculate the checksum on primary |
+| `geo_dependency_proxy_manifests_checksum_total`          | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests to checksum on primary |
+| `geo_dependency_proxy_manifests_checksummed`             | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests that successfully calculated the checksum on primary |
+| `geo_dependency_proxy_manifests_failed`                  | Gauge     | 15.6  | `url`                                                                                     | Number of syncable dependency proxy manifests failed to sync on secondary |
+| `geo_dependency_proxy_manifests_registry`                | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests in the registry |
+| `geo_dependency_proxy_manifests_synced`                  | Gauge     | 15.6  | `url`                                                                                     | Number of syncable dependency proxy manifests synced on secondary |
+| `geo_dependency_proxy_manifests_verification_failed`     | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests that failed verification on secondary |
+| `geo_dependency_proxy_manifests_verification_total`      | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests to attempt to verify on secondary |
+| `geo_dependency_proxy_manifests_verified`                | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests successfully verified on secondary |
+| `geo_dependency_proxy_manifests`                         | Gauge     | 15.6  | `url`                                                                                     | Number of dependency proxy manifests on primary |
+| `geo_design_management_repositories_checksum_failed`     | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories failed to calculate the checksum on primary |
+| `geo_design_management_repositories_checksum_total`      | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories tried to checksum on primary |
+| `geo_design_management_repositories_checksummed`         | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories successfully checksummed on primary |
+| `geo_design_management_repositories_failed`              | Gauge     | 16.1  | `url`                                                                                     | Number of syncable design repositories failed to sync on secondary |
+| `geo_design_management_repositories_registry`            | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories in the registry |
+| `geo_design_management_repositories_synced`              | Gauge     | 16.1  | `url`                                                                                     | Number of syncable design repositories synced on secondary |
+| `geo_design_management_repositories_verification_failed` | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories verifications failed on secondary |
+| `geo_design_management_repositories_verification_total`  | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories verifications tried on secondary |
+| `geo_design_management_repositories_verified`            | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories verified on secondary |
+| `geo_design_management_repositories`                     | Gauge     | 16.1  | `url`                                                                                     | Number of design repositories on primary |
+| `geo_group_wiki_repositories_checksum_failed`            | Gauge     | 13.10 | `url`                                                                                     | Number of group wikis that failed to calculate the checksum on primary |
+| `geo_group_wiki_repositories_checksum_total`             | Gauge     | 16.3  | `url`                                                                                     | Number of group wikis to checksum on primary |
+| `geo_group_wiki_repositories_checksummed`                | Gauge     | 13.10 | `url`                                                                                     | Number of group wikis that successfully calculated the checksum on primary |
+| `geo_group_wiki_repositories_failed`                     | Gauge     | 13.10 | `url`                                                                                     | Number of syncable group wikis failed to sync on secondary |
+| `geo_group_wiki_repositories_registry`                   | Gauge     | 13.10 | `url`                                                                                     | Number of group wikis in the registry |
+| `geo_group_wiki_repositories_synced`                     | Gauge     | 13.10 | `url`                                                                                     | Number of syncable group wikis synced on secondary |
+| `geo_group_wiki_repositories_verification_failed`        | Gauge     | 16.3  | `url`                                                                                     | Number of group wikis that failed verification on secondary |
+| `geo_group_wiki_repositories_verification_total`         | Gauge     | 16.3  | `url`                                                                                     | Number of group wikis to attempt to verify on secondary |
+| `geo_group_wiki_repositories_verified`                   | Gauge     | 16.3  | `url`                                                                                     | Number of group wikis successfully verified on secondary |
+| `geo_group_wiki_repositories`                            | Gauge     | 13.10 | `url`                                                                                     | Number of group wikis on primary |
+| `geo_job_artifacts_checksum_failed`                      | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts failed to calculate the checksum on primary |
+| `geo_job_artifacts_checksum_total`                       | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts to checksum on primary |
+| `geo_job_artifacts_checksummed`                          | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts that successfully calculated the checksum on primary |
+| `geo_job_artifacts_failed`                               | Gauge     | 14.8  | `url`                                                                                     | Number of syncable job artifacts failed to sync on secondary |
+| `geo_job_artifacts_registry`                             | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts in the registry |
+| `geo_job_artifacts_synced`                               | Gauge     | 14.8  | `url`                                                                                     | Number of syncable job artifacts synced on secondary |
+| `geo_job_artifacts_verification_failed`                  | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts that failed verification on secondary |
+| `geo_job_artifacts_verification_total`                   | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts to attempt to verify on secondary |
+| `geo_job_artifacts_verified`                             | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts successfully verified on secondary |
+| `geo_job_artifacts`                                      | Gauge     | 14.8  | `url`                                                                                     | Number of job artifacts on primary |
+| `geo_last_event_id`                                      | Gauge     | 10.2  | `url`                                                                                     | Database ID of the latest event log entry on the primary |
+| `geo_last_event_timestamp`                               | Gauge     | 10.2  | `url`                                                                                     | UNIX timestamp of the latest event log entry on the primary |
+| `geo_last_successful_status_check_timestamp`             | Gauge     | 10.2  | `url`                                                                                     | Last timestamp when the status was successfully updated |
+| `geo_lfs_objects_checksum_failed`                        | Gauge     | 14.6  | `url`                                                                                     | Number of LFS objects failed to calculate the checksum on primary |
+| `geo_lfs_objects_checksum_total`                         | Gauge     | 14.6  | `url`                                                                                     | Number of LFS objects that need to be checksummed on primary |
+| `geo_lfs_objects_checksummed`                            | Gauge     | 14.6  | `url`                                                                                     | Number of LFS objects checksummed successfully on primary |
+| `geo_lfs_objects_failed`                                 | Gauge     | 10.2  | `url`                                                                                     | Number of syncable LFS objects failed to sync on secondary |
+| `geo_lfs_objects_registry`                               | Gauge     | 14.6  | `url`                                                                                     | Number of LFS objects in the registry |
+| `geo_lfs_objects_synced`                                 | Gauge     | 10.2  | `url`                                                                                     | Number of syncable LFS objects synced on secondary |
+| `geo_lfs_objects_verification_failed`                    | Gauge     | 14.6  | `url`                                                                                     | Number of LFS objects that failed verifications on secondary |
+| `geo_lfs_objects_verification_total`                     | Gauge     | 14.6  | `url`                                                                                     | Number of LFS objects to attempt to verify on secondary |
+| `geo_lfs_objects_verified`                               | Gauge     | 14.6  | `url`                                                                                     | Number of LFS objects successfully verified on secondary |
+| `geo_lfs_objects`                                        | Gauge     | 10.2  | `url`                                                                                     | Number of LFS objects on primary |
+| `geo_merge_request_diffs_checksum_failed`                | Gauge     | 13.4  | `url`                                                                                     | Number of merge request diffs failed to calculate the checksum on primary |
+| `geo_merge_request_diffs_checksum_total`                 | Gauge     | 13.12 | `url`                                                                                     | Number of merge request diffs to checksum on primary |
+| `geo_merge_request_diffs_checksummed`                    | Gauge     | 13.4  | `url`                                                                                     | Number of merge request diffs that successfully calculated the checksum on primary |
+| `geo_merge_request_diffs_failed`                         | Gauge     | 13.4  | `url`                                                                                     | Number of syncable merge request diffs failed to sync on secondary |
+| `geo_merge_request_diffs_registry`                       | Gauge     | 13.4  | `url`                                                                                     | Number of merge request diffs in the registry |
+| `geo_merge_request_diffs_synced`                         | Gauge     | 13.4  | `url`                                                                                     | Number of syncable merge request diffs synced on secondary |
+| `geo_merge_request_diffs_verification_failed`            | Gauge     | 13.12 | `url`                                                                                     | Number of merge request diffs that failed verification on secondary |
+| `geo_merge_request_diffs_verification_total`             | Gauge     | 13.12 | `url`                                                                                     | Number of merge request diffs to attempt to verify on secondary |
+| `geo_merge_request_diffs_verified`                       | Gauge     | 13.12 | `url`                                                                                     | Number of merge request diffs successfully verified on secondary |
+| `geo_merge_request_diffs`                                | Gauge     | 13.4  | `url`                                                                                     | Number of merge request diffs on primary |
+| `geo_package_files_checksum_failed`                      | Gauge     | 13.0  | `url`                                                                                     | Number of package files failed to calculate the checksum on primary |
+| `geo_package_files_checksummed`                          | Gauge     | 13.0  | `url`                                                                                     | Number of package files checksummed on primary |
+| `geo_package_files_failed`                               | Gauge     | 13.3  | `url`                                                                                     | Number of syncable package files failed to sync on secondary |
+| `geo_package_files_registry`                             | Gauge     | 13.3  | `url`                                                                                     | Number of package files in the registry |
+| `geo_package_files_synced`                               | Gauge     | 13.3  | `url`                                                                                     | Number of syncable package files synced on secondary |
+| `geo_package_files`                                      | Gauge     | 13.0  | `url`                                                                                     | Number of package files on primary |
+| `geo_packages_nuget_symbols`                             | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files on primary |
+| `geo_packages_nuget_symbols_checksum_total`              | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files to checksum on primary |
+| `geo_packages_nuget_symbols_checksummed`                 | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files that successfully calculated the checksum on primary |
+| `geo_packages_nuget_symbols_checksum_failed`             | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files that failed to calculate the checksum on primary |
+| `geo_packages_nuget_symbols_synced`                      | Gauge     | 18.6  | `url`                                                                                     | Number of syncable NuGet symbol files synced on secondary |
+| `geo_packages_nuget_symbols_failed`                      | Gauge     | 18.6  | `url`                                                                                     | Number of syncable NuGet symbol files failed to sync on secondary |
+| `geo_packages_nuget_symbols_registry`                    | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files in the registry |
+| `geo_packages_nuget_symbols_verification_total`          | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files to attempt to verify on secondary |
+| `geo_packages_nuget_symbols_verified`                    | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files successfully verified on secondary |
+| `geo_packages_nuget_symbols_verification_failed`         | Gauge     | 18.6  | `url`                                                                                     | Number of NuGet symbol files that failed verification on secondary |
+| `geo_packages_helm_metadata_caches`                      | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches on primary |
+| `geo_packages_helm_metadata_caches_checksum_total`       | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches to checksum on primary |
+| `geo_packages_helm_metadata_caches_checksummed`          | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches that successfully calculated the checksum on primary |
+| `geo_packages_helm_metadata_caches_checksum_failed`      | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches that failed to calculate the checksum on primary |
+| `geo_packages_helm_metadata_caches_synced`               | Gauge     | 18.9  | `url`                                                                                     | Number of syncable Helm metadata caches synced on secondary |
+| `geo_packages_helm_metadata_caches_failed`               | Gauge     | 18.9  | `url`                                                                                     | Number of syncable Helm metadata caches failed to sync on secondary |
+| `geo_packages_helm_metadata_caches_registry`             | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches in the registry |
+| `geo_packages_helm_metadata_caches_verification_total`   | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches to attempt to verify on secondary |
+| `geo_packages_helm_metadata_caches_verified`             | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches successfully verified on secondary |
+| `geo_packages_helm_metadata_caches_verification_failed`  | Gauge     | 18.9  | `url`                                                                                     | Number of Helm metadata caches that failed verification on secondary |
+| `geo_pages_deployments_checksum_failed`                  | Gauge     | 14.6  | `url`                                                                                     | Number of pages deployments failed to calculate the checksum on primary |
+| `geo_pages_deployments_checksum_total`                   | Gauge     | 14.6  | `url`                                                                                     | Number of pages deployments to checksum on primary |
+| `geo_pages_deployments_checksummed`                      | Gauge     | 14.6  | `url`                                                                                     | Number of pages deployments that successfully calculated the checksum on primary |
+| `geo_pages_deployments_failed`                           | Gauge     | 14.3  | `url`                                                                                     | Number of syncable pages deployments failed to sync on secondary |
+| `geo_pages_deployments_registry`                         | Gauge     | 14.3  | `url`                                                                                     | Number of pages deployments in the registry |
+| `geo_pages_deployments_synced`                           | Gauge     | 14.3  | `url`                                                                                     | Number of syncable pages deployments synced on secondary |
+| `geo_pages_deployments_verification_failed`              | Gauge     | 14.6  | `url`                                                                                     | Number of pages deployments verifications failed on secondary |
+| `geo_pages_deployments_verification_total`               | Gauge     | 14.6  | `url`                                                                                     | Number of pages deployments to attempt to verify on secondary |
+| `geo_pages_deployments_verified`                         | Gauge     | 14.6  | `url`                                                                                     | Number of pages deployments successfully verified on secondary |
+| `geo_pages_deployments`                                  | Gauge     | 14.3  | `url`                                                                                     | Number of pages deployments on primary |
+| `geo_project_repositories_checksum_failed`               | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories that failed to calculate the checksum on primary |
+| `geo_project_repositories_checksum_total`                | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories to checksum on primary |
+| `geo_project_repositories_checksummed`                   | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories that successfully calculated the checksum on primary |
+| `geo_project_repositories_failed`                        | Gauge     | 16.2  | `url`                                                                                     | Number of syncable Project Repositories failed to sync on secondary |
+| `geo_project_repositories_registry`                      | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories in the registry |
+| `geo_project_repositories_synced`                        | Gauge     | 16.2  | `url`                                                                                     | Number of syncable Project Repositories synced on secondary |
+| `geo_project_repositories_verification_failed`           | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories that failed verification on secondary |
+| `geo_project_repositories_verification_total`            | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories to attempt to verify on secondary |
+| `geo_project_repositories_verified`                      | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories successfully verified on secondary |
+| `geo_project_repositories`                               | Gauge     | 16.2  | `url`                                                                                     | Number of Project Repositories on primary |
+| `geo_project_wiki_repositories_checksum_failed`          | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories that failed to calculate the checksum on primary |
+| `geo_project_wiki_repositories_checksum_total`           | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories to checksum on primary |
+| `geo_project_wiki_repositories_checksummed`              | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories that successfully calculated the checksum on primary |
+| `geo_project_wiki_repositories_failed`                   | Gauge     | 15.10 | `url`                                                                                     | Number of syncable Project Wiki Repositories failed to sync on secondary |
+| `geo_project_wiki_repositories_registry`                 | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories in the registry |
+| `geo_project_wiki_repositories_synced`                   | Gauge     | 15.10 | `url`                                                                                     | Number of syncable Project Wiki Repositories synced on secondary |
+| `geo_project_wiki_repositories_verification_failed`      | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories that failed verification on secondary |
+| `geo_project_wiki_repositories_verification_total`       | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories to attempt to verify on secondary |
+| `geo_project_wiki_repositories_verified`                 | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories successfully verified on secondary |
+| `geo_project_wiki_repositories`                          | Gauge     | 15.10 | `url`                                                                                     | Number of Project Wiki Repositories on primary |
+| `geo_repositories_checksum_failed`                       | Gauge     | 10.7  | `url`                                                                                     | Deprecated for removal in 17.0. Replaced by `geo_project_repositories_checksum_failed`. Number of repositories failed to calculate the checksum on primary |
+| `geo_repositories_checksummed`                           | Gauge     | 10.7  | `url`                                                                                     | Deprecated for removal in 17.0. Replaced by `geo_project_repositories_checksummed`. Number of repositories checksummed on primary |
+| `geo_repositories_failed`                                | Gauge     | 10.2  | `url`                                                                                     | Deprecated for removal in 17.0. Replaced by `geo_project_repositories_failed`. Number of repositories failed to sync on secondary |
+| `geo_repositories_synced`                                | Gauge     | 10.2  | `url`                                                                                     | Deprecated for removal in 17.0. Replaced by `geo_project_repositories_synced`. Number of repositories synced on secondary |
+| `geo_repositories_verification_failed`                   | Gauge     | 10.7  | `url`                                                                                     | Deprecated for removal in 17.0. Replaced by `geo_project_repositories_verification_failed`. Number of repositories that failed verification on secondary |
+| `geo_repositories_verified`                              | Gauge     | 10.7  | `url`                                                                                     | Deprecated for removal in 17.0. Replaced by `geo_project_repositories_verified`. Number of repositories successfully verified on secondary |
+| `geo_repositories`                                       | Gauge     | 10.2  | `url`                                                                                     | Deprecated in 17.9. The future GitLab release for removal is yet to be confirmed. Use `geo_project_repositories` instead. Total number of repositories available on primary |
+| `geo_snippet_repositories_checksum_failed`               | Gauge     | 13.4  | `url`                                                                                     | Number of snippets failed to calculate the checksum on primary |
+| `geo_snippet_repositories_checksummed`                   | Gauge     | 13.4  | `url`                                                                                     | Number of snippets checksummed on primary |
+| `geo_snippet_repositories_failed`                        | Gauge     | 13.4  | `url`                                                                                     | Number of syncable snippets failed on secondary |
+| `geo_snippet_repositories_registry`                      | Gauge     | 13.4  | `url`                                                                                     | Number of syncable snippets in the registry |
+| `geo_snippet_repositories_synced`                        | Gauge     | 13.4  | `url`                                                                                     | Number of syncable snippets synced on secondary |
+| `geo_snippet_repositories`                               | Gauge     | 13.4  | `url`                                                                                     | Number of snippets on primary |
+| `geo_abuse_report_uploads`                               | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads on primary |
+| `geo_abuse_report_uploads_checksum_total`                | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads to checksum on primary |
+| `geo_abuse_report_uploads_checksummed`                   | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads that successfully calculated the checksum on primary |
+| `geo_abuse_report_uploads_checksum_failed`               | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads failed to calculate the checksum on primary |
+| `geo_abuse_report_uploads_synced`                        | Gauge     | 18.10 | `url`                                                                                     | Number of syncable abuse report uploads synced on secondary |
+| `geo_abuse_report_uploads_failed`                        | Gauge     | 18.10 | `url`                                                                                     | Number of syncable abuse report uploads failed to sync on secondary |
+| `geo_abuse_report_uploads_registry`                      | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads in the registry |
+| `geo_abuse_report_uploads_verification_total`            | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads to attempt to verify on secondary |
+| `geo_abuse_report_uploads_verified`                      | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads successfully verified on secondary |
+| `geo_abuse_report_uploads_verification_failed`           | Gauge     | 18.10 | `url`                                                                                     | Number of abuse report uploads that failed verification on secondary |
+| `geo_project_uploads`                                    | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads on primary |
+| `geo_project_uploads_checksum_total`                     | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads to checksum on primary |
+| `geo_project_uploads_checksummed`                        | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads that successfully calculated the checksum on primary |
+| `geo_project_uploads_checksum_failed`                    | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads failed to calculate the checksum on primary |
+| `geo_project_uploads_synced`                             | Gauge     | 18.10 | `url`                                                                                     | Number of syncable project uploads synced on secondary |
+| `geo_project_uploads_failed`                             | Gauge     | 18.10 | `url`                                                                                     | Number of syncable project uploads failed to sync on secondary |
+| `geo_project_uploads_registry`                           | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads in the registry |
+| `geo_project_uploads_verification_total`                 | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads to attempt to verify on secondary |
+| `geo_project_uploads_verified`                           | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads successfully verified on secondary |
+| `geo_project_uploads_verification_failed`                | Gauge     | 18.10 | `url`                                                                                     | Number of project uploads that failed verification on secondary |
+| `geo_group_uploads`                                      | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads on primary |
+| `geo_group_uploads_checksum_total`                       | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads to checksum on primary |
+| `geo_group_uploads_checksummed`                          | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads that successfully calculated the checksum on primary |
+| `geo_group_uploads_checksum_failed`                      | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads failed to calculate the checksum on primary |
+| `geo_group_uploads_synced`                               | Gauge     | 18.11 | `url`                                                                                     | Number of syncable group uploads synced on secondary |
+| `geo_group_uploads_failed`                               | Gauge     | 18.11 | `url`                                                                                     | Number of syncable group uploads failed to sync on secondary |
+| `geo_group_uploads_registry`                             | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads in the registry |
+| `geo_group_uploads_verification_total`                   | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads to attempt to verify on secondary |
+| `geo_group_uploads_verified`                             | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads successfully verified on secondary |
+| `geo_group_uploads_verification_failed`                  | Gauge     | 18.11 | `url`                                                                                     | Number of group uploads that failed verification on secondary |
+| `geo_user_uploads`                                       | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads on primary |
+| `geo_user_uploads_checksum_total`                        | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads to checksum on primary |
+| `geo_user_uploads_checksummed`                           | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads that successfully calculated the checksum on primary |
+| `geo_user_uploads_checksum_failed`                       | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads failed to calculate the checksum on primary |
+| `geo_user_uploads_synced`                                | Gauge     | 18.11 | `url`                                                                                     | Number of syncable user uploads synced on secondary |
+| `geo_user_uploads_failed`                                | Gauge     | 18.11 | `url`                                                                                     | Number of syncable user uploads failed to sync on secondary |
+| `geo_user_uploads_registry`                              | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads in the registry |
+| `geo_user_uploads_verification_total`                    | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads to attempt to verify on secondary |
+| `geo_user_uploads_verified`                              | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads successfully verified on secondary |
+| `geo_user_uploads_verification_failed`                   | Gauge     | 18.11 | `url`                                                                                     | Number of user uploads that failed verification on secondary |
+| `geo_design_management_action_uploads`                   | Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads on primary |
+| `geo_design_management_action_uploads_checksum_total`    | Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads to checksum on primary |
+| `geo_design_management_action_uploads_checksummed`       | Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads that successfully calculated the checksum on primary |
+| `geo_design_management_action_uploads_checksum_failed`   | Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads failed to calculate the checksum on primary |
+| `geo_design_management_action_uploads_synced`            | Gauge     | 18.11 | `url`                                                                                     | Number of syncable design management action uploads synced on secondary |
+| `geo_design_management_action_uploads_failed`            | Gauge     | 18.11 | `url`                                                                                     | Number of syncable design management action uploads failed to sync on secondary |
+| `geo_design_management_action_uploads_registry`          | Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads in the registry |
+| `geo_design_management_action_uploads_verification_total`| Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads to attempt to verify on secondary |
+| `geo_design_management_action_uploads_verified`          | Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads successfully verified on secondary |
+| `geo_design_management_action_uploads_verification_failed`| Gauge     | 18.11 | `url`                                                                                     | Number of design management action uploads that failed verification on secondary |
+| `geo_bulk_import_export_upload_uploads`                  | Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files on primary |
+| `geo_bulk_import_export_upload_uploads_checksum_total`   | Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files to checksum on primary |
+| `geo_bulk_import_export_upload_uploads_checksummed`      | Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files that successfully calculated the checksum on primary |
+| `geo_bulk_import_export_upload_uploads_checksum_failed`  | Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files failed to calculate the checksum on primary |
+| `geo_bulk_import_export_upload_uploads_synced`           | Gauge     | 19.0 | `url`                                                                                     | Number of syncable bulk import/export archive files synced on secondary |
+| `geo_bulk_import_export_upload_uploads_failed`           | Gauge     | 19.0 | `url`                                                                                     | Number of syncable bulk import/export archive files failed to sync on secondary |
+| `geo_bulk_import_export_upload_uploads_registry`         | Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files in the registry |
+| `geo_bulk_import_export_upload_uploads_verification_total`| Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files to attempt to verify on secondary |
+| `geo_bulk_import_export_upload_uploads_verified`         | Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files successfully verified on secondary |
+| `geo_bulk_import_export_upload_uploads_verification_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of bulk import/export archive files that failed verification on secondary |
+| `geo_achievement_uploads`                                | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads on primary |
+| `geo_achievement_uploads_checksum_total`                 | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads to checksum on primary |
+| `geo_achievement_uploads_checksummed`                    | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads that successfully calculated the checksum on primary |
+| `geo_achievement_uploads_checksum_failed`                | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads failed to calculate the checksum on primary |
+| `geo_achievement_uploads_synced`                         | Gauge     | 18.11 | `url`                                                                                     | Number of syncable achievement uploads synced on secondary |
+| `geo_achievement_uploads_failed`                         | Gauge     | 18.11 | `url`                                                                                     | Number of syncable achievement uploads failed to sync on secondary |
+| `geo_achievement_uploads_registry`                       | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads in the registry |
+| `geo_achievement_uploads_verification_total`             | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads to attempt to verify on secondary |
+| `geo_achievement_uploads_verified`                       | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads successfully verified on secondary |
+| `geo_achievement_uploads_verification_failed`            | Gauge     | 18.11 | `url`                                                                                     | Number of achievement uploads that failed verification on secondary |
+| `geo_import_export_upload_uploads`                       | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads on primary |
+| `geo_import_export_upload_uploads_checksum_total`        | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads to checksum on primary |
+| `geo_import_export_upload_uploads_checksummed`           | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads that successfully calculated the checksum on primary |
+| `geo_import_export_upload_uploads_checksum_failed`       | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads failed to calculate the checksum on primary |
+| `geo_import_export_upload_uploads_synced`                | Gauge     | 19.0  | `url`                                                                                     | Number of syncable import/export archive uploads synced on secondary |
+| `geo_import_export_upload_uploads_failed`                | Gauge     | 19.0  | `url`                                                                                     | Number of syncable import/export archive uploads failed to sync on secondary |
+| `geo_import_export_upload_uploads_registry`              | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads in the registry |
+| `geo_import_export_upload_uploads_verification_total`    | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads to attempt to verify on secondary |
+| `geo_import_export_upload_uploads_verified`              | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads successfully verified on secondary |
+| `geo_import_export_upload_uploads_verification_failed`   | Gauge     | 19.0  | `url`                                                                                     | Number of import/export archive uploads that failed verification on secondary |
+| `geo_vulnerability_archive_export_uploads`               | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads on primary |
+| `geo_vulnerability_archive_export_uploads_checksum_total`| Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads to checksum on primary |
+| `geo_vulnerability_archive_export_uploads_checksummed`   | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads that successfully calculated the checksum on primary |
+| `geo_vulnerability_archive_export_uploads_checksum_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads failed to calculate the checksum on primary |
+| `geo_vulnerability_archive_export_uploads_synced`        | Gauge     | 19.0 | `url`                                                                                     | Number of syncable vulnerability archive export uploads synced on secondary |
+| `geo_vulnerability_archive_export_uploads_failed`        | Gauge     | 19.0 | `url`                                                                                     | Number of syncable vulnerability archive export uploads failed to sync on secondary |
+| `geo_vulnerability_archive_export_uploads_registry`      | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads in the registry |
+| `geo_vulnerability_archive_export_uploads_verification_total`| Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads to attempt to verify on secondary |
+| `geo_vulnerability_archive_export_uploads_verified`      | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads successfully verified on secondary |
+| `geo_vulnerability_archive_export_uploads_verification_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability archive export uploads that failed verification on secondary |
+| `geo_project_import_export_relation_export_upload_uploads`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads on primary |
+| `geo_project_import_export_relation_export_upload_uploads_checksum_total`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads to checksum on primary |
+| `geo_project_import_export_relation_export_upload_uploads_checksummed`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads that successfully calculated the checksum on primary |
+| `geo_project_import_export_relation_export_upload_uploads_checksum_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads failed to calculate the checksum on primary |
+| `geo_project_import_export_relation_export_upload_uploads_synced`| Gauge     | 19.0 | `url`                                                                                     | Number of syncable project import export relation export upload uploads synced on secondary |
+| `geo_project_import_export_relation_export_upload_uploads_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of syncable project import export relation export upload uploads failed to sync on secondary |
+| `geo_project_import_export_relation_export_upload_uploads_registry`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads in the registry |
+| `geo_project_import_export_relation_export_upload_uploads_verification_total`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads to attempt to verify on secondary |
+| `geo_project_import_export_relation_export_upload_uploads_verified`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads successfully verified on secondary |
+| `geo_project_import_export_relation_export_upload_uploads_verification_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of project import export relation export upload uploads that failed verification on secondary |
+| `geo_project_import_export_relation_export_upload_uploads_oldest_unsynced_time`| Gauge     | 19.0 | `url`                                                                                     | Timestamp of the oldest unsynced project import export relation export upload uploads on secondary |
+| `geo_vulnerability_export_part_uploads`                  | Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads on primary |
+| `geo_vulnerability_export_part_uploads_checksum_total`   | Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads to checksum on primary |
+| `geo_vulnerability_export_part_uploads_checksummed`      | Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads that successfully calculated the checksum on primary |
+| `geo_vulnerability_export_part_uploads_checksum_failed`  | Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads failed to calculate the checksum on primary |
+| `geo_vulnerability_export_part_uploads_synced`           | Gauge     | 19.1 | `url`                                                                                     | Number of syncable vulnerability export part uploads synced on secondary |
+| `geo_vulnerability_export_part_uploads_failed`           | Gauge     | 19.1 | `url`                                                                                     | Number of syncable vulnerability export part uploads failed to sync on secondary |
+| `geo_vulnerability_export_part_uploads_registry`         | Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads in the registry |
+| `geo_vulnerability_export_part_uploads_verification_total`| Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads to attempt to verify on secondary |
+| `geo_vulnerability_export_part_uploads_verified`         | Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads successfully verified on secondary |
+| `geo_vulnerability_export_part_uploads_verification_failed`| Gauge     | 19.1 | `url`                                                                                     | Number of vulnerability export part uploads that failed verification on secondary |
+| `geo_vulnerability_export_part_uploads_oldest_unsynced_time`| Gauge     | 19.1 | `url`                                                                                     | Timestamp of the oldest unsynced vulnerability export part uploads on secondary |
+| `geo_vulnerability_export_uploads`                       | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads on primary |
+| `geo_vulnerability_export_uploads_checksum_total`        | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads to checksum on primary |
+| `geo_vulnerability_export_uploads_checksummed`           | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads that successfully calculated the checksum on primary |
+| `geo_vulnerability_export_uploads_checksum_failed`       | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads failed to calculate the checksum on primary |
+| `geo_vulnerability_export_uploads_synced`                | Gauge     | 19.0 | `url`                                                                                     | Number of syncable vulnerability export uploads synced on secondary |
+| `geo_vulnerability_export_uploads_failed`                | Gauge     | 19.0 | `url`                                                                                     | Number of syncable vulnerability export uploads failed to sync on secondary |
+| `geo_vulnerability_export_uploads_registry`              | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads in the registry |
+| `geo_vulnerability_export_uploads_verification_total`    | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads to attempt to verify on secondary |
+| `geo_vulnerability_export_uploads_verified`              | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads successfully verified on secondary |
+| `geo_vulnerability_export_uploads_verification_failed`   | Gauge     | 19.0 | `url`                                                                                     | Number of vulnerability export uploads that failed verification on secondary |
+| `geo_user_permission_export_upload_uploads`              | Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads on primary |
+| `geo_user_permission_export_upload_uploads_checksum_total`| Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads to checksum on primary |
+| `geo_user_permission_export_upload_uploads_checksummed`  | Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads that successfully calculated the checksum on primary |
+| `geo_user_permission_export_upload_uploads_checksum_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads failed to calculate the checksum on primary |
+| `geo_user_permission_export_upload_uploads_synced`       | Gauge     | 19.0 | `url`                                                                                     | Number of syncable user permission export upload uploads synced on secondary |
+| `geo_user_permission_export_upload_uploads_failed`       | Gauge     | 19.0 | `url`                                                                                     | Number of syncable user permission export upload uploads failed to sync on secondary |
+| `geo_user_permission_export_upload_uploads_registry`     | Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads in the registry |
+| `geo_user_permission_export_upload_uploads_verification_total`| Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads to attempt to verify on secondary |
+| `geo_user_permission_export_upload_uploads_verified`     | Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads successfully verified on secondary |
+| `geo_user_permission_export_upload_uploads_verification_failed`| Gauge     | 19.0 | `url`                                                                                     | Number of user permission export upload uploads that failed verification on secondary |
+| `geo_user_permission_export_upload_uploads_oldest_unsynced_time`| Gauge     | 19.0 | `url`                                                                                     | Timestamp of the oldest unsynced user permission export upload uploads on secondary |
+| `geo_issuable_metric_image_uploads`                      | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads on primary |
+| `geo_issuable_metric_image_uploads_checksum_total`       | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads to checksum on primary |
+| `geo_issuable_metric_image_uploads_checksummed`          | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads that successfully calculated the checksum on primary |
+| `geo_issuable_metric_image_uploads_checksum_failed`      | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads failed to calculate the checksum on primary |
+| `geo_issuable_metric_image_uploads_synced`               | Gauge     | 19.1 | `url`                                                                                     | Number of syncable issuable metric image uploads synced on secondary |
+| `geo_issuable_metric_image_uploads_failed`               | Gauge     | 19.1 | `url`                                                                                     | Number of syncable issuable metric image uploads failed to sync on secondary |
+| `geo_issuable_metric_image_uploads_registry`             | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads in the registry |
+| `geo_issuable_metric_image_uploads_verification_total`   | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads to attempt to verify on secondary |
+| `geo_issuable_metric_image_uploads_verified`             | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads successfully verified on secondary |
+| `geo_issuable_metric_image_uploads_verification_failed`  | Gauge     | 19.1 | `url`                                                                                     | Number of issuable metric image uploads that failed verification on secondary |
+| `geo_issuable_metric_image_uploads_oldest_unsynced_time` | Gauge     | 19.1 | `url`                                                                                     | Timestamp of the oldest unsynced issuable metric image uploads on secondary |
+| `geo_dependency_list_export_uploads`                     | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads on primary |
+| `geo_dependency_list_export_uploads_checksum_total`      | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads to checksum on primary |
+| `geo_dependency_list_export_uploads_checksummed`         | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads that successfully calculated the checksum on primary |
+| `geo_dependency_list_export_uploads_checksum_failed`     | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads failed to calculate the checksum on primary |
+| `geo_dependency_list_export_uploads_synced`              | Gauge     | 19.1 | `url`                                                                                     | Number of syncable dependency list export uploads synced on secondary |
+| `geo_dependency_list_export_uploads_failed`              | Gauge     | 19.1 | `url`                                                                                     | Number of syncable dependency list export uploads failed to sync on secondary |
+| `geo_dependency_list_export_uploads_registry`            | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads in the registry |
+| `geo_dependency_list_export_uploads_verification_total`  | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads to attempt to verify on secondary |
+| `geo_dependency_list_export_uploads_verified`            | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads successfully verified on secondary |
+| `geo_dependency_list_export_uploads_verification_failed` | Gauge     | 19.1 | `url`                                                                                     | Number of dependency list export uploads that failed verification on secondary |
+| `geo_dependency_list_export_uploads_oldest_unsynced_time`| Gauge     | 19.1 | `url`                                                                                     | Timestamp of the oldest unsynced dependency list export uploads on secondary |
+| `geo_packages_debian_project_component_files`                     | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files on primary |
+| `geo_packages_debian_project_component_files_checksum_total`      | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files to checksum on primary |
+| `geo_packages_debian_project_component_files_checksummed`         | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files that successfully calculated the checksum on primary |
+| `geo_packages_debian_project_component_files_checksum_failed`     | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files failed to calculate the checksum on primary |
+| `geo_packages_debian_project_component_files_synced`              | Gauge     | 19.1 | `url`                                                                                     | Number of syncable Debian project component files synced on secondary |
+| `geo_packages_debian_project_component_files_failed`              | Gauge     | 19.1 | `url`                                                                                     | Number of syncable Debian project component files failed to sync on secondary |
+| `geo_packages_debian_project_component_files_registry`            | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files in the registry |
+| `geo_packages_debian_project_component_files_verification_total`  | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files to attempt to verify on secondary |
+| `geo_packages_debian_project_component_files_verified`            | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files successfully verified on secondary |
+| `geo_packages_debian_project_component_files_verification_failed` | Gauge     | 19.1 | `url`                                                                                     | Number of Debian project component files that failed verification on secondary |
+| `geo_alert_management_metric_image_uploads`              | Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads on primary |
+| `geo_alert_management_metric_image_uploads_checksum_total`| Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads to checksum on primary |
+| `geo_alert_management_metric_image_uploads_checksummed`  | Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads that successfully calculated the checksum on primary |
+| `geo_alert_management_metric_image_uploads_checksum_failed`| Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads failed to calculate the checksum on primary |
+| `geo_alert_management_metric_image_uploads_synced`       | Gauge     | 19.1 | `url`                                                                                     | Number of syncable alert management metric image uploads synced on secondary |
+| `geo_alert_management_metric_image_uploads_failed`       | Gauge     | 19.1 | `url`                                                                                     | Number of syncable alert management metric image uploads failed to sync on secondary |
+| `geo_alert_management_metric_image_uploads_registry`     | Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads in the registry |
+| `geo_alert_management_metric_image_uploads_verification_total`| Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads to attempt to verify on secondary |
+| `geo_alert_management_metric_image_uploads_verified`     | Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads successfully verified on secondary |
+| `geo_alert_management_metric_image_uploads_verification_failed`| Gauge     | 19.1 | `url`                                                                                     | Number of alert management metric image uploads that failed verification on secondary |
+| `geo_alert_management_metric_image_uploads_oldest_unsynced_time`| Gauge     | 19.1 | `url`                                                                                     | Timestamp of the oldest unsynced alert management metric image uploads on secondary |
+| `geo_personal_snippet_uploads`                           | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads on primary |
+| `geo_personal_snippet_uploads_checksum_total`            | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads to checksum on primary |
+| `geo_personal_snippet_uploads_checksummed`               | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads that successfully calculated the checksum on primary |
+| `geo_personal_snippet_uploads_checksum_failed`           | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads failed to calculate the checksum on primary |
+| `geo_personal_snippet_uploads_synced`                    | Gauge     | 19.1 | `url`                                                                                     | Number of syncable personal snippet uploads synced on secondary |
+| `geo_personal_snippet_uploads_failed`                    | Gauge     | 19.1 | `url`                                                                                     | Number of syncable personal snippet uploads failed to sync on secondary |
+| `geo_personal_snippet_uploads_registry`                  | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads in the registry |
+| `geo_personal_snippet_uploads_verification_total`        | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads to attempt to verify on secondary |
+| `geo_personal_snippet_uploads_verified`                  | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads successfully verified on secondary |
+| `geo_personal_snippet_uploads_verification_failed`       | Gauge     | 19.1 | `url`                                                                                     | Number of personal snippet uploads that failed verification on secondary |
+| `geo_personal_snippet_uploads_oldest_unsynced_time`      | Gauge     | 19.1 | `url`                                                                                     | Timestamp of the oldest unsynced personal snippet uploads on secondary |
+| `geo_project_topic_uploads`                              | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads on primary |
+| `geo_project_topic_uploads_checksum_total`               | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads to checksum on primary |
+| `geo_project_topic_uploads_checksummed`                  | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads that successfully calculated the checksum on primary |
+| `geo_project_topic_uploads_checksum_failed`              | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads failed to calculate the checksum on primary |
+| `geo_project_topic_uploads_synced`                       | Gauge     | 19.2 | `url`                                                                                     | Number of syncable project topic uploads synced on secondary |
+| `geo_project_topic_uploads_failed`                       | Gauge     | 19.2 | `url`                                                                                     | Number of syncable project topic uploads failed to sync on secondary |
+| `geo_project_topic_uploads_registry`                     | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads in the registry |
+| `geo_project_topic_uploads_verification_total`           | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads to attempt to verify on secondary |
+| `geo_project_topic_uploads_verified`                     | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads successfully verified on secondary |
+| `geo_project_topic_uploads_verification_failed`          | Gauge     | 19.2 | `url`                                                                                     | Number of project topic uploads that failed verification on secondary |
+| `geo_project_topic_uploads_oldest_unsynced_time`         | Gauge     | 19.2 | `url`                                                                                     | Timestamp of the oldest unsynced project topic uploads on secondary |
+| `geo_organization_detail_uploads`                        | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads on primary |
+| `geo_organization_detail_uploads_checksum_total`         | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads to checksum on primary |
+| `geo_organization_detail_uploads_checksummed`            | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads that successfully calculated the checksum on primary |
+| `geo_organization_detail_uploads_checksum_failed`        | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads failed to calculate the checksum on primary |
+| `geo_organization_detail_uploads_synced`                 | Gauge     | 19.2 | `url`                                                                                     | Number of syncable organization detail uploads synced on secondary |
+| `geo_organization_detail_uploads_failed`                 | Gauge     | 19.2 | `url`                                                                                     | Number of syncable organization detail uploads failed to sync on secondary |
+| `geo_organization_detail_uploads_registry`               | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads in the registry |
+| `geo_organization_detail_uploads_verification_total`     | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads to attempt to verify on secondary |
+| `geo_organization_detail_uploads_verified`               | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads successfully verified on secondary |
+| `geo_organization_detail_uploads_verification_failed`    | Gauge     | 19.2 | `url`                                                                                     | Number of organization detail uploads that failed verification on secondary |
+| `geo_organization_detail_uploads_oldest_unsynced_time`   | Gauge     | 19.2 | `url`                                                                                     | Timestamp of the oldest unsynced organization detail uploads on secondary |
+| `geo_dependency_list_export_part_uploads`                | Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads on primary |
+| `geo_dependency_list_export_part_uploads_checksum_total` | Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads to checksum on primary |
+| `geo_dependency_list_export_part_uploads_checksummed`    | Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads that successfully calculated the checksum on primary |
+| `geo_dependency_list_export_part_uploads_checksum_failed`| Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads failed to calculate the checksum on primary |
+| `geo_dependency_list_export_part_uploads_synced`         | Gauge     | 19.2 | `url`                                                                                     | Number of syncable dependency list export part uploads synced on secondary |
+| `geo_dependency_list_export_part_uploads_failed`         | Gauge     | 19.2 | `url`                                                                                     | Number of syncable dependency list export part uploads failed to sync on secondary |
+| `geo_dependency_list_export_part_uploads_registry`       | Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads in the registry |
+| `geo_dependency_list_export_part_uploads_verification_total`| Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads to attempt to verify on secondary |
+| `geo_dependency_list_export_part_uploads_verified`       | Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads successfully verified on secondary |
+| `geo_dependency_list_export_part_uploads_verification_failed`| Gauge     | 19.2 | `url`                                                                                     | Number of dependency list export part uploads that failed verification on secondary |
+| `geo_dependency_list_export_part_uploads_oldest_unsynced_time`| Gauge     | 19.2 | `url`                                                                                     | Timestamp of the oldest unsynced dependency list export part uploads on secondary |
+| `geo_vulnerability_remediation_uploads`                  | Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads on primary |
+| `geo_vulnerability_remediation_uploads_checksum_total`   | Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads to checksum on primary |
+| `geo_vulnerability_remediation_uploads_checksummed`      | Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads that successfully calculated the checksum on primary |
+| `geo_vulnerability_remediation_uploads_checksum_failed`  | Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads failed to calculate the checksum on primary |
+| `geo_vulnerability_remediation_uploads_synced`           | Gauge     | 19.2 | `url`                                                                                     | Number of syncable vulnerability remediation uploads synced on secondary |
+| `geo_vulnerability_remediation_uploads_failed`           | Gauge     | 19.2 | `url`                                                                                     | Number of syncable vulnerability remediation uploads failed to sync on secondary |
+| `geo_vulnerability_remediation_uploads_registry`         | Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads in the registry |
+| `geo_vulnerability_remediation_uploads_verification_total`| Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads to attempt to verify on secondary |
+| `geo_vulnerability_remediation_uploads_verified`         | Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads successfully verified on secondary |
+| `geo_vulnerability_remediation_uploads_verification_failed`| Gauge     | 19.2 | `url`                                                                                     | Number of vulnerability remediation uploads that failed verification on secondary |
+| `geo_vulnerability_remediation_uploads_oldest_unsynced_time`| Gauge     | 19.2 | `url`                                                                                     | Timestamp of the oldest unsynced vulnerability remediation uploads on secondary |
+| `geo_appearance_uploads`                                 | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads on primary |
+| `geo_appearance_uploads_checksum_total`                  | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads to checksum on primary |
+| `geo_appearance_uploads_checksummed`                     | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads that successfully calculated the checksum on primary |
+| `geo_appearance_uploads_checksum_failed`                 | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads failed to calculate the checksum on primary |
+| `geo_appearance_uploads_synced`                          | Gauge     | 19.2 | `url`                                                                                     | Number of syncable appearance uploads synced on secondary |
+| `geo_appearance_uploads_failed`                          | Gauge     | 19.2 | `url`                                                                                     | Number of syncable appearance uploads failed to sync on secondary |
+| `geo_appearance_uploads_registry`                        | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads in the registry |
+| `geo_appearance_uploads_verification_total`              | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads to attempt to verify on secondary |
+| `geo_appearance_uploads_verified`                        | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads successfully verified on secondary |
+| `geo_appearance_uploads_verification_failed`             | Gauge     | 19.2 | `url`                                                                                     | Number of appearance uploads that failed verification on secondary |
+| `geo_appearance_uploads_oldest_unsynced_time`            | Gauge     | 19.2 | `url`                                                                                     | Timestamp of the oldest unsynced appearance uploads on secondary |
+| `geo_status_failed_total`                                | Counter   | 10.2  | `url`                                                                                     | Number of times retrieving the status from the Geo Node failed |
+| `geo_terraform_state_versions_checksum_failed`           | Gauge     | 13.5  | `url`                                                                                     | Number of terraform state versions failed to calculate the checksum on primary |
+| `geo_terraform_state_versions_checksum_total`            | Gauge     | 13.12 | `url`                                                                                     | Number of terraform state versions that need to be checksummed on primary |
+| `geo_terraform_state_versions_checksummed`               | Gauge     | 13.5  | `url`                                                                                     | Number of terraform state versions checksummed successfully on primary |
+| `geo_terraform_state_versions_failed`                    | Gauge     | 13.5  | `url`                                                                                     | Number of syncable terraform state versions failed to sync on secondary |
+| `geo_terraform_state_versions_registry`                  | Gauge     | 13.5  | `url`                                                                                     | Number of terraform state versions in the registry |
+| `geo_terraform_state_versions_synced`                    | Gauge     | 13.5  | `url`                                                                                     | Number of syncable terraform state versions synced on secondary |
+| `geo_terraform_state_versions_verification_failed`       | Gauge     | 13.12 | `url`                                                                                     | Number of terraform state versions that failed verification on secondary |
+| `geo_terraform_state_versions_verification_total`        | Gauge     | 13.12 | `url`                                                                                     | Number of terraform state versions to attempt to verify on secondary |
+| `geo_terraform_state_versions_verified`                  | Gauge     | 13.12 | `url`                                                                                     | Number of terraform state versions successfully verified on secondary |
+| `geo_terraform_state_versions`                           | Gauge     | 13.5  | `url`                                                                                     | Number of terraform state versions on primary |
+| `geo_uploads_checksum_failed`                            | Gauge     | 14.6  | `url`                                                                                     | Number of uploads failed to calculate the checksum on primary |
+| `geo_uploads_checksum_total`                             | Gauge     | 14.6  | `url`                                                                                     | Number of uploads to checksum on primary |
+| `geo_uploads_checksummed`                                | Gauge     | 14.6  | `url`                                                                                     | Number of uploads that successfully calculated the checksum on primary |
+| `geo_uploads_failed`                                     | Gauge     | 14.1  | `url`                                                                                     | Number of syncable uploads failed to sync on secondary |
+| `geo_uploads_registry`                                   | Gauge     | 14.1  | `url`                                                                                     | Number of uploads in the registry |
+| `geo_uploads_synced`                                     | Gauge     | 14.1  | `url`                                                                                     | Number of uploads synced on secondary |
+| `geo_uploads_verification_failed`                        | Gauge     | 14.6  | `url`                                                                                     | Number of uploads that failed verification on secondary |
+| `geo_uploads_verification_total`                         | Gauge     | 14.6  | `url`                                                                                     | Number of uploads to attempt to verify on secondary |
+| `geo_uploads_verified`                                   | Gauge     | 14.6  | `url`                                                                                     | Number of uploads successfully verified on secondary |
+| `geo_uploads`                                            | Gauge     | 14.1  | `url`                                                                                     | Number of uploads on primary |
+| `gitlab_audit_event_streaming_worker_total`              | Counter   | 18.9  | `should_stream`, `should_persist`, `streamable`                                           | Audit events processed by streaming worker |
+| `gitlab_ci_job_failure_reasons`                          | Counter   | 13.11 | `reason`, `runner_type`                                                                   | Counter of job failure reasons. Also exported by the Rails process. For `reason` label values, see [CI/CD failure reason metrics](#cicd-failure-reason-metrics) |
+| `gitlab_ci_pipeline_failure_reasons`                     | Counter   | 13.11 | `reason`                                                                                  | Counter of pipeline failure reasons. Also exported by the Rails process. For `reason` label values, see [CI/CD failure reason metrics](#cicd-failure-reason-metrics) |
+| `gitlab_ci_queue_active_runners_total`                   | Histogram | 16.3  |                                                                                           | The number of active runners that can process the CI/CD queue in a project |
+| `gitlab_maintenance_mode`                                | Gauge     | 15.11 |                                                                                           | Is GitLab Maintenance Mode enabled? |
+| `gitlab_memwd_violations_handled_total`                  | Counter   | 15.9  |                                                                                           | Total number of times Sidekiq process memory violations were handled |
+| `gitlab_memwd_violations_total`                          | Counter   | 15.9  |                                                                                           | Total number of times a Sidekiq process violated a memory threshold |
+| `gitlab_optimistic_locking_retries`                      | Histogram | 13.10 |                                                                                           | Number of retry attempts to execute optimistic retry lock |
+| `gitlab_pg_ash_consecutive_rotate_failures`              | Gauge     | 19.5  |                                                                                           | Number of [active session history](../performance/_index.md#active-session-history) partition rotations that failed in a row; a successful rotation resets it |
+| `gitlab_pg_ash_insert_errors`                            | Gauge     | 19.4  |                                                                                           | Number of errors `pg_ash` hit while writing [active session history](../performance/_index.md#active-session-history) samples |
+| `gitlab_pg_ash_missed_samples`                           | Gauge     | 19.4  |                                                                                           | Number of [active session history](../performance/_index.md#active-session-history) samples interrupted before they could be recorded |
+| `gitlab_pg_ash_sampler_errors_total`                     | Counter   | 19.4  |                                                                                           | Number of errors raised while taking an [active session history](../performance/_index.md#active-session-history) sample |
+| `gitlab_pg_ash_skipped_samples`                          | Gauge     | 19.4  |                                                                                           | Number of [active session history](../performance/_index.md#active-session-history) samples skipped because sampling was off in the database |
+| `gitlab_transaction_event_receive_email_create_issue_total`                     | Counter   | 12.3  |                                                                                           | Counter for received emails that create an issue |
+| `gitlab_transaction_event_receive_email_create_merge_request_total`             | Counter   | 12.3  |                                                                                           | Counter for received emails that create a merge request |
+| `gitlab_transaction_event_receive_email_create_note_issuable_total`             | Counter   | 12.3  |                                                                                           | Counter for received emails that create a comment on an issue, when the email is not a reply to a notification |
+| `gitlab_transaction_event_receive_email_create_note_total`                      | Counter   | 12.3  |                                                                                           | Counter for received emails that create a comment, when the email is a reply to a notification |
+| `gitlab_transaction_event_receive_email_service_desk_total`                     | Counter   | 12.3  |                                                                                           | Counter for received Service Desk reply emails |
+| `gitlab_transaction_event_receive_email_unsubscribe_total`                      | Counter   | 12.3  |                                                                                           | Counter for unsubscribe emails |
+| `gitlab_transaction_event_remote_mirrors_failed_total`   | Counter   | 10.8  |                                                                                           | Counter for failed remote mirrors |
+| `gitlab_transaction_event_remote_mirrors_finished_total` | Counter   | 10.8  |                                                                                           | Counter for finished remote mirrors |
+| `gitlab_transaction_event_remote_mirrors_running_total`  | Counter   | 10.8  |                                                                                           | Counter for running remote mirrors |
+| `global_search_awaiting_indexing_queue_size`             | Gauge     | 13.2  |                                                                                           | Deprecated and removed in 18.7. Replaced by `search_advanced_awaiting_indexing_queue_size`. Number of database updates waiting to be synchronized to Elasticsearch while indexing is paused |
+| `global_search_bulk_cron_initial_queue_size`             | Gauge     | 13.1  |                                                                                           | Deprecated and removed in 18.7. Replaced by `search_advanced_bulk_cron_initial_queue_size`. Number of initial database updates waiting to be synchronized to Elasticsearch |
+| `global_search_bulk_cron_queue_size`                     | Gauge     | 12.10 |                                                                                           | Deprecated and removed in 18.7. Replaced by `search_advanced_bulk_cron_queue_size`. Number of incremental database updates waiting to be synchronized to Elasticsearch |
+| `limited_capacity_worker_max_running_jobs`               | Gauge     | 13.5  | `worker`                                                                                  | Maximum number of running jobs |
+| `limited_capacity_worker_remaining_work_count`           | Gauge     | 13.5  | `worker`                                                                                  | Number of jobs waiting to be enqueued |
+| `limited_capacity_worker_running_jobs`                   | Gauge     | 13.5  | `worker`                                                                                  | Number of running jobs |
+| `search_advanced_awaiting_indexing_queue_size`           | Gauge     | 17.6  |                                                                                           | Number of database updates waiting to be synchronized to Elasticsearch while indexing is paused |
+| `search_advanced_bulk_cron_embedding_queue_size`         | Gauge     | 17.6  |                                                                                           | Number of embedding updates waiting to be synchronized to Elasticsearch |
+| `search_advanced_bulk_cron_initial_queue_size`           | Gauge     | 17.6  |                                                                                           | Number of initial database updates waiting to be synchronized to Elasticsearch |
+| `search_advanced_bulk_cron_queue_size`                   | Gauge     | 17.6  |                                                                                           | Number of incremental database updates waiting to be synchronized to Elasticsearch |
+| `sidekiq_concurrency_limit_current_concurrent_jobs`      | Gauge     | 17.6  | `worker`, `feature_category`                                                              | Current number of concurrent running jobs. |
+| `sidekiq_concurrency_limit_current_limit`                | Gauge     | 18.3  | `worker`, `feature_category`                                                              | Number of concurrent jobs currently allowed to run subject to throttling |
+| `sidekiq_concurrency_limit_max_concurrent_jobs`          | Gauge     | 17.3  | `worker`, `feature_category`                                                              | Max number of concurrent running Sidekiq jobs |
+| `sidekiq_concurrency_limit_queue_jobs`                   | Gauge     | 17.3  | `worker`, `feature_category`                                                              | Number of Sidekiq jobs waiting in the concurrency limit queue |
+| `sidekiq_concurrency`                                    | Gauge     | 12.5  |                                                                                           | Maximum number of Sidekiq jobs |
+| `sidekiq_elasticsearch_requests_duration_seconds`        | Histogram | 13.1  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Duration in seconds that a Sidekiq job spent in requests to an Elasticsearch server |
+| `sidekiq_elasticsearch_requests_total`                   | Counter   | 13.1  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Elasticsearch requests during a Sidekiq job execution |
+| `sidekiq_zoekt_requests_duration_seconds`                | Histogram | 19.2  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency`, `destination_shard_redis` | Duration in seconds that a Sidekiq job spent in requests to a Zoekt server. |
+| `sidekiq_zoekt_requests_total`                           | Counter   | 19.2  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency`, `destination_shard_redis` | Zoekt requests during a Sidekiq job execution. |
+| `sidekiq_jobs_completion_seconds`                        | Histogram | 12.2  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Seconds to complete Sidekiq job |
+| `sidekiq_jobs_cpu_seconds`                               | Histogram | 12.4  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Seconds of CPU time to run Sidekiq job |
+| `sidekiq_jobs_db_seconds`                                | Histogram | 12.9  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Seconds of DB time to run Sidekiq job |
+| `sidekiq_jobs_dead_total`                                | Counter   | 13.7  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `urgency`               | Sidekiq dead jobs (jobs that have run out of retries) |
+| `sidekiq_jobs_failed_total`                              | Counter   | 12.2  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `urgency`               | Sidekiq jobs failed |
+| `sidekiq_jobs_gitaly_seconds`                            | Histogram | 12.9  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Seconds of Gitaly time to run Sidekiq job |
+| `sidekiq_jobs_interrupted_total`                         | Counter   | 15.2  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `urgency`               | Sidekiq jobs interrupted |
+| `sidekiq_jobs_queue_duration_seconds`                    | Histogram | 12.5  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `urgency`               | Duration in seconds that a Sidekiq job was queued before being executed |
+| `sidekiq_jobs_retried_total`                             | Counter   | 12.2  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `urgency`               | Sidekiq jobs retried |
+| `sidekiq_jobs_skipped_total`                             | Counter   | 16.2  | `worker`, `action`, `feature_category`, `reason`                                          | Number of jobs being skipped (dropped or deferred) when `drop_sidekiq_jobs` feature flag is enabled or `run_sidekiq_jobs` feature flag is disabled |
+| `sidekiq_mem_total_bytes`                                | Gauge     | 15.3  |                                                                                           | Number of bytes allocated for both objects consuming an object slot and objects that required a malloc' |
+| `sidekiq_redis_requests_duration_seconds`                | Histogram | 13.1  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Duration in seconds that a Sidekiq job spent querying a Redis server |
+| `sidekiq_redis_requests_total`                           | Counter   | 13.1  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency` | Redis requests during a Sidekiq job execution |
+| `sidekiq_running_jobs`                                   | Gauge     | 12.2  | `queue`, `boundary`, `external_dependencies`, `feature_category`, `urgency`               | Number of Sidekiq jobs running |
+| `sidekiq_throttling_events_total`                        | Counter   | 18.3  | `worker`, `strategy`                                                                      | Total number of Sidekiq throttling events |
+| `sidekiq_watchdog_running_jobs_total`                    | Counter   | 15.9  | `worker_class`                                                                            | Current running jobs when RSS limit was reached |
+
+## Database load balancing metrics
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+The following metrics are available:
+
+| Metric                                                  | Type    | Since                                                       | Labels   | Description |
+|:--------------------------------------------------------|:--------|:------------------------------------------------------------|:---------|:------------|
+| `db_load_balancing_hosts`                               | Gauge   | [12.3](https://gitlab.com/gitlab-org/gitlab/-/issues/13630) |          | Current number of load balancing hosts |
+| `sidekiq_load_balancing_count`                          | Counter | 13.11                                                       | `queue`, `boundary`, `external_dependencies`, `feature_category`, `job_status`, `urgency`, `data_consistency`, `load_balancing_strategy` | Sidekiq jobs using load balancing with data consistency set to `:sticky` or `:delayed` |
+| `gitlab_transaction_caught_up_replica_pick_count_total` | Counter | 14.1                                                        | `result` | Number of search attempts for caught up replica |
+
+## Database partitioning metrics
+
+{{< details >}}
+
+- Tier: Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+The following metrics are available:
+
+| Metric                  | Type  | Since                                                        | Description |
+|:------------------------|:------|:-------------------------------------------------------------|:------------|
+| `db_partitions_present` | Gauge | [13.4](https://gitlab.com/gitlab-org/gitlab/-/issues/227353) | Number of database partitions present |
+| `db_partitions_missing` | Gauge | [13.4](https://gitlab.com/gitlab-org/gitlab/-/issues/227353) | Number of database partitions currently expected, but not present |
+
+## Connection pool metrics
+
+These metrics record the status of the database
+[connection pools](https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/ConnectionPool.html),
+and the metrics all have these labels:
+
+- `class` - the Ruby class being recorded.
+  - `ActiveRecord::Base` is the main database connection.
+  - `Geo::TrackingBase` is the connection to the Geo tracking database, if
+    enabled.
+- `host` - the host name used to connect to the database.
+- `port` - the port used to connect to the database.
+
+| Metric                                              | Type  | Since | Description |
+|:----------------------------------------------------|:------|:------|:------------|
+| `gitlab_database_connection_pool_size`              | Gauge | 13.0  | Total connection pool capacity |
+| `gitlab_database_connection_pool_connections`       | Gauge | 13.0  | Number of connections that have been created in the pool.[^idle-connection-count] |
+| `gitlab_database_connection_pool_busy`              | Gauge | 13.0  | Connections in use where the owner is still alive |
+| `gitlab_database_connection_pool_dead`              | Gauge | 13.0  | Connections in use where the owner is not alive |
+| `gitlab_database_connection_pool_idle`              | Gauge | 13.0  | Connections created, but not currently in use |
+| `gitlab_database_connection_pool_waiting`           | Gauge | 13.0  | Threads currently waiting on this queue |
+| `gitlab_database_extended_connection_pool_busy`     | Gauge | 18.11 | Connections in use where the owner is still alive, per thread |
+| `gitlab_database_extended_connection_pool_dead`     | Gauge | 18.11 | Connections in use where the owner is not alive, per thread |
+
+[^idle-connection-count]: Because `idle` counts only initialized connections that are not in use, the total of `busy`, `dead`, and `idle` connections can be less than or equal to the total number of connections.
+
+In GitLab 18.11 and later, the default connection pool gauges are
+aggregated across Puma worker processes, so a single time series is
+emitted per pod (rather than one per worker).
+
+The aggregation uses the [`multiprocess_mode`](https://github.com/prometheus/client_ruby#aggregation-settings-for-multi-process-stores)
+setting supported by the [`prometheus-client-mmap`](https://gitlab.com/gitlab-org/ruby/gems/prometheus-client-mmap)
+client used by GitLab:
+
+- `gitlab_database_connection_pool_size` uses `min`. Because Puma
+  workers are forked with the same configuration, this value is the
+  same for every worker in a pod, so `min` just surfaces that shared
+  value.
+- `gitlab_database_connection_pool_connections`, `gitlab_database_connection_pool_busy`,
+  `gitlab_database_connection_pool_dead`, `gitlab_database_connection_pool_idle`, and
+  `gitlab_database_connection_pool_waiting` use `max` (the worst-case worker).
+
+Because these values are per-pod worst-case instead of sums across
+workers, dashboards or alerts that summed per-worker series in GitLab 18.10 and earlier
+(for example, `sum(gitlab_database_connection_pool_busy)`) now under-report the total.
+
+Do not try to reconstruct the previous sum by multiplying by the number
+of Puma workers. A sum across a pod does not reflect utilization on
+that pod or across the fleet, and monitoring should target the
+worst-case worker.
+
+If a single worker process saturates its pool, that worker cannot
+handle requests, regardless of what the other workers on the same pod
+are doing.
+
+For connection pool saturation monitoring, use `busy` plus `dead` instead of `connections` minus `idle`.
+
+The `gitlab_database_extended_connection_pool_busy` and
+`gitlab_database_extended_connection_pool_dead` metrics include a
+`thread_name` label for per-thread granularity.
+These metrics are disabled by default due to high cardinality.
+To enable them for a percentage of pods, use the
+`per_thread_db_connection_pool_metrics`
+[ops feature flag](../../../development/feature_flags/_index.md).
+The flag is scoped to `Feature.current_pod`, so it can be turned on
+for a percentage of pods without emitting the high-cardinality series
+fleet-wide.
+
+## Ruby metrics
+
+Some basic Ruby runtime metrics are available:
+
+| Metric                                    | Type    | Since | Description |
+|:------------------------------------------|:--------|:------|:------------|
+| `ruby_gc_duration_seconds`                | Counter | 11.1  | Time spent by Ruby in GC |
+| `ruby_gc_stat_...`                        | Gauge   | 11.1  | Various metrics from [GC.stat](https://ruby-doc.org/core-2.6.5/GC.html#method-c-stat) |
+| `ruby_gc_stat_ext_heap_fragmentation`     | Gauge   | 15.2  | Degree of Ruby heap fragmentation as live objects versus eden slots (range 0 to 1) |
+| `ruby_gvl_wait_seconds_total`             | Gauge   | 19.4  | Seconds all threads in this process spent waiting for the Global VM Lock. [Controlled by a feature flag](#metrics-controlled-by-a-feature-flag) |
+| `ruby_file_descriptors`                   | Gauge   | 11.1  | File descriptors per process |
+| `ruby_sampler_duration_seconds`           | Counter | 11.1  | Time spent collecting stats |
+| `ruby_process_cpu_seconds_total`          | Gauge   | 12.0  | Total amount of CPU time per process |
+| `ruby_process_max_fds`                    | Gauge   | 12.0  | Maximum number of open file descriptors per process |
+| `ruby_process_resident_memory_bytes`      | Gauge   | 12.0  | Memory usage by process (RSS/Resident Set Size) |
+| `ruby_process_resident_anon_memory_bytes` | Gauge   | 15.6  | Anonymous memory usage by process (RSS/Resident Set Size) |
+| `ruby_process_resident_file_memory_bytes` | Gauge   | 15.6  | File-backed memory usage by process (RSS/Resident Set Size) |
+| `ruby_process_unique_memory_bytes`        | Gauge   | 13.0  | Memory usage by process (USS/Unique Set Size) |
+| `ruby_process_proportional_memory_bytes`  | Gauge   | 13.0  | Memory usage by process (PSS/Proportional Set Size) |
+| `ruby_process_start_time_seconds`         | Gauge   | 12.0  | UNIX timestamp of process start time |
+
+## Puma Metrics
+
+| Metric                    | Type  | Since | Description |
+|:--------------------------|:------|:------|:------------|
+| `puma_workers`            | Gauge | 12.0  | Total number of workers |
+| `puma_running_workers`    | Gauge | 12.0  | Number of booted workers |
+| `puma_stale_workers`      | Gauge | 12.0  | Number of old workers |
+| `puma_running`            | Gauge | 12.0  | Number of running threads |
+| `puma_queued_connections` | Gauge | 12.0  | Number of connections in that worker's "to do" set waiting for a worker thread |
+| `puma_active_connections` | Gauge | 12.0  | Number of threads processing a request |
+| `puma_pool_capacity`      | Gauge | 12.0  | Number of requests the worker is capable of taking right now |
+| `puma_max_threads`        | Gauge | 12.0  | Maximum number of worker threads |
+| `puma_idle_threads`       | Gauge | 12.0  | Number of spawned threads which are not processing a request |
+
+## Redis metrics
+
+These client metrics are meant to complement Redis server metrics.
+These metrics are broken down per
+[Redis instance](../../redis/replication_and_failover.md#running-multiple-redis-clusters).
+These metrics all have a `storage` label which indicates the Redis
+instance. For example, `cache` or `shared_state`.
+
+| Metric                                            | Type      | Since | Description |
+|:--------------------------------------------------|:----------|:------|:------------|
+| `gitlab_redis_client_exceptions_total`            | Counter   | 13.2  | Number of Redis client exceptions, broken down by exception class |
+| `gitlab_redis_client_requests_total`              | Counter   | 13.2  | Number of Redis client requests |
+| `gitlab_redis_client_requests_duration_seconds`   | Histogram | 13.2  | Redis request latency, excluding blocking commands |
+| `gitlab_redis_client_redirections_total`          | Counter   | 15.10 | Number of Redis Cluster MOVED/ASK redirections, broken down by redirection type |
+| `gitlab_redis_client_requests_pipelined_commands` | Histogram | 16.4  | Number of commands per pipeline sent to a single Redis server |
+| `gitlab_redis_client_pipeline_redirections_count` | Histogram | 17.0  | Number of Redis Cluster redirections in a pipeline |
+
+## Git LFS metrics
+
+Metrics to track various [Git LFS](https://git-lfs.com/) functionality.
+
+| Metric                                             | Type    | Since | Description |
+|:---------------------------------------------------|:--------|:------|:------------|
+| `gitlab_sli_lfs_update_objects_total`              | Counter | 16.10 | Number of updated LFS objects in total |
+| `gitlab_sli_lfs_update_objects_error_total`        | Counter | 16.10 | Number of updated LFS object errors in total |
+| `gitlab_sli_lfs_check_objects_total`               | Counter | 16.10 | Number of check LFS objects in total |
+| `gitlab_sli_lfs_check_objects_error_total`         | Counter | 16.10 | Number of check LFS object errors in total |
+| `gitlab_sli_lfs_validate_link_objects_total`       | Counter | 16.10 | Number of validated LFS linked objects in total |
+| `gitlab_sli_lfs_validate_link_objects_error_total` | Counter | 16.10 | Number of validated LFS linked object errors in total |
+
+## Secret detection partner token verification metrics
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/208292) in GitLab 18.6.
+
+{{< /history >}}
+
+Metrics to track secret detection partner token verification with external partner APIs (AWS, GCP, Postman, etc.).
+
+| Metric                                            | Type      | Since | Labels                                        | Description |
+|:--------------------------------------------------|:----------|:------|:----------------------------------------------|:------------|
+| `validity_check_partner_api_duration_seconds`     | Histogram | 18.6  | `partner`                                     | Tracks API response time for partner token verification requests. Histogram buckets: [0.1, 0.25, 0.5, 1, 2, 5, 10] seconds. |
+| `validity_check_partner_api_requests_total`       | Counter   | 18.6  | `partner`, `status`, `error_type`             | Total number of partner API verification requests. `status` can be `success` or `failure`. `error_type` is included only for failures (e.g., `network_error`, `rate_limit`, `response_error`). |
+| `validity_check_network_errors_total`             | Counter   | 18.6  | `partner`, `error_class`                      | Total network errors during partner API calls. `error_class` indicates the type of error (e.g., `Timeout`, `ConnectionRefused`, `HTTPError`). |
+| `validity_check_rate_limit_hits_total`            | Counter   | 18.6  | `limit_type`                    | Total rate limit hits during token verification. `limit_type` corresponds to the partner rate limit key (e.g., `partner_aws_api`, `partner_gcp_api`, `partner_postman_api`). |
+
+### Partner labels
+
+The `partner` label can have the following values:
+
+- `aws` - Amazon Web Services tokens
+- `gcp` - Google Cloud Platform tokens
+- `postman` - Postman API tokens
+
+## Metrics shared directory
+
+The GitLab Prometheus client requires a directory to store metrics data shared between multi-process services.
+Those files are shared among all instances running under Puma server.
+The directory must be accessible to all running Puma processes, or
+metrics can't function correctly.
+
+This directory's location is configured using environment variable `prometheus_multiproc_dir`.
+For best performance, create this directory in `tmpfs`.
+
+If GitLab is installed using the Linux package
+and `tmpfs` is available, then GitLab configures the metrics directory for you.

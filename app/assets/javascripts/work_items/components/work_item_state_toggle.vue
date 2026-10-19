@@ -1,0 +1,357 @@
+<script>
+import { GlButton, GlDisclosureDropdownItem, GlLoadingIcon, GlModal, GlLink } from '@gitlab/ui';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import Tracking from '~/tracking';
+import { __, s__, sprintf } from '~/locale';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import {
+  I18N_WORK_ITEM_ERROR_UPDATING,
+  STATE_OPEN,
+  STATE_EVENT_CLOSE,
+  STATE_EVENT_REOPEN,
+  TRACKING_CATEGORY_SHOW,
+  VIEW_CONTEXT,
+  LINKED_CATEGORIES_MAP,
+  i18n,
+  STATE_CLOSED,
+} from '../constants';
+import {
+  findBlockerLinkedItems,
+  findOpenChildItemsCountsByType,
+  lowercaseWorkItemType,
+} from '../utils';
+import { updateCountsForParent } from '../graphql/cache_utils';
+import updateWorkItemMutation from '../graphql/update_work_item.mutation.graphql';
+import workItemByIidQuery from '../graphql/work_item_by_iid.query.graphql';
+import workItemLinkedItemsQuery from '../graphql/work_item_linked_items.query.graphql';
+import workItemOpenChildCountQuery from '../graphql/open_child_count.query.graphql';
+
+export default {
+  name: 'WorkItemStateToggle',
+  components: {
+    GlButton,
+    GlDisclosureDropdownItem,
+    GlLoadingIcon,
+    GlModal,
+    GlLink,
+  },
+  mixins: [Tracking.mixin(), glFeatureFlagsMixin()],
+  inject: {
+    viewContext: { default: VIEW_CONTEXT.fullScreen },
+  },
+  props: {
+    workItemState: {
+      type: String,
+      required: true,
+    },
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    workItemIid: {
+      type: String,
+      required: true,
+    },
+    workItemType: {
+      type: String,
+      required: true,
+    },
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    showAsDropdownItem: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    hasComment: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    disabled: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    parentId: {
+      type: String,
+      required: false,
+      default: null,
+    },
+  },
+  emits: ['error', 'submit-comment', 'work-item-state-updated'],
+  data() {
+    return {
+      updateInProgress: false,
+      blockerItems: [],
+      openChildItemsCount: 0,
+    };
+  },
+  apollo: {
+    // eslint-disable-next-line @gitlab/vue-no-undef-apollo-properties
+    workItem: {
+      query: workItemByIidQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          iid: this.workItemIid,
+          useWorkItemFeatures: Boolean(this.glFeatures.workItemFeaturesField),
+        };
+      },
+      update(data) {
+        return data.namespace?.workItem ?? {};
+      },
+      skip() {
+        return !this.workItemIid;
+      },
+      error(e) {
+        const msg = e.message || i18n.fetchError;
+        this.$emit('error', msg);
+        Sentry.captureException(new Error(msg));
+      },
+    },
+    blockerItems: {
+      query: workItemLinkedItemsQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          iid: this.workItemIid,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      skip() {
+        return !this.workItemIid;
+      },
+      update({ namespace }) {
+        if (!namespace?.workItem) return [];
+
+        const linkedWorkItems = findBlockerLinkedItems(namespace.workItem) || [];
+
+        return linkedWorkItems.filter((item) => {
+          return (
+            item.linkType === LINKED_CATEGORIES_MAP.IS_BLOCKED_BY &&
+            item.workItemState !== STATE_CLOSED
+          );
+        });
+      },
+      error(e) {
+        const msg = e.message || i18n.fetchError;
+        this.$emit('error', msg);
+        Sentry.captureException(new Error(msg));
+      },
+    },
+    openChildItemsCount: {
+      query: workItemOpenChildCountQuery,
+      variables() {
+        return {
+          fullPath: this.fullPath,
+          iid: this.workItemIid,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      skip() {
+        return !this.workItemIid;
+      },
+      update({ namespace }) {
+        if (!namespace?.workItem) return 0;
+
+        /** @type {Array<{countsByState: { opened : number }}> } */
+        const countsByType = findOpenChildItemsCountsByType(namespace.workItem);
+
+        if (!countsByType) {
+          return 0;
+        }
+
+        const total = countsByType.reduce((acc, curr) => acc + curr.countsByState.opened, 0);
+
+        return total;
+      },
+    },
+  },
+  computed: {
+    isWorkItemOpen() {
+      return this.workItemState === STATE_OPEN;
+    },
+    lowercaseWorkItemType() {
+      return lowercaseWorkItemType(this.workItemType);
+    },
+    toggleWorkItemStateText() {
+      let baseText = this.isWorkItemOpen
+        ? s__('WorkItem|Close %{workItemType}')
+        : s__('WorkItem|Reopen %{workItemType}');
+
+      if (this.hasComment) {
+        baseText = this.isWorkItemOpen
+          ? s__('WorkItem|Comment and close %{workItemType}')
+          : s__('WorkItem|Comment and reopen %{workItemType}');
+      }
+      return sprintf(baseText, { workItemType: this.lowercaseWorkItemType });
+    },
+    toggleWorkItemStateIcon() {
+      return this.isWorkItemOpen ? 'issue-close' : 'issue-open-m';
+    },
+    // eslint-disable-next-line vue/no-unused-properties
+    tracking() {
+      return {
+        category: TRACKING_CATEGORY_SHOW,
+        label: 'item_state',
+        property: `type_${this.workItemType}`,
+        extra: { viewContext: this.viewContext },
+      };
+    },
+    toggleInProgressText() {
+      const baseText = this.isWorkItemOpen
+        ? s__('WorkItem|Closing %{workItemType}')
+        : s__('WorkItem|Reopening %{workItemType}');
+      return sprintf(baseText, { workItemType: this.lowercaseWorkItemType });
+    },
+    isBlocked() {
+      return this.blockerItems.length > 0;
+    },
+    hasOpenChildren() {
+      return this.openChildItemsCount > 0;
+    },
+    action() {
+      if (this.isWorkItemOpen) {
+        if (this.isBlocked) {
+          return () => this.$refs.blockedByIssuesModal.show();
+        }
+        if (this.hasOpenChildren) {
+          return () => this.$refs.openChildrenWarningModal.show();
+        }
+      }
+      return this.updateWorkItem;
+    },
+    blockedByModalTitle() {
+      return sprintf(s__('WorkItem|Are you sure you want to close this blocked %{workItemType}?'), {
+        workItemType: this.lowercaseWorkItemType,
+      });
+    },
+    blockedByModalBody() {
+      return sprintf(
+        s__('WorkItem|This %{workItemType} is currently blocked by the following items:'),
+        { workItemType: this.lowercaseWorkItemType },
+      );
+    },
+    openChildrenModalTitle() {
+      return sprintf(s__('WorkItem|Are you sure you want to close this %{workItemType}?'), {
+        workItemType: this.lowercaseWorkItemType,
+      });
+    },
+    openChildrenModalBody() {
+      return sprintf(
+        s__(
+          'WorkItem|This %{workItemType} has open child items. If you close this %{workItemType}, they will remain open.',
+        ),
+        { workItemType: this.lowercaseWorkItemType },
+      );
+    },
+    modalActionCancel() {
+      return {
+        text: __('Cancel'),
+      };
+    },
+    modalActionPrimary() {
+      return {
+        text: sprintf(s__('WorkItem|Yes, close %{workItemType}'), {
+          workItemType: this.lowercaseWorkItemType,
+        }),
+      };
+    },
+    dropdownItem() {
+      return { text: this.toggleWorkItemStateText, icon: this.toggleWorkItemStateIcon };
+    },
+  },
+  methods: {
+    async updateWorkItem() {
+      this.updateInProgress = true;
+
+      try {
+        this.track('updated_state');
+
+        const { data } = await this.$apollo.mutate({
+          mutation: updateWorkItemMutation,
+          variables: {
+            input: {
+              id: this.workItemId,
+              stateEvent: this.isWorkItemOpen ? STATE_EVENT_CLOSE : STATE_EVENT_REOPEN,
+            },
+          },
+          update: (cache) =>
+            updateCountsForParent({
+              cache,
+              parentId: this.parentId,
+              workItemType: this.workItemType,
+              isClosing: this.isWorkItemOpen,
+            }),
+        });
+
+        const errors = data.workItemUpdate?.errors;
+
+        if (errors?.length) {
+          throw new Error(errors[0]);
+        }
+      } catch (error) {
+        const msg = sprintf(I18N_WORK_ITEM_ERROR_UPDATING, {
+          workItemType: this.workItemType,
+        });
+        this.$emit('error', msg);
+        Sentry.captureException(error);
+      }
+
+      if (this.hasComment) {
+        this.$emit('submit-comment');
+      }
+      this.$emit('work-item-state-updated');
+
+      this.updateInProgress = false;
+    },
+  },
+};
+</script>
+
+<template>
+  <span>
+    <gl-disclosure-dropdown-item v-if="showAsDropdownItem" :item="dropdownItem" @action="action">
+      <template v-if="updateInProgress" #list-item>
+        <gl-loading-icon inline size="sm" class="gl-mr-2" />
+        {{ toggleInProgressText }}
+      </template>
+    </gl-disclosure-dropdown-item>
+
+    <gl-button v-else :loading="updateInProgress" :disabled="disabled" @click="action">{{
+      toggleWorkItemStateText
+    }}</gl-button>
+
+    <gl-modal
+      ref="blockedByIssuesModal"
+      modal-id="blocked-by-issues-modal"
+      data-testid="blocked-by-issues-modal"
+      :action-cancel="modalActionCancel"
+      :action-primary="modalActionPrimary"
+      :title="blockedByModalTitle"
+      @primary="updateWorkItem"
+    >
+      <p>{{ blockedByModalBody }}</p>
+      <ul>
+        <li v-for="issue in blockerItems" :key="issue.workItem.iid">
+          <gl-link :href="issue.workItem.webUrl">#{{ issue.workItem.iid }}</gl-link>
+        </li>
+      </ul>
+    </gl-modal>
+
+    <gl-modal
+      ref="openChildrenWarningModal"
+      modal-id="open-children-warning-modal"
+      data-testid="open-children-warning-modal"
+      :action-cancel="modalActionCancel"
+      :action-primary="modalActionPrimary"
+      :title="openChildrenModalTitle"
+      @primary="updateWorkItem"
+    >
+      <p>{{ openChildrenModalBody }}</p>
+    </gl-modal>
+  </span>
+</template>

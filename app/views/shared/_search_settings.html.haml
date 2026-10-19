@@ -1,0 +1,7 @@
+- return if @hide_search_settings
+
+- container_class = local_assigns.fetch(:container_class, 'gl-my-2')
+
+%div{ class: container_class }
+  .js-search-settings-app
+    %input.gl-form-input.form-control{ type: "text", placeholder: _("Search settings"), aria: { label: _("Search settings") }, disabled: true }

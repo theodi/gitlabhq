@@ -1,0 +1,25 @@
+variables:
+  TEST_VAR: "hello world!"
+  123456: "123456"
+  FOO:
+    value: "BAR"
+    description: "A single value variable"
+  VAR_WITH_DESCRIPTION:
+    description: "A multi-value variable"
+  RAW_VAR:
+    value: "Hello $FOO"
+    expand: false
+  VAR_WITH_OPTIONS:
+    value: "staging"
+    options:
+      - "production"
+      - "staging"
+      - "canary"
+    description: "The deployment target. Set to 'production' by default."
+
+rspec:
+  script: rspec
+  variables:
+    RAW_VAR2:
+      value: "Hello $DEPLOY_ENVIRONMENT"
+      expand: false

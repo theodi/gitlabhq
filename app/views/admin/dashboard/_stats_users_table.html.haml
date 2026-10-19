@@ -1,0 +1,21 @@
+%table.table.gl-text-subtle.gl-w-full
+  %tr
+    %td{ class: '!gl-p-5' }
+      = s_('AdminArea|Users without a Group and Project')
+    %td.gl-text-right{ class: '!gl-p-5' }
+      = @users_statistics&.without_groups_and_projects
+  - user_roles_mapping.map do |role_key, role_name|
+    %tr
+      %td{ class: '!gl-p-5' }
+        = s_('AdminArea|Users with highest role')
+        %strong
+          -# rubocop:disable Gettext/StaticIdentifier -- These roles are already translated in other places
+          = s_("AdminArea|#{role_name}")
+          -# rubocop:enable Gettext/StaticIdentifier
+      %td.gl-text-right{ class: '!gl-p-5' }
+        = @users_statistics&.public_send("with_highest_role_#{role_key}")
+  %tr
+    %td{ class: '!gl-p-5' }
+      = s_('AdminArea|Bots')
+    %td.gl-text-right{ class: '!gl-p-5' }
+      = @users_statistics&.bots

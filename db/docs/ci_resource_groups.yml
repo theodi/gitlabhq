@@ -1,0 +1,13 @@
+---
+table_name: ci_resource_groups
+classes:
+- Ci::ResourceGroup
+feature_categories:
+- continuous_delivery
+description: https://docs.gitlab.com/ee/ci/resource_groups/
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/20950
+milestone: '12.7'
+gitlab_schema: gitlab_ci
+sharding_key:
+  project_id: projects
+table_size: small

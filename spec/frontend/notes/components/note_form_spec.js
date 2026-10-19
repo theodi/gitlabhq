@@ -1,0 +1,681 @@
+import { GlLink, GlFormCheckbox } from '@gitlab/ui';
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { createTestingPinia } from '@pinia/testing';
+import { PiniaVuePlugin } from 'pinia';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import NoteForm from '~/notes/components/note_form.vue';
+import MarkdownField from '~/vue_shared/components/markdown/field.vue';
+import CommentFieldLayout from '~/notes/components/comment_field_layout.vue';
+import { AT_WHO_ACTIVE_CLASS } from '~/gfm_auto_complete';
+import notesEventHub from '~/notes/event_hub';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import { mockTracking } from 'helpers/tracking_helper';
+import MarkdownEditor from '~/vue_shared/components/markdown/markdown_editor.vue';
+import { globalAccessorPlugin } from '~/pinia/plugins';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { useBatchComments } from '~/batch_comments/store';
+import currentUserQuery from '~/graphql_shared/queries/current_user.query.graphql';
+import { noteableDataMock, notesDataMock, discussionMock, userDataMock } from '../mock_data';
+
+jest.mock('~/lib/utils/autosave');
+
+Vue.use(PiniaVuePlugin);
+Vue.use(VueApollo);
+
+describe('issue_note_form component', () => {
+  let pinia;
+  let wrapper;
+  let textarea;
+  let props;
+  let trackingSpy;
+
+  const createComponentWrapper = (propsData = {}, provide = {}, stubs = {}) => {
+    wrapper = mountExtended(NoteForm, {
+      pinia,
+      apolloProvider: createMockApollo([
+        [currentUserQuery, jest.fn().mockResolvedValue({ data: { currentUser: null } })],
+      ]),
+      propsData: {
+        ...props,
+        ...propsData,
+      },
+      provide: {
+        glFeatures: provide,
+      },
+      stubs,
+    });
+
+    textarea = wrapper.find('textarea');
+  };
+
+  const findCancelButton = () => wrapper.findComponentByTestId('cancel');
+  const findCancelCommentButton = () => wrapper.findComponentByTestId('cancelBatchCommentsEnabled');
+  const findAddToStartReviewButton = () => wrapper.findByTestId('start-review-button');
+  const findMarkdownField = () => wrapper.findComponent(MarkdownField);
+
+  beforeEach(() => {
+    pinia = createTestingPinia({ plugins: [globalAccessorPlugin] });
+    useLegacyDiffs();
+    useNotes().noteableData = noteableDataMock;
+    useNotes().notesData = notesDataMock;
+    useBatchComments().$patch({ isMergeRequest: true });
+
+    props = {
+      isEditing: false,
+      noteBody: 'Magni suscipit eius consectetur enim et ex et commodi.',
+      noteId: '545',
+    };
+    trackingSpy = mockTracking(undefined, null, jest.spyOn);
+  });
+
+  describe('noteHash', () => {
+    beforeEach(() => {
+      createComponentWrapper();
+    });
+
+    it('returns note hash string based on `noteId`', () => {
+      expect(wrapper.vm.noteHash).toBe(`#note_${props.noteId}`);
+    });
+
+    it('return note hash as `#` when `noteId` is empty', () => {
+      createComponentWrapper({
+        noteId: '',
+      });
+
+      expect(wrapper.vm.noteHash).toBe('#');
+    });
+  });
+
+  it('shows content editor switcher', () => {
+    createComponentWrapper();
+
+    expect(wrapper.text()).toContain('Switch to rich text editing');
+  });
+
+  describe('markdown editor', () => {
+    it('shows markdown editor', () => {
+      createComponentWrapper();
+
+      expect(wrapper.findComponent(MarkdownEditor).exists()).toBe(true);
+    });
+
+    it('passes down restoreFromAutosave prop to the editor', () => {
+      createComponentWrapper({ restoreFromAutosave: true });
+
+      expect(wrapper.findComponent(MarkdownEditor).props('restoreFromAutosave')).toBe(true);
+    });
+  });
+
+  describe('conflicts editing', () => {
+    beforeEach(() => {
+      createComponentWrapper();
+    });
+
+    it('should show conflict message if note changes outside the component', async () => {
+      wrapper.setProps({
+        ...props,
+        noteBody: 'Foo',
+      });
+
+      const message =
+        'This comment changed after you started editing it. Review the updated comment to ensure information is not lost.';
+
+      await nextTick();
+
+      const conflictWarning = wrapper.find('.js-conflict-edit-warning');
+
+      expect(conflictWarning.exists()).toBe(true);
+      expect(conflictWarning.text().replace(/\s+/g, ' ').trim()).toBe(message);
+      expect(conflictWarning.findComponent(GlLink).attributes('href')).toBe('#note_545');
+    });
+  });
+
+  describe('form', () => {
+    beforeEach(() => {
+      createComponentWrapper();
+    });
+
+    it('should render text area with noteable type', () => {
+      expect(textarea.attributes('data-noteable-type')).toBe(noteableDataMock.noteableType);
+    });
+
+    it('should render text area with placeholder', () => {
+      expect(textarea.attributes('placeholder')).toBe('Write a comment or drag your files here…');
+    });
+
+    it('should set data-supports-quick-actions to enable autocomplete', () => {
+      expect(textarea.attributes('data-supports-quick-actions')).toBe('true');
+    });
+
+    it('does not opt out of any quick action by default', () => {
+      expect(
+        wrapper.findComponent(MarkdownEditor).attributes('data-exclude-commands'),
+      ).toBeUndefined();
+    });
+
+    it.each`
+      context                             | formProps
+      ${'a diff comment'}                 | ${{ diffFile: { file_path: 'file.rb', diff_refs: {} } }}
+      ${'a reply draft on a diff thread'} | ${{ isDraft: true, note: { id: 1 }, discussion: { diff_file: { file_path: 'file.rb', diff_refs: {} } } }}
+    `('opts $context out of the /internal_note quick action', ({ formProps }) => {
+      createComponentWrapper(formProps);
+
+      expect(wrapper.findComponent(MarkdownEditor).attributes('data-exclude-commands')).toBe(
+        'internal_note',
+      );
+    });
+
+    it('keeps the /internal_note quick action on a top-level draft', () => {
+      createComponentWrapper({ isDraft: true, note: { id: 1 } });
+
+      expect(
+        wrapper.findComponent(MarkdownEditor).attributes('data-exclude-commands'),
+      ).toBeUndefined();
+    });
+
+    it.each`
+      confidential | placeholder
+      ${false}     | ${'Write a comment or drag your files here…'}
+      ${true}      | ${'Write an internal note or drag your files here…'}
+    `(
+      'should set correct textarea placeholder text when discussion confidentiality is $internal',
+      async ({ confidential, placeholder }) => {
+        props.discussion = {
+          ...discussionMock,
+          confidential,
+        };
+        createComponentWrapper();
+
+        await nextTick();
+
+        expect(wrapper.find('textarea').attributes('placeholder')).toBe(placeholder);
+      },
+    );
+
+    it('should link to markdown docs', () => {
+      expect(findMarkdownField().props('markdownDocsPath')).toBe(notesDataMock.markdownDocsPath);
+    });
+
+    describe('keyboard events', () => {
+      beforeEach(() => {
+        textarea.setValue('Foo');
+      });
+
+      describe('up', () => {
+        it('does not emit `enter-edit-mode` while the form still has content', () => {
+          const eventHubSpy = jest.spyOn(notesEventHub, '$emit');
+
+          textarea.trigger('keydown.up');
+
+          expect(eventHubSpy).not.toHaveBeenCalled();
+        });
+
+        it('emits `enter-edit-mode` with your last note when the form is empty', () => {
+          const noteId = 42;
+          useNotes().userData = userDataMock;
+          createComponentWrapper({
+            noteBody: '',
+            discussion: { ...discussionMock, notes: [{ id: noteId, author: userDataMock }] },
+          });
+          const eventHubSpy = jest.spyOn(notesEventHub, '$emit');
+
+          textarea.trigger('keydown.up');
+
+          expect(eventHubSpy).toHaveBeenCalledWith('enter-edit-mode', { noteId });
+        });
+      });
+
+      describe('enter', () => {
+        it('should save note when cmd+enter is pressed', () => {
+          textarea.trigger('keydown.enter', { metaKey: true });
+
+          expect(wrapper.emitted('handle-form-update')).toHaveLength(1);
+        });
+
+        it('should save note when ctrl+enter is pressed', () => {
+          textarea.trigger('keydown.enter', { ctrlKey: true });
+
+          expect(wrapper.emitted('handle-form-update')).toHaveLength(1);
+        });
+
+        it('should disable textarea when ctrl+enter is pressed', async () => {
+          textarea.trigger('keydown.enter', { ctrlKey: true });
+
+          expect(textarea.attributes('disabled')).toBeUndefined();
+
+          await nextTick();
+
+          expect(textarea.attributes('disabled')).toBeDefined();
+        });
+      });
+    });
+
+    describe('actions', () => {
+      it('should be possible to cancel', () => {
+        createComponentWrapper();
+
+        findCancelButton().vm.$emit('click');
+
+        expect(wrapper.emitted('cancel-form')).toHaveLength(1);
+      });
+
+      it('will not cancel form if there is an active at-who-active class', async () => {
+        createComponentWrapper();
+
+        const textareaEl = wrapper.vm.$refs.markdownEditor.$el.querySelector('textarea');
+        const cancelButton = findCancelButton();
+        textareaEl.classList.add(AT_WHO_ACTIVE_CLASS);
+        cancelButton.vm.$emit('click');
+        await nextTick();
+
+        expect(wrapper.emitted('cancel-form')).toBeUndefined();
+      });
+
+      it('should be possible to update the note', () => {
+        createComponentWrapper();
+
+        textarea.setValue('Foo');
+        const saveButton = wrapper.findComponent('.js-vue-issue-save');
+        saveButton.vm.$emit('click');
+
+        expect(wrapper.emitted('handle-form-update')).toHaveLength(1);
+      });
+
+      it('tracks event when save button is clicked', () => {
+        createComponentWrapper();
+
+        textarea.setValue('Foo');
+        const saveButton = wrapper.findComponent('.js-vue-issue-save');
+        saveButton.vm.$emit('click');
+
+        expect(trackingSpy).toHaveBeenCalledWith(undefined, 'save_markdown', {
+          label: 'markdown_editor',
+          property: 'Issue_note',
+        });
+      });
+
+      describe('when discussion is confidential', () => {
+        beforeEach(() => {
+          createComponentWrapper({ discussion: { confidential: true } });
+        });
+
+        it('passes correct internal note information to CommentFieldLayout', () => {
+          expect(wrapper.findComponent(CommentFieldLayout).props('isInternalNote')).toBe(true);
+        });
+      });
+    });
+  });
+
+  describe('resolve checkbox', () => {
+    it('hides resolve checkbox when discussion is not resolvable', () => {
+      createComponentWrapper({
+        discussion: {
+          ...discussionMock,
+          notes: [
+            ...discussionMock.notes.map((n) => ({
+              ...n,
+              resolvable: false,
+              current_user: { ...n.current_user, can_resolve_discussion: false },
+            })),
+          ],
+        },
+      });
+
+      expect(wrapper.findComponent(GlFormCheckbox).exists()).toBe(false);
+    });
+
+    it('shows resolve checkbox when discussion is resolvable', () => {
+      createComponentWrapper({
+        discussion: {
+          ...discussionMock,
+          notes: [
+            ...discussionMock.notes.map((n) => ({
+              ...n,
+              resolvable: true,
+              current_user: { ...n.current_user, can_resolve_discussion: true },
+            })),
+          ],
+        },
+      });
+
+      expect(wrapper.findComponent(GlFormCheckbox).exists()).toBe(true);
+    });
+
+    describe('when the checkbox changes the resolved state', () => {
+      const submitAndRunCallback = async (...callbackArgs) => {
+        createComponentWrapper({
+          discussion: {
+            ...discussionMock,
+            notes: discussionMock.notes.map((n) => ({
+              ...n,
+              resolvable: true,
+              current_user: { ...n.current_user, can_resolve_discussion: true },
+            })),
+          },
+        });
+
+        await wrapper.findComponent(GlFormCheckbox).find('input').setChecked();
+        textarea.setValue('Foo');
+        wrapper.findComponent('.js-vue-issue-save').vm.$emit('click');
+
+        const [, , callback] = wrapper.emitted('handle-form-update')[0];
+        callback(...callbackArgs);
+      };
+
+      beforeEach(() => {
+        useNotes().toggleResolveNote.mockResolvedValue();
+      });
+
+      it('toggles the resolved state after the note saves', async () => {
+        await submitAndRunCallback();
+
+        expect(useNotes().toggleResolveNote).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not toggle the resolved state when the save request already did', async () => {
+        await submitAndRunCallback(undefined, { resolvedStateSaved: true });
+
+        expect(useNotes().toggleResolveNote).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('with batch comments', () => {
+    beforeEach(() => {
+      createComponentWrapper({
+        isDraft: true,
+        noteId: '',
+        discussion: { ...discussionMock, for_commit: false },
+      });
+    });
+
+    it('should be possible to cancel', () => {
+      findCancelCommentButton().vm.$emit('click');
+
+      expect(wrapper.emitted('cancel-form')).toEqual([[true, false]]);
+    });
+
+    it('hides actions for commits', () => {
+      createComponentWrapper({ discussion: { for_commit: true } });
+
+      expect(wrapper.find('.note-form-actions').text()).not.toContain('Start a review');
+    });
+
+    describe('on enter', () => {
+      it('should start review or add to review when cmd+enter is pressed', async () => {
+        textarea.setValue('Foo');
+        textarea.trigger('keydown.enter', { metaKey: true });
+
+        await nextTick();
+
+        expect(wrapper.emitted('handle-form-update-add-to-review')).toStrictEqual([
+          ['Foo', false, wrapper.vm.$refs.editNoteForm, expect.any(Function)],
+        ]);
+      });
+    });
+
+    describe('on shift cmd enter', () => {
+      it('should add comment now when shift-cmd+enter is pressed', async () => {
+        textarea.setValue('Foo');
+        textarea.trigger('keydown.enter', { metaKey: true, shiftKey: true });
+
+        await nextTick();
+
+        expect(wrapper.emitted('handle-form-update')).toHaveLength(1);
+      });
+    });
+
+    describe('when adding a draft comment', () => {
+      beforeEach(() => {
+        jest.spyOn(notesEventHub, '$emit');
+      });
+
+      it('sends the event to indicate that a draft has been added to the review', () => {
+        useBatchComments().drafts = [{ note: 'A' }];
+        createComponentWrapper({
+          isDraft: true,
+          noteId: '',
+          discussion: { ...discussionMock, for_commit: false },
+        });
+
+        findAddToStartReviewButton().trigger('click');
+
+        expect(notesEventHub.$emit).toHaveBeenCalledWith('note-form-add-to-review', {
+          name: 'note-form-add-to-review',
+        });
+      });
+
+      it('sends the event to indicate that a review has been started with the new draft', () => {
+        createComponentWrapper({
+          isDraft: true,
+          noteId: '',
+          discussion: { ...discussionMock, for_commit: false },
+        });
+
+        findAddToStartReviewButton().trigger('click');
+
+        expect(notesEventHub.$emit).toHaveBeenCalledWith('note-form-start-review', {
+          name: 'note-form-start-review',
+        });
+      });
+    });
+  });
+
+  it('calls append on a markdown editor', () => {
+    createComponentWrapper(undefined, undefined, { MarkdownEditor });
+    const spy = jest.spyOn(wrapper.findComponent(MarkdownEditor).vm, 'append');
+    wrapper.vm.append('foo');
+    expect(spy).toHaveBeenCalledWith('foo');
+  });
+
+  it('disables table of contents support in the markdown editor', () => {
+    createComponentWrapper();
+    expect(findMarkdownField().props('supportsTableOfContents')).toBe(false);
+  });
+
+  describe('markdownPreviewPath', () => {
+    const diffFile = {
+      file_path: 'app/models/user.rb',
+      view_path: '/namespace/project/-/blob/abc123/app/models/user.rb',
+      diff_refs: {
+        base_sha: 'abc123',
+        start_sha: 'def456',
+        head_sha: 'ghi789',
+      },
+    };
+
+    const line = {
+      new_line: 42,
+      can_receive_suggestion: true,
+      text: '<span id="LC2" class="line" lang="plaintext"></span>\n',
+      rich_text: '<span id="LC2" class="line" lang="plaintext"></span>\n',
+    };
+
+    it('returns base preview path when no line or diffParams are present', () => {
+      createComponentWrapper();
+
+      expect(wrapper.vm.markdownPreviewPath).toBe(noteableDataMock.preview_note_path);
+    });
+
+    it('includes preview_suggestions as boolean when line and diffParams are present', () => {
+      createComponentWrapper({
+        diffFile,
+        line,
+      });
+
+      const previewPath = wrapper.vm.markdownPreviewPath;
+
+      expect(previewPath).toContain('preview_suggestions=true');
+      expect(previewPath).toContain('line=42');
+      expect(previewPath).toContain('file_path=app%2Fmodels%2Fuser.rb');
+      expect(previewPath).toContain('base_sha=abc123');
+      expect(previewPath).toContain('start_sha=def456');
+      expect(previewPath).toContain('head_sha=ghi789');
+    });
+
+    it('does not include preview_suggestions when line is missing', () => {
+      createComponentWrapper({
+        diffFile,
+        line: null,
+      });
+
+      const previewPath = wrapper.vm.markdownPreviewPath;
+
+      expect(previewPath).not.toContain('preview_suggestions');
+      expect(previewPath).toBe(noteableDataMock.preview_note_path);
+    });
+
+    it('does not include preview_suggestions when diffParams is missing', () => {
+      createComponentWrapper({
+        diffFile: null,
+        line,
+      });
+
+      const previewPath = wrapper.vm.markdownPreviewPath;
+
+      expect(previewPath).not.toContain('preview_suggestions');
+      expect(previewPath).toBe(noteableDataMock.preview_note_path);
+    });
+  });
+
+  describe('codeSuggestionsConfig passed to MarkdownEditor', () => {
+    const findMarkdownEditorConfig = () =>
+      wrapper.findComponent(MarkdownEditor).props('codeSuggestionsConfig');
+
+    describe('lines normalization', () => {
+      it('uses text directly when present on the line object', () => {
+        createComponentWrapper({
+          line: { text: 'plain text', rich_text: '<b>ignored</b>', type: 'new', new_line: 1 },
+          lines: [],
+        });
+
+        expect(findMarkdownEditorConfig().lines).toEqual(['plain text']);
+      });
+
+      it('strips HTML and unescapes entities from rich_text when text is absent', () => {
+        createComponentWrapper({
+          line: { rich_text: '<span>&lt;div&gt;</span>', type: 'new', new_line: 1 },
+          lines: [],
+        });
+
+        expect(findMarkdownEditorConfig().lines).toEqual(['<div>']);
+      });
+
+      it('uses the lines prop when provided, ignoring the single line', () => {
+        createComponentWrapper({
+          line: { text: 'first', type: 'new', new_line: 1 },
+          lines: [
+            { text: 'line one', type: 'new', new_line: 1 },
+            { text: 'line two', type: 'new', new_line: 2 },
+          ],
+        });
+
+        expect(findMarkdownEditorConfig().lines).toEqual(['line one', 'line two']);
+      });
+
+      it('passes empty lines array when no line or lines provided', () => {
+        createComponentWrapper({ line: null, lines: [] });
+
+        expect(findMarkdownEditorConfig().lines).toEqual([]);
+      });
+    });
+
+    describe('lineType', () => {
+      it('passes the line type when line is provided', () => {
+        createComponentWrapper({
+          line: { text: 'foo', type: 'new', new_line: 1 },
+        });
+
+        expect(findMarkdownEditorConfig().lineType).toBe('new');
+      });
+
+      it('passes empty string when line is null', () => {
+        createComponentWrapper({ line: null });
+
+        expect(findMarkdownEditorConfig().lineType).toBe('');
+      });
+    });
+
+    describe('canSuggest', () => {
+      it('is falsy without a line', () => {
+        createComponentWrapper({ line: null });
+
+        expect(findMarkdownEditorConfig().canSuggest).toBe(false);
+      });
+
+      it('is falsy when line.can_receive_suggestion is false', () => {
+        createComponentWrapper({
+          line: { text: 'foo', type: 'new', new_line: 1, can_receive_suggestion: false },
+        });
+
+        expect(findMarkdownEditorConfig().canSuggest).toBe(false);
+      });
+    });
+
+    describe('lineRange', () => {
+      it('is null when no line is provided', () => {
+        createComponentWrapper({ line: null, lines: [] });
+
+        expect(findMarkdownEditorConfig().lineRange).toBeNull();
+      });
+
+      it('sets start and end to the single line number', () => {
+        createComponentWrapper({
+          line: { text: 'foo', type: 'new', new_line: 7 },
+          lines: [],
+        });
+
+        expect(findMarkdownEditorConfig().lineRange).toEqual({ start: 7, end: 7 });
+      });
+
+      it('uses first and last new_line from the lines prop for a range', () => {
+        createComponentWrapper({
+          line: { text: 'last', type: 'new', new_line: 9 },
+          lines: [
+            { text: 'first', type: 'new', new_line: 5 },
+            { text: 'middle', type: 'new', new_line: 7 },
+            { text: 'last', type: 'new', new_line: 9 },
+          ],
+        });
+
+        expect(findMarkdownEditorConfig().lineRange).toEqual({ start: 5, end: 9 });
+      });
+    });
+
+    describe('blobRawPath', () => {
+      it('converts diffFile view_path to a raw path', () => {
+        const diffFile = {
+          file_path: 'foo.rb',
+          view_path: '/foo/-/blob/abc/foo.rb',
+          diff_refs: { base_sha: 'abc', start_sha: 'def', head_sha: 'ghi' },
+        };
+        createComponentWrapper({
+          line: { text: 'foo', type: 'new', new_line: 1 },
+          diffFile,
+        });
+
+        expect(findMarkdownEditorConfig().blobRawPath).toBe('/foo/-/raw/abc/foo.rb');
+      });
+
+      it('is null when no diffFile is provided', () => {
+        createComponentWrapper({ line: { text: 'foo', type: 'new', new_line: 1 } });
+
+        expect(findMarkdownEditorConfig().blobRawPath).toBeNull();
+      });
+
+      it('is null when diffFile has no view_path', () => {
+        createComponentWrapper({
+          line: { text: 'foo', type: 'new', new_line: 1 },
+          diffFile: {
+            file_path: 'foo.rb',
+            diff_refs: { base_sha: 'abc', start_sha: 'def', head_sha: 'ghi' },
+          },
+        });
+
+        expect(findMarkdownEditorConfig().blobRawPath).toBeNull();
+      });
+    });
+  });
+});

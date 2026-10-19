@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "required" : [
+    "id",
+    "short_id",
+    "title",
+    "created_at",
+    "parent_ids",
+    "message",
+    "author_name",
+    "author_email",
+    "authored_date",
+    "committer_name",
+    "committer_email",
+    "committed_date",
+    "web_url"
+  ],
+  "properties" : {
+    "id": { "type": ["string", "null"] },
+    "short_id": { "type": ["string", "null"] },
+    "title": { "type": "string" },
+    "created_at": { "type": "string" },
+    "parent_ids": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "string",
+        "additionalProperties": false
+      }
+    },
+    "message": { "type": "string" },
+    "author_name": { "type": "string" },
+    "author_email": { "type": "string" },
+    "authored_date": { "type": "string" },
+    "committer_name": { "type": "string" },
+    "committer_email": { "type": "string" },
+    "committed_date": { "type": "string" },
+    "web_url": { "type": "string" }
+  }
+}

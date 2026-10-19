@@ -1,0 +1,48 @@
+- ref = local_assigns.fetch(:ref) { current_ref }
+- project = local_assigns.fetch(:project) { @project }
+- web_ide_button_data = web_ide_button_data({ blob: nil })
+- fork_options = fork_modal_options(@project, nil)
+- add_page_specific_style 'page_bundles/projects'
+- unless @ref.blank? ||  @repository&.root_ref == @ref
+  - compare_path = project_compare_index_path(@project, from:  @repository&.root_ref, to: @ref)
+
+- if (readme = @repository.readme) && readme.rich_viewer
+  .tree-holder.gl-mt-5
+    #js-repository-blob-header-app{ data: {
+      project_id: @project.id,
+      ref: ref,
+      ref_type: @ref_type.to_s,
+      breadcrumbs: breadcrumb_data_attributes,
+      project_root_path: project_path(@project),
+      project_path: project.full_path,
+      compare_path: compare_path,
+      web_ide_button_options: web_ide_button_data.merge(fork_options).to_json,
+      web_ide_button_default_branch: @project.default_branch_or_main,
+      full_name: project.name_with_namespace,
+      escaped_ref: ActionDispatch::Journey::Router::Utils.escape_path(ref),
+        download_links: []
+    }.merge(vue_readme_header_additional_data) }
+
+  %article.file-holder.readme-holder{ id: 'readme', class: ("limited-width-container" unless fluid_layout) }
+    .js-file-title.file-title-flex-parent.gl-px-4.gl-py-3
+      .file-header-content
+        = blob_icon readme.mode, readme.name
+        = link_to project_blob_path(@project, tree_join(@ref, readme.path), ref_type: @ref_type) do
+          %strong
+            = readme.name
+    = render 'projects/blob/viewer', viewer: readme.rich_viewer, viewer_url: namespace_project_blob_path(@project.namespace, @project, tree_join(@ref, readme.path), viewer: :rich, format: :json, ref_type: @ref_type)
+
+- else
+  .row-content-block.second-block.center
+    %h4
+      This project does not have a README yet
+
+    - if can?(current_user, :push_code, @project)
+      %p
+        A
+        %code README
+        file contains information about other files in a repository and is commonly
+        distributed with computer software, forming part of its documentation.
+        GitLab will render it here instead of this message.
+      %p
+        = link_button_to "Add Readme", @project.add_readme_path, variant: :confirm

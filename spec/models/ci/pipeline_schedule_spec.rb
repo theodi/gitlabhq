@@ -1,0 +1,631 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Ci::PipelineSchedule, feature_category: :continuous_integration do
+  let_it_be_with_reload(:project) { create_default(:project, :small_repo) }
+
+  let(:repository) { project.repository }
+
+  subject(:schedule) { build(:ci_pipeline_schedule, project: project) }
+
+  it { is_expected.to belong_to(:project) }
+  it { is_expected.to validate_presence_of(:project) }
+  it { is_expected.to belong_to(:owner) }
+
+  it { is_expected.to have_many(:pipelines).dependent(:nullify) }
+  it { is_expected.to have_many(:variables) }
+  it { is_expected.to have_many(:inputs) }
+
+  it { is_expected.to respond_to(:ref) }
+  it { is_expected.to respond_to(:cron) }
+  it { is_expected.to respond_to(:cron_timezone) }
+  it { is_expected.to respond_to(:description) }
+  it { is_expected.to respond_to(:next_run_at) }
+
+  it_behaves_like 'includes Limitable concern' do
+    subject { build(:ci_pipeline_schedule, project: project) }
+  end
+
+  it_behaves_like 'cleanup by a loose foreign key' do
+    let!(:parent) { create(:user) }
+    let!(:model) { create(:ci_pipeline_schedule, owner: parent, project: project) }
+  end
+
+  describe 'validations' do
+    it 'does not allow invalid cron patterns' do
+      pipeline_schedule = build(:ci_pipeline_schedule, cron: '0 0 0 * *', project: project)
+
+      expect(pipeline_schedule).not_to be_valid
+    end
+
+    it 'does not allow invalid cron patterns' do
+      pipeline_schedule = build(:ci_pipeline_schedule, cron_timezone: 'invalid', project: project)
+
+      expect(pipeline_schedule).not_to be_valid
+    end
+
+    it 'does not allow empty variable key' do
+      pipeline_schedule = build(:ci_pipeline_schedule,
+        variables_attributes: [{ value: 'test_value' }],
+        project: project)
+
+      expect(pipeline_schedule).not_to be_valid
+    end
+
+    it 'does not allow duplicate inputs' do
+      schedule = build(:ci_pipeline_schedule)
+
+      schedule.inputs = build_list(:ci_pipeline_schedule_input, 2, name: 'test_input')
+
+      expect(schedule).not_to be_valid
+      expect(schedule.errors.full_messages).to contain_exactly('Inputs have duplicate values (test_input)')
+    end
+
+    it 'limits the number of inputs' do
+      schedule.inputs = build_list(:ci_pipeline_schedule_input, 21)
+
+      expect(schedule).not_to be_valid
+      expect(schedule.errors.full_messages).to contain_exactly('Inputs exceeds the limit of 20.')
+    end
+
+    context 'when an short ref record is being updated' do
+      let(:new_description) { 'some description' }
+      let(:ref) { 'other' }
+      let(:pipeline_schedule) do
+        build(:ci_pipeline_schedule, cron: ' 0 0 * * *   ', ref: ref, project: project)
+      end
+
+      before do
+        repository.add_branch(project.creator, ref, 'master')
+        pipeline_schedule.save!(validate: false)
+      end
+
+      it 'does not update the ref' do
+        pipeline_schedule.update!(description: new_description)
+
+        expect(pipeline_schedule.reload.ref).to eq(ref)
+        expect(pipeline_schedule.description).to eq(new_description)
+      end
+    end
+
+    context 'when active is false' do
+      it 'does not allow nullified ref' do
+        pipeline_schedule = build(:ci_pipeline_schedule, :inactive, ref: nil, project: project)
+
+        expect(pipeline_schedule).not_to be_valid
+      end
+    end
+
+    context 'when cron contains trailing whitespaces' do
+      it 'strips the attribute' do
+        pipeline_schedule = build(:ci_pipeline_schedule, cron: ' 0 0 * * *   ', project: project)
+
+        expect(pipeline_schedule).to be_valid
+        expect(pipeline_schedule.cron).to eq('0 0 * * *')
+      end
+    end
+  end
+
+  describe '.runnable_schedules' do
+    subject { described_class.runnable_schedules }
+
+    let!(:pipeline_schedule) do
+      travel_to(1.day.ago) do
+        create(:ci_pipeline_schedule, :hourly, project: project)
+      end
+    end
+
+    it 'returns the runnable schedule' do
+      is_expected.to eq([pipeline_schedule])
+    end
+
+    context 'when there are no runnable schedules' do
+      let!(:pipeline_schedule) {}
+
+      it 'returns an empty array' do
+        is_expected.to be_empty
+      end
+    end
+  end
+
+  describe '.preloaded' do
+    subject { described_class.preloaded }
+
+    before do
+      create_list(:ci_pipeline_schedule, 3, project: project)
+    end
+
+    it 'preloads the associations' do
+      subject
+
+      query = ActiveRecord::QueryRecorder.new { subject.map(&:project).each(&:route) }
+
+      expect(query.count).to eq(3)
+    end
+  end
+
+  describe '.owned_by' do
+    let_it_be_with_reload(:user) { create(:user) }
+    let_it_be_with_reload(:owned_pipeline_schedule) { create(:ci_pipeline_schedule, owner: user, project: project) }
+    let_it_be_with_reload(:other_pipeline_schedule) { create(:ci_pipeline_schedule, project: project) }
+
+    subject { described_class.owned_by(user) }
+
+    it 'returns owned pipeline schedules' do
+      is_expected.to eq([owned_pipeline_schedule])
+    end
+  end
+
+  describe '.for_project' do
+    let_it_be_with_reload(:project_pipeline_schedule) { create(:ci_pipeline_schedule, project: project) }
+    let_it_be_with_reload(:other_pipeline_schedule) { create(:ci_pipeline_schedule) }
+
+    subject { described_class.for_project(project) }
+
+    it 'returns pipeline schedule only for project' do
+      is_expected.to eq([project_pipeline_schedule])
+    end
+  end
+
+  describe '#set_next_run_at' do
+    let(:now) { Time.zone.local(2021, 3, 2, 1, 0) }
+    let_it_be_with_reload(:pipeline_schedule) { create(:ci_pipeline_schedule, cron: "0 1 * * *", project: project) }
+
+    it 'calls fallback method next_run_at if there is no plan limit' do
+      allow(Gitlab::SidekiqConfig).to receive(:cron_jobs)
+        .and_return({ 'pipeline_schedule_worker' => { 'cron' => "0 1 2 3 *" } })
+
+      travel_to(now) do
+        expect(pipeline_schedule).to receive(:calculate_next_run_at).and_call_original
+
+        pipeline_schedule.set_next_run_at
+
+        expect(pipeline_schedule.next_run_at).to eq(Time.zone.local(2022, 3, 2, 1, 0))
+      end
+    end
+
+    context 'when the record updates attributes other than the cron values' do
+      before do
+        pipeline_schedule
+      end
+
+      it 'does not call set_next_run_at' do
+        expect(pipeline_schedule).not_to receive(:set_next_run_at)
+
+        pipeline_schedule.update!(description: 'some description')
+      end
+    end
+
+    context 'when the mutation updates cron' do
+      before do
+        pipeline_schedule
+      end
+
+      it 'calls set_next_run_at' do
+        expect(pipeline_schedule).to receive(:set_next_run_at)
+
+        pipeline_schedule.update!(cron: "0 2 * * *")
+      end
+
+      context 'when mutating the record but passing the same cron value' do
+        it 'does not call set_next_run_at' do
+          expect(pipeline_schedule).not_to receive(:set_next_run_at)
+
+          pipeline_schedule.update!(cron: "0 1 * * *")
+        end
+      end
+    end
+
+    context 'when the mutation updates cron_timezone' do
+      before do
+        pipeline_schedule
+      end
+
+      it 'calls set_next_run_at' do
+        expect(pipeline_schedule).to receive(:set_next_run_at)
+
+        pipeline_schedule.update!(cron_timezone: "Eastern Time (US & Canada)")
+      end
+
+      context 'when mutating the record but passing the same cron value' do
+        it 'does not call set_next_run_at' do
+          expect(pipeline_schedule).not_to receive(:set_next_run_at)
+
+          pipeline_schedule.update!(cron_timezone: Gitlab::Ci::CronParser::VALID_SYNTAX_SAMPLE_TIME_ZONE)
+        end
+      end
+    end
+
+    context 'when there are two different pipeline schedules in different time zones' do
+      let(:pipeline_schedule_1) do
+        create(:ci_pipeline_schedule, :weekly, cron_timezone: 'Eastern Time (US & Canada)', project: project)
+      end
+
+      let(:pipeline_schedule_2) do
+        create(:ci_pipeline_schedule, :weekly, cron_timezone: 'UTC', project: project)
+      end
+
+      it 'sets different next_run_at' do
+        expect(pipeline_schedule_1.next_run_at).not_to eq(pipeline_schedule_2.next_run_at)
+      end
+    end
+  end
+
+  describe '#schedule_next_run!' do
+    let_it_be_with_reload(:pipeline_schedule) { create(:ci_pipeline_schedule, :nightly, project: project) }
+
+    before do
+      pipeline_schedule.update_column(:next_run_at, nil)
+    end
+
+    it 'updates next_run_at' do
+      expect { pipeline_schedule.schedule_next_run! }
+        .to change { pipeline_schedule.next_run_at }
+    end
+
+    context 'when record is invalid' do
+      before do
+        allow(pipeline_schedule).to receive(:save!) { raise ActiveRecord::RecordInvalid, pipeline_schedule }
+      end
+
+      it 'nullifies the next run at' do
+        pipeline_schedule.schedule_next_run!
+
+        expect(pipeline_schedule.next_run_at).to be_nil
+      end
+    end
+
+    context 'when cron has changed' do
+      before do
+        pipeline_schedule.cron = '0 0 * * *'
+      end
+
+      it 'does not update next_run_at' do
+        expect(pipeline_schedule).not_to receive(:set_next_run_at)
+        pipeline_schedule.schedule_next_run!
+      end
+    end
+
+    context 'when cron_timezone has changed' do
+      before do
+        pipeline_schedule.cron_timezone = 'Eastern Time (US & Canada)'
+      end
+
+      it 'does not update next_run_at' do
+        expect(pipeline_schedule).not_to receive(:set_next_run_at)
+        pipeline_schedule.schedule_next_run!
+      end
+    end
+  end
+
+  describe '#job_variables' do
+    let_it_be_with_reload(:pipeline_schedule) { create(:ci_pipeline_schedule, project: project) }
+
+    let_it_be(:pipeline_schedule_variables, freeze: false) do
+      create_list(:ci_pipeline_schedule_variable, 2, pipeline_schedule: pipeline_schedule)
+    end
+
+    subject { pipeline_schedule.job_variables }
+
+    before do
+      pipeline_schedule.reload
+    end
+
+    it { is_expected.to match_array(pipeline_schedule_variables.map(&:to_hash_variable)) }
+  end
+
+  describe '#daily_limit' do
+    let(:pipeline_schedule) { build(:ci_pipeline_schedule) }
+
+    subject(:daily_limit) { pipeline_schedule.daily_limit }
+
+    context 'when there is no limit' do
+      before do
+        create(:plan_limits, :default_plan, ci_daily_pipeline_schedule_triggers: 0)
+      end
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when there is a limit' do
+      before do
+        create(:plan_limits, :default_plan, ci_daily_pipeline_schedule_triggers: 144)
+      end
+
+      it { is_expected.to eq(144) }
+    end
+  end
+
+  describe '#for_tag?' do
+    context 'when the target is a tag' do
+      before do
+        subject.ref = 'refs/tags/v1.0'
+      end
+
+      it { expect(subject.for_tag?).to be(true) }
+    end
+
+    context 'when the target is a branch' do
+      before do
+        subject.ref = 'refs/heads/main'
+      end
+
+      it { expect(subject.for_tag?).to be(false) }
+    end
+
+    context 'when there is no ref' do
+      before do
+        subject.ref = nil
+      end
+
+      it { expect(subject.for_tag?).to be(false) }
+    end
+  end
+
+  describe '#ref_for_display' do
+    context 'when the target is a tag' do
+      before do
+        subject.ref = 'refs/tags/v1.0'
+      end
+
+      it { expect(subject.ref_for_display).to eq('v1.0') }
+    end
+
+    context 'when the target is a branch' do
+      before do
+        subject.ref = 'refs/heads/main'
+      end
+
+      it { expect(subject.ref_for_display).to eq('main') }
+    end
+
+    context 'when the ref is ambiguous' do
+      before do
+        subject.ref = 'release-2.8'
+      end
+
+      it { expect(subject.ref_for_display).to eq('release-2.8') }
+    end
+
+    context 'when there is no ref' do
+      before do
+        subject.ref = nil
+      end
+
+      it { expect(subject.ref_for_display).to be_nil }
+    end
+  end
+
+  describe '#worker_cron' do
+    before do
+      allow(Gitlab::SidekiqConfig).to receive(:cron_jobs)
+        .and_return({ 'pipeline_schedule_worker' => { 'cron' => "* 1 2 3 4" } })
+    end
+
+    it "returns cron expression" do
+      expect(subject.worker_cron_expression).to eq("* 1 2 3 4")
+    end
+  end
+
+  context 'loose foreign key on ci_pipeline_schedules.project_id' do
+    it_behaves_like 'cleanup by a loose foreign key' do
+      let_it_be_with_reload(:parent) { create(:project, :small_repo) }
+      let!(:model) { create(:ci_pipeline_schedule, project: parent) }
+    end
+  end
+
+  describe 'before_destroy' do
+    let_it_be_with_reload(:pipeline_schedule) { create(:ci_pipeline_schedule, cron: ' 0 0 * * *   ', project: project) }
+    let_it_be_with_reload(:pipeline) { create(:ci_pipeline, pipeline_schedule: pipeline_schedule) }
+
+    it 'nullifys associated pipelines' do
+      expect(pipeline_schedule).to receive(:nullify_dependent_associations_in_batches).and_call_original
+
+      result = pipeline_schedule.destroy
+
+      expect(result).to be_truthy
+      expect(pipeline.reload.pipeline_schedule).to be_nil
+      expect(described_class.find_by(id: pipeline_schedule.id)).to be_nil
+    end
+  end
+
+  describe '#sort' do
+    before do
+      travel_to(Time.zone.local(2024, 3, 2, 1, 0))
+    end
+
+    let!(:pipeline1) do
+      create(:ci_pipeline_schedule, description: :aab, ref: :masterb, cron: ' 0 5 * * *   ',
+        created_at: Time.zone.local(2024, 3, 2, 1, 0), updated_at: Time.zone.local(2024, 1, 2, 1, 0),
+        project: project)
+    end
+
+    let!(:pipeline2) do
+      create(:ci_pipeline_schedule, description: :aaa, ref: :masterz, cron: ' 0 6 * * *   ',
+        created_at: Time.zone.local(2023, 3, 2, 1, 0), updated_at: Time.zone.local(2024, 3, 2, 1, 0),
+        project: project)
+    end
+
+    let!(:pipeline3) do
+      create(:ci_pipeline_schedule, description: :zzz, ref: :mastera, cron: ' 0 8 * * *   ',
+        created_at: Time.zone.local(2022, 3, 2, 1, 0), updated_at: Time.zone.local(2024, 4, 2, 1, 0),
+        project: project)
+    end
+
+    let!(:pipeline4) do
+      create(:ci_pipeline_schedule, description: :zza, ref: :mastery, cron: ' 0 7 * * *   ',
+        created_at: Time.zone.local(2021, 3, 2, 1, 0), updated_at: Time.zone.local(2024, 2, 2, 1, 0),
+        project: project)
+    end
+
+    context "by id" do
+      it "sorts desc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:id_desc)
+        expect(pipeline_schedules).to eq([pipeline4, pipeline3, pipeline2, pipeline1])
+      end
+
+      it "sorts asc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:id_asc)
+        expect(pipeline_schedules).to eq([pipeline1, pipeline2, pipeline3, pipeline4])
+      end
+    end
+
+    context "by description" do
+      it "sorts desc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:description_desc)
+        expect(pipeline_schedules).to eq([pipeline3, pipeline4, pipeline1, pipeline2])
+      end
+
+      it "sorts asc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:description_asc)
+        expect(pipeline_schedules).to eq([pipeline2, pipeline1, pipeline4, pipeline3])
+      end
+    end
+
+    context "by ref" do
+      it "sorts desc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:ref_desc)
+        expect(pipeline_schedules).to eq([pipeline2, pipeline4, pipeline1, pipeline3])
+      end
+
+      it "sorts asc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:ref_asc)
+        expect(pipeline_schedules).to eq([pipeline3, pipeline1, pipeline4, pipeline2])
+      end
+    end
+
+    context "by next_run_at" do
+      it "sorts desc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:next_run_at_desc)
+        expect(pipeline_schedules).to eq([pipeline3, pipeline4, pipeline2, pipeline1])
+      end
+
+      it "sorts asc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:next_run_at_asc)
+        expect(pipeline_schedules).to eq([pipeline1, pipeline2, pipeline4, pipeline3])
+      end
+    end
+
+    context "by created_at" do
+      it "sorts desc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:created_at_desc)
+        expect(pipeline_schedules).to eq([pipeline1, pipeline2, pipeline3, pipeline4])
+      end
+
+      it "sorts asc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:created_at_asc)
+        expect(pipeline_schedules).to eq([pipeline4, pipeline3, pipeline2, pipeline1])
+      end
+    end
+
+    context "by updated_at" do
+      it "sorts desc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:updated_at_desc)
+        expect(pipeline_schedules).to eq([pipeline3, pipeline2, pipeline4, pipeline1])
+      end
+
+      it "sorts asc" do
+        pipeline_schedules = project.pipeline_schedules.sort_by_attribute(:updated_at_asc)
+        expect(pipeline_schedules).to eq([pipeline1, pipeline4, pipeline2, pipeline3])
+      end
+    end
+  end
+
+  describe '#inputs_hash' do
+    let_it_be_with_reload(:pipeline_schedule) { create(:ci_pipeline_schedule, project: project) }
+
+    before_all do
+      create(:ci_pipeline_schedule_input, pipeline_schedule: pipeline_schedule, name: 'input1', value: 'value1')
+      create(:ci_pipeline_schedule_input, pipeline_schedule: pipeline_schedule, name: 'input2', value: 'value2')
+    end
+
+    subject(:inputs_hash) { pipeline_schedule.reload.inputs_hash }
+
+    it { is_expected.to eq({ 'input1' => 'value1', 'input2' => 'value2' }) }
+  end
+
+  describe '.grouped_by_active' do
+    let_it_be_with_reload(:active_schedule_1)   { create(:ci_pipeline_schedule, active: true, project: project) }
+    let_it_be_with_reload(:active_schedule_2)   { create(:ci_pipeline_schedule, active: true, project: project) }
+    let_it_be_with_reload(:inactive_schedule_1) { create(:ci_pipeline_schedule, active: false, project: project) }
+
+    subject(:result) { described_class.grouped_by_active }
+
+    it 'returns counts grouped by active state' do
+      expect(result).to eq(
+        true => 2,
+        false => 1
+      )
+    end
+
+    context 'when there are no records for a state' do
+      before do
+        described_class.delete_all
+        create(:ci_pipeline_schedule, active: true, project: project)
+      end
+
+      it 'returns only the existing state with count' do
+        expect(result).to eq(true => 1)
+      end
+    end
+  end
+
+  describe 'next_run_at updates when active status changes' do
+    let(:now) { Time.zone.local(2021, 3, 2, 1, 0) }
+    let!(:inactive_schedule) do
+      travel_to(now) do
+        create(:ci_pipeline_schedule, cron: "0 1 * * *", active: false, project: project)
+      end
+    end
+
+    context 'when active is changed from false to true' do
+      it 'recalculates next_run_at when it is in the future' do
+        future_next_run = now + 3.days
+        inactive_schedule.update_column(:next_run_at, future_next_run)
+
+        travel_to(now + 2.days) do
+          inactive_schedule.update!(active: true)
+
+          expect(inactive_schedule.next_run_at).not_to eq(future_next_run)
+          expect(inactive_schedule.next_run_at).to be_future
+        end
+      end
+
+      it 'recalculates next_run_at when it was in the past' do
+        past_next_run = now - 1.day
+        inactive_schedule.update_column(:next_run_at, past_next_run)
+
+        inactive_schedule.update!(active: true)
+        expect(inactive_schedule.next_run_at).to be_future
+        expect(inactive_schedule.next_run_at).not_to eq(past_next_run)
+      end
+    end
+
+    context 'when active is changed from true to false' do
+      let!(:active_schedule) do
+        travel_to(now) do
+          create(:ci_pipeline_schedule, cron: "0 1 * * *", active: true, project: project)
+        end
+      end
+
+      it 'does not update next_run_at' do
+        original_next_run = active_schedule.next_run_at
+
+        active_schedule.update!(active: false)
+
+        expect(active_schedule.next_run_at).to eq(original_next_run)
+      end
+    end
+
+    context 'when other attributes are updated' do
+      it 'does not update next_run_at' do
+        original_next_run = inactive_schedule.next_run_at
+
+        inactive_schedule.update!(description: 'new description')
+
+        expect(inactive_schedule.next_run_at).to eq(original_next_run)
+      end
+    end
+  end
+end

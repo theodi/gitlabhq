@@ -1,0 +1,16 @@
+---
+key_path: counts_weekly.test_metric
+description:
+product_group:
+value_type: number
+status: active
+milestone: "13.9"
+introduced_by_url:
+time_frame: 7d
+data_source:
+data_category: optional
+instrumentation_class: Count
+performance_indicator_type: []
+tier:
+#- premium
+- ultimate

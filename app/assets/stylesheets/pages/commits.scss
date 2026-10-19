@@ -1,114 +1,155 @@
-.commits-compare-switch{
-  @extend .btn;
-  background: image-url("switch_icon.png") no-repeat center center;
-  text-indent: -9999px;
-  float: left;
-  margin-right: 9px;
-}
+@use "sass:color";
 
-.lists-separator {
-  margin: 10px 0;
-  border-color: #DDD;
-}
-
-.commits-row {
-  ul {
-    margin: 0;
-
-    li.commit {
-      padding: 8px 0;
-    }
-  }
-
-  .commits-row-date {
-    font-size: 15px;
-    line-height: 20px;
-    margin-bottom: 5px;
+.branch-info .commit-icon {
+  svg {
+    top: 3px;
   }
 }
 
-.commits-feed-holder {
-  float: right;
+/*
+ * Commit message textarea for web editor and
+ * custom merge request message
+ */
+.commit-message-container {
+  @apply gl-bg-default;
+  position: relative;
+  font-family: $monospace-font;
+  $left: 12px;
+
+  .max-width-marker {
+    width: 72ch;
+    color: $commit-max-width-marker-color;
+    font-family: inherit;
+    left: $left;
+    height: 100%;
+    border-right: 1px solid color.mix($input-border, $white);
+    position: absolute;
+    z-index: 1;
+  }
+
+  textarea {
+    background-color: $commit-message-text-area-bg;
+    font-family: inherit;
+    padding-left: $left;
+    position: relative;
+    z-index: 2;
+  }
 }
 
-li.commit {
-  .commit-row-title {
-    font-size: $list-font-size;
-    line-height: 20px;
-    margin-bottom: 2px;
+.commit-row-title {
+  .str-truncated {
+    max-width: 70%;
+  }
+}
 
-    .notes_count {
-      float: right;
-      margin-right: 10px;
+.commit-content {
+  padding-right: 10px;
+  white-space: normal;
+  min-width: 0;
+
+  .commit-title {
+    display: flex;
+    align-items: center;
+  }
+
+  .committer {
+    @apply gl-text-subtle;
+
+    .commit-author-link {
+      @apply gl-text-default;
     }
 
-    .commit_short_id {
-      min-width: 65px;
-      font-family: $monospace_font;
+    // stylelint-disable-next-line gitlab/no-gl-class
+    &.gl-inline-flex {
+      gap: 0.5ch;
     }
 
-    .str-truncated {
-      max-width: 70%;
+    .commit-author-link {
+      max-width: 19ch;
     }
+  }
+}
 
-    .commit-row-message {
-      color: #444;
+.commit-nav-buttons {
+  margin: 0 0.5rem;
 
-      &:hover {
-        text-decoration: underline;
-      }
+  a.btn,
+  button {
+    // See: https://gitlab.com/gitlab-org/gitlab-services/design.gitlab.com/-/issues/2569
+    &:last-child > svg {
+      margin-left: 0.25rem;
+      margin-right: 0;
     }
+  }
+}
 
-    .text-expander {
-      background: #eee;
-      color: #555;
-      padding: 0 5px;
-      cursor: pointer;
-      margin-left: 4px;
-      &:hover {
-        background-color: #ddd;
-      }
-    }
+.commit,
+.generic-commit-status {
+  a {
+    @apply gl-text-default;
   }
 
   .commit-row-description {
-    font-size: 14px;
-    border-left: 1px solid #EEE;
-    padding: 10px 15px;
-    margin: 5px 0 10px 5px;
-    background: #f9f9f9;
     display: none;
-
-    pre {
-      border: none;
-      background: inherit;
-      padding: 0;
-      margin: 0;
-    }
-  }
-
-  .commit-row-info {
-    color: #777;
-    line-height: 24px;
-    font-size: 13px;
+    flex: 1;
 
     a {
-      color: #777;
-    }
-
-    .committed_ago {
-      display: inline-block;
+      color: $blue-600;
     }
   }
 
   &.inline-commit {
     .commit-row-title {
-      font-size: 13px;
-    }
-
-    .committed_ago {
-      float: right;
-      @extend .cgray;
+      font-size: $code-font-size-fixed;
     }
   }
+}
+
+.branch-commit {
+  .commit-icon {
+    text-align: center;
+    display: inline-block;
+
+    svg {
+      height: 14px;
+      width: 14px;
+      vertical-align: middle;
+      @apply gl-fill-icon-subtle;
+    }
+  }
+}
+
+.commit,
+.generic-commit-status,
+.branch-commit {
+  .commit-sha {
+    @apply gl-text-link;
+  }
+}
+
+.signature-badge {
+  &:hover {
+    text-decoration: none;
+  }
+
+  .header-main-content & {
+    margin-right: $gl-spacing-scale-2;
+  }
+}
+
+.gpg-popover-certificate-details {
+  ul {
+    padding-left: $gl-padding;
+  }
+
+  li.unstyled {
+    list-style-type: none;
+  }
+}
+
+.signature-popover {
+  display: flex;
+  align-items: center;
+  font-weight: $gl-font-weight-normal;
+  line-height: 1.5;
 }

@@ -1,0 +1,20 @@
+---
+key_path: counts.templates_gitlab_slack_application_active
+description: Count templates with active slack application
+product_group: import
+product_categories:
+- integrations
+value_type: number
+status: removed
+milestone: "14.3"
+milestone_removed: "14.4"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/70496
+time_frame: 7d
+data_source: database
+data_category: optional
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate
+removed_by_url:

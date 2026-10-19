@@ -1,0 +1,364 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+require_relative '../../support/tmpdir'
+require_relative '../../support/abort_capture'
+require_relative '../../../lib/gitlab/principles_distiller/provision_flow'
+
+RSpec.describe Gitlab::PrinciplesDistiller::ProvisionFlow do
+  include TmpdirHelper
+  include AbortCaptureHelper
+
+  let(:tmpdir) { mktmpdir }
+  let(:prompt_path) { File.join(tmpdir, '.ai/principles/distillation_prompt.md') }
+  let(:prompt_content) { "<!-- author note -->\nYou are the agent.\nFollow the rules.\n" }
+  let(:env) do
+    {
+      'GITLAB_TOKEN' => 'token-abc',
+      'GITLAB_HOST' => nil,
+      'AGENT_PRINCIPLES_CATALOG_PROJECT' => 'gitlab-org/gitlab',
+      'AGENT_PRINCIPLES_CATALOG_FLOW_NAME' => nil
+    }
+  end
+
+  before do
+    stub_const('ENV', env_double(env))
+    Gitlab::PrinciplesDistiller::Workspace.path = tmpdir
+    FileUtils.mkdir_p(File.dirname(prompt_path))
+    File.write(prompt_path, prompt_content)
+  end
+
+  describe '#load_distillation_prompt' do
+    it 'strips the leading HTML comment' do
+      result = described_class.new({ dry_run: true }).send(:load_distillation_prompt)
+
+      expect(result).to eq("You are the agent.\nFollow the rules.")
+      expect(result).not_to include('author note')
+    end
+
+    context 'when the prompt file is missing' do
+      before do
+        File.delete(prompt_path)
+      end
+
+      it 'aborts' do
+        expect { described_class.new({ dry_run: true }).send(:load_distillation_prompt) }
+          .to raise_error(SystemExit)
+      end
+    end
+  end
+
+  describe '#build_flow_yaml' do
+    let(:instance) { described_class.new({ dry_run: true }) }
+
+    it 'embeds the system prompt under prompt_template.system' do
+      yaml = instance.send(:build_flow_yaml, "Line 1\nLine 2")
+      parsed = YAML.safe_load(yaml)
+
+      prompt = parsed.fetch('prompts').first.fetch('prompt_template')
+
+      expect(prompt['system']).to include('Line 1', 'Line 2')
+      expect(prompt['user']).to eq('{{goal}}')
+      expect(prompt['placeholder']).to eq('history')
+    end
+
+    it 'sets environment to ambient (no-UI execution)' do
+      parsed = YAML.safe_load(instance.send(:build_flow_yaml, 'x'))
+
+      expect(parsed['environment']).to eq('ambient')
+    end
+
+    it 'wires the AgentComponent to the prompt and toolset', :aggregate_failures do
+      parsed = YAML.safe_load(instance.send(:build_flow_yaml, 'x'))
+
+      component = parsed.fetch('components').first
+
+      expect(component['type']).to eq('AgentComponent')
+      expect(component['prompt_id']).to eq('distiller_prompt')
+      expect(component['toolset']).to match_array(Gitlab::PrinciplesDistiller::FlowDefinition::TOOL_NAMES)
+    end
+
+    it 'declares only the goal input that the template references', :aggregate_failures do
+      # The flow validator rejects declared inputs that the prompt
+      # template does not reference. Only `goal` (used as {{goal}}) may be
+      # declared; an unused `project` input made flow releases fail with
+      # "extra input variables not present in template: ['project']".
+      parsed = YAML.safe_load(instance.send(:build_flow_yaml, 'x'))
+
+      component = parsed.fetch('components').first
+
+      expect(component['inputs']).to eq([{ 'from' => 'context:goal', 'as' => 'goal' }])
+    end
+
+    it 'routes the single component to end' do
+      parsed = YAML.safe_load(instance.send(:build_flow_yaml, 'x'))
+
+      expect(parsed['routers']).to match_array([{ 'from' => 'distiller', 'to' => 'end' }])
+      expect(parsed['flow']['entry_point']).to eq('distiller')
+    end
+  end
+
+  describe '#execute' do
+    subject(:execute) { instance.execute }
+
+    context 'when print_consumer_id is enabled' do
+      let(:instance) { described_class.new({ dry_run: false, print_consumer_id: true }) }
+      let(:flow) { { 'id' => 'gid://gitlab/Ai::Catalog::Item/1009160' } }
+      let(:consumer) { { 'id' => 'gid://gitlab/Ai::Catalog::ItemConsumer/7368818' } }
+
+      before do
+        allow(instance).to receive_messages(find_project_gid!: 'gid://gitlab/Project/278964', find_flow: flow,
+          lookup_item_consumer: consumer)
+      end
+
+      it 'prints only the numeric consumer ID without reading the prompt or mutating the catalog' do
+        File.delete(prompt_path)
+        expect(instance).not_to receive(:reconcile_flow_version)
+        expect(instance).not_to receive(:create_flow)
+        expect(instance).not_to receive(:ensure_item_consumer)
+
+        expect { execute }.to output("7368818\n").to_stdout
+      end
+
+      context 'when the flow does not exist' do
+        let(:flow) { nil }
+
+        it 'aborts with an actionable error' do
+          expect { execute }.to output(%r{catalog flow not found.*Agent Principles Distiller.*gitlab-org/gitlab})
+            .to_stderr.and raise_error(SystemExit)
+        end
+      end
+
+      context 'when the flow is not bound to the project' do
+        let(:consumer) { nil }
+
+        it 'aborts with an actionable error' do
+          expect { execute }.to output(%r{catalog flow is not bound to project: gitlab-org/gitlab})
+            .to_stderr.and raise_error(SystemExit)
+        end
+      end
+    end
+  end
+
+  describe '#check_definition_size!' do
+    let(:instance) { described_class.new({ dry_run: true }) }
+
+    it 'passes a definition within budget' do
+      expect { instance.send(:check_definition_size!, instance.send(:build_flow_yaml, 'Short.')) }
+        .not_to raise_error
+    end
+
+    context 'when the definition exceeds the stored-JSONB limit' do
+      # Under the limit as YAML, over it once the catalog stores the prompt twice.
+      let(:oversized) { instance.send(:build_flow_yaml, 'word ' * 8_000) }
+
+      it 'aborts before any catalog mutation' do
+        expect { instance.send(:check_definition_size!, oversized) }.to raise_error(SystemExit)
+      end
+
+      it 'reports stored bytes rather than only the YAML size' do
+        message = capture_abort_stderr { instance.send(:check_definition_size!, oversized) }
+
+        expect(message).to match(/over the catalog limit/)
+        expect(message).to match(/stored definition \d+ bytes/)
+        expect(message).to match(/counted twice/)
+        expect(message).to match(/591638/)
+      end
+    end
+  end
+
+  describe 'initialisation' do
+    context 'when GITLAB_TOKEN is unset' do
+      before do
+        env['GITLAB_TOKEN'] = nil
+      end
+
+      it 'aborts' do
+        expect { described_class.new({ dry_run: true }) }.to raise_error(SystemExit)
+      end
+    end
+
+    context 'when AGENT_PRINCIPLES_CATALOG_PROJECT is unset' do
+      before do
+        env['AGENT_PRINCIPLES_CATALOG_PROJECT'] = nil
+      end
+
+      it 'aborts' do
+        expect { described_class.new({ dry_run: true }) }.to raise_error(SystemExit)
+      end
+    end
+
+    it 'reads project and flow name from env', :aggregate_failures do
+      env['AGENT_PRINCIPLES_CATALOG_PROJECT'] = 'group/proj'
+      env['AGENT_PRINCIPLES_CATALOG_FLOW_NAME'] = 'My Custom Flow'
+
+      instance = described_class.new({ dry_run: true })
+
+      expect(instance.instance_variable_get(:@project_path)).to eq('group/proj')
+      expect(instance.instance_variable_get(:@flow_name)).to eq('My Custom Flow')
+    end
+
+    it 'falls back to DEFAULT_FLOW_NAME when AGENT_PRINCIPLES_CATALOG_FLOW_NAME is unset' do
+      env['AGENT_PRINCIPLES_CATALOG_PROJECT'] = 'group/proj'
+
+      instance = described_class.new({ dry_run: true })
+
+      expect(instance.instance_variable_get(:@flow_name)).to eq(described_class::DEFAULT_FLOW_NAME)
+    end
+  end
+
+  describe '#graphql' do
+    let(:instance) { described_class.new({ dry_run: false }) }
+    let(:client) { instance_double(Gitlab::PrinciplesDistiller::GraphqlClient) }
+
+    before do
+      allow(instance).to receive(:graphql_client).and_return(client)
+    end
+
+    context 'when the call succeeds' do
+      it 'returns the data payload' do
+        allow(client).to receive(:query).and_return({ 'ok' => true })
+
+        expect(instance.send(:graphql, 'query {}')).to eq({ 'ok' => true })
+      end
+    end
+
+    context 'when the call raises a permission-denied error and an action is given' do
+      let(:error) do
+        Gitlab::PrinciplesDistiller::GraphqlClient::Error.new(
+          "GraphQL errors: The resource that you are attempting to access does not exist " \
+            "or you don't have permission to perform this action"
+        )
+      end
+
+      before do
+        allow(client).to receive(:query).and_raise(error)
+      end
+
+      it 'aborts with actionable maintainer guidance rather than the raw error' do
+        # `abort` writes the message to stderr; capture and assert on it.
+        expect { instance.send(:graphql, 'mutation {}', {}, action: 'release a new flow version') }
+          .to output(/not authorized to release a new flow version/).to_stderr
+          .and(raise_error(SystemExit))
+      end
+
+      it 'includes the manual provisioning command and the admin ability name' do
+        expect { instance.send(:graphql, 'mutation {}', {}, action: 'release a new flow version') }
+          .to output(/admin_ai_catalog_item.*provision-flow/m).to_stderr
+          .and(raise_error(SystemExit))
+      end
+    end
+
+    context 'when the call raises a permission-denied error but no action is given' do
+      let(:error) do
+        Gitlab::PrinciplesDistiller::GraphqlClient::Error.new("you don't have permission to perform this action")
+      end
+
+      it 'aborts with the raw error message' do
+        allow(client).to receive(:query).and_raise(error)
+
+        expect { instance.send(:graphql, 'query {}') }
+          .to output(/perform this action/).to_stderr
+          .and(raise_error(SystemExit))
+      end
+    end
+
+    context 'when the call raises a non-permission error with an action' do
+      let(:error) { Gitlab::PrinciplesDistiller::GraphqlClient::Error.new('GraphQL HTTP 500: boom') }
+
+      it 'aborts with the raw error, not the permission guidance', :aggregate_failures do
+        allow(client).to receive(:query).and_raise(error)
+
+        # `abort` writes to stderr and raises SystemExit. Compose a single
+        # stderr matcher so the negative check (no permission guidance) shares
+        # the same block that expects SystemExit, rather than a bare `not_to
+        # output` block whose SystemExit would go unrescued.
+        raw_error_only = a_string_matching(/GraphQL HTTP 500: boom/)
+          .and(satisfy { |s| !s.include?('not authorized') })
+
+        expect { instance.send(:graphql, 'mutation {}', {}, action: 'create the catalog flow') }
+          .to output(raw_error_only).to_stderr
+          .and(raise_error(SystemExit))
+      end
+    end
+  end
+
+  describe '#permission_denied?' do
+    let(:instance) { described_class.new({ dry_run: true }) }
+
+    it 'matches the GitLab authorization error string' do
+      error = Gitlab::PrinciplesDistiller::GraphqlClient::Error.new(
+        "The resource that you are attempting to access does not exist " \
+          "or you don't have permission to perform this action"
+      )
+
+      expect(instance.send(:permission_denied?, error)).to be(true)
+    end
+
+    it 'does not match unrelated errors' do
+      error = Gitlab::PrinciplesDistiller::GraphqlClient::Error.new('GraphQL HTTP 502: bad gateway')
+
+      expect(instance.send(:permission_denied?, error)).to be(false)
+    end
+  end
+
+  describe '.parse_options' do
+    around do |example|
+      original_argv = ARGV.dup
+      example.run
+    ensure
+      ARGV.replace(original_argv)
+    end
+
+    it 'defaults options to false' do
+      ARGV.replace([])
+
+      expect(described_class.parse_options).to eq(dry_run: false, print_consumer_id: false)
+    end
+
+    it 'sets dry_run when --dry-run is passed' do
+      ARGV.replace(['--dry-run'])
+
+      expect(described_class.parse_options).to eq(dry_run: true, print_consumer_id: false)
+    end
+
+    it 'sets print_consumer_id when --print-consumer-id is passed' do
+      ARGV.replace(['--print-consumer-id'])
+
+      expect(described_class.parse_options).to eq(dry_run: false, print_consumer_id: true)
+    end
+  end
+
+  # Returns a hash-like ENV double that responds to `[]`, `fetch`, and key checks
+  # using the supplied hash. nil/empty values mimic an unset env var.
+  def env_double(env_hash)
+    Class.new do
+      def initialize(env_hash)
+        @env_hash = env_hash
+      end
+
+      def [](key)
+        @env_hash[key]
+      end
+
+      def fetch(key, *args, &blk)
+        value = @env_hash[key]
+        return value if value && !value.to_s.empty?
+        return args.first if args.any?
+        return yield(key) if blk
+
+        raise KeyError, key
+      end
+
+      def key?(key)
+        @env_hash.key?(key) && !@env_hash[key].to_s.empty?
+      end
+      alias_method :include?, :key?
+      alias_method :has_key?, :key?
+
+      def to_hash
+        @env_hash.compact
+      end
+    end.new(env_hash)
+  end
+end

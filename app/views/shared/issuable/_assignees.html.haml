@@ -1,0 +1,11 @@
+- max_render = 4
+- assignees_rendering_overflow = issuable.assignees.size > max_render
+- render_count = assignees_rendering_overflow ? max_render - 1 : max_render
+- more_assignees_count = issuable.assignees.size - render_count
+
+- issuable.assignees.take(render_count).each do |assignee| # rubocop: disable CodeReuse/ActiveRecord
+  = link_to_member(assignee, name: false, title: s_("MrList|Assigned to %{name}") % { name: assignee.name})
+
+- if more_assignees_count > 0
+  %span{ class: 'avatar-counter has-tooltip', data: { container: 'body', placement: 'bottom', 'line-type' => 'old' }, title: _("+%{more_assignees_count} more assignees") % { more_assignees_count: more_assignees_count} }
+    = _("+%{more_assignees_count}") % { more_assignees_count: more_assignees_count}

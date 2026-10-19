@@ -1,0 +1,850 @@
+import {
+  FILTERED_SEARCH_TERM,
+  OPERATOR_IS,
+  OPERATOR_NOT,
+  OPERATOR_OR,
+  TOKEN_TYPE_ASSIGNEE,
+  TOKEN_TYPE_AUTHOR,
+  TOKEN_TYPE_CONFIDENTIAL,
+  TOKEN_TYPE_CONTACT,
+  TOKEN_TYPE_EPIC,
+  TOKEN_TYPE_ITERATION,
+  TOKEN_TYPE_LABEL,
+  TOKEN_TYPE_MILESTONE,
+  TOKEN_TYPE_MY_REACTION,
+  TOKEN_TYPE_ORGANIZATION,
+  TOKEN_TYPE_RELEASE,
+  TOKEN_TYPE_SEARCH_WITHIN,
+  TOKEN_TYPE_TYPE,
+  TOKEN_TYPE_WEIGHT,
+  TOKEN_TYPE_HEALTH,
+  TOKEN_TYPE_PARENT,
+} from '~/vue_shared/components/filtered_search_bar/constants';
+import { EMOJI_THUMBS_UP, EMOJI_THUMBS_DOWN } from '~/emoji/constants';
+import { CREATED_DESC, SAVED_VIEW_SEARCH_DELIMITER } from '~/work_items/list/constants';
+import { singleSavedView } from '../mock_data';
+
+export const setSortPreferenceMutationResponse = {
+  data: {
+    userPreferencesUpdate: {
+      errors: [],
+    },
+  },
+};
+
+export const setSortPreferenceMutationResponseWithErrors = {
+  data: {
+    userPreferencesUpdate: {
+      errors: ['oh no!'],
+    },
+  },
+};
+
+export const setIdTypePreferenceMutationResponse = {
+  data: {
+    userPreferencesUpdate: {
+      errors: [],
+    },
+  },
+};
+
+export const setIdTypePreferenceMutationResponseWithErrors = {
+  data: {
+    userPreferencesUpdate: {
+      errors: ['oh no!'],
+    },
+  },
+};
+
+export const locationSearch = [
+  '?search=find+issues',
+  'author_username=homer',
+  'not[author_username][]=marge',
+  'or[author_username][]=burns',
+  'or[author_username][]=smithers',
+  'assignee_username[]=bart',
+  'assignee_username[]=lisa',
+  'assignee_username[]=5',
+  'not[assignee_username][]=patty',
+  'not[assignee_username][]=selma',
+  'or[assignee_username][]=carl',
+  'or[assignee_username][]=lenny',
+  'milestone_title=season+3',
+  'milestone_title=season+4',
+  'not[milestone_title]=season+20',
+  'not[milestone_title]=season+30',
+  'label_name[]=cartoon',
+  'label_name[]=tv',
+  'not[label_name][]=live action',
+  'not[label_name][]=drama',
+  'or[label_name][]=comedy',
+  'or[label_name][]=sitcom',
+  'release_tag=v3',
+  'release_tag=v4',
+  'not[release_tag]=v20',
+  'not[release_tag]=v30',
+  'type[]=1',
+  'type[]=1001',
+  'not[type][]=1002',
+  'not[type][]=2',
+  `my_reaction_emoji=${EMOJI_THUMBS_UP}`,
+  `not[my_reaction_emoji]=${EMOJI_THUMBS_DOWN}`,
+  'confidential=yes',
+  'iteration_id=4',
+  'iteration_id=12',
+  'not[iteration_id]=20',
+  'not[iteration_id]=42',
+  'epic_id=12',
+  'not[epic_id]=34',
+  'weight=1',
+  'not[weight]=3',
+  'crm_contact_id=123',
+  'crm_organization_id=456',
+  'health_status=atRisk',
+  'not[health_status]=onTrack',
+  'parent_id=123',
+  'not[parent_id]=123',
+].join('&');
+
+export const locationSearchWithWildcardValues = [
+  'assignee_id=Any',
+  'assignee_username=bart',
+  'my_reaction_emoji=None',
+  'iteration_id=Current',
+  'label_name[]=None',
+  'release_tag=None',
+  'milestone_title=Upcoming',
+  'epic_id=None',
+  'weight=None',
+  'health_status=None',
+  'parent_id=Any',
+].join('&');
+
+const makeFilteredTokens = ({ grouped }) => [
+  { type: FILTERED_SEARCH_TERM, value: { data: 'find issues', operator: 'undefined' } },
+  { type: TOKEN_TYPE_AUTHOR, value: { data: 'homer', operator: OPERATOR_IS } },
+  ...(grouped
+    ? [
+        { type: TOKEN_TYPE_AUTHOR, value: { data: ['marge'], operator: OPERATOR_NOT } },
+        { type: TOKEN_TYPE_AUTHOR, value: { data: ['burns', 'smithers'], operator: OPERATOR_OR } },
+      ]
+    : [
+        { type: TOKEN_TYPE_AUTHOR, value: { data: 'marge', operator: OPERATOR_NOT } },
+        { type: TOKEN_TYPE_AUTHOR, value: { data: 'burns', operator: OPERATOR_OR } },
+        { type: TOKEN_TYPE_AUTHOR, value: { data: 'smithers', operator: OPERATOR_OR } },
+      ]),
+  { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'bart', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'lisa', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ASSIGNEE, value: { data: '5', operator: OPERATOR_IS } },
+  ...(grouped
+    ? [
+        { type: TOKEN_TYPE_ASSIGNEE, value: { data: ['patty', 'selma'], operator: OPERATOR_NOT } },
+        { type: TOKEN_TYPE_ASSIGNEE, value: { data: ['carl', 'lenny'], operator: OPERATOR_OR } },
+      ]
+    : [
+        { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'patty', operator: OPERATOR_NOT } },
+        { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'selma', operator: OPERATOR_NOT } },
+        { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'carl', operator: OPERATOR_OR } },
+        { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'lenny', operator: OPERATOR_OR } },
+      ]),
+  { type: TOKEN_TYPE_MILESTONE, value: { data: 'season 3', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_MILESTONE, value: { data: 'season 4', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_MILESTONE, value: { data: 'season 20', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_MILESTONE, value: { data: 'season 30', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_LABEL, value: { data: 'cartoon', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_LABEL, value: { data: 'tv', operator: OPERATOR_IS } },
+  ...(grouped
+    ? [
+        {
+          type: TOKEN_TYPE_LABEL,
+          value: { data: ['live action', 'drama'], operator: OPERATOR_NOT },
+        },
+      ]
+    : [
+        { type: TOKEN_TYPE_LABEL, value: { data: 'live action', operator: OPERATOR_NOT } },
+        { type: TOKEN_TYPE_LABEL, value: { data: 'drama', operator: OPERATOR_NOT } },
+      ]),
+  ...(grouped
+    ? [{ type: TOKEN_TYPE_LABEL, value: { data: ['comedy', 'sitcom'], operator: OPERATOR_OR } }]
+    : [
+        { type: TOKEN_TYPE_LABEL, value: { data: 'comedy', operator: OPERATOR_OR } },
+        { type: TOKEN_TYPE_LABEL, value: { data: 'sitcom', operator: OPERATOR_OR } },
+      ]),
+  { type: TOKEN_TYPE_RELEASE, value: { data: 'v3', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_RELEASE, value: { data: 'v4', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_RELEASE, value: { data: 'v20', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_RELEASE, value: { data: 'v30', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_TYPE, value: { data: '1', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_TYPE, value: { data: '1001', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_TYPE, value: { data: '1002', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_TYPE, value: { data: '2', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_MY_REACTION, value: { data: EMOJI_THUMBS_UP, operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_MY_REACTION, value: { data: EMOJI_THUMBS_DOWN, operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_CONFIDENTIAL, value: { data: 'yes', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ITERATION, value: { data: '4', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ITERATION, value: { data: '12', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ITERATION, value: { data: '20', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_ITERATION, value: { data: '42', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_EPIC, value: { data: '12', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_EPIC, value: { data: '34', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_WEIGHT, value: { data: '1', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_WEIGHT, value: { data: '3', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_CONTACT, value: { data: '123', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ORGANIZATION, value: { data: '456', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_HEALTH, value: { data: 'atRisk', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_HEALTH, value: { data: 'onTrack', operator: OPERATOR_NOT } },
+  { type: TOKEN_TYPE_PARENT, value: { data: '123', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_PARENT, value: { data: '123', operator: OPERATOR_NOT } },
+];
+
+export const filteredTokens = makeFilteredTokens({ grouped: false });
+export const groupedFilteredTokens = makeFilteredTokens({ grouped: true });
+
+export const filteredTokensWithWildcardValues = [
+  { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'Any', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'bart', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_MY_REACTION, value: { data: 'None', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ITERATION, value: { data: 'Current', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_LABEL, value: { data: 'None', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_RELEASE, value: { data: 'None', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_MILESTONE, value: { data: 'Upcoming', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_EPIC, value: { data: 'None', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_WEIGHT, value: { data: 'None', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_HEALTH, value: { data: 'None', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_PARENT, value: { data: 'Any', operator: OPERATOR_IS } },
+];
+
+export const apiParams = {
+  search: 'find issues',
+  authorUsername: 'homer',
+  assigneeUsernames: ['bart', 'lisa', '5'],
+  milestoneTitle: ['season 3', 'season 4'],
+  labelName: ['cartoon', 'tv'],
+  releaseTag: ['v3', 'v4'],
+  workItemTypeIds: ['gid://gitlab/WorkItems::Type/1', 'gid://gitlab/WorkItems::Type/1001'],
+  myReactionEmoji: EMOJI_THUMBS_UP,
+  confidential: true,
+  iterationId: ['4', '12'],
+  epicId: '12',
+  weight: '1',
+  crmContactId: '123',
+  crmOrganizationId: '456',
+  healthStatusFilter: 'atRisk',
+  hierarchyFilters: {
+    parentIds: ['gid://gitlab/WorkItem/123'],
+    includeDescendantWorkItems: true,
+  },
+  not: {
+    authorUsername: 'marge',
+    assigneeUsernames: ['patty', 'selma'],
+    milestoneTitle: ['season 20', 'season 30'],
+    labelName: ['live action', 'drama'],
+    releaseTag: ['v20', 'v30'],
+    workItemTypeIds: ['gid://gitlab/WorkItems::Type/1002', 'gid://gitlab/WorkItems::Type/2'],
+    myReactionEmoji: EMOJI_THUMBS_DOWN,
+    iterationId: ['20', '42'],
+    epicId: '34',
+    weight: '3',
+    healthStatusFilter: 'onTrack',
+    parentIds: ['gid://gitlab/WorkItem/123'],
+  },
+  or: {
+    authorUsernames: ['burns', 'smithers'],
+    assigneeUsernames: ['carl', 'lenny'],
+    labelNames: ['comedy', 'sitcom'],
+  },
+};
+
+export const apiParamsWithWildcardValues = {
+  assigneeWildcardId: 'ANY',
+  assigneeUsernames: 'bart',
+  labelName: 'None',
+  myReactionEmoji: 'None',
+  releaseTagWildcardId: 'NONE',
+  iterationWildcardId: 'CURRENT',
+  milestoneWildcardId: 'UPCOMING',
+  epicWildcardId: 'NONE',
+  weightWildcardId: 'NONE',
+  healthStatusFilter: 'NONE',
+  hierarchyFilters: {
+    includeDescendantWorkItems: true,
+    parentWildcardId: 'ANY',
+  },
+};
+
+export const urlParams = {
+  search: 'find issues',
+  author_username: 'homer',
+  'not[author_username][]': 'marge',
+  'or[author_username][]': ['burns', 'smithers'],
+  'assignee_username[]': ['bart', 'lisa', '5'],
+  'not[assignee_username][]': ['patty', 'selma'],
+  'or[assignee_username][]': ['carl', 'lenny'],
+  milestone_title: ['season 3', 'season 4'],
+  'not[milestone_title]': ['season 20', 'season 30'],
+  'label_name[]': ['cartoon', 'tv'],
+  'not[label_name][]': ['live action', 'drama'],
+  'or[label_name][]': ['comedy', 'sitcom'],
+  release_tag: ['v3', 'v4'],
+  'not[release_tag]': ['v20', 'v30'],
+  'type[]': ['1', '1001'],
+  'not[type][]': ['1002', '2'],
+  my_reaction_emoji: EMOJI_THUMBS_UP,
+  'not[my_reaction_emoji]': EMOJI_THUMBS_DOWN,
+  confidential: 'yes',
+  iteration_id: ['4', '12'],
+  'not[iteration_id]': ['20', '42'],
+  epic_id: '12',
+  'not[epic_id]': '34',
+  weight: '1',
+  'not[weight]': '3',
+  crm_contact_id: '123',
+  crm_organization_id: '456',
+  health_status: 'atRisk',
+  'not[health_status]': 'onTrack',
+  parent_id: '123',
+  'not[parent_id]': '123',
+};
+
+export const urlParamsWithWildcardValues = {
+  assignee_id: 'Any',
+  'assignee_username[]': 'bart',
+  'label_name[]': 'None',
+  release_tag: 'None',
+  my_reaction_emoji: 'None',
+  iteration_id: 'Current',
+  milestone_title: 'Upcoming',
+  epic_id: 'None',
+  weight: 'None',
+  health_status: 'None',
+  parent_id: 'Any',
+};
+
+export const savedViewFiltersObject = {
+  state: 'opened',
+  confidential: true,
+  subscribed: 'explicitly_subscribed',
+  in: ['title'],
+  search: 'ABC',
+  myReactionEmoji: 'smile',
+  closedBefore: '2025-01-01T00:00:00.000+00:00',
+  closedAfter: '2025-01-01T00:00:00.000+00:00',
+  iid: '123',
+  dueBefore: '2025-01-01T00:00:00.000+00:00',
+  dueAfter: '2025-01-01T00:00:00.000+00:00',
+  createdBefore: '2025-01-01T00:00:00.000+00:00',
+  createdAfter: '2025-01-01T00:00:00.000+00:00',
+  updatedBefore: '2025-01-01T00:00:00.000+00:00',
+  updatedAfter: '2025-01-01T00:00:00.000+00:00',
+  excludeProjects: true,
+  excludeGroupWorkItems: true,
+  includeDescendants: true,
+  healthStatusFilter: 'on_track',
+  weight: '1',
+  workItemTypeIds: ['1'],
+  not: {
+    myReactionEmoji: 'smile',
+    healthStatusFilter: ['on_track'],
+    weight: '1',
+    workItemTypeIds: ['5', '1'],
+    assigneeUsernames: ['root'],
+    authorUsername: ['root'],
+    iterationId: ['1'],
+  },
+  assigneeUsernames: ['root'],
+  or: {
+    assigneeUsernames: ['root'],
+    authorUsernames: ['root'],
+  },
+  authorUsername: 'root',
+  milestoneTitle: ['v0.0'],
+  hierarchyFilters: {
+    parentIds: ['gid://gitlab/WorkItem/456'],
+    includeDescendantWorkItems: false,
+  },
+  fullPath: 'flightjs/Flight',
+  customField: [],
+  iterationWildcardId: 'CURRENT',
+  iterationCadenceId: ['gid://gitlab/Iterations::Cadence/1'],
+  status: {
+    name: "Won't do",
+  },
+};
+
+export const savedViewFilterTokens = [
+  { type: 'confidential', value: { data: 'yes', operator: '=' } },
+  { type: 'subscribed', value: { data: 'EXPLICITLY_SUBSCRIBED', operator: '=' } },
+  {
+    type: TOKEN_TYPE_SEARCH_WITHIN,
+    value: { data: 'TITLE', operator: OPERATOR_IS },
+  },
+  { type: 'filtered-search-term', value: { data: 'ABC', operator: undefined } },
+  { type: 'my-reaction', value: { data: 'smile', operator: '=' } },
+  {
+    type: 'closed',
+    value: {
+      data: '2025-01-01',
+      operator: '<',
+    },
+  },
+  {
+    type: 'closed',
+    value: {
+      data: '2025-01-01',
+      operator: '≥',
+    },
+  },
+  {
+    type: 'due-date',
+    value: {
+      data: '2025-01-01',
+      operator: '<',
+    },
+  },
+  {
+    type: 'due-date',
+    value: {
+      data: '2025-01-01',
+      operator: '≥',
+    },
+  },
+  {
+    type: 'created',
+    value: {
+      data: '2025-01-01',
+      operator: '<',
+    },
+  },
+  {
+    type: 'created',
+    value: {
+      data: '2025-01-01',
+      operator: '≥',
+    },
+  },
+  {
+    type: 'updated',
+    value: {
+      data: '2025-01-01',
+      operator: '<',
+    },
+  },
+  {
+    type: 'updated',
+    value: {
+      data: '2025-01-01',
+      operator: '≥',
+    },
+  },
+  { type: 'health', value: { data: 'onTrack', operator: '=' } },
+  { type: 'weight', value: { data: '1', operator: '=' } },
+  { type: 'type', value: { data: '1', operator: '=' } },
+  { type: 'my-reaction', value: { data: 'smile', operator: '!=' } },
+  { type: 'health', value: { data: 'onTrack', operator: '!=' } },
+  { type: 'weight', value: { data: '1', operator: '!=' } },
+  { type: 'type', value: { data: ['5', '1'], operator: '!=' } },
+  { type: 'assignee', value: { data: ['root'], operator: '!=' } },
+  { type: 'author', value: { data: ['root'], operator: '!=' } },
+  { type: 'iteration', value: { data: ['1'], operator: '!=' } },
+  { type: 'assignee', value: { data: 'root', operator: '=' } },
+  { type: 'assignee', value: { data: ['root'], operator: '||' } },
+  { type: 'author', value: { data: ['root'], operator: '||' } },
+  { type: 'author', value: { data: 'root', operator: '=' } },
+  { type: 'milestone', value: { data: 'v0.0', operator: '=' } },
+  { type: TOKEN_TYPE_PARENT, value: { data: '456', operator: '=' } },
+  { type: 'group', value: { data: 'flightjs/Flight', operator: '=' } },
+  { type: 'iteration', value: { data: 'Current&1', operator: '=' } },
+  { type: 'status', value: { data: "Won't do", operator: '=' } },
+];
+
+export const saveSavedViewParams = {
+  isEdit: false,
+  isForm: false,
+  namespacePath: 'my-group',
+  name: 'My View',
+  description: 'A test view',
+  isPrivate: false,
+  filters: { state: 'opened' },
+  sort: 'CREATED_DESC',
+  displaySettings: { groupBy: 'assignee' },
+  mutationKey: 'workItemSavedViewCreate',
+};
+
+export const saveSavedViewResponse = {
+  data: {
+    workItemSavedViewCreate: {
+      errors: [],
+      savedView: {
+        id: 'gid://gitlab/SavedView/1',
+        name: 'My View',
+        description: 'A test view',
+        isPrivate: false,
+        filters: { state: 'opened' },
+        sort: 'CREATED_DESC',
+        displaySettings: { groupBy: 'assignee' },
+        subscribed: true,
+        updatedAt: '2025-12-04T10:00:00Z',
+        author: { name: 'Tim Ridgewater' },
+        lastUpdatedBy: { name: 'Nicole Evans' },
+        userPermissions: {
+          updateSavedView: true,
+          deleteSavedView: true,
+          updateSavedViewVisibility: true,
+          __typename: 'SavedViewPermissions',
+        },
+      },
+    },
+  },
+};
+
+export const saveSavedViewWithSearchParams = {
+  isEdit: false,
+  isForm: false,
+  namespacePath: 'my-group',
+  name: 'My View',
+  description: 'A test view',
+  isPrivate: false,
+  filters: { in: 'TITLE', search: ['work', 'items'] },
+  sort: 'CREATED_DESC',
+  displaySettings: { groupBy: 'assignee' },
+  mutationKey: 'workItemSavedViewCreate',
+};
+
+export const saveSavedViewWithSearchResponse = {
+  data: {
+    workItemSavedViewCreate: {
+      errors: [],
+      savedView: {
+        id: 'gid://gitlab/SavedView/1',
+        name: 'My View',
+        description: 'A test view',
+        isPrivate: false,
+        filters: { in: 'TITLE' },
+        sort: 'CREATED_DESC',
+        displaySettings: { groupBy: 'assignee', search: 'work__SV__items' },
+        subscribed: true,
+        updatedAt: '2025-12-04T10:00:00Z',
+        author: { name: 'Tim Ridgewater' },
+        lastUpdatedBy: { name: 'Nicole Evans' },
+        userPermissions: {
+          updateSavedView: true,
+          deleteSavedView: true,
+          updateSavedViewVisibility: true,
+          __typename: 'SavedViewPermissions',
+        },
+      },
+    },
+  },
+};
+
+export const editSavedViewParams = {
+  isEdit: true,
+  isForm: false,
+  id: 'gid://gitlab/SavedView/1',
+  name: 'Updated View',
+  description: 'Updated description',
+  isPrivate: false,
+  filters: { state: 'closed' },
+  sort: 'UPDATED_DESC',
+  displaySettings: { groupBy: 'status' },
+  userPermissions: {
+    updateSavedView: true,
+    deleteSavedView: true,
+    updateSavedViewVisibility: true,
+    __typename: 'SavedViewPermissions',
+  },
+  subscribed: true,
+  mutationKey: 'workItemSavedViewUpdate',
+};
+
+export const editSavedViewResponse = {
+  data: {
+    workItemSavedViewUpdate: {
+      errors: [],
+      savedView: {
+        id: 'gid://gitlab/SavedView/1',
+        name: 'Updated View',
+        description: 'Updated description',
+        isPrivate: false,
+        filters: { state: 'closed' },
+        sort: 'UPDATED_DESC',
+        displaySettings: { groupBy: 'status' },
+        updatedAt: '2025-12-04T10:00:00Z',
+        author: { name: 'Tim Ridgewater' },
+        lastUpdatedBy: { name: 'Nicole Evans' },
+        userPermissions: {
+          updateSavedView: true,
+          deleteSavedView: true,
+          updateSavedViewVisibility: true,
+          __typename: 'SavedViewPermissions',
+        },
+        subscribed: true,
+      },
+    },
+  },
+};
+
+export const editSavedViewFormOnlyParams = {
+  isEdit: true,
+  isForm: true,
+  id: 'gid://gitlab/SavedView/1',
+  name: 'Updated View',
+  description: 'Updated description',
+  isPrivate: false,
+  filters: { state: 'closed' },
+  sort: 'UPDATED_DESC',
+  displaySettings: { groupBy: 'status' },
+  userPermissions: {
+    updateSavedView: true,
+    deleteSavedView: true,
+    updateSavedViewVisibility: true,
+    __typename: 'SavedViewPermissions',
+  },
+  subscribed: true,
+  mutationKey: 'workItemSavedViewUpdate',
+};
+
+export const editSavedViewFormOnlyResponse = {
+  data: {
+    workItemSavedViewUpdate: {
+      errors: [],
+      savedView: {
+        id: 'gid://gitlab/SavedView/1',
+        name: 'Updated View',
+        description: 'Updated description',
+        isPrivate: false,
+        userPermissions: {
+          updateSavedView: true,
+          deleteSavedView: true,
+          updateSavedViewVisibility: true,
+          __typename: 'SavedViewPermissions',
+        },
+        subscribed: true,
+      },
+    },
+  },
+};
+
+export const mockSavedViewsData = [
+  {
+    __typename: 'WorkItemSavedViewType',
+    id: 'gid://gitlab/WorkItems::SavedViews::SavedView/1',
+    name: 'My Private View',
+    description: 'Only I can see this',
+    isPrivate: true,
+    subscribed: true,
+    filters: {},
+    displaySettings: {},
+    sort: CREATED_DESC,
+    updatedAt: '2026-04-08T09:50:54Z',
+    author: {
+      id: 'gid://gitlab/User/1',
+      avatarUrl: '/uploads/-/system/user/avatar/1/avatar.png',
+      name: 'Administrator',
+      username: 'root',
+      webUrl: 'http://127.0.0.1:3000/root',
+      webPath: '/root',
+      __typename: 'UserCore',
+    },
+    lastUpdatedBy: {
+      id: 'gid://gitlab/User/1',
+      avatarUrl: '/uploads/-/system/user/avatar/1/avatar.png',
+      name: 'Administrator',
+      username: 'root',
+      webUrl: 'http://127.0.0.1:3000/root',
+      webPath: '/root',
+      __typename: 'UserCore',
+    },
+    userPermissions: {
+      updateSavedView: true,
+      deleteSavedView: true,
+      updateSavedViewVisibility: true,
+      __typename: 'SavedViewPermissions',
+    },
+  },
+];
+
+export const exampleSavedViewResponse = {
+  data: {
+    namespace: {
+      __typename: 'Namespace',
+      id: 'namespace',
+      currentSavedViews: {
+        nodes: mockSavedViewsData,
+      },
+      subscribedSavedViewLimit: 100,
+      savedViews: {
+        __typename: 'SavedViewConnection',
+        nodes: singleSavedView,
+      },
+    },
+  },
+};
+
+const unsubscribedSavedView = [
+  {
+    __typename: 'WorkItemSavedViewType',
+    name: 'Current sprint 3',
+    description: 'The things I am focused on for the sprint',
+    subscribed: false,
+    isPrivate: true,
+    id: 'gid://gitlab/WorkItems::SavedViews::SavedView/3',
+    displaySettings: {
+      assignee: true,
+      blocked: true,
+      blocking: true,
+      dates: true,
+      health: true,
+      labels: true,
+      milestone: true,
+      popularity: true,
+      weight: true,
+      comments: true,
+      iteration: true,
+      status: true,
+    },
+    filters: {
+      state: 'opened',
+      assigneeUsernames: 'root',
+      labelName: 'Broffe',
+    },
+    sort: 'UPDATED_DESC',
+    userPermissions: {
+      updateSavedView: true,
+      deleteSavedView: true,
+      updateSavedViewVisibility: true,
+      __typename: 'SavedViewPermissions',
+    },
+    updatedAt: '2026-04-08T09:50:54Z',
+    author: {
+      id: 'gid://gitlab/User/1',
+      avatarUrl: '/uploads/-/system/user/avatar/1/avatar.png',
+      name: 'Administrator',
+      username: 'root',
+      webUrl: 'http://127.0.0.1:3000/root',
+      webPath: '/root',
+      __typename: 'UserCore',
+    },
+    lastUpdatedBy: {
+      id: 'gid://gitlab/User/1',
+      avatarUrl: '/uploads/-/system/user/avatar/1/avatar.png',
+      name: 'Administrator',
+      username: 'root',
+      webUrl: 'http://127.0.0.1:3000/root',
+      webPath: '/root',
+      __typename: 'UserCore',
+    },
+  },
+];
+
+export const savedViewResponseFactory = ({ limit, subscribed, savedViews = null }) => {
+  return {
+    data: {
+      namespace: {
+        __typename: 'Namespace',
+        id: 'namespace',
+        currentSavedViews: {
+          nodes: mockSavedViewsData,
+        },
+        subscribedSavedViewLimit: limit || 100,
+        savedViews: {
+          __typename: 'SavedViewConnection',
+          nodes: savedViews ?? (subscribed ? singleSavedView : unsubscribedSavedView),
+          pageInfo: {
+            __typename: 'PageInfo',
+            hasNextPage: false,
+            hasPreviousPage: false,
+            startCursor: null,
+            endCursor: null,
+          },
+        },
+      },
+    },
+  };
+};
+
+export const savedViewFiltersWithWildcards = {
+  milestoneWildcardId: 'none',
+  assigneeWildcardId: 'any',
+  iterationWildcardId: 'current',
+};
+
+export const savedViewFilterTokensWithWildcards = [
+  { type: TOKEN_TYPE_MILESTONE, value: { data: 'None', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ASSIGNEE, value: { data: 'Any', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ITERATION, value: { data: 'Current', operator: OPERATOR_IS } },
+];
+
+export const savedViewFiltersWithIterationCadence = {
+  iterationWildcardId: 'CURRENT',
+  iterationCadenceId: ['gid://gitlab/Iterations::Cadence/5'],
+};
+
+export const savedViewFilterTokensWithIterationCadence = [
+  { type: TOKEN_TYPE_ITERATION, value: { data: 'Current&5', operator: OPERATOR_IS } },
+];
+
+export const savedViewFiltersWithIterationCadenceOnly = {
+  iterationCadenceId: ['gid://gitlab/Iterations::Cadence/5'],
+};
+
+export const savedViewFilterTokensWithIterationCadenceOnly = [
+  { type: TOKEN_TYPE_ITERATION, value: { data: 'Any&5', operator: OPERATOR_IS } },
+];
+
+export const savedViewFiltersWithMultipleIterationCadences = {
+  iterationWildcardId: 'CURRENT',
+  iterationCadenceId: ['gid://gitlab/Iterations::Cadence/5', 'gid://gitlab/Iterations::Cadence/6'],
+};
+
+export const savedViewFilterTokensWithMultipleIterationCadences = [
+  { type: TOKEN_TYPE_ITERATION, value: { data: 'Current&5', operator: OPERATOR_IS } },
+  { type: TOKEN_TYPE_ITERATION, value: { data: 'Current&6', operator: OPERATOR_IS } },
+];
+
+export const savedViewFiltersWithNotParent = {
+  not: {
+    parentIds: ['gid://gitlab/WorkItem/789'],
+  },
+};
+
+export const savedViewFilterTokensWithNotParent = [
+  { type: TOKEN_TYPE_PARENT, value: { data: '789', operator: OPERATOR_NOT } },
+];
+
+export const savedViewFiltersWithSingleIn = {
+  in: ['title'],
+};
+
+export const savedViewFilterTokensWithSingleIn = [
+  { type: TOKEN_TYPE_SEARCH_WITHIN, value: { data: 'TITLE', operator: OPERATOR_IS } },
+];
+
+export const savedViewFiltersWithHierarchyParent = {
+  hierarchyFilters: {
+    parentIds: ['gid://gitlab/WorkItem/123'],
+  },
+};
+
+export const savedViewFilterTokensWithHierarchyParent = [
+  { type: TOKEN_TYPE_PARENT, value: { data: '123', operator: OPERATOR_IS } },
+];
+
+export const savedViewFiltersWithHierarchyParentWildcard = {
+  hierarchyFilters: {
+    parentWildcardId: 'none',
+  },
+};
+
+export const savedViewFilterTokensWithHierarchyParentWildcard = [
+  { type: TOKEN_TYPE_PARENT, value: { data: 'None', operator: OPERATOR_IS } },
+];
+
+export const savedViewFiltersWithMultipleSearchTokens = {
+  search: `Work${SAVED_VIEW_SEARCH_DELIMITER}Items`,
+};
+
+export const savedViewFilterTokensWithMultipleSearchTokens = [
+  { type: FILTERED_SEARCH_TERM, value: { data: 'Work', operator: undefined } },
+  { type: FILTERED_SEARCH_TERM, value: { data: 'Items', operator: undefined } },
+];

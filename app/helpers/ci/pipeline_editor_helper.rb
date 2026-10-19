@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+module Ci
+  module PipelineEditorHelper
+    include ChecksCollaboration
+
+    def can_view_pipeline_editor?(project)
+      can_collaborate_with_project?(project)
+    end
+
+    def current_branch
+      params[:branch_name]
+    end
+
+    def js_pipeline_editor_data(project)
+      initial_branch = params[:branch_name]
+      latest_commit = project.repository.commit(initial_branch) || project.commit
+      total_branches = project.repository_exists? ? project.repository.branch_count : 0
+
+      {
+        "ci-config-path": project.ci_config_path_or_default,
+        "ci-examples-help-page-path" => help_page_path('ci/examples/_index.md'),
+        "ci-help-page-path" => help_page_path('ci/_index.md'),
+        "ci-lint-path" => project_ci_lint_path(project),
+        "ci-troubleshooting-path" => help_page_path('ci/debugging.md', anchor: 'job-configuration-issues'),
+        "default-branch" => project.default_branch_or_main,
+        "initial-branch-name" => initial_branch,
+        "includes-help-page-path" => help_page_path('ci/yaml/includes.md'),
+        "needs-help-page-path" => help_page_path('ci/yaml/_index.md', anchor: 'needs'),
+        "new-merge-request-path" => namespace_project_new_merge_request_path,
+        "new-pipeline-path" => can?(current_user, :create_pipeline, project) ? new_project_pipeline_path(project) : '',
+        "pipeline_etag" => latest_commit ? graphql_etag_pipeline_sha_path(latest_commit.sha) : '',
+        "project-full-path" => project.full_path,
+        "simulate-pipeline-help-page-path" => help_page_path('ci/pipeline_editor/_index.md',
+          anchor: 'validate-cicd-configuration'),
+        "total-branches" => total_branches,
+        "uses-external-config" => uses_external_config?(project) ? 'true' : 'false',
+        "yml-help-page-path" => help_page_path('ci/yaml/_index.md')
+      }
+    end
+
+    private
+
+    def uses_external_config?(project)
+      ci_config_source = Gitlab::Ci::ProjectConfig.new(project: project, sha: nil).source
+
+      [:external_project_source, :remote_source].include?(ci_config_source)
+    end
+  end
+end
+
+Ci::PipelineEditorHelper.prepend_mod_with('Ci::PipelineEditorHelper')

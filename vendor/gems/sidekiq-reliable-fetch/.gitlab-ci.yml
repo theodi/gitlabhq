@@ -1,0 +1,56 @@
+include:
+  - local: gems/gem.gitlab-ci.yml
+    inputs:
+      gem_name: "sidekiq-reliable-fetch"
+      gem_path_prefix: "vendor/gems/"
+
+rspec:
+  extends:
+    - .with_redis
+  parallel:
+    matrix:
+      - RUBY_VERSION: ["${RUBY_VERSION_DEFAULT}"] # 3.2 isn't supported yet
+
+.with_redis:
+  extends:
+    - .repo-from-artifacts
+  services:
+    - redis:alpine
+  variables:
+    REDIS_URL: "redis://redis"
+
+.reliability:
+  extends:
+    - .with_redis
+    - .ruby_matrix
+  script:
+    - cd tests/reliability
+    - bundle exec ruby reliability_test.rb
+
+integration_semi:
+  extends: .reliability
+  variables:
+    JOB_FETCHER: semi
+
+integration_reliable:
+  extends: .reliability
+  variables:
+    JOB_FETCHER: reliable
+
+.interruption:
+  extends:
+    - .with_redis
+    - .ruby_matrix
+  script:
+    - cd tests/interruption
+    - bundle exec ruby "test_${SIGNAL}_signal.rb"
+
+kill_interruption:
+  extends: .interruption
+  variables:
+    SIGNAL: kill
+
+term_interruption:
+  extends: .interruption
+  variables:
+    SIGNAL: term

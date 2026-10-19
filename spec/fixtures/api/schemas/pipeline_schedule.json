@@ -1,0 +1,169 @@
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "description": {
+      "type": "string"
+    },
+    "ref": {
+      "type": "string"
+    },
+    "cron": {
+      "type": "string"
+    },
+    "cron_timezone": {
+      "type": "string"
+    },
+    "next_run_at": {
+      "type": "string"
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_pipeline": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "iid": {
+          "type": "integer"
+        },
+        "project_id": {
+          "type": "integer"
+        },
+        "sha": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "web_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "owner": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "public_email": {
+          "type": ["string", "null"]
+        },
+        "id": {
+          "type": "integer"
+        },
+        "state": {
+          "type": "string"
+        },
+        "avatar_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "web_url": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "username",
+        "state",
+        "avatar_url",
+        "web_url"
+      ]
+    },
+    "variables": {
+      "type": "array",
+      "items": {
+        "$ref": "pipeline_schedule_variable.json"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "array",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ]
+      }
+    }
+  },
+  "required": [
+    "id",
+    "description",
+    "ref",
+    "cron",
+    "cron_timezone",
+    "next_run_at",
+    "active",
+    "created_at",
+    "updated_at",
+    "owner"
+  ],
+  "additionalProperties": false
+}

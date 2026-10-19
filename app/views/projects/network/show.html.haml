@@ -1,27 +1,22 @@
-- page_title "Network", @ref
-= render "head"
-.project-network
-  .controls
-    = form_tag namespace_project_network_path(@project.namespace, @project, @id), method: :get, class: 'form-inline network-form' do |f|
-      = text_field_tag :extended_sha1, @options[:extended_sha1], placeholder: "Input an extended SHA1 syntax", class: 'search-input form-control input-mx-250 search-sha'
-      = button_tag class: 'btn btn-success btn-search-sha' do
-        %i.fa.fa-search
-      .inline.prepend-left-20
-        .checkbox.light
-          = label_tag :filter_ref do
-            = check_box_tag :filter_ref, 1, @options[:filter_ref]
-            %span Begin with the selected commit
+- title = _("Repository graph")
+- breadcrumb_title title
+- page_title title, @ref
 
-  .network-graph
-    = spinner nil, true
+- if @gitaly_unavailable
+  = render 'shared/errors/gitaly_unavailable', reason: s_('Network|Unable to load repository graph')
+- else
+  .project-network-header.gl-flex.gl-flex-col.gl-overflow-hidden
+    = render ::Layouts::PageHeadingComponent.new(title) do |c|
+      - c.with_description do
+        = _("You can move around the graph by using the arrow keys.")
 
-:javascript
-  disableButtonIfEmptyField('#extended_sha1', '.btn-search-sha')
+    .project-network
+      .gl-flex.gl-flex-wrap.gl-items-start.gl-gap-3.gl-p-5.gl-bg-subtle.gl-border-t.gl-border-b
+        .gl-min-w-26
+          #js-graph-ref-switcher{ data: { project_id: @project.id, ref: @ref, network_path: project_network_path(@project, @ref, ref_type: @ref_type) } }
 
-  network_graph = new Network({
-    url: '#{namespace_project_network_path(@project.namespace, @project, @ref, @options.merge(format: :json))}',
-    commit_url: '#{namespace_project_commit_path(@project.namespace, @project, 'ae45ca32').gsub("ae45ca32", "%s")}',
-    ref: '#{@ref}',
-    commit_id: '#{@commit.id}'
-  })
-  new ShortcutsNetwork(network_graph.branch_graph)
+        #js-ref-search-form{ data: { network_path: project_network_path(@project, @ref, ref_type: @ref_type)} }
+
+      - if @commit
+        .network-graph.gl-overflow-scroll{ tabindex: 0, role: 'figure', data: { url: @url, commit_url: @commit_url, ref: @ref, commit_id: @commit.id, type: 'figure-branch-graph' } }
+          = gl_loading_icon(size: 'md', css_class: 'gl-mt-5')

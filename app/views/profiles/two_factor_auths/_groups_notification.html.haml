@@ -1,0 +1,13 @@
+%details.gl-mt-3{ data: { testid: 'two-factor-groups-notification-details' } }
+  %summary.gl-cursor-pointer
+    = leavable ? _('Review and leave groups') : _('Review groups')
+  %ul.gl-list-disc{ data: { testid: 'two-factor-groups-notification' } }
+    - groups.each do |group|
+      - member = memberships[group.id]
+      %li
+        = group.name
+        - if can?(current_user, :destroy_group_member, member)
+          - confirm_message = format(s_('GroupsTree|Are you sure you want to leave "%{fullName}"?'), fullName: group.full_name)
+          = link_button_to _('Leave group'), leave_group_members_path(group), variant: :danger, category: :tertiary, size: :small, method: :delete, aria: { label: _('Leave group') }, data: { confirm: confirm_message, confirm_btn_variant: 'danger', testid: 'two-factor-leave-group-button' }
+        - else
+          %span.gl-text-subtle{ data: { testid: 'leave-group-blocked' } }= _('You cannot leave this group')

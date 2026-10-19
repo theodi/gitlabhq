@@ -1,0 +1,13 @@
+---
+table_name: x509_issuers
+classes:
+- X509Issuer
+feature_categories:
+- source_code_management
+description: Stores data about issuer of X.509 certificate
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/17773
+milestone: '12.8'
+gitlab_schema: gitlab_main_org
+table_size: small
+sharding_key:
+  project_id: projects

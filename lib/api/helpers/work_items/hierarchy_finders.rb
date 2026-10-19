@@ -1,0 +1,38 @@
+# frozen_string_literal: true
+
+module API
+  module Helpers
+    module WorkItems
+      module HierarchyFinders
+        # Every "child not found" path on these endpoints returns the same message so callers can't
+        # tell "this work item does not exist" apart from "it exists but you can't see/admin it".
+        CHILD_NOT_FOUND_MESSAGE = 'No matching work item found. Make sure that you are adding a valid work item ID.'
+
+        def find_sibling_work_item!(parent_work_item, child_id)
+          sibling_work_item = parent_work_item.work_item_children.find_by_id(child_id)
+
+          return sibling_work_item if sibling_work_item
+
+          render_api_error!(CHILD_NOT_FOUND_MESSAGE, 404)
+        end
+
+        # Used for a sibling that is only read (e.g. the reorder anchor), not linked/admin'd,
+        # so unlike find_sibling_work_item! this also enforces the current user can see it.
+        def find_readable_sibling_work_item!(parent_work_item, child_id)
+          sibling_work_item = find_sibling_work_item!(parent_work_item, child_id)
+
+          return sibling_work_item if can?(current_user, :read_work_item, sibling_work_item)
+
+          render_api_error!(CHILD_NOT_FOUND_MESSAGE, 404)
+        end
+
+        def find_parent_link!(parent_work_item, child_id)
+          ::WorkItems::ParentLink
+            .for_parents(parent_work_item.id)
+            .for_children(child_id)
+            .first || render_api_error!(CHILD_NOT_FOUND_MESSAGE, 404)
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,157 @@
+---
+stage: Plan
+group: Work Items
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: GitLab for Slack app administration
+description: "Administer, configure, and troubleshoot the GitLab for Slack app on GitLab Self-Managed instances."
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+> [!note]
+> For user documentation, see [GitLab for Slack app](../../user/project/integrations/gitlab_slack_application.md).
+
+The GitLab for Slack app distributed through the Slack App Directory only works with GitLab.com.
+On GitLab Self-Managed, you can create your own copy of the GitLab for Slack app from a [manifest file](https://api.slack.com/reference/manifests#creating_apps) and configure your instance.
+
+The app is a private one-time copy installed in your Slack workspace only and not distributed through the Slack App Directory. To have the [GitLab for Slack app](../../user/project/integrations/gitlab_slack_application.md) on your GitLab Self-Managed instance, you must turn on the integration.
+
+## Create a GitLab for Slack app
+
+Prerequisites:
+
+- You must be at least a [Slack workspace administrator](https://slack.com/help/articles/360018112273-Types-of-roles-in-Slack).
+
+To create a GitLab for Slack app:
+
+- **In GitLab**:
+
+  1. In the upper-right corner, select **Admin**.
+  1. In the left sidebar, select **Settings** > **General**.
+  1. Expand **GitLab for Slack app**.
+  1. Select **Create Slack app**.
+
+You're then redirected to Slack for the next steps.
+
+- **In Slack**:
+
+  1. Select the Slack workspace to create the app in, then select **Next**.
+  1. Slack displays a summary of the app for review. To view the complete manifest, select **Edit Configurations**. To go back to the review summary, select **Next**.
+  1. Select **Create**.
+  1. Select **Got it** to close the dialog.
+  1. Select **Install to Workspace**.
+
+## Configure the settings
+
+After you've [created a GitLab for Slack app](#create-a-gitlab-for-slack-app), you can configure the settings in GitLab:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **GitLab for Slack app**.
+1. Select the **Enable GitLab for Slack app** checkbox.
+1. Enter the details of your GitLab for Slack app:
+   1. Go to [Slack API](https://api.slack.com/apps).
+   1. Search for and select **GitLab (`<your host name>`)**.
+   1. Scroll to **App Credentials**.
+1. Select **Save changes**.
+
+## Install the GitLab for Slack app
+
+{{< history >}}
+
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/175803) in GitLab 17.8. Feature flag `gitlab_for_slack_app_instance_and_group_level` removed.
+
+{{< /history >}}
+
+Prerequisites:
+
+- You must have the [appropriate permissions to add apps to your Slack workspace](https://slack.com/help/articles/202035138-Add-apps-to-your-Slack-workspace).
+- You must [create a GitLab for Slack app](#create-a-gitlab-for-slack-app) and [configure the app settings](#configure-the-settings).
+
+To install the GitLab for Slack app from the instance settings:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **Integrations**.
+1. Select **GitLab for Slack app**.
+1. Select **Install GitLab for Slack app**.
+1. On the Slack confirmation page, select **Allow**.
+
+### Test your configuration
+
+To test your GitLab for Slack app configuration:
+
+1. Enter the `/gitlab help` slash command into a channel in your Slack workspace.
+1. Press <kbd>Enter</kbd>.
+
+You should see a list of available Slash commands.
+
+To use Slash commands for a project, configure the [GitLab for Slack app](../../user/project/integrations/gitlab_slack_application.md) for the project.
+
+## Update the GitLab for Slack app
+
+Prerequisites:
+
+- You must be at least a [Slack workspace administrator](https://slack.com/help/articles/360018112273-Types-of-roles-in-Slack).
+
+When GitLab releases new features for the GitLab for Slack app, you might have to manually update your copy to use the new features.
+
+To update your copy of the GitLab for Slack app:
+
+- **In GitLab**:
+  1. In the upper-right corner, select **Admin**.
+  1. In the left sidebar, select **Settings** > **General**.
+  1. Expand **GitLab for Slack app**.
+  1. Select **Download latest manifest file** to download `slack_manifest.json`.
+- **In Slack**:
+  1. Go to [Slack API](https://api.slack.com/apps).
+  1. Search for and select **GitLab (`<your host name>`)**.
+  1. In the left sidebar, select **App Manifest**.
+  1. Select the **JSON** tab to switch to a JSON view of the manifest.
+  1. Copy the contents of the `slack_manifest.json` file you've downloaded from GitLab.
+  1. Paste the contents into the JSON viewer to replace any existing contents.
+  1. Select **Save Changes**.
+
+## Connectivity requirements
+
+To turn on the GitLab for Slack app functionality, your network must allow inbound and outbound connections between GitLab and Slack.
+
+- For [Slack notifications](../../user/project/integrations/gitlab_slack_application.md#slack-notifications), the GitLab instance must be allowed to send requests to `https://slack.com`.
+- For [Slash commands](../../user/project/integrations/gitlab_slack_application.md#slash-commands) and other features, the GitLab instance must be allowed to receive requests from `https://slack.com`.
+
+## Enable support for multiple workspaces
+
+By default, you can [install the GitLab for Slack app](../../user/project/integrations/gitlab_slack_application.md#install-the-gitlab-for-slack-app) in only one Slack workspace.
+An administrator selects this workspace when they [create a GitLab for Slack app](#create-a-gitlab-for-slack-app).
+
+To turn on support for multiple Slack workspaces, you must configure the GitLab for Slack app
+as an [unlisted distributed app](https://api.slack.com/distribution#unlisted-distributed-apps).
+An unlisted distributed app:
+
+- Is not published in the Slack App Directory.
+- Can only be used with your GitLab instance and not by other sites.
+
+To configure the GitLab for Slack app as an unlisted distributed app:
+
+1. Go to the [**Your Apps**](https://api.slack.com/apps) page on Slack and select your GitLab for Slack app.
+1. Select **Manage Distribution**.
+1. In the **Share Your App with Other Workspaces** section, expand **Remove Hard Coded Information**.
+1. Select the **I've reviewed and removed any hard-coded information** checkbox.
+1. Select **Activate Public Distribution**.
+
+## Troubleshooting
+
+When administering the GitLab for Slack app, you might encounter the following issues.
+
+### Slash commands return `dispatch_failed` in Slack
+
+Slash commands might return `/gitlab failed with the error "dispatch_failed"` in Slack.
+
+To resolve this issue, ensure:
+
+- The GitLab for Slack app is properly [configured](#configure-the-settings) and the **Enable GitLab for Slack app** checkbox is selected.
+- Your GitLab instance [allows requests to and from Slack](#connectivity-requirements).

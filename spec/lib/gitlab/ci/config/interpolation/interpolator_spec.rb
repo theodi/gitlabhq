@@ -1,0 +1,562 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Ci::Config::Interpolation::Interpolator, feature_category: :pipeline_composition do
+  using RSpec::Parameterized::TableSyntax
+
+  let_it_be(:project) { create(:project) }
+
+  let(:result) { ::Gitlab::Ci::Config::Yaml::Result.new(config: [header, content]) }
+  let(:yaml_context) { ::Gitlab::Ci::Config::Yaml::Context.new }
+  let(:external_context) { nil }
+
+  subject { described_class.new(result, arguments, yaml_context, external_context) }
+
+  context 'when an input value contains a YAML tag' do
+    let(:tag) do
+      Gitlab::Ci::Config::Yaml::Tags::Reference.new.tap do |reference|
+        reference.data = { tag: '!reference', seq: %w[.shared] }
+      end
+    end
+
+    let(:content) { { test: '$[[ inputs.a ]]' } }
+
+    # A tag is only resolved by `Tags::Resolver`, which runs on the merged config after
+    # interpolation. Interpolation therefore passes the unresolved object through, and what
+    # happens next depends on the input type and on how the included file uses the value.
+    # See https://gitlab.com/gitlab-org/gitlab/-/issues/607053.
+    context 'when the input type keeps the value a container' do
+      where(:case_name, :type, :value) do
+        'a tag as an array element' | 'array' | [ref(:tag), 'other']
+        'a tag as a hash key'       | 'array' | [{ ref(:tag) => 'other' }]
+      end
+
+      with_them do
+        let(:header) { { spec: { inputs: { a: { type: type } } } } }
+        let(:arguments) { { a: value } }
+
+        it 'passes the unresolved tag through for the resolver to handle' do
+          subject.interpolate!
+
+          expect(subject).to be_valid
+          expect(subject.to_hash[:test]).to eq(value)
+        end
+      end
+    end
+
+    context 'with a string input' do
+      let(:header) { { spec: { inputs: { a: { type: 'string' } } } } }
+      let(:arguments) { { a: tag } }
+
+      it 'coerces the tag to its string representation' do
+        subject.interpolate!
+
+        expect(subject).to be_valid
+        expect(subject.to_hash[:test]).to include('Gitlab::Ci::Config::Yaml::Tags::Reference')
+      end
+    end
+
+    context 'when the input type rejects the unresolved object' do
+      where(:case_name, :type, :message) do
+        'a number input'  | 'number'  | '`a` input: provided value is not a number'
+        'a boolean input' | 'boolean' | '`a` input: provided value is not a boolean'
+      end
+
+      with_them do
+        let(:header) { { spec: { inputs: { a: { type: type } } } } }
+        let(:arguments) { { a: tag } }
+
+        it 'reports a type error rather than naming the tag' do
+          subject.interpolate!
+
+          expect(subject).not_to be_valid
+          expect(subject.errors).to include(message)
+        end
+      end
+    end
+  end
+
+  context 'when input data is valid' do
+    let(:header) do
+      { spec: { inputs: { website: nil } } }
+    end
+
+    let(:content) do
+      { test: 'deploy $[[ inputs.website ]]' }
+    end
+
+    let(:arguments) do
+      { website: 'gitlab.com' }
+    end
+
+    it 'correctly interpolates the config' do
+      subject.interpolate!
+
+      expect(subject).to be_interpolated
+      expect(subject).to be_valid
+      expect(subject.to_hash).to eq({ test: 'deploy gitlab.com' })
+    end
+  end
+
+  context 'when an interpolated value embedded in a string contains backslash sequences' do
+    let(:header) do
+      { spec: { inputs: { arg: nil } } }
+    end
+
+    let(:content) do
+      { test: "printf '%s' $[[ inputs.arg | posix_escape ]] done" }
+    end
+
+    let(:arguments) do
+      { arg: '\;id' }
+    end
+
+    it 'preserves the escaped value instead of reinterpreting the backslashes', :aggregate_failures do
+      subject.interpolate!
+
+      expect(subject).to be_valid
+      # `posix_escape` shell-escapes the value; the surrounding-string
+      # substitution must keep that escaping intact rather than reinterpreting
+      # the backslashes as `gsub` backreferences.
+      escaped = Shellwords.shellescape('\;id')
+      expect(subject.to_hash).to eq({ test: "printf '%s' #{escaped} done" })
+    end
+  end
+
+  context 'when input uses array index access' do
+    let(:header) do
+      { spec: { inputs: { versions: { type: 'array' } } } }
+    end
+
+    let(:content) do
+      { test: 'deploy $[[ inputs.versions[0] ]]' }
+    end
+
+    let(:arguments) do
+      { versions: %w[v1.0 v2.0] }
+    end
+
+    it 'correctly interpolates the array element' do
+      subject.interpolate!
+
+      expect(subject).to be_interpolated
+      expect(subject).to be_valid
+      expect(subject.to_hash).to eq({ test: 'deploy v1.0' })
+    end
+  end
+
+  context 'when a hyphenated input uses array index access' do
+    let(:header) do
+      { spec: { inputs: { 'supported-versions': { type: 'array', default: %w[2.0 1.0] } } } }
+    end
+
+    let(:content) do
+      { test: 'echo $[[ inputs.supported-versions[0] ]]' }
+    end
+
+    let(:arguments) { {} }
+
+    it 'correctly interpolates the array element' do
+      subject.interpolate!
+
+      expect(subject).to be_interpolated
+      expect(subject).to be_valid
+      expect(subject.to_hash).to eq({ test: 'echo 2.0' })
+    end
+  end
+
+  context 'when config has a syntax error' do
+    let(:result) { ::Gitlab::Ci::Config::Yaml::Result.new(error: 'Invalid configuration format') }
+
+    let(:arguments) do
+      { website: 'gitlab.com' }
+    end
+
+    it 'surfaces an error about invalid config' do
+      subject.interpolate!
+
+      expect(subject).not_to be_valid
+      expect(subject.error_message).to eq subject.errors.first
+      expect(subject.errors).to include 'Invalid configuration format'
+    end
+  end
+
+  context 'when spec header is missing but inputs are specified' do
+    let(:header) { nil }
+    let(:content) { { test: 'echo' } }
+    let(:arguments) { { foo: 'bar' } }
+
+    it 'surfaces an error about invalid inputs' do
+      subject.interpolate!
+
+      expect(subject).not_to be_valid
+      expect(subject.error_message).to eq subject.errors.first
+      expect(subject.errors).to include('Given inputs not defined in the `spec` section of the included ' \
+                                        'configuration file')
+    end
+  end
+
+  context 'when spec header is invalid' do
+    let(:header) do
+      { spec: { arguments: { website: nil } } }
+    end
+
+    let(:content) do
+      { test: 'deploy $[[ inputs.website ]]' }
+    end
+
+    let(:arguments) do
+      { website: 'gitlab.com' }
+    end
+
+    it 'surfaces an error about invalid header' do
+      subject.interpolate!
+
+      expect(subject).not_to be_valid
+      expect(subject.error_message).to eq subject.errors.first
+      expect(subject.errors).to include('header:spec config contains unknown keys: arguments')
+    end
+  end
+
+  context 'when provided interpolation arguments are not a hash' do
+    let(:header) do
+      { spec: { inputs: { website: nil } } }
+    end
+
+    let(:content) do
+      { test: 'deploy $[[ inputs.website ]]' }
+    end
+
+    let(:arguments) do
+      'invalid'
+    end
+
+    it 'returns an error' do
+      subject.interpolate!
+
+      expect(subject).not_to be_valid
+      expect(subject.errors).to include 'Given inputs must be a hash'
+    end
+  end
+
+  context 'when provided interpolation argument is invalid' do
+    let(:header) do
+      { spec: { inputs: { number_of_deploy: { type: 'number' } } } }
+    end
+
+    let(:content) do
+      { test: 'deploy $[[ inputs.number_of_deploy ]]' }
+    end
+
+    let(:arguments) do
+      { number_of_deploy: 'hello' }
+    end
+
+    it 'returns an error' do
+      subject.interpolate!
+
+      expect(subject).not_to be_valid
+      expect(subject.error_message).to eq subject.errors.first
+      expect(subject.errors).to include '`number_of_deploy` input: provided value is not a number'
+    end
+  end
+
+  context 'when interpolation block is invalid' do
+    let(:header) do
+      { spec: { inputs: { website: nil } } }
+    end
+
+    let(:content) do
+      { test: 'deploy $[[ inputs.abc ]]' }
+    end
+
+    let(:arguments) do
+      { website: 'gitlab.com' }
+    end
+
+    it 'returns an error' do
+      subject.interpolate!
+
+      expect(subject).not_to be_valid
+      expect(subject.errors).to include 'unknown interpolation provided: `abc` in `inputs.abc`'
+      expect(subject.error_message).to eq 'unknown interpolation provided: `abc` in `inputs.abc`'
+    end
+  end
+
+  context 'when multiple interpolation blocks are invalid' do
+    let(:header) do
+      { spec: { inputs: { website: nil } } }
+    end
+
+    let(:content) do
+      { test: 'deploy $[[ inputs.something.abc ]] $[[ inputs.cde ]] $[[ efg ]]' }
+    end
+
+    let(:arguments) do
+      { website: 'gitlab.com' }
+    end
+
+    it 'returns an error' do
+      subject.interpolate!
+
+      expect(subject).not_to be_valid
+      expect(subject.error_message)
+        .to eq 'unknown interpolation provided: `something` in `inputs.something.abc`'
+    end
+  end
+
+  context 'when using component interpolation' do
+    let(:yaml_context) do
+      ::Gitlab::Ci::Config::Yaml::Context.new(
+        variables: [],
+        component: { name: 'my-component', sha: 'abc123', version: '1.0.0', reference: '1.0' }
+      )
+    end
+
+    context 'when component values are specified in spec' do
+      let(:header) do
+        { spec: { component: %w[name sha version reference] } }
+      end
+
+      let(:content) do
+        { test: 'Component $[[ component.name ]] at $[[ component.sha ]] version $[[ component.version ]] ' \
+                  'reference $[[ component.reference ]]' }
+      end
+
+      let(:arguments) { {} }
+
+      it 'correctly interpolates component data' do
+        subject.interpolate!
+
+        expect(subject).to be_interpolated
+        expect(subject).to be_valid
+        expect(subject.to_hash).to eq({ test: 'Component my-component at abc123 version 1.0.0 reference 1.0' })
+      end
+    end
+
+    context 'when component value not in spec is accessed' do
+      let(:header) do
+        { spec: { component: %w[name] } }
+      end
+
+      let(:content) do
+        { test: 'Component $[[ component.name ]] at $[[ component.sha ]]' }
+      end
+
+      let(:arguments) { {} }
+
+      it 'returns an error for unspecified component value' do
+        subject.interpolate!
+
+        expect(subject).not_to be_valid
+        expect(subject.errors).to include 'unknown interpolation provided: `sha` in `component.sha`'
+      end
+    end
+
+    context 'when both inputs and component are used' do
+      let(:header) do
+        { spec: { inputs: { env: nil }, component: %w[name version] } }
+      end
+
+      let(:content) do
+        {
+          test: 'Deploy to $[[ inputs.env ]] using $[[ component.name ]] v$[[ component.version ]]'
+        }
+      end
+
+      let(:arguments) { { env: 'production' } }
+
+      it 'correctly interpolates both inputs and component data' do
+        subject.interpolate!
+
+        expect(subject).to be_interpolated
+        expect(subject).to be_valid
+        expect(subject.to_hash).to eq({ test: 'Deploy to production using my-component v1.0.0' })
+      end
+    end
+  end
+
+  describe '#to_hash' do
+    context 'when interpolation is not used' do
+      let(:result) do
+        ::Gitlab::Ci::Config::Yaml::Result.new(config: content)
+      end
+
+      let(:content) do
+        { test: 'deploy production' }
+      end
+
+      let(:arguments) { nil }
+
+      it 'returns original content' do
+        subject.interpolate!
+
+        expect(subject.to_hash).to eq(content)
+      end
+    end
+
+    context 'when interpolation is available' do
+      let(:header) do
+        { spec: { inputs: { website: nil } } }
+      end
+
+      let(:content) do
+        { test: 'deploy $[[ inputs.website ]]' }
+      end
+
+      let(:arguments) do
+        { website: 'gitlab.com' }
+      end
+
+      it 'correctly interpolates content' do
+        subject.interpolate!
+
+        expect(subject.to_hash).to eq({ test: 'deploy gitlab.com' })
+      end
+    end
+  end
+
+  describe 'external context and header includes' do
+    let(:external_context) do
+      Gitlab::Ci::Config::External::Context.new(project: project, sha: 'HEAD', user: create(:user))
+    end
+
+    subject do
+      described_class.new(result, arguments, yaml_context, external_context)
+    end
+
+    before do
+      allow_next_instance_of(Gitlab::Ci::Config::External::Context) do |instance|
+        allow(instance).to receive(:check_execution_time!)
+      end
+    end
+
+    context 'when spec includes external input files' do
+      let(:header) do
+        {
+          spec: {
+            include: [{ local: '/inputs.yml' }],
+            inputs: {
+              inline_input: { default: 'inline_value' }
+            }
+          }
+        }
+      end
+
+      let(:content) do
+        { test: 'deploy $[[ inputs.inline_input ]] $[[ inputs.external_input ]]' }
+      end
+
+      let(:arguments) do
+        { inline_input: 'inline', external_input: 'external' }
+      end
+
+      before do
+        allow_next_instance_of(Gitlab::Ci::Config::External::Header::Processor) do |processor|
+          allow(processor).to receive(:perform).and_return(
+            inputs: {
+              inline_input: { default: 'inline_value' },
+              external_input: { default: 'external_value' }
+            }
+          )
+        end
+      end
+
+      it 'processes header includes and merges external inputs' do
+        subject.interpolate!
+
+        expect(subject).to be_interpolated
+        expect(subject).to be_valid
+        expect(subject.to_hash).to eq({ test: 'deploy inline external' })
+      end
+    end
+
+    context 'when spec has includes but no external_context is provided' do
+      let(:header) do
+        {
+          spec: {
+            include: [{ local: '/inputs.yml' }],
+            inputs: {
+              website: { default: 'gitlab.com' }
+            }
+          }
+        }
+      end
+
+      let(:content) do
+        { test: 'deploy $[[ inputs.website ]]' }
+      end
+
+      let(:arguments) do
+        { website: 'example.com' }
+      end
+
+      let(:external_context) { nil }
+
+      subject do
+        described_class.new(result, arguments, yaml_context, external_context)
+      end
+
+      it 'uses inline inputs without processing includes' do
+        subject.interpolate!
+
+        expect(subject).to be_interpolated
+        expect(subject).to be_valid
+        expect(subject.to_hash).to eq({ test: 'deploy example.com' })
+      end
+    end
+
+    context 'when header include processing fails' do
+      let(:header) do
+        {
+          spec: {
+            include: [{ local: '/non-existent.yml' }],
+            inputs: {
+              website: nil
+            }
+          }
+        }
+      end
+
+      let(:content) do
+        { test: 'deploy $[[ inputs.website ]]' }
+      end
+
+      let(:arguments) do
+        { website: 'gitlab.com' }
+      end
+
+      before do
+        allow_next_instance_of(Gitlab::Ci::Config::External::Header::Processor) do |processor|
+          allow(processor).to receive(:perform).and_raise(
+            Gitlab::Ci::Config::External::Header::Processor::IncludeError.new('Local file does not exist')
+          )
+        end
+      end
+
+      it 'captures the error and marks interpolation as invalid' do
+        subject.interpolate!
+
+        expect(subject).not_to be_valid
+        expect(subject.errors).to include('Local file does not exist')
+      end
+    end
+
+    context 'when header is nil and external_context is provided' do
+      let(:result) do
+        ::Gitlab::Ci::Config::Yaml::Result.new(config: content)
+      end
+
+      let(:content) { { test: 'deploy production' } }
+      let(:arguments) { nil }
+
+      it 'handles nil header gracefully' do
+        subject.interpolate!
+
+        expect(subject).to be_valid
+        expect(subject.to_hash).to eq({ test: 'deploy production' })
+      end
+    end
+  end
+end

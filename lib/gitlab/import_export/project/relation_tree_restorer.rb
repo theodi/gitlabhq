@@ -1,0 +1,74 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module ImportExport
+    module Project
+      class RelationTreeRestorer < ImportExport::Group::RelationTreeRestorer
+        # Relations which cannot be saved at project level (and have a group assigned)
+        GROUP_MODELS = [GroupLabel, Milestone, Epic].freeze
+
+        def restore_single_relation(relation_key, extra_track_scope: {})
+          bulk_insert_without_cache_or_touch do
+            process_relation!(relation_key, relations[relation_key], extra_track_scope: extra_track_scope)
+          end
+        end
+
+        def relation_factory_params(relation_key, relation_index, data_hash)
+          super.merge({ import_source: ::Import::SOURCE_PROJECT_EXPORT_IMPORT })
+        end
+
+        private
+
+        def relations
+          relations = super
+          relations.delete("vulnerabilities") if Feature.disabled?(:import_vulnerabilities, user)
+          relations
+        end
+
+        def group_models
+          GROUP_MODELS
+        end
+
+        def filter_attributes(params)
+          attributes = super
+
+          return attributes unless ::Gitlab::ImportSources.template?(@importable.import_type)
+
+          attributes.except('created_at')
+        end
+
+        def bulk_insert_enabled
+          true
+        end
+
+        def modify_attributes
+          @importable.reconcile_shared_runners_setting!
+          @importable.drop_visibility_level!
+        end
+
+        def after_save_importable
+          update_archived_state!
+        end
+
+        def update_archived_state!
+          return unless ActiveModel::Type::Boolean.new.cast(@importable_attributes['archived'])
+          return unless @importable.project_namespace.present?
+
+          @importable.project_namespace.archive!(transition_user: @user)
+        rescue StateMachines::InvalidTransition => e
+          @shared.logger.warn(
+            message: '[Project Import] Failed to archive project namespace',
+            project_id: @importable.id,
+            error: e.message
+          )
+        end
+
+        def relation_invalid_for_importable?(relation_object)
+          group_models.include?(relation_object.class) && relation_object.group_id
+        end
+      end
+    end
+  end
+end
+
+Gitlab::ImportExport::Project::RelationTreeRestorer.prepend_mod

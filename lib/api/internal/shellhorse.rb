@@ -1,0 +1,130 @@
+# frozen_string_literal: true
+
+module API
+  module Internal
+    class Shellhorse < ::API::Base
+      # gitlab-shell and workhorse authenticate via a shared secret, so the
+      # global organization hook has no user; derive from gl_repository instead.
+      skip_global_organization_setup!
+
+      before { authenticate_by_gitlab_shell_or_workhorse_token! }
+      before { set_current_organization_from_repository }
+
+      helpers ::API::Helpers::InternalHelpers
+
+      COMMANDS_TO_AUDIT = %w[git-upload-pack git-receive-pack].freeze
+      CERTIFICATE_AUDIT_PARAMS = %i[ca_fingerprint certificate_identity certificate_trust_source].freeze
+      CERTIFICATE_IDENTITY_MAX_LENGTH = 1_024
+
+      helpers do
+        def check_clone_or_pull_or_push_verb(params)
+          return 'push' if params[:action] == 'git-receive-pack'
+
+          # we must set the default value for wants/haves because
+          # gitlab shell/workhorse will trim the whole posted params
+          # json key if its value is 0
+          wants = haves = 0
+          if params.key?(:packfile_stats)
+            wants = Integer(params[:packfile_stats][:wants]) if params[:packfile_stats][:wants].present?
+            haves = Integer(params[:packfile_stats][:haves]) if params[:packfile_stats][:haves].present?
+          end
+
+          wants > 0 && haves == 0 ? 'clone' : 'pull'
+        end
+
+        def certificate_audit_details
+          details = {}
+          CERTIFICATE_AUDIT_PARAMS.each do |param|
+            details[param] = params[param] if params[param].present?
+          end
+
+          if details[:certificate_identity]
+            details[:certificate_identity] = details[:certificate_identity].truncate(CERTIFICATE_IDENTITY_MAX_LENGTH)
+          end
+
+          details
+        end
+      end
+
+      namespace 'internal' do
+        namespace 'shellhorse' do
+          params do
+            requires :action, type: String,
+              desc: 'Git command being used. Possible values: `git-upload-pack`, `git-receive-pack`,
+              `git-upload-archive`.'
+            requires :protocol, type: String,
+              desc: 'Protocol used for the change. GitLab Shell uses `SSH`, Gitaly uses `HTTP` or `SSH`.'
+            requires :gl_repository, type: String,
+              desc: 'GitLab project ID with a prefix of `project-`.',
+              documentation: { example: 'project-1234' } # repository identifier, such as project-7
+            requires :changes, type: String,
+              desc: 'Changes applied. GitLab shell uses `_any`, Gitaly uses `<oldrev> <newrev> <refname>`.'
+            optional :check_ip, type: String,
+              desc: 'IP address where the call to GitLab Shell originated.'
+            optional :packfile_stats, type: Hash, desc: 'Object that contains information about client files.' do
+              # wants is the number of objects the client announced it wants.
+              optional :wants, type: Integer, desc: 'Number of objects the client announces it wants.'
+              # haves is the number of objects the client announced it has.
+              optional :haves, type: Integer, desc: 'Number of objects the client announces it has.'
+            end
+            optional :written_bytes, type: Integer,
+              desc: 'Number of bytes written (sent to client) during the git operation.'
+            optional :received_bytes, type: Integer,
+              desc: 'Number of bytes received (from client) during the git operation.'
+            optional :key_id, type: Integer,
+              desc: 'ID of the SSH key used for authentication. Present when a deploy key authenticates via SSH.'
+            optional :identifier, type: String,
+              desc: 'GL_ID of the actor performing the git operation, such as `user-1` or `deploy-token-1`.
+              Sent by Workhorse for HTTP operations and takes precedence over `username` when resolving the actor.'
+            optional :username, type: String,
+              desc: 'Username of the user performing the git operation.'
+            optional :namespace_path, type: String,
+              desc: 'Namespace path for SSH certificate scoped access.'
+            optional :ca_fingerprint, type: String,
+              desc: 'Fingerprint, with the `SHA256:` prefix, of the CA that signed the authenticating SSH certificate.'
+            optional :certificate_identity, type: String,
+              desc: 'Key ID of the SSH certificate used for authentication, truncated to 1024 characters if longer.'
+            optional :certificate_trust_source, type: String,
+              desc: 'Where the certificate CA is trusted. GitLab Shell sends `file`, `group`, or `instance`.'
+          end
+
+          route_setting :authorization, skip_granular_token_authorization: :gitlab_shared_secret_auth
+          post '/git_audit_event', feature_category: :source_code_management do
+            unless COMMANDS_TO_AUDIT.include?(params[:action])
+              break response_with_status(code: 400, success: false, message: "No valid action specified")
+            end
+
+            unless need_git_audit_event?
+              break response_with_status(code: 200, success: false, message: "No git audit event needed")
+            end
+
+            audit_message = {
+              protocol: params[:protocol],
+              action: params[:action],
+              verb: check_clone_or_pull_or_push_verb(params)
+            }
+
+            audit_message[:written_bytes] = params[:written_bytes] if params[:written_bytes].present?
+            audit_message[:received_bytes] = params[:received_bytes] if params[:received_bytes].present?
+
+            audit_message.merge!(certificate_audit_details)
+
+            # Surface the SSH key used for the operation so that owners can
+            # correlate Git-over-SSH activity with a specific credential.
+            audit_message.merge!(actor.key_details)
+
+            # If the protocol is SSH, we need to send the original IP from the PROXY
+            # protocol to the audit streaming event. The original IP from gitlab-shell
+            # is set through the `check_ip` parameter.
+            audit_message[:ip_address] = params[:check_ip] if include_ip_address_in_audit_event?(params[:check_ip])
+
+            send_git_audit_streaming_event(audit_message)
+            response_with_status(message: audit_message.except(:ip_address))
+          end
+        end
+      end
+    end
+  end
+end
+
+API::Internal::Shellhorse.prepend_mod_with('API::Internal::Shellhorse')

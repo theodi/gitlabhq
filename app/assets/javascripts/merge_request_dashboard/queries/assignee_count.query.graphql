@@ -1,0 +1,26 @@
+query requestingReviewCount(
+  $state: MergeRequestState = opened
+  $reviewState: MergeRequestReviewState
+  $reviewStates: [MergeRequestReviewState!]
+  $reviewerWildcardId: ReviewerWildcardId
+  $mergedAfter: Time
+  $or: UnionedMergeRequestFilterInput
+  $not: MergeRequestsResolverNegatedParams
+  $ignoredReviewerUsername: String
+) {
+  currentUser {
+    id
+    mergeRequests: assignedMergeRequests(
+      state: $state
+      reviewState: $reviewState
+      reviewStates: $reviewStates
+      reviewerWildcardId: $reviewerWildcardId
+      mergedAfter: $mergedAfter
+      or: $or
+      not: $not
+      ignoredReviewerUsername: $ignoredReviewerUsername
+    ) {
+      count
+    }
+  }
+}

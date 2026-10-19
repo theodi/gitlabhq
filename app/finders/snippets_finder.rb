@@ -1,63 +1,292 @@
-class SnippetsFinder
-  def execute(current_user, params = {})
-    filter = params[:filter]
+# frozen_string_literal: true
 
-    case filter
-    when :all then
-      snippets(current_user).fresh.non_expired
-    when :by_user then
-      by_user(current_user, params[:user], params[:scope])
-    when :by_project
-      by_project(current_user, params[:project])
+# Finder for retrieving snippets that a user can see, optionally scoped to a
+# project or snippets author.
+#
+# Basic usage:
+#
+#     user = User.find(1)
+#     organization = Organization.find(1)
+#
+#     SnippetsFinder.new(user, organization_id: organization.id).execute
+#
+# To limit the snippets to a specific project, supply the `project:` option:
+#
+#     user = User.find(1)
+#     project = Project.find(1)
+#     organization_id = project.organization_id # Every project belongs to an organization
+#
+#     SnippetsFinder.new(user, project: project, organization_id: organization_id).execute
+#
+# Limiting snippets to an author can be done by supplying the `author:` option:
+#
+#     user = User.find(1)
+#     project = Project.find(1)
+#     organization_id = project.organization_id # Every project belongs to an organization
+#
+#     SnippetsFinder.new(user, author: user, organization_id: organization_id).execute
+#
+# To filter snippets using a specific visibility level, you can provide the
+# `scope:` option:
+#
+#     user = User.find(1)
+#     project = Project.find(1)
+#     organization_id = project.organization_id # Every project belongs to an organization
+#
+#     SnippetsFinder.new(user, author: user, scope: :are_public, organization_id: organization_id).execute
+#
+# Valid `scope:` values are:
+#
+# * `:are_private`
+# * `:are_internal`
+# * `:are_public`
+#
+# Any other value will be ignored.
+#
+# Note: `organization_id` is a required parameter. An ArgumentError will be
+# raised if it is not provided.
+class SnippetsFinder < UnionFinder
+  include FinderMethods
+  include Gitlab::Utils::StrongMemoize
+  include CreatedAtFilter
+  include Gitlab::Allowable
+
+  attr_reader :current_user, :params, :organization_id
+
+  def initialize(current_user = nil, params = {})
+    @current_user = current_user
+    @params = params
+    @organization_id = params.delete(:organization_id)
+
+    unless @organization_id
+      raise(
+        ArgumentError,
+        'organization_id is a required parameter for SnippetsFinder'
+      )
     end
+
+    if project && author
+      raise(
+        ArgumentError,
+        'Filtering by both an author and a project is not supported, ' \
+          'as this finder is not optimised for this use case'
+      )
+    end
+  end
+
+  def execute
+    # The snippet query can be expensive, therefore if the
+    # author or project params have been passed and they don't
+    # exist, or if a Project has been passed and has snippets
+    # disabled, it's better to return
+    return Snippet.none if author.nil? && params[:author].present?
+    return Snippet.none if project.nil? && params[:project].present?
+    return Snippet.none if project && !project.feature_available?(:snippets, current_user)
+
+    filter_snippets.order_by(sort_param)
   end
 
   private
 
-  def snippets(current_user)
-    if current_user
-      Snippet.public_and_internal
+  def filter_snippets
+    if return_all_available_and_permitted?
+      snippets = all_snippets_for_admin
     else
-      # Not authenticated
-      #
-      # Return only:
-      #   public snippets
-      Snippet.are_public
+      snippets = all_snippets
+      snippets = by_ids(snippets)
+      snippets = snippets.with_optional_visibility(visibility_from_scope)
+      snippets = hide_created_by_banned_user(snippets)
+      snippets = by_organization(snippets)
+    end
+
+    by_created_at(snippets)
+  end
+
+  def return_all_available_and_permitted?
+    # Currently limited to access_levels `admin` and `auditor`
+    # See policies/base_policy.rb files for specifics.
+    params[:all_available] && can?(current_user, :read_all_resources)
+  end
+
+  def all_snippets
+    if explore?
+      snippets_for_explore
+    elsif only_personal?
+      personal_snippets
+    elsif project
+      snippets_for_a_single_project
+    else
+      snippets_for_personal_and_multiple_projects
     end
   end
 
-  def by_user(current_user, user, scope)
-    snippets = user.snippets.fresh.non_expired
+  # Produces a query that retrieves snippets for the Explore page
+  #
+  # We only show personal snippets here because this page is meant for
+  # discovery, and project snippets are of limited interest here.
+  def snippets_for_explore
+    Snippet.public_to_user(current_user).only_personal_snippets
+  end
 
-    return snippets.are_public unless current_user
+  # Produces a query that retrieves snippets from multiple projects.
+  #
+  # The resulting query will, depending on the user's permissions, include the
+  # following collections of snippets:
+  #
+  # 1. Snippets that don't belong to any project.
+  # 2. Snippets of projects that are visible to the current user (e.g. snippets
+  #    in public projects).
+  # 3. Snippets of projects that the current user is a member of.
+  #
+  # Each collection is constructed in isolation, allowing for greater control
+  # over the resulting SQL query.
+  def snippets_for_personal_and_multiple_projects
+    queries = []
+    queries << personal_snippets unless only_project?
 
-    if user == current_user
-      case scope
-      when 'are_internal' then
-        snippets.are_internal
-      when 'are_private' then
-        snippets.are_private
-      when 'are_public' then
-        snippets.are_public
-      else
-        snippets
-      end
+    if can?(current_user, :read_cross_project)
+      queries << snippets_of_visible_projects
+      queries << snippets_of_authorized_projects if current_user
+    end
+
+    prepared_union(queries)
+  end
+
+  def all_snippets_for_admin
+    return Snippet.only_project_snippets if only_project?
+
+    Snippet.all
+  end
+
+  def snippets_for_a_single_project
+    Snippet.for_project_with_user(project, current_user)
+  end
+
+  def personal_snippets
+    snippets_for_author_or_visible_to_user.only_personal_snippets
+  end
+
+  # Returns the snippets that the current user (logged in or not) can view.
+  def snippets_of_visible_projects
+    snippets_for_author_or_visible_to_user
+      .only_include_projects_visible_to(current_user)
+      .only_include_projects_with_snippets_enabled
+  end
+
+  # Returns the snippets that the currently logged in user has access to by
+  # being a member of the project the snippets belong to.
+  #
+  # This method requires that `current_user` returns a `User` instead of `nil`,
+  # and is optimised for this specific scenario.
+  def snippets_of_authorized_projects
+    base = author ? author.snippets : Snippet.all
+
+    base
+      .only_include_projects_with_snippets_enabled(include_private: true)
+      .only_include_authorized_projects(current_user)
+  end
+
+  def snippets_for_author_or_visible_to_user
+    if author
+      snippets_for_author
+    elsif current_user
+      Snippet.visible_to_or_authored_by(current_user)
     else
-      snippets.public_and_internal
+      Snippet.public_to_user
     end
   end
 
-  def by_project(current_user, project)
-    snippets = project.snippets.fresh.non_expired
+  def snippets_for_author
+    base = author.snippets
 
-    if current_user
-      if project.team.member?(current_user.id)
-        snippets
-      else
-        snippets.public_and_internal
-      end
+    if author == current_user
+      # If the current user is also the author of all snippets, then we can
+      # include private snippets.
+      base
     else
-      snippets.are_public
+      base.public_to_user(current_user)
     end
+  end
+
+  def visibility_from_scope
+    case params[:scope].to_s
+    when 'are_private'
+      Snippet::PRIVATE
+    when 'are_internal'
+      Snippet::INTERNAL
+    when 'are_public'
+      Snippet::PUBLIC
+    end
+  end
+
+  def by_ids(snippets)
+    return snippets unless params[:ids].present?
+
+    snippets.id_in(params[:ids])
+  end
+
+  def by_organization(snippets)
+    return snippets unless should_apply_organization_filter?
+
+    snippets.in_organization(organization_id)
+  end
+
+  def should_apply_organization_filter?
+    return false if project.present?
+    return false if return_all_available_and_permitted?
+
+    ::Gitlab::Organizations::Isolation.enabled?
+  end
+
+  def hide_created_by_banned_user(snippets)
+    # if admin -> return all snippets, if not-admin -> filter out snippets by banned user
+    return snippets if can?(current_user, :read_all_resources)
+
+    snippets.without_created_by_banned_user
+  end
+
+  def author
+    strong_memoize(:author) do
+      next unless params[:author].present?
+
+      params[:author].is_a?(User) ? params[:author] : User.find_by_id(params[:author])
+    end
+  end
+
+  def project
+    strong_memoize(:project) do
+      next unless params[:project].present?
+
+      params[:project].is_a?(Project) ? params[:project] : Project.find_by_id(params[:project])
+    end
+  end
+
+  def sort_param
+    params[:sort].presence || 'id_desc'
+  end
+
+  def explore?
+    params[:explore].present?
+  end
+
+  def only_personal?
+    params[:only_personal].present?
+  end
+
+  def only_project?
+    params[:only_project].present?
+  end
+
+  def prepared_union(queries)
+    return Snippet.none if queries.empty?
+    return queries.first if queries.length == 1
+
+    # The queries are going to be part of a global `where`
+    # therefore we only need to retrieve the `id` column
+    # which will speed the query
+    queries.map! { |rel| rel.select(:id) }
+    Snippet.id_in(find_union(queries, Snippet))
   end
 end
+
+SnippetsFinder.prepend_mod_with('SnippetsFinder')

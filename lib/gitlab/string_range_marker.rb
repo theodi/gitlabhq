@@ -1,0 +1,135 @@
+# frozen_string_literal: true
+
+module Gitlab
+  class StringRangeMarker
+    # Anchored (\G) at rich_pos so a bare & fails the match in O(1) instead of
+    # scanning to a distant/absent ; (which was O(k*n) for k bare & on one line).
+    # Bounds mirror the longest HTML5 entities: 32-char named, 31-digit decimal,
+    # 30-hexit numeric.
+    #
+    ENTITY_PATTERN = /\G&(?:\w{1,32}|#\d{1,31}|#x\h{1,30});/
+
+    attr_accessor :raw_line, :rich_line, :html_escaped
+
+    def initialize(raw_line, rich_line = nil)
+      @raw_line = raw_line.dup
+      if rich_line.nil?
+        @rich_line = raw_line.dup
+        @html_escaped = false
+      else
+        @rich_line = ERB::Util.html_escape(rich_line)
+        @html_escaped = true
+      end
+    end
+
+    def mark(ranges)
+      return rich_line unless ranges&.any?
+
+      marker_ranges = ranges.map { |range| Gitlab::MarkerRange.from_range(range) }
+
+      if !html_escaped || identity_mapping?
+        rich_marker_ranges = marker_ranges
+      else
+        rich_marker_ranges = []
+        marker_ranges.each do |range|
+          mapped_length = position_mapping.length
+          next if range.begin >= mapped_length
+
+          effective_end = [range.end, mapped_length - 1].min
+          effective_range = range.begin..effective_end
+          rich_positions = position_mapping[effective_range].flatten
+
+          rich_marker_ranges.concat(collapse_ranges(rich_positions, range.mode))
+        end
+      end
+
+      offset = 0
+      rich_marker_ranges.each_with_index do |range, i|
+        offset_range = (range.begin + offset)..(range.end + offset)
+        original_text = rich_line[offset_range]
+
+        next if original_text.nil?
+
+        text = yield(original_text, left: i == 0, right: i == rich_marker_ranges.length - 1, mode: range.mode)
+
+        rich_line[offset_range] = text
+
+        offset += text.length - original_text.length
+      end
+
+      @html_escaped ? rich_line.html_safe : rich_line
+    end
+
+    private
+
+    # Equal length alone does not imply a 1:1 raw->rich mapping: an already-html_safe
+    # rich_line passes through html_escape untouched, so it can hold markup while
+    # matching raw_line's length. Absent '<' and '&', no tag or entity can shift offsets.
+    def identity_mapping?
+      raw_line.length == rich_line.length &&
+        rich_line.exclude?('<') &&
+        rich_line.exclude?('&')
+    end
+
+    def position_mapping
+      @position_mapping ||= safe_position_mapping
+    end
+
+    def safe_position_mapping
+      mapping = []
+      rich_pos = 0
+      rich_length = rich_line.length
+
+      (0..raw_line.length).each do |raw_pos|
+        # Skip HTML tags
+        while rich_pos < rich_length && rich_line[rich_pos] == '<'
+          rich_pos += 1 while rich_pos < rich_length && rich_line[rich_pos] != '>'
+          break if rich_pos >= rich_length # unclosed tag - bail out
+
+          rich_pos += 1
+        end
+
+        break if rich_pos >= rich_length
+
+        # A well-formed entity (&name; / &#nn; / &#xhh;) collapses to one raw
+        # position. A bare, literal & fails the anchored match and maps 1:1
+        # rather than overrunning to an unrelated ; and mangling later positions.
+        #
+        match = rich_line.match(ENTITY_PATTERN, rich_pos) if rich_line[rich_pos] == '&'
+
+        if match
+          entity_end = match.end(0) - 1
+          mapping[raw_pos] = (rich_pos..entity_end).to_a
+          rich_pos = entity_end + 1
+        else
+          mapping[raw_pos] = rich_pos
+          rich_pos += 1
+        end
+      end
+
+      mapping
+    end
+
+    def collapse_ranges(positions, mode)
+      return [] if positions.empty?
+
+      ranges = []
+
+      start = prev = positions[0]
+      range = MarkerRange.new(start, prev, mode: mode)
+      positions[1..].each do |pos|
+        if pos == prev + 1
+          range = MarkerRange.new(start, pos, mode: mode)
+          prev = pos
+        else
+          ranges << range
+          start = prev = pos
+          range = MarkerRange.new(start, prev, mode: mode)
+        end
+      end
+      ranges << range
+
+      ranges
+    end
+  end
+end

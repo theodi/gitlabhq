@@ -1,0 +1,96 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "body": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "integer"
+    },
+    "number": {
+      "type": "integer"
+    },
+    "state": {
+      "type": "string"
+    },
+    "html_url": {
+      "type": "string"
+    },
+    "merged": {
+      "type": "boolean"
+    },
+    "merged_at": { "type": [ "string", "null" ], "format": "date-time" },
+    "closed_at": { "type": [ "string", "null" ], "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "assignee": {
+      "$ref": "user.json"
+    },
+    "author": {
+      "$ref": "user.json"
+    },
+    "head": {
+      "type": "object",
+      "required": [
+        "label",
+        "ref",
+        "repo"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "repo": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "repository.json"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "label",
+        "ref",
+        "repo"
+      ],
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "repo": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "repository.json"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "additionalProperties": false
+  }
+}

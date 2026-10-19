@@ -1,0 +1,74 @@
+import Vue from 'vue';
+import { mapState, mapActions } from 'pinia';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { useDiffsView } from '~/rapid_diffs/stores/diffs_view';
+import DiffAppControls from '~/diffs/components/diff_app_controls.vue';
+import { DiffFile } from '~/rapid_diffs/web_components/diff_file';
+import { COLLAPSE_FILE, EXPAND_FILE } from '~/rapid_diffs/adapter_events';
+import { useDiffsList } from '~/rapid_diffs/stores/diffs_list';
+
+const collapseAllFiles = () => {
+  DiffFile.getAll().forEach((file) => file.trigger(COLLAPSE_FILE));
+};
+
+const expandAllFiles = () => {
+  DiffFile.getAll().forEach((file) => file.trigger(EXPAND_FILE));
+};
+
+const initSettingsApp = (el, pinia) => {
+  return new Vue({
+    el,
+    name: 'DiffAppControlsRoot',
+    pinia,
+    computed: {
+      ...mapState(useDiffsList, ['isLoading', 'isEmpty']),
+      ...mapState(useDiffsView, [
+        'showWhitespace',
+        'viewType',
+        'fileByFileMode',
+        'singleFileMode',
+        'diffsStats',
+      ]),
+    },
+    methods: {
+      ...mapActions(useDiffsView, ['updateViewType', 'updateShowWhitespace', 'toggleFileByFile']),
+    },
+    render(h) {
+      return h(DiffAppControls, {
+        props: {
+          hasChanges: !this.isEmpty,
+          showWhitespace: this.showWhitespace,
+          diffViewType: this.viewType,
+          viewDiffsFileByFile: this.singleFileMode,
+          fileByFileSupported: true,
+          isLoading: this.isLoading,
+          addedLines: this.diffsStats?.addedLines,
+          removedLines: this.diffsStats?.removedLines,
+          diffsCount: this.diffsStats?.diffsCount,
+          hideOnNarrowScreen: false,
+        },
+        on: {
+          'update-diff-view-type': this.updateViewType,
+          'toggle-whitespace': this.updateShowWhitespace,
+          'toggle-file-by-file': this.toggleFileByFile,
+          'expand-all-files': expandAllFiles,
+          'collapse-all-files': collapseAllFiles,
+        },
+      });
+    },
+  });
+};
+
+export const initViewSettings = ({ pinia, target, appData }) => {
+  const { showWhitespace, diffViewType, updateUserEndpoint, fileByFileMode } = appData;
+  const fileByFile = parseBoolean(fileByFileMode);
+  useDiffsView(pinia).$patch({
+    showWhitespace: parseBoolean(showWhitespace),
+    viewType: diffViewType,
+    updateUserEndpoint,
+    fileByFileMode: fileByFile,
+    singleFileMode: fileByFile,
+  });
+  useDiffsList(pinia).fillInLoadedFiles();
+  return initSettingsApp(target, pinia);
+};

@@ -1,0 +1,142 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe ClusterablePresenter, feature_category: :deployment_management do
+  include Gitlab::Routing.url_helpers
+
+  let_it_be(:project) { create(:project) }
+  let_it_be(:group) { create(:group) }
+  let_it_be(:user) { create(:user) }
+
+  describe '.fabricate' do
+    subject { described_class.fabricate(project) }
+
+    it 'creates an object from a descendant presenter' do
+      expect(subject).to be_kind_of(ProjectClusterablePresenter)
+    end
+  end
+
+  shared_examples 'appropriate member permissions' do
+    context 'with a developer' do
+      before do
+        clusterable.add_developer(user)
+      end
+
+      it { is_expected.to be_falsy }
+    end
+
+    context 'with a maintainer' do
+      before do
+        clusterable.add_maintainer(user)
+      end
+
+      it { is_expected.to be_truthy }
+    end
+  end
+
+  describe '#can_create_cluster?' do
+    subject { described_class.new(clusterable).can_create_cluster? }
+
+    before do
+      allow(clusterable).to receive(:current_user).and_return(user)
+    end
+
+    context 'when clusterable is a group' do
+      let(:clusterable) { group }
+
+      it_behaves_like 'appropriate member permissions'
+    end
+
+    context 'when clusterable is a project' do
+      let(:clusterable) { project }
+
+      it_behaves_like 'appropriate member permissions'
+    end
+  end
+
+  describe '#can_add_cluster?' do
+    subject { described_class.new(clusterable).can_add_cluster? }
+
+    before do
+      clusterable.add_maintainer(user)
+
+      allow(clusterable).to receive(:current_user).and_return(user)
+    end
+
+    context 'when clusterable is a group' do
+      let(:clusterable) { group }
+
+      it_behaves_like 'appropriate member permissions'
+    end
+
+    context 'when clusterable is a project' do
+      let(:clusterable) { project }
+
+      it_behaves_like 'appropriate member permissions'
+    end
+  end
+
+  describe '#can_admin_cluster?' do
+    subject { described_class.new(clusterable).can_admin_cluster? }
+
+    before do
+      clusterable.add_maintainer(user)
+
+      allow(clusterable).to receive(:current_user).and_return(user)
+    end
+
+    context 'when clusterable is a group' do
+      let(:clusterable) { group }
+
+      it_behaves_like 'appropriate member permissions'
+    end
+
+    context 'when clusterable is a project' do
+      let(:clusterable) { project }
+
+      it_behaves_like 'appropriate member permissions'
+    end
+  end
+
+  describe '#environments_cluster_path' do
+    subject { described_class.new(clusterable).environments_cluster_path(cluster) }
+
+    let(:clusterable) { group }
+    let(:cluster) { build_stubbed(:cluster_for_group, groups: [clusterable]) }
+
+    it { is_expected.to be_nil }
+  end
+
+  describe '#create_cluster_migration_path' do
+    subject { described_class.new(double).create_cluster_migration_path(double) }
+
+    it 'raises NotImplementedError' do
+      expect { subject }.to raise_error(NotImplementedError)
+    end
+  end
+
+  describe '#update_cluster_migration_path' do
+    subject { described_class.new(double).update_cluster_migration_path(double) }
+
+    it 'raises NotImplementedError' do
+      expect { subject }.to raise_error(NotImplementedError)
+    end
+  end
+
+  describe '#index_path' do
+    let(:clusterable) { group }
+
+    context 'without options' do
+      subject { described_class.new(clusterable).index_path }
+
+      it { is_expected.to eq(group_clusters_path(clusterable)) }
+    end
+
+    context 'with options' do
+      subject { described_class.new(clusterable).index_path(format: :json) }
+
+      it { is_expected.to eq(group_clusters_path(clusterable, format: :json)) }
+    end
+  end
+end

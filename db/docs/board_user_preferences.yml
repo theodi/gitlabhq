@@ -1,0 +1,15 @@
+---
+table_name: board_user_preferences
+classes:
+- BoardUserPreference
+feature_categories:
+- team_planning
+description: Preferences for issue boards stored on a per user basis, such as whether
+  to hide or show labels
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/33892
+milestone: '13.1'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  group_id: namespaces
+  project_id: projects
+table_size: small

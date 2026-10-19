@@ -1,0 +1,166 @@
+# frozen_string_literal: true
+
+module RapidDiffs
+  module Viewers
+    class NoPreviewComponent < ViewerComponent
+      include Gitlab::Utils::StrongMemoize
+
+      def self.viewer_name
+        'no_preview'
+      end
+
+      def virtual_rendering_params
+        return if @diff_file.empty?
+
+        {
+          paragraphs_count: paragraphs_count
+        }
+      end
+
+      private
+
+      def mode_changed?
+        @diff_file.mode_changed? && !@diff_file.new_file? && !@diff_file.deleted_file?
+      end
+
+      def change_description
+        if @diff_file.empty?
+          return _('Empty file added.') if @diff_file.new_file?
+          return _('Empty file deleted.') if @diff_file.deleted_file?
+        end
+
+        if @diff_file.new_file?
+          _("File added.")
+        elsif @diff_file.deleted_file?
+          _("File deleted.")
+        elsif @diff_file.content_changed? && @diff_file.renamed_file?
+          _("File changed and moved.")
+        elsif @diff_file.content_changed?
+          _("File changed.")
+        elsif @diff_file.renamed_file?
+          _("File moved.")
+        end
+      end
+
+      def mode_changed_description
+        return unless mode_changed?
+
+        message = _('File mode changed from %{from} to %{to}.')
+        helpers.safe_format(message, from: @diff_file.a_mode, to: @diff_file.b_mode)
+      end
+
+      def has_description?
+        !change_description.nil? || mode_changed?
+      end
+
+      def no_preview_reason
+        no_preview_reasons[matched_no_preview_reason]&.call
+      end
+
+      def matched_no_preview_reason
+        return if @diff_file.empty?
+        return :too_large if @diff_file.too_large?
+        return :stored_externally if @diff_file.stored_externally?
+        return :generated_collapsed if @diff_file.collapsed? && @diff_file.generated?
+        return :collapsed if @diff_file.collapsed?
+        return :not_diffable unless @diff_file.diffable?
+        return :whitespace_only if @diff_file.whitespace_only?
+
+        :file_type if @diff_file.new_file? || @diff_file.content_changed?
+      end
+      strong_memoize_attr :matched_no_preview_reason
+
+      def no_preview_reasons
+        {
+          too_large: -> { _("File size exceeds preview limit.") },
+          stored_externally: -> { stored_externally_message },
+          generated_collapsed: -> { generated_collapsed_message },
+          collapsed: -> { _("Preview size limit exceeded, changes collapsed.") },
+          not_diffable: -> { _("Preview suppressed by a .gitattributes entry or the file's encoding is unsupported.") },
+          whitespace_only: -> { _("Contains only whitespace changes.") },
+          file_type: -> { _("No diff preview for this file type.") }
+        }
+      end
+
+      def stored_externally_message
+        docs_link = helpers.link_to(
+          '',
+          helpers.help_page_path('topics/git/lfs/_index.md'),
+          target: '_blank',
+          rel: 'noopener noreferrer'
+        )
+        helpers.safe_format(
+          _('File stored in LFS. %{linkStart}Learn more%{linkEnd}.'),
+          helpers.tag_pair(docs_link, :linkStart, :linkEnd)
+        )
+      end
+
+      def generated_collapsed_message
+        docs_link = helpers.link_to(
+          '',
+          helpers.help_page_path('user/project/merge_requests/changes.md', anchor: 'collapse-generated-files'),
+          target: '_blank',
+          rel: 'noopener noreferrer'
+        )
+        helpers.safe_format(
+          _('Generated files are collapsed by default. To change this behavior, edit the ' \
+            '%{tagStart}.gitattributes%{tagEnd} file. %{linkStart}Learn more.%{linkEnd}'),
+          helpers.tag_pair(helpers.tag.code, :tagStart, :tagEnd),
+          helpers.tag_pair(docs_link, :linkStart, :linkEnd)
+        )
+      end
+
+      def expandable_inline?
+        (@diff_file.collapsed? && expandable?) || (@diff_file.whitespace_only? && !@diff_file.too_large?)
+      end
+
+      def expandable?
+        @diff_file.diffable_text? && !@diff_file.too_large?
+      end
+
+      def file_changed?
+        !@diff_file.new_file? && @diff_file.content_changed?
+      end
+
+      def important?
+        @diff_file.collapsed? || @diff_file.too_large?
+      end
+
+      def old_blob_path
+        return if @diff_file.path_traversal?
+
+        project_blob_path(project, helpers.tree_join(@diff_file.old_content_sha, @diff_file.old_path))
+      end
+
+      def new_blob_path
+        return if @diff_file.path_traversal?
+
+        project_blob_path(project, helpers.tree_join(@diff_file.content_sha, @diff_file.file_path))
+      end
+
+      def blob_path
+        @diff_file.deleted_file? ? old_blob_path : new_blob_path
+      end
+
+      def action_button(**args, &)
+        tag.div class: 'rd-no-preview-action', data: { testid: 'rd-no-preview-action' } do
+          render Pajamas::ButtonComponent.new(**args) do
+            yield
+          end
+        end
+      end
+
+      def project
+        @diff_file.repository.project
+      end
+      strong_memoize_attr :project
+
+      def paragraphs_count
+        count = 0
+        count += 1 if has_description?
+        count += 1 if matched_no_preview_reason
+        count
+      end
+    end
+  end
+end

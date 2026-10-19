@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Generic helper functions for archives/packages
+source scripts/packages/helpers.sh
+
+export CURL_TOKEN_HEADER="${CURL_TOKEN_HEADER:-"JOB-TOKEN"}"
+
+export GITLAB_COM_CANONICAL_PROJECT_ID="278964" # https://gitlab.com/gitlab-org/gitlab
+export GITLAB_COM_CANONICAL_FOSS_PROJECT_ID="13083" # https://gitlab.com/gitlab-org/gitlab-foss
+export JIHULAB_COM_CANONICAL_PROJECT_ID="13953" # https://jihulab.com/gitlab-cn/gitlab
+export CANONICAL_PROJECT_ID="${GITLAB_COM_CANONICAL_PROJECT_ID}"
+
+# By default, we only want to store/retrieve packages from GitLab.com...
+export API_V4_URL="https://gitlab.com/api/v4"
+
+# If it's a FOSS repository, it needs to use FOSS package registry
+if [[ ! -d "ee/" ]]; then
+  export CANONICAL_PROJECT_ID="${GITLAB_COM_CANONICAL_FOSS_PROJECT_ID}"
+fi
+
+# If it's in the JiHu project, it needs to use its own package registry
+if [[ "${CI_SERVER_HOST}" = "jihulab.com" ]]; then
+  export API_V4_URL="${CI_API_V4_URL}"
+  export CANONICAL_PROJECT_ID="${JIHULAB_COM_CANONICAL_PROJECT_ID}"
+fi
+
+export API_PACKAGES_BASE_URL="${API_V4_URL}/projects/${CANONICAL_PROJECT_ID}/packages/generic"
+
+export UPLOAD_TO_CURRENT_SERVER="false"
+# We only want to upload artifacts to https://gitlab.com and https://jihulab.com instances
+if [[ "${CI_SERVER_HOST}" = "gitlab.com" ]] || [[ "${CI_SERVER_HOST}" = "jihulab.com" ]]; then
+  export UPLOAD_TO_CURRENT_SERVER="true"
+fi
+
+export UPLOAD_PACKAGE_FLAG="false"
+# And only if we're in a pipeline from the canonical project
+if [[ "${UPLOAD_TO_CURRENT_SERVER}" = "true" ]] && [[ "${CI_PROJECT_ID}" = "${CANONICAL_PROJECT_ID}" ]]; then
+  export UPLOAD_PACKAGE_FLAG="true"
+fi
+
+# Graphql Schema dump constants
+export GRAPHQL_SCHEMA_PACKAGE="graphql-schema.tar.gz"
+export GRAPHQL_SCHEMA_PATH="tmp/tests/graphql/"
+export GRAPHQL_SCHEMA_PACKAGE_URL="${API_PACKAGES_BASE_URL}/graphql-schema/master/${GRAPHQL_SCHEMA_PACKAGE}"
+
+export GITLAB_EDITION="ee"
+if [[ "${FOSS_ONLY:-no}" = "1" ]] || [[ "${CI_PROJECT_NAME}" = "gitlab-foss" ]]; then
+  export GITLAB_EDITION="foss"
+fi
+
+if [[ "${CI_SERVER_HOST}" = "jihulab.com" ]]; then
+  export GITLAB_EDITION="jh"
+fi
+
+# Fixtures constants
+export FIXTURES_PATH="tmp/tests/frontend/**/*"
+export FIXTURES_PACKAGE="fixtures-${GLCI_FIXTURES_HASH:-$CI_COMMIT_SHA}.tar.gz"
+export FIXTURES_PACKAGE_URL="${API_PACKAGES_BASE_URL}/fixtures/${GLCI_FIXTURES_HASH:-$CI_COMMIT_SHA}/${FIXTURES_PACKAGE}"
+
+function setup_test_env() {
+  mkdir -p ${GLCI_CACHED_SERVICES_FOLDER} ${TMP_TEST_FOLDER}
+
+  # move binaries from cache location to tmp test folder
+  echo "Moving cached binaries to '${TMP_TEST_FOLDER}'"
+  mv ${GLCI_CACHED_SERVICES_FOLDER}/* ${TMP_TEST_FOLDER}/ && echo "done!" || true
+
+  section_start "setup-test-env" "Setting up testing environment"; scripts/setup-test-env; section_end "setup-test-env";
+  section_start "gitaly-test-build" "Compiling Gitaly binaries"; scripts/gitaly-test-build; section_end "gitaly-test-build";  # Do not use 'bundle exec' here
+
+  # restore binaries cache folder before stripping binaries to avoid cache re-upload
+  echo "Restoring binaries cache folder"
+  mv ${TMP_TEST_FOLDER}/* ${GLCI_CACHED_SERVICES_FOLDER}/
+  # remove workhorse config_path file which is recreated on every run and taints cache
+  rm -f ${GLCI_CACHED_SERVICES_FOLDER}/gitlab-workhorse/config_path
+  # remove testdata folder which taints cache and causes re-upload
+  rm -rf ${GLCI_CACHED_SERVICES_FOLDER}/gitaly/internal/testhelper/testdata
+  # copy all files to be saved as artifacts
+  cp -r ${GLCI_CACHED_SERVICES_FOLDER}/* ${TMP_TEST_FOLDER}/
+  echo "done!"
+
+  strip_executable_binaries "${TMP_TEST_FOLDER}"
+}
+
+function strip_executable_binaries() {
+  local path="$1"
+
+  echo "Stripping executable binaries for size reduction"
+  find "$path" -executable -type f ! -size 0 -print0 | xargs -0 grep -IL . | xargs strip || true
+  echo "done!"
+}
+
+# Fixtures functions
+function create_and_upload_graphql_schema_package() {
+  create_package "${GRAPHQL_SCHEMA_PACKAGE}" "${GRAPHQL_SCHEMA_PATH}"
+  upload_package "${GRAPHQL_SCHEMA_PACKAGE}" "${GRAPHQL_SCHEMA_PACKAGE_URL}"
+}
+
+function fixtures_archive_doesnt_exist() {
+  echoinfo "Checking if the package is available at ${FIXTURES_PACKAGE_URL} ..."
+
+  archive_doesnt_exist "${FIXTURES_PACKAGE_URL}"
+}
+
+function create_fixtures_package() {
+  create_package "${FIXTURES_PACKAGE}" "${FIXTURES_PATH}"
+}
+
+function upload_fixtures_package() {
+  upload_package "${FIXTURES_PACKAGE}" "${FIXTURES_PACKAGE_URL}"
+}
+
+# Dump auto-explain logs fingerprints
+export FINGERPRINTS_PACKAGE="query-fingerprints.tar.gz"
+export FINGERPRINTS_FILE="query_fingerprints.txt"
+export FINGERPRINTS_PACKAGE_URL="${API_PACKAGES_BASE_URL}/auto-explain-logs/master/${FINGERPRINTS_PACKAGE}"
+
+function extract_and_upload_fingerprints() {
+  echo "Extracting SQL query fingerprints from ${RSPEC_AUTO_EXPLAIN_LOG_PATH}"
+  ruby scripts/sql_fingerprint_extractor.rb "${RSPEC_AUTO_EXPLAIN_LOG_PATH}" "${FINGERPRINTS_FILE}.new"
+
+  # Check if any new fingerprints were found
+  new_count=$(wc -l < "${FINGERPRINTS_FILE}.new")
+  if [ "$new_count" -eq 0 ]; then
+    echo "No fingerprints found in current run, exiting early"
+    rm "${FINGERPRINTS_FILE}.new"
+    return 0
+  fi
+
+  echo "Found ${new_count} fingerprints in current run"
+
+  # Attempt to download the previous package. A 404 means no package exists yet, so this run seeds
+  # it. Any other failure means the accumulated baseline could not be read, and publishing anyway
+  # would replace it with this run's fingerprints alone, so leave the package untouched instead.
+  echo "Attempting to download previous fingerprints package..."
+  http_status=$(curl --silent --show-error --retry 3 -w "%{http_code}" -o latest_fingerprints.tar.gz "${FINGERPRINTS_PACKAGE_URL}" || true)
+
+  if [ "${http_status}" = "404" ]; then
+    echo "No previous fingerprints package exists (HTTP 404), seeding it with this run's fingerprints"
+    rm -f latest_fingerprints.tar.gz
+    mv "${FINGERPRINTS_FILE}.new" "${FINGERPRINTS_FILE}"
+  elif [ "${http_status}" != "200" ]; then
+    echo "Could not read the existing fingerprints package (HTTP ${http_status:-000}), preserving it as-is"
+    rm -f latest_fingerprints.tar.gz "${FINGERPRINTS_FILE}.new"
+    return 0
+  else
+    echo "Previous fingerprints package downloaded successfully"
+
+    # Extract the package
+    mkdir -p temp_fingerprints
+
+    if ! tar -xzf latest_fingerprints.tar.gz -C temp_fingerprints; then
+      echo "Could not extract the existing fingerprints package, preserving it as-is"
+      rm -rf temp_fingerprints latest_fingerprints.tar.gz "${FINGERPRINTS_FILE}.new"
+      return 0
+    fi
+
+    # The archive extracted cleanly, so a missing fingerprints file reflects what the package
+    # actually holds rather than a transfer problem. Treat it as an empty baseline so a renamed or
+    # malformed package re-seeds on this run instead of never being republished again.
+    if [ ! -f "temp_fingerprints/${FINGERPRINTS_FILE}" ]; then
+      echo "The existing package holds no ${FINGERPRINTS_FILE}, re-seeding the baseline from this run"
+      : > "temp_fingerprints/${FINGERPRINTS_FILE}"
+    fi
+
+    echo "Merging with existing fingerprints..."
+    # Combine both files and remove duplicates
+    cat "temp_fingerprints/${FINGERPRINTS_FILE}" "${FINGERPRINTS_FILE}.new" | sort | uniq > "${FINGERPRINTS_FILE}"
+
+    # Count and report stats
+    old_count=$(wc -l < "temp_fingerprints/${FINGERPRINTS_FILE}")
+    new_total=$(wc -l < "${FINGERPRINTS_FILE}")
+    added_count=$((new_total - old_count))
+
+    if [ "$added_count" -eq 0 ]; then
+      echo "No new unique fingerprints found, exiting early"
+      rm -rf temp_fingerprints latest_fingerprints.tar.gz "${FINGERPRINTS_FILE}.new" "${FINGERPRINTS_FILE}"
+      return 0
+    fi
+
+    echo "Previous fingerprints: ${old_count}"
+    echo "Newly added fingerprints: ${added_count}"
+    echo "Total unique fingerprints: ${new_total}"
+
+    # Clean up
+    rm -rf temp_fingerprints latest_fingerprints.tar.gz "${FINGERPRINTS_FILE}.new"
+  fi
+
+  create_package "${FINGERPRINTS_PACKAGE}" "${FINGERPRINTS_FILE}"
+  upload_package "${FINGERPRINTS_PACKAGE}" "${FINGERPRINTS_PACKAGE_URL}"
+}

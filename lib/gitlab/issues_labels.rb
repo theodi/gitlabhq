@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Gitlab
   class IssuesLabels
     class << self
@@ -18,8 +20,8 @@ module Gitlab
           { title: "enhancement", color: green }
         ]
 
-        labels.each do |label|
-          project.labels.create(label)
+        labels.each do |params|
+          ::Labels::FindOrCreateService.new(nil, project, params).execute(skip_authorization: true)
         end
       end
     end

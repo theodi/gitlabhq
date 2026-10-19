@@ -1,0 +1,341 @@
+import { Node } from '@tiptap/core';
+import { VueRenderer } from '@tiptap/vue-2';
+import tippy from 'tippy.js';
+import Suggestion, { findSuggestionMatch } from '@tiptap/suggestion';
+import { PluginKey } from '@tiptap/pm/state';
+import { uniqueId } from 'lodash-es';
+import { REFERENCE_TYPES } from '~/content_editor/constants/reference_types';
+import { isEmojiAutocompleteEnabled } from '~/lib/utils/emoji_autocomplete';
+import {
+  prioritizeCommandsWithFrequent,
+  recordFrequentCommandUsage,
+} from '~/editor/quick_action_suggestions';
+import { prioritizeMentionedMembers } from '~/lib/utils/autocomplete_mentions';
+import SuggestionsDropdown from '../components/suggestions_dropdown.vue';
+import { COMMANDS, MEMBER_COMMANDS } from '../constants';
+import CodeBlockHighlight from './code_block_highlight';
+import Diagram from './diagram';
+import Frontmatter from './frontmatter';
+import Code from './code';
+
+const CODE_NODE_TYPES = [CodeBlockHighlight.name, Diagram.name, Frontmatter.name, Code.name];
+
+// No autocompleted name starts with a space, so a space right after a trigger
+// character means the author is writing prose, not searching: `Bonjour !` and
+// `Statut :` should leave the popup closed. Spaces later in the query still search
+// (`:smiling ` narrows the smiling faces, `#login page` finds an issue by title).
+function findMatchUnlessQueryStartsWithSpace(config) {
+  const match = findSuggestionMatch(config);
+
+  return /^\s/.test(match?.query ?? '') ? null : match;
+}
+
+const QUOTED_QUICK_ACTION_REFERENCE_TYPES = {
+  [COMMANDS.STATUS]: REFERENCE_TYPES.STATUS,
+  [COMMANDS.TYPE]: REFERENCE_TYPES.TYPE,
+};
+
+function expandRangeToIncludeText(range, text, tiptapEditor) {
+  if (!text) return range;
+
+  const { state } = tiptapEditor;
+  const { from, to: originalTo } = range;
+  const maxTo = Math.min(from + text.length, state.doc.content.size);
+  const docSliceText = state.doc.textBetween(from, maxTo, '\n', '\uFFFC');
+  let matchedLen = 0;
+  for (; matchedLen < docSliceText.length; matchedLen += 1) {
+    if (docSliceText[matchedLen] !== text[matchedLen]) break;
+  }
+  const expandedTo = Math.max(originalTo, from + matchedLen);
+  return { from, to: expandedTo };
+}
+
+// Collects usernames already mentioned in the document, in order of first
+// appearance. Reads the structured `reference` nodes directly; a `@mention`
+// typed inside code never becomes a reference node, so code is excluded for
+// free and no text parsing is needed.
+function mentionedUsernamesInDoc(doc) {
+  const usernames = [];
+
+  doc.descendants((node) => {
+    if (node.type.name === 'reference' && node.attrs.referenceType === REFERENCE_TYPES.USER) {
+      const text = node.attrs.originalText || node.attrs.text;
+      if (text?.startsWith('@')) usernames.push(text.slice(1).toLowerCase());
+    }
+  });
+
+  return [...new Set(usernames)];
+}
+
+function createSuggestionPlugin({
+  editor,
+  char,
+  limit = 5,
+  nodeType,
+  referenceType,
+  cache = true,
+  insertionMap = {},
+  serializer,
+  autocompleteHelper,
+  resolveReferenceType,
+  ...options
+}) {
+  let activeReferenceType = referenceType;
+
+  return Suggestion({
+    editor,
+    char,
+    allowSpaces: true,
+    findSuggestionMatch: findMatchUnlessQueryStartsWithSpace,
+    pluginKey: new PluginKey(uniqueId('suggestions')),
+
+    command: ({ editor: tiptapEditor, range, props }) => {
+      let content;
+
+      if (nodeType === 'link') {
+        content = [
+          {
+            type: 'text',
+            text: props.text,
+            marks: [{ type: 'link', attrs: props }],
+          },
+        ];
+      } else {
+        content = [
+          { type: nodeType, attrs: props },
+          { type: 'text', text: ` ${insertionMap[props.text] || ''}` },
+        ];
+      }
+
+      // Record frequent command usage for slash-commands
+      if (char === '/') {
+        const name = props?.name || props?.text;
+        if (typeof name === 'string' && name.length > 0) {
+          recordFrequentCommandUsage(name);
+        }
+      }
+
+      // Try to expand the range forward to include as much of props.text as possible
+      const expandedRange = expandRangeToIncludeText(range, props.text, tiptapEditor);
+      tiptapEditor.chain().focus().insertContentAt(expandedRange, content).run();
+    },
+
+    async items({ query, editor: tiptapEditor }) {
+      if (CODE_NODE_TYPES.some((type) => tiptapEditor.isActive(type))) return [];
+      const slice = tiptapEditor.state.doc.slice(0, tiptapEditor.state.selection.to);
+      const markdownLine = serializer.serialize({ doc: slice.content }).split('\n').pop();
+      const prefixCommand = markdownLine.match(/\/\w+/)?.[0];
+
+      activeReferenceType = resolveReferenceType?.(prefixCommand) || referenceType;
+
+      // For member quick actions, collect users already mentioned in the
+      // document so the data source can float them to the top.
+      const prioritizeUsernames =
+        activeReferenceType === REFERENCE_TYPES.USER && MEMBER_COMMANDS.includes(prefixCommand)
+          ? mentionedUsernamesInDoc(tiptapEditor.state.doc)
+          : [];
+
+      return autocompleteHelper
+        .getDataSource(activeReferenceType, {
+          command: prefixCommand,
+          cache,
+          limit,
+          ...options,
+        })
+        .search(prefixCommand, query, { prioritizeUsernames })
+        .then((data) => {
+          // Apply the usual empty-query ordering (frequent commands / alphabetical
+          // members), then float any already-mentioned users on top of it so only
+          // those users change position. The data source already floated them
+          // before applying its result limit, so they survive truncation here.
+          const ordered = query ? data : prioritizeCommandsWithFrequent(data);
+
+          return prioritizeMentionedMembers(ordered, prioritizeUsernames);
+        });
+    },
+
+    render: () => {
+      let component;
+      let popup;
+      let isHidden = false;
+
+      const onUpdate = (props) => {
+        component?.updateProps({
+          ...props,
+          nodeProps: { referenceType: activeReferenceType },
+          loading: false,
+        });
+
+        if (!props.clientRect) return;
+
+        popup?.[0].setProps({
+          getReferenceClientRect: props.clientRect,
+        });
+      };
+
+      return {
+        onBeforeStart: (props) => {
+          component = new VueRenderer(SuggestionsDropdown, {
+            propsData: {
+              ...props,
+              char,
+              nodeType,
+              nodeProps: { referenceType: activeReferenceType },
+              loading: true,
+            },
+            editor: props.editor,
+          });
+
+          if (!props.clientRect) {
+            return;
+          }
+
+          popup = tippy('body', {
+            getReferenceClientRect: props.clientRect,
+            appendTo: () => props.editor.view.dom.parentNode || document.body,
+            // Matches $gl-new-dropdown-max-width; tippy defaults to 350px
+            maxWidth: 456,
+            onHide: () => {
+              isHidden = true;
+            },
+            onShow: () => {
+              isHidden = false;
+            },
+            content: component.element,
+            showOnCreate: true,
+            interactive: true,
+            trigger: 'manual',
+            placement: 'bottom-start',
+            popperOptions: {
+              modifiers: [
+                {
+                  name: 'flip',
+                  enabled: true,
+                  options: {
+                    fallbackPlacements: ['top-start'],
+                  },
+                },
+                {
+                  name: 'preventOverflow',
+                  enabled: true,
+                  options: {
+                    boundary: 'clippingParents',
+                  },
+                },
+              ],
+            },
+          });
+        },
+
+        onStart: onUpdate,
+        onUpdate,
+
+        onKeyDown(props) {
+          if (isHidden) return false;
+
+          const { event } = props;
+
+          if (event.key === 'Escape') {
+            event.stopPropagation();
+            popup?.[0].hide();
+
+            return true;
+          }
+
+          const handled = component?.ref?.onKeyDown(props) ?? false;
+
+          if (!handled && (event.key === 'Enter' || event.key === 'Tab')) {
+            popup?.[0].hide();
+          }
+
+          return handled;
+        },
+
+        onExit() {
+          popup?.[0].destroy();
+          component?.destroy();
+        },
+      };
+    },
+    ...options,
+  });
+}
+
+export default Node.create({
+  name: 'suggestions',
+
+  addOptions() {
+    return {
+      autocompleteHelper: {},
+      serializer: null,
+    };
+  },
+
+  renderHTML() {
+    return ['div'];
+  },
+
+  addProseMirrorPlugins() {
+    const { serializer, autocompleteHelper } = this.options;
+
+    // eslint-disable-next-line max-params
+    const createPlugin = (char, nodeType, referenceType, options = {}) =>
+      createSuggestionPlugin({
+        editor: this.editor,
+        char,
+        nodeType,
+        referenceType,
+        serializer,
+        autocompleteHelper,
+        ...options,
+      });
+
+    return [
+      createPlugin('@', 'reference', REFERENCE_TYPES.USER, { limit: 10, filterOnBackend: true }),
+      createPlugin('#', 'reference', REFERENCE_TYPES.ISSUE, { filterOnBackend: true }),
+      createPlugin('[issue:', 'reference', REFERENCE_TYPES.ISSUE_ALTERNATIVE, {
+        filterOnBackend: true,
+      }),
+      createPlugin('[work_item:', 'reference', REFERENCE_TYPES.WORK_ITEM, {
+        filterOnBackend: true,
+      }),
+      createPlugin('$', 'reference', REFERENCE_TYPES.SNIPPET),
+      createPlugin('~', 'referenceLabel', REFERENCE_TYPES.LABEL, { limit: 100 }),
+      createPlugin('&', 'reference', REFERENCE_TYPES.EPIC),
+      createPlugin('[epic:', 'reference', REFERENCE_TYPES.EPIC_ALTERNATIVE),
+      createPlugin('!', 'reference', REFERENCE_TYPES.MERGE_REQUEST),
+      createPlugin('[vulnerability:', 'reference', REFERENCE_TYPES.VULNERABILITY, {
+        filterOnBackend: true,
+      }),
+      createPlugin('*iteration:', 'reference', REFERENCE_TYPES.ITERATION),
+      createPlugin('"', 'reference', REFERENCE_TYPES.STATUS, {
+        limit: 100,
+        resolveReferenceType: (prefixCommand) => QUOTED_QUICK_ACTION_REFERENCE_TYPES[prefixCommand],
+      }),
+      createPlugin('%', 'reference', REFERENCE_TYPES.MILESTONE),
+      ...(isEmojiAutocompleteEnabled() ? [createPlugin(':', 'emoji', REFERENCE_TYPES.EMOJI)] : []),
+      createPlugin('[[', 'link', REFERENCE_TYPES.WIKI),
+      createPlugin('/', 'reference', REFERENCE_TYPES.COMMAND, {
+        cache: false,
+        limit: 100,
+        startOfLine: true,
+        insertionMap: {
+          [COMMANDS.LABEL]: '~',
+          [COMMANDS.UNLABEL]: '~',
+          [COMMANDS.RELABEL]: '~',
+          [COMMANDS.ASSIGN]: '@',
+          [COMMANDS.UNASSIGN]: '@',
+          [COMMANDS.REASSIGN]: '@',
+          [COMMANDS.ASSIGN_REVIEWER]: '@',
+          [COMMANDS.UNASSIGN_REVIEWER]: '@',
+          [COMMANDS.REASSIGN_REVIEWER]: '@',
+          [COMMANDS.REQUEST_REVIEW]: '@',
+          [COMMANDS.MILESTONE]: '%',
+          [COMMANDS.ITERATION]: '*iteration:',
+          [COMMANDS.STATUS]: '"',
+          [COMMANDS.TYPE]: '"',
+        },
+      }),
+    ];
+  },
+});

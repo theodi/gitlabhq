@@ -1,0 +1,49 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "~/work_items/graphql/award_emoji.fragment.graphql"
+
+# @feature_category: team_planning
+query projectWorkItemAwardEmojis(
+  $fullPath: ID!
+  $iid: String!
+  $after: String
+  $pageSize: Int
+  $useWorkItemFeatures: Boolean = false
+) {
+  namespace(fullPath: $fullPath) {
+    id
+    workItem(iid: $iid) {
+      id
+      iid
+      widgets {
+        ... on WorkItemWidgetAwardEmoji {
+          type
+          newCustomEmojiPath
+          awardEmoji(first: $pageSize, after: $after) {
+            pageInfo {
+              ...PageInfo
+            }
+            nodes {
+              ...AwardEmojiFragment
+            }
+          }
+        }
+      }
+      features @include(if: $useWorkItemFeatures) {
+        awardEmoji {
+          type
+          newCustomEmojiPath
+          upvotes
+          downvotes
+          awardEmoji(first: $pageSize, after: $after) {
+            pageInfo {
+              ...PageInfo
+            }
+            nodes {
+              ...AwardEmojiFragment
+            }
+          }
+        }
+      }
+    }
+  }
+}

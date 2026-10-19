@@ -1,0 +1,186 @@
+# frozen_string_literal: true
+
+module API
+  module Helpers
+    module LabelHelpers
+      extend Grape::API::Helpers
+
+      params :label_create_params do
+        requires :name, type: String, desc: 'The name of the label to be created'
+        requires :color, type: String, desc: 'Color of the label in 6-digit hex notation with a leading `#` sign, for example `#FFAABB`, or one of the [CSS color names](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value#Color_keywords).'
+        optional :description, type: String, desc: 'Description of the label.'
+        optional :archived, type: Boolean, desc: 'Whether the label is archived'
+      end
+
+      params :label_update_params do
+        optional :new_name, type: String, desc: 'The new name of the label'
+        optional :color, type: String, desc: 'New color of the label, given in 6-digit hex notation with a leading `#` sign (for example, `#FFAABB`), or one of the [CSS color names](https://developer.mozilla.org/en-US/docs/Web/CSS/color_value#Color_keywords).'
+        optional :description, type: String, desc: 'New description of label.'
+        optional :archived, type: Boolean, desc: 'Whether the label is archived'
+      end
+
+      params :project_label_update_params do
+        use :label_update_params
+        optional :priority, type: Integer, desc: 'The priority of the label', allow_blank: true
+        at_least_one_of :new_name, :color, :description, :priority, :archived
+      end
+
+      params :group_label_update_params do
+        use :label_update_params
+        at_least_one_of :new_name, :color, :description, :archived
+      end
+
+      def find_label(parent, id_or_title, params = { include_ancestor_groups: true })
+        # Keep the identifier keys out of the finder so they aren't applied as a title
+        # filter; the label is resolved from id_or_title below.
+        finder_params = params.except(:name, :label_id)
+        labels = available_labels_for(parent, finder_params)
+        label = labels.find_by_id(id_or_title) || labels.find_by_title(id_or_title)
+
+        label || not_found!('Label')
+      end
+
+      def get_labels(parent, entity, params = {})
+        present paginate(available_labels_for(parent, params)),
+          with: entity,
+          current_user: current_user,
+          parent: parent,
+          with_counts: params[:with_counts]
+      end
+
+      def get_label(parent, entity, params = {})
+        label = find_label(parent, params_id_or_title, params)
+
+        present label, with: entity, current_user: current_user, parent: parent
+      end
+
+      def create_label(parent, entity)
+        authorize! :create_label, parent
+
+        label = available_labels_for(parent).find_by_title(params[:name])
+        conflict!('Label already exists') if label
+
+        priority = params.delete(:priority)
+        label_params = declared_params(include_missing: false)
+
+        label = ::Labels::CreateService.new(current_user, label_params).execute(create_service_params(parent))
+
+        if label.persisted?
+          if parent.is_a?(Project)
+            label.prioritize!(parent, priority) if priority
+          end
+
+          present label, with: entity, current_user: current_user, parent: parent
+        else
+          render_validation_error!(label)
+        end
+      end
+
+      def update_label(parent, entity)
+        authorize! :update_label, parent
+
+        label = find_label(parent, params_id_or_title, include_ancestor_groups: false)
+        update_priority = params.key?(:priority)
+        priority = params.delete(:priority)
+
+        # params is used to update the label so we need to remove this field here
+        params.delete(:label_id)
+        params.delete(:name)
+
+        update_params = declared_params(include_missing: false)
+
+        if update_params.present?
+          authorize! :update_label, label
+
+          label = ::Labels::UpdateService.new(current_user, update_params).execute(label)
+          render_validation_error!(label) unless label.valid?
+        end
+
+        if parent.is_a?(Project) && update_priority
+          if priority.nil?
+            label.unprioritize!(parent)
+          else
+            label.prioritize!(parent, priority)
+          end
+        end
+
+        present label, with: entity, current_user: current_user, parent: parent
+      end
+
+      def delete_label(parent)
+        label = find_label(parent, params_id_or_title, include_ancestor_groups: false)
+
+        authorize! :delete_label, label
+
+        destroy_conditionally!(label) do |label_to_destroy|
+          ::Labels::DestroyService.new(current_user, label_to_destroy).execute
+        end
+
+        render_api_error!('Label is locked and was not removed', 400) unless label.destroyed?
+      end
+
+      def promote_label(parent)
+        unless parent.group
+          render_api_error!('Failed to promote project label to group label', 400)
+        end
+
+        authorize! :promote_label, parent.group
+
+        label = find_label(parent, params[:name], include_ancestor_groups: false)
+
+        begin
+          group_label = ::Labels::PromoteService.new(parent, current_user).execute(label)
+
+          if group_label
+            present group_label, with: Entities::GroupLabel, current_user: current_user, parent: parent.group
+          else
+            render_api_error!('Failed to promote project label to group label', 400)
+          end
+        rescue StandardError => error
+          render_api_error!(error.to_s, 400)
+        end
+      end
+
+      def params_id_or_title
+        @params_id_or_title ||= params[:label_id] || params[:name]
+      end
+
+      # Project label routes also resolve group labels, so authorize the granular token
+      # against the label's owner like the GraphQL label mutations do. This runs before
+      # parameter validation, so a missing or malformed identifier must not raise here.
+      def label_owner_boundary
+        label = label_for_authorization
+        label.is_a?(GroupLabel) ? label.group : user_project
+      end
+
+      # Priority is stored per project, so a priority-only update stays a project concern.
+      def label_update_boundary
+        label_fields_updated? ? label_owner_boundary : user_project
+      end
+
+      def label_for_authorization
+        id_or_title = params[:label_id] || params[:name]
+        return unless id_or_title
+
+        labels = available_labels_for(user_project, include_ancestor_groups: false)
+        labels.find_by_id(id_or_title) || labels.find_by_title(id_or_title)
+      end
+
+      def label_fields_updated?
+        label_fields = route.params.keys.map(&:to_s) - %w[id label_id name priority]
+        params.keys.map(&:to_s).intersect?(label_fields)
+      end
+
+      def create_service_params(parent)
+        case parent
+        when Project
+          { project: parent }
+        when Group
+          { group: parent }
+        else
+          raise TypeError, 'Parent type is not supported'
+        end
+      end
+    end
+  end
+end

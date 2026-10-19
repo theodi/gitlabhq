@@ -1,0 +1,457 @@
+import { GlLink, GlSearchBoxByClick } from '@gitlab/ui';
+import { nextTick } from 'vue';
+import { mount } from '@vue/test-utils';
+import JobLogTopBar from '~/ci/job_details/components/job_log_top_bar.vue';
+import { backoffMockImplementation } from 'helpers/backoff_helper';
+import * as commonUtils from '~/lib/utils/common_utils';
+import { mockJobLog } from 'jest/ci/jobs_mock_data';
+import * as scrollUtils from '~/lib/utils/scroll_utils';
+
+jest.mock('~/lib/utils/common_utils');
+
+const mockToastShow = jest.fn();
+
+describe('JobLogTopBar', () => {
+  let wrapper;
+
+  beforeEach(() => {
+    jest.spyOn(commonUtils, 'backOff').mockImplementation(backoffMockImplementation);
+  });
+
+  afterEach(() => {
+    commonUtils.backOff.mockReset();
+  });
+
+  const defaultProps = {
+    rawPath: '/raw',
+    logViewerPath: '/viewer',
+    size: 511952,
+    isScrollTopDisabled: false,
+    isScrollBottomDisabled: false,
+    isJobLogSizeVisible: true,
+    isComplete: true,
+    jobLog: mockJobLog,
+  };
+
+  const createWrapper = (props = {}) => {
+    wrapper = mount(JobLogTopBar, {
+      propsData: {
+        ...defaultProps,
+        ...props,
+      },
+      data() {
+        return {
+          searchTerm: '82',
+        };
+      },
+      mocks: {
+        $toast: {
+          show: mockToastShow,
+        },
+      },
+    });
+  };
+
+  const findShowingLast = () => wrapper.find('[data-testid="showing-last"]');
+  const findShowingLastLinks = () => findShowingLast().findAllComponents(GlLink);
+  const findRawLinkController = () => wrapper.find('[data-testid="job-raw-link-controller"]');
+  const findScrollTop = () => wrapper.find('[data-testid="job-top-bar-scroll-top"]');
+  const findScrollBottom = () => wrapper.find('[data-testid="job-top-bar-scroll-bottom"]');
+  const findJobLogSearch = () => wrapper.findComponent(GlSearchBoxByClick);
+  const findScrollFailure = () =>
+    wrapper.findComponent('[data-testid="job-top-bar-scroll-to-failure"]');
+  const findJobLogSearchPreviousButton = () =>
+    wrapper.findComponent('[data-testid="job-scroll-to-prev-btn"]');
+  const findJobLogSearchNextButton = () =>
+    wrapper.findComponent('[data-testid="job-scroll-to-next-btn"]');
+  const findFullScreenButton = () => wrapper.find('[data-testid="job-top-bar-toggle-fullscreen"]');
+
+  describe('Truncate information', () => {
+    describe('with isJobLogSizeVisible', () => {
+      beforeEach(() => {
+        createWrapper();
+      });
+
+      it('renders size information', () => {
+        expect(findShowingLast().text()).toMatch('Showing last 499.95 KiB of log.');
+      });
+
+      it('renders links', () => {
+        expect(findShowingLastLinks()).toHaveLength(2);
+        expect(findShowingLastLinks().at(0).attributes('href')).toBe('/raw');
+        expect(findShowingLastLinks().at(1).attributes('href')).toBe('/viewer');
+      });
+    });
+
+    describe('with isJobLogSizeVisible and log viewer is not available', () => {
+      beforeEach(() => {
+        createWrapper({
+          logViewerPath: null,
+        });
+      });
+
+      it('renders size information', () => {
+        expect(findShowingLastLinks()).toHaveLength(1);
+        expect(findShowingLastLinks().at(0).attributes('href')).toBe('/raw');
+      });
+    });
+  });
+
+  describe('links section', () => {
+    describe('with raw job log path', () => {
+      beforeEach(() => {
+        createWrapper();
+      });
+
+      it('renders raw job log link', () => {
+        expect(findRawLinkController().attributes('href')).toBe(defaultProps.rawPath);
+      });
+    });
+
+    describe('without raw job log path', () => {
+      beforeEach(() => {
+        createWrapper({
+          rawPath: null,
+        });
+      });
+
+      it('does not render raw job log link', () => {
+        expect(findRawLinkController().exists()).toBe(false);
+      });
+    });
+  });
+
+  describe('scroll buttons', () => {
+    describe('scroll top button', () => {
+      describe('when user can scroll top', () => {
+        beforeEach(() => {
+          createWrapper({
+            isScrollTopDisabled: false,
+          });
+        });
+
+        it('emits scroll-job-log-top event on click', async () => {
+          await findScrollTop().trigger('click');
+
+          expect(wrapper.emitted('scroll-job-log-top')).toHaveLength(1);
+        });
+      });
+
+      describe('when user can not scroll top', () => {
+        beforeEach(() => {
+          createWrapper({
+            isScrollTopDisabled: true,
+            isScrollBottomDisabled: false,
+          });
+        });
+
+        it('renders disabled scroll top button', () => {
+          expect(findScrollTop().attributes('aria-disabled')).toBe('true');
+        });
+
+        it('does not emit scroll-job-log-top event on click', async () => {
+          await findScrollTop().trigger('click');
+
+          expect(wrapper.emitted('scroll-job-log-top')).toBeUndefined();
+        });
+      });
+    });
+
+    describe('scroll bottom button', () => {
+      describe('when user can scroll bottom', () => {
+        beforeEach(() => {
+          createWrapper();
+        });
+
+        it('emits scroll-job-log-bottom event on click', async () => {
+          await findScrollBottom().trigger('click');
+
+          expect(wrapper.emitted('scroll-job-log-bottom')).toHaveLength(1);
+        });
+      });
+
+      describe('when user can not scroll bottom', () => {
+        beforeEach(() => {
+          createWrapper({
+            isScrollTopDisabled: false,
+            isScrollBottomDisabled: true,
+          });
+        });
+
+        it('renders disabled scroll bottom button', () => {
+          expect(findScrollBottom().attributes('aria-disabled')).toEqual('true');
+        });
+
+        it('does not emit scroll-job-log-bottom event on click', async () => {
+          await findScrollBottom().trigger('click');
+
+          expect(wrapper.emitted('scroll-job-log-bottom')).toBeUndefined();
+        });
+      });
+    });
+
+    describe('scroll to failure button', () => {
+      describe('with red text failures on the page', () => {
+        let firstFailure;
+        let secondFailure;
+
+        beforeEach(() => {
+          jest.spyOn(document, 'querySelectorAll').mockReturnValueOnce(['mock-element']);
+
+          createWrapper();
+
+          firstFailure = document.createElement('div');
+          firstFailure.className = 'term-fg-l-red';
+          document.body.appendChild(firstFailure);
+
+          secondFailure = document.createElement('div');
+          secondFailure.className = 'term-fg-l-red';
+          document.body.appendChild(secondFailure);
+        });
+
+        afterEach(() => {
+          if (firstFailure) {
+            firstFailure.remove();
+            firstFailure = null;
+          }
+
+          if (secondFailure) {
+            secondFailure.remove();
+            secondFailure = null;
+          }
+        });
+
+        it('is enabled', () => {
+          expect(findScrollFailure().props('disabled')).toBe(false);
+        });
+
+        it('scrolls to each failure', async () => {
+          jest.spyOn(firstFailure, 'scrollIntoView');
+
+          await findScrollFailure().trigger('click');
+
+          expect(firstFailure.scrollIntoView).toHaveBeenCalled();
+
+          await findScrollFailure().trigger('click');
+
+          expect(secondFailure.scrollIntoView).toHaveBeenCalled();
+
+          await findScrollFailure().trigger('click');
+
+          expect(firstFailure.scrollIntoView).toHaveBeenCalled();
+        });
+      });
+
+      describe('with no red text failures on the page', () => {
+        beforeEach(() => {
+          jest.spyOn(document, 'querySelectorAll').mockReturnValueOnce([]);
+
+          createWrapper();
+        });
+
+        it('is disabled', () => {
+          expect(findScrollFailure().props('disabled')).toBe(true);
+        });
+      });
+
+      describe('when the job log is not complete', () => {
+        beforeEach(() => {
+          jest.spyOn(document, 'querySelectorAll').mockReturnValueOnce(['mock-element']);
+
+          createWrapper();
+        });
+
+        it('is enabled', () => {
+          expect(findScrollFailure().props('disabled')).toBe(false);
+        });
+      });
+
+      describe('on error', () => {
+        beforeEach(() => {
+          jest.spyOn(commonUtils, 'backOff').mockRejectedValueOnce();
+
+          createWrapper();
+        });
+
+        it('stays disabled', () => {
+          expect(findScrollFailure().props('disabled')).toBe(true);
+        });
+      });
+    });
+  });
+
+  describe('Job log search', () => {
+    const mockResultElement = {
+      getAttribute: jest.fn(() => 'mocked-value'),
+      className: 'js-log-line #L5',
+    };
+
+    beforeEach(() => {
+      createWrapper();
+      document.querySelector = jest.fn(() => mockResultElement);
+      jest.spyOn(scrollUtils, 'scrollToElement');
+    });
+
+    it('prev button scrolls to the line correctly', async () => {
+      findJobLogSearch().vm.$emit('input', 'with');
+      findJobLogSearch().vm.$emit('submit');
+      await nextTick();
+
+      findJobLogSearchNextButton().vm.$emit('click');
+      findJobLogSearchPreviousButton().vm.$emit('click');
+
+      expect(document.querySelector).toHaveBeenCalledWith('.js-log-line #L5');
+      expect(scrollUtils.scrollToElement).toHaveBeenCalledWith(mockResultElement, { offset: -0 });
+    });
+
+    it('next button scrolls to the line correctly', async () => {
+      findJobLogSearch().vm.$emit('input', 'with');
+      findJobLogSearch().vm.$emit('submit');
+      await nextTick();
+
+      await findJobLogSearchNextButton().vm.$emit('click');
+
+      expect(document.querySelector).toHaveBeenCalledWith('.js-log-line #L5');
+      expect(scrollUtils.scrollToElement).toHaveBeenCalledWith(mockResultElement, { offset: -0 });
+    });
+
+    it('prev and next buttons are disabled initially', () => {
+      expect(findJobLogSearchPreviousButton().attributes('aria-disabled')).toBe('true');
+      expect(findJobLogSearchNextButton().attributes('aria-disabled')).toBe('true');
+    });
+
+    it('prev and next buttons are disabled when search has exactly one result', async () => {
+      findJobLogSearch().vm.$emit('input', 'secrets');
+      findJobLogSearch().vm.$emit('submit');
+      await nextTick();
+
+      expect(findJobLogSearchPreviousButton().attributes('aria-disabled')).toBe('true');
+      expect(findJobLogSearchNextButton().attributes('aria-disabled')).toBe('true');
+    });
+
+    it('prev button is enabled after next button is clicked when search has multiple results', async () => {
+      findJobLogSearch().vm.$emit('input', 'with');
+      findJobLogSearch().vm.$emit('submit');
+      await nextTick();
+
+      expect(findJobLogSearchPreviousButton().attributes('aria-disabled')).toBe('true');
+
+      findJobLogSearchNextButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findJobLogSearchPreviousButton().attributes('aria-disabled')).toBeUndefined();
+    });
+
+    it('next button is enabled when search has multiple results', async () => {
+      findJobLogSearch().vm.$emit('input', 'with');
+      findJobLogSearch().vm.$emit('submit');
+      await nextTick();
+
+      expect(findJobLogSearchNextButton().attributes('aria-disabled')).toBeUndefined();
+    });
+
+    it('prev button is disabled when already at the first result', async () => {
+      findJobLogSearch().vm.$emit('input', 'with');
+      findJobLogSearch().vm.$emit('submit');
+      await nextTick();
+
+      findJobLogSearchNextButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findJobLogSearchPreviousButton().attributes('aria-disabled')).toBeUndefined();
+
+      findJobLogSearchPreviousButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findJobLogSearchPreviousButton().attributes('aria-disabled')).toBe('true');
+    });
+
+    it('next button is disabled when already at the last result', async () => {
+      findJobLogSearch().vm.$emit('input', 'with');
+      findJobLogSearch().vm.$emit('submit');
+      await nextTick();
+
+      [...Array(4)].forEach(() => findJobLogSearchNextButton().vm.$emit('click'));
+      await nextTick();
+
+      expect(findJobLogSearchNextButton().attributes('aria-disabled')).toBe('true');
+    });
+
+    it('displays job log search', () => {
+      expect(findJobLogSearch().exists()).toBe(true);
+    });
+
+    it('emits search results', () => {
+      findJobLogSearch().vm.$emit('submit');
+
+      expect(wrapper.emitted('search-results')).toHaveLength(1);
+    });
+
+    it('clears search results', () => {
+      findJobLogSearch().vm.$emit('clear');
+
+      expect(wrapper.emitted('search-results')).toEqual([[[]]]);
+    });
+  });
+
+  describe('Fullscreen controls', () => {
+    it('displays a disabled fullscreen button', () => {
+      createWrapper();
+
+      expect(findFullScreenButton().exists()).toBe(true);
+      expect(findFullScreenButton().attributes('aria-disabled')).toBe('true');
+    });
+
+    it('displays an enabled "Show full screen" button', () => {
+      createWrapper({
+        fullScreenModeAvailable: true,
+      });
+
+      expect(findFullScreenButton().attributes('aria-disabled')).toBeUndefined();
+      expect(findFullScreenButton().attributes('aria-label')).toBe('Show full screen');
+    });
+
+    it('emits a enter-fullscreen event when the show fullscreen is clicked', async () => {
+      createWrapper({
+        fullScreenModeAvailable: true,
+      });
+
+      await findFullScreenButton().trigger('click');
+
+      expect(wrapper.emitted('enter-fullscreen')).toHaveLength(1);
+    });
+
+    it('displays an enabled "Exit full screen" button', () => {
+      createWrapper({
+        fullScreenModeAvailable: true,
+        fullScreenEnabled: true,
+      });
+
+      expect(findFullScreenButton().attributes('aria-disabled')).toBeUndefined();
+      expect(findFullScreenButton().attributes('aria-label')).toBe('Exit full screen');
+    });
+
+    it('emits a exit-fullscreen event when the exit fullscreen is clicked', async () => {
+      createWrapper({
+        fullScreenModeAvailable: true,
+        fullScreenEnabled: true,
+      });
+
+      await findFullScreenButton().trigger('click');
+
+      expect(wrapper.emitted('exit-fullscreen')).toHaveLength(1);
+    });
+
+    it('keeps the same button element when toggling fullscreen, so focus persists', async () => {
+      createWrapper({
+        fullScreenModeAvailable: true,
+      });
+
+      const buttonElement = findFullScreenButton().element;
+
+      await wrapper.setProps({ fullScreenEnabled: true });
+
+      expect(findFullScreenButton().element).toBe(buttonElement);
+    });
+  });
+});

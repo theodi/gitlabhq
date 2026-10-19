@@ -1,0 +1,13 @@
+- index = local_assigns.fetch(:index, nil)
+- milestone = local_assigns.fetch(:result, nil)
+- position = index + 1
+
+.search-result-row
+  = link_to milestone_path(milestone), class: 'gl-font-bold', data: search_result_tracking_attrs(position) do
+    %span.term.str-truncated= simple_search_highlight_and_truncate(milestone.title, @search_term)
+
+  .gl-mt-2.gl-text-subtle.gl-whitespace-normal.gl-text-left.gl-text-sm= milestone.resource_parent.full_name
+
+  - if milestone.description.present?
+    .description.term
+      = search_md_sanitize(milestone.description)

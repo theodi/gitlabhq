@@ -1,0 +1,108 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe GitlabSchema.types['WorkItem'], feature_category: :team_planning do
+  specify { expect(described_class.graphql_name).to eq('WorkItem') }
+
+  specify { expect(described_class).to require_graphql_authorizations(:read_work_item) }
+
+  specify { expect(described_class).to expose_permissions_using(Types::PermissionTypes::WorkItem) }
+
+  specify { expect(described_class.interfaces).to include(Types::TodoableInterface) }
+
+  it 'has specific fields' do
+    fields = %i[
+      author
+      available_quick_actions
+      confidential
+      description
+      description_html
+      external_author
+      id
+      iid
+      imported
+      lock_version
+      namespace
+      project
+      state title
+      title_html
+      userPermissions
+      widgets
+      features
+      work_item_type
+      created_at
+      updated_at
+      closed_at
+      closed_by
+      web_url
+      web_path
+      create_note_email
+      reference
+      archived
+      name
+      duplicatedToWorkItemUrl
+      movedToWorkItemUrl
+      comment_templates_paths
+      showPlanUpgradePromotion
+      hidden
+    ]
+
+    expect(described_class).to have_graphql_fields(*fields).at_least
+  end
+
+  describe 'pagination and count' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:group) { create(:group, :public) }
+    let_it_be(:project) { create(:project, :public) }
+
+    let(:field_name) { 'workItems' }
+
+    it_behaves_like 'issuables pagination and count' do
+      let_it_be(:issuables) { create_list(:work_item, 10, project: project, created_at: now) }
+      let(:container_name) { 'project' }
+      let(:container) { project }
+    end
+  end
+
+  describe '.authorization_scopes' do
+    it 'allows ai_workflows scope token' do
+      expect(described_class.authorization_scopes).to include(:ai_workflows)
+    end
+  end
+
+  describe 'fields with :ai_workflows scope' do
+    expected_scoped_fields = %w[
+      author closedAt closedBy confidential createdAt description id iid imported namespace project
+      state title updatedAt userDiscussionsCount widgets features workItemType archived
+    ]
+
+    expected_scoped_fields.each do |field_name|
+      it "includes :ai_workflows scope for the #{field_name} field" do
+        field = described_class.fields[field_name]
+        expect(field.instance_variable_get(:@scopes)).to include(:ai_workflows)
+      end
+    end
+  end
+
+  describe 'create_note_email field scope' do
+    it 'only allows :api scope and excludes :read_api' do
+      field = described_class.fields['createNoteEmail']
+      scopes = field.instance_variable_get(:@scopes)
+
+      expect(scopes).to eq([:api])
+      expect(scopes).not_to include(:read_api)
+    end
+
+    it 'has a field-level granular scope directive requiring create_issue_note on the project boundary' do
+      field = described_class.fields['createNoteEmail']
+      directive = field.directives.find { |d| d.is_a?(Directives::Authz::GranularScope) }
+      expect(directive).not_to be_nil
+
+      args = directive.arguments.keyword_arguments
+      expect(args[:permissions]).to include('create_issue_note')
+      expect(args[:boundary_type]).to eq('project')
+      expect(args[:boundary]).to eq('project')
+    end
+  end
+end

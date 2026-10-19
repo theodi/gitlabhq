@@ -1,0 +1,50 @@
+---
+name: admin
+description: Instance-wide administrator with full access to all projects and groups,
+  including instance-level settings and custom attributes.
+inherits_from:
+- owner
+project:
+  permissions: []
+  raw_permissions:
+  - delete_custom_attribute
+  - read_custom_attribute
+  - read_storage_disk_path
+  - update_custom_attribute
+  - update_max_artifacts_size
+group:
+  permissions: []
+  raw_permissions:
+  - create_govern_policy
+  - delete_custom_attribute
+  - delete_govern_policy
+  - lock_namespace_duo_feature
+  - read_custom_attribute
+  - read_govern_policy
+  - update_custom_attribute
+  - update_govern_policy
+  - update_max_artifacts_size
+organization:
+  permissions: []
+  raw_permissions:
+  - access_organization_admin_area
+  - create_govern_policy
+  - create_group
+  - create_organization_user
+  - delete_govern_policy
+  - delete_organization
+  - delete_organization_user
+  - read_admin_users
+  - read_artifact_registry
+  - read_govern_policy
+  - read_organization
+  - read_organization_user
+  - read_user_access_level
+  - read_user_groups
+  - read_work_item_type
+  - restore_organization
+  - transfer_group
+  - update_govern_policy
+  - update_integration
+  - update_organization
+  - update_organization_user

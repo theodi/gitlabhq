@@ -1,0 +1,17 @@
+---
+description: 'Visit new MR link after push or create new MR from banner'
+internal_events: true
+action: visit_after_push_link_or_create_mr_banner
+identifiers:
+  - project
+  - namespace
+  - user
+product_group: activation
+product_categories:
+- code_review_workflow
+milestone: '16.9'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/143036
+tiers:
+  - free
+  - premium
+  - ultimate

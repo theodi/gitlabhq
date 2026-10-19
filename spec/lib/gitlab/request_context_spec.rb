@@ -1,0 +1,145 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::RequestContext, :request_store, feature_category: :application_instrumentation do
+  subject { described_class.instance }
+
+  before do
+    allow(subject).to receive(:enabled?).and_return(true)
+  end
+
+  it 'starts with nothing recorded' do
+    is_expected.to have_attributes(client_ip: nil, user_agent: nil, start_thread_cpu_time: nil, request_start_time: nil)
+  end
+
+  describe '.start_request_context' do
+    let(:user_agent) { 'GitLabMobile/1.2.0 (iOS 26.0.1; build 45)' }
+    let(:request) { ActionDispatch::Request.new({ 'REMOTE_ADDR' => '1.2.3.4', 'HTTP_USER_AGENT' => user_agent }) }
+    let(:start_request_context) { described_class.start_request_context(request: request) }
+
+    before do
+      allow(Gitlab::Metrics::System).to receive(:real_time).and_return(123)
+    end
+
+    it 'sets the client IP' do
+      expect { start_request_context }.to change { subject.client_ip }.from(nil).to('1.2.3.4')
+    end
+
+    it 'sets the user agent' do
+      expect { start_request_context }.to change { subject.user_agent }.from(nil).to(user_agent)
+    end
+
+    it 'sets the spam params' do
+      expect { start_request_context }.to change { subject.spam_params }.from(nil).to(::Spam::SpamParams)
+    end
+
+    it 'sets the request start time' do
+      expect { start_request_context }.to change { subject.request_start_time }.from(nil).to(123)
+    end
+
+    it 'leaves the request timeout unset when Rack::Timeout enforces no timeout' do
+      expect { start_request_context }.not_to change { subject.request_timeout_at }.from(nil)
+    end
+
+    context 'when Rack::Timeout is enforcing a timeout' do
+      let(:rack_timeout_info) { ::Rack::Timeout::RequestDetails.new(nil, nil, nil, 60) }
+      let(:request) do
+        ActionDispatch::Request.new(
+          { 'REMOTE_ADDR' => '1.2.3.4', ::Rack::Timeout::ENV_INFO_KEY => rack_timeout_info })
+      end
+
+      before do
+        allow(Gitlab::Metrics::System).to receive(:monotonic_time).and_return(1000.0)
+      end
+
+      it 'sets the request timeout to the time it computed' do
+        expect { start_request_context }.to change { subject.request_timeout_at }.from(nil).to(1060.0)
+      end
+
+      context 'when the request already spent time being serviced' do
+        let(:rack_timeout_info) { ::Rack::Timeout::RequestDetails.new(nil, nil, 5, 60) }
+
+        it 'discounts the time already spent' do
+          expect { start_request_context }.to change { subject.request_timeout_at }.from(nil).to(1055.0)
+        end
+      end
+    end
+  end
+
+  describe '.start_thread_context' do
+    let(:start_thread_context) { described_class.start_thread_context }
+
+    before do
+      allow(Gitlab::Metrics::System).to receive(:thread_cpu_time).and_return(123)
+      allow(Gitlab::Memory::Instrumentation).to receive(:start_thread_memory_allocations).and_return(456)
+    end
+
+    it 'sets the thread cpu time' do
+      expect { start_thread_context }.to change { subject.start_thread_cpu_time }.from(nil).to(123)
+    end
+
+    it 'sets the thread memory allocations' do
+      expect { start_thread_context }.to change { subject.thread_memory_allocations }.from(nil).to(456)
+    end
+  end
+
+  describe '.apdex_duration_s' do
+    let(:start_monotonic_time) { 100.0 }
+
+    context 'when request_start_monotonic_time is set' do
+      before do
+        subject.request_start_monotonic_time = start_monotonic_time
+        allow(Gitlab::Metrics::System).to receive(:monotonic_time).and_return(100.5)
+      end
+
+      it 'returns the elapsed time in seconds rounded to microsecond precision' do
+        expect(described_class.apdex_duration_s).to eq(Gitlab::Utils.ms_to_round_sec(500.0))
+      end
+    end
+
+    context 'when request_start_monotonic_time is not set' do
+      it 'returns nil' do
+        expect(described_class.apdex_duration_s).to be_nil
+      end
+    end
+  end
+
+  describe '#request_deadline' do
+    let(:request_start_time) { 1575982156.206008 }
+
+    before do
+      allow(subject).to receive(:request_start_time).and_return(request_start_time)
+    end
+
+    it "sets the time to #{Settings.gitlab.max_request_duration_seconds} seconds in the future" do
+      expect(subject.request_deadline).to eq(request_start_time + Settings.gitlab.max_request_duration_seconds)
+      expect(subject.request_deadline).to be_a(Float)
+    end
+
+    it 'returns nil if there is no start time' do
+      allow(subject).to receive(:request_start_time).and_return(nil)
+
+      expect(subject.request_deadline).to be_nil
+    end
+  end
+
+  describe '#ensure_request_deadline_not_exceeded!' do
+    it 'does not raise an error when there was no deadline' do
+      expect(subject).to receive(:request_deadline).and_return(nil)
+      expect { subject.ensure_deadline_not_exceeded! }.not_to raise_error
+    end
+
+    it 'does not raise an error if the deadline is in the future' do
+      allow(subject).to receive(:request_deadline).and_return(Gitlab::Metrics::System.real_time + 10)
+
+      expect { subject.ensure_deadline_not_exceeded! }.not_to raise_error
+    end
+
+    it 'raises an error when the deadline is in the past' do
+      allow(subject).to receive(:request_deadline).and_return(Gitlab::Metrics::System.real_time - 10)
+
+      expect { subject.ensure_deadline_not_exceeded! }.to raise_error(described_class::RequestDeadlineExceeded)
+    end
+  end
+end

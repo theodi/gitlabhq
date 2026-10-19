@@ -1,0 +1,18 @@
+description: "Click navigation menu item"
+category: default
+action: click_menu_item
+extra_properties:
+  sidebar_display:
+    type: string
+  menu_display:
+    type: string
+identifiers:
+product_group: engagement
+product_categories:
+- navigation
+milestone: "14.0"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/62030
+tiers:
+- free
+- premium
+- ultimate

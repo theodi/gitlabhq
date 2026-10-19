@@ -1,0 +1,1284 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Members, feature_category: :groups_and_projects do
+  let_it_be(:maintainer) { create(:user, username: 'maintainer_user') }
+  let_it_be(:maintainer2) { create(:user, username: 'user-with-maintainer-role') }
+  let_it_be(:developer) { create(:user) }
+  let_it_be(:access_requester) { create(:user) }
+  let_it_be(:stranger) { create(:user) }
+  let_it_be(:user_with_minimal_access) { create(:user) }
+
+  let_it_be_with_refind(:project) do
+    create(:project, :public, creator_id: maintainer.id, group: create(:group, :public)) do |project|
+      project.add_maintainer(maintainer)
+      project.add_developer(developer, current_user: maintainer)
+      project.request_access(access_requester)
+    end
+  end
+
+  let_it_be_with_refind(:group) do
+    create(:group, :public) do |group|
+      group.add_owner(maintainer)
+      group.add_developer(developer, maintainer)
+      create(:group_member, :minimal_access, source: group, user: user_with_minimal_access)
+      group.request_access(access_requester)
+    end
+  end
+
+  let_it_be(:nested_user) { create(:user) }
+  let_it_be(:project_user) { create(:user) }
+  let_it_be(:linked_group_user) { create(:user) }
+  let_it_be(:invited_group_developer) { create(:user) }
+  let_it_be_with_refind(:invited_group) do
+    create(:group) do |group|
+      group.add_owner(maintainer)
+      group.add_developer(invited_group_developer, maintainer)
+    end
+  end
+
+  let_it_be_with_refind(:parent_group) do
+    create(:group, :public) do |group|
+      group.add_owner(maintainer)
+      group.add_developer(developer, maintainer)
+      create(:group_member, :minimal_access, source: group, user: user_with_minimal_access)
+      group.request_access(access_requester)
+    end
+  end
+
+  let_it_be_with_refind(:nested_group) do
+    create(:group, parent: parent_group) do |nested_group|
+      nested_group.add_developer(nested_user, maintainer)
+      create(:group_group_link, :guest, shared_with_group: invited_group, shared_group: nested_group)
+    end
+  end
+
+  let_it_be_with_refind(:linked_group) do
+    create(:group) do |linked_group|
+      linked_group.add_owner(maintainer)
+      linked_group.add_developer(linked_group_user, maintainer)
+    end
+  end
+
+  let_it_be_with_refind(:nested_project) do
+    create(:project, :public, group: nested_group) do |project|
+      project.add_developer(project_user, current_user: maintainer)
+    end
+  end
+
+  let_it_be(:project_group_link) { create(:project_group_link, project: nested_project, group: linked_group) }
+
+  describe 'GET /:source_type/:id/members(/all)' do
+    shared_examples 'GET /:source_type/:id/members/(all)' do |source_type, all|
+      let(:members_url) do
+        "/#{source_type.pluralize}/#{source.id}/members".tap do |url|
+          url << "/all" if all
+        end
+      end
+
+      context "with :source_type == #{source_type.pluralize} and all == #{all}" do
+        it_behaves_like 'a 404 response when source is private' do
+          let(:route) { get api(members_url, stranger) }
+        end
+
+        %i[maintainer developer access_requester stranger].each do |type|
+          context "when authenticated as a #{type}" do
+            it 'returns 200' do
+              user = public_send(type)
+
+              get api(members_url, user)
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(response).to include_pagination_headers
+              expect(json_response).to be_an Array
+              expect(json_response.size).to eq(2)
+              expect(json_response.map { |u| u['id'] }).to match_array [maintainer.id, developer.id]
+              expect(json_response).to contain_exactly(
+                a_hash_including('created_by' => a_hash_including('id' => maintainer.id)),
+                hash_not_including('created_by')
+              )
+            end
+          end
+        end
+
+        it 'avoids N+1 queries' do
+          # create the new user even before establishing the baseline
+          new_user = create(:user)
+
+          # Establish baseline
+          get api(members_url, maintainer)
+
+          control = ActiveRecord::QueryRecorder.new do
+            get api(members_url, maintainer)
+          end
+
+          project.add_developer(new_user)
+
+          expect do
+            get api(members_url, maintainer)
+          end.not_to exceed_query_limit(control)
+        end
+
+        it 'does not return invitees' do
+          create(:"#{source_type}_member", invite_token: '123', invite_email: 'test@abc.com', source: source, user: nil)
+
+          get api(members_url, developer)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to include_pagination_headers
+          expect(json_response).to be_an Array
+          expect(json_response.size).to eq(2)
+          expect(json_response.map { |u| u['id'] }).to match_array [maintainer.id, developer.id]
+        end
+
+        context 'with cross db check disabled' do
+          around do |example|
+            allow_cross_joins_across_databases(url: 'https://gitlab.com/gitlab-org/gitlab/-/issues/343305') do
+              example.run
+            end
+          end
+
+          it 'finds members with query string' do
+            get api(members_url, developer), params: { query: maintainer.username }
+
+            expect(response).to have_gitlab_http_status(:ok)
+            expect(response).to include_pagination_headers
+            expect(json_response).to be_an Array
+            expect(json_response.count).to eq(1)
+            expect(json_response.first['username']).to eq(maintainer.username)
+          end
+        end
+
+        it 'finds members with the given user_ids' do
+          get api(members_url, developer), params: { user_ids: [maintainer.id, developer.id, stranger.id] }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to include_pagination_headers
+          expect(json_response).to be_an Array
+          expect(json_response.map { |u| u['id'] }).to contain_exactly(maintainer.id, developer.id)
+        end
+
+        it 'finds all members with no query specified' do
+          get api(members_url, developer), params: { query: '' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(response).to include_pagination_headers
+          expect(json_response).to be_an Array
+          expect(json_response.count).to eq(2)
+          expect(json_response.map { |u| u['id'] }).to match_array [maintainer.id, developer.id]
+        end
+      end
+
+      it_behaves_like 'authorizing granular token permissions', :read_member do
+        let(:user) { maintainer }
+        let(:boundary_object) { source }
+        let(:request) { get api(members_url, personal_access_token: pat) }
+      end
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all)', 'project', false do
+      let(:source) { project }
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all)', 'project', true do
+      let(:source) { project }
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all)', 'group', false do
+      let(:source) { group }
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all)', 'group', true do
+      let(:source) { group }
+    end
+
+    it_behaves_like 'rate limited endpoint', rate_limit_key: :project_members_api do
+      let_it_be(:user2) { create(:user) }
+
+      let(:current_user) { developer }
+
+      def request
+        get api("/projects/#{nested_project.id}/members/all", current_user)
+      end
+
+      def request_with_second_scope
+        get api("/projects/#{nested_project.id}/members/all", user2)
+      end
+    end
+
+    context 'when invited groups have public visibility' do
+      it 'finds all project members including inherited members and members shared into ancestor groups' do
+        get api("/projects/#{nested_project.id}/members/all", developer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+        expected_user_ids = [maintainer.id, developer.id, nested_user.id, project_user.id, linked_group_user.id, invited_group_developer.id]
+        expect(json_response.map { |u| u['id'] }).to match_array expected_user_ids
+      end
+
+      it 'finds all group members including inherited members and members shared into ancestor groups' do
+        get api("/groups/#{nested_group.id}/members/all", developer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to include_pagination_headers
+        expect(json_response).to be_an Array
+        expected_user_ids = [maintainer.id, developer.id, nested_user.id, invited_group_developer.id]
+        expect(json_response.map { |u| u['id'] }).to match_array expected_user_ids
+      end
+    end
+
+    context 'when invited groups have private visibility' do
+      before do
+        linked_group.update!(visibility_level: Gitlab::VisibilityLevel::PRIVATE)
+        invited_group.update!(visibility_level: Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      shared_examples 'invited groups with private visibility' do
+        context 'when current user is a member of the shared source' do
+          it 'hides the created_by attribute of the invited members of the current source' do
+            get api(api_path, developer)
+
+            expect(json_response.map { |u| u['id'] }).to match_array expected_user_ids
+
+            hidden_created_by_user_ids = [maintainer.id, linked_group_user.id, invited_group_developer.id]
+            hidden_created_by_members, revealed_created_by_members = json_response
+              .partition { |u| hidden_created_by_user_ids.include?(u['id']) }
+
+            expect(hidden_created_by_members.map { |u| u['created_by'] }).to all(be_nil)
+            expect(revealed_created_by_members.map { |u| u['created_by'] }).to all(be_present)
+          end
+        end
+
+        context 'when current user is an admin of the shared source' do
+          it 'reveals the created_by attribute of all the invited group members of the current source' do
+            get api(api_path, maintainer)
+
+            expect(json_response.map { |u| u['id'] }).to match_array expected_user_ids
+            expect(json_response.reject { |u| u['id'] == maintainer.id }.map { |u| u['created_by'] }).to all(be_present)
+          end
+        end
+
+        context 'when current user is a non-member of the shared source' do
+          it 'does not return the members of the invited private group of the current source' do
+            get api(api_path, create(:user))
+
+            expect(json_response.map { |u| u['id'] }).to match_array expected_user_ids_for_non_members
+          end
+        end
+      end
+
+      # context 'when current user is a member of the shared source' do
+      it_behaves_like 'invited groups with private visibility' do
+        let(:api_path) { "/projects/#{nested_project.id}/members/all" }
+        let(:expected_user_ids) do
+          [maintainer.id, developer.id, nested_user.id, project_user.id, linked_group_user.id, invited_group_developer.id]
+        end
+
+        let(:expected_user_ids_for_non_members) do
+          [maintainer.id, developer.id, nested_user.id, project_user.id]
+        end
+      end
+
+      it_behaves_like 'invited groups with private visibility' do
+        let(:api_path) { "/groups/#{nested_group.id}/members/all" }
+        let(:expected_user_ids) do
+          [maintainer.id, developer.id, nested_user.id, invited_group_developer.id]
+        end
+
+        let(:expected_user_ids_for_non_members) do
+          [maintainer.id, developer.id, nested_user.id]
+        end
+      end
+    end
+
+    it 'returns only one member for each user without returning duplicated members with correct access levels' do
+      linked_group.add_developer(developer)
+
+      get api("/projects/#{nested_project.id}/members/all", developer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+
+      expected_users_and_access_levels = [
+        [developer.id, Gitlab::Access::DEVELOPER],
+        [maintainer.id, Gitlab::Access::OWNER],
+        [nested_user.id, Gitlab::Access::DEVELOPER],
+        [project_user.id, Gitlab::Access::DEVELOPER],
+        [linked_group_user.id, Gitlab::Access::DEVELOPER],
+        [invited_group_developer.id, Gitlab::Access::GUEST]
+      ]
+      expect(json_response.map { |u| [u['id'], u['access_level']] }).to match_array(expected_users_and_access_levels)
+    end
+
+    it 'finds all group members including inherited members' do
+      get api("/groups/#{nested_group.id}/members/all", developer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expected_user_ids = [maintainer.id, developer.id, nested_user.id, invited_group_developer.id]
+      expect(json_response.map { |u| u['id'] }).to match_array expected_user_ids
+    end
+
+    context 'with a subgroup' do
+      let(:group) { create(:group, :private) }
+      let(:subgroup) { create(:group, :private, parent: group) }
+
+      before do
+        create(:project, group: subgroup)
+        subgroup.add_developer(developer)
+      end
+
+      it 'subgroup member cannot get parent group members list' do
+        get api("/groups/#{group.id}/members/all", developer)
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'two_factor_enabled field' do
+      let_it_be(:member_with_2fa) { create(:user, :two_factor) }
+
+      before_all do
+        group.add_developer(member_with_2fa)
+      end
+
+      # 'maintainer' is in fact an owner of the group!
+      it 'is exposed to group owners', :aggregate_failures do
+        get api("/groups/#{group.id}/members", maintainer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        member_data = json_response.find { |m| m['id'] == member_with_2fa.id }
+        expect(member_data).to include('two_factor_enabled' => true)
+      end
+
+      context 'when requester is an admin' do
+        let_it_be(:admin) { create(:admin) }
+
+        it 'is exposed with admin mode enabled', :aggregate_failures do
+          get api("/groups/#{group.id}/members", admin, admin_mode: true)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          member_data = json_response.find { |m| m['id'] == member_with_2fa.id }
+          expect(member_data).to include('two_factor_enabled' => true)
+        end
+
+        it 'is not exposed with admin mode disabled', :aggregate_failures do
+          get api("/groups/#{group.id}/members", admin, admin_mode: false)
+
+          expect(response).to have_gitlab_http_status(:ok)
+          json_response.each do |m|
+            expect(m).not_to have_key('two_factor_enabled')
+          end
+        end
+      end
+    end
+
+    it 'exposes two_factor_enabled as false for members without 2FA when requester is an owner', :aggregate_failures do
+      get api("/groups/#{group.id}/members", maintainer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      member_without_2fa = json_response.find { |m| m['id'] == maintainer.id }
+      expect(member_without_2fa).to include('two_factor_enabled' => false)
+    end
+
+    it 'is not exposed to non-owners' do
+      get api("/groups/#{group.id}/members", developer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      json_response.each do |m|
+        expect(m).not_to have_key('two_factor_enabled')
+      end
+    end
+
+    it 'is not exposed for project members' do
+      get api("/projects/#{project.id}/members", maintainer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      json_response.each do |m|
+        expect(m).not_to have_key('two_factor_enabled')
+      end
+    end
+
+    context 'with inherited members' do
+      let_it_be(:inherited_member_with_2fa) { create(:user, :two_factor) }
+      let_it_be(:child_group_owner) { create(:user) }
+
+      before_all do
+        parent_group.add_developer(inherited_member_with_2fa)
+        nested_group.add_owner(child_group_owner)
+      end
+
+      it 'is exposed to owners of the queried child group for inherited members on the /all endpoint',
+        :aggregate_failures do
+        get api("/groups/#{nested_group.id}/members/all", child_group_owner)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        member_data = json_response.find { |m| m['id'] == inherited_member_with_2fa.id }
+        expect(member_data).to include('two_factor_enabled' => true)
+      end
+    end
+  end
+
+  describe 'GET /:source_type/:id/members(/all)/:user_id' do
+    shared_examples 'GET /:source_type/:id/members/(all/):user_id' do |source_type, all|
+      let(:members_url) do
+        "/#{source_type.pluralize}/#{source.id}/members/".tap do |url|
+          url << "all/" if all
+          url << developer.id.to_s
+        end
+      end
+
+      context "with :source_type == #{source_type.pluralize} and all == #{all}" do
+        it_behaves_like 'a 404 response when source is private' do
+          let(:route) { get api(members_url, stranger) }
+        end
+
+        context 'when authenticated as a non-member' do
+          %i[access_requester stranger].each do |type|
+            context "as a #{type}" do
+              it 'returns 200' do
+                user = public_send(type)
+                get api(members_url, user)
+
+                expect(response).to have_gitlab_http_status(:ok)
+                # User attributes
+                expect(json_response['id']).to eq(developer.id)
+                expect(json_response['name']).to eq(developer.name)
+                expect(json_response['username']).to eq(developer.username)
+                expect(json_response['state']).to eq(developer.state)
+                expect(json_response['avatar_url']).to eq(developer.avatar_url)
+                expect(json_response['web_url']).to eq(Gitlab::Routing.url_helpers.user_url(developer))
+
+                # Member attributes
+                expect(json_response['access_level']).to eq(Member::DEVELOPER)
+                expect(json_response['created_at'].to_time).to be_present
+              end
+            end
+          end
+        end
+
+        context 'with ancestral membership' do
+          shared_examples 'response with correct access levels' do
+            it do
+              get api(members_url, developer)
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(json_response['access_level']).to eq(Member::MAINTAINER)
+            end
+          end
+
+          before do
+            source.add_maintainer(developer)
+          end
+
+          include_examples 'response with correct access levels'
+
+          context 'having email invite' do
+            before do
+              Member
+                .find_by(source: group, user: developer)
+                .update!(invite_email: 'email@email.com')
+            end
+
+            include_examples 'response with correct access levels'
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :read_member do
+          let(:user) { maintainer }
+          let(:boundary_object) { source }
+          let(:request) { get api(members_url, personal_access_token: pat) }
+        end
+      end
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all/):user_id', 'project', false do
+      let(:source) { project }
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all/):user_id', 'project', true do
+      let_it_be_with_reload(:source) { create(:project, :public, group: group) }
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all/):user_id', 'group', false do
+      let(:source) { group }
+    end
+
+    it_behaves_like 'GET /:source_type/:id/members/(all/):user_id', 'group', true do
+      let_it_be_with_reload(:source) { create(:group, parent: group) }
+    end
+
+    context 'when invited groups have public visibility' do
+      it 'finds all project members including inherited members and members shared into ancestor groups' do
+        get api("/projects/#{nested_project.id}/members/all/#{linked_group_user.id}", developer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['id']).to eq(linked_group_user.id)
+        expect(json_response['created_by']).to be_present
+      end
+
+      it 'finds all group members including inherited members and members shared into ancestor groups' do
+        get api("/groups/#{nested_group.id}/members/all/#{invited_group_developer.id}", developer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response['id']).to eq(invited_group_developer.id)
+        expect(json_response['created_by']).to be_present
+      end
+    end
+
+    context 'when invited groups have private visibility' do
+      before do
+        linked_group.update!(visibility_level: Gitlab::VisibilityLevel::PRIVATE)
+        invited_group.update!(visibility_level: Gitlab::VisibilityLevel::PRIVATE)
+      end
+
+      shared_examples 'invited group with private visibility' do
+        context 'when current user is a member of the shared source' do
+          it 'hides the created_by attribute of the invited members of the current source' do
+            get api(api_path, developer)
+
+            expect(json_response['id']).to eq(expected_user.id)
+            expect(json_response['created_by']).to be_nil
+          end
+        end
+
+        context 'when current user is an admin of the shared source' do
+          it 'reveals the created_by attribute of all the invited members of the current project' do
+            get api(api_path, maintainer)
+
+            expect(json_response['id']).to eq(expected_user.id)
+            expect(json_response['created_by']).to be_present
+          end
+        end
+
+        context 'when current user is a non-member of the shared source' do
+          it 'does not return the member of the invited private group of the current source' do
+            get api(api_path, create(:user))
+
+            expect(response).to have_gitlab_http_status(:not_found)
+          end
+        end
+      end
+
+      it_behaves_like 'invited group with private visibility' do
+        let(:api_path) { "/projects/#{nested_project.id}/members/all/#{linked_group_user.id}" }
+        let(:expected_user) { linked_group_user }
+      end
+
+      it_behaves_like 'invited group with private visibility' do
+        let(:api_path) { "/groups/#{nested_group.id}/members/all/#{invited_group_developer.id}" }
+        let(:expected_user) { invited_group_developer }
+      end
+    end
+
+    it 'finds the inherited group member' do
+      get api("/groups/#{nested_group.id}/members/all/#{maintainer.id}", developer)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['id']).to eq(maintainer.id)
+    end
+
+    context 'with a subgroup' do
+      let(:group) { create(:group, :private) }
+      let(:subgroup) { create(:group, :private, parent: group) }
+
+      before do
+        create(:project, group: subgroup)
+        subgroup.add_developer(developer)
+      end
+
+      it 'subgroup member cannot get parent group members list' do
+        get api("/groups/#{group.id}/members/all/#{maintainer.id}", developer)
+        expect(response).to have_gitlab_http_status(:forbidden)
+      end
+    end
+
+    context 'two_factor_enabled field' do
+      let_it_be(:member_with_2fa) { create(:user, :two_factor) }
+
+      before_all do
+        group.add_developer(member_with_2fa)
+      end
+
+      # 'maintainer' is in fact an owner of the group!
+      it 'is exposed to group owners', :aggregate_failures do
+        get api("/groups/#{group.id}/members/#{member_with_2fa.id}", maintainer)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response).to include('two_factor_enabled' => true)
+      end
+    end
+  end
+
+  describe 'DELETE /:source_type/:id/members/:user_id' do
+    shared_examples 'DELETE /:source_type/:id/members/:user_id' do |source_type|
+      context "with :source_type == #{source_type.pluralize}" do
+        it_behaves_like 'a 404 response when source is private' do
+          let(:route) { delete api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", stranger) }
+        end
+
+        context 'when authenticated as a non-member or member with insufficient rights' do
+          %i[access_requester stranger].each do |type|
+            context "as a #{type}" do
+              it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+                let(:route) do
+                  delete api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", public_send(type))
+                end
+              end
+            end
+          end
+        end
+
+        context 'when authenticated as a member and deleting themself' do
+          it 'deletes the member' do
+            expect do
+              delete api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", developer)
+
+              expect(response).to have_gitlab_http_status(:no_content)
+            end.to change { source.members.count }.by(-1)
+          end
+        end
+
+        context 'when authenticated as a maintainer/owner' do
+          context 'and member is a requester' do
+            it 'returns 404' do
+              expect do
+                delete api("/#{source_type.pluralize}/#{source.id}/members/#{access_requester.id}", maintainer)
+
+                expect(response).to have_gitlab_http_status(:not_found)
+              end.not_to change { source.requesters.count }
+            end
+          end
+
+          context 'when attempting to delete a member with higher access level' do
+            let(:owner) { create(:user) }
+            # the other 'maintainer' is in fact an owner of the group!
+            let(:maintainer) { maintainer2 }
+
+            before do
+              source.add_owner(owner)
+              source.add_maintainer(maintainer)
+            end
+
+            it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+              let(:route) do
+                delete api("/#{source_type.pluralize}/#{source.id}/members/#{owner.id}", maintainer)
+              end
+            end
+          end
+
+          it 'deletes the member' do
+            expect do
+              delete api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer)
+
+              expect(response).to have_gitlab_http_status(:no_content)
+            end.to change { source.members.count }.by(-1)
+          end
+
+          it_behaves_like 'rate limited endpoint', rate_limit_key: :members_delete, use_second_scope: false do
+            let(:current_user) { maintainer }
+
+            let(:another_member) { create(:user, developer_of: source) }
+
+            # We rate limit scoped by the group / project
+            let(:delete_paths) do
+              [
+                api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer),
+                api("/#{source_type.pluralize}/#{source.id}/members/#{another_member.id}", maintainer)
+              ]
+            end
+
+            def request
+              delete_member_path = delete_paths.shift
+
+              delete delete_member_path
+            end
+          end
+
+          it_behaves_like '412 response' do
+            let(:request) { api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer) }
+          end
+
+          it_behaves_like 'authorizing granular token permissions', :delete_member do
+            let(:user) { maintainer }
+            let(:boundary_object) { source }
+            let(:request) do
+              delete api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", personal_access_token: pat)
+            end
+          end
+        end
+
+        it 'returns 404 if member does not exist' do
+          delete api("/#{source_type.pluralize}/#{source.id}/members/#{non_existing_record_id}", maintainer)
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+      end
+    end
+
+    it_behaves_like 'DELETE /:source_type/:id/members/:user_id', 'project' do
+      let(:source) { project }
+    end
+
+    it_behaves_like 'DELETE /:source_type/:id/members/:user_id', 'group' do
+      let(:source) { group }
+    end
+  end
+
+  describe 'DELETE /groups/:id/members/:user_id' do
+    it 'deletes only the member with skip_subresources=true' do
+      nested_group.add_developer(developer)
+
+      expect do
+        delete api("/groups/#{parent_group.id}/members/#{developer.id}", maintainer), params: { skip_subresources: true }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end.to change { parent_group.members.count }.by(-1)
+          .and not_change { nested_group.members.count }
+    end
+
+    it 'deletes member and its sub memberships with skip_subresources=false' do
+      nested_group.add_developer(developer)
+
+      expect do
+        delete api("/groups/#{parent_group.id}/members/#{developer.id}", maintainer), params: { skip_subresources: false }
+
+        expect(response).to have_gitlab_http_status(:no_content)
+      end.to change { parent_group.members.count }.by(-1)
+          .and change { nested_group.members.count }.by(-1)
+    end
+  end
+
+  describe 'POST /:source_type/:id/members' do
+    shared_examples 'POST /:source_type/:id/members' do |source_type|
+      context "with :source_type == #{source_type.pluralize}" do
+        it_behaves_like 'a 404 response when source is private' do
+          let(:route) do
+            post api("/#{source_type.pluralize}/#{source.id}/members", stranger),
+              params: { user_id: access_requester.id, access_level: Member::MAINTAINER }
+          end
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :create_member do
+          let(:user) { maintainer }
+          let(:boundary_object) { source }
+          let(:request) do
+            post api("/#{source_type.pluralize}/#{source.id}/members", personal_access_token: pat),
+              params: { user_id: stranger.id, access_level: Member::DEVELOPER }
+          end
+        end
+
+        context 'when authenticated as a non-member or member with insufficient membership management rights' do
+          context 'when the user does not have rights to manage members' do
+            %i[access_requester stranger developer].each do |type|
+              context "as a #{type}" do
+                it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+                  let(:route) do
+                    post api("/#{source_type.pluralize}/#{source.id}/members", public_send(type)),
+                      params: { user_id: access_requester.id, access_level: Member::MAINTAINER }
+                  end
+                end
+              end
+            end
+          end
+
+          context 'when the user has the rights to manage members but tries to manage members with a higher access level' do
+            # the other 'maintainer' is in fact an owner of the group!
+            let(:maintainer) { maintainer2 }
+
+            before do
+              source.add_maintainer(maintainer)
+            end
+
+            context 'when an access requester is added as OWNER' do
+              it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+                let(:route) do
+                  post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                    params: { user_id: access_requester.id, access_level: Member::OWNER }
+                end
+              end
+            end
+
+            context 'when a totally new user is added as OWNER' do
+              it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+                let(:route) do
+                  post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                    params: { user_id: stranger.id, access_level: Member::OWNER }
+                end
+              end
+            end
+          end
+        end
+
+        context 'when authenticated as a member with membership management rights' do
+          context 'and new member is already a requester' do
+            context 'when the requester is of equal or lower access level' do
+              it 'transforms the requester into a proper member' do
+                expect do
+                  post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                    params: { user_id: access_requester.id, access_level: Member::MAINTAINER }
+
+                  expect(response).to have_gitlab_http_status(:created)
+                end.to change { source.members.count }.by(1)
+                expect(source.requesters.count).to eq(0)
+                expect(json_response['id']).to eq(access_requester.id)
+                expect(json_response['access_level']).to eq(Member::MAINTAINER)
+              end
+            end
+          end
+
+          it 'creates a new member' do
+            expect do
+              post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                params: { user_id: stranger.id, access_level: Member::DEVELOPER }
+
+              expect(response).to have_gitlab_http_status(:created)
+            end.to change { source.members.count }.by(1)
+            expect(json_response['id']).to eq(stranger.id)
+            expect(json_response['access_level']).to eq(Member::DEVELOPER)
+          end
+
+          it 'returns the error message if there was an error adding the member to the group' do
+            error_message = 'Test CreateService Error Message'
+            allow_next_instance_of(::Members::CreateService) do |service|
+              expect(service).to receive(:execute).and_return(status: :error, message: error_message)
+              allow(service).to receive(:single_member).and_return(
+                instance_double(Member, invalid?: false)
+              )
+            end
+
+            expect do
+              post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                params: { user_id: stranger.id, access_level: Member::DEVELOPER }
+            end.not_to change { source.members.count }
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['status']).to eq('error')
+            expect(json_response['message']).to eq(error_message)
+          end
+
+          context 'with invite_source considerations', :snowplow do
+            let(:params) { { user_id: stranger.id, access_level: Member::DEVELOPER } }
+
+            it 'tracks the invite source as api' do
+              post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                params: params
+
+              expect_snowplow_event(
+                category: 'Members::CreateService',
+                action: 'create_member',
+                label: 'members-api',
+                property: 'existing_user',
+                user: maintainer
+              )
+            end
+
+            it 'tracks the invite source from params' do
+              post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                params: params.merge(invite_source: '_invite_source_')
+
+              expect_snowplow_event(
+                category: 'Members::CreateService',
+                action: 'create_member',
+                label: '_invite_source_',
+                property: 'existing_user',
+                user: maintainer
+              )
+            end
+          end
+
+          context 'when executing the Members::CreateService for multiple user_ids' do
+            let(:user_ids) { [stranger.id, access_requester.id].join(',') }
+
+            it 'returns success when it successfully create all members' do
+              expect do
+                post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                  params: { user_id: user_ids, access_level: Member::DEVELOPER }
+
+                expect(response).to have_gitlab_http_status(:created)
+              end.to change { source.members.count }.by(2)
+              expect(json_response['status']).to eq('success')
+            end
+
+            it 'returns the error message if there was an error adding members to group' do
+              error_message = 'Unable to find User ID'
+              allow_next_instance_of(::Members::CreateService) do |service|
+                expect(service).to receive(:execute).and_return({ status: :error, message: error_message })
+              end
+
+              expect do
+                post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                  params: { user_id: user_ids, access_level: Member::DEVELOPER }
+              end.not_to change { source.members.count }
+              expect(json_response['status']).to eq('error')
+              expect(json_response['message']).to eq(error_message)
+            end
+          end
+
+          context 'when executing the Members::CreateService for multiple usernames' do
+            let(:usernames) { [stranger.username, access_requester.username].join(',') }
+
+            it 'returns success when it successfully create all members' do
+              expect do
+                post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                  params: { username: usernames, access_level: Member::DEVELOPER }
+
+                expect(response).to have_gitlab_http_status(:created)
+              end.to change { source.members.count }.by(2)
+              expect(json_response['status']).to eq('success')
+            end
+
+            it 'returns the error message if there was an error adding members to group' do
+              error_message = 'Unable to find Username'
+              allow_next_instance_of(::Members::CreateService) do |service|
+                expect(service).to receive(:execute).and_return({ status: :error, message: error_message })
+              end
+
+              expect do
+                post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+                  params: { username: usernames, access_level: Member::DEVELOPER }
+              end.not_to change { source.members.count }
+              expect(json_response['status']).to eq('error')
+              expect(json_response['message']).to eq(error_message)
+            end
+          end
+        end
+
+        context 'access levels' do
+          it 'does not create the member if group level is higher' do
+            parent = create(:group)
+
+            group.update!(parent: parent)
+            project.update!(group: group)
+            parent.add_developer(stranger)
+
+            post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+              params: { user_id: stranger.id, access_level: Member::REPORTER }
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']['access_level'])
+              .to eq(["should be greater than or equal to Developer inherited membership from group #{parent.name}"])
+          end
+
+          it 'creates the member if group level is lower' do
+            parent = create(:group)
+
+            group.update!(parent: parent)
+            project.update!(group: group)
+            parent.add_developer(stranger)
+
+            post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+              params: { user_id: stranger.id, access_level: Member::MAINTAINER }
+
+            expect(response).to have_gitlab_http_status(:created)
+            expect(json_response['id']).to eq(stranger.id)
+            expect(json_response['access_level']).to eq(Member::MAINTAINER)
+          end
+        end
+
+        context 'access expiry date' do
+          subject do
+            post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+              params: { user_id: stranger.id, access_level: Member::DEVELOPER, expires_at: expires_at }
+          end
+
+          context 'when set to a date in the past' do
+            let(:expires_at) { 2.days.ago.to_date }
+
+            it 'does not create a member' do
+              expect do
+                subject
+              end.not_to change { source.members.count }
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+              expect(json_response['message']).to eq({ 'expires_at' => ['cannot be a date in the past'] })
+            end
+          end
+
+          context 'when set to a date in the future' do
+            let(:expires_at) { 2.days.from_now.to_date }
+
+            it 'creates a member' do
+              expect do
+                subject
+              end.to change { source.members.count }.by(1)
+
+              expect(response).to have_gitlab_http_status(:created)
+              expect(json_response['id']).to eq(stranger.id)
+              expect(json_response['expires_at']).to eq(expires_at.to_s)
+            end
+          end
+        end
+
+        it "returns 409 if member already exists" do
+          source.add_guest(stranger)
+
+          post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+            params: { user_id: maintainer.id, access_level: Member::MAINTAINER }
+
+          expect(response).to have_gitlab_http_status(:conflict)
+        end
+
+        it 'returns 404 when the user_id is not valid' do
+          post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+            params: { user_id: non_existing_record_id, access_level: Member::MAINTAINER }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+          expect(json_response['message']).to eq('404 User Not Found')
+        end
+
+        it 'returns 400 when user_id is not given' do
+          post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+            params: { access_level: Member::MAINTAINER }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+
+        it 'returns 400 when access_level is not given' do
+          post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+            params: { user_id: stranger.id }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+
+        it 'returns 400 when access_level is not valid' do
+          post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+            params: { user_id: stranger.id, access_level: non_existing_record_access_level }
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+      end
+
+      context 'adding project bot' do
+        let_it_be(:project_bot) { create(:user, :project_bot) }
+
+        before do
+          unrelated_project = create(:project)
+          unrelated_project.add_maintainer(project_bot)
+        end
+
+        it 'returns 400' do
+          expect do
+            post api("/#{source_type.pluralize}/#{source.id}/members", maintainer),
+              params: { user_id: project_bot.id, access_level: Member::DEVELOPER }
+
+            expect(response).to have_gitlab_http_status(:bad_request)
+            expect(json_response['message']['user_id']).to(
+              include('project bots cannot be added to other groups / projects'))
+          end.not_to change { project.members.count }
+        end
+      end
+    end
+
+    it_behaves_like 'POST /:source_type/:id/members', 'project' do
+      let(:source) { project }
+
+      before do
+        # Extra queries from has_approval_policy_rules? checking approval_policy_rules.
+        # Threshold set to the measured worst case (~110, including the intermittent
+        # `plans` table INSERT and todos resolution) plus a 1-query buffer, so it stays
+        # tight enough to catch a future regression instead of masking it.
+        # See: https://gitlab.com/gitlab-org/quality/test-failure-issues/-/work_items/44271
+        allow(Gitlab::QueryLimiting::Transaction).to receive(:threshold).and_return(110)
+      end
+    end
+
+    it_behaves_like 'POST /:source_type/:id/members', 'group' do
+      let(:source) { group }
+    end
+  end
+
+  describe 'POST /projects/:id/members' do
+    context 'adding owner to project' do
+      it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+        let(:route) do
+          post api("/projects/#{project.id}/members", maintainer),
+            params: { user_id: access_requester.id, access_level: Member::OWNER }
+        end
+      end
+    end
+
+    context 'add member to project' do
+      it 'allows adding by username' do
+        post api("/projects/#{project.id}/members", maintainer),
+          params: { username: access_requester.username, access_level: Member::DEVELOPER }
+
+        expect(response).to have_gitlab_http_status(:created)
+        expect(json_response['username']).to eq(access_requester.username)
+      end
+
+      it 'returns a 400 if user_id is also provided' do
+        post api("/projects/#{project.id}/members", maintainer),
+          params: { username: access_requester.username, user_id: access_requester.id, access_level: Member::DEVELOPER }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error']).to eq('user_id, username are mutually exclusive')
+      end
+
+      it 'returns a 400 if user_id and username is missing' do
+        post api("/projects/#{project.id}/members", maintainer),
+          params: { access_level: Member::DEVELOPER }
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error']).to match('at least one parameter must be provided')
+      end
+    end
+
+    context 'remove bot from project' do
+      it 'returns a 403 forbidden' do
+        project_bot = create(:user, :project_bot)
+        create(:project_member, project: project, user: project_bot)
+
+        expect do
+          delete api("/projects/#{project.id}/members/#{project_bot.id}", maintainer)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end.not_to change { project.members.count }
+      end
+    end
+  end
+
+  describe 'PUT /:source_type/:id/members/:user_id' do
+    shared_examples 'PUT /:source_type/:id/members/:user_id' do |source_type|
+      context "with :source_type == #{source_type.pluralize}" do
+        it_behaves_like 'a 404 response when source is private' do
+          let(:route) do
+            put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", stranger),
+              params: { access_level: Member::MAINTAINER }
+          end
+        end
+
+        context 'when authenticated as a non-member or member with insufficient rights' do
+          %i[access_requester stranger developer].each do |type|
+            context "as a #{type}" do
+              it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+                let(:route) do
+                  put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", public_send(type)),
+                    params: { access_level: Member::MAINTAINER }
+                end
+              end
+            end
+          end
+
+          context 'as a maintainer updating a member to one with higher access level than themselves' do
+            # the other 'maintainer' is in fact an owner of the group!
+            let(:maintainer) { maintainer2 }
+
+            before do
+              # the other 'maintainer' is in fact an owner of the group!
+              source.add_maintainer(maintainer2)
+            end
+
+            context 'updating a member to OWNER' do
+              it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+                let(:route) do
+                  put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer),
+                    params: { access_level: Member::OWNER }
+                end
+              end
+            end
+          end
+        end
+
+        context 'when authenticated as a maintainer/owner' do
+          context 'when updating a member with the same or lower access level' do
+            it 'updates the member' do
+              put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer),
+                params: { access_level: Member::MAINTAINER }
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(json_response['id']).to eq(developer.id)
+              expect(json_response['access_level']).to eq(Member::MAINTAINER)
+            end
+          end
+
+          context 'when updating a member with higher access level' do
+            let(:owner) { create(:user) }
+            # the other 'maintainer' is in fact an owner of the group!
+            let(:maintainer) { maintainer2 }
+
+            before do
+              source.add_owner(owner)
+              source.add_maintainer(maintainer)
+            end
+
+            it_behaves_like 'a 403 response when user does not have rights to manage members of a specific access level' do
+              let(:route) do
+                put api("/#{source_type.pluralize}/#{source.id}/members/#{owner.id}", maintainer),
+                  params: { access_level: Member::OWNER }
+              end
+            end
+          end
+        end
+
+        context 'access expiry date' do
+          subject do
+            put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer),
+              params: { expires_at: expires_at, access_level: Member::MAINTAINER }
+          end
+
+          context 'when set to a date in the past' do
+            let(:expires_at) { 2.days.ago.to_date }
+
+            it 'does not update the member' do
+              subject
+
+              expect(response).to have_gitlab_http_status(:bad_request)
+              expect(json_response['message']).to eq({ 'expires_at' => ['cannot be a date in the past'] })
+            end
+          end
+
+          context 'when set to a date in the future' do
+            let(:expires_at) { 2.days.from_now.to_date }
+
+            it 'updates the member' do
+              subject
+
+              expect(response).to have_gitlab_http_status(:ok)
+              expect(json_response['expires_at']).to eq(expires_at.to_s)
+            end
+          end
+        end
+
+        it 'returns 409 if member does not exist' do
+          put api("/#{source_type.pluralize}/#{source.id}/members/#{non_existing_record_id}", maintainer),
+            params: { access_level: Member::MAINTAINER }
+
+          expect(response).to have_gitlab_http_status(:not_found)
+        end
+
+        it 'returns 400 when access_level is not given' do
+          put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+
+        it 'returns 400 when access level is not valid' do
+          put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", maintainer),
+            params: { access_level: 13 } # Invalid: between GUEST(10) and PLANNER(15)
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+        end
+
+        it_behaves_like 'authorizing granular token permissions', :update_member do
+          let(:user) { maintainer }
+          let(:boundary_object) { source }
+          let(:request) do
+            put api("/#{source_type.pluralize}/#{source.id}/members/#{developer.id}", personal_access_token: pat),
+              params: { access_level: Member::MAINTAINER }
+          end
+        end
+      end
+    end
+
+    it_behaves_like 'PUT /:source_type/:id/members/:user_id', 'project' do
+      let(:source) { project }
+    end
+
+    it_behaves_like 'PUT /:source_type/:id/members/:user_id', 'group' do
+      let(:source) { group }
+    end
+  end
+end

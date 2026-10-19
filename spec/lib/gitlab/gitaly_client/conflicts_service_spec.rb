@@ -1,0 +1,155 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::GitalyClient::ConflictsService do
+  let_it_be(:project) { create(:project, :repository) }
+  let_it_be(:target_project) { create(:project, :repository) }
+  let(:source_repository) { project.repository.raw }
+  let(:target_repository) { target_project.repository.raw }
+  let(:target_gitaly_repository) { target_repository.gitaly_repository }
+  let(:our_commit_oid) { 'f00' }
+  let(:their_commit_oid) { 'f44' }
+  let(:client) do
+    described_class.new(target_repository, our_commit_oid, their_commit_oid)
+  end
+
+  describe '#conflicts' do
+    subject(:conflicts) { client.conflicts? }
+
+    it 'calls list_conflict_files with no parameters' do
+      expect_any_instance_of(described_class).to receive(:list_conflict_files)
+          .and_return(["let's pretend i'm a conflicted file"])
+
+      conflicts
+    end
+  end
+
+  describe '#list_conflict_files' do
+    let(:allow_tree_conflicts) { false }
+    let(:request) do
+      Gitaly::ListConflictFilesRequest.new(
+        repository: target_gitaly_repository,
+        our_commit_oid: our_commit_oid,
+        their_commit_oid: their_commit_oid,
+        allow_tree_conflicts: allow_tree_conflicts
+      )
+    end
+
+    shared_examples_for 'listing conflicts' do
+      it 'sends an RPC request' do
+        expect_any_instance_of(Gitaly::ConflictsService::Stub).to receive(:list_conflict_files)
+          .with(request, kind_of(Hash))
+          .and_return(instance_double(GRPC::ActiveCall::Operation, execute: [].to_enum, trailing_metadata: {}))
+
+        client.list_conflict_files(allow_tree_conflicts: allow_tree_conflicts)
+      end
+    end
+
+    it_behaves_like 'listing conflicts'
+
+    context 'when allow_tree_conflicts is set to true' do
+      let(:allow_tree_conflicts) { true }
+
+      it_behaves_like 'listing conflicts'
+    end
+  end
+
+  describe '#resolve_conflicts' do
+    let(:user) { create(:user) }
+    let(:files) do
+      [{ old_path: 'some/path', new_path: 'some/path', content: '' }]
+    end
+
+    let(:source_branch) { 'master' }
+    let(:target_branch) { 'feature' }
+    let(:commit_message) { 'Solving conflicts\n\nTést' }
+    let(:resolution) do
+      Gitlab::Git::Conflict::Resolution.new(user, files, commit_message)
+    end
+
+    subject do
+      client.resolve_conflicts(source_repository, resolution, source_branch, target_branch)
+    end
+
+    it 'sends an RPC request' do
+      expect_any_instance_of(Gitaly::ConflictsService::Stub).to receive(:resolve_conflicts)
+        .with(kind_of(Enumerator), kind_of(Hash))
+        .and_return(instance_double(GRPC::ActiveCall::Operation,
+          execute: double(resolution_error: ""), trailing_metadata: {}))
+
+      subject
+    end
+
+    context 'with branches with UTF-8 characters' do
+      let(:source_branch) { 'testòbranch' }
+      let(:target_branch) { 'ábranch' }
+
+      it 'handles commit messages with UTF-8 characters' do
+        allow(::Gitlab::GitalyClient).to receive(:call).and_call_original
+        expect(::Gitlab::GitalyClient).to receive(:call).with(anything, :conflicts_service, :resolve_conflicts, any_args) do |*args|
+          # Force the generation of request messages by iterating through the enumerator
+          message = args[3].to_a.first
+          params = [message.header.commit_message, message.header.source_branch, message.header.target_branch]
+          expect(params.map(&:encoding).uniq).to eq([Encoding::ASCII_8BIT])
+
+          double(resolution_error: nil)
+        end
+
+        subject
+      end
+    end
+
+    it 'raises a relevant exception if resolution_error is present' do
+      expect_any_instance_of(Gitaly::ConflictsService::Stub).to receive(:resolve_conflicts)
+        .with(kind_of(Enumerator), kind_of(Hash))
+        .and_return(instance_double(GRPC::ActiveCall::Operation,
+          execute: double(resolution_error: "something happened"), trailing_metadata: {}))
+
+      expect { subject }.to raise_error(Gitlab::Git::Conflict::Resolver::ResolutionError)
+    end
+
+    context 'when a GRPC::BadStatus error is raised' do
+      context 'when the error message starts with the pre-receive hooks prefix' do
+        let(:error_message) { 'running pre-receive hooks: hook rejected the push' }
+        let(:grpc_error) { GRPC::BadStatus.new(GRPC::Core::StatusCodes::INTERNAL, error_message) }
+
+        context 'when the error prefix does not match a safe message prefix' do
+          it 'raises the fallback message' do
+            expect_any_instance_of(Gitaly::ConflictsService::Stub).to receive(:resolve_conflicts)
+              .with(kind_of(Enumerator), kind_of(Hash)).and_raise(grpc_error)
+
+            expect { subject }.to raise_error(Gitlab::Git::PreReceiveError) do |error|
+              expect(error.message).to eq('Prevented by server hooks')
+            end
+          end
+        end
+
+        context 'when the error prefix matches a safe message prefix' do
+          let(:error_message) { 'running pre-receive hooks: GitLab: hook rejected the push' }
+
+          it 'raises a PreReceiveError with the error details stripped of the prefix' do
+            expect_any_instance_of(Gitaly::ConflictsService::Stub).to receive(:resolve_conflicts)
+                                                                        .with(kind_of(Enumerator), kind_of(Hash)).and_raise(grpc_error)
+
+            expect { subject }.to raise_error(Gitlab::Git::PreReceiveError) do |error|
+              expect(error.message).to eq('hook rejected the push')
+            end
+          end
+        end
+      end
+
+      context 'when the error message does not start with the pre-receive hooks prefix' do
+        let(:error_message) { 'some other error' }
+        let(:grpc_error) { GRPC::BadStatus.new(GRPC::Core::StatusCodes::INTERNAL, error_message) }
+
+        it 're-raises the original GRPC::BadStatus error' do
+          expect_any_instance_of(Gitaly::ConflictsService::Stub).to receive(:resolve_conflicts)
+            .with(kind_of(Enumerator), kind_of(Hash)).and_raise(grpc_error)
+
+          expect { subject }.to raise_error(GRPC::BadStatus)
+        end
+      end
+    end
+  end
+end

@@ -1,80 +1,93 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-cd $(dirname $0)/..
-app_root=$(pwd)
-sidekiq_pidfile="$app_root/tmp/pids/sidekiq.pid"
+set -eo pipefail
+
+cd "$(dirname "$0")/.."
+app_root="$(pwd)"
+sidekiq_workers="${SIDEKIQ_WORKERS:-1}"
+sidekiq_queues="${SIDEKIQ_QUEUES:-*}" # Queues to listen to; default to `*` (all)
+sidekiq_pidfile="$app_root/tmp/pids/sidekiq-cluster.pid"
 sidekiq_logfile="$app_root/log/sidekiq.log"
-gitlab_user=$(ls -l config.ru | awk '{print $3}')
+
+RAILS_ENV="${RAILS_ENV:-development}"
+
+trap cleanup EXIT
 
 warn()
 {
   echo "$@" 1>&2
 }
 
-stop()
+get_sidekiq_pid()
 {
-  bundle exec sidekiqctl stop $sidekiq_pidfile >> $sidekiq_logfile 2>&1
+  if [ ! -f "$sidekiq_pidfile" ]; then
+    warn "No pidfile found at $sidekiq_pidfile; is Sidekiq running?"
+    return
+  fi
+
+  cat "$sidekiq_pidfile"
 }
 
-killall()
+stop()
 {
-  pkill -u $gitlab_user -f 'sidekiq [0-9]'
+  sidekiq_pid=$(get_sidekiq_pid)
+
+  if [ "$sidekiq_pid" ]; then
+    kill -TERM "$sidekiq_pid" || true
+  fi
 }
 
 restart()
 {
-  if [ -f $sidekiq_pidfile ]; then
+  if [ -f "$sidekiq_pidfile" ]; then
     stop
   fi
-  killall
-  start_sidekiq -d -L $sidekiq_logfile
-}
 
-start_no_deamonize()
-{
-  start_sidekiq
+  start_sidekiq "$@"
 }
 
 start_sidekiq()
 {
-  bundle exec sidekiq -q post_receive -q mailer -q archive_repo -q system_hook -q project_web_hook -q gitlab_shell -q common -q default -e $RAILS_ENV -P $sidekiq_pidfile $@ >> $sidekiq_logfile 2>&1
+  cmd="exec"
+  chpst=$(command -v chpst || true)
+
+  # Foreground supervisors (runit, Caproni) stop Sidekiq by signalling our
+  # process group, which `chpst -P` would move it out of.
+  if [ -n "$chpst" ] && [ "$action" != "start_foreground" ]; then
+    cmd="${cmd} ${chpst} -P"
+  fi
+
+  # sidekiq-cluster expects an argument per process.
+  for (( i=1; i<=sidekiq_workers; i++ ))
+  do
+    processes_args+=("${sidekiq_queues}")
+  done
+
+  ${cmd} bin/sidekiq-cluster "${processes_args[@]}" -P "$sidekiq_pidfile" -e "$RAILS_ENV" "$@" 2>&1 | tee -a "$sidekiq_logfile"
 }
 
-load_ok()
+cleanup()
 {
-  sidekiq_pid=$(cat $sidekiq_pidfile)
-  if [ -z "$sidekiq_pid" ] ; then
-    warn "Could not find a PID in $sidekiq_pidfile"
-    exit 0
-  fi
-
-  if (ps -p $sidekiq_pid -o args | grep '\([0-9]\+\) of \1 busy' 1>&2) ; then
-    warn "Too many busy Sidekiq workers"
-    exit 1
-  fi
-
-  exit 0
+  stop
 }
 
-case "$1" in
+action="$1"
+shift || true
+
+case "$action" in
   stop)
     stop
     ;;
   start)
-    restart
+    restart "$@" &
     ;;
-  start_no_deamonize)
-    start_no_deamonize
+  start_foreground)
+    start_sidekiq "$@"
     ;;
   restart)
-    restart
-    ;;
-  killall)
-    killall
-    ;;
-  load_ok)
-    load_ok
+    restart "$@" &
     ;;
   *)
-    echo "Usage: RAILS_ENV=your_env $0 {stop|start|start_no_deamonize|restart|killall|load_ok}"
+    echo "Usage: RAILS_ENV=<env> SIDEKIQ_WORKERS=<n> $0 {stop|start|start_foreground|restart}"
+    ;;
 esac

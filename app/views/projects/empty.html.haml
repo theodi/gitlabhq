@@ -1,50 +1,69 @@
-- if current_user && can?(current_user, :download_code, @project)
-  = render 'shared/no_ssh'
-  = render 'shared/no_password'
+- add_page_specific_style 'page_bundles/projects'
+- add_page_specific_style 'page_bundles/project'
+
+- @skip_current_level_breadcrumb = true
+
+= render partial: 'flash_messages', locals: { project: @project }
+= render 'clusters_deprecation_alert'
 
 = render "home_panel"
 
-.center.well
-  %h3
-    The repository for this project is empty
-  %h4
-    You can
-    = link_to namespace_project_new_blob_path(@project.namespace, @project, 'master'), class: 'btn btn-new btn-lg' do
-      add a file
-    &nbsp;or do a push via the command line.
+.project-page-indicator.js-show-on-project-root
 
-.well
-  = render "shared/clone_panel"
-%h4
-  %strong Command line instructions
-%div.git-empty
-  %fieldset
-    %legend Git global setup
-    %pre.dark
-      :preserve
-        git config --global user.name "#{git_user_name}"
-        git config --global user.email "#{git_user_email}"
+#js-project-show-empty-page.project-page-layout
+  .project-page-layout-content.gl-mt-5
+    .project-buttons.gl-mb-5{ data: { testid: 'quick-actions-container' } }
+      .project-clone-holder.gl-block{ class: '@sm/panel:gl-hidden' }
+        = render "shared/mobile_clone_panel"
 
-  %fieldset
-    %legend Create a new repository
-    %pre.dark
-      :preserve
-        git clone #{ content_tag(:span, default_url_to_repo, class: 'clone')}
-        cd #{@project.path}
-        touch README.md
-        git add README.md
-        git commit -m "add README"
-        git push -u origin master
+      .project-clone-holder.gl-hidden.gl-justify-end.gl-w-full.gl-gap-3{ class: '@sm/panel:gl-flex' }
+        = render 'shared/web_ide_button', blob: nil
+        = render "projects/buttons/code", ref: @ref, ref_type: @ref_type
 
-  %fieldset
-    %legend Existing folder or Git repository
-    %pre.dark
-      :preserve
-        cd existing_folder
-        git init
-        git remote add origin #{ content_tag(:span, default_url_to_repo, class: 'clone')}
-        git push -u origin master
+    = render Pajamas::CardComponent.new(card_options: { class: 'gl-mb-5' }, body_options: { class: 'gl-p-5 gl-rounded-base' }) do |c|
+      - c.with_body do
+        %h2.gl-text-lg.gl-my-0= _('The repository for this project is empty')
+        - if @project.can_current_user_push_code?
+          %p.gl-m-0.gl-mt-2.gl-text-subtle= _('To get started, clone the repository or upload some files.')
 
-- if can? current_user, :remove_project, @project
-  .prepend-top-20
-    = link_to 'Remove project', [@project.namespace.becomes(Namespace), @project], data: { confirm: remove_project_message(@project)}, method: :delete, class: "btn btn-remove pull-right"
+    - if can?(current_user, :push_code, @project)
+
+      %h2= _('Command line instructions')
+      %p
+        = _('You can also upload existing files from your computer using the instructions below.')
+      .git-empty.js-git-empty
+        %h3.h4= _('Configure your Git identity')
+        - git_get_started_doc = link_to('', help_page_path('topics/git/get_started.md'), target: '_blank', rel: 'noopener noreferrer')
+        - git_config_doc = link_to('', help_page_path('topics/git/how_to_install_git/_index.md', anchor: 'configure-git'), target: '_blank', rel: 'noopener noreferrer')
+        %p= safe_format(_("%{get_started}Get started with Git%{get_started_end} and learn %{git_config}how to configure it%{git_config_end}."), tag_pair(git_get_started_doc, :get_started, :get_started_end), tag_pair(git_config_doc, :git_config, :git_config_end))
+        .scrolling-tabs-container.inner-page-scroll-tabs
+        = gl_tabs_nav({ class: 'js-configure-git-tabs' }) do
+          = gl_tab_link_to '#', item_active: true, 'aria-controls': 'local' do
+            = s_('GitSetup|Local')
+          = gl_tab_link_to '#', 'aria-controls': 'global' do
+            = s_('GitSetup|Global')
+        .tab-content
+          .tab-pane.active#local
+            = render partial: 'empty_git_config', locals: { scope: 'local' }
+          .tab-pane#global
+            = render partial: 'empty_git_config', locals: { scope: 'global' }
+        %h3.h4= _('Add files')
+        - if ssh_enabled?
+          %p= _("Push files to this repository using SSH or HTTPS. If you're unsure, we recommend SSH.")
+          .scrolling-tabs-container.inner-page-scroll-tabs
+          = gl_tabs_nav({ class: 'js-empty-project-tabs' }) do
+            = gl_tab_link_to '#', item_active: true, 'aria-controls': 'ssh' do
+              = _('SSH')
+            = gl_tab_link_to '#', 'aria-controls': 'https' do
+              = _('HTTPS')
+            = render_if_exists 'projects/empty_kerberos_tab_link'
+          .tab-content
+            .tab-pane.active#ssh
+              = render partial: 'empty_git_instructions', locals: { protocol: 'ssh' }
+            .tab-pane#https
+              = render partial: 'empty_git_instructions', locals: { protocol: 'https' }
+            = render_if_exists 'projects/empty_kerberos_pane'
+        - else
+          = render partial: 'empty_git_instructions', locals: { protocol: 'https' }
+  .project-page-layout-sidebar.js-show-on-project-root.gl-mt-5
+    = render "sidebar"

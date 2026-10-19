@@ -1,24 +1,178 @@
+# frozen_string_literal: true
+
 module Gitlab
   class Seeder
+    extend ActionView::Helpers::NumberHelper
+
+    MASS_INSERT_PREFIX = 'mass_insert'
+    MASS_INSERT_PROJECT_START = "#{MASS_INSERT_PREFIX}_project_"
+    MASS_INSERT_GROUP_START = "#{MASS_INSERT_PREFIX}_group_"
+    MASS_INSERT_USER_START = "#{MASS_INSERT_PREFIX}_user_"
+    REPORTED_USER_START = 'reported_user_'
+    ESTIMATED_INSERT_PER_MINUTE = 250_000
+    MASS_INSERT_ENV = 'MASS_INSERT'
+
+    module NamespaceSeed
+      extend ActiveSupport::Concern
+
+      included do
+        scope :not_mass_generated, -> do
+          where.not("namespaces.path LIKE '#{sanitize_sql_like(MASS_INSERT_GROUP_START)}%'")
+        end
+      end
+    end
+
+    module ProjectSeed
+      extend ActiveSupport::Concern
+
+      included do
+        scope :not_mass_generated, -> do
+          where.not("projects.path LIKE '#{sanitize_sql_like(MASS_INSERT_PROJECT_START)}%'")
+        end
+      end
+    end
+
+    module UserSeed
+      extend ActiveSupport::Concern
+
+      included do
+        scope :not_mass_generated, -> do
+          where.not(
+            "username LIKE '#{sanitize_sql_like(MASS_INSERT_USER_START)}%' OR " \
+              "username LIKE '#{sanitize_sql_like(REPORTED_USER_START)}%'"
+          )
+        end
+      end
+    end
+
+    def self.log_message(message)
+      puts "#{Time.current}: #{message}"
+    end
+
+    def self.with_mass_insert(size, model)
+      humanized_model_name = model.is_a?(String) ? model : model.model_name.human.pluralize(size)
+
+      if !ENV[MASS_INSERT_ENV] && !ENV['CI']
+        puts "\nSkipping mass insertion for #{humanized_model_name}."
+        puts "Consider running the seed with #{MASS_INSERT_ENV}=1"
+        return
+      end
+
+      humanized_size = number_with_delimiter(size)
+      estimative = estimated_time_message(size)
+
+      puts "\nCreating #{humanized_size} #{humanized_model_name}."
+      puts estimative
+
+      yield
+
+      puts "\n#{number_with_delimiter(size)} #{humanized_model_name} created!"
+    end
+
+    def self.estimated_time_message(size)
+      estimated_minutes = (size.to_f / ESTIMATED_INSERT_PER_MINUTE).round
+      humanized_minutes = 'minute'.pluralize(estimated_minutes)
+
+      if estimated_minutes == 0
+        "Rough estimated time: less than a minute ⏰"
+      else
+        "Rough estimated time: #{estimated_minutes} #{humanized_minutes} ⏰"
+      end
+    end
+
     def self.quiet
-      mute_mailer
+      # Additional seed logic for models.
+      Namespace.include(NamespaceSeed)
+      Project.include(ProjectSeed)
+      User.include(UserSeed)
+
+      old_perform_deliveries = ActionMailer::Base.perform_deliveries
+      ActionMailer::Base.perform_deliveries = false
+
       SeedFu.quiet = true
-      yield
+
+      without_database_logging do
+        without_statement_timeout do
+          without_new_note_notifications do
+            # Request store benefits development seeders the most because it
+            # saves us about 30% of seeding time, and production seeds are minimal.
+            if Rails.env.development?
+              Gitlab::SafeRequestStore.ensure_request_store do
+                sidekiq_strict_mode = Sidekiq::Config::DEFAULTS[:on_complex_arguments]
+                disable_request_limits = ENV['GITALY_DISABLE_REQUEST_LIMITS']
+                # We need this because seeders shouldn't be limited by Gitaly
+                # since we're not actually in a request-response environment.
+                ENV['GITALY_DISABLE_REQUEST_LIMITS'] = 'true'
+                # Strict args just print annoying warnings during seeding.
+                # At this point, the developer can't do anything about this.
+                Sidekiq.strict_args!(false)
+                yield
+              ensure
+                ENV['GITALY_DISABLE_REQUEST_LIMITS'] = disable_request_limits
+                Sidekiq.strict_args!(sidekiq_strict_mode)
+              end
+            else
+              yield
+            end
+          end
+        end
+      end
+
+      puts Rainbow("\nOK").green
+    ensure
       SeedFu.quiet = false
-      puts "\nOK".green
+      ActionMailer::Base.perform_deliveries = old_perform_deliveries
     end
 
-    def self.by_user(user)
+    def self.without_gitaly_timeout
+      # Remove Gitaly timeout
+      old_timeout = Gitlab::CurrentSettings.current_application_settings.gitaly_timeout_default
+      Gitlab::CurrentSettings.current_application_settings.update_columns(gitaly_timeout_default: 0)
+      # Otherwise we still see the default value when running seed_fu
+      ApplicationSetting.expire
+
       yield
+    ensure
+      Gitlab::CurrentSettings.current_application_settings.update_columns(gitaly_timeout_default: old_timeout)
+      ApplicationSetting.expire
     end
 
-    def self.mute_mailer
-      code = <<-eos
-def Notify.delay
-  self
-end
-      eos
-      eval(code)
+    def self.without_new_note_notifications
+      NotificationService.alias_method :original_new_note, :new_note
+      NotificationService.define_method(:new_note) { |note| }
+
+      yield
+    ensure
+      NotificationService.alias_method :new_note, :original_new_note
+      NotificationService.remove_method :original_new_note
+    end
+
+    def self.without_statement_timeout
+      Gitlab::Database::EachDatabase.each_connection do |connection|
+        connection.execute('SET statement_timeout=0')
+        Gitlab::Database::TransactionTimeout.disable(connection)
+      end
+      yield
+    ensure
+      Gitlab::Database::EachDatabase.each_connection do |connection|
+        connection.execute('RESET statement_timeout')
+        Gitlab::Database::TransactionTimeout.reset(connection)
+      end
+    end
+
+    def self.without_database_logging
+      old_loggers = Gitlab::Database.database_base_models.transform_values(&:logger)
+
+      Gitlab::Database.database_base_models.each do |_, model|
+        model.logger = nil
+      end
+
+      yield
+    ensure
+      Gitlab::Database.database_base_models.each do |connection_name, model|
+        model.logger = old_loggers[connection_name]
+      end
     end
   end
 end
+# :nocov:

@@ -1,0 +1,11 @@
+---
+name: create_organization
+description: Grants the ability to create organizations
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - create_organization
+assignable_when:
+  - condition: saas

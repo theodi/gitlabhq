@@ -1,0 +1,79 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+#import "ee_else_ce/work_items/graphql/notes/work_item_note.fragment.graphql"
+
+# @feature_category: team_planning
+query workItemNotesByIid(
+  $fullPath: ID!
+  $iid: String!
+  $after: String
+  $pageSize: Int
+  $sort: WorkItemDiscussionsSort
+  $useWorkItemFeatures: Boolean = false
+) {
+  namespace(fullPath: $fullPath) {
+    id
+    workItem(iid: $iid) {
+      id
+      iid
+      namespace {
+        id
+      }
+      features @include(if: $useWorkItemFeatures) {
+        notes {
+          type
+          discussionLocked
+          discussions(first: $pageSize, after: $after, filter: ALL_NOTES, sort: $sort) {
+            pageInfo {
+              ...PageInfo
+            }
+            nodes {
+              id
+              resolved
+              resolvable
+              resolvedBy {
+                id
+                name
+              }
+              userPermissions {
+                resolveNote
+              }
+              notes {
+                nodes {
+                  ...WorkItemNote
+                }
+              }
+            }
+          }
+        }
+      }
+      widgets(onlyTypes: [NOTES]) @skip(if: $useWorkItemFeatures) {
+        ... on WorkItemWidgetNotes {
+          type
+          discussionLocked
+          discussions(first: $pageSize, after: $after, filter: ALL_NOTES, sort: $sort) {
+            pageInfo {
+              ...PageInfo
+            }
+            nodes {
+              id
+              resolved
+              resolvable
+              resolvedBy {
+                id
+                name
+              }
+              userPermissions {
+                resolveNote
+              }
+              notes {
+                nodes {
+                  ...WorkItemNote
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

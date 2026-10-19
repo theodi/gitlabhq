@@ -1,0 +1,56 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'projects/hooks/edit' do
+  let(:project) { build_stubbed(:project) }
+  let(:hook) { build_stubbed(:project_hook, project: project) }
+
+  before do
+    assign :project, project
+    assign :hook, hook
+  end
+
+  it 'renders webhook page with "Recent events"' do
+    render
+
+    expect(rendered).to have_css('.gl-heading-2', text: _('Webhook'))
+    expect(rendered).to have_text(_('Recent events'))
+  end
+
+  context 'when webhook is rate limited' do
+    before do
+      allow(hook).to receive(:rate_limited?).and_return(true)
+    end
+
+    it 'renders alert' do
+      render
+
+      expect(rendered).to have_text(s_('Webhooks|Webhook rate limit has been reached'))
+    end
+  end
+
+  context 'when webhook is permanently disabled' do
+    before do
+      allow(hook).to receive(:permanently_disabled?).and_return(true)
+    end
+
+    it 'renders alert' do
+      render
+
+      expect(rendered).to have_text(s_('Webhooks|Webhook disabled'))
+    end
+  end
+
+  context 'when webhook is temporarily disabled' do
+    before do
+      allow(hook).to receive_messages(temporarily_disabled?: true, disabled_until: Time.now + 10.minutes)
+    end
+
+    it 'renders alert' do
+      render
+
+      expect(rendered).to have_text(s_('Webhooks|Webhook temporarily disabled'))
+    end
+  end
+end

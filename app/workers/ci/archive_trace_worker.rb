@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+module Ci
+  class ArchiveTraceWorker
+    include ApplicationWorker
+
+    idempotent!
+    deduplicate :until_executed
+    data_consistency :sticky
+
+    sidekiq_options retry: 3
+    max_concurrency_limit_percentage 0.32
+    include PipelineBackgroundQueue
+
+    def perform(job_id)
+      archivable_jobs = Ci::Build.without_archived_trace.eager_load_for_archiving_trace
+
+      archivable_jobs.find_by_id(job_id).try do |job|
+        Ci::ArchiveTraceService.new.execute(job, worker_name: self.class.name)
+      end
+    end
+  end
+end

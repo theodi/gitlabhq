@@ -1,0 +1,81 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe AdjournedProjectsDeletionCronWorker, feature_category: :compliance_management do
+  describe "#perform" do
+    subject(:worker) { described_class.new }
+
+    let_it_be(:deletion_adjourned_period_days) { 10 }
+    let_it_be(:user) { create(:user) }
+    let_it_be(:marked_for_deletion_at) { (deletion_adjourned_period_days + 1).days.ago }
+
+    let!(:project_marked_for_deletion) do
+      create(:project, marked_for_deletion_at: marked_for_deletion_at, deleting_user: user)
+    end
+
+    before do
+      stub_application_setting(deletion_adjourned_period: deletion_adjourned_period_days)
+      create(:project)
+      create(:project, marked_for_deletion_at: (deletion_adjourned_period_days - 1).days.ago)
+    end
+
+    it 'only schedules to delete projects marked for deletion before number of days from settings' do
+      expect(AdjournedProjectDeletionWorker).to receive(:perform_in).with(0, project_marked_for_deletion.id)
+
+      worker.perform
+    end
+
+    it 'tracks internal event for project deletion' do
+      expect { worker.perform }
+        .to trigger_internal_events('trigger_delete_on_project')
+        .with(
+          project: project_marked_for_deletion,
+          namespace: project_marked_for_deletion.namespace,
+          user: user,
+          additional_properties: {
+            label: 'worker',
+            property: 'true',
+            actor: 'system'
+          }
+        )
+        .and increment_usage_metrics('counts.count_total_permanent_project_deletion_on_worker')
+    end
+
+    context 'when two projects are scheduled for deletion' do
+      let_it_be(:project_marked_for_deletion_two) do
+        create(:project, marked_for_deletion_at: marked_for_deletion_at, deleting_user: user)
+      end
+
+      it 'schedules the second job 3 seconds after the first' do
+        expect(AdjournedProjectDeletionWorker).to receive(:perform_in).with(3, project_marked_for_deletion.id)
+        expect(AdjournedProjectDeletionWorker).to receive(:perform_in).with(0, project_marked_for_deletion_two.id)
+
+        worker.perform
+      end
+    end
+
+    context 'with pending_delete project' do
+      before do
+        project_marked_for_deletion.update!(pending_delete: true)
+      end
+
+      it 'scheduled the project for deletion' do
+        expect(AdjournedProjectDeletionWorker).to receive(:perform_in)
+                                                    .with(anything, project_marked_for_deletion.id)
+
+        worker.perform
+      end
+    end
+
+    context 'with marked for deletion exactly before number of days from settings' do
+      let(:marked_for_deletion_at) { deletion_adjourned_period_days.days.ago }
+
+      it 'schedules to delete project', :freeze_time do
+        expect(AdjournedProjectDeletionWorker).to receive(:perform_in).with(0, project_marked_for_deletion.id)
+
+        worker.perform
+      end
+    end
+  end
+end

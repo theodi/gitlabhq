@@ -1,0 +1,95 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`packages_list_row renders 1`] = `
+<div
+  class="gl-border-b-1 gl-border-b-default gl-border-b-solid gl-border-t-1 gl-border-t-solid gl-border-t-transparent gl-flex gl-flex-col"
+  data-testid="package-row"
+>
+  <div
+    class="gl-flex gl-py-3"
+  >
+    <div
+      class="@sm/panel:gl-flex-row gl-flex gl-flex-col gl-grow gl-items-stretch gl-justify-between"
+    >
+      <div
+        class="@sm/panel:gl-mb-0 gl-flex gl-flex-col gl-grow gl-mb-3 gl-min-w-0"
+      >
+        <div
+          class="@sm/panel:gl-flex gl-font-semibold gl-items-center gl-min-h-6 gl-min-w-0 gl-text-default"
+        >
+          <div
+            class="gl-flex gl-items-center gl-min-w-0 gl-mr-3"
+          >
+            <gl-link-stub
+              class="gl-min-w-0 gl-text-default"
+              data-testid="details-link"
+              href="foo"
+            >
+              <gl-truncate-stub
+                position="end"
+                text="Test package"
+              />
+            </gl-link-stub>
+          </div>
+        </div>
+        <div
+          class="gl-flex gl-gap-3 gl-grow gl-items-center gl-min-h-6 gl-min-w-0 gl-text-sm gl-text-subtle"
+        >
+          <div
+            class="gl-flex"
+          >
+            <span>
+              1.0.0
+            </span>
+            <div />
+            <package-path-stub
+              path="foo/bar/baz"
+            />
+          </div>
+        </div>
+      </div>
+      <div
+        class="@sm/panel:gl-items-end gl-flex gl-flex-col gl-justify-center gl-shrink-0 gl-text-subtle"
+      >
+        <div
+          class="@sm/panel:gl-text-default gl-flex gl-items-center gl-min-h-6"
+        >
+          <publish-method-stub
+            packageentity="[object Object]"
+          />
+        </div>
+        <div
+          class="gl-flex gl-items-center gl-min-h-6 gl-text-sm"
+        >
+          <span>
+            Created
+            <time
+              datetime="2015-12-10"
+              title="Thursday, December 10, 2015 at 12:00:00 AM GMT"
+            >
+              Dec 10, 2015
+            </time>
+          </span>
+        </div>
+      </div>
+    </div>
+    <div
+      class="@sm/panel:gl-flex gl-items-center gl-pl-3"
+    >
+      <gl-button-stub
+        accessibledisabled="true"
+        aria-label="Remove package"
+        buttontextclasses=""
+        category="secondary"
+        data-testid="action-delete"
+        icon="remove"
+        size="medium"
+        tag="button"
+        title="Remove package"
+        type="button"
+        variant="danger"
+      />
+    </div>
+  </div>
+</div>
+`;

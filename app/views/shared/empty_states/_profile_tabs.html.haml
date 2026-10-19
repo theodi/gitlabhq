@@ -1,0 +1,23 @@
+- current_user_empty_message_description = local_assigns.fetch(:current_user_empty_message_description, nil)
+- secondary_button_link = local_assigns.fetch(:secondary_button_link, nil)
+- secondary_button_label = local_assigns.fetch(:secondary_button_label, nil)
+- primary_button_link = local_assigns.fetch(:primary_button_link, nil)
+- primary_button_label = local_assigns.fetch(:primary_button_label, nil)
+
+- is_current_user = user_profile? && current_user.present? && current_user.username == params[:username]
+
+.nothing-here-block
+  - if is_current_user
+    = render Pajamas::EmptyStateComponent.new(svg_path: illustration_path,
+      title: current_user_empty_message_header,
+      primary_button_text: primary_button_label,
+      primary_button_link: primary_button_link,
+      secondary_button_text: secondary_button_label,
+      secondary_button_link: secondary_button_link) do |c|
+
+      - c.with_description do
+        - if current_user_empty_message_description.present?
+          = current_user_empty_message_description
+  - else
+    = render Pajamas::EmptyStateComponent.new(svg_path: illustration_path,
+      title: visitor_empty_message)

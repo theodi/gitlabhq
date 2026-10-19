@@ -1,18 +1,22 @@
-.event-title
-  %span.author_name= link_to_author event
-  %span.event_label{class: event.action_name}
-    = event_action_name(event)
+= icon_for_profile_event(event)
 
-  - if event.target
-    %strong= link_to "##{event.target_iid}", [event.project.namespace.becomes(Namespace), event.project, event.target]
-    at
+= event_user_info(event)
 
-  - if event.project
-    = link_to_project event.project
-  - else
-    = event.project_name
-    
-- if event.target.respond_to?(:title)
-  .event-body
-    .event-note
-      = event.target.title
+.event-title.gl-flex
+  = inline_event_icon(event)
+  .event-title-block.gl-inline-block.gl-mr-2
+    - if event.target
+      %span.event-type{ class: event.action_name + user_profile_activity_classes }
+        = localized_action_name(event)
+      %span.event-target-type{ class: user_profile_activity_classes }
+        = event.target_type_name
+      = link_to event_feed_url(event), class: 'event-target-link', title: event.target_title do
+        = event.target.reference_link_text
+      - unless event.milestone?
+        %span.event-target-title.gl-text-ellipsis.gl-overflow-hidden{ dir: "auto" }
+          = "&quot;".html_safe + event.target.title + "&quot".html_safe
+    - else
+      %span.event-type.gl-inline-block{ class: event.action_name }
+        = event_action_name(event)
+
+    = render "events/event_scope", event: event if event.resource_parent.present?

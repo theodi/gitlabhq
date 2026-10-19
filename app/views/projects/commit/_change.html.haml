@@ -1,0 +1,36 @@
+- can_push_code = can?(current_user, :push_code, @project)
+
+- if !can_push_code && selected_branch.present?
+  - branch_collaboration = @project.branch_allows_collaboration?(current_user, selected_branch)
+  - existing_branch = ERB::Util.html_escape(selected_branch)
+- else
+  - branch_collaboration = false
+  - existing_branch = ''
+
+- case type.to_s
+- when 'revert'
+  - revert_merge_request = _('Revert this merge request')
+  - revert_commit = _('Revert this commit')
+  - title = commit.merged_merge_request(current_user) ? revert_merge_request : revert_commit
+
+  .js-revert-commit-modal{ data: { title: title,
+    endpoint: revert_namespace_project_commit_path(commit, namespace_id: @project.namespace.full_path, project_id: @project),
+    branch: @project.default_branch,
+    push_code: can_push_code.to_s,
+    branch_collaboration: branch_collaboration.to_s,
+    existing_branch: existing_branch,
+    branches_endpoint: project_branches_path(@project) } }
+
+- when 'cherry-pick'
+  - title = commit.merged_merge_request(current_user) ? _('Cherry-pick this merge request') : _('Cherry-pick this commit')
+
+  .js-cherry-pick-commit-modal{ data: { title: title,
+    endpoint: cherry_pick_namespace_project_commit_path(commit, namespace_id: @project.namespace.full_path, project_id: @project),
+    branch: @project.default_branch,
+    target_project_id: @project.id,
+    target_project_name: @project.full_path,
+    push_code: can_push_code.to_s,
+    branch_collaboration: branch_collaboration.to_s,
+    existing_branch: existing_branch,
+    branches_endpoint: refs_project_path(@project),
+    projects: cherry_pick_projects_data(@project).to_json } }

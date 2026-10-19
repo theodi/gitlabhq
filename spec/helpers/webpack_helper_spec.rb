@@ -1,0 +1,344 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe WebpackHelper, feature_category: :tooling do
+  let(:source) { 'foo.js' }
+  let(:asset_path) { "/assets/webpack/#{source}" }
+
+  before do
+    allow(helper).to receive(:vite_enabled?).and_return(false)
+  end
+
+  describe '#prefetch_link_tag' do
+    it 'returns prefetch link tag' do
+      expect(helper.prefetch_link_tag(source)).to eq("<link rel=\"prefetch\" href=\"/#{source}\">")
+    end
+  end
+
+  describe '#webpack_preload_asset_tag' do
+    before do
+      allow(Gitlab::Webpack::Manifest).to receive(:asset_paths).and_return([asset_path])
+      allow(helper).to receive(:content_security_policy_nonce).and_return('noncevalue')
+    end
+
+    it 'preloads the resource by default' do
+      expect(helper).to receive(:preload_link_tag).with(asset_path, {}).and_call_original
+
+      output = helper.webpack_preload_asset_tag(source)
+
+      expect(output).to eq("<link rel=\"preload\" href=\"#{asset_path}\" as=\"script\" type=\"text/javascript\" nonce=\"noncevalue\">")
+    end
+
+    it 'prefetches the resource if explicitly asked' do
+      expect(helper).to receive(:prefetch_link_tag).with(asset_path).and_call_original
+
+      output = helper.webpack_preload_asset_tag(source, prefetch: true)
+
+      expect(output).to eq("<link rel=\"prefetch\" href=\"#{asset_path}\">")
+    end
+  end
+
+  describe '#bundler_manifest_filename' do
+    before do
+      allow(Gitlab.config.webpack).to receive(:bundler).and_return('webpack')
+    end
+
+    it 'uses the Webpack manifest by default' do
+      expect(helper.bundler_manifest_filename).to eq(Gitlab.config.webpack.manifest_filename)
+    end
+
+    context 'when ENABLE_RSPACK is set' do
+      before do
+        stub_env('ENABLE_RSPACK', 'true')
+      end
+
+      it 'uses the Rspack manifest' do
+        expect(helper.bundler_manifest_filename).to eq('manifest.rspack.json')
+      end
+    end
+
+    context 'when the configured bundler is Rspack' do
+      before do
+        allow(Gitlab.config.webpack).to receive(:bundler).and_return('rspack')
+      end
+
+      it 'uses the Rspack manifest' do
+        expect(helper.bundler_manifest_filename).to eq('manifest.rspack.json')
+      end
+
+      it 'lets ENABLE_RSPACK override the configuration' do
+        stub_env('ENABLE_RSPACK', 'false')
+
+        expect(helper.bundler_manifest_filename).to eq(Gitlab.config.webpack.manifest_filename)
+      end
+    end
+
+    context 'when the rspack_production_assets flag is enabled in production' do
+      before do
+        stub_rails_env('production')
+        stub_feature_flags(rspack_production_assets: true)
+      end
+
+      it 'uses the Rspack manifest' do
+        expect(helper.bundler_manifest_filename).to eq('manifest.rspack.json')
+      end
+    end
+
+    context 'when only the rspack_production_assets_opt_in flag is enabled in production' do
+      let(:user) { build_stubbed(:user) }
+
+      before do
+        stub_rails_env('production')
+        stub_feature_flags(rspack_production_assets: false)
+        allow(helper).to receive(:current_user).and_return(user)
+      end
+
+      it 'uses the Rspack manifest for an opted-in user' do
+        stub_feature_flags(rspack_production_assets_opt_in: user)
+
+        expect(helper.bundler_manifest_filename).to eq('manifest.rspack.json')
+      end
+
+      it 'keeps the Webpack manifest for other users' do
+        stub_feature_flags(rspack_production_assets_opt_in: build_stubbed(:user))
+
+        expect(helper.bundler_manifest_filename).to eq(Gitlab.config.webpack.manifest_filename)
+      end
+
+      it 'keeps the Webpack manifest for anonymous requests' do
+        allow(helper).to receive(:current_user).and_return(nil)
+        stub_feature_flags(rspack_production_assets_opt_in: user)
+
+        expect(helper.bundler_manifest_filename).to eq(Gitlab.config.webpack.manifest_filename)
+      end
+    end
+
+    context 'when the rspack_production_assets flag is enabled outside production' do
+      before do
+        stub_feature_flags(rspack_production_assets: true)
+      end
+
+      it 'keeps the Webpack manifest' do
+        expect(helper.bundler_manifest_filename).to eq(Gitlab.config.webpack.manifest_filename)
+      end
+    end
+  end
+
+  context 'when vite enabled' do
+    let(:bundle) { 'bundle.js' }
+
+    before do
+      stub_rails_env('development')
+
+      allow(helper).to receive_messages(vite_javascript_tag: 'vite', vite_enabled?: true)
+    end
+
+    describe '#webpack_bundle_tag' do
+      it 'return vite javascript tag' do
+        expect(helper.webpack_bundle_tag(bundle)).to eq('vite')
+      end
+
+      it 'forwards options to the vite javascript tag' do
+        expect(helper).to receive(:vite_javascript_tag).with(bundle, blocking: 'render')
+
+        helper.webpack_bundle_tag(bundle, blocking: 'render')
+      end
+    end
+  end
+
+  describe '#webpack_bundle_tag' do
+    let(:bundle) { 'bundle.js' }
+
+    before do
+      allow(helper).to receive(:webpack_entrypoint_paths).with(bundle).and_return([asset_path])
+    end
+
+    it 'forwards options to the javascript include tag' do
+      expect(helper).to receive(:javascript_include_tag).with(asset_path, blocking: 'render')
+
+      helper.webpack_bundle_tag(bundle, blocking: 'render')
+    end
+  end
+
+  describe '#webpack_controller_bundle_tags with vue3 migration' do
+    let(:user) { build_stubbed(:user) }
+
+    before do
+      allow(helper).to receive(:current_user).and_return(user)
+      allow(helper.controller).to receive_messages(
+        controller_path: 'projects/jobs',
+        action_name: 'show'
+      )
+      allow(Gitlab::Webpack::Manifest).to receive(:entrypoint_paths) do |entry|
+        raise Gitlab::Webpack::Manifest::AssetMissingError unless served_entries.include?(entry)
+
+        ["/assets/webpack/#{entry}.js"]
+      end
+    end
+
+    context 'when the route has no page entry' do
+      let(:served_entries) { ['main'] }
+
+      it 'renders nothing, because the layout loads main on its own' do
+        expect(helper.webpack_controller_bundle_tags).to be_empty
+      end
+    end
+
+    context 'when the page is committed to Vue 3' do
+      let(:served_entries) { ['pages.projects.jobs.show.vue3'] }
+
+      before do
+        # Default to the real implementation, then override only the specific
+        # entry name we care about. The broader stub must be declared first;
+        # otherwise the narrower stub would be overwritten by it.
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for).and_call_original
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for)
+          .with('pages.projects.jobs.show', current_user: user)
+          .and_return('pages.projects.jobs.show.vue3')
+      end
+
+      it 'renders the .vue3 entry' do
+        expect(helper.webpack_controller_bundle_tags).to include('pages.projects.jobs.show.vue3.js')
+      end
+    end
+
+    context 'when the .vue3 entry is missing from the manifest' do
+      let(:served_entries) { ['pages.projects.jobs.show'] }
+
+      before do
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for).and_call_original
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for)
+          .with('pages.projects.jobs.show', current_user: user)
+          .and_return('pages.projects.jobs.show.vue3')
+      end
+
+      it 'falls back to the original entry' do
+        output = helper.webpack_controller_bundle_tags
+
+        expect(output).to include('pages.projects.jobs.show.js')
+        expect(output).not_to include('.vue3.js')
+      end
+
+      it 'tracks the fallback so the no-op rollout is detectable' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+          an_instance_of(Gitlab::Webpack::Manifest::AssetMissingError),
+          vue3_entrypoint: 'pages.projects.jobs.show.vue3'
+        )
+
+        helper.webpack_controller_bundle_tags
+      end
+
+      context 'on a second request in the same process' do
+        it 'reports once rather than per request' do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).once
+
+          2.times { helper.webpack_controller_bundle_tags }
+        end
+      end
+    end
+
+    context 'when the page has no bundle in this build' do
+      # An EE-only page in a FOSS build: the YAML is still on disk, so the entry
+      # resolves to `.vue3`, but neither bundle was compiled.
+      let(:served_entries) { ['pages.projects'] }
+
+      before do
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for).and_call_original
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for)
+          .with('pages.projects.jobs.show', current_user: user)
+          .and_return('pages.projects.jobs.show.vue3')
+      end
+
+      it 'walks up to the ancestor entry without tracking', :aggregate_failures do
+        expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+
+        expect(helper.webpack_controller_bundle_tags).to include('pages.projects.js')
+      end
+    end
+
+    context 'when a route segment has no bundle at all' do
+      let(:served_entries) { ['pages.projects'] }
+
+      before do
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for) { |name, **| name }
+      end
+
+      it 'walks up to the ancestor entry without tracking', :aggregate_failures do
+        expect(Gitlab::ErrorTracking).not_to receive(:track_exception)
+
+        expect(helper.webpack_controller_bundle_tags).to include('pages.projects.js')
+      end
+    end
+  end
+
+  describe '#webpack_bundle_tag with vue3 migration' do
+    subject(:output) { helper.webpack_bundle_tag(bundle) }
+
+    let(:user) { build_stubbed(:user) }
+
+    before do
+      allow(helper).to receive(:current_user).and_return(user)
+      allow(Gitlab::Webpack::Manifest).to receive(:entrypoint_paths) do |entry|
+        ["/assets/webpack/#{entry}.js"]
+      end
+    end
+
+    context 'when the bundle is rolling out Vue 3' do
+      let(:bundle) { 'performance_bar' }
+
+      before do
+        allow(Gitlab::Vue3Migration).to receive(:rollout?).with(bundle).and_return(true)
+        allow(Gitlab::Vue3Migration).to receive(:entrypoint_for)
+          .with(bundle, current_user: user).and_return(resolved_entry)
+      end
+
+      context 'and the feature flag is off' do
+        let(:resolved_entry) { bundle }
+
+        it 'renders the Vue 2 bundle', :aggregate_failures do
+          expect(output).to include('performance_bar.js')
+          expect(output).not_to include('.vue3.js')
+        end
+      end
+
+      context 'and the feature flag is on' do
+        let(:resolved_entry) { "#{bundle}.vue3" }
+
+        it 'renders the Vue 3 bundle' do
+          expect(output).to include('performance_bar.vue3.js')
+        end
+
+        context 'with Vite enabled' do
+          before do
+            allow(helper).to receive(:vite_enabled?).and_return(true)
+          end
+
+          # ViteRuby appends `.js` only to a name without an extension, and
+          # `.vue3` reads as one, so the bare name 404s on the dev server.
+          it 'requests the Vue 3 bundle with its extension' do
+            expect(helper).to receive(:vite_javascript_tag).with('performance_bar.vue3.js')
+
+            output
+          end
+        end
+      end
+    end
+
+    context 'when the bundle has no rollout declaration' do
+      let(:bundle) { 'redirect_listbox' }
+
+      before do
+        allow(Gitlab::Vue3Migration).to receive(:rollout?).with(bundle).and_return(false)
+      end
+
+      # Helper and fixture specs render this tag without a Warden request, where
+      # `current_user` raises `Devise::MissingWarden`.
+      it 'renders the bundle without consulting the current user', :aggregate_failures do
+        expect(helper).not_to receive(:current_user)
+
+        expect(output).to include('redirect_listbox.js')
+      end
+    end
+  end
+end

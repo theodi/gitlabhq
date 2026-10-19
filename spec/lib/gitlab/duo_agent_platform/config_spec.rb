@@ -1,0 +1,1722 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::DuoAgentPlatform::Config, feature_category: :duo_agent_platform do
+  let_it_be(:project) { create(:project, :repository) }
+
+  let(:config) { described_class.new(project) }
+  let(:config_path) { '.gitlab/duo/agent-config.yml' }
+  let(:candidate_path) { '.gitlab/duo/agent-config-candidate.yml' }
+  let(:default_branch) { 'main' }
+  let(:commit_sha) { 'abc123' }
+
+  before do
+    allow(project).to receive(:default_branch).and_return(default_branch)
+    commit = Struct.new(:sha).new(commit_sha)
+    allow(project.repository).to receive(:commit).with(default_branch).and_return(commit)
+    # dap_agent_config_candidate is on by default in specs and no candidate file exists, so
+    # every example below also exercises the fallback to CONFIG_FILE_NAME.
+    allow(project.repository).to receive(:blob_data_at)
+                                   .with(default_branch, candidate_path)
+                                   .and_return(nil)
+  end
+
+  context 'when the repository is empty' do
+    let_it_be(:project) { create(:project, :empty_repo) }
+
+    before do
+      # Let default_branch fall through to the group or instance preference, as it
+      # does in production, so the guard is exercised rather than asserted. The
+      # commit lookup for cache_key then really resolves to nothing.
+      allow(project).to receive(:default_branch).and_call_original
+      allow(project.repository).to receive(:commit).and_call_original
+    end
+
+    it 'does not ask Gitaly for either config file' do
+      expect(project.repository).not_to receive(:blob_data_at)
+
+      expect(config.config_present?).to be(false)
+    end
+  end
+
+  describe 'candidate config file' do
+    before do
+      allow(project.repository).to receive(:blob_data_at)
+                                     .with(default_branch, config_path)
+                                     .and_return("image: primary:1.0")
+    end
+
+    context 'when the flag is disabled' do
+      before do
+        stub_feature_flags(dap_agent_config_candidate: false)
+      end
+
+      it 'reads the primary file and never looks for the candidate' do
+        expect(project.repository).not_to receive(:blob_data_at).with(default_branch, candidate_path)
+
+        expect(config.default_image).to eq('primary:1.0')
+      end
+    end
+
+    context 'when the flag is enabled for the project' do
+      before do
+        stub_feature_flags(dap_agent_config_candidate: project)
+      end
+
+      it 'reads the candidate file' do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, candidate_path)
+                                       .and_return("image: candidate:2.0")
+
+        expect(config.default_image).to eq('candidate:2.0')
+      end
+
+      it 'falls back to the primary file when the candidate is absent' do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, candidate_path)
+                                       .and_return(nil)
+
+        expect(config.default_image).to eq('primary:1.0')
+      end
+
+      it 'is not read for a different project' do
+        other_project = create(:project, :repository)
+        allow(other_project).to receive(:default_branch).and_return(default_branch)
+        allow(other_project.repository).to receive(:blob_data_at)
+                                             .with(default_branch, config_path)
+                                             .and_return("image: other:1.0")
+
+        expect(other_project.repository).not_to receive(:blob_data_at).with(default_branch, candidate_path)
+
+        expect(described_class.new(other_project).default_image).to eq('other:1.0')
+      end
+    end
+
+    # Guards the rollback path: the flag flip does not move the SHA, so a shared key
+    # would keep serving the other file until CACHE_EXPIRY.
+    describe 'cache isolation', :use_clean_rails_memory_store_caching do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, candidate_path)
+                                       .and_return("image: candidate:2.0")
+      end
+
+      it 'does not serve a cached candidate config after the flag is disabled' do
+        stub_feature_flags(dap_agent_config_candidate: project)
+        expect(described_class.new(project).default_image).to eq('candidate:2.0')
+
+        stub_feature_flags(dap_agent_config_candidate: false)
+        expect(described_class.new(project).default_image).to eq('primary:1.0')
+      end
+
+      it 'does not serve a cached primary config after the flag is enabled' do
+        stub_feature_flags(dap_agent_config_candidate: false)
+        expect(described_class.new(project).default_image).to eq('primary:1.0')
+
+        stub_feature_flags(dap_agent_config_candidate: project)
+        expect(described_class.new(project).default_image).to eq('candidate:2.0')
+      end
+    end
+  end
+
+  describe '#default_image' do
+    context 'when config contains an image' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("image: ruby:3.0\nother: value")
+      end
+
+      it 'returns the image value' do
+        expect(config.default_image).to eq('ruby:3.0')
+      end
+    end
+
+    context 'when config file does not exist' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns nil' do
+        expect(config.default_image).to be_nil
+      end
+    end
+
+    context 'when config does not contain an image key' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("other_key: value")
+      end
+
+      it 'returns nil' do
+        expect(config.default_image).to be_nil
+      end
+    end
+  end
+
+  describe '#id_tokens' do
+    context 'when config contains id_tokens' do
+      let(:config_content) do
+        <<~YAML
+          id_tokens:
+            SIGSTORE_ID_TOKEN:
+              aud: sigstore
+            VAULT_ID_TOKEN:
+              aud:
+                - https://vault.example.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns the id_tokens hash' do
+        expect(config.id_tokens).to eq(
+          'SIGSTORE_ID_TOKEN' => { 'aud' => 'sigstore' },
+          'VAULT_ID_TOKEN' => { 'aud' => ['https://vault.example.com'] }
+        )
+      end
+    end
+
+    context 'when config does not contain id_tokens' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("image: ruby:3.0")
+      end
+
+      it 'returns nil' do
+        expect(config.id_tokens).to be_nil
+      end
+    end
+
+    context 'when config file does not exist' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns nil' do
+        expect(config.id_tokens).to be_nil
+      end
+    end
+
+    context 'when id_tokens is not a hash' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("id_tokens: invalid")
+      end
+
+      it 'returns nil' do
+        expect(config.id_tokens).to be_nil
+      end
+    end
+  end
+
+  describe '#variables' do
+    context 'when config contains a variables allowlist' do
+      let(:config_content) do
+        <<~YAML
+          variables:
+            - MY_API_KEY
+            - DATABASE_URL
+            - MY_API_KEY
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns the unique list of variable names as strings' do
+        expect(config.variables).to eq(%w[MY_API_KEY DATABASE_URL])
+      end
+    end
+
+    context 'when config does not contain variables' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("image: ruby:3.0")
+      end
+
+      it 'returns an empty array' do
+        expect(config.variables).to eq([])
+      end
+    end
+
+    context 'when config file does not exist' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns an empty array' do
+        expect(config.variables).to eq([])
+      end
+    end
+  end
+
+  describe '#reference_repository_path' do
+    before do
+      allow(project.repository).to receive(:blob_data_at)
+                                     .with(default_branch, config_path)
+                                     .and_return(config_content)
+    end
+
+    context 'when git_strategy sets reference_repository_path' do
+      let(:config_content) do
+        <<~YAML
+          git_strategy:
+            reference_repository_path: /opt/duo/ref.git
+        YAML
+      end
+
+      it 'returns the path' do
+        expect(config.reference_repository_path).to eq('/opt/duo/ref.git')
+      end
+    end
+
+    context 'when git_strategy is not a hash' do
+      let(:config_content) { "git_strategy: /opt/duo/ref.git" }
+
+      it 'returns nil' do
+        expect(config.reference_repository_path).to be_nil
+      end
+    end
+
+    context 'when the path is not a string' do
+      let(:config_content) do
+        <<~YAML
+          git_strategy:
+            reference_repository_path: true
+        YAML
+      end
+
+      it 'returns nil' do
+        expect(config.reference_repository_path).to be_nil
+      end
+    end
+
+    context 'when config does not contain git_strategy' do
+      let(:config_content) { "image: ruby:3.0" }
+
+      it 'returns nil' do
+        expect(config.reference_repository_path).to be_nil
+      end
+    end
+
+    context 'when config file does not exist' do
+      let(:config_content) { nil }
+
+      it 'returns nil' do
+        expect(config.reference_repository_path).to be_nil
+      end
+    end
+  end
+
+  describe '#setup_script' do
+    context 'when config contains setup_script as array' do
+      let(:config_content) do
+        <<~YAML
+          setup_script:
+            - npm install
+            - npm run build
+            - echo "Setup complete"
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns array of commands' do
+        expect(config.setup_script).to match_array(['npm install', 'npm run build', 'echo "Setup complete"'])
+      end
+    end
+
+    context 'when config contains setup_script as single string' do
+      let(:config_content) do
+        <<~YAML
+          setup_script: npm install
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns array with single command' do
+        expect(config.setup_script).to eq(['npm install'])
+      end
+    end
+
+    context 'when config does not contain setup_script' do
+      let(:config_content) do
+        <<~YAML
+          image: node:18-alpine
+          other_key: value
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns nil' do
+        expect(config.setup_script).to be_nil
+      end
+    end
+
+    context 'when config file does not exist' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns nil' do
+        expect(config.setup_script).to be_nil
+      end
+    end
+  end
+
+  describe '#cache_config' do
+    context 'with file-based cache key' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key:
+              files:
+                - package.json
+                - package-lock.json
+            paths:
+              - node_modules
+              - .npm
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns normalized cache configuration' do
+        expected = {
+          'key' => {
+            'files' => ['package.json', 'package-lock.json']
+          },
+          'paths' => ['node_modules', '.npm']
+        }
+        expect(config.cache_config).to eq(expected)
+      end
+    end
+
+    context 'with file-based key and prefix' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key:
+              files:
+                - Gemfile.lock
+              prefix: rspec
+            paths:
+              - vendor/ruby
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns cache configuration with prefix' do
+        expected = {
+          'key' => {
+            'files' => ['Gemfile.lock'],
+            'prefix' => 'rspec'
+          },
+          'paths' => ['vendor/ruby']
+        }
+        expect(config.cache_config).to eq(expected)
+      end
+    end
+
+    context 'with multiple files in cache key' do
+      let(:files) { Array.new(file_count) { |i| "file#{i + 1}.txt" } }
+      let(:config_content) do
+        { 'cache' => { 'key' => { 'files' => files }, 'paths' => ['node_modules'] } }.to_yaml
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      context 'with exactly the CI limit of files' do
+        let(:file_count) { 10 }
+
+        it 'uses all files without logging a warning' do
+          expect(Gitlab::AppLogger).not_to receive(:warn)
+
+          expect(config.cache_config['key']['files']).to eq(files)
+        end
+      end
+
+      context 'with more files than the CI limit' do
+        let(:file_count) { 12 }
+
+        it 'uses the first ten files and logs the limit', :aggregate_failures do
+          expect(Gitlab::AppLogger).to receive(:warn)
+            .with(message: 'Cache key files truncated', original_count: 12, truncated_count: 10)
+
+          expect(config.cache_config['key']['files']).to eq(files.first(10))
+        end
+      end
+
+      context 'when increase_ci_cache_key_files_limit is disabled' do
+        let(:file_count) { 4 }
+
+        before do
+          stub_feature_flags(increase_ci_cache_key_files_limit: false)
+        end
+
+        it 'uses the first two files and logs the limit', :aggregate_failures do
+          expect(Gitlab::AppLogger).to receive(:warn)
+            .with(message: 'Cache key files truncated', original_count: 4, truncated_count: 2)
+
+          expect(config.cache_config['key']['files']).to eq(%w[file1.txt file2.txt])
+        end
+      end
+    end
+
+    context 'with string cache key' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key: my-cache-key
+            paths:
+              - node_modules
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns cache configuration with string key' do
+        expected = {
+          'key' => 'my-cache-key',
+          'paths' => ['node_modules']
+        }
+        expect(config.cache_config).to eq(expected)
+      end
+    end
+
+    context 'with only paths (no key)' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            paths:
+              - node_modules
+              - vendor/bundle
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns cache configuration without key' do
+        expected = {
+          'paths' => ['node_modules', 'vendor/bundle']
+        }
+        expect(config.cache_config).to eq(expected)
+      end
+    end
+
+    context 'without paths (invalid cache)' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key: my-cache-key
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns nil since paths are required' do
+        expect(config.cache_config).to be_nil
+      end
+    end
+
+    context 'when cache is not a hash' do
+      let(:config_content) do
+        <<~YAML
+          cache: invalid
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns nil' do
+        expect(config.cache_config).to be_nil
+      end
+    end
+
+    context 'when config does not contain cache' do
+      let(:config_content) do
+        <<~YAML
+          image: node:18-alpine
+          setup_script:
+            - npm install
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns nil' do
+        expect(config.cache_config).to be_nil
+      end
+    end
+
+    context 'when config file does not exist' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns nil' do
+        expect(config.cache_config).to be_nil
+      end
+    end
+
+    context 'with file-based key but no files' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key:
+              prefix: test
+            paths:
+              - node_modules
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns cache configuration without key since files are missing' do
+        expected = {
+          'paths' => ['node_modules']
+        }
+        expect(config.cache_config).to eq(expected)
+      end
+    end
+
+    context 'with paths as single string' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            paths: node_modules
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'converts single path to array' do
+        expected = {
+          'paths' => ['node_modules']
+        }
+        expect(config.cache_config).to eq(expected)
+      end
+    end
+
+    context 'with empty paths array' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key: test-key
+            paths: []
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns nil since paths are empty' do
+        expect(config.cache_config).to be_nil
+      end
+    end
+  end
+
+  describe '#valid_format?' do
+    context 'with valid YAML hash' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("image: ruby:3.0")
+      end
+
+      it 'returns true' do
+        expect(config.valid_format?).to be true
+      end
+    end
+
+    context 'with empty file' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'when YAML parsing fails' do
+      before do
+        # Unmatched bracket will cause syntax error
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("[")
+
+        # Ensure cache yields to the block to trigger the parsing
+        allow(Rails.cache).to receive(:fetch).and_yield
+      end
+
+      it 'returns false and tracks the error' do
+        expect(Gitlab::ErrorTracking).to receive(:track_exception)
+                                           .with(instance_of(Psych::SyntaxError), project_id: project.id)
+
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with git_strategy configuration' do
+      using RSpec::Parameterized::TableSyntax
+
+      where(:git_strategy, :valid) do
+        { 'reference_repository_path' => '/opt/duo/ref.git' } | true
+        { 'reference_repository_path' => '/buildsx/ref.git' } | true
+        { 'reference_repository_path' => 'opt/duo/ref.git' } | false
+        { 'reference_repository_path' => '/builds/group/project/.git' } | false
+        { 'reference_repository_path' => '/builds' } | false
+        { 'reference_repository_path' => '/' } | false
+        { 'unknown' => '/opt/duo/ref.git' } | false
+        '/opt/duo/ref.git' | false
+      end
+
+      with_them do
+        before do
+          allow(project.repository).to receive(:blob_data_at)
+                                         .with(default_branch, config_path)
+                                         .and_return({ 'git_strategy' => git_strategy }.to_yaml)
+        end
+
+        it 'validates the git_strategy section' do
+          expect(config.valid_format?).to be valid
+        end
+      end
+    end
+
+    context 'with id_tokens configuration' do
+      let(:config_content) do
+        <<~YAML
+          id_tokens:
+            SIGSTORE_ID_TOKEN:
+              aud: sigstore
+            VAULT_ID_TOKEN:
+              aud:
+                - https://vault.example.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns true' do
+        expect(config.valid_format?).to be true
+      end
+    end
+
+    context 'with invalid id_tokens missing aud' do
+      let(:config_content) do
+        <<~YAML
+          id_tokens:
+            SIGSTORE_ID_TOKEN:
+              foo: bar
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with an empty string aud' do
+      let(:config_content) do
+        <<~YAML
+          id_tokens:
+            SIGSTORE_ID_TOKEN:
+              aud: ""
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with an empty string aud array entry' do
+      let(:config_content) do
+        <<~YAML
+          id_tokens:
+            SIGSTORE_ID_TOKEN:
+              aud:
+                - ""
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with an id_tokens name that is not a valid CI variable name' do
+      let(:config_content) do
+        <<~YAML
+          id_tokens:
+            "GIT_SSH COMMAND":
+              aud: sigstore
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with more id_tokens than the maximum allowed' do
+      let(:config_content) do
+        tokens = (1..21).map { |i| "  TOKEN_#{i}:\n    aud: sigstore" }.join("\n")
+        "id_tokens:\n#{tokens}\n"
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with a variables allowlist' do
+      let(:config_content) do
+        <<~YAML
+          variables:
+            - MY_API_KEY
+            - _DATABASE_URL
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns true' do
+        expect(config.valid_format?).to be true
+      end
+    end
+
+    context 'with a variables entry that is not a valid CI variable name' do
+      let(:config_content) do
+        <<~YAML
+          variables:
+            - 1invalid
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with duplicate variables entries' do
+      let(:config_content) do
+        <<~YAML
+          variables:
+            - MY_API_KEY
+            - MY_API_KEY
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with more variables than the maximum allowed' do
+      let(:config_content) do
+        variables = (1..51).map { |i| "  - VAR_#{i}" }.join("\n")
+        "variables:\n#{variables}\n"
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with complex valid configuration' do
+      let(:config_content) do
+        <<~YAML
+          image: node:18-alpine
+          setup_script:
+            - npm ci
+            - npm test
+          cache:
+            key:
+              files:
+                - package.json
+                - package-lock.json
+              prefix: test
+            paths:
+              - node_modules
+              - .npm
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns true' do
+        expect(config.valid_format?).to be true
+      end
+
+      it 'correctly parses all configuration sections' do
+        expect(config.default_image).to eq('node:18-alpine')
+        expect(config.setup_script).to match_array(['npm ci', 'npm test'])
+        expect(config.cache_config).to eq({
+          'key' => {
+            'files' => ['package.json', 'package-lock.json'],
+            'prefix' => 'test'
+          },
+          'paths' => ['node_modules', '.npm']
+        })
+      end
+    end
+  end
+
+  describe '#network_policy' do
+    context 'with valid network_policy containing duplicates' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains:
+              - example.com
+              - example.com
+              - EXAMPLE.COM
+              - test.com
+              - test.com
+            denied_domains:
+              - blocked.com
+              - blocked.com
+              - malicious.com
+              - malicious.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'removes duplicates from allowed_domains and denied_domains' do
+        expected = {
+          'allowed_domains' => ['example.com', 'test.com'],
+          'denied_domains' => ['blocked.com', 'malicious.com']
+        }
+        expect(config.network_policy).to eq(expected)
+      end
+    end
+
+    context 'with domains containing single quotes' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains:
+              - "EXAM'PLE.COM"
+            denied_domains:
+              - "mali'cious.com"
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'removes single quotes and downcases domains' do
+        expected = {
+          'allowed_domains' => ['example.com'],
+          'denied_domains' => ['malicious.com']
+        }
+        expect(config.network_policy).to eq(expected)
+      end
+    end
+
+    context 'with various input formats' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains:
+              - 1
+              - nil
+              - abcdef
+            denied_domains:
+              - blocked.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'is invalid' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'when network_policy is not a hash' do
+      let(:config_content) do
+        <<~YAML
+          network_policy: invalid_string
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns nil' do
+        expect(config.network_policy).to be_nil
+      end
+    end
+
+    context 'when allowed_domains contains non-array' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains: example.com
+            denied_domains:
+              - blocked.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'is not valid' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'when config does not contain network_policy' do
+      let(:config_content) do
+        <<~YAML
+          image: node:18-alpine
+          setup_script:
+            - npm install
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns nil' do
+        expect(config.network_policy).to be_nil
+      end
+    end
+
+    context 'when config file does not exist' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns nil' do
+        expect(config.network_policy).to be_nil
+      end
+    end
+
+    context 'when network_policy has empty arrays' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains: []
+            denied_domains: []
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns empty arrays for both domains' do
+        expected = {
+          'allowed_domains' => [],
+          'denied_domains' => []
+        }
+        expect(config.network_policy).to eq(expected)
+      end
+    end
+
+    context 'when network_policy has only allowed_domains' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains:
+              - example.com
+              - test.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns normalized policy with only allowed_domains' do
+        expected = {
+          'allowed_domains' => ['example.com', 'test.com'],
+          'denied_domains' => []
+        }
+        expect(config.network_policy).to eq(expected)
+      end
+    end
+
+    context 'when network_policy has only denied_domains' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            denied_domains:
+              - blocked.com
+              - malicious.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns normalized policy with only denied_domains' do
+        expected = {
+          'allowed_domains' => [],
+          'denied_domains' => ['blocked.com', 'malicious.com']
+        }
+        expect(config.network_policy).to eq(expected)
+      end
+    end
+
+    context 'when network_policy has nil values' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains:
+            denied_domains:
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'is invalid' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'when @config is nil' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+        allow(Rails.cache).to receive(:fetch).and_return(nil)
+      end
+
+      it 'returns nil without calling dig' do
+        expect(config.network_policy).to be_nil
+      end
+    end
+
+    context 'when domains exceed MAX_USER_SPECIFIED_DOMAINS' do
+      let(:max_domains) { 10 }
+      let(:excess_count) { max_domains + 10 }
+      let(:config_content) do
+        allowed = (1..excess_count).map { |i| "allowed#{i}.com" }
+        denied = (1..excess_count).map { |i| "denied#{i}.com" }
+        <<~YAML
+          network_policy:
+            allowed_domains:
+              #{allowed.map { |d| "- #{d}" }.join("\n    ")}
+            denied_domains:
+              #{denied.map { |d| "- #{d}" }.join("\n    ")}
+        YAML
+      end
+
+      before do
+        stub_const("#{described_class}::MAX_USER_SPECIFIED_DOMAINS", max_domains)
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'limits allowed_domains and denied_domains to MAX_USER_SPECIFIED_DOMAINS' do
+        result = config.network_policy
+        expect(result['allowed_domains'].length).to eq(max_domains)
+        expect(result['denied_domains'].length).to eq(max_domains)
+        expect(result['allowed_domains'].first).to eq('allowed1.com')
+        expect(result['allowed_domains'].last).to eq("allowed#{max_domains}.com")
+        expect(result['denied_domains'].first).to eq('denied1.com')
+        expect(result['denied_domains'].last).to eq("denied#{max_domains}.com")
+      end
+    end
+
+    context 'with all network_policy fields' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains:
+              - example.com
+              - test.com
+            denied_domains:
+              - blocked.com
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns normalized policy with all fields' do
+        expected = {
+          'allowed_domains' => ['example.com', 'test.com'],
+          'denied_domains' => ['blocked.com']
+        }
+        expect(config.network_policy).to eq(expected)
+      end
+    end
+
+    context 'with invalid image type' do
+      let(:config_content) do
+        <<~YAML
+          image:
+            - not_a_string
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with empty image string' do
+      let(:config_content) do
+        <<~YAML
+          image: ""
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with invalid top-level field imgae (typo of image)' do
+      let(:config_content) do
+        <<~YAML
+          imgae: ruby:3.0
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+        expect(config.validation_errors).to include('object property at `/imgae` is a disallowed additional property')
+      end
+    end
+
+    context 'with invalid setup_script type' do
+      let(:config_content) do
+        <<~YAML
+          setup_script:
+            key: value
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with empty setup_script array' do
+      let(:config_content) do
+        <<~YAML
+          setup_script: []
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with invalid network_policy type' do
+      let(:config_content) do
+        <<~YAML
+          network_policy: not_a_hash
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with invalid network_policy properties' do
+      let(:config_content) do
+        <<~YAML
+          network_policy:
+            allowed_domains:
+              - example.com
+            unknown_key: value
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+
+    context 'with invalid cache - missing paths' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key: test-key
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'passes schema validation but cache_config returns nil' do
+        expect(config.valid_format?).to be true
+        expect(config.cache_config).to be_nil
+      end
+    end
+
+    context 'with invalid cache - empty paths array' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            paths: []
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'passes schema validation but cache_config returns nil' do
+        expect(config.valid_format?).to be false
+        expect(config.cache_config).to be_nil
+      end
+    end
+
+    context 'with invalid cache key - missing files' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key:
+              prefix: test
+            paths:
+              - node_modules
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'passes schema validation but cache_config normalizes without key' do
+        expect(config.valid_format?).to be true
+        expect(config.cache_config).to eq({ 'paths' => ['node_modules'] })
+      end
+    end
+
+    context 'with more files than the CI limit in cache key' do
+      let(:config_content) do
+        files = Array.new(11) { |i| "file#{i + 1}.txt" }
+        { 'cache' => { 'key' => { 'files' => files }, 'paths' => ['node_modules'] } }.to_yaml
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'passes schema validation but cache_config truncates to 10 files' do
+        expect(config.valid_format?).to be true
+        expect(config.cache_config['key']['files'].length).to eq(10)
+      end
+    end
+
+    context 'with valid cache key - exactly two files' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            key:
+              files:
+                - file1.txt
+                - file2.txt
+            paths:
+              - node_modules
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns true' do
+        expect(config.valid_format?).to be true
+      end
+    end
+
+    context 'with invalid cache - unknown properties' do
+      let(:config_content) do
+        <<~YAML
+          cache:
+            paths:
+              - node_modules
+            unknown_property: value
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns false' do
+        expect(config.valid_format?).to be false
+      end
+    end
+  end
+
+  describe '#validation_errors' do
+    context 'with valid configuration' do
+      let(:config_content) do
+        <<~YAML
+          image: ruby:3.0
+          setup_script:
+            - bundle install
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns empty array' do
+        expect(config.validation_errors).to eq([])
+      end
+    end
+
+    context 'with invalid configuration' do
+      let(:config_content) do
+        <<~YAML
+          image: 123
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'returns array of error messages' do
+        errors = config.validation_errors
+        expect(errors).not_to be_empty
+        expect(errors.first).to include('string')
+      end
+    end
+
+    context 'when config is nil' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(nil)
+      end
+
+      it 'returns empty array' do
+        expect(config.validation_errors).to eq([])
+      end
+    end
+
+    context 'when config is not a hash' do
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return("not a hash")
+        allow(Rails.cache).to receive(:fetch).and_yield
+      end
+
+      it 'returns empty array' do
+        expect(config.validation_errors).to eq([])
+      end
+    end
+  end
+
+  describe 'caching' do
+    let(:cache_key) { "duo_config:#{project.id}:#{commit_sha}" }
+
+    before do
+      # The candidate variant appends ':candidate'; 'cache isolation' above covers it.
+      stub_feature_flags(dap_agent_config_candidate: false)
+      allow(project.repository).to receive(:blob_data_at)
+                                     .with(default_branch, config_path)
+                                     .and_return("image: cached-image")
+    end
+
+    it 'uses Rails cache with correct key and expiry' do
+      expect(Rails.cache).to receive(:fetch)
+                               .with(cache_key, expires_in: 5.minutes)
+                               .and_call_original
+
+      config
+    end
+
+    context 'when commit SHA is nil' do
+      before do
+        allow(project.repository).to receive(:commit).with(default_branch).and_return(nil)
+      end
+
+      it 'uses "empty" in cache key' do
+        expect(Rails.cache).to receive(:fetch)
+                                 .with("duo_config:#{project.id}:empty", expires_in: 5.minutes)
+                                 .and_call_original
+
+        config
+      end
+    end
+
+    context 'with multiple method calls' do
+      let(:config_content) do
+        <<~YAML
+          image: ruby:3.0
+          setup_script:
+            - bundle install
+          cache:
+            paths:
+              - vendor/bundle
+        YAML
+      end
+
+      before do
+        allow(project.repository).to receive(:blob_data_at)
+                                       .with(default_branch, config_path)
+                                       .and_return(config_content)
+      end
+
+      it 'uses the same cached configuration for all methods' do
+        expect(Rails.cache).to receive(:fetch)
+                                 .with(cache_key, expires_in: 5.minutes)
+                                 .once
+                                 .and_call_original
+
+        expect(config.default_image).to eq('ruby:3.0')
+        expect(config.setup_script).to eq(['bundle install'])
+        expect(config.cache_config).to eq({ 'paths' => ['vendor/bundle'] })
+      end
+    end
+  end
+end

@@ -1,0 +1,52 @@
+%span.gl-flex.gl-items-center
+  %h5
+    = gl_badge_tag "POST", { variant: :info }
+    = hook_log.url
+  = gl_badge_tag hook_log.trigger.singularize.titleize, { class: 'gl-ml-3' }
+
+%p
+  = _('Completed in %{duration_seconds} seconds (%{relative_time})').html_safe % { duration_seconds: number_with_precision(hook_log.execution_duration, precision: 2), relative_time: time_ago_with_tooltip(hook_log.created_at) }
+
+%hr
+
+- if hook_log.internal_error_message.present?
+  = render Pajamas::AlertComponent.new(title: _('Internal error occurred while delivering this webhook.'),
+    variant: :danger,
+    dismissible: false) do |c|
+    - c.with_body do
+      = _('Error: %{error}') % { error: hook_log.internal_error_message }
+
+%span.gl-flex.gl-items-center
+  %h3
+    = _('Response')
+    = render partial: 'shared/hook_logs/status_label', locals: { hook_log: hook_log }
+
+%pre.gl-mt-3
+  - if hook_log.response_body.blank?
+    = s_('Webhooks|Response body is empty')
+  - else
+    :escaped
+      #{hook_log.response_body}
+
+%h4= _('Headers')
+%pre
+  - if hook_log.response_headers.blank?
+    = s_('Webhooks|Response headers are empty')
+  - else
+    - hook_log.response_headers.each do |k, v|
+      <span class="gl-font-bold">#{k}:</span> #{v}
+      %br
+
+%h3.gl-mt-6= _('Request')
+%pre
+  - if hook_log.oversize?
+    = _('Request data is too large')
+  - else
+    :escaped
+      #{Gitlab::Json.pretty_generate(hook_log.request_data)}
+
+%h4= _('Headers')
+%pre
+  - hook_log.request_headers.each do |k, v|
+    <span class="gl-font-bold">#{k}:</span> #{v}
+    %br

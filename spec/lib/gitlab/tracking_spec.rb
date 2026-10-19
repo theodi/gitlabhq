@@ -1,0 +1,468 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Tracking, feature_category: :application_instrumentation do
+  include StubENV
+  using RSpec::Parameterized::TableSyntax
+
+  before do
+    stub_application_setting(snowplow_enabled: true)
+    stub_application_setting(snowplow_collector_hostname: 'gitfoo.com')
+    stub_application_setting(snowplow_cookie_domain: '.gitfoo.com')
+    stub_application_setting(snowplow_app_id: '_abc123_')
+
+    stub_feature_flags(snowplow_sync_emitter: false)
+
+    described_class.instance_variable_set(:@tracker, nil)
+  end
+
+  after do
+    described_class.instance_variable_set(:@tracker, nil)
+  end
+
+  it { is_expected.to delegate_method(:flush).to(:tracker) }
+
+  describe '.frontend_client_options' do
+    shared_examples 'delegates to destination' do |klass|
+      before do
+        allow_next_instance_of(klass) do |instance|
+          allow(instance).to receive(:frontend_client_options).and_call_original
+        end
+      end
+
+      it "delegates to #{klass} destination" do
+        expect_next_instance_of(klass) do |instance|
+          expect(instance).to receive(:frontend_client_options)
+        end
+
+        subject.frontend_client_options
+      end
+    end
+
+    shared_examples 'delegates to SnowplowMicro destination with proper options' do
+      it_behaves_like 'delegates to destination', Gitlab::Tracking::Destinations::SnowplowMicro
+
+      it 'returns useful client options' do
+        expected_fields = {
+          namespace: 'gl',
+          hostname: 'localhost:9090',
+          cookieDomain: '.gitlab.com',
+          appId: '_abc123_',
+          protocol: 'http',
+          forceSecureTracker: false,
+          formTracking: true,
+          linkClickTracking: true
+        }
+
+        expect(subject.frontend_client_options).to match(expected_fields)
+      end
+    end
+
+    context 'when destination is Snowplow' do
+      it_behaves_like 'delegates to destination', Gitlab::Tracking::Destinations::Snowplow
+
+      it 'returns useful client options' do
+        expected_fields = {
+          namespace: 'gl',
+          hostname: 'gitfoo.com',
+          cookieDomain: '.gitfoo.com',
+          appId: '_abc123_',
+          formTracking: true,
+          linkClickTracking: true
+        }
+
+        expect(subject.frontend_client_options).to match(expected_fields)
+      end
+    end
+
+    context 'when destination is SnowplowMicro' do
+      before do
+        allow(Rails.env).to receive(:development?).and_return(true)
+      end
+
+      context "enabled with yml config" do
+        let(:snowplow_micro_settings) do
+          {
+            enabled: true,
+            address: "localhost:9090"
+          }
+        end
+
+        before do
+          stub_config(snowplow_micro: snowplow_micro_settings)
+        end
+
+        it_behaves_like 'delegates to SnowplowMicro destination with proper options'
+      end
+    end
+  end
+
+  context 'event tracking' do
+    let(:namespace) { create(:namespace) }
+
+    shared_examples 'rescued error raised by destination class' do
+      it 'rescues error' do
+        error = StandardError.new("something went wrong")
+        allow_any_instance_of(destination_class).to receive(:event).and_raise(error)
+
+        expect(Gitlab::ErrorTracking).to receive(:track_and_raise_for_dev_exception)
+                                           .with(
+                                             error,
+                                             snowplow_category: category,
+                                             snowplow_action: action
+                                           )
+
+        expect { tracking_method }.not_to raise_error
+      end
+    end
+
+    shared_examples 'delegates to destination' do |klass, method|
+      before do
+        allow_any_instance_of(klass).to receive(:event)
+      end
+
+      it "delegates to #{klass} destination" do
+        other_context = double(:context)
+
+        project = build_stubbed(:project)
+        user = build_stubbed(:user)
+
+        expect(Gitlab::Tracking::StandardContext)
+          .to receive(:new)
+                .with(project_id: project.id, user: user, namespace: namespace, extra_key_1: 'extra value 1', extra_key_2: 'extra value 2')
+                .and_call_original
+
+        expect_any_instance_of(klass).to receive(:event) do |_, category, action, args|
+          expect(category).to eq('category')
+          expect(action).to eq('action')
+          expect(args[:label]).to eq('label')
+          expect(args[:property]).to eq('property')
+          expect(args[:value]).to eq(1.5)
+          expect(args[:context].length).to eq(2)
+          expect(args[:context].first.to_json[:schema]).to eq(Gitlab::Tracking::StandardContext::GITLAB_STANDARD_SCHEMA_URL)
+          expect(args[:context].last).to eq(other_context)
+        end
+
+        described_class.method(method).call('category', 'action',
+          label: 'label',
+          property: 'property',
+          value: 1.5,
+          context: [other_context],
+          project: project,
+          user: user,
+          namespace: namespace,
+          extra_key_1: 'extra value 1',
+          extra_key_2: 'extra value 2'
+        )
+      end
+    end
+
+    describe '.event' do
+      context 'when the action is not passed in as a string' do
+        it 'allows symbols' do
+          expect(Gitlab::ErrorTracking).not_to receive(:track_and_raise_for_dev_exception)
+
+          described_class.event('category', :some_action)
+        end
+
+        it 'allows nil' do
+          expect(Gitlab::ErrorTracking).not_to receive(:track_and_raise_for_dev_exception)
+
+          described_class.event('category', nil)
+        end
+
+        it 'allows integers' do
+          expect(Gitlab::ErrorTracking).not_to receive(:track_and_raise_for_dev_exception)
+
+          described_class.event('category', 1)
+        end
+      end
+
+      context 'when destination is Snowplow' do
+        before do
+          allow(Rails.env).to receive(:development?).and_return(true)
+        end
+
+        it_behaves_like 'rescued error raised by destination class' do
+          let(:category) { 'category' }
+          let(:action) { 'action' }
+          let(:destination_class) { Gitlab::Tracking::Destinations::Snowplow }
+
+          subject(:tracking_method) { described_class.event(category, action) }
+        end
+
+        it_behaves_like 'delegates to destination', Gitlab::Tracking::Destinations::Snowplow, :event
+      end
+
+      context 'when destination is SnowplowMicro' do
+        before do
+          allow(Rails.env).to receive(:development?).and_return(true)
+        end
+
+        it_behaves_like 'rescued error raised by destination class' do
+          let(:category) { 'category' }
+          let(:action) { 'action' }
+          let(:destination_class) { Gitlab::Tracking::Destinations::Snowplow }
+
+          subject(:tracking_method) { described_class.event(category, action) }
+        end
+
+        it_behaves_like 'delegates to destination', Gitlab::Tracking::Destinations::SnowplowMicro, :event
+      end
+
+      context 'with the experiment logger' do
+        let(:context) { [] }
+
+        subject(:event) { described_class.event('category', :some_action, context: context) }
+
+        context 'when track_struct_event_logger is enabled' do
+          before do
+            # stub calls inside destination to ignore its internal logger calls
+            allow_any_instance_of(Gitlab::Tracking::Destinations::Snowplow).to receive(:event)
+            # preload destination tracker to ignore logger calls on its initialization
+            allow_any_instance_of(Gitlab::Tracking::Destinations::Snowplow).to receive(:tracker).and_return(
+              # rubocop:disable GitlabSecurity/PublicSend -- done to facilitate debug log
+              Gitlab::Tracking::Destinations::Snowplow.new.send(:tracker)
+              # rubocop:enable GitlabSecurity/PublicSend
+            )
+            stub_feature_flags(track_struct_event_logger: true)
+          end
+
+          context 'when context include experiment string' do
+            let(:context) { ['__experiment_context__'] }
+
+            it 'calls the GitLab logger' do
+              expect(Gitlab::AppLogger).to receive(:info).twice
+
+              event
+            end
+          end
+
+          context 'when context does not include experiment string' do
+            it 'does not call the GitLab logger' do
+              expect(Gitlab::AppLogger).not_to receive(:info)
+
+              event
+            end
+          end
+        end
+
+        context 'when track_struct_event_logger is disabled' do
+          before do
+            stub_feature_flags(track_struct_event_logger: false)
+          end
+
+          context 'when context include experiment string' do
+            let(:context) { ['__experiment_context__'] }
+
+            it 'does not call the GitLab logger' do
+              expect(Gitlab::AppLogger).not_to receive(:info)
+
+              event
+            end
+          end
+
+          context 'when context does not include experiment string' do
+            it 'does not call the GitLab logger' do
+              expect(Gitlab::AppLogger).not_to receive(:info)
+
+              event
+            end
+          end
+        end
+      end
+
+      describe 'tracker reset' do
+        let(:context) { [] }
+
+        subject(:event) { proc { described_class.event('category', :some_action, context: context) } }
+
+        context 'when sending two events without changing any feature flags in between the triggers' do
+          it 'only creates the tracker once' do
+            expect(Gitlab::Tracking::Destinations::Snowplow).to receive(:new).once.and_call_original
+            event.call
+            event.call
+          end
+
+          context 'when in staging environment' do
+            it 'only creates the tracker once' do
+              allow(Gitlab).to receive(:staging?).and_return true
+
+              expect(Gitlab::Tracking::Destinations::Snowplow).to receive(:new).once.and_call_original
+              event.call
+              event.call
+            end
+          end
+        end
+
+        context 'when there are feature flags changes between the event triggers' do
+          it 'only creates the tracker once' do
+            stub_feature_flags(track_struct_event_logger: false)
+
+            expect(Gitlab::Tracking::Destinations::Snowplow).to receive(:new).once.and_call_original
+            event.call
+            Feature.enable(:track_struct_event_logger)
+            event.call
+          end
+
+          context 'when in staging environment' do
+            it 'resets the tracker' do
+              stub_feature_flags(track_struct_event_logger: false)
+              allow(Gitlab).to receive(:staging?).and_return true
+
+              expect(Gitlab::Tracking::Destinations::Snowplow).to receive(:new).twice.and_call_original
+              event.call
+              Feature.enable(:track_struct_event_logger)
+              event.call
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe 'snowplow_micro_enabled?' do
+    where(:development?, :micro_verification_enabled?, :result) do
+      true  | true  | true
+      false | true  | true
+      true  | false | true
+      false | false | false
+    end
+
+    with_them do
+      before do
+        allow(Rails.env).to receive(:development?).and_return(development?)
+        allow(described_class).to receive(:micro_verification_enabled?).and_return(micro_verification_enabled?)
+      end
+
+      subject { described_class.snowplow_micro_enabled? }
+
+      it { is_expected.to be(result) }
+    end
+  end
+
+  describe '.micro_verification_enabled?' do
+    where(:verify_tracking, :result) do
+      nil     | false
+      'true'  | true
+      'false' | false
+      '0'     | false
+      '1'     | true
+    end
+
+    with_them do
+      before do
+        stub_env('VERIFY_TRACKING', verify_tracking)
+      end
+
+      subject { described_class.micro_verification_enabled? }
+
+      it { is_expected.to be(result) }
+    end
+  end
+
+  describe '.frontend_tracker_needed?' do
+    subject { described_class.frontend_tracker_needed? }
+
+    where(:snowplow_micro_enabled?, :only_send_duo_events?, :internal_duo_events, :result) do
+      true  | true  | []                | true
+      false | false | []                | true
+      false | true  | ['click_button']  | true
+      false | true  | []                | false
+    end
+
+    with_them do
+      before do
+        allow(described_class).to receive(:snowplow_micro_enabled?).and_return(snowplow_micro_enabled?)
+        allow(Gitlab::Tracking::EventEligibilityChecker).to receive_messages(
+          only_send_duo_events?: only_send_duo_events?,
+          internal_duo_events: internal_duo_events
+        )
+      end
+
+      it { is_expected.to be(result) }
+    end
+
+    context 'when Snowplow and product usage data are disabled' do
+      before do
+        stub_application_setting(snowplow_enabled: false)
+        stub_env('GITLAB_PRODUCT_USAGE_DATA_ENABLED', 'false')
+      end
+
+      it 'returns false in FOSS', unless: Gitlab.ee? do
+        is_expected.to be(false)
+      end
+
+      it 'returns true in EE because there are Duo events to forward', if: Gitlab.ee? do
+        is_expected.to be(true)
+      end
+    end
+  end
+
+  describe 'tracker' do
+    it 'returns a SnowPlowMicro instance in development' do
+      allow(Rails.env).to receive(:development?).and_return(true)
+
+      expect(described_class.tracker).to be_an_instance_of(Gitlab::Tracking::Destinations::SnowplowMicro)
+    end
+
+    it 'returns a SnowPlow instance when not in development' do
+      allow(Rails.env).to receive(:development?).and_return(false)
+
+      expect(described_class.tracker).to be_an_instance_of(Gitlab::Tracking::Destinations::Snowplow)
+    end
+  end
+
+  describe '.billing_tracker' do
+    before do
+      described_class.instance_variable_set(:@billing_tracker, nil)
+    end
+
+    after do
+      described_class.instance_variable_set(:@billing_tracker, nil)
+    end
+
+    context 'when not in development' do
+      before do
+        allow(Rails.env).to receive(:development?).and_return(false)
+      end
+
+      it 'returns a Snowplow instance' do
+        expect(described_class.billing_tracker).to be_an_instance_of(Gitlab::Tracking::Destinations::Snowplow)
+      end
+
+      it 'uses an app_id with _billing suffix' do
+        stub_application_setting(snowplow_enabled?: false, gitlab_dedicated_instance?: false)
+        allow(Gitlab).to receive(:staging?).and_return(false)
+        stub_config_setting(host: 'example.com')
+
+        expect(described_class.billing_tracker.app_id).to eq('gitlab_sm_billing')
+      end
+
+      it 'uses an app_id with _billing suffix for dedicated instances' do
+        stub_application_setting(snowplow_enabled?: false, gitlab_dedicated_instance?: true)
+        allow(Gitlab).to receive(:staging?).and_return(false)
+        stub_config_setting(host: 'example.com')
+
+        expect(described_class.billing_tracker.app_id).to eq('gitlab_dedicated_billing')
+      end
+
+      it 'uses an app_id with _billing suffix when snowplow is enabled' do
+        stub_application_setting(snowplow_enabled?: true, snowplow_app_id: 'custom_app')
+
+        expect(described_class.billing_tracker.app_id).to eq('custom_app_billing')
+      end
+    end
+
+    context 'when in development' do
+      before do
+        allow(Rails.env).to receive(:development?).and_return(true)
+      end
+
+      it 'returns a SnowplowMicro instance' do
+        expect(described_class.billing_tracker).to be_an_instance_of(Gitlab::Tracking::Destinations::SnowplowMicro)
+      end
+    end
+  end
+end

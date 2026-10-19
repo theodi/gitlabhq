@@ -1,38 +1,11 @@
-- page_title "Contributor statistics"
-= render 'head'
-.loading-graph
-  .center
-    %h3.page-title
-      %i.fa.fa-spinner.fa-spin
-      Building repository graph.
-    %p.slead Please wait a moment, this page will automatically refresh when ready.
+- page_title _('Contributor analytics')
 
-.stat-graph.hide
-  .header.clearfix
-    %h3#date_header.page-title
-    %p.light
-      Commits to #{@project.default_branch}, excluding merge commits. Limited by 6,000 commits
-    %input#brush_change{:type => "hidden"}
-  .graphs
-    #contributors-master
-    #contributors.clearfix
-      %ol.contributors-list.clearfix
+= render ::Layouts::PageHeadingComponent.new( _('Contributor analytics'))
 
+- if @gitaly_unavailable
+  = render 'shared/errors/gitaly_unavailable', reason: s_('Graphs|Unable to load contributor analytics')
+- else
+  - graph_path = project_graph_path(@project, current_ref, ref_type: @ref_type, format: :json)
+  - commits_path = project_commits_path(@project, current_ref, ref_type: @ref_type)
 
-
-:coffeescript
-  $.ajax
-    type: "GET",
-    url: location.href,
-    success: (data) ->
-      graph = new ContributorsStatGraph()
-      graph.init(data)
-
-      $("#brush_change").change ->
-        graph.change_date_header()
-        graph.redraw_authors()
-
-      $(".stat-graph").fadeIn();
-      $(".loading-graph").hide();
-    dataType: "json"
-
+  .js-contributors-graph{ class: container_class, data: { project_graph_path: graph_path, project_branch: current_ref, default_branch: @project.default_branch, project_id: @project.id, commits_path: commits_path } }

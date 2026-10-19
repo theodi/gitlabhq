@@ -1,0 +1,430 @@
+# frozen_string_literal: true
+
+# The BulkImport::Entity represents a Group or Project to be imported during the
+# bulk import process. An entity is nested under the parent group when it is not
+# a top level group.
+#
+# A full bulk import entity structure might look like this, where the links are
+# parents:
+#
+#          **Before Import**              **After Import**
+#
+#             GroupEntity                      Group
+#              |      |                        |   |
+#     GroupEntity   ProjectEntity          Group   Project
+#          |                                 |
+#    ProjectEntity                        Project
+#
+# The tree structure of the entities results in the same structure for imported
+# Groups and Projects.
+class BulkImports::Entity < ApplicationRecord
+  include AfterCommitQueue
+  include Gitlab::Utils::StrongMemoize
+  include Gitlab::InternalEventsTracking
+
+  GROUP_ENTITY_SOURCE_TYPE = 'group_entity'
+  PROJECT_ENTITY_SOURCE_TYPE = 'project_entity'
+
+  self.table_name = 'bulk_import_entities'
+
+  ignore_column :source_xid_convert_to_bigint, remove_with: '19.2', remove_after: '2026-07-21'
+
+  FailedError = Class.new(StandardError)
+
+  belongs_to :bulk_import, optional: false
+  belongs_to :parent, class_name: 'BulkImports::Entity', optional: true
+
+  belongs_to :project, optional: true
+  belongs_to :organization, class_name: 'Organizations::Organization', optional: true
+  belongs_to :group, foreign_key: :namespace_id, optional: true, inverse_of: :bulk_import_entities
+
+  has_many :trackers,
+    class_name: 'BulkImports::Tracker',
+    inverse_of: :entity,
+    foreign_key: :bulk_import_entity_id
+
+  has_many :failures,
+    class_name: 'BulkImports::Failure',
+    inverse_of: :entity,
+    foreign_key: :bulk_import_entity_id
+
+  validates :source_type, presence: true
+  validates :source_full_path, presence: true
+  validates :destination_name, presence: true, if: -> { group || project }
+  validates :destination_namespace, exclusion: [nil], if: :group
+  validates :destination_namespace, presence: true, if: :project?
+
+  validates_with ExactlyOnePresentValidator, fields: [:group, :project, :organization],
+    message: ->(_fields) { s_('BulkImport|Import failed. The bulk import entity must belong to only one organization, group, or project.') }
+  validate :validate_parent_is_a_group, if: :parent
+  validate :validate_imported_entity_type
+  validate :validate_destination_namespace_ascendency, if: :group_entity?
+  validate :validate_source_full_path_format
+  validate :validate_bulk_import_organization_matches
+
+  enum :source_type, { group_entity: 0, project_entity: 1 }
+
+  scope :by_user_id, ->(user_id) { joins(:bulk_import).where(bulk_imports: { user_id: user_id }) }
+  scope :stale, -> { where('updated_at < ?', 24.hours.ago).where(status: [0, 1]) }
+  scope :by_bulk_import_id, ->(bulk_import_id) { where(bulk_import_id: bulk_import_id) }
+  scope :order_by_created_at, ->(direction) { order(created_at: direction) }
+  scope :order_by_updated_at_and_id, ->(direction) { order(updated_at: direction, id: :asc) }
+  scope :with_trackers, -> { includes(:trackers) }
+
+  alias_attribute :destination_slug, :destination_name
+
+  delegate :default_project_visibility, :default_group_visibility,
+    to: :'Gitlab::CurrentSettings.current_application_settings'
+
+  state_machine :status, initial: :created do
+    state :created, value: 0
+    state :started, value: 1
+    state :finished, value: 2
+    state :timeout, value: 3
+    state :failed, value: -1
+    state :canceled, value: -2
+
+    event :start do
+      transition created: :started
+    end
+
+    event :finish do
+      transition started: :finished
+      transition failed: :failed
+    end
+
+    event :fail_op do
+      transition any => :failed
+    end
+
+    event :cleanup_stale do
+      transition created: :timeout
+      transition started: :timeout
+    end
+
+    event :cancel do
+      transition any => :canceled
+    end
+
+    after_transition any => [:finished, :failed, :timeout] do |entity, _|
+      entity.update_has_failures
+    end
+
+    after_transition any => [:canceled] do |entity, _|
+      entity.run_after_commit do
+        entity.propagate_cancel
+      end
+
+      entity.track_project_import_event('cancel_project_import')
+      entity.track_group_import_event('cancel_group_import')
+      entity.track_entity_import_event('cancel_gitlab_migration_entity')
+    end
+
+    after_transition on: :fail_op do |entity, _|
+      entity.track_project_import_event('fail_project_import')
+      entity.track_group_import_event('fail_group_import')
+      entity.track_entity_import_event('fail_gitlab_migration_entity')
+    end
+
+    after_transition on: :cleanup_stale do |entity, _|
+      entity.track_project_import_event('timeout_project_import')
+      entity.track_group_import_event('timeout_group_import')
+      entity.track_entity_import_event('timeout_gitlab_migration_entity')
+    end
+
+    after_transition on: :start do |entity, _|
+      entity.track_entity_import_event('start_gitlab_migration_entity')
+    end
+
+    after_transition on: :finish do |entity, _|
+      # `event :finish` has a `failed => failed` self-transition, so guard on
+      # the terminal state to only fire when the entity truly finished.
+      entity.track_entity_import_event('finish_gitlab_migration_entity') if entity.finished?
+    end
+  end
+
+  def self.all_human_statuses
+    state_machine.states.map(&:human_name)
+  end
+
+  def encoded_source_full_path
+    ERB::Util.url_encode(source_full_path)
+  end
+
+  def pipelines
+    stage_classes = if bulk_import.offline?
+                      {
+                        GROUP_ENTITY_SOURCE_TYPE => Import::Offline::Imports::Groups::Stage,
+                        PROJECT_ENTITY_SOURCE_TYPE => Import::Offline::Imports::Projects::Stage
+                      }
+                    else
+                      {
+                        GROUP_ENTITY_SOURCE_TYPE => BulkImports::Groups::Stage,
+                        PROJECT_ENTITY_SOURCE_TYPE => BulkImports::Projects::Stage
+                      }
+                    end
+
+    stage_classes[source_type].new(self).pipelines
+  end
+  strong_memoize_attr :pipelines
+
+  def pipeline_exists?(name)
+    pipelines.any? { _1[:pipeline].to_s == name.to_s }
+  end
+
+  def entity_type
+    source_type.gsub('_entity', '')
+  end
+
+  def pluralized_name
+    entity_type.pluralize
+  end
+
+  def portable_class
+    entity_type.classify.constantize
+  end
+
+  def base_resource_url_path
+    "/#{pluralized_name}/#{encoded_source_full_path}"
+  end
+
+  def base_xid_resource_url_path
+    "/#{pluralized_name}/#{source_xid}"
+  end
+
+  def base_resource_path
+    if source_xid.present?
+      base_xid_resource_url_path
+    else
+      base_resource_url_path
+    end
+  end
+
+  def export_relations_url_path_base
+    File.join(base_resource_path, 'export_relations')
+  end
+
+  def export_relations_url_path
+    if bulk_import.supports_batched_export?
+      Gitlab::Utils.add_url_parameters(export_relations_url_path_base, batched: true)
+    else
+      export_relations_url_path_base
+    end
+  end
+
+  def relation_download_url_path(relation, batch_number = nil)
+    url = File.join(export_relations_url_path_base, 'download')
+    params = { relation: relation }
+
+    params.merge!(batched: true, batch_number: batch_number) if batch_number && bulk_import.supports_batched_export?
+
+    Gitlab::Utils.add_url_parameters(url, params)
+  end
+
+  def wikis_url_path
+    "#{base_resource_path}/wikis"
+  end
+
+  def project?
+    source_type == PROJECT_ENTITY_SOURCE_TYPE
+  end
+
+  def group?
+    source_type == GROUP_ENTITY_SOURCE_TYPE
+  end
+
+  def update_service
+    "::#{pluralized_name.capitalize}::UpdateService".constantize
+  end
+
+  def full_path
+    project? ? project&.full_path : group&.full_path
+  end
+
+  def full_path_with_fallback
+    full_path || Gitlab::Utils.append_path(destination_namespace, destination_slug)
+  end
+
+  def default_visibility_level
+    return default_group_visibility if group?
+
+    default_project_visibility
+  end
+
+  def update_has_failures
+    return if has_failures
+    return unless failures.any?
+
+    update!(has_failures: true)
+    bulk_import.update!(has_failures: true)
+  end
+
+  def source_version
+    @source_version ||= bulk_import.source_version_info
+  end
+
+  def checksums
+    trackers.each_with_object({}) do |tracker, checksums|
+      next unless tracker.file_extraction_pipeline?
+      next if tracker.skipped?
+      next if tracker.checksums_empty?
+
+      checksums.merge!(tracker.checksums)
+    end
+  end
+
+  def propagate_cancel
+    trackers.each(&:cancel)
+  end
+
+  # Direct Transfer and Offline Transfer keep the source host in different
+  # places (BulkImports::Configuration#url vs Import::Offline::Configuration#source_hostname),
+  # so pick the one that matches this bulk_import's source_type.
+  def hashed_import_source
+    source_url =
+      if bulk_import.offline?
+        bulk_import.offline_configuration&.source_hostname
+      else
+        bulk_import.configuration&.safe_url
+      end
+
+    return if source_url.blank?
+
+    location = "#{source_url.delete_suffix('/')}/#{source_full_path}"
+
+    Gitlab::Import::SourceIdentifier.hash(location)
+  end
+
+  def track_project_import_event(action)
+    return unless project?
+
+    run_after_commit do
+      track_internal_event(action, project_import_event_attributes)
+    end
+  end
+
+  def project_import_event_attributes
+    import_event_attributes.merge(project: project, namespace: project&.namespace)
+  end
+
+  def start_project_import_event_attributes
+    with_request_channel(project_import_event_attributes)
+  end
+
+  def track_group_import_event(action)
+    return unless group?
+
+    run_after_commit do
+      track_internal_event(action, group_import_event_attributes)
+    end
+  end
+
+  def group_import_event_attributes
+    import_event_attributes.merge(namespace: group)
+  end
+
+  def start_group_import_event_attributes
+    with_request_channel(group_import_event_attributes)
+  end
+
+  # Fires for both project and group entities, and may fire before any
+  # Project/Group record exists (e.g. failure during the very first pipeline),
+  # so no project?/group? guard and identifiers are attached only when present.
+  def track_entity_import_event(action)
+    run_after_commit do
+      track_internal_event(action, entity_import_event_attributes)
+    end
+  end
+
+  def entity_import_event_attributes
+    base = import_event_attributes
+    base.merge(
+      namespace: project&.namespace || group,
+      project: project,
+      additional_properties: base[:additional_properties].merge(parent_entity_id: parent_id).compact
+    )
+  end
+
+  # label (gitlab_migration vs offline_transfer) distinguishes Direct Transfer
+  # from Offline Transfer, which share this entity model and EntityFinisher.
+  # project_import_event_attributes/group_import_event_attributes read it from
+  # bulk_import rather than the project/group record, since that record may not
+  # exist yet if the entity fails/cancels before its pipeline creates it.
+  def import_event_attributes
+    {
+      user: bulk_import.user,
+      additional_properties: {
+        label: bulk_import.import_source.to_s,
+        property: hashed_import_source
+      }.compact
+    }
+  end
+
+  private
+
+  # request_channel is captured at CreateService time in EphemeralData
+  # (Redis) rather than on the BulkImport record. Only sent on start_* events,
+  # and deliberately not added to entity_import_event_attributes, per the
+  # design in gitlab-org/gitlab#617884.
+  def with_request_channel(attrs)
+    attrs.merge(
+      additional_properties: attrs[:additional_properties].merge(
+        request_channel: ::Import::BulkImports::EphemeralData.new(bulk_import_id).request_channel
+      ).compact
+    )
+  end
+
+  def validate_parent_is_a_group
+    errors.add(:parent, s_('BulkImport|must be a group.')) unless parent.group_entity?
+  end
+
+  def validate_imported_entity_type
+    if group.present? && project_entity?
+      errors.add(
+        :group,
+        s_('BulkImport|must belong to a project.')
+      )
+    end
+
+    if project.present? && group_entity?
+      errors.add(
+        :project,
+        s_('BulkImport|must belong to a group.')
+      )
+    end
+  end
+
+  def validate_destination_namespace_ascendency
+    return unless bulk_import&.source_equals_destination?
+
+    source = Group.find_by_full_path(source_full_path)
+
+    return unless source
+
+    if source.self_and_descendants.any? { |namespace| namespace.full_path == destination_namespace }
+      errors.add(
+        :base,
+        s_('BulkImport|Import failed. The destination cannot be a subgroup of the source group. Change the destination and try again.')
+      )
+    end
+  end
+
+  def validate_source_full_path_format
+    validator = group? ? NamespacePathValidator : ProjectPathValidator
+
+    return if validator.valid_path?(source_full_path)
+
+    errors.add(
+      :source_full_path,
+      s_('BulkImport|must have a relative path with no HTTP ' \
+         'protocol characters or leading or trailing forward slashes. Path segments must not start or ' \
+         'end with a special character or contain consecutive special characters.')
+    )
+  end
+
+  def validate_bulk_import_organization_matches
+    return if bulk_import.nil? || organization.nil? || bulk_import.organization == organization
+
+    errors.add(:organization_id, _("must match the bulk import organization's ID"))
+  end
+end

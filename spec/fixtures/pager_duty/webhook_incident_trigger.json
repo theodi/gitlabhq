@@ -1,0 +1,61 @@
+{
+  "event": {
+    "id": "01DDZJG3TC199M1GJQ7LO67JYS",
+    "event_type": "incident.triggered",
+    "resource_type": "incident",
+    "occurred_at": "2022-11-30T08:46:19.079Z",
+    "agent": {
+      "html_url": "https://gitlab-1.pagerduty.com/users/PIN0B5C",
+      "id": "PIN0B5C",
+      "self": "https://api.pagerduty.com/users/PIN0B5C",
+      "summary": "Rajendra Kadam",
+      "type": "user_reference"
+    },
+    "client": "nil",
+    "data": {
+      "id": "Q1XZUF87W1HB5A",
+      "type": "incident",
+      "self": "https://api.pagerduty.com/incidents/Q1XZUF87W1HB5A",
+      "html_url": "https://gitlab-1.pagerduty.com/incidents/Q1XZUF87W1HB5A",
+      "number": 2,
+      "status": "triggered",
+      "incident_key": "[FILTERED]",
+      "created_at": "2022-11-30T08:46:19Z",
+      "title": "[FILTERED]",
+      "service": {
+        "html_url": "https://gitlab-1.pagerduty.com/services/PK6IKMT",
+        "id": "PK6IKMT",
+        "self": "https://api.pagerduty.com/services/PK6IKMT",
+        "summary": "Test service",
+        "type": "service_reference"
+      },
+      "assignees": [
+        {
+          "html_url": "https://gitlab-1.pagerduty.com/users/PIN0B5C",
+          "id": "PIN0B5C",
+          "self": "https://api.pagerduty.com/users/PIN0B5C",
+          "summary": "Rajendra Kadam",
+          "type": "user_reference"
+        }
+      ],
+      "escalation_policy": {
+        "html_url": "https://gitlab-1.pagerduty.com/escalation_policies/PWP6XTY",
+        "id": "PWP6XTY",
+        "self": "https://api.pagerduty.com/escalation_policies/PWP6XTY",
+        "summary": "Default",
+        "type": "escalation_policy_reference"
+      },
+      "teams": [],
+      "priority": {
+        "html_url": "https://gitlab-1.pagerduty.com/account/incident_priorities",
+        "id": "PKWBGFQ",
+        "self": "https://api.pagerduty.com/priorities/PKWBGFQ",
+        "summary": "P2",
+        "type": "priority_reference"
+      },
+      "urgency": "high",
+      "conference_bridge": "nil",
+      "resolve_reason": "nil"
+    }
+  }
+}

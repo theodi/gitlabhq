@@ -1,0 +1,14 @@
+---
+table_name: merge_requests_compliance_violations
+classes:
+- MergeRequests::ComplianceViolation
+feature_categories:
+- compliance_management
+description: Stores compliance violations detected in merge requests for audit and
+  reporting purposes.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/74290
+milestone: '14.6'
+gitlab_schema: gitlab_main_org
+table_size: medium
+sharding_key:
+  target_project_id: projects

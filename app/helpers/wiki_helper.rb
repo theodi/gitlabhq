@@ -1,24 +1,216 @@
+# frozen_string_literal: true
+
 module WikiHelper
-  # Rails v4.1.9+ escapes all model IDs, converting slashes into %2F. The
-  # only way around this is to implement our own path generators.
-  def namespace_project_wiki_path(namespace, project, wiki_page, *args)
-    slug =
-        case wiki_page
-        when Symbol
-          wiki_page
-        when String
-          wiki_page
-        else
-          wiki_page.slug
-        end
-    namespace_project_path(namespace, project) + "/wikis/#{slug}"
+  include API::Helpers::RelatedResourcesHelpers
+
+  def wiki_page_title(page, action = nil)
+    titles = [_('Wiki')]
+
+    if page.persisted?
+      titles << page.human_title
+      breadcrumb_title(page.human_title)
+      wiki_breadcrumb_collapsed_links(page.slug)
+    end
+
+    titles << action if action
+    page_title(*titles.reverse)
+    add_to_breadcrumbs(_('Wiki'), wiki_path(page.wiki))
   end
 
-  def edit_namespace_project_wiki_path(namespace, project, wiki_page, *args)
-    namespace_project_wiki_path(namespace, project, wiki_page) + '/edit'
+  def wiki_sidebar_toggle_button
+    render Pajamas::ButtonComponent.new(
+      category: :secondary,
+      icon: 'sidebar',
+      button_options: {
+        title: _('Toggle sidebar'),
+        class: 'js-sidebar-wiki-toggle-open wiki-sidebar-toggle toggle-action-open gl-mr-2 has-tooltip',
+        "aria-label": _('Toggle sidebar')
+      })
   end
 
-  def history_namespace_project_wiki_path(namespace, project, wiki_page, *args)
-    namespace_project_wiki_path(namespace, project, wiki_page) + '/history'
+  # Produces a pure text breadcrumb for a given page.
+  #
+  # page_slug - The slug of a WikiPage object.
+  #
+  # Returns a String composed of the capitalized name of each directory and the
+  # capitalized name of the page itself.
+  def breadcrumb(page_slug)
+    page_slug.split('/')
+      .map { |dir_or_page| WikiPage.unhyphenize(dir_or_page).capitalize }
+      .join(' / ')
+  end
+
+  def wiki_breadcrumb_items(page_slug)
+    parts = page_slug.split('/').reject(&:empty?)
+    parts.pop
+
+    parts.each_with_index.map do |_, i|
+      slug = parts[0..i].join('/')
+      basename = File.basename(slug)
+      title = WikiPage.unhyphenize(basename)
+      if title.casecmp('home') == 0
+        title = 'Home'
+      elsif WikiPage::RESERVED_SLUGS.any? { |reserved| reserved.casecmp?(basename) }
+        title = title.upcase_first
+      end
+
+      { text: title, href: wiki_page_path(@wiki, slug) }
+    end
+  end
+
+  def wiki_breadcrumb_collapsed_links(page_slug)
+    wiki_breadcrumb_items(page_slug).each do |item|
+      add_to_breadcrumb_collapsed_links(item, location: :after)
+    end
+  end
+
+  def wiki_attachment_upload_url
+    case @wiki.container
+    when Project
+      expose_url(api_v4_projects_wikis_attachments_path(id: @wiki.container.id))
+    else
+      raise TypeError, "Unsupported wiki container #{@wiki.container.class}"
+    end
+  end
+
+  def wiki_sort_controls(wiki, direction, action: :pages)
+    link_class = 'has-tooltip reverse-sort-btn rspec-reverse-sort'
+    reversed_direction = direction == 'desc' ? 'asc' : 'desc'
+    icon_class = direction == 'desc' ? 'highest' : 'lowest'
+    title = direction == 'desc' ? _('Sort direction: Descending') : _('Sort direction: Ascending')
+
+    link_options = { action: action, direction: reversed_direction }
+
+    render Pajamas::ButtonComponent.new(
+      href: wiki_path(wiki, **link_options),
+      icon: "sort-#{icon_class}",
+      button_options: { class: link_class, title: title }
+    )
+  end
+
+  def wiki_404_messages
+    title = s_("Wiki404|This page doesn't exist")
+    writable_body = s_("Wiki404|Would you like to create it?")
+    readonly_body = s_('Wiki404|Use the sidebar to find a different page.')
+
+    {
+      writable: { title: title, body: writable_body },
+      readonly: { title: title, body: readonly_body }
+    }
+  end
+
+  def wiki_empty_state_messages(wiki)
+    case wiki.container
+    when Project
+      writable_body = s_(
+        "WikiEmpty|Use GitLab Wiki to collaborate on documentation in a project or group. " \
+          "You can store wiki pages written in markup formats like Markdown or AsciiDoc in a " \
+          "separate Git repository, and access the wiki through Git, the GitLab web interface, or the API."
+      )
+
+      if show_enable_confluence_integration?(wiki.container)
+        writable_body += s_("WikiEmpty| Have a Confluence wiki already? Use that instead.")
+      end
+
+      {
+        writable: {
+          title: s_('WikiEmpty|Get started with wikis'),
+          body: writable_body
+        },
+        readonly: {
+          title: s_('WikiEmpty|This wiki doesn\'t have any content yet'),
+          body: s_(
+            'WikiEmpty|You can use GitLab Wiki to collaborate on documentation in a project or group. ' \
+              'You can store wiki pages written in markup formats like Markdown or AsciiDoc in a ' \
+              'separate Git repository, and access the wiki through Git, the GitLab web interface, or the API.'
+          )
+        }
+      }
+    when Group
+      {
+        writable: {
+          title: s_('WikiEmpty|Get started with wikis'),
+          body: s_(
+            "WikiEmpty|Use GitLab Wiki to collaborate on documentation in a project or group. " \
+              "You can store wiki pages written in markup formats like Markdown or AsciiDoc in a " \
+              "separate Git repository, and access the wiki through Git, the GitLab web interface, or the API."
+          )
+        },
+        readonly: {
+          title: s_('WikiEmpty|This wiki doesn\'t have any content yet'),
+          body: s_('WikiEmpty|You can use GitLab Wiki to collaborate on documentation in a project or group. ' \
+            'You can store wiki pages written in markup formats like Markdown or AsciiDoc in a ' \
+            'separate Git repository, and access the wiki through Git, the GitLab web interface, or the API.'
+                  )
+        }
+      }
+    else
+      raise NotImplementedError, "Unknown wiki container type #{wiki.container.class.name}"
+    end
+  end
+
+  def wiki_page_tracking_context(page)
+    {
+      'wiki-format' => page.format,
+      'wiki-title-size' => page.title.bytesize,
+      'wiki-content-size' => page.raw_content.bytesize,
+      'wiki-directory-nest-level' => page.path.scan('/').count,
+      'wiki-container-type' => page.wiki.container.class.name
+    }
+  end
+
+  def show_enable_confluence_integration?(container)
+    container.is_a?(Project) &&
+      current_user&.can?(:admin_project, container) &&
+      !container.has_confluence?
+  end
+
+  def wiki_page_render_api_endpoint(page)
+    expose_path(api_v4_projects_wikis_path(wiki_page_render_api_endpoint_params(page)))
+  end
+
+  def wiki_markup_hash_by_name_id
+    Wiki::VALID_USER_MARKUPS.map { |key, value| { value[:name] => key } }.reduce({}, :merge)
+  end
+
+  private
+
+  def wiki_page_render_api_endpoint_params(page)
+    {
+      id: page.container.id,
+      slug: ERB::Util.url_encode(page.page.url_path).gsub(/%2f/i, '/'),
+      params: { version: page.version.id }
+    }
+  end
+
+  def wiki_page_info(page, uploads_path: '')
+    {
+      last_commit_sha: page.last_commit_sha,
+      persisted: page.persisted?,
+      title: page.title,
+      content: page.content || '',
+      front_matter: page.front_matter || {},
+      format: page.format.to_s,
+      uploads_path: uploads_path,
+      slug: page.slug,
+      path: wiki_page_path(page.wiki, page),
+      wiki_path: wiki_path(page.wiki),
+      help_path: help_page_path('user/project/wiki/_index.md'),
+      markdown_help_path: help_page_path('user/markdown.md'),
+      markdown_preview_path: wiki_page_path(page.wiki, page, action: :preview_markdown),
+      create_path: wiki_path(page.wiki, action: :create),
+      container_full_path: page.wiki.container.full_path
+    }
+  end
+
+  def wiki_page_basic_info(page)
+    {
+      title: page.title,
+      format: page.format.to_s,
+      slug: page.slug,
+      path: wiki_page_path(page.wiki, page)
+    }
   end
 end
+
+WikiHelper.prepend_mod_with('WikiHelper')

@@ -1,0 +1,17 @@
+---
+description: tracks when a user selects or deselects a checkbox in the filter.
+action: checkbox
+product_group: global_search
+product_categories:
+- global_search
+milestone: '16.1'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/121037
+tiers:
+  - free
+  - premium
+  - ultimate
+additional_properties:
+  label:
+    description: label on the checkbox
+  property:
+    description: value of checkbox (checked/unchecked)

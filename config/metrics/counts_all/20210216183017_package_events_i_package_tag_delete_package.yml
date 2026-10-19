@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: counts.package_events_i_package_tag_delete_package
+description: A count of package tags that have been deleted from the package registry
+product_group: package_registry
+product_categories:
+- package_registry
+value_type: number
+status: removed
+time_frame: all
+data_source: redis
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+removed_by_url:
+milestone_removed: "<16.4"

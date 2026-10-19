@@ -1,0 +1,19 @@
+---
+key_path: active_user_count
+description: The number of active users existing in the instance. This is named the instance_user_count in the Versions application.
+product_group: analytics_instrumentation
+product_categories:
+- service_ping
+value_type: number
+status: active
+milestone: "<13.9"
+data_category: subscription
+time_frame: none
+instrumentation_class: ActiveUserCountMetric
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/557
+performance_indicator_type: []

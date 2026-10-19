@@ -1,0 +1,205 @@
+import { __, sprintf, formatNumber } from '~/locale';
+import {
+  timeIntervalInWords,
+  humanizeTimeInterval,
+} from '~/lib/utils/datetime/date_format_utility';
+import { baseFieldKeyOf, labelWithParameter } from './chart_data';
+
+export const formatCount = (value) => formatNumber(value);
+
+// Compact notation where horizontal space is tight: 2,500,000 → 2.5M.
+// Axes keep 1 fraction digit; stats use 2 for extra precision at large sizes.
+export const formatCountCompact = (
+  value,
+  { lowercaseThousands = false, maximumFractionDigits = 1 } = {},
+) => {
+  const formatted = formatNumber(value, { notation: 'compact', maximumFractionDigits });
+
+  return lowercaseThousands && typeof formatted === 'string'
+    ? formatted.replace('K', 'k')
+    : formatted;
+};
+
+// Credits are fractional amounts, so cap the digits at cents-style precision.
+export const formatCredits = (value) => formatNumber(value, { maximumFractionDigits: 2 });
+
+export const formatRate = (value) => {
+  const percentage = value * 100;
+  const rounded = percentage % 1 === 0 ? percentage.toFixed(0) : percentage.toFixed(1);
+  return `${rounded}%`;
+};
+
+export const formatDuration = (seconds) => timeIntervalInWords(seconds, { abbreviated: true });
+
+// Compact notation for chart axes: keeps the largest applicable unit only
+// (`1h 27m 32s` → `1.5h`). Cells and tooltips keep the full-digit `formatDuration`.
+export const formatDurationCompact = (seconds) =>
+  humanizeTimeInterval(seconds, { abbreviated: true });
+
+const rawString = (value) => (value == null ? '' : String(value));
+
+// Each unit owns its cell and axis formatters. Rates render the same in both
+// contexts; counts and durations get a compact variant on the axis.
+const UNITS = {
+  count: { cell: formatCount, axis: formatCountCompact },
+  credits: { cell: formatCredits, axis: formatCountCompact },
+  rate: { cell: formatRate, axis: formatRate },
+  duration: { cell: formatDuration, axis: formatDurationCompact },
+};
+
+const unitByFieldKey = {
+  acceptanceRate: 'rate',
+  successRate: 'rate',
+  failureRate: 'rate',
+  canceledRate: 'rate',
+  skippedRate: 'rate',
+  completionRate: 'rate',
+  acceptedCount: 'count',
+  rejectedCount: 'count',
+  shownCount: 'count',
+  totalCount: 'count',
+  usersCount: 'count',
+  finishedCount: 'count',
+  projectsCount: 'count',
+  suggestionSizeSum: 'count',
+  throughputCount: 'count',
+  featuresCount: 'count',
+  returningUsersCount: 'count',
+  previousPeriodUsersCount: 'count',
+  joinedUsersCount: 'count',
+  churnedUsersCount: 'count',
+  flowTypesCount: 'count',
+  createdMrCountMin: 'count',
+  createdMrCountMax: 'count',
+  createdMrCountMean: 'count',
+  createdMrCountSum: 'count',
+  createdMrCountQuantile: 'count',
+  mergedMrCountMin: 'count',
+  mergedMrCountMax: 'count',
+  mergedMrCountMean: 'count',
+  mergedMrCountSum: 'count',
+  mergedMrCountQuantile: 'count',
+  closedMrCountMin: 'count',
+  closedMrCountMax: 'count',
+  closedMrCountMean: 'count',
+  closedMrCountSum: 'count',
+  closedMrCountQuantile: 'count',
+  openMrCountMin: 'count',
+  openMrCountMax: 'count',
+  openMrCountMean: 'count',
+  openMrCountSum: 'count',
+  openMrCountQuantile: 'count',
+  creditsUsedMin: 'credits',
+  creditsUsedMax: 'credits',
+  creditsUsedMean: 'credits',
+  creditsUsedSum: 'credits',
+  creditsUsedQuantile: 'credits',
+  creditsPerMergedMrRatio: 'credits',
+  duration: 'duration',
+  queuedDuration: 'duration',
+  durationQuantile: 'duration',
+  durationMean: 'duration',
+  durationMin: 'duration',
+  durationMax: 'duration',
+  durationSum: 'duration',
+  timeToMergeQuantile: 'duration',
+  timeToMergeMean: 'duration',
+  timeToMergeMin: 'duration',
+  timeToMergeMax: 'duration',
+  timeToMergeSum: 'duration',
+};
+
+export const unitFor = (fieldKey) => unitByFieldKey[fieldKey] ?? null;
+
+export const formatterFor = (fieldKey) => UNITS[unitFor(fieldKey)]?.cell ?? rawString;
+
+export const axisFormatterFor = (fieldKey) => UNITS[unitFor(fieldKey)]?.axis ?? rawString;
+
+export const valueFormatterFor = (metric) => formatterFor(baseFieldKeyOf(metric));
+
+// Compact notation per unit: numbers gain a compact suffix (1,450,191 -> 1.45M),
+// rates stay in their already-short percentage format, and durations drop to
+// their largest unit (1h 1m 1s -> 1h).
+const formatCountCompactTwoDigits = (value) =>
+  formatCountCompact(value, { maximumFractionDigits: 2 });
+
+const COMPACT_BY_UNIT = {
+  count: formatCountCompactTwoDigits,
+  credits: formatCountCompactTwoDigits,
+  rate: formatRate,
+  duration: formatDurationCompact,
+};
+
+export const compactValueFormatterFor = (metric) => {
+  const fieldKey = baseFieldKeyOf(metric);
+  return COMPACT_BY_UNIT[unitFor(fieldKey)] ?? formatterFor(fieldKey);
+};
+
+const UNIT_LABELS = {
+  count: () => __('Count'),
+  credits: () => __('Credits'),
+  rate: () => __('Percentage'),
+  duration: () => __('Duration'),
+};
+
+/**
+ * Returns a human-readable label for the given unit key.
+ * Used as the Y-axis title when multiple metrics share the same unit.
+ */
+export const labelForUnit = (unit) => UNIT_LABELS[unit]?.() ?? '';
+
+/**
+ * Builds a map of { [metricLabel]: cellFormatter } for tooltip formatting.
+ * Shared across all chart types that display multiple metrics.
+ * Keys use the parameterised label so they match the series names produced
+ * by the chart_data builders; formatValueForLabel resolves by series name.
+ */
+export const buildFormatterByLabel = (metrics) =>
+  Object.fromEntries(metrics.map((m) => [labelWithParameter(m), formatterFor(baseFieldKeyOf(m))]));
+
+/**
+ * Looks up the cell formatter for a series label and applies it to a value.
+ * Falls back to identity formatting for unknown labels so mixed-unit charts
+ * never mis-format a value (e.g. rendering a count as a percentage).
+ */
+export const formatValueForLabel = (formatterByLabel, label, value) =>
+  (formatterByLabel[label] ?? formatterFor(null))(value);
+
+/**
+ * Returns the compact axis formatter when all metrics share the same unit,
+ * or null when they have mixed units (letting ECharts use its default).
+ */
+export const buildSharedAxisFormatter = (metrics) => {
+  if (metrics.length === 0) return null;
+  const units = metrics.map((m) => unitFor(baseFieldKeyOf(m)));
+  if (units[0] == null || !units.every((u) => u === units[0])) return null;
+  return axisFormatterFor(baseFieldKeyOf(metrics[0]));
+};
+
+/**
+ * Derives a Y-axis title from the metrics list:
+ * - Single metric: the metric's own parameterised label (e.g. "Total count",
+ *   "Duration quantile (0.5)")
+ * - Multiple metrics, same unit: the unit label (e.g. "Count")
+ * - Multiple metrics, mixed units: empty string
+ */
+export const yAxisTitleFor = (metrics) => {
+  if (metrics.length === 0) return '';
+  if (metrics.length === 1) return labelWithParameter(metrics[0]);
+  const units = metrics.map((m) => unitFor(baseFieldKeyOf(m)));
+  if (units[0] != null && units.every((u) => u === units[0])) {
+    return labelForUnit(units[0]);
+  }
+  return '';
+};
+
+/**
+ * Combines a two-dimension chart's category axis title so it reflects both
+ * the primary dimension (the axis categories) and the secondary dimension
+ * (conveyed only through the legend/stack otherwise), e.g. "Language by IDE".
+ */
+export const dimensionAxisTitleFor = (primaryDimension, secondaryDimension) =>
+  sprintf(__('%{primary} by %{secondary}'), {
+    primary: labelWithParameter(primaryDimension),
+    secondary: labelWithParameter(secondaryDimension),
+  });

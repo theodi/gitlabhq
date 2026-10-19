@@ -1,0 +1,21 @@
+!!! 5
+%html
+  %head
+    %title GraphQL explorer
+
+    = csrf_meta_tags
+    = action_cable_meta_tag
+    = Gon::Base.render_data(nonce: content_security_policy_nonce)
+
+    = universal_stylesheet_link_tag 'page_bundles/graphql_explorer'
+    = webpack_bundle_tag 'graphql_explorer'
+  %body{ class: ('with-performance-bar' if performance_bar_enabled?) }
+    - if performance_bar_enabled?
+      #performance-bar-root
+        %template{ :shadowrootmode => "open" }
+          = render 'peek/bar'
+          = universal_stylesheet_link_tag 'application', crossorigin: 'anonymous'
+          = universal_stylesheet_link_tag 'tailwind', crossorigin: 'anonymous'
+          = universal_stylesheet_link_tag 'performance_bar', crossorigin: 'anonymous'
+          = webpack_bundle_tag 'performance_bar'
+    #graphiql-container{ data: { introspection_schema_path: "#{Gitlab.config.gitlab.relative_url_root}/-/graphql/introspection_result.json" } } Loading…

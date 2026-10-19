@@ -1,0 +1,6 @@
+# @feature_category: team_planning
+mutation deleteWorkItem($input: WorkItemDeleteInput!) {
+  workItemDelete(input: $input) {
+    errors
+  }
+}

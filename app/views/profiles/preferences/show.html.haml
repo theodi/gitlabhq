@@ -1,0 +1,25 @@
+- page_title _('Preferences')
+- add_page_specific_style 'page_bundles/profiles/preferences'
+- tabs = preferences_tabs
+- data_attributes = { color_modes: Gitlab::ColorModes.available_modes.to_json, themes: Gitlab::Themes.available_themes.to_json, body_classes: Gitlab::Themes.body_classes }
+
+= gitlab_ui_form_for @user, url: profile_preferences_path, remote: true, method: :put, html: { id: "profile-preferences-form" } do |f|
+  - if Feature.enabled?(:preferences_tabs, current_user)
+    .gl-tabs-wrapper
+      = gl_tabs_nav({ class: 'js-preferences-tabs' }) do
+        - tabs.each_with_index do |tab, index|
+          -# Pane ids differ from the tab hrefs so a tab hash never scrolls the tab navigation out of view on load.
+          = gl_tab_link_to "##{tab[:id]}", item_active: index == 0, 'aria-controls': "#{tab[:id]}-pane", data: { testid: "preferences-tab-#{tab[:id]}" } do
+            = tab[:title]
+
+    .tab-content.gl-tab-content.gl-pt-5
+      - tabs.each_with_index do |tab, index|
+        .tab-pane{ id: "#{tab[:id]}-pane", class: ('active' if index == 0) }
+          = render "profiles/preferences/tabs/#{tab[:partial]}", f: f, **tab.fetch(:locals, {})
+  - else
+    - tabs.each do |tab|
+      -# Keeps the anchors the untabbed page has always had, for example `#appearance`.
+      %div{ id: tab[:id] }
+        = render "profiles/preferences/tabs/#{tab[:partial]}", f: f, **tab.fetch(:locals, {})
+
+  #js-profile-preferences-app{ data: data_attributes }

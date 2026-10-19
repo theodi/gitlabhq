@@ -1,0 +1,11 @@
+@import 'mixins_and_variables_and_functions';
+
+.terms {
+  .flash-container {
+    top: 0;
+  }
+
+  .terms-fade {
+    background: linear-gradient(var(--gl-color-alpha-0), var(--gl-background-color-subtle));
+  }
+}

@@ -1,0 +1,264 @@
+import Vue, { nextTick } from 'vue';
+import { GlAvatar, GlAvatarLink, GlSprintf } from '@gitlab/ui';
+import { createTestingPinia } from '@pinia/testing';
+import { PiniaVuePlugin } from 'pinia';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import diffDiscussionHeader from '~/notes/components/diff_discussion_header.vue';
+import ToggleRepliesWidget from '~/notes/components/toggle_replies_widget.vue';
+import mockDiffFile from 'jest/diffs/mock_data/diff_discussions';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { globalAccessorPlugin } from '~/pinia/plugins';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { discussionMock } from '../mock_data';
+
+Vue.use(PiniaVuePlugin);
+
+describe('diff_discussion_header component', () => {
+  let pinia;
+  let wrapper;
+
+  const createComponent = ({ propsData = {}, provide = {} } = {}) => {
+    wrapper = shallowMountExtended(diffDiscussionHeader, {
+      pinia,
+      propsData: {
+        discussion: discussionMock,
+        ...propsData,
+      },
+      provide: {
+        navigateToDiffNote: null,
+        ...provide,
+      },
+      stubs: { GlSprintf },
+    });
+  };
+
+  beforeEach(() => {
+    window.mrTabs = {};
+    pinia = createTestingPinia({ plugins: [globalAccessorPlugin] });
+    useLegacyDiffs();
+    useNotes();
+    createComponent({ propsData: { discussion: discussionMock } });
+  });
+
+  describe('Avatar', () => {
+    const firstNoteAuthor = discussionMock.notes[0].author;
+    const findAvatarLink = () => wrapper.findComponent(GlAvatarLink);
+    const findAvatar = () => wrapper.findComponent(GlAvatar);
+
+    it('should render user avatar and user avatar link with popover support', () => {
+      expect(findAvatar().exists()).toBe(true);
+
+      const avatarLink = findAvatarLink();
+      expect(avatarLink.exists()).toBe(true);
+      expect(avatarLink.classes()).toContain('js-user-link');
+      expect(avatarLink.attributes()).toMatchObject({
+        href: firstNoteAuthor.path,
+        'data-user-id': `${firstNoteAuthor.id}`,
+        'data-username': `${firstNoteAuthor.username}`,
+      });
+    });
+
+    it('renders avatar of the first note author', () => {
+      expect(findAvatar().props('src')).toBe(firstNoteAuthor.avatar_url);
+      expect(findAvatar().props('alt')).toBe(firstNoteAuthor.name);
+      expect(findAvatar().props('size')).toBe(32);
+    });
+  });
+
+  describe('action text', () => {
+    const commitId = 'razupaltuff';
+    const truncatedCommitId = commitId.substr(0, 8);
+    let commitElement;
+
+    beforeEach(async () => {
+      createComponent({
+        propsData: {
+          discussion: {
+            ...discussionMock,
+            for_commit: true,
+            commit_id: commitId,
+            diff_discussion: true,
+            diff_file: {
+              ...mockDiffFile,
+            },
+          },
+        },
+      });
+
+      await nextTick();
+      commitElement = wrapper.find('.commit-sha');
+    });
+
+    describe('for diff threads without a commit id', () => {
+      it('should show started a thread on the diff text', async () => {
+        createComponent({
+          propsData: {
+            discussion: {
+              ...discussionMock,
+              diff_discussion: true,
+              for_commit: false,
+              commit_id: null,
+            },
+          },
+        });
+
+        await nextTick();
+        expect(wrapper.text()).toContain('started a thread on the diff');
+      });
+
+      it('should show thread on older version text', async () => {
+        createComponent({
+          propsData: {
+            discussion: {
+              ...discussionMock,
+              diff_discussion: true,
+              for_commit: false,
+              commit_id: null,
+              active: false,
+            },
+          },
+        });
+
+        await nextTick();
+        expect(wrapper.text()).toContain('started a thread on an old version of the diff');
+      });
+    });
+
+    describe('for commit threads', () => {
+      it('should display a monospace started a thread on commit', () => {
+        expect(wrapper.text()).toContain(`started a thread on commit ${truncatedCommitId}`);
+        expect(commitElement.exists()).toBe(true);
+        expect(commitElement.text()).toContain(truncatedCommitId);
+      });
+    });
+
+    describe('for diff thread with a commit id', () => {
+      it('should display started thread on commit header', async () => {
+        createComponent({
+          propsData: {
+            discussion: {
+              ...discussionMock,
+              diff_discussion: true,
+              for_commit: false,
+              commit_id: commitId,
+            },
+          },
+        });
+
+        await nextTick();
+        expect(wrapper.text()).toContain(`started a thread on commit ${truncatedCommitId}`);
+
+        expect(commitElement).not.toBe(null);
+      });
+
+      it('should display outdated change on commit header', async () => {
+        createComponent({
+          propsData: {
+            discussion: {
+              ...discussionMock,
+              diff_discussion: true,
+              for_commit: false,
+              commit_id: commitId,
+              active: false,
+            },
+          },
+        });
+
+        await nextTick();
+        expect(wrapper.text()).toContain(
+          `started a thread on an outdated change in commit ${truncatedCommitId}`,
+        );
+
+        expect(commitElement).not.toBe(null);
+      });
+    });
+  });
+
+  describe('replies toggle', () => {
+    it('renders replies toggle inside a list element', () => {
+      createComponent();
+      const toggleWidget = wrapper.findComponent(ToggleRepliesWidget);
+      expect(toggleWidget.exists()).toBe(true);
+      expect(toggleWidget.element.parentElement.tagName).toBe('UL');
+      expect(toggleWidget.props()).toMatchObject({
+        collapsed: false,
+        replies: discussionMock.notes,
+      });
+    });
+
+    it('skips system notes', () => {
+      createComponent({
+        propsData: {
+          discussion: {
+            ...discussionMock,
+            notes: [...discussionMock.notes, { system: true }],
+          },
+        },
+      });
+      expect(wrapper.findComponent(ToggleRepliesWidget).props('replies')).toStrictEqual(
+        discussionMock.notes,
+      );
+    });
+
+    it('passes collapsed state', () => {
+      createComponent({
+        propsData: {
+          discussion: {
+            ...discussionMock,
+            expanded: false,
+          },
+        },
+      });
+      expect(wrapper.findComponent(ToggleRepliesWidget).props('collapsed')).toBe(true);
+    });
+
+    it('toggles discussion', () => {
+      createComponent({
+        propsData: {
+          discussion: {
+            ...discussionMock,
+            expanded: false,
+          },
+        },
+      });
+      wrapper.findComponent(ToggleRepliesWidget).vm.$emit('toggle');
+      expect(useNotes().toggleDiscussion).toHaveBeenCalledWith({ discussionId: discussionMock.id });
+    });
+  });
+
+  describe('Rapid Diffs navigation', () => {
+    const diffDiscussion = {
+      ...discussionMock,
+      diff_discussion: true,
+      discussion_path: '/project/-/merge_requests/1/diffs#abc123',
+    };
+
+    const findDiscussionLink = () => wrapper.find(`a[href="${diffDiscussion.discussion_path}"]`);
+
+    describe('when navigateToDiffNote is not provided', () => {
+      it('renders the discussion link', async () => {
+        createComponent({ propsData: { discussion: diffDiscussion } });
+        await nextTick();
+        expect(findDiscussionLink().exists()).toBe(true);
+      });
+    });
+
+    describe('when navigateToDiffNote is provided', () => {
+      let navigateToDiffNoteMock;
+
+      beforeEach(async () => {
+        navigateToDiffNoteMock = jest.fn();
+        createComponent({
+          propsData: { discussion: diffDiscussion },
+          provide: { navigateToDiffNote: navigateToDiffNoteMock },
+        });
+        await nextTick();
+      });
+
+      it('calls navigateToDiffNote on link click', async () => {
+        await findDiscussionLink().trigger('click');
+        expect(navigateToDiffNoteMock).toHaveBeenCalledWith(diffDiscussion);
+      });
+    });
+  });
+});

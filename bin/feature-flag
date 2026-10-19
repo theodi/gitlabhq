@@ -1,0 +1,354 @@
+#!/usr/bin/env ruby
+#
+# Generate a feature flag entry file in the correct location.
+#
+# Automatically stages the file and amends the previous commit if the `--amend`
+# argument is used.
+
+require_relative '../config/bundler_setup'
+require 'optparse'
+require 'readline'
+require 'uri'
+require 'yaml'
+require 'gitlab/utils/all'
+
+require_relative '../lib/feature/shared' unless defined?(Feature::Shared)
+require_relative 'lib/feature_generator/shared'
+
+class FeatureFlagOptionParser
+  extend FeatureGenerator::Shared::Helpers
+  extend FeatureGenerator::Shared::OptionParserMixin
+  extend ::Feature::Shared
+
+  NOUN = 'feature flag'
+
+  FF_ROLLOUT_ISSUE_TEMPLATE = '.gitlab/issue_templates/Feature Flag Roll Out.md'
+
+  Options = Struct.new(
+    :name,
+    :description,
+    :type,
+    :group,
+    :milestone,
+    :ee,
+    :amend,
+    :dry_run,
+    :force,
+    :feature_issue_url,
+    :introduced_by_url,
+    :rollout_issue_url,
+    :username,
+    keyword_init: true
+  )
+
+  class << self
+    def parse(argv)
+      options = Options.new
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: #{__FILE__} [options] <feature-flag>\n\n"
+
+        # Note: We do not provide a shorthand for this in order to match the `git
+        # commit` interface
+        opts.on('--amend', 'Amend the previous commit') do |value|
+          options.amend = value
+        end
+
+        opts.on('-d', '--description [string]', String, 'Short description for the feature flag') do |value|
+          options.description = value
+        end
+
+        opts.on('-f', '--force', 'Overwrite an existing entry') do |value|
+          options.force = value
+        end
+
+        opts.on('-a', '--feature-issue-url [string]', String, 'URL of the original feature issue') do |value|
+          options.feature_issue_url = value
+        end
+
+        opts.on('-m', '--introduced-by-url [string]', String, 'URL of merge request introducing the Feature Flag') do |value|
+          options.introduced_by_url = value
+        end
+
+        opts.on('-M', '--milestone [string]', String, 'Milestone in which the Feature Flag was introduced') do |value|
+          options.milestone = value
+        end
+
+        opts.on('-i', '--rollout-issue-url [string]', String, 'URL of Issue rolling out the Feature Flag') do |value|
+          options.rollout_issue_url = value
+        end
+
+        opts.on('-n', '--dry-run', "Don't actually write anything, just print") do |value|
+          options.dry_run = value
+        end
+
+        opts.on('-g', '--group [string]', String, "The group introducing a feature flag, like: `group::project management`") do |value|
+          options.group = value if group_labels.include?(value)
+        end
+
+        opts.on('-t', '--type [string]', String, "The category of the feature flag, valid options are: #{TYPES.keys.map(&:to_s).join(', ')}") do |value|
+          options.type = value.to_sym if TYPES.key?(value.to_sym)
+        end
+
+        opts.on('-u', '--username [string]', String, "The username of the feature flag DRI") do |value|
+          options.username = value
+        end
+
+        opts.on('-e', '--ee', 'Generate a feature flag entry for GitLab EE') do |value|
+          options.ee = value
+        end
+
+        opts.on('-h', '--help', 'Print help message') do
+          $stdout.puts opts
+          raise FeatureGenerator::Shared::Done
+        end
+      end
+
+      parser.parse!(argv)
+
+      unless argv.one?
+        $stdout.puts parser.help
+        $stdout.puts
+        raise FeatureGenerator::Shared::Abort, 'Feature flag name is required'
+      end
+
+      options.name = argv.first.downcase.gsub(/-/, '_')
+
+      options
+    end
+
+    def rollout_issue_template
+      @rollout_issue_template ||= File.read(File.expand_path("../#{FF_ROLLOUT_ISSUE_TEMPLATE}", __dir__))
+    end
+
+    def types_list
+      list = []
+      TYPES.each_with_index do |(type, data), index|
+        next if data[:deprecated]
+
+        list << "#{index + 1}. #{type.to_s.rjust(17)}    #{data[:description]}"
+      end
+
+      list
+    end
+
+    def read_type
+      prompt = 'Specify the feature flag type'
+      unless fzf_available?
+        print_prompt(prompt)
+        print_list(types_list)
+      end
+
+      loop do
+        type = prompt_list(prompt: prompt, list: types_list)
+        type = TYPES.keys[type.to_i - 1] unless type.to_i.zero?
+        type = type&.to_sym
+        type_def = TYPES[type]
+
+        if type_def && !type_def[:deprecated]
+          $stdout.puts "You picked the type '#{type}'" # rubocop:disable Gitlab/DirectStdio -- CLI script output
+          return type
+        else
+          $stderr.puts "Invalid type specified '#{type}'" # rubocop:disable Gitlab/DirectStdio -- CLI script output
+        end
+      end
+    end
+
+    def read_group
+      super(noun: NOUN)
+    end
+
+    def read_feature_issue_url
+      read_url('URL of the original feature issue (enter to skip):')
+    end
+
+    def read_introduced_by_url
+      super(noun: NOUN)
+    end
+
+    def read_rollout_issue_url(options)
+      return unless TYPES.dig(options.type, :rollout_issue)
+
+      issue_new_url = "https://gitlab.com/gitlab-org/gitlab/-/work_items/new"
+      issue_title = "[FF] `#{options.name}` -- #{options.description}"
+      issue_new_url = issue_new_url + "?" + URI.encode_www_form('issue[title]' => issue_title)
+      group_name = find_group_by_label(options.group)
+
+      template = rollout_issue_template
+
+      if options.username
+        template.gsub!('<gitlab-username-of-dri>', options.username)
+      else
+        template.gsub!('/assign @<gitlab-username-of-dri>', "/assign me")
+      end
+
+      template.gsub!('<feature-flag-name>', options.name)
+      template.gsub!('<merge-request-url>', options.introduced_by_url) if options.introduced_by_url
+      template.gsub!('<milestone>', options.milestone)
+      template.gsub!('<feature-issue-link>', options.feature_issue_url) if options.feature_issue_url
+      template.gsub!('<slack-channel-of-dri-team>', group_name['slack_channel']) if group_name&.key?('slack_channel')
+      template.gsub!('<group-label>', %Q(~"#{options.group}"))
+
+      $stdout.puts # rubocop:disable Gitlab/DirectStdio -- CLI script output
+      $stdout.puts ">> Press any key and paste the issue content that we copied to your clipboard! 🚀" # rubocop:disable Gitlab/DirectStdio -- CLI script output
+      Readline.readline('?> ', false)
+      copy_to_clipboard!(template)
+
+      if open_url!(issue_new_url) != 0
+        $stdout.puts ">> Automatic opening of the new issue URL failed, so please visit #{issue_new_url} manually." # rubocop:disable Gitlab/DirectStdio -- CLI script output
+      end
+
+      $stdout.puts ">> URL of the rollout issue (enter to skip):" # rubocop:disable Gitlab/DirectStdio -- CLI script output
+
+      loop do
+        created_url = Readline.readline('?> ', false)&.strip
+        created_url = nil if created_url&.empty?
+        return created_url if created_url.nil? || valid_url?(created_url)
+      end
+    end
+
+    def read_username
+      $stdout.puts # rubocop:disable Gitlab/DirectStdio -- CLI script output
+      $stdout.puts ">> Username of the feature flag DRI (enter to skip):" # rubocop:disable Gitlab/DirectStdio -- CLI script output
+
+      loop do
+        username = Readline.readline('?> ', false)&.strip
+        return if username.nil? || username.empty?
+        return username if valid_url?("https://gitlab.com/#{username}")
+      end
+    end
+
+    def read_ee
+      $stdout.puts # rubocop:disable Gitlab/DirectStdio -- CLI script output
+      $stdout.puts ">> Is this an EE only feature (enter to skip):" # rubocop:disable Gitlab/DirectStdio -- CLI script output
+
+      loop do
+        ee = Readline.readline('?> ', false)&.strip
+        return if ee.nil? || ee.empty?
+        return Gitlab::Utils.to_boolean(ee)
+      end
+    end
+  end
+end
+
+class FeatureFlagCreator
+  include FeatureGenerator::Shared::Helpers
+  include FeatureGenerator::Shared::CreatorMixin
+
+  NOUN = 'feature flag'
+
+  attr_reader :options
+
+  def initialize(options)
+    @options = options
+  end
+
+  def execute
+    assert_clipboard_command!
+    assert_feature_branch!
+    assert_name!(noun: NOUN)
+    assert_existing_feature_flag!
+
+    options.type ||= FeatureFlagOptionParser.read_type
+    options.group ||= FeatureFlagOptionParser.read_group
+    options.feature_issue_url ||= FeatureFlagOptionParser.read_feature_issue_url
+    options.introduced_by_url ||= FeatureFlagOptionParser.read_introduced_by_url
+    options.milestone ||= FeatureFlagOptionParser.read_milestone
+    options.username ||= FeatureFlagOptionParser.read_username
+    options.ee ||= FeatureFlagOptionParser.read_ee
+    options.rollout_issue_url ||= FeatureFlagOptionParser.read_rollout_issue_url(options)
+
+    $stdout.puts "\e[32mcreate\e[0m #{file_path}" # rubocop:disable Gitlab/DirectStdio -- CLI script output
+    $stdout.puts contents # rubocop:disable Gitlab/DirectStdio -- CLI script output
+
+    unless options.dry_run
+      write
+      amend_commit if options.amend
+    end
+
+    if editor
+      system("#{editor} '#{file_path}'")
+    end
+  end
+
+  private
+
+  def contents
+    config_hash.to_yaml
+  end
+
+  def config_hash
+    {
+      'name'              => options.name,
+      'description'       => options.description,
+      'feature_issue_url' => options.feature_issue_url,
+      'introduced_by_url' => options.introduced_by_url,
+      'rollout_issue_url' => options.rollout_issue_url,
+      'milestone'         => options.milestone,
+      'group'             => options.group,
+      'type'              => options.type.to_s,
+      'default_enabled'   => false
+    }
+  end
+
+  # Override: use Kernel.exec so the user gets a full interactive editor session
+  def amend_commit
+    fail_with "git add failed" unless system(*%W[git add #{file_path}])
+
+    Kernel.exec(*%w[git commit --amend])
+  end
+
+  def assert_clipboard_command!
+    return if FeatureFlagOptionParser.copy_to_clipboard_command
+
+    fail_with "Could not find a copy to clipboard command. On Linux, please install xclip or xsel (or wl-clipboard under Wayland). On macOS, make sure pbcopy is available."
+  end
+
+  def assert_existing_feature_flag!
+    existing_path = all_feature_flag_names[options.name]
+    return unless existing_path
+    return if options.force
+
+    fail_with "#{existing_path} already exists! Use `--force` to overwrite."
+  end
+
+  def file_path
+    feature_flags_paths.last
+      .sub('**', options.type.to_s)
+      .sub('*.yml', options.name + '.yml')
+  end
+
+  def all_feature_flag_names
+    @all_feature_flag_names ||=
+      feature_flags_paths.map do |glob_path|
+        Dir.glob(glob_path).map do |path|
+          [File.basename(path, '.yml'), path]
+        end
+      end.flatten(1).to_h
+  end
+
+  def feature_flags_paths
+    paths = []
+    paths << File.join('config', 'feature_flags', '**', '*.yml')
+    paths << File.join('ee', 'config', 'feature_flags', '**', '*.yml') if ee?
+    paths
+  end
+
+  def ee?
+    options.ee
+  end
+end
+
+if $0 == __FILE__
+  begin
+    options = FeatureFlagOptionParser.parse(ARGV)
+    FeatureFlagCreator.new(options).execute
+  rescue FeatureGenerator::Shared::Abort => ex
+    $stderr.puts ex.message # rubocop:disable Gitlab/DirectStdio -- CLI script output
+    exit 1
+  rescue FeatureGenerator::Shared::Done
+    exit
+  end
+end
+
+# vim: ft=ruby

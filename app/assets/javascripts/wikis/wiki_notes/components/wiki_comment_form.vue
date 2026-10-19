@@ -1,0 +1,438 @@
+<script>
+import { GlAlert, GlFormCheckbox, GlTooltipDirective, GlButton } from '@gitlab/ui';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import TimelineEntryItem from '~/vue_shared/components/notes/timeline_entry_item.vue';
+import CommentFieldLayout from '~/notes/components/comment_field_layout.vue';
+import MarkdownEditor from '~/vue_shared/components/markdown/markdown_editor.vue';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { TYPENAME_NOTE, TYPENAME_DISCUSSION } from '~/graphql_shared/constants';
+import createWikiPageNoteMutation from '~/wikis/wiki_notes/graphql/create_wiki_page_note.mutation.graphql';
+import updateWikiPageMutation from '~/wikis/wiki_notes/graphql/update_wiki_page_note.mutation.graphql';
+import { updateDraft, clearDraft, getDraft } from '~/lib/utils/autosave';
+import { detectAndConfirmSensitiveTokens } from '~/lib/utils/secret_detection';
+import { COMMENT_FORM } from '~/notes/i18n';
+import { __ } from '~/locale';
+import HelpIcon from '~/vue_shared/components/help_icon/help_icon.vue';
+import { trackSavedUsingEditor } from '~/vue_shared/components/markdown/tracking';
+import * as constants from '~/notes/constants';
+import { confirmAction } from '~/lib/utils/confirm_via_gl_modal/confirm_action';
+import { createNoteErrorMessages, getAutosaveKey } from '../utils';
+import WikiDiscussionSignedOut from './wiki_discussions_signed_out.vue';
+
+export default {
+  name: 'WikiCommentForm',
+  i18n: COMMENT_FORM,
+  components: {
+    GlAlert,
+    GlFormCheckbox,
+    WikiDiscussionSignedOut,
+    TimelineEntryItem,
+    CommentFieldLayout,
+    MarkdownEditor,
+    GlButton,
+    HelpIcon,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  inject: [
+    'currentUserData',
+    'markdownPreviewPath',
+    'noteableType',
+    'markdownDocsPath',
+    'isContainerArchived',
+  ],
+  props: {
+    noteableId: {
+      type: String,
+      required: true,
+    },
+    noteId: {
+      type: String,
+      required: true,
+    },
+    discussionId: {
+      type: String,
+      required: false,
+      default: null,
+    },
+    isReply: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isEdit: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canSetInternalNote: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    discussionResolved: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canResolve: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: [
+    'cancel',
+    'creating-note-done',
+    'creating-note-failed',
+    'creating-note-start',
+    'creating-note-success',
+  ],
+  data() {
+    return {
+      errors: [],
+      timeoutIds: [],
+      note: '',
+      noteType: constants.COMMENT,
+      noteIsInternal: false,
+      isSubmitting: false,
+      formFieldProps: {
+        id: 'wiki-comment-form',
+        name: 'wiki-comment-form',
+        'aria-label': __('Wiki comment form'),
+        placeholder: __('Write a comment or drag your files here...'),
+        'data-testid': 'note-textarea',
+        class: 'note-textarea js-gfm-input js-autosize markdown-area',
+      },
+      noteableData: {
+        discussion_locked: false,
+        confidential: false,
+        issue_email_participants: [],
+      },
+      resolve: false,
+      unresolve: this.discussionResolved,
+    };
+  },
+  computed: {
+    autocompleteDataSources() {
+      return gl?.GfmAutoComplete?.dataSources;
+    },
+    userSignedId() {
+      return Boolean(this.currentUserData?.id);
+    },
+    canCreateNote() {
+      return !this.isContainerArchived;
+    },
+    autosaveKey() {
+      if (this.userSignedId) {
+        return getAutosaveKey(this.noteableType, this.noteId);
+      }
+
+      return '';
+    },
+    autosaveKeyInternalNote() {
+      if (this.userSignedId) {
+        // eslint-disable-next-line @gitlab/no-hardcoded-urls -- local storage key, not a URL
+        return getAutosaveKey(this.noteableType, `${this.noteId}/InternalNote`);
+      }
+
+      return '';
+    },
+    saveButtonTitle() {
+      if (this.isReply) return __('Reply');
+      if (this.isEdit) return __('Save comment');
+      return __('Comment');
+    },
+    replyOrEdit() {
+      return this.isReply || this.isEdit;
+    },
+    dynamicClasses() {
+      return {
+        formParent: {
+          'timeline-content': !this.replyOrEdit,
+        },
+        root: {
+          'gl-mt-6': this.replyOrEdit,
+        },
+      };
+    },
+    showResolveDiscussionToggle() {
+      return this.isReply && this.canResolve;
+    },
+    saveShouldChangeResolvedState() {
+      return this.resolve || this.unresolve;
+    },
+    newResolvedState() {
+      return this.discussionResolved ? !this.unresolve : this.resolve;
+    },
+    noteHasContent() {
+      return Boolean(this.note.trim());
+    },
+    createNoteInput() {
+      return this.isEdit
+        ? {
+            id: convertToGraphQLId(TYPENAME_NOTE, this.noteId),
+            body: this.note,
+          }
+        : {
+            noteableId: this.noteableId,
+            body: this.note,
+            discussionId: this.isReply ? this.discussionId : null,
+            internal: this.noteIsInternal,
+          };
+    },
+    discussionToggleResolveInput() {
+      return {
+        id: this.discussionId || convertToGraphQLId(TYPENAME_DISCUSSION, 0),
+        resolve: this.newResolvedState,
+      };
+    },
+    editMutationVariables() {
+      return {
+        input: {
+          id: convertToGraphQLId(TYPENAME_NOTE, this.noteId),
+          body: this.note,
+        },
+      };
+    },
+    saveMutationVariables() {
+      return {
+        shouldCreateNote: this.noteHasContent,
+        shouldChangeResolvedState: this.saveShouldChangeResolvedState,
+        createNoteInput: this.createNoteInput,
+        discussionToggleResolveInput: this.discussionToggleResolveInput,
+      };
+    },
+  },
+  beforeDestroy() {
+    this.timeoutIds.forEach((id) => {
+      clearTimeout(id);
+    });
+  },
+  mounted() {
+    this.noteIsInternal = parseBoolean(getDraft(this.autosaveKeyInternalNote));
+  },
+  methods: {
+    async handleCancel() {
+      if (!this.note.trim()) {
+        return this.$emit('cancel');
+      }
+
+      const msg = this.isEdit
+        ? __('Are you sure you want to cancel editing this comment?')
+        : __('Are you sure you want to cancel creating this comment?');
+
+      const confirmed = await confirmAction(msg, {
+        primaryBtnText: __('Discard changes'),
+        cancelBtnText: this.isEdit ? __('Continue editing') : __('Continue creating'),
+      });
+
+      if (confirmed) {
+        return this.$emit('cancel');
+      }
+      return null;
+    },
+    dismissError(index) {
+      this.errors.splice(index, 1);
+    },
+    setError(err) {
+      this.errors = err;
+    },
+    async handleSave() {
+      this.errors = [];
+
+      this.isSubmitting = true;
+
+      // save to a block scoped variable so the value is still available in the finally block
+      const { noteHasContent } = this;
+      const noteBackup = this.note;
+
+      if (noteHasContent) {
+        const confirmSubmit = await detectAndConfirmSensitiveTokens({ content: this.note });
+        if (!confirmSubmit) {
+          return;
+        }
+
+        this.$emit('creating-note-start', {
+          ...this.createNoteInput,
+          individualNote: this.noteType === constants.DISCUSSION,
+        });
+
+        trackSavedUsingEditor(
+          this.$refs.markdownEditor?.isContentEditorActive,
+          `${this.noteableType}_${this.noteType}`,
+        );
+      }
+
+      try {
+        const discussion = await this.$apollo.mutate({
+          mutation: this.isEdit ? updateWikiPageMutation : createWikiPageNoteMutation,
+          variables: this.isEdit ? this.editMutationVariables : this.saveMutationVariables,
+        });
+
+        const response = this.isEdit
+          ? discussion.data.updateNote?.note
+          : discussion.data.createNote?.note?.discussion;
+
+        this.noteIsInternal = false;
+
+        if (noteHasContent) {
+          this.note = '';
+          clearDraft(this.autosaveKey);
+          clearDraft(this.autosaveKeyInternalNote);
+          this.$emit('creating-note-success', response);
+        }
+      } catch (err) {
+        this.setError(createNoteErrorMessages(err));
+        if (noteHasContent) {
+          this.$emit('creating-note-failed', err);
+        }
+        this.note = noteBackup;
+
+        this.timeoutIds.push(
+          setTimeout(() => {
+            this.$refs.markdownEditor.focus();
+          }, 100),
+        );
+      } finally {
+        this.isSubmitting = false;
+        if (noteHasContent) {
+          this.$emit('creating-note-done');
+        }
+      }
+    },
+    onInput(value) {
+      if (!this.isSubmitting) this.note = value;
+    },
+    disableSubmitButton() {
+      return (!this.noteHasContent && !this.saveShouldChangeResolvedState) || this.isSubmitting;
+    },
+    setInternalNoteCheckbox() {
+      updateDraft(this.autosaveKeyInternalNote, this.noteIsInternal);
+    },
+  },
+};
+</script>
+<template>
+  <div data-testid="wiki-note-comment-form-container" :class="dynamicClasses.root">
+    <wiki-discussion-signed-out v-if="!userSignedId" />
+    <ul
+      v-else-if="canCreateNote"
+      data-testid="wiki-note-comment-form"
+      class="notes notes-form timeline"
+    >
+      <timeline-entry-item class="note-form">
+        <gl-alert
+          v-for="(error, index) in errors"
+          :key="index"
+          variant="danger"
+          class="gl-mb-2"
+          @dismiss="() => dismissError(index)"
+        >
+          {{ error }}
+        </gl-alert>
+        <div class="timeline-content-form" :class="dynamicClasses.formParent">
+          <form
+            ref="commentForm"
+            class="new-note common-note-form gfm-form js-main-target-form"
+            data-testid="wiki-note-form"
+            @submit.stop.prevent
+          >
+            <comment-field-layout
+              :with-alert-container="true"
+              :is-internal-note="noteIsInternal"
+              :note="note"
+              :noteable-data="noteableData"
+            >
+              <markdown-editor
+                ref="markdownEditor"
+                :value="note"
+                :autofocus="replyOrEdit"
+                :render-markdown-path="markdownPreviewPath"
+                :markdown-docs-path="markdownDocsPath"
+                :form-field-props="formFieldProps"
+                :autosave-key="autosaveKey"
+                :disabled="isSubmitting"
+                :autocomplete-data-sources="autocompleteDataSources"
+                supports-quick-actions
+                @keydown.shift.meta.enter="handleSave"
+                @keydown.shift.ctrl.enter="handleSave"
+                @keydown.meta.enter.exact="handleSave"
+                @keydown.ctrl.enter.exact="handleSave"
+                @input="onInput"
+              />
+            </comment-field-layout>
+            <div class="note-form-actions gl-font-size-0">
+              <template v-if="showResolveDiscussionToggle">
+                <label>
+                  <template v-if="discussionResolved">
+                    <gl-form-checkbox
+                      v-model="unresolve"
+                      data-testid="wiki-note-unresolve-checkbox"
+                    >
+                      {{ __('Reopen thread') }}
+                    </gl-form-checkbox>
+                  </template>
+                  <template v-else>
+                    <gl-form-checkbox v-model="resolve" data-testid="wiki-note-resolve-checkbox">
+                      {{ __('Resolve thread') }}
+                    </gl-form-checkbox>
+                  </template>
+                </label>
+              </template>
+            </div>
+            <div v-if="replyOrEdit" class="gl-font-size-0 gl-flex gl-flex-wrap gl-gap-3">
+              <gl-button
+                :disabled="disableSubmitButton()"
+                category="primary"
+                variant="confirm"
+                data-testid="wiki-note-save-button"
+                class="js-vue-issue-save js-comment-button gl-w-full @sm/panel:gl-w-fit"
+                @click="handleSave"
+              >
+                {{ saveButtonTitle }}
+              </gl-button>
+              <gl-button
+                :disabled="isSubmitting"
+                data-testid="wiki-note-cancel-button"
+                class="note-edit-cancel js-close-discussion-note-form gl-w-full @sm/panel:gl-w-fit"
+                category="secondary"
+                variant="default"
+                @click="handleCancel"
+              >
+                {{ __('Cancel') }}
+              </gl-button>
+            </div>
+            <div v-else class="note-form-actions gl-font-size-0">
+              <gl-form-checkbox
+                v-if="canSetInternalNote"
+                v-model="noteIsInternal"
+                class="gl-mb-2 gl-basis-full"
+                data-testid="wiki-internal-note-checkbox"
+                @input="setInternalNoteCheckbox"
+              >
+                {{ $options.i18n.internal }}
+                <help-icon
+                  v-gl-tooltip:tooltipcontainer.bottom
+                  :title="$options.i18n.internalVisibility"
+                />
+              </gl-form-checkbox>
+              <gl-button
+                :disabled="disableSubmitButton()"
+                category="primary"
+                variant="confirm"
+                data-testid="wiki-note-comment-button"
+                tracking-label="wiki-comment-button"
+                class="js-vue-issue-save js-comment-button gl-mr-3 gl-w-full @sm/panel:gl-w-fit"
+                @click="handleSave"
+              >
+                {{ saveButtonTitle }}
+              </gl-button>
+            </div>
+          </form>
+        </div>
+      </timeline-entry-item>
+    </ul>
+  </div>
+</template>

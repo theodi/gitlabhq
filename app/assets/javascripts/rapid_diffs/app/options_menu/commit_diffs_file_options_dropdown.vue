@@ -1,0 +1,88 @@
+<script>
+import { __ } from '~/locale';
+import DiffFileOptionsDropdown from '~/rapid_diffs/app/options_menu/diff_file_options_dropdown.vue';
+
+export default {
+  name: 'CommitDiffsFileOptionsDropdown',
+  components: {
+    DiffFileOptionsDropdown,
+  },
+  inject: {
+    store: { type: Object },
+  },
+  props: {
+    items: {
+      type: Array,
+      required: true,
+    },
+    fileId: {
+      type: String,
+      required: true,
+    },
+    oldPath: {
+      type: String,
+      required: true,
+    },
+    newPath: {
+      type: String,
+      required: true,
+    },
+  },
+  computed: {
+    fileDiscussions() {
+      return this.store.findDiscussionsForFile({
+        oldPath: this.oldPath,
+        newPath: this.newPath,
+      });
+    },
+    hasDiscussions() {
+      return this.fileDiscussions.length > 0;
+    },
+    discussionsHidden() {
+      return this.hasDiscussions && this.fileDiscussions.every((d) => d.hidden);
+    },
+    groups() {
+      const baseGroup = {
+        items: this.items,
+      };
+
+      if (!this.hasDiscussions) {
+        return [baseGroup];
+      }
+
+      const toggleGroup = {
+        bordered: true,
+        items: [
+          {
+            text: this.discussionsHidden
+              ? __('Show comments on this file')
+              : __('Hide comments on this file'),
+            action: this.toggleComments,
+            extraAttrs: {
+              'data-testid': 'toggle-comment-button',
+            },
+          },
+        ],
+      };
+
+      return [baseGroup, toggleGroup];
+    },
+  },
+  methods: {
+    toggleComments() {
+      this.store.setFileDiscussionsHidden(this.oldPath, this.newPath, !this.discussionsHidden);
+      this.$refs['diff-file-options-dropdown']?.closeAndFocus();
+    },
+  },
+};
+</script>
+
+<template>
+  <diff-file-options-dropdown
+    ref="diff-file-options-dropdown"
+    :items="groups"
+    :file-id="fileId"
+    :old-path="oldPath"
+    :new-path="newPath"
+  />
+</template>

@@ -1,0 +1,194 @@
+<script>
+import { GlButton, GlButtonGroup, GlTooltipDirective } from '@gitlab/ui';
+import { isGid, getIdFromGraphQLId } from '~/graphql_shared/utils';
+import Tracking from '~/tracking';
+import { BUTTON_TOOLTIP_RETRY, BUTTON_TOOLTIP_CANCEL, TRACKING_CATEGORIES } from '~/ci/constants';
+import PipelineMultiActions from './pipeline_multi_actions.vue';
+import PipelinesManualActions from './pipelines_manual_actions.vue';
+import PipelineStopModal from './pipeline_stop_modal.vue';
+
+export default {
+  name: 'PipelineOperations',
+  BUTTON_TOOLTIP_RETRY,
+  BUTTON_TOOLTIP_CANCEL,
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  components: {
+    GlButton,
+    GlButtonGroup,
+    PipelineMultiActions,
+    PipelinesManualActions,
+    PipelineStopModal,
+  },
+  mixins: [Tracking.mixin()],
+  props: {
+    pipeline: {
+      type: Object,
+      required: true,
+    },
+  },
+  emits: ['cancel-pipeline', 'job-action-executed', 'retry-pipeline'],
+  data() {
+    return {
+      isCanceling: false,
+      isRetrying: false,
+      showConfirmationModal: false,
+      pipelineToCancel: this.pipeline,
+    };
+  },
+  computed: {
+    fullPath() {
+      return this.pipeline?.project?.fullPath || this.pipeline?.project?.full_path.slice(1);
+    },
+    hasActions() {
+      const hasRESTActions =
+        this.pipeline?.details?.has_manual_actions || this.pipeline?.details?.has_scheduled_actions;
+      const hasGraphQLActions =
+        this.pipeline?.hasManualActions || this.pipeline?.hasScheduledActions;
+
+      return hasRESTActions || hasGraphQLActions;
+    },
+    isRetryable() {
+      // REST flags already include the permission check server-side
+      const isRESTRetryable = this.pipeline?.flags?.retryable;
+      const isGraphQLRetryable =
+        this.pipeline?.retryable && this.pipeline?.userPermissions?.updatePipeline;
+
+      return isRESTRetryable || isGraphQLRetryable;
+    },
+    isCancelable() {
+      const isRESTCancelable = this.pipeline?.flags?.cancelable;
+      const isGraphQLCancelable =
+        this.pipeline?.cancelable && this.pipeline?.userPermissions?.cancelPipeline;
+
+      return isRESTCancelable || isGraphQLCancelable;
+    },
+    pipelineId() {
+      if (isGid(this.pipeline.id)) {
+        return getIdFromGraphQLId(this.pipeline.id);
+      }
+
+      return this.pipeline.id;
+    },
+    modalPipeline() {
+      const pipeline = this.pipelineToCancel;
+
+      // The modal reads GraphQL field names, so REST rows are adapted below.
+      // Both branches go away once `mr_pipelines_graphql` ships and the REST table is removed.
+      if (isGid(pipeline.id)) {
+        return pipeline;
+      }
+
+      return {
+        ...pipeline,
+        ref: pipeline.ref?.name,
+        refUrl: pipeline.ref?.path,
+        commit: pipeline.commit && {
+          ...pipeline.commit,
+          shortId: pipeline.commit.short_id,
+          webPath: pipeline.commit.commit_path,
+        },
+        detailedStatus: pipeline.details?.status,
+      };
+    },
+    pipelineIid() {
+      // GraphQL returns a string, pipeline manual actions expects a number
+      return Number(this.pipeline.iid);
+    },
+  },
+  watch: {
+    pipeline() {
+      if (this.isCanceling || this.isRetrying) {
+        this.isCanceling = false;
+        this.isRetrying = false;
+      }
+    },
+  },
+  methods: {
+    onCloseModal() {
+      this.showConfirmationModal = false;
+    },
+    onConfirmCancelPipeline() {
+      this.isCanceling = true;
+      this.showConfirmationModal = false;
+
+      this.$emit('cancel-pipeline', this.pipelineToCancel);
+    },
+    handleCancelClick() {
+      this.showConfirmationModal = true;
+      this.pipelineToCancel = this.pipeline;
+
+      this.trackClick('click_cancel_button');
+    },
+    handleRetryClick() {
+      this.isRetrying = true;
+
+      this.trackClick('click_retry_button');
+
+      this.$emit('retry-pipeline', this.pipeline);
+    },
+    onManualJobPlayed() {
+      this.$emit('job-action-executed', this.pipeline);
+    },
+    trackClick(action) {
+      this.track(action, { label: TRACKING_CATEGORIES.table });
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="gl-text-right">
+    <pipeline-stop-modal
+      :pipeline="modalPipeline"
+      :show-confirmation-modal="showConfirmationModal"
+      @submit="onConfirmCancelPipeline"
+      @close-modal="onCloseModal"
+    />
+
+    <gl-button-group>
+      <slot name="duo-workflow-action"></slot>
+      <pipelines-manual-actions
+        v-if="hasActions"
+        :iid="pipelineIid"
+        :full-path="fullPath"
+        @refresh-pipeline-table="onManualJobPlayed"
+      />
+
+      <gl-button
+        v-if="isRetryable"
+        :key="`retry-${isRetrying}`"
+        v-gl-tooltip
+        :aria-label="$options.BUTTON_TOOLTIP_RETRY"
+        :title="$options.BUTTON_TOOLTIP_RETRY"
+        :disabled="isRetrying"
+        :loading="isRetrying"
+        class="js-pipelines-retry-button"
+        data-testid="pipelines-retry-button"
+        icon="retry"
+        variant="default"
+        category="secondary"
+        @click="handleRetryClick"
+      />
+
+      <gl-button
+        v-if="isCancelable"
+        :key="`cancel-${isCanceling}`"
+        v-gl-tooltip
+        :aria-label="$options.BUTTON_TOOLTIP_CANCEL"
+        :title="$options.BUTTON_TOOLTIP_CANCEL"
+        :loading="isCanceling"
+        :disabled="isCanceling"
+        icon="cancel"
+        variant="danger"
+        category="primary"
+        class="js-pipelines-cancel-button gl-ml-1"
+        data-testid="pipelines-cancel-button"
+        @click="handleCancelClick"
+      />
+
+      <pipeline-multi-actions :pipeline-id="pipelineId" :full-path="fullPath" />
+    </gl-button-group>
+  </div>
+</template>

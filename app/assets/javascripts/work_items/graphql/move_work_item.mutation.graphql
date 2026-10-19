@@ -1,0 +1,20 @@
+#import "ee_else_ce/work_items/graphql/work_item_hierarchy.fragment.graphql"
+#import "~/work_items/graphql/work_item_hierarchy_slim.fragment.graphql"
+
+# @feature_category: team_planning
+mutation workItemMove(
+  $input: workItemsHierarchyReorderInput!
+  $pageSize: Int = 100
+  $endCursor: String = ""
+  $useWorkItemFeatures: Boolean = false
+) {
+  workItemsHierarchyReorder(input: $input) {
+    workItem {
+      ...WorkItemHierarchySlim
+    }
+    parentWorkItem {
+      ...WorkItemHierarchy
+    }
+    errors
+  }
+}

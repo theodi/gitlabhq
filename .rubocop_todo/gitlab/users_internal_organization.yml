@@ -1,0 +1,7 @@
+---
+Gitlab/UsersInternalOrganization:
+  Exclude:
+    - 'app/services/notes/create_service.rb'
+    - 'app/services/observability/access_request_service.rb'
+    - 'spec/services/observability/access_request_service_spec.rb'
+    - 'spec/workers/anti_abuse/spam_abuse_events_worker_spec.rb'

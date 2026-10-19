@@ -1,0 +1,270 @@
+---
+stage: Verify
+group: Runner Core
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Dashboard for Kubernetes
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+- Status: Beta
+
+{{< /details >}}
+
+Use the dashboard for Kubernetes to understand the status of your clusters with an intuitive visual interface.
+The dashboard works with every connected Kubernetes cluster, whether you deployed it
+with CI/CD or GitOps.
+
+![Dashboard showing the status of Kubernetes pods and services.](img/kubernetes_summary_ui_v17_2.png)
+
+## Configure a dashboard
+
+Configure a dashboard to use it for a given environment.
+You can configure dashboard for an environment that already exists, or
+add one when you create an environment.
+
+Prerequisites:
+
+- A GitLab agent for Kubernetes is [installed](../../user/clusters/agent/install/_index.md) and [`user_access`](../../user/clusters/agent/user_access.md) is configured for the environment's project or its parent group.
+
+{{< tabs >}}
+
+{{< tab title="The environment already exists" >}}
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Operate** > **Environments**.
+1. Select the environment to be associated with the agent for Kubernetes.
+1. Select **Edit**.
+1. Select a GitLab agent for Kubernetes.
+1. Optional. From the **Kubernetes namespace** dropdown list, select a namespace.
+1. Optional. From the **Flux resource** dropdown list, select a Flux resource.
+1. Select **Save**.
+
+{{< /tab >}}
+
+{{< tab title="The environment doesn't exist" >}}
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Operate** > **Environments**.
+1. Select **New environment**.
+1. Complete the **Name** field.
+1. Select a GitLab agent for Kubernetes.
+1. Optional. From the **Kubernetes namespace** dropdown list, select a namespace.
+1. Optional. From the **Flux resource** dropdown list, select a Flux resource.
+1. Select **Save**.
+
+{{< /tab >}}
+
+{{< /tabs >}}
+
+### Configure a dashboard for a dynamic environment
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/467912) in GitLab 17.6.
+
+{{< /history >}}
+
+To configure a dashboard for a dynamic environment:
+
+- Specify the agent in your `.gitlab-ci.yml` file. You must specify the full path to the agent configuration project,
+  followed by a colon and the name of the agent.
+
+For example:
+
+```yaml
+deploy_review_app:
+  stage: deploy
+  script: make deploy
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    kubernetes:
+      agent: path/to/agent/project:agent-name
+```
+
+For more information, see the [CI/CD YAML syntax reference](../yaml/_index.md#environmentkubernetes).
+
+## View a dashboard
+
+{{< history >}}
+
+- Kubernetes watch API integration [introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/422945) in GitLab 16.6 [with a feature flag](../../administration/feature_flags/_index.md) named `k8s_watch_api`. Disabled by default.
+- Kubernetes watch API integration [enabled by default](https://gitlab.com/gitlab-org/gitlab/-/merge_requests/136831) in GitLab 16.7.
+- [Generally available](https://gitlab.com/gitlab-org/gitlab/-/issues/427762) in GitLab 17.1. Feature flag `k8s_watch_api` removed.
+
+{{< /history >}}
+
+View a dashboard to see the status of connected clusters.
+The status of your Kubernetes resources and Flux reconciliation updates in real time.
+
+To view a configured dashboard:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Operate** > **Environments**.
+1. Select the environment associated with the agent for Kubernetes.
+1. Select the **Kubernetes overview** tab.
+
+A list of pods is displayed. Select a pod to view its details.
+
+### Flux sync status
+
+You can review the sync status of your Flux deployments from a dashboard.
+To display the deployment status, your dashboard must retrieve the `Kustomization` and `HelmRelease` resources,
+which requires a namespace to be configured for the environment.
+
+GitLab searches the `Kustomization` and `HelmRelease` resources specified by the **Flux resource** dropdown list in the environment settings.
+
+A dashboard displays one of the following status badges:
+
+| Status | Description |
+|---------|-------------|
+| **Reconciled** | The deployment successfully reconciled with its environment. |
+| **Reconciling** | A reconciliation is in progress. |
+| **Stalled** | A reconciliation is stuck because of an error that cannot be resolved without human intervention. |
+| **Failed** | The deployment couldn't reconcile because of an unrecoverable error. |
+| **Unknown** | The sync status of the deployment couldn't be retrieved. |
+| **Unavailable** | The `Kustomization` or `HelmRelease` resource couldn't be retrieved. |
+
+### Trigger Flux reconciliation
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/434248) in GitLab 17.3.
+
+{{< /history >}}
+
+You can manually reconcile your deployment with its Flux resources.
+
+To trigger a reconciliation:
+
+1. On a dashboard, select the sync status badge of a Flux deployment.
+1. Select **Actions** ({{< icon name="ellipsis_v" >}}) > **Trigger reconciliation** ({{< icon name="retry" >}}).
+
+### Suspend or resume Flux reconciliation
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/478380) in GitLab 17.5.
+
+{{< /history >}}
+
+You can manually suspend or resume your Flux reconciliation from the UI.
+
+To suspend or resume reconciliation:
+
+1. On a dashboard, select the sync status badge of a Flux deployment.
+1. Select **Actions** ({{< icon name="ellipsis_v" >}}), then choose one of the following:
+   - **Suspend reconciliation** ({{< icon name="stop" >}}) to pause the Flux reconciliation.
+   - **Resume reconciliation** ({{< icon name="play" >}}) to restart the Flux reconciliation.
+
+### View pod logs
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/13793) in GitLab 17.2.
+
+{{< /history >}}
+
+View pod logs when you want to quickly understand and troubleshoot issues across your environments from a configured dashboard. You can view logs for each container in a pod.
+
+- Select **View logs**, then select the container you want to view logs for.
+
+You can also view pod logs from the pod details.
+
+### Delete a pod
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/gitlab/-/issues/467653) in GitLab 17.3.
+
+{{< /history >}}
+
+To restart a failed pod, delete it from the Kubernetes dashboard.
+
+To delete a pod:
+
+1. On the **Kubernetes overview** tab, find the pod you want to delete.
+1. Select **Actions** ({{< icon name="ellipsis_v" >}}) > **Delete pod** ({{< icon name="remove" >}}).
+
+You can also delete a pod from the pod details.
+
+## Detailed dashboard
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/epics/11351) in GitLab 16.4, [with a feature flag](../../administration/feature_flags/_index.md) named `k8s_dashboard`. Disabled by default.
+- [Enabled on GitLab.com](https://gitlab.com/gitlab-org/gitlab/-/issues/424237) in GitLab 16.7 for a subset of users.
+
+{{< /history >}}
+
+> [!flag]
+> The availability of this feature is controlled by a feature flag.
+> For more information, see the history.
+> This feature is available for testing, but not ready for production use.
+
+The detailed dashboard provides information about the following Kubernetes resources:
+
+- Pods
+- Services
+- Deployments
+- ReplicaSets
+- StatefulSets
+- DaemonSets
+- Jobs
+- CronJobs
+
+Each dashboard displays a list of resources with their statuses, namespaces, and age.
+You can select a resource to open a drawer with more information, including labels
+and YAML-formatted status, annotations, and spec.
+
+![Dashboard with detailed information about the connected cluster.](img/kubernetes_dashboard_deployments_v16_9.png)
+
+Because of the focus shift described in [this issue](https://gitlab.com/gitlab-org/ci-cd/deploy-stage/environments-group/general/-/issues/53#note_1720060812), work on the detailed dashboard is paused.
+
+To provide feedback on the detailed dashboard, see [issue 460279](https://gitlab.com/gitlab-org/gitlab/-/issues/460279).
+
+### View a detailed dashboard
+
+Prerequisites:
+
+- A GitLab agent for Kubernetes is [configured](../../user/clusters/agent/install/_index.md) and shared with the environment's project, or its parent group, using the [`user_access`](../../user/clusters/agent/user_access.md) keyword.
+
+The detailed dashboard is not linked from the sidebar navigation.
+To view a detailed dashboard:
+
+1. Find your agent for Kubernetes ID:
+   1. In the top bar, select **Search or go to** and find your project.
+   1. Select **Operate** > **Kubernetes clusters**.
+   1. Copy the numerical ID of the agent you want to access.
+1. Go to one of the following URLs, replacing `<agent_id>` with your agent ID:
+
+   | Resource type | URL |
+   | --- | --- |
+   | Pods | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/pods` |
+   | Services | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/services` |
+   | Deployments | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/deployments` |
+   | ReplicaSets | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/replicaSets` |
+   | StatefulSets | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/statefulSets` |
+   | DaemonSets | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/daemonSets` |
+   | Jobs | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/jobs` |
+   | CronJobs | `https://myinstance.gitlab.com/-/kubernetes/<agent_id>/cronJobs` |
+
+## Troubleshooting
+
+When working with the dashboard for Kubernetes, you might encounter the following issues.
+
+### User cannot list resource in API group
+
+You might get an error that states `Error: services is forbidden: User "gitlab:user:<user-name>" cannot list resource "<resource-name>" in API group "" at the cluster scope`.
+
+This error happens when a user is not allowed to do the specified operation in the [Kubernetes RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/).
+
+To resolve, check your [RBAC configuration](../../user/clusters/agent/user_access.md#configure-kubernetes-access). If the RBAC is properly configured, contact your Kubernetes administrator.
+
+### GitLab agent dropdown list is empty
+
+When you configure a new environment, the **GitLab agent** dropdown list might be empty, even if you have configured Kubernetes clusters.
+
+To populate the **GitLab agent** dropdown list, grant an agent Kubernetes access with the [`user_access`](../../user/clusters/agent/user_access.md) keyword.

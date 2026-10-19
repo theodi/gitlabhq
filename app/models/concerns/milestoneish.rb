@@ -1,0 +1,158 @@
+# frozen_string_literal: true
+
+module Milestoneish
+  DISPLAY_ISSUES_LIMIT = 500
+  DISPLAY_MERGE_REQUESTS_LIMIT = 1000
+
+  def total_issues_count
+    @total_issues_count ||= Milestones::IssuesCountService.new(self).count
+  end
+
+  def closed_issues_count
+    @close_issues_count ||= Milestones::ClosedIssuesCountService.new(self).count
+  end
+
+  def opened_issues_count
+    total_issues_count - closed_issues_count
+  end
+
+  def total_merge_requests_count
+    @total_merge_requests_count ||= Milestones::MergeRequestsCountService.new(self).count
+  end
+
+  def complete?
+    total_issues_count > 0 && total_issues_count == closed_issues_count
+  end
+
+  def percent_complete
+    closed_issues_count * 100 / total_issues_count
+  rescue ZeroDivisionError
+    0
+  end
+
+  def remaining_days
+    return 0 if !due_date || expired?
+
+    (due_date - Date.today).to_i
+  end
+
+  def issues_visible_to_user(user)
+    memoize_per_user(user, :issues_visible_to_user) do
+      IssuesFinder.new(user, issues_finder_params)
+        .execute.preload(:assignees).where(milestone_id: milestoneish_id)
+    end
+  end
+
+  def issue_participants_visible_by_user(user)
+    User.joins(:issue_assignees)
+      .where('issue_assignees.issue_id' => issues_visible_to_user(user).select(:id))
+      .allow_cross_joins_across_databases(url: "https://gitlab.com/gitlab-org/gitlab/-/issues/417457")
+      .distinct
+  end
+
+  def issue_labels_visible_by_user(user)
+    Label.joins(:label_links)
+      .where('label_links.target_id' => issues_visible_to_user(user).select(:id), 'label_links.target_type' => 'Issue')
+      .distinct
+  end
+
+  def milestone_issues(user)
+    work_items_finder_params = issues_finder_params
+    work_items_finder_params[:include_descendants] = true if work_items_finder_params[:include_subgroups]
+
+    work_item_ids = ::WorkItems::WorkItemsFinder.new(user, work_items_finder_params)
+      .execute
+      .where(milestone_id: milestoneish_id)
+      .limit(DISPLAY_ISSUES_LIMIT)
+
+    WorkItem.where(id: work_item_ids.select(:id))
+      .reorder(id: :desc) # Re-apply the default sort from the finder
+      .preload_associated_models
+      .preload(namespace: :route)
+  end
+
+  def merge_requests_visible_to_user(user)
+    memoize_per_user(user, :merge_requests_visible_to_user) do
+      MergeRequestsFinder.new(user, issues_finder_params)
+        .execute.where(milestone_id: milestoneish_id)
+    end
+  end
+
+  def merge_requests_count_for_display(user)
+    # Materializing the milestone's MRs first forces a plan driven by
+    # index_merge_requests_on_milestone_id; the planner otherwise walks every
+    # project in the hierarchy, which times out for large groups.
+    cte = Gitlab::SQL::CTE.new(
+      :milestone_merge_requests,
+      MergeRequest.select(:id, :milestone_id, :target_project_id, :author_id)
+        .where(milestone_id: milestoneish_id)
+    )
+
+    merge_requests_visible_to_user(user)
+      .with(cte.to_arel)
+      .from(cte.alias_to(MergeRequest.arel_table))
+      .reorder(nil)
+      .limit(DISPLAY_MERGE_REQUESTS_LIMIT + 1)
+      .count
+  end
+
+  def upcoming?
+    start_date && start_date.future?
+  end
+
+  def upcoming
+    upcoming? || false
+  end
+
+  def expires_at
+    if due_date
+      if due_date.past?
+        "expired on #{due_date.to_fs(:medium)}"
+      else
+        "expires on #{due_date.to_fs(:medium)}"
+      end
+    end
+  end
+
+  def expired?
+    due_date && due_date.past?
+  end
+
+  def expired
+    expired? || false
+  end
+
+  def total_time_spent
+    @total_time_spent ||= issues.joins(:timelogs).sum(:time_spent) + merge_requests.joins(:timelogs).sum(:time_spent)
+  end
+
+  def human_total_time_spent
+    Gitlab::TimeTrackingFormatter.output(total_time_spent)
+  end
+
+  def total_time_estimate
+    @total_time_estimate ||= issues.sum(:time_estimate) + merge_requests.sum(:time_estimate)
+  end
+
+  def human_total_time_estimate
+    Gitlab::TimeTrackingFormatter.output(total_time_estimate)
+  end
+
+  private
+
+  def memoize_per_user(user, method_name)
+    memoized_users[method_name][user&.id] ||= yield
+  end
+
+  def memoized_users
+    @memoized_users ||= Hash.new { |h, k| h[k] = {} }
+  end
+
+  # override in a class that includes this module to get a faster query
+  # from IssuesFinder
+  def issues_finder_params
+    {}
+  end
+end
+
+Milestoneish.prepend_mod_with('Milestoneish')

@@ -1,0 +1,17 @@
+---
+description: Wiki page is viewed
+internal_events: true
+action: view_wiki_page
+identifiers:
+- project
+- namespace
+- user
+product_group: planner_intelligence
+product_categories:
+- wiki
+milestone: '17.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/149271
+tiers:
+- free
+- premium
+- ultimate

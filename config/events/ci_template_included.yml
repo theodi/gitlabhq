@@ -1,0 +1,23 @@
+---
+description: When a pipeline is created with a CI Template file included in its configuration.
+internal_events: true
+action: ci_template_included
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: pipeline_authoring
+product_categories:
+- pipeline_composition
+milestone: "16.5"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/132819
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: Template event name
+  property:
+    description: "Indicates if the template was included implicitly or not. Implicit includes happen due to certain features, like AutoDevOps, being configured – as opposed to explicit includes via the keyword in a YAML file."

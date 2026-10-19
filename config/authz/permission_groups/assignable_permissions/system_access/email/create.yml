@@ -1,0 +1,14 @@
+---
+name: create_email
+description: Grants the ability to create emails
+boundaries:
+  - instance
+  - user
+available_for:
+  - granular_access_token
+permissions:
+  - create_user_email
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

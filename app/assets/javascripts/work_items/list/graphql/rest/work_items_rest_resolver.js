@@ -1,0 +1,353 @@
+/**
+ * REST-backed resolvers for the work items list.
+ *
+ * `restWorkItemsResolver` is the top-level @client resolver for `Query.restWorkItems`
+ *
+ * `workItemsRestResolver` is the shared implementation it delegates to: it fetches
+ * from the work items REST endpoint and maps the response to match the GraphQL
+ * WorkItem type shape so Apollo can cache it.
+ *
+ * REST endpoint: GET /api/:version/namespaces/:full_path/-/work_items
+ */
+
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { buildApiUrl } from '~/api/api_utils';
+import axios from '~/lib/utils/axios_utils';
+import { parseUrlPathname } from '~/lib/utils/url_utility';
+import { convertGraphQLVarsToRestParams } from './rest_filter_params_mapper';
+
+const GROUPS_PATH = '/api/:version/groups/:full_path/-/work_items';
+const NAMESPACES_PATH = '/api/:version/namespaces/:full_path/-/work_items';
+
+export function isGroupNamespace(namespace) {
+  return Boolean(namespace?.isGroup);
+}
+
+const REST_STATE_TO_GRAPHQL = {
+  opened: 'OPEN',
+  closed: 'CLOSED',
+  locked: 'LOCKED',
+};
+
+const NAMESPACE_KIND_TO_TYPENAME = {
+  project: 'Namespaces::ProjectNamespace',
+  group: 'Namespaces::GroupNamespace',
+};
+
+// Reuses `fallbackNamespace` when the paths match, so Apollo normalizes to the same cache entry as
+// the rest of the list. `restNamespace` is absent on older API responses, where the item was
+// assumed to live in `fallbackNamespace`.
+function mapNamespace(restNamespace, fallbackNamespace) {
+  if (!restNamespace || restNamespace.full_path === fallbackNamespace.fullPath) {
+    return fallbackNamespace;
+  }
+
+  return {
+    __typename: 'Namespace',
+    // eslint-disable-next-line @gitlab/require-i18n-strings
+    id: `gid://gitlab/${NAMESPACE_KIND_TO_TYPENAME[restNamespace.kind] || 'Namespace'}/${restNamespace.id}`,
+    fullPath: restNamespace.full_path,
+  };
+}
+
+function mapLabelsFeature(features) {
+  const labelsData = features?.labels;
+  return {
+    __typename: 'WorkItemWidgetLabels',
+    allowsScopedLabels: labelsData?.allows_scoped_labels ?? false,
+    labels: {
+      nodes: (labelsData?.labels ?? []).map((label) => ({
+        __typename: 'Label',
+        id: label.id ? `gid://gitlab/Label/${label.id}` : null,
+        title: label.title,
+        color: label.color,
+        textColor: label.text_color,
+        description: label.description ?? null,
+      })),
+    },
+  };
+}
+
+function mapAssigneesFeature(features) {
+  const assignees = features?.assignees ?? [];
+  return {
+    __typename: 'WorkItemWidgetAssignees',
+    assignees: {
+      nodes: assignees.map((user) => ({
+        id: user.id ? `gid://gitlab/User/${user.id}` : null,
+        avatarUrl: user.avatar_url ?? null,
+        name: user.name,
+        username: user.username,
+        webUrl: user.web_url ?? null, // eslint-disable-line local-rules/no-web-url
+        webPath: user.web_url ? parseUrlPathname(user.web_url) : null, // eslint-disable-line local-rules/no-web-url
+        __typename: 'UserCore',
+      })),
+      __typename: 'UserCoreConnection',
+    },
+  };
+}
+
+function mapMilestoneFeature(features) {
+  const milestone = features?.milestone;
+  return {
+    __typename: 'WorkItemWidgetMilestone',
+    milestone: milestone
+      ? {
+          id: milestone.id ? `gid://gitlab/Milestone/${milestone.id}` : null,
+          dueDate: milestone.due_date ?? null,
+          startDate: milestone.start_date ?? null,
+          title: milestone.title,
+          webPath: milestone.web_url ? parseUrlPathname(milestone.web_url) : null, // eslint-disable-line local-rules/no-web-url
+          webUrl: milestone.web_url ?? null, // eslint-disable-line local-rules/no-web-url
+          __typename: 'Milestone',
+        }
+      : null,
+  };
+}
+
+function mapStartAndDueDateFeature(features) {
+  const startAndDueDateData = features?.start_and_due_date;
+  return {
+    __typename: 'WorkItemWidgetStartAndDueDate',
+    dueDate: startAndDueDateData?.due_date ?? null,
+    startDate: startAndDueDateData?.start_date ?? null,
+  };
+}
+
+function mapHierarchyFeature(features, itemNamespace) {
+  const hierarchy = features?.hierarchy;
+  return {
+    __typename: 'WorkItemWidgetHierarchy',
+    parent: hierarchy?.parent
+      ? {
+          __typename: 'WorkItem',
+          id: hierarchy.parent.global_id,
+          iid: String(hierarchy.parent.iid),
+          title: hierarchy.parent.title,
+          titleHtml: hierarchy.parent.title_html,
+          confidential: hierarchy.parent.confidential ?? false,
+          webUrl: hierarchy.parent.web_url ?? null, // eslint-disable-line local-rules/no-web-url
+          namespace: mapNamespace(hierarchy.parent.namespace, itemNamespace),
+          workItemType: hierarchy.parent.work_item_type
+            ? {
+                __typename: 'WorkItemType',
+                id: hierarchy.parent.work_item_type.id
+                  ? `gid://gitlab/WorkItems::Type/${hierarchy.parent.work_item_type.id}`
+                  : null,
+                name: hierarchy.parent.work_item_type.name,
+                iconName: hierarchy.parent.work_item_type.icon_name ?? null,
+              }
+            : null,
+        }
+      : null,
+  };
+}
+
+function mapAwardEmojiFeature(features) {
+  const awardEmojiData = features?.award_emoji;
+  return {
+    __typename: 'WorkItemWidgetAwardEmoji',
+    upvotes: awardEmojiData?.upvotes ?? 0,
+    downvotes: awardEmojiData?.downvotes ?? 0,
+  };
+}
+
+function mapDevelopmentFeature(features) {
+  const developmentData = features?.development;
+  return {
+    __typename: 'WorkItemWidgetDevelopment',
+    closingMergeRequests: {
+      count: developmentData?.closing_merge_requests_count ?? 0,
+      __typename: 'WorkItemClosingMergeRequestConnection',
+    },
+  };
+}
+
+export function mapWidgetsFromFeatures(features, itemNamespace) {
+  const widgets = [
+    { ...mapLabelsFeature(features), type: 'LABELS' },
+    { ...mapAssigneesFeature(features), type: 'ASSIGNEES' },
+    { ...mapMilestoneFeature(features), type: 'MILESTONE' },
+    { ...mapStartAndDueDateFeature(features), type: 'START_AND_DUE_DATE' },
+    { ...mapHierarchyFeature(features, itemNamespace), type: 'HIERARCHY' },
+    { ...mapAwardEmojiFeature(features), type: 'AWARD_EMOJI' },
+  ];
+
+  if (features?.development) {
+    widgets.push({ ...mapDevelopmentFeature(features), type: 'DEVELOPMENT' });
+  }
+
+  return widgets;
+}
+
+export function mapFeaturesFromRestResponse(features, itemNamespace) {
+  return {
+    __typename: 'WorkItemFeatures',
+    labels: mapLabelsFeature(features),
+    assignees: mapAssigneesFeature(features),
+    milestone: mapMilestoneFeature(features),
+    startAndDueDate: mapStartAndDueDateFeature(features),
+    hierarchy: mapHierarchyFeature(features, itemNamespace),
+    awardEmoji: mapAwardEmojiFeature(features),
+    development: features?.development ? mapDevelopmentFeature(features) : null,
+  };
+}
+
+// Returns a `WorkItemFeatures` placeholder whose every subfield is null. We cannot use `@skip`/`@include`
+// directives inside the @client subtree. To keep widgets as the single source of truth when the
+// work_item_features_field flag is off we return this shape so Apollo's selection set is satisfied with explicit nulls.
+export function nullWorkItemFeatures() {
+  return {
+    __typename: 'WorkItemFeatures',
+    labels: null,
+    assignees: null,
+    milestone: null,
+    startAndDueDate: null,
+    hierarchy: null,
+    awardEmoji: null,
+    development: null,
+  };
+}
+
+export function mapWorkItemToGraphQL(item, sharedNamespace, { useWorkItemFeatures = false } = {}) {
+  const itemNamespace = mapNamespace(item.namespace, sharedNamespace);
+
+  return {
+    __typename: 'WorkItem',
+    id: item.global_id,
+    iid: String(item.iid),
+    title: item.title,
+    titleHtml: item.title_html,
+    state: REST_STATE_TO_GRAPHQL[item.state] ?? item.state,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    closedAt: item.closed_at ?? null,
+    confidential: item.confidential ?? false,
+    hidden: item.hidden ?? false,
+    reference: item.reference ?? null,
+    webPath: item.web_path ?? null,
+    webUrl: item.web_url ?? null, // eslint-disable-line local-rules/no-web-url
+    userDiscussionsCount: item.user_discussions_count ?? 0,
+    author: item.author
+      ? {
+          __typename: 'UserCore',
+          id: item.author.id ? `gid://gitlab/User/${item.author.id}` : null,
+          avatarUrl: item.author.avatar_url ?? null,
+          name: item.author.name,
+          username: item.author.username,
+          webPath: item.author.web_path ?? null,
+          webUrl: item.author.web_url ?? null, // eslint-disable-line local-rules/no-web-url
+        }
+      : null,
+    namespace: itemNamespace,
+    workItemType: item.work_item_type
+      ? {
+          __typename: 'WorkItemType',
+          id: item.work_item_type.id
+            ? `gid://gitlab/WorkItems::Type/${item.work_item_type.id}`
+            : null,
+          name: item.work_item_type.name,
+          iconName: item.work_item_type.icon_name ?? null,
+        }
+      : null,
+    widgets: mapWidgetsFromFeatures(item.features, itemNamespace),
+    features: useWorkItemFeatures
+      ? mapFeaturesFromRestResponse(item.features, itemNamespace)
+      : nullWorkItemFeatures(),
+  };
+}
+
+// Parses pagination info from REST API response headers
+// Supports both keyset pagination and offset pagination
+export function parsePageInfo(headers) {
+  const nextCursor = headers['x-next-cursor'] || null;
+  const prevCursor = headers['x-prev-cursor'] || null;
+
+  // If cursor headers are present, use keyset pagination
+  if (nextCursor || prevCursor) {
+    return {
+      __typename: 'PageInfo',
+      hasNextPage: Boolean(nextCursor),
+      hasPreviousPage: Boolean(prevCursor),
+      endCursor: nextCursor,
+      startCursor: prevCursor,
+    };
+  }
+
+  // Otherwise, fall back to offset pagination
+  const nextPage = headers['x-next-page'];
+  const prevPage = headers['x-prev-page'];
+
+  return {
+    __typename: 'PageInfo',
+    hasNextPage: Boolean(nextPage),
+    hasPreviousPage: Boolean(prevPage),
+    endCursor: nextPage ? String(nextPage) : null,
+    startCursor: prevPage ? String(prevPage) : null,
+  };
+}
+
+export async function workItemsRestResolver(namespace, args) {
+  const { fullPath } = namespace;
+
+  const restParams = convertGraphQLVarsToRestParams(args);
+
+  restParams.set(
+    'fields',
+    'id,iid,global_id,title,title_html,state,created_at,updated_at,closed_at,reference,web_path,web_url,author,work_item_type,confidential,hidden,user_discussions_count,namespace',
+  );
+  restParams.set(
+    'features',
+    'labels,assignees,milestone,start_and_due_date,hierarchy,award_emoji,development',
+  );
+
+  const pathTemplate = isGroupNamespace(namespace) ? GROUPS_PATH : NAMESPACES_PATH;
+  const url = buildApiUrl(pathTemplate).replace(':full_path', encodeURIComponent(fullPath));
+
+  let response;
+  try {
+    response = await axios.get(url, { params: restParams });
+  } catch (error) {
+    Sentry.captureException(error);
+    throw error;
+  }
+
+  const useWorkItemFeatures = Boolean(window.gon?.features?.workItemFeaturesField);
+  const nodes = (response.data ?? []).map((item) =>
+    mapWorkItemToGraphQL(item, namespace, { useWorkItemFeatures }),
+  );
+
+  const pageInfo = parsePageInfo(response.headers);
+  return {
+    __typename: 'WorkItemConnection',
+    pageInfo,
+    nodes,
+  };
+}
+
+/**
+ * Top-level @client resolver for Query.restWorkItems field.
+ *
+ * Wraps workItemsRestResolver above to adapt the signature from:
+ *   workItemsRestResolver(namespace, args)
+ * to:
+ *   restWorkItemsResolver(_, args)
+ *
+ * This isolates REST data under Query.restWorkItems instead of
+ * Query.namespace(fullPath).workItems, preventing cache broadcast conflicts
+ * where writes to namespace trigger unwanted resolver reruns.
+ *
+ * The namespace object passed downstream is a lightweight marker used solely
+ * for REST endpoint selection (groups vs namespaces). Real namespace data
+ * (id, kind) comes from the REST API response itself.
+ */
+export async function restWorkItemsResolver(_, args) {
+  const { fullPath, isGroup, ...restArgs } = args;
+
+  const namespace = {
+    fullPath,
+    isGroup: Boolean(isGroup),
+  };
+
+  return workItemsRestResolver(namespace, restArgs);
+}

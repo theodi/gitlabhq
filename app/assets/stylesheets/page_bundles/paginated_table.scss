@@ -1,0 +1,22 @@
+@import 'mixins_and_variables_and_functions';
+
+.paginated-table-wrapper {
+  .new-alert {
+    background-color: var(--green-50, $green-50);
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-tabs-nav {
+    border-bottom-width: 0;
+  }
+
+  @include gl-container-width-down(sm, panel) {
+    .list-header {
+      flex-direction: column-reverse;
+    }
+
+    .create-incident-button {
+      width: 100%;
+    }
+  }
+}

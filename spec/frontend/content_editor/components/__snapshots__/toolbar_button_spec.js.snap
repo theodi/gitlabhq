@@ -1,0 +1,17 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`content_editor/components/toolbar_button displays tertiary, medium button with a provided label and icon 1`] = `
+<button
+  aria-label="Bold"
+  class="btn btn-default btn-default-tertiary btn-icon btn-sm gl-button gl-mr-2"
+  title="Bold"
+  type="button"
+>
+  <gl-icon-stub
+    class="gl-button-icon"
+    name="bold"
+    size="16"
+    variant="current"
+  />
+</button>
+`;

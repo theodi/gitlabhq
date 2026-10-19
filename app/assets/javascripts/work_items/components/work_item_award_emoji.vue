@@ -1,0 +1,283 @@
+<script>
+import { produce } from 'immer';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+
+import { getIdFromGraphQLId, convertToGraphQLId } from '~/graphql_shared/utils';
+import { s__ } from '~/locale';
+import AwardsList from '~/vue_shared/components/awards_list.vue';
+import { isLoggedIn } from '~/lib/utils/common_utils';
+import { TYPENAME_USER } from '~/graphql_shared/constants';
+
+import { EMOJI_THUMBS_UP, EMOJI_THUMBS_DOWN } from '~/emoji/constants';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import projectWorkItemAwardEmojiQuery from '../graphql/award_emoji.query.graphql';
+import updateAwardEmojiMutation from '../graphql/update_award_emoji.mutation.graphql';
+import { DEFAULT_PAGE_SIZE_EMOJIS } from '../constants';
+import { findAwardEmojiWidget } from '../utils';
+
+export default {
+  name: 'WorkItemAwardEmoji',
+  defaultAwards: [EMOJI_THUMBS_UP, EMOJI_THUMBS_DOWN],
+  components: {
+    AwardsList,
+  },
+  mixins: [glFeatureFlagsMixin()],
+  props: {
+    workItemArchived: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    workItemDiscussionLocked: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    workItemId: {
+      type: String,
+      required: true,
+    },
+    workItemFullpath: {
+      type: String,
+      required: true,
+    },
+    workItemIid: {
+      type: String,
+      required: false,
+      default: null,
+    },
+  },
+  emits: ['emoji-updated', 'error'],
+  data() {
+    return {
+      newCustomEmojiPath: '',
+      isLoading: false,
+    };
+  },
+  computed: {
+    canAwardEmoji() {
+      return isLoggedIn() && !this.workItemArchived && !this.workItemDiscussionLocked;
+    },
+    currentUserId() {
+      return window.gon.current_user_id;
+    },
+    currentUserFullName() {
+      return window.gon.current_user_fullname;
+    },
+    /**
+     * Parse and convert emoji reactions list to a format that AwardsList can understand
+     */
+    awards() {
+      if (!this.awardEmoji) {
+        return [];
+      }
+
+      return this.awardEmoji.nodes.map((emoji) => ({
+        name: emoji.name,
+        user: {
+          id: getIdFromGraphQLId(emoji.user.id),
+          name: emoji.user.name,
+        },
+      }));
+    },
+    customEmojiPath() {
+      return this.newCustomEmojiPath;
+    },
+    pageInfo() {
+      return this.awardEmoji?.pageInfo;
+    },
+    hasNextPage() {
+      return this.pageInfo?.hasNextPage;
+    },
+  },
+  apollo: {
+    // eslint-disable-next-line @gitlab/vue-no-undef-apollo-properties
+    awardEmoji: {
+      query: projectWorkItemAwardEmojiQuery,
+      variables() {
+        return {
+          iid: this.workItemIid,
+          fullPath: this.workItemFullpath,
+          after: this.after,
+          pageSize: DEFAULT_PAGE_SIZE_EMOJIS,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      update(data) {
+        return findAwardEmojiWidget(data.namespace?.workItem)?.awardEmoji || {};
+      },
+      skip() {
+        return !this.workItemIid;
+      },
+      result({ data }) {
+        if (this.hasNextPage) {
+          this.fetchAwardEmojis();
+        } else {
+          this.isLoading = false;
+        }
+        if (data?.namespace) {
+          this.newCustomEmojiPath =
+            findAwardEmojiWidget(data.namespace?.workItem)?.newCustomEmojiPath || '';
+          this.$emit('emoji-updated', data.namespace?.workItem);
+        }
+      },
+      error() {
+        this.$emit(
+          'error',
+          s__(
+            'WorkItem|Something went wrong while fetching work item award emojis. Please try again.',
+          ),
+        );
+      },
+    },
+  },
+  methods: {
+    async fetchAwardEmojis() {
+      this.isLoading = true;
+      try {
+        await this.$apollo.queries.awardEmoji.fetchMore({
+          variables: {
+            pageSize: DEFAULT_PAGE_SIZE_EMOJIS,
+            after: this.pageInfo?.endCursor,
+          },
+        });
+      } catch {
+        this.$emit(
+          'error',
+          s__(
+            'WorkItem|Something went wrong while fetching work item award emojis. Please try again.',
+          ),
+        );
+      }
+    },
+    isEmojiPresentForCurrentUser(name) {
+      return (
+        this.awards.findIndex(
+          (emoji) => emoji.name === name && emoji.user.id === this.currentUserId,
+        ) > -1
+      );
+    },
+    /**
+     * Prepare emoji reactions nodes based on emoji name
+     * and whether the user has toggled the emoji off or on
+     */
+    getAwardEmojiNodes(name, toggledOn) {
+      // If the emoji toggled on, add the emoji
+      if (toggledOn) {
+        // If emoji is already present in award list, no action is needed
+        if (this.isEmojiPresentForCurrentUser(name)) {
+          return this.awardEmoji.nodes;
+        }
+
+        // else make a copy of immutable list and return the list after adding the new emoji
+        const awardEmojiNodes = [...this.awardEmoji.nodes];
+        awardEmojiNodes.push({
+          name,
+          __typename: 'AwardEmoji',
+          user: {
+            id: convertToGraphQLId(TYPENAME_USER, this.currentUserId),
+            name: this.currentUserFullName,
+            __typename: 'UserCore',
+          },
+        });
+
+        return awardEmojiNodes;
+      }
+
+      // else just filter the emoji
+      return this.awardEmoji.nodes.filter(
+        (emoji) =>
+          !(emoji.name === name && getIdFromGraphQLId(emoji.user.id) === this.currentUserId),
+      );
+    },
+    updateWorkItemAwardEmojiWidgetCache({ cache, name, toggledOn }) {
+      const query = {
+        query: projectWorkItemAwardEmojiQuery,
+        variables: {
+          fullPath: this.workItemFullpath,
+          iid: this.workItemIid,
+          pageSize: DEFAULT_PAGE_SIZE_EMOJIS,
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        },
+      };
+
+      const sourceData = cache.readQuery(query);
+
+      // The query is not cached until the list has loaded; the refetch covers that case.
+      if (!sourceData) {
+        return;
+      }
+
+      const newData = produce(sourceData, (draftState) => {
+        const widgetAwardEmoji = findAwardEmojiWidget(draftState.namespace?.workItem);
+        if (widgetAwardEmoji && widgetAwardEmoji.awardEmoji) {
+          widgetAwardEmoji.awardEmoji.nodes = this.getAwardEmojiNodes(name, toggledOn);
+        }
+      });
+
+      cache.writeQuery({ ...query, data: newData });
+    },
+    handleAward(name) {
+      // Decide action based on emoji is already present
+      const inputVariables = {
+        awardableId: this.workItemId,
+        name,
+      };
+
+      this.$apollo
+        .mutate({
+          mutation: updateAwardEmojiMutation,
+          variables: {
+            input: inputVariables,
+          },
+          optimisticResponse: {
+            awardEmojiToggle: {
+              errors: [],
+              toggledOn: !this.isEmojiPresentForCurrentUser(name),
+            },
+          },
+          update: (
+            cache,
+            {
+              data: {
+                awardEmojiToggle: { toggledOn },
+              },
+            },
+          ) => {
+            // update the cache of emoji reactions widget object
+            this.updateWorkItemAwardEmojiWidgetCache({ cache, name, toggledOn });
+          },
+        })
+        .then(
+          ({
+            data: {
+              awardEmojiToggle: { errors },
+            },
+          }) => {
+            if (errors?.length) {
+              throw new Error(errors[0]);
+            }
+          },
+        )
+        .catch((error) => {
+          this.$emit('error', error.message);
+          Sentry.captureException(error);
+        });
+    },
+  },
+};
+</script>
+
+<template>
+  <div v-if="!isLoading">
+    <awards-list
+      :awards="awards"
+      :can-award-emoji="canAwardEmoji"
+      :current-user-id="currentUserId"
+      :default-awards="$options.defaultAwards"
+      :custom-emoji-path="customEmojiPath"
+      selected-class="selected"
+      @award="handleAward"
+    />
+  </div>
+</template>

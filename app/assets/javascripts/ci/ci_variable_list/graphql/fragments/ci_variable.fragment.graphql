@@ -1,0 +1,6 @@
+fragment BaseCiVariable on CiVariable {
+  id
+  key
+  value
+  variableType
+}

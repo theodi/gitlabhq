@@ -1,0 +1,31 @@
+@import 'mixins_and_variables_and_functions';
+
+.issues-list {
+  &.manual-ordering {
+    @apply gl-bg-subtle;
+    @apply gl-rounded-base;
+    padding: $gl-padding-8;
+
+    .issue {
+      background-color: var(--gl-background-color-section);
+      margin-bottom: $gl-padding-8;
+      @apply gl-rounded-base;
+      border: 1px solid var(--gl-border-color-section);
+      box-shadow: 0 1px 2px $issue-boards-card-shadow;
+    }
+  }
+
+  .issue {
+    padding: 10px $gl-padding;
+    position: relative;
+
+    .title {
+      margin-bottom: 2px;
+    }
+  }
+}
+
+.is-ghost {
+  opacity: 0.3;
+  pointer-events: none;
+}

@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "required": [
+    "name",
+    "version",
+    "package_type",
+    "status",
+    "_links",
+    "versions",
+    "created_at",
+    "last_downloaded_at"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "conan_package_name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "package_type": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "_links": {
+      "type": "object",
+      "properties": {
+        "web_path": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "last_downloaded_at": {
+      "type": ["string", "null"]
+    },
+    "creator_id": {
+      "type": ["integer", "null"]
+    },
+    "versions": {
+      "type": "array",
+      "items": {
+        "$ref": "package_version.json"
+      }
+    }
+  }
+}

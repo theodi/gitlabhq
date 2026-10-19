@@ -1,0 +1,32 @@
+- show_project_name = local_assigns.fetch(:show_project_name, false)
+
+.scrolling-tabs-container.inner-page-scroll-tabs.is-smaller
+  %button.fade-left{ type: 'button', title: _('Scroll left'), 'aria-label': _('Scroll left') }
+    = sprite_icon('chevron-lg-left', size: 12)
+  %button.fade-right{ type: 'button', title: _('Scroll right'), 'aria-label': _('Scroll right') }
+    = sprite_icon('chevron-lg-right', size: 12)
+  = gl_tabs_nav({ class: %w[scrolling-tabs js-milestone-tabs] }) do
+    = gl_tab_link_to '#tab-issues', item_active: true, data: { endpoint: milestone_tab_path(milestone, 'issues', show_project_name: show_project_name) } do
+      = _('Work items')
+      = gl_tab_counter_badge milestone.milestone_issues(current_user).length
+    - if milestone.merge_requests_enabled?
+      = gl_tab_link_to '#tab-merge-requests', data: { endpoint: milestone_tab_path(milestone, 'merge_requests', show_project_name: show_project_name) } do
+        = _('Merge requests')
+        = gl_tab_counter_badge milestone_merge_requests_count_for_display(milestone)
+    = gl_tab_link_to '#tab-participants', data: { endpoint: milestone_tab_path(milestone, 'participants') } do
+      = _('Participants')
+      = gl_tab_counter_badge milestone.issue_participants_visible_by_user(current_user).count
+    = gl_tab_link_to '#tab-labels', data: { endpoint: milestone_tab_path(milestone, 'labels') } do
+      = _('Labels')
+      = gl_tab_counter_badge milestone.issue_labels_visible_by_user(current_user).count
+
+.tab-content
+  .tab-pane.active#tab-issues
+    = render "shared/milestones/tab_loading"
+  - if milestone.merge_requests_enabled?
+    .tab-pane#tab-merge-requests
+      = render "shared/milestones/tab_loading"
+  .tab-pane#tab-participants
+    = render "shared/milestones/tab_loading"
+  .tab-pane#tab-labels
+    = render "shared/milestones/tab_loading"

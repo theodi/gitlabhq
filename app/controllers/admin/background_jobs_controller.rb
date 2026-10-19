@@ -1,6 +1,7 @@
-class Admin::BackgroundJobsController < Admin::ApplicationController
-  def show
-    ps_output, _ = Gitlab::Popen.popen(%W(ps -U #{Gitlab.config.gitlab.user} -o pid,pcpu,pmem,stat,start,command))
-    @sidekiq_processes = ps_output.split("\n").grep(/sidekiq/)
+# frozen_string_literal: true
+
+module Admin
+  class BackgroundJobsController < ApplicationController
+    feature_category :not_owned # rubocop:todo Gitlab/AvoidFeatureCategoryNotOwned
   end
 end

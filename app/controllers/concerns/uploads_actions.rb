@@ -1,0 +1,220 @@
+# frozen_string_literal: true
+
+module UploadsActions
+  extend ActiveSupport::Concern
+  include Gitlab::Utils::StrongMemoize
+  include SendFileUpload
+
+  # Starting with version 2, Markdown upload URLs use project / group IDs instead of paths
+  ID_BASED_UPLOAD_PATH_VERSION = 2
+
+  UPLOAD_MOUNTS = %w[avatar attachment file logo pwa_icon header_logo favicon screenshot].freeze
+
+  # We need to avoid setting certain formats. For example, using the :js format
+  # would trigger Rails' cross-origin JavaScript protection. To avoid this, we use
+  # the :text format for JS files instead.
+  CUSTOM_REQUEST_FORMAT_MAPPING = {
+    js: :text
+  }.freeze
+
+  included do
+    prepend_before_action :set_request_format_from_path_extension
+    rescue_from FileUploader::InvalidSecret, with: :render_404
+
+    rescue_from ::Gitlab::PathTraversal::PathTraversalAttackError do
+      head :bad_request
+    end
+  end
+
+  def create
+    uploader = UploadService.new(model, file_param, uploader_class, uploaded_by_user_id: current_user&.id).execute
+
+    respond_to do |format|
+      if uploader
+        format.json do
+          render json: { link: uploader.to_h }
+        end
+      else
+        format.json do
+          render json: _('Invalid file.'), status: :unprocessable_entity
+        end
+      end
+    end
+  end
+
+  # This should either
+  #   - send the file directly
+  #   - or redirect to its URL
+  #
+  def show
+    Gitlab::PathTraversal.check_path_traversal!(filename_param)
+
+    return render_404 unless uploader&.exists?
+
+    ttl, directives = *cache_settings
+    ttl ||= 0
+    directives ||= { private: true, must_revalidate: true }
+
+    # URLs with a ?v= parameter are versioned by the model's updated_at timestamp
+    # (set by avatar_query_params in avatarable.rb). The URL changes whenever the
+    # resource changes, so the current URL is effectively immutable.
+    version_param = params.permit(:v)[:v]
+    if uploader.mounted_as.to_s == 'avatar' && model.updated_at.present? &&
+        version_param.to_s == model.updated_at.to_i.to_s
+      expires_in 7.days, public: directives[:public]
+      response.cache_control[:extras] << 'immutable'
+    else
+      expires_in ttl, directives
+    end
+
+    file_uploader = [uploader, *uploader.versions.values].find do |version|
+      version.filename == filename_param
+    end
+
+    return render_404 unless file_uploader
+
+    workhorse_set_content_type!
+    send_upload(file_uploader, attachment: file_uploader.filename, disposition: content_disposition)
+  end
+
+  def authorize
+    set_workhorse_internal_api_content_type
+
+    authorized = uploader_class.workhorse_authorize(
+      has_length: false,
+      maximum_size: Gitlab::CurrentSettings.max_attachment_size.megabytes.to_i)
+
+    render json: authorized
+  rescue SocketError
+    render json: _("Error uploading file"), status: :internal_server_error
+  end
+
+  private
+
+  # ActionController treats UploadedFile as a permitted scalar, so the file survives the permit.
+  def file_param
+    params.permit(:file)[:file]
+  end
+
+  def filename_param
+    params.permit(:filename)[:filename]
+  end
+
+  def secret_param
+    params.permit(:secret)[:secret]
+  end
+
+  def mounted_as_param
+    params.permit(:mounted_as)[:mounted_as]
+  end
+
+  # Based on ActionDispatch::Http::MimeNegotiation. We have an
+  # initializer that monkey-patches this method out (so that repository
+  # paths don't guess a format based on extension), but we do want this
+  # behavior when serving uploads.
+  def set_request_format_from_path_extension
+    path = request.headers['action_dispatch.original_path'] || request.headers['PATH_INFO']
+    match = path&.match(/\.(\w+)\z/)
+    return unless match
+
+    format = Mime[match.captures.first]
+
+    return if format.blank?
+
+    request.format = CUSTOM_REQUEST_FORMAT_MAPPING[format.symbol] || format.symbol
+  end
+
+  def content_disposition
+    if uploader.embeddable? || uploader.pdf?
+      'inline'
+    else
+      'attachment'
+    end
+  end
+
+  def uploader_class
+    raise NotImplementedError
+  end
+
+  def upload_mount
+    mounted_as = mounted_as_param
+    mounted_as if UPLOAD_MOUNTS.include?(mounted_as)
+  end
+
+  def uploader_mounted?
+    upload_model_class < CarrierWave::Mount::Extension && !upload_mount.nil?
+  end
+
+  def uploader
+    if uploader_mounted?
+      model.public_send(upload_mount) # rubocop:disable GitlabSecurity/PublicSend
+    else
+      build_uploader_from_upload
+    end
+  end
+  strong_memoize_attr :uploader
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def build_uploader_from_upload
+    uploader = build_uploader
+    return unless uploader
+
+    upload_paths = uploader.upload_paths(filename_param)
+    upload = Upload.find_by(model: model, uploader: uploader_class.to_s, path: upload_paths)
+    upload&.retrieve_uploader
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def build_uploader
+    return unless secret_param && filename_param
+
+    uploader = uploader_class.new(model, secret: secret_param)
+
+    return unless uploader.model_valid?
+
+    uploader
+  end
+
+  def embeddable?
+    uploader && uploader.exists? && uploader.embeddable?
+  end
+
+  def bypass_auth_checks_on_uploads?
+    return false if private_project_with_auth_checks?
+
+    action_name == 'show' && embeddable?
+  end
+
+  def private_project_with_auth_checks?
+    target_project &&
+      !target_project.public? &&
+      target_project.enforce_auth_checks_on_uploads?
+  end
+
+  def upload_version_at_least?(version)
+    return unless uploader && uploader.upload
+
+    uploader.upload.version >= version
+  end
+
+  def target_project
+    nil
+  end
+
+  def find_model
+    nil
+  end
+
+  def cache_settings
+    []
+  end
+
+  def model
+    find_model
+  end
+  strong_memoize_attr :model
+
+  def workhorse_authorize_request?
+    action_name == 'authorize'
+  end
+end

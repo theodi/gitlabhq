@@ -1,0 +1,73 @@
+# frozen_string_literal: true
+
+module Ci
+  module Runners
+    class BulkPauseRunnersService
+      attr_reader :current_user, :runners
+
+      RUNNER_LIMIT = 50
+
+      # @param runners [Array<Ci::Runner>] the runners to pause or unpause
+      # @param current_user [User] the user performing the operation
+      # @param paused [Boolean] action of pausing or unpausing
+      def initialize(runners:, current_user:, paused:)
+        @runners = runners
+        @current_user = current_user
+        @paused = paused
+      end
+
+      def execute
+        if runners.present?
+          # pause the runners
+          return pause_runners(@paused)
+        end
+
+        ServiceResponse.success(payload: { updated_count: 0, updated_runners: [], errors: [] })
+      end
+
+      private
+
+      def pause_runners(paused)
+        active = !paused
+        runner_count = runners.limit(RUNNER_LIMIT + 1).count
+        authorized_runners, unauthorized_runners = compute_authorized_runners
+        authorized_runners.each { |runner| runner.update(active: active) }
+        ServiceResponse.success(
+          payload: {
+            updated_count: authorized_runners.count,
+            updated_runners: authorized_runners,
+            errors: error_messages(runner_count, authorized_runners.map(&:id), unauthorized_runners.map(&:id))
+          })
+      end
+
+      # Returns the preloaded, authorization-checked runner records themselves (not just their
+      # ids), so callers can reuse the same objects (and their preloaded associations) instead of
+      # re-querying by id, which would otherwise re-trigger the N+1 queries this preloader avoids.
+      def compute_authorized_runners
+        limited_runners = runners.limit(RUNNER_LIMIT).to_a
+        ::Ci::Preloaders::RunnerPolicyPreloader.new(limited_runners, current_user).execute
+
+        # partition's [truthy_items, falsy_items] result becomes this method's own return value:
+        # [authorized_runners, unauthorized_runners], unpacked by the caller below.
+        limited_runners.partition { |runner| Ability.allowed?(current_user, :update_runner, runner) }
+      end
+
+      def error_messages(runner_count, authorized_runners_ids, unauthorized_runners_ids)
+        errors = []
+
+        if runner_count > RUNNER_LIMIT
+          errors << "Can only pause up to #{RUNNER_LIMIT} runners per call. Ignored the remaining runner(s)."
+        end
+
+        if authorized_runners_ids.empty?
+          errors << "User does not have permission to update / pause any of the runners"
+        elsif unauthorized_runners_ids.any?
+          failed_ids = unauthorized_runners_ids.map { |runner_id| "##{runner_id}" }.join(', ')
+          errors << "User does not have permission to update / pause runner(s) #{failed_ids}"
+        end
+
+        errors
+      end
+    end
+  end
+end

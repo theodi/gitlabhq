@@ -1,0 +1,14 @@
+---
+name: create_oauth_application
+description: Grants the ability to create OAuth applications
+boundaries:
+  - instance
+  - user
+available_for:
+  - granular_access_token
+permissions:
+  - create_oauth_application
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

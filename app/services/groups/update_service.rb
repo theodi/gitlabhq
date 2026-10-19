@@ -1,0 +1,194 @@
+# frozen_string_literal: true
+
+module Groups
+  class UpdateService < Groups::BaseService
+    include UpdateVisibilityLevel
+
+    SETTINGS_PARAMS = [
+      :allow_mfa_for_subgroups,
+      :ai_custom_instructions
+    ].freeze
+
+    def execute
+      reject_parent_id!
+      remove_unallowed_params
+
+      before_assignment_hook(group, params)
+
+      if renaming_group_with_container_registry_images?
+        group.errors.add(:base, container_images_error)
+        return false
+      end
+
+      return false unless valid_visibility_level_change?(group, group.visibility_attribute_value(params))
+      return false unless valid_share_with_group_lock_change?
+      return false unless valid_path_change?
+      return false unless update_shared_runners
+
+      handle_changes
+      handle_namespace_settings
+      group.assign_attributes(params.except(*non_assignable_group_params))
+
+      return false if group.errors.present?
+
+      begin
+        success = group.save
+
+        after_update if success
+
+        success
+      rescue Gitlab::UpdatePathError, ActiveRecord::RecordInvalid => e
+        group.errors.add(:base, e.message)
+
+        false
+      rescue ServiceDesk::RefreshProjectKeyAddressSlugsService::AddressSlugConflictError => e
+        group.errors.add(:base, service_desk_address_conflict_message(e.message))
+
+        false
+      end
+    end
+
+    private
+
+    def valid_path_change?
+      return true unless group.packages_feature_enabled?
+      return true if params[:path].blank?
+      return true if group.has_parent?
+      return true if !group.has_parent? && group.path == params[:path]
+
+      # we have a path change on a root group:
+      # check that we don't have any npm package with a scope set to the group path
+      projects = ::Packages::ProjectsFinder.new(current_user: current_user, group: group).execute
+      npm_packages = ::Packages::PackagesFinder.new(projects, preload_pipelines: false, package_type: :npm)
+                                               .execute
+                                               .with_npm_scope(group.path)
+
+      return true unless npm_packages.exists?
+
+      group.errors.add(:path, s_('GroupSettings|cannot change when group contains projects with NPM packages'))
+      false
+    end
+
+    def before_assignment_hook(group, params)
+      @full_path_before = group.full_path
+      @path_before = group.path
+    end
+
+    def renaming_group_with_container_registry_images?
+      renaming? && group.has_container_repository_including_subgroups?
+    end
+
+    def renaming?
+      new_path = params[:path]
+
+      new_path && new_path != @path_before
+    end
+
+    def container_images_error
+      s_("GroupSettings|Cannot update the path because there are projects under this group that contain Docker images in their container registry. Please remove the images from your projects first and try again.")
+    end
+
+    def after_update
+      if group.previous_changes.include?(group.visibility_level_field) && group.private?
+        # don't enqueue immediately to prevent todos removal in case of a mistake
+        TodosDestroyer::GroupPrivateWorker.perform_in(Todo::WAIT_FOR_DELETE, group.id)
+      end
+
+      update_two_factor_requirement_for_subgroups
+      publish_path_changed_event if group.path_previously_changed?
+    end
+
+    def update_two_factor_requirement_for_subgroups
+      settings = group.namespace_settings
+      return if settings.allow_mfa_for_subgroups
+
+      if settings.previous_changes.include?(:allow_mfa_for_subgroups)
+        # enque in batches members update
+        DisallowTwoFactorForSubgroupsWorker.perform_async(group.id)
+      end
+    end
+
+    def reject_parent_id!
+      params.delete(:parent_id)
+    end
+
+    # overridden in EE
+    def remove_unallowed_params
+      if Feature.disabled?(:omniauth_step_up_auth_for_namespace, group)
+        params.delete(:step_up_auth_required_oauth_provider)
+      end
+
+      params.delete(:emails_enabled) unless can?(current_user, :set_emails_disabled, group)
+      params.delete(:max_artifacts_size) unless can?(current_user, :update_max_artifacts_size, group)
+
+      unless can?(current_user, :update_default_branch_protection, group)
+        params.delete(:default_branch_protection)
+        params.delete(:default_branch_protection_defaults)
+      end
+
+      unless can?(current_user, :admin_namespace, group)
+        params.delete(:math_rendering_limits_enabled)
+        params.delete(:lock_math_rendering_limits_enabled)
+        params.delete(:allow_runner_registration_token)
+      end
+
+      unless can?(current_user, :manage_merge_request_settings, group)
+        params.delete(:require_sha_for_merge)
+        params.delete(:lock_require_sha_for_merge)
+      end
+    end
+
+    def handle_changes
+      handle_settings_update
+      handle_crm_settings_update
+    end
+
+    def handle_settings_update
+      settings_params = params.slice(*allowed_settings_params)
+      settings_params.merge!({ default_branch_protection: params[:default_branch_protection] }.compact)
+      allowed_settings_params.each { |param| params.delete(param) }
+
+      ::NamespaceSettings::AssignAttributesService.new(current_user, group, settings_params).execute
+    end
+
+    def allowed_settings_params
+      SETTINGS_PARAMS
+    end
+
+    def valid_share_with_group_lock_change?
+      return true unless changing_share_with_group_lock?
+      return true if can?(current_user, :change_share_with_group_lock, group)
+
+      group.errors.add(:share_with_group_lock, s_('GroupSettings|cannot be disabled when the parent group "Share with group lock" is enabled, except by the owner of the parent group'))
+      false
+    end
+
+    def changing_share_with_group_lock?
+      return false if params[:share_with_group_lock].nil?
+
+      params[:share_with_group_lock] != group.share_with_group_lock
+    end
+
+    def update_shared_runners
+      return true if params[:shared_runners_setting].nil?
+
+      result = Groups::UpdateSharedRunnersService.new(group, current_user, shared_runners_setting: params.delete(:shared_runners_setting)).execute
+
+      return true if result[:status] == :success
+
+      group.errors.add(:update_shared_runners, result[:message])
+      false
+    end
+
+    def non_assignable_group_params
+      []
+    end
+
+    def publish_path_changed_event
+      event = Namespaces::Groups::GroupPathChangedEvent.new(data: { group_id: group.id })
+      group.run_after_commit_or_now { Gitlab::EventStore.publish(event) }
+    end
+  end
+end
+
+Groups::UpdateService.prepend_mod_with('Groups::UpdateService')

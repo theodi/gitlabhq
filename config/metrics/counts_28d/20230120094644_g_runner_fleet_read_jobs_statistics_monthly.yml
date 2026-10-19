@@ -1,0 +1,20 @@
+---
+key_path: redis_hll_counters.runner.g_runner_fleet_read_jobs_statistics_monthly
+description: Count of unique users (monthly) who read runner job statistics
+product_group: runner_core
+product_categories:
+- fleet_visibility
+value_type: number
+status: active
+milestone: "15.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/109113
+time_frame: 28d
+data_source: redis_hll
+data_category: optional
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+    - g_runner_fleet_read_jobs_statistics
+performance_indicator_type: []
+tiers:
+- ultimate

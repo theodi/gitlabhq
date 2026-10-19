@@ -1,0 +1,8 @@
+name: gitlab_main
+description: Legacy schema for all unclassified tables.
+allow_cross_joins:
+  - gitlab_shared
+allow_cross_transactions:
+  - gitlab_internal
+  - gitlab_shared
+require_sharding_key: false

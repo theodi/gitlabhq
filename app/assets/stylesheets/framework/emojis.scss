@@ -1,0 +1,96 @@
+@use "sass:math";
+
+gl-emoji {
+  font-style: normal;
+  display: inline-block;
+  vertical-align: baseline;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  font-size: 1.2em;
+  line-height: 1;
+
+  img {
+    width: 1em;
+    object-fit: scale-down;
+    height: 1em;
+  }
+}
+
+.user-status-emoji {
+  margin-left: $gl-padding-4;
+  margin-right: $gl-padding-4;
+
+  gl-emoji {
+    font-size: 1em;
+    line-height: 16px;
+    vertical-align: baseline;
+  }
+}
+
+.dashboard-status-emoji {
+  @apply gl-text-[1.5rem];
+  @apply gl-mt-1;
+}
+
+.gl-platform-windows .dashboard-status-emoji {
+  @apply -gl-mt-[0.2rem];
+  @apply -gl-ml-2;
+}
+
+.gl-platform-linux .dashboard-status-emoji {
+  @apply gl-text-[1.125rem];
+  @apply -gl-mt-1;
+}
+
+.emoji-picker-category-header {
+  position: sticky;
+  background: linear-gradient(to bottom, var(--gl-background-color-overlap) 50%, transparent 100%);
+}
+
+.emoji-picker-emoji {
+  height: 30px;
+  // Create a width that fits 9 emojis per row
+  width: math.div(100, 9) * 1%;
+  mix-blend-mode: normal !important;
+
+  gl-emoji {
+    font-size: 1.2rem !important;
+  }
+
+  gl-emoji img {
+    top: auto;
+    max-width: unset;
+  }
+}
+
+.emoji-picker .gl-dropdown .dropdown-menu,
+.emoji-picker .gl-new-dropdown .gl-new-dropdown-panel {
+  width: 354px !important;
+}
+
+.emoji-picker .gl-new-dropdown-contents {
+  max-height: none !important;
+  overflow-y: hidden !important;
+}
+
+.emoji-picker-category-tab {
+  border-bottom-color: transparent;
+
+  &:hover {
+    &:not(.emoji-picker-category-active) {
+      @apply gl-border-b;
+    }
+  }
+
+  &:focus-visible {
+    z-index: 2;
+  }
+}
+
+.emoji-picker-category-active {
+  border-bottom-color: $gl-control-border-color-selected-default !important;
+}
+
+.emoji-picker .gl-dropdown-contents > :last-child {
+  padding-bottom: 0;
+  overflow-y: hidden;
+}

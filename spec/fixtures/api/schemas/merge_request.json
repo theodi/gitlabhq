@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "required": [
+    "iid",
+    "url"
+  ],
+  "properties": {
+    "iid": {
+      "type": "integer"
+    },
+    "url": {
+      "type": "string",
+      "format": "uri"
+    }
+  },
+  "additionalProperties": false
+}

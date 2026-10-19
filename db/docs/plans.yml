@@ -1,0 +1,12 @@
+---
+table_name: plans
+classes:
+- Plan
+feature_categories:
+- plan_provisioning
+description: Contains information about purchasable Plans for GitLab namespaces
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/39ca951a0f28d147d4689379bbe48a9c14d55d9f
+milestone: '9.5'
+gitlab_schema: gitlab_main_cell_local
+table_size: small
+notes: static and deprecated table, to be removed in https://gitlab.com/groups/gitlab-org/-/work_items/19409

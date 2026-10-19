@@ -1,0 +1,13 @@
+@import 'mixins_and_variables_and_functions';
+
+.agent-activity-list {
+  .system-note .timeline-entry-inner {
+    .timeline-icon {
+      margin-top: $gl-spacing-scale-1;
+    }
+  }
+
+  .timeline-entry::before {
+    margin-top: $gl-spacing-scale-4;
+  }
+}

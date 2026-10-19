@@ -1,0 +1,115 @@
+import { GlDisclosureDropdown } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import CommitListActions from '~/projects/commits/components/commit_list_actions.vue';
+import OpenMrBadge from '~/badges/components/open_mr_badge/open_mr_badge.vue';
+
+const commitsFeedPath = '/gitlab-org/gitlab/-/commits/main.atom';
+const browseFilesPath = '/gitlab-org/gitlab/-/tree/main';
+
+describe('CommitListActions', () => {
+  let wrapper;
+
+  const createComponent = ({ filePath = 'README.md', mergeRequestAction = null } = {}) => {
+    wrapper = shallowMountExtended(CommitListActions, {
+      provide: {
+        projectFullPath: 'gitlab-org/gitlab',
+        escapedRef: 'feature',
+        browseFilesPath,
+        commitsFeedPath,
+      },
+      propsData: {
+        filePath,
+        mergeRequestAction,
+      },
+    });
+  };
+
+  const findOverflowMenu = () => wrapper.findComponent(GlDisclosureDropdown);
+  const findBrowseFilesItem = () => wrapper.findComponentByTestId('browse-files-link');
+  const findCommitsFeedItem = () => wrapper.findComponentByTestId('commits-feed-link');
+  const findOpenMrBadge = () => wrapper.findComponent(OpenMrBadge);
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  it('renders overflow menu with correct props', () => {
+    const overflowMenu = findOverflowMenu();
+
+    expect(overflowMenu.props()).toMatchObject({
+      icon: 'ellipsis_v',
+      toggleText: 'Actions',
+      textSrOnly: true,
+      noCaret: true,
+      category: 'tertiary',
+      placement: 'bottom-end',
+    });
+  });
+
+  it('renders browse files dropdown item with correct props', () => {
+    const browseFilesItem = findBrowseFilesItem();
+
+    expect(browseFilesItem.props('item')).toMatchObject({
+      text: 'Browse files',
+      icon: 'folder-open',
+      href: browseFilesPath,
+      extraAttrs: {
+        'data-testid': 'browse-files-link',
+      },
+    });
+  });
+
+  it('renders commits feed dropdown item with correct props', () => {
+    const commitsFeedItem = findCommitsFeedItem();
+
+    expect(commitsFeedItem.props('item')).toMatchObject({
+      text: 'Commits feed',
+      icon: 'rss',
+      href: commitsFeedPath,
+      extraAttrs: {
+        'data-testid': 'commits-feed-link',
+      },
+    });
+  });
+
+  describe('merge request dropdown item', () => {
+    const mergeRequestAction = {
+      text: 'Create merge request',
+      href: '/gitlab-org/gitlab/-/merge_requests/new',
+      testid: 'create-merge-request-link',
+    };
+    const findMergeRequestItem = () => wrapper.findComponentByTestId(mergeRequestAction.testid);
+
+    it('does not render the item when no action is passed', () => {
+      expect(findMergeRequestItem().exists()).toBe(false);
+    });
+
+    it('renders the item hidden on wider viewports when an action is passed', () => {
+      createComponent({ mergeRequestAction });
+      const item = findMergeRequestItem();
+
+      expect(item.props('item')).toMatchObject({
+        text: 'Create merge request',
+        icon: 'merge-request',
+        href: '/gitlab-org/gitlab/-/merge_requests/new',
+      });
+      expect(item.classes()).toContain('@md/panel:gl-hidden');
+    });
+  });
+
+  describe('open mr badge', () => {
+    it('renders OpenMrBadge with correct props', () => {
+      expect(findOpenMrBadge().exists()).toBe(true);
+      expect(findOpenMrBadge().props()).toMatchObject({
+        projectPath: 'gitlab-org/gitlab',
+        blobPath: 'README.md',
+        currentRef: 'feature',
+      });
+    });
+
+    it('does not render OpenMrBadge when there is no file path', () => {
+      createComponent({ filePath: '' });
+      expect(findOpenMrBadge().exists()).toBe(false);
+    });
+  });
+});

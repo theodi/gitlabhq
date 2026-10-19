@@ -1,40 +1,53 @@
-Gitlab::Seeder.quiet do
-  content =<<eos
-class Member < ActiveRecord::Base
-  include Notifiable
-  include Gitlab::Access
+require './spec/support/sidekiq_middleware'
 
-  belongs_to :user
-  belongs_to :source, polymorphic: true
+SNIPPET_REPO_URL = "https://gitlab.com/gitlab-org/gitlab-snippet-test.git"
+BUNDLE_PATH = File.join(Rails.root, 'db/fixtures/development/gitlab-snippet-test.bundle')
 
-  validates :user, presence: true
-  validates :source, presence: true
-  validates :user_id, uniqueness: { scope: [:source_type, :source_id], message: "already exists in source" }
-  validates :access_level, inclusion: { in: Gitlab::Access.all_values }, presence: true
+class Gitlab::Seeder::SnippetRepository
+  def initialize(snippet)
+    @snippet = snippet
+  end
 
-  scope :guests, -> { where(access_level: GUEST) }
-  scope :reporters, -> { where(access_level: REPORTER) }
-  scope :developers, -> { where(access_level: DEVELOPER) }
-  scope :masters,  -> { where(access_level: MASTER) }
-  scope :owners,  -> { where(access_level: OWNER) }
+  def import
+    if File.exist?(BUNDLE_PATH)
+      @snippet.repository.create_from_bundle(BUNDLE_PATH)
+    else
+      @snippet.repository.import_repository(SNIPPET_REPO_URL)
+      @snippet.repository.bundle_to_disk(BUNDLE_PATH)
+    end
+  end
 
-  delegate :name, :username, :email, to: :user, prefix: true
-end
-eos
-
-  (1..50).each  do |i|
-    user = User.all.sample
-
-    PersonalSnippet.seed(:id, [{
-      id: i,
-      author_id: user.id,
-      title: FFaker::Lorem.sentence(3),
-      file_name:  FFaker::Internet.domain_word + '.rb',
-      visibility_level: Gitlab::VisibilityLevel.values.sample,
-      content: content,
-    }])
-
-    print('.')
+  def self.cleanup
+    File.delete(BUNDLE_PATH) if File.exist?(BUNDLE_PATH)
+  rescue => e
+    warn "\nError cleaning up snippet bundle: #{e}"
   end
 end
 
+Gitlab::Seeder.quiet do
+  20.times do |i|
+    user = User.not_mass_generated.sample
+
+    user.snippets.create({
+      type: 'PersonalSnippet',
+      title: FFaker::Lorem.sentence(3),
+      file_name:  'file.rb',
+      visibility_level: Gitlab::VisibilityLevel.values.sample,
+      organization: Gitlab::DatabaseImporters::AdminOrganizationImporter.seeded_admin_organization,
+      content: 'foo'
+    }).tap do |snippet|
+      snippet.repository.expire_exists_cache
+
+      unless snippet.repository_exists?
+        Gitlab::Seeder::SnippetRepository.new(snippet).import
+      end
+
+      snippet.track_snippet_repository(snippet.repository.storage)
+      snippet.statistics.refresh!
+    end
+
+    print('.')
+  end
+
+  Gitlab::Seeder::SnippetRepository.cleanup
+end

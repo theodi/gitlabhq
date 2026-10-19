@@ -1,0 +1,135 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Organizations::CreateService, feature_category: :organization do
+  describe '#execute' do
+    let_it_be(:user) { create(:user) }
+
+    let(:current_user) { user }
+    let(:params) { attributes_for(:organization).merge(extra_params) }
+    let(:avatar_filename) { nil }
+    let(:extra_params) { {} }
+    let(:created_organization) { response.payload[:organization] }
+
+    subject(:response) { described_class.new(current_user: current_user, params: params).execute }
+
+    context 'when user does not have permission' do
+      let(:current_user) { nil }
+
+      it 'returns an error' do
+        expect(response).to be_error
+
+        expect(response.message).to match_array(
+          ['You have insufficient permissions to create organizations'])
+      end
+    end
+
+    context 'when on self-managed' do
+      it 'returns an error' do
+        expect(response).to be_error
+
+        expect(response.message).to match_array(
+          ['You have insufficient permissions to create organizations'])
+      end
+    end
+
+    context 'when user has permission', :saas do
+      shared_examples 'creating an organization' do
+        it 'creates the organization' do
+          expect { response }.to change { Organizations::Organization.count }
+                                   .and change { Organizations::OrganizationUser.count }.by(1)
+          expect(response).to be_success
+          expect(created_organization.name).to eq(params[:name])
+          expect(created_organization.path).to eq(params[:path])
+          expect(created_organization.description).to eq(params[:description])
+          expect(created_organization.avatar.filename).to eq(avatar_filename)
+          expect(created_organization.owner?(current_user)).to be(true)
+        end
+      end
+
+      it_behaves_like 'creating an organization'
+
+      context 'with description' do
+        let(:description) { 'Organization description' }
+        let(:extra_params) { { description: description } }
+
+        it_behaves_like 'creating an organization'
+      end
+
+      context 'with avatar' do
+        let(:avatar_filename) { 'dk.png' }
+        let(:avatar) { fixture_file_upload("spec/fixtures/#{avatar_filename}") }
+        let(:extra_params) { { avatar: avatar } }
+
+        it_behaves_like 'creating an organization'
+      end
+
+      context 'when the organization is not persisted' do
+        let(:extra_params) { { name: nil } }
+
+        it 'returns an error when the organization is not persisted' do
+          expect(response).to be_error
+          expect(response.message).to match_array(["Name can't be blank"])
+        end
+      end
+    end
+  end
+
+  describe 'Organization Administrator role sync' do
+    let_it_be(:user) { create(:user) }
+
+    let(:params) { attributes_for(:organization) }
+
+    subject(:response) { described_class.new(current_user: user, params: params).execute }
+
+    before do
+      allow(Authz::Organizations::OwnerRoleSync).to receive(:enabled?).and_return(true)
+    end
+
+    describe '#execute' do
+      context 'when the creator becomes the first owner', :saas do
+        it 'enqueues one owner sync job, acting as the creator' do
+          enqueued = nil
+          allow(Authz::Organizations::GrantOwnerRoleWorker).to receive(:perform_async) { |*args| enqueued = args }
+
+          organization = response.payload[:organization]
+
+          expect(enqueued).to eq([organization.id, nil, user.id])
+        end
+
+        context 'when the owner role sync is unavailable' do
+          before do
+            allow(Authz::Organizations::OwnerRoleSync).to receive(:enabled?).and_return(false)
+          end
+
+          it 'does not enqueue GrantOwnerRoleWorker', :aggregate_failures do
+            expect(Authz::Organizations::GrantOwnerRoleWorker).not_to receive(:perform_async)
+
+            expect(response).to be_success
+          end
+        end
+
+        context 'when the organization is not persisted' do
+          let(:params) { attributes_for(:organization).merge(name: nil) }
+
+          it 'does not enqueue GrantOwnerRoleWorker', :aggregate_failures do
+            expect(Authz::Organizations::GrantOwnerRoleWorker).not_to receive(:perform_async)
+
+            expect(response).to be_error
+          end
+        end
+      end
+
+      context 'when authorization is skipped and there is no current user' do
+        subject(:response) { described_class.new(current_user: nil, params: params).execute(skip_authorization: true) }
+
+        it 'does not enqueue GrantOwnerRoleWorker', :aggregate_failures do
+          expect(Authz::Organizations::GrantOwnerRoleWorker).not_to receive(:perform_async)
+
+          expect(response).to be_success
+        end
+      end
+    end
+  end
+end

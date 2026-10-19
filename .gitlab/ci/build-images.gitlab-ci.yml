@@ -1,0 +1,18 @@
+# Parent-pipeline copy of the QA image. Consumed by:
+# - `build-qa-image as-if-foss` → `e2e:test-on-omnibus-ce` (CE / security MR & nightly flow)
+# - `start-release-environments-security-pipeline` on stable-branch / RC pipelines
+# The EE flow builds its own copy inside the `e2e:test-on-omnibus-ee` child pipeline
+# (see `.gitlab/ci/test-on-omnibus/internal.gitlab-ci.yml`).
+# Build steps are shared via `.build-qa-image-base` (global.gitlab-ci.yml).
+# See https://docs.gitlab.com/development/testing_guide/end_to_end/#testing-code-in-merge-requests for more details.
+build-qa-image:
+  extends:
+    - .build-qa-image-base
+    - .build-images:rules:build-qa-image
+  stage: build-images
+
+build-qa-image as-if-foss:
+  extends:
+    - build-qa-image
+    - .as-if-foss
+    - .qa:rules:test-on-omnibus-ce:follow-up

@@ -1,0 +1,127 @@
+# frozen_string_literal: true
+
+class NotePolicy < BasePolicy
+  include Gitlab::Utils::StrongMemoize
+
+  delegate { @subject.resource_parent }
+  delegate { @subject.noteable if DeclarativePolicy.has_policy?(@subject.noteable) }
+
+  condition(:is_author) { @user && @subject.author == @user }
+  condition(:is_noteable_author) { @user && @subject.noteable.try(:author_id) == @user.id }
+  condition(:is_member) { parent_namespace&.member?(@user) }
+
+  condition(:editable, scope: :subject) { @subject.editable? }
+
+  condition(:can_read_noteable) { can?(:"read_#{@subject.noteable_ability_name}", @subject.noteable) }
+  condition(:commit_is_deleted) { @subject.for_commit? && @subject.noteable.blank? }
+  condition(:for_personal_snippet) { @subject.for_personal_snippet? }
+
+  condition(:discussion_locked) { @subject.noteable&.try(:discussion_locked?) }
+
+  condition(:for_design) { @subject.for_design? }
+
+  condition(:is_visible) { @subject.system_note_visible_for?(@user) }
+
+  condition(:internal, scope: :subject) { @subject.confidential? }
+
+  # if noteable is a work item it needs to check the notes widget availability
+  condition(:notes_widget_enabled, scope: :subject) do
+    noteable = @subject.noteable
+    next true unless noteable
+
+    !noteable.respond_to?(:has_widget?) || noteable.has_widget?(:notes)
+  end
+
+  rule { ~notes_widget_enabled }.prevent_all
+
+  rule { ~editable }.policy do
+    prevent :admin_note
+    prevent :update_note
+    prevent :delete_note
+  end
+
+  # If user can't read the issue/MR/etc then they should not be allowed to do anything to their own notes
+  rule { ~can_read_noteable }.policy do
+    prevent :admin_note
+    prevent :update_note
+    prevent :delete_note
+    prevent :resolve_note
+    prevent :reposition_note
+    prevent :award_emoji
+  end
+
+  # Special rule for deleted commits
+  rule { ~(can_read_noteable | commit_is_deleted) }.policy do
+    prevent :read_note
+  end
+
+  rule { is_author }.policy do
+    enable :read_note
+    enable :admin_note
+    enable :update_note
+    enable :delete_note
+    enable :resolve_note
+  end
+
+  rule { is_noteable_author & for_personal_snippet }.policy do
+    enable :admin_note
+    enable :update_note
+    enable :delete_note
+  end
+
+  rule { discussion_locked & ~is_member }.policy do
+    prevent :resolve_note
+  end
+
+  rule { ~is_visible }.policy do
+    prevent :read_note
+    prevent :admin_note
+    prevent :update_note
+    prevent :delete_note
+    prevent :resolve_note
+    prevent :reposition_note
+    prevent :award_emoji
+  end
+
+  rule { is_noteable_author }.policy do
+    enable :resolve_note
+  end
+
+  rule { can?(:read_internal_note) }.policy do
+    enable :mark_note_as_internal
+  end
+
+  rule { internal & ~can?(:read_internal_note) }.policy do
+    prevent :read_note
+    prevent :admin_note
+    prevent :update_note
+    prevent :delete_note
+    prevent :resolve_note
+    prevent :reposition_note
+    prevent :award_emoji
+  end
+
+  rule { can?(:admin_note) | (for_design & can?(:create_note)) }.policy do
+    enable :reposition_note
+  end
+
+  rule { admin }.policy do
+    enable :read_note
+    enable :admin_note
+    enable :update_note
+    enable :delete_note
+    enable :resolve_note
+    enable :reposition_note
+    enable :award_emoji
+  end
+
+  def parent_namespace
+    strong_memoize(:parent_namespace) do
+      next if @subject.is_a?(PersonalSnippet)
+      next @subject.noteable.group if @subject.noteable.is_a?(Epic)
+
+      # Group-level work items have no project, so fall back to their namespace.
+      @subject.project || @subject.noteable.try(:namespace)
+    end
+  end
+end

@@ -1,0 +1,155 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe API::MergeRequestDiffs, 'MergeRequestDiffs', feature_category: :source_code_management do
+  let_it_be(:user)    { create(:user) }
+  let_it_be(:project) { create(:project, :repository, maintainers: user) }
+  let_it_be(:merge_request) do
+    create(:merge_request, importing: true, source_project: project, target_project: project)
+  end
+
+  before_all do
+    merge_request.merge_request_diffs.create!(head_commit_sha: '6f6d7e7ed97bb5f0054f2b1df789b39ca89b6ff9')
+    merge_request.merge_request_diffs.create!(head_commit_sha: '5937ac0a7beb003549fc5fd26fc247adbce4a52e')
+  end
+
+  describe 'GET /projects/:id/merge_requests/:merge_request_iid/versions' do
+    it 'returns 200 for a valid merge request' do
+      get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions", user)
+      merge_request_diff = merge_request.merge_request_diffs.last
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response).to include_pagination_headers
+      expect(json_response).to be_an Array
+      expect(json_response.size).to eq(merge_request.merge_request_diffs.size)
+      expect(json_response.first['id']).to eq(merge_request_diff.id)
+      expect(json_response.first['head_commit_sha']).to eq(merge_request_diff.head_commit_sha)
+    end
+
+    it 'returns a 404 when merge_request id is used instead of the iid' do
+      get api("/projects/#{project.id}/merge_requests/#{merge_request.id}/versions", user)
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'returns a 404 when merge_request_iid not found' do
+      get api("/projects/#{project.id}/merge_requests/0/versions", user)
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context 'when merge request author has only guest access' do
+      it_behaves_like 'rejects user from accessing merge request info' do
+        let(:url) { "/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions" }
+      end
+    end
+
+    context 'with oauth token that has ai_workflows scope' do
+      let(:token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'allows access' do
+        get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions", oauth_access_token: token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_merge_request_diff do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions", personal_access_token: pat)
+      end
+    end
+  end
+
+  describe 'GET /projects/:id/merge_requests/:merge_request_iid/versions/:version_id' do
+    let(:merge_request_diff) { merge_request.merge_request_diffs.first }
+
+    it 'returns a 200 for a valid merge request' do
+      get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request_diff.id}", user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response['id']).to eq(merge_request_diff.id)
+      expect(json_response['head_commit_sha']).to eq(merge_request_diff.head_commit_sha)
+      expect(json_response['diffs'].size).to eq(merge_request_diff.diffs.size)
+    end
+
+    it 'returns commits' do
+      get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request_diff.id}", user)
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(json_response.dig('commits', 0)).to include(
+        'author_name' => 'Job van der Voort',
+        'parent_ids' => %w[1b12f15a11fc6e62177bef08f47bc7b5ce50b141 498214de67004b1da3d820901307bed2a68a8ef6]
+      )
+    end
+
+    context 'when unidiff format is requested' do
+      it 'returns a diff in Unified format' do
+        get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request_diff.id}", user), params: { unidiff: true }
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.dig('diffs', 0, 'diff')).to eq(merge_request_diff.diffs.diffs.first.unidiff)
+      end
+    end
+
+    it 'returns a 404 when merge_request id is used instead of the iid' do
+      get api("/projects/#{project.id}/merge_requests/#{merge_request.id}/versions/#{merge_request_diff.id}", user)
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'returns a 404 when merge_request version_id is not found' do
+      get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/0", user)
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    it 'returns a 404 when merge_request_iid is not found' do
+      get api("/projects/#{project.id}/merge_requests/#{non_existing_record_iid}/versions/#{merge_request_diff.id}", user)
+      expect(response).to have_gitlab_http_status(:not_found)
+    end
+
+    context 'when merge request author has only guest access' do
+      it_behaves_like 'rejects user from accessing merge request info' do
+        let(:url) { "/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request_diff.id}" }
+      end
+    end
+
+    context 'caching merge request diffs', :use_clean_rails_redis_caching do
+      let(:merge_request_raw_diff) { merge_request_diff.diffs.diffs.first }
+      let(:expected_diff) { merge_request_raw_diff.diff }
+      let(:expected_unidiff) { merge_request_raw_diff.unidiff }
+
+      it 'creates different cache keys for diff/unidiff modes' do
+        get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request_diff.id}", user)
+
+        expected_diff_key = [::API::Entities::MergeRequestDiffFull, merge_request_diff.cache_key, false].join(":")
+        expect(Rails.cache.fetch(expected_diff_key)).to be_present
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.dig('diffs', 0, 'diff')).to eq(expected_diff)
+
+        get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request_diff.id}", user), params: { unidiff: true }
+
+        expected_unidiff_key = [::API::Entities::MergeRequestDiffFull, merge_request_diff.cache_key, true].join(":")
+        expect(Rails.cache.fetch(expected_unidiff_key)).to be_present
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(json_response.dig('diffs', 0, 'diff')).to eq(expected_unidiff)
+      end
+    end
+
+    context 'with oauth token that has ai_workflows scope' do
+      let(:token) { create(:oauth_access_token, user: user, scopes: [:ai_workflows]) }
+
+      it 'allows access' do
+        get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request_diff.id}", oauth_access_token: token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    it_behaves_like 'authorizing granular token permissions', :read_merge_request_diff do
+      let(:boundary_object) { project }
+      let(:request) do
+        get api("/projects/#{project.id}/merge_requests/#{merge_request.iid}/versions/#{merge_request.merge_request_diffs.first.id}", personal_access_token: pat)
+      end
+    end
+  end
+end

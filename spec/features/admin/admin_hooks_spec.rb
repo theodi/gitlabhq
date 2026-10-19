@@ -1,51 +1,181 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe "Admin::Hooks", feature: true do
+RSpec.describe 'Admin::Hooks', :with_current_organization, feature_category: :webhooks do
+  include Spec::Support::Helpers::ModalHelpers
+
+  let_it_be(:user) { create(:admin, organizations: [current_organization]) }
+
   before do
-    @project = create(:project)
-    login_as :admin
-
-    @system_hook = create(:system_hook)
-
+    sign_in(user)
+    enable_admin_mode!(user)
   end
 
-  describe "GET /admin/hooks" do
-    it "should be ok" do
+  describe 'GET /admin/hooks' do
+    it 'is ok', :js do
       visit admin_root_path
-      within ".sidebar-wrapper" do
-        click_on "Hooks"
+
+      within_testid('super-sidebar') do
+        click_on 'System hooks', match: :first
       end
-      expect(current_path).to eq(admin_hooks_path)
+
+      expect(page).to have_current_path(admin_hooks_path, ignore_query: true)
     end
 
-    it "should have hooks list" do
+    it 'has hooks list' do
+      system_hook = create(:system_hook, organization: current_organization)
+
       visit admin_hooks_path
-      expect(page).to have_content(@system_hook.url)
+      expect(page).to have_content(system_hook.url)
+    end
+
+    it 'renders plugins list as well' do
+      allow(Gitlab::FileHook).to receive(:files).and_return(['foo.rb', 'bar.clj'])
+
+      visit admin_hooks_path
+
+      expect(page).to have_content('File hooks')
+      expect(page).to have_content('foo.rb')
+      expect(page).to have_content('bar.clj')
     end
   end
 
-  describe "New Hook" do
+  describe 'New Hook' do
+    let(:url) { generate(:url) }
+
+    it 'adds new hook', :js do
+      visit admin_hooks_path
+
+      click_button 'Add new webhook'
+      fill_in 'Name (optional)', with: 'New system hook'
+      fill_in 'Description (optional)', with: 'A new system hook for testing'
+      fill_in 'URL', with: url
+      check 'Enable SSL verification'
+
+      expect do
+        click_button 'Add webhook'
+
+        expect(page).to have_content 'SSL Verification: enabled'
+        expect(page).to have_current_path(admin_hooks_path, ignore_query: true)
+        expect(page).to have_content(url)
+      end.to change { SystemHook.count }.by(1)
+    end
+  end
+
+  describe 'Update existing hook' do
+    let(:new_url) { generate(:url) }
+    let_it_be(:hook) { create(:system_hook, organization: current_organization) }
+
+    it 'updates existing hook', :js do
+      visit admin_hooks_path
+
+      click_link 'Edit'
+      fill_in 'Name (optional)', with: 'Existing system hook'
+      fill_in 'Description (optional)', with: 'An existing system hook for testing'
+      fill_in 'URL', with: new_url
+      check 'Enable SSL verification'
+      click_button 'Save changes'
+
+      expect(page).to have_content('Enable SSL verification')
+      expect(page).to have_current_path(edit_admin_hook_path(hook), ignore_query: true)
+      expect(page).to have_content('Recent events')
+      click_link 'Close'
+      expect(page).to have_content('Add new webhook')
+      expect(page).not_to have_content('Save changes')
+    end
+  end
+
+  describe 'Remove existing hook', :js do
+    let(:hook_url) { generate(:url) }
+    let!(:hook) { create(:system_hook, url: hook_url, organization: current_organization) }
+
+    context 'removes existing hook' do
+      it 'from hooks list page' do
+        visit admin_hooks_path
+
+        expect(page).to have_content(hook_url)
+        accept_gl_confirm(button_text: 'Delete webhook') { click_link 'Delete' }
+
+        expect(page).to have_content('Webhook deleted')
+        expect(SystemHook.exists?(hook.id)).to be(false)
+
+        current_organization.system_hooks.reset
+
+        visit admin_hooks_path
+
+        expect(page).to have_no_content(hook_url)
+      end
+
+      it 'from hook edit page' do
+        visit edit_admin_hook_path(hook)
+
+        expect(page).to have_field('URL', with: hook_url)
+        accept_gl_confirm(button_text: 'Delete webhook') { click_link 'Delete' }
+
+        expect(page).to have_content('Webhook deleted')
+        expect(SystemHook.exists?(hook.id)).to be(false)
+
+        current_organization.system_hooks.reset
+
+        visit admin_hooks_path
+
+        expect(page).to have_no_content(hook_url)
+      end
+    end
+  end
+
+  describe 'Test', :js do
     before do
-      @url = FFaker::Internet.uri("http")
+      system_hook = create(:system_hook, organization: current_organization)
+      WebMock.stub_request(:post, system_hook.url)
       visit admin_hooks_path
-      fill_in "hook_url", with: @url
-      expect { click_button "Add System Hook" }.to change(SystemHook, :count).by(1)
+
+      click_button 'Test'
+      click_link 'Push events'
     end
 
-    it "should open new hook popup" do
-      expect(current_path).to eq(admin_hooks_path)
-      expect(page).to have_content(@url)
-    end
+    it { expect(page).to have_current_path(admin_hooks_path, ignore_query: true) }
   end
 
-  describe "Test" do
-    before do
-      WebMock.stub_request(:post, @system_hook.url)
-      visit admin_hooks_path
-      click_link "Test Hook"
+  context 'Merge request hook' do
+    describe 'New Hook' do
+      let(:url) { generate(:url) }
+
+      it 'adds new hook', :js do
+        visit admin_hooks_path
+
+        click_button 'Add new webhook'
+        fill_in 'URL', with: url
+        uncheck 'Repository update events'
+        check 'Merge request events'
+
+        expect do
+          click_button 'Add webhook'
+
+          expect(page).to have_current_path(admin_hooks_path, ignore_query: true)
+          expect(page).to have_content(url)
+        end.to change { SystemHook.count }.by(1)
+      end
     end
 
-    it { expect(current_path).to eq(admin_hooks_path) }
-  end
+    describe 'Test', :js do
+      before do
+        system_hook = create(:system_hook, organization: current_organization)
+        WebMock.stub_request(:post, system_hook.url)
+      end
 
+      it 'succeeds if the user has a repository with a merge request' do
+        project = create(:project, :repository, organization: current_organization)
+        create(:project_member, user: user, project: project)
+        create(:merge_request, source_project: project)
+
+        visit admin_hooks_path
+        click_button 'Test'
+        click_link 'Merge request events'
+
+        expect(page).to have_content 'Hook executed successfully'
+      end
+    end
+  end
 end

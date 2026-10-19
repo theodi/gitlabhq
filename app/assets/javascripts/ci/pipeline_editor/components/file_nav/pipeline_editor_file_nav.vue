@@ -1,0 +1,79 @@
+<script>
+import { GlButton } from '@gitlab/ui';
+import getAppStatus from '~/ci/pipeline_editor/graphql/queries/client/app_status.query.graphql';
+import { glListenersMixin } from '~/lib/utils/vue3compat/gl_listeners_mixin';
+import { EDITOR_APP_STATUS_EMPTY, EDITOR_APP_STATUS_LOADING } from '../../constants';
+import FileTreePopover from '../popovers/file_tree_popover.vue';
+import BranchSwitcher from './branch_switcher.vue';
+
+export default {
+  name: 'PipelineEditorFileNav',
+  components: {
+    BranchSwitcher,
+    FileTreePopover,
+    GlButton,
+  },
+  mixins: [glListenersMixin],
+  props: {
+    hasUnsavedChanges: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isNewCiConfigFile: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    shouldLoadNewBranch: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['toggle-file-tree'],
+  data() {
+    return { appStatus: '' };
+  },
+  apollo: {
+    appStatus: {
+      query: getAppStatus,
+      update(data) {
+        return data.app.status;
+      },
+    },
+  },
+  computed: {
+    isAppLoading() {
+      return this.appStatus === EDITOR_APP_STATUS_LOADING;
+    },
+    showFileTreeToggle() {
+      return !this.isNewCiConfigFile && this.appStatus !== EDITOR_APP_STATUS_EMPTY;
+    },
+  },
+  methods: {
+    onFileTreeBtnClick() {
+      this.$emit('toggle-file-tree');
+    },
+  },
+};
+</script>
+<template>
+  <div class="gl-mb-4 gl-flex gl-flex-wrap gl-gap-3">
+    <gl-button
+      v-if="showFileTreeToggle"
+      id="file-tree-toggle"
+      icon="file-tree"
+      data-testid="file-tree-toggle"
+      :aria-label="__('File Tree')"
+      :loading="isAppLoading"
+      @click="onFileTreeBtnClick"
+    />
+    <file-tree-popover v-if="showFileTreeToggle" />
+    <branch-switcher
+      :has-unsaved-changes="hasUnsavedChanges"
+      :should-load-new-branch="shouldLoadNewBranch"
+      v-on="glListeners()"
+    />
+  </div>
+</template>

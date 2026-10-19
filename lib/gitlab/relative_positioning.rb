@@ -1,0 +1,43 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module RelativePositioning
+    STEPS = 9
+    IDEAL_DISTANCE = (2**(STEPS - 1)) + 1
+
+    MIN_POSITION = Gitlab::Database::MIN_INT_VALUE
+    START_POSITION = 0
+    MAX_POSITION = Gitlab::Database::MAX_INT_VALUE
+
+    MAX_GAP = IDEAL_DISTANCE * 2
+    MIN_GAP = 2
+
+    NoSpaceLeft = Class.new(StandardError)
+    InvalidPosition = Class.new(StandardError)
+    IllegalRange = Class.new(ArgumentError)
+    IssuePositioningDisabled = Class.new(StandardError)
+
+    def self.range(lhs, rhs)
+      if lhs && rhs
+        ClosedRange.new(lhs, rhs)
+      elsif lhs
+        StartingFrom.new(lhs)
+      elsif rhs
+        EndingAt.new(rhs)
+      else
+        raise IllegalRange, 'One of rhs or lhs must be provided' unless lhs && rhs
+      end
+    end
+
+    # Builds the `move_between_ids` pair expected by the update service from a
+    # pair of raw before/after IDs. Non-positive IDs are normalized to `nil`,
+    # and the whole pair collapses to `nil` when neither ID is usable.
+    def self.parse_move_between_ids(before_id, after_id)
+      ids = [before_id, after_id]
+        .map(&:to_i)
+        .map { |id| id > 0 ? id : nil }
+
+      ids if ids.any?
+    end
+  end
+end

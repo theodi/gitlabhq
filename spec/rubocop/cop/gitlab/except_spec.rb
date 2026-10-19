@@ -1,0 +1,13 @@
+# frozen_string_literal: true
+
+require 'rubocop_spec_helper'
+require_relative '../../../../rubocop/cop/gitlab/except'
+
+RSpec.describe RuboCop::Cop::Gitlab::Except, feature_category: :tooling do
+  it 'flags the use of Gitlab::SQL::Except.new' do
+    expect_offense(<<~RUBY)
+    Gitlab::SQL::Except.new([foo])
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use the `FromExcept` concern, instead of using `Gitlab::SQL::Except` directly
+    RUBY
+  end
+end

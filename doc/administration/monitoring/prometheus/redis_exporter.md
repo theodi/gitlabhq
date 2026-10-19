@@ -1,0 +1,63 @@
+---
+stage: Shared responsibility based on functional area
+group: Shared responsibility based on functional area
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Redis exporter
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+The [Redis exporter](https://github.com/oliver006/redis_exporter) enables you to measure
+various [Redis](https://redis.io) metrics. For more information on what is exported,
+[read the upstream documentation](https://github.com/oliver006/redis_exporter/blob/master/README.md#whats-exported).
+
+For self-compiled installations, you must install and configure it yourself.
+
+To enable the Redis exporter:
+
+1. [Enable Prometheus](_index.md#configuring-prometheus).
+1. Edit `/etc/gitlab/gitlab.rb`.
+1. Add (or find and uncomment) the following line, making sure it's set to `true`:
+
+   ```ruby
+   redis_exporter['enable'] = true
+   ```
+
+1. Save the file and [reconfigure GitLab](../../restart_gitlab.md#reconfigure-a-linux-package-installation)
+   for the changes to take effect.
+
+Prometheus begins collecting performance data from
+the Redis exporter exposed at `localhost:9121`.
+
+## Configure the Redis exporter flags
+
+You can use the `redis_exporter['flags']` setting to pass
+[command-line flags](https://github.com/oliver006/redis_exporter/blob/master/README.md#command-line-flags)
+and customize the Redis exporter's behavior according to your monitoring requirements.
+
+> [!note]
+> `redis.addr` is not usable as that value is configured by `gitlab_rails[redis_*]` values such as `gitlab_rails[redis_host]`.
+
+To configure the Redis exporter flags:
+
+1. Edit `/etc/gitlab/gitlab.rb`, and add some flags, for example:
+
+   ```ruby
+   redis_exporter['flags'] = {
+     'redis.password' => 'your-redis-password',
+     'namespace' => 'redis',
+     'web.listen-address' => ':9121',
+     'web.telemetry-path' => '/metrics'
+   }
+   ```
+
+1. Reconfigure GitLab:
+
+   ```shell
+   sudo gitlab-ctl reconfigure
+   ```

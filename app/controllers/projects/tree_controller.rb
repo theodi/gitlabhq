@@ -1,27 +1,94 @@
+# frozen_string_literal: true
+
 # Controller for viewing a repository's file structure
 class Projects::TreeController < Projects::ApplicationController
   include ExtractsPath
+  include CreatesCommit
+  include ActionView::Helpers::SanitizeHelper
+  include RedirectsForMissingPathOnTree
+  include SourcegraphDecorator
+  include HandlesGitalyErrors
+
+  around_action :allow_gitaly_ref_name_caching, only: [:show]
 
   before_action :require_non_empty_project, except: [:new, :create]
   before_action :assign_ref_vars
-  before_action :authorize_download_code!
+  before_action :set_is_ambiguous_ref, only: [:show]
+  before_action :assign_dir_vars, only: [:create_dir]
+  before_action :authorize_read_code!
+  before_action :authorize_edit_tree!, only: [:create_dir]
+
+  before_action do
+    push_licensed_feature(:file_locks) if @project.licensed_feature_available?(:file_locks)
+  end
+
+  feature_category :source_code_management
+  urgency :low, [:show]
 
   def show
-    if tree.entries.empty?
-      if @repository.blob_at(@commit.id, @path)
-        redirect_to(
-          namespace_project_blob_path(@project.namespace, @project,
-                                      File.join(@ref, @path))
-        ) and return
-      else
-        return not_found!
-      end
+    return render_404 unless @commit
+
+    if require_auth?
+      @skip_logs_tree_loading = true
+      gon.push({
+        show_commit_columns: false
+      })
     end
 
-    respond_to do |format|
-      format.html
-      # Disable cache so browser history works
-      format.js { no_cache_headers }
+    if tree.entries.empty?
+      if @repository.blob_at(@commit.id, @path)
+        redirect_to project_blob_path(@project, File.join(@ref, @path), ref_type: @ref_type)
+      elsif path_present?
+        redirect_to_tree_root_for_missing_path(@project, @ref, @path)
+      end
     end
   end
+
+  def create_dir
+    return render_404 unless @commit_params.values.all?
+
+    create_commit(
+      Files::CreateDirService,
+      success_notice: _("The directory has been successfully created."),
+      success_path: project_tree_path(@project, File.join(@branch_name, @dir_name)),
+      failure_path: project_tree_path(@project, @ref)
+    )
+  end
+
+  private
+
+  def require_auth?
+    current_user.blank? && @ref != @project.default_branch_or_main &&
+      Feature.enabled?(:require_login_for_commit_tree, @project)
+  end
+
+  def tree
+    @tree ||= @repo.tree(@commit.id, @path)
+  end
+
+  def redirect_renamed_default_branch?
+    action_name == 'show'
+  end
+
+  def assign_dir_vars
+    params.require(create_dir_params_attributes)
+
+    @branch_name = permitted_params[:branch_name]
+
+    @dir_name = File.join(@path, permitted_params[:dir_name])
+    @commit_params = {
+      file_path: @dir_name,
+      commit_message: permitted_params[:commit_message]
+    }
+  end
+
+  def permitted_params
+    params.permit(*create_dir_params_attributes)
+  end
+
+  def create_dir_params_attributes
+    [:branch_name, :dir_name, :commit_message]
+  end
 end
+
+Projects::TreeController.prepend_mod

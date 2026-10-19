@@ -1,0 +1,198 @@
+---
+stage: Package
+group: Package Registry
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Ruby gems API
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use this API to interact with the [Ruby gems and Bundler package manager clients](../../user/packages/rubygems_registry/_index.md).
+
+> [!warning]
+> This API is used by the [Ruby gems and Bundler package manager clients](https://maven.apache.org/)
+> and is generally not meant for manual consumption. This API is under development and is not ready
+> for production use due to limited functionality.
+
+These endpoints do not adhere to the standard API authentication methods.
+See the [Ruby gems registry documentation](../../user/packages/rubygems_registry/_index.md)
+for details on which headers and token types are supported. Undocumented authentication methods might be removed in the future.
+
+## Enable the Ruby gems API
+
+The Ruby gems API for GitLab is behind a feature flag that is disabled by default. GitLab
+administrators with access to the GitLab Rails console can enable this API for your instance.
+
+To enable it:
+
+```ruby
+Feature.enable(:rubygem_packages)
+```
+
+To disable it:
+
+```ruby
+Feature.disable(:rubygem_packages)
+```
+
+To enable or disable it for specific projects:
+
+```ruby
+Feature.enable(:rubygem_packages, Project.find(1))
+Feature.disable(:rubygem_packages, Project.find(2))
+```
+
+## Download a gem file
+
+Downloads a specified gem file for a project.
+
+```plaintext
+GET projects/:id/packages/rubygems/gems/:file_name
+```
+
+| Attribute    | Type   | Required | Description |
+| ------------ | ------ | -------- | ----------- |
+| `id`         | string | yes      | The ID or full path of the project. |
+| `file_name`  | string | yes      | The name of the `.gem` file. |
+
+```shell
+curl --header "Authorization:<personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/rubygems/gems/my_gem-1.0.0.gem"
+```
+
+Write the output to file:
+
+```shell
+curl --header "Authorization:<personal_access_token>" "https://gitlab.example.com/api/v4/projects/1/packages/rubygems/gems/my_gem-1.0.0.gem" >> my_gem-1.0.0.gem
+```
+
+This writes the downloaded file to `my_gem-1.0.0.gem` in the current directory.
+
+## Download a gemspec file
+
+Downloads a gemspec file in Marshal format for a specific gem version.
+
+```plaintext
+GET projects/:id/packages/rubygems/quick/Marshal.4.8/:file_name
+```
+
+| Attribute    | Type   | Required | Description |
+| ------------ | ------ | -------- | ----------- |
+| `id`         | string | yes      | The ID or full path of the project. |
+| `file_name`  | string | yes      | The gemspec file name in the format `<gem_name>-<version>.gemspec.rz`. |
+
+The response is a deflate-compressed, marshalled `Gem::Specification` object.
+
+```shell
+curl --header "Authorization:<personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/rubygems/quick/Marshal.4.8/my_gem-1.0.0.gemspec.rz"
+```
+
+## Download a spec index file
+
+Downloads a RubyGems spec index file for a project. The index lists the gems available in the
+project registry.
+
+```plaintext
+GET projects/:id/packages/rubygems/:file_name
+```
+
+| Attribute   | Type   | Required | Description |
+| ----------- | ------ | -------- | ----------- |
+| `file_name` | string | Yes      | The spec index file name: `specs.4.8.gz`, `latest_specs.4.8.gz`, or `prerelease_specs.4.8.gz`. |
+| `id`        | string | Yes      | The ID or full path of the project. |
+
+The spec index file name determines which package release versions are listed:
+
+- `specs.4.8.gz` lists released versions.
+- `latest_specs.4.8.gz` lists the latest released version of each gem.
+- `prerelease_specs.4.8.gz` lists prerelease versions.
+
+If successful, returns [`200 OK`](../rest/troubleshooting.md#status-codes) and a Gzip-compressed,
+marshalled array of `[name, version, platform]` entries.
+
+Example request:
+
+```shell
+curl --header "Authorization: <your_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/rubygems/specs.4.8.gz"
+```
+
+## Retrieve dependencies
+
+Retrieves a list of dependencies for specified gems.
+
+The response is a marshalled array of hashes for all versions of the requested gems.
+Because the response is marshalled, you can store it in a file.
+
+```plaintext
+GET projects/:id/packages/rubygems/api/v1/dependencies
+```
+
+| Attribute | Type   | Required | Description |
+| --------- | ------ | -------- | ----------- |
+| `id`      | string | yes      | The ID or full path of the project. |
+| `gems`    | string | no       | Comma-separated list of gems to fetch dependencies for. |
+
+```shell
+curl --header "Authorization:<personal_access_token>" \
+  --url "https://gitlab.example.com/api/v4/projects/1/packages/rubygems/api/v1/dependencies?gems=my_gem,foo"
+```
+
+If Ruby is installed, you can use the following
+Ruby command to read the response. For this to work, you must
+either [set your credentials in `~/.gem/credentials`](../../user/packages/rubygems_registry/_index.md#authenticate-to-the-package-registry),
+or pass your access token to the request:
+
+```shell
+$ ruby -ropen-uri -rpp -e \
+  'pp Marshal.load(URI.open("https://gitlab.example.com/api/v4/projects/1/packages/rubygems/api/v1/dependencies?gems=my_gem,rails,foo", "Authorization" => <personal_access_token>))'
+
+[{:name=>"my_gem", :number=>"0.0.1", :platform=>"ruby", :dependencies=>[]},
+ {:name=>"my_gem",
+  :number=>"0.0.3",
+  :platform=>"ruby",
+  :dependencies=>
+   [["dependency_1", "~> 1.2.3"],
+    ["dependency_2", "= 3.0.0"],
+    ["dependency_3", ">= 1.0.0"],
+    ["dependency_4", ">= 0"]]},
+ {:name=>"my_gem",
+  :number=>"0.0.2",
+  :platform=>"ruby",
+  :dependencies=>
+   [["dependency_1", "~> 1.2.3"],
+    ["dependency_2", "= 3.0.0"],
+    ["dependency_3", ">= 1.0.0"],
+    ["dependency_4", ">= 0"]]},
+ {:name=>"foo",
+  :number=>"0.0.2",
+  :platform=>"ruby",
+  :dependencies=>
+    ["dependency_2", "= 3.0.0"],
+    ["dependency_4", ">= 0"]]}]
+```
+
+## Upload a gem
+
+Uploads a gem for a specified project.
+
+```plaintext
+POST projects/:id/packages/rubygems/api/v1/gems
+```
+
+| Attribute | Type   | Required | Description |
+| --------- | ------ | -------- | ----------- |
+| `id`      | string | yes      | The ID or full path of the project. |
+
+```shell
+curl --request POST \
+     --upload-file path/to/my_gem_file.gem \
+     --header "Authorization:<personal_access_token>" \
+     --url "https://gitlab.example.com/api/v4/projects/1/packages/rubygems/api/v1/gems"
+```

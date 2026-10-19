@@ -1,0 +1,35 @@
+query errorDetails($fullPath: ID!, $errorId: GitlabErrorTrackingDetailedErrorID!) {
+  project(fullPath: $fullPath) {
+    id
+    sentryErrors {
+      detailedError(id: $errorId) {
+        id
+        sentryId
+        title
+        userCount
+        count
+        status
+        firstSeen
+        lastSeen
+        message
+        culprit
+        tags {
+          level
+          logger
+        }
+        externalUrl
+        externalBaseUrl
+        firstReleaseVersion
+        frequency {
+          count
+          time
+        }
+        lastReleaseVersion
+        gitlabCommit
+        gitlabCommitPath
+        gitlabIssuePath
+        integrated
+      }
+    }
+  }
+}

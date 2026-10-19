@@ -1,0 +1,156 @@
+# frozen_string_literal: true
+
+module API
+  class Topics < ::API::Base
+    include PaginationParams
+
+    feature_category :groups_and_projects
+
+    helpers do
+      def find_topic!(id)
+        topic = ::Projects::Topic.find(id)
+
+        find_organization!(topic.organization_id)
+
+        topic
+      end
+    end
+
+    desc 'List all topics' do
+      detail 'Lists all project topics sorted by the number of associated projects.'
+      success Entities::Projects::Topic
+      tags ['project_topics']
+    end
+    params do
+      optional :search, type: String,
+        desc: 'Search topics against their `name`.',
+        documentation: { example: 'search' }
+      optional :without_projects, type: Boolean, desc: 'If `true`, returns only topics that have no assigned projects.'
+      optional :organization_id, type: Integer, default: -> { ::Current.organization.id },
+        desc: 'Filter topics by organization ID.'
+      use :pagination
+    end
+    route_setting :authorization, skip_granular_token_authorization: :public_endpoint
+    get 'topics' do
+      organization = find_organization!(params[:organization_id])
+
+      topics = ::Projects::TopicsFinder.new(
+        params: declared_params(include_missing: false),
+        organization_id: organization.id
+      ).execute
+
+      present paginate(topics), with: Entities::Projects::Topic
+    end
+
+    desc 'Retrieve a topic' do
+      detail 'Retrieves a specified project topic.'
+      success Entities::Projects::Topic
+      tags ['project_topics']
+    end
+    params do
+      requires :id, type: Integer, desc: 'ID of the project topic.'
+    end
+    route_setting :authorization, skip_granular_token_authorization: :public_endpoint
+    get 'topics/:id' do
+      topic = find_topic!(params[:id])
+
+      present topic, with: Entities::Projects::Topic
+    end
+
+    desc 'Create a project topic' do
+      detail 'Creates a project topic. Administrators only.'
+      success Entities::Projects::Topic
+      tags ['project_topics']
+    end
+    params do
+      requires :name, type: String, desc: 'Slug (name)'
+      requires :title, type: String, desc: 'Title'
+      optional :description, type: String, desc: 'Description'
+      optional :avatar, type: ::API::Validations::Types::WorkhorseFile, desc: 'Avatar image for topic',
+        documentation: { type: 'file' }
+      optional :organization_id, type: Integer, default: -> { ::Current.organization.id },
+        desc: 'The organization id for the topic'
+    end
+    route_setting :authorization, permissions: :create_topic, boundary_type: :instance, assignable_when: [:admin]
+    post 'topics' do
+      authenticated_as_admin!
+
+      find_organization!(params[:organization_id]) if params[:organization_id].present?
+      topic = ::Projects::Topic.new(declared_params(include_missing: false))
+
+      if topic.save
+        present topic, with: Entities::Projects::Topic
+      else
+        render_validation_error!(topic)
+      end
+    end
+
+    desc 'Update a project topic' do
+      detail 'Updates a specified project topic. Administrators only.'
+      success Entities::Projects::Topic
+      tags ['project_topics']
+    end
+    params do
+      requires :id, type: Integer, desc: 'ID of the project topic.'
+      optional :name, type: String, desc: 'Slug (name)'
+      optional :title, type: String, desc: 'Title'
+      optional :description, type: String, desc: 'Description'
+      optional :avatar, type: ::API::Validations::Types::WorkhorseFile, desc: 'Avatar image for topic',
+        documentation: { type: 'file' }
+    end
+    route_setting :authorization, permissions: :update_topic, boundary_type: :instance, assignable_when: [:admin]
+    put 'topics/:id' do
+      authenticated_as_admin!
+
+      topic = find_topic!(params[:id])
+
+      topic.remove_avatar! if params.key?(:avatar) && params[:avatar].nil?
+
+      if topic.update(declared_params(include_missing: false))
+        present topic, with: Entities::Projects::Topic
+      else
+        render_validation_error!(topic)
+      end
+    end
+
+    desc 'Delete a project topic' do
+      detail 'Deletes a specified project topic. Administrators only.'
+      success code: 204, message: 'Resource deleted'
+      tags ['project_topics']
+    end
+    params do
+      requires :id, type: Integer, desc: 'ID of the project topic.'
+    end
+    route_setting :authorization, permissions: :delete_topic, boundary_type: :instance, assignable_when: [:admin]
+    delete 'topics/:id' do
+      authenticated_as_admin!
+
+      topic = find_topic!(params[:id])
+
+      destroy_conditionally!(topic)
+    end
+
+    desc 'Merge topics' do
+      detail 'Merges a source topic into a target topic. This action deletes the source topic and moves all ' \
+        'assigned projects to the target topic. Administrators only.'
+      success Entities::Projects::Topic
+      tags ['project_topics']
+    end
+    params do
+      requires :source_topic_id, type: Integer, desc: 'ID of the project topic to merge from.'
+      requires :target_topic_id, type: Integer, desc: 'ID of the project topic to merge into.'
+    end
+    route_setting :authorization, permissions: :merge_topic, boundary_type: :instance, assignable_when: [:admin]
+    post 'topics/merge' do
+      authenticated_as_admin!
+
+      source_topic = find_topic!(params[:source_topic_id])
+      target_topic = find_topic!(params[:target_topic_id])
+
+      response = ::Topics::MergeService.new(source_topic, target_topic).execute
+      render_api_error!(response.message, :bad_request) if response.error?
+
+      present target_topic, with: Entities::Projects::Topic
+    end
+  end
+end

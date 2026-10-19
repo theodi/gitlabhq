@@ -1,6 +1,10 @@
+require './spec/support/sidekiq_middleware'
+
 Gitlab::Seeder.quiet do
-  Issue.all.each do |issue|
+  Issue.find_each do |issue|
     project = issue.project
+    # Group-level work items have no project, so there is no project team to comment as.
+    next unless project
 
     project.team.users.each do |user|
       note_params = {
@@ -9,12 +13,14 @@ Gitlab::Seeder.quiet do
         note: FFaker::Lorem.sentence,
       }
 
-      Notes::CreateService.new(project, user, note_params).execute
+      Gitlab::ExclusiveLease.skipping_transaction_check do
+        Notes::CreateService.new(project, user, note_params).execute
+      end
       print '.'
     end
   end
 
-  MergeRequest.all.each do |mr|
+  MergeRequest.find_each do |mr|
     project = mr.project
 
     project.team.users.each do |user|
@@ -23,8 +29,9 @@ Gitlab::Seeder.quiet do
         noteable_id: mr.id,
         note: FFaker::Lorem.sentence,
       }
-
-      Notes::CreateService.new(project, user, note_params).execute
+      Gitlab::ExclusiveLease.skipping_transaction_check do
+        Notes::CreateService.new(project, user, note_params).execute
+      end
       print '.'
     end
   end

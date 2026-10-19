@@ -1,0 +1,106 @@
+# frozen_string_literal: true
+
+module RapidDiffs
+  module Resource
+    extend ActiveSupport::Concern
+
+    def diff_files_metadata
+      return render_404 if rapid_diffs_presenter.nil?
+
+      render json: {
+        diff_files: DiffFileMetadataEntity.represent(rapid_diffs_presenter.diffs_resource.raw_diff_files)
+      }
+    end
+
+    def diffs_stats
+      return render_404 if rapid_diffs_presenter.nil?
+
+      render json: RapidDiffs::DiffsStatsEntity.represent(
+        rapid_diffs_presenter.diffs_resource,
+        {
+          email_path: email_format_path,
+          diff_path: complete_diff_path
+        }
+      )
+    end
+
+    def diff_file
+      return render_404 if rapid_diffs_presenter.nil?
+
+      old_path = diff_file_params[:old_path]
+      new_path = diff_file_params[:new_path]
+      ignore_whitespace_changes = Gitlab::Utils.to_boolean(diff_file_params[:ignore_whitespace_changes])
+      full = Gitlab::Utils.to_boolean(diff_file_params[:full])
+
+      options = {
+        expanded: true,
+        ignore_whitespace_change: ignore_whitespace_changes,
+        use_extra_viewer_as_main: false
+      }
+
+      diff_file = find_diff_file(options, old_path, new_path)
+      return render_404 unless diff_file
+
+      extra_file_data = {}
+      if diff_file.whitespace_only? && ignore_whitespace_changes
+        options[:ignore_whitespace_change] = false
+        diff_file = find_diff_file(options, old_path, new_path)
+        extra_file_data[:show_whitespace] = true
+      end
+
+      if full
+        return head :payload_too_large if blob_too_large?(diff_file)
+
+        diff_file.expand_to_full!
+      end
+
+      render diff_file_component(
+        diff_file: diff_file,
+        parallel_view: diff_view == :parallel,
+        plain_view: (Gitlab::Utils.to_boolean(diff_file_params[:plain_view]) if diff_file_params[:plain_view].present?),
+        extra_file_data: extra_file_data
+      ), layout: false
+    end
+
+    private
+
+    attr_reader :environment
+
+    def diff_file_component(base_args)
+      ::RapidDiffs::DiffFileComponent.new(**base_args, environment: environment)
+    end
+
+    def find_diff_file(extra_options, old_path, new_path)
+      with_custom_diff_options do |options|
+        options[:paths] = [old_path, new_path].compact
+        rapid_diffs_presenter.diff_files(**options.merge(extra_options)).first
+      end
+    end
+
+    # When overridden this method should return a path to view diffs in an email-friendly format.
+    def email_format_path
+      nil
+    end
+
+    # When overridden this method should return a path to view the complete diffs in the UI.
+    def complete_diff_path
+      nil
+    end
+
+    def blob_too_large?(diff_file)
+      blob = diff_file.blob
+      return false unless blob
+
+      # Prefer the diff file's own blob size limit (e.g. merge request diffs
+      # override it) so full file expansion uses the same limit as the diff
+      # collection, falling back to the highlight limit otherwise.
+      limit = diff_file.max_blob_size || Gitlab::Highlight.file_size_limit
+
+      blob.raw_size > limit
+    end
+
+    def diff_file_params
+      params.permit(:old_path, :new_path, :ignore_whitespace_changes, :view, :full, :plain_view)
+    end
+  end
+end

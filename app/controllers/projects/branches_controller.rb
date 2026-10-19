@@ -1,46 +1,309 @@
+# frozen_string_literal: true
+
 class Projects::BranchesController < Projects::ApplicationController
   include ActionView::Helpers::SanitizeHelper
+  include SortingHelper
+  include HandlesGitalyErrors
+
   # Authorize
-  before_action :require_non_empty_project
-  before_action :authorize_download_code!
-  before_action :authorize_push_code!, only: [:create, :destroy]
+  before_action :require_non_empty_project, except: :create
+  before_action :authorize_read_code!
+  before_action :authorize_push_code!, only: [:new, :create, :destroy, :destroy_all_merged]
+
+  # Support legacy URLs
+  before_action :redirect_for_legacy_index_sort_or_search, only: [:index]
+  before_action :limit_diverging_commit_counts!, only: [:diverging_commit_counts]
+
+  feature_category :source_code_management
+  urgency :low, [:index, :diverging_commit_counts, :create, :destroy]
 
   def index
-    @sort = params[:sort] || 'name'
-    @branches = @repository.branches_sorted_by(@sort)
-    @branches = Kaminari.paginate_array(@branches).page(params[:page]).per(PER_PAGE)
-  end
+    respond_to do |format|
+      format.html do
+        @mode = fetch_mode
+        next render_404 unless @mode
 
-  def recent
-    @branches = @repository.recent_branches
-  end
+        @sort = sort_param || default_sort
+        @overview_max_branches = 5
 
-  def create
-    branch_name = sanitize(strip_tags(params[:branch_name]))
-    ref = sanitize(strip_tags(params[:ref]))
-    result = CreateBranchService.new(project, current_user).
-        execute(branch_name, ref)
+        # Fetch branches for the specified mode
+        fetch_branches_by_mode
+        fetch_merge_requests_for_branches
 
-    if result[:status] == :success
-      @branch = result[:branch]
-      redirect_to namespace_project_tree_path(@project.namespace, @project,
-                                              @branch.name)
-    else
-      @error = result[:message]
-      render action: 'new'
+        @branches.each do |branch|
+          Gitlab::Git::RefPreloader.collect_ref(@project.id, Gitlab::Git::BRANCH_REF_PREFIX + branch.name)
+        end
+
+        @merged_branch_names = repository.merged_branch_names(@branches.map(&:name), include_identical: true)
+        @branch_pipeline_statuses =
+          Ci::CommitStatusesFinder.new(@project, repository, current_user, @branches, ref_type: :heads).execute
+
+        # https://gitlab.com/gitlab-org/gitlab/-/issues/22851
+        Gitlab::GitalyClient.allow_n_plus_1_calls do
+          render
+        end
+      end
+      format.json do
+        branches = BranchesFinder.new(@repository, branches_params).execute
+        branches = Kaminari.paginate_array(branches).page(branches_params[:page])
+        render json: branches.map(&:name)
+      end
     end
   end
 
-  def destroy
-    DeleteBranchService.new(project, current_user).execute(params[:id])
-    @branch_name = params[:id]
+  def diverging_commit_counts
+    respond_to do |format|
+      format.json do
+        next render json: {} unless repository.head_commit
+
+        service = ::Branches::DivergingCommitCountsService.new(repository)
+        ref_names = permitted_params[:names].presence
+
+        branches = Gitlab::Git::Finders::RefsFinder.new(
+          repository,
+          ref_type: :branches,
+          ref_names: ref_names
+        ).execute
+
+        Gitlab::GitalyClient.allow_n_plus_1_calls do
+          render json: branches.to_h { |branch| [branch.name, service.call(branch)] }.compact
+        end
+      end
+    end
+  end
+
+  # rubocop: disable CodeReuse/ActiveRecord
+  def create
+    branch_name = sanitize_ref_name(permitted_params[:branch_name])
+
+    redirect_to_autodeploy = project.empty_repo? && project.deployment_platform.present?
+
+    result = ::Branches::CreateService.new(project, current_user)
+        .execute(branch_name, ref)
+
+    success = (result[:status] == :success)
+
+    if permitted_params[:issue_iid] && success
+      target_project = confidential_issue_project || @project
+      issue = IssuesFinder.new(current_user, project_id: target_project.id)
+                .find_by(iid: permitted_params[:issue_iid])
+
+      if issue
+        SystemNoteService.new_issue_branch(issue, target_project, current_user, branch_name, branch_project: @project)
+      end
+    end
 
     respond_to do |format|
       format.html do
-        redirect_to namespace_project_branches_path(@project.namespace,
-                                                    @project)
+        if success
+          if redirect_to_autodeploy
+            redirect_to url_to_autodeploy_setup(project, branch_name),
+              notice: view_context.autodeploy_flash_notice(branch_name)
+          else
+            redirect_to project_tree_path(@project, branch_name)
+          end
+        else
+          @error = result[:message]
+          render action: 'new'
+        end
       end
-      format.js
+
+      format.json do
+        if success
+          render json: { name: branch_name, url: project_tree_url(@project, branch_name) }
+        else
+          render json: result[:message], status: :unprocessable_entity
+        end
+      end
     end
+  end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def destroy
+    result = ::Branches::DeleteService.new(project, current_user).execute(permitted_params[:id])
+
+    respond_to do |format|
+      format.html do
+        flash_type = result.error? ? :alert : :notice
+        flash[flash_type] = result.message
+
+        redirect_back_or_default(default: project_branches_path(@project), options: { status: :see_other })
+      end
+
+      format.js { head result.http_status }
+      format.json { render json: { message: result.message }, status: result.http_status }
+    end
+  end
+
+  def destroy_all_merged
+    ::Branches::DeleteMergedService.new(@project, current_user).async_execute
+
+    redirect_to project_branches_path(@project),
+      notice: _('Merged branches are being deleted. This can take some time depending on the number of branches. ' \
+        'Please refresh the page to see changes.')
+  end
+
+  private
+
+  def permitted_params
+    params.permit(:branch_name, :confidential_issue_project_id, :id, :issue_iid, :ref, names: [])
+  end
+
+  def sort_param
+    sort = branches_params[:sort].presence
+
+    unless sort.in?(supported_sort_options)
+      flash.now[:alert] = _("Unsupported sort value.")
+      sort = nil
+    end
+
+    sort
+  end
+
+  def default_sort
+    'stale' == @mode ? SORT_UPDATED_OLDEST : SORT_UPDATED_RECENT
+  end
+
+  def supported_sort_options
+    [nil, SORT_NAME, SORT_UPDATED_OLDEST, SORT_UPDATED_RECENT]
+  end
+
+  # It can be expensive to calculate the diverging counts for each
+  # branch. Normally the frontend should be specifying a set of branch
+  # names, but prior to
+  # https://gitlab.com/gitlab-org/gitlab-ce/merge_requests/32496, the
+  # frontend could omit this set. To prevent excessive I/O, we require
+  # that a list of names be specified.
+  def limit_diverging_commit_counts!
+    limit = Kaminari.config.default_per_page
+
+    # If we don't have many branches in the repository, then go ahead.
+    return if project.repository.branch_count <= limit
+    return if permitted_params[:names].present? && Array(permitted_params[:names]).length <= limit
+
+    render json: { error: "Specify at least one and at most #{limit} branch names" }, status: :unprocessable_entity
+  end
+
+  def ref
+    if permitted_params[:ref]
+      sanitize_ref_name(permitted_params[:ref])
+    else
+      @project.default_branch_or_main
+    end
+  end
+
+  def sanitize_ref_name(value)
+    safe_unescape(strip_tags(sanitize(value.to_s)))
+  end
+
+  # Safely unescape URI-encoded branch names.
+  # Handles branch names with slashes (e.g., feature%2Flogin -> feature/login)
+  # while preserving literal percent characters (e.g., test%ab stays test%ab).
+  # If unescaping produces invalid UTF-8, the percent was meant to be literal.
+  # Returns a plain String (not SafeBuffer) for Gitaly compatibility.
+  def safe_unescape(name)
+    unescaped = Addressable::URI.unescape(name)
+    unescaped.valid_encoding? ? unescaped : name.to_str
+  end
+
+  def url_to_autodeploy_setup(project, branch_name)
+    project_new_blob_path(
+      project,
+      branch_name,
+      file_name: '.gitlab-ci.yml',
+      commit_message: 'Set up auto deploy',
+      target_branch: branch_name,
+      context: 'autodeploy'
+    )
+  end
+
+  def redirect_for_legacy_index_sort_or_search
+    # Normalize a legacy URL with redirect
+    if request.format != :json && !branches_params[:state].presence && [:sort, :search, :page].any? do |key|
+      branches_params[key].presence
+    end
+      redirect_to project_branches_filtered_path(@project, state: 'all'),
+        notice: _('Update your bookmarked URLs as filtered/sorted branches URL has been changed.')
+    end
+  end
+
+  def fetch_branches_by_mode
+    return fetch_branches_for_overview if @mode == 'overview'
+
+    @branches, @prev_path, @next_path =
+      Projects::BranchesByModeService.new(@project, branches_params.merge(sort: @sort, mode: @mode)).execute
+  end
+
+  def fetch_merge_requests_for_branches
+    @related_merge_requests = @project
+                                .source_of_merge_requests
+                                .including_target_project
+                                .by_target_branch(@project.default_branch)
+                                .by_sorted_source_branches(@branches.map(&:name))
+                                .group_by(&:source_branch)
+  end
+
+  def fetch_branches_for_overview
+    # Here we get one more branch to indicate if there are more data we're not showing
+    limit = @overview_max_branches + 1
+
+    @active_branches =
+      BranchesFinder.new(@repository, { per_page: limit, sort: SORT_UPDATED_RECENT })
+        .execute(gitaly_pagination: true).select(&:active?)
+    @stale_branches =
+      BranchesFinder.new(@repository, { per_page: limit, sort: SORT_UPDATED_OLDEST })
+        .execute(gitaly_pagination: true).select(&:stale?)
+
+    @branches = @active_branches + @stale_branches
+  end
+
+  def fetch_mode
+    state = branches_params[:state].presence
+
+    return 'overview' unless state
+
+    state.presence_in(%w[active stale all overview])
+  end
+
+  def confidential_issue_project
+    return if permitted_params[:confidential_issue_project_id].blank?
+
+    confidential_issue_project = Project.find(permitted_params[:confidential_issue_project_id])
+
+    return unless can?(current_user, :update_issue, confidential_issue_project)
+
+    confidential_issue_project
+  end
+
+  def branches_params
+    permitted = params.permit(:page, :state, :sort, :search, :page_token, :offset).to_h
+    search_from_raw = search_param_from_raw_query_string
+    permitted[:search] = search_from_raw if search_from_raw
+
+    permitted
+  end
+
+  # Parse search from raw query string so '+' is not decoded as space (branch names can contain '+')
+  # See https://gitlab.com/gitlab-org/gitlab/-/issues/589047
+  def search_param_from_raw_query_string
+    return if request.query_string.blank?
+
+    part = request.query_string.split('&').find do |p|
+      key, value = p.split('=', 2)
+      key && value && !key.empty? && !value.empty? && CGI.unescape(key) == 'search'
+    end
+    return unless part
+
+    _, value = part.split('=', 2)
+    unescape_value_preserving_plus(value).presence
+  end
+
+  # CGI.unescape decodes '+' as space; branch names can contain '+'. Decode %XX only and preserve literal '+'.
+  # Use a unique placeholder (not null char) so URLs containing actual null characters are handled correctly.
+  def unescape_value_preserving_plus(value)
+    placeholder = '__GITLAB_PLUS_PLACEHOLDER__'
+    value = value.gsub('+', placeholder)
+    value = CGI.unescape(value)
+    value.gsub(placeholder, '+')
   end
 end

@@ -1,0 +1,15 @@
+---
+table_name: project_ci_cd_settings
+classes:
+- ProjectCiCdSetting
+feature_categories:
+- continuous_integration
+- continuous_delivery
+- fleet_visibility
+description: Project-scoped settings related to the CI/CD domain
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/392c411bdc16386ef42c86afaf8c4d8e4cddb955
+milestone: '10.8'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

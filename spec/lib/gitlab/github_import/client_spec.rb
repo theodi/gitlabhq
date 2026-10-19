@@ -1,16 +1,1130 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe Gitlab::GithubImport::Client do
-  let(:token) { '123456' }
-  let(:client) { Gitlab::GithubImport::Client.new(token) }
+RSpec.describe Gitlab::GithubImport::Client, feature_category: :importers do
+  subject(:client) { described_class.new('foo', parallel: parallel) }
 
-  before do
-    Gitlab.config.omniauth.providers << OpenStruct.new(app_id: "asd123", app_secret: "asd123", name: "github")
+  let(:parallel) { true }
+
+  describe '#parallel?' do
+    context 'when the client is running in parallel mode' do
+      it { expect(client).to be_parallel }
+    end
+
+    context 'when the client is running in sequential mode' do
+      let(:parallel) { false }
+
+      it { expect(client).not_to be_parallel }
+    end
   end
 
-  it 'all OAuth2 client options are symbols' do
-    client.client.options.keys.each do |key|
-      expect(key).to be_kind_of(Symbol)
+  describe '#user' do
+    let(:status_code) { 200 }
+    let(:body) { { id: 1 } }
+    let(:headers) { { 'Content-Type' => 'application/json' } }
+
+    before do
+      stub_request(:get, 'https://api.github.com/users/foo')
+        .to_return(status: status_code, body: body.to_json, headers: headers)
+    end
+
+    subject(:user) { client.user('foo') }
+
+    it 'returns the details for the given username' do
+      expect(client).to receive(:with_rate_limit).and_yield
+      expect(user).to eq({ id: 1 })
+    end
+
+    context 'when a not modified response is returned' do
+      let(:status_code) { 304 }
+
+      it 'returns nil' do
+        expect(client).to receive(:with_rate_limit).and_yield
+        expect(user).to be_nil
+      end
+    end
+  end
+
+  describe '#pull_request_reviews' do
+    it 'returns the pull request reviews' do
+      expect(client)
+        .to receive(:each_object)
+        .with(:pull_request_reviews, 'foo/bar', 999)
+
+      client.pull_request_reviews('foo/bar', 999)
+    end
+  end
+
+  describe '#pull_request_review_requests' do
+    it 'returns the pull request review requests' do
+      expect(client.octokit).to receive(:pull_request_review_requests).with('foo/bar', 999)
+      expect(client).to receive(:with_rate_limit).and_yield
+
+      client.pull_request_review_requests('foo/bar', 999)
+    end
+  end
+
+  describe '#repos' do
+    it 'returns the user\'s repositories as a hash' do
+      stub_request(:get, 'https://api.github.com/rate_limit')
+        .to_return(status: 200, headers: { 'X-RateLimit-Limit' => 5000, 'X-RateLimit-Remaining' => 5000 })
+
+      stub_request(:get, 'https://api.github.com/user/repos?page=1&page_length=10&per_page=100')
+        .to_return(status: 200, body: [{ id: 1 }, { id: 2 }].to_json, headers: { 'Content-Type' => 'application/json' })
+
+      repos = client.repos({ page: 1, page_length: 10 })
+
+      expect(repos).to match_array([{ id: 1 }, { id: 2 }])
+    end
+  end
+
+  describe '#repository' do
+    it 'returns the details of a repository' do
+      expect(client.octokit).to receive(:repo).with('foo/bar')
+      expect(client).to receive(:with_rate_limit).and_yield
+
+      client.repository('foo/bar')
+    end
+
+    it 'returns repository data as a hash' do
+      stub_request(:get, 'https://api.github.com/rate_limit')
+        .to_return(status: 200, headers: { 'X-RateLimit-Limit' => 5000, 'X-RateLimit-Remaining' => 5000 })
+
+      stub_request(:get, 'https://api.github.com/repos/foo/bar')
+        .to_return(status: 200, body: { id: 1 }.to_json, headers: { 'Content-Type' => 'application/json' })
+
+      repository = client.repository('foo/bar')
+
+      expect(repository).to eq({ id: 1 })
+    end
+  end
+
+  describe '#pull_request' do
+    it 'returns the details of a pull_request' do
+      expect(client.octokit).to receive(:pull_request).with('foo/bar', 999)
+      expect(client).to receive(:with_rate_limit).and_yield
+
+      client.pull_request('foo/bar', 999)
+    end
+  end
+
+  describe '#create_hook' do
+    let(:config) { { url: 'https://gitlab.example.com/hook', content_type: 'json', secret: 'secret' } }
+    let(:options) { { events: %w[push pull_request], active: true } }
+
+    it 'creates a web hook on the repository' do
+      expect(client.octokit).to receive(:create_hook).with(123, 'web', config, options)
+      expect(client).to receive(:with_rate_limit).and_yield
+
+      client.create_hook(123, config, options)
+    end
+
+    it 'returns the hook data as a hash' do
+      stub_request(:get, 'https://api.github.com/rate_limit')
+        .to_return(status: 200, headers: { 'X-RateLimit-Limit' => 5000, 'X-RateLimit-Remaining' => 5000 })
+
+      stub_request(:post, 'https://api.github.com/repositories/123/hooks')
+        .to_return(status: 201, body: { id: 42 }.to_json, headers: { 'Content-Type' => 'application/json' })
+
+      expect(client.create_hook(123, config, options)).to eq({ id: 42 })
+    end
+  end
+
+  describe '#delete_hook' do
+    it 'removes the hook from the repository' do
+      expect(client.octokit).to receive(:remove_hook).with(123, 42)
+      expect(client).to receive(:with_rate_limit).and_yield
+
+      client.delete_hook(123, 42)
+    end
+
+    it 'sends a DELETE request for the hook' do
+      stub_request(:get, 'https://api.github.com/rate_limit')
+        .to_return(status: 200, headers: { 'X-RateLimit-Limit' => 5000, 'X-RateLimit-Remaining' => 5000 })
+
+      delete_request = stub_request(:delete, 'https://api.github.com/repositories/123/hooks/42')
+        .to_return(status: 204)
+
+      expect(client.delete_hook(123, 42)).to be(true)
+      expect(delete_request).to have_been_requested
+    end
+  end
+
+  describe '#labels' do
+    it 'returns the labels' do
+      expect(client)
+        .to receive(:each_object)
+        .with(:labels, 'foo/bar')
+
+      client.labels('foo/bar')
+    end
+  end
+
+  describe '#milestones' do
+    it 'returns the milestones' do
+      expect(client)
+        .to receive(:each_object)
+        .with(:milestones, 'foo/bar')
+
+      client.milestones('foo/bar')
+    end
+  end
+
+  describe '#releases' do
+    it 'returns the releases' do
+      expect(client)
+        .to receive(:each_object)
+        .with(:releases, 'foo/bar')
+
+      client.releases('foo/bar')
+    end
+  end
+
+  describe '#branches' do
+    it 'returns the branches' do
+      expect(client)
+        .to receive(:each_object)
+          .with(:branches, 'foo/bar')
+
+      client.branches('foo/bar')
+    end
+  end
+
+  describe '#collaborators' do
+    it 'returns the collaborators' do
+      expect(client)
+        .to receive(:each_object)
+          .with(:collaborators, 'foo/bar')
+
+      client.collaborators('foo/bar')
+    end
+  end
+
+  describe '#branch_protection' do
+    it 'returns the protection details for the given branch' do
+      expect(client.octokit)
+        .to receive(:branch_protection).with('org/repo', 'bar')
+      expect(client).to receive(:with_rate_limit).and_yield
+
+      branch_protection = client.branch_protection('org/repo', 'bar')
+
+      expect(branch_protection).to be_a(Hash)
+    end
+  end
+
+  describe '#each_object' do
+    it 'converts each object into a hash' do
+      stub_request(:get, 'https://api.github.com/rate_limit')
+        .to_return(status: 200, headers: { 'X-RateLimit-Limit' => 5000, 'X-RateLimit-Remaining' => 5000 })
+
+      stub_request(:get, 'https://api.github.com/repos/foo/bar/releases?per_page=100')
+        .to_return(status: 200, body: [{ id: 1 }].to_json, headers: { 'Content-Type' => 'application/json' })
+
+      client.each_object(:releases, 'foo/bar') do |release|
+        expect(release).to eq({ id: 1 })
+      end
+    end
+  end
+
+  describe '#each_page' do
+    let(:resume_url) { nil }
+
+    before do
+      allow(client)
+        .to receive(:with_rate_limit)
+        .and_yield
+
+      stub_request(:get, 'https://api.github.com/repos/foo/bar/issues?per_page=100')
+        .to_return(
+          status: 200,
+          body: [{ title: 'Issue 1' }].to_json,
+          headers: {
+            'Content-Type' => 'application/json',
+            link: '<https://api.github.com/repositories/1/issues?page=2&per_page=100>; rel="next"'
+          }
+        )
+
+      stub_request(:get, 'https://api.github.com/repositories/1/issues?page=2&per_page=100')
+        .to_return(
+          status: 200,
+          body: [{ title: 'Issue 2' }].to_json,
+          headers: {
+            'Content-Type' => 'application/json',
+            link: '<https://api.github.com/repositories/1/issues?page=3&per_page=100>; rel="next", ' \
+              '<https://api.github.com/repositories/1/issues?page=2&per_page=100>; rel="prev"'
+          }
+        )
+
+      stub_request(:get, 'https://api.github.com/repositories/1/issues?page=3&per_page=100')
+        .to_return(
+          status: 200,
+          body: [{ title: 'Issue 3' }].to_json,
+          headers: {
+            'Content-Type' => 'application/json',
+            link: '<https://api.github.com/repositories/1/issues?page=2&per_page=100>; rel="prev"'
+          }
+        )
+    end
+
+    context 'without a block' do
+      it 'returns an Enumerator' do
+        expect(client.each_page(:issues, resume_url, 'foo/bar')).to be_an_instance_of(Enumerator)
+      end
+
+      it 'the returned Enumerator returns Page objects' do
+        enum = client.each_page(:issues, resume_url, 'foo/bar')
+
+        page1 = enum.next
+        page2 = enum.next
+        page3 = enum.next
+
+        expect(page1).to be_an_instance_of(described_class::Page)
+        expect(page2).to be_an_instance_of(described_class::Page)
+        expect(page3).to be_an_instance_of(described_class::Page)
+
+        expect(page1.objects.map(&:to_h)).to eq([{ title: 'Issue 1' }])
+        expect(page1.url).to be_nil
+
+        expect(page2.objects.map(&:to_h)).to eq([{ title: 'Issue 2' }])
+        expect(page2.url).to eq('https://api.github.com/repositories/1/issues?page=2&per_page=100')
+
+        expect(page3.objects.map(&:to_h)).to eq([{ title: 'Issue 3' }])
+        expect(page3.url).to eq('https://api.github.com/repositories/1/issues?page=3&per_page=100')
+      end
+    end
+
+    context 'with a block' do
+      it 'yields every retrieved page to the supplied block' do
+        pages = []
+
+        client.each_page(:issues, resume_url, 'foo/bar') { |page| pages << page }
+
+        expect(pages.size).to eq(3)
+
+        expect(pages[0]).to be_an_instance_of(described_class::Page)
+        expect(pages[1]).to be_an_instance_of(described_class::Page)
+        expect(pages[2]).to be_an_instance_of(described_class::Page)
+
+        expect(pages[0].objects.map(&:to_h)).to eq([{ title: 'Issue 1' }])
+        expect(pages[0].url).to be_nil
+
+        expect(pages[1].objects.map(&:to_h)).to eq([{ title: 'Issue 2' }])
+        expect(pages[1].url).to eq('https://api.github.com/repositories/1/issues?page=2&per_page=100')
+
+        expect(pages[2].objects.map(&:to_h)).to eq([{ title: 'Issue 3' }])
+        expect(pages[2].url).to eq('https://api.github.com/repositories/1/issues?page=3&per_page=100')
+      end
+    end
+
+    it 'exposes the next page URL on every page, nil on the last one' do
+      pages = []
+
+      client.each_page(:issues, resume_url, 'foo/bar') { |page| pages << page }
+
+      expect(pages.map(&:next_url)).to eq([
+        'https://api.github.com/repositories/1/issues?page=2&per_page=100',
+        'https://api.github.com/repositories/1/issues?page=3&per_page=100',
+        nil
+      ])
+    end
+
+    context 'when a resume URL is passed' do
+      let(:resume_url) { 'https://api.github.com/repositories/1/issues?page=2&per_page=100' }
+
+      it 'resumes the pagination from the provided URL' do
+        pages = []
+
+        client.each_page(:issues, resume_url, 'foo/bar') { |page| pages << page }
+
+        expect(pages.size).to eq(2)
+
+        expect(pages[0]).to be_an_instance_of(described_class::Page)
+        expect(pages[1]).to be_an_instance_of(described_class::Page)
+
+        expect(pages[0].objects.map(&:to_h)).to eq([{ title: 'Issue 2' }])
+        expect(pages[0].url).to eq('https://api.github.com/repositories/1/issues?page=2&per_page=100')
+
+        expect(pages[1].objects.map(&:to_h)).to eq([{ title: 'Issue 3' }])
+        expect(pages[1].url).to eq('https://api.github.com/repositories/1/issues?page=3&per_page=100')
+      end
+    end
+
+    context 'when resume URL is an empty string' do
+      let(:resume_url) { '' }
+
+      it 'does not resume the pagination' do
+        pages = []
+
+        client.each_page(:issues, resume_url, 'foo/bar') { |page| pages << page }
+
+        expect(pages.size).to eq(3)
+      end
+    end
+
+    context 'when the next URL is malformed' do
+      it 'yields the page without a next_url and raises InvalidURLError when followed' do
+        stub_request(:get, 'https://api.github.com/repos/foo/bar/issues?per_page=100')
+          .to_return(
+            status: 200,
+            body: [{ title: 'Issue 1' }].to_json,
+            headers: { 'Content-Type' => 'application/json', link: '<https://api.github.com/a b>; rel="next"' }
+          )
+
+        enum = client.each_page(:issues, nil, 'foo/bar')
+
+        expect(enum.next.next_url).to be_nil
+        expect { enum.next }.to raise_error(Gitlab::GithubImport::Exceptions::InvalidURLError)
+      end
+    end
+
+    context 'when next URL host does not match API URL host' do
+      it 'raises InvalidURLError' do
+        stub_request(:get, 'https://api.github.com/repos/foo/bar/issues?per_page=100')
+        .to_return(
+          status: 200,
+          body: [{ title: 'Issue 1' }].to_json,
+          headers: {
+            'Content-Type' => 'application/json',
+            link: '<https://another.host.com>; rel="next"'
+          }
+        )
+
+        enum = client.each_page(:issues, nil, 'foo/bar')
+
+        expect(enum.next.next_url).to be_nil
+
+        expect { enum.next }.to raise_error(Gitlab::GithubImport::Exceptions::InvalidURLError, 'Invalid pagination URL')
+      end
+    end
+
+    context 'when the token expires after the first page' do
+      subject(:client) { described_class.new('foo', token_refresher: -> { 'refreshed-token' }) }
+
+      before do
+        allow(client).to receive(:with_rate_limit).and_call_original
+        allow(client).to receive(:requests_remaining?).and_return(true)
+
+        stub_request(:get, 'https://api.github.com/repositories/1/issues?page=2&per_page=100')
+          .with(headers: { 'Authorization' => 'token foo' })
+          .to_return(status: 401, body: { message: 'Bad credentials' }.to_json,
+            headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'retries the page with the refreshed token' do
+        pages = []
+
+        client.each_page(:issues, nil, 'foo/bar') { |page| pages << page }
+
+        expect(pages.flat_map { |page| page.objects.map(&:to_h) })
+          .to eq([{ title: 'Issue 1' }, { title: 'Issue 2' }, { title: 'Issue 3' }])
+        expect(
+          a_request(:get, 'https://api.github.com/repositories/1/issues?page=2&per_page=100')
+            .with(headers: { 'Authorization' => 'token refreshed-token' })
+        ).to have_been_made.once
+      end
+    end
+  end
+
+  describe '#with_rate_limit' do
+    it 'yields the supplied block when enough requests remain' do
+      expect(client).to receive(:requests_remaining?).and_return(true)
+
+      expect { |b| client.with_rate_limit(&b) }.to yield_control
+    end
+
+    it 'waits before yielding if not enough requests remain' do
+      expect(client).to receive(:requests_remaining?).and_return(false)
+      expect(client).to receive(:raise_or_wait_for_rate_limit)
+
+      expect { |b| client.with_rate_limit(&b) }.to yield_control
+    end
+
+    it 'waits and retries the operation if all requests were consumed in the supplied block' do
+      retries = 0
+
+      expect(client).to receive(:requests_remaining?).and_return(true)
+      expect(client).to receive(:raise_or_wait_for_rate_limit)
+
+      client.with_rate_limit do
+        if retries == 0
+          retries += 1
+          raise(Octokit::TooManyRequests.new(body: 'primary'))
+        end
+      end
+
+      expect(retries).to eq(1)
+    end
+
+    it 'increments the request count counter' do
+      expect(client.request_count_counter)
+        .to receive(:increment)
+        .and_call_original
+
+      expect(client).to receive(:requests_remaining?).and_return(true)
+
+      client.with_rate_limit { nil }
+    end
+
+    it 'ignores rate limiting when disabled' do
+      expect(client)
+        .to receive(:rate_limiting_enabled?)
+        .and_return(false)
+
+      expect(client)
+        .not_to receive(:requests_remaining?)
+
+      expect(client.with_rate_limit { 10 }).to eq(10)
+    end
+
+    context 'when threshold is hit' do
+      it 'raises a RateLimitError with the appropriate message' do
+        expect(client).to receive(:requests_remaining?).and_return(false)
+
+        expect { client.with_rate_limit }
+          .to raise_error(Gitlab::GithubImport::RateLimitError, 'Internal threshold reached')
+      end
+    end
+
+    context 'when primary rate limit hit' do
+      let(:limited_block) { -> { raise(Octokit::TooManyRequests.new(body: 'primary')) } }
+
+      it 're-raises a RateLimitError with the appropriate message' do
+        expect(client).to receive(:requests_remaining?).and_return(true)
+
+        expect { client.with_rate_limit(&limited_block) }
+          .to raise_error(Gitlab::GithubImport::RateLimitError, 'primary')
+      end
+    end
+
+    context 'when secondary rate limit hit' do
+      let(:limited_block) { -> { raise(Octokit::TooManyRequests.new(body: 'secondary')) } }
+
+      it 're-raises a RateLimitError with the appropriate message' do
+        expect(client).to receive(:requests_remaining?).and_return(true)
+
+        expect { client.with_rate_limit(&limited_block) }
+          .to raise_error(Gitlab::GithubImport::RateLimitError, 'secondary')
+      end
+    end
+
+    context 'when Faraday error received from octokit', :aggregate_failures do
+      let(:error_class) { described_class::CLIENT_CONNECTION_ERROR }
+      let(:info_params) { { 'error.class': error_class } }
+      let(:block_to_rate_limit) { -> { client.pull_request('foo/bar', 999) } }
+
+      context 'when rate_limiting_enabled is true' do
+        it 'retries on error and succeeds' do
+          allow_retry
+
+          expect(client).to receive(:requests_remaining?).twice.and_return(true)
+          expect(Gitlab::GithubImport::Logger).to receive(:info).with(hash_including(info_params)).once
+
+          expect(client.with_rate_limit(&block_to_rate_limit)).to eq({})
+        end
+
+        it 'retries and does not succeed' do
+          allow(client).to receive(:requests_remaining?).and_return(true)
+          allow(client.octokit).to receive(:pull_request).and_raise(error_class, 'execution expired')
+
+          expect { client.with_rate_limit(&block_to_rate_limit) }.to raise_error(error_class, 'execution expired')
+        end
+      end
+
+      context 'when rate_limiting_enabled is false' do
+        before do
+          allow(client).to receive(:rate_limiting_enabled?).and_return(false)
+        end
+
+        it 'retries on error and succeeds' do
+          allow_retry
+
+          expect(Gitlab::GithubImport::Logger).to receive(:info).with(hash_including(info_params)).once
+
+          expect(client.with_rate_limit(&block_to_rate_limit)).to eq({})
+        end
+
+        it 'retries and does not succeed' do
+          allow(client.octokit).to receive(:pull_request).and_raise(error_class, 'execution expired')
+
+          expect { client.with_rate_limit(&block_to_rate_limit) }.to raise_error(error_class, 'execution expired')
+        end
+      end
+    end
+
+    context 'without a token refresher' do
+      it 'propagates an unauthorized response unchanged' do
+        allow(client).to receive(:requests_remaining?).and_return(true)
+
+        expect { client.with_rate_limit { raise Octokit::Unauthorized } }
+          .to raise_error(Octokit::Unauthorized)
+      end
+    end
+
+    context 'with a token refresher' do
+      subject(:client) { described_class.new('foo', token_refresher: token_refresher) }
+
+      let(:token_refresher) { -> { 'refreshed-token' } }
+
+      before do
+        allow(client).to receive(:requests_remaining?).and_return(true)
+      end
+
+      it 'mints a fresh credential and retries once after an unauthorized response' do
+        attempts = 0
+
+        result = client.with_rate_limit do
+          attempts += 1
+          raise Octokit::Unauthorized if attempts == 1
+
+          'success'
+        end
+
+        expect(result).to eq('success')
+        expect(attempts).to eq(2)
+        expect(client.octokit.access_token).to eq('refreshed-token')
+      end
+
+      it 'does not retry a second unauthorized response from the same attempt' do
+        expect { client.with_rate_limit { raise Octokit::Unauthorized } }
+          .to raise_error(Octokit::Unauthorized)
+      end
+
+      it 'raises when the refresher returns no credential' do
+        client = described_class.new('foo', token_refresher: -> { nil })
+        allow(client).to receive(:requests_remaining?).and_return(true)
+
+        expect { client.with_rate_limit { raise Octokit::Unauthorized } }
+          .to raise_error(ArgumentError, 'GitHub installation token refresh returned no credential')
+      end
+    end
+  end
+
+  describe '#requests_remaining?' do
+    using RSpec::Parameterized::TableSyntax
+
+    where(:requests_limit, :remaining_requests, :result) do
+      5000 | (described_class::RATE_LIMIT_THRESHOLD_MAX + 1) | true
+      5000 | described_class::RATE_LIMIT_THRESHOLD_MAX | false
+      5000 | (described_class::RATE_LIMIT_THRESHOLD_MAX - 1) | false
+      969  | described_class::RATE_LIMIT_THRESHOLD_MAX | true
+      959  | (described_class::RATE_LIMIT_THRESHOLD_MAX - 1) | false
+      500  | 27   | true
+      500  | 26   | false
+      30   | 4    | true
+      30   | 3    | false
+      10   | 3    | true
+      10   | 2    | false
+      5    | 2    | true
+      5    | 1    | false
+      1    | 1    | true
+      1    | 0    | false
+    end
+
+    with_them do
+      before do
+        allow(client).to receive_messages(
+          requests_limit: requests_limit,
+          remaining_requests: remaining_requests
+        )
+      end
+
+      it { expect(client.requests_remaining?).to be(result) }
+    end
+  end
+
+  describe '#raise_or_wait_for_rate_limit' do
+    context 'when running in parallel mode' do
+      it 'raises RateLimitError' do
+        expect { client.raise_or_wait_for_rate_limit('primary') }
+          .to raise_error(Gitlab::GithubImport::RateLimitError)
+      end
+    end
+
+    context 'when running in sequential mode' do
+      let(:parallel) { false }
+
+      it 'sleeps' do
+        expect(client).to receive(:rate_limit_resets_in).and_return(1)
+        expect(client).to receive(:sleep).with(1)
+
+        client.raise_or_wait_for_rate_limit('primary')
+      end
+
+      it 'increments the rate limit counter' do
+        expect(client)
+          .to receive(:rate_limit_resets_in)
+          .and_return(1)
+
+        expect(client)
+          .to receive(:sleep)
+          .with(1)
+
+        expect(client.rate_limit_counter)
+          .to receive(:increment)
+          .and_call_original
+
+        client.raise_or_wait_for_rate_limit('primary')
+      end
+    end
+  end
+
+  describe '#remaining_requests' do
+    it 'returns the number of remaining requests' do
+      rate_limit = double(remaining: 1)
+
+      expect(client.octokit).to receive(:rate_limit).and_return(rate_limit)
+      expect(client.remaining_requests).to eq(1)
+    end
+  end
+
+  describe '#requests_limit' do
+    it 'returns requests limit' do
+      rate_limit = double(limit: 1)
+
+      expect(client.octokit).to receive(:rate_limit).and_return(rate_limit)
+      expect(client.requests_limit).to eq(1)
+    end
+  end
+
+  describe '#rate_limit_resets_in' do
+    it 'returns the number of seconds after which the rate limit is reset' do
+      rate_limit = double(resets_in: 1)
+
+      expect(client.octokit).to receive(:rate_limit).and_return(rate_limit)
+
+      expect(client.rate_limit_resets_in).to eq(6)
+    end
+  end
+
+  describe '#api_endpoint' do
+    context 'without a custom endpoint configured in Omniauth' do
+      it 'returns the default API endpoint' do
+        expect(client)
+          .to receive(:custom_api_endpoint)
+          .and_return(nil)
+
+        expect(client.api_endpoint).to eq('https://api.github.com')
+      end
+    end
+
+    context 'with a custom endpoint configured in Omniauth' do
+      it 'returns the custom endpoint' do
+        endpoint = 'https://github.kittens.com'
+
+        expect(client)
+          .to receive(:custom_api_endpoint)
+          .and_return(endpoint)
+
+        expect(client.api_endpoint).to eq(endpoint)
+      end
+    end
+
+    context 'with a custom host' do
+      subject(:client) { described_class.new('foo', host: host) }
+
+      let(:host) { 'http://github-enterprise.com' }
+
+      it 'adds /api/v3 to the URL' do
+        expect(client.api_endpoint).to eq('http://github-enterprise.com/api/v3')
+      end
+
+      context 'when the host ends with /api/v3' do
+        let(:host) { 'http://github-enterprise.com/api/v3' }
+
+        it 'does not add /api/v3 to the URL' do
+          expect(client.api_endpoint).to eq('http://github-enterprise.com/api/v3')
+        end
+      end
+
+      context 'when host is github.com' do
+        let(:host) { 'https://github.com' }
+
+        it 'does not add /api/v3 to the URL' do
+          expect(client.api_endpoint).to eq('https://github.com')
+        end
+      end
+
+      context 'when host includes an API version different from v3' do
+        let(:host) { 'http://github-enterprise.com/api/v4' }
+
+        it 'keeps the provided version' do
+          expect(client.api_endpoint).to eq('http://github-enterprise.com/api/v4')
+        end
+      end
+    end
+  end
+
+  describe '#web_endpoint' do
+    context 'without a custom endpoint configured in Omniauth' do
+      it 'returns the default web endpoint' do
+        expect(client)
+          .to receive(:custom_api_endpoint)
+          .and_return(nil)
+
+        expect(client.web_endpoint).to eq('https://github.com')
+      end
+    end
+
+    context 'with a custom endpoint configured in Omniauth' do
+      it 'returns the custom endpoint' do
+        endpoint = 'https://github.kittens.com'
+
+        expect(client)
+          .to receive(:custom_api_endpoint).twice
+          .and_return(endpoint)
+
+        expect(client.web_endpoint).to eq(endpoint)
+      end
+    end
+  end
+
+  describe '#custom_web_endpoint' do
+    context 'with custom API endpoint' do
+      it 'returns the web endpoint derived from API endpoint' do
+        endpoint = 'https://github.enterprise.com'
+
+        expect(client)
+          .to receive(:custom_api_endpoint).twice
+          .and_return('https://github.enterprise.com/api/v3')
+
+        expect(client.custom_web_endpoint).to eq(endpoint)
+      end
+    end
+
+    context 'without custom API endpoint' do
+      it 'returns nil' do
+        expect(client)
+          .to receive(:custom_api_endpoint)
+          .and_return(nil)
+
+        expect(client.custom_web_endpoint).to be_nil
+      end
+    end
+  end
+
+  describe '#custom_api_endpoint' do
+    context 'without a custom endpoint' do
+      it 'returns nil' do
+        expect(client)
+          .to receive(:github_omniauth_provider)
+          .and_return({})
+
+        expect(client.custom_api_endpoint).to be_nil
+      end
+    end
+
+    context 'with a custom endpoint' do
+      it 'returns the API endpoint' do
+        endpoint = 'https://github.kittens.com'
+
+        expect(client)
+          .to receive(:github_omniauth_provider)
+          .and_return({ 'args' => { 'client_options' => { 'site' => endpoint } } })
+
+        expect(client.custom_api_endpoint).to eq(endpoint)
+      end
+    end
+  end
+
+  describe '#default_api_endpoint' do
+    it 'returns the default API endpoint' do
+      client = described_class.new('foo')
+
+      expect(client.default_api_endpoint).to eq('https://api.github.com')
+    end
+  end
+
+  describe '#verify_ssl' do
+    context 'without a custom configuration' do
+      it 'returns true' do
+        expect(client)
+          .to receive(:github_omniauth_provider)
+          .and_return({})
+
+        expect(client.verify_ssl).to be(true)
+      end
+    end
+
+    context 'with a custom configuration' do
+      it 'returns the configured value' do
+        expect(client.verify_ssl).to be(false)
+      end
+    end
+  end
+
+  describe '#github_omniauth_provider' do
+    context 'without a configured provider' do
+      it 'returns an empty Hash' do
+        expect(Gitlab.config.omniauth)
+          .to receive(:providers)
+          .and_return([])
+
+        expect(client.github_omniauth_provider).to eq({})
+      end
+    end
+
+    context 'with a configured provider' do
+      it 'returns the provider details as a Hash' do
+        hash = client.github_omniauth_provider
+
+        expect(hash['name']).to eq('github')
+        expect(hash['url']).to eq('https://github.com/')
+      end
+    end
+  end
+
+  describe '#rate_limiting_enabled?' do
+    it 'returns true when using GitHub.com' do
+      expect(client.octokit).not_to receive(:rate_limit)
+
+      expect(client.rate_limiting_enabled?).to be(true)
+    end
+
+    context 'for GitHub enterprise installations' do
+      before do
+        allow(client)
+          .to receive(:api_endpoint)
+          .and_return('https://github.kittens.com/')
+      end
+
+      it 'returns true when the rate limit endpoint exists' do
+        stub_request(:get, 'https://api.github.com/rate_limit')
+          .to_return(status: 200, headers: { 'X-RateLimit-Limit' => 5000, 'X-RateLimit-Remaining' => 5000 })
+
+        expect(client.rate_limiting_enabled?).to be(true)
+      end
+
+      it 'returns false when the rate limit endpoint does not exist' do
+        stub_request(:get, 'https://api.github.com/rate_limit')
+          .to_return(status: 404)
+
+        expect(client.rate_limiting_enabled?).to be(false)
+      end
+
+      it 'memoizes the result and only checks the rate limit endpoint once' do
+        stub_request(:get, 'https://api.github.com/rate_limit')
+          .to_return(status: 404)
+
+        2.times { expect(client.rate_limiting_enabled?).to be(false) }
+
+        expect(a_request(:get, 'https://api.github.com/rate_limit')).to have_been_made.once
+      end
+
+      it 'retries on connection error and succeeds' do
+        allow_retry(:rate_limit)
+
+        expect(Gitlab::GithubImport::Logger)
+          .to receive(:info)
+          .with(hash_including('error.class': described_class::CLIENT_CONNECTION_ERROR))
+          .once
+
+        expect(client.rate_limiting_enabled?).to be(true)
+      end
+    end
+  end
+
+  describe 'search' do
+    let(:user) { { login: 'user' } }
+    let(:org1) { { login: 'org1' } }
+    let(:org2) { { login: 'org2' } }
+    let(:repo1) { { full_name: 'repo1' } }
+    let(:repo2) { { full_name: 'repo2' } }
+
+    before do
+      allow(client)
+        .to receive(:each_object)
+        .with(:repos, nil, { affiliation: 'collaborator' })
+        .and_return([repo1, repo2].to_enum)
+
+      allow(client)
+        .to receive(:each_object)
+        .with(:organizations)
+        .and_return([org1, org2].to_enum)
+
+      allow(client.octokit).to receive(:user).and_return(user)
+    end
+
+    describe '#search_repos_by_name_graphql' do
+      let(:expected_query) do
+        'test in:name is:public,private fork:true user:user repo:repo1 repo:repo2 org:org1 org:org2'
+      end
+
+      let(:expected_graphql_params) { "type: REPOSITORY, query: \"#{expected_query}\"" }
+      let(:expected_graphql) do
+        <<-TEXT
+          {
+              search(#{expected_graphql_params}) {
+                  nodes {
+                      __typename
+                      ... on Repository {
+                          id: databaseId
+                          name
+                          full_name: nameWithOwner
+                          owner { login }
+                      }
+                  }
+                  pageInfo {
+                      startCursor
+                      endCursor
+                      hasNextPage
+                      hasPreviousPage
+                  },
+                  repositoryCount
+              }
+          }
+        TEXT
+      end
+
+      it 'searches for repositories based on name' do
+        expect(client.octokit).to receive(:post).with(
+          '/graphql', { query: expected_graphql }.to_json
+        )
+
+        client.search_repos_by_name_graphql('test')
+      end
+
+      context 'when api_endpoint is not api.github.com' do
+        it 'uses the graphql api path for a self-hosted instance' do
+          expect(client)
+            .to receive(:api_endpoint)
+            .and_return('https://github.kittens.com/')
+
+          expect(client.octokit).to receive(:post).with(
+            '/api/graphql', { query: expected_graphql }.to_json
+          )
+
+          client.search_repos_by_name_graphql('test')
+        end
+      end
+
+      context 'when relation type option present' do
+        context 'when relation type is owned' do
+          let(:expected_query) { 'test in:name is:public,private fork:true user:user' }
+
+          it 'searches for repositories within the organization based on name' do
+            expect(client.octokit).to receive(:post).with(
+              '/graphql', { query: expected_graphql }.to_json
+            )
+
+            client.search_repos_by_name_graphql('test', relation_type: 'owned')
+          end
+        end
+
+        context 'when relation type is organization' do
+          let(:expected_query) { 'test in:name is:public,private fork:true org:test-login' }
+
+          it 'searches for repositories within the organization based on name' do
+            expect(client.octokit).to receive(:post).with(
+              '/graphql', { query: expected_graphql }.to_json
+            )
+
+            client.search_repos_by_name_graphql(
+              'test', relation_type: 'organization', organization_login: 'test-login'
+            )
+          end
+        end
+
+        context 'when relation type is collaborated' do
+          let(:expected_query) { 'test in:name is:public,private fork:true repo:repo1 repo:repo2' }
+
+          it 'searches for collaborated repositories based on name' do
+            expect(client.octokit).to receive(:post).with(
+              '/graphql', { query: expected_graphql }.to_json
+            )
+
+            client.search_repos_by_name_graphql('test', relation_type: 'collaborated')
+          end
+        end
+      end
+
+      context 'when pagination options present' do
+        context 'with "first" option' do
+          let(:expected_graphql_params) do
+            "type: REPOSITORY, query: \"#{expected_query}\", first: 25"
+          end
+
+          it 'searches for repositories via expected query' do
+            expect(client.octokit).to receive(:post).with(
+              '/graphql', { query: expected_graphql }.to_json
+            )
+
+            client.search_repos_by_name_graphql('test', { first: 25 })
+          end
+        end
+
+        context 'with "after" option' do
+          let(:expected_graphql_params) do
+            "type: REPOSITORY, query: \"#{expected_query}\", after: \"Y3Vyc29yOjE=\""
+          end
+
+          it 'searches for repositories via expected query' do
+            expect(client.octokit).to receive(:post).with(
+              '/graphql', { query: expected_graphql }.to_json
+            )
+
+            client.search_repos_by_name_graphql('test', { after: 'Y3Vyc29yOjE=' })
+          end
+        end
+      end
+
+      context 'when Faraday error received from octokit', :aggregate_failures do
+        let(:error_class) { described_class::CLIENT_CONNECTION_ERROR }
+        let(:info_params) { { 'error.class': error_class } }
+
+        it 'retries on error and succeeds' do
+          allow_retry(:post)
+
+          expect(Gitlab::GithubImport::Logger).to receive(:info).with(hash_including(info_params)).once
+
+          expect(client.search_repos_by_name_graphql('test')).to eq({})
+        end
+
+        it 'retries and does not succeed' do
+          allow(client.octokit)
+            .to receive(:post)
+            .with('/graphql', { query: expected_graphql }.to_json)
+            .and_raise(error_class, 'execution expired')
+
+          expect { client.search_repos_by_name_graphql('test') }.to raise_error(error_class, 'execution expired')
+        end
+      end
+    end
+
+    describe '#count_repos_by_relation_type_graphql' do
+      relation_types = {
+        'owned' => ' in:name is:public,private fork:true user:user',
+        'collaborated' => ' in:name is:public,private fork:true repo:repo1 repo:repo2',
+        'organization' => 'org:org1 org:org2'
+      }
+
+      relation_types.each do |relation_type, expected_query|
+        expected_graphql_params = "type: REPOSITORY, query: \"#{expected_query}\""
+        expected_graphql =
+          <<-TEXT
+          {
+            search(#{expected_graphql_params}) {
+              repositoryCount
+            }
+          }
+          TEXT
+
+        it 'returns count by relation_type' do
+          expect(client.octokit).to receive(:post).with(
+            '/graphql', { query: expected_graphql }.to_json
+          )
+
+          client.count_repos_by_relation_type_graphql(relation_type: relation_type)
+        end
+      end
+    end
+  end
+
+  def allow_retry(method = :pull_request)
+    call_count = 0
+    allow(client.octokit).to receive(method) do
+      call_count += 1
+      call_count > 1 ? {} : raise(described_class::CLIENT_CONNECTION_ERROR, 'execution expired')
     end
   end
 end

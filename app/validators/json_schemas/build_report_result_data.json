@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Build report result data",
+  "type": "object",
+  "properties": {
+    "coverage": {
+      "type": "number",
+      "format": "float"
+    },
+    "tests": {
+      "$ref": "./build_report_result_data_tests.json"
+    }
+  },
+  "additionalProperties": false
+}

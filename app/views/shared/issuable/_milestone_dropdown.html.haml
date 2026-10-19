@@ -1,0 +1,11 @@
+- name = local_assigns.fetch(:name, nil)
+- project = @target_project || @project
+- selected = local_assigns.fetch(:selected, nil)
+
+.js-milestone-dropdown-root{ data: { can_admin_milestone: can?(current_user, :admin_milestone, project),
+  full_path: project.full_path,
+  input_name: name,
+  milestone_id: selected.try(:id),
+  milestone_title: selected.try(:title),
+  project_milestones_path: project_milestones_path(project),
+  workspace_type: Namespaces::ProjectNamespace.sti_name.downcase } }

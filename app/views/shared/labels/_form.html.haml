@@ -1,0 +1,55 @@
+- add_page_specific_style 'page_bundles/labels'
+- show_lock_on_merge = local_assigns.fetch(:show_lock_on_merge, false)
+
+- if @label.persisted? && @label.archived?
+  = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false, alert_options: { class: 'gl-mb-5' }) do |c|
+    - c.with_body do
+      = _('This label is archived and not available for use. Unarchive to use it again.')
+    - c.with_actions do
+      = gitlab_ui_form_for @label, as: :label, url: url, html: { class: 'gl-inline-block' } do |unarchive_form|
+        = unarchive_form.hidden_field :archived, value: false
+        = unarchive_form.submit _('Unarchive label'), pajamas_button: true, size: :small
+
+= gitlab_ui_form_for @label, as: :label, url: url, html: { class: 'label-form js-quick-submit' } do |f|
+  = form_errors(@label)
+
+  .gl-form-group.gl-row
+    .gl-col-12
+      = f.label :title
+      = f.text_field :title, class: "gl-form-input form-control js-label-title", required: true, autofocus: true, data: { testid: 'label-title-field' }
+    = render_if_exists 'shared/labels/create_label_help_text'
+
+  .gl-form-group.gl-row
+    .gl-col-12
+      = f.label :description, _("Description (optional)")
+      = f.text_area :description, class: "gl-form-input form-control js-quick-submit", rows: 4, data: { testid: 'label-description-field' }
+  .gl-form-group.gl-row
+    .gl-col-12
+      = f.label :color, _("Background color")
+      .input-group
+        .input-group-prepend
+          %input.label-color-preview.gl-w-7.gl-h-full.gl-border-1.gl-border-solid.gl-border-gray-500.gl-border-r-0.gl-rounded-tr-none.gl-rounded-br-none{ type: "color", placeholder: _('Select color') }
+        = f.text_field :color, class: "gl-form-input form-control", data: { testid: 'label-color-field' }
+      .form-text.gl-text-subtle
+        = _('Select a color from the color picker or from the presets below.')
+      = render_suggested_colors
+  - if show_lock_on_merge
+    .gl-form-group.gl-row
+      .gl-col-12
+        = f.gitlab_ui_checkbox_component :lock_on_merge,
+          _('Lock label after a merge request is merged'),
+          help_text: label_lock_on_merge_help_text,
+          checkbox_options: { disabled: @label.lock_on_merge }
+  .gl-flex.gl-justify-between
+    %div
+      - if @label.persisted?
+        = f.submit _('Save changes'), class: 'js-save-button gl-mr-2', pajamas_button: true
+      - else
+        = f.submit _('Create label'), class: 'js-save-button gl-mr-2', data: { testid: 'label-create-button' }, pajamas_button: true
+      = render Pajamas::ButtonComponent.new(href: back_path) do
+        = _('Cancel')
+
+    - if @label.persisted?
+      - presented_label = @label.present
+      = render Pajamas::ButtonComponent.new(variant: :danger, category: :secondary, button_options: { class: 'js-delete-label-modal-button', data: { label_name: presented_label.name, subject_name: presented_label.subject_name, destroy_path: presented_label.destroy_path } }) do
+        = _('Delete')

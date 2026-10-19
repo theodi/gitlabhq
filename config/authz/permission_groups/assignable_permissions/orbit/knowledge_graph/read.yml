@@ -1,0 +1,10 @@
+---
+name: read_knowledge_graph
+description: Grants the ability to query and read knowledge graph data
+deprecated: true
+boundaries:
+  - user
+available_for:
+  - granular_access_token
+permissions:
+  - read_knowledge_graph

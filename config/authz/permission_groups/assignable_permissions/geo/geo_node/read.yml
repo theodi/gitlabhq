@@ -1,0 +1,11 @@
+---
+name: read_geo_node
+description: Grants the ability to read Geo nodes
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_geo_node
+assignable_when:
+  - condition: admin

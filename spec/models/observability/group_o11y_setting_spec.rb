@@ -1,0 +1,634 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Observability::GroupO11ySetting, feature_category: :observability do
+  let_it_be(:group) { create(:group) }
+
+  describe 'relations' do
+    it { is_expected.to belong_to(:namespace) }
+
+    it 'exposes `group` as a deprecated alias for `namespace`' do
+      setting = build(:observability_group_o11y_setting, group: group)
+
+      expect(setting.group).to eq(setting.namespace)
+      expect(setting.group).to eq(group)
+    end
+  end
+
+  describe 'validations' do
+    subject(:group_o11y_setting) { build(:observability_group_o11y_setting, group: group) }
+
+    it { is_expected.to validate_length_of(:o11y_service_url).is_at_most(255) }
+    it { is_expected.to validate_length_of(:o11y_service_password).is_at_most(510) }
+    it { is_expected.to validate_length_of(:o11y_service_post_message_encryption_key).is_at_most(510) }
+
+    context 'when email is invalid' do
+      it 'is invalid with malformed email' do
+        group_o11y_setting.o11y_service_user_email = 'invalid-email'
+        expect(group_o11y_setting).to be_invalid
+        expect(group_o11y_setting.errors[:o11y_service_user_email]).to include(I18n.t(:invalid,
+          scope: 'valid_email.validations.email'))
+      end
+
+      it 'is invalid with empty email' do
+        group_o11y_setting.o11y_service_user_email = ''
+        expect(group_o11y_setting).to be_invalid
+        expect(group_o11y_setting.errors[:o11y_service_user_email]).to include(I18n.t(:invalid,
+          scope: 'activerecord.errors.messages'))
+      end
+    end
+
+    context 'when url is invalid' do
+      [nil, ''].each do |invalid_url|
+        it "is invalid with #{invalid_url}" do
+          group_o11y_setting.o11y_service_url = invalid_url
+          expect(group_o11y_setting).to be_invalid
+          expect(group_o11y_setting.errors[:o11y_service_url]).to include("is invalid")
+        end
+      end
+
+      it 'is invalid with malformed url' do
+        group_o11y_setting.o11y_service_url = 'not-a-valid-url'
+        expect(group_o11y_setting).to be_invalid
+        expect(group_o11y_setting.errors[:o11y_service_url]).to include(
+          "is blocked: Only allowed schemes are http, https"
+        )
+      end
+
+      it 'is invalid with url exceeding maximum length' do
+        group_o11y_setting.o11y_service_url = "https://example.com/#{'a' * 256}"
+        expect(group_o11y_setting).to be_invalid
+        expect(group_o11y_setting.errors[:o11y_service_url]).to include('is too long (maximum is 255 characters)')
+      end
+
+      ssrf_urls = [
+        'https://webhook.site#.gitlab-o11y.com',
+        'https://attacker.com#.gitlab-o11y.com',
+        'https://user:pass@attacker.com'
+      ]
+
+      %i[o11y_service_url o11y_otel_url o11y_mcp_url].each do |attribute|
+        ssrf_urls.each do |ssrf_url|
+          it "is invalid when #{attribute} has fragment/userinfo url #{ssrf_url}" do
+            group_o11y_setting.write_attribute(attribute, ssrf_url)
+            expect(group_o11y_setting).to be_invalid
+            expect(group_o11y_setting.errors[attribute]).to include('is invalid')
+          end
+        end
+
+        it "is invalid when #{attribute} cannot be parsed" do
+          group_o11y_setting.write_attribute(attribute, 'https://example.com')
+          allow(Addressable::URI).to receive(:parse).and_call_original
+          allow(Addressable::URI).to receive(:parse).with('https://example.com')
+                                       .and_raise(Addressable::URI::InvalidURIError)
+
+          expect(group_o11y_setting).to be_invalid
+          expect(group_o11y_setting.errors[attribute]).to include('is invalid')
+        end
+      end
+    end
+
+    context 'when url is valid' do
+      [
+        'http://example.com',
+        'https://example.com',
+        'https://example.com/api/v1',
+        'https://example.com:8080',
+        'http://localhost:3000/api'
+      ].each do |valid_url|
+        it "is valid with #{valid_url}" do
+          group_o11y_setting.o11y_service_url = valid_url
+
+          expect(group_o11y_setting).to be_valid
+        end
+      end
+    end
+
+    %i[o11y_otel_url o11y_mcp_url].each do |field|
+      context "for #{field}" do
+        it 'is valid when blank' do
+          group_o11y_setting[field] = nil
+          expect(group_o11y_setting).to be_valid
+
+          group_o11y_setting[field] = ''
+          expect(group_o11y_setting).to be_valid
+        end
+
+        it 'is valid with a well-formed url' do
+          group_o11y_setting[field] = 'https://override.example.com:14318'
+          expect(group_o11y_setting).to be_valid
+        end
+
+        it 'is invalid with a malformed url' do
+          group_o11y_setting[field] = 'not-a-valid-url'
+          expect(group_o11y_setting).to be_invalid
+          expect(group_o11y_setting.errors[field]).to include(
+            'is blocked: Only allowed schemes are http, https'
+          )
+        end
+
+        it 'is invalid with a url exceeding maximum length' do
+          group_o11y_setting[field] = "https://example.com/#{'a' * 256}"
+          expect(group_o11y_setting).to be_invalid
+          expect(group_o11y_setting.errors[field]).to include('is too long (maximum is 255 characters)')
+        end
+      end
+    end
+
+    %i[o11y_service_password o11y_service_post_message_encryption_key].each do |field|
+      context "when #{field} is too long" do
+        it "is invalid with #{field} exceeding maximum length" do
+          group_o11y_setting.send(:"#{field}=", 'a' * 511)
+          expect(group_o11y_setting).to be_invalid
+          expect(group_o11y_setting.errors[field]).to include('is too long (maximum is 510 characters)')
+        end
+      end
+    end
+  end
+
+  describe 'encryption' do
+    let_it_be_with_reload(:setting) do
+      create(:observability_group_o11y_setting, group: group, o11y_service_password: 'super-secret-password',
+        o11y_service_post_message_encryption_key: 'super-secret-key').tap(&:reload)
+    end
+
+    shared_examples 'encrypts field' do |field_name, field_value|
+      it "encrypts the #{field_name} value" do
+        encrypted_value = setting.read_attribute_before_type_cast(field_name)
+
+        expect(setting.send(field_name)).to eq(field_value)
+        expect(encrypted_value).not_to eq(setting.send(field_name))
+        expect(encrypted_value).not_to include(field_value)
+      end
+    end
+
+    context 'when password encryption' do
+      include_examples 'encrypts field', :o11y_service_password, 'super-secret-password'
+    end
+
+    context 'when secret_key encryption' do
+      include_examples 'encrypts field', :o11y_service_post_message_encryption_key, 'super-secret-key'
+    end
+
+    context 'when updating encrypted fields' do
+      let(:new_password) { 'new-super-secret-password' }
+      let(:new_secret_key) { 'new-super-secret-key' }
+
+      shared_examples 're-encrypts field when changed' do |field_name, new_value|
+        it "re-encrypts #{field_name} when changed" do
+          original_raw_value = setting.attributes[field_name.to_s]
+          setting.send(:"#{field_name}=", new_value)
+          setting.save!
+
+          new_raw_value = setting.attributes[field_name.to_s]
+          expect(new_raw_value).not_to eq(original_raw_value)
+          expect(setting.send(field_name)).to eq(new_value)
+        end
+      end
+
+      include_examples 're-encrypts field when changed', :o11y_service_password, 'new-super-secret-password'
+      include_examples 're-encrypts field when changed', :o11y_service_post_message_encryption_key,
+        'new-super-secret-key'
+    end
+  end
+
+  describe '.find_by_group_id' do
+    let_it_be(:group1) { create(:group) }
+    let_it_be(:group2) { create(:group) }
+    let_it_be(:setting1) { create(:observability_group_o11y_setting, group: group1) }
+    let_it_be(:setting2) { create(:observability_group_o11y_setting, group: group2) }
+
+    it 'finds the setting by group_id' do
+      result = described_class.find_by_group_id(group1.id)
+      expect(result).to eq(setting1)
+    end
+
+    it 'returns nil when no setting exists for the group_id' do
+      non_existing_group_id = non_existing_record_id
+      result = described_class.find_by_group_id(non_existing_group_id)
+      expect(result).to be_nil
+    end
+
+    it 'finds the correct setting when multiple settings exist' do
+      result = described_class.find_by_group_id(group2.id)
+      expect(result).to eq(setting2)
+    end
+  end
+
+  describe '.search_by_group_id' do
+    let_it_be(:group1) { create(:group) }
+    let_it_be(:group2) { create(:group) }
+    let_it_be(:setting1) { create(:observability_group_o11y_setting, group: group1) }
+    let_it_be(:setting2) { create(:observability_group_o11y_setting, group: group2) }
+
+    it 'returns settings for the specified group_id' do
+      result = described_class.search_by_group_id(group1.id)
+      expect(result).to contain_exactly(setting1)
+    end
+
+    it 'returns empty collection when no settings exist for the group_id' do
+      non_existing_group_id = non_existing_record_id
+      result = described_class.search_by_group_id(non_existing_group_id)
+      expect(result).to be_empty
+    end
+
+    it 'eager-loads the namespace association with with_namespace' do
+      result = described_class.with_namespace.search_by_group_id(group1.id)
+      expect(result).to contain_exactly(setting1)
+      expect(result.first.association(:namespace)).to be_loaded
+    end
+  end
+
+  describe '#gitlab_observability_export_variable' do
+    let_it_be_with_refind(:setting) { create(:observability_group_o11y_setting, group: group) }
+
+    context 'when the variable exists' do
+      let_it_be(:variable) do
+        create(:ci_group_variable, group: group, key: 'GITLAB_OBSERVABILITY_EXPORT', value: 'metrics,logs,traces')
+      end
+
+      it 'returns the variable' do
+        expect(setting.gitlab_observability_export_variable).to eq(variable)
+      end
+    end
+
+    context 'when the variable does not exist' do
+      it 'returns nil' do
+        expect(setting.gitlab_observability_export_variable).to be_nil
+      end
+    end
+
+    context 'when namespace is nil' do
+      let(:setting) { build(:observability_group_o11y_setting, group: nil) }
+
+      it 'returns nil' do
+        expect(setting.gitlab_observability_export_variable).to be_nil
+      end
+    end
+
+    context 'when namespace is a personal (user) namespace' do
+      let_it_be(:user_namespace) { create(:namespace) }
+      let(:setting) { build(:observability_group_o11y_setting, group: user_namespace) }
+
+      it 'returns nil without raising NoMethodError for #variables', :aggregate_failures do
+        expect { setting.gitlab_observability_export_variable }.not_to raise_error
+        expect(setting.gitlab_observability_export_variable).to be_nil
+      end
+    end
+  end
+
+  describe '#provisioning?' do
+    let(:setting) { build(:observability_group_o11y_setting, group: group) }
+
+    context 'when record is a new record' do
+      it 'returns true' do
+        expect(setting).to be_new_record
+        expect(setting.provisioning?).to be true
+      end
+    end
+
+    context 'when record is persisted' do
+      let_it_be(:setting) { create(:observability_group_o11y_setting, group: group) }
+
+      shared_examples 'returns true within window' do |time_offset|
+        it "returns true at #{time_offset}" do
+          travel_to(setting.created_at + time_offset) do
+            expect(setting.provisioning?).to be true
+          end
+        end
+      end
+
+      shared_examples 'returns false outside window' do |time_offset|
+        it "returns false at #{time_offset}" do
+          travel_to(setting.created_at + time_offset) do
+            expect(setting.provisioning?).to be false
+          end
+        end
+      end
+
+      include_examples 'returns true within window', 0.seconds
+      include_examples 'returns true within window', 2.minutes + 30.seconds
+      include_examples 'returns true within window', 5.minutes
+
+      include_examples 'returns false outside window', 5.minutes + 1.second
+      include_examples 'returns false outside window', 1.hour
+
+      it 'returns true when current time is before creation' do
+        travel_to(setting.created_at - 1.second) do
+          expect(setting.provisioning?).to be true
+        end
+      end
+    end
+  end
+
+  describe 'otel endpoints' do
+    let(:setting) { build(:observability_group_o11y_setting, group: group) }
+
+    shared_examples 'otel endpoint' do |method, scheme, port|
+      context "when o11y_service_name is set" do
+        before do
+          setting.o11y_service_name = 'my-service'
+        end
+
+        it "returns the correct #{method} endpoint" do
+          expect(setting.send(method)).to eq("#{scheme}://my-service.otel.gitlab-o11y.com:#{port}")
+        end
+      end
+
+      context "when o11y_service_name is nil" do
+        before do
+          setting.o11y_service_name = nil
+          allow(setting).to receive(:name_from_url).and_return('service-from-url')
+        end
+
+        it "uses name_from_url as fallback" do
+          expect(setting.send(method)).to eq("#{scheme}://service-from-url.otel.gitlab-o11y.com:#{port}")
+        end
+      end
+
+      context "when both o11y_service_name and name_from_url are nil" do
+        before do
+          setting.o11y_service_name = nil
+          allow(setting).to receive_messages(name_from_url: nil, name_from_group: 'group-path')
+        end
+
+        it "uses name_from_group as fallback" do
+          expect(setting.send(method)).to eq("#{scheme}://group-path.otel.gitlab-o11y.com:#{port}")
+        end
+      end
+
+      context "with special characters in service name" do
+        before do
+          setting.o11y_service_name = 'my-service-with-dashes'
+        end
+
+        it "handles service names with special characters" do
+          expect(setting.send(method)).to eq("#{scheme}://my-service-with-dashes.otel.gitlab-o11y.com:#{port}")
+        end
+      end
+
+      context "when o11y_otel_url is overridden" do
+        before do
+          setting[:o11y_otel_url] = 'https://otel.self-hosted.example.com:9999'
+        end
+
+        it "derives the host from the override" do
+          expect(setting.send(method)).to eq("#{scheme}://otel.self-hosted.example.com:#{port}")
+        end
+      end
+    end
+
+    describe '#otel_http_endpoint' do
+      include_examples 'otel endpoint', :otel_http_endpoint, 'http', 4318
+    end
+
+    describe '#otel_grpc_endpoint' do
+      include_examples 'otel endpoint', :otel_grpc_endpoint, 'http', 4317
+    end
+
+    describe '#otel_grpcs_endpoint' do
+      include_examples 'otel endpoint', :otel_grpcs_endpoint, 'https', 14317
+    end
+
+    describe '#otel_https_endpoint' do
+      it 'returns the default https endpoint with port 14318' do
+        setting.o11y_service_name = 'my-service'
+
+        expect(setting.otel_https_endpoint).to eq('https://my-service.otel.gitlab-o11y.com:14318')
+      end
+
+      context 'when o11y_otel_url is overridden' do
+        it 'uses the host and port from the override' do
+          setting[:o11y_otel_url] = 'https://otel.self-hosted.example.com:9999'
+
+          expect(setting.otel_https_endpoint).to eq('https://otel.self-hosted.example.com:9999')
+        end
+
+        it 'falls back to port 14318 when the override has no port' do
+          setting[:o11y_otel_url] = 'https://otel.self-hosted.example.com'
+
+          expect(setting.otel_https_endpoint).to eq('https://otel.self-hosted.example.com:14318')
+        end
+      end
+    end
+  end
+
+  describe '#o11y_otel_url' do
+    let(:setting) { build(:observability_group_o11y_setting, group: group) }
+
+    it 'returns the default otel url derived from the service name' do
+      setting.o11y_service_name = 'my-service'
+
+      expect(setting.o11y_otel_url).to eq('https://my-service.otel.gitlab-o11y.com:14318')
+    end
+
+    it 'returns the stored value when set' do
+      setting[:o11y_otel_url] = 'https://otel.self-hosted.example.com:9999'
+
+      expect(setting.o11y_otel_url).to eq('https://otel.self-hosted.example.com:9999')
+    end
+
+    it 'returns the default when the stored value is blank' do
+      setting.o11y_service_name = 'my-service'
+      setting[:o11y_otel_url] = ''
+
+      expect(setting.o11y_otel_url).to eq('https://my-service.otel.gitlab-o11y.com:14318')
+    end
+  end
+
+  describe '#o11y_mcp_url' do
+    let(:setting) { build(:observability_group_o11y_setting, group: group) }
+
+    it 'returns the default mcp url derived from the service name' do
+      setting.o11y_service_name = 'my-service'
+
+      expect(setting.o11y_mcp_url).to eq('https://my-service.mcp.gitlab-o11y.com/mcp')
+    end
+
+    it 'falls back to name_from_url when o11y_service_name is not set explicitly' do
+      setting.o11y_service_name = nil
+      allow(setting).to receive(:name_from_url).and_return('service-from-url')
+
+      expect(setting.o11y_mcp_url).to eq('https://service-from-url.mcp.gitlab-o11y.com/mcp')
+    end
+
+    it 'falls back to name_from_group when o11y_service_name and name_from_url are nil' do
+      setting.o11y_service_name = nil
+      allow(setting).to receive_messages(name_from_url: nil, name_from_group: 'group-path')
+
+      expect(setting.o11y_mcp_url).to eq('https://group-path.mcp.gitlab-o11y.com/mcp')
+    end
+
+    it 'returns the stored value when set' do
+      setting[:o11y_mcp_url] = 'https://mcp.self-hosted.example.com/mcp'
+
+      expect(setting.o11y_mcp_url).to eq('https://mcp.self-hosted.example.com/mcp')
+    end
+
+    it 'returns the default when the stored value is blank' do
+      setting.o11y_service_name = 'my-service'
+      setting[:o11y_mcp_url] = ''
+
+      expect(setting.o11y_mcp_url).to eq('https://my-service.mcp.gitlab-o11y.com/mcp')
+    end
+  end
+
+  describe 'factory' do
+    it 'creates a valid record' do
+      setting = build(:observability_group_o11y_setting)
+      expect(setting).to be_valid
+    end
+
+    it 'associates with a group' do
+      setting = build_stubbed(:observability_group_o11y_setting)
+      expect(setting.group).to be_present
+    end
+  end
+
+  describe '.observability_setting_for' do
+    context 'when resource is nil or invalid' do
+      it 'returns nil for nil' do
+        expect(described_class.observability_setting_for(nil)).to be_nil
+      end
+
+      it 'returns nil for non-Project/Namespace resource' do
+        expect(described_class.observability_setting_for(build_stubbed(:user))).to be_nil
+      end
+
+      it 'returns nil for Project whose namespace is nil' do
+        project = build_stubbed(:project)
+        allow(project).to receive(:namespace).and_return(nil)
+
+        expect(described_class.observability_setting_for(project)).to be_nil
+      end
+    end
+
+    shared_examples 'traverses parent groups' do |resource_type|
+      let_it_be(:root_group) { create(:group) }
+      let_it_be(:parent_group) { create(:group, parent: root_group) }
+      let_it_be(:child_group) { create(:group, parent: parent_group) }
+      let_it_be(:resource) { resource_type == :project ? create(:project, group: child_group) : child_group }
+
+      it "returns setting when #{resource_type} group has setting" do
+        setting = create(:observability_group_o11y_setting, group: child_group)
+
+        expect(described_class.observability_setting_for(resource)).to eq(setting)
+      end
+
+      it "returns setting when parent has setting" do
+        setting = create(:observability_group_o11y_setting, group: parent_group)
+
+        expect(described_class.observability_setting_for(resource)).to eq(setting)
+      end
+
+      it "returns setting when root ancestor has setting" do
+        setting = create(:observability_group_o11y_setting, group: root_group)
+
+        expect(described_class.observability_setting_for(resource)).to eq(setting)
+      end
+
+      it "returns nil when no group in hierarchy has setting" do
+        expect(described_class.observability_setting_for(resource)).to be_nil
+      end
+    end
+
+    context 'when ancestor_ids is empty' do
+      let(:group) { build_stubbed(:group) }
+
+      it 'returns nil when ancestor_ids is empty' do
+        allow(group).to receive(:traversal_ids).and_return([])
+
+        expect(described_class.observability_setting_for(group)).to be_nil
+      end
+    end
+
+    context 'when resource is a Project' do
+      include_examples 'traverses parent groups', :project
+    end
+
+    context 'when resource is a Group' do
+      include_examples 'traverses parent groups', :group
+    end
+
+    shared_examples 'resolves personal namespace setting' do |resource_factory|
+      let_it_be(:user_namespace) { create(:namespace) }
+      let_it_be(:resource) do
+        resource_factory == :project ? create(:project, namespace: user_namespace) : user_namespace
+      end
+
+      it 'returns the setting when the user namespace has one' do
+        setting = create(:observability_group_o11y_setting, group: user_namespace)
+
+        expect(described_class.observability_setting_for(resource)).to eq(setting)
+      end
+
+      it 'returns nil when no setting exists' do
+        expect(described_class.observability_setting_for(resource)).to be_nil
+      end
+    end
+
+    context 'when resource is a Project in a personal namespace' do
+      include_examples 'resolves personal namespace setting', :project
+    end
+
+    context 'when resource is a personal (user) Namespace' do
+      include_examples 'resolves personal namespace setting', :namespace
+    end
+  end
+end
+
+RSpec.describe 'Observability::GroupO11ySetting#observability_export_variable_for', feature_category: :observability do
+  describe '#observability_export_variable_for' do
+    context 'when namespace is a group' do
+      let_it_be(:group) { create(:group) }
+      let_it_be_with_refind(:setting) { create(:observability_group_o11y_setting, group: group) }
+
+      context 'when the group variable exists' do
+        let_it_be(:variable) do
+          create(:ci_group_variable, group: group, key: 'GITLAB_OBSERVABILITY_EXPORT', value: 'metrics,logs,traces')
+        end
+
+        it 'returns the group variable (ignores project argument)' do
+          expect(setting.observability_export_variable_for(nil)).to eq(variable)
+          expect(setting.observability_export_variable_for(create(:project, group: group))).to eq(variable)
+        end
+      end
+
+      context 'when the group variable does not exist' do
+        it 'returns nil' do
+          expect(setting.observability_export_variable_for(nil)).to be_nil
+        end
+      end
+    end
+
+    context 'when namespace is a personal (user) namespace' do
+      let_it_be(:user_namespace) { create(:namespace) }
+      let_it_be(:personal_project) { create(:project, namespace: user_namespace) }
+      let_it_be(:setting) { create(:observability_group_o11y_setting, group: user_namespace) }
+
+      context 'when the project variable exists' do
+        let_it_be(:variable) do
+          create(:ci_variable, project: personal_project, key: 'GITLAB_OBSERVABILITY_EXPORT',
+            value: 'metrics,logs,traces')
+        end
+
+        it 'returns the project variable' do
+          expect(setting.observability_export_variable_for(personal_project)).to eq(variable)
+        end
+      end
+
+      context 'when the project variable does not exist' do
+        it 'returns nil' do
+          expect(setting.observability_export_variable_for(personal_project)).to be_nil
+        end
+      end
+
+      context 'when project is nil' do
+        it 'returns nil' do
+          expect(setting.observability_export_variable_for(nil)).to be_nil
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,128 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "url",
+    "created_at",
+    "push_events",
+    "tag_push_events",
+    "merge_requests_events",
+    "repository_update_events",
+    "enable_ssl_verification",
+    "alert_status",
+    "disabled_until",
+    "url_variables",
+    "custom_webhook_template",
+    "custom_headers",
+    "branch_filter_strategy",
+    "token_present",
+    "signing_token_present"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "url": {
+      "type": "string"
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "push_events": {
+      "type": "boolean"
+    },
+    "tag_push_events": {
+      "type": "boolean"
+    },
+    "merge_requests_events": {
+      "type": "boolean"
+    },
+    "repository_update_events": {
+      "type": "boolean"
+    },
+    "enable_ssl_verification": {
+      "type": "boolean"
+    },
+    "alert_status": {
+      "type": "string",
+      "enum": [
+        "executable",
+        "disabled",
+        "temporarily_disabled"
+      ]
+    },
+    "disabled_until": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "url_variables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "custom_webhook_template": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "organization_id": {
+      "type": "integer"
+    },
+    "custom_headers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "push_events_branch_filter": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "branch_filter_strategy": {
+      "type": "string"
+    },
+    "token_present": {
+      "type": "boolean"
+    },
+    "signing_token_present": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

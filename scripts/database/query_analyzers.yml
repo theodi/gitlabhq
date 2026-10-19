@@ -1,0 +1,25 @@
+MultiplePartitionScanDetector:
+  todos:
+    # Queries known to be unpruned that we ignore until they are fixed.
+    # These fingerprints can be found in the auto_explain pipeline artifacts.
+    # Each entry is either a bare fingerprint or a hash carrying the tracking issue.
+    # Example:
+    # - c2cfe803a497101b
+    # - fingerprint: d3e4f5a6b7c8d9e0
+    #   issue: "https://gitlab.com/gitlab-org/gitlab/-/issues/XXXX"
+    - fingerprint: 955968b0f17eca7c
+      issue: 'https://gitlab.com/gitlab-org/gitlab/-/work_items/627306'
+    - fingerprint: c869fcbfa3050bf9
+      issue: 'https://gitlab.com/gitlab-org/gitlab/-/work_items/631236'
+  allowed:
+    - fingerprint: efc08db52e27a805
+      reason: 'Runner jobs keyset pagination walks a global ID order across partitions; filtering by partition_id would omit jobs'
+      issue: 'https://gitlab.com/gitlab-org/gitlab/-/work_items/552362'
+    - fingerprint: d01e15eb99a73822
+      reason: 'Orphan artifact cleanup resolves object storage keys, which carry no partition_id, so the lookup cannot prune'
+    # Queries that legitimately scan all partitions and cannot prune.
+    # - fingerprint: c2cfe803a497101b
+    #   reason: "Runner heartbeat scans all partitions by design"
+    #   issue: "https://gitlab.com/gitlab-org/gitlab/-/issues/XXXX"
+JSONBScanDetector:
+  todos:

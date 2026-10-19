@@ -1,0 +1,21 @@
+key_path: redis_hll_counters.quickactions.i_quickactions_link_weekly
+description: Count of WAU using the `/link` quick action
+product_group: platform_insights
+product_categories:
+- incident_management
+value_type: number
+status: active
+milestone: "15.5"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/99963
+time_frame: 7d
+data_source: redis_hll
+data_category: optional
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+    - i_quickactions_link
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

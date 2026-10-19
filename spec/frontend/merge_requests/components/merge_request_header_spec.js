@@ -1,0 +1,172 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { shallowMount } from '@vue/test-utils';
+import { createTestingPinia } from '@pinia/testing';
+import { PiniaVuePlugin } from 'pinia';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import ArchivedBadge from '~/issuable/components/archived_badge.vue';
+import HiddenBadge from '~/issuable/components/hidden_badge.vue';
+import LockedBadge from '~/issuable/components/locked_badge.vue';
+import StatusBadge from '~/issuable/components/status_badge.vue';
+import MergeRequestHeader from '~/merge_requests/components/merge_request_header.vue';
+import ConfidentialityBadge from '~/vue_shared/components/confidentiality_badge.vue';
+import ImportedBadge from '~/vue_shared/components/imported_badge.vue';
+import { globalAccessorPlugin } from '~/pinia/plugins';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { badgeState } from '~/merge_requests/badge_state';
+import getStateQuery from '~/pages/projects/merge_requests/queries/get_state.query.graphql';
+import waitForPromises from 'helpers/wait_for_promises';
+
+Vue.use(PiniaVuePlugin);
+Vue.use(VueApollo);
+
+describe('MergeRequestHeader component', () => {
+  let pinia;
+  let wrapper;
+
+  const findArchivedBadge = () => wrapper.findComponent(ArchivedBadge);
+  const findConfidentialBadge = () => wrapper.findComponent(ConfidentialityBadge);
+  const findLockedBadge = () => wrapper.findComponent(LockedBadge);
+  const findHiddenBadge = () => wrapper.findComponent(HiddenBadge);
+  const findImportedBadge = () => wrapper.findComponent(ImportedBadge);
+  const findStatusBadge = () => wrapper.findComponent(StatusBadge);
+
+  const renderTestMessage = (renders) => (renders ? 'renders' : 'does not render');
+
+  const stateQueryHandler = jest.fn().mockResolvedValue({
+    data: {
+      namespace: {
+        __typename: 'Project',
+        id: 'gid://gitlab/Project/1',
+        issuable: {
+          __typename: 'MergeRequest',
+          id: 'gid://gitlab/MergeRequest/1',
+          state: 'merged',
+        },
+      },
+    },
+  });
+
+  const createComponent = ({
+    archived = false,
+    confidential,
+    hidden,
+    locked,
+    isImported = false,
+  } = {}) => {
+    useNotes().noteableData.archived = archived;
+    useNotes().noteableData.confidential = confidential;
+    useNotes().noteableData.discussion_locked = locked;
+    useNotes().noteableData.targetType = 'merge_request';
+
+    wrapper = shallowMount(MergeRequestHeader, {
+      pinia,
+      apolloProvider: createMockApollo([[getStateQuery, stateQueryHandler]]),
+      provide: {
+        hidden,
+        iid: 'mock_id',
+        query: getStateQuery,
+        projectPath: 'gitlab-org/gitlab',
+      },
+      propsData: {
+        initialState: 'opened',
+        isImported,
+        isDraft: false,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    pinia = createTestingPinia({ plugins: [globalAccessorPlugin] });
+    useLegacyDiffs();
+    useNotes();
+  });
+
+  it('renders status badge', () => {
+    createComponent();
+
+    expect(findStatusBadge().props()).toEqual({
+      issuableType: 'merge_request',
+      state: 'opened',
+      isDraft: false,
+    });
+  });
+
+  it('updates status in badge', async () => {
+    createComponent();
+
+    badgeState.updateStatus();
+    await waitForPromises();
+
+    expect(findStatusBadge().props('state')).toEqual('merged');
+  });
+
+  describe.each`
+    locked   | confidential | hidden
+    ${true}  | ${true}      | ${false}
+    ${true}  | ${false}     | ${false}
+    ${false} | ${true}      | ${false}
+    ${false} | ${false}     | ${false}
+    ${true}  | ${true}      | ${true}
+    ${true}  | ${false}     | ${true}
+    ${false} | ${true}      | ${true}
+    ${false} | ${false}     | ${true}
+  `(
+    `when locked=$locked, confidential=$confidential, and hidden=$hidden`,
+    ({ locked, confidential, hidden }) => {
+      beforeEach(() => {
+        createComponent({ confidential, hidden, locked });
+      });
+
+      it(`${renderTestMessage(confidential)} the confidential badge`, () => {
+        const confidentialBadge = findConfidentialBadge();
+        expect(confidentialBadge.exists()).toBe(confidential);
+
+        if (confidential && !hidden) {
+          expect(confidentialBadge.props()).toMatchObject({
+            workspaceType: 'project',
+            issuableType: 'issue',
+          });
+        }
+      });
+
+      it(`${renderTestMessage(locked)} the locked badge`, () => {
+        expect(findLockedBadge().exists()).toBe(locked);
+      });
+
+      it(`${renderTestMessage(hidden)} the hidden badge`, () => {
+        expect(findHiddenBadge().exists()).toBe(hidden);
+      });
+    },
+  );
+
+  describe('imported badge', () => {
+    it('renders when merge request is imported', () => {
+      createComponent({ isImported: true });
+
+      expect(findImportedBadge().exists()).toBe(true);
+    });
+
+    it('does not render when merge request is not imported', () => {
+      createComponent({ isImported: false });
+
+      expect(findImportedBadge().exists()).toBe(false);
+    });
+  });
+
+  describe('archived badge', () => {
+    it('renders when merge request belongs to an archived project', () => {
+      createComponent({ archived: true });
+
+      expect(findArchivedBadge().exists()).toBe(true);
+      expect(findArchivedBadge().props('issuableType')).toBe('merge_request');
+    });
+
+    it('does not render when merge request does not belong to an archived project', () => {
+      createComponent({ archived: false });
+
+      expect(findArchivedBadge().exists()).toBe(false);
+    });
+  });
+});

@@ -1,0 +1,296 @@
+# frozen_string_literal: true
+
+module Mcp
+  module Tools
+    class Manager
+      include Base::VersionHelper
+
+      class ToolNotFoundError < StandardError
+        attr_reader :tool_name, :args
+
+        def initialize(tool_name)
+          @tool_name = tool_name
+          super("Tool '#{tool_name}' not found.")
+        end
+      end
+
+      class VersionNotFoundError < StandardError
+        attr_reader :tool_name, :requested_version, :available_versions
+
+        def initialize(tool_name, requested_version, available_versions)
+          @tool_name = tool_name
+          @requested_version = requested_version
+          @available_versions = available_versions
+          super("Tool '#{tool_name}' version '#{requested_version}' not found. " \
+            "Available versions: #{available_versions.join(', ')}")
+        end
+      end
+
+      class InvalidVersionFormatError < StandardError
+        attr_reader :version
+
+        def initialize(version)
+          @version = version
+          super("Invalid semantic version format: #{version}.")
+        end
+      end
+
+      # Registry of all custom tools mapped to their service classes
+      CUSTOM_TOOLS = {
+        'get_artifact_file' => ::Mcp::Tools::Jobs::GetArtifactFileService,
+        'get_job' => ::Mcp::Tools::Jobs::GetJobService,
+        'get_mcp_server_version' => ::Mcp::Tools::GetServerVersionService,
+        'get_merge_request_conflicts' => ::Mcp::Tools::MergeRequests::GetMergeRequestConflictsService,
+        'list_releases' => ::Mcp::Tools::Releases::ListReleasesService,
+        'list_tags' => ::Mcp::Tools::Repositories::Tags::ListTagsService
+      }.freeze
+
+      GRAPHQL_TOOLS = {
+        'accept_merge_request' => ::Mcp::Tools::MergeRequests::AcceptMergeRequestService,
+        'add_branch' => ::Mcp::Tools::Repositories::Branches::AddBranchService,
+        'add_commit' => ::Mcp::Tools::Repositories::AddCommitService,
+        'get_commit' => ::Mcp::Tools::Commits::GetCommitService,
+        'get_merge_request' => ::Mcp::Tools::MergeRequests::GetMergeRequestService,
+        'get_merge_request_notes' => ::Mcp::Tools::MergeRequests::GetMergeRequestNotesService,
+        'get_repository_file' => ::Mcp::Tools::Repositories::GetRepositoryFileService,
+        'get_pipeline' => ::Mcp::Tools::Pipelines::GetPipelineService,
+        'get_project' => ::Mcp::Tools::Projects::GetProjectService,
+        'get_saved_view_work_items' => ::Mcp::Tools::WorkItems::GetSavedViewWorkItemsService,
+        'get_user' => ::Mcp::Tools::Users::GetUserService,
+        'get_work_item' => ::Mcp::Tools::WorkItems::GetWorkItemService,
+        'get_workitem_notes' => ::Mcp::Tools::WorkItems::GetWorkItemNotesService,
+        'get_work_item_types' => ::Mcp::Tools::WorkItems::GetWorkItemTypesService,
+        'link_work_items' => ::Mcp::Tools::WorkItems::LinkWorkItemsService,
+        'list_commits' => ::Mcp::Tools::Commits::ListCommitsService,
+        'list_groups' => ::Mcp::Tools::Groups::ListGroupsService,
+        'list_merge_requests' => ::Mcp::Tools::MergeRequests::ListMergeRequestsService,
+        'list_projects' => ::Mcp::Tools::Projects::ListProjectsService,
+        'list_repository_tree' => ::Mcp::Tools::Repositories::ListRepositoryTreeService,
+        'list_project_members' => ::Mcp::Tools::Projects::ListProjectMembersService,
+        'list_wiki_pages' => ::Mcp::Tools::Wikis::ListWikiPagesService,
+        'list_work_items' => ::Mcp::Tools::WorkItems::ListWorkItemsService,
+        'save_merge_request_review' => ::Mcp::Tools::MergeRequests::SaveMergeRequestReviewService,
+        'save_note' => ::Mcp::Tools::Notes::SaveNoteService,
+        'save_pipeline' => ::Mcp::Tools::Pipelines::SavePipelineService,
+        'save_work_item' => ::Mcp::Tools::WorkItems::SaveWorkItemService,
+        'search_labels' => ::Mcp::Tools::Labels::SearchService
+      }.freeze
+
+      def initialize
+        # Do not call build_tools here. API::Base.descendants is evaluated lazily, and
+        # Manager is instantiated at class-definition time via namespace_setting in
+        # API::Mcp::Base, before all routes are registered. Deferring to the first call
+        # of #tools ensures a complete route list.
+      end
+
+      def tools
+        @tools ||= build_tools
+      end
+
+      def alias_map
+        @alias_map ||= build_alias_map
+      end
+
+      def list_tools(context: nil, toolsets: nil)
+        requested_tools = user_tools(context, Array(toolsets).map(&:to_sym))
+        return tools if requested_tools.empty?
+
+        tools.merge(requested_tools.except(*alias_map.keys)) { |_name, tool, _requested_tool| tool }
+      end
+
+      def tools_in_toolsets(toolset_ids, tools: self.tools)
+        selected = Array(toolset_ids).map(&:to_sym) | Toolsets::ALWAYS_ON
+        tools.each_with_object([]) do |(name, tool), result|
+          result << name if selected.include?(tool.toolset)
+        end
+      end
+
+      def get_tool(name:, version: nil, context: nil)
+        raise InvalidVersionFormatError, version if version && !validate_semantic_version(version)
+
+        canonical_name = resolve_alias(name)
+
+        return get_custom_tool(canonical_name, version) if custom_tools.key?(canonical_name)
+
+        return get_graphql_tool(canonical_name, version) if graphql_tools.key?(canonical_name)
+
+        return get_api_tool(canonical_name, version) if discover_api_tools.key?(canonical_name)
+
+        return get_aggregated_api_tool(canonical_name, version) if discover_aggregated_api_tools.key?(canonical_name)
+
+        user_tools(context, Toolsets::ALL)[canonical_name] || raise(ToolNotFoundError, name)
+      end
+
+      def resolve_alias(name)
+        return name if tools.key?(name)
+
+        alias_map[name] || name
+      end
+
+      def aliases_for(canonical_name)
+        reverse_alias_map.fetch(canonical_name, [])
+      end
+
+      private
+
+      def reverse_alias_map
+        @reverse_alias_map ||= alias_map.each_with_object({}) do |(alias_name, canonical), map|
+          (map[canonical] ||= []) << alias_name
+        end
+      end
+
+      def get_custom_tool(name, version)
+        get_tool_from_registry(custom_tools, name, version)
+      end
+
+      def get_graphql_tool(name, version)
+        get_tool_from_registry(graphql_tools, name, version)
+      end
+
+      def get_tool_from_registry(tool_registry, name, version)
+        tool_class = tool_registry[name]
+
+        unless version.nil? || tool_class.version_exists?(version)
+          available_versions = tool_class.available_versions
+          raise VersionNotFoundError.new(name, version, available_versions)
+        end
+
+        tool_class.new(name: name, version: version)
+      end
+
+      def get_api_tool(name, version)
+        api_tools = discover_api_tools
+        tool = api_tools[name]
+        api_tool_version = tool.version
+
+        raise VersionNotFoundError.new(name, version, [api_tool_version]) if version && version != api_tool_version
+
+        tool
+      end
+
+      def get_aggregated_api_tool(name, version)
+        aggregated_api_tools = discover_aggregated_api_tools
+        tool = aggregated_api_tools[name]
+        tool_version = tool.version
+
+        raise VersionNotFoundError.new(name, version, [tool_version]) if version && version != tool_version
+
+        # Each caller needs its own instance because execute stores @request/@params on it.
+        # TODO: https://gitlab.com/gitlab-org/gitlab/-/issues/604494
+        tool.dup
+      end
+
+      def build_alias_map
+        map = {}
+
+        tools.each do |tool_name, tool|
+          next unless tool.respond_to?(:tool_aliases)
+
+          tool.tool_aliases.each { |alias_name| map[alias_name] = tool_name }
+        end
+
+        map
+      end
+
+      def build_tools
+        tools = {}
+
+        # Build custom tools using their latest versions
+        custom_tools.each do |name, tool_class|
+          tools[name] = tool_class.new(name: name)
+        end
+
+        graphql_tools.each do |name, tool_class|
+          tools[name] = tool_class.new(name: name)
+        end
+
+        # Include API tools (discovered from route_setting :mcp)
+        api_tools = discover_api_tools
+        api_tools.each do |name, tool|
+          tools[name] = tool
+        end
+
+        # Include aggregated API tools (discovered from route_setting :mcp with aggregators specified)
+        aggregated_api_tools = discover_aggregated_api_tools
+        aggregated_api_tools.each do |name, tool|
+          tools[name] = tool
+        end
+
+        tools
+      end
+
+      def discover_api_tools
+        @api_tools ||= begin
+          api_tools = {}
+
+          mcp_routes.each do |route, settings|
+            next if settings[:aggregators].present?
+
+            name = settings[:tool_name].to_s
+            tool = Mcp::Tools::Base::ApiTool.new(name: name, route: route)
+            api_tools[name] = tool
+          end
+
+          api_tools.freeze
+        end
+      end
+
+      def discover_aggregated_api_tools
+        @aggregated_api_tools ||= begin
+          aggregated_api_tools = {}
+
+          mcp_routes.each do |route, settings|
+            aggregators = settings[:aggregators]
+            next if aggregators.blank?
+
+            name = settings[:tool_name].to_s
+            tool = Mcp::Tools::Base::ApiTool.new(name: name, route: route)
+
+            aggregators.each do |aggregator|
+              aggregated_api_tools[aggregator] ||= []
+              aggregated_api_tools[aggregator] << tool
+            end
+          end
+
+          aggregated_api_tools.to_h do |klass, tools|
+            [klass.tool_name, klass.new(tools: tools)]
+          end.freeze
+        end
+      end
+
+      # Scans descendants and memoize instead of API::API.routes to ensure EE-only sub-apps are also discovered
+      def mcp_routes
+        @mcp_routes ||= begin
+          pairs = []
+
+          ::API::Base.descendants.each do |klass|
+            next if klass == ::API::API
+
+            klass.routes.each do |route|
+              settings = route.app.route_setting(:mcp)
+              next if settings.blank?
+
+              pairs << [route, settings]
+            end
+          end
+
+          pairs.freeze
+        end
+      end
+
+      def user_tools(_context, _toolsets)
+        {}
+      end
+
+      def custom_tools
+        CUSTOM_TOOLS
+      end
+
+      def graphql_tools
+        GRAPHQL_TOOLS
+      end
+    end
+  end
+end
+
+Mcp::Tools::Manager.prepend_mod

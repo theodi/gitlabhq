@@ -1,0 +1,18 @@
+- expanded = integration_expanded?('floc_')
+
+= render ::Layouts::SettingsBlockComponent.new(s_('FloC|Federated Learning of Cohorts (FLoC)'),
+  id: 'js-floc-settings',
+  expanded: expanded) do |c|
+  - c.with_description do
+    - floc_link_url = help_page_path('administration/settings/floc.md')
+    - floc_link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: floc_link_url }
+    = html_escape(s_('FloC|Configure whether you want to participate in FLoC. %{floc_link_start}What is FLoC?%{floc_link_end}')) % { floc_link_start: floc_link_start, floc_link_end: '</a>'.html_safe }
+  - c.with_body do
+    = gitlab_ui_form_for @application_setting, url: general_admin_application_settings_path(anchor: 'js-floc-settings'), html: { class: 'fieldset-form', id: 'floc-settings' } do |f|
+      = form_errors(@application_setting)
+
+      %fieldset
+        .form-group
+          = f.gitlab_ui_checkbox_component :floc_enabled,
+          s_('FloC|Participate in FLoC')
+      = f.submit _('Save changes'), pajamas_button: true

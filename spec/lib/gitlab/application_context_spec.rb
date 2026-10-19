@@ -1,0 +1,454 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::ApplicationContext, feature_category: :shared do
+  describe '.allowed_job_keys' do
+    it 'includes known keys but omits Web-specific keys' do
+      expect(described_class.allowed_job_keys).to include(
+        :user, :user_id, :project, :root_namespace, :client_id, :mvcc_manifest
+      )
+      expect(described_class.allowed_job_keys).not_to include(
+        :auth_fail_reason,
+        :auth_fail_token_id,
+        :auth_fail_requested_scopes,
+        :http_router_rule_action,
+        :http_router_rule_type,
+        :auth_fail_token_type,
+        :auth_fail_auth_header_type,
+        :duo_workflow_id,
+        :organization_source,
+        :client_service
+      )
+    end
+  end
+
+  describe '.with_context' do
+    it 'yields the block' do
+      expect { |b| described_class.with_context({}, &b) }.to yield_control
+    end
+
+    it 'passes the expected context on to labkit' do
+      user = build(:user)
+      project = build(:project)
+      fake_proc = duck_type(:call)
+      expected_context = hash_including(user: fake_proc, project: fake_proc, root_namespace: fake_proc)
+
+      expect(Labkit::Context).to receive(:with_context).with(expected_context)
+
+      described_class.with_context(
+        user: user,
+        project: project,
+        namespace: build(:namespace)) {}
+    end
+
+    it 'raises an error when passing invalid options' do
+      expect { described_class.with_context(no: 'option') {} }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe '.with_raw_context' do
+    it 'yields the block' do
+      expect { |b| described_class.with_raw_context({}, &b) }.to yield_control
+    end
+
+    it 'passes the attributes unaltered on to labkit' do
+      attrs = { foo: :bar }
+
+      expect(Labkit::Context).to receive(:with_context).with(attrs)
+
+      described_class.with_raw_context(attrs) {}
+    end
+  end
+
+  describe '.push' do
+    it 'passes the expected context on to labkit' do
+      fake_proc = duck_type(:call)
+      expected_context = { user: fake_proc, client_id: fake_proc,
+                           Labkit::Fields::GL_USER_ID => fake_proc }
+
+      expect(Labkit::Context).to receive(:push).with(expected_context)
+
+      described_class.push(user: build(:user))
+    end
+
+    it 'raises an error when passing invalid options' do
+      expect { described_class.push(no: 'option') }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe '.current_context_include?' do
+    it 'returns true if the key was present in the context' do
+      described_class.with_context(caller_id: "Hello") do
+        expect(described_class.current_context_include?(:caller_id)).to be(true)
+      end
+    end
+
+    it 'returns false if the key was not present in the current context' do
+      expect(described_class.current_context_include?(:caller_id)).to be(false)
+    end
+  end
+
+  describe '.current_context_attribute' do
+    it 'returns the raw attribute value' do
+      described_class.with_context(caller_id: "Hello") do
+        expect(described_class.current_context_attribute(:caller_id)).to be('Hello')
+      end
+    end
+
+    it 'returns the attribute value with meta prefix' do
+      described_class.with_context(feature_category: "secure") do
+        expect(described_class.current_context_attribute('meta.feature_category')).to be('secure')
+      end
+    end
+
+    it 'returns nil if the key was not present in the current context' do
+      expect(described_class.current_context_attribute(:caller_id)).to be_nil
+    end
+  end
+
+  describe '#to_lazy_hash' do
+    let_it_be(:user) { create(:user) }
+    let_it_be(:project) { create(:project) }
+    let_it_be(:namespace) { create(:group) }
+    let_it_be(:subgroup) { create(:group, parent: namespace) }
+
+    def result(context)
+      context.to_lazy_hash.transform_values { |v| v.respond_to?(:call) ? v.call : v }
+    end
+
+    it 'does not call the attributes until needed' do
+      fake_proc = double('Proc')
+
+      expect(fake_proc).not_to receive(:call)
+
+      described_class.new(user: fake_proc, project: fake_proc, namespace: fake_proc).to_lazy_hash
+    end
+
+    it 'correctly loads the expected values when they are wrapped in a block' do
+      context = described_class.new(user: -> { user }, project: -> { project }, namespace: -> { subgroup })
+
+      expect(result(context)).to include(
+        user: user.username,
+        Labkit::Fields::GL_USER_ID => user.id,
+        project: project.full_path,
+        root_namespace: namespace.full_path
+      )
+    end
+
+    it 'correctly loads the expected values when passed directly' do
+      context = described_class.new(user: user, project: project, namespace: subgroup)
+
+      expect(result(context)).to include(
+        user: user.username,
+        Labkit::Fields::GL_USER_ID => user.id,
+        project: project.full_path,
+        root_namespace: namespace.full_path
+      )
+    end
+
+    it 're-resolves the user lambda instead of caching a nil result' do
+      current = nil
+      context = described_class.new(user: -> { current })
+
+      # First read happens before the user is known (e.g. before authentication).
+      expect(context.to_lazy_hash[:user].call).to be_nil
+
+      current = user
+
+      # A later read must pick up the now-known user, not a memoized nil.
+      expect(context.to_lazy_hash[:user].call).to eq(user.username)
+      expect(context.to_lazy_hash[Labkit::Fields::GL_USER_ID].call).to eq(user.id)
+    end
+
+    it 'falls back to a projects namespace when a project is passed but no namespace' do
+      context = described_class.new(project: project)
+
+      expect(result(context)).to include(
+        project: project.full_path,
+        root_namespace: project.full_path_components.first
+      )
+    end
+
+    it 'includes the root namespace id when a namespace is in the context' do
+      context = described_class.new(namespace: subgroup)
+
+      expect(result(context)[Labkit::Fields::GL_ROOT_NAMESPACE_ID]).to eq(namespace.id)
+    end
+
+    it 'has no root namespace id when only a project is given and its namespace is not loaded' do
+      context = described_class.new(project: Project.find(project.id))
+
+      expect(result(context)[Labkit::Fields::GL_ROOT_NAMESPACE_ID]).to be_nil
+    end
+
+    it 'drops the root namespace id from the emitted context when it has no value' do
+      described_class.with_context(project: Project.find(project.id)) do
+        expect(Labkit::Context.current.to_h)
+          .not_to have_key(Labkit::Context.log_key(Labkit::Fields::GL_ROOT_NAMESPACE_ID))
+      end
+    end
+
+    it 'includes the root namespace id for a group runner, as the path does' do
+      runner = create(:ci_runner, :group, groups: [subgroup])
+      context = described_class.new(runner: runner)
+
+      expect(result(context)).to include(
+        root_namespace: namespace.full_path,
+        Labkit::Fields::GL_ROOT_NAMESPACE_ID => namespace.id
+      )
+    end
+
+    it 'includes the root namespace id from a project whose namespace is already loaded' do
+      context = described_class.new(project: Project.includes(:namespace).find(project.id))
+
+      expect(result(context)[Labkit::Fields::GL_ROOT_NAMESPACE_ID]).to eq(project.namespace.id)
+    end
+
+    it 'does not query for the root namespace id' do
+      context = described_class.new(namespace: Group.find(subgroup.id))
+
+      expect { result(context)[Labkit::Fields::GL_ROOT_NAMESPACE_ID] }
+        .not_to exceed_query_limit(1) # the existing root_namespace path lookup
+    end
+
+    it 'contains known keys' do
+      context = described_class.new(project: project)
+
+      # Make sure all possible keys would be included
+      allow(context).to receive_message_chain(:set_values, :include?).and_return(true)
+
+      # If a newly added key is added to the context hash, we need to list it in
+      # the known keys constant. This spec ensures that we do.
+      expect(context.to_lazy_hash.keys - described_class.known_keys).to eq([])
+    end
+
+    describe 'setting the client' do
+      let_it_be(:remote_ip) { '127.0.0.1' }
+      let_it_be(:runner) { create(:ci_runner) }
+      let_it_be(:job) { create(:ci_build, :pending, :queued, user: user, project: project) }
+      let_it_be(:options) { { remote_ip: remote_ip, runner: runner, user: user, job: job } }
+
+      using RSpec::Parameterized::TableSyntax
+
+      where(:provided_options, :client) do
+        [:remote_ip]                 | :remote_ip
+        [:remote_ip, :runner]        | :runner
+        [:remote_ip, :runner, :user] | :runner
+        [:remote_ip, :user]          | :user
+        [:job]                       | :user
+      end
+
+      with_them do
+        it 'sets the client_id to the expected value' do
+          context = described_class.new(**options.slice(*provided_options))
+
+          client_id = case client
+                      when :remote_ip then "ip/#{remote_ip}"
+                      when :runner then "runner/#{runner.id}"
+                      when :user then "user/#{user.id}"
+                      end
+
+          expect(result(context)[:client_id]).to eq(client_id)
+        end
+      end
+    end
+
+    context 'when using a runner project' do
+      let_it_be(:owner_project) { create(:project) }
+      let_it_be_with_reload(:runner) { create(:ci_runner, :project, projects: [owner_project]) }
+
+      it 'sets project path from owner project' do
+        context = described_class.new(runner: runner)
+
+        expect(result(context)).to include(project: runner.owner.full_path)
+      end
+
+      context 'when the runner serves multiple projects' do
+        before do
+          create(:ci_runner_project, runner: runner, project: project)
+        end
+
+        it 'sets project path from owner project' do
+          context = described_class.new(runner: runner)
+
+          expect(result(context)).to include(project: runner.owner.full_path)
+        end
+      end
+    end
+
+    context 'when using an instance runner' do
+      let_it_be(:runner) { create(:ci_runner, :instance) }
+
+      it 'does not sets project path' do
+        context = described_class.new(runner: runner)
+
+        expect(result(context)).to include(project: nil)
+      end
+    end
+
+    context 'when using job context' do
+      let_it_be(:job) { create(:ci_build, :pending, :queued, user: user, project: project) }
+
+      it 'sets expected values' do
+        context = described_class.new(job: job)
+
+        expect(result(context)).to include(job_id: job.id, project: project.full_path, pipeline_id: job.pipeline_id)
+      end
+    end
+
+    context 'when using bulk import context' do
+      it 'sets expected bulk_import_entity_id value' do
+        context = described_class.new(bulk_import_entity_id: 1)
+
+        expect(result(context)).to include(bulk_import_entity_id: 1)
+      end
+    end
+
+    context 'when using organization context' do
+      let_it_be(:organization) { create(:organization) }
+
+      it 'sets the organization_id value' do
+        context = described_class.new(organization: organization)
+
+        expect(result(context)).to include(organization_id: organization.id)
+      end
+    end
+
+    context 'when using kubernetes agent context' do
+      let_it_be(:cluster_agent) {  create(:cluster_agent) }
+
+      it 'sets the kubernetes_agent_id value' do
+        context = described_class.new(kubernetes_agent: cluster_agent)
+
+        expect(result(context)).to include(kubernetes_agent_id: cluster_agent.id)
+      end
+    end
+
+    context 'when using auth failure context' do
+      # The AuthFailure struct is pushed as the :auth_fail attribute and expanded
+      # into individual log fields, stored as static values at push time.
+      # Clearing them (e.g. after warden succeeds) requires pushing nil values via
+      # clear_auth_failure_in_application_context.
+      let(:auth_fail) do
+        Gitlab::Auth::AuthFailure.new(
+          reason: 'insufficient_scope',
+          token_id: 'PersonalAccessToken/1',
+          requested_scopes: 'api',
+          token_type: 'PersonalAccessToken',
+          auth_header_type: 'private_token_header'
+        )
+      end
+
+      let(:expanded_log_fields) do
+        {
+          auth_fail_reason: 'insufficient_scope',
+          auth_fail_token_id: 'PersonalAccessToken/1',
+          auth_fail_requested_scopes: 'api',
+          auth_fail_token_type: 'PersonalAccessToken',
+          auth_fail_auth_header_type: 'private_token_header'
+        }
+      end
+
+      it 'expands the auth_fail struct into individual log fields', :aggregate_failures do
+        context = described_class.new(auth_fail: auth_fail)
+
+        expect(result(context)).to include(expanded_log_fields)
+      end
+
+      it 'stores the log fields as static values, not lazy lambdas' do
+        context = described_class.new(auth_fail: auth_fail)
+
+        # to_lazy_hash captures the values at push time, so mutating the struct
+        # afterwards does not change what was already stored.
+        hash = context.to_lazy_hash
+
+        expect(hash.values_at(*expanded_log_fields.keys)).to all(be_a(String))
+      end
+
+      it 'omits auth_fail fields entirely when no auth_fail struct is pushed', :aggregate_failures do
+        context = described_class.new(caller_id: 'some_caller')
+
+        Gitlab::Auth::AuthFailure::LOG_KEYS.each_key do |key|
+          expect(result(context)).not_to have_key(key)
+        end
+      end
+    end
+
+    context 'when using the MVCC manifest context' do
+      it 'sets the mvcc_manifest value' do
+        manifest_sha = '1234567890abcdef1234567890abcdef12345678'
+        context = described_class.new(mvcc_manifest: manifest_sha)
+
+        expect(result(context)).to include(mvcc_manifest: manifest_sha)
+      end
+
+      it 'does not set the mvcc_manifest value when absent' do
+        context = described_class.new(project: project)
+
+        expect(result(context)).not_to have_key(:mvcc_manifest)
+      end
+    end
+
+    context 'when using the Duo Workflow ID context' do
+      it 'sets the duo_workflow_id value' do
+        context = described_class.new(duo_workflow_id: 'wf-abc-123')
+
+        expect(result(context)).to include(duo_workflow_id: 'wf-abc-123')
+      end
+
+      it 'does not set the duo_workflow_id value when absent' do
+        context = described_class.new(project: project)
+
+        expect(result(context)).not_to have_key(:duo_workflow_id)
+      end
+    end
+
+    context 'when using the client service context' do
+      it 'sets the calling service without adding a user identity' do
+        context = described_class.new(client_service: 'orbit-indexer')
+
+        expect(result(context)).to include(client_service: 'orbit-indexer')
+        expect(result(context)).not_to have_key(:user)
+      end
+
+      it 'does not set the calling service when absent' do
+        expect(result(described_class.new(project: project))).not_to have_key(:client_service)
+      end
+    end
+
+    context 'when using the organization source context' do
+      it 'sets the organization_source value' do
+        context = described_class.new(organization_source: 'fallback')
+
+        expect(result(context)).to include(organization_source: 'fallback')
+      end
+
+      it 'does not set the organization_source value when absent' do
+        context = described_class.new(project: project)
+
+        expect(result(context)).not_to have_key(:organization_source)
+      end
+    end
+  end
+
+  describe '#use' do
+    let(:context) { described_class.new(user: build(:user)) }
+
+    it 'yields control' do
+      expect { |b| context.use(&b) }.to yield_control
+    end
+
+    it 'passes the expected context on to labkit' do
+      expect(Labkit::Context).to receive(:with_context).with(a_hash_including(user: duck_type(:call)))
+
+      context.use {}
+    end
+
+    it 'does not cause queries' do
+      context = described_class.new(project: create(:project), namespace: create(:group, :nested), user: create(:user))
+
+      expect { context.use { Gitlab::ApplicationContext.current } }.not_to exceed_query_limit(0)
+    end
+  end
+end

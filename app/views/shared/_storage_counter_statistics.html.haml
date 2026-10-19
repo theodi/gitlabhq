@@ -1,0 +1,6 @@
+%span.gl-text-subtle= _('Storage:')
+.gl-col-span-2
+  %strong= storage_counter(storage_size)
+  - if storage_details
+    (#{storage_counters_details(storage_details)})
+    .gl-text-sm.gl-text-subtle= _('Calculations are made based on projects in the current group. Projects in subgroups are not included.')

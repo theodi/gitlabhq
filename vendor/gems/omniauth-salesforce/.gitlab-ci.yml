@@ -1,0 +1,5 @@
+include:
+  - local: gems/gem.gitlab-ci.yml
+    inputs:
+      gem_name: "omniauth-salesforce"
+      gem_path_prefix: "vendor/gems/"

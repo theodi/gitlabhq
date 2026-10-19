@@ -1,0 +1,15 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Snippet Description component matches the snapshot 1`] = `
+<markdown-field-view-stub
+  data-testid="snippet-description-content"
+>
+  <div
+    class="js-snippet-description md"
+  >
+    <h2>
+      The property of Thor
+    </h2>
+  </div>
+</markdown-field-view-stub>
+`;

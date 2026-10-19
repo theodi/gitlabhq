@@ -1,0 +1,63 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe WorkItems::RelatedWorkItemLink, feature_category: :portfolio_management do
+  let_it_be(:project) { create(:project) }
+  let_it_be(:issue) { create(:work_item, :issue, project: project) }
+
+  it_behaves_like 'issuable link' do
+    let_it_be_with_reload(:issuable_link) { create(:work_item_link) }
+    let_it_be(:issuable) { issue }
+    let_it_be(:issuable2) { create(:work_item, :issue, project: project) }
+    let_it_be(:issuable3) { create(:work_item, :issue, project: project) }
+    let(:issuable_class) { 'WorkItem' }
+    let(:issuable_link_factory) { :work_item_link }
+  end
+
+  it_behaves_like 'includes LinkableItem concern' do
+    let_it_be(:item) { create(:work_item, project: project) }
+    let_it_be(:item1) { create(:work_item, project: project) }
+    let_it_be(:item2) { create(:work_item, project: project) }
+    let_it_be(:link_factory) { :work_item_link }
+    let_it_be(:item_type) { described_class.issuable_name }
+  end
+
+  describe '.order_by_created_at_asc' do
+    let_it_be(:project2) { create(:project) }
+    let_it_be(:item1) { create(:work_item, :issue, project: project) }
+    let_it_be(:item2) { create(:work_item, :issue, project: project) }
+    let_it_be(:item3) { create(:work_item, :issue, project: project2) }
+    let_it_be(:item4) { create(:work_item, :issue, project: project2) }
+    let_it_be(:link_old) { create(:work_item_link, source: item1, target: item2, created_at: 3.days.ago) }
+    let_it_be(:link_new) { create(:work_item_link, source: item3, target: item4, created_at: 1.day.ago) }
+
+    it 'returns links sorted by ascending created_at' do
+      expect(described_class.order_by_created_at_asc).to eq([link_old, link_new])
+    end
+  end
+
+  describe '.issuable_type' do
+    it { expect(described_class.issuable_type).to eq(:issue) }
+  end
+
+  describe '.issuable_name' do
+    it { expect(described_class.issuable_name).to eq('work item') }
+  end
+
+  describe 'validations' do
+    describe 'linking work items' do
+      let(:work_item_types) { [:issue, :task, :epic, :objective, :key_result, :incident, :ticket, :test_case] }
+
+      it 'allows linking between any combination of work item types' do
+        work_item_types.product(work_item_types).each do |source_type_sym, target_type_sym|
+          source = build(:work_item, source_type_sym, project: project)
+          target = build(:work_item, target_type_sym, project: project)
+          link = build(:work_item_link, source: source, target: target)
+
+          expect(link).to be_valid, "Expected #{source_type_sym} -> #{target_type_sym} link to be valid"
+        end
+      end
+    end
+  end
+end

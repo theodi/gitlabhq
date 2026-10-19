@@ -1,0 +1,197 @@
+# @feature_category: mcp_server
+#import "./merge_request_edition_fields.fragment.graphql"
+
+query getMergeRequest(
+  $fullPath: ID!
+  $iid: String!
+  $includeDiffs: Boolean = false
+  $includeDiffFiles: Boolean = false
+  $includeDiffPatches: Boolean = false
+  $includeCommits: Boolean = false
+  $includeNotes: Boolean = false
+  $includePipelines: Boolean = false
+  $includeDiscussions: Boolean = false
+  $includeApprovals: Boolean = false
+  $includeConflicts: Boolean = false
+  $notesAfter: String
+  $notesFirst: Int
+  $notesBefore: String
+  $notesLast: Int
+  $diffsAfter: String
+  $diffsFirst: Int
+  $commitsAfter: String
+  $commitsFirst: Int = 100
+  $pipelinesAfter: String
+  $pipelinesFirst: Int = 100
+) {
+  project(fullPath: $fullPath) {
+    id
+    mergeRequest(iid: $iid) {
+      id
+      iid
+      title
+      description
+      state
+      draft
+      webUrl
+      sourceBranch
+      targetBranch
+      createdAt
+      updatedAt
+      mergedAt
+      conflicts
+      conflictStatus @include(if: $includeConflicts)
+      conflictFiles @include(if: $includeConflicts) {
+        ourPath
+        theirPath
+        content
+      }
+      author {
+        id
+        username
+        name
+      }
+      approved @include(if: $includeApprovals)
+      approvedBy(first: 100) @include(if: $includeApprovals) {
+        pageInfo {
+          hasNextPage
+        }
+        nodes {
+          id
+          username
+          name
+        }
+      }
+      ...MergeRequestEditionFields
+      diffStatsSummary @include(if: $includeDiffs) {
+        additions
+        deletions
+        changes
+        fileCount
+      }
+      diffStats @include(if: $includeDiffFiles) {
+        path
+        additions
+        deletions
+      }
+      diffs(first: $diffsFirst, after: $diffsAfter, expanded: true)
+        @include(if: $includeDiffPatches) {
+        nodes {
+          oldPath
+          newPath
+          aMode
+          bMode
+          newFile
+          renamedFile
+          deletedFile
+          collapsed
+          tooLarge
+          diff
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      commits(first: $commitsFirst, after: $commitsAfter) @include(if: $includeCommits) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          sha
+          shortId
+          title
+          authoredDate
+          authorName
+          webUrl
+        }
+      }
+      pipelines(first: $pipelinesFirst, after: $pipelinesAfter) @include(if: $includePipelines) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          iid
+          sha
+          ref
+          status
+          source
+          path
+          createdAt
+          updatedAt
+        }
+      }
+      discussions(first: 50) @include(if: $includeDiscussions) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          resolvable
+          resolved
+          notes {
+            nodes {
+              id
+              body
+              system
+              internal
+              createdAt
+              author {
+                id
+                username
+                name
+              }
+            }
+          }
+        }
+      }
+      resolvedDiscussionsCount @include(if: $includeNotes)
+      resolvableDiscussionsCount @include(if: $includeNotes)
+      notes(after: $notesAfter, before: $notesBefore, first: $notesFirst, last: $notesLast)
+        @include(if: $includeNotes) {
+        pageInfo {
+          hasNextPage
+          hasPreviousPage
+          startCursor
+          endCursor
+        }
+        count
+        nodes {
+          id
+          webUrl: url
+          body
+          system
+          internal
+          createdAt
+          updatedAt
+          author {
+            id
+            username
+            name
+          }
+          position {
+            newPath
+            oldPath
+            newLine
+            oldLine
+          }
+          discussion {
+            id
+            resolvable
+            resolved
+            resolvedBy {
+              id
+              username
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}

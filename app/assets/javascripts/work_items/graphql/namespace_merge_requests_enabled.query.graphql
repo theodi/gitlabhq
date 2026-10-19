@@ -1,0 +1,7 @@
+# @feature_category: team_planning
+query namespaceMergeRequestsEnabled($fullPath: ID!) {
+  namespace(fullPath: $fullPath) {
+    id
+    mergeRequestsEnabled
+  }
+}

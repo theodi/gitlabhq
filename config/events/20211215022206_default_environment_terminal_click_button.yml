@@ -1,0 +1,17 @@
+description: "Click environment terminal button"
+category: default
+action: click_button
+extra_properties:
+identifiers:
+product_group: environments
+product_categories:
+- environment_management
+milestone: "14.2"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/66968
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`environment_terminal`"

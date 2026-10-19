@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "required" : [
+    "id",
+    "environment_scope",
+    "active"
+  ],
+  "properties" : {
+    "id": { "type": "integer" },
+    "environment_scope": { "type": "string" },
+    "active": { "type": "boolean" },
+    "percentage": { "type": ["integer", "null"] },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" },
+    "strategies": { "type": "array", "items": { "$ref": "feature_flag_strategy.json" } }
+  },
+  "additionalProperties": false
+}

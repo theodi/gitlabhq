@@ -1,0 +1,36 @@
+- page_title _('Labels')
+- can_create_label = can?(current_user, :create_label, @group)
+- search = params[:search]
+- subscribed = params[:subscribed]
+- archived = params[:archived]
+- labels_or_filters = @labels.exists? || search.present? || subscribed.present? || archived.present?
+- add_page_specific_style 'page_bundles/labels'
+
+%h1.gl-sr-only= page_title
+
+= render 'shared/labels/nav', labels_or_filters: labels_or_filters, can_create_label: can_create_label
+
+- if labels_or_filters
+  #js-promote-label-modal
+  .labels-container.gl-mt-5
+    - if @labels.any?
+      .gl-text-subtle.gl-mb-5
+        = labels_function_introduction
+
+      = render ::Layouts::CrudComponent.new(_('Labels'), count: number_with_delimiter(@labels.total_count), icon: 'label', options: { class: 'other-labels' }, body_options: { class: '!gl-m-0' }) do |c|
+        - c.with_body do
+          %ul.manage-labels-list.js-other-labels
+            = render partial: 'shared/label', collection: @labels, as: :label, locals: { use_label_priority: false, subject: @group }
+        - c.with_pagination do
+          = paginate @labels, theme: 'gitlab'
+    - elsif search.present?
+      .nothing-here-block
+        = _('No labels with such name or description')
+    - elsif subscribed.present?
+      .nothing-here-block
+        = _('You do not have any subscriptions yet')
+    - elsif archived.present?
+      .nothing-here-block
+        = _('No archived labels')
+- else
+  = render 'shared/empty_states/labels'

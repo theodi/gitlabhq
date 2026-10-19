@@ -1,0 +1,517 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::AutocompleteService, :with_current_organization, feature_category: :groups_and_projects do
+  let_it_be(:group, freeze: false) { create(:group) }
+  let_it_be(:project, freeze: false) { create(:project, :public, group: group) }
+  let_it_be(:owner, freeze: false) { create(:user, owner_of: project) }
+  let_it_be(:issue, freeze: false) { create(:issue, project: project, title: 'Issue 1') }
+
+  describe '#issues' do
+    it 'calls work_items' do
+      autocomplete = described_class.new(project, owner)
+
+      expect(autocomplete).to receive(:work_items).and_call_original
+      autocomplete.issues
+    end
+
+    describe 'confidential issues' do
+      let_it_be(:author, freeze: false) { create(:user) }
+      let_it_be(:assignee, freeze: false) { create(:user) }
+      let_it_be(:non_member, freeze: false) { create(:user) }
+      let(:member) { create(:user) }
+      let_it_be(:admin, freeze: false) { create(:admin) }
+      let_it_be(:security_issue_1, freeze: false) do
+        create(:issue, :confidential, project: project, title: 'Security issue 1', author: author)
+      end
+
+      let_it_be(:security_issue_2, freeze: false) do
+        create(:issue, :confidential, title: 'Security issue 2', project: project, assignees: [assignee])
+      end
+
+      it 'includes work item icons in list' do
+        autocomplete = described_class.new(project, nil)
+        issues = autocomplete.issues.map(&:icon_name)
+
+        expect(issues).to include 'work-item-issue'
+      end
+
+      it 'does not list project confidential issues for guests' do
+        autocomplete = described_class.new(project, nil)
+        issues = autocomplete.issues.map(&:iid)
+
+        expect(issues).to include issue.iid
+        expect(issues).not_to include security_issue_1.iid
+        expect(issues).not_to include security_issue_2.iid
+        expect(issues.count).to eq 1
+      end
+
+      it 'does not list project confidential issues for non project members' do
+        autocomplete = described_class.new(project, non_member)
+        issues = autocomplete.issues.map(&:iid)
+
+        expect(issues).to include issue.iid
+        expect(issues).not_to include security_issue_1.iid
+        expect(issues).not_to include security_issue_2.iid
+        expect(issues.count).to eq 1
+      end
+
+      it 'does not list project confidential issues for project members with guest role' do
+        project.add_guest(member)
+
+        autocomplete = described_class.new(project, non_member)
+        issues = autocomplete.issues.map(&:iid)
+
+        expect(issues).to include issue.iid
+        expect(issues).not_to include security_issue_1.iid
+        expect(issues).not_to include security_issue_2.iid
+        expect(issues.count).to eq 1
+      end
+
+      it 'lists project confidential issues for author' do
+        autocomplete = described_class.new(project, author)
+        issues = autocomplete.issues.map(&:iid)
+
+        expect(issues).to include issue.iid
+        expect(issues).to include security_issue_1.iid
+        expect(issues).not_to include security_issue_2.iid
+        expect(issues.count).to eq 2
+      end
+
+      it 'lists project confidential issues for assignee' do
+        autocomplete = described_class.new(project, assignee)
+        issues = autocomplete.issues.map(&:iid)
+
+        expect(issues).to include issue.iid
+        expect(issues).not_to include security_issue_1.iid
+        expect(issues).to include security_issue_2.iid
+        expect(issues.count).to eq 2
+      end
+
+      it 'lists project confidential issues for project members' do
+        project.add_developer(member)
+
+        autocomplete = described_class.new(project, member)
+        issues = autocomplete.issues.map(&:iid)
+
+        expect(issues).to include issue.iid
+        expect(issues).to include security_issue_1.iid
+        expect(issues).to include security_issue_2.iid
+        expect(issues.count).to eq 3
+      end
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it 'lists all project issues for admin', :enable_admin_mode do
+          autocomplete = described_class.new(project, admin)
+          issues = autocomplete.issues.map(&:iid)
+
+          expect(issues).to include issue.iid
+          expect(issues).to include security_issue_1.iid
+          expect(issues).to include security_issue_2.iid
+          expect(issues.count).to eq 3
+        end
+      end
+
+      context 'when admin mode is disabled' do
+        it 'does not list project confidential issues for admin' do
+          autocomplete = described_class.new(project, admin)
+          issues = autocomplete.issues.map(&:iid)
+
+          expect(issues).to include issue.iid
+          expect(issues).not_to include security_issue_1.iid
+          expect(issues).not_to include security_issue_2.iid
+          expect(issues.count).to eq 1
+        end
+      end
+    end
+
+    context 'when search param is given' do
+      let_it_be(:issue_8, freeze: false) { create(:issue, project: project, iid: 8) }
+      let_it_be(:issue_80, freeze: false) { create(:issue, project: project, iid: 80) }
+      let_it_be(:issue_800, freeze: false) { create(:issue, project: project, iid: 800) }
+      let_it_be(:issue_8000, freeze: false) { create(:issue, project: project, iid: 8000) }
+      let_it_be(:issue_80000, freeze: false) { create(:issue, project: project, iid: 80000) }
+      let_it_be(:issue_90000, freeze: false) { create(:issue, project: project, title: 'gitlab issue 8', iid: 90000) }
+
+      it 'returns limited list of matching issues' do
+        autocomplete = described_class.new(project, owner, { search: '8' })
+
+        issue_iids = autocomplete.issues.map(&:iid)
+
+        expect(issue_iids).to eq([90000, 80000, 8000, 800, 80])
+      end
+    end
+  end
+
+  describe '#work_items' do
+    it 'returns work items using WorkItemsFinder' do
+      autocomplete = described_class.new(project, owner)
+      result = autocomplete.work_items
+
+      expect(result).to be_present
+      expect(result).to all(be_a(WorkItem))
+    end
+
+    it 'includes work item icons in list' do
+      autocomplete = described_class.new(project, owner)
+      work_items = autocomplete.work_items.map(&:icon_name)
+
+      expect(work_items).to all(start_with('work-item-'))
+    end
+
+    context 'with search parameter' do
+      let_it_be(:issue_8, freeze: false) { create(:issue, project: project, iid: 8) }
+      let_it_be(:issue_80, freeze: false) { create(:issue, project: project, iid: 80) }
+      let_it_be(:issue_800, freeze: false) { create(:issue, project: project, iid: 800) }
+      let_it_be(:issue_8000, freeze: false) { create(:issue, project: project, iid: 8000) }
+      let_it_be(:issue_80000, freeze: false) { create(:issue, project: project, iid: 80000) }
+      let_it_be(:issue_90000, freeze: false) { create(:issue, project: project, title: 'gitlab issue 8', iid: 90000) }
+
+      it 'filters work items by search term' do
+        autocomplete = described_class.new(project, owner, { search: '8' })
+        work_item_iids = autocomplete.work_items.map(&:iid)
+
+        expect(work_item_iids).to eq([90000, 80000, 8000, 800, 80])
+      end
+
+      it 'filters work items by title' do
+        autocomplete = described_class.new(project, owner, { search: 'gitlab' })
+        work_item_iids = autocomplete.work_items.map(&:iid)
+
+        expect(work_item_iids).to include(90000)
+      end
+    end
+
+    context 'with confidential work items' do
+      let(:author) { create(:user) }
+      let(:assignee) { create(:user) }
+      let(:non_member) { create(:user) }
+      let(:member) { create(:user) }
+      let(:admin) { create(:admin) }
+      let!(:security_issue_1) do
+        create(:issue, :confidential, project: project, title: 'Security issue 1', author: author)
+      end
+
+      let!(:security_issue_2) do
+        create(:issue, :confidential, title: 'Security issue 2', project: project, assignees: [assignee])
+      end
+
+      it 'does not list project confidential work items for guests' do
+        autocomplete = described_class.new(project, nil)
+        work_items = autocomplete.work_items.map(&:iid)
+
+        expect(work_items).to include issue.iid
+        expect(work_items).not_to include security_issue_1.iid
+        expect(work_items).not_to include security_issue_2.iid
+      end
+
+      it 'does not list project confidential work items for non project members' do
+        autocomplete = described_class.new(project, non_member)
+        work_items = autocomplete.work_items.map(&:iid)
+
+        expect(work_items).to include issue.iid
+        expect(work_items).not_to include security_issue_1.iid
+        expect(work_items).not_to include security_issue_2.iid
+      end
+
+      it 'lists project confidential work items for author' do
+        autocomplete = described_class.new(project, author)
+        work_items = autocomplete.work_items.map(&:iid)
+
+        expect(work_items).to include issue.iid
+        expect(work_items).to include security_issue_1.iid
+        expect(work_items).not_to include security_issue_2.iid
+      end
+
+      it 'lists project confidential work items for assignee' do
+        autocomplete = described_class.new(project, assignee)
+        work_items = autocomplete.work_items.map(&:iid)
+
+        expect(work_items).to include issue.iid
+        expect(work_items).not_to include security_issue_1.iid
+        expect(work_items).to include security_issue_2.iid
+      end
+
+      it 'lists project confidential work items for project members' do
+        project.add_developer(member)
+
+        autocomplete = described_class.new(project, member)
+        work_items = autocomplete.work_items.map(&:iid)
+
+        expect(work_items).to include issue.iid
+        expect(work_items).to include security_issue_1.iid
+        expect(work_items).to include security_issue_2.iid
+      end
+
+      context 'when admin mode is enabled', :enable_admin_mode do
+        it 'lists all project work items for admin' do
+          autocomplete = described_class.new(project, admin)
+          work_items = autocomplete.work_items.map(&:iid)
+
+          expect(work_items).to include issue.iid
+          expect(work_items).to include security_issue_1.iid
+          expect(work_items).to include security_issue_2.iid
+        end
+      end
+
+      context 'when admin mode is disabled' do
+        it 'does not list project confidential work items for admin' do
+          autocomplete = described_class.new(project, admin)
+          work_items = autocomplete.work_items.map(&:iid)
+
+          expect(work_items).to include issue.iid
+          expect(work_items).not_to include security_issue_1.iid
+          expect(work_items).not_to include security_issue_2.iid
+        end
+      end
+    end
+  end
+
+  describe '#milestones' do
+    let_it_be(:user, freeze: false) { create(:user) }
+    let!(:group_milestone1) { create(:milestone, group: group, due_date: '2017-01-01', title: 'Second Title') }
+    let!(:group_milestone2) { create(:milestone, group: group, due_date: '2017-01-01', title: 'First Title') }
+    let!(:project_milestone) { create(:milestone, project: project, due_date: '2016-01-01') }
+
+    let(:milestone_titles) { described_class.new(project, user).milestones.map(&:title) }
+
+    it 'includes project and group milestones and sorts them correctly' do
+      expect(milestone_titles).to eq([project_milestone.title, group_milestone2.title, group_milestone1.title])
+    end
+
+    it 'does not include closed milestones' do
+      group_milestone1.close
+
+      expect(milestone_titles).to eq([project_milestone.title, group_milestone2.title])
+    end
+
+    it 'does not include milestones from other projects in the group' do
+      other_project = create(:project, group: group)
+      project_milestone.update!(project: other_project)
+
+      expect(milestone_titles).to eq([group_milestone2.title, group_milestone1.title])
+    end
+
+    context 'with nested groups' do
+      let(:subgroup) { create(:group, :public, parent: group) }
+      let!(:subgroup_milestone) { create(:milestone, group: subgroup) }
+
+      before do
+        project.update!(namespace: subgroup)
+      end
+
+      it 'includes project milestones and all acestors milestones' do
+        expect(milestone_titles).to match_array(
+          [project_milestone.title, group_milestone2.title, group_milestone1.title, subgroup_milestone.title]
+        )
+      end
+    end
+  end
+
+  describe '#wikis' do
+    let_it_be(:user, freeze: false) { create(:user) }
+    let_it_be(:group, freeze: false) { create(:group, :public) }
+    let_it_be(:project, freeze: false) { create(:project, :public, group: group) }
+    let_it_be(:wiki, freeze: false) { create(:project_wiki, project: project) }
+    let_it_be(:page1, freeze: false) { create(:wiki_page, wiki: wiki, title: 'page1', content: 'content1') }
+    let_it_be(:page2, freeze: false) do
+      create(:wiki_page, wiki: wiki, title: 'page2', content: "---\ntitle: Real title\n---\ncontent2")
+    end
+
+    context 'when user can read wiki' do
+      let(:service) { described_class.new(project, user) }
+
+      it 'returns wiki pages' do
+        results = service.wikis
+
+        expect(results.size).to eq(2)
+        expect(results.first).to include(path: "/#{project.full_path}/-/wikis/page1", slug: 'page1', title: 'page1')
+      end
+
+      it 'loads real title of the page from frontmatter if present' do
+        results = service.wikis
+
+        expect(results.size).to eq(2)
+        expect(results.last).to include(path: "/#{project.full_path}/-/wikis/page2", slug: 'page2', title: 'Real title')
+      end
+
+      %w[templates uploads].each_with_index do |prefix, index|
+        context "with #{prefix}" do
+          let(:page_number) { index + 3 }
+
+          before do
+            create(:wiki_page, wiki: wiki, title: "#{prefix}/page#{page_number}", content: "content#{page_number}")
+          end
+
+          it "does not return #{prefix}" do
+            results = service.wikis
+
+            expect(results.pluck(:slug)).not_to include("#{prefix}/page#{page_number}")
+          end
+        end
+      end
+    end
+
+    context 'when user cannot read wiki' do
+      it 'returns empty array' do
+        project.project_feature.update!(wiki_access_level: ProjectFeature::PRIVATE)
+
+        service = described_class.new(project, nil)
+        results = service.wikis
+
+        expect(results).to be_empty
+      end
+    end
+  end
+
+  describe '#contacts' do
+    let_it_be(:user, freeze: false) { create(:user) }
+    let_it_be(:contact_1, freeze: false) { create(:contact, group: group) }
+    let_it_be(:contact_2, freeze: false) { create(:contact, group: group) }
+    let_it_be(:contact_3, freeze: false) { create(:contact, :inactive, group: group) }
+
+    let(:issue) { nil }
+
+    subject { described_class.new(project, user).contacts(issue).as_json }
+
+    before_all do
+      group.add_developer(user)
+    end
+
+    it 'returns CRM contacts from group' do
+      expected_contacts = [
+        { 'id' => contact_1.id, 'email' => contact_1.email,
+          'first_name' => contact_1.first_name, 'last_name' => contact_1.last_name, 'state' => contact_1.state },
+        { 'id' => contact_2.id, 'email' => contact_2.email,
+          'first_name' => contact_2.first_name, 'last_name' => contact_2.last_name, 'state' => contact_2.state },
+        { 'id' => contact_3.id, 'email' => contact_3.email,
+          'first_name' => contact_3.first_name, 'last_name' => contact_3.last_name, 'state' => contact_3.state }
+      ]
+
+      expect(subject).to match_array(expected_contacts)
+    end
+
+    context 'some contacts are already assigned to the issue' do
+      let(:issue) { create(:issue, project: project) }
+
+      before do
+        issue.customer_relations_contacts << [contact_2, contact_3]
+      end
+
+      it 'marks already assigned contacts as set' do
+        expected_contacts = [
+          { 'id' => contact_1.id, 'email' => contact_1.email,
+            'first_name' => contact_1.first_name, 'last_name' => contact_1.last_name, 'state' => contact_1.state, 'set' => false },
+          { 'id' => contact_2.id, 'email' => contact_2.email,
+            'first_name' => contact_2.first_name, 'last_name' => contact_2.last_name, 'state' => contact_2.state, 'set' => true },
+          { 'id' => contact_3.id, 'email' => contact_3.email,
+            'first_name' => contact_3.first_name, 'last_name' => contact_3.last_name, 'state' => contact_3.state, 'set' => true }
+        ]
+
+        expect(subject).to match_array(expected_contacts)
+      end
+    end
+  end
+
+  describe '#labels_as_hash' do
+    def expect_labels_to_equal(labels, expected_labels)
+      expect(labels.size).to eq(expected_labels.size)
+      extract_title = ->(label) { label['title'] }
+      expect(labels.map(&extract_title)).to match_array(expected_labels.map(&extract_title))
+    end
+
+    let_it_be(:user, freeze: false) { create(:user) }
+    let_it_be(:group, freeze: false) { create(:group, :nested, developers: user) }
+    let_it_be(:sub_group, freeze: false) { create(:group, parent: group) }
+    let_it_be(:project, freeze: false) { create(:project, :public, group: group) }
+    let(:issue) { create(:issue, project: project) }
+
+    let_it_be(:label1, freeze: false) { create(:label, project: project) }
+    let_it_be(:label2, freeze: false) { create(:label, project: project) }
+    let_it_be(:sub_group_label, freeze: false) { create(:group_label, group: sub_group) }
+    let_it_be(:parent_group_label, freeze: false) { create(:group_label, group: group.parent, group_id: group.id) }
+
+    it 'returns labels from project and ancestor groups' do
+      service = described_class.new(project, user)
+      results = service.labels_as_hash(nil)
+      expected_labels = [label1, label2, parent_group_label]
+
+      expect_labels_to_equal(results, expected_labels)
+    end
+
+    context 'some labels are already assigned' do
+      before do
+        issue.labels << label1
+      end
+
+      it 'marks already assigned as set' do
+        service = described_class.new(project, user)
+        results = service.labels_as_hash(issue)
+        expected_labels = [label1, label2, parent_group_label]
+
+        expect_labels_to_equal(results, expected_labels)
+
+        assigned_label_titles = issue.labels.map(&:title)
+        results.each do |hash|
+          if assigned_label_titles.include?(hash['title'])
+            expect(hash[:set]).to be(true)
+          else
+            expect(hash.key?(:set)).to be(false)
+          end
+        end
+      end
+    end
+
+    context 'with archived labels' do
+      let_it_be(:archived_label, freeze: false) { create(:label, :archived, project: project) }
+
+      subject(:results) { described_class.new(project, user).labels_as_hash(nil) }
+
+      it 'does not return archived labels' do
+        expected_labels = [label1, label2, parent_group_label]
+
+        expect_labels_to_equal(results, expected_labels)
+      end
+    end
+  end
+
+  describe '#commands' do
+    subject(:commands) { described_class.new(project, owner).commands(issue) }
+
+    context 'spend' do
+      it 'params include timecategory' do
+        expect(commands).to include(a_hash_including(
+          name: :spend,
+          params: ['time(1h30m | -1h30m) <date(YYYY-MM-DD)> <[timecategory:category-name]>']
+        ))
+      end
+
+      context 'when timelog_category_quick_action feature flag is disabled' do
+        before do
+          stub_feature_flags(timelog_categories: false)
+        end
+
+        it 'params do not include timecategory' do
+          expect(commands).to include(a_hash_including(
+            name: :spend,
+            params: ['time(1h30m | -1h30m) <date(YYYY-MM-DD)>']
+          ))
+        end
+      end
+    end
+  end
+
+  describe '#snippets' do
+    let_it_be(:user, freeze: false) { create(:user) }
+
+    it 'passes organization_id to SnippetsFinder' do
+      expect(SnippetsFinder).to receive(:new).with(
+        user,
+        hash_including(organization_id: current_organization.id)
+      ).and_call_original
+
+      described_class.new(project, user, { organization_id: current_organization.id }).snippets
+    end
+  end
+end

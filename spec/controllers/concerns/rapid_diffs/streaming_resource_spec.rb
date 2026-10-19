@@ -1,0 +1,449 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe RapidDiffs::StreamingResource, feature_category: :source_code_management do
+  subject(:controller) do
+    Class.new(ApplicationController) do
+      include RapidDiffs::StreamingResource
+
+      def call_options
+        streaming_diff_options
+      end
+
+      def diff_options
+        {
+          ignore_whitespace_change: false,
+          expanded: false,
+          use_extra_viewer_as_main: true,
+          offset_index: 0
+        }
+      end
+
+      attr_accessor :rapid_diffs_presenter
+    end
+  end
+
+  describe '#options' do
+    it 'returns hash of diff_options' do
+      expect(controller.new.call_options).to eq({
+        ignore_whitespace_change: false,
+        expanded: false,
+        use_extra_viewer_as_main: true,
+        offset_index: 0
+      })
+    end
+  end
+
+  describe '#request' do
+    it 'forces format as HTML' do
+      expect(controller.new.request.format.to_s).to eq('text/html')
+    end
+  end
+
+  # ActionController::TestCase makes the streaming thread run its block inline
+  describe '#new_controller_thread' do
+    let(:controller_instance) { controller.new }
+    let(:events) { [] }
+
+    before do
+      allow(controller_instance).to receive(:release_database_connections) { events << :released }
+    end
+
+    it 'releases the database connections once the streaming thread finishes' do
+      controller_instance.send(:new_controller_thread) { events << :streamed }
+
+      expect(events).to eq([:streamed, :released])
+    end
+
+    it 'releases the database connections when the streaming thread raises' do
+      expect { controller_instance.send(:new_controller_thread) { raise ArgumentError } }.to raise_error(ArgumentError)
+
+      expect(events).to eq([:released])
+    end
+  end
+
+  describe '#release_database_connections' do
+    it 'releases the connections of the current thread to every host and the primary', :aggregate_failures do
+      expect(Gitlab::Database::LoadBalancing).to receive(:release_all_connections).with(no_args)
+      expect(ApplicationRecord.connection_handler).to receive(:clear_active_connections!).with(no_args)
+
+      controller.new.send(:release_database_connections)
+    end
+
+    it 'tracks an error raised while releasing the connections instead of raising it' do
+      error = StandardError.new('release failed')
+      allow(Gitlab::Database::LoadBalancing).to receive(:release_all_connections).and_raise(error)
+
+      expect(Gitlab::ErrorTracking).to receive(:track_exception).with(error)
+
+      expect { controller.new.send(:release_database_connections) }.not_to raise_error
+    end
+  end
+
+  describe '#current_user' do
+    let(:controller_instance) { controller.new }
+    let(:user) { nil }
+    let(:warden) { instance_double(Warden::Proxy, authenticate: user) }
+
+    before do
+      allow(controller_instance).to receive_messages(warden: warden, session: {})
+    end
+
+    it 'resolves the user through Warden while nothing is memoized' do
+      expect(controller_instance.current_user).to be_nil
+      expect(warden).to have_received(:authenticate)
+    end
+
+    context 'when the user was resolved before streaming started' do
+      before do
+        controller_instance.current_user
+        allow(controller_instance).to receive(:warden).and_raise(Devise::MissingWarden)
+      end
+
+      it 'reuses the anonymous user' do
+        expect(controller_instance.current_user).to be_nil
+      end
+
+      context 'with a signed in user' do
+        let(:user) { build_stubbed(:user) }
+
+        it 'reuses the signed in user' do
+          expect(controller_instance.current_user).to eq(user)
+        end
+      end
+    end
+  end
+
+  describe '#environment' do
+    let(:controller_instance) { controller.new }
+
+    context 'when environment is set' do
+      let(:environment) { build(:environment) }
+
+      before do
+        controller_instance.instance_variable_set(:@environment, environment)
+      end
+
+      it 'returns the environment' do
+        expect(controller_instance.send(:environment)).to eq(environment)
+      end
+    end
+
+    context 'when environment is not set' do
+      it 'returns nil' do
+        expect(controller_instance.send(:environment)).to be_nil
+      end
+    end
+  end
+
+  describe '#diff_file_component' do
+    let(:controller_instance) { controller.new }
+    let(:diff_file) { build(:diff_file) }
+
+    before do
+      allow(controller_instance).to receive_message_chain(:helpers, :diff_view).and_return(:inline)
+    end
+
+    context 'when environment is nil' do
+      it 'creates a DiffFileComponent with nil environment' do
+        expect(::RapidDiffs::DiffFileComponent).to receive(:new)
+                                                     .with(
+                                                       diff_file: diff_file,
+                                                       parallel_view: false,
+                                                       environment: nil
+                                                     )
+
+        controller_instance.send(:diff_file_component, diff_file)
+      end
+    end
+
+    context 'when environment is set' do
+      let(:environment) { build(:environment) }
+
+      before do
+        controller_instance.instance_variable_set(:@environment, environment)
+      end
+
+      it 'creates a DiffFileComponent with the environment' do
+        expect(::RapidDiffs::DiffFileComponent).to receive(:new)
+                                                     .with(
+                                                       diff_file: diff_file,
+                                                       parallel_view: false,
+                                                       environment: environment
+                                                     )
+
+        controller_instance.send(:diff_file_component, diff_file)
+      end
+    end
+
+    context 'when view is parallel' do
+      let(:environment) { build(:environment) }
+
+      before do
+        allow(controller_instance).to receive_message_chain(:helpers, :diff_view).and_return(:parallel)
+        controller_instance.instance_variable_set(:@environment, environment)
+      end
+
+      it 'creates a DiffFileComponent with parallel_view: true' do
+        expect(::RapidDiffs::DiffFileComponent).to receive(:new)
+                                                     .with(
+                                                       diff_file: diff_file,
+                                                       parallel_view: true,
+                                                       environment: environment
+                                                     )
+
+        controller_instance.send(:diff_file_component, diff_file)
+      end
+    end
+  end
+
+  describe '#diff_files_collection' do
+    let(:controller_instance) { controller.new }
+    let(:diff_files) { [build(:diff_file), build(:diff_file)] }
+
+    before do
+      allow(controller_instance).to receive_message_chain(:helpers, :diff_view).and_return(:inline)
+    end
+
+    context 'when environment is nil' do
+      it 'creates a DiffFileComponent collection with nil environment' do
+        expect(::RapidDiffs::DiffFileComponent).to receive(:with_collection)
+                                                     .with(
+                                                       diff_files,
+                                                       parallel_view: false,
+                                                       environment: nil
+                                                     )
+
+        controller_instance.send(:diff_files_collection, diff_files)
+      end
+    end
+
+    context 'when environment is set' do
+      let(:environment) { build(:environment) }
+
+      before do
+        controller_instance.instance_variable_set(:@environment, environment)
+      end
+
+      it 'creates a DiffFileComponent collection with the environment' do
+        expect(::RapidDiffs::DiffFileComponent).to receive(:with_collection)
+                                                     .with(
+                                                       diff_files,
+                                                       parallel_view: false,
+                                                       environment: environment
+                                                     )
+
+        controller_instance.send(:diff_files_collection, diff_files)
+      end
+    end
+
+    context 'when view is parallel' do
+      let(:environment) { build(:environment) }
+
+      before do
+        allow(controller_instance).to receive_message_chain(:helpers, :diff_view).and_return(:parallel)
+        controller_instance.instance_variable_set(:@environment, environment)
+      end
+
+      it 'creates a DiffFileComponent collection with parallel_view: true' do
+        expect(::RapidDiffs::DiffFileComponent).to receive(:with_collection)
+                                                     .with(
+                                                       diff_files,
+                                                       parallel_view: true,
+                                                       environment: environment
+                                                     )
+
+        controller_instance.send(:diff_files_collection, diff_files)
+      end
+    end
+  end
+
+  describe '#diffs_stream' do
+    let(:controller_instance) { controller.new }
+    let(:mock_presenter) { instance_double(RapidDiffs::BasePresenter) }
+    let(:diff_files) { [build(:diff_file)] }
+    let(:stream) { instance_double(ActionDispatch::Response::Buffer, write: nil, close: nil, closed?: false) }
+    let(:response) { instance_double(ActionDispatch::Response, stream: stream) }
+
+    let(:empty_state_html) { '<empty-state>No changes</empty-state>' }
+    let(:diff_html) { '<diff-file></diff-file>' }
+
+    before do
+      controller_instance.rapid_diffs_presenter = mock_presenter
+      allow(controller_instance).to receive_messages(
+        response: response,
+        rapid_diffs_enabled?: true,
+        view_context: nil,
+        stream_headers: nil,
+        params: ActionController::Parameters.new)
+      allow(controller_instance).to receive_message_chain(:helpers, :diff_view).and_return('inline')
+      allow(mock_presenter).to receive(:diff_files_for_streaming).and_return(diff_files)
+      allow(RapidDiffs::DiffFileComponent).to receive_message_chain(:with_collection, :render_in)
+                                                .and_return(diff_html)
+      allow(RapidDiffs::DiffFileComponent).to receive_message_chain(:new, :call)
+                                                .and_return(diff_html)
+      allow(RapidDiffs::DiffFileComponent).to receive_message_chain(:new, :render_in)
+                                                .and_return(diff_html)
+    end
+
+    it 'renders diffs' do
+      controller_instance.send(:diffs_stream)
+      expect(response.stream).to have_received(:write).with(diff_html)
+      # ensure we're not doing double work when checking for empty state
+      expect(mock_presenter).to have_received(:diff_files_for_streaming).once
+    end
+
+    it 'writes server-timings element with metrics', :aggregate_failures do
+      controller_instance.send(:diffs_stream)
+      expect(response.stream).to have_received(:write).with(a_string_matching(/\A<server-timings /))
+      expect(response.stream).to have_received(:write).with(a_string_matching(/streaming="[\d.]+"/))
+      expect(response.stream).to have_received(:write).with(a_string_matching(/rpc="[\d.]+"/))
+      expect(response.stream).to have_received(:write).with(a_string_matching(/rendering="[\d.]+"/))
+    end
+
+    context 'with non-sequential collapsed diffs' do
+      let(:diff_files) do
+        collapsed_diff = build(:diff_file)
+        expanded_diff = build(:diff_file)
+        allow(collapsed_diff).to receive(:no_preview?).and_return(true)
+        allow(expanded_diff).to receive(:no_preview?).and_return(false)
+        [expanded_diff, collapsed_diff, expanded_diff, collapsed_diff]
+      end
+
+      it 'renders diffs' do
+        controller_instance.send(:diffs_stream)
+        expect(response.stream).to have_received(:write).with(diff_html).exactly(diff_files.count).times
+        # ensure we're not doing double work when checking for empty state
+        expect(mock_presenter).to have_received(:diff_files_for_streaming).once
+      end
+    end
+
+    context 'when no diffs and no offset' do
+      let(:diff_files) { [] }
+
+      before do
+        allow(controller_instance).to receive(:params).and_return(ActionController::Parameters.new)
+        allow(controller_instance).to receive(:render).with(anything, layout: false), &:call
+        allow(RapidDiffs::EmptyStateComponent).to receive_message_chain(:new, :call).and_return(empty_state_html)
+      end
+
+      it 'renders empty state' do
+        controller_instance.send(:diffs_stream)
+        expect(response.stream).to have_received(:write).with(empty_state_html)
+      end
+    end
+
+    context 'when offset is provided' do
+      before do
+        allow(controller_instance).to receive(:params).and_return(ActionController::Parameters.new(offset: '5'))
+      end
+
+      it 'renders diffs' do
+        controller_instance.send(:diffs_stream)
+        expect(response.stream).to have_received(:write).with(diff_html)
+      end
+    end
+
+    context 'when skip parameters are provided' do
+      let(:skipped_file) do
+        build(:diff_file).tap do |file|
+          allow(file).to receive_messages(old_path: 'skip.txt', new_path: 'skip.txt')
+        end
+      end
+
+      let(:other_file) do
+        build(:diff_file).tap do |file|
+          allow(file).to receive_messages(old_path: 'other.txt', new_path: 'other.txt')
+        end
+      end
+
+      let(:diff_files) { [skipped_file, other_file] }
+
+      before do
+        allow(controller_instance).to receive(:params).and_return(
+          ActionController::Parameters.new(skip_old_path: 'skip.txt', skip_new_path: 'skip.txt', offset: '1')
+        )
+      end
+
+      it 'skips the file matching skip parameters' do
+        controller_instance.send(:diffs_stream)
+        expect(response.stream).to have_received(:write).with(diff_html).once
+      end
+    end
+
+    context 'when stream is already closed' do
+      before do
+        allow(controller_instance).to receive(:stream_diff_files).and_wrap_original do |original_method, *args|
+          original_method.call(*args)
+          allow(stream).to receive(:closed?).and_return(true)
+        end
+      end
+
+      it 'does not raise an IOError when closing the stream' do
+        expect { controller_instance.send(:diffs_stream) }.not_to raise_error
+        expect(stream).not_to have_received(:close)
+      end
+    end
+
+    context 'when stream is lost' do
+      where(:error) do
+        [
+          [[ActionController::Live::ClientDisconnected]],
+          [[IOError, 'closed stream']]
+        ]
+      end
+
+      with_them do
+        before do
+          allow(stream).to receive(:write).and_raise(*error)
+        end
+
+        it 'silently handles the disconnection' do
+          expect { controller_instance.send(:diffs_stream) }.not_to raise_error
+          expect(Gitlab::AppLogger).not_to receive(:error)
+        end
+      end
+    end
+
+    context 'with diff_blobs flag enabled' do
+      let(:user) { create(:user) }
+
+      before do
+        stub_feature_flags(rapid_diffs_debug: true)
+        allow(controller_instance).to receive_messages(
+          current_user: user,
+          params: ActionController::Parameters.new(diff_blobs: 'true')
+        )
+      end
+
+      context 'when diff files are present' do
+        before do
+          allow(mock_presenter).to receive(:diff_files_for_streaming_by_changed_paths).and_yield(diff_files)
+        end
+
+        it 'streams diff files using diff_blobs path' do
+          controller_instance.send(:diffs_stream)
+
+          expect(mock_presenter).to have_received(:diff_files_for_streaming_by_changed_paths)
+          expect(response.stream).to have_received(:write).with(diff_html)
+        end
+      end
+
+      context 'when no diff files are present' do
+        let(:diff_files) { [] }
+
+        before do
+          allow(controller_instance).to receive(:render).with(anything, layout: false), &:call
+          allow(RapidDiffs::EmptyStateComponent).to receive_message_chain(:new, :call).and_return(empty_state_html)
+        end
+
+        it 'renders empty state using diff_blobs path' do
+          controller_instance.send(:diffs_stream)
+
+          expect(response.stream).to have_received(:write).with(empty_state_html)
+        end
+      end
+    end
+  end
+end

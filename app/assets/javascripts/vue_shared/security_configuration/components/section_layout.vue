@@ -1,0 +1,45 @@
+<script>
+import SectionLoader from './section_loader.vue';
+
+export default {
+  name: 'SectionLayout',
+  components: {
+    SectionLoader,
+  },
+  props: {
+    heading: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    isLoading: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    stacked: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+};
+</script>
+
+<template>
+  <div
+    class="gl-border-b gl-m-0 gl-py-6 gl-leading-20"
+    :class="stacked ? 'gl-display-flex gl-flex-direction-column gl-gap-5' : 'row'"
+  >
+    <div :class="stacked ? 'gl-pl-0 gl-pr-0' : 'gl-col-lg-4 gl-pl-0 gl-pr-9'">
+      <h2 v-if="heading" class="gl-mt-0 gl-text-size-h2">{{ heading }}</h2>
+      <slot v-else name="heading"></slot>
+      <slot name="description"></slot>
+    </div>
+
+    <div :class="stacked ? 'gl-pl-0 gl-pr-0' : 'gl-col-lg-8 gl-pl-0 gl-pr-0'">
+      <section-loader v-if="isLoading" />
+      <slot v-else name="features"></slot>
+    </div>
+  </div>
+</template>

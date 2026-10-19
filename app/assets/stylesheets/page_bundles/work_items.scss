@@ -1,0 +1,672 @@
+@import 'mixins_and_variables_and_functions';
+@import 'issues_show';
+@import 'issues_list';
+
+$work-item-field-inset-shadow: inset 0 0 0 $gl-border-size-1 var(--gray-200, $gray-200) !important;
+$work-item-overview-right-sidebar-width: px-to-rem(290px);
+$work-item-overview-gap-width: 2rem;
+
+// sticky error placement for errors in modals, by default it is 83px for full view
+#work-item-detail-modal {
+  .flash-container.flash-container-page.sticky {
+    top: -8px;
+  }
+}
+
+
+// stylelint-disable-next-line gitlab/no-gl-class, gitlab/no-has -- scoped to a specific work-item-view element
+.gl-modal .work-item-view,
+:where(.page-with-panels) .work-item-view, // when it's in a panel, treat work items like drawers
+.work-item-detail-panel .work-item-view:not(:has(.design-detail)) {
+  container-name: work-item-view;
+  container-type: inline-size;
+}
+
+.work-item-detail-panel {
+  // Bottom clearance from the panel's rounded edge is provided by .panel-content;
+  // duplicating it here made the drawer's scroll area shorter than other panels.
+  @apply gl-pt-0;
+  @apply gl-h-full;
+  @apply gl-bg-default;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  contain: layout;
+  transition: none;
+}
+
+.workplan-editor {
+  margin-inline: calc(var(--container-padding-x) * -1);
+}
+
+.work-item-detail-panel-content {
+  @apply gl-flex-1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  // these allow space for focus rings that are up against the edges of the content div to show
+  margin-inline: -4px;
+  padding-inline: 4px;
+}
+
+// In the work item detail panel the dynamic panel's .panel-content-inner is the
+// scroll container, so the work item detail must not become one itself: its
+// overflow would trap the sticky sidebar and stop it from sticking. Scope this
+// to the .panel-content-inner structure so panels that reuse these classes
+// without a dynamic panel (e.g. the work plan panel) keep their own scrolling.
+.work-item-detail-panel .panel-content-inner .work-item-detail-panel-content {
+  overflow: visible;
+}
+
+@include gl-container-width-down(md, panel) {
+  .work-item-overview {
+    display: block !important;
+  }
+
+  .work-item-container-xs-hidden {
+    display: none !important;
+  }
+}
+
+.work-item-overview:not(.sidebar-hidden) {
+  @include gl-container-width-up(md) {
+    display: grid;
+    // allow the main content area to shrink
+    // grid items have "max-width: auto" so without the minmax the content can
+    // spill outside of the overview container
+    $work-item-sidebar-min-width: 13rem;
+    grid-template-columns: minmax(67%, 1fr) minmax($work-item-sidebar-min-width, $work-item-overview-right-sidebar-width);
+    column-gap: $work-item-overview-gap-width;
+  }
+}
+
+.work-item-overview-right-sidebar {
+   .work-item-attributes-item {
+    @apply gl-mb-4;
+
+    &:not(:first-child) {
+      @apply gl-pt-4;
+      @apply gl-border-t;
+      @apply gl-border-subtle;
+    }
+  }
+}
+
+// 2-column layout for attributes at sm container widths, where the sidebar
+// sits below content full-width. Reverts to single column at md+, where the
+// sidebar becomes a narrow right column.
+.work-item-attributes-wrapper {
+  @include gl-container-width-up(sm) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--gl-detail-layout-gap, $gl-spacing-scale-7);
+
+    // First item of the right column has nothing above it within its column,
+    // so drop the separator border applied by the sidebar rule above.
+    > .work-item-attributes-item:nth-child(2) {
+      @apply gl-border-t-0;
+      @apply gl-pt-0;
+    }
+  }
+
+  @include gl-container-width-up(md) {
+    display: block;
+
+    > .work-item-attributes-item:nth-child(2) {
+      @apply gl-border-t;
+      @apply gl-pt-4;
+    }
+  }
+}
+
+.create-work-item-description {
+  .markdown-area,
+  .rte-text-box {
+    @include gl-container-width-up(sm) {
+      min-height: 38vh;
+    }
+  }
+}
+
+@include gl-container-width-up(md) {
+   .work-item-attributes-wrapper {
+    padding-inline: $gl-spacing-scale-3;
+  }
+}
+
+// There is no props to set the font weight class in GlToggle
+// Here, we are overriding the font weight
+.work-item-dropdown-toggle {
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-toggle-label {
+    font-weight: normal;
+  }
+
+  a, a:hover {
+    @apply gl-text-default;
+    text-decoration: none;
+  }
+}
+
+.work-item-display-settings-drawer {
+  .work-item-dropdown-toggle {
+    @apply gl-px-0;
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-new-dropdown-item-content {
+      @apply gl-px-0;
+    }
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-new-dropdown-item-text-wrapper {
+      padding-block: 6px;
+      padding-inline: 12px;
+    }
+  }
+}
+
+.editable-wi-title {
+  width: 100%;
+  @include gl-container-width-up(md, panel) {
+    width: calc(100% - #{$work-item-overview-right-sidebar-width} - #{$work-item-overview-gap-width});
+  }
+}
+// Disclosure hierarchy component, used for Ancestors widget
+
+$disclosure-hierarchy-chevron-dimension: 1.2rem;
+
+@mixin hierarchy-active-item-color {
+  background-color: var(--gl-action-neutral-background-color-hover);
+
+  &::after {
+    background-color: var(--gl-action-neutral-background-color-hover);
+    z-index: 3;
+  }
+}
+
+.disclosure-hierarchy {
+  @include gl-container-width-up(sm, panel) {
+    margin-right: $gl-spacing-scale-7;
+  }
+}
+
+.disclosure-hierarchy-item:first-child,
+.disclosure-hierarchy-item:last-child {
+  flex-shrink: 1;
+}
+
+.disclosure-hierarchy-button {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: $gl-spacing-scale-48;
+  padding-left: $gl-spacing-scale-4;
+  padding-top: calc(#{$gl-spacing-scale-3} - 1px);
+  padding-bottom: calc(#{$gl-spacing-scale-3} - 1px);
+  display: flex;
+  position: relative;
+  font-size: $gl-font-size-sm;
+  @apply gl-border;
+  border-right-style: none;
+  border-left-style: none;
+  line-height: $gl-line-height-16;
+  padding-right: $grid-size;
+  background: var(--gl-background-color-default);
+  color: var(--gl-action-neutral-foreground-color-default);
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    background-color: inherit;
+    top: 0.39rem;
+    right: px-to-rem(-9px);
+    width: $disclosure-hierarchy-chevron-dimension;
+    height: $disclosure-hierarchy-chevron-dimension;
+    transform: rotate(45deg) skew(14deg, 14deg);
+    @apply gl-border;
+    border-color: inherit;
+    border-bottom-color: transparent;
+    border-left-color: transparent;
+    border-top-left-radius: $gl-border-radius-small;
+    border-bottom-right-radius: $gl-border-radius-small;
+  }
+
+  &::before {
+    background: var(--gl-background-color-default);
+    left: -10px;
+    z-index: 1;
+  }
+
+  &::after {
+    z-index: 0;
+  }
+
+  .disclosure-hierarchy-item:first-child & {
+    padding-left: $gl-spacing-scale-3;
+    @apply gl-border-l;
+    border-top-left-radius: $gl-border-radius-base;
+    border-bottom-left-radius: $gl-border-radius-base;
+
+    &::before {
+      display: none;
+    }
+
+    &:active,
+    &:focus-visible,
+    &:focus-visible:active {
+      // Custom focus
+      box-shadow: 1px 1px 0 1px var(--gl-focus-ring-outer-color), 2px -1px 0 1px var(--gl-focus-ring-outer-color), -1px 1px 0 1px var(--gl-focus-ring-outer-color), -1px -1px 0 1px var(--gl-focus-ring-outer-color) !important;
+    }
+  }
+
+  .disclosure-hierarchy-item:last-child & {
+    padding-right: $gl-spacing-scale-4;
+    @apply gl-border-r;
+    border-top-right-radius: $gl-border-radius-base;
+    border-bottom-right-radius: $gl-border-radius-base;
+
+    &::after {
+      display: none;
+    }
+  }
+
+  &[disabled] {
+    @apply gl-text-disabled;
+    cursor: not-allowed;
+  }
+
+  &:not([disabled]):hover {
+    border-color: var(--gl-border-color-default);
+    @include hierarchy-active-item-color;
+    color: var(--gl-action-neutral-foreground-color-hover);
+
+    &::after {
+      @apply gl-border-l-0;
+      @apply gl-border-r-0;
+    }
+  }
+
+  &:active,
+  &:focus-visible,
+  &:focus-visible:active {
+    // Custom focus
+    box-shadow: 1px 1px 0 1px var(--gl-focus-ring-outer-color), 2px -1px 0 1px var(--gl-focus-ring-outer-color) !important;
+    outline: none;
+    border-top: 1px solid var(--gl-action-neutral-border-color-default);
+    border-bottom: 1px solid var(--gl-action-neutral-border-color-default);
+    @include hierarchy-active-item-color;
+    border-radius: $gl-border-radius-small;
+    color: var(--gl-action-neutral-foreground-color-focus);
+
+    &::before, &::after {
+      box-shadow: 2px -2px 0 1px var(--gl-focus-ring-outer-color);
+    }
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.work-item-sidebar-dropdown .gl-new-dropdown-panel {
+    width: 100% !important;
+    max-width: 17rem !important;
+}
+
+.work-item-description .truncated {
+  min-height: 16rem;
+  max-height: 80vh;
+  overflow: hidden;
+}
+
+.is-ghost {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+// Styles BOARD_CARD_DROP_INDICATOR_CLASS. The `.board-card-list >` prefix is needed to
+// outrank the card's own utility classes, which load after this page bundle.
+.board-card-list > .board-card-drop-indicator {
+  position: relative;
+  height: 0;
+  min-height: 0;
+  border: 0;
+  pointer-events: none;
+
+  > * {
+    display: none;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    top: -1px;
+    height: 2px;
+    border-radius: 1px;
+    background-color: var(--gl-highlight-target-border-color);
+  }
+}
+
+// An empty column has only one drop slot, so while a card is over it the whole
+// empty state becomes the drop layer and the insertion line is hidden.
+.board-card-list.is-drop-target > .board-column-empty-state {
+  border: 2px solid var(--gl-focus-ring-outer-color);
+  border-radius: var(--gl-border-radius-lg);
+  color: var(--gl-text-color-default);
+  padding-block-start: 4rem;
+
+  > * {
+    display: none;
+  }
+
+  &::after {
+    content: attr(data-drop-text);
+    margin-block-end: auto;
+  }
+}
+
+.board-card-list.is-drop-target > .board-card-drop-indicator::after {
+  display: none;
+}
+
+.design-scaler-wrapper {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.work-item-design-widget-container {
+  container-type: inline-size;
+  container-name: work-item-design-widget;
+
+  .work-item-design-grid {
+    @apply gl-grid;
+    @apply gl-grid-cols-2;
+  }
+
+  .design-list-item {
+    height: unset;
+  }
+
+  .work-item-design-hidden-xs {
+    @apply gl-hidden;
+  }
+
+  @container work-item-design-widget (min-width: #{$breakpoint-sm}) {
+    .work-item-design-grid {
+      @apply gl-grid-cols-3;
+    }
+
+    .work-item-design-show-sm {
+      @apply gl-block;
+    }
+
+    .work-item-design-hidden-sm {
+      @apply gl-hidden;
+    }
+  }
+
+  @container work-item-design-widget (min-width: #{$breakpoint-md}) {
+    .work-item-design-grid {
+      @apply gl-grid-cols-4;
+    }
+  }
+
+  @container work-item-design-widget (min-width: #{$breakpoint-xl}) {
+    .work-item-design-grid {
+      @apply gl-grid-cols-6;
+    }
+  }
+}
+
+.work-item-list-container, .planning-view {
+  .row-content-block {
+    @apply gl-bg-transparent;
+    @apply gl-border-b-0;
+    @apply gl-p-0;
+  }
+
+  .sticky-filter {
+    @apply gl-bg-default;
+    @apply gl-left-0;
+    @apply gl-pt-2;
+    @apply gl-pb-3;
+    @apply gl-px-[--container-padding-x];
+    @apply gl-border-b;
+  }
+}
+
+.work-item-display-settings-drawer {
+  width: 20rem !important;
+}
+
+.work-item-sidebar-container {
+  container-type: inline-size;
+  container-name: work-item-sidebar;
+
+  @container work-item-sidebar (max-width: #{calc($work-item-overview-right-sidebar-width - 3rem)}) {
+    .time-tracking-body {
+      @apply gl-flex-col;
+      @apply gl-items-start;
+
+      .time-tracking-spent-and-progress {
+        @apply gl-flex-col-reverse;
+        @apply gl-w-full;
+        @apply gl-items-stretch;
+
+        .time-tracking-progress {
+          @apply gl-mx-0;
+          @apply gl-my-2;
+        }
+      }
+    }
+
+    .work-item-date-input {
+      @apply gl-flex-col;
+      @apply gl-items-stretch;
+
+      .work-item-datepicker {
+        @apply gl-max-w-full;
+      }
+    }
+
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .work-item-sidebar-dropdown .gl-new-dropdown-panel {
+      @apply gl-min-w-0 #{!important};
+      @apply gl-max-w-[calc(100%-1rem)] #{!important};
+    }
+  }
+}
+
+// Temporary fallback for browsers that do not properly support container queries.
+// Should be removed once container queries are fully stable across all browsers.
+// This is implemnted below for specific browsers.
+// Cf. https://gitlab.com/gitlab-org/gitlab/-/merge_requests/186598
+@mixin browser-specific-overrides {
+  .work-item-design-widget-container {
+    container-type: unset;
+
+    @include gl-container-width-up(sm, panel) {
+      .work-item-design-grid {
+        @apply gl-grid-cols-3;
+      }
+
+      .work-item-design-show-sm {
+        @apply gl-block;
+      }
+
+      .work-item-design-hidden-sm {
+        @apply gl-hidden;
+      }
+    }
+
+    @include gl-container-width-up(md, panel) {
+      .work-item-design-grid {
+        @apply gl-grid-cols-4;
+      }
+    }
+
+    @include gl-container-width-up(xl, panel) {
+      .work-item-design-grid {
+        @apply gl-grid-cols-6;
+      }
+    }
+  }
+
+  .work-item-sidebar-container {
+    container-type: unset;
+  }
+
+  .work-item-notes .note-container-query-wrapper {
+    container-type: unset !important;
+
+    @include gl-container-width-down(sm, panel) {
+      .note-hidden-xs {
+        @apply gl-hidden
+      }
+    }
+
+    @include gl-container-width-up(sm, panel) {
+      .note-only-xs {
+        @apply gl-hidden
+      }
+    }
+  }
+}
+
+.work-item-link-child:hover .work-item-status{
+  // Subtle border as dark mode background is same as status badge
+  box-shadow: inset 0 0 0 1px var(--gl-color-alpha-light-8);
+}
+
+// Safari
+@supports (-webkit-appearance:none) and (stroke-color:transparent) {
+  @include browser-specific-overrides;
+}
+
+// Firefox
+@-moz-document url-prefix() {
+  @include browser-specific-overrides;
+}
+
+ul.content-list {
+  .issue-clickable {
+    a, span, button {
+      @apply gl-relative;
+      @apply gl-z-2;
+      cursor: pointer !important;
+    }
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific work-item-detail element
+[data-testid="work-item-detail"]:has(.issue-sticky-header) .flash-container.sticky {
+  top: calc(#{$calc-application-header-height} + var(--layout-sticky-header-height, 3rem) + $gl-spacing-scale-3);
+}
+
+.work-item-detail-panel .flash-container.sticky {
+  top: 0;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific work-item-detail element
+.work-item-detail-panel [data-testid="work-item-detail"]:has(.issue-sticky-header) .flash-container.sticky {
+  top: calc(var(--layout-sticky-header-height, 3rem) + $gl-spacing-scale-3);
+}
+
+/* stylelint-disable-next-line gitlab/no-gl-class, gitlab/no-has -- scoped to specific dropdown items */
+.gl-new-dropdown-item:has(.sidebar-participant-disabled),
+/* stylelint-disable-next-line gitlab/no-gl-class */
+.gl-dropdown-item:has(.sidebar-participant-disabled) {
+  cursor: not-allowed;
+}
+
+.sidebar-participant-disabled {
+  /* stylelint-disable-next-line gitlab/no-gl-class */
+  .gl-avatar-labeled-label,
+  .gl-avatar-labeled-sublabel {
+    color: var(--gl-text-color-disabled);
+  }
+}
+
+// GlDrawer's default max-height uses the viewport (100vh), which is too tall here and cuts
+// off the bottom of the drawer. Size it to the panel instead so it scrolls fully.
+// stylelint-disable-next-line gitlab/no-gl-class -- overriding GlDrawer's inline max-height
+.work-item-display-settings-drawer.gl-drawer {
+  max-height: calc(100% - var(--drawer-top-offset, 0px)) !important;
+}
+
+// The workplan flow appends a machine-readable copy of its clarifying question
+// to the comment body, fenced as `json:duo-question`. Banzai renders it as a
+// normal code block, so we hide it and instead render a transformed question UI.
+// The copy button goes too: Banzai renders it as the block's sibling, so hiding only
+// the `pre` leaves a control offering to copy something nobody can see.
+// See https://gitlab.com/groups/gitlab-org/-/work_items/22772
+pre[data-lang-params='duo-question'] {
+  &,
+  + copy-code {
+    display: none;
+  }
+}
+
+// `MultipleChoiceSelector` groups its items into one bordered box, while a Duo question
+// shows them as separate cards. Only what has to outrank the component lives here.
+// See https://gitlab.com/gitlab-org/gitlab/-/work_items/608852
+.multiple-choice-selector.duo-question-options {
+  @apply gl-border-none;
+
+  // The items sit inside the checkbox group, so that is what stacks them.
+  > div {
+    @apply gl-flex;
+    @apply gl-flex-col;
+    @apply gl-gap-3;
+  }
+
+  // Matches the single-select list's description.
+  .help-text {
+    @apply gl-text-sm;
+    @apply gl-mt-1;
+    line-height: 1.5;
+  }
+
+  .custom-control {
+    @apply gl-grow;
+  }
+
+  .custom-control-label {
+    line-height: 1.5;
+  }
+
+  // The box is drawn as `label::before`, pinned to the top of the line, not centred.
+  .custom-control.custom-checkbox .custom-control-label {
+    &::before,
+    &::after {
+      top: $gl-spacing-scale-1;
+    }
+  }
+
+  .multiple-choice-selector-item {
+    @apply gl-overflow-hidden;
+    @apply gl-rounded-lg;
+    @apply gl-border-1;
+    @apply gl-border-solid;
+    @apply gl-border-default;
+    @apply gl-px-4;
+    @apply gl-py-3;
+  }
+
+  // Checking an item squares off the corners it shares with a checked neighbour and
+  // pulls it over their borders. All three classes are named to outrank those rules.
+  .multiple-choice-selector-item.duo-question-option.is-checked {
+    @apply gl-rounded-lg;
+    @apply gl-m-0;
+    @apply gl-shadow-none;
+  }
+}
+
+// A linked decision is highlighted the way a linked comment is, so the two deep links feel the
+// same. Tailwind has no utility for the shared timeline token, so the rule lives here.
+.decision-log-item.is-target {
+  background-color: var(--timeline-entry-target-background-color);
+}
+
+// Tailwind has no utility for the illustration base fill token, so the rule lives here.
+.board-empty-state-icon {
+  background-color: var(--gl-illustration-base-fill-color);
+}

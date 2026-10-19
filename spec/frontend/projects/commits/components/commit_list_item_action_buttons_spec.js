@@ -1,0 +1,94 @@
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import CommitListItemActionButtons from '~/projects/commits/components/commit_list_item_action_buttons.vue';
+import ExpandCollapseButton from '~/vue_shared/components/expand_collapse_button/expand_collapse_button.vue';
+import ClipboardButton from '~/vue_shared/components/clipboard_button.vue';
+import { mockCommit } from './mock_data';
+
+describe('CommitListItemActionButtons', () => {
+  let wrapper;
+
+  const mockProjectRootPath = '/gitlab-org/gitlab-shell';
+
+  const createComponent = (props = {}) => {
+    wrapper = shallowMountExtended(CommitListItemActionButtons, {
+      propsData: {
+        commit: mockCommit,
+        isCollapsed: true,
+        ...props,
+      },
+      provide: {
+        projectRootPath: mockProjectRootPath,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  const findClipboardButton = () => wrapper.findComponent(ClipboardButton);
+  const findBrowseFilesButton = () => wrapper.findByTestId('browse-files-button');
+  const findExpandCollapseButton = () => wrapper.findComponent(ExpandCollapseButton);
+
+  describe('commit short ID', () => {
+    it('displays the commit short ID', () => {
+      const commitShortId = wrapper.findByText(mockCommit.shortId);
+      expect(commitShortId.exists()).toBe(true);
+    });
+  });
+
+  describe('clipboard button', () => {
+    it('passes correct props to clipboard button', () => {
+      const clipboardButton = findClipboardButton();
+      expect(clipboardButton.props('text')).toBe(mockCommit.sha);
+      expect(clipboardButton.props('title')).toBe(
+        'Copy commit SHA 8e3336548a7aa36b7cae362fbd8c694793ecc110',
+      );
+      expect(clipboardButton.props('category')).toBe('tertiary');
+    });
+  });
+
+  describe('browse files button', () => {
+    it('links to the repository tree at the commit SHA', () => {
+      const browseButton = findBrowseFilesButton();
+      expect(browseButton.attributes('href')).toBe(
+        `${mockProjectRootPath}/-/tree/${mockCommit.sha}`,
+      );
+      expect(browseButton.attributes('aria-label')).toBe('Browse commit files');
+    });
+
+    it('links to the blob at the commit SHA when a file path is set', () => {
+      createComponent({ currentPath: 'app/models/user.rb' });
+
+      expect(findBrowseFilesButton().attributes('href')).toBe(
+        `${mockProjectRootPath}/-/blob/${mockCommit.sha}/app/models/user.rb`,
+      );
+    });
+
+    it('has a tooltip', () => {
+      expect(findBrowseFilesButton().attributes('title')).toBe('Browse commit files');
+    });
+  });
+
+  describe('expand/collapse button', () => {
+    it('renders with correct props', () => {
+      expect(findExpandCollapseButton().props()).toMatchObject({
+        anchorId: '',
+        isCollapsed: true,
+      });
+    });
+
+    it('forwards the loading state to the expand/collapse button', () => {
+      expect(findExpandCollapseButton().props('loading')).toBe(false);
+
+      createComponent({ isLoading: true });
+      expect(findExpandCollapseButton().props('loading')).toBe(true);
+    });
+
+    it('emits click event when clicked', async () => {
+      const expandCollapseButton = findExpandCollapseButton();
+      await expandCollapseButton.vm.$emit('click');
+      expect(wrapper.emitted()).toEqual({ click: [[]] });
+    });
+  });
+});

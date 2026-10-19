@@ -1,27 +1,61 @@
-# == Schema Information
-#
-# Table name: web_hooks
-#
-#  id                    :integer          not null, primary key
-#  url                   :string(255)
-#  project_id            :integer
-#  created_at            :datetime
-#  updated_at            :datetime
-#  type                  :string(255)      default("ProjectHook")
-#  service_id            :integer
-#  push_events           :boolean          default(TRUE), not null
-#  issues_events         :boolean          default(FALSE), not null
-#  merge_requests_events :boolean          default(FALSE), not null
-#  tag_push_events       :boolean          default(FALSE)
-#  note_events           :boolean          default(FALSE), not null
-#
+# frozen_string_literal: true
 
 class ProjectHook < WebHook
-  belongs_to :project
+  include TriggerableHooks
+  include Presentable
+  include Limitable
+  extend ::Gitlab::Utils::Override
 
-  scope :push_hooks, -> { where(push_events: true) }
-  scope :tag_push_hooks, -> { where(tag_push_events: true) }
-  scope :issue_hooks, -> { where(issues_events: true) }
-  scope :note_hooks, -> { where(note_events: true) }
-  scope :merge_request_hooks, -> { where(merge_requests_events: true) }
+  AVAILABLE_HOOKS = [
+    :confidential_issue_hooks,
+    :confidential_note_hooks,
+    :deployment_hooks,
+    :emoji_hooks,
+    :feature_flag_hooks,
+    :issue_hooks,
+    :job_hooks,
+    :merge_request_hooks,
+    :milestone_hooks,
+    :note_hooks,
+    :pipeline_hooks,
+    :push_hooks,
+    :release_hooks,
+    :resource_access_token_hooks,
+    :resource_deploy_token_hooks,
+    :tag_push_hooks,
+    :wiki_page_hooks
+  ].freeze
+
+  self.allow_legacy_sti_class = true
+
+  self.limit_scope = :project
+
+  has_many :web_hook_logs, foreign_key: 'web_hook_id', inverse_of: :web_hook
+
+  belongs_to :project
+  validates :project, presence: true
+
+  scope :for_projects, ->(project) { where(project: project) }
+
+  def self.available_hooks
+    AVAILABLE_HOOKS
+  end
+
+  triggerable_hooks available_hooks
+
+  def pluralized_name
+    _('Webhooks')
+  end
+
+  override :application_context
+  def application_context
+    super.merge(project: project, organization: project.organization)
+  end
+
+  override :parent
+  def parent
+    project
+  end
 end
+
+ProjectHook.prepend_mod_with('ProjectHook')

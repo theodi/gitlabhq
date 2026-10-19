@@ -1,0 +1,22 @@
+# @feature_category: portfolio_management
+mutation updateWorkItemListUserPreference(
+  $namespace: ID!
+  $workItemTypeId: WorkItemsTypeID
+  $displaySettings: JSON
+  $sort: WorkItemSort
+) {
+  workItemUserPreferenceUpdate(
+    input: {
+      namespacePath: $namespace
+      displaySettings: $displaySettings
+      workItemTypeId: $workItemTypeId
+      sort: $sort
+    }
+  ) {
+    errors
+    userPreferences {
+      displaySettings
+      sort
+    }
+  }
+}

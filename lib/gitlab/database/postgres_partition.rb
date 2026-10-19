@@ -1,0 +1,85 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Database
+    class PostgresPartition < SharedModel
+      LIST_PARTITION_PATTERN = /FOR VALUES IN \(([^)]+)\)/
+      DEFAULT_CONDITION = 'DEFAULT'
+
+      self.primary_key = :identifier
+
+      belongs_to :postgres_partitioned_table, foreign_key: 'parent_identifier', primary_key: 'identifier'
+
+      # identifier includes the partition schema.
+      # For example 'gitlab_partitions_static.events_03', or 'gitlab_partitions_dynamic.logs_03'
+      scope :for_identifier, ->(identifier) do
+        unless Gitlab::Database::FULLY_QUALIFIED_IDENTIFIER.match?(identifier)
+          raise ArgumentError, "Partition name is not fully qualified with a schema: #{identifier}"
+        end
+
+        where(primary_key => identifier)
+      end
+
+      scope :by_identifier, ->(identifier) do
+        for_identifier(identifier).first!
+      end
+
+      scope :for_parent_table, ->(parent_table) do
+        if Database::FULLY_QUALIFIED_IDENTIFIER.match?(parent_table)
+          where(parent_identifier: parent_table).order(:name)
+        else
+          where("parent_identifier = concat(current_schema(), '.', ?)", parent_table).order(:name)
+        end
+      end
+
+      scope :with_parent_tables, ->(parent_tables) do
+        parent_identifiers = parent_tables.map { |name| "#{connection.current_schema}.#{name}" }
+
+        where(parent_identifier: parent_identifiers).order(:name)
+      end
+
+      # Postgres quotes the bound literal for a bigint or smallint key but not for an
+      # integer one, so we match the value as a whole word rather than assume one form.
+      scope :with_list_constraint, ->(value) do
+        where(sanitize_sql_for_conditions(['condition ~ ?', "^FOR VALUES IN \\(.*\\m#{value.to_i}\\M"]))
+      end
+
+      # A DEFAULT partition declares no bound, so it absorbs
+      # every value the explicit partitions do not claim.
+      scope :default_partition, -> { where(condition: DEFAULT_CONDITION) }
+
+      scope :pending_detach, -> { where(pending_detach: true) }
+
+      scope :above_threshold, ->(threshold) do
+        where('pg_total_relation_size(identifier) > ?', threshold)
+      end
+
+      def self.partition_exists?(table_name)
+        where("identifier = concat(current_schema(), '.', ?)", table_name).exists?
+      end
+
+      def self.legacy_partition_exists?(table_name)
+        result = connection.select_value(<<~SQL)
+          SELECT true FROM pg_class
+          WHERE relname = '#{table_name}'
+          AND relispartition = true;
+        SQL
+
+        !!result
+      end
+
+      def to_s
+        name
+      end
+
+      def list_partition_ids
+        return [] if condition.blank?
+
+        match = condition.match(LIST_PARTITION_PATTERN)
+        return [] unless match
+
+        match[1].scan(/\d+/).map(&:to_i)
+      end
+    end
+  end
+end

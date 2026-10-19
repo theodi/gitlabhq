@@ -1,0 +1,167 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    module Parsers
+      module Test
+        class Junit
+          JunitParserError = Class.new(Gitlab::Ci::Parsers::ParserError)
+          ATTACHMENT_TAG_REGEX = /\[\[ATTACHMENT\|(?<path>[^\[\]\|]+?)\]\]/
+
+          def parse!(xml_data, test_report, job:)
+            test_suite = test_report.get_suite(job.test_suite_name)
+            root = XmlConverter.new(xml_data).to_h
+            total_parsed = 0
+            total_test_case_time = 0.0
+            max_test_cases = job.max_test_cases_per_report
+
+            all_cases(root) do |test_case|
+              test_case = create_test_case(test_case, test_suite, job)
+              test_suite.add_test_case(test_case)
+              total_parsed += 1
+              total_test_case_time += test_case.execution_time
+
+              ensure_test_cases_limited!(total_parsed, max_test_cases)
+            end
+
+            add_total_time_from_xml(root, test_suite, total_test_case_time)
+
+          rescue Nokogiri::XML::SyntaxError => e
+            test_suite.set_suite_error("JUnit XML parsing failed: #{e}")
+          rescue StandardError => e
+            test_suite.set_suite_error("JUnit data parsing failed: #{e}")
+          end
+
+          private
+
+          # A job can carry several JUnit report files, each parsed into the same TestSuite.
+          # The XML-declared time is more authoritative than the sum of the case times, so it
+          # replaces this file's contribution to the running total. `add_test_case` already
+          # added `total_test_case_time`, hence the subtraction.
+          # A zero means the XML declares no time we can read, e.g. nested <testsuite> elements
+          # without a `time` attribute, so the accumulated case times have to stand.
+          def add_total_time_from_xml(root, test_suite, total_test_case_time)
+            return unless root
+
+            xml_time = total_time_from_xml(root)
+            return unless xml_time > 0
+
+            test_suite.total_time += xml_time - total_test_case_time
+          end
+
+          def total_time_from_xml(root)
+            return dig_into_testsuites(root, 'time').to_f if dig_into_testsuites(root, 'time')
+
+            testsuites = collect_all_testsuites(root)
+            total_time = testsuites.sum { |suite| suite['time']&.to_f || 0 }
+
+            return add_testcase_times(testsuites) if total_time == 0
+
+            total_time
+          end
+
+          def collect_all_testsuites(root)
+            testsuites = []
+
+            testsuites.concat(Array.wrap(dig_into_testsuites(root, 'testsuite')))
+            testsuites.concat(Array.wrap(root['testsuite']))
+
+            testsuites.compact
+          end
+
+          def add_testcase_times(testsuites)
+            testsuites.sum do |suite|
+              Array.wrap(suite['testcase']).sum { |test_case| test_case['time']&.to_f || 0 }
+            end
+          end
+
+          def ensure_test_cases_limited!(total_parsed, limit)
+            return unless limit > 0 && total_parsed > limit
+
+            raise JunitParserError, "number of test cases exceeded the limit of #{limit}"
+          end
+
+          def all_cases(root, parent = nil, &blk)
+            return unless root.present?
+
+            [root].flatten.compact.map do |node|
+              next unless node.is_a?(Hash)
+
+              # we allow only one top-level 'testsuites'
+              all_cases(node['testsuites'], root, &blk) unless parent
+
+              # we require at least one level of testsuites or testsuite
+              each_case(node['testcase'], node['name'], &blk) if parent
+
+              # we allow multiple nested 'testsuite' (eg. PHPUnit)
+              all_cases(node['testsuite'], root, &blk)
+            end
+          end
+
+          def each_case(testcase, testsuite_name, &blk)
+            return unless testcase.present?
+
+            [testcase].flatten.compact.each do |tc|
+              tc['suite_name'] = testsuite_name
+
+              yield(tc)
+            end
+          end
+
+          def create_test_case(data, test_suite, job)
+            system_out_content = Array.wrap(data['system_out']).join("\n\n")
+            system_out = system_out_content.present? ? "System Out:\n\n#{system_out_content}" : nil
+
+            system_err_content = Array.wrap(data['system_err']).join("\n\n")
+            system_err = system_err_content.present? ? "System Err:\n\n#{system_err_content}" : nil
+
+            if data.key?('failure')
+              status = ::Gitlab::Ci::Reports::TestCase::STATUS_FAILED
+              system_output = [data['failure'], system_out, system_err].compact.join("\n\n")
+              attachment = attachment_path(system_out_content)
+            elsif data.key?('error')
+              status = ::Gitlab::Ci::Reports::TestCase::STATUS_ERROR
+              system_output = [data['error'], system_out, system_err].compact.join("\n\n")
+              attachment = attachment_path(system_out_content)
+            elsif data.key?('skipped')
+              status = ::Gitlab::Ci::Reports::TestCase::STATUS_SKIPPED
+              system_output = data['skipped']
+            else
+              status = ::Gitlab::Ci::Reports::TestCase::STATUS_SUCCESS
+              system_output = system_out
+              attachment = attachment_path(system_out_content)
+            end
+
+            ::Gitlab::Ci::Reports::TestCase.new(
+              suite_name: data['suite_name'] || test_suite.name,
+              classname: data['classname'],
+              name: data['name'],
+              file: data['file'],
+              execution_time: data['time'],
+              status: status,
+              system_output: system_output,
+              attachment: attachment,
+              job: job
+            )
+          end
+
+          def suite_name(parent, test_suite)
+            parent.dig('testsuite', 'name') || test_suite.name
+          end
+
+          def dig_into_testsuites(root, *params)
+            node = root&.dig('testsuites')
+            node.is_a?(Hash) ? node.dig(*params) : nil
+          end
+
+          def attachment_path(data)
+            return unless data
+
+            matches = data.match(ATTACHMENT_TAG_REGEX)
+            matches[:path] if matches
+          end
+        end
+      end
+    end
+  end
+end

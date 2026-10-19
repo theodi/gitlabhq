@@ -1,0 +1,13 @@
+---
+table_name: elasticsearch_indexed_projects
+classes:
+- ElasticsearchIndexedProject
+feature_categories:
+- global_search
+description: List of projects explicitly included in Elasticsearch indexing.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/9861
+milestone: '11.10'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

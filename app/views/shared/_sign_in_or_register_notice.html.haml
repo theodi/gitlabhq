@@ -1,0 +1,11 @@
+= render Pajamas::AlertComponent.new(variant: :info, dismissible: false) do |c|
+  - c.with_body do
+    .gl-flex.gl-items-center
+      .gl-grow
+        - if allow_signup?
+          = I18n.t('devise.failure.unauthenticated')
+        - else
+          = _('Sign in before continuing.')
+  - if allow_signup?
+    - c.with_actions do
+      = link_button_to _("Register now"), new_user_registration_path, class: 'btn-confirm', size: :small

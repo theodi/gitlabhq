@@ -1,0 +1,158 @@
+<script>
+import {
+  GlDisclosureDropdown,
+  GlDisclosureDropdownGroup,
+  GlDisclosureDropdownItem,
+  GlTooltipDirective,
+} from '@gitlab/ui';
+import { s__, __ } from '~/locale';
+import { isTemplate } from '../utils';
+import CloneWikiModal from './clone_wiki_modal.vue';
+import DeleteWikiModal from './delete_wiki_modal.vue';
+
+export default {
+  name: 'WikiMoreDropdown',
+  components: {
+    GlDisclosureDropdown,
+    GlDisclosureDropdownGroup,
+    GlDisclosureDropdownItem,
+    CloneWikiModal,
+    DeleteWikiModal,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  inject: {
+    canCreateNewPage: { default: false },
+    newUrl: { default: null },
+    historyUrl: { default: null },
+    templatesUrl: { default: null },
+    pagePersisted: { default: null },
+  },
+  props: {
+    deleteModalId: {
+      type: String,
+      required: false,
+      default: 'delete-wiki-modal',
+    },
+    cloneModalId: {
+      type: String,
+      required: false,
+      default: 'clone-wiki-modal',
+    },
+    dropdownTestid: {
+      type: String,
+      required: false,
+      default: 'wiki-more-dropdown',
+    },
+  },
+  i18n: {
+    wikiActions: s__('Wiki|Wiki actions'),
+  },
+  data() {
+    return {
+      isDropdownVisible: false,
+    };
+  },
+  computed: {
+    isTemplate,
+    templateLinkClass() {
+      return '';
+    },
+    newItem() {
+      return {
+        text: this.isTemplate ? s__('Wiki|New template') : s__('Wiki|New page'),
+        href: this.newUrl,
+        extraAttrs: {
+          'data-testid': 'page-new-button',
+        },
+      };
+    },
+    historyItem() {
+      return {
+        text: this.isTemplate ? s__('Wiki|Template history') : s__('Wiki|Page history'),
+        href: this.historyUrl,
+        extraAttrs: {
+          'data-testid': 'page-history-button',
+        },
+      };
+    },
+    printItem() {
+      return {
+        text: __('Print as PDF'),
+        action: this.printPage,
+        extraAttrs: {
+          'data-testid': 'page-print-button',
+        },
+      };
+    },
+    templateItem() {
+      return {
+        text: __('Templates'),
+        href: this.templatesUrl,
+        extraAttrs: {
+          class: this.templateLinkClass,
+          'data-testid': 'page-templates-button',
+        },
+      };
+    },
+    showDropdownTooltip() {
+      return !this.isDropdownVisible ? this.$options.i18n.wikiActions : '';
+    },
+    showPrintItem() {
+      return !this.isTemplate && this.pagePersisted;
+    },
+  },
+  methods: {
+    printPage() {
+      document.querySelectorAll('img').forEach((img) => img.setAttribute('loading', 'eager'));
+      document.querySelectorAll('details').forEach((detail) => detail.setAttribute('open', ''));
+
+      window.print();
+    },
+    showDropdown() {
+      this.isDropdownVisible = true;
+    },
+    hideDropdown() {
+      this.isDropdownVisible = false;
+    },
+  },
+};
+</script>
+<template>
+  <div>
+    <label for="wiki-more-dropdown" class="gl-hidden">{{ $options.i18n.wikiActions }}</label>
+    <gl-disclosure-dropdown
+      v-gl-tooltip="showDropdownTooltip"
+      icon="ellipsis_v"
+      category="tertiary"
+      placement="bottom-end"
+      no-caret
+      toggle-id="wiki-more-dropdown"
+      :data-testid="dropdownTestid"
+      class="print:gl-hidden"
+      @shown="showDropdown"
+      @hidden="hideDropdown"
+    >
+      <gl-disclosure-dropdown-item v-if="newUrl && canCreateNewPage" :item="newItem" icon="plus" />
+
+      <gl-disclosure-dropdown-item v-if="templatesUrl" :item="templateItem" icon="template" />
+
+      <clone-wiki-modal show-as-dropdown-item :modal-id="cloneModalId" />
+
+      <gl-disclosure-dropdown-group v-if="historyUrl || showPrintItem" bordered>
+        <gl-disclosure-dropdown-item v-if="historyUrl" :item="historyItem" icon="history" />
+        <gl-disclosure-dropdown-item
+          v-if="showPrintItem"
+          :item="printItem"
+          icon="document"
+          data-event-tracking="click_print_as_pdf_in_wiki_page"
+        />
+      </gl-disclosure-dropdown-group>
+
+      <gl-disclosure-dropdown-group v-if="pagePersisted" bordered>
+        <delete-wiki-modal show-as-dropdown-item :modal-id="deleteModalId" />
+      </gl-disclosure-dropdown-group>
+    </gl-disclosure-dropdown>
+  </div>
+</template>

@@ -1,0 +1,69 @@
+import './filtered_search_token_keys';
+
+export default class FilteredSearchTokenizer {
+  static processTokens(input, allowedKeys) {
+    // Regex extracts `(token):(operator)(symbol)(value)`
+    // Values that start with a double quote must end in a double quote (same for single)
+
+    const tokenRegex = new RegExp(
+      `(${allowedKeys.join('|')}):(=|!=)?([~%@&]?)(?:('[^']*'{0,1})|("[^"]*"{0,1})|(\\S+))`,
+      'g',
+    );
+    const tokens = [];
+    const tokenIndexes = []; // stores key+value for simple search
+    let lastToken = null;
+    const searchToken =
+      input
+        // eslint-disable-next-line max-params
+        .replace(tokenRegex, (match, key, operator, symbol, v1, v2, v3) => {
+          const prefixedTokens = ['~', '%', '@', '&'];
+          const comparisonTokens = ['!=', '='];
+          let tokenValue = v1 || v2 || v3;
+          let tokenSymbol = symbol;
+          let tokenIndex = '';
+          let tokenOperator = operator;
+
+          if (prefixedTokens.includes(tokenValue)) {
+            tokenSymbol = tokenValue;
+            tokenValue = '';
+          }
+
+          if (comparisonTokens.includes(tokenValue)) {
+            tokenOperator = tokenValue;
+            tokenValue = '';
+          }
+
+          tokenIndex = `${key}:${tokenValue}`;
+
+          // Prevent adding duplicates
+          if (tokenIndexes.indexOf(tokenIndex) === -1) {
+            tokenIndexes.push(tokenIndex);
+
+            tokens.push({
+              key,
+              value: tokenValue || '',
+              symbol: tokenSymbol || '',
+              operator: tokenOperator || '',
+            });
+          }
+
+          return '';
+        })
+        .replace(/\s{2,}/g, ' ')
+        .trim() || '';
+
+    if (tokens.length > 0) {
+      const last = tokens[tokens.length - 1];
+      const lastString = `${last.key}:${last.operator}${last.symbol}${last.value}`;
+      lastToken =
+        input.lastIndexOf(lastString) === input.length - lastString.length ? last : searchToken;
+    } else {
+      lastToken = searchToken;
+    }
+    return {
+      tokens,
+      lastToken,
+      searchToken,
+    };
+  }
+}

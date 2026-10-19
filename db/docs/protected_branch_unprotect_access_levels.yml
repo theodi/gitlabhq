@@ -1,0 +1,14 @@
+---
+table_name: protected_branch_unprotect_access_levels
+classes:
+- ProtectedBranch::UnprotectAccessLevel
+feature_categories:
+- source_code_management
+description: Stores access settings for protected branch unprotection
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/5103
+milestone: '10.7'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  protected_branch_project_id: projects
+  protected_branch_namespace_id: namespaces
+table_size: small

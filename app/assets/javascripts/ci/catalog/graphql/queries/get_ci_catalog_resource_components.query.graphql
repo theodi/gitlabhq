@@ -1,0 +1,29 @@
+# @feature_category: pipeline_composition
+
+query getCiCatalogResourceComponents($fullPath: ID!, $version: String) {
+  ciCatalogResource(fullPath: $fullPath) {
+    id
+    webPath
+    versions(name: $version, first: 1) {
+      nodes {
+        id
+        components {
+          nodes {
+            id
+            name
+            includePath
+            description
+            last30DayUsageCount
+            inputs {
+              name
+              default
+              description
+              required
+              type
+            }
+          }
+        }
+      }
+    }
+  }
+}

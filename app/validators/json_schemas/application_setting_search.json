@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Application Settings for search",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "global_search_work_items_enabled": {
+      "type": "boolean",
+      "description": "Enable global search for work items"
+    },
+    "global_search_merge_requests_enabled": {
+      "type": "boolean",
+      "description": "Enable global search for merge requests"
+    },
+    "global_search_snippet_titles_enabled": {
+      "type": "boolean",
+      "description": "Enable global search for snippets"
+    },
+    "global_search_users_enabled": {
+      "type": "boolean",
+      "description": "Enable global search for users"
+    },
+    "global_search_groups_enabled": {
+      "type": "boolean",
+      "description": "Enable global search for groups"
+    },
+    "global_search_block_anonymous_searches_enabled": {
+      "type": "boolean",
+      "description": "Enable blocking of anonymous global search requests"
+    },
+    "anonymous_searches_allowed": {
+      "type": "boolean",
+      "description": "Allow anonymous searches"
+    },
+    "default_search_scope": {
+      "type": "string",
+      "description": "Default scope for search"
+    }
+  }
+}

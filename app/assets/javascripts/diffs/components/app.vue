@@ -1,0 +1,967 @@
+<script>
+import { GlLoadingIcon, GlKeysetPagination, GlSprintf, GlAlert } from '@gitlab/ui';
+import { debounce, throttle } from 'lodash-es';
+import { mapState, mapActions } from 'pinia';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import FindingsDrawer from 'ee_component/diffs/components/shared/findings_drawer.vue';
+import {
+  keysFor,
+  MR_PREVIOUS_FILE_IN_DIFF,
+  MR_NEXT_FILE_IN_DIFF,
+  MR_COMMITS_NEXT_COMMIT,
+  MR_COMMITS_PREVIOUS_COMMIT,
+  MR_TOGGLE_REVIEW,
+  MR_TOGGLE_DIFF_VIEW_TYPE,
+  ISSUABLE_COMMENT_OR_REPLY,
+} from '~/behaviors/shortcuts/keybindings';
+import { PanelBreakpointInstance } from '~/panel_breakpoint_instance';
+import { createAlert } from '~/alert';
+import { InternalEvents } from '~/tracking';
+import { helpPagePath } from '~/helpers/help_page_helper';
+import { getScrollingElement } from '~/lib/utils/panels';
+import { handleLocationHash, getCookie } from '~/lib/utils/common_utils';
+import { BV_HIDE_TOOLTIP, DEFAULT_DEBOUNCE_AND_THROTTLE_MS } from '~/lib/utils/constants';
+import { Mousetrap } from '~/lib/mousetrap';
+import { updateHistory, getLocationHash } from '~/lib/utils/url_utility';
+import { __ } from '~/locale';
+import notesEventHub from '~/notes/event_hub';
+import { DynamicScroller, DynamicScrollerItem } from 'vendor/vue-virtual-scroller';
+import getMRCodequalityAndSecurityReports from 'ee_else_ce/diffs/components/graphql/get_mr_codequality_and_security_reports.query.graphql';
+import { useFileBrowser } from '~/diffs/stores/file_browser';
+import { useLegacyDiffs } from '~/diffs/stores/legacy_diffs';
+import { useNotes } from '~/notes/store/legacy_notes';
+import { useFindingsDrawer } from '~/mr_notes/store/findings_drawer';
+import { useBatchComments } from '~/batch_comments/store';
+import { querySelectionClosest } from '~/lib/utils/selection';
+import { useCodeReview } from '~/diffs/stores/code_review';
+import * as types from '~/diffs/store/mutation_types';
+import { sortFindingsByFile } from '../utils/sort_findings_by_file';
+import {
+  ALERT_OVERFLOW_HIDDEN,
+  ALERT_MERGE_CONFLICT,
+  ALERT_COLLAPSED_FILES,
+  INLINE_DIFF_VIEW_TYPE,
+  PARALLEL_DIFF_VIEW_TYPE,
+  TRACKING_DIFF_VIEW_INLINE,
+  TRACKING_DIFF_VIEW_PARALLEL,
+  TRACKING_FILE_BROWSER_TREE,
+  TRACKING_FILE_BROWSER_LIST,
+  TRACKING_WHITESPACE_SHOW,
+  TRACKING_WHITESPACE_HIDE,
+  TRACKING_SINGLE_FILE_MODE,
+  TRACKING_MULTIPLE_FILES_MODE,
+  EVT_MR_PREPARED,
+  EVT_DISCUSSIONS_ASSIGNED,
+  FILE_BROWSER_VISIBLE,
+} from '../constants';
+import { isCollapsed } from '../utils/diff_file';
+import diffsEventHub from '../event_hub';
+import { diffsApp } from '../utils/performance';
+import { extractFileHash } from '../utils/merge_request';
+import { queueRedisHllEvents } from '../utils/queue_events';
+import CollapsedFilesWarning from './collapsed_files_warning.vue';
+import CommitWidget from './commit_widget.vue';
+import CompareVersions from './compare_versions.vue';
+import DiffFile from './diff_file.vue';
+import HiddenFilesWarning from './hidden_files_warning.vue';
+import NoChanges from './no_changes.vue';
+import VirtualScrollerScrollSync from './virtual_scroller_scroll_sync';
+import DiffsFileTree from './diffs_file_tree.vue';
+import DiffAppControls from './diff_app_controls.vue';
+
+export const FINDINGS_STATUS_PARSED = 'PARSED';
+export const FINDINGS_STATUS_ERROR = 'ERROR';
+export const FINDINGS_POLL_INTERVAL = 1000;
+
+export default {
+  name: 'DiffsApp',
+  FINDINGS_STATUS_PARSED,
+  FINDINGS_STATUS_ERROR,
+  components: {
+    DiffAppControls,
+    DiffsFileTree,
+    FindingsDrawer,
+    DynamicScroller,
+    DynamicScrollerItem,
+    VirtualScrollerScrollSync,
+    CompareVersions,
+    DiffFile,
+    NoChanges,
+    HiddenFilesWarning,
+    CollapsedFilesWarning,
+    CommitWidget,
+    GlLoadingIcon,
+    GlKeysetPagination,
+    GlSprintf,
+    GlAlert,
+  },
+  mixins: [InternalEvents.mixin()],
+  alerts: {
+    ALERT_OVERFLOW_HIDDEN,
+    ALERT_MERGE_CONFLICT,
+    ALERT_COLLAPSED_FILES,
+  },
+  props: {
+    endpointCoverage: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    projectPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    iid: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    sastReportAvailable: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    codequalityReportAvailable: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    shouldShow: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    currentUser: {
+      type: Object,
+      required: true,
+    },
+    helpPagePath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    changesEmptyStateIllustration: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    linkedFileUrl: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  data() {
+    return {
+      diffFilesLength: 0,
+      virtualScrollCurrentIndex: -1,
+      subscribedToVirtualScrollingEvents: false,
+      autoScrolled: false,
+      activeProject: undefined,
+      hasScannerError: false,
+      linkedFileStatus: '',
+      codequalityData: {},
+      sastData: {},
+      keydownTime: undefined,
+      listenersAttached: false,
+      toggledFile: false,
+      scrollingElement: null,
+    };
+  },
+  apollo: {
+    // eslint-disable-next-line @gitlab/vue-no-undef-apollo-properties
+    getMRCodequalityAndSecurityReports: {
+      context: {
+        featureCategory: 'code_quality',
+      },
+      query: getMRCodequalityAndSecurityReports,
+      pollInterval: FINDINGS_POLL_INTERVAL,
+      variables() {
+        return { fullPath: this.projectPath, iid: this.iid };
+      },
+      skip() {
+        if (this.hasScannerError) {
+          return true;
+        }
+
+        return !this.codequalityReportAvailable && !this.sastReportAvailable;
+      },
+      update(data) {
+        if (!data?.project?.mergeRequest) {
+          return;
+        }
+
+        const { codequalityReportsComparer, sastReport } = data.project.mergeRequest;
+        this.activeProject = data.project.mergeRequest.project;
+
+        if (
+          (sastReport?.status === FINDINGS_STATUS_PARSED || !this.sastReportAvailable) &&
+          (!this.codequalityReportAvailable ||
+            codequalityReportsComparer?.status === FINDINGS_STATUS_PARSED)
+        ) {
+          this.$apollo.queries.getMRCodequalityAndSecurityReports.stopPolling();
+        }
+
+        if (sastReport?.status === FINDINGS_STATUS_ERROR && this.sastReportAvailable) {
+          this.fetchScannerFindingsError();
+
+          this.$apollo.queries.getMRCodequalityAndSecurityReports.stopPolling();
+        }
+
+        if (codequalityReportsComparer?.report?.newErrors) {
+          this.codequalityData = sortFindingsByFile(codequalityReportsComparer.report.newErrors);
+        }
+
+        if (sastReport?.report) {
+          this.sastData = sastReport.report;
+        }
+      },
+      error() {
+        this.fetchScannerFindingsError();
+        this.$apollo.queries.getMRCodequalityAndSecurityReports.stopPolling();
+      },
+    },
+  },
+  computed: {
+    ...mapState(useLegacyDiffs, {
+      numTotalFiles: 'realSize',
+      numVisibleFiles: 'size',
+    }),
+    ...mapState(useLegacyDiffs, [
+      'isLoading',
+      'diffViewType',
+      'commit',
+      'renderOverflowWarning',
+      'plainDiffPath',
+      'emailPatchPath',
+      'retrievingBatches',
+      'startVersion',
+      'latestDiff',
+      'currentDiffFileId',
+      'hasConflicts',
+      'viewDiffsFileByFile',
+      'renderTreeList',
+      'showWhitespace',
+      'addedLines',
+      'removedLines',
+      'whichCollapsedTypes',
+      'currentDiffIndex',
+      'isVirtualScrollingEnabled',
+      'isBatchLoading',
+      'isBatchLoadingError',
+      'linkedFile',
+      'gitalyErrorMessage',
+    ]),
+    ...mapState(useLegacyDiffs, { diffFiles: 'diffFilesFiltered' }),
+    ...mapState(useNotes, ['discussions', 'isNotesFetched', 'getNoteableData']),
+    ...mapState(useFileBrowser, ['fileBrowserVisible', 'isLoadingFileBrowser', 'flatBlobsList']),
+    ...mapState(useFindingsDrawer, ['activeDrawer']),
+    ...mapState(useCodeReview, ['reviewedIds']),
+    diffs() {
+      if (!this.viewDiffsFileByFile) {
+        return this.diffFiles;
+      }
+
+      return this.diffFiles.filter((file, i) => {
+        return file.file_hash === this.currentDiffFileId || (i === 0 && !this.currentDiffFileId);
+      });
+    },
+    discussionsCount() {
+      return this.discussions.length;
+    },
+    canCurrentUserFork() {
+      return this.currentUser.can_fork === true && this.currentUser.can_create_merge_request;
+    },
+    renderDiffFiles() {
+      return this.flatBlobsList.length > 0;
+    },
+    diffsIncomplete() {
+      return this.flatBlobsList.length !== this.diffFiles.length;
+    },
+    isFullChangeset() {
+      return this.startVersion === null && this.latestDiff;
+    },
+    showFileByFileNavigation() {
+      return this.flatBlobsList.length > 1 && this.viewDiffsFileByFile;
+    },
+    currentFileNumber() {
+      return this.currentDiffIndex + 1;
+    },
+    fileNavigationPageInfo() {
+      return {
+        hasPreviousPage: this.currentDiffIndex > 0,
+        hasNextPage: this.currentDiffIndex < this.flatBlobsList.length - 1,
+      };
+    },
+    visibleWarning() {
+      let visible = false;
+
+      if (this.renderOverflowWarning) {
+        visible = this.$options.alerts.ALERT_OVERFLOW_HIDDEN;
+      } else if (this.isFullChangeset && this.hasConflicts) {
+        visible = this.$options.alerts.ALERT_MERGE_CONFLICT;
+      } else if (this.whichCollapsedTypes.automatic && !this.viewDiffsFileByFile) {
+        visible = this.$options.alerts.ALERT_COLLAPSED_FILES;
+      }
+
+      return visible;
+    },
+    renderFileTree() {
+      return this.renderDiffFiles && this.fileBrowserVisible;
+    },
+    hideTooltips() {
+      const hide = () => {
+        if (!this.shouldShow) return;
+        this.$root.$emit(BV_HIDE_TOOLTIP);
+      };
+      return throttle(hide, 100);
+    },
+    hasChanges() {
+      return this.diffFiles.length > 0;
+    },
+  },
+  watch: {
+    commit(newCommit, oldCommit) {
+      const commitChangedAfterRender = newCommit && !this.isLoading;
+      const commitIsDifferent = oldCommit && newCommit.id !== oldCommit.id;
+      const url = window?.location ? String(window.location) : '';
+
+      if (commitChangedAfterRender && commitIsDifferent) {
+        updateHistory({
+          title: document.title,
+          url: url.replace(oldCommit.id, newCommit.id),
+        });
+        this.refetchDiffData();
+        this.adjustView();
+      }
+    },
+    diffViewType() {
+      this.adjustView();
+    },
+    viewDiffsFileByFile(newViewFileByFile) {
+      if (!newViewFileByFile && this.diffsIncomplete) {
+        this.refetchDiffData({ refetchMeta: false });
+      }
+    },
+    shouldShow() {
+      // When the shouldShow property changed to true, the route is rendered for the first time
+      // and if we have the isLoading as true this means we didn't fetch the data
+      if (this.isLoading) {
+        this.fetchData();
+      }
+
+      this.adjustView();
+      this.subscribeToVirtualScrollingEvents();
+    },
+    renderFileTree: 'adjustView',
+    isLoading: 'adjustView',
+  },
+  mounted() {
+    if (this.shouldShow) {
+      this.fetchData();
+    }
+
+    const id = window?.location?.hash;
+
+    if (id && id.indexOf('#note') !== 0 && id.indexOf('#draft') !== 0) {
+      this.setHighlightedRow({ lineCode: id.split('diff-content').pop().slice(1) });
+    }
+
+    const events = [];
+
+    if (this.renderTreeList) {
+      events.push(TRACKING_FILE_BROWSER_TREE);
+    } else {
+      events.push(TRACKING_FILE_BROWSER_LIST);
+    }
+
+    if (this.diffViewType === INLINE_DIFF_VIEW_TYPE) {
+      events.push(TRACKING_DIFF_VIEW_INLINE);
+    } else {
+      events.push(TRACKING_DIFF_VIEW_PARALLEL);
+    }
+
+    if (this.showWhitespace) {
+      events.push(TRACKING_WHITESPACE_SHOW);
+    } else {
+      events.push(TRACKING_WHITESPACE_HIDE);
+    }
+
+    if (this.viewDiffsFileByFile) {
+      events.push(TRACKING_SINGLE_FILE_MODE);
+    } else {
+      events.push(TRACKING_MULTIPLE_FILES_MODE);
+    }
+
+    queueRedisHllEvents(events, { verifyCap: true });
+
+    this.subscribeToVirtualScrollingEvents();
+    window.addEventListener('hashchange', this.handleHashChange);
+    this.scrollingElement = getScrollingElement(this.$el);
+    this.scrollingElement.addEventListener('scroll', this.hideTooltips);
+
+    if (document.querySelector('.js-static-panel-inner')) {
+      PanelBreakpointInstance.addResizeListener(() => {
+        if (!PanelBreakpointInstance.isDesktop()) {
+          this.setFileBrowserVisibility(false);
+        } else {
+          this.setTreeDisplay();
+        }
+      });
+    }
+  },
+  beforeCreate() {
+    diffsApp.instrument();
+  },
+  created() {
+    this.adjustView();
+    this.subscribeToEvents();
+
+    this.slowHashHandler = debounce(() => {
+      handleLocationHash();
+      this.autoScrolled = true;
+    }, DEFAULT_DEBOUNCE_AND_THROTTLE_MS);
+    this.$watch(
+      () => this.discussionsCount,
+      (newVal, prevVal) => {
+        if (newVal > prevVal) {
+          this.setDiscussions();
+        }
+      },
+    );
+  },
+  beforeDestroy() {
+    diffsApp.deinstrument();
+    this.unsubscribeFromEvents();
+    this.removeEventListeners();
+
+    window.removeEventListener('hashchange', this.handleHashChange);
+    this.scrollingElement.removeEventListener('scroll', this.hideTooltips);
+
+    diffsEventHub.$off('scrollToFileHash', this.scrollVirtualScrollerToFileHash);
+    diffsEventHub.$off('scrollToIndex', this.scrollVirtualScrollerToIndex);
+  },
+  methods: {
+    ...mapActions(useNotes, ['startTaskList']),
+    ...mapActions(useLegacyDiffs, [
+      'moveToNeighboringCommit',
+      'fetchDiffFilesMeta',
+      'fetchDiffFilesBatch',
+      'fetchFileByFile',
+      'loadCollapsedDiff',
+      'setFileForcedOpen',
+      'fetchCoverageFiles',
+      'rereadNoteHash',
+      'assignDiscussionsToDiff',
+      'setCurrentFileHash',
+      'setHighlightedRow',
+      'goToFile',
+      'navigateToDiffFileIndex',
+      'setFileByFile',
+      'disableVirtualScroller',
+      'fetchLinkedFile',
+      'expandAllFiles',
+      'collapseAllFiles',
+      'setDiffViewType',
+      'setShowWhitespace',
+      'goToFile',
+      'setFileCollapsedByUser',
+    ]),
+    ...mapActions(useLegacyDiffs, {
+      setCurrentDiffFile: types.SET_CURRENT_DIFF_FILE,
+    }),
+    ...mapActions(useFileBrowser, ['setFileBrowserVisibility', 'toggleTreeOpen']),
+    ...mapActions(useFindingsDrawer, ['setDrawer']),
+    closeDrawer() {
+      this.setDrawer({});
+    },
+    fetchScannerFindingsError() {
+      this.hasScannerError = true;
+      createAlert({
+        message: __('Something went wrong fetching the scanner findings. Please try again.'),
+      });
+    },
+    toggleActiveFileReview() {
+      const activeFile = this.diffFiles.find((file) => file.file_hash === this.currentDiffFileId);
+
+      if (activeFile) {
+        const reviewed = !(
+          useCodeReview().reviewedIds[activeFile.code_review_id] ||
+          useCodeReview().reviewedIds[activeFile.id]
+        );
+        useCodeReview().removeId(activeFile.id);
+        useCodeReview().setReviewed(activeFile.code_review_id, reviewed);
+        this.setFileCollapsedByUser({ filePath: activeFile.file_path, collapsed: reviewed });
+      }
+    },
+    subscribeToEvents() {
+      notesEventHub.$once('fetchDiffData', this.fetchData);
+      notesEventHub.$on('refetchDiffData', this.refetchDiffData);
+      notesEventHub.$on('fetchedNotesData', this.rereadNoteHash);
+      notesEventHub.$on('note-form-add-to-review', this.handleReviewTracking);
+      notesEventHub.$on('note-form-start-review', this.handleReviewTracking);
+      diffsEventHub.$on('diffFilesModified', this.setDiscussions);
+      diffsEventHub.$on('doneLoadingBatches', this.autoScroll);
+      diffsEventHub.$on('set-file-active', this.setFileActive);
+      diffsEventHub.$on(EVT_MR_PREPARED, this.fetchData);
+      diffsEventHub.$on(EVT_DISCUSSIONS_ASSIGNED, this.handleHash);
+    },
+    unsubscribeFromEvents() {
+      diffsEventHub.$off(EVT_DISCUSSIONS_ASSIGNED, this.handleHash);
+      diffsEventHub.$off(EVT_MR_PREPARED, this.fetchData);
+      diffsEventHub.$off('doneLoadingBatches', this.autoScroll);
+      diffsEventHub.$off('diffFilesModified', this.setDiscussions);
+      notesEventHub.$off('note-form-start-review', this.handleReviewTracking);
+      notesEventHub.$off('note-form-add-to-review', this.handleReviewTracking);
+      notesEventHub.$off('fetchedNotesData', this.rereadNoteHash);
+      notesEventHub.$off('refetchDiffData', this.refetchDiffData);
+      notesEventHub.$off('fetchDiffData', this.fetchData);
+      diffsEventHub.$off('set-file-active', this.setFileActive);
+    },
+    autoScroll() {
+      const lineCode = window.location.hash;
+      const sha1InHash = extractFileHash({ input: lineCode });
+
+      if (sha1InHash) {
+        const idx = this.diffs.findIndex((diffFile) => diffFile.file_hash === sha1InHash);
+        const file = this.diffs[idx];
+
+        if (!isCollapsed(file)) return;
+
+        this.loadCollapsedDiff({ file })
+          .then(() => {
+            this.setDiscussions();
+            this.setFileForcedOpen({ filePath: file.new_path });
+
+            this.$nextTick(() => this.scrollVirtualScrollerToIndex(idx));
+          })
+          .catch(() => {});
+      }
+    },
+    handleHash() {
+      if (this.viewDiffsFileByFile && !this.autoScrolled) {
+        const file = this.diffs[0];
+
+        if (file && !file.isLoadingFullFile) {
+          requestIdleCallback(() => this.slowHashHandler());
+        }
+      }
+    },
+    handleHashChange() {
+      let hash = getLocationHash();
+
+      if (this.viewDiffsFileByFile) {
+        if (!hash) {
+          hash = this.diffFiles[0].file_hash;
+        }
+
+        this.setCurrentFileHash(hash);
+        this.fetchFileByFile();
+      }
+    },
+    handleFilePaginationChange(direction) {
+      if (direction === 'prev' && this.currentDiffIndex > 0) {
+        this.navigateToDiffFileIndex(this.currentDiffIndex - 1);
+      } else if (direction === 'next' && this.currentDiffIndex < this.flatBlobsList.length - 1) {
+        this.navigateToDiffFileIndex(this.currentDiffIndex + 1);
+      }
+    },
+    refetchDiffData({ refetchMeta = true } = {}) {
+      this.fetchData({ toggleTree: false, fetchMeta: refetchMeta });
+    },
+    fetchData({ toggleTree = true, fetchMeta = true } = {}) {
+      if (this.linkedFileUrl && this.linkedFileStatus !== 'loaded') {
+        this.linkedFileStatus = 'loading';
+        this.fetchLinkedFile(this.linkedFileUrl)
+          .then(() => {
+            this.linkedFileStatus = 'loaded';
+            if (toggleTree) this.setTreeDisplay();
+          })
+          .catch(() => {
+            this.linkedFileStatus = 'error';
+            createAlert({
+              message: __("Couldn't fetch the linked file."),
+            });
+          });
+      }
+      if (fetchMeta) {
+        this.fetchDiffFilesMeta()
+          .then((data) => {
+            let realSize = 0;
+
+            if (data) {
+              realSize = data.real_size;
+
+              if (this.viewDiffsFileByFile) {
+                this.fetchFileByFile();
+              }
+            }
+
+            this.diffFilesLength = parseInt(realSize, 10) || 0;
+            if (toggleTree) {
+              this.setTreeDisplay();
+            }
+
+            document.querySelector('.js-changes-tab-count').textContent = this.diffFilesLength;
+          })
+          .catch(() => {
+            createAlert({
+              message: __('Something went wrong on our end. Please try again.'),
+            });
+          });
+      }
+
+      if (!this.viewDiffsFileByFile) {
+        this.fetchDiffFilesBatch(Boolean(this.linkedFileUrl))
+          .then(() => {
+            if (toggleTree) this.setTreeDisplay();
+            // Guarantee the discussions are assigned after the batch finishes.
+            // Just watching the length of the discussions or the diff files
+            // isn't enough, because with split diff loading, neither will
+            // change when loading the other half of the diff files.
+            this.setDiscussions();
+          })
+          .catch(() => {
+            createAlert({
+              message: __('Something went wrong on our end. Please try again.'),
+            });
+          });
+      }
+
+      if (this.endpointCoverage) {
+        this.fetchCoverageFiles();
+      }
+
+      if (!this.isNotesFetched) {
+        notesEventHub.$emit('fetch-notes-data');
+      }
+    },
+    setDiscussions() {
+      requestIdleCallback(
+        () =>
+          this.assignDiscussionsToDiff()
+            .then(this.$nextTick)
+            .then(this.startTaskList)
+            .then(this.scrollVirtualScrollerToDiffNote),
+        { timeout: 1000 },
+      );
+    },
+    adjustView() {
+      if (this.shouldShow) {
+        this.$nextTick(() => {
+          this.setEventListeners();
+        });
+      } else {
+        this.removeEventListeners();
+      }
+    },
+    setEventListeners() {
+      if (this.listenersAttached) return;
+
+      Mousetrap.bind(keysFor(MR_PREVIOUS_FILE_IN_DIFF), () => this.jumpToFile(-1));
+      Mousetrap.bind(keysFor(MR_NEXT_FILE_IN_DIFF), () => this.jumpToFile(+1));
+      Mousetrap.bind(keysFor(MR_COMMITS_NEXT_COMMIT), () =>
+        this.moveToNeighboringCommit({ direction: 'next' }),
+      );
+      Mousetrap.bind(keysFor(MR_COMMITS_PREVIOUS_COMMIT), () =>
+        this.moveToNeighboringCommit({ direction: 'previous' }),
+      );
+      Mousetrap.bind(keysFor(MR_TOGGLE_REVIEW), () => this.toggleActiveFileReview());
+      Mousetrap.bind(keysFor(MR_TOGGLE_DIFF_VIEW_TYPE), () => this.toggleDiffViewType());
+      Mousetrap.bind(['mod+f', 'mod+g'], () => {
+        this.keydownTime = new Date().getTime();
+      });
+      Mousetrap.bind(keysFor(ISSUABLE_COMMENT_OR_REPLY), this.quoteReply);
+
+      window.addEventListener('blur', this.handleBrowserFindActivation);
+
+      this.listenersAttached = true;
+    },
+    removeEventListeners() {
+      Mousetrap.unbind(keysFor(MR_PREVIOUS_FILE_IN_DIFF));
+      Mousetrap.unbind(keysFor(MR_NEXT_FILE_IN_DIFF));
+      Mousetrap.unbind(keysFor(MR_COMMITS_NEXT_COMMIT));
+      Mousetrap.unbind(keysFor(MR_COMMITS_PREVIOUS_COMMIT));
+      Mousetrap.unbind(keysFor(MR_TOGGLE_REVIEW));
+      Mousetrap.unbind(keysFor(MR_TOGGLE_DIFF_VIEW_TYPE));
+      Mousetrap.unbind(keysFor(ISSUABLE_COMMENT_OR_REPLY));
+      Mousetrap.unbind(['ctrl+f', 'command+f', 'mod+f', 'mod+g']);
+      window.removeEventListener('blur', this.handleBrowserFindActivation);
+      this.listenersAttached = false;
+    },
+    handleBrowserFindActivation() {
+      if (!this.keydownTime) return;
+
+      const delta = new Date().getTime() - this.keydownTime;
+
+      // To make sure the user is using the find function we need to wait for blur
+      // and max 1000ms to be sure it the search box is filtered
+      if (delta >= 0 && delta < 1000) {
+        this.disableVirtualScroller();
+
+        this.trackEvent('i_code_review_user_searches_diff');
+      }
+    },
+    jumpToFile(step) {
+      const targetIndex = this.currentDiffIndex + step;
+      if (targetIndex >= 0 && targetIndex < this.flatBlobsList.length) {
+        this.goToFile({ path: this.flatBlobsList[targetIndex].path });
+      }
+    },
+    setTreeDisplay() {
+      const hideBrowserPreference = getCookie(FILE_BROWSER_VISIBLE);
+      if (hideBrowserPreference) {
+        this.setFileBrowserVisibility(parseBoolean(hideBrowserPreference));
+      } else {
+        const shouldHide =
+          !PanelBreakpointInstance.isDesktop() ||
+          (!this.isBatchLoading && this.flatBlobsList.length <= 1);
+        this.setFileBrowserVisibility(!shouldHide);
+      }
+    },
+    async scrollVirtualScrollerToFileHash(hash) {
+      if (!this.isVirtualScrollingEnabled) {
+        setTimeout(() => handleLocationHash());
+      }
+
+      const index = this.diffFiles.findIndex((f) => f.file_hash === hash);
+
+      if (index !== -1) {
+        this.scrollVirtualScrollerToIndex(index);
+      }
+    },
+    scrollVirtualScrollerToIndex(index) {
+      this.virtualScrollCurrentIndex = index;
+    },
+    scrollVirtualScrollerToDiffNote() {
+      const id = window?.location?.hash;
+
+      if (id.startsWith('#note_')) {
+        const noteId = id.replace('#note_', '');
+        const discussion = this.discussions.find(
+          (d) => d.diff_file && d.notes.find((n) => n.id === noteId),
+        );
+
+        if (discussion) {
+          this.scrollVirtualScrollerToFileHash(discussion.diff_file.file_hash);
+        }
+      } else if (id.startsWith('#draft_')) {
+        const draftId = Number(id.replace('#draft_', ''));
+        const draft = useBatchComments().drafts.find((d) => d.id === draftId);
+
+        if (draft) {
+          this.scrollVirtualScrollerToFileHash(draft.file_hash);
+        }
+      }
+    },
+    subscribeToVirtualScrollingEvents() {
+      if (this.shouldShow && !this.subscribedToVirtualScrollingEvents) {
+        diffsEventHub.$on('scrollToFileHash', this.scrollVirtualScrollerToFileHash);
+        diffsEventHub.$on('scrollToIndex', this.scrollVirtualScrollerToIndex);
+
+        this.subscribedToVirtualScrollingEvents = true;
+      }
+    },
+    reloadPage() {
+      window.location.reload();
+    },
+    handleReviewTracking(event) {
+      const trackingTypes = {
+        'note-form-start-review': 'merge_request_click_start_review_on_changes_tab',
+        'note-form-add-to-review': 'merge_request_click_add_to_review_on_changes_tab',
+      };
+
+      if (this.shouldShow && trackingTypes[event.name]) {
+        this.trackEvent(trackingTypes[event.name]);
+      }
+    },
+    isDiffViewActive(item) {
+      return (
+        (this.virtualScrollCurrentIndex >= 0 || this.toggledFile) &&
+        this.currentDiffFileId === item.file_hash
+      );
+    },
+    toggleFileByFile() {
+      this.setFileByFile({ fileByFile: !this.viewDiffsFileByFile });
+    },
+    toggleDiffViewType() {
+      const newViewType =
+        this.diffViewType === INLINE_DIFF_VIEW_TYPE
+          ? PARALLEL_DIFF_VIEW_TYPE
+          : INLINE_DIFF_VIEW_TYPE;
+      this.setDiffViewType(newViewType);
+    },
+    toggleWhitespace(updatedSetting) {
+      this.setShowWhitespace({ showWhitespace: updatedSetting });
+    },
+    setFileActive(hash) {
+      this.setCurrentFileHash(hash);
+      this.toggledFile = true;
+    },
+    quoteReply() {
+      if (!this.shouldShow) return;
+
+      const el = querySelectionClosest('.js-discussion-container');
+      if (!el) return;
+
+      el.dispatchEvent(new CustomEvent('quoteReply'));
+    },
+    onFileTreeClick(file) {
+      this.setCurrentDiffFile(file.fileHash);
+      this.goToFile({ path: file.path });
+    },
+  },
+  howToMergeDocsPath: helpPagePath('user/project/merge_requests/merge_request_troubleshooting.md', {
+    anchor: 'check-out-merge-requests-locally-through-the-head-ref',
+  }),
+};
+</script>
+
+<template>
+  <div v-show="shouldShow">
+    <findings-drawer :project="activeProject" :drawer="activeDrawer" @close="closeDrawer" />
+    <div v-if="isLoading || isLoadingFileBrowser" class="loading">
+      <gl-loading-icon size="lg" />
+    </div>
+    <div v-else id="diffs" :class="{ active: shouldShow }" class="diffs tab-pane">
+      <div class="gl-flex gl-flex-wrap">
+        <compare-versions :toggle-file-tree-visible="hasChanges" />
+        <diff-app-controls
+          class="gl-ml-auto gl-px-5 gl-pb-2 gl-pt-3"
+          :has-changes="hasChanges"
+          :diffs-count="numTotalFiles"
+          :added-lines="addedLines"
+          :removed-lines="removedLines"
+          :show-whitespace="showWhitespace"
+          :view-diffs-file-by-file="viewDiffsFileByFile"
+          :diff-view-type="diffViewType"
+          @expand-all-files="expandAllFiles"
+          @collapse-all-files="collapseAllFiles"
+          @update-diff-view-type="setDiffViewType"
+          @toggle-whitespace="toggleWhitespace"
+          @toggle-file-by-file="toggleFileByFile"
+        />
+      </div>
+
+      <template v-if="!isBatchLoadingError">
+        <collapsed-files-warning v-if="visibleWarning == $options.alerts.ALERT_COLLAPSED_FILES" />
+      </template>
+
+      <div
+        :data-can-create-note="getNoteableData.current_user.can_create_note"
+        class="files gl-mt-2 gl-flex"
+      >
+        <diffs-file-tree
+          v-if="renderFileTree"
+          class="gl-px-5"
+          :total-files-count="numTotalFiles"
+          :current-diff-file-id="currentDiffFileId"
+          :linked-file-path="linkedFile ? linkedFile.file_path : null"
+          @click-file="onFileTreeClick"
+          @toggle-folder="toggleTreeOpen"
+        />
+        <div class="gl-col-md-auto diff-files-holder gl-px-5">
+          <commit-widget v-if="commit" :commit="commit" :collapsible="false" />
+          <gl-alert
+            v-if="isBatchLoadingError"
+            variant="danger"
+            :dismissible="false"
+            :primary-button-text="__('Reload page')"
+            @primary-action="reloadPage"
+          >
+            {{ gitalyErrorMessage || __("Error: Couldn't load some or all of the changes.") }}
+          </gl-alert>
+          <div v-if="isBatchLoading && !isBatchLoadingError" class="loading">
+            <gl-loading-icon size="lg" />
+          </div>
+          <template v-else-if="renderDiffFiles">
+            <div v-if="linkedFileStatus === 'loading'" class="loading">
+              <gl-loading-icon size="lg" />
+            </div>
+            <hidden-files-warning
+              v-if="visibleWarning == $options.alerts.ALERT_OVERFLOW_HIDDEN"
+              :visible="numVisibleFiles"
+              :total="numTotalFiles"
+              :plain-diff-path="plainDiffPath"
+              :email-patch-path="emailPatchPath"
+            />
+            <dynamic-scroller
+              v-if="isVirtualScrollingEnabled"
+              :items="diffs"
+              :min-item-size="70"
+              :buffer="1000"
+              :use-transform="false"
+              page-mode
+            >
+              <template #default="{ item, index, active }">
+                <dynamic-scroller-item
+                  v-if="active"
+                  :item="item"
+                  :active="active"
+                  :class="{ active }"
+                  class="gl-mb-5"
+                >
+                  <diff-file
+                    :file="item"
+                    :codequality-data="codequalityData"
+                    :sast-data="sastData"
+                    :reviewed="reviewedIds[item.code_review_id] || reviewedIds[item.id]"
+                    :is-first-file="index === 0"
+                    :is-last-file="index === diffFilesLength - 1"
+                    :help-page-path="helpPagePath"
+                    :can-current-user-fork="canCurrentUserFork"
+                    :view-diffs-file-by-file="viewDiffsFileByFile"
+                    :active="active"
+                    :is-diff-view-active="isDiffViewActive(item)"
+                  />
+                </dynamic-scroller-item>
+              </template>
+              <template #before>
+                <virtual-scroller-scroll-sync v-model="virtualScrollCurrentIndex" />
+              </template>
+            </dynamic-scroller>
+            <template v-else>
+              <diff-file
+                v-for="(file, index) in diffs"
+                :key="file.new_path"
+                :file="file"
+                :codequality-data="codequalityData"
+                :sast-data="sastData"
+                :reviewed="reviewedIds[file.code_review_id] || reviewedIds[file.id]"
+                :is-first-file="index === 0"
+                :is-last-file="index === diffFilesLength - 1"
+                :help-page-path="helpPagePath"
+                :can-current-user-fork="canCurrentUserFork"
+                :view-diffs-file-by-file="viewDiffsFileByFile"
+                :is-diff-view-active="currentDiffFileId === file.file_hash"
+                class="gl-mb-5"
+              />
+            </template>
+            <div
+              v-if="showFileByFileNavigation"
+              data-testid="file-by-file-navigation"
+              class="gl-grid gl-text-center"
+            >
+              <gl-keyset-pagination
+                class="gl-mx-auto"
+                v-bind="fileNavigationPageInfo"
+                @prev="handleFilePaginationChange('prev')"
+                @next="handleFilePaginationChange('next')"
+              />
+              <gl-sprintf :message="__('File %{current} of %{total}')">
+                <template #current>{{ currentFileNumber }}</template>
+                <template #total>{{ flatBlobsList.length }}</template>
+              </gl-sprintf>
+            </div>
+            <gl-loading-icon v-else-if="retrievingBatches" size="lg" />
+          </template>
+          <no-changes
+            v-else-if="!isBatchLoadingError"
+            :changes-empty-state-illustration="changesEmptyStateIllustration"
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

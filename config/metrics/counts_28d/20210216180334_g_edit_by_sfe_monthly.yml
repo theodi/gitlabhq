@@ -1,0 +1,22 @@
+---
+data_category: operational
+key_path: redis_hll_counters.ide_edit.g_edit_by_sfe_monthly
+description: Number of users editing a file from the single file editor
+product_group: source_code
+product_categories:
+- source_code_management
+value_type: number
+status: active
+time_frame: 28d
+data_source: internal_events
+events:
+  - name: g_edit_by_sfe
+    unique: user.id
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type:
+- customer_health_score
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

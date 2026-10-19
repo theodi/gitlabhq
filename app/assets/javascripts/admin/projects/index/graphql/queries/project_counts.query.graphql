@@ -1,0 +1,31 @@
+query getAdminProjectCounts(
+  $search: String
+  $minAccessLevel: AccessLevelEnum
+  $programmingLanguageName: String
+  $visibilityLevel: VisibilityLevelsEnum
+  $namespacePath: ID
+  $lastRepositoryCheckFailed: Boolean
+) {
+  active: projects(
+    active: true
+    search: $search
+    minAccessLevel: $minAccessLevel
+    programmingLanguageName: $programmingLanguageName
+    visibilityLevel: $visibilityLevel
+    namespacePath: $namespacePath
+    lastRepositoryCheckFailed: $lastRepositoryCheckFailed
+  ) {
+    count
+  }
+  inactive: projects(
+    active: false
+    search: $search
+    minAccessLevel: $minAccessLevel
+    programmingLanguageName: $programmingLanguageName
+    visibilityLevel: $visibilityLevel
+    namespacePath: $namespacePath
+    lastRepositoryCheckFailed: $lastRepositoryCheckFailed
+  ) {
+    count
+  }
+}

@@ -1,0 +1,91 @@
+<script>
+import { GlCollapsibleListbox } from '@gitlab/ui';
+import { debounce, uniqBy } from 'lodash-es';
+import {
+  I18N_NO_RESULTS_MESSAGE,
+  I18N_BRANCH_HEADER,
+  I18N_BRANCH_SEARCH_PLACEHOLDER,
+} from '../constants';
+
+export default {
+  name: 'BranchesDropdown',
+  components: {
+    GlCollapsibleListbox,
+  },
+  inject: ['modalStore'],
+  props: {
+    value: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  emits: ['input'],
+  i18n: {
+    noResultsMessage: I18N_NO_RESULTS_MESSAGE,
+    branchHeaderTitle: I18N_BRANCH_HEADER,
+    branchSearchPlaceholder: I18N_BRANCH_SEARCH_PLACEHOLDER,
+  },
+  data() {
+    return {
+      searchTerm: '',
+    };
+  },
+  computed: {
+    joinedBranches() {
+      return this.modalStore.joinedBranches;
+    },
+    isFetching() {
+      return this.modalStore.isFetching;
+    },
+    branch() {
+      return this.modalStore.branch;
+    },
+    listboxItems() {
+      const selectedItem = { value: this.branch, text: this.branch };
+      const transformedList = this.joinedBranches.map((value) => ({ value, text: value }));
+
+      if (this.searchTerm) {
+        return transformedList;
+      }
+
+      // Add selected item to top of list if not searching
+      return uniqBy([selectedItem].concat(transformedList), 'value');
+    },
+  },
+  mounted() {
+    this.fetchBranches();
+  },
+  methods: {
+    fetchBranches(query) {
+      this.modalStore.fetchBranches(query);
+    },
+    selectBranch(branch) {
+      this.$emit('input', branch);
+    },
+    debouncedSearch: debounce(function debouncedSearch() {
+      this.fetchBranches(this.searchTerm);
+    }, 250),
+    searchTermChanged(value) {
+      this.searchTerm = value.trim();
+      this.debouncedSearch(value);
+    },
+  },
+};
+</script>
+<template>
+  <gl-collapsible-listbox
+    class="gl-max-w-full"
+    :header-text="$options.i18n.branchHeaderTitle"
+    :toggle-text="value"
+    toggle-class="gl-w-full"
+    :items="listboxItems"
+    searchable
+    :search-placeholder="$options.i18n.branchSearchPlaceholder"
+    :searching="isFetching"
+    :selected="value"
+    :no-results-text="$options.i18n.noResultsMessage"
+    @search="searchTermChanged"
+    @select="selectBranch"
+  />
+</template>

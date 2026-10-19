@@ -1,0 +1,176 @@
+include:
+  # Shared before_script for the generate job here and for the distill/collect
+  # jobs in the child pipeline. Lives outside `.gitlab/ci/*.gitlab-ci.yml` so
+  # the child-only template alongside it is not swept into every parent
+  # pipeline by that glob.
+  - local: .gitlab/ci/sync-principles/setup.gitlab-ci.yml
+
+# Weekly distillation that keeps distilled agent principles in sync with
+# docs.gitlab.com SSOT changes, by triggering a Duo Workflow per affected
+# principle through the AI Catalog "Agent Principles Distiller" flow
+# (provisioned by `bin/gitlab-ai-principles-distiller-provision-flow`) and
+# opening per-team MRs via the GitLab REST API.
+# See gitlab-org/gitlab#597600 for the original design.
+#
+# This runs as a dynamic CHILD PIPELINE: `ai-principles-pipeline-generate`
+# below scans for drift and emits one distill job per affected principle,
+# which a child pipeline then runs in parallel before fanning back in to a
+# single publish job. See .gitlab/ci/sync-principles/child.gitlab-ci.yml for
+# that shape and gitlab-org/gitlab#607365 for why.
+#
+# Trigger: dedicated pipeline schedule on master with
+# SCHEDULE_TYPE=ai-principles-distillation.
+#
+# Tokens: GITLAB_TOKEN (Workflow API + GraphQL) and GITLAB_API_TOKEN
+# (auto-MR REST). Both are sourced from a single project CI/CD variable
+# AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN, which must be a classic PAT
+# with `api` scope (fine-grained PATs do not cover GraphQL, AI Catalog
+# mutations, or the Duo Workflow create endpoint).
+#
+# The token belongs to the dedicated service account
+# service-modelops-agent-principles-distiller (Developer on
+# gitlab-org/gitlab, with a Duo Agent Platform seat). The Duo Agent
+# Platform Workflow API requires a user with a seat as the calling
+# identity, which project access tokens (e.g.
+# PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE) lack. Provisioning is tracked
+# in access request
+# https://gitlab.com/gitlab-com/team-member-epics/access-requests/-/issues/43931
+# (confidential).
+#
+# Distills nothing itself, so it stays fast: it provisions the catalog flow,
+# scans the manifest for drift, and writes the child-pipeline YAML.
+ai-principles-pipeline-generate:
+  stage: ai-gateway
+  needs: []
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}-alpine
+  timeout: 30m
+  variables:
+    # GITLAB_TOKEN authenticates the AI Catalog provisioning mutations and the
+    # GraphQL calls behind the drift scan. No REST auto-MR token is needed
+    # here: publishing happens in the child pipeline's collect job.
+    GITLAB_TOKEN: $AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN
+    # AGENT_PRINCIPLES_CATALOG_PROJECT pins the catalog project that
+    # `provision_flow` and `sync` operate against. Set here rather than
+    # as a project CI variable so it's reviewable in this YAML.
+    AGENT_PRINCIPLES_CATALOG_PROJECT: gitlab-org/gitlab
+    # Install gem dependencies under the gem's vendor/ dir (matches the
+    # convention used by other gems in this repo, isolates the install
+    # from system gems).
+    BUNDLE_PATH: vendor
+    # AGENT_PRINCIPLES_CATALOG_ITEM_CONSUMER_ID is the numeric ID of the
+    # AI Catalog ItemConsumer that binds the "Agent Principles Distiller"
+    # flow to gitlab-org/gitlab. It is set as a project CI/CD variable
+    # (provisioned once via the provision-flow bin) and exposed
+    # automatically to this job's runner — DO NOT redefine it here as
+    # `$AGENT_PRINCIPLES_CATALOG_ITEM_CONSUMER_ID`, which would force
+    # literal-string substitution (variable expansion is disabled by
+    # default since GitLab 18.6) and break the API call.
+  before_script:
+    - !reference ['.ai-principles-setup', before_script]
+  script:
+    # Mirror any prompt/tool changes from .ai/principles/distillation_prompt.md
+    # into the AI Catalog flow before the distill jobs trigger workflows.
+    # Done once here rather than in each distill job, so N parallel jobs don't
+    # race to mutate the same catalog item.
+    - bundle exec bin/gitlab-ai-principles-distiller-provision-flow --workspace "$CI_PROJECT_DIR"
+    # Detect drift and emit one distill job per affected principle.
+    - bundle exec bin/gitlab-ai-principles-distiller-sync --workspace "$CI_PROJECT_DIR" generate-pipeline
+  rules:
+    - !reference ['.ai-principles-sync:rules:scheduled', rules]
+  artifacts:
+    expire_in: 7d
+    paths:
+      - tmp/ai-principles-child-pipeline.yml
+
+# Runs the generated distill jobs and their fan-in publish job.
+#
+# `strategy: depend` mirrors the child pipeline's status onto this job, so a
+# distillation failure still fails the scheduled pipeline. The Slack alerting
+# lives INSIDE the child pipeline: dotenv reports do not propagate from a child
+# to its parent, and reporting from here would lose the failed-principle names.
+ai-principles-distill:
+  stage: ai-gateway
+  needs:
+    - job: ai-principles-pipeline-generate
+      artifacts: true
+  variables:
+    PARENT_PIPELINE_ID: $CI_PIPELINE_ID
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: ""
+  trigger:
+    strategy: depend
+    include:
+      - artifact: tmp/ai-principles-child-pipeline.yml
+        job: ai-principles-pipeline-generate
+  rules:
+    - !reference ['.ai-principles-sync:rules:scheduled', rules]
+
+# Job that reconciles the Duo Code Review instruction fences in
+# .gitlab/duo/mr-review-instructions.yaml with the committed distilled
+# principles on master, decoupled from distillation.
+#
+# It regenerates each fence by PURE PROJECTION of the merged-master distilled
+# files (copying their distilled_at_sha / source_checksum front matter) and
+# NEVER re-runs distillation, so the resulting MR is idempotent and passes the
+# ai-duo-review-instructions guard on its own. This closes the drift window a
+# team's distilled MR opens between merging and the fence catching up.
+# See gitlab-org/gitlab#604890 for the design.
+#
+# Trigger: automatically on master pushes that change a fence input (see
+# `.ai-principles-fence-input-patterns`), and as a manual job on every other
+# master push for recovery.
+#
+# Runs share one resource group because they all force-push the same reconcile
+# branch. Each run fetches master after it acquires the group, so a run that
+# waited reconciles the latest master, not its own pipeline's commit.
+#
+# Token: GITLAB_API_TOKEN (auto-MR REST) sourced from the same
+# AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN service-account PAT as the weekly
+# sync. No Duo Workflow / GraphQL tokens are needed because this job never
+# distills.
+ai-principles-reconcile-fences:
+  stage: ai-gateway
+  needs: []
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}-alpine
+  timeout: 15m
+  resource_group: ai-principles-reconcile-fences
+  variables:
+    # Used by the sync bin to create the reconcile MR via the REST API.
+    GITLAB_API_TOKEN: $AGENT_PRINCIPLES_SERVICE_ACCOUNT_TOKEN
+    # Install gem dependencies under the gem's vendor/ dir (matches the
+    # convention used by other gems in this repo, isolates the install
+    # from system gems).
+    BUNDLE_PATH: vendor
+  before_script:
+    - apk add --no-cache git
+    # Audit-trail visibility: log the identity making the calls (the
+    # service account; see access request #43931).
+    - echo "Identity:${GITLAB_USER_LOGIN:-<unset>} (job triggered from $CI_PIPELINE_SOURCE)"
+    - git config --global user.email "service-modelops-agent-principles-distiller@gitlab.com"
+    - git config --global user.name "Agent Principles Distiller"
+    # The reconcile cuts its branch off origin/$CI_DEFAULT_BRANCH and projects
+    # fences from that ref's committed distilled files, so master's tip must be
+    # available. A failed fetch must fail the job rather than silently
+    # reconciling from a stale ref, so no `|| true` here. The `+` is required:
+    # a shallow fetch can't prove a fast-forward once master has advanced.
+    - |
+      attempt=1
+      retry_delay=10
+      until git fetch --depth=1 origin "+$CI_DEFAULT_BRANCH:refs/remotes/origin/$CI_DEFAULT_BRANCH"; do
+        status=$?
+        if [ "$attempt" -ge 4 ]; then
+          exit "$status"
+        fi
+        echo "Fetch attempt $attempt failed; retrying in $retry_delay seconds..."
+        sleep "$retry_delay"
+        attempt=$((attempt + 1))
+        retry_delay=$((retry_delay * 2))
+      done
+    - cd gems/gitlab-ai-principles-distiller
+    - gem install bundler --no-document --version "$(tail -n 1 Gemfile.lock | tr -d '[:space:]')"
+    - bundle install --jobs=$(nproc) --retry=3
+  script:
+    # Pure projection from master: regenerate the fences and open/update the
+    # reconcile MR. Never re-distills.
+    - bundle exec bin/gitlab-ai-principles-distiller-sync --workspace "$CI_PROJECT_DIR" reconcile-fences --push
+  rules:
+    - !reference ['.ai-principles-reconcile:rules', rules]

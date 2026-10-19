@@ -1,0 +1,4 @@
+fragment ReviewersApplicableApprovalRules on UserMergeRequestInteraction {
+  # Overridden in EE
+  approved
+}

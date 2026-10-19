@@ -1,0 +1,20 @@
+---
+key_path: settings.certificate_based_clusters_ff
+name: "certificate_based_clusters_ff"
+description: "Certificate-based clusters feature flag"
+product_group: runner_core
+product_categories:
+- environment_management
+value_type: boolean
+status: active
+milestone: "14.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/81311
+time_frame: none
+data_source: system
+data_category: optional
+instrumentation_class: CertBasedClustersFfMetric
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

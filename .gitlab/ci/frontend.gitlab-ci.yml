@@ -1,0 +1,843 @@
+include:
+  - local: .gitlab/ci/frontend/test-base.gitlab-ci.yml
+
+.with-fixtures-needs:
+  needs:
+    - "rspec-all frontend_fixture"
+    - "rspec-all frontend_fixture clickhouse"
+
+.with-graphql-schema-dump-needs:
+  needs:
+    - "graphql-schema-dump"
+
+.compile-assets-base:
+  extends:
+    - .default-retry
+    - .default-before_script
+    - .assets-compile-cache
+    - .with-ci-node-image
+  variables:
+    SETUP_DB: "false"
+    USE_BUNDLE_INSTALL: "false"  # skip bundle install from default prepare_build script
+    WEBPACK_VENDOR_DLL: "true"
+    GLCI_ASSETS_BUNDLER: "webpack"
+    # Disable warnings in browserslist which can break on backports
+    # https://github.com/browserslist/browserslist/blob/a287ec6/node.js#L367-L384
+    BROWSERSLIST_IGNORE_OLD_DATA: "true"
+    WEBPACK_COMPILE_LOG_PATH: "tmp/webpack-output.log"
+    GIT_DEPTH: "1"
+  stage: prepare
+  needs:
+    - cache:assets-hash
+  script:
+    - scripts/compile_assets
+    - scripts/build_assets_image
+
+compile-production-assets:
+  image: ${REGISTRY_HOST}/${REGISTRY_GROUP}/gitlab-build-images/ci/${BUILD_OS}-${OS_VERSION}-slim-ruby-${RUBY_VERSION}-node-${NODE_VERSION}:rubygems-${RUBYGEMS_VERSION}-git-${GIT_VERSION}-lfs-${LFS_VERSION}-yarn-${YARN_VERSION}-graphicsmagick-${GRAPHICSMAGICK_VERSION}-docker-${DOCKER_VERSION}
+  extends:
+    - .use-buildx
+    - .compile-assets-base
+    - .production
+    - .frontend:rules:compile-production-assets
+  tags:
+    - $GLCI_PRODUCTION_ASSETS_RUNNER_OPTIONAL
+  variables:
+    # The image is built by `build-assets-image`, which combines this Webpack build
+    # with the Rspack one. This job still compiles Webpack assets and emits the assets
+    # tag/hash artifacts that downstream (Omnibus, CNG, release-environments) consume.
+    GLCI_BUILD_ASSETS_IMAGE: "false"
+    GLCI_ASSETS_TAG_ENV_FILE_PATH: "assets-tag-env.env"
+    ARCH: linux/amd64,linux/arm64
+    HEALTHCHECK_TCP_PORT: "2375"
+  before_script:
+    - !reference [.compile-assets-base, before_script]
+    - !reference [.buildx-setup, before_script]
+  after_script:
+    - source scripts/utils.sh
+    - echo "GLCI_ASSETS_IMAGE_TAG=$(assets_image_tag)" > $GLCI_ASSETS_TAG_ENV_FILE_PATH
+  artifacts:
+    name: webpack-report
+    expire_in: 31d
+    paths:
+      # These assets are used in:
+      # - GitLab UI for integration tests: https://gitlab.com/gitlab-org/gitlab-ui/-/blob/e88493b3c855aea30bf60baee692a64606b0eb1e/.storybook/preview-head.pug#L1
+      - public/assets/
+      - ${WEBPACK_COMPILE_LOG_PATH}
+      - ${GLCI_GITLAB_ASSETS_HASH_FILE}
+    when: always
+    reports:
+      dotenv: $GLCI_ASSETS_TAG_ENV_FILE_PATH
+
+compile-production-assets as-if-foss:
+  extends:
+    - compile-production-assets
+    - .as-if-foss
+    - .qa:rules:test-on-omnibus-ce:follow-up
+
+compile-production-assets istanbul:
+  extends:
+    - compile-production-assets
+    - .frontend:rules:compile-production-assets-istanbul
+  variables:
+    BABEL_ENV: "istanbul"
+    GLCI_ASSETS_TAG_ENV_FILE_PATH: "assets-tag-env-istanbul.env"
+    # compile-production-assets no longer builds an image (build-assets-image does), but the
+    # istanbul job still builds its own instrumented image, so re-enable it here.
+    GLCI_BUILD_ASSETS_IMAGE: "true"
+    # Instrumented code is much bigger, so a default build exhausts the pod
+    NO_SOURCEMAPS: "true"
+    NO_COMPRESSION: "true"
+    NO_MINIFY: "true"
+  # The assets caches are shared with plain jobs, so instrumented output stays out
+  cache:
+    - !reference [.ruby-gems-cache]
+    - !reference [.node-modules-cache]
+  after_script:
+    - source scripts/utils.sh
+    - echo "GLCI_ISTANBUL_ASSETS_IMAGE_TAG=$(assets_image_tag)" > $GLCI_ASSETS_TAG_ENV_FILE_PATH
+  # Only the image consumes these assets, and instrumented ones are huge
+  artifacts:
+    name: instrumented-assets
+    expire_in: 7d
+    when: always
+    paths:
+      - ${WEBPACK_COMPILE_LOG_PATH}
+    reports:
+      dotenv: $GLCI_ASSETS_TAG_ENV_FILE_PATH
+
+compile-production-assets vue3:
+  extends:
+    - .compile-assets-base
+    - .production
+    - .vue3
+    - .frontend:rules:compile-production-assets
+  tags:
+    - $GLCI_PRODUCTION_ASSETS_RUNNER_OPTIONAL
+  artifacts:
+    name: webpack-report-vue3
+    expire_in: 7d
+    when: always
+    paths:
+      - ${WEBPACK_COMPILE_LOG_PATH}
+
+# Fills the `ci` partial assets cache that compile-production-assets restores in MR pipelines.
+# babel-loader and Terser cache keys include the sourcemap setting and Node version, so this must
+# build with the MR job's image and MR pipeline variables, not master's.
+compile-production-assets partial-cache:
+  image: !reference [compile-production-assets, image]
+  extends:
+    - .compile-assets-base
+    - .production
+    - .frontend:rules:compile-production-assets-partial-cache
+  tags:
+    - $GLCI_PRODUCTION_ASSETS_RUNNER_OPTIONAL
+  variables:
+    GLCI_ASSETS_TARGET: !reference [.default-merge-request-variables, GLCI_ASSETS_TARGET]
+    NO_SOURCEMAPS: !reference [.default-merge-request-variables, NO_SOURCEMAPS]
+    NO_COMPRESSION: !reference [.default-merge-request-variables, NO_COMPRESSION]
+  needs: []
+  cache:
+    - !reference [.node-modules-cache]
+    - !reference [.ruby-gems-cache]
+    # Unprotected so MR pipelines can restore it; this job never reads it
+    - key: !reference [.assets-tmp-cache, key]
+      paths: !reference [.assets-tmp-cache, paths]
+      policy: push
+      unprotect: true
+  script:
+    - scripts/compile_assets
+  artifacts:
+    name: webpack-report-partial-cache
+    expire_in: 7d
+    when: always
+    paths:
+      - ${WEBPACK_COMPILE_LOG_PATH}
+
+compile-production-assets-rspack as-if-foss:
+  extends:
+    - compile-production-assets-rspack
+    - .as-if-foss
+    - .qa:rules:test-on-omnibus-ce:follow-up
+
+# Vue 3 twin of compile-production-assets-rspack, mirroring `compile-production-assets vue3`:
+# it only proves the Vue 3 production build compiles, so nothing consumes its output.
+compile-production-assets-rspack vue3:
+  extends:
+    - compile-production-assets-rspack
+    - .vue3
+  script:
+    - scripts/compile_assets
+  artifacts:
+    name: rspack-report-vue3
+    expire_in: 7d
+    when: always
+    paths:
+      - ${WEBPACK_COMPILE_LOG_PATH}
+
+compile-test-assets:
+  extends:
+    - .compile-assets-base
+    - .frontend:rules:compile-test-assets
+  tags:
+    - $GITLAB_LARGE_RUNNER_OPTIONAL
+  needs:
+    - cache:assets-hash-rspack
+  variables:
+    ENABLE_RSPACK: "true"
+    GLCI_ASSETS_BUNDLER: "rspack"
+  artifacts:
+    expire_in: 7d
+    paths:
+      - public/assets/
+      - config/helpers/tailwind/  # Assets created during tailwind compilation
+      - "${WEBPACK_COMPILE_LOG_PATH}"
+    when: always
+
+compile-test-assets vue3:
+  extends:
+    - compile-test-assets
+    - .vue3
+
+.frontend-fixtures-base:
+  extends:
+    - .default-retry
+    - .default-before_script
+    - .base-script
+    - .ruby-cache
+    - .repo-from-artifacts
+  stage: fixtures
+  needs:
+    - setup-test-env
+    - retrieve-tests-metadata
+    - compile-test-assets
+    # it's ok to wait for the repo artifact as we're waiting for setup-test-env (which takes longer than clone-gitlab-repo) anyway
+    - !reference [.repo-from-artifacts, needs]
+  variables:
+    # Don't add `CRYSTALBALL: "false"` here as we're enabling Crystalball for scheduled pipelines (in `.gitlab-ci.yml`), so that we get coverage data
+    # for the `frontend fixture RSpec files` that will be added to the Crystalball mapping in `update-tests-metadata`.
+    # More information in https://gitlab.com/gitlab-org/gitlab/-/merge_requests/74003.
+    WEBPACK_VENDOR_DLL: "true"
+  artifacts:
+    name: frontend-fixtures
+    expire_in: 31d
+    when: always
+    paths:
+      - crystalball/
+      - knapsack/
+      - log/*.log
+      - tmp/tests/frontend/**/*
+
+# Builds FOSS, and EE fixtures in the EE project.
+# Builds FOSS fixtures in the FOSS project.
+rspec-all frontend_fixture:
+  extends:
+    - .use-pg17
+    - .frontend-fixtures-base
+    - .frontend:rules:frontend_fixture
+  script:
+    - !reference [.frontend-fixtures-base, script]
+    - rspec_parallelized_job "--tag ~click_house"
+  parallel: 8
+
+rspec-all frontend_fixture clickhouse:
+  extends:
+    - .use-pg17-clickhouse25
+    - .frontend-fixtures-base
+    - .frontend:rules:frontend_fixture
+  variables:
+    RSPEC_DRY_RUN_TAGS: "click_house"
+  script:
+    - !reference [.clickhouse-setup, script]
+    - rspec_parallelized_job "--tag click_house"
+
+.upload-frontend-fixtures-base:
+  extends:
+    - .default-retry
+    - .with-ruby-slim-image
+  stage: fixtures
+  needs:
+    - !reference [.with-fixtures-needs, needs]
+  script:
+    - source scripts/gitlab_component_helpers.sh
+    - |
+      fixtures_archive_doesnt_exist || { echo "Exiting early as package exists!"; exit 0; }
+      create_fixtures_package
+      upload_fixtures_package
+
+# Uploads fixtures to package registry if running in canonical project
+upload-frontend-fixtures:
+  extends:
+    - .upload-frontend-fixtures-base
+    - .frontend:rules:update-frontend-fixtures
+
+# Same as upload-frontend-fixtures, but triggered manually so fixtures from an
+# unmerged branch/pipeline can be published on demand (e.g. to develop an MFE
+# against a monolith change before it merges).
+upload-frontend-fixtures-on-demand:
+  extends:
+    - .upload-frontend-fixtures-base
+    - .frontend:rules:update-frontend-fixtures-on-demand
+  # This job can run on pipelines where the fixture jobs are absent (e.g. MRs
+  # targeting a stable branch), so its needs must be optional.
+  needs:
+    - job: "rspec-all frontend_fixture"
+      optional: true
+    - job: "rspec-all frontend_fixture clickhouse"
+      optional: true
+
+# Cleans up older fixtures packages
+cleanup-frontend-fixtures:
+  extends:
+    - .default-retry
+    - .with-ruby-slim-image
+    - .frontend:rules:fixtures-packages-cleanup
+  stage: fixtures
+  # The script only calls the GitLab API and needs no artifacts. Downloading
+  # them pulls colliding compile-{test,production}-assets outputs that fail
+  # extraction with a file-vs-directory conflict. See:
+  # https://gitlab.com/gitlab-org/quality/engineering-productivity/master-broken-incidents/-/issues/30834
+  dependencies: []
+  before_script:
+    - source scripts/utils.sh
+    - install_gitlab_gem
+  script:
+    - scripts/packages/automated_cleanup.rb
+
+graphql-schema-dump:
+  variables:
+    SETUP_DB: "false"
+    GIT_DEPTH: "1"
+  extends:
+    - .default-retry
+    - .ruby-cache
+    - .default-before_script
+    - .frontend:rules:default-frontend-jobs
+  stage: fixtures
+  needs:
+    - job: cache:ruby-gems
+      optional: true
+  script:
+    - bundle exec rake gitlab:graphql:schema:dump
+  artifacts:
+    expire_in: 30 days
+    name: graphql-schema
+    paths:
+      - tmp/tests/graphql/gitlab_schema.graphql
+      - tmp/tests/graphql/gitlab_schema.json
+
+upload-graphql-schema-dump:
+  stage: fixtures
+  variables:
+    SETUP_DB: "false"
+  extends:
+    - .default-retry
+    - .ruby-cache
+    - .default-before_script
+    - .frontend:rules:upload-graphql-schema-dump
+    - .with-graphql-schema-dump-needs
+  script:
+    - source scripts/gitlab_component_helpers.sh
+    - create_and_upload_graphql_schema_package
+
+jest-build-cache:
+  extends:
+    - .frontend-test-base
+    - .repo-from-artifacts
+    - .frontend:rules:jest
+  needs:
+    - !reference [.frontend-test-base, needs]
+    - !reference [.repo-from-artifacts, needs]
+  artifacts:
+    name: jest-cache
+    expire_in: 12h
+    when: always
+    paths:
+      - tmp/cache/jest/
+  script:
+    - scripts/frontend/warm_jest_cache.mjs
+  variables:
+    # Propagate exit code correctly. See https://gitlab.com/groups/gitlab-org/-/epics/6074.
+    FF_USE_NEW_BASH_EVAL_STRATEGY: 'true'
+    FORCE_COLOR: '1'
+    # skip reporting metrics from no-op tests
+    GLCI_EXPORT_TEST_METRICS: "false"
+  allow_failure:
+    # In merge requests, failures exit with 2, so fail the pipeline. Otherwise,
+    # they exit with 1, so as not to break master and other pipelines.
+    exit_codes: 1
+
+.vue3:
+  variables:
+    VUE_VERSION: 3
+
+.with-jest-build-cache-vue3-ensure-compilable-sfcs-needs:
+  needs:
+    - job: jest-build-cache-vue3-ensure-compilable-sfcs
+      optional: true
+
+jest-build-cache-vue3-ensure-compilable-sfcs:
+  extends:
+    - .vue3
+    - jest-build-cache
+    - .frontend:rules:jest
+
+jest:
+  extends:
+    - .frontend-test-base
+    - .repo-from-artifacts
+    - .frontend:rules:jest
+  needs:
+    - !reference [.frontend-test-base, needs]
+    - !reference [.repo-from-artifacts, needs]
+    - job: jest-build-cache
+      optional: true
+  artifacts:
+    name: coverage-frontend
+    expire_in: 31d
+    when: always
+    paths:
+      - coverage-frontend/
+      - junit_jest.xml
+      - jest-reports/
+      - jest-test-mapping/
+      - tmp/tests/frontend/
+    reports:
+      junit: junit_jest.xml
+  parallel: 11
+  script:
+    - scripts/frontend/jest_ci.js
+
+jest-with-fixtures:
+  extends:
+    - jest
+    - .repo-from-artifacts
+    - .frontend:rules:jest
+  needs:
+    - !reference [jest, needs]
+    - !reference [.with-fixtures-needs, needs]
+  parallel: 2
+  script:
+    - scripts/frontend/jest_ci.js --fixtures
+
+jest vue3:
+  extends:
+    - .frontend-test-base
+    - .repo-from-artifacts
+    - .frontend:rules:jest
+    - .vue3
+  needs:
+    - !reference [.frontend-test-base, needs]
+    - !reference [.repo-from-artifacts, needs]
+    - !reference [.with-jest-build-cache-vue3-ensure-compilable-sfcs-needs, needs]
+  variables:
+    GLCI_TEST_METRICS_RUN_TYPE: frontend-jest-tests-vue3
+  artifacts:
+    name: vue3-mr-junit
+    expire_in: 31d
+    when: always
+    paths:
+      - junit_jest.xml
+      - jest-reports/
+  parallel: !reference [jest, parallel]
+  script:
+    - scripts/frontend/jest_ci.js --vue3
+
+jest-with-fixtures vue3:
+  extends:
+    - jest vue3
+    - .repo-from-artifacts
+  needs:
+    - !reference [.frontend-test-base, needs]
+    - !reference [.with-jest-build-cache-vue3-ensure-compilable-sfcs-needs, needs]
+    # it's ok to wait for the repo artifact as we're waiting for the fixtures (which wait for the repo artifact) anyway
+    - !reference [.repo-from-artifacts, needs]
+    - !reference [.with-fixtures-needs, needs]
+  artifacts:
+    name: vue3-mr-junit
+    expire_in: 31d
+    when: always
+    paths:
+      - junit_jest.xml
+      - jest-reports/
+  parallel: !reference [jest-with-fixtures, parallel]
+  script:
+    - scripts/frontend/jest_ci.js --vue3 --fixtures
+
+jest predictive:
+  extends:
+    - jest
+    - .frontend:rules:jest:predictive
+  needs:
+    - !reference [jest, needs]
+    - "detect-tests"
+  script:
+    - |
+      if [[ -s "$GLCI_PREDICTIVE_CHANGED_FILES_PATH" ]] || [[ -s "$GLCI_PREDICTIVE_MATCHING_JS_FILES_PATH" ]]; then
+        scripts/frontend/jest_ci.js --predictive
+      fi
+
+  parallel: 4
+
+jest-with-fixtures predictive:
+  extends:
+    - jest-with-fixtures
+    - .frontend:rules:jest:predictive
+  needs:
+    - !reference [jest-with-fixtures, needs]
+    - "detect-tests"
+  script:
+    - |
+      if [[ -s "$GLCI_PREDICTIVE_CHANGED_FILES_PATH" ]] || [[ -s "$GLCI_PREDICTIVE_MATCHING_JS_FILES_PATH" ]]; then
+        scripts/frontend/jest_ci.js --predictive --fixtures
+      fi
+
+jest vue3 predictive:
+  extends:
+    - jest vue3
+    - .frontend:rules:jest:predictive
+  needs:
+    - !reference [jest vue3, needs]
+    - "detect-tests"
+  script:
+    - |
+      if [[ -s "$GLCI_PREDICTIVE_CHANGED_FILES_PATH" ]] || [[ -s "$GLCI_PREDICTIVE_MATCHING_JS_FILES_PATH" ]]; then
+        scripts/frontend/jest_ci.js --vue3 --predictive
+      fi
+  parallel: !reference [jest predictive, parallel]
+
+jest-with-fixtures vue3 predictive:
+  extends:
+    - jest-with-fixtures vue3
+    - .frontend:rules:jest:predictive
+  needs:
+    - !reference [jest-with-fixtures vue3, needs]
+    - "detect-tests"
+  script:
+    - |
+      if [[ -s "$GLCI_PREDICTIVE_CHANGED_FILES_PATH" ]] || [[ -s "$GLCI_PREDICTIVE_MATCHING_JS_FILES_PATH" ]]; then
+        scripts/frontend/jest_ci.js --vue3 --predictive --fixtures;
+      fi
+  parallel: !reference [jest-with-fixtures predictive, parallel]
+
+# Frontend integration tests (Jest, backed by Mock Service Worker)
+jest-integration:
+  extends:
+    - .frontend-test-base
+    - .repo-from-artifacts
+    - .frontend:rules:jest-integration
+  variables:
+    JEST_INTEGRATION_REPORT: tmp/jest-integration-report.json
+    JEST_INTEGRATION_START_TIME_FILE: tmp/jest-integration-start-time
+  script:
+    - date +%s > "${JEST_INTEGRATION_START_TIME_FILE}"
+    # Capture the Jest exit code so we can re-raise it after the summary step.
+    # The summary is always posted (even on test failure) because the inline
+    # comment is the primary signal for reviewers; the job itself also fails
+    # when tests fail, surfacing the failure in the pipeline.
+    - yarn jest:integration --ci --passWithNoTests --forceExit --json --outputFile="${JEST_INTEGRATION_REPORT}"; JEST_EXIT=$?
+    # This runs in `script` instead of `after_script` on purpose.
+    # We want the budget gate to be able to fail the job when someone adds too many new tests.
+    # That only works from `script`, because GitLab ignores the exit code of `after_script` and a failure there
+    # wouldn't stop the pipeline.
+    #
+    # Posting the summary comment is best-effort: if the API call fails, the script quietly ignores it
+    # and the job keeps going. The job fails when tests fail or when the per-new-test budget is breached.
+    - |
+      # Read the recorded integration-test start timestamp; fall back to 0 if the file is
+      # missing or unreadable (keeps later duration math from breaking).
+      START=$(cat "${JEST_INTEGRATION_START_TIME_FILE}" 2>/dev/null || echo 0)
+      DURATION=$(( $(date +%s) - START ))
+      node scripts/frontend/post_integration_test_summary.mjs \
+        --job-name "${CI_JOB_NAME}" \
+        --report-path "${JEST_INTEGRATION_REPORT}" \
+        --artifact-path "${JEST_INTEGRATION_REPORT}" \
+        --job-url "${CI_JOB_URL}" \
+        --duration "${DURATION}"
+      echo "Exiting with jest exit code $JEST_EXIT."
+      exit $JEST_EXIT
+  artifacts:
+    name: jest-integration-report
+    expire_in: 7d
+    when: always
+    paths:
+      - tmp/jest-integration-report.json
+  needs:
+    # it's ok to wait for the repo artifact as we're waiting for the fixtures (which wait for the repo artifact) anyway
+    - !reference [.frontend-test-base, needs]
+    - !reference [.repo-from-artifacts, needs]
+    - !reference [.with-fixtures-needs, needs]
+    - !reference [.with-graphql-schema-dump-needs, needs]
+
+jest-integration vue3:
+  extends:
+    - jest-integration
+    - .vue3
+
+jest-snapshot-vue3:
+  extends:
+    - .frontend-test-base
+    - .repo-from-artifacts
+    - .frontend:rules:jest-snapshot-vue3
+  needs:
+    # it's ok to wait for the repo artifact as we're waiting for the fixtures (which wait for the repo artifact) anyway
+    - !reference [.frontend-test-base, needs]
+    - !reference [.repo-from-artifacts, needs]
+    - !reference [.with-fixtures-needs, needs]
+  variables:
+    VUE_VERSION: 3
+    JEST_REPORT: jest-test-report.json
+    SNAPSHOT_TEST_REPORT: jest-snapshot-test-report.json
+  script:
+    - |
+      yarn jest:snapshots --ci --json --outputFile="${JEST_REPORT}" || echo 'Proceed to parsing test report...'
+      echo $(ruby -rjson -e 'puts JSON.generate(JSON.parse(File.read(ENV["JEST_REPORT"])).dig("snapshot"))') > "${SNAPSHOT_TEST_REPORT}"
+
+      echo " ============= snapshot test report start =============="
+      cat "${SNAPSHOT_TEST_REPORT}"
+      echo " ============= snapshot test report end ================"
+
+      snapshot_test_failed=$(ruby -rjson -e 'puts JSON.parse(File.read(ENV["SNAPSHOT_TEST_REPORT"])).dig("failure")')
+      if [[ "${snapshot_test_failed}" == "true" ]]
+      then
+        echo "You have failed snapshot tests! Exiting 1..."
+        exit 1
+      else
+        echo 'All snapshot tests passed! Exiting 0...'
+        exit 0
+      fi
+  artifacts:
+    name: snapshot_tests
+    expire_in: 31d
+    when: always
+    paths:
+      - jest-snapshot-test-match.json
+      - jest-snapshot-test-report.json
+
+test-linters:
+  extends:
+    - .frontend-test-base
+    - .frontend:rules:test-linters
+  script:
+    - yarn vitest:eslint
+
+test-vue3migration-tooling:
+  extends:
+    - .frontend-test-base
+    - .frontend:rules:test-vue3migration-tooling
+  script:
+    - yarn vitest:vue3migration
+
+coverage-frontend:
+  extends:
+    - .default-retry
+    - .default-utils-before_script
+    - .yarn-cache
+    - .repo-from-artifacts
+    - .frontend:rules:coverage-frontend
+  needs:
+    - !reference [.repo-from-artifacts, needs]
+    - job: "jest"
+      optional: true
+    - job: "jest-with-fixtures"
+      optional: true
+    - job: "jest predictive"
+      optional: true
+  stage: post-test
+  script:
+    - yarn_install_script
+    - yarn node scripts/frontend/merge_coverage_frontend.js
+    # Removing the individual coverage results, as we just merged them.
+    - if ls coverage-frontend/jest-* > /dev/null 2>&1; then
+        rm -r coverage-frontend/jest-*;
+      fi
+  coverage: '/^Statements\s*:\s*?(\d+(?:\.\d+)?)%/'
+  artifacts:
+    name: coverage-frontend
+    expire_in: 31d
+    paths:
+      - coverage-frontend/
+      - jest-reports/
+      - jest-test-mapping/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-frontend/cobertura-coverage.xml
+
+compile-storybook:
+  extends:
+    - .frontend-test-base
+    - .storybook-yarn-cache-pull-push
+    - .repo-from-artifacts
+    - .frontend:rules:compile-storybook
+  # In test-frontend so test-storybook can use the build artifact.
+  stage: test-frontend
+  needs:
+    # it's ok to wait for the repo artifact as we're waiting for the fixtures (which wait for the repo artifact) anyway
+    - !reference [.frontend-test-base, needs]
+    - !reference [.repo-from-artifacts, needs]
+    - !reference [.with-fixtures-needs, needs]
+    - !reference [.with-graphql-schema-dump-needs, needs]
+  artifacts:
+    name: storybook
+    expire_in: 31d
+    when: always
+    paths:
+      - storybook/public
+  script:
+    - yarn_install_script_storybook
+    - yarn run storybook:build
+
+test-storybook:
+  extends:
+    - .frontend-test-base
+    - .storybook-yarn-cache
+    - .repo-from-artifacts
+    - .frontend:rules:test-storybook
+  stage: test-frontend
+  needs:
+    # it's ok to wait for the repo artifact as we're waiting for the fixtures (which wait for the repo artifact) anyway
+    - !reference [.frontend-test-base, needs]
+    - !reference [.repo-from-artifacts, needs]
+    - !reference [.with-fixtures-needs, needs]
+    - !reference [.with-graphql-schema-dump-needs, needs]
+    # Optional: rules differ from compile-storybook, so the build step falls back when absent.
+    - job: compile-storybook
+      optional: true
+  timeout: 60m
+  artifacts:
+    name: storybook-test-results
+    access: developer
+    expire_in: 31d
+    when: always
+    paths:
+      - storybook/storybook-results.json
+  script:
+    - yarn_install_script_storybook
+    - yarn --cwd ./storybook playwright install --with-deps chromium
+    # Reuse compile-storybook's artifact if present, else build (pre-compiled stories avoid dev-server timeouts).
+    - '[ -f storybook/public/index.html ] || yarn run storybook:build'
+    # `kill $STORYBOOK_PID` only reaps the yarn wrapper, leaving its http-server child
+    # orphaned and still holding the job's stdout/stderr pipe; redirect output so the
+    # runner's Wait() gets EOF instead of failing "WaitDelay expired before I/O complete".
+    - yarn --cwd ./storybook run serve > /dev/null 2>&1 &
+    - STORYBOOK_PID=$!
+    - until curl -f http://localhost:6006 >/dev/null 2>&1; do sleep 1; done  # Wait for Storybook to start
+    - yarn run storybook:dev:test
+    - kill $STORYBOOK_PID || true
+
+bundle-size-review:
+  extends:
+    - .default-retry
+    - .default-before_script
+    - .assets-compile-cache-pull
+  rules:
+    - if: '$ENABLE_RSPACK == "true"'
+      when: never
+    - !reference [".frontend:rules:bundle-size-review", rules]
+  stage: test-frontend
+  # This job runs the same webpack build as compile-production-assets, plus the
+  # bundle analyzer, so the default runner OOM-kills it.
+  tags:
+    - $GLCI_MEDIUM_RUNNER_REQUIRED
+  needs:
+    - job: compile-production-assets
+      optional: true
+  variables:
+    SETUP_DB: "false"
+  script:
+    - yarn_install_script
+    - scripts/bundle_size_review
+  cache:
+    - !reference [.yarn-cache, cache]
+  artifacts:
+    when: always
+    name: bundle-size-review
+    expire_in: 31d
+    paths:
+      - bundle-size-review/
+
+compile-production-assets-rspack:
+  extends:
+    - .compile-assets-base
+    - .production
+    - .frontend:rules:compile-production-assets
+  # High-memory runner (matches Webpack); the Rspack build OOMs the default one.
+  tags:
+    - $GLCI_PRODUCTION_ASSETS_RUNNER_OPTIONAL
+  needs:
+    - cache:assets-hash-rspack
+  variables:
+    ENABLE_RSPACK: "true"
+    GLCI_ASSETS_BUNDLER: "rspack"
+  script:
+    - scripts/compile_assets
+    # Distinct path: the runner can't extract two artifacts sharing public/assets/webpack/**.
+    - rm -rf rspack-assets && mkdir -p rspack-assets && cp -r public/assets/webpack rspack-assets/webpack
+  artifacts:
+    name: rspack-production-assets
+    expire_in: 31d
+    paths:
+      - rspack-assets/
+      - ${WEBPACK_COMPILE_LOG_PATH}
+    when: always
+
+# Combined gitlab-assets-ee image (Webpack + Rspack) so one image serves either bundler.
+build-assets-image:
+  extends:
+    - .base-image-build-buildx
+    - .fast-no-clone-job
+    - .production
+    - .frontend:rules:compile-production-assets
+  stage: prepare
+  tags:
+    - $GLCI_PRODUCTION_ASSETS_RUNNER_OPTIONAL
+  # Keep the unconditional retry from .base-image-build-buildx instead of the
+  # exit-code retry from .fast-no-clone-job, which would otherwise override it.
+  retry: 2
+  needs:
+    - cache:assets-hash
+    - job: compile-production-assets
+      artifacts: true
+    - job: compile-production-assets-rspack
+      artifacts: true
+  variables:
+    GLCI_BUILD_ASSETS_IMAGE: "true"
+    # The assets hash doesn't cover .gitlab/ci/** or app/helpers/**, so the assets-hash tag
+    # may already hold a Webpack-only image from master; without this the script would
+    # re-tag it and the Rspack assets would never ship. Drop this (and restore the free
+    # registry-side re-tag) once Webpack is gone.
+    GLCI_REBUILD_ASSETS_IMAGE: "true"
+    GLCI_ASSETS_TAG_ENV_FILE_PATH: "assets-tag-env.env"
+    ARCH: linux/amd64,linux/arm64
+    HEALTHCHECK_TCP_PORT: "2375"
+    FILES_TO_DOWNLOAD: >
+      Dockerfile.assets
+      scripts/build_assets_image
+  before_script:
+    - !reference [".fast-no-clone-job", before_script]
+    - !reference [".default-utils-before_script", before_script]
+    - !reference [".buildx-setup", before_script]
+  script:
+    - cp --recursive --no-clobber rspack-assets/webpack/. public/assets/webpack/
+    - chmod u+x scripts/build_assets_image && scripts/build_assets_image
+  after_script:
+    - source scripts/utils.sh
+    - echo "GLCI_ASSETS_IMAGE_TAG=$(assets_image_tag)" > $GLCI_ASSETS_TAG_ENV_FILE_PATH
+  artifacts:
+    reports:
+      dotenv: $GLCI_ASSETS_TAG_ENV_FILE_PATH
+
+# FOSS (CE) counterpart of build-assets-image: combines the Webpack and Rspack FOSS
+# compiles into the gitlab-assets-ce image (FOSS_ONLY selects the image name).
+build-assets-image as-if-foss:
+  extends:
+    - build-assets-image
+    - .as-if-foss
+    - .qa:rules:test-on-omnibus-ce:follow-up
+  needs:
+    - cache:assets-hash
+    - job: compile-production-assets as-if-foss
+      artifacts: true
+    - job: compile-production-assets-rspack as-if-foss
+      artifacts: true

@@ -1,0 +1,388 @@
+@import 'mixins_and_variables_and_functions';
+
+$dark-highlight-bg: #ffe792;
+$dark-highlight-color: $black;
+$white-highlight: #fafe3d;
+$search-dropdown-max-height: 400px;
+$search-avatar-size: 16px;
+$search-sidebar-min-width: 240px;
+$search-sidebar-max-width: 300px;
+$language-filter-max-height: 20rem;
+$white-divider: #d9d9d9;
+$black-divider: #666;
+
+.search-results {
+  .search-result-row {
+    border-bottom: 1px solid var(--gl-border-color-default);
+    padding-bottom: $gl-padding;
+    margin-bottom: $gl-padding;
+
+    &:last-child {
+      border-bottom: 0;
+    }
+
+    .fork-sprite {
+      margin-right: -5px;
+    }
+  }
+
+  mark {
+    @include str-highlighted;
+  }
+
+}
+
+.results {
+  .dark.highlight-search-term {
+    background-color: $dark-highlight-bg !important;
+    color: $dark-highlight-color !important;
+  }
+
+  .white.highlight-search-term {
+    background-color: $white-highlight !important;
+    color: $dark-highlight-color !important;
+  }
+
+  .multimatch-divider-dark {
+    border-color: $black-divider !important;
+    border-bottom: 1px solid;
+    border-left: 0;
+    border-right: 0;
+    border-top: 0;
+  }
+
+  .multimatch-divider-light {
+    border-color: $white-divider !important;
+    border-bottom: 1px solid;
+    border-left: 0;
+    border-right: 0;
+    border-top: 0;
+  }
+}
+
+.results .filters a[aria-current="page"] {
+  background-color: var(--gl-background-color-strong);
+}
+
+.language-filter-checkbox,
+.type-filter-checkbox {
+  .custom-control-label {
+    flex-grow: 1;
+  }
+}
+
+.issue-filters {
+  .label-filter {
+    list-style: none;
+
+    .header-search-dropdown-menu {
+      max-height: $language-filter-max-height;
+      min-width: calc(#{$search-sidebar-min-width} - (#{$gl-spacing-scale-5} + #{$gl-spacing-scale-5}));
+      max-width: calc(#{$search-sidebar-min-width} - (#{$gl-spacing-scale-5} + #{$gl-spacing-scale-5}));
+
+      @include gl-container-width-up(xl, panel) {
+        min-width: calc(#{$search-sidebar-max-width} - (#{$gl-spacing-scale-5} + #{$gl-spacing-scale-5}));
+        max-width: calc(#{$search-sidebar-max-width} - (#{$gl-spacing-scale-5} + #{$gl-spacing-scale-5}));
+      }
+
+      .label-with-color-checkbox {
+        .custom-control-label {
+          display: flex;
+          margin-bottom: 0;
+        }
+      }
+    }
+  }
+}
+
+.advanced-search-promote {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
+.search-max-w-inherit {
+  max-width: inherit;
+}
+
+.search-wrap-f-md-down {
+  @include gl-container-width-down(md, panel) {
+    white-space: normal !important;
+  }
+}
+
+.search {
+  margin: 0 8px;
+
+  form {
+    display: block;
+    margin: 0;
+    padding: 4px;
+    width: $search-input-width;
+    line-height: 24px;
+    height: 32px;
+    border: 0;
+    @apply gl-rounded-base;
+    transition: border-color ease-in-out $default-transition-duration,
+      background-color ease-in-out $default-transition-duration;
+
+    @include gl-container-width-up(xl, panel) {
+      width: $search-input-xl-width;
+    }
+
+    &:hover {
+      box-shadow: none;
+    }
+  }
+
+  .search-input {
+    border: 0;
+    font-size: 14px;
+    padding: 0 20px 0 0;
+    margin-left: 5px;
+    line-height: 25px;
+    width: 98%;
+    color: $white;
+    background: none;
+    transition: color ease-in-out $default-transition-duration;
+  }
+
+  .search-input::placeholder {
+    transition: color ease-in-out $default-transition-duration;
+  }
+
+  .search-input-wrap {
+    width: 100%;
+
+    .search-icon,
+    .clear-icon {
+      position: absolute;
+      right: 5px;
+      top: 4px;
+    }
+
+    .search-icon {
+      transition: color $default-transition-duration;
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+    }
+
+    .clear-icon {
+      display: none;
+    }
+
+    // Rewrite position. Dropdown menu should be relative to .search-input-container
+    .dropdown {
+      position: static;
+    }
+
+    .dropdown-header {
+      // Necessary because deprecatedJQueryDropdown doesn't support a second style of headers
+      font-weight: $gl-font-weight-bold;
+      color: var(--gl-text-color-strong);
+      font-size: $gl-font-size;
+      line-height: 16px;
+    }
+
+    // Custom dropdown positioning
+    .dropdown-menu {
+      left: -5px;
+      max-height: $search-dropdown-max-height;
+      overflow: auto;
+
+      @include gl-container-width-up(xl, panel) {
+        width: $search-input-xl-width;
+      }
+    }
+
+    .dropdown-content {
+      max-height: $search-dropdown-max-height - 18px;
+    }
+  }
+
+  &.has-value {
+    .search-icon {
+      display: none;
+    }
+
+    .clear-icon {
+      cursor: pointer;
+      display: block;
+    }
+  }
+
+  .identicon,
+  .search-item-avatar {
+    flex-basis: $search-avatar-size;
+    flex-shrink: 0;
+    margin-right: 4px;
+  }
+
+  .search-item-avatar {
+    width: $search-avatar-size;
+    height: $search-avatar-size;
+    border-radius: 50%;
+    border: 1px solid var(--gray-50, $gray-50);
+  }
+}
+
+.search-field-holder,
+.project-filter-form {
+  flex: 1 0 auto;
+  position: relative;
+
+  .search-holder & {
+    margin-right: 0;
+
+    @include gl-container-width-up(sm, panel) {
+      margin-right: 5px;
+    }
+  }
+
+  .search-icon {
+    position: absolute;
+    left: 10px;
+    top: 9px;
+    color: var(--gl-icon-color-subtle);
+    pointer-events: none;
+  }
+
+  .search-text-input {
+    padding-left: $gl-padding + 15px;
+    padding-right: $gl-padding + 15px;
+  }
+}
+
+.search-holder {
+  @include gl-container-width-up(sm, panel) {
+    display: flex;
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .btn-search,
+  .dropdown-menu-toggle,
+  .gl-dropdown {
+    width: 100%;
+    margin-top: 5px;
+
+    @include gl-container-width-up(sm, panel) {
+      width: auto;
+      margin-top: 0;
+      margin-left: 5px;
+    }
+  }
+
+  .dropdown {
+    @include gl-container-width-up(sm, panel) {
+      margin-left: 5px;
+      margin-right: 5px;
+    }
+  }
+}
+
+.search-page-form {
+  .dropdown-menu-toggle,
+  .btn-search {
+    width: 100%;
+  }
+
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .dropdown-menu-toggle,
+  .gl-dropdown {
+    @include gl-container-width-up(lg, panel) {
+      width: 240px;
+    }
+  }
+
+  .btn-search {
+    @include gl-container-width-up(lg, panel) {
+      width: auto;
+    }
+  }
+}
+
+// This overrides parts of the Project File View CSS
+// We leverage most of the styling but broke off
+// from how we were doing it in `shared/file_highlight`
+#search-blob-content {
+  .line_holder {
+    pre {
+      padding: 0; // This overrides the existing style that will add space between each line.
+      border-radius: 0;
+
+      .line {
+        word-break: break-word;
+        white-space: break-spaces;
+      }
+    }
+
+    svg {
+      float: none; // We have more than one icon on this implementation and don't want to float them.
+      margin: 0; // We will manage the margin with GitLab UI utility classes
+    }
+
+    .line-numbers {
+      padding: 0; // This overrides the existing style that will add space between each line.
+      min-width: 6.5rem; // Ensure our numbers fit
+
+      .diff-line-num {
+        a {
+          transition: none; // There will be a hover transition from theme, blue, darkened
+        }
+      }
+    }
+
+    &:hover {
+      svg {
+        visibility: visible; // We want to show the icons when the any part of the line is hovered
+      }
+    }
+
+    // The icons only appear on hover
+    // So on mobile we can hide them and retake the space for the code blob
+    @include gl-container-width-down(md, panel) {
+      svg {
+        display: none;
+      }
+
+      .line-numbers {
+        min-width: 4rem;
+      }
+    }
+
+    &:last-of-type {
+      border-radius: 0 0 $gl-border-radius-base-inner $gl-border-radius-base-inner;
+
+      pre {
+        border-bottom-right-radius: $gl-border-radius-base-inner;
+      }
+
+      .diff-line-num:first-of-type {
+        border-bottom-left-radius: $gl-border-radius-base-inner;
+      }
+    }
+  }
+}
+
+/**
+ * When form input type is search, browsers add a clear input button inside
+ * the input field. This overlaps with the input field we have already added.
+ */
+
+/* stylelint-disable property-no-vendor-prefix */
+input[type='search'] {
+  -webkit-appearance: textfield;
+  -moz-appearance: textfield;
+  appearance: textfield;
+
+  &::-webkit-search-cancel-button,
+  &::-webkit-search-results-button {
+    display: none;
+  }
+}
+/* stylelint-enable property-no-vendor-prefix */
+
+.description.term p:last-child {
+  @apply gl-m-0;
+}

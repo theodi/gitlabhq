@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Policies that can be assigned to a CI_JOB_TOKEN",
+  "type": "array",
+  "items": {
+    "type": "string",
+    "enum": [
+      "read_badges",
+      "admin_badges",
+      "read_deployments",
+      "admin_deployments",
+      "read_environments",
+      "admin_environments",
+      "read_jobs",
+      "admin_jobs",
+      "read_merge_requests",
+      "read_packages",
+      "admin_packages",
+      "read_pipelines",
+      "admin_pipelines",
+      "read_releases",
+      "admin_releases",
+      "read_repositories",
+      "admin_repositories",
+      "read_secure_files",
+      "admin_secure_files",
+      "read_terraform_state",
+      "admin_terraform_state",
+      "read_work_items"
+    ]
+  },
+  "uniqueItems": true,
+  "additionalItems": false
+}

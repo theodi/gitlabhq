@@ -1,0 +1,15 @@
+---
+name: update_project
+description: Grants the ability to update project settings and attributes
+boundaries:
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - housekeep_project
+  - import_member
+  - recalculate_storage
+  - restore_project
+  - star_project
+  - unstar_project
+  - update_project

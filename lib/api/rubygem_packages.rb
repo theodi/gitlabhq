@@ -1,0 +1,261 @@
+# frozen_string_literal: true
+
+###
+# API endpoints for the RubyGem package registry
+module API
+  class RubygemPackages < ::API::Base
+    include ::API::Helpers::Authentication
+
+    helpers ::API::Helpers::PackagesHelpers
+    helpers ::API::Helpers::Packages::Rubygems
+    helpers ::API::Helpers::Packages::Rubygems::ErrorMessageHeader
+
+    feature_category :package_registry
+    urgency :low
+
+    # The Marshal version can be found by "#{Marshal::MAJOR_VERSION}.#{Marshal::MINOR_VERSION}"
+    # Updating the version should require a GitLab API version change.
+    MARSHAL_VERSION = '4.8'
+    PACKAGE_FILENAME = 'package.gem'
+    SPEC_INDEX_FILE_NAMES = %W[
+      specs.#{MARSHAL_VERSION}.gz
+      latest_specs.#{MARSHAL_VERSION}.gz
+      prerelease_specs.#{MARSHAL_VERSION}.gz
+    ].freeze
+    FILE_NAME_REQUIREMENTS = {
+      file_name: ::API::NO_SLASH_URL_PART_REGEX
+    }.freeze
+    GEMSPEC_FILE_NAME_REQUIREMENTS = {
+      file_name: Gitlab::Regex.rubygems_gemspec_file_name_regex
+    }.freeze
+
+    content_type :binary, 'application/octet-stream'
+
+    authenticate_with do |accept|
+      accept.token_types(:personal_access_token, :deploy_token, :job_token)
+            .sent_through(:http_token, :http_basic_auth)
+    end
+
+    helpers do
+      def project
+        user_project(action: :read_package)
+      end
+
+      # Overridden in EE to enforce the Dependency Firewall; no-ops in CE.
+      def enforce_dependency_firewall_on_upload!; end
+
+      def enforce_dependency_firewall_on_download!(_package); end
+    end
+
+    before do
+      require_packages_enabled!
+      authenticate_non_get!
+    end
+
+    after_validation do
+      not_found! unless Feature.enabled?(:rubygem_packages, project)
+    end
+
+    params do
+      requires :id, types: [Integer, String], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      namespace ':id/packages/rubygems' do
+        desc 'Download the spec index file' do
+          detail 'Downloads a RubyGems spec index file (specs.4.8.gz, latest_specs.4.8.gz, or ' \
+            'prerelease_specs.4.8.gz) for a project.'
+          produces %w[application/octet-stream]
+          success code: 200
+          failure [
+            { code: 400, message: 'Bad Request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not Found' }
+          ]
+          tags %w[packages_rubygem]
+        end
+        params do
+          requires :file_name, type: String, values: SPEC_INDEX_FILE_NAMES, desc: 'Name of the spec file.', documentation: { type: 'file' }
+        end
+        route_setting :authorization, permissions: :read_ruby_gem, boundary_type: :project
+        get ":file_name", requirements: FILE_NAME_REQUIREMENTS do
+          authorize_read_package!(project)
+
+          spec_file = ::Packages::Rubygems::SpecFile
+                        .find_by_project_id_and_file_name(project.id, params[:file_name])
+
+          if spec_file
+            present_carrierwave_file!(spec_file.file)
+          else
+            enqueue_create_spec_files_worker(project)
+            not_found!
+          end
+        end
+
+        desc 'Download a gemspec file' do
+          detail 'Downloads a gemspec file in Marshal format for a specified gem version.'
+          produces %w[application/octet-stream]
+          success code: 200
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not Found' }
+          ]
+          tags %w[packages_rubygem]
+        end
+        params do
+          requires :file_name, type: String, desc: 'Name of the gemspec file, in the format `<gem_name>-<version>.gemspec.rz`.', documentation: { type: 'file' }
+        end
+        route_setting :authorization, permissions: :read_ruby_gem, boundary_type: :project
+        get "quick/Marshal.#{MARSHAL_VERSION}/:file_name", requirements: GEMSPEC_FILE_NAME_REQUIREMENTS do
+          authorize_read_package!(project)
+
+          package_file = ::Packages::PackageFile
+                           .for_rubygem_with_file_name(project, params[:file_name])
+                           .installable
+                           .last!
+
+          track_package_event('pull_package', :rubygems, project: project, namespace: project.namespace)
+
+          present_carrierwave_file!(package_file.file)
+        end
+
+        desc 'Download a gem file' do
+          detail 'Downloads a specified gem file for a project.'
+          produces %w[application/octet-stream]
+          success code: 200
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Not Found' }
+          ]
+          tags %w[packages_rubygem]
+        end
+        params do
+          requires :file_name, type: String, desc: 'Name of the `.gem` file.', documentation: { type: 'file' }
+        end
+        route_setting :authorization, permissions: :download_ruby_gem, boundary_type: :project
+        get "gems/:file_name", requirements: FILE_NAME_REQUIREMENTS do
+          authorize_read_package!(project)
+
+          package_files = ::Packages::PackageFile
+                            .for_rubygem_with_file_name(project, params[:file_name])
+
+          package_file = package_files.installable.last!
+
+          enforce_dependency_firewall_on_download!(package_file.package)
+
+          track_package_event('pull_package', :rubygems, project: project, namespace: project.namespace)
+
+          present_package_file!(package_file)
+        end
+
+        namespace 'api/v1' do
+          desc 'Authorize a gem upload from workhorse' do
+            detail 'This feature was introduced in GitLab 13.9'
+            success code: 200
+            failure [
+              { code: 401, message: 'Unauthorized' },
+              { code: 403, message: 'Forbidden' }
+            ]
+            tags %w[packages_rubygem]
+          end
+          route_setting :authorization, skip_granular_token_authorization: :workhorse_pre_authorization
+          post 'gems/authorize' do
+            authorize_workhorse!(
+              subject: project,
+              has_length: false,
+              maximum_size: project.actual_limits.rubygems_max_file_size
+            )
+          end
+
+          desc 'Upload a gem' do
+            detail 'Uploads a gem for a specified project.'
+            success code: 201
+            failure [
+              { code: 401, message: 'Unauthorized' },
+              { code: 403, message: 'Forbidden' },
+              { code: 404, message: 'Not Found' }
+            ]
+            tags %w[packages_rubygem]
+          end
+          params do
+            requires :file, type: ::API::Validations::Types::WorkhorseFile, desc: 'The package file to be published (generated by Multipart middleware)', documentation: { type: 'file' }
+          end
+          route_setting :authorization, permissions: :upload_ruby_gem, boundary_type: :project
+          post 'gems' do
+            authorize_upload!(project)
+            bad_request!('File is too large') if project.actual_limits.exceeded?(:rubygems_max_file_size, params[:file].size)
+
+            enforce_dependency_firewall_on_upload!
+
+            track_package_event('push_package', :rubygems, project: project, namespace: project.namespace)
+
+            response = nil
+            ApplicationRecord.transaction do
+              package = ::Packages::CreateTemporaryPackageService.new(
+                project, current_user, declared_params.merge(build: current_authenticated_job)
+              ).execute(::Packages::Rubygems::Package, name: ::Packages::Rubygems::TEMPORARY_PACKAGE_NAME)
+
+              file_params = {
+                file: params[:file],
+                file_name: PACKAGE_FILENAME
+              }
+
+              response = ::Packages::Rubygems::CreatePackageFileService.new(
+                package: package,
+                params: file_params.merge(build: current_authenticated_job)
+              ).execute
+            end
+
+            created! if response&.success?
+            bad_request!(response&.message)
+          rescue ObjectStorage::RemoteStoreError => e
+            Gitlab::ErrorTracking.track_exception(e, extra: { file_name: params[:file_name], project_id: project.id })
+
+            forbidden!
+          end
+
+          desc 'Retrieve dependencies' do
+            detail 'Retrieves a list of dependencies for specified gems. The response is a marshalled array of ' \
+              'hashes for all versions of the requested gems. Because the response is marshalled, you can store it in ' \
+              'a file.'
+            produces %w[application/octet-stream]
+            success code: 200
+            failure [
+              { code: 401, message: 'Unauthorized' },
+              { code: 403, message: 'Forbidden' },
+              { code: 404, message: 'Not Found' }
+            ]
+            is_array true
+            tags %w[packages_rubygem]
+          end
+          params do
+            optional :gems, type: Array[String], coerce_with: ::API::Validations::Types::CommaSeparatedToArray.coerce, desc: 'Comma-separated list of gems to fetch dependencies for.'
+          end
+          route_setting :authorization, permissions: :read_ruby_gem, boundary_type: :project
+          get 'dependencies' do
+            authorize_read_package!(project)
+
+            if params[:gems].blank?
+              status :ok
+            else
+              results = params[:gems].map do |gem_name|
+                service_result = Packages::Rubygems::DependencyResolverService.new(project, current_user, gem_name: gem_name).execute
+                render_api_error!(service_result.message, service_result.http_status) if service_result.error?
+
+                service_result.payload
+              end
+
+              content_type 'application/octet-stream'
+              env['api.format'] = :binary
+              Marshal.dump(results.flatten)
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+API::RubygemPackages.prepend_mod

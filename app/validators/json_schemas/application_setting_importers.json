@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Application settings for importers and exporters",
+  "type": "object",
+  "properties": {
+    "import_jobs_concurrency_limit": {
+      "type": "integer"
+    },
+    "silent_admin_exports_enabled": {
+      "type": "boolean"
+    },
+    "allow_contribution_mapping_to_admins": {
+      "type": "boolean"
+    },
+    "allow_bypass_placeholder_confirmation": {
+      "type": "boolean"
+    },
+    "relation_export_batch_size": {
+      "type": "integer"
+    },
+    "concurrent_relation_export_limit": {
+      "type": "integer"
+    },
+    "allow_s3_compatible_storage_for_offline_transfer": {
+      "type": "boolean"
+    },
+    "allow_application_default_credentials_for_offline_transfer": {
+      "type": "boolean"
+    },
+    "offline_transfer_exports_enabled": {
+      "type": "boolean"
+    },
+    "offline_transfer_imports_enabled": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

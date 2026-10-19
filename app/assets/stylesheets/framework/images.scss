@@ -1,0 +1,77 @@
+.appearance-logo-preview,
+.appearance-pwa-icon-preview {
+  max-width: 400px;
+  margin-bottom: 20px;
+}
+
+.appearance-light-logo-preview {
+  @apply gl-bg-subtle;
+  max-width: 72px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.svg-content {
+  text-align: center;
+  padding: $gl-padding;
+
+  svg,
+  img {
+    max-width: 425px;
+    width: 100%;
+  }
+
+  $image-widths: 80 130 150 225 250 306 394 430;
+  @each $width in $image-widths {
+    &.svg-#{$width} {
+      img,
+      svg {
+        max-width: #{$width + 'px'};
+      }
+    }
+  }
+}
+
+svg {
+  fill: currentColor;
+}
+
+svg:is([id*="-sm"], [id*="-md"], [id*="-lg"]) {
+  fill: none;
+}
+
+.square,
+svg {
+  $svg-sizes: 8 10 12 14 16 18 24 32 48 72;
+  @each $svg-size in $svg-sizes {
+    &.s#{$svg-size} {
+      width: #{$svg-size}px;
+      height: #{$svg-size}px;
+    }
+  }
+
+  &.s12 {
+    vertical-align: -1px;
+  }
+
+  &.s16 {
+    vertical-align: -3px;
+  }
+}
+
+.integration-logo {
+  &[alt='Diffblue Cover'],
+  &[alt='Drone'],
+  &[alt='GitHub'],
+  &[alt='Mattermost notifications'],
+  &[alt='Mattermost slash commands'],
+  &[alt='Phorge'] {
+    .gl-dark & {
+      filter: invert(1) brightness(2);
+    }
+  }
+}
+
+body.image-lightbox-open {
+  overflow: hidden;
+}

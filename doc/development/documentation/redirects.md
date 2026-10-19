@@ -1,0 +1,192 @@
+---
+stage: none
+group: Documentation Guidelines
+info: For assistance with this Style Guide page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments-to-other-projects-and-subjects>.
+description: Learn how to contribute to GitLab Documentation.
+title: Redirects in GitLab documentation
+---
+
+When you move, rename, or delete a page, you must add a redirect. Redirects reduce
+how often users get 404s when they visit the documentation site from out-of-date links.
+
+Add a redirect to ensure:
+
+- Users see the new page and can update or delete their bookmark.
+- External sites can update their links, especially sites that have automation that
+  checks for redirected links.
+- Translated documentation can always fall back to an existing file in the English content.
+- AI crawlers can still find relevant context for the subject.
+- The documentation site global navigation does not link to a missing page.
+
+  The links in the global navigation are already tested in the `docs-gitlab-com` project.
+
+Be sure to assign a technical writer to any merge request that moves, renames, or deletes a page.
+Technical Writers can help with any questions and can review your change.
+
+Do not redirect to another redirect.
+
+> [!note]
+> When you change the filename of a page, the Google Analytics data is removed from the content audit
+> and the page views start from scratch. If you want to change the filename, edit the page first,
+> so you can ensure the new page name is as accurate as possible.
+
+## Types of redirects
+
+There are two types of redirects:
+
+- [Redirects added into the documentation files themselves](#redirect-to-a-page-that-already-exists), for users who
+  view the docs in `/help` on GitLab Self-Managed instances. For example,
+  [`/help` on GitLab.com](https://gitlab.com/help). These must be added in the same
+  MR that renames or moves a doc. Redirects to internal pages expire after three months
+  and redirects to external pages (starting with `https:`) expire after a year.
+- [GitLab Pages redirects](../../user/project/pages/redirects.md), which are added
+  automatically after redirect files expire. They must not be manually added by
+  contributors and expire after nine months. Redirects pointing to external sites
+  are not added to the GitLab Pages redirects.
+
+Expired redirect files are removed from the documentation projects as part of the Technical Writing team's [monthly tasks](https://gitlab.com/gitlab-org/technical-writing/team-tasks/-/blob/main/.gitlab/issue_templates/tw-monthly-tasks.md).
+
+## Redirect to a page that already exists
+
+To redirect a page to another page in the same repository:
+
+1. In the Markdown file that you want to direct to a new location:
+
+   - Delete all of the content.
+   - Add this content:
+
+     ```markdown
+     ---
+     redirect_to: '../newpath/to/file/_index.md'
+     remove_date: 'YYYY-MM-DD'
+     ---
+
+     <!-- markdownlint-disable -->
+
+     This document was moved to [another location](../newpath/to/file/_index.md).
+
+     <!-- This redirect file can be deleted after <YYYY-MM-DD>. -->
+     <!-- Redirects that point to other docs in the same project expire in three months. -->
+     <!-- Redirects that point to docs in a different project or site (for example, link is not relative and starts with `https:`) expire in one year. -->
+     <!-- Before deletion, see: https://docs.gitlab.com/development/documentation/redirects -->
+     ```
+
+   - Replace both instances of `../newpath/to/file/index.md` with the new file path.
+   - Replace both instances of `YYYY-MM-DD` with the expiration date, as explained in the template.
+
+1. If the page had images that aren't used on any other pages, delete them.
+
+### Update links in other repositories
+
+After your changes are committed, search for and update all other repositories that
+might link to the old file:
+
+1. In <https://gitlab.com/gitlab-com/www-gitlab-com>, search for full URLs:
+
+   ```shell
+   grep -r "docs.gitlab.com/path/to/file" .
+   ```
+
+1. In <https://gitlab.com/gitlab-org/technical-writing/docs-gitlab-com/-/blob/main/data/en-us/navigation.yaml>,
+   search for the path, and remove the entry.
+1. In [all of the doc projects](site_architecture/_index.md#source-files), search for links in the docs
+   and codebase. Search for all variations, including full URL and just the path.
+   For example, go to the root directory of the `gitlab` project and run:
+
+   ```shell
+   grep -r "docs.gitlab.com/path/to/file" .
+   grep -r "path/to/file" .
+   grep -r "path/to/file.md" .
+   grep -r "path/to/file" .
+   ```
+
+   You might need to try variations of relative links, such as `../path/to/file` or
+   `../file` to find every case.
+1. In <https://gitlab.com/gitlab-org/customers-gitlab-com>, search for full URLs:
+
+   ```shell
+   grep -r "docs.gitlab.com/path/to/file" .
+   ```
+
+### Move a file's location
+
+If you want to move a file from one location to another, you do not move it.
+Instead, you duplicate the file, and add the redirect code to the old file.
+
+1. Create the new file.
+1. Copy the contents of the old file to the new one.
+1. In the old file, delete all the content.
+1. In the old file, add the redirect code and follow the rest of the steps in
+   the [Redirect to a page that already exists](#redirect-to-a-page-that-already-exists) topic.
+
+## Use code to add a redirect
+
+If you prefer to use a script to create the redirect:
+
+Add the redirect code to the old documentation file by running the
+following Rake task. The first argument is the path of the old file,
+and the second argument is the path of the new file:
+
+- To redirect to a page in the same project, use relative paths and
+  the `.md` extension. Both old and new paths start from the same location.
+  In the following example, both paths are relative to `doc/`:
+
+  ```shell
+  bundle exec rake "gitlab:docs:redirect[doc/user/search/old_file.md, doc/api/new_file.md]"
+  ```
+
+- To redirect to a page in a different project or site, use the full URL (with `https://`) :
+
+  ```shell
+  bundle exec rake "gitlab:docs:redirect[doc/user/search/old_file.md, https://example.com]"
+  ```
+
+- Alternatively, you can omit the arguments and be prompted to enter the values:
+
+  ```shell
+  bundle exec rake gitlab:docs:redirect
+  ```
+
+## Exceptions to creating a redirect
+
+In some cases you can skip adding the redirect and just delete the file. The page
+must have already been removed from (or never existed in) the navigation, and one
+of the following must be true:
+
+- The page was added and removed in the same release, so it was never included in
+  a GitLab Self-Managed release.
+- The page does not contain any content of value, like a placeholder page or a page
+  with extremely low usage statistics.
+
+## Troubleshooting
+
+These sections contain solutions to problems you might encounter with documentation redirects.
+
+### Error: `Duplicate content path` after moving a page
+
+If you move a file into a directory of the same name, you might get a `Duplicate content path` error from Hugo.
+For example:
+
+- Source file: `doc/development/testing.md` (becomes the new redirect)
+- Target file: `doc/development/testing/_index.md`
+
+```shell
+WARN  Duplicate content path: "/development/testing" file: "gitlab/doc/development/testing.md"
+panic: Duplicate content path: "/development/testing" file: "gitlab/doc/development/testing.md"
+```
+
+This error happens because both the redirect file and the new file would publish
+to an identical URL path. In this example both files would need to be published to
+`https://docs.gitlab.com/testing/`, which is invalid.
+
+To avoid this issue, review the content of the source page and choose an alternative name
+for the new file or directory. Choosing a different directory name allows you to use `_index.md`
+for the filename. For example:
+
+- Source file: `doc/development/testing.md` (becomes the new redirect)
+- Target file: `doc/development/backend_testing/_index.md`
+
+### Error: `File <filepath> is invalidly renamed!` after moving a page
+
+This error can occur in CI/CD pipelines for the same reason as the `Duplicate content path` Hugo error. The solution
+to this error is the same as for the Hugo error.

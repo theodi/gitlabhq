@@ -1,116 +1,120 @@
-- page_title "Account"
-%h3.page-title
-  = page_title
-%p.light
-  Change your username and basic account settings.
-%hr
-- if current_user.ldap_user?
-  .alert.alert-info
-    Some options are unavailable for LDAP accounts
+- add_page_specific_style 'page_bundles/profile'
+- page_title _('Account')
 
-.account-page
-  .panel.panel-default.update-token
-    .panel-heading
-      Reset Private token
-    .panel-body
-      = form_for @user, url: reset_private_token_profile_path, method: :put do |f|
-        .data
-          %p
-            Your private token is used to access application resources without authentication.
-            %br
-            It can be used for atom feeds or the API.
-            %span.cred
-              Keep it secret!
+- content_for :after_flash_content do
+  .flash-container.flash-container-page.sticky
+    - if current_user.ldap_user?
+      = render Pajamas::AlertComponent.new(dismissible: false) do |c|
+        - c.with_body do
+          = s_('Profiles|Some options are unavailable for LDAP accounts')
 
-          %p.cgray
-            - if current_user.private_token
-              = text_field_tag "token", current_user.private_token, class: "form-control"
-              %div
-                = f.submit 'Reset private token', data: { confirm: "Are you sure?" }, class: "btn btn-default btn-build-token"
-            - else
-              %span You don`t have one yet. Click generate to fix it.
-              = f.submit 'Generate', class: "btn btn-default btn-build-token"
+    = render 'two_factor_enabled_alert'
 
-  - unless current_user.ldap_user?
-    .panel.panel-default
-      .panel-heading
-        Two-factor Authentication
-      .panel-body
-        - if current_user.otp_required_for_login
-          .pull-right
-            = link_to 'Disable Two-factor Authentication', profile_two_factor_auth_path, method: :delete, class: 'btn btn-close btn-sm',
-                data: { confirm: 'Are you sure?' }
-          %p.text-success
-            %strong
-              Two-factor Authentication is enabled
-          %p
-            If you lose your recovery codes you can
-            %strong
-              = succeed ',' do
-                = link_to 'generate new ones', codes_profile_two_factor_auth_path, method: :post, data: { confirm: 'Are you sure?' }
-            invalidating all previous codes.
+= render ::Layouts::SettingsSectionComponent.new(s_('Profiles|Support PIN')) do |c|
+  - c.with_description do
+    = s_("Profiles|For some actions you request, the Support team may ask you to authenticate your request by generating a Support PIN.")
+  - c.with_body do
+    %div
+      - if current_user.support_pin.present?
+        %p
+          %span.gl-font-bold
+            #{s_("Profiles|Support PIN")}:
+          = current_user.support_pin
+        %p
+          %span.gl-font-bold
+            #{_('Expires at')}:
+          = current_user.support_pin_expires_at.to_fs(:medium)
+      - else
+        %p
+          = _('No active Support PIN.')
+      = form_tag generate_support_pin_profile_account_path, method: :post do
+        = render Pajamas::ButtonComponent.new(variant: :confirm, type: :submit) do
+          = s_("Profiles|Generate New PIN")
 
+- if current_user.can_change_username?
+  = render ::Layouts::SettingsSectionComponent.new(s_('Profiles|Change username')) do |c|
+    - c.with_description do
+      = s_('Profiles|Changing your username can have unintended side effects.')
+      = succeed '.' do
+        = link_to _('Learn more'), help_page_path('user/profile/_index.md', anchor: 'change-your-username'), target: '_blank', rel: 'noopener noreferrer'
+    - c.with_body do
+      - data = { initial_username: current_user.username, root_url: root_url, action_url: update_username_profile_path(format: :json) }
+      #update-username{ data: data }
+
+= render_if_exists 'profiles/accounts/designated_beneficiaries', designated_account_manager: local_assigns[:designated_account_manager], designated_account_successor: local_assigns[:designated_account_successor]
+
+= render ::Layouts::SettingsSectionComponent.new(s_('Profiles|Scheduled pipelines you own')) do |c|
+  - c.with_description do
+    = s_("Profiles|View, edit, or transfer ownership of your active scheduled pipelines.")
+  - c.with_body do
+    %div{ data: { testid: 'owned-scheduled-pipelines' } }
+      - schedules = current_user.pipeline_schedules.active.with_project_path.limit(500)
+      - if schedules.any?
+        %p.gl-font-bold= _('Scheduled pipelines')
+        %ul
+          - schedules.each do |schedule|
+            - next unless schedule.project
+            %li= link_to "#{schedule.project.full_path} - #{schedule.description}", project_pipeline_schedules_path(schedule.project), target: '_blank', rel: 'noopener noreferrer'
+      - else
+        %p
+          = s_('Profiles|You do not own any active scheduled pipelines.')
+
+- if Feature.enabled?(:revoke_import_source_user_reassignment, current_user)
+  = render ::Layouts::SettingsSectionComponent.new(s_('UserMapping|Reassigned import contributions')) do |c|
+    - c.with_description do
+      = s_('UserMapping|Contributions from these users on an import source instance have been reassigned to you. If you revoke a reassignment, future imports no longer automatically assign contributions from that user to you.')
+    - c.with_body do
+      #js-reassigned-source-users
+
+- if prevent_delete_account?
+  = render ::Layouts::SettingsSectionComponent.new('') do |c|
+    - c.with_heading do
+      %span.gl-text-danger= s_('Profiles|Delete account')
+    - c.with_description do
+      = s_('Profiles|Account deletion is not allowed by your administrator.')
+- else
+  = render ::Layouts::SettingsSectionComponent.new('') do |c|
+    - c.with_heading do
+      %span.gl-text-danger= s_('Profiles|Delete account')
+    - c.with_description do
+      - if current_user.can_be_removed? && can?(current_user, :destroy_user, current_user)
+        = s_('Profiles|Deleting your account has the following effects:')
+      - if !current_user.can_be_removed?
+        = s_('Profiles|Your account is currently the sole owner in the following:')
+    - c.with_body do
+      - if current_user.can_be_removed? && can?(current_user, :destroy_user, current_user)
+        = render 'users/deletion_guidance', user: current_user
+
+        -# Delete button here
+        = render Pajamas::ButtonComponent.new(variant: :danger, button_options: { id: 'delete-account-button', disabled: true, data: { testid: 'delete-account-button' }}) do
+          = s_('Profiles|Delete account')
+
+        #delete-account-modal{ data: delete_account_modal_data }
+      - else
+        - if !current_user.can_be_removed?
+          - if ui_for_organizations_enabled? && current_user.solo_owned_organizations.present?
+            %p.gl-font-bold
+              = _('Organizations')
+              %ul
+                - current_user.solo_owned_organizations.each do |organization|
+                  %li= link_to organization.name, organization.web_url, target: '_blank', rel: 'noopener noreferrer'
+
+          - if current_user.solo_owned_groups.present?
+            %p.gl-font-bold
+              = _('Groups')
+              %ul
+                - current_user.solo_owned_groups.each do |group|
+                  %li= link_to group.name, group.web_url, target: '_blank', rel: 'noopener noreferrer'
+
+          = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false) do |c|
+            = c.with_body do
+              %p.gl-mb-0= s_('Profiles|You must transfer ownership or delete these before you can delete your account.')
+        - elsif !current_user.can_remove_self?
+          = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false) do |c|
+            = c.with_body do
+              %p= s_('Profiles|GitLab is unable to verify your identity automatically. For security purposes, you must set a password by %{openingTag}resetting your password%{closingTag} to delete your account.').html_safe % { openingTag: "<a href='#{reset_user_settings_password_path}' rel=\"nofollow\" data-method=\"put\">".html_safe, closingTag: '</a>'.html_safe}
+              %p.gl-mb-0= s_('Profiles|After resetting a password, if the option to delete your account is still not available, %{link_start}submit a request%{link_end} to begin the account deletion process.').html_safe % { link_start: '<a href="https://support.gitlab.io/personal-data-request/" rel="nofollow noreferrer noopener" target="_blank">'.html_safe, link_end: '</a>'.html_safe}
         - else
-          %p
-            Increase your account's security by enabling two-factor authentication (2FA).
-          %p
-            Each time you log in you’ll be required to provide your username and
-            password as usual, plus a randomly-generated code from your phone.
-          %div
-            = link_to 'Enable Two-factor Authentication', new_profile_two_factor_auth_path, class: 'btn btn-success'
-
-  - if show_profile_social_tab?
-    .panel.panel-default
-      .panel-heading
-        Connected Accounts
-      .panel-body
-        .oauth-buttons.append-bottom-10
-          %p Click on icon to activate signin with one of the following services
-          - enabled_social_providers.each do |provider|
-            .btn-group
-              = link_to oauth_image_tag(provider), omniauth_authorize_path(User, provider),
-                method: :post, class: "btn btn-lg #{'active' if oauth_active?(provider)}"
-              - if oauth_active?(provider)
-                = link_to unlink_profile_account_path(provider: provider), method: :delete, class: 'btn btn-lg' do
-                  = icon('close')
-
-  - if show_profile_username_tab?
-    .panel.panel-warning.update-username
-      .panel-heading
-        Change Username
-      .panel-body
-        = form_for @user, url: update_username_profile_path,  method: :put, remote: true do |f|
-          %p
-            Changing your username will change path to all personal projects!
-          %div
-            = f.text_field :username, required: true, class: 'form-control'
-            &nbsp;
-          .loading-gif.hide
-            %p
-              = icon('spinner spin')
-              Saving new username
-          %p.light
-            = user_url(@user)
-          %div
-            = f.submit 'Save username', class: "btn btn-warning"
-
-  - if show_profile_remove_tab?
-    .panel.panel-danger.remove-account
-      .panel-heading
-        Remove account
-      .panel-body
-        - if @user.can_be_removed?
-          %p Deleting an account has the following effects:
-          %ul
-            %li All user content like authored issues, snippets, comments will be removed
-            - rp = current_user.personal_projects.count
-            - unless rp.zero?
-              %li #{pluralize rp, 'personal project'} will be removed and cannot be restored
-          = link_to 'Delete account', user_registration_path, data: { confirm: "REMOVE #{current_user.name}? Are you sure?" }, method: :delete, class: "btn btn-remove"
-        - else
-          - if @user.solo_owned_groups.present?
-            %p
-              Your account is currently an owner in these groups:
-              %strong #{@user.solo_owned_groups.map(&:name).join(', ')}
-            %p
-              You must transfer ownership or delete these groups before you can delete yur account.
+          = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false) do |c|
+            = c.with_body do
+              = s_("Profiles|You don't have access to delete this user.")

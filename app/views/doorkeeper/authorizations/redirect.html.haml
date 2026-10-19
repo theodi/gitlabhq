@@ -1,0 +1,20 @@
+= render ::Layouts::PageHeadingComponent.new(_("Redirecting"))
+
+%div
+  %a{ :href => redirect_uri } Click here to redirect to #{redirect_uri}
+
+= javascript_tag do
+  :plain
+    (function() {
+      // Only permit a basic set of characters in the fragment.
+      const allowedRegex = /^#[\w-]+$/g;
+
+      const hash = window.location.hash;
+      let redirectUri = "#{redirect_uri}";
+
+      if (window.location.hash && window.location.hash.search(allowedRegex) === 0 && redirectUri.indexOf('#') === -1) {
+        redirectUri = redirectUri + hash;
+      }
+
+      window.location = redirectUri;
+    })();

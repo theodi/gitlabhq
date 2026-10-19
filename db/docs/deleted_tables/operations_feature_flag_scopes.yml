@@ -1,0 +1,12 @@
+---
+table_name: operations_feature_flag_scopes
+classes: []
+feature_categories:
+- feature_flags
+description: Deprecated in favor of `operations_scopes`. To be dropped.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/9110
+milestone: '11.8'
+gitlab_schema: gitlab_main
+table_size: small
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/197233
+removed_in_milestone: '18.2'

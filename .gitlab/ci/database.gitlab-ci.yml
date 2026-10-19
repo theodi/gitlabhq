@@ -1,0 +1,260 @@
+include:
+  - local: .gitlab/ci/rails/shared.gitlab-ci.yml
+
+.db:setup pg17:
+  stage: prepare
+  variables:
+    GIT_DEPTH: 1
+  needs:
+    - job: cache:ruby-gems
+      optional: true
+  extends:
+    - .use-pg17
+    - .default-before_script
+    - .ruby-cache
+    - .rails:rules:setup-test-env
+  script:
+    - source scripts/utils.sh
+    - pg_dumpall -h postgres -U postgres > pg_dumpall.sql
+  artifacts:
+    paths:
+      - pg_dumpall.sql
+      - db/*schema_cache.yml
+
+clickhouse:check-schema:
+  variables:
+    DISABLE_WEBMOCK: "true"
+    ENABLE_CLICKHOUSE_DB_DUMP: "true"
+  extends:
+    - .rspec-base
+    - .use-pg17-clickhouse25
+    - .rails:rules:clickhouse-migration-changes
+  script:
+    - !reference [.clickhouse-setup, script]
+    - ruby scripts/validate_clickhouse_schema.rb
+
+db:setup pg17:
+  extends:
+    - .db:setup pg17
+
+# Job name is detected in scripts/utils.sh to set up EE-only databases.
+db:setup-ee pg17:
+  extends:
+    - .db:setup pg17
+    - .rails:rules:setup-test-env-ee
+
+db:rollback single-db-ci-connection:
+  extends:
+    - db:rollback
+    - .single-db-ci-connection
+    - .rails:rules:single-db-ci-connection
+
+db:migrate:reset single-db-ci-connection:
+  extends:
+    - .db:migrate:reset
+    - .single-db-ci-connection
+    - .rails:rules:single-db-ci-connection
+
+db:post_deployment_migrations_validator-single-db-ci-connection:
+  extends:
+    - db:post_deployment_migrations_validator
+    - .single-db-ci-connection
+    - .rails:rules:db:check-migrations-single-db-ci-connection
+
+db:backup_and_restore single-db-ci-connection:
+  extends:
+    - db:backup_and_restore
+    - .single-db-ci-connection
+    - .rails:rules:db-backup
+
+db:rollback single-db-sec-connection:
+  extends:
+    - db:rollback
+    - .single-db-sec-connection
+    - .rails:rules:single-db-sec-connection
+
+db:migrate:reset single-db-sec-connection:
+  extends:
+    - .db:migrate:reset
+    - .single-db-sec-connection
+    - .rails:rules:single-db-sec-connection
+
+db:post_deployment_migrations_validator-single-db-sec-connection:
+  extends:
+    - db:post_deployment_migrations_validator
+    - .single-db-sec-connection
+    - .rails:rules:db:check-migrations-single-db-sec-connection
+
+db:backup_and_restore single-db-sec-connection:
+  extends:
+    - db:backup_and_restore
+    - .single-db-sec-connection
+    - .rails:rules:db-backup
+
+db:rollback:
+  extends:
+    - .db-job-base
+    - .rails:rules:db-rollback
+  script:
+    - first_migration_version=$(bundle exec rake db:migrate:status | grep '^\s*up' | awk 'NR==2 {print $2}')  # Rollback to the first migration after InitSchema
+    - |
+      if [ -z "$first_migration_version" ]; then
+        echo "Error: Could not determine first migration version"
+        exit 1
+      fi
+    - echo "Rolling back to version $first_migration_version"
+    - bundle exec rake db:migrate VERSION=$first_migration_version
+    - bundle exec rake db:migrate
+
+db:rollback single-db:
+  extends:
+    - db:rollback
+    - .single-db
+    - .rails:rules:single-db
+
+# https://docs.gitlab.com/development/database/dbmigrate_multi_version_upgrade_job/
+db:migrate:multi-version-upgrade:
+  extends:
+    - .single-db
+    - .db-job-base
+    - .rails:rules:db:migrate:multi-version-upgrade
+  variables:
+    UPGRADE_STOP_DUMP_URL: "https://gitlab.com/gitlab-org/quality/pg-dump-generator/-/raw/main/pg_dumps/ee/latest_upgrade_stop.gz"
+  script:
+    - |
+      curl -o latest_upgrade_stop.gz $UPGRADE_STOP_DUMP_URL
+      gunzip -c latest_upgrade_stop.gz > gitlabhq_production
+      bundle exec rake db:drop db:create
+      apt-get update -qq && apt-get install -y -qq postgresql-client
+      psql --output /dev/null -v "ON_ERROR_STOP=1" -h postgres -U postgres -d gitlabhq_test < gitlabhq_production
+      bundle exec rake gitlab:db:configure
+      bundle exec rake gitlab:db:execute_batched_migrations
+
+# Validate PG version supported by GitLab
+db:migrate:multi-version-upgrade-pg18:
+  extends:
+    - db:migrate:multi-version-upgrade
+    - .use-pg18
+
+.db:migrate:reset:
+  extends: .db-job-base
+  script:
+    - bundle exec rake db:migrate:reset
+
+db:migrate:reset single-db:
+  extends:
+    - .db:migrate:reset
+    - .single-db
+
+db:check-schema:
+  extends:
+    - .db-job-base
+    - .single-db
+    - .rails:rules:db:check-schema
+  script:
+    - bundle exec rake db:drop db:create db:migrate
+    - scripts/validate_migration_checksum
+
+db:check-migrations:
+  extends:
+    - .db-job-base
+    - .use-pg17  # Should match the db same version used by GDK
+    - .rails:rules:ee-and-foss-mr-with-migration
+  script:
+    # The clone-gitlab-repo artifact has no job token in .git/config, and the private
+    # security mirror rejects anonymous fetches, so fetch through the token URL.
+    - git fetch "$CI_REPOSITORY_URL" "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME:$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --depth 20
+    - scripts/validate_migration_timestamps
+    - scripts/validate_migration_schema
+
+db:check-migrations-single-db:
+  extends:
+    - db:check-migrations
+    - .single-db
+    - .rails:rules:db:check-migrations-single-db
+
+db:post_deployment_migrations_validator:
+  extends:
+    - .db-job-base
+    - .rails:rules:ee-and-foss-mr-with-migration
+  script:
+    - git fetch "$CI_REPOSITORY_URL" "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME:$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --depth 20
+    - scripts/post_deployment_migrations_validator
+  allow_failure: true
+
+db:post_deployment_migrations_validator-single-db:
+  extends:
+    - db:post_deployment_migrations_validator
+    - .single-db
+    - .rails:rules:db:check-migrations-single-db
+
+db:migrate-non-superuser:
+  extends:
+    - .db-job-base
+    - .rails:rules:ee-and-foss-mr-with-migration
+  script: bundle exec rake gitlab:db:reset_as_non_superuser
+
+db:gitlabcom-database-testing:
+  extends: .rails:rules:db:gitlabcom-database-testing
+  stage: test
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}-alpine
+  needs: []
+  allow_failure: true
+  script:
+    - source scripts/utils.sh
+    - install_gitlab_gem
+    - scripts/trigger-build.rb gitlab-com-database-testing
+
+db:backup_and_restore:
+  extends:
+    - .db-job-base
+    - .rails:rules:db-backup
+  variables:
+    SETUP_DB: "false"
+    GITLAB_ASSUME_YES: "1"
+  script:
+    - |
+      . scripts/prepare_build.sh
+      bundle exec rake db:drop db:create db:schema:load db:seed_fu
+      mkdir -p tmp/tests/public/uploads tmp/tests/{artifacts,pages,lfs-objects,terraform_state,registry,packages,ci_secure_files,external-diffs,agent_plan_content,ci_catalog_bundles}
+      bundle exec rake gitlab:backup:create
+      date
+      bundle exec rake gitlab:backup:restore
+
+db:backup_and_restore single-db:
+  extends:
+    - db:backup_and_restore
+    - .single-db
+    - .rails:rules:db-backup
+
+db:rollback geo:
+  extends:
+    - db:rollback
+    - .rails:rules:ee-only-migration
+  script:
+    - bundle exec rake db:migrate:geo VERSION=20170627195211
+    - bundle exec rake db:migrate:geo
+
+db:docs-up-to-date:
+  extends:
+    - .db-job-base
+    - .db:rules:docs-up-to-date
+  script:
+    - bundle exec rake gitlab:db:dictionary:generate
+    - git diff --exit-code db/docs
+
+db:invalidate-old-pipeline-results:
+  extends:
+    - .db-job-base
+    - .db:rules:invalidate-old-pipeline-results
+  stage: post-test
+  allow_failure: true
+  needs:
+    - job: cache:ruby-gems
+      optional: true
+    - !reference [.repo-from-artifacts, needs]
+  script:
+    - |
+      git fetch "$CI_REPOSITORY_URL" "+$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:refs/remotes/origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+      export MOST_RECENT_COMMIT_TIMESTAMP="$(git log origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME --pretty=format:"%at" | head -n 1)"
+      bundle exec ruby scripts/database/mark_pipeline_comments.rb $CI_MERGE_REQUEST_IID $MOST_RECENT_COMMIT_TIMESTAMP

@@ -1,0 +1,77 @@
+<script>
+import { GlButton, GlButtonGroup, GlDisclosureDropdownItem } from '@gitlab/ui';
+import { keyboardShortcutsDisabled } from '~/behaviors/shortcuts/shortcuts_disabled';
+import { InternalEvents } from '~/tracking';
+
+export default {
+  name: 'CodeDropdownIdeItem',
+  components: {
+    GlButton,
+    GlButtonGroup,
+    GlDisclosureDropdownItem,
+  },
+  mixins: [InternalEvents.mixin()],
+  props: {
+    ideItem: {
+      type: Object,
+      required: true,
+    },
+  },
+  emits: ['close-dropdown'],
+  computed: {
+    shortcutsDisabled() {
+      return keyboardShortcutsDisabled();
+    },
+  },
+  methods: {
+    closeDropdown() {
+      this.$emit('close-dropdown');
+    },
+    trackAndClose({ action, label, additionalProperties } = {}) {
+      if (action) {
+        const payload = { ...(additionalProperties || {}) };
+        if (label) payload.label = label;
+        this.trackEvent(action, Object.keys(payload).length ? payload : undefined);
+      }
+      this.closeDropdown();
+    },
+  },
+};
+</script>
+
+<template>
+  <gl-disclosure-dropdown-item
+    v-if="ideItem.items"
+    :data-testid="ideItem.testId"
+    class="gl-mb-3 gl-flex gl-w-full gl-items-center gl-justify-between gl-px-4 gl-py-2"
+  >
+    <span class="gl-min-w-0">{{ ideItem.text }}</span>
+    <gl-button-group>
+      <gl-button
+        v-for="(ideOption, ideOptionIndex) in ideItem.items"
+        :key="ideOptionIndex"
+        :href="ideOption.href"
+        is-unsafe-link
+        target="_blank"
+        size="small"
+        v-bind="ideOption.extraAttrs"
+        @click="trackAndClose(ideOption.tracking)"
+      >
+        {{ ideOption.text }}
+      </gl-button>
+    </gl-button-group>
+  </gl-disclosure-dropdown-item>
+  <gl-disclosure-dropdown-item
+    v-else-if="ideItem.href"
+    :item="ideItem"
+    :data-testid="ideItem.testId"
+    @action="trackAndClose(ideItem.tracking)"
+  >
+    <template #list-item>
+      <span class="gl-flex gl-items-center gl-justify-between">
+        <span>{{ ideItem.text }}</span>
+        <kbd v-if="ideItem.shortcut && !shortcutsDisabled" class="flat">{{ ideItem.shortcut }}</kbd>
+      </span>
+    </template>
+  </gl-disclosure-dropdown-item>
+</template>

@@ -1,0 +1,120 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`SearchItem should render the item 1`] = `
+<div
+  class="gl-flex gl-items-center"
+>
+  <gl-avatar-stub
+    alt="avatar"
+    aria-hidden="true"
+    class="gl-mr-3"
+    entityid="37"
+    entityname=""
+    shape="rect"
+    size="16"
+    src="https://www.gravatar.com/avatar/a9638f4ec70148d51e56bf05ad41e993?s=80&d=identicon"
+  />
+  <span
+    class="gl-flex gl-gap-2 gl-items-center gl-min-w-0"
+  >
+    <highlighted-text-stub
+      class="gl-truncate"
+      highlightclass=""
+      match="root"
+      text="Cole Dickinson"
+    />
+  </span>
+</div>
+`;
+
+exports[`SearchItem should render the item 2`] = `
+<div
+  class="gl-flex gl-items-center"
+>
+  <gl-icon-stub
+    class="gl-mr-3 gl-shrink-0"
+    data-testid="icon"
+    name="users"
+    size="16"
+    variant="current"
+  />
+  <span
+    class="gl-flex gl-gap-2 gl-items-center gl-min-w-0"
+  >
+    <highlighted-text-stub
+      class="gl-truncate"
+      highlightclass=""
+      match="root"
+      text="Manage > Activity"
+    />
+  </span>
+</div>
+`;
+
+exports[`SearchItem should render the item 3`] = `
+<div
+  class="gl-flex gl-items-center"
+>
+  <gl-avatar-stub
+    alt="avatar"
+    aria-hidden="true"
+    class="gl-mr-3"
+    entityid="1"
+    entityname="MockProject1"
+    shape="rect"
+    size="16"
+    src="/project/avatar/1/avatar.png"
+  />
+  <span
+    class="gl-flex gl-gap-2 gl-items-center gl-min-w-0"
+  >
+    <highlighted-text-stub
+      class="gl-truncate"
+      highlightclass=""
+      match="root"
+      text="MockProject1"
+    />
+    <span
+      aria-hidden="true"
+      class="gl-text-subtle"
+      data-testid="namespace-bullet"
+    >
+      ·
+    </span>
+    <highlighted-text-stub
+      class="gl-text-sm gl-text-subtle gl-truncate"
+      data-testid="namespace"
+      highlightclass=""
+      match="root"
+      text="Gitlab Org / MockProject1"
+    />
+  </span>
+</div>
+`;
+
+exports[`SearchItem should render the item 4`] = `
+<div
+  class="gl-flex gl-items-center"
+>
+  <gl-avatar-stub
+    alt="avatar"
+    aria-hidden="true"
+    class="gl-mr-3"
+    entityid="7"
+    entityname="Flight"
+    shape="rect"
+    size="16"
+    src=""
+  />
+  <span
+    class="gl-flex gl-gap-2 gl-items-center gl-min-w-0"
+  >
+    <highlighted-text-stub
+      class="gl-truncate"
+      highlightclass=""
+      match="root"
+      text="Dismiss Cipher with no integrity"
+    />
+  </span>
+</div>
+`;

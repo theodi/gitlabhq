@@ -1,0 +1,130 @@
+# frozen_string_literal: true
+
+module API
+  class ProtectedTags < ::API::Base
+    include PaginationParams
+
+    TAG_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS.merge(name: ::API::NO_SLASH_URL_PART_REGEX)
+
+    feature_category :source_code_management
+
+    helpers Helpers::ProtectedTagsHelpers
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'List all protected tags' do
+        detail 'Lists all protected tags for a specified project.'
+        is_array true
+        success code: 200, model: Entities::ProtectedTag
+        failure [
+          { code: 403, message: 'Unauthenticated' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags %w[protected_tags]
+      end
+      params do
+        use :pagination
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :read_protected_tag, boundary_type: :project
+      get ':id/protected_tags' do
+        authorize!(:read_protected_tags, user_project)
+        protected_tags = user_project.protected_tags.preload(:create_access_levels)
+
+        present paginate(protected_tags), with: Entities::ProtectedTag, project: user_project
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Retrieve a protected tag or wildcard protected tag' do
+        detail 'Retrieves a specified protected tag or wildcard protected tag.'
+        success code: 200, model: Entities::ProtectedTag
+        failure [
+          { code: 403, message: 'Unauthenticated' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags %w[protected_tags]
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the tag or wildcard.', documentation: { example: 'release*' }
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :read_protected_tag, boundary_type: :project
+      get ':id/protected_tags/:name', requirements: TAG_ENDPOINT_REQUIREMENTS do
+        authorize!(:read_protected_tags, user_project)
+        protected_tag = user_project.protected_tags.find_by!(name: params[:name])
+
+        present protected_tag, with: Entities::ProtectedTag, project: user_project
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Protect a repository tag' do
+        detail 'Protects a specified repository tag using a wildcard protected tag.'
+        success code: 201, model: Entities::ProtectedTag
+        failure [
+          { code: 403, message: 'Unauthenticated' },
+          { code: 404, message: 'Not found' },
+          { code: 422, message: 'Unprocessable entity' }
+        ]
+        tags %w[protected_tags]
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the tag or wildcard.', documentation: { example: 'release-1-0' }
+        # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+        optional :create_access_level,
+          type: Integer,
+          values: ProtectedTag::CreateAccessLevel.allowed_access_levels,
+          desc: 'Access level allowed to create the protected tag. Defaults to `40` (Maintainer role).',
+          documentation: { example: 30 }
+        # rubocop:enable API/AccessLevelStringType
+        use :optional_params
+      end
+      route_setting :authorization, permissions: :create_protected_tag, boundary_type: :project
+      post ':id/protected_tags' do
+        authorize!(:create_protected_tags, user_project)
+        protected_tags_params = {
+          name: params[:name],
+          create_access_levels_attributes: ::ProtectedRefs::AccessLevelParams.new(:create, params).access_levels
+        }
+
+        protected_tag = ::ProtectedTags::CreateService.new(user_project,
+          current_user,
+          protected_tags_params).execute
+
+        if protected_tag.persisted?
+          present protected_tag, with: Entities::ProtectedTag, project: user_project
+        else
+          render_api_error!(protected_tag.errors.full_messages, 422)
+        end
+      end
+
+      desc 'Unprotect repository tags' do
+        detail 'Unprotects a specified protected tag or wildcard protected tag.'
+        success code: 204
+        failure [
+          { code: 403, message: 'Unauthenticated' },
+          { code: 404, message: 'Not found' },
+          { code: 412, message: 'Precondition Failed' }
+        ]
+        tags %w[protected_tags]
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the tag or wildcard.', documentation: { example: 'release-1-0' }
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :delete_protected_tag, boundary_type: :project
+      delete ':id/protected_tags/:name', requirements: TAG_ENDPOINT_REQUIREMENTS do
+        authorize!(:delete_protected_tag, user_project)
+
+        protected_tag = user_project.protected_tags.find_by!(name: params[:name])
+
+        destroy_conditionally!(protected_tag) do
+          destroy_service = ::ProtectedTags::DestroyService.new(user_project, current_user)
+          destroy_service.execute(protected_tag)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+    end
+  end
+end

@@ -1,0 +1,723 @@
+import { shallowMount } from '@vue/test-utils';
+import { nextTick } from 'vue';
+import { merge } from 'lodash-es';
+import { GlDisclosureDropdown } from '@gitlab/ui';
+import { stubComponent } from 'helpers/stub_component';
+import waitForPromises from 'helpers/wait_for_promises';
+import { confirmAction } from '~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal';
+import { detectAndConfirmSensitiveTokens } from '~/lib/utils/secret_detection';
+import { createAlert } from '~/alert';
+import DiscussionReplyPlaceholder from '~/notes/components/discussion_reply_placeholder.vue';
+import ResolveDiscussionButton from '~/notes/components/resolve_discussion_button.vue';
+import ResolveWithIssueButton from '~/notes/components/discussion_resolve_with_issue_button.vue';
+import NoteForm from '~/rapid_diffs/app/discussions/note_form.vue';
+import NoteSignedOutWidget from '~/rapid_diffs/app/discussions/note_signed_out_widget.vue';
+import NoteableDiscussion from '~/rapid_diffs/app/discussions/noteable_discussion.vue';
+import DiscussionNotes from '~/rapid_diffs/app/discussions/discussion_notes.vue';
+import { isLoggedIn } from '~/lib/utils/common_utils';
+import { CopyAsGFM } from '~/behaviors/markdown/copy_as_gfm';
+
+jest.mock('~/alert');
+jest.mock('~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal');
+jest.mock('~/lib/utils/secret_detection');
+jest.mock('~/lib/utils/common_utils');
+jest.mock('~/lib/utils/autosave');
+jest.mock('~/behaviors/markdown/copy_as_gfm');
+
+describe('NoteableDiscussion', () => {
+  let wrapper;
+  let defaultProps;
+  let store;
+
+  const createDiscussion = (discussionProps, noteProps) => ({
+    id: 'discussion-1',
+    reply_id: 'reply-1',
+    internal: false,
+    notes: [{ id: 'note-1', internal: false, ...noteProps }],
+    ...discussionProps,
+  });
+
+  const defaultProvide = {
+    userPermissions: { can_create_note: true },
+    endpoints: { createNote: '/api/notes' },
+  };
+
+  const createComponent = ({
+    props = {},
+    provide = {},
+    stubs = {},
+    listeners = {},
+    repliesVisible = true,
+  } = {}) => {
+    wrapper = shallowMount(NoteableDiscussion, {
+      propsData: {
+        ...defaultProps,
+        discussion: createDiscussion(),
+        ...props,
+      },
+      listeners,
+      provide: merge({ store }, defaultProvide, provide),
+      stubs: {
+        DiscussionNotes: stubComponent(DiscussionNotes, {
+          data() {
+            return { repliesVisible };
+          },
+          template: `<ul><slot name="footer" :repliesVisible="repliesVisible"></slot></ul>`,
+        }),
+        ResolveWithDuoDropdownItem: true,
+        ...stubs,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    isLoggedIn.mockReturnValue(true);
+    defaultProps = {
+      requestLastNoteEditing: jest.fn(),
+    };
+    store = {
+      replyToDiscussion: jest.fn().mockResolvedValue(),
+    };
+  });
+
+  it('renders discussion notes', () => {
+    createComponent();
+    expect(wrapper.findComponent(DiscussionNotes).props('notes')).toStrictEqual(
+      createDiscussion().notes,
+    );
+  });
+
+  describe('discussion navigation data attributes', () => {
+    it('sets data-discussion-resolvable when discussion is resolvable', () => {
+      createComponent({
+        props: { discussion: createDiscussion({ resolvable: true, resolved: false }) },
+      });
+      expect(wrapper.attributes('data-discussion-resolvable')).toBe('true');
+      expect(wrapper.attributes('data-discussion-resolved')).toBeUndefined();
+    });
+
+    it('sets data-discussion-resolved when discussion is resolved', () => {
+      createComponent({
+        props: { discussion: createDiscussion({ resolvable: true, resolved: true }) },
+      });
+      expect(wrapper.attributes('data-discussion-resolvable')).toBe('true');
+      expect(wrapper.attributes('data-discussion-resolved')).toBe('true');
+    });
+
+    it('does not set data-discussion-resolvable when discussion is not resolvable', () => {
+      createComponent({
+        props: { discussion: createDiscussion({ resolvable: false }) },
+      });
+      expect(wrapper.attributes('data-discussion-resolvable')).toBeUndefined();
+    });
+  });
+
+  it('renders signed out widget when not logged in', () => {
+    isLoggedIn.mockReturnValue(false);
+    createComponent();
+    expect(wrapper.findComponent(NoteSignedOutWidget).exists()).toBe(true);
+  });
+
+  it('renders reply placeholder when not replying and user can create notes', () => {
+    createComponent();
+    expect(wrapper.findComponent(DiscussionReplyPlaceholder).exists()).toBe(true);
+    expect(wrapper.findComponent(NoteForm).exists()).toBe(false);
+  });
+
+  it('hides reply wrapper for individual notes', () => {
+    createComponent({ props: { discussion: createDiscussion({ individual_note: true }) } });
+    expect(wrapper.find('[data-testid="reply-wrapper"]').exists()).toBe(false);
+  });
+
+  it('starts replying', async () => {
+    createComponent();
+    await wrapper.findComponent(DiscussionReplyPlaceholder).vm.$emit('focus');
+    await nextTick();
+    expect(wrapper.emitted('start-replying')).toStrictEqual([[]]);
+  });
+
+  it('shows note form when reply mode is on', () => {
+    createComponent({ props: { discussion: createDiscussion({ isReplying: true }) } });
+    expect(wrapper.findComponent(NoteForm).exists()).toBe(true);
+    expect(wrapper.findComponent(DiscussionReplyPlaceholder).exists()).toBe(false);
+  });
+
+  it('stops replying', async () => {
+    createComponent({ props: { discussion: createDiscussion({ isReplying: true }) } });
+    await wrapper.findComponent(NoteForm).vm.$emit('cancel', false, false);
+    await nextTick();
+    expect(confirmAction).not.toHaveBeenCalled();
+    expect(wrapper.emitted('stop-replying')).toStrictEqual([[]]);
+  });
+
+  it('shows confirmation when form is dirty', async () => {
+    confirmAction.mockResolvedValue(true);
+    createComponent({ props: { discussion: createDiscussion({ isReplying: true }) } });
+    await wrapper.findComponent(NoteForm).vm.$emit('cancel', true, true);
+    expect(confirmAction).toHaveBeenCalled();
+    await waitForPromises();
+    await nextTick();
+    expect(wrapper.emitted('stop-replying')).toStrictEqual([[]]);
+  });
+
+  it('does not hide form when confirmation is declined', async () => {
+    confirmAction.mockResolvedValue(false);
+    createComponent({ props: { discussion: createDiscussion({ isReplying: true }) } });
+    await wrapper.findComponent(NoteForm).vm.$emit('cancel', true, true);
+    await nextTick();
+    expect(wrapper.findComponent(NoteForm).exists()).toBe(true);
+    expect(wrapper.findComponent(DiscussionReplyPlaceholder).exists()).toBe(false);
+    expect(wrapper.emitted('stop-replying')).toBe(undefined);
+  });
+
+  it('propagates start-editing event', () => {
+    const note = {};
+    createComponent();
+    wrapper.findComponent(DiscussionNotes).vm.$emit('start-editing', note);
+    expect(wrapper.emitted('start-editing')).toStrictEqual([[note]]);
+  });
+
+  it('propagates cancel-editing event', () => {
+    const note = {};
+    createComponent();
+    wrapper.findComponent(DiscussionNotes).vm.$emit('cancel-editing', note);
+    expect(wrapper.emitted('cancel-editing')).toStrictEqual([[note]]);
+  });
+
+  it('propagates note-edited event', () => {
+    const note = {};
+    const value = 'edit';
+    createComponent();
+    wrapper.findComponent(DiscussionNotes).vm.$emit('note-edited', { note, value });
+    expect(wrapper.emitted('note-edited')).toStrictEqual([[{ note, value }]]);
+  });
+
+  describe('quote reply', () => {
+    beforeEach(() => {
+      jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => cb());
+      CopyAsGFM.selectionToGfm.mockResolvedValue('> quoted text');
+    });
+
+    it('opens the reply form with the quoted selection when quoteReply fires', async () => {
+      const append = jest.fn();
+      createComponent({
+        props: { discussion: createDiscussion({ isReplying: true }) },
+        stubs: { NoteForm: stubComponent(NoteForm, { methods: { append } }) },
+      });
+
+      wrapper
+        .find('[data-testid="discussion-content"]')
+        .element.dispatchEvent(new CustomEvent('quoteReply'));
+      await waitForPromises();
+      await nextTick();
+
+      expect(wrapper.emitted('start-replying')).toStrictEqual([[]]);
+      expect(append).toHaveBeenCalledWith('> quoted text');
+    });
+
+    it('opens the reply form and quotes the selection when quoteReply fires while not replying', async () => {
+      const append = jest.fn();
+      const discussion = createDiscussion({ isReplying: false });
+      createComponent({
+        props: { discussion },
+        listeners: {
+          'start-replying': () => {
+            wrapper.setProps({ discussion: { ...discussion, isReplying: true } });
+          },
+        },
+        stubs: { NoteForm: stubComponent(NoteForm, { methods: { append } }) },
+      });
+
+      wrapper
+        .find('[data-testid="discussion-content"]')
+        .element.dispatchEvent(new CustomEvent('quoteReply'));
+      await waitForPromises();
+      await nextTick();
+
+      expect(wrapper.emitted('start-replying')).toStrictEqual([[]]);
+      expect(append).toHaveBeenCalledWith('> quoted text');
+    });
+  });
+
+  describe('timelineLayout prop', () => {
+    it('passes timelineLayout to DiscussionNotes', () => {
+      createComponent({ props: { timelineLayout: true } });
+      expect(wrapper.findComponent(DiscussionNotes).props('timelineLayout')).toBe(true);
+    });
+
+    it('defaults timelineLayout to false', () => {
+      createComponent();
+      expect(wrapper.findComponent(DiscussionNotes).props('timelineLayout')).toBe(false);
+    });
+  });
+
+  describe('isLastDiscussion prop', () => {
+    it('passes isLastDiscussion to DiscussionNotes', () => {
+      createComponent({ props: { isLastDiscussion: true } });
+      expect(wrapper.findComponent(DiscussionNotes).props('isLastDiscussion')).toBe(true);
+    });
+
+    it('defaults isLastDiscussion to false', () => {
+      createComponent();
+      expect(wrapper.findComponent(DiscussionNotes).props('isLastDiscussion')).toBe(false);
+    });
+  });
+
+  describe('when saving reply', () => {
+    beforeEach(() => {
+      detectAndConfirmSensitiveTokens.mockResolvedValue(true);
+    });
+
+    it('calls store.replyToDiscussion and closes form', async () => {
+      const discussion = createDiscussion({ isReplying: true });
+      createComponent({ props: { discussion } });
+      await wrapper.findComponent(NoteForm).props('saveNote')('test note');
+      expect(store.replyToDiscussion).toHaveBeenCalledWith(discussion, 'test note', undefined);
+      expect(wrapper.emitted('stop-replying')).toStrictEqual([[]]);
+    });
+
+    it('does not save when sensitive token detection is declined', async () => {
+      detectAndConfirmSensitiveTokens.mockResolvedValue(false);
+      createComponent({ props: { discussion: createDiscussion({ isReplying: true }) } });
+      await wrapper.findComponent(NoteForm).props('saveNote')('test note');
+      expect(store.replyToDiscussion).not.toHaveBeenCalled();
+    });
+
+    it('propagates save failure and keeps the form open', async () => {
+      store.replyToDiscussion.mockRejectedValue(new Error('fail'));
+      createComponent({ props: { discussion: createDiscussion({ isReplying: true }) } });
+
+      await expect(wrapper.findComponent(NoteForm).props('saveNote')('test note')).rejects.toThrow(
+        'fail',
+      );
+      expect(wrapper.emitted('stop-replying')).toBe(undefined);
+    });
+  });
+
+  it('passes data to form', () => {
+    const requestLastNoteEditing = jest.fn();
+    const discussion = createDiscussion({ isReplying: true });
+    createComponent({ props: { discussion, requestLastNoteEditing } });
+    const props = wrapper.findComponent(NoteForm).props();
+    props.requestLastNoteEditing();
+    expect(props.saveButtonTitle).toBe('Reply');
+    expect(props.autosaveKey).toBeDefined();
+    expect(props.internal).toBe(false);
+    expect(requestLastNoteEditing).toHaveBeenCalledWith(discussion);
+  });
+
+  it('passes correct saveButtonTitle for internal discussion', () => {
+    createComponent({
+      props: { discussion: { ...createDiscussion({ isReplying: true }), internal: true } },
+    });
+    const props = wrapper.findComponent(NoteForm).props();
+    expect(props.saveButtonTitle).toBe('Reply internally');
+    expect(props.internal).toBe(true);
+  });
+
+  describe('draft review support', () => {
+    it('hides reply wrapper for draft discussions', () => {
+      createComponent({
+        props: { discussion: createDiscussion({ isDraft: true }) },
+      });
+      expect(wrapper.find('[data-testid="reply-wrapper"]').exists()).toBe(false);
+    });
+
+    describe('saveDraft', () => {
+      beforeEach(() => {
+        detectAndConfirmSensitiveTokens.mockResolvedValue(true);
+        store.addDraftToDiscussion = jest.fn().mockResolvedValue();
+      });
+
+      it('passes saveDraft to NoteForm when canStartReview', () => {
+        createComponent({
+          props: { discussion: createDiscussion({ isReplying: true }) },
+        });
+        expect(wrapper.findComponent(NoteForm).props('saveDraft')).toEqual(expect.any(Function));
+      });
+
+      it('does not pass saveDraft when store lacks addDraftToDiscussion', () => {
+        delete store.addDraftToDiscussion;
+        createComponent({
+          props: { discussion: createDiscussion({ isReplying: true }) },
+        });
+        expect(wrapper.findComponent(NoteForm).props('saveDraft')).toBeNull();
+      });
+
+      it('does not pass saveDraft when discussion already has a draft reply', () => {
+        const discussion = createDiscussion({ isReplying: true });
+        discussion.notes.push({ id: 'draft-1', isDraft: true });
+        createComponent({ props: { discussion } });
+        expect(wrapper.findComponent(NoteForm).props('saveDraft')).toBeNull();
+      });
+
+      it('passes hasDrafts to NoteForm', () => {
+        store.hasDrafts = true;
+        createComponent({
+          props: { discussion: createDiscussion({ isReplying: true }) },
+        });
+        expect(wrapper.findComponent(NoteForm).props('hasDrafts')).toBe(true);
+      });
+
+      it('calls store.addDraftToDiscussion and closes form', async () => {
+        const discussion = createDiscussion({ isReplying: true });
+        createComponent({ props: { discussion } });
+        await wrapper.findComponent(NoteForm).props('saveDraft')('draft text', false);
+        expect(store.addDraftToDiscussion).toHaveBeenCalledWith(discussion, 'draft text', false);
+        expect(wrapper.emitted('stop-replying')).toStrictEqual([[]]);
+      });
+
+      it('does not save draft when sensitive token detection is declined', async () => {
+        detectAndConfirmSensitiveTokens.mockResolvedValue(false);
+        createComponent({
+          props: { discussion: createDiscussion({ isReplying: true }) },
+        });
+        await wrapper.findComponent(NoteForm).props('saveDraft')('draft text');
+        expect(store.addDraftToDiscussion).not.toHaveBeenCalled();
+      });
+
+      it('propagates draft save failure and keeps the form open', async () => {
+        store.addDraftToDiscussion.mockRejectedValue(new Error('fail'));
+        createComponent({
+          props: { discussion: createDiscussion({ isReplying: true }) },
+        });
+
+        await expect(
+          wrapper.findComponent(NoteForm).props('saveDraft')('draft text'),
+        ).rejects.toThrow('fail');
+        expect(wrapper.emitted('stop-replying')).toBe(undefined);
+      });
+
+      it('cancels form when empty text is passed', async () => {
+        createComponent({
+          props: { discussion: createDiscussion({ isReplying: true }) },
+        });
+        await wrapper.findComponent(NoteForm).props('saveDraft')('');
+        expect(store.addDraftToDiscussion).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('resolve with issue button', () => {
+    const resolveWithIssuePath = '/issues/new?discussion_to_resolve=1';
+
+    it('renders when discussion is resolvable and not resolved', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({
+            resolvable: true,
+            resolved: false,
+            resolve_with_issue_path: resolveWithIssuePath,
+          }),
+        },
+      });
+      const button = wrapper.findComponent(ResolveWithIssueButton);
+      expect(button.exists()).toBe(true);
+      expect(button.props('url')).toBe(resolveWithIssuePath);
+    });
+
+    it('does not render when discussion is resolved', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({
+            resolvable: true,
+            resolved: true,
+            resolve_with_issue_path: resolveWithIssuePath,
+          }),
+        },
+      });
+      expect(wrapper.findComponent(ResolveWithIssueButton).exists()).toBe(false);
+    });
+
+    it('does not render when discussion is not resolvable', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({
+            resolvable: false,
+            resolved: false,
+            resolve_with_issue_path: resolveWithIssuePath,
+          }),
+        },
+      });
+      expect(wrapper.findComponent(ResolveWithIssueButton).exists()).toBe(false);
+    });
+
+    it('does not render when resolve_with_issue_path is absent', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({ resolvable: true, resolved: false }),
+        },
+      });
+      expect(wrapper.findComponent(ResolveWithIssueButton).exists()).toBe(false);
+    });
+  });
+
+  describe('secondary actions dropdown', () => {
+    const resolvableUnresolved = { resolvable: true, resolved: false };
+
+    describe('when can_resolve_discussions_with_ai is true', () => {
+      beforeEach(() => {
+        createComponent({
+          props: { discussion: createDiscussion(resolvableUnresolved) },
+          provide: {
+            userPermissions: { can_create_note: true, can_resolve_discussions_with_ai: true },
+          },
+        });
+      });
+
+      it('renders the secondary actions dropdown', () => {
+        expect(wrapper.findComponent(GlDisclosureDropdown).exists()).toBe(true);
+      });
+
+      it('does not render ResolveWithIssueButton', () => {
+        expect(wrapper.findComponent(ResolveWithIssueButton).exists()).toBe(false);
+      });
+    });
+
+    describe('when can_resolve_discussions_with_ai is false and resolve_with_issue_path is present', () => {
+      const resolveWithIssuePath = '/issues/new?discussion_to_resolve=1';
+
+      beforeEach(() => {
+        createComponent({
+          props: {
+            discussion: createDiscussion({
+              ...resolvableUnresolved,
+              resolve_with_issue_path: resolveWithIssuePath,
+            }),
+          },
+          provide: {
+            userPermissions: { can_create_note: true, can_resolve_discussions_with_ai: false },
+          },
+        });
+      });
+
+      it('does not render the secondary actions dropdown', () => {
+        expect(wrapper.findComponent(GlDisclosureDropdown).exists()).toBe(false);
+      });
+
+      it('renders ResolveWithIssueButton as a fallback', () => {
+        expect(wrapper.findComponent(ResolveWithIssueButton).exists()).toBe(true);
+      });
+    });
+
+    describe('when the discussion is already resolved', () => {
+      it('does not render the dropdown', () => {
+        createComponent({
+          props: { discussion: createDiscussion({ resolvable: true, resolved: true }) },
+          provide: {
+            userPermissions: { can_create_note: true, can_resolve_discussions_with_ai: true },
+          },
+        });
+
+        expect(wrapper.findComponent(GlDisclosureDropdown).exists()).toBe(false);
+      });
+    });
+
+    describe('when the discussion is not resolvable', () => {
+      it('does not render the dropdown', () => {
+        createComponent({
+          props: { discussion: createDiscussion({ resolvable: false }) },
+          provide: {
+            userPermissions: { can_create_note: true, can_resolve_discussions_with_ai: true },
+          },
+        });
+
+        expect(wrapper.findComponent(GlDisclosureDropdown).exists()).toBe(false);
+      });
+    });
+  });
+
+  describe('resolve button', () => {
+    const resolvableNote = {
+      id: 'note-1',
+      resolvable: true,
+      current_user: { can_resolve_discussion: true },
+    };
+
+    it('renders resolve button for resolvable discussions', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({ resolvable: true, resolved: false }, resolvableNote),
+          toggleResolveNote: jest.fn(),
+        },
+      });
+      const button = wrapper.findComponent(ResolveDiscussionButton);
+      expect(button.exists()).toBe(true);
+      expect(button.props('buttonTitle')).toBe('Resolve thread');
+    });
+
+    it('shows unresolve title when discussion is resolved', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({ resolvable: true, resolved: true }, resolvableNote),
+          toggleResolveNote: jest.fn(),
+        },
+      });
+      expect(wrapper.findComponent(ResolveDiscussionButton).props('buttonTitle')).toBe(
+        'Reopen thread',
+      );
+    });
+
+    it('does not render resolve button for non-resolvable discussions', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({ resolvable: false }),
+          toggleResolveNote: jest.fn(),
+        },
+      });
+      expect(wrapper.findComponent(ResolveDiscussionButton).exists()).toBe(false);
+    });
+
+    it('does not render resolve button when user cannot resolve', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion(
+            { resolvable: true },
+            { id: 'note-1', resolvable: true, current_user: { can_resolve_discussion: false } },
+          ),
+          toggleResolveNote: jest.fn(),
+        },
+      });
+      expect(wrapper.findComponent(ResolveDiscussionButton).exists()).toBe(false);
+    });
+
+    it('does not render resolve button when toggleResolveNote is not provided', () => {
+      createComponent({
+        props: {
+          discussion: createDiscussion({ resolvable: true }, resolvableNote),
+        },
+      });
+      expect(wrapper.findComponent(ResolveDiscussionButton).exists()).toBe(false);
+    });
+
+    it('calls toggleResolveNote when resolve button is clicked', async () => {
+      const toggleResolveNote = jest.fn().mockResolvedValue();
+      const discussion = createDiscussion({ resolvable: true, resolved: false }, resolvableNote);
+      createComponent({
+        props: { discussion, toggleResolveNote },
+      });
+      await wrapper.findComponent(ResolveDiscussionButton).vm.$emit('on-click');
+      expect(toggleResolveNote).toHaveBeenCalledWith(discussion);
+    });
+
+    it('shows alert when resolving fails', async () => {
+      const toggleResolveNote = jest.fn().mockRejectedValue(new Error('fail'));
+      const discussion = createDiscussion({ resolvable: true, resolved: false }, resolvableNote);
+      createComponent({
+        props: { discussion, toggleResolveNote },
+      });
+      await wrapper.findComponent(ResolveDiscussionButton).vm.$emit('on-click');
+      await waitForPromises();
+      expect(createAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Something went wrong while resolving this discussion. Please try again.',
+        }),
+      );
+    });
+  });
+
+  describe('resolve checkbox in reply form', () => {
+    const resolvableNote = {
+      id: 'note-1',
+      resolvable: true,
+      current_user: { can_resolve_discussion: true },
+    };
+
+    it.each`
+      scenario                        | resolvable | hasToggle | expected
+      ${'resolvable with toggle'}     | ${true}    | ${true}   | ${true}
+      ${'resolvable without toggle'}  | ${true}    | ${false}  | ${false}
+      ${'non-resolvable with toggle'} | ${false}   | ${true}   | ${false}
+    `(
+      'sets showResolveDiscussionToggle=$expected for $scenario',
+      ({ resolvable, hasToggle, expected }) => {
+        const noteProps = resolvable ? resolvableNote : {};
+        createComponent({
+          props: {
+            discussion: createDiscussion(
+              { isReplying: true, resolvable, resolved: false },
+              noteProps,
+            ),
+            ...(hasToggle ? { toggleResolveNote: jest.fn() } : {}),
+          },
+        });
+        expect(wrapper.findComponent(NoteForm).props('showResolveDiscussionToggle')).toBe(expected);
+      },
+    );
+
+    it('saves the resolved state with the reply', async () => {
+      const toggleResolveNote = jest.fn().mockResolvedValue();
+      const discussion = createDiscussion(
+        { isReplying: true, resolvable: true, resolved: false },
+        resolvableNote,
+      );
+      createComponent({
+        props: { discussion, toggleResolveNote },
+      });
+      await wrapper.findComponent(NoteForm).props('saveNote')('test note', true);
+      expect(store.replyToDiscussion).toHaveBeenCalledWith(discussion, 'test note', true);
+      expect(toggleResolveNote).not.toHaveBeenCalled();
+    });
+  });
+  describe('code suggestions', () => {
+    const suggestionsStub = (Component, template) =>
+      stubComponent(Component, {
+        inject: { codeSuggestions: { default: null } },
+        computed: {
+          suggestions() {
+            return JSON.stringify(this.codeSuggestions?.() ?? null);
+          },
+        },
+        template,
+      });
+    const findSuggestions = (testid) =>
+      JSON.parse(wrapper.find(`[data-testid="${testid}"]`).attributes('data-suggestions'));
+    const config = { canSuggest: true, lines: ['const a = 1;'] };
+
+    it('provides the suggestions resolved for the thread to the reply form', () => {
+      const resolveCodeSuggestions = jest.fn().mockReturnValue(config);
+      const discussion = createDiscussion({ isReplying: true });
+      createComponent({
+        props: { discussion },
+        provide: { resolveCodeSuggestions },
+        stubs: {
+          NoteForm: suggestionsStub(
+            NoteForm,
+            '<div data-testid="reply-form" :data-suggestions="suggestions"></div>',
+          ),
+        },
+      });
+
+      expect(findSuggestions('reply-form')).toEqual(config);
+      expect(resolveCodeSuggestions).toHaveBeenCalledWith(discussion);
+    });
+
+    it('provides the same suggestions to the notes, where comments are edited', () => {
+      createComponent({
+        provide: { resolveCodeSuggestions: () => config },
+        stubs: {
+          DiscussionNotes: suggestionsStub(
+            DiscussionNotes,
+            '<ul data-testid="notes" :data-suggestions="suggestions"></ul>',
+          ),
+        },
+      });
+
+      expect(findSuggestions('notes')).toEqual(config);
+    });
+
+    it('provides no suggestions when the thread is not on a diff line', () => {
+      createComponent({
+        props: { discussion: createDiscussion({ isReplying: true }) },
+        stubs: {
+          NoteForm: suggestionsStub(
+            NoteForm,
+            '<div data-testid="reply-form" :data-suggestions="suggestions"></div>',
+          ),
+        },
+      });
+
+      expect(findSuggestions('reply-form')).toBeNull();
+    });
+  });
+});

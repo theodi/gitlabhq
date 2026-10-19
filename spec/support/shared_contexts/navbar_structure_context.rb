@@ -1,0 +1,328 @@
+# frozen_string_literal: true
+
+RSpec.shared_context 'project navbar structure' do
+  include NavbarStructureHelper
+
+  let(:secure_nav_item) do
+    {
+      nav_item: _('Secure'),
+      nav_sub_items: [
+        (_('Audit events') if Gitlab.ee?),
+        _('Security configuration')
+      ]
+    }
+  end
+
+  let(:structure) do
+    [
+      {
+        nav_item: _('Manage'),
+        nav_sub_items: [
+          _('Activity'),
+          _('Members'),
+          _('Labels')
+        ]
+      },
+      {
+        nav_item: _('Plan'),
+        nav_sub_items: [
+          s_('WorkItem|Work items'),
+          _('Issue boards'),
+          _('Milestones'),
+          _('Wiki')
+        ]
+      },
+
+      if Gitlab.ee?
+        {
+          nav_item: s_('DuoAgentsPlatform|AI'),
+          nav_sub_items: [
+            s_('AICatalog|Agents'),
+            s_('DuoAgentsPlatform|Sessions')
+          ]
+        }
+      end,
+
+      {
+        nav_item: _('Code'),
+        nav_sub_items: [
+          _('Merge requests'),
+          _('Repository'),
+          _('Branches'),
+          _('Commits'),
+          _('Tags'),
+          _('Repository graph'),
+          _('Compare revisions'),
+          _('Snippets'),
+          (_('Locked files') if Gitlab.ee?)
+        ]
+      },
+      {
+        nav_item: _('Build'),
+        nav_sub_items: [
+          _('Pipelines'),
+          _('Jobs'),
+          _('Pipeline editor'),
+          _('Pipeline schedules'),
+          _('Artifacts')
+        ]
+      },
+      secure_nav_item,
+      {
+        nav_item: _('Deploy'),
+        nav_sub_items: [
+          _('Releases'),
+          s_('FeatureFlags|Feature flags'),
+          _('Model registry')
+        ]
+      },
+      {
+        nav_item: _('Operate'),
+        nav_sub_items: [
+          _('Environments'),
+          _('Kubernetes clusters'),
+          s_('Terraform|Terraform states')
+        ]
+      },
+      {
+        nav_item: _('Monitor'),
+        nav_sub_items: [
+          _('Error Tracking'),
+          _('Alerts'),
+          _('Incidents'),
+          _('Service Desk')
+        ]
+      },
+      {
+        nav_item: _('Analyze'),
+        nav_sub_items: project_analytics_sub_nav_item
+      },
+      {
+        nav_item: _('Observe'),
+        nav_sub_items: [
+          s_('Observability|Observability configuration')
+        ]
+      },
+      {
+        nav_item: _('Settings'),
+        nav_sub_items: [
+          _('General'),
+          _('Service accounts'),
+          _('Integrations'),
+          _('Webhooks'),
+          _('Access tokens'),
+          _('Repository'),
+          _('Merge requests'),
+          _('CI/CD'),
+          _('Packages and registries'),
+          _('Monitor'),
+          s_('UsageQuota|Usage quotas')
+        ].compact
+      }
+    ].compact
+  end
+
+  # Projects belonging to a group have
+  # different menu elements
+  let(:group_owned_structure) do
+    structure.last[:nav_sub_items] = [
+      _('General'),
+      _('Service accounts'),
+      _('Integrations'),
+      _('Webhooks'),
+      _('Access tokens'),
+      _('Repository'),
+      _('Merge requests'),
+      _('CI/CD'),
+      _('Packages and registries'),
+      _('Monitor'),
+      s_('UsageQuota|Usage quotas')
+    ].compact
+    structure
+  end
+end
+
+RSpec.shared_context 'group navbar structure' do
+  let(:settings_nav_item) do
+    {
+      nav_item: _('Settings'),
+      nav_sub_items: [
+        _('General'),
+        _('Integrations'),
+        _('Webhooks'),
+        _('Access tokens'),
+        _('Repository'),
+        _('CI/CD'),
+        _('Applications'),
+        _('Packages and registries'),
+        s_('UsageQuota|Usage quotas'),
+        s_('Orbit|Orbit'),
+        _('Domain Verification')
+      ]
+    }
+  end
+
+  let(:settings_for_maintainer_nav_item) do
+    {
+      nav_item: _("Settings"),
+      nav_sub_items: [_("Repository")]
+    }
+  end
+
+  let(:secure_nav_item) do
+    {
+      nav_item: _("Secure"),
+      nav_sub_items: [_("Audit events")]
+    }
+  end
+
+  let(:plan_nav_items) do
+    [s_("WorkItem|Work items"), _("Issue board"), _("Milestones"), (_('Iterations') if Gitlab.ee?)]
+  end
+
+  let(:customer_relations_nav_item) do
+    {
+      nav_item: _('Customer relations'),
+      nav_sub_items: [
+        _('Contacts'),
+        _('Organizations')
+      ]
+    }
+  end
+
+  let(:observability_nav_item) do
+    {
+      nav_item: _("Observe"),
+      nav_sub_items: [s_('Observability|Observability configuration')]
+    }
+  end
+
+  let(:duo_agents_nav_item) do
+    {
+      nav_item: s_('DuoAgentsPlatform|AI'),
+      nav_sub_items: [s_('AICatalog|Agents')]
+    }
+  end
+
+  let(:structure) do
+    [
+      {
+        nav_item: _("Manage"),
+        nav_sub_items: [_("Activity"), _("Members"), _("Labels"), _("Achievements")]
+      },
+      {
+        nav_item: _("Plan"),
+        nav_sub_items: plan_nav_items
+      },
+      # The Duo Agents menu renders only for root groups
+      (duo_agents_nav_item if Gitlab.ee? && group.parent.nil?),
+      {
+        nav_item: _("Code"),
+        nav_sub_items: [_("Merge requests")]
+      },
+      {
+        nav_item: _("Build"),
+        nav_sub_items: [_("Runners")]
+      },
+      (secure_nav_item if Gitlab.ee?),
+      {
+        nav_item: _("Operate"),
+        nav_sub_items: [_("Kubernetes")]
+      },
+      observability_nav_item
+    ]
+  end
+end
+
+RSpec.shared_context 'dashboard navbar structure' do
+  let(:structure) do
+    [
+      {
+        nav_item: _("Home"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Projects"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Groups"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Organizations"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Work items"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Merge requests"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("To-Do List"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Milestones"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Snippets"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Activity"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Import history"),
+        nav_sub_items: []
+      }
+    ]
+  end
+end
+
+RSpec.shared_context '"Explore" navbar structure' do
+  let(:structure) do
+    [
+      {
+        nav_item: _("Projects"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Groups"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("CI/CD Catalog"),
+        nav_sub_items: []
+      },
+
+      if Gitlab.ee?
+        {
+          nav_item: s_("AICatalog|AI Catalog"),
+          nav_sub_items: []
+        }
+      end,
+
+      if Gitlab.ee?
+        {
+          nav_item: s_("Analytics|GitLab Intelligence"),
+          nav_sub_items: []
+        }
+      end,
+
+      {
+        nav_item: _("Topics"),
+        nav_sub_items: []
+      },
+      {
+        nav_item: _("Snippets"),
+        nav_sub_items: []
+      }
+    ]
+  end
+end

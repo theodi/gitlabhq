@@ -1,0 +1,19 @@
+---
+description: Triggered when an email invitation is accepted
+action: accepted
+identifiers:
+- project
+- namespace
+- user
+product_group: acquisition
+product_categories:
+- acquisition
+milestone: '14.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/164498
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: Always 'invite_email'

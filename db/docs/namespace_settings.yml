@@ -1,0 +1,13 @@
+---
+table_name: namespace_settings
+classes:
+- NamespaceSetting
+feature_categories:
+- groups_and_projects
+description: Stores settings per namespace
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/36321
+milestone: '13.2'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces
+table_size: small

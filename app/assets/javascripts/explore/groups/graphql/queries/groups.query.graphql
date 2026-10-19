@@ -1,0 +1,35 @@
+#import "~/graphql_shared/fragments/group.fragment.graphql"
+
+# @feature_category: groups_and_projects
+query exploreGroups(
+  $active: Boolean
+  $search: String
+  $sort: String
+  $parentId: Int
+  $before: String
+  $after: String
+) {
+  groups(
+    active: $active
+    search: $search
+    sort: $sort
+    parentId: $parentId
+    before: $before
+    after: $after
+    pagination: "keyset"
+  ) @client {
+    nodes {
+      ...Group
+      hasChildren
+      children
+      childrenCount
+    }
+    pageInfo {
+      perPage
+      hasNextPage
+      hasPreviousPage
+      startCursor
+      endCursor
+    }
+  }
+}

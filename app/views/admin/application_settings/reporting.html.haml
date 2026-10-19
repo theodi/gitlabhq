@@ -1,0 +1,28 @@
+- breadcrumb_title _("Reporting")
+- page_title _("Reporting")
+- add_page_specific_style 'page_bundles/settings'
+
+%div{ data: { event_tracking_load: 'true', event_tracking: 'view_admin_application_settings_reporting_pageload' } }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Spam and Anti-bot Protection'),
+  id: 'js-spam-settings',
+  testid: 'spam-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure CAPTCHAs, IP address limits, and other anti-spam measures.')
+  - c.with_body do
+    = render 'spam'
+
+-# this partial is from JiHu, see details in https://gitlab.com/gitlab-jh/gitlab/-/merge_requests/135
+= render_if_exists 'admin/application_settings/content_validation_section'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Abuse reports'),
+  id: 'js-abuse-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Receive notification of abuse reports by email.')
+    = link_to _('Learn more.'), help_page_path('administration/review_abuse_reports.md'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'abuse'
+
+= render_if_exists 'admin/application_settings/git_abuse_rate_limit'

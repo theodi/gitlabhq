@@ -1,0 +1,31 @@
+# @feature_category: continuous_integration
+query getPipelineStageJobs($id: CiStageID!) {
+  ciPipelineStage(id: $id) {
+    id
+    jobs {
+      nodes {
+        id
+        detailedStatus {
+          id
+          action {
+            id
+            confirmationMessage
+            icon
+            path
+            title
+          }
+          detailsPath
+          deploymentDetailsPath
+          group
+          hasDetails
+          icon
+          tooltip
+          label
+        }
+        name
+        scheduled
+        scheduledAt
+      }
+    }
+  }
+}

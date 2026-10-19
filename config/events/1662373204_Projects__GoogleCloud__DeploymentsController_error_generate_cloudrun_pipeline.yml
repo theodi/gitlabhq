@@ -1,0 +1,17 @@
+---
+description: Failed to enable Cloud Run services
+category: Projects::GoogleCloud::DeploymentsController
+action: error_generate_cloudrun_pipeline
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: 5-min-app
+milestone: "15.4"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/96683"
+tiers:
+- free
+- premium
+- ultimate
+

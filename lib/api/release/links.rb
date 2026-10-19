@@ -1,0 +1,191 @@
+# frozen_string_literal: true
+
+module API
+  module Release
+    class Links < ::API::Base
+      include PaginationParams
+
+      release_links_tags = %w[releases]
+      RELEASE_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS
+        .merge(tag_name: ::API::NO_SLASH_URL_PART_REGEX)
+
+      after_validation { authorize! :read_release, user_project }
+
+      feature_category :release_orchestration
+      urgency :low
+
+      params do
+        requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+      end
+      resource 'projects/:id', requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        params do
+          requires :tag_name, type: String, desc: 'Tag associated with the release.'
+        end
+        resource 'releases/:tag_name', requirements: RELEASE_ENDPOINT_REQUIREMENTS do
+          resource :assets do
+            desc 'List all release links' do
+              detail 'Lists all assets as links from a release.'
+              success Entities::Releases::Link
+              failure [
+                { code: 401, message: 'Unauthorized' },
+                { code: 404, message: 'Not found' }
+              ]
+              is_array true
+              tags release_links_tags
+            end
+            params do
+              use :pagination
+            end
+            route_setting :authentication, job_token_allowed: true
+            route_setting :authorization, permissions: :read_release_link, boundary_type: :project,
+              job_token_policies: :read_releases,
+              allow_public_access_for_enabled_project_features: :releases
+            get 'links' do
+              authorize! :read_release, release
+
+              present paginate(release.links.sorted), with: Entities::Releases::Link
+            end
+
+            desc 'Create a release link' do
+              detail 'Creates an asset link for a specified release.'
+              success Entities::Releases::Link
+              failure [
+                { code: 400, message: 'Bad request' },
+                { code: 401, message: 'Unauthorized' }
+              ]
+              tags release_links_tags
+            end
+            params do
+              requires :name, type: String, desc: 'Name of the link. Link names must be unique in the release.'
+              requires :url, type: String, desc: 'URL of the link. Link URLs must be unique in the release.'
+              optional :direct_asset_path, type: String, desc: 'Path for a [direct asset link](https://docs.gitlab.com/user/project/releases/release_fields/#permanent-links-to-release-assets).'
+              optional :filepath, type: String, desc: 'Path for a direct asset link. Deprecated. Use ' \
+                                                  '`direct_asset_path` instead.'
+              optional :link_type,
+                type: String,
+                values: %w[other runbook image package],
+                default: 'other',
+                desc: 'Type of the link.'
+            end
+            route_setting :authentication, job_token_allowed: true
+            route_setting :authorization, permissions: :create_release_link, boundary_type: :project,
+              job_token_policies: :admin_releases
+            post 'links' do
+              result = ::Releases::Links::CreateService
+                .new(release, current_user, declared_params(include_missing: false))
+                .execute
+
+              if result.success?
+                present result.payload[:link], with: Entities::Releases::Link
+              elsif result.reason == ::Releases::Links::REASON_FORBIDDEN
+                forbidden!
+              else
+                render_api_error!(result.message, 400)
+              end
+            end
+
+            params do
+              requires :link_id, type: Integer, desc: 'ID of the link.'
+            end
+            resource 'links/:link_id' do
+              desc 'Retrieve a release link' do
+                detail 'Retrieves a specified asset as a link from a release.'
+                success Entities::Releases::Link
+                failure [
+                  { code: 401, message: 'Unauthorized' },
+                  { code: 404, message: 'Not found' }
+                ]
+                tags release_links_tags
+              end
+              route_setting :authentication, job_token_allowed: true
+              route_setting :authorization, permissions: :read_release_link, boundary_type: :project,
+                job_token_policies: :read_releases,
+                allow_public_access_for_enabled_project_features: :releases
+              get do
+                authorize! :read_release, release
+
+                present link, with: Entities::Releases::Link
+              end
+
+              desc 'Update a release link' do
+                detail 'Updates a specified asset link for a release.'
+                success Entities::Releases::Link
+                failure [
+                  { code: 400, message: 'Bad request' },
+                  { code: 401, message: 'Unauthorized' }
+                ]
+                tags release_links_tags
+              end
+              params do
+                optional :name, type: String, desc: 'Name of the link.'
+                optional :url, type: String, desc: 'URL of the link.'
+                optional :direct_asset_path, type: String, desc: 'Path for a [direct asset link](https://docs.gitlab.com/user/project/releases/release_fields/#permanent-links-to-release-assets).'
+                optional :filepath, type: String, desc: 'Path for a direct asset link. Deprecated. Use ' \
+                                                    '`direct_asset_path` instead.'
+                optional :link_type,
+                  type: String,
+                  values: %w[other runbook image package],
+                  default: 'other',
+                  desc: 'Type of the link.'
+
+                at_least_one_of :name, :url
+              end
+              route_setting :authentication, job_token_allowed: true
+              route_setting :authorization, permissions: :update_release_link, boundary_type: :project,
+                job_token_policies: :admin_releases
+              put do
+                result = ::Releases::Links::UpdateService
+                  .new(release, current_user, declared_params(include_missing: false))
+                  .execute(link)
+
+                if result.success?
+                  present result.payload[:link], with: Entities::Releases::Link
+                elsif result.reason == ::Releases::Links::REASON_FORBIDDEN
+                  forbidden!
+                else
+                  render_api_error!(result.message, 400)
+                end
+              end
+
+              desc 'Delete a release link' do
+                detail 'Deletes a specified asset link from a release.'
+                success Entities::Releases::Link
+                failure [
+                  { code: 400, message: 'Bad request' },
+                  { code: 401, message: 'Unauthorized' }
+                ]
+                tags release_links_tags
+              end
+              route_setting :authentication, job_token_allowed: true
+              route_setting :authorization, permissions: :delete_release_link, boundary_type: :project,
+                job_token_policies: :admin_releases
+              delete do
+                result = ::Releases::Links::DestroyService
+                  .new(release, current_user)
+                  .execute(link)
+
+                if result.success?
+                  present result.payload[:link], with: Entities::Releases::Link
+                elsif result.reason == ::Releases::Links::REASON_FORBIDDEN
+                  forbidden!
+                else
+                  render_api_error!(result.message, 400)
+                end
+              end
+            end
+          end
+        end
+      end
+
+      helpers do
+        def release
+          @release ||= user_project.releases.find_by_tag!(declared_params(include_parent_namespaces: true)[:tag_name])
+        end
+
+        def link
+          @link ||= release.links.find(declared_params(include_parent_namespaces: true)[:link_id])
+        end
+      end
+    end
+  end
+end

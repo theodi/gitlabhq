@@ -1,0 +1,92 @@
+<script>
+import { GlButton, GlTooltipDirective } from '@gitlab/ui';
+import ClipboardButton from '~/vue_shared/components/clipboard_button.vue';
+import ExpandCollapseButton from '~/vue_shared/components/expand_collapse_button/expand_collapse_button.vue';
+import { __, sprintf } from '~/locale';
+import { getBrowseFilesPath } from '../utils/browse_files_path';
+
+export default {
+  name: 'CommitListItemActionButtons',
+  components: {
+    ExpandCollapseButton,
+    ClipboardButton,
+    GlButton,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  inject: ['projectRootPath'],
+  props: {
+    commit: {
+      type: Object,
+      required: true,
+    },
+    isCollapsed: {
+      type: Boolean,
+      required: true,
+    },
+    isLoading: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    anchorId: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    currentPath: {
+      type: String,
+      required: false,
+      default: '',
+    },
+  },
+  emits: ['click'],
+  computed: {
+    copyCommitShaTitle() {
+      return sprintf(__('Copy commit SHA %{sha}'), { sha: this.commit.sha });
+    },
+    browseFilesPath() {
+      return getBrowseFilesPath({
+        projectRootPath: this.projectRootPath,
+        commitSha: this.commit.sha,
+        currentPath: this.currentPath,
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="gl-mr-2 gl-hidden gl-items-center gl-gap-2 @md/panel:gl-flex">
+    <span class="gl-font-monospace">{{ commit.shortId }}</span>
+    <clipboard-button
+      category="tertiary"
+      size="small"
+      :text="commit.sha"
+      :title="copyCommitShaTitle"
+    />
+    <gl-button
+      v-gl-tooltip
+      category="tertiary"
+      size="small"
+      icon="folder-open"
+      :href="browseFilesPath"
+      :title="__('Browse commit files')"
+      :aria-label="__('Browse commit files')"
+      data-testid="browse-files-button"
+    />
+    <span
+      class="gl-border-r gl-mx-2 gl-h-6 gl-border-r-section"
+      :class="{ 'gl-invisible': !commit.description }"
+    ></span>
+    <expand-collapse-button
+      :class="{ 'gl-invisible': !commit.description }"
+      :is-collapsed="isCollapsed"
+      :loading="isLoading"
+      :anchor-id="anchorId"
+      :accessible-label="commit.title"
+      @click="$emit('click')"
+    />
+  </div>
+</template>

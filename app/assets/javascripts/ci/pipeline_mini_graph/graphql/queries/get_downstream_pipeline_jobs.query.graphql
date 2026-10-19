@@ -1,0 +1,33 @@
+# @feature_category: continuous_integration
+query getDownstreamPipelineJobs($fullPath: ID!, $iid: ID!, $retried: Boolean) {
+  project(fullPath: $fullPath) {
+    id
+    pipeline(iid: $iid) {
+      id
+      jobs(retried: $retried) {
+        nodes {
+          id
+          detailedStatus {
+            id
+            action {
+              id
+              confirmationMessage
+              icon
+              path
+              title
+            }
+            detailsPath
+            group
+            hasDetails
+            icon
+            name
+            tooltip
+          }
+          name
+          scheduled
+          scheduledAt
+        }
+      }
+    }
+  }
+}

@@ -1,14 +1,19 @@
+# frozen_string_literal: true
+
 module ProjectsHelper
-  def remove_from_project_team_message(project, member)
-    if member.user
-      "You are going to remove #{member.user.name} from #{project.name} project team. Are you sure?"
-    else
-      "You are going to revoke the invitation for #{member.invite_email} to join #{project.name} project team. Are you sure?"
-    end
+  include Gitlab::Utils::StrongMemoize
+  include CompareHelper
+  include Gitlab::Allowable
+
+  def project_incident_management_setting
+    @project_incident_management_setting ||= @project.incident_management_setting ||
+      @project.build_incident_management_setting
   end
 
   def link_to_project(project)
-    link_to [project.namespace.becomes(Namespace), project] do
+    link_to namespace_project_path(namespace_id: project.namespace, id: project),
+      title: h(project.name),
+      class: 'gl-link' do
       title = content_tag(:span, project.name, class: 'project-name')
 
       if project.namespace
@@ -20,290 +25,1035 @@ module ProjectsHelper
     end
   end
 
-  def link_to_member(project, author, opts = {})
-    default_opts = { avatar: true, name: true, size: 16 }
+  def link_to_member_avatar(author, opts = {})
+    default_opts = { size: 16 }
+    opts = default_opts.merge(opts)
+
+    classes = %W[avatar avatar-inline s#{opts[:size]}]
+    classes << opts[:avatar_class] if opts[:avatar_class]
+
+    avatar = avatar_icon_for_user(author, opts[:size])
+
+    image_tag(avatar, width: opts[:size], class: classes, alt: '')
+  end
+
+  def author_content_tag(author, opts = {})
+    default_opts = { author_class: 'author', tooltip: false, by_username: false }
+    opts = default_opts.merge(opts)
+
+    has_tooltip = !opts[:by_username] && opts[:tooltip]
+
+    username = opts[:by_username] ? author.to_reference : author.name
+    name_tag_options = { class: [opts[:author_class]] }
+
+    if has_tooltip
+      name_tag_options[:title] = author.to_reference
+      name_tag_options[:data] = { placement: 'top' }
+      name_tag_options[:class] << 'has-tooltip'
+    end
+
+    # NOTE: ActionView::Helpers::TagHelper#content_tag HTML escapes username
+    content_tag(:span, username, name_tag_options)
+  end
+
+  def link_to_member(author, opts = {}, &block)
+    default_opts = { avatar: true, name: true, title: ":name" }
     opts = default_opts.merge(opts)
 
     return "(deleted)" unless author
 
-    author_html =  ""
+    data_attrs = {
+      user_id: author.id,
+      username: author.username,
+      name: author.name,
+      testid: "author-link"
+    }
 
-    # Build avatar image tag
-    author_html << image_tag(avatar_icon(author.try(:email), opts[:size]), width: opts[:size], class: "avatar avatar-inline #{"s#{opts[:size]}" if opts[:size]}", alt:'') if opts[:avatar]
-
-    # Build name span tag
-    author_html << content_tag(:span, sanitize(author.name), class: 'author') if opts[:name]
-
-    author_html = author_html.html_safe
+    inject_classes = ["author-link gl-text-link", opts[:extra_class]]
 
     if opts[:name]
-      link_to(author_html, user_path(author), class: "author_link").html_safe
+      inject_classes.concat(["js-user-link", opts[:mobile_classes]])
     else
-      link_to(author_html, user_path(author), class: "author_link has_tooltip", data: { :'original-title' => sanitize(author.name) } ).html_safe
+      inject_classes.append("has-tooltip")
+    end
+
+    inject_classes = inject_classes.compact.join(" ")
+
+    author_html = []
+    # Build avatar image tag
+    author_html << link_to_member_avatar(author, opts) if opts[:avatar]
+    # Build name span tag
+    author_html << author_content_tag(author, opts) if opts[:name]
+    author_html << capture(&block) if block
+    author_html = author_html.join.html_safe
+
+    if opts[:name]
+      link_to(author_html, user_path(author), class: inject_classes, data: data_attrs).html_safe
+    else
+      title = opts[:title].sub(":name", sanitize(author.name))
+      link_to(
+        author_html,
+        user_path(author),
+        class: inject_classes,
+        title: title,
+        data: { container: 'body' }
+      ).html_safe
     end
   end
 
-  def project_title(project)
+  def push_project_breadcrumbs(project)
     if project.group
-      content_tag :span do
-        link_to(
-          simple_sanitize(project.group.name), group_path(project.group)
-        ) + ' / ' +
-          link_to(simple_sanitize(project.name),
-                  project_path(project))
-      end
+      push_group_breadcrumbs(project.group)
     else
       owner = project.namespace.owner
-      content_tag :span do
-        link_to(
-          simple_sanitize(owner.name), user_path(owner)
-        ) + ' / ' +
-          link_to(simple_sanitize(project.name),
-                  project_path(project))
-      end
+      name = sanitize(owner.name, tags: [])
+      url = user_path(owner)
+
+      push_to_schema_breadcrumb(name, url)
     end
+
+    push_to_schema_breadcrumb(project.name, project_path(project), project.try(:avatar_url))
   end
 
-  def remove_project_message(project)
-    "You are going to remove #{project.name_with_namespace}.\n Removed project CANNOT be restored!\n Are you ABSOLUTELY sure?"
+  def remove_project_message
+    format(
+      _("Deleting a project places it into a read-only state until %{date}, " \
+        "at which point the project will be permanently deleted. Are you ABSOLUTELY sure?"),
+      date: permanent_deletion_date_formatted(Date.current)
+    )
+  end
+
+  def link_to_namespace_change_doc
+    link_to _('project\'s path'),
+      help_page_path('user/group/manage.md', anchor: 'change-a-groups-path'),
+      target: '_blank',
+      rel: 'noopener'
+  end
+
+  def link_to_data_loss_doc
+    link_to _('data loss'), help_page_path('user/project/repository/_index.md', anchor: 'repository-path-changes'),
+      target: '_blank', rel: 'noopener'
   end
 
   def transfer_project_message(project)
-    "You are going to transfer #{project.name_with_namespace} to another owner. Are you ABSOLUTELY sure?"
+    _("You are about to transfer %{code_start}%{project_full_path}%{code_end} to another namespace. This action " \
+      "changes the %{link_to_namespace_change_doc} and can lead to %{link_to_data_loss_doc}.") % {
+        project_full_path: project.full_path,
+        code_start: '<code class="gl-whitespace-pre-wrap">',
+        code_end: '</code>',
+        link_to_namespace_change_doc: link_to_namespace_change_doc,
+        link_to_data_loss_doc: link_to_data_loss_doc
+      }
   end
 
-  def project_nav_tabs
-    @nav_tabs ||= get_project_nav_tabs(@project, current_user)
+  def transfer_project_confirm_button
+    _("Transfer project")
   end
 
-  def project_nav_tab?(name)
-    project_nav_tabs.include? name
-  end
+  def remove_fork_project_description_message(project)
+    source = visible_fork_source(project)
 
-  def project_active_milestones
-    @project.milestones.active.order("due_date, title ASC")
-  end
+    if source
+      msg = _('This will remove the fork relationship between this project and %{fork_source}.') % {
+        fork_source: link_to(source.full_name, project_path(source))
+      }
 
-  def link_to_toggle_star(title, starred)
-    cls = 'star-btn btn btn-sm btn-default'
-
-    toggle_text =
-      if starred
-        ' Unstar'
-      else
-        ' Star'
-      end
-
-    toggle_html = content_tag('span', class: 'toggle') do
-      icon('star') + toggle_text
-    end
-
-    count_html = content_tag('span', class: 'count') do
-      @project.star_count.to_s
-    end
-
-    link_opts = {
-      title: title,
-      class: cls,
-      method: :post,
-      remote: true,
-      data: { type: 'json' }
-    }
-
-    path = toggle_star_namespace_project_path(@project.namespace, @project)
-
-    content_tag 'span', class: starred ? 'turn-on' : 'turn-off' do
-      link_to(path, link_opts) do
-        toggle_html + ' ' + count_html
-      end
-    end
-  end
-
-  def link_to_toggle_fork
-    html = content_tag('span') do
-      icon('code-fork') + ' Fork'
-    end
-
-    count_html = content_tag(:span, class: 'count') do
-      @project.forks_count.to_s
-    end
-
-    html + count_html
-  end
-
-  def project_for_deploy_key(deploy_key)
-    if deploy_key.projects.include?(@project)
-      @project
+      msg.html_safe
     else
-      deploy_key.projects.find { |project| can?(current_user, :read_project, project) }
+      _('This will remove the fork relationship between this project and other projects in the fork network.')
     end
+  end
+
+  def vue_fork_divergence_data(project, ref)
+    source_project = visible_fork_source(project)
+
+    return {} unless source_project
+
+    source_default_branch = source_project.default_branch
+
+    merge_request =
+      MergeRequest.opened
+        .from_project(project).of_projects(source_project.id).from_source_branches(ref).first
+
+    {
+      project_path: project.full_path,
+      selected_branch: ref,
+      source_name: source_project.full_name,
+      source_path: project_path(source_project),
+      source_default_branch: source_default_branch,
+      can_sync_branch: can_sync_branch?(project, ref).to_s,
+      ahead_compare_path: project_compare_path(
+        project, from: source_default_branch, to: ref, from_project_id: source_project.id
+      ),
+      create_mr_path: create_merge_request_path(project, source_project, ref, merge_request),
+      view_mr_path: merge_request && project_merge_request_path(source_project, merge_request),
+      behind_compare_path: project_compare_path(
+        source_project, from: ref, to: source_default_branch, from_project_id: project.id
+      )
+    }
+  end
+
+  def remove_fork_project_warning_message(project)
+    _("You are going to remove the fork relationship from %{project_full_name}. Are you ABSOLUTELY sure?") % {
+      project_full_name: project.full_name
+    }
+  end
+
+  def remove_fork_project_confirm_json(project, remove_form_id)
+    {
+      remove_form_id: remove_form_id,
+      button_text: _('Remove fork relationship'),
+      confirm_danger_message: remove_fork_project_warning_message(project),
+      phrase: @project.path
+    }
+  end
+
+  def visible_fork_source(project)
+    project.fork_source if project.fork_source && can?(current_user, :read_project, project.fork_source)
+  end
+
+  def can_change_visibility_level?(project, current_user)
+    can?(current_user, :change_visibility_level, project)
+  end
+
+  def can_disable_emails?(project, current_user)
+    return false if project.group&.emails_disabled?
+
+    can?(current_user, :set_emails_disabled, project)
+  end
+
+  def can_set_diff_preview_in_email?(project, current_user)
+    return false if project.group&.show_diff_preview_in_email?.equal?(false)
+
+    can?(current_user, :set_show_diff_preview_in_email, project)
+  end
+
+  def last_push_event
+    current_user&.recent_push(@project)
+  end
+
+  def link_to_autodeploy_doc
+    link_to _('About auto deploy'),
+      help_page_path('topics/autodevops/stages.md', anchor: 'auto-deploy'),
+      target: '_blank',
+      rel: 'noopener'
+  end
+
+  def autodeploy_flash_notice(branch_name)
+    ERB::Util.html_escape(
+      _("Branch %{branch_name} was created. To set up auto deploy, choose a GitLab CI " \
+        "Yaml template and commit your changes. %{link_to_autodeploy_doc}")
+    ) % {
+      branch_name: tag.strong(truncate(sanitize(branch_name))),
+      link_to_autodeploy_doc: link_to_autodeploy_doc
+    }
+  end
+
+  def load_pipeline_status(projects)
+    Gitlab::Cache::Ci::ProjectPipelineStatus
+      .load_in_batch_for_projects(projects)
+  end
+
+  def load_catalog_resources(projects)
+    ActiveRecord::Associations::Preloader.new(records: projects, associations: :catalog_resource).call
+  end
+
+  def last_pipeline_from_status_cache(project)
+    if Feature.enabled?(:last_pipeline_from_pipeline_status, project)
+      pipeline_status = project.pipeline_status
+      return unless pipeline_status.has_status?
+
+      # commits have far more attributes than id, but last_pipeline only requires sha
+      return Commit.from_hash({ id: pipeline_status.sha }, project).last_pipeline
+    end
+
+    project.last_pipeline
+  end
+
+  def show_no_ssh_key_message?(project)
+    Gitlab::CurrentSettings.user_show_add_ssh_key_message? &&
+      cookies[:hide_no_ssh_message].blank? &&
+      current_user &&
+      !current_user.hide_no_ssh_key &&
+      current_user.require_ssh_key?
+  end
+
+  def show_invalid_gpg_key_message?(project)
+    return false unless project.beyond_identity_integration&.active?
+    return false if current_user.gpg_keys.externally_valid.exists?
+
+    true
+  end
+
+  def show_no_password_message?
+    cookies[:hide_no_password_message].blank? && !current_user.hide_no_password &&
+      current_user.require_extra_setup_for_git_auth?
+  end
+
+  def no_password_message
+    set_password_link_start = '<a href="%{url}">'.html_safe % { url: edit_user_settings_password_path }
+    set_up_pat_link_start = '<a href="%{url}">'.html_safe % { url: user_settings_personal_access_tokens_path }
+
+    message = if current_user.require_password_creation_for_git?
+                _(
+                  'Your account is authenticated with SSO or SAML. To push and pull over %{protocol} ' \
+                    'with Git using this account, you must %{set_password_link_start}set a password%{link_end} ' \
+                    'or %{set_up_pat_link_start}set up a personal access token%{link_end} to use instead of a password.'
+                )
+              else
+                _(
+                  'Your account is authenticated with SSO or SAML. To push and pull over %{protocol} with Git using ' \
+                    'this account, you must %{set_up_pat_link_start}set up a personal access token%{link_end} to use ' \
+                    'instead of a password.'
+                )
+              end
+
+    ERB::Util.html_escape(message) % {
+      protocol: gitlab_config.protocol.upcase,
+      set_password_link_start: set_password_link_start,
+      set_up_pat_link_start: set_up_pat_link_start,
+      link_end: '</a>'.html_safe
+    }
+  end
+
+  # Returns true if any projects are present.
+  #
+  # If the relation has a LIMIT applied we'll cast the relation to an Array
+  # since repeated any? checks would otherwise result in multiple COUNT queries
+  # being executed.
+  #
+  # If no limit is applied we'll just issue a COUNT since the result set could
+  # be too large to load into memory.
+  def any_projects?(projects)
+    return projects.any? if projects.is_a?(Array)
+
+    if projects.limit_value
+      projects.to_a.any?
+    else
+      projects.except(:offset).any?
+    end
+  end
+
+  def push_to_create_project_command(user = current_user)
+    repository_url =
+      if Gitlab::CurrentSettings.current_application_settings.enabled_git_access_protocol == 'http'
+        user_url(user)
+      else
+        Gitlab.config.gitlab_shell.ssh_path_prefix + user.username
+      end
+
+    "git push --set-upstream #{repository_url}/$(git rev-parse --show-toplevel | xargs basename).git " \
+      "$(git rev-parse --abbrev-ref HEAD)"
+  end
+
+  def show_xcode_link?(project = @project)
+    browser.platform.mac? && project.repository.xcode_project?
+  end
+
+  def xcode_uri_to_repo(project = @project)
+    "xcode://clone?repo=#{CGI.escape(default_url_to_repo(project))}"
+  end
+
+  def explore_projects_tab?
+    current_page?(explore_projects_path)
+  end
+
+  def show_count?(disabled: false, compact_mode: false)
+    !disabled && !compact_mode
+  end
+
+  def error_tracking_setting_project_json
+    setting = @project.error_tracking_setting
+
+    return if setting.blank? || setting.project_slug.blank? ||
+      setting.organization_slug.blank?
+
+    {
+      sentry_project_id: setting.sentry_project_id,
+      name: setting.project_name,
+      organization_name: setting.organization_name,
+      organization_slug: setting.organization_slug,
+      slug: setting.project_slug
+    }.to_json
+  end
+
+  def external_classification_label_help_message
+    default_label = ::Gitlab::CurrentSettings.current_application_settings
+                      .external_authorization_service_default_label
+
+    s_(
+      "ExternalAuthorizationService|When no classification label is set the " \
+        "default label `%{default_label}` will be used."
+    ) % { default_label: default_label }
+  end
+
+  # Data for the Vue-rendered project general settings form (naming,
+  # description, topics, avatar). EE adds the licensed repository-size-limit
+  # fields via an override.
+  def project_general_settings_data(project)
+    service_ping_settings_path =
+      if current_user&.can_admin_all_resources?
+        metrics_and_profiling_admin_application_settings_path(anchor: 'js-usage-settings')
+      else
+        ''
+      end
+
+    {
+      project_id: project.id,
+      project_name: project.name,
+      project_description: project.description,
+      project_avatar_url: project.avatar_url,
+      project_avatar_removable: project.avatar?.to_s,
+      project_topics: project.topic_list.to_json,
+      max_description_length: Project::MAX_DESCRIPTION_LENGTH,
+      form_action: project_path(project),
+      organization_id: project.organization.id,
+      show_repository_size_limit_cta: registration_features_can_be_prompted?.to_s,
+      service_ping_settings_path: service_ping_settings_path,
+      external_authorization_enabled: ::Gitlab::ExternalAuthorization.enabled?.to_s,
+      external_authorization_classification_label: project.external_authorization_classification_label,
+      external_authorization_help_text: external_classification_label_help_message
+    }
+  end
+
+  def project_can_be_shared?
+    !membership_locked? || @project.allowed_to_share_with_group?
+  end
+
+  def membership_locked?
+    false
+  end
+
+  def project_license_name(project)
+    key = "project:#{project.id}:license_name"
+
+    Gitlab::SafeRequestStore.fetch(key) { project.repository.license&.name }
+  rescue GRPC::Unavailable, GRPC::DeadlineExceeded, Gitlab::Git::CommandError => e
+    Gitlab::ErrorTracking.track_exception(e)
+    Gitlab::SafeRequestStore[key] = nil
+
+    nil
+  end
+
+  def show_lfs_misconfiguration_banner?(project)
+    return false unless project.repository && project.lfs_enabled?
+
+    if current_user&.dismissed_callout_for_project?(feature_name: :lfs_misconfiguration_banner, project: project)
+      return false
+    end
+
+    Rails.cache.fetch("show_lfs_misconfiguration_banner_#{project.id}", expires_in: 5.minutes) do
+      project.lfs_objects_projects.project_repository_type.any? && !project.repository.has_gitattributes?
+    end
+  end
+
+  def project_permissions_panel_data(project)
+    {
+      packagesAvailable: ::Gitlab.config.packages.enabled,
+      packagesHelpPath: help_page_path('user/packages/_index.md'),
+      currentSettings: project_permissions_settings(project),
+      canAddCatalogResource: can_add_catalog_resource?(project),
+      canSetDiffPreviewInEmail: can_set_diff_preview_in_email?(project, current_user),
+      canChangeVisibilityLevel: can_change_visibility_level?(project, current_user),
+      canDisableEmails: can_disable_emails?(project, current_user),
+      allowedVisibilityOptions: project_allowed_visibility_levels(project),
+      visibilityHelpPath: help_page_path('user/public_access.md'),
+      registryAvailable: Gitlab.config.registry.enabled,
+      registryHelpPath: help_page_path('user/packages/container_registry/_index.md'),
+      lfsAvailable: Gitlab.config.lfs.enabled,
+      lfsHelpPath: help_page_path('topics/git/lfs/_index.md'),
+      lfsObjectsExist: project.lfs_objects.exists?,
+      lfsObjectsRemovalHelpPath: help_page_path('topics/git/lfs/_index.md',
+        anchor: 'delete-a-git-lfs-file-from-repository-history'),
+      pagesAvailable: Gitlab.config.pages.enabled,
+      pagesAccessControlEnabled: Gitlab.config.pages.access_control,
+      pagesAccessControlForced: project.pages_access_control_forced_by_ancestor?,
+      pagesHelpPath: help_page_path('user/project/pages/pages_access_control.md'),
+      issuesHelpPath: issues_help_page_path(project),
+      membersPagePath: project_project_members_path(project),
+      environmentsHelpPath: help_page_path('ci/environments/_index.md'),
+      featureFlagsHelpPath: help_page_path('operations/feature_flags.md'),
+      releasesHelpPath: help_page_path('user/project/releases/_index.md'),
+      infrastructureHelpPath: help_page_path('user/infrastructure/_index.md')
+    }
+  end
+
+  def project_classes(project)
+    return "project-highlight-puc" if project.warn_about_potentially_unwanted_characters?
+
+    ""
+  end
+
+  # Returns the confirm phrase the user needs to type in order to delete the project
+  #
+  # Thus the phrase should include the namespace to make it very clear to the
+  # user which project is subject to deletion.
+  # Relevant issue: https://gitlab.com/gitlab-org/gitlab/-/issues/343591
+  def delete_confirm_phrase(project)
+    project.path_with_namespace
+  end
+
+  def able_to_see_issues?(project, user)
+    project.issues_enabled? && can?(user, :read_issue, project)
+  end
+
+  def able_to_see_merge_requests?(project, user)
+    project.merge_requests_enabled? && can?(user, :read_merge_request, project)
+  end
+
+  def able_to_see_forks_count?(project, user)
+    project.forking_enabled? && can?(user, :read_code, project)
+  end
+
+  def fork_button_data_attributes(project)
+    return unless current_user
+    return if project.empty_repo?
+
+    if current_user.already_forked?(project) && !current_user.has_groups_allowing_project_creation?
+      user_fork_url = namespace_project_path(current_user, current_user.fork_of(project))
+    end
+
+    {
+      can_fork_project: can?(current_user, :fork_project, project).to_s,
+      can_read_code: can?(current_user, :read_code, project).to_s,
+      forks_count: project.forks_count,
+      new_fork_url: new_project_fork_path(project),
+      project_forks_url: project_forks_path(project),
+      user_fork_url: user_fork_url
+    }
+  end
+
+  def star_count_data_attributes(project)
+    starred = current_user ? current_user.starred?(project) : false
+
+    {
+      project_id: project.id,
+      sign_in_path: new_session_path(:user, redirect_to_referer: 'yes'),
+      star_count: project.star_count,
+      starred: starred.to_s,
+      starrers_path: project_starrers_path(project)
+    }
+  end
+
+  def notification_data_attributes(project)
+    return unless current_user
+
+    notification_setting = current_user.notification_settings_for(project)
+    dropdown_items = notification_dropdown_items(notification_setting).to_json if notification_setting
+    notification_level = notification_setting.level if notification_setting
+
+    {
+      emails_disabled: project.emails_disabled?.to_s,
+      notification_dropdown_items: dropdown_items,
+      notification_help_page_path: help_page_path('user/profile/notifications.md'),
+      notification_level: notification_level
+    }
+  end
+
+  def home_panel_data_attributes
+    project = @project.is_a?(ProjectPresenter) ? @project.project : @project
+    dropdown_attributes = project_more_action_data(project)
+    fork_button_attributes = fork_button_data_attributes(project) || {}
+    notification_attributes = notification_data_attributes(project) || {}
+    star_count_attributes = star_count_data_attributes(project)
+    admin_path = admin_project_path(project) if current_user&.can_admin_all_resources?
+
+    {
+      admin_path: admin_path,
+      can_read_project: can?(current_user, :read_project, project).to_s,
+      is_project_empty: project.empty_repo?.to_s,
+      project_id: project.id,
+      project_full_path: project.full_path
+    }.merge(
+      dropdown_attributes,
+      fork_button_attributes,
+      notification_attributes,
+      star_count_attributes
+    )
+  end
+
+  def import_from_bitbucket_message
+    configure_oauth_import_message('Bitbucket', help_page_path("integration/bitbucket.md"))
+  end
+
+  def archiving_available?(project)
+    return false unless project
+
+    project.persisted? && can?(current_user, :archive_project, project)
+  end
+
+  def show_dormant_project_deletion_banner?(project)
+    return false unless project
+    return false unless delete_dormant_projects?
+
+    project.persisted? && project.dormant?
+  end
+
+  def dormant_project_deletion_date(project)
+    Gitlab::DormantProjectsDeletionWarningTracker.new(project.id).scheduled_deletion_date
+  end
+
+  def show_clusters_alert?(project)
+    Gitlab.com? && can_admin_associated_clusters?(project)
+  end
+
+  def clusters_deprecation_alert_message
+    if has_active_license?
+      s_(
+        'ClusterIntegration|The certificate-based Kubernetes integration is deprecated and ' \
+          'will be removed in the future. You should %{linkStart}migrate to the GitLab agent ' \
+          'for Kubernetes%{linkEnd}. For more information, see the %{deprecationLinkStart}' \
+          'deprecation epic%{deprecationLinkEnd}, or contact GitLab support.'
+      )
+    else
+      s_(
+        'ClusterIntegration|The certificate-based Kubernetes integration is deprecated and ' \
+          'will be removed in the future. You should %{linkStart}migrate to the GitLab agent ' \
+          'for Kubernetes%{linkEnd}. For more information, see the %{deprecationLinkStart}' \
+          'deprecation epic%{deprecationLinkEnd}.'
+      )
+    end
+  end
+
+  def project_coverage_chart_data_attributes(daily_coverage_options, ref)
+    {
+      graph_endpoint: "#{daily_coverage_options[:graph_api_path]}?#{daily_coverage_options[:base_params].to_query}",
+      graph_start_date: daily_coverage_options[:base_params][:start_date].strftime('%b %d'),
+      graph_end_date: daily_coverage_options[:base_params][:end_date].strftime('%b %d'),
+      graph_ref: ref.to_s,
+      graph_csv_path: "#{daily_coverage_options[:download_path]}?#{daily_coverage_options[:base_params].to_query}"
+    }
+  end
+
+  def localized_project_human_access(access)
+    localized_access_names[access] || Gitlab::Access.human_access(access)
+  end
+
+  def badge_count(number)
+    format_cached_count(1000, number)
+  end
+
+  def remote_mirror_setting_enabled?
+    false
+  end
+
+  def show_built_in_project_templates_tab?
+    true
+  end
+
+  def http_clone_url_to_repo(project)
+    project.http_url_to_repo
+  end
+
+  def ssh_clone_url_to_repo(project)
+    project.ssh_url_to_repo
+  end
+
+  def can_view_branch_rules?
+    can?(current_user, :read_branch_rule, @project)
+  end
+
+  def can_push_code?
+    current_user&.can?(:push_code, @project)
+  end
+
+  def can_admin_associated_clusters?(project)
+    can_admin_project_clusters?(project) || can_admin_group_clusters?(project)
+  end
+
+  def branch_rules_path
+    project_settings_repository_path(@project, anchor: 'branch-rules')
+  end
+
+  def visibility_level_content(project, css_class: nil, icon_css_class: nil, icon_variant: nil)
+    title = visibility_icon_description(project)
+    container_class = [
+      'has-tooltip gl-border-0 gl-bg-transparent gl-p-0 gl-leading-0 gl-text-inherit',
+      css_class
+    ].compact.join(' ')
+    data = { container: 'body', placement: 'top' }
+
+    content_tag(
+      :button,
+      class: container_class,
+      data: data,
+      title: title,
+      type: 'button',
+      aria: { label: title }) do
+      visibility_level_icon(project.visibility_level, options: { class: icon_css_class, variant: icon_variant })
+    end
+  end
+
+  def dashboard_projects_app_data
+    {
+      initial_sort: group_project_list_sort_by,
+      programming_languages: programming_languages,
+      base_path: root_path,
+      can_create_project: current_user.can_create_project?
+    }.to_json
+  end
+
+  def show_dashboard_projects_welcome_page?
+    dashboard_projects_landing_paths = [
+      root_path,
+      root_dashboard_path,
+      dashboard_projects_path,
+      contributed_dashboard_projects_path
+    ]
+
+    dashboard_projects_landing_paths.include?(request.path) && !current_user.authorized_projects.exists?
+  end
+
+  def project_pages_domain_choices
+    pages_url = build_pages_url(@project)
+    blank_option = [[s_('GitLabPages|Don’t enforce a primary domain'), '']]
+    gitlab_default_option = [[pages_url, pages_url]]
+
+    domain_options = @project.pages_domains.map { |domain| [domain.url, domain.url] } || []
+    options_for_select(
+      blank_option + domain_options + gitlab_default_option,
+      selected: @project.project_setting.pages_primary_domain
+    )
+  end
+
+  def project_archive_settings_app_data(project)
+    {
+      resource_type: 'project',
+      resource_id: project.id,
+      resource_path: project_path(project),
+      marked_for_deletion: project.scheduled_for_deletion_in_hierarchy_chain?.to_s,
+      help_path: help_page_path('user/project/working_with_projects.md', anchor: 'archive-a-project')
+    }
+  end
+
+  def project_unarchive_settings_app_data(project)
+    {
+      resource_type: 'project',
+      resource_id: project.id,
+      resource_path: project_path(project),
+      ancestors_archived: project.ancestors_archived?.to_s,
+      help_path: help_page_path('user/project/working_with_projects.md', anchor: 'unarchive-a-project')
+    }
+  end
+
+  def show_archived_badge?(project)
+    project.self_or_ancestors_archived?
   end
 
   private
 
-  def get_project_nav_tabs(project, current_user)
-    nav_tabs = [:home]
+  def issues_help_page_path(project)
+    help_page_path('user/work_items/_index.md')
+  end
 
-    if !project.empty_repo? && can?(current_user, :download_code, project)
-      nav_tabs << [:files, :commits, :network, :graphs]
+  def can_admin_project_clusters?(project)
+    project.clusters.any? && can?(current_user, :admin_cluster, project)
+  end
+
+  def can_admin_group_clusters?(project)
+    project.group && project.group.clusters.any? && can?(current_user, :admin_cluster, project.group)
+  end
+
+  def create_merge_request_path(project, source_project, ref, merge_request)
+    return if merge_request.present?
+    return unless can?(current_user, :create_merge_request_from, project)
+    return unless can?(current_user, :create_merge_request_in, source_project)
+
+    create_mr_path(
+      from: ref,
+      source_project: project,
+      to: source_project.default_branch,
+      target_project: source_project)
+  end
+
+  def can_sync_branch?(project, ref)
+    return false unless project.repository.branch_exists?(ref)
+
+    ::Gitlab::UserAccess.new(current_user, container: project).can_push_to_branch?(ref)
+  end
+
+  def can_push_initial_commit_to_namespace?(namespace)
+    namespace.can_push_initial_commit?(current_user)
+  end
+
+  def localized_access_names
+    {
+      Gitlab::Access::NO_ACCESS => _('No access'),
+      Gitlab::Access::MINIMAL_ACCESS => _("Minimal Access"),
+      Gitlab::Access::GUEST => _('Guest'),
+      Gitlab::Access::PLANNER => _('Planner'),
+      Gitlab::Access::REPORTER => _('Reporter'),
+      Gitlab::Access::SECURITY_MANAGER => _('Security Manager'),
+      Gitlab::Access::DEVELOPER => _('Developer'),
+      Gitlab::Access::MAINTAINER => _('Maintainer'),
+      Gitlab::Access::OWNER => _('Owner')
+    }
+  end
+
+  def configure_oauth_import_message(provider, help_url)
+    link_start = '<a href="%{url}" target="_blank" rel="noopener noreferrer">'.html_safe % { url: help_url }
+
+    msg = if current_user.can_admin_all_resources?
+            s_('ImportProjects|To enable importing projects from %{provider}, as administrator you need to ' \
+              'configure %{link_start}OAuth integration%{link_end}')
+          else
+            s_('ImportProjects|To enable importing projects from %{provider}, ask your GitLab administrator to ' \
+              'configure %{link_start}OAuth integration%{link_end}')
+          end
+
+    safe_format(msg, provider: provider, link_start: link_start, link_end: '</a>'.html_safe)
+  end
+
+  def project_lfs_status(project)
+    if project.lfs_enabled?
+      content_tag(:span, class: 'lfs-enabled') do
+        s_('LFSStatus|Enabled')
+      end
+    else
+      content_tag(:span, class: 'lfs-disabled') do
+        s_('LFSStatus|Disabled')
+      end
     end
-
-    if project.repo_exists? && can?(current_user, :read_merge_request, project)
-      nav_tabs << :merge_requests
-    end
-
-    if can?(current_user, :admin_project, project)
-      nav_tabs << :settings
-    end
-
-    if can?(current_user, :read_issue, project)
-      nav_tabs << :issues
-    end
-
-    if can?(current_user, :read_wiki, project)
-      nav_tabs << :wiki
-    end
-
-    if can?(current_user, :read_project_snippet, project)
-      nav_tabs << :snippets
-    end
-
-    if can?(current_user, :read_milestone, project)
-      nav_tabs << [:milestones, :labels]
-    end
-
-    nav_tabs.flatten
   end
 
   def git_user_name
     if current_user
-      current_user.name
+      current_user.name.gsub('"', '\"')
     else
-      "Your name"
+      _("Your name")
     end
   end
 
   def git_user_email
     if current_user
-      current_user.email
+      current_user.commit_email_or_default
     else
       "your@email.com"
     end
   end
 
-  def repository_size(project = nil)
-    "#{(project || @project).repository_size} MB"
-  rescue
-    # In order to prevent 500 error
-    # when application cannot allocate memory
-    # to calculate repo size - just show 'Unknown'
-    'unknown'
+  def default_url_to_repo(project = @project)
+    case default_clone_protocol
+    when 'ssh'
+      project.ssh_url_to_repo
+    else
+      project.http_url_to_repo
+    end
   end
 
-  def default_url_to_repo(project = nil)
-    project = project || @project
-    current_user ? project.url_to_repo : project.http_url_to_repo
+  def default_clone_label
+    _("Copy %{protocol} clone URL") % { protocol: default_clone_protocol.upcase }
   end
 
   def default_clone_protocol
-    current_user ? "ssh" : "http"
-  end
-
-  def project_last_activity(project)
-    if project.last_activity_at
-      time_ago_with_tooltip(project.last_activity_at, 'bottom', 'last_activity_time_ago')
+    if allowed_protocols_present?
+      enabled_protocol
     else
-      "Never"
+      extra_default_clone_protocol
     end
   end
 
-  def contribution_guide_url(project)
-    if project && contribution_guide = project.repository.contribution_guide
-      namespace_project_blob_path(
-        project.namespace,
-        project,
-        tree_join(project.default_branch,
-                  contribution_guide.name)
-      )
-    end
-  end
-
-  def changelog_url(project)
-    if project && changelog = project.repository.changelog
-      namespace_project_blob_path(
-        project.namespace,
-        project,
-        tree_join(project.default_branch,
-                  changelog.name)
-      )
-    end
-  end
-
-  def license_url(project)
-    if project && license = project.repository.license
-      namespace_project_blob_path(
-        project.namespace,
-        project,
-        tree_join(project.default_branch,
-                  license.name)
-      )
-    end
-  end
-
-  def version_url(project)
-    if project && version = project.repository.version
-      namespace_project_blob_path(
-        project.namespace,
-        project,
-        tree_join(project.default_branch,
-                  version.name)
-      )
-    end
-  end
-
-  def hidden_pass_url(original_url)
-    result = URI(original_url)
-    result.password = '*****' unless result.password.nil?
-    result
-  rescue
-    original_url
-  end
-
-  def project_wiki_path_with_version(proj, page, version, is_newest)
-    url_params = is_newest ? {} : { version_id: version }
-    namespace_project_wiki_path(proj.namespace, proj, page, url_params)
-  end
-
-  def project_status_css_class(status)
-    case status
-    when "started"
-      "active"
-    when "failed"
-      "danger"
-    when "finished"
-      "success"
-    end
-  end
-
-  def service_field_value(type, value)
-    return value unless type == 'password'
-
-    if value.present?
-      "***********"
+  def extra_default_clone_protocol
+    if !current_user || current_user.require_ssh_key?
+      gitlab_config.protocol
     else
-      nil
+      'ssh'
     end
   end
 
-  def user_max_access_in_project(user, project)
-    level = project.team.max_member_access(user)
+  def current_ref
+    return current_branch if @repository.try(:branch_exists?, current_branch)
+    return @repository.try(:root_ref) if @wiki
 
-    if level
-      Gitlab::Access.options_with_owner.key(level)
+    @ref || @repository.try(:root_ref)
+  end
+
+  def project_child_container_class(view_path)
+    view_path == "projects/issues" ? "gl-mt-3" : "project-show-#{view_path}"
+  end
+
+  def project_merge_requests(project)
+    MergeRequestsFinder.new(current_user, project_id: project.id).execute
+  end
+
+  def restricted_levels
+    return [] if current_user.can_admin_all_resources?
+
+    Gitlab::CurrentSettings.restricted_visibility_levels || []
+  end
+
+  def project_permissions_settings(project)
+    feature = project.project_feature
+    {
+      packagesEnabled: !!project.packages_enabled,
+      packageRegistryAccessLevel: feature.package_registry_access_level,
+      packageRegistryAllowAnyoneToPullOption: ::Gitlab::CurrentSettings.package_registry_allow_anyone_to_pull_option,
+      visibilityLevel: project.visibility_level,
+      requestAccessEnabled: !!project.request_access_enabled,
+      issuesAccessLevel: feature.issues_access_level,
+      repositoryAccessLevel: feature.repository_access_level,
+      forkingAccessLevel: feature.forking_access_level,
+      mergeRequestsAccessLevel: feature.merge_requests_access_level,
+      buildsAccessLevel: feature.builds_access_level,
+      wikiAccessLevel: feature.wiki_access_level,
+      snippetsAccessLevel: feature.snippets_access_level,
+      pagesAccessLevel: feature.pages_access_level,
+      analyticsAccessLevel: feature.analytics_access_level,
+      containerRegistryEnabled: !!project.container_registry_enabled,
+      lfsEnabled: !!project.lfs_enabled,
+      emailsEnabled: project.emails_enabled?,
+      extendedPratExpiryWebhooksExecute: project.extended_prat_expiry_webhooks_execute?,
+      showDiffPreviewInEmail: project.show_diff_preview_in_email?,
+      monitorAccessLevel: feature.monitor_access_level,
+      showDefaultAwardEmojis: project.show_default_award_emojis?,
+      warnAboutPotentiallyUnwantedCharacters: project.warn_about_potentially_unwanted_characters?,
+      enforceAuthChecksOnUploads: project.enforce_auth_checks_on_uploads?,
+      securityAndComplianceAccessLevel: project.security_and_compliance_access_level,
+      containerRegistryAccessLevel: feature.container_registry_access_level,
+      environmentsAccessLevel: feature.environments_access_level,
+      featureFlagsAccessLevel: feature.feature_flags_access_level,
+      releasesAccessLevel: feature.releases_access_level,
+      infrastructureAccessLevel: feature.infrastructure_access_level,
+      modelExperimentsAccessLevel: feature.model_experiments_access_level,
+      modelRegistryAccessLevel: feature.model_registry_access_level
+    }
+  end
+
+  def project_allowed_visibility_levels(project)
+    Gitlab::VisibilityLevel.values.select do |level|
+      project.visibility_level_allowed?(level) && restricted_levels.exclude?(level)
     end
   end
 
-  def leave_project_message(project)
-    "Are you sure you want to leave \"#{project.name}\" project?"
+  def can_show_last_commit_in_list?(project)
+    can?(current_user, :read_cross_project) &&
+      can?(current_user, :read_commit_status, project)
+  end
+
+  def pages_https_only_disabled?
+    !@project.pages_domains.all?(&:https?)
+  end
+
+  def pages_https_only_title
+    return unless pages_https_only_disabled?
+
+    "You must enable HTTPS for all your domains first"
+  end
+
+  def filter_starrer_path(options = {})
+    options = params.slice(:sort).merge(options).permit!
+    "#{request.path}?#{options.to_param}"
+  end
+
+  def sidebar_operations_paths
+    %w[
+      environments
+      clusters
+      cluster_agents
+      functions
+      error_tracking
+      alert_management
+      incidents
+      incident_management
+      user
+      gcp
+      logs
+      product_analytics
+      metrics_dashboard
+      feature_flags
+      terraform
+    ]
+  end
+
+  def show_visibility_confirm_modal?(project)
+    project.visibility_level > Gitlab::VisibilityLevel::PRIVATE && project.forks_count > 0
+  end
+
+  def confirm_reduce_visibility_message(project)
+    strong_start = "<strong>".html_safe
+    strong_end = "</strong>".html_safe
+    message = _("You're about to reduce the visibility of the project %{strong_start}%{project_name}%{strong_end}.")
+
+    if project.group
+      message = _(
+        "You're about to reduce the visibility of the project " \
+          "%{strong_start}%{project_name}%{strong_end} in %{strong_start}%{group_name}%{strong_end}."
+      )
+    end
+
+    ERB::Util.html_escape(message) % {
+      strong_start: strong_start,
+      strong_end: strong_end,
+      project_name: project.name,
+      group_name: project.group ? project.group.name : nil
+    }
+  end
+
+  def project_permissions_data(project, target_form_id = nil)
+    {
+      target_form_id: target_form_id,
+      button_testid: 'reduce-project-visibility-button',
+      confirm_button_text: _('Reduce project visibility'),
+      confirm_danger_message: confirm_reduce_visibility_message(project),
+      phrase: project.full_path,
+      additional_information: _('Note: current forks will keep their visibility level.'),
+      html_confirmation_message: true.to_s,
+      show_visibility_confirm_modal: show_visibility_confirm_modal?(project).to_s
+    }
+  end
+
+  def gitlab_duo_settings_data(project)
+    {
+      duo_availability_cascading_settings: project_cascading_namespace_settings_popover_data(
+        :duo_features_enabled,
+        project,
+        method(:edit_group_path)
+      ),
+      duo_remote_flows_cascading_settings: project_cascading_namespace_settings_popover_data(
+        :duo_remote_flows_enabled,
+        project,
+        method(:edit_group_path)
+      ),
+      duo_foundational_flows_cascading_settings: project_cascading_namespace_settings_popover_data(
+        :duo_foundational_flows_enabled,
+        project,
+        method(:edit_group_path)
+      ),
+      tool_approval_for_session_cascading_settings: project_cascading_namespace_settings_popover_data(
+        :tool_approval_for_session_enabled,
+        project,
+        method(:edit_group_path)
+      ),
+      duo_auto_mode_cascading_settings: project_cascading_namespace_settings_popover_data(
+        :duo_auto_mode_enabled,
+        project,
+        method(:edit_group_path)
+      ),
+      ai_audit_events_storage_cascading_settings: project_cascading_namespace_settings_popover_data(
+        :ai_audit_events_storage_enabled,
+        project,
+        method(:edit_group_path)
+      )
+    }
+  end
+
+  def delete_dormant_projects?
+    strong_memoize(:delete_dormant_projects_setting) do
+      ::Gitlab::CurrentSettings.delete_inactive_projects?
+    end
+  end
+
+  def project_more_action_data(project)
+    request = project.requesters.with_user(current_user).first
+
+    {
+      can_request_access: can?(current_user, :request_access, project).to_s,
+      can_withdraw_access_request: can?(current_user, :withdraw_member_access_request, request).to_s,
+      request_access_path: request_access_project_project_members_path(project),
+      withdraw_access_request_path: leave_project_project_members_path(project),
+      dashboard_path: dashboard_projects_path
+    }
   end
 end
+
+ProjectsHelper.prepend_mod_with('ProjectsHelper')

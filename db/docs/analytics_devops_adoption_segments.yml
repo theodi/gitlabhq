@@ -1,0 +1,13 @@
+---
+table_name: analytics_devops_adoption_segments
+classes:
+- Analytics::DevopsAdoption::EnabledNamespace
+feature_categories:
+- devops_reports
+description: Stores a reference to the Namespace which is enabled for the DevOps report.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/45748
+milestone: '13.6'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces
+table_size: small

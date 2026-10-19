@@ -1,0 +1,111 @@
+---
+stage: Security Risk Management
+group: Security Policies
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: License approval policies
+description: Understand how to specify criteria using license approval policy for approval of a merge request before it can be merged. Applies to protected target branches only.
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+Use license approval policies to specify criteria that determine when approval is required before a merge request can be merged.
+
+License approval policies apply only to [protected](../project/repository/branches/protected.md) target branches.
+
+The following video provides an overview of these policies.
+
+<div class="video-fallback">
+  See the video: <a href="https://www.youtube.com/watch?v=34qBQ9t8qO8">Overview of GitLab License Approval Policies</a>.
+</div>
+<figure class="video-container">
+  <iframe src="https://www.youtube-nocookie.com/embed/34qBQ9t8qO8" frameborder="0" allowfullscreen> </iframe>
+</figure>
+
+## Prerequisites to creating a new license approval policy
+
+License approval policies rely on the output of a dependency scanning job to verify that requirements have been met. If dependency scanning has not been properly configured, and therefore no dependency scanning jobs ran related to an open MR, the policy has no data with which to verify the requirements. When security policies are missing data for evaluation, by default they fail closed and assume the merge request could contain vulnerabilities. You can opt out of the default behavior with the `fallback_behavior` property and set policies to fail open. A policy that fails open has all invalid and unenforceable rules unblocked.
+
+To ensure enforcement of your policies, you should enable dependency scanning on your target development projects. You can achieve this a few different ways:
+
+- Create a [scan execution policy](../application_security/policies/scan_execution_policies.md) that enforces dependency scanning to run in all target development projects.
+- Work with your development teams to configure [dependency scanning](../application_security/dependency_scanning/_index.md) in each of their projects' `.gitlab-ci.yml` files or enable it using a [security configuration](../application_security/detect/security_configuration.md).
+
+License approval policies require license information from [GitLab-supported packages](license_scanning_of_cyclonedx_files/_index.md#supported-languages-and-package-managers).
+
+## Create a new license approval policy
+
+Create a license approval policy to enforce license compliance.
+
+To create a license approval policy:
+
+1. [Link a security policy project](../application_security/policies/enforcement/security_policy_projects.md#link-to-a-security-policy-project) to your development group, subgroup, or project (the Owner role is required).
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Secure** > **Policies**.
+1. Create a new [merge request approval policy](../application_security/policies/merge_request_approval_policies.md).
+1. In your policy rule, select **License scanning**.
+
+## Criteria defining which licenses require approval
+
+The following types of criteria can be used to determine which licenses are "approved" or "denied" and require approval.
+
+- When any license in a list of explicitly prohibited licenses is detected.
+- When any license is detected except for licenses that have been explicitly listed as acceptable.
+
+## Criteria to compare licenses detected in the merge request branch to licenses in the default branch
+
+The following types of criteria can be used to determine whether or not approval is required based on the licenses that exist in the default branch:
+
+- Denied licenses can be configured to only require approval if the denied license is part of a dependency that does not already exist in the default branch.
+- Denied licenses can be configured to require approval if the denied license exists in any component that already exists in the default branch.
+
+![License approval policy](img/license_approval_policy_v15_9.png)
+
+If a license is found that violates the license approval policy, it blocks the merge request and instructs the developer to remove it. The merge request cannot be merged until the `denied` license is removed unless an eligible approver for the license approval policy approves the merge request.
+
+![Merge request with denied licenses](img/denied_licenses_v15_3.png)
+
+## Troubleshooting
+
+### License approval policies block merge requests due to `unknown` licenses
+
+License approval policies can block merge requests due to `unknown` licenses in some
+scenarios.
+
+> [!note]
+> Package-level exclusions using PURLs in the [`licenses` field](../application_security/policies/merge_request_approval_policies.md#licenses_with_package_exclusion-object)
+> do not work with `unknown` licenses. The `licenses` field supports [SPDX license names](https://spdx.org/licenses)
+> matching only, and `unknown` is not a valid SPDX
+> license name. If you configure a denied `unknown` license with a PURL exclusion, the
+> exclusion is ignored during merge request approval evaluation, and the merge request
+> is still blocked. The pipeline **Licenses** tab appears to respect the exclusion,
+> but the merge request approval widget does not. These views use different evaluation
+> paths.
+
+This can happen in any of the following situations:
+
+- The dependency scanning job fails to identify a license for a particular component.
+- A new or uncommon license is used that is not recognized by the scanning tool.
+- The license information is missing or incomplete in the component's metadata.
+
+To address this issue:
+
+1. Review the **Licenses** tab in the pipeline page to identify which components have
+   `unknown` licenses, or review `out-of-policy` licenses generated by the GitLab
+   security bot.
+1. Manually investigate these components to determine their actual licenses.
+1. If the licenses cannot be determined or are not acceptable, remove or replace the
+   affected components.
+
+If you need to temporarily allow merging with `unknown` licenses:
+
+1. Edit your license approval policy.
+1. Add `unknown` to the list of allowed licenses.
+1. After you address the issue, remove `unknown` from the allowed licenses list to
+   maintain proper license compliance.
+
+Always consult with your legal team when dealing with license compliance issues, especially when handling `unknown` licenses.

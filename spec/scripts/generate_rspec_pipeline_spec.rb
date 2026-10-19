@@ -1,0 +1,652 @@
+# frozen_string_literal: true
+
+require 'fast_spec_helper'
+require 'tempfile'
+
+require_relative '../../scripts/generate_rspec_pipeline'
+
+RSpec.describe GenerateRspecPipeline, :silence_stdout, feature_category: :tooling do
+  describe '#generate!' do
+    let!(:rspec_files) { Tempfile.new(['rspec_files_path', '.txt']) }
+    let(:rspec_files_content) do
+      "spec/migrations/a_spec.rb spec/migrations/b_spec.rb spec/migrations/c_spec.rb spec/migrations/d_spec.rb " \
+        "spec/lib/gitlab/background_migration/a_spec.rb spec/lib/gitlab/background_migration/b_spec.rb " \
+        "spec/models/a_spec.rb spec/models/b_spec.rb " \
+        "spec/controllers/a_spec.rb spec/controllers/b_spec.rb " \
+        "spec/features/a_spec.rb spec/features/b_spec.rb " \
+        "ee/spec/features/a_spec.rb"
+    end
+
+    let(:pipeline_template) { Tempfile.new(['pipeline_template', '.yml.erb']) }
+    let(:pipeline_template_content) do
+      <<~YAML
+      <% if test_suite_prefix.nil? && rspec_files_per_test_level[:migration][:files].size > 0 %>
+      rspec migration:
+      <% if rspec_files_per_test_level[:migration][:parallelization] > 1 %>
+        parallel: <%= rspec_files_per_test_level[:migration][:parallelization] %>
+      <% end %>
+      <% end %>
+      <% if test_suite_prefix.nil? && rspec_files_per_test_level[:background_migration][:files].size > 0 %>
+      rspec background_migration:
+      <% if rspec_files_per_test_level[:background_migration][:parallelization] > 1 %>
+        parallel: <%= rspec_files_per_test_level[:background_migration][:parallelization] %>
+      <% end %>
+      <% end %>
+      <% if test_suite_prefix.nil? && rspec_files_per_test_level[:unit][:files].size > 0 %>
+      rspec unit:
+      <% if rspec_files_per_test_level[:unit][:parallelization] > 1 %>
+        parallel: <%= rspec_files_per_test_level[:unit][:parallelization] %>
+      <% end %>
+      <% end %>
+      <% if test_suite_prefix.nil? && rspec_files_per_test_level[:integration][:files].size > 0 %>
+      rspec integration:
+      <% if rspec_files_per_test_level[:integration][:parallelization] > 1 %>
+        parallel: <%= rspec_files_per_test_level[:integration][:parallelization] %>
+      <% end %>
+      <% end %>
+      <% if test_suite_prefix.nil? && rspec_files_per_test_level[:system][:files].size > 0 %>
+      rspec system:
+      <% if rspec_files_per_test_level[:system][:parallelization] > 1 %>
+        parallel: <%= rspec_files_per_test_level[:system][:parallelization] %>
+      <% end %>
+      <% end %>
+      <% if test_suite_prefix == 'ee/' && rspec_files_per_test_level[:unit][:files].size > 0 %>
+      rspec-unit system:
+      <% if rspec_files_per_test_level[:unit][:parallelization] > 1 %>
+        parallel: <%= rspec_files_per_test_level[:unit][:parallelization] %>
+      <% end %>
+      <% end %>
+      <% if test_suite_prefix == 'ee/' && rspec_files_per_test_level[:system][:files].size > 0 %>
+      rspec-ee system:
+      <% if rspec_files_per_test_level[:system][:parallelization] > 1 %>
+        parallel: <%= rspec_files_per_test_level[:system][:parallelization] %>
+      <% end %>
+      <% end %>
+      YAML
+    end
+
+    let(:knapsack_report) { Tempfile.new(['knapsack_report', '.json']) }
+    let(:knapsack_report_content) do
+      <<~JSON
+      {
+        "spec/migrations/a_spec.rb": 620.3,
+        "spec/migrations/b_spec.rb": 610.1,
+        "spec/migrations/c_spec.rb": 20.1,
+        "spec/migrations/d_spec.rb": 20.1,
+        "spec/migrations/e_spec.rb": 20.1,
+        "spec/migrations/f_spec.rb": 20.1,
+        "spec/migrations/g_spec.rb": 20.1,
+        "spec/lib/gitlab/background_migration/a_spec.rb": 60.5,
+        "spec/lib/gitlab/background_migration/b_spec.rb": 180.3,
+        "spec/models/a_spec.rb": 360.2,
+        "spec/models/b_spec.rb": 180.6,
+        "spec/controllers/a_spec.rb": 60.2,
+        "spec/controllers/ab_spec.rb": 180.4,
+        "spec/features/a_spec.rb": 360.1,
+        "spec/features/b_spec.rb": 180.5,
+        "ee/spec/features/a_spec.rb": 180.5
+      }
+      JSON
+    end
+
+    around do |example|
+      rspec_files.write(rspec_files_content)
+      rspec_files.rewind
+      pipeline_template.write(pipeline_template_content)
+      pipeline_template.rewind
+      knapsack_report.write(knapsack_report_content)
+      knapsack_report.rewind
+      example.run
+    ensure
+      rspec_files.close
+      rspec_files.unlink
+      pipeline_template.close
+      pipeline_template.unlink
+      knapsack_report.close
+      knapsack_report.unlink
+    end
+
+    context 'when rspec_files and pipeline_template_path exists' do
+      subject do
+        described_class.new(
+          rspec_files_path: rspec_files.path,
+          pipeline_template_path: pipeline_template.path
+        )
+      end
+
+      it 'generates the pipeline config with default parallelization' do
+        subject.generate!
+
+        expect(File.read("#{pipeline_template.path}.yml"))
+          .to eq(
+            "rspec migration:\nrspec background_migration:\nrspec unit:\n" \
+            "rspec integration:\nrspec system:"
+          )
+      end
+
+      context 'when parallelization > 0' do
+        # With the documented defaults (DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS = 11s),
+        # files_per_node = (600 - 180) / 11 ~= 38 for non-system levels and (900 - 180) / 11 ~= 65
+        # for the system level. We pick file counts that force 2 or more shards per level so the
+        # parallelisation branch of the heuristic is exercised against realistic numbers.
+        let(:rspec_files_content) do
+          [
+            Array.new(150) { |i| "spec/migrations/#{i}_spec.rb" },
+            Array.new(50)  { |i| "spec/lib/gitlab/background_migration/#{i}_spec.rb" },
+            Array.new(50)  { |i| "spec/models/#{i}_spec.rb" },
+            Array.new(50)  { |i| "spec/controllers/#{i}_spec.rb" },
+            Array.new(100) { |i| "spec/features/#{i}_spec.rb" }
+          ].flatten.join(' ')
+        end
+
+        it 'generates the pipeline config' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml"))
+            .to eq(
+              "rspec migration:\n  parallel: 4\nrspec background_migration:\n  parallel: 2\n" \
+              "rspec unit:\n  parallel: 2\nrspec integration:\n  parallel: 2\n" \
+              "rspec system:\n  parallel: 2"
+            )
+        end
+      end
+
+      context 'when parallelization > MAX_NODES_COUNT' do
+        let(:rspec_files_content) do
+          Array.new(51) { |i| "spec/migrations/#{i}_spec.rb" }.join(' ')
+        end
+
+        before do
+          stub_const(
+            "#{described_class}::DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS",
+            described_class::OPTIMAL_TEST_JOB_DURATION_IN_SECONDS
+          )
+        end
+
+        it 'generates the pipeline config with max parallelization of MAX_NODES_COUNT' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml"))
+            .to eq("rspec migration:\n  parallel: #{described_class::MAX_NODES_COUNT}")
+        end
+      end
+
+      context 'with a custom max_nodes override below MAX_NODES_COUNT' do
+        subject do
+          described_class.new(
+            rspec_files_path: rspec_files.path,
+            pipeline_template_path: pipeline_template.path,
+            max_nodes: 20
+          )
+        end
+
+        let(:rspec_files_content) do
+          Array.new(51) { |i| "spec/migrations/#{i}_spec.rb" }.join(' ')
+        end
+
+        before do
+          stub_const(
+            "#{described_class}::DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS",
+            described_class::OPTIMAL_TEST_JOB_DURATION_IN_SECONDS
+          )
+        end
+
+        it 'caps parallelization at the override' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml"))
+            .to eq("rspec migration:\n  parallel: 20")
+        end
+      end
+
+      context 'with a custom max_nodes override above MAX_NODES_COUNT' do
+        subject do
+          described_class.new(
+            rspec_files_path: rspec_files.path,
+            pipeline_template_path: pipeline_template.path,
+            max_nodes: 88
+          )
+        end
+
+        let(:rspec_files_content) do
+          Array.new(88) { |i| "spec/migrations/#{i}_spec.rb" }.join(' ')
+        end
+
+        before do
+          stub_const(
+            "#{described_class}::DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS",
+            described_class::OPTIMAL_TEST_JOB_DURATION_IN_SECONDS
+          )
+        end
+
+        it 'parallelizes up to the override and bypasses enforce_needs_limit!' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml"))
+            .to eq("rspec migration:\n  parallel: 88")
+        end
+      end
+
+      context 'with a non-positive max_nodes value' do
+        let(:rspec_files_content) do
+          Array.new(60) { |i| "spec/migrations/#{i}_spec.rb" }.join(' ')
+        end
+
+        before do
+          stub_const(
+            "#{described_class}::DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS",
+            described_class::OPTIMAL_TEST_JOB_DURATION_IN_SECONDS
+          )
+        end
+
+        [0, -1].each do |bad_value|
+          context "with max_nodes: #{bad_value}" do
+            subject do
+              described_class.new(
+                rspec_files_path: rspec_files.path,
+                pipeline_template_path: pipeline_template.path,
+                max_nodes: bad_value
+              )
+            end
+
+            it 'falls back to MAX_NODES_COUNT instead of rendering an invalid parallel value' do
+              subject.generate!
+
+              expect(File.read("#{pipeline_template.path}.yml"))
+                .to eq("rspec migration:\n  parallel: #{described_class::MAX_NODES_COUNT}")
+            end
+          end
+        end
+      end
+
+      context 'when active test levels exceed GITLAB_MAX_NEEDS_COUNT' do
+        before do
+          stub_const("#{described_class}::GITLAB_MAX_NEEDS_COUNT", 1)
+        end
+
+        it 'raises with a clear message instead of looping forever' do
+          expect { subject.generate! }.to raise_error(
+            RuntimeError,
+            /Cannot enforce needs limit/
+          )
+        end
+      end
+
+      context 'when total parallelization across test levels exceeds GITLAB_MAX_NEEDS_COUNT' do
+        let(:rspec_files_content) do
+          migration_files = Array.new(44) { |i| "spec/migrations/#{i}_spec.rb" }.join(' ')
+          system_files = Array.new(10) { |i| "spec/features/#{i}_spec.rb" }.join(' ')
+          "#{migration_files} #{system_files}"
+        end
+
+        before do
+          stub_const(
+            "#{described_class}::DEFAULT_AVERAGE_TEST_FILE_DURATION_IN_SECONDS",
+            described_class::OPTIMAL_TEST_JOB_DURATION_IN_SECONDS
+          )
+          # Neutralise per-test-level overrides so this test exercises only the needs-limit logic.
+          stub_const("#{described_class}::OPTIMAL_TEST_JOB_DURATION_OVERRIDES_PER_TEST_LEVEL", {})
+        end
+
+        it 'reduces the largest level parallelization to stay within the needs limit' do
+          subject.generate!
+
+          content = File.read("#{pipeline_template.path}.yml")
+          # migration reduced from 44 to 40 so that 40 + 10 = 50 == GITLAB_MAX_NEEDS_COUNT
+          expect(content).to include("rspec migration:\n  parallel: 40")
+          expect(content).to include("rspec system:\n  parallel: 10")
+        end
+
+        context 'when two levels tie for the largest parallelization' do
+          let(:rspec_files_content) do
+            migration_files = Array.new(44) { |i| "spec/migrations/#{i}_spec.rb" }.join(' ')
+            system_files = Array.new(44) { |i| "spec/features/#{i}_spec.rb" }.join(' ')
+            "#{migration_files} #{system_files}"
+          end
+
+          it 'distributes the reduction across both levels and reaches exactly GITLAB_MAX_NEEDS_COUNT' do
+            subject.generate!
+
+            content = File.read("#{pipeline_template.path}.yml")
+            # overflow = 88 - 50 = 38; per_level_decrement = ceil(38/2) = 19; each: 44 - 19 = 25
+            expect(content).to include("rspec migration:\n  parallel: 25")
+            expect(content).to include("rspec system:\n  parallel: 25")
+          end
+        end
+      end
+    end
+
+    context 'when knapsack_report_path is given' do
+      subject do
+        described_class.new(
+          rspec_files_path: rspec_files.path,
+          pipeline_template_path: pipeline_template.path,
+          knapsack_report_path: knapsack_report.path
+        )
+      end
+
+      it 'generates the pipeline config with parallelization based on Knapsack' do
+        subject.generate!
+
+        # System tests use a 15-minute target job duration (via OPTIMAL_TEST_JOB_DURATION_OVERRIDES_PER_TEST_LEVEL),
+        # which fits the two system files in this fixture into a single shard.
+        expect(File.read("#{pipeline_template.path}.yml"))
+          .to eq(
+            "rspec migration:\n  parallel: 4\nrspec background_migration:\n" \
+            "rspec unit:\n  parallel: 2\nrspec integration:\nrspec system:"
+          )
+      end
+
+      context 'and RSpec files have a high duration' do
+        let(:rspec_files_content) do
+          "spec/migrations/a_spec.rb spec/migrations/b_spec.rb"
+        end
+
+        it 'generates the pipeline config with parallelization based on Knapsack' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml"))
+            .to eq(
+              "rspec migration:\n  parallel: 2"
+            )
+        end
+      end
+
+      context 'and Knapsack report does not contain valid JSON' do
+        let(:knapsack_report_content) { "#{super()}," }
+
+        it 'generates the pipeline config with default parallelization' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml"))
+            .to eq(
+              "rspec migration:\nrspec background_migration:\nrspec unit:\n" \
+              "rspec integration:\nrspec system:"
+            )
+        end
+      end
+
+      context 'when many slower system files are detected' do
+        # Mix slower system test files with files from every other test
+        # level so we can verify the system override is scoped correctly.
+        let(:rspec_files_content) do
+          [
+            Array.new(40) { |i| "spec/features/slower_#{i}_spec.rb" },
+            Array.new(50) { |i| "spec/migrations/#{i}_spec.rb" },
+            Array.new(50) { |i| "spec/lib/gitlab/background_migration/#{i}_spec.rb" },
+            Array.new(50) { |i| "spec/models/#{i}_spec.rb" },
+            Array.new(50) { |i| "spec/controllers/#{i}_spec.rb" }
+          ].flatten.join(' ')
+        end
+
+        let(:knapsack_report_content) do
+          entries = Array.new(40) { |i| %("spec/features/slower_#{i}_spec.rb": 300.0) }
+          "{#{entries.join(',')}}"
+        end
+
+        it 'applies the system override without affecting other test levels', :aggregate_failures do
+          subject.generate!
+
+          content = File.read("#{pipeline_template.path}.yml")
+          expect(content).to include("rspec system:\n  parallel: 17")
+          expect(content).to include("rspec migration:\n  parallel: 2")
+          expect(content).to include("rspec background_migration:\n  parallel: 2")
+          expect(content).to include("rspec unit:\n  parallel: 2")
+          expect(content).to include("rspec integration:\n  parallel: 2")
+        end
+      end
+    end
+
+    context 'when test_suite_prefix is given' do
+      let(:rspec_files_content) { "ee/spec/models/a_spec.rb spec/features/a_spec.rb" }
+
+      subject do
+        described_class.new(
+          rspec_files_path: rspec_files.path,
+          pipeline_template_path: pipeline_template.path,
+          knapsack_report_path: knapsack_report.path,
+          test_suite_prefix: 'ee/'
+        )
+      end
+
+      it 'generates the pipeline config based on the test_suite_prefix' do
+        subject.generate!
+
+        expect(File.read("#{pipeline_template.path}.yml"))
+          .to eq("rspec-unit system:")
+      end
+    end
+
+    describe 'job_tags option' do
+      let(:pipeline_template_content) do
+        <<~YAML
+        default:
+          image: $DEFAULT_CI_IMAGE
+          <%- if job_tags.any? -%>
+          tags:
+            <%- job_tags.each do |job_tag| -%>
+            - <%= job_tag %>
+            <%- end -%>
+          <%- end -%>
+        YAML
+      end
+
+      before do
+        subject.generate!
+      end
+
+      context 'when job_tags is not given' do
+        subject do
+          described_class.new(
+            rspec_files_path: rspec_files.path,
+            pipeline_template_path: pipeline_template.path
+          )
+        end
+
+        it 'generates the pipeline config with no tags' do
+          expect(File.read("#{pipeline_template.path}.yml"))
+            .to eq(
+              <<~YAML.chomp
+                    default:
+                      image: $DEFAULT_CI_IMAGE
+              YAML
+            )
+        end
+      end
+
+      context 'when job_tags is given' do
+        subject do
+          described_class.new(
+            rspec_files_path: rspec_files.path,
+            pipeline_template_path: pipeline_template.path,
+            job_tags: job_tags
+          )
+        end
+
+        context 'with two tags' do
+          let(:job_tags) { %w[foo bar] }
+
+          it 'generates the pipeline config with the expected tags' do
+            expect(File.read("#{pipeline_template.path}.yml"))
+              .to eq(
+                <<~YAML.chomp
+                      default:
+                        image: $DEFAULT_CI_IMAGE
+                        tags:
+                          - foo
+                          - bar
+                YAML
+              )
+          end
+        end
+
+        context 'with empty tags array' do
+          let(:job_tags) { [] }
+
+          it 'generates the pipeline without any tags defined' do
+            expect(File.read("#{pipeline_template.path}.yml"))
+              .to eq(
+                <<~YAML.chomp
+                      default:
+                        image: $DEFAULT_CI_IMAGE
+                YAML
+              )
+          end
+        end
+      end
+    end
+
+    context 'when generated_pipeline_path is given' do
+      let(:custom_pipeline_filename) { Tempfile.new(['custom_pipeline_filename', '.yml']) }
+
+      around do |example|
+        example.run
+      ensure
+        custom_pipeline_filename.close
+        custom_pipeline_filename.unlink
+      end
+
+      subject do
+        described_class.new(
+          rspec_files_path: rspec_files.path,
+          pipeline_template_path: pipeline_template.path,
+          generated_pipeline_path: custom_pipeline_filename.path
+        )
+      end
+
+      it 'writes the pipeline config in the given generated_pipeline_path' do
+        subject.generate!
+
+        expect(File.read(custom_pipeline_filename.path))
+          .to eq(
+            "rspec migration:\nrspec background_migration:\nrspec unit:\n" \
+            "rspec integration:\nrspec system:"
+          )
+      end
+    end
+
+    context 'when rspec_files does not exist' do
+      subject { described_class.new(rspec_files_path: nil, pipeline_template_path: pipeline_template.path) }
+
+      it 'generates the pipeline config using the no-op template' do
+        subject.generate!
+
+        expect(File.read("#{pipeline_template.path}.yml")).to include("no-op:")
+      end
+    end
+
+    context 'when pipeline_template_path does not exist' do
+      subject { described_class.new(rspec_files_path: rspec_files.path, pipeline_template_path: nil) }
+
+      it 'generates the pipeline config using the no-op template' do
+        expect { subject }.to raise_error(ArgumentError)
+      end
+    end
+
+    context 'when only system tests are detected' do
+      let(:rspec_files_content) { "spec/features/a_spec.rb spec/features/b_spec.rb" }
+
+      subject do
+        described_class.new(
+          rspec_files_path: rspec_files.path,
+          pipeline_template_path: pipeline_template.path
+        )
+      end
+
+      context 'when no tier label is set' do
+        before do
+          stub_env('CI_MERGE_REQUEST_LABELS', nil)
+        end
+
+        it 'generates the pipeline config with system tests' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml")).to eq("rspec system:")
+        end
+      end
+
+      context 'when on tier-2 pipeline' do
+        before do
+          stub_env('CI_MERGE_REQUEST_LABELS', 'pipeline::tier-2')
+        end
+
+        it 'generates the pipeline config with system tests' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml")).to eq("rspec system:")
+        end
+      end
+
+      context 'when on tier-1 pipeline' do
+        before do
+          stub_env('CI_MERGE_REQUEST_LABELS', 'pipeline::tier-1')
+        end
+
+        it 'generates the pipeline config with system tests' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml")).to eq("rspec system:")
+        end
+      end
+
+      context 'when on tier-2 pipeline with spec-only label' do
+        before do
+          stub_env('CI_MERGE_REQUEST_LABELS', 'pipeline::tier-2,pipeline:spec-only')
+        end
+
+        it 'generates the pipeline config with system tests' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml")).to eq("rspec system:")
+        end
+      end
+
+      context 'when on tier-3 pipeline' do
+        before do
+          stub_env('CI_MERGE_REQUEST_LABELS', 'pipeline::tier-3')
+        end
+
+        # System tests are skipped here as they run by default in the tier-3 pipeline
+        it 'generates the pipeline config using the no-op template' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml")).to include("no-op:")
+        end
+      end
+
+      context 'when on tier-3 pipeline with spec-only label' do
+        before do
+          stub_env('CI_MERGE_REQUEST_LABELS', 'pipeline::tier-3,pipeline:spec-only')
+        end
+
+        it 'generates the pipeline config with system tests' do
+          subject.generate!
+
+          expect(File.read("#{pipeline_template.path}.yml")).to eq("rspec system:")
+        end
+      end
+    end
+
+    context 'when system tests and other tests are detected on tier-2 pipeline' do
+      let(:rspec_files_content) { "spec/features/a_spec.rb spec/models/a_spec.rb" }
+
+      subject do
+        described_class.new(
+          rspec_files_path: rspec_files.path,
+          pipeline_template_path: pipeline_template.path
+        )
+      end
+
+      before do
+        stub_env('CI_MERGE_REQUEST_LABELS', 'pipeline::tier-2')
+      end
+
+      it 'generates the pipeline config' do
+        subject.generate!
+
+        expect(File.read("#{pipeline_template.path}.yml")).to include("rspec unit:")
+        expect(File.read("#{pipeline_template.path}.yml")).to include("rspec system:")
+      end
+    end
+  end
+end

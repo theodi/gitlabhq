@@ -1,0 +1,27 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'bundler/inline'
+
+gemfile do
+  source 'https://rubygems.org'
+
+  gem 'gitlab-rspec_flaky', path: 'gems/gitlab-rspec_flaky'
+end
+
+report_file = ARGV.shift
+unless report_file
+  puts "usage: #{__FILE__} <report-file> <new-report-file>"
+  exit 1
+end
+
+new_report_file = ARGV.shift || report_file
+report = Gitlab::RspecFlaky::Report.load(report_file)
+puts "Loading #{report_file}..."
+puts "Current report has #{report.size} entries."
+
+new_report = report.prune_outdated
+
+puts "New report has #{new_report.size} entries: #{report.size - new_report.size} entries older than " \
+     "#{Gitlab::RspecFlaky::Report::OUTDATED_DAYS_THRESHOLD} days were removed."
+puts "Saved #{new_report_file}." if new_report.write(new_report_file)

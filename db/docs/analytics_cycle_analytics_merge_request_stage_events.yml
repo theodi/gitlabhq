@@ -1,0 +1,14 @@
+---
+table_name: analytics_cycle_analytics_merge_request_stage_events
+classes:
+- Analytics::CycleAnalytics::MergeRequestStageEvent
+feature_categories:
+- value_stream_management
+description: Contains various MergeRequest-related timestamps for aggregating Value
+  Stream Analytics data.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/68950
+milestone: '14.3'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  group_id: namespaces
+table_size: small

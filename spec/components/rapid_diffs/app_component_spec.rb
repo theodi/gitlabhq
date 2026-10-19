@@ -1,0 +1,378 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe RapidDiffs::AppComponent, feature_category: :code_review_workflow do
+  let_it_be(:diffs_slice, freeze: false) { Array.new(2, build(:diff_file)) }
+  let(:diffs_stream_url) { '/stream' }
+  let(:reload_stream_url) { '/reload_stream' }
+  let(:show_whitespace) { true }
+  let(:diff_view) { :inline }
+  let(:update_user_endpoint) { '/update_user' }
+  let(:diffs_stats_endpoint) { '/diffs_stats' }
+  let(:diff_files_endpoint) { '/diff_files_metadata' }
+  let(:diff_file_endpoint) { '/diff_file' }
+  let(:should_sort_metadata_files) { false }
+  let(:lazy) { false }
+  let(:extra_app_data) { nil }
+  let(:extra_prefetch_endpoints) { [] }
+
+  let(:linked_file) { nil }
+  let(:empty_state_type) { nil }
+  let(:diff_collection) { linked_file ? [linked_file] : (diffs_slice || []) }
+  let(:initial_file) { nil }
+
+  let(:diff_presenter) do
+    instance_double(
+      ::RapidDiffs::BasePresenter,
+      diffs_slice: diffs_slice,
+      diffs_stream_url: diffs_stream_url,
+      reload_stream_url: reload_stream_url,
+      diffs_stats_endpoint: diffs_stats_endpoint,
+      diff_files_endpoint: diff_files_endpoint,
+      diff_file_endpoint: diff_file_endpoint,
+      sorted?: should_sort_metadata_files,
+      environment: nil,
+      lazy?: lazy,
+      linked_file: linked_file,
+      empty_state_type: empty_state_type,
+      diff_collection: diff_collection,
+      initial_file: initial_file
+    )
+  end
+
+  subject(:component) do
+    described_class.new(
+      diff_presenter,
+      extra_app_data: extra_app_data,
+      extra_prefetch_endpoints: extra_prefetch_endpoints
+    )
+  end
+
+  before do
+    allow(component).to receive(:helpers).and_wrap_original do |original_method, *args|
+      helpers = original_method.call(*args)
+      allow(helpers).to receive_messages(
+        hide_whitespace?: !show_whitespace,
+        diff_view: diff_view,
+        api_v4_user_preferences_path: update_user_endpoint
+      )
+      helpers
+    end
+  end
+
+  it "renders app" do
+    render_component
+    expect(page).to have_css('[data-rapid-diffs]')
+  end
+
+  it "renders diffs slice" do
+    render_component
+    expect(page.all('diff-file').size).to eq(2)
+  end
+
+  it "renders app data" do
+    render_component
+    app = page.find('[data-rapid-diffs]')
+    data = Gitlab::Json.parse(app['data-app-data'])
+    expect(data['diffs_stream_url']).to eq(diffs_stream_url)
+    expect(data['reload_stream_url']).to eq(reload_stream_url)
+    expect(data['diffs_stats_endpoint']).to eq(diffs_stats_endpoint)
+    expect(data['diff_files_endpoint']).to eq(diff_files_endpoint)
+    expect(data['diff_file_endpoint']).to eq(diff_file_endpoint)
+    expect(data['update_user_endpoint']).to eq(update_user_endpoint)
+    expect(data['show_whitespace']).to eq(show_whitespace)
+    expect(data['diff_view_type']).to eq(diff_view.to_s)
+    expect(data['lazy']).to eq(lazy)
+    expect(data['initial_file']).to be_nil
+    expect(data['file_by_file_mode']).to be(false)
+  end
+
+  context "when user has file by file mode enabled" do
+    let_it_be(:user) { build_stubbed(:user, view_diffs_file_by_file: true) }
+
+    before do
+      allow(component).to receive(:helpers).and_wrap_original do |original_method, *args|
+        helpers = original_method.call(*args)
+        allow(helpers).to receive_messages(
+          hide_whitespace?: !show_whitespace,
+          diff_view: diff_view,
+          api_v4_user_preferences_path: update_user_endpoint,
+          current_user: user
+        )
+        helpers
+      end
+    end
+
+    it "sets file_by_file_mode to true" do
+      render_component
+      app = page.find('[data-rapid-diffs]')
+      data = Gitlab::Json.parse(app['data-app-data'])
+      expect(data['file_by_file_mode']).to be(true)
+    end
+
+    it "does not render the stream container" do
+      render_component
+      expect(page).not_to have_css('[data-stream-remaining-diffs]')
+    end
+
+    it "does not add the stream preload to startup JS" do
+      render_component
+      expect(vc_test_controller.view_context.content_for?(:startup_js)).to be_falsey
+    end
+  end
+
+  context "with extra_app_data" do
+    let(:extra_app_data) { { custom_field: 'custom_value', another_field: 123 } }
+
+    it "merges extra app data into app data" do
+      render_component
+      app = page.find('[data-rapid-diffs]')
+      data = Gitlab::Json.parse(app['data-app-data'])
+      expect(data['custom_field']).to eq('custom_value')
+      expect(data['another_field']).to eq(123)
+    end
+  end
+
+  context "with should_sort_metadata_files set to true" do
+    let(:should_sort_metadata_files) { true }
+
+    it "enables sorting metadata" do
+      render_component
+      app = page.find('[data-rapid-diffs]')
+      expect(Gitlab::Json.parse(app['data-app-data'])['should_sort_metadata_files']).to eq(should_sort_metadata_files)
+    end
+  end
+
+  it "renders view settings" do
+    render_component
+    expect(page).to have_css('[data-view-settings]')
+  end
+
+  it "renders file browser toggle" do
+    render_component
+    container = page.find("[data-file-browser-toggle]")
+    expect(container).not_to be_nil
+  end
+
+  it "renders sidebar" do
+    render_component
+    container = page.find("[data-file-browser]")
+    expect(container).not_to be_nil
+    expect(page).to have_css('[data-testid="rd-file-browser-loading"]')
+  end
+
+  it "sets sidebar width" do
+    allow(vc_test_controller).to receive(:cookies).and_return({ mr_tree_list_width: '250' })
+    render_component
+    container = page.find("[data-file-browser]")
+    expect(container[:style]).to include("width: 250px")
+  end
+
+  it "ignores invalid sidebar width" do
+    allow(vc_test_controller).to receive(:cookies).and_return({ mr_tree_list_width: 'foobar' })
+    render_component
+    container = page.find("[data-file-browser]")
+    expect(container[:style]).to be_empty
+  end
+
+  it "hides sidebar" do
+    allow(vc_test_controller).to receive(:cookies).and_return({ file_browser_visible: 'false' })
+    render_component
+    expect(page).to have_css('[data-file-browser]', visible: :hidden)
+  end
+
+  it "renders stream container" do
+    render_component
+    expect(page).to have_css("[data-stream-remaining-diffs]")
+  end
+
+  it "renders before_diffs_list slot" do
+    result = render_component do |c|
+      c.with_before_diffs_list do
+        'custom_before_content'
+      end
+    end
+    expect(result).to have_text('custom_before_content')
+  end
+
+  it "renders diffs_list slot" do
+    result = render_component do |c|
+      c.with_diffs_list do
+        'custom_list'
+      end
+    end
+    expect(result).to have_text('custom_list')
+  end
+
+  it "renders after_diffs_list slot" do
+    result = render_component do |c|
+      c.with_after_diffs_list do
+        'custom_after_content'
+      end
+    end
+    expect(result).to have_text('custom_after_content')
+  end
+
+  describe '#parallel_view?' do
+    let(:diff_view) { :parallel }
+
+    it 'returns true when diff_view is parallel' do
+      render_component
+      expect(component.parallel_view?).to be(true)
+    end
+
+    context 'when diff_view is inline' do
+      let(:diff_view) { :inline }
+
+      it 'returns false' do
+        render_component
+        expect(component.parallel_view?).to be(false)
+      end
+    end
+  end
+
+  it "renders diffs list" do
+    render_component
+    expect(page).to have_css('[data-diffs-list]')
+    expect(page).to have_css('[data-diffs-overlay]')
+  end
+
+  it 'preloads' do
+    render_component
+    expect(component.helpers.page_startup_api_calls).to include(diffs_stats_endpoint)
+    expect(component.helpers.page_startup_api_calls).to include(diff_files_endpoint)
+    expect(vc_test_controller.view_context.content_for?(:startup_js)).not_to be_nil
+  end
+
+  context 'with extra_prefetch_endpoints' do
+    let(:extra_prefetch_endpoints) { %w[/custom_endpoint_1 /custom_endpoint_2] }
+
+    it 'includes extra prefetch endpoints in preloads' do
+      render_component
+      expect(component.helpers.page_startup_api_calls).to include(diffs_stats_endpoint)
+      expect(component.helpers.page_startup_api_calls).to include(diff_files_endpoint)
+      expect(component.helpers.page_startup_api_calls).to include('/custom_endpoint_1')
+      expect(component.helpers.page_startup_api_calls).to include('/custom_endpoint_2')
+    end
+  end
+
+  it 'adds application stylesheet' do
+    style_added = false
+    allow(component).to receive(:helpers).and_wrap_original do |original_method, *args|
+      helpers = original_method.call(*args)
+      allow(helpers).to receive(:add_page_specific_style).with('page_bundles/rapid_diffs') do
+        style_added = true
+      end
+      helpers
+    end
+    render_component
+    expect(style_added).to be(true)
+  end
+
+  it 'has loading indicator' do
+    render_component
+    expect(page).to have_css('[data-list-loading]')
+  end
+
+  context 'when has no diffs for streaming' do
+    let(:diffs_stream_url) { nil }
+
+    it 'hides loading indicator' do
+      render_component
+      expect(page).to have_css('[data-list-loading][hidden]', visible: :hidden)
+    end
+  end
+
+  context "when presenter reports a non-nil empty_state_type" do
+    let(:empty_state_type) { :no_changes }
+    let(:diffs_slice) { [] }
+    let(:diffs_stream_url) { nil }
+
+    it "renders the default empty state component" do
+      render_component
+      expect(page).to have_text("There are no changes")
+    end
+
+    context 'when lazy loading' do
+      let(:lazy) { true }
+
+      it "does not render the empty state server-side" do
+        render_component
+        expect(page).not_to have_text("There are no changes")
+      end
+    end
+
+    context 'with a custom empty_state slot' do
+      it 'renders slot content instead of default empty state' do
+        result = render_component do |c|
+          c.with_empty_state do
+            'custom empty state'
+          end
+        end
+        expect(result).to have_text('custom empty state')
+        expect(result).not_to have_text('There are no changes')
+      end
+
+      it 'does not render diff files' do
+        result = render_component do |c|
+          c.with_empty_state do
+            'custom empty state'
+          end
+        end
+        expect(result).not_to have_css('diff-file')
+      end
+    end
+  end
+
+  describe "initial_file in app data" do
+    let(:initial_file) { { old_path: 'old.txt', new_path: 'new.txt' } }
+
+    it "passes the presenter's initial_file through" do
+      render_component
+      app = page.find('[data-rapid-diffs]')
+      data = Gitlab::Json.parse(app['data-app-data'])
+      expect(data['initial_file']).to eq({ 'old_path' => 'old.txt', 'new_path' => 'new.txt' })
+    end
+
+    context "when the presenter rendered no diff file" do
+      let(:initial_file) { nil }
+
+      it "is nil" do
+        render_component
+        app = page.find('[data-rapid-diffs]')
+        data = Gitlab::Json.parse(app['data-app-data'])
+        expect(data['initial_file']).to be_nil
+      end
+    end
+  end
+
+  context "with linked file" do
+    let(:linked_diff_file) do
+      build(:diff_file).tap do |file|
+        file.diff.old_path = 'old.txt'
+        file.diff.new_path = 'new.txt'
+        file.linked = true
+      end
+    end
+
+    let(:diffs_slice) { nil }
+    let(:linked_file) { linked_diff_file }
+
+    it "renders only the linked file" do
+      render_component
+      expect(page.all('diff-file').size).to eq(1)
+    end
+
+    it "includes linked file data in app data" do
+      render_component
+      app = page.find('[data-rapid-diffs]')
+      data = Gitlab::Json.parse(app['data-app-data'])
+      expect(data['linked_file_data']).to eq({ 'old_path' => 'old.txt', 'new_path' => 'new.txt' })
+    end
+  end
+
+  def render_component(&block)
+    render_inline(component, &block)
+  end
+end

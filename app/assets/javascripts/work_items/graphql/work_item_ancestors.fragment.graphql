@@ -1,0 +1,19 @@
+#import "./work_item_ancestors_hierarchy.fragment.graphql"
+
+fragment WorkItemAncestors on WorkItem {
+  id
+  title
+  titleHtml
+  widgets @skip(if: $useWorkItemFeatures) {
+    type
+    ... on WorkItemWidgetHierarchy {
+      ...WorkItemAncestorsHierarchy
+    }
+  }
+  features @include(if: $useWorkItemFeatures) {
+    hierarchy {
+      type
+      ...WorkItemAncestorsHierarchy
+    }
+  }
+}

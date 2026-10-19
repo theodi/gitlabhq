@@ -1,0 +1,43 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`History Item renders the correct markup 1`] = `
+<li
+  class="js-timeline-entry note-container-query-wrapper note-wrapper system-note timeline-entry"
+>
+  <div
+    class="gl-clearfix timeline-entry-inner"
+  >
+    <div
+      class="-gl-mt-1 gl-bg-strong gl-flex gl-float-left gl-h-6 gl-items-center gl-justify-center gl-ml-2 gl-rounded-full gl-text-subtle gl-w-6"
+    >
+      <gl-icon-stub
+        name="pencil"
+        size="16"
+        variant="current"
+      />
+    </div>
+    <div
+      class="timeline-content"
+    >
+      <div
+        class="note-header"
+      >
+        <div
+          class="gl-mt-1 note-header-info"
+        >
+          <div
+            data-testid="default-slot"
+          />
+        </div>
+      </div>
+      <div
+        class="note-body"
+      >
+        <div
+          data-testid="body-slot"
+        />
+      </div>
+    </div>
+  </div>
+</li>
+`;

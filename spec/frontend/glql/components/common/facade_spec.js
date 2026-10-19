@@ -1,0 +1,407 @@
+import { GlAlert, GlButton, GlIntersectionObserver } from '@gitlab/ui';
+import { nextTick } from 'vue';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import GlqlFacade from '~/glql/components/common/facade.vue';
+import GlqlActions from '~/glql/components/common/actions.vue';
+import GlqlResolver from '~/glql/components/common/resolver.vue';
+import GlqlViewSourceModal from '~/glql/components/common/view_source_modal.vue';
+import Counter from '~/glql/utils/counter';
+import { copyToClipboard } from '~/lib/utils/copy_to_clipboard';
+import CrudComponent from '~/vue_shared/components/crud_component.vue';
+import { copyGLQLContents } from '~/glql/utils/copy_as_gfm';
+import { MOCK_ISSUES, MOCK_FIELDS } from '../../mock_data';
+
+jest.mock('~/lib/utils/copy_to_clipboard');
+jest.mock('~/glql/utils/copy_as_gfm', () => ({
+  copyGLQLContents: jest.fn().mockResolvedValue(),
+}));
+
+const MOCK_PARSE_OUTPUT = {
+  query: 'query {}',
+  config: { display: 'list', title: 'Some title', description: 'Some description' },
+  variables: {
+    limit: { value: null, type: 'Int' },
+    after: { value: null, type: 'String' },
+    before: { value: null, type: 'String' },
+  },
+  fields: MOCK_FIELDS,
+};
+
+describe('GlqlFacade', () => {
+  let wrapper;
+
+  // numGlqlBlocks is a module-level counter shared across instances. Reset it so
+  // each test starts fresh and the suite stays independent of test count/order.
+  beforeEach(() => {
+    GlqlFacade.numGlqlBlocks.reset();
+  });
+
+  const createComponent = async (props = {}, glFeatures = {}) => {
+    wrapper = mountExtended(GlqlFacade, {
+      propsData: {
+        queryKey: 'glql_key',
+        queryYaml: 'assignee = "foo"',
+        ...props,
+      },
+      provide: {
+        glFeatures,
+      },
+      stubs: {
+        GlqlResolver: true,
+      },
+    });
+    await nextTick();
+  };
+
+  const findResolver = () => wrapper.findComponent(GlqlResolver);
+  const findCrudComponent = () => wrapper.findComponent(CrudComponent);
+  const findContent = () => wrapper.findByTestId('glql-content');
+
+  const triggerIntersectionObserver = async () => {
+    wrapper.findComponent(GlIntersectionObserver).vm.$emit('appear');
+    await nextTick();
+  };
+
+  const emitResolverChange = async (data = {}) => {
+    findResolver().vm.$emit('change', {
+      loading: false,
+      query: MOCK_PARSE_OUTPUT.query,
+      config: MOCK_PARSE_OUTPUT.config,
+      data: { count: 2, ...MOCK_ISSUES },
+      mode: 'standard',
+      error: null,
+      ...data,
+    });
+    await nextTick();
+  };
+
+  describe('when glqlLoadOnClick feature flag is enabled', () => {
+    beforeEach(async () => {
+      await createComponent({}, { glqlLoadOnClick: true });
+    });
+
+    it('renders the query in a code block', () => {
+      expect(wrapper.find('code').text()).toBe('assignee = "foo"');
+    });
+
+    it('renders the Load embedded view button', () => {
+      expect(wrapper.findComponent(GlButton).text()).toEqual('Load embedded view');
+    });
+  });
+
+  describe('title', () => {
+    beforeEach(async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+    });
+
+    it('shows skeleton loader when loading', async () => {
+      await emitResolverChange({ loading: true, config: {} });
+
+      expect(findCrudComponent().props('title')).toBe('');
+      expect(wrapper.findByTestId('title-skeleton-loader').exists()).toBe(true);
+    });
+
+    it('shows a title set by the config', async () => {
+      const title = 'facade';
+      await emitResolverChange({ config: { title } });
+
+      expect(findCrudComponent().props('title')).toBe(title);
+    });
+
+    it.each(['table', 'list', 'orderedList', 'stat', 'columnChart', 'lineChart', undefined])(
+      'shows a generic default title for display type: %s',
+      async (display) => {
+        await emitResolverChange({ config: { display } });
+
+        expect(findCrudComponent().props('title')).toBe('Embedded view');
+      },
+    );
+  });
+
+  describe('content padding', () => {
+    beforeEach(async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+    });
+
+    it.each(['stat', 'columnChart', 'lineChart'])(
+      'insets block display "%s" so the card owns its padding',
+      async (display) => {
+        await emitResolverChange({ config: { display } });
+
+        expect(findContent().classes()).toEqual(['gl-px-5', 'gl-py-5']);
+      },
+    );
+
+    it.each(['list', 'orderedList', 'table'])(
+      'renders full-bleed display "%s" without padding',
+      async (display) => {
+        await emitResolverChange({ config: { display } });
+
+        expect(findContent().classes()).toEqual([]);
+      },
+    );
+  });
+
+  describe('when the query includes a collapsed flag', () => {
+    beforeEach(async () => {
+      await createComponent({
+        queryYaml: 'query: assignee = "foo"\n collapsed: true',
+      });
+      await triggerIntersectionObserver();
+      await emitResolverChange({
+        config: { ...MOCK_PARSE_OUTPUT.config, collapsed: true },
+      });
+    });
+
+    it('renders the crud component as collapsed', () => {
+      expect(wrapper.findComponent(CrudComponent).props('collapsed')).toBe(true);
+    });
+
+    describe('when the crud component dispatches an expanded event', () => {
+      beforeEach(() => {
+        wrapper.findComponent(CrudComponent).vm.$emit('expanded');
+      });
+
+      it('sets crud component state to not collapsed', () => {
+        expect(wrapper.findComponent(CrudComponent).props('collapsed')).toBe(false);
+      });
+
+      describe('and later a collapsed event', () => {
+        beforeEach(() => {
+          wrapper.findComponent(CrudComponent).vm.$emit('collapsed');
+        });
+
+        it('sets state to collapsed', () => {
+          expect(wrapper.findComponent(CrudComponent).props('collapsed')).toBe(true);
+        });
+      });
+    });
+  });
+
+  describe('when the query is successful', () => {
+    beforeEach(async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+      await emitResolverChange();
+    });
+
+    it('renders crud component in expanded state', () => {
+      const crudComponent = wrapper.findComponent(CrudComponent);
+      expect(crudComponent.props('title')).toBe('Some title');
+      expect(crudComponent.props('description')).toBe('Some description');
+      expect(crudComponent.props('count')).toBe(2);
+
+      expect(crudComponent.props('collapsed')).toBe(false);
+    });
+
+    it('hides the item count in analytics mode instead of showing zero', async () => {
+      await emitResolverChange({ mode: 'analytics', data: { count: 1, nodes: [{}] } });
+
+      expect(findCrudComponent().props('count')).toBe(null);
+      expect(findCrudComponent().props('showZeroCount')).toBe(false);
+      expect(wrapper.findByTestId('crud-count').exists()).toBe(false);
+    });
+
+    it('renders actions', () => {
+      expect(wrapper.findComponent(GlqlActions).props()).toEqual({
+        showCopyContents: true,
+      });
+    });
+
+    describe('view source modal', () => {
+      const findViewSourceModal = () => wrapper.findComponent(GlqlViewSourceModal);
+
+      it('passes the query and view title to the modal', () => {
+        expect(findViewSourceModal().props()).toMatchObject({
+          query: 'assignee = "foo"',
+          title: 'Some title',
+        });
+      });
+
+      it('is hidden until the view source action is triggered', async () => {
+        expect(findViewSourceModal().props('visible')).toBe(false);
+
+        wrapper.findComponent(GlqlActions).vm.$emit('view-source');
+        await nextTick();
+
+        expect(findViewSourceModal().props('visible')).toBe(true);
+      });
+
+      it('closes when the modal reports it has been dismissed', async () => {
+        wrapper.findComponent(GlqlActions).vm.$emit('view-source');
+        await nextTick();
+
+        findViewSourceModal().vm.$emit('change', false);
+        await nextTick();
+
+        expect(findViewSourceModal().props('visible')).toBe(false);
+      });
+    });
+
+    it('copies the query wrapped in a glql block on copy source event', () => {
+      wrapper.findComponent(GlqlActions).vm.$emit('copy-source');
+
+      expect(copyToClipboard).toHaveBeenCalledWith('```glql\nassignee = "foo"\n```', document.body);
+    });
+
+    it('renders a footer text', () => {
+      expect(wrapper.text()).toContain('Embedded view powered by GLQL');
+    });
+
+    it('shows a "No data" message if the list of items provided is empty', async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+      await emitResolverChange({ data: { count: 0, nodes: [] } });
+
+      expect(wrapper.text()).toContain('No data found for this query');
+    });
+
+    it('reloads the query on reload event', async () => {
+      const oldResolver = findResolver();
+
+      wrapper.findComponent(GlqlActions).vm.$emit('reload');
+      await nextTick();
+
+      expect(oldResolver.exists()).toBe(false);
+      expect(findResolver().exists()).toBe(true);
+    });
+
+    it('remounts the resolver when the query changes', async () => {
+      const oldResolver = findResolver();
+
+      await wrapper.setProps({ queryYaml: 'assignee = "bar"' });
+      await nextTick();
+
+      expect(oldResolver.exists()).toBe(false);
+      expect(findResolver().exists()).toBe(true);
+      expect(findResolver().props('glqlQuery')).toBe('assignee = "bar"');
+    });
+  });
+
+  describe('when the query results in a timeout (503) error', () => {
+    beforeEach(async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+      await emitResolverChange({ error: { networkError: { statusCode: 503 } } });
+    });
+
+    it('displays timeout error alert', () => {
+      const alert = wrapper.findComponent(GlAlert);
+      expect(alert.exists()).toBe(true);
+      expect(alert.props('variant')).toBe('warning');
+      expect(alert.text()).toContain(
+        'Embedded view timed out. Add more filters to reduce the number of results.',
+      );
+      expect(alert.props('primaryButtonText')).toBe('Retry');
+    });
+
+    it('creates a new resolver to retry the query when primary action of timeout error alert is triggered', async () => {
+      const oldResolver = findResolver();
+
+      const alert = wrapper.findComponent(GlAlert);
+      alert.vm.$emit('primary-action');
+      await nextTick();
+
+      expect(oldResolver.exists()).toBe(false);
+      expect(findResolver().exists()).toBe(true);
+    });
+  });
+
+  describe('when the query results in a forbidden (403) error', () => {
+    beforeEach(async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+      await emitResolverChange({ error: { networkError: { statusCode: 403 } } });
+    });
+
+    it('displays forbidden error alert', () => {
+      const alert = wrapper.findComponent(GlAlert);
+      expect(alert.exists()).toBe(true);
+      expect(alert.props('variant')).toBe('danger');
+      expect(alert.text()).toContain('You do not have permission to view this embedded view.');
+    });
+  });
+
+  describe('when the query results in a syntax error', () => {
+    beforeEach(async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+      await emitResolverChange({ error: new Error('Syntax error: Unexpected `=`') });
+    });
+
+    it('displays error alert on query failure, formatted by marked', () => {
+      const alert = wrapper.findComponent(GlAlert);
+      expect(alert.exists()).toBe(true);
+      expect(alert.props('variant')).toBe('warning');
+      expect(alert.find('ul li').html()).toMatchInlineSnapshot(`
+<li>
+  Syntax error: Unexpected
+  <code>
+    =
+  </code>
+</li>
+`);
+    });
+  });
+
+  describe('when number of GLQL blocks on page exceeds the limit', () => {
+    beforeEach(async () => {
+      // Simulate exceeding the limit
+      jest.spyOn(Counter.prototype, 'increment').mockImplementation(() => {
+        throw new Error('Counter exceeded max value');
+      });
+
+      await createComponent();
+      await triggerIntersectionObserver();
+    });
+
+    it('displays limit error alert after exceeding embedded view block limit', () => {
+      const alert = wrapper.findComponent(GlAlert);
+      expect(alert.exists()).toBe(true);
+      expect(alert.props('variant')).toBe('warning');
+      expect(alert.text()).toContain(
+        'Only 20 embedded views can be automatically displayed on a page. Click the button below to manually display this view.',
+      );
+      expect(alert.props('primaryButtonText')).toBe('Display view');
+    });
+
+    it('creates a new resolver to retry the query when primary action of limit error alert is triggered', async () => {
+      const oldResolver = findResolver();
+
+      const alert = wrapper.findComponent(GlAlert);
+      alert.vm.$emit('primary-action');
+      await nextTick();
+
+      expect(oldResolver.exists()).toBe(false);
+      expect(findResolver().exists()).toBe(true);
+    });
+  });
+
+  describe('when "Copy contents" is triggered', () => {
+    const config = { display: 'columnChart', title: 'Data view' };
+    const data = { count: 1, nodes: [{ language: 'ruby', totalCount: 21 }] };
+    const fields = [
+      { key: 'language', label: 'Language', type: 'dimension' },
+      { key: 'totalCount', label: 'Total count', type: 'metric' },
+    ];
+
+    beforeEach(async () => {
+      await createComponent();
+      await triggerIntersectionObserver();
+      await emitResolverChange({ config, data, fields });
+
+      wrapper.findComponent(GlqlActions).vm.$emit('copy-as-gfm');
+    });
+
+    it('copies the view with the state the resolver last reported', () => {
+      expect(copyGLQLContents).toHaveBeenCalledWith({
+        config,
+        data,
+        fields,
+        el: findResolver().element,
+      });
+    });
+  });
+});

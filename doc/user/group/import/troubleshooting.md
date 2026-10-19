@@ -1,0 +1,267 @@
+---
+stage: GitLab Dedicated
+group: Import
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Troubleshooting direct transfer migrations
+description: "Troubleshooting GitLab direct transfer migrations with Rails console commands, error solutions, and configuration tips."
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+In a [Rails console session](../../../administration/operations/rails_console.md#starting-a-rails-console-session),
+you can find the failure or error messages for the group import attempt using:
+
+```ruby
+# Get relevant import records
+import = BulkImports::Entity.where(namespace_id: Group.id).map(&:bulk_import).last
+
+# Alternative lookup by user
+import = BulkImport.where(user_id: User.find(...)).last
+
+# Get list of import entities. Each entity represents either a group or a project
+entities = import.entities
+
+# Get a list of entity failures
+entities.map(&:failures).flatten
+
+# Alternative failure lookup by status
+entities.where(status: [-1]).pluck(:destination_name, :destination_namespace, :status)
+```
+
+You can also see all migrated entities with any failures related to them using an
+[API endpoint](../../../api/bulk_imports.md#list-all-group-or-project-migration-entities).
+
+## Migrations are slow or timing out
+
+If you're experiencing very slow migrations or [timeouts](../../../administration/instance_limits.md#direct-transfer-migration)
+during migrations, use these strategies to reduce migration duration.
+
+### Add Sidekiq workers to the destination instance
+
+If migrating to a GitLab Self-Managed instance, to speed up migrations, you can add Sidekiq workers to the destination
+instance. When increasing the number of Sidekiq workers, you must take into account that:
+
+- A single direct transfer migration migrates five groups or projects at a time, regardless of the number of Sidekiq
+  workers available on the destination instance.
+- The destination instance must have the capacity to handle more concurrent jobs. If so, adding more Sidekiq workers can
+  reduce the time it takes to import each group or project.
+
+For more information about how to add Sidekiq workers to the destination instance, see
+[Sidekiq configuration for imports](../../../administration/sidekiq/configuration_for_imports.md).
+
+### Start separate migrations
+
+You can experience delays and potential timeouts if the source instance doesn't have the resources to export five
+groups in parallel. When the source instance is under-resourced, the destination instance must wait for exported data to
+become available.
+
+To reduce delays caused by parallel exports, start a separate migration for each group instead of
+all groups and projects at the same time. Because the GitLab UI can only migrate top-level groups, you might need to
+use the API to migrate projects in their subgroups.
+
+## Stale imports
+
+Migrations might stall or finish with a `timeout` status due to issues on the source or destination instance.
+To resolve these issues, inspect the logs from both the source and destination instances.
+
+### Source instance
+
+On the source instance, stale imports are often due to excessive memory usage,
+which might restart Sidekiq processes and interrupt export jobs.
+The destination instance might wait for the export files until the migration eventually times out.
+
+To check if the [group](../../../api/group_relations_export.md#retrieve-the-status-of-an-export) or
+[project](../../../api/project_relations_export.md#retrieve-the-status-of-an-export) relations were
+successfully exported, run the following command:
+
+```shell
+curl --request GET --location "https://example.gitlab.com/api/v4/projects/:ID/export_relations/status" \
+--header "PRIVATE-TOKEN: <your_access_token>"
+```
+
+If a {{< glossary-tooltip text="relation" >}} has a status other than `1`, the relation was not successfully exported
+and the issue is on the source instance.
+
+You can also run the following command to search for interrupted export jobs.
+Keep in mind that Sidekiq logs might rotate after restarts, so be sure to
+check the rotated logs as well.
+
+```shell
+grep `BulkImports::RelationBatchExportWorker` sidekiq.log | grep "interrupted_count"
+```
+
+If Sidekiq restarts are causing the issue:
+
+- Configure a separate Sidekiq process for export jobs.
+  For more information, see [Sidekiq configuration for import](../../../administration/sidekiq/configuration_for_imports.md).
+  If the problem persists, reduce Sidekiq concurrency to limit the number of jobs processed simultaneously.
+- Increase Sidekiq memory limits:
+  If your instance has available memory, [increase the maximum RSS limit](../../../administration/sidekiq/sidekiq_memory_killer.md#configuring-the-limits) for Sidekiq processes.
+  For example, you can increase the limit from 2 GB to 3 GB to prevent frequent restarts.
+- Increase maximum interruption count:
+  To allow more interruptions before a job fails, you can increase the maximum interruption count for
+  [`BulkImports::RelationBatchExportWorker`](https://gitlab.com/gitlab-org/gitlab/-/blob/b8e11d267cdd4a00807984f98a9d8d8cfa51602e/app/workers/bulk_imports/relation_batch_export_worker.rb#L4):
+
+  1. Add the following configuration to increase the limit to `20` (the default value is `3`):
+
+     ```ruby
+     sidekiq_options max_retries_after_interruption: 20
+     ```
+
+  1. Restart Sidekiq for the changes to take effect.
+
+You can now trigger a new migration or use the
+[project relations export API](../../../api/project_relations_export.md#schedule-a-new-export-for-a-project) to manually trigger the export.
+Check the [export status](../../../api/project_relations_export.md#retrieve-the-status-of-an-export) to see if
+relations are being exported successfully.
+
+For example, to trigger the export of a specific project, run the following command:
+
+```shell
+curl --request POST --location "https://example.gitlab.com/api/v4/projects/:ID/export_relations" \
+--header "PRIVATE-TOKEN: <your_access_token>" \
+--form 'batched="true"'
+```
+
+### Destination instance
+
+In rare cases, the destination instance might fail to migrate a group or project successfully.
+For more information, see [issue 498720](https://gitlab.com/gitlab-org/gitlab/-/issues/498720).
+
+To resolve this issue, migrate the groups or projects that failed by using the [import API](../../../api/import.md).
+With this API, you can migrate specific groups and projects individually.
+
+## Other `404` errors
+
+You can receive other `404` errors when importing a group, for example:
+
+```json
+"exception_message": "Unsuccessful response 404 from [FILTERED] Bo...",
+"exception_class": "BulkImports::NetworkError",
+```
+
+This error indicates a problem transferring from the source instance. To solve this, check that you have met the
+[prerequisites](direct_transfer_migrations.md#prerequisites) on the source instance.
+
+## Mismatched group or project path names
+
+If a source group or project path doesn't conform to [naming rules](../../reserved_names.md#rules-for-usernames-project-and-group-names-and-slugs), the path is normalized to
+ensure it is valid. For example, `Destination-Project-Path` is normalized to `destination-project-path`.
+
+## Error: `command exited with error code 15 and Unable to save [FILTERED] into [FILTERED]`
+
+You might receive the error `command exited with error code 15 and Unable to save [FILTERED] into [FILTERED]` in logs
+when migrating projects by using direct transfer. If you receive this error, you can safely ignore it. GitLab retries
+the exited command.
+
+## Error: `Batch export [batch_number] from source instance failed`
+
+On the destination instance, you might encounter the following error:
+
+```plaintext
+Batch export [batch_number] from source instance failed: [source instance error]
+```
+
+This error occurs when the source instance fails to export some records.
+The most common reasons are:
+
+- Insufficient disk space
+- Multiple interruptions of Sidekiq jobs due to insufficient memory
+- Database statement timeout
+
+To resolve this issue:
+
+1. Identify and fix the problem on the source instance.
+1. Delete the partially imported project or group from the destination instance and initiate a new import.
+
+For more information about the relations and batches that failed to export,
+use the export status API endpoints for [projects](../../../api/project_relations_export.md#retrieve-the-status-of-an-export)
+and [groups](../../../api/group_relations_export.md#retrieve-the-status-of-an-export) on the source instance.
+
+## Error: `duplicate key value violates unique constraint`
+
+When importing records, you might get the following error:
+
+```plaintext
+PG::UniqueViolation: ERROR:  duplicate key value violates unique constraint
+```
+
+This error can occur when:
+
+- A Sidekiq worker processing the import restarts due to high memory or CPU usage.
+  To reduce Sidekiq resource issues during import:
+  - Optimize [Sidekiq configuration for imports](../../../administration/sidekiq/configuration_for_imports.md).
+  - Limit the number of concurrent jobs in the `bulk_import_concurrent_pipeline_batch_limit` [application setting](../../../api/settings.md).
+- You are [consolidating groups or projects from different source groups into a single destination group](_index.md#known-issues).
+  When epics from different source groups have the same internal ID (which are only unique in a single group), importing them to a single destination group
+  causes conflicts. This conflict causes `PG::UniqueViolation: ERROR:  duplicate key value violates unique constraint` errors referencing `index_issues_on_namespace_id_iid_unique` or `index_epics_on_group_id_and_iid`.
+
+## Error: `Import::BulkImports::FileDownloadStrategy::ServiceError Invalid content type`
+
+When using direct transfer between GitLab instances, you might encounter the following error:
+
+```plaintext
+Import::BulkImports::FileDownloadStrategy::ServiceError Invalid content type
+```
+
+This error is related to how network traffic is routed between instances.
+If a content type other than `application/gzip` is returned,
+your network requests might be bypassing GitLab Workhorse.
+
+To resolve this issue:
+
+- Check that your Ingress is configured to route traffic through
+  GitLab Workhorse on port `8181` rather than directly to Puma.
+- Consider enabling [proxy downloads](../../../administration/object_storage.md#proxy-download) for object storage.
+
+## Milestone titles appended with `(imported-xx-datetime)`
+
+When importing a group, if any group and project milestone titles [clash with existing titles](../../project/milestones/_index.md#milestone-title-rules) in the destination namespace, the imported milestones have
+a unique suffix appended to their title. For example, `18.0 (imported-3d-1770206299)`.
+
+To identify these milestones, search the `log/importer.log` file on the destination instance for the following:
+
+```plaintext
+Updating milestone title - source title used by existing group or project milestone
+```
+
+The log entry includes:
+
+- `importable_id`: The ID of the group being imported.
+- `milestone_title`: The title of the milestone being renamed.
+- `existing_group_id` or `existing_project_id`: The ID of the group or project that contains the existing milestone.
+
+With this information, you can locate the milestone and update the title to something you prefer.
+
+## Error: `Destination belongs to a different organization than the current one`
+
+Migrations by direct transfer fail when the source and destination namespaces belong to
+different organizations and either organization is marked as isolated.
+
+To resolve this error, migrate to a destination namespace that belongs to your
+current organization. For more information, see
+[issue 595674](https://gitlab.com/gitlab-org/gitlab/-/issues/595674).
+
+## Direct transfer fails when a downloaded file exceeds the maximum download file size
+
+Direct transfer fails when a file downloaded from the source instance is larger than the
+maximum download file size, which defaults to 5 GiB. Direct transfer exports most data in small
+batches, so most files do not exceed this limit. Only the `repository`, `lfs`, and `uploads`
+relations are likely to exceed it.
+
+On GitLab Self-Managed and GitLab Dedicated, an administrator can increase the
+[maximum download file size](../../../administration/settings/import_and_export_settings.md#maximum-download-file-size-for-imports-by-direct-or-offline-transfer).
+
+On GitLab.com, the limit is fixed and cannot be raised. To migrate a project that exceeds the
+limit, reduce the size of the affected relation before you migrate:
+
+- `repository`: Rewrite the Git history to remove large files. This action changes all commit SHAs.
+  For more information, see [methods to reduce repository size](../../project/repository/repository_size.md#methods-to-reduce-repository-size).
+- `lfs`: Migrate the project, then manually push the missing LFS objects to the destination.
+  For more information, see [LFS objects are missing on push](../../../topics/git/lfs/troubleshooting.md#lfs-objects-are-missing-on-push).
+- `uploads`: No workaround is available. For more information, see [issue 526344](https://gitlab.com/gitlab-org/gitlab/-/issues/526344).

@@ -1,0 +1,324 @@
+# frozen_string_literal: true
+
+module API
+  class Discussions < ::API::Base
+    include PaginationParams
+    include APIGuard
+
+    helpers ::API::Helpers::NotesHelpers
+    helpers ::RendersNotes
+
+    allow_access_with_scope :ai_workflows, if: ->(request) do
+      request.get? || request.head? || request.post? || request.put?
+    end
+
+    before do
+      authenticate!
+    end
+
+    urgency :low, [
+      '/projects/:id/merge_requests/:noteable_id/discussions',
+      '/projects/:id/merge_requests/:noteable_id/discussions/:discussion_id',
+      '/projects/:id/merge_requests/:noteable_id/discussions/:discussion_id/notes',
+      '/projects/:id/merge_requests/:noteable_id/discussions/:discussion_id/notes/:note_id',
+      '/projects/:id/issues/:noteable_id/discussions',
+      '/projects/:id/issues/:noteable_id/discussions/:discussion_id',
+      '/projects/:id/issues/:noteable_id/discussions/:discussion_id/notes',
+      '/projects/:id/issues/:noteable_id/discussions/:discussion_id/notes/:note_id'
+    ]
+
+    Helpers::DiscussionsHelpers.feature_category_per_noteable_type.each do |noteable_type, feature_category|
+      parent_type = noteable_type.parent_class.to_s.underscore
+      noteables_str = noteable_type.to_s.underscore.pluralize
+      notable_name = noteable_type.to_s.underscore.humanize.downcase
+      notable_article = notable_name.match?(/\A[aeiou]/i) ? 'an' : 'a'
+      notable_id_type = noteable_type == Commit ? String : Integer
+      noteables_path = noteable_type == Commit ? "repository/#{noteables_str}" : noteables_str
+      notable_type_underscore = noteable_type.to_s.underscore
+      boundary_type = parent_type.to_sym
+
+      params do
+        requires :id, type: String, desc: "ID or URL-encoded path of the #{parent_type}."
+      end
+      resource parent_type.pluralize.to_sym, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+        desc "List all discussions for #{notable_article} #{notable_name}" do
+          detail "Lists all discussions for a specified #{notable_name}."
+          success Entities::Discussion
+          tags ['discussions']
+        end
+        params do
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+          use :pagination
+        end
+
+        route_setting :authorization, permissions: :"read_#{notable_type_underscore}_discussion", boundary_type: boundary_type
+        get ":id/#{noteables_path}/:noteable_id/discussions", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+
+          discussion_ids = paginate(noteable.discussion_ids_relation)
+          notes = readable_discussion_notes(noteable, discussion_ids)
+
+          present Discussion.build_collection(notes, noteable), with: Entities::Discussion
+        end
+
+        desc "Retrieve a discussion for #{notable_article} #{notable_name}" do
+          detail "Retrieves a specified discussion for #{notable_article} #{notable_name}."
+          success Entities::Discussion
+          tags ['discussions']
+        end
+        params do
+          requires :discussion_id, type: String, desc: 'ID of the discussion.'
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+        end
+        route_setting :authorization, permissions: :"read_#{notable_type_underscore}_discussion", boundary_type: boundary_type
+        get ":id/#{noteables_path}/:noteable_id/discussions/:discussion_id", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+          notes = readable_discussion_notes(noteable, params[:discussion_id])
+
+          if notes.empty?
+            break not_found!("Discussion")
+          end
+
+          discussion = Discussion.build(notes, noteable)
+
+          present discussion, with: Entities::Discussion
+        end
+
+        desc "Create #{notable_article} #{notable_name} discussion" do
+          detail "Creates a discussion for a specified #{notable_name}. Replies can be added to it later."
+          success Entities::Discussion
+          tags ['discussions']
+        end
+        params do
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+          requires :body, type: String, desc: 'Content of the note or reply.'
+          optional :created_at, type: String, desc: 'Date and time the note was created, in ISO 8601 format such as `2016-03-11T03:45:40Z`. Requires administrator or project/group owner rights.'
+
+          if [Commit, MergeRequest].include?(noteable_type)
+            optional :position, type: Hash, desc: 'Position when creating a note' do
+              requires :base_sha, type: String, desc: 'Base commit SHA in the source branch'
+              requires :start_sha, type: String, desc: 'SHA referencing commit in target branch'
+              requires :head_sha, type: String, desc: 'SHA referencing HEAD of this merge request'
+              requires :position_type, type: String, desc: 'Type of the position reference', values: %w[text image file]
+              optional :new_path, type: String, desc: 'File path after change'
+              optional :new_line, type: Integer, desc: 'Line number after change'
+              optional :old_path, type: String, desc: 'File path before change'
+              optional :old_line, type: Integer, desc: 'Line number before change'
+              optional :width, type: Integer, desc: 'Width of the image'
+              optional :height, type: Integer, desc: 'Height of the image'
+              optional :x, type: Integer, desc: 'X coordinate in the image'
+              optional :y, type: Integer, desc: 'Y coordinate in the image'
+
+              if noteable_type == MergeRequest
+                optional :line_range, type: Hash, desc: 'Multi-line start and end' do
+                  optional :start, type: Hash, desc: 'Start line for a multi-line note' do
+                    optional :line_code, type: String, desc: 'Start line code for multi-line note'
+                    optional :type, type: String, desc: 'Start line type for multi-line note'
+                    optional :old_line, type: Integer, desc: 'Start old_line line number'
+                    optional :new_line, type: Integer, desc: 'Start new_line line number'
+                  end
+                  optional :end, type: Hash, desc: 'End line for a multi-line note' do
+                    optional :line_code, type: String, desc: 'End line code for multi-line note'
+                    optional :type, type: String, desc: 'End line type for multi-line note'
+                    optional :old_line, type: Integer, desc: 'End old_line line number'
+                    optional :new_line, type: Integer, desc: 'End new_line line number'
+                  end
+                end
+              end
+            end
+          end
+        end
+        route_setting :authorization, permissions: :"create_#{notable_type_underscore}_discussion", boundary_type: boundary_type
+        post ":id/#{noteables_path}/:noteable_id/discussions", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+          type = params[:position] ? 'DiffNote' : 'DiscussionNote'
+          id_key = noteable.is_a?(Commit) ? :commit_id : :noteable_id
+
+          opts = {
+            note: params[:body],
+            created_at: params[:created_at],
+            type: type,
+            noteable_type: noteables_str.classify,
+            position: params[:position],
+            id_key => noteable.id,
+            scope_validator: ::Gitlab::Auth::ScopeValidator.new(current_user, Gitlab::Auth::RequestAuthenticator.new(request))
+          }
+          opts[:commit_id] = params[:commit_id] if noteable.is_a?(MergeRequest) && type == 'DiffNote'
+
+          begin
+            note = create_note(noteable, opts)
+          rescue QuickActions::InterpretService::QuickActionsNotAllowedError => error
+            forbidden!(error.message)
+          end
+
+          process_note_creation_result(note) do
+            present note.discussion, with: Entities::Discussion
+          end
+        end
+        desc "List comments in #{notable_article} #{notable_name} discussion" do
+          detail "Lists the comments in a specified #{notable_name} discussion."
+          success Entities::Discussion
+          tags ['discussions']
+        end
+        params do
+          requires :discussion_id, type: String, desc: 'ID of the discussion.'
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+        end
+        route_setting :authorization, permissions: :"read_#{notable_type_underscore}_discussion_note", boundary_type: boundary_type
+        get ":id/#{noteables_path}/:noteable_id/discussions/:discussion_id/notes", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+          notes = readable_discussion_notes(noteable, params[:discussion_id])
+
+          if notes.empty?
+            break not_found!("Notes")
+          end
+
+          present notes, with: Entities::Note
+        end
+
+        desc "Add a comment to #{notable_article} #{notable_name} discussion" do
+          detail "Adds a comment to a specified #{notable_name} discussion."
+          success Entities::Note
+          tags ['discussions']
+        end
+        params do
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+          requires :discussion_id, type: String, desc: 'ID of the discussion.'
+          requires :body, type: String, desc: 'Content of the note or reply.'
+          optional :created_at, type: String, desc: 'Date and time the note was created, in ISO 8601 format such as `2016-03-11T03:45:40Z`. Requires administrator or project/group owner rights.'
+        end
+        route_setting :authorization, permissions: :"create_#{notable_type_underscore}_discussion_note", boundary_type: boundary_type
+        post ":id/#{noteables_path}/:noteable_id/discussions/:discussion_id/notes", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+          # Only the first note is needed; avoid rendering the whole thread (O(N) per reply).
+          first_note = noteable.notes.with_discussion_ids(params[:discussion_id]).order_created_at_id_asc.first
+          validator = ::Gitlab::Auth::ScopeValidator.new(current_user, Gitlab::Auth::RequestAuthenticator.new(request))
+
+          break not_found!("Discussion") unless first_note&.readable_by?(current_user)
+
+          discussion = first_note.to_discussion
+
+          unless discussion.can_reply_to_system_note?
+            break bad_request!("Replies to system notes are not allowed.")
+          end
+
+          unless first_note.part_of_discussion? || discussion.can_convert_to_discussion?
+            break bad_request!("Discussion can not be replied to.")
+          end
+
+          opts = {
+            note: params[:body],
+            type: 'DiscussionNote',
+            in_reply_to_discussion_id: params[:discussion_id],
+            created_at: params[:created_at],
+            scope_validator: validator
+          }
+          begin
+            note = create_note(noteable, opts)
+          rescue QuickActions::InterpretService::QuickActionsNotAllowedError => error
+            forbidden!(error.message)
+          end
+
+          process_note_creation_result(note) do
+            present note, with: Entities::Note
+          end
+        end
+
+        desc "Retrieve a comment from #{notable_article} #{notable_name} discussion" do
+          detail "Retrieves a specified comment from a #{notable_name} discussion."
+          success Entities::Note
+          tags ['discussions']
+        end
+        params do
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+          requires :discussion_id, type: String, desc: 'ID of the discussion.'
+          requires :note_id, type: Integer, desc: 'ID of the discussion note.'
+        end
+        route_setting :authorization, permissions: :"read_#{notable_type_underscore}_discussion_note", boundary_type: boundary_type
+        get ":id/#{noteables_path}/:noteable_id/discussions/:discussion_id/notes/:note_id", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+
+          get_note(noteable, params[:note_id], noteable_type)
+        end
+
+        desc "Update a comment in #{notable_article} #{notable_name} discussion" do
+          detail "Updates or changes the status of a specified comment in a #{notable_name} discussion."
+          success Entities::Note
+          tags ['discussions']
+        end
+        params do
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+          requires :discussion_id, type: String, desc: 'ID of the discussion.'
+          requires :note_id, type: Integer, desc: 'ID of the discussion note.'
+          optional :body, type: String, desc: 'Content of the note or reply.'
+          optional :resolved, type: Boolean, desc: 'If `true`, resolves the note. If `false`, reopens the note.'
+          exactly_one_of :body, :resolved
+        end
+        route_setting :authorization, permissions: :"update_#{notable_type_underscore}_discussion_note", boundary_type: boundary_type
+        put ":id/#{noteables_path}/:noteable_id/discussions/:discussion_id/notes/:note_id", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+
+          if params[:resolved].nil?
+            update_note(noteable, params[:note_id], noteable_type)
+          else
+            resolve_note(noteable, params[:note_id], params[:resolved], noteable_type)
+          end
+        end
+
+        desc "Delete a comment from #{notable_article} #{notable_name} discussion" do
+          detail "Deletes a specified comment from a #{notable_name} discussion."
+          success Entities::Note
+          tags ['discussions']
+        end
+        params do
+          # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+          requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+          # rubocop:enable API/ParameterType
+          requires :discussion_id, type: String, desc: 'ID of the discussion.'
+          requires :note_id, type: Integer, desc: 'ID of the discussion note.'
+        end
+        route_setting :authorization, permissions: :"delete_#{notable_type_underscore}_discussion_note", boundary_type: boundary_type
+        delete ":id/#{noteables_path}/:noteable_id/discussions/:discussion_id/notes/:note_id", feature_category: feature_category do
+          noteable = find_noteable(noteable_type, params[:noteable_id])
+
+          delete_note(noteable, params[:note_id])
+        end
+
+        if Noteable.resolvable_types.include?(noteable_type.to_s)
+          desc "Resolve or unresolve #{notable_article} #{notable_name} discussion" do
+            detail "Resolves or unresolves a specified #{notable_name} discussion."
+            success Entities::Discussion
+            tags ['discussions']
+          end
+          params do
+            # rubocop:disable API/ParameterType -- `notable_id_type` is a dynamic value, cop does not recognise this pattern
+            requires :noteable_id, type: notable_id_type, desc: "ID of the #{notable_name}."
+            # rubocop:enable API/ParameterType
+            requires :discussion_id, type: String, desc: 'ID of the discussion.'
+            requires :resolved, type: Boolean, desc: 'If `true`, resolves the discussion. If `false`, reopens the discussion.'
+          end
+          route_setting :authorization, permissions: :"update_#{notable_type_underscore}_discussion", boundary_type: boundary_type
+          put ":id/#{noteables_path}/:noteable_id/discussions/:discussion_id", feature_category: feature_category do
+            noteable = find_noteable(noteable_type, params[:noteable_id])
+
+            resolve_discussion(noteable, params[:discussion_id], params[:resolved])
+          end
+        end
+      end
+    end
+  end
+end

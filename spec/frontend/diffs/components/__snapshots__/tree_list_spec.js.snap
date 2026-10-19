@@ -1,0 +1,160 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Diffs tree list component linked file files in folders links folder/1.rb file 1`] = `
+[
+  "📁folder/",
+  "──1.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-2.rb",
+  "────nested-3.rb",
+  "──2.rb",
+  "──3.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-first.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links folder/2.rb file 1`] = `
+[
+  "📁folder/",
+  "──2.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-2.rb",
+  "────nested-3.rb",
+  "──1.rb",
+  "──3.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-first.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links folder/3.rb file 1`] = `
+[
+  "📁folder/",
+  "──3.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-2.rb",
+  "────nested-3.rb",
+  "──1.rb",
+  "──2.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-first.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links folder/sub-folder/nested-1.rb file 1`] = `
+[
+  "📁folder/sub-folder/",
+  "──nested-1.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-2.rb",
+  "────nested-3.rb",
+  "──1.rb",
+  "──2.rb",
+  "──3.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-first.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links folder/sub-folder/nested-2.rb file 1`] = `
+[
+  "📁folder/sub-folder/",
+  "──nested-2.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-3.rb",
+  "──1.rb",
+  "──2.rb",
+  "──3.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-first.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links folder/sub-folder/nested-3.rb file 1`] = `
+[
+  "📁folder/sub-folder/",
+  "──nested-3.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-2.rb",
+  "──1.rb",
+  "──2.rb",
+  "──3.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-first.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links folder-single/single.rb file 1`] = `
+[
+  "📁folder-single/",
+  "──single.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-2.rb",
+  "────nested-3.rb",
+  "──1.rb",
+  "──2.rb",
+  "──3.rb",
+  "root-first.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links root-first.rb file 1`] = `
+[
+  "root-first.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-2.rb",
+  "────nested-3.rb",
+  "──1.rb",
+  "──2.rb",
+  "──3.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-last.rb",
+]
+`;
+
+exports[`Diffs tree list component linked file files in folders links root-last.rb file 1`] = `
+[
+  "root-last.rb",
+  "📁folder",
+  "──📁sub-folder",
+  "────nested-1.rb",
+  "────nested-2.rb",
+  "────nested-3.rb",
+  "──1.rb",
+  "──2.rb",
+  "──3.rb",
+  "📁folder-single",
+  "──single.rb",
+  "root-first.rb",
+]
+`;

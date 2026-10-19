@@ -1,0 +1,136 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module EtagCaching
+    module Router
+      class Rails
+        extend EtagCaching::Router::Helpers
+
+        # We enable an ETag for every request matching the regex.
+        # To match a regex the path needs to match the following:
+        #   - Don't contain a reserved word (expect for the words used in the
+        #     regex itself)
+        #   - Ending in `issues/id`/realtime_changes` for the `issue_title` route
+        USED_IN_ROUTES = %w[noteable issue issues realtime_changes
+          commit pipelines merge_requests builds
+          new environments].freeze
+        RESERVED_WORDS = Gitlab::PathRegex::ILLEGAL_PROJECT_PATH_WORDS - USED_IN_ROUTES
+        RESERVED_WORDS_REGEX = Regexp.union(*RESERVED_WORDS.map { |word| Regexp.escape(word) })
+        RESERVED_WORDS_PREFIX = %(^(?!.*\/(#{RESERVED_WORDS_REGEX})\/).*)
+
+        ROUTES = [
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/issues/\d+/realtime_changes\z},
+            'issue_title',
+            ::Projects::IssuesController,
+            :realtime_changes
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/commit/\S+/pipelines\.json\z},
+            'commit_pipelines',
+            ::Projects::CommitController,
+            :pipelines
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/merge_requests/new\.json\z},
+            'new_merge_request_pipelines',
+            ::Projects::MergeRequests::CreationsController,
+            :new
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/merge_requests/\d+/pipelines\.json\z},
+            'merge_request_pipelines',
+            ::Projects::MergeRequestsController,
+            :pipelines
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/pipelines\.json\z},
+            'project_pipelines',
+            ::Projects::PipelinesController,
+            :index
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/pipelines/\d+\.json\z},
+            'project_pipeline',
+            ::Projects::PipelinesController,
+            :show
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/builds/\d+\.json\z},
+            'project_build',
+            ::Projects::BuildsController,
+            :show
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/clusters/\d+/environments\z},
+            'cluster_environments',
+            ::Groups::ClustersController,
+            :environments
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/-/environments\.json\z},
+            'environments',
+            ::Projects::EnvironmentsController,
+            :index
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/import/github/realtime_changes\.json\z},
+            'realtime_changes_import_github',
+            ::Import::GithubController,
+            :realtime_changes
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/import/bitbucket/realtime_changes\.json\z},
+            'realtime_changes_import_bitbucket',
+            ::Import::BitbucketController,
+            :realtime_changes
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/import/gitea/realtime_changes\.json\z},
+            'realtime_changes_import_gitea',
+            ::Import::GiteaController,
+            :realtime_changes
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/import/bitbucket_server/realtime_changes\.json\z},
+            'realtime_changes_import_bitbucket_server',
+            ::Import::BitbucketServerController,
+            :realtime_changes
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/merge_requests/\d+/cached_widget\.json\z},
+            'merge_request_widget',
+            ::Projects::MergeRequests::ContentController,
+            :cached_widget
+          ],
+          [
+            %r{#{RESERVED_WORDS_PREFIX}/merge_requests/\d+/ci_environments_status\z},
+            'merge_request_ci_environments_status',
+            ::Projects::MergeRequestsController,
+            :ci_environments_status
+          ]
+        ].map { |attrs| build_rails_route(*attrs) }.freeze
+
+        # Overridden in EE to add more routes
+        def self.all_routes
+          ROUTES
+        end
+
+        # Both ignore the /o/:organization_path prefix: a scoped and an unscoped
+        # request for the same resource must share one cache key, or a touch
+        # from one context never invalidates the etag polled from the other.
+        def self.match(request)
+          path = ::Gitlab::Routing::OrganizationsHelper.unscoped_path(request.path_info)
+
+          all_routes.find { |route| route.match(path) }
+        end
+
+        def self.cache_key(request)
+          ::Gitlab::Routing::OrganizationsHelper.unscoped_path(request.path)
+        end
+      end
+    end
+  end
+end
+
+Gitlab::EtagCaching::Router::Rails.prepend_mod_with('Gitlab::EtagCaching::Router::Rails')

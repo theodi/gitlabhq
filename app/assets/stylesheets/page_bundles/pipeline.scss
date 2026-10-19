@@ -1,0 +1,341 @@
+@import 'mixins_and_variables_and_functions';
+@import './pipeline_mixins';
+
+/**
+ * Pipeline Page Bundle
+ *
+ * Styles used to render a single pipeline page.
+ *
+ * Includes its tabs:
+ *
+ * - [data-page='projects:pipelines:show']
+ * - [data-page='projects:pipelines:dag']
+ * - [data-page='projects:pipelines:builds']
+ * - [data-page='projects:pipelines:failures']
+ * - [data-page='projects:pipelines:tests']
+ * - ...
+ */
+
+.tab-pane {
+  .ci-table {
+    thead th {
+      border-top: 0;
+    }
+  }
+}
+
+.build-failures {
+  .build-state {
+    padding: 20px 2px;
+
+    .stage {
+      @apply gl-text-subtle;
+      font-weight: $gl-font-weight-normal;
+      vertical-align: middle;
+    }
+  }
+
+  .build-log {
+    border: 0;
+    line-height: initial;
+  }
+
+  .build-log-row td {
+    border-top: 0;
+    border-bottom-width: 1px;
+    border-bottom-style: solid;
+    padding-top: 0;
+  }
+
+  .build-log {
+    width: 100%;
+    text-align: left;
+    margin-top: $gl-padding;
+  }
+
+  .build-actions {
+    width: 70px;
+    text-align: right;
+  }
+
+  .build-stage {
+    width: 140px;
+  }
+
+  .ci-status-icon-failed {
+    padding: 10px 0 10px 12px;
+    width: 12px + 24px; // padding-left + svg width
+  }
+
+  .build-icon svg {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+  }
+
+  .build-state,
+  .build-log-row {
+    > td:last-child {
+      padding-right: 0;
+    }
+  }
+
+  @include gl-container-width-down(md, panel) {
+    td:empty {
+      display: none;
+    }
+
+    .ci-table {
+      margin-top: 2 * $gl-padding;
+    }
+
+    .build-log-container {
+      padding-top: $gl-padding;
+      padding-bottom: $gl-padding;
+    }
+
+    .build-log {
+      margin-bottom: 0;
+      margin-top: 0;
+    }
+  }
+}
+
+
+// These are single-value classes to use with utility-class style CSS.
+// They are here to still access a variable or because they use magic values.
+// scoped to the graph. Do not add other styles.
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-pipeline-min-h {
+  min-height: calc(#{$dropdown-max-height-lg} + #{$gl-spacing-scale-6});
+}
+
+.pipeline-job-action {
+  &:hover {
+    background-color: var(--gl-action-neutral-background-color-hover);
+  }
+
+  &:focus-visible {
+    background-color: var(--gl-action-neutral-background-color-focus);
+  }
+
+  &:active {
+    background-color: var(--gl-action-neutral-background-color-active);
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-pipeline-job-width {
+  @apply gl-w-full;
+  max-width: 400px;
+
+  .pipeline-graph-container & {
+    max-width: unset;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-downstream-pipeline-job-width {
+  width: 8rem;
+
+  .pipeline-graph-container & {
+    width: 100%;
+
+    @include gl-container-width-up(sm, panel) {
+      width: 8rem;
+    }
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-linked-pipeline-padding {
+  padding-right: 120px;
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.gl-ci-action-icon-container {
+  position: absolute;
+  right: 5px;
+  top: 50% !important;
+  transform: translateY(-50%);
+
+  // Action Icons in big pipeline-graph nodes
+  &.ci-action-icon-wrapper {
+    height: 24px;
+    width: 24px;
+    border-radius: 100%;
+    display: block;
+    padding: 0;
+    line-height: 0;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-gl-class
+.stage-column-title .gl-ci-action-icon-container {
+  right: 11px;
+}
+
+.split-report-section {
+  border-bottom: 1px solid var(--gray-50, $gray-50);
+
+  .report-block-container {
+    max-height: 500px;
+    overflow: auto;
+  }
+
+  .space-children,
+  .space-children > span {
+    display: flex;
+    align-self: center;
+  }
+
+  .media {
+    align-items: center;
+    padding: 10px;
+    line-height: 20px;
+
+    /*
+    This fixes the wrapping div of the icon in the report header.
+    Apparently the borderless status icons are half the size of the status icons with border.
+    This means we have to double the size of the wrapping div for borderless icons.
+    */
+    .space-children:first-child {
+      width: 32px;
+      height: 32px;
+      align-items: center;
+      justify-content: center;
+      margin-right: 5px;
+      margin-left: 1px;
+    }
+  }
+
+  .code-text {
+    width: 100%;
+    flex: 1;
+  }
+}
+
+.codequality-report {
+  .media {
+    padding: $gl-padding;
+  }
+
+  .report-block-container {
+    height: auto !important;
+  }
+}
+
+.progress-bar.bg-primary {
+  background-color: var(--blue-500, $blue-500) !important;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to a specific CI card element
+.ci-card:has(.ci-job-item-failed) {
+  border-color: var(--gl-control-border-color-error);
+}
+
+// Pipeline failed status
+.ci-job-component > .ci-job-item-failed,
+.ci-job-component.ci-job-item-failed:not(:hover):not(:focus-visible) > a {
+  @include ci-job-item-failed-status-bg;
+}
+
+.pipeline-graph-container {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  .stage-column.is-stage-view:not(:last-of-type)::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: $gl-spacing-scale-6;
+    width: 2px;
+    height: $gl-spacing-scale-5 * 2;
+    background-color: $gray-200;
+
+    @include gl-container-width-up(sm, panel) {
+      top: 1.125rem;
+      left: 100%;
+      width: $gl-spacing-scale-5 * 2;
+      height: 2px;
+    }
+  }
+
+  .stage-column,
+  .stage-column.is-stage-view {
+    min-width: 1px;
+
+    @include gl-container-width-up(sm, panel) {
+      min-width: inherit;
+      max-width: $gl-spacing-scale-48;
+
+      &:first-of-type {
+        margin-left: $gl-spacing-scale-6;
+      }
+    }
+  }
+
+  .linked-pipelines-column,
+  .pipeline-show-container,
+  .pipeline-links-container {
+    @include gl-container-width-down(sm, panel) {
+      flex-basis: 100%;
+    }
+  }
+
+  .pipeline-graph {
+    @include gl-container-width-down(sm, panel) {
+      border-top-left-radius: 0;
+      border-top-right-radius: 0;
+    }
+  }
+
+  .pipeline-graph .pipeline-graph {
+    background-color: var(--gray-100, $gray-100);
+  }
+}
+
+.stage-column {
+  // stylelint-disable-next-line gitlab/no-gl-class
+  &,
+  .gl-new-dropdown-custom-toggle {
+    width: 100%;
+  }
+
+  // Set artificial focus on the menu-item to keep
+  // it consistent with the original dropdown items
+  // stylelint-disable-next-line gitlab/no-gl-class
+  .gl-new-dropdown-item:focus-visible,
+  .gl-new-dropdown-item-content:focus-visible {
+    outline: none;
+
+    .menu-item {
+      @apply gl-bg-strong;
+      @apply gl-rounded-base;
+      box-shadow: inset 0 0 0 2px $blue-400,
+        inset 0 0 0 3px var(--white, $white);
+      outline: none;
+    }
+  }
+
+}
+
+.scan-reports-summary-grid {
+  grid-template-columns: 1fr 1fr max-content;
+}
+
+@include gl-container-width-down(sm, panel) {
+  .scan-reports-summary-grid :nth-child(3n+1) {
+    grid-column: 1 / -1;
+  }
+}
+
+// Temporary fix to make tooltip appear correctly
+// until we refactor the tooltip handling in
+// https://gitlab.com/gitlab-org/gitlab/-/issues/463629
+.ci-job-component-tooltip::first-letter {
+  text-transform: uppercase;
+}

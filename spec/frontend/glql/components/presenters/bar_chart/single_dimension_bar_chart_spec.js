@@ -1,0 +1,559 @@
+import { GlBarChart } from '@gitlab/ui/src/charts';
+import {
+  GL_COLOR_DATA_BLUE_50,
+  GL_COLOR_DATA_BLUE_400,
+  GL_COLOR_DATA_BLUE_500,
+  GL_COLOR_DATA_BLUE_900,
+} from '@gitlab/ui/src/tokens/build/js/tokens';
+import { nextTick } from 'vue';
+import { mountExtended, shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import {
+  getSystemColorScheme,
+  listenSystemColorSchemeChange,
+  removeListenerSystemColorSchemeChange,
+} from '~/lib/utils/css_utils';
+import SingleDimensionBarChart from '~/glql/components/presenters/bar_chart/single_dimension_bar_chart.vue';
+import {
+  barCategoryAxisOptions,
+  barChartHeightFor,
+} from '~/glql/components/presenters/bar_chart/bar_chart_options';
+import { chartTooltipStub } from '../../../chart_helpers';
+
+jest.mock('~/lib/utils/css_utils', () => ({
+  ...jest.requireActual('~/lib/utils/css_utils'),
+  getSystemColorScheme: jest.fn(() => 'gl-light'),
+  listenSystemColorSchemeChange: jest.fn(),
+  removeListenerSystemColorSchemeChange: jest.fn(),
+}));
+
+const DIMENSION = { key: 'language', label: 'Language', name: 'language', type: 'dimension' };
+const CREATED = {
+  key: 'created',
+  label: 'Created',
+  name: 'created',
+  type: 'dimension',
+  parameters: { granularity: 'daily' },
+};
+const TOTAL_COUNT = {
+  key: 'totalCount',
+  label: 'Total count',
+  name: 'totalCount',
+  type: 'metric',
+};
+const ACCEPTANCE_RATE = {
+  key: 'acceptanceRate',
+  label: 'Acceptance rate',
+  name: 'acceptanceRate',
+  type: 'metric',
+};
+const DURATION_QUANTILE = {
+  key: 'durationQuantile',
+  label: 'p95',
+  name: 'durationQuantile',
+  type: 'metric',
+};
+const ALIASED_METRIC = {
+  key: 'p50',
+  field: 'durationQuantile',
+  label: 'Duration P50',
+  type: 'metric',
+  parameters: { quantile: 0.5 },
+};
+const SHOWN = { key: 'shownCount', label: 'Shown', name: 'shownCount', type: 'metric' };
+const ACCEPTED = { key: 'acceptedCount', label: 'Accepted', name: 'acceptedCount', type: 'metric' };
+const DATA = {
+  nodes: [
+    { language: 'ruby', totalCount: 21, acceptanceRate: 0.625, shownCount: 8, acceptedCount: 5 },
+    { language: 'python', totalCount: 14, acceptanceRate: 0.333, shownCount: 6, acceptedCount: 2 },
+  ],
+};
+
+describe('SingleDimensionBarChart', () => {
+  let wrapper;
+
+  const createComponent = (props = {}, provide = {}) => {
+    wrapper = shallowMountExtended(SingleDimensionBarChart, {
+      provide,
+      propsData: {
+        data: DATA,
+        dimension: DIMENSION,
+        metrics: [TOTAL_COUNT],
+        ...props,
+      },
+    });
+  };
+
+  const findChart = () => wrapper.findComponent(GlBarChart);
+
+  describe('with 1 metric', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('renders GlBarChart in tiled presentation by default', () => {
+      expect(findChart().exists()).toBe(true);
+      expect(findChart().props('presentation')).toBe('tiled');
+    });
+
+    it('labels the x-axis with the metric name and y-axis with the dimension name', () => {
+      expect(findChart().props('xAxisTitle')).toBe('Total count');
+      expect(findChart().props('yAxisTitle')).toBe('Language');
+    });
+
+    it('sizes the chart from its row count', () => {
+      expect(findChart().props('height')).toBe(barChartHeightFor(2));
+    });
+
+    it('passes reversed [value, dimension] tuples keyed by metric label', () => {
+      expect(findChart().props('data')).toEqual({
+        'Total count': [
+          [21, 'ruby'],
+          [14, 'python'],
+        ],
+      });
+    });
+  });
+
+  describe('with a time dimension', () => {
+    const TIME_DIMENSION = {
+      key: 'finished',
+      label: 'Finished',
+      name: 'finishedAt',
+      type: 'dimension',
+      parameters: { granularity: 'weekly' },
+    };
+
+    it('includes granularity in the y-axis title', () => {
+      createComponent({ dimension: TIME_DIMENSION });
+
+      expect(findChart().props('yAxisTitle')).toBe('Finished (weekly)');
+    });
+  });
+
+  describe('with an unaliased parameterised metric', () => {
+    const PARAMETERISED_METRIC = {
+      key: 'durationQuantile',
+      field: 'durationQuantile',
+      label: 'Duration quantile',
+      type: 'metric',
+      parameters: { quantile: 0.5 },
+    };
+    const PARAM_DATA = { nodes: [{ language: 'ruby', durationQuantile: 3661 }] };
+
+    it('uses the parameterised label as the x-axis title', () => {
+      createComponent({ metrics: [PARAMETERISED_METRIC], data: PARAM_DATA });
+
+      expect(findChart().props('xAxisTitle')).toBe('Duration quantile (0.5)');
+    });
+
+    it('keys the series data by the parameterised label', () => {
+      createComponent({ metrics: [PARAMETERISED_METRIC], data: PARAM_DATA });
+
+      expect(findChart().props('data')).toEqual({
+        'Duration quantile (0.5)': [[3661, 'ruby']],
+      });
+    });
+  });
+
+  describe('with an aliased parameterised metric', () => {
+    it('resolves the formatter from the base field name, not the alias', () => {
+      createComponent({
+        metrics: [ALIASED_METRIC],
+        data: { nodes: [{ language: 'ruby', p50: 3661 }] },
+      });
+
+      expect(findChart().props('option').xAxis.axisLabel.formatter(10000)).toBe('2.8h');
+    });
+
+    it('builds the series from the alias key and labels it with the alias label', () => {
+      createComponent({
+        metrics: [ALIASED_METRIC],
+        data: {
+          nodes: [
+            { language: 'ruby', p50: 3661 },
+            { language: 'python', p50: 90 },
+          ],
+        },
+      });
+
+      expect(findChart().props('data')).toEqual({
+        'Duration P50': [
+          [3661, 'ruby'],
+          [90, 'python'],
+        ],
+      });
+    });
+  });
+
+  describe('with 2 metrics (tiled)', () => {
+    beforeEach(() => {
+      createComponent({ metrics: [TOTAL_COUNT, ACCEPTANCE_RATE] });
+    });
+
+    it('renders GlBarChart in tiled presentation', () => {
+      expect(findChart().props('presentation')).toBe('tiled');
+    });
+
+    it('passes one series per metric', () => {
+      expect(findChart().props('data')).toEqual({
+        'Total count': [
+          [21, 'ruby'],
+          [14, 'python'],
+        ],
+        'Acceptance rate': [
+          [0.625, 'ruby'],
+          [0.333, 'python'],
+        ],
+      });
+    });
+
+    it('adds half a row band per extra tiled bar', () => {
+      expect(findChart().props('height')).toBe(barChartHeightFor(2, { barsPerRow: 2 }));
+    });
+  });
+
+  describe('with stacked=true', () => {
+    beforeEach(() => {
+      createComponent({ metrics: [SHOWN, ACCEPTED], stacked: true });
+    });
+
+    it('renders GlBarChart in stacked presentation', () => {
+      expect(findChart().props('presentation')).toBe('stacked');
+    });
+
+    it('sizes the chart by row rather than by bar', () => {
+      expect(findChart().props('height')).toBe(barChartHeightFor(2));
+    });
+  });
+
+  describe('x-axis formatting', () => {
+    const xAxisOption = () => findChart().props('option').xAxis;
+
+    it('formats the x-axis with the compact count formatter', () => {
+      createComponent();
+
+      expect(xAxisOption().axisLabel.formatter(2500000)).toBe('2.5M');
+    });
+
+    it('formats the x-axis as a compact duration when the metric is a quantile', () => {
+      createComponent({
+        metrics: [DURATION_QUANTILE],
+        data: { nodes: [{ language: 'ruby', durationQuantile: 10000 }] },
+      });
+
+      expect(xAxisOption().axisLabel.formatter(10000)).toBe('2.8h');
+    });
+
+    it('formats the x-axis as a percentage when the metric is a rate', () => {
+      createComponent({
+        metrics: [ACCEPTANCE_RATE],
+        data: { nodes: [{ language: 'ruby', acceptanceRate: 0.5 }] },
+      });
+
+      expect(xAxisOption().axisLabel.formatter(0.42)).toBe('42%');
+    });
+
+    it('omits the x-axis formatter override when metrics have mixed units', () => {
+      createComponent({ metrics: [TOTAL_COUNT, ACCEPTANCE_RATE] });
+
+      expect(findChart().props('option').xAxis).toBeUndefined();
+    });
+  });
+
+  describe('y-axis category labels', () => {
+    const yAxisOption = () => findChart().props('option').yAxis;
+
+    it('overrides the truncating label formatter with pixel-based sizing', () => {
+      createComponent();
+
+      // The probe must be longer than GlBarChart's 7-character truncation to
+      // tell the identity override apart from the default truncating formatter.
+      expect(yAxisOption().axisLabel.formatter('feature-branch-name')).toBe('feature-branch-name');
+      expect(yAxisOption().axisLabel.overflow).toBe('truncate');
+    });
+
+    it('sizes the label gutter from the longest category label', () => {
+      // Multi-year buckets produce yearful labels ("Jan 1, 2025"), keeping the
+      // expected width above the clamp floor so this pins the proportional
+      // sizing, not just the minimum.
+      createComponent({
+        dimension: CREATED,
+        data: {
+          nodes: [
+            { created: '2025-01-01', totalCount: 21 },
+            { created: '2026-06-01', totalCount: 14 },
+          ],
+        },
+      });
+
+      // The sizing math itself is covered by bar_chart_options_spec; here we
+      // assert the formatted labels reach the util and its output the chart.
+      const { yAxis, grid } = barCategoryAxisOptions(['Jan 1, 2025', 'Jun 1, 2026']);
+
+      expect(yAxisOption().axisLabel.width).toBe(yAxis.axisLabel.width);
+      expect(yAxisOption().nameGap).toBe(yAxis.nameGap);
+      expect(findChart().props('option').grid).toEqual(grid);
+    });
+
+    it('keeps raw bucket values in the data and formats them via the axis formatter', () => {
+      createComponent({
+        dimension: CREATED,
+        data: {
+          nodes: [
+            { created: '2026-01-01', totalCount: 21 },
+            { created: '2026-02-01', totalCount: 14 },
+          ],
+        },
+      });
+
+      expect(findChart().props('data')).toEqual({
+        'Total count': [
+          [21, '2026-01-01'],
+          [14, '2026-02-01'],
+        ],
+      });
+      expect(yAxisOption().axisLabel.formatter('2026-01-01')).toBe('Jan 1');
+    });
+  });
+
+  describe('with shareLabels=true', () => {
+    const yAxisFormatter = () => findChart().props('option').yAxis.axisLabel.formatter;
+
+    it('appends the value and its share of the total to each category label', () => {
+      createComponent({ shareLabels: true });
+
+      expect(yAxisFormatter()('ruby')).toBe('ruby · 21 · 60%');
+      expect(yAxisFormatter()('python')).toBe('python · 14 · 40%');
+    });
+
+    it('formats the count with thousands separators', () => {
+      createComponent({
+        shareLabels: true,
+        data: {
+          nodes: [
+            { language: 'ruby', totalCount: 1555 },
+            { language: 'python', totalCount: 500 },
+          ],
+        },
+      });
+
+      expect(yAxisFormatter()('ruby')).toBe('ruby · 1,555 · 75.7%');
+    });
+
+    it('sizes the label gutter from the composite labels', () => {
+      createComponent({ shareLabels: true });
+
+      const { yAxis } = barCategoryAxisOptions(['ruby · 21 · 60%', 'python · 14 · 40%'], {
+        shareLabels: true,
+      });
+
+      expect(findChart().props('option').yAxis.axisLabel.width).toBe(yAxis.axisLabel.width);
+    });
+
+    it('widens the gutter cap so a long share label is not cut off', () => {
+      createComponent({
+        shareLabels: true,
+        data: { nodes: [{ language: 'a-very-long-language-name', totalCount: 1555 }] },
+      });
+
+      expect(findChart().props('option').yAxis.axisLabel.width).toBe(240);
+    });
+
+    it('keeps plain labels for a metric that is not a count', () => {
+      createComponent({ shareLabels: true, metrics: [ACCEPTANCE_RATE] });
+
+      expect(yAxisFormatter()('ruby')).toBe('ruby');
+    });
+
+    it('keeps plain labels with more than one metric', () => {
+      createComponent({ shareLabels: true, metrics: [TOTAL_COUNT, ACCEPTANCE_RATE] });
+
+      expect(yAxisFormatter()('ruby')).toBe('ruby');
+    });
+  });
+
+  describe('with showAxisTitles=false', () => {
+    beforeEach(() => {
+      createComponent({ showAxisTitles: false });
+    });
+
+    it('passes empty axis titles', () => {
+      expect(findChart().props('xAxisTitle')).toBe('');
+      expect(findChart().props('yAxisTitle')).toBe('');
+    });
+
+    it('drops the axis title space from the grid', () => {
+      const { grid } = barCategoryAxisOptions(['ruby', 'python'], { axisTitle: false });
+
+      expect(findChart().props('option').grid).toEqual(grid);
+    });
+
+    it('sizes the chart without room for an axis title', () => {
+      expect(findChart().props('height')).toBe(barChartHeightFor(2, { axisTitle: false }));
+    });
+  });
+
+  describe('with colorBy=category', () => {
+    const styled = (color) => ({
+      itemStyle: { color, borderColor: color },
+      emphasis: { itemStyle: { color, borderColor: color } },
+    });
+
+    it('gives each bar its own solid shade and border, darkest at the top in light mode', () => {
+      createComponent({ colorBy: 'category' });
+
+      // ECharts draws the first row at the bottom, so the last row is the top one.
+      expect(findChart().props('data')).toEqual({
+        'Total count': [
+          { value: [21, 'ruby'], ...styled(GL_COLOR_DATA_BLUE_500) },
+          { value: [14, 'python'], ...styled(GL_COLOR_DATA_BLUE_900) },
+        ],
+      });
+    });
+
+    describe('in dark mode', () => {
+      beforeEach(() => {
+        getSystemColorScheme.mockReturnValue('gl-dark');
+        createComponent({ colorBy: 'category' });
+      });
+
+      afterEach(() => {
+        getSystemColorScheme.mockReturnValue('gl-light');
+      });
+
+      it('flips the scale so the top bar is the lightest', () => {
+        expect(findChart().props('data')).toEqual({
+          'Total count': [
+            { value: [21, 'ruby'], ...styled(GL_COLOR_DATA_BLUE_400) },
+            { value: [14, 'python'], ...styled(GL_COLOR_DATA_BLUE_50) },
+          ],
+        });
+      });
+    });
+
+    describe('when the system colour scheme changes', () => {
+      beforeEach(async () => {
+        createComponent({ colorBy: 'category' });
+
+        const [[onSchemeChange]] = listenSystemColorSchemeChange.mock.calls;
+        onSchemeChange('gl-dark');
+        await nextTick();
+      });
+
+      it('recolours the bars for the new scheme', () => {
+        expect(findChart().props('data')['Total count'][1]).toEqual({
+          value: [14, 'python'],
+          ...styled(GL_COLOR_DATA_BLUE_50),
+        });
+      });
+    });
+
+    it('stops listening for scheme changes when destroyed', () => {
+      createComponent({ colorBy: 'category' });
+      const [[onSchemeChange]] = listenSystemColorSchemeChange.mock.calls;
+
+      wrapper.destroy();
+
+      expect(removeListenerSystemColorSchemeChange).toHaveBeenCalledWith(onSchemeChange);
+    });
+
+    it('still sizes the label gutter from the category labels', () => {
+      createComponent({ colorBy: 'category' });
+
+      const { yAxis } = barCategoryAxisOptions(['ruby', 'python']);
+
+      expect(findChart().props('option').yAxis.axisLabel.width).toBe(yAxis.axisLabel.width);
+    });
+
+    it('keeps plain tuples with more than one metric', () => {
+      createComponent({ colorBy: 'category', metrics: [TOTAL_COUNT, ACCEPTANCE_RATE] });
+
+      expect(findChart().props('data')['Total count']).toEqual([
+        [21, 'ruby'],
+        [14, 'python'],
+      ]);
+    });
+  });
+
+  describe('rendered tooltip', () => {
+    // Stub the chart and render its tooltip slots with fixed params, so we can
+    // assert on the resulting tooltip DOM rather than reaching into component
+    // internals.
+    const mountWithTooltip = ({ seriesData, data = DATA, ...props }) => {
+      const stub = chartTooltipStub({ seriesData });
+      return mountExtended(SingleDimensionBarChart, {
+        propsData: { data, dimension: DIMENSION, ...props },
+        stubs: { GlBarChart: stub },
+      });
+    };
+
+    it('formats each series with its own unit when units differ across metrics', () => {
+      const w = mountWithTooltip({
+        metrics: [ACCEPTANCE_RATE, DURATION_QUANTILE],
+        seriesData: [
+          { seriesName: 'Acceptance rate', value: [0.819, 'ruby'], color: '#aaa' },
+          { seriesName: 'p95', value: [5252, 'ruby'], color: '#bbb' },
+        ],
+      });
+
+      expect(w.text()).toContain('81.9%');
+      expect(w.text()).toContain('1h 27m 32s');
+    });
+
+    it('renders unknown series labels through identity (no unit mapping)', () => {
+      const w = mountWithTooltip({
+        metrics: [DURATION_QUANTILE],
+        seriesData: [{ seriesName: 'Unknown', value: [3661, 'ruby'], color: '#aaa' }],
+      });
+
+      expect(w.text()).toContain('3661');
+      expect(w.text()).not.toContain('1h 1m 1s');
+    });
+
+    it('formats an aliased duration metric with the base field formatter', () => {
+      const w = mountWithTooltip({
+        metrics: [ALIASED_METRIC],
+        data: { nodes: [{ language: 'ruby', p50: 3661 }] },
+        seriesData: [{ seriesName: 'Duration P50', value: [3661, 'ruby'], color: '#aaa' }],
+      });
+
+      expect(w.text()).toContain('1h 1m 1s');
+    });
+
+    it('keeps the plain label in the title when shareLabels is on', () => {
+      const w = mountWithTooltip({
+        shareLabels: true,
+        metrics: [TOTAL_COUNT],
+        seriesData: [{ seriesName: 'Total count', value: [21, 'ruby'], color: '#aaa' }],
+      });
+
+      // The body already lists the count, so the share suffix stays on the axis.
+      expect(w.text()).toContain('ruby (Language)');
+      expect(w.text()).not.toContain('60%');
+    });
+
+    it('still names the dimension in the title when axis titles are hidden', () => {
+      const w = mountWithTooltip({
+        showAxisTitles: false,
+        metrics: [TOTAL_COUNT],
+        seriesData: [{ seriesName: 'Total count', value: [21, 'ruby'], color: '#aaa' }],
+      });
+
+      expect(w.text()).toContain('ruby (Language)');
+    });
+  });
+
+  describe('accessible title', () => {
+    it('names the chart with the panel title inside a dashboard panel', () => {
+      createComponent({}, { getVisualizationTitle: () => 'Panel title' });
+
+      expect(findChart().attributes('accessible-title')).toBe('Panel title');
+    });
+
+    it('has no chart title outside a dashboard panel', () => {
+      createComponent();
+
+      expect(findChart().attributes('accessible-title')).toBe('');
+    });
+  });
+});

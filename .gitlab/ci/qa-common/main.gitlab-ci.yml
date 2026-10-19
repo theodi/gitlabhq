@@ -1,0 +1,232 @@
+default:
+  interruptible: true
+
+workflow:
+  name: $PIPELINE_NAME
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      auto_cancel:
+        on_new_commit: none
+    # catch all rule as this is only used in child pipeline context so should be triggered always
+    - when: always
+
+include:
+  - local: .gitlab/ci/version.yml
+  - local: .gitlab/ci/global.gitlab-ci.yml
+  - local: .gitlab/ci/ci-images.gitlab-ci.yml
+  - component: "gitlab.com/gitlab-org/quality/pipeline-common/allure-report@13.0.0"
+    inputs:
+      job_name: "e2e-test-report"
+      job_stage: "report"
+      report_title: '<a href="https://handbook.gitlab.com/handbook/engineering/testing/end-to-end-pipeline-monitoring/#allure-report">E2E Test Result Summary</a>'
+      aws_access_key_id_variable_name: "QA_ALLURE_AWS_ACCESS_KEY_ID"
+      aws_secret_access_key_variable_name: "QA_ALLURE_AWS_SECRET_ACCESS_KEY"
+      gitlab_auth_token_variable_name: "PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE"
+      allure_job_name: "${QA_RUN_TYPE}"
+      # An empty value makes allure-report-publisher skip the merge request update, so the
+      # report is still uploaded but no bot comment is posted.
+      allure_mr_update_type: ""
+  - project: gitlab-org/quality/pipeline-common
+    ref: 13.1.1
+    file:
+      - /ci/notify-slack.gitlab-ci.yml
+      - /ci/qa-report.gitlab-ci.yml
+      - /ci/junit.gitlab-ci.yml
+
+stages:
+  - test
+  - report
+  - notify
+
+# ==========================================
+# Templates
+# ==========================================
+
+# add flag to ignore test runtime when creating example runtime data reports
+.with-ignored-runtime-data:
+  variables:
+    QA_IGNORE_RUNTIME_DATA: "true"
+
+.parallel:
+  parallel: 5
+
+.qa-install:
+  extends:
+    - .with-ruby-slim-image
+    - .qa-cache
+  variables:
+    BUNDLE_SUPPRESS_INSTALL_USING_MESSAGES: "true"
+    BUNDLE_SILENCE_ROOT_WARNING: "true"
+  before_script:
+    - cd qa && bundle install
+
+.docker-in-docker:
+  services:
+    - name: "$GL_DOCKER_REGISTRY_MIRROR/docker:${DOCKER_VERSION}-dind"
+      alias: docker
+      entrypoint: ["sh", "-c", "dockerd-entrypoint.sh $GL_DOCKER_DIND_OPTIONS"]
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+    GL_DOCKER_REGISTRY_MIRROR: mirror.gcr.io
+    GL_DOCKER_REGISTRY_MIRROR_ENDPOINT: https://${GL_DOCKER_REGISTRY_MIRROR}
+    GL_DOCKER_DIND_OPTIONS: "--registry-mirror=$GL_DOCKER_REGISTRY_MIRROR_ENDPOINT"
+    HEALTHCHECK_TCP_PORT: "2375"
+
+.e2e-test-variables:
+  variables:
+    QA_GENERATE_ALLURE_REPORT: "true"
+    QA_CAN_TEST_PRAEFECT: "false"
+    QA_INTERCEPT_REQUESTS: "true"
+    QA_ARTIFACTS_DIR: $CI_PROJECT_DIR
+    QA_SUITE_STATUS_ENV_FILE: "${CI_PROJECT_DIR}/suite_status.env"
+    QA_ALLOW_LOCAL_REQUESTS: "true"
+    GITLAB_LICENSE_MODE: test
+    GITLAB_QA_ADMIN_ACCESS_TOKEN: $QA_ADMIN_ACCESS_TOKEN
+    FF_NETWORK_PER_BUILD: "true"
+    # RUNNER_SCRIPT_TIMEOUT will trigger before overall job timeout, this ensures after_script will still be executed
+    # https://docs.gitlab.com/ci/runners/configure_runners/#set-script-and-after_script-timeouts
+    RUNNER_SCRIPT_TIMEOUT: $MAX_E2E_TEST_EXECUTION_TIME
+
+.e2e-test-base:
+  extends:
+    - .docker-in-docker
+    - .qa-install
+    - .e2e-test-variables
+  variables:
+    # variables related to failure issue reporting
+    # default values from /ci/qa-report.gitlab-ci.yml will work with gitlab-qa orchestrator but not with cng and gdk tests
+    QA_RSPEC_JSON_FILE_PATTERN: $CI_PROJECT_DIR/qa/tmp/rspec-*.json
+    QA_TEST_METRICS_JSON_FILE_PATTERN: $CI_PROJECT_DIR/qa/tmp/test-metrics-*.json
+    QA_SYSTEM_LOG_FILE_PATTERN: $CI_PROJECT_DIR/test_output/logs
+  script:
+    - source $CI_PROJECT_DIR/scripts/utils.sh
+    - source $CI_PROJECT_DIR/scripts/rspec_helpers.sh
+    - echo "SUITE_RAN=true" > "${QA_SUITE_STATUS_ENV_FILE}"
+    - run_e2e_specs "${QA_GITLAB_URL}" "${QA_TESTS}" "${QA_RSPEC_TAGS}"
+
+.upload-test-runtime-data:
+  extends:
+    - .qa-install
+  stage: report
+  when: on_success
+  variables:
+    QA_JSON_REPORT_FILE_PATTERN: $CI_PROJECT_DIR/qa/tmp/rspec-*.json
+  script:
+    - bundle exec rake "knapsack:upload_example_runtimes[$QA_JSON_REPORT_FILE_PATTERN]"
+
+.export-code-paths-mapping:
+  extends:
+    - .qa-install
+  stage: report
+  when: always
+  allow_failure: true
+  variables:
+    QA_CODE_PATHS_MAPPING_FILE_PATTERN: $CI_PROJECT_DIR/qa/tmp/test-code-paths-mapping-*.json
+  script:
+    - bundle exec rake "ci:export_code_paths_mapping[$QA_CODE_PATHS_MAPPING_FILE_PATTERN]"
+  rules:
+    - if: '$COVERBAND_ENABLED == "true"'
+
+.export-frontend-code-paths-mapping:
+  extends:
+    - .qa-install
+  stage: report
+  when: always
+  allow_failure: true
+  variables:
+    QA_FRONTEND_PATHS_MAPPING_FILE_PATTERN: $CI_PROJECT_DIR/qa/tmp/js-coverage-by-example-*.json
+  script:
+    - bundle exec rake "ci:export_frontend_code_paths_mapping[$QA_FRONTEND_PATHS_MAPPING_FILE_PATTERN]"
+  rules:
+    - if: '$BABEL_ENV == "istanbul"'
+
+.process-e2e-coverage:
+  extends:
+    - .with-ci-node-image
+    - .yarn-cache
+  stage: report
+  when: always
+  allow_failure: true
+  variables:
+    NODE_ENV: "development"  # Need devDependencies for istanbul packages
+  before_script:
+    - cd $CI_PROJECT_DIR
+    - source scripts/utils.sh
+    - echo "Installing yarn packages with devDependencies..."
+    - yarn install --frozen-lockfile --production=false
+  script:
+    - echo "Collecting E2E backend coverage files..."
+    - mkdir -p coverage-e2e-backend
+    - cp qa/tmp/coverband-coverage-*.json coverage-e2e-backend/ 2>/dev/null || echo "No Coverband files found"
+    - echo "Collecting E2E backend test mapping files..."
+    - mkdir -p e2e-test-mapping
+    - cp qa/tmp/test-code-paths-mapping-*.json e2e-test-mapping/ 2>/dev/null || echo "No backend test mapping files found"
+    - echo "Processing E2E frontend coverage..."
+    - NODE_OPTIONS="--max-old-space-size=4096" yarn node scripts/frontend/merge_e2e_coverage.js
+    - echo "Converting per-example Istanbul coverage to per-test line-hit format..."
+    - mkdir -p coverage-e2e-per-test-frontend
+    - NODE_OPTIONS="--max-old-space-size=4096" yarn node scripts/frontend/convert_e2e_istanbul_to_per_test_coverage.js || echo "Istanbul per-test conversion failed (non-fatal)"
+    - echo "Collecting E2E frontend test mappings..."
+    - cp qa/tmp/js-coverage-by-example-*.json coverage-e2e-frontend/ 2>/dev/null || echo "No E2E frontend test mapping files found"
+    - echo "Collecting E2E test report files..."
+    - mkdir -p e2e-test-reports
+    - cp qa/tmp/rspec-*.json e2e-test-reports/ 2>/dev/null || echo "No E2E test report files found"
+  artifacts:
+    paths:
+      - coverage-e2e-backend/
+      - coverage-e2e-frontend/
+      - coverage-e2e-per-test-frontend/
+      - e2e-test-mapping/
+      - e2e-test-reports/
+    expire_in: 7d
+    when: always
+  rules:
+    - if: '$COVERBAND_ENABLED == "true" && $BABEL_ENV == "istanbul" && $GLCI_EXPORT_COVERAGE == "true"'
+
+.notify-slack:
+  extends:
+    - .post-to-slack
+    - .qa-install
+  stage: notify
+  variables:
+    QA_RSPEC_XML_FILE_PATTERN: "$CI_PROJECT_DIR/qa/tmp/rspec-*.xml"
+    GITLAB_API_TOKEN: $PROJECT_TOKEN_FOR_CI_SCRIPTS_API_USAGE
+    SLACK_ICON_EMOJI: ci_failing
+    STATUS_SYM: ☠️
+    STATUS: failed
+    TYPE: "($QA_RUN_TYPE) "
+    ALLURE_JOB_NAME: $QA_RUN_TYPE
+  when: always
+  script:
+    - |
+      if [ "$SUITE_FAILED" != "true" ] && [ "$SUITE_RAN" == "true" ]; then
+        echo "Test suite passed. Exiting..."
+        exit 0
+      fi
+    - bundle exec prepare-stage-reports --input-files "${QA_RSPEC_XML_FILE_PATTERN}"
+    - !reference [.post-to-slack, script]
+
+.failure-videos:
+  variables:
+    USE_SELENOID: "true"
+    QA_RECORD_VIDEO: "true"
+    QA_REMOTE_GRID: "selenoid:4444"
+
+# ==========================================
+# Pre stage
+# ==========================================
+dont-interrupt-me:
+  stage: .pre
+  image: alpine:latest
+  interruptible: false
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "This jobs makes sure this pipeline won't be interrupted! See https://docs.gitlab.com/ci/yaml/#interruptible."
+  rules:
+    - if: '$CI_MERGE_REQUEST_EVENT_TYPE == "merged_result" || $CI_MERGE_REQUEST_EVENT_TYPE == "detached"'
+      when: manual
+      allow_failure: true

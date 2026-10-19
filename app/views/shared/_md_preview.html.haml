@@ -1,0 +1,36 @@
+- referenced_users = local_assigns.fetch(:referenced_users, nil)
+- supports_quick_actions = local_assigns.fetch(:supports_quick_actions, false)
+
+- if @merge_request&.discussion_locked?
+  .issuable-note-warning
+    = sprite_icon('lock', css_class: 'icon')
+    %span
+      = _('The discussion in this merge request is locked.')
+      = _('Only project members can comment.')
+
+%div{ class: "md-area !gl-relative" }
+  .md-header.gl-px-3.gl-rounded-t-base.gl-border-b.gl-border-default
+    .gl-flex.gl-items-top.gl-flex-nowrap.gl-justify-between
+      .md-header-toolbar.gl-flex.gl-py-3.gl-flex-wrap.gl-gap-y-3
+        = render Pajamas::ButtonComponent.new(category: :tertiary, size: :small, button_options: { class: 'js-md-preview-button', value: 'preview' }) do
+          = _('Preview')
+        .gl-flex.gl-py-2.haml-markdown-button
+          .gl-border-l.gl-ml-2.gl-pl-3
+        = render 'shared/blob/markdown_buttons', supports_quick_actions: supports_quick_actions
+      .full-screen.gl-py-3
+        = render Pajamas::ButtonComponent.new(icon: 'maximize', category: :tertiary, size: :small, button_options: { 'tabindex': -1, 'title': _("Go full screen"), 'aria-label': _("Go full screen"), class: 'has-tooltip js-zen-enter', data: { container: 'body' } })
+
+  .md-write-holder
+    = yield
+  .md.md-preview-holder.gl-px-5.js-md-preview.hide{ data: { url: url } }
+  .referenced-commands.hide
+
+  - if referenced_users
+    .referenced-users.hide
+      %span
+        = sprite_icon('warning-solid')
+        You are about to add
+        %strong
+          %span.js-referenced-users-count 0
+          people
+        to the discussion. Proceed with caution.

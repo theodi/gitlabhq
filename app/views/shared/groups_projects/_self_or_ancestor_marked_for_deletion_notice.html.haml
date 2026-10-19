@@ -1,0 +1,6 @@
+- return unless deletion_in_progress_or_scheduled_in_hierarchy_chain?(context)
+
+= render Pajamas::AlertComponent.new(variant: :warning,
+  dismissible: false) do |c|
+  = c.with_body do
+    = self_or_ancestors_deletion_in_progress_or_scheduled_message(context)

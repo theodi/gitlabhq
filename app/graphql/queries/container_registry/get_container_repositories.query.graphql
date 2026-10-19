@@ -1,0 +1,97 @@
+query getProjectContainerRepositories(
+  $fullPath: ID!
+  $name: String
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+  $isGroupPage: Boolean!
+  $sort: ContainerRepositorySort
+) {
+  project(fullPath: $fullPath) @skip(if: $isGroupPage) {
+    __typename
+    id
+    containerRepositoriesCount
+    containerRepositories(
+      name: $name
+      after: $after
+      before: $before
+      first: $first
+      last: $last
+      sort: $sort
+    ) {
+      __typename
+      nodes {
+        id
+        migrationState
+        name
+        path
+        status
+        location
+        createdAt
+        expirationPolicyStartedAt
+        expirationPolicyCleanupStatus
+        project {
+          id
+          path
+        }
+        protectionRuleExists
+        userPermissions {
+          destroyContainerRepository
+        }
+        __typename
+      }
+      pageInfo {
+        __typename
+        hasNextPage
+        hasPreviousPage
+        startCursor
+        endCursor
+      }
+    }
+  }
+  group(fullPath: $fullPath) @include(if: $isGroupPage) {
+    __typename
+    id
+    containerRepositoriesCount
+    containerRepositories(
+      name: $name
+      after: $after
+      before: $before
+      first: $first
+      last: $last
+      sort: $sort
+    ) {
+      __typename
+      nodes {
+        id
+        migrationState
+        name
+        path
+        status
+        location
+        createdAt
+        expirationPolicyStartedAt
+        expirationPolicyCleanupStatus
+        project {
+          id
+          name
+          path
+          webUrl
+        }
+        protectionRuleExists
+        userPermissions {
+          destroyContainerRepository
+        }
+        __typename
+      }
+      pageInfo {
+        __typename
+        hasNextPage
+        hasPreviousPage
+        startCursor
+        endCursor
+      }
+    }
+  }
+}

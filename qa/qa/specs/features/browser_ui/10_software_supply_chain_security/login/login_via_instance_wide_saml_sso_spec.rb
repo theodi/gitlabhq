@@ -1,0 +1,23 @@
+# frozen_string_literal: true
+
+module QA
+  RSpec.describe 'Software Supply Chain Security', :orchestrated, :instance_saml, feature_category: :system_access do
+    describe 'Instance wide SAML SSO' do
+      it(
+        'user logs in to gitlab with SAML SSO'
+      ) do
+        Runtime::Browser.visit(:gitlab, Page::Main::Login)
+
+        Page::Main::Login.perform(&:sign_in_with_saml)
+
+        Vendor::SamlIdp::Page::Login.perform do |login_page|
+          login_page.login('user1', 'user1pass')
+        end
+
+        Page::Dashboard::Welcome.perform do |welcome|
+          expect(welcome).to have_welcome_title
+        end
+      end
+    end
+  end
+end

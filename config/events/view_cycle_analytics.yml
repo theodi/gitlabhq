@@ -1,0 +1,17 @@
+---
+description: Counts VSA (both group- and project-level) views
+internal_events: true
+action: view_cycle_analytics
+identifiers:
+- project
+- namespace
+- user
+product_group: optimize
+product_categories:
+- value_stream_management
+milestone: '17.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/149947
+tiers:
+- free
+- premium
+- ultimate

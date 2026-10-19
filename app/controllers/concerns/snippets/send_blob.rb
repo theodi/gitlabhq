@@ -1,0 +1,27 @@
+# frozen_string_literal: true
+
+module Snippets::SendBlob
+  include SendsBlob
+
+  def send_snippet_blob(snippet, blob)
+    workhorse_set_content_type!
+
+    send_blob(
+      snippet.repository,
+      blob,
+      inline: content_disposition == 'inline',
+      allow_caching: ::Users::Anonymous.can?(:cache_blob, snippet),
+      force_revalidate: true
+    )
+  end
+
+  private
+
+  def inline_param
+    params.permit(:inline)[:inline]
+  end
+
+  def content_disposition
+    @disposition ||= inline_param == 'false' ? 'attachment' : 'inline'
+  end
+end

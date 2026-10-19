@@ -1,0 +1,11 @@
+---
+name: create_license
+description: Grants the ability to create licenses
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - create_license
+assignable_when:
+  - condition: admin

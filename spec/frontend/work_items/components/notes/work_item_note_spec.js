@@ -1,0 +1,981 @@
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { GlAvatarLink } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import mockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { updateDraft, clearDraft, getDraft } from '~/lib/utils/autosave';
+import EditedAt from '~/issues/show/components/edited.vue';
+import gfmEventHub from '~/vue_shared/components/markdown/eventhub';
+import WorkItemNote from '~/work_items/components/notes/work_item_note.vue';
+import WorkItemNoteAwardsList from '~/work_items/components/notes/work_item_note_awards_list.vue';
+import TimelineEntryItem from '~/vue_shared/components/notes/timeline_entry_item.vue';
+import NoteBody from '~/work_items/components/notes/work_item_note_body.vue';
+import NoteHeader from '~/notes/components/note_header.vue';
+import NoteActions from '~/work_items/components/notes/work_item_note_actions.vue';
+import WorkItemCommentForm from '~/work_items/components/notes/work_item_comment_form.vue';
+import updateWorkItemNoteMutation from '~/work_items/graphql/notes/update_work_item_note.mutation.graphql';
+import updateWorkItemMutation from '~/work_items/graphql/update_work_item.mutation.graphql';
+import workItemByIidQuery from '~/work_items/graphql/work_item_by_iid.query.graphql';
+import {
+  mockAssignees,
+  mockWorkItemCommentNote,
+  mockWorkItemCommentNoteByContributor,
+  mockWorkItemCommentByMaintainer,
+  updateWorkItemMutationResponse,
+  workItemByIidResponseFactory,
+  workItemQueryResponse,
+} from 'ee_else_ce_jest/work_items/mock_data';
+import { i18n, TRACKING_CATEGORY_SHOW } from '~/work_items/constants';
+import { mockTracking } from 'helpers/tracking_helper';
+
+Vue.use(VueApollo);
+jest.mock('~/lib/utils/autosave');
+
+describe('Work Item Note', () => {
+  let wrapper;
+  const updatedNoteText = '# Some title';
+  const updatedNoteBody = '<h1 data-sourcepos="1:1-1:12" dir="auto">Some title</h1>';
+  const mockWorkItemId = workItemQueryResponse.data.workItem.id;
+
+  const mockWorkItemByDifferentUser = {
+    data: {
+      workItem: {
+        ...workItemQueryResponse.data.workItem,
+        author: {
+          avatarUrl:
+            'http://127.0.0.1:3000/avatar/e64c7d89f26bd1972efa854d13d7dd61?s=80&d=identicon',
+          id: 'gid://gitlab/User/2',
+          name: 'User 1',
+          username: 'user1',
+          webUrl: 'http://127.0.0.1:3000/user1',
+          __typename: 'UserCore',
+        },
+      },
+    },
+  };
+
+  const successHandler = jest.fn().mockResolvedValue({
+    data: {
+      updateNote: {
+        errors: [],
+        note: {
+          ...mockWorkItemCommentNote,
+          body: updatedNoteText,
+          bodyHtml: updatedNoteBody,
+        },
+      },
+    },
+  });
+
+  const muationErrorMessage = 'Cannot convert existing comment to an internal note';
+  const mutationErrorHandler = jest.fn().mockResolvedValue({
+    data: {
+      updateNote: {
+        errors: [muationErrorMessage],
+        note: {
+          ...mockWorkItemCommentNote,
+          body: updatedNoteText,
+          bodyHtml: updatedNoteBody,
+        },
+      },
+    },
+  });
+
+  const workItemResponseHandler = jest.fn().mockResolvedValue(workItemByIidResponseFactory());
+  const workItemByAuthoredByDifferentUser = jest
+    .fn()
+    .mockResolvedValue(mockWorkItemByDifferentUser);
+
+  const updateWorkItemMutationSuccessHandler = jest
+    .fn()
+    .mockResolvedValue(updateWorkItemMutationResponse);
+
+  const errorHandler = jest.fn().mockRejectedValue('Oops');
+
+  const findAwardsList = () => wrapper.findComponent(WorkItemNoteAwardsList);
+  const findTimelineEntryItem = () => wrapper.findComponent(TimelineEntryItem);
+  const findNoteHeader = () => wrapper.findComponent(NoteHeader);
+  const findNoteBody = () => wrapper.findComponent(NoteBody);
+  const findNoteActions = () => wrapper.findComponent(NoteActions);
+  const findCommentForm = () => wrapper.findComponent(WorkItemCommentForm);
+  const findEditedAt = () => wrapper.findComponent(EditedAt);
+  const findUpdateError = () => wrapper.findByTestId('update-error');
+  const findSessionBar = () => wrapper.findComponent({ name: 'NoteSessionBar' });
+  const findAgentActorLine = () => wrapper.findComponent({ name: 'NoteAgentActorLine' });
+  const findDuoQuestionNote = () => wrapper.findComponent({ name: 'DuoQuestionNote' });
+
+  const createComponent = ({
+    note = mockWorkItemCommentNote,
+    isFirstNote = false,
+    canReply = false,
+    updateNoteMutationHandler = successHandler,
+    workItemId = mockWorkItemId,
+    updateWorkItemMutationHandler = updateWorkItemMutationSuccessHandler,
+    assignees = mockAssignees,
+    workItemByIidResponseHandler = workItemResponseHandler,
+    provideData = {},
+  } = {}) => {
+    wrapper = shallowMountExtended(WorkItemNote, {
+      propsData: {
+        fullPath: 'test-project-path',
+        workItemId,
+        workItemIid: '1',
+        note,
+        canReply,
+        isFirstNote,
+        workItemType: 'Task',
+        markdownPreviewPath: '/group/project/preview_markdown?target_type=WorkItem',
+        uploadsPath: '/test-project-path/uploads',
+        autocompleteDataSources: {},
+        assignees,
+      },
+      provide: provideData,
+      stubs: {
+        TimelineEntryItem,
+        NoteSessionBar: {
+          name: 'NoteSessionBar',
+          props: ['agentName', 'sessionId', 'status', 'isReply'],
+          template: '<div></div>',
+        },
+        NoteAgentActorLine: {
+          name: 'NoteAgentActorLine',
+          props: {
+            presence: { type: Object, required: true },
+          },
+          template: '<div></div>',
+        },
+      },
+      mocks: {
+        $route: {},
+      },
+      apolloProvider: mockApollo([
+        [workItemByIidQuery, workItemByIidResponseHandler],
+        [updateWorkItemNoteMutation, updateNoteMutationHandler],
+        [updateWorkItemMutation, updateWorkItemMutationHandler],
+      ]),
+    });
+  };
+
+  describe('when editing', () => {
+    beforeEach(() => {
+      createComponent();
+
+      findNoteActions().vm.$emit('start-editing');
+      return nextTick();
+    });
+
+    it('should render a comment form', () => {
+      expect(findCommentForm().exists()).toBe(true);
+    });
+
+    it('should not render note body', () => {
+      expect(findNoteBody().exists()).toBe(false);
+    });
+
+    it('updates saved draft with current note text when draft is empty', () => {
+      getDraft.mockReturnValue('');
+      createComponent();
+      findNoteActions().vm.$emit('start-editing');
+
+      expect(updateDraft).toHaveBeenCalledWith(
+        `${mockWorkItemCommentNote.id}-comment`,
+        mockWorkItemCommentNote.body,
+      );
+    });
+
+    it('does not update draft when existing draft is present', () => {
+      updateDraft.mockClear();
+      getDraft.mockReturnValue('existing draft');
+      createComponent();
+      findNoteActions().vm.$emit('start-editing');
+
+      expect(updateDraft).not.toHaveBeenCalled();
+    });
+
+    it('passes correct autosave key prop to comment form component', () => {
+      expect(findCommentForm().props('autosaveKey')).toBe(`${mockWorkItemCommentNote.id}-comment`);
+    });
+
+    it('should hide a form and show wrapper when user cancels editing', async () => {
+      findCommentForm().vm.$emit('cancel-editing');
+      await nextTick();
+
+      expect(findCommentForm().exists()).toBe(false);
+      expect(findNoteBody().exists()).toBe(true);
+    });
+
+    it('should show the awards list when in edit mode', async () => {
+      createComponent({ note: mockWorkItemCommentNote });
+      findNoteActions().vm.$emit('start-editing');
+      await nextTick();
+      expect(findAwardsList().exists()).toBe(true);
+    });
+  });
+
+  describe('when submitting a form to edit a note', () => {
+    it('calls update mutation with correct variables', async () => {
+      createComponent();
+      findNoteActions().vm.$emit('start-editing');
+      await nextTick();
+
+      findCommentForm().vm.$emit('submit-form', { commentText: updatedNoteText });
+
+      expect(successHandler).toHaveBeenCalledWith({
+        input: {
+          id: mockWorkItemCommentNote.id,
+          body: updatedNoteText,
+        },
+      });
+    });
+
+    it('hides the form after successful mutation', async () => {
+      createComponent();
+      findNoteActions().vm.$emit('start-editing');
+      await nextTick();
+
+      findCommentForm().vm.$emit('submit-form', { commentText: updatedNoteText });
+      await waitForPromises();
+
+      expect(findCommentForm().exists()).toBe(false);
+      expect(clearDraft).toHaveBeenCalledWith(`${mockWorkItemCommentNote.id}-comment`);
+    });
+
+    describe('when mutation fails', () => {
+      beforeEach(async () => {
+        createComponent({ updateNoteMutationHandler: errorHandler });
+        findNoteActions().vm.$emit('start-editing');
+        await nextTick();
+        findCommentForm().vm.$emit('submit-form', { commentText: updatedNoteText });
+        await waitForPromises();
+      });
+
+      it('opens the form again', () => {
+        expect(findCommentForm().exists()).toBe(true);
+      });
+
+      it('updates the saved draft with the latest comment text', () => {
+        expect(updateDraft).toHaveBeenCalledWith(
+          `${mockWorkItemCommentNote.id}-comment`,
+          updatedNoteText,
+        );
+      });
+
+      it('shows the error inline', () => {
+        expect(findUpdateError().text()).toBe(
+          'Something went wrong when updating a comment. Please try again',
+        );
+      });
+    });
+
+    describe('when mutation returns errors', () => {
+      beforeEach(async () => {
+        createComponent({
+          updateNoteMutationHandler: mutationErrorHandler,
+        });
+        findNoteActions().vm.$emit('start-editing');
+        await nextTick();
+        findCommentForm().vm.$emit('submit-form', { commentText: updatedNoteText });
+        await waitForPromises();
+      });
+
+      it('opens the form again', () => {
+        expect(findCommentForm().exists()).toBe(true);
+      });
+
+      it('updates the saved draft with the latest comment text', () => {
+        expect(updateDraft).toHaveBeenCalledWith(
+          `${mockWorkItemCommentNote.id}-comment`,
+          updatedNoteText,
+        );
+      });
+
+      it('shows the returned error inline', () => {
+        expect(findUpdateError().text()).toBe(muationErrorMessage);
+      });
+    });
+  });
+
+  describe('when toggling a checkbox in a note', () => {
+    it('calls mutation to update the description', () => {
+      const commentText = `beginning
+
+- [x] one
+- [ ] two
+- [ ] three
+
+end`;
+      createComponent();
+
+      findNoteBody().vm.$emit('update-note', { commentText });
+
+      expect(successHandler).toHaveBeenCalledWith({
+        input: {
+          id: mockWorkItemCommentNote.id,
+          body: commentText,
+        },
+      });
+    });
+  });
+
+  describe('when not editing', () => {
+    it('should not render a comment form', () => {
+      createComponent();
+      expect(findCommentForm().exists()).toBe(false);
+    });
+
+    it('should render note wrapper', () => {
+      createComponent();
+      expect(findNoteBody().exists()).toBe(true);
+    });
+
+    it('renders no "edited at" information by default', () => {
+      createComponent();
+      expect(findEditedAt().exists()).toBe(false);
+    });
+
+    it('renders "edited at" information if the note was edited', () => {
+      createComponent({
+        note: {
+          ...mockWorkItemCommentNote,
+          lastEditedAt: '2023-02-12T07:47:40Z',
+          lastEditedBy: { ...mockWorkItemCommentNote.author, webPath: 'test-path' },
+        },
+      });
+
+      expect(findEditedAt().props()).toMatchObject({
+        updatedAt: '2023-02-12T07:47:40Z',
+        updatedByName: 'Administrator',
+        updatedByPath: 'test-path',
+      });
+    });
+
+    describe('main comment', () => {
+      beforeEach(async () => {
+        createComponent({ isFirstNote: true, canReply: true });
+        await waitForPromises();
+      });
+
+      it('emits `duo-question-answered` when its Duo question is answered', () => {
+        findDuoQuestionNote().vm.$emit('duo-question-answered');
+
+        expect(wrapper.emitted('duo-question-answered')).toEqual([[]]);
+      });
+
+      it('should have the note header, actions and body', () => {
+        expect(findTimelineEntryItem().exists()).toBe(true);
+        expect(findNoteHeader().exists()).toBe(true);
+        expect(findNoteBody().exists()).toBe(true);
+        expect(findNoteActions().exists()).toBe(true);
+      });
+
+      it('should have the reply button props', () => {
+        expect(findNoteActions().props('showReply')).toBe(true);
+      });
+
+      it('should have the project name', () => {
+        expect(findNoteActions().props('projectName')).toBe('Project name');
+      });
+
+      it('should pass the noteUrl to the note header and should be a work items url', () => {
+        expect(findNoteHeader().props('noteUrl')).toContain('work_items');
+      });
+    });
+
+    describe('Duo Agent Platform session', () => {
+      describe('when the note has no session', () => {
+        beforeEach(async () => {
+          createComponent();
+          await waitForPromises();
+        });
+
+        it('passes no session id', () => {
+          expect(findNoteActions().props('duoSessionId')).toBe(null);
+        });
+      });
+
+      describe('when the session field is absent', () => {
+        beforeEach(async () => {
+          const { duoCreatedSession, ...noteWithoutSessionField } = mockWorkItemCommentNote;
+          createComponent({ note: noteWithoutSessionField });
+          await waitForPromises();
+        });
+
+        it('passes no session id', () => {
+          expect(findNoteActions().props('duoSessionId')).toBe(null);
+        });
+      });
+
+      describe('when the note has a session', () => {
+        beforeEach(async () => {
+          createComponent({
+            note: {
+              ...mockWorkItemCommentNote,
+              duoCreatedSession: {
+                id: 'gid://gitlab/Ai::DuoWorkflows::Workflow/42',
+                __typename: 'DuoWorkflow',
+              },
+            },
+          });
+          await waitForPromises();
+        });
+
+        it('passes the numeric session id', () => {
+          expect(findNoteActions().props('duoSessionId')).toBe(42);
+        });
+      });
+    });
+
+    describe('comment threads', () => {
+      beforeEach(() => {
+        createComponent();
+      });
+
+      it('should show avatar link with popover support', () => {
+        const avatarLink = findTimelineEntryItem().findComponent(GlAvatarLink);
+        const { author } = mockWorkItemCommentNote;
+
+        expect(avatarLink.exists()).toBe(true);
+        expect(avatarLink.classes()).toContain('js-user-link');
+        expect(avatarLink.attributes()).toMatchObject({
+          href: author.webUrl,
+          'data-user-id': '1',
+          'data-username': `${author.username}`,
+        });
+      });
+
+      it('should have the note header, actions and body', () => {
+        expect(findTimelineEntryItem().exists()).toBe(true);
+        expect(findNoteHeader().exists()).toBe(true);
+        expect(findNoteBody().exists()).toBe(true);
+        expect(findNoteActions().exists()).toBe(true);
+      });
+
+      it('should not have the reply button props', () => {
+        expect(findNoteActions().props('showReply')).toBe(false);
+      });
+    });
+
+    describe('assign/unassign to commenting user', () => {
+      it('calls a mutation with correct variables', async () => {
+        createComponent({ assignees: mockAssignees });
+        await waitForPromises();
+        findNoteActions().vm.$emit('assign-user');
+
+        await waitForPromises();
+
+        expect(updateWorkItemMutationSuccessHandler).toHaveBeenCalledWith({
+          input: {
+            id: mockWorkItemId,
+            assigneesWidget: {
+              assigneeIds: [mockAssignees[1].id],
+            },
+          },
+          useWorkItemFeatures: false,
+        });
+      });
+
+      it('emits an error and resets assignees if mutation was rejected', async () => {
+        createComponent({
+          updateWorkItemMutationHandler: errorHandler,
+          assignees: [mockAssignees[0]],
+        });
+
+        await waitForPromises();
+
+        expect(findNoteActions().props('isAuthorAnAssignee')).toEqual(true);
+
+        findNoteActions().vm.$emit('assign-user');
+
+        await waitForPromises();
+
+        expect(wrapper.emitted('error')).toEqual([[i18n.updateError]]);
+        expect(findNoteActions().props('isAuthorAnAssignee')).toEqual(true);
+      });
+
+      it('tracks the event', async () => {
+        createComponent();
+        await waitForPromises();
+        const trackingSpy = mockTracking(undefined, wrapper.element, jest.spyOn);
+
+        findNoteActions().vm.$emit('assign-user');
+
+        await waitForPromises();
+
+        expect(trackingSpy).toHaveBeenCalledWith(TRACKING_CATEGORY_SHOW, 'unassigned_user', {
+          category: TRACKING_CATEGORY_SHOW,
+          label: 'work_item_note_actions',
+          property: 'type_Task',
+          extra: { viewContext: 'full_screen' },
+        });
+      });
+
+      describe('when FF workItemFeaturesField is true and features.assignees is present', () => {
+        const mockFeatures = {
+          assignees: {
+            allowsMultipleAssignees: true,
+            assignees: {
+              nodes: mockAssignees,
+              __typename: 'UserCoreConnection',
+            },
+          },
+        };
+        let updateWorkItemWithFeaturesHandler;
+
+        beforeEach(async () => {
+          const response = workItemByIidResponseFactory();
+          response.data.namespace.workItem.features = mockFeatures;
+
+          const { workItemUpdate } = updateWorkItemMutationResponse.data;
+          const mutationResponse = {
+            data: {
+              workItemUpdate: {
+                ...workItemUpdate,
+                workItem: {
+                  ...workItemUpdate.workItem,
+                  features: mockFeatures,
+                },
+              },
+            },
+          };
+          updateWorkItemWithFeaturesHandler = jest.fn().mockResolvedValue(mutationResponse);
+
+          createComponent({
+            assignees: mockAssignees,
+            workItemByIidResponseHandler: jest.fn().mockResolvedValue(response),
+            updateWorkItemMutationHandler: updateWorkItemWithFeaturesHandler,
+            provideData: { glFeatures: { workItemFeaturesField: true } },
+          });
+          await waitForPromises();
+        });
+
+        it('calls mutation with useWorkItemFeatures set to true', async () => {
+          findNoteActions().vm.$emit('assign-user');
+          await waitForPromises();
+
+          expect(updateWorkItemWithFeaturesHandler).toHaveBeenCalledWith({
+            input: {
+              id: mockWorkItemId,
+              assigneesWidget: {
+                assigneeIds: [mockAssignees[1].id],
+              },
+            },
+            useWorkItemFeatures: true,
+          });
+        });
+      });
+    });
+
+    describe('report abuse props', () => {
+      it.each`
+        currentUserId | canReportAbuse | sameAsAuthor
+        ${1}          | ${false}       | ${'same as'}
+        ${4}          | ${true}        | ${'not same as'}
+      `(
+        'should be $canReportAbuse when the author is $sameAsAuthor as the author of the note',
+        ({ currentUserId, canReportAbuse }) => {
+          window.gon = {
+            current_user_id: currentUserId,
+          };
+          createComponent();
+
+          expect(findNoteActions().props('canReportAbuse')).toBe(canReportAbuse);
+        },
+      );
+    });
+
+    describe('internal note', () => {
+      it('does not have the internal note class set by default', () => {
+        createComponent();
+        expect(findTimelineEntryItem().classes()).not.toContain('internal-note');
+      });
+
+      it('timeline entry item and note header has the class for internal notes', () => {
+        createComponent({
+          note: {
+            ...mockWorkItemCommentNote,
+            internal: true,
+          },
+        });
+        expect(findTimelineEntryItem().classes()).toContain('internal-note');
+        expect(findNoteHeader().props('isInternalNote')).toBe(true);
+      });
+    });
+
+    it('confidential information on note', async () => {
+      createComponent();
+      await findNoteActions().vm.$emit('start-editing');
+      const { confidential } = workItemByIidResponseFactory().data.namespace.workItem;
+      expect(findCommentForm().props('isWorkItemConfidential')).toBe(confidential);
+    });
+
+    describe('author and user role badges', () => {
+      describe('author badge props', () => {
+        it.each`
+          isWorkItemAuthor | sameAsCurrentUser | workItemByIidResponseHandler
+          ${true}          | ${'same as'}      | ${workItemResponseHandler}
+          ${false}         | ${'not same as'}  | ${workItemByAuthoredByDifferentUser}
+        `(
+          'should pass correct isWorkItemAuthor `$isWorkItemAuthor` to note actions when author is $sameAsCurrentUser as current note',
+          async ({ isWorkItemAuthor, workItemByIidResponseHandler }) => {
+            createComponent({ workItemByIidResponseHandler });
+            await waitForPromises();
+
+            expect(findNoteActions().props('isWorkItemAuthor')).toBe(isWorkItemAuthor);
+          },
+        );
+      });
+
+      describe('Max access level badge', () => {
+        it('should pass the max access badge props', async () => {
+          createComponent({ note: mockWorkItemCommentByMaintainer });
+          await waitForPromises();
+
+          expect(findNoteActions().props('maxAccessLevelOfAuthor')).toBe(
+            mockWorkItemCommentByMaintainer.maxAccessLevelOfAuthor,
+          );
+        });
+      });
+
+      describe('Contributor badge', () => {
+        it('should pass the contributor props', async () => {
+          createComponent({ note: mockWorkItemCommentNoteByContributor });
+          await waitForPromises();
+
+          expect(findNoteActions().props('isAuthorContributor')).toBe(
+            mockWorkItemCommentNoteByContributor.authorIsContributor,
+          );
+        });
+      });
+    });
+
+    it('passes note props to awards list', () => {
+      createComponent({ note: mockWorkItemCommentNote });
+
+      expect(findAwardsList().props('note')).toBe(mockWorkItemCommentNote);
+      expect(findAwardsList().props('workItemIid')).toBe('1');
+    });
+
+    it('passes external author to note header', () => {
+      const externalAuthor = 'user@example.com';
+
+      createComponent({
+        note: {
+          ...mockWorkItemCommentNote,
+          externalAuthor,
+        },
+      });
+
+      expect(findNoteHeader().props('emailParticipant')).toBe(externalAuthor);
+    });
+  });
+
+  it('calls the work item query', () => {
+    createComponent();
+
+    expect(workItemResponseHandler).toHaveBeenCalled();
+  });
+
+  describe('when note has no author', () => {
+    beforeEach(() => {
+      createComponent({
+        note: {
+          ...mockWorkItemCommentNote,
+          author: null,
+        },
+      });
+    });
+
+    it('should pass correct author prop to note header', () => {
+      expect(findNoteHeader().props('author')).toEqual({});
+    });
+
+    it('should not allow assigning to comment author', () => {
+      expect(findNoteActions().props('showAssignUnassign')).toBe(false);
+    });
+  });
+
+  describe('markdown-editor event-hub edit-note event', () => {
+    const setupComponent = async ({ id = mockWorkItemCommentNote.id, adminNote = true } = {}) => {
+      createComponent({
+        note: {
+          ...mockWorkItemCommentNote,
+          id,
+          userPermissions: {
+            ...mockWorkItemCommentNote.userPermissions,
+            adminNote,
+          },
+        },
+      });
+
+      gfmEventHub.$emit('edit-note', { note: mockWorkItemCommentNote });
+
+      await nextTick();
+    };
+
+    it('enables editing on the note for a matching note when adminNote is true', async () => {
+      await setupComponent();
+
+      expect(wrapper.emitted('start-editing')).toHaveLength(1);
+      expect(findCommentForm().exists()).toBe(true);
+    });
+
+    it.each`
+      setupProps                         | description
+      ${{ adminNote: false }}            | ${'a matching note when adminNote is false'}
+      ${{ id: 'gid://gitlab/Note/100' }} | ${'non-matching note when adminNote is true'}
+    `('does not enable editing on the note for $description', async ({ setupProps }) => {
+      await setupComponent(setupProps);
+
+      expect(wrapper.emitted('start-editing')).toBeUndefined();
+      expect(findCommentForm().exists()).toBe(false);
+    });
+  });
+
+  describe('AgentActorLine', () => {
+    const agentPresence = {
+      sessionId: 'gid://gitlab/Ai::DuoWorkflows::Workflow/42',
+      agentName: 'Developer Agent',
+      agentCatalogWebPath: '/-/ai/catalog/agents/3',
+      initiatorType: 'USER',
+      initiator: { label: '@nokafor', webPath: '/nokafor' },
+      userPermissions: { readDuoWorkflow: true },
+    };
+
+    const presenceNote = { ...mockWorkItemCommentNote, agentPresence };
+
+    const createWithFlag = (options = {}) =>
+      createComponent({
+        ...options,
+        provideData: { glFeatures: { agentPresenceConsolidation: true } },
+      });
+
+    describe('when the agentPresenceConsolidation feature flag is disabled', () => {
+      beforeEach(() => {
+        createComponent({
+          note: {
+            ...presenceNote,
+            duoCreatedSession: {
+              id: 'gid://gitlab/Ai::DuoWorkflows::Workflow/42',
+              __typename: 'DuoWorkflow',
+            },
+          },
+          provideData: { glFeatures: { agentPresenceConsolidation: false } },
+        });
+      });
+
+      it('does not render the actor line', () => {
+        expect(findAgentActorLine().exists()).toBe(false);
+      });
+
+      it('still offers the standalone session button', () => {
+        expect(findNoteActions().props('duoSessionId')).toBe(42);
+      });
+    });
+
+    describe.each`
+      description                       | note
+      ${'has no agent presence'}        | ${mockWorkItemCommentNote}
+      ${'has a null agent presence'}    | ${{ ...mockWorkItemCommentNote, agentPresence: null }}
+      ${'has no resolvable agent name'} | ${{ ...mockWorkItemCommentNote, agentPresence: { ...agentPresence, agentName: null } }}
+      ${'has no session to open'}       | ${{ ...mockWorkItemCommentNote, agentPresence: { ...agentPresence, sessionId: null } }}
+    `('when the note $description', ({ note }) => {
+      beforeEach(() => createWithFlag({ note }));
+
+      it('does not render the actor line', () => {
+        expect(findAgentActorLine().exists()).toBe(false);
+      });
+    });
+
+    describe('when the agent presence names no session', () => {
+      beforeEach(() =>
+        createWithFlag({
+          note: {
+            ...mockWorkItemCommentNote,
+            agentPresence: { ...agentPresence, sessionId: null },
+            duoCreatedSession: {
+              id: 'gid://gitlab/Ai::DuoWorkflows::Workflow/42',
+              __typename: 'DuoWorkflow',
+            },
+          },
+        }),
+      );
+
+      it('keeps the standalone session button, rather than a link to nothing', () => {
+        expect(findNoteActions().props('duoSessionId')).toBe(42);
+      });
+    });
+
+    describe('when the note has agent presence', () => {
+      beforeEach(() => createWithFlag({ note: presenceNote }));
+
+      it('renders the actor line for the agent and its session', () => {
+        expect(findAgentActorLine().props('presence')).toEqual({
+          sessionId: 'gid://gitlab/Ai::DuoWorkflows::Workflow/42',
+          agentName: 'Developer Agent',
+          agentCatalogWebPath: '/-/ai/catalog/agents/3',
+          initiatorType: 'USER',
+          initiator: { label: '@nokafor', webPath: '/nokafor' },
+          userPermissions: { readDuoWorkflow: true },
+        });
+      });
+
+      it('hides the raw service account username, which the actor line replaces', () => {
+        expect(findNoteHeader().props('hideUsername')).toBe(true);
+      });
+
+      it('keeps the header on one row', () => {
+        expect(findNoteHeader().props('singleLine')).toBe(true);
+      });
+
+      describe('when the actor line reports it no longer fits', () => {
+        beforeEach(async () => {
+          findAgentActorLine().vm.$emit('overflow', true);
+          await nextTick();
+        });
+
+        it('lets the header wrap', () => {
+          expect(findNoteHeader().props('singleLine')).toBe(false);
+        });
+      });
+
+      it('drops the standalone session button, which would duplicate the session link', () => {
+        expect(findNoteActions().props('duoSessionId')).toBe(null);
+      });
+    });
+
+    describe('when the current user cannot read the session', () => {
+      beforeEach(() =>
+        createWithFlag({
+          note: {
+            ...mockWorkItemCommentNote,
+            agentPresence: { ...agentPresence, userPermissions: { readDuoWorkflow: false } },
+          },
+        }),
+      );
+
+      it('still renders the actor line', () => {
+        expect(findAgentActorLine().exists()).toBe(true);
+      });
+
+      it('tells the actor line the session cannot be opened', () => {
+        expect(findAgentActorLine().props('presence').userPermissions).toEqual({
+          readDuoWorkflow: false,
+        });
+      });
+    });
+
+    describe('when the agent has no catalog profile', () => {
+      beforeEach(() =>
+        createWithFlag({
+          note: {
+            ...mockWorkItemCommentNote,
+            agentPresence: { ...agentPresence, agentCatalogWebPath: null },
+          },
+        }),
+      );
+
+      it('passes no catalog path', () => {
+        expect(findAgentActorLine().props('presence').agentCatalogWebPath).toBe(null);
+      });
+    });
+  });
+
+  describe('NoteSessionBar', () => {
+    const SESSION_ID = 1;
+    const AGENT_NAME = 'Duo Developer';
+
+    const sessionNote = {
+      ...mockWorkItemCommentNote,
+      duoTriggeredSession: {
+        id: SESSION_ID,
+        agentName: AGENT_NAME,
+        statusName: 'running',
+      },
+    };
+
+    describe('when the noteAgentSessionBar feature flag is disabled and the note has a session', () => {
+      beforeEach(() => {
+        createComponent({
+          note: sessionNote,
+          provideData: { glFeatures: { noteAgentSessionBar: false } },
+        });
+      });
+
+      it('does not render', () => {
+        expect(findSessionBar().exists()).toBe(false);
+      });
+    });
+
+    describe('when the noteAgentSessionBar feature flag is enabled', () => {
+      const createWithFlag = (options = {}) =>
+        createComponent({
+          ...options,
+          provideData: { glFeatures: { noteAgentSessionBar: true } },
+        });
+
+      describe.each`
+        description                              | note
+        ${'has no session'}                      | ${mockWorkItemCommentNote}
+        ${'has a null session'}                  | ${{ ...mockWorkItemCommentNote, duoTriggeredSession: null }}
+        ${'has a session without an id'}         | ${{ ...mockWorkItemCommentNote, duoTriggeredSession: { id: null, agentName: AGENT_NAME, statusName: 'running' } }}
+        ${'has a session without an agent name'} | ${{ ...mockWorkItemCommentNote, duoTriggeredSession: { id: SESSION_ID, agentName: null, statusName: 'running' } }}
+      `('when the note $description', ({ note }) => {
+        beforeEach(() => {
+          createWithFlag({ note });
+        });
+
+        it('does not render', () => {
+          expect(findSessionBar().exists()).toBe(false);
+        });
+      });
+
+      describe('when the note has a session', () => {
+        beforeEach(() => {
+          createWithFlag({ note: sessionNote });
+        });
+
+        it('renders the session bar', () => {
+          expect(findSessionBar().exists()).toBe(true);
+        });
+
+        it('passes the session props', () => {
+          expect(findSessionBar().props()).toMatchObject({
+            agentName: AGENT_NAME,
+            sessionId: SESSION_ID,
+            status: 'running',
+          });
+        });
+      });
+
+      describe.each`
+        isFirstNote | expectedIsReply
+        ${true}     | ${false}
+        ${false}    | ${true}
+      `('when isFirstNote is $isFirstNote', ({ isFirstNote, expectedIsReply }) => {
+        beforeEach(() => {
+          createWithFlag({ note: sessionNote, isFirstNote });
+        });
+
+        it('passes the matching isReply prop', () => {
+          expect(findSessionBar().props('isReply')).toBe(expectedIsReply);
+        });
+      });
+
+      describe('when the session status is finished', () => {
+        beforeEach(() => {
+          createWithFlag({
+            note: {
+              ...sessionNote,
+              duoTriggeredSession: { ...sessionNote.duoTriggeredSession, statusName: 'finished' },
+            },
+          });
+        });
+
+        it('still renders the session bar', () => {
+          expect(findSessionBar().exists()).toBe(true);
+        });
+      });
+    });
+  });
+});

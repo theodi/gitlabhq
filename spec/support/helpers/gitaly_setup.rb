@@ -1,0 +1,473 @@
+# frozen_string_literal: true
+
+# This file contains environment settings for gitaly when it's running
+# as part of the gitlab-ce/ee test suite.
+#
+# Please be careful when modifying this file. Your changes must work
+# both for local development rspec runs, and in CI.
+
+require 'securerandom'
+require 'socket'
+require 'logger'
+require 'fileutils'
+require 'gitlab/utils/all'
+
+module GitalySetup
+  extend self
+
+  REPOS_STORAGE = 'default'
+
+  LOGGER = begin
+    default_name = ENV['CI'] ? 'DEBUG' : 'WARN'
+    level_name = ENV['GITLAB_TESTING_LOG_LEVEL']&.upcase
+    level = Logger.const_get(level_name || default_name, true) # rubocop: disable Gitlab/ConstGetInheritFalse
+    Logger.new($stdout, level: level, formatter: ->(_, _, _, msg) { msg })
+  end
+
+  # Expands a path relative to rails root. This module is used in non-rails
+  # contexts and so Rails.root cannot be used.
+  def expand_path(path)
+    File.expand_path(path, File.join(__dir__, '../../..'))
+  end
+
+  def storage_path
+    expand_path('tmp/tests/repositories')
+  end
+
+  def second_storage_path
+    expand_path('tmp/tests/second_storage')
+  end
+
+  def tmp_tests_gitaly_dir
+    expand_path('tmp/tests/gitaly')
+  end
+
+  def runtime_dir
+    candidate = expand_path('tmp/run')
+    # Gitaly validates that the socket path fits in sockaddr_un.sun_path.
+    # On macOS the limit is 104 bytes; on Linux it is 108 bytes. Use 103 as
+    # the threshold so the check is safe on both platforms.
+    # The socket path Gitaly constructs is: <runtime_dir>/gitaly-<PID>/sock.d/tsocket
+    # We simulate the worst-case PID (99999) to get the maximum possible length.
+    socket_path = File.join(candidate, 'gitaly-99999', 'sock.d', 'tsocket')
+    if socket_path.bytesize > 103
+      # Fall back to a short /tmp-based path to avoid exceeding the OS limit.
+      # Including the UID makes it unique per user and avoids permission conflicts.
+      "/tmp/gitaly-test-#{Process.uid}"
+    else
+      candidate
+    end
+  end
+
+  def tmp_tests_gitaly_bin_dir
+    File.join(tmp_tests_gitaly_dir, '_build', 'bin')
+  end
+
+  def tmp_tests_gitlab_shell_dir
+    expand_path('tmp/tests/gitlab-shell')
+  end
+
+  def rails_gitlab_shell_secret
+    expand_path('.gitlab_shell_secret')
+  end
+
+  def gitlab_shell_secret_file
+    File.join(tmp_tests_gitlab_shell_dir, '.gitlab_shell_secret')
+  end
+
+  def env
+    {
+      # Git hooks can't run during tests as the internal API is not running.
+      'GITALY_TESTING_NO_GIT_HOOKS' => "1",
+      # This must be set to false if the MVCC feature flag should be used, because
+      # of a conditional hardcoded in Gitaly. We should make this cleaner in the future.
+      'GITALY_TESTING_ENABLE_ALL_FEATURE_FLAGS' => mvcc_repositories? ? "false" : "true"
+    }
+  end
+
+  def config_name(service)
+    case service
+    when :gitaly
+      'config.toml'
+    when :gitaly2
+      'gitaly2.config.toml'
+    when :praefect
+      'praefect.config.toml'
+    end
+  end
+
+  def config_path(service)
+    File.join(tmp_tests_gitaly_dir, config_name(service))
+  end
+
+  def service_cmd(service, toml = nil)
+    toml ||= config_path(service)
+
+    case service
+    when :gitaly, :gitaly2
+      [File.join(tmp_tests_gitaly_bin_dir, 'gitaly'), toml]
+    when :praefect
+      [File.join(tmp_tests_gitaly_bin_dir, 'praefect'), '-config', toml]
+    end
+  end
+
+  def run_command(cmd, env: {})
+    system(env, *cmd, exception: true, chdir: tmp_tests_gitaly_dir)
+  end
+
+  def build_gitaly
+    run_command(%w[make all WITH_BUNDLED_GIT=YesPlease], env: env.merge('GIT_VERSION' => nil))
+  end
+
+  def start_gitaly(service, toml = nil)
+    case service
+    when :gitaly
+      FileUtils.mkdir_p(GitalySetup.storage_path)
+    when :gitaly2
+      FileUtils.mkdir_p(GitalySetup.second_storage_path)
+    end
+
+    start(service, toml)
+  end
+
+  def start_praefect
+    if praefect_with_db?
+      LOGGER.debug 'Starting Praefect with database election strategy'
+      start(:praefect, File.join(tmp_tests_gitaly_dir, 'praefect-db.config.toml'))
+    else
+      LOGGER.debug 'Starting Praefect with in-memory election strategy'
+      start(:praefect)
+    end
+  end
+
+  def start(service, toml = nil)
+    toml ||= config_path(service)
+    args = service_cmd(service, toml)
+
+    # Ensure that tmp/run exists
+    FileUtils.mkdir_p(runtime_dir)
+
+    # Ensure user configuration does not affect Git
+    # Context: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/58776#note_547613780
+    env = self.env.merge('HOME' => nil, 'XDG_CONFIG_HOME' => nil)
+
+    log_system_snapshot("before_spawn")
+
+    pid = spawn(env, *args, [:out, :err] => "log/#{service}-test.log")
+
+    begin
+      try_connect!(service, toml)
+    rescue StandardError
+      process_details(pid)
+      Process.kill('TERM', pid)
+      raise
+    end
+
+    pid
+  end
+
+  # Taken from Gitlab::Shell.generate_and_link_secret_token
+  def ensure_gitlab_shell_secret!
+    secret_file = rails_gitlab_shell_secret
+    shell_link = gitlab_shell_secret_file
+
+    File.write(secret_file, SecureRandom.hex(16)) unless File.size?(secret_file)
+
+    return if File.exist?(shell_link)
+
+    FileUtils.ln_s(secret_file, shell_link)
+  end
+
+  def connect_proc(toml)
+    # This code needs to work in an environment where we cannot use bundler,
+    # so we cannot easily use the toml-rb gem. This ad-hoc parser should be
+    # good enough.
+    config_text = File.read(toml)
+
+    config_text.lines.each do |line|
+      match_data = line.match(/^\s*(socket_path|listen_addr)\s*=\s*"([^"]*)"$/)
+
+      next unless match_data
+
+      case match_data[1]
+      when 'socket_path'
+        return -> { UNIXSocket.new(match_data[2]) }
+      when 'listen_addr'
+        addr, port = match_data[2].split(':')
+        return -> { TCPSocket.new(addr, port.to_i) }
+      end
+    end
+
+    raise "failed to find socket_path or listen_addr in #{toml}"
+  end
+
+  def try_connect!(service, toml)
+    LOGGER.debug "Trying to connect to #{service}: "
+
+    start_time = Time.now
+
+    timeout = 60
+    delay = 0.1
+    connect = connect_proc(toml)
+
+    sample_iterations = 60
+    connected = false
+
+    Integer(timeout / delay).times do |i|
+      connect.call
+      LOGGER.debug " OK\n"
+
+      elapsed = (Time.now - start_time).round(2)
+      log_system_snapshot("after_success_#{elapsed}s")
+
+      connected = true
+      break
+    rescue Errno::ENOENT, Errno::ECONNREFUSED
+      LOGGER.debug '.'
+
+      if ENV['CI'] && i > 0 && (i % sample_iterations) == 0
+        elapsed = (Time.now - start_time).round(1)
+        log_system_snapshot("during_attempt_#{elapsed}s")
+      end
+
+      sleep delay
+    end
+
+    return if connected
+
+    LOGGER.warn " FAILED to connect to #{service}\n"
+
+    elapsed = (Time.now - start_time).round(2)
+    log_system_snapshot("after_failure_#{elapsed}s")
+
+    raise "could not connect to #{service}"
+  end
+
+  # The Gitaly node itself, never the gitway hop that a configured gitway_address can put in front of it: this
+  # locates the install directory and socket the test env starts Gitaly from.
+  def gitaly_socket_path
+    Gitlab::GitalyClient.gitaly_address(REPOS_STORAGE).delete_prefix('unix:')
+  end
+
+  # Extracts the gitaly install directory based on the gitaly socket configured
+  # in gitlab.yml. This allows the test gitaly to be temporarily overridden.
+  def gitaly_dir
+    socket_path = gitaly_socket_path
+    socket_path = File.expand_path(gitaly_socket_path) if expand_path_for_socket?
+
+    File.dirname(socket_path)
+  end
+
+  # Linux fails with "bind: invalid argument" if a UNIX socket path exceeds 108 characters:
+  # https://github.com/golang/go/issues/6895. We use absolute paths in CI to ensure
+  # that changes in the current working directory don't affect GRPC reconnections.
+  def expand_path_for_socket?
+    !!ENV['CI']
+  end
+
+  def setup_gitaly
+    gitaly_logging_level = ENV['GITALY_TESTING_LOG_LEVEL'] || 'warn'
+
+    [
+      {
+        storages: { 'default' => storage_path },
+        options: {
+          runtime_dir: runtime_dir,
+          prometheus_listen_addr: ENV.fetch('GITALY_PROMETHEUS_LISTEN_ADDR', 'localhost:9236'),
+          config_filename: config_name(:gitaly)
+        }
+      },
+      {
+        storages: { 'test_second_storage' => second_storage_path },
+        options: {
+          runtime_dir: runtime_dir,
+          gitaly_socket: "gitaly2.socket",
+          config_filename: config_name(:gitaly2)
+        }
+      }
+    ].each do |params|
+      params[:options][:logging_level] = gitaly_logging_level
+      Gitlab::SetupHelper::Gitaly.create_configuration(
+        gitaly_dir,
+        params[:storages],
+        force: true,
+        options: params[:options]
+      )
+    end
+
+    # In CI we need to pre-generate both config files.
+    # For local testing we'll create the correct file on-demand.
+    if ENV['CI'] || !praefect_with_db?
+      Gitlab::SetupHelper::Praefect.create_configuration(
+        gitaly_dir,
+        nil,
+        force: true,
+        options: {
+          logging_level: gitaly_logging_level
+        }
+      )
+    end
+
+    if ENV['CI'] || praefect_with_db?
+      Gitlab::SetupHelper::Praefect.create_configuration(
+        gitaly_dir,
+        nil,
+        force: true,
+        options: {
+          per_repository: true,
+          config_filename: 'praefect-db.config.toml',
+          pghost: ENV['CI'] ? 'postgres' : ENV.fetch('PGHOST'),
+          pgport: ENV['CI'] ? 5432 : ENV.fetch('PGPORT').to_i,
+          pguser: ENV['CI'] ? 'postgres' : ENV.fetch('USER'),
+          logging_level: gitaly_logging_level
+        }
+      )
+    end
+
+    # In CI no database is running when Gitaly is set up
+    # so scripts/gitaly-test-spawn will take care of it instead.
+    setup_praefect unless ENV['CI']
+  end
+
+  def setup_praefect
+    return unless praefect_with_db?
+
+    migrate_cmd = service_cmd(:praefect, File.join(tmp_tests_gitaly_dir, 'praefect-db.config.toml')) + ['sql-migrate']
+    system(env, *migrate_cmd, [:out, :err] => 'log/praefect-test.log')
+  end
+
+  def socket_path(service)
+    File.join(tmp_tests_gitaly_dir, "#{service}.socket")
+  end
+
+  def praefect_socket_path
+    "unix:" + socket_path(:praefect)
+  end
+
+  def stop(pid)
+    Process.kill('KILL', pid)
+  rescue Errno::ESRCH
+    # The process can already be gone if the test run was INTerrupted.
+  end
+
+  def spawn_gitaly(toml = nil)
+    pids = []
+
+    if toml
+      pids << start_gitaly(:gitaly, toml)
+    else
+      pids << start_gitaly(:gitaly)
+      pids << start_gitaly(:gitaly2)
+      pids << start_praefect
+    end
+
+    Kernel.at_exit do
+      # In CI, this function is called by scripts/gitaly-test-spawn, triggered
+      # in a before_script. Gitaly needs to remain running until the container
+      # is stopped.
+      next if ENV['CI']
+      # In Workhorse tests (locally or in CI), this function is called by
+      # scripts/gitaly-test-spawn during `make test`. Gitaly needs to remain
+      # running until `make test` cleans it up.
+      next if ENV['GITALY_PID_FILE']
+
+      ::Gitlab::GitalyClient.clear_stubs!
+
+      pids.each { |pid| stop(pid) }
+
+      [storage_path, second_storage_path].each { |storage_dir| FileUtils.rm_rf(storage_dir) }
+    end
+  rescue StandardError
+    raise gitaly_failure_message
+  end
+
+  def gitaly_failure_message
+    message = "gitaly spawn failed\n\n"
+
+    message += "- The `gitaly` binary does not exist: #{gitaly_binary}\n" unless File.exist?(gitaly_binary)
+    message += "- The `praefect` binary does not exist: #{praefect_binary}\n" unless File.exist?(praefect_binary)
+    message += "- No `git` binaries exist\n" if git_binaries.empty?
+
+    message += read_log_file('log/gitaly-test.log')
+    message += read_log_file('log/gitaly2-test.log')
+    message += read_log_file('log/praefect-test.log')
+
+    unless ENV['CI']
+      message += "\nIf binaries are missing, try running `make -C tmp/tests/gitaly all WITH_BUNDLED_GIT=YesPlease`.\n"
+      message += "\nOtherwise, try running `rm -rf #{tmp_tests_gitaly_dir}`."
+    end
+
+    message
+  end
+
+  def read_log_file(logs_path)
+    return '' unless File.exist?(logs_path)
+
+    <<~LOGS
+      \n#{logs_path}:\n
+      #{File.read(logs_path)}
+    LOGS
+  end
+
+  def git_binaries
+    Dir.glob(File.join(tmp_tests_gitaly_dir, "_build", "bin", "gitaly-git-v*"))
+  end
+
+  def gitaly_binary
+    File.join(tmp_tests_gitaly_dir, "_build", "bin", "gitaly")
+  end
+
+  def praefect_binary
+    File.join(tmp_tests_gitaly_dir, "_build", "bin", "praefect")
+  end
+
+  def praefect_with_db?
+    Gitlab::Utils.to_boolean(ENV['GITALY_PRAEFECT_WITH_DB'], default: false)
+  end
+
+  def mvcc_repositories?
+    Gitlab::Utils.to_boolean(ENV['GITALY_NEW_REPO_MVCC_BACKEND'], default: false)
+  end
+
+  private
+
+  # Logs the details of the process with the given pid.
+  def process_details(pid)
+    output = `ps -p #{pid} -o pid,ppid,state,%cpu,%mem,etime,args`
+    LOGGER.debug output
+
+    stack_output = `cat /proc/#{pid}/stack 2>/dev/null || echo "Could not read process stack"`
+    LOGGER.debug stack_output
+
+    load_avg = `cat /proc/loadavg 2>/dev/null || echo "unavailable"`
+    LOGGER.debug "Load average: #{load_avg.strip}\n"
+
+    io_wait = `vmstat 1 1 2>/dev/null | tail -1 | awk '{print $16}' || echo "0"`
+    LOGGER.debug "I/O wait: #{io_wait.strip}%\n"
+
+    disk_usage = `df -h 2>/dev/null | grep overlay | awk '{print $5}' || echo "unknown"`
+    LOGGER.debug "Disk usage: #{disk_usage.strip}\n"
+  end
+
+  def log_system_snapshot(label)
+    return unless ENV['CI'] || ENV['GITLAB_TESTING_LOG_LEVEL'] == 'debug'
+
+    if RUBY_PLATFORM.include?('darwin')
+      load = `sysctl -n vm.loadavg 2>/dev/null | awk '{print $2,$3,$4}'`.strip
+      mem_mb = `vm_stat 2>/dev/null | awk '/Pages free/ {print int($3 * 4096 / 1024 / 1024)}'`.strip
+      LOGGER.debug "\n[#{label}] load=#{load} mem_free=#{mem_mb}MB\n"
+    else
+      load = `cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}'`.strip
+      io_wait = `vmstat 1 2 2>/dev/null | tail -1 | awk '{print $16}'`.strip
+      mem = `grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}'`.strip
+      mem_mb = (mem.to_i / 1024.0).round
+      io_pressure = `cat /proc/pressure/io 2>/dev/null | grep some | awk '{print $2}' | cut -d= -f2`.strip
+
+      metrics = "load=#{load} io_wait=#{io_wait}% mem=#{mem_mb}MB"
+      metrics += " io_pressure=#{io_pressure}%" unless io_pressure.empty?
+      LOGGER.debug "\n[#{label}] #{metrics}\n"
+    end
+  rescue StandardError => e
+    LOGGER.debug "\n[#{label}] metrics unavailable: #{e.message}\n"
+  end
+end

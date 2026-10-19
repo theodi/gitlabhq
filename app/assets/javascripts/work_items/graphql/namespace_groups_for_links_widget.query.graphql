@@ -1,0 +1,19 @@
+# @feature_category: team_planning
+query namespaceGroupsForLinksWidget($fullPath: ID!, $groupSearch: String) {
+  group(fullPath: $fullPath) {
+    id
+    name
+    avatarUrl
+    fullName
+    fullPath
+    descendantGroups(search: $groupSearch, includeParentDescendants: true) {
+      nodes {
+        id
+        name
+        avatarUrl
+        fullName
+        fullPath
+      }
+    }
+  }
+}

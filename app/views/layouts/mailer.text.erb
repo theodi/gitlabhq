@@ -1,0 +1,9 @@
+<%= text_header_message %>
+
+<%= yield -%>
+
+-- <%# signature marker %>
+<%= notification_reason_text %>
+<%= render_if_exists 'layouts/mailer/additional_text' %>
+
+<%= text_footer_message %>

@@ -1,0 +1,23 @@
+- deletion_color = local_assigns.fetch(:deletion, nil)
+- addition_color = local_assigns.fetch(:addition, nil)
+
+-# --custom-diff-deletion-color is only used in Rapid Diffs
+- if deletion_color.present? || request.path == profile_preferences_path
+  = universal_stylesheet_link_tag "highlight/diff_custom_colors_deletion"
+- if deletion_color.present?
+  - deletion_color_rgb = hex_color_to_rgb_array(deletion_color).join(',')
+  :css
+    body {
+      --diff-deletion-color: rgba(#{deletion_color_rgb},0.2);
+      --custom-diff-deletion-color: rgba(#{deletion_color_rgb},0.2);
+    }
+
+- if addition_color.present? || request.path == profile_preferences_path
+  = universal_stylesheet_link_tag "highlight/diff_custom_colors_addition"
+- if addition_color.present?
+  - addition_color_rgb = hex_color_to_rgb_array(addition_color).join(',')
+  :css
+    body {
+      --diff-addition-color: rgba(#{addition_color_rgb},0.2);
+      --custom-diff-addition-color: rgba(#{addition_color_rgb},0.2);
+    }

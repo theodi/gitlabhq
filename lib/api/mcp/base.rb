@@ -1,0 +1,309 @@
+# frozen_string_literal: true
+
+module API
+  module Mcp
+    class Base < ::API::Base
+      include ::API::Helpers::HeadersHelpers
+      include APIGuard
+      include ::Mcp::Tools::Base::VersionHelper
+
+      helpers ::API::Helpers::Mcp::AuthChallenge
+      helpers ::API::Helpers::Mcp::JsonRpc
+
+      # JSON-RPC Specification
+      # See: https://www.jsonrpc.org/specification
+      JSONRPC_VERSION = '2.0'
+
+      # JSON-RPC Error Codes
+      # See: https://www.jsonrpc.org/specification#error_object
+      JSONRPC_ERRORS = {
+        invalid_request: {
+          code: -32600,
+          message: 'Invalid Request'
+        },
+        method_not_found: {
+          code: -32601,
+          message: 'Method not found'
+        },
+        invalid_params: {
+          code: -32602,
+          message: 'Invalid params'
+        },
+        version_mismatch: {
+          code: -32001,
+          message: 'Version not supported'
+        },
+        tool_denied: {
+          code: -32002,
+          message: 'Tool denied'
+        }
+        # NOTE: Parse error	code -32700	is unsupported due to 400 Bad Request returned by Workhorse
+      }.freeze
+
+      # JSON-RPC Supported Requests
+      # See: https://modelcontextprotocol.io/specification/2025-06-18/schema#common-types
+      JSONRPC_METHOD_HANDLERS = {
+        'initialize' => Handlers::InitializeRequest,
+        'notifications/initialized' => Handlers::InitializedNotificationRequest
+      }.freeze
+
+      feature_category :mcp_server
+      allow_access_with_scope :mcp
+      urgency :low
+
+      before do
+        # MCP clients' User-Agents vary too much for ClientIdentity to recognise.
+        Gitlab::ApplicationContext.push(client_type: 'integration', client_name: 'mcp')
+
+        authenticate!
+
+        unless feature_available?
+          logger.info(
+            message: 'MCP server not available',
+            event_name: 'permission_denied',
+            ai_component: 'mcp_server',
+            denial_reason: mcp_denial_reason,
+            Labkit::Fields::GL_USER_ID => current_user.id
+          )
+
+          forbidden!(mcp_denial_message)
+        end
+
+        # API::API registers `api` for every route, so the API guard lets a token without `mcp` through.
+        unless AccessTokenValidationService.new(access_token)
+          .include_any_scope?([Gitlab::Auth::MCP_SCOPE, Gitlab::Auth::GRANULAR_SCOPE])
+
+          if access_token
+            save_auth_failure_in_application_context(access_token, :insufficient_scope, [Gitlab::Auth::MCP_SCOPE])
+          end
+
+          raise Gitlab::Auth::InsufficientScopeError, [Gitlab::Auth::MCP_SCOPE]
+        end
+      end
+
+      helpers do
+        extend ::Gitlab::Utils::Override
+        include ::Gitlab::Utils::StrongMemoize
+
+        def logger
+          Gitlab::Mcp::Logger.build
+        end
+        strong_memoize_attr :logger
+
+        def feature_available?
+          mcp_denial_reason.nil?
+        end
+
+        def mcp_denial_reason
+          # SaaS is short-circuited by the EE override; :instance_setting_disabled is self-managed-only.
+          return :instance_setting_disabled unless ::Gitlab::CurrentSettings.mcp_server_enabled?
+
+          nil
+        end
+        strong_memoize_attr :mcp_denial_reason
+
+        def mcp_denial_message
+          'MCP server disabled for this instance'
+        end
+
+        # Of the guard's scopes, only `mcp` gets past the check in `before`; a list without it, such as sudo's, is kept.
+        override :bearer_challenge_scopes
+        def bearer_challenge_scopes(scopes)
+          scopes.include?(Gitlab::Auth::MCP_SCOPE) ? [Gitlab::Auth::MCP_SCOPE] : scopes
+        end
+
+        # Allowed MCP tool names, as set by the Duo Workflow executor.
+        #
+        # @return [Array<String>, nil] names from the `X-Gitlab-Enabled-Mcp-Server-Tools` header,
+        #   or nil when the header is absent or lists no names
+        def enabled_mcp_server_tools
+          header_value = headers['X-Gitlab-Enabled-Mcp-Server-Tools']
+          return if header_value.blank?
+
+          names = header_value.split(',').map(&:strip).reject(&:blank?)
+          return if names.empty?
+
+          names
+        end
+
+        # Workhorse's Duo Workflow token always carries ai_workflows, and the documented MCP
+        # clients can't get that scope, so only it may list an unlisted tool by naming it.
+        def list_named_unlisted_tools?
+          Array(access_token.scopes).map(&:to_sym).include?(::Gitlab::Auth::AI_WORKFLOW)
+        end
+
+        # Returns the prefix for all MCP tool names for this request.
+        # This header can be used by users to prevent tool conflicts when
+        # configuring MCP servers of multiple GitLab instances.
+        # Return nil when the header is absent or blank (no prefix)
+        def mcp_server_tool_name_prefix
+          header_value = headers['X-Gitlab-Mcp-Server-Tool-Name-Prefix']
+          return if header_value.blank?
+
+          header_value[0, 32]
+        end
+
+        def invoke_basic_handler
+          method_name = params[:method]
+          handler_class = JSONRPC_METHOD_HANDLERS[method_name] || method_not_found!(method_name)
+          handler = handler_class.new(params[:params] || {}, oauth_access_token, current_user,
+            client_info: mcp_client_info)
+          handler.invoke
+        end
+
+        def mcp_client_info
+          ::Gitlab::Mcp::ClientInfo.from_request(params[:params], user_agent: headers['User-Agent'])
+        end
+        strong_memoize_attr :mcp_client_info
+
+        def mcp_request_context
+          ::Mcp::Tools::RequestContext.new(current_user: current_user, access_token: access_token, request: request)
+        end
+        strong_memoize_attr :mcp_request_context
+
+        def method_not_found!(method_name)
+          # render error used to stop request and return early
+          render_structured_api_error!({
+            jsonrpc: JSONRPC_VERSION,
+            error: JSONRPC_ERRORS[:method_not_found].merge({ data: { method: method_name } }),
+            id: params[:id]
+          }, 404)
+        end
+
+        def oauth_access_token
+          token = Doorkeeper::OAuth::Token.from_request(
+            current_request,
+            *Doorkeeper.configuration.access_token_methods
+          )
+          unauthorized! unless token
+          token
+        end
+
+        def format_jsonrpc_response(result)
+          if params[:id].nil? || result.nil?
+            # MCP spec requires 202 Accepted with no body for JSON-RPC notifications
+            # See: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
+            # "If the input consists solely of JSON-RPC responses or notifications:
+            #  If the server accepts the input, the server MUST return HTTP status code 202 Accepted with no body."
+            # NOTE: `body false` forces status 204, and a plain '' body would still be JSON-dumped
+            # to the string `""`. `Gitlab::Json::Precompiled` skips that dumping so the body stays empty.
+            status :accepted
+            body Gitlab::Json::Precompiled.new('')
+          else
+            {
+              jsonrpc: JSONRPC_VERSION,
+              result: result,
+              id: params[:id]
+            }
+          end
+        end
+
+        def render_mcp_result(result)
+          format_jsonrpc_response(result)
+        end
+      end
+
+      # Model Context Protocol (MCP) specification
+      # See: https://modelcontextprotocol.io/specification/2025-06-18
+      namespace :mcp do
+        namespace_setting :mcp_manager, ::Mcp::Tools::Manager.new
+        params do
+          # JSON-RPC Request Object
+          # See: https://www.jsonrpc.org/specification#request_object
+          requires :jsonrpc, type: String, desc: 'JSON-RPC protocol version identifier. Must be `2.0`.',
+            allow_blank: false, values: [JSONRPC_VERSION]
+          requires :method, type: String, desc: 'Name of the JSON-RPC method invoked on the MCP server.',
+            allow_blank: false
+          # `id` must be echoed back with the same type (INC-6166). The identity `coerce_with`
+          # preserves it; without it Grape coerces to the first matching `types` entry.
+          optional :id, types: [Integer, String], coerce_with: ->(value) { value },
+            desc: 'ID of the JSON-RPC request returned in the response.',
+            allow_blank: false
+          optional :params, desc: 'Parameters for the JSON-RPC method specified in `method`.',
+            types: [Hash, Array]
+        end
+
+        rescue_from Grape::Exceptions::ValidationErrors do |e|
+          render_structured_api_error!({
+            jsonrpc: JSONRPC_VERSION,
+            error: JSONRPC_ERRORS[:invalid_request].merge({ data: { validations: e.full_messages } }),
+            id: jsonrpc_request_id
+          }, 400)
+        end
+
+        rescue_from Handlers::CallTool::ToolDeniedError do |e|
+          render_structured_api_error!({
+            jsonrpc: JSONRPC_VERSION,
+            error: JSONRPC_ERRORS[:tool_denied].merge({ data: { tool: e.tool_name, denied_by: e.denied_by }.compact }),
+            id: params[:id]
+          }, 403)
+        end
+
+        rescue_from ArgumentError do |e|
+          render_structured_api_error!({
+            jsonrpc: JSONRPC_VERSION,
+            error: JSONRPC_ERRORS[:invalid_params].merge({ data: { params: e.message } }),
+            id: jsonrpc_request_id
+          }, 400)
+        end
+
+        # See: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server
+        desc 'Create MCP request handler' do
+          detail 'Handles Model Context Protocol requests'
+          failure [
+            { code: 400, message: 'Bad request' },
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 404, message: 'Method not found' }
+          ]
+          tags ['mcp']
+        end
+        route_setting :authorization, permissions: :execute_mcp_tool, boundary_type: :user
+        post do
+          status :ok
+
+          result =
+            case params[:method]
+            when 'tools/call'
+              # Route-backed tools such as start_duo_session rerun a route on this env, where `params`
+              # are the tool arguments, so they read the client from here.
+              request.env[::Gitlab::Mcp::ClientInfo::RACK_ENV_KEY] = mcp_client_info
+
+              Handlers::CallTool.new(namespace_setting(:mcp_manager)).invoke(request, params[:params], current_user,
+                context: mcp_request_context, tool_name_prefix: mcp_server_tool_name_prefix,
+                client_info: mcp_client_info)
+            when 'tools/list'
+              allowed_tools = enabled_mcp_server_tools
+              allowed_toolsets = ::Mcp::Tools::Toolsets.parse(headers['X-Gitlab-Enabled-Mcp-Server-Toolsets'])
+              allowed_toolsets = ::Mcp::Tools::Toolsets.defaults if allowed_toolsets.blank? && allowed_tools.blank?
+
+              Handlers::ListTools.new(namespace_setting(:mcp_manager)).invoke(current_user,
+                context: mcp_request_context, allowed_tools: allowed_tools, allowed_toolsets: allowed_toolsets,
+                tool_name_prefix: mcp_server_tool_name_prefix, include_named_unlisted: list_named_unlisted_tools?)
+            else
+              invoke_basic_handler
+            end
+
+          render_mcp_result(result)
+        end
+
+        # See: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#listening-for-messages-from-the-server
+        desc 'Get MCP response listener' do
+          detail 'Listens for Model Context Protocol responses'
+          failure [
+            { code: 401, message: 'Unauthorized' },
+            { code: 403, message: 'Forbidden' },
+            { code: 405, message: 'Method not allowed' }
+          ]
+          tags ['mcp']
+        end
+        route_setting :authorization, permissions: :execute_mcp_tool, boundary_type: :user
+        get do
+          status :method_not_allowed
+        end
+      end
+    end
+  end
+end
+
+API::Mcp::Base.prepend_mod

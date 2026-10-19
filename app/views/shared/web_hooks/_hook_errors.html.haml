@@ -1,0 +1,23 @@
+- strong = { strong_start: '<strong>'.html_safe,
+  strong_end: '</strong>'.html_safe }
+- help_link = link_to('', help_page_path('user/project/integrations/webhooks.md', anchor: 'auto-disabled-webhooks'), target: '_blank', rel: 'noopener noreferrer')
+- if hook.rate_limited?
+  - placeholders = { limit: number_with_delimiter(hook.rate_limit),
+    root_namespace: hook.parent.root_namespace.path }
+  = render Pajamas::AlertComponent.new(title: s_('Webhooks|Webhook rate limit has been reached'),
+    variant: :danger) do |c|
+    - c.with_body do
+      = s_("Webhooks|Webhooks for %{root_namespace} are now disabled because they've been triggered more than %{limit} times per minute. These webhooks are re-enabled automatically in the next minute.").html_safe % placeholders
+- elsif hook.permanently_disabled?
+  - failure_count = { failure_count: hook.recent_failures }
+  = render Pajamas::AlertComponent.new(title: s_('Webhooks|Webhook disabled'),
+    variant: :danger) do |c|
+    - c.with_body do
+      = safe_format(s_('Webhooks|The webhook has %{help_link_start}failed%{help_link_end} %{failure_count} times consecutively and has been disabled. To re-enable the webhook, see %{strong_start}Recent events%{strong_end} for more information about the error, then test your settings.'), strong, failure_count, tag_pair(help_link, :help_link_start, :help_link_end))
+- elsif hook.temporarily_disabled?
+  - retry_time = { retry_time: time_interval_in_words(hook.disabled_until - Time.now) }
+  - failure_count = { failure_count: hook.recent_failures }
+  = render Pajamas::AlertComponent.new(title: s_('Webhooks|Webhook temporarily disabled'),
+    variant: :warning) do |c|
+    - c.with_body do
+      = safe_format(s_('Webhooks|The webhook has %{help_link_start}failed%{help_link_end} %{failure_count} times consecutively and is disabled for %{retry_time}. To re-enable the webhook earlier, see %{strong_start}Recent events%{strong_end} for more information about the error, then test your settings.'), retry_time, strong, failure_count, tag_pair(help_link, :help_link_start, :help_link_end))

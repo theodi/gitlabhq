@@ -1,0 +1,561 @@
+---
+stage: Verify
+group: Runner Core
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: Install GitLab Relay (KAS)
+description: Manage GitLab Relay (KAS).
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+GitLab Relay (KAS) is a component installed with GitLab. It serves as a central
+communication relay for bidirectional gRPC communication between GitLab and external
+systems, including:
+
+- Runners: Required to use the [Job Router](../../ci/runners/job_router/_index.md) and [Runner Controllers](../../ci/runners/job_router/runner_controllers.md).
+- Kubernetes clusters: Required to use the [Agent for Kubernetes](../../user/clusters/agent/_index.md).
+
+KAS was formerly known as the Kubernetes Agent Server. The name was changed to reflect its evolved role beyond Kubernetes.
+
+GitLab Relay (KAS) is installed and available on GitLab.com at `grpcs://kas.gitlab.com`.
+The WebSocket address `wss://kas.gitlab.com` is also available.
+If you use GitLab Self-Managed, by default GitLab Relay (KAS) is installed and available.
+
+## Installation options
+
+As a GitLab administrator, you can control the GitLab Relay (KAS) installation:
+
+- For [Linux package installations](#for-linux-package-installations).
+- For [GitLab Helm chart installations](#for-gitlab-helm-chart).
+
+### For Linux package installations
+
+{{< history >}}
+
+- Native gRPC routing to KAS on the GitLab host [added](https://gitlab.com/gitlab-org/omnibus-gitlab/-/merge_requests/8857) in GitLab 18.7.
+- Default agent address [changed](https://gitlab.com/gitlab-org/omnibus-gitlab/-/merge_requests/9761) from `ws://gitlab.example.com/-/kubernetes-agent/` or `wss://gitlab.example.com/-/kubernetes-agent/` to `grpcs://gitlab.example.com` in GitLab 19.5.
+
+{{< /history >}}
+
+GitLab Relay (KAS) for Linux package installations can be enabled on a single node, or on multiple nodes at once.
+By default, GitLab Relay (KAS) is enabled. Agents connect to it at `grpcs://gitlab.example.com` when
+`external_url` uses HTTPS without a relative URL root and the bundled NGINX terminates TLS with HTTP/2.
+Otherwise, for example when
+[TLS is terminated at a load balancer](https://docs.gitlab.com/omnibus/settings/ssl/#configure-a-reverse-proxy-or-load-balancer-ssl-termination),
+agents connect over WebSocket at `wss://gitlab.example.com/-/kubernetes-agent/` or
+`ws://gitlab.example.com/-/kubernetes-agent/`. WebSocket stays available in both cases.
+
+#### Disable on a single node
+
+To disable GitLab Relay (KAS) on a single node:
+
+1. Edit `/etc/gitlab/gitlab.rb`:
+
+   ```ruby
+   gitlab_kas['enable'] = false
+   ```
+
+1. [Reconfigure GitLab](../restart_gitlab.md#reconfigure-a-linux-package-installation).
+
+#### Turn on KAS on multiple nodes
+
+KAS instances communicate with each other by registering their private addresses in Redis at a well-known location.
+Each KAS must be configured to present its private address details so that other instances can reach it.
+
+To turn on KAS on multiple nodes:
+
+1. Add the [common configuration](#common-configuration).
+1. Add the configuration from one of the following options:
+
+   - [Option 1 - explicit manual configuration](#option-1---explicit-manual-configuration)
+   - [Option 2 - automatic CIDR-based configuration](#option-2---automatic-cidr-based-configuration)
+   - [Option 3 - automatic configuration based on listener configuration](#option-3---automatic-configuration-based-on-listener-configuration)
+
+1. [Reconfigure GitLab](../restart_gitlab.md#reconfigure-a-linux-package-installation).
+1. (Optional) If you use a multi-server environment with separate GitLab Rails and Sidekiq nodes, enable KAS on the Sidekiq nodes.
+
+##### Common configuration
+
+For each KAS node, edit the file at `/etc/gitlab/gitlab.rb` and add the following configuration:
+
+```ruby
+gitlab_kas_external_url 'grpcs://kas.gitlab.example.com/'
+
+gitlab_kas['api_secret_key'] = '<32_bytes_long_base64_encoded_value>'
+gitlab_kas['private_api_secret_key'] = '<32_bytes_long_base64_encoded_value>'
+
+# private_api_listen_address examples, pick one:
+
+gitlab_kas['private_api_listen_address'] = 'A.B.C.D:8155' # Listen on a particular IPv4. Each node must use its own unique IP.
+# gitlab_kas['private_api_listen_address'] = '[A:B:C::D]:8155' # Listen on a particular IPv6. Each node must use its own unique IP.
+# gitlab_kas['private_api_listen_address'] = 'kas-N.gitlab.example.com:8155' # Listen on all IPv4 and IPv6 interfaces that the DNS name resolves to. Each node must use its own unique domain.
+# gitlab_kas['private_api_listen_address'] = ':8155' # Listen on all IPv4 and IPv6 interfaces.
+# gitlab_kas['private_api_listen_address'] = '0.0.0.0:8155' # Listen on all IPv4 interfaces.
+# gitlab_kas['private_api_listen_address'] = '[::]:8155' # Listen on all IPv6 interfaces.
+
+# Uncomment below to enable KAS to KAS TLS communication
+# gitlab_kas['private_api_certificate_file'] = '<path_to_kas_server_crt_file>'
+# gitlab_kas['private_api_key_file'] = '<path_to_kas_server_certificate_key>'
+
+gitlab_kas['env'] = {
+  # 'OWN_PRIVATE_API_HOST' => '<server-name-from-cert>' # Add if you want to use TLS for KAS->KAS communication. This name is used to verify the TLS certificate host name instead of the host in the URL of the destination KAS.
+  'SSL_CERT_DIR' => "/opt/gitlab/embedded/ssl/certs/",
+}
+
+gitlab_rails['gitlab_kas_external_url'] = 'grpcs://gitlab.example.com'
+gitlab_rails['gitlab_kas_internal_url'] = 'grpc://kas.internal.gitlab.example.com'
+gitlab_rails['gitlab_kas_external_k8s_proxy_url'] = 'https://gitlab.example.com/-/kubernetes-agent/k8s-proxy/'
+```
+
+Do not set `private_api_listen_address` to listen on an internal address, such as:
+
+- `localhost`
+- Loopback IP addresses, like `127.0.0.1` or `::1`
+- A UNIX socket
+
+Other KAS nodes cannot reach these addresses.
+
+For single-node configurations, you can set `private_api_listen_address` to listen on an internal address.
+
+##### Option 1 - explicit manual configuration
+
+For each KAS node, edit the file at `/etc/gitlab/gitlab.rb` and set the `OWN_PRIVATE_API_URL` environment variable explicitly:
+
+```ruby
+gitlab_kas['env'] = {
+  # OWN_PRIVATE_API_URL examples, pick one. Each node must use its own unique IP or DNS name.
+  # Use grpcs:// when using TLS on the private API endpoint.
+
+  'OWN_PRIVATE_API_URL' => 'grpc://A.B.C.D:8155' # IPv4
+  # 'OWN_PRIVATE_API_URL' => 'grpcs://A.B.C.D:8155' # IPv4 + TLS
+  # 'OWN_PRIVATE_API_URL' => 'grpc://[A:B:C::D]:8155' # IPv6
+  # 'OWN_PRIVATE_API_URL' => 'grpc://kas-N-private-api.gitlab.example.com:8155' # DNS name
+}
+```
+
+##### Option 2 - automatic CIDR-based configuration
+
+{{< history >}}
+
+- [Added](https://gitlab.com/gitlab-org/cluster-integration/gitlab-agent/-/merge_requests/2183) multiple CIDR support to `OWN_PRIVATE_API_CIDR` in GitLab 17.8.1.
+
+{{< /history >}}
+
+You might not be able to set an exact IP address or hostname in the `OWN_PRIVATE_API_URL` variable if, for example,
+the KAS host is assigned an IP address and a hostname dynamically.
+
+If you cannot set an exact IP address or hostname, you can configure `OWN_PRIVATE_API_CIDR` to set up KAS to dynamically construct
+`OWN_PRIVATE_API_URL` based on one or more [CIDRs](https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing):
+
+This approach allows each KAS node to use a static configuration that works as long as
+the CIDR doesn't change.
+
+For each KAS node, edit the file at `/etc/gitlab/gitlab.rb` to dynamically construct the
+`OWN_PRIVATE_API_URL` URL:
+
+1. Comment out `OWN_PRIVATE_API_URL` in your common configuration to turn off this variable.
+1. Configure `OWN_PRIVATE_API_CIDR` to specify what networks the KAS nodes listen on.
+   When you start KAS, it determines which private IP address to use by selecting the host address that matches the specified CIDR.
+1. Configure `OWN_PRIVATE_API_PORT` to use a different port. By default, KAS uses the port from the `private_api_listen_address` parameter.
+1. If you use TLS on the private API endpoint, configure `OWN_PRIVATE_API_SCHEME=grpcs`. By default, KAS uses the `grpc` scheme.
+
+```ruby
+gitlab_kas['env'] = {
+  # 'OWN_PRIVATE_API_CIDR' => '10.0.0.0/8', # IPv4 example
+  # 'OWN_PRIVATE_API_CIDR' => '2001:db8:8a2e:370::7334/64', # IPv6 example
+  # 'OWN_PRIVATE_API_CIDR' => '10.0.0.0/8,2001:db8:8a2e:370::7334/64', # multiple CIRDs example
+
+  # 'OWN_PRIVATE_API_PORT' => '8155',
+  # 'OWN_PRIVATE_API_SCHEME' => 'grpc',
+}
+```
+
+##### Option 3 - automatic configuration based on listener configuration
+
+A KAS node can determine what IP addresses are available based on the `private_api_listen_network` and
+`private_api_listen_address` settings:
+
+- If `private_api_listen_address` is set to a fixed IP address and port number (for example, `ip:port`), it uses this IP address.
+- If `private_api_listen_address` has no IP address (for example, `:8155`), or has an unspecified IP address
+  (for example, `[::]:8155` or `0.0.0.0:8155`), KAS assigns all non-loopback and non-link-local IP addresses to the node.
+  IPv4 and IPv6 addresses are filtered based on the value of `private_api_listen_network`.
+- If `private_api_listen_address` is a `hostname:PORT` (for example, `kas-N-private-api.gitlab.example.com:8155`), KAS
+  resolves the DNS name and assigns all IP addresses to the node.
+  In this mode, KAS listens only on the first IP address (This behavior is defined by the [Go standard library](https://pkg.go.dev/net#Listen)).
+  IPv4 and IPv6 addresses are filtered based on the value of `private_api_listen_network`.
+
+Before exposing the private API address of a KAS on all IP addresses, make sure this action does not conflict with your organization's security policy.
+The private API endpoint requires a valid authentication token for all requests.
+
+For each KAS node, edit the file at `/etc/gitlab/gitlab.rb`:
+
+Example 1. Listen on all IPv4 and IPv6 interfaces:
+
+```ruby
+# gitlab_kas['private_api_listen_network'] = 'tcp' # this is the default value, no need to set it.
+gitlab_kas['private_api_listen_address'] = ':8155' # Listen on all IPv4 and IPv6 interfaces
+```
+
+Example 2. Listen on all IPv4 interfaces:
+
+```ruby
+gitlab_kas['private_api_listen_network'] = 'tcp4'
+gitlab_kas['private_api_listen_address'] = ':8155'
+```
+
+Example 3. Listen on all IPv6 interfaces:
+
+```ruby
+gitlab_kas['private_api_listen_network'] = 'tcp6'
+gitlab_kas['private_api_listen_address'] = ':8155'
+```
+
+You can use environment variables to override the scheme and port that
+construct the `OWN_PRIVATE_API_URL`:
+
+```ruby
+gitlab_kas['env'] = {
+  # 'OWN_PRIVATE_API_PORT' => '8155',
+  # 'OWN_PRIVATE_API_SCHEME' => 'grpc',
+}
+```
+
+##### Use a load balancer or reverse proxy with multiple KAS instances
+
+> [!warning]
+> When you place a load balancer or reverse proxy in front of KAS, configure separate endpoints for external and internal traffic
+> to prevent exposing the internal API.
+
+KAS serves traffic on different ports:
+
+- Port 8150 (`listen_address`): Agent connections (WebSocket/gRPC)
+- Port 8153 (`internal_api_listen_address`): GitLab Rails API (gRPC)
+
+  > [!warning]
+  > Do not expose port 8153 publicly. Though the port gets authenticated, it should only be accessible to GitLab Rails instances.
+
+To secure KAS when you use a load balancer or reverse proxy, configure two separate endpoints:
+
+- External endpoint: Port 8150 (for agents)
+- Internal endpoint: Port 8153 (for GitLab Rails only, restricted by network or firewall)
+
+This separation ensures that the internal API remains isolated from public access.
+
+For example, configure an internal endpoint with network restrictions in NGINX:
+
+```nginx
+# Internal endpoint (network-restricted)
+server {
+  listen 8443 ssl http2;
+  server_name kas-internal.example.com;
+
+  # Optional: allow 10.0.1.0/24; deny all;
+
+  location /gitlab.agent. {
+    grpc_pass grpc://kas-backend:8153;
+  }
+}
+```
+
+Configure GitLab to use the separate endpoints (`/etc/gitlab/gitlab.rb`):
+
+```ruby
+gitlab_rails['gitlab_kas_external_url'] = 'wss://kas-external.example.com'
+gitlab_rails['gitlab_kas_internal_url'] = 'grpcs://kas-internal.example.com:8443'
+gitlab_rails['gitlab_kas_external_k8s_proxy_url'] = 'https://kas-external.example.com/k8s-proxy/'
+```
+
+Key configuration points:
+
+- Use separate domains, ports, or IP restrictions for internal traffic.
+- For cloud load balancers, configure separate target groups for ports 8150 and 8153.
+
+##### GitLab Relay (KAS) node settings
+
+| Setting                                             | Description |
+|-----------------------------------------------------|-------------|
+| `gitlab_kas['private_api_listen_network']`          | The network family KAS listens on. Defaults to `tcp` for both IPv4 and IPv6 networks. Set to `tcp4` for IPv4 or `tcp6` for IPv6. |
+| `gitlab_kas['private_api_listen_address']`          | The address the KAS listens on. Set to `0.0.0.0:8155` or to an IP and port reachable by other nodes in the cluster. |
+| `gitlab_kas['api_secret_key']`                      | The shared secret used for authentication between KAS and GitLab. The value must be Base64-encoded and exactly 32 bytes long. |
+| `gitlab_kas['private_api_secret_key']`              | The shared secret used for authentication between different KAS instances. The value must be Base64-encoded and exactly 32 bytes long. |
+| `gitlab_kas['private_api_certificate_file']`        | Full path of the KAS server certificate file. Required when `OWN_PRIVATE_API_SCHEME` or `OWN_PRIVATE_API_URL` is `grpcs`. |
+| `gitlab_kas['private_api_key_file']`                | Full path of the KAS server certificate key file. Required when `OWN_PRIVATE_API_SCHEME` or `OWN_PRIVATE_API_URL` is `grpcs`. |
+| `OWN_PRIVATE_API_SCHEME`                            | Optional value used to specify what scheme to use when constructing `OWN_PRIVATE_API_URL`. Can be `grpc` or `grpcs`. |
+| `OWN_PRIVATE_API_URL`                               | The environment variable used by KAS for service discovery. Set to the hostname or IP address of the node you're configuring. The node must be reachable by other nodes in the cluster. |
+| `OWN_PRIVATE_API_HOST`                              | Optional value used to verify the TLS certificate hostname.[^outbound-tls] A client compares this value to the hostname in the server's TLS certificate file. |
+| `OWN_PRIVATE_API_PORT`                              | Optional value used to specify what port to use when constructing `OWN_PRIVATE_API_URL`. |
+| `OWN_PRIVATE_API_CIDR`                              | Optional value used to specify which IP addresses from the available networks to use when constructing `OWN_PRIVATE_API_URL`. |
+| `gitlab_kas['client_timeout_seconds']`              | The timeout for the client to connect to the KAS. |
+| `gitlab_kas_external_url`                           | The user-facing URL for the in-cluster `agentk`. Can be a fully qualified domain or subdomain,[^subdomain-example] or a GitLab external URL.[^instance-path-example] If blank, defaults to a GitLab external URL. |
+| `gitlab_rails['gitlab_kas_external_url']`           | The user-facing URL for the in-cluster `agentk`. If blank, defaults to the `gitlab_kas_external_url`. |
+| `gitlab_rails['gitlab_kas_external_k8s_proxy_url']` | The user-facing URL for Kubernetes API proxying. If blank, defaults to a URL based on `gitlab_kas_external_url`. |
+| `gitlab_rails['gitlab_kas_internal_url']`           | The internal URL the GitLab backend uses to communicate with KAS. |
+
+[^outbound-tls]: TLS for outbound connections is enabled when `OWN_PRIVATE_API_URL` or `OWN_PRIVATE_API_SCHEME` starts with `grpcs`.
+[^subdomain-example]: For example, `grpcs://kas.gitlab.example.com/`.
+[^instance-path-example]: For example, `grpcs://gitlab.example.com`.
+
+#### Configure a standalone KAS node
+
+Configure Omnibus to run KAS separately from other components.
+
+On each Rails node:
+
+```ruby
+## KAS Config
+gitlab_kas['enable'] = false
+
+gitlab_rails['gitlab_kas_enabled'] = true
+gitlab_rails['gitlab_kas_external_url'] = 'grpcs://kas.example.com/'
+gitlab_rails['gitlab_kas_internal_url'] = 'grpc://<KAS_NODE_IP_OR_DOMAIN>:8153' # If you want to configure multiple KAS nodes that are behind an internal LB, then use 'grpc://<LB_IP_OR_DOMAIN>:<port>'
+gitlab_rails['gitlab_kas_external_k8s_proxy_url'] = 'https://kas.example.com/-/kubernetes-agent/k8s-proxy/'
+```
+
+On each KAS node:
+
+```ruby
+### External URL
+external_url 'https://kas.example.com'
+
+### Avoid running unnecessary services ###
+gitaly['enable'] = false
+gitlab_workhorse['enable'] = false
+nginx['enable'] = true
+postgresql['enable'] = false
+prometheus['enable'] = false
+puma['enable'] = false
+redis['enable'] = false
+sidekiq['enable'] = false
+
+### Prevent database connections during 'gitlab-ctl reconfigure' ###
+gitlab_rails['rake_cache_clear'] = false
+gitlab_rails['auto_migrate'] = false
+
+gitlab_kas['redis_password'] = '<redis_password>'
+
+# Uncomment below if using Redis high availability with Sentinel
+# gitlab_kas['redis_sentinels'] = [
+#  {host: '<REDIS_IP>', port: 26379},
+#  {host: '<REDIS_IP>', port: 26379},
+#  {host: '<REDIS_IP>', port: 26379},
+# ]
+# gitlab_kas['redis_sentinels_master_name'] = 'gitlab-redis'
+# gitlab_kas['redis_sentinels_password'] = '<redis_sentinels_password>'
+
+### GitLab Relay (KAS) ###
+gitlab_kas['enable'] = true
+gitlab_kas_external_url 'grpcs://kas.example.com/'
+gitlab_kas['api_secret_key'] = '<32_bytes_long_base64_encoded_value>'
+gitlab_kas['private_api_secret_key'] = '<32_bytes_long_base64_encoded_value>'
+gitlab_kas['private_api_listen_address'] = '<KAS_NODE_PRIVATE_IP>:8155'
+
+gitlab_kas['listen_address'] = '<KAS_NODE_PRIVATE_IP>:8150'
+gitlab_kas['observability_listen_address'] = '<KAS_NODE_PRIVATE_IP>:8151'
+gitlab_kas['internal_api_listen_address'] = '<KAS_NODE_PRIVATE_IP>:8153'
+gitlab_kas['kubernetes_api_listen_address'] = '<KAS_NODE_PRIVATE_IP>:8154'
+
+```
+
+### For GitLab Helm Chart
+
+See [how to use the GitLab-KAS chart](https://docs.gitlab.com/charts/charts/gitlab/kas/).
+
+## Kubernetes API proxy cookie
+
+GitLab Relay (KAS) proxies Kubernetes API requests to the GitLab agent for Kubernetes with either:
+
+- A [CI/CD job](https://gitlab.com/gitlab-org/cluster-integration/gitlab-agent/-/blob/master/doc/kubernetes_ci_access.md).
+- [GitLab user credentials](https://gitlab.com/gitlab-org/cluster-integration/gitlab-agent/-/blob/master/doc/kubernetes_user_access.md).
+
+To authenticate with user credentials, Rails sets a cookie for the GitLab frontend.
+This cookie is called `_gitlab_kas` and it contains an encrypted
+session ID, like the [`_gitlab_session` cookie](../../user/profile/_index.md#cookies-used-for-sign-in).
+The `_gitlab_kas` cookie must be sent to the KAS proxy endpoint with every request
+to authenticate and authorize the user.
+
+## Enable receptive agents
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/groups/gitlab-org/-/work_items/12180) in GitLab 17.4.
+
+{{< /history >}}
+
+[Receptive agents](../../user/clusters/agent/_index.md#receptive-agents) allow GitLab to integrate with Kubernetes clusters
+that cannot establish a network connection to the GitLab instance, but can be connected to by GitLab.
+
+Prerequisites:
+
+- Administrator access.
+
+To enable receptive agents:
+
+1. In the upper-right corner, select **Admin**.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **GitLab Agent for Kubernetes**.
+1. Turn on the **Enable receptive mode** toggle.
+
+## Configure Kubernetes API proxy response header allowlist
+
+{{< history >}}
+
+- [Introduced](https://gitlab.com/gitlab-org/cluster-integration/gitlab-agent/-/issues/642) in GitLab 18.3 [with a feature flag](../feature_flags/_index.md) named `kas_k8s_api_proxy_response_header_allowlist`. Disabled by default.
+- [Generally available](https://gitlab.com/gitlab-org/cluster-integration/gitlab-agent/-/issues/642) in GitLab 18.7. Feature flag `kas_k8s_api_proxy_response_header_allowlist` removed.
+
+{{< /history >}}
+
+The Kubernetes API proxy in KAS uses an allowlist for the response headers.
+Secure and well-known Kubernetes and HTTP headers are allowed by default.
+
+For a list of allowed response headers, see the [response header allowlist](https://gitlab.com/gitlab-org/cluster-integration/gitlab-agent/-/blob/master/internal/module/kubernetes_api/server/proxy_headers.go).
+
+If you require response headers
+that are not in the default allowlist,
+you can add your response headers
+in the KAS configuration.
+
+To add extra allowed response headers:
+
+```yaml
+agent:
+  kubernetes_api:
+    extra_allowed_response_headers:
+      - 'X-My-Custom-Header-To-Allow'
+```
+
+Support for the addition of more response headers is tracked in
+[issue 550614](https://gitlab.com/gitlab-org/gitlab/-/issues/550614).
+
+## Troubleshooting
+
+If you have issues while using GitLab Relay (KAS), view the
+service logs by running the following command:
+
+```shell
+kubectl logs -f -l=app=kas -n <YOUR-GITLAB-NAMESPACE>
+```
+
+In Linux package installations, find the logs in `/var/log/gitlab/gitlab-kas/`.
+
+You can also [troubleshoot issues with individual agents](../../user/clusters/agent/troubleshooting.md).
+
+### Configuration file not found
+
+If you get the following error message:
+
+```plaintext
+time="2020-10-29T04:44:14Z" level=warning msg="Config: failed to fetch" agent_id=2 error="configuration file not found: \".gitlab/agents/test-agent/config.yaml\
+```
+
+The path is incorrect for either:
+
+- The repository where the agent was registered.
+- The agent configuration file.
+
+To fix this issue, ensure that the paths are correct.
+
+### Error: `dial tcp <GITLAB_INTERNAL_IP>:443: connect: connection refused`
+
+If you are running GitLab Self-Managed and:
+
+- The instance isn't running behind an SSL-terminating proxy.
+- The instance doesn't have HTTPS configured on the GitLab instance itself.
+- The instance's hostname resolves locally to its internal IP address.
+
+When GitLab Relay (KAS) tries to connect to the GitLab API, the following error might occur:
+
+```json
+{"level":"error","time":"2021-08-16T14:56:47.289Z","msg":"GetAgentInfo()","correlation_id":"01FD7QE35RXXXX8R47WZFBAXTN","grpc_service":"gitlab.agent.reverse_tunnel.rpc.ReverseTunnel","grpc_method":"Connect","error":"Get \"https://gitlab.example.com/api/v4/internal/kubernetes/agent_info\": dial tcp 172.17.0.4:443: connect: connection refused"}
+```
+
+To fix this issue for Linux package installations,
+set the following parameter in `/etc/gitlab/gitlab.rb`. Replace `gitlab.example.com` with your GitLab instance's hostname:
+
+```ruby
+gitlab_kas['gitlab_address'] = 'http://gitlab.example.com'
+```
+
+### Error: `x509: certificate signed by unknown authority`
+
+If you encounter this error when trying to reach the GitLab URL, it means it doesn't trust the GitLab certificate.
+
+You might see a similar error in the KAS logs of your GitLab application server:
+
+```json
+{"level":"error","time":"2023-03-07T20:19:48.151Z","msg":"AgentInfo()","grpc_service":"gitlab.agent.agent_configuration.rpc.AgentConfiguration","grpc_method":"GetConfiguration","error":"Get \"https://gitlab.example.com/api/v4/internal/kubernetes/agent_info\": x509: certificate signed by unknown authority"}
+```
+
+To fix this error, install the public certificate of your internal CA in the `/etc/gitlab/trusted-certs` directory.
+
+Alternatively, you can configure KAS to read the certificate from a custom directory. To do this, add the following configuration to the file at `/etc/gitlab/gitlab.rb`:
+
+```ruby
+gitlab_kas['env'] = {
+   'SSL_CERT_DIR' => "/opt/gitlab/embedded/ssl/certs/"
+ }
+```
+
+To apply the changes:
+
+1. Reconfigure GitLab:
+
+```shell
+sudo gitlab-ctl reconfigure
+```
+
+1. Restart GitLab Relay (KAS):
+
+```shell
+gitlab-ctl restart gitlab-kas
+```
+
+### Error: `GRPC::DeadlineExceeded in Clusters::Agents::NotifyGitPushWorker`
+
+This error likely occurs when the client does not receive a response within the default timeout period (5 seconds). To resolve the issue, you can increase the client timeout by modifying the `/etc/gitlab/gitlab.rb` configuration file.
+
+#### Steps to Resolve
+
+1. Add or update the following configuration to increase the timeout value:
+
+```ruby
+gitlab_kas['client_timeout_seconds'] = "10"
+```
+
+1. Apply the changes by reconfiguring GitLab:
+
+```shell
+gitlab-ctl reconfigure
+```
+
+#### Note
+
+You can adjust the timeout value to suit your specific needs. Testing is recommended to ensure the issue is resolved without impacting system performance.
+
+### Error: `Blocked Kubernetes API proxy response header`
+
+If HTTP response headers are lost when sent from the Kubernetes cluster to the user through the Kubernetes API proxy, check the KAS logs or Sentry instance for the following error:
+
+```plaintext
+Blocked Kubernetes API proxy response header. Please configure extra allowed headers for your instance in the KAS config with `extra_allowed_response_headers` and have a look at the troubleshooting guide at https://docs.gitlab.com/administration/clusters/kas/#troubleshooting.
+```
+
+This error means that the Kubernetes API proxy blocked response headers because
+they are not defined in the response header allowlist.
+
+For more information on adding response headers,
+see [configure the response header allowlist](#configure-kubernetes-api-proxy-response-header-allowlist).
+
+Support for the addition of more response headers is tracked in
+[issue 550614](https://gitlab.com/gitlab-org/gitlab/-/issues/550614).

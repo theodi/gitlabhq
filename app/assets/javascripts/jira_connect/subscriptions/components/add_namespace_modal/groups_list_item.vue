@@ -1,0 +1,80 @@
+<script>
+import { mapActions } from 'pinia';
+import { GlButton } from '@gitlab/ui';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import GroupItemName from '../group_item_name.vue';
+import { I18N_ADD_SUBSCRIPTIONS_ERROR_MESSAGE } from '../../constants';
+import { useJiraConnectSubscriptions } from '../../store';
+
+export default {
+  name: 'GroupsListItem',
+  components: {
+    GlButton,
+    GroupItemName,
+  },
+  inject: {
+    subscriptionsPath: {
+      default: '',
+    },
+  },
+  props: {
+    group: {
+      type: Object,
+      required: true,
+    },
+    disabled: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['error'],
+  data() {
+    return {
+      isLoading: false,
+    };
+  },
+  methods: {
+    ...mapActions(useJiraConnectSubscriptions, ['addSubscription']),
+    async onClick() {
+      this.isLoading = true;
+      try {
+        await this.addSubscription({
+          namespacePath: this.group.full_path,
+          subscriptionsPath: this.subscriptionsPath,
+        });
+      } catch (error) {
+        const message =
+          error?.response?.data?.errors ||
+          error?.response?.data?.message ||
+          I18N_ADD_SUBSCRIPTIONS_ERROR_MESSAGE;
+        this.$emit('error', message);
+        Sentry.captureException(error);
+      }
+      this.isLoading = false;
+    },
+  },
+};
+</script>
+
+<template>
+  <li class="gl-border-b-1 gl-border-b-default gl-border-b-solid">
+    <div class="gl-flex gl-items-center gl-py-3">
+      <div class="gl-flex-shrink-1 gl-flex gl-min-w-0 gl-grow gl-items-center">
+        <div class="gl-flex-shrink-1 gl-min-w-0 gl-grow">
+          <group-item-name :group="group" />
+        </div>
+
+        <gl-button
+          category="secondary"
+          variant="confirm"
+          :loading="isLoading"
+          :disabled="disabled"
+          @click.prevent="onClick"
+        >
+          {{ __('Link') }}
+        </gl-button>
+      </div>
+    </div>
+  </li>
+</template>

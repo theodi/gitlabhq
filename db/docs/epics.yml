@@ -1,0 +1,14 @@
+---
+table_name: epics
+classes:
+- Epic
+feature_categories:
+- portfolio_management
+description: Information directly related to Epics, used by epic management features
+  and the roadmap
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/3126
+milestone: '10.2'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  group_id: namespaces
+table_size: small

@@ -1,0 +1,25 @@
+---
+key_path: redis_hll_counters.ci_templates.p_ci_templates_pages_lektor
+description: Count of distinct projects that included the Pages/Lektor.gitlab-ci.yml template in a pipeline
+product_group: pipeline_authoring
+product_categories:
+- pipeline_composition
+value_type: number
+status: active
+milestone: '14.3'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/69204
+time_frame:
+- 28d
+- 7d
+data_source: internal_events
+data_category: optional
+tiers:
+- free
+- premium
+- ultimate
+events:
+- name: ci_template_included
+  unique: project.id
+  filter:
+    label: pages_lektor
+    property: 'false'

@@ -1,0 +1,56 @@
+---
+stage: Data Access
+group: Database Frameworks
+info: Any user with at least the Maintainer role can merge updates to this content. For details, see <https://docs.gitlab.com/development/development_processes/#development-guidelines-review>.
+title: Swapping tables
+---
+
+Sometimes you need to replace one table with another. For example, when
+migrating data in a very large table it's often better to create a copy of the
+table and insert and migrate the data into this new table in the background.
+
+> [!note]
+> First, verify whether the table is replicated to ClickHouse with Siphon. The table is replicated
+> when a configuration file for it exists in
+> [`db/siphon/tables`](https://gitlab.com/gitlab-org/gitlab/-/tree/master/db/siphon/tables).
+> Logical replication does not capture the rename, so in that case also follow
+> [Renaming or swapping tables](clickhouse/clickhouse_within_gitlab.md#renaming-or-swapping-tables).
+
+For example, to swap a table called `events` with another table called `events_for_migration`, you would need to:
+
+1. Rename `events` to `events_temporary`.
+1. Rename `events_for_migration` to `events`.
+1. Rename `events_temporary` to `events_for_migration`.
+
+You can do this in Rails using the `rename_table` method:
+
+```ruby
+rename_table :events, :events_temporary
+rename_table :events_for_migration, :events
+rename_table :events_temporary, :events_for_migration
+```
+
+This does not require any downtime as long as the 3 `rename_table` calls are
+executed in the same database transaction. Rails by default uses database
+transactions for migrations, but if it doesn't, you need to start one
+manually:
+
+```ruby
+Event.transaction do
+  rename_table :events, :events_temporary
+  rename_table :events_for_migration, :events
+  rename_table :events_temporary, :events_for_migration
+end
+```
+
+Once swapped, you _have to_ reset the primary key of the new table. For
+PostgreSQL you can use the `reset_pk_sequence!` method like so:
+
+```ruby
+reset_pk_sequence!('events')
+```
+
+Failure to reset the primary keys results in newly created rows starting
+with an ID value of 1. Depending on the existing data, this can then lead to
+duplicate key constraints popping up, preventing users from creating new
+data.

@@ -1,0 +1,74 @@
+# frozen_string_literal: true
+
+require 'rubocop_spec_helper'
+require_relative '../../../../rubocop/cop/graphql/json_type'
+
+RSpec.describe RuboCop::Cop::Graphql::JSONType, feature_category: :api do
+  let(:msg) do
+    'Avoid using GraphQL::Types::JSON. See: https://docs.gitlab.com/development/api_graphql_styleguide/#json'
+  end
+
+  context 'fields' do
+    it 'adds an offense when GraphQL::Types::JSON is used' do
+      expect_offense(<<~RUBY)
+        class MyType
+          field :some_field, GraphQL::Types::JSON
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ #{msg}
+        end
+      RUBY
+    end
+
+    it 'adds an offense when GraphQL::Types::JSON is used with other keywords' do
+      expect_offense(<<~RUBY)
+        class MyType
+          field :some_field, GraphQL::Types::JSON, null: true, description: 'My description'
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ #{msg}
+        end
+      RUBY
+    end
+
+    it 'does not add an offense for other types' do
+      expect_no_offenses(<<~RUBY.strip)
+        class MyType
+          field :some_field, GraphQL::Types::String
+        end
+      RUBY
+    end
+  end
+
+  context 'arguments' do
+    it 'adds an offense when GraphQL::Types::JSON is used' do
+      expect_offense(<<~RUBY)
+        class MyType
+          argument :some_arg, GraphQL::Types::JSON
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ #{msg}
+        end
+      RUBY
+    end
+
+    it 'adds an offense when GraphQL::Types::JSON is used with other keywords' do
+      expect_offense(<<~RUBY)
+        class MyType
+          argument :some_arg, GraphQL::Types::JSON, null: true, description: 'My description'
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ #{msg}
+        end
+      RUBY
+    end
+
+    it 'does not add an offense for other types' do
+      expect_no_offenses(<<~RUBY.strip)
+        class MyType
+          argument :some_arg, GraphQL::Types::String
+        end
+      RUBY
+    end
+  end
+
+  it 'does not add an offense for uses outside of field or argument' do
+    expect_no_offenses(<<~RUBY.strip)
+      class MyType
+        foo :some_field, GraphQL::Types::JSON
+      end
+    RUBY
+  end
+end

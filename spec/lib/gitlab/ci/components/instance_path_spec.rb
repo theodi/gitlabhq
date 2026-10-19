@@ -1,0 +1,728 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Ci::Components::InstancePath, feature_category: :pipeline_composition do
+  let_it_be(:user, freeze: false) { create(:user) }
+
+  let(:path) { described_class.new(address: address) }
+  let(:server_fqdn) { 'acme.com' }
+  let(:fqdn_prefix) { "#{server_fqdn}/" }
+
+  before do
+    allow(Gitlab.config.gitlab).to receive(:server_fqdn).and_return(server_fqdn)
+  end
+
+  shared_context 'with catalog resource project with components' do
+    let_it_be(:project, freeze: false) do
+      create(
+        :project, :custom_repo,
+        files: {
+          'templates/secret-detection.yml' => 'image: alpine_1',
+          'templates/dast/template.yml' => 'image: alpine_2',
+          'templates/dast/another-template.yml' => 'image: alpine_3',
+          'templates/dast/another-folder/template.yml' => 'image: alpine_4'
+        }
+      )
+    end
+
+    let_it_be(:catalog_resource) { create(:ci_catalog_resource, :published, project: project) }
+    let_it_be(:commit) { project.repository.commit }
+    let_it_be(:project_path) { project.full_path }
+
+    before_all do
+      create(
+        :release, :with_catalog_resource_version,
+        project: project, tag: '0.1.0', author: user, sha: commit.id
+      )
+
+      create(
+        :release, :with_catalog_resource_version,
+        project: project, tag: '0.1.2', author: user, sha: commit.id
+      )
+    end
+  end
+
+  describe '#fetch_content!' do
+    let(:version) { 'master' }
+    let(:project_path) { project.full_path }
+    let(:address) { "acme.com/#{project_path}/secret-detection@#{version}" }
+
+    context 'when the project repository contains a templates directory' do
+      let_it_be(:project, freeze: false) do
+        create(
+          :project, :custom_repo,
+          developers: user,
+          files: {
+            'templates/secret-detection.yml' => 'image: alpine_1',
+            'templates/dast/template.yml' => 'image: alpine_2',
+            'templates/dast/another-template.yml' => 'image: alpine_3',
+            'templates/dast/another-folder/template.yml' => 'image: alpine_4'
+          }
+        )
+      end
+
+      context 'when user does not have permissions' do
+        it 'raises an error when fetching the content' do
+          expect { path.fetch_content!(current_user: build(:user)) }
+            .to raise_error(Gitlab::Access::AccessDeniedError)
+        end
+      end
+
+      shared_examples 'does not find the component' do
+        it 'returns nil' do
+          result = path.fetch_content!(current_user: user)
+          expect(result).to be_nil
+        end
+      end
+
+      shared_examples 'finds the component' do
+        shared_examples 'fetches the component content' do
+          it 'fetches the component content', :aggregate_failures do
+            result = path.fetch_content!(current_user: user)
+            expect(result.content).to eq(file_content)
+            expect(result.path).to eq(file_path)
+            expect(path.project).to eq(project)
+            expect(path.sha).to eq(project.commit('master').id)
+          end
+        end
+
+        it_behaves_like 'fetches the component content'
+
+        context 'when the there is a redirect set for the project' do
+          let_it_be(:redirect_route) { project.redirect_routes.create!(path: 'another-group/new-project') }
+          let(:project_path) { redirect_route.path }
+
+          it_behaves_like 'fetches the component content'
+        end
+      end
+
+      context 'when the component is simple (single file template)' do
+        it_behaves_like 'finds the component' do
+          let(:file_path) { 'templates/secret-detection.yml' }
+          let(:file_content) { 'image: alpine_1' }
+        end
+      end
+
+      context 'when the component is complex (directory-based template)' do
+        let(:address) { "acme.com/#{project_path}/dast@#{version}" }
+
+        it_behaves_like 'finds the component' do
+          let(:file_path) { 'templates/dast/template.yml' }
+          let(:file_content) { 'image: alpine_2' }
+        end
+
+        context 'when there is an invalid nested component folder' do
+          let(:address) { "acme.com/#{project_path}/dast/another-folder@#{version}" }
+
+          it_behaves_like 'does not find the component'
+        end
+
+        context 'when there is an invalid nested component path' do
+          let(:address) { "acme.com/#{project_path}/dast/another-template@#{version}" }
+
+          it_behaves_like 'does not find the component'
+        end
+      end
+
+      context "when the project path starts with '/'" do
+        let(:project_path) { "/#{project.full_path}" }
+
+        it_behaves_like 'does not find the component'
+      end
+
+      context 'when fetching the latest release' do
+        let(:version) { '~latest' }
+
+        context 'when there is no project' do
+          it_behaves_like 'does not find the component'
+        end
+
+        context 'when the project is not a catalog resource' do
+          let_it_be(:project, freeze: false) { create(:project, :small_repo) }
+
+          it_behaves_like 'does not find the component'
+        end
+
+        context 'when the project is a catalog resource' do
+          let_it_be(:project, freeze: false) do
+            create(
+              :project, :custom_repo,
+              developers: user,
+              files: {
+                'templates/secret-detection.yml' => 'image: alpine_1'
+              }
+            )
+          end
+
+          let_it_be(:resource, freeze: false) { create(:ci_catalog_resource, project: project) }
+
+          let_it_be(:v2_6_0, freeze: false) do
+            sha = project.repository.commit('master').id
+            release = create(
+              :release, project: project, tag: '2.6.0', sha: sha, author: user, released_at: Date.yesterday
+            )
+
+            create(:ci_catalog_resource_version, catalog_resource: resource, release: release, semver: '2.6.0')
+          end
+
+          let_it_be(:v1_1_2) do
+            sha = project.repository.update_file(
+              user, 'templates/secret-detection.yml', 'image: alpine_2',
+              message: 'Updates image', branch_name: project.default_branch
+            )
+            release = create(:release, project: project, tag: '1.1.2', sha: sha, author: user, released_at: Date.today)
+
+            create(:ci_catalog_resource_version, catalog_resource: resource, release: release, semver: '1.1.2')
+          end
+
+          let_it_be(:v6_0_0_pre) do
+            sha = project.repository.update_file(
+              user, 'templates/secret-detection.yml', 'image: alpine_6',
+              message: 'Updates release', branch_name: project.default_branch
+            )
+            release = create(
+              :release, project: project, tag: '6.0.0-pre', sha: sha, author: user, released_at: Date.today
+            )
+
+            create(:ci_catalog_resource_version, catalog_resource: resource, release: release, semver: '6.0.0-pre')
+          end
+
+          it 'returns the component content of the latest semantic version', :aggregate_failures do
+            result = path.fetch_content!(current_user: user)
+
+            expect(result.content).to eq('image: alpine_1')
+            expect(result.path).to eq('templates/secret-detection.yml')
+            expect(path.project).to eq(project)
+            expect(path.sha).to eq(v2_6_0.sha)
+          end
+
+          context 'when fetching the version with shorthand' do
+            context 'when it is one digit' do
+              let(:version) { '1' }
+
+              it 'returns the component content of the latest for that version', :aggregate_failures do
+                result = path.fetch_content!(current_user: user)
+
+                expect(result.content).to eq('image: alpine_2')
+              end
+            end
+
+            context 'when it is two digits' do
+              let(:version) { '2.6' }
+
+              it 'returns the component content of the latest for that version', :aggregate_failures do
+                result = path.fetch_content!(current_user: user)
+
+                expect(result.content).to eq('image: alpine_1')
+              end
+            end
+
+            context 'when the version does not match' do
+              let(:version) { '3' }
+
+              it 'returns nil' do
+                result = path.fetch_content!(current_user: user)
+                expect(result).to be_nil
+              end
+            end
+
+            context 'when the version matches a pre-release' do
+              let(:version) { '6' }
+
+              it 'returns nil as shorthand should not fetch pre-release versions' do
+                result = path.fetch_content!(current_user: user)
+                expect(result).to be_nil
+              end
+            end
+          end
+        end
+      end
+
+      context 'when version does not exist' do
+        let(:version) { 'non-existent' }
+
+        it 'returns nil', :aggregate_failures do
+          expect(path.fetch_content!(current_user: user)).to be_nil
+          expect(path.project).to eq(project)
+          expect(path.sha).to be_nil
+        end
+      end
+
+      context 'when ci_cache_component_includes feature flag is disabled' do
+        before do
+          stub_feature_flags(ci_cache_component_includes: false)
+        end
+
+        context 'when fetching the latest release' do
+          let(:version) { '~latest' }
+          let_it_be_with_reload(:resource) { create(:ci_catalog_resource, project: project) }
+
+          let_it_be(:catalog_version) do
+            sha = project.repository.commit.id
+            release = create(:release, project: project, tag: '1.0.0', sha: sha, author: user)
+            create(:ci_catalog_resource_version, catalog_resource: resource, release: release, semver: '1.0.0')
+          end
+
+          it 'returns the component content using legacy_find_version_sha', :aggregate_failures do
+            result = path.fetch_content!(current_user: user)
+
+            expect(result.content).to eq('image: alpine_1')
+            expect(path.sha).to eq(catalog_version.sha)
+          end
+        end
+
+        context 'when using shorthand semver' do
+          let(:version) { '1' }
+          let_it_be_with_reload(:resource) { create(:ci_catalog_resource, project: project) }
+
+          let_it_be(:catalog_version) do
+            sha = project.repository.commit.id
+            release = create(:release, project: project, tag: '1.2.0', sha: sha, author: user)
+            create(:ci_catalog_resource_version, catalog_resource: resource, release: release, semver: '1.2.0')
+          end
+
+          it 'returns the component content using legacy_sha_by_shorthand_semver', :aggregate_failures do
+            result = path.fetch_content!(current_user: user)
+
+            expect(result.content).to eq('image: alpine_1')
+            expect(path.sha).to eq(catalog_version.sha)
+          end
+        end
+
+        context 'when using a released tag' do
+          let(:version) { '2.0.0' }
+
+          let_it_be(:release) do
+            create(:release, project: project, tag: '2.0.0', author: user, sha: project.repository.commit.id)
+          end
+
+          it 'returns the component content using sha_by_released_tag', :aggregate_failures do
+            result = path.fetch_content!(current_user: user)
+
+            expect(result.content).to eq('image: alpine_1')
+            expect(path.sha).to eq(release.sha)
+          end
+        end
+
+        context 'when using a branch ref' do
+          let(:version) { 'master' }
+
+          it 'returns the component content using sha_by_ref', :aggregate_failures do
+            result = path.fetch_content!(current_user: user)
+
+            expect(result.content).to eq('image: alpine_1')
+            expect(path.sha).to eq(project.commit('master').id)
+          end
+        end
+      end
+
+      context 'when current GitLab instance is installed on a relative URL' do
+        let(:address) { "acme.com/gitlab/#{project_path}/secret-detection@#{version}" }
+        let(:server_fqdn) { 'acme.com/gitlab' }
+
+        it 'fetches the component content', :aggregate_failures do
+          result = path.fetch_content!(current_user: user)
+          expect(result.content).to eq('image: alpine_1')
+          expect(result.path).to eq('templates/secret-detection.yml')
+          expect(path.project).to eq(project)
+          expect(path.sha).to eq(project.commit('master').id)
+        end
+      end
+
+      describe '#sha' do
+        let_it_be(:version) { '0.1.0' }
+        let_it_be(:catalog_resource) { create(:ci_catalog_resource, :published, project: project) }
+        let_it_be(:commit) { project.repository.commit }
+        let_it_be(:tag) { project.repository.add_tag(user, version, commit.id) }
+
+        before_all do
+          project.add_maintainer(user)
+        end
+
+        context 'when there is a release' do
+          context 'when the version matches' do
+            let_it_be(:release, freeze: false) do
+              create(
+                :release, :with_catalog_resource_version,
+                project: project, tag: version, author: user, sha: commit.id
+              )
+            end
+
+            it 'returns the release sha' do
+              result = path.fetch_content!(current_user: user)
+
+              expect(path.sha).to eq(release.sha)
+
+              expect(result.content).to eq('image: alpine_1')
+              expect(result.path).to eq('templates/secret-detection.yml')
+              expect(path.project).to eq(project)
+            end
+          end
+
+          context 'when version does not match' do
+            let_it_be(:release, freeze: false) do
+              create(
+                :release, :with_catalog_resource_version,
+                project: project, tag: '0.2.0', author: user, sha: commit.id
+              )
+            end
+
+            it 'returns project commit sha' do
+              result = path.fetch_content!(current_user: user)
+
+              expect(path.sha).to eq(project.commit(version).id)
+
+              expect(result.content).to eq('image: alpine_1')
+              expect(result.path).to eq('templates/secret-detection.yml')
+              expect(path.project).to eq(project)
+            end
+          end
+        end
+
+        context 'when there are no releases' do
+          it 'returns project commit sha' do
+            result = path.fetch_content!(current_user: user)
+
+            expect(path.sha).to eq(project.commit(version).id)
+
+            expect(result.content).to eq('image: alpine_1')
+            expect(result.path).to eq('templates/secret-detection.yml')
+            expect(path.project).to eq(project)
+          end
+        end
+
+        context 'when project does not exist' do
+          let(:address) { "acme.com/non-existent/project/component@1.0.0" }
+
+          it 'returns nil' do
+            expect(path.sha).to be_nil
+          end
+        end
+      end
+    end
+  end
+
+  describe '#matched_version' do
+    include_context 'with catalog resource project with components'
+
+    subject(:matched_version) { path.matched_version }
+
+    context 'when using a full semantic version' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@0.1.0" }
+
+      it { is_expected.to eq '0.1.0' }
+    end
+
+    context 'when using a partial semantic version' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@0.1" }
+
+      it { is_expected.to eq '0.1.2' }
+    end
+
+    context 'when using ~latest' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@~latest" }
+
+      it { is_expected.to eq '0.1.2' }
+    end
+
+    context 'when using a SHA' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@#{commit.id}" }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when project is not a catalog resource' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@0.1.0" }
+
+      before do
+        catalog_resource.destroy!
+      end
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when project does not exist' do
+      let(:address) { "acme.com/non-existent/project/component@1.0.0" }
+
+      it { is_expected.to be_nil }
+    end
+  end
+
+  describe '#reference' do
+    include_context 'with catalog resource project with components'
+
+    subject(:reference) { path.reference }
+
+    context 'when using a full semantic version' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@0.1.0" }
+
+      it { is_expected.to eq '0.1.0' }
+    end
+
+    context 'when using a partial semantic version' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@0.1" }
+
+      it { is_expected.to eq '0.1' }
+    end
+
+    context 'when using ~latest' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@~latest" }
+
+      it { is_expected.to eq '~latest' }
+    end
+
+    context 'when using a SHA' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@#{commit.id}" }
+
+      it { is_expected.to eq commit.id }
+    end
+
+    context 'when project is not a catalog resource' do
+      let(:address) { "acme.com/#{project_path}/secret-detection@0.1.0" }
+
+      before do
+        catalog_resource.destroy!
+      end
+
+      it { is_expected.to eq '0.1.0' }
+    end
+  end
+
+  describe '#invalid_usage_for_latest?' do
+    let_it_be(:project, freeze: false) { create(:project) }
+    let(:project_path) { project.full_path }
+    let(:address) { "acme.com/#{project_path}/secret-detection@#{version}" }
+
+    context 'when the version is ~latest and the project is not a catalog resource' do
+      let(:version) { '~latest' }
+
+      it 'returns true and therefore is valid' do
+        expect(path.invalid_usage_for_latest?).to be_truthy
+      end
+    end
+
+    context 'when the version is not ~latest' do
+      let(:version) { '1.0.0' }
+
+      it 'returns false' do
+        expect(path.invalid_usage_for_latest?).to be_falsey
+      end
+    end
+
+    context 'when the project is a catalog resource' do
+      let(:version) { '~latest' }
+      let_it_be(:catalog_resource) { create(:ci_catalog_resource, project: project) }
+
+      it 'returns false' do
+        expect(path.invalid_usage_for_latest?).to be_falsey
+      end
+    end
+  end
+
+  describe '#invalid_usage_for_partial_semver?' do
+    let_it_be(:project, freeze: false) { create(:project) }
+    let(:project_path) { project.full_path }
+    let(:address) { "acme.com/#{project_path}/secret-detection@#{version}" }
+
+    context 'when the project is a catalog resource' do
+      let_it_be(:catalog_resource) { create(:ci_catalog_resource, project: project) }
+
+      context 'when selected by a partial semantic version' do
+        let(:version) { '1.0' }
+
+        it 'does not return the error message' do
+          expect(path.invalid_usage_for_partial_semver?).to be_falsey
+        end
+      end
+
+      context 'when selected by a full semantic version' do
+        let(:version) { '1.0.0' }
+
+        it 'does not return the error message' do
+          expect(path.invalid_usage_for_partial_semver?).to be_falsey
+        end
+      end
+    end
+
+    context 'when the project is not a catalog resource' do
+      context 'when selected by a partial semantic version' do
+        let(:version) { '1.0' }
+
+        it 'returns the error message' do
+          expect(path.invalid_usage_for_partial_semver?).to be_truthy
+        end
+      end
+
+      context 'when selected by a full semantic version' do
+        let(:version) { '1.0.0' }
+
+        it 'does not return the error message' do
+          expect(path.invalid_usage_for_partial_semver?).to be_falsey
+        end
+      end
+    end
+  end
+
+  describe '#template_file_paths' do
+    let_it_be(:project, freeze: false) { create(:project) }
+    let(:project_path) { project.full_path }
+    let(:address) { "acme.com/#{project_path}/my-component@1.0.0" }
+
+    it 'returns both simple and complex template paths' do
+      expect(path.template_file_paths).to eq([
+        'templates/my-component.yml',
+        'templates/my-component/template.yml'
+      ])
+    end
+  end
+
+  describe '.match?' do
+    subject(:match) { described_class.match?(address) }
+
+    context 'when address is a valid path' do
+      let(:address) { "#{fqdn_prefix}group/project@master" }
+
+      it { is_expected.to be_truthy }
+    end
+
+    context 'when address is an invalid path' do
+      let(:address) { 'group/project@master' }
+
+      it { is_expected.to be_falsey }
+    end
+  end
+
+  describe '.fqdn_prefix' do
+    subject(:fqdn_prefix) { described_class.fqdn_prefix }
+
+    it { is_expected.to eq("#{server_fqdn}/") }
+  end
+
+  describe 'SafeRequestStore caching', :request_store do
+    include_context 'with catalog resource project with components'
+
+    let(:address) { "acme.com/#{project_path}/secret-detection@0.1.0" }
+
+    describe '#project' do
+      it 'caches the project lookup in SafeRequestStore' do
+        path1 = described_class.new(address: address)
+        path2 = described_class.new(address: address)
+
+        expect(Project).to receive(:find_by_full_path).once.and_call_original
+
+        path1.project
+        path2.project
+      end
+    end
+
+    describe '#sha' do
+      it 'caches the sha lookup in SafeRequestStore' do
+        path1 = described_class.new(address: address)
+        path2 = described_class.new(address: address)
+
+        path1.sha
+        expect(path1).not_to receive(:sha_by_released_tag)
+        expect(path1).not_to receive(:sha_by_ref)
+
+        path2.sha
+      end
+    end
+
+    describe '#fetch_content!' do
+      it 'caches the access check in SafeRequestStore' do
+        path1 = described_class.new(address: address)
+        path2 = described_class.new(address: address)
+
+        expect(Ability).to receive(:allowed?).with(user, :download_code, project).once.and_return(true)
+
+        path1.fetch_content!(current_user: user)
+        path2.fetch_content!(current_user: user)
+      end
+    end
+  end
+
+  describe 'content fetching optimizations', :request_store, :clean_gitlab_redis_repository_cache do
+    let_it_be(:project, freeze: false) do
+      create(
+        :project, :custom_repo,
+        developers: user,
+        files: {
+          'templates/component-a.yml' => 'job_a: { script: echo a }',
+          'templates/component-b.yml' => 'job_b: { script: echo b }'
+        }
+      )
+    end
+
+    let(:version) { 'master' }
+    let(:project_path) { project.full_path }
+
+    context 'when ci_cache_component_includes is disabled' do
+      before do
+        stub_feature_flags(ci_cache_component_includes: false)
+      end
+
+      it 'does not write to cache' do
+        address = "acme.com/#{project_path}/component-a@#{version}"
+        path = described_class.new(address: address)
+        cache_store = Gitlab::Redis::RepositoryCache.cache_store
+
+        result = path.fetch_content!(current_user: user)
+        expect(result.content).not_to be_nil
+
+        sha = project.commit('master').sha
+        cache_key = "ci_component_content:v1:#{project.id}:#{sha}:templates/component-a.yml"
+
+        expect(cache_store.read(cache_key)).to be_nil
+      end
+
+      it 'does not read from cache' do
+        address = "acme.com/#{project_path}/component-a@#{version}"
+        path = described_class.new(address: address)
+        cache_store = Gitlab::Redis::RepositoryCache.cache_store
+        sha = project.commit('master').sha
+        cache_key = "ci_component_content:v1:#{project.id}:#{sha}:templates/component-a.yml"
+
+        cache_store.write(cache_key, 'cached: value')
+
+        result = path.fetch_content!(current_user: user)
+
+        expect(result.content).to eq('job_a: { script: echo a }')
+        expect(result.content).not_to eq('cached: value')
+      end
+    end
+
+    it 'caches content across multiple requests' do
+      address = "acme.com/#{project_path}/component-a@#{version}"
+      path1 = described_class.new(address: address)
+
+      first_result = path1.fetch_content!(current_user: user)
+      first_content = first_result.content
+
+      expect(project.repository).not_to receive(:blobs_at)
+
+      path2 = described_class.new(address: address)
+      second_result = path2.fetch_content!(current_user: user)
+
+      expect(second_result.content).to eq(first_content)
+      expect(second_result.path).to eq(first_result.path)
+    end
+
+    it 'generates cache keys for both simple and complex template paths' do
+      address = "acme.com/#{project_path}/component-a@#{version}"
+      path = described_class.new(address: address)
+
+      result = path.fetch_content!(current_user: user)
+      expect(result.content).to eq('job_a: { script: echo a }')
+
+      cache_store = Gitlab::Redis::RepositoryCache.cache_store
+      sha = project.commit('master').sha
+
+      simple_cache_key = "ci_component_content:v1:#{project.id}:#{sha}:templates/component-a.yml"
+      complex_cache_key = "ci_component_content:v1:#{project.id}:#{sha}:templates/component-a/template.yml"
+
+      expect(cache_store.read(simple_cache_key)).to eq('job_a: { script: echo a }')
+      expect(cache_store.read(complex_cache_key)).to be_nil
+    end
+  end
+end

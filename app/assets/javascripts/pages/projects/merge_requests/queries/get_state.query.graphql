@@ -1,0 +1,9 @@
+query getMergeRequestState($projectPath: ID!, $iid: String!) {
+  namespace: project(fullPath: $projectPath) {
+    id
+    issuable: mergeRequest(iid: $iid) {
+      id
+      state
+    }
+  }
+}

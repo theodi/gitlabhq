@@ -1,0 +1,633 @@
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { GlDisclosureDropdownItem } from '@gitlab/ui';
+import VueDraggable from '~/lib/utils/vue3compat/draggable_compat.vue';
+import { mountExtended, shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { stubComponent } from 'helpers/stub_component';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import WorkItemsSavedViewsSelectors from '~/work_items/list/components/work_items_saved_views_selectors.vue';
+import WorkItemsCreateSavedViewDropdown from '~/work_items/list/components/work_items_create_saved_view_dropdown.vue';
+import waitForPromises from 'helpers/wait_for_promises';
+import workItemSavedViewDelete from '~/work_items/graphql/delete_saved_view.mutation.graphql';
+import workItemSavedViewUnsubscribe from '~/work_items/list/graphql/unsubscribe_from_saved_view.mutation.graphql';
+import workItemSavedViewReorder from '~/work_items/graphql/reorder_saved_view.mutation.graphql';
+import { CREATED_DESC } from '~/work_items/list/constants';
+import { ROUTES } from '~/work_items/constants';
+
+Vue.use(VueApollo);
+
+describe('WorkItemsSavedViewsSelectors', () => {
+  let wrapper;
+  let routerPushMock;
+  let routerResolveMock;
+  let toastShowMock;
+  let unsubscribeMutationHandler;
+  let deleteMutationHandler;
+  let reorderMutationHandler;
+
+  const mockSavedViewsData = [
+    {
+      __typename: 'WorkItemSavedViewType',
+      id: 'gid://gitlab/WorkItems::SavedViews::SavedView/1',
+      name: 'My Private View',
+      description: 'Only I can see this',
+      isPrivate: true,
+      subscribed: true,
+      filters: {},
+      displaySettings: {},
+      sort: CREATED_DESC,
+      userPermissions: {
+        updateSavedView: true,
+        deleteSavedView: true,
+        updateSavedViewVisibility: true,
+        __typename: 'SavedViewPermissions',
+      },
+    },
+    {
+      __typename: 'WorkItemSavedViewType',
+      id: 'gid://gitlab/WorkItems::SavedViews::SavedView/2',
+      name: 'Team View 1',
+      description: 'Only I can see this',
+      isPrivate: false,
+      subscribed: true,
+      filters: {},
+      displaySettings: {},
+      sort: CREATED_DESC,
+      userPermissions: {
+        updateSavedView: true,
+        deleteSavedView: true,
+        updateSavedViewVisibility: true,
+        __typename: 'SavedViewPermissions',
+      },
+    },
+    {
+      __typename: 'WorkItemSavedViewType',
+      id: 'gid://gitlab/WorkItems::SavedViews::SavedView/3',
+      name: 'Second Team View 2',
+      description: 'Only I can see this',
+      isPrivate: false,
+      subscribed: true,
+      filters: {},
+      displaySettings: {},
+      sort: CREATED_DESC,
+      userPermissions: {
+        updateSavedView: true,
+        deleteSavedView: true,
+        updateSavedViewVisibility: true,
+        __typename: 'SavedViewPermissions',
+      },
+    },
+  ];
+
+  const mockUnsubscribeResponse = {
+    data: {
+      workItemSavedViewUnsubscribe: {
+        __typename: 'WorkItemSavedViewUnsubscribePayload',
+        savedView: {
+          __typename: 'WorkItemSavedViewType',
+          id: 'gid://gitlab/WorkItems::SavedViews::SavedView/1',
+        },
+      },
+    },
+  };
+
+  const mockDeleteResponse = {
+    data: {
+      workItemSavedViewDelete: {
+        __typename: 'WorkItemSavedViewDeletePayload',
+        errors: [],
+        savedView: {
+          __typename: 'WorkItemSavedViewType',
+          id: 'gid://gitlab/WorkItems::SavedViews::SavedView/1',
+        },
+      },
+    },
+  };
+
+  const mockReorderResponse = {
+    data: {
+      workItemSavedViewReorder: {
+        __typename: 'WorkItemSavedViewReorderPayload',
+        errors: [],
+        savedView: {
+          __typename: 'WorkItemSavedViewType',
+          id: 'gid://gitlab/WorkItems::SavedViews::SavedView/1',
+        },
+      },
+    },
+  };
+
+  const createComponent = ({
+    props,
+    mockSavedViews = mockSavedViewsData,
+    visibleViews = mockSavedViews.slice(0, 2),
+    overflowedViews = mockSavedViews.slice(2),
+    routeMock = { params: { view_id: '1' } },
+    subscribedSavedViewLimit = null,
+    mountFn = shallowMountExtended,
+  } = {}) => {
+    routerPushMock = jest.fn();
+    // Hash hrefs keep jsdom from attempting a real navigation on unprevented clicks
+    routerResolveMock = jest.fn(({ params }) => ({ href: `#/views/${params.view_id}` }));
+    toastShowMock = jest.fn();
+    unsubscribeMutationHandler = jest.fn().mockResolvedValue(mockUnsubscribeResponse);
+    deleteMutationHandler = jest.fn().mockResolvedValue(mockDeleteResponse);
+    reorderMutationHandler = jest.fn().mockResolvedValue(mockReorderResponse);
+
+    const apolloProvider = createMockApollo([
+      [workItemSavedViewUnsubscribe, unsubscribeMutationHandler],
+      [workItemSavedViewDelete, deleteMutationHandler],
+      [workItemSavedViewReorder, reorderMutationHandler],
+    ]);
+
+    wrapper = mountFn(WorkItemsSavedViewsSelectors, {
+      apolloProvider,
+      propsData: {
+        fullPath: 'test-project-path',
+        savedViews: mockSavedViews,
+        sortKey: CREATED_DESC,
+        filters: {},
+        displaySettings: {},
+        ...props,
+      },
+      data() {
+        return {
+          visibleViews,
+          overflowedViews,
+        };
+      },
+      provide: {
+        subscribedSavedViewLimit,
+      },
+      slots: {
+        'header-area': '<div data-testid="header-area-slot">Header Area</div>',
+      },
+      mocks: {
+        $route: routeMock,
+        $router: {
+          push: routerPushMock,
+          resolve: routerResolveMock,
+        },
+        $toast: {
+          show: toastShowMock,
+        },
+      },
+      stubs: {
+        VueDraggable: stubComponent(VueDraggable),
+        WorkItemsCreateSavedViewDropdown: true,
+        WorkItemsSavedViewSelector: {
+          props: ['savedView'],
+          template: `
+            <div data-testid="saved-view">
+              <button data-testid="unsubscribe-btn" @click="$emit('unsubscribe-saved-view', savedView)">Unsubscribe</button>
+              <button data-testid="delete-btn" @click="$emit('delete-saved-view', savedView)">Delete</button>
+              {{ savedView.name }}
+            </div>
+          `,
+        },
+      },
+    });
+  };
+
+  const findDefaultViewSelector = () => wrapper.findByTestId('saved-views-default-view-selector');
+  const findVisibleViewSelectors = () => wrapper.findAllByTestId('visible-view-selector');
+  const findOverflowDropdown = () => wrapper.findByTestId('saved-views-more-toggle');
+  const findOverflowDropdownComponent = () =>
+    wrapper.findComponentByTestId('saved-views-more-toggle');
+  const findUnsubscribeBtnAt = (index) =>
+    findVisibleViewSelectors().at(index).find('[data-testid="unsubscribe-btn"]');
+  const findDeleteBtnAt = (index) =>
+    findVisibleViewSelectors().at(index).find('[data-testid="delete-btn"]');
+  const findCreateSavedViewDropdown = () => wrapper.findComponent(WorkItemsCreateSavedViewDropdown);
+  const findVueDraggable = () => wrapper.findComponent(VueDraggable);
+
+  describe('default view selector', () => {
+    it('renders the default view selector title', () => {
+      createComponent();
+
+      expect(findDefaultViewSelector().text()).toBe('All items');
+    });
+
+    it('emits navigate-to-all-items when clicked', async () => {
+      createComponent();
+
+      await findDefaultViewSelector().trigger('click');
+
+      expect(wrapper.emitted('navigate-to-all-items')).toHaveLength(1);
+    });
+  });
+
+  describe('views selectors', () => {
+    it('renders visible saved views', () => {
+      createComponent();
+
+      mockSavedViewsData.slice(0, 2).forEach((view) => {
+        expect(wrapper.text()).toContain(view.name);
+      });
+    });
+
+    it('renders the overflow dropdown when overflowed views exist', () => {
+      createComponent();
+
+      expect(findOverflowDropdown().exists()).toBe(true);
+      expect(findVisibleViewSelectors()).toHaveLength(2);
+    });
+
+    it('does not render the overflow dropdown when no overflowed views exist', () => {
+      createComponent({
+        mockSavedViews: [mockSavedViewsData[0], mockSavedViewsData[1]],
+        visibleViews: [mockSavedViewsData[0], mockSavedViewsData[1]],
+        overflowedViews: [],
+      });
+
+      expect(findOverflowDropdown().exists()).toBe(false);
+    });
+
+    describe('overflow items', () => {
+      const findFirstOverflowItem = () =>
+        findOverflowDropdownComponent().findComponent(GlDisclosureDropdownItem);
+      const findFirstOverflowLink = () => findFirstOverflowItem().find('a');
+      const clickFirstOverflowLink = (eventInit = {}) => {
+        const event = new MouseEvent('click', { bubbles: true, cancelable: true, ...eventInit });
+        // Vue 3 ignores a bubbled event stamped in the same millisecond its listener was attached,
+        // and mount and click happen in the same millisecond here
+        const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 1);
+        findFirstOverflowLink().element.dispatchEvent(event);
+        dateNowSpy.mockRestore();
+
+        return event;
+      };
+      const expectNavigationToView3 = () => {
+        expect(routerPushMock).toHaveBeenCalledWith({
+          name: ROUTES.savedView,
+          params: { view_id: '3' },
+          query: undefined,
+        });
+      };
+
+      it('renders each overflowed view as a link to the view', () => {
+        createComponent({ mountFn: mountExtended });
+
+        expect(routerResolveMock).toHaveBeenCalledWith({
+          name: ROUTES.savedView,
+          params: { view_id: '3' },
+          query: undefined,
+        });
+        expect(findFirstOverflowLink().attributes('href')).toBe('#/views/3');
+      });
+
+      describe('when an overflow item is clicked', () => {
+        let clickEvent;
+
+        beforeEach(() => {
+          createComponent({ mountFn: mountExtended });
+          clickEvent = clickFirstOverflowLink();
+        });
+
+        it('prevents the browser from following the link', () => {
+          expect(clickEvent.defaultPrevented).toBe(true);
+        });
+
+        it('navigates to the clicked view', async () => {
+          await nextTick();
+
+          expectNavigationToView3();
+        });
+
+        it('calls reorder mutation', async () => {
+          await waitForPromises();
+
+          expect(reorderMutationHandler).toHaveBeenCalled();
+        });
+      });
+
+      describe('when an overflow item is activated with the keyboard', () => {
+        beforeEach(async () => {
+          createComponent({ mountFn: mountExtended });
+          await findFirstOverflowItem().trigger('keydown', { code: 'Enter' });
+        });
+
+        it('navigates to the activated view', () => {
+          expectNavigationToView3();
+        });
+      });
+
+      describe('when reorder fails after an overflow item is clicked', () => {
+        const reorderError = new Error('Reorder failed');
+
+        beforeEach(async () => {
+          createComponent({ mountFn: mountExtended });
+          reorderMutationHandler.mockRejectedValueOnce(reorderError);
+          clickFirstOverflowLink();
+          await waitForPromises();
+        });
+
+        it('emits error', () => {
+          expect(wrapper.emitted('error')).toHaveLength(1);
+          expect(wrapper.emitted('error')[0]).toEqual([
+            reorderError,
+            'An error occurred while reordering work items.',
+          ]);
+        });
+      });
+
+      describe.each`
+        description     | eventInit
+        ${'Cmd+click'}  | ${{ metaKey: true }}
+        ${'Ctrl+click'} | ${{ ctrlKey: true }}
+      `('when an overflow item is opened with $description', ({ eventInit }) => {
+        let clickEvent;
+
+        beforeEach(async () => {
+          createComponent({ mountFn: mountExtended });
+          clickEvent = clickFirstOverflowLink(eventInit);
+          await waitForPromises();
+        });
+
+        it('lets the browser open the link in a new tab', () => {
+          expect(clickEvent.defaultPrevented).toBe(false);
+          expect(routerPushMock).not.toHaveBeenCalled();
+          expect(reorderMutationHandler).not.toHaveBeenCalled();
+        });
+      });
+    });
+  });
+
+  describe('drag and drop reordering', () => {
+    it('renders VueDraggable component', () => {
+      createComponent();
+
+      expect(findVueDraggable().exists()).toBe(true);
+    });
+
+    it('disables dragging when only one visible view', () => {
+      createComponent({
+        visibleViews: [mockSavedViewsData[0]],
+        overflowedViews: [],
+      });
+
+      expect(findVueDraggable().attributes('disabled')).toBe('disabled');
+    });
+
+    it('updates visible views order on drag input', async () => {
+      jest
+        .spyOn(WorkItemsSavedViewsSelectors.methods, 'detectViewsOverflow')
+        .mockImplementation(() => {});
+      createComponent();
+
+      const reorderedViews = [mockSavedViewsData[1], mockSavedViewsData[0]];
+      findVueDraggable().vm.$emit('input', reorderedViews);
+      await nextTick();
+
+      const selectors = findVisibleViewSelectors();
+      expect(selectors.at(0).text()).toContain(mockSavedViewsData[1].name);
+      expect(selectors.at(1).text()).toContain(mockSavedViewsData[0].name);
+    });
+
+    it('calls reorder mutation on drag change', async () => {
+      createComponent();
+
+      findVueDraggable().vm.$emit('input', [mockSavedViewsData[1], mockSavedViewsData[0]]);
+      findVueDraggable().vm.$emit('change', {
+        moved: { newIndex: 1, element: mockSavedViewsData[0] },
+      });
+
+      await waitForPromises();
+
+      expect(reorderMutationHandler).toHaveBeenCalled();
+    });
+
+    it('does not navigate to dragged view on drag change', async () => {
+      createComponent();
+
+      findVueDraggable().vm.$emit('input', [mockSavedViewsData[1], mockSavedViewsData[0]]);
+      findVueDraggable().vm.$emit('change', {
+        moved: { newIndex: 1, element: mockSavedViewsData[0] },
+      });
+
+      await waitForPromises();
+
+      expect(routerPushMock).not.toHaveBeenCalled();
+    });
+
+    it('does not reorder when change event has no moved data', async () => {
+      createComponent();
+
+      findVueDraggable().vm.$emit('change', {});
+      await waitForPromises();
+
+      expect(reorderMutationHandler).not.toHaveBeenCalled();
+    });
+
+    it('emits error when drag reorder fails', async () => {
+      const reorderError = new Error('Reorder failed');
+      createComponent();
+      reorderMutationHandler.mockRejectedValueOnce(reorderError);
+
+      findVueDraggable().vm.$emit('change', {
+        moved: { newIndex: 1, element: mockSavedViewsData[0] },
+      });
+
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toHaveLength(1);
+    });
+  });
+
+  describe('unsubscribe from saved view', () => {
+    it('calls unsubscribe mutation when unsubscribe-saved-view event is emitted', async () => {
+      createComponent();
+
+      await findUnsubscribeBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(unsubscribeMutationHandler).toHaveBeenCalledWith({
+        input: {
+          id: mockSavedViewsData[0].id,
+        },
+      });
+    });
+
+    it('navigates to next view after successful unsubscribe', async () => {
+      createComponent();
+
+      await findUnsubscribeBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(routerPushMock).toHaveBeenCalledWith({
+        name: ROUTES.savedView,
+        params: { view_id: '2' },
+      });
+    });
+
+    it('shows success toast after successful unsubscribe', async () => {
+      createComponent();
+
+      await findUnsubscribeBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(toastShowMock).toHaveBeenCalledWith('View removed from your list');
+    });
+
+    it('emits navigate-to-all-items when unsubscribing from the last view', async () => {
+      createComponent({
+        mockSavedViews: [mockSavedViewsData[0]],
+        visibleViews: [mockSavedViewsData[0]],
+        overflowedViews: [],
+      });
+
+      await findUnsubscribeBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(wrapper.emitted('navigate-to-all-items')).toHaveLength(1);
+    });
+
+    it('emits error event when unsubscribe mutation fails', async () => {
+      createComponent();
+
+      const networkError = new Error('Network error');
+      unsubscribeMutationHandler.mockRejectedValueOnce(networkError);
+
+      await findUnsubscribeBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toHaveLength(1);
+      expect(wrapper.emitted('error')[0]).toEqual([
+        networkError,
+        'An error occurred while removing the view. Please try again.',
+      ]);
+    });
+
+    it('navigates to previous view when unsubscribing from the last view in list', async () => {
+      createComponent({
+        mockSavedViews: [mockSavedViewsData[0], mockSavedViewsData[1]],
+        visibleViews: [mockSavedViewsData[0], mockSavedViewsData[1]],
+        overflowedViews: [],
+      });
+
+      await findUnsubscribeBtnAt(1).trigger('click');
+      await waitForPromises();
+
+      expect(routerPushMock).toHaveBeenCalledWith({
+        name: ROUTES.savedView,
+        params: { view_id: '1' },
+      });
+    });
+  });
+
+  describe('delete saved view', () => {
+    it('calls delete mutation when delete-saved-view event is emitted', async () => {
+      createComponent();
+
+      await findDeleteBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(deleteMutationHandler).toHaveBeenCalledWith({
+        input: {
+          id: mockSavedViewsData[0].id,
+        },
+      });
+    });
+
+    it('navigates to next view after successful delete', async () => {
+      createComponent();
+
+      await findDeleteBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(routerPushMock).toHaveBeenCalledWith({
+        name: ROUTES.savedView,
+        params: { view_id: '2' },
+      });
+    });
+
+    it('shows success toast after successful delete', async () => {
+      createComponent();
+
+      await findDeleteBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(toastShowMock).toHaveBeenCalledWith('View has been deleted');
+    });
+
+    it('emits navigate-to-all-items when deleting the last view', async () => {
+      createComponent({
+        mockSavedViews: [mockSavedViewsData[0]],
+        visibleViews: [mockSavedViewsData[0]],
+        overflowedViews: [],
+      });
+
+      await findDeleteBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(wrapper.emitted('navigate-to-all-items')).toHaveLength(1);
+    });
+
+    it('emits error event when delete mutation fails', async () => {
+      createComponent();
+
+      const networkError = new Error('Network error');
+      deleteMutationHandler.mockRejectedValueOnce(networkError);
+
+      await findDeleteBtnAt(0).trigger('click');
+      await waitForPromises();
+
+      expect(wrapper.emitted('error')).toHaveLength(1);
+      expect(wrapper.emitted('error')[0]).toEqual([
+        networkError,
+        'An error occurred while deleting the view. Please try again.',
+      ]);
+    });
+
+    it('navigates to previous view when deleting the last view in list', async () => {
+      createComponent({
+        mockSavedViews: [mockSavedViewsData[0], mockSavedViewsData[1]],
+        visibleViews: [mockSavedViewsData[0], mockSavedViewsData[1]],
+        overflowedViews: [],
+      });
+
+      await findDeleteBtnAt(1).trigger('click');
+      await waitForPromises();
+
+      expect(routerPushMock).toHaveBeenCalledWith({
+        name: ROUTES.savedView,
+        params: { view_id: '1' },
+      });
+    });
+  });
+
+  describe('subscription limit warning', () => {
+    it('passes showSubscriptionLimitWarning as false when below limit', () => {
+      createComponent({ subscribedSavedViewLimit: 5 });
+
+      expect(findCreateSavedViewDropdown().props('showSubscriptionLimitWarning')).toBe(false);
+    });
+
+    it('passes showSubscriptionLimitWarning as true when at limit', () => {
+      createComponent({ subscribedSavedViewLimit: 3 });
+
+      expect(findCreateSavedViewDropdown().props('showSubscriptionLimitWarning')).toBe(true);
+    });
+
+    it('passes showSubscriptionLimitWarning as true when exceeding limit', () => {
+      createComponent({ subscribedSavedViewLimit: 2 });
+
+      expect(findCreateSavedViewDropdown().props('showSubscriptionLimitWarning')).toBe(true);
+    });
+
+    it('passes correct fullPath and sortKey props to dropdown', () => {
+      createComponent();
+
+      expect(findCreateSavedViewDropdown().props('fullPath')).toBe('test-project-path');
+      expect(findCreateSavedViewDropdown().props('sortKey')).toBe(CREATED_DESC);
+    });
+  });
+
+  describe('header slot', () => {
+    it('renders the header-area slot content', () => {
+      createComponent();
+
+      expect(wrapper.findByTestId('header-area-slot').exists()).toBe(true);
+    });
+  });
+});

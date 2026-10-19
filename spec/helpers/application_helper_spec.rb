@@ -1,286 +1,1004 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
-describe ApplicationHelper do
+RSpec.describe ApplicationHelper, feature_category: :shared do
+  include Devise::Test::ControllerHelpers
+
+  # This spec targets CI environment with precompiled assets to trigger
+  # Sprockets' `File.binread` and find encoding issues.
+  #
+  # See https://gitlab.com/gitlab-com/gl-infra/production/-/issues/17627#note_1782396646
+  describe '#error_css' do
+    it 'returns precompiled error CSS with proper encoding' do
+      expect(error_css.encoding.name).to eq('UTF-8')
+    end
+  end
+
   describe 'current_controller?' do
     before do
-      allow(controller).to receive(:controller_name).and_return('foo')
+      stub_controller_name('foo')
     end
 
     it 'returns true when controller matches argument' do
-      expect(current_controller?(:foo)).to be_truthy
+      expect(helper.current_controller?(:foo)).to be_truthy
     end
 
     it 'returns false when controller does not match argument' do
-      expect(current_controller?(:bar)).not_to be_truthy
+      expect(helper.current_controller?(:bar)).to be_falsey
     end
 
-    it 'should take any number of arguments' do
-      expect(current_controller?(:baz, :bar)).not_to be_truthy
-      expect(current_controller?(:baz, :bar, :foo)).to be_truthy
+    it 'takes any number of arguments' do
+      expect(helper.current_controller?(:baz, :bar)).to be_falsey
+      expect(helper.current_controller?(:baz, :bar, :foo)).to be_truthy
+    end
+
+    context 'when namespaced' do
+      before do
+        stub_controller_path('bar/foo')
+      end
+
+      it 'returns true when controller matches argument' do
+        expect(helper.current_controller?(:foo)).to be_truthy
+      end
+
+      it 'returns true when controller and namespace matches argument in path notation' do
+        expect(helper.current_controller?('bar/foo')).to be_truthy
+      end
+
+      it 'returns false when namespace doesnt match' do
+        expect(helper.current_controller?('foo/foo')).to be_falsey
+      end
+    end
+
+    def stub_controller_name(value)
+      allow(helper.controller).to receive(:controller_name).and_return(value)
+    end
+
+    def stub_controller_path(value)
+      allow(helper.controller).to receive(:controller_path).and_return(value)
     end
   end
 
   describe 'current_action?' do
     before do
-      allow(self).to receive(:action_name).and_return('foo')
+      stub_action_name('foo')
     end
 
-    it 'returns true when action matches argument' do
-      expect(current_action?(:foo)).to be_truthy
+    it 'returns true when action matches' do
+      expect(helper.current_action?(:foo)).to be_truthy
     end
 
-    it 'returns false when action does not match argument' do
-      expect(current_action?(:bar)).not_to be_truthy
+    it 'returns false when action does not match' do
+      expect(helper.current_action?(:bar)).to be_falsey
     end
 
-    it 'should take any number of arguments' do
-      expect(current_action?(:baz, :bar)).not_to be_truthy
-      expect(current_action?(:baz, :bar, :foo)).to be_truthy
-    end
-  end
-
-  describe 'project_icon' do
-    avatar_file_path = File.join(Rails.root, 'public', 'gitlab_logo.png')
-
-    it 'should return an url for the avatar' do
-      project = create(:project)
-      project.avatar = File.open(avatar_file_path)
-      project.save!
-      avatar_url = "http://localhost/uploads/project/avatar/#{ project.id }/gitlab_logo.png"
-      expect(project_icon("#{project.namespace.to_param}/#{project.to_param}").to_s).to eq(
-        "<img alt=\"Gitlab logo\" src=\"#{avatar_url}\" />"
-      )
+    it 'takes any number of arguments' do
+      expect(helper.current_action?(:baz, :bar)).to be_falsey
+      expect(helper.current_action?(:baz, :bar, :foo)).to be_truthy
     end
 
-    it 'should give uploaded icon when present' do
-      project = create(:project)
-      project.save!
-
-      allow_any_instance_of(Project).to receive(:avatar_in_git).and_return(true)
-
-      avatar_url = 'http://localhost' + namespace_project_avatar_path(project.namespace, project)
-      expect(project_icon("#{project.namespace.to_param}/#{project.to_param}").to_s).to match(
-        image_tag(avatar_url))
+    def stub_action_name(value)
+      allow(helper).to receive(:action_name).and_return(value)
     end
   end
 
-  describe 'avatar_icon' do
-    avatar_file_path = File.join(Rails.root, 'public', 'gitlab_logo.png')
+  describe '#admin_section?' do
+    context 'when controller is under the admin namespace' do
+      before do
+        allow(helper).to receive(:controller).and_return(Admin::UsersController.new)
+      end
 
-    it 'should return an url for the avatar' do
-      user = create(:user)
-      user.avatar = File.open(avatar_file_path)
-      user.save!
-      expect(avatar_icon(user.email).to_s).
-        to match("/uploads/user/avatar/#{ user.id }/gitlab_logo.png")
-    end
-
-    it 'should return an url for the avatar with relative url' do
-      Gitlab.config.gitlab.stub(relative_url_root: '/gitlab')
-      Gitlab.config.gitlab.stub(url: Settings.send(:build_gitlab_url))
-
-      user = create(:user)
-      user.avatar = File.open(avatar_file_path)
-      user.save!
-      expect(avatar_icon(user.email).to_s).
-        to match("/gitlab/uploads/user/avatar/#{ user.id }/gitlab_logo.png")
-    end
-
-    it 'should call gravatar_icon when no avatar is present' do
-      user = create(:user, email: 'test@example.com')
-      user.save!
-      expect(avatar_icon(user.email).to_s).to eq('http://www.gravatar.com/avatar/55502f40dc8b7c769880b10874abc9d0?s=40&d=identicon')
-    end
-  end
-
-  describe 'gravatar_icon' do
-    let(:user_email) { 'user@email.com' }
-
-    it 'should return a generic avatar path when Gravatar is disabled' do
-      ApplicationSetting.any_instance.stub(gravatar_enabled?: false)
-      expect(gravatar_icon(user_email)).to match('no_avatar.png')
-    end
-
-    it 'should return a generic avatar path when email is blank' do
-      expect(gravatar_icon('')).to match('no_avatar.png')
-    end
-
-    it 'should return default gravatar url' do
-      Gitlab.config.gitlab.stub(https: false)
-      url = 'http://www.gravatar.com/avatar/b58c6f14d292556214bd64909bcdb118'
-      expect(gravatar_icon(user_email)).to match(url)
-    end
-
-    it 'should use SSL when appropriate' do
-      Gitlab.config.gitlab.stub(https: true)
-      expect(gravatar_icon(user_email)).to match('https://secure.gravatar.com')
-    end
-
-    it 'should return custom gravatar path when gravatar_url is set' do
-      allow(self).to receive(:request).and_return(double(:ssl? => false))
-      allow(Gitlab.config.gravatar).
-        to receive(:plain_url).
-        and_return('http://example.local/?s=%{size}&hash=%{hash}')
-      url = 'http://example.local/?s=20&hash=b58c6f14d292556214bd64909bcdb118'
-      expect(gravatar_icon(user_email, 20)).to eq(url)
-    end
-
-    it 'should accept a custom size' do
-      allow(self).to receive(:request).and_return(double(:ssl? => false))
-      expect(gravatar_icon(user_email, 64)).to match(/\?s=64/)
-    end
-
-    it 'should use default size when size is wrong' do
-      allow(self).to receive(:request).and_return(double(:ssl? => false))
-      expect(gravatar_icon(user_email, nil)).to match(/\?s=40/)
-    end
-
-    it 'should be case insensitive' do
-      allow(self).to receive(:request).and_return(double(:ssl? => false))
-      expect(gravatar_icon(user_email)).
-        to eq(gravatar_icon(user_email.upcase + ' '))
-    end
-  end
-
-  describe 'grouped_options_refs' do
-    # Override Rails' grouped_options_for_select helper since HTML is harder to work with
-    def grouped_options_for_select(options, *args)
-      options
-    end
-
-    let(:options) { grouped_options_refs }
-
-    before do
-      # Must be an instance variable
-      @project = create(:project)
-    end
-
-    it 'includes a list of branch names' do
-      expect(options[0][0]).to eq('Branches')
-      expect(options[0][1]).to include('master', 'feature')
-    end
-
-    it 'includes a list of tag names' do
-      expect(options[1][0]).to eq('Tags')
-      expect(options[1][1]).to include('v1.0.0', 'v1.1.0')
-    end
-
-    it 'includes a specific commit ref if defined' do
-      # Must be an instance variable
-      @ref = '2ed06dc41dbb5936af845b87d79e05bbf24c73b8'
-
-      expect(options[2][0]).to eq('Commit')
-      expect(options[2][1]).to eq([@ref])
-    end
-
-    it 'sorts tags in a natural order' do
-      # Stub repository.tag_names to make sure we get some valid testing data
-      expect(@project.repository).to receive(:tag_names).
-        and_return(['v1.0.9', 'v1.0.10', 'v2.0', 'v3.1.4.2', 'v2.0rc1¿',
-                    'v1.0.9a', 'v2.0-rc1', 'v2.0rc2'])
-
-      expect(options[1][1]).
-        to eq(['v3.1.4.2', 'v2.0', 'v2.0rc2', 'v2.0rc1¿', 'v2.0-rc1', 'v1.0.10',
-               'v1.0.9', 'v1.0.9a'])
-    end
-  end
-
-  describe 'user_color_scheme_class' do
-    context 'with current_user is nil' do
-      it 'should return a string' do
-        allow(self).to receive(:current_user).and_return(nil)
-        expect(user_color_scheme_class).to be_kind_of(String)
+      it 'returns true' do
+        expect(helper.admin_section?).to be(true)
       end
     end
 
-    context 'with a current_user' do
-      (1..5).each do |color_scheme_id|
-        context "with color_scheme_id == #{color_scheme_id}" do
-          it 'should return a string' do
-            current_user = double(:color_scheme_id => color_scheme_id)
-            allow(self).to receive(:current_user).and_return(current_user)
-            expect(user_color_scheme_class).to be_kind_of(String)
-          end
+    context 'when controller is not under the admin namespace' do
+      before do
+        allow(helper).to receive(:controller).and_return(UsersController.new)
+      end
+
+      it 'returns true' do
+        expect(helper.admin_section?).to be(false)
+      end
+    end
+  end
+
+  describe 'time_ago_with_tooltip' do
+    around do |example|
+      Time.use_zone('UTC') { example.run }
+    end
+
+    def element(**arguments)
+      @time = Time.zone.parse('2015-07-02 08:23')
+      element = helper.time_ago_with_tooltip(@time, **arguments)
+
+      Nokogiri::HTML::DocumentFragment.parse(element).first_element_child
+    end
+
+    it 'returns a time element' do
+      expect(element.name).to eq 'time'
+    end
+
+    it 'includes the date string' do
+      expect(element.text).to eq @time.strftime("%b %d, %Y")
+    end
+
+    it 'has a datetime attribute' do
+      expect(element.attr('datetime')).to eq '2015-07-02T08:23:00Z'
+    end
+
+    it 'has a formatted title attribute' do
+      expect(element.attr('title')).to eq 'Jul 2, 2015 8:23am'
+    end
+
+    it 'includes a default js-timeago class' do
+      expect(element.attr('class')).to eq 'js-timeago'
+    end
+
+    it 'accepts a custom html_class' do
+      expect(element(html_class: 'custom_class').attr('class')).to eq 'js-timeago custom_class'
+    end
+
+    it 'accepts a custom tooltip placement' do
+      expect(element(placement: 'bottom').attr('data-placement')).to eq 'bottom'
+    end
+
+    it 'converts to Time' do
+      expect { helper.time_ago_with_tooltip(Date.today) }.not_to raise_error
+    end
+
+    it 'add class for the short format' do
+      timeago_element = element(short_format: 'short')
+
+      expect(timeago_element.attr('class')).to eq 'js-short-timeago'
+      expect(timeago_element.next_element).to be_nil
+    end
+
+    it 'returns blank if time is nil' do
+      el = helper.time_ago_with_tooltip(nil)
+
+      expect(el).to eq('')
+      expect(el.html_safe).to eq('')
+    end
+  end
+
+  describe 'edited_time_ago_with_tooltip' do
+    around do |example|
+      Time.use_zone('UTC') { example.run }
+    end
+
+    let(:project) { build_stubbed(:project) }
+
+    context 'when editable object was not edited' do
+      let(:merge_request) { build_stubbed(:merge_request, source_project: project) }
+
+      it { expect(helper.edited_time_ago_with_tooltip(merge_request)).to be_nil }
+    end
+
+    context 'when editable object was edited' do
+      let(:user) { build_stubbed(:user) }
+      let(:now) { Time.zone.parse('2015-07-02 08:23') }
+      let(:merge_request) { build_stubbed(:merge_request, source_project: project, last_edited_at: now, last_edited_by: user) }
+
+      it { expect(helper.edited_time_ago_with_tooltip(merge_request)).to have_text("Edited #{now.strftime('%b %d, %Y')} by #{user.name}") }
+      it { expect(helper.edited_time_ago_with_tooltip(merge_request, exclude_author: true)).to have_text("Edited #{now.strftime('%b %d, %Y')}") }
+    end
+  end
+
+  describe '#active_when' do
+    it { expect(helper.active_when(true)).to eq('active') }
+    it { expect(helper.active_when(false)).to be_nil }
+  end
+
+  describe '#linkedin_name' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:user) { build_stubbed(:user, linkedin: linkedin_url) }
+
+    subject { helper.linkedin_name(user) }
+
+    where(:linkedin_url, :linkedin_name) do
+      'alice'                                           | 'alice'
+      'https://www.linkedin.com/in/'                    | 'in'
+      'https://www.linkedin.com/in/alice'               | 'alice'
+      'http://www.linkedin.com/in/alice'                | 'alice'
+      'http://linkedin.com/in/alice'                    | 'alice'
+      'https://www.linkedin.com/in/alice'               | 'alice'
+      'https://linkedin.com/in/alice'                   | 'alice'
+      'https://linkedin.com/in/alice/more/path'         | 'path'
+    end
+
+    with_them do
+      it { is_expected.to eq(linkedin_name) }
+    end
+  end
+
+  describe '#linkedin_url' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:user) { build_stubbed(:user) }
+
+    subject { helper.linkedin_url(user) }
+
+    before do
+      allow(helper).to receive(:linkedin_name).and_return(linkedin_name)
+    end
+
+    where(:linkedin_name, :linkedin_url) do
+      ''                                       | 'https://www.linkedin.com/in/'
+      'alice'                                  | 'https://www.linkedin.com/in/alice'
+    end
+
+    with_them do
+      it { is_expected.to eq(linkedin_url) }
+    end
+  end
+
+  describe '#twitter_name' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:user) { build_stubbed(:user, twitter: twitter_input) }
+
+    subject { helper.twitter_name(user) }
+
+    where(:twitter_input, :expected_name) do
+      nil                                   | ''
+      ''                                    | ''
+      'alice'                               | 'alice'
+      '@alice'                              | 'alice'
+      'https://twitter.com/alice'           | 'alice'
+      'https://www.twitter.com/alice'       | 'alice'
+      'http://twitter.com/alice'            | 'alice'
+      'https://x.com/alice'                 | 'alice'
+      'https://x.com/@alice'                | 'alice'
+      'https://twitter.com/alice/more/path' | 'alice'
+    end
+
+    with_them do
+      it { is_expected.to eq(expected_name) }
+    end
+  end
+
+  describe '#twitter_url?' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:user) { build_stubbed(:user) }
+
+    subject { helper.twitter_url(user) }
+
+    before do
+      user.twitter = twitter_name
+    end
+
+    where(:twitter_name, :twitter_url) do
+      nil                                   | ''
+      ''                                    | ''
+      'alice'                               | 'https://x.com/alice'
+      '@alice'                              | 'https://x.com/alice'
+      'http://www.twitter.com/alice'        | 'https://x.com/alice'
+      'http://twitter.com/alice'            | 'https://x.com/alice'
+      'https://www.twitter.com/alice'       | 'https://x.com/alice'
+      'https://twitter.com/alice'           | 'https://x.com/alice'
+      'https://twitter.com/alice/more/path' | 'https://x.com/alice'
+      'https://x.com/alice'                 | 'https://x.com/alice'
+      'https://x.com/@alice'                | 'https://x.com/alice'
+    end
+
+    with_them do
+      it { is_expected.to eq(twitter_url) }
+    end
+  end
+
+  describe '#github_name' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:user) { build_stubbed(:user, github: github_input) }
+
+    subject { helper.github_name(user) }
+
+    where(:github_input, :expected_name) do
+      nil                                   | ''
+      ''                                    | ''
+      'alice'                               | 'alice'
+      'https://github.com/alice'            | 'alice'
+      'https://www.github.com/alice'        | 'alice'
+      'http://github.com/alice'             | 'alice'
+      'https://github.com/alice/more/path'  | 'alice'
+      'github.com/alice'                    | 'alice'
+    end
+
+    with_them do
+      it { is_expected.to eq(expected_name) }
+    end
+  end
+
+  describe '#github_url?' do
+    using RSpec::Parameterized::TableSyntax
+
+    let(:user) { build_stubbed(:user) }
+
+    subject { helper.github_url(user) }
+
+    before do
+      user.github = github_name
+    end
+
+    where(:github_name, :github_url) do
+      nil                                   | ''
+      ''                                    | ''
+      'dosire'                              | 'https://github.com/dosire'
+      'https://github.com/dosire'           | 'https://github.com/dosire'
+      'https://www.github.com/dosire'       | 'https://github.com/dosire'
+      'http://github.com/dosire'            | 'https://github.com/dosire'
+      'https://github.com/dosire/more/path' | 'https://github.com/dosire'
+      'github.com/dosire'                   | 'https://github.com/dosire'
+    end
+
+    with_them do
+      it { is_expected.to eq(github_url) }
+    end
+  end
+
+  describe '#community_forum' do
+    subject { helper.community_forum }
+
+    it 'returns the url' do
+      is_expected.to eq("https://forum.gitlab.com")
+    end
+  end
+
+  describe '#support_url' do
+    context 'when alternate support url is specified' do
+      let(:alternate_url) { 'http://company.example.com/get-help' }
+
+      it 'returns the alternate support url' do
+        stub_application_setting(help_page_support_url: alternate_url)
+
+        expect(helper.support_url).to eq(alternate_url)
+      end
+    end
+
+    context 'when alternate support url is not specified' do
+      it 'builds the support url from the default support url' do
+        expect(helper.support_url).to eq("https://support.gitlab.com")
+      end
+    end
+  end
+
+  describe '#instance_review_permitted?' do
+    shared_examples 'returns expected result depending on instance setting' do |instance_setting, expected_result|
+      before do
+        allow(::Gitlab::CurrentSettings).to receive(:instance_review_permitted?).and_return(instance_setting)
+        allow(helper).to receive(:current_user).and_return(current_user)
+      end
+
+      it { is_expected.to be(expected_result) }
+    end
+
+    subject { helper.instance_review_permitted? }
+
+    context 'as admin' do
+      let_it_be(:current_user) { build(:user, :admin) }
+
+      context 'when admin mode setting is disabled', :do_not_mock_admin_mode_setting do
+        it_behaves_like 'returns expected result depending on instance setting', true, true
+        it_behaves_like 'returns expected result depending on instance setting', false, false
+      end
+
+      context 'when admin mode setting is enabled' do
+        context 'when in admin mode', :enable_admin_mode do
+          it_behaves_like 'returns expected result depending on instance setting', true, true
+          it_behaves_like 'returns expected result depending on instance setting', false, false
+        end
+
+        context 'when not in admin mode' do
+          it_behaves_like 'returns expected result depending on instance setting', true, false
+          it_behaves_like 'returns expected result depending on instance setting', false, false
+        end
+      end
+    end
+
+    context 'as normal user' do
+      let_it_be(:current_user) { build(:user) }
+
+      it_behaves_like 'returns expected result depending on instance setting', true, false
+      it_behaves_like 'returns expected result depending on instance setting', false, false
+    end
+  end
+
+  describe '#locale_path' do
+    it 'returns the locale path with an `_`' do
+      Gitlab::I18n.with_locale('pt-BR') do
+        expect(helper.locale_path).to include('assets/locale/pt_BR/app')
+      end
+    end
+  end
+
+  describe '#client_class_list' do
+    context 'when browser or platform are unknown' do
+      it 'returns string containing CSS classes representing fallbacks' do
+        class_list = helper.client_class_list
+        expect(class_list).to eq('gl-browser-generic gl-platform-other')
+      end
+    end
+
+    context 'when browser and platform are known' do
+      before do
+        allow(helper.controller).to receive(:browser).and_return(::Browser.new('Google Chrome/Linux'))
+      end
+
+      it 'returns string containing CSS classes representing them' do
+        class_list = helper.client_class_list
+        expect(class_list).to eq('gl-browser-chrome gl-platform-linux')
+      end
+    end
+  end
+
+  describe '#client_js_flags' do
+    context 'when browser or platform are unknown' do
+      it 'returns map containing JS flags representing falllbacks' do
+        flags_list = helper.client_js_flags
+        expect(flags_list[:isGeneric]).to be(true)
+        expect(flags_list[:isOther]).to be(true)
+      end
+    end
+
+    context 'when browser and platform are known' do
+      before do
+        allow(helper.controller).to receive(:browser).and_return(::Browser.new('Google Chrome/Linux'))
+      end
+
+      it 'returns map containing JS flags representing client browser and platform' do
+        flags_list = helper.client_js_flags
+        expect(flags_list[:isChrome]).to be(true)
+        expect(flags_list[:isLinux]).to be(true)
+      end
+    end
+  end
+
+  describe '#page_startup_api_calls' do
+    it 'returns map containing JS Page Startup Calls' do
+      helper.add_page_startup_api_call("testURL")
+
+      startup_calls = helper.page_startup_api_calls
+
+      expect(startup_calls["testURL"]).to eq({})
+    end
+  end
+
+  describe '#autocomplete_data_sources' do
+    let_it_be(:project) { create(:project) }
+    let_it_be(:noteable_type) { Issue }
+    let_it_be(:group_sources) { [:members, :issues, :mergeRequests, :labels, :milestones, :commands] }
+    let_it_be(:project_sources) { [:members, :issues, :mergeRequests, :labels, :milestones, :commands, :snippets, :contacts, :wikis] }
+
+    let(:group) { build_stubbed(:group) }
+
+    def expect_autocomplete_data_sources_to_be(object, noteable_type, source_keys)
+      sources = helper.autocomplete_data_sources(object, noteable_type)
+      expect(sources.keys).to match_array(source_keys)
+      sources.keys.each do |key|
+        expect(sources[key]).not_to be_nil
+      end
+    end
+
+    def expect_autocomplete_data_sources_to_contain(object, noteable_type, source_keys)
+      sources = helper.autocomplete_data_sources(object, noteable_type)
+      expect(sources.keys).to include(*source_keys)
+      sources.keys.each do |key|
+        expect(sources[key]).not_to be_nil
+      end
+    end
+
+    context 'group' do
+      it 'returns paths for autocomplete_sources_controller' do
+        expect_autocomplete_data_sources_to_contain(group, noteable_type, group_sources)
+      end
+    end
+
+    context 'project' do
+      it 'returns paths for autocomplete_sources_controller' do
+        expect_autocomplete_data_sources_to_be(project, noteable_type, project_sources)
+      end
+    end
+  end
+
+  describe '#external_storage_url_or_path' do
+    let(:project) { build_stubbed(:project) }
+
+    context 'when external storage is disabled' do
+      it 'returns the passed path' do
+        expect(helper.external_storage_url_or_path('/foo/bar', project)).to eq('/foo/bar')
+      end
+    end
+
+    context 'when @snippet is set' do
+      it 'returns the passed path' do
+        snippet = build_stubbed(:project_snippet)
+        assign(:snippet, snippet)
+
+        expect(helper.external_storage_url_or_path('/foo/bar', project)).to eq('/foo/bar')
+      end
+    end
+
+    context 'when external storage is enabled' do
+      let_it_be_with_reload(:user) { create(:user) }
+
+      before do
+        stub_application_setting(static_objects_external_storage_url: 'https://cdn.gitlab.com')
+        allow(helper).to receive(:current_user).and_return(user)
+      end
+
+      it 'returns the external storage URL prepended to the path' do
+        expect(helper.external_storage_url_or_path('/foo/bar', project)).to eq("https://cdn.gitlab.com/foo/bar?token=#{user.static_object_token}")
+      end
+
+      it 'preserves the path query parameters' do
+        url = helper.external_storage_url_or_path('/foo/bar?unicode=1', project)
+
+        expect(url).to eq("https://cdn.gitlab.com/foo/bar?token=#{user.static_object_token}&unicode=1")
+      end
+
+      context 'when project is public' do
+        let(:project) { build_stubbed(:project, :public) }
+
+        it 'returns does not append a token parameter' do
+          expect(helper.external_storage_url_or_path('/foo/bar', project)).to eq('https://cdn.gitlab.com/foo/bar')
         end
       end
     end
   end
 
-  describe 'simple_sanitize' do
-    let(:a_tag) { '<a href="#">Foo</a>' }
+  describe '#body_data' do
+    context 'when @ignore_password_managers is set' do
+      it 'asks 1Password to ignore the page' do
+        assign(:ignore_password_managers, true)
 
-    it 'allows the a tag' do
-      expect(simple_sanitize(a_tag)).to eq(a_tag)
+        expect(helper.body_data).to include('1p_ignore': '')
+      end
     end
 
-    it 'allows the span tag' do
-      input = '<span class="foo">Bar</span>'
-      expect(simple_sanitize(input)).to eq(input)
+    context 'when @project is not set' do
+      it 'does not include project data in the body data elements' do
+        expect(helper.body_data).to eq(
+          {
+            page: 'application',
+            page_type_id: nil,
+            group: nil,
+            group_full_path: nil
+          }
+        )
+      end
+
+      context 'when @group is set' do
+        it 'sets group in the body data elements' do
+          group = build_stubbed(:group)
+
+          assign(:group, group)
+
+          expect(helper.body_data).to eq(
+            {
+              page: 'application',
+              page_type_id: nil,
+              group: group.path,
+              group_full_path: group.full_path
+            }
+          )
+        end
+      end
     end
 
-    it 'disallows other tags' do
-      input = "<strike><b>#{a_tag}</b></strike>"
-      expect(simple_sanitize(input)).to eq(a_tag)
+    context 'when @project is set' do
+      let(:project) { build_stubbed(:project) }
+
+      before do
+        assign(:project, project)
+        allow(helper).to receive(:current_user).and_return(nil)
+      end
+
+      it 'includes all possible body data elements and associates the project elements with project' do
+        expect(helper.body_data).to eq(
+          {
+            page: 'application',
+            page_type_id: nil,
+            group: nil,
+            group_full_path: nil,
+            project_id: project.id,
+            project: project.path,
+            project_full_path: project.full_path,
+            namespace_id: project.namespace.id
+          }
+        )
+      end
+
+      context 'when @project is owned by a group' do
+        let(:project) { build_stubbed(:project, group: build_stubbed(:group)) }
+
+        it 'includes all possible body data elements and associates the project elements with project' do
+          expect(helper.body_data).to eq(
+            {
+              page: 'application',
+              page_type_id: nil,
+              group: project.group.name,
+              group_full_path: project.group.full_path,
+              project_id: project.id,
+              project: project.path,
+              project_full_path: project.full_path,
+              namespace_id: project.namespace.id
+            }
+          )
+        end
+      end
+
+      context 'when controller is issues' do
+        before do
+          stub_controller_method(:controller_path, 'projects:issues')
+        end
+
+        context 'when params[:id] is present and the issue exsits and action_name is show' do
+          it 'sets all project and id elements correctly related to the issue' do
+            issue = build_stubbed(:issue, project: project)
+            stub_controller_method(:action_name, 'show')
+            stub_controller_method(:params, { id: issue.id })
+
+            expect(helper.body_data).to eq(
+              {
+                page: 'projects:issues:show',
+                page_type_id: issue.id,
+                group: nil,
+                group_full_path: nil,
+                project_id: issue.project.id,
+                project: issue.project.path,
+                project_full_path: project.full_path,
+                namespace_id: issue.project.namespace.id
+              }
+            )
+          end
+        end
+      end
+    end
+
+    def stub_controller_method(method_name, value)
+      allow(helper.controller).to receive(method_name).and_return(value)
     end
   end
 
-  describe 'link_to' do
-    it 'should not include rel=nofollow for internal links' do
-      expect(link_to('Home', root_path)).to eq('<a href="/">Home</a>')
+  describe '#profile_social_links' do
+    context 'when discord is set' do
+      let(:user) { build(:user) }
+      let(:discord) { discord_url(user) }
+
+      it 'returns an empty string if discord is not set' do
+        expect(discord).to eq('')
+      end
+
+      it 'returns discord url when discord id is set' do
+        user.discord = '1234567890123456789'
+
+        expect(discord).to eq('https://discord.com/users/1234567890123456789')
+      end
     end
 
-    it 'should include rel=nofollow for external links' do
-      expect(link_to('Example', 'http://www.example.com')).
-        to eq '<a href="http://www.example.com" rel="nofollow">Example</a>'
+    context 'when bluesky is set' do
+      let(:user) { build(:user) }
+      let(:bluesky) { bluesky_url(user) }
+
+      it 'returns an empty string if bluesky did id is not set' do
+        expect(bluesky).to eq('')
+      end
+
+      it 'returns bluesky url when bluesky did id is set' do
+        user.bluesky = 'did:plc:ewvi7nxzyoun6zhxrhs64oiz'
+
+        expect(bluesky).to eq(external_redirect_path(url: 'https://bsky.app/profile/did:plc:ewvi7nxzyoun6zhxrhs64oiz'))
+      end
     end
 
-    it 'should include rel=nofollow for external links and honor existing html_options' do
-      expect(link_to('Example', 'http://www.example.com', class: 'toggle', data: {toggle: 'dropdown'}))
-        .to eq '<a class="toggle" data-toggle="dropdown" href="http://www.example.com" rel="nofollow">Example</a>'
+    describe '#mastodon_url' do
+      let(:user) { build(:user) }
+      let(:mastodon) { mastodon_url(user) }
+
+      context 'when a valid handle is set' do
+        it 'returns mastodon url with relme when user handle is set' do
+          user.mastodon = '@robin@example.com'
+
+          expect(mastodon).to eq(external_redirect_path(url: 'https://example.com/@robin', rel: 'me'))
+        end
+      end
+
+      context 'when an invalid handle is set' do
+        it 'returns an empty string when the mastodon handle is blank' do
+          expect(mastodon).to eq('')
+        end
+
+        it 'returns an empty string when mastodon handle doesn`t match the validation regex' do
+          user.mastodon = 'invalid-mastodon_handle-format'
+
+          expect(mastodon).to eq('')
+        end
+      end
     end
 
-    it 'should include rel=nofollow for external links and preserve other rel values' do
-      expect(link_to('Example', 'http://www.example.com', rel: 'noreferrer'))
-        .to eq '<a href="http://www.example.com" rel="noreferrer nofollow">Example</a>'
-    end
+    describe '#orcid_url' do
+      let(:user) { build(:user) }
 
-    it 'should not include rel=nofollow for external links on the same host as GitLab' do
-      expect(Gitlab.config.gitlab).to receive(:host).and_return('example.foo')
-      expect(link_to('Example', 'http://example.foo/bar')).
-        to eq '<a href="http://example.foo/bar">Example</a>'
-    end
+      subject(:orcid) { orcid_url(user) }
 
-    it 'should not raise an error when given a bad URI' do
-      expect { link_to('default', 'if real=1 RANDOM; if real>1 IDLHS; if real>500 LHS') }.
-        not_to raise_error
-    end
+      context 'without ORCID ID' do
+        it 'returns an empty string' do
+          expect(orcid).to eq('')
+        end
+      end
 
-    it 'should not raise an error when given a bad mailto URL' do
-      expect { link_to('email', 'mailto://foo.bar@example.es?subject=Subject%20Line') }.
-        not_to raise_error
+      context 'with ORCID ID' do
+        it 'returns orcid url' do
+          user.orcid = '1234-1234-1234-1234'
+
+          expect(orcid).to eq(external_redirect_path(url: 'https://orcid.org/1234-1234-1234-1234'))
+        end
+      end
     end
   end
 
-  describe 'render_markup' do
-    let(:content) { 'Noël' }
+  describe '#gitlab_ui_form_for' do
+    let_it_be(:user) { build(:user) }
 
-    it 'should preserve encoding' do
-      expect(content.encoding.name).to eq('UTF-8')
-      expect(render_markup('foo.rst', content).encoding.name).to eq('UTF-8')
+    before do
+      allow(helper).to receive(:users_path).and_return('/root')
+      allow(helper).to receive(:form_for).and_call_original
     end
 
-    it "should delegate to #markdown when file name corresponds to Markdown" do
-      expect(self).to receive(:gitlab_markdown?).with('foo.md').and_return(true)
-      expect(self).to receive(:markdown).and_return('NOEL')
+    it 'adds custom form builder to options and calls `form_for`' do
+      options = { html: { class: 'foo-bar' } }
+      expected_options = options.merge({ builder: ::Gitlab::FormBuilders::GitlabUiFormBuilder })
 
-      expect(render_markup('foo.md', content)).to eq('NOEL')
+      expect do |b|
+        helper.gitlab_ui_form_for(user, options, &b)
+      end.to yield_with_args(::Gitlab::FormBuilders::GitlabUiFormBuilder)
+
+      expect(helper).to have_received(:form_for).with(user, a_hash_including(expected_options))
+    end
+  end
+
+  describe '#gitlab_ui_form_with' do
+    let_it_be(:user) { build(:user) }
+
+    before do
+      allow(helper).to receive(:users_path).and_return('/root')
+      allow(helper).to receive(:form_with).and_call_original
     end
 
-    it "should delegate to #asciidoc when file name corresponds to AsciiDoc" do
-      expect(self).to receive(:asciidoc?).with('foo.adoc').and_return(true)
-      expect(self).to receive(:asciidoc).and_return('NOEL')
+    it 'adds custom form builder to options and calls `form_with`' do
+      options = { model: user, html: { class: 'foo-bar' } }
+      expected_options = options.merge({ builder: ::Gitlab::FormBuilders::GitlabUiFormBuilder })
 
-      expect(render_markup('foo.adoc', content)).to eq('NOEL')
+      expect do |b|
+        helper.gitlab_ui_form_with(**options, &b)
+      end.to yield_with_args(::Gitlab::FormBuilders::GitlabUiFormBuilder)
+      expect(helper).to have_received(:form_with).with(expected_options)
+    end
+  end
+
+  describe '#page_class' do
+    let_it_be(:user) { build(:user) }
+
+    subject(:page_class) do
+      helper.page_class.flatten
+    end
+
+    describe 'with-header' do
+      it { is_expected.to include('with-header') }
+    end
+
+    describe 'with-top-bar' do
+      it { is_expected.to include('with-top-bar') }
+    end
+
+    describe 'page-with-panels' do
+      it { is_expected.to include('page-with-panels') }
+    end
+
+    describe 'user-logged-in and user-logged-out' do
+      context 'when current_user is present' do
+        before do
+          allow(helper).to receive(:current_user).and_return(user)
+        end
+
+        it { is_expected.to include('user-logged-in') }
+        it { is_expected.not_to include('user-logged-out') }
+      end
+
+      context 'when no current_user' do
+        before do
+          allow(helper).to receive(:current_user).and_return(nil)
+        end
+
+        it { is_expected.to include('user-logged-out') }
+        it { is_expected.not_to include('user-logged-in') }
+      end
+    end
+  end
+
+  describe '#dispensable_render' do
+    context 'when an error occurs in the template to be rendered' do
+      before do
+        allow(helper).to receive(:render).and_raise
+      end
+
+      it 'calls `track_and_raise_for_dev_exception`' do
+        expect(Gitlab::ErrorTracking).to receive(:track_and_raise_for_dev_exception)
+        helper.dispensable_render
+      end
+
+      context 'for development environment' do
+        before do
+          stub_rails_env('development')
+        end
+
+        it 'raises an error' do
+          expect { helper.dispensable_render }.to raise_error(StandardError)
+        end
+      end
+
+      context 'for production environments' do
+        before do
+          stub_rails_env('production')
+        end
+
+        it 'returns nil' do
+          expect(helper.dispensable_render).to be_nil
+        end
+      end
+    end
+
+    context 'when no error occurs in the template to be rendered' do
+      before do
+        allow(helper).to receive(:render).and_return('foo')
+      end
+
+      it 'does not track or raise and returns the rendered content' do
+        expect(Gitlab::ErrorTracking).not_to receive(:track_and_raise_for_dev_exception)
+        expect(helper.dispensable_render).to eq('foo')
+      end
+    end
+  end
+
+  describe '#dispensable_render_if_exists' do
+    context 'when an error occurs in the template to be rendered' do
+      before do
+        allow(helper).to receive(:render_if_exists).and_raise
+      end
+
+      it 'calls `track_and_raise_for_dev_exception`' do
+        expect(Gitlab::ErrorTracking).to receive(:track_and_raise_for_dev_exception)
+        helper.dispensable_render_if_exists
+      end
+
+      context 'for development environment' do
+        before do
+          stub_rails_env('development')
+        end
+
+        it 'raises an error' do
+          expect { helper.dispensable_render_if_exists }.to raise_error(StandardError)
+        end
+      end
+
+      context 'for production environments' do
+        before do
+          stub_rails_env('production')
+        end
+
+        it 'returns nil' do
+          expect(helper.dispensable_render_if_exists).to be_nil
+        end
+      end
+    end
+
+    context 'when no error occurs in the template to be rendered' do
+      before do
+        allow(helper).to receive(:render_if_exists).and_return('foo')
+      end
+
+      it 'does not track or raise' do
+        expect(Gitlab::ErrorTracking).not_to receive(:track_and_raise_for_dev_exception)
+        expect(helper.dispensable_render_if_exists).to eq('foo')
+      end
+    end
+  end
+
+  describe 'sign_in_with_redirect?' do
+    context 'when on the sign-in page that redirects afterwards' do
+      before do
+        allow(helper).to receive(:current_page?).and_return(true)
+        session[:user_return_to] = true
+      end
+
+      it 'returns true' do
+        expect(helper.sign_in_with_redirect?).to be_truthy
+      end
+    end
+
+    context 'when on a non sign-in page' do
+      before do
+        allow(helper).to receive(:current_page?).and_return(false)
+      end
+
+      it 'returns false' do
+        expect(helper.sign_in_with_redirect?).to be_falsey
+      end
+    end
+  end
+
+  describe 'collapsed_super_sidebar?' do
+    context 'when super_sidebar_collapsed cookie is true' do
+      before do
+        helper.request.cookies['super_sidebar_collapsed'] = 'true'
+      end
+
+      it 'returns true' do
+        expect(helper.collapsed_super_sidebar?).to be(true)
+      end
+    end
+
+    context 'when super_sidebar_collapsed cookie is false' do
+      before do
+        helper.request.cookies['super_sidebar_collapsed'] = 'false'
+      end
+
+      it 'returns false' do
+        expect(helper.collapsed_super_sidebar?).to be(false)
+      end
+    end
+  end
+
+  describe '#hidden_resource_icon', feature_category: :insider_threat do
+    let_it_be(:mock_svg) { '<svg></svg>'.html_safe }
+
+    shared_examples 'returns icon with tooltip' do
+      before do
+        allow(helper).to receive(:sprite_icon).with('spam', css_class: 'gl-align-text-bottom', variant: nil).and_return(mock_svg)
+      end
+
+      it 'returns icon with tooltip' do
+        result = helper.hidden_resource_icon(resource)
+        expect(result).to eq("<span class=\"has-tooltip\" title=\"#{expected_title}\">#{mock_svg}</span>")
+      end
+    end
+
+    context 'when resource is an issue' do
+      let_it_be(:resource) { build(:issue) }
+      let(:expected_title) { 'This issue is hidden because its author has been banned.' }
+
+      it_behaves_like 'returns icon with tooltip'
+    end
+
+    context 'when resource is a merge request' do
+      let_it_be(:resource) { build(:merge_request) }
+      let(:expected_title) { 'This merge request is hidden because its author has been banned.' }
+
+      it_behaves_like 'returns icon with tooltip'
+    end
+
+    context 'when css_class is provided' do
+      let_it_be(:resource) { build(:issue) }
+
+      it 'passes the value to sprite_icon' do
+        expect(helper).to receive(:sprite_icon).with('spam', css_class: 'gl-align-text-bottom extra-class', variant: nil).and_return(mock_svg)
+
+        helper.hidden_resource_icon(resource, css_class: 'extra-class')
+      end
+    end
+
+    context 'when variant is provided' do
+      let_it_be(:resource) { build(:issue) }
+
+      it 'passes the value to sprite_icon' do
+        expect(helper).to receive(:sprite_icon).with('spam', css_class: 'gl-align-text-bottom', variant: 'subtle').and_return(mock_svg)
+        helper.hidden_resource_icon(resource, variant: 'subtle')
+      end
     end
   end
 end

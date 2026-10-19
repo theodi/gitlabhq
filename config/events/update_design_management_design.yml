@@ -1,0 +1,17 @@
+---
+description: A design is updated
+internal_events: true
+action: update_design_management_design
+identifiers:
+- project
+- namespace
+- user
+product_group: portfolio_planning
+product_categories:
+- design_management
+milestone: '17.0'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/150994
+tiers:
+- free
+- premium
+- ultimate

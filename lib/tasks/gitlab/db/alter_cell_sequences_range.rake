@@ -1,0 +1,24 @@
+# frozen_string_literal: true
+
+# rubocop:disable Gitlab/AvoidGitlabInstanceChecks -- We want to set sequence limits only on Gitlab instances
+namespace :gitlab do
+  namespace :db do
+    desc 'Alters sequence limits for cell specific tables'
+    task :alter_cell_sequences_range, [:minval, :maxval] => :environment do |_t, args|
+      next unless Gitlab.com_except_jh? || Gitlab.dev_or_test_env?
+
+      # This is a safety check to ensure this rake does not alter the sequences for the Legacy Cell
+      next if Gitlab.config.cell.database.skip_sequence_alteration
+
+      sequence_names = ENV['SEQUENCE_NAMES']
+      sequence_names = sequence_names&.split(',')&.map(&:strip)&.reject(&:blank?).presence
+
+      Gitlab::Database::EachDatabase.each_connection do |connection, _database_name|
+        Gitlab::Database::AlterCellSequencesRange.new(
+          args.minval&.to_i, args.maxval&.to_i, connection, sequence_names: sequence_names
+        ).execute
+      end
+    end
+  end
+end
+# rubocop:enable Gitlab/AvoidGitlabInstanceChecks

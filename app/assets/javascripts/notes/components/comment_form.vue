@@ -1,0 +1,478 @@
+<script>
+import { GlAlert, GlButton, GlFormCheckbox, GlTooltipDirective } from '@gitlab/ui';
+import $ from 'jquery';
+import { mapActions, mapState } from 'pinia';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { createAlert } from '~/alert';
+import { updateDraft, clearDraft, getDraft } from '~/lib/utils/autosave';
+import { STATUS_CLOSED, STATUS_MERGED, STATUS_OPEN, STATUS_REOPENED } from '~/issues/constants';
+import { detectAndConfirmSensitiveTokens } from '~/lib/utils/secret_detection';
+import {
+  capitalizeFirstCharacter,
+  convertToCamelCase,
+  slugifyWithUnderscore,
+} from '~/lib/utils/text_utility';
+import { __, sprintf } from '~/locale';
+import MarkdownEditor from '~/vue_shared/components/markdown/markdown_editor.vue';
+import TimelineEntryItem from '~/vue_shared/components/notes/timeline_entry_item.vue';
+import HelpIcon from '~/vue_shared/components/help_icon/help_icon.vue';
+import { trackSavedUsingEditor } from '~/vue_shared/components/markdown/tracking';
+import { fetchUserCounts } from '~/super_sidebar/user_counts_fetch';
+import { badgeState } from '~/merge_requests/badge_state';
+import { useNotes } from '~/notes/store/legacy_notes';
+import * as constants from '../constants';
+import eventHub from '../event_hub';
+import { COMMENT_FORM } from '../i18n';
+import { getNoteFormErrorMessages } from '../utils';
+import issuableStateMixin from '../mixins/issuable_state';
+import CommentFieldLayout from './comment_field_layout.vue';
+import CommentTypeDropdown from './comment_type_dropdown.vue';
+import DiscussionLockedWidget from './discussion_locked_widget.vue';
+import NoteSignedOutWidget from './note_signed_out_widget.vue';
+
+export default {
+  name: 'CommentForm',
+  i18n: COMMENT_FORM,
+  components: {
+    NoteSignedOutWidget,
+    DiscussionLockedWidget,
+    MarkdownEditor,
+    GlAlert,
+    GlButton,
+    TimelineEntryItem,
+    HelpIcon,
+    CommentFieldLayout,
+    CommentTypeDropdown,
+    GlFormCheckbox,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [issuableStateMixin],
+  props: {
+    noteableType: {
+      type: String,
+      required: true,
+    },
+  },
+  data() {
+    return {
+      note: '',
+      noteType: constants.COMMENT,
+      errors: [],
+      noteIsInternal: false,
+      isSubmitting: false,
+      formFieldProps: {
+        'aria-label': this.$options.i18n.comment,
+        placeholder: this.$options.i18n.bodyPlaceholder,
+        id: 'note-body',
+        name: 'note[note]',
+        class: 'js-note-text note-textarea js-gfm-input markdown-area',
+        'data-testid': 'comment-field',
+      },
+    };
+  },
+  computed: {
+    ...mapState(useNotes, [
+      'isToggleStateButtonLoading',
+      'getCurrentUserLastNote',
+      'getNoteableData',
+      'getNotesData',
+      'getUserData',
+      'openState',
+      'hasDrafts',
+    ]),
+    autocompleteDataSources() {
+      return gl.GfmAutoComplete?.dataSources;
+    },
+    noteableDisplayName() {
+      const displayNameMap = {
+        [constants.ISSUE_NOTEABLE_TYPE]: __('ticket'),
+        [constants.EPIC_NOTEABLE_TYPE]: this.$options.i18n.epic,
+        [constants.MERGE_REQUEST_NOTEABLE_TYPE]: this.$options.i18n.mergeRequest,
+        [constants.INCIDENT_NOTEABLE_TYPE]: this.$options.i18n.incident,
+      };
+
+      const noteableTypeKey =
+        constants.NOTEABLE_TYPE_MAPPING[this.noteableType] || constants.ISSUE_NOTEABLE_TYPE;
+      return displayNameMap[noteableTypeKey];
+    },
+    isLoggedIn() {
+      return this.getUserData.id;
+    },
+    commentButtonTitle() {
+      const { comment, internalComment, startThread, startInternalThread } = this.$options.i18n;
+      if (this.noteIsInternal) {
+        return this.noteType === constants.COMMENT ? internalComment : startInternalThread;
+      }
+      return this.noteType === constants.COMMENT ? comment : startThread;
+    },
+    discussionsRequireResolution() {
+      return this.getNoteableData.noteableType === constants.MERGE_REQUEST_NOTEABLE_TYPE;
+    },
+    isOpen() {
+      return this.openState === STATUS_OPEN || this.openState === STATUS_REOPENED;
+    },
+    canCreateNote() {
+      return this.getNoteableData.current_user.can_create_note;
+    },
+    canSetInternalNote() {
+      return this.getNoteableData.current_user.can_create_confidential_note;
+    },
+    issueActionButtonTitle() {
+      const openOrClose = this.isOpen ? 'close' : 'reopen';
+
+      if (this.note.length) {
+        return sprintf(this.$options.i18n.actionButton.withNote[openOrClose], {
+          actionText: this.commentButtonTitle,
+          noteable: this.noteableDisplayName,
+        });
+      }
+
+      return sprintf(this.$options.i18n.actionButton.withoutNote[openOrClose], {
+        noteable: this.noteableDisplayName,
+      });
+    },
+    actionButtonClassNames() {
+      return {
+        'btn-reopen': !this.isOpen,
+        'btn-close': this.isOpen,
+        'js-note-target-close': this.isOpen,
+        'js-note-target-reopen': !this.isOpen,
+      };
+    },
+    markdownDocsPath() {
+      return this.getNotesData.markdownDocsPath;
+    },
+    markdownPreviewPath() {
+      return this.getNoteableData.preview_note_path;
+    },
+    canToggleIssueState() {
+      return (
+        this.getNoteableData.current_user.can_update &&
+        this.openState !== STATUS_MERGED &&
+        !this.closedAndLocked
+      );
+    },
+    closedAndLocked() {
+      return !this.isOpen && this.isLocked(this.getNoteableData);
+    },
+    endpoint() {
+      return this.getNoteableData.create_note_path;
+    },
+    draftEndpoint() {
+      return this.getNotesData.draftsPath;
+    },
+    isIssue() {
+      return constants.NOTEABLE_TYPE_MAPPING[this.noteableType] === constants.ISSUE_NOTEABLE_TYPE;
+    },
+    isMergeRequest() {
+      return (
+        constants.NOTEABLE_TYPE_MAPPING[this.noteableType] === constants.MERGE_REQUEST_NOTEABLE_TYPE
+      );
+    },
+    trackingLabel() {
+      return slugifyWithUnderscore(`${this.commentButtonTitle} button`);
+    },
+    disableSubmitButton() {
+      return this.note.length === 0 || this.isSubmitting;
+    },
+    autosaveKey() {
+      if (this.isLoggedIn) {
+        const noteableType = capitalizeFirstCharacter(convertToCamelCase(this.noteableType));
+        return `${this.$options.i18n.note}/${noteableType}/${this.getNoteableData.id}`;
+      }
+
+      return null;
+    },
+    autosaveKeyInternalNote() {
+      if (this.isLoggedIn) {
+        // eslint-disable-next-line @gitlab/no-hardcoded-urls -- False positive, not a URL
+        return `${this.autosaveKey}/internalNote`;
+      }
+
+      return null;
+    },
+    shouldDisableField() {
+      return this.isSubmitting;
+    },
+    showLockedWidget() {
+      return !this.canCreateNote && this.isLocked(this.getNoteableData);
+    },
+  },
+  watch: {
+    noteIsInternal(val) {
+      this.formFieldProps.placeholder = val
+        ? this.$options.i18n.bodyPlaceholderInternal
+        : this.$options.i18n.bodyPlaceholder;
+    },
+  },
+  mounted() {
+    // jQuery is needed here because it is a custom event being dispatched with jQuery.
+    $(document).on('issuable:change', (e, isClosed) => {
+      this.toggleIssueLocalState(isClosed ? STATUS_CLOSED : STATUS_REOPENED);
+    });
+
+    if (this.autosaveKeyInternalNote) {
+      this.noteIsInternal = parseBoolean(getDraft(this.autosaveKeyInternalNote));
+    }
+  },
+  methods: {
+    ...mapActions(useNotes, [
+      'saveNote',
+      'removePlaceholderNotes',
+      'closeIssuable',
+      'reopenIssuable',
+      'toggleIssueLocalState',
+    ]),
+    handleSaveError(response) {
+      this.errors = getNoteFormErrorMessages(response);
+    },
+    handleSaveDraft() {
+      this.handleSave({ isDraft: true });
+    },
+    async handleSave({ withIssueAction = false, isDraft = false } = {}) {
+      this.errors = [];
+
+      if (this.note.length) {
+        const noteData = {
+          endpoint: isDraft ? this.draftEndpoint : this.endpoint,
+          flashContainer: this.$el,
+          data: {
+            note: {
+              noteable_type: this.noteableType,
+              noteable_id: this.getNoteableData.id,
+              internal: this.noteIsInternal,
+              note: this.note,
+            },
+            merge_request_diff_head_sha: this.getNoteableData.diff_head_sha,
+          },
+          isDraft,
+        };
+
+        if (this.noteType === constants.DISCUSSION || isDraft) {
+          noteData.data.note.type = constants.DISCUSSION_NOTE;
+        }
+
+        const confirmSubmit = await detectAndConfirmSensitiveTokens({ content: this.note });
+        if (!confirmSubmit) {
+          return;
+        }
+
+        this.isSubmitting = true;
+
+        this.note = ''; // Empty textarea while being requested. Repopulate in catch
+        if (isDraft) {
+          eventHub.$emit('note-form-add-to-review', { name: 'note-form-add-to-review' });
+        }
+
+        trackSavedUsingEditor(
+          this.$refs.markdownEditor.isContentEditorActive,
+          `${this.noteableType}_${this.noteType}`,
+        );
+
+        this.saveNote(noteData)
+          .then(() => {
+            this.discard();
+
+            if (withIssueAction) {
+              this.toggleIssueState();
+            }
+
+            clearDraft(this.autosaveKeyInternalNote);
+          })
+          .catch(({ response }) => {
+            this.handleSaveError(response);
+
+            this.note = noteData.data.note.note; // Restore textarea content.
+            this.removePlaceholderNotes();
+          })
+          .finally(() => {
+            this.isSubmitting = false;
+          });
+      } else {
+        this.toggleIssueState();
+      }
+    },
+    handleEnter() {
+      if (this.hasDrafts) {
+        this.handleSaveDraft();
+      } else {
+        this.handleSave();
+      }
+    },
+    toggleIssueState() {
+      if (this.isIssue) {
+        // We want to invoke the close/reopen logic in the issue header
+        // since that is where the blocked-by issues modal logic is also defined
+        eventHub.$emit('toggle-issuable-state');
+        return;
+      }
+
+      const toggleState = this.isOpen ? this.closeIssuable : this.reopenIssuable;
+
+      toggleState()
+        .then(() => {
+          fetchUserCounts();
+          // badgeState is only initialized for MR type
+          // To avoid undefined error added an optional chaining to function
+          return badgeState?.updateStatus?.();
+        })
+        .catch(() =>
+          createAlert({
+            message: constants.toggleStateErrorMessage[this.noteableType][this.openState],
+          }),
+        );
+    },
+    discard() {
+      this.note = '';
+      this.noteIsInternal = false;
+      this.$refs.markdownEditor.togglePreview(false);
+    },
+    editCurrentUserLastNote() {
+      if (this.note === '') {
+        const lastNote = this.getCurrentUserLastNote;
+
+        if (lastNote) {
+          eventHub.$emit('enter-edit-mode', {
+            noteId: lastNote.id,
+          });
+        }
+      }
+    },
+    dismissError(index) {
+      this.errors.splice(index, 1);
+    },
+    onInput(value) {
+      this.note = value;
+    },
+    // eslint-disable-next-line vue/no-unused-properties -- append() is part of the component's public API.
+    append(value) {
+      this.$refs.markdownEditor.append(value);
+    },
+    setInternalNoteCheckbox() {
+      updateDraft(this.autosaveKeyInternalNote, this.noteIsInternal);
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <note-signed-out-widget v-if="!isLoggedIn" />
+    <discussion-locked-widget v-else-if="showLockedWidget" :issuable-type="noteableDisplayName" />
+    <ul v-else-if="canCreateNote" class="notes notes-form timeline">
+      <timeline-entry-item class="note-form">
+        <div class="flash-container gl-mb-2"></div>
+        <gl-alert
+          v-for="(error, index) in errors"
+          :key="index"
+          variant="danger"
+          class="gl-mb-2"
+          @dismiss="() => dismissError(index)"
+        >
+          {{ error }}
+        </gl-alert>
+        <div class="timeline-content timeline-content-form">
+          <form
+            ref="commentForm"
+            class="new-note common-note-form gfm-form js-main-target-form"
+            data-testid="comment-form"
+            @submit.stop.prevent
+          >
+            <comment-field-layout
+              :with-alert-container="true"
+              :is-internal-note="noteIsInternal"
+              :note="note"
+              :noteable-data="getNoteableData"
+            >
+              <markdown-editor
+                ref="markdownEditor"
+                :value="note"
+                :render-markdown-path="markdownPreviewPath"
+                :markdown-docs-path="markdownDocsPath"
+                :form-field-props="formFieldProps"
+                :autosave-key="autosaveKey"
+                :disabled="shouldDisableField"
+                :autocomplete-data-sources="autocompleteDataSources"
+                :noteable-type="noteableType"
+                supports-quick-actions
+                :supports-table-of-contents="false"
+                @keydown.up="editCurrentUserLastNote()"
+                @keydown.shift.meta.enter="handleSave()"
+                @keydown.shift.ctrl.enter="handleSave()"
+                @keydown.meta.enter.exact="handleEnter()"
+                @keydown.ctrl.enter.exact="handleEnter()"
+                @input="onInput"
+              />
+            </comment-field-layout>
+            <div class="note-form-actions gl-flex gl-flex-wrap gl-gap-3">
+              <gl-form-checkbox
+                v-if="canSetInternalNote"
+                v-model="noteIsInternal"
+                class="gl-basis-full"
+                data-testid="internal-note-checkbox"
+                @input="setInternalNoteCheckbox"
+              >
+                {{ $options.i18n.internal }}
+                <help-icon
+                  v-gl-tooltip:tooltipcontainer.bottom
+                  :title="$options.i18n.internalVisibility"
+                />
+              </gl-form-checkbox>
+              <template v-if="hasDrafts">
+                <gl-button
+                  :disabled="disableSubmitButton"
+                  data-testid="add-to-review-button"
+                  category="primary"
+                  variant="confirm"
+                  @click="handleSaveDraft()"
+                >
+                  {{ $options.i18n.addToReview }}
+                </gl-button>
+                <gl-button
+                  :disabled="disableSubmitButton"
+                  data-testid="add-comment-now-button"
+                  category="secondary"
+                  @click.prevent="handleSave()"
+                  >{{ $options.i18n.addCommentNow }}</gl-button
+                >
+              </template>
+              <template v-else>
+                <comment-type-dropdown
+                  v-model="noteType"
+                  data-testid="comment-button"
+                  :disabled="disableSubmitButton"
+                  :tracking-label="trackingLabel"
+                  :is-internal-note="noteIsInternal"
+                  :noteable-display-name="noteableDisplayName"
+                  :discussions-require-resolution="discussionsRequireResolution"
+                  class="!gl-mb-0"
+                  @click="handleSave"
+                />
+                <template v-if="isMergeRequest">
+                  <gl-button
+                    :disabled="disableSubmitButton"
+                    data-testid="start-review-button"
+                    @click="handleSaveDraft()"
+                  >
+                    {{ $options.i18n.startReview }}
+                  </gl-button>
+                </template>
+              </template>
+              <gl-button
+                v-if="canToggleIssueState"
+                :loading="isToggleStateButtonLoading"
+                :class="[actionButtonClassNames, 'btn-comment btn-comment-and-close']"
+                :disabled="isSubmitting"
+                data-testid="close-reopen-button"
+                @click="handleSave({ withIssueAction: true })"
+                >{{ issueActionButtonTitle }}</gl-button
+              >
+            </div>
+          </form>
+        </div>
+      </timeline-entry-item>
+    </ul>
+  </div>
+</template>

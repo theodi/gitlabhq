@@ -1,0 +1,85 @@
+.preflight-job-base:
+  stage: preflight
+  extends:
+    - .default-retry
+
+rails-boot:
+  extends:
+    - .preflight-job-base
+    - .default-before_script
+    - .production
+    - .ruby-cache
+    - .use-pg17
+    - .preflight:rules:rails-production-server-boot
+  variables:
+    GIT_DEPTH: "1"
+  needs:
+    - job: cache:ruby-gems
+      optional: true
+  script:
+    - bin/rails boot --environment=production
+
+ruby_syntax:
+  extends:
+    - .preflight-job-base
+    - .repo-from-artifacts
+    - .preflight:rules:ruby_syntax
+  before_script:
+    - source scripts/utils.sh
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION}
+  parallel:
+    matrix:
+      - RUBY_VERSION: ["${RUBY_VERSION_DEFAULT}", "${RUBY_VERSION_NEXT}"]
+  script:
+    - fail_on_warnings scripts/lint/check_ruby_syntax.rb
+
+no-ee-check:
+  extends:
+    - .preflight-job-base
+    - .repo-from-artifacts
+    - .preflight:rules:no-ee-check
+  script:
+    - scripts/no-dir-check ee
+
+no-jh-check:
+  extends:
+    - .preflight-job-base
+    - .repo-from-artifacts
+    - .preflight:rules:no-jh-check
+  script:
+    - scripts/no-dir-check jh
+
+unique-by-index-check:
+  extends:
+    - .preflight-job-base
+    - .repo-from-artifacts
+    - .preflight:rules:unique-by-index-check
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}ruby:${RUBY_VERSION_DEFAULT}
+  allow_failure: true
+  script:
+    - scripts/lint/check_unique_by_indexes.rb
+
+.pipeline-tier-base:
+  needs: []
+  extends:
+    - .preflight-job-base
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}alpine:latest
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "${CI_JOB_NAME}"
+
+pipeline-tier-1:
+  extends:
+    - .pipeline-tier-base
+    - .preflight:rules:pipeline-tier-1
+
+pipeline-tier-2:
+  extends:
+    - .pipeline-tier-base
+    - .preflight:rules:pipeline-tier-2
+
+pipeline-tier-3:
+  extends:
+    - .pipeline-tier-base
+    - .preflight:rules:pipeline-tier-3

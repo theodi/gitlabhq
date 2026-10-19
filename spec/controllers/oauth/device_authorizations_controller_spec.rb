@@ -1,0 +1,116 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Oauth::DeviceAuthorizationsController, feature_category: :system_access do
+  let(:user) { create(:user) }
+
+  before do
+    sign_in(user)
+  end
+
+  describe "GET #index" do
+    subject { get :index, format: :html }
+
+    render_views
+
+    it_behaves_like "RequestPayloadLogger information appended"
+
+    context "when requested with HTML format" do
+      it "renders the 'doorkeeper/device_authorization_grant/index' template" do
+        get :index, format: :html
+        expect(response).to render_template("doorkeeper/device_authorization_grant/index")
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it "uses the 'minimal' layout" do
+        get :index, format: :html
+        expect(response).to render_template(layout: 'minimal')
+      end
+    end
+
+    context "when requested with JSON format" do
+      it "returns a no content status" do
+        get :index, format: :json
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+    end
+  end
+
+  describe 'POST #confirm' do
+    subject { post :confirm, params: { user_code: user_code }, format: :html }
+
+    let(:user_code) { 'valid_user_code' }
+    let(:application) { build_stubbed(:oauth_application) }
+    let(:device_grant) { instance_double('Doorkeeper::DeviceAuthorizationGrant::DeviceGrant', scopes: 'read write', application: application, expired?: false) }
+    let(:invalid_user_code) { 'invalid_user_code' }
+
+    before do
+      allow(controller).to receive(:device_grant_model).and_return(Doorkeeper::DeviceAuthorizationGrant::DeviceGrant)
+      allow(Doorkeeper::DeviceAuthorizationGrant::DeviceGrant).to receive(:find_by)
+        .with(user_code: user_code).and_return(device_grant)
+    end
+
+    it_behaves_like "RequestPayloadLogger information appended"
+
+    context 'with valid user_code' do
+      before do
+        allow(Doorkeeper::DeviceAuthorizationGrant::DeviceGrant).to receive(:find_by)
+          .with(user_code: user_code).and_return(device_grant)
+      end
+
+      it 'assigns @scopes' do
+        post :confirm, params: { user_code: user_code }, format: :html
+        expect(assigns(:scopes)).to eq('read write')
+      end
+
+      it 'assigns @application' do
+        post :confirm, params: { user_code: user_code }, format: :html
+        expect(assigns(:application)).to eq(application)
+      end
+
+      it 'renders the authorize template' do
+        post :confirm, params: { user_code: user_code }, format: :html
+        expect(response).to render_template('doorkeeper/device_authorization_grant/authorize')
+      end
+
+      it 'responds with no content for JSON format' do
+        post :confirm, params: { user_code: user_code }, format: :json
+        expect(response).to have_gitlab_http_status(:no_content)
+      end
+    end
+
+    context 'with invalid user_code' do
+      before do
+        allow(Doorkeeper::DeviceAuthorizationGrant::DeviceGrant).to receive(:find_by)
+          .with(user_code: invalid_user_code).and_return(nil)
+      end
+
+      it 'redirects to the device authorizations index with an error', :aggregate_failures do
+        post :confirm, params: { user_code: invalid_user_code }, format: :html
+        expect(response).to redirect_to(oauth_device_authorizations_index_url)
+        expect(flash[:notice]).to eq(I18n.t('doorkeeper.flash.device_codes.authorize.invalid_user_code'))
+      end
+
+      it 'does not render the authorize template' do
+        post :confirm, params: { user_code: invalid_user_code }, format: :html
+        expect(response).not_to render_template('doorkeeper/device_authorization_grant/authorize')
+      end
+
+      it 'responds with unprocessable entity for JSON format' do
+        post :confirm, params: { user_code: invalid_user_code }, format: :json
+        expect(response).to have_gitlab_http_status(:unprocessable_entity)
+      end
+    end
+
+    context 'with an expired user_code' do
+      let(:device_grant) { instance_double('Doorkeeper::DeviceAuthorizationGrant::DeviceGrant', expired?: true) }
+
+      it 'redirects to the device authorizations index with an error', :aggregate_failures do
+        post :confirm, params: { user_code: user_code }, format: :html
+        expect(response).to redirect_to(oauth_device_authorizations_index_url)
+        expect(flash[:notice]).to eq(I18n.t('doorkeeper.flash.device_codes.authorize.expired_user_code'))
+      end
+    end
+  end
+end

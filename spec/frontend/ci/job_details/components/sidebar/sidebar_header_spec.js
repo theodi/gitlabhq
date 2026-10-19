@@ -1,0 +1,137 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import SidebarHeader from '~/ci/job_details/components/sidebar/sidebar_header.vue';
+import JobRetryButton from '~/ci/job_details/components/sidebar/job_sidebar_retry_button.vue';
+import getJobQuery from '~/ci/job_details/graphql/queries/get_job.query.graphql';
+import { mockFullPath, mockId, mockJobResponse, mockJobWithInputsResponse } from '../../mock_data';
+
+Vue.use(VueApollo);
+
+const defaultProvide = {
+  projectPath: mockFullPath,
+};
+
+describe('Sidebar Header', () => {
+  let wrapper;
+
+  const createComponent = ({
+    options = {},
+    props = {},
+    restJob = {},
+    provide = { ...defaultProvide },
+  } = {}) => {
+    wrapper = shallowMountExtended(SidebarHeader, {
+      propsData: {
+        ...props,
+        jobId: mockId,
+        restJob: {
+          name: 'My job',
+          status: {
+            action: {
+              confirmation_message: null,
+            },
+          },
+          ...restJob,
+        },
+      },
+      provide,
+      ...options,
+    });
+  };
+
+  const createComponentWithApollo = ({
+    props = {},
+    restJob = {},
+    provide = { ...defaultProvide },
+    jobQueryResponse = mockJobResponse,
+  } = {}) => {
+    const getJobQueryResponse = jest.fn().mockResolvedValue(jobQueryResponse);
+
+    const requestHandlers = [[getJobQuery, getJobQueryResponse]];
+
+    const apolloProvider = createMockApollo(requestHandlers);
+
+    const options = {
+      apolloProvider,
+    };
+
+    createComponent({
+      props,
+      restJob,
+      options,
+      provide,
+    });
+
+    return waitForPromises();
+  };
+
+  const findCancelButton = () => wrapper.findByTestId('cancel-button');
+  const findForceCancelButton = () => wrapper.findByTestId('force-cancel-button');
+  const findEraseButton = () => wrapper.findByTestId('job-log-erase-link');
+  const findTerminalLink = () => wrapper.findByTestId('terminal-link');
+  const findRetryButton = () => wrapper.findComponent(JobRetryButton);
+
+  describe('when rendering contents', () => {
+    it('does not render buttons with no paths', async () => {
+      await createComponentWithApollo();
+      expect(findCancelButton().exists()).toBe(false);
+      expect(findEraseButton().exists()).toBe(false);
+      expect(findRetryButton().exists()).toBe(false);
+      expect(findTerminalLink().exists()).toBe(false);
+    });
+
+    it('renders a retry button with a path', async () => {
+      await createComponentWithApollo({ restJob: { retry_path: 'retry/path' } });
+      expect(findRetryButton().exists()).toBe(true);
+    });
+
+    it('renders a cancel button with a path', async () => {
+      await createComponentWithApollo({ restJob: { cancel_path: 'cancel/path' } });
+      expect(findCancelButton().exists()).toBe(true);
+    });
+
+    it('renders an erase button with a path', async () => {
+      await createComponentWithApollo({ restJob: { erase_path: 'erase/path' } });
+      expect(findEraseButton().exists()).toBe(true);
+    });
+
+    it('should render terminal link', async () => {
+      await createComponentWithApollo({ restJob: { terminal_path: 'terminal/path' } });
+      expect(findTerminalLink().attributes('href')).toBe('terminal/path');
+    });
+
+    describe(`a build with force_cancel_path`, () => {
+      it('renders a force cancel button with flag', async () => {
+        const provide = {
+          ...defaultProvide,
+        };
+        await createComponentWithApollo({
+          restJob: { force_cancel_path: 'force_cancel/path' },
+          provide,
+        });
+        expect(findForceCancelButton().exists()).toBe(true);
+        expect(findForceCancelButton().attributes('href')).toBe('force_cancel/path');
+      });
+    });
+  });
+
+  describe('retry button with inputs', () => {
+    it('passes hasInputs as false when job has no inputs', async () => {
+      await createComponentWithApollo({ restJob: { retry_path: 'retry/path' } });
+
+      expect(findRetryButton().props('hasInputs')).toBe(false);
+    });
+
+    it('passes hasInputs as true when job has inputs', async () => {
+      await createComponentWithApollo({
+        restJob: { retry_path: 'retry/path' },
+        jobQueryResponse: mockJobWithInputsResponse,
+      });
+
+      expect(findRetryButton().props('hasInputs')).toBe(true);
+    });
+  });
+});

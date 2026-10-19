@@ -1,0 +1,115 @@
+UsageData/LargeTable:
+  Enabled: true
+  NonRelatedClasses:
+    - :ActionMailer::Base
+    - :Date
+    - :Feature
+    - :Gitlab
+    - :Gitlab::AppLogger
+    - :Gitlab::Auth
+    - :Gitlab::CurrentSettings
+    - :Gitlab::Database
+    - :Gitlab::ErrorTracking
+    - :Gitlab::Geo
+    - :Gitlab::Git
+    - :Gitlab::IncomingEmail
+    - :Gitlab::Metrics
+    - :Gitlab::Runtime
+    - :Gitaly::Server
+    - :Gitlab::UsageData
+    - :Gitlab::UsageDataCounters
+    - :Arel::Nodes::NamedFunction
+    - :Arel
+    - :License
+    - :Rails
+    - :Time
+    - :SECURE_PRODUCT_TYPES
+    - :Settings
+    - :CE_MEMOIZED_VALUES
+    - :EE_MEMOIZED_VALUES
+    - :Ohai::System
+  CountMethods:
+    - :count
+    - :distinct_count
+    - :histogram
+  AllowedMethods:
+    - :arel_table
+    - :minimum
+    - :maximum
+UsageData/HistogramWithLargeTable:
+  Enabled: true
+  HighTrafficModels: &high_traffic_models # models for all high traffic tables in Migration/UpdateLargeTable
+    - 'AuditEvent'
+    - 'CommitStatus'
+    - 'Ci::Processable'
+    - 'Ci::Bridge'
+    - 'Ci::Build'
+    - 'GenericCommitStatus'
+    - 'Ci::JobArtifact'
+    - 'Ci::PipelineVariable'
+    - 'Ci::Pipeline'
+    - 'Ci::Stage'
+    - 'Deployment'
+    - 'Event'
+    - 'PushEvent'
+    - 'Issue'
+    - 'MergeRequestDiffCommit'
+    - 'MergeRequestDiffFile'
+    - 'MergeRequestDiff'
+    - 'MergeRequest::Metrics'
+    - 'MergeRequest'
+    - 'NamespaceSetting'
+    - 'Namespace'
+    - 'Group'
+    - 'NoteDiffFile'
+    - 'Note'
+    - 'DiffNote'
+    - 'DiscussionNote'
+    - 'SyntheticNote'
+    - 'LabelNote'
+    - 'MilestoneNote'
+    - 'StateNote'
+    - 'LegacyDiffNote'
+    - 'ProjectAuthorization'
+    - 'Project'
+    - 'ProjectCiCdSetting'
+    - 'ProjectSetting'
+    - 'ProjectFeature'
+    - 'ProtectedBranch'
+    - 'ExportedProtectedBranch'
+    - 'PushEventPayload'
+    - 'ResourceLabelEvent'
+    - 'Route'
+    - 'SentNotification'
+    - 'SystemNoteMetadata'
+    - 'ActsAsTaggableOn::Tagging'
+    - 'Todo'
+    - 'User'
+    - 'UserPreference'
+    - 'UserDetail'
+    - 'Vulnerabilities::Finding'
+    - 'WebHookLog'
+UsageData/DistinctCountByLargeForeignKey:
+  Enabled: true
+  AllowedForeignKeys:
+    - 'agent_id'
+    - 'author_id'
+    - 'clusters.user_id'
+    - 'creator_id'
+    - 'issue_id'
+    - 'merge_request_id'
+    - 'merge_requests.target_project_id'
+    - 'owner_id'
+    - 'project_id'
+    - 'user_id'
+    - 'resource_owner_id'
+    - 'requirement_id'
+UsageData/InstrumentationSuperclass:
+  Enabled: true
+  AllowedClasses:
+    - :DatabaseMetric
+    - :GenericMetric
+    - :RedisHLLMetric
+    - :RedisMetric
+    - :NumbersMetric
+    - :PrometheusMetric

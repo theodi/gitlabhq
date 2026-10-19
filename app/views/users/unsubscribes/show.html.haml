@@ -1,0 +1,10 @@
+- page_title _("Unsubscribe"), _("Admin Notifications")
+%h1.page-title.gl-text-size-h-display Unsubscribe from Admin notifications
+
+= form_tag unsubscribe_path(Base64.urlsafe_encode64(@email)) do
+  %p
+    Yes, I want to unsubscribe
+    %strong= @email
+    from any further admin emails.
+  = render Pajamas::ButtonComponent.new(type: :submit, variant: :confirm) do
+    = _('Unsubscribe')

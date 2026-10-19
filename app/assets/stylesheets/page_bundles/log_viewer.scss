@@ -1,0 +1,76 @@
+@import 'mixins_and_variables_and_functions';
+
+.job-log-viewer-top-bar {
+  @include job-log-top-bar;
+}
+
+.job-log-viewer {
+  background-color: $builds-log-bg; // stays the same in dark more
+  color: $white-contrast; // stays the same in dark more
+
+  .log-line {
+    display: flex;
+    position: relative;
+    gap: $gl-spacing-scale-5;
+  }
+
+  .log-line-header {
+    cursor: pointer;
+
+    &:hover {
+      background-color: rgba($white, 0.2);
+    }
+  }
+
+  // line number
+  .log-line div:first-child {
+    flex-shrink: 0;
+    flex-basis: $gl-spacing-scale-9;
+    text-align: right;
+    user-select: none;
+
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-icon {
+      position: absolute;
+      left: 0;
+    }
+
+    a {
+      @apply gl-text-subtle;
+
+      &:hover,
+      &:active,
+      &:visited {
+        text-decoration: underline;
+        @apply gl-text-subtle;
+      }
+    }
+  }
+
+  // line timestamp
+  .log-line time {
+    flex-shrink: 0;
+    @apply gl-text-subtle;
+    user-select: none;
+  }
+
+  // line text
+  .log-line div:last-child {
+    white-space: pre;
+    text-wrap: wrap;
+    word-break: break-all;
+    word-wrap: break-word;
+    flex-grow: 0;
+
+    span {
+      // Our default 1.5 line-height leave gaps between lines with `xterm-bg` backgrounds classes.
+      // Add extra padding to fill the line. Helps with ANSI art.
+      padding: 1.25px 0;
+    }
+  }
+
+  .loader-animation {
+    @include build-loader-animation;
+  }
+}
+

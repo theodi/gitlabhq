@@ -1,0 +1,9 @@
+# @feature_category: pipeline_composition
+
+mutation updateCurrentPage($pageNumber: Int!) {
+  updateCurrentPage(pageNumber: $pageNumber) @client {
+    page {
+      current
+    }
+  }
+}

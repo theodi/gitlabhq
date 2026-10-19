@@ -1,0 +1,205 @@
+# frozen_string_literal: true
+
+module DraftNotes
+  class PublishService < DraftNotes::BaseService
+    def execute(draft: nil, executing_user: nil)
+      executing_user ||= current_user
+
+      return error('Not allowed to create notes') unless can?(executing_user, :create_note, merge_request)
+      return error('Review not found') if params[:review_id].present? && existing_review.nil?
+
+      check_quick_actions!(draft ? [draft] : draft_notes)
+
+      review = nil
+      if draft
+        publish_draft_note(draft, executing_user)
+      else
+        review = create_review(executing_user)
+        merge_request_activity_counter.track_publish_review_action(user: current_user) if review
+        review ||= existing_review
+      end
+
+      summary_note = create_summary_note(review)
+
+      handle_notifications(current_user, merge_request, review, summary_note) if notify?(draft, review)
+
+      success(review_id: review&.id, summary_note_id: summary_note&.id)
+    rescue ActiveRecord::RecordInvalid => e
+      message = "Unable to save #{e.record.class.name}: #{e.record.errors.full_messages.join(', ')} "
+      error(message)
+    end
+
+    # Whether there are draft notes for #execute to publish, or an existing review to
+    # notify about. Only then does it publish MergeRequests::DraftNotePublishedEvent.
+    def publishes_draft_notes?(draft: nil)
+      draft.present? || draft_notes.present? || existing_review.present?
+    end
+
+    private
+
+    def existing_review
+      return if params[:review_id].blank?
+
+      review = merge_request.reviews.find_by_id(params[:review_id])
+      review if review&.author_id == current_user.id
+    end
+    strong_memoize_attr :existing_review
+
+    # Rejects the whole publish before anything is created when a draft has a
+    # quick action that the scope validator does not permit.
+    def check_quick_actions!(drafts)
+      return unless params[:scope_validator]
+
+      service = QuickActions::InterpretService.new(
+        container: project, current_user: current_user, params: { scope_validator: params[:scope_validator] }
+      )
+      drafts.each { |draft| service.check_quick_actions!(draft.note, merge_request) }
+    end
+
+    def notify?(draft, review)
+      (draft || review) && !params[:defer_notifications]
+    end
+
+    def create_summary_note(review)
+      return unless params[:summary_note]
+
+      note_params = params[:summary_note].merge(review_id: review&.id, created_at: review&.created_at)
+      note = Notes::CreateService.new(project, current_user, note_params).execute
+
+      if note.errors.any?
+        Gitlab::AppLogger.warn(
+          message: 'Draft note publish: summary note not persisted',
+          merge_request_id: merge_request.id,
+          project_id: project.id,
+          errors: note.errors.full_messages
+        )
+      end
+
+      note
+    end
+
+    def publish_draft_note(draft, executing_user)
+      create_note_from_draft(draft, executing_user)
+      draft.delete
+    end
+
+    def create_review(executing_user)
+      return if draft_notes.blank?
+
+      review = existing_review || Review.create!(author: current_user, merge_request: merge_request, project: project)
+
+      created_notes = draft_notes.filter_map do |draft_note|
+        next unless draft_note.note.present?
+
+        draft_note.review = review
+        create_note_from_draft(
+          draft_note,
+          executing_user,
+          skip_capture_diff_note_position: true,
+          skip_keep_around_commits: true,
+          skip_merge_status_trigger: true
+        )
+      end
+
+      capture_diff_note_positions(created_notes)
+      keep_around_commits(created_notes)
+      draft_notes.delete_all
+      GraphqlTriggers.merge_request_merge_status_updated(merge_request)
+      after_publish
+
+      review
+    end
+
+    def create_note_from_draft(draft, executing_user, skip_capture_diff_note_position: false, skip_keep_around_commits: false, skip_merge_status_trigger: false)
+      # Make sure the diff file is unfolded in order to find the correct line
+      # codes.
+      draft.diff_file&.unfold_diff_lines(draft.original_position)
+
+      note_params = draft.publish_params.merge(skip_keep_around_commits: skip_keep_around_commits)
+      note_params[:scope_validator] = params[:scope_validator] if params[:scope_validator]
+      note = Notes::CreateService.new(project, current_user, note_params).execute(
+        skip_capture_diff_note_position: skip_capture_diff_note_position,
+        skip_merge_status_trigger: skip_merge_status_trigger,
+        executing_user: executing_user
+      )
+
+      unless note.persisted?
+        Gitlab::AppLogger.warn(
+          message: 'Draft note publish: note not persisted',
+          draft_note_id: draft.id,
+          merge_request_id: merge_request.id,
+          project_id: project.id,
+          errors: note.errors.full_messages
+        )
+      end
+
+      set_discussion_resolve_status(note, draft) if note.persisted?
+      note
+    end
+
+    def set_discussion_resolve_status(note, draft_note)
+      return unless draft_note.discussion_id.present?
+
+      discussion = note.discussion
+
+      if draft_note.resolve_discussion && discussion.can_resolve?(current_user)
+        discussion.resolve!(current_user)
+      else
+        discussion.unresolve!
+      end
+    end
+
+    def capture_diff_note_positions(notes)
+      paths = notes.flat_map do |note|
+        note.diff_file&.paths if note.diff_note?
+      end
+
+      return if paths.empty?
+
+      capture_service = Discussions::CaptureDiffNotePositionService.new(merge_request, paths.compact)
+
+      notes.each do |note|
+        capture_service.execute(note.discussion) if note.diff_note? && note.start_of_discussion?
+      end
+    end
+
+    def keep_around_commits(notes)
+      shas = notes.flat_map do |note|
+        note.shas if note.diff_note?
+      end.uniq
+
+      # We are allowing this since gitaly call will be created for each sha and
+      # even though they're unique, there will still be multiple Gitaly calls.
+      Gitlab::GitalyClient.allow_n_plus_1_calls do
+        project.repository.keep_around(*shas, source: self.class.name)
+      end
+    end
+
+    def after_publish
+      merge_request.assignees.each(&:invalidate_merge_request_cache_counts)
+    end
+
+    def handle_notifications(current_user, merge_request, review, summary_note)
+      create_draft_published_event(merge_request, current_user, review, summary_note)
+
+      MergeRequests::ResolvedDiscussionNotificationService
+        .new(project: project, current_user: current_user)
+        .execute(merge_request, send_notifications: false)
+    end
+
+    def create_draft_published_event(merge_request, current_user, review, summary_note)
+      review_id = review&.id
+      data = { current_user_id: current_user.id, merge_request_id: merge_request.id }
+      data[:review_id] = review_id if review_id
+      data[:summary_note_id] = summary_note.id if review_id && summary_note&.persisted?
+
+      Gitlab::EventStore.publish(
+        MergeRequests::DraftNotePublishedEvent.new(
+          data: data
+        )
+      )
+    end
+  end
+end
+
+DraftNotes::PublishService.prepend_mod

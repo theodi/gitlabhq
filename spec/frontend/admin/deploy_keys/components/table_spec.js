@@ -1,0 +1,257 @@
+import { GlLoadingIcon, GlEmptyState, GlPagination, GlModal } from '@gitlab/ui';
+import { nextTick } from 'vue';
+import EMPTY_STATE_SVG_URL from '@gitlab/svgs/dist/illustrations/empty-state/empty-access-token-md.svg?url';
+import responseBody from 'test_fixtures/api/deploy_keys/index.json';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+import { stubComponent } from 'helpers/stub_component';
+import DeployKeysTable from '~/admin/deploy_keys/components/table.vue';
+import TimeAgoTooltip from '~/vue_shared/components/time_ago_tooltip.vue';
+import Api, { DEFAULT_PER_PAGE } from '~/api';
+import { createAlert } from '~/alert';
+
+jest.mock('~/api');
+jest.mock('~/alert');
+jest.mock('~/lib/utils/csrf', () => ({ token: 'mock-csrf-token' }));
+
+describe('DeployKeysTable', () => {
+  let wrapper;
+
+  const deployKey = responseBody[0];
+  const deployKey2 = responseBody[1];
+  const deployKeyWithoutMd5Fingerprint = responseBody[2];
+
+  const createComponent = () => {
+    wrapper = mountExtended(DeployKeysTable, {
+      stubs: {
+        GlModal: stubComponent(GlModal, {
+          template: `
+            <div>
+              <slot name="modal-title"></slot>
+              <slot></slot>
+              <slot name="modal-footer"></slot>
+            </div>`,
+        }),
+      },
+    });
+  };
+
+  const findTable = () => wrapper.findByTestId('deploy-keys-list');
+  const findEditButton = (index) =>
+    wrapper.findAllByLabelText(DeployKeysTable.i18n.edit, { selector: 'a' }).at(index);
+  const findRemoveButton = (index) =>
+    wrapper.findAllByLabelText(DeployKeysTable.i18n.delete, { selector: 'button' }).at(index);
+  const findLoadingIcon = () => wrapper.findComponent(GlLoadingIcon);
+  const findTimeAgoTooltip = (index) => wrapper.findAllComponents(TimeAgoTooltip).at(index);
+  const findPagination = () => wrapper.findComponent(GlPagination);
+
+  const expectDeployKeyIsRendered = (expectedDeployKey, expectedRowIndex) => {
+    const editButton = findEditButton(expectedRowIndex);
+    const timeAgoTooltip = findTimeAgoTooltip(expectedRowIndex);
+
+    expect(wrapper.findByText(expectedDeployKey.title).exists()).toBe(true);
+
+    expect(
+      wrapper.findByText(expectedDeployKey.fingerprint_sha256, { selector: 'div' }).exists(),
+    ).toBe(true);
+    expect(timeAgoTooltip.exists()).toBe(true);
+    expect(timeAgoTooltip.props('time')).toBe(expectedDeployKey.created_at);
+    expect(editButton.exists()).toBe(true);
+    expect(editButton.attributes('href')).toBe(`/admin/deploy_keys/${expectedDeployKey.id}/edit`);
+    expect(findRemoveButton(expectedRowIndex).exists()).toBe(true);
+  };
+
+  const expectDeployKeyWithFingerprintIsRendered = (expectedDeployKey, expectedRowIndex) => {
+    expect(wrapper.findByText(expectedDeployKey.fingerprint, { selector: 'div' }).exists()).toBe(
+      true,
+    );
+    expectDeployKeyIsRendered(expectedDeployKey, expectedRowIndex);
+  };
+
+  const itRendersTheEmptyState = () => {
+    it('renders empty state with a create action instead of the page heading', () => {
+      const emptyState = wrapper.findComponent(GlEmptyState);
+
+      expect(emptyState.exists()).toBe(true);
+      expect(emptyState.props()).toMatchObject({
+        svgPath: EMPTY_STATE_SVG_URL,
+        title: DeployKeysTable.i18n.emptyStateTitle,
+        description: DeployKeysTable.i18n.emptyStateDescription,
+        primaryButtonText: DeployKeysTable.i18n.newDeployKeyButtonText,
+        primaryButtonLink: '/admin/deploy_keys/new',
+      });
+    });
+
+    it('does not render the page heading or its action', () => {
+      expect(wrapper.find('h1').exists()).toBe(false);
+      expect(wrapper.findByTestId('new-deploy-key-button').exists()).toBe(false);
+    });
+  };
+
+  describe('when there are deploy keys to show', () => {
+    beforeEach(async () => {
+      Api.deployKeys.mockResolvedValue({
+        data: responseBody,
+        headers: { 'x-total': `${responseBody.length}` },
+      });
+
+      createComponent();
+
+      await waitForPromises();
+    });
+
+    it('renders page title', () => {
+      expect(wrapper.findByText(DeployKeysTable.i18n.pageTitle).exists()).toBe(true);
+    });
+
+    it('renders `New deploy key` button', () => {
+      const newDeployKeyButton = wrapper.findByTestId('new-deploy-key-button');
+
+      expect(newDeployKeyButton.exists()).toBe(true);
+      expect(newDeployKeyButton.attributes('href')).toBe('/admin/deploy_keys/new');
+    });
+  });
+
+  describe('when `/deploy_keys` API request is pending', () => {
+    beforeEach(() => {
+      Api.deployKeys.mockImplementation(() => new Promise(() => {}));
+    });
+
+    it('shows loading icon', async () => {
+      createComponent();
+
+      await nextTick();
+
+      expect(findLoadingIcon().exists()).toBe(true);
+    });
+  });
+
+  describe('when `/deploy_keys` API request is successful', () => {
+    describe('when there are deploy keys', () => {
+      beforeEach(() => {
+        Api.deployKeys.mockResolvedValue({
+          data: responseBody,
+          headers: { 'x-total': `${responseBody.length}` },
+        });
+
+        createComponent();
+      });
+
+      it('renders table with the deploy keys', () => {
+        expect(findTable().exists()).toBe(true);
+      });
+
+      it('renders deploy keys in table', () => {
+        expectDeployKeyWithFingerprintIsRendered(deployKey, 0);
+        expectDeployKeyWithFingerprintIsRendered(deployKey2, 1);
+      });
+
+      it('renders deploy keys that do not have an MD5 fingerprint', () => {
+        expectDeployKeyIsRendered(deployKeyWithoutMd5Fingerprint, 2);
+      });
+
+      describe('when delete button is clicked', () => {
+        it('asks user to confirm', async () => {
+          await findRemoveButton(0).trigger('click');
+
+          const modal = wrapper.findComponent(GlModal);
+          const form = modal.find('form');
+          const submitSpy = jest.spyOn(form.element, 'submit');
+
+          expect(modal.props('visible')).toBe(true);
+          expect(form.attributes('action')).toBe(`/admin/deploy_keys/${deployKey.id}`);
+          expect(form.find('input[name="_method"]').attributes('value')).toBe('delete');
+          expect(form.find('input[name="authenticity_token"]').attributes('value')).toBe(
+            'mock-csrf-token',
+          );
+
+          modal.vm.$emit('primary');
+
+          expect(submitSpy).toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe('pagination', () => {
+      beforeEach(() => {
+        Api.deployKeys.mockResolvedValueOnce({
+          data: [deployKey],
+          headers: { 'x-total': '3' },
+        });
+
+        createComponent();
+      });
+
+      it('renders pagination', () => {
+        const pagination = findPagination();
+        expect(pagination.exists()).toBe(true);
+        expect(pagination.props()).toMatchObject({
+          value: 1,
+          perPage: DEFAULT_PER_PAGE,
+          totalItems: responseBody.length,
+          align: 'center',
+        });
+      });
+
+      describe('when pagination is changed', () => {
+        it('calls API with `page` parameter', async () => {
+          const pagination = findPagination();
+          expectDeployKeyWithFingerprintIsRendered(deployKey, 0);
+
+          Api.deployKeys.mockResolvedValue({
+            data: [deployKey2],
+            headers: { 'x-total': '2' },
+          });
+
+          pagination.vm.$emit('input', 2);
+
+          await nextTick();
+
+          expect(findLoadingIcon().exists()).toBe(true);
+          expect(pagination.exists()).toBe(false);
+
+          await waitForPromises();
+
+          expect(Api.deployKeys).toHaveBeenCalledWith({
+            page: 2,
+            public: true,
+          });
+          expectDeployKeyWithFingerprintIsRendered(deployKey2, 0);
+        });
+      });
+    });
+
+    describe('when there are no deploy keys', () => {
+      beforeEach(() => {
+        Api.deployKeys.mockResolvedValue({
+          data: [],
+          headers: { 'x-total': '0' },
+        });
+
+        createComponent();
+      });
+
+      itRendersTheEmptyState();
+    });
+  });
+
+  describe('when `deploy_keys` API request is unsuccessful', () => {
+    const error = new Error('Network Error');
+
+    beforeEach(() => {
+      Api.deployKeys.mockRejectedValue(error);
+
+      createComponent();
+    });
+
+    itRendersTheEmptyState();
+
+    it('displays alert', () => {
+      expect(createAlert).toHaveBeenCalledWith({
+        message: DeployKeysTable.i18n.apiErrorMessage,
+        captureError: true,
+        error,
+      });
+    });
+  });
+});

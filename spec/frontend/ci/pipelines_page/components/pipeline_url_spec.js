@@ -1,0 +1,375 @@
+import { merge } from 'lodash-es';
+import { mockTracking, unmockTracking } from 'helpers/tracking_helper';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import PipelineUrlComponent from '~/ci/pipelines_page/components/pipeline_url.vue';
+import UserAvatarLink from '~/vue_shared/components/user_avatar/user_avatar_link.vue';
+import CommitPopover from '~/vue_shared/components/commit_popover.vue';
+import { TRACKING_CATEGORIES } from '~/ci/constants';
+import {
+  mockPipeline,
+  mockPipelineBranch,
+  mockPipelineTag,
+} from '../../pipeline_details/mock_data';
+import { mockBranchPipeline } from '../mock_data';
+
+const projectPath = 'test/test';
+
+describe('Pipeline Url Component', () => {
+  let wrapper;
+  let trackingSpy;
+
+  const findTableCell = () => wrapper.findByTestId('pipeline-url-table-cell');
+  const findPipelineUrlLink = () => wrapper.findComponentByTestId('pipeline-url-link');
+  const findPipelineIdentifierLink = () =>
+    wrapper.findComponentByTestId('pipeline-identifier-link');
+  const findPipelineIdentifierMissingMessage = () =>
+    wrapper.findByTestId('pipeline-identifier-missing-message');
+  const findRefName = () => wrapper.findComponentByTestId('merge-request-ref');
+  const findCommitShortSha = () => wrapper.findComponentByTestId('commit-short-sha');
+  const findCommitIcon = () => wrapper.findByTestId('commit-icon');
+  const findCommitIconType = () => wrapper.findByTestId('commit-icon-type');
+  const findCommitRefName = () => wrapper.findComponentByTestId('commit-ref-name');
+  const findCommitPopover = () => wrapper.findComponent(CommitPopover);
+
+  const defaultProps = { ...mockPipeline(projectPath) };
+
+  const createComponent = ({ props, provide } = {}) => {
+    wrapper = shallowMountExtended(PipelineUrlComponent, {
+      propsData: { ...defaultProps, ...props },
+      provide: { ...provide },
+    });
+  };
+
+  it('should render pipeline url table cell', () => {
+    createComponent();
+
+    expect(findTableCell().exists()).toBe(true);
+  });
+
+  it('should render a link the provided path and id', () => {
+    createComponent();
+
+    expect(findPipelineUrlLink().attributes('href')).toBe('foo');
+    expect(findPipelineUrlLink().text()).toBe('#1');
+  });
+
+  it('should render the  pipeline schedule with REST data', () => {
+    createComponent({
+      props: merge(mockPipeline(projectPath), {
+        pipeline: {
+          name: 'Build pipeline',
+          pipeline_schedule: { id: 1, description: 'Schedule', path: 'schedule/path' },
+        },
+      }),
+    });
+
+    expect(findRefName().exists()).toBe(true);
+    expect(findCommitShortSha().exists()).toBe(true);
+    expect(findPipelineIdentifierLink().text()).toBe('Schedule');
+    expect(findPipelineIdentifierLink().attributes('href')).toBe('schedule/path');
+    expect(findPipelineIdentifierMissingMessage().exists()).toBe(false);
+  });
+
+  it('should render the  pipeline schedule with GraphQL data', () => {
+    createComponent({
+      props: merge(mockPipeline(projectPath), {
+        pipeline: {
+          name: 'Scheduled Pipeline',
+          pipelineSchedule: {
+            id: 'gid://gitlab/Ci::PipelineSchedule/8',
+            description: 'Schedule',
+            editPath: 'schedule/path',
+          },
+        },
+      }),
+    });
+
+    expect(findRefName().exists()).toBe(true);
+    expect(findCommitShortSha().exists()).toBe(true);
+    expect(findPipelineIdentifierLink().text()).toBe('Schedule');
+    expect(findPipelineIdentifierLink().attributes('href')).toBe('schedule/path');
+    expect(findPipelineIdentifierMissingMessage().exists()).toBe(false);
+  });
+
+  it('should render the pipeline name identifier instead of commit title', () => {
+    createComponent({
+      props: merge(mockPipeline(projectPath), {
+        pipeline: { name: 'Build pipeline', pipeline_schedule: null },
+      }),
+    });
+
+    expect(findRefName().exists()).toBe(true);
+    expect(findCommitShortSha().exists()).toBe(true);
+    expect(findPipelineIdentifierLink().text()).toBe('Commit');
+    expect(findPipelineIdentifierLink().attributes('href')).toBe('/test/test/commit/aabbccdd');
+  });
+
+  it('should render the pipeline schedule identifier when pipeline has no name but schedule', () => {
+    createComponent({
+      props: merge(mockPipeline(projectPath), {
+        pipeline: {
+          pipeline_schedule: { id: 1, description: 'Schedule', path: 'schedule/path' },
+        },
+      }),
+    });
+
+    expect(findRefName().exists()).toBe(true);
+    expect(findCommitShortSha().exists()).toBe(true);
+    expect(findPipelineIdentifierLink().text()).toBe('Schedule');
+    expect(findPipelineIdentifierLink().attributes('href')).toBe('schedule/path');
+  });
+
+  it('should render the commit title when pipeline has no identifier', () => {
+    createComponent();
+
+    expect(findRefName().exists()).toBe(true);
+    expect(findCommitShortSha().exists()).toBe(true);
+    expect(findPipelineIdentifierLink().text()).toBe('Commit');
+    expect(findPipelineIdentifierLink().attributes('href')).toBe('/test/test/commit/aabbccdd');
+  });
+
+  it('should render a missing ref when pipeline has no identifier or commit', () => {
+    createComponent({
+      props: merge(mockPipeline(projectPath), {
+        pipeline: { commit: null },
+      }),
+    });
+
+    expect(findRefName().exists()).toBe(true);
+    expect(findCommitShortSha().exists()).toBe(true);
+    expect(findPipelineIdentifierLink().exists()).toBe(false);
+    expect(findPipelineIdentifierMissingMessage().classes('gl-text-subtle')).toBe(true);
+    expect(findPipelineIdentifierMissingMessage().text()).toBe(
+      "Can't find HEAD commit for this branch",
+    );
+  });
+
+  describe('when the commit is not readable', () => {
+    const commitPath = `/${projectPath}/-/commit/aabbccddeeff00112233445566778899aabbccdd`;
+    const commitTitle = 'Fix the build';
+    const commitAuthorName = 'Jane Author';
+    const commitAuthorGravatar = 'https://www.gravatar.com/avatar/jane';
+
+    beforeEach(() => {
+      createComponent({
+        props: merge(mockPipeline(projectPath), {
+          pipeline: {
+            commit: null,
+            commitPath,
+            commitTitle,
+            commitAuthorName,
+            commitAuthorGravatar,
+          },
+        }),
+      });
+    });
+
+    it('links the commit title from the pipeline summary fields', () => {
+      expect(findPipelineIdentifierLink().text()).toBe(commitTitle);
+      expect(findPipelineIdentifierLink().attributes('href')).toBe(commitPath);
+      expect(findPipelineIdentifierMissingMessage().exists()).toBe(false);
+      expect(findCommitPopover().exists()).toBe(false);
+    });
+
+    it('renders the author gravatar without a link', () => {
+      expect(wrapper.findComponent(UserAvatarLink).props()).toMatchObject({
+        imgSrc: commitAuthorGravatar,
+        imgAlt: commitAuthorName,
+        tooltipText: commitAuthorName,
+        linkHref: '',
+      });
+    });
+  });
+
+  describe('commit user avatar', () => {
+    it('renders when commit author exists', () => {
+      const pipelineBranch = mockPipelineBranch();
+      const { avatar_url: imgSrc, name, path } = pipelineBranch.pipeline.commit.author;
+      createComponent({ props: pipelineBranch });
+
+      const component = wrapper.findComponent(UserAvatarLink);
+      expect(component.exists()).toBe(true);
+      expect(component.props()).toMatchObject({
+        imgSize: 16,
+        imgSrc,
+        imgAlt: name,
+        linkHref: path,
+        tooltipText: name,
+      });
+    });
+
+    it('does not render when commit author does not exist', () => {
+      createComponent();
+
+      expect(wrapper.findComponent(UserAvatarLink).exists()).toBe(false);
+    });
+
+    describe('when the author is not a GitLab user', () => {
+      const gravatar = 'https://www.gravatar.com/avatar/external';
+
+      it.each`
+        authorEmail               | linkHref
+        ${'external@example.com'} | ${'mailto:external@example.com'}
+        ${null}                   | ${''}
+      `(
+        'links to "$linkHref" when the author email is $authorEmail',
+        ({ authorEmail, linkHref }) => {
+          createComponent({
+            props: merge(mockPipeline(projectPath), {
+              pipeline: {
+                commit: {
+                  author: null,
+                  author_name: 'External Author',
+                  author_email: authorEmail,
+                  author_gravatar_url: gravatar,
+                },
+              },
+            }),
+          });
+
+          expect(wrapper.findComponent(UserAvatarLink).props()).toMatchObject({
+            imgSrc: gravatar,
+            imgAlt: 'External Author',
+            tooltipText: 'External Author',
+            linkHref,
+          });
+        },
+      );
+    });
+  });
+
+  describe('commit popover', () => {
+    beforeEach(() => createComponent({ props: { pipeline: mockBranchPipeline } }));
+
+    it('renders CommitPopover when pipeline has a commit', () => {
+      expect(findCommitPopover().exists()).toBe(true);
+    });
+
+    it('passes pipeline.commit to CommitPopover', () => {
+      expect(findCommitPopover().props('commit')).toEqual(mockBranchPipeline.commit);
+    });
+
+    it('passes popoverTargetId matching the commit SHA link id', () => {
+      const popoverId = findCommitPopover().props('popoverTargetId');
+      expect(findCommitShortSha().attributes('id')).toBe(popoverId);
+      expect(popoverId).toBe(`pipeline-commit-popover-${mockBranchPipeline.commit.shortId}`);
+    });
+  });
+
+  it('should render commit icon tooltip', () => {
+    createComponent();
+
+    expect(findCommitIcon().attributes('title')).toBe('Commit');
+  });
+
+  it.each`
+    pipeline                | expectedTitle
+    ${mockPipelineTag()}    | ${'Tag'}
+    ${mockPipelineBranch()} | ${'Branch'}
+    ${mockPipeline()}       | ${'Merge Request'}
+  `('should render tooltip $expectedTitle for commit icon type', ({ pipeline, expectedTitle }) => {
+    createComponent({ props: pipeline });
+
+    expect(findCommitIconType().attributes('title')).toBe(expectedTitle);
+  });
+
+  describe('tracking', () => {
+    beforeEach(() => {
+      trackingSpy = mockTracking(undefined, wrapper.element, jest.spyOn);
+    });
+
+    afterEach(() => {
+      unmockTracking();
+    });
+
+    it('tracks pipeline id click', () => {
+      createComponent();
+
+      findPipelineUrlLink().vm.$emit('click');
+
+      expect(trackingSpy).toHaveBeenCalledWith(undefined, 'click_pipeline_id', {
+        label: TRACKING_CATEGORIES.table,
+      });
+    });
+
+    it('tracks merge request ref click', () => {
+      createComponent();
+
+      findRefName().vm.$emit('click');
+
+      expect(trackingSpy).toHaveBeenCalledWith(undefined, 'click_mr_ref', {
+        label: TRACKING_CATEGORIES.table,
+      });
+    });
+
+    it('tracks commit ref name click', () => {
+      createComponent({ props: mockPipelineBranch() });
+
+      findCommitRefName().vm.$emit('click');
+
+      expect(trackingSpy).toHaveBeenCalledWith(undefined, 'click_commit_name', {
+        label: TRACKING_CATEGORIES.table,
+      });
+    });
+
+    it('tracks commit title click', () => {
+      createComponent({
+        props: merge(mockPipelineBranch(), { pipeline: { name: null } }),
+      });
+
+      findPipelineIdentifierLink().vm.$emit('click');
+
+      expect(trackingSpy).toHaveBeenCalledWith(undefined, 'click_commit_title', {
+        label: TRACKING_CATEGORIES.table,
+      });
+    });
+
+    it('tracks commit short sha click', () => {
+      createComponent({
+        props: mockPipelineBranch(),
+      });
+
+      findCommitShortSha().vm.$emit('click');
+
+      expect(trackingSpy).toHaveBeenCalledWith(undefined, 'click_commit_sha', {
+        label: TRACKING_CATEGORIES.table,
+      });
+    });
+  });
+
+  describe('commit links', () => {
+    it('formats ref URL correctly', () => {
+      createComponent({
+        props: {
+          pipeline: { ...mockBranchPipeline, merge_request: null },
+        },
+      });
+
+      expect(findCommitRefName().attributes('href')).toBe('commits/main');
+    });
+
+    it('renders commit SHA link with webPath from GraphQL data', () => {
+      createComponent({
+        props: {
+          pipeline: { ...mockBranchPipeline, merge_request: null },
+        },
+      });
+
+      expect(findCommitShortSha().attributes('href')).toBe(
+        '/root/ci-project/-/commit/de80f1042526e0374ba1cfdca7c1d6595406e949',
+      );
+    });
+
+    it('renders commit title link with webPath from GraphQL data', () => {
+      createComponent({
+        props: {
+          pipeline: { ...mockBranchPipeline, merge_request: null, name: null },
+        },
+      });
+
+      expect(findPipelineIdentifierLink().attributes('href')).toBe(
+        '/root/ci-project/-/commit/de80f1042526e0374ba1cfdca7c1d6595406e949',
+      );
+    });
+  });
+});

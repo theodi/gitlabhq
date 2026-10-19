@@ -1,0 +1,83 @@
+---
+stage: Agent Foundations
+group: unassigned
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Use AI-native features throughout your development lifecycle.
+title: Get started with GitLab Duo
+---
+
+GitLab Duo is an AI-native assistant that helps you throughout your planning, development, and security workflow.
+GitLab Duo includes features like Code Suggestions and Code Explanation,
+which help you write, review, and edit code.
+
+## Step 1: Ensure you have access to GitLab Duo
+
+GitLab Duo requires setup by your administrator, group, or project owner.
+
+If you have issues accessing GitLab Duo features, your administrators
+can check the health of the installation.
+
+For more information, see:
+
+- [Turn on GitLab Duo](../gitlab_duo/turn_on_off.md).
+- [Health check details](../../administration/gitlab_duo/configure/_index.md#run-a-health-check-for-gitlab-duo).
+
+## Step 2: Try GitLab Duo Chat in the UI
+
+To get started, try using Chat in the GitLab UI.
+
+Go to a project and in the upper-right corner, select the button for **GitLab Duo Chat**.
+If this button is available, it means everything is configured properly.
+Try asking Chat a question about a specific issue or merge request, or about GitLab in general.
+
+For more information, see:
+
+- [GitLab Duo Non-Agentic Chat](../gitlab_duo_chat/_index.md).
+
+## Step 3: Try other GitLab Duo features
+
+GitLab Duo is available throughout your workflow. From planning sprints to
+troubleshooting CI/CD pipelines, from writing test cases to resolving security threats,
+GitLab Duo can help you in a variety of ways.
+
+The features you have access to might differ, depending on your subscription.
+
+For more information, see:
+
+- [A decision tree, to help you decide which GitLab Duo features match your workflow](../gitlab_duo/_index.md).
+- [The complete list of GitLab Duo features](../gitlab_duo/feature_summary.md).
+- [How to turn on GitLab Duo features that are still in development](../gitlab_duo/turn_on_off.md#turn-on-beta-and-experimental-features).
+
+## Step 4: Prepare to use GitLab Duo in your IDE
+
+Now try GitLab Duo features in your IDE. In VS Code and other editors, you can use
+features like GitLab Duo Chat, the software development flow, and Code Suggestions.
+
+To get started, install an extension and authenticate with GitLab.
+
+For more information, see:
+
+- [Set up the extension for VS Code](../../editor_extensions/visual_studio_code/setup.md).
+- [Set up the extension for JetBrains](../../editor_extensions/jetbrains_ide/setup.md).
+- [Set up the extension for Visual Studio](../../editor_extensions/visual_studio/setup.md).
+- [Set up the extension for Neovim](../../editor_extensions/neovim/setup.md).
+- [Use the Web IDE](../project/web_ide/_index.md).
+
+## Step 5: Start using IDE features
+
+Finally, test GitLab Duo in your IDE.
+
+- Code Suggestions recommends code as you type.
+- Chat is available to ask questions about your code or anything else you need.
+- The software development flow performs tasks on your behalf.
+
+You can choose the development languages you want suggestions for.
+
+For more information, see:
+
+- [Supported extensions and languages](../project/repository/code_suggestions/supported_extensions.md).
+- [Set up Code Suggestions](../project/repository/code_suggestions/set_up.md).
+- [Troubleshoot GitLab for VS Code](../../editor_extensions/visual_studio_code/troubleshooting.md).
+- [Troubleshoot the GitLab Duo plugin for JetBrains IDEs](../../editor_extensions/jetbrains_ide/jetbrains_troubleshooting.md).
+- [Troubleshoot GitLab for Visual Studio](../../editor_extensions/visual_studio/visual_studio_troubleshooting.md).
+- [Troubleshoot the GitLab plugin for Neovim](../../editor_extensions/neovim/neovim_troubleshooting.md).

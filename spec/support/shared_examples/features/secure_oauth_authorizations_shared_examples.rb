@@ -1,0 +1,69 @@
+# frozen_string_literal: true
+
+RSpec.shared_examples 'Secure OAuth Authorizations' do
+  context 'when user is confirmed' do
+    let_it_be(:user, freeze: false) { create(:user, organizations: [current_organization]) }
+
+    it 'asks the user to authorize the application' do
+      expect(page).to have_text "#{application.name} is requesting access to your account on"
+    end
+
+    it 'renders the consent forms without id, guarding against a form_with_generates_ids revert' do
+      expect(page).not_to have_css('form [id]')
+    end
+  end
+
+  context 'when user is unconfirmed' do
+    let_it_be(:user, freeze: false) { create(:user, :unconfirmed) }
+
+    it 'displays an error' do
+      expect(page).to have_text I18n.t('doorkeeper.errors.messages.unconfirmed_email')
+    end
+  end
+end
+
+RSpec.shared_examples 'Secure Device OAuth Authorizations' do
+  let(:user) { create(:user) }
+
+  context 'when authorize page is rendered' do
+    it 'asks user to authorize the device' do
+      expect(page).to have_text "Authorize a device to access your GitLab account"
+      within_testid('authorization-button') do
+        expect(page).to have_content(format(_('Authorize')))
+      end
+    end
+
+    it 'renders a form with input elements and authorize button without id' do
+      expect(page).not_to have_css('form [id]')
+    end
+  end
+
+  context 'when confirmation page is rendered' do
+    let!(:device_grant) do
+      Doorkeeper::DeviceAuthorizationGrant::DeviceGrant.create!(
+        application: create(:oauth_application, scopes: 'read_user'),
+        user_code: user_code,
+        device_code: SecureRandom.hex,
+        expires_in: 300,
+        scopes: 'read_user',
+        organization: current_organization
+      )
+    end
+
+    before do
+      find_by_testid('authorization-button').click
+    end
+
+    it 'renders confirmation button without id' do
+      within_testid('authorization-button') do
+        expect(page).to have_content(format(_('Confirm')))
+      end
+
+      expect(find_by_testid('authorization-button')[:id].nil?).to be_truthy
+    end
+
+    it 'renders a form without id, guarding against a form_with_generates_ids revert' do
+      expect(page).not_to have_css('form [id]')
+    end
+  end
+end

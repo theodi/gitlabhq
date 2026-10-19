@@ -1,0 +1,129 @@
+---
+stage: Plan
+group: Planner Intelligence
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Automatic Let's Encrypt SSL certificates for GitLab Pages.
+title: GitLab Pages Let's Encrypt certificates
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab.com, GitLab Self-Managed
+
+{{< /details >}}
+
+The GitLab Pages integration with Let's Encrypt (LE) allows you
+to use LE certificates for your Pages website with custom domains
+without the hassle of having to issue and update them yourself.
+GitLab does it for you, out-of-the-box.
+
+[Let's Encrypt](https://letsencrypt.org) is a free, automated, and
+open source Certificate Authority.
+
+> [!warning]
+> This feature covers only certificates for custom domains, not the wildcard certificate required to run
+> [Pages daemon](../../../../administration/pages/_index.md) (GitLab Self-Managed, Free, Premium, and Ultimate only). Wildcard
+> certificate generation is tracked in [this issue](https://gitlab.com/gitlab-org/omnibus-gitlab/-/issues/3342).
+
+## Prerequisites
+
+Before you can turn on automatic provisioning of an SSL certificate for your domain, make sure you have:
+
+- Created a [project](../_index.md#getting-started) in GitLab
+  containing your website's source code.
+- Acquired a domain (`example.com`) and added a [DNS entry](_index.md)
+  pointing it to your Pages website. The top-level domain (`.com`) must be a
+  [public suffix](https://publicsuffix.org/).
+- [Added your domain to your Pages project](_index.md#step-1-add-a-custom-domain)
+  and verified your ownership.
+- Verified your website is up and running, accessible through your custom domain.
+
+The GitLab integration with Let's Encrypt is turned on and available on GitLab.com.
+For **GitLab Self-Managed** instances, make sure your administrator has
+[turned it on](../../../../administration/pages/_index.md#lets-encrypt-integration).
+
+## Enabling Let's Encrypt integration for your custom domain
+
+After you've met the requirements, turn on Let's Encrypt integration:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Deploy** > **Pages**.
+1. Next to the domain name, select **Edit** ({{< icon name="pencil" >}}).
+1. Turn on the **Automatic certificate management using Let's Encrypt** toggle.
+
+   ![The Let's Encrypt toggle in the custom domain settings.](img/lets_encrypt_integration_v12_1.png)
+
+1. Select **Save changes**.
+
+After you turn it on, GitLab obtains a Let's Encrypt certificate and adds it to the
+associated Pages domain. GitLab also renews it automatically.
+
+> [!note]
+> Issuing the certificate and updating Pages configuration
+> can take up to an hour.
+> If you already have an SSL certificate in domain settings, it
+> continues to work until replaced by the Let's Encrypt certificate.
+
+## Troubleshooting
+
+### Something went wrong while obtaining the Let's Encrypt certificate
+
+You might get an error that states **Something went wrong while obtaining the Let's Encrypt certificate**.
+
+This issue occurs when Let's Encrypt cannot reach or validate your domain.
+
+To resolve this issue:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Settings** > **General**.
+1. Expand **Visibility, project features, permissions**.
+1. Under **Pages**, from the dropdown list, select **Everyone With Access**.
+1. Select **Deploy** > **Pages** > **Domains & settings**.
+1. Next to the domain name, select **Edit** ({{< icon name="pencil" >}}).
+1. In **Verification status**, select **Retry verification** ({{< icon name="retry" >}}).
+
+If you get the same error, check the following:
+
+- Make sure you have set only one `CNAME` or `A` DNS record for your domain.
+- Make sure your domain doesn't have an `AAAA` DNS record.
+- If you have a `CAA` DNS record for your domain or any higher level domains,
+  make sure it includes [`letsencrypt.org`](https://letsencrypt.org/docs/caa/).
+- Make sure your [domain is verified](_index.md#step-1-add-a-custom-domain).
+- If you use [parallel deployments](../parallel_deployments.md), make sure your primary
+  deployment has an empty `path_prefix`. A non-empty `path_prefix` (for example, `latest`)
+  prevents the `/.well-known/acme-challenge` path from being served.
+
+Go back to the **Deploy** > **Pages** settings, and retry the verification.
+
+### Obtaining a certificate hangs for more than an hour
+
+If you've turned on Let's Encrypt integration, but a certificate is absent after an hour and you see the message:
+
+```plaintext
+GitLab is obtaining a Let's Encrypt SSL certificate for this domain.
+This process can take some time. Please try again later.
+```
+
+Remove and add the domain for GitLab Pages again by following these steps:
+
+1. In the top bar, select **Search or go to** and find your project.
+1. In the left sidebar, select **Deploy** > **Pages**.
+1. Next to the domain name, select **Remove**.
+1. [Add the domain again, and verify it](_index.md#step-1-add-a-custom-domain).
+1. [Turn on Let's Encrypt integration for your domain](#enabling-lets-encrypt-integration-for-your-custom-domain).
+1. If you're still getting the same error:
+   1. Make sure you have properly set only one `CNAME` or `A` DNS record for your domain.
+   1. Make sure your domain does not have an `AAAA` DNS record.
+   1. If you have a `CAA` DNS record for your domain or any higher level domains, make sure [it includes `letsencrypt.org`](https://letsencrypt.org/docs/caa/).
+   1. Go to step 1.
+
+<!-- Include any troubleshooting steps that you can foresee. If you know beforehand what issues
+one might have when setting this up, or when something is changed, or on upgrading, it's
+important to describe those, too. Think of things that may go wrong and include them here.
+This is important to minimize requests for support, and to avoid doc comments with
+questions that you know someone might ask.
+
+Each scenario can be a third-level heading, for example, `### Getting error message X`.
+If you have none to add when creating a doc, leave this section in place
+but commented out to help encourage others to add to it in the future. -->

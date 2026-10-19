@@ -1,0 +1,8 @@
+- page_title _('Monitor Settings')
+- breadcrumb_title _('Monitor Settings')
+
+= render_if_exists 'projects/settings/operations/observability'
+= render 'projects/settings/operations/error_tracking'
+= render 'projects/settings/operations/alert_management'
+= render 'projects/settings/operations/incidents'
+= render_if_exists 'projects/settings/operations/status_page'

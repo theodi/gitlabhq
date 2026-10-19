@@ -1,0 +1,61 @@
+# frozen_string_literal: true
+
+RSpec.shared_context 'with conan api setup' do
+  include PackagesManagerApiSpecHelpers
+  include HttpBasicAuthHelpers
+
+  let_it_be_with_reload(:project) { create(:project) }
+  let_it_be(:user, freeze: false) { create(:user, developer_of: [project]) }
+  let_it_be(:personal_access_token, freeze: false) { create(:personal_access_token, user: user) }
+  let_it_be(:deploy_token, freeze: false) do
+    create(:deploy_token, read_package_registry: true, write_package_registry: true, projects: [project])
+  end
+
+  let_it_be(:job, freeze: true) { create(:ci_build, :running, user: user, project: project) }
+
+  before do
+    # Seed eagerly so specs that stub Gitlab::ExclusiveLease (e.g. lease
+    # unavailability shared examples) don't trip over the lock inside
+    # JwtSigningKey#seed! the first time a JWT gets built.
+    Packages::Conan::JwtSigningKey.current_secret_key
+  end
+
+  let(:conan_package_reference) { package.conan_package_references.first.reference }
+
+  let(:job_token) { job.token }
+  let(:jwt_secret) do
+    OpenSSL::HMAC.hexdigest(
+      OpenSSL::Digest.new('SHA256'),
+      ::Packages::Conan::JwtSigningKey.current_secret_key,
+      Gitlab::ConanToken::HMAC_KEY
+    )
+  end
+
+  let(:jwt) { build_jwt(personal_access_token) }
+  let(:headers) { build_token_auth_header(jwt.encoded) }
+
+  let(:snowplow_gitlab_standard_context) do
+    { user: user, project: project, namespace: project.namespace, property: 'i_package_conan_user' }
+  end
+end
+
+RSpec.shared_context 'for conan file download endpoints' do
+  let(:recipe_path) { package.conan_recipe_path }
+  let(:package_file) { package.package_files.find_by(file_name: 'conaninfo.txt') }
+  let(:recipe_file) { package.package_files.find_by!(file_name: 'conanfile.py') }
+  let(:package_file_metadata) { package_file.conan_file_metadatum }
+  let(:recipe_file_metadata) { recipe_file.conan_file_metadatum }
+end
+
+RSpec.shared_context 'for conan file upload endpoints' do
+  include WorkhorseHelpers
+
+  include_context 'workhorse headers'
+
+  let(:headers_with_token) { build_token_auth_header(jwt.encoded).merge(workhorse_headers) }
+  let(:recipe_path) { "#{recipe_path_name}/#{recipe_path_version}/#{recipe_path_username}/#{recipe_path_channel}" }
+  let(:recipe_path_name) { "#{package.name}_new" }
+  let(:recipe_path_version) { package.version }
+  let(:recipe_path_username) { project.full_path.tr('/', '+') }
+  let(:recipe_path_channel) { "stable" }
+end

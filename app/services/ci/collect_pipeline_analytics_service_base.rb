@@ -1,0 +1,110 @@
+# frozen_string_literal: true
+
+module Ci
+  class CollectPipelineAnalyticsServiceBase
+    include PipelineRefFilterIncludingReservedRefNames
+
+    STATUS_GROUP_TO_STATUSES = { success: %w[success], failed: %w[failed], other: %w[canceled skipped] }.freeze
+    STATUS_GROUPS = STATUS_GROUP_TO_STATUSES.keys.freeze
+    STATUS_TO_STATUS_GROUP = STATUS_GROUP_TO_STATUSES.flat_map { |k, v| v.product([k]) }.to_h
+
+    ALLOWED_PERCENTILES = [50, 75, 90, 95, 99].freeze
+    MAX_SUBGROUP_PATHS = 10
+
+    attr_reader :current_user, :container, :from_time, :to_time, :source, :ref, :status_groups,
+      :duration_percentiles, :subgroup_full_paths
+
+    # rubocop:disable Metrics/ParameterLists -- All keyword args with defaults
+    def initialize(
+      current_user:, container:, from_time:, to_time:,
+      source: nil, ref: nil, status_groups: [:any], duration_percentiles: [], subgroup_full_paths: []
+    )
+      # rubocop:enable Metrics/ParameterLists
+      @current_user = current_user
+      @container = container
+      @from_time = from_time || 1.week.ago.utc
+      @to_time = to_time || Time.now.utc
+      @status_groups = status_groups
+      @source = source
+      @ref = ref
+      @duration_percentiles = duration_percentiles
+      @subgroup_full_paths = subgroup_full_paths
+    end
+
+    def execute
+      error_response = validate_arguments
+      return error_response if error_response
+
+      unless ::Gitlab::ClickHouse.configured?
+        return ServiceResponse.error(message: 'ClickHouse database is not configured')
+      end
+
+      ::Gitlab::ApplicationContext.with_context(namespace: attribution_namespace) do
+        fetch_response
+      end
+    end
+
+    private
+
+    # A Project is not a Namespace, so passing it to with_context would be
+    # silently dropped by the context's type check. project_namespace is a
+    # namespace record that is always present and adds no extra query.
+    def attribution_namespace
+      container.is_a?(::Project) ? container.project_namespace : container
+    end
+
+    def allowed?
+      Ability.allowed?(current_user, :read_ci_cd_analytics, container)
+    end
+
+    def clickhouse_model
+      return ::ClickHouse::Finders::Ci::SiphonPipelinesFinder if Feature.enabled?(:pipeline_analytics_siphon, container)
+
+      if ::ClickHouse::Models::Ci::FinishedPipelinesHourly.time_window_valid?(from_time, to_time)
+        return ::ClickHouse::Models::Ci::FinishedPipelinesHourly
+      end
+
+      ::ClickHouse::Models::Ci::FinishedPipelinesDaily
+    end
+
+    def base_query
+      query = clickhouse_model.for_container(container).within_dates(from_time, to_time)
+      query = query.for_subgroups(resolve_subgroups) if subgroup_full_paths.present?
+      query = query.for_source(source) if source
+      query = query.for_ref(ref_and_associated_reserved_refs(container, ref, source)) if ref
+
+      query
+    end
+
+    def resolve_subgroups
+      return [] unless subgroup_full_paths.present? && container.is_a?(::Group)
+
+      ::Group.where_full_path_in(subgroup_full_paths).within(container.traversal_ids)
+    end
+
+    def duration_percentile_symbols
+      duration_percentiles.map { |p| :"p#{p}" }
+    end
+
+    def selected_statuses
+      status_groups.flat_map(&STATUS_GROUP_TO_STATUSES).compact
+    end
+
+    def validate_arguments
+      if (duration_percentiles & ALLOWED_PERCENTILES) != duration_percentiles
+        return ServiceResponse.error(message: 'Invalid duration percentiles specified')
+      end
+
+      return ServiceResponse.error(message: 'Container must be specified') if container.nil?
+      return ServiceResponse.error(message: 'Not allowed') unless allowed?
+      return ServiceResponse.error(message: 'Invalid time window') if from_time > to_time
+
+      error_message = clickhouse_model.validate_time_window(from_time, to_time)
+      ServiceResponse.error(message: error_message) if error_message
+    end
+
+    def fetch_response
+      raise NotImplementedError, "#{self.class} must implement `#{__method__}`"
+    end
+  end
+end

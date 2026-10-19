@@ -1,0 +1,545 @@
+import Vue, { nextTick } from 'vue';
+import VueApollo from 'vue-apollo';
+import { MountingPortal } from 'portal-vue';
+
+import { GlAlert } from '@gitlab/ui';
+import { cloneDeepWith } from 'lodash-es';
+import { createAlert } from '~/alert';
+import { updateGlobalTodoCount } from '~/sidebar/utils';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { stubComponent } from 'helpers/stub_component';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import waitForPromises from 'helpers/wait_for_promises';
+
+import todosMarkAllDoneMutation from '~/sidebar/queries/todos_mark_all_done.mutation.graphql';
+import createWorkItemTodosMutation from '~/work_items/graphql/create_work_item_todos.mutation.graphql';
+import getDesignQuery from '~/work_items/components/design_management/graphql/design_details.query.graphql';
+import archiveDesignMutation from '~/work_items/components/design_management/graphql/archive_design.mutation.graphql';
+import createImageDiffNoteMutation from '~/work_items/components/design_management/graphql/create_image_diff_note.mutation.graphql';
+import repositionImageDiffNoteMutation from '~/work_items/components/design_management/graphql/reposition_image_diff_note.mutation.graphql';
+import DesignReplyForm from '~/work_items/components/design_management/design_notes/design_reply_form.vue';
+import DesignDetails from '~/work_items/components/design_management/design_preview/design_details.vue';
+import DesignPresentation from '~/work_items/components/design_management/design_preview/design_presentation.vue';
+import DesignToolbar from '~/work_items/components/design_management/design_preview/design_toolbar.vue';
+import DesignSidebar from '~/work_items/components/design_management/design_preview/design_sidebar.vue';
+import DesignScaler from '~/work_items/components/design_management/design_preview/design_scaler.vue';
+import * as utils from '~/work_items/components/design_management/utils';
+import {
+  updateWorkItemDesignCurrentTodosWidget,
+  updateStoreAfterAddImageDiffNote,
+} from '~/work_items/components/design_management/cache_updates';
+import {
+  DESIGN_DETAIL_LAYOUT_CLASSLIST,
+  DESIGN_NOT_FOUND_ERROR,
+  DESIGN_SINGLE_ARCHIVE_ERROR,
+  UPDATE_IMAGE_DIFF_NOTE_ERROR,
+} from '~/work_items/components/design_management/constants';
+import {
+  getDesignResponse,
+  mockDesign,
+  mockArchiveDesignMutationResponse,
+  mockCreateImageNoteDiffResponse,
+  mockRepositionImageNoteDiffResponse,
+  mockAllVersions,
+} from '../mock_data';
+
+jest.mock('~/alert');
+jest.mock('~/sidebar/utils');
+jest.mock('~/work_items/components/design_management/cache_updates', () => ({
+  updateWorkItemDesignCurrentTodosWidget: jest.fn(),
+  updateStoreAfterAddImageDiffNote: jest.fn(),
+}));
+Vue.use(VueApollo);
+
+const MOCK_ROUTE = {
+  path: '/work_items/1/designs/Screenshot_from_2024-03-28_10-24-43.png',
+  query: {},
+  params: {
+    id: 'Screenshot_from_2024-03-28_10-24-43.png',
+  },
+};
+
+const mockPageLayoutElement = {
+  classList: {
+    add: jest.fn(),
+    remove: jest.fn(),
+  },
+};
+
+const newCoordinates = { x: 20, y: 20 };
+const discussionId = 'discussion-id';
+const noteId = 'note-id';
+
+describe('DesignDetails', () => {
+  let wrapper;
+
+  const workItemIid = '1';
+  const routerPushMock = jest.fn();
+
+  const findDesignPresentation = () => wrapper.findComponent(DesignPresentation);
+  const findDesignToolbar = () => wrapper.findComponent(DesignToolbar);
+  const findDesignSidebar = () => wrapper.findComponent(DesignSidebar);
+  const findDesignScaler = () => wrapper.findComponent(DesignScaler);
+  const findDesignReplyForm = () => wrapper.findComponent(DesignReplyForm);
+
+  const getDesignQueryHandler = jest.fn().mockResolvedValue(getDesignResponse);
+  const createImageDiffNoteMutationSuccessHandler = jest
+    .fn()
+    .mockResolvedValue(mockCreateImageNoteDiffResponse);
+  const archiveDesignSuccessMutationHandler = jest
+    .fn()
+    .mockResolvedValue(mockArchiveDesignMutationResponse);
+  const repositionImageNoteMutationSuccessHandler = jest
+    .fn()
+    .mockResolvedValue(mockRepositionImageNoteDiffResponse);
+  const archiveDesignMutationError = jest.fn().mockRejectedValue(new Error('Mutation failed'));
+  const error = new Error('ruh roh some error');
+  const errorQueryHandler = jest.fn().mockRejectedValue(error);
+
+  const pendingTodos = [
+    { id: 'gid://gitlab/Todo/5', state: 'pending', __typename: 'Todo' },
+    { id: 'gid://gitlab/Todo/6', state: 'pending', __typename: 'Todo' },
+  ];
+
+  const todoCreateHandler = jest.fn().mockResolvedValue({
+    data: {
+      todoMutation: {
+        todo: { id: 'gid://gitlab/Todo/5', state: 'pending', __typename: 'Todo' },
+        errors: [],
+        __typename: 'TodoCreatePayload',
+      },
+    },
+  });
+  const todosMarkAllDoneHandler = jest.fn().mockResolvedValue({
+    data: {
+      todoMutation: {
+        todos: pendingTodos,
+        errors: [],
+        __typename: 'TodosMarkAllDonePayload',
+      },
+    },
+  });
+
+  const designResponseWithTodos = (todos) =>
+    cloneDeepWith(getDesignResponse, (value, key) =>
+      key === 'currentUserTodos' ? { nodes: todos, __typename: 'TodoConnection' } : undefined,
+    );
+
+  function createComponent({
+    queryHandler = getDesignQueryHandler,
+    archiveDesignMutationHandler = archiveDesignSuccessMutationHandler,
+    repositionImageMutationHandler = repositionImageNoteMutationSuccessHandler,
+    routeArg = MOCK_ROUTE,
+    props = {},
+    data = {},
+    attachTo = null,
+  } = {}) {
+    wrapper = shallowMountExtended(DesignDetails, {
+      apolloProvider: createMockApollo([
+        [getDesignQuery, queryHandler],
+        [archiveDesignMutation, archiveDesignMutationHandler],
+        [createImageDiffNoteMutation, createImageDiffNoteMutationSuccessHandler],
+        [repositionImageDiffNoteMutation, repositionImageMutationHandler],
+        [createWorkItemTodosMutation, todoCreateHandler],
+        [todosMarkAllDoneMutation, todosMarkAllDoneHandler],
+      ]),
+      data() {
+        return data;
+      },
+      propsData: {
+        iid: workItemIid,
+        allDesigns: [mockDesign],
+        allVersions: mockAllVersions,
+        ...props,
+      },
+      mocks: {
+        $route: routeArg,
+        $router: { push: routerPushMock },
+      },
+      provide: {
+        fullPath: 'gitlab-org/gitlab-shell',
+      },
+      stubs: {
+        RouterView: true,
+        // Render the portal's slot contents in place so child components and
+        // refs are accessible without actually teleporting to document.body.
+        MountingPortal: stubComponent(MountingPortal, { name: 'MountingPortal' }),
+      },
+      ...(attachTo ? { attachTo } : {}),
+    });
+  }
+
+  const findMountingPortal = () => wrapper.findComponent(MountingPortal);
+
+  it('sets loading state', () => {
+    createComponent();
+
+    expect(findDesignPresentation().props('isLoading')).toBe(true);
+    expect(findDesignToolbar().props('isLoading')).toBe(true);
+    expect(findDesignSidebar().props('isLoading')).toBe(true);
+  });
+
+  it('renders the overlay via MountingPortal mounted to body', () => {
+    createComponent();
+
+    expect(findMountingPortal().attributes()).toMatchObject({
+      'mount-to': 'body',
+    });
+  });
+
+  describe('when loaded', () => {
+    beforeEach(async () => {
+      createComponent();
+      await waitForPromises();
+    });
+
+    it('calls get design query', () => {
+      expect(getDesignQueryHandler).toHaveBeenCalledWith({
+        id: 'gid://gitlab/DesignManagement::DesignAtVersion/33.1',
+      });
+    });
+
+    it('renders `DesignScaler` component', () => {
+      expect(findDesignScaler().exists()).toBe(true);
+    });
+
+    it('archives a design', async () => {
+      findDesignToolbar().vm.$emit('archive-design');
+      await waitForPromises();
+
+      expect(archiveDesignSuccessMutationHandler).toHaveBeenCalled();
+    });
+
+    it('throws error if archive a design query fails', async () => {
+      createComponent({ archiveDesignMutationHandler: archiveDesignMutationError });
+
+      findDesignToolbar().vm.$emit('archive-design');
+      await waitForPromises();
+
+      expect(createAlert).toHaveBeenCalledWith({ message: DESIGN_SINGLE_ARCHIVE_ERROR });
+    });
+
+    it('moves note pin', async () => {
+      findDesignPresentation().vm.$emit('move-note', {
+        noteId,
+        discussionId,
+        position: newCoordinates,
+      });
+      await waitForPromises();
+
+      expect(repositionImageNoteMutationSuccessHandler).toHaveBeenCalled();
+    });
+
+    it('displays error when move note pin fails', async () => {
+      createComponent({ repositionImageMutationHandler: errorQueryHandler });
+
+      findDesignPresentation().vm.$emit('move-note', {
+        noteId,
+        discussionId,
+        position: newCoordinates,
+      });
+      await waitForPromises();
+
+      expect(createAlert).toHaveBeenCalledWith({ message: UPDATE_IMAGE_DIFF_NOTE_ERROR });
+    });
+  });
+
+  describe('when query fails', () => {
+    beforeEach(async () => {
+      createComponent({
+        queryHandler: errorQueryHandler,
+      });
+      await waitForPromises();
+    });
+
+    it('createAlert has been called', () => {
+      expect(createAlert).toHaveBeenCalledWith({ message: DESIGN_NOT_FOUND_ERROR });
+    });
+  });
+
+  describe('when navigating to component', () => {
+    it('applies fullscreen layout class', () => {
+      jest.spyOn(utils, 'getPageLayoutElement').mockReturnValue(mockPageLayoutElement);
+      createComponent();
+
+      DesignDetails.beforeRouteEnter.call(wrapper.vm, {}, {}, jest.fn());
+
+      expect(mockPageLayoutElement.classList.add).toHaveBeenCalledTimes(1);
+      expect(mockPageLayoutElement.classList.add).toHaveBeenCalledWith(
+        ...DESIGN_DETAIL_LAYOUT_CLASSLIST,
+      );
+    });
+  });
+
+  describe('when navigating within the component', () => {
+    it('`scale` prop of DesignPresentation component is 1', async () => {
+      createComponent({ data: { scale: 2 } });
+
+      await nextTick();
+      expect(findDesignPresentation().props('scale')).toBe(2);
+
+      DesignDetails.beforeRouteUpdate.call(wrapper.vm, {}, {}, jest.fn());
+      await nextTick();
+
+      expect(findDesignPresentation().props('scale')).toBe(1);
+    });
+  });
+
+  describe('when navigating away from component', () => {
+    it('removes fullscreen layout class', () => {
+      jest.spyOn(utils, 'getPageLayoutElement').mockReturnValue(mockPageLayoutElement);
+      createComponent();
+
+      DesignDetails.beforeRouteLeave.call(wrapper.vm, {}, {}, jest.fn());
+
+      expect(mockPageLayoutElement.classList.remove).toHaveBeenCalledTimes(1);
+      expect(mockPageLayoutElement.classList.remove).toHaveBeenCalledWith(
+        ...DESIGN_DETAIL_LAYOUT_CLASSLIST,
+      );
+    });
+  });
+
+  describe('design toolbar', () => {
+    beforeEach(async () => {
+      createComponent();
+      await waitForPromises();
+    });
+
+    it('renders with correct data', () => {
+      const { design, currentUserDesignTodos, designFilename } = findDesignToolbar().props();
+
+      expect(design).toEqual(mockDesign);
+      expect(currentUserDesignTodos).toEqual([]);
+      expect(designFilename).toEqual(MOCK_ROUTE.params.id);
+    });
+
+    it('closes sidebar on toggle', async () => {
+      expect(findDesignSidebar().props('isOpen')).toBe(true);
+
+      findDesignToolbar().vm.$emit('toggle-sidebar');
+      await nextTick();
+
+      expect(findDesignSidebar().props('isOpen')).toBe(false);
+    });
+
+    const expectedTodosQuery = {
+      query: getDesignQuery,
+      variables: { id: 'gid://gitlab/DesignManagement::DesignAtVersion/33.1' },
+    };
+
+    describe('when the design has no pending to-do item', () => {
+      beforeEach(async () => {
+        findDesignToolbar().vm.$emit('toggle-todo');
+        await waitForPromises();
+      });
+
+      it('creates a to-do item targeting the design', () => {
+        expect(todoCreateHandler).toHaveBeenCalledWith({
+          input: { targetId: mockDesign.id },
+        });
+      });
+
+      it('writes the new to-do item into the design cache', () => {
+        expect(updateWorkItemDesignCurrentTodosWidget).toHaveBeenCalledWith({
+          store: expect.anything(),
+          todos: [{ __typename: 'Todo', id: 'gid://gitlab/Todo/5', state: 'pending' }],
+          query: expectedTodosQuery,
+        });
+      });
+
+      it('increments the global to-do count', () => {
+        expect(updateGlobalTodoCount).toHaveBeenCalledWith(1);
+      });
+    });
+
+    describe('when creating the to-do item returns errors', () => {
+      beforeEach(async () => {
+        todoCreateHandler.mockResolvedValueOnce({
+          data: {
+            todoMutation: {
+              todo: null,
+              errors: ['Cannot create to-do item'],
+              __typename: 'TodoCreatePayload',
+            },
+          },
+        });
+
+        findDesignToolbar().vm.$emit('toggle-todo');
+        await waitForPromises();
+      });
+
+      it('shows the error and leaves the global count alone', () => {
+        expect(wrapper.findComponent(GlAlert).text()).toBe('Cannot create to-do item');
+        expect(updateGlobalTodoCount).not.toHaveBeenCalled();
+      });
+
+      it('leaves the design cache alone', () => {
+        expect(updateWorkItemDesignCurrentTodosWidget).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('when the design has pending to-do items', () => {
+      beforeEach(async () => {
+        createComponent({
+          queryHandler: jest.fn().mockResolvedValue(designResponseWithTodos(pendingTodos)),
+        });
+        await waitForPromises();
+
+        findDesignToolbar().vm.$emit('toggle-todo');
+        await waitForPromises();
+      });
+
+      // `todosMarkAllDone` is scoped by target, so one call clears every pending to-do on
+      // the design. `workItemUpdate` cannot be used here: it only accepts a work item id.
+      it('clears them in a single call scoped to the design', () => {
+        expect(todosMarkAllDoneHandler).toHaveBeenCalledTimes(1);
+        expect(todosMarkAllDoneHandler).toHaveBeenCalledWith({
+          input: { targetId: mockDesign.id },
+        });
+      });
+
+      it('clears them from the design cache', () => {
+        expect(updateWorkItemDesignCurrentTodosWidget).toHaveBeenCalledWith({
+          store: expect.anything(),
+          todos: [],
+          query: expectedTodosQuery,
+        });
+      });
+
+      it('decrements the global to-do count by the number marked done', () => {
+        expect(updateGlobalTodoCount).toHaveBeenCalledWith(-pendingTodos.length);
+      });
+    });
+
+    describe('when the response marks fewer to-do items done than the design query held', () => {
+      beforeEach(async () => {
+        createComponent({
+          queryHandler: jest.fn().mockResolvedValue(designResponseWithTodos(pendingTodos)),
+        });
+        await waitForPromises();
+
+        todosMarkAllDoneHandler.mockResolvedValueOnce({
+          data: {
+            todoMutation: {
+              todos: [pendingTodos[0]],
+              errors: [],
+              __typename: 'TodosMarkAllDonePayload',
+            },
+          },
+        });
+
+        findDesignToolbar().vm.$emit('toggle-todo');
+        await waitForPromises();
+      });
+
+      // The design query can be stale, so only the mutation knows the real number.
+      it('decrements the global to-do count by what the response reports', () => {
+        expect(updateGlobalTodoCount).toHaveBeenCalledWith(-1);
+      });
+    });
+
+    describe('when marking the to-do items done returns errors', () => {
+      beforeEach(async () => {
+        createComponent({
+          queryHandler: jest.fn().mockResolvedValue(designResponseWithTodos([pendingTodos[0]])),
+        });
+        await waitForPromises();
+
+        todosMarkAllDoneHandler.mockResolvedValueOnce({
+          data: {
+            todoMutation: {
+              todos: [],
+              errors: ['Cannot mark to-do items done'],
+              __typename: 'TodosMarkAllDonePayload',
+            },
+          },
+        });
+
+        findDesignToolbar().vm.$emit('toggle-todo');
+        await waitForPromises();
+      });
+
+      it('shows the error and leaves the global count alone', () => {
+        expect(wrapper.findComponent(GlAlert).text()).toBe('Cannot mark to-do items done');
+        expect(updateGlobalTodoCount).not.toHaveBeenCalled();
+      });
+
+      // Without this the toggle would flip to "Add a to-do item" while the error is showing.
+      it('leaves the pending to-do items in the design cache', () => {
+        expect(updateWorkItemDesignCurrentTodosWidget).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('when annotating', () => {
+    beforeEach(async () => {
+      createComponent();
+
+      await waitForPromises();
+      findDesignPresentation().vm.$emit('open-comment-form', { x: 0, y: 0 });
+    });
+
+    it('updates storeand closes the form when mutation is completed', async () => {
+      const mockDesignVariables = {
+        id: 'gid://gitlab/DesignManagement::DesignAtVersion/33.1',
+      };
+
+      findDesignReplyForm().vm.$emit('note-submit-complete', {
+        store: expect.anything(),
+        data: mockCreateImageNoteDiffResponse.data,
+      });
+
+      await nextTick();
+      expect(updateStoreAfterAddImageDiffNote).toHaveBeenCalledWith(
+        expect.anything(),
+        mockCreateImageNoteDiffResponse.data.createImageDiffNote,
+        getDesignQuery,
+        mockDesignVariables,
+      );
+
+      expect(findDesignReplyForm().exists()).toBe(false);
+    });
+
+    it('closes the form and clears the comment on canceling form', async () => {
+      findDesignReplyForm().vm.$emit('cancel-form');
+
+      await nextTick();
+      expect(findDesignReplyForm().exists()).toBe(false);
+    });
+  });
+
+  describe('focus management', () => {
+    let trigger;
+
+    beforeEach(() => {
+      // Stand in for the design link the user clicked to open the overlay.
+      trigger = document.createElement('a');
+      trigger.href = '#';
+      document.body.appendChild(trigger);
+      trigger.focus();
+    });
+
+    afterEach(() => {
+      trigger.remove();
+    });
+
+    it('moves focus to the overlay root after mount', async () => {
+      createComponent({ attachTo: document.body });
+
+      await nextTick();
+
+      expect(document.activeElement).toBe(wrapper.vm.$refs.root);
+      expect(wrapper.vm.$refs.root.getAttribute('tabindex')).toBe('-1');
+    });
+
+    it('restores focus to the previously-focused element on route leave', async () => {
+      createComponent({ attachTo: document.body });
+      await nextTick();
+      const focusSpy = jest.spyOn(trigger, 'focus');
+
+      DesignDetails.beforeRouteLeave.call(wrapper.vm, {}, {}, jest.fn());
+
+      expect(focusSpy).toHaveBeenCalled();
+    });
+  });
+});

@@ -1,0 +1,383 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::LfsPointers::LfsDownloadLinkListService, feature_category: :source_code_management do
+  let(:import_url) { 'http://www.gitlab.com/demo/repo.git' }
+  let(:lfs_endpoint) { "#{import_url}/info/lfs/objects/batch" }
+  let(:project) { build_stubbed(:project, import_url: import_url) }
+  let(:new_oids) { { 'oid1' => 123, 'oid2' => 125 } }
+  let(:headers) { { 'X-Some-Header' => '456' } }
+  let(:remote_uri) { URI.parse(lfs_endpoint) }
+
+  let(:request_object) { HTTParty::Request.new(Net::HTTP::Post, '/') }
+  let(:parsed_block) { -> {} }
+  let(:success_net_response) { Net::HTTPOK.new('', '', '') }
+  let(:response) { Gitlab::HTTP::Response.new(request_object, net_response, parsed_block) }
+
+  let(:invalid_object_response) do
+    [
+      'oid' => 'whatever',
+      'size' => 123
+    ]
+  end
+
+  def objects_response(oids)
+    body = oids.map do |oid, size|
+      {
+        'oid' => oid, 'size' => size,
+        'actions' => {
+          'download' => {
+            'href' => "#{import_url}/gitlab-lfs/objects/#{oid}",
+            'header' => headers
+          }
+        }
+      }
+    end
+
+    Struct.new(:success?, :objects).new(true, body).to_json
+  end
+
+  def custom_response(net_response, body = nil)
+    allow(net_response).to receive(:body).and_return(body)
+    Gitlab::HTTP::Response.new(request_object, net_response, parsed_block)
+  end
+
+  subject(:service) { described_class.new(project, remote_uri: remote_uri) }
+
+  before do
+    allow(project).to receive(:lfs_enabled?).and_return(true)
+
+    response = custom_response(success_net_response, objects_response(new_oids))
+    allow(Gitlab::HTTP).to receive(:post).and_return(response)
+  end
+
+  describe '#each_link' do
+    it 'retrieves each download link of every non existent lfs object' do
+      links = []
+      service.each_link(new_oids) { |lfs_download_object| links << lfs_download_object.link }
+
+      expect(links).to contain_exactly(
+        "#{import_url}/gitlab-lfs/objects/oid1",
+        "#{import_url}/gitlab-lfs/objects/oid2"
+      )
+    end
+
+    it 'stores headers' do
+      expected_headers = []
+      service.each_link(new_oids) do |lfs_download_object|
+        expected_headers << lfs_download_object.headers
+      end
+
+      expect(expected_headers).to contain_exactly(headers, headers)
+    end
+
+    context 'when lfs objects size is larger than the batch size' do
+      def stub_successful_request(batch)
+        response = custom_response(success_net_response, objects_response(batch))
+        stub_request(batch, response)
+      end
+
+      def stub_entity_too_large_error_request(batch)
+        entity_too_large_net_response = Net::HTTPRequestEntityTooLarge.new('', '', '')
+        response = custom_response(entity_too_large_net_response)
+        stub_request(batch, response)
+      end
+
+      def stub_request(batch, response)
+        expect(Import::Clients::HTTP).to receive(:post).with(
+          remote_uri,
+          {
+            body: { operation: 'download', objects: batch.map { |k, v| { oid: k, size: v } } }.to_json,
+            headers: subject.send(:headers)
+          }
+        ).and_return(response)
+      end
+
+      let(:new_oids) { { 'oid1' => 123, 'oid2' => 125, 'oid3' => 126, 'oid4' => 127, 'oid5' => 128 } }
+
+      context 'when batch size' do
+        before do
+          stub_const("#{described_class.name}::REQUEST_BATCH_SIZE", 2)
+
+          data = new_oids.to_a
+          stub_successful_request([data[0], data[1]])
+          stub_successful_request([data[2], data[3]])
+          stub_successful_request([data[4]])
+        end
+
+        it 'retrieves them in batches' do
+          checksum = 0
+          service.each_link(new_oids) do |lfs_download_object|
+            expect(lfs_download_object.link).to eq "#{import_url}/gitlab-lfs/objects/#{lfs_download_object.oid}"
+            checksum += 1
+          end
+          expect(checksum).to eq new_oids.size
+        end
+      end
+
+      context 'when request fails with RateLimit error' do
+        def stub_rate_limit_error_request(batch)
+          rate_limit_net_response = Net::HTTPTooManyRequests.new('', '', '')
+          allow(rate_limit_net_response).to receive(:code).and_return(429)
+          response = custom_response(rate_limit_net_response, '{}')
+          allow(response).to receive(:code).and_return(429)
+          stub_request(batch, response)
+        end
+
+        context 'when rate limit is hit' do
+          before do
+            stub_const("#{described_class.name}::REQUEST_BATCH_SIZE", 5)
+
+            data = new_oids.to_a
+            stub_rate_limit_error_request(data)
+          end
+
+          it 'raises DownloadLinksError with TooManyRequests message' do
+            expect { service.each_link(new_oids) }
+              .to raise_error(described_class::DownloadLinksError, 'Unable to download due to TooManyRequests error')
+          end
+        end
+      end
+
+      context 'when request fails with PayloadTooLarge error' do
+        let(:error_class) { described_class::DownloadLinksRequestEntityTooLargeError }
+
+        context 'when the smaller batch eventually works' do
+          before do
+            stub_const("#{described_class.name}::REQUEST_BATCH_SIZE", 5)
+
+            data = new_oids.to_a
+
+            # with the batch size of 5
+            stub_entity_too_large_error_request(data)
+
+            # with the batch size of 2
+            stub_successful_request([data[0], data[1]])
+            stub_successful_request([data[2], data[3]])
+            stub_successful_request([data[4]])
+          end
+
+          it 'retrieves them eventually and logs exceptions' do
+            expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+              an_instance_of(error_class), project_id: project.id, batch_size: 5, oids_count: 5
+            )
+
+            checksum = 0
+            service.each_link(new_oids) do |lfs_download_object|
+              expect(lfs_download_object.link).to eq "#{import_url}/gitlab-lfs/objects/#{lfs_download_object.oid}"
+              checksum += 1
+            end
+            expect(checksum).to eq new_oids.size
+          end
+        end
+
+        context 'when batch size cannot be any smaller' do
+          before do
+            stub_const("#{described_class.name}::REQUEST_BATCH_SIZE", 5)
+
+            data = new_oids.to_a
+
+            # with the batch size of 5
+            stub_entity_too_large_error_request(data)
+
+            # with the batch size of 2
+            stub_entity_too_large_error_request([data[0], data[1]])
+          end
+
+          it 'raises an error and logs exceptions' do
+            expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+              an_instance_of(error_class), project_id: project.id, batch_size: 5, oids_count: 5
+            )
+            expect(Gitlab::ErrorTracking).to receive(:track_exception).with(
+              an_instance_of(error_class), project_id: project.id, batch_size: 2, oids_count: 5
+            )
+            expect { service.each_link(new_oids) }.to raise_error(described_class::DownloadLinksError)
+          end
+        end
+      end
+    end
+
+    context 'credentials' do
+      context 'when the download link and the lfs_endpoint have the same host' do
+        context 'when lfs_endpoint has credentials' do
+          let(:import_url) { 'http://user:password@www.gitlab.com/demo/repo.git' }
+
+          it 'adds credentials to the download_link' do
+            checksum = 0
+            service.each_link(new_oids) do |lfs_download_object|
+              expect(lfs_download_object.link.starts_with?('http://user:password@')).to be_truthy
+              checksum += 1
+            end
+            expect(checksum).to eq new_oids.size
+          end
+        end
+
+        context 'when lfs_endpoint does not have any credentials' do
+          it 'does not add any credentials' do
+            checksum = 0
+            service.each_link(new_oids) do |lfs_download_object|
+              expect(lfs_download_object.link.starts_with?('http://user:password@')).to be_falsey
+              checksum += 1
+            end
+            expect(checksum).to eq new_oids.size
+          end
+        end
+      end
+
+      context 'when the download link and the lfs_endpoint have different hosts' do
+        let(:import_url_with_credentials) { 'http://user:password@www.otherdomain.com/demo/repo.git' }
+        let(:lfs_endpoint) { "#{import_url_with_credentials}/info/lfs/objects/batch" }
+
+        it 'downloads without any credentials' do
+          checksum = 0
+          service.each_link(new_oids) do |lfs_download_object|
+            expect(lfs_download_object.link.starts_with?('http://user:password@')).to be_falsey
+            checksum += 1
+          end
+          expect(checksum).to eq new_oids.size
+        end
+      end
+    end
+  end
+
+  describe '#download_links_for' do
+    context 'if request fails' do
+      let(:failed_response) do
+        response = custom_response(Net::HTTPRequestTimeout.new('', '408', 'Request Timeout'), '{"message":"boom"}')
+        allow(response).to receive(:code).and_return(408)
+        response
+      end
+
+      before do
+        allow(Gitlab::HTTP).to receive(:post).and_return(failed_response)
+      end
+
+      it 'raises an error' do
+        expect { subject.send(:download_links_for, new_oids) }.to raise_error(described_class::DownloadLinksError)
+      end
+
+      it 'logs the sanitized endpoint and response details for troubleshooting', :aggregate_failures do
+        expect(Gitlab::AppLogger).to receive(:error).with(
+          hash_including(
+            Labkit::Fields::GL_PROJECT_ID => project.id,
+            Labkit::Fields::LOG_MESSAGE => 'LFS batch API returned an unsuccessful response',
+            Labkit::Fields::HTTP_URL => lfs_endpoint,
+            Labkit::Fields::HTTP_STATUS_CODE => 408,
+            response_body: '{"message":"boom"}'
+          )
+        )
+
+        expect { subject.send(:download_links_for, new_oids) }.to raise_error(described_class::DownloadLinksError)
+      end
+    end
+
+    context 'when the request is unauthorized' do
+      let(:unauthorized_response) do
+        response = custom_response(Net::HTTPUnauthorized.new('', '401', 'Unauthorized'), '{"message":"SSO required"}')
+        allow(response).to receive(:code).and_return(401)
+        response
+      end
+
+      before do
+        allow(Gitlab::HTTP).to receive(:post).and_return(unauthorized_response)
+      end
+
+      it 'raises a DownloadLinksRequestUnauthorizedError' do
+        expect { subject.send(:download_links_for, new_oids) }
+          .to raise_error(described_class::DownloadLinksRequestUnauthorizedError)
+      end
+
+      it 'is a kind of DownloadLinksError so existing rescues still catch it' do
+        expect { subject.send(:download_links_for, new_oids) }
+          .to raise_error(described_class::DownloadLinksError)
+      end
+
+      it 'logs the sanitized endpoint and response details for troubleshooting', :aggregate_failures do
+        expect(Gitlab::AppLogger).to receive(:error).with(
+          hash_including(
+            Labkit::Fields::GL_PROJECT_ID => project.id,
+            Labkit::Fields::LOG_MESSAGE => 'LFS batch API returned an unsuccessful response',
+            Labkit::Fields::HTTP_URL => lfs_endpoint,
+            Labkit::Fields::HTTP_STATUS_CODE => 401,
+            response_body: '{"message":"SSO required"}'
+          )
+        )
+
+        expect { subject.send(:download_links_for, new_oids) }
+          .to raise_error(described_class::DownloadLinksRequestUnauthorizedError)
+      end
+
+      it 'sanitizes credentials embedded in the endpoint before logging', :aggregate_failures do
+        credentialed_uri = URI.parse("http://user:token@www.gitlab.com/demo/repo.git/info/lfs/objects/batch")
+        service = described_class.new(project, remote_uri: credentialed_uri)
+
+        expect(Gitlab::AppLogger).to receive(:error) do |payload|
+          expect(payload[Labkit::Fields::HTTP_URL]).to eq('http://www.gitlab.com/demo/repo.git/info/lfs/objects/batch')
+          expect(payload[Labkit::Fields::HTTP_URL]).not_to include('token')
+        end
+
+        expect { service.send(:download_links_for, new_oids) }
+          .to raise_error(described_class::DownloadLinksRequestUnauthorizedError)
+      end
+
+      it 'sanitizes credentials embedded in the response body before logging', :aggregate_failures do
+        body = '{"message":"failed for http://user:token@www.gitlab.com/demo/repo.git"}'
+        response = custom_response(Net::HTTPUnauthorized.new('', '401', 'Unauthorized'), body)
+        allow(response).to receive(:code).and_return(401)
+        allow(Gitlab::HTTP).to receive(:post).and_return(response)
+
+        expect(Gitlab::AppLogger).to receive(:error) do |payload|
+          expect(payload[:response_body]).not_to include('token')
+          expect(payload[:response_body]).to include('http://*****:*****@www.gitlab.com/demo/repo.git')
+        end
+
+        expect { subject.send(:download_links_for, new_oids) }
+          .to raise_error(described_class::DownloadLinksRequestUnauthorizedError)
+      end
+
+      it 'does not raise when the response body is not valid UTF-8', :aggregate_failures do
+        body = (+"error \xC3\x28 invalid").force_encoding('UTF-8')
+        response = custom_response(Net::HTTPUnauthorized.new('', '401', 'Unauthorized'), body)
+        allow(response).to receive(:code).and_return(401)
+        allow(Gitlab::HTTP).to receive(:post).and_return(response)
+
+        expect(Gitlab::AppLogger).to receive(:error).with(hash_including(:response_body))
+
+        expect { subject.send(:download_links_for, new_oids) }
+          .to raise_error(described_class::DownloadLinksRequestUnauthorizedError)
+      end
+
+      it 'still raises the caller error if logging itself fails', :aggregate_failures do
+        allow(Gitlab::AppLogger).to receive(:error).and_raise(StandardError, 'logging boom')
+
+        expect { subject.send(:download_links_for, new_oids) }
+          .to raise_error(described_class::DownloadLinksRequestUnauthorizedError)
+      end
+    end
+
+    shared_examples 'JSON parse errors' do |body|
+      it 'raises an error' do
+        response = custom_response(success_net_response)
+        allow(response).to receive(:body).and_return(body)
+        allow(Gitlab::HTTP).to receive(:post).and_return(response)
+
+        expect { subject.send(:download_links_for, new_oids) }.to raise_error(described_class::DownloadLinksError)
+      end
+    end
+
+    it_behaves_like 'JSON parse errors', '{'
+    it_behaves_like 'JSON parse errors', '{}'
+    it_behaves_like 'JSON parse errors', '{ foo: 123 }'
+  end
+
+  describe '#parse_response_links' do
+    it 'does not add oid entry if href not found' do
+      expect(subject).to receive(:log_error).with("Link for Lfs Object with oid whatever not found or invalid.")
+
+      result = subject.send(:parse_response_links, invalid_object_response)
+
+      expect(result).to be_empty
+    end
+  end
+end

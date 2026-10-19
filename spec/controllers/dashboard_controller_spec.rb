@@ -1,0 +1,345 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe DashboardController, feature_category: :code_review_workflow do
+  context 'when user is nil' do
+    before do
+      allow(controller).to receive(:authenticate_user!)
+      allow(controller).to receive(:projects)
+    end
+
+    it 'does not redirect issues to work_items dashboard' do
+      get :issues, params: { assignee_username: 'test' }, format: :atom
+
+      expect(response).not_to redirect_to(work_items_dashboard_path)
+    end
+
+    it 'does not redirect issues_calendar to work_items dashboard' do
+      get :issues_calendar, params: { assignee_username: 'test' }
+
+      expect(response).not_to redirect_to(work_items_dashboard_path)
+    end
+  end
+
+  context 'signed in' do
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project) }
+
+    before_all do
+      project.add_maintainer(user)
+    end
+
+    before do
+      sign_in(user)
+    end
+
+    describe 'GET home' do
+      it 'renders the homepage' do
+        get :home
+        expect(response).to be_successful.and render_template('root/index')
+      end
+
+      it 'tracks user_views_homepage event' do
+        expect { get :home }.to trigger_internal_events('user_views_homepage').with(user: user)
+      end
+    end
+
+    describe 'GET issues' do
+      it 'redirects to work_items with query parameters preserved' do
+        get :issues, params: { assignee_username: user.username, state: 'opened', sort: 'created_desc' }
+
+        expect(response).to redirect_to(work_items_dashboard_path(
+          assignee_username: user.username, state: 'opened', sort: 'created_desc'
+        ))
+        expect(response).to have_gitlab_http_status(:moved_permanently)
+      end
+    end
+
+    describe 'GET work_items' do
+      it 'renders issues template with filter params' do
+        get :work_items, params: { assignee_username: user.username }
+
+        expect(response).to render_template(:issues)
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+
+      it 'renders issues template when no filters are set' do
+        get :work_items
+
+        expect(response).to render_template(:issues)
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    describe 'GET issues.atom' do
+      it 'redirects atom feed to work_items.atom' do
+        get :issues, params: { author_id: user.id }, format: :atom
+
+        expect(response).to redirect_to(work_items_dashboard_path(author_id: user.id, format: :atom))
+        expect(response).to have_gitlab_http_status(:moved_permanently)
+      end
+    end
+
+    describe 'GET issues_calendar' do
+      it 'redirects to work_items.ics' do
+        get :issues_calendar, params: { assignee_username: user.username }
+
+        expect(response).to redirect_to(
+          work_items_dashboard_path(assignee_username: user.username, format: :ics)
+        )
+        expect(response).to have_gitlab_http_status(:moved_permanently)
+      end
+    end
+
+    describe 'GET work_items.atom' do
+      it_behaves_like 'issuables list meta-data', :issue, :work_items, format: :atom
+      it_behaves_like 'issuables requiring filter', :work_items, format: :atom
+
+      it 'includes tasks in work item list' do
+        task = create(:work_item, :task, project: project, author: user)
+
+        get :work_items, params: { author_id: user.id }, format: :atom
+
+        expect(assigns[:issues].map(&:id)).to include(task.id)
+      end
+    end
+
+    describe 'GET merge requests search' do
+      before do
+        stub_feature_flags(mr_dashboard_vue_search: false)
+      end
+
+      it_behaves_like 'issuables requiring filter', :search_merge_requests
+
+      context 'when sorting by merged_at with merged state' do
+        it 'allows merged_at sorting' do
+          get :search_merge_requests, params: { author_id: user.id, state: 'merged', sort: 'merged_at' }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(assigns(:sort)).to eq('merged_at')
+        end
+      end
+
+      context 'when an ActiveRecord::QueryCanceled is raised' do
+        before do
+          allow_next_instance_of(Gitlab::IssuableMetadata) do |instance|
+            allow(instance).to receive(:data).and_raise(ActiveRecord::QueryCanceled)
+          end
+        end
+
+        it 'sets :search_timeout_occurred' do
+          get :search_merge_requests, params: { author_id: user.id }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(assigns(:search_timeout_occurred)).to be(true)
+        end
+
+        context 'rendering views' do
+          render_views
+
+          it 'shows error message' do
+            get :search_merge_requests, params: { author_id: user.id }
+
+            expect(response.body).to have_content('Too many results to display. Edit your search or add a filter.')
+          end
+
+          it 'does not display MR counts in nav' do
+            get :search_merge_requests, params: { author_id: user.id }
+
+            expect(response.body).to have_content('Open Merged Closed All')
+            expect(response.body).not_to have_content('Open 0 Merged 0 Closed 0 All 0')
+          end
+        end
+
+        it 'logs the exception' do
+          expect(Gitlab::ErrorTracking).to receive(:track_exception).and_call_original
+
+          get :search_merge_requests, params: { author_id: user.id }
+        end
+      end
+
+      context 'when an ActiveRecord::QueryCanceled is not raised' do
+        it 'does not set :search_timeout_occurred' do
+          get :search_merge_requests, params: { author_id: user.id }
+
+          expect(response).to have_gitlab_http_status(:ok)
+          expect(assigns(:search_timeout_occurred)).to be_nil
+        end
+
+        context 'rendering views' do
+          render_views
+
+          it 'displays MR counts in nav' do
+            get :search_merge_requests, params: { author_id: user.id }
+
+            expect(response.body).to have_content('Open 0 Merged 0 Closed 0 All 0')
+            expect(response.body).not_to have_content('Open Merged Closed All')
+          end
+        end
+      end
+    end
+  end
+
+  describe "GET activity as JSON" do
+    include DesignManagementTestHelpers
+    render_views
+
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project, :public, issues_access_level: ProjectFeature::PRIVATE) }
+    let_it_be(:other_project) { create(:project, :public) }
+
+    before do
+      enable_design_management
+      create(:event, :created, project: project, target: create(:issue))
+      create(:wiki_page_event, :created, project: project)
+      create(:wiki_page_event, :updated, project: project)
+      create(:design_event, project: project)
+      create(:design_event, author: user, project: other_project)
+
+      sign_in(user)
+
+      request.cookies[:event_filter] = 'all'
+    end
+
+    context 'when user has permission to see the event' do
+      before do
+        project.add_developer(user)
+        other_project.add_developer(user)
+      end
+
+      context 'without filter param' do
+        it 'returns only events of the user' do
+          get :activity, params: { format: :json }
+
+          expect(json_response['count']).to eq(3)
+        end
+      end
+
+      context 'with "projects" filter' do
+        it 'returns events of the user\'s projects' do
+          get :activity, params: { format: :json, filter: :projects }
+
+          expect(json_response['count']).to eq(6)
+        end
+      end
+
+      context 'when transferred events exist' do
+        let!(:transferred_event) do
+          create(
+            :event,
+            :transferred,
+            project: other_project,
+            target: other_project,
+            target_type: 'Project',
+            author: user
+          )
+        end
+
+        it 'does not include transferred events without filter param' do
+          get :activity, params: { format: :json }
+
+          expect(json_response['count']).to eq(3)
+        end
+
+        it 'does not include transferred events with "projects" filter' do
+          get :activity, params: { format: :json, filter: :projects }
+
+          expect(json_response['count']).to eq(6)
+        end
+      end
+
+      context 'with "followed" filter' do
+        let_it_be(:followed_user) { create(:user) }
+        let_it_be(:followed_user_private_project) { create(:project, :private) }
+        let_it_be(:followed_user_public_project) { create(:project, :public) }
+
+        before do
+          followed_user_private_project.add_developer(followed_user)
+          followed_user_public_project.add_developer(followed_user)
+          user.follow(followed_user)
+          create(:event, :created, project: followed_user_private_project, target: create(:issue),
+            author: followed_user)
+          create(:event, :created, project: followed_user_public_project, target: create(:issue), author: followed_user)
+        end
+
+        it 'returns public events of the user\'s followed users' do
+          get :activity, params: { format: :json, filter: :followed }
+
+          expect(json_response['count']).to eq(1)
+        end
+      end
+    end
+
+    context 'when user has no permission to see the event' do
+      it 'filters out invisible event' do
+        get :activity, params: { format: :json, filter: :projects }
+
+        expect(json_response['html']).to include(_('No activities found'))
+      end
+
+      it 'filters out invisible event when calculating the count' do
+        get :activity, params: { format: :json, filter: :projects }
+
+        expect(json_response['count']).to eq(0)
+      end
+    end
+  end
+
+  describe "#check_filters_presence!" do
+    let_it_be(:user) { create(:user) }
+
+    before do
+      sign_in(user)
+      get :merge_requests, params: params
+    end
+
+    context "no filters" do
+      let(:params) { {} }
+
+      shared_examples_for 'no filters are set' do
+        it 'sets @no_filters_set to true' do
+          expect(assigns[:no_filters_set]).to be(true)
+        end
+      end
+
+      it_behaves_like 'no filters are set'
+
+      context 'when key is present but value is not' do
+        let(:params) { { author_username: nil } }
+
+        it_behaves_like 'no filters are set'
+      end
+
+      context 'when in param is set but no search' do
+        let(:params) { { in: 'title' } }
+
+        it_behaves_like 'no filters are set'
+      end
+    end
+
+    shared_examples_for 'filters are set' do
+      it 'sets @no_filters_set to false' do
+        expect(assigns[:no_filters_set]).to be(false)
+      end
+    end
+
+    context "scalar filters" do
+      let(:params) { { author_id: user.id } }
+
+      it_behaves_like 'filters are set'
+    end
+
+    context "array filters" do
+      let(:params) { { label_name: ['bug'] } }
+
+      it_behaves_like 'filters are set'
+    end
+
+    context 'search' do
+      let(:params) { { search: 'test' } }
+
+      it_behaves_like 'filters are set'
+    end
+  end
+end

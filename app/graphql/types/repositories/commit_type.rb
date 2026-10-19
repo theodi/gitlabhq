@@ -1,0 +1,176 @@
+# frozen_string_literal: true
+
+module Types
+  module Repositories
+    class CommitType < BaseObject
+      graphql_name 'Commit'
+
+      authorize :read_code
+      authorize_granular_token permissions: :read_code, boundary: :project, boundary_type: :project
+
+      present_using CommitPresenter
+
+      implements Types::TodoableInterface
+      implements Types::Notes::NoteableInterface
+
+      field :id, type: GraphQL::Types::ID, null: false,
+        description: 'ID (global ID) of the commit.'
+
+      field :parent_sha, GraphQL::Types::String, null: true, method: :parent_id,
+        description: 'SHA ID of the first parent.'
+
+      field :sha, type: GraphQL::Types::String, null: false,
+        description: 'SHA1 ID of the commit.'
+
+      field :short_id, type: GraphQL::Types::String, null: false,
+        description: 'Short SHA1 ID of the commit.'
+
+      field :title, type: GraphQL::Types::String, null: true, calls_gitaly: true,
+        description: 'Title of the commit message.'
+
+      field :full_title, type: GraphQL::Types::String, null: true, calls_gitaly: true,
+        description: 'Full title of the commit message.'
+
+      field :description, type: GraphQL::Types::String, null: true,
+        description: 'Description of the commit message.'
+
+      field :message, type: GraphQL::Types::String, null: true,
+        description: 'Raw commit message.'
+
+      field :has_agent_session, type: GraphQL::Types::Boolean, null: false,
+        method: :has_agent_session?,
+        description: 'Indicates the commit was authored during a GitLab Duo Agent Platform flow.'
+
+      field :authored_date, type: Types::TimeType, null: true,
+        description: 'Timestamp of when the commit was authored.'
+
+      field :committed_date, type: Types::TimeType, null: true,
+        description: 'Timestamp of when the commit was committed.'
+
+      field :web_url, type: GraphQL::Types::String, null: false,
+        description: 'Web URL of the commit.'
+
+      field :web_path, type: GraphQL::Types::String, null: false,
+        description: 'Web path of the commit.'
+
+      field :signature, type: Types::CommitSignatureInterface,
+        null: true,
+        calls_gitaly: true,
+        description: 'Signature of the commit.'
+
+      field :signature_html, type: GraphQL::Types::String, null: true, calls_gitaly: true,
+        description: 'Rendered HTML of the commit signature.'
+
+      field :author_email, type: GraphQL::Types::String, null: true,
+        description: "Commit author's email."
+      field :author_gravatar, type: GraphQL::Types::String, null: true,
+        description: 'Commit authors gravatar.'
+      field :author_name, type: GraphQL::Types::String, null: true,
+        description: 'Commit authors name.'
+
+      field :committer_email, type: GraphQL::Types::String, null: true,
+        description: "Email of the committer."
+
+      field :committer_name, type: GraphQL::Types::String, null: true,
+        description: "Name of the committer."
+
+      field :tags, [GraphQL::Types::String], null: true,
+        description: 'Tag names pointing to the commit.',
+        method: :tags_for_display
+
+      # models/commit lazy loads the author by email
+      field :author, type: Types::UserType, null: true,
+        description: 'Author of the commit.'
+
+      field :diffs, [Types::DiffType], null: true, calls_gitaly: true,
+        description: 'Diffs contained within the commit. ' \
+          'This field can only be resolved for 10 diffs in any single request.' do
+        # Limited to 10 calls per GraphQL request as calling `diffs` multiple times will
+        # lead to N+1 queries to Gitaly.
+        extension ::Gitlab::Graphql::Limit::FieldCallCount, limit: 10
+      end
+
+      field :diff_stats, [Types::DiffStatsType], null: true, calls_gitaly: true,
+        description: 'Details about which files were changed in the commit. ' \
+          'This field can only be resolved for 10 commits in any single request.' do
+        # Each resolution shells out to Gitaly, so limit the calls per request to
+        # bound the N+1 when selected across a page of commits (as `diffs` does).
+        extension ::Gitlab::Graphql::Limit::FieldCallCount, limit: 10
+      end
+
+      field :diff_stats_summary, Types::DiffStatsSummaryType, null: true, calls_gitaly: true,
+        description: 'Summary of which files were changed in the commit. ' \
+          'This field can only be resolved for 10 commits in any single request.' do
+        extension ::Gitlab::Graphql::Limit::FieldCallCount, limit: 10
+      end
+
+      field :pipelines,
+        null: true,
+        description: 'Pipelines of the commit ordered latest first.',
+        resolver: Resolvers::CommitPipelinesResolver
+
+      field :latest_pipeline,
+        type: Types::Ci::PipelineType,
+        null: true,
+        description: 'Latest pipeline that determines the commit CI status. ' \
+          'Excludes dangling pipelines, such as security policy scans, that do ' \
+          'not affect the commit CI status.' do
+        argument :ref, GraphQL::Types::String,
+          required: false,
+          description: 'Ref to scope the pipeline to. When provided, returns the ' \
+            'latest pipeline for the commit on that ref; otherwise the latest ' \
+            'pipeline for the commit across all refs.'
+      end
+
+      markdown_field :title_html, null: true, description: "HTML rendering of `title`"
+      markdown_field :full_title_html, null: true, description: "HTML rendering of `full_title`"
+      markdown_field :description_html, null: true
+
+      def diffs
+        object.diffs.diffs
+      end
+
+      # `Commit#diff_stats` is memoized on the model, so selecting both
+      # `diffStats` and `diffStatsSummary` triggers a single Gitaly call.
+      def diff_stats
+        object.diff_stats&.to_a
+      end
+
+      def diff_stats_summary
+        stats = object.diff_stats
+        return unless stats
+
+        {
+          additions: stats.sum(&:additions),
+          deletions: stats.sum(&:deletions),
+          file_count: stats.paths.size
+        }
+      end
+
+      # Mirrors Ci::CommitWithPipeline#lazy_latest_pipeline, but resolves lazily
+      # through GraphQL so statuses for a page of commits are batch loaded. Uses
+      # `ci_pipelines` (the `ci_sources` scope) so dangling pipelines such as
+      # `security_orchestration_policy` scans do not influence the commit CI
+      # status, keeping it consistent with the commit page, `Commit#status`, and
+      # `Ci::Ref#update_status_by!`. The batch key includes `ref` so commits
+      # queried with different refs resolve in separate batches.
+      def latest_pipeline(ref: nil)
+        commit_project = object.project
+        return unless commit_project
+
+        BatchLoader::GraphQL.for(object.sha).batch(key: [commit_project.id, ref]) do |shas, loader|
+          # rubocop:disable Database/AvoidUnpartitionedCiRelations -- `in_current_partition: true` scopes the lookup to the current partition first and only falls back to a cross-partition scan for the SHAs whose latest pipeline predates it.
+          pipelines = commit_project.ci_pipelines
+            .latest_pipeline_per_commit(shas.compact, ref, in_current_partition: true)
+          # rubocop:enable Database/AvoidUnpartitionedCiRelations
+
+          shas.each { |sha| loader.call(sha, pipelines[sha]) }
+        end
+      end
+
+      def author_gravatar
+        GravatarService.new.execute(object.author_email, 40)
+      end
+    end
+  end
+end

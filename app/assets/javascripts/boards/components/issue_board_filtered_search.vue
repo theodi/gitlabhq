@@ -1,0 +1,216 @@
+<script>
+import { GlFilteredSearchToken } from '@gitlab/ui';
+import fuzzaldrinPlus from 'fuzzaldrin-plus';
+import { orderBy } from 'lodash-es';
+import BoardFilteredSearch from 'ee_else_ce/boards/components/board_filtered_search.vue';
+import axios from '~/lib/utils/axios_utils';
+import { autocompleteAwardEmojisPath } from '~/lib/utils/path_helpers/autocomplete';
+import issueBoardFilters from 'ee_else_ce/boards/issue_board_filters';
+import { TYPENAME_USER } from '~/graphql_shared/constants';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { __ } from '~/locale';
+import {
+  OPTIONS_NONE_ANY,
+  OPTIONS_NONE_ANY_ME,
+  OPERATORS_IS_NOT_OR,
+  OPERATORS_IS,
+  TOKEN_TITLE_ASSIGNEE,
+  TOKEN_TITLE_AUTHOR,
+  TOKEN_TITLE_CONFIDENTIAL,
+  TOKEN_TITLE_LABEL,
+  TOKEN_TITLE_MILESTONE,
+  TOKEN_TITLE_MY_REACTION,
+  TOKEN_TITLE_RELEASE,
+  TOKEN_TITLE_TYPE,
+  TOKEN_TYPE_ASSIGNEE,
+  TOKEN_TYPE_AUTHOR,
+  TOKEN_TYPE_CONFIDENTIAL,
+  TOKEN_TYPE_LABEL,
+  TOKEN_TYPE_MILESTONE,
+  TOKEN_TYPE_MY_REACTION,
+  TOKEN_TYPE_RELEASE,
+  TOKEN_TYPE_TYPE,
+} from '~/vue_shared/components/filtered_search_bar/constants';
+import UserToken from '~/vue_shared/components/filtered_search_bar/tokens/user_token.vue';
+import EmojiToken from '~/vue_shared/components/filtered_search_bar/tokens/emoji_token.vue';
+import LabelToken from '~/vue_shared/components/filtered_search_bar/tokens/label_token.vue';
+import MilestoneToken from '~/vue_shared/components/filtered_search_bar/tokens/milestone_token.vue';
+import ReleaseToken from '~/vue_shared/components/filtered_search_bar/tokens/release_token.vue';
+import WorkItemTypeToken from '~/vue_shared/components/filtered_search_bar/tokens/work_item_type_token.vue';
+
+export default {
+  name: 'IssueBoardFilteredSearch',
+  components: { BoardFilteredSearch },
+  inject: ['isSignedIn', 'releasesFetchPath', 'fullPath', 'isGroupBoard'],
+  props: {
+    board: {
+      type: Object,
+      required: false,
+      default: () => {},
+    },
+    isSwimlanesOn: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    filters: {
+      type: Object,
+      required: true,
+    },
+  },
+  emits: ['set-filters'],
+  computed: {
+    tokensCE() {
+      const { fetchLabels } = issueBoardFilters(this.$apollo, this.fullPath, this.isGroupBoard);
+
+      const tokens = [
+        {
+          icon: 'user',
+          title: TOKEN_TITLE_ASSIGNEE,
+          type: TOKEN_TYPE_ASSIGNEE,
+          operators: OPERATORS_IS_NOT_OR,
+          token: UserToken,
+          dataType: 'user',
+          unique: true,
+          multiSelect: true,
+          isProject: !this.isGroupBoard,
+          fullPath: this.fullPath,
+          preloadedUsers: this.preloadedUsers(),
+          defaultUsers: this.isSignedIn ? OPTIONS_NONE_ANY_ME : OPTIONS_NONE_ANY,
+        },
+        {
+          icon: 'pencil',
+          title: TOKEN_TITLE_AUTHOR,
+          type: TOKEN_TYPE_AUTHOR,
+          operators: OPERATORS_IS_NOT_OR,
+          symbol: '@',
+          token: UserToken,
+          dataType: 'user',
+          unique: true,
+          multiSelect: true,
+          isProject: !this.isGroupBoard,
+          fullPath: this.fullPath,
+          preloadedUsers: this.preloadedUsers(),
+        },
+        {
+          icon: 'labels',
+          title: TOKEN_TITLE_LABEL,
+          type: TOKEN_TYPE_LABEL,
+          operators: OPERATORS_IS_NOT_OR,
+          token: LabelToken,
+          unique: false,
+          multiSelect: true,
+          recentSuggestionsStorageKey: `${this.fullPath}-board-recent-tokens-label`,
+          symbol: '~',
+          fetchLabels,
+        },
+        ...(this.isSignedIn
+          ? [
+              {
+                type: TOKEN_TYPE_MY_REACTION,
+                title: TOKEN_TITLE_MY_REACTION,
+                icon: 'thumb-up',
+                token: EmojiToken,
+                unique: true,
+                fetchEmojis: (search = '') => {
+                  // TODO: Switch to GraphQL query when backend is ready: https://gitlab.com/gitlab-org/gitlab/-/issues/339694
+                  return axios.get(autocompleteAwardEmojisPath()).then(({ data }) => {
+                    if (search) {
+                      return {
+                        data: fuzzaldrinPlus.filter(data, search, {
+                          key: ['name'],
+                        }),
+                      };
+                    }
+                    return { data };
+                  });
+                },
+              },
+              {
+                type: TOKEN_TYPE_CONFIDENTIAL,
+                icon: 'eye-slash',
+                title: TOKEN_TITLE_CONFIDENTIAL,
+                unique: true,
+                token: GlFilteredSearchToken,
+                operators: OPERATORS_IS,
+                options: [
+                  { icon: 'eye-slash', value: 'yes', title: __('Yes') },
+                  { icon: 'eye', value: 'no', title: __('No') },
+                ],
+              },
+            ]
+          : []),
+        {
+          type: TOKEN_TYPE_MILESTONE,
+          title: TOKEN_TITLE_MILESTONE,
+          icon: 'milestone',
+          symbol: '%',
+          token: MilestoneToken,
+          unique: true,
+          shouldSkipSort: true,
+          isProject: !this.isGroupBoard,
+          fullPath: this.fullPath,
+        },
+        {
+          type: TOKEN_TYPE_TYPE,
+          title: TOKEN_TITLE_TYPE,
+          icon: 'work-item-issue',
+          unique: true,
+          multiSelect: true,
+          operators: OPERATORS_IS_NOT_OR,
+          token: WorkItemTypeToken,
+          fullPath: this.fullPath,
+          isFilterableBoardView: true,
+        },
+        {
+          type: TOKEN_TYPE_RELEASE,
+          title: TOKEN_TITLE_RELEASE,
+          icon: 'rocket',
+          token: ReleaseToken,
+          fetchReleases: (search) => {
+            // TODO: Switch to GraphQL query when backend is ready: https://gitlab.com/gitlab-org/gitlab/-/issues/337686
+            return axios.get(this.releasesFetchPath).then(({ data }) => {
+              if (search) {
+                return fuzzaldrinPlus.filter(data, search, {
+                  key: ['tag'],
+                });
+              }
+              return data;
+            });
+          },
+        },
+      ];
+
+      return orderBy(tokens, ['title']);
+    },
+    tokens() {
+      return this.tokensCE;
+    },
+  },
+  methods: {
+    preloadedUsers() {
+      return gon?.current_user_id
+        ? [
+            {
+              id: convertToGraphQLId(TYPENAME_USER, gon.current_user_id),
+              name: gon.current_user_fullname,
+              username: gon.current_username,
+              avatarUrl: gon.current_user_avatar_url,
+            },
+          ]
+        : [];
+    },
+  },
+};
+</script>
+
+<template>
+  <board-filtered-search
+    data-testid="issue-board-filtered-search"
+    :tokens="tokens"
+    :board="board"
+    :is-swimlanes-on="isSwimlanesOn"
+    :filters="filters"
+    @set-filters="$emit('set-filters', $event)"
+  />
+</template>

@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'projects/commit/_commit_box.html.haml' do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project, :repository, developers: user) }
+
+  before do
+    assign(:project, project)
+    assign(:commit, project.commit)
+    allow(view).to receive_messages(current_user: user, can_collaborate_with_project?: false)
+  end
+
+  it 'shows the commit SHA' do
+    render
+
+    expect(rendered).to have_text(Commit.truncate_sha(project.commit.sha).to_s)
+  end
+
+  context 'when there is a pipeline present' do
+    let(:pipeline) { create(:ci_pipeline, project: project, sha: project.commit.id, status: 'success') }
+
+    context 'when pipeline has stages' do
+      before do
+        create(:ci_build, pipeline: pipeline, stage: 'build')
+
+        assign(:last_pipeline, project.commit.last_pipeline)
+      end
+
+      it 'shows pipeline stages in vue' do
+        render
+
+        expect(rendered).to have_selector("#js-commit-box-pipeline-summary[data-iid='#{pipeline.iid}']")
+      end
+    end
+
+    context 'when pipeline has no iid' do
+      before do
+        pipeline.update_column(:iid, nil)
+
+        assign(:last_pipeline, pipeline)
+      end
+
+      it 'does not show the pipeline summary' do
+        render
+
+        expect(rendered).not_to have_selector('#js-commit-box-pipeline-summary')
+      end
+    end
+  end
+end

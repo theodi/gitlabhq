@@ -1,0 +1,227 @@
+# Referenced in .gitlab/ci/release-environments.gitlab-ci.yml
+# This downstream pipeline should only be run in the security mirror repository.
+---
+include:
+  - local: .gitlab/ci/ci-images.gitlab-ci.yml
+  - local: .gitlab/ci/cng/main.gitlab-ci.yml
+    inputs:
+      cng_path: 'charts/components/images'
+  - project: 'gitlab-org/quality/pipeline-common'
+    ref: '13.1.1'
+    file: ci/base.gitlab-ci.yml
+
+stages:
+  - prepare
+  - start
+  - deploy
+  - qa
+  - finish
+
+.inherit_variables:
+  inherit:
+    variables:
+      - GIT_DEPTH
+      - GIT_STRATEGY
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+
+variables:
+  GIT_DEPTH: 20
+  GIT_STRATEGY: fetch
+
+release-environments-build-cng-env:
+  extends: .build-cng-env
+  before_script:
+    - !reference [.build-cng-env, before_script]
+    - define_trigger_branch_in_build_env
+    - export CNG_BRANCH=$TRIGGER_BRANCH
+    - unset CI_COMMIT_TAG  # Do not use tag for CNG build
+
+release-environments-build-cng:
+  extends: .build-cng
+  needs: ["release-environments-build-cng-env"]
+  variables:
+    IMAGE_TAG_EXT: "-${CI_COMMIT_SHORT_SHA}"
+
+release-environments-build-omnibus-env:
+  stage: prepare
+  extends:
+    - .with-ruby-slim-image
+  variables:
+    BUILD_ENV: build.env
+  before_script:
+    - source scripts/utils.sh
+  script:
+    - SECURITY_SOURCES=$([[ ! "$CI_PROJECT_NAMESPACE" =~ ^gitlab-org\/security ]] || echo "true")
+    - echo "SECURITY_SOURCES=${SECURITY_SOURCES:-false}" > $BUILD_ENV
+    - for version_file in *_VERSION; do echo "$version_file=$(cat $version_file)" >> $BUILD_ENV; done
+    - ruby -e 'puts "FULL_RUBY_VERSION=#{RUBY_VERSION}"' >> $BUILD_ENV
+    - echo "SHORT_RUBY_VERSION=${RUBY_VERSION}" >> $BUILD_ENV
+    - echo "GITLAB_ASSETS_TAG=${GLCI_ASSETS_IMAGE_TAG}" >> $BUILD_ENV
+    - echo "EE=$([[ $FOSS_ONLY == '1' ]] && echo 'false' || echo 'true')" >> $BUILD_ENV
+    - define_trigger_branch_in_build_env
+    - echo "Built environment file for omnibus build:"
+    - cat $BUILD_ENV
+  artifacts:
+    expire_in: 3 days
+    reports:
+      dotenv: $BUILD_ENV
+    paths:
+      - $BUILD_ENV
+
+release-environments-build-omnibus:
+  stage: prepare
+  needs:
+    - release-environments-build-omnibus-env
+  inherit:
+    variables: false
+  variables:
+    GITALY_SERVER_VERSION: $GITALY_SERVER_VERSION
+    GITLAB_ELASTICSEARCH_INDEXER_VERSION: $GITLAB_ELASTICSEARCH_INDEXER_VERSION
+    GITLAB_KAS_VERSION: $GITLAB_KAS_VERSION
+    GITLAB_PAGES_VERSION: $GITLAB_PAGES_VERSION
+    GITLAB_SHELL_VERSION: $GITLAB_SHELL_VERSION
+    GITLAB_WORKHORSE_VERSION: $GITLAB_WORKHORSE_VERSION
+    GITLAB_VERSION: $CI_COMMIT_SHA
+    GITLAB_ASSETS_TAG: $GITLAB_ASSETS_TAG
+    IMAGE_TAG: "${CI_COMMIT_SHA}-ruby${SHORT_RUBY_VERSION}"
+    TOP_UPSTREAM_SOURCE_PROJECT: $CI_PROJECT_PATH
+    SECURITY_SOURCES: $SECURITY_SOURCES
+    USE_SPECIFIED_RUBY_VERSION: "true"
+    RUBY_VERSION: $FULL_RUBY_VERSION
+    ee: $EE
+    RELEASE_ENVIRONMENT_BUILD: "true"
+    PARENT_CI_PIPELINE_ID: $CI_PIPELINE_ID
+    PARENT_CI_COMMIT_SHORT_SHA: $CI_COMMIT_SHORT_SHA
+  trigger:
+    project: gitlab-org/security/omnibus-gitlab
+    branch: $TRIGGER_BRANCH
+    strategy: depend
+    inputs:
+      skip_qa_test: true
+
+release-environments-deploy-env:
+  stage: prepare
+  needs:
+    - release-environments-build-cng
+    - release-environments-build-omnibus
+  variables:
+    DEPLOY_ENV: deploy.env
+  script:
+    - ./scripts/release_environment/construct-release-environments-versions.rb
+  artifacts:
+    reports:
+      dotenv: $DEPLOY_ENV
+    paths:
+      - $DEPLOY_ENV
+    expire_in: 7 days
+    when: always
+
+release-environments-update-resource-group:
+  stage: prepare
+  script:
+    # Make sure pipelines run in order
+    # See https://docs.gitlab.com/ci/resource_groups/#change-the-process-mode
+    - |
+      curl --request PUT --data "process_mode=oldest_first" --header "PRIVATE-TOKEN:${RELEASE_ENVIRONMENT_API_TOKEN}" \
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/resource_groups/release-environment-${CI_COMMIT_REF_SLUG}"
+
+release-environments-notification-start:
+  stage: start
+  extends: .inherit_variables
+  variables:
+    RELEASE_ENVIRONMENT_NOTIFICATION_TYPE: "deploy"
+  script:
+    - ruby scripts/release_environment/notification.rb
+  needs: ["release-environments-deploy-env"]
+
+release-environments-deploy:
+  stage: deploy
+  inherit:
+    variables: false
+  variables:
+    VERSIONS: "${VERSIONS}"
+    ENVIRONMENT: "${ENVIRONMENT}"
+    OMNIBUS_PACKAGE_VERSION: "${OMNIBUS_PACKAGE_VERSION}"
+  trigger:
+    project: gitlab-com/gl-infra/release-environments
+    branch: main
+    strategy: depend
+  needs: ["release-environments-deploy-env"]
+
+release-environments-qa:
+  stage: qa
+  extends:
+    - .qa-base
+  timeout: 30m
+  parallel: 3
+  variables:
+    QA_SCENARIO: "Test::Instance::Smoke"
+    RELEASE: "${CI_REGISTRY}/${CI_PROJECT_PATH}/gitlab-ee-qa:${CI_COMMIT_SHA}"
+    GITLAB_QA_OPTS: --address "https://gitlab.${ENVIRONMENT}-get.env.release.gitlab.net"
+    GITLAB_ADMIN_USERNAME: "${RELEASE_ENVIRONMENTS_GET_QA_ADMIN_USER}"
+    GITLAB_ADMIN_PASSWORD: "${RELEASE_ENVIRONMENTS_GET_QA_ADMIN_PASSWORD}"
+    QA_PRAEFECT_REPOSITORY_STORAGE: "default"
+    SIGNUP_DISABLED: "true"
+  before_script:
+    - !reference [.qa-base, before_script]
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+  retry:
+    max: 2
+    when: always
+
+release-environments-notification-failure:
+  stage: finish
+  extends: .inherit_variables
+  variables:
+    RELEASE_ENVIRONMENT_NOTIFICATION_TYPE: "deploy"
+  script:
+    - ruby scripts/release_environment/notification.rb
+  needs:
+    - job: release-environments-deploy
+      artifacts: false
+    - job: release-environments-deploy-env
+  when: on_failure
+
+release-environments-notification-success:
+  stage: finish
+  extends: .inherit_variables
+  variables:
+    RELEASE_ENVIRONMENT_NOTIFICATION_TYPE: "deploy"
+  script:
+    - ruby scripts/release_environment/notification.rb
+  needs:
+    - job: release-environments-qa
+      artifacts: false
+    - job: release-environments-deploy-env
+
+release-environments-notification-qa-failure:
+  stage: finish
+  extends: .inherit_variables
+  variables:
+    RELEASE_ENVIRONMENT_NOTIFICATION_TYPE: "qa"
+  script:
+    - ruby scripts/release_environment/notification.rb
+  needs:
+    - job: release-environments-qa
+      artifacts: false
+    - job: release-environments-deploy-env
+  when: on_failure
+
+release-environments-labeling-merge-request:
+  stage: finish
+  before_script:
+    - source scripts/utils.sh
+    - install_gitlab_gem
+  script:
+    - ruby scripts/release_environment/update_merge_requests_label.rb
+  needs:
+    - job: release-environments-deploy  # To ensure this job starts as soon as deployment succeeds
+      artifacts: false
+    - project: gitlab-com/gl-infra/release-environments  # To ensure this job can access $DEPLOYMENT_ID
+      job: track-deployment-start
+      ref: main
+      artifacts: true
+  allow_failure: true

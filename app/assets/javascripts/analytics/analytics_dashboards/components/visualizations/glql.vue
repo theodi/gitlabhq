@@ -1,0 +1,295 @@
+<script>
+import { __, s__ } from '~/locale';
+import * as Sentry from '~/sentry/sentry_browser_wrapper';
+import { EXECUTION_QUEUE_DASHBOARD } from '~/glql/constants';
+import { forget } from '~/glql/core/executor';
+import GlqlResolver from '~/glql/components/common/resolver.vue';
+import ViewSourceModal from '~/glql/components/common/view_source_modal.vue';
+import { copyQuerySource } from '~/glql/utils/common';
+import { copyGLQLContents } from '~/glql/utils/copy_as_gfm';
+import {
+  classifyGlqlError,
+  GLQL_ERROR_GENERIC,
+  GLQL_ERROR_INVALID_QUERY,
+  GLQL_ERROR_NO_ACCESS,
+  GLQL_ERROR_NOT_CONFIGURED,
+  GLQL_ERROR_RATE_LIMITED,
+  GLQL_ERROR_TIMEOUT,
+  GLQL_ERROR_UNAVAILABLE,
+} from '~/glql/utils/error_classifier';
+import PanelState from '~/analytics/shared/components/panel_state.vue';
+import {
+  PANEL_STATE_ERROR,
+  PANEL_STATE_ERROR_NO_RETRY,
+  PANEL_STATE_NO_ACCESS,
+  PANEL_STATE_NO_DATA,
+  PANEL_STATE_NOT_CONFIGURED,
+  PANEL_STATE_UNAVAILABLE,
+} from '~/analytics/shared/constants';
+
+const STATE_VARIANT_BY_ERROR_CATEGORY = {
+  [GLQL_ERROR_NO_ACCESS]: PANEL_STATE_NO_ACCESS,
+  [GLQL_ERROR_NOT_CONFIGURED]: PANEL_STATE_NOT_CONFIGURED,
+  [GLQL_ERROR_UNAVAILABLE]: PANEL_STATE_UNAVAILABLE,
+  [GLQL_ERROR_TIMEOUT]: PANEL_STATE_ERROR,
+  [GLQL_ERROR_RATE_LIMITED]: PANEL_STATE_ERROR_NO_RETRY,
+  // Deterministic query errors: a retry re-runs the same query and fails the same way.
+  [GLQL_ERROR_INVALID_QUERY]: PANEL_STATE_ERROR_NO_RETRY,
+  [GLQL_ERROR_GENERIC]: PANEL_STATE_ERROR,
+};
+
+export default {
+  name: 'GlqlVisualization',
+  EXECUTION_QUEUE_DASHBOARD,
+  PANEL_STATE_NO_DATA,
+  components: {
+    GlqlResolver,
+    PanelState,
+    ViewSourceModal,
+  },
+  // Pages that time their load provide this: a panel registers per query, settles on its result.
+  inject: {
+    glqlPanelLoad: { default: null },
+  },
+  props: {
+    data: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    namespace: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    isProject: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    options: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    filters: {
+      type: Object,
+      required: false,
+      default: () => ({}),
+    },
+    // The panel's index in the dashboard's reading order, from the panel component. As the
+    // request priority it fills a view top to bottom, and a panel's later pages and comparison
+    // never wait behind the panels below it.
+    loadPriority: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+  },
+  emits: ['set-actions', 'reload'],
+  data() {
+    return {
+      resolverResult: undefined,
+      stateVariant: null,
+      stateDescription: '',
+      retryCount: 0,
+      modalVisible: false,
+      settledResolverKey: null,
+    };
+  },
+  computed: {
+    showEmptyState() {
+      return this.resolverResult?.data?.nodes?.length === 0;
+    },
+    // Stat tiles are too small for the centered state block, so they ask for the compact
+    // layout up front; any tile still too short for its state shrinks it through the
+    // dashboard-panel-body container queries. Only the compiler may read the query text,
+    // so the display type is not recovered from it here.
+    compactState() {
+      return this.resolverResult?.config?.display === 'stat';
+    },
+    emptyStateTitle() {
+      return this.options.emptyState?.title ?? '';
+    },
+    emptyStateDescription() {
+      return this.options.emptyState?.description ?? '';
+    },
+    // GlDashboardPanel hides its actions dropdown when a panel has no actions, so opting out
+    // means emitting an empty list. Panels opt out entirely, error state included.
+    showActions() {
+      return this.options.showActions ?? true;
+    },
+    // Bundled here rather than passed down as separate options: the resolver is shared with
+    // GLQL blocks in comments and descriptions, which have no dashboard to configure a trend.
+    comparison() {
+      if (!this.options.comparisonQuery) return null;
+
+      return { query: this.options.comparisonQuery, metric: this.options.trendMetric };
+    },
+    // The resolver does not re-query on prop changes. Remounting it discards the old instance
+    // along with its in-flight requests, so a superseded result can never arrive here.
+    // `retryCount` is part of the key because a retry re-runs the same query: nothing else
+    // in the key changes, so only a remount forces re-execution.
+    resolverKey() {
+      return `${this.retryCount}|${this.isProject}|${this.namespace}|${this.data}|${JSON.stringify(this.bindings)}`;
+    },
+    bindings() {
+      const { groups = [], projects = [] } = this.filters;
+
+      return [
+        ['group', groups],
+        ['project', projects],
+      ]
+        .filter(([, paths]) => paths.length)
+        .map(([field, paths]) => ({
+          target: { kind: 'filter', field },
+          value: { kind: 'list', values: paths },
+        }));
+    },
+    // Null, not an empty object, so the resolver falls back to deriving the namespace from the URL.
+    scope() {
+      if (!this.namespace) return null;
+
+      return this.isProject ? { project: this.namespace } : { group: this.namespace };
+    },
+  },
+  watch: {
+    data() {
+      this.resetState();
+    },
+    // Also clears the empty and error states, so the resolver remounts under the new key.
+    scope() {
+      this.resetState();
+    },
+    // The filters prop also carries the date range, so bindings can get a new array
+    // reference even when the groups/projects haven't changed. Only reset when the
+    // content actually changes, matching the resolver's key, or we'd wipe loaded results.
+    bindings(newValue, oldValue) {
+      if (JSON.stringify(newValue) !== JSON.stringify(oldValue)) this.resetState();
+    },
+    resolverKey() {
+      this.glqlPanelLoad?.register(this.$el);
+    },
+  },
+  mounted() {
+    this.glqlPanelLoad?.register(this.$el);
+  },
+  methods: {
+    resetState() {
+      this.resolverResult = undefined;
+      this.stateVariant = null;
+      this.stateDescription = '';
+    },
+    handleResolverChange({ data, config, fields, error, loading }) {
+      this.resolverResult = { data, config, fields };
+
+      if (this.glqlPanelLoad && !loading && this.settledResolverKey !== this.resolverKey) {
+        this.settledResolverKey = this.resolverKey;
+        this.glqlPanelLoad.settle(this.$el);
+      }
+
+      const actions = [];
+      if (error) {
+        const category = classifyGlqlError(error);
+        // Access, availability and query mistakes are expected states; only
+        // unexpected failures are errors worth reporting.
+        if (category === GLQL_ERROR_GENERIC) Sentry.captureException(error);
+
+        // Rows already on screen (a failed continuation page) stay visible;
+        // replacing them with an error state would destroy loaded data.
+        this.stateVariant = data?.nodes?.length ? null : STATE_VARIANT_BY_ERROR_CATEGORY[category];
+
+        if (category === GLQL_ERROR_TIMEOUT) {
+          this.stateDescription = s__(
+            'Analytics|The query timed out. Select a shorter date range and try again.',
+          );
+        } else if (category === GLQL_ERROR_INVALID_QUERY) {
+          // The message is the only way a dashboard author can fix their query.
+          this.stateDescription = error.message || '';
+        } else {
+          this.stateDescription = '';
+        }
+      } else {
+        this.stateVariant = null;
+        this.stateDescription = '';
+
+        actions.push(
+          { text: __('View source'), action: () => this.viewSource() },
+          { text: __('Copy source'), action: () => this.copySource() },
+        );
+
+        // "Copy contents" is only rendered if there are results to copy.
+        if (data?.count) {
+          actions.push({ text: __('Copy contents'), action: () => this.copyAsGFM() });
+        }
+      }
+
+      actions.push({ text: __('Reload'), action: () => this.reload() });
+      this.$emit('set-actions', this.showActions ? actions : []);
+    },
+    // The error state's Retry. Nothing in the resolver key changes, so only a key bump re-runs
+    // the query, and the cached result has to go first or the new resolver would read it back.
+    retry() {
+      forget(this.data, EXECUTION_QUEUE_DASHBOARD);
+      this.resetState();
+      this.retryCount += 1;
+    },
+    // The panel shows a loading state while it re-fetches its data source, which destroys this
+    // visualization and mounts a fresh one, so a key bump here would never mount. Dropping the
+    // cached result is what makes that fresh one query again.
+    reload() {
+      forget(this.data, EXECUTION_QUEUE_DASHBOARD);
+      this.$emit('reload');
+    },
+    viewSource() {
+      this.modalVisible = true;
+    },
+    copySource() {
+      copyQuerySource(this.data);
+    },
+    async copyAsGFM() {
+      await copyGLQLContents({ ...this.resolverResult, el: this.$refs.resolver.$el });
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <panel-state
+      v-if="stateVariant"
+      :variant="stateVariant"
+      :compact="compactState"
+      :description="stateDescription"
+      @retry="retry"
+    />
+
+    <panel-state
+      v-else-if="showEmptyState"
+      :variant="$options.PANEL_STATE_NO_DATA"
+      :compact="compactState"
+      :title="emptyStateTitle"
+      :description="emptyStateDescription"
+    />
+
+    <glql-resolver
+      v-else
+      ref="resolver"
+      :key="resolverKey"
+      :glql-query="data"
+      :comparison="comparison"
+      :scope="scope"
+      :queue="$options.EXECUTION_QUEUE_DASHBOARD"
+      :priority="loadPriority"
+      :bindings="bindings"
+      tracking-event-name="render_analytics_dashboard_glql_panel"
+      @change="handleResolverChange"
+    />
+
+    <view-source-modal
+      v-model="modalVisible"
+      :query="data"
+      :title="s__('AnalyticsDashboards|Panel query')"
+    />
+  </div>
+</template>

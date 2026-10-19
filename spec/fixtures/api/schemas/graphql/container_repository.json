@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "path",
+    "location",
+    "createdAt",
+    "updatedAt",
+    "tagsCount",
+    "expirationPolicyCleanupStatus",
+    "project",
+    "lastCleanupDeletedTagsCount",
+    "userPermissions",
+    "protectionRuleExists"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "location": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "expirationPolicyStartedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tagsCount": {
+      "type": "integer"
+    },
+    "expirationPolicyCleanupStatus": {
+      "type": "string",
+      "enum": [
+        "UNSCHEDULED",
+        "SCHEDULED",
+        "UNFINISHED",
+        "ONGOING"
+      ]
+    },
+    "project": {
+      "type": "object"
+    },
+    "lastCleanupDeletedTagsCount": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "userPermissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "destroyContainerRepository": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

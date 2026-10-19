@@ -1,0 +1,20 @@
+---
+data_category: operational
+key_path: usage_activity_by_stage_monthly.create.merge_requests_users
+description: Distinct count of users performing merge request actions like closed, merged, created, commented
+product_group: code_review
+product_categories:
+- code_review_workflow
+value_type: number
+status: removed
+time_frame: 28d
+data_source: redis_hll
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+milestone_removed: "15.10"
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/115037

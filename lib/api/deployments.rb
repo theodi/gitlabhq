@@ -1,0 +1,285 @@
+# frozen_string_literal: true
+
+module API
+  # Deployments RESTful API endpoints
+  class Deployments < ::API::Base
+    include PaginationParams
+    include APIGuard
+
+    allow_access_with_scope :ai_workflows, if: ->(request) { request.get? || request.head? }
+
+    deployments_tags = %w[deploy_resources]
+    before { authenticate! }
+
+    feature_category :continuous_delivery
+    urgency :low
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'List all project deployments' do
+        detail 'Lists all deployments in a project.'
+        success Entities::Deployment
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        is_array true
+        tags deployments_tags
+      end
+      params do
+        use :pagination
+
+        optional :order_by,
+          type: String,
+          values: DeploymentsFinder::ALLOWED_SORT_VALUES,
+          default: DeploymentsFinder::DEFAULT_SORT_VALUE,
+          desc: 'Sort results by the specified field.'
+
+        optional :sort,
+          type: String,
+          values: DeploymentsFinder::ALLOWED_SORT_DIRECTIONS,
+          default: DeploymentsFinder::DEFAULT_SORT_DIRECTION,
+          desc: 'Sort results in ascending or descending order.'
+
+        optional :updated_after,
+          type: DateTime,
+          desc: 'Return deployments updated after the specified date. Expected in ISO 8601 format (`2019-03-15T08:00:00Z`)'
+
+        optional :updated_before,
+          type: DateTime,
+          desc: 'Return deployments updated before the specified date. Expected in ISO 8601 format (`2019-03-15T08:00:00Z`)'
+
+        optional :finished_after,
+          type: DateTime,
+          desc: 'Return deployments finished after the specified date. Expected in ISO 8601 format (`2019-03-15T08:00:00Z`)'
+
+        optional :finished_before,
+          type: DateTime,
+          desc: 'Return deployments finished before the specified date. Expected in ISO 8601 format (`2019-03-15T08:00:00Z`)'
+
+        optional :environment,
+          type: String,
+          desc: 'Name of the [environment](https://docs.gitlab.com/ci/environments/) to filter deployments by.'
+
+        optional :status,
+          type: String,
+          values: Deployment.statuses.keys,
+          desc: 'Filter deployments by status.'
+      end
+
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :read_deployment, boundary_type: :project,
+        job_token_policies: :read_deployments,
+        allow_public_access_for_enabled_project_features: [:repository, :builds, :environments]
+      get ':id/deployments' do
+        authorize! :read_deployment, user_project
+
+        deployments =
+          DeploymentsFinder.new(declared_params(include_missing: false).merge(project: user_project))
+            .execute.with_api_entity_associations
+
+        present paginate(deployments), with: Entities::Deployment
+      rescue DeploymentsFinder::InefficientQueryError => e
+        bad_request!(e.message)
+      end
+
+      desc 'Retrieve a deployment' do
+        detail 'Retrieves a specified deployment.'
+        success Entities::DeploymentExtended
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deployments_tags
+      end
+      params do
+        requires :deployment_id, type: Integer, desc: 'ID of the deployment.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :read_deployment, boundary_type: :project,
+        job_token_policies: :read_deployments,
+        allow_public_access_for_enabled_project_features: [:repository, :builds, :environments]
+      get ':id/deployments/:deployment_id' do
+        authorize! :read_deployment, user_project
+
+        deployment = user_project.deployments.find(params[:deployment_id])
+
+        present deployment, with: Entities::DeploymentExtended
+      end
+
+      desc 'Create a deployment' do
+        detail 'Creates a deployment.'
+        success Entities::DeploymentExtended
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deployments_tags
+      end
+      params do
+        requires :environment,
+          type: String,
+          allow_blank: false,
+          desc: 'Name of the [environment](https://docs.gitlab.com/ci/environments/) to create the deployment for.'
+
+        requires :sha,
+          type: String,
+          allow_blank: false,
+          desc: 'SHA of the commit that is deployed.'
+
+        requires :ref,
+          type: String,
+          allow_blank: false,
+          desc: 'Name of the branch or tag that is deployed.'
+
+        requires :tag,
+          type: Boolean,
+          desc: 'If `true`, the deployed ref is a tag.'
+
+        requires :status,
+          type: String,
+          desc: 'Status of the deployment that is created.',
+          values: %w[running success failed canceled]
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :create_deployment, boundary_type: :project,
+        job_token_policies: [:admin_deployments, :admin_environments]
+      post ':id/deployments' do
+        authorize!(:create_deployment, user_project)
+        authorize!(:create_environment, user_project)
+
+        render_api_error!({ sha: ["The commit does not exist"] }, 400) unless user_project.commit(declared_params[:sha])
+        render_api_error!({ ref: ["The branch or tag does not exist"] }, 400) unless user_project.commit(declared_params[:ref])
+
+        environment = user_project
+          .environments
+          .find_or_create_by_name(params[:environment])
+
+        unless environment.persisted?
+          render_validation_error!(environment)
+        end
+
+        authorize!(:create_deployment, environment)
+
+        service = ::Deployments::CreateService
+          .new(environment, current_user, declared_params)
+
+        deployment = service.execute
+
+        if deployment.persisted?
+          present(deployment, with: Entities::DeploymentExtended, current_user: current_user)
+        else
+          render_validation_error!(deployment)
+        end
+      end
+
+      desc 'Update a deployment' do
+        detail 'Updates a specified deployment.'
+        success Entities::DeploymentExtended
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags deployments_tags
+      end
+      params do
+        requires :status,
+          type: String,
+          desc: 'New status of the deployment.',
+          values: %w[running success failed canceled]
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :update_deployment, boundary_type: :project,
+        job_token_policies: :admin_deployments
+      put ':id/deployments/:deployment_id' do
+        deployment = user_project.deployments.find(params[:deployment_id])
+
+        authorize!(:update_deployment, deployment)
+
+        if deployment.deployable
+          forbidden!('Deployments created using GitLab CI can not be updated using the API')
+        end
+
+        service = ::Deployments::UpdateService.new(deployment, declared_params)
+
+        if service.execute
+          present(deployment, with: Entities::DeploymentExtended, current_user: current_user)
+        else
+          render_validation_error!(deployment)
+        end
+      end
+
+      desc 'Delete a deployment' do
+        detail 'Deletes a specified deployment that is not currently the last deployment for an environment or in a ' \
+          '`running` state.'
+        success code: 204, message: 'Deployment destroyed'
+        failure [
+          [403, 'Forbidden'],
+          [400, '"Cannot destroy running deployment" or "Deployment currently deployed to environment"']
+        ]
+        tags deployments_tags
+      end
+      params do
+        requires :deployment_id, type: Integer, desc: 'ID of the deployment.'
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: :delete_deployment, boundary_type: :project,
+        job_token_policies: :admin_deployments
+      delete ':id/deployments/:deployment_id' do
+        check_rate_limit!(:deployment_delete, scope: { user: current_user })
+
+        deployment = user_project.deployments.find(params[:deployment_id])
+
+        authorize!(:destroy_deployment, deployment)
+
+        destroy_conditionally!(deployment) do
+          result = ::Ci::Deployments::DestroyService.new(user_project, current_user).execute(deployment)
+
+          if result[:status] == :error
+            render_api_error!(result[:message], result[:http_status] || 400)
+          end
+        end
+      end
+
+      helpers Helpers::MergeRequestsHelpers
+
+      desc 'List all merge requests associated with a deployment' do
+        detail 'Lists all merge requests shipped with a specified deployment.'
+        success Entities::MergeRequestBasic
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 404, message: 'Not found' }
+        ]
+        is_array true
+        tags deployments_tags
+      end
+      params do
+        use :pagination
+
+        requires :deployment_id, type: Integer, desc: 'ID of the deployment.'
+
+        use :merge_requests_base_params
+      end
+      route_setting :authentication, job_token_allowed: true
+      route_setting :authorization, permissions: [:read_deployment, :read_merge_request], boundary_type: :project,
+        job_token_policies: :read_deployments,
+        allow_public_access_for_enabled_project_features: [:repository, :builds, :environments]
+      get ':id/deployments/:deployment_id/merge_requests' do
+        authorize! :read_deployment, user_project
+
+        mr_params = declared_params.merge(deployment_id: params[:deployment_id])
+        merge_requests = MergeRequestsFinder.new(current_user, mr_params).execute
+
+        present paginate(merge_requests), with: Entities::MergeRequestBasic, current_user: current_user
+      end
+    end
+  end
+end
+
+API::Deployments.prepend_mod

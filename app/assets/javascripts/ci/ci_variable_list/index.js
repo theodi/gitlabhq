@@ -1,0 +1,72 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { parseBoolean } from '@gitlab/frontend-utils';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+import CiAdminVariables from './components/ci_admin_variables.vue';
+import CiGroupVariables from './components/ci_group_variables.vue';
+import CiProjectVariables from './components/ci_project_variables.vue';
+import { generateCacheConfig, resolvers } from './graphql/settings';
+
+const mountCiVariableListApp = (containerEl) => {
+  const {
+    endpoint,
+    groupId,
+    groupPath,
+    isGroup,
+    isProject,
+    maskableRawRegex,
+    maskableRegex,
+    projectFullPath,
+    projectId,
+    protectedByDefault,
+  } = containerEl.dataset;
+
+  const parsedIsProject = parseBoolean(isProject);
+  const parsedIsGroup = parseBoolean(isGroup);
+  const isProtectedByDefault = parseBoolean(protectedByDefault);
+
+  let component = CiAdminVariables;
+
+  if (parsedIsGroup) {
+    component = CiGroupVariables;
+  } else if (parsedIsProject) {
+    component = CiProjectVariables;
+  }
+
+  Vue.use(VueApollo);
+
+  // If the feature flag `ci_variables_pages` is enabled,
+  // we are using the default cache config with pages.
+  const apolloProvider = new VueApollo({
+    defaultClient: createDefaultClient(
+      resolvers,
+      generateCacheConfig(window.gon?.features?.ciVariablesPages),
+    ),
+  });
+
+  return initVueApp({
+    el: containerEl,
+    apolloProvider,
+    provide: {
+      endpoint,
+      groupId,
+      groupPath,
+      isInheritedGroupVars: false,
+      isProtectedByDefault,
+      maskableRawRegex,
+      maskableRegex,
+      projectFullPath,
+      projectId,
+    },
+    component,
+  });
+};
+
+export default (containerId = 'js-ci-variables') => {
+  const el = document.getElementById(containerId);
+
+  if (!el) return;
+
+  mountCiVariableListApp(el);
+};

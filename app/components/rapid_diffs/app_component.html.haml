@@ -1,0 +1,61 @@
+- helpers.add_page_specific_style 'page_bundles/rapid_diffs'
+- if !lazy?
+  - prefetch_endpoints.each do |endpoint|
+    - helpers.add_page_startup_api_call endpoint
+  - if diffs_stream_url && !file_by_file_mode?
+    - helpers.content_for :startup_js do
+      - javascript_tag nonce: content_security_policy_nonce do
+        :plain
+          var controller = new AbortController();
+          window.gl.rapidDiffsPreload = {
+            controller: controller,
+            streamRequest: fetch('#{Gitlab::UrlSanitizer.sanitize(diffs_stream_url)}', { signal: controller.signal })
+          }
+
+%article.rd-app{ aria: { label: root_label }, data: { rapid_diffs: true, app_data: app_data.to_json } }
+  %header.rd-app-header{ aria: { label: header_label } }
+    .rd-app-file-browser-toggle
+      %div{ data: { file_browser_toggle: true } }
+    %div{ data: { after_browser_toggle: true } }
+    .rd-app-settings
+      %div{ data: { view_settings: true } }
+  .rd-app-body
+    .rd-app-sidebar{ data: { file_browser: true }, style: sidebar_style }
+      .rd-app-sidebar-loading{ data: { testid: 'rd-file-browser-loading' } }
+        = helpers.gl_loading_icon(size: 'sm')
+    -# using label produces better results in VoiceOver than labelledby + hidden h2
+    %section.rd-app-content{ aria: { label: content_label } }
+      - if empty_state_visible?
+        - if empty_state?
+          = empty_state
+        - else
+          = render RapidDiffs::EmptyStateComponent.new
+      .rd-app-diffs-list
+        = before_diffs_list
+        .rd-app-content-header{ data: { hidden_files_warning: true } }
+        -# performance optimization: using a sibling element to cover diffs list is faster than changing opacity on the parent
+        .rd-app-diffs-list-loading-overlay{ data: { diffs_overlay: true } }
+        .flash-container{ data: { diffs_list_alert: true } }
+        %div{ data: { diffs_list: true } }
+          - unless lazy?
+            = javascript_tag nonce: content_security_policy_nonce do
+              :plain
+                requestAnimationFrame(() => { window.performance.mark('rapid-diffs-first-diff-file-shown') })
+            - unless empty_state_visible?
+              - if diffs_list?
+                = diffs_list
+              - else
+                = render RapidDiffs::DiffFileComponent.with_collection(diff_collection, parallel_view: parallel_view?, environment: environment)
+            - if diffs_stream_url && !file_by_file_mode?
+              %div{ data: { stream_remaining_diffs: true } }
+            - else
+              = javascript_tag nonce: content_security_policy_nonce do
+                :plain
+                  requestAnimationFrame(() => {
+                    window.performance.mark('rapid-diffs-list-loaded');
+                    window.performance.measure('rapid-diffs-list-loading', 'rapid-diffs-first-diff-file-shown', 'rapid-diffs-list-loaded');
+                  })
+        %div{ data: { file_by_file_navigation: true } }
+        .rd-app-diffs-loading{ data: { list_loading: true }, hidden: !diffs_stream_url || file_by_file_mode? }
+          = render Pajamas::SpinnerComponent.new(size: :lg)
+        = after_diffs_list

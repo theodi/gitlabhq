@@ -1,0 +1,60 @@
+# frozen_string_literal: true
+
+module API
+  # MergeRequestDiff API
+  class MergeRequestDiffs < ::API::Base
+    include PaginationParams
+    include Helpers::Unidiff
+    include APIGuard
+
+    allow_access_with_scope :ai_workflows, if: ->(request) { request.get? || request.head? }
+
+    before { authenticate! }
+
+    feature_category :code_review_workflow
+
+    params do
+      requires :id, types: [String, Integer], desc: 'ID or URL-encoded path of the project.'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'Retrieve merge request diff versions' do
+        detail 'Retrieves merge request diff versions.'
+        success Entities::MergeRequestDiff
+        tags %w[merge_requests]
+        is_array true
+      end
+
+      params do
+        requires :merge_request_iid, type: Integer, desc: 'Internal ID of the merge request.'
+        use :pagination
+      end
+      route_setting :authorization, permissions: :read_merge_request_diff, boundary_type: :project
+      get ":id/merge_requests/:merge_request_iid/versions" do
+        merge_request = find_merge_request_with_access(params[:merge_request_iid])
+
+        present paginate(merge_request.merge_request_diffs.order_id_desc), with: Entities::MergeRequestDiff
+      end
+
+      desc 'Retrieve a merge request diff version' do
+        detail 'Retrieves a merge request diff version.'
+        success Entities::MergeRequestDiffFull
+        tags %w[merge_requests]
+      end
+
+      params do
+        requires :merge_request_iid, type: Integer, desc: 'Internal ID of the merge request.'
+        requires :version_id, type: Integer, desc: 'ID of the merge request diff version.'
+        use :with_unidiff
+      end
+
+      route_setting :authorization, permissions: :read_merge_request_diff, boundary_type: :project
+      get ":id/merge_requests/:merge_request_iid/versions/:version_id", urgency: :low do
+        merge_request = find_merge_request_with_access(params[:merge_request_iid])
+
+        cache_context = ->(_) { declared_params[:unidiff] }
+
+        present_cached merge_request.merge_request_diffs.find(params[:version_id]), with: Entities::MergeRequestDiffFull, cache_context: cache_context, enable_unidiff: declared_params[:unidiff]
+      end
+    end
+  end
+end

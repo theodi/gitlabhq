@@ -1,0 +1,378 @@
+<script>
+import { GlAvatarLink, GlAvatar, GlSprintf, GlLink } from '@gitlab/ui';
+import { defineAsyncComponent } from 'vue';
+import { getIdFromGraphQLId } from '~/graphql_shared/utils';
+import { confirmAction } from '~/lib/utils/confirm_via_gl_modal/confirm_via_gl_modal';
+import { createAlert } from '~/alert';
+import { ignoreWhilePending } from '~/lib/utils/ignore_while_pending';
+import { __, sprintf } from '~/locale';
+import { detectAndConfirmSensitiveTokens } from '~/lib/utils/secret_detection';
+import { isCurrentUser } from '~/lib/utils/common_utils';
+import { parseAgentPresence } from '~/ai/agents_utils';
+import TimeAgoTooltip from '~/vue_shared/components/time_ago_tooltip.vue';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import { glSlotsMixin } from '~/lib/utils/vue3compat/gl_slots_mixin';
+import NoteActions from './note_actions.vue';
+import NoteBody from './note_body.vue';
+import NoteHeader from './note_header.vue';
+import TimelineEntryItem from './timeline_entry_item.vue';
+
+export default {
+  name: 'NoteableNote',
+  components: {
+    NoteHeader,
+    NoteActions,
+    NoteBody,
+    NoteSessionBar: defineAsyncComponent(
+      () => import('ee_component/ai/shared/widgets/note_session_bar.vue'),
+    ),
+    NoteAgentActorLine: defineAsyncComponent(
+      () => import('ee_component/ai/shared/widgets/note_agent_actor_line.vue'),
+    ),
+    GlAvatarLink,
+    GlAvatar,
+    GlSprintf,
+    GlLink,
+    TimelineEntryItem,
+    TimeAgoTooltip,
+  },
+  mixins: [glSlotsMixin, glFeatureFlagsMixin()],
+  inject: {
+    store: {
+      type: Object,
+    },
+    endpoints: {
+      type: Object,
+    },
+  },
+  provide() {
+    return {
+      reportAbusePath: this.endpoints.reportAbuse,
+    };
+  },
+  props: {
+    note: {
+      type: Object,
+      required: true,
+    },
+    showReplyButton: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    autosaveKey: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    restoreFromAutosave: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    timelineLayout: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isLastDiscussion: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    canResolve: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isResolved: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isResolving: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isFirstNote: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['cancel-editing', 'note-edited', 'resolve', 'start-editing', 'start-replying'],
+  data() {
+    return {
+      actorLineOverflows: false,
+      isDeleting: false,
+      isSaving: false,
+    };
+  },
+  computed: {
+    isEditing() {
+      return this.note.isEditing;
+    },
+    author() {
+      return this.note.author;
+    },
+    authorId() {
+      return getIdFromGraphQLId(this.author.id);
+    },
+    commentType() {
+      return this.note.internal ? __('internal note') : __('comment');
+    },
+    isDraft() {
+      return Boolean(this.note.isDraft);
+    },
+    canAwardEmoji() {
+      if (this.isDraft) return false;
+      return this.note.current_user?.can_award_emoji ?? false;
+    },
+    canEdit() {
+      return this.note.current_user?.can_edit ?? false;
+    },
+    canReportAsAbuse() {
+      if (this.isDraft) return false;
+      return Boolean(this.endpoints.reportAbuse) && !isCurrentUser(this.authorId);
+    },
+    resolvedText() {
+      return this.note.resolved_by_push
+        ? __('Automatically resolved %{timeago} by %{author}')
+        : __('Resolved %{timeago} by %{author}');
+    },
+    isAmazonQCodeReview() {
+      return this.author.username === 'amazon-q';
+    },
+    hasSession() {
+      return (
+        this.glFeatures.noteAgentSessionBar &&
+        Boolean(this.note.duo_session_id_triggered && this.note.duo_session_agent_name)
+      );
+    },
+    agentPresence() {
+      if (!this.glFeatures.agentPresenceConsolidation) return null;
+
+      return parseAgentPresence(this.note.agent_presence);
+    },
+    duoSessionId() {
+      if (this.agentPresence) return null;
+
+      return this.note.duo_session_id;
+    },
+  },
+  watch: {
+    isEditing: {
+      handler(isEditing) {
+        if (isEditing) this.$nextTick(() => this.$el.scrollIntoView({ block: 'nearest' }));
+      },
+      immediate: true,
+    },
+  },
+  methods: {
+    async onDelete() {
+      const msg = sprintf(__('Are you sure you want to delete this %{commentType}?'), {
+        commentType: this.commentType,
+      });
+      const confirmed = await confirmAction(msg, {
+        primaryBtnVariant: 'danger',
+        primaryBtnText: this.note.internal ? __('Delete internal note') : __('Delete comment'),
+      });
+
+      if (!confirmed) return;
+
+      this.isDeleting = true;
+
+      try {
+        await this.store.destroyNote(this.note);
+      } catch (error) {
+        createAlert({
+          message: __('Something went wrong while deleting your note. Please try again.'),
+        });
+      } finally {
+        this.isDeleting = false;
+      }
+    },
+    async saveNote(noteText) {
+      const confirmSubmit = await detectAndConfirmSensitiveTokens({ content: noteText });
+
+      if (!confirmSubmit) return;
+
+      this.isSaving = true;
+
+      try {
+        await this.store.saveNote(this.note, noteText);
+        this.$emit('cancel-editing');
+      } finally {
+        this.isSaving = false;
+      }
+    },
+    onCancelEditing: ignoreWhilePending(async function cancel(shouldConfirm) {
+      if (shouldConfirm) {
+        const msg = sprintf(__('Are you sure you want to cancel editing this %{commentType}?'), {
+          commentType: this.commentType,
+        });
+        const confirmed = await confirmAction(msg, {
+          primaryBtnText: __('Cancel editing'),
+          primaryBtnVariant: 'danger',
+          secondaryBtnVariant: 'default',
+          secondaryBtnText: __('Continue editing'),
+          hideCancel: true,
+        });
+        if (!confirmed) return;
+      }
+      this.$emit('cancel-editing');
+    }),
+    async toggleAward(name) {
+      try {
+        await this.store.toggleAwardOnNote(this.note, name);
+      } catch (error) {
+        createAlert({
+          message: __('Failed to set a reaction. Please try again.'),
+          error,
+        });
+      }
+    },
+  },
+};
+</script>
+
+<template>
+  <timeline-entry-item
+    :id="`note_${note.id}`"
+    :timeline-layout="timelineLayout"
+    :is-last-discussion="isLastDiscussion"
+    :class="{
+      'gl-pointer-events-none gl-opacity-5': isSaving || isDeleting,
+      'gl-bg-[var(--note-background)]': !timelineLayout,
+      '[--note-background:var(--timeline-entry-draft-note-background-color)]': isDraft,
+    }"
+    class="[--note-background:initial] target:[--note-background:var(--timeline-entry-target-background-color)]"
+    data-testid="noteable-note-container"
+  >
+    <!-- Avatar slot for timeline layout -->
+    <template #avatar>
+      <gl-avatar-link
+        :href="author.path"
+        :data-user-id="authorId"
+        :data-username="author.username"
+        class="js-user-link gl-mt-2"
+      >
+        <gl-avatar
+          :src="author.avatar_url"
+          :entity-name="author.username"
+          :alt="author.name"
+          :size="32"
+        />
+      </gl-avatar-link>
+    </template>
+
+    <!-- Content slot for timeline layout, default slot for non-timeline -->
+    <template #content>
+      <div
+        :class="{
+          'gl-border gl-rounded-lg gl-border-section gl-bg-[var(--note-background)]':
+            timelineLayout,
+        }"
+      >
+        <div
+          v-if="glSlots().headline"
+          class="gl-border-b gl-border-section gl-px-4 gl-py-3 gl-text-subtle"
+        >
+          <slot name="headline"></slot>
+        </div>
+        <div
+          class="js-note-header-info gl-flex gl-flex-wrap gl-items-start gl-justify-between gl-gap-2 gl-px-4 gl-pt-2"
+          :class="{ '!gl-flex-nowrap': agentPresence }"
+        >
+          <note-header
+            class="gl-my-1 gl-py-2"
+            :author="author"
+            :created-at="note.created_at"
+            :note-id="note.id"
+            :is-internal-note="note.internal"
+            :is-imported="note.imported"
+            :show-avatar="!timelineLayout"
+            :hide-username="Boolean(agentPresence)"
+            :single-line="Boolean(agentPresence) && !actorLineOverflows"
+          >
+            <template v-if="glSlots()['avatar-badge']" #avatar-badge>
+              <slot name="avatar-badge"></slot>
+            </template>
+            <template v-if="agentPresence">
+              <note-agent-actor-line
+                :presence="agentPresence"
+                @overflow="actorLineOverflows = $event"
+              />
+            </template>
+          </note-header>
+          <note-actions
+            class="gl-pt-1"
+            :author-id="authorId"
+            :note-id="note.id"
+            :is-amazon-q-code-review="isAmazonQCodeReview"
+            :note-url="note.noteable_note_url"
+            :access-level="note.human_access"
+            :is-contributor="note.is_contributor"
+            :is-author="note.is_noteable_author"
+            :project-name="note.project_name"
+            :noteable-type="note.noteable_type"
+            :show-reply="showReplyButton"
+            :can-edit="canEdit"
+            :can-award-emoji="canAwardEmoji"
+            :can-delete="canEdit"
+            :can-report-as-abuse="canReportAsAbuse"
+            :can-resolve="canResolve"
+            :is-resolved="isResolved"
+            :is-resolving="isResolving"
+            :duo-session-id="duoSessionId"
+            @resolve="$emit('resolve')"
+            @delete="onDelete"
+            @start-editing="$emit('start-editing')"
+            @start-replying="$emit('start-replying')"
+            @award="toggleAward"
+          />
+        </div>
+        <div class="gl-pb-4 gl-pr-4" :class="timelineLayout ? 'gl-pl-4' : 'gl-ml-2 gl-pl-8'">
+          <div v-if="isResolved" class="-gl-mt-2 gl-mb-3 gl-text-sm gl-text-subtle">
+            <gl-sprintf :message="resolvedText">
+              <template #timeago>
+                <time-ago-tooltip :time="note.resolved_at" tooltip-placement="bottom" />
+              </template>
+              <template #author>
+                <gl-link
+                  :href="note.resolved_by.path"
+                  :data-user-id="note.resolved_by.id"
+                  class="js-user-link gl-break-words"
+                >
+                  {{ note.resolved_by.name }}
+                </gl-link>
+              </template>
+            </gl-sprintf>
+          </div>
+          <note-body
+            :note="note"
+            :can-edit="canEdit"
+            :is-editing="isEditing"
+            :autosave-key="autosaveKey"
+            :restore-from-autosave="restoreFromAutosave"
+            :save-note="saveNote"
+            :is-first-note="isFirstNote"
+            @cancel-editing="onCancelEditing"
+            @input="$emit('note-edited', $event)"
+            @award="toggleAward"
+          />
+        </div>
+        <note-session-bar
+          v-if="hasSession"
+          :class="{ 'gl-ml-3': !isFirstNote }"
+          :agent-name="note.duo_session_agent_name"
+          :session-id="note.duo_session_id_triggered"
+          :status="note.duo_session_status"
+          :is-reply="!isFirstNote"
+        />
+        <slot name="footer"></slot>
+      </div>
+    </template>
+  </timeline-entry-item>
+</template>

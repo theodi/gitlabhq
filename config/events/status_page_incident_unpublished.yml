@@ -1,0 +1,15 @@
+---
+description: Tracks usages of unpublish operation
+internal_events: true
+action: status_page_incident_unpublished
+identifiers:
+  - project
+  - user
+  - namespace
+product_group: platform_insights
+product_categories:
+- incident_management
+milestone: '16.11'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/146160
+tiers:
+  - ultimate

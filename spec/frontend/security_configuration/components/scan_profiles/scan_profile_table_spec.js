@@ -1,0 +1,164 @@
+import { GlTable, GlButton, GlSkeletonLoader } from '@gitlab/ui';
+import { mountExtended } from 'helpers/vue_test_utils_helper';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import ScanProfileTable from '~/security_configuration/components/scan_profiles/scan_profile_table.vue';
+import ScanTypeCell from '~/security_configuration/components/scan_profiles/scan_type_cell.vue';
+import {
+  SCAN_PROFILE_PROMO_ITEMS,
+  SCAN_PROFILE_TYPE_SAST,
+} from '~/security_configuration/constants';
+
+describe('ScanProfileTable', () => {
+  let wrapper;
+
+  const { bindInternalEventDocument } = useMockInternalEventsTracking();
+
+  const createComponent = ({ props } = {}) => {
+    wrapper = mountExtended(ScanProfileTable, {
+      propsData: {
+        loading: false,
+        tableItems: SCAN_PROFILE_PROMO_ITEMS,
+        ...props,
+      },
+    });
+
+    return wrapper;
+  };
+
+  const findTable = () => wrapper.findComponent(GlTable);
+  const findAllButtons = () => wrapper.findAllComponents(GlButton);
+  const findApplyButton = () => findAllButtons().at(0);
+  const findPreviewButton = () => findAllButtons().at(1);
+  const findSkeletonLoader = () => wrapper.findComponent(GlSkeletonLoader);
+  const findAllScanTypeCells = () => wrapper.findAllComponents(ScanTypeCell);
+
+  it('shows a skeleton loader when loading', () => {
+    wrapper = mountExtended(ScanProfileTable, {
+      propsData: {
+        loading: true,
+        tableItems: [],
+      },
+    });
+
+    expect(findSkeletonLoader().exists()).toBe(true);
+  });
+
+  describe('table rendering', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('renders table with correct fields', () => {
+      const table = findTable();
+      expect(table.exists()).toBe(true);
+      expect(table.props('fields')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: 'scanType', label: 'Scanner' }),
+          expect.objectContaining({ key: 'name', label: 'Profile' }),
+          expect.objectContaining({ key: 'status', label: 'Scanner health' }),
+          expect.objectContaining({ key: 'lastScan', label: 'Last scan' }),
+          expect.objectContaining({ key: 'actions', label: '' }),
+        ]),
+      );
+    });
+
+    it('passes table items to the table', () => {
+      expect(findTable().props('items')).toEqual(SCAN_PROFILE_PROMO_ITEMS);
+    });
+
+    it('renders scanner type from promo item', () => {
+      expect(wrapper.text()).toContain('SD');
+      expect(wrapper.text()).toContain('Secret detection');
+    });
+
+    it('renders Dependency Scanning scanner type', () => {
+      expect(wrapper.text()).toContain('DS');
+      expect(wrapper.text()).toContain('Dependency scanning');
+    });
+
+    it('renders "No profile applied"', () => {
+      expect(wrapper.text()).toContain('No profile applied');
+    });
+
+    it('renders last scan as —', () => {
+      expect(wrapper.text()).toContain('—');
+    });
+
+    it('renders disabled apply button', () => {
+      expect(findApplyButton().props('disabled')).toBe(true);
+    });
+
+    it('renders disabled preview button', () => {
+      expect(findPreviewButton().props('disabled')).toBe(true);
+    });
+  });
+
+  it('hides the scanner on additional profile rows', () => {
+    createComponent({
+      props: {
+        tableItems: [
+          { scanType: SCAN_PROFILE_TYPE_SAST, isConfigured: true },
+          { scanType: SCAN_PROFILE_TYPE_SAST, isConfigured: true, isAdditionalProfile: true },
+        ],
+      },
+    });
+
+    expect(findAllScanTypeCells()).toHaveLength(1);
+  });
+
+  it('removes the borders between profiles of one type', () => {
+    createComponent({
+      props: {
+        tableItems: [
+          { scanType: SCAN_PROFILE_TYPE_SAST, isConfigured: true, hasAdditionalProfileBelow: true },
+          { scanType: SCAN_PROFILE_TYPE_SAST, isConfigured: true, isAdditionalProfile: true },
+        ],
+      },
+    });
+
+    const [firstRowCell, secondRowCell] = wrapper.findAll('tbody tr td:first-child').wrappers;
+
+    expect(firstRowCell.classes()).toContain('!gl-border-b-0');
+    expect(firstRowCell.classes()).not.toContain('!gl-border-t-0');
+    expect(secondRowCell.classes()).toContain('!gl-border-t-0');
+    expect(secondRowCell.classes()).not.toContain('!gl-border-b-0');
+  });
+
+  describe('tracking', () => {
+    it('tracks view_scan_profile_list on mount', () => {
+      const { trackEventSpy } = bindInternalEventDocument(document);
+      createComponent();
+
+      expect(trackEventSpy).toHaveBeenCalledWith('view_scan_profile_list', {}, undefined);
+    });
+
+    it('tracks click_scan_profile_learn_more_link when a learn more link is clicked', () => {
+      createComponent();
+      const { triggerEvent, trackEventSpy } = bindInternalEventDocument(wrapper.element);
+
+      triggerEvent(wrapper.find('[data-event-tracking]').element);
+
+      expect(trackEventSpy).toHaveBeenLastCalledWith(
+        'click_scan_profile_learn_more_link',
+        expect.any(Object),
+      );
+    });
+  });
+
+  describe.each(['name', 'status', 'actions'])('%s slot', (slotName) => {
+    it('renders custom status slot content when provided', () => {
+      wrapper = mountExtended(ScanProfileTable, {
+        propsData: {
+          loading: false,
+          tableItems: SCAN_PROFILE_PROMO_ITEMS,
+        },
+        scopedSlots: {
+          [`cell(${slotName})`]: `<div class="custom-status">Custom ${slotName} content</div>`,
+        },
+      });
+
+      expect(wrapper.find('.custom-status').exists()).toBe(true);
+      expect(wrapper.text()).toContain(`Custom ${slotName} content`);
+    });
+  });
+});

@@ -1,0 +1,289 @@
+# frozen_string_literal: true
+
+module API
+  module Helpers
+    module WorkItems
+      module Preloads
+        WORK_ITEM_REFERENCE_PRELOADS = [
+          :author,
+          { project: { namespace: :route } },
+          { namespace: { parent: :route } }
+        ].freeze
+
+        WORK_ITEM_POLICY_PRELOADS = [
+          { project: [:project_feature, { namespace: :route }] },
+          { namespace: { parent: :route } }
+        ].freeze
+
+        NOTE_REFERENCE_PRELOADS = %i[author project noteable updated_by system_note_metadata].freeze
+
+        FEATURE_PRELOADS = {
+          description: [:last_edited_by],
+          assignees: [:assignees],
+          labels: [:labels],
+          milestone: [{ milestone: [{ group: :route }, { project: { namespace: :route } }] }],
+          start_and_due_date: [:dates_source],
+          time_tracking: [{ timelogs: :user }],
+          error_tracking: [:sentry_issue],
+          hierarchy: [{ work_item_parent: WORK_ITEM_REFERENCE_PRELOADS }],
+          notifications: [:issue_assignees]
+        }.freeze
+
+        PROJECT_FEATURE_PRELOADS = {}.freeze
+
+        GROUP_FEATURE_PRELOADS = {}.freeze
+
+        FIELD_PRELOADS = {
+          author: [:author],
+          closed_by: [:closed_by],
+          duplicated_to_work_item_url: [:duplicated_to],
+          moved_to_work_item_url: [:moved_to],
+          promoted_to_epic_url: [:work_item_transition],
+          web_url: [:author],
+          web_path: [:author],
+          namespace: [{ namespace: :route }]
+        }.freeze
+
+        PROJECT_FIELD_PRELOADS = {
+          create_note_email: [:project],
+          reference: [{ namespace: :route }, { project: :namespace }],
+          web_url: [{ namespace: :route }, { project: :namespace }],
+          web_path: [{ namespace: :route }, { project: :namespace }],
+          user_permissions: [:project],
+          features: [:project]
+        }.freeze
+
+        GROUP_FIELD_PRELOADS = {
+          reference: [{ namespace: :route }],
+          web_url: [{ namespace: :route }],
+          web_path: [{ namespace: :route }],
+          user_permissions: [:namespace],
+          features: [{ namespace: :route }]
+        }.freeze
+
+        def preload_associations_for(field_keys, feature_keys, resource_parent)
+          is_project = resource_parent.is_a?(::Project)
+
+          context_field_preloads, context_feature_preloads =
+            if is_project
+              [PROJECT_FIELD_PRELOADS, PROJECT_FEATURE_PRELOADS]
+            else
+              [GROUP_FIELD_PRELOADS, GROUP_FEATURE_PRELOADS]
+            end
+
+          field_preloads = field_keys.flat_map do |field|
+            FIELD_PRELOADS.fetch(field, []) + context_field_preloads.fetch(field, [])
+          end
+
+          feature_preloads = feature_keys.flat_map do |feature|
+            FEATURE_PRELOADS.fetch(feature, []) + context_feature_preloads.fetch(feature, [])
+          end
+
+          (field_preloads + feature_preloads).uniq
+        end
+
+        def build_work_items_relation(resource_parent, preloads: [])
+          work_items_relation = ::WorkItems::WorkItemsFinder.new(
+            current_user,
+            work_items_finder_params(resource_parent)
+          ).execute
+
+          return work_items_relation if preloads.blank?
+
+          work_items_relation.preload(*preloads) # rubocop:disable CodeReuse/ActiveRecord -- Preloading associations for API response
+        end
+
+        def find_work_item_by_iid(resource_parent, iid)
+          ::WorkItems::WorkItemsFinder.new(
+            current_user,
+            work_items_parent_params(resource_parent).merge(iids: [iid])
+          ).execute.first
+        end
+
+        # Resolves a `namespaces/:id` route param: user namespaces are rejected, project namespaces
+        # resolve to their project, group namespaces are used directly.
+        def resolve_namespace_resource_parent!(resource_parent_id)
+          namespace = find_namespace_by_path!(resource_parent_id.to_s, allow_project_namespaces: true)
+          not_found!('Namespace') if namespace.is_a?(::Namespaces::UserNamespace)
+          namespace.is_a?(::Namespaces::ProjectNamespace) ? namespace.project : namespace
+        end
+
+        # Resolves the work item for a `namespaces/:id/-/work_items/:iid` route.
+        def work_item_for_namespace!(namespace_id, work_item_iid)
+          work_item_for!(resolve_namespace_resource_parent!(namespace_id), work_item_iid)
+        end
+
+        # Resolves the work item for a project- or group-scoped route. 404s if not found or not readable.
+        def work_item_for!(resource_parent, work_item_iid)
+          find_work_item_by_iid(resource_parent, work_item_iid).tap do |work_item|
+            not_found!('Work Item') unless work_item
+          end
+        end
+
+        # Preloads the project / group membership associated with the work items so the :read_project and :read_group
+        # policy checks don't N+1 on membership lookups
+        def preload_work_item_policies(work_items)
+          return unless current_user
+          return if work_items.blank?
+
+          preload_policies_for(work_items)
+        end
+
+        def preload_hierarchy_authorization(work_items, feature_keys)
+          return unless current_user
+          return unless feature_keys.include?(:hierarchy)
+          return if work_items.blank?
+
+          parents = work_items.filter_map do |work_item|
+            next unless work_item.has_widget?(:hierarchy)
+
+            work_item.get_widget(:hierarchy).parent
+          end
+
+          return if parents.empty?
+
+          preload_policies_for(parents)
+        end
+
+        def count_preloads_for(work_items, field_keys, feature_keys)
+          preloads = {}
+          if field_keys.include?(:user_discussions_count)
+            preloads[:user_discussions_counts] = preload_user_discussions_counts(work_items)
+          end
+
+          preloads[:award_emoji_counts] = preload_award_emoji_counts(work_items) if feature_keys.include?(:award_emoji)
+
+          if feature_keys.include?(:development)
+            preloads[:closing_merge_requests_counts] = preload_closing_merge_requests_counts(work_items)
+            preloads[:will_auto_close_ids] = preload_will_auto_close_ids(work_items)
+          end
+
+          preloads
+        end
+
+        def build_children_relation(parent_work_item, state: nil, preloads: [])
+          relation = parent_work_item.work_item_children_by_relative_position
+          relation = relation.with_state(state) if state.to_s.in?(%w[opened closed])
+
+          # Unconditionally preload author and project / namespace / route so the :read_work_item policy check doesn't
+          # N+1 when loading those associations
+          all_preloads = (preloads + WORK_ITEM_REFERENCE_PRELOADS).uniq
+          relation.preload(*all_preloads) # rubocop:disable CodeReuse/ActiveRecord -- Preloading associations for API response
+        end
+
+        def build_linked_items_relation(work_item, state: nil, link_type: nil, preloads: [])
+          # Unconditionally preload author and project / namespace / route so the :read_work_item policy check doesn't
+          # N+1 when loading those associations
+          all_preloads = (preloads + WORK_ITEM_REFERENCE_PRELOADS).uniq
+
+          relation = ::WorkItem.linked_items_for(work_item.id, link_type: link_type, preload: all_preloads)
+          relation = relation.with_state(state) if state.to_s.in?(%w[opened closed])
+          relation
+        end
+
+        def build_notes_relation(parent_work_item, notes_filter:)
+          # Preload the associations Entities::Note serializes per row (author, project, noteable)
+          # plus updated_by and system_note_metadata, otherwise rendering a page issues per-note
+          # queries proportional to per_page.
+          parent_work_item.notes
+            .with_notes_filter(notes_filter)
+            .preload(NOTE_REFERENCE_PRELOADS) # rubocop:disable CodeReuse/ActiveRecord -- Preloading associations for API response
+            .reorder(order_options_with_tie_breaker) # rubocop:disable CodeReuse/ActiveRecord -- needed for stable ordering on `order_by` + `sort`
+        end
+
+        def build_discussion_notes_relation(parent_work_item, discussion_id)
+          # Sort by id because keyset pagination needs a column with unique values, and created_at can repeat.
+          # IDs increase in creation order, so this still returns the thread oldest first.
+          parent_work_item.notes
+            .with_discussion_ids(discussion_id)
+            .preload(NOTE_REFERENCE_PRELOADS) # rubocop:disable CodeReuse/ActiveRecord -- Preloading associations for API response
+            .reorder(id: :asc) # rubocop:disable CodeReuse/ActiveRecord -- keyset pagination needs a unique sort column
+        end
+
+        # Bulk-fetches Subscription rows for the given work items and current user so the
+        # notifications feature entity can read each work item's subscribed state from memory
+        # rather than triggering one query per item.
+        def preload_notifications_subscriptions(work_items, feature_keys)
+          return {} unless current_user && feature_keys.include?(:notifications) && work_items.present?
+
+          ::Subscription
+            .for_subscribables(work_items.map(&:id), ::WorkItem.polymorphic_name)
+            .for_user(current_user)
+            .index_by(&:subscribable_id)
+        end
+
+        private
+
+        def preload_user_discussions_counts(work_items)
+          return {} if work_items.empty?
+
+          ::Note.count_for_collection(
+            work_items.map(&:id),
+            work_items.first.class.base_class.name,
+            'COUNT(DISTINCT discussion_id) AS count'
+          ).each_with_object({}) { |row, hash| hash[row.noteable_id] = row.count.to_i }
+        end
+
+        # Visibility-aware bulk count of closing merge requests keyed by work item id, so the development
+        # feature entity reads each count from memory instead of issuing one query per work item.
+        def preload_closing_merge_requests_counts(work_items)
+          return {} if work_items.empty?
+
+          ::MergeRequestIssue.count_for_collection(work_items.map(&:id), current_user).to_h
+        end
+
+        # Bulk-resolves will_auto_close_by_merge_request for the whole page (open + project auto-closes +
+        # has an opened closing merge request) so the entity avoids an EXISTS query per work item.
+        def preload_will_auto_close_ids(work_items)
+          eligible = work_items.select(&:eligible_for_autoclose_by_merge_request?)
+          return Set.new if eligible.empty?
+
+          ::MergeRequestIssue.auto_close_issue_ids(eligible.map(&:id))
+        end
+
+        def preload_award_emoji_counts(work_items)
+          return {} if work_items.empty?
+
+          awardable_type = work_items.first.class.base_class.name
+          ::AwardEmoji
+            .votes_for_collection(work_items.map(&:id), awardable_type)
+            .each_with_object({}) do |row, hash|
+              counts = hash[row.awardable_id] ||= { up: 0, down: 0 }
+              key = row.name == ::AwardEmoji::UPVOTE_NAME ? :up : :down
+              counts[key] = row.count.to_i
+            end
+        end
+
+        def work_items_parent_params(resource_parent)
+          if resource_parent.is_a?(::Project)
+            { project_id: resource_parent.id }
+          else
+            { group_id: resource_parent.id }
+          end
+        end
+
+        def work_items_finder_params(resource_parent)
+          transformer = ::API::Helpers::WorkItemsFilterParams.new(params, resource_parent: resource_parent)
+          filter_params = transformer.transform
+
+          work_items_parent_params(resource_parent)
+            .merge(filter_params)
+            .merge(sort: "#{params[:order_by]}_#{params[:sort]}")
+        end
+
+        def preload_policies_for(records)
+          projects = records.filter_map(&:project)
+          ::Preloaders::UserMaxAccessLevelInProjectsPreloader.new(projects, current_user).execute if projects.any?
+
+          group_namespaces = (records.map(&:namespace) + projects.map(&:namespace))
+            .select { |namespace| namespace.type == ::Group.sti_name }
+          return if group_namespaces.empty?
+
+          ::Preloaders::GroupPolicyPreloader.new(group_namespaces, current_user).execute
+        end
+      end
+    end
+  end
+end
+
+API::Helpers::WorkItems::Preloads.prepend_mod

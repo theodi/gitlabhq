@@ -1,0 +1,39 @@
+import Vue from 'vue';
+import VueRouter from 'vue-router';
+import VueApollo from 'vue-apollo';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+import { adminGroupsPath } from '~/lib/utils/path_helpers/instance_admin';
+import routes from './routes';
+import AdminGroupsApp from './components/app.vue';
+
+Vue.use(VueRouter);
+Vue.use(VueApollo);
+
+export const createRouter = (basePath) => {
+  const router = new VueRouter({
+    routes,
+    mode: 'history',
+    base: basePath,
+  });
+
+  return router;
+};
+
+export const initAdminGroups = () => {
+  const el = document.getElementById('js-admin-groups-app');
+
+  if (!el) return false;
+
+  const apolloProvider = new VueApollo({
+    defaultClient: createDefaultClient(),
+  });
+
+  return initVueApp({
+    el,
+    router: createRouter(adminGroupsPath()),
+    apolloProvider,
+    name: 'AdminGroupsRoot',
+    component: AdminGroupsApp,
+  });
+};

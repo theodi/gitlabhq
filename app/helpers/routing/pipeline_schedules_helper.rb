@@ -1,0 +1,14 @@
+# frozen_string_literal: true
+
+module Routing
+  module PipelineSchedulesHelper
+    def pipeline_schedules_path(project, *args)
+      project_pipeline_schedules_path(project, *args)
+    end
+
+    def pipeline_schedule_path(schedule, *args)
+      project = schedule.project
+      project_pipeline_schedule_path(project, schedule, *args)
+    end
+  end
+end

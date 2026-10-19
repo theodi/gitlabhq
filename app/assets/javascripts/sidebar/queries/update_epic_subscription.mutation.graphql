@@ -1,0 +1,11 @@
+mutation boardEpicSetSubscription($fullPath: ID!, $iid: ID!, $subscribedState: Boolean!) {
+  updateIssuableSubscription: epicSetSubscription(
+    input: { groupPath: $fullPath, iid: $iid, subscribedState: $subscribedState }
+  ) {
+    issuable: epic {
+      id
+      subscribed
+    }
+    errors
+  }
+}

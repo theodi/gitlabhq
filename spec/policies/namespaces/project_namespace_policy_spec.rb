@@ -1,0 +1,156 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Namespaces::ProjectNamespacePolicy, feature_category: :groups_and_projects do
+  include ExternalAuthorizationServiceHelpers
+  include AdminModeHelper
+
+  let_it_be(:public_project) { create(:project, :public) }
+  let_it_be(:private_project) { create(:project, :private) }
+
+  subject { described_class.new(current_user, namespace) }
+
+  it_behaves_like 'checks timelog categories permissions' do
+    let(:project) { create(:project) }
+    let(:namespace) { project.project_namespace }
+    let(:users_container) { project }
+  end
+
+  context 'with read_namespace permissions' do
+    let_it_be(:project) { public_project }
+    let(:owner) { project.creator }
+    let_it_be(:developer) { create(:user) }
+    let_it_be(:admin) { create(:admin) }
+    let(:namespace) { project.project_namespace }
+
+    before_all do
+      project.add_developer(developer)
+    end
+
+    it 'allows access when a user has read access to the project' do
+      expect(described_class.new(owner, project.project_namespace)).to be_allowed(:read_project, :read_namespace)
+      expect(described_class.new(developer, project.project_namespace)).to be_allowed(:read_project, :read_namespace)
+      expect(described_class.new(admin, project.project_namespace)).to be_allowed(:read_project, :read_namespace)
+    end
+
+    it 'never checks the external service' do
+      expect(::Gitlab::ExternalAuthorization).not_to receive(:access_allowed?)
+
+      expect(described_class.new(owner, namespace)).to be_allowed(:read_project, :read_namespace)
+    end
+
+    context 'with an external authorization service' do
+      before do
+        enable_external_authorization_service_check
+      end
+
+      it 'allows access when the external service allows it' do
+        external_service_allow_access(owner, project)
+        external_service_allow_access(developer, project)
+
+        expect(described_class.new(owner, namespace)).to be_allowed(:read_project, :read_namespace)
+        expect(described_class.new(developer, namespace)).to be_allowed(:read_project, :read_namespace)
+      end
+
+      context 'with an admin' do
+        context 'when admin mode is enabled', :enable_admin_mode do
+          it 'does not check the external service and allows access' do
+            expect(::Gitlab::ExternalAuthorization).not_to receive(:access_allowed?)
+
+            expect(described_class.new(admin, namespace)).to be_allowed(:read_project, :read_namespace)
+          end
+        end
+
+        context 'when admin mode is disabled' do
+          it 'checks the external service and allows access' do
+            external_service_allow_access(admin, project)
+
+            expect(::Gitlab::ExternalAuthorization).to receive(:access_allowed?)
+
+            expect(described_class.new(admin, namespace)).to be_allowed(:read_project, :read_namespace)
+          end
+        end
+      end
+
+      it 'prevents all but seeing a public project in a list when access is denied' do
+        [developer, owner, build(:user), nil].each do |user|
+          external_service_deny_access(user, project)
+          policy = described_class.new(user, namespace)
+
+          expect(policy).not_to be_allowed(:read_project, :read_namespace)
+        end
+      end
+
+      it 'passes the full path to external authorization for logging purposes' do
+        expect(::Gitlab::ExternalAuthorization)
+          .to receive(:access_allowed?).with(owner, 'default_label', project.full_path).and_call_original
+
+        described_class.new(owner, namespace).allowed?(:read_project, :read_namespace)
+      end
+    end
+
+    context 'with support bot user' do
+      let_it_be(:current_user) { create(:support_bot) }
+
+      context 'with service desk disabled' do
+        it { expect(described_class.new(current_user, namespace)).not_to be_allowed(:read_project, :read_namespace) }
+      end
+    end
+
+    context 'with deploy key access actor' do
+      context 'when project is private' do
+        let(:project) { private_project }
+        let(:deploy_key) { create(:deploy_key, user: owner) }
+
+        subject { described_class.new(deploy_key, project.project_namespace) }
+
+        context 'when a read deploy key is enabled in the project' do
+          let!(:deploy_keys_project) { create(:deploy_keys_project, project: project, deploy_key: deploy_key) }
+
+          it { is_expected.to be_disallowed(:read_project, :read_namespace) }
+        end
+
+        context 'when a write deploy key is enabled in the project' do
+          let!(:deploy_keys_project) do
+            create(:deploy_keys_project, :write_access, project: project, deploy_key: deploy_key)
+          end
+
+          it { is_expected.to be_disallowed(:read_project, :read_namespace) }
+        end
+
+        context 'when the deploy key is not enabled in the project' do
+          it { is_expected.to be_disallowed(:read_project, :read_namespace) }
+        end
+      end
+    end
+  end
+
+  describe 'read_namespace_via_membership' do
+    using RSpec::Parameterized::TableSyntax
+
+    let_it_be(:internal_project) { create(:project, :internal) }
+    let_it_be(:non_member) { create(:user) }
+    let_it_be(:guest) { create(:user, guest_of: [public_project, internal_project]) }
+    let_it_be(:admin) { create(:admin) }
+
+    subject(:policy) { described_class.new(current_user, project.project_namespace) }
+
+    where(:project, :current_user, :admin_mode, :allowed) do
+      ref(:public_project)   | ref(:non_member) | false | false
+      ref(:internal_project) | ref(:non_member) | false | false
+      ref(:public_project)   | ref(:guest)      | false | true
+      ref(:internal_project) | ref(:guest)      | false | true
+      ref(:public_project)   | ref(:admin)      | false | false
+      ref(:public_project)   | ref(:admin)      | true  | true
+    end
+
+    with_them do
+      before do
+        enable_admin_mode!(admin) if admin_mode
+      end
+
+      it { expect(policy.allowed?(:read_namespace_via_membership)).to eq(allowed) }
+    end
+  end
+end

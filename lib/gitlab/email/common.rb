@@ -1,0 +1,62 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Email
+    # Contains common methods which must be present in all email classes
+    module Common
+      UNSUBSCRIBE_SUFFIX        = Gitlab::EmailHandler::ReplyKey::UNSUBSCRIBE_SUFFIX
+      UNSUBSCRIBE_SUFFIX_LEGACY = Gitlab::EmailHandler::ReplyKey::UNSUBSCRIBE_SUFFIX_LEGACY
+      WILDCARD_PLACEHOLDER      = '%{key}'
+
+      # This can be overridden for a custom config
+      def config
+        raise NotImplementedError
+      end
+
+      def incoming_email_config
+        Gitlab.config.incoming_email
+      end
+
+      def enabled?
+        !!config&.enabled && config.address.present?
+      end
+
+      def supports_wildcard?
+        config_address = incoming_email_config.address
+
+        config_address.present? && config_address.include?(WILDCARD_PLACEHOLDER)
+      end
+
+      def supports_issue_creation?
+        enabled? && supports_wildcard?
+      end
+
+      alias_method :supports_work_item_creation?, :supports_issue_creation?
+
+      def reply_address(key)
+        incoming_email_config.address.sub(WILDCARD_PLACEHOLDER, key)
+      end
+
+      # example: incoming+1234567890abcdef1234567890abcdef-unsubscribe@incoming.gitlab.com
+      def unsubscribe_address(key)
+        incoming_email_config.address.sub(WILDCARD_PLACEHOLDER, "#{key}#{UNSUBSCRIBE_SUFFIX}")
+      end
+
+      def key_from_address(address, wildcard_address: nil)
+        raise NotImplementedError
+      end
+
+      def key_from_fallback_message_id(mail_id)
+        ::Gitlab::EmailHandler::MailKey.key_from_fallback_message_id(mail_id, Gitlab.config.gitlab.host)
+      end
+
+      def scan_fallback_references(references)
+        ::Gitlab::EmailHandler::MailKey.scan_fallback_references(references)
+      end
+
+      def encrypted_secrets
+        Settings.encrypted(config.encrypted_secret_file)
+      end
+    end
+  end
+end

@@ -1,0 +1,41 @@
+fragment PackageData on Package {
+  id
+  name
+  version
+  packageType
+  createdAt
+  status
+  statusMessage
+  tags {
+    nodes {
+      id
+      name
+    }
+  }
+  metadata {
+    ... on ConanMetadata {
+      id
+      packageChannel
+      packageUsername
+    }
+  }
+  pipelines(first: 1) {
+    nodes {
+      id
+      sha
+      ref
+      commitPath
+      user {
+        id
+        name
+      }
+    }
+  }
+  protectionRuleExists
+  _links {
+    webPath
+  }
+  userPermissions {
+    destroyPackage
+  }
+}

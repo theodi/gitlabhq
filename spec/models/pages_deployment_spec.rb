@@ -1,0 +1,428 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe PagesDeployment, feature_category: :pages do
+  using RSpec::Parameterized::TableSyntax
+  let_it_be(:project) { create(:project) }
+
+  describe 'associations' do
+    it { is_expected.to belong_to(:project).required }
+    it { is_expected.to belong_to(:ci_build).optional }
+  end
+
+  describe 'validations' do
+    it { is_expected.to validate_presence_of(:file) }
+
+    it { is_expected.to validate_presence_of(:size) }
+    it { is_expected.to validate_numericality_of(:size).only_integer.is_greater_than(0) }
+
+    it { is_expected.to validate_presence_of(:file_count) }
+    it { is_expected.to validate_numericality_of(:file_count).only_integer.is_greater_than_or_equal_to(0) }
+
+    it { is_expected.to validate_presence_of(:file_sha256) }
+
+    it { is_expected.to validate_inclusion_of(:file_store).in_array(ObjectStorage::SUPPORTED_STORES) }
+
+    it 'is valid when created from the factory' do
+      expect(build(:pages_deployment)).to be_valid
+    end
+  end
+
+  context 'with deployments stored locally and remotely' do
+    before do
+      stub_pages_object_storage(::Pages::DeploymentUploader)
+    end
+
+    it_behaves_like 'object storable' do
+      let(:locally_stored) { create(:pages_deployment, project: project, file_store: ::ObjectStorage::Store::LOCAL) }
+      let(:remotely_stored) { create(:pages_deployment, project: project, file_store: ::ObjectStorage::Store::REMOTE) }
+    end
+  end
+
+  context 'when uploading the file' do
+    before do
+      stub_pages_object_storage(::Pages::DeploymentUploader)
+    end
+
+    it 'stores the file outsize of the transaction' do
+      expect_next_instance_of(PagesDeployment) do |deployment|
+        expect(deployment).to receive(:store_file_now!)
+      end
+
+      create(:pages_deployment, project: project)
+    end
+
+    it 'does nothing when the file did not change' do
+      deployment = create(:pages_deployment, project: project)
+
+      expect(deployment).not_to receive(:store_file_now!)
+
+      deployment.touch
+    end
+  end
+
+  describe '#upload_ready' do
+    it 'marks #upload_ready as true when upload finishes' do
+      deployment = build(:pages_deployment)
+
+      expect { deployment.save! }
+        .to change { deployment.upload_ready }
+        .from(false).to(true)
+    end
+  end
+
+  describe '.deactivate_all', :freeze_time do
+    let_it_be_with_reload(:deployment) { create(:pages_deployment, project: project, updated_at: 5.minutes.ago) }
+    let_it_be_with_reload(:nil_path_prefix_deployment) { create(:pages_deployment, project: project, path_prefix: nil) }
+    let_it_be_with_reload(:empty_path_prefix_deployment) do
+      create(:pages_deployment, project: project, path_prefix: '')
+    end
+
+    let_it_be_with_reload(:other_project_deployment) { create(:pages_deployment) }
+    let_it_be_with_reload(:deactivated_deployment) do
+      create(:pages_deployment, project: project, deleted_at: 5.minutes.ago)
+    end
+
+    it 'updates only older deployments for the same project and path prefix' do
+      expect { described_class.deactivate_all(project) }
+        .to change { deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+        .and change { deployment.reload.updated_at }.to(Time.zone.now)
+        .and change { nil_path_prefix_deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+        .and change { empty_path_prefix_deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+        .and not_change { other_project_deployment.reload.deleted_at }
+        .and not_change { deactivated_deployment.reload.deleted_at }
+    end
+  end
+
+  describe '.deactivate_deployments_older_than', :freeze_time do
+    let_it_be_with_reload(:nil_path_prefix_deployment) { create(:pages_deployment, project: project, path_prefix: nil) }
+    let_it_be_with_reload(:empty_path_prefix_deployment) do
+      create(:pages_deployment, project: project, path_prefix: '')
+    end
+
+    let_it_be_with_reload(:older_deployment) { create(:pages_deployment, project: project, updated_at: 5.minutes.ago) }
+    let_it_be_with_reload(:reference_deployment) do
+      create(:pages_deployment, project: project, updated_at: 5.minutes.ago)
+    end
+
+    let_it_be_with_reload(:newer_deployment) { create(:pages_deployment, project: project, updated_at: 5.minutes.ago) }
+
+    let_it_be_with_reload(:other_project_deployment) { create(:pages_deployment) }
+    let_it_be_with_reload(:other_path_prefix_deployment) do
+      create(:pages_deployment, project: project, path_prefix: 'other')
+    end
+
+    let_it_be_with_reload(:deactivated_deployment) do
+      create(:pages_deployment, project: project, deleted_at: 5.minutes.ago)
+    end
+
+    it 'updates only older deployments for the same project and path prefix' do
+      expect { described_class.deactivate_deployments_older_than(reference_deployment) }
+        .to change { older_deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+        .and change { older_deployment.reload.updated_at }.to(Time.zone.now)
+        .and change { nil_path_prefix_deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+        .and change { empty_path_prefix_deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+        .and not_change { reference_deployment.reload.deleted_at }
+        .and not_change { newer_deployment.reload.deleted_at }
+        .and not_change { other_project_deployment.reload.deleted_at }
+        .and not_change { other_path_prefix_deployment.reload.deleted_at }
+        .and not_change { deactivated_deployment.reload.deleted_at }
+    end
+
+    it 'updates only older deployments for the same project with the given time' do
+      time = 30.minutes.from_now
+
+      expect { described_class.deactivate_deployments_older_than(reference_deployment, time: time) }
+        .to change { older_deployment.reload.deleted_at }.from(nil).to(time)
+        .and change { older_deployment.reload.updated_at }.to(Time.zone.now)
+        .and change { nil_path_prefix_deployment.reload.deleted_at }.from(nil).to(time)
+        .and change { empty_path_prefix_deployment.reload.deleted_at }.from(nil).to(time)
+        .and not_change { reference_deployment.reload.deleted_at }
+        .and not_change { newer_deployment.reload.deleted_at }
+        .and not_change { other_project_deployment.reload.deleted_at }
+        .and not_change { other_path_prefix_deployment.reload.deleted_at }
+        .and not_change { deactivated_deployment.reload.deleted_at }
+    end
+  end
+
+  describe '.count_versioned_deployments_for' do
+    it 'counts the number of active pages deployments for a list of projects' do
+      group = create(:group)
+      project1 = create(:project, group: group).tap do |project|
+        # not versioned
+        create(:pages_deployment, project: project)
+        # versioned, active
+        create(:pages_deployment, project: project, path_prefix: 'v1')
+        # versioned, not active
+        create(:pages_deployment, project: project, path_prefix: 'v2', deleted_at: 1.day.from_now)
+      end
+      project2 = create(:project, group: group).tap do |project|
+        # not versioned
+        create(:pages_deployment, project: project)
+        # versioned, active
+        create(:pages_deployment, project: project, path_prefix: 'v1')
+        # versioned, not active
+        create(:pages_deployment, project: project, path_prefix: 'v2', deleted_at: 1.day.from_now)
+      end
+
+      expect(described_class.count_versioned_deployments_for([project1, project2], 10)).to eq(2)
+      expect(described_class.count_versioned_deployments_for([project1, project2], 1)).to eq(1)
+    end
+
+    it 'counts the number of active pages deployments for a single project' do
+      group = create(:group)
+      project = create(:project, group: group).tap do |project|
+        create(:pages_deployment, project: project, path_prefix: 'v1')
+        create(:pages_deployment, project: project, path_prefix: 'v2')
+        create(:pages_deployment, project: project, path_prefix: 'v3')
+      end
+
+      expect(described_class.count_versioned_deployments_for(project, 10)).to eq(3)
+    end
+
+    context 'with namespace domain filtering' do
+      let_it_be(:namespace_domain_project) do
+        create(:project).tap do |project|
+          project.project_setting.update!(pages_unique_domain_enabled: false)
+        end
+      end
+
+      let_it_be(:unique_domain_project) do
+        create(:project).tap do |project|
+          project.project_setting.update!(
+            pages_unique_domain_enabled: true,
+            pages_unique_domain: 'unique.example.com'
+          )
+        end
+      end
+
+      let_it_be(:namespace_domain_deployment) do
+        create(:pages_deployment, project: namespace_domain_project, path_prefix: 'v1')
+      end
+
+      let_it_be(:unique_domain_deployment) do
+        create(:pages_deployment, project: unique_domain_project, path_prefix: 'v1')
+      end
+
+      describe '.for_namespace_domain_projects' do
+        it 'returns deployments for projects using the namespace domain' do
+          expect(described_class.for_namespace_domain_projects).to contain_exactly(namespace_domain_deployment)
+        end
+      end
+
+      it 'counts only namespace-domain deployments when requested' do
+        count = described_class.count_versioned_deployments_for(
+          [namespace_domain_project, unique_domain_project],
+          10,
+          namespace_domain_only: true
+        )
+
+        expect(count).to eq(1)
+      end
+
+      it 'counts deployments for all domain settings by default' do
+        count = described_class.count_versioned_deployments_for(
+          [namespace_domain_project, unique_domain_project],
+          10
+        )
+
+        expect(count).to eq(2)
+      end
+
+      it 'limits grouped counts to namespace-domain projects', :aggregate_failures do
+        additional_namespace_domain_projects = create_list(:project, 2)
+        additional_namespace_domain_projects.each do |project|
+          project.project_setting.update!(pages_unique_domain_enabled: false)
+          create(:pages_deployment, project: project, path_prefix: 'v1')
+        end
+        namespace_domain_projects = [namespace_domain_project] + additional_namespace_domain_projects
+
+        counts = described_class.count_versioned_deployments_for(
+          namespace_domain_projects + [unique_domain_project],
+          2,
+          group_by_project: true,
+          namespace_domain_only: true
+        )
+
+        expect(counts).to be_a(Hash)
+        expect(counts.keys).to all(be_in(namespace_domain_projects.map(&:id)))
+        expect(counts).not_to have_key(unique_domain_project.id)
+        expect(counts.values).to all(eq(1))
+        expect(counts.size).to eq(2)
+      end
+    end
+  end
+
+  describe 'default for file_store' do
+    let(:deployment) do
+      filepath = Rails.root.join("spec/fixtures/pages.zip")
+
+      described_class.create!(
+        project: project,
+        file: fixture_file_upload(filepath),
+        file_sha256: Digest::SHA256.file(filepath).hexdigest,
+        file_count: 3
+      )
+    end
+
+    it 'uses local store when object storage is not enabled' do
+      expect(deployment.file_store).to eq(ObjectStorage::Store::LOCAL)
+    end
+
+    it 'uses remote store when object storage is enabled' do
+      stub_pages_object_storage(::Pages::DeploymentUploader)
+
+      expect(deployment.file_store).to eq(ObjectStorage::Store::REMOTE)
+    end
+  end
+
+  it 'saves size along with the file' do
+    deployment = create(:pages_deployment, project: project)
+    expect(deployment.size).to eq(deployment.file.size)
+  end
+
+  describe '.older_than' do
+    it 'returns deployments with lower id' do
+      old_deployments = create_list(:pages_deployment, 2)
+
+      deployment = create(:pages_deployment)
+
+      # new deployment
+      create(:pages_deployment)
+
+      expect(described_class.older_than(deployment.id)).to eq(old_deployments)
+    end
+  end
+
+  describe '#active?' do
+    it 'returns true when upload_ready is true and deleted_at is nil' do
+      deployment = build_stubbed(:pages_deployment, upload_ready: true, deleted_at: nil)
+      expect(deployment).to be_active
+    end
+
+    it 'returns false when deleted_at is set' do
+      deployment = build_stubbed(:pages_deployment, upload_ready: true, deleted_at: Time.zone.now)
+      expect(deployment).not_to be_active
+    end
+
+    it 'returns false when upload_ready is false' do
+      deployment = build_stubbed(:pages_deployment, upload_ready: false, deleted_at: nil)
+      expect(deployment).not_to be_active
+    end
+
+    it 'returns false when both upload_ready is false and deleted_at is set' do
+      deployment = build_stubbed(:pages_deployment, upload_ready: false, deleted_at: Time.zone.now)
+      expect(deployment).not_to be_active
+    end
+  end
+
+  describe '.inactive' do
+    it 'returns deployments with deleted_at set' do
+      deployment = create(:pages_deployment, project: project, deleted_at: Time.zone.now)
+      expect(described_class.inactive).to include(deployment)
+    end
+
+    it 'returns deployments with future deleted_at' do
+      deployment = create(:pages_deployment, project: project, deleted_at: 30.minutes.from_now)
+      expect(described_class.inactive).to include(deployment)
+    end
+
+    it 'returns deployments that are not upload ready' do
+      deployment = create(:pages_deployment, project: project)
+      deployment.update_column(:upload_ready, false)
+
+      expect(described_class.inactive).to include(deployment)
+      expect(described_class.active).not_to include(deployment)
+    end
+
+    it 'does not return active deployments' do
+      deployment = create(:pages_deployment, project: project)
+      expect(described_class.inactive).not_to include(deployment)
+    end
+
+    it 'is the complement of the active scope' do
+      active = create(:pages_deployment, project: project)
+      inactive_deleted = create(:pages_deployment, project: project, deleted_at: Time.zone.now)
+      inactive_future = create(:pages_deployment, project: project, deleted_at: 30.minutes.from_now)
+
+      expect(described_class.active).to contain_exactly(active)
+      expect(described_class.inactive).to contain_exactly(inactive_deleted, inactive_future)
+    end
+  end
+
+  # Verify that calling deactivate on an instance sets the deleted_at value to now
+  describe '.deactivate (instance method)' do
+    it 'sets deleted_at to the current time', :freeze_time do
+      deployment = create(:pages_deployment)
+      expect { deployment.deactivate }
+        .to change { deployment.deleted_at }.from(nil).to(Time.zone.now)
+    end
+  end
+
+  describe '.restore' do
+    it 'sets deleted_at to nil', :freeze_time do
+      deployment = create(:pages_deployment, deleted_at: Time.zone.now)
+      expect { deployment.restore }
+        .to change { deployment.deleted_at }.from(Time.zone.now).to(nil)
+    end
+
+    context 'when restoring a deleted page deployment with path_prefix not nil', :freeze_time do
+      let(:deleted_deployment) do
+        create(:pages_deployment, project: project, deleted_at: Time.zone.now, path_prefix: 'test')
+      end
+
+      let(:past_deactivation_date) { '2020-02-16' }
+
+      where(:path_prefix, :deleted_at) do
+        'test2' | nil # active deployment with different path_prefix stays active
+        'test'  | ref(:past_deactivation_date)   # stopped deployment with same path_prefix stays stopped
+        'test2' | ref(:past_deactivation_date)   # stopped deployment with different path_prefix stays stopped
+        '' | nil # active deployment with no path_prefix stays active
+        '' | ref(:past_deactivation_date) # stopped deployment with no path_prefix stays stopped
+      end
+
+      with_them do
+        it 'deactivate active deployment with diff paths and others stays the same' do
+          deployment = create(:pages_deployment, project: project, path_prefix: path_prefix, deleted_at: deleted_at)
+          expect { deleted_deployment.restore }
+          .not_to change { deployment.reload.deleted_at }
+        end
+      end
+
+      it 'deactivate active deployment with same path_prefix' do
+        active_deployment = create(:pages_deployment, project: project, path_prefix: 'test')
+        expect { deleted_deployment.restore }
+          .to change { active_deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+      end
+    end
+
+    context 'when restoring a deleted page deployment with path_prefix nil', :freeze_time do
+      let(:deleted_deployment) do
+        create(:pages_deployment, project: project, deleted_at: Time.zone.now, path_prefix: '')
+      end
+
+      let(:past_deactivation_date) { '2020-02-16' }
+
+      where(:path_prefix, :deleted_at) do
+        'test2' | nil # active deployment with a path_prefix stays active
+        'test2' | ref(:past_deactivation_date)   # stopped deployment with a path_prefix stays stopped
+        ''      | ref(:past_deactivation_date)   # stopped deployment with no path_prefix stays stopped
+      end
+
+      with_them do
+        it 'deactivate active deployment with diff paths and others stays the same' do
+          deployment = create(:pages_deployment, project: project, path_prefix: path_prefix, deleted_at: deleted_at)
+          expect { deleted_deployment.restore }
+          .not_to change { deployment.reload.deleted_at }
+        end
+      end
+
+      it 'deactivate active deployment with same path_prefix' do
+        active_deployment = create(:pages_deployment, project: project, path_prefix: '')
+        expect { deleted_deployment.restore }
+          .to change { active_deployment.reload.deleted_at }.from(nil).to(Time.zone.now)
+      end
+    end
+  end
+end

@@ -1,0 +1,26 @@
+= render ::Layouts::BaseLayout.new(heading: @heading, description: @description, page_heading_sr_only: @page_heading_sr_only, loading: @loading, options: @options) do |c|
+  - if heading?
+    - c.with_heading do
+      = heading
+  - if actions?
+    - c.with_actions do
+      = actions
+  - if description?
+    - c.with_description do
+      = description
+  - if alerts?
+    - c.with_alerts do
+      = alerts
+
+  .gl-detail-layout-container{ class: class_names('gl-detail-layout-container-has-sidebar': sidebar?), data: { testid: 'detail-layout-container' } }
+    .gl-detail-layout-content{ data: { testid: 'detail-layout-content' } }
+      = content
+    - if sidebar?
+      .gl-detail-layout-sidebar{ data: { testid: 'detail-layout-sidebar' } }
+        = sidebar
+    - if widgets?
+      .gl-detail-layout-widgets{ data: { testid: 'detail-layout-widgets' } }
+        = widgets
+    - if activity?
+      .gl-detail-layout-activity{ data: { testid: 'detail-layout-activity' } }
+        = activity

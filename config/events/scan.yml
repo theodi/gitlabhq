@@ -1,0 +1,19 @@
+---
+description: Track results ingested from GitLab security report artifacts.
+action: scan
+identifiers:
+  - project
+  - user
+product_group: vulnerability_management
+product_categories:
+  - vulnerability_management
+  - dependency_management
+milestone: '14.1'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/166618
+tiers:
+  - ultimate
+additional_properties:
+  label:
+    description: Analyzer id
+  property:
+    description: Scan type

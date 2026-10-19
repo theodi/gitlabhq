@@ -1,0 +1,80 @@
+# frozen_string_literal: true
+
+require 'opensearch'
+require 'faraday_middleware/aws_sigv4'
+
+module ActiveContext
+  module Databases
+    module Opensearch
+      class Client
+        include ActiveContext::Databases::Concerns::ElasticClient
+
+        delegate :bulk, :delete_by_query, to: :client
+
+        OPEN_TIMEOUT = 5
+        NO_RETRY = 0
+        DEFAULT_ADAPTER = :typhoeus
+
+        def initialize(options)
+          @options = options
+        end
+
+        def search(user:, collection:, query:, source_fields: nil)
+          es_query = Processor.transform(collection: collection, node: query, user: user)
+          es_query = add_source_fields(es_query, source_fields)
+
+          query_result = log_search(collection: collection) do
+            result = client.search(index: collection.collection_name, body: es_query)
+            QueryResult.new(result: result, collection: collection, user: user)
+          end
+
+          query_result.authorized_results
+        end
+
+        def client
+          @client ||= ::OpenSearch::Client.new(opensearch_config) do |fmid|
+            next unless options[:aws]
+
+            credentials_provider = aws_credentials
+            raise ::Aws::Sigv4::Errors::MissingCredentialsError unless credentials_provider
+
+            fmid.request(
+              :aws_sigv4,
+              credentials_provider: credentials_provider,
+              service: 'es',
+              region: options[:aws_region]
+            )
+          end
+        end
+
+        def aws_credentials
+          static_credentials = ::Aws::Credentials.new(options[:aws_access_key], options[:aws_secret_access_key])
+
+          return static_credentials if static_credentials&.set?
+
+          aws_credential_provider = ::Aws::CredentialProviderChain.new.resolve
+          aws_credential_provider if aws_credential_provider&.set?
+        end
+
+        private
+
+        def opensearch_config
+          {
+            adapter: options[:client_adapter]&.to_sym || DEFAULT_ADAPTER,
+            urls: options[:url],
+            transport_options: {
+              request: {
+                timeout: options[:client_request_timeout],
+                open_timeout: OPEN_TIMEOUT
+              }
+            },
+            randomize_hosts: true,
+            retry_on_failure: options[:retry_on_failure] || NO_RETRY,
+            log: options[:debug],
+            debug: options[:debug]
+          }.compact
+        end
+      end
+    end
+  end
+end

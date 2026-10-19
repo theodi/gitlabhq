@@ -1,0 +1,12 @@
+---
+table_name: audit_events_streaming_instance_namespace_filters
+classes:
+- AuditEvents::Instance::NamespaceFilter
+feature_categories:
+- audit_events
+description: Stores audit event namespace filters for external audit event destinations
+  configurations of GitLab instance.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/148448
+milestone: '17.0'
+gitlab_schema: gitlab_main_cell_setting
+table_size: small

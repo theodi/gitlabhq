@@ -1,0 +1,41 @@
+- button_path = local_assigns.fetch(:button_path, false)
+- button_text = _("Create merge request")
+- closed_merged_count = issuables_count_for_state(:merged, :closed)
+- opened_merged_count = issuables_count_for_state(:merged, :opened)
+- is_opened_state = params[:state] == 'opened'
+- is_closed_state = params[:state] == 'closed'
+- can_create_merge_request = merge_request_source_project_for_project(@project)
+- tracking_data = { event_tracking: 'click_new_merge_request_empty_list' }
+
+- if has_filter_bar_param?
+  = render ::Layouts::EmptyResultComponent.new(type: :filter, data: { testid: 'issuable-empty-state' })
+
+- elsif is_opened_state && opened_merged_count == 0 && closed_merged_count > 0
+  = render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-merge-requests-md.svg',
+    empty_state_options: { data: { testid: 'issuable-empty-state' } },
+    title: _("There are no open merge requests")) do |c|
+
+    - c.with_description do
+      = _("To keep this project going, create a new merge request")
+      - if can_create_merge_request
+        .gl-mt-5= link_button_to button_text, button_path || project_new_merge_request_path(@project),
+          title: button_text, variant: :confirm, data: tracking_data
+
+- elsif is_closed_state && opened_merged_count > 0 && closed_merged_count == 0
+  = render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-merge-requests-md.svg',
+    empty_state_options: { data: { testid: 'issuable-empty-state' } },
+    title: _("There are no closed merge requests"))
+
+- else
+  = render Pajamas::EmptyStateComponent.new(svg_path: 'illustrations/empty-state/empty-merge-requests-md.svg',
+    empty_state_options: { data: { testid: 'issuable-empty-state' } },
+    title: _("Create a merge request to suggest changes to the repository.")) do |c|
+
+    - c.with_description do
+      = _("Use merge requests to propose, collaborate, and review code changes with others.")
+      - if button_path
+        .gl-mt-5= link_button_to button_text, button_path,
+          title: button_text,
+          id: 'new_merge_request_link',
+          variant: :confirm,
+          data: { testid: "new-merge-request-button", **tracking_data }

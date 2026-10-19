@@ -1,0 +1,47 @@
+include:
+  - local: gems/gem.gitlab-ci.yml
+    inputs:
+      bundle_gemfiles: ['Gemfile', 'Gemfile.next']
+      gem_name: "gitlab-backup-cli"
+
+
+rspec:
+  extends: .ruby_on_rails_matrix
+  variables:
+    BUNDLE_FROZEN: "false"
+    POSTGRES_USER: gitlab
+    POSTGRES_PASSWORD: password
+    POSTGRES_VERSION: 16
+    PGPASSWORD: "${POSTGRES_PASSWORD}"
+  services:
+    - name: postgres:${POSTGRES_VERSION}
+      command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+  before_script:
+    - cp db/structure.sql .
+    - echo -e "\e[0Ksection_start:`date +%s`:postgresql16\r\e[0KInstalling PostgreSQL 16"
+    - curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc|gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+    - echo "deb https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+    - apt update && apt install -y postgresql-client-16
+    - echo -e "\e[0Ksection_end:`date +%s`:postgresql16\r\e[0K"
+    - psql -h postgres -U $POSTGRES_USER -c 'create database gitlabhq_test;'
+    - psql -h postgres -U $POSTGRES_USER -c 'create database gitlabhq_ci_test;'
+    - psql -h postgres -U $POSTGRES_USER -d gitlabhq_test -q < structure.sql > /dev/null
+    - psql -h postgres -U $POSTGRES_USER -d gitlabhq_ci_test -q < structure.sql > /dev/null
+    - cp gems/gitlab-backup-cli/spec/fixtures/config/database.yml config/
+    - "sed -i \"s/username: postgres$/username: $POSTGRES_USER/g\" config/database.yml"
+    - "sed -i \"s/password:\\s*$/password: $POSTGRES_PASSWORD/g\" config/database.yml"
+    - "sed -i \"s/host: localhost$/host: postgres/g\" config/database.yml"
+    - |
+      cd gems/gitlab-backup-cli/spec/fixtures/gitlab_fake &&
+      [ -n "$BUNDLE_GEMFILE" ] && mv Gemfile ${BUNDLE_GEMFILE} && mv Gemfile.lock ${BUNDLE_GEMFILE}.lock
+    - bundle install --retry=3
+    - cd -
+    - !reference [.default, before_script]
+  script:
+    - RAILS_ENV=test bundle exec rspec
+  coverage: '/LOC \((\d+\.\d+%)\) covered.$/'
+  artifacts:
+    expire_in: 31d
+    when: always
+    paths:
+      - coverage/

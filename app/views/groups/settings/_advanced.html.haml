@@ -1,0 +1,35 @@
+.gl-flex.gl-gap-5.gl-flex-col
+  = render 'groups/settings/create_organization', group: @group
+  = render 'groups/settings/export', group: @group
+  = render 'groups/settings/archive', group: @group
+
+  = render Pajamas::CardComponent.new(header_options: { class: 'gl-px-5 gl-py-4 gl-border-b-1 gl-border-b-solid gl-border-default' }, body_options: { class: 'gl-px-5 gl-py-4' }) do |c|
+    - c.with_header do
+      .gl-flex.gl-grow
+        %h4.gl-text-base.gl-leading-24.gl-m-0= s_('GroupSettings|Change group URL')
+      %p.gl-text-subtle.gl-text-sm.gl-m-0
+        = s_("GroupSettings|Changing a group's URL can have unintended side effects.")
+        #{link_to _('Learn more'), help_page_path('user/group/manage.md', anchor: 'change-a-groups-path'), target: '_blank', rel: 'noopener noreferrer'}.
+
+    - c.with_body do
+      = gitlab_ui_form_for @group, html: { multipart: true, class: 'gl-show-field-errors' }, authenticity_token: true do |f|
+        = form_errors(@group)
+        .form-group
+          .input-group.gl-field-error-anchor
+            .group-root-path.input-group-prepend.has-tooltip{ title: group_path(@group), :'data-placement' => 'bottom' }
+              .input-group-text
+                %span>= unscoped_root_url
+                - if @group.parent
+                  %strong= @group.parent.full_path + '/'
+            = f.hidden_field :parent_id
+            = f.text_field :path, placeholder: 'open-source', class: 'form-control',
+              autofocus: local_assigns[:autofocus] || false, required: true,
+              pattern: Gitlab::PathRegex::NAMESPACE_FORMAT_REGEX_JS,
+              title: group_url_error_message,
+              maxlength: ::Namespace::URL_MAX_LENGTH,
+              "data-bind-in" => "#{'create_chat_team' if Gitlab.config.mattermost.enabled}"
+        = f.submit s_('GroupSettings|Change group URL'), class: 'btn-danger-secondary', pajamas_button: true
+
+  = render 'groups/settings/transfer', group: @group
+  = render 'shared/groups_projects/settings/restore', context: @group, tracking_event: 'trigger_restore_on_group'
+  = render 'groups/settings/delete'

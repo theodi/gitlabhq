@@ -1,0 +1,569 @@
+export const collationMismatchResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  databases: {
+    main: {
+      collation_mismatches: [
+        {
+          collation_name: 'en_US.UTF-8',
+          provider: 'c',
+          stored_version: '2.28',
+          actual_version: '2.31',
+        },
+        {
+          collation_name: 'fr_FR.UTF-8',
+          provider: 'c',
+          stored_version: '2.28',
+          actual_version: '2.31',
+        },
+      ],
+      corrupted_indexes: [
+        {
+          index_name: 'index_users_on_name',
+          table_name: 'users',
+          affected_columns: 'name',
+          index_type: 'btree',
+          is_unique: true,
+          size_bytes: 5678901,
+          corruption_types: ['duplicates'],
+          needs_deduplication: true,
+        },
+      ],
+      skipped_indexes: [
+        {
+          index_name: 'index_merge_requests_on_target_project_id',
+          table_name: 'merge_requests',
+          table_size_bytes: 2147483648,
+          index_size_bytes: 214748364,
+          table_size_threshold: 1073741824,
+          reason: 'table_size_exceeds_threshold',
+        },
+      ],
+    },
+    ci: {
+      collation_mismatches: [],
+      corrupted_indexes: [],
+    },
+  },
+};
+
+export const noIssuesResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  databases: {
+    main: {
+      collation_mismatches: [],
+      corrupted_indexes: [],
+      skipped_indexes: [],
+    },
+  },
+};
+
+export const schemaIssuesResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  schema_check_results: {
+    main: {
+      missing_indexes: [
+        {
+          name: 'public.index_users_on_email',
+        },
+        {
+          name: 'public.index_projects_on_name',
+        },
+      ],
+      missing_tables: [
+        {
+          name: 'public.audit_logs',
+        },
+      ],
+      missing_foreign_keys: [
+        {
+          name: 'public.merge_requests_project_id',
+        },
+      ],
+      missing_sequences: [
+        {
+          name: 'users_id_seq',
+        },
+      ],
+      wrong_sequence_owners: [
+        {
+          name: 'public.abuse_events_id_seq',
+          details: {
+            current_owner: 'public.achievements.id',
+            expected_owner: 'public.abuse_events.id',
+          },
+        },
+      ],
+    },
+    ci: {
+      missing_indexes: [
+        {
+          name: 'public.index_ci_builds_on_status',
+        },
+      ],
+      missing_tables: [],
+      missing_foreign_keys: [],
+      missing_sequences: [],
+    },
+  },
+};
+
+export const noSchemaIssuesResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  schema_check_results: {
+    main: {
+      missing_indexes: [],
+      missing_tables: [],
+      missing_foreign_keys: [],
+      missing_sequences: [],
+    },
+  },
+};
+
+export const singleDatabaseResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  schema_check_results: {
+    main: {
+      missing_indexes: [
+        {
+          name: 'public.index_users_on_email',
+        },
+      ],
+      missing_tables: [],
+      missing_foreign_keys: [],
+      missing_sequences: [],
+    },
+  },
+};
+
+export const vacuumActivity = [
+  {
+    pid: 4242,
+    schema_name: 'public',
+    table_name: 'ci_builds',
+    phase: 'vacuuming indexes',
+    heap_blks_total: 1000,
+    heap_blks_scanned: 600,
+    heap_blks_vacuumed: 500,
+    index_vacuum_count: 2,
+    max_dead_tuple_bytes: 2097152,
+    dead_tuple_bytes: 2000000,
+    indexes_total: 5,
+    indexes_processed: 3,
+    vacuum_type: 'autovacuum',
+    anti_wraparound: false,
+    running_time_seconds: 36000,
+    delay_time: 12.5,
+  },
+  {
+    pid: 4243,
+    schema_name: 'public',
+    table_name: 'merge_requests',
+    phase: 'scanning heap',
+    heap_blks_total: 2000,
+    heap_blks_scanned: 100,
+    heap_blks_vacuumed: 0,
+    index_vacuum_count: 0,
+    max_dead_tuple_bytes: 2097152,
+    dead_tuple_bytes: 50000,
+    indexes_total: 3,
+    indexes_processed: 0,
+    vacuum_type: 'manual',
+    anti_wraparound: false,
+    running_time_seconds: 300,
+    delay_time: null,
+  },
+];
+
+export const autovacuumConfig = {
+  settings: {
+    autovacuum: { value: 'on', unit: null },
+    autovacuum_max_workers: { value: '3', unit: null },
+    autovacuum_naptime: { value: '60', unit: 's' },
+    autovacuum_vacuum_scale_factor: { value: '0.2', unit: null },
+    autovacuum_vacuum_threshold: { value: '50', unit: null },
+    autovacuum_analyze_scale_factor: { value: '0.1', unit: null },
+    autovacuum_analyze_threshold: { value: '50', unit: null },
+    autovacuum_vacuum_insert_scale_factor: { value: '0.2', unit: null },
+    autovacuum_vacuum_insert_threshold: { value: '1000', unit: null },
+    autovacuum_vacuum_cost_delay: { value: '2', unit: 'ms' },
+    autovacuum_vacuum_cost_limit: { value: '-1', unit: null, effective_value: '200' },
+    vacuum_cost_limit: { value: '200', unit: null },
+    autovacuum_work_mem: { value: '-1', unit: 'kB' },
+    maintenance_work_mem: { value: '65536', unit: 'kB' },
+    autovacuum_freeze_max_age: { value: '200000000', unit: null },
+    autovacuum_multixact_freeze_max_age: { value: '400000000', unit: null },
+  },
+  findings: [
+    {
+      severity: 'error',
+      code: 'tables_autovacuum_disabled',
+      message: 'Autovacuum is disabled for 1 table.',
+    },
+    {
+      severity: 'warning',
+      code: 'autovacuum_cost_limit_low',
+      setting_name: 'autovacuum_vacuum_cost_limit',
+      message: 'The cost limit is at or near the conservative default.',
+    },
+    {
+      severity: 'warning',
+      code: 'autovacuum_work_mem_inherited',
+      setting_name: 'autovacuum_work_mem',
+      message: 'The autovacuum_work_mem setting is unset and inherits maintenance_work_mem.',
+    },
+    {
+      severity: 'warning',
+      code: 'scale_factor_risk',
+      message: 'The global vacuum scale factor is high for 1 large table.',
+    },
+  ],
+  severity: 'error',
+  counts: { error: 1, warning: 3 },
+  table_overrides: [
+    {
+      schema_name: 'public',
+      table_name: 'ci_builds',
+      total_bytes: 5368709120,
+      estimated_rows: 1000000,
+      overrides: { autovacuum_vacuum_scale_factor: '0.01' },
+      autovacuum_disabled: false,
+    },
+    {
+      schema_name: 'public',
+      table_name: 'audit_events',
+      total_bytes: 1073741824,
+      estimated_rows: 500000,
+      overrides: { autovacuum_enabled: 'false' },
+      autovacuum_disabled: true,
+    },
+    {
+      schema_name: 'public',
+      table_name: 'ci_job_artifacts',
+      total_bytes: 2199023255552,
+      estimated_rows: 50000000,
+      overrides: { autovacuum_vacuum_scale_factor: '0.001' },
+      autovacuum_disabled: false,
+    },
+  ],
+  scale_factor_risks: [
+    {
+      schema_name: 'public',
+      table_name: 'merge_request_diffs',
+      total_bytes: 21474836480,
+      estimated_rows: 9000000,
+    },
+  ],
+};
+
+export const timeoutsSettings = {
+  statement_timeout: {
+    value: 120000,
+    default_value: 0,
+    unit: 'ms',
+    source: 'session',
+    source_location: null,
+  },
+  lock_timeout: {
+    value: 0,
+    default_value: 0,
+    unit: 'ms',
+    source: 'default',
+    source_location: null,
+  },
+  idle_in_transaction_session_timeout: {
+    value: 0,
+    default_value: 0,
+    unit: 'ms',
+    source: 'default',
+    source_location: null,
+  },
+};
+
+export const timeouts = {
+  settings: timeoutsSettings,
+  overrides: [],
+  findings: [
+    {
+      severity: 'warning',
+      code: 'statement_timeout_unlimited_by_default',
+      message: 'The cluster default for statement_timeout is 0.',
+    },
+  ],
+  severity: 'warning',
+  counts: { warning: 1 },
+};
+
+export const timeoutsWithoutFindings = {
+  settings: timeoutsSettings,
+  overrides: [],
+  findings: [],
+  severity: null,
+  counts: {},
+};
+
+export const databaseInformationResults = {
+  databases: {
+    main: {
+      current_user: 'gitlab',
+      search_path: '"$user", public',
+      timeouts: timeoutsWithoutFindings,
+      schemas: [
+        { name: 'public', current: true, owner: 'postgres' },
+        { name: 'gitlab_partitions_dynamic', current: false, owner: 'postgres' },
+        { name: 'gitlab_partitions_static', current: false, owner: 'postgres' },
+      ],
+      findings: [],
+      severity: null,
+      counts: {},
+      vacuums: vacuumActivity,
+      vacuum_activity_available: true,
+      autovacuum_config: autovacuumConfig,
+    },
+  },
+};
+
+export const databaseInformationWithFindings = {
+  databases: {
+    main: {
+      current_user: 'gitlab',
+      search_path: 'public',
+      schemas: [{ name: 'public', current: true, owner: 'postgres' }],
+      findings: [
+        {
+          severity: 'error',
+          code: 'search_path_missing_public',
+          message: 'The public schema is not in the search path.',
+        },
+        {
+          severity: 'warning',
+          code: 'search_path_non_default',
+          message: 'The search path differs from the expected default of "$user", public.',
+        },
+      ],
+      severity: 'error',
+      counts: { error: 1, warning: 1 },
+    },
+  },
+};
+
+export const databaseInformationWithDatabaseError = {
+  databases: {
+    main: { error: 'connection refused' },
+  },
+};
+
+export const multiDatabaseResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  schema_check_results: {
+    main: {
+      missing_indexes: [{ name: 'public.index_on_users_lower_email' }],
+      missing_tables: [],
+      missing_foreign_keys: [],
+      missing_sequences: [],
+    },
+    ci: {
+      missing_indexes: [{ name: 'public.p_ci_builds_name_id_idx' }],
+      missing_tables: [],
+      missing_foreign_keys: [],
+      missing_sequences: [],
+    },
+    registry: {
+      missing_indexes: [],
+      missing_tables: [{ name: 'public.registry_table' }],
+      missing_foreign_keys: [],
+      missing_sequences: [],
+    },
+  },
+};
+
+export const lfkBacklogResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  connections: {
+    main: [
+      {
+        parent_table: 'public.projects',
+        pending_records: 100000,
+        capped: true,
+        oldest_pending_age_seconds: 50000000,
+        deferred_records: 0,
+      },
+      {
+        parent_table: 'public.users',
+        pending_records: 28282,
+        capped: false,
+        oldest_pending_age_seconds: 3600000,
+        deferred_records: 1,
+      },
+    ],
+    ci: [],
+  },
+};
+
+export const lfkNoBacklogResults = {
+  metadata: {
+    last_run_at: '2025-07-23T10:00:00Z',
+  },
+  connections: {
+    main: [],
+  },
+};
+
+export const timeoutsUnlimited = {
+  settings: {
+    ...timeoutsSettings,
+    statement_timeout: { ...timeoutsSettings.statement_timeout, value: 0 },
+  },
+  overrides: [],
+  findings: [
+    {
+      severity: 'error',
+      code: 'statement_timeout_unlimited',
+      message:
+        'The statement_timeout value is 0 on the connection GitLab uses, so a query can run with no limit. A query that does not end keeps its connection, which can use up the connection pool and stop GitLab. Set statement_timeout to 60000 ms or less.',
+    },
+  ],
+  severity: 'error',
+  counts: { error: 1 },
+};
+
+export const timeoutsAboveMaximum = {
+  settings: {
+    ...timeoutsSettings,
+    statement_timeout: { ...timeoutsSettings.statement_timeout, value: 300000 },
+  },
+  overrides: [],
+  findings: [
+    {
+      severity: 'warning',
+      code: 'statement_timeout_above_maximum',
+      message:
+        'The statement_timeout value is 300000 ms on the connection GitLab uses, more than the recommended maximum of 60000 ms. A higher value lets a slow query hold its connection for longer.',
+    },
+    {
+      severity: 'warning',
+      code: 'statement_timeout_unlimited_by_default',
+      message:
+        'The cluster default for statement_timeout is 0. GitLab sets its own value for each of its sessions, but any other session, for example psql, a backup or an external tool, can run a query with no limit. Set statement_timeout in postgresql.conf, or with ALTER DATABASE or ALTER ROLE.',
+    },
+  ],
+  severity: 'warning',
+  counts: { warning: 2 },
+};
+
+export const timeoutsFromConfigurationFile = {
+  settings: {
+    statement_timeout: {
+      value: 60000,
+      default_value: 60000,
+      unit: 'ms',
+      source: 'configuration file',
+      source_location: '/etc/postgresql/postgresql.conf:750',
+    },
+    lock_timeout: {
+      value: 0,
+      default_value: 0,
+      unit: 'ms',
+      source: 'default',
+      source_location: null,
+    },
+  },
+  overrides: [],
+  findings: [],
+  severity: null,
+  counts: {},
+};
+
+export const timeoutsWithOverrides = {
+  ...timeoutsWithoutFindings,
+  overrides: [
+    { database_name: null, role_name: null, name: 'statement_timeout', value: '90s' },
+    {
+      database_name: 'gitlabhq_production',
+      role_name: 'gitlab',
+      name: 'lock_timeout',
+      value: '5s',
+    },
+    {
+      database_name: 'gitlabhq_production',
+      role_name: null,
+      name: 'statement_timeout',
+      value: '0',
+    },
+  ],
+};
+
+export const timeoutsWithoutSettings = {
+  ...timeoutsWithoutFindings,
+  settings: {},
+};
+
+export const vacuumActivityAntiWraparound = [
+  {
+    pid: 5150,
+    schema_name: 'public',
+    table_name: 'ci_job_artifacts',
+    phase: 'scanning heap',
+    heap_blks_total: 480000,
+    heap_blks_scanned: 96000,
+    heap_blks_vacuumed: 0,
+    index_vacuum_count: 0,
+    max_dead_tuple_bytes: 67108864,
+    dead_tuple_bytes: 12000000,
+    indexes_total: 4,
+    indexes_processed: 0,
+    vacuum_type: 'autovacuum',
+    anti_wraparound: true,
+    running_time_seconds: 7200,
+    delay_time: 0,
+  },
+];
+
+// The role lacks pg_monitor, so pg_stat_activity yields no type, running time or
+// anti-wraparound status. Progress still comes from pg_stat_progress_vacuum.
+export const vacuumActivityWithoutPgMonitor = [
+  {
+    ...vacuumActivity[0],
+    index_vacuum_count: 3,
+    vacuum_type: null,
+    anti_wraparound: null,
+    running_time_seconds: null,
+    delay_time: null,
+  },
+];
+
+export const corruptedIndexesStructural = [
+  ...collationMismatchResults.databases.main.corrupted_indexes,
+  {
+    index_name: 'index_projects_on_path',
+    table_name: 'projects',
+    affected_columns: 'path',
+    index_type: 'btree',
+    is_unique: false,
+    size_bytes: 134217728,
+    corruption_types: ['structural', 'duplicates'],
+    needs_deduplication: false,
+  },
+];
+
+export const autovacuumConfigHealthy = {
+  settings: autovacuumConfig.settings,
+  findings: [],
+  severity: null,
+  counts: {},
+  table_overrides: [],
+  scale_factor_risks: [],
+};

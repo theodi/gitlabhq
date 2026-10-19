@@ -1,0 +1,199 @@
+# frozen_string_literal: true
+
+module ActiveContext
+  module Databases
+    module Postgresql
+      class Client
+        include ActiveContext::Databases::Concerns::Client
+
+        class << self
+          attr_accessor :default_connection_pool
+        end
+
+        BULK_OPERATIONS = [:upsert, :delete].freeze
+
+        attr_reader :options
+
+        def initialize(options)
+          @options = options.with_indifferent_access
+          @pool_mutex = Mutex.new
+        end
+
+        def connection_pool
+          @connection_pool || pool_mutex.synchronize { @connection_pool ||= setup_connection_pool }
+        end
+
+        def close
+          pool_mutex.synchronize do
+            next unless @connection_model
+
+            @connection_model.remove_connection
+            @connection_model = nil
+            @connection_pool = nil
+          end
+        end
+
+        # source_fields is accepted for interface compatibility but not used.
+        # PG queries use SELECT * and column filtering is handled at the SQL level.
+        def search(user:, collection:, query:, source_fields: nil) # rubocop:disable Lint/UnusedMethodArgument -- see comment above
+          sql = Processor.transform(collection: collection, node: query, user: user)
+
+          query_result = log_search(collection: collection) do
+            result = with_connection do |conn|
+              conn.execute(sql)
+            end
+            QueryResult.new(result: result, collection: collection, user: user)
+          end
+
+          query_result.authorized_results
+        end
+
+        def bulk_process(operations)
+          failed_operations = []
+          operations_by_collection = operations.group_by { |op| op.each_key.first }
+
+          operations_by_collection.each do |collection_name, collection_operations|
+            with_model_for(collection_name) do |model|
+              BULK_OPERATIONS.each do |operation_type|
+                failed_ops = perform_bulk_operation(operation_type, model, collection_name, collection_operations)
+                failed_operations.concat(failed_ops)
+              end
+            end
+          end
+
+          failed_operations
+        end
+
+        # Provides raw PostgreSQL connection
+        def with_raw_connection(&block)
+          handle_connection(raw_connection: true, &block)
+        end
+
+        # Provides Rails-wrapped connection for using ActiveRecord methods
+        def with_connection(&block)
+          handle_connection(raw_connection: false, &block)
+        end
+
+        def with_model_for(table_name)
+          model_class = Class.new(::ActiveRecord::Base) do
+            self.table_name = table_name
+
+            def self.name
+              "ActiveContext::Model::#{table_name.classify}"
+            end
+
+            def self.to_s
+              name
+            end
+          end
+
+          with_connection do |conn|
+            model_class.define_singleton_method(:connection) { conn }
+            model_class.define_singleton_method(:connection_pool) { conn.pool }
+            yield model_class
+          end
+        end
+
+        private
+
+        attr_reader :pool_mutex
+
+        def handle_connection(raw_connection: false)
+          connection_pool.with_connection do |conn|
+            yield(raw_connection ? conn.raw_connection : conn)
+          rescue PG::Error, ::ActiveRecord::StatementInvalid => e
+            handle_error(e)
+          end
+        end
+
+        def handle_error(error)
+          ActiveContext::Logger.exception(error, class_name: self.class.name, message: 'Database error occurred')
+          raise error
+        end
+
+        def setup_connection_pool
+          connection_model.establish_connection(build_database_config.stringify_keys)
+          connection_model.connection_pool
+        end
+
+        def connection_model
+          @connection_model ||= Class.new(::ActiveRecord::Base) do
+            self.abstract_class = true
+
+            def self.name
+              "ActiveContext::ConnectionPool::#{object_id}"
+            end
+
+            def self.to_s
+              name
+            end
+          end
+        end
+
+        def build_database_config
+          Config.build_database_config(options)
+        end
+
+        # rubocop:disable Rails/SkipsModelValidations -- bulk_upsert is more performant and we don't have validations
+        def perform_bulk_operation(operation_type, model, collection_name, operations)
+          data = operations.filter_map { |op| op[collection_name][operation_type] }
+
+          return data if data.empty?
+
+          case operation_type
+          when :upsert
+            upsert_data = prepare_upsert_data(data)
+            model.transaction do
+              upsert_data.each do |upsert_group|
+                model.upsert_all(
+                  upsert_group[:data],
+                  unique_by: upsert_group[:unique_by],
+                  update_only: upsert_group[:update_only_columns]
+                )
+              end
+            end
+          when :delete
+            prepare_delete_data(data).each do |group|
+              ref_ids = group[:ref_ids]
+              ref_version = group[:ref_version]
+
+              next if ref_ids.empty?
+
+              query = model.where(ref_id: ref_ids)
+              query = query.where.not(ref_version: ref_version) if ref_version.present?
+
+              query.delete_all
+            end
+          end
+
+          []
+        rescue StandardError => e
+          ActiveContext::Logger.exception(e, class_name: self.class.name,
+            message: "Error with #{operation_type} operation for #{collection_name}")
+          operations.pluck(:ref)
+        end
+        # rubocop:enable Rails/SkipsModelValidations
+
+        def prepare_upsert_data(data)
+          data.group_by(&:keys).map do |columns, grouped_data|
+            {
+              unique_by: [:id, :partition_id],
+              update_only_columns: columns - [:id, :partition_id],
+              data: grouped_data
+            }
+          end
+        end
+
+        def prepare_delete_data(data)
+          data_by_version = data.group_by { |record| record[:ref_version] }
+          data_by_version.map do |ref_version, records|
+            {
+              ref_version: ref_version,
+              ref_ids: records.pluck(:ref_id)
+            }
+          end
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,150 @@
+// Defines min height of the header
+// to avoid a 1px flickering between
+// expanded/collapsed mode
+// and with/without actions
+$crud-header-min-height: px-to-rem(40px);
+
+.crud-header {
+  min-height: $crud-header-min-height;
+}
+
+.crud-count .gl-badge {
+  @apply -gl-ml-2;
+  @apply -gl-my-1;
+  @apply gl-px-2;
+  @apply gl-text-subtle;
+  @apply gl-bg-transparent;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to crud-body element
+.crud-body:has(.gl-table) {
+  margin: 0;
+  padding: 0;
+
+  // Table adjustments
+  @mixin new-card-table-adjustments {
+    tbody > tr {
+      &:first-of-type > td[data-label],
+      &:first-of-type > td:first-of-type:last-of-type {
+        border-top-width: 0;
+      }
+
+      &:last-of-type td:not(:last-of-type) {
+        border-bottom-width: $gl-border-size-1;
+      }
+
+      > td[data-label] {
+        border-left: 0;
+        border-left-style: none;
+        border-right: 0;
+        border-right-style: none;
+      }
+
+      > [data-label]::before {
+        text-align: left;
+      }
+
+      > th {
+        border-top-width: $gl-border-size-1;
+      }
+
+      &::after {
+        background-color: $white;
+      }
+
+      &:last-child::after {
+        display: none;
+      }
+    }
+  }
+
+  table.b-table-fixed,
+  table.b-table-stacked-sm,
+  table.b-table-stacked-md,
+  table.b-table-stacked-lg {
+    margin-bottom: 0;
+
+    tr:first-of-type th {
+      border-top-width: 0;
+    }
+
+    tr:last-of-type td {
+      border-bottom-width: 0;
+    }
+  }
+
+  table.gl-table.b-table.b-table-stacked-sm {
+    @include gl-container-width-down(sm, panel) {
+      @include new-card-table-adjustments;
+    }
+  }
+
+  table.gl-table.b-table.b-table-stacked-md {
+    @include gl-container-width-down(md, panel) {
+      @include new-card-table-adjustments;
+    }
+  }
+
+  table.gl-table.b-table.b-table-stacked-lg {
+    @include gl-container-width-down(lg, panel) {
+      @include new-card-table-adjustments;
+    }
+  }
+}
+
+// GLQL: This prevents double borders.
+// The body contains a scrollable table.
+// Remove left and right table borders,
+// as Crud already renders outer borders.
+.crud-body .gl-table-shadow > table {
+  td:first-of-type,
+  th:first-of-type {
+    @apply gl-border-l-0;
+  }
+
+  td:last-of-type,
+  th:last-of-type {
+    @apply gl-border-r-0 #{!important};
+  }
+
+  tr:first-of-type th {
+    @apply gl-border-t-0;
+  }
+
+  tr:last-of-type td {
+    @apply gl-border-b-0;
+  }
+
+  tr:hover td {
+    @apply gl-bg-subtle;
+  }
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to crud-body element
+.crud-body:has(.content-list) {
+  margin: 0;
+  padding: 0;
+
+  .content-list > li {
+    @apply gl-mx-2;
+    @apply gl-px-3;
+  }
+}
+
+.crud-pagination {
+  margin-top: -1px;
+
+  // stylelint-disable-next-line gitlab/no-has -- scoped to crud-pagination element
+  &:not(:has(> .gl-pagination, > .crud-pagination-container)) {
+    display: none;
+  }
+
+  .gl-pagination {
+    margin-top: 0;
+  }
+
+  .gl-pagination ul,
+  .pagination {
+    margin-bottom: 0;
+  }
+}

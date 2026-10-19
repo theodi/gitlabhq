@@ -1,0 +1,41 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+
+query getBranchRules($projectPath: ID!, $after: String, $first: Int) {
+  project(fullPath: $projectPath) {
+    id
+    branchRules(first: $first, after: $after) {
+      nodes {
+        name
+        id
+        isDefault
+        matchingBranchesCount
+        branchProtection {
+          allowForcePush
+          mergeAccessLevels {
+            edges {
+              node {
+                accessLevel
+                accessLevelDescription
+              }
+            }
+          }
+          pushAccessLevels {
+            edges {
+              node {
+                accessLevel
+                accessLevelDescription
+                deployKey {
+                  id
+                  title
+                }
+              }
+            }
+          }
+        }
+      }
+      pageInfo {
+        ...PageInfo
+      }
+    }
+  }
+}

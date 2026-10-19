@@ -1,0 +1,95 @@
+/*
+ * This is a minimal stylesheet, meant to be used for error pages.
+ */
+@import '@gitlab/ui/src/scss/variables';
+@import '@gitlab/ui/src/scss/mixins';
+
+@import 'framework/variables';
+@import 'bootstrap/scss/functions';
+@import 'bootstrap/scss/variables';
+@import 'bootstrap/scss/mixins';
+@import 'bootstrap/scss/reboot';
+@import 'bootstrap/scss/buttons';
+@import 'bootstrap/scss/forms';
+
+@import '@gitlab/ui/src/components/base/button/button';
+
+body {
+  color: $gl-text-color-default;
+  text-align: center;
+  font-family: "Nunito Sans", -apple-system, ".SFNSText-Regular", "San Francisco", BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+h1 {
+  font-size: 1.75rem;
+  line-height: 2.25rem;
+  margin: 1rem 0;
+}
+
+p {
+  margin-bottom: .5rem;
+}
+
+img {
+  display: block;
+  margin: 0 auto;
+}
+
+a {
+  text-decoration: none;
+  color: $gl-text-color-link;
+}
+
+.page-container {
+  margin: auto 20px;
+}
+
+.error-container {
+  max-width: 65ch;
+  margin: auto;
+  padding: $gl-spacing-scale-5 0;
+  text-align: center;
+}
+
+.action-container {
+  margin-top: $gl-spacing-scale-6;
+}
+
+.form-inline-flex {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: $gl-spacing-scale-3;
+
+  .field {
+    flex-grow: 1;
+  }
+
+  @include gl-container-width-up(sm, panel) {
+    flex-direction: row;
+  }
+}
+
+.error-nav {
+  margin: $gl-spacing-scale-6 0 0 0;
+  padding: $gl-spacing-scale-4 0 0 0;
+  border-top: 1px solid $gl-border-color-default;
+
+  li {
+    display: block;
+    padding-bottom: 1em;
+  }
+
+  @include gl-container-width-up(sm, panel) {
+    li {
+      display: inline-block;
+      padding-bottom: 0;
+
+      &:not(:first-child)::before {
+        content: '\00B7';
+        display: inline-block;
+        padding: 0 $gl-spacing-scale-3;
+      }
+    }
+  }
+}

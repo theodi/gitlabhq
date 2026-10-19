@@ -1,0 +1,161 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Query.project(fullPath).ciConfigVariables(ref)', feature_category: :pipeline_composition do
+  include GraphqlHelpers
+  include ReactiveCachingHelpers
+
+  let_it_be(:content) do
+    File.read(Rails.root.join('spec/support/gitlab_stubs/gitlab_ci.yml'))
+  end
+
+  let_it_be(:project) { create(:project, :custom_repo, :public, files: { '.gitlab-ci.yml' => content }) }
+  let_it_be(:user) { create(:user) }
+
+  let(:service) { Ci::ListConfigVariablesService.new(project, user) }
+  let(:ref) { project.default_branch }
+  let(:fail_on_cache_miss) { false }
+
+  let(:query) do
+    %(
+      query {
+        project(fullPath: "#{project.full_path}") {
+          ciConfigVariables(ref: "#{ref}", failOnCacheMiss: #{fail_on_cache_miss}) {
+            key
+            value
+            valueOptions
+            description
+          }
+        }
+      }
+    )
+  end
+
+  context 'when the user has the correct permissions' do
+    before do
+      project.add_maintainer(user)
+      allow(Ci::ListConfigVariablesService)
+        .to receive(:new)
+        .and_return(service)
+    end
+
+    context 'when the cache is not empty' do
+      let(:expected_ci_variables) do
+        [
+          {
+            'key' => 'KEY_VALUE_VAR',
+            'value' => 'value x',
+            'valueOptions' => nil,
+            'description' => 'value of KEY_VALUE_VAR'
+          },
+          {
+            'key' => 'DB_NAME',
+            'value' => 'postgres',
+            'valueOptions' => nil,
+            'description' => nil
+          },
+          {
+            'key' => 'ENVIRONMENT_VAR',
+            'value' => 'env var value',
+            'valueOptions' => ['env var value', 'env var value2'],
+            'description' => 'env var description'
+          }
+        ]
+      end
+
+      shared_examples 'returns CI variables' do
+        it 'returns the CI variables for the config' do
+          expect(service)
+            .to receive(:execute)
+            .with(ref)
+            .and_call_original
+
+          post_graphql(query, current_user: user)
+
+          expect(graphql_data.dig('project', 'ciConfigVariables')).to match_array(expected_ci_variables)
+        end
+      end
+
+      before do
+        synchronous_reactive_cache(service)
+      end
+
+      it_behaves_like 'returns CI variables'
+
+      context 'when failOnCacheMiss is true' do
+        let(:fail_on_cache_miss) { true }
+
+        it_behaves_like 'returns CI variables'
+      end
+
+      context 'when ref is a commit SHA reachable from a project branch' do
+        let(:ref) { project.commit(project.default_branch).sha }
+
+        it_behaves_like 'returns CI variables'
+      end
+    end
+
+    context 'when the cache is empty' do
+      it 'returns nothing' do
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data.dig('project', 'ciConfigVariables')).to be_nil
+      end
+
+      context 'when failOnCacheMiss is true' do
+        let(:fail_on_cache_miss) { true }
+
+        it 'returns an error' do
+          post_graphql(query, current_user: user)
+
+          expect(graphql_errors).to include(
+            a_hash_including(
+              'message' => 'Failed to retrieve CI/CD variables from cache.'
+            )
+          )
+        end
+      end
+    end
+
+    context 'when ref is a commit SHA not reachable from any project ref' do
+      include ProjectForksHelper
+
+      let_it_be(:forked_project) { fork_project(project, user, repository: true) }
+      let(:ref) { forked_commit_sha }
+      let_it_be(:forked_commit_sha) do
+        forked_project.repository.create_file(
+          user, 'test-file.txt', 'test', message: 'test commit', branch_name: 'master'
+        )
+      end
+
+      before_all do
+        create(:merge_request, source_project: forked_project, target_project: project)
+      end
+
+      it 'returns nothing without invoking the service' do
+        expect(service).not_to receive(:execute)
+
+        post_graphql(query, current_user: user)
+
+        expect(graphql_data.dig('project', 'ciConfigVariables')).to be_nil
+      end
+    end
+  end
+
+  context 'when the user is not authorized' do
+    before do
+      project.add_guest(user)
+      allow(Ci::ListConfigVariablesService)
+        .to receive(:new)
+        .and_return(service)
+      synchronous_reactive_cache(service)
+    end
+
+    it 'returns nothing' do
+      post_graphql(query, current_user: user)
+
+      expect(graphql_data.dig('project', 'ciConfigVariables')).to be_nil
+    end
+  end
+end

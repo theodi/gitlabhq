@@ -1,0 +1,48 @@
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+
+fragment ListItemShared on CiRunner {
+  id
+  description
+  runnerType
+  shortSha
+  paused
+  locked
+  tagList
+  createdAt
+  createdBy {
+    ...User
+  }
+  contactedAt
+  status
+  jobExecutionStatus
+  userPermissions {
+    updateRunner
+    deleteRunner
+  }
+  managers(first: 1) {
+    count
+    # @graphql-eslint/eslint-plugin@4.0.0 reports missing IDs in `FragmentDefinition`. For now, we are
+    # ignoring the newly uncovered error on this fragment. Please consider addressing the violation
+    # if you are modifying this file and it turns out selecting the ID makes sense here.
+    # eslint-disable-next-line @graphql-eslint/require-selections
+    nodes {
+      version
+      ipAddress
+    }
+  }
+  groups(first: 1) {
+    nodes {
+      id
+      name
+      fullName
+      webUrl
+    }
+  }
+  ownerProject {
+    id
+    name
+    fullPath
+    nameWithNamespace
+    webUrl
+  }
+}

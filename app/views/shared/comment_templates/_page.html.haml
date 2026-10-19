@@ -1,0 +1,11 @@
+- base_path = local_assigns.fetch(:base_path, '')
+- namespace_id = local_assigns.fetch(:namespace_id, nil)
+- page_title _('Comment templates')
+
+= render ::Layouts::SettingsSectionComponent.new(page_title,
+  id: 'js-comment-templates-root',
+  options: { data: { base_path: base_path, namespace_id: namespace_id } }) do |c|
+  - c.with_description do
+    = _('Comment templates can be used when creating comments inside issues, merge requests, and epics.')
+  - c.with_body do
+    = gl_loading_icon(size: 'lg')

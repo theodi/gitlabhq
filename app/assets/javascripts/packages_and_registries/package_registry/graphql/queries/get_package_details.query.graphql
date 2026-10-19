@@ -1,0 +1,83 @@
+# @feature_category: package_registry
+
+query getPackageDetails($id: PackagesPackageID!) {
+  package(id: $id) {
+    id
+    name
+    packageType
+    version
+    lastDownloadedAt
+    createdAt
+    updatedAt
+    status
+    statusMessage
+    publicPackage
+    npmUrl
+    mavenUrl
+    conanUrl
+    nugetUrl
+    pypiUrl
+    pypiSetupUrl
+    composerUrl
+    composerConfigRepositoryUrl
+    protectionRuleExists
+    project {
+      id
+      path
+      name
+      fullPath
+    }
+    tags(first: 10) {
+      nodes {
+        id
+        name
+      }
+    }
+    pipelines(first: 1) {
+      nodes {
+        ref
+        id
+        project {
+          id
+          name
+          webUrl
+        }
+      }
+    }
+    versions {
+      count
+    }
+    dependencyLinks {
+      nodes {
+        id
+        dependency {
+          id
+          name
+          versionPattern
+        }
+        dependencyType
+        metadata {
+          ... on NugetDependencyLinkMetadata {
+            id
+            targetFramework
+          }
+        }
+      }
+    }
+    metadata {
+      ... on MavenMetadata {
+        id
+        appName
+        appGroup
+        appVersion
+      }
+      ... on NugetMetadata {
+        id
+        iconUrl
+      }
+    }
+    userPermissions {
+      destroyPackage
+    }
+  }
+}

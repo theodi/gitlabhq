@@ -1,0 +1,292 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Boards::Issues::ListService, feature_category: :planning_views do
+  describe '#execute' do
+    let_it_be(:user) { create(:user) }
+
+    context 'when parent is a project' do
+      let_it_be_with_reload(:project) { create(:project, :empty_repo) }
+      let_it_be(:board) { create(:board, project: project) }
+
+      let_it_be(:m1) { create(:milestone, project: project) }
+      let_it_be(:m2) { create(:milestone, project: project) }
+
+      let_it_be(:bug) { create(:label, project: project, name: 'Bug') }
+      let_it_be(:development) { create(:label, project: project, name: 'Development') }
+      let_it_be(:testing) { create(:label, project: project, name: 'Testing') }
+      let_it_be(:p1) { create(:label, title: 'P1', project: project, priority: 1) }
+      let_it_be(:p2) { create(:label, title: 'P2', project: project, priority: 2) }
+      let_it_be(:p3) { create(:label, title: 'P3', project: project, priority: 3) }
+
+      let_it_be(:backlog) { board.lists.backlog.first }
+      let_it_be(:list1)   { create(:list, board: board, label: development, position: 0) }
+      let_it_be(:list2)   { create(:list, board: board, label: testing, position: 1) }
+      let_it_be(:closed)  { board.lists.closed.first }
+
+      let_it_be(:opened_issue1) { create(:labeled_issue, project: project, milestone: m1, title: 'Issue 1', labels: [bug]) }
+      let_it_be(:opened_issue2) { create(:labeled_issue, project: project, milestone: m2, title: 'Issue 2', labels: [p2]) }
+      let_it_be(:reopened_issue1) { create(:issue, :opened, project: project, title: 'Reopened Issue 1') }
+
+      let_it_be(:list1_issue1) { create(:labeled_issue, project: project, milestone: m1, labels: [p2, development]) }
+      let_it_be(:list1_issue2) { create(:labeled_issue, project: project, milestone: m2, labels: [development]) }
+      let_it_be(:list1_issue3) { create(:labeled_issue, project: project, milestone: m1, labels: [development, p1]) }
+      let_it_be(:list2_issue1) { create(:labeled_issue, project: project, milestone: m1, labels: [testing]) }
+
+      let_it_be(:closed_issue1) { create(:labeled_issue, :closed, project: project, labels: [bug], closed_at: 1.day.ago) }
+      let_it_be(:closed_issue2) { create(:labeled_issue, :closed, project: project, labels: [p3], closed_at: 2.days.ago) }
+      let_it_be(:closed_issue3) { create(:issue, :closed, project: project, closed_at: 1.week.ago) }
+      let_it_be(:closed_issue4) { create(:labeled_issue, :closed, project: project, labels: [p1], closed_at: 1.year.ago) }
+      let_it_be(:closed_issue5) { create(:labeled_issue, :closed, project: project, labels: [development], closed_at: 2.years.ago) }
+
+      let(:parent) { project }
+
+      before_all do
+        project.add_developer(user)
+      end
+
+      it_behaves_like 'issues list service'
+
+      context 'when reading positions from work_item_positions' do
+        let_it_be(:positioned_issue) { create(:issue, project: project, relative_position: 500) }
+        let_it_be(:unpositioned_issue) { create(:issue, project: project, relative_position: nil) }
+
+        it 'scopes by the project positioning root and keeps unpositioned issues' do
+          result = described_class.new(parent, user, board_id: board.id, id: backlog.id).execute
+
+          expect(result).to include(positioned_issue, unpositioned_issue)
+        end
+
+        context 'when filtering by the positioning root' do
+          let(:root_id) { project.project_namespace.work_item_positioning_root.id }
+          let(:root_condition) { %("work_item_positions"."relative_positioning_namespace_id" = #{root_id}) }
+          let(:root_join_condition) { %("work_item_positions"."work_item_id" = "issues"."id" AND #{root_condition}) }
+
+          it 'filters in WHERE for the backlog list so the positions index can serve the order' do
+            sql = described_class.new(parent, user, board_id: board.id, id: backlog.id).execute.to_sql
+
+            expect(sql).not_to include(root_join_condition)
+            expect(sql).to include(root_condition)
+          end
+
+          it 'filters in the join for a label list' do
+            sql = described_class.new(parent, user, board_id: board.id, id: list1.id).execute.to_sql
+
+            expect(sql).to include(root_join_condition)
+          end
+        end
+      end
+
+      context 'when project is archived' do
+        before do
+          project.update!(archived: true)
+        end
+
+        it_behaves_like 'issues list service'
+      end
+
+      context 'when filtering' do
+        let_it_be(:incident) do
+          create(
+            :labeled_issue,
+            :incident,
+            project: project,
+            milestone: m1,
+            labels: [development, p1]
+          )
+        end
+
+        let_it_be(:task) do
+          create(
+            :labeled_issue,
+            :task,
+            project: project,
+            milestone: m1,
+            labels: [development, p1]
+          )
+        end
+
+        context 'when filtering by incident type' do
+          it 'only returns the incident type' do
+            params = { board_id: board.id, id: list1.id, issue_types: 'incident' }
+
+            expect(described_class.new(parent, user, params).execute).to eq [incident]
+          end
+        end
+
+        context 'when filtering by task type' do
+          # Tasks are only filterable on boards when work_item_tasks_on_boards is enabled.
+          # The provider also short-circuits to false for user-namespaced projects, so the
+          # board's project must be group-owned for the FF check to apply.
+          let_it_be(:group_for_tasks) { create(:group) }
+          let_it_be(:task_project) { create(:project, :empty_repo, group: group_for_tasks) }
+          let_it_be(:task_board) { create(:board, project: task_project) }
+          let_it_be(:task_list) { create(:list, board: task_board) }
+          let_it_be(:task_only) do
+            create(:labeled_issue, :task, project: task_project, labels: [task_list.label])
+          end
+
+          before_all do
+            task_project.add_developer(user)
+          end
+
+          before do
+            stub_feature_flags(work_item_tasks_on_boards: true)
+          end
+
+          it 'only returns the task type' do
+            params = { board_id: task_board.id, id: task_list.id, issue_types: 'task' }
+
+            expect(described_class.new(task_project, user, params).execute).to eq [task_only]
+          end
+        end
+
+        context 'when filtering by negated type' do
+          it 'only returns the specified type' do
+            params = { board_id: board.id, id: list1.id, not: { issue_types: %w[issue task] } }
+
+            expect(described_class.new(parent, user, params).execute).to contain_exactly(incident)
+          end
+        end
+
+        context 'when filtering by work_item_type_ids' do
+          let(:incident_type) { build(:work_item_system_defined_type, :incident) }
+
+          it 'only returns issues with the specified work item type' do
+            params = { board_id: board.id, id: list1.id, work_item_type_ids: [incident_type.id] }
+
+            expect(described_class.new(parent, user, params).execute).to eq [incident]
+          end
+        end
+
+        context 'when filtering by negated work_item_type_ids' do
+          let(:issue_type) { build(:work_item_system_defined_type, :issue) }
+          let(:task_type) { build(:work_item_system_defined_type, :task) }
+
+          it 'excludes issues with the specified work item types' do
+            params = { board_id: board.id, id: list1.id, not: { work_item_type_ids: [issue_type.id, task_type.id] } }
+
+            expect(described_class.new(parent, user, params).execute).to contain_exactly(incident)
+          end
+        end
+      end
+    end
+
+    context 'when parent is a group' do
+      let(:project) { create(:project, :empty_repo, namespace: group) }
+      let(:project1) { create(:project, :empty_repo, namespace: group) }
+      let(:project_archived) { create(:project, :empty_repo, :archived, namespace: group) }
+
+      let(:m1) { create(:milestone, group: group) }
+      let(:m2) { create(:milestone, group: group) }
+
+      let(:bug) { create(:group_label, group: group, name: 'Bug') }
+      let(:development) { create(:group_label, group: group, name: 'Development') }
+      let(:testing) { create(:group_label, group: group, name: 'Testing') }
+
+      let(:p1) { create(:group_label, title: 'P1', group: group) }
+      let(:p2) { create(:group_label, title: 'P2', group: group) }
+      let(:p3) { create(:group_label, title: 'P3', group: group) }
+
+      let(:p1_project) { create(:label, title: 'P1_project', project: project, priority: 1) }
+      let(:p2_project) { create(:label, title: 'P2_project', project: project, priority: 2) }
+      let(:p3_project) { create(:label, title: 'P3_project', project: project, priority: 3) }
+
+      let(:p1_project1) { create(:label, title: 'P1_project1', project: project1, priority: 1) }
+      let(:p2_project1) { create(:label, title: 'P2_project1', project: project1, priority: 2) }
+      let(:p3_project1) { create(:label, title: 'P3_project1', project: project1, priority: 3) }
+
+      let!(:backlog) { board.lists.backlog.first }
+      let!(:list1)   { create(:list, board: board, label: development, position: 0) }
+      let!(:list2)   { create(:list, board: board, label: testing, position: 1) }
+      let!(:closed)  { board.lists.closed.first }
+
+      let!(:opened_issue1) { create(:labeled_issue, project: project, milestone: m1, title: 'Issue 1', labels: [bug]) }
+      let!(:opened_issue2) { create(:labeled_issue, project: project, milestone: m2, title: 'Issue 2', labels: [p2, p2_project]) }
+      let!(:opened_issue3) { create(:labeled_issue, project: project_archived, milestone: m1, title: 'Issue 3', labels: [bug]) }
+      let!(:reopened_issue1) { create(:issue, state: 'opened', project: project, title: 'Reopened Issue 1', closed_at: Time.current) }
+
+      let!(:list1_issue1) { create(:labeled_issue, project: project, milestone: m1, labels: [p2, p2_project, development]) }
+      let!(:list1_issue2) { create(:labeled_issue, project: project, milestone: m2, labels: [development]) }
+      let!(:list1_issue3) { create(:labeled_issue, project: project1, milestone: m1, labels: [development, p1, p1_project1]) }
+      let!(:list2_issue1) { create(:labeled_issue, project: project1, milestone: m1, labels: [testing]) }
+
+      let!(:closed_issue1) { create(:labeled_issue, :closed, project: project, labels: [bug], closed_at: 1.day.ago) }
+      let!(:closed_issue2) { create(:labeled_issue, :closed, project: project, labels: [p3, p3_project], closed_at: 2.days.ago) }
+      let!(:closed_issue3) { create(:issue, :closed, project: project1, closed_at: 1.week.ago) }
+      let!(:closed_issue4) { create(:labeled_issue, :closed, project: project1, labels: [p1, p1_project1], closed_at: 1.year.ago) }
+      let!(:closed_issue5) { create(:labeled_issue, :closed, project: project1, labels: [development], closed_at: 2.years.ago) }
+
+      before do
+        group.add_developer(user)
+      end
+
+      context 'when the group has no parent' do
+        let(:parent) { group }
+        let(:group) { create(:group) }
+        let(:board) { create(:board, group: group) }
+
+        it_behaves_like 'issues list service'
+      end
+
+      context 'when the group is an ancestor' do
+        let(:parent) { create(:group) }
+        let(:group) { create(:group, parent: parent) }
+        let(:board) { create(:board, group: parent) }
+
+        before do
+          parent.add_developer(user)
+        end
+
+        it_behaves_like 'issues list service'
+      end
+    end
+  end
+
+  describe '.initialize_relative_positions' do
+    let_it_be(:user) { create(:user) }
+    let_it_be_with_reload(:project) { create(:project, :empty_repo) }
+    let_it_be(:board) { create(:board, project: project) }
+
+    let(:issue) { create(:issue, project: project, relative_position: nil) }
+
+    context "when 'Gitlab::Database::read_write?' is true" do
+      before do
+        allow(Gitlab::Database).to receive(:read_write?).and_return(true)
+      end
+
+      context 'user cannot move issues' do
+        it 'does not initialize the relative positions of issues' do
+          described_class.initialize_relative_positions(board, user, [issue])
+
+          expect(issue.relative_position).to be_nil
+        end
+      end
+
+      context 'user can move issues' do
+        before_all do
+          project.add_developer(user)
+        end
+
+        it 'initializes the relative positions of issues' do
+          described_class.initialize_relative_positions(board, user, [issue])
+
+          expect(issue.relative_position).not_to be_nil
+        end
+      end
+    end
+
+    context "when 'Gitlab::Database::read_write?' is false" do
+      before do
+        allow(Gitlab::Database).to receive(:read_write?).and_return(false)
+      end
+
+      it 'does not initialize the relative positions of issues' do
+        described_class.initialize_relative_positions(board, user, [issue])
+
+        expect(issue.relative_position).to be_nil
+      end
+    end
+  end
+end

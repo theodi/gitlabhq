@@ -1,0 +1,109 @@
+import { GlDisclosureDropdown } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import { useMockInternalEventsTracking } from 'helpers/tracking_internal_events_helper';
+import CreatePersonalAccessTokenDropdown from '~/personal_access_tokens/components/create_personal_access_token_dropdown.vue';
+
+const { bindInternalEventDocument } = useMockInternalEventsTracking();
+
+describe('CreatePersonalAccessTokenDropdown', () => {
+  let wrapper;
+
+  const createComponent = (provide = {}) => {
+    wrapper = shallowMountExtended(CreatePersonalAccessTokenDropdown, {
+      provide: {
+        accessTokenGranularNewUrl: '/granular/new',
+        accessTokenLegacyNewUrl: '/legacy/new',
+        granularTokensEnforced: false,
+        ...provide,
+      },
+    });
+  };
+
+  const findDropdown = () => wrapper.findComponent(GlDisclosureDropdown);
+  const findFineGrainedTokenOption = () => findDropdown().props('items').at(0);
+  const findLegacyTokenOption = () => findDropdown().props('items').at(1);
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  it('renders a disclosure dropdown', () => {
+    expect(findDropdown().exists()).toBe(true);
+  });
+
+  it('sets correct dropdown props', () => {
+    expect(findDropdown().props()).toMatchObject({
+      toggleText: 'Generate token',
+      placement: 'bottom-end',
+      fluidWidth: true,
+    });
+  });
+
+  it('renders two dropdown items', () => {
+    expect(findDropdown().props('items')).toHaveLength(2);
+  });
+
+  describe('fine-grained token option', () => {
+    it('displays the correct title', () => {
+      expect(findFineGrainedTokenOption().text).toBe('Fine-grained token');
+    });
+
+    it('displays the correct description', () => {
+      expect(findFineGrainedTokenOption().description).toBe(
+        'Limit scope to specific groups and projects and fine-grained permissions to resources.',
+      );
+    });
+
+    it('displays the correct link', () => {
+      expect(findFineGrainedTokenOption().href).toBe('/granular/new');
+    });
+
+    describe('when the option is selected', () => {
+      let trackEventSpy;
+
+      beforeEach(async () => {
+        ({ trackEventSpy } = bindInternalEventDocument(wrapper.element));
+
+        await findDropdown().vm.$emit('action', findFineGrainedTokenOption());
+      });
+
+      it('tracks the event', () => {
+        expect(trackEventSpy).toHaveBeenCalledWith(
+          'click_generate_fine_grained_personal_access_token',
+          {},
+          undefined,
+        );
+      });
+    });
+  });
+
+  describe('legacy token option', () => {
+    it('displays the correct title', () => {
+      expect(findLegacyTokenOption().text).toContain('Legacy token');
+    });
+
+    it('displays the correct description', () => {
+      expect(findLegacyTokenOption().description).toContain(
+        'Scoped to all groups and projects with broad permissions to resources.',
+      );
+    });
+
+    it('displays the correct link', () => {
+      expect(findLegacyTokenOption().href).toBe('/legacy/new');
+    });
+  });
+
+  describe('when granular token enforcement is active', () => {
+    beforeEach(() => {
+      createComponent({ granularTokensEnforced: true });
+    });
+
+    it('includes only fine-grained token option', () => {
+      expect(findDropdown().props('items')).toHaveLength(1);
+
+      expect(findFineGrainedTokenOption()).toMatchObject({
+        href: '/granular/new',
+      });
+    });
+  });
+});

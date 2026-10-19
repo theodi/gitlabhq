@@ -1,0 +1,14 @@
+---
+table_name: oauth_openid_requests
+classes:
+- Doorkeeper::OpenidConnect::Request
+feature_categories:
+- system_access
+description: Stores OpenID Connect authentication requests for OAuth flows supporting
+  OpenID protocol.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/c4982890489d254da2fe998aab30bf257767ed5e
+milestone: '9.0'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  organization_id: organizations
+table_size: small

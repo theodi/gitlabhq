@@ -1,0 +1,25 @@
+- page_title _("Starrers")
+- add_page_specific_style 'page_bundles/users'
+
+.top-area.adjust
+  .nav-text
+    - full_count_title = "#{@public_count} public and #{@private_count} private"
+    #{pluralize(@total_count, 'starrer')}: #{full_count_title}
+  - if @starrers.size > 0 || params[:search].present?
+    .nav-controls
+      = form_tag request.original_url, method: :get, class: 'form-inline user-search-form flex-users-form' do
+        .form-group
+          %div{ class: "!gl-relative" }
+            = search_field_tag :search, params[:search], { placeholder: _('Search'), class: 'form-control gl-pr-7', spellcheck: false }
+            %button.user-search-btn{ class: 'gl-p-2 gl-absolute gl-right-3', type: "submit", "aria-label" => _("Submit search") }
+              = sprite_icon('search')
+          - starrers_sort_options = starrers_sort_options_hash.map { |value, text| { value: value, text: text, href: filter_starrer_path(sort: value) } }
+          = gl_redirect_listbox_tag starrers_sort_options, @sort, class: 'gl-ml-3', data: { placement: 'right' }
+- if @starrers.size > 0
+  .row.gl-mt-3
+    = render partial: 'starrer', collection: @starrers, as: :starrer
+  = paginate @starrers, theme: 'gitlab'
+- elsif params[:search].present?
+  .nothing-here-block= _('No starrers matched your search')
+- else
+  .nothing-here-block= _('Nobody has starred this repository yet')

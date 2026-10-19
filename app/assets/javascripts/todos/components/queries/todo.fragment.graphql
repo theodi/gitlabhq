@@ -1,0 +1,63 @@
+fragment Todo on Todo {
+  id
+  state
+  snoozedUntil
+  createdAt
+  action
+  body
+  targetType
+  targetUrl
+  transferFailedRetryUrl
+  transferFailureReason @gl_introduced(version: "19.5.0")
+  memberAccessType
+  author {
+    id
+    name
+    webUrl
+    avatarUrl
+  }
+  note {
+    id
+    bodyFirstLineHtml
+  }
+  group {
+    id
+    fullName
+  }
+  project {
+    id
+    nameWithNamespace
+  }
+  targetEntity {
+    name
+    ... on Design {
+      issue {
+        id
+        name
+        reference
+      }
+    }
+    ... on Issue {
+      issueState: state
+      reference
+      webPath
+      dueDate
+      workItemType {
+        id
+        name
+        iconName
+      }
+    }
+    ... on WorkItem {
+      reference
+    }
+    ... on MergeRequest {
+      mergeRequestState: state
+      reference
+      webPath
+    }
+    ... on AlertManagementAlert {
+      alertState: status
+    }
+  }
+}

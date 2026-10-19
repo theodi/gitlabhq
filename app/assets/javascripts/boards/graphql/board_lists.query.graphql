@@ -1,0 +1,36 @@
+#import "ee_else_ce/boards/graphql/board_list.fragment.graphql"
+
+# @feature_category: portfolio_management
+query BoardLists(
+  $fullPath: ID!
+  $boardId: BoardID!
+  $listId: ListID
+  $filters: BoardIssueInput
+  $isGroup: Boolean = false
+  $isProject: Boolean = false
+) {
+  group(fullPath: $fullPath) @include(if: $isGroup) {
+    id
+    board(id: $boardId) {
+      id
+      hideBacklogList
+      lists(issueFilters: $filters, id: $listId) {
+        nodes {
+          ...BoardListFragment
+        }
+      }
+    }
+  }
+  project(fullPath: $fullPath) @include(if: $isProject) {
+    id
+    board(id: $boardId) {
+      id
+      hideBacklogList
+      lists(issueFilters: $filters, id: $listId) {
+        nodes {
+          ...BoardListFragment
+        }
+      }
+    }
+  }
+}

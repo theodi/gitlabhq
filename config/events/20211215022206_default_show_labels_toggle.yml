@@ -1,0 +1,19 @@
+description: "Toggle labels on boards"
+category: default
+action: toggle
+extra_properties:
+identifiers:
+product_group: work_items
+product_categories:
+- team_planning
+milestone:
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/73809
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "`show_labels`"
+  property:
+    description: "`[on | off]`"

@@ -1,0 +1,764 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Members::DestroyService, feature_category: :groups_and_projects do
+  let_it_be(:current_user) { create(:user) }
+  let_it_be_with_reload(:member_user) { create(:user) }
+  let_it_be_with_reload(:group) { create(:group, :public) }
+  let_it_be_with_reload(:group_project) { create(:project, :public, group: group) }
+
+  let(:opts) { {} }
+
+  shared_examples 'a service raising ActiveRecord::RecordNotFound' do
+    it 'raises ActiveRecord::RecordNotFound' do
+      expect { described_class.new(member, current_user: current_user).execute }.to raise_error(ActiveRecord::RecordNotFound)
+    end
+  end
+
+  shared_examples 'a service raising Gitlab::Access::AccessDeniedError' do
+    it 'raises Gitlab::Access::AccessDeniedError' do
+      expect { described_class.new(member, current_user: current_user).execute }.to raise_error(Gitlab::Access::AccessDeniedError)
+    end
+  end
+
+  shared_examples 'a service destroying a member' do
+    before do
+      type = member.is_a?(GroupMember) ? 'Group' : 'Project'
+      expect(TodosDestroyer::EntityLeaveWorker).to receive(:perform_in).with(Todo::WAIT_FOR_DELETE, member.user_id, member.source_id, type)
+      expect(MembersDestroyer::UnassignIssuablesWorker).to receive(:perform_async).with(member.user_id, member.source_id, type, current_user.id) if opts[:unassign_issuables]
+    end
+
+    it 'destroys the member' do
+      expect { described_class.new(member, current_user: current_user, **opts).execute }.to change { member.source.members_and_requesters.count }.by(-1)
+    end
+
+    it 'destroys member notification_settings' do
+      if member_user.notification_settings.any?
+        expect { described_class.new(member, current_user: current_user, **opts).execute }
+          .to change { member_user.notification_settings.count }.by(-1)
+      else
+        expect { described_class.new(member, current_user: current_user, **opts).execute }
+          .not_to change { member_user.notification_settings.count }
+      end
+    end
+
+    it 'resolves the access request todos for the owner' do
+      expect_next_instance_of(described_class) do |instance|
+        expect(instance).to receive(:resolve_access_request_todos).with(member)
+      end
+
+      described_class.new(member, current_user: current_user, **opts).execute
+    end
+
+    it 'triggers members destroyed cloud event' do
+      expect { described_class.new(member, current_user: current_user, **opts).execute }
+        .to publish_event(Members::DestroyedCloudEvent)
+    end
+
+    it 'does not remove user from organization' do
+      expect { described_class.new(member, current_user: current_user, **opts).execute }
+        .not_to change { member.source.organization.organization_users.count }
+    end
+  end
+
+  shared_examples 'a service destroying a member with access' do
+    it_behaves_like 'a service destroying a member'
+
+    it 'invalidates cached counts for assigned issues and merge requests', :aggregate_failures, :sidekiq_might_not_need_inline do
+      create(:issue, project: group_project, assignees: [member_user])
+      create(:merge_request, source_project: group_project, assignees: [member_user])
+      create(:todo, :pending, project: group_project, user: member_user)
+      create(:todo, :done, project: group_project, user: member_user)
+
+      expect(member_user.assigned_open_merge_requests_count).to be(1)
+      expect(member_user.assigned_open_issues_count).to be(1)
+      expect(member_user.todos_pending_count).to be(1)
+
+      service = described_class.new(member, current_user: current_user, **opts)
+
+      if opts[:unassign_issuables]
+        expect(service).to receive(:enqueue_unassign_issuables)
+      end
+
+      service.execute
+
+      expect(member_user.assigned_open_merge_requests_count).to be(0)
+      expect(member_user.assigned_open_issues_count).to be(0)
+      expect(member_user.todos_pending_count).to be(0)
+
+      unless opts[:unassign_issuables]
+        expect(member_user.assigned_merge_requests.opened.count).to be(1)
+        expect(member_user.assigned_issues.opened.count).to be(1)
+      end
+    end
+  end
+
+  shared_examples 'a service destroying an access request of another user' do
+    it_behaves_like 'a service destroying a member'
+
+    it 'calls the access denied mailer' do
+      allow(Members::AccessDeniedMailer).to receive(:email).with(member: member).and_call_original
+
+      expect do
+        described_class.new(member, current_user: current_user, **opts).execute
+      end.to have_enqueued_mail(Members::AccessDeniedMailer, :email)
+    end
+  end
+
+  shared_examples 'a service destroying an access request of self' do
+    it_behaves_like 'a service destroying a member'
+
+    context 'when current user is the member' do
+      it 'does not call the access denied mailer' do
+        expect do
+          described_class.new(member, current_user: current_user, **opts).execute
+        end.not_to have_enqueued_mail(Members::AccessDeniedMailer, :email)
+      end
+    end
+  end
+
+  describe 'serializing owner removals with the delete_members lock' do
+    include ExclusiveLeaseHelpers
+
+    let(:lock_key) { "delete_members:#{member_to_delete.source.class}:#{member_to_delete.source.id}" }
+    let(:lock_timeout) { 1.minute }
+
+    subject(:destroy_member) { described_class.new(member_to_delete, current_user: current_user, **opts).execute }
+
+    shared_examples 'removes the member without taking the delete_members lock' do
+      it 'removes the member without taking the delete_members lock' do
+        allow(Gitlab::ExclusiveLease).to receive(:new).and_call_original
+        expect(Gitlab::ExclusiveLease).not_to receive(:new).with(lock_key, timeout: lock_timeout)
+
+        expect { destroy_member }.to change { member_to_delete.source.members.count }.by(-1)
+      end
+    end
+
+    context 'when removing a group owner' do
+      before_all do
+        group.add_owner(current_user)
+      end
+
+      let_it_be(:member_to_delete) { group.add_owner(member_user) }
+
+      it 'checks for the last owner and removes the owner while holding the lock' do
+        expect_to_obtain_exclusive_lease(lock_key, timeout: lock_timeout)
+
+        expect { destroy_member }.to change { group.members.count }.by(-1)
+      end
+
+      context 'when a concurrent owner removal holds the lock' do
+        before do
+          stub_exclusive_lease_taken(lock_key, timeout: lock_timeout)
+        end
+
+        it 'raises instead of risking the removal of the last owner' do
+          expect { destroy_member }.to raise_error(Gitlab::ExclusiveLeaseHelpers::FailedToObtainLockError)
+        end
+      end
+    end
+
+    context 'when removing a group member who is not an owner' do
+      before_all do
+        group.add_owner(current_user)
+      end
+
+      let_it_be(:member_to_delete) { group.add_developer(member_user) }
+
+      it_behaves_like 'removes the member without taking the delete_members lock'
+    end
+
+    context 'when removing a project member' do
+      before_all do
+        group_project.add_owner(current_user)
+      end
+
+      context 'when the member is an owner' do
+        let_it_be(:member_to_delete) { group_project.add_owner(member_user) }
+
+        it_behaves_like 'removes the member without taking the delete_members lock'
+      end
+
+      context 'when the member is not an owner' do
+        let_it_be(:member_to_delete) { group_project.add_developer(member_user) }
+
+        it_behaves_like 'removes the member without taking the delete_members lock'
+      end
+    end
+  end
+
+  context 'with a member with access' do
+    before do
+      group_project.update_attribute(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+      group.update_attribute(:visibility_level, Gitlab::VisibilityLevel::PRIVATE)
+    end
+
+    context 'when current user cannot destroy the given member' do
+      context 'with a project member' do
+        let(:member) { group_project.members.find_by(user_id: member_user.id) }
+
+        context 'when current user does not have any membership management permissions' do
+          before do
+            group_project.add_developer(member_user)
+          end
+
+          it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError'
+
+          context 'when skipping authorisation' do
+            it_behaves_like 'a service destroying a member with access' do
+              let(:opts) { { skip_authorization: true, unassign_issuables: true } }
+            end
+          end
+        end
+
+        context 'when a project maintainer tries to destroy a project owner' do
+          before do
+            group_project.add_owner(member_user)
+          end
+
+          it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError'
+
+          context 'when skipping authorisation' do
+            it_behaves_like 'a service destroying a member with access' do
+              let(:opts) { { skip_authorization: true, unassign_issuables: true } }
+            end
+          end
+        end
+      end
+    end
+
+    context 'with a group member' do
+      let(:member) { group.members.find_by(user_id: member_user.id) }
+
+      before do
+        group.add_developer(member_user)
+      end
+
+      it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError'
+
+      context 'when skipping authorisation' do
+        it_behaves_like 'a service destroying a member with access' do
+          let(:opts) { { skip_authorization: true, unassign_issuables: true } }
+        end
+      end
+    end
+
+    context 'when current user can destroy the given member' do
+      before_all do
+        group_project.add_maintainer(current_user)
+        group.add_owner(current_user)
+      end
+
+      context 'with a project member' do
+        let(:member) { group_project.members.find_by(user_id: member_user.id) }
+
+        before do
+          group_project.add_developer(member_user)
+        end
+
+        it_behaves_like 'a service destroying a member with access'
+
+        context 'unassign issuables' do
+          it_behaves_like 'a service destroying a member with access' do
+            let(:opts) { { unassign_issuables: true } }
+          end
+        end
+      end
+
+      context 'with a project bot member' do
+        let(:member) { group_project.members.find_by(user_id: member_user.id) }
+        let(:member_user) { create(:user, :project_bot) }
+
+        before do
+          group_project.add_maintainer(member_user)
+        end
+
+        context 'when the destroy_bot flag is true' do
+          it_behaves_like 'a service destroying a member with access' do
+            let(:opts) { { destroy_bot: true } }
+          end
+        end
+
+        context 'when the destroy_bot flag is not specified' do
+          it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError'
+        end
+      end
+
+      context 'with a group member' do
+        let(:member) { group.members.find_by(user_id: member_user.id) }
+
+        before do
+          group.add_developer(member_user)
+        end
+
+        it_behaves_like 'a service destroying a member with access'
+
+        context 'unassign issuables' do
+          it_behaves_like 'a service destroying a member with access' do
+            let(:opts) { { unassign_issuables: true } }
+          end
+        end
+      end
+
+      describe 'authorized projects refresh' do
+        subject(:destroy_member) { described_class.new(member, current_user: current_user, **opts).execute }
+
+        # StubbedMember runs the per-member refresh inline, so a project that stays
+        # authorized after the destroy shows the service left the refresh to the caller
+        context 'with skip_authorized_projects_refresh: true' do
+          let(:opts) { { skip_authorized_projects_refresh: true } }
+
+          context 'with a project member' do
+            let!(:member) { group_project.add_developer(member_user) }
+
+            it 'leaves the refresh to the caller' do
+              expect { destroy_member }
+                .to change { group_project.members.count }.by(-1)
+                .and not_change { member_user.authorized_projects.include?(group_project) }.from(true)
+            end
+          end
+
+          context 'with a group member' do
+            let!(:member) { group.add_developer(member_user) }
+
+            it 'leaves the refresh to the caller' do
+              expect { destroy_member }
+                .to change { group.members.count }.by(-1)
+                .and not_change { member_user.authorized_projects.include?(group_project) }.from(true)
+            end
+
+            context 'with skip_subresources: false' do
+              let(:opts) { { skip_authorized_projects_refresh: true, skip_subresources: false } }
+
+              before do
+                group_project.add_maintainer(member_user)
+              end
+
+              it 'leaves the refresh to the caller for the subresource memberships too' do
+                expect { destroy_member }
+                  .to change { Member.with_user(member_user).count }.by(-2)
+                  .and not_change { member_user.authorized_projects.include?(group_project) }.from(true)
+              end
+            end
+          end
+        end
+
+        context 'without skip_authorized_projects_refresh' do
+          let(:opts) { {} }
+          let!(:member) { group.add_developer(member_user) }
+
+          it 'refreshes after the destroy' do
+            expect { destroy_member }
+              .to change { member_user.authorized_projects.include?(group_project) }.from(true).to(false)
+          end
+        end
+      end
+    end
+  end
+
+  context 'with an access requester' do
+    before do
+      group_project.update!(request_access_enabled: true)
+      group.update!(request_access_enabled: true)
+      group_project.request_access(member_user)
+      group.request_access(member_user)
+    end
+
+    context 'when current user cannot destroy the given access requester' do
+      it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError' do
+        let(:member) { group_project.requesters.find_by(user_id: member_user.id) }
+      end
+
+      it_behaves_like 'a service destroying a member' do
+        let(:opts) { { skip_authorization: true, skip_subresources: true } }
+        let(:member) { group_project.requesters.find_by(user_id: member_user.id) }
+      end
+
+      it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError' do
+        let(:member) { group.requesters.find_by(user_id: member_user.id) }
+      end
+
+      it_behaves_like 'a service destroying a member' do
+        let(:opts) { { skip_authorization: true, skip_subresources: true } }
+        let(:member) { group.requesters.find_by(user_id: member_user.id) }
+      end
+    end
+
+    context 'when current user can destroy the given access requester' do
+      let(:opts) { { skip_subresources: true } }
+
+      before_all do
+        group_project.add_maintainer(current_user)
+        group.add_owner(current_user)
+      end
+
+      it_behaves_like 'a service destroying an access request of another user' do
+        let(:member) { group_project.requesters.find_by(user_id: member_user.id) }
+      end
+
+      it_behaves_like 'a service destroying an access request of another user' do
+        let(:member) { group.requesters.find_by(user_id: member_user.id) }
+      end
+    end
+
+    context 'on withdrawing their own access request' do
+      let(:opts) { { skip_subresources: true } }
+      let(:current_user) { member_user }
+
+      it_behaves_like 'a service destroying an access request of self' do
+        let(:member) { group_project.requesters.find_by(user_id: member_user.id) }
+      end
+
+      it_behaves_like 'a service destroying an access request of self' do
+        let(:member) { group.requesters.find_by(user_id: member_user.id) }
+      end
+    end
+  end
+
+  context 'with an invited user' do
+    let(:project_invited_member) { create(:project_member, :invited, project: group_project) }
+    let(:group_invited_member) { create(:group_member, :invited, group: group) }
+
+    context 'when current user cannot destroy the given invited user' do
+      it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError' do
+        let(:member) { project_invited_member }
+      end
+
+      it_behaves_like 'a service destroying a member' do
+        let(:opts) { { skip_authorization: true } }
+        let(:member) { project_invited_member }
+      end
+
+      it_behaves_like 'a service raising Gitlab::Access::AccessDeniedError' do
+        let(:member) { group_invited_member }
+      end
+
+      it_behaves_like 'a service destroying a member' do
+        let(:opts) { { skip_authorization: true } }
+        let(:member) { group_invited_member }
+      end
+    end
+
+    context 'when current user can destroy the given invited user' do
+      before_all do
+        group_project.add_maintainer(current_user)
+        group.add_owner(current_user)
+      end
+
+      # Regression spec for issue: https://gitlab.com/gitlab-org/gitlab-foss/issues/32504
+      it_behaves_like 'a service destroying a member' do
+        let(:member) { project_invited_member }
+      end
+
+      it_behaves_like 'a service destroying a member' do
+        let(:member) { group_invited_member }
+      end
+    end
+  end
+
+  context 'subresources' do
+    let_it_be_with_reload(:user) { create(:user) }
+    let_it_be_with_reload(:member_user) { create(:user) }
+
+    let_it_be_with_reload(:group) { create(:group, :public) }
+    let_it_be_with_reload(:subgroup) { create(:group, parent: group) }
+    let_it_be(:private_subgroup) { create(:group, :private, parent: group, name: 'private_subgroup') }
+    let_it_be(:private_subgroup_with_direct_membership) { create(:group, :private, parent: group) }
+    let_it_be_with_reload(:subsubgroup) { create(:group, parent: subgroup) }
+
+    let_it_be_with_reload(:group_project) { create(:project, :public, group: group) }
+    let_it_be_with_reload(:control_project) { create(:project, :private, group: subsubgroup) }
+    let_it_be_with_reload(:subsubproject) { create(:project, :public, group: subsubgroup) }
+
+    let_it_be(:private_subgroup_project) do
+      create(:project, :private, group: private_subgroup, name: 'private_subgroup_project')
+    end
+
+    let_it_be(:private_subgroup_with_direct_membership_project) do
+      create(:project, :private, group: private_subgroup_with_direct_membership, name: 'private_subgroup_project')
+    end
+
+    context 'with memberships' do
+      before do
+        subgroup.add_developer(member_user)
+        subsubgroup.add_developer(member_user)
+        subsubproject.add_developer(member_user)
+        group_project.add_developer(member_user)
+        control_project.add_maintainer(user)
+        private_subgroup_with_direct_membership.add_developer(member_user)
+        group.add_owner(user)
+
+        @group_member = create(:group_member, :developer, group: group, user: member_user)
+      end
+
+      let_it_be(:todo_in_public_group_project) do
+        create(:todo, :pending,
+          project: group_project,
+          user: member_user,
+          target: create(:issue, project: group_project)
+        )
+      end
+
+      let_it_be(:mr_in_public_group_project) do
+        create(:merge_request, source_project: group_project, assignees: [member_user])
+      end
+
+      let_it_be(:todo_in_private_subgroup_project) do
+        create(:todo, :pending,
+          project: private_subgroup_project,
+          user: member_user,
+          target: create(:issue, project: private_subgroup_project)
+        )
+      end
+
+      let_it_be(:mr_in_private_subgroup_project) do
+        create(:merge_request, source_project: private_subgroup_project, assignees: [member_user])
+      end
+
+      let_it_be(:todo_in_public_subsubgroup_project) do
+        create(:todo, :pending,
+          project: subsubproject,
+          user: member_user,
+          target: create(:issue, project: subsubproject)
+        )
+      end
+
+      let_it_be(:mr_in_public_subsubgroup_project) do
+        create(:merge_request, source_project: subsubproject, assignees: [member_user])
+      end
+
+      let_it_be(:todo_in_private_subgroup_with_direct_membership_project) do
+        create(:todo, :pending,
+          project: private_subgroup_with_direct_membership_project,
+          user: member_user,
+          target: create(:issue, project: private_subgroup_with_direct_membership_project)
+        )
+      end
+
+      let_it_be(:mr_in_private_subgroup_with_direct_membership_project) do
+        create(:merge_request,
+          source_project: private_subgroup_with_direct_membership_project,
+          assignees: [member_user]
+        )
+      end
+
+      context 'with skipping of subresources' do
+        subject(:execute_service) { described_class.new(@group_member, current_user: user, skip_subresources: true).execute }
+
+        before do
+          execute_service
+        end
+
+        it 'removes the group membership' do
+          expect(group.members.map(&:user)).not_to include(member_user)
+        end
+
+        it 'does not remove the project membership' do
+          expect(group_project.members.map(&:user)).to include(member_user)
+        end
+
+        it 'does not remove the subgroup membership' do
+          expect(subgroup.members.map(&:user)).to include(member_user)
+        end
+
+        it 'does not remove the subsubgroup membership' do
+          expect(subsubgroup.members.map(&:user)).to include(member_user)
+        end
+
+        it 'does not remove the subsubproject membership' do
+          expect(subsubproject.members.map(&:user)).to include(member_user)
+        end
+
+        it 'does not remove the user from the control project' do
+          expect(control_project.members.map(&:user)).to include(user)
+        end
+
+        context 'todos', :sidekiq_inline do
+          it 'removes todos for which the user no longer has access' do
+            expect(member_user.todos).to include(
+              todo_in_public_group_project,
+              todo_in_public_subsubgroup_project,
+              todo_in_private_subgroup_with_direct_membership_project
+            )
+
+            expect(member_user.todos).not_to include(todo_in_private_subgroup_project)
+          end
+        end
+
+        context 'issuables', :sidekiq_inline do
+          subject(:execute_service) do
+            described_class.new(@group_member, current_user: user, skip_subresources: true, unassign_issuables: true).execute
+          end
+
+          it 'removes assigned issuables, even in subresources' do
+            expect(member_user.assigned_merge_requests).to be_empty
+          end
+        end
+      end
+
+      context 'without skipping of subresources' do
+        subject(:execute_service) { described_class.new(@group_member, current_user: user, skip_subresources: false).execute }
+
+        before do
+          execute_service
+        end
+
+        it 'removes the project membership' do
+          expect(group_project.members.map(&:user)).not_to include(member_user)
+        end
+
+        it 'removes the group membership' do
+          expect(group.members.map(&:user)).not_to include(member_user)
+        end
+
+        it 'removes the subgroup membership' do
+          expect(subgroup.members.map(&:user)).not_to include(member_user)
+        end
+
+        it 'removes the subsubgroup membership' do
+          expect(subsubgroup.members.map(&:user)).not_to include(member_user)
+        end
+
+        it 'removes the subsubproject membership' do
+          expect(subsubproject.members.map(&:user)).not_to include(member_user)
+        end
+
+        it 'does not remove the user from the control project' do
+          expect(control_project.members.map(&:user)).to include(user)
+        end
+
+        context 'todos', :sidekiq_inline do
+          it 'removes todos for which the user no longer has access' do
+            expect(member_user.todos).to include(
+              todo_in_public_group_project,
+              todo_in_public_subsubgroup_project
+            )
+
+            expect(member_user.todos).not_to include(
+              todo_in_private_subgroup_project,
+              todo_in_private_subgroup_with_direct_membership_project
+            )
+          end
+        end
+
+        context 'issuables', :sidekiq_inline do
+          subject(:execute_service) do
+            described_class.new(@group_member, current_user: user, skip_subresources: false, unassign_issuables: true).execute
+          end
+
+          it 'removes assigned issuables' do
+            expect(member_user.assigned_merge_requests).to be_empty
+          end
+        end
+      end
+    end
+
+    context 'with invites' do
+      before do
+        create(:group_member, :developer, group: subsubgroup, user: member_user)
+        create(:project_member, :invited, project: group_project, created_by: member_user)
+        create(:group_member, :invited, group: group, created_by: member_user)
+        create(:project_member, :invited, project: subsubproject, created_by: member_user)
+        create(:group_member, :invited, group: subgroup, created_by: member_user)
+
+        subsubproject.add_developer(member_user)
+        control_project.add_maintainer(user)
+        group.add_owner(user)
+
+        @group_member = create(:group_member, :developer, group: group, user: member_user)
+      end
+
+      context 'with skipping of subresources' do
+        before do
+          described_class.new(@group_member, current_user: user, skip_subresources: true).execute
+        end
+
+        it 'does not remove group members invited by deleted user' do
+          expect(group.members.not_accepted_invitations_by_user(member_user)).not_to be_empty
+        end
+
+        it 'does not remove project members invited by deleted user' do
+          expect(group_project.members.not_accepted_invitations_by_user(member_user)).not_to be_empty
+        end
+
+        it 'does not remove subgroup members invited by deleted user' do
+          expect(subgroup.members.not_accepted_invitations_by_user(member_user)).not_to be_empty
+        end
+
+        it 'does not remove subproject members invited by deleted user' do
+          expect(subsubproject.members.not_accepted_invitations_by_user(member_user)).not_to be_empty
+        end
+      end
+
+      context 'without skipping of subresources' do
+        before do
+          described_class.new(@group_member, current_user: user, skip_subresources: false).execute
+        end
+
+        it 'removes group members invited by deleted user' do
+          expect(group.members.not_accepted_invitations_by_user(member_user)).to be_empty
+        end
+
+        it 'removes project members invited by deleted user' do
+          expect(group_project.members.not_accepted_invitations_by_user(member_user)).to be_empty
+        end
+
+        it 'removes subgroup members invited by deleted user' do
+          expect(subgroup.members.not_accepted_invitations_by_user(member_user)).to be_empty
+        end
+
+        it 'removes subproject members invited by deleted user' do
+          expect(subsubproject.members.not_accepted_invitations_by_user(member_user)).to be_empty
+        end
+      end
+    end
+  end
+
+  context 'deletion of invitations created by deleted project member' do
+    let(:user) { project.first_owner }
+    let(:member_user) { create(:user) }
+
+    let(:project) { create(:project) }
+
+    before do
+      create(:project_member, :invited, project: project, created_by: member_user)
+
+      project_member = create(:project_member, :maintainer, user: member_user, project: project)
+
+      described_class.new(project_member, current_user: user).execute
+    end
+
+    it 'removes project members invited by deleted user' do
+      expect(project.members.not_accepted_invitations_by_user(member_user)).to be_empty
+    end
+  end
+
+  describe '#mark_as_recursive_call' do
+    it 'marks the instance as recursive' do
+      member = create(:group_member)
+      service = described_class.new(member, current_user: current_user)
+      service.mark_as_recursive_call
+
+      expect(service.send(:recursive_call?)).to be(true)
+    end
+  end
+
+  context 'when member leaves their last group' do
+    let_it_be(:group) { create(:group).tap { |g| g.add_owner(current_user) } }
+    let(:member) { group.add_owner(member_user) }
+
+    specify { expect(member.user.groups.count).to eq(1) }
+
+    it_behaves_like 'a service destroying a member'
+  end
+
+  context 'when member leaves their last project' do
+    let_it_be(:project) { create(:project).tap { |g| g.add_owner(current_user) } }
+    let(:member) { project.add_owner(member_user) }
+
+    specify { expect(member.user.projects.count).to eq(1) }
+
+    it_behaves_like 'a service destroying a member'
+  end
+end

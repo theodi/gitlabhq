@@ -1,0 +1,325 @@
+# frozen_string_literal: true
+
+# Generated HTML is transformed back to GFM by app/assets/javascripts/behaviors/markdown/nodes/reference.js
+module Banzai
+  module Filter
+    module References
+      # Base class for GitLab Flavored Markdown reference filters.
+      #
+      # References within <pre>, <code>, <a>, and <style> elements are ignored.
+      #
+      # Context options:
+      #   :project (required) - Current project, ignored if reference is cross-project.
+      #   :only_path          - Generate path-only links.
+      class ReferenceFilter < HTML::Pipeline::Filter
+        include RequestStoreReferenceCache
+        include Concerns::OutputSafety
+        prepend Concerns::PipelineTimingCheck
+        include Concerns::HtmlWriter
+        include Concerns::TextReplacer
+        include Concerns::ContextAccessors
+
+        REFERENCE_TYPE_ATTRIBUTE = :reference_type
+        REFERENCE_TYPE_DATA_ATTRIBUTE_NAME = "data-#{REFERENCE_TYPE_ATTRIBUTE.to_s.dasherize}".freeze
+
+        class << self
+          # Implement in child class
+          # Example: self.reference_type = :merge_request
+          attr_accessor :reference_type
+
+          # Implement in child class
+          # Example: self.object_class = MergeRequest
+          attr_accessor :object_class
+
+          def call(doc, context = nil, result = nil)
+            new(doc, context, result).call_and_update_nodes
+          end
+        end
+
+        def initialize(doc, context = nil, result = nil)
+          super
+
+          @new_nodes = {}
+          @nodes = self.result[:reference_filter_nodes]
+        end
+
+        def call_and_update_nodes
+          with_update_nodes { call }
+        end
+
+        def call
+          ref_pattern_start = /\A#{object_reference_pattern}\z/
+
+          nodes.each_with_index do |node, index|
+            if text_node?(node)
+              replace_node_when_text_matches(node, index, object_reference_pattern) do |content|
+                object_link_filter(content, object_reference_pattern)
+              end
+            elsif element_node?(node)
+              yield_valid_link(node) do |link, _text, inner_html|
+                if ref_pattern_start.match?(link)
+                  html = object_link_filter(link, ref_pattern_start, link_content_html: inner_html)
+                  replace_node_with_html(node, index, html) if html
+                end
+              end
+            end
+          end
+
+          doc
+        end
+
+        # Public: Find references in text (like `!123` for merge requests).
+        #
+        # Simplified usage (see AbstractReferenceFilter#object_link_filter for a full example):
+        #
+        #   references_in(text) do |match_text, id, project_ref, namespace_ref, matches|
+        #     object = find_object(namespace_ref, project_ref, id)
+        #     if object
+        #       write_opening_tag("a", {
+        #         "href" => "...",
+        #         # ... other attributes ...
+        #       }) << CGI.escapeHTML(object.to_reference) << "</a>"
+        #     else
+        #       CGI.escapeHTML(match_text)
+        #     end
+        #   end
+        #
+        # text - String text to make replacements in.  This is the content of a DOM text
+        # node, and *cannot* be returned without modification.
+        #
+        # Yields each String text match as the first argument; the remaining arguments
+        # depend on the particular subclass of ReferenceFilter being used. The block
+        # must return HTML, and not text.
+        #
+        # Returns a HTML String replaced with replacements made, or nil if no replacements
+        # were made.
+        #
+        # Notes:
+        #
+        # * The input is text -- we expect to match e.g. &1 or %"Git 2.5" without having to
+        #   deal with HTML entities, as our object reference patterns are not compatible
+        #   with entities.
+        #
+        # * Likewise, any strings yielded to the block are text, but the block must return
+        #   HTML, whether it's a successful resolution or not.  Any text input used in the
+        #   block must be escaped for return.
+        #
+        # * The return value is HTML, as the whole point is to create links (and possibly other
+        #   elements).  Care must be taken that any input text is escaped before reaching
+        #   the output.  This must be respected in all subclasses of ReferenceFilter.
+        #
+        # See AbstractReferenceFilter#references_in for a reference implementation that safely
+        # handles user input.
+        def references_in(text, pattern = object_reference_pattern)
+          raise NotImplementedError, "#{self.class} must implement method: #{__callee__}"
+        end
+
+        # Iterates over all <a> and text() nodes in a document.
+        #
+        # Nodes are skipped whenever their ancestor is one of the nodes returned
+        # by `ignore_ancestor_query`. Link tags are not processed if they have a
+        # "gfm" class or the "href" attribute is empty.
+        def each_node
+          return to_enum(__method__) unless block_given?
+
+          doc.xpath(query).each do |node|
+            yield node
+          end
+        end
+
+        # Returns an Array containing all HTML nodes.
+        def nodes
+          @nodes ||= each_node.to_a
+        end
+
+        def nodes?
+          @nodes.present?
+        end
+
+        def object_class
+          self.class.object_class
+        end
+
+        def requires_unescaping?
+          false
+        end
+
+        private
+
+        # Returns a Hash of attributes to attach to a reference link
+        #
+        # attributes - Hash, where the key becomes the data attribute name and the
+        #              value is the data attribute value
+        #
+        # Examples:
+        #
+        #   data_attribute(project: 1, issue: 2)
+        #   # => {"data-reference-type" => "SomeReferenceFilter", "data-container" => "body",
+        #         "data-placement" => "top", "data-project" => 1, "data-issue" => 2}
+        #
+        #   data_attribute(project: 3, merge_request: 4)
+        #   # => {"data-reference-type" => "SomeReferenceFilter", "data-container" => "body",
+        #         "data-placement" => "top", "data-project" => 3, "data-merge-request" => 4}
+        #
+        # Returns a Hash
+        def data_attribute(attributes = {})
+          attributes = attributes.compact
+
+          attributes[:container] ||= 'body'
+          attributes[:placement] ||= 'top'
+          attributes[REFERENCE_TYPE_ATTRIBUTE] = self.class.reference_type
+          attributes.delete(:original) if context[:no_original_data]
+
+          attributes.transform_keys { |k| "data-#{k.to_s.dasherize}" }
+        end
+
+        def ignore_ancestor_query
+          @ignore_ancestor_query ||= begin
+            parents = %w[pre code a style]
+            parents << 'blockquote' if context[:ignore_blockquotes]
+            parents << 'span[contains(concat(" ", @class, " "), " idiff ")]'
+
+            parents.map { |n| "ancestor::#{n}" }.join(' or ')
+          end
+        end
+
+        # Ensure that a :project key exists in context
+        #
+        # Note that while the key might exist, its value could be nil!
+        def validate
+          needs :project unless skip_project_check?
+        end
+
+        def skip_project_check?
+          context[:skip_project_check]
+        end
+
+        def reference_class(type, tooltip: true)
+          gfm_klass = "gfm gfm-#{type}"
+
+          return gfm_klass unless tooltip
+
+          "#{gfm_klass} has-tooltip"
+        end
+
+        # Yields the link's URL, inner text, and inner HTML whenever the node is a valid <a> tag.
+        #
+        # We expect that the URL and inner *text* will be equal when the link was a result of
+        # an autolink in Markdown. For example:
+        #
+        # ```markdown
+        # <https://gitlab.com/x?y="z"&fox>
+        # ```
+        #
+        # produces the HTML:
+        #
+        # ```html
+        # <a href="https://gitlab.com/x?y=%22z%22&amp;fox">https://gitlab.com/x?y=&quot;z&quot;&amp;fox</a>
+        # ```
+        #
+        # The href DOM attribute, after percent-decoding, is 'https://gitlab.com/x?y="z"&fox'.
+        # The node's inner text is identical: 'https://gitlab.com/x?y="z"&fox'.
+        # The node's inner HTML is 'https://gitlab.com/x?y=&quot;z&quot;&amp;fox'.
+        def yield_valid_link(node)
+          # We cannot use CGI.unescape here because it also converts `+` to spaces.
+          # We need to keep the `+` for expanded reference formats; we want to only
+          # percent-decode here.
+          link = Addressable::URI.unescape(node.attr('href').to_s)
+
+          return unless link.force_encoding('UTF-8').valid_encoding?
+
+          yield link, node.text, node.inner_html
+        end
+
+        # Replaces a node with HTML obtained by yielding node.text, iff node.text matches the given pattern.
+        # Doesn't replace anything if the block returns nil.
+        def replace_node_when_text_matches(node, index, pattern)
+          node_text = node.text
+
+          return unless pattern.match?(node_text)
+
+          html = yield node_text
+          replace_node_with_html(node, index, html) if html
+        end
+
+        def text_node?(node)
+          node.is_a?(Nokogiri::XML::Text)
+        end
+
+        def element_node?(node)
+          node.is_a?(Nokogiri::XML::Element)
+        end
+
+        def object_reference_pattern
+          @object_reference_pattern ||= object_class.reference_pattern
+        end
+
+        def object_link_reference_pattern
+          @object_link_reference_pattern ||= object_class.link_reference_pattern
+        end
+
+        def object_name
+          @object_name ||= object_class.name.underscore
+        end
+
+        def object_sym
+          @object_sym ||= object_name.to_sym
+        end
+
+        def object_link_filter(text, pattern, link_content_html: nil, link_reference: false)
+          raise NotImplementedError, "#{self.class} must implement method: #{__callee__}"
+        end
+
+        def query
+          @query ||= %{descendant-or-self::text()[not(#{ignore_ancestor_query})]
+          | descendant-or-self::a[
+            not(contains(concat(" ", @class, " "), " gfm ")) and not(@href = "")
+          ]}
+        end
+
+        def replace_node_with_html(node, index, html)
+          return if node.to_html == html
+
+          created = node.replace(html)
+          @new_nodes[index] = created.xpath(query).to_a
+        end
+
+        def only_path?
+          context[:only_path]
+        end
+
+        def with_update_nodes
+          @new_nodes = {}
+          yield.tap { update_nodes! }
+        end
+
+        # Once Filter completes replacing nodes, we update nodes with @new_nodes
+        def update_nodes!
+          # if we haven't loaded `nodes` yet, don't do it here
+          return unless nodes?
+
+          @new_nodes.sort_by { |index, _new_nodes| -index }.each do |index, new_nodes|
+            nodes[index, 1] = new_nodes
+          end
+          result[:reference_filter_nodes] = nodes
+        end
+
+        # `original` is used to restore the original input in ReferenceRedactor when necessary.
+        # It always contains safe HTML --- if the original match was on a link, it is the
+        # inner HTML of the <a> tag (after sanitization, etc.).  If not, we escape the plain text
+        # match.
+        #
+        # `original_href` is used to store the original href in ReferenceRedactor when necessary,
+        # for cases when the reference is used as the href. Note that it is text, not safe HTML.
+        def data_attributes_for(match_text, link_content_html, **attrs)
+          {
+            **attrs,
+            original: link_content_html || CGI.escapeHTML(match_text),
+            link: link_content_html ? true : nil,
+            original_href: link_content_html ? match_text : nil
+          }.compact
+        end
+      end
+    end
+  end
+end

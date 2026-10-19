@@ -1,42 +1,20 @@
+# frozen_string_literal: true
+
 class PasswordsController < Devise::PasswordsController
+  include GitlabRecaptcha
+  include Gitlab::Tracking::Helpers::WeakPasswordErrorEvent
 
-  def create
-    email = resource_params[:email]
-    resource_found = resource_class.find_by_email(email)
-    if resource_found && resource_found.ldap_user?
-      flash[:alert] = "Cannot reset password for LDAP user."
-      respond_with({}, location: after_sending_reset_password_instructions_path_for(resource_name)) and return
-    end
+  skip_before_action :require_no_authentication, only: [:edit, :update]
 
-    self.resource = resource_class.send_reset_password_instructions(resource_params)
-    if successfully_sent?(resource)
-      respond_with({}, location: after_sending_reset_password_instructions_path_for(resource_name))
-    else
-      respond_with(resource)
-    end
-  end
+  prepend_before_action :check_recaptcha, only: :create
+  before_action :load_recaptcha, only: :new
+  before_action :resource_from_email, only: [:create]
+  before_action :check_password_authentication_available, only: [:create]
+  before_action :throttle_reset, only: [:create]
 
-  # After a user resets their password, prompt for 2FA code if enabled instead
-  # of signing in automatically
-  #
-  # See http://git.io/vURrI
-  def update
-    super do |resource|
-      # TODO (rspeicher): In Devise master (> 3.4.1), we can set
-      # `Devise.sign_in_after_reset_password = false` and avoid this mess.
-      if resource.errors.empty? && resource.try(:otp_required_for_login?)
-        resource.unlock_access! if unlockable?(resource)
+  feature_category :system_access
 
-        # Since we are not signing this user in, we use the :updated_not_active
-        # message which only contains "Your password was changed successfully."
-        set_flash_message(:notice, :updated_not_active) if is_flashing_format?
-
-        # Redirect to sign in so they can enter 2FA code
-        respond_with(resource, location: new_session_path(resource)) and return
-      end
-    end
-  end
-
+  # rubocop: disable CodeReuse/ActiveRecord
   def edit
     super
     reset_password_token = Devise.token_generator.digest(
@@ -47,13 +25,80 @@ class PasswordsController < Devise::PasswordsController
 
     unless reset_password_token.nil?
       user = User.where(
+        organization_id: Current.organization.id,
         reset_password_token: reset_password_token
       ).first_or_initialize
 
+      return redirect_blocked_user if user.blocked?
+
       unless user.reset_password_period_valid?
-        flash[:alert] = 'Your password reset token has expired.'
+        flash[:alert] = _('Your password reset token has expired.')
         redirect_to(new_user_password_url(user_email: user['email']))
       end
     end
   end
+  # rubocop: enable CodeReuse/ActiveRecord
+
+  def update
+    user = resource_class.with_reset_password_token(resource_params[:reset_password_token])
+    return redirect_blocked_user if user&.blocked?
+
+    super do |resource|
+      if resource.valid?
+        resource.password_automatically_set = false
+        resource.password_expires_at = nil
+        resource.save(validate: false) if resource.changed?
+      else
+        log_audit_reset_failure(resource)
+        track_weak_password_error(resource, self.class.name, 'create')
+      end
+    end
+  end
+
+  protected
+
+  # overridden in EE
+  def log_audit_reset_failure(_user); end
+
+  def resource_from_email
+    self.resource = resource_class.find_by_email(resource_params[:email].to_s)
+  end
+
+  def check_password_authentication_available
+    return if Gitlab::CurrentSettings.password_authentication_enabled?
+
+    redirect_to after_sending_reset_password_instructions_path_for(resource_name),
+      alert: _("Password authentication is unavailable.")
+  end
+
+  def check_recaptcha
+    return unless resource_params[:email].present?
+
+    super
+  end
+
+  def throttle_reset
+    return unless resource && resource.recently_sent_password_reset?
+
+    # Throttle reset attempts, but return a normal message to
+    # avoid user enumeration attack.
+    redirect_to new_user_session_path,
+      notice: I18n.t('devise.passwords.send_paranoid_instructions')
+  end
+
+  def context_user
+    resource
+  end
+
+  def resource_params
+    super.permit(:email, :reset_password_token, :password, :password_confirmation)
+  end
+
+  private
+
+  def redirect_blocked_user
+    redirect_to new_user_session_path, alert: I18n.t('devise.failure.blocked')
+  end
 end
+
+PasswordsController.prepend_mod_with('PasswordsController')

@@ -1,0 +1,462 @@
+<script>
+import { GlButton, GlTooltipDirective } from '@gitlab/ui';
+import Vue, { defineAsyncComponent } from 'vue';
+import Sortable from 'sortablejs';
+import { renderGFM } from '~/behaviors/markdown/render_gfm';
+import { destroyImageLightbox } from '~/behaviors/markdown/render_image_lightbox';
+import { toggleCheckbox } from '~/behaviors/markdown/utils';
+import TaskListItemActions from '~/issues/show/components/task_list_item_actions.vue';
+import eventHub from '~/issues/show/event_hub';
+import { InternalEvents } from '~/tracking';
+import {
+  convertDescriptionWithNewSort,
+  deleteTaskListItem,
+  disableTaskListItem,
+  enableTaskListItem,
+  extractTaskTitleAndDescription,
+  insertNextToTaskListItemText,
+  taskListSortableOptions,
+} from '~/issues/show/utils';
+import { getSortableDefaultOptions, isDragging } from '~/sortable/utils';
+import { installRevertOnEscapePlugin } from '~/sortable/plugins/revert_on_escape';
+import { handleLocationHash } from '~/lib/utils/common_utils';
+import { getLocationHash } from '~/lib/utils/url_utility';
+import SafeHtml from '~/vue_shared/directives/safe_html';
+import {
+  CREATION_CONTEXT_DESCRIPTION_CHECKLIST,
+  WORK_ITEM_TYPE_NAME_EPIC,
+  WORK_ITEM_TYPE_NAME_ISSUE,
+  WORK_ITEM_TYPE_NAME_TASK,
+} from '../constants';
+
+const trackingMixin = InternalEvents.mixin();
+
+const FULL_OPACITY = 'gl-opacity-10';
+const CURSOR_GRAB = 'gl-cursor-grab';
+const isCheckbox = (target) => target?.classList.contains('task-list-item-checkbox');
+
+export default {
+  name: 'WorkItemDescriptionRendered',
+  CREATION_CONTEXT_DESCRIPTION_CHECKLIST,
+  directives: {
+    SafeHtml,
+    GlTooltip: GlTooltipDirective,
+  },
+  components: {
+    CreateWorkItemModal: defineAsyncComponent(
+      () => import('~/work_items/components/create_work_item_modal.vue'),
+    ),
+    GlButton,
+  },
+  mixins: [trackingMixin],
+  props: {
+    enableTruncation: {
+      type: Boolean,
+      required: true,
+    },
+    fullPath: {
+      type: String,
+      required: true,
+    },
+    isGroup: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    isUpdating: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    workItemDescription: {
+      type: Object,
+      required: true,
+    },
+    workItemId: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    workItemType: {
+      type: String,
+      required: false,
+      default: '',
+    },
+    canEdit: {
+      type: Boolean,
+      required: true,
+    },
+    withoutHeadingAnchors: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  emits: ['description-updated', 'task-item-toggled'],
+  data() {
+    return {
+      childDescription: '',
+      childTitle: '',
+      hasTaskListItemActions: false,
+      truncated: false,
+      visible: false,
+      checkboxes: [],
+    };
+  },
+  computed: {
+    childItemType() {
+      return this.workItemType === WORK_ITEM_TYPE_NAME_EPIC
+        ? WORK_ITEM_TYPE_NAME_ISSUE
+        : WORK_ITEM_TYPE_NAME_TASK;
+    },
+    descriptionText() {
+      return this.workItemDescription?.description;
+    },
+    descriptionHtml() {
+      return this.workItemDescription?.descriptionHtml;
+    },
+    isDescriptionEmpty() {
+      return this.descriptionHtml?.trim() === '';
+    },
+    isTruncated() {
+      return this.truncated && this.enableTruncation;
+    },
+  },
+  watch: {
+    descriptionHtml: {
+      handler() {
+        this.renderGFM();
+      },
+      immediate: true,
+    },
+    isUpdating: {
+      handler(isUpdating) {
+        this.sortables.forEach((sortable) => {
+          sortable.option('disabled', isUpdating);
+        });
+        this.disableCheckboxes(isUpdating);
+      },
+    },
+  },
+  created() {
+    // This property is intentionally not reactive.
+    this.sortables = [];
+  },
+  async mounted() {
+    installRevertOnEscapePlugin();
+    eventHub.$on('convert-task-list-item', this.convertTaskListItem);
+    eventHub.$on('delete-task-list-item', this.deleteTaskListItem);
+    eventHub.$on('disable-task-list-item', this.disableTaskListItem);
+    eventHub.$on('enable-task-list-item', this.enableTaskListItem);
+    window.addEventListener('hashchange', (e) => this.truncateOrScrollToAnchor(e));
+
+    await this.$nextTick();
+    this.truncateOrScrollToAnchor();
+  },
+  beforeDestroy() {
+    eventHub.$off('convert-task-list-item', this.convertTaskListItem);
+    eventHub.$off('delete-task-list-item', this.deleteTaskListItem);
+    eventHub.$off('disable-task-list-item', this.disableTaskListItem);
+    eventHub.$off('enable-task-list-item', this.enableTaskListItem);
+    window.removeEventListener('hashchange', this.truncateOrScrollToAnchor);
+    this.destroySortableLists();
+    this.removeAllPointerEventListeners();
+
+    if (this.$refs['gfm-content']) {
+      destroyImageLightbox(this.$refs['gfm-content']);
+    }
+  },
+  methods: {
+    async renderGFM() {
+      await this.$nextTick();
+
+      renderGFM(this.$refs['gfm-content']);
+      gl?.lazyLoader?.searchLazyImages();
+
+      if (this.canEdit) {
+        this.initCheckboxes();
+        this.removeAllPointerEventListeners();
+        this.destroySortableLists();
+        this.renderSortableLists();
+        this.renderTaskListItemActions();
+      }
+    },
+    /**
+     * Work Item description is truncated when they exceed 40% of the viewport height (see truncateLongDescription below)
+     * Also, it is not rendered before DOMContentLoaded is complete so even if truncation is not done, anchoring
+     * to a link within description doesn't cause page to scroll, so we need handle both these scenarios manually.
+     *
+     * This method checks if Work Item was opened with an anchor pointed to a link within description.
+     * If yes, it will prevent description from truncating and will scroll the page to the anchor.
+     * If no, it will truncate the description as per default behaviour.
+     */
+    truncateOrScrollToAnchor({ type } = {}) {
+      const hash = getLocationHash();
+      const hashSelector = `href="#${hash}"`;
+      const isLocationHashAnchoredInDescription =
+        hash && this.descriptionHtml?.includes(hashSelector);
+
+      if (isLocationHashAnchoredInDescription) {
+        // Link was referred from current page itself,
+        // so we expand the description and then scroll to it.
+        if (type === 'hashchange') {
+          this.showAll();
+        }
+        handleLocationHash();
+      } else {
+        this.truncateLongDescription();
+      }
+    },
+    destroySortableLists() {
+      while (this.sortables.length > 0) {
+        this.sortables.pop().destroy();
+      }
+    },
+    renderSortableLists() {
+      // We exclude GLFM table of contents, including nested lists within their `section-nav` root.
+      // We also exclude footnotes, which are in an `ol` inside a `section.footnotes`.
+      const lists = this.$el.querySelectorAll?.(
+        '.description ul, .description :not(section.footnotes) > ol',
+      );
+
+      lists?.forEach((list) => {
+        if (list.closest('.section-nav') || list.children.length <= 1) {
+          return;
+        }
+
+        Array.from(list.children).forEach((listItem) => {
+          listItem.prepend(this.createDragIconElement());
+          this.addPointerEventListeners(listItem, '.drag-icon');
+        });
+
+        this.sortables.push(
+          Sortable.create(
+            list,
+            getSortableDefaultOptions({
+              forceFallback: true,
+              revertOnEscape: true,
+              handle: '.drag-icon',
+              ...taskListSortableOptions,
+              onUpdate: (event) => {
+                const description = convertDescriptionWithNewSort(this.descriptionText, event.to);
+                this.$emit('description-updated', description);
+              },
+            }),
+          ),
+        );
+      });
+    },
+    createDragIconElement() {
+      const container = document.createElement('div');
+      // eslint-disable-next-line no-unsanitized/property
+      container.innerHTML = `<svg class="drag-icon s14 gl-icon gl-cursor-grab gl-opacity-0" role="img" aria-hidden="true">
+        <use href="${gon.sprite_icons}#grip"></use>
+      </svg>`;
+      return container.firstChild;
+    },
+    initCheckboxes() {
+      this.checkboxes = this.$el.querySelectorAll(
+        '.task-list-item-checkbox:not([data-inapplicable])',
+      );
+
+      // enable boxes, disabled by default in markdown
+      this.disableCheckboxes(false);
+    },
+    disableCheckboxes(disabled) {
+      this.checkboxes.forEach((checkbox) => {
+        // eslint-disable-next-line no-param-reassign
+        checkbox.disabled = disabled;
+      });
+    },
+    renderTaskListItemActions() {
+      const taskListItems = this.$el.querySelectorAll?.(
+        '.task-list-item:not(table .task-list-item)',
+      );
+
+      taskListItems?.forEach((listItem) => {
+        const enabled = Boolean(listItem.querySelector('.task-list-item-checkbox:enabled'));
+        const dropdown = this.createTaskListItemActions(enabled);
+        insertNextToTaskListItemText(dropdown, listItem);
+        this.addPointerEventListeners(listItem, '.task-list-item-actions');
+        this.hasTaskListItemActions = true;
+      });
+    },
+    createTaskListItemActions(enabled) {
+      const app = new Vue({
+        el: document.createElement('div'),
+        name: 'TaskListItemActionsRoot',
+        provide: { id: this.workItemId, issuableType: this.workItemType, enabled },
+        render: (createElement) => createElement(TaskListItemActions),
+      });
+      return app.$el;
+    },
+    addPointerEventListeners(listItem, elementSelector) {
+      const pointeroverListener = (event) => {
+        const element = event.target.closest('li').querySelector(elementSelector);
+        if (!element || isDragging() || this.isUpdating) {
+          return;
+        }
+        element.classList.add(CURSOR_GRAB);
+        element.classList.add(FULL_OPACITY);
+      };
+      const pointeroutListener = (event) => {
+        const element = event.target.closest('li').querySelector(elementSelector);
+        if (!element) {
+          return;
+        }
+        element.classList.remove(CURSOR_GRAB);
+        element.classList.remove(FULL_OPACITY);
+      };
+
+      // We use pointerover/pointerout instead of CSS so that when we hover over a
+      // list item with children, the grip icons of its children do not become visible.
+      listItem.addEventListener('pointerover', pointeroverListener);
+      listItem.addEventListener('pointerout', pointeroutListener);
+
+      this.pointerEventListeners = this.pointerEventListeners || new Map();
+      const events = [
+        { type: 'pointerover', listener: pointeroverListener },
+        { type: 'pointerout', listener: pointeroutListener },
+      ];
+      if (this.pointerEventListeners.has(listItem)) {
+        const concatenatedEvents = this.pointerEventListeners.get(listItem).concat(events);
+        this.pointerEventListeners.set(listItem, concatenatedEvents);
+      } else {
+        this.pointerEventListeners.set(listItem, events);
+      }
+    },
+    removeAllPointerEventListeners() {
+      this.pointerEventListeners?.forEach((events, listItem) => {
+        events.forEach((event) => listItem.removeEventListener(event.type, event.listener));
+        this.pointerEventListeners.delete(listItem);
+      });
+    },
+    convertTaskListItem({ id, sourcepos }) {
+      if (this.workItemId !== id) {
+        return;
+      }
+      const { newDescription, taskDescription, taskTitle } = deleteTaskListItem(
+        this.descriptionText,
+        sourcepos,
+      );
+      const { title, description } = extractTaskTitleAndDescription(taskTitle, taskDescription);
+      this.childTitle = title;
+      this.childDescription = description;
+      this.visible = true;
+      this.newDescription = newDescription;
+    },
+    deleteTaskListItem({ id, sourcepos }) {
+      if (this.workItemId !== id) {
+        return;
+      }
+      const { newDescription } = deleteTaskListItem(this.descriptionText, sourcepos);
+      this.$emit('description-updated', newDescription);
+    },
+    disableTaskListItem({ id, sourcepos }) {
+      if (this.workItemId !== id) {
+        return;
+      }
+      const { newDescription } = disableTaskListItem(this.descriptionText, sourcepos);
+      this.$emit('description-updated', newDescription);
+    },
+    enableTaskListItem({ id, sourcepos }) {
+      if (this.workItemId !== id) {
+        return;
+      }
+      const { newDescription } = enableTaskListItem(this.descriptionText, sourcepos);
+      this.$emit('description-updated', newDescription);
+    },
+    handleWorkItemCreated() {
+      this.$emit('description-updated', this.newDescription);
+    },
+    toggleCheckboxes(event) {
+      const { target } = event;
+
+      if (isCheckbox(target)) {
+        const { checked } = target;
+
+        target.disabled = true;
+
+        const replacement = toggleCheckbox({
+          rawMarkdown: this.descriptionText,
+          checkboxChecked: checked,
+          target,
+        });
+        if (!replacement) return;
+
+        this.$emit('task-item-toggled', {
+          checked,
+          lineSource: replacement.oldLine,
+          lineSourcepos: replacement.sourcepos,
+          revert: () => {
+            target.checked = !checked;
+          },
+        });
+      }
+    },
+    truncateLongDescription() {
+      /* Truncate when description is > 80% viewport height, plus 96px buffer to avoid trivial truncations. */
+      const maxHeight = window.innerHeight * 0.8 + 96;
+      this.truncated = this.$refs['gfm-content']?.clientHeight > maxHeight;
+    },
+    showAll() {
+      this.truncated = false;
+      this.trackEvent('expand_description_on_workitem', {
+        label: this.workItemType,
+      });
+    },
+  },
+};
+</script>
+
+<template>
+  <div>
+    <div v-if="isDescriptionEmpty" class="gl-text-subtle">{{ __('No description') }}</div>
+    <div
+      v-else
+      ref="description"
+      class="js-work-item-description work-item-description description md gl-relative gl-clearfix"
+      :class="{ '-gl-ml-6 gl-overflow-y-hidden gl-pl-6': isTruncated }"
+    >
+      <div
+        ref="gfm-content"
+        v-safe-html="descriptionHtml"
+        data-testid="work-item-description"
+        :class="{
+          truncated: isTruncated,
+          'has-task-list-item-actions': hasTaskListItemActions,
+          '[&_a.anchor]:gl-hidden': withoutHeadingAnchors,
+        }"
+        @change="toggleCheckboxes"
+      ></div>
+      <div v-if="isTruncated" class="description-more gl-z-1 -gl-ml-6 gl-block gl-w-full gl-pl-6">
+        <div class="show-all-btn gl-flex gl-w-full gl-items-center gl-justify-center gl-pb-2">
+          <gl-button
+            ref="show-all-btn"
+            variant="confirm"
+            category="tertiary"
+            class="gl-mx-4"
+            data-testid="show-all-btn"
+            @click="showAll"
+            >{{ __('Read more') }}</gl-button
+          >
+        </div>
+      </div>
+    </div>
+    <create-work-item-modal
+      :creation-context="$options.CREATION_CONTEXT_DESCRIPTION_CHECKLIST"
+      :description="childDescription"
+      :full-path="fullPath"
+      hide-button
+      :hide-namespace-selector="!isGroup"
+      :hide-type-selector="!isGroup"
+      :is-group="isGroup"
+      :parent-id="workItemId"
+      :title="childTitle"
+      :visible="visible"
+      :preselected-work-item-type="childItemType"
+      @hide-modal="visible = false"
+      @work-item-created="handleWorkItemCreated"
+    />
+  </div>
+</template>

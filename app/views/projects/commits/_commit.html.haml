@@ -1,33 +1,107 @@
-%li.commit.js-toggle-container
-  .commit-row-title
-    %strong.str-truncated
-      = link_to_gfm commit.title, namespace_project_commit_path(project.namespace, project, commit.id), class: "commit-row-message"
-      - if commit.description?
-        %a.text-expander.js-toggle-button ...
+-#-----------------------------------------------------------------
+  WARNING: Please keep changes up-to-date with the following files:
+  - `assets/javascripts/diffs/components/commit_item.vue`
 
-    .pull-right
-      = link_to commit.short_id, namespace_project_commit_path(project.namespace, project, commit), class: "commit_short_id"
+  EXCEPTION WARNING - see above `.vue` file for de-sync drift
 
-    .notes_count
-      - if @note_counts
-        - note_count = @note_counts.fetch(commit.id, 0)
-      - else
-        - notes = commit.notes
-        - note_count = notes.user.count
+  WARNING: When introducing new content here, please consider what
+           changes may need to be made in the cache keys used to
+           wrap this view, found in
+           CommitsHelper#commit_partial_cache_key
+-#-----------------------------------------------------------------
+- view_details      = local_assigns.fetch(:view_details, false)
+- merge_request     = local_assigns.fetch(:merge_request, nil)
+- project           = local_assigns.fetch(:project) { merge_request&.project }
+- ref               = local_assigns.fetch(:ref) { merge_request&.source_branch }
+- is_commits_page = local_assigns.fetch(:is_commits_page, false)
+- pipeline_ref      = ref unless is_commits_page && !@ref_type && Commit.valid_hash?(ref)
+- commit            = commit.present(current_user: current_user)
+- commit_status     = commit.detailed_status_for(pipeline_ref)
+- show_legacy_ci_icon = local_assigns.fetch(:show_legacy_ci_icon, true)
+- is_blob_page = local_assigns.fetch(:is_blob_page, false)
+- tags              = commit.tags_for_display
+- collapsible       = local_assigns.fetch(:collapsible, true)
+- link_data_attrs   = local_assigns.fetch(:link_data_attrs, {})
+- link              = commit_path(project, commit, merge_request: merge_request)
+- show_project_name = local_assigns.fetch(:show_project_name, false)
+- toggle_commit_message = _("Toggle commit description")
+- add_page_specific_style 'page_bundles/commit_description'
 
-      - if note_count > 0
-        %span.light
-          %i.fa.fa-comments
-          = note_count
+%li{ class: ["commit !gl-flex-row", ("js-toggle-container" if collapsible)], id: "commit-#{commit.short_id}" }
+  %div{ class: ["gl-self-start", is_blob_page ? "gl-block": "gl-hidden @sm/panel:gl-block"] }
+    = author_avatar(commit, size: 32, has_tooltip: false, css_class: 'gl-inline-block')
 
-  - if commit.description?
-    .commit-row-description.js-toggle-content
-      %pre
-        = preserve(gfm(escape_once(commit.description)))
+  .commit-detail.flex-list.gl-flex.gl-flex-col.gl-justify-start.gl-items-start.gl-grow.gl-min-w-0{ class: '@sm/panel:gl-flex-row @sm/panel:gl-items-center @sm/panel:gl-justify-between' }
+    .commit-content{ data: { testid: 'commit-content' } }
+      - if is_blob_page
+        .gl-flex.gl-gap-3.gl-items-center{ class: '@sm/panel:gl-hidden' }
+          .committer.gl-text-sm
+            - commit_authored_timeago = time_ago_with_tooltip(commit.authored_date, placement: 'bottom')
+            = commit_authored_timeago.html_safe
+          = render Pajamas::ButtonComponent.new(category: :tertiary, variant: :link, icon: 'commit', href: link, button_options: { class: ["commit-row-message js-onboarding-commit-item"] }) do
+            = commit.short_id
 
-  .commit-row-info
-    = commit_author_link(commit, avatar: true, size: 24)
-    authored
-    .committed_ago
-      #{time_ago_with_tooltip(commit.committed_date)} &nbsp;
-    = link_to_browse_code(project, commit)
+      %div{ class: is_blob_page ? "gl-hidden @sm/panel:gl-block": "gl-block" }
+        - if view_details && merge_request
+          = link_to commit.title, project_commit_path(project, commit.id, merge_request_iid: merge_request.iid), class: ["commit-row-message item-title js-onboarding-commit-item", ("!gl-italic" if commit.message.empty?)], data: link_data_attrs
+        - else
+          = link_to_markdown_field(commit, :title, link, { class: "commit-row-message item-title js-onboarding-commit-item #{'!gl-italic' if commit.message.empty?}", data: link_data_attrs })
+        %span.commit-row-message{ class: '!gl-inline @sm/panel:!gl-hidden' }
+          &middot;
+          = commit.short_id
+        - if commit.description? && collapsible
+          = render Pajamas::ButtonComponent.new(icon: 'ellipsis_h',
+            button_options: { class: 'button-ellipsis-horizontal js-toggle-button', data: { toggle: 'tooltip', container: 'body', collapse_title: toggle_commit_message, expand_title: toggle_commit_message, commit_id: commit.id }, title: toggle_commit_message, aria: { label: toggle_commit_message }})
+        = render partial: 'projects/commits/committer', locals: { commit: commit }
+        = render_if_exists 'projects/commits/project_namespace', show_project_name: show_project_name, project: project
+
+        - if commit.description?
+          %pre{ class: ["commit-row-description gl-whitespace-pre-wrap", (collapsible ? "js-toggle-content" : "!gl-block")], data: { commit_id: commit.id } }
+            - if !is_commits_page
+              = preserve(markdown_field(commit, :description))
+
+    .commit-actions.gl-flex.gl-items-center.gl-gap-3
+      %div{ class: is_blob_page ? "gl-hidden @sm/panel:gl-flex gl-items-center gl-gap-3 gl-my-2": "gl-flex gl-items-center gl-gap-3 gl-my-2" }
+        - if commit.respond_to?(:has_agent_session?) && commit.has_agent_session?
+          %span.gl-inline-flex.gl-items-center.has-tooltip{ class: '!gl-text-subtle', role: 'img', title: s_('DuoAgentPlatform|Commit authored in a GitLab Duo Agent session'), aria: { label: s_('DuoAgentPlatform|GitLab Duo Agent session') }, data: { testid: 'commit-agent-session-badge' } }
+            = sprite_icon('session-ai')
+        - if tags.present?
+          - if tags.size > 1
+            = gl_badge_tag(variant: :neutral, icon: 'tag', class: 'gl-font-monospace has-tooltip',  title: tags.join(', '),  href: project_commit_path(project, commit.id)) do
+              %span.gl-sr-only
+                = _('View commit %{commit_id}') % { commit_id: commit.short_id}
+              = _('%{count} tags') % { count: tags.size }
+          - else
+            = gl_badge_tag(variant: :neutral, icon: 'tag', class: 'gl-font-monospace has-tooltip',  title: tags.first,  href: project_commits_path(project, tags.first, ref_type: 'tags')) do
+              %span.gl-sr-only
+                = _('View commits for tag %{tag}') % { tag: tags.first }
+              %span{ class: 'gl-truncate gl-max-w-12 @sm/panel:gl-max-w-15 @md/panel:gl-max-w-28 @lg/panel:gl-max-w-34 @xl/panel:gl-max-w-48' }
+                = tags.first
+        - if request.xhr?
+          - if commit.has_signature?
+            = render partial: 'projects/commit/signature', object: commit.signature
+        - else
+          = render partial: 'projects/commit/ajax_signature', locals: { commit: commit }
+        - if show_legacy_ci_icon && commit_status
+          = render_commit_status(commit, commit_status, ref: pipeline_ref)
+        - if commit_status
+          .js-commit-pipeline-status{ data: { endpoint: pipelines_project_commit_path(project, commit.id, ref: pipeline_ref) } }
+        .btn-group.gl-hidden{ class: '@sm/panel:gl-flex' }
+          = render Pajamas::ButtonComponent.new(label: true, button_text_classes: 'gl-font-monospace', button_options: { class: 'dark:!gl-bg-neutral-800' }) do
+            = commit.short_id
+          = clipboard_button(text: commit.id, category: :primary, size: :medium, title: _("Copy commit SHA"), aria_label: _("Copy commit SHA %{sha}") % { sha: commit.short_id })
+          = link_to_browse_code(project, commit)
+
+      - if is_blob_page
+        .gl-block{ class: '@sm/panel:gl-hidden' }
+          = render Pajamas::ButtonComponent.new(icon: 'ellipsis_h', button_options: { class: 'button-ellipsis-horizontal text-expander js-toggle-button', data: { toggle: 'tooltip', container: 'body', collapse_title: toggle_commit_message, expand_title: toggle_commit_message }, title: toggle_commit_message, aria: { label: toggle_commit_message }})
+        #js-commit-history-link{ data: { history_link: project_commits_path(@project, @id, ref_type: @ref_type), event_tracking: 'click_history_control_on_blob_page' } }
+
+  - if is_blob_page
+    .gl-block{ class: '@sm/panel:gl-hidden' }
+      .gl-hidden.js-toggle-content.gl-mt-6
+        = link_to_markdown_field(commit, :title, link, { class: "commit-row-message item-title js-onboarding-commit-item #{'!gl-italic' if commit.message.empty?}" })
+        = render partial: 'projects/commits/committer', locals: { commit: commit }
+        - if commit.description?
+          %pre{ class: ["commit-row-description gl-whitespace-pre-wrap", (collapsible ? "js-toggle-content" : "!gl-block")] }
+            = preserve(markdown_field(commit, :description))

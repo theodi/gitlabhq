@@ -1,0 +1,71 @@
+---
+stage: Software Supply Chain Security
+group: Compliance
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Generate and export the chain of custody report in GitLab to track project changes and merge details for compliance.
+title: Chain of custody report
+---
+
+{{< details >}}
+
+- Tier: Ultimate
+- Offering: GitLab.com, GitLab Self-Managed, GitLab Dedicated
+
+{{< /details >}}
+
+The chain of custody report provides a one-month trailing window of all commits to a project under the group.
+
+To generate the report for all commits, GitLab:
+
+1. Fetches all projects under the group.
+1. For each project, fetches the last one month of commits in chronological order (newest first). Each project is capped at 1024 commits. If there are more than
+   1024 commits in the one-month window, they are truncated.
+1. Sorts all commits by committed date (descending) with deterministic secondary sorting by commit SHA for consistent ordering.
+1. Writes the commits to a CSV file. The file is truncated at 15 MB because the report is emailed as an attachment.
+
+The report includes:
+
+- Commit SHA.
+- Commit author.
+- Committer (normalized to GitLab user name when available, based on committer email).
+- Date committed (with millisecond precision in UTC format).
+- Group.
+- Project.
+
+If the commit has a related merge commit, then the following are also included:
+
+- Merge commit SHA.
+- Merge request ID.
+- User who merged the merge request.
+- Merge date.
+- Pipeline ID.
+- Merge request approvers.
+
+## Generate chain of custody report
+
+To generate the chain of custody report:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Compliance center**.
+1. In the upper-right corner, select **Export**.
+1. Select **Export chain of custody report**.
+
+The chain of custody report is sent through email.
+
+## Generate commit-specific chain of custody report
+
+You can generate a commit-specific chain of custody report for a given commit SHA. This report provides only the
+details for the provided commit SHA.
+
+To generate a commit-specific Chain of Custody report:
+
+1. In the top bar, select **Search or go to** and find your group.
+1. In the left sidebar, select **Secure** > **Compliance center**.
+1. In the upper-right corner, select **Export**.
+1. Select **Export custody report of a specific commit**.
+1. Enter the commit SHA, and then select **Export custody report**.
+
+The chain of custody report is sent through email.
+
+Alternatively, use a direct link: `https://gitlab.com/groups/<group-name>/-/security/merge_commit_reports.csv?commit_sha={optional_commit_sha}`,
+passing in an optional value to the `commit_sha` query parameter.

@@ -1,0 +1,12 @@
+%p.details
+  = sprintf(s_("Notify|%{author_link}'s issue %{issue_reference_link} is due soon."), { author_link: link_to(@issue.author_name, user_url(@issue.author)), issue_reference_link: issue_reference_link(@issue) }).html_safe
+
+- if @issue.assignees.any?
+  %p
+    = assignees_label(@issue)
+%p
+  = sprintf(s_('Notify|This issue is due on: %{issue_due_date}'), { issue_due_date: @issue.due_date.to_fs(:medium) }).html_safe
+
+- if @issue.description
+  .md
+    = markdown(@issue.description, pipeline: :email, author: @issue.author, current_user: @recipient, issuable_reference_expansion_enabled: true)

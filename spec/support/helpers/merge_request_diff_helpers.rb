@@ -1,0 +1,168 @@
+# frozen_string_literal: true
+
+module MergeRequestDiffHelpers
+  PageEndReached = Class.new(StandardError)
+
+  def add_diff_line_draft_comment(comment, line_holder, diff_side = nil)
+    click_diff_line(line_holder, diff_side)
+    page.within('.js-discussion-note-form') do
+      fill_in('note_note', with: comment)
+      begin
+        click_button('Start a review', wait: 0.1)
+      rescue Capybara::ElementNotFound
+        click_button('Add to review')
+      end
+    end
+  end
+
+  def click_diff_line(line_holder, diff_side = nil)
+    wait_for('new note form to appear on the row') do
+      line = get_line_components(line_holder, diff_side)
+      scroll_to_panel_elements_bottom(line_holder)
+      line_holder.hover
+
+      line[:num].find('.js-add-diff-note-button', wait: 0.2).click
+
+      page.has_field?('note_note', focused: true, wait: 0.2)
+    rescue Capybara::ElementNotFound
+    end
+  end
+
+  def get_line_components(line_holder, diff_side = nil)
+    if diff_side.nil?
+      get_inline_line_components(line_holder)
+    else
+      get_parallel_line_components(line_holder, diff_side)
+    end
+  end
+
+  def get_inline_line_components(line_holder)
+    { content: line_holder.find('.line_content', match: :first), num: line_holder.find('.diff-line-num', match: :first) }
+  end
+
+  def get_parallel_line_components(line_holder, diff_side = nil)
+    side_index = diff_side == 'left' ? 0 : 1
+    # Wait for `.line_content`
+    line_holder.find('.line_content', match: :first)
+    # Wait for `.diff-line-num`
+    line_holder.find('.diff-line-num', match: :first)
+    { content: line_holder.all('.line_content')[side_index], num: line_holder.all('.diff-line-num')[side_index] }
+  end
+
+  def has_reached_page_end
+    evaluate_script("(window.innerHeight + window.scrollY) >= document.body.offsetHeight")
+  end
+
+  def has_reached_panel_end
+    evaluate_script("(function() {
+      const panel = document.querySelector('.js-static-panel-inner');
+      return (panel.scrollTop + panel.clientHeight) >= panel.scrollHeight;
+    })()")
+  end
+
+  def scroll_to_panel_elements_bottom(element)
+    evaluate_script("(function(el) {
+      const panel = document.querySelector('.js-static-panel-inner');
+      const rect = el.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      panel.scrollBy(0, rect.bottom - panelRect.bottom);
+    })(arguments[0]);", element.native)
+  end
+
+  # we're not using Capybara's .obscured here because it also checks if the element is clickable
+  def within_viewport?(element)
+    evaluate_script("(function(el) {
+      var rect = el.getBoundingClientRect();
+      return (
+        rect.bottom >= 0 &&
+        rect.right >= 0 &&
+        rect.top <= (window.innerHeight || document.documentElement.clientHeight) &&
+        rect.left <= (window.innerWidth || document.documentElement.clientWidth)
+      );
+    })(arguments[0]);", element.native)
+  end
+
+  def within_panel_viewport?(element)
+    evaluate_script("(function(el) {
+      const panel = document.querySelector('.js-static-panel-inner');
+      const rect = el.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      return (
+        rect.bottom >= panelRect.top &&
+        rect.right >= panelRect.left &&
+        rect.top <= panelRect.bottom &&
+        rect.left <= panelRect.right
+      );
+    })(arguments[0]);", element.native)
+  end
+
+  def find_within_viewport(selector, **options)
+    begin
+      element = find(selector, **options, wait: 2)
+    rescue Capybara::ElementNotFound
+      return
+    end
+    return element if within_viewport?(element)
+
+    nil
+  end
+
+  def find_within_panel_viewport(selector, **options)
+    begin
+      element = find(selector, **options, wait: 2)
+    rescue Capybara::ElementNotFound
+      return
+    end
+    return element if within_panel_viewport?(element)
+
+    nil
+  end
+
+  def find_by_scrolling(selector, **options)
+    wait_for_scrollable_content_to_load
+
+    element = find_within_viewport(selector, **options)
+    return element if element
+
+    page.execute_script "window.scrollTo(0,0)"
+    until element
+
+      if has_reached_page_end
+        raise PageEndReached, "Failed to find any elements matching a selector '#{selector}' by scrolling. Page end reached."
+      end
+
+      page.execute_script "window.scrollBy(0,window.innerHeight/1.5)"
+      element = find_within_viewport(selector, **options)
+    end
+    element
+  end
+
+  def find_in_panel_by_scrolling(selector, **options)
+    wait_for_scrollable_content_to_load
+
+    element = find_within_panel_viewport(selector, **options)
+    return element if element
+
+    page.execute_script "document.querySelector('.js-static-panel-inner').scrollTo(0,0)"
+
+    until element
+
+      if has_reached_panel_end
+        raise PageEndReached, "Failed to find any elements matching a selector '#{selector}' by scrolling. Page end reached."
+      end
+
+      page.execute_script "document.querySelector('.js-static-panel-inner').scrollBy(0, document.querySelector('.js-static-panel-inner').clientHeight/1.5)"
+
+      element = find_within_panel_viewport(selector, **options)
+    end
+    element
+  end
+
+  private
+
+  def wait_for_scrollable_content_to_load
+    return unless page.has_css?('.diffs-tab', wait: 0)
+
+    expect(page).to have_css('.diff-file')
+  end
+end

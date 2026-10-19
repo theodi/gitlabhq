@@ -1,36 +1,39 @@
-- too_big = diff_file.diff_lines.count > Commit::DIFF_SAFE_LINES
+- too_big = diff_file.diff_lines.count > Commit.diff_safe_max_lines
 - if too_big
-  %a.supp_diff_link Changes suppressed. Click to show
+  .suppressed-container
+    %a.show-suppressed-diff.cursor-pointer.js-show-suppressed-diff= _("Changes suppressed. Click to show.")
 
-%table.text-file{class: "#{'hide' if too_big}"}
-  - last_line = 0
-  - diff_file.diff_lines.each_with_index do |line, index|
-    - type = line.type
-    - last_line = line.new_pos
-    - line_code = generate_line_code(diff_file.file_path, line)
-    - line_old = line.old_pos
-    %tr.line_holder{ id: line_code, class: "#{type}" }
-      - if type == "match"
-        = render "projects/diffs/match_line", {line: line.text,
-          line_old: line_old, line_new: line.new_pos, bottom: false, new_file: diff_file.new_file}
+%table.text-file.diff-wrap-lines.code.code-commit.js-syntax-highlight.commit-diff{ data: diff_view_data, class: too_big ? 'hide' : '' }
+  - diff_file.highlighted_diff_lines.each do |line|
+    - line_code = diff_file.line_code(line)
+
+    %tr.line_holder{ class: line.type, id: line_code }
+      - case line.type
+      - when 'match'
+        = diff_match_line line.old_pos, line.new_pos, text: line.text
+      - when 'old-nomappinginraw', 'new-nomappinginraw', 'unchanged-nomappinginraw'
+        = diff_nomappinginraw_line line, %w[old_line diff-line-num], %w[new_line diff-line-num], %w[line_content]
+      - when 'old-nonewline', 'new-nonewline'
+        %td.old_line.diff-line-num
+        %td.new_line.diff-line-num
+        %td.line_content.match= line.text
       - else
-        %td.old_line
-          = link_to raw(type == "new" ? "&nbsp;" : line_old), "##{line_code}", id: line_code
-          - if @comments_allowed && can?(current_user, :write_note, @project)
-            = link_to_new_diff_note(line_code)
-        %td.new_line{data: {linenumber: line.new_pos}}
-          = link_to raw(type == "old" ? "&nbsp;" : line.new_pos) , "##{line_code}", id: line_code
-        %td.line_content{class: "noteable_line #{type} #{line_code}", "line_code" => line_code}= raw diff_line_content(line.text)
+        %td.old_line.diff-line-num{ class: "#{line.type} js-avatar-container", data: { linenumber: line.old_pos } }
+          = add_diff_note_button(line_code, diff_file.position(line), line.type)
+          %a{ href: "##{line_code}", data: { linenumber: diff_link_number(line.type, "new", line.old_pos) } }
 
-    - if @reply_allowed
-      - comments = @line_notes.select { |n| n.line_code == line_code && n.active? }.sort_by(&:created_at)
-      - unless comments.empty?
-        = render "projects/notes/diff_notes_with_reply", notes: comments, line: line.text
+        %td.new_line.diff-line-num{ class: line.type, data: { linenumber: line.new_pos } }
+          %a{ href: "##{line_code}", data: { linenumber: diff_link_number(line.type, "old", line.new_pos) } }
 
-  - if last_line > 0
-    = render "projects/diffs/match_line", {line: "",
-      line_old: last_line, line_new: last_line, bottom: true, new_file: diff_file.new_file}
+        %td.line_content{ class: line.type }<
+          = diff_line_content(line.rich_text)
 
-- if diff_file.diff.blank? && diff_file.mode_changed?
-  .file-mode-changed
-    File mode changed
+    - if line.discussable? && @grouped_diff_discussions.present? && @grouped_diff_discussions[line_code]
+      - line_discussions = @grouped_diff_discussions[line_code]
+      = render "discussions/diff_discussion", discussions: line_discussions, expanded: line_discussions.any?(&:expanded?)
+
+  - if !diff_file.new_file? && !diff_file.deleted_file? && diff_file.highlighted_diff_lines.any?
+    - last_line = diff_file.highlighted_diff_lines.last
+    - if last_line.new_pos < total_lines
+      %tr.line_holder
+        = diff_match_line last_line.old_pos, last_line.new_pos, bottom: true

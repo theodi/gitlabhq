@@ -1,0 +1,19 @@
+---
+data_category: operational
+key_path: git.version
+description: Information about Git version
+product_group: operate
+product_categories:
+- git
+value_type: object
+value_json_schema: 'config/metrics/objects_schemas/git_version_schema.json'
+status: active
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332
+time_frame: none
+data_source: system
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []

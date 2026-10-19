@@ -1,0 +1,65 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "path",
+    "location",
+    "created_at"
+  ],
+  "properties": {
+    "id": {
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string"
+    },
+    "project_id": {
+      "type": "integer"
+    },
+    "location": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cleanup_policy_started_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "tags_path": {
+      "type": "string"
+    },
+    "destroy_path": {
+      "type": "string"
+    },
+    "status": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "delete_scheduled",
+            "delete_failed"
+          ]
+        }
+      ]
+    },
+    "tags": {
+      "$ref": "tags.json"
+    },
+    "tags_count": {
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false
+}

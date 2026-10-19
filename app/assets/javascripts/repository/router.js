@@ -1,0 +1,153 @@
+import { escapeRegExp } from 'lodash-es';
+import Vue from 'vue';
+import VueRouter from 'vue-router';
+import { joinPaths, webIDEUrl } from '~/lib/utils/url_utility';
+import { projectPath } from '~/lib/utils/path_helpers/project';
+import { encodeRepositoryPath } from './utils/url_utility';
+import { setTitle } from './utils/title';
+import BlobPage from './pages/blob.vue';
+import IndexPage from './pages/index.vue';
+import TreePage from './pages/tree.vue';
+import { getRefType } from './utils/ref_type';
+
+Vue.use(VueRouter);
+
+const normalizePathParam = (pathParam) => {
+  // Vue Router 4 when there's more than one `:path` segment
+  if (Array.isArray(pathParam)) {
+    return joinPaths(...pathParam);
+  }
+
+  // Vue Router 3, or when there's zero or one `:path` segments.
+  return pathParam?.replace(/^\//, '') || '/';
+};
+
+export default function createRouter(projectFullPath, baseRef, fullName) {
+  const treePathRoute = {
+    component: TreePage,
+    props: (route) => ({
+      refType: getRefType(route.query.ref_type || null),
+    }),
+  };
+
+  const blobPathRoute = {
+    component: BlobPage,
+    props: (route) => {
+      return {
+        projectPath: projectFullPath,
+        refType: getRefType(route.query.ref_type || null),
+      };
+    },
+  };
+
+  const router = new VueRouter({
+    mode: 'history',
+    base: projectPath(projectFullPath),
+    routes: [
+      {
+        name: 'treePathDecoded',
+        // Sometimes the ref needs decoding depending on how the backend sends it to us
+        path: `/:dash(-)?/tree/${decodeURI(baseRef)}/:path*`,
+        ...treePathRoute,
+      },
+      {
+        name: 'treePathEncoded',
+        // Support encoded refs for branches with special characters (e.g., #, %, etc.)
+        path: `/:dash(-)?/tree/${encodeRepositoryPath(baseRef)}/:path*`,
+        ...treePathRoute,
+      },
+      {
+        name: 'treePathEncodedSlashes',
+        // External tools (e.g. Jira) link refs with encoded slashes (%2F)
+        path: `/:dash(-)?/tree/${escapeRegExp(baseRef?.replace(/\//g, '%2F'))}/:path*`,
+        ...treePathRoute,
+      },
+      {
+        name: 'treePath',
+        // Support without decoding as well just in case the ref doesn't need to be decoded
+        path: `/:dash(-)?/tree/${escapeRegExp(baseRef)}/:path*`,
+        ...treePathRoute,
+      },
+      {
+        name: 'blobPathDecoded',
+        // Sometimes the ref needs decoding depending on how the backend sends it to us
+        path: `/:dash(-)?/blob/${decodeURI(baseRef)}/:path*`,
+        ...blobPathRoute,
+      },
+      {
+        name: 'blobPathEncoded',
+        // Support encoded refs for branches with special characters (e.g., #, %, etc.)
+        path: `/:dash(-)?/blob/${encodeRepositoryPath(baseRef)}/:path*`,
+        ...blobPathRoute,
+      },
+      {
+        name: 'blobPathEncodedSlashes',
+        // External tools (e.g. Jira) link refs with encoded slashes (%2F)
+        path: `/:dash(-)?/blob/${escapeRegExp(baseRef?.replace(/\//g, '%2F'))}/:path*`,
+        ...blobPathRoute,
+      },
+      {
+        name: 'blobPath',
+        // Support without decoding as well just in case the ref doesn't need to be decoded
+        path: `/:dash(-)?/blob/${escapeRegExp(baseRef)}/:path*`,
+        ...blobPathRoute,
+      },
+      {
+        path: '/',
+        name: 'projectRoot',
+        component: IndexPage,
+        props: {
+          refType: 'HEADS',
+        },
+        meta: {
+          refType: 'HEADS',
+        },
+      },
+      {
+        // Fallback: history navigation can land on non-repository paths (e.g. wikis)
+        // while this app is loaded
+        path: '*',
+        name: 'notFound',
+        component: { render: () => null },
+      },
+    ],
+  });
+
+  // Tree/blob views host the file tree browser + content side by side, so on Fixed
+  // layout they get a wider max-width via `.repository-max-width` (see
+  // page_bundles/tree.scss). The Rails @content_class only fires on
+  // initial render, so client-side navigation needs to update the outer container
+  // class here. The container is the parent of #content-body — the alert wrapper
+  // rendered above it is also a .container-fluid direct child of
+  // .js-static-panel-inner, so class selectors alone would match the wrong element.
+  const containerEl = document.getElementById('content-body')?.parentElement;
+
+  router.afterEach(({ params: { path }, name = '' }) => {
+    const needsClosingSlash = !name.includes('blobPath');
+    const normalizedPath = normalizePathParam(path);
+    window.gl.webIDEPath = webIDEUrl(
+      joinPaths(
+        '/',
+        projectFullPath,
+        'edit',
+        decodeURI(baseRef),
+        '-',
+        normalizedPath,
+        needsClosingSlash && '/',
+      ),
+    );
+
+    const titlePath = Array.isArray(path) ? joinPaths(...path) : path; // Vue 3 returns an array of strings for the path
+
+    // The base ref is pre-encoded for route matching; the tab title should
+    // show the human-readable ref.
+    setTitle(titlePath || '', baseRef && decodeURIComponent(baseRef), fullName);
+
+    if (containerEl) {
+      const wideRoute = name.startsWith('treePath') || name.startsWith('blobPath');
+      containerEl.classList.toggle('repository-max-width', wideRoute);
+    }
+  });
+
+  return router;
+}

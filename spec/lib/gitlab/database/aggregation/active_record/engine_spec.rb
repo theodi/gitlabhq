@@ -1,0 +1,192 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Gitlab::Database::Aggregation::ActiveRecord::Engine, feature_category: :value_stream_management do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:project) { create(:project) }
+  let_it_be(:merge_request1) do
+    create(:merge_request, :unique_branches,
+      updated_by_id: user.id,
+      target_project: project,
+      source_project: project,
+      time_estimate: 1,
+      created_at: '2025-04-05').tap do |mr|
+      mr.metrics.update!(merged_at: '2025-05-03')
+    end
+  end
+
+  let_it_be(:merge_request2) do
+    create(:merge_request, :unique_branches,
+      target_project: project,
+      source_project: project,
+      time_estimate: 3,
+      created_at: '2025-04-04').tap do |mr|
+        mr.metrics.update!(latest_closed_at: '2025-05-03')
+      end
+  end
+
+  let_it_be(:merge_request3) do
+    create(:merge_request, updated_by_id: user.id, time_estimate: 5, created_at: '2025-06-05').tap do |mr|
+      mr.metrics.update!(merged_at: '2025-06-04')
+    end
+  end
+
+  let(:engine_definition) do
+    described_class.build do
+      dimensions do
+        column :state_id, :integer, description: 'Integer representation of the existing merge request states'
+        column :updated_by_id, :integer, description: 'User id value who last updated the the merge request'
+        column :project_id, :integer, description: 'ID of the associated project'
+        date_bucket :created_at, :timestamp, description: 'Bucketed creation timestamp (month)',
+          parameters: { granularity: { type: :string, in: %w[monthly daily] } }
+        date_bucket :merged_at,
+          :timestamp,
+          -> { MergeRequest::Metrics.arel_table[:merged_at] },
+          parameters: { granularity: { type: :string, in: %w[monthly weekly] } },
+          scope_proc: ->(scope, _ctx) { scope.joins(:metrics).where.not(merge_request_metrics: { merged_at: nil }) },
+          description: 'Bucketed merge timestamp (month or week).'
+        date_bucket :closed_at,
+          :timestamp,
+          -> { MergeRequest::Metrics.arel_table[:latest_closed_at] },
+          parameters: { granularity: { type: :string, in: %w[monthly weekly] } },
+          scope_proc: ->(scope, _ctx) { scope.joins(:metrics) },
+          description: 'Bucketed merge timestamp (month or week).'
+        column :state,
+          :string,
+          -> { MergeRequest.arel_table[:state_id] },
+          formatter: ->(v) { MergeRequest.available_states.invert[v] },
+          description: 'String representation of the existing merge request states.'
+      end
+
+      metrics do
+        count description: 'Total record count'
+        mean :time_estimate, :float, description: 'Mean time estimate'
+        mean :time_estimate_with_block, :float, -> { MergeRequest.arel_table[:time_estimate] }
+      end
+    end
+  end
+
+  let(:engine) { engine_definition.new(context: { scope: MergeRequest.all }) }
+
+  it 'mean time_estimate by state_id' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :state_id }],
+      metrics: [{ identifier: :mean_time_estimate }, { identifier: :mean_time_estimate_with_block }]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      state_id: 1, mean_time_estimate: 3.0, mean_time_estimate_with_block: 3.0
+    ])
+  end
+
+  it 'count by project_id sorted' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :project_id }],
+      metrics: [{ identifier: :total_count }],
+      order: [{ identifier: :total_count, direction: :desc }]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      { project_id: project.id, total_count: 2 },
+      { project_id: merge_request3.project_id, total_count: 1 }
+    ])
+  end
+
+  it 'count by month' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :created_at, parameters: { granularity: 'monthly' } }],
+      metrics: [{ identifier: :total_count }],
+      order: [{ identifier: :created_at, parameters: { granularity: 'monthly' }, direction: :desc }]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      { created_at_monthly: merge_request3.created_at.beginning_of_month, total_count: 1 },
+      { created_at_monthly: merge_request1.created_at.beginning_of_month, total_count: 2 }
+    ])
+  end
+
+  it 'group and order by the same timestamp column with different granularity' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [
+        { identifier: :created_at, parameters: { granularity: 'monthly' } },
+        { identifier: :created_at, parameters: { granularity: 'daily' } }
+      ],
+      metrics: [{ identifier: :total_count }],
+      order: [
+        { identifier: :created_at, parameters: { granularity: 'monthly' }, direction: :desc },
+        { identifier: :created_at, parameters: { granularity: 'daily' }, direction: :asc }
+      ]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      {
+        created_at_monthly: merge_request3.created_at.beginning_of_month,
+        created_at_daily: merge_request3.created_at.beginning_of_day,
+        total_count: 1
+      },
+      {
+        created_at_monthly: merge_request2.created_at.beginning_of_month,
+        created_at_daily: merge_request2.created_at.beginning_of_day,
+        total_count: 1
+      },
+      {
+        created_at_monthly: merge_request1.created_at.beginning_of_month,
+        created_at_daily: merge_request1.created_at.beginning_of_day,
+        total_count: 1
+      }
+    ])
+  end
+
+  it 'count by state' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [{ identifier: :state }],
+      metrics: [{ identifier: :total_count }]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      { state: 'opened', total_count: 3 }
+    ])
+  end
+
+  it 'global count' do
+    request = Gitlab::Database::Aggregation::Request.new(
+      dimensions: [],
+      metrics: [{ identifier: :total_count }]
+    )
+
+    expect(engine).to execute_aggregation(request).and_return([
+      { total_count: 3 }
+    ])
+  end
+
+  describe 'null value handling' do
+    context 'when column with integer type returns null values' do
+      it 'groups null values together' do
+        request = Gitlab::Database::Aggregation::Request.new(
+          dimensions: [{ identifier: :updated_by_id }],
+          metrics: [{ identifier: :total_count }]
+        )
+
+        expect(engine).to execute_aggregation(request).and_return([
+          { updated_by_id: user.id, total_count: 2 },
+          { updated_by_id: nil, total_count: 1 }
+        ])
+      end
+    end
+
+    context 'when date_bucket dimension returns null values' do
+      it 'groups null values together' do
+        request = Gitlab::Database::Aggregation::Request.new(
+          dimensions: [{ identifier: :closed_at, parameters: { granularity: 'monthly' } }],
+          metrics: [{ identifier: :total_count }]
+        )
+
+        expect(engine).to execute_aggregation(request).and_return([
+          { closed_at_monthly: merge_request2.metrics.latest_closed_at.beginning_of_month, total_count: 1 },
+          { closed_at_monthly: nil, total_count: 2 }
+        ])
+      end
+    end
+  end
+end

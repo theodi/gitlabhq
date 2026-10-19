@@ -1,0 +1,292 @@
+# frozen_string_literal: true
+
+require "spec_helper"
+
+RSpec.describe RapidDiffs::MergeRequestAppComponent, feature_category: :code_review_workflow do
+  let(:app_component) { instance_double(RapidDiffs::AppComponent) }
+  let(:diffs_stats_endpoint) { '/diffs_stats' }
+  let(:diff_files_endpoint) { '/diff_files_metadata' }
+  let(:diff_file_endpoint) { '/diff_file' }
+  let(:mr_path) { '/group/project/-/merge_requests/1' }
+  let(:project_path) { 'group/project' }
+  let(:project_name) { 'Group / Project' }
+  let(:merge_request) { build_stubbed(:merge_request) }
+  let(:code_review_enabled) { false }
+  let(:discussions_endpoint) { '/discussions' }
+  let(:user_permissions) { { can_create_note: true } }
+  let(:noteable_type) { 'MergeRequest' }
+  let(:preview_markdown_endpoint) { '/preview_markdown' }
+  let(:register_path) { '/register' }
+  let(:sign_in_path) { '/sign_in' }
+  let(:markdown_docs_path) { '/markdown_docs' }
+  let(:report_abuse_path) { '/report_abuse' }
+  let(:versions) { { 'source_versions' => [], 'target_versions' => [] } }
+  let(:suggestions_help_path) { '/help/suggestions' }
+  let(:default_suggestion_commit_message) { 'Apply suggestion' }
+  let(:coverage_endpoint) { nil }
+  let(:codequality_endpoint) { nil }
+  let(:new_comment_template_paths) do
+    [{
+      text: 'Your comment templates',
+      href: ::Gitlab::Routing.url_helpers.profile_comment_templates_path
+    }]
+  end
+
+  let(:presenter) do
+    double( # rubocop:disable RSpec/VerifiedDoubles -- initial_preparation? is delegated at runtime
+      ::RapidDiffs::MergeRequestPresenter,
+      diffs_stats_endpoint: diffs_stats_endpoint,
+      diff_files_endpoint: diff_files_endpoint,
+      diff_file_endpoint: diff_file_endpoint,
+      discussions_endpoint: discussions_endpoint,
+      user_permissions: user_permissions,
+      noteable_type: noteable_type,
+      preview_markdown_endpoint: preview_markdown_endpoint,
+      register_path: register_path,
+      sign_in_path: sign_in_path,
+      markdown_docs_path: markdown_docs_path,
+      report_abuse_path: report_abuse_path,
+      code_review_enabled: code_review_enabled,
+      environment: nil,
+      resource: merge_request,
+      conflict_resolution_path: "#{mr_path}/conflicts",
+      can_merge: false,
+      mr_path: mr_path,
+      project_path: project_path,
+      project_name: project_name,
+      versions: versions,
+      suggestions_help_path: suggestions_help_path,
+      default_suggestion_commit_message: default_suggestion_commit_message,
+      new_comment_template_paths: new_comment_template_paths,
+      linked_file: nil,
+      initial_preparation?: false,
+      coverage_endpoint: coverage_endpoint,
+      codequality_endpoint: codequality_endpoint,
+      sast_report_available: false,
+      empty_state_type: nil
+    )
+  end
+
+  subject(:component) { described_class.new(presenter) }
+
+  before do
+    allow(RapidDiffs::AppComponent).to receive(:new).and_return(app_component)
+    allow(app_component).to receive(:set_original_view_context)
+    allow(app_component).to receive(:render_in).and_yield(app_component)
+    allow(app_component).to receive(:with_before_diffs_list).and_yield
+    allow(app_component).to receive(:with_diffs_list).and_yield
+    allow(app_component).to receive_messages(diff_collection: [], parallel_view?: false)
+  end
+
+  it "renders app with correct arguments" do
+    expect(RapidDiffs::AppComponent).to receive(:new).with(
+      presenter,
+      extra_app_data: {
+        mr_path: mr_path,
+        project_path: project_path,
+        project_name: project_name,
+        source_branch: merge_request.source_branch,
+        iid: merge_request.iid,
+        code_review_enabled: false,
+        user_permissions: user_permissions,
+        discussions_endpoint: discussions_endpoint,
+        noteable_type: noteable_type,
+        preview_markdown_endpoint: preview_markdown_endpoint,
+        register_path: register_path,
+        sign_in_path: sign_in_path,
+        report_abuse_path: report_abuse_path,
+        markdown_docs_path: markdown_docs_path,
+        suggestions_help_path: suggestions_help_path,
+        default_suggestion_commit_message: default_suggestion_commit_message,
+        new_comment_template_paths: new_comment_template_paths,
+        versions: versions,
+        coverage_endpoint: coverage_endpoint,
+        codequality_endpoint: codequality_endpoint,
+        sast_report_available: false,
+        is_fork: merge_request.for_fork?.to_s,
+        source_project_path: merge_request.source_project.path,
+        source_project_default_url: merge_request.source_project.http_url_to_repo,
+        reviewing_docs_path: '/help/user/project/merge_requests/merge_request_troubleshooting.md' \
+          '#check-out-merge-requests-locally-through-the-head-ref'
+      }
+    )
+
+    render_component
+  end
+
+  context 'when coverage_endpoint is set' do
+    let(:coverage_endpoint) { '/coverage_reports.json' }
+
+    it 'forwards coverage_endpoint via extra_app_data' do
+      expect(RapidDiffs::AppComponent).to receive(:new).with(
+        presenter,
+        extra_app_data: hash_including(coverage_endpoint: coverage_endpoint)
+      )
+
+      render_component
+    end
+  end
+
+  context 'when codequality_endpoint is set' do
+    let(:codequality_endpoint) { '/codequality_mr_diff_reports.json' }
+
+    it 'forwards codequality_endpoint via extra_app_data' do
+      expect(RapidDiffs::AppComponent).to receive(:new).with(
+        presenter,
+        extra_app_data: hash_including(codequality_endpoint: codequality_endpoint)
+      )
+
+      render_component
+    end
+  end
+
+  context 'when sast_report_available is true' do
+    before do
+      allow(presenter).to receive(:sast_report_available).and_return(true)
+    end
+
+    it 'forwards sast_report_available via extra_app_data' do
+      expect(RapidDiffs::AppComponent).to receive(:new).with(
+        presenter,
+        extra_app_data: hash_including(sast_report_available: true)
+      )
+
+      render_component
+    end
+  end
+
+  it "renders diffs_list slot with merge request diff files" do
+    allow(RapidDiffs::MergeRequestDiffFileComponent).to receive(:with_collection).and_return([])
+
+    render_component
+
+    expect(RapidDiffs::MergeRequestDiffFileComponent).to have_received(:with_collection)
+      .with(anything, hash_including(conflict_resolution_path: presenter.conflict_resolution_path))
+  end
+
+  it "loads merge request rapid diffs stylesheet" do
+    style_added = false
+    allow(component).to receive(:helpers).and_wrap_original do |original_method, *args|
+      helpers = original_method.call(*args)
+      allow(helpers).to receive(:add_page_specific_style).with('page_bundles/merge_request_rapid_diffs') do
+        style_added = true
+      end
+      helpers
+    end
+
+    render_component
+
+    expect(style_added).to be(true)
+  end
+
+  describe 'viewed FOUC prevention' do
+    let(:code_review_enabled) { true }
+
+    it 'includes startup_js for FOUC prevention when code review is enabled' do
+      render_component
+
+      startup_js = component.helpers.content_for(:startup_js)
+      expect(startup_js).to be_present
+      expect(startup_js).to include('const linkedFileCodeReviewId = null')
+    end
+
+    context 'when code review is disabled' do
+      let(:code_review_enabled) { false }
+
+      it 'does not include startup_js for FOUC prevention' do
+        render_component
+
+        expect(component.helpers.content_for?(:startup_js)).to be(false)
+      end
+    end
+
+    context 'when viewing a linked file' do
+      let(:linked_file) { instance_double(Gitlab::Diff::File, code_review_id: 'linked-file-id') }
+
+      before do
+        allow(presenter).to receive(:linked_file).and_return(linked_file)
+      end
+
+      it 'excludes the linked file from FOUC prevention' do
+        render_component
+
+        startup_js = component.helpers.content_for(:startup_js)
+        expect(startup_js).to include('linked-file-id')
+      end
+    end
+  end
+
+  context 'when presenter reports initial_preparation empty_state_type' do
+    before do
+      allow(presenter).to receive(:empty_state_type).and_return(:initial_preparation)
+      allow(app_component).to receive(:with_empty_state).and_yield
+    end
+
+    it 'renders building message' do
+      render_component
+
+      expect(page).to have_text('Building your merge request')
+    end
+  end
+
+  it 'does not render building message when empty_state_type is nil' do
+    render_component
+
+    expect(page).not_to have_text('Building your merge request')
+  end
+
+  context 'when presenter reports already_merged empty_state_type' do
+    let(:merge_request) { build_stubbed(:merge_request, source_branch: 'feature', target_branch: 'main') }
+
+    before do
+      allow(presenter).to receive(:empty_state_type).and_return(:already_merged)
+      allow(app_component).to receive(:with_empty_state).and_yield
+    end
+
+    it 'renders the already-merged title and description', :aggregate_failures do
+      render_component
+
+      expect(page).to have_text('Changes already merged')
+      expect(page).to have_text('All changes from feature are already present in main.')
+    end
+  end
+
+  it 'does not render the already-merged message when empty_state_type is nil' do
+    render_component
+
+    expect(page).not_to have_text('Changes already merged')
+  end
+
+  context "when user has permission to create notes" do
+    let(:user_permissions) { { can_create_note: true } }
+
+    it "renders before_diffs_list slot with new discussion toggle" do
+      render_component
+
+      expect(page).to have_selector('[data-new-discussion-toggle][data-click="newDiscussion"][hidden]', visible: :all)
+
+      tooltip_title = 'Add a comment to this line or drag for multiple lines'
+      expect(page).to have_selector(".rd-new-discussion-toggle.has-tooltip[title='#{tooltip_title}']", visible: :all)
+    end
+  end
+
+  context "when user does not have permission to create notes" do
+    let(:user_permissions) { { can_create_note: false } }
+
+    it "does not render new discussion toggle" do
+      render_component
+
+      expect(page).not_to have_selector('[data-new-discussion-toggle]', visible: :all)
+    end
+  end
+
+  it "always renders commit widget placeholder" do
+    render_component
+
+    expect(page).to have_selector('[data-commit-widget]', visible: :all)
+  end
+
+  def render_component
+    render_inline(component)
+  end
+end

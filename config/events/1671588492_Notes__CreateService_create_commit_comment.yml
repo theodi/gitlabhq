@@ -1,0 +1,22 @@
+---
+description: Mirrored `counts.commit_comment` Service Ping metric as a Snowplow event. Emitted when a note for a commit is created.
+category: Notes::CreateService
+action: create_commit_comment
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+product_group: source_code
+product_categories:
+- source_code_management
+milestone: "15.8"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/105148
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: Mirrored Service Ping metric key path
+

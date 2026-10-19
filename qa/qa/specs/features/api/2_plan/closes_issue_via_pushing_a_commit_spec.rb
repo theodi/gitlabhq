@@ -1,0 +1,22 @@
+# frozen_string_literal: true
+
+module QA
+  RSpec.describe 'Plan', feature_category: :team_planning do
+    include Support::API
+
+    describe 'Issue' do
+      let(:issue) { create(:issue, project: create(:project, :with_readme)) }
+
+      it 'closes via pushing a commit' do
+        Resource::Repository::ProjectPush.fabricate! do |push|
+          push.commit_message = "Closes ##{issue.iid}"
+          push.new_branch = false
+          push.file_content = "Closes ##{issue.iid}"
+          push.project = issue.project
+        end
+
+        expect { issue.reload!.state }.to eventually_eq('closed').within(max_duration: 10, sleep_interval: 1)
+      end
+    end
+  end
+end

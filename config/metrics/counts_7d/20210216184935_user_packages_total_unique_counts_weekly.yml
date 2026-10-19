@@ -1,0 +1,357 @@
+---
+data_category: optional
+key_path: redis_hll_counters.user_packages.user_packages_total_unique_counts_weekly
+description: A weekly count of users that have interacted with a package in the package registry
+product_group: package_registry
+product_categories:
+- package_registry
+value_type: number
+status: active
+time_frame: 7d
+data_source: internal_events
+events:
+# --- cargo ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: cargo
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: cargo
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: cargo
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: cargo
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: cargo
+    property: user
+# --- composer ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: composer
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: composer
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: composer
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: composer
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: composer
+    property: user
+# --- conan ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: conan
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: conan
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: conan
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: conan
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: conan
+    property: user
+# --- debian ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: debian
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: debian
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: debian
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: debian
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: debian
+    property: user
+# --- generic ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: generic
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: generic
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: generic
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: generic
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: generic
+    property: user
+# --- helm ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: helm
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: helm
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: helm
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: helm
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: helm
+    property: user
+# --- maven ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: maven
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: maven
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: maven
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: maven
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: maven
+    property: user
+# --- npm ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: npm
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: npm
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: npm
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: npm
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: npm
+    property: user
+# --- nuget ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: nuget
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: nuget
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: nuget
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: nuget
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: nuget
+    property: user
+# --- pypi ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: pypi
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: pypi
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: pypi
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: pypi
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: pypi
+    property: user
+# --- rpm ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: rpm
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: rpm
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: rpm
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: rpm
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: rpm
+    property: user
+# --- rubygems ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: rubygems
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: rubygems
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: rubygems
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: rubygems
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: rubygems
+    property: user
+# --- terraform_module ---
+- name: push_package_to_registry
+  unique: user.id
+  filter:
+    label: terraform_module
+    property: user
+- name: pull_package_from_registry
+  unique: user.id
+  filter:
+    label: terraform_module
+    property: user
+- name: delete_package_from_registry
+  unique: user.id
+  filter:
+    label: terraform_module
+    property: user
+- name: push_symbol_package_to_registry
+  unique: user.id
+  filter:
+    label: terraform_module
+    property: user
+- name: pull_symbol_package_from_registry
+  unique: user.id
+  filter:
+    label: terraform_module
+    property: user
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/60541

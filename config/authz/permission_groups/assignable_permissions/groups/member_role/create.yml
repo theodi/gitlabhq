@@ -1,0 +1,20 @@
+---
+name: create_member_role
+description: Grants the ability to create member roles
+boundaries:
+  - group
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - create_member_role
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance
+  - condition: saas
+    boundaries:
+      - group
+  - condition: self_managed
+    boundaries:
+      - instance

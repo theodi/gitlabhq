@@ -1,0 +1,61 @@
+# frozen_string_literal: true
+
+module API
+  module Hooks
+    # It is important that this re-usable module is not a Grape Instance,
+    # since it will be re-mounted.
+    # rubocop: disable API/Base
+    class UrlVariables < ::Grape::API
+      params do
+        requires :hook_id, type: Integer, desc: 'ID of the hook.'
+        requires :key, type: String, desc: 'Key of the URL variable.'
+      end
+      namespace ':hook_id/url_variables' do
+        desc 'Update a URL variable' do
+          detail 'Updates a URL variable for a specified webhook.'
+          tags ['hooks']
+        end
+        params do
+          requires :value, type: String, desc: 'Value of the URL variable.'
+        end
+        given configuration[:tier] do
+          route_setting :tier, configuration[:tier]
+        end
+        route_setting :authorization, permissions: :update_webhook_url_variable,
+          boundary_type: configuration[:boundary_type]
+        put ":key" do
+          hook = find_hook
+          key = params.delete(:key)
+          value = params.delete(:value)
+          vars = hook.url_variables.merge(key => value)
+
+          error!('Illegal key or value', 422) unless hook.update(url_variables: vars)
+
+          status :no_content
+        end
+
+        desc 'Delete a URL variable' do
+          detail 'Deletes a URL variable from a specified webhook.'
+          tags ['hooks']
+        end
+        given configuration[:tier] do
+          route_setting :tier, configuration[:tier]
+        end
+        route_setting :authorization, permissions: :delete_webhook_url_variable,
+          boundary_type: configuration[:boundary_type]
+        delete ":key" do
+          hook = find_hook
+          key = params.delete(:key)
+          not_found!('URL variable') unless hook.url_variables.key?(key)
+
+          vars = hook.url_variables.reject { _1 == key }
+
+          error!('Could not unset variable', 422) unless hook.update(url_variables: vars)
+
+          status :no_content
+        end
+      end
+    end
+    # rubocop: enable API/Base
+  end
+end

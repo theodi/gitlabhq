@@ -1,0 +1,250 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Integrations::ExecuteWorker, '#perform', feature_category: :integrations do
+  let_it_be(:integration) { create(:jira_integration) }
+
+  let(:worker) { described_class.new }
+
+  it 'executes integration with given data' do
+    data = { test: 'test' }
+
+    expect_next_found_instance_of(integration.class) do |integration|
+      expect(integration).to receive(:execute).with(data)
+    end
+
+    worker.perform(integration.id, data)
+  end
+
+  it 'logs error messages' do
+    error = StandardError.new('invalid URL')
+
+    expect_next_found_instance_of(integration.class) do |integration|
+      expect(integration).to receive(:execute).and_raise(error)
+      expect(integration).to receive(:log_exception).with(error)
+    end
+
+    worker.perform(integration.id, {})
+  end
+
+  it 'logs executed integration class name' do
+    allow(worker).to receive(:log_extra_metadata_on_done)
+
+    worker.perform(integration.id, {})
+
+    expect(worker).to have_received(:log_extra_metadata_on_done).with(:integration_class, 'Integrations::Jira')
+  end
+
+  describe 'organization logging' do
+    before do
+      allow(worker).to receive(:log_extra_metadata_on_done)
+    end
+
+    it 'logs the organization of a project-level integration' do
+      worker.perform(integration.id, {})
+
+      expect(worker).to have_received(:log_extra_metadata_on_done)
+        .with(Labkit::Fields::GL_ORGANIZATION_ID, integration.project.organization_id)
+    end
+
+    context 'with an instance-level integration' do
+      let_it_be(:instance_integration) { create(:jira_integration, :instance) }
+
+      it 'logs the organization of the integration' do
+        worker.perform(instance_integration.id, {})
+
+        expect(worker).to have_received(:log_extra_metadata_on_done)
+          .with(Labkit::Fields::GL_ORGANIZATION_ID, instance_integration.organization_id)
+      end
+    end
+  end
+
+  context 'when integration filters are configured' do
+    let(:data) { { object_kind: 'push' } }
+    let(:scoped_filter) do
+      {
+        'rules' => [
+          { 'field' => 'object_kind', 'operator' => 'eq', 'value' => 'push' }
+        ]
+      }
+    end
+
+    it 'executes when there are no filters' do
+      expect(Gitlab::FilterEvaluator).not_to receive(:evaluate)
+
+      expect_next_found_instance_of(integration.class) do |integration|
+        allow(integration).to receive(:filter).and_return({})
+        expect(integration).to receive(:execute).with(hash_including('object_kind' => 'push'))
+      end
+
+      worker.perform(integration.id, data)
+    end
+
+    it 'executes when a scoped filter matches' do
+      expect(Gitlab::FilterEvaluator).to receive(:evaluate).with(scoped_filter, kind_of(Hash)).and_return(true)
+
+      expect_next_found_instance_of(integration.class) do |integration|
+        allow(integration).to receive(:filter).and_return({ 'push' => scoped_filter, 'global' => { 'rules' => [] } })
+        expect(integration).to receive(:execute).with(hash_including('object_kind' => 'push'))
+      end
+
+      worker.perform(integration.id, data)
+    end
+
+    it 'executes when only a non-matching scoped filter exists' do
+      expect(Gitlab::FilterEvaluator).not_to receive(:evaluate)
+
+      expect_next_found_instance_of(integration.class) do |integration|
+        allow(integration).to receive(:filter).and_return({ 'merge_request' => scoped_filter })
+        expect(integration).to receive(:execute).with(hash_including('object_kind' => 'push'))
+      end
+
+      worker.perform(integration.id, data)
+    end
+
+    it 'skips execution when a global filter does not match' do
+      global_filter = { 'rules' => [{ 'field' => 'object_kind', 'operator' => 'eq', 'value' => 'merge_request' }] }
+
+      expect(Gitlab::FilterEvaluator).to receive(:evaluate).with(global_filter, kind_of(Hash)).and_return(false)
+
+      expect_next_found_instance_of(integration.class) do |integration|
+        allow(integration).to receive(:filter).and_return({ 'global' => global_filter })
+        expect(integration).not_to receive(:execute)
+      end
+
+      worker.perform(integration.id, data)
+    end
+
+    it 'prefers scoped filter over global filter' do
+      global_filter = { 'rules' => [{ 'field' => 'object_kind', 'operator' => 'eq', 'value' => 'merge_request' }] }
+
+      expect(Gitlab::FilterEvaluator).to receive(:evaluate).with(scoped_filter, kind_of(Hash)).and_return(true)
+
+      expect_next_found_instance_of(integration.class) do |integration|
+        allow(integration).to receive(:filter).and_return({ 'push' => scoped_filter, 'global' => global_filter })
+        expect(integration).to receive(:execute).with(hash_including('object_kind' => 'push'))
+      end
+
+      worker.perform(integration.id, data)
+    end
+  end
+
+  context 'when integration cannot be found' do
+    it 'completes silently and does not log an error' do
+      expect(Gitlab::IntegrationsLogger).not_to receive(:error)
+
+      expect do
+        worker.perform(non_existing_record_id, {})
+      end.not_to raise_error
+    end
+  end
+
+  context 'when the Gitlab::SilentMode is enabled' do
+    before do
+      allow(Gitlab::SilentMode).to receive(:enabled?).and_return(true)
+    end
+
+    it 'completes silently and does not log an error' do
+      expect(Gitlab::IntegrationsLogger).not_to receive(:error)
+
+      expect do
+        worker.perform(non_existing_record_id, {})
+      end.not_to raise_error
+    end
+  end
+
+  context 'when object is wiki_page' do
+    let_it_be_with_reload(:container) { create(:project) }
+    # `freeze: false` is kept here because this `let_it_be` subject is not an
+    # ActiveRecord record (or memoizes internal state); freezing raises
+    # FrozenError and reload/refind are no-ops on it. Keep as-is (see
+    # gitlab-org/gitlab#602925).
+    let_it_be(:wiki, freeze: false) { container.wiki }
+    let_it_be(:content) { 'test content' }
+    let_it_be_with_reload(:wiki_page) { create(:wiki_page, container: container, content: content) }
+
+    let(:object_kind) { 'wiki_page' }
+    let(:slug) { wiki_page.slug }
+    let(:version_id) { wiki_page.version.id }
+    let(:args) do
+      {
+        object_kind: object_kind,
+        project: {
+          id: container.id
+        },
+        object_attributes: {
+          slug: slug,
+          version_id: version_id
+        }
+      }
+    end
+
+    it 'injects content into wiki_page' do
+      expected_data = args.deep_merge(object_attributes: { content: content })
+
+      expect(ProjectWiki).to receive(:find_by_id).with(container.id).and_return(wiki)
+      expect(wiki).to receive(:find_page).with(slug, version_id).and_return(wiki_page)
+      expect_next_found_instance_of(integration.class) do |integration|
+        expect(integration).to receive(:execute).with(expected_data)
+      end
+
+      worker.perform(integration.id, args)
+    end
+
+    context 'when parameter slug empty' do
+      let(:slug) { '' }
+
+      it 'uses existing data' do
+        expected_data = args
+
+        expect_next_found_instance_of(integration.class) do |integration|
+          expect(integration).to receive(:execute).with(expected_data)
+        end
+
+        worker.perform(integration.id, args)
+      end
+    end
+
+    context 'when parameter version_id empty' do
+      let(:version_id) { '' }
+
+      it 'uses existing data' do
+        expected_data = args
+
+        expect_next_found_instance_of(integration.class) do |integration|
+          expect(integration).to receive(:execute).with(expected_data)
+        end
+
+        worker.perform(integration.id, args)
+      end
+    end
+
+    context 'when wiki empty' do
+      it 'uses existing data' do
+        expected_data = args
+
+        expect(ProjectWiki).to receive(:find_by_id).with(container.id).and_return(nil)
+        expect_next_found_instance_of(integration.class) do |integration|
+          expect(integration).to receive(:execute).with(expected_data)
+        end
+
+        worker.perform(integration.id, args)
+      end
+    end
+
+    context 'when wiki page empty' do
+      it 'uses existing data' do
+        expected_data = args
+
+        expect(ProjectWiki).to receive(:find_by_id).with(container.id).and_return(wiki)
+        expect(wiki).to receive(:find_page).with(slug, version_id).and_return(nil)
+        expect_next_found_instance_of(integration.class) do |integration|
+          expect(integration).to receive(:execute).with(expected_data)
+        end
+
+        worker.perform(integration.id, args)
+      end
+    end
+  end
+end

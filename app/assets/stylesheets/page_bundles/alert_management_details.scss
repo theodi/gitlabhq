@@ -1,0 +1,39 @@
+@import 'mixins_and_variables_and_functions';
+
+.alert-management-details {
+  .toggle-sidebar-mobile-button {
+    right: 0;
+  }
+
+  .dropdown-menu-toggle {
+    &:hover {
+      background-color: $white;
+    }
+  }
+
+  .dropdown-item {
+    &:first-child {
+      &::before {
+        padding-top: 0;
+      }
+    }
+
+    &::before {
+      padding-top: $gl-spacing-scale-8;
+    }
+
+    // stylelint-disable-next-line gitlab/no-gl-class
+    .gl-dropdown-item-text-wrapper {
+      padding-top: 0;
+      padding-bottom: 0;
+    }
+  }
+
+  .main-notes-list::before {
+    left: $gl-spacing-scale-5 !important;
+  }
+
+  .note-header-info {
+    margin-top: $gl-spacing-scale-1;
+  }
+}

@@ -1,0 +1,11 @@
+# @feature_category: code_review_workflow
+query mergeRequestDiffStats($id: MergeRequestID!) {
+  mergeRequest(id: $id) {
+    id
+    diffStatsSummary {
+      fileCount
+      additions
+      deletions
+    }
+  }
+}

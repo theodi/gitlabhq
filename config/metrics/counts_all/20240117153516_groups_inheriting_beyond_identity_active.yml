@@ -1,0 +1,21 @@
+---
+key_path: counts.groups_inheriting_beyond_identity_active
+description: Count of projects with active integrations for BeyondIdentity
+product_group: source_code
+product_categories:
+- source_code_management
+value_type: number
+status: active
+milestone: "16.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/136754
+time_frame: all
+data_source: database
+instrumentation_class: ActiveGroupsInheritingIntegrationsMetric
+options:
+  type: beyond_identity
+data_category: optional
+performance_indicator_type: []
+tiers:
+- free
+- premium
+- ultimate

@@ -1,0 +1,9 @@
+.form-group
+  = render Pajamas::CheckboxTagComponent.new(name: :only_protected_branches,
+    checkbox_options: { class: 'js-mirror-protected' },
+    label_options: { class: '!gl-mb-0' }) do |c|
+    - c.with_label do
+      = _('Mirror only protected branches')
+    - c.with_help_text do
+      = _('If enabled, only protected branches will be mirrored.')
+      = link_to _('Learn more.'), help_page_path('user/project/repository/mirror/_index.md', anchor: 'mirror-only-protected-branches'), target: '_blank', rel: 'noopener noreferrer'

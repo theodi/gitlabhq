@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "last_updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_changed_by_user_id": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "last_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deletion_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deletion_attempt_count": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "deletion_last_failed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "correlation_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deletion_scheduled_by_user_id": {
+      "type": "number"
+    },
+    "transfer_scheduled_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "transfer_scheduled_by_user_id": {
+      "type": "number"
+    },
+    "transfer_initiated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "transfer_initiated_by_user_id": {
+      "type": "number"
+    },
+    "transfer_target_parent_id": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "transfer_attempt_count": {
+      "type": "number"
+    },
+    "transfer_last_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "organization_transfer_source_id": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "preserved_states": {
+      "type": "object",
+      "properties": {
+        "schedule_deletion": {
+          "type": "string",
+          "enum": [
+            "ancestor_inherited",
+            "archived"
+          ]
+        },
+        "start_deletion": {
+          "type": "string",
+          "enum": [
+            "ancestor_inherited",
+            "archived",
+            "deletion_scheduled"
+          ]
+        },
+        "schedule_transfer": {
+          "type": "string",
+          "enum": [
+            "ancestor_inherited",
+            "archived"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

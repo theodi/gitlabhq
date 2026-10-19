@@ -1,0 +1,4 @@
+invalid workflow:auto_cancel:on_new_commit value:
+  workflow:
+    auto_cancel:
+      on_new_commit: unexpected_value

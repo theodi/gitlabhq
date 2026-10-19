@@ -1,0 +1,9 @@
+query epicReference($fullPath: ID!, $iid: ID) {
+  namespace: group(fullPath: $fullPath) {
+    id
+    issuable: epic(iid: $iid) {
+      id
+      reference(full: true)
+    }
+  }
+}

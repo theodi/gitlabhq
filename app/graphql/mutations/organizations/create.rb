@@ -1,0 +1,45 @@
+# frozen_string_literal: true
+
+module Mutations
+  module Organizations
+    class Create < Base
+      graphql_name 'OrganizationCreate'
+
+      authorize :create_organization
+      authorize_granular_token permissions: :create_organization, boundary: :instance, boundary_type: :instance,
+        assignable_when: [:saas]
+
+      argument :name, GraphQL::Types::String,
+        required: true,
+        description: 'Name for the organization.'
+
+      argument :path, GraphQL::Types::String,
+        required: true,
+        description: 'Path for the organization.'
+
+      argument :visibility, Types::Organizations::VisibilityEnum,
+        required: false,
+        description: 'Visibility for the organization.'
+
+      def resolve(args)
+        authorize!(:global)
+
+        return error_feature_flag unless ::Organizations::Release.enabled?(:org_creation, current_user)
+
+        result = ::Organizations::CreateService.new(
+          current_user: current_user,
+          params: args
+        ).execute
+
+        { organization: result.payload[:organization], errors: result.errors }
+      end
+
+      private
+
+      def error_feature_flag
+        # Don't translate feature flag error because it's temporary.
+        { organization: nil, errors: ['Organization creation is not enabled for this user.'] }
+      end
+    end
+  end
+end

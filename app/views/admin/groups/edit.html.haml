@@ -1,4 +1,7 @@
-- page_title "Edit", @group.name, "Groups"
-%h3.page-title Edit group: #{@group.name}
-%hr
-= render 'form'
+- add_to_breadcrumbs _("Groups"), admin_groups_path
+- add_to_breadcrumbs @group.name, admin_group_path(@group)
+- breadcrumb_title _("Edit")
+- page_title _("Edit"), @group.name, _("Groups")
+
+= render ::Layouts::PageHeadingComponent.new(_('Edit group: %{group_name}') % { group_name: @group.name })
+= render 'form', visibility_level: @group.visibility_level

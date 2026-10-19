@@ -1,0 +1,86 @@
+# frozen_string_literal: true
+
+module Gitlab
+  module Ci
+    module Pipeline
+      module Chain
+        class Skip < Chain::Base
+          include ::Gitlab::Utils::StrongMemoize
+
+          SKIP_PATTERN = /\[(ci[ _-]skip|skip[ _-]ci)\]/i
+
+          def perform!
+            return unless skipped?
+            return unless config_exists? || skipped_pipeline_allows_merge?
+
+            if @command.save_incompleted && !@pipeline.readonly?
+              # Project iid must be called outside a transaction, so we ensure it is set here
+              # otherwise it may be set within the state transition transaction of the skip call
+              # which it will lock the InternalId row for the whole transaction
+              @pipeline.ensure_project_iid!
+
+              @pipeline.skip
+            end
+          end
+
+          def break?
+            skipped?
+          end
+
+          private
+
+          def skipped?
+            !@command.ignore_skip_ci &&
+              (commit_message_skips_ci? || merge_request_title_skips_ci? || !!@command.push_options&.skips_ci?)
+          end
+
+          def commit_message_skips_ci?
+            return false unless @pipeline.git_commit_message
+            # The merge ref message copies the MR title, which can be stale. The title check covers it.
+            return false if merge_ref_pipeline? && Feature.enabled?(:ci_skip_pipeline_from_mr_title, project)
+
+            strong_memoize(:commit_message_skips_ci) do
+              !!(@pipeline.git_commit_message =~ SKIP_PATTERN)
+            end
+          end
+
+          def merge_request_title_skips_ci?
+            return false unless @command.merge_request
+            return false unless Feature.enabled?(:ci_skip_pipeline_from_mr_title, project)
+
+            !!(@command.merge_request.title =~ SKIP_PATTERN)
+          end
+          strong_memoize_attr :merge_request_title_skips_ci?
+
+          def merge_ref_pipeline?
+            @command.merge_request.present? && @pipeline.ref == @command.merge_request.merge_ref_path
+          end
+
+          def config_exists?
+            pipeline_config = ::Gitlab::Ci::ProjectConfig.new(
+              project: project,
+              sha: @pipeline.sha,
+              custom_content: @command.content,
+              pipeline_source: @command.source,
+              pipeline_source_bridge: @command.bridge,
+              triggered_for_branch: @pipeline.branch?,
+              ref: @pipeline.ref,
+              source_branch: @command.merge_request&.source_branch || @pipeline.ref,
+              pipeline_policy_context: @command.pipeline_policy_context,
+              inputs: @command.inputs
+            )
+
+            pipeline_config.exists?
+          end
+
+          def skipped_pipeline_allows_merge?
+            project.only_allow_merge_if_pipeline_succeeds?(inherit_group_setting: true) &&
+              project.allow_merge_on_skipped_pipeline?(inherit_group_setting: true)
+          end
+        end
+      end
+    end
+  end
+end
+
+Gitlab::Ci::Pipeline::Chain::Skip.prepend_mod

@@ -1,0 +1,13 @@
+---
+table_name: dast_profiles_pipelines
+classes:
+- Dast::ProfilesPipeline
+feature_categories:
+- dynamic_application_security_testing
+description: Join table between DAST Profiles and CI Pipelines
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/56821
+milestone: '13.11'
+gitlab_schema: gitlab_sec
+table_size: small
+sharding_key:
+  project_id: projects

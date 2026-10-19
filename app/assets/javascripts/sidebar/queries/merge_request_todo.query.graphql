@@ -1,0 +1,13 @@
+query mergeRequestTodos($fullPath: ID!, $iid: String!) {
+  namespace: project(fullPath: $fullPath) {
+    id
+    issuable: mergeRequest(iid: $iid) {
+      id
+      currentUserTodos(state: pending) {
+        nodes {
+          id
+        }
+      }
+    }
+  }
+}

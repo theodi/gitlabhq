@@ -1,0 +1,191 @@
+# frozen_string_literal: true
+
+module API
+  class ProtectedBranches < ::API::Base
+    include PaginationParams
+
+    BRANCH_ENDPOINT_REQUIREMENTS = ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS.merge(name: ::API::NO_SLASH_URL_PART_REGEX)
+
+    feature_category :source_code_management
+
+    helpers Helpers::ProtectedBranchesHelpers
+
+    params do
+      requires :id,
+        types: [String, Integer],
+        desc: 'ID or URL-encoded path of the project.',
+        documentation: { example: 'gitlab-org/gitlab' }
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'List all protected branches' do
+        detail 'Lists all protected branches for a specified project.'
+        success code: 200, model: Entities::ProtectedBranch
+        is_array true
+        failure [
+          { code: 404, message: '404 Project Not Found' },
+          { code: 401, message: '401 Unauthorized' }
+        ]
+        tags ['protected_branches']
+      end
+      params do
+        use :pagination
+        optional :search, type: String, desc: 'Name or part of the name of protected branches to search ' \
+                                          'for.', documentation: { example: 'mai' }
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :read_protected_branch, boundary_type: :project
+      get ':id/protected_branches' do
+        authorize_read_code!
+
+        protected_branches =
+          ProtectedBranchesFinder
+            .new(user_project, params)
+            .execute
+            .preload(:push_access_levels, :merge_access_levels)
+
+        present paginate(protected_branches), with: Entities::ProtectedBranch, project: user_project
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Retrieve a protected branch or wildcard protected branch' do
+        detail 'Retrieves a specified protected branch or wildcard protected branch.'
+        success code: 200, model: Entities::ProtectedBranch
+        failure [
+          { code: 404, message: '404 Project Not Found' },
+          { code: 401, message: '401 Unauthorized' }
+        ]
+        tags ['protected_branches']
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the branch or wildcard.', documentation: { example: 'main' }
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :read_protected_branch, boundary_type: :project
+      get ':id/protected_branches/:name', requirements: BRANCH_ENDPOINT_REQUIREMENTS do
+        authorize_read_code!
+
+        protected_branch = user_project.protected_branches.find_by!(name: params[:name])
+
+        present protected_branch, with: Entities::ProtectedBranch, project: user_project
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Protect repository branches' do
+        detail 'Protects a specified repository branch or several project repository branches using a wildcard ' \
+          'protected branch.'
+        success code: 201, model: Entities::ProtectedBranch
+        failure [
+          { code: 422, message: 'name is missing' },
+          { code: 409, message: "Protected branch 'main' already exists" },
+          { code: 404, message: '404 Project Not Found' },
+          { code: 401, message: '401 Unauthorized' }
+        ]
+        tags ['protected_branches']
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the branch or wildcard.', documentation: { example: 'main' }
+        # rubocop:disable API/AccessLevelStringType -- Introduced before the cop
+        optional :push_access_level, type: Integer,
+          values: ProtectedBranch::PushAccessLevel.allowed_access_levels,
+          desc: 'Access level allowed to push. Defaults to `40` (Maintainer role).'
+        optional :merge_access_level, type: Integer,
+          values: ProtectedBranch::MergeAccessLevel.allowed_access_levels,
+          desc: 'Access level allowed to merge. Defaults to `40` (Maintainer role).'
+        # rubocop:enable API/AccessLevelStringType
+        optional :allow_force_push, type: Boolean,
+          default: false,
+          desc: 'If `true`, members who can push to this branch can also force push.'
+
+        use :optional_params
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :create_protected_branch, boundary_type: :project
+      post ':id/protected_branches' do
+        authorize_create_protected_branch!
+
+        protected_branch = user_project.protected_branches.find_by(name: params[:name])
+
+        if protected_branch
+          conflict!("Protected branch '#{params[:name]}' already exists")
+        end
+
+        declared_params = declared_params(include_missing: false)
+        api_service = ::ProtectedBranches::ApiService.new(user_project, current_user, declared_params)
+        protected_branch = api_service.create
+
+        if protected_branch.persisted?
+          present protected_branch, with: Entities::ProtectedBranch, project: user_project
+        else
+          render_api_error!(protected_branch.errors.full_messages, 422)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Update a protected branch' do
+        detail 'Updates a protected branch for a specified project.'
+        success code: 200, model: Entities::ProtectedBranch
+        failure [
+          { code: 422, message: 'Push access levels access level has already been taken' },
+          { code: 404, message: '404 Project Not Found' },
+          { code: 401, message: '401 Unauthorized' },
+          { code: 400, message: '400 Bad request' }
+        ]
+        tags ['protected_branches']
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the branch or wildcard.', documentation: { example: 'main' }
+        optional :allow_force_push, type: Boolean,
+          desc: 'If `true`, members who can push to this branch can also force push.',
+          allow_blank: false
+
+        use :optional_params
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :update_protected_branch, boundary_type: :project
+      patch ':id/protected_branches/:name', requirements: BRANCH_ENDPOINT_REQUIREMENTS do
+        protected_branch = user_project.protected_branches.find_by!(name: params[:name])
+
+        authorize_update_protected_branch!(protected_branch)
+
+        declared_params = declared_params(include_missing: false)
+        api_service = ::ProtectedBranches::ApiService.new(user_project, current_user, declared_params)
+        protected_branch = api_service.update(protected_branch)
+
+        if protected_branch.valid?
+          present protected_branch, with: Entities::ProtectedBranch, project: user_project
+        else
+          render_api_error!(protected_branch.errors.full_messages, 422)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+
+      desc 'Unprotect repository branches' do
+        detail 'Unprotects a specified protected branch or wildcard protected branch.'
+        success code: 204
+        failure [
+          { code: 404, message: '404 Project Not Found' },
+          { code: 401, message: '401 Unauthorized' }
+        ]
+        tags ['protected_branches']
+      end
+      params do
+        requires :name, type: String, desc: 'Name of the branch or wildcard.', documentation: { example: 'main' }
+      end
+      # rubocop: disable CodeReuse/ActiveRecord
+      route_setting :authorization, permissions: :delete_protected_branch, boundary_type: :project
+      delete ':id/protected_branches/:name', requirements: BRANCH_ENDPOINT_REQUIREMENTS, urgency: :low do
+        protected_branch = user_project.protected_branches.find_by!(name: params[:name])
+
+        authorize_destroy_protected_branch!(protected_branch)
+
+        destroy_conditionally!(protected_branch) do
+          destroy_service = ::ProtectedBranches::DestroyService.new(user_project, current_user)
+          destroy_service.execute(protected_branch)
+        end
+      end
+      # rubocop: enable CodeReuse/ActiveRecord
+    end
+  end
+end
+
+API::ProtectedBranches.prepend_mod_with('API::ProtectedBranches')

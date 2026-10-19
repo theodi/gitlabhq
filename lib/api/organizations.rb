@@ -1,0 +1,116 @@
+# frozen_string_literal: true
+
+module API
+  class Organizations < ::API::Base
+    feature_category :organization
+
+    before { authenticate! }
+
+    helpers do
+      def authorize_organization_creation!
+        authorize! :create_organization
+      end
+    end
+
+    resource :organizations do
+      desc 'Create an organization' do
+        detail 'Creates an organization. This feature was introduced in GitLab 17.5. ' \
+          'This feature is behind the `allow_organization_creation` feature flag. ' \
+          'In GitLab 18.3, the feature flag changed to `organization_switching`. ' \
+          'In GitLab 19.4, the feature flag changed to `org_stage_experimental`.'
+        success Entities::Organizations::Organization
+        tags %w[organizations]
+      end
+      params do
+        requires :name, type: String, desc: 'The name of the organization'
+        requires :path, type: String, desc: 'The path of the organization'
+        optional :description, type: String, desc: 'The description of the organization'
+        optional :visibility, type: String,
+          values: %w[private public],
+          desc: 'The visibility level of the organization'
+        optional :avatar, type: ::API::Validations::Types::WorkhorseFile, desc: 'The avatar image for the organization',
+          documentation: { type: 'file' }
+      end
+      route_setting :lifecycle, :experiment
+      route_setting :authorization, permissions: :create_organization, boundary_type: :instance,
+        assignable_when: [:saas]
+      post do
+        forbidden! unless ::Organizations::Release.enabled?(:org_creation, current_user)
+        check_rate_limit!(:create_organization_api, scope: { user: current_user })
+        authorize_organization_creation!
+
+        response = ::Organizations::CreateService
+          .new(current_user: current_user, params: declared_params(include_missing: false))
+          .execute
+
+        if response.success?
+          present response[:organization], with: Entities::Organizations::Organization
+        else
+          render_api_error!(response.message, :bad_request)
+        end
+      end
+
+      desc 'Soft-delete an organization' do
+        detail 'This feature was introduced in GitLab 19.2.'
+        success code: 202
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags %w[organizations]
+      end
+      params do
+        requires :id, type: Integer, desc: 'ID of the organization.'
+      end
+      route_setting :lifecycle, :experiment
+      route_setting :authorization, permissions: :delete_organization, boundary_type: :instance
+      delete ':id' do
+        organization = find_organization!(params[:id])
+
+        response = ::Organizations::SoftDeleteService
+          .new(organization, current_user: current_user)
+          .execute
+
+        if response.success?
+          accepted!
+        else
+          render_api_error!(response.message, response.cause.access_denied? ? 403 : 400)
+        end
+      end
+
+      desc 'Restore a soft-deleted organization' do
+        detail 'Restores a soft-deleted organization. This feature was introduced in GitLab 19.6.'
+        success Entities::Organizations::Organization
+        failure [
+          { code: 400, message: 'Bad request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not found' }
+        ]
+        tags %w[organizations]
+      end
+      params do
+        requires :id, type: Integer, desc: 'The ID of the organization.'
+      end
+      route_setting :lifecycle, :experiment
+      route_setting :authorization, permissions: :restore_organization, boundary_type: :instance,
+        assignable_when: [:admin]
+      post ':id/restore' do
+        organization = find_organization!(params[:id])
+        authorize! :restore_organization, organization
+
+        response = ::Organizations::RestoreService
+          .new(organization, current_user: current_user)
+          .execute
+
+        if response.success?
+          present response[:organization], with: Entities::Organizations::Organization
+        else
+          render_api_error!(response.message, :bad_request)
+        end
+      end
+    end
+  end
+end

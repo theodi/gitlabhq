@@ -1,0 +1,88 @@
+{
+  "type": "object",
+  "required": [
+    "model_version"
+  ],
+  "properties": {
+    "model_version": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "creation_timestamp",
+        "last_updated_timestamp",
+        "user_id",
+        "current_stage",
+        "description",
+        "source",
+        "run_id",
+        "status",
+        "status_message",
+        "tags",
+        "run_link",
+        "aliases"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "creation_timestamp": {
+          "type": "integer"
+        },
+        "last_updated_timestamp": {
+          "type": "integer"
+        },
+        "user_id": {
+          "type": "null"
+        },
+        "current_stage": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "status_message": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "key",
+              "value"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "run_link": {
+          "type": "string"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+          }
+        }
+      }
+    }
+  }
+}

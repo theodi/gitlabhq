@@ -1,0 +1,198 @@
+# frozen_string_literal: true
+
+require 'json'
+require_relative '../../../../scripts/coverage/path_normalizer'
+
+module QA
+  module Support
+    module Formatters
+      # RSpec formatter to map E2E specs to diff files
+      class CoverbandFormatter < ::RSpec::Core::Formatters::BaseFormatter
+        include Support::API
+
+        BOOT_COVERAGE_CLEAR_ATTEMPTS = 3
+        MAX_REMAINING_CODE_PATHS_AFTER_CLEAR = 1000
+        WAIT_FOR_COVERBAND_REPORTING_SECONDS = 3
+
+        def initialize(output)
+          super
+
+          @full_coverage_by_example = {}
+          @logger = Runtime::Logger.logger
+          @cov_api_endpoint = "#{Runtime::Scenario.gitlab_address}/api/v4/internal/coverage"
+          @headers_access_token = {
+            "PRIVATE-TOKEN" => Runtime::User::Data.admin_api_token || Runtime::User::Data::DEFAULT_ADMIN_API_TOKEN
+          }
+        end
+
+        ::RSpec::Core::Formatters.register(
+          self,
+          :start,
+          :example_started,
+          :example_finished,
+          :stop
+        )
+
+        # Runs at the start of suite
+        #
+        # @param [RSpec::Core::Notifications::StartNotification] notification
+        # @return [void]
+        def start(_notification)
+          remaining = 0
+          status = :failed
+
+          QA::Support::Retrier.retry_until(
+            max_attempts: BOOT_COVERAGE_CLEAR_ATTEMPTS, sleep_interval: 0, raise_on_failure: false
+          ) do
+            delete(cov_api_endpoint, headers: headers_access_token)
+            sleep WAIT_FOR_COVERBAND_REPORTING_SECONDS
+            response = get(cov_api_endpoint, headers: headers_access_token)
+            next (status = :unavailable) if response.code == 404
+            next false if response.code != 200
+
+            remaining = JSON.parse(response.body).size
+            logger.info("Clearing boot coverage, #{remaining} files remaining")
+            status = :cleared if remaining < MAX_REMAINING_CODE_PATHS_AFTER_CLEAR
+          end
+
+          case status
+          when :cleared
+            logger.info("Cleared boot coverage data, #{remaining} files remaining")
+          when :unavailable
+            logger.warn("Coverage API is not available, no mapping will be produced by this job")
+          else
+            logger.error(
+              "Failed to clear boot coverage after #{BOOT_COVERAGE_CLEAR_ATTEMPTS} attempts, " \
+                "#{remaining} files remaining. Mapping from this job is not trustworthy."
+            )
+          end
+        rescue StandardError => e
+          logger.error("Failed to clear boot coverage, error: #{e}")
+        end
+
+        # Runs at the end of suite
+        #
+        # @param [RSpec::Core::Notifications::ExamplesNotification] notification
+        # @return [void]
+        def stop(_notification)
+          save_coverage_data
+        end
+
+        # Example start event
+        def example_started(example_notification)
+          return if example_notification.example.metadata[:skip]
+
+          response = nil
+          QA::Support::Retrier.retry_until(max_attempts: 5, sleep_interval: 1) do
+            response = delete(cov_api_endpoint, headers: headers_access_token)
+            next true if response.code == 200
+
+            logger.debug("Failed to clear coverage, code: #{response.code}, body: #{response.body}")
+            false
+          end
+          logger.info("Cleared coverage data")
+        rescue StandardError
+          logger.error("Failed to clear coverage, code: #{response.code}, body: #{response.body}")
+        end
+
+        # Example finish event
+        def example_finished(example_notification)
+          return if example_notification.example.metadata[:skip] || example_failed?(example_notification)
+
+          response = nil
+          QA::Support::Retrier.retry_until(max_attempts: 1, sleep_interval: 2) do
+            response = get(cov_api_endpoint, headers: headers_access_token)
+            coverage = JSON.parse(response.body)
+            next true if response.code == 200 && coverage.any?
+
+            if response.code != 200
+              logger.debug("Fetching coverage data failed, code: #{response.code}, body: #{response.body}")
+            end
+
+            logger.debug("Fetching coverage data failed, no coverage data available") if coverage.empty?
+            false
+          end
+
+          spec_file = root_spec_file(example_notification.example)
+          full_coverage_data = JSON.parse(response.body)
+
+          # Store full coverage data for both test selection and LCOV conversion
+          merge_coverage(spec_file, full_coverage_data)
+
+          logger.info("Fetched coverage data")
+        rescue StandardError
+          logger.error("Failed to fetch coverage data, code: #{response.code}, body: #{response.body}")
+        end
+
+        def example_failed?(example_notification)
+          example_notification.example.execution_result.status == :failed
+        end
+
+        # Save coverage data
+        # - Test mapping (file paths only) for test selection
+        # - Full coverage data for LCOV conversion
+        #
+        # @return [void]
+        def save_coverage_data
+          return if full_coverage_by_example.empty?
+
+          # Normalize paths in coverage data (Coverband returns absolute paths)
+          normalized_coverage = full_coverage_by_example.transform_values do |coverage_data|
+            normalize_coverage_paths(coverage_data)
+          end
+
+          # Derive test mapping from normalized coverage data
+          test_mapping = normalized_coverage.transform_values(&:keys)
+
+          mapping_file = "tmp/test-code-paths-mapping-#{ENV['CI_JOB_NAME_SLUG'] || 'local'}-#{SecureRandom.hex(6)}.json"
+          File.write(mapping_file, test_mapping.to_json)
+          logger.info("Saved test coverage mapping data to #{mapping_file}")
+
+          coverage_file = "tmp/coverband-coverage-#{ENV['CI_JOB_NAME_SLUG'] || 'local'}-#{SecureRandom.hex(6)}.json"
+          File.write(coverage_file, normalized_coverage.to_json)
+          logger.info("Saved full Coverband coverage data to #{coverage_file}")
+        rescue StandardError => e
+          logger.error("Failed to save coverage data, error: #{e}")
+        end
+
+        private
+
+        attr_reader :full_coverage_by_example, :logger, :headers_access_token, :cov_api_endpoint
+
+        # Normalizes file paths from Coverband API to clean relative paths.
+        # Coverband returns absolute paths like /builds/gitlab-org/gitlab/app/models/user.rb
+        # This normalizes to: app/models/user.rb
+        def normalize_coverage_paths(coverage_data)
+          coverage_data.transform_keys { |path| PathNormalizer.normalize(path) }
+        end
+
+        # Shared examples report the shared file, not the spec rspec runs
+        #
+        # @param [RSpec::Core::Example] example
+        # @return [String]
+        def root_spec_file(example)
+          group = example.metadata[:example_group]
+          group = group[:parent_example_group] while group[:parent_example_group]
+          group[:file_path]
+        end
+
+        # Add an example's coverage to what the spec file already collected
+        #
+        # @param [String] spec_file
+        # @param [Hash] coverage_data
+        # @return [void]
+        def merge_coverage(spec_file, coverage_data)
+          collected = full_coverage_by_example[spec_file]
+          return full_coverage_by_example[spec_file] = coverage_data unless collected
+
+          coverage_data.each do |path, lines|
+            collected_lines = collected[path]
+            next collected[path] = lines unless collected_lines
+
+            lines.each { |line, hits| collected_lines[line] = collected_lines[line].to_i + hits.to_i }
+          end
+        end
+      end
+    end
+  end
+end

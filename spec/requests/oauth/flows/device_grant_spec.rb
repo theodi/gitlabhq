@@ -1,0 +1,210 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Gitlab OAuth2 Device Authorization Grant', feature_category: :system_access do
+  let_it_be(:organization) { create(:organization) }
+  let_it_be(:application) do
+    create(:oauth_application, :with_device_code_enabled, redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
+      confidential: false, scopes: 'read_user')
+  end
+
+  let_it_be_with_reload(:user) { create(:user, :with_namespace, organizations: [organization]) }
+  let_it_be(:client_id) { application.uid }
+  let_it_be(:client_secret) { application.secret }
+
+  let(:device_authorization_params) do
+    {
+      client_id: client_id,
+      scope: 'read_user'
+    }
+  end
+
+  let(:token_params) do
+    {
+      client_id: client_id,
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
+    }
+  end
+
+  before do
+    allow_next_instance_of(Gitlab::Current::Organization) do |instance|
+      allow(instance).to receive(:organization).and_return(organization)
+    end
+    sign_in(user)
+
+    # verification_uri is generated via Gitlab::Routing.url_helpers, which
+    # uses Rails' default_url_options host rather than the request host.
+    # Align it with the integration test session's actual default host so
+    # posting back to verification_uri hits the same session/cookies.
+    allow(Gitlab::Application.routes).to receive(:default_url_options)
+      .and_return(protocol: 'http', host: 'www.example.com', script_name: '')
+  end
+
+  def fetch_device_code
+    post '/oauth/authorize_device',
+      params: device_authorization_params,
+      headers: { 'Content-Type' => 'application/x-www-form-urlencoded' }
+    json_response
+  end
+
+  def fetch_access_token(device_code)
+    post oauth_token_path, params: token_params.merge(device_code: device_code)
+    json_response
+  end
+
+  def verify_device_code(device_code_response)
+    user_code = device_code_response['user_code']
+    verification_uri = device_code_response['verification_uri']
+
+    post verification_uri, params: { user_code: user_code }
+  end
+
+  describe 'Device Authorization Request' do
+    context 'with valid client_id and scope' do
+      it 'returns device code and verification URI', :aggregate_failures do
+        response_body = fetch_device_code
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response_body).to include('device_code', 'user_code', 'expires_in')
+        expect(response_body['verification_uri']).to eq('http://www.example.com/oauth/device')
+        expect(json_response['expires_in']).to be(300) # device_code_expires_in default
+      end
+    end
+
+    context 'with invalid client_id' do
+      it 'returns an error' do
+        post '/oauth/authorize_device', params: device_authorization_params.merge(client_id: 'invalid')
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+        expect(json_response['error']).to eq('invalid_client')
+      end
+    end
+
+    context 'when relative_url_root is configured' do
+      before do
+        allow(Gitlab::Application.routes).to receive(:default_url_options)
+          .and_return(protocol: 'http', host: 'www.example.com', script_name: '/gitlab')
+      end
+
+      it 'includes relative_url_root in verification_uri and verification_uri_complete',
+        :aggregate_failures do
+        response_body = fetch_device_code
+
+        expect(response_body['verification_uri']).to eq('http://www.example.com/gitlab/oauth/device')
+        expect(response_body['verification_uri_complete'])
+          .to start_with('http://www.example.com/gitlab/oauth/device?user_code=')
+      end
+    end
+
+    context 'with invalid scope request' do
+      shared_examples 'rejects device authorization with invalid_scope error' do
+        it 'rejects the request with invalid_scope error' do
+          fetch_device_code
+
+          expect(response).to have_gitlab_http_status(:bad_request)
+          expect(json_response['error']).to eq('invalid_scope')
+        end
+      end
+
+      context 'when requesting scopes beyond application limits' do
+        let(:device_authorization_params) { super().merge(scope: 'api') }
+
+        include_examples 'rejects device authorization with invalid_scope error'
+      end
+
+      context 'when no requesting scope is specified' do
+        # As no default behaviour is currently specified in gem or configuration when scope is blank
+        let(:device_authorization_params) { super().except(:scope) }
+
+        include_examples 'rejects device authorization with invalid_scope error'
+      end
+
+      context 'when requesting multiple scopes with mixed validity' do
+        let(:device_authorization_params) { super().merge(scope: 'read_user api') }
+
+        include_examples 'rejects device authorization with invalid_scope error'
+      end
+    end
+  end
+
+  describe 'Token Request with Device Code' do
+    let(:device_code_response) { fetch_device_code }
+    let(:device_code) { device_code_response['device_code'] }
+
+    context 'when device_code_enabled is false' do
+      before do
+        application.reload.update!(device_code_enabled: false)
+      end
+
+      it 'returns an error' do
+        response_body = fetch_device_code
+
+        expect(response_body['error']).to eq('access_denied')
+      end
+    end
+
+    context 'with valid device code' do
+      it 'returns access token' do
+        verify_device_code(device_code_response)
+        token_response = fetch_access_token(device_code)
+
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(token_response).to include('access_token', 'token_type', 'expires_in', 'refresh_token')
+        expect(json_response['expires_in']).to be(Gitlab::CurrentSettings.oauth_access_token_expires_in)
+      end
+    end
+
+    context 'with invalid device code' do
+      it 'returns an error' do
+        fetch_access_token('invalid_code')
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error']).to eq('invalid_grant')
+      end
+    end
+
+    context 'with pending device code verification' do
+      it 'returns authorization pending error' do
+        fetch_access_token(device_code)
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error']).to eq('authorization_pending')
+      end
+    end
+
+    context 'with expired device code' do
+      it 'returns expired device code error' do
+        verify_device_code(device_code_response)
+        travel_to 1.hour.from_now do
+          fetch_access_token(device_code)
+        end
+
+        expect(response).to have_gitlab_http_status(:bad_request)
+        expect(json_response['error']).to eq('expired_token')
+      end
+    end
+  end
+
+  describe 'User Verification Flow' do
+    let(:device_code_response) { fetch_device_code }
+    let(:user_code) { device_code_response['user_code'] }
+    let(:verification_uri) { device_code_response['verification_uri'] }
+
+    it 'allows user to verify the device code' do
+      post verification_uri, params: { user_code: user_code }
+      follow_redirect!
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.body).to include('Device successfully authorized')
+    end
+
+    it 'fails with an invalid user code' do
+      post verification_uri, params: { user_code: 'invalid' }
+      follow_redirect!
+
+      expect(response).to have_gitlab_http_status(:ok)
+      expect(response.body).to include('The user code is invalid')
+    end
+  end
+end

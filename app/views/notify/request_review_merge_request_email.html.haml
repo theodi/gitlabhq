@@ -1,0 +1,11 @@
+- long_mr = '%{reference} %{mrtitle}' % { reference: @merge_request.to_reference, mrtitle: @merge_request.title }
+- mr_url = merge_request_url(@merge_request)
+
+%h4{ style: 'margin-bottom: 0' }
+  = s_('Notify|Review requested')
+%p{ style: 'margin-top: 0' }
+  = html_escape(s_('Notify|You were added as a reviewer on %{long_mr} by %{name}.')) % {name: sanitize_name(@updated_by.name), long_mr: long_mr}
+  = render_if_exists 'notify/diff_summary'
+%p
+  %a{ href: mr_url, target: "_blank", rel: "noopener noreferrer nofollow", style: "-webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; font-size: 14px; color: #ffffff; text-decoration: none; border-radius: 8px; -webkit-border-radius: 8px; background-color: #3a383d; display: inline-block; padding: 8px 12px" }
+    = s_('Notify|Review changes')

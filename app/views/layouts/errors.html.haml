@@ -1,9 +1,32 @@
 !!! 5
-%html{ lang: "en"}
-  = render "layouts/head"
-  %body{class: "#{app_theme}  application"}
-    = render "layouts/header/empty"
-    .container.navless-container
-      = render "layouts/flash"
-      .error-page
-        = yield
+%html{ lang: I18n.locale, class: user_application_color_mode }
+  %head
+    %meta{ :content => "width=device-width, initial-scale=1", :name => "viewport" }
+    %title= yield(:title)
+    = render 'layouts/application_color_mode_js'
+    = universal_stylesheet_link_tag 'errors'
+    = universal_stylesheet_link_tag 'application'
+    = universal_stylesheet_link_tag 'fonts'
+    = universal_stylesheet_link_tag 'tailwind'
+  %body
+    .page-container
+      = yield
+    = javascript_tag do
+      :plain
+        (function(){
+          var goBackElement = document.querySelector('.js-go-back');
+
+          if (goBackElement && history.length > 1) {
+            goBackElement.removeAttribute('hidden');
+
+            goBackElement.querySelector('button').addEventListener('click', function() {
+              history.back();
+            });
+          }
+
+          // We do not have rails_ujs here, so we're manually making a link trigger a form submit.
+          document.querySelector('.js-sign-out-link')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.querySelector('.js-sign-out-form')?.submit();
+          });
+        }());

@@ -1,0 +1,32 @@
+#import "~/graphql_shared/fragments/label.fragment.graphql"
+#import "~/graphql_shared/fragments/user.fragment.graphql"
+#import "~/work_items/graphql/milestone.fragment.graphql"
+
+fragment WorkItemMetadataWidgets on WorkItemWidget {
+  type
+  ... on WorkItemWidgetStartAndDueDate @skip(if: $useWorkItemFeatures) {
+    dueDate
+    startDate
+  }
+  ... on WorkItemWidgetMilestone @skip(if: $useWorkItemFeatures) {
+    milestone {
+      ...MilestoneFragment
+    }
+  }
+  ... on WorkItemWidgetAssignees @skip(if: $useWorkItemFeatures) {
+    allowsMultipleAssignees
+    canInviteMembers
+    assignees {
+      nodes {
+        ...User
+      }
+    }
+  }
+  ... on WorkItemWidgetLabels @skip(if: $useWorkItemFeatures) {
+    labels {
+      nodes {
+        ...Label
+      }
+    }
+  }
+}

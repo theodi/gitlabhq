@@ -1,0 +1,49 @@
+@use 'functions';
+@use 'sass:list';
+@use 'sass:map';
+@import 'page_bundles/mixins_and_variables_and_functions';
+
+$base-font-size: 16px;
+$code-row-height-target: 20px;
+$code-font-size-target: 12.5px;
+
+$code-row-height: calc($code-row-height-target / $base-font-size * 1rem);
+$code-font-size: calc($code-font-size-target / $base-font-size * 1rem);
+$code-line-height: calc($code-row-height-target / $code-font-size-target);
+
+$app-header-vertical-padding: $gl-spacing-scale-3;
+$app-vertical-breakpoint: md;
+
+$diff-file-border-width: 1px;
+$diff-file-header-padding-y: $gl-spacing-scale-3;
+
+$diff-file-element-order: (
+  diff-file-hunk-header-z-index,
+  diff-file-cell-focused-z-index,
+  diff-file-highlighted-line-number-z-index,
+  diff-file-new-discussion-toggle-row-z-index,
+  diff-file-discussion-row-z-index,
+  diff-file-suggestion-header-z-index,
+  diff-file-header-z-index,
+  diff-file-header-active-z-index,
+  diff-file-suggestion-active-z-index,
+  diff-file-new-discussion-toggle-z-index
+);
+$diff-file-z-index-map: ();
+$counter: 0;
+
+@each $variable-name in $diff-file-element-order {
+  $counter: $counter + 1;
+  $diff-file-z-index-map: map.set($diff-file-z-index-map, $variable-name, $counter);
+}
+
+$diff-file-hunk-header-z-index: map.get($diff-file-z-index-map, diff-file-hunk-header-z-index);
+$diff-file-cell-focused-z-index: map.get($diff-file-z-index-map, diff-file-cell-focused-z-index);
+$diff-file-header-z-index: map.get($diff-file-z-index-map, diff-file-header-z-index);
+$diff-file-highlighted-line-number-z-index: map.get($diff-file-z-index-map, diff-file-highlighted-line-number-z-index);
+$diff-file-new-discussion-toggle-row-z-index: map.get($diff-file-z-index-map, diff-file-new-discussion-toggle-row-z-index);
+$diff-file-discussion-row-z-index: map.get($diff-file-z-index-map, diff-file-discussion-row-z-index);
+$diff-file-suggestion-header-z-index: map.get($diff-file-z-index-map, diff-file-suggestion-header-z-index);
+$diff-file-header-active-z-index: map.get($diff-file-z-index-map, diff-file-header-active-z-index);
+$diff-file-suggestion-active-z-index: map.get($diff-file-z-index-map, diff-file-suggestion-active-z-index);
+$diff-file-new-discussion-toggle-z-index: map.get($diff-file-z-index-map, diff-file-new-discussion-toggle-z-index);

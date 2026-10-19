@@ -1,0 +1,34 @@
+- ssh_info = @instance_configuration.settings[:ssh_algorithms_hashes]
+- content_for :table_content do
+  %li
+    = link_to _('SSH host key fingerprints'), '#ssh-host-keys-fingerprints'
+
+- content_for :settings_content do
+  %h2#ssh-host-keys-fingerprints
+    = _('SSH host key fingerprints')
+
+  - if ssh_info.blank?
+    %p
+      = html_escape(_('SSH host keys are not available on this system. Please use %{ssh_keyscan} command or contact your GitLab administrator for more information.')) % { ssh_keyscan: tag.code('ssh-keyscan') }
+  - else
+    %p
+      = _('Below are the fingerprints for the current instance SSH host keys.')
+
+    .table-responsive
+      %table
+        %thead
+          %tr
+            %th
+              = _('Algorithm')
+            %th
+              = _('MD5')
+            %th
+              = _('SHA256')
+        %tbody
+          - ssh_info.each do |algorithm|
+            %tr
+              %td= algorithm[:name]
+              %td
+                %code= instance_configuration_cell_html(algorithm[:md5])
+              %td
+                %code= instance_configuration_cell_html(algorithm[:sha256])

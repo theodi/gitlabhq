@@ -1,0 +1,134 @@
+import { shallowMount } from '@vue/test-utils';
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import FrequentItems from '~/super_sidebar/components/global_search/components/frequent_items.vue';
+import FrequentGroups from '~/super_sidebar/components/global_search/components/frequent_groups.vue';
+import createMockApollo from 'helpers/mock_apollo_helper';
+import { useConfigurePathHelpers } from 'helpers/configure_path_helpers';
+import currentUserFrecentGroupsQuery from '~/super_sidebar/graphql/queries/current_user_frecent_groups.query.graphql';
+import waitForPromises from 'helpers/wait_for_promises';
+import { frecentGroupsMock } from '../../../mock_data';
+
+Vue.use(VueApollo);
+
+describe('FrequentlyVisitedGroups', () => {
+  /** @type {import('@vue/test-utils').Wrapper} */
+  let wrapper;
+  /** @type {jest.Mock} */
+  let currentUserFrecentGroupsQueryHandler;
+
+  const createComponent = (options) => {
+    const mockApollo = createMockApollo([
+      [currentUserFrecentGroupsQuery, currentUserFrecentGroupsQueryHandler],
+    ]);
+
+    wrapper = shallowMount(FrequentGroups, {
+      apolloProvider: mockApollo,
+      ...options,
+    });
+  };
+
+  const findFrequentItems = () => wrapper.findComponent(FrequentItems);
+  const receivedAttrs = (wrapperInstance) => ({
+    // See https://github.com/vuejs/test-utils/issues/2151.
+    ...wrapperInstance.vm.$attrs,
+  });
+
+  beforeEach(() => {
+    gon.current_username = 'root';
+    currentUserFrecentGroupsQueryHandler = jest.fn().mockResolvedValue({
+      data: {
+        frecentGroups: frecentGroupsMock,
+      },
+    });
+  });
+
+  describe.each`
+    description              | relativeUrl
+    ${'with relativeUrl'}    | ${'/gitlab'}
+    ${'without relativeUrl'} | ${''}
+  `('$description', ({ relativeUrl }) => {
+    useConfigurePathHelpers(relativeUrl);
+
+    it('passes group-specific props', () => {
+      createComponent();
+
+      expect(findFrequentItems().props()).toMatchObject({
+        emptyStateText: 'Groups you visit often will appear here.',
+        groupName: 'Frequently visited groups',
+        viewAllItemsIcon: 'group',
+        viewAllItemsText: 'View all my groups',
+        viewAllItemsPath: `${relativeUrl}/dashboard/groups`,
+      });
+    });
+
+    it('passes fetched groups to FrequentItems', async () => {
+      createComponent();
+      await waitForPromises();
+
+      expect(findFrequentItems().props('items')).toEqual(
+        frecentGroupsMock.map((group) => ({
+          ...group,
+          webPath: `${relativeUrl}/${group.fullPath}`,
+        })),
+      );
+      expect(findFrequentItems().props('loading')).toBe(false);
+    });
+  });
+
+  it('loads frecent groups', () => {
+    createComponent();
+
+    expect(currentUserFrecentGroupsQueryHandler).toHaveBeenCalled();
+    expect(findFrequentItems().props('loading')).toBe(true);
+  });
+
+  it('passes attrs to FrequentItems', () => {
+    createComponent({ attrs: { bordered: true, class: 'test-class' } });
+
+    expect(findFrequentItems().classes()).toContain('test-class');
+    expect(receivedAttrs(findFrequentItems())).toMatchObject({
+      bordered: true,
+    });
+  });
+
+  describe('events', () => {
+    beforeEach(() => {
+      createComponent();
+    });
+
+    it('emits action on click', () => {
+      findFrequentItems().vm.$emit('action');
+      expect(wrapper.emitted('action')).toStrictEqual([['FREQUENTLY_VISITED_GROUPS_HANDLE']]);
+    });
+  });
+
+  describe('when query returns null', () => {
+    beforeEach(async () => {
+      currentUserFrecentGroupsQueryHandler = jest.fn().mockResolvedValue({
+        data: {
+          frecentGroups: null,
+        },
+      });
+
+      createComponent();
+
+      await waitForPromises();
+    });
+
+    it('renders with empty array', () => {
+      expect(findFrequentItems().props('items')).toEqual([]);
+    });
+  });
+
+  describe('when user is not logged in', () => {
+    it('does not render frequent items, load frecent groups, and emits nothing-to-render event', () => {
+      gon.current_username = null;
+      createComponent();
+
+      expect(findFrequentItems().exists()).toBe(false);
+      expect(currentUserFrecentGroupsQueryHandler).not.toHaveBeenCalled();
+      expect(wrapper.emitted('nothing-to-render')).toHaveLength(1);
+    });
+  });
+});

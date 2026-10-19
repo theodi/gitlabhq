@@ -1,0 +1,22 @@
+# frozen_string_literal: true
+
+module Types
+  module Packages
+    module Maven
+      class MetadatumType < BaseObject
+        graphql_name 'MavenMetadata'
+        description 'Maven metadata'
+
+        authorize :read_package
+
+        field :app_group, GraphQL::Types::String, null: false, description: 'App group of the Maven package.'
+        field :app_name, GraphQL::Types::String, null: false, description: 'App name of the Maven package.'
+        field :app_version, GraphQL::Types::String, null: true, description: 'App version of the Maven package.'
+        field :created_at, Types::TimeType, null: false, description: 'Date of creation.'
+        field :id, ::Types::GlobalIDType[::Packages::Maven::Metadatum], null: false, description: 'ID of the metadatum.'
+        field :path, GraphQL::Types::String, null: false, description: 'Path of the Maven package.'
+        field :updated_at, Types::TimeType, null: false, description: 'Date of most recent update.'
+      end
+    end
+  end
+end

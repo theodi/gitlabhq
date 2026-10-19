@@ -1,0 +1,359 @@
+---
+stage: AI-powered
+group: Duo Chat
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+title: GitLab Duo Chatのトラブルシューティング
+---
+
+GitLab Duo Chatの使用中に、次の問題が発生することがあります。
+
+## **GitLab Duo Chat**ボタンが表示されない {#the-gitlab-duo-chat-button-is-not-displayed}
+
+ボタンがUIの右上隅に表示されない場合は、GitLab Duo Chat [が有効になっている](../gitlab_duo/turn_on_off.md)ことを確認してください。
+
+**GitLab Duo Chat**ボタンは、[GitLab Duoの機能が無効になっているグループとプロジェクト](../gitlab_duo/turn_on_off.md)には表示されません。
+
+GitLab Duo Chatを有効にした後、ボタンが表示されるまでに数分かかる場合があります。
+
+これで問題が解決しない場合は、次のトラブルシューティングドキュメントも確認してください:
+
+- [GitLab Duoコード提案](../project/repository/code_suggestions/troubleshooting.md)。
+- [VS Code](../../editor_extensions/visual_studio_code/troubleshooting.md)。
+- [Microsoft Visual Studio](../../editor_extensions/visual_studio/visual_studio_troubleshooting.md)。
+- [JetBrains IDE](../../editor_extensions/jetbrains_ide/jetbrains_troubleshooting.md)。
+- [Neovim](../../editor_extensions/neovim/neovim_troubleshooting.md)。
+- [Eclipse](../../editor_extensions/eclipse/troubleshooting.md)。
+- [GitLab Duoのトラブルシューティング](../gitlab_duo/troubleshooting.md)。
+- [GitLab Duo Self-Hostedのトラブルシューティング](../../administration/gitlab_duo_self_hosted/troubleshooting.md)。
+
+## `Error M2000` {#error-m2000}
+
+`I'm sorry, I couldn't find any documentation to answer your question. Error code: M2000`というエラーが表示されることがあります。
+
+このエラーは、Chatが質問に答えるための関連ドキュメントを見つけられない場合に発生します。これは、検索クエリが利用可能なドキュメントと一致しない場合、またはドキュメント検索機能に問題がある場合に発生する可能性があります。
+
+もう一度試すか、[GitLab Duo Chatのベストプラクティスドキュメント](best_practices.md)を参照して、質問を改良してください。
+
+## `Error M3002` {#error-m3002}
+
+`I am sorry, I cannot access the information you are asking about. A group or project owner has turned off Duo features in this group or project. Error code: M3002`というエラーが表示されることがあります。
+
+このエラーは、GitLab Duoが[オフ](../gitlab_duo/turn_on_off.md)になっているプロジェクトまたはグループに属する項目について質問した場合に発生します。
+
+GitLab Duoがオンになっていない場合、GitLab Duo Chatは、グループまたはプロジェクト内の項目（イシュー、エピック、マージリクエストなど）に関する情報を処理できません。
+
+## `Error M3003` {#error-m3003}
+
+`I'm sorry, I can't generate a response. You might want to try again. You could also be getting this error because the items you're asking about either don't exist, you don't have access to them, or your session has expired. Error code: M3003`というエラーが表示されることがあります。
+
+このエラーは、以下の場合に発生します:
+
+- アクセス権のない項目（イシュー、エピック、マージリクエストなど）、または存在しない項目についてGitLab Duo Chatに質問した。
+- セッションがタイムアウトした。
+
+アクセスできる項目について、もう一度質問してみてください。問題が解決しない場合は、セッションのタイムアウトが原因である可能性があります。GitLab Duo Chatの使用を続行するには、再度サインインしてください。詳細については、[GitLab Duoの可用性を制御する](../gitlab_duo/turn_on_off.md)を参照してください。
+
+## `Error M3004` {#error-m3004}
+
+`I'm sorry, I can't generate a response. You do not have access to GitLab Duo Chat. Error code: M3004`というエラーが表示されることがあります。
+
+このエラーは、GitLab Duo Chatにアクセスしようとしたが、必要なアクセス権がない場合に発生します。
+
+[GitLab Duo Chatを使用するためのアクセス権](../gitlab_duo/turn_on_off.md)があることを確認してください。
+
+## `Error M3005` {#error-m3005}
+
+`I'm sorry, this question is not supported in your Duo Pro subscription. You might consider upgrading to Duo Enterprise. Error code: M3005`というエラーが表示されることがあります。
+
+このエラーは、GitLab Duo Chatのツールにアクセスしようとしたが、そのツールがGitLab Duoのサブスクリプションプランにバンドルされていない場合に発生します。
+
+[GitLab Duoのサブスクリプションプラン](https://about.gitlab.com/gitlab-duo/#pricing)に、選択したツールが含まれていることを確認してください。
+
+## `Error M3006` {#error-m3006}
+
+`I'm sorry, you don't have the GitLab Duo subscription required to use Duo Chat. Please contact your administrator. Error code: M3006`というエラーが表示されることがあります。
+
+このエラーは、GitLab Duo ChatがGitLab Duoのサブスクリプションに含まれていない場合に発生します。
+
+[GitLab Duoのサブスクリプションプラン](https://about.gitlab.com/gitlab-duo/#pricing)に、GitLab Duo Chatが含まれていることを確認してください。
+
+## `Error M4000` {#error-m4000}
+
+`I'm sorry, I can't generate a response. Please try again. Error code: M4000`というエラーが表示されることがあります。
+
+このエラーは、スラッシュコマンドリクエストの処理中に予期しない問題が発生した場合に表示されます。リクエストを再試行してください。問題が解決しない場合は、コマンドの構文が正しいことを確認してください。
+
+スラッシュコマンドの詳細については、次のドキュメントを参照してください:
+
+- [/tests](examples.md#write-tests-in-the-ide)
+- [/refactor](examples.md#refactor-code-in-the-ide)
+- [/fix](examples.md#fix-code-in-the-ide)
+- [/explain](examples.md#explain-selected-code)
+
+## `Error M4001` {#error-m4001}
+
+`I'm sorry, I can't generate a response. Please try again. Error code: M4001`というエラーが表示されることがあります。
+
+このエラーは、リクエストを完了するために必要な情報が見つからない場合に発生します。リクエストを再試行してください。
+
+## `Error M4002` {#error-m4002}
+
+`I'm sorry, I can't generate a response. Please try again. Error code: M4002`というエラーが表示されることがあります。
+
+このエラーは、[CI/CDに関連する質問](examples.md#ask-about-cicd)に回答する際に問題が発生した場合に表示されます。リクエストを再試行してください。
+
+## `Error M4003` {#error-m4003}
+
+`This command is used for explaining vulnerabilities and can only be invoked from a vulnerability detail page.`または`Vulnerability Explanation currently only supports vulnerabilities reported by SAST. Error code: M4003`というエラーが表示されることがあります。
+
+このエラーは、[`Explain Vulnerability`](examples.md#explain-a-vulnerability)機能を使用する際に問題が発生した場合に表示されます。
+
+## `Error M4004` {#error-m4004}
+
+`This resource has no comments to summarize`というエラーが表示されることがあります。
+
+このエラーは、`Summarize Discussion`機能を使用する際に問題が発生した場合に表示されます。
+
+## `Error M4005` {#error-m4005}
+
+`There is no job log to troubleshoot.`または`This command is used for troubleshooting jobs and can only be invoked from a failed job log page.`というエラーが表示されることがあります。
+
+このエラーは、[`Troubleshoot job`](examples.md#troubleshoot-failed-cicd-jobs-with-root-cause-analysis)機能を使用する際に問題が発生した場合に表示されます。
+
+## `Error M5000` {#error-m5000}
+
+`I'm sorry, I can't generate a response. Please try again. Error code: M5000`というエラーが表示されることがあります。
+
+このエラーは、項目（イシュー、エピック、マージリクエストなど）に関連するコンテンツの処理中に問題が発生した場合に表示されます。リクエストを再試行してください。
+
+## `Error A1000` {#error-a1000}
+
+`I'm sorry, I couldn't respond in time. Please try again. Error code: A1000`というエラーが表示されることがあります。
+
+このエラーは、処理中にタイムアウトが発生した場合に発生します。リクエストを再試行してください。
+
+## `Error A1001` {#error-a1001}
+
+`I'm sorry, I can't generate a response. Please try again. Error code: A1001`というエラーが表示されることがあります。
+
+このエラーは、リクエストを処理したAIサービスで問題が発生した場合に表示されます。
+
+考えられる理由を以下に示します:
+
+- GitLabコード内のバグが原因のクライアント側のエラー。
+- Anthropicコード内のバグが原因のサーバー側のエラー。
+- AIゲートウェイに到達しなかったHTTPリクエスト。
+
+エラーの理由をより明確にするための[イシューが存在](https://gitlab.com/gitlab-org/gitlab/-/issues/479465)します。
+
+問題を解決するには、リクエストを再試行してください。
+
+エラーが解決しない場合は、`/new`または`/reset`コマンドを使用して、新しい会話を開始してください。問題が解決しない場合は、GitLabサポートチームに問題を報告してください。
+
+### GitLab Duo Self-Hosted {#gitlab-duo-self-hosted}
+
+GitLab Duo Self-Hostedでチャットを使用しているときにこのエラーが発生した場合、AIゲートウェイへの接続に問題がありました。
+
+これを解決するには、[セルフホスト型デバッグスクリプト](../../administration/gitlab_duo_self_hosted/troubleshooting.md#use-debugging-scripts)を使用して、GitLabインスタンスからAIゲートウェイにアクセスでき、期待どおりに機能していることを確認します。
+
+問題が解決しない場合は、GitLabサポートチームに問題を報告してください。
+
+## `Error A1002` {#error-a1002}
+
+`I'm sorry, I couldn't respond in time. Please try again. Error code: A1002`というエラーが表示されることがあります。
+
+このエラーは、AIゲートウェイからイベントが返されないか、GitLabがイベントを解析するのに失敗した場合に発生します。
+
+もう一度リクエストを試すか、[AIゲートウェイログ](../../administration/gitlab_duo_self_hosted/logging.md)を表示し、エラーがないか確認してください。
+
+## `Error A1003` {#error-a1003}
+
+`I'm sorry, I couldn't respond in time. Please try again. Error code: A1003`というエラーが表示されることがあります。
+
+このエラーは、AIゲートウェイからのストリーミング応答が失敗した場合に発生します。リクエストを再試行してください。
+
+### GitLab Duo Self-Hosted {#gitlab-duo-self-hosted-1}
+
+GitLab Duo Self-HostedでChatを使用しているときにこの問題が発生した場合は、ストリーミングが機能しているかどうかを確認してください:
+
+1. AIゲートウェイコンテナ内で、次のコマンドを実行します:
+
+   ```shell
+   curl --request 'POST' \
+   'http://localhost:5052/v2/chat/agent' \
+   --header 'accept: application/json' \
+   --header 'Content-Type: application/json' \
+   --header 'x-gitlab-enabled-feature-flags: expanded_ai_logging' \
+   --data '{
+     "messages": [
+       {
+         "role": "user",
+         "content": "Hello",
+         "context": null,
+         "current_file": null,
+         "additional_context": []
+       }
+     ],
+     "model_metadata": {
+       "provider": "custom_openai",
+       "name": "mistral",
+       "endpoint": "<change here>",
+       "api_key": "<change here>",
+       "identifier": "<change here>"
+     },
+     "unavailable_resources": [],
+     "options": {
+       "agent_scratchpad": {
+         "agent_type": "react",
+         "steps": []
+       }
+     }
+   }'
+   ```
+
+   ストリーミングが機能している場合、チャンク化された応答が表示されるはずです。機能していない場合、応答は空になります。
+
+1. これがモデルのデプロイに関するイシューであるかどうかを確認するには、特定のエラーメッセージについて[AIゲートウェイのログ](../../administration/gitlab_duo_self_hosted/logging.md)を確認します。
+
+1. 接続を検証するには、AIゲートウェイコンテナで`AIGW_CUSTOM_MODELS__DISABLE_STREAMING`環境変数を設定してストリーミングを無効にします:
+
+   ```shell
+   docker run .... -e AIGW_CUSTOM_MODELS__DISABLE_STREAMING=true ...
+   ```
+
+## `Error A1004` {#error-a1004}
+
+`I'm sorry, I couldn't respond in time. Please try again. Error code: A1004`というエラーが表示されることがあります。
+
+このエラーは、AIゲートウェイの処理中にエラーが発生した場合に発生します。リクエストを再試行してください。
+
+## `Error A1005` {#error-a1005}
+
+`I'm sorry, you've entered too many prompts. Please run /clear or /reset before asking the next question. Error code: A1005`というエラーが表示されることがあります。
+
+このエラーは、プロンプトの長さがLLMの最大トークン制限を超えた場合に発生します。`/new`コマンドで新しい会話を開始し、リクエストを再試行してください。
+
+## `Error A1006` {#error-a1006}
+
+`I'm sorry, Duo Chat agent reached the limit before finding an answer for your question. Please try a different prompt or clear your conversation history with /clear. Error code: A1006`というエラーが表示されることがあります。
+
+このエラーは、ReActエージェントがクエリに対するソリューションを見つけられなかった場合に発生します。別のプロンプトを試すか、`/new`または`/reset`で新しい会話を開始してください。
+
+## `Error A1007` {#error-a1007}
+
+`There was an error processing your request. Please try again or contact support if the issue persists. Error code: A1007`というエラーが表示されることがあります。
+
+このエラーは、GitLab Duo Agent Platformでリクエストを処理中に予期しないエラーが発生した場合に表示されます。
+
+## `Error A1008` {#error-a1008}
+
+`There was an error processing your request. Please try again or contact support if the issue persists. Error code: A1008`というエラーが表示されることがあります。
+
+このエラーは、GitLab Duo Agent Platformで使用されているアップストリームのLLMプロバイダーにリクエストが送信された場合に発生します。
+
+## `Error A6000` {#error-a6000}
+
+`I'm sorry, I couldn't respond in time. Please try a more specific request or enter /clear to start a new chat. Error code: A6000`というエラーが表示されることがあります。
+
+これは、GitLab Duo Chatに問題が発生した場合に発生するフォールバックエラーです。より具体的なリクエストを試すか、`/new`を入力して新しいチャットを開始するか、改善に役立つフィードバックをお寄せください。
+
+## `Error A9999` {#error-a9999}
+
+`I'm sorry, I couldn't respond in time. Please try again. Error code: A9999`というエラーが表示されることがあります。
+
+このエラーは、ReActエージェントで不明なエラーが発生した場合に発生します。リクエストを再試行してください。
+
+問題が解決しない場合は、[GitLabサポートチームに問題を報告してください](https://about.gitlab.com/support/)。
+
+## `Error G3001` {#error-g3001}
+
+`I'm sorry, but answering this question requires a different Duo subscription. Please contact your administrator.`というエラーが表示されることがあります。
+
+このエラーは、GitLab Duo Chatがサブスクリプションで利用できない場合に発生します。別のリクエストを試して、管理者に連絡してください。
+
+## `Error G3002` {#error-g3002}
+
+`I'm sorry, you have not selected a default GitLab Duo namespace. Please select a default GitLab Duo namespace in your user preferences.`というエラーが表示されることがあります。
+
+このエラーは、複数のGitLab Duoネームスペースに属している場合、またはGitLabリモートが設定されていないローカルプロジェクトで作業している場合に発生します。
+
+これを解決するには、[デフォルトのGitLab Duoネームスペースを設定](../profile/preferences.md#set-a-default-gitlab-duo-namespace)します。
+
+## チャットの応答内のリンクは選択できません {#links-in-chat-responses-are-not-selectable}
+
+GitLab Duo Chatは、外部ウェブサイトおよびサードパーティドメインのURLを選択可能なリンクとして応答に表示しません。
+
+チャットは代わりに、これらの種類のURLをリンクテキストのみを表示するコード形式のテキストに変換します。宛先URLは表示されません。
+
+この制限は、AI応答で生成される可能性のある悪意のあるリンクからユーザーを保護するのに役立ちます。
+
+チャットは、応答で次の種類のリンクを選択可能として表示します:
+
+- `docs.gitlab.com`のGitLabドキュメントへのリンク。
+- `gitlab.com`へのリンク。GitLabプロジェクト、イシュー、マージリクエストなどが含まれますが、これらに限定されません。
+- GitLabインスタンス内の相対URL。
+
+## GitLab Duo Agentic Chatに固有のイシュー {#issues-specific-to-gitlab-duo-agentic-chat}
+
+### GitLabクレジットの不足 {#not-enough-gitlab-credits}
+
+GitLabクレジットを使い果たしたため、チャットにアクセスできなくなる可能性があります。
+
+この問題を解決するには、次のいずれかを実行します:
+
+- [GitLabクレジットをさらに購入する](../../subscriptions/gitlab_credits.md#buy-gitlab-credits)。
+- 非エージェント型Chatに切り替えます。切り替えると、新しい会話が開始されます。以前のエージェント型チャットの会話は引き続き表示できますが、読み取り専用です。
+
+### 応答時間が遅い {#slow-response-times}
+
+Agentic Chatは、処理とリクエストへの応答において、非エージェント型Chatよりも遅くなる可能性があります。
+
+このイシューは、エージェント型チャットが情報を収集するために複数のAPIコールを行うため、応答に大幅に時間がかかる可能性があるために発生します。
+
+### 権限の制限 {#limited-permissions}
+
+Agentic Chatは、GitLabユーザーがアクセス権限を持っているリソースと同じリソースにアクセスできます。エージェント型チャットがリクエストに答えるのに必要なリソースにアクセスできない場合は、[ユーザー権限](../permissions.md)を確認してください。
+
+### 検索の制限 {#search-limitations}
+
+Agentic Chatは、セマンティック検索ではなく、キーワードに基づく検索を使用します。Agentic Chatは、検索で使用される正確なキーワードを含まない関連コンテンツを見逃す可能性があります。
+
+## ヘッダーの不一致の問題 {#header-mismatch-issue}
+
+特定のエラーコードなしで、`I'm sorry, I can't generate a response. Please try again`というエラーが表示されることがあります。
+
+Sidekiqログをチェックして、エラー`Header mismatch 'X-Gitlab-Instance-Id'`が見つかるかどうかを確認してください。
+
+このエラーが表示された場合は、解決するために、GitLabサポートチームに連絡して、ライセンスの新しいアクティベーションコードを送信するように依頼してください。
+
+詳細については、[イシュー103](https://gitlab.com/gitlab-com/enablement-sub-department/section-enable-request-for-help/-/issues/103)を参照してください。
+
+## Cloud Connectorのヘルスチェック {#check-the-health-of-the-cloud-connector}
+
+Cloud Connectorに関連するさまざまなコンポーネントのステータスを検証するスクリプトを作成しました。次に例を示します:
+
+- アクセスデータ
+- トークン
+- ライセンス
+- ホスト接続
+- 機能フラグのアクセシビリティ
+
+このスクリプトをデバッグモードで実行して、より詳細な出力を表示し、レポートファイルを生成できます。
+
+1. 単一ノードインスタンスにSSHで接続し、スクリプトをダウンロードします:
+
+   ```shell
+   wget https://gitlab.com/gitlab-org/gitlab/-/snippets/3734617/raw/main/health_check.rb
+   ```
+
+1. Railsランナーを使用して、スクリプトを実行します。
+
+   スクリプトへのフルパスを使用していることを確認してください。
+
+   ```ruby
+   Usage: gitlab-rails runner full_path/to/health_check.rb
+          --debug                     Enable debug mode
+          --output-file <file_path>   Write a report to a specified file
+          --username <username>       Provide a username to test seat assignments
+          --skip [CHECK]              Skip specific checks (options: access_data, token, license, host, features, end_to_end)
+   ```

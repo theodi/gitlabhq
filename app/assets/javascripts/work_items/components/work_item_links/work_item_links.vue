@@ -1,0 +1,359 @@
+<script>
+import {
+  GlAlert,
+  GlDisclosureDropdown,
+  GlDisclosureDropdownItem,
+  GlTooltipDirective,
+} from '@gitlab/ui';
+import { s__ } from '~/locale';
+import { createAlert } from '~/alert';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { TYPENAME_ISSUE, TYPENAME_WORK_ITEM } from '~/graphql_shared/constants';
+import getIssueDetailsQuery from 'ee_else_ce/work_items/graphql/get_issue_details.query.graphql';
+import { visitUrl } from '~/lib/utils/url_utility';
+import glFeatureFlagsMixin from '~/vue_shared/mixins/gl_feature_flags_mixin';
+import CrudComponent from '~/vue_shared/components/crud_component.vue';
+import {
+  FORM_TYPES,
+  TASKS_ANCHOR,
+  DEFAULT_PAGE_SIZE_CHILD_ITEMS,
+  WORKITEM_LINKS_METADATA_LOCALSTORAGEKEY,
+  WORKITEM_TREE_SHOWCLOSED_LOCALSTORAGEKEY,
+} from '../../constants';
+import {
+  findHierarchyWidget,
+  saveToggleToLocalStorage,
+  getToggleFromLocalStorage,
+  getHiddenMetadataKeysFromLocalStorage,
+  getItems,
+} from '../../utils';
+import getWorkItemTreeQuery from '../../graphql/work_item_tree.query.graphql';
+import WorkItemChildrenLoadMore from '../shared/work_item_children_load_more.vue';
+import WorkItemMoreActions from '../shared/work_item_more_actions.vue';
+import WorkItemLinksForm from './work_item_links_form.vue';
+import WorkItemChildrenWrapper from './work_item_children_wrapper.vue';
+
+export default {
+  name: 'WorkItemLinks',
+  childrenType: {
+    id: 'gid://gitlab/WorkItems::Type/5',
+    name: 'Task', // eslint-disable-line @gitlab/require-i18n-strings
+  },
+  components: {
+    GlAlert,
+    GlDisclosureDropdown,
+    GlDisclosureDropdownItem,
+    CrudComponent,
+    WorkItemLinksForm,
+    WorkItemChildrenWrapper,
+    WorkItemChildrenLoadMore,
+    WorkItemMoreActions,
+  },
+  directives: {
+    GlTooltip: GlTooltipDirective,
+  },
+  mixins: [glFeatureFlagsMixin()],
+  inject: ['fullPath'],
+  props: {
+    issuableId: {
+      type: Number,
+      required: true,
+    },
+    issuableIid: {
+      type: Number,
+      required: true,
+    },
+    isGroup: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+  },
+  apollo: {
+    workItem: {
+      query: getWorkItemTreeQuery,
+      variables() {
+        return {
+          id: this.issuableGid,
+          pageSize: DEFAULT_PAGE_SIZE_CHILD_ITEMS,
+          endCursor: '',
+          useWorkItemFeatures: Boolean(this.glFeatures?.workItemFeaturesField),
+        };
+      },
+      update(data) {
+        return data.workItem ?? {};
+      },
+      skip() {
+        return !this.issuableId;
+      },
+      error(e) {
+        this.error = e.message || this.$options.i18n.fetchError;
+      },
+      result() {
+        if (this.hasNextPage && this.children.length === 0) {
+          this.fetchNextPage();
+        }
+      },
+    },
+    parentIssue: {
+      query: getIssueDetailsQuery,
+      variables() {
+        return {
+          id: convertToGraphQLId(TYPENAME_ISSUE, this.issuableId),
+        };
+      },
+      update: (data) => data.issue,
+    },
+  },
+  data() {
+    return {
+      error: undefined,
+      parentIssue: null,
+      formType: null,
+      workItem: null,
+      widgetName: TASKS_ANCHOR,
+      hiddenMetadataKeys: [],
+      showClosed: true,
+      fetchNextPageInProgress: false,
+      disableContent: false,
+    };
+  },
+  computed: {
+    confidential() {
+      return this.parentIssue?.confidential || this.workItem?.confidential || false;
+    },
+    iid() {
+      return String(this.issuableIid);
+    },
+    issuableIteration() {
+      return this.parentIssue?.iteration;
+    },
+    issuableMilestone() {
+      return this.parentIssue?.milestone;
+    },
+    hierarchyWidget() {
+      return this.workItem ? findHierarchyWidget(this.workItem) : {};
+    },
+    children() {
+      return this.hierarchyWidget?.children?.nodes || [];
+    },
+    canUpdate() {
+      return this.workItem?.userPermissions.updateWorkItem || false;
+    },
+    canAddTask() {
+      return this.workItem?.userPermissions.adminParentLink || false;
+    },
+    // Only used for children for now but should be extended later to support parents and siblings
+    isChildrenEmpty() {
+      return this.children?.length === 0;
+    },
+    issuableGid() {
+      return this.issuableId ? convertToGraphQLId(TYPENAME_WORK_ITEM, this.issuableId) : null;
+    },
+    isLoading() {
+      return this.$apollo.queries.workItem.loading;
+    },
+    childrenIds() {
+      return this.children.map((c) => c.id);
+    },
+    childrenCountLabel() {
+      return this.isLoading && this.children.length === 0 ? '...' : this.children.length;
+    },
+    pageInfo() {
+      return this.hierarchyWidget?.children?.pageInfo;
+    },
+    endCursor() {
+      return this.pageInfo?.endCursor || '';
+    },
+    hasNextPage() {
+      return this.pageInfo?.hasNextPage;
+    },
+    workItemType() {
+      return this.workItem?.workItemType?.name || '';
+    },
+    hasAllChildItemsHidden() {
+      const filterClosed = getItems(this.showClosed);
+      return filterClosed(this.children).length === 0;
+    },
+  },
+  mounted() {
+    this.hiddenMetadataKeys = getHiddenMetadataKeysFromLocalStorage(
+      WORKITEM_LINKS_METADATA_LOCALSTORAGEKEY,
+      [],
+    );
+    this.showClosed = getToggleFromLocalStorage(WORKITEM_TREE_SHOWCLOSED_LOCALSTORAGEKEY);
+  },
+  methods: {
+    showAddForm(formType) {
+      this.$refs.workItemsLinks.showForm();
+      this.formType = formType;
+      this.$nextTick(() => {
+        this.$refs.wiLinksForm.$refs.wiTitleInput?.$el.focus();
+      });
+    },
+    hideAddForm() {
+      this.$refs.workItemsLinks.hideForm();
+      this.formType = null;
+    },
+    navigateToChild({ event, child }) {
+      event.preventDefault();
+      visitUrl(child.webUrl);
+    },
+    handleUpdateHiddenMetadataKeys(hiddenKeys) {
+      this.hiddenMetadataKeys = [...hiddenKeys];
+    },
+    toggleShowClosed() {
+      this.showClosed = !this.showClosed;
+      saveToggleToLocalStorage(WORKITEM_TREE_SHOWCLOSED_LOCALSTORAGEKEY, this.showClosed);
+    },
+    async fetchNextPage() {
+      if (this.hasNextPage && !this.fetchNextPageInProgress) {
+        this.fetchNextPageInProgress = true;
+        try {
+          await this.$apollo.queries.workItem.fetchMore({
+            variables: {
+              endCursor: this.endCursor,
+            },
+          });
+        } catch (error) {
+          createAlert({
+            message: s__('Hierarchy|Something went wrong while fetching children.'),
+            captureError: true,
+            error,
+          });
+        } finally {
+          this.fetchNextPageInProgress = false;
+        }
+      }
+    },
+  },
+  i18n: {
+    title: s__('WorkItem|Child items'),
+    fetchError: s__(
+      'WorkItem|Something went wrong when fetching child items. Please refresh this page.',
+    ),
+    emptyStateMessage: s__(
+      'WorkItem|No child items are currently assigned. Use child items to break down this issue into smaller parts.',
+    ),
+    addChildButtonLabel: s__('WorkItem|Add'),
+    addChildOptionLabel: s__('WorkItem|Existing task'),
+    createChildOptionLabel: s__('WorkItem|New task'),
+    noChildItemsOpen: s__('WorkItem|No child items are currently open.'),
+  },
+  FORM_TYPES,
+  WORKITEM_LINKS_METADATA_LOCALSTORAGEKEY,
+};
+</script>
+
+<template>
+  <crud-component
+    ref="workItemsLinks"
+    :anchor-id="widgetName"
+    :title="$options.i18n.title"
+    icon="work-item-task"
+    :count="childrenCountLabel"
+    :is-loading="isLoading && !fetchNextPageInProgress"
+    is-collapsible
+    :collapsed="isChildrenEmpty && !error && !isLoading && !formType"
+    data-testid="work-item-links"
+  >
+    <template #actions>
+      <gl-disclosure-dropdown
+        v-if="canUpdate && canAddTask"
+        placement="bottom-end"
+        size="small"
+        :toggle-text="$options.i18n.addChildButtonLabel"
+        data-testid="toggle-form"
+      >
+        <gl-disclosure-dropdown-item
+          data-testid="toggle-create-form"
+          @action="showAddForm($options.FORM_TYPES.create)"
+        >
+          <template #list-item>
+            {{ $options.i18n.createChildOptionLabel }}
+          </template>
+        </gl-disclosure-dropdown-item>
+        <gl-disclosure-dropdown-item
+          data-testid="toggle-add-form"
+          @action="showAddForm($options.FORM_TYPES.add)"
+        >
+          <template #list-item>
+            {{ $options.i18n.addChildOptionLabel }}
+          </template>
+        </gl-disclosure-dropdown-item>
+      </gl-disclosure-dropdown>
+      <work-item-more-actions
+        :work-item-iid="iid"
+        :full-path="fullPath"
+        :work-item-type="workItemType"
+        :hidden-metadata-keys="hiddenMetadataKeys"
+        :show-closed="showClosed"
+        :show-view-roadmap-action="false"
+        :metadata-local-storage-key="$options.WORKITEM_LINKS_METADATA_LOCALSTORAGEKEY"
+        @update-hidden-metadata-keys="handleUpdateHiddenMetadataKeys"
+        @toggle-show-closed="toggleShowClosed"
+      />
+    </template>
+
+    <template v-if="isChildrenEmpty && !error" #empty>
+      {{ $options.i18n.emptyStateMessage }}
+    </template>
+
+    <template #form>
+      <work-item-links-form
+        ref="wiLinksForm"
+        data-testid="add-links-form"
+        :full-path="fullPath"
+        :full-name="workItem.namespace.fullName"
+        :is-group="false"
+        :issuable-gid="issuableGid"
+        :children-ids="childrenIds"
+        :children-type="$options.childrenType"
+        :parent-confidential="confidential"
+        :parent-iteration="issuableIteration"
+        :parent-milestone="issuableMilestone"
+        :form-type="formType"
+        :parent-work-item-type="workItemType"
+        @update-in-progress="disableContent = $event"
+        @cancel="hideAddForm"
+      />
+    </template>
+
+    <template #default>
+      <gl-alert v-if="error" variant="danger" @dismiss="error = undefined">
+        {{ error }}
+      </gl-alert>
+      <div v-if="!hasAllChildItemsHidden" class="!gl-px-3 gl-pb-3 gl-pt-2">
+        <work-item-children-wrapper
+          v-if="workItem"
+          :children="children"
+          :parent="workItem"
+          :can-update="canUpdate"
+          :is-group="isGroup"
+          :full-path="fullPath"
+          :work-item-id="issuableGid"
+          :hidden-metadata-keys="hiddenMetadataKeys"
+          :show-closed="showClosed"
+          :disable-content="disableContent"
+          :has-indirect-children="false"
+          @error="error = $event"
+          @select-child="navigateToChild"
+        />
+        <work-item-children-load-more
+          v-if="hasNextPage"
+          data-testid="work-item-load-more"
+          :fetch-next-page-in-progress="fetchNextPageInProgress"
+          @fetch-next-page="fetchNextPage"
+        />
+      </div>
+
+      <div
+        v-if="hasAllChildItemsHidden"
+        class="gl-text-subtle"
+        data-testid="work-item-no-child-items-open"
+      >
+        {{ $options.i18n.noChildItemsOpen }}
+      </div>
+    </template>
+  </crud-component>
+</template>

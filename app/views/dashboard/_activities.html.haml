@@ -1,14 +1,11 @@
-.hidden-xs
-  = render "events/event_last_push", event: @last_push
-
-  - if current_user
-    %ul.nav.nav-pills.event_filter.pull-right
-      %li.pull-right
-        = link_to dashboard_path(:atom, { private_token: current_user.private_token }), class: 'rss-btn' do
-          %i.fa.fa-rss
-          Activity Feed
-
+.nav-block.activities
   = render 'shared/event_filter'
-  %hr
-.content_list
-= spinner
+  .controls
+    = render Pajamas::ButtonComponent.new(href: dashboard_projects_path(rss_url_options), icon: 'rss', button_options: { title: _('Subscribe'), aria: { label: _('Subscribe') }, class: 'gl-hidden @sm/panel:gl-inline-flex' })
+
+.js-infinite-scrolling-root
+  %ul.content_list.gl-list-none.gl-pl-0.js-infinite-scrolling-content
+  .js-infinite-scrolling-page-end
+    .js-infinite-scrolling-loading
+      .loading
+        = render Pajamas::SpinnerComponent.new(size: :md)

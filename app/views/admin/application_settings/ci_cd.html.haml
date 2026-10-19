@@ -1,0 +1,71 @@
+- breadcrumb_title _("CI/CD")
+- page_title _("CI/CD")
+- add_page_specific_style 'page_bundles/settings'
+
+= render ::Layouts::SettingsBlockComponent.new(_('Variables'),
+  id: 'js-ci-cd-variables',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('CiVariables|Variables store information that you can use in job scripts. All projects on the instance can use these variables.')
+    = link_to _('Learn more.'), help_page_path('ci/variables/_index.md', anchor: 'for-an-instance'), target: '_blank', rel: 'noopener noreferrer'
+  - c.with_body do
+    = render 'ci/variables/attributes'
+    %h4.gl-text-base.gl-mb-2= s_('CICD|Allow pipeline variables by default')
+    %p.gl-text-subtle.gl-mb-3= s_('CICD|Control whether pipeline variables are allowed by default in new projects in new groups.')
+    = render 'pipeline_variables_settings'
+    %hr.gl-my-5
+    #js-instance-variables{ data: { endpoint: admin_ci_variables_path, maskable_regex: ci_variable_maskable_regex, protected_by_default: ci_variable_protected_by_default?.to_s} }
+
+= render ::Layouts::SettingsBlockComponent.new(_('Continuous Integration and Deployment'),
+  id: 'js-continuous-integration-settings',
+  testid: 'ci-cd-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Customize CI/CD settings, including Auto DevOps, instance runners, and job artifacts.')
+  - c.with_body do
+    = render 'ci_cd'
+
+= render_if_exists 'admin/application_settings/ci_cd_catalog', expanded: expanded_by_default?
+
+= render_if_exists 'admin/application_settings/required_instance_ci_setting', expanded: expanded_by_default?
+
+= render_if_exists 'admin/application_settings/package_registry', expanded: expanded_by_default?
+
+= render_if_exists 'admin/application_settings/virtual_registry', expanded: expanded_by_default?
+
+- if Gitlab.config.registry.enabled
+  = render ::Layouts::SettingsBlockComponent.new(_('Container registry'),
+    id: 'js-registry-settings',
+    testid: 'registry-settings',
+    expanded: expanded_by_default?) do |c|
+    - c.with_description do
+      = _('Various container registry settings.')
+    - c.with_body do
+      = render 'registry'
+
+= render ::Layouts::SettingsBlockComponent.new(s_('Runners|Runners'),
+  id: 'js-runner-settings',
+  testid: 'runner-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = _('Configure runner management and registration settings.')
+  - c.with_body do
+    = render 'runners_settings_form'
+
+= render ::Layouts::SettingsBlockComponent.new(s_('CICD|Job token permissions'),
+  id: 'js-job-token-permissions-settings',
+  testid: 'job-token-permissions-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('CICD|Configure CI/CD job token settings for all projects.')
+  - c.with_body do
+    = render 'job_token_permissions_form'
+
+= render ::Layouts::SettingsBlockComponent.new(s_('CICD|Job logs'),
+  id: 'js-job-logs-settings',
+  testid: 'job-logs-settings',
+  expanded: expanded_by_default?) do |c|
+  - c.with_description do
+    = s_('CICD|Configure CI job log settings for all projects.')
+  - c.with_body do
+    = render 'job_logs_form'

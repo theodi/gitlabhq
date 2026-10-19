@@ -1,0 +1,38 @@
+# frozen_string_literal: true
+
+module API
+  module Helpers
+    module CustomAttributes
+      extend ActiveSupport::Concern
+
+      included do
+        helpers do
+          params :with_custom_attributes do
+            optional :with_custom_attributes, type: ::Grape::API::Boolean, default: false,
+              desc: 'If `true`, includes [custom attributes](https://docs.gitlab.com/api/custom_attributes/) ' \
+                'in the response. Administrators only.'
+
+            optional :custom_attributes, type: Hash,
+              desc: 'Filter by [custom attributes](https://docs.gitlab.com/api/custom_attributes/) that match ' \
+                'all of the specified key and value pairs. Administrators only.'
+          end
+
+          # rubocop: disable CodeReuse/ActiveRecord
+          def with_custom_attributes(collection_or_resource, options = {})
+            options = options.merge(
+              with_custom_attributes: params[:with_custom_attributes] &&
+                can?(current_user, :read_custom_attribute)
+            )
+
+            if options[:with_custom_attributes] && collection_or_resource.is_a?(ActiveRecord::Relation)
+              collection_or_resource = collection_or_resource.includes(:custom_attributes)
+            end
+
+            [collection_or_resource, options]
+          end
+          # rubocop: enable CodeReuse/ActiveRecord
+        end
+      end
+    end
+  end
+end

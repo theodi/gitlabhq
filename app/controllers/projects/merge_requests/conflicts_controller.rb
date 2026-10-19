@@ -1,0 +1,106 @@
+# frozen_string_literal: true
+
+class Projects::MergeRequests::ConflictsController < Projects::MergeRequests::ApplicationController
+  include IssuableActions
+  include HandlesGitalyErrors
+
+  # resolve_conflicts runs these checks inside ResolveService, so the GraphQL mutation can share them
+  before_action :authorize_can_resolve_conflicts!, except: :resolve_conflicts
+
+  urgency :low, [
+    :show,
+    :conflict_for_path,
+    :resolve_conflicts
+  ]
+
+  def show
+    respond_to do |format|
+      format.html do
+        @issuable_sidebar = serializer.represent(@merge_request, serializer: 'sidebar')
+        Gitlab::UsageDataCounters::MergeRequestActivityUniqueCounter
+          .track_loading_conflict_ui_action(user: current_user)
+      end
+
+      format.json do
+        if @conflicts_list.can_be_resolved_in_ui?
+          render json: @conflicts_list
+        elsif @merge_request.can_be_merged?
+          render json: {
+            message: _('The merge conflicts for this merge request have already been resolved. ' \
+              'Please return to the merge request.'),
+            type: 'error'
+          }
+        else
+          render json: {
+            message: _('The merge conflicts for this merge request cannot be resolved through GitLab. ' \
+              'Please try to resolve them locally.'),
+            type: 'error'
+          }
+        end
+      end
+    end
+  end
+
+  def conflict_for_path
+    return render_404 unless @conflicts_list.can_be_resolved_in_ui?
+
+    file = @conflicts_list.file_for_path(conflict_path_params[:old_path], conflict_path_params[:new_path])
+
+    return render_404 unless file
+
+    render json: file, full_content: true
+  end
+
+  def resolve_conflicts
+    result = ::MergeRequests::Conflicts::ResolveService
+      .new(merge_request)
+      .execute(current_user, resolve_conflicts_params)
+
+    return render_resolve_conflicts_error(result) if result.error?
+
+    flash[:notice] = _('All merge conflicts were resolved. The merge request can now be merged.')
+
+    render json: { redirect_to: project_merge_request_path(@project, @merge_request, resolved_conflicts: true) }
+  end
+
+  private
+
+  def render_resolve_conflicts_error(result)
+    case result.reason
+    when ::MergeRequests::Conflicts::ResolveService::REASON_NO_PUSH_ACCESS,
+      ::MergeRequests::Conflicts::ResolveService::REASON_NOT_RESOLVABLE_IN_UI
+      render_404
+    when ::MergeRequests::Conflicts::ResolveService::REASON_PRE_RECEIVE
+      render status: :unprocessable_entity, json: { message: result.message }
+    else
+      render status: :bad_request, json: { message: result.message }
+    end
+  end
+
+  def conflict_path_params
+    params.permit(:old_path, :new_path)
+  end
+
+  def resolve_conflicts_params
+    params.permit(:commit_message, files: [:old_path, :new_path, :content, { sections: {} }])
+  end
+
+  alias_method :issuable, :merge_request
+
+  def authorize_can_resolve_conflicts!
+    @conflicts_list = ::MergeRequests::Conflicts::ListService.new(@merge_request)
+
+    render_404 unless @conflicts_list.can_be_resolved_by?(current_user)
+    return if performed?
+
+    # Trigger Gitaly call early to allow HandlesGitalyErrors to catch
+    # unavailability. The result is cached, so subsequent calls are free.
+    @conflicts_list.can_be_resolved_in_ui?
+  end
+
+  def serializer
+    MergeRequestSerializer.new(current_user: current_user, project: project)
+  end
+end
+
+Projects::MergeRequests::ConflictsController.prepend_mod_with('Projects::MergeRequests::ConflictsController')

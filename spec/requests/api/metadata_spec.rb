@@ -1,0 +1,135 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe API::Metadata, feature_category: :shared do
+  shared_examples_for 'GET /metadata' do
+    context 'when unauthenticated' do
+      it 'returns authentication error' do
+        get api(endpoint)
+
+        expect(response).to have_gitlab_http_status(:unauthorized)
+      end
+    end
+
+    context 'when authenticated as user' do
+      let(:user) { create(:user) }
+
+      it_behaves_like 'authorizing granular token permissions', :read_metadata do
+        let(:boundary_object) { :instance }
+        let(:request) { get api(endpoint, personal_access_token: pat) }
+      end
+
+      it 'returns the metadata information' do
+        get api(endpoint, user)
+
+        expect_metadata
+      end
+    end
+
+    context 'when authenticated with OAuth token having ai_workflows scope' do
+      # The :ai_workflows scope is intentionally not creatable as a PAT scope
+      # (see Gitlab::Auth#unavailable_ai_features_scopes), so we exercise the
+      # actual production path: an OAuth access token issued via
+      # PreConfiguredWorkflowTokenService for the Duo Workflow executor.
+      let_it_be(:user) { create(:user) }
+      let_it_be(:application) { create(:oauth_application, scopes: 'ai_workflows') }
+      let_it_be(:oauth_token) do
+        create(:oauth_access_token, application: application, resource_owner: user, scopes: 'ai_workflows')
+      end
+
+      it 'returns the metadata information' do
+        get api(endpoint, oauth_access_token: oauth_token)
+
+        expect_metadata
+      end
+
+      it 'returns "200" response on head requests' do
+        head api(endpoint, oauth_access_token: oauth_token)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    context 'when authenticated with token' do
+      let(:personal_access_token) { create(:personal_access_token, scopes: scopes) }
+
+      context 'with api scope' do
+        let(:scopes) { %i[api] }
+
+        it 'returns the metadata information' do
+          get api(endpoint, personal_access_token: personal_access_token)
+
+          expect_metadata
+        end
+
+        it 'returns "200" response on head requests' do
+          head api(endpoint, personal_access_token: personal_access_token)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'with ai_features scope' do
+        let(:scopes) { %i[ai_features] }
+
+        it 'returns the metadata information' do
+          get api(endpoint, personal_access_token: personal_access_token)
+
+          expect_metadata
+        end
+
+        it 'returns "200" response on head requests' do
+          head api(endpoint, personal_access_token: personal_access_token)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'with read_user scope' do
+        let(:scopes) { %i[read_user] }
+
+        it 'returns the metadata information' do
+          get api(endpoint, personal_access_token: personal_access_token)
+
+          expect_metadata
+        end
+
+        it 'returns "200" response on head requests' do
+          head api(endpoint, personal_access_token: personal_access_token)
+
+          expect(response).to have_gitlab_http_status(:ok)
+        end
+      end
+
+      context 'with neither api, ai_features nor read_user scope' do
+        let(:scopes) { %i[read_repository] }
+
+        it 'returns authorization error' do
+          get api(endpoint, personal_access_token: personal_access_token)
+
+          expect(response).to have_gitlab_http_status(:forbidden)
+        end
+      end
+    end
+
+    def expect_metadata
+      aggregate_failures("testing response") do
+        expect(response).to have_gitlab_http_status(:ok)
+        expect(response).to match_response_schema('public_api/v4/metadata')
+      end
+    end
+  end
+
+  describe 'GET /metadata' do
+    let(:endpoint) { '/metadata' }
+
+    include_examples 'GET /metadata'
+  end
+
+  describe 'GET /version' do
+    let(:endpoint) { '/version' }
+
+    include_examples 'GET /metadata'
+  end
+end

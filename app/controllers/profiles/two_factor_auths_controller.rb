@@ -1,50 +1,327 @@
-class Profiles::TwoFactorAuthsController < Profiles::ApplicationController
-  def new
-    unless current_user.otp_secret
-      current_user.otp_secret = User.generate_otp_secret(32)
-      current_user.save!
-    end
+# frozen_string_literal: true
 
-    @qr_code = build_qr_code
+class Profiles::TwoFactorAuthsController < Profiles::ApplicationController
+  skip_before_action :check_two_factor_requirement
+  before_action :ensure_verified_primary_email, only: [:show, :create]
+  before_action :validate_current_password,
+    only: [:create, :codes, :destroy, :destroy_otp, :destroy_webauthn, :create_webauthn],
+    if: :current_password_required?
+  before_action :update_current_user_otp!, only: [:show]
+
+  helper_method :current_password_required?
+
+  feature_category :system_access
+
+  include SafeFormatHelper
+  include BaseServiceUtility
+  include AuthHelper
+  include AuthenticatesWithTwoFactor
+
+  def show
+    setup_show_page
+    render(locals: show_view_variables)
   end
 
   def create
-    if current_user.valid_otp?(params[:pin_code])
-      current_user.otp_required_for_login = true
-      @codes = current_user.generate_otp_backup_codes!
-      current_user.save!
+    otp_validation_result =
+      ::Users::ValidateManualOtpService.new(current_user).execute(params.permit(:pin_code)[:pin_code])
+    validated = (otp_validation_result[:status] == :success)
+
+    notify_on_success(:otp) if validated
+
+    if validated && current_user.otp_backup_codes?
+      destroy_all_but_current_user_session!(current_user, session)
+      Users::UpdateService.new(current_user, user: current_user, otp_required_for_login: true).execute!
+      redirect_to profile_two_factor_auth_path, notice: _("Your Time-based OTP device was registered!")
+    elsif validated
+      destroy_all_but_current_user_session!(current_user, session)
+
+      Users::UpdateService.new(current_user, user: current_user, otp_required_for_login: true).execute! do |user|
+        @codes = user.generate_otp_backup_codes!
+      end
 
       render 'create'
     else
-      @error = 'Invalid pin code'
+      @otp_error = { message: _('Invalid pin code.') }
+      @account_string = account_string
+
+      setup_show_page
+
+      render 'show'
+    end
+  end
+
+  def create_webauthn
+    result = Webauthn::RegisterService.new(
+      current_user,
+      device_registration_params,
+      session[:challenge]
+    ).execute
+
+    @webauthn_registration = result.payload
+
+    notice = result.message
+    if result.success?
+      session.delete(:challenge)
+
+      notify_on_success(:webauthn, device_name: @webauthn_registration.name)
+
+      if current_user.otp_backup_codes?
+        redirect_to profile_two_factor_auth_path, notice: notice
+      else
+
+        Users::UpdateService.new(current_user, user: current_user).execute! do |_user|
+          @codes = current_user.generate_otp_backup_codes!
+        end
+        flash[:notice] = notice
+        render 'create'
+      end
+    else
       @qr_code = build_qr_code
 
-      render 'new'
+      setup_webauthn_registration
+
+      flash.now[:alert] = notice
+      render :show
     end
   end
 
   def codes
-    @codes = current_user.generate_otp_backup_codes!
-    current_user.save!
+    Users::UpdateService.new(current_user, user: current_user).execute! do |user|
+      @codes = user.generate_otp_backup_codes!
+    end
   end
 
   def destroy
-    current_user.update_attributes({
-      otp_required_for_login:    false,
-      encrypted_otp_secret:      nil,
-      encrypted_otp_secret_iv:   nil,
-      encrypted_otp_secret_salt: nil,
-      otp_backup_codes:          nil
-    })
+    result = TwoFactor::DestroyService.new(current_user, user: current_user).execute
 
-    redirect_to profile_account_path
+    if result[:status] == :success
+      redirect_to profile_two_factor_auth_url,
+        status: :found,
+        notice: _('Two-factor authentication has been disabled successfully!')
+    else
+      redirect_to profile_two_factor_auth_url, status: :found, alert: result[:message]
+    end
+  end
+
+  def destroy_otp
+    result = TwoFactor::DestroyOtpService.new(current_user, user: current_user).execute
+
+    if result[:status] == :success
+      redirect_to profile_two_factor_auth_path,
+        status: :found,
+        notice: _('One-time password authenticator has been deleted!')
+    else
+      redirect_to profile_two_factor_auth_path, status: :found, alert: result[:message]
+    end
+  end
+
+  def destroy_webauthn
+    result = Webauthn::DestroyService.new(current_user, current_user, params.permit(:id)[:id]).execute
+
+    if result[:status] == :success
+      redirect_to profile_two_factor_auth_path, status: :found, notice: _("Successfully deleted WebAuthn device.")
+    else
+      redirect_to profile_two_factor_auth_path, status: :found, alert: result[:message]
+    end
+  end
+
+  def skip
+    if two_factor_grace_period_expired?
+      redirect_to profile_two_factor_auth_url, alert: _('Cannot skip two factor authentication setup')
+    else
+      session[:skip_two_factor] = current_user.otp_grace_period_started_at + two_factor_grace_period.hours
+      redirect_to root_url
+    end
   end
 
   private
 
+  def show_view_variables
+    {}
+  end
+
+  def update_current_user_otp!
+    current_user.update_otp_secret! if current_user.needs_new_otp_secret?
+
+    unless current_user.otp_grace_period_started_at && two_factor_grace_period
+      current_user.otp_grace_period_started_at = Time.current
+    end
+
+    Users::UpdateService.new(current_user, user: current_user).execute!
+  end
+
+  def validate_current_password
+    return if current_user.valid_password?(params.permit(:current_password)[:current_password])
+
+    current_user.increment_failed_attempts!
+
+    error_message = { message: _('You must provide a valid current password.') }
+    if action_name == 'create_webauthn'
+      @webauthn_error = error_message
+    elsif action_name == 'create'
+      @otp_error = error_message
+    else
+      @error = error_message
+    end
+
+    setup_show_page
+
+    render 'show'
+  end
+
   def build_qr_code
-    issuer = "GitLab | #{current_user.email}"
-    uri = current_user.otp_provisioning_uri(current_user.email, issuer: issuer)
-    RQRCode::render_qrcode(uri, :svg, level: :m, unit: 3)
+    uri = current_user.otp_provisioning_uri(account_string, issuer: issuer_host)
+    svg = RQRCode::QRCode.new(uri, level: :m).as_svg(
+      shape_rendering: "crispEdges",
+      module_size: 3
+    )
+
+    doc = Nokogiri::XML(svg)
+    svg_node = doc.at('svg')
+    title = Nokogiri::XML::Node.new('title', doc)
+    title.content = _('Generated QR Code')
+    svg_node.children.before(title)
+
+    doc.to_xml
+  end
+
+  def account_string
+    "#{issuer_host}:#{current_user.email}"
+  end
+
+  def issuer_host
+    Gitlab.config.gitlab.host
+  end
+
+  def device_registration_params
+    params.require(:device_registration).permit(:device_response, :name)
+  end
+
+  def setup_webauthn_registration
+    @registrations = second_factor_webauthn_registrations
+    @webauthn_registration ||= WebauthnRegistration.new
+    @passkeys = get_passkeys
+
+    current_user.user_detail.update!(webauthn_xid: WebAuthn.generate_user_id) unless current_user.webauthn_xid
+
+    options = webauthn_options
+    session[:challenge] = options.challenge
+
+    gon.push(webauthn: { options: options })
+  end
+
+  def second_factor_webauthn_registrations
+    current_user.second_factor_webauthn_registrations.map do |webauthn_registration|
+      {
+        name: webauthn_registration.name,
+        created_at: webauthn_registration.created_at,
+        delete_path: destroy_webauthn_profile_two_factor_auth_path(webauthn_registration)
+      }
+    end
+  end
+
+  def get_passkeys
+    current_user.passkeys.map do |passkey|
+      {
+        name: passkey.name,
+        created_at: passkey.created_at,
+        last_used_at: passkey.last_used_at,
+        delete_path: profile_passkey_path(passkey)
+      }
+    end
+  end
+
+  def webauthn_options
+    WebAuthn::Credential.options_for_create(
+      user: {
+        id: current_user.webauthn_xid,
+        name: current_user.username,
+        display_name: current_user.name
+      },
+      exclude: current_user.get_all_webauthn_credential_ids,
+      authenticator_selection: {
+        user_verification: 'discouraged',
+        resident_key: 'preferred'
+      },
+      rp: { name: 'GitLab' },
+      extensions: { credProps: true }
+    )
+  end
+
+  def group_memberships(groups)
+    GroupMember.with_user(current_user).with_source_id(groups.map(&:id)).index_by(&:source_id)
+  end
+
+  def groups_notification(groups, memberships:, leavable:)
+    render_to_string partial: 'groups_notification',
+      locals: { groups: groups, memberships: memberships, leavable: leavable }
+  end
+
+  def ensure_verified_primary_email
+    unless current_user.two_factor_enabled? || current_user.primary_email_verified?
+      redirect_to profile_emails_path,
+        notice: _('You need to verify your primary email first before enabling two-factor authentication (2FA).')
+    end
+  end
+
+  def setup_show_page
+    if two_factor_authentication_required? && !current_user.two_factor_enabled?
+      group_list = nil
+      two_factor_auth_actions = {
+        global: ->(_) do
+          _('The global settings require you to enable two-factor authentication (2FA) for your account.')
+        end,
+        admin_2fa: ->(_) do
+          _('Administrator users are required to enable two-factor authentication (2FA) for their account.')
+        end,
+        group: ->(groups) do
+          memberships = group_memberships(groups)
+          # Being in an enforcing group does not mean the user can leave it: sole owners and
+          # LDAP-synced members cannot, so only invite them to leave when at least one group
+          # can actually be left. The list itself still explains where the requirement comes
+          # from. It is absent only when the requirement outlives the groups behind it, since
+          # the reason is read from a denormalized column and the groups from a live query.
+          leavable = groups.any? { |group| can?(current_user, :destroy_group_member, memberships[group.id]) }
+          group_list = groups_notification(groups, memberships: memberships, leavable: leavable) if groups.any?
+
+          if leavable
+            _('One or more groups require you to add 2FA to your account. Choose your preferred method below ' \
+              'or review and leave groups to continue using your account.')
+          else
+            _('One or more groups require you to add 2FA to your account. Choose your preferred method below.')
+          end
+        end
+      }
+      message = execute_action_for_2fa_reason(two_factor_auth_actions)
+      message =
+        if two_factor_grace_period_expired?
+          view_context.safe_join([message, group_list].compact)
+        else
+          append_configure_2fa_later(message, group_list: group_list)
+        end
+
+      flash.now[:alert] = {
+        title: _('Secure your account with two-factor authentication (2FA)'),
+        message: message
+      }
+    end
+
+    @qr_code = build_qr_code
+    @account_string = account_string
+
+    setup_webauthn_registration
+  end
+
+  def append_configure_2fa_later(message, group_list: nil)
+    grace_period_deadline = current_user.otp_grace_period_started_at + two_factor_grace_period.hours
+    render_to_string partial: 'configure_later_button',
+      locals: { message: message, grace_period_deadline: grace_period_deadline, group_list: group_list }
+  end
+
+  def notify_on_success(type, options = {})
+    notification_service.enabled_two_factor(current_user, type, options)
   end
 end
+
+Profiles::TwoFactorAuthsController.prepend_mod

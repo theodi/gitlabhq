@@ -1,0 +1,56 @@
+<script>
+import { GlButton, GlCard } from '@gitlab/ui';
+import { mapActions, mapState } from 'pinia';
+import { useAccessTokens } from '../stores/access_tokens';
+import { navigateToQuery } from '../utils';
+
+import { slugify } from '../../../lib/utils/text_utility';
+
+export default {
+  name: 'AccessTokenStatistics',
+  components: {
+    GlButton,
+    GlCard,
+  },
+  computed: {
+    ...mapState(useAccessTokens, ['statistics', 'urlParams']),
+  },
+  methods: {
+    ...mapActions(useAccessTokens, ['fetchTokens', 'setFilters', 'setPage']),
+    handleFilter(filters) {
+      this.setFilters(filters);
+      this.setPage(1);
+      navigateToQuery(this.$router, this.urlParams);
+      this.fetchTokens();
+    },
+    slugifyStat(stat) {
+      // eslint-disable-next-line @gitlab/require-i18n-strings
+      return `${slugify(stat)}-count`;
+    },
+  },
+};
+</script>
+
+<template>
+  <div class="gl-my-5 gl-grid gl-gap-4 @sm/panel:gl-grid-cols-2 @lg/panel:gl-grid-cols-4">
+    <gl-card
+      v-for="statistic in statistics"
+      :key="statistic.title"
+      :data-testid="slugifyStat(statistic.title)"
+    >
+      <template #header>
+        <h2>{{ statistic.title }}</h2>
+      </template>
+
+      <p class="gl-heading-1 gl-mb-0">{{ statistic.value }}</p>
+      <gl-button
+        class="gl-mt-3"
+        :title="statistic.tooltipTitle"
+        variant="link"
+        @click="handleFilter(statistic.filters)"
+      >
+        {{ s__('AccessTokens|Filter list') }}
+      </gl-button>
+    </gl-card>
+  </div>
+</template>

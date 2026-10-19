@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class ProjectTeam
   attr_accessor :project
 
@@ -5,55 +7,79 @@ class ProjectTeam
     @project = project
   end
 
-  # Shortcut to add users
-  #
-  # Use:
-  #   @team << [@user, :master]
-  #   @team << [@users, :master]
-  #
-  def <<(args)
-    users, access, current_user = *args
-
-    if users.respond_to?(:each)
-      add_users(users, access, current_user)
-    else
-      add_user(users, access, current_user)
-    end
+  def add_guest(user, current_user: nil)
+    add_member(user, :guest, current_user: current_user)
   end
 
-  def find(user_id)
-    user = project.users.find_by(id: user_id)
+  def add_planner(user, current_user: nil)
+    add_member(user, :planner, current_user: current_user)
+  end
 
-    if group
-      user ||= group.users.find_by(id: user_id)
-    end
+  def add_reporter(user, current_user: nil)
+    add_member(user, :reporter, current_user: current_user)
+  end
 
-    user
+  def add_security_manager(user, current_user: nil)
+    add_member(user, :security_manager, current_user: current_user)
+  end
+
+  def add_developer(user, current_user: nil)
+    add_member(user, :developer, current_user: current_user)
+  end
+
+  def add_maintainer(user, current_user: nil)
+    add_member(user, :maintainer, current_user: current_user)
+  end
+
+  def add_owner(user, current_user: nil)
+    add_member(user, :owner, current_user: current_user)
+  end
+
+  def add_role(user, role, current_user: nil)
+    public_send(:"add_#{role}", user, current_user: current_user) # rubocop:disable GitlabSecurity/PublicSend
   end
 
   def find_member(user_id)
-    member = project.project_members.find_by(user_id: user_id)
+    member = project.members.find_by(user_id: user_id)
 
     # If user is not in project members
     # we should check for group membership
     if group && !member
-      member = group.group_members.find_by(user_id: user_id)
+      member = group.members.find_by(user_id: user_id)
     end
 
     member
   end
 
-  def add_users(users, access, current_user = nil)
-    ProjectMember.add_users_into_projects(
-      [project.id],
+  def add_members(users, access_level, current_user: nil, expires_at: nil)
+    Members::Projects::CreatorService.add_members( # rubocop:disable CodeReuse/ServiceClass
+      project,
       users,
-      access,
-      current_user
+      access_level,
+      current_user: current_user,
+      expires_at: expires_at
     )
   end
 
-  def add_user(user, access, current_user = nil)
-    add_users([user], access, current_user)
+  # NOTE: `immediately_sync_authorizations` can be expensive to run in the foreground. This should only be used in rare
+  # cases where asynchronous authorization does not work (e.g. user is created and used immediately in the same
+  # request).
+  def add_member(
+    user, access_level, current_user: nil, expires_at: nil, immediately_sync_authorizations: false,
+    # skip_authorization bypasses all member-creation policy checks.
+    # Use only for system-driven flows (e.g. service-account provisioning)
+    # Never pass values derived from user input.
+    skip_authorization: false
+  )
+    Members::Projects::CreatorService.add_member( # rubocop:disable CodeReuse/ServiceClass
+      project,
+      user,
+      access_level,
+      current_user: current_user,
+      expires_at: expires_at,
+      immediately_sync_authorizations: immediately_sync_authorizations,
+      skip_authorization: skip_authorization
+    )
   end
 
   # Remove all users from project team
@@ -61,62 +87,94 @@ class ProjectTeam
     ProjectMember.truncate_team(project)
   end
 
-  def users
-    members
-  end
-
   def members
     @members ||= fetch_members
   end
+  alias_method :users, :members
 
   def guests
-    @guests ||= fetch_members(:guests)
+    @guests ||= fetch_members(Gitlab::Access::GUEST)
+  end
+
+  def planners
+    @planners ||= fetch_members(Gitlab::Access::PLANNER)
   end
 
   def reporters
-    @reporters ||= fetch_members(:reporters)
+    @reporters ||= fetch_members(Gitlab::Access::REPORTER)
   end
 
   def developers
-    @developers ||= fetch_members(:developers)
+    @developers ||= fetch_members(Gitlab::Access::DEVELOPER)
   end
 
-  def masters
-    @masters ||= fetch_members(:masters)
+  def maintainers
+    @maintainers ||= fetch_members(Gitlab::Access::MAINTAINER)
   end
 
-  def import(source_project, current_user = nil)
+  def owners
+    @owners ||=
+      if group
+        group.owners.allow_cross_joins_across_databases(url: "https://gitlab.com/gitlab-org/gitlab/-/issues/432606")
+      else
+        # workaround until we migrate Project#owners to have membership with
+        # OWNER access level
+        Array.wrap(fetch_members(Gitlab::Access::OWNER)) | Array.wrap(project.owner)
+      end
+  end
+
+  def owner?(user)
+    owners.include?(user)
+  end
+
+  def import(source_project, current_user)
     target_project = project
 
-    source_members = source_project.project_members.to_a
-    target_user_ids = target_project.project_members.pluck(:user_id)
+    source_members = source_members_for_import(source_project)
+    target_user_ids = target_project.project_members.pluck_user_ids
+
+    importer_access_level = max_member_access(current_user.id)
 
     source_members.reject! do |member|
       # Skip if user already present in team
       !member.invite? && target_user_ids.include?(member.user_id)
     end
 
-    source_members.map! do |member|
+    new_members = source_members.map do |member|
       new_member = member.dup
       new_member.id = nil
       new_member.source = target_project
+      # So that a maintainer cannot import a member with owner access
+      new_member.access_level = [new_member.access_level, importer_access_level].min
       new_member.created_by = current_user
+
+      params = { access_level: new_member.access_level, member_role_id: member.member_role_id }
+      if new_member.prevent_role_assignement?(current_user, params)
+        new_member.errors.add(:base, _("Insufficient permissions to assign this member"))
+      end
+
       new_member
     end
 
     ProjectMember.transaction do
-      source_members.each do |member|
+      new_members.each do |member|
+        next if member.errors.any?
+
         member.save
       end
     end
 
-    true
-  rescue
+    new_members
+  rescue StandardError
     false
   end
 
   def guest?(user)
     max_member_access(user.id) == Gitlab::Access::GUEST
+  end
+
+  def planner?(user)
+    max_member_access(user.id) == Gitlab::Access::PLANNER
   end
 
   def reporter?(user)
@@ -127,43 +185,136 @@ class ProjectTeam
     max_member_access(user.id) == Gitlab::Access::DEVELOPER
   end
 
-  def master?(user)
-    max_member_access(user.id) == Gitlab::Access::MASTER
+  def maintainer?(user)
+    max_member_access(user.id) == Gitlab::Access::MAINTAINER
   end
 
-  def member?(user_id)
-    !!find_member(user_id)
+  # Checks if `user` is authorized for this project, with at least the
+  # `min_access_level` (if given).
+  def member?(user, min_access_level = Gitlab::Access::GUEST)
+    return false unless user
+
+    max_member_access(user.id) >= min_access_level
+  end
+
+  # Only for direct and not invited members
+  def has_user?(user)
+    return false unless user
+
+    project.project_members.non_invite.exists?(user: user)
+  end
+
+  def human_max_access(user_id)
+    Gitlab::Access.human_access(max_member_access(user_id))
+  end
+
+  # Determine the maximum access level for a group of users in bulk.
+  #
+  # Returns a Hash mapping user ID -> maximum access level.
+  def max_member_access_for_user_ids(user_ids)
+    Gitlab::SafeRequestLoader.execute(
+      resource_key: project.max_member_access_for_resource_key(User),
+      resource_ids: user_ids,
+      default_value: Gitlab::Access::NO_ACCESS
+    ) do |user_ids|
+      project.project_authorizations
+             .where(user: user_ids)
+             .group(:user_id)
+             .maximum(:access_level)
+    end
+  end
+
+  def write_member_access_for_user_id(user_id, project_access_level)
+    project.merge_value_to_request_store(User, user_id, project_access_level)
+  end
+
+  def purge_member_access_cache_for_user_id(user_id)
+    project.purge_resource_id_from_request_store(User, user_id)
   end
 
   def max_member_access(user_id)
-    access = []
-    access << project.project_members.find_by(user_id: user_id).try(:access_field)
+    max_member_access_for_user_ids([user_id])[user_id]
+  end
 
-    if group
-      access << group.group_members.find_by(user_id: user_id).try(:access_field)
+  # Return the highest access level for a user
+  #
+  # A special case is handled here when the user is a GitLab admin
+  # or organization owner which implies it has "OWNER" access everywhere,
+  # but should not officially appear as a member of a project unless
+  # specifically added to it
+  #
+  # @param user [User]
+  # @param only_concrete_membership [Bool] whether require admin concrete membership status
+  def max_member_access_for_user(user, only_concrete_membership: false)
+    return ProjectMember::NO_ACCESS unless user
+
+    Gitlab::Instrumentation::Authz.measure do
+      # This check does not require any additional queries
+      next ProjectMember::OWNER if !only_concrete_membership && user.can_admin_all_resources?
+
+      # This check is next since it is more efficient than the organization ownership check
+      next ProjectMember::OWNER if personal_namespace_owner?(user)
+
+      next ProjectMember::OWNER if !only_concrete_membership && user.can_update_organization?(project.organization)
+
+      max_member_access(user.id)
     end
+  end
 
-    access.compact.max
+  def contribution_check_for_user_ids(user_ids)
+    Gitlab::SafeRequestLoader.execute(
+      resource_key: "contribution_check_for_users:#{project.id}",
+      resource_ids: user_ids,
+      default_value: false
+    ) do |user_ids|
+      project.merge_requests
+             .merged
+             .where(author_id: user_ids, target_branch: project.default_branch.to_s)
+             .pluck(:author_id)
+             .product([true]).to_h
+    end
+  end
+
+  def contributor?(user_id)
+    return false if max_member_access(user_id) >= Gitlab::Access::GUEST
+
+    contribution_check_for_user_ids([user_id])[user_id]
   end
 
   private
 
+  # Check if the user owns the project via a personal namespace.
+  # Compares namespace.owner_id directly instead of using project.owner,
+  # which triggers additional queries (loading the group association and
+  # namespace owner). Skips the check entirely for group-owned projects
+  # when the group association is already loaded, since the project is not
+  # in a personal namespace
+  def personal_namespace_owner?(user)
+    # Short circuit here to avoid any nil = nil checks due to non-persisted records
+    return false unless user.id
+    return false if project.association(:group).loaded? && group
+
+    project.namespace.owner_id == user.id
+  end
+
   def fetch_members(level = nil)
-    project_members = project.project_members
-    group_members = group ? group.group_members : []
+    members = project.authorized_users
+    members = members.where(project_authorizations: { access_level: level }) if level
 
-    if level
-      project_members = project_members.send(level)
-      group_members = group_members.send(level) if group
-    end
-
-    user_ids = project_members.pluck(:user_id)
-    user_ids.push(*group_members.pluck(:user_id)) if group
-
-    User.where(id: user_ids)
+    members
   end
 
   def group
     project.group
   end
+
+  def member_user_ids
+    Member.on_project_and_ancestors(project).select(:user_id)
+  end
+
+  def source_members_for_import(source_project)
+    source_project.project_members.to_a
+  end
 end
+
+ProjectTeam.prepend_mod_with('ProjectTeam')

@@ -1,0 +1,1348 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'getting a work item list for a project', feature_category: :portfolio_management do
+  include_context 'with work items list request'
+
+  let_it_be(:label1) { create(:label, project: project) }
+  let_it_be(:label2) { create(:label, project: project) }
+  let_it_be(:milestone1) { create(:milestone, project: project, due_date: 5.days.ago) }
+  let_it_be(:milestone2) { create(:milestone, project: project, due_date: 3.days.from_now) }
+
+  let_it_be_with_reload(:item1) do
+    create(
+      :work_item, project: project, discussion_locked: true,
+      title: 'item1', milestone: milestone2, labels: [label1]
+    )
+  end
+
+  let_it_be_with_reload(:item2) do
+    create(
+      :work_item,
+      project: project,
+      title: 'item2',
+      last_edited_by: current_user,
+      last_edited_at: 1.day.ago,
+      labels: [label2],
+      milestone: milestone1
+    )
+  end
+
+  let_it_be_with_reload(:confidential_item) { create(:work_item, confidential: true, project: project, title: 'item3') }
+  let_it_be(:other_item) { create(:work_item) }
+
+  let(:items_data) { graphql_data['project']['workItems']['nodes'] }
+  let(:item_filter_params) { {} }
+
+  let(:variables) { {} }
+
+  shared_examples 'work items resolver without N + 1 queries' do |threshold: 0|
+    it 'avoids N+1 queries', :use_sql_query_cache do
+      post_graphql(query, current_user: current_user, variables: variables) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+        post_graphql(query, current_user: current_user, variables: variables)
+      end
+
+      expect_graphql_errors_to_be_empty
+
+      create_list(
+        :work_item, 3,
+        :task,
+        :last_edited_by_user,
+        last_edited_at: 1.week.ago,
+        project: project,
+        labels: [label1, label2],
+        milestone: milestone2,
+        author: reporter
+      )
+
+      expect do
+        post_graphql(query, current_user: current_user, variables: variables)
+      end.not_to exceed_all_query_limit(control).with_threshold(threshold)
+
+      expect_graphql_errors_to_be_empty
+    end
+  end
+
+  it_behaves_like 'graphql work item list request spec' do
+    let_it_be(:container_build_params) { { project: project } }
+    let(:work_item_node_path) { %w[project workItems nodes] }
+
+    def post_query(request_user = current_user)
+      post_graphql(query, current_user: request_user)
+    end
+  end
+
+  describe 'N + 1 queries' do
+    context 'when querying root fields' do
+      # availableQuickActions evaluates each command's availability condition
+      # against the individual work item, so it is inherently one query set per
+      # item and cannot satisfy this guard.
+      let(:fields) do
+        <<~QUERY
+          nodes {
+            #{all_graphql_fields_for('WorkItem', max_depth: 2, excluded: %w[availableQuickActions])}
+          }
+        QUERY
+      end
+
+      # Issue to fix N+1 - https://gitlab.com/gitlab-org/gitlab/-/issues/548924
+      it_behaves_like 'work items resolver without N + 1 queries', threshold: 3
+    end
+
+    context 'when querying the features field' do
+      let(:fields) do
+        <<~GRAPHQL
+          nodes {
+            features {
+              description {
+                edited
+                lastEditedAt
+                lastEditedBy {
+                  webPath
+                  username
+                }
+              }
+              assignees {
+                assignees { nodes { id } }
+              }
+              hierarchy {
+                parent { id }
+                children {
+                  nodes {
+                    id
+                  }
+                }
+              }
+              labels {
+                labels { nodes { id } }
+                allowsScopedLabels
+              }
+              milestone {
+                milestone {
+                  id
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      it_behaves_like 'work items resolver without N + 1 queries'
+    end
+
+    context 'with projectWorkItems query' do
+      let(:query) { get_graphql_query_as_string('work_items/graphql/project_work_items.query.graphql') }
+      let(:variables) { { 'fullPath' => project.full_path } }
+
+      it_behaves_like 'work items resolver without N + 1 queries'
+    end
+  end
+
+  context 'when querying features.assignees' do
+    let(:work_items_data) { graphql_data['project']['workItems']['nodes'] }
+    let(:assignee_data) { work_items_data.map { |data| data.dig('features', 'assignees', 'assignees', 'nodes') } }
+    let(:assignees) do
+      [
+        create(:user, name: 'BBB'),
+        create(:user, name: 'AAA'),
+        create(:user, name: 'BBB')
+      ]
+    end
+
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          features {
+            assignees {
+              assignees { nodes { id } }
+            }
+          }
+        }
+      GRAPHQL
+    end
+
+    before do
+      project.work_items.each { |work_item| work_item.update!(assignees: assignees) }
+    end
+
+    it 'returns assignees ordered by name ASC id DESC' do
+      post_graphql(query, current_user: current_user)
+
+      expect(assignee_data).to all(
+        eq(
+          [
+            { 'id' => assignees[1].to_gid.to_s },
+            { 'id' => assignees[2].to_gid.to_s },
+            { 'id' => assignees[0].to_gid.to_s }
+          ]
+        )
+      )
+    end
+  end
+
+  context 'when querying closedBy' do
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          id
+          closedBy { id }
+        }
+      GRAPHQL
+    end
+
+    before_all do
+      item1.close!(current_user)
+    end
+
+    it 'returns the user that closed the work item and null for open items' do
+      post_graphql(query, current_user: current_user)
+
+      expect(items_data).to include(
+        { 'id' => item1.to_gid.to_s, 'closedBy' => { 'id' => current_user.to_gid.to_s } },
+        { 'id' => item2.to_gid.to_s, 'closedBy' => nil }
+      )
+    end
+
+    it 'avoids N+1 queries', :use_sql_query_cache do
+      post_graphql(query, current_user: current_user) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+        post_graphql(query, current_user: current_user)
+      end
+
+      create_list(:work_item, 2, project: project).each { |work_item| work_item.close!(create(:user)) }
+
+      expect { post_graphql(query, current_user: current_user) }.not_to exceed_all_query_limit(control)
+      expect_graphql_errors_to_be_empty
+    end
+  end
+
+  context 'when querying features.hierarchy' do
+    let_it_be(:children) { create_list(:work_item, 4, :task, project: project) }
+    let_it_be_with_reload(:child_link1) { create(:parent_link, work_item_parent: item1, work_item: children[0]) }
+    let_it_be_with_reload(:child_link2) { create(:parent_link, work_item_parent: item1, work_item: children[1]) }
+
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          id
+          features {
+            hierarchy {
+              hasChildren
+              parent { id }
+              children { nodes { id } }
+            }
+          }
+        }
+      GRAPHQL
+    end
+
+    context 'with ordered children' do
+      let(:items_data) { graphql_data['project']['workItems']['nodes'] }
+      let(:work_item_data) { items_data.find { |item| item['id'] == item1.to_gid.to_s } }
+      let(:children_ids) { work_item_data.dig("features", "hierarchy", "children", "nodes").pluck("id") }
+
+      let(:first_child) { children[0].to_gid.to_s }
+      let(:second_child) { children[1].to_gid.to_s }
+
+      it 'returns children ordered by created_at by default' do
+        post_graphql(query, current_user: current_user)
+
+        expect(children_ids).to eq([first_child, second_child])
+      end
+
+      context 'when ordered by relative position' do
+        before do
+          child_link1.update!(relative_position: 20)
+          child_link2.update!(relative_position: 10)
+        end
+
+        it 'returns children in correct order' do
+          post_graphql(query, current_user: current_user)
+
+          expect(children_ids).to eq([second_child, first_child])
+        end
+      end
+    end
+
+    it 'executes limited number of N+1 queries' do
+      post_graphql(query, current_user: current_user) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: current_user)
+      end
+
+      parent_work_items = create_list(:work_item, 2, project: project)
+      create(:parent_link, work_item_parent: parent_work_items[0], work_item: children[2])
+      create(:parent_link, work_item_parent: parent_work_items[1], work_item: children[3])
+
+      expect { post_graphql(query, current_user: current_user) }
+        .not_to exceed_query_limit(control)
+    end
+
+    it 'avoids N+1 queries when children are added to a work item' do
+      post_graphql(query, current_user: current_user) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: current_user)
+      end
+
+      create(:parent_link, work_item_parent: item1, work_item: children[2])
+      create(:parent_link, work_item_parent: item1, work_item: children[3])
+
+      expect { post_graphql(query, current_user: current_user) }
+        .not_to exceed_query_limit(control)
+    end
+  end
+
+  context 'when querying features.startAndDueDate' do
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          features {
+            startAndDueDate {
+              dueDate
+              startDate
+            }
+          }
+        }
+      GRAPHQL
+    end
+
+    it 'avoids N+1 queries when we create more work items' do
+      post_graphql(query, current_user: current_user) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new do
+        post_graphql(query, current_user: current_user)
+      end
+
+      create_list(:work_item, 3, project: project)
+
+      expect { post_graphql(query, current_user: current_user) }
+        .not_to exceed_query_limit(control)
+    end
+  end
+
+  context 'when the user does not have access to the item' do
+    before do
+      project.project_feature.update!(issues_access_level: ProjectFeature::PRIVATE)
+    end
+
+    it 'returns an empty list' do
+      post_graphql(query)
+
+      expect(items_data).to eq([])
+    end
+  end
+
+  it 'returns only items visible to user' do
+    post_graphql(query, current_user: current_user)
+
+    expect(item_ids).to eq([item2.to_global_id.to_s, item1.to_global_id.to_s])
+  end
+
+  context 'when the user can see confidential items' do
+    before_all do
+      project.add_developer(current_user)
+    end
+
+    it 'returns also confidential items' do
+      post_graphql(query, current_user: current_user)
+
+      expect(item_ids).to eq([confidential_item.to_global_id.to_s, item2.to_global_id.to_s, item1.to_global_id.to_s])
+    end
+  end
+
+  context 'when filtering by search' do
+    it_behaves_like 'query with a search term' do
+      let(:ids) { item_ids }
+      let(:user) { current_user }
+      let_it_be(:issuable) { create(:work_item, project: project, description: 'bar') }
+    end
+  end
+
+  context 'when filtering by subscribed' do
+    let_it_be(:subscribed_item) { create(:work_item, project: project) }
+    let_it_be(:unsubscribed_item) { create(:work_item, project: project) }
+    let_it_be(:subscription) do
+      create(:subscription, subscribable: subscribed_item, user: current_user, subscribed: true)
+    end
+
+    let_it_be(:unsubscription) do
+      create(:subscription, subscribable: unsubscribed_item, user: current_user, subscribed: false)
+    end
+
+    it 'returns only subscribed items' do
+      post_graphql(query(subscribed: :EXPLICITLY_SUBSCRIBED), current_user: current_user)
+
+      expect(item_ids).to match_array([subscribed_item.to_global_id.to_s])
+    end
+
+    it 'returns only unsubscribed items' do
+      post_graphql(query(subscribed: :EXPLICITLY_UNSUBSCRIBED), current_user: current_user)
+
+      expect(item_ids).to match_array([unsubscribed_item.to_global_id.to_s])
+    end
+
+    it 'does not filter subscribed items' do
+      post_graphql(query, current_user: current_user)
+
+      expect(item_ids).to match_array([subscribed_item.to_global_id.to_s, unsubscribed_item.to_global_id.to_s,
+        item1.to_global_id.to_s, item2.to_global_id.to_s])
+    end
+  end
+
+  describe 'sorting and pagination' do
+    let(:data_path) { [:project, :work_items] }
+
+    def pagination_query(params)
+      graphql_query_for(
+        'project',
+        { 'fullPath' => project.full_path },
+        query_graphql_field('workItems', params, "#{page_info} nodes { id }")
+      )
+    end
+
+    before do
+      project.add_developer(current_user)
+    end
+
+    context 'when sorting by title ascending' do
+      it_behaves_like 'sorted paginated query' do
+        let(:sort_param) { :TITLE_ASC }
+        let(:first_param) { 2 }
+        let(:all_records) { [item1, item2, confidential_item].map { |item| item.to_global_id.to_s } }
+      end
+    end
+
+    context 'when sorting by title descending' do
+      it_behaves_like 'sorted paginated query' do
+        let(:sort_param) { :TITLE_DESC }
+        let(:first_param) { 2 }
+        let(:all_records) { [confidential_item, item2, item1].map { |item| item.to_global_id.to_s } }
+      end
+    end
+
+    context 'when sorting by MILESTONE_DUE_ASC' do
+      it_behaves_like 'sorted paginated query' do
+        let(:sort_param) { :MILESTONE_DUE_ASC }
+        let(:first_param) { 2 }
+        let(:all_records) { [item2, item1, confidential_item].map { |item| item.to_global_id.to_s } }
+      end
+    end
+  end
+
+  context 'when fetching work item notifications widget' do
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          id
+          features {
+            notifications {
+              subscribed
+            }
+          }
+        }
+      GRAPHQL
+    end
+
+    it 'returns correct subscription status for each work item' do
+      item_with_no_subscription = create(:work_item, project: project)
+      create(:subscription, subscribable: item1, user: current_user, project: project, subscribed: true)
+      create(:subscription, subscribable: item2, user: current_user, project: project, subscribed: false)
+
+      post_graphql(query, current_user: current_user)
+
+      expect_graphql_errors_to_be_empty
+
+      subscription_data = items_data.to_h { |item| [item['id'], item.dig('features', 'notifications', 'subscribed')] }
+
+      expect(subscription_data[item1.to_gid.to_s]).to be true
+      expect(subscription_data[item2.to_gid.to_s]).to be false
+      expect(subscription_data[item_with_no_subscription.to_gid.to_s]).to be false
+    end
+
+    it 'executes limited number of N+1 queries', :use_sql_query_cache do
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+        post_graphql(query, current_user: current_user)
+      end
+
+      create_list(:work_item, 3, project: project)
+
+      # Participant check for items without subscription records may add a constant query
+      expect { post_graphql(query, current_user: current_user) }
+        .not_to exceed_all_query_limit(control).with_threshold(1)
+      expect_graphql_errors_to_be_empty
+    end
+  end
+
+  context 'when fetching work item award emoji widget' do
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          features {
+            awardEmoji {
+              awardEmoji {
+                nodes {
+                  name
+                  emoji
+                  user { id }
+                }
+              }
+              upvotes
+              downvotes
+            }
+          }
+        }
+      GRAPHQL
+    end
+
+    before do
+      create(:award_emoji, name: 'star', user: current_user, awardable: item1)
+      create(:award_emoji, :upvote, awardable: item1)
+      create(:award_emoji, :downvote, awardable: item1)
+    end
+
+    it 'executes limited number of N+1 queries', :use_sql_query_cache do
+      post_graphql(query, current_user: current_user) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+        post_graphql(query, current_user: current_user)
+      end
+
+      create_list(:work_item, 2, project: project) do |item|
+        create(:award_emoji, name: 'rocket', awardable: item)
+        create_list(:award_emoji, 2, :upvote, awardable: item)
+        create_list(:award_emoji, 2, :downvote, awardable: item)
+      end
+
+      expect { post_graphql(query, current_user: current_user) }
+        .not_to exceed_all_query_limit(control)
+      expect_graphql_errors_to_be_empty
+    end
+  end
+
+  context 'when fetching work item linked items widget' do
+    let_it_be(:other_project) { create(:project, :repository, :public, group: group) }
+    let_it_be(:other_milestone) { create(:milestone, project: other_project) }
+    let_it_be(:related_items) { create_list(:work_item, 3, project: other_project, milestone: other_milestone) }
+
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          features {
+            linkedItems {
+              linkedItems {
+                nodes {
+                  linkId
+                  linkType
+                  linkCreatedAt
+                  linkUpdatedAt
+                  workItem {
+                    id
+                    features {
+                      milestone {
+                        milestone {
+                          id
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      GRAPHQL
+    end
+
+    before do
+      create(:work_item_link, source: item1, target: related_items[0], link_type: 'relates_to')
+      create(:work_item_link, source: item2, target: related_items[0], link_type: 'relates_to')
+    end
+
+    it 'avoids N+1 queries', :use_sql_query_cache,
+      quarantine: 'https://gitlab.com/gitlab-org/quality/test-failure-issues/-/issues/2302' do
+      post_graphql(query, current_user: current_user) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+        post_graphql(query, current_user: current_user)
+      end
+
+      item3 = create(:work_item, project: project, discussion_locked: true, title: 'item1', labels: [label1])
+
+      [item1, item2, item3].each do |item|
+        create(:work_item_link, source: item, target: related_items[1], link_type: 'relates_to')
+        create(:work_item_link, source: item, target: related_items[2], link_type: 'relates_to')
+      end
+
+      expect_graphql_errors_to_be_empty
+      expect { post_graphql(query, current_user: current_user) }
+        .not_to exceed_all_query_limit(control)
+    end
+  end
+
+  context 'when fetching work item participants widget' do
+    let_it_be(:other_project) { create(:project, group: group) }
+    let_it_be(:project) { other_project }
+    let_it_be_with_reload(:users) { create_list(:user, 3) }
+    let_it_be_with_reload(:work_items) { create_list(:work_item, 3, project: project, assignees: users) }
+
+    let(:fields) do
+      <<~GRAPHQL
+        nodes {
+          id
+          features {
+            participants {
+              participants {
+                nodes {
+                  id
+                  username
+                }
+              }
+            }
+          }
+        }
+      GRAPHQL
+    end
+
+    before_all do
+      project.add_guest(current_user)
+    end
+
+    it 'returns participants' do
+      post_graphql(query, current_user: current_user)
+
+      participants_usernames = graphql_dig_at(
+        items_data, 'features', 'participants', 'participants', 'nodes', 'username'
+      )
+      expect(participants_usernames).to match_array(work_items.flat_map(&:participants).map(&:username))
+    end
+
+    it 'executes limited number of N+1 queries', :use_sql_query_cache do
+      post_graphql(query, current_user: current_user) # warm-up
+
+      control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+        post_graphql(query, current_user: current_user)
+      end
+
+      create_list(:work_item, 2, project: project, assignees: users)
+
+      expect_graphql_errors_to_be_empty
+      # Participants are resolved per work item via Issuable#system_note_authors and
+      # Issuable#notes_for_participants, each adding one query per new item.
+      expect { post_graphql(query, current_user: current_user) }
+        .not_to exceed_all_query_limit(control).with_threshold(4)
+    end
+  end
+
+  context 'with development widget' do
+    context 'for closing merge requests field' do
+      let(:work_items) { [item1, item2] }
+      let(:fields) do
+        <<~GRAPHQL
+          nodes {
+            id
+            features {
+              development {
+                closingMergeRequests {
+                  count
+                  nodes {
+                    id
+                    fromMrDescription
+                    mergeRequest { id }
+                  }
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      before do
+        work_items.each do |item|
+          create(
+            :merge_request_issue,
+            issue: item,
+            merge_request: create(:merge_request, source_project: project, target_branch: "feature#{item.id}")
+          )
+        end
+      end
+
+      it 'avoids N+1 queries', :use_sql_query_cache do
+        post_graphql(query, current_user: current_user) # warmup
+
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+          post_graphql(query, current_user: current_user)
+        end
+        expect(graphql_errors).to be_blank
+
+        2.times do
+          new_work_item = create(:work_item, project: project)
+          create(
+            :merge_request_issue,
+            issue: new_work_item,
+            merge_request: create(:merge_request, source_project: project, target_branch: "feature#{new_work_item.id}")
+          )
+        end
+
+        expect { post_graphql(query, current_user: current_user) }.not_to exceed_all_query_limit(control)
+        expect(graphql_errors).to be_blank
+      end
+    end
+
+    context 'for closing merge requests count field' do
+      let(:work_items) { [item1, item2] }
+      let(:fields) do
+        <<~GRAPHQL
+          nodes {
+            id
+            features {
+              development {
+                closingMergeRequestsCount
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      before do
+        work_items.each do |item|
+          create(
+            :merge_request_issue,
+            issue: item,
+            merge_request: create(:merge_request, source_project: project, target_branch: "feature#{item.id}")
+          )
+        end
+      end
+
+      it 'returns the count for each work item' do
+        post_graphql(query, current_user: current_user)
+
+        expect(graphql_errors).to be_blank
+        counts = graphql_data_at(:project, :workItems, :nodes).map do |node|
+          node.dig('features', 'development', 'closingMergeRequestsCount')
+        end
+
+        expect(counts).to all(eq(1))
+      end
+
+      it 'avoids N+1 queries', :use_sql_query_cache do
+        post_graphql(query, current_user: current_user) # warmup
+
+        control = ActiveRecord::QueryRecorder.new(skip_cached: false) do
+          post_graphql(query, current_user: current_user)
+        end
+        expect(graphql_errors).to be_blank
+
+        2.times do
+          new_work_item = create(:work_item, project: project)
+          create(
+            :merge_request_issue,
+            issue: new_work_item,
+            merge_request: create(:merge_request, source_project: project, target_branch: "feature#{new_work_item.id}")
+          )
+        end
+
+        expect { post_graphql(query, current_user: current_user) }.not_to exceed_all_query_limit(control)
+        expect(graphql_errors).to be_blank
+      end
+    end
+
+    context 'for related merge requests field' do
+      let(:fields) do
+        <<~GRAPHQL
+          nodes {
+            id
+            features {
+              development {
+                relatedMergeRequests {
+                  nodes {
+                    id
+                    iid
+                  }
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      it 'limits the field to 1 execution' do
+        post_graphql(query, current_user: current_user)
+
+        expect_graphql_errors_to_include(
+          '"relatedMergeRequests" field can be requested only for 1 WorkItemWidgetDevelopment(s) at a time.'
+        )
+      end
+    end
+
+    context 'for related branches field' do
+      let(:fields) do
+        <<~GRAPHQL
+          nodes {
+            id
+            features {
+              development {
+                relatedBranches  {
+                  nodes {
+                    name
+                    comparePath
+                    pipelineStatus { name label favicon }
+                  }
+                }
+              }
+            }
+          }
+        GRAPHQL
+      end
+
+      it 'limits the field to 1 execution' do
+        post_graphql(query, current_user: current_user)
+
+        expect_graphql_errors_to_include(
+          '"relatedBranches" field can be requested only for 1 WorkItemWidgetDevelopment(s) at a time.'
+        )
+      end
+    end
+  end
+
+  context 'with error tracking widget' do
+    context "when we call the widget for many work items" do
+      let(:fields) do
+        <<~QUERY
+          nodes {
+            id
+            features {
+              errorTracking {
+                identifier
+                status
+                stackTrace {
+                  nodes {
+                    filename
+                  }
+                }
+              }
+            }
+          }
+        QUERY
+      end
+
+      it 'returns the stack trace', :aggregate_failures do
+        post_graphql(query, current_user: current_user)
+
+        expect_graphql_errors_to_include(
+          "\"identifier\" field can be requested only for 1 WorkItemWidgetErrorTracking(s) at a time."
+        )
+        expect_graphql_errors_to_include(
+          "\"status\" field can be requested only for 1 WorkItemWidgetErrorTracking(s) at a time."
+        )
+        expect_graphql_errors_to_include(
+          "\"stackTrace\" field can be requested only for 1 WorkItemWidgetErrorTracking(s) at a time."
+        )
+      end
+    end
+
+    context "when we call the widget for one work item" do
+      let(:widget_data) { graphql_data['workItem']['features']['errorTracking'] }
+
+      let(:latest_event) do
+        instance_double(Gitlab::ErrorTracking::ErrorEvent,
+          issue_id: sentry_issue.sentry_issue_identifier,
+          date_received: 1.day.ago,
+          stack_trace_entries: [
+            {
+              "filename" => "test.rb",
+              "lineNo" => 54,
+              "absPath" => "test.rb",
+              "function" => "<main>",
+              "colNo" => nil,
+              "context" => [[51, "  end\n"], [52, "end\n"], [53, "\n"], [54, "yes"], [55, ""], [56, ""], [57, ""]]
+            }
+          ]
+        )
+      end
+
+      let(:expected_response) do
+        {
+          "absolutePath" => "test.rb",
+          "columnNumber" => nil,
+          "context" => [
+            { "line" => "<span id=\"LC1\" class=\"line\" data-lang=\"ruby\">  <span class=\"k\">end</span></span>",
+              "lineNumber" => 51 },
+            { "line" => "<span id=\"LC1\" class=\"line\" data-lang=\"ruby\"><span class=\"k\">end</span></span>",
+              "lineNumber" => 52 },
+            { "line" => "<span id=\"LC1\" class=\"line\" data-lang=\"ruby\"></span>", "lineNumber" => 53 },
+            { "line" => "<span id=\"LC1\" class=\"line\" data-lang=\"ruby\"><span class=\"n\">yes</span></span>",
+              "lineNumber" => 54 },
+            { "line" => "", "lineNumber" => 55 },
+            { "line" => "", "lineNumber" => 56 },
+            { "line" => "", "lineNumber" => 57 }
+          ],
+          "filename" => "test.rb",
+          "function" => "<main>",
+          "lineNumber" => 54
+        }
+      end
+
+      let(:fields) do
+        <<~QUERY
+        id
+        features {
+          errorTracking {
+            identifier
+            status
+            stackTrace {
+              nodes {
+                filename
+                columnNumber
+                function
+                lineNumber
+                absolutePath
+                context {
+                  line
+                  lineNumber
+                }
+              }
+            }
+          }
+        }
+        QUERY
+      end
+
+      let(:query) do
+        graphql_query_for(
+          'work_item',
+          { 'id' => item1.to_global_id.to_s },
+          fields
+        )
+      end
+
+      context "when sentry issue does not exist" do
+        let_it_be(:sentry_issue) { nil }
+
+        it 'returns not_found status and empty stack trace' do
+          post_graphql(query, current_user: current_user)
+          expect(widget_data.fetch("status")).to eq("NOT_FOUND")
+          expect(widget_data["stackTrace"]["nodes"]).to be_empty
+        end
+      end
+
+      context "when sentry issue exists and the service is beings called" do
+        let_it_be(:sentry_issue) { create(:sentry_issue, issue: item1) }
+
+        before do
+          allow_next_instance_of(ErrorTracking::IssueLatestEventService) do |instance|
+            allow(instance).to receive(:execute).and_return(service_response)
+          end
+        end
+
+        context "when service reply with success" do
+          let(:service_response) { { status: :success, latest_event: latest_event } }
+
+          it 'returns the stack trace' do
+            post_graphql(query, current_user: current_user)
+            expect(widget_data.fetch("status")).to eq("SUCCESS")
+            expect(widget_data["stackTrace"]["nodes"].first).to match_array(expected_response)
+          end
+        end
+
+        context "when service reply with error with bad request" do
+          let(:service_response) { { status: :error, http_status: :bad_request } }
+
+          it 'returns error status and empty stack trace' do
+            post_graphql(query, current_user: current_user)
+            expect(widget_data.fetch("status")).to eq("ERROR")
+            expect(widget_data["stackTrace"]["nodes"]).to be_empty
+          end
+        end
+
+        context "when service reply with error with no content" do
+          let(:service_response) { { status: :error, http_status: :no_content } }
+
+          it 'returns retry status and empty stack trace' do
+            post_graphql(query, current_user: current_user)
+            expect(widget_data.fetch("status")).to eq("RETRY")
+            expect(widget_data["stackTrace"]["nodes"]).to be_empty
+          end
+        end
+      end
+    end
+  end
+
+  describe 'filters' do
+    before_all do
+      project.add_developer(current_user)
+    end
+
+    let(:fields) do
+      <<~QUERY
+        nodes {
+          id
+        }
+      QUERY
+    end
+
+    context 'when filtering by confidential' do
+      let(:item_filter_params) { { confidential: true } }
+
+      it 'returns only confidential items' do
+        post_graphql(query, current_user: current_user)
+
+        expect(item_ids).to contain_exactly(confidential_item.to_global_id.to_s)
+      end
+    end
+
+    context 'when filtering by assignees' do
+      before_all do
+        IssueAssignee.create!(issue: item1, assignee: current_user)
+        IssueAssignee.create!(issue: item2, assignee: reporter)
+      end
+
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      let(:item_filter_params) { { assignee_usernames: [current_user.username] } }
+
+      it 'returns items assigned to the user' do
+        expect(item_ids).to contain_exactly(item1.to_global_id.to_s)
+      end
+
+      context 'when using NOT' do
+        let(:item_filter_params) { { not: { assignee_usernames: [current_user.username] } } }
+
+        it 'returns items not assigned to the user' do
+          expect(item_ids).to contain_exactly(item2.to_global_id.to_s, confidential_item.to_global_id.to_s)
+        end
+      end
+
+      context 'when using OR' do
+        let(:item_filter_params) { { or: { assignee_usernames: [current_user.username, reporter.username] } } }
+
+        it 'returns items assigned to either user' do
+          expect(item_ids).to contain_exactly(item1.to_global_id.to_s, item2.to_global_id.to_s)
+        end
+      end
+
+      context 'when using a wildcard' do
+        let(:item_filter_params) { { assignee_wildcard_id: :NONE } }
+
+        it 'returns items without an assignee' do
+          expect(item_ids).to contain_exactly(confidential_item.to_global_id.to_s)
+        end
+      end
+
+      context 'when both assigneeUsernames and assigneeWildcardId are provided' do
+        let(:item_filter_params) { { assignee_usernames: [current_user.username], assignee_wildcard_id: :NONE } }
+
+        it 'returns an error' do
+          expect_graphql_errors_to_include(
+            'Only one of [assigneeUsernames, assigneeWildcardId] arguments is allowed at the same time.'
+          )
+        end
+      end
+    end
+
+    context 'when filtering by author' do
+      before_all do
+        item1.update_columns(author_id: current_user.id)
+        item2.update_columns(author_id: reporter.id)
+        confidential_item.update_columns(author_id: create(:user).id)
+      end
+
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      let(:item_filter_params) { { author_username: current_user.username } }
+
+      it 'returns items authored by the user' do
+        expect(item_ids).to contain_exactly(item1.to_global_id.to_s)
+      end
+
+      context 'when using NOT' do
+        let(:item_filter_params) { { not: { author_username: current_user.username } } }
+
+        it 'returns items not authored by the user' do
+          expect(item_ids).to contain_exactly(item2.to_global_id.to_s, confidential_item.to_global_id.to_s)
+        end
+      end
+
+      context 'when using OR' do
+        let(:item_filter_params) { { or: { author_usernames: [current_user.username, reporter.username] } } }
+
+        it 'returns items authored by either user' do
+          expect(item_ids).to contain_exactly(item1.to_global_id.to_s, item2.to_global_id.to_s)
+        end
+      end
+    end
+
+    context 'when filtering by label' do
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      let(:item_filter_params) { { label_name: label1.name } }
+
+      it 'returns items with the label' do
+        expect(item_ids).to contain_exactly(item1.to_global_id.to_s)
+      end
+
+      context 'when using NOT' do
+        let(:item_filter_params) { { not: { label_name: label1.name } } }
+
+        it 'returns items without the label' do
+          expect(item_ids).to contain_exactly(item2.to_global_id.to_s, confidential_item.to_global_id.to_s)
+        end
+      end
+
+      context 'when using OR' do
+        let(:item_filter_params) { { or: { label_names: [label1.name, label2.name] } } }
+
+        it 'returns items authored by either user' do
+          expect(item_ids).to contain_exactly(item1.to_global_id.to_s, item2.to_global_id.to_s)
+        end
+      end
+    end
+
+    context 'when filtering by milestone' do
+      before_all do
+        item1.update_columns(milestone_id: milestone1.id)
+        item2.update_columns(milestone_id: milestone2.id)
+      end
+
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      let(:item_filter_params) { { milestone_title: milestone1.title } }
+
+      it 'returns items with the milestone' do
+        expect(item_ids).to contain_exactly(item1.to_global_id.to_s)
+      end
+
+      context 'when using NOT' do
+        let(:item_filter_params) { { not: { milestone_title: milestone1.title } } }
+
+        it 'returns items without the milestone' do
+          expect(item_ids).to contain_exactly(item2.to_global_id.to_s, confidential_item.to_global_id.to_s)
+        end
+      end
+
+      context 'when using a wildcard' do
+        let(:item_filter_params) { { milestone_wildcard_id: :NONE } }
+
+        it 'returns items without a milestone' do
+          expect(item_ids).to contain_exactly(confidential_item.to_global_id.to_s)
+        end
+      end
+
+      context 'when both milestoneTitle and milestoneWildcardId are provided' do
+        let(:item_filter_params) { { milestone_title: [milestone1.title], milestone_wildcard_id: :NONE } }
+
+        it 'returns an error' do
+          expect_graphql_errors_to_include(
+            'Only one of [milestoneTitle, milestoneWildcardId] arguments is allowed at the same time.'
+          )
+        end
+      end
+    end
+
+    context 'when filtering by reaction emoji' do
+      before_all do
+        create(:award_emoji, :upvote, user: current_user, awardable: item1)
+        create(:award_emoji, :downvote, user: current_user, awardable: item2)
+      end
+
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      let(:item_filter_params) { { my_reaction_emoji: AwardEmoji::THUMBS_UP } }
+
+      it 'returns items with the reaction emoji' do
+        expect(item_ids).to contain_exactly(item1.to_global_id.to_s)
+      end
+
+      context 'when using NOT' do
+        let(:item_filter_params) { { not: { my_reaction_emoji: AwardEmoji::THUMBS_UP } } }
+
+        it 'returns items without the reaction emoji' do
+          expect(item_ids).to contain_exactly(item2.to_global_id.to_s, confidential_item.to_global_id.to_s)
+        end
+      end
+    end
+
+    context 'when filtering by types' do
+      let(:item_filter_params) { { types: [:TASK] } }
+
+      let_it_be(:task) { create(:work_item, :task, project: project) }
+
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      it 'returns items with selected types' do
+        expect(item_ids).to contain_exactly(task.to_global_id.to_s)
+      end
+
+      context 'when using NOT' do
+        let(:item_filter_params) { { not: { types: [:ISSUE] } } }
+
+        it 'returns items without selected types' do
+          expect(item_ids).to contain_exactly(task.to_global_id.to_s)
+        end
+      end
+    end
+
+    context 'when filtering by workItemTypeIds' do
+      let_it_be(:task) { create(:work_item, :task, project: project) }
+
+      let(:item_filter_params) { { workItemTypeIds: [task.work_item_type.to_global_id.to_s] } }
+
+      before do
+        post_graphql(query, current_user: current_user)
+      end
+
+      it 'returns items with selected type GIDs' do
+        expect(item_ids).to contain_exactly(task.to_global_id.to_s)
+      end
+
+      context 'with multiple work item type ids' do
+        let(:item_filter_params) do
+          {
+            workItemTypeIds: [
+              task.work_item_type.to_global_id.to_s,
+              item1.work_item_type.to_global_id.to_s
+            ]
+          }
+        end
+
+        it 'returns items of all specified types' do
+          expect(item_ids).to contain_exactly(
+            task.to_global_id.to_s,
+            item1.to_global_id.to_s,
+            item2.to_global_id.to_s,
+            confidential_item.to_global_id.to_s
+          )
+        end
+      end
+
+      context 'when using NOT' do
+        let(:item_filter_params) { { not: { workItemTypeIds: [task.work_item_type.to_global_id.to_s] } } }
+
+        it 'returns items without selected type GIDs' do
+          expect(item_ids).not_to include(task.to_global_id.to_s)
+        end
+      end
+
+      context 'when both types and workItemTypeIds are provided' do
+        let(:item_filter_params) { { types: [:TASK], workItemTypeIds: [task.work_item_type.to_global_id.to_s] } }
+
+        it 'returns a mutual exclusion error' do
+          expect_graphql_errors_to_include(
+            'Only one of [issueTypes, workItemTypeIds] arguments is allowed at the same time.'
+          )
+        end
+      end
+
+      context 'when both types and workItemTypeIds are provided in NOT' do
+        let(:item_filter_params) do
+          { not: { types: [:TASK], workItemTypeIds: [task.work_item_type.to_global_id.to_s] } }
+        end
+
+        it 'returns a mutual exclusion error' do
+          expect_graphql_errors_to_include(
+            'Only one of [issueTypes, workItemTypeIds] arguments is allowed at the same time.'
+          )
+        end
+      end
+
+      context 'when workItemTypeIds exceeds the maximum limit' do
+        let(:item_filter_params) do
+          { workItemTypeIds: (1..101).map { |id| "gid://gitlab/WorkItems::Type/#{id}" } }
+        end
+
+        it 'returns an error' do
+          expect_graphql_errors_to_include('workItemTypeIds is too long (maximum is 100)')
+        end
+      end
+
+      context 'when NOT workItemTypeIds exceeds the maximum limit' do
+        let(:item_filter_params) do
+          { not: { workItemTypeIds: (1..101).map { |id| "gid://gitlab/WorkItems::Type/#{id}" } } }
+        end
+
+        it 'returns an error' do
+          expect_graphql_errors_to_include('workItemTypeIds is too long (maximum is 100)')
+        end
+      end
+    end
+  end
+
+  # Exercises the WorkItem type-level granular token authorization through
+  # the Project.workItems connection.
+  it_behaves_like 'authorizing granular token permissions for GraphQL', [:read_project, :read_work_item] do
+    let(:user) { reporter }
+    let(:boundary_object) { project }
+    # createNoteEmail requires write permissions since it can be used to create issues and notes.
+    let(:fields) do
+      <<~QUERY
+        nodes {
+          #{all_graphql_fields_for('WorkItem', max_depth: 1, excluded: ['createNoteEmail'])}
+        }
+      QUERY
+    end
+
+    let(:request) { post_graphql(query, token: { personal_access_token: pat }) }
+  end
+
+  context 'when skipping authorization' do
+    shared_examples  'request with skipped abilities' do |abilities = []|
+      it 'authorizes objects as expected' do
+        expect_any_instance_of(Gitlab::Graphql::Authorize::ObjectAuthorization) do |authorization|
+          expect(authorization).to receive(:ok).with(
+            project.work_items.first,
+            current_user,
+            scope_validator: nil,
+            skip_abilities: abilities
+          )
+        end
+
+        post_graphql(query, current_user: current_user)
+      end
+    end
+
+    context 'when authorize_issue_types_in_finder feature flag is enabled' do
+      before do
+        stub_feature_flags(authorize_issue_types_in_finder: true)
+      end
+
+      it_behaves_like 'request with skipped abilities', [:read_work_item]
+    end
+
+    context 'when authorize_issue_types_in_finder feature flag is disabled' do
+      before do
+        stub_feature_flags(authorize_issue_types_in_finder: false)
+      end
+
+      it_behaves_like 'request with skipped abilities', []
+    end
+  end
+
+  def item_ids
+    graphql_dig_at(items_data, :id)
+  end
+
+  def query(params = item_filter_params)
+    graphql_query_for(
+      'project',
+      { 'fullPath' => project.full_path },
+      query_graphql_field('workItems', params, fields)
+    )
+  end
+end

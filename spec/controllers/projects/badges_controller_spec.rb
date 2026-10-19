@@ -1,0 +1,259 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe Projects::BadgesController do
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project, :small_repo, maintainers: user) }
+  let_it_be_with_reload(:pipeline) { create(:ci_pipeline, project: project) }
+
+  shared_context 'renders badge irrespective of project access levels' do |badge_type|
+    context 'when project is public' do
+      before do
+        project.update!(visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it "returns the #{badge_type} badge to unauthenticated users" do
+        get_badge(badge_type)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+
+    context 'when project is restricted' do
+      before_all { project.add_guest(user) }
+
+      before do
+        project.update!(visibility_level: Gitlab::VisibilityLevel::INTERNAL)
+        sign_in(user)
+      end
+
+      it "returns the #{badge_type} badge to guest users" do
+        get_badge(badge_type)
+
+        expect(response).to have_gitlab_http_status(:ok)
+      end
+    end
+  end
+
+  shared_context 'when pipelines are public' do |badge_type|
+    before do
+      project.update!(public_builds: true)
+    end
+
+    it_behaves_like 'renders badge irrespective of project access levels', badge_type
+  end
+
+  shared_context 'when pipelines are not public' do |badge_type|
+    before do
+      project.update!(public_builds: false)
+    end
+
+    context 'when project is public' do
+      before do
+        project.update!(visibility_level: Gitlab::VisibilityLevel::PUBLIC)
+      end
+
+      it 'returns 404 to unauthenticated users' do
+        get_badge(badge_type)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when project is restricted to the user' do
+      before_all { project.add_guest(user) }
+
+      before do
+        project.update!(visibility_level: Gitlab::VisibilityLevel::INTERNAL)
+        sign_in(user)
+      end
+
+      it 'defaults to project permissions' do
+        get_badge(badge_type)
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+  end
+
+  shared_context 'customization' do |badge_type|
+    render_views
+
+    before_all { project.add_maintainer(user) }
+
+    before do
+      sign_in(user)
+    end
+
+    context 'when key_text param is used' do
+      it 'sets custom key text' do
+        get_badge(badge_type, key_text: 'custom key text')
+
+        expect(response.body).to include('custom key text')
+      end
+    end
+
+    context 'when key_width param is used' do
+      it 'sets custom key width' do
+        get_badge(badge_type, key_width: '123')
+
+        expect(response.body).to include('123')
+      end
+    end
+
+    if badge_type == :release
+      context 'when value_width param is used' do
+        it 'sets custom value width' do
+          get_badge(badge_type, value_width: '123')
+
+          expect(response.body).to include('123')
+        end
+      end
+    end
+  end
+
+  shared_examples 'a badge resource' do |badge_type|
+    context 'format' do
+      before_all { project.add_maintainer(user) }
+
+      before do
+        sign_in(user)
+      end
+
+      it 'renders the `flat` badge layout by default' do
+        get_badge(badge_type)
+
+        expect(response).to render_template('projects/badges/badge')
+      end
+
+      context 'when style param is set to `flat`' do
+        it 'renders the `flat` badge layout' do
+          get_badge(badge_type, style: 'flat')
+
+          expect(response).to render_template('projects/badges/badge')
+        end
+      end
+
+      context 'when style param is set to an invalid type' do
+        it 'renders the `flat` (default) badge layout' do
+          get_badge(badge_type, style: 'xxx')
+
+          expect(response).to render_template('projects/badges/badge')
+        end
+      end
+
+      context 'when style param is set to `flat-square`' do
+        it 'renders the `flat-square` badge layout' do
+          get_badge(badge_type, style: 'flat-square')
+
+          expect(response).to render_template('projects/badges/badge_flat-square')
+        end
+      end
+    end
+
+    it_behaves_like 'customization', badge_type
+
+    if [:pipeline, :coverage].include?(badge_type)
+      it_behaves_like 'when pipelines are public', badge_type
+      it_behaves_like 'when pipelines are not public', badge_type
+    end
+  end
+
+  describe '#pipeline' do
+    it_behaves_like 'a badge resource', :pipeline
+
+    context 'with ignore_skipped param' do
+      render_views
+
+      before_all { project.add_maintainer(user) }
+
+      before do
+        pipeline.update!(status: :skipped)
+        sign_in(user)
+      end
+
+      it 'returns skipped badge if set to false' do
+        get_badge(:pipeline, ignore_skipped: false)
+        expect(response.body).to include('skipped')
+      end
+
+      it 'does not return skipped badge if set to true' do
+        get_badge(:pipeline, ignore_skipped: true)
+        expect(response.body).to include('unknown')
+      end
+    end
+  end
+
+  describe '#custom' do
+    action = :custom
+
+    it_behaves_like 'a badge resource', action
+    it_behaves_like 'renders badge irrespective of project access levels', action
+  end
+
+  describe '#coverage' do
+    it_behaves_like 'a badge resource', :coverage
+  end
+
+  describe '#release' do
+    action = :release
+
+    it_behaves_like 'a badge resource', action
+    it_behaves_like 'renders badge irrespective of project access levels', action
+  end
+
+  describe 'badge options taken from the request' do
+    before_all { project.add_maintainer(user) }
+
+    before do
+      sign_in(user)
+    end
+
+    it 'passes the coverage thresholds to the coverage badge' do
+      expect(Gitlab::Ci::Badge::Coverage::Report)
+        .to receive(:new).with(project, pipeline.ref, opts: hash_including(min_good: '90'))
+        .and_call_original
+
+      get :coverage, params: {
+        namespace_id: project.namespace.to_param, project_id: project, ref: pipeline.ref, min_good: 90
+      }, format: :svg
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'passes order_by to the release badge' do
+      expect(Gitlab::Ci::Badge::Release::LatestRelease)
+        .to receive(:new).with(project, user, opts: hash_including(order_by: 'released_at'))
+        .and_call_original
+
+      get :release, params: {
+        namespace_id: project.namespace.to_param, project_id: project, order_by: 'released_at'
+      }, format: :svg
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+
+    it 'passes the colours to the custom badge' do
+      expect(Gitlab::Ci::Badge::Custom::CustomBadge)
+        .to receive(:new).with(project, opts: hash_including(value_color: 'blue'))
+        .and_call_original
+
+      get :custom, params: {
+        namespace_id: project.namespace.to_param, project_id: project, value_color: 'blue'
+      }, format: :svg
+
+      expect(response).to have_gitlab_http_status(:ok)
+    end
+  end
+
+  def get_badge(badge, args = {})
+    params = {
+      namespace_id: project.namespace.to_param,
+      project_id: project,
+      ref: pipeline.ref
+    }.merge(args.slice(:style, :key_text, :key_width, :value_width, :ignore_skipped))
+
+    get badge, params: params, format: :svg
+  end
+end

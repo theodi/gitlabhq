@@ -1,0 +1,74 @@
+import { nextTick } from 'vue';
+import { GlFormInput, GlAlert, GlButton, GlMultiStepFormTemplate } from '@gitlab/ui';
+import { shallowMountExtended } from 'helpers/vue_test_utils_helper';
+import RunnerCreateWizardRequiredFields from '~/ci/runner/components/runner_create_wizard_required_fields.vue';
+
+describe('Create Runner Required Fields', () => {
+  let wrapper;
+
+  const createComponent = () => {
+    wrapper = shallowMountExtended(RunnerCreateWizardRequiredFields, {
+      propsData: {
+        currentStep: 1,
+        stepsTotal: 3,
+        isRunUntagged: false,
+        tagList: '',
+      },
+      stubs: {
+        GlFormInput,
+      },
+    });
+  };
+
+  beforeEach(() => {
+    createComponent();
+  });
+
+  const findGlMultiStepFormTemplate = () => wrapper.findComponent(GlMultiStepFormTemplate);
+  const findNextButton = () => wrapper.findComponent(GlButton);
+  const findAlert = () => wrapper.findComponent(GlAlert);
+  const findTagsInput = () => wrapper.findByTestId('runner-tags-input');
+  const findRunUntaggedCheckbox = () => wrapper.findComponentByTestId('runner-untagged-checkbox');
+
+  describe('form', () => {
+    it('passes the correct props to GlMultiStepFormTemplate', () => {
+      expect(findGlMultiStepFormTemplate().props()).toMatchObject({
+        title: 'Create instance runner',
+        currentStep: 1,
+        stepsTotal: 3,
+      });
+    });
+
+    it('renders error when user click next button with no tags or runUntagged provided', async () => {
+      findNextButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findAlert().exists()).toBe(true);
+      expect(wrapper.emitted('on-required-fields-update')).toBeUndefined();
+    });
+
+    it('does not render error when user click next button with tags provided', async () => {
+      findTagsInput().setValue('tag1, tag2');
+      findTagsInput().trigger('blur');
+      findNextButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findAlert().exists()).toBe(false);
+      expect(wrapper.emitted('on-required-fields-update')).toEqual([
+        [{ tags: 'tag1, tag2', runUntagged: false }],
+      ]);
+    });
+
+    it('does not renders error when user click next button with runUntagged provided', async () => {
+      findRunUntaggedCheckbox().vm.$emit('input', ['untagged']);
+      findNextButton().vm.$emit('click');
+      await nextTick();
+
+      expect(findAlert().exists()).toBe(false);
+    });
+  });
+
+  it('renders the Next step button', () => {
+    expect(findNextButton().text()).toBe('Next step');
+  });
+});

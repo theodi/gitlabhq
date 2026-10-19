@@ -1,0 +1,47 @@
+# frozen_string_literal: true
+
+module Mutations
+  module AlertManagement
+    module HttpIntegration
+      class Create < HttpIntegrationBase
+        graphql_name 'HttpIntegrationCreate'
+
+        include FindsProject
+
+        authorize_granular_token permissions: :create_http_integration,
+          boundary_argument: :project_path, boundary_type: :project
+
+        argument :project_path, GraphQL::Types::ID,
+          required: true,
+          description: 'Project to create the integration in.'
+
+        argument :name, GraphQL::Types::String,
+          required: true,
+          description: 'Name of the integration.'
+
+        argument :type, Types::AlertManagement::IntegrationTypeEnum,
+          as: :type_identifier,
+          required: false,
+          default_value: :http,
+          replace_null_with_default: true,
+          description: 'Type of integration to create. Cannot be changed after creation.'
+
+        argument :active, GraphQL::Types::Boolean,
+          required: true,
+          description: 'Whether the integration is receiving alerts.'
+
+        def resolve(args)
+          project = authorized_find!(args[:project_path])
+
+          response ::AlertManagement::HttpIntegrations::CreateService.new(
+            project,
+            current_user,
+            http_integration_params(project, args)
+          ).execute
+        end
+      end
+    end
+  end
+end
+
+Mutations::AlertManagement::HttpIntegration::Create.prepend_mod

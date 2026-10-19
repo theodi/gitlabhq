@@ -1,0 +1,42 @@
+.navbar-empty {
+  justify-content: center;
+  height: var(--header-height);
+  background: var(--gl-background-color-default);
+  border-bottom: 1px solid var(--gl-border-color-default);
+
+  .tanuki-logo,
+  .brand-header-logo {
+    max-height: 100%;
+  }
+}
+
+.set-user-status-modal {
+  .modal-body {
+    min-height: unset;
+  }
+
+  .input-lg {
+    max-width: unset;
+  }
+
+  .emoji-menu-toggle-button {
+    @include emoji-menu-toggle-button;
+    padding: $gl-vert-padding $gl-btn-padding;
+  }
+
+  .input-group {
+    &,
+    .input-group-prepend,
+    .input-group-append {
+      height: $input-height;
+    }
+  }
+}
+
+.nav-links > li > a {
+  .badge.badge-pill {
+    @include gl-container-width-down(sm, panel) { display: none; }
+  }
+
+  @include gl-container-width-down(sm, panel) { margin-right: 3px; }
+}

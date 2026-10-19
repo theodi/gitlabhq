@@ -1,0 +1,19 @@
+---
+data_category: optional
+key_path: counts_monthly.personal_snippets
+description: Monthly count of personal Snippets
+product_group: source_code
+product_categories:
+- source_code_management
+value_type: number
+status: active
+time_frame: 28d
+data_source: database
+instrumentation_class: CountPersonalSnippetsMetric
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

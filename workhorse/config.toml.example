@@ -1,0 +1,200 @@
+# alt_document_root = '/home/git/public/assets'
+# shutdown_timeout = "60s"
+# trusted_cidrs_for_x_forwarded_for = []
+# trusted_cidrs_for_propagation = []
+# trusted_forwarded_hosts = []
+
+[redis]
+URL = "unix:/home/git/gitlab/redis/redis.socket"
+# Optional: Redis 6+ ACL credentials for the primary instance. Username and
+# Password also apply to the primary when Sentinel is used, where the URL is
+# not consulted for credentials.
+#   username = "redis-user"
+#   password = "redis-password"
+# Optional: Sentinel configuration for Redis high availability
+#   sentinel = ["redis://sentinel1.example.com:26379", "redis://sentinel2.example.com:26379"]
+#   sentinel_master = "mymaster"
+#   sentinel_username = "sentinel-user"
+#   sentinel_password = "sentinel-password"
+
+# Optional: TLS configuration for Redis client connections
+# [redis.tls]
+#   certificate = "/path/to/client/certificate.crt"
+#   key = "/path/to/client/private/key.key"
+#   ca_certificate = "/path/to/ca/certificate.crt"
+#   min_version = "tls1.2"
+#   max_version = "tls1.3"
+
+# Optional: passwordless authentication with a rotating cloud token (for
+# example Microsoft Entra for Azure Cache for Redis / Azure Managed Redis).
+# Takes precedence over username/password, refreshes the token on live
+# connections, and requires TLS. Point URL at the managed Redis endpoint; not
+# supported with Sentinel (managed Redis exposes a single endpoint).
+# [redis.credentials_provider]
+#   provider = "azure" # currently only "azure" is supported
+#   [redis.credentials_provider.azure]
+#     auth_type = "default" # Azure default credential chain (default); or "managed_identity"
+#     object_id = "00000000-0000-0000-0000-000000000000" # object (principal) ID of a user-assigned identity; omit for system-assigned
+#     scope = "https://redis.azure.com/.default"
+
+# Optional: TLS configuration for Sentinel connections
+# [Sentinel.tls]
+#   certificate = "/path/to/client/certificate.crt"
+#   key = "/path/to/client/private/key.key"
+#   ca_certificate = "/path/to/ca/certificate.crt"
+#   min_version = "tls1.2"
+#   max_version = "tls1.3"
+
+[object_storage]
+  provider = "AWS" # Allowed options: AWS, AzureRM, Google
+
+[object_storage.s3]
+  aws_access_key_id = "YOUR AWS ACCESS KEY"
+  aws_secret_access_key = "YOUR AWS SECRET ACCESS KEY"
+
+[object_storage.azurerm]
+  azure_storage_account_name = "YOUR ACCOUNT NAME"
+  azure_storage_access_key = "YOUR ACCOUNT KEY"
+
+[object_storage.google]
+  google_application_default = true # if the application default should be used
+  google_json_key_string = '''
+  JSON KEY STRING
+  '''
+  google_json_key_location = "PATH TO JSON KEY FILE"
+
+[metadata]
+  zip_reader_limit_bytes = 104857600
+
+[image_resizer]
+  max_scaler_procs = 4 # Recommendation: CPUs / 2
+  max_filesize = 250000
+
+[[listeners]]
+  network = "tcp"
+  addr = "127.0.0.1:3443"
+
+[listeners.tls]
+  certificate = "/path/to/certificate"
+  key = "/path/to/private/key"
+  min_version = "tls1.2"
+  max_version = "tls1.3"
+
+# Metrics listener configuration
+# Exposes Prometheus metrics on a dedicated endpoint.
+# Mutually exclusive with the -prometheusListenAddr CLI flag.
+[metrics_listener]
+  # Network type for the metrics listener (tcp, tcp4, tcp6, unix)
+  network = "tcp"
+  # Address to bind the Prometheus metrics server to
+  addr = "localhost:9229"
+
+  # Optional: TLS configuration for the metrics listener
+  # [metrics_listener.tls]
+  #   certificate = "/path/to/certificate"
+  #   key = "/path/to/private/key"
+  #   min_version = "tls1.2"
+  #   max_version = "tls1.3"
+
+[circuit_breaker]
+  enabled = true
+  timeout = 60
+  interval = 180
+  max_requests = 1
+  consecutive_failures = 5
+
+# Health check listener configuration
+# Enables a dedicated health check endpoint for readiness probes
+[health_check_listener]
+  # Network type for the health check listener (tcp, tcp4, tcp6, unix)
+  network = "tcp"
+  # Address to bind the health check server to
+  addr = "localhost:8182"
+
+  # URL to check Puma's readiness endpoint
+  # Readiness indicates if the service is ready to accept traffic
+  # If not specified, authBackend + /-/readiness is used.
+  readiness_probe_url = "http://localhost:8080/-/readiness"
+
+  # Optional: URL to check Puma's control server for readiness checks
+  # Uncomment to enable control server checks
+  # puma_control_url = "http://localhost:9293"
+
+  # How often to perform health checks
+  check_interval = "10s"
+
+  # Duration to skip Rails readiness checks after a successful request
+  # This helps reduce load on the Rails server by avoiding redundant checks
+  # when recent requests have been successful. (disabled by default)
+  # rails_skip_interval = "0s"
+
+  # Timeout for individual health check requests
+  timeout = "5s"
+
+  # How long to remain not ready after receiving shutdown signal
+  # This allows load balancers to drain traffic before shutdown
+  graceful_shutdown_delay = "10s"
+
+  # Number of consecutive failures before marking as not ready (readiness only)
+  max_consecutive_failures = 1
+
+  # Number of consecutive successes required to become ready (readiness only)
+  min_successful_probes = 1
+
+# Optional: Load shedding configuration
+# When enabled, Workhorse will return 503 Service Unavailable when Puma's
+# request backlog exceeds the configured threshold. This helps protect Puma
+# from being overwhelmed and allows NGINX to retry requests to other instances.
+[load_shedding]
+  # Enable load shedding (default: false)
+  enabled = false
+
+  # Backlog threshold at which to start shedding load
+  # When the backlog exceeds this value, new requests will be rejected with 503
+  backlog_threshold = 50
+
+  # Hysteresis factor for deactivation (0.0 to 1.0)
+  # Load shedding will be deactivated when backlog drops below:
+  #   threshold * hysteresis_factor
+  # This prevents rapid oscillation around the threshold.
+  # Example: threshold=100, hysteresis=0.8 means:
+  #   - Activate shedding at backlog >= 100
+  #   - Deactivate shedding at backlog < 80
+  # Default: 0.8
+  backlog_hysteresis = 0.8
+
+  # Retry-After header value in seconds when shedding load
+  # In Kubernetes with multiple pods, use 0 to allow NGINX to immediately
+  # retry to a different pod. For single instances, use 1-2 to give Puma
+  # time to process queued requests.
+  # Default: 0 (immediate retry, recommended for Kubernetes)
+  retry_after_seconds = 0
+
+  # HTTP status code to return when shedding load
+  # Use a custom code (e.g., 529) to distinguish load shedding responses
+  # from other 503 errors (database timeouts, Gitaly issues, etc.).
+  # This allows NGINX to retry load shedding responses while not retrying
+  # other 503 errors.
+  # Default: 503 (Service Unavailable)
+  # status_code = 529
+
+  # Strategy for calculating effective backlog across workers
+  # Options: "max" (default), "sum"
+  #   - "max": Use the maximum backlog across all workers
+  #   - "sum": Use the sum of backlogs across all workers
+  # Default: "max"
+  strategy = "max"
+
+  # How often to sample Puma's backlog metrics
+  # This is independent of the health check interval and allows for
+  # faster response to load changes.
+  # Default: 1s
+  check_interval = "1s"
+
+  # URL to Puma's control server for backlog metrics
+  # If not specified, defaults to http://localhost:9293
+  # puma_control_url = "http://localhost:9293"
+
+  # Timeout for control server requests
+  # Default: 5s
+  timeout = "5s"

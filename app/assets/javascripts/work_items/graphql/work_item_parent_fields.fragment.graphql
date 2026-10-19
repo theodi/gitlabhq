@@ -1,0 +1,19 @@
+# @feature_category: team_planning
+
+fragment WorkItemParentFields on WorkItem {
+  id
+  iid
+  title
+  titleHtml
+  webUrl
+  confidential
+  namespace {
+    id
+    fullPath
+  }
+  workItemType {
+    id
+    name
+    iconName
+  }
+}

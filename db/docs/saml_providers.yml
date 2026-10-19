@@ -1,0 +1,13 @@
+---
+table_name: saml_providers
+classes:
+- SamlProvider
+feature_categories:
+- system_access
+description: Stores SAML identity provider configurations for group-level SAML authentication.
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/4549
+milestone: '10.7'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  group_id: namespaces
+table_size: small

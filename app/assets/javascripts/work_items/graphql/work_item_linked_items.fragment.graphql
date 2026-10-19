@@ -1,0 +1,68 @@
+#import "~/work_items/graphql/work_item_parent_fields.fragment.graphql"
+#import "ee_else_ce/work_items/graphql/work_item_metadata_widgets.fragment.graphql"
+#import "ee_else_ce/work_items/graphql/work_item_metadata_widgets_extras.fragment.graphql"
+#import "ee_else_ce/work_items/graphql/work_item_child_metadata_features.fragment.graphql"
+
+# @graphql-eslint/eslint-plugin@4.0.0 reports missing IDs in `FragmentDefinition`. For now, we are
+# ignoring the newly uncovered error on this fragment. Please consider addressing the violation
+# if you are modifying this file and it turns out selecting the ID makes sense here.
+# eslint-disable-next-line @graphql-eslint/require-selections
+fragment WorkItemLinkedItemsFragment on WorkItem {
+  widgets {
+    ... on WorkItemWidgetLinkedItems {
+      type
+      linkedItems {
+        nodes {
+          linkId
+          linkType
+          workItemState
+          workItem {
+            id
+            iid
+            confidential
+            namespace {
+              id
+              fullPath
+            }
+            author {
+              id
+              username
+            }
+            workItemType {
+              id
+              name
+              iconName
+            }
+            title
+            titleHtml
+            state
+            createdAt
+            closedAt
+            webUrl
+            reference(full: true)
+            widgets {
+              ... on WorkItemWidgetLinkedItems {
+                linkedItems {
+                  nodes {
+                    linkId
+                    linkType
+                  }
+                }
+              }
+              ...WorkItemMetadataWidgets
+              ...WorkItemMetadataWidgetsExtras
+              ... on WorkItemWidgetHierarchy {
+                parent {
+                  ...WorkItemParentFields
+                }
+              }
+            }
+            features @include(if: $useWorkItemFeatures) {
+              ...WorkItemChildMetadataFeatures
+            }
+          }
+        }
+      }
+    }
+  }
+}

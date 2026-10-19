@@ -1,0 +1,39 @@
+#import "~/graphql_shared/fragments/page_info.fragment.graphql"
+
+query jiraGetProjects(
+  $search: String!
+  $after: String = ""
+  $first: Int!
+  $searchNamespaces: Boolean = false
+  $sort: String
+  $membership: Boolean = true
+  $active: Boolean = true
+) {
+  projects(
+    search: $search
+    after: $after
+    first: $first
+    membership: $membership
+    searchNamespaces: $searchNamespaces
+    sort: $sort
+    active: $active
+  ) {
+    nodes {
+      id
+      name
+      nameWithNamespace
+      fullPath
+      avatarUrl
+      path
+      repository {
+        empty
+      }
+      userPermissions {
+        pushCode
+      }
+    }
+    pageInfo {
+      ...PageInfo
+    }
+  }
+}

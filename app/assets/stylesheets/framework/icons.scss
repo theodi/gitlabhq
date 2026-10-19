@@ -1,0 +1,149 @@
+@mixin icon-styles($color) {
+  svg,
+  .gl-icon {
+    fill: $color;
+  }
+}
+
+.ci-status-icon-success,
+.ci-status-icon-passed {
+  svg,
+  .gl-icon {
+    @apply gl-fill-icon-success;
+  }
+}
+
+.ci-status-icon-error,
+.ci-status-icon-failed {
+  @include icon-styles($red-500);
+}
+
+.ci-status-icon-pending,
+.ci-status-icon-waiting-for-resource,
+.ci-status-icon-waiting-for-callback,
+.ci-status-icon-failed-with-warnings,
+.ci-status-icon-success-with-warnings {
+  @include icon-styles($orange-500);
+}
+
+.ci-status-icon-running {
+  @include icon-styles($blue-500);
+}
+
+.ci-status-icon-canceled,
+.ci-status-icon-disabled,
+.ci-status-icon-scheduled,
+.ci-status-icon-manual {
+  @include icon-styles($gray-900);
+}
+
+.ci-status-icon-notification,
+.ci-status-icon-preparing,
+.ci-status-icon-created,
+.ci-status-icon-skipped,
+.ci-status-icon-notfound {
+  @include icon-styles($gray-500);
+}
+
+a.ci-icon:focus-visible {
+  @apply gl-focus;
+}
+
+.ci-icon {
+  border-radius: 20px;
+
+  // .ci-icon class is used at
+  // - app/assets/javascripts/vue_shared/components/ci_icon/ci_icon.vue
+  // - app/helpers/ci/status_helper.rb
+  .ci-icon-gl-icon-wrapper {
+    display: inline-block;
+    border-radius: $gl-border-radius-full;
+    line-height: 0;
+  }
+
+  // Makes the borderless CI icons appear slightly bigger than the default 16px.
+  // Could be fixed by making the SVG fill up the canvas in a follow up issue.
+  .gl-icon {
+    width: 20px;
+    height: 20px;
+    margin: -2px;
+  }
+
+  @mixin ci-icon-style(
+    $background-color,
+    $text-color,
+    $icon-color,
+    $icon-background-color,
+  ) {
+    color: $text-color !important;
+    background-color: $background-color;
+    border: 2px solid $background-color;
+
+    .ci-icon-gl-icon-wrapper {
+      border: 2px solid $background-color;
+      background-color: $icon-background-color;
+      color: $icon-color;
+
+      .gl-dark & {
+        border-color: transparent;
+      }
+    }
+  }
+
+  &.ci-icon-variant-success {
+    @include ci-icon-style(
+      $background-color: var(--ci-icon-success-background-color),
+      $text-color: var(--ci-icon-success-text-color),
+      $icon-color: var(--ci-icon-success-icon-color),
+      $icon-background-color: var(--ci-icon-success-icon-background-color),
+    )
+  }
+
+  &.ci-icon-variant-warning {
+    @include ci-icon-style(
+      $background-color: var(--ci-icon-warning-background-color),
+      $text-color: var(--ci-icon-warning-text-color),
+      $icon-color: var(--ci-icon-warning-icon-color),
+      $icon-background-color: var(--ci-icon-warning-icon-background-color),
+    )
+  }
+
+  &.ci-icon-variant-danger {
+    @include ci-icon-style(
+      $background-color: var(--ci-icon-danger-background-color),
+      $text-color: var(--ci-icon-danger-text-color),
+      $icon-color: var(--ci-icon-danger-icon-color),
+      $icon-background-color: var(--ci-icon-danger-icon-background-color),
+    )
+  }
+
+  &.ci-icon-variant-info {
+    @include ci-icon-style(
+      $background-color: var(--ci-icon-info-background-color),
+      $text-color: var(--ci-icon-info-text-color),
+      $icon-color: var(--ci-icon-info-icon-color),
+      $icon-background-color: var(--ci-icon-info-icon-background-color),
+    )
+  }
+
+  &.ci-icon-variant-neutral {
+    @include ci-icon-style(
+      $background-color: var(--ci-icon-neutral-background-color),
+      $text-color: var(--ci-icon-neutral-text-color),
+      $icon-color: var(--ci-icon-neutral-icon-color),
+      $icon-background-color: var(--ci-icon-neutral-icon-background-color),
+    )
+  }
+}
+
+.user-avatar-link {
+  text-decoration: none;
+}
+
+.circle-icon-container {
+  $border-size: 1px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

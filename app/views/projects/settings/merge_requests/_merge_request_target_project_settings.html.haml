@@ -1,0 +1,19 @@
+- return unless @project.mr_can_target_upstream? && can?(current_user, :read_project, @project.forked_from_project)
+
+- form = local_assigns.fetch(:form)
+
+= form.fields_for :project_setting do |settings|
+  %fieldset.form-group{ aria: { describedby: :merge_request_target_project_settings_description } }
+    %legend{ class: 'gl-m-0 gl-heading-5 gl-border-0' }
+      = s_('ProjectSettings|Target project')
+    %p.gl-text-subtle{ id: :merge_request_target_project_settings_description }
+      = s_('ProjectSettings|The default target project for merge requests created in this fork project.')
+
+    = settings.gitlab_ui_radio_component :mr_default_target_self,
+      false,
+      s_('ProjectSettings|Upstream project'),
+      help_text: @project.forked_from_project.full_name
+    = settings.gitlab_ui_radio_component :mr_default_target_self,
+      true,
+      s_('ProjectSettings|This project'),
+      help_text: @project.full_name

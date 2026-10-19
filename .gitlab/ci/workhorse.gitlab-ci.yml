@@ -1,0 +1,161 @@
+workhorse:verify:
+  extends:
+    - .workhorse-job-cache
+    - .workhorse:rules:workhorse
+    - .default-utils-before_script
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}golang:${GO_VERSION}
+  stage: test
+  needs: []
+  parallel:
+    matrix:
+      - GO_VERSION: ["1.26"]
+  script:
+    - go version
+    - make -C workhorse # test build
+    - make -C workhorse verify
+
+.workhorse:test:
+  extends:
+    - .workhorse:rules:workhorse
+    - .workhorse-job-cache-pull
+  image: ${REGISTRY_HOST}/${REGISTRY_GROUP}/gitlab-build-images/${BUILD_OS}-${OS_VERSION}-ruby-${RUBY_VERSION}-golang-${GO_VERSION}-rust-${RUST_VERSION}:rubygems-${RUBYGEMS_VERSION}-git-${GIT_VERSION}-exiftool-${EXIFTOOL_VERSION}
+  services:
+    - name: redis:7.2-alpine
+      alias: redis
+  variables:
+    GITALY_ADDRESS: "tcp://127.0.0.1:8075"
+  stage: test
+  needs:
+    - setup-test-env
+  before_script:
+    - !reference [.default-utils-before_script, before_script]
+    - export BUNDLE_WITHOUT="${BUNDLE_WITHOUT}:default:test:puma:kerberos:metrics:ed25519"
+    - bundle_install_script
+    - go version
+    - scripts/gitaly-test-build
+    - cp workhorse/config.toml.example workhorse/config.toml
+    - sed -i 's|URL.*$|URL = "redis://redis:6379"|g' workhorse/config.toml
+  script:
+    - make -C workhorse test
+  artifacts:
+    expire_in: 30 days
+    paths:
+      - log/gitaly-test.log
+
+.workhorse:test:go-script:
+  script:
+    - make -C workhorse test-coverage 2>&1 | tee workhorse/test-output.txt
+    - |
+      make -C workhorse TEST_OPTIONS="-json" test 2>workhorse/test-output.err \
+      | go -C workhorse tool gitlab-test-metrics-exporter > workhorse/test-output.json || true
+    - cd workhorse && go run ../scripts/workhorse/go_coverage_to_lcov.go cover.out coverage.lcov
+
+.workhorse:test:go-artifacts:
+  coverage: '/\d+.\d+%/'
+  artifacts:
+    expire_in: 30 days
+    when: always
+    paths:
+      - workhorse/coverage.html
+      - workhorse/cover.out
+      - workhorse/coverage.lcov
+      - workhorse/test-output.json
+      - workhorse/test-output.err
+      - log/gitaly-test.log
+
+workhorse:test go:
+  extends:
+    - .workhorse:test
+    - .workhorse:test:go-artifacts
+  parallel:
+    matrix:
+      - GO_VERSION: ["1.25", "1.26", "1.27"]
+  variables:
+    GLCI_TEST_METRICS_RUN_TYPE: workhorse-go-${GO_VERSION}-redis-7.2
+  script:
+    - !reference [.workhorse:test:go-script, script]
+
+workhorse:test fips:
+  extends: .workhorse:test
+  needs:
+    - setup-test-env-fips
+  parallel:
+    matrix:
+      - GO_VERSION: ["1.25", "1.26", "1.27"]
+  image: ${REGISTRY_HOST}/${REGISTRY_GROUP}/gitlab-build-images/${BUILD_OS}-${OS_VERSION}-ruby-${RUBY_VERSION}-golang-${GO_VERSION}-rust-${RUST_VERSION}:rubygems-${RUBYGEMS_VERSION}-git-${GIT_VERSION}-exiftool-${EXIFTOOL_VERSION}
+  variables:
+    FIPS_MODE: 1
+    GOLANG_FIPS: 1
+    BUILD_OS: "ubi"
+    OS_VERSION: ${UBI_VERSION}
+
+workhorse:test race:
+  extends: .workhorse:test
+  script:
+    - make -C workhorse test-race
+
+# Weekly scheduled job: run the workhorse Go tests against Valkey instead of Redis
+# to validate compatibility before GitLab.com switches from Redis to Valkey.
+workhorse:test go valkey:
+  extends:
+    - .workhorse:test
+    - .workhorse:test:go-artifacts
+  services:
+    - name: valkey/valkey:7.2
+      alias: redis
+  parallel:
+    matrix:
+      - GO_VERSION: ["1.25", "1.26", "1.27"]
+  variables:
+    GLCI_TEST_METRICS_RUN_TYPE: workhorse-go-${GO_VERSION}-valkey-7.2
+  script:
+    - !reference [.workhorse:test:go-script, script]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "schedule" && $SCHEDULE_TYPE == "weekly"'
+
+workhorse-coverage:
+  extends:
+    - .workhorse-job-cache-pull
+    - .workhorse:rules:workhorse-coverage
+  image: ${GITLAB_DEPENDENCY_PROXY_ADDRESS}golang:${GO_VERSION}
+  stage: post-test
+  needs:
+    - job: workhorse:test go
+      artifacts: true
+      optional: true
+      parallel:
+        matrix:
+          - GO_VERSION: "1.26"
+  variables:
+    GO_VERSION: "1.26"
+  script:
+    - |
+      if [ ! -f "workhorse/test-output.json" ]; then
+        echo "Workhorse test output not found. Skipping coverage processing..."
+        exit 0
+      fi
+    - echo "Generating test report from Go test JSON output..."
+    - mkdir -p workhorse-test-reports
+    - cd workhorse && go run ../scripts/workhorse/generate_test_report.go test-output.json ../workhorse-test-reports/workhorse-tests.json
+    - cd ..
+    - mkdir -p workhorse-test-mapping
+    # Workhorse tests have feature_category: nil, so the test map is not used
+    # for category assignment. We provide an empty map to satisfy the required parameter.
+    - echo '{}' > workhorse-test-mapping/workhorse-source-to-test.json
+  artifacts:
+    expire_in: 31d
+    paths:
+      - workhorse/coverage.lcov
+      - workhorse/coverage.html
+      - workhorse-test-reports/
+      - workhorse-test-mapping/
+
+workhorse:logging-field-validator:
+  needs: []
+  stage: lint
+  extends:
+    - .workhorse-job-cache
+    - .workhorse:rules:workhorse
+    - .default-utils-before_script
+  script:
+    - make -C workhorse validate-log-fields

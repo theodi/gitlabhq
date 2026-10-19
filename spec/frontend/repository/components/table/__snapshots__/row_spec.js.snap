@@ -1,0 +1,178 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Repository table row component renders a symlink table row 1`] = `
+<tr
+  class="tree-item"
+  data-event-tracking="click_file_list_on_repository_page"
+>
+  <th
+    class="gl-cursor-default gl-font-normal gl-relative tree-item-file-name"
+    scope="row"
+  >
+    <a
+      class="gl-inline-flex gl-max-w-full gl-min-w-0 tree-item-link"
+      data-testid="file-name-link"
+      href="https://test.com"
+      title="test"
+    >
+      <file-icon-stub
+        class="gl-mr-2 gl-relative gl-text-subtle"
+        cssclasses="gl-relative file-icon"
+        filemode="120000"
+        filename="test"
+        size="16"
+      />
+      <gl-truncate-stub
+        class="gl-grow gl-min-w-0 hover:gl-underline"
+        position="end"
+        text="test"
+        withtooltip="true"
+      />
+    </a>
+    <gl-icon-stub
+      arialabel="Locked by Root"
+      class="gl-relative gl-z-1"
+      name="lock"
+      size="12"
+      title="Locked by Root"
+      variant="current"
+    />
+  </th>
+  <td
+    class="@sm/panel:gl-table-cell cursor-default gl-hidden tree-commit"
+  >
+    <gl-link-stub
+      class="gl-text-subtle str-truncated-100 tree-commit-link"
+    />
+  </td>
+  <td
+    class="cursor-default gl-text-right gl-text-subtle tree-time-ago"
+  >
+    <timeago-tooltip-stub
+      cssclass=""
+      datetimeformat="asDateTime"
+      href=""
+      time="2019-01-01"
+      tooltipplacement="top"
+    />
+  </td>
+</tr>
+`;
+
+exports[`Repository table row component renders table row 1`] = `
+<tr
+  class="tree-item"
+  data-event-tracking="click_file_list_on_repository_page"
+>
+  <th
+    class="gl-cursor-default gl-font-normal gl-relative tree-item-file-name"
+    scope="row"
+  >
+    <a
+      class="gl-inline-flex gl-max-w-full gl-min-w-0 tree-item-link"
+      data-testid="file-name-link"
+      href="https://test.com"
+      title="test"
+    >
+      <file-icon-stub
+        class="gl-mr-2 gl-relative gl-text-subtle"
+        cssclasses="gl-relative file-icon"
+        filemode=""
+        filename="test"
+        size="16"
+      />
+      <gl-truncate-stub
+        class="gl-grow gl-min-w-0 hover:gl-underline"
+        position="end"
+        text="test"
+        withtooltip="true"
+      />
+    </a>
+    <gl-icon-stub
+      arialabel="Locked by Root"
+      class="gl-relative gl-z-1"
+      name="lock"
+      size="12"
+      title="Locked by Root"
+      variant="current"
+    />
+  </th>
+  <td
+    class="@sm/panel:gl-table-cell cursor-default gl-hidden tree-commit"
+  >
+    <gl-link-stub
+      class="gl-text-subtle str-truncated-100 tree-commit-link"
+    />
+  </td>
+  <td
+    class="cursor-default gl-text-right gl-text-subtle tree-time-ago"
+  >
+    <timeago-tooltip-stub
+      cssclass=""
+      datetimeformat="asDateTime"
+      href=""
+      time="2019-01-01"
+      tooltipplacement="top"
+    />
+  </td>
+</tr>
+`;
+
+exports[`Repository table row component renders table row for path with special character 1`] = `
+<tr
+  class="tree-item"
+  data-event-tracking="click_file_list_on_repository_page"
+>
+  <th
+    class="gl-cursor-default gl-font-normal gl-relative tree-item-file-name"
+    scope="row"
+  >
+    <a
+      class="gl-inline-flex gl-max-w-full gl-min-w-0 tree-item-link"
+      data-testid="file-name-link"
+      href="https://test.com"
+      title="test"
+    >
+      <file-icon-stub
+        class="gl-mr-2 gl-relative gl-text-subtle"
+        cssclasses="gl-relative file-icon"
+        filemode=""
+        filename="test"
+        size="16"
+      />
+      <gl-truncate-stub
+        class="gl-grow gl-min-w-0 hover:gl-underline"
+        position="end"
+        text="test"
+        withtooltip="true"
+      />
+    </a>
+    <gl-icon-stub
+      arialabel="Locked by Root"
+      class="gl-relative gl-z-1"
+      name="lock"
+      size="12"
+      title="Locked by Root"
+      variant="current"
+    />
+  </th>
+  <td
+    class="@sm/panel:gl-table-cell cursor-default gl-hidden tree-commit"
+  >
+    <gl-link-stub
+      class="gl-text-subtle str-truncated-100 tree-commit-link"
+    />
+  </td>
+  <td
+    class="cursor-default gl-text-right gl-text-subtle tree-time-ago"
+  >
+    <timeago-tooltip-stub
+      cssclass=""
+      datetimeformat="asDateTime"
+      href=""
+      time="2019-01-01"
+      tooltipplacement="top"
+    />
+  </td>
+</tr>
+`;

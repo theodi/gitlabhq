@@ -1,0 +1,59 @@
+# frozen_string_literal: true
+
+module Banzai
+  class UploadsController < ApplicationController
+    include UploadsActions
+
+    skip_before_action :authenticate_user!
+    skip_before_action :check_two_factor_requirement
+
+    before_action :verify_workhorse_api!
+    before_action :verify_upload_model_class!
+    before_action :authorize_access!
+
+    feature_category :markdown
+
+    MODEL_CLASSES = {
+      'project' => Project,
+      'group' => Group
+    }.freeze
+
+    private
+
+    def verify_upload_model_class!
+      render_404 if upload_model_class.nil?
+    end
+
+    def authorize_access!
+      return if bypass_auth_checks_on_uploads?
+      return if can?(current_user, :"read_#{model.to_ability_name}", model)
+
+      route_not_found
+    end
+
+    def upload_params
+      params.permit(:model, :model_id)
+    end
+
+    def upload_model_class
+      MODEL_CLASSES[upload_params[:model]]
+    end
+
+    def uploader_class
+      case model
+      when Project
+        FileUploader
+      when Group
+        NamespaceFileUploader
+      end
+    end
+
+    def target_project
+      model if model.is_a?(Project)
+    end
+
+    def find_model
+      upload_model_class.find(upload_params[:model_id])
+    end
+  end
+end

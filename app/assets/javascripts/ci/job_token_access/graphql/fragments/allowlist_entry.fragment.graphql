@@ -1,0 +1,20 @@
+fragment AllowlistEntry on CiJobTokenScopeAllowlistEntry {
+  defaultPermissions
+  jobTokenPolicies
+  target {
+    ... on CiJobTokenAccessibleGroup {
+      id
+      name
+      fullPath
+      avatarUrl
+      webUrl
+    }
+    ... on CiJobTokenAccessibleProject {
+      id
+      name
+      fullPath
+      avatarUrl
+      webUrl
+    }
+  }
+}

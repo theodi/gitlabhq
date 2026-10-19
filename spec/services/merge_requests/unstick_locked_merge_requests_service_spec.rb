@@ -1,0 +1,374 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe MergeRequests::UnstickLockedMergeRequestsService, :clean_gitlab_redis_shared_state, feature_category: :code_review_workflow do
+  let_it_be(:project) { create(:project, :repository) }
+  let(:service) { described_class.new }
+
+  describe '#execute' do
+    context 'when merge job identified as completed' do
+      it 'updates merge request to merged when locked but has merge_commit_sha' do
+        allow(Gitlab::SidekiqStatus).to receive(:completed_jids).and_return(%w[123 456])
+        mr_with_sha = create(
+          :merge_request,
+          :locked,
+          source_project: project,
+          merge_jid: '123',
+          state: :locked,
+          merge_commit_sha: 'foo-bar-baz'
+        )
+
+        mr_without_sha = create(
+          :merge_request,
+          :locked,
+          source_project: project,
+          merge_jid: '123',
+          state: :locked,
+          merge_commit_sha: nil
+        )
+
+        mr_with_sha.add_to_locked_set
+        mr_without_sha.add_to_locked_set
+
+        service.execute
+
+        mr_with_sha.reload
+        mr_without_sha.reload
+        expect(mr_with_sha).to be_merged
+        expect(mr_without_sha).to be_opened
+        expect(mr_with_sha.merge_jid).to be_present
+        expect(mr_without_sha.merge_jid).to be_nil
+        expect(Gitlab::MergeRequests::LockedSet.all).to be_empty
+      end
+
+      it 'updates merge request to opened when locked but has not been merged', :sidekiq_might_not_need_inline do
+        allow(Gitlab::SidekiqStatus).to receive(:completed_jids).and_return(%w[123])
+
+        merge_request = create(
+          :merge_request,
+          :locked,
+          source_project: project,
+          merge_jid: '123',
+          state: :locked
+        )
+
+        pipeline = create(
+          :ci_pipeline,
+          project: merge_request.project,
+          ref: merge_request.source_branch,
+          sha: merge_request.source_branch_sha
+        )
+
+        merge_request.add_to_locked_set
+
+        service.execute
+
+        merge_request.reload
+        expect(merge_request).to be_opened
+        expect(merge_request.head_pipeline).to eq(pipeline)
+      end
+
+      it 'logs updated stuck merge job ids and errored MRs' do
+        allow(Gitlab::SidekiqStatus).to receive(:completed_jids).and_return(%w[100 123 456 789])
+
+        merged_mr = create(
+          :merge_request,
+          :locked,
+          source_project: project,
+          merge_jid: '100',
+          merge_commit_sha: 'abc123',
+          source_branch: 'improve/awesome'
+        )
+
+        mr_1 = create(
+          :merge_request,
+          :locked,
+          source_project: project,
+          merge_jid: '123',
+          source_branch: 'add_images_and_changes'
+        )
+
+        mr_2 = create(
+          :merge_request,
+          :locked,
+          source_project: project,
+          merge_jid: '456',
+          source_branch: 'feature_conflict'
+        )
+
+        broken_mr = create(:merge_request, :locked, source_project: project, merge_jid: '789')
+        broken_mr.update_attribute(:title, '')
+
+        merged_mr.add_to_locked_set
+        mr_1.add_to_locked_set
+        mr_2.add_to_locked_set
+        broken_mr.add_to_locked_set
+
+        expect(Gitlab::AppJsonLogger).to receive(:info)
+          .with(
+            class: described_class.name,
+            message: 'Marked locked merge request as merged',
+            merge_request_id: merged_mr.id,
+            merge_jid: '100'
+          )
+
+        expect(Gitlab::AppJsonLogger).to receive(:info)
+          .with(
+            class: described_class.name,
+            message: 'Reopened locked merge request',
+            merge_request_id: mr_1.id,
+            merge_jid: '123'
+          )
+
+        expect(Gitlab::AppJsonLogger).to receive(:info)
+          .with(
+            class: described_class.name,
+            message: 'Reopened locked merge request',
+            merge_request_id: mr_2.id,
+            merge_jid: '456'
+          )
+
+        expect(Gitlab::AppJsonLogger).to receive(:error)
+          .with(
+            class: described_class.name,
+            message: 'Failed to unlock locked merge request',
+            merge_request_id: broken_mr.id,
+            merge_jid: '789',
+            errors: ["Title can't be blank"]
+          )
+
+        service.execute
+
+        expect(broken_mr.reload).to be_locked
+        expect(Gitlab::MergeRequests::LockedSet.all).to eq([broken_mr.id.to_s])
+      end
+    end
+
+    context 'when merge job not identified as completed' do
+      it 'does not change merge request state when job is not completed yet' do
+        allow(Gitlab::SidekiqStatus).to receive(:completed_jids).and_return([])
+
+        merge_request = create(:merge_request, :locked, source_project: project, merge_jid: '123')
+        merge_request.add_to_locked_set
+
+        expect { service.execute }.not_to change { merge_request.reload.state }.from('locked')
+        expect(Gitlab::MergeRequests::LockedSet.all).not_to be_empty
+      end
+    end
+
+    context 'when a locked MR conflicts with a newer opened MR on the same source branch' do
+      # Reproduces #600038: MR A is stuck `locked` (its merge silently failed).
+      # A newer MR B is then opened for the same (source_branch, target_branch)
+      # pair, which is allowed because the duplicate-branch validation only
+      # considers `opened` MRs. When the unstick cron later tries to reopen A,
+      # `validate_branches` fails ("Another open merge request already exists..."),
+      # so `unlock_mr` returns false and A is left `locked` forever.
+      let!(:stuck_mr) do
+        create(:merge_request, :locked,
+          source_project: project, target_project: project,
+          source_branch: 'feature', target_branch: 'master',
+          merge_jid: nil)
+      end
+
+      let_it_be(:conflicting_mr) do
+        create(:merge_request,
+          source_project: project, target_project: project,
+          source_branch: 'feature', target_branch: 'master')
+      end
+
+      before do
+        stuck_mr.add_to_locked_set
+      end
+
+      it 'force-closes the stuck MR, logs it, and clears it from the locked set', :aggregate_failures do
+        expect(Gitlab::AppJsonLogger).to receive(:info)
+          .with(hash_including(
+            message: 'Force-closed stuck locked merge request',
+            merge_request_id: stuck_mr.id
+          ))
+          .and_call_original
+
+        service.execute
+
+        stuck_mr.reload
+        expect(stuck_mr).to be_closed
+        expect(Gitlab::MergeRequests::LockedSet.all).not_to include(stuck_mr.id.to_s)
+      end
+    end
+
+    context 'when MR is not locked but in locked set' do
+      let(:merge_request) { create(:merge_request, source_project: project) }
+
+      it 'gets removed from locked set' do
+        merge_request.add_to_locked_set
+
+        service.execute
+
+        expect(Gitlab::MergeRequests::LockedSet.all).to be_empty
+      end
+
+      it 'logs the stale removal' do
+        merge_request.add_to_locked_set
+
+        expect(Gitlab::AppJsonLogger).to receive(:info)
+          .with(
+            class: described_class.name,
+            message: 'Removed already-unlocked merge request from locked set',
+            merge_request_id: merge_request.id,
+            merge_jid: merge_request.merge_jid,
+            state: merge_request.state
+          )
+
+        service.execute
+      end
+    end
+
+    context 'when MR has no merge_jid' do
+      let(:merge_request) do
+        create(
+          :merge_request,
+          :locked,
+          source_project: project,
+          state: :locked,
+          merge_jid: nil
+        )
+      end
+
+      it 'unlocks the MR' do
+        merge_request.add_to_locked_set
+
+        expect { service.execute }
+          .to change { merge_request.reload.state }
+          .from('locked')
+          .to('opened')
+        expect(Gitlab::MergeRequests::LockedSet.all).to be_empty
+      end
+
+      it 'logs errors for MRs without merge_jid that fail to unlock' do
+        broken_mr = create(:merge_request, :locked, source_project: project, merge_jid: nil)
+        broken_mr.update_attribute(:title, '')
+
+        broken_mr.add_to_locked_set
+
+        expect(Gitlab::AppJsonLogger).to receive(:error)
+          .with(
+            class: described_class.name,
+            message: 'Failed to unlock locked merge request',
+            merge_request_id: broken_mr.id,
+            merge_jid: nil,
+            errors: ["Title can't be blank"]
+          )
+
+        service.execute
+
+        expect(broken_mr.reload).to be_locked
+        expect(Gitlab::MergeRequests::LockedSet.all).to eq([broken_mr.id.to_s])
+      end
+
+      context 'when there is merge exclusive lease' do
+        before do
+          merge_request.merge_exclusive_lease.try_obtain
+          merge_request.add_to_locked_set
+        end
+
+        it 'does not do anything' do
+          expect { service.execute }
+            .not_to change { merge_request.reload.state }
+            .from('locked')
+          expect(Gitlab::MergeRequests::LockedSet.all).not_to be_empty
+        end
+      end
+
+      context 'when MR changes were merged' do
+        shared_examples_for 'unsticks merged MR' do
+          it 'marks the MR as merged' do
+            expect { service.execute }
+              .to change { merge_request.reload.state }
+              .from('locked')
+              .to('merged')
+          end
+
+          context 'when there is merge exclusive lease' do
+            before do
+              merge_request.merge_exclusive_lease.try_obtain
+            end
+
+            it 'does not do anything' do
+              expect { service.execute }
+                .not_to change { merge_request.reload.state }
+                .from('locked')
+              expect(Gitlab::MergeRequests::LockedSet.all).not_to be_empty
+            end
+          end
+        end
+
+        context 'when merged_commit_sha is set' do
+          before do
+            merge_request.update!(merged_commit_sha: 'abc123')
+            merge_request.add_to_locked_set
+          end
+
+          it_behaves_like 'unsticks merged MR'
+        end
+
+        context 'when only merge_commit_sha is set' do
+          before do
+            merge_request.update!(merge_commit_sha: 'abc123')
+            merge_request.add_to_locked_set
+          end
+
+          it_behaves_like 'unsticks merged MR'
+        end
+
+        context 'when merged_commit_sha and merge_commit_sha is not set' do
+          before do
+            merge_request.add_to_locked_set
+          end
+
+          context 'and source_branch_sha is nil' do
+            before do
+              allow_next_found_instance_of(MergeRequest) do |mr|
+                allow(mr).to receive(:source_branch_sha).and_return(nil)
+              end
+            end
+
+            it 'unlocks the MR' do
+              expect { service.execute }
+                .to change { merge_request.reload.state }
+                .from('locked')
+                .to('opened')
+              expect(Gitlab::MergeRequests::LockedSet.all).to be_empty
+            end
+          end
+
+          context 'and target_branch_sha is nil' do
+            before do
+              allow_next_found_instance_of(MergeRequest) do |mr|
+                allow(mr).to receive(:target_branch_sha).and_return(nil)
+              end
+            end
+
+            it 'unlocks the MR' do
+              expect { service.execute }
+                .to change { merge_request.reload.state }
+                .from('locked')
+                .to('opened')
+              expect(Gitlab::MergeRequests::LockedSet.all).to be_empty
+            end
+          end
+
+          context 'and MR has no diffs anymore' do
+            before do
+              allow_next_found_instance_of(MergeRequest) do |mr|
+                allow(mr).to receive(:has_diffs?).and_return(false)
+              end
+            end
+
+            it_behaves_like 'unsticks merged MR'
+          end
+        end
+      end
+    end
+  end
+end

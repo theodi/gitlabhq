@@ -1,0 +1,29 @@
+- page_title @protected_ref.name, _("Protected Tags")
+
+.row.gl-mt-3.gl-mb-3
+  .gl-col-lg-3
+    %h4.gl-mt-0.ref-name
+      = @protected_ref.name
+
+  .gl-col-lg-9
+    %h5= s_("ProtectedTag|Matching Tags")
+    - if @gitaly_unavailable
+      = render 'shared/errors/gitaly_unavailable', reason: s_('ProtectedTag|Unable to load matching tags')
+    - elsif @matching_refs.present?
+      .table-responsive
+        %table.table.protected-tags-list
+          %colgroup
+            %col{ width: "30%" }
+            %col{ width: "30%" }
+          %thead
+            %tr
+              %th= s_("ProtectedTag|Tag")
+              %th= s_("ProtectedTag|Last commit")
+          %tbody
+            - @matching_refs.each do |matching_tag|
+              = render partial: "projects/protected_tags/shared/matching_tag", locals: { tag_name: matching_tag.name }
+        = render('kaminari/gitlab/without_count', previous_path: @prev_path, next_path: @next_path, event_tracking: nil)
+    - else
+      = render Pajamas::AlertComponent.new(variant: :warning, dismissible: false) do |c|
+        - c.with_body do
+          = s_("ProtectedTag|Couldn't find any matching tags.")

@@ -1,0 +1,251 @@
+# frozen_string_literal: true
+
+class SearchService
+  include Gitlab::Allowable
+  include Gitlab::Utils::StrongMemoize
+
+  DEFAULT_PER_PAGE = Gitlab::SearchResults::DEFAULT_PER_PAGE
+  MAX_PER_PAGE = 200
+
+  # Elasticsearch answers `from + size > index.max_result_window` with an HTTP
+  # 400, and GitLab overrides that setting nowhere, so the ES default applies.
+  # Not read back from the cluster, so raising it there has no effect here.
+  # The user-facing limit is documented in doc/api/search.md.
+  MAX_RESULT_WINDOW = 10_000
+
+  def self.supported_search_types
+    %w[basic]
+  end
+
+  attr_reader :params
+
+  def initialize(current_user, params = {})
+    @current_user = current_user
+    @params = Search::Params.new(params, detect_abuse: true)
+  end
+
+  def project
+    return unless params[:project_id].present?
+
+    the_project = Project.find_by_id(params[:project_id])
+    can?(current_user, :read_project, the_project) ? the_project : nil
+  end
+  strong_memoize_attr :project
+  def group
+    return unless params[:group_id].present?
+
+    the_group = Group.find_by_id(params[:group_id])
+    can?(current_user, :read_group, the_group) ? the_group : nil
+  end
+  strong_memoize_attr :group
+
+  def search_type_errors
+    # overridden in EE
+  end
+
+  def user_requested_scope
+    params[:scope]
+  end
+
+  def global_search?
+    project.blank? && group.blank?
+  end
+
+  def search_type
+    'basic'
+  end
+
+  def show_snippets?
+    params[:snippets] == 'true'
+  end
+  strong_memoize_attr :show_snippets?
+
+  delegate :scope, to: :search_service
+  delegate :valid_terms_count?, :valid_query_length?, to: :params
+
+  def search_results
+    abuse_detected? ? ::Search::EmptySearchResults.new : search_service.execute
+  end
+  strong_memoize_attr :search_results
+
+  def search_objects(preload_method = nil)
+    return @search_objects ||= results_beyond_result_window if page_beyond_result_window?
+
+    @search_objects ||= redact_unauthorized_results(
+      search_results.objects(scope, page: page, per_page: per_page, preload_method: preload_method)
+    )
+  end
+
+  def search_highlight
+    search_results.highlight_map(scope)
+  end
+
+  def search_aggregations
+    search_results.aggregations(scope)
+  end
+
+  def search_counts
+    search_results.counts(scope)
+  end
+
+  def abuse_detected?
+    params.abusive? || pipe_abuse_detector.abusive?
+  end
+  strong_memoize_attr :abuse_detected?
+
+  def abuse_messages
+    return [] unless abuse_detected?
+
+    params.abuse_detection.errors.full_messages
+  end
+
+  def level
+    @level ||=
+      if project
+        'project'
+      elsif group
+        'group'
+      else
+        'global'
+      end
+  end
+
+  def global_search_enabled_for_scope?
+    return false if show_snippets? && !::Gitlab::CurrentSettings.global_search_snippet_titles_enabled?
+
+    case params[:scope]
+    when 'issues', 'work_items'
+      ::Gitlab::CurrentSettings.global_search_work_items_enabled?
+    when 'merge_requests'
+      ::Gitlab::CurrentSettings.global_search_merge_requests_enabled?
+    when 'snippet_titles'
+      ::Gitlab::CurrentSettings.global_search_snippet_titles_enabled?
+    when 'users'
+      ::Gitlab::CurrentSettings.global_search_users_enabled?
+    when 'groups'
+      ::Gitlab::CurrentSettings.global_search_groups_enabled?
+    else
+      true
+    end
+  end
+
+  private
+
+  def pipe_abuse_detector
+    Search::PipeAbuseDetector.new(search_type, params)
+  end
+
+  # Advanced search cannot reach past MAX_RESULT_WINDOW. Serving an empty page at
+  # the requested offset, rather than clamping `page`, is what keeps `X-Page` and
+  # `rel="next"` honest for a client walking pages. Basic search (SQL OFFSET) and
+  # Zoekt have no result window, so both keep serving deep pages.
+  def page_beyond_result_window?
+    search_type == 'advanced' && page > max_page
+  end
+
+  # total_count sits at Kaminari's MAX_COUNT_LIMIT so that OffsetPagination omits
+  # X-Total instead of publishing a fabricated one; a smaller value is published.
+  def results_beyond_result_window
+    Kaminari.paginate_array([], total_count: MAX_RESULT_WINDOW, limit: per_page, offset: per_page * (page - 1))
+  end
+
+  def page
+    [1, params[:page].to_i].max
+  end
+
+  # The deepest page that keeps `from + per_page <= MAX_RESULT_WINDOW`, given
+  # that `from == per_page * (page - 1)`. The lower guard is defensive: per_page
+  # is in [1, 200] today, so max_page >= 50.
+  def max_page
+    [MAX_RESULT_WINDOW / per_page, 1].max
+  end
+
+  def per_page
+    per_page_param = params[:per_page].to_i
+
+    return DEFAULT_PER_PAGE unless per_page_param > 0
+
+    [MAX_PER_PAGE, per_page_param].min
+  end
+
+  def visible_result?(object)
+    return true unless object.respond_to?(:to_ability_name) && DeclarativePolicy.has_policy?(object)
+    return Ability.allowed?(current_user, :"read_#{object.to_ability_name}", object) unless scope == 'users'
+
+    # For user search, check member visibility permissions based on search level
+    case level
+    when 'project'
+      # Project level: :read_project always implies :read_project_member, so always allow
+      # The :read_project check happens in the #project method, which returns nil if denied
+      # If :read_project is denied, #project returns nil and #level returns 'global' instead
+      # Therefore, if we reach this branch, the user already has :read_project access
+      true
+    when 'group'
+      Ability.allowed?(current_user, :read_group_member, group)
+    else
+      Ability.allowed?(current_user, :read_users_list)
+    end
+  end
+
+  def redact_unauthorized_results(results_collection)
+    redacted_results = results_collection.reject { |object| visible_result?(object) }
+
+    if redacted_results.any?
+      redacted_log = redacted_results.each_with_object({}) do |object, memo|
+        memo[object.id] = { ability: :"read_#{object.to_ability_name}", id: object.id, class_name: object.class.name }
+      end
+
+      log_redacted_search_results(redacted_log.values)
+
+      return results_collection.id_not_in(redacted_log.keys) if results_collection.is_a?(ActiveRecord::Relation)
+    end
+
+    return results_collection if results_collection.is_a?(ActiveRecord::Relation)
+
+    permitted_results = results_collection - redacted_results
+
+    Kaminari.paginate_array(
+      permitted_results,
+      total_count: results_collection.total_count,
+      limit: results_collection.limit_value,
+      offset: results_collection.offset_value
+    )
+  end
+
+  def log_redacted_search_results(filtered_results)
+    request_info = {
+      class: self.class.name,
+      message: 'redacted_search_results',
+      filtered: filtered_results,
+      query: params[:search],
+      "meta.search.type": search_type,
+      "meta.search.level": level,
+      "meta.search.scope": scope,
+      "meta.search.group_id": group&.id,
+      "meta.search.project_id": project&.id
+    }
+
+    logger.error(request_info)
+  end
+
+  def logger
+    @logger ||= ::Gitlab::RedactedSearchResultsLogger.build
+  end
+
+  def search_service
+    @search_service ||=
+      if project
+        Search::ProjectService.new(current_user, project, params)
+      elsif show_snippets?
+        Search::SnippetService.new(current_user, params)
+      elsif group
+        Search::GroupService.new(current_user, group, params)
+      else
+        Search::GlobalService.new(current_user, params)
+      end
+  end
+
+  attr_reader :current_user
+end
+
+SearchService.prepend_mod_with('SearchService')

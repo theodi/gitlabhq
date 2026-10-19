@@ -1,0 +1,634 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe SentNotification, :request_store, feature_category: :notifications do
+  let_it_be(:user) { create(:user) }
+  let_it_be(:group) { create(:group) }
+  let_it_be(:project) { create(:project, :repository, group: group) }
+
+  describe 'validation' do
+    describe 'note validity' do
+      context "when the project doesn't match the noteable's project" do
+        subject { build(:sent_notification, noteable: create(:issue)) }
+
+        it "is invalid" do
+          expect(subject).not_to be_valid
+        end
+      end
+
+      context "when the project doesn't match the discussion project" do
+        let(:discussion_id) { create(:note).discussion_id }
+
+        subject { build(:sent_notification, in_reply_to_discussion_id: discussion_id) }
+
+        it "is invalid" do
+          expect(subject).not_to be_valid
+        end
+      end
+
+      context "when the noteable project and discussion project match" do
+        let_it_be(:project) { create(:project, :small_repo) }
+        let_it_be(:issue) { create(:issue, project: project) }
+        let_it_be(:discussion_id) { create(:note, project: project, noteable: issue).discussion_id }
+
+        subject { build(:sent_notification, project: project, noteable: issue, in_reply_to_discussion_id: discussion_id) }
+
+        it "is valid" do
+          expect(subject).to be_valid
+        end
+      end
+    end
+  end
+
+  describe 'associations' do
+    subject { build(:sent_notification) }
+
+    it { is_expected.to belong_to(:issue_email_participant) }
+  end
+
+  describe 'callbacks' do
+    describe '#ensure_sharding_key' do
+      let(:additional_args) { {} }
+
+      subject(:notification_namespace_id) do
+        record = described_class.new(noteable: noteable, **additional_args)
+        record.valid?
+
+        record.namespace_id
+      end
+
+      context 'when noteable is a DesignManagement::Design' do
+        let(:noteable) { create(:design, issue: create(:issue, project: project)).reload }
+
+        it { is_expected.to eq(project.project_namespace_id) }
+      end
+
+      context 'when noteable is a Issue' do
+        let(:noteable) { create(:issue, project: project) }
+
+        it { is_expected.to eq(noteable.namespace_id) }
+      end
+
+      context 'when noteable is a MergeRequest' do
+        let(:noteable) { create(:merge_request, source_project: project) }
+
+        it { is_expected.to eq(project.project_namespace_id) }
+      end
+
+      context 'when noteable is a ProjectSnippet' do
+        let(:noteable) { create(:project_snippet, project: project) }
+
+        it { is_expected.to eq(project.project_namespace_id) }
+      end
+
+      context 'when noteable is a Commit' do
+        let(:commit) { create(:commit, project: project) }
+        let(:noteable) { nil }
+        let(:additional_args) { { project: project, noteable_type: commit.class.name, commit_id: commit.id } }
+
+        it { is_expected.to eq(project.project_namespace_id) }
+      end
+
+      context 'when noteable type is not supported' do
+        let(:noteable) { create(:personal_snippet) }
+
+        it 'raises an error' do
+          expect do
+            notification_namespace_id
+          end.to raise_error(SentNotification::INVALID_NOTEABLE)
+        end
+      end
+    end
+  end
+
+  shared_examples 'a successful sent notification' do
+    it 'creates a new SentNotification' do
+      expect { subject }.to change { described_class.count }.by(1)
+    end
+  end
+
+  shared_examples 'a non-sticky write' do
+    it 'writes without sticking to primary' do
+      subject
+
+      Gitlab::Database::LoadBalancing.each_load_balancer do |lb|
+        expect(Gitlab::Database::LoadBalancing::SessionMap.current(lb).use_primary?).to be false
+      end
+    end
+  end
+
+  describe 'sliding_list partitioning' do
+    let(:partition_manager) { Gitlab::Database::Partitioning::PartitionManager.new(described_class) }
+    let(:active_partition) { described_class.partitioning_strategy.active_partition }
+
+    describe 'next_partition_if callback' do
+      subject(:value) { described_class.partitioning_strategy.next_partition_if.call(active_partition) }
+
+      context 'when the partition is empty' do
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the partition has records' do
+        before do
+          create(:sent_notification, project: project)
+          create(:sent_notification, project: project)
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the first record of the partition is older than PARTITION_DURATION' do
+        before do
+          create(:sent_notification,
+            project: project,
+            created_at: (described_class::PARTITION_DURATION + 1.day).ago
+          )
+          create(:sent_notification)
+        end
+
+        it { is_expected.to be(true) }
+      end
+    end
+
+    describe 'detach_partition_if' do
+      subject { described_class.partitioning_strategy.detach_partition_if.call(active_partition) }
+
+      context 'when the partition is empty' do
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the partition has records' do
+        before do
+          create(:sent_notification, project: project)
+          create(:sent_notification, project: project)
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when partition has records older than retention period, but newest record is within retention period' do
+        before do
+          create(:sent_notification,
+            project: project,
+            created_at: (described_class::RETENTION_PERIOD + 2.days).ago
+          )
+          create(:sent_notification,
+            project: project,
+            created_at: (described_class::RETENTION_PERIOD - 1.day).ago
+          )
+        end
+
+        it { is_expected.to be(false) }
+      end
+
+      context 'when the newest record of the partition is older than RETENTION_PERIOD' do
+        before do
+          create(:sent_notification,
+            project: project,
+            created_at: (described_class::RETENTION_PERIOD + 2.days).ago
+          )
+          create(:sent_notification,
+            project: project,
+            created_at: (described_class::RETENTION_PERIOD + 1.day).ago
+          )
+        end
+
+        it { is_expected.to be(true) }
+      end
+    end
+  end
+
+  describe '.create' do
+    it 'sets partition after saving the record' do
+      sent_notification = create(:sent_notification, project: project)
+
+      new = described_class.new(
+        sent_notification.attributes.except('id', 'partition').merge(reply_key: described_class.reply_key)
+      )
+
+      expect { new.save! }.to change { new.partition }.from(nil).to(instance_of(Integer))
+    end
+  end
+
+  describe '.for' do
+    let_it_be_with_reload(:sent_notification) { create(:sent_notification, project: project) }
+
+    subject(:found_sent_notification) { described_class.for(reply_key) }
+
+    context 'when reply_key is not a string' do
+      let(:reply_key) { nil }
+
+      it { is_expected.to be_nil }
+    end
+
+    context 'when reply key uses old format' do
+      let_it_be(:sent_notification) { create(:sent_notification, :legacy_reply_key, project: project) }
+      let(:reply_key) { sent_notification.reply_key }
+
+      it { is_expected.to eq(sent_notification) }
+
+      context 'when more than one record exists with the same reply_key' do
+        before do
+          sent_notification.dup.save!
+        end
+
+        it { is_expected.to be_nil }
+      end
+    end
+
+    context 'when reply key uses partitioned table format' do
+      let_it_be(:sent_notification) { create(:sent_notification, project: project) }
+      let_it_be(:reply_key) do
+        sent_notification.partitioned_reply_key
+      end
+
+      it { is_expected.to eq(sent_notification) }
+
+      context 'when more than one record exists with the same reply_key' do
+        before do
+          sent_notification.dup.save!
+        end
+
+        it { is_expected.to be_nil }
+      end
+
+      context 'when the partitioned table format does not include namespace_id' do
+        let(:reply_key) { sent_notification.partitioned_reply_key.gsub(/-[0-9a-z]+\z/, '') }
+
+        it { is_expected.to eq(sent_notification) }
+      end
+
+      context 'when partition needs not be decoded' do
+        let(:reply_key) { sent_notification.partitioned_reply_key.gsub(/\A[0-9a-z]+/, 'z') }
+
+        it 'decodes the partition before querying the database' do
+          expect { found_sent_notification }.to make_queries_matching(/"partition" = 35/)
+        end
+      end
+    end
+
+    context 'when a namespace_id is given' do
+      let_it_be(:sent_notification) { create(:sent_notification, project: project) }
+      let(:reply_key) { sent_notification.partitioned_reply_key }
+
+      subject(:found_sent_notification) { described_class.for(reply_key, namespace_id) }
+
+      context 'when the namespace_id matches' do
+        let(:namespace_id) { sent_notification.namespace_id }
+
+        it { is_expected.to eq(sent_notification) }
+
+        it 'scopes the query by namespace_id' do
+          expect { found_sent_notification }.to make_queries_matching(/"namespace_id" = #{namespace_id}/)
+        end
+      end
+
+      context 'when the namespace_id does not match' do
+        let(:namespace_id) { non_existing_record_id }
+
+        it { is_expected.to be_nil }
+      end
+
+      context 'when the reply key uses the legacy format' do
+        let_it_be(:sent_notification) { create(:sent_notification, :legacy_reply_key, project: project) }
+        let(:reply_key) { sent_notification.reply_key }
+        let(:namespace_id) { sent_notification.namespace_id }
+
+        it { is_expected.to eq(sent_notification) }
+      end
+    end
+  end
+
+  describe '.record' do
+    let_it_be(:issue) { create(:issue) }
+
+    subject(:sent_notification) { described_class.record(issue, user.id) }
+
+    it_behaves_like 'a successful sent notification'
+    it_behaves_like 'a non-sticky write'
+
+    context 'with issue email participant' do
+      let!(:issue_email_participant) { create(:issue_email_participant, issue: issue) }
+
+      subject(:sent_notification) do
+        described_class.record(issue, user.id, {
+          issue_email_participant: issue_email_participant
+        })
+      end
+
+      it 'saves the issue_email_participant' do
+        expect(sent_notification.issue_email_participant).to eq(issue_email_participant)
+      end
+    end
+  end
+
+  describe '.record_note' do
+    subject { described_class.record_note(note, note.author.id) }
+
+    context 'for a diff_note_on_merge_request' do
+      let_it_be(:note) { create(:diff_note_on_merge_request) }
+
+      it_behaves_like 'a successful sent notification'
+      it_behaves_like 'a non-sticky write'
+
+      it 'sets in_reply_to_discussion_id' do
+        expect(subject.in_reply_to_discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for a discussion note' do
+      let_it_be(:note) { create(:discussion_note) }
+
+      it 'sets in_reply_to_discussion_id' do
+        expect(subject.in_reply_to_discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for an individual note' do
+      let_it_be(:note) { create(:note_on_merge_request) }
+
+      it_behaves_like 'a successful sent notification'
+      it_behaves_like 'a non-sticky write'
+
+      it 'sets in_reply_to_discussion_id' do
+        expect(subject.in_reply_to_discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for a design note' do
+      let_it_be(:note) { create(:note_on_design, project: project) }
+
+      it 'does not set in_reply_to_discussion_id' do
+        expect(subject.in_reply_to_discussion_id).to be_nil
+      end
+    end
+  end
+
+  describe '#partitioned_reply_key' do
+    let_it_be(:sent_notification) { create(:sent_notification, project: project) }
+
+    subject { sent_notification.partitioned_reply_key }
+
+    it { is_expected.to match(Gitlab::EmailHandler::ReplyKey::PARTITIONED_REPLY_KEY_REGEX) }
+
+    # This might seem a bit redundant, but here `namespace_id` is not optional
+    it { is_expected.to match(/\A[0-9a-z]{1,4}-[0-9a-z]{25}-[0-9a-z]{1,13}\z/) }
+
+    context 'when sent_notification is not persisted' do
+      let(:sent_notification) { build(:sent_notification) }
+
+      it { is_expected.to eq(sent_notification.reply_key) }
+    end
+  end
+
+  describe '#unsubscribable?' do
+    shared_examples 'an unsubscribable notification' do |noteable_type|
+      subject { described_class.record(noteable, user.id) }
+
+      context "for #{noteable_type}" do
+        it { expect(subject).to be_unsubscribable }
+      end
+    end
+
+    shared_examples 'a non-unsubscribable notification' do |noteable_type|
+      subject { described_class.record(noteable, user.id) }
+
+      context "for a #{noteable_type}" do
+        it { expect(subject).not_to be_unsubscribable }
+      end
+    end
+
+    it_behaves_like 'an unsubscribable notification', 'issue' do
+      let(:noteable) { create(:issue, project: project) }
+    end
+
+    it_behaves_like 'an unsubscribable notification', 'merge request' do
+      let(:noteable) { create(:merge_request, source_project: project) }
+    end
+
+    it_behaves_like 'a non-unsubscribable notification', 'commit' do
+      let_it_be(:project) { create(:project, :small_repo) }
+      let(:noteable) { project.commit }
+    end
+
+    it_behaves_like 'a non-unsubscribable notification', 'project snippet' do
+      let(:noteable) { create(:project_snippet, project: project) }
+    end
+  end
+
+  describe '#for_commit?' do
+    shared_examples 'a commit notification' do |noteable_type|
+      subject { described_class.record(noteable, user.id) }
+
+      context "for #{noteable_type}" do
+        it { expect(subject).to be_for_commit }
+      end
+    end
+
+    shared_examples 'a non-commit notification' do |noteable_type|
+      subject { described_class.record(noteable, user.id) }
+
+      context "for a #{noteable_type}" do
+        it { expect(subject).not_to be_for_commit }
+      end
+    end
+
+    it_behaves_like 'a non-commit notification', 'issue' do
+      let(:noteable) { create(:issue, project: project) }
+    end
+
+    it_behaves_like 'a non-commit notification', 'merge request' do
+      let(:noteable) { create(:merge_request, source_project: project) }
+    end
+
+    it_behaves_like 'a commit notification', 'commit' do
+      let_it_be(:project) { create(:project, :small_repo) }
+      let(:noteable) { project.commit }
+    end
+
+    it_behaves_like 'a non-commit notification', 'project snippet' do
+      let(:noteable) { create(:project_snippet, project: project) }
+    end
+  end
+
+  describe '#for_snippet?' do
+    shared_examples 'a snippet notification' do |noteable_type|
+      subject { described_class.record(noteable, user.id) }
+
+      context "for #{noteable_type}" do
+        it { expect(subject).to be_for_snippet }
+      end
+    end
+
+    shared_examples 'a non-snippet notification' do |noteable_type|
+      subject { described_class.record(noteable, user.id) }
+
+      context "for a #{noteable_type}" do
+        it { expect(subject).not_to be_for_snippet }
+      end
+    end
+
+    it_behaves_like 'a non-snippet notification', 'issue' do
+      let(:noteable) { create(:issue, project: project) }
+    end
+
+    it_behaves_like 'a non-snippet notification', 'merge request' do
+      let(:noteable) { create(:merge_request, source_project: project) }
+    end
+
+    it_behaves_like 'a non-snippet notification', 'commit' do
+      let_it_be(:project) { create(:project, :small_repo) }
+      let(:noteable) { project.commit }
+    end
+
+    it_behaves_like 'a snippet notification', 'project snippet' do
+      let(:noteable) { create(:project_snippet, project: project) }
+    end
+  end
+
+  describe '#create_reply' do
+    context 'for issue' do
+      let(:issue) { create(:issue) }
+
+      subject { described_class.record(issue, issue.author.id) }
+
+      it 'creates a comment on the issue' do
+        note = subject.create_reply('Test')
+        expect(note.in_reply_to?(issue)).to be_truthy
+      end
+    end
+
+    context 'for issue comment' do
+      let(:note) { create(:note_on_issue) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'converts the comment to a discussion on the issue' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for issue discussion' do
+      let(:note) { create(:discussion_note_on_issue) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'creates a reply on the discussion' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for merge request' do
+      let(:merge_request) { create(:merge_request) }
+
+      subject { described_class.record(merge_request, merge_request.author.id) }
+
+      it 'creates a comment on the merge_request' do
+        note = subject.create_reply('Test')
+        expect(note.in_reply_to?(merge_request)).to be_truthy
+      end
+    end
+
+    context 'for merge request comment' do
+      let(:note) { create(:note_on_merge_request) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'converts the comment to a discussion on the merge request' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for merge request diff discussion' do
+      let(:note) { create(:diff_note_on_merge_request) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'creates a reply on the discussion' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for merge request non-diff discussion' do
+      let(:note) { create(:discussion_note_on_merge_request) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'creates a reply on the discussion' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for commit' do
+      let_it_be(:project) { create(:project, :small_repo) }
+      let(:commit) { project.commit }
+
+      subject { described_class.record(commit, project.creator.id) }
+
+      it 'creates a comment on the commit' do
+        note = subject.create_reply('Test')
+        expect(note.in_reply_to?(commit)).to be_truthy
+      end
+    end
+
+    context 'for commit comment' do
+      let(:note) { create(:note_on_commit) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'creates a comment on the commit' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).not_to eq(note.discussion_id)
+      end
+    end
+
+    context 'for commit diff discussion' do
+      let(:note) { create(:diff_note_on_commit) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'creates a reply on the discussion' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).to eq(note.discussion_id)
+      end
+    end
+
+    context 'for commit non-diff discussion' do
+      let(:note) { create(:discussion_note_on_commit) }
+
+      subject { described_class.record_note(note, note.author.id) }
+
+      it 'creates a reply on the discussion' do
+        new_note = subject.create_reply('Test')
+        expect(new_note.in_reply_to?(note)).to be_truthy
+        expect(new_note.discussion_id).to eq(note.discussion_id)
+      end
+    end
+  end
+
+  describe '#noteable' do
+    context 'when finding a commit fails' do
+      let!(:commit) { project.commit }
+      let!(:sent_notification) { described_class.record(commit, user) }
+
+      it 'returns nil' do
+        allow(project).to receive(:commit).and_raise(StandardError)
+
+        expect(sent_notification.noteable).to be_nil
+      end
+    end
+  end
+end

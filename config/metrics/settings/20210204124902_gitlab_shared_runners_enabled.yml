@@ -1,0 +1,23 @@
+---
+data_category: operational
+key_path: gitlab_shared_runners_enabled
+description: Whether shared runners is enabled
+product_group: runner_core
+product_categories:
+- runner_core
+value_type: boolean
+status: active
+time_frame: none
+data_source: system
+instrumentation_class: GitlabConfigMetric
+options:
+  config:
+    gitlab_ci: shared_runners_enabled
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type:
+- customer_health_score
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/51974

@@ -1,0 +1,37 @@
+---
+start-release-environments-security-pipeline:
+  allow_failure: false
+  extends:
+    - .release-environments:rules:start-release-environments-security-pipeline
+  stage: release-environments
+  # We do not want to have ALL global variables passed as trigger variables,
+  # as they cannot be overridden. See this issue for more context:
+  #
+  # https://gitlab.com/gitlab-org/gitlab/-/issues/387183
+  needs:
+    - compile-production-assets
+    # Gate on the combined assets image so the downstream deploy doesn't pull a stale Webpack-only one.
+    - build-assets-image
+    - build-qa-image
+  inherit:
+    variables:
+      - RUBY_VERSION_DEFAULT
+      - RUBY_VERSION_NEXT
+      - RUBY_VERSION
+      - REGISTRY_GROUP
+      - REGISTRY_HOST
+      - GIT_VERSION
+      - DOCKER_VERSION
+  # These variables are set in the pipeline schedules.
+  # They need to be explicitly passed on to the child pipeline.
+  # https://docs.gitlab.com/ci/pipelines/downstream_pipelines/#pass-yaml-defined-cicd-variables
+  variables:
+    # used by build-cng-env to pass assets image tag to downstream CNG build pipeline
+    GLCI_ASSETS_IMAGE_TAG: $GLCI_ASSETS_IMAGE_TAG
+  trigger:
+    strategy: depend
+    include:
+      - project: 'gitlab-org/security/gitlab'
+        ref: '$CI_COMMIT_REF_NAME'
+        file: '.gitlab/ci/release-environments/security.gitlab-ci.yml'
+  resource_group: release-environment-${CI_COMMIT_REF_SLUG}

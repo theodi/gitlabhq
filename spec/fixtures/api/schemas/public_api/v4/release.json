@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "required": ["name", "tag_name", "commit", "released_at"],
+  "properties": {
+    "name": { "type": "string" },
+    "tag_name": { "type": "string" },
+    "description": { "type": "string" },
+    "description_html": { "type": "string" },
+    "created_at": { "type": "string" , "format": "date-time"},
+    "released_at": { "type": "string", "format": "date-time" },
+    "upcoming_release": { "type": "boolean" },
+    "commit": {
+      "oneOf": [{ "type": "null" }, { "$ref": "commit/basic.json" }]
+    },
+    "author": {
+      "oneOf": [{ "type": "null" }, { "$ref": "user/basic.json" }]
+    },
+    "milestones": {
+      "type": "array",
+      "items": { "$ref": "milestone_with_stats.json" }
+    },
+    "commit_path": { "type": "string" },
+    "tag_path": { "type": "string" },
+    "evidences": {
+      "type": "array",
+      "items": { "$ref": "release/evidence.json" }
+    },
+    "assets": {
+      "required": ["count", "links", "sources"],
+      "properties": {
+        "count": { "type": "integer" },
+        "links": { "$ref": "../../release/links.json" },
+        "sources": {
+          "type": "array",
+          "items": {
+            "format": "zip",
+            "url": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "_links": {
+      "properties": {
+        "edit_url": { "type": "string" }
+      }
+    }
+  },
+  "additionalProperties": false
+}

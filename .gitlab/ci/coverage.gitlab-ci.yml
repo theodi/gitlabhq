@@ -1,0 +1,184 @@
+# Coverage export jobs for both RSpec and Jest test suites
+
+.coverage-export-base:
+  extends:
+    - .default-retry
+    - .ruby-cache
+  stage: post-test
+  allow_failure: true
+  before_script:
+    - !reference [.default-utils-before_script, before_script]
+    - eval "bundle install ${BUNDLE_INSTALL_FLAGS}"
+  variables:
+    CLICKHOUSE_URL: $GLCI_DA_CLICKHOUSE_URL
+    CLICKHOUSE_DATABASE: $GLCI_CLICKHOUSE_CODE_COVERAGE_DB
+    CLICKHOUSE_SHARED_DB: $GLCI_CLICKHOUSE_SHARED_DB
+    CLICKHOUSE_USERNAME: $GLCI_CLICKHOUSE_METRICS_USERNAME
+    # Note: GLCI_CLICKHOUSE_METRICS_PASSWORD is read directly from the environment
+    # by the test-coverage script and is not passed via CLI for security reasons
+
+test-coverage:export-rspec-and-e2e:
+  extends:
+    - .coverage-export-base
+    - .rails:rules:coverage-export-rspec-and-e2e
+  stage: post-qa
+  needs:
+    - job: e2e:test-on-cng
+      optional: true
+    - job: rspec:coverage
+      optional: true
+    - job: update-tests-metadata
+      optional: true
+  variables:
+    BRIDGE_NAME: 'e2e:test-on-cng'
+    JOB_NAME: 'process-e2e-coverage'
+  script:
+    - ruby scripts/coverage/download_artifacts_from_child_pipeline.rb
+    - ruby scripts/coverage/merge_backend_coverage.rb
+    - echo "Merging E2E test mappings with Crystalball mappings..."
+    - ruby scripts/coverage/merge_e2e_backend_test_mapping.rb
+    - ruby scripts/coverage/backend_coverage_exporter.rb || true
+    - echo "Exporting E2E per-test coverage (Coverband backend + Istanbul frontend)..."
+    - bundle exec test-coverage --per-test-coverage 'coverage-e2e-backend/coverband-coverage-*.json' --clickhouse-url "${CLICKHOUSE_URL}" --clickhouse-database "${CLICKHOUSE_DATABASE}" --clickhouse-username "${CLICKHOUSE_USERNAME}" || true
+    - bundle exec test-coverage --per-test-coverage 'coverage-e2e-per-test-frontend/per-test-coverage-e2e-frontend-*.json' --clickhouse-url "${CLICKHOUSE_URL}" --clickhouse-database "${CLICKHOUSE_DATABASE}" --clickhouse-username "${CLICKHOUSE_USERNAME}" || true
+  artifacts:
+    paths:
+      - coverage-backend/
+      - coverage-e2e-backend/
+      - coverage-e2e-per-test-frontend/
+      - coverage/
+      - crystalball/
+      - rspec/
+      - e2e-test-reports/
+    expire_in: 7d
+
+test-coverage:export-jest-and-e2e:
+  extends:
+    - .coverage-export-base
+    - .with-ci-node-image
+    - .yarn-cache
+    - .frontend:rules:coverage-export-jest-and-e2e
+  stage: post-qa
+  needs:
+    - job: e2e:test-on-cng
+      optional: true
+    - job: coverage-frontend
+      optional: true
+  before_script:
+    - !reference [.default-utils-before_script, before_script]
+    - eval "bundle install ${BUNDLE_INSTALL_FLAGS}"
+    - source scripts/utils.sh
+    - yarn_install_script
+  variables:
+    BRIDGE_NAME: 'e2e:test-on-cng'
+    JOB_NAME: 'process-e2e-coverage'
+  script:
+    - ruby scripts/coverage/download_artifacts_from_child_pipeline.rb
+    - echo "Merging Jest + E2E coverage..."
+    - node scripts/frontend/merge_coverage_frontend.js
+    - echo "Merging E2E test mappings with Jest mappings..."
+    - node scripts/frontend/merge_e2e_frontend_test_mapping.js
+    - ruby scripts/coverage/frontend_coverage_exporter.rb || true
+  artifacts:
+    paths:
+      - coverage-frontend/
+      - coverage-e2e-frontend/
+      - jest-reports/
+      - jest-test-mapping/
+      - e2e-test-reports/
+    expire_in: 7d
+
+test-coverage:export-per-test-rspec:
+  extends:
+    - .coverage-export-base
+    - .per-test-coverage:rules:delta
+  stage: post-qa
+  # parallel:N splits the rspec shards across nodes. The downloader reads
+  # CI_NODE_INDEX and CI_NODE_TOTAL and inserts a disjoint slice per node, so a
+  # big-delta capture is no longer one long serial download and insert.
+  # Aggregation runs once afterwards in test-coverage:aggregate-per-test.
+  parallel: 4
+  needs:
+    - job: per-test-coverage:trigger
+      artifacts: false
+  variables:
+    JOB_PATTERN: '^rspec(-ee)? .+ per-test-coverage( [0-9]+/[0-9]+)?$'
+  script:
+    # Stream: download a batch of shards, insert them into ClickHouse, delete
+    # them, then fetch the next batch. The old download-all-then-insert model
+    # held every shard's ndjson on disk at once, and a full-bucket capture
+    # exhausted the runner (Errno::ENOSPC).
+    - |
+      ruby scripts/coverage/download_per_test_coverage_artifacts.rb \
+        --pattern "$JOB_PATTERN" \
+        --batch-size 10 \
+        --output-glob 'tmp/per-test-coverage-rspec-*.ndjson' \
+        --process-command "bundle exec test-coverage --per-test-coverage 'tmp/per-test-coverage-rspec-*.ndjson' --test-reports 'rspec/rspec-*.json' --skip-aggregation --clickhouse-url ${CLICKHOUSE_URL} --clickhouse-database ${CLICKHOUSE_DATABASE} --clickhouse-shared-database ${CLICKHOUSE_SHARED_DB} --clickhouse-username ${CLICKHOUSE_USERNAME}"
+
+test-coverage:export-per-test-jest:
+  extends:
+    - .coverage-export-base
+    - .per-test-coverage:rules:delta
+  stage: post-qa
+  needs:
+    - job: per-test-coverage:trigger
+      artifacts: false
+  variables:
+    JOB_PATTERN: '^jest(-with-fixtures)? per-test-coverage( [0-9]+/[0-9]+)?$'
+  script:
+    # Stream (see export-per-test-rspec): batch download, insert, delete, repeat.
+    - |
+      ruby scripts/coverage/download_per_test_coverage_artifacts.rb \
+        --pattern "$JOB_PATTERN" \
+        --batch-size 10 \
+        --output-glob 'tmp/per-test-coverage-jest-*.json' \
+        --process-command "bundle exec test-coverage --per-test-coverage 'tmp/per-test-coverage-jest-*.json' --skip-aggregation --clickhouse-url ${CLICKHOUSE_URL} --clickhouse-database ${CLICKHOUSE_DATABASE} --clickhouse-username ${CLICKHOUSE_USERNAME}"
+
+test-coverage:aggregate-per-test:
+  extends:
+    - .coverage-export-base
+    - .per-test-coverage:rules:delta
+  stage: post-qa
+  needs:
+    - job: test-coverage:export-per-test-rspec
+      artifacts: false
+    - job: test-coverage:export-per-test-jest
+      artifacts: false
+  script:
+    # The rspec and jest exports insert with --skip-aggregation, the rspec one
+    # across parallel nodes. Run the table-wide aggregation exactly once here,
+    # after every shard has landed, so a full-bucket capture aggregates a single
+    # time instead of once per node.
+    - bundle exec test-coverage --run-aggregation --clickhouse-url "${CLICKHOUSE_URL}" --clickhouse-database "${CLICKHOUSE_DATABASE}" --clickhouse-username "${CLICKHOUSE_USERNAME}"
+
+test-coverage:export-workhorse:
+  extends:
+    - .coverage-export-base
+    - .workhorse:rules:workhorse-coverage
+  needs:
+    - job: workhorse-coverage
+      optional: true
+  script:
+    - ruby scripts/coverage/workhorse_coverage_exporter.rb || true
+  artifacts:
+    paths:
+      - workhorse/
+      - workhorse-test-reports/
+      - workhorse-test-mapping/
+    expire_in: 7d
+
+sync-category-owners:
+  extends:
+    - .default-retry
+    - .ruby-cache
+    - .rails:rules:sync-category-owners
+  stage: post-qa
+  needs: []
+  before_script:
+    - !reference [.default-utils-before_script, before_script]
+    - eval "bundle install ${BUNDLE_INSTALL_FLAGS}"
+  script:
+    - bundle exec sync-category-owners
+        --clickhouse-url "${GLCI_DA_CLICKHOUSE_URL}"
+        --clickhouse-database "${GLCI_CLICKHOUSE_SHARED_DB}"
+        --clickhouse-username "${GLCI_CLICKHOUSE_METRICS_USERNAME}"

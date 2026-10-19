@@ -1,0 +1,16 @@
+---
+description: View Runners clicked after group runner creation
+internal_events: true
+action: click_view_runners_button_in_new_group_runner_form
+identifiers:
+  - namespace
+  - user
+product_group: runner_core
+product_categories:
+  - runner_core
+milestone: '16.10'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/146063
+tiers:
+  - free
+  - premium
+  - ultimate

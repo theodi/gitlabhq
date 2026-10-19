@@ -1,0 +1,46 @@
+{
+  "type": "object",
+  "required": [
+    "closed_at",
+    "merged_at",
+    "closed_by",
+    "merged_by"
+  ],
+  "properties": {
+    "closed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "merged_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "closed_by": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "user.json"
+        }
+      ]
+    },
+    "merged_by": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "user.json"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

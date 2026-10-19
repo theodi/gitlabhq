@@ -1,0 +1,13 @@
+---
+table_name: protected_tag_create_access_levels
+classes:
+- ProtectedTag::CreateAccessLevel
+feature_categories:
+- source_code_management
+description: Stores create access settings for protected tags
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/07d7d8e65905a39164b63f55eccdcea8f10f5d14
+milestone: '9.1'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

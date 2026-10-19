@@ -1,0 +1,240 @@
+<script>
+import { createAlert } from '~/alert';
+import { s__ } from '~/locale';
+import { ciCatalogResourcesItemsCount } from '~/ci/catalog/graphql/settings';
+import { historyPushState } from '~/lib/utils/common_utils';
+import { setUrlParams, getParameterByName } from '~/lib/utils/url_utility';
+import { convertToGraphQLId } from '~/graphql_shared/utils';
+import { TYPENAME_GROUP } from '~/graphql_shared/constants';
+import CatalogSearch from '../list/catalog_search.vue';
+import CatalogTabs from '../list/catalog_tabs.vue';
+import CiResourcesList from '../list/ci_resources_list.vue';
+import CatalogListSkeletonLoader from '../list/catalog_list_skeleton_loader.vue';
+import CatalogHeader from '../list/catalog_header.vue';
+import EmptyState from '../list/empty_state.vue';
+import getCatalogResources from '../../graphql/queries/get_ci_catalog_resources.query.graphql';
+import getCurrentPage from '../../graphql/queries/client/get_current_page.query.graphql';
+import updateCurrentPageMutation from '../../graphql/mutations/client/update_current_page.mutation.graphql';
+import getCatalogResourcesCount from '../../graphql/queries/get_ci_catalog_resources_count.query.graphql';
+import { DEFAULT_SORT_VALUE, SCOPE, TAB_NAME, getVerificationLevelOptions } from '../../constants';
+
+export default {
+  name: 'CiResourcesPage',
+  i18n: {
+    fetchError: s__('CiCatalog|There was an error fetching CI/CD Catalog projects.'),
+    countFetchError: s__('CiCatalog|There was an error fetching the CI/CD Catalog project count.'),
+  },
+  components: {
+    CatalogHeader,
+    CatalogListSkeletonLoader,
+    CatalogSearch,
+    CatalogTabs,
+    CiResourcesList,
+    EmptyState,
+  },
+  data() {
+    const searchTerm = getParameterByName('search');
+    const verificationLevel = getParameterByName('verification_level');
+    const topicsParam = getParameterByName('topics');
+    const topics = topicsParam ? topicsParam.split(',') : [];
+    const groupsParam = getParameterByName('groups');
+    const groups = groupsParam ? groupsParam.split(',') : [];
+
+    return {
+      catalogResources: [],
+      catalogResourcesCount: { all: 0, namespaces: 0, analytics: 0 },
+      currentPage: 1,
+      pageInfo: {},
+      searchTerm: searchTerm || null,
+      sortValue: DEFAULT_SORT_VALUE,
+      verificationLevel: verificationLevel || null,
+      topics,
+      groups,
+      tabData: {
+        name: TAB_NAME.all,
+        scope: SCOPE.all,
+        minAccessLevel: null,
+      },
+    };
+  },
+  apollo: {
+    catalogResourcesCount: {
+      query: getCatalogResourcesCount,
+      variables() {
+        return {
+          searchTerm: this.searchTerm,
+          verificationLevel: this.verificationLevelEnum,
+          topics: this.topics,
+          groupIds: this.groupGraphQLIds,
+        };
+      },
+      update({ namespaces, all, analytics }) {
+        return {
+          namespaces: namespaces.count,
+          all: all.count,
+          analytics: analytics.count,
+        };
+      },
+      error(e) {
+        createAlert({
+          message: e.message || this.$options.i18n.countFetchError,
+        });
+      },
+    },
+    catalogResources: {
+      query: getCatalogResources,
+      variables() {
+        return {
+          scope: this.tabData.scope,
+          minAccessLevel: this.tabData.minAccessLevel || null,
+          searchTerm: this.searchTerm,
+          sortValue: this.sortValue,
+          verificationLevel: this.verificationLevelEnum,
+          topics: this.topics,
+          groupIds: this.groupGraphQLIds,
+          first: ciCatalogResourcesItemsCount,
+        };
+      },
+      update(data) {
+        return data?.ciCatalogResources?.nodes || [];
+      },
+      result({ data }) {
+        const { pageInfo } = data?.ciCatalogResources || {};
+        this.pageInfo = pageInfo;
+      },
+      error(e) {
+        createAlert({ message: e.message || this.$options.i18n.fetchError });
+      },
+    },
+    currentPage: {
+      query: getCurrentPage,
+      update(data) {
+        return data?.page?.current || 1;
+      },
+    },
+  },
+  computed: {
+    groupGraphQLIds() {
+      return this.groups.map((id) => convertToGraphQLId(TYPENAME_GROUP, id));
+    },
+    verificationLevelEnum() {
+      if (!this.verificationLevel) return null;
+
+      const level = getVerificationLevelOptions().find((l) => l.text === this.verificationLevel);
+      return level?.value || null;
+    },
+    hasResources() {
+      return this.catalogResources.length > 0;
+    },
+    isLoading() {
+      return this.$apollo.queries.catalogResources.loading;
+    },
+    isLoadingCounts() {
+      return this.$apollo.queries.catalogResourcesCount.loading;
+    },
+  },
+  methods: {
+    async handlePrevPage() {
+      try {
+        await this.$apollo.queries.catalogResources.fetchMore({
+          variables: {
+            before: this.pageInfo.startCursor,
+            last: ciCatalogResourcesItemsCount,
+            first: null,
+          },
+        });
+
+        this.decrementPage();
+      } catch (e) {
+        // Ensure that the current query is properly stopped if an error occurs.
+        this.$apollo.queries.catalogResources.stop();
+        createAlert({ message: e?.message || this.$options.i18n.fetchError, variant: 'danger' });
+      }
+    },
+    async handleNextPage() {
+      try {
+        await this.$apollo.queries.catalogResources.fetchMore({
+          variables: {
+            after: this.pageInfo.endCursor,
+          },
+        });
+
+        this.incrementPage();
+      } catch (e) {
+        // Ensure that the current query is properly stopped if an error occurs.
+        this.$apollo.queries.catalogResources.stop();
+
+        createAlert({ message: e?.message || this.$options.i18n.fetchError, variant: 'danger' });
+      }
+    },
+    handleTabChange(tabData) {
+      this.tabData = tabData;
+    },
+    updatePageCount(pageNumber) {
+      this.$apollo.mutate({
+        mutation: updateCurrentPageMutation,
+        variables: {
+          pageNumber,
+        },
+      });
+    },
+    decrementPage() {
+      this.updatePageCount(this.currentPage - 1);
+    },
+    incrementPage() {
+      this.updatePageCount(this.currentPage + 1);
+    },
+    onUpdateFilters({ searchTerm = null, verificationLevel = null, topics = [], groups = [] }) {
+      this.searchTerm = searchTerm;
+      this.verificationLevel = verificationLevel;
+      this.topics = topics;
+      this.groups = groups;
+      this.resetPageCount();
+      historyPushState(
+        setUrlParams({
+          search: searchTerm,
+          verification_level: verificationLevel,
+          topics: topics.length ? topics.join(',') : null,
+          groups: groups.length ? groups.join(',') : null,
+        }),
+      );
+    },
+    onUpdateSorting(sortValue) {
+      this.sortValue = sortValue;
+      this.resetPageCount();
+    },
+    resetPageCount() {
+      this.updatePageCount(1);
+    },
+  },
+};
+</script>
+<template>
+  <div>
+    <catalog-header />
+    <catalog-tabs
+      :is-loading="isLoadingCounts"
+      :resource-counts="catalogResourcesCount"
+      @tab-change="handleTabChange"
+    />
+    <catalog-search
+      :initial-search-term="searchTerm"
+      :initial-verification-level="verificationLevel"
+      :initial-topics="topics"
+      :initial-groups="groups"
+      @update-sorting="onUpdateSorting"
+      @update-filters="onUpdateFilters"
+    />
+    <catalog-list-skeleton-loader v-if="isLoading" class="gl-mt-3 gl-w-full" />
+    <empty-state v-else-if="!hasResources" :search-term="searchTerm" :current-tab="tabData.name" />
+    <template v-else>
+      <ci-resources-list
+        :page-info="pageInfo"
+        :resources="catalogResources"
+        :current-tab="tabData.name"
+        @on-prev-page="handlePrevPage"
+        @on-next-page="handleNextPage"
+      />
+    </template>
+  </div>
+</template>

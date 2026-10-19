@@ -1,0 +1,13 @@
+---
+name: read_custom_attribute
+description: Grants the ability to read custom attributes
+boundaries:
+  - group
+  - project
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - read_custom_attribute
+assignable_when:
+  - condition: admin

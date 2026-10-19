@@ -1,0 +1,160 @@
+# frozen_string_literal: true
+
+module AutoMerge
+  class BaseService < ::BaseService
+    include Gitlab::Utils::StrongMemoize
+    include MergeRequests::AssignsMergeParams
+
+    def execute(merge_request)
+      ApplicationRecord.transaction do
+        register_auto_merge_parameters!(merge_request)
+        yield if block_given?
+      end
+
+      notify(merge_request)
+      execute_merge_request_hooks(merge_request)
+      AutoMergeProcessWorker.perform_async({ 'merge_request_id' => merge_request.id })
+
+      strategy.to_sym
+    rescue StandardError => e
+      track_exception(e, merge_request)
+      :failed
+    end
+
+    def process(_)
+      raise NotImplementedError
+    end
+
+    def update(merge_request)
+      assign_allowed_merge_params(merge_request, params.merge(auto_merge_strategy: strategy))
+
+      return :failed unless merge_request.save
+
+      strategy.to_sym
+    end
+
+    def cancel(merge_request, &block)
+      response = clear_auto_merge(merge_request, error_message: "Can't cancel the automatic merge", &block)
+
+      # Fire the update webhook only on a successful, user-initiated cancellation.
+      # abort delegates to clear_auto_merge too but intentionally skips this:
+      # aborts are system-initiated, so a plain 'update' event would misattribute
+      # the change to current_user.
+      execute_merge_request_hooks(merge_request) if response[:status] == :success
+
+      response
+    end
+
+    def abort(merge_request, reason, &block)
+      clear_auto_merge(merge_request, error_message: "Can't abort the automatic merge", &block)
+    end
+
+    def available_for?(merge_request)
+      strong_memoize("available_for_#{merge_request.id}") do
+        availability_details(merge_request).available?
+      end
+    end
+
+    private
+
+    def availability_details(merge_request)
+      strong_memoize("availability_details_#{merge_request.id}") do
+        unless merge_request.can_be_merged_by?(current_user)
+          next AutoMerge::AvailabilityCheck.error(unavailable_reason: :forbidden)
+        end
+
+        mergeability_checks = merge_request.execute_merge_checks(
+          MergeRequest.all_mergeability_checks,
+          params: skippable_available_for_checks(merge_request),
+          execute_all: false
+        )
+
+        unless mergeability_checks.success?
+          next AutoMerge::AvailabilityCheck.error(
+            unavailable_reason: :mergeability_checks_failed,
+            unsuccessful_check: mergeability_checks.payload[:unsuccessful_check],
+            unsuccessful_check_explanation: mergeability_checks.payload[:unsuccessful_check_explanation]
+          )
+        end
+
+        block_given? ? yield : AvailabilityCheck.success
+      end
+    end
+
+    def skippable_available_for_checks(merge_request)
+      merge_request.skipped_auto_merge_checks(
+        auto_merge_strategy: strategy
+      )
+    end
+
+    # Overridden in child classes
+    def notify(merge_request); end
+
+    # Fires outside the transaction so the DB state is committed before
+    # external consumers receive the event.
+    def execute_merge_request_hooks(merge_request)
+      MergeRequests::BaseService
+        .new(project: merge_request.project, current_user: current_user)
+        .execute_hooks(merge_request, 'update')
+    end
+
+    def strategy
+      strong_memoize(:strategy) do
+        self.class.name.demodulize.remove('Service').underscore
+      end
+    end
+
+    def register_auto_merge_parameters!(merge_request)
+      assign_allowed_merge_params(merge_request, params.merge(auto_merge_strategy: strategy))
+      merge_request.auto_merge_enabled = true
+      merge_request.merge_user = current_user
+      merge_request.save!
+    end
+
+    def clear_auto_merge(merge_request, error_message:, &block)
+      ApplicationRecord.transaction do
+        clear_auto_merge_parameters!(merge_request)
+        yield if block
+      end
+
+      success
+    rescue StandardError => e
+      track_exception(e, merge_request)
+      error(error_message, 406)
+    end
+
+    def clear_auto_merge_parameters!(merge_request)
+      merge_request.auto_merge_enabled = false
+      merge_request.merge_user = nil
+
+      merge_request.clear_merge_params(clearable_auto_merge_parameters)
+
+      # Clearing auto-merge parameters must succeed even when the merge request is
+      # otherwise broken (e.g. its fork relationship is gone), so we relax the
+      # structural validations that are irrelevant to disabling auto-merge. The flag
+      # is reset afterwards so any later use of this in-memory object validates normally.
+      merge_request.allow_broken = true
+      merge_request.save!
+    ensure
+      merge_request.allow_broken = false
+    end
+
+    # Overridden in EE child classes
+    def clearable_auto_merge_parameters
+      %w[
+        should_remove_source_branch
+        commit_message
+        squash_commit_message
+        auto_merge_strategy
+      ]
+    end
+
+    def track_exception(error, merge_request)
+      Gitlab::ErrorTracking.track_exception(error, merge_request_id: merge_request&.id)
+    end
+
+    def logger
+      @logger ||= Gitlab::AppLogger
+    end
+  end
+end

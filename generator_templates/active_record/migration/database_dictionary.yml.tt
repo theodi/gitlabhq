@@ -1,0 +1,11 @@
+---
+table_name: <%= table_name %>
+classes:
+- <%= table_name.classify %>
+feature_categories:
+- todo
+description: TODO
+introduced_by_url: TODO
+milestone: '<%= Gitlab.current_milestone %>'
+gitlab_schema: gitlab_main_org
+sharding_key: TODO # See https://docs.gitlab.com/development/organization/#defining-a-sharding-key-for-all-organizational-tables for instructions

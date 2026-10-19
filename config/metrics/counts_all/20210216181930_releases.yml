@@ -1,0 +1,17 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage.release.releases
+description: Unique users creating release tags
+product_group: environments
+product_categories:
+- release_orchestration
+value_type: number
+status: active
+time_frame: all
+data_source: database
+tiers:
+- free
+- premium
+- ultimate
+milestone: "<13.9"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/54332

@@ -1,0 +1,271 @@
+---
+stage: GitLab Delivery
+group: Build
+info: To determine the technical writer assigned to the Stage/Group associated with this page, see <https://handbook.gitlab.com/handbook/product/ux/technical-writing/#assignments>
+description: Install, configure, and upgrade GitLab by using the Linux package.
+title: Install GitLab using the Linux package
+---
+
+{{< details >}}
+
+- Tier: Free, Premium, Ultimate
+- Offering: GitLab Self-Managed
+
+{{< /details >}}
+
+The Linux packages are mature and scalable, and are used on GitLab.com. If you need additional
+flexibility and resilience, we recommend deploying GitLab as described in the
+[reference architecture documentation](../../administration/reference_architectures/_index.md).
+
+The Linux package is quicker to install and easier to upgrade, and it contains
+features to enhance reliability not found in other installation methods. Install through a
+single package (also known as Omnibus GitLab) that bundles all the different services
+and tools required to run GitLab. See the [installation requirements](../requirements.md)
+to learn about the minimum hardware requirements.
+
+Linux packages are available in our packages repository for:
+
+- [GitLab Enterprise Edition](https://packages.gitlab.com/ui/browse/gitlab/gitlab-ee).
+- [GitLab Community Edition](https://packages.gitlab.com/ui/browse/gitlab/gitlab-ce).
+
+Check that the required GitLab version is available for your host operating system.
+
+## Supported platforms
+
+GitLab provides Linux packages for the operating systems listed below. We build and
+distribute packages for these platforms. The table shows which GitLab versions
+are available for each operating system.
+
+We provide Linux packages for operating systems based on vendor support lifecycles.
+Where long-term support (LTS) versions exist, we target those, though not all operating systems
+follow an LTS model.
+
+Package builds typically continue until an operating system reaches vendor end-of-life (EOL).
+We follow standard or maintenance support timelines, not extended or premium support periods.
+
+We may discontinue package builds before vendor EOL due to:
+
+- Business considerations: Including but not limited to low customer adoption,
+  disproportionate maintenance costs, or strategic product direction changes.
+- Technical constraints: When third-party dependencies, security requirements,
+  or underlying technology changes make continued package builds impractical or
+  impossible.
+- Vendor actions: When operating system vendors make changes that fundamentally
+  impact our software's functionality or when required components become
+  unavailable.
+
+We aim to provide at least 6 months' notice before discontinuing support for any operating system version. When technical limitations or vendor constraints require shorter notice, we will communicate changes as soon as possible.
+
+> [!note]
+> `amd64` and `x86_64` refer to the same 64-bit architecture. The names `arm64` and `aarch64` are also interchangeable
+> and refer to the same architecture.
+
+| Operating system                                                                   | First supported GitLab version | Architecture          | Operating system EOL | Proposed last supported GitLab version  | Upstream release notes                                                                                        |
+|------------------------------------------------------------------------------------|--------------------------------|-----------------------|----------------------|-------------------------------|---------------------------------------------------------------------------------------------------------------|
+| [AlmaLinux 8](almalinux.md)                         | GitLab CE / GitLab EE 14.5.0   | `x86_64`, `aarch64`[^known-issues-exist] | Mar 2029             | GitLab CE / GitLab EE 21.10.0 | [AlmaLinux details](https://almalinux.org/)                                                                   |
+| [AlmaLinux 9](almalinux.md)                         | GitLab CE / GitLab EE 16.0.0   | `x86_64`, `aarch64`[^known-issues-exist] | May 2032             | GitLab CE / GitLab EE 25.0.0  | [AlmaLinux details](https://almalinux.org/)                                                                   |
+| [AlmaLinux 10](almalinux.md)                         | GitLab CE / GitLab EE 18.6.0   | `x86_64`, `aarch64`[^known-issues-exist] | May 2035             | GitLab CE / GitLab EE 28.0.0  | [AlmaLinux details](https://almalinux.org/)                                                                  |
+| [Amazon Linux 2](amazonlinux_2.md)                  | GitLab CE / GitLab EE 14.9.0   | `amd64`, `arm64`[^known-issues-exist]    | June 2026            | GitLab CE / GitLab EE 19.1.0  | [Amazon Linux details](https://aws.amazon.com/amazon-linux-2/faqs/)                                           |
+| [Amazon Linux 2023](amazonlinux_2023.md)            | GitLab CE / GitLab EE 16.3.0   | `amd64`, `arm64`[^known-issues-exist]    | June 2029            | GitLab CE / GitLab EE 22.1.0  | [Amazon Linux details](https://docs.aws.amazon.com/linux/al2023/ug/release-cadence.html)                      |
+| [Debian 11](debian.md)                              | GitLab CE / GitLab EE 14.6.0   | `amd64`, `arm64`[^known-issues-exist]    | Aug 2026             | GitLab CE / GitLab EE 19.3.0  | [Debian Linux details](https://wiki.debian.org/LTS)                                                           |
+| [Debian 12](debian.md)                              | GitLab CE / GitLab EE 16.1.0   | `amd64`, `arm64`[^known-issues-exist]    | June 2028            | GitLab CE / GitLab EE 19.3.0  | [Debian Linux details](https://wiki.debian.org/LTS)                                                           |
+| [Debian 13](debian.md)                              | GitLab CE / GitLab EE 18.5.0   | `amd64`, `arm64`[^known-issues-exist]    | June 2030            | GitLab CE / GitLab EE 23.1.0  | [Debian Linux details](https://wiki.debian.org/LTS)                                                           |
+| [openSUSE Leap 15.6](suse.md)              | GitLab CE / GitLab EE 17.6.0   | `x86_64`, `aarch64`[^known-issues-exist] | Dec 2025             | TBD  | [openSUSE details](https://en.opensuse.org/Lifetime)                                                          |
+| [SUSE Linux Enterprise Server 12](suse.md) | GitLab EE 9.0.0                | `x86_64`              | Oct 2027             | TBD  | [SUSE Linux Enterprise Server details](https://www.suse.com/lifecycle/)                                       |
+| [SUSE Linux Enterprise Server 15](suse.md) | GitLab EE 14.8.0               | `x86_64`              | Dec 2024             | TBD  | [SUSE Linux Enterprise Server details](https://www.suse.com/lifecycle/)                                       |
+| [Oracle Linux 8](almalinux.md)                      | GitLab CE / GitLab EE 12.8.1   | `x86_64`              | July 2029            | GitLab CE / GitLab EE 22.2.0  | [Oracle Linux details](https://www.oracle.com/a/ocom/docs/elsp-lifetime-069338.pdf)                           |
+| [Oracle Linux 9](almalinux.md)                      | GitLab CE / GitLab EE 16.2.0   | `x86_64`              | June 2032            | GitLab CE / GitLab EE 25.1.0  | [Oracle Linux details](https://www.oracle.com/a/ocom/docs/elsp-lifetime-069338.pdf)                           |
+| [Oracle Linux 10](almalinux.md)                      | GitLab CE / GitLab EE 18.6.0   | `x86_64`              | June 2035            | GitLab CE / GitLab EE 28.1.0  | [Oracle Linux details](https://www.oracle.com/a/ocom/docs/elsp-lifetime-069338.pdf)                           |
+| [Red Hat Enterprise Linux 8](almalinux.md)          | GitLab CE / GitLab EE 12.8.1   | `x86_64`, `arm64`[^known-issues-exist]   | May 2029             | GitLab CE / GitLab EE 22.0.0  | [Red Hat Enterprise Linux details](https://access.redhat.com/support/policy/updates/errata/#Life_Cycle_Dates) |
+| [Red Hat Enterprise Linux 9](almalinux.md)          | GitLab CE / GitLab EE 16.0.0   | `x86_64`, `arm64`[^known-issues-exist]   | May 2032             | GitLab CE / GitLab EE 25.0.0  | [Red Hat Enterprise Linux details](https://access.redhat.com/support/policy/updates/errata/#Life_Cycle_Dates) |
+| [Red Hat Enterprise Linux 10](almalinux.md)          | GitLab CE / GitLab EE 18.6.0   | `x86_64`, `arm64`[^known-issues-exist]   | May 2035             | GitLab CE / GitLab EE 28.0.0  | [Red Hat Enterprise Linux details](https://access.redhat.com/support/policy/updates/errata/#Life_Cycle_Dates) |
+| [Ubuntu 22.04](ubuntu.md)                           | GitLab CE / GitLab EE 15.5.0   | `amd64`, `arm64`[^known-issues-exist]    | April 2027           | GitLab CE / GitLab EE 19.11.0 | [Ubuntu details](https://wiki.ubuntu.com/Releases). FIPS packages were added in GitLab 18.4. Before upgrading from Ubuntu 20.04, view the [upgrade notes](#ubuntu-2204-fips). |
+| [Ubuntu 24.04](ubuntu.md)                           | GitLab CE / GitLab EE 17.1.0   | `amd64`, `arm64`[^known-issues-exist]    | April 2029           | GitLab CE / GitLab EE 21.11.0 | [Ubuntu details](https://wiki.ubuntu.com/Releases)                                                            |
+| [Ubuntu 26.04](ubuntu.md)                           | GitLab CE / GitLab EE 19.3.0   | `amd64`, `arm64`[^known-issues-exist]    | April 2031           | GitLab CE / GitLab EE 23.11.0 | [Ubuntu details](https://wiki.ubuntu.com/Releases)                                                            |
+
+[^known-issues-exist]: [Known issues](https://gitlab.com/groups/gitlab-org/-/work_items/4397) exist for running GitLab on ARM.
+
+### Unofficial, unsupported installation methods
+
+The following installation methods are provided as-is by the wider GitLab
+community and are not supported by GitLab:
+
+- [Debian native package](https://wiki.debian.org/gitlab/) (by Pirate Praveen)
+- [FreeBSD package](https://www.freshports.org/www/gitlab-ce) (by Torsten Zühlsdorff)
+- [Arch Linux package](https://archlinux.org/packages/extra/x86_64/gitlab/) (by the Arch Linux community)
+- [Puppet module](https://forge.puppet.com/modules/puppet/gitlab) (by Vox Pupuli)
+- [Ansible playbook](https://github.com/geerlingguy/ansible-role-gitlab) (by Jeff Geerling)
+- [GitLab virtual appliance (KVM)](https://marketplace.opennebula.io/appliance/6b54a412-03a5-11e9-8652-f0def1753696) (by OpenNebula)
+- [GitLab on Cloudron](https://cloudron.io/store/com.gitlab.cloudronapp.html) (via Cloudron App Library)
+
+## End-of-life versions
+
+You can find the list of deprecated operating systems and the final GitLab release for them in the table below:
+
+| OS version       | End of life                                                                         | Last supported GitLab version |
+|:-----------------|:------------------------------------------------------------------------------------|:------------------------------|
+| CentOS 6 and RHEL 6 | [November 2020](https://www.centos.org/about/)                                   | GitLab CE / GitLab EE 13.6 |
+| CentOS 7 and RHEL 7 | [June 2024](https://www.centos.org/about/)                                       | GitLab CE / GitLab EE 17.7 |
+| CentOS 8         | [December 2021](https://www.centos.org/about/)                                      | GitLab CE / GitLab EE 14.6 |
+| Oracle Linux 7   | [December 2024](https://endoflife.date/oracle-linux)                                | GitLab CE / GitLab EE 17.7 |
+| Scientific Linux 7 | [June 2024](https://scientificlinux.org/downloads/sl-versions/sl7/)               | GitLab CE / GitLab EE 17.7 |
+| Debian 7 Wheezy  | [May 2018](https://www.debian.org/News/2018/20180601)                               | GitLab CE / GitLab EE 11.6 |
+| Debian 8 Jessie  | [June 2020](https://www.debian.org/News/2020/20200709)                              | GitLab CE / GitLab EE 13.3 |
+| Debian 9 Stretch | [June 2022](https://lists.debian.org/debian-lts-announce/2022/07/msg00002.html)     | GitLab CE / GitLab EE 15.2 |
+| Debian 10 Buster | [June 2024](https://www.debian.org/News/2024/20240615)                              | GitLab CE / GitLab EE 17.5 |
+| OpenSUSE 42.1    | [May 2017](https://en.opensuse.org/Lifetime#Discontinued_distributions)             | GitLab CE / GitLab EE 9.3 |
+| OpenSUSE 42.2    | [January 2018](https://en.opensuse.org/Lifetime#Discontinued_distributions)         | GitLab CE / GitLab EE 10.4 |
+| OpenSUSE 42.3    | [July 2019](https://en.opensuse.org/Lifetime#Discontinued_distributions)            | GitLab CE / GitLab EE 12.1 |
+| OpenSUSE 13.2    | [January 2017](https://en.opensuse.org/Lifetime#Discontinued_distributions)         | GitLab CE / GitLab EE 9.1 |
+| OpenSUSE 15.0    | [December 2019](https://en.opensuse.org/Lifetime#Discontinued_distributions)        | GitLab CE / GitLab EE 12.5 |
+| OpenSUSE 15.1    | [November 2020](https://en.opensuse.org/Lifetime#Discontinued_distributions)        | GitLab CE / GitLab EE 13.12 |
+| OpenSUSE 15.2    | [December 2021](https://en.opensuse.org/Lifetime#Discontinued_distributions)        | GitLab CE / GitLab EE 14.7 |
+| OpenSUSE 15.3    | [December 2022](https://en.opensuse.org/Lifetime#Discontinued_distributions)        | GitLab CE / GitLab EE 15.10 |
+| OpenSUSE 15.4    | [December 2023](https://en.opensuse.org/Lifetime#Discontinued_distributions)        | GitLab CE / GitLab EE 16.7 |
+| OpenSUSE 15.5    | [December 2024](https://en.opensuse.org/Lifetime#Discontinued_distributions)        | GitLab CE / GitLab EE 17.8 |
+| SLES 15 SP2      | [December 2024](https://www.suse.com/lifecycle/#suse-linux-enterprise-server-15)    | GitLab EE 18.1 |
+| Raspbian Wheezy  | [May 2015](https://downloads.raspberrypi.org/raspbian/images/raspbian-2015-05-07/)  | GitLab CE 8.17 |
+| Raspbian Jessie  | [May 2017](https://downloads.raspberrypi.org/raspbian/images/raspbian-2017-07-05/)  | GitLab CE 11.7 |
+| Raspbian Stretch | [June 2020](https://downloads.raspberrypi.org/raspbian/images/raspbian-2019-04-09/) | GitLab CE 13.3 |
+| Raspberry Pi OS Buster | [June 2024](https://www.debian.org/News/2024/20240615)                        | GitLab CE 17.7 |
+| Ubuntu 12.04     | [April 2017](https://ubuntu.com/about/release-cycle)                           | GitLab CE / GitLab EE 9.1 |
+| Ubuntu 14.04     | [April 2019](https://ubuntu.com/about/release-cycle)                           | GitLab CE / GitLab EE 11.10 |
+| Ubuntu 16.04     | [April 2021](https://ubuntu.com/about/release-cycle)                           | GitLab CE / GitLab EE 13.12 |
+| Ubuntu 18.04     | [June 2023](https://ubuntu.com/about/release-cycle)                            | GitLab CE / GitLab EE 16.11 |
+| Ubuntu 20.04     | [May 2025](https://ubuntu.com/about/release-cycle)                            | GitLab CE / GitLab EE 18.11 |
+
+### Raspberry Pi OS (32-bit - Raspbian)
+
+GitLab dropped support for Raspberry Pi OS (32-bit - Raspbian) with GitLab
+17.11 being the last version available for the 32-bit platform. Starting with
+GitLab 18.0, you should move to Raspberry Pi OS (64 bit) and use the
+[Debian arm64 package](debian.md).
+
+For information on backing up data on a 32-bit OS and restoring it to a 64-bit
+OS, see [Upgrading operating systems for PostgreSQL](../../administration/postgresql/upgrading_os.md).
+
+## Uninstall the Linux package
+
+To uninstall the Linux package, you can opt to either keep your data (repositories,
+database, configuration) or remove all of them:
+
+1. Optional. To remove
+   [all users and groups created by the Linux package](https://docs.gitlab.com/omnibus/settings/configuration/#disable-user-and-group-account-management)
+   before removing the package:
+
+   ```shell
+   sudo gitlab-ctl stop && sudo gitlab-ctl remove-accounts
+   ```
+
+   > [!note]
+   > If you have a problem removing accounts or groups, run `userdel` or `groupdel` manually
+   > to delete them. You might also want to manually remove the leftover user home directories
+   > from `/home/`.
+
+1. Choose whether to keep your data or remove all of them:
+
+   - To preserve your data (repositories, database, configuration), stop GitLab and
+     remove its supervision process:
+
+     ```shell
+     sudo systemctl stop gitlab-runsvdir
+     sudo systemctl disable gitlab-runsvdir
+     sudo rm /usr/lib/systemd/system/gitlab-runsvdir.service
+     sudo systemctl daemon-reload
+     sudo systemctl reset-failed
+     sudo gitlab-ctl uninstall
+     ```
+
+   - To remove all data:
+
+     ```shell
+     sudo gitlab-ctl cleanse && sudo rm -r /opt/gitlab
+     ```
+
+1. Uninstall the package (replace with `gitlab-ce` if you have GitLab FOSS installed):
+
+   {{< tabs >}}
+
+   {{< tab title="apt" >}}
+
+   ```shell
+   # Debian/Ubuntu
+   sudo apt remove gitlab-ee
+   ```
+
+   {{< /tab >}}
+
+   {{< tab title="dnf" >}}
+
+   ```shell
+   # AlmaLinux/RHEL/Oracle Linux/Amazon Linux 2023
+   sudo dnf remove gitlab-ee
+   ```
+
+   {{< /tab >}}
+
+   {{< tab title="zypper" >}}
+
+   ```shell
+   # OpenSUSE Leap/SLES
+   sudo zypper remove gitlab-ee
+   ```
+
+   {{< /tab >}}
+
+   {{< tab title="yum" >}}
+
+   ```shell
+   # Amazon Linux 2
+   sudo yum remove gitlab-ee
+   ```
+
+   {{< /tab >}}
+
+   {{< /tabs >}}
+
+### Ubuntu 22.04 FIPS
+
+In GitLab 18.4 and later, FIPS builds are available for Ubuntu 22.04.
+
+Before you upgrade:
+
+1. Verify password hash migration for all active users: In GitLab 17.11 and later,
+   user passwords are automatically rehashed with enhanced salt when users sign in.
+
+   Any users who haven't completed this hash migration will be unable to sign in to
+   Ubuntu 22 FIPS installations and will need to perform a password reset.
+
+   To find users who have not migrated, use [this Rake task](../../administration/raketasks/password.md#check-password-hashes)
+   before upgrading to Ubuntu 22.04.
+
+1. Check the GitLab secrets JSON: Rails now requires stronger active dispatch salts to
+   issue cookies. The Linux package uses static values with sufficient length by default on
+   Ubuntu 22.04. However, you can customize these salts by setting the following keys
+   in your Linux package configuration:
+
+   ```ruby
+   gitlab_rails['signed_cookie_salt'] = 'custom value'
+   gitlab_rails['authenticated_encrypted_cookie_salt'] = 'another custom value'
+   ```
+
+   The values are written to the `gitlab-secrets.json` and must be synchronized across
+   all Rails nodes.
+
+1. Prepare for OAuth token migration when upgrading to FIPS 140-3: GitLab 18.6.0, 18.5.2, and 18.4.4 introduced SHA512 hashing for OAuth
+   tokens to comply with FIPS 140-3 requirements. Previously, GitLab used PBKDF2 without
+   salt, which is incompatible with FIPS 140-3 compliant systems like Ubuntu 22.04.
+
+   > [!note]
+   > This migration is only required when moving to FIPS 140-3 compliant operating systems
+   > (such as Ubuntu 22.04). No changes are needed if you are already running on older FIPS versions
+   > (such as Ubuntu 20.04) or staying on non-FIPS systems.
+
+   When migrating from a non-FIPS instance or older FIPS version to a FIPS 140-3 instance:
+
+   1. Upgrade to GitLab 18.4 or later.
+   1. Allow sufficient time for active OAuth access tokens to be automatically rehashed during normal usage.
+   1. Rotate OAuth application secrets to ensure all newly issued tokens use the FIPS-compliant
+      hashing algorithm.
+   1. Notify users that they may need to re-authenticate with OAuth-integrated applications
+      if their tokens have not been used recently.

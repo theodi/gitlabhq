@@ -1,0 +1,7 @@
+---
+event: Organizations::GroupTransferredEvent
+description: Published once per `organization_id` change on a root group. May be delivered
+  more than once for the same group, so subscribers must be idempotent. Descendant
+  namespaces and projects may not have moved yet, and subscribers are responsible for
+  traversing them if needed. Not emitted when the surrounding transaction is rolled back.
+feature_category: organization

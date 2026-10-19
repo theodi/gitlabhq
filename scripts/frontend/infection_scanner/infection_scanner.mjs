@@ -1,0 +1,560 @@
+#!/usr/bin/env node
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import fs from 'node:fs';
+import { createServer } from 'node:http';
+import { execSync } from 'node:child_process';
+import { analyze, createResolver } from './analyze.mjs';
+import { findDuplicatedModules } from './duplicated_modules.mjs';
+import { formatDuplicatedModulesReport } from './duplicated_modules_report.mjs';
+
+const cjsRequire = createRequire(import.meta.url);
+const ROOT_PATH = path.resolve(import.meta.dirname, '..', '..', '..');
+const JS_ROOT = path.join(ROOT_PATH, 'app/assets/javascripts');
+const OUTPUT_PATH = path.join(ROOT_PATH, 'tmp', 'infection_scanner.json');
+
+// --- Alias resolution (loaded from webpack config) ---
+
+function buildAliasMap() {
+  const webpackConfig = cjsRequire(path.join(ROOT_PATH, 'config/webpack.config.js'));
+  const { CONTEXT_ALIASES } = cjsRequire(path.join(ROOT_PATH, 'config/vue3migration/aliases'));
+  // The plain map has no CONTEXT_ALIASES overrides -- it's what an un-infected
+  // importer actually resolves against in the real build. Kept alongside the
+  // merged map so the resolver can compute both resolutions for specifiers that
+  // CONTEXT_ALIASES redirects (see `createResolver`'s `plainAliasMap` doc).
+  const plainAliasMap = { ...webpackConfig.resolve.alias };
+  const aliasMap = { ...plainAliasMap };
+  // Context aliases represent "vue3 mode" resolution — the infection plugin
+  // applies these at runtime.  Merge them as exact-match aliases ($ suffix)
+  // so the scanner follows the same resolution paths.
+  for (const [key, target] of Object.entries(CONTEXT_ALIASES)) {
+    aliasMap[`${key}$`] = target;
+  }
+  return { aliasMap, plainAliasMap };
+}
+
+const { aliasMap, plainAliasMap } = buildAliasMap();
+
+// Single shared resolver instance, used both for entrypoint discovery and
+// (transparently, inside `analyze()`) for the graph walk.
+const resolver = createResolver({
+  aliasMap,
+  rootPath: ROOT_PATH,
+  fallbackResolve: (specifier, fromDir) => {
+    try {
+      return cjsRequire.resolve(specifier, { paths: [fromDir] });
+    } catch {
+      return null;
+    }
+  },
+});
+
+// --- Entry discovery ---
+
+function discoverEntries() {
+  const { generateEntries } = cjsRequire(path.join(ROOT_PATH, 'config/webpack.helpers'));
+  const { baseEntryPoints } = cjsRequire(path.join(ROOT_PATH, 'config/helpers/entry_points'));
+  const { entries: generated } = generateEntries();
+
+  const all = { ...baseEntryPoints, ...generated };
+
+  const dummyFromFile = path.join(JS_ROOT, '__entry__.js');
+  const entrypoints = {};
+  for (const [name, files] of Object.entries(all)) {
+    const last = Array.isArray(files) ? files[files.length - 1] : files;
+    const resolved = resolver.resolveModule(last, dummyFromFile);
+    if (resolved) {
+      entrypoints[name] = resolved;
+    }
+  }
+  return entrypoints;
+}
+
+// --- Infection specifiers (loaded from context aliases) ---
+
+const INFECTION_SPECIFIERS = (() => {
+  const { CONTEXT_ALIASES } = cjsRequire(path.join(ROOT_PATH, 'config/vue3migration/aliases'));
+  return Object.keys(CONTEXT_ALIASES);
+})();
+
+// --- vue3_migration.yml promotion ---
+
+// Files declared as Vue 3 migration entrypoints in `vue3_migration.yml`
+// must be considered infected, even if `analyze()`'s structural
+// propagation didn't reach them via the import graph.
+//
+// Why: pages opted into migration via YAML may be thin wrappers whose
+// only imports are app roots. `computeInfected` treats app roots as
+// propagation barriers (because app roots are self-contained Vue
+// boundaries), which leaves wrappers structurally uninfected.
+function collectYamlDeclaredPages() {
+  const glob = cjsRequire('glob');
+  const pattern = '{,ee/,jh/}app/assets/javascripts/pages/**/vue3_migration.yml';
+  const yamls = glob.sync(pattern, { cwd: ROOT_PATH, absolute: true });
+  return yamls.map((yamlPath) => path.join(path.dirname(yamlPath), 'index.js'));
+}
+
+function promoteYamlDeclaredPages(graph) {
+  const promoted = new Set();
+  for (const indexPath of collectYamlDeclaredPages()) {
+    const entry = graph[indexPath];
+    if (!entry || entry.infected) continue;
+    entry.infected = true;
+    // Keep `infected` a subset of `exposedToVue`. A promoted page is exposed to Vue anyway,
+    // because nothing barriers the downward walk, so this is defensive.
+    entry.exposedToVue = true;
+    entry.infectionPromotedByYaml = true;
+    promoted.add(indexPath);
+  }
+  if (promoted.size > 0) {
+    console.log(
+      `[vue3-infection-scanner] Promoted ${promoted.size} vue3_migration.yml page(s) to infected.`,
+    );
+  }
+  return promoted;
+}
+
+// --- Duplicated modules check ---
+
+// Each is bound to the Vue version that built it, so two copies are correct.
+const DUPLICATION_EXPECTED = [
+  'ee/app/assets/javascripts/invite_members/provider.js',
+  'ee/app/assets/javascripts/subscriptions/graphql/graphql.js',
+  'app/assets/javascripts/pinia/instance.js',
+];
+
+const stripQuery = (id) => (id.includes('?') ? id.slice(0, id.indexOf('?')) : id);
+
+function discoverVue3PageSeeds() {
+  const { generateEntries } = cjsRequire(path.join(ROOT_PATH, 'config/webpack.helpers'));
+  const { loadVue3Migrations } = cjsRequire(path.join(ROOT_PATH, 'config/vue3migration/migration'));
+  const { baseEntryPoints, ALWAYS_LOADED_ENTRY_POINTS } = cjsRequire(
+    path.join(ROOT_PATH, 'config/helpers/entry_points'),
+  );
+  const { entries } = generateEntries();
+  const dummyFromFile = path.join(JS_ROOT, '__entry__.js');
+  const resolveSpecifier = (spec) => resolver.resolveModule(stripQuery(spec), dummyFromFile);
+
+  // Seeded as Vue 2. A global bundle in rollout also appears as a page above,
+  // with its `.vue3` entry seeded infected, so both of its states are checked.
+  const globalSeeds = ALWAYS_LOADED_ENTRY_POINTS.map((name) => {
+    const file = resolveSpecifier(baseEntryPoints[name]);
+    if (!file) throw new Error(`[vue3-infection-scanner] cannot resolve entry '${name}'`);
+    return { file, infected: false };
+  });
+
+  // Unmigrated entries are skipped: checking them costs about 2.7s.
+  const migrated = new Set(
+    Object.entries(loadVue3Migrations()).flatMap(([name, { status }]) =>
+      status === 'rollout' ? [name, `${name}.vue3`] : [name],
+    ),
+  );
+
+  const pages = [];
+  for (const [key, specifiers] of Object.entries(entries)) {
+    if (!migrated.has(key)) continue;
+
+    const seeds = specifiers
+      .map((spec) => ({ file: resolveSpecifier(spec), infected: spec.includes('?vue3') }))
+      .filter((seed) => seed.file);
+    if (!seeds.length) continue;
+
+    const isRolloutFlagOn = key.endsWith('.vue3');
+    const isRolloutFlagOff = Boolean(entries[`${key}.vue3`]);
+    let flagState;
+    if (isRolloutFlagOn) flagState = 'flag on';
+    else if (isRolloutFlagOff) flagState = 'flag off';
+
+    pages.push({
+      entry: key.replace(/\.vue3$/, ''),
+      flagState,
+      seeds: [...seeds, ...globalSeeds],
+    });
+  }
+  return pages;
+}
+
+function checkDuplicatedModules(result) {
+  const { createIsInfectable } = cjsRequire(path.join(ROOT_PATH, 'config/vue3migration/infection'));
+
+  const graphMap = new Map(Object.entries(result.graph));
+  // `createIsInfectable` throws for a path that is not in the graph.
+  const realIsInfectable = createIsInfectable(graphMap);
+  const isInfectable = (file) => graphMap.has(file) && realIsInfectable(file);
+
+  const pages = discoverVue3PageSeeds();
+  const options = {
+    graph: result.graph,
+    pages,
+    isInfectable,
+    rootPath: ROOT_PATH,
+    duplicationExpected: DUPLICATION_EXPECTED,
+  };
+
+  const findings = findDuplicatedModules(options);
+  if (!findings.length) {
+    console.log(
+      `[vue3-infection-scanner] Duplicated modules check: ${pages.length} page state(s), none found.`,
+    );
+    return [];
+  }
+
+  console.error(formatDuplicatedModulesReport(findings));
+  return findings;
+}
+
+// --- JSON output ---
+
+function writeOutput(result) {
+  const dir = path.dirname(OUTPUT_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(OUTPUT_PATH, JSON.stringify(result, null, 2));
+  console.log(`[vue3-infection-scanner] Written to ${OUTPUT_PATH}. Done.`);
+}
+
+// --- Web server ---
+
+function getRelPath(absPath) {
+  if (!absPath) return absPath;
+  return path.relative(ROOT_PATH, absPath);
+}
+
+function buildSubgraph(graph, rootFile) {
+  const nodes = new Map();
+  const links = [];
+  const visited = new Set();
+  const queue = [rootFile];
+  visited.add(rootFile);
+
+  while (queue.length) {
+    const file = queue.shift();
+    const entry = graph[file];
+    if (!nodes.has(file)) {
+      let type = 'js';
+      if (file.includes('/node_modules/')) {
+        type = 'node_module';
+      } else if (file.endsWith('.vue')) {
+        type = 'vue';
+      }
+
+      nodes.set(file, {
+        id: file,
+        rel: getRelPath(file),
+        type,
+        dynamicImport: false,
+        appRoot: entry ? entry.appRoot : false,
+        infected: entry ? entry.infected : false,
+        infectionSource: entry?.infectionReasons?.some((s) => s.file === file) || false,
+        infectionSourceReason:
+          entry?.infectionReasons?.find((s) => s.file === file)?.reason || null,
+        infectionReasons: entry?.infectionReasons
+          ? entry.infectionReasons.map((s) => ({ file: getRelPath(s.file), reason: s.reason }))
+          : [],
+        infectionReasonCount: entry?.infectionReasonCount || 0,
+      });
+    }
+    const edges = entry ? entry.imports : [];
+    for (const edge of edges) {
+      if (edge.resolved) {
+        links.push({ source: file, target: edge.resolved, dynamic: edge.dynamic });
+        if (!visited.has(edge.resolved)) {
+          visited.add(edge.resolved);
+          queue.push(edge.resolved);
+        }
+      }
+    }
+  }
+
+  for (const link of links) {
+    if (link.dynamic && nodes.has(link.target)) {
+      nodes.get(link.target).dynamicImport = true;
+    }
+  }
+
+  return { nodes: [...nodes.values()], links };
+}
+
+const LOADING_HTML = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="5">
+  <title>Infection Scanner - Analyzing...</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #1a1a2e; color: #e0e0e0; }
+    .spinner { border: 4px solid #333; border-top: 4px solid #e94560; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-right: 16px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .container { display: flex; align-items: center; }
+  </style>
+</head>
+<body>
+  <div class="container"><div class="spinner"></div><h2>Analysis in progress... page will refresh automatically.</h2></div>
+</body>
+</html>`;
+
+const UI_HTML_PATH = path.join(import.meta.dirname, 'infection_scanner-ui.html');
+
+const subgraphCache = new Map();
+let entryStatsCache = null;
+
+function computeEntryStats(entrypoints, graph) {
+  const stats = {};
+  const triggerEntryCount = new Map();
+
+  for (const [name, file] of Object.entries(entrypoints)) {
+    const visited = new Set();
+    const queue = [file];
+    visited.add(file);
+    let infectionSources = 0;
+    let infected = 0;
+    let appRoots = 0;
+    let total = 0;
+    const entryInfectionSources = new Set();
+
+    while (queue.length) {
+      const f = queue.shift();
+      const isNm = f.includes('/node_modules/');
+      const entry = graph[f];
+      if (entry) {
+        if (!isNm) {
+          total += 1;
+          if (entry.appRoot) {
+            appRoots += 1;
+          }
+          if (entry.infected) {
+            infected += 1;
+            if (entry.infectionReasons && entry.infectionReasons.some((s) => s.file === f)) {
+              infectionSources += 1;
+              entryInfectionSources.add(f);
+            }
+          }
+        }
+        for (const imp of entry.imports) {
+          if (imp.resolved && !visited.has(imp.resolved) && graph[imp.resolved]) {
+            visited.add(imp.resolved);
+            queue.push(imp.resolved);
+          }
+        }
+      }
+    }
+
+    for (const t of entryInfectionSources) {
+      triggerEntryCount.set(t, (triggerEntryCount.get(t) || 0) + 1);
+    }
+
+    stats[name] = { infectionSources, infected, appRoots, total };
+  }
+
+  const topTriggers = [...triggerEntryCount.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([file, count]) => {
+      const entry = graph[file];
+      const reason = entry?.infectionReasons?.find((s) => s.file === file)?.reason || null;
+      return { file: getRelPath(file), reason, entryCount: count };
+    });
+
+  return { stats, topInfectionSources: topTriggers };
+}
+
+let analysisResult = null;
+let analysisRunning = false;
+
+function startServer() {
+  const PORT = 9131;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+
+    if (url.pathname === '/subgraph' && analysisResult) {
+      const rootFile = url.searchParams.get('root');
+      if (!rootFile || !analysisResult.graph[rootFile]) {
+        res.writeHead(404);
+        res.end('File not found in graph');
+        return;
+      }
+      if (!subgraphCache.has(rootFile)) {
+        subgraphCache.set(rootFile, JSON.stringify(buildSubgraph(analysisResult.graph, rootFile)));
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(subgraphCache.get(rootFile));
+      return;
+    }
+
+    if (url.pathname === '/hybrid-list' && analysisResult) {
+      const rootFile = url.searchParams.get('root');
+      if (!rootFile || !analysisResult.graph[rootFile]) {
+        res.writeHead(404);
+        res.end('File not found in graph');
+        return;
+      }
+      const { graph } = analysisResult;
+      const visited = new Set();
+      const queue = [rootFile];
+      visited.add(rootFile);
+      const projectTriggers = [];
+      const projectTargets = [];
+      const nmTriggers = [];
+      const nmTargets = [];
+      const appRoots = [];
+
+      while (queue.length) {
+        const f = queue.shift();
+        const entry = graph[f];
+        if (entry) {
+          const isNm = f.includes('/node_modules/');
+          if (entry.appRoot && !isNm) {
+            appRoots.push({ id: f, file: getRelPath(f) });
+          }
+          if (entry.infected) {
+            const isSrc =
+              entry.infectionReasons && entry.infectionReasons.some((s) => s.file === f);
+            const reason = isSrc ? entry.infectionReasons.find((s) => s.file === f).reason : null;
+            const item = { id: f, file: getRelPath(f), reason };
+            if (isSrc) {
+              (isNm ? nmTriggers : projectTriggers).push(item);
+            } else {
+              (isNm ? nmTargets : projectTargets).push(item);
+            }
+          }
+          for (const imp of entry.imports) {
+            if (imp.resolved && !visited.has(imp.resolved) && graph[imp.resolved]) {
+              visited.add(imp.resolved);
+              queue.push(imp.resolved);
+            }
+          }
+        }
+      }
+
+      const result = { projectTriggers, projectTargets, nmTriggers, nmTargets, appRoots };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    if (analysisRunning || !analysisResult) {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(LOADING_HTML);
+      return;
+    }
+
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+      const template = fs.readFileSync(UI_HTML_PATH, 'utf-8');
+      if (!entryStatsCache) {
+        console.log('[vue3-infection-scanner] Computing entry stats...');
+        entryStatsCache = computeEntryStats(analysisResult.entrypoints, analysisResult.graph);
+        console.log('[vue3-infection-scanner] Entry stats computed.');
+      }
+      const dataJson = JSON.stringify({
+        entrypoints: analysisResult.entrypoints,
+        entryStats: entryStatsCache.stats,
+        topInfectionSources: entryStatsCache.topInfectionSources,
+      });
+      const dataScript = `const DATA = ${dataJson};`;
+      const html = template.replace('/* DATA_PLACEHOLDER */', dataScript);
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
+      return;
+    }
+
+    res.writeHead(404);
+    res.end('Not found');
+  });
+
+  server.listen(PORT, () => {
+    console.log(`[vue3-infection-scanner] Server running at http://localhost:${PORT}`);
+    try {
+      const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+      execSync(`${openCmd} http://localhost:${PORT}`);
+    } catch {
+      /* ignore if browser open fails */
+    }
+  });
+}
+
+// --- Main ---
+
+async function runAnalysis() {
+  analysisRunning = true;
+
+  console.log('[vue3-infection-scanner] Discovering entrypoints...');
+  const entrypoints = discoverEntries();
+  console.log(`[vue3-infection-scanner] Found ${Object.keys(entrypoints).length} entrypoints`);
+
+  console.log('[vue3-infection-scanner] Building import graph...');
+  const result = await analyze({
+    rootPath: ROOT_PATH,
+    entrypoints,
+    infectionSpecifiers: INFECTION_SPECIFIERS,
+    aliasMap,
+    plainAliasMap,
+    fallbackResolve: (specifier, fromDir) => {
+      try {
+        return cjsRequire.resolve(specifier, { paths: [fromDir] });
+      } catch {
+        return null;
+      }
+    },
+    onProgress: (parsed, total) => {
+      process.stderr.write(
+        parsed === total
+          ? `\r[vue3-infection-scanner] Parsed ${total}/${total} files. Done.\n`
+          : `\r[vue3-infection-scanner] Parsed ${parsed}/${total} files...`,
+      );
+    },
+  });
+
+  // Promote pages declared in `vue3_migration.yml` to infected. See the
+  // commentary on `promoteYamlDeclaredPages` for the rationale.
+  promoteYamlDeclaredPages(result.graph);
+
+  // analyze() produces the annotated graph; surface aggregate counts.
+  let appRoots = 0;
+  let infected = 0;
+  let exposedToVue = 0;
+  let invariantBreaches = 0;
+  for (const entry of Object.values(result.graph)) {
+    if (entry.appRoot) appRoots += 1;
+    if (entry.infected) infected += 1;
+    if (entry.exposedToVue) exposedToVue += 1;
+    if (entry.infected && !entry.exposedToVue) invariantBreaches += 1;
+  }
+  if (invariantBreaches > 0) {
+    throw new Error(
+      `[vue3-infection-scanner] ${invariantBreaches} file(s) are infected but do not reach ` +
+        `Vue. Removing the app-root barrier can only add files, so this cannot happen.`,
+    );
+  }
+  console.log(`[vue3-infection-scanner] App roots: ${appRoots} files`);
+  console.log(
+    `[vue3-infection-scanner] Infected: ${infected} / ${Object.keys(result.graph).length} files`,
+  );
+  console.log(
+    `[vue3-infection-scanner] Exposed to Vue: ${exposedToVue} / ` +
+      `${Object.keys(result.graph).length} files`,
+  );
+
+  // Write first so a failed check still leaves a fresh graph on disk.
+  writeOutput(result);
+  const duplicatedModules = checkDuplicatedModules(result);
+
+  analysisResult = result;
+  analysisRunning = false;
+  return { result, duplicatedModules };
+}
+
+const mode = process.argv[2];
+
+if (mode === 'web') {
+  runAnalysis();
+  startServer();
+} else {
+  runAnalysis()
+    .then(({ duplicatedModules }) => {
+      if (duplicatedModules.length) process.exitCode = 1;
+      return duplicatedModules.length;
+    })
+    .catch((err) => {
+      console.error(err);
+      process.exitCode = 1;
+    });
+}

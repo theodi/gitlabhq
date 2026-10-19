@@ -1,0 +1,352 @@
+# frozen_string_literal: true
+
+module API
+  class MavenPackages < ::API::Base
+    MAVEN_ENDPOINT_REQUIREMENTS = {
+      file_name: ::API::NO_SLASH_URL_PART_REGEX
+    }.freeze
+
+    feature_category :package_registry
+    urgency :low
+
+    content_type :md5, 'text/plain'
+    content_type :sha1, 'text/plain'
+    content_type :binary, 'application/octet-stream'
+
+    rescue_from ActiveRecord::RecordInvalid do |e|
+      render_api_error!(e.message, 400)
+    end
+
+    before do
+      require_packages_enabled!
+      authenticate_non_get!
+    end
+
+    helpers ::API::Helpers::PackagesHelpers
+    helpers ::API::Helpers::Packages::DependencyProxyHelpers
+    helpers ::API::Helpers::Packages::Maven
+    helpers ::API::Helpers::Packages::Maven::BasicAuthHelpers
+    helpers ::API::Helpers::Packages::Maven::ApiErrorFormatter
+
+    helpers do
+      # overridden in EE
+      def enforce_dependency_firewall_on_upload!(_package_name, _version); end
+
+      def path_exists?(path)
+        return false if path.blank?
+
+        Packages::Maven::Metadatum.with_path(path)
+                                  .exists?
+      end
+
+      # The sha verification done by the maven api is between:
+      # - the sha256 set by workhorse helpers
+      # - the sha256 of the sha1 of the uploaded package file
+      def verify_package_file(package_file, uploaded_file)
+        stored_sha256 = Digest::SHA256.hexdigest(package_file.file_sha1)
+        expected_sha256 = uploaded_file.sha256
+
+        if stored_sha256 == expected_sha256
+          no_content!
+        else
+          conflict!
+        end
+      end
+
+      # Checksums (.sha1/.md5) are stored as columns on the package file, so they
+      # skip find-or-create: md5 is a no-op, sha1 only verifies the stored file.
+      # No primary pinning is needed here: this path only reads, and per-user load
+      # balancing sticking (set in API::Helpers#current_user) already routes reads
+      # to a caught-up replica or the primary, so the package file written by the
+      # preceding artifact upload is visible.
+      def upload_maven_checksum_file(file_name, format)
+        return '' if format == 'md5'
+
+        package = ::Packages::Maven::PackageFinder
+          .new(current_user, user_project, path: params[:path]).execute&.last
+        not_found!('Package') unless package
+
+        package_file = ::Packages::PackageFileFinder
+          .new(package, file_name).execute!
+
+        verify_package_file(package_file, params[:file])
+      end
+
+      def find_project_by_path(path)
+        project_path = path.rpartition('/').first
+        Project.find_by_full_path(project_path)
+      end
+
+      def jar_file?(format)
+        format == 'jar'
+      end
+
+      def maven_upload_authorize_params
+        {
+          has_length: true,
+          maximum_size: user_project.actual_limits.maven_max_file_size,
+          use_final_store_path: true,
+          final_store_path_config: { root_hash: user_project.id }
+        }
+      end
+
+      def find_and_present_package_file(package, file_name, format, params)
+        package_file = nil
+
+        package_file = ::Packages::PackageFileFinder.new(package, file_name).execute if package
+
+        no_package_found = package_file ? false : true
+
+        redirect_registry_request(
+          forward_to_registry: no_package_found,
+          package_type: :maven,
+          target: params[:target],
+          path: params[:path],
+          file_name: params[:file_name]
+        ) do
+          unauthorized! if no_package_found && !current_user && params[:target].is_a?(::Group)
+          not_found!('Package') if no_package_found
+
+          present_package(package, format, package_file)
+        end
+      end
+
+      def present_package(package, format, package_file)
+        project = package.project
+        case format
+        when 'md5'
+          package_file.file_md5.to_s
+        when 'sha1'
+          package_file.file_sha1.to_s
+        else
+          track_package_event('pull_package', :maven, project: project, namespace: project.namespace) if jar_file?(format)
+
+          download_package_file!(package_file)
+        end
+      end
+    end
+
+    desc 'Download the maven package file for the instance' do
+      detail 'This feature was introduced in GitLab 11.6'
+      success code: 200
+      failure [
+        { code: 401, message: 'Unauthorized' },
+        { code: 403, message: 'Forbidden' },
+        { code: 404, message: 'Not Found' }
+      ]
+      tags %w[packages]
+    end
+    params do
+      requires :file_name, type: String, desc: 'The package file name'
+      use :path_and_file_name
+    end
+    route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true, basic_auth_personal_access_token: true
+    route_setting :authorization, job_token_policies: :read_packages,
+      allow_public_access_for_enabled_project_features: :package_registry,
+      permissions: :download_maven_package_file, boundary_type: :instance
+    get 'packages/maven/*path/:file_name', requirements: MAVEN_ENDPOINT_REQUIREMENTS do
+      # return a similar failure to authorize_read_package!(project)
+
+      forbidden! unless path_exists?(params[:path])
+
+      file_name, format = extract_format(params[:file_name])
+
+      # To avoid name collision we require project path and project package be the same.
+      # For packages that have different name from the project we should use
+      # the endpoint that includes project id
+      project = find_project_by_path(params[:path])
+
+      authorize_read_package!(project)
+      authorize_job_token_policies!(project)
+
+      package = fetch_package(file_name: file_name, project: project)
+
+      not_found!('Package') unless package
+
+      package_file = ::Packages::PackageFileFinder
+        .new(package, file_name).execute!
+
+      present_package(package, format, package_file)
+    end
+
+    desc 'Download the maven package file for a group' do
+      detail 'This feature was introduced in GitLab 11.7'
+      success [
+        { code: 200 },
+        { code: 302 }
+      ]
+      failure [
+        { code: 401, message: 'Unauthorized' },
+        { code: 403, message: 'Forbidden' },
+        { code: 404, message: 'Not Found' }
+      ]
+      tags %w[packages]
+    end
+    params do
+      requires :id, types: [String, Integer], desc: 'The ID or URL-encoded path of the group'
+    end
+    resource :groups, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      params do
+        requires :file_name, type: String, desc: 'The package file name'
+        use :path_and_file_name
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true, basic_auth_personal_access_token: true
+      route_setting :authorization, job_token_policies: :read_packages,
+        allow_public_access_for_enabled_project_features: :package_registry,
+        permissions: :download_maven_package_file, boundary_type: :group
+      get ':id/-/packages/maven/*path/:file_name', requirements: MAVEN_ENDPOINT_REQUIREMENTS do
+        # return a similar failure to group = find_group(params[:id])
+        group = find_authorized_group!(action: :read_package_within_public_registries)
+
+        if Feature.disabled?(:maven_central_request_forwarding, group&.root_ancestor)
+          not_found!('Group') unless path_exists?(params[:path])
+        end
+
+        file_name, format = extract_format(params[:file_name])
+        package = fetch_package(file_name: file_name, group: group)
+
+        if package
+          authorize_read_package!(package.project)
+          authorize_job_token_policies!(package.project)
+        end
+
+        find_and_present_package_file(package, file_name, format, params.merge(target: group))
+      end
+    end
+
+    params do
+      requires :id, types: [String, Integer], desc: 'The ID or URL-encoded path of the project'
+    end
+    resource :projects, requirements: ::API::NAMESPACE_OR_PROJECT_REQUIREMENTS do
+      desc 'Download the maven package file for a project' do
+        detail 'This feature was introduced in GitLab 11.3'
+        success [
+          { code: 200 },
+          { code: 302 }
+        ]
+        failure [
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[packages]
+      end
+      params do
+        requires :file_name, type: String, desc: 'The package file name'
+        use :path_and_file_name
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true, basic_auth_personal_access_token: true
+      route_setting :authorization, job_token_policies: :read_packages,
+        allow_public_access_for_enabled_project_features: :package_registry,
+        permissions: :download_maven_package_file, boundary_type: :project
+      get ':id/packages/maven/*path/:file_name', requirements: MAVEN_ENDPOINT_REQUIREMENTS do
+        project = authorized_user_project(action: :read_package)
+
+        # return a similar failure to user_project
+        unless Feature.enabled?(:maven_central_request_forwarding, project&.root_ancestor)
+          not_found!('Project') unless path_exists?(params[:path])
+        end
+
+        authorize_read_package!(project)
+        authorize_job_token_policies!(project)
+
+        file_name, format = extract_format(params[:file_name])
+
+        package = fetch_package(file_name: file_name, project: project)
+
+        find_and_present_package_file(package, file_name, format, params.merge(target: project))
+      end
+
+      desc 'Workhorse authorize the maven package file upload' do
+        detail 'This feature was introduced in GitLab 11.3'
+        success code: 200
+        failure [
+          { code: 400, message: 'Bad Request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' }
+        ]
+        tags %w[packages]
+      end
+      params do
+        requires :path, type: String, desc: 'Package path', documentation: { example: 'foo/bar/mypkg/1.0-SNAPSHOT' }
+        requires :file_name, type: String, desc: 'Package file name', regexp: Gitlab::Regex.maven_file_name_regex, documentation: { example: 'mypkg-1.0-SNAPSHOT.pom' }
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true, basic_auth_personal_access_token: true
+      route_setting :authorization, job_token_policies: :admin_packages, skip_granular_token_authorization: :workhorse_pre_authorization
+      put ':id/packages/maven/*path/:file_name/authorize', requirements: MAVEN_ENDPOINT_REQUIREMENTS do
+        authorize_upload!
+
+        package_name, version = extract_maven_package_name_and_version(params[:path], params[:file_name])
+        protect_package!(package_name, :maven)
+
+        enforce_dependency_firewall_on_upload!(package_name, version)
+
+        status 200
+        content_type Gitlab::Workhorse::INTERNAL_API_CONTENT_TYPE
+        ::Packages::PackageFileUploader.workhorse_authorize(**maven_upload_authorize_params)
+      end
+
+      desc 'Upload the maven package file' do
+        detail 'This feature was introduced in GitLab 11.3'
+        success code: 200
+        failure [
+          { code: 400, message: 'Bad Request' },
+          { code: 401, message: 'Unauthorized' },
+          { code: 403, message: 'Forbidden' },
+          { code: 404, message: 'Not Found' },
+          { code: 422, message: 'Unprocessable Entity' }
+        ]
+        tags %w[packages]
+      end
+      params do
+        requires :path, type: String, desc: 'Package path', documentation: { example: 'foo/bar/mypkg/1.0-SNAPSHOT' }
+        requires :file_name, type: String, desc: 'Package file name', regexp: Gitlab::Regex.maven_file_name_regex, documentation: { example: 'mypkg-1.0-SNAPSHOT.pom' }
+        requires :file, type: ::API::Validations::Types::WorkhorseFile, desc: 'The package file to be published (generated by Multipart middleware)', documentation: { type: 'file' }
+      end
+      route_setting :authentication, job_token_allowed: true, deploy_token_allowed: true, basic_auth_personal_access_token: true
+      route_setting :authorization, job_token_policies: :admin_packages, permissions: :upload_maven_package_file, boundary_type: :project
+      put ':id/packages/maven/*path/:file_name', requirements: MAVEN_ENDPOINT_REQUIREMENTS do
+        unprocessable_entity! if Gitlab::FIPS.enabled? && params[:file].md5
+        authorize_upload!
+        bad_request!('File is too large') if user_project.actual_limits.exceeded?(:maven_max_file_size, params[:file].size)
+
+        # In FIPS mode, we've already told Workhorse not to generate a
+        # MD5 checksum via UploadHashFunctions, and the FIPS check above
+        # ensures that Workhorse obeys that. However, Gradle will attempt to issue a PUT request
+        # with the MD5 checksum, and the publish step will fail if this endpoint returns a
+        # 422 (https://github.com/gradle/gradle/blob/v8.5.0/platforms/software/maven/src/main/java/org/gradle/api/publish/maven/internal/publisher/AbstractMavenPublisher.java#L240),
+        # so we need to skip the second FIPS check here.
+        file_name, format = extract_format(params[:file_name], skip_fips_check: true)
+
+        break upload_maven_checksum_file(file_name, format) if %w[sha1 md5].include?(format)
+
+        lb = ::ApplicationRecord.load_balancer
+        ::Gitlab::Database::LoadBalancing::SessionMap.current(lb).use_primary do
+          result = ::Packages::Maven::FindOrCreatePackageService
+                     .new(user_project, current_user, params.merge(build: current_authenticated_job)).execute
+
+          if result.error?
+            forbidden!(result.errors.first) if result.cause.package_protected?
+            bad_request!(result.errors.first)
+          end
+
+          package = result.payload[:package]
+
+          file_params = {
+            file: params[:file],
+            size: params[:file].size,
+            file_name: file_name,
+            file_sha1: params[:file].sha1,
+            file_md5: params[:file].md5
+          }
+
+          ::Packages::CreatePackageFileService.new(package, file_params.merge(build: current_authenticated_job)).execute
+          track_package_event('push_package', :maven, project: user_project, namespace: user_project.namespace) if jar_file?(format)
+        end
+      end
+    end
+  end
+end
+
+API::MavenPackages.prepend_mod

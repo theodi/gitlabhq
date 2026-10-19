@@ -1,0 +1,25 @@
+---
+description: When a component that has been published to the CI/CD Catalog is included in a pipeline.
+internal_events: true
+action: ci_catalog_component_included
+additional_properties:
+  label:
+    description: Full path and name of the component being included
+  value:
+    description: Type of the component being included
+  property:
+    description: Version of the component being included
+identifiers:
+- project
+- namespace
+- user
+product_group: pipeline_authoring
+product_categories:
+- component_catalog
+- pipeline_composition
+milestone: '16.11'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/146834
+tiers:
+- free
+- premium
+- ultimate

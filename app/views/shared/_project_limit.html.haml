@@ -1,0 +1,9 @@
+- if cookies[:hide_project_limit_message].blank? && !current_user.hide_project_limit && !current_user.can_create_project? && current_user.projects_limit > 0
+  = render Pajamas::AlertComponent.new(variant: :warning,
+    dismissible: false,
+    alert_options: { class: 'project-limit-message' }) do |c|
+    - c.with_body do
+      = _("You cannot create new projects in your personal namespace because you have reached your personal project limit.")
+    - c.with_actions do
+      = link_button_to _('Remind later'), '#', class: 'alert-link hide-project-limit-message', variant: :confirm, size: :small
+      = link_button_to _("Don't show again"), user_settings_profile_path(user: {hide_project_limit: true}), method: :put, class: 'alert-link gl-ml-3', size: :small

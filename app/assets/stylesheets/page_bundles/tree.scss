@@ -1,0 +1,299 @@
+@import 'mixins_and_variables_and_functions';
+
+$bottom-padding: $gl-spacing-scale-6;
+$file-tree-browser-z-index: 500;
+$repository-max-width: 1600px;
+
+// Repository tree/blob views host the file tree browser and content
+// side-by-side, so on Fixed layout they get a wider max-width than
+// $fixed-layout-width. Scoped to `.container-limited` so the Fluid layout
+// preference stays full-width.
+.container-limited.repository-max-width {
+  max-width: $repository-max-width;
+}
+
+.file-tree-browser-overlay {
+  @apply gl-bg-overlay;
+  z-index: $file-tree-browser-z-index - 1;
+}
+
+// Remove the below after the UI has been fully migrated to paneled views
+html:not(.page-with-panels) .file-tree-browser  {
+  top: calc(var(--application-header-height) + 1px); // header + 1px border
+}
+
+.file-tree-browser {
+  --file-row-level-padding: #{$gl-spacing-scale-5};
+  --file-tree-min-height: 300px;
+  --file-tree-bottom-padding: #{rem-to-px($bottom-padding)};
+  top: var(--application-header-height);
+  bottom: $calc-application-footer-height;
+  background: var(--gl-background-color-default);
+  min-height: var(--file-tree-min-height);
+  z-index: $file-tree-browser-z-index;
+
+  @media (prefers-reduced-motion: no-preference) {
+    @apply gl-transition-transform;
+  }
+
+  .file-row {
+    @apply gl-border-none;
+    @apply gl-bg-transparent;
+    @apply gl-w-full;
+  }
+
+  &.file-tree-browser-peek {
+    @apply gl-shadow;
+    @apply gl-rounded-base;
+    @apply gl-rounded-l-none;
+    bottom: 0;
+  }
+}
+
+// Vue transition classes
+.file-tree-browser-slide-enter,
+.file-tree-browser-slide-leave-to {
+  transform: translate3d(-100%, 0, 0);
+}
+
+.file-tree-browser-responsive {
+  width: var(--tree-width);
+
+  @include gl-container-width-down(lg) {
+    width: min(80vw, 320px);
+  }
+}
+
+.tree-holder {
+  .nav-block {
+    margin: $gl-spacing-scale-5 0 $gl-spacing-scale-5;
+
+    .tree-ref-holder {
+      margin-right: 15px;
+    }
+
+    @include gl-container-width-up(sm) {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+
+      .tree-ref-container {
+        flex: 1;
+      }
+
+      .tree-controls {
+        text-align: right;
+
+        .control {
+          float: left;
+          margin-right: 8px;
+
+          &:last-child {
+            margin-right: 0;
+          }
+        }
+      }
+
+      .tree-ref-holder {
+        float: left;
+      }
+
+      .repo-breadcrumb {
+        li:last-of-type {
+          position: relative;
+        }
+      }
+    }
+  }
+
+  @include gl-container-width-down(sm, panel) {
+    .tree-ref-container {
+      justify-content: space-between;
+    }
+
+    .repo-breadcrumb {
+      position: relative;
+
+      .dropdown-menu {
+        left: inherit;
+        right: 0;
+      }
+    }
+
+    .tree-controls {
+      margin-bottom: 10px;
+
+      .btn:not(.dropdown-toggle-split),
+      .dropdown {
+        width: 100%;
+      }
+    }
+  }
+
+  .file-finder {
+    max-width: 500px;
+    width: 100%;
+
+    .file-finder-input {
+      width: 95%;
+      display: inline-block;
+    }
+  }
+
+  .add-to-tree {
+    vertical-align: top;
+    padding: 8px;
+
+    svg {
+      top: 0;
+    }
+  }
+
+  table.tree-table {
+    @apply dark:gl-bg-neutral-900;
+    @apply gl-mb-0;
+
+    thead tr th[scope="col"] {
+      @apply gl-bg-subtle;
+      @apply dark:gl-bg-neutral-800;
+      @apply gl-border-t-0;
+    }
+
+    tbody tr {
+      @apply gl-border-b-section;
+
+      td,
+      th {
+        line-height: 21px;
+      }
+
+      td, th {
+        @apply gl-border-section;
+      }
+    }
+
+    tbody tr.tree-item {
+      &:hover:not(.tree-truncated-warning) {
+        td, th {
+          background-color: var(--gl-highlight-target-background-color);
+          border-top: 1px solid var(--gl-highlight-target-border-color);
+          border-bottom: 1px solid var(--gl-highlight-target-border-color);
+
+          &:first-child {
+            box-shadow: inset 1px 0 0 0 var(--gl-highlight-target-border-color);
+          }
+
+          &:last-child {
+            box-shadow: inset -1px 0 0 0 var(--gl-highlight-target-border-color);
+          }
+
+          &:first-child:last-child {
+            box-shadow: inset 1px 0 0 0 var(--gl-highlight-target-border-color),
+              inset -1px 0 0 0 var(--gl-highlight-target-border-color);
+          }
+        }
+
+        &:last-child {
+          td, th {
+            @apply gl-border-b-0;
+            box-shadow: inset 0 -1px 0 0 var(--gl-highlight-target-border-color);
+
+            &:first-child {
+              box-shadow: inset 1px 0 0 0 var(--gl-highlight-target-border-color),
+                inset 0 -1px 0 0 var(--gl-highlight-target-border-color);
+              border-bottom-left-radius: $gl-border-radius-lg-inner;
+            }
+
+            &:last-child {
+              box-shadow: inset -1px 0 0 0 var(--gl-highlight-target-border-color),
+                inset 0 -1px 0 0 var(--gl-highlight-target-border-color);
+              border-bottom-right-radius: $gl-border-radius-lg-inner;
+            }
+          }
+        }
+      }
+
+      &.selected {
+        td {
+          @apply gl-bg-strong;
+          @apply dark:gl-bg-neutral-800;
+          @apply gl-border-t;
+          @apply gl-border-b;
+        }
+      }
+
+      &:last-of-type,
+      &:last-of-type td,
+      &:last-of-type:hover td {
+        @apply gl-border-b-0;
+      }
+    }
+  }
+
+  .tree-item {
+    .link-container {
+      padding: 0;
+
+      a {
+        padding: 10px $gl-padding;
+        display: block;
+      }
+    }
+
+    .tree-item-file-name {
+      max-width: 320px;
+      vertical-align: middle;
+
+      i,
+      a {
+        @apply gl-text-default;
+      }
+
+      img {
+        position: relative;
+        top: -1px;
+      }
+    }
+
+    .tree-item-file-external-link {
+      margin-right: 4px;
+
+      span {
+        text-decoration: inherit;
+      }
+    }
+  }
+
+  .tree-truncated-warning {
+    color: var(--orange-600, $orange-600);
+    background-color: var(--orange-50, $orange-50);
+  }
+
+  .tree-time-ago {
+    min-width: 135px;
+  }
+
+  .tree-commit {
+    max-width: 320px;
+
+    .tree-commit-link {
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+  }
+}
+
+.blob-commit-info {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.blob-content-holder {
+  margin-top: $gl-padding;
+}
+
+.edit-dropdown-group-width {
+  width: 320px;
+}

@@ -1,0 +1,5 @@
+query getMRCodequalityAndSecurityReports($fullPath: ID!) {
+  project(fullPath: $fullPath) {
+    id
+  }
+}

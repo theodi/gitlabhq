@@ -1,0 +1,20 @@
+---
+data_category: optional
+key_path: counts.wiki_pages_view
+description: Total number of wiki page views
+product_group: planner_intelligence
+product_categories:
+- wiki
+value_type: number
+status: active
+milestone: "13.3"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/38784"
+time_frame: all
+data_source: internal_events
+events:
+  - name: view_wiki_page
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []

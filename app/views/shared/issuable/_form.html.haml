@@ -1,0 +1,75 @@
+- form = local_assigns.fetch(:f)
+- commits = local_assigns[:commits]
+- project = @target_project || @project
+- presenter = local_assigns.fetch(:presenter, nil)
+
+= form_errors(issuable)
+
+- if @conflict
+  - model_name = _(issuable.class.model_name.human.downcase)
+  = render 'shared/model_version_conflict', model_name: model_name, link_path: polymorphic_path([@project, issuable])
+
+= render 'shared/issuable/form/branch_chooser', issuable: issuable, form: form
+
+.form-group
+  = form.label :title do
+    = _('Title (required)')
+
+  = render 'shared/issuable/form/title', issuable: issuable, form: form, has_wip_commits: commits && commits.detect(&:draft?)
+
+= render 'shared/form_elements/description', model: issuable, form: form, project: project
+
+= render 'shared/issuable/form/metadata', issuable: issuable, form: form, project: project, presenter: presenter
+
+= render 'shared/issuable/form/merge_params', issuable: issuable
+
+= render 'shared/issuable/form/contribution', issuable: issuable, form: form
+
+- if @merge_request_to_resolve_discussions_of
+  .form-group
+    = sprite_icon('information-o')
+    - if @merge_request_to_resolve_discussions_of.discussions_can_be_resolved_by?(current_user)
+      = hidden_field_tag 'merge_request_to_resolve_discussions_of', @merge_request_to_resolve_discussions_of.iid
+      - if @discussion_to_resolve
+        = hidden_field_tag 'discussion_to_resolve', @discussion_to_resolve.id
+        Creating this issue will resolve the thread in
+      - else
+        Creating this issue will resolve all threads in
+      = link_to_discussions_to_resolve(@merge_request_to_resolve_discussions_of, @discussion_to_resolve)
+    - else
+      The
+      = @discussion_to_resolve ? 'thread' : 'threads'
+      at
+      = link_to_discussions_to_resolve(@merge_request_to_resolve_discussions_of, @discussion_to_resolve)
+      will stay open. Ask someone with permission to resolve
+      = @discussion_to_resolve ? 'it.' : 'them.'
+
+= render_if_exists 'observability/observability_links', observability_values: @observability_values, issuable: issuable, project: project
+
+- is_footer = !(issuable.is_a?(MergeRequest) && issuable.new_record?)
+.gl-mt-5{ class: (is_footer ? "footer-block" : "middle-block") }
+  - if !issuable.persisted? && !issuable.project.empty_repo? && (guide_url = issuable.project.present.contribution_guide_path)
+    .gl-mb-5
+      - contribution_guidelines = link_to('', strip_tags(guide_url))
+      = safe_format(_('Please review the %{strong_start}%{contribution_guidelines_start}contribution guidelines%{contribution_guidelines_end}%{strong_end} for this project.'), tag_pair('<strong></strong>'.html_safe, :strong_start, :strong_end), tag_pair(contribution_guidelines, :contribution_guidelines_start, :contribution_guidelines_end))
+
+  - if issuable.new_record?
+    - create_issuable_text = issuable.is_a?(MergeRequest) ? _('Create merge request') : _('Create issue')
+    = form.submit "#{create_issuable_text}", pajamas_button: true, class: 'gl-mr-2 js-issuable-submit-button js-reset-autosave', data: { testid: 'issuable-create-button', track_action: 'click_button', track_label: 'submit_mr', track_value: 0 }
+  - else
+    = form.submit _('Save changes'), pajamas_button: true, class: 'gl-mr-2 js-issuable-submit-button js-reset-autosave', data: { track_action: 'click_button', track_label: 'submit_mr', track_value: 0 }
+
+  - if issuable.new_record?
+    = link_button_to _('Cancel'), polymorphic_path([@project, issuable.class]), class: 'js-reset-autosave'
+  - else
+    = link_button_to _('Cancel'), polymorphic_path([@project, issuable]), class: 'js-reset-autosave'
+    - if can?(current_user, :"destroy_#{issuable.to_ability_name}", @project)
+      - confirm_title = _('Delete %{issuableType}?') % { issuableType: issuable.human_class_name }
+      - confirm_body = _('You’re about to permanently delete the %{issuableType} ‘%{strongOpen}%{issuableTitle}%{strongClose}’. To avoid data loss, consider %{strongOpen}closing this %{issuableType}%{strongClose} instead. Once deleted, it cannot be undone or recovered.') % { issuableType: issuable.human_class_name, issuableTitle: html_escape(issuable.title), strongOpen: '<strong>', strongClose: '</strong>' }
+      - confirm_primary_btn_text = _('Delete %{issuableType}') % { issuableType: issuable.human_class_name }
+      = link_button_to _('Delete'), polymorphic_path([@project, issuable], params: { destroy_confirm: true }), data: { title: confirm_title, confirm: confirm_body, is_html_message: true, confirm_btn_variant: 'danger'}, method: :delete, class: 'gl-float-right js-reset-autosave', "aria-label": confirm_primary_btn_text, variant: :danger, category: :secondary
+
+= form.hidden_field :lock_version
+
+- if @vulnerability_id
+  = hidden_field_tag 'vulnerability_id', @vulnerability_id

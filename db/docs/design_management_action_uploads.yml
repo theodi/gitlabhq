@@ -1,0 +1,15 @@
+---
+table_name: design_management_action_uploads
+classes:
+- DesignManagement::Action
+- Geo::DesignManagementActionUpload
+- Upload
+feature_categories:
+- design_management
+description: Stores uploads for DesignManagement::Action model
+introduced_by_url:
+milestone: '17.11'
+table_size: small
+gitlab_schema: gitlab_main_org
+sharding_key:
+  namespace_id: namespaces

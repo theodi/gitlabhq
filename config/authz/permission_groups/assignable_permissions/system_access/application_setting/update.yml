@@ -1,0 +1,11 @@
+---
+name: update_application_setting
+description: Grants the ability to update application settings
+boundaries:
+  - instance
+available_for:
+  - granular_access_token
+permissions:
+  - update_application_setting
+assignable_when:
+  - condition: admin

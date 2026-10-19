@@ -1,0 +1,74 @@
+# @feature_category: custom_dashboards_foundation
+
+#import "ee_else_ce/explore/analytics_dashboards/graphql/fragments/scope_group_permissions.fragment.graphql"
+#import "ee_else_ce/explore/analytics_dashboards/graphql/fragments/scope_project_permissions.fragment.graphql"
+
+# Both connections are limited to what the user belongs to.
+#
+# The projects connection excludes archived results via `archived: EXCLUDE`. `Query.groups` has
+# no `archived` argument, so `active: true` is the nearest available filter, and it only drops
+# groups pending deletion.
+#
+# `Query.projects` already ranks by similarity whenever `search` is given, but `Query.groups`
+# defaults to `name_asc`, so the groups half asks for it explicitly. `allAvailable: false` is
+# what makes it eligible: similarity is refused on scopes not bounded by membership.
+query searchAnalyticsDashboardNamespacesGlobal(
+  $search: String!
+  $groupsAfter: String
+  $projectsAfter: String
+  $first: Int = 10
+  $searchGroups: Boolean = true
+  $searchProjects: Boolean = true
+) {
+  groups(
+    first: $first
+    after: $groupsAfter
+    search: $search
+    allAvailable: false
+    active: true
+    sort: "similarity"
+  ) @include(if: $searchGroups) {
+    nodes {
+      id
+      name
+      fullName
+      fullPath
+      ...AnalyticsDashboardScopeGroupPermissions
+      # Aliased so both result types expose their parent under the same key.
+      namespace: parent {
+        id
+        name
+        fullPath
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+  projects(
+    first: $first
+    after: $projectsAfter
+    search: $search
+    membership: true
+    searchNamespaces: true
+    archived: EXCLUDE
+  ) @include(if: $searchProjects) {
+    nodes {
+      id
+      name
+      fullName: nameWithNamespace
+      fullPath
+      ...AnalyticsDashboardScopeProjectPermissions
+      namespace {
+        id
+        name
+        fullPath
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}

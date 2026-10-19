@@ -1,0 +1,5 @@
+mutation DismissPipelineGraphCallout($featureName: String!) {
+  userCalloutCreate(input: { featureName: $featureName }) {
+    errors
+  }
+}

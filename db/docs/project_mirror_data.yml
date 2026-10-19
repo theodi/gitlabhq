@@ -1,0 +1,14 @@
+---
+table_name: project_mirror_data
+classes:
+- ProjectImportState
+feature_categories:
+- importers
+description: Used to store and track the project import status when using the Import/Export
+  feature
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/commit/0ca479d1ce0eadfcdc0e29d0e18136f5790d5b2f
+milestone: '9.3'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

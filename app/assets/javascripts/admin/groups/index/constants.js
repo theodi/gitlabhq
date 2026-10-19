@@ -1,0 +1,105 @@
+import { get } from 'lodash-es';
+import groupsEmptyStateIllustration from '@gitlab/svgs/dist/illustrations/empty-state/empty-groups-md.svg?url';
+import { s__, __ } from '~/locale';
+import {
+  SORT_LABEL_NAME,
+  SORT_LABEL_CREATED,
+  SORT_LABEL_UPDATED,
+  SORT_LABEL_STORAGE_SIZE,
+  PAGINATION_TYPE_KEYSET,
+} from '~/groups_projects/constants';
+import GroupsList from '~/vue_shared/components/groups_list/groups_list.vue';
+import { formatGraphQLGroups } from '~/vue_shared/components/groups_list/formatter';
+import ResourceListsEmptyState from '~/vue_shared/components/resource_lists/empty_state.vue';
+import adminGroupsQuery from './graphql/queries/admin_groups.query.graphql';
+
+export const SORT_OPTION_NAME = {
+  value: 'name',
+  text: SORT_LABEL_NAME,
+};
+
+export const SORT_OPTION_CREATED = {
+  value: 'created',
+  text: SORT_LABEL_CREATED,
+};
+
+export const SORT_OPTION_UPDATED = {
+  value: 'updated',
+  text: SORT_LABEL_UPDATED,
+};
+
+export const SORT_OPTION_STORAGE_SIZE = {
+  value: 'storage_size_keyset',
+  text: SORT_LABEL_STORAGE_SIZE,
+};
+
+export const SORT_OPTIONS = [
+  SORT_OPTION_NAME,
+  SORT_OPTION_CREATED,
+  SORT_OPTION_UPDATED,
+  SORT_OPTION_STORAGE_SIZE,
+];
+
+const baseTab = {
+  formatter: (groups) =>
+    formatGraphQLGroups(groups, (group) => {
+      const canAdminAllResources = get(group.userPermissions, 'adminAllResources', true);
+
+      return {
+        avatarLabelLink: group.adminShowPath,
+        editPath: group.adminEditPath,
+        availableActions: canAdminAllResources ? group.availableActions : [],
+      };
+    }),
+  listComponent: GroupsList,
+  listComponentProps: {
+    listItemClass: 'gl-px-5',
+    showGroupIcon: true,
+  },
+  emptyStateComponent: ResourceListsEmptyState,
+  query: adminGroupsQuery,
+  queryPath: 'groups',
+  paginationType: PAGINATION_TYPE_KEYSET,
+  sortOptions: SORT_OPTIONS,
+  defaultSortOption: SORT_OPTION_CREATED,
+};
+
+export const ACTIVE_TAB = {
+  ...baseTab,
+  text: __('Active'),
+  value: 'active',
+  variables: { active: true },
+  countsQueryPath: 'active',
+  emptyStateComponentProps: {
+    svgPath: groupsEmptyStateIllustration,
+    title: s__("Groups|You don't have any active groups yet."),
+    description: s__(
+      'Organization|A group is a collection of several projects. If you organize your projects under a group, it works like a folder.',
+    ),
+    'data-testid': 'groups-empty-state',
+  },
+};
+
+export const INACTIVE_TAB = {
+  ...baseTab,
+  text: __('Inactive'),
+  value: 'inactive',
+  variables: { active: false },
+  countsQueryPath: 'inactive',
+  emptyStateComponentProps: {
+    svgPath: groupsEmptyStateIllustration,
+    title: s__("Groups|You don't have any inactive groups."),
+    description: s__('Groups|Groups that are archived or pending deletion will appear here.'),
+  },
+};
+
+export const ADMIN_GROUPS_TABS = [ACTIVE_TAB, INACTIVE_TAB];
+
+export const BASE_ROUTE = '/';
+
+export const ADMIN_GROUPS_ROUTE_NAME = 'admin-groups';
+
+export const FIRST_TAB_ROUTE_NAMES = [ADMIN_GROUPS_ROUTE_NAME];
+
+export const FILTERED_SEARCH_TERM_KEY = 'search';
+export const FILTERED_SEARCH_NAMESPACE = 'admin-groups';

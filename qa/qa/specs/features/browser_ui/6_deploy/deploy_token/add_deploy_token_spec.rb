@@ -1,0 +1,22 @@
+# frozen_string_literal: true
+
+module QA
+  RSpec.describe 'Deploy', feature_category: :environment_management do
+    describe 'Deploy token creation' do
+      it 'user adds a deploy token' do
+        Flow::Login.sign_in
+
+        deploy_token_name = 'deploy token name'
+        one_week_from_now = Date.today + 7 # rubocop:disable Rails/Date -- E2E tests run outside of Rails environment
+
+        deploy_token = create(:project_deploy_token,
+          name: deploy_token_name,
+          expires_at: one_week_from_now,
+          scopes: %w[read_repository])
+
+        expect(deploy_token.username.length).to be > 0
+        expect(deploy_token.token.length).to be > 0
+      end
+    end
+  end
+end

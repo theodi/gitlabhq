@@ -1,0 +1,24 @@
+---
+data_category: optional
+key_path: usage_activity_by_stage_monthly.create.action_monthly_active_users_live_preview_edit
+description: Count of monthly unique users that successfully connect to Live Preview
+product_group: remote_development
+product_categories:
+- web_ide
+value_type: number
+status: removed
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/85420
+time_frame: 28d
+data_source: redis_hll
+instrumentation_class: RedisHLLMetric
+options:
+  events:
+  - g_edit_by_live_preview
+tiers:
+- free
+- premium
+- ultimate
+performance_indicator_type: []
+milestone: "15.0"
+removed_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/131356
+milestone_removed: '16.4'

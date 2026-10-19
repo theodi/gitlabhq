@@ -1,0 +1,55 @@
+import Vue from 'vue';
+import VueApollo from 'vue-apollo';
+import { initVueApp } from '~/lib/utils/vue3compat/init_vue_app';
+import createDefaultClient from '~/lib/graphql';
+import App from './components/app.vue';
+
+Vue.use(VueApollo);
+
+export function initForkApp() {
+  const el = document.getElementById('fork-groups-mount-element');
+
+  if (!el) {
+    return null;
+  }
+
+  const {
+    forkIllustration,
+    newGroupPath,
+    projectFullPath,
+    visibilityHelpPath,
+    cancelPath,
+    projectId,
+    projectName,
+    projectPath,
+    projectDefaultBranch,
+    projectDescription,
+    projectVisibility,
+    restrictedVisibilityLevels,
+  } = el.dataset;
+
+  return initVueApp({
+    el,
+    name: 'ForkAppRoot',
+    apolloProvider: new VueApollo({
+      defaultClient: createDefaultClient(),
+    }),
+    provide: {
+      newGroupPath,
+      visibilityHelpPath,
+      cancelPath,
+      projectFullPath,
+      projectId,
+      projectName,
+      projectPath,
+      projectDescription,
+      projectDefaultBranch,
+      projectVisibility,
+      restrictedVisibilityLevels: JSON.parse(restrictedVisibilityLevels),
+    },
+    component: App,
+    props: {
+      forkIllustration,
+    },
+  });
+}

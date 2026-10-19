@@ -1,0 +1,97 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'Merge Request Creations diffs stream', feature_category: :code_review_workflow do
+  # `freeze: false` is required in this spec: one or more `let_it_be` subjects
+  # cannot be frozen by default (deep_freeze traversal failure, a non-AR
+  # subject, or an in-memory mutation that survives reload/refind). Do not
+  # drop these opt-outs or convert them to `let_it_be_with_reload`/`refind`
+  # (see gitlab-org/gitlab#602925).
+  let_it_be(:project, freeze: false) { create(:project, :public, :repository) }
+  let_it_be(:user, freeze: false) { create(:user, maintainer_of: project) }
+  # `freeze: false` is kept here because this `let_it_be` subject is not an
+  # ActiveRecord record, so freezing gives no cross-example isolation benefit
+  # and `let_it_be_with_reload`/`refind` are no-ops on it. Keep as-is (see
+  # gitlab-org/gitlab#602925).
+  let_it_be(:source_branch, freeze: false) { 'fix' }
+  # `freeze: false` is kept here because this `let_it_be` subject is not an
+  # ActiveRecord record, so freezing gives no cross-example isolation benefit
+  # and `let_it_be_with_reload`/`refind` are no-ops on it. Keep as-is (see
+  # gitlab-org/gitlab#602925).
+  let_it_be(:target_branch, freeze: false) { 'master' }
+
+  let_it_be(:compare, freeze: false) do
+    CompareService.new(
+      project,
+      source_branch
+    ).execute(
+      project,
+      target_branch
+    )
+  end
+
+  # `freeze: false` is kept here because this `let_it_be` subject is not an
+  # ActiveRecord record, so freezing gives no cross-example isolation benefit
+  # and `let_it_be_with_reload`/`refind` are no-ops on it. Keep as-is (see
+  # gitlab-org/gitlab#602925).
+  let_it_be(:offset, freeze: false) { 0 }
+  let_it_be(:diff_files, freeze: false) { compare.diffs.diff_files }
+
+  before do
+    sign_in(user)
+  end
+
+  describe 'GET diffs_stream' do
+    def go(**extra_params)
+      params = {
+        namespace_id: project.namespace,
+        project_id: project,
+        offset: offset,
+        merge_request: {
+          source_branch: source_branch,
+          target_branch: target_branch
+        }
+      }
+
+      get namespace_project_new_merge_request_diffs_stream_path(params.merge(extra_params))
+    end
+
+    it 'includes all diffs' do
+      go
+
+      streamed_content = response.body
+
+      diff_files.each do |diff_file|
+        expect(streamed_content).to include(diff_file.new_path)
+      end
+    end
+
+    include_examples 'diffs stream tests'
+
+    context 'when user does not access to create merge request' do
+      let(:user) { create(:user) }
+
+      it 'returns a 404 status' do
+        go
+
+        expect(response).to have_gitlab_http_status(:not_found)
+      end
+    end
+
+    context 'when merge request cannot be created' do
+      before do
+        allow_next_instance_of(MergeRequest) do |instance|
+          allow(instance).to receive(:can_be_created).and_return(false)
+        end
+      end
+
+      it 'no diffs are streamed' do
+        go
+
+        expect(response.body).to not_include('diff-file')
+        expect(response.body).to include('server-timings')
+      end
+    end
+  end
+end

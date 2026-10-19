@@ -1,0 +1,275 @@
+@use 'constants';
+
+.rd-diff-file-component {
+  --rd-diff-file-header-background-color: var(--gl-background-color-subtle);
+  --rd-diff-file-border-color: var(--gl-border-color-default);
+  --rd-paint-extend-left: 16px;
+  --rd-paint-extend-bottom: 16px;
+  display: block;
+  scroll-margin-top: var(--rd-app-sticky-top-with-padding);
+  margin-bottom: var(--rd-diff-file-bottom-margin);
+}
+
+.rd-diff-file-component-linked {
+  --rd-diff-file-header-background-color: var(--gl-highlight-target-background-color);
+  --rd-diff-file-outer-border-color: var(--gl-highlight-target-border-color);
+}
+
+.rd-diff-file-component-conflict {
+  --rd-diff-file-header-background-color: var(--gl-feedback-danger-background-color);
+  --rd-diff-file-outer-border-color: var(--gl-feedback-danger-border-color);
+}
+
+.rd-diff-file {
+  $header-padding: constants.$diff-file-header-padding-y * 2;
+  // top/bottom padding + toggle button size, excluding borders
+  $file-header-height: calc($header-padding + $gl-button-small-size);
+  --rd-diff-file-header-height: #{$file-header-height};
+  --rd-diff-file-border-radius: #{$gl-border-radius-lg};
+  --rd-diff-file-header-radius: var(--rd-diff-file-border-radius) var(--rd-diff-file-border-radius) 0 0;
+  --rd-diff-file-header-collapsed-radius: var(--rd-diff-file-border-radius);
+  container: diff-file / normal;
+}
+
+// duplicate selector to override styles by .flash-container
+.rd-diff-file-error.rd-diff-file-error.rd-diff-file-error {
+  --gl-alert-border-radius: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--rd-diff-file-outer-border-color, var(--rd-diff-file-border-color));
+  border-top: 0;
+  max-width: none;
+
+  &:empty {
+    display: none;
+  }
+}
+
+.rd-diff-file-conflict-message {
+  --gl-alert-border-radius: var(--rd-diff-file-header-radius);
+  border: 1px solid var(--rd-diff-file-outer-border-color);
+  border-bottom: 0;
+  border-radius: var(--gl-alert-border-radius);
+}
+
+.rd-diff-file-conflict-message + .rd-diff-file-header-sticky .rd-diff-file-header {
+  --rd-diff-file-header-radius: 0;
+  --rd-diff-file-header-collapsed-radius: 0 0 var(--rd-diff-file-border-radius) var(--rd-diff-file-border-radius);
+  border-top: 1px solid transparent;
+}
+
+.rd-diff-file-details {
+  --rd-content-border-radius: 0 0 var(--rd-diff-file-border-radius) var(--rd-diff-file-border-radius);
+  --rd-content-border-color: var(--rd-diff-file-border-color, var(--gl-border-color-default));
+}
+
+.rd-diff-file-details > summary {
+  display: none;
+}
+
+/*
+  Rapid Diffs use content-visibility: auto to virtualize the whole diff file,
+  skipping all of the rendering work for off-screen files.
+  This is controlled through the --rd-content-visibility-auto property.
+  --virtual-... configuration props allow to fine-tune the virtual dimensions of a diff file,
+  which is done on a best effort approach.
+ */
+.rd-diff-file:where([data-virtual], [data-collapsed]) {
+  content-visibility: var(--rd-content-visibility-auto, auto);
+}
+
+.rd-diff-file[data-virtual] {
+  // Extend the paint containment boundary so the new discussion toggle (positioned
+  // outside the first cell) and the gutter toggle are not clipped.
+  padding-left: var(--rd-paint-extend-left);
+  padding-bottom: var(--rd-paint-extend-bottom);
+  margin-left: calc(var(--rd-paint-extend-left) * -1);
+  margin-bottom: calc(var(--rd-paint-extend-bottom) * -1);
+
+  // 'auto' remembers the last rendered height; the calc is only a fallback for initial render
+  contain-intrinsic-size:
+    auto 0 auto
+    calc(var(--rd-diff-file-header-height) + #{constants.$diff-file-border-width * 3} + var(--rd-body-intrinsic-height));
+
+  @media (max-resolution: 1x) {
+    // prevent pixel shifts on non-retina displays when hovering a line
+    will-change: transform;
+  }
+}
+
+diff-file:hover,
+diff-file[data-line-range-dragging] {
+  position: relative;
+  z-index: 2;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to the apply suggestion dropdown
+diff-file:has([data-apply-suggestion-toggle] button[aria-expanded='true']) {
+  position: relative;
+  z-index: 2;
+}
+
+.rd-diff-file[data-collapsed] {
+  // header top/bottom borders only
+  contain-intrinsic-size:
+    auto 0 auto
+    calc(var(--rd-diff-file-header-height) + #{constants.$diff-file-border-width * 2});
+}
+
+// content-visibility: auto; applies paint containment, which means you can not draw outside a diff file
+// we need to disable this when we show dropdowns and other elements which extend past a diff file
+// stylelint-disable-next-line gitlab/no-has -- scoped to diff file elements
+.rd-diff-file:where([data-virtual], [data-collapsed]):has(button[aria-controls*='base-dropdown'][aria-expanded='true']),
+.rd-diff-file[data-virtual]:has(.zen-backdrop.fullscreen) {
+  --rd-content-visibility-auto: visible;
+}
+
+.rd-diff-file-header-sticky {
+  position: sticky;
+  // 1px offset to hide top border
+  top: calc(var(--rd-app-sticky-top, 1px) - 1px);
+  z-index: constants.$diff-file-header-z-index;
+  container-type: scroll-state;
+}
+
+// stylelint-disable-next-line gitlab/no-has -- scoped to diff file sticky header
+.rd-diff-file-header-sticky:has([data-options-toggle] button[aria-expanded='true']) {
+  z-index: constants.$diff-file-header-active-z-index;
+}
+
+.rd-diff-file-header {
+  --rd-diff-file-header-horizontal-padding: #{$gl-spacing-scale-4};
+  --rd-diff-file-header-vertical-padding: #{$gl-spacing-scale-3};
+  @apply gl-text-default;
+  display: flex;
+  background-color: var(--rd-diff-file-header-background-color);
+  border: 1px solid var(--rd-diff-file-outer-border-color, var(--rd-diff-file-border-color));
+  padding: #{constants.$diff-file-header-padding-y} var(--rd-diff-file-header-horizontal-padding);
+  border-radius: var(--rd-diff-file-header-radius);
+  word-break: break-word;
+
+  @container scroll-state(stuck: top) {
+    border-radius: 0 0 var(--rd-diff-file-border-radius) var(--rd-diff-file-border-radius);
+  }
+}
+
+.rd-diff-file[data-collapsed] .rd-diff-file-header {
+  border-radius: var(--rd-diff-file-header-collapsed-radius);
+}
+
+.rd-diff-file-header-main {
+  position: relative;
+  // extra spacing to avoid accidental file collapse clicks
+  padding: var(--rd-diff-file-header-vertical-padding);
+  margin: calc(var(--rd-diff-file-header-vertical-padding) * -1);
+  z-index: 1;
+}
+
+// we shouldn't use flex to align these items because it forces copy button to always wrap to a new line
+.rd-diff-file-header-submodule,
+.rd-diff-file-title,
+.rd-diff-file-deleted {
+  display: inline;
+}
+
+.rd-diff-file-title {
+  @apply gl-text-default;
+  font: inherit;
+  font-weight: $gl-font-weight-heading;
+  margin: 0;
+}
+
+.rd-diff-file-title .commit-sha {
+  font-size: 85%;
+  font-weight: normal;
+}
+
+.rd-diff-file-link {
+  font: inherit;
+  color: inherit;
+}
+
+.rd-diff-file-header-submodule,
+.rd-diff-file-title,
+.rd-file-mode-change,
+.rd-copy-path,
+.rd-diff-file-deleted,
+.rd-submodule-icon.rd-submodule-icon {
+  vertical-align: middle;
+}
+
+.rd-diff-file-title,
+.rd-file-mode-change,
+.rd-copy-path,
+.rd-diff-file-deleted,
+.rd-submodule-icon {
+  margin-right: $gl-padding-4;
+}
+
+.rd-diff-file-moved {
+  margin: 0 $gl-padding-4;
+  font-weight: $gl-font-weight-normal;
+}
+
+.rd-diff-file-toggle {
+  margin-right: $gl-spacing-scale-3;
+}
+
+.rd-diff-file[data-collapsed] .rd-diff-file-toggle-button[data-opened],
+.rd-diff-file:not([data-collapsed]) .rd-diff-file-toggle-button[data-closed] {
+  display: none;
+}
+
+.rd-diff-file-toggle-button::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+}
+
+.rd-diff-file-info {
+  $horizontal-padding: var(--rd-diff-file-header-horizontal-padding);
+  $horizontal-padding-inv: calc(var(--rd-diff-file-header-horizontal-padding) * -1);
+  $vertical-padding: var(--rd-diff-file-header-vertical-padding);
+  $vertical-padding-inv: calc(var(--rd-diff-file-header-vertical-padding) * -1);
+  position: relative;
+  display: flex;
+  align-self: flex-start;
+  align-items: center;
+  min-height: calc(#{$gl-button-small-size} + var(--rd-diff-file-header-vertical-padding) * 2);
+  // extra spacing to avoid accidental file collapse clicks
+  padding: $vertical-padding     $horizontal-padding     $vertical-padding     $vertical-padding;
+  margin:  $vertical-padding-inv $horizontal-padding-inv $vertical-padding-inv auto;
+  gap: $gl-padding;
+  z-index: 1;
+}
+
+.rd-diff-file-stats {
+  display: flex;
+  align-items: center;
+  margin: 0 0 0 auto;
+  white-space: nowrap;
+  gap: $gl-padding-8;
+}
+
+.rd-stats-added {
+  @apply gl-text-success;
+}
+
+.rd-stats-removed {
+  @apply gl-text-danger;
+}
+
+.rd-diff-file-body {
+  border: constants.$diff-file-border-width solid var(--rd-diff-file-outer-border-color, var(--rd-content-border-color));
+  border-top: 0;
+  border-radius: var(--rd-content-border-radius);
+}
+
+@supports (content-visibility: hidden) {
+  [data-file-body][hidden] {
+    display: block !important;
+    // https://web.dev/articles/content-visibility#hide_content_with_content-visibility_hidden
+    // content-visibility: hidden preserves element's rendering state which improves performance for larger diffs
+    content-visibility: hidden;
+  }
+}

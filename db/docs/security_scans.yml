@@ -1,0 +1,13 @@
+---
+table_name: security_scans
+classes:
+- Security::Scan
+feature_categories:
+- vulnerability_management
+description: Stores information about the security scans that are a part of Ci::Build
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/23669
+milestone: '12.8'
+gitlab_schema: gitlab_sec
+sharding_key:
+  project_id: projects
+table_size: over_limit

@@ -1,0 +1,13 @@
+---
+table_name: status_page_settings
+classes:
+- StatusPage::ProjectSetting
+feature_categories:
+- incident_management
+description: Project settings related to Status Page
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/25863
+milestone: '12.9'
+gitlab_schema: gitlab_main_org
+sharding_key:
+  project_id: projects
+table_size: small

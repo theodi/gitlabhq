@@ -1,0 +1,22 @@
+---
+key_path: counts.i_code_review_merge_request_widget_terraform_count_expand_failed
+description: Total number of times the Terraform widget extension was expanded (while in its Failed state)
+product_group: code_review
+product_categories:
+- code_review_workflow
+value_type: number
+status: active
+milestone: "15.3"
+introduced_by_url: "https://gitlab.com/gitlab-org/gitlab/-/merge_requests/93340"
+time_frame: all
+data_source: internal_events
+data_category: optional
+events:
+- name: expand_merge_request_widget
+  filter:
+    label: terraform
+    property: failed
+tiers:
+- free
+- premium
+- ultimate

@@ -1,0 +1,17 @@
+---
+data_category: optional
+key_path: topology
+description: Topology data
+product_group: cloud_connector
+value_type: object
+status: active
+milestone: "13.11"
+introduced_by_url: https://gitlab.com/groups/gitlab-org/-/epics/3209
+time_frame: none
+data_source: prometheus
+tiers:
+- free
+- premium
+- ultimate
+value_json_schema: 'config/metrics/objects_schemas/topology_schema.json'
+performance_indicator_type: []

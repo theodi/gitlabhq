@@ -1,0 +1,20 @@
+# frozen_string_literal: true
+
+require 'rubocop_spec_helper'
+require_relative '../../../../rubocop/cop/gitlab/bulk_insert'
+
+RSpec.describe RuboCop::Cop::Gitlab::BulkInsert, feature_category: :database do
+  it 'flags the use of ApplicationRecord.legacy_bulk_insert' do
+    expect_offense(<<~RUBY)
+      ApplicationRecord.legacy_bulk_insert('merge_request_diff_files', rows)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use the `BulkInsertSafe` concern, [...]
+    RUBY
+  end
+
+  it 'flags the use of ::ApplicationRecord.legacy_bulk_insert' do
+    expect_offense(<<~RUBY)
+      ::ApplicationRecord.legacy_bulk_insert('merge_request_diff_files', rows)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Use the `BulkInsertSafe` concern, [...]
+    RUBY
+  end
+end

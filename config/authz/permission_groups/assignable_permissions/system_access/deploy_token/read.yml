@@ -1,0 +1,15 @@
+---
+name: read_deploy_token
+description: Grants the ability to read deploy tokens
+boundaries:
+  - instance
+  - group
+  - project
+available_for:
+  - granular_access_token
+permissions:
+  - read_deploy_token
+assignable_when:
+  - condition: admin
+    boundaries:
+      - instance

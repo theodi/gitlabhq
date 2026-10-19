@@ -1,0 +1,22 @@
+---
+category: IncidentManagement::TimelineEvents::UpdateService
+action: incident_management_timeline_event_edited
+extra_properties:
+identifiers:
+- project
+- user
+- namespace
+description: "Event migrated form Service Ping metric. Count of unique users edited timeline events"
+product_group: platform_insights
+product_categories:
+- incident_management
+milestone: "15.7"
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/105223
+tiers:
+- free
+- premium
+- ultimate
+additional_properties:
+  label:
+    description: "Mirrored Service Ping total metric key_path: redis_hll_counters.incident_management.incident_management_total_unique_counts_monthly"
+

@@ -1,0 +1,22 @@
+# frozen_string_literal: true
+
+module Ci
+  module PipelineSchedulesHelper
+    def js_pipeline_schedules_form_data(project, schedule)
+      {
+        daily_limit: schedule.daily_limit,
+        default_branch: project.default_branch,
+        project_id: project.id,
+        project_path: project.full_path,
+        schedule_id: schedule.id,
+        schedules_path: pipeline_schedules_path(project),
+        settings_link: project_settings_ci_cd_path(project),
+        timezone_data: timezone_data.to_json,
+        can_set_pipeline_variables: Ability.allowed?(current_user, :set_pipeline_variables, project).to_s,
+        worker_cron_expression: schedule.worker_cron_expression
+      }
+    end
+  end
+end
+
+Ci::PipelineSchedulesHelper.prepend_mod_with('Ci::PipelineSchedulesHelper')

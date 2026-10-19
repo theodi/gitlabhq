@@ -1,0 +1,309 @@
+import {
+  formatIssueInput,
+  filterVariables,
+  FiltersInfo,
+  getBoardListTitleId,
+} from '~/boards/boards_util';
+import { FilterFields } from '~/boards/constants';
+
+describe('formatIssueInput', () => {
+  const issueInput = {
+    labelIds: ['gid://gitlab/GroupLabel/5'],
+    projectPath: 'gitlab-org/gitlab-test',
+    id: 'gid://gitlab/Issue/11',
+  };
+
+  it('correctly merges boardConfig into the issue', () => {
+    const boardConfig = {
+      labels: [
+        {
+          type: 'GroupLabel',
+          id: 44,
+        },
+      ],
+      assigneeId: '55',
+      milestoneId: 66,
+      weight: 1,
+    };
+
+    const result = formatIssueInput(issueInput, boardConfig);
+    expect(result).toEqual({
+      projectPath: 'gitlab-org/gitlab-test',
+      id: 'gid://gitlab/Issue/11',
+      labelIds: ['gid://gitlab/GroupLabel/5', 'gid://gitlab/GroupLabel/44'],
+      assigneeIds: ['gid://gitlab/User/55'],
+      milestoneId: 'gid://gitlab/Milestone/66',
+      weight: 1,
+    });
+  });
+
+  it('does not add weight to input if weight is NONE', () => {
+    const boardConfig = {
+      weight: -2, // NO_WEIGHT
+    };
+
+    const result = formatIssueInput(issueInput, boardConfig);
+    const expected = {
+      projectPath: 'gitlab-org/gitlab-test',
+      id: 'gid://gitlab/Issue/11',
+      labelIds: ['gid://gitlab/GroupLabel/5'],
+      assigneeIds: [],
+      milestoneId: undefined,
+    };
+
+    expect(result).toEqual(expected);
+  });
+});
+
+describe('filterVariables', () => {
+  it.each([
+    [
+      'correctly processes array filter values',
+      {
+        filters: {
+          'not[filterA]': ['val1', 'val2'],
+        },
+        expected: {
+          not: {
+            filterA: ['val1', 'val2'],
+          },
+        },
+      },
+    ],
+    [
+      "renames a filter if 'remap' method is available",
+      {
+        filters: {
+          filterD: 'some value',
+        },
+        expected: {
+          filterA: 'some value',
+          not: {},
+        },
+      },
+    ],
+    [
+      'correctly processes a negated filter that supports negation',
+      {
+        filters: {
+          'not[filterA]': 'some value 1',
+          'not[filterB]': 'some value 2',
+        },
+        expected: {
+          not: {
+            filterA: 'some value 1',
+          },
+        },
+      },
+    ],
+    [
+      'correctly removes an unsupported filter depending on issuableType',
+      {
+        issuableType: 'epic',
+        filters: {
+          filterA: 'some value 1',
+          filterE: 'some value 2',
+        },
+        expected: {
+          filterE: 'some value 2',
+          not: {},
+        },
+      },
+    ],
+    [
+      'applies a transform when the filter value needs to be modified',
+      {
+        filters: {
+          filterC: 'abc',
+          'not[filterC]': 'def',
+        },
+        expected: {
+          filterC: 'ABC',
+          not: {
+            filterC: 'DEF',
+          },
+        },
+      },
+    ],
+    [
+      'correctly processes a unioned (OR) filter using its unionedKey',
+      {
+        filters: {
+          'or[filterA]': ['val1', 'val2'],
+        },
+        expected: {
+          not: {},
+          or: {
+            filterAList: ['val1', 'val2'],
+          },
+        },
+      },
+    ],
+    [
+      'does not apply per-field transforms to unioned (OR) filters',
+      {
+        filters: {
+          'or[filterC]': ['abc', 'def'],
+        },
+        expected: {
+          not: {},
+          or: {
+            filterCList: ['abc', 'def'],
+          },
+        },
+      },
+    ],
+  ])('%s', (_, { filters, issuableType = 'issue', expected }) => {
+    const result = filterVariables({
+      filters,
+      issuableType,
+      filterInfo: {
+        filterA: {
+          negatedSupport: true,
+          unionedKey: 'filterAList',
+        },
+        filterB: {
+          negatedSupport: false,
+        },
+        filterC: {
+          negatedSupport: true,
+          unionedKey: 'filterCList',
+          transform: (val) => val.toUpperCase(),
+        },
+        filterD: {
+          remap: () => 'filterA',
+        },
+        filterE: {
+          negatedSupport: true,
+        },
+      },
+      filterFields: {
+        issue: ['filterA', 'filterB', 'filterC', 'filterD', 'filterAList', 'filterCList'],
+        epic: ['filterE'],
+      },
+    });
+
+    expect(result).toEqual(expected);
+  });
+
+  it.each([
+    [
+      'converts milestone wild card',
+      {
+        filters: {
+          milestoneTitle: 'Started',
+        },
+        expected: {
+          milestoneWildcardId: 'STARTED',
+          not: {},
+        },
+      },
+    ],
+    [
+      'converts assignee wild card',
+      {
+        filters: {
+          assigneeUsername: 'Any',
+        },
+        expected: {
+          assigneeWildcardId: 'ANY',
+          not: {},
+        },
+      },
+    ],
+    [
+      'converts custom fields',
+      {
+        filters: {
+          'custom-field[1]': '2',
+        },
+        expected: {
+          customField: [
+            {
+              customFieldId: 'gid://gitlab/Issuables::CustomField/1',
+              selectedOptionIds: ['gid://gitlab/Issuables::CustomFieldSelectOption/2'],
+            },
+          ],
+          not: {},
+        },
+      },
+      {
+        filters: {
+          'custom-field[1][]': '2',
+        },
+        expected: {
+          customField: [],
+          not: {},
+        },
+      },
+    ],
+    [
+      'converts a single type to an array of workItemTypeIds global ids',
+      {
+        filters: {
+          type: ['1'],
+        },
+        expected: {
+          workItemTypeIds: ['gid://gitlab/WorkItems::Type/1'],
+          not: {},
+        },
+      },
+    ],
+    [
+      'converts a multi-value type (is one of) to an array of workItemTypeIds',
+      {
+        filters: {
+          type: ['1', '2'],
+        },
+        expected: {
+          workItemTypeIds: ['gid://gitlab/WorkItems::Type/1', 'gid://gitlab/WorkItems::Type/2'],
+          not: {},
+        },
+      },
+    ],
+    [
+      'converts the legacy types param to workItemTypeIds',
+      {
+        filters: {
+          types: '1',
+        },
+        expected: {
+          workItemTypeIds: 'gid://gitlab/WorkItems::Type/1',
+          not: {},
+        },
+      },
+    ],
+    [
+      'keeps negated author usernames on the issue board',
+      {
+        filters: {
+          'not[authorUsernames]': ['root', 'admin'],
+        },
+        expected: {
+          not: { authorUsernames: ['root', 'admin'] },
+        },
+      },
+    ],
+  ])('%s', (_, { filters, issuableType = 'issue', expected }) => {
+    const result = filterVariables({
+      filters,
+      issuableType,
+      filterInfo: FiltersInfo,
+      filterFields: FilterFields,
+      options: { hasCustomFieldsFeature: true },
+    });
+
+    expect(result).toEqual(expected);
+  });
+});
+
+describe('getBoardListTitleId', () => {
+  it('returns null when listId is not provided', () => {
+    expect(getBoardListTitleId(undefined)).toBeNull();
+    expect(getBoardListTitleId(null)).toBeNull();
+  });
+
+  it('returns a sanitized id string for a valid listId', () => {
+    expect(getBoardListTitleId('gid://gitlab/List/1')).toBe('board-list-title-gid---gitlab-List-1');
+  });
+});

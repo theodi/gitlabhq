@@ -1,0 +1,60 @@
+# frozen_string_literal: true
+
+return if helper.revert_mr?
+
+NO_SPECS_LABELS = [
+  'maintenance::pipelines',
+  'maintenance::refactor',
+  'maintenance::workflow',
+  'maintenance::performance',
+  'documentation',
+  'QA'
+].freeze
+NO_NEW_SPEC_MESSAGE = <<~MSG
+You've made some app changes, but didn't add any tests.
+That's OK as long as you're refactoring existing code,
+but please consider adding any of the %<labels>s labels.
+MSG
+EE_CHANGE_WITH_FOSS_SPEC_CHANGE_MESSAGE = <<~MSG
+You've made some EE-specific changes, but only made changes to FOSS tests.
+This could be a sign that you're testing an EE-specific behavior in a FOSS test.
+
+Please make sure the spec files pass in AS-IF-FOSS mode either:
+
+1. Locally with `FOSS_ONLY=1 bin/rspec -- %<spec_files>s`.
+1. In the MR pipeline by verifying that the `rspec:predictive:trigger` job has passed in the as-if-foss cross project downstream pipeline.
+1. In the MR pipelines by setting the ~"pipeline:run-as-if-foss" label on the MR (you can do it with the `/label ~"pipeline:run-as-if-foss"` quick action) and start a new MR pipeline.
+
+MSG
+
+CONTROLLER_SPEC_DEPRECATION_MESSAGE = <<~MSG
+Do not add new controller specs. We are moving from controller specs to
+request specs (and/or feature specs). Please add request specs under
+`/spec/requests` and/or `/ee/spec/requests` instead.
+
+See https://gitlab.com/groups/gitlab-org/-/epics/5076 for information.
+MSG
+
+all_changed_files = helper.all_changed_files
+has_app_changes = all_changed_files.grep(%r{\A(app|lib|db/(geo/)?(post_)?migrate)/}).any?
+has_ee_app_changes = all_changed_files.grep(%r{\Aee/(app|lib|db/(geo/)?(post_)?migrate)/}).any?
+spec_changes = specs.changed_specs_files(ee: :exclude)
+has_spec_changes = spec_changes.any?
+has_ee_spec_changes = specs.changed_specs_files(ee: :only).any?
+new_specs_needed = (helper.mr_labels & NO_SPECS_LABELS).empty?
+
+if (has_app_changes || has_ee_app_changes) && !(has_spec_changes || has_ee_spec_changes) && new_specs_needed
+  warn format(NO_NEW_SPEC_MESSAGE, labels: helper.labels_list(NO_SPECS_LABELS)), sticky: false
+end
+
+# The only changes outside `ee/` are in `spec/`
+if has_ee_app_changes && has_spec_changes && !(has_app_changes || has_ee_spec_changes)
+  warn format(EE_CHANGE_WITH_FOSS_SPEC_CHANGE_MESSAGE, spec_files: spec_changes.join(" ")), sticky: false
+end
+
+# Forbidding a new file addition under `/spec/controllers` or `/ee/spec/controllers`
+warn CONTROLLER_SPEC_DEPRECATION_MESSAGE if helper.changes.added.files.grep(%r{^(ee/)?spec/controllers/}).any?
+
+specs.changed_specs_files.each do |filename|
+  specs.add_suggestions_for(filename)
+end

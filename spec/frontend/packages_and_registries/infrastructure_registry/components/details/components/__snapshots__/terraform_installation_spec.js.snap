@@ -1,0 +1,44 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`TerraformInstallation renders all the messages 1`] = `
+<div>
+  <h3
+    class="gl-text-lg"
+  >
+    Provision instructions
+  </h3>
+  <code-instruction-stub
+    copytext="Copy Terraform Command"
+    instruction="module "my_module_name" {
+  source = "bar.dev/foo/Test/system-22"
+  version = "0.1"
+}"
+    label="Copy and paste into your Terraform configuration, insert the variables, and run Terraform init:"
+    multiline="true"
+    trackingaction=""
+    trackinglabel=""
+  />
+  <h3
+    class="gl-text-lg"
+  >
+    Registry setup
+  </h3>
+  <code-instruction-stub
+    copytext="Copy Terraform Setup Command"
+    instruction="credentials "bar.dev" {
+  token = "<TOKEN>"
+}"
+    label="To authorize access to the Terraform registry:"
+    multiline="true"
+    trackingaction=""
+    trackinglabel=""
+  />
+  For more information on the Terraform registry,
+  <gl-link-stub
+    href="/help/user/packages/terraform_module_registry/_index#reference-a-terraform-module"
+  >
+    see our documentation
+  </gl-link-stub>
+  .
+</div>
+`;

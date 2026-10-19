@@ -1,0 +1,268 @@
+# frozen_string_literal: true
+
+require 'spec_helper'
+
+RSpec.describe 'JobRetry', feature_category: :continuous_integration do
+  include GraphqlHelpers
+
+  let_it_be(:user) { create(:user) }
+  let_it_be_with_reload(:project) { create(:project, :repository, maintainers: user) }
+  let_it_be(:sha) { project.repository.commit.sha }
+  let_it_be(:pipeline) { create(:ci_pipeline, sha: sha, project: project, user: user) }
+
+  let(:job) { create(:ci_build, :success, pipeline: pipeline, name: 'build') }
+
+  let(:mutation) do
+    variables = {
+      id: job.to_global_id.to_s
+    }
+    graphql_mutation(:job_retry, variables,
+      <<-QL
+                       errors
+                       job {
+                         id
+                       }
+      QL
+    )
+  end
+
+  let(:mutation_response) { graphql_mutation_response(:job_retry) }
+
+  before do
+    project.update!(ci_pipeline_variables_minimum_override_role: :maintainer)
+  end
+
+  it_behaves_like 'authorizing granular token permissions for GraphQL', :retry_job do
+    let(:boundary_object) { project }
+    let(:mutation) { graphql_mutation(:job_retry, { id: job.to_global_id.to_s }, 'errors') }
+    let(:request) { post_graphql_mutation(mutation, token: { personal_access_token: pat }) }
+  end
+
+  it 'returns an error if the user is not allowed to retry the job' do
+    post_graphql_mutation(mutation, current_user: create(:user))
+
+    expect(graphql_errors).not_to be_empty
+  end
+
+  context 'when the job retry rate limit is exceeded', :clean_gitlab_redis_rate_limiting, :freeze_time do
+    before do
+      stub_application_setting(job_retry_limit_per_user_project: 1)
+    end
+
+    it 'returns the throttle message in errors', :aggregate_failures do
+      2.times { post_graphql_mutation(mutation, current_user: user) }
+
+      expect(response).to have_gitlab_http_status(:success)
+      expect(mutation_response['job']).to be_nil
+      expect(mutation_response['errors']).to contain_exactly(::Gitlab::ApplicationRateLimiter.throttled_error_message)
+    end
+  end
+
+  context 'when the job is a Ci::Build' do
+    it 'retries the build' do
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      new_job_id = GitlabSchema.object_from_id(mutation_response['job']['id']).sync.id
+
+      new_job = ::Ci::Build.find(new_job_id)
+      expect(new_job).not_to be_retried
+    end
+
+    context "and the user does not have the ability to use variables" do
+      before do
+        project.update!(ci_pipeline_variables_minimum_override_role: :no_one_allowed)
+      end
+
+      it 'successfully retries the build' do
+        post_graphql_mutation(mutation, current_user: user)
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(mutation_response['errors']).to be_empty
+      end
+    end
+  end
+
+  context 'when the job is a Ci::Bridge' do
+    let(:job) { create(:ci_bridge, :success, pipeline: pipeline, name: 'puente') }
+
+    it 'retries the bridge' do
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      new_job_id = GitlabSchema.object_from_id(mutation_response['job']['id']).sync.id
+
+      new_job = ::Ci::Bridge.find(new_job_id)
+      expect(new_job).not_to be_retried
+    end
+  end
+
+  context 'when given CI variables' do
+    let(:job) { create(:ci_build, :success, :actionable, pipeline: pipeline, name: 'build') }
+
+    let(:mutation) do
+      variables = {
+        id: job.to_global_id.to_s,
+        variables: { key: 'MANUAL_VAR', value: 'test manual var' }
+      }
+
+      graphql_mutation(:job_retry, variables,
+        <<-QL
+                        errors
+                        job {
+                          id
+                        }
+        QL
+      )
+    end
+
+    it 'applies them to a retried manual job' do
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(response).to have_gitlab_http_status(:success)
+
+      new_job_id = GitlabSchema.object_from_id(mutation_response['job']['id']).sync.id
+      new_job = ::Ci::Build.find(new_job_id)
+      expect(new_job.job_variables.count).to be(1)
+      expect(new_job.job_variables.first.key).to eq('MANUAL_VAR')
+      expect(new_job.job_variables.first.value).to eq('test manual var')
+      expect(new_job.job_variables.first.project_id).to eq(project.id)
+    end
+
+    context "and the user does not have the ability to use variables" do
+      before do
+        project.update!(ci_pipeline_variables_minimum_override_role: :no_one_allowed)
+      end
+
+      it 'returns an error' do
+        post_graphql_mutation(mutation, current_user: user)
+
+        expect(graphql_errors).not_to be_empty
+        expect_graphql_errors_to_include('Internal server error: 403 Forbidden')
+      end
+    end
+  end
+
+  context 'when the job is not retryable' do
+    let(:job) { create(:ci_build, :retried, pipeline: pipeline) }
+
+    it 'returns an error' do
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(mutation_response['job']).to be_nil
+      expect(mutation_response['errors']).to match_array(['Job is not retryable'])
+    end
+  end
+
+  context 'when inputs contain sensitive values' do
+    let(:job) { create(:ci_build, :success, pipeline: pipeline, name: 'build') }
+
+    let(:mutation) do
+      graphql_mutation(
+        :job_retry,
+        { id: job.to_global_id.to_s, inputs: [{ name: 'SECRET', value: 'top-secret-value' }] },
+        'errors',
+        [],
+        'retryJobWithVariables'
+      )
+    end
+
+    let(:logger_instance) { instance_double(Gitlab::GraphqlLogger) }
+    let(:logged_payloads) { [] }
+
+    before do
+      allow(Gitlab::GraphqlLogger).to receive(:build).and_return(logger_instance)
+      allow(logger_instance).to receive(:info) { |payload| logged_payloads << payload }
+    end
+
+    it 'does not log input values in plaintext', :aggregate_failures do
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(logged_payloads).not_to be_empty
+      logged_variables = logged_payloads.map { |payload| payload[:variables].to_s }
+      expect(logged_variables).to all(exclude('top-secret-value'))
+      expect(logged_variables).to include(a_string_including('[FILTERED]'))
+    end
+  end
+
+  context 'when given job inputs' do
+    let(:inputs_spec) do
+      {
+        'environment' => { 'type' => 'string', 'default' => 'staging', 'options' => %w[staging production] },
+        'debug' => { 'type' => 'boolean', 'default' => false }
+      }
+    end
+
+    let(:job) do
+      create(:ci_build, :success, pipeline: pipeline, name: 'build', options: { inputs: inputs_spec })
+    end
+
+    let(:mutation) do
+      variables = {
+        id: job.to_global_id.to_s,
+        inputs: [
+          { name: 'environment', value: 'production' },
+          { name: 'debug', value: true }
+        ]
+      }
+
+      graphql_mutation(:job_retry, variables,
+        <<-QL
+                        errors
+                        job {
+                          id
+                        }
+      QL
+      )
+    end
+
+    it 'applies them to the retried job' do
+      post_graphql_mutation(mutation, current_user: user)
+
+      expect(response).to have_gitlab_http_status(:success)
+      expect(mutation_response['errors']).to be_empty
+
+      new_job_id = GitlabSchema.object_from_id(mutation_response['job']['id']).sync.id
+      new_job = ::Ci::Build.find(new_job_id)
+      expect(new_job.inputs.count).to be(2)
+
+      environment_input = new_job.inputs.find_by(name: 'environment')
+      expect(environment_input.value).to eq('production')
+      expect(environment_input.project_id).to eq(project.id)
+
+      debug_input = new_job.inputs.find_by(name: 'debug')
+      expect(debug_input.value).to be true
+      expect(debug_input.project_id).to eq(project.id)
+    end
+
+    context 'when inputs are invalid' do
+      let(:mutation) do
+        variables = {
+          id: job.to_global_id.to_s,
+          inputs: [
+            { name: 'environment', value: 'development' }
+          ]
+        }
+
+        graphql_mutation(:job_retry, variables,
+          <<-QL
+                          errors
+                          job {
+                            id
+                          }
+        QL
+        )
+      end
+
+      it 'returns validation errors' do
+        post_graphql_mutation(mutation, current_user: user)
+
+        expect(response).to have_gitlab_http_status(:success)
+        expect(mutation_response['job']).to be_nil
+        expect(mutation_response['errors']).to contain_exactly(
+          '`environment` input: `development` cannot be used because it is not in the list of allowed options'
+        )
+      end
+    end
+  end
+end

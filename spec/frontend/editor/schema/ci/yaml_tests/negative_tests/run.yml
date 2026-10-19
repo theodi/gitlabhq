@@ -1,0 +1,129 @@
+run_with_step_script:
+  run:
+    - name: hello_steps
+      step: gitlab.com/gitlab-org/ci-cd/runner-tools/echo-step
+      script: echo 'Hello!'
+      inputs:
+        echo: hello steps!
+
+run_without_name:
+  run:
+    step: some reference
+
+run_with_nested_run_sequence:
+  run:
+    - run:
+      - name: my_step
+        func: namespace/function-name
+
+run_without_name_script:
+  run:
+    script: rspec
+
+run_with_invalid_key:
+  run:
+    - name: step1
+      invalid_key: value1
+
+run_with_empty_string:
+  run: ''
+
+run_with_non_array:
+  run: "not an array"
+
+run_with_invalid_env:
+  run:
+    - name: invalid_env
+      script: echo 'Test'
+      env:
+        - not_a_key_value_pair
+
+run_with_invalid_inputs:
+  run:
+    - name: invalid_inputs
+      step: gitlab.com/gitlab-org/ci-cd/runner-tools/step1
+      inputs:
+        - not_an_object
+
+run_with_missing_step:
+  run:
+    - name: missing_required
+      env:
+        TEST: 'value'
+
+run_with_invalid_step_value:
+  run:
+    - name: invalid_step
+      step: 123  # Should be a string
+
+run_with_invalid_script_value:
+  run:
+    - name: invalid_script
+      script:
+        - not_a_string
+        - 123
+
+run_with_script_having_inputs:
+  run:
+    - name: script_cannot_have_inputs
+      script: echo foobar
+      inputs:
+        - msg: Hello
+
+run_with_missing_git_revision:
+  run:
+    - name: missing_git_revision
+      step:
+        git:
+          url: gitlab.com/components/script
+
+run_with_missing_git_url:
+  run:
+    - name: missing_git_revision
+      step:
+        git:
+          dir: reverse
+          rev: v1
+
+run_with_missing_oci_registry:
+  run:
+    - name: my_step
+      step:
+        oci:
+          repository: my-project/image
+          tag: 5.0.0
+
+run_with_missing_oci_repository:
+  run:
+    - name: my_step
+      step:
+        oci:
+          registry: registry.gitlab.com
+          tag: 5.0.0
+
+run_with_missing_oci_tag:
+  run:
+    - name: my_step
+      step:
+        oci:
+          registry: registry.gitlab.com
+          repository: my-project/image
+
+step_using_action:
+  run:
+    - name: github_action_step
+      action: mikefarah/yq@master
+      inputs:
+        cmd: yq .name some.yaml
+      env:
+        env1: value1
+
+step_with_both_step_and_func:
+  run:
+    - name: file_system_step
+      step: ./steps/my-step
+      func: github-actions/yq@master
+      inputs:
+        cmd: yq .name some.yaml
+      env:
+        env1: value1

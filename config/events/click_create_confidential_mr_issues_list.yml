@@ -1,0 +1,17 @@
+---
+description: User clicks Create confidential merge request on issues list
+internal_events: true
+action: click_create_confidential_mr_issues_list
+identifiers:
+  - project
+  - namespace
+  - user
+product_group: activation
+product_categories:
+- code_review_workflow
+milestone: '16.9'
+introduced_by_url: https://gitlab.com/gitlab-org/gitlab/-/merge_requests/143036
+tiers:
+  - free
+  - premium
+  - ultimate
